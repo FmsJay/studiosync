@@ -69,6 +69,19 @@ local half = '{\n  // "tag:bandsync-guest": [],\n  "tagOwners": {\n    "tag:band
 new = services.policy_with_tags(half)
 assert(new == '{\n  // "tag:bandsync-guest": [],\n  "tagOwners": {\n\t\t"tag:bandsync-guest": ["autogroup:member"],\n    "tag:bandsync": ["autogroup:admin"],\n  },\n}', "only the missing one, into the existing tagOwners: someone's own owners stay")
 assert(services.policy_with_tags("") == nil, "no policy at all: nothing")
+-- the guest rule: only Tailscale's starting allow-all is split; anyone's own rules stay
+local start = '{\n\t"grants": [\n\t\t// Allow all connections.\n\t\t{"src": ["*"], "dst": ["*"], "ip": ["*"]},\n\t],\n\t"ssh": [\n\t\t{"action": "check", "src": ["autogroup:member"], "dst": ["autogroup:self"], "users": ["root"]},\n\t],\n}'
+new = services.policy_with_guest_rule(services.policy_with_tags(start))
+assert(new and new:find('\t\t{"src": ["autogroup:member", "tag:bandsync"], "dst": ["*"], "ip": ["*"]},\n\t\t{"src": ["tag:bandsync-guest"], "dst": ["autogroup:member", "tag:bandsync"], "ip": ["tcp:22000", "udp:22000", "tcp:2049"]},\n\t],', 1, true), "split in place, same indent")
+assert(new:find("// Allow all connections.", 1, true) and new:find('"ssh"', 1, true), "comments and the rest stay")
+assert(select(2, services.policy_with_guest_rule(new)) == "has it", "once")
+local acl = '{"acls": [{"action": "accept", "src": ["*"], "dst": ["*:*"]}]}'
+assert(services.policy_with_guest_rule(acl) == '{"acls": [{"action": "accept", "src": ["autogroup:member", "tag:bandsync"], "dst": ["*:*"]},\n' ..
+  '{"action": "accept", "src": ["tag:bandsync-guest"], "dst": ["autogroup:member:22000,2049", "tag:bandsync:22000,2049"]}]}', "the older acls form")
+assert(select(2, services.policy_with_guest_rule('{"tagOwners": {"tag:server": []}, "grants": [{"src": ["*"], "dst": ["*"], "ip": ["*"]}]}')) == "own rules", "another tag")
+assert(select(2, services.policy_with_guest_rule('{"grants": [{"src": ["*"], "dst": ["*"], "ip": ["*"]}, {"src": ["*"], "dst": ["autogroup:internet"], "ip": ["*"]}]}')) == "own rules", "another rule from everyone")
+assert(select(2, services.policy_with_guest_rule('{"grants": [{"src": ["group:band"], "dst": ["*"], "ip": ["*"]}]}')) == "own rules", "no allow-all")
+assert(services.policy_with_guest_rule('{"grants": [/* {"src": ["*"], "dst": ["*"], "ip": ["*"]} */ {"src": ["*"], "dst": ["*"], "ip": ["*"]}]}'):find('/* {"src": ["*"]', 1, true), "the rule, not a commented-out copy")
 -- guests more than a day old
 local now = os.time({ year = 2026, month = 11, day = 6, hour = 12, min = 0, sec = 0 })
 local devs = '{"devices": [{"id": "1", "tags": ["tag:bandsync-guest"], "created": "2026-11-05T11:00:00Z"}, {"id": "2", "tags": ["tag:bandsync-guest"], "created": "2026-11-05T13:00:00Z"},' ..

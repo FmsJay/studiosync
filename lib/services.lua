@@ -594,7 +594,7 @@ function services.tailscale_guest_key()
 end
 
 services.GUEST_TIP = "As Invite, and their computer joins your Tailscale network for a day without an account, so Play along and Jam reach them.\n" ..
-  "The invitation works once, within a day; their computer drops off once it's offline a while, and after a day at most. While it's on, your\nTailscale policy decides what it can reach: with Tailscale's starting policy that's all your computers."
+  "The invitation works once, within a day; their computer drops off once it's offline a while, and after a day at most. While it's on, your\nTailscale policy decides what it can reach: all your computers on Tailscale's starting policy, only StudioSync once Set up the tags has limited guests."
 function services.copy_guest_invite(my_id, info, ctx, ImGui)
   local key, why = services.tailscale_guest_key()
   if not key then band.log("couldn't make a guest invitation: " .. tostring(why)); return end
@@ -637,17 +637,45 @@ function services.policy_with_tags(text)
   if not at then return nil end
   return text:sub(1, at) .. '\n\t"tagOwners": {' .. table.concat(add) .. "\n\t}," .. text:sub(at + 1)
 end
--- Adds them to the tailnet's policy (only if nobody changed it meanwhile: its ETag). -> true, or nil + why
-function services.tailscale_add_tags()
+-- Tailscale's starting allow-all rule, as grants (new networks) or the older acls
+local GRANT_ALL = '{%s*"src"%s*:%s*%[%s*"%*"%s*%]%s*,%s*"dst"%s*:%s*%[%s*"%*"%s*%]%s*,%s*"ip"%s*:%s*%[%s*"%*"%s*%]%s*}'
+local ACL_ALL = '{%s*"action"%s*:%s*"accept"%s*,%s*"src"%s*:%s*%[%s*"%*"%s*%]%s*,%s*"dst"%s*:%s*%[%s*"%*:%*"%s*%]%s*}'
+-- A policy whose only rule is that one, split in two: members and StudioSync's computers reach everything as before; guests reach only Syncthing
+-- (22000) and NINJAM (2049) on them. Anything else in the policy (another tag, another rule from "*") means someone wrote their own rules: those
+-- stay as they are. -> the new text; or nil + "has it" / "own rules". Pure.
+-- shortcut: computers shared in from another network lose the reach "*" gave them; handle that if a studio ever relies on sharing.
+function services.policy_with_guest_rule(text)
+  local code = code_only(text)
+  if code:find('"src"%s*:%s*%[%s*"tag:bandsync%-guest"%s*%]') then return nil, "has it" end
+  for tag in code:gmatch('"(tag:[%w%-]+)"') do
+    if tag ~= "tag:bandsync" and tag ~= GUEST_TAG then return nil, "own rules" end
+  end
+  local _, wild = code:gsub('"src"%s*:%s*%[[^%]]*"%*"', "")
+  local s, e = code:find(GRANT_ALL)
+  local acl = not s
+  if acl then s, e = code:find(ACL_ALL) end
+  if not s or wild ~= 1 then return nil, "own rules" end
+  local ind = text:sub(1, s - 1):match("\n([ \t]*)$") or ""
+  return text:sub(1, s - 1) .. (acl
+    and '{"action": "accept", "src": ["autogroup:member", "tag:bandsync"], "dst": ["*:*"]},\n' .. ind ..
+        '{"action": "accept", "src": ["tag:bandsync-guest"], "dst": ["autogroup:member:22000,2049", "tag:bandsync:22000,2049"]}'
+    or '{"src": ["autogroup:member", "tag:bandsync"], "dst": ["*"], "ip": ["*"]},\n' .. ind ..
+       '{"src": ["tag:bandsync-guest"], "dst": ["autogroup:member", "tag:bandsync"], "ip": ["tcp:22000", "udp:22000", "tcp:2049"]}') .. text:sub(e + 1)
+end
+-- Adds the tags to the tailnet's policy, and the guest rule when `ok_to_limit()` says yes (only if nobody changed the policy meanwhile: its ETag).
+-- -> true + "limited" / "has it" / "own rules" / nil (guests left as they were); or nil + why
+function services.tailscale_add_tags(ok_to_limit)
   local code, head, text = ts_api("GET", "/tailnet/-/acl", nil, { "Accept: application/hujson" })
   if not code then return nil, head end
-  local new = services.policy_with_tags(text)
-  if not new then return true end
+  local new = services.policy_with_tags(text) or text
+  local limited, how = services.policy_with_guest_rule(new)
+  if limited and ok_to_limit and ok_to_limit() then new, how = limited, "limited" end
+  if new == text then return true, how end
   local etag = head:match("\n[Ee][Tt][Aa][Gg]:%s*([^\r\n]+)")
   code, head = ts_api("POST", "/tailnet/-/acl", new, { "Content-Type: application/hujson", "Accept: application/hujson", etag and ("If-Match: " .. etag) or nil })
   if not code then return nil, head end
-  band.log("added StudioSync's tags to the Tailscale network's policy")
-  return true
+  band.log(how == "limited" and "set up StudioSync's tags and the guest rule in the Tailscale network's policy" or "added StudioSync's tags to the Tailscale network's policy")
+  return true, how
 end
 
 -- Guests in `json` (GET /tailnet/-/devices) that came on more than a day before `now` (seconds, UTC): their ids. Pure.

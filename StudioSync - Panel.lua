@@ -2387,10 +2387,18 @@ function ui.settings_advanced()
         ImGui.Text(ctx, "Tailscale access token saved")
         next_to("Set up the tags")
         if ImGui.SmallButton(ctx, "Set up the tags") then
-          local ok, why = services.tailscale_add_tags()
-          band.log(ok and "Tailscale's policy has StudioSync's tags: new computers stay signed in, and guests can join" or ("couldn't set up the tags: " .. tostring(why)))
+          local ok, how = services.tailscale_add_tags(function()
+            return reaper.MB("Your Tailscale network lets every computer on it reach every other one, guests included.\n\n" ..
+              "StudioSync can change that one rule so guests reach only its file sharing (Syncthing) and jams (NINJAM) on your computers. " ..
+              "Your own computers and your bandmates' stay as they are.\n\nIf a later StudioSync needs more than that, its notes will say so.\n\nLimit what guests can reach?", "StudioSync", 4) == 6
+          end)
+          band.log(not ok and ("couldn't set up the tags: " .. tostring(how))
+            or (how == "limited" or how == "has it") and "Tailscale's policy has StudioSync's tags, and guests reach only its file sharing and jams on your computers"
+            or how == "own rules" and "Tailscale's policy has StudioSync's tags. It has rules of its own, so StudioSync left those alone: guests reach whatever they allow"
+            or "Tailscale's policy has StudioSync's tags; guests can still reach whatever your policy allows")
         end
-        ImGui.SetItemTooltip(ctx, "Adds the tagOwners lines to the Tailscale network's policy (nothing else in it changes): computers StudioSync's installer signs in\nthen stay signed in, and 'Invite a guest for a day' works. Once is enough.")
+        ImGui.SetItemTooltip(ctx, "Adds the tagOwners lines to the Tailscale network's policy: computers StudioSync's installer signs in then stay signed in,\n" ..
+          "and 'Invite a guest for a day' works. On Tailscale's starting policy it also offers to limit guests to StudioSync's file sharing and jams.")
         next_to("Forget the token")
         if ImGui.SmallButton(ctx, "Forget the token") then services.set_tailscale_token(""); band.log("Tailscale access token forgotten on this computer") end
       end
