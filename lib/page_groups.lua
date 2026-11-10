@@ -75,7 +75,7 @@ function pg.join_button(env)
   if ImGui.Button(ctx, "Paste join code") then
     local clip = ImGui.GetClipboardText(ctx) or ""
     local found = services.parse_join(clip)
-    join_text, why_not = found and services.join_code(found.id, { id = found.band, name = found.name }) or "", nil
+    join_text, why_not = found and clip or "", nil -- (the whole message: a guest's key is in it)
     ImGui.OpenPopup(ctx, "Paste join code")
   end
   ImGui.SetItemTooltip(ctx, "Someone invited you and you already have StudioSync: paste what they sent.")
@@ -115,6 +115,10 @@ function pg.join_button(env)
       if root then
         band.log(why == "already" and ("you're already in " .. band.info(root).name) or
           ("joined " .. band.info(root).name .. ": ask whoever invited you to let you in. Its projects arrive after that."))
+        if code.key and reaper.MB("This invitation also signs this computer in to their Tailscale network as a guest for a day, so Play along and Jam reach them.\n\n" ..
+            "If you use Tailscale for anything else, switch back from its menu afterwards.\n\nSign in?", "StudioSync", 4) == 6 then
+          band.log(services.tailscale_join(code.key) and "signing in to their Tailscale network for the day" or "Tailscale isn't installed here: Play along and Jam need it, the rest works without")
+        end
         pg.root = root
         env.reload_cfg()
         ImGui.CloseCurrentPopup(ctx)
@@ -123,6 +127,12 @@ function pg.join_button(env)
     end
     ImGui.EndPopup(ctx)
   end
+end
+
+-- Next to the last item if `label`'s button still fits on this line, else on the next one (the panel's next_to: a studio's buttons ran off a narrow panel)
+local function beside(ctx, ImGui, label, gap)
+  ImGui.SameLine(ctx, 0, gap or -1)
+  if ImGui.GetContentRegionAvail(ctx) < ImGui.CalcTextSize(ctx, label) + 36 then ImGui.NewLine(ctx) end
 end
 
 local function invite_button(env, g, id)
@@ -136,6 +146,11 @@ local function invite_button(env, g, id)
   end
   ImGui.EndDisabled(ctx)
   ImGui.SetItemTooltip(ctx, my_id and "Copies a message to send them: a join code if they have StudioSync, and a line for a Mac and one for Windows if they don't, which installs everything." or "Waiting for Syncthing (it has to be running).")
+  if my_id and services.tailscale_token() ~= "" then -- (a token: Settings > Advanced)
+    beside(ctx, ImGui, "Guest")
+    if ImGui.SmallButton(ctx, "Guest##" .. id) then services.copy_guest_invite(my_id, band.info(g.root), ctx, ImGui) end
+    ImGui.SetItemTooltip(ctx, services.GUEST_TIP)
+  end
 end
 
 -- This computer out of a group, or the owner closing it for everyone.
@@ -234,7 +249,7 @@ function pg.draw_groups(env)
       ImGui.SameLine(ctx)
       invite_button(env, g, i)
       if groups.may_manage(g.root, me) and reaper.file_exists(g.root .. "/_band/band.json") then
-        ImGui.SameLine(ctx)
+        beside(ctx, ImGui, "Rename")
         if ImGui.SmallButton(ctx, "Rename") then
           local ok, name = reaper.GetUserInputs("StudioSync: rename", 1, "New name,extrawidth=120", g.name)
           if ok and name ~= g.name then
@@ -244,7 +259,7 @@ function pg.draw_groups(env)
         end
         ImGui.SetItemTooltip(ctx, "Everyone in it sees the new name. Its folder names, here and on Google Drive, stay as they are.")
       end
-      ImGui.SameLine(ctx, 0, 18)
+      beside(ctx, ImGui, role == "owner" and "Close" or "Leave", 18)
       if role == "owner" then ImGui.PushStyleColor(ctx, ImGui.Col_Text, theme.RED) end
       if ImGui.SmallButton(ctx, role == "owner" and "Close" or "Leave") then leave(env, g.root) end
       if role == "owner" then ImGui.PopStyleColor(ctx) end

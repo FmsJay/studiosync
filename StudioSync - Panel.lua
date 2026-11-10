@@ -2113,15 +2113,8 @@ local function home_who()
     "already paired with this computer.\nWhen they've run it, 'Let them in' shows here." or "Waiting for Syncthing (it has to be running).")
   if my_id and services.tailscale_token() ~= "" then -- (a token: Settings > Advanced)
     next_to("Invite a guest for a day")
-    if ImGui.SmallButton(ctx, "Invite a guest for a day") then
-      local key, why = services.tailscale_guest_key()
-      if key then
-        band.copy(services.invite_text(my_id, band.info(cfg.root), key), ctx, ImGui)
-        band.log("a guest invitation is on your clipboard: it also puts their computer on your Tailscale network for a day (no account needed)")
-      else band.log("couldn't make a guest invitation: " .. tostring(why)) end
-    end
-    ImGui.SetItemTooltip(ctx, "As Invite a collaborator, and their computer joins your Tailscale network for a day without an account, so Play along and Jam reach them.\n" ..
-      "The line works once, within a day; their computer drops off once it's offline a while, and after a day at most. While it's on, your\nTailscale policy decides what it can reach: with Tailscale's starting policy that's all your computers.")
+    if ImGui.SmallButton(ctx, "Invite a guest for a day") then services.copy_guest_invite(my_id, band.info(cfg.root), ctx, ImGui) end
+    ImGui.SetItemTooltip(ctx, services.GUEST_TIP)
   end
   local people, armed = {}, {}
   for i = 0, reaper.CountTracks(proj) - 1 do
@@ -3254,7 +3247,9 @@ local function loop()
   else
     ImGui.PushStyleVar(ctx, ImGui.StyleVar_WindowTitleAlign, 0.5, 0.5) -- (the logo has the left corner)
     ImGui.PushStyleColor(ctx, ImGui.Col_Button, 0) -- (the little triangle in a docked window's corner is drawn in this colour as it begins)
-    visible, open = ImGui.Begin(ctx, "StudioSync###StudioSync", true, flags)
+    -- the name only where it clears Window and Dock: under 500 px wide it ran beneath them (0.58.28)
+    visible, open = ImGui.Begin(ctx, (ui.title_w or 0) >= 500 and "StudioSync###StudioSync" or "###StudioSync", true, flags)
+    ui.title_w = ImGui.GetWindowWidth(ctx)
     ImGui.PopStyleColor(ctx)
     ImGui.PopStyleVar(ctx)
   end

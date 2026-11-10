@@ -262,7 +262,7 @@ function services.invite_text(id, info, key)
     "Windows (in PowerShell):\n" ..
     '$f="$env:TEMP\\studiosync_install.ps1"; iwr -UseBasicParsing "' .. base .. 'install_windows.ps1?$(Get-Random)" -OutFile $f; ' ..
     "powershell -NoProfile -ExecutionPolicy Bypass -File $f -HostId " .. id .. " -BandId " .. info.id .. " -BandName " .. q1(info.name) .. (key and (" -TsKey " .. key) or "") .. "\n\n" ..
-    (key and "That line works once, within a day: it puts your computer on my Tailscale network as a guest for the day (no account needed).\n\n" or "") ..
+    (key and "That works once, within a day: it puts your computer on my Tailscale network as a guest for the day (no account needed). If you use Tailscale for anything else, switch back from its menu afterwards.\n\n" or "") ..
     "When it's done, tell me: I let you in from my StudioSync panel."
 end
 
@@ -275,7 +275,7 @@ function services.parse_join(text)
   if not id then id, folder, name = text:match("%-HostId%s+([%u%d%-]+)%s+%-BandId%s+([%w%-]+)%s+%-BandName%s+'([^'\r\n]*)'") end
   if not id then id, folder, name = text:match("BS_HOST_ID=([%u%d%-]+)%s+BS_BAND_ID=([%w%-]+)%s+BS_BAND_NAME='([^'\r\n]*)'") end
   if not id or not services.is_device_id(id) then return nil end
-  return { id = id, band = folder:lower(), name = (name:gsub("[^%w%-_ ]", ""):match("^%s*(.-)%s*$")) }
+  return { id = id, band = folder:lower(), name = (name:gsub("[^%w%-_ ]", ""):match("^%s*(.-)%s*$")), key = text:match("tskey%-auth%-[%w%-]+") }
 end
 -- Into a studio from a code, with StudioSync already here: what an invitation's installer does (the folder, the pairing), and nothing else to install. Whoever invited
 -- you then sees Let them in. -> its folder, or nil + why.
@@ -591,6 +591,21 @@ function services.tailscale_guest_key()
   local key = (band.json_decode(out) or {}).key
   if type(key) == "string" and key:match("^tskey%-auth%-[%w%-]+$") then return key end
   return nil, "Tailscale didn't hand back a key"
+end
+
+services.GUEST_TIP = "As Invite, and their computer joins your Tailscale network for a day without an account, so Play along and Jam reach them.\n" ..
+  "The invitation works once, within a day; their computer drops off once it's offline a while, and after a day at most. While it's on, your\nTailscale policy decides what it can reach: with Tailscale's starting policy that's all your computers."
+function services.copy_guest_invite(my_id, info, ctx, ImGui)
+  local key, why = services.tailscale_guest_key()
+  if not key then band.log("couldn't make a guest invitation: " .. tostring(why)); return end
+  band.copy(services.invite_text(my_id, info, key), ctx, ImGui)
+  band.log("a guest invitation is on your clipboard: it also puts their computer on your Tailscale network for a day (no account needed)")
+end
+-- A guest's key from a pasted invitation (services.parse_join: only key characters): what the installers do with it. In the background: it can take a minute.
+function services.tailscale_join(key)
+  local exe = tailscale_exe()
+  if exe then background("ts-guest", string.format('"%s" login --authkey=%s --timeout=120s', exe, key), 0) end
+  return exe ~= nil
 end
 
 -- `text` with comments blanked out, same length: where to look for keys in a HuJSON policy. Strings stay.
