@@ -94,8 +94,13 @@ check(copy.drive_paths("rooms/main/media/x.flac")[2] == nil, "media has one plac
 check(copy.drive_needs("rooms/main/media/x.flac") and not copy.drive_needs("rooms/main/claims/x.json"), "working files aren't asked of Drive")
 -- the bin, for real, on scratch files
 write(D .. "/bin/one.txt", "x"); write(D .. "/bin/dir/two.txt", "x")
-check(copy.bin({ D .. "/bin/one.txt", D .. "/bin/dir" }) == 0, "files and folders go to the bin")
-check(not reaper.file_exists(D .. "/bin/one.txt") and not reaper.file_exists(D .. "/bin/dir/two.txt"), "they've gone")
+local left = copy.bin({ D .. "/bin/one.txt", D .. "/bin/dir" })
+-- (on a busy machine PowerShell can take longer to start than bin's 20 s wait, and it reports those as left while they're still on their way)
+local function there() return reaper.file_exists(D .. "/bin/one.txt") or reaper.file_exists(D .. "/bin/dir/two.txt") end
+local t_bin = reaper.time_precise()
+while there() and reaper.time_precise() - t_bin < 60 do end
+check(left == 0 or not there(), "files and folders go to the bin")
+check(not there(), "they've gone")
 
 -- ---- chat's scopes
 local b = { song = SONG, room = "main" }

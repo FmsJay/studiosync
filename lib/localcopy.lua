@@ -155,7 +155,7 @@ end
 -- Into the Recycle Bin or Trash. Returns how many paths couldn't go (a file REAPER still has open, usually).
 function copy.bin(paths, label)
   if #paths == 0 then return 0 end
-  local tmp = (os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp"):gsub("\\", "/"):gsub("/+$", "") .. "/bandsync-bin-" .. os.time()
+  local tmp = (os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp"):gsub("\\", "/"):gsub("/+$", "") .. "/bandsync-bin-" .. os.time() .. "-" .. math.floor(reaper.time_precise() * 1000) % 1000000 -- (two in one second shared one script)
   local function left_now()
     local left = 0
     for _, p in ipairs(paths) do

@@ -188,6 +188,9 @@ end
 
 local last_driver
 local drawings_at = -math.huge -- (when this last looked whether the room has drawings to show)
+-- Where a tick's time goes, part by part: the last tick over 0.15 s is kept in "slow tick <proj>" (not saved), to find what holds REAPER up on a big song
+local laps, lap_t = {}, 0
+local function lap(name) local t = reaper.time_precise(); laps[#laps + 1] = string.format("%s %.0f", name, (t - lap_t) * 1000); lap_t = t end
 local last_session -- a session.json caught mid-sync reads as nothing: keep the last good one
 local joined = {} -- machines this Live sync has already let in
 -- Are we in the middle of editing? (the project changed in the last 2 s, or the mouse button is down): the band's
@@ -274,6 +277,7 @@ local function poll()
   local hold = select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) ~= ""
 
   local now = reaper.time_precise()
+  lap("who")
   -- mirror sync (docs/mirror-design.md): the whole project travels object by object. What changed here goes out
   -- before the band's changes come in, so an edit still unsent is never overwritten unseen
   sync.local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1"
@@ -284,6 +288,7 @@ local function poll()
       local tok, terr = pcall(sync.watch_timeline, proj, cfg, b.song, b.room, my_can) -- (before the items: a tempo change moves them)
       if not tok then band.log("tempo/markers: " .. tostring(terr)) end
     end
+    lap("timeline")
     -- (with Hold my changes on, the look still runs, sending nothing: it marks what you changed, so the band's
     -- changes to those wait for yours instead of replacing them; mirror.unsent)
     -- a full look reads every track and item: only when REAPER says the project changed, or the band's changes just
@@ -295,7 +300,8 @@ local function poll()
     local waiting = now - mirror_at > math.max(1, mirror_took * 5) and (require("bgrender").waiting() or require("prints").waiting() or require("mirror").unsettled) -- (or a part waiting its turn, or a plug-in chain to settle)
     -- (at 3,000 items a look holds REAPER up for over a second, even with nothing happening: at most a fifth of its time, unless there's more to send)
     local room_to_look = mirror_due or now - mirror_at > mirror_took * 5
-    if room_to_look and (cc ~= mirror_cc or mirror_due or waiting or now - mirror_at > math.max(10, mirror_took * 30)) and not mouse_down() then
+    -- (the look nothing asked for, for what REAPER doesn't count: further apart on a big song, where each holds REAPER up longer)
+    if room_to_look and (cc ~= mirror_cc or mirror_due or waiting or now - mirror_at > math.max(10, mirror_took * 60)) and not mouse_down() then
       local presence = require("presence")
       local held = function(oid) return presence.holder(presence.peers(cfg, b.song, b.room), oid) end -- (edit holds)
       local here = {} -- (bandmates in the song now: one of them may print what its author can't, lib/prints.lua)
@@ -311,6 +317,7 @@ local function poll()
         for k in pairs(require("mirror").unsent) do if k:sub(1, #key) == key then n = n + 1 end end
         reaper.SetExtState(band.SECTION, "held " .. key, tostring(n), false)
       end
+      lap("look")
     end
   end
 
@@ -352,6 +359,7 @@ local function poll()
     if n == 0 and sync.since_save >= 100 and reaper.GetPlayStateEx(proj) == 0 then sync.need_save, sync.since_save = true, 0 end
     if n > 0 then band.log(n .. " change(s) from the others (" .. room .. ")"); mirror_due = true end
   end
+  lap("receive")
 
   -- a bandmate who has every change has had a different project from ours for a minute, and we're caught up too:
   -- something never landed here. Bring it in line with the band's newest version (at most every 5 minutes).
@@ -377,6 +385,7 @@ local function poll()
     end
   end
 
+  lap("in line")
   -- new band machines: on the host of a computer in one band, a machine asking over the band's Tailscale (only band
   -- machines are on it) is let in at once; with several bands, never on its own. The rest ask in the panel (tools.join_requests).
   if host and #band.bands() <= 1 and require("groups").may_manage(cfg.root, cfg.user) then
@@ -403,6 +412,7 @@ local function poll()
     if retired > 0 then band.log(retired .. " placeholder(s) replaced by the real takes") end
   end
 
+  lap("joins, live clips")
   if sync.need_save then -- a delete went out: the project is saved, so a crash can't bring the take back here
     sync.need_save = nil
     for i = 0, 512 do
@@ -419,26 +429,28 @@ local function poll()
     elseif now - quiet.since > 1200 then pcall(end_of_session, "20 minutes with no changes") end
   end
   local droot = drive.root(cfg)
-  -- every 3 minutes (sooner while a big copy is still going): store-and-forward needs no hurry, and Drive limits
-  -- how often one account may change files
-  if droot and reaper.GetPlayStateEx(proj) == 0 and now - drive_at > (drive_more and 10 or 180) then
+  -- every 3 minutes (each pass while a big copy is still going): store-and-forward needs no hurry, and Drive limits
+  -- how often one account may change files. A pass copies for 0.1 s, and not in a pass that looked: 1.5 s every 10 s held
+  -- REAPER up that long each time while a big song's room went across (3,150 changes, 2026-11-10)
+  if droot and reaper.GetPlayStateEx(proj) == 0 and now - drive_at > (drive_more and 0 or 180) and mirror_at ~= now then
     drive_at = now
     local moved, more = 0, false
     for _, room in ipairs(rooms) do
-      local ok, n, m = pcall(drive.mirror, sync.room_dir(cfg, b.song, room), droot .. "/" .. b.song .. "/rooms/" .. room, 1.5, cfg.user)
+      local ok, n, m = pcall(drive.mirror, sync.room_dir(cfg, b.song, room), droot .. "/" .. b.song .. "/rooms/" .. room, 0.1, cfg.user)
       if ok then moved, more = moved + n, more or m
       elseif drive_said ~= tostring(n) then drive_said = tostring(n); band.log("Google Drive copy: " .. tostring(n)) end
     end
     if not more then -- then the other songs here, one a pass: each keeps a copy a bandmate can open from Drive
-      local ok, n, m = pcall(drive.upkeep, cfg, droot, require("songsync").here(cfg), b.song, 1.0)
+      local ok, n, m = pcall(drive.upkeep, cfg, droot, require("songsync").here(cfg), b.song, 0.1)
       if ok then moved, more = moved + n, more or m
       elseif drive_said ~= tostring(n) then drive_said = tostring(n); band.log("Google Drive copy: " .. tostring(n)) end
     end
-    pcall(require("sessionfile").catch_up, b.song, 1.0) -- your recordings the end-of-session projects use
+    pcall(require("sessionfile").catch_up, b.song, 0.1) -- your recordings the end-of-session projects use
     if more and not drive_more then band.log("Google Drive: bringing the studio's copy of this room up to date (carries on between passes)") end
     if moved > 0 and not more then band.log(string.format("Google Drive copy up to date (%d file(s) this pass)", moved)) end
     drive_more = more
   end
+  lap("save, drive")
   sync.draw_claims(proj, who.times) -- who claimed which stretch of time, as regions (this machine only)
   do -- bandmates' pings show here; following someone keeps the view on theirs (lib/presence.lua)
     local presence = require("presence")
@@ -451,6 +463,7 @@ local function poll()
     if now - paint_at > 1 then paint_at = now; require("people").paint(proj, cfg, peers, who.tracks) end
   end
 
+  lap("claims, presence")
   -- status receipt for the Status window: written when it changes, else every 15 s as a heartbeat
   -- pending + hold let "Take control" wait until everyone has caught up before switching
   local armed = {}
@@ -487,9 +500,11 @@ local function poll()
     sync.write_status(proj, cfg, b.song, b.room, info)
   end
 
+  lap("status")
   if s then band.check_version(s.bandsync, "'" .. b.song .. "'", true) end
   reaper.TrackList_AdjustWindows(false)
   reaper.UpdateArrange()
+  lap("redraw")
 end
 
 -- The panel stops us with a flag (re-running the action would raise REAPER's task-control dialog), and sees
@@ -587,6 +602,7 @@ local function tick_body() -- returns true to keep going
     reaper.DeleteExtState(band.SECTION, "transport " .. key, false)
     take_cue(band.json_decode(tjson))
   end
+  lap("start")
   if not transport and reaper.time_precise() - quick_at > 0.25 then -- a start/stop can't wait for the 2 s poll
     quick_at = reaper.time_precise()
     take_cue(quick_transport())
@@ -601,6 +617,7 @@ local function tick_body() -- returns true to keep going
       end
     end
   end
+  lap("cue check")
   if transport then
     local tnow = together.now()
     local theirs = transport.lead and transport.lead ~= cfg.user
@@ -690,6 +707,7 @@ local function tick_body() -- returns true to keep going
     recording = true
   elseif recording then recording, stopped_at = false, reaper.time_precise() end
   local now = reaper.time_precise()
+  lap("transport")
   -- Real time mode: only what's armed feeds SonoBus (lib/live.lua rt_sends), checked about once a second
   if now - rt_at > 1 then
     rt_at = now
@@ -708,6 +726,7 @@ local function tick_body() -- returns true to keep going
     local ok, e = pcall(livemidi.receive_tick, proj, cfg, b)
     if not ok and midi_view_err ~= tostring(e) then midi_view_err = tostring(e); band.log("live MIDI view: " .. tostring(e)) end
   end
+  lap("listen, midi view")
   local every = reaper.GetPlayStateEx(proj) & 1 == 1 and 2 -- playing: a pass can stall REAPER ~0.5 s (seen on the laptop)
     or (lagbars or now - stopped_at < 8 or require("bgrender").waiting() or require("prints").waiting()) and 0.5 or 2 -- side by side, just after a recording, or with a print on its way: look often
   local redo = reaper.Undo_CanRedo2(proj)
@@ -764,6 +783,8 @@ tick = function()
     BANDSYNC_LIVE_PROJ = proj
     return dofile(dir .. "/StudioSync - Live sync.lua")
   end
+  local t0 = reaper.time_precise()
+  laps, lap_t = {}, t0
   if reaper.time_precise() - sws_at > 1 then
     sws_at = reaper.time_precise()
     pcall(band.sws_colours) -- (lib/band.lua)
@@ -774,10 +795,16 @@ tick = function()
       reaper.Main_OnCommand(40047, 0) -- Peaks: Build any missing peaks
     end
   end
+  lap("colours, open fx")
   local ok, go = pcall(tick_body)
   if not ok then
     if reaper.time_precise() - said_at > 30 then said_at = reaper.time_precise(); band.log("live sync error: " .. tostring(go)) end
     go = true
+  end
+  local took = reaper.time_precise() - t0
+  if took > 0.15 then
+    lap("rest")
+    reaper.SetExtState(band.SECTION, "slow tick " .. key, string.format("%.0f ms at %s: %s", took * 1000, os.date("%H:%M:%S"), table.concat(laps, ", ")), false)
   end
   if go then reaper.defer(tick) end
 end

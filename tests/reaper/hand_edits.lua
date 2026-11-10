@@ -25,11 +25,20 @@ local was_bg, was_view = reaper.GetExtState(band.SECTION, "bg render"), reaper.G
 reaper.SetExtState(band.SECTION, "bg render", "off", false) -- (in front: audio_prints covers the background)
 reaper.Main_OnCommand(40859, 0); local pa = reaper.EnumProjects(-1)
 reaper.Main_OnCommand(40859, 0); local pb = reaper.EnumProjects(-1)
+-- (a pass sends or applies a quarter second's worth, the rest next pass: on a busy machine two passes left a change behind, so these run until done)
 local function watch(p, cfg, can)
   reaper.SelectProjectInstance(p)
-  return (mirror.watch(p, cfg, song, room, { can = can or yes, mode = "claims", here = { [cfg.user] = true } }))
+  local n = 0
+  for _ = 1, 20 do
+    n = n + mirror.watch(p, cfg, song, room, { can = can or yes, mode = "claims", here = { [cfg.user] = true } })
+    if not mirror.more then break end
+  end
+  return n
 end
-local function recv(p, cfg) reaper.SelectProjectInstance(p); for _ = 1, 3 do sync.receive(p, cfg, song, room, yes) end end
+local function recv(p, cfg)
+  reaper.SelectProjectInstance(p)
+  for k = 1, 20 do sync.receive(p, cfg, song, room, yes); if k >= 3 and not sync.backlog then break end end
+end
 local function hold(s) local w = reaper.time_precise(); while reaper.time_precise() - w < s do end end
 local function print_of(it) local _, p = prints.takes(it); return p and select(2, reaper.GetSetMediaItemTakeInfo_String(p, "P_EXT:" .. prints.KEY, "", false)) or "" end
 local function file_of(it) local _, p = prints.takes(it); return p and reaper.GetMediaSourceFileName(reaper.GetMediaItemTake_Source(p), "") or "" end

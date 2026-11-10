@@ -141,11 +141,14 @@ function drive.media_owners(events, room)
 end
 
 local seen_events = {} -- path -> { type, take, time, id, user, media } (events are written once, so read once)
-local function read_events(dir)
+-- -> the events, or nil once `deadline` (time_precise) has passed with some still unread: those read so far are kept, the next call carries on
+-- (the first pass after a start read a big room's 3,150 at once and held REAPER up 0.7 s)
+local function read_events(dir, deadline)
   local out = {}
   for _, f in ipairs(band.files(dir, ".json")) do
     local p = dir .. "/" .. f
     local e = seen_events[p]
+    if e == nil and deadline and reaper.time_precise() > deadline then return nil end
     if not e then
       local ev = band.read_json(p)
       e = ev and { type = ev.type, take = ev.take, time = ev.time, id = ev.id, user = ev.user } or false
@@ -153,7 +156,7 @@ local function read_events(dir)
         e.media = {}
         for room, rel in ev.state:gmatch('FILE "{media:([^}]+)}/([^"]+)"') do e.media[#e.media + 1] = { room, rel } end
       end
-      if e then seen_events[p] = e end
+      if e then seen_events[p] = e end -- (one not readable yet may still be arriving: read again next time)
     end
     if e then out[#out + 1] = e end
   end
@@ -221,7 +224,8 @@ function drive.mirror(here, there, budget, user, wait)
     n = n + 1
   end
   -- written once: whatever's missing goes across
-  local events = read_events(here .. "/events")
+  local events = read_events(here .. "/events", t0 + (budget or 1.5))
+  if not events then return 0, true end -- (who owns which recording isn't known yet: nothing's copied on half a list)
   local owners = drive.media_owners(events, here:match("([^/]+)$"))
   for _, sub in ipairs({ "trimmed", "events", "recall", "midi", "media" }) do -- (media: recordings and prints the items use)
     local A, B = band.files(here .. "/" .. sub), band.files(there .. "/" .. sub)
