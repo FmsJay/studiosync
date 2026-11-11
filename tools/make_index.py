@@ -49,7 +49,7 @@ for f in sorted((ROOT / "lib" / "mac").glob("*")):  # compiled helpers (tools/ma
 
 for f in sorted((ROOT / "lib" / "ninjam").glob("*")):  # the NINJAM server (tools/ninjam-server): each computer gets its own
     rel = f"lib/ninjam/{f.name}"
-    plat = {"ninjamsrv.exe": {"platform": "win64"}, "ninjamsrv": {"platform": "darwin"}}.get(f.name, {})
+    plat = {"ninjamsrv.exe": {"platform": "win64"}, "ninjamsrv": {"platform": "darwin"}, "njrelay": {"platform": "darwin"}}.get(f.name, {})
     ET.SubElement(ver, "source", file=rel, **plat).text = url(rel)
 
 ET.indent(index)

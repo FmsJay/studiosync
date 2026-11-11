@@ -5,3 +5,6 @@
 How it's built: `tools/ninjam-server` in StudioSync's repository.
 
 `bandsync.cfg` lets in this computer and Tailscale addresses only.
+
+`njrelay` (macOS only, StudioSync's own, GPL-3.0-or-later, source in `tools/ninjam-relay`): ReaNINJAM on a Mac connects through it, so a server
+that goes away doesn't leave ReaNINJAM's "Disconnected from host!" alert holding every script.

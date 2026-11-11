@@ -6,8 +6,9 @@
  * ReaNINJAM's connection open, sends it NINJAM's own keepalive (ReaNINJAM drops a connection that's silent for three
  * keepalive periods: netmsg.cpp) and writes "lost" to the status file. StudioSync sees that and presses Disconnect.
  *
- * usage: njrelay <listen port> <server host> <server port> <status file> [REAPER's pid]
- * Listens on 127.0.0.1 only. One client at a time. Server-to-client traffic goes on whole messages only (1 byte type,
+ * usage: njrelay <listen port> <target file> <status file> [REAPER's pid]
+ * The target file holds the server as "host:port" and is read at each new connection, so the server can move without
+ * restarting this (which would drop ReaNINJAM's connection and bring up the very alert this is for). Listens on 127.0.0.1 only. One client at a time. Server-to-client traffic goes on whole messages only (1 byte type,
  * 4 bytes little-endian size, then the body), so a keepalive is never put into the middle of one. Status file: "connecting",
  * "ok", "lost", or "idle" (no client). Exits once REAPER (the pid given) is gone, or on SIGTERM.
  */
@@ -67,12 +68,29 @@ static int dial(const char *host, const char *port) {
   return fd;
 }
 
+/* "host:port" from the target file (the last colon splits them: no IPv6 literals). -> 0, or -1 */
+static int read_target(const char *path, char *host, size_t hn, char *port, size_t pn) {
+  char line[512] = "";
+  FILE *f = fopen(path, "r");
+  if (!f) return -1;
+  if (!fgets(line, sizeof line, f)) line[0] = 0;
+  fclose(f);
+  line[strcspn(line, "\r\n \t")] = 0;
+  char *c = strrchr(line, ':');
+  if (!c || c == line || !c[1]) return -1;
+  *c = 0;
+  snprintf(host, hn, "%s", line);
+  snprintf(port, pn, "%s", c + 1);
+  return 0;
+}
+
 /* One client, start to finish. */
-static void serve(int cl, const char *host, const char *port) {
+static void serve(int cl, const char *target_path) {
   int one = 1;
   setsockopt(cl, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
   status("connecting");
-  int up = dial(host, port);
+  char host[256], port[16];
+  int up = read_target(target_path, host, sizeof host, port, sizeof port) == 0 ? dial(host, port) : -1;
   if (up < 0) status("lost"); else status("ok");
   unsigned char *buf = malloc(1 << 16);
   size_t cap = 1 << 16, have = 0; /* server bytes not yet forwarded: always the start of a message */
@@ -123,9 +141,9 @@ out:
 }
 
 int main(int argc, char **argv) {
-  if (argc < 5) { fprintf(stderr, "usage: njrelay <listen port> <server host> <server port> <status file> [REAPER's pid]\n"); return 2; }
-  status_path = argv[4];
-  reaper_pid = argc > 5 ? (pid_t)atoi(argv[5]) : 0;
+  if (argc < 4) { fprintf(stderr, "usage: njrelay <listen port> <target file> <status file> [REAPER's pid]\n"); return 2; }
+  status_path = argv[3];
+  reaper_pid = argc > 4 ? (pid_t)atoi(argv[4]) : 0;
   signal(SIGPIPE, SIG_IGN);
   int ls = socket(AF_INET, SOCK_STREAM, 0);
   int one = 1;
@@ -142,7 +160,7 @@ int main(int argc, char **argv) {
     struct pollfd p ={ ls, POLLIN, 0 };
     if (poll(&p, 1, 1000) <= 0) continue;
     int cl = accept(ls, NULL, NULL);
-    if (cl >= 0) serve(cl, argv[2], argv[3]);
+    if (cl >= 0) serve(cl, argv[2]);
   }
   close(ls);
   return 0;

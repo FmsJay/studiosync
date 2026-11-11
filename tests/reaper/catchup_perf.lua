@@ -50,6 +50,7 @@ local ok, err = pcall(function()
   end
   out[#out + 1] = string.format("A sent %d events in %.1f s", sent, reaper.time_precise() - t0)
   check(longest_send < 1.5, string.format("no sending pass held REAPER up for long (%.2f s; a whole burst at once took several)", longest_send))
+  do local f = io.open(D .. "/catchup_last_step.txt", "w"); if f then f:write(os.date("%H:%M:%S "), "opening tab 2\n"); f:close() end end
   reaper.Main_OnCommand(40859, 0); pb = reaper.EnumProjects(-1)
   local passes, worst, total, applied = 0, 0, 0, 0
   repeat
@@ -73,12 +74,18 @@ local ok, err = pcall(function()
   check(same, "every item where A's newest revision put it")
 end)
 if not ok then fails = fails + 1; out[#out + 1] = "ERROR " .. tostring(err) end
+-- (REAPER 7.84 crashed in reaper_midi.dll under a Main_OnCommand here, twice on 2026-11-10, both times after other suites in the same session:
+-- where it was last is written down first, so a crash says which step)
+local function step(s) local f = io.open(D .. "/catchup_last_step.txt", "w"); if f then f:write(os.date("%H:%M:%S "), s, "\n"); f:close() end end
 for k, p in pairs({ pa, pb }) do
   if reaper.ValidatePtr2(0, p, "ReaProject*") then
     reaper.SelectProjectInstance(p)
+    step("saving tab " .. k)
     reaper.Main_SaveProjectEx(p, D .. "/catchup_" .. stamp .. "_" .. k .. ".rpp", 8)
+    step("closing tab " .. k .. " (" .. reaper.CountMediaItems(p) .. " items)")
     reaper.Main_OnCommand(40860, 0)
   end
 end
+step("done")
 if front and reaper.ValidatePtr2(0, front, "ReaProject*") then reaper.SelectProjectInstance(front) end
 return (fails == 0 and "ALL PASS" or fails .. " FAILED") .. "\n" .. table.concat(out, "\n")

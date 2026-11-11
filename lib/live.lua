@@ -91,6 +91,14 @@ function live.disconnect()
   return true
 end
 
+-- The server went away under a relayed connection (a Mac: services.relay_for): disconnect as if by hand, before ReaNINJAM notices and shows its alert.
+-- -> true if it did.
+function live.relay_lost()
+  if reaper.GetExtState(band.SECTION, "ninjam connect") == reaper.GetExtState(band.SECTION, "ninjam host") then return false end
+  if require("services").relay_status() ~= "lost" then return false end
+  return live.disconnect()
+end
+
 -- What ReaNINJAM says about its connection, for the panel: "connected to <server>", "connecting", or nil (it isn't there).
 function live.status()
   local con = live.window()
@@ -106,7 +114,9 @@ local function press_host_box()
   local box = reaper.JS_Window_Find("NINJAM Connection Configuration", true)
   if not box or not reaper.JS_Window_IsVisible(box) then return false end -- (on a Mac a closed one stays listed, hidden, for up to a minute)
   -- (it only reads its ini the first time it loads in a REAPER session: a server that's moved since would never be found)
-  local host, edit = reaper.GetExtState(band.SECTION, "ninjam host"), reaper.JS_Window_FindChildByID and reaper.JS_Window_FindChildByID(box, 1025)
+  local host = reaper.GetExtState(band.SECTION, "ninjam connect")
+  if host == "" then host = reaper.GetExtState(band.SECTION, "ninjam host") end
+  local edit = reaper.JS_Window_FindChildByID and reaper.JS_Window_FindChildByID(box, 1025)
   if host ~= "" and edit then reaper.JS_Window_SetTitle(edit, host) end
   reaper.JS_WindowMessage_Send(box, "WM_COMMAND", 1, 0, 0, 0) -- (a posted one never reaches a box on a Mac: it sat there for good, 0.57.7)
   return true
@@ -188,9 +198,11 @@ end
 function live.configure(cfg, server, mode, send, sessiondir)
   server = server:gsub("[%s%c]", "") -- (from the shared folder, and it goes into a settings file a line at a time)
   local path = live.ini_path()
-  reaper.SetExtState(band.SECTION, "ninjam host", server, false)
+  reaper.SetExtState(band.SECTION, "ninjam host", server, false) -- (the server itself: what the panel shows, and what's checked for an answer)
+  local via = require("services").relay_for(server) -- (on a Mac, the local relay: services.relay_for)
+  reaper.SetExtState(band.SECTION, "ninjam connect", via, false)
   local keys = {
-    host = server, user = cfg.user, anon = "1", pass = "", passrem = "0",
+    host = via, user = cfg.user, anon = "1", pass = "", passrem = "0",
     savelocal = "1", savelocalwav = "0", sessiondir = sessiondir,
     lc_cnt = "1",
     mastervol = "3.981072", -- (+12 dB: each remote channel comes in at -12 dB, with no setting of its own, so people sound as they do on SonoBus)

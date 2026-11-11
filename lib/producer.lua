@@ -105,6 +105,7 @@ local function auto_connect(tab)
   -- (a server stopped on purpose: no presses while it goes. They brought ReaNINJAM's "can't connect" box and its connection box up: Mac, 0.58.21)
   if (held[reaper.GetExtState(band.SECTION, "ninjam host")] or -math.huge) > reaper.time_precise() then return end
   local live = require("live")
+  if live.relay_lost() then band.log("the NINJAM server went away: disconnected before ReaNINJAM's alert could hold everything up") end -- (a Mac: services.relay_for)
   if live.error_box() then -- (it failed, or the server went away: say it, try again)
     local said = live.close_boxes()
     if c.said ~= said then c.said = said; band.log("NINJAM server: " .. tostring(said)) end

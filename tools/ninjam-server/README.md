@@ -16,6 +16,10 @@ server simply goes away (its computer switched off, say), ReaNINJAM shows "Disco
 script in REAPER, StudioSync's too, waits until someone presses its OK. A disconnect StudioSync asks for shows no box. If its
 connection box is open too, the mouse may not reach the alert: press Return: once for the alert's OK, and once more for the connection box, which connects.
 
+From 0.58.35 a Mac's ReaNINJAM connects through `njrelay` (`lib/ninjam`, source in `tools/ninjam-relay`), a relay on 127.0.0.1:2098.
+When the server goes away it keeps ReaNINJAM's connection open with NINJAM's own keepalive and tells StudioSync, which then disconnects
+as if by hand: no alert. Build it on a Mac with `cc -O2 -Wall -arch arm64 -arch x86_64 -o lib/ninjam/njrelay tools/ninjam-relay/njrelay.c`.
+
 It keeps running when REAPER closes, from a copy in StudioSync's own folder (`<resource>/StudioSync/ninjam`), so an update
 never has to replace a running program.
 

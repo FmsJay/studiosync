@@ -732,6 +732,31 @@ function services.ensure_ninjam()
   band.log("started the NINJAM server on this computer" .. (WIN and ": if Windows asks whether it may accept connections, allow it, or nobody can reach it" or ""))
   return "started"
 end
+-- On a Mac ReaNINJAM connects through njrelay (lib/ninjam, source in tools/ninjam-relay). A server that just goes away brings up ReaNINJAM's "Disconnected from
+-- host!", which there holds every script until someone presses OK; the relay keeps ReaNINJAM's connection open and quiet instead, and its status file says
+-- "lost", so StudioSync disconnects as if by hand (live.relay_lost), which shows no alert. It reads its server from a file at each connection, so the
+-- server can move without restarting it. -> the address to give ReaNINJAM: the relay's, or `server` itself where there's no relay (Windows, or none shipped).
+-- shortcut: if something else holds the port, the relay can't listen and ReaNINJAM can't connect until the next start goes direct (status "cantlisten").
+services.RELAY_PORT = 2098
+local function relay_dir() return band.home():gsub("\\", "/") .. "/ninjam" end
+function services.relay_status() return (band.read(relay_dir() .. "/njrelay.txt") or ""):match("^(%a+)") end
+function services.relay_for(server)
+  local from = services.ninjam_dir() .. "/njrelay"
+  if WIN or not server:match("^.+:%d+$") or not reaper.file_exists(from) or services.relay_status() == "cantlisten" then return server end
+  local dir = relay_dir()
+  reaper.RecursiveCreateDirectory(dir, 0)
+  if band.read(dir .. "/njrelay.target") ~= server then band.write_atomic(dir .. "/njrelay.target", server) end
+  if not services.running("njrelay", true) then
+    pcall(band.copy_atomic, from, dir .. "/njrelay")
+    local sh = TMP .. "/bandsync-njrelay.sh"
+    band.write_atomic(sh, "chmod +x '" .. dir .. "/njrelay'; xattr -c '" .. dir .. "/njrelay'\n")
+    reaper.ExecProcess("/bin/sh '" .. sh .. "'", 5000)
+    os.remove(dir .. "/njrelay.txt")
+    if not launch(dir .. "/njrelay", { tostring(services.RELAY_PORT), "njrelay.target", "njrelay.txt" }, dir) then return server end
+  end
+  return "127.0.0.1:" .. services.RELAY_PORT
+end
+
 -- Does Windows let it accept connections? Until it does it's up but nobody reaches it (the laptop, 0.58.11: Windows only asks once, on the host's screen). A check in the
 -- background, for a Health row; a computer's own connection doesn't go through the firewall, so it can't simply try. A Block rule wins: Cancel at Windows' box makes one.
 function services.firewall_knows_ninjam()
