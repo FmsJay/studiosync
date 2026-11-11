@@ -1584,6 +1584,26 @@ function mirror.wins(proj, oid, rev, order)
   return mirror.newer({ rev = rev, time = order }, krev and { rev = krev, time = korder } or nil)
 end
 
+-- When versions were made, from their ids ("<user>-YYYYMMDD-HHMMSSZ-...": a merged one names several): the earliest and the latest, in seconds.
+local function id_span(id)
+  local lo, hi
+  for y, mo, d, h, mi, s in tostring(id or ""):gmatch("(%d%d%d%d)(%d%d)(%d%d)%-(%d%d)(%d%d)(%d%d)Z") do
+    local t = utc_secs(tonumber(y), tonumber(mo), tonumber(d), tonumber(h), tonumber(mi), tonumber(s))
+    lo, hi = math.min(lo or t, t), math.max(hi or t, t)
+  end
+  return lo, hi
+end
+-- Two versions of an item, one started from a version over a month older than the newer of them: someone away that long (lib/trim.lua takes
+-- such old versions away). Merged only on computers that still had the old one, the projects came apart (review, D5). So never merged,
+-- decided from the ids alone, the same everywhere: the newer stands, and the other is on the Restore page (and its author's Use mine).
+function mirror.too_old_to_merge(a, b)
+  local _, newest_a = id_span(a.id)
+  local _, newest_b = id_span(b.id)
+  local base_a, base_b = id_span(a.base_ev), id_span(b.base_ev)
+  local newest, base = math.max(newest_a or 0, newest_b or 0), math.min(base_a or math.huge, base_b or math.huge)
+  return newest - base > require("trim").DAYS * 86400
+end
+
 -- An item changed apart from the version this computer holds (each started before the other): the two put together, the same on every
 -- computer (mirror.merge_item), so what only one of them changed isn't lost (docs/clashes.md). The merged version, or nil.
 function mirror.merge_for(proj, ev, room_dir)
@@ -1592,6 +1612,7 @@ function mirror.merge_for(proj, ev, room_dir)
   if not krev or kev == "" or kev == ev.id then return nil end
   local k = mirror.event_file(room_dir, kev)
   if not (k and not k.gone and type(k.state) == "string" and k.base_ev) then return nil end
+  if mirror.too_old_to_merge(k, ev) then return nil end
   local apart = mirror.apart(room_dir, k, ev)
   if apart == nil then -- (a change in between isn't here yet, most likely still on its way: this one waits for it, two minutes at most)
     local ms = mirror.order_parts((ev.time or "") .. "x")

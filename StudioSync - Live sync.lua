@@ -145,7 +145,7 @@ local function end_of_session(why)
   local key = "trimmed " .. b.song .. "/" .. b.room
   if sync.driver(cfg, b.song, b.room, s0) == cfg.user and reaper.GetExtState(band.SECTION, key) ~= os.date("!%Y-%m-%d") then
     reaper.SetExtState(band.SECTION, key, os.date("!%Y-%m-%d"), true)
-    local ok, gone = pcall(require("trim").run, cfg, b.song, b.room, 30)
+    local ok, gone = pcall(require("trim").run, cfg, b.song, b.room)
     if ok and gone > 0 then band.log(string.format("trimmed %d change(s) older than 30 days that no saved version needs (kept in 'StudioSync history archive')", gone))
     elseif not ok then band.log("couldn't trim old history: " .. tostring(gone)) end
   end
@@ -353,10 +353,8 @@ local function poll()
   for _, room in ipairs(rooms) do
     local room_can = room == b.room and can or sync.authority(cfg, b.song, room, s)
     local n = 0
-    -- (and not before the look has seen your last change: that look is what marks it as yours and unsent, mirror.unsent. On a big song
-    -- a look waits a while, and a bandmate's change to the same item landed over yours with no trace. Review, 0.58.47; 30 s at most)
-    local seen_mine = reaper.GetProjectStateChangeCount(proj) == mirror_cc or now - mirror_at > 30
-    if seen_mine and not editing() and not redo_pending() then n = sync.receive(proj, cfg, b.song, room, room_can) end
+    -- (and not before the look has seen your last change: sync.seen_mine)
+    if sync.seen_mine(reaper.GetProjectStateChangeCount(proj), mirror_cc, now, mirror_at) and not editing() and not redo_pending() then n = sync.receive(proj, cfg, b.song, room, room_can) end
     -- a lot came in and it's over: saved, so the next open starts from here and doesn't take it all in again with REAPER held up
     sync.since_save = (sync.since_save or 0) + n
     if n == 0 and sync.since_save >= 100 and reaper.GetPlayStateEx(proj) == 0 then sync.need_save, sync.since_save = true, 0 end

@@ -1288,6 +1288,11 @@ function sync.watch_timeline(proj, cfg, song, room, can)
   end
 end
 
+-- May the band's changes come in now? Only once a look (mirror.watch) has seen this computer's last change: that look marks it as yours and
+-- unsent, so theirs waits for it. Before it, a bandmate's change to the same item landed over yours with no trace (review, 0.58.47). 30 s at
+-- most. cc: the project's change count now; looked_cc, looked_at: the count just after the last look, and when it ran.
+function sync.seen_mine(cc, looked_cc, now, looked_at) return cc == looked_cc or now - looked_at > 30 end
+
 -- Apply events this project hasn't applied yet, oldest first, from whoever may make each one.
 function sync.receive(proj, cfg, song, room, can)
   local dir = sync.room_dir(cfg, song, room) .. "/events"

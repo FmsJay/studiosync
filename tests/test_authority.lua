@@ -67,4 +67,11 @@ assert(can("James", "Guitar", 12) and not can("Laptop", "Guitar", 12), "a releas
 claims["claims/Laptop.json"] = { user = "Laptop", time = "2026-10-30T09:00:00Z", tracks = { "Guitar" }, since = { ["tracks:guitar"] = "2026-10-30T09:00:00Z" } }
 can, who = sync.authority({ root = "root" }, "Saltmarsh", "main", s)
 assert(can("Laptop", "Guitar", 12) and not can("James", "Guitar", 12), "claimed again after the release: theirs")
+
+-- the band's changes wait until a look has seen your last edit (0.58.53: sync.seen_mine, Live sync's receive guard)
+assert(sync.seen_mine(7, 7, 100, 95), "nothing changed here since the look: theirs may come in")
+assert(not sync.seen_mine(8, 7, 100, 95), "you edited after the look: theirs waits, or it lands over yours unseen")
+assert(not sync.seen_mine(8, 7, 125, 95), "still waiting at 30 s")
+assert(sync.seen_mine(8, 7, 126, 95), "but never longer than 30 s")
+assert(sync.seen_mine(8, -1, 0, -math.huge), "before the first look ever, nothing holds them up")
 print("ok")

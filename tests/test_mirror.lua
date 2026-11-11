@@ -522,6 +522,24 @@ do
 end
 print("ok ancestry")
 
+-- someone back after more than a month (0.58.53): their change started from a version trim may have taken away on some computers, so it's never
+-- merged anywhere, decided from the ids alone; a normal clash still merges
+do
+  local function v(id, base) return { id = id, base_ev = base } end
+  local back = v("Bee-20261211-100000Z-00001-0001", "Bee-20261101-090000Z-00007-0002") -- (made on their return, from where they left off)
+  local here = v("James-20261210-120000Z-00040-0003", "James-20261209-120000Z-00039-0004")
+  assert(mirror.too_old_to_merge(here, back) and mirror.too_old_to_merge(back, here), "40 days between: never merged, whichever side looks")
+  local quick = v("Bee-20261210-120500Z-00002-0005", "James-20261209-120000Z-00039-0004")
+  assert(not mirror.too_old_to_merge(here, quick), "two people the same day: merged as usual")
+  local same_old = v("Bee-20261210-120500Z-00002-0006", "James-20261020-120000Z-00001-0007")
+  assert(mirror.too_old_to_merge(v("James-20261210-120000Z-00040-0008", "James-20261020-120000Z-00001-0007"), same_old),
+    "both starting from a version untouched for 51 days: not merged either (it may be gone somewhere); the newer stands")
+  assert(mirror.too_old_to_merge(here, v(mirror.merge_id("Bee-20261211-100000Z-00001-0001", "Ann-20261210-100000Z-00001-0009"), mirror.merge_id(
+    "Ann-20261102-100000Z-00001-0010", "Bee-20261209-100000Z-00001-0011"))), "a merged version counts its oldest part")
+  assert(not mirror.too_old_to_merge(v("V", nil), v("X2", "X1")), "ids with no time in them: left to the usual test")
+end
+print("ok")
+
 -- the clock after a restart, with this computer's clock 20 minutes behind (0.58.52): a change made on top of one already seen comes after it
 do
   local ext = {}

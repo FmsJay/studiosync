@@ -121,6 +121,23 @@ local ok, err = pcall(function()
   check(list(pa) == list(pb), "both computers end with the same items: " .. list(pa) .. "  //  " .. list(pb))
   check(list(pa):find("8.30", 1, true) ~= nil and list(pa):find("version", 1, true) ~= nil, "the last nudge, and the loser's version on a lane of its own")
   check(mirror.root(pa) == mirror.root(pb), "and the same project, by fingerprint")
+
+  -- ---- the race Live sync guards against (sync.seen_mine, 0.58.53): Laptop edits, and James's change to the same item is already here before
+  -- Laptop's look has seen that edit. The guard holds theirs back until the look; then both stand, on both computers
+  ia, ib = item(pa), item(pb)
+  reaper.SelectProjectInstance(pa); watch(pa, A)
+  local looked_cc, looked_at = reaper.GetProjectStateChangeCount(pa), reaper.time_precise()
+  reaper.SetMediaItemInfo_Value(ia, "D_FADEINLEN", 0.25); reaper.Undo_OnStateChange2(pa, "Laptop: fade in") -- (as an edit by hand counts)
+  reaper.SelectProjectInstance(pb); reaper.SetMediaItemInfo_Value(ib, "D_SNAPOFFSET", 0.5); watch(pb, B)
+  local cc = reaper.GetProjectStateChangeCount(pa)
+  check(cc ~= looked_cc and not sync.seen_mine(cc, looked_cc, reaper.time_precise(), looked_at), "James's change waits: Laptop's edit isn't seen yet")
+  watch(pa, A) -- (the next look: Laptop's fade goes out)
+  check(sync.seen_mine(reaper.GetProjectStateChangeCount(pa), reaper.GetProjectStateChangeCount(pa), reaper.time_precise(), reaper.time_precise()), "after the look it may come in")
+  for _ = 1, 3 do recv(pa, A); watch(pa, A); recv(pb, B); watch(pb, B) end
+  ia, ib = item(pa), item(pb)
+  local function both(x) return math.abs(reaper.GetMediaItemInfo_Value(x, "D_FADEINLEN") - 0.25) < 1e-6 and math.abs(reaper.GetMediaItemInfo_Value(x, "D_SNAPOFFSET") - 0.5) < 1e-6 end
+  check(ia and ib and both(ia) and both(ib), "Laptop's fade and James's snap offset are both in, on both computers")
+  check(mirror.root(pa) == mirror.root(pb), "and the same project, by fingerprint")
 end)
 if not ok then fails = fails + 1; out[#out + 1] = "FAIL error: " .. tostring(err) end
 sync.driver_name = was_driver

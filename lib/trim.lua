@@ -10,6 +10,7 @@
 -- trimmed, so nothing is lost for good.
 local band = require("band")
 local trim = {}
+trim.DAYS = 30 -- how old a change has to be before it may go (mirror.too_old_to_merge counts on it)
 
 -- What one event is about: an object's oid, the timeline, or nil (kept regardless).
 local function key_of(ev)
@@ -90,8 +91,9 @@ function trim.plan(evs, points, cutoff)
   return out
 end
 
--- Trim one room now. Returns how many went. `days`: how old a change has to be (30).
+-- Trim one room now. Returns how many went. `days`: how old a change has to be (trim.DAYS).
 function trim.run(cfg, song, room, days)
+  days = days or trim.DAYS
   local sync, recall = require("sync"), require("recall")
   local dir = sync.room_dir(cfg, song, room) .. "/events"
   local evs = {}
@@ -99,7 +101,7 @@ function trim.run(cfg, song, room, days)
     local ev = band.read_json(dir .. "/" .. f)
     if type(ev) == "table" and type(ev.id) == "string" and ev.id .. ".json" == f then evs[#evs + 1] = ev end
   end
-  local cutoff = os.date("!%Y-%m-%dT%H:%M:%SZ", os.time() - (days or 30) * 86400)
+  local cutoff = os.date("!%Y-%m-%dT%H:%M:%SZ", os.time() - days * 86400)
   local gone = trim.plan(evs, recall.list(cfg, song, room), cutoff)
   if #gone == 0 then return 0 end
   local root = cfg.root:gsub("[/\\]+$", "")
