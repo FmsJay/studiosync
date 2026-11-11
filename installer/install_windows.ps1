@@ -384,14 +384,16 @@ function Request($mode) {
   for ($i = 0; $i -lt 360 -and -not (Test-Path $result); $i++) {
     Start-Sleep 1
     if ($i -gt 15 -and -not (Get-Reaper)) { $script:Gone = $true; break }
-    if ($i -eq 30) { Say "Waiting for StudioSync to arrive through ReaPack. ReaPack opens its own windows on a first run (Manage repositories, Transaction report): press OK on them." }
+    # (on a first start REAPER asks about the audio device and ReaPack shows Manage repositories: until they're answered nothing runs, and Tailscale's
+    # welcome window can sit on top of them. Windows Sandbox run, 2026-11-10: the setup waited out its 6 minutes behind both)
+    if ($i -eq 30) { Say "Waiting for StudioSync to arrive through ReaPack. Look in REAPER for its first-start windows and answer them: 'select your audio device now?' (No is fine: Preferences > Audio later), then OK on ReaPack's Manage repositories and Transaction report. Tailscale's welcome window may be covering them: close it." }
   }
   if (-not (Test-Path $result)) { return $null }
   Start-Sleep -Milliseconds 300
   return Get-Content $result -Raw | ConvertFrom-Json
 }
 if ($NoReaper) { Ok "stopping before REAPER, as asked. This computer's Syncthing ID: $myId"; exit 0 }
-Say "Setting up StudioSync inside REAPER (REAPER opens; on a first start it scans your plug-ins, which can take a while) ..."
+Say "Setting up StudioSync inside REAPER (REAPER opens; on a first start it scans your plug-ins and asks a question or two, which need answering) ..."
 $r = Request $Scripts
 if (-not $r) {
   if ($script:Gone) { Warn "REAPER closed unexpectedly during setup. Open REAPER (and your project: File > Recent projects), then run this again." }
