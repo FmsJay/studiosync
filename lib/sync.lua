@@ -855,6 +855,7 @@ local ev_seq = 0
 function sync.post(cfg, song, room, ev, proj)
   ev_seq = ev_seq + 1
   ev.format, ev.user, ev.time = band.FORMAT, cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ")
+  if ev.type == "obj" and not ev.hlc then ev.hlc = require("mirror").hlc_next() end -- (what equal revisions are settled by: mirror.order_of)
   -- made with nobody else here (full control): everyone takes it when it reaches them, whoever drove then
   if sync.alone then ev.alone = true; if proj then setext(proj, band.SECTION, "alone_last", ev.time) end end
   ev.id = string.format("%s-%s-%05d-%04d", (cfg.user:gsub(" ", "_")), os.date("!%Y%m%d-%H%M%SZ"), ev_seq, math.random(0, 9999))
@@ -1327,7 +1328,12 @@ function sync.receive(proj, cfg, song, room, can)
   -- older ones are counted as done (they stay in the folder for Restore). Replaying every revision of every object
   -- rewrote a plug-in chain changed 50 times 50 times (review, 2026-10-31).
   local function mirror_newer(a, x)
-    return require("mirror").newer({ rev = a.rev, time = (a.time or "") .. (a.user or "") }, { rev = x.rev, time = (x.time or "") .. (x.user or "") })
+    local mirror = require("mirror")
+    return mirror.newer({ rev = a.rev, time = mirror.order_of(a) }, { rev = x.rev, time = mirror.order_of(x) })
+  end
+  -- (but a change to an item made apart from the newest one isn't older news: the two are merged, mirror.receive, as every computer does)
+  local function apart(x, w)
+    return x.obj == "item" and w and not x.gone and not w.gone and x.base_ev and w.base_ev and require("mirror").apart(sync.room_dir(cfg, song, room), x, w)
   end
   local latest = {}
   for _, ev in ipairs(pending) do
@@ -1349,7 +1355,7 @@ function sync.receive(proj, cfg, song, room, can)
         and (ev.gone or ev.state ~= nil) and (ev.name == nil or type(ev.name) == "string") and (ev.pos == nil or type(ev.pos) == "number")) then
       setext(proj, sync.APPLIED, ev.id, "1") -- malformed (a newer or damaged file): skipped, once, without stopping the rest
       band.log("skipped a change from " .. tostring(ev.user) .. " that StudioSync can't read (" .. tostring(ev.id) .. ")")
-    elseif (ev.type == "plays" and newest[ev.track or ""] ~= ev.id) or superseded(proj, ev) or (obj and latest[ev.oid] ~= ev) then
+    elseif (ev.type == "plays" and newest[ev.track or ""] ~= ev.id) or superseded(proj, ev) or (obj and latest[ev.oid] ~= ev and not apart(ev, latest[ev.oid])) then
       setext(proj, sync.APPLIED, ev.id, "1") -- superseded
     elseif ev.user == cfg.user and not obj then
       setext(proj, sync.APPLIED, ev.id, "1") -- our own: already true here
@@ -1367,7 +1373,8 @@ function sync.receive(proj, cfg, song, room, can)
     else
       -- one undo point per pass, only when something lands: reading our own change back opened one too, which sat on
       -- top of the edit and held its print, so Ctrl+Z took two presses and the first left the note moved (PC, 0.40.3)
-      local lands = not obj or require("mirror").wins(proj, ev.oid, ev.rev or 0, (ev.time or "") .. (ev.user or ""))
+      local m = require("mirror")
+      local lands = not obj or m.wins(proj, ev.oid, ev.rev or 0, m.order_of(ev)) or m.merge_for(proj, ev, sync.room_dir(cfg, song, room)) ~= nil -- (or it's merged in)
       if lands and not undo_open then reaper.Undo_BeginBlock2(proj); undo_open = true end
       -- one bad event must never block everything behind it (2026-10-28: a take-less "driver" event threw on every
       -- pass, so the handover's edits and tempo change never applied): log it and move on

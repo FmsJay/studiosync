@@ -479,7 +479,8 @@ local function poll()
     last_track = select(2, reaper.GetProjExtState(proj, band.SECTION, "last_track")),
     follow = reaper.GetExtState(band.SECTION, "follow " .. tostring(proj)), follow_driver = reaper.GetExtState(band.SECTION, "follow driver") ~= "" or nil,
     listen = reaper.GetExtState(band.SECTION, "listen " .. tostring(proj)),
-    produce = require("producer").who(proj), produce_via = require("producer").who(proj) and require("producer").via(proj) or nil, stamping = reaper.GetExtState(band.SECTION, "stamping " .. tostring(proj)) ~= "" or nil }
+    produce = require("producer").who(proj), produce_via = require("producer").who(proj) and require("producer").via(proj) or nil, stamping = reaper.GetExtState(band.SECTION, "stamping " .. tostring(proj)) ~= "" or nil,
+    lets = require("producer").lets() or nil } -- (whoever produces me may start and stop my transport: their panel shows its buttons)
   if info.follow == "" then info.follow = nil end
   if not info.playing then info.cursor = math.floor(reaper.GetCursorPositionEx(proj) * 1000 + 0.5) / 1000 end -- (followers' cursors go here: lib/presence.lua)
   do
@@ -493,7 +494,7 @@ local function poll()
   end
   if info.listen == "" then info.listen = nil end
   local fingerprint = tostring(info.follow) .. tostring(info.follow_driver) .. tostring(info.listen) .. tostring(info.rt) .. tostring(info.rt_silent) .. tostring(info.cursor) .. band.json_encode(sync.holdings(proj)) .. tostring(driver) .. info.pending .. tostring(hold) .. band.json_encode(armed) ..
-    tostring(info.side) .. tostring(info.playing) .. tostring(info.recording) .. tostring(info.front) .. tostring(info.mirror) ..
+    tostring(info.side) .. tostring(info.playing) .. tostring(info.recording) .. tostring(info.front) .. tostring(info.mirror) .. tostring(info.lets) ..
     band.json_encode({ info.editing, info.view, info.ping or false }) .. info.last_track
   if fingerprint ~= status_json or now - last_status > 15 then
     status_json, last_status, status_info = fingerprint, now, info
@@ -524,7 +525,10 @@ local function follows(name)
 end
 local function take_cue(ev)
   if not ev or (ev.id and fired[ev.id]) or (ev.at or 0) < cue_at then return end
-  if ev.follow and not side_bars() and not follows(ev.lead) then return end
+  if ev.remote then -- a producer starting or stopping someone's transport (lib/producer.lua): only theirs, with their say-so
+    if not require("producer").remote_ok(ev, cfg.user, require("producer").lets(), reaper.GetExtState(band.SECTION, "produced by " .. key), together.now()) then return end
+    ev.behind = true -- (from where they asked, however late it arrived: a take starts where it was meant to)
+  elseif ev.follow and not side_bars() and not follows(ev.lead) then return end
   cue_at, transport = ev.at or cue_at, ev
 end
 
@@ -655,7 +659,8 @@ local function tick_body() -- returns true to keep going
         else
           reaper.OnPlayButtonEx(proj)
         end
-        local said = transport.rec and transport.follow and theirs
+        local said = transport.remote and string.format("%s from %.2f s: %s started it (they're producing you)", transport.rec and "recording" or "playing", from, tostring(transport.lead))
+          or transport.rec and transport.follow and theirs
           and string.format("playing along with %s's recording from %.2f s (%.0f ms after the planned moment)", tostring(transport.user), from, (tnow - fire) * 1000)
           or string.format("%s together from %.2f s (%s; %.0f ms after the planned moment)", transport.rec and "recording" or "playing",
             from, tostring(transport.user), (tnow - fire) * 1000)

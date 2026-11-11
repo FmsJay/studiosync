@@ -27,4 +27,19 @@ assert(trim.major({ keep = true, label = "x" }) and trim.major({ label = "chorus
 assert(not trim.major({ label = "before James took over from Laptop" }), "a handover snapshot is minor")
 -- nothing older than the cutoff: nothing goes
 assert(#trim.plan(evs, points, "2025-12-01T00:00:00Z") == 0, "nothing old enough")
+-- a merged version is rebuilt from its two changes and their base: all three stay, and what a base names as a merge
+do
+  local base = { id = "m1", oid = "I-M", rev = 1, time = "2026-01-01T00:00:00Z", type = "obj", base_ev = "m0" }
+  local m0 = { id = "m0", oid = "I-M", rev = 0, time = "2025-12-31T00:00:00Z", type = "obj" }
+  local w = { id = "w", oid = "I-M", rev = 3, base = 1, base_ev = "m1", time = "2026-01-02T00:00:00Z", type = "obj" }
+  local l = { id = "l", oid = "I-M", rev = 2, base = 1, base_ev = "m1", time = "2026-01-03T00:00:00Z", type = "obj" }
+  local after = { id = "x", oid = "I-N", rev = 5, base = 4, base_ev = "m(p&q)", time = "2026-01-04T00:00:00Z", type = "obj" }
+  local p = { id = "p", oid = "I-N", rev = 4, time = "2026-01-01T00:00:00Z", type = "obj" }
+  local q = { id = "q", oid = "I-N", rev = 3, time = "2026-01-01T00:00:00Z", type = "obj" }
+  local g = {}
+  for _, id in ipairs(trim.plan({ m0, base, w, l, after, p, q }, {}, "2026-02-15T00:00:00Z")) do g[id] = true end
+  assert(not g.w and not g.l and not g.m1, "the newest, the change made apart from it, and their base")
+  assert(g.m0, "but not the base's own base: nothing rebuilds from it")
+  assert(not g.p and not g.q, "both changes a merged base was made from")
+end
 print("ok")

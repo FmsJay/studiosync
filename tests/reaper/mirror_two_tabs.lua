@@ -29,7 +29,14 @@ local function same(what)
   local diff = {}
   for oid, o in pairs(oa) do if not ob[oid] then diff[#diff + 1] = "missing on B: " .. oid elseif ob[oid].hash ~= o.hash then
     diff[#diff + 1] = "differs: " .. oid .. (o.kind == "track" and ("\n   A " .. mirror.track_line(o.state) .. "|" .. o.state.after ..
-      "\n   B " .. mirror.track_line(ob[oid].state) .. "|" .. ob[oid].state.after) or "") end end
+      "\n   B " .. mirror.track_line(ob[oid].state) .. "|" .. ob[oid].state.after) or "") end
+    if ob[oid] and ob[oid].hash ~= o.hash and type(o.state) == "string" and type(ob[oid].state) == "string" then -- (an item: the first line that differs)
+      local la, lb = {}, {}
+      for l in o.state:gmatch("[^\n]+") do la[#la + 1] = l end
+      for l in ob[oid].state:gmatch("[^\n]+") do lb[#lb + 1] = l end
+      for i = 1, math.max(#la, #lb) do if la[i] ~= lb[i] then diff[#diff] = diff[#diff] .. "\n   A " .. tostring(la[i]) .. "\n   B " .. tostring(lb[i]); break end end
+    end
+  end
   for oid in pairs(ob) do if not oa[oid] then diff[#diff + 1] = "extra on B: " .. oid end end
   check(#diff == 0, what .. (#diff > 0 and (" -> " .. table.concat(diff, "; ")) or ""))
 end
@@ -110,7 +117,7 @@ local ok, err = pcall(function()
   -- 4. History: undo A's mute (one change), from the shared History; B follows
   local entries = recall.entries(A, song, room)
   local idx
-  for i, e in ipairs(entries) do if e.kind == "obj" and e.obj == "item" and e.oid == mirror.item_oid(it) and (e.rev or 0) > 1 then idx = i end end
+  for i, e in ipairs(entries) do if e.kind == "obj" and e.obj == "item" and e.oid == mirror.item_oid(it) and e.base_ev ~= nil then idx = i end end -- (a change, not the making: within 30 s they share a rev)
   check(idx ~= nil, "History has the mute change")
   if idx then
     say(mirror.revert(pa, A, song, room, mirror.plan_undo(entries, idx), { can = yes, mode = "claims" }))

@@ -19,8 +19,9 @@ local function key_of(ev)
   return nil
 end
 local TRANSPORT = "\0transport"
-local function later(a, b) -- the same order every machine uses: rev, then time, then id
+local function later(a, b) -- the same order every machine uses: rev, then the clock (lib/mirror.lua order_of) or time, then id
   if (a.rev or 0) ~= (b.rev or 0) then return (a.rev or 0) > (b.rev or 0) end
+  if tonumber(a.hlc) and tonumber(b.hlc) and tonumber(a.hlc) ~= tonumber(b.hlc) then return tonumber(a.hlc) > tonumber(b.hlc) end
   if (a.time or "") ~= (b.time or "") then return (a.time or "") > (b.time or "") end
   return (a.id or "") > (b.id or "")
 end
@@ -36,6 +37,39 @@ function trim.plan(evs, points, cutoff)
     if k and k ~= TRANSPORT and (not newest[k] or later(ev, newest[k])) then newest[k] = ev end
   end
   for _, ev in pairs(newest) do keep[ev.id] = true end
+  -- and what a merged version is rebuilt from (lib/mirror.lua event_file, 0.58.43): a change made apart from the newest (not on its line of
+  -- bases), and the base each kept one started from
+  local by_id = {}
+  for _, ev in ipairs(evs) do by_id[ev.id] = ev end
+  local behind = {} -- every id on a newest one's line of bases
+  local todo = {}
+  for _, w in pairs(newest) do todo[#todo + 1] = w.base_ev end
+  while #todo > 0 do -- (a loop, not recursion: a long history is thousands deep)
+    local id = table.remove(todo)
+    if type(id) == "string" and not behind[id] then
+      behind[id] = true
+      for part in id:gmatch("[^()&]+") do
+        if part ~= "m" and by_id[part] then behind[part] = true; todo[#todo + 1] = by_id[part].base_ev end
+      end
+    end
+  end
+  for _, ev in ipairs(evs) do
+    local k = key_of(ev)
+    local w = k and newest[k]
+    if w and ev ~= w and ev.base_ev and w.base_ev and not ev.gone and not behind[ev.id] then keep[ev.id] = true end
+  end
+  -- each kept one's base; a base that is a merge's id ("m(a&b)") is rebuilt from a and b and their bases, so those too. Only through merge
+  -- ids: a plain base's own base isn't read (following every base_ev kept the whole history, since each change names the one before)
+  local function need(id, depth)
+    if type(id) ~= "string" or depth > 20 then return end
+    if not id:find("^m%(") then keep[id] = true; return end
+    for part in id:gmatch("[^()&]+") do
+      if part ~= "m" then keep[part] = true; need(by_id[part] and by_id[part].base_ev, depth + 1) end
+    end
+  end
+  local roots = {}
+  for id in pairs(keep) do roots[#roots + 1] = id end
+  for _, id in ipairs(roots) do need(by_id[id] and by_id[id].base_ev, 0) end
   for _, p in ipairs(points) do
     if trim.major(p) and p.time then
       local at = {}

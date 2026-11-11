@@ -59,7 +59,7 @@ function status.gather(cfg, b, proj)
         rows[#rows + 1] = { name = st.user, age = a, version = st.version or "?", missing = missing,
           has = total - missing, mine = count(st.takes or {}, cfg.user), pending = st.pending or 0, hold = st.hold,
           armed = st.armed, side = st.side, playing = st.playing, recording = st.recording, mirror = st.mirror,
-          behind = behind, reaper = st.reaper, last_track = st.last_track,
+          behind = behind, reaper = st.reaper, last_track = st.last_track, lets = st.lets, -- (lets: whoever produces them may start and stop their transport)
           state = a > 60 and "offline" or ((missing == 0 and not behind) and "synced" or "syncing") }
       end
     end

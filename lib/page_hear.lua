@@ -135,6 +135,10 @@ function page.producer(ctx, ImGui, proj, cfg, b, rows)
   if by ~= "" then
     ImGui.TextColored(ctx, theme.ACCENT, by .. " is producing you")
     ImGui.SetItemTooltip(ctx, "They hear what you record on their grid, a moment behind you. Nothing changes for you: record as usual.")
+    local ch, on = ImGui.Checkbox(ctx, "Let them start and stop my transport##letdrive", producer.lets())
+    if ch then producer.set_lets(on); band.log(on and ("whoever produces you can now play, record and stop your transport from their panel") or "only you start and stop your transport now") end
+    ImGui.SetItemTooltip(ctx, "Their panel gets Play, Record and Stop for your REAPER, from where their cursor is: handy when your hands are on an instrument.\n" ..
+      "Only someone producing you, and only while this is on. Kept on this computer.")
     page.ninjam_line(ctx, ImGui)
     for _, st in ipairs(require("presence").peers(cfg, b.song, b.room)) do
       if st.produce == cfg.user and st.playing and reaper.GetPlayStateEx(proj) & 1 == 0 then
@@ -181,6 +185,22 @@ function page.producer(ctx, ImGui, proj, cfg, b, rows)
   page.fit(ctx, ImGui, "Stop")
   if ImGui.SmallButton(ctx, "Stop") then producer.stop(proj, cfg, b) end
   ImGui.SetItemTooltip(ctx, "Back to your own transport.")
+  -- their transport, from here, if they let you (lib/producer.lua producer.remote)
+  if them and them.lets then
+    ImGui.AlignTextToFramePadding(ctx)
+    ImGui.TextDisabled(ctx, name .. "'s transport:")
+    for _, btn in ipairs({ { "Play##rplay", "start", false }, { "Record##rrec", "start", true }, { "Stop##rstop", "stop", false } }) do
+      page.fit(ctx, ImGui, btn[1]:match("^[^#]+"))
+      if ImGui.SmallButton(ctx, btn[1]) then
+        local ok, why = producer.remote(proj, cfg, b, btn[2], btn[3])
+        if not ok then band.log(tostring(why)) end
+      end
+    end
+    ImGui.SetItemTooltip(ctx, "Plays or records " .. name .. "'s REAPER from where your cursor is (put it where the take should start), or stops it.\n" ..
+      "It reaches them in a moment, through the shared folder. Your song follows theirs, a moment behind, as always.")
+  elseif them then
+    ImGui.TextDisabled(ctx, name .. " can let you start and stop their transport (on their Home)")
+  end
 end
 
 return page

@@ -456,3 +456,36 @@ do
   assert(w({ "A" }, { "P", "Q", "A" }, { P = "A", Q = "A" }) == w({ "A" }, { "A", "Q", "P" }, { P = "A", Q = "A" })) -- (the same list whatever the order here)
   assert(w({ "A" }, { "P", "Q", "A" }, { P = "LOST", Q = "LOST" }) == "A P Q")
 end
+
+-- the order: the clock's milliseconds since 0.58.43, an older event's second before; mixed, they compare by when
+do
+  local ms = mirror.order_parts("2026-11-11T03:16:42Z" .. "James")
+  local new = string.format("%d|James", ms + 500)
+  assert(mirror.newer({ rev = 5, time = new }, { rev = 5, time = "2026-11-11T03:16:42ZJames" }), "half a second later on the clock beats the old second")
+  assert(not mirror.newer({ rev = 5, time = string.format("%d|Zed", ms - 1000) }, { rev = 5, time = "2026-11-11T03:16:42ZAnn" }), "a second earlier loses, whatever the name")
+  assert(mirror.newer({ rev = 5, time = string.format("%d|Zed", ms) }, { rev = 5, time = string.format("%d|Ann", ms) }), "same moment: the name")
+  assert(mirror.order_of({ hlc = 1794365482123, user = "Bee", time = "x" }) == "1794365482123|Bee" and mirror.order_of({ time = "T", user = "Bee" }) == "TBee", "order_of")
+end
+
+-- two versions of an item put together from their base
+do
+  local base = "<ITEM\nPOSITION 4\nLENGTH 2\nMUTE 0 0\nNAME \"dry\"\nVOLPAN 1 0 1 -1\n<SOURCE MIDI\nE 0 90 3c 60\n>\n>\n"
+  local moved = base:gsub("POSITION 4", "POSITION 8")
+  local louder = base:gsub("VOLPAN 1 0 1 %-1", "VOLPAN 2 0 1 -1")
+  local m, both = mirror.merge_item(base, moved, louder, "Bee")
+  assert(m:find("POSITION 8", 1, true) and m:find("VOLPAN 2 0 1 -1", 1, true) and #both == 0, "one moved it, the other turned it up: both stand")
+  assert(m == mirror.merge_item(base, louder, moved, "James"), "the same whichever won, when nothing clashes")
+  local m2, both2 = mirror.merge_item(base, moved, base:gsub("POSITION 4", "POSITION 6"), "Bee")
+  assert(m2:find("POSITION 8", 1, true) and not m2:find("POSITION 6", 1, true) and #both2 == 1, "both moved it: the winner's place")
+  local notes_w = base:gsub("E 0 90 3c 60", "E 0 90 3e 60")
+  local notes_l = base:gsub("E 0 90 3c 60", "E 0 90 40 60")
+  local m3 = mirror.merge_item(base, notes_w, notes_l, "Bee")
+  assert(m3:find("E 0 90 3e 60", 1, true) and m3:find("\nTAKE\nNAME \"Bee's version\"\n", 1, true) and m3:find("E 0 90 40 60", 1, true),
+    "both rewrote the notes: the winner's play, the loser's are one more take, named for them")
+  assert(select(2, m3:gsub("\nTAKE\n", "")) == 1 and not m3:find("POSITION 4\nLENGTH 2\nMUTE 0 0\nNAME \"Bee", 1, true), "only take lines in the extra take")
+  local lane = mirror.merge_item(base .. "BANDLANE 0\n", moved .. "BANDLANE 0\n", louder .. "BANDLANE 2\n", "Bee")
+  assert(lane:find(">\nBANDLANE 2\n$"), "the lane, after the item, merged like any line")
+  local added = base:gsub("MUTE 0 0\n", "MUTE 0 0\nCOLOR 123 B\n")
+  assert(mirror.merge_item(base, moved, added, "Bee"):find("MUTE 0 0\nCOLOR 123 B\n", 1, true), "a line only the loser added goes in where they had it")
+end
+print("ok merge")

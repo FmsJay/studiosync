@@ -157,8 +157,8 @@ function suggest.accept(proj, cfg, room_dir, h, may, local_mix)
   reaper.PreventUIRefresh(1)
   reaper.Undo_BeginBlock2(proj)
   for _, c in ipairs(list) do
-    local rev = mirror.known(proj, c.oid)
-    if (rev or 0) ~= (c.rev or 0) then stale = stale + 1 -- (changed since it was suggested: what's there now stands)
+    local rev, _, kev = mirror.known(proj, c.oid)
+    if (rev or 0) ~= (c.rev or 0) or (c.ev and kev ~= "" and kev ~= c.ev) then stale = stale + 1 -- (changed since it was suggested: what's there now stands)
     elseif not may(c.name, c.pos) then refused = refused + 1
     else
       local ok, res = pcall(mirror.apply, proj, c, media, local_mix)

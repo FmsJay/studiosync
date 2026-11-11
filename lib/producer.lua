@@ -23,6 +23,31 @@ function producer.set_lag(proj, s)
   s = math.max(producer.MIN_LAG, math.min(producer.MAX_LAG, s))
   reaper.SetProjExtState(proj, band.SECTION, "produce lag", string.format("%.1f", s))
 end
+-- The producer's hands on the performer's transport (James, 2026-11-10): Play, Record or Stop, from where the producer's cursor is. Only if the
+-- performer lets them (it's their recording: a setting of theirs, kept on their computer, and their status says so), and only while that
+-- person is producing them; their Live sync does it (take_cue), and this computer goes on following a moment behind, as ever.
+producer.LET = "let producer drive"
+function producer.lets() return reaper.GetExtState(band.SECTION, producer.LET) ~= "" end
+function producer.set_lets(on) reaper.SetExtState(band.SECTION, producer.LET, on and "1" or "", true) end
+-- kind: "start" or "stop"; rec: record, not just play. -> the cue's id, or nil + why
+function producer.remote(proj, cfg, b, kind, rec)
+  local name = producer.who(proj)
+  if not name then return nil, "you're not producing anyone" end
+  local ev = { type = kind, at = require("together").now(), pos = reaper.GetCursorPositionEx(proj), countin = 0, lead = cfg.user, remote = name,
+    rec = kind == "start" and rec or nil }
+  local id = require("sync").post(cfg, b.song, b.room, ev)
+  band.log(string.format("%s %s %s", kind == "stop" and "stopping" or (rec and "recording" or "playing"), name,
+    kind == "stop" and "" or string.format("from %.2f s (your cursor)", ev.pos)))
+  return id
+end
+-- Is this cue one `me` should act on? A producer's, for me, with my say-so, from someone producing me now, and fresh. Pure but for its arguments.
+function producer.remote_ok(ev, me, lets, produced_by, now)
+  if type(ev) ~= "table" or ev.remote ~= me or not lets or type(ev.lead) ~= "string" then return false end
+  if now - (tonumber(ev.at) or 0) > 30 then return false end
+  for who in (produced_by or ""):gmatch("[^,]+") do if who:match("^%s*(.-)%s*$") == ev.lead then return true end end
+  return false
+end
+
 -- How far behind this tab runs, if it's producing `name` (who the cue is from); else nil.
 function producer.behind(proj, name)
   if producer.who(proj) == name then return producer.lag(proj) end

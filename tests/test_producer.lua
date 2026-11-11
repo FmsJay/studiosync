@@ -31,4 +31,13 @@ assert(stamp.READ:find("options:gmem=StudioSyncStamp", 1, true), "Live sync hear
 for _, text in ipairs({ stamp.SEND, stamp.READ }) do
   assert(not text:find("1e%d") and not text:find("[^%w_]BIT[^_%w]"), "EEL2's names aren't case-sensitive: BIT and bit are one variable")
 end
+-- a producer's hands on someone's transport: only theirs, only with their say-so, only from someone producing them now, only fresh
+local cue = { type = "start", at = 1000, pos = 12, rec = true, lead = "James", remote = "Maya" }
+assert(producer.remote_ok(cue, "Maya", true, "James", 1003), "for me, allowed, from my producer, 3 s old")
+assert(not producer.remote_ok(cue, "Maya", false, "James", 1003), "not allowed: nothing happens")
+assert(not producer.remote_ok(cue, "Sam", true, "James", 1003), "for someone else")
+assert(not producer.remote_ok(cue, "Maya", true, "Laptop", 1003), "from someone who isn't producing me")
+assert(producer.remote_ok(cue, "Maya", true, "Laptop, James", 1003), "one of two producing me")
+assert(not producer.remote_ok(cue, "Maya", true, "James", 1031), "half a minute old: too late to start a take")
+assert(not producer.remote_ok({ type = "start", at = 1000, lead = "James" }, "Maya", true, "James", 1003), "an ordinary cue isn't a remote one")
 print("ok")

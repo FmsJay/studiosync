@@ -12,10 +12,11 @@
  * The target file holds the server as "host:port" and is read at each new connection, so the server can move without
  * restarting this (which would drop ReaNINJAM's connection and bring up the very alert this is for). Listens on 127.0.0.1 only. One client at a time. Server-to-client traffic goes on whole messages only (1 byte type,
  * 4 bytes little-endian size, then the body), so a keepalive is never put into the middle of one. Status file: "connecting",
- * "ok", "lost", or "idle" (no client). Exits once REAPER (the pid given) is gone, or on SIGTERM.
+ * "ok", "lost", or "idle" (no client). Exits once REAPER (the pid given, else any process called REAPER) has been gone a minute, or on SIGTERM.
  */
 #include <errno.h>
 #include <fcntl.h>
+#include <libproc.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -32,8 +33,33 @@
 #define MAX_MSG (64 * 1024 * 1024) /* (an interval of uncompressed audio is far below this; anything bigger is garbage) */
 
 static const char *status_path;
-static pid_t reaper_pid; /* 0: run until stopped */
-static int reaper_gone(void) { return reaper_pid > 0 && kill(reaper_pid, 0) != 0 && errno == ESRCH; }
+static pid_t reaper_pid; /* 0: look for any process called REAPER */
+/* Is REAPER still running? Started from a shell script, this has no REAPER parent to watch, and it ran on for good after REAPER quit,
+ * checking the server every 5 s (Mac, 0.58.42). So with no pid given it looks REAPER up by name. */
+static int reaper_running(void) {
+  if (reaper_pid > 0) return !(kill(reaper_pid, 0) != 0 && errno == ESRCH);
+  int n = proc_listallpids(NULL, 0);
+  if (n <= 0) return 1; /* (can't tell: carry on) */
+  pid_t *pids = malloc(sizeof(pid_t) * (size_t)(n + 64));
+  if (!pids) return 1;
+  n = proc_listallpids(pids, (int)(sizeof(pid_t) * (size_t)(n + 64)));
+  int found = 0;
+  for (int i = 0; i < n && !found; i++) {
+    char name[256];
+    if (proc_name(pids[i], name, sizeof name) > 0 && strcmp(name, "REAPER") == 0) found = 1;
+  }
+  free(pids);
+  return found;
+}
+/* Gone for a minute (two looks 30 s apart: a REAPER restart takes a few seconds, and the next Connect starts this again anyway) */
+static int reaper_gone(void) {
+  static time_t last_look = 0;
+  static int missing = 0;
+  if (time(NULL) - last_look < 30) return 0;
+  last_look = time(NULL);
+  missing = reaper_running() ? 0 : missing + 1;
+  return missing >= 2;
+}
 
 static void status(const char *s) {
   char tmp[4096];

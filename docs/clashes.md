@@ -13,18 +13,24 @@ both were apart (offline, or Syncthing hadn't caught up), or both changed it wit
    machine at once, with the reason, so most would-be clashes never reach the band. In *Anyone*, everything
    unclaimed is open, the tempo map and markers too.
 2. **The owner wins** (James, 2026-11-04). A change by whoever has claimed it, or by the driver on what's unclaimed, takes a version number far past anything made meanwhile (`mirror.next_rev`), so it stands however often someone else changed it, and every computer agrees without being told who owned what.
-3. **Otherwise, more edits wins.** Every object carries a version number that goes up by one with each change to it. Of two
-   clashing versions, the one with the higher number wins: whoever changed that object more times since the two
-   split. A tie goes to the later clock time, then to the name that sorts last, so every machine picks the same
-   one without asking anyone (`mirror.newer` in `lib/mirror.lua`).
-4. **Nothing is lost, and yours is a click away.** The losing version stays in History. Its owner is told ("X also changed ... while you were
-   apart: theirs is in") with a **Use mine** button that puts it straight back for everyone, unless the other person owns it. When both
-   worked alone, a saved version of the loser's whole project is kept first.
+3. **Items are merged, not picked** (0.58.43). Two changes to one item made apart are put together: each line of the item (its
+   place, length, fades, volume, each take's settings and notes) comes from whichever side changed it, so one person moving a clip while
+   another turns it down keeps both. Every computer works out the same merge from the two changes and the version they both started from
+   (each change says which one: `base_ev`), so nobody has to send it (`mirror.merge_item`, `mirror.event_file` in `lib/mirror.lua`).
+4. **Where both changed the same thing, more edits wins,** counted in edits, not nudges: changes to one thing within 30 seconds of your
+   last one are one edit (`mirror.SESSION_SECS`), except the owner's, which always jump past what others made meanwhile (rule 2). A tie goes to the hybrid logical clock (milliseconds, never behind any change the computer
+   has seen, so a clock that's off can't win it), then to the name that sorts last (`mirror.newer`, `mirror.order_of`).
+5. **Both rewrote the same notes or audio:** the winner's take plays, and the loser's comes along as another take named "X's version",
+   which StudioSync's takes-into-lanes then puts on a lane of its own. Nothing anyone recorded is lost.
+6. **Nothing is lost, and yours is a click away.** The losing version stays in History. Its owner is told what happened, with a
+   **Use mine** button that puts all of theirs back for everyone, unless the other person owns it. When both worked alone, a saved version
+   of the loser's whole project is kept first.
 
 Known weak spots:
-- "More edits" is a proxy for "more work", not a measure of it: ten nudges outvote one long careful edit.
-- The tie-break uses each computer's clock; a clock that's minutes off can win ties it shouldn't.
-- The loser hears about it after the fact. There is no "both versions, pick one" step.
+- Tracks, plug-in chains, automation and sends are still settled whole (rule 4), not merged.
+- Three or more people changing one item at once can merge in a different order on different computers (Health shows it as "came out
+  different"); two at once always agree.
+- The loser still hears about it after the fact. There is no "both versions, pick one" step.
 
 ## How other tools decide
 
