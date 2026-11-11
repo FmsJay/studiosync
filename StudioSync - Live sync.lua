@@ -524,10 +524,14 @@ local function follows(name)
   return reaper.GetExtState(band.SECTION, "follow driver") ~= "" and sync.driver_name == name
 end
 local function take_cue(ev)
-  if not ev or (ev.id and fired[ev.id]) or (ev.at or 0) < cue_at then return end
+  if not ev or (ev.id and fired[ev.id]) or (not ev.remote and (ev.at or 0) < cue_at) then return end
   if ev.remote then -- a producer starting or stopping someone's transport (lib/producer.lua): only theirs, with their say-so
     if not require("producer").remote_ok(ev, cfg.user, require("producer").lets(), reaper.GetExtState(band.SECTION, "produced by " .. key), together.now()) then return end
-    ev.behind = true -- (from where they asked, however late it arrived: a take starts where it was meant to)
+    -- (from where they asked, however late it arrived: a take starts where it was meant to. Fired as it lands, not at their clock's moment, and it
+    -- doesn't hold back the band's own cues: a producer whose clock ran ahead made this one wait, and everything after it. Review, 0.58.45)
+    ev.behind, ev.at = true, math.min(tonumber(ev.at) or together.now(), together.now())
+    transport = ev
+    return
   elseif ev.follow and not side_bars() and not follows(ev.lead) then return end
   cue_at, transport = ev.at or cue_at, ev
 end
@@ -669,7 +673,9 @@ local function tick_body() -- returns true to keep going
       end
       if transport.id then fired[transport.id] = true end -- the regular poll applies the same event again later
       reaper.DeleteExtState(band.SECTION, "together_at " .. key, false)
-      side.quiet_until = reaper.time_precise() + 1 -- what we just did isn't a press to pass on
+      -- what we just did isn't a press to pass on; but a producer's press is: the producer follows us, and their song started or stopped with
+      -- nothing told it (review, 0.58.45)
+      if not transport.remote then side.quiet_until = reaper.time_precise() + 1 end
       transport = nil
     end
   end

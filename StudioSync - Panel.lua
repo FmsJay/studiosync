@@ -2705,8 +2705,11 @@ local function frame_app()
   local _, my = ImGui.GetMousePos(ctx)
   local at_top = ImGui.IsWindowHovered(ctx, ImGui.HoveredFlags_ChildWindows | ImGui.HoveredFlags_AllowWhenBlockedByPopup)
     and my >= wy and my < wy + (ui.head_open and ui.head_h or 16)
-  if at_top or ImGui.IsPopupOpen(ctx, "", ImGui.PopupFlags_AnyPopupId) then ui.head_seen = reaper.time_precise() end -- (a menu from the bar keeps it)
-  ui.head_open = not docked or not running or held or #both > 0 or reaper.time_precise() - (ui.head_seen or -math.huge) < 0.4 -- (a moment's grace: no flicker at its edge)
+  if at_top then ui.head_seen = reaper.time_precise() end -- (not any open popup: a combo on the page dropped the page under its own list. Review)
+  local open = not docked or not running or held or #both > 0 or reaper.time_precise() - (ui.head_seen or -math.huge) < 0.4 -- (a moment's grace: no flicker at its edge)
+  if open ~= ui.head_open then ui.head_flip_at = reaper.time_precise() end -- (everything under it moves: its buttons wait a moment, as for suggestions)
+  ui.head_open = open
+  local moving = reaper.time_precise() - (ui.head_flip_at or -math.huge) < 0.5
   local toast_place
   if not ui.head_open then
     local cx, cy = ImGui.GetCursorScreenPos(ctx)
@@ -2836,7 +2839,7 @@ local function frame_app()
       ImGui.SetCursorPosX(ctx, 16)
     end
     ui.head_h = ImGui.GetCursorPosY(ctx) + 4
-    if toast_place.over then toast_place.y = wy + y0 + fh + 8 end
+    if toast_place.over then toast_place.y = wy + ui.head_h end -- (under the page tabs too, when they're a row of their own)
   end
   -- what StudioSync just did, under the bar for a few seconds (actions used to report only to the Console)
   local log = band.activity()
@@ -2868,6 +2871,7 @@ local function frame_app()
   tools.toast_show(ctx, ImGui, saying, toast_place)
   local bars_at = ImGui.GetCursorPosY(ctx)
   ImGui.SetNextWindowSizeConstraints(ctx, 0, 0, 100000, (wide or wh < 440) and (ImGui.GetFrameHeightWithSpacing(ctx) * 2 + 2) or wh * 0.25)
+  ImGui.BeginDisabled(ctx, moving) -- (the bar just opened or folded: these moved under the mouse)
   local bars_open = ImGui.BeginChild(ctx, "bars", 0, 0, ImGui.ChildFlags_AutoResizeY)
   if bars_open then ImGui.Indent(ctx, 16) end
   tools.removed_bar(ctx, ImGui)
@@ -2924,6 +2928,7 @@ local function frame_app()
       local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1" })))
   end, function(name) return can(cfg.user, name) end)
   if bars_open then ImGui.Unindent(ctx, 16); ImGui.EndChild(ctx) end
+  ImGui.EndDisabled(ctx)
   local _, bars_h = ImGui.GetItemRectSize(ctx)
   if bars_h < 6 then ImGui.SetCursorPosY(ctx, bars_at) end -- (nothing in them: no gap. An empty child is still 4 px tall, and 8 more of spacing)
   ui.asked_page()
@@ -2955,7 +2960,7 @@ local function frame_app()
   end
   ImGui.PushStyleVar(ctx, ImGui.StyleVar_WindowPadding, 16, ui.short and 4 or 12)
   -- (rows coming or going above it move the page under the mouse: its buttons wait a moment too, or a Remove or Restore could take a click aimed elsewhere)
-  local settling = require("suggest").settling()
+  local settling = require("suggest").settling() or moving
   ImGui.BeginDisabled(ctx, settling)
   if wide then -- (two full-size buttons filled a short column: design review)
     ImGui.PushStyleVar(ctx, ImGui.StyleVar_FramePadding, 8, ui.short and 3 or 4)

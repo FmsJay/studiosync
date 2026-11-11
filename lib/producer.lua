@@ -26,9 +26,13 @@ end
 -- The producer's hands on the performer's transport (James, 2026-11-10): Play, Record or Stop, from where the producer's cursor is. Only if the
 -- performer lets them (it's their recording: a setting of theirs, kept on their computer, and their status says so), and only while that
 -- person is producing them; their Live sync does it (take_cue), and this computer goes on following a moment behind, as ever.
+-- The say-so names who it's for ("James, Sam"): ticked for one producer, it doesn't hand your transport to whoever produces you next (review, 0.58.45).
 producer.LET = "let producer drive"
-function producer.lets() return reaper.GetExtState(band.SECTION, producer.LET) ~= "" end
-function producer.set_lets(on) reaper.SetExtState(band.SECTION, producer.LET, on and "1" or "", true) end
+local function names(list) local t = {} for who in (list or ""):gmatch("[^,]+") do t[#t + 1] = who:match("^%s*(.-)%s*$") end return t end
+local function has(list, name) for _, who in ipairs(names(list)) do if who == name then return true end end return false end
+producer.has = has
+function producer.lets() local v = reaper.GetExtState(band.SECTION, producer.LET); return v ~= "" and v ~= "1" and v or nil end -- ("1": before 0.58.45, for anyone)
+function producer.set_lets(who) if who and who ~= "" then reaper.SetExtState(band.SECTION, producer.LET, who, true) else reaper.DeleteExtState(band.SECTION, producer.LET, true) end end
 -- kind: "start" or "stop"; rec: record, not just play. -> the cue's id, or nil + why
 function producer.remote(proj, cfg, b, kind, rec)
   local name = producer.who(proj)
@@ -40,12 +44,11 @@ function producer.remote(proj, cfg, b, kind, rec)
     kind == "stop" and "" or string.format("from %.2f s (your cursor)", ev.pos)))
   return id
 end
--- Is this cue one `me` should act on? A producer's, for me, with my say-so, from someone producing me now, and fresh. Pure but for its arguments.
+-- Is this cue one `me` should act on? A producer's, for me, from someone I said yes to who is producing me now, and fresh. Pure but for its arguments.
 function producer.remote_ok(ev, me, lets, produced_by, now)
-  if type(ev) ~= "table" or ev.remote ~= me or not lets or type(ev.lead) ~= "string" then return false end
+  if type(ev) ~= "table" or ev.remote ~= me or type(ev.lead) ~= "string" then return false end
   if now - (tonumber(ev.at) or 0) > 30 then return false end
-  for who in (produced_by or ""):gmatch("[^,]+") do if who:match("^%s*(.-)%s*$") == ev.lead then return true end end
-  return false
+  return has(lets, ev.lead) and has(produced_by, ev.lead)
 end
 
 -- How far behind this tab runs, if it's producing `name` (who the cue is from); else nil.
