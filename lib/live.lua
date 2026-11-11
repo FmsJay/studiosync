@@ -124,8 +124,20 @@ end
 -- Connect, one step a call: with `open`, its Connect button brings up the host box (filled in by live.configure); that box's
 -- own Connect is pressed as soon as it's there. -> "connected", "pressing", "opening", or nil (no window, not asked to open it).
 local function press_host_box()
-  local box = reaper.JS_Window_Find("NINJAM Connection Configuration", true)
-  if not box or not reaper.JS_Window_IsVisible(box) then return false end -- (on a Mac a closed one stays listed, hidden, for up to a minute)
+  -- (the visible one: on a Mac a closed one stays listed, hidden, for up to a minute, and Find handed back that one while the real box sat on
+  -- screen unpressed: the Mac never reconnected after a long outage, 0.58.40)
+  local box
+  if reaper.JS_Window_ListFind then
+    local _, list = reaper.JS_Window_ListFind("NINJAM Connection Configuration", true)
+    for addr in (list or ""):gmatch("[^,]+") do
+      local w = reaper.JS_Window_HandleFromAddress(tonumber(addr))
+      if w and reaper.JS_Window_IsVisible(w) then box = w; break end
+    end
+  else
+    box = reaper.JS_Window_Find("NINJAM Connection Configuration", true)
+    if box and not reaper.JS_Window_IsVisible(box) then box = nil end
+  end
+  if not box then return false end
   -- (it only reads its ini the first time it loads in a REAPER session: a server that's moved since would never be found)
   local host = reaper.GetExtState(band.SECTION, "ninjam connect")
   if host == "" then host = reaper.GetExtState(band.SECTION, "ninjam host") end

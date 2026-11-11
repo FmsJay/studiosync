@@ -144,7 +144,7 @@ local function auto_connect(tab)
     local capped = not reaper.GetOS():find("^Win") and not relayed() and r.n >= 3
     if not capped and server_answers(host) and live.connect(false) ~= "connected" then
       r.n = r.n + 1
-      connecting[tab] = { tries = 0, at = -math.huge, start = c.start }
+      connecting[tab] = { tries = 0, at = -math.huge, start = c.start, next_look = c.next_look } -- (the 10 s carry over: it went round every few s)
       band.log("the NINJAM server answers now: connecting")
       return
     end
@@ -153,11 +153,12 @@ local function auto_connect(tab)
   if not reaper.GetOS():find("^Win") then
     local now = live.connect(false)
     if now == "connected" then c.done, c.up, c.up_at = true, true, reaper.time_precise()
-    elseif now ~= "pressing" and c.pressed then
+    elseif now ~= "pressing" and c.pressed and reaper.time_precise() - c.pressed_at > 8 then -- (a moment to connect: the next look came too soon, every time)
       c.done = true
       band.log(relayed() and "NINJAM: the server didn't answer: connecting when it does" or "NINJAM: if ReaNINJAM shows a box, press its OK to finish connecting")
     elseif not c.pressed and reaper.time_precise() - c.at > 12 and server_answers(reaper.GetExtState(band.SECTION, "ninjam host")) then
       c.pressed = live.connect(true) == "opening"
+      c.pressed_at = reaper.time_precise()
     end
     return
   end
