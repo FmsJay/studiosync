@@ -535,7 +535,6 @@ sync.speaks_for_name = speaks_for_name
 
 function sync.midi_seen(proj, id, tk) setext(proj, sync.MIDIHASH, id, select(2, reaper.MIDI_GetHash(tk, false, ""))) end
 
-sync.fxhash = fxhash
 
 -- ---- our own takes ------------------------------------------------------------------------------
 
