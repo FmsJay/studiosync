@@ -530,6 +530,14 @@ local function take_cue(ev)
     -- (from where they asked, however late it arrived: a take starts where it was meant to. Fired as it lands, not at their clock's moment, and it
     -- doesn't hold back the band's own cues: a producer whose clock ran ahead made this one wait, and everything after it. Review, 0.58.45)
     ev.behind, ev.at = true, math.min(tonumber(ev.at) or together.now(), together.now())
+    if ev.rec then -- (nothing armed: REAPER's Record Warning box comes up and holds every script, this one too, until someone answers. Mac, 0.58.45)
+      local armed = false
+      for i = 0, reaper.CountTracks(proj) - 1 do armed = armed or reaper.GetMediaTrackInfo_Value(reaper.GetTrack(proj, i), "I_RECARM") == 1 end
+      if not armed then
+        if ev.id then fired[ev.id] = true end
+        return band.log(tostring(ev.lead) .. " asked to record you, but nothing is armed here: arm a track, and they can press Record again")
+      end
+    end
     transport = ev
     return
   elseif ev.follow and not side_bars() and not follows(ev.lead) then return end
@@ -667,7 +675,10 @@ local function tick_body() -- returns true to keep going
           or transport.rec and transport.follow and theirs
           and string.format("playing along with %s's recording from %.2f s (%.0f ms after the planned moment)", tostring(transport.user), from, (tnow - fire) * 1000)
           or string.format("%s together from %.2f s (%s; %.0f ms after the planned moment)", transport.rec and "recording" or "playing",
-            from, tostring(transport.user), (tnow - fire) * 1000)
+            from, tostring(transport.user or transport.lead), (tnow - fire) * 1000)
+        if reaper.GetPlayStateEx(proj) & 1 == 0 then -- (REAPER said no: its Record Warning answered Cancel, say. "recording from" was logged with nothing running: Mac, 0.58.45)
+          said = "REAPER didn't start (" .. (transport.rec and "record" or "play") .. " from " .. string.format("%.2f", from) .. " s was cancelled)"
+        end
         band.log(said)
         reaper.SetExtState(band.SECTION, "together " .. key, os.date("%H:%M:%S ") .. said, false) -- the panel shows it
       end
