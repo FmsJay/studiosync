@@ -376,7 +376,9 @@ function Request($mode) {
   }
   # ONE request: the helper waits inside REAPER for ReaPack itself (asking again while ReaPack's report window was up
   # crashed REAPER on macOS, 2026-10-28)
-  $once = if ($ReaperExe) { @("-newinst", "-cfgfile", "`"$res\reaper.ini`"") } else { @("-nonewinst") }
+  # (@(...) around it: an `if` hands back a one-item list as a plain string, and + then glued the path onto it: REAPER got
+  # `-nonewinst"C:\...lua"`, showed its Usage box and never ran the helper. Windows Sandbox run, 2026-11-10)
+  $once = @(if ($ReaperExe) { "-newinst", "-cfgfile", "`"$res\reaper.ini`"" } else { "-nonewinst" })
   Start-Process $reaper -ArgumentList ($once + "`"$helper`"")
   $script:Gone = $false
   for ($i = 0; $i -lt 360 -and -not (Test-Path $result); $i++) {
