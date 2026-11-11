@@ -21,6 +21,7 @@ if b and b.role == "solo" then return band.msg("This is a Solo edit copy: prepar
 local rows = prep.scan(proj, cfg, b)
 local ctx = ImGui.CreateContext("StudioSync: prepare")
 local result -- summary lines once applied
+local review = false -- (the list with its ticks, once asked for)
 local sharing = reaper.GetExtState(band.SECTION, "share after prepare") ~= "" -- (Share sent us: the last button goes on to it)
 reaper.DeleteExtState(band.SECTION, "share after prepare", false)
 local function share_now(ImGui_ctx)
@@ -60,9 +61,23 @@ local function loop()
         ImGui.TextWrapped(ctx, "This project is already shared: what you change here goes to everyone as your changes, and whatever isn't yours to change is put back. Best done when nobody else is working on it.")
         ImGui.PopStyleColor(ctx)
       end
-      ImGui.TextWrapped(ctx, "What this project needs for StudioSync. Untick anything you'd rather keep, then Continue: a backup copy of the project is saved first.")
-      ImGui.Spacing(ctx)
-      if ImGui.BeginChild(ctx, "rows", 0, -40) then
+      -- (the short version first: lanes, FLAC bit depths and ripple were choices a first-timer couldn't make, and every row is on by default.
+      -- Review changes shows the list to untick. UX review, 0.58.52)
+      local titles = {}
+      for _, r in ipairs(rows) do if r.todo ~= nil and r.on then titles[#titles + 1] = r.title end end
+      if not review then
+        ImGui.TextWrapped(ctx, string.format("StudioSync tidies %d thing%s in this project first, the way the studio works best (a backup copy is saved before anything changes):",
+          #titles, #titles == 1 and "" or "s"))
+        for _, t in ipairs(titles) do ImGui.Bullet(ctx); ImGui.TextWrapped(ctx, t) end
+        ImGui.Spacing(ctx)
+        if ImGui.SmallButton(ctx, "Review changes") then review = true end
+        ImGui.SetItemTooltip(ctx, "See what each one does, and untick any you'd rather keep as they are.")
+        ImGui.Spacing(ctx)
+      else
+        ImGui.TextWrapped(ctx, "What this project needs for StudioSync. Untick anything you'd rather keep, then Continue: a backup copy of the project is saved first.")
+        ImGui.Spacing(ctx)
+      end
+      if review and ImGui.BeginChild(ctx, "rows", 0, -40) then
         for i, r in ipairs(rows) do
           ImGui.PushID(ctx, tostring(i))
           if r.todo ~= nil then

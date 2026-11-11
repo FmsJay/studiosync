@@ -41,6 +41,7 @@ echo
 # ---------- 0. questions ----------
 # (names are plain letters, digits, spaces, - and _: the default is shown already cleaned, and a typed name that
 # changes when cleaned is said, not changed silently)
+say "A studio is the people you make music with: StudioSync shares your projects with them as you work."
 USERNAME_BS="$(plain "${BS_USER:-}")"
 while [ -z "$USERNAME_BS" ]; do
   typed="$(ask "Your name, as the studio will see it (you can change it later)" "$(plain "$(id -F 2>/dev/null | cut -d' ' -f1)")")"

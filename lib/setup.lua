@@ -11,6 +11,8 @@ function setup.live_file(cfg, b) return band.song_dir(cfg, b.song) .. "/live.jso
 
 -- The band's SonoBus group and password, made by whoever needs it first: <shared folder>/sonobus.json.
 function setup.sonobus_group(cfg)
+  local secret = require("groups").sonobus_secret(cfg.root)
+  if secret then return live.sonobus_group({}, band.info(cfg.root).id, secret) end -- (from the studio's secret: nothing to keep)
   local file = cfg.root .. "/sonobus.json"
   local data = band.read_json(file) or {}
   local had = data.group

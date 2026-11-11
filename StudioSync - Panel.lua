@@ -1093,6 +1093,11 @@ local function home_play()
   require("page_hear").fit(ctx, ImGui, "Configure SonoBus") -- (beside, or below in a narrow column: it was cut to "Configure Sono")
   if ImGui.SmallButton(ctx, "Configure SonoBus") then sonobus_open() end
   ImGui.SetItemTooltip(ctx, "Opens SonoBus's own window (volume and mute per collaborator, buffer, quality). You don't need it to play together.")
+  if on then -- (the help for it was in Settings > Advanced, with nothing here pointing at it: UX review, 0.58.52)
+    require("page_hear").fit(ctx, ImGui, "Can't hear?")
+    if ImGui.SmallButton(ctx, "Can't hear?") then ui.go_settings("Advanced") end
+    ImGui.SetItemTooltip(ctx, "What to try when you can't hear someone, or they can't hear you (Settings > Advanced).")
+  end
   if not ui.short then -- (a tall docker has the room)
     ImGui.TextDisabled(ctx, on and "You hear everyone live, and play, stop and record follow whoever presses them."
       or "Off: changes still sync, but you don't hear each other live or follow each other's play and stop.")
@@ -1117,14 +1122,9 @@ local function home_who()
   local services = require("services")
   local my_id = services.my_device_id()
   ImGui.BeginDisabled(ctx, not my_id)
-  if ImGui.SmallButton(ctx, "Invite a collaborator") then
-    band.copy(services.invite_text(my_id, band.info(cfg.root)), ctx, ImGui)
-    band.log("an invitation is on your clipboard: paste it to your collaborator (a message, an email). It installs StudioSync " ..
-      "already paired with this computer; then press 'Let them in' here when they're done.")
-  end
+  if ImGui.SmallButton(ctx, "Invite a collaborator") then tools.invite(my_id, band.info(cfg.root), ctx, ImGui) end
   ImGui.EndDisabled(ctx)
-  ImGui.SetItemTooltip(ctx, my_id and "Copies a message with one line to paste on a Mac and one on Windows: it installs everything, " ..
-    "already paired with this computer.\nWhen they've run it, 'Let them in' shows here." or "Waiting for Syncthing (it has to be running).")
+  ImGui.SetItemTooltip(ctx, my_id and tools.INVITE_TIP or "Waiting for Syncthing (it has to be running).")
   if my_id and services.tailscale_token() ~= "" then -- (a token: Settings > Advanced)
     next_to("Invite a guest for a day")
     if ImGui.SmallButton(ctx, "Invite a guest for a day") then services.copy_guest_invite(my_id, band.info(cfg.root), ctx, ImGui) end
@@ -1186,7 +1186,9 @@ local function home_who()
     if (i - 1) % per ~= 0 then ImGui.SameLine(ctx, 0, gap) end
     if card("who " .. p.name, w) then -- (grows with what they have armed)
       ui.person_name(p, 16)
-      pill(p.state == "syncing" and "getting changes" or p.state, p.state == "here" and GREEN or rgba(status.COLORS[p.state] or { 0.55, 0.55, 0.55 }))
+      -- (in words: "synced", "here" and "no receipt" were the code's names for them. UX review, 0.58.52)
+      local words = ({ here = "you", synced = "up to date", syncing = "getting changes", offline = "away", ["no receipt"] = "never synced here" })[p.state] or p.state
+      pill(words, p.state == "here" and GREEN or rgba(status.COLORS[p.state] or { 0.55, 0.55, 0.55 }))
       ImGui.SetItemTooltip(ctx, ({ here = "This machine.", ["synced"] = "Has every change.", ["syncing"] = "Still getting changes (yours or the studio's).",
         offline = "Not seen for over a minute.", ["no receipt"] = "Has sent takes, but never ran Live sync here." })[p.state] or p.state)
       if p.recording then ImGui.SameLine(ctx, 0, 4); pill("recording", RED)
@@ -1786,7 +1788,7 @@ local function frame_app()
   if not running and rooms.is_copy(proj, cfg, b) then
     at_row("older copy")
     pill("older copy", YELLOW, DARK, fh)
-    ImGui.SetItemTooltip(ctx, "A backup or autosave of this song, not your project for it. Nothing goes in or out of it.")
+    ImGui.SetItemTooltip(ctx, "A backup or autosave of this project, not your working copy of it. Nothing goes in or out of it.")
   elseif not running and band.synced_elsewhere(proj) then -- (a second copy of the song: syncing it would work on a stale one)
     at_row("open in another tab")
     pill("open in another tab", YELLOW, DARK, fh)
@@ -2137,7 +2139,7 @@ local function updated()
   if reaper.time_precise() - disk_at < 3 then return false end
   disk_at = reaper.time_precise()
   local disk = (band.read(dir .. "/lib/band.lua") or ""):match('VERSION = "([^"]+)"')
-  local ready = disk and disk ~= band.VERSION and disk == seen_disk
+  local ready = disk and disk ~= band.VERSION and disk == seen_disk and band.update_ok(dir, disk) -- (from a shared folder, once you said yes: Autostart asks)
   seen_disk = disk
   return ready
 end

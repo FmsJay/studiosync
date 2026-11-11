@@ -426,13 +426,17 @@ end
 -- (one group for the band, so it's the same in every song). Pure apart from the random password.
 -- `id`: the group's own ID, from which every computer works out the same name: two switching Real time on at once in a new group each made
 -- their own, the file kept one, and they sat in different groups waiting for each other (0.50.0, PC and laptop).
-function live.sonobus_group(data, id)
+-- `secret`: the studio's own (band.json `sonobus`, groups.sonobus_secret): with it the password isn't worked out from the ID alone, which
+-- every invitation shows, so whoever saw one, or was taken out, could join the live audio for good (review, 0.58.52). The name stays the ID's.
+function live.sonobus_group(data, id, secret)
+  if secret and id then data.group, data.password = nil, nil end
   if data.group and data.password then return data.group, data.password end
   if id then
-    local function word(seed, n)
+    local function word(seed, n, key)
+      key = key or id
       local h, out = seed, {}
       local chars = "abcdefghjkmnpqrstuvwxyz23456789"
-      for i = 1, #id do h = (h ~ id:byte(i)) * 1099511628211 end
+      for i = 1, #key do h = (h ~ key:byte(i)) * 1099511628211 end
       for i = 1, n do
         h = (h ~ i) * 1099511628211
         local k = ((h >> 20) & 0xFFFF) % #chars + 1
@@ -440,7 +444,7 @@ function live.sonobus_group(data, id)
       end
       return table.concat(out)
     end
-    data.group, data.password = "StudioSync " .. word(-3750763034362895579, 8), word(7046029254386353087, 14)
+    data.group, data.password = "StudioSync " .. word(-3750763034362895579, 8), word(7046029254386353087, 14, secret and (id .. "\0" .. secret) or nil)
     return data.group, data.password
   end
   local chars, pw = "abcdefghjkmnpqrstuvwxyz23456789", {}

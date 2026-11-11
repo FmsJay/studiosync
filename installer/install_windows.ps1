@@ -57,6 +57,7 @@ function YesNo($q, $def) { $a = Ask "$q (y/n)" $def; return $a -match '^[yY]' }
 Say "StudioSync setup"
 Write-Host "This installs what StudioSync needs and sets it up. It asks a few questions first (unless given up front); Windows may ask"
 Write-Host "permission for each app it installs. Nothing already installed is changed."
+Write-Host "A studio is the people you make music with: StudioSync shares your projects with them as you work."
 Write-Host ""
 
 # ---------- 0. questions ----------
@@ -82,7 +83,7 @@ if (-not $isHost) {
 # the band (docs/bands-design.md): each its own shared folder. An invitation names it; the first one set up names it.
 $folderId = ($BandId.ToLower() -replace '[^a-z0-9-]', '')
 if (-not $isHost -and -not $folderId) { # (someone's device ID typed in by hand, no invitation)
-  $folderId = ((Ask "The studio's ID (it's in their invitation, after -BandId; press Enter if they don't have one)" "bandsync").ToLower() -replace '[^a-z0-9-]', '')
+  $folderId = ((Ask "The studio's ID, if whoever set it up gave you one (press Enter if not)" "bandsync").ToLower() -replace '[^a-z0-9-]', '')
   if (-not $folderId) { $folderId = "bandsync" }
 }
 $bandName = $BandName -replace '[^\w\- ]', ''

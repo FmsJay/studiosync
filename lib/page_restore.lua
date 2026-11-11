@@ -11,7 +11,7 @@ function R.init(env)
   E, ctx, ImGui, ui, dir, action, next_to = env, env.ctx, env.ImGui, env.ui, env.dir, env.action, env.next_to
   combo, describe, local_time = env.combo, env.describe, env.local_time
 end
-local label = "" -- (the name for the next saved version, as it's typed)
+local label, keep_it = "", false -- (the name for the next saved version, as it's typed; and whether it's kept for good)
 
 -- History's "kind" filter: a set of event kinds, or a test on the change
 local KINDS = {
@@ -161,15 +161,20 @@ end
 function R.section_recall()
   local b, cfg, proj, view, wide, points, can, who = E.b(), E.cfg(), E.proj(), E.view(), E.wide(), E.points(), E.can(), E.who()
   if not ui.short then ImGui.SeparatorText(ctx, "Saved versions") end -- (short: the box's own words say it, and the list gets the row)
-  ImGui.SetNextItemWidth(ctx, -130)
+  ImGui.SetNextItemWidth(ctx, -250)
   local _, v = ImGui.InputTextWithHint(ctx, "##label", "name this version (e.g. 'chorus with double guitars')", label, ImGui.InputTextFlags_None)
   label = v
   ImGui.SameLine(ctx)
   if ImGui.Button(ctx, "Save this version") then
-    recall.save(proj, cfg, b.song, b.room, label ~= "" and label or "saved by " .. cfg.user)
+    if keep_it then recall.back_up(proj, cfg, b, label ~= "" and label or nil) -- (kept for good, and the project on Drive: what Back up did)
+    else recall.save(proj, cfg, b.song, b.room, label ~= "" and label or "saved by " .. cfg.user) end
     label = ""
     E.refresh_now()
   end
+  ImGui.SameLine(ctx)
+  local _, k = ImGui.Checkbox(ctx, "Keep for good##keepver", keep_it)
+  keep_it = k
+  ImGui.SetItemTooltip(ctx, "Never trimmed, and the project goes to Google Drive too if you use it. (Back up and Save this version were two buttons: one now.)")
   if ImGui.SmallButton(ctx, "Render current mix") then action("Final mix") end
   ImGui.SetItemTooltip(ctx, "Renders the whole project as your master has it (in your File > Render format) into the shared folder's mixes/ for everyone, and to Google Drive if you use it.\n" ..
     "Everyone's parts are in it, yours too. Only tracks that stay on this computer ('yours, not sent', StudioSync's helpers) are left out. Nothing is added to the project.")
@@ -183,6 +188,12 @@ function R.section_recall()
   end
   ImGui.SetItemTooltip(ctx, "One file per shared track, the whole song, all starting together: into the shared folder's stems/ for everyone.\n" ..
     "As your master hears them (in your File > Render format). Tracks that stay on this computer are left out, silent ones skipped.")
+  next_to("Dry stems")
+  if ImGui.SmallButton(ctx, "Dry stems") then
+    local out, n = require("extras").stems(proj, cfg, b, true)
+    if out then band.log(string.format("%d dry stem(s) in %s, for everyone", n, out)) else band.msg(n) end
+  end
+  ImGui.SetItemTooltip(ctx, "The same, without each track's effects (instruments still play): what a mixer usually asks for. Your effects are back as they were after.")
   next_to("Credits draft")
   if ImGui.SmallButton(ctx, "Credits draft") then
     local path = require("extras").credits(cfg, b)
@@ -191,8 +202,6 @@ function R.section_recall()
   end
   ImGui.SetItemTooltip(ctx, "Who started which tracks, recorded which takes and made which changes, from the history: a draft to agree the splits on.\n" ..
     "Written to the shared folder (credits.txt), with the percentages left for you to fill in.")
-  next_to("Back up")
-  if ImGui.SmallButton(ctx, "Back up") then recall.back_up(proj, cfg, b); E.refresh_now() end
   ImGui.SetItemTooltip(ctx, "Keeps the project as it stands now: a saved version here that's never trimmed, and the project on Google Drive if you use it. No audio is rendered.")
   next_to("Save a copy outside the studio")
   if ImGui.SmallButton(ctx, "Save a copy outside the studio") then

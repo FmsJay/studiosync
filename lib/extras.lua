@@ -8,10 +8,11 @@ local extras = {}
 -- Every track the band shares, one file each, the whole song, into <Song>/stems/<date>/ (in the shared folder, for everyone), named for
 -- its track. As your master hears it (each machine's master is its own), StudioSync's own and your local tracks left out, silent ones
 -- skipped. Your render settings and selection are put back. -> the folder, and how many files; or nil + why.
-function extras.stems(proj, cfg, b)
+-- dry: without the tracks' effects (their instruments still play), as a mixer wants them; put back after.
+function extras.stems(proj, cfg, b, dry)
   if reaper.GetPlayStateEx(proj) & 4 == 4 then return nil, "Stop recording first." end
   local mirror = require("mirror")
-  local out = band.song_dir(cfg, b.song) .. "/stems/" .. os.date("%Y-%m-%d %H%M") .. " " .. band.clean(cfg.user)
+  local out = band.song_dir(cfg, b.song) .. "/stems/" .. os.date("%Y-%m-%d %H%M") .. " " .. band.clean(cfg.user) .. (dry and " dry" or "")
   reaper.RecursiveCreateDirectory(out, 0)
   local saved = {}
   for _, k in ipairs({ "RENDER_FILE", "RENDER_PATTERN" }) do saved[k] = select(2, reaper.GetSetProjectInfo_String(proj, k, "", false)) end
@@ -29,17 +30,40 @@ function extras.stems(proj, cfg, b)
     return nil, "There are no shared tracks to render."
   end
   reaper.GetSetProjectInfo_String(proj, "RENDER_FILE", out, true)
-  reaper.GetSetProjectInfo_String(proj, "RENDER_PATTERN", "$track", true)
+  local bypassed = {} -- (dry: each shared track's effects off for the render; its instrument stays, so a MIDI part still sounds)
+  if dry then
+    for tr, _ in pairs(selected) do
+      if not mirror.local_track(tr) then
+        local inst = reaper.TrackFX_GetInstrument(tr)
+        for i = 0, reaper.TrackFX_GetCount(tr) - 1 do
+          if i ~= inst and reaper.TrackFX_GetEnabled(tr, i) then reaper.TrackFX_SetEnabled(tr, i, false); bypassed[#bypassed + 1] = { tr, i } end
+        end
+      end
+    end
+  end
+  reaper.GetSetProjectInfo_String(proj, "RENDER_PATTERN", dry and "$track (dry)" or "$track", true)
   reaper.GetSetProjectInfo(proj, "RENDER_SETTINGS", 3, true) -- stems of the selected tracks (3, not 2: 2 rendered the master. FINDINGS F-0036)
   reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 1, true) -- the entire project: every stem starts at the song's start, so they line up
   reaper.GetSetProjectInfo(proj, "RENDER_ADDTOPROJ", 2, true) -- (&2: silent stems skipped)
   reaper.Main_OnCommand(42230, 0) -- File: Render project, using the most recent render settings, auto-close render dialog
+  for _, x in ipairs(bypassed) do if reaper.ValidatePtr2(proj, x[1], "MediaTrack*") then reaper.TrackFX_SetEnabled(x[1], x[2], true) end end
   for tr, was in pairs(selected) do if reaper.ValidatePtr2(proj, tr, "MediaTrack*") then reaper.SetTrackSelected(tr, was) end end
   for k, v in pairs(saved) do
     if type(v) == "string" then reaper.GetSetProjectInfo_String(proj, k, v, true) else reaper.GetSetProjectInfo(proj, k, v, true) end
   end
-  local made = #band.files(out)
-  if made == 0 then return nil, "The render made nothing (cancelled, or File > Render's format couldn't write)." end
+  -- (silent ones go: REAPER's "skip silent" only skips a track with no media at all, and an empty MIDI part made a silent file. Only files this
+  -- render just made, in its own new folder)
+  local made = 0
+  for _, f in ipairs(band.files(out)) do
+    local src = reaper.PCM_Source_CreateFromFile(out .. "/" .. f)
+    -- (silent, REAPER answers "no change", 1.0, to both: to its peak at 0 dB, and to its loudness at -23 LUFS. A sound gives 1.0 to both
+    -- only if it sits exactly at both, which doesn't happen. Measured, 0.58.52)
+    local silent = src and reaper.CalculateNormalization(src, 2, 0, 0, 0) == 1 and reaper.CalculateNormalization(src, 0, -23, 0, 0) == 1
+    if src then reaper.PCM_Source_Destroy(src) end
+    if silent then os.remove(out .. "/" .. f) else made = made + 1 end
+  end
+  if made == 0 then os.remove(out) end -- (its own empty folder, not left in the shared folder)
+  if made == 0 then return nil, "The render made nothing (cancelled, or File > Render's format couldn't write, or every track was silent)." end
   return out, made
 end
 
@@ -252,7 +276,10 @@ function extras.swap_in_file(item, path)
   local take = reaper.AddTakeToMediaItem(item)
   reaper.SetMediaItemTake_Source(take, src)
   reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", "full quality: " .. path:match("[^/\\]+$"), true)
-  local len = math.min(reaper.GetMediaItemInfo_Value(item, "D_LENGTH"), 30)
+  local item_len = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+  local len = math.min(item_len, 30)
+  -- (a take is only read within its item: the search reads 6 s past it, so the item is that long while it reads, and back after)
+  reaper.SetMediaItemInfo_Value(item, "D_LENGTH", len + 6)
   -- envelopes at 100 per second: the stream's first `len` s, the file's from 3 s before to 3 s after
   local rate = 8000
   local a = envelope(samples(stream, 0, len, rate), 80)
@@ -269,6 +296,7 @@ function extras.swap_in_file(item, path)
   local fb = samples(take, start, 2.04, rate)
   off = off - 0.02 + extras.best_lag(fa, fb, 160, 0, 320) / rate
   reaper.SetMediaItemTakeInfo_Value(take, "D_STARTOFFS", off)
+  reaper.SetMediaItemInfo_Value(item, "D_LENGTH", item_len)
   reaper.SetActiveTake(take)
   reaper.UpdateItemInProject(item)
   return off

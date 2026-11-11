@@ -23,6 +23,20 @@ function H.maint_rows()
     H.maint_at, maint_st = reaper.time_precise(), setup.check(cfg, b, proj)
     maint_st.for_proj = proj
     -- MIDI tracks playing an instrument on another track that doesn't load here (lib/prints.lua prints.route)
+    -- files two computers changed at the same moment: Syncthing keeps the one that lost beside it ("x.sync-conflict-..."), and StudioSync
+    -- reads only the other, so what was in the loser was gone with nothing said (review, 0.58.52). Where people's shared files are:
+    maint_st.conflicts = {}
+    local sdir = band.song_dir(cfg, b.song)
+    local dirs = { sdir, sdir .. "/chat", sdir .. "/chat/msgs", sdir .. "/chat/todo", sdir .. "/chat/links", cfg.root .. "/_band" }
+    for _, room in ipairs(band.subdirs(sdir .. "/rooms")) do dirs[#dirs + 1] = sdir .. "/rooms/" .. room; dirs[#dirs + 1] = sdir .. "/rooms/" .. room .. "/claims" end
+    for _, d in ipairs(dirs) do
+      reaper.EnumerateFiles(d, -1) -- (re-read: REAPER keeps listings)
+      for i = 0, math.huge do
+        local f = reaper.EnumerateFiles(d, i)
+        if not f then break end
+        if f:find(".sync-conflict-", 1, true) then maint_st.conflicts[#maint_st.conflicts + 1] = d .. "/" .. f end
+      end
+    end
     maint_st.routed = {}
     local prints = require("prints")
     for i = 0, reaper.CountTracks(proj) - 1 do
@@ -56,6 +70,15 @@ function H.maint_rows()
       s.peers and "Syncthing is connected to nobody. No collaborator is online, so that's fine: your changes reach them later."
       or "Can't tell whether Syncthing is connected." },
     { "sonobus", s.sonobus, "yellow", "SonoBus is ready (Real time mode)", "SonoBus isn't set up yet: Real time mode (Home) adds it." },
+    (function()
+      local c = s.conflicts or {}
+      local first = c[1] and c[1]:match("([^/]+)%.sync%-conflict") or ""
+      return { "conflicts", #c == 0, "yellow", "No files were changed by two computers at once",
+        string.format("%d shared file(s) were changed on two computers at the same moment (the first: %s). Syncthing kept the other version beside it, named sync-conflict: look at both and keep what's right.", #c, first),
+        action = c[1] and { "Show it", function() band.open_url((c[1]:match("^(.*)/[^/]+$"))) end, "Opens the folder it's in." } or nil }
+    end)(),
+    { "shared code", not band.from_shared(dir), "yellow", "StudioSync is installed on this computer",
+      "StudioSync runs from the shared folder here, so anyone in the studio can change what runs on this computer. Installing it through ReaPack is safer (the README says how)." },
     (function()
       local skipped = sync.skipped(proj)
       return { "skipped", #skipped == 0, "yellow", "Every change from the others landed here",

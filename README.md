@@ -166,7 +166,8 @@ By hand:
    - **From the shared folder** (studio-internal): *Actions > Show action list > New action > Load ReaScript*,
      and load every `StudioSync - *.lua` straight from `<shared folder>/_tools/studiosync`. **StudioSync - Update**
      registers any new scripts that arrive later. The trade-off: anyone who can write to the shared folder can
-     change everyone's scripts. Only share it with your studio.
+     change everyone's scripts. Only share it with your studio. A new version that arrives there asks before it takes
+     over a running session (it still runs when REAPER next starts), and Settings > Health keeps a yellow line saying so.
 3. Run **StudioSync - Settings**: choose the shared folder and enter your name.
 4. **Install ReaImGui** (*Extensions > ReaPack > Browse packages*): the panel, and with it the Live and
    Restore pages, needs it.
@@ -375,7 +376,11 @@ With Real time mode on:
 - **My time / Their time**: in your time you hear them as it arrives, a little late. *Their time* holds your own
   backing back by that much, so what they play lines up with it: for listening along, not for playing. SonoBus's window
   shows each person's delay (the number after the down arrow); with a guest, use their measured delay.
-- **Guest**: for someone who joins with only SonoBus (a singer at home, no REAPER, no copy of the project). They hear
+- **A guest for a day**: when their computer asks to join, press **For a day** beside **Let them in**. Every computer stops
+  syncing with theirs a day later by itself (a guest invitation's Tailscale access ends then too); their copy stays with them.
+- **The live audio's password** is the studio's own: worked out from a secret the owner's computer keeps in the studio's
+  settings, not from the studio's ID that invitations show. It changes when someone is taken out.
+- **SonoBus-only singer**: for someone who joins with only SonoBus (a singer at home, no REAPER, no copy of the project). They hear
   your whole mix, and what they sing is recorded on the Real time track whenever you record. **Measure their delay**
   plays them a bar of count-in and 8 clicks to clap along to, and times where the claps land (the whole round trip;
   the idea is from ReaConnect). Measure right before you record: the delay drifts as SonoBus adjusts its buffers

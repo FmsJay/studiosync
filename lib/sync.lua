@@ -888,6 +888,11 @@ function sync.post(cfg, song, room, ev, proj)
   reaper.RecursiveCreateDirectory(dir, 0)
   band.write_json(dir .. "/" .. ev.id .. ".json", ev)
   if proj then stamp(proj, ev) end
+  if ev.type == "start" or ev.type == "stop" then -- (a cue: Syncthing told to look at it now, not when its watcher gets round to it)
+    local id = band.info(cfg.root).id
+    local rel = (dir .. "/" .. ev.id .. ".json"):gsub("\\", "/"):sub(#cfg.root:gsub("\\", "/"):gsub("/+$", "") + 2)
+    if id then pcall(require("services").rescan, id, rel) end
+  end
   return ev.id
 end
 

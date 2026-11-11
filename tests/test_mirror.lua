@@ -521,3 +521,20 @@ do
   package.loaded.band = real
 end
 print("ok ancestry")
+
+-- the clock after a restart, with this computer's clock 20 minutes behind (0.58.52): a change made on top of one already seen comes after it
+do
+  local ext = {}
+  local real_reaper, real_together = reaper, package.loaded.together
+  reaper = setmetatable({ GetExtState = function(s, k) return ext[k] or "" end, SetExtState = function(s, k, v) ext[k] = v end },
+    { __index = function() return function() end end })
+  package.loaded.together = { now = function() return 1800000000 end } -- (20 minutes behind the change below)
+  local seen = { rev = 3, hlc = (1800000000 + 1200) * 1000, user = "Sam" }
+  mirror.hlc_seen(seen.hlc) -- (watch does this with the version it builds on)
+  local mine = { rev = 3, hlc = mirror.hlc_next(), user = "Bee" }
+  assert(mine.hlc > seen.hlc, "never behind what it builds on: " .. mine.hlc .. " / " .. seen.hlc)
+  assert(mirror.newer({ rev = 3, time = mirror.order_of(mine) }, { rev = 3, time = mirror.order_of(seen) }), "so it wins the tie, as it should")
+  assert(mirror.hlc_next() > mine.hlc, "and each next one is later still")
+  reaper, package.loaded.together = real_reaper, real_together
+end
+print("ok clock")

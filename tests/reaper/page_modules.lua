@@ -58,5 +58,6 @@ page("page_rooms", { "refresh", "squares", "actions", "invites" },
   function(m) check(type(m.view()) == "table" and m.view().room == b.room, "Rooms shows this tab's room") end)
 -- (not start_together: it would start the band's transport for real)
 page("page_play", { "section_together", "section_live" })
+draw("extras.ab_draw", function() require("extras").ab_draw(ctx, ImGui, cfg, b) end) -- (drawn only: playing needs a click)
 out[#out + 1] = string.format("page_modules: fails %d of %d", fails, #out)
 return table.concat(out, "\n")

@@ -41,7 +41,21 @@ function groups.may_remove(root, by, target)
   return r == "admin" and t == "member"
 end
 
-local function save(root, change)
+-- The studio's SonoBus secret (band.json `sonobus`): the live audio's password is worked out from it (lib/live.lua sonobus_group). Made by the
+-- owner's computer once (groups.tick), and made again when someone is taken out (lib/removal.lua), so what they knew stops working.
+function groups.sonobus_secret(root)
+  local j = json_of(root)
+  return type(j.sonobus) == "string" and j.sonobus ~= "" and j.sonobus or nil
+end
+local save
+function groups.new_sonobus_secret(root)
+  math.randomseed(os.time() + math.floor(reaper.time_precise() * 1000) % 100000)
+  local chars, t = "abcdefghjkmnpqrstuvwxyz23456789", {}
+  for i = 1, 24 do local k = math.random(#chars); t[i] = chars:sub(k, k) end
+  save(root, function(j) j.sonobus = table.concat(t) end)
+end
+
+save = function(root, change)
   local info, j = band.info(root), json_of(root)
   j.name, j.id, j.drive = info.name, info.id, info.drive
   change(j)
@@ -178,6 +192,11 @@ function groups.tick(now)
   end
   local me = reaper.GetExtState(band.SECTION, "user")
   for _, g in ipairs(band.bands()) do
+    -- (the owner's computer gives a studio from before 0.58.52 its SonoBus secret: only the owner, so two computers can't make two)
+    if me ~= "" and groups.role(g.root, me) == "owner" and not groups.sonobus_secret(g.root) and not groups.is_old(g.root) then
+      groups.new_sonobus_secret(g.root)
+      band.log(g.name .. "'s live audio has a password of its own now (everyone's SonoBus picks it up the next time Real time mode connects)")
+    end
     local key = "group closed " .. g.id
     if reaper.GetExtState(band.SECTION, key) == "" and not groups.is_old(g.root) then
       local e = band.read_json(g.root .. "/_band/closed.json")

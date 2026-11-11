@@ -596,6 +596,7 @@ local function tick_body() -- returns true to keep going
     return band.log("live sync stopped: this tab is now " .. (now_b and now_b.role == "solo" and "a Solo edit working copy" or "no longer this session"))
   end
   if reaper.GetExtState(band.SECTION, "live owner " .. key) ~= my_token then -- a newer Live sync took this tab over
+    reloaded = true -- (it carries on the session: this one ending isn't the session's end, so no kept "end of session" from here)
     return band.log("Live sync restarted for '" .. b.song .. "' (room " .. b.room .. "): nothing to do")
   end
   if reaper.GetExtState(band.SECTION, "stop " .. key) ~= "" then
@@ -792,7 +793,7 @@ local function updated()
   if reaper.time_precise() - disk_at < 5 then return false end
   disk_at = reaper.time_precise()
   local disk = (band.read(dir .. "/lib/band.lua") or ""):match('VERSION = "([^"]+)"')
-  local ready = disk and disk ~= band.VERSION and disk == seen_disk
+  local ready = disk and disk ~= band.VERSION and disk == seen_disk and band.update_ok(dir, disk) -- (from a shared folder, once you said yes: Autostart asks)
   seen_disk = disk
   return ready
 end

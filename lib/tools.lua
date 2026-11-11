@@ -95,13 +95,23 @@ function tools.toast_show(ctx, ImGui, line, place)
 end
 
 local let_at, let_device, asked_at, asking = {}, {}, -math.huge, {} -- (let_at, who was just let in: Syncthing's own list says they're asking for up to 20 s more, and the row stayed)
-local function let_in(d, me)
+-- An invitation onto the clipboard: Home's and the Studios page's say the same now (they said "Let them in shows here" and "on Home", and it
+-- shows at the top of the panel on any page. UX review, 0.58.52).
+tools.INVITE_TIP = "Copies a message to send them: one line for a Mac and one for Windows that installs everything, already paired with this computer " ..
+  "(and a join code if they already have StudioSync).\nWhen they've run it, their request appears at the top of this panel: press Let them in."
+function tools.invite(my_id, info, ctx, ImGui)
+  band.copy(require("services").invite_text(my_id, info), ctx, ImGui)
+  band.log("an invitation to " .. tostring(info.name) .. " is on your clipboard: paste it to your collaborator. When they've run it, their request appears at the top of this panel")
+end
+
+local function let_in(d, me, day)
   local services = require("services")
   local ok, why
   if d.folder then
     ok, why = services.share_folder(d.folder, d.id)
     if ok then
       require("removal").let_in(d.root, d.id) -- (taken out before, and back)
+      if day then require("removal").guest(d.root, d.id, d.name, me) end -- (and out again in a day, on every computer)
       do -- a kept version of what's open, from before they arrived
         local recall = require("recall")
         local base = { root = reaper.GetExtState(band.SECTION, "sync_root"), user = me }
@@ -117,7 +127,7 @@ local function let_in(d, me)
     end
   else
     ok, why = services.add_device(d.id, d.name)
-    if ok then let_device[d.id] = true end
+    if ok then let_device[d.id] = day and "day" or true end
   end
   if ok then let_at[d.id .. (d.folder or "")] = reaper.time_precise() end
   band.log(ok and (d.folder and ("let '" .. tostring(d.name) .. "' into " .. d.band .. ": the projects reach them now") or ("let '" .. tostring(d.name) .. "' connect: the studio they were invited to follows in a moment"))
@@ -130,13 +140,17 @@ function tools.join_requests(ctx, ImGui)
   local skip = band.json_decode(reaper.GetExtState(band.SECTION, "join skipped")) or {}
   for _, d in ipairs(asking) do
     if not skip[d.id] and reaper.time_precise() - (let_at[d.id .. (d.folder or "")] or -math.huge) > 40 and d.folder and let_device[d.id] then
+      local day = let_device[d.id] == "day" -- (for a day, if that's how the first press let them connect)
       let_device[d.id] = nil -- (the one press covers the studio they were invited to; another one later asks again)
-      let_in(d, me)
+      let_in(d, me, day)
     elseif not skip[d.id] and reaper.time_precise() - (let_at[d.id .. (d.folder or "")] or -math.huge) > 40 then
       -- (buttons first: the words pushed them off a narrow panel)
       ImGui.SetCursorPosX(ctx, math.max(ImGui.GetCursorPosX(ctx), 16)) -- (no project open, there is no margin here: Mac, 0.52.5)
       if ImGui.SmallButton(ctx, "Let " .. tostring(d.name) .. " in##" .. d.id .. (d.folder or "")) then let_in(d, me) end
       ImGui.SetItemTooltip(ctx, "Only if you know this computer: anyone who has your Syncthing ID can ask.")
+      ImGui.SameLine(ctx)
+      if ImGui.SmallButton(ctx, "For a day##" .. d.id .. (d.folder or "")) then let_in(d, me, true) end
+      ImGui.SetItemTooltip(ctx, "A guest: let in now, and every computer stops syncing with theirs a day from now. Their copy stays with them.")
       ImGui.SameLine(ctx)
       if ImGui.SmallButton(ctx, "Not my collaborator##" .. d.id) then
         skip[d.id] = true

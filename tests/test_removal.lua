@@ -18,3 +18,10 @@ assert(removal.frees({ "Sam", "Bee", "James" }, "Sam", "Bee", 10), "Bee is first
 assert(not removal.frees({ "Sam", "Bee", "James" }, "Sam", "James", 10), "James waits for Bee")
 assert(removal.frees({ "Sam", "Bee", "James" }, "Sam", "James", 3700), "after an hour, anyone")
 assert(removal.frees({ "Sam" }, "Sam", "James", 10), "nobody else listed: whoever looks")
+
+-- a guest let in for a day: their mark falls due a day later, not before (0.58.52)
+do
+  local m = { at = 1000 + removal.DAY - removal.GRACE }
+  assert(not removal.due(m, 1000 + removal.DAY - 120), "still a guest a little before the day is up")
+  assert(removal.due(m, 1000 + removal.DAY + 1), "out once the day is up")
+end

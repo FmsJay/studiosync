@@ -41,6 +41,14 @@ local function background(name, cmd, every)
   return last[name]
 end
 
+-- When REAPER quits: the background scripts and config files StudioSync left in the temp folder go (some hold Syncthing's API key or a
+-- Tailscale token: they stayed there for good. Review, 0.58.52). Each is made again when it's next needed.
+function services.tidy_temp()
+  for _, f in ipairs(band.files(TMP)) do
+    if f:match("^bandsync%-.+%.cmd$") or f:match("^bandsync%-.+%.sh$") or f:match("^bandsync%-.+%.cfg$") or f:match("^bandsync%-.+%.txt$") then os.remove(TMP .. "/" .. f) end
+  end
+end
+
 -- Whether a process named `exe` (e.g. "syncthing") is running. Answers from the last background check
 -- (at most ~15 s old); the very first time, it waits for one.
 -- `fresh`: ask now and wait (the background answer can be up to 15 s old: before starting something, that's too old)
@@ -210,9 +218,12 @@ function services.ask(path, secs)
   return run_now((cmd:gsub("%-m 3 ", "-m " .. (secs or 3) .. " ", 1)), secs or 3)
 end
 -- Have Syncthing scan a folder now (it reads a changed .stignore then: lib/songsync.lua). In the background.
-function services.rescan(folder)
-  local cmd = st_api("/rest/db/scan?folder=" .. folder, "POST")
-  if cmd then background("syncthing-rescan", cmd, 0) end
+-- sub: one path inside it (a start or stop cue: Syncthing otherwise noticed it a second later, by its watcher, and the Mac had it 3.3 s after
+-- it was written. Measured, 0.58.52)
+function services.rescan(folder, sub)
+  local q = sub and ("&sub=" .. sub:gsub("[^%w%-%._~/]", function(c) return string.format("%%%02X", c:byte()) end)) or ""
+  local cmd = st_api("/rest/db/scan?folder=" .. folder .. q, "POST")
+  if cmd then background(sub and "syncthing-rescan-cue" or "syncthing-rescan", cmd, 0) end
 end
 function services.syncthing_peers_now()
   local cmd, why = st_api("/rest/system/connections")

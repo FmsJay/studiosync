@@ -140,12 +140,9 @@ local function invite_button(env, g, id)
   local services = require("services")
   local my_id = services.my_device_id()
   ImGui.BeginDisabled(ctx, not my_id)
-  if ImGui.SmallButton(ctx, "Invite##" .. id) then
-    band.copy(services.invite_text(my_id, band.info(g.root)), ctx, ImGui)
-    band.log("an invitation to " .. g.name .. " is on your clipboard: paste it to your collaborator. When they've run it, 'Let them in' shows on Home")
-  end
+  if ImGui.SmallButton(ctx, "Invite a collaborator##" .. id) then require("tools").invite(my_id, band.info(g.root), ctx, ImGui) end
   ImGui.EndDisabled(ctx)
-  ImGui.SetItemTooltip(ctx, my_id and "Copies a message to send them: a join code if they have StudioSync, and a line for a Mac and one for Windows if they don't, which installs everything." or "Waiting for Syncthing (it has to be running).")
+  ImGui.SetItemTooltip(ctx, my_id and require("tools").INVITE_TIP or "Waiting for Syncthing (it has to be running).")
   if my_id and services.tailscale_token() ~= "" then -- (a token: Settings > Advanced)
     beside(ctx, ImGui, "Guest")
     if ImGui.SmallButton(ctx, "Guest##" .. id) then services.copy_guest_invite(my_id, band.info(g.root), ctx, ImGui) end
@@ -215,7 +212,7 @@ function pg.draw_groups(env)
     if #list > 0 then
       ImGui.SameLine(ctx, 0, 14)
       ImGui.AlignTextToFramePadding(ctx)
-      ImGui.TextDisabled(ctx, "A new studio is for different people, or a project of its own. For another song with the same people, share it in the one you have.")
+      ImGui.TextDisabled(ctx, "A new studio is for different people, or a project of its own. For another project with the same people, share it in the studio you have.")
     end
   end
   if #list == 0 then ImGui.TextDisabled(ctx, "You're not in a studio yet. Start one, or paste the join code someone sent you.") end
@@ -278,7 +275,7 @@ function pg.draw_groups(env)
   if not wide then
     ImGui.Spacing(ctx)
     if #list > 0 then
-      ImGui.TextDisabled(ctx, "A new studio is for different people, or a project of its own. For another song with the same people, share it in the one you have.")
+      ImGui.TextDisabled(ctx, "A new studio is for different people, or a project of its own. For another project with the same people, share it in the studio you have.")
     end
     new_ones()
   end

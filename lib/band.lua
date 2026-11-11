@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.58.51", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.58.52", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -377,6 +377,23 @@ function band.info(root)
 end
 -- The bands this computer is in (persistent ExtState "bands": their folders), the current one always among them:
 -- { { root, name, id, drive } }, by name.
+-- Is StudioSync running from inside a shared folder (the installer's -Scripts folder)? Then anyone in the studio can change what runs here.
+function band.from_shared(dir)
+  local d = (dir or ""):gsub("\\", "/"):lower()
+  for _, g in ipairs(band.bands()) do
+    local r = (g.root or ""):gsub("\\", "/"):lower():gsub("/+$", "")
+    if r ~= "" and d:sub(1, #r + 1) == r .. "/" then return true end
+  end
+  return false
+end
+-- May a running script switch to the version now on disk? Installed through ReaPack (or by hand), yes: you asked for it. Run from a shared
+-- folder, only once you've said yes to that version (Autostart asks): any computer in the studio can put new code there, and it ran on
+-- everyone within seconds (review, 0.58.52). (It still runs when REAPER next starts: Settings > Health says so, and ReaPack is the safer install.)
+function band.update_ok(dir, version)
+  if not band.from_shared(dir) then return true end
+  return reaper.GetExtState(band.SECTION, "update ok") == version
+end
+
 function band.bands()
   local roots, seen, out = {}, {}, {}
   for r in reaper.GetExtState(band.SECTION, "bands"):gmatch("[^|]+") do roots[#roots + 1] = r end

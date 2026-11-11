@@ -43,8 +43,12 @@ local function say_problem(words)
 end
 local st_at, st_up = -math.huge, true
 local BEHIND, loop_began = 8, reaper.time_precise()
+local held_until = -math.huge -- (after REAPER held every script, Live sync's beat is old too: it isn't stopped, it's catching up)
 local function loop()
   if reaper.time_precise() - at < 2 then return reaper.defer(loop) end -- every 2 s is plenty
+  -- (a gap here means a box held all of REAPER, this too: a Record Warning left two minutes, and every Live sync's beat was old. Restarted then,
+  -- each replaced one saved a kept "end of session" in the middle of a session. Mac, 0.58.45. So a look after a gap waits half a minute)
+  if reaper.time_precise() - at > 10 then held_until = reaper.time_precise() + 30 end
   at = reaper.time_precise()
   -- the hidden REAPER that renders prints (lib/bgrender.lua) opens a copy from bandsync-render: nothing to do there
   for i = 0, 64 do
@@ -60,6 +64,7 @@ local function loop()
     reaper.atexit(function()
       pcall(require("undo").auto_keys, dir)
       pcall(require("startup").on_quit)
+      pcall(require("services").tidy_temp)
     end)
   end
   pcall(require("startup").note)
@@ -68,7 +73,14 @@ local function loop()
   -- an update: the new code takes over in place (once the version on disk has held for two looks), as Live sync does;
   -- before 0.21.3 a running Autostart kept its old rules until REAPER restarted
   local disk = (band.read(dir .. "/lib/band.lua") or ""):match('VERSION = "([^"]+)"')
-  if disk and disk ~= band.VERSION and disk == seen_disk then
+  if disk and disk ~= band.VERSION and disk == seen_disk and not band.update_ok(dir, disk) and reaper.GetExtState(band.SECTION, "update asked") ~= disk then
+    reaper.SetExtState(band.SECTION, "update asked", disk, true) -- (once per version)
+    if reaper.MB("StudioSync " .. disk .. " has arrived in the shared folder (this computer runs StudioSync from there).\n\n" ..
+        "Anyone in the studio can put a new version there. Only say Yes if you expected an update from your studio.\n\nSwitch to it now?", "StudioSync", 4) == 6 then
+      reaper.SetExtState(band.SECTION, "update ok", disk, true)
+    else band.log("StudioSync " .. disk .. " in the shared folder wasn't switched to (you said no). It runs when REAPER next starts: ask your studio about it") end
+  end
+  if disk and disk ~= band.VERSION and disk == seen_disk and band.update_ok(dir, disk) then
     for _, f in ipairs(band.files(dir .. "/lib", ".lua")) do package.loaded[f:sub(1, -5)] = nil end
     return dofile(dir .. "/StudioSync - Autostart.lua")
   end
@@ -125,7 +137,7 @@ local function loop()
         or reaper.GetExtState(band.SECTION, "autosync " .. fn:lower()) == "1") and band.binding(proj) then -- (the old key: until Live sync writes the new)
       local beat = tonumber(reaper.GetExtState(band.SECTION, "live " .. key))
       -- (30 s, not 5: a dialog left open a few seconds pauses every script, and isn't a Live sync that stopped)
-      local alive = beat and reaper.time_precise() - beat < 30
+      local alive = beat and reaper.time_precise() - beat < 30 or reaper.time_precise() < held_until
       -- The tab in front first, three tries, then it says so once. Tabs behind it follow, one a look and none of them brought forward: flipping
       -- them to the front never stopped with 38 tabs open and REAPER couldn't be clicked (PC, 2026-10-30), and left alone, their bandmates saw
       -- this person as offline until they switched to the tab (Mac, 0.57.6). One try each, and at most BEHIND of them.
