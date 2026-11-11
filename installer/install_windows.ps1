@@ -338,6 +338,13 @@ if (-not $isHost) {
   Ok "paired with your collaborator"
 }
 
+# A guest's Tailscale sign-in, before REAPER (as the Mac installer does it): it needs nothing from REAPER, and a REAPER step that doesn't finish
+# stops the run before section 5, so the invitation's key went unused and the guest never reached anyone (Windows Sandbox run, 2026-11-10).
+if ($wantLive -and $TsKey -and (Test-Path "$env:ProgramFiles\Tailscale\tailscale.exe")) {
+  $ErrorActionPreference = "Continue"; & "$env:ProgramFiles\Tailscale\tailscale.exe" login "--authkey=$TsKey" --timeout=120s 2>$null | Out-Null; $code = $LASTEXITCODE; $ErrorActionPreference = "Stop"
+  if ($code -eq 0) { Ok "Tailscale joined the studio's network as a guest, for a day" } else { Warn "Tailscale couldn't join with the invitation's key (it works once, for a day): ask for a new invitation." }
+}
+
 # ---------- 4. StudioSync scripts, inside REAPER ----------
 $work = Join-Path $env:TEMP "studiosync_setup"
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
@@ -438,9 +445,7 @@ if ($wantLive) {
   # session (untagged ones sign out every 180 days). Needs the host's one-time tagOwners line (below).
   $tsSt = $null
   $tagged = $false
-  if ((Test-Path $ts) -and $TsKey) { # a guest: `login` adds the inviter's network beside any of their own (switch back from Tailscale's menu)
-    $ErrorActionPreference = "Continue"; & $ts login "--authkey=$TsKey" --timeout=120s 2>$null | Out-Null; $code = $LASTEXITCODE; $ErrorActionPreference = "Stop"
-    if ($code -eq 0) { Ok "Tailscale joined the studio's network as a guest, for a day" } else { Warn "Tailscale couldn't join with the invitation's key (it works once, for a day): ask for a new invitation." }
+  if ((Test-Path $ts) -and $TsKey) { # a guest: `login` adds the inviter's network beside any of their own (switch back from Tailscale's menu). Done before REAPER, above.
     $tagged = $true
   } elseif (Test-Path $ts) {
     try { $ErrorActionPreference = "Continue"; $tsSt = & $ts status --json 2>$null | ConvertFrom-Json } catch { } finally { $ErrorActionPreference = "Stop" }

@@ -96,7 +96,11 @@ end
 function live.relay_lost()
   if reaper.GetExtState(band.SECTION, "ninjam connect") == reaper.GetExtState(band.SECTION, "ninjam host") then return false end
   if require("services").relay_status() ~= "lost" then return false end
-  return live.disconnect()
+  local con = live.window()
+  if not con then return false end
+  -- (straight to the command, not live.disconnect: still connecting, the relay holding it for a server that never came, there's no Disconnect button yet)
+  reaper.JS_WindowMessage_Post(con, "WM_COMMAND", 40002, 0, 0, 0)
+  return true
 end
 
 -- What ReaNINJAM says about its connection, for the panel: "connected to <server>", "connecting", or nil (it isn't there).

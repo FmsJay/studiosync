@@ -746,7 +746,15 @@ function services.relay_for(server)
   local dir = relay_dir()
   reaper.RecursiveCreateDirectory(dir, 0)
   if band.read(dir .. "/njrelay.target") ~= server then band.write_atomic(dir .. "/njrelay.target", server) end
-  if not services.running("njrelay", true) then
+  local running = services.running("njrelay", true)
+  -- (an update's relay replaces the running one, but only between connections: stopping it under one is the alert this is for)
+  if running and services.relay_status() == "idle" and band.read(from) ~= band.read(dir .. "/njrelay") then
+    local sh = TMP .. "/bandsync-njrelay-stop.sh"
+    band.write_atomic(sh, "/usr/bin/pkill -x njrelay; sleep 1\n") -- (gone before the new one takes the port)
+    reaper.ExecProcess("/bin/sh '" .. sh .. "'", 5000)
+    running = false
+  end
+  if not running then
     pcall(band.copy_atomic, from, dir .. "/njrelay")
     local sh = TMP .. "/bandsync-njrelay.sh"
     band.write_atomic(sh, "chmod +x '" .. dir .. "/njrelay'; xattr -c '" .. dir .. "/njrelay'\n")

@@ -7,12 +7,14 @@
  * keepalive periods: netmsg.cpp) and writes "lost" to the status file. StudioSync sees that and presses Disconnect.
  *
  * usage: njrelay <listen port> <target file> <status file> [REAPER's pid]
+ * Status file: "connecting", "waiting" (no server yet, client held), "ok", "lost", "idle" (no client), "cantlisten".
  * The target file holds the server as "host:port" and is read at each new connection, so the server can move without
  * restarting this (which would drop ReaNINJAM's connection and bring up the very alert this is for). Listens on 127.0.0.1 only. One client at a time. Server-to-client traffic goes on whole messages only (1 byte type,
  * 4 bytes little-endian size, then the body), so a keepalive is never put into the middle of one. Status file: "connecting",
  * "ok", "lost", or "idle" (no client). Exits once REAPER (the pid given) is gone, or on SIGTERM.
  */
 #include <errno.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -51,7 +53,8 @@ static int send_all(int fd, const unsigned char *p, size_t n) {
   return 0;
 }
 
-static int dial(const char *host, const char *port) {
+/* Connect within `secs` (an offline Tailscale machine never answers a connect at all: it would hold this up for over a minute). -> fd, or -1 */
+static int dial(const char *host, const char *port, int secs) {
   struct addrinfo hints, *res, *a;
   memset(&hints, 0, sizeof hints);
   hints.ai_socktype = SOCK_STREAM;
@@ -60,7 +63,16 @@ static int dial(const char *host, const char *port) {
   for (a = res; a; a = a->ai_next) {
     fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
     if (fd < 0) continue;
-    if (connect(fd, a->ai_addr, a->ai_addrlen) == 0) break;
+    int fl = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+    int r = connect(fd, a->ai_addr, a->ai_addrlen);
+    if (r < 0 && errno == EINPROGRESS) {
+      struct pollfd p = { fd, POLLOUT, 0 };
+      int err = 0;
+      socklen_t el = sizeof err;
+      r = (poll(&p, 1, secs * 1000) == 1 && getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &el) == 0 && err == 0) ? 0 : -1;
+    }
+    if (r == 0) { fcntl(fd, F_SETFL, fl); break; }
     close(fd); fd = -1;
   }
   freeaddrinfo(res);
@@ -84,19 +96,35 @@ static int read_target(const char *path, char *host, size_t hn, char *port, size
   return 0;
 }
 
-/* One client, start to finish. */
+/* One client, start to finish. Before the server's first message (its challenge) ReaNINJAM may be sent nothing: anything else, or the
+ * connection closing, is a failed connect to it, with its "can't connect to host!" alert (Mac, 0.58.35). So until then a server that
+ * doesn't answer is tried again every 2 s, the client held silently (ReaNINJAM waits 135 s for a first message: netmsg.cpp with its
+ * starting keepalive of 45 s), and "waiting" said; after WAIT_FOR s it's "lost", for StudioSync to disconnect. Once signed in, a
+ * server gone is "lost" at once, with keepalives to hold ReaNINJAM until StudioSync disconnects. */
+#define WAIT_FOR 100
 static void serve(int cl, const char *target_path) {
   int one = 1;
   setsockopt(cl, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
   status("connecting");
   char host[256], port[16];
-  int up = read_target(target_path, host, sizeof host, port, sizeof port) == 0 ? dial(host, port) : -1;
-  if (up < 0) status("lost"); else status("ok");
+  int up = -1, started = 0; /* started: the server's first message has gone to the client */
+  time_t since = time(NULL), last_try = 0;
+  unsigned char pend[4096]; /* client bytes while there's no server yet (none expected before the challenge) */
+  size_t npend = 0;
   unsigned char *buf = malloc(1 << 16);
   size_t cap = 1 << 16, have = 0; /* server bytes not yet forwarded: always the start of a message */
   time_t last_keep = time(NULL);
   for (;;) {
     if (reaper_gone()) break;
+    if (up < 0 && !started && time(NULL) - last_try >= 2) {
+      last_try = time(NULL);
+      if (read_target(target_path, host, sizeof host, port, sizeof port) == 0) up = dial(host, port, 3);
+      if (up >= 0) {
+        status("ok");
+        if (npend && send_all(up, pend, npend) < 0) { close(up); up = -1; }
+        npend = 0;
+      } else status(time(NULL) - since < WAIT_FOR ? "waiting" : "lost");
+    }
     struct pollfd p[2] = { { cl, POLLIN, 0 }, { up, POLLIN, 0 } };
     int n = poll(p, up >= 0 ? 2 : 1, 1000);
     if (n < 0) { if (errno == EINTR) continue; break; }
@@ -104,12 +132,13 @@ static void serve(int cl, const char *target_path) {
       unsigned char tmp[1 << 16];
       ssize_t r = recv(cl, tmp, sizeof tmp, 0);
       if (r <= 0) break; /* ReaNINJAM disconnected (asked for, or gone): done with this client */
-      if (up >= 0 && send_all(up, tmp, (size_t)r) < 0) { close(up); up = -1; status("lost"); }
+      if (up >= 0) { if (send_all(up, tmp, (size_t)r) < 0) { close(up); up = -1; status("lost"); } }
+      else if (!started && npend + (size_t)r <= sizeof pend) { memcpy(pend + npend, tmp, (size_t)r); npend += (size_t)r; }
     }
     if (up >= 0 && (p[1].revents & (POLLIN | POLLHUP | POLLERR))) {
       if (have == cap) { cap *= 2; buf = realloc(buf, cap); }
       ssize_t r = recv(up, buf + have, cap - have, 0);
-      if (r <= 0) { close(up); up = -1; status("lost"); }
+      if (r <= 0) { close(up); up = -1; status(started ? "lost" : "waiting"); } /* (before the challenge: tried again, as above) */
       else {
         have += (size_t)r;
         size_t done = 0; /* forward every whole message, keep the rest */
@@ -122,12 +151,13 @@ static void serve(int cl, const char *target_path) {
           }
           if (send_all(cl, buf + done, 5 + len) < 0) goto out;
           done += 5 + len;
+          started = 1;
         }
         if (up < 0) have = 0;
         else { memmove(buf, buf + done, have - done); have -= done; }
       }
     }
-    if (up < 0 && time(NULL) - last_keep >= 2) { /* server gone: keep ReaNINJAM waiting quietly until it's told to disconnect */
+    if (up < 0 && started && time(NULL) - last_keep >= 2) { /* server gone after sign-in: keep ReaNINJAM waiting quietly until it's told to disconnect */
       unsigned char k[5] = { MSG_KEEPALIVE, 0, 0, 0, 0 };
       if (send_all(cl, k, 5) < 0) break;
       last_keep = time(NULL);

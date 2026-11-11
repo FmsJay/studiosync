@@ -97,6 +97,7 @@ end
 local connecting = {}
 local server_at, server_lost = {}, {}
 local held = {} -- server -> until when nothing connects to it: it's just been stopped on purpose (services.stop_ninjam)
+local restarted = {} -- tab -> { n, since }: "the NINJAM server answers now" restarts in the last 10 minutes
 local function auto_connect(tab)
   -- (a start is told by the time it was asked for: it may come from the panel's script, which has its own copy of this table. Mac, 0.58.13)
   local start = reaper.GetExtState(band.SECTION, "ninjam start " .. tab)
@@ -124,7 +125,14 @@ local function auto_connect(tab)
   if c.done and not c.up and reaper.time_precise() > (c.next_look or 0) then
     c.next_look = reaper.time_precise() + 10 -- (port_open needs two runs in a row: about 20 s)
     local host = reaper.GetExtState(band.SECTION, "ninjam host")
-    if host ~= "" and require("services").port_open(host) and live.connect(false) ~= "connected" then
+    -- (a Mac: at most 3 of these in 10 minutes. Under ReaNINJAM's alert each connect is dropped a few seconds on, and this pressed Connect every 6 s
+    -- for as long as the alert stayed up: 0.58.35)
+    local r = restarted[tab] or { n = 0, since = reaper.time_precise() }
+    if reaper.time_precise() - r.since > 600 then r.n, r.since = 0, reaper.time_precise() end
+    restarted[tab] = r
+    local capped = not reaper.GetOS():find("^Win") and r.n >= 3
+    if not capped and host ~= "" and require("services").port_open(host) and live.connect(false) ~= "connected" then
+      r.n = r.n + 1
       connecting[tab] = { tries = 0, at = -math.huge, start = c.start }
       band.log("the NINJAM server answers now: connecting")
       return
