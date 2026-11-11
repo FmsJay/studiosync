@@ -27,6 +27,10 @@ end
 -- ReaNINJAM's window. (On a Mac a closed one stays listed, hidden, for a minute or more, saying what it last said: with the real one hidden too, nothing tells
 -- them apart, and a fresh start read "connected", then "lost", and waited to try again: Mac, 0.58.10. So the ones closed are noted, by live.closing.)
 local function closed_ones() return reaper.GetExtState(band.SECTION, "ninjam closed") end
+-- (but ReaNINJAM keeps one main window per REAPER process: added again after a Leave, it took the window it had, still on the list as closed, and
+-- StudioSync found no window to press Connect in, for good: Mac, 0.58.38. So an add after the last close means every window listed may be the live one)
+local function stamp(key) return tonumber(reaper.GetExtState(band.SECTION, key)) or -math.huge end
+function live.added() reaper.SetExtState(band.SECTION, "ninjam added at", tostring(reaper.time_precise()), false) end
 function live.window()
   if not reaper.JS_Window_ListFind then return reaper.JS_Window_Find and reaper.JS_Window_Find(live.FX, true) end
   local _, list = reaper.JS_Window_ListFind(live.FX, true)
@@ -35,6 +39,10 @@ function live.window()
     if ("," .. closed .. ","):find("," .. addr .. ",", 1, true) then still[#still + 1] = addr
     elseif not found then found = reaper.JS_Window_HandleFromAddress(tonumber(addr)) end
   end
+  if not found and still[1] and stamp("ninjam added at") > stamp("ninjam closed at") then -- (the window it kept)
+    reaper.SetExtState(band.SECTION, "ninjam closed", "", false)
+    return reaper.JS_Window_HandleFromAddress(tonumber(still[1]))
+  end
   if closed ~= "" then reaper.SetExtState(band.SECTION, "ninjam closed", table.concat(still, ","), false) end
   return found
 end
@@ -42,6 +50,7 @@ function live.closing()
   if reaper.GetOS():find("^Win") or not reaper.JS_Window_ListFind then return end
   local _, list = reaper.JS_Window_ListFind(live.FX, true)
   reaper.SetExtState(band.SECTION, "ninjam closed", list or "", false)
+  reaper.SetExtState(band.SECTION, "ninjam closed at", tostring(reaper.time_precise()), false)
 end
 
 -- What ReaNINJAM's local channel is sending right now, read off its window: "session", "normal", "voice", or
@@ -125,6 +134,7 @@ local function press_host_box()
   reaper.JS_WindowMessage_Send(box, "WM_COMMAND", 1, 0, 0, 0) -- (a posted one never reaches a box on a Mac: it sat there for good, 0.57.7)
   return true
 end
+local opened_at = -math.huge -- (when this last opened the host box)
 function live.connect(open)
   if not reaper.JS_WindowMessage_Post then return nil end
   if press_host_box() then return "pressing" end
@@ -132,7 +142,11 @@ function live.connect(open)
   local con = live.window()
   if not con then return nil end
   if reaper.JS_Window_FindChild(con, "Disconnect", true) then return "connected" end
+  -- (one box at a time: one opened under an alert, or on another Space, doesn't read as visible, and each press opened another. Three were stacked on a
+  -- Mac, the last taking every click: 0.58.35)
+  if open and not reaper.GetOS():find("^Win") and reaper.time_precise() - opened_at < 30 then return "opening" end -- (Windows sees its box: it retries 5 s apart)
   if open and reaper.JS_Window_FindChild(con, "Connect...", true) then
+    opened_at = reaper.time_precise()
     reaper.JS_WindowMessage_Post(con, "WM_COMMAND", 1072, 0, 0, 0)
     -- (its box is pressed as soon as it's up, not at the next look a moment later: seen for a second otherwise, with the window itself out of sight. Mac, 0.58.10)
     local frames = 0
@@ -271,6 +285,7 @@ function live.fx(proj, add, fx)
   end
   local i = reaper.TrackFX_AddByName(master, fx, false, -1)
   if i < 0 then return nil end
+  if fx == live.FX then live.added() end
   return master, i
 end
 

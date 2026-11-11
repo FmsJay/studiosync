@@ -84,6 +84,7 @@ local function ninjam_on(proj, cfg, b, send)
     end
     i = reaper.TrackFX_AddByName(rt, live.FX, false, -1)
     if i < 0 then return nil, "ReaNINJAM won't load in this REAPER: re-scan its plug-ins (Preferences > Plug-ins > VST), or use the SonoBus route." end
+    live.added()
     tr = rt
   end
   reaper.TrackFX_Show(tr, i, 3)
