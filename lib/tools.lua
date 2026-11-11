@@ -201,13 +201,22 @@ function tools.removed_bar(ctx, ImGui)
   ImGui.PopStyleColor(ctx)
 end
 
-function tools.put_back_bar(ctx, ImGui, song, use_mine, may)
+function tools.put_back_bar(ctx, ImGui, song, use_mine, may, claim)
   local pb = band.json_decode(reaper.GetExtState(band.SECTION, "put back"))
   if not (pb and pb.text) then return end
   if pb.song and song and pb.song ~= song then return end -- (another song's, in another tab: laptop, 0.42.4)
   if pb.at and os.time() - pb.at > 600 then return end -- (old news: it's still in Setup > Console. Mac, 0.42.4)
   if ImGui.SmallButton(ctx, "OK##putback") then reaper.DeleteExtState(band.SECTION, "put back", false) end -- (first: a panel docked short showed the text, and no way to dismiss it)
-  ImGui.SetItemTooltip(ctx, "Hide this. Every undone edit is also in Settings > Console.")
+  ImGui.SetItemTooltip(ctx, "Hide this. Every edit that wasn't sent is also in Settings > Console.")
+  if claim and type(pb.claim) == "string" then -- (the way out, right here: it was on another card. UX review, 0.58.47)
+    ImGui.SameLine(ctx)
+    if ImGui.SmallButton(ctx, "Claim " .. pb.claim .. "##putback") then
+      claim(pb.claim)
+      reaper.DeleteExtState(band.SECTION, "put back", false)
+      band.log(pb.claim .. " is yours now: edit it again and it goes to everyone")
+    end
+    ImGui.SetItemTooltip(ctx, "Makes " .. pb.claim .. " yours: only you can change it, whoever's driving. Then make your edit again.")
+  end
   local mine = type(pb.mine) == "table" and pb.mine[1] and pb.mine
   if mine and use_mine then -- (a clash yours lost: straight back from here, not by way of the Restore page: James)
     ImGui.SameLine(ctx)
@@ -222,7 +231,7 @@ function tools.put_back_bar(ctx, ImGui, song, use_mine, may)
     ImGui.SetItemTooltip(ctx, yours and "Puts yours back, for everyone, as a new change. Theirs stays on the Restore page."
       or "It's theirs to change: they've claimed it, or it's the driver's. Ask them, or use the suggestion they'll see if you change it again.")
   end
-  local said = mine and tostring(pb.text) or ("Undone: " .. tostring(pb.text) .. ((pb.n or 1) > 1 and string.format("  (%d edits undone)", pb.n) or ""))
+  local said = mine and tostring(pb.text) or (tostring(pb.text) .. ((pb.n or 1) > 1 and string.format("  (%d edits not sent)", pb.n) or ""))
   -- (beside the buttons when it fits, as in a short docker that's all the room there is. Wrapped beside them it ran under its own OK: Mac, 0.57.6)
   ImGui.SameLine(ctx)
   if ImGui.CalcTextSize(ctx, said) + 16 > ImGui.GetContentRegionAvail(ctx) then ImGui.NewLine(ctx) end

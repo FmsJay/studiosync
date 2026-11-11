@@ -46,7 +46,7 @@ and macOS 26 (2026-10-26); the times quoted are from those runs.
 ## 0. Interview (one message)
 
 Ask: their name as the band should see it; whether they are the **host** (first person in the band,
-runs the always-on machine) or **joining**; if joining, nothing more when they used a bandmate's invitation (Home > Invite a bandmate: its line already holds the ID); otherwise a bandmate's **Syncthing device ID** (8 studios of 7 letters and digits, like ABCDEFG-HIJKLMN-...-1234567, 63 characters: in their StudioSync panel's invitation, or in Syncthing: Actions > Show ID); whether they mind REAPER's **plug-in scan** (see step 2). Don't ask about SonoBus, Tailscale or Google Drive: they're core, and installed without asking (James). Each waits for its own sign-in.
+runs the always-on machine) or **joining**; if joining, nothing more when they used a bandmate's invitation (Home > Invite a collaborator: its line already holds the ID); otherwise a bandmate's **Syncthing device ID** (8 studios of 7 letters and digits, like ABCDEFG-HIJKLMN-...-1234567, 63 characters: in their StudioSync panel's invitation, or in Syncthing: Actions > Show ID); whether they mind REAPER's **plug-in scan** (see step 2). Don't ask about SonoBus, Tailscale or Google Drive: they're core, and installed without asking (James). Each waits for its own sign-in.
 
 ## 1. Syncthing (the shared folder)
 

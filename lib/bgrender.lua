@@ -451,9 +451,11 @@ function bg.claim(key, name, out)
     -- (whatever the render called it: a stem render may add the track's name, a leftover a "-2")
     local ext = f:match("%.(%a+)$")
     local to = out .. "/" .. name .. "." .. ext
-    os.remove(to)
-    -- (one REAPER still holds can't be replaced: it's the same print, made from the same, so that one stands)
-    if (os.rename(j.dir .. "/" .. f, to) or reaper.file_exists(to)) and ext == "flac" then flac = to end
+    -- (put in place without deleting the old one first: a rename across drives fails, and the print was gone for everyone. A copy replaces it
+    -- safely, band.copy_atomic. One REAPER still holds can't be replaced: it's the same print, made from the same, so that one stands. Review, 0.58.47)
+    local src = j.dir .. "/" .. f
+    local moved = os.rename(src, to) or (pcall(require("band").copy_atomic, src, to) and os.remove(src) ~= false)
+    if (moved or reaper.file_exists(to)) and ext == "flac" then flac = to end
   end
   drop(key)
   if flac then done = done + 1 end

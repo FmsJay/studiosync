@@ -291,7 +291,8 @@ function pg.draw_groups(env)
       ImGui.PushID(ctx, "old" .. i)
       local there = reaper.EnumerateFiles(o.root, 0) or reaper.EnumerateSubdirectories(o.root, 0)
       local can = base ~= o.root -- (the folder this computer still counts as its current one stays, until there's another)
-      ImGui.BeginDisabled(ctx, not there or not can)
+      local letting_go = groups.still_leaving((band.info(o.root) or {}).id) -- (until Syncthing has let it go: a delete before that reached everyone)
+      ImGui.BeginDisabled(ctx, not there or not can or letting_go)
       if ImGui.SmallButton(ctx, "Delete my copy") and reaper.MB("Delete this computer's copy of " .. tostring(o.name) .. "?\n\n" .. tostring(o.root) ..
           "\n\nIt goes to the " .. (reaper.GetOS():find("^Win") and "Recycle Bin" or "Trash") .. ". Nobody else's copy is touched.", "StudioSync", 4) == 6 then
         local left = require("localcopy").delete_group(o.root)
@@ -371,6 +372,13 @@ local function project_menu(env, root, r, names)
   local ss = require("songsync")
   local cfg = { root = root, user = env.cfg().user }
   if ImGui.BeginPopupContextItem(ctx) then
+    if ImGui.BeginMenu(ctx, "Stage") then -- (where it is, for everyone: lib/extras.lua)
+      local extras = require("extras")
+      local now = extras.stage(root, r.song)
+      for _, st in ipairs(extras.STAGES) do if ImGui.MenuItem(ctx, st, nil, now == st) then extras.set_stage(root, r.song, st, cfg.user) end end
+      if now and ImGui.MenuItem(ctx, "(none)") then extras.set_stage(root, r.song, nil, cfg.user) end
+      ImGui.EndMenu(ctx)
+    end
     if #r.rooms > 1 and ImGui.BeginMenu(ctx, "Open a room") then
       for _, rm in ipairs(r.rooms) do if ImGui.MenuItem(ctx, rm) then open_project(env, root, r.song, rm) end end
       ImGui.EndMenu(ctx)
@@ -457,7 +465,7 @@ function pg.draw_projects(env)
     local ch, v = ImGui.Checkbox(ctx, "Keep every project on this computer", all)
     ImGui.PopStyleVar(ctx)
     if ch then reaper.SetExtState(band.SECTION, "projects keep all", v and "1" or "", true); ss.apply(cfg) end
-    ImGui.SetItemTooltip(ctx, "On: every project of this studio comes here in full (the computer that stays on, so new collaborators always have a source). A project you delete here stays away.\n" ..
+    ImGui.SetItemTooltip(ctx, "Downloads every project in full, not just the ones you open: good for a computer that stays on, so new collaborators always have a source. A project you delete here stays away.\n" ..
       "Off: every project's listing comes, and a project in full once you open it here.")
   end
   if wide then ImGui.SameLine(ctx, 0, 14); ImGui.SetCursorPosY(ctx, ImGui.GetCursorPosY(ctx) + 2); keep_all() end
@@ -511,6 +519,8 @@ function pg.draw_projects(env)
     project_menu(env, root, r, names)
     local dl = ImGui.GetWindowDrawList(ctx)
     ImGui.DrawList_AddText(dl, x + 6, y + 1, here and theme.TEXT or theme.MUTED, r.song)
+    local stage = require("extras").stage(root, r.song)
+    if stage then ImGui.DrawList_AddText(dl, x + 18 + ImGui.CalcTextSize(ctx, r.song), y + 1, stage == "Done" and theme.GREEN or theme.ACCENT, stage) end
     local right = (r.last ~= "" and chooser.ago(r.last, os.date("!*t")) or "") .. (here and "" or "  ·  not on this computer")
     local w = ImGui.CalcTextSize(ctx, right)
     ImGui.DrawList_AddText(dl, x + avail - w - 8, y + 1, theme.MUTED, right)

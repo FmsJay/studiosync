@@ -86,11 +86,22 @@ end
 -- Receiver, before the chain loads: each missing file goes back where the plug-in looks for it, if that folder can
 -- exist here; the rest are said once (where the copy is, so the plug-in can be pointed at it).
 fxfiles.said = {}
+-- What a bandmate's event may ask for: a copy from plugin files/ itself (no other folder, no ".."), back to a path of a
+-- kind a plug-in loads (EXT): never a script or a program, wherever it would go (review, 0.58.47: a startup folder took
+-- any file before). Pure.
+function fxfiles.safe(f)
+  if type(f) ~= "table" or type(f.path) ~= "string" or type(f.copy) ~= "string" then return false end
+  if not f.copy:match("^plugin files/[^/\\]+$") or f.copy:find("..", 1, true) then return false end
+  local p = f.path:gsub("\\", "/")
+  if p:find("/%.%./") or p:find("/%.%.$") or p:find("%z") then return false end
+  local ext = p:match("%.([%w]+)$")
+  return ext ~= nil and fxfiles.EXT[ext:lower()] == true
+end
 function fxfiles.fetch(list, media_dir, where)
   if type(list) ~= "table" then return end
   local band = require("band")
   for _, f in ipairs(list) do
-    if type(f) == "table" and type(f.path) == "string" and type(f.copy) == "string" and not reaper.file_exists(f.path) then
+    if fxfiles.safe(f) and not reaper.file_exists(f.path) then
       local src = media_dir .. "/" .. f.copy
       local dir = f.path:gsub("\\", "/"):match("^(.*)/[^/]+$")
       local drive = f.path:match("^(%a:)[\\/]")

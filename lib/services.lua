@@ -149,6 +149,17 @@ function services.tune_band_folder(folder)
       set[#set + 1] = key .. " " .. got .. " -> " .. want
     end
   end
+  -- (and old versions kept, 30 days, staggered: without them a deletion anywhere, by a bug or a slip, reached every copy with nothing to
+  -- go back to. Only where none is set: someone's own choice stays. Review, 0.58.47)
+  local vtype = (reaper.ExecProcess(q(st) .. " cli config folders " .. folder .. " versioning type get", 8000) or ""):match("^0\n(.-)%s*$")
+  if vtype == "" then
+    local ok = (reaper.ExecProcess(q(st) .. " cli config folders " .. folder .. " versioning type set staggered", 8000) or ""):match("^0\n")
+    if ok then
+      reaper.ExecProcess(q(st) .. " cli config folders " .. folder .. " versioning params set maxAge 2592000", 8000)
+      reaper.ExecProcess(q(st) .. " cli config folders " .. folder .. " versioning params set cleanInterval 3600", 8000)
+      set[#set + 1] = "versioning none -> staggered (30 days)"
+    end
+  end
   table.sort(set)
   return set
 end
@@ -458,8 +469,16 @@ function services.unshare(folder, id)
   local st = services.syncthing_path()
   if not st then return nil, "Syncthing wasn't found" end
   if not services.is_device_id(id) then return nil, "not a device ID: " .. tostring(id) end
-  local function has(f) return (reaper.ExecProcess(q(st) .. " cli config folders " .. f .. " devices list", 8000) or ""):find(id, 1, true) ~= nil end
-  if has(folder) then
+  -- (true, false, or nil when Syncthing didn't answer: taken as "not shared", a removal on a computer just started, before Syncthing was,
+  -- was noted as done for good and never happened. Review, 0.58.47)
+  local function has(f)
+    local r = reaper.ExecProcess(q(st) .. " cli config folders " .. f .. " devices list", 8000) or ""
+    if not r:match("^0\n") then return nil end
+    return r:find(id, 1, true) ~= nil
+  end
+  local shared = has(folder)
+  if shared == nil then return nil, "Syncthing didn't answer (it may not be running yet)" end
+  if shared then
     local r = reaper.ExecProcess(q(st) .. " cli config folders " .. folder .. " devices " .. id .. " delete", 15000) or ""
     if not r:match("^0\n") then return nil, "Syncthing didn't stop sharing: " .. r:gsub("^%d+\n", "") end
   end
@@ -512,11 +531,9 @@ local ts_at, ts_up, ts_json = -math.huge, false, ""
 function services.tailscale_up()
   local exe = tailscale_exe()
   if not exe then return false end
-  if reaper.time_precise() - ts_at > 20 then
-    ts_at = reaper.time_precise()
-    ts_json = reaper.ExecProcess(q(exe) .. " status --json --peers=false", 5000) or ""
-    ts_up = services.tailscale_running_in(ts_json)
-  end
+  -- (in the background, every 20 s: waited for, a hung Tailscale held REAPER up to 5 s each time. Review, 0.58.47)
+  local out = background("ts-status", q(exe) .. " status --json --peers=false", 20)
+  if out and out ~= ts_json then ts_json, ts_up = out, services.tailscale_running_in(out) end
   return ts_up
 end
 -- Will this computer stay signed in? -> true (it's tagged, or its key expiry's off), or the date it signs out on. From `tailscale status --json --peers=false`. Pure.
@@ -604,7 +621,16 @@ end
 -- A guest's key from a pasted invitation (services.parse_join: only key characters): what the installers do with it. In the background: it can take a minute.
 function services.tailscale_join(key)
   local exe = tailscale_exe()
-  if exe then background("ts-guest", string.format('"%s" login --authkey=%s --timeout=120s', exe, key), 0) end
+  if exe then
+    background("ts-guest", string.format('"%s" login --authkey=%s --timeout=120s', exe, key), 0)
+    -- (the script it ran held the key in the temp folder for good: gone once sign-in has had its two minutes. Review, 0.58.47)
+    local t0 = reaper.time_precise()
+    local function tidy()
+      if reaper.time_precise() - t0 < 150 then return reaper.defer(tidy) end
+      os.remove(TMP .. "/bandsync-ts-guest." .. (WIN and "cmd" or "sh"))
+    end
+    reaper.defer(tidy)
+  end
   return exe ~= nil
 end
 
@@ -739,7 +765,17 @@ end
 -- shortcut: if something else holds the port, the relay can't listen and ReaNINJAM can't connect until the next start goes direct (status "cantlisten").
 services.RELAY_PORT = 2098
 local function relay_dir() return band.home():gsub("\\", "/") .. "/ninjam" end
-function services.relay_status() return (band.read(relay_dir() .. "/njrelay.txt") or ""):match("^(%a+)") end
+-- (a relay that beats, 0.58.47 on, rewrites it every 3 s while a client is on: older than 15 s, it died with that word up, and nothing
+-- reconnected. "cantlisten" is tried again after a minute: once, a busy port turned the relay off for good. Review, 0.58.47)
+function services.relay_status()
+  local line = band.read(relay_dir() .. "/njrelay.txt") or ""
+  local word, t = line:match("^(%a+) (%d+)")
+  if not word then return line:match("^(%a+)") end
+  local age = os.time() - tonumber(t)
+  if word == "cantlisten" then return age < 60 and word or nil end
+  if line:find(" hb", 1, true) and age > 15 then return nil end
+  return word
+end
 -- With nobody connected, the relay checks the server every 5 s itself: whether it answered, as of the last 15 s.
 function services.relay_up()
   local word, up, t = (band.read(relay_dir() .. "/njrelay.txt") or ""):match("^(%a+) (%a+) (%d+)")

@@ -44,8 +44,7 @@ local SLICES = {
   { "Undo", "Undo your own last change, for everyone. It asks first, and says if a collaborator changed the same thing since.",
     function() ask("undo") end },
   { "Redo", "Bring back the change you undid last, for everyone. It asks first.", function() ask("redo") end },
-  { "Restore…", "Opens Restore: every change with its own Undo, and Back to here... to put the selected tracks or the " ..
-    "whole project back to a moment.", function() ask("history") end },
+  { "Restore…", "Opens Restore: undo any one change, or put the selected tracks or the whole project back to a moment.", function() ask("history") end },
   driving and { "You\ndrive", "You're driving: your deletes, moves and lane choices already go to everyone." } or
     { "Take\ncontrol", "Take control: from now on your deletes, moves and lane choices go to everyone. It asks first.",
       function() dofile(dir .. "/StudioSync - Take control.lua") end },

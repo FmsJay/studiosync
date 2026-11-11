@@ -197,4 +197,10 @@ function groups.tick(now)
   end
 end
 
+-- Is Syncthing still to let go of this folder (it was left or closed a moment ago)? Deleting the copy before that reached everyone. Review, 0.58.47.
+function groups.still_leaving(id)
+  local leaving = band.json_decode(reaper.GetExtState(band.SECTION, "leaving"))
+  for _, l in ipairs(type(leaving) == "table" and leaving or {}) do if l.id == id then return true end end
+  return false
+end
 return groups

@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -61,14 +62,33 @@ static int reaper_gone(void) {
   return missing >= 2;
 }
 
+/* The status file: a word and the time, with "hb" for StudioSync to know it's rewritten every few seconds while a client is on (beat), so a
+ * relay that died mid-session doesn't leave "ok" up for good (review, 0.58.47). */
+static char last_word[32] = "";
+static time_t last_write = 0;
 static void status(const char *s) {
   char tmp[4096];
   snprintf(tmp, sizeof tmp, "%s.tmp", status_path);
+  snprintf(last_word, sizeof last_word, "%s", s);
+  last_write = time(NULL);
   FILE *f = fopen(tmp, "w");
   if (!f) return;
-  fprintf(f, "%s %ld\n", s, (long)time(NULL));
+  fprintf(f, "%s %ld hb\n", s, (long)time(NULL));
   fclose(f);
   rename(tmp, status_path);
+}
+static void beat(void) { if (last_word[0] && time(NULL) - last_write >= 3) status(last_word); }
+/* A send that can't finish in 5 s fails: a stalled server held the relay inside send() for good, past REAPER quitting (review, 0.58.47). */
+static void send_timeout(int fd) { struct timeval tv = { 5, 0 }; setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv); }
+/* Grow a buffer, or say it couldn't. -> 0, or -1 */
+static int grow(unsigned char **buf, size_t *cap, size_t want) {
+  size_t c = *cap;
+  while (c < want) c *= 2;
+  if (c == *cap) return 0;
+  unsigned char *b = realloc(*buf, c);
+  if (!b) return -1;
+  *buf = b; *cap = c;
+  return 0;
 }
 
 static int send_all(int fd, const unsigned char *p, size_t n) {
@@ -133,6 +153,7 @@ static int read_target(const char *path, char *host, size_t hn, char *port, size
 static void serve(int cl, const char *target_path) {
   int one = 1;
   setsockopt(cl, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+  send_timeout(cl);
   status("connecting");
   char host[256], port[16];
   int up = -1, started = 0; /* started: the server's first message has gone to the client */
@@ -141,15 +162,18 @@ static void serve(int cl, const char *target_path) {
   size_t npend = 0;
   unsigned char *buf = malloc(1 << 16);
   size_t cap = 1 << 16, have = 0; /* server bytes not yet forwarded: always the start of a message */
+  if (!buf) { close(cl); status("idle"); return; }
   time_t last_keep = time(NULL);
   for (;;) {
     if (reaper_gone()) break;
+    beat();
     if (up < 0 && !started && time(NULL) - last_try >= 1) { /* (every second: WAIT_FOR is short) */
       last_try = time(NULL);
       /* (1 s: a computer that's gone from Tailscale never refuses, it just doesn't answer, and 3 s dials put "lost" up to 9 s in, against
        * ReaNINJAM's 10. Pointed out by the Mac's test, 0.58.40) */
       if (read_target(target_path, host, sizeof host, port, sizeof port) == 0) up = dial(host, port, 1);
       if (up >= 0) {
+        send_timeout(up);
         status("ok");
         if (npend && send_all(up, pend, npend) < 0) { close(up); up = -1; }
         npend = 0;
@@ -166,9 +190,9 @@ static void serve(int cl, const char *target_path) {
       else if (!started && npend + (size_t)r <= sizeof pend) { memcpy(pend + npend, tmp, (size_t)r); npend += (size_t)r; }
     }
     if (up >= 0 && (p[1].revents & (POLLIN | POLLHUP | POLLERR))) {
-      if (have == cap) { cap *= 2; buf = realloc(buf, cap); }
+      if (have == cap && grow(&buf, &cap, cap * 2) < 0) goto out;
       ssize_t r = recv(up, buf + have, cap - have, 0);
-      if (r <= 0) { close(up); up = -1; status(started ? "lost" : "waiting"); } /* (before the challenge: tried again, as above) */
+      if (r <= 0) { close(up); up = -1; have = 0; status(started ? "lost" : "waiting"); } /* (before the challenge: tried again, as above; and its part-message gone with it, or the next server's stream started with it) */
       else {
         have += (size_t)r;
         size_t done = 0; /* forward every whole message, keep the rest */
@@ -176,7 +200,7 @@ static void serve(int cl, const char *target_path) {
           size_t len = buf[done + 1] | buf[done + 2] << 8 | buf[done + 3] << 16 | (size_t)buf[done + 4] << 24;
           if (len > MAX_MSG) { close(up); up = -1; status("lost"); break; }
           if (have - done < 5 + len) {
-            while (cap < 5 + len) { cap *= 2; buf = realloc(buf, cap); }
+            if (grow(&buf, &cap, 5 + len) < 0) goto out;
             break;
           }
           if (send_all(cl, buf + done, 5 + len) < 0) goto out;

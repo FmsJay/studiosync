@@ -353,7 +353,10 @@ local function poll()
   for _, room in ipairs(rooms) do
     local room_can = room == b.room and can or sync.authority(cfg, b.song, room, s)
     local n = 0
-    if not editing() and not redo_pending() then n = sync.receive(proj, cfg, b.song, room, room_can) end
+    -- (and not before the look has seen your last change: that look is what marks it as yours and unsent, mirror.unsent. On a big song
+    -- a look waits a while, and a bandmate's change to the same item landed over yours with no trace. Review, 0.58.47; 30 s at most)
+    local seen_mine = reaper.GetProjectStateChangeCount(proj) == mirror_cc or now - mirror_at > 30
+    if seen_mine and not editing() and not redo_pending() then n = sync.receive(proj, cfg, b.song, room, room_can) end
     -- a lot came in and it's over: saved, so the next open starts from here and doesn't take it all in again with REAPER held up
     sync.since_save = (sync.since_save or 0) + n
     if n == 0 and sync.since_save >= 100 and reaper.GetPlayStateEx(proj) == 0 then sync.need_save, sync.since_save = true, 0 end
@@ -554,7 +557,7 @@ local function quick_transport()
     i = i + 1
     if not seen_ev[f] then
       seen_ev[f] = true
-      if f:sub(-5) == ".json" and not f:lower():find("^" .. (cfg.user:gsub(" ", "_"):lower():gsub("%p", "%%%0")) .. "%-") then
+      if f:sub(-5) == ".json" and not sync.is_mine(f, cfg.user) then
         local ev = band.read_json(dir .. "/" .. f)
         if ev and (ev.type == "start" or ev.type == "stop") and not fired[ev.id] and together.now() - (ev.at or 0) < 30 then found = ev end
       end

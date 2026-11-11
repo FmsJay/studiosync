@@ -25,7 +25,7 @@ local sync = {
 -- mouse, where the edit was just made: otherwise it just slid back with no word (laptop, 2026-10-30).
 -- The panel also keeps the newest one up in a bar of its own until it's dismissed (ExtState "put back"), and the
 -- small button says so: with the panel shrunk to that button, it said nothing at all (review, 2026-10-31).
-function sync.put_back(text, mine) -- mine: { oid, ev, name } when it was a clash your version lost, for Use mine
+function sync.put_back(text, mine, claim) -- mine: { oid, ev, name } when it was a clash your version lost, for Use mine; claim: a track the bar can claim
   band.log(text)
   -- (the count is this song's, lately: another song's flood carried over as "1352 edits undone": laptop, 0.42.5)
   local old = band.json_decode(reaper.GetExtState(band.SECTION, "put back")) or {}
@@ -38,7 +38,7 @@ function sync.put_back(text, mine) -- mine: { oid, ev, name } when it was a clas
     for _, m in ipairs(list) do if m.oid == mine.oid then seen = true end end -- (the first of yours that lost is the one you made)
     if not seen and #list < 200 then list[#list + 1] = mine end
   end
-  reaper.SetExtState(band.SECTION, "put back", band.json_encode({ text = text, n = n, at = os.time(), song = sync.current_song, mine = list }), false)
+  reaper.SetExtState(band.SECTION, "put back", band.json_encode({ text = text, n = n, at = os.time(), song = sync.current_song, mine = list, claim = claim }), false)
   local beat = tonumber(reaper.GetExtState(band.SECTION, "panel alive"))
   local shown = beat and reaper.time_precise() - beat < 5 and reaper.GetExtState(band.SECTION, "panel minimized") == ""
   if not shown then
@@ -852,13 +852,34 @@ end
 
 local ev_seq = 0
 -- With `proj`, an edit or track change is ordered after the newest change to it seen here, and remembered as that.
+-- Changes from the band this project gave up on (they failed again and again, or couldn't be read): kept, so Health says so and can try
+-- them again. Marked as done and only logged, the project stayed different for good with nothing to show it. Review, 0.58.47.
+function sync.skipped(proj) return band.json_decode(ext(proj, band.SECTION, "skipped")) or {} end
+function sync.skip(proj, ev, why)
+  local list = sync.skipped(proj)
+  if #list < 50 then list[#list + 1] = { id = ev.id, user = ev.user, why = tostring(why):sub(1, 200) } end
+  setext(proj, band.SECTION, "skipped", band.json_encode(list))
+  setext(proj, sync.APPLIED, ev.id, "1")
+end
+function sync.retry_skipped(proj)
+  local list = sync.skipped(proj)
+  for _, s in ipairs(list) do setext(proj, sync.APPLIED, s.id, ""); sync.failed[s.id] = nil end
+  setext(proj, band.SECTION, "skipped", "")
+  return #list
+end
+-- A name as it starts an event's id: letters, digits, "-" and "_" only ("&", "(" and ")" split merge ids, mirror.split_merge. Review, 0.58.47).
+function sync.id_user(user) return ((user or "x"):gsub("[^%w%-_]", "_")) end
+-- Is this event id (or file name) one `user` made? The name, then the date: "Al" isn't "Al-B" (their cues were skipped as ours. Review).
+function sync.is_mine(id, user)
+  return (id or ""):lower():find("^" .. sync.id_user(user):lower():gsub("%p", "%%%0") .. "%-%d%d%d%d%d%d%d%d%-") ~= nil
+end
 function sync.post(cfg, song, room, ev, proj)
   ev_seq = ev_seq + 1
   ev.format, ev.user, ev.time = band.FORMAT, cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ")
   if ev.type == "obj" and not ev.hlc then ev.hlc = require("mirror").hlc_next() end -- (what equal revisions are settled by: mirror.order_of)
   -- made with nobody else here (full control): everyone takes it when it reaches them, whoever drove then
   if sync.alone then ev.alone = true; if proj then setext(proj, band.SECTION, "alone_last", ev.time) end end
-  ev.id = string.format("%s-%s-%05d-%04d", (cfg.user:gsub(" ", "_")), os.date("!%Y%m%d-%H%M%SZ"), ev_seq, math.random(0, 9999))
+  ev.id = string.format("%s-%s-%05d-%04d", sync.id_user(cfg.user), os.date("!%Y%m%d-%H%M%SZ"), ev_seq, math.random(0, 9999))
   local k = proj and newest_key(ev, ev.was)
   if k then
     local seen = ext(proj, sync.NEWEST, k)
@@ -1252,7 +1273,7 @@ function sync.watch_timeline(proj, cfg, song, room, can)
           band.apply_markers(proj, before[2] or {})
           reaper.Undo_EndBlock2(proj, "StudioSync: put the studio's tempo map and markers back", -1)
           sig = timeline_sig(proj)
-          sync.put_back("the tempo map, markers and project settings are the driver's to change: put back (take control, or the driver can set Editing to Open)")
+          sync.put_back("Not sent: only the driver changes the tempo, markers and project settings. Take control, or ask them to set Who controls to Anyone")
         else
           band.log("tempo or markers changed here, but only the driver's changes go to the others (Take control first)")
         end
@@ -1332,8 +1353,9 @@ function sync.receive(proj, cfg, song, room, can)
     return mirror.newer({ rev = a.rev, time = mirror.order_of(a) }, { rev = x.rev, time = mirror.order_of(x) })
   end
   -- (but a change to an item made apart from the newest one isn't older news: the two are merged, mirror.receive, as every computer does)
-  local function apart(x, w)
-    return x.obj == "item" and w and not x.gone and not w.gone and x.base_ev and w.base_ev and require("mirror").apart(sync.room_dir(cfg, song, room), x, w)
+  local function apart(x, w) -- (true, false, or nil while a change between hasn't arrived: then it isn't counted as done either)
+    if not (x.obj == "item" and w and not x.gone and not w.gone and x.base_ev and w.base_ev) then return false end
+    return require("mirror").apart(sync.room_dir(cfg, song, room), x, w)
   end
   local latest = {}
   for _, ev in ipairs(pending) do
@@ -1353,9 +1375,9 @@ function sync.receive(proj, cfg, song, room, can)
     local obj = ev.type == "obj"
     if obj and not (type(ev.oid) == "string" and (ev.obj == "item" or ev.obj == "track" or require("mirror").PART[ev.obj]) and type(ev.rev) == "number"
         and (ev.gone or ev.state ~= nil) and (ev.name == nil or type(ev.name) == "string") and (ev.pos == nil or type(ev.pos) == "number")) then
-      setext(proj, sync.APPLIED, ev.id, "1") -- malformed (a newer or damaged file): skipped, once, without stopping the rest
+      sync.skip(proj, ev, "StudioSync can't read it") -- malformed (a newer or damaged file): skipped, once, without stopping the rest
       band.log("skipped a change from " .. tostring(ev.user) .. " that StudioSync can't read (" .. tostring(ev.id) .. ")")
-    elseif (ev.type == "plays" and newest[ev.track or ""] ~= ev.id) or superseded(proj, ev) or (obj and latest[ev.oid] ~= ev and not apart(ev, latest[ev.oid])) then
+    elseif (ev.type == "plays" and newest[ev.track or ""] ~= ev.id) or superseded(proj, ev) or (obj and latest[ev.oid] ~= ev and apart(ev, latest[ev.oid]) == false) then
       setext(proj, sync.APPLIED, ev.id, "1") -- superseded
     elseif ev.user == cfg.user and not obj then
       setext(proj, sync.APPLIED, ev.id, "1") -- our own: already true here
@@ -1383,7 +1405,7 @@ function sync.receive(proj, cfg, song, room, can)
         sync.failed[ev.id] = (sync.failed[ev.id] or 0) + 1
         if not obj or sync.failed[ev.id] >= 5 then
           band.log("skipped a change from " .. tostring(ev.user) .. " that StudioSync couldn't apply (" .. tostring(ev.type) .. "): " .. tostring(res))
-          setext(proj, sync.APPLIED, ev.id, "1")
+          sync.skip(proj, ev, res)
         end
       elseif res then
         setext(proj, sync.APPLIED, ev.id, "1")
@@ -1448,12 +1470,12 @@ end
 
 -- How many of the room's events this project hasn't applied (or set aside) yet.
 function sync.pending_events(proj, cfg, song, room)
-  local n, mine = 0, (cfg.user:gsub(" ", "_")) .. "-"
+  local n = 0
   for _, f in ipairs(band.files(sync.room_dir(cfg, song, room) .. "/events", ".json")) do
     local id = f:sub(1, -6)
     -- waiting on a claim isn't "behind", and neither is our own change on its way back (the pill read "Receiving 321"
     -- right after a restore we sent: laptop, 0.34.4)
-    if ext(proj, sync.APPLIED, id) == "" and not sync.deferred[id] and id:sub(1, #mine) ~= mine then n = n + 1 end
+    if ext(proj, sync.APPLIED, id) == "" and not sync.deferred[id] and not sync.is_mine(id, cfg.user) then n = n + 1 end
   end
   return n
 end

@@ -43,7 +43,11 @@ local function load(cfg, b)
     for kind in pairs(t) do
       for _, f in ipairs(band.files(src[1] .. "/" .. kind, ".json")) do
         local v = band.read_json(src[1] .. "/" .. kind .. "/" .. f)
-        if type(v) == "table" then v.file, v.where = src[1] .. "/" .. kind .. "/" .. f, src[2]; t[kind][#t[kind] + 1] = v end
+        -- (a link with no url, from a bandmate's damaged or newer file, errored every frame. Review, 0.58.47)
+        if type(v) == "table" and (kind ~= "links" or type(v.url) == "string") then
+          if type(v.title) ~= "string" then v.title = "" end
+          v.file, v.where = src[1] .. "/" .. kind .. "/" .. f, src[2]; t[kind][#t[kind] + 1] = v
+        end
       end
     end
   end
@@ -52,13 +56,16 @@ local function load(cfg, b)
   return t
 end
 
-local function add(cfg, b, kind, v)
-  local d = chat.dir(cfg, b, scope) .. "/" .. kind
+local function add(cfg, b, kind, v, sc)
+  local d = chat.dir(cfg, b, sc or scope) .. "/" .. kind
   reaper.RecursiveCreateDirectory(d, 0)
   v.user, v.time = cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ")
   band.write_json(d .. "/" .. stamp(cfg) .. ".json", v)
   cache = nil
 end
+
+-- Something said for the band from elsewhere (a mix rendered, say): a message in this project's chat.
+function chat.post(cfg, b, text) add(cfg, b, "msgs", { text = text }, "song") end
 
 -- Messages newer than the last time this person looked at the song's chat (for the tab's count).
 local unread_at, unread_n, unread_song = -math.huge, 0, nil

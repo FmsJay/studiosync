@@ -37,7 +37,7 @@ $boxed = Get-ChildItem "$env:LOCALAPPDATA\Packages\*\LocalCache\Local\$probe" -E
 Remove-Item (Join-Path $env:LOCALAPPDATA $probe) -ErrorAction SilentlyContinue
 if ($boxed) {
   $argv = @("-Tag", $Tag, "-Scripts", $Scripts)
-  foreach ($k in "User", "HostId", "Root", "BandId", "BandName", "Hosting", "Live", "Solo", "Plugins", "Extras", "SyncthingHome", "ReaperExe") { $v = Get-Variable $k -ValueOnly; if ($v) { $argv += @("-$k", $v) } }
+  foreach ($k in "User", "HostId", "Root", "BandId", "BandName", "Hosting", "Live", "Solo", "Plugins", "Extras", "SyncthingHome", "ReaperExe", "TsKey") { $v = Get-Variable $k -ValueOnly; if ($v) { $argv += @("-$k", $v) } }
   if ($NoApps) { $argv += "-NoApps" }
   if ($NoReaper) { $argv += "-NoReaper" }
   $quoted = ($argv | ForEach-Object { if ($_ -match '^-') { $_ } else { '"' + $_ + '"' } }) -join " "
@@ -182,6 +182,7 @@ function Install-Quiet {
   }
   $script:Quiet = @()
 }
+$script:downloads = @()
 function Install-Plugin($name, $repo, $pattern, $tag, $have) {
   if ($NoApps) { return }
   # ($have: one place or several where it lands, wildcards allowed)
@@ -192,6 +193,7 @@ function Install-Plugin($name, $repo, $pattern, $tag, $have) {
   $file = Join-Path $env:TEMP $a.name
   Say "Downloading $name ($($a.name)) ..."
   try { Invoke-WebRequest $a.browser_download_url -OutFile $file -UseBasicParsing } catch { Warn "$name didn't download: $_"; return }
+  $script:downloads += $file # (deleted at the end: they stayed in TEMP for good. Review, 0.58.47)
   if ($file -match '\.exe$') {
     if (Run-Installer $name $file $have) { return } # (later, with the others: Install-Quiet)
   } elseif ($file -match '\.msi$') {
@@ -533,6 +535,8 @@ if ($wantSolo) {
 }
 if ($isHost) { $left += "In REAPER, open your song's project: the StudioSync panel offers 'Share this project with the studio'." }
 else { $left += "In REAPER, the StudioSync panel offers 'Join the studio's project' once your collaborator has let you in: the studio's projects arrive by themselves, and the panel lists them." }
+foreach ($d in $script:downloads) { Remove-Item -Force $d -ErrorAction SilentlyContinue }
+Remove-Item -Recurse -Force (Join-Path $env:TEMP "studiosync_setup") -ErrorAction SilentlyContinue
 Write-Host ""
 Say "Done. What's left (these need you):"
 foreach ($l in $left) { Write-Host "  - $l" }

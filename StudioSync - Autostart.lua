@@ -26,7 +26,7 @@ end
 local REQUEST = band.home() .. "/install-request"
 local tried = {} -- project key -> when we last started it (don't hammer a Live sync that refuses to run)
 local at, seen_disk = 0, nil
-local keys_set = false
+local keys_set = BANDSYNC_AUTOSTART_STARTED == true -- (carried over an update's reload: the startup steps ran again, reopening tabs and switching the front one. Review, 0.58.47)
 -- Something stopped syncing: the panel says so in red, and with the panel closed the tiny box comes back to say it. (Said once: closing the box again keeps it closed.)
 local function say_problem(words)
   local was = reaper.GetExtState(band.SECTION, "sync problem")
@@ -53,7 +53,7 @@ local function loop()
     if (fn or ""):find("bandsync-render", 1, true) then return end
   end
   if not keys_set then -- (Ctrl+Z never rolls back a bandmate's work: lib/undo.lua. Not in the hidden renderer, above)
-    keys_set = true
+    keys_set, BANDSYNC_AUTOSTART_STARTED = true, true
     pcall(require("undo").auto_keys, dir)
     local ok, why = pcall(require("startup").on_start) -- (the band's songs, opened without REAPER's boxes: lib/startup.lua)
     if not ok then band.log("couldn't open the studio's projects by itself: " .. tostring(why)) end

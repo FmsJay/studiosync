@@ -340,8 +340,7 @@ function recall.restore_state(proj, cfg, song, room, st, label, saved)
       for _, f in ipairs(band.files(trash)) do
         local lf = f:lower()
         if lf:sub(1, #lid + 1) == lid .. "." or lf:sub(1, #lid + 1) == lid .. "-" then
-          os.rename(trash .. "/" .. f, takes_dir .. "/" .. f)
-          found = true
+          if os.rename(trash .. "/" .. f, takes_dir .. "/" .. f) then found = true end -- (only what really came back: review, 0.58.47)
         end
       end
       if found then

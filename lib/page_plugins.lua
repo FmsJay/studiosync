@@ -260,9 +260,11 @@ local function browse_tick(cfg)
   end
 end
 
-function pp.draw(ctx, ImGui, proj, cfg)
-  browse_tick(cfg)
-  if reaper.time_precise() - used_at > 3 then used_at, used = reaper.time_precise(), pp.used(proj) end
+-- Everyone's plug-in lists, the translations and what this project uses, every 3 s: read each frame, they were the panel's heaviest work
+-- (review, 0.58.47).
+function pp.refresh(proj, cfg)
+  if reaper.time_precise() - used_at <= 3 and pp.lists_root == cfg.root then return end
+  used_at, used = reaper.time_precise(), pp.used(proj)
   local lists = {}
   for _, f in ipairs(band.files(cfg.root .. "/plugins", ".json")) do
     local l = band.read_json(cfg.root .. "/plugins/" .. f)
@@ -272,7 +274,21 @@ function pp.draw(ctx, ImGui, proj, cfg)
       lists[#lists + 1] = { user = l.user, set = set }
     end
   end
-  local tmap = pp.translations(cfg)
+  pp.lists, pp.tmap, pp.lists_root = lists, pp.translations(cfg), cfg.root
+end
+-- Does anyone lack a plug-in this project uses (so the Plugins page has something to say)?
+function pp.missing(proj, cfg)
+  pp.refresh(proj, cfg)
+  for _, u in ipairs(used or {}) do
+    for _, l in ipairs(pp.lists or {}) do if not l.set[u.key] then return true end end
+  end
+  return false
+end
+
+function pp.draw(ctx, ImGui, proj, cfg)
+  browse_tick(cfg)
+  pp.refresh(proj, cfg)
+  local lists, tmap = pp.lists, pp.tmap
   local about = "Plug-ins in this project, who doesn't have them, and the studio's translation for them."
   local short = select(2, ImGui.GetContentRegionAvail(ctx)) < 200
   if not short then ImGui.TextDisabled(ctx, about) end

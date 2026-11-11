@@ -201,7 +201,7 @@ local function auto_connect(tab)
     band.log("can't reach the NINJAM server yet: if ReaNINJAM shows a box, press its OK. Trying again for a few minutes")
   elseif c.tries >= 13 and reaper.time_precise() - c.at > 30 then
     c.done = true
-    band.log("couldn't connect to the NINJAM server: is Tailscale on? Stop and Produce again, or press Show it on the Play page")
+    band.log("couldn't connect to the NINJAM server: is Tailscale on? Stop and Produce again, or press Show it on the Play/Jam page (Settings > Advanced > Show the Play/Jam tab)")
   end
 end
 

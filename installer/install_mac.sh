@@ -71,7 +71,7 @@ fi
 # the band (docs/bands-design.md): each its own shared folder. An invitation names it; the first one set up names it.
 FOLDER_ID="$(printf '%s' "${BS_BAND_ID:-}" | LC_ALL=C tr -cd 'a-z0-9-')"
 if ! yes "$HOSTING" && [ -z "$FOLDER_ID" ]; then # (someone's device ID typed in by hand, no invitation)
-  FOLDER_ID="$(ask "The studio's ID (it's in their invitation, after BS_BAND_ID=; press Return if they don't have one)" bandsync | LC_ALL=C tr -cd 'a-z0-9-')"
+  FOLDER_ID="$(ask "The studio's ID, if whoever set it up gave you one (press Return if not)" bandsync | LC_ALL=C tr -cd 'a-z0-9-')"
   [ -n "$FOLDER_ID" ] || FOLDER_ID=bandsync
 fi
 BAND_NAME="$(plain "${BS_BAND_NAME:-}")"

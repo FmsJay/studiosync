@@ -61,9 +61,8 @@ function page.realtime(ctx, ImGui, proj)
     ms = want
     band.log(string.format("you hear in their time: your backing %d ms later, so the others line up with it (listening, not playing)", want))
   end
-  ImGui.SetItemTooltip(ctx, "Your backing (and your own playing) comes later, so what they play lines up with it:\n" ..
-    "for listening along, not for playing (you'd be playing late). With a guest, use their measured delay;\n" ..
-    "for collaborators, SonoBus's window shows each one's delay (the number after the down arrow).")
+  ImGui.SetItemTooltip(ctx, "Delays your backing so their playing lines up with it. For listening along, not for playing.\n" ..
+    "The delay to set: a guest's measured one, or each collaborator's in SonoBus's window (the number after the down arrow).")
   if their then
     beside("", 90)
     ImGui.SetNextItemWidth(ctx, 90)
@@ -73,13 +72,25 @@ function page.realtime(ctx, ImGui, proj)
     ImGui.SetItemTooltip(ctx, "How much later your backing comes. Drag, or double-click to type.")
   end
   local g = guest.on(proj)
-  beside("Guest")
-  local chg, gv = ImGui.Checkbox(ctx, "Guest", g)
+  beside("SonoBus-only singer")
+  local chg, gv = ImGui.Checkbox(ctx, "SonoBus-only singer", g) -- (not "Guest": that's the day invitation. UX review, 0.58.47)
   if chg then guest.set(proj, gv) end
-  ImGui.SetItemTooltip(ctx, "For someone joining with only SonoBus (a singer at home): they hear your whole mix, and what they sing\n" ..
-    "is recorded on the Real time track whenever you record. Send them your studio's SonoBus link (Configure SonoBus).")
+  ImGui.SetItemTooltip(ctx, "Someone joining from the SonoBus app alone, a singer at home, say. They hear your mix,\n" ..
+    "and their singing records on the Real time track when you record. Send them your SonoBus link (Configure SonoBus).")
   if g then
     local d = guest.delay(proj)
+    beside("Swap in their own file")
+    if ImGui.SmallButton(ctx, "Swap in their own file") then
+      local item = reaper.GetSelectedMediaItem(proj, 0)
+      local ok, path = item and reaper.GetUserFileNameForRead("", "Their own recording of this take", "")
+      if not item then band.msg("Select what you recorded from them first (their item).")
+      elseif ok then
+        local off, why = require("extras").swap_in_file(item, path)
+        band.log(off and string.format("their own recording is in as a new take, lined up by ear (%.3f s into the file)", off) or tostring(why))
+      end
+    end
+    ImGui.SetItemTooltip(ctx, "What came over SonoBus is compressed. Their own recording (SonoBus can record on their side) is the real thing:\n" ..
+      "select what you recorded from them, pick their file, and it goes in as a new take, lined up with what's there.")
     local label = d and string.format("Measure again (%d ms)", d) or "Measure their delay"
     beside(label)
     if ImGui.SmallButton(ctx, label) then run("Measure guest delay") end
@@ -125,7 +136,7 @@ function page.ninjam_line(ctx, ImGui)
   if reaper.time_precise() - njm_at > 1 then njm_at, njm_said = reaper.time_precise(), require("live").status() end
   if not njm_said then return end
   ImGui.TextDisabled(ctx, "NINJAM: " .. njm_said)
-  ImGui.SetItemTooltip(ctx, "ReaNINJAM runs out of sight. Show it on the Play page (Settings > Advanced shows it) brings its window up.")
+  ImGui.SetItemTooltip(ctx, "ReaNINJAM runs hidden. Show it, on the Play/Jam page (Settings > Advanced > Show the Play/Jam tab), opens its window.")
 end
 
 -- On Home, while producing or being produced.

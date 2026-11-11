@@ -67,6 +67,12 @@ if made then
     reaper.RecursiveCreateDirectory(droot .. "/" .. b.song .. "/mixes", 0)
     local copied, why = pcall(band.copy_atomic, out .. "/" .. made, droot .. "/" .. b.song .. "/mixes/" .. made)
     band.log(copied and "and copied to Google Drive" or ("couldn't copy the mix to Google Drive, but it's in the shared folder: " .. tostring(why)))
+    if copied then droot = droot .. "/" .. b.song .. "/mixes" else droot = nil end
   end
+  -- (in the chat, so everyone hears there's a new mix, and where to play it on a phone: the Drive app. Research, 0.58.47)
+  pcall(function()
+    require("page_chat").post(cfg, b, "New mix: " .. made .. (droot and (". On your phone: the Google Drive app, " .. b.song .. " > mixes.") or
+      ". It's in the shared folder's " .. b.song .. "/mixes."))
+  end)
 else band.msg("The render didn't make a file (cancelled, or File > Render's format couldn't write). Nothing was changed.") end
 reaper.defer(function() end) -- (no "ReaScript: Run" on the undo list: Ctrl+Z would be spent on it)

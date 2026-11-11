@@ -42,7 +42,8 @@ local function all_marks(root)
   local list = {}
   for _, f in ipairs(band.files(marks(root), ".json")) do
     local m = band.read_json(marks(root) .. "/" .. f)
-    if type(m) == "table" and m.user and (m.left or require("groups").may_remove(root, m.by, m.user)) then list[#list + 1] = m end
+    -- (leaving is only yours to say: a "left" mark someone else wrote took anyone out, the host too. Review, 0.58.47)
+    if type(m) == "table" and m.user and ((m.left and m.by == m.user) or require("groups").may_remove(root, m.by, m.user)) then list[#list + 1] = m end
   end
   return list
 end
@@ -72,6 +73,23 @@ function removal.let_in(root, device)
   for _, m in ipairs(all_marks(root)) do if m.device == device then removal.keep(root, m.user) end end
 end
 
+-- Who frees a leaver's claims: one computer, not all of them at once (each wrote itself into the driver's seat, and their copies of
+-- the claims crossed: review, 0.58.47). The first name among those whose computers have said which they are, but them; after an hour,
+-- anyone, in case that one is away. Pure over its arguments.
+function removal.frees(names, leaver, me, age)
+  if age >= 3600 then return true end
+  table.sort(names)
+  for _, n in ipairs(names) do if n ~= leaver then return n == me end end
+  return true
+end
+local function members(root)
+  local t = {}
+  for _, f in ipairs(band.files(devices(root), ".json")) do
+    local d = band.read_json(devices(root) .. "/" .. f)
+    if type(d) == "table" and type(d.user) == "string" then t[#t + 1] = d.user end
+  end
+  return t
+end
 -- Their claims free and, where they drove, you in the seat: every song and room in the group.
 local function free(root, user, me)
   local sync, rooms = require("sync"), require("rooms")
@@ -102,13 +120,13 @@ function removal.tick(now)
     for _, m in ipairs(all_marks(g.root)) do
       if m.user == me or (id and m.device == id) then
         if not m.left then told = string.format("%s took you out of %s: nothing syncs with the studio any more, and your copy stays here. Ask to be invited again to come back.", tostring(m.by), g.name) end
-      elseif removal.due(m, now) and m.device then
+      elseif removal.due(m, now) and m.device and m.device == removal.device_of(g.root, m.user) then -- (only their own computer: a mark can name any)
         local key = "removal done " .. g.id .. " " .. m.user .. " " .. tostring(m.at)
         if reaper.GetExtState(band.SECTION, key) == "" then
           local ok, why = services.unshare(g.id, m.device)
           if ok then
             reaper.SetExtState(band.SECTION, key, "1", true)
-            if m.by == me or m.left then pcall(free, g.root, m.user, me) end
+            if m.by == me or (m.left and removal.frees(members(g.root), m.user, me, now - (tonumber(m.at) or now))) then pcall(free, g.root, m.user, me) end
             band.log(m.user .. " is out of " .. g.name .. ": this computer no longer syncs with theirs")
           else band.log("couldn't stop syncing with " .. m.user .. ": " .. tostring(why)) end
         end

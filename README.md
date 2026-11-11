@@ -284,7 +284,7 @@ Restore (its own page):
   tracks to here** (their items and plug-ins), **Restore whole project to here** (the driver), or **Open in side room**,
   to check it's the right moment first. Every restore goes to the others as new changes, so it can be undone the same way.
 - **Saved versions** (every handover, or *Save this version*), and *Open it as it was before StudioSync* (the copy Publish
-  kept). **Render current mix** puts the whole project's mix, as your master has it, in the shared folder's `<Song>/mixes/` for everyone, and on Drive. **Back up** keeps the project as it stands: a saved version kept for good, and the project on Drive.
+  kept). **Render current mix** puts the whole project's mix, as your master has it, in the shared folder's `<Song>/mixes/` for everyone, and on Drive, and says so in the project's chat (with where to play it on a phone: the Google Drive app). **Export stems** renders one file per shared track, all starting at the song's start, into `<Song>/stems/`. **Compare two mixes (A/B)** plays two renders from `mixes/` in turn from the same place, turned to the same loudness (needs SWS). **Credits draft** writes `<Song>/credits.txt`: who started which tracks, recorded which takes and made which changes, with the splits left for the band to agree. **Back up** keeps the project as it stands: a saved version kept for good, and the project on Drive.
 - **Old history is trimmed**: once a day, at the end of a session, the room's driver takes away changes older than
   30 days that nothing needs. Each thing's newest change stays, so does everything a major saved version (end of
   session, "yours before…", or one you saved by hand) needs to restore exactly; only the snapshots before a
@@ -292,7 +292,14 @@ Restore (its own page):
   driver's computer, not away for good.
 
 Chat (its own page): **This room**, **This project** or **Studio**, each with **Messages**, **To-do** (anyone ticks
-them off) and **Links** (lyrics, charts, documents). Each message is its own small file, so nothing ever clashes.
+them off) and **Links** (lyrics, charts, documents). Beside them, **Notes** pin to the edit cursor or a take: *Go* jumps
+there, and a tick marks one resolved, for everyone. Each message is its own small file, so nothing ever clashes.
+
+Home opens with **Since you were last here**: the others' changes and takes, new messages and notes, until you
+press OK. On the Projects page, right-click a project for its **Stage** (Idea, Writing, Tracking, Mixing, Done), shown
+beside its name for everyone. **Settings > Advanced > Show advanced controls** shows side rooms, region and time claims,
+Listen and Produce, and the Plugins page; off, each still shows when it has something to say. A new project starts with
+*Who controls: Anyone*; the driver can tighten it there.
 
 Plugins (its own page): every plug-in the project uses, on which tracks, and who in the studio doesn't have it. Set a
 **translation** for one (something the studio has that's close enough); *Apply translations here* adds it right after

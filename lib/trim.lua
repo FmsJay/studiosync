@@ -19,10 +19,10 @@ local function key_of(ev)
   return nil
 end
 local TRANSPORT = "\0transport"
-local function later(a, b) -- the same order every machine uses: rev, then the clock (lib/mirror.lua order_of) or time, then id
-  if (a.rev or 0) ~= (b.rev or 0) then return (a.rev or 0) > (b.rev or 0) end
-  if tonumber(a.hlc) and tonumber(b.hlc) and tonumber(a.hlc) ~= tonumber(b.hlc) then return tonumber(a.hlc) > tonumber(b.hlc) end
-  if (a.time or "") ~= (b.time or "") then return (a.time or "") > (b.time or "") end
+local function later(a, b) -- the same order every machine uses (lib/mirror.lua newer: rev, then the clock, then the name), then id
+  local mirror = require("mirror")
+  local x, y = { rev = a.rev, time = mirror.order_of(a) }, { rev = b.rev, time = mirror.order_of(b) }
+  if mirror.newer(x, y) ~= mirror.newer(y, x) then return mirror.newer(x, y) end
   return (a.id or "") > (b.id or "")
 end
 -- A point is major unless it's the snapshot taken before a handover.
@@ -53,11 +53,13 @@ function trim.plan(evs, points, cutoff)
       end
     end
   end
+  local rival = {} -- (the newest of them only: what a settle merges in. Every losing branch kept history growing for good. Review, 0.58.47)
   for _, ev in ipairs(evs) do
     local k = key_of(ev)
     local w = k and newest[k]
-    if w and ev ~= w and ev.base_ev and w.base_ev and not ev.gone and not behind[ev.id] then keep[ev.id] = true end
+    if w and ev ~= w and ev.base_ev and w.base_ev and not ev.gone and not behind[ev.id] and (not rival[k] or later(ev, rival[k])) then rival[k] = ev end
   end
+  for _, ev in pairs(rival) do keep[ev.id] = true end
   -- each kept one's base; a base that is a merge's id ("m(a&b)") is rebuilt from a and b and their bases, so those too. Only through merge
   -- ids: a plain base's own base isn't read (following every base_ev kept the whole history, since each change names the one before)
   local function need(id, depth)

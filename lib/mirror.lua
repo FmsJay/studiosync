@@ -478,13 +478,22 @@ mirror.sessions = {} -- proj .. oid -> { rev, at }: our last change to it
 -- What equal revisions are settled by, an "order": "<ms>|<user>" since 0.58.43, a hybrid logical clock (milliseconds, never behind any change
 -- this computer has seen, so a clock that's minutes off can't win ties it shouldn't: docs/clashes.md), or "<YYYY-MM-DDTHH:MM:SSZ><user>" from
 -- before. -> milliseconds (UTC), the rest. Pure.
-local tz = os.time() - os.time(os.date("!*t"))
+-- (UTC by arithmetic: os.time works in local time, and a time zone offset taken once was an hour out across a daylight saving change. Review, 0.58.47)
+local function utc_secs(y, mo, d, h, mi, s)
+  y = mo <= 2 and y - 1 or y
+  local era = (y >= 0 and y or y - 399) // 400
+  local yoe = y - era * 400
+  local doy = (153 * (mo + (mo > 2 and -3 or 9)) + 2) // 5 + d - 1
+  local days = era * 146097 + yoe * 365 + yoe // 4 - yoe // 100 + doy - 719468
+  return days * 86400 + h * 3600 + mi * 60 + s
+end
+mirror.utc_secs = utc_secs
 function mirror.order_parts(o)
   o = o or ""
   local ms, rest = o:match("^(%d+)|(.*)$")
   if ms then return tonumber(ms), rest end
   local y, mo, d, h, mi, s, after = o:match("^(%d%d%d%d)-(%d%d)-(%d%d)T(%d%d):(%d%d):(%d%d)Z(.*)$")
-  if y then return (os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(d), hour = tonumber(h), min = tonumber(mi), sec = tonumber(s) }) + tz) * 1000, after end
+  if y then return utc_secs(tonumber(y), tonumber(mo), tonumber(d), tonumber(h), tonumber(mi), tonumber(s)) * 1000, after end
   return 0, o
 end
 function mirror.order_of(ev)
@@ -844,6 +853,11 @@ function mirror.tokenize_media(chunk, media_dir)
   end))
 end
 local function media_path(media_dir, room, rel)
+  -- (a bandmate's item can't point outside the band folder: "{media:..}/../../Users/x/secret.wav" took a private file, which
+  -- editing the item then copied into the band's media. Review, 0.58.47)
+  if (room and (room:find("[/\\]") or room:find("..", 1, true))) or rel:find("%.%.[/\\]") or rel:find("^[/\\]") or rel:find("^%a:") then
+    return norm_path(media_dir):gsub("/$", "") .. "/(refused path)"
+  end
   return room and (rooms_dir(media_dir) .. "/" .. room .. "/media/" .. rel) or (norm_path(media_dir):gsub("/$", "") .. "/" .. rel)
 end
 function mirror.resolve_media(chunk, media_dir)
@@ -1577,9 +1591,29 @@ function mirror.merge_for(proj, ev, room_dir)
   local krev, _, kev, kord = mirror.known(proj, ev.oid)
   if not krev or kev == "" or kev == ev.id then return nil end
   local k = mirror.event_file(room_dir, kev)
-  if not (k and not k.gone and type(k.state) == "string" and k.base_ev and mirror.apart(room_dir, k, ev)) then return nil end
+  if not (k and not k.gone and type(k.state) == "string" and k.base_ev) then return nil end
+  local apart = mirror.apart(room_dir, k, ev)
+  if apart == nil then -- (a change in between isn't here yet, most likely still on its way: this one waits for it, two minutes at most)
+    local ms = mirror.order_parts((ev.time or "") .. "x")
+    if ms > 0 and os.time() - ms / 1000 < 120 then return nil, true end
+    return nil
+  end
+  if not apart then return nil end
   local theirs = mirror.newer({ rev = ev.rev, time = mirror.order_of(ev) }, { rev = krev, time = kord })
   return mirror.event_file(room_dir, mirror.merge_id(theirs and ev.id or kev, theirs and kev or ev.id))
+end
+
+-- An item landing in a lane resets which lanes play: the track's own settings go back on top (a merged item too: review, 0.58.47).
+local function lanes_back(proj, ev, media_dir, local_mix)
+  if not ev.track then return end
+  local tr = mirror.find(proj, "track", ev.track)
+  local krev, _, kev, kord = mirror.known(proj, ev.track)
+  if tr and krev then
+    local tev = kev ~= "" and require("band").read_json(media_dir:gsub("/media$", "") .. "/events/" .. kev .. ".json")
+    if type(tev) == "table" and type(tev.state) == "table" then mirror.set_track_state(proj, tr, tev.state, local_mix) end
+    local t = mirror.track_state(proj, tr, local_mix)
+    remember(proj, ev.track, krev, mirror.track_hash(t, local_mix), kev, kord)
+  end
 end
 
 -- An incoming "obj" event (from sync.apply). Returns true when handled (applied or older than what we hold).
@@ -1588,7 +1622,8 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   mirror.hlc_seen(ev.hlc)
   local order = mirror.order_of(ev)
   -- (before the usual "theirs wins or not": the loser's other changes go in too)
-  local merging = mirror.merge_for(proj, ev, media_dir:gsub("/media$", ""))
+  local merging, wait = mirror.merge_for(proj, ev, (media_dir:gsub("/media$", "")))
+  if wait then return false end
   if not merging and not mirror.wins(proj, ev.oid, ev.rev or 0, order) then return true end
   -- a change of ours to it hasn't gone out yet (Hold my changes is on, plug-ins and automation waiting to settle or
   -- for playback to stop, a long edit): theirs waits until ours has gone, then the two are settled like any clash.
@@ -1614,6 +1649,7 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
     if ok then
       remember(proj, ev.oid, merging.rev, h, merging.id, mirror.order_of(merging))
       require("sync").landed_media = true
+      lanes_back(proj, merging, media_dir, local_mix)
       local lost, on = merging.loser, (ev.name or "") ~= "" and ev.name or "an unnamed track"
       local takes = false
       for _, key in ipairs(merging.clashed or {}) do takes = takes or key:find("<SOURCE", 1, true) ~= nil end
@@ -1657,33 +1693,32 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
     band.log(string.format("%s's change to %s came out different here than on their machine (the panel's Health shows it)", tostring(ev.user),
       mirror.PART[ev.obj] and (mirror.PART[ev.obj] .. " on " .. where) or ev.obj == "track" and ("track " .. where) or ("an item on " .. where)))
   end
-  if ok and ev.obj == "item" and ev.track then
-    local tr = mirror.find(proj, "track", ev.track)
-    local krev, _, kev, kord = mirror.known(proj, ev.track)
-    if tr and krev then
-      -- an item landing in a lane resets which lanes play: the track's own settings go back on top
-      local tev = kev ~= "" and require("band").read_json(media_dir:gsub("/media$", "") .. "/events/" .. kev .. ".json")
-      if type(tev) == "table" and type(tev.state) == "table" then mirror.set_track_state(proj, tr, tev.state, local_mix) end
-      local t = mirror.track_state(proj, tr, local_mix)
-      remember(proj, ev.track, krev, mirror.track_hash(t, local_mix), kev, kord)
-    end
-  end
+  if ok and ev.obj == "item" then lanes_back(proj, ev, media_dir, local_mix) end
   return ok
 end
 
 -- (a side room starts as a copy: what hasn't changed in it last changed in the room it came from. Looked for only here, a chain
 -- that merely reads differently on this machine went out as a change, and opening a room printed 16 parts again: Mac, 0.42.27)
 local room_parent = {}
+local plain_cache, plain_n = {}, 0 -- room dir \0 id -> the event (events never change: the walks below read the same ones over and over)
 local function plain_event(room_dir, evid)
   if not evid or evid == "" then return nil end
+  local key = room_dir .. "\0" .. evid
+  if plain_cache[key] then return plain_cache[key] end
   local band = require("band")
   local ev = band.read_json(room_dir .. "/events/" .. evid .. ".json")
-  if ev then return ev end
-  room_parent[room_dir] = room_parent[room_dir] or (band.read_json(room_dir .. "/room.json") or {}).parent -- (it may not have synced here yet: not noted as none)
-  return room_parent[room_dir] and plain_event((room_dir:gsub("[^/]+$", room_parent[room_dir])), evid) or nil
+  if not ev then
+    room_parent[room_dir] = room_parent[room_dir] or (band.read_json(room_dir .. "/room.json") or {}).parent -- (it may not have synced here yet: not noted as none)
+    ev = room_parent[room_dir] and plain_event((room_dir:gsub("[^/]+$", room_parent[room_dir])), evid) or nil
+  end
+  if type(ev) == "table" then
+    if plain_n > 20000 then plain_cache, plain_n = {}, 0 end -- shortcut: a whole flush past 20,000 events, enough for any song's working set
+    plain_cache[key], plain_n = ev, plain_n + 1
+  end
+  return ev
 end
 -- A merged version of an item (mirror.merge_item) has the id "m(<winner>&<loser>)" (either may be one itself). It's nowhere on disk: every computer
--- rebuilds it the same way from the two events and the base they came from (the older of their two bases), so all agree with nobody sending it.
+-- rebuilds it the same way from the two events and the version both came from, so all agree with nobody sending it.
 -- -> it like an event (the winner's fields; rev, base, state its own), or nil when an event or a base (base_ev: 0.58.43 on) isn't there.
 function mirror.merge_id(winner, loser) return "m(" .. winner .. "&" .. loser .. ")" end
 function mirror.split_merge(id)
@@ -1697,30 +1732,68 @@ function mirror.split_merge(id)
 end
 -- Does version `v` (an event or a merged version) build on the version with id `of` (or is it that one)? Followed through the versions each
 -- started from (base_ev), and both sides of a merge. Not by revision number: one edit's quick nudges share a number (watch), so numbers don't
--- tell versions apart. A version's clock is later than everything it builds on, so the walk stops below `of`'s clock. Pure but for reading events.
+-- tell versions apart. A plain change's clock is later than everything it builds on, so the walk stops below `of`'s clock.
+-- -> true, false, or nil when it can't tell: a version on the way isn't here (yet). Two quick edits arriving out of order looked "made apart"
+-- and were merged for good (review, 0.58.47). A walk too long to finish counts as building on it. Pure but for reading events.
 function mirror.descends(room_dir, v, of, of_hlc)
   if not v or not of then return false end
   of_hlc = tonumber(of_hlc)
-  local todo, seen, steps = { v }, {}, 0
-  while #todo > 0 and steps < 400 do
-    local x = table.remove(todo)
+  local todo, seen, steps, missing = { v }, {}, 0, false
+  while #todo > 0 do
     steps = steps + 1
+    if steps > 400 then return true end
+    local x = table.remove(todo)
     if x.id == of then return true end
-    if not seen[x.id or ""] and not (of_hlc and tonumber(x.hlc) and tonumber(x.hlc) < of_hlc) then
+    local w, l = mirror.split_merge(x.id)
+    if not seen[x.id or ""] and (w or not (of_hlc and tonumber(x.hlc) and tonumber(x.hlc) < of_hlc)) then
       seen[x.id or ""] = true
-      local w, l = mirror.split_merge(x.id)
       for _, id in ipairs(w and { w, l } or { x.base_ev }) do
         if id == of then return true end
         local y = id and mirror.event_file(room_dir, id)
+        if y then todo[#todo + 1] = y elseif id then missing = true end
+      end
+    end
+  end
+  if missing then return nil end
+  return false
+end
+-- Two versions made apart: neither builds on the other. -> true, false, or nil (can't tell yet).
+function mirror.apart(room_dir, a, b)
+  if not (a and b) or a.id == b.id then return false end
+  local ab, ba = mirror.descends(room_dir, a, b.id, b.hlc), mirror.descends(room_dir, b, a.id, a.hlc)
+  if ab or ba then return false end
+  if ab == nil or ba == nil then return nil end
+  return true
+end
+-- What a version builds on, nearest first (both sides of a merge).
+local function parents(x) local w, l = mirror.split_merge(x.id); return w and { w, l } or { x.base_ev } end
+-- The version two versions both build on, nearest to them: everything one builds on, then the first of those the other reaches. "The older of the
+-- two bases" lost what one side changed in between (both made two changes apart: review, 0.58.47). -> its id, or nil.
+local function common_base(room_dir, a, b)
+  local behind, todo, steps = {}, { a }, 0
+  while #todo > 0 and steps < 400 do
+    steps = steps + 1
+    for _, id in ipairs(parents(table.remove(todo, 1))) do
+      if not behind[id] then
+        behind[id] = true
+        local y = mirror.event_file(room_dir, id)
         if y then todo[#todo + 1] = y end
       end
     end
   end
-  return false
-end
--- Two versions made apart: neither builds on the other.
-function mirror.apart(room_dir, a, b)
-  return a and b and a.id ~= b.id and not mirror.descends(room_dir, a, b.id, b.hlc) and not mirror.descends(room_dir, b, a.id, a.hlc)
+  local seen
+  todo, steps, seen = { b }, 0, {}
+  while #todo > 0 and steps < 400 do
+    steps = steps + 1
+    for _, id in ipairs(parents(table.remove(todo, 1))) do
+      if behind[id] then return id end
+      if not seen[id] then
+        seen[id] = true
+        local y = mirror.event_file(room_dir, id)
+        if y then todo[#todo + 1] = y end
+      end
+    end
+  end
 end
 local merged = {} -- room dir \0 id -> the version (events never change, so neither do their merges)
 local function event_file(room_dir, evid, depth)
@@ -1732,14 +1805,20 @@ local function event_file(room_dir, evid, depth)
   if depth > 12 then return nil end
   local w, l = event_file(room_dir, w_id, depth), event_file(room_dir, l_id, depth)
   if not (w and l and type(w.state) == "string" and type(l.state) == "string") then return nil end
-  local older = w
-  if (l.base or 0) < (w.base or 0) or ((l.base or 0) == (w.base or 0) and (l.base_ev or "") < (w.base_ev or "")) then older = l end
-  local b = older.base_ev and event_file(room_dir, older.base_ev, depth)
+  local base_id = common_base(room_dir, w, l)
+  if not base_id then -- (no shared past here: the older of their two bases, as before 0.58.47)
+    local older = w
+    if (l.base or 0) < (w.base or 0) or ((l.base or 0) == (w.base or 0) and (l.base_ev or "") < (w.base_ev or "")) then older = l end
+    base_id = older.base_ev
+  end
+  local b = base_id and event_file(room_dir, base_id, depth)
   if not (b and type(b.state) == "string") then return nil end
   local v = {}
   for k, x in pairs(w) do v[k] = x end
   v.state, v.clashed = mirror.merge_item(b.state, w.state, l.state, l.user)
-  v.id, v.rev, v.hash, v.base, v.base_ev, v.loser = evid, math.max(w.rev or 0, l.rev or 0), nil, older.base, older.base_ev, l
+  v.id, v.rev, v.hash, v.base, v.base_ev, v.loser = evid, math.max(w.rev or 0, l.rev or 0), nil, b.rev or 0, base_id, l
+  -- (the later of the two clocks: with the winner's, a walk from a later change stopped here before reaching the loser. Review, 0.58.47)
+  if tonumber(w.hlc) or tonumber(l.hlc) then v.hlc = math.max(tonumber(w.hlc) or 0, tonumber(l.hlc) or 0) end
   merged[key] = v
   return v
 end
@@ -2014,11 +2093,11 @@ function mirror.watch(proj, cfg, song, room, opts)
           local unpooled, n = ch:gsub("\n%s*POOLEDEVTS[^\n]*", "")
           if got and n > 0 then reaper.SetItemStateChunk(o.ptr, unpooled, false) end
         end
-        why.text = "a new item on " .. where .. " isn't yours to add: it's kept here on '" .. where .. " (yours, not sent)', " ..
-          (why.to and ("and suggested to " .. why.to) or "not sent to the others (claim the track, or take control)")
+        why.text = "Not sent: " .. where .. " isn't yours to add to. Your item is on '" .. where .. " (yours, not sent)'" ..
+          (why.to and (", and sent to " .. why.to .. " as a suggestion") or ". Claim " .. where .. " to share it")
       elseif o.kind == "track" and o.ptr then
         reaper.GetSetMediaTrackInfo_String(o.ptr, "P_EXT:band_local", "yours", true)
-        why.text = "a new track isn't yours to add: it stays here as yours, not sent to the others (take control to add tracks)"
+        why.text = "Not sent: only the driver adds tracks here. Yours stays on this computer (Take control to add tracks)"
       elseif o.kind == "misc" then
         -- a group or lock put on someone's track: nothing here is worth keeping, and left on, your VCA went on moving their track on
         -- this computer alone (what you hear and render differs from everyone else). If they accept, it lands as theirs.
@@ -2033,7 +2112,7 @@ function mirror.watch(proj, cfg, song, room, opts)
         " (the studio's version hasn't arrived here yet): it stays as it is for now")
     end
     back = back + 1
-    if why.text then sync.put_back(why.text) end
+    if why.text then sync.put_back(why.text, nil, why.claim) end
   end
   -- A track made here is claimed by whoever made it, once it has a name (James, 2026-11-01: an unseen "the maker may
   -- change it" let the PC change Bass I; a claim shows on the Claims card and can be released). Not by the driver
@@ -2044,7 +2123,7 @@ function mirror.watch(proj, cfg, song, room, opts)
     if name == "" or select(2, reaper.GetSetMediaTrackInfo_String(o.ptr, k, "", false)) ~= "1" then return end
     reaper.GetSetMediaTrackInfo_String(o.ptr, k, "", true)
     if opts.mode == "driver" or me == sync.driver_name or (sync.is_claimed and sync.is_claimed(name)) then return end
-    if sync.claim_tracks(cfg, song, room, { name }) then band.log("you made track " .. name .. ": it's claimed for you (Claims card: release it to share it)") end
+    if sync.claim_tracks(cfg, song, room, { name }) then band.log("you made track " .. name .. ": it's claimed for you (Home > Claims: release it to share it)") end
   end
   -- What was refused goes to whoever claimed it, as a suggestion, if it's a claim that refused it. -> true when it went.
   local function propose(o, rev, who, claim_name, pos, name, gone)
@@ -2244,7 +2323,7 @@ function mirror.watch(proj, cfg, song, room, opts)
       local name = perm_name(o, by_oid)
       local holder = rev and opts.held and opts.held(o.oid)
       if holder then -- someone else is working on it right now (lib/presence.lua): theirs, for a few seconds
-        return put_back(o, rev, evid, { name = name, text = string.format("%s is editing %s right now: put back (try again in a few seconds)",
+        return put_back(o, rev, evid, { name = name, text = string.format("Not sent: %s is editing %s right now. Try again in a few seconds",
           holder, o.kind == "track" and ("track " .. (name ~= "" and name or "(unnamed)")) or ((o.kind == "item" and "that item" or mirror.PART[o.kind]) .. " on " .. (name ~= "" and name or "an unnamed track"))) })
       end
       local last = rev and event_file(room_dir, evid) or nil
@@ -2277,7 +2356,10 @@ function mirror.watch(proj, cfg, song, room, opts)
         -- later order makes it the newer. Ten nudges outvoted one careful edit: docs/clashes.md)
         local s = mirror.sessions[rk]
         -- (what we hold is still our own last one. Not for an owner: theirs jumps past what others made meanwhile, which a reused number wouldn't)
+        -- (shortcut: StudioSync before 0.58.43 settles equal revisions by the second, so two nudges in one second can end differently there; the
+        -- version warning asks everyone to update)
         local same_edit = not owned and s and s.rev == rev and s.id == evid and reaper.time_precise() - s.at < mirror.SESSION_SECS
+        mirror.hlc_seen(last and last.hlc) -- (the clock past what this builds on: after a restart it could fall behind, and every walk stopped short)
         local ev = { type = "obj", obj = o.kind, oid = o.oid, rev = same_edit and rev or mirror.next_rev(rev, owned), base = rev or 0, state = state, track = o.track,
           base_ev = evid ~= "" and evid or nil, -- (the version this one started from: a merge finds the base there, mirror.merge_item)
           name = name, pos = o.pos, hash = o.hash, hv = mirror.HV } -- (hash: what it is here; every receiver checks it came out the same)
@@ -2342,13 +2424,16 @@ function mirror.watch(proj, cfg, song, room, opts)
         local who = owner_of and owner_of(ok_before and name or (last.name or ""), pos)
         -- (someone's claim: what was done to it goes to them to accept. lib/suggest.lua)
         local to = propose(o, rev, who, ok_before and name or (last and last.name or ""), pos, name)
-        local how = to and ("it's claimed by " .. who .. ": put back, and suggested to them")
-          or (who and who ~= me and who ~= sync.driver_name) and ("it's claimed by " .. who .. ": put back (ask them to release it)")
-          or sync.room_mode == "admins" and "admins only here: put back (an admin can give it to you)"
-          or (who and who ~= me) and (who .. " drives: put back (claim it, or take control)")
-          or "it isn't yours to change right now: put back (claim it, or take control)"
-        put_back(o, rev, evid, { name = ok_before and name or (last.name or ""), to = to and who or nil, text = string.format("%s: %s",
-          o.kind == "track" and ("Track " .. where) or ((o.kind == "item" and "That item" or mirror.PART[o.kind]:gsub("^%l", string.upper)) .. " on " .. where), how) })
+        -- (plain words, whose it is first: "Undone: ... put back (claim it, or take control)" read as your own Undo. UX review, 0.58.47)
+        local claimed = who and who ~= me and who ~= sync.driver_name
+        local how = to and (where .. " is " .. who .. "'s, so it's sent to them as a suggestion")
+          or claimed and (where .. " is claimed by " .. who .. ": ask them to release it")
+          or sync.room_mode == "admins" and "only admins edit here: an admin can let you"
+          or (who and who ~= me) and (who .. " is driving and " .. where .. " is nobody's: claim it to edit it")
+          or "it isn't yours to change right now: claim it to edit it"
+        local claim = not to and not claimed and sync.room_mode == "claims" and (ok_before and name or last.name) or nil -- (the bar's Claim it)
+        put_back(o, rev, evid, { name = ok_before and name or (last.name or ""), to = to and who or nil, claim = claim ~= "" and claim or nil,
+          text = string.format("Not sent: %s. %s", how, o.kind == "track" and "The track is back as it was" or ((o.kind == "item" and "The item" or mirror.PART[o.kind]:gsub("^%l", string.upper)) .. " is back as it was")) })
       end
     end)
     if not ok then say_once("err" .. o.oid, "mirror sync skipped " .. o.oid .. ": " .. tostring(err)) end
@@ -2887,9 +2972,14 @@ end
 -- computer's receive did it. `all`: its changes (room_newest). -> an event, or a merged version.
 function mirror.settled(room_dir, newest, all)
   if newest.obj ~= "item" or newest.gone or not newest.base_ev then return newest end
-  local rival
+  local rival, behind, todo = nil, {}, { newest } -- (what the newest builds on, walked once: two walks per past change froze a long history. Review, 0.58.47)
+  while #todo > 0 and #todo < 2000 do
+    for _, id in ipairs(parents(table.remove(todo))) do
+      if not behind[id] then behind[id] = true; local y = event_file(room_dir, id); if y then todo[#todo + 1] = y end end
+    end
+  end
   for _, x in ipairs(all or {}) do
-    if x ~= newest and not x.gone and x.base_ev and type(x.state) == "string" and mirror.apart(room_dir, x, newest)
+    if x ~= newest and not behind[x.id] and not x.gone and x.base_ev and type(x.state) == "string" and mirror.apart(room_dir, x, newest)
         and (not rival or mirror.newer({ rev = x.rev, time = mirror.order_of(x) }, { rev = rival.rev, time = mirror.order_of(rival) })) then rival = x end
   end
   return rival and event_file(room_dir, mirror.merge_id(newest.id, rival.id)) or newest
@@ -2907,7 +2997,7 @@ function mirror.heal(proj, room_dir, local_mix)
   for oid, ev in pairs(newest) do
     ev = mirror.settled(room_dir, ev, all[oid]) -- (a merge of two changes made apart: what every computer holds)
     local _, kh, kev = mirror.known(proj, oid)
-    if kev ~= ev.id and not (kev or ""):find(ev.id, 1, true) then -- (held inside a merge: in line)
+    if kev ~= ev.id then -- (exactly: merge ids are the same everywhere, and "held inside a merge" hid two different ones for good. Review, 0.58.47)
       local order = mirror.order_of(ev)
       if ev.gone then
         if kh and kh ~= "" then

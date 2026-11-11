@@ -198,7 +198,7 @@ function prep.scan(proj, cfg, b)
   -- StudioSync's own setup
   local live = require("live")
   if b and b.role ~= "solo" and not live.fx(proj, false, live.SONOBUS) then
-    add("sonobus", "Put SonoBus on the master (off until you Connect)", "For Real time: it joins your studio by itself when you switch that on.", 1, true)
+    add("sonobus", "Add SonoBus (it stays off until you turn on Real time mode)", "For Real time: it joins your studio by itself when you switch that on.", 1, true)
   end
   if not require("tools").autostart_on() then
     add("autostart", "Start Live sync with REAPER", "A REAPER restart brings Live sync back for sessions where it was running (otherwise changes quietly stay here).", 1, true)
@@ -477,7 +477,7 @@ function prep.apply(proj, cfg, b, rows, dir)
 
   if on.sonobus then
     local ok, why = require("setup").sonobus(cfg, b, proj, false)
-    done[#done + 1] = ok and "SonoBus is on the master (off until you Connect)" or tostring(why)
+    done[#done + 1] = ok and "SonoBus is added (it stays off until you turn on Real time mode)" or tostring(why)
   end
   if on.autostart then
     done[#done + 1] = require("tools").set_autostart(true, dir) and "Live sync now starts with REAPER" or "Couldn't write Scripts/__startup.lua"

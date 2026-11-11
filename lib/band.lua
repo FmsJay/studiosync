@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.58.46", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.58.47", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -104,7 +104,14 @@ end
 
 function band.read(path)
   local f = io.open(path, "rb")
-  if not f then return nil end
+  if not f then
+    -- (a power cut between finish's two renames on Windows left only the old copy, under a name Syncthing ignores: its deletion went to
+    -- everyone. Put back on the next read. Review, 0.58.47)
+    local dir, name = path:match("^(.*)/([^/]+)$")
+    if not dir or not os.rename(dir .. "/.syncthing." .. name .. ".old.tmp", path) then return nil end
+    f = io.open(path, "rb")
+    if not f then return nil end
+  end
   local s = f:read("a"); f:close()
   return s
 end

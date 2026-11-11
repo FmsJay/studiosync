@@ -59,6 +59,9 @@ if not b.song then
 end
 reaper.SetExtState(band.SECTION, "project file " .. song, (select(2, reaper.EnumProjects(-1)):gsub("\\", "/")), true)
 reaper.RecursiveCreateDirectory(band.song_dir(cfg, song) .. "/rooms/main/media", 0)
+-- A new project starts with anyone editing (James, 0.58.47: a collaborator's first edit was refused under "Driver + claims", the biggest
+-- first-day wall). The driver can tighten it under Who controls; an existing project keeps what it has.
+if not reaper.file_exists(band.song_dir(cfg, song) .. "/rooms/main/mode.json") then require("sync").set_mode(cfg, song, "main", "open", cfg.user) end
 local version = (old and old.version or 0) + 1
 band.write_json(band.session_path(cfg, song), {
   format = band.FORMAT, bandsync = band.VERSION, song = song, host = cfg.user, version = version, sync = "mirror",

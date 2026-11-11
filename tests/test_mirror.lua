@@ -489,3 +489,35 @@ do
   assert(mirror.merge_item(base, moved, added, "Bee"):find("MUTE 0 0\nCOLOR 123 B\n", 1, true), "a line only the loser added goes in where they had it")
 end
 print("ok merge")
+
+-- old-style times convert to UTC by arithmetic, whatever the local zone or daylight saving (0.58.47)
+assert(mirror.utc_secs(1970, 1, 1, 0, 0, 0) == 0, "the epoch")
+assert(mirror.utc_secs(2026, 11, 10, 12, 0, 0) == 1794312000, "a November day: " .. mirror.utc_secs(2026, 11, 10, 12, 0, 0))
+assert(mirror.utc_secs(2026, 7, 1, 0, 0, 0) == 1782864000, "a July day")
+assert(mirror.utc_secs(2024, 2, 29, 0, 0, 0) == 1709164800, "a leap day")
+assert(select(1, mirror.order_parts("2026-07-01T00:00:00ZBee")) == 1782864000000, "an old order")
+
+-- what versions build on, from a stand-in events folder (0.58.47): a missing link is "can't tell", never "made apart"
+do
+  local store = {}
+  local real = package.loaded.band
+  package.loaded.band = setmetatable({ read_json = function(path) return store[path:match("([^/]+)%.json$")] end }, { __index = real })
+  local R = "R" .. os.time()
+  local function ev(id, base, hlc, state) store[id] = { id = id, base_ev = base, hlc = hlc, rev = 1, obj = "item", state = state or "<ITEM\nPOSITION 0\n>" } end
+  ev("V", nil, 100)
+  ev("X2", "X1", 300) -- (X1 not here yet: two quick edits, the second arriving first)
+  assert(mirror.apart(R, mirror.event_file(R, "V"), mirror.event_file(R, "X2")) == nil, "a missing change between: can't tell yet")
+  ev("X1", "V", 200)
+  assert(mirror.apart(R .. "b", mirror.event_file(R .. "b", "V"), mirror.event_file(R .. "b", "X2")) == false, "once it's here: X2 builds on V")
+  -- both made two changes apart: the merge starts from where they split, not from either side's middle
+  local function st(pos, vol) return "<ITEM\nPOSITION " .. pos .. "\nVOLPAN " .. vol .. " 0 1 -1\n>" end
+  ev("B", nil, 10, st(0, 1))
+  ev("W1", "B", 20, st(5, 1)); ev("W2", "W1", 30, st(5, 1))
+  ev("L1", "B", 21, st(0, 0.5)); ev("L2", "L1", 31, st(0, 0.5))
+  local m = mirror.event_file(R .. "c", mirror.merge_id("W2", "L2"))
+  assert(m and m.base_ev == "B", "the merge's base is where both split: " .. tostring(m and m.base_ev))
+  assert(m.state:find("POSITION 5", 1, true) and m.state:find("VOLPAN 0.5", 1, true), "and both sides' changes are in: " .. tostring(m.state))
+  assert(m.hlc == 31, "a merged version takes the later clock: " .. tostring(m.hlc))
+  package.loaded.band = real
+end
+print("ok ancestry")

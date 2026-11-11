@@ -169,9 +169,16 @@ function copy.bin(paths, label)
     local q = function(s) return "'" .. s:gsub("'", "''") .. "'" end
     local lines = { "Add-Type @'", "using System; using System.Runtime.InteropServices;", "public static class StudioSyncBin {",
       "  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] public struct Op { public IntPtr hwnd; public uint func; public string from; public string to; public ushort flags; public bool aborted; public IntPtr maps; public string title; }",
-      '  [DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern int SHFileOperation(ref Op op);', "}", "'@" }
+      '  [DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern int SHFileOperation(ref Op op);',
+      "  [StructLayout(LayoutKind.Sequential)] public struct Bin { public int size; public long bytes; public long items; }",
+      '  [DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern int SHQueryRecycleBin(string root, ref Bin info);', "}", "'@" }
+    -- (a drive with no Recycle Bin, a USB stick or a network share, deletes for good and asks on a window nobody sees: such paths are left,
+    -- and said. Review, 0.58.47)
     for _, p in ipairs(paths) do
-      lines[#lines + 1] = "$op = New-Object StudioSyncBin+Op; $op.func = 3; $op.flags = 0x0654; $op.from = " .. q((p:gsub("/", "\\"))) .. ' + [char]0 + [char]0; [void][StudioSyncBin]::SHFileOperation([ref]$op)'
+      local wp = q((p:gsub("/", "\\")))
+      lines[#lines + 1] = "$b = New-Object StudioSyncBin+Bin; $b.size = [Runtime.InteropServices.Marshal]::SizeOf($b); " ..
+        "if ([StudioSyncBin]::SHQueryRecycleBin([IO.Path]::GetPathRoot(" .. wp .. "), [ref]$b) -ne 0) { Set-Content -LiteralPath " .. q((tmp:gsub("/", "\\")) .. ".nobin") .. " 1 } else { " ..
+        "$op = New-Object StudioSyncBin+Op; $op.func = 3; $op.flags = 0x0654; $op.from = " .. wp .. ' + [char]0 + [char]0; [void][StudioSyncBin]::SHFileOperation([ref]$op) }'
     end
     lines[#lines + 1] = "Set-Content -LiteralPath " .. q((tmp:gsub("/", "\\")) .. ".done") .. " 1"
     band.write_atomic(tmp .. ".ps1", "\239\187\191" .. table.concat(lines, "\r\n") .. "\r\n")
@@ -181,6 +188,10 @@ function copy.bin(paths, label)
     local t0 = reaper.time_precise()
     while not reaper.file_exists(tmp .. ".done") and reaper.time_precise() - t0 < 20 do
       if reaper.time_precise() - t0 > 1 and left_now() == 0 then break end
+    end
+    if reaper.file_exists(tmp .. ".nobin") then
+      os.remove(tmp .. ".nobin")
+      band.log("left " .. tostring(label or "some files") .. " where it is: that drive has no Recycle Bin, so deleting would be for good. Delete it by hand if you mean to")
     end
     os.remove(tmp .. ".done"); os.remove(tmp .. ".cmd"); os.remove(tmp .. ".vbs")
     if reaper.file_exists(tmp .. ".ps1") then os.remove(tmp .. ".ps1") end

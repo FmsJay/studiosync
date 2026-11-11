@@ -12,3 +12,9 @@ assert(not out.Kim, "a new computer of theirs, let in since, isn't the one the m
 assert(out.Pat, "a computer that never said which it was goes by the mark")
 assert(not out.Lee, "still in their minute: still listed")
 print("ok")
+
+-- a leaver's claims go free on one computer: the first other name, or anyone after an hour (0.58.47)
+assert(removal.frees({ "Sam", "Bee", "James" }, "Sam", "Bee", 10), "Bee is first of the rest")
+assert(not removal.frees({ "Sam", "Bee", "James" }, "Sam", "James", 10), "James waits for Bee")
+assert(removal.frees({ "Sam", "Bee", "James" }, "Sam", "James", 3700), "after an hour, anyone")
+assert(removal.frees({ "Sam" }, "Sam", "James", 10), "nobody else listed: whoever looks")
