@@ -23,6 +23,8 @@ local env = {
   combo = function(label, cur) ImGui.Text(ctx, tostring(label)); return cur end, describe = function(e) return require("recall").describe(e) end,
   local_time = function(iso) return tostring(iso) end, points = function() return require("recall").list(cfg, b.song, b.room) end,
   can = function() return function() return true end end, who = function() return { mode = "claims" } end, refresh_now = function() end,
+  same_room_on = function() return false end, set_same_room = function() end, sonobus_open = function() end, bar_of = function(p) return tostring(p) end,
+  check = function(label, v) return ImGui.Checkbox(ctx, label, v) end, sb_link = function() return nil end,
 }
 -- One part, inside a child of its own in a window of its own: an error halfway through leaves only that child open, which is closed here
 -- (else ImGui raised its own error box when the script ended, and that held REAPER: 0.58.50).
@@ -54,5 +56,7 @@ page("page_health", { "maint_rows", "maint_level", "maint_health", "maint_upkeep
 page("page_restore", { "section_recall", "section_history" })
 page("page_rooms", { "refresh", "squares", "actions", "invites" },
   function(m) check(type(m.view()) == "table" and m.view().room == b.room, "Rooms shows this tab's room") end)
+-- (not start_together: it would start the band's transport for real)
+page("page_play", { "section_together", "section_live" })
 out[#out + 1] = string.format("page_modules: fails %d of %d", fails, #out)
 return table.concat(out, "\n")
