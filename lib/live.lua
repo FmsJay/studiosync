@@ -123,6 +123,7 @@ end
 
 -- Connect, one step a call: with `open`, its Connect button brings up the host box (filled in by live.configure); that box's
 -- own Connect is pressed as soon as it's there. -> "connected", "pressing", "opening", or nil (no window, not asked to open it).
+local stuck = {} -- box -> when StudioSync first pressed it (true once it's said the box won't take a press)
 local function press_host_box()
   -- (the visible one: on a Mac a closed one stays listed, hidden, for up to a minute, and Find handed back that one while the real box sat on
   -- screen unpressed: the Mac never reconnected after a long outage, 0.58.40)
@@ -144,16 +145,40 @@ local function press_host_box()
   local edit = reaper.JS_Window_FindChildByID and reaper.JS_Window_FindChildByID(box, 1025)
   if host ~= "" and edit then reaper.JS_Window_SetTitle(edit, host) end
   reaper.JS_WindowMessage_Send(box, "WM_COMMAND", 1, 0, 0, 0) -- (a posted one never reaches a box on a Mac: it sat there for good, 0.57.7)
+  -- (a box can stop taking any message while another REAPER window is in front of it: with ReaPack's Transaction report open, Connect and Cancel by
+  -- message both did nothing on a Mac, and the box connected the moment the report closed. 0.58.41. So after 20 s of pressing, say so, once per box)
+  local key = tostring(box)
+  stuck[key] = stuck[key] or reaper.time_precise()
+  if stuck[key] ~= true and reaper.time_precise() - stuck[key] > 20 then
+    stuck[key] = true
+    band.log("ReaNINJAM's connection box isn't taking StudioSync's press: close any other REAPER window in front of it (ReaPack's report, say), or press its Connect yourself")
+  end
   return true
 end
 local opened_at = -math.huge -- (when this last opened the host box)
 function live.connect(open)
   if not reaper.JS_WindowMessage_Post then return nil end
+  local con = live.window()
+  local connected = con and reaper.JS_Window_FindChild(con, "Disconnect", true)
+  -- (through the relay, it also knows when ReaNINJAM is still connecting, before its Disconnect button comes)
+  local relay = require("services").relay_status()
+  local on_relay = reaper.GetExtState(band.SECTION, "ninjam connect") ~= reaper.GetExtState(band.SECTION, "ninjam host")
+    and (relay == "ok" or relay == "waiting" or relay == "connecting")
+  if connected or on_relay then
+    -- (connected or connecting: a box still coming is one asked for while presses couldn't get through, and pressing it disconnects and connects
+    -- again. 16 connects in 15 s on a Mac used up ReaNINJAM's session folders for that minute: "Error creating session directory!". 0.58.41)
+    if reaper.JS_Window_ListFind then
+      local _, list = reaper.JS_Window_ListFind("NINJAM Connection Configuration", true)
+      for addr in (list or ""):gmatch("[^,]+") do
+        local w = reaper.JS_Window_HandleFromAddress(tonumber(addr))
+        if w and reaper.JS_Window_IsVisible(w) then reaper.JS_WindowMessage_Send(w, "WM_COMMAND", 2, 0, 0, 0) end -- (Cancel)
+      end
+    end
+    return connected and "connected" or "pressing"
+  end
   if press_host_box() then return "pressing" end
   if live.error_box() then return "error" end -- (its Connect does nothing until that's answered, on Windows)
-  local con = live.window()
   if not con then return nil end
-  if reaper.JS_Window_FindChild(con, "Disconnect", true) then return "connected" end
   -- (one box at a time: one opened under an alert, or on another Space, doesn't read as visible, and each press opened another. Three were stacked on a
   -- Mac, the last taking every click: 0.58.35)
   if open and not reaper.GetOS():find("^Win") and reaper.time_precise() - opened_at < 30 then return "opening" end -- (Windows sees its box: it retries 5 s apart)
