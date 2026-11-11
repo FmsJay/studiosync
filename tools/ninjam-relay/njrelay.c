@@ -7,7 +7,8 @@
  * keepalive periods: netmsg.cpp) and writes "lost" to the status file. StudioSync sees that and presses Disconnect.
  *
  * usage: njrelay <listen port> <target file> <status file> [REAPER's pid]
- * Status file: "connecting", "waiting" (no server yet, client held), "ok", "lost", "idle" (no client), "cantlisten".
+ * Status file: "connecting", "waiting" (no server yet, client held), "ok", "lost", "idle up" / "idle down" (no client; whether the
+ * server answers), "cantlisten". Each line ends with the time it was written.
  * The target file holds the server as "host:port" and is read at each new connection, so the server can move without
  * restarting this (which would drop ReaNINJAM's connection and bring up the very alert this is for). Listens on 127.0.0.1 only. One client at a time. Server-to-client traffic goes on whole messages only (1 byte type,
  * 4 bytes little-endian size, then the body), so a keepalive is never put into the middle of one. Status file: "connecting",
@@ -98,10 +99,11 @@ static int read_target(const char *path, char *host, size_t hn, char *port, size
 
 /* One client, start to finish. Before the server's first message (its challenge) ReaNINJAM may be sent nothing: anything else, or the
  * connection closing, is a failed connect to it, with its "can't connect to host!" alert (Mac, 0.58.35). So until then a server that
- * doesn't answer is tried again every 2 s, the client held silently (ReaNINJAM waits 135 s for a first message: netmsg.cpp with its
- * starting keepalive of 45 s), and "waiting" said; after WAIT_FOR s it's "lost", for StudioSync to disconnect. Once signed in, a
- * server gone is "lost" at once, with keepalives to hold ReaNINJAM until StudioSync disconnects. */
-#define WAIT_FOR 100
+ * doesn't answer is tried again every 2 s, the client held silently, and "waiting" said; after WAIT_FOR s it's "lost", for StudioSync
+ * to disconnect, which shows nothing. ReaNINJAM itself gives up on a first message after about 10 s (seen on the Mac, 0.58.39), so
+ * WAIT_FOR leaves StudioSync time to act before that. Once signed in, a server gone is "lost" at once, with keepalives to hold
+ * ReaNINJAM until StudioSync disconnects. */
+#define WAIT_FOR 5 /* (+ up to 1 s of the idle check holding up accept, + one 1 s dial, + StudioSync's ~1 s look: under 10) */
 static void serve(int cl, const char *target_path) {
   int one = 1;
   setsockopt(cl, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
@@ -116,9 +118,11 @@ static void serve(int cl, const char *target_path) {
   time_t last_keep = time(NULL);
   for (;;) {
     if (reaper_gone()) break;
-    if (up < 0 && !started && time(NULL) - last_try >= 2) {
+    if (up < 0 && !started && time(NULL) - last_try >= 1) { /* (every second: WAIT_FOR is short) */
       last_try = time(NULL);
-      if (read_target(target_path, host, sizeof host, port, sizeof port) == 0) up = dial(host, port, 3);
+      /* (1 s: a computer that's gone from Tailscale never refuses, it just doesn't answer, and 3 s dials put "lost" up to 9 s in, against
+       * ReaNINJAM's 10. Pointed out by the Mac's test, 0.58.40) */
+      if (read_target(target_path, host, sizeof host, port, sizeof port) == 0) up = dial(host, port, 1);
       if (up >= 0) {
         status("ok");
         if (npend && send_all(up, pend, npend) < 0) { close(up); up = -1; }
@@ -126,7 +130,7 @@ static void serve(int cl, const char *target_path) {
       } else status(time(NULL) - since < WAIT_FOR ? "waiting" : "lost");
     }
     struct pollfd p[2] = { { cl, POLLIN, 0 }, { up, POLLIN, 0 } };
-    int n = poll(p, up >= 0 ? 2 : 1, 1000);
+    int n = poll(p, up >= 0 ? 2 : 1, up < 0 && !started ? 200 : 1000); /* (holding: back to the next dial soon) */
     if (n < 0) { if (errno == EINTR) continue; break; }
     if (p[0].revents & (POLLIN | POLLHUP | POLLERR)) { /* client to server: passed on as it comes */
       unsigned char tmp[1 << 16];
@@ -185,12 +189,22 @@ int main(int argc, char **argv) {
   a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   if (bind(ls, (struct sockaddr *)&a, sizeof a) < 0 || listen(ls, 1) < 0) { status("cantlisten"); return 1; }
   status("idle");
+  time_t last_probe = 0;
   for (;;) {
     if (reaper_gone()) break;
+    /* With nobody connected, whether the server answers, every 5 s: "idle up" / "idle down". StudioSync connects on that, not on a
+     * port check of its own, which read a server that had just gone as answering and pressed Connect at nothing (Mac, 0.58.39). */
+    if (time(NULL) - last_probe >= 5) {
+      last_probe = time(NULL);
+      char host[256], port[16];
+      int fd = read_target(argv[2], host, sizeof host, port, sizeof port) == 0 ? dial(host, port, 1) : -1; /* (1 s: a client waits on it) */
+      if (fd >= 0) close(fd);
+      status(fd >= 0 ? "idle up" : "idle down");
+    }
     struct pollfd p ={ ls, POLLIN, 0 };
     if (poll(&p, 1, 1000) <= 0) continue;
     int cl = accept(ls, NULL, NULL);
-    if (cl >= 0) serve(cl, argv[2]);
+    if (cl >= 0) { serve(cl, argv[2]); last_probe = 0; }
   }
   close(ls);
   return 0;

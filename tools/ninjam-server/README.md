@@ -14,7 +14,7 @@ the Play page brings the window up.
 **Stop server** on the Play page stops it, 10 s after telling everyone on it to disconnect. That matters on a Mac: when a
 server simply goes away (its computer switched off, say), ReaNINJAM shows "Disconnected from host!", and on a Mac every
 script in REAPER, StudioSync's too, waits until someone presses its OK. A disconnect StudioSync asks for shows no box. If its
-connection box is open too, the mouse may not reach the alert: press Return: once for the alert's OK, and once more for the connection box, which connects.
+connection box is open over the alert, the alert won't take a click: press Cancel on the box first, then OK on the alert (Mac, 0.58.39).
 
 From 0.58.35 a Mac's ReaNINJAM connects through `njrelay` (`lib/ninjam`, source in `tools/ninjam-relay`), a relay on 127.0.0.1:2098.
 When the server goes away it keeps ReaNINJAM's connection open with NINJAM's own keepalive and tells StudioSync, which then disconnects

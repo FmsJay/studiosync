@@ -740,6 +740,11 @@ end
 services.RELAY_PORT = 2098
 local function relay_dir() return band.home():gsub("\\", "/") .. "/ninjam" end
 function services.relay_status() return (band.read(relay_dir() .. "/njrelay.txt") or ""):match("^(%a+)") end
+-- With nobody connected, the relay checks the server every 5 s itself: whether it answered, as of the last 15 s.
+function services.relay_up()
+  local word, up, t = (band.read(relay_dir() .. "/njrelay.txt") or ""):match("^(%a+) (%a+) (%d+)")
+  return word == "idle" and up == "up" and os.time() - tonumber(t) < 15
+end
 function services.relay_for(server)
   local from = services.ninjam_dir() .. "/njrelay"
   if WIN or not server:match("^.+:%d+$") or not reaper.file_exists(from) or services.relay_status() == "cantlisten" then return server end

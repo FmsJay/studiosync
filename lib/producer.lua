@@ -99,6 +99,16 @@ local connecting = {}
 local server_at, server_lost = {}, {}
 local held = {} -- server -> until when nothing connects to it: it's just been stopped on purpose (services.stop_ninjam)
 local restarted = {} -- tab -> { n, since }: "the NINJAM server answers now" restarts in the last 10 minutes
+-- Through the relay (a Mac: services.relay_for), a try at a server that's gone shows nothing (the relay holds it, StudioSync disconnects), and the
+-- relay's own check says whether the server answers: StudioSync's port check read a server just gone as answering (Mac, 0.58.39).
+local function relayed()
+  local via = reaper.GetExtState(band.SECTION, "ninjam connect")
+  return via ~= "" and via ~= reaper.GetExtState(band.SECTION, "ninjam host")
+end
+local function server_answers(host)
+  if relayed() then return require("services").relay_up() end
+  return host ~= "" and require("services").port_open(host)
+end
 local function auto_connect(tab)
   -- (a start is told by the time it was asked for: it may come from the panel's script, which has its own copy of this table. Mac, 0.58.13)
   local start = reaper.GetExtState(band.SECTION, "ninjam start " .. tab)
@@ -131,8 +141,8 @@ local function auto_connect(tab)
     local r = restarted[tab] or { n = 0, since = reaper.time_precise() }
     if reaper.time_precise() - r.since > 600 then r.n, r.since = 0, reaper.time_precise() end
     restarted[tab] = r
-    local capped = not reaper.GetOS():find("^Win") and r.n >= 3
-    if not capped and host ~= "" and require("services").port_open(host) and live.connect(false) ~= "connected" then
+    local capped = not reaper.GetOS():find("^Win") and not relayed() and r.n >= 3
+    if not capped and server_answers(host) and live.connect(false) ~= "connected" then
       r.n = r.n + 1
       connecting[tab] = { tries = 0, at = -math.huge, start = c.start }
       band.log("the NINJAM server answers now: connecting")
@@ -145,8 +155,8 @@ local function auto_connect(tab)
     if now == "connected" then c.done, c.up, c.up_at = true, true, reaper.time_precise()
     elseif now ~= "pressing" and c.pressed then
       c.done = true
-      band.log("NINJAM: if ReaNINJAM shows a box, press its OK to finish connecting")
-    elseif not c.pressed and reaper.time_precise() - c.at > 12 and reaper.GetExtState(band.SECTION, "ninjam host") ~= "" and require("services").port_open(reaper.GetExtState(band.SECTION, "ninjam host")) then
+      band.log(relayed() and "NINJAM: the server didn't answer: connecting when it does" or "NINJAM: if ReaNINJAM shows a box, press its OK to finish connecting")
+    elseif not c.pressed and reaper.time_precise() - c.at > 12 and server_answers(reaper.GetExtState(band.SECTION, "ninjam host")) then
       c.pressed = live.connect(true) == "opening"
     end
     return
