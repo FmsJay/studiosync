@@ -2656,25 +2656,9 @@ local function frame_app()
     end
     if p[1] == page and not compact then ImGui.DrawList_AddRectFilled(ImGui.GetWindowDrawList(ctx), x - 8, y + 6, x - 4, y + h - 6, ACCENT, 2) end
   end
-  local y0 = ImGui.GetCursorPosY(ctx) + (ui.short and -4 or 8)
-  ImGui.SetCursorPos(ctx, 16, y0)
-  if ui.crumb(view.group or "", 0, 1 / 3, fh, "The studio this project belongs to. Click: all your studios.") then page = "Groups"; require("page_groups").root = nil end
-  local function at_row(label) -- next to the last piece, or on a new line when `label`'s piece doesn't fit
-    ImGui.SameLine(ctx, 0, 8)
-    if label and ImGui.GetContentRegionAvail(ctx) < ImGui.CalcTextSize(ctx, label) + 24 then
-      ImGui.SetCursorPos(ctx, 16, y0 + fh + 6)
-      y0 = y0 + fh + 6
-    else
-      ImGui.SetCursorPosY(ctx, y0)
-    end
-  end
   local key = tostring(proj)
   local beat = tonumber(reaper.GetExtState(band.SECTION, "live " .. key))
   local running = beat and reaper.time_precise() - beat < 5
-  at_row(b.song)
-  if ui.crumb(b.song, 1 / 3, 2 / 3, fh, "The project in this tab. Click: this studio's projects.") then page = "Projects"; require("page_groups").root = cfg.root end
-  at_row(b.room)
-  if ui.crumb(b.room, 2 / 3, 1, fh, "The room this tab is in. Click: the Rooms page.") then page = "Rooms" end
   -- what sync is actually doing, not just whether it runs ("Sync on" was green with nothing reaching anyone: review)
   local label, colour, tip = "Sync off", RED, "Live sync is off in this tab."
   if running then
@@ -2694,21 +2678,10 @@ local function frame_app()
   local driver_gone = reaper.GetExtState(band.SECTION, "alone " .. tostring(proj)) ~= "" or reaper.GetExtState(band.SECTION, "driver_away " .. tostring(proj)) ~= "" -- (Mac, 0.58.5: "James drives" beside "you have full control")
   local drives = view.driver == cfg.user and "you drive" or view.driver and (view.driver .. (driver_gone and " drives (away)" or " drives")) or "nobody drives yet"
   ui.status = { label = label, colour = colour, tip = tip, drives = drives }
-  at_row(label)
-  if ImGui.GetCursorPosX(ctx) > 17 then ImGui.SetCursorPosX(ctx, ImGui.GetCursorPosX(ctx) + 10) end -- (apart from the coloured pills: those say where you are, this how sync is going)
-  pill(label, colour, DARK, fh)
-  ImGui.SetItemTooltip(ctx, tip)
-  if select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) ~= "" then -- (Hold my changes was invisible once on: review)
-    local n = tonumber(reaper.GetExtState(band.SECTION, "held " .. key)) or 0
-    local held = n > 0 and string.format("Holding %d change%s", n, n == 1 and "" or "s") or "Holding your changes"
-    at_row(held); pill(held, YELLOW, DARK, fh)
-    ImGui.SetItemTooltip(ctx, "Hold my changes is on: what you change stays here until you send it.")
-    at_row("Send now")
-    if ImGui.SmallButton(ctx, "Send now##hold") then reaper.SetProjExtState(proj, band.SECTION, "hold", "") end
-    ImGui.SetItemTooltip(ctx, "Switch Hold my changes off: everything you changed goes to the others.")
-  end
-  do -- two people armed on one track: both record onto it at once (review item 33)
-    local mine, both = {}, {}
+  local held = select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) ~= ""
+  local both = {} -- two people armed on one track: both record onto it at once (review item 33)
+  do
+    local mine = {}
     for i = 0, reaper.CountTracks(proj) - 1 do
       local tr = reaper.GetTrack(proj, i)
       if reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1 then mine[select(2, reaper.GetTrackName(tr))] = true end
@@ -2718,104 +2691,152 @@ local function frame_app()
         for _, t in ipairs(r.armed or {}) do if mine[t] then both[#both + 1] = r.name .. " (" .. t .. ")" end end
       end
     end
-    if #both > 0 then
-      local armed = "Armed together: " .. table.concat(both, ", ")
-      at_row(armed); pill(armed, YELLOW, DARK, fh)
-      ImGui.SetItemTooltip(ctx, "You and they both have this track armed: if you both record, two takes land on it at once.\n" ..
-        "Fine for trying parts; otherwise agree who records it, or record onto a track of your own.")
-    end
   end
-  if not running and rooms.is_copy(proj, cfg, b) then
-    at_row("older copy")
-    pill("older copy", YELLOW, DARK, fh)
-    ImGui.SetItemTooltip(ctx, "A backup or autosave of this song, not your project for it. Nothing goes in or out of it.")
-  elseif not running and band.synced_elsewhere(proj) then -- (a second copy of the song: syncing it would work on a stale one)
-    at_row("open in another tab")
-    pill("open in another tab", YELLOW, DARK, fh)
-    ImGui.SetItemTooltip(ctx, "This project is already open and syncing in another tab: work there. This tab is a second copy, not synced.")
-  elseif not running then -- (Stop is in Settings: nobody needs it at hand, and it sat next to buttons people do press)
-    at_row("Start")
-    if ImGui.Button(ctx, "Start") then reaper.DeleteExtState(band.SECTION, "stop " .. key, false); band.start_live(dir) end
-  end
-  at_row(drives)
-  ImGui.SetCursorPosY(ctx, y0 + (fh - ImGui.GetTextLineHeight(ctx)) / 2) -- (not AlignTextToFramePadding: it carries along the row, and the page tabs sat low: design review)
-  ImGui.TextDisabled(ctx, drives)
-  ImGui.SetItemTooltip(ctx, "The driver's changes go to everyone, except on what someone has claimed.")
   -- (no buttons for these: Ctrl+Z and Ctrl+Shift+Z do it, and Edit > Undo: Live sync steps in. The radial menu still asks for them here.)
   local function undo_redo(redo) -- (lib/undo.lua: the same as the StudioSync - Undo / Redo actions, but always asks)
     local res, why = require("undo").step(proj, cfg, b, redo, { ask = true, describe = describe })
     if res then band.log(res) elseif why then band.msg(why) end
     hist_at = 0
   end
-  if wide then -- the pages, in the bar
-    ImGui.PushStyleVar(ctx, ImGui.StyleVar_SelectableTextAlign, 0.5, 0.5)
-    ImGui.PushStyleVar(ctx, ImGui.StyleVar_ItemSpacing, 8, 0) -- (a selectable grows by the spacing: the highlight stood taller than the pills)
-    for i, p in ipairs(ui.pages()) do
-      ImGui.SameLine(ctx, 0, i == 1 and 24 or 2)
-      -- (they stay put: going by the status beside them, they slid when "In sync" became "Receiving 13", under the mouse)
-      if i == 1 then tabs_at = math.max(math.min(tabs_at, ww * 0.4), ImGui.GetCursorPosX(ctx)); ImGui.SetCursorPosX(ctx, tabs_at) end
-      ImGui.SetCursorPosY(ctx, y0)
-      nav_item(p, ImGui.CalcTextSize(ctx, p[1]) + 28 + (nav_dot(p[1]) and 12 or 0), fh)
-    end
-    ImGui.PopStyleVar(ctx, 2)
-    if wh < y0 + fh + 60 then
-      local words = "Too short to show a page: drag the line above the docker's tabs up."
-      ImGui.SameLine(ctx, 0, 16)
-      ImGui.SetCursorPosY(ctx, y0 + 3)
-      if ImGui.GetContentRegionAvail(ctx) <= ImGui.CalcTextSize(ctx, words) + 240 then words = "Too short: drag it up" end -- (pressing a page showed nothing, with no hint: Mac, 0.57.7)
-      if ImGui.GetContentRegionAvail(ctx) > ImGui.CalcTextSize(ctx, words) + 240 then ImGui.TextColored(ctx, YELLOW, words) else ImGui.Dummy(ctx, 0, 0) end
-    end
-  end
   local docked = ImGui.IsWindowDocked(ctx)
-  -- the window's own buttons sit at the right end of the bar (when they fit there), apart from the session's
-  local bar_min = docked or native -- (no title bar of ours to put it on: else it sits by the close button)
-  -- (Window and Dock: on the title bar when the panel has its own, else here, and never folded into "...": they went missing at some sizes. James, 0.58.23)
-  local labels = bar_min and { "Sync and exit", "Window", docked and "Undock" or "Dock" } or { "Sync and exit" }
-  local need = bar_min and 2 * (fh - 6) + 28 or 0 -- (the two window icons: as a word's width, the second fell off the right edge)
-  for _, l in ipairs(labels) do need = need + ImGui.CalcTextSize(ctx, l) + 28 end
-  ImGui.SameLine(ctx, 0, 8)
-  local room = ImGui.GetContentRegionAvail(ctx)
+  -- docked, the bar folds to a strip in sync's colour (and Settings' when it wants a look) until the mouse comes to the top: the page gets the room
+  -- (James, 0.58.44). Never while it holds something to press: Start, Send now, two people armed on one track
+  local wx, wy = ImGui.GetWindowPos(ctx)
+  local _, my = ImGui.GetMousePos(ctx)
+  local at_top = ImGui.IsWindowHovered(ctx, ImGui.HoveredFlags_ChildWindows | ImGui.HoveredFlags_AllowWhenBlockedByPopup)
+    and my >= wy and my < wy + (ui.head_open and ui.head_h or 16)
+  if at_top or ImGui.IsPopupOpen(ctx, "", ImGui.PopupFlags_AnyPopupId) then ui.head_seen = reaper.time_precise() end -- (a menu from the bar keeps it)
+  ui.head_open = not docked or not running or held or #both > 0 or reaper.time_precise() - (ui.head_seen or -math.huge) < 0.4 -- (a moment's grace: no flicker at its edge)
   local toast_place
-  if ww >= 520 and room - need > 160 then -- (the bar has room: a blank line under it cost a short docker 30 px for something shown 6 s at a time)
-    local tx = ImGui.GetCursorScreenPos(ctx)
-    local _, ty = ImGui.GetWindowPos(ctx)
-    toast_place = { x = tx + 8, y = ty + y0 + (fh - ImGui.GetTextLineHeight(ctx)) / 2, w = room - need - 16 }
-  else -- (no room in the bar: over the top of the page while it's being said. A blank row for it cost every page 30 px, for something shown 6 s at a time)
-    toast_place = { x = ImGui.GetWindowPos(ctx) + 16, w = ww - 32, over = true }
-  end
-  if ww < 600 then -- (narrow: Sync and exit folds into "...", as "Window" wrapped alone onto a row of its own: design review)
-    at_row("...")
-    if ImGui.Button(ctx, "...##leave") then
-      if band.pick({ "Sync and exit" }) == "Sync and exit" then require("leave").start(proj, cfg, b) end
-    end
-    ImGui.SetItemTooltip(ctx, "Sync and exit.")
+  if not ui.head_open then
+    local cx, cy = ImGui.GetCursorScreenPos(ctx)
+    local dl, dot = ImGui.GetWindowDrawList(ctx), nav_dot("Settings")
+    ImGui.DrawList_AddRectFilled(dl, wx + 8, cy + 3, wx + ww - (dot and 46 or 8), cy + 7, colour, 2)
+    if dot then ImGui.DrawList_AddRectFilled(dl, wx + ww - 40, cy + 3, wx + ww - 8, cy + 7, dot, 2) end
+    ImGui.Dummy(ctx, 0, 6)
+    toast_place = { x = wx + 16, y = cy + 12, w = ww - 32, over = true }
   else
-    if room > need + 12 then ImGui.SetCursorPosX(ctx, ImGui.GetCursorPosX(ctx) + room - need); ImGui.SetCursorPosY(ctx, y0)
-    else at_row("Sync and exit") end
-    if ImGui.Button(ctx, "Sync and exit") then require("leave").start(proj, cfg, b) end
-    ImGui.SetItemTooltip(ctx, "Leaving? Saves, gets everything you've done out to the others, says who has it, then lets you close the project or quit REAPER.")
-  end
-  if bar_min then
-    at_row("Window")
-    ui.window_button()
-    at_row(docked and "Undock" or "Dock")
-    tools.dock_menu(docked)
-  end
-  if bar_min then ui.window_buttons(at_row, y0, fh) end
-  ImGui.SetCursorPos(ctx, 16, y0 + fh + (ui.short and 2 or 5)) -- (closer to the page: more of it shows, docked above all. James, 0.58.23)
-  -- narrow: the pages first, so a row arriving under them can't slide them from under the mouse (design review)
-  if compact and not wide then
-    ImGui.PushStyleVar(ctx, ImGui.StyleVar_SelectableTextAlign, 0.5, 0.5)
-    for i, p in ipairs(ui.pages()) do
-      local w = ImGui.CalcTextSize(ctx, p[1]) + 28 + (nav_dot(p[1]) and 12 or 0)
-      if i > 1 then
-        ImGui.SameLine(ctx, 0, 2)
-        if ImGui.GetContentRegionAvail(ctx) < w then ImGui.NewLine(ctx); ImGui.SetCursorPosX(ctx, 16) end -- (a narrow panel lost Plugins and Setup off the right)
+    local y0 = ImGui.GetCursorPosY(ctx) + (ui.short and -4 or 8)
+    ImGui.SetCursorPos(ctx, 16, y0)
+    if ui.crumb(view.group or "", 0, 1 / 3, fh, "The studio this project belongs to. Click: all your studios.") then page = "Groups"; require("page_groups").root = nil end
+    local function at_row(label) -- next to the last piece, or on a new line when `label`'s piece doesn't fit
+      ImGui.SameLine(ctx, 0, 8)
+      if label and ImGui.GetContentRegionAvail(ctx) < ImGui.CalcTextSize(ctx, label) + 24 then
+        ImGui.SetCursorPos(ctx, 16, y0 + fh + 6)
+        y0 = y0 + fh + 6
+      else
+        ImGui.SetCursorPosY(ctx, y0)
       end
-      nav_item(p, w, fh)
     end
-    ImGui.PopStyleVar(ctx)
-    ImGui.SetCursorPosX(ctx, 16)
+    at_row(b.song)
+    if ui.crumb(b.song, 1 / 3, 2 / 3, fh, "The project in this tab. Click: this studio's projects.") then page = "Projects"; require("page_groups").root = cfg.root end
+    at_row(b.room)
+    if ui.crumb(b.room, 2 / 3, 1, fh, "The room this tab is in. Click: the Rooms page.") then page = "Rooms" end
+    at_row(label)
+    if ImGui.GetCursorPosX(ctx) > 17 then ImGui.SetCursorPosX(ctx, ImGui.GetCursorPosX(ctx) + 10) end -- (apart from the coloured pills: those say where you are, this how sync is going)
+    pill(label, colour, DARK, fh)
+    ImGui.SetItemTooltip(ctx, tip)
+    if held then -- (Hold my changes was invisible once on: review)
+      local n = tonumber(reaper.GetExtState(band.SECTION, "held " .. key)) or 0
+      local words = n > 0 and string.format("Holding %d change%s", n, n == 1 and "" or "s") or "Holding your changes"
+      at_row(words); pill(words, YELLOW, DARK, fh)
+      ImGui.SetItemTooltip(ctx, "Hold my changes is on: what you change stays here until you send it.")
+      at_row("Send now")
+      if ImGui.SmallButton(ctx, "Send now##hold") then reaper.SetProjExtState(proj, band.SECTION, "hold", "") end
+      ImGui.SetItemTooltip(ctx, "Switch Hold my changes off: everything you changed goes to the others.")
+    end
+    if #both > 0 then
+      local armed = "Armed together: " .. table.concat(both, ", ")
+      at_row(armed); pill(armed, YELLOW, DARK, fh)
+      ImGui.SetItemTooltip(ctx, "You and they both have this track armed: if you both record, two takes land on it at once.\n" ..
+        "Fine for trying parts; otherwise agree who records it, or record onto a track of your own.")
+    end
+    if not running and rooms.is_copy(proj, cfg, b) then
+      at_row("older copy")
+      pill("older copy", YELLOW, DARK, fh)
+      ImGui.SetItemTooltip(ctx, "A backup or autosave of this song, not your project for it. Nothing goes in or out of it.")
+    elseif not running and band.synced_elsewhere(proj) then -- (a second copy of the song: syncing it would work on a stale one)
+      at_row("open in another tab")
+      pill("open in another tab", YELLOW, DARK, fh)
+      ImGui.SetItemTooltip(ctx, "This project is already open and syncing in another tab: work there. This tab is a second copy, not synced.")
+    elseif not running then -- (Stop is in Settings: nobody needs it at hand, and it sat next to buttons people do press)
+      at_row("Start")
+      if ImGui.Button(ctx, "Start") then reaper.DeleteExtState(band.SECTION, "stop " .. key, false); band.start_live(dir) end
+    end
+    at_row(drives)
+    ImGui.SetCursorPosY(ctx, y0 + (fh - ImGui.GetTextLineHeight(ctx)) / 2) -- (not AlignTextToFramePadding: it carries along the row, and the page tabs sat low: design review)
+    ImGui.TextDisabled(ctx, drives)
+    ImGui.SetItemTooltip(ctx, "The driver's changes go to everyone, except on what someone has claimed.")
+    if wide then -- the pages, in the bar
+      ImGui.PushStyleVar(ctx, ImGui.StyleVar_SelectableTextAlign, 0.5, 0.5)
+      ImGui.PushStyleVar(ctx, ImGui.StyleVar_ItemSpacing, 8, 0) -- (a selectable grows by the spacing: the highlight stood taller than the pills)
+      for i, p in ipairs(ui.pages()) do
+        ImGui.SameLine(ctx, 0, i == 1 and 24 or 2)
+        -- (they stay put: going by the status beside them, they slid when "In sync" became "Receiving 13", under the mouse)
+        if i == 1 then tabs_at = math.max(math.min(tabs_at, ww * 0.4), ImGui.GetCursorPosX(ctx)); ImGui.SetCursorPosX(ctx, tabs_at) end
+        ImGui.SetCursorPosY(ctx, y0)
+        nav_item(p, ImGui.CalcTextSize(ctx, p[1]) + 28 + (nav_dot(p[1]) and 12 or 0), fh)
+      end
+      ImGui.PopStyleVar(ctx, 2)
+      if wh < y0 + fh + 60 then
+        local words = "Too short to show a page: drag the line above the docker's tabs up."
+        ImGui.SameLine(ctx, 0, 16)
+        ImGui.SetCursorPosY(ctx, y0 + 3)
+        if ImGui.GetContentRegionAvail(ctx) <= ImGui.CalcTextSize(ctx, words) + 240 then words = "Too short: drag it up" end -- (pressing a page showed nothing, with no hint: Mac, 0.57.7)
+        if ImGui.GetContentRegionAvail(ctx) > ImGui.CalcTextSize(ctx, words) + 240 then ImGui.TextColored(ctx, YELLOW, words) else ImGui.Dummy(ctx, 0, 0) end
+      end
+    end
+    -- the window's own buttons sit at the right end of the bar (when they fit there), apart from the session's
+    local bar_min = docked or native -- (no title bar of ours to put it on: else it sits by the close button)
+    -- (Window and Dock: on the title bar when the panel has its own, else here, and never folded into "...": they went missing at some sizes. James, 0.58.23)
+    local labels = bar_min and { "Sync and exit", "Window", docked and "Undock" or "Dock" } or { "Sync and exit" }
+    local need = bar_min and 2 * (fh - 6) + 28 or 0 -- (the two window icons: as a word's width, the second fell off the right edge)
+    for _, l in ipairs(labels) do need = need + ImGui.CalcTextSize(ctx, l) + 28 end
+    ImGui.SameLine(ctx, 0, 8)
+    local room = ImGui.GetContentRegionAvail(ctx)
+    if ww >= 520 and room - need > 160 then -- (the bar has room: a blank line under it cost a short docker 30 px for something shown 6 s at a time)
+      local tx = ImGui.GetCursorScreenPos(ctx)
+      local _, ty = ImGui.GetWindowPos(ctx)
+      toast_place = { x = tx + 8, y = ty + y0 + (fh - ImGui.GetTextLineHeight(ctx)) / 2, w = room - need - 16 }
+    else -- (no room in the bar: over the top of the page while it's being said. A blank row for it cost every page 30 px, for something shown 6 s at a time)
+      toast_place = { x = ImGui.GetWindowPos(ctx) + 16, w = ww - 32, over = true }
+    end
+    if ww < 600 then -- (narrow: Sync and exit folds into "...", as "Window" wrapped alone onto a row of its own: design review)
+      at_row("...")
+      if ImGui.Button(ctx, "...##leave") then
+        if band.pick({ "Sync and exit" }) == "Sync and exit" then require("leave").start(proj, cfg, b) end
+      end
+      ImGui.SetItemTooltip(ctx, "Sync and exit.")
+    else
+      if room > need + 12 then ImGui.SetCursorPosX(ctx, ImGui.GetCursorPosX(ctx) + room - need); ImGui.SetCursorPosY(ctx, y0)
+      else at_row("Sync and exit") end
+      if ImGui.Button(ctx, "Sync and exit") then require("leave").start(proj, cfg, b) end
+      ImGui.SetItemTooltip(ctx, "Leaving? Saves, gets everything you've done out to the others, says who has it, then lets you close the project or quit REAPER.")
+    end
+    if bar_min then
+      at_row("Window")
+      ui.window_button()
+      at_row(docked and "Undock" or "Dock")
+      tools.dock_menu(docked)
+    end
+    if bar_min then ui.window_buttons(at_row, y0, fh) end
+    ImGui.SetCursorPos(ctx, 16, y0 + fh + (ui.short and 2 or 5)) -- (closer to the page: more of it shows, docked above all. James, 0.58.23)
+    -- narrow: the pages first, so a row arriving under them can't slide them from under the mouse (design review)
+    if compact and not wide then
+      ImGui.PushStyleVar(ctx, ImGui.StyleVar_SelectableTextAlign, 0.5, 0.5)
+      for i, p in ipairs(ui.pages()) do
+        local w = ImGui.CalcTextSize(ctx, p[1]) + 28 + (nav_dot(p[1]) and 12 or 0)
+        if i > 1 then
+          ImGui.SameLine(ctx, 0, 2)
+          if ImGui.GetContentRegionAvail(ctx) < w then ImGui.NewLine(ctx); ImGui.SetCursorPosX(ctx, 16) end -- (a narrow panel lost Plugins and Setup off the right)
+        end
+        nav_item(p, w, fh)
+      end
+      ImGui.PopStyleVar(ctx)
+      ImGui.SetCursorPosX(ctx, 16)
+    end
+    ui.head_h = ImGui.GetCursorPosY(ctx) + 4
+    if toast_place.over then toast_place.y = wy + y0 + fh + 8 end
   end
   -- what StudioSync just did, under the bar for a few seconds (actions used to report only to the Console)
   local log = band.activity()
@@ -2841,8 +2862,7 @@ local function frame_app()
   tools.toast_seen = true -- (opening the panel doesn't replay the old newest line)
   local saying = tools.toast_line and reaper.time_precise() - tools.toast_at < 6 and tools.toast_line or nil
   if toast_place and toast_place.over then
-    local tx, ty = toast_place.x, select(2, ImGui.GetWindowPos(ctx)) + y0 + fh + 8
-    toast_place.y = ty
+    local tx, ty = toast_place.x, toast_place.y
     if saying then ImGui.DrawList_AddRectFilled(ImGui.GetForegroundDrawList(ctx), tx - 6, ty - 3, tx + toast_place.w + 6, ty + ImGui.GetTextLineHeight(ctx) + 5, theme.BG, 4) end
   end
   tools.toast_show(ctx, ImGui, saying, toast_place)

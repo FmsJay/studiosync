@@ -189,15 +189,19 @@ function page.producer(ctx, ImGui, proj, cfg, b, rows)
   if them and them.lets then
     ImGui.AlignTextToFramePadding(ctx)
     ImGui.TextDisabled(ctx, name .. "'s transport:")
-    for _, btn in ipairs({ { "Play##rplay", "start", false }, { "Record##rrec", "start", true }, { "Stop##rstop", "stop", false } }) do
+    local armed = #(them.armed or {}) > 0
+    for _, btn in ipairs({ { "Play##rplay", "start", false, "Plays " .. name .. "'s song from your cursor. Yours follows a moment behind, as always." },
+        { "Record##rrec", "start", true, armed and ("Records " .. name .. " from your cursor, on what they have armed (" .. table.concat(them.armed, ", ") .. ").")
+          or ("Nothing is armed on " .. name .. "'s side, so this records nothing. Ask them to arm a track.") },
+        { "Stop##rstop", "stop", false, "Stops " .. name .. "'s transport." } }) do
       page.fit(ctx, ImGui, btn[1]:match("^[^#]+"))
       if ImGui.SmallButton(ctx, btn[1]) then
         local ok, why = producer.remote(proj, cfg, b, btn[2], btn[3])
         if not ok then band.log(tostring(why)) end
       end
+      ImGui.SetItemTooltip(ctx, btn[4])
     end
-    ImGui.SetItemTooltip(ctx, "Plays or records " .. name .. "'s REAPER from where your cursor is (put it where the take should start), or stops it.\n" ..
-      "It reaches them in a moment, through the shared folder. Your song follows theirs, a moment behind, as always.")
+    if not armed then ImGui.SameLine(ctx); ImGui.TextDisabled(ctx, "(nothing armed)") end
   elseif them then
     ImGui.TextDisabled(ctx, name .. " can let you start and stop their transport (on their Home)")
   end
