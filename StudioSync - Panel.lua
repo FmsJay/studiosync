@@ -481,7 +481,7 @@ end
 local drive_root, drive_at = nil, -math.huge
 local MODE_INFO = {
   { "driver", "Only the driver", "Only the driver changes what the studio has. Everyone else's changes are put back (record as usual)." },
-  { "claims", "Driver + claims", "The driver, and everyone on what they've claimed (a track, a region, a stretch of time). Other changes are put back." },
+  { "claims", "Driver + claimed tracks", "The driver, and everyone on what they've claimed (a track, a region, a stretch of time). Other changes are put back." },
   { "admins", "Admins only", "Only the studio's owner and admins change what the studio has, and anyone on what an admin gave them (right-click their name). Other changes are put back." },
   { "open", "Anyone", "Anyone changes anything nobody has claimed, the tempo map and markers too. If two change one thing at once,\n" ..
     "whoever changed it more wins, and the other person gets Use mine." },
@@ -697,7 +697,7 @@ function ui.person_menu(p)
   end
   if groups.may_remove(cfg.root, me, p.user) and not removal.mark(cfg.root, p.user) then
     any = true
-    if ImGui.Selectable(ctx, "Remove from the others...") and reaper.MB("Take " .. p.user .. " out of " .. tostring(view.group) .. "?\n\n" ..
+    if ImGui.Selectable(ctx, "Remove from the studio...") and reaper.MB("Take " .. p.user .. " out of " .. tostring(view.group) .. "?\n\n" ..
         "Within a few minutes every computer in the studio stops syncing with theirs. Their claims go free. What they made stays in the songs and on Restore.\n\n" ..
         "They keep the copy they already have: that can't be taken back. If they also have the studio's Google Drive folder, remove them there too.\n\n" ..
         "You have a minute to change your mind, and you can invite them again later.", "StudioSync", 4) == 6 then
@@ -814,6 +814,10 @@ local function section_claims()
     if #list == 0 then band.msg("Select the tracks you want to own first.") else claim(list, {}) end
   end
   ImGui.SetItemTooltip(ctx, "The tracks you've selected become yours: only you can change them, whoever's driving.")
+  next_to("Keep selected tracks local")
+  if ImGui.Button(ctx, "Keep selected tracks local") then ui.keep_local() end
+  ImGui.SetItemTooltip(ctx, "New tracks of your own that never go to the others: a reference mix, a guide, a scratch idea. Only tracks that haven't gone out yet\n" ..
+    "(a shared one would vanish for everyone). Pressed again with only such tracks selected, it shares them.")
   if not ui.advanced() then return end -- (regions and time: advanced controls)
   next_to("Claim selected region")
   if ImGui.Button(ctx, "Claim selected region") then
@@ -989,7 +993,7 @@ local function section_notes()
   end
   -- (docked, the list takes the column's height, as the versions do; a 90 px box left the rest of a tall column empty)
   if ImGui.BeginChild(ctx, "notes", 0, wide and next(ideas) == nil and math.max(70, select(2, ImGui.GetContentRegionAvail(ctx)) - 4) or 90, ImGui.ChildFlags_Borders) then
-    if #notes == 0 then ImGui.TextDisabled(ctx, "No notes yet.") end
+    if #notes == 0 then ImGui.TextDisabled(ctx, "No notes yet: put the edit cursor where you mean and add one, and everyone sees it at that spot.") end
     local shown_n, only = 0, require("page_chat").only()
     for i, e in ipairs(notes) do
       if only ~= "" and e.user ~= only then goto next_note end
@@ -1129,6 +1133,7 @@ local function home_play()
 end
 local function home_who()
   require("page_hear").producer(ctx, ImGui, proj, cfg, b, view and view.rows or {}) -- (at the top: at 560 wide it was past all three people. Mac, 0.58.5)
+  if not wide then home_play() end -- (real time mode first: it's what a session starts with, and it was under every person's card. UX review, 0.58.62)
   heading("Who's here")
   if view.driver ~= cfg.user then -- next to the people: who drives is about them
     next_to("Take control")
@@ -1192,7 +1197,7 @@ local function home_who()
       ui.person_claims(p.user, p.last_track)
       ui.leaving_row(p)
     end
-    if #view.rows == 0 then ImGui.TextDisabled(ctx, "Nobody else has synced in this room yet.") end
+    if #view.rows == 0 then ImGui.TextDisabled(ctx, "Nobody else is in this room yet. Invite a collaborator (above) copies a message to send them; once they're in, they show here.") end
     return
   end
   local avail = ImGui.GetContentRegionAvail(ctx)
@@ -1233,16 +1238,23 @@ local function home_who()
       card_end()
     end
   end
-  if #view.rows == 0 then ImGui.TextDisabled(ctx, "Nobody else has synced in this room yet.") end
-  if not wide then home_play() end
+  if #view.rows == 0 then ImGui.TextDisabled(ctx, "Nobody else is in this room yet. Invite a collaborator (above) copies a message to send them; once they're in, they show here.") end
 end
 -- Local mixing: your faders and pan stay yours (not sent, not overwritten). Off again: adopt the band's mix, or
 -- send yours.
-local function local_mix_row()
-  local on = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1"
-  local ch, v = switch_row("##localmix", "Keep my mix to myself", on, "Your faders and pan stay yours: nobody else's reach you, and yours don't go out.")
-  if ch and v then reaper.SetProjExtState(proj, band.SECTION, "local_mix", "1"); require("mirror").begin_local_mix(proj)
-  elseif ch then
+function ui.keep_local()
+  local list = {}
+  for i = 0, reaper.CountSelectedTracks(proj) - 1 do list[#list + 1] = reaper.GetSelectedTrack(proj, i) end
+  if #list == 0 then return band.msg("Select the tracks you want to keep on this computer first.") end
+  local n, shared, kept = require("mirror").keep_local(proj, list)
+  if n > 0 then band.log(kept and (n .. " track(s) stay on this computer: nothing on them goes to the others") or (n .. " track(s) shared with the others again")) end
+  if shared > 0 then band.msg(shared .. " of them already went to the others, so they stay shared: made local they'd vanish for everyone.\n\n" ..
+    "To keep a copy of your own, duplicate the track and keep the copy local.") end
+end
+-- (ui.set_local_mix: the switch, and the bindable action through "panel do")
+function ui.set_local_mix(v)
+  if v then reaper.SetProjExtState(proj, band.SECTION, "local_mix", "1"); require("mirror").begin_local_mix(proj); band.log("Local mixing is on: your faders and pan stay yours")
+  else
     -- (named choices: as Yes/No, "No" sent your faders and pan to every bandmate: review, 2026-10-31)
     local take, send = "Use the studio's mix (your faders and pan follow theirs again)", "Send my faders and pan to everyone (the tracks I may change)"
     local r = band.pick({ "#Local mixing off: whose mix?", take, send, "Cancel (keep Local mixing on)" })
@@ -1251,6 +1263,11 @@ local function local_mix_row()
       reaper.SetProjExtState(proj, band.SECTION, "local_mix", "")
     end
   end
+end
+local function local_mix_row()
+  local on = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1"
+  local ch, v = switch_row("##localmix", "Keep my mix to myself", on, "Your faders and pan stay yours: nobody else's reach you, and yours don't go out.")
+  if ch then ui.set_local_mix(v) end
 end
 -- A gap between two parts sharing a column.
 function ui.spacer() ImGui.Dummy(ctx, 0, 2); ImGui.Separator(ctx); ImGui.Dummy(ctx, 0, 2) end
@@ -1263,7 +1280,7 @@ function ui.feed(apart) -- apart: a line between it and what's above
   if ImGui.BeginChild(ctx, "feed", 0, h - ImGui.GetFrameHeightWithSpacing(ctx) - 4) then
     ImGui.PushTextWrapPos(ctx, 0)
     local lines = band.activity()
-    if #lines == 0 then ImGui.TextDisabled(ctx, "Nothing yet.") end
+    if #lines == 0 then ImGui.TextDisabled(ctx, "Nothing yet: what you and the others do in this project shows here as it happens.") end
     for _, l in ipairs(lines) do ImGui.TextDisabled(ctx, l) end
     ImGui.PopTextWrapPos(ctx)
     ImGui.EndChild(ctx)
@@ -1308,10 +1325,10 @@ local function page_home()
   if ui.short then -- (Real time had to be scrolled to, under the people: design review)
     -- (hearing or producing someone, Real time's column has rows and rows of controls: it takes the width from the others, so they all fit without scrolling)
     local busy = same_room_on() or require("producer").who(proj)
-    layout(busy and { { home_who, 500 }, { home_play, 440 }, { home_rules, 300 }, { home_claims, 200 } }
-      or { { home_who, 540 }, { home_play, 280 }, { home_rules, 340 }, { home_claims, 280 } })
+    layout(busy and { { home_play, 440 }, { home_who, 500 }, { home_rules, 300 }, { home_claims, 200 } }
+      or { { home_play, 280 }, { home_who, 540 }, { home_rules, 340 }, { home_claims, 280 } })
   elseif wide then -- (a tall docker: the people as cards, and nothing left alone in a tall column)
-    layout({ { home_who, 760 }, { function() home_play(); ui.feed(true) end, 480 }, { function() home_rules(); ui.spacer(); home_claims() end, 480 } })
+    layout({ { function() home_play(); ui.feed(true) end, 480 }, { home_who, 760 }, { function() home_rules(); ui.spacer(); home_claims() end, 480 } })
   else layout({ { home_who, 360 }, { home_session, 400 } }) end
 end
 
@@ -1343,12 +1360,14 @@ local function settings_sync()
   if card("sync") then
     if b then section_sync() end
     -- MIDI wet/dry, this machine's choice (lib/prints.lua): never changes what anyone else hears
-    ImGui.SeparatorText(ctx, "MIDI and audio play as")
+    -- (Dry and Wet read as an effect's mix knob, and as MIDI only: it's every part, audio too. UX review, 0.58.62)
+    ImGui.SeparatorText(ctx, "Parts play (MIDI and audio)")
     local prints = require("prints")
-    for _, m in ipairs({ { "auto", "Auto", "The dry take (the notes, through your instruments) when the track's plug-ins all load here, else the wet one." },
-        { "notes", "Dry", "Always the dry take: the notes through your own instruments, so you can change the sound." },
-        { "sound", "Wet", "Always the wet take: the sound the studio printed, exactly what whoever played it heard." } }) do
-      if m[1] ~= "auto" then ImGui.SameLine(ctx) end
+    for _, m in ipairs({ { "auto", "Auto", "Through your plug-ins when every plug-in the part plays through loads here, else as the studio printed it." },
+        { "notes", "Through my plug-ins", "Always the part itself through your own plug-ins: a MIDI part's notes through your instruments, a recording through\n" ..
+          "your amp sims and effects, so you can change the sound. A plug-in you don't have plays nothing." },
+        { "sound", "As printed", "Always the studio's print: the part rendered through the track's plug-ins by whoever changed it, exactly what they heard." } }) do
+      if m[1] ~= "auto" then next_to(m[2]) end -- (longer words now: onto the next line when they don't fit)
       if ImGui.RadioButton(ctx, m[2] .. "##midiplays", prints.mode() == m[1]) then
         reaper.SetExtState(band.SECTION, "midi_plays", m[1], true)
         if b then for i = 0, reaper.CountMediaItems(proj) - 1 do prints.choose(reaper.GetMediaItem(proj, i)) end end
@@ -1507,7 +1526,7 @@ local function studio_private_audio()
 end
 local function settings_studio()
   ImGui.TextDisabled(ctx, "For everyone in " .. band.info(cfg.root).name .. ". Only the owner and admins change these; everyone can use them.")
-  layout({ { studio_alerts, 360 }, { studio_call, 360 }, { studio_listen, 360 }, { studio_private_audio, 360 } }, true)
+  layout({ { studio_alerts, 360 }, { studio_call, 360 }, { studio_private_audio, 360 } }, true)
 end
 local function settings_drive()
   if card("drive") then
@@ -1682,7 +1701,8 @@ local PAGES = {
   { "Play/Jam", "Start together, Play along and Jam (NINJAM). Settings > Advanced shows or hides this tab." },
   { "Chat", "Messages, to-dos, notes and links for this room, this project or the whole studio." },
   { "Restore", "Every change, and three ways back: the whole project, the selected tracks, or one change." },
-  { "Plugins", "Every plug-in in this project, who doesn't have it, and the studio's translations for it." },
+  { "Mixes", "Render the mix, export stems, compare two mixes, a credits draft, studio templates, a copy outside the studio, and the listening page." },
+  { "Plugins", "Every plug-in in this project, who doesn't have it, and the studio's stand-ins for it." },
   { "Settings", "You, options, health (red: needs fixing, yellow: worth a look), the console and updates." },
 }
 local LOBBY = { Groups = true, Projects = true, Settings = true } -- (what there is with no group project in front. Groups isn't a tab: the group pill goes there)
@@ -2008,8 +2028,8 @@ local function frame_app()
   end
   if ww < 600 then -- (narrow: a short "Leave", as "Window" wrapped alone onto a row of its own: design review. Not "...": leaving is the one
     -- thing everyone has to find. UX review, 0.58.47)
-    at_row("Leave")
-    if ImGui.Button(ctx, "Leave##leave") then require("leave").start(proj, cfg, b) end
+    at_row("Exit")
+    if ImGui.Button(ctx, "Exit##leave") then require("leave").start(proj, cfg, b) end
     ImGui.SetItemTooltip(ctx, "Sync and exit: saves, gets everything you've done out to the others, says who has it, then lets you close the project or quit REAPER.")
   else
     if room > need + 12 then ImGui.SetCursorPosX(ctx, ImGui.GetCursorPosX(ctx) + room - need); ImGui.SetCursorPosY(ctx, y0)
@@ -2075,6 +2095,7 @@ local function frame_app()
   tools.removed_bar(ctx, ImGui)
   ui.sync_problem()
   require("leave").draw(ctx, ImGui)
+  tools.invite_popup(ctx, ImGui)
   page_rooms.invites()
   tools.join_requests(ctx, ImGui) -- (someone asking to join the band folder)
   if b and can then -- (an edit touching a claim, before the rest: lib/suggest.lua)
@@ -2136,7 +2157,18 @@ local function frame_app()
     if want == "undo" or want == "redo" then undo_redo(want == "redo")
     elseif want == "realtime" then set_same_room(not same_room_on())
     elseif want == "chat" then page = "Chat"
-    elseif want:match("^history") then page = "Restore" end
+    elseif want:match("^history") then page = "Restore"
+    -- (the bindable actions, power-user review 0.58.62: each does what its control on the panel does)
+    elseif want == "hold" then
+      local on = select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) == ""
+      reaper.SetProjExtState(proj, band.SECTION, "hold", on and "1" or "")
+      band.log(on and "Hold my changes is on: what you change stays here until you switch it off" or "Hold my changes is off: what you changed goes to the others")
+    elseif want == "localmix" then ui.set_local_mix(select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) ~= "1")
+    elseif want == "claim" then
+      local list = {}
+      for i = 0, reaper.CountSelectedTracks(proj) - 1 do list[#list + 1] = part_name(reaper.GetSelectedTrack(proj, i)) end
+      if #list == 0 then band.msg("Select the tracks you want to own first.") else claim(list, {}); band.log("claimed " .. table.concat(list, ", ")) end
+    elseif want == "keeplocal" then ui.keep_local() end
   end
   if ui.short then ImGui.PushStyleVar(ctx, ImGui.StyleVar_ItemSpacing, 8, 1) end
   ImGui.Separator(ctx)
@@ -2182,6 +2214,7 @@ local function frame_app()
     elseif page == "Chat" then
       layout({ { function() require("page_chat").draw(ctx, ImGui, cfg, b) end, 560 }, { function() section_notes(); section_ideas() end, 420 } })
     elseif page == "Restore" then layout({ { restore.section_recall, 400 }, { restore.section_history, 600 } })
+    elseif page == "Mixes" then layout({ { restore.section_mixes, 440 }, { studio_listen, 360 } })
     elseif page == "Plugins" then
       layout({ { function() require("page_plugins").draw(ctx, ImGui, proj, cfg) end, 760 }, { function() require("page_plugins").drums(ctx, ImGui, proj, cfg) end, 420 }, { section_plugins, 420 } })
     elseif page == "Settings" then page_setup() end
@@ -2244,13 +2277,14 @@ function ui.frame_lobby()
   tools.removed_bar(ctx, ImGui)
   ui.sync_problem()
   tools.join_requests(ctx, ImGui)
+  tools.invite_popup(ctx, ImGui)
   ImGui.Separator(ctx)
   ImGui.PushStyleVar(ctx, ImGui.StyleVar_WindowPadding, 16, 12)
   if ImGui.BeginChild(ctx, "page", 0, 0, ImGui.ChildFlags_AlwaysUseWindowPadding) then
     ui.smooth_scroll("setup " .. tostring(page))
     ImGui.PushTextWrapPos(ctx, 0)
-    if page == "Groups" then ui.page_body(function() pg.draw_groups(ui.env) end)
-    elseif page == "Projects" then ui.page_body(function() pg.draw_projects(ui.env) end)
+    if page == "Groups" then ui.page_body(function() pg.checklist(ui.env); pg.draw_groups(ui.env) end)
+    elseif page == "Projects" then ui.page_body(function() pg.checklist(ui.env); pg.draw_projects(ui.env) end)
     else page_setup() end
     ImGui.PopTextWrapPos(ctx)
     ImGui.EndChild(ctx)

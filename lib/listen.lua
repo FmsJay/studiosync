@@ -49,7 +49,7 @@ button{background:#2e7d4f;border:0;margin-top:6px}.ok{color:#8c8;font-size:14px}
       end
     end
   end
-  if n == 0 then h[#h + 1] = [[<p class="dim">No mixes yet: Render current mix (StudioSync's Restore page) puts one here.</p>]] end
+  if n == 0 then h[#h + 1] = [[<p class="dim">No mixes yet: Render current mix (StudioSync's Mixes tab) puts one here.</p>]] end
   if channel then
     h[#h + 1] = "<script>const CH=" .. band.json_encode(channel) .. ",SV=" .. band.json_encode(server) .. [[;
 const who=document.getElementById("who");who.value=localStorage.getItem("who")||"";who.onchange=()=>localStorage.setItem("who",who.value);
@@ -109,7 +109,7 @@ local function q(s) return '"' .. s .. '"' end
 function listen.port(id) -- one per studio, the same every time. Pure.
   local h = 0
   for i = 1, #id do h = (h * 31 + id:byte(i)) % 1000 end
-  return 47800 + h % 100
+  return 47000 + h -- (a thousand to pick from: within a hundred, two studios on one computer met one time in a hundred. Review, 0.58.62)
 end
 local function beat_file(id) return band.home() .. "/listen-" .. id .. ".beat" end
 local function beat(id) local f = io.open(beat_file(id), "w"); if f then f:write(os.date("!%Y-%m-%dT%H:%M:%SZ")); f:close() end end
@@ -127,9 +127,13 @@ local function start_server(cfg)
     band.write_atomic(vbs, 'CreateObject("WScript.Shell").Run """" & WScript.Arguments(0) & """", 0, False\r\n')
     reaper.ExecProcess(string.format('wscript.exe //B //Nologo "%s" "%s"', vbs, bat), -1)
   else
+    -- (through a script file: macOS's ExecProcess doesn't honour quotes inside an argument, and "Application Support" in the path split the
+    -- command, so the server never started. As services.background does. Mac review, 0.58.62)
     local s = function(x) return "'" .. x:gsub("'", "'\\''") .. "'" end
-    reaper.ExecProcess("/bin/sh -c " .. s("/usr/bin/perl " .. s(here .. "listen_server.pl") .. " " .. s(root) .. " " .. listen.port(id) .. " " ..
-      s(beat_file(id)) .. " " .. s(prefix) .. " >/dev/null 2>&1 &"), -1)
+    local sh = require("services").TMP .. "/bandsync-listen-" .. id .. ".sh"
+    band.write_atomic(sh, "/usr/bin/perl " .. s(here .. "listen_server.pl") .. " " .. s(root) .. " " .. listen.port(id) .. " " ..
+      s(beat_file(id)) .. " " .. s(prefix) .. " >/dev/null 2>&1 &\n")
+    reaper.ExecProcess("/bin/sh '" .. sh .. "'", -1)
   end
 end
 function listen.share(cfg, on)
@@ -139,7 +143,7 @@ function listen.share(cfg, on)
   local id = band.info(cfg.root).id
   local path = "/studiosync-" .. id
   if not on then
-    reaper.ExecProcess(q(exe) .. " serve --https=443 --set-path " .. path .. " off", 10000)
+    services.ts_exec("serve --https=443 --set-path " .. path .. " off", 10000)
     reaper.DeleteExtState(band.SECTION, key(cfg.root), true)
     os.remove(beat_file(id)) -- (the server sees it gone and quits)
     return true
@@ -154,7 +158,7 @@ function listen.share(cfg, on)
   end
   listen.write(cfg)
   start_server(cfg)
-  local r = reaper.ExecProcess(q(exe) .. " serve --bg --yes --set-path " .. path .. " http://127.0.0.1:" .. listen.port(id), 15000) or ""
+  local r = services.ts_exec("serve --bg --yes --set-path " .. path .. " http://127.0.0.1:" .. listen.port(id), 15000)
   if not r:match("^0\n") then os.remove(beat_file(id)); return nil, "Tailscale didn't share it: " .. r:gsub("^%d+\n", ""):sub(1, 300) end
   pcall(require("groups").set_tailnet, cfg.root)
   local address = "https://" .. host .. path .. "/_band/listen.html"
@@ -181,7 +185,9 @@ function listen.tick_one(cfg)
   if not channel then return end
   local since_key = "listen since " .. cfg.root
   local since = reaper.GetExtState(band.SECTION, since_key)
-  local out = services.background("listen-notes", 'curl -s -m 15 "' .. alerts.server(cfg.root) .. "/" .. channel .. "/json?poll=1&since=" .. (since ~= "" and since or "12h") .. '"', 25)
+  -- (each studio's own run, and since a time, not a message: ntfy keeps messages 12 hours, and a since= naming one it had dropped
+  -- answered nothing for good. Review, 0.58.62. The seen list takes out the second they share)
+  local out = services.background("listen-notes-" .. id, 'curl -s -m 15 "' .. alerts.server(cfg.root) .. "/" .. channel .. "/json?poll=1&since=" .. (since:match("^%d+$") or "12h") .. '"', 25)
   if not out then return end
   local songs = {}
   for _, s in ipairs(band.songs(cfg)) do songs[s] = true end
@@ -201,10 +207,10 @@ function listen.tick_one(cfg)
       band.log("a comment on " .. song .. " came in from the listening page")
     end
     local ok, m = pcall(band.json_decode, line)
-    if ok and type(m) == "table" and type(m.id) == "string" and m.id:match("^[%w]+$") then last = m.id end
+    if ok and type(m) == "table" and tonumber(m.time) then last = math.max(last or 0, math.floor(tonumber(m.time))) end
   end
   reaper.SetExtState(band.SECTION, "listen seen " .. cfg.root, seen, true)
-  if last then reaper.SetExtState(band.SECTION, since_key, last, true) end
+  if last then reaper.SetExtState(band.SECTION, since_key, tostring(last), true) end
 end
 
 return listen

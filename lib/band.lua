@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.58.62", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.58.63", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -45,6 +45,17 @@ local function norm(p) return (p:gsub("\\", "/"):gsub("/+$", "")) end
 band.norm = norm
 
 function band.msg(text) reaper.MB(text, "StudioSync", 0) end
+-- A request the panel carries out ("panel do": the radial menu's slices, the bindable actions), so each asks first exactly as its button there does.
+-- The panel is opened first when it isn't running (running it again would close it). `dir`: the scripts' folder.
+function band.panel_do(dir, what)
+  reaper.SetExtState(band.SECTION, "panel do", what, false)
+  reaper.DeleteExtState(band.SECTION, "panel minimized", true) -- (the pill doesn't run the panel's pages)
+  local beat = tonumber(reaper.GetExtState(band.SECTION, "panel alive"))
+  if not (beat and reaper.time_precise() - beat < 10) then
+    local id = reaper.AddRemoveReaScript(true, 0, dir .. "/StudioSync - Panel.lua", true)
+    if id > 0 then reaper.Main_OnCommand(id, 0) end
+  end
+end
 
 -- This computer's own StudioSync folder (projects as you work on them, reopen list). One that's been here since it was called BandSync keeps its
 -- folder: open tabs, recent projects and saved paths all point there.
@@ -400,10 +411,14 @@ function band.bands()
   for r in reaper.GetExtState(band.SECTION, "bands"):gmatch("[^|]+") do roots[#roots + 1] = r end
   roots[#roots + 1] = reaper.GetExtState(band.SECTION, "sync_root")
   for _, r in ipairs(roots) do
-    if r ~= "" and not seen[r] and band.subdirs(r)[1] then -- (a folder that's gone, or never synced, is left out)
+    -- (a folder that's gone is left out. One just joined, with nothing arrived yet, is in, marked waiting: it was left out too, and a joiner
+    -- read "You're not in a studio yet" until they were let in. Beginner review, 0.58.62)
+    local real = false
+    for _, d in ipairs(r ~= "" and band.subdirs(r) or {}) do if d:sub(1, 1) ~= "." then real = true end end
+    if r ~= "" and not seen[r] and (real or band.subdirs(r)[1] or reaper.EnumerateFiles(r, 0)) then
       seen[r] = true
       local i = band.info(r)
-      out[#out + 1] = { root = r, name = i.name, id = i.id, drive = i.drive }
+      out[#out + 1] = { root = r, name = i.name, id = i.id, drive = i.drive, waiting = not real or nil }
     end
   end
   table.sort(out, function(a, z) return a.name:lower() < z.name:lower() end)

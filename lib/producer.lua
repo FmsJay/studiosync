@@ -58,29 +58,10 @@ end
 
 local function pair_of(proj, name) return require("hear").pairs(proj)[name] or 0 end
 
-local function talk_track(proj, add)
-  for t = 0, reaper.CountTracks(proj) - 1 do
-    local tr = reaper.GetTrack(proj, t)
-    if select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local", "", false)) == "talkback" then return tr end
-  end
-  if not add then return nil end
-  local tr = require("mirror").add_local_track(proj, "StudioSync talkback", "talkback")
-  reaper.SetMediaTrackInfo_Value(tr, "I_RECINPUT", 0) -- (the first input, mono)
-  reaper.SetMediaTrackInfo_Value(tr, "I_RECMODE", 2) -- (never makes a file, should someone press record)
-  reaper.SetMediaTrackInfo_Value(tr, "I_RECMON", 1)
-  reaper.SetMediaTrackInfo_Value(tr, "I_RECARM", 1)
-  reaper.SetMediaTrackInfo_Value(tr, "B_MAINSEND", 0) -- (they don't need to hear themselves)
-  reaper.SetMediaTrackInfo_Value(tr, "B_MUTE", 1)
-  return tr
-end
-function producer.talking(proj)
-  local tr = talk_track(proj, false)
-  return tr ~= nil and reaper.GetMediaTrackInfo_Value(tr, "B_MUTE") == 0
-end
-function producer.talk(proj, on)
-  local tr = talk_track(proj, on)
-  if tr then reaper.SetMediaTrackInfo_Value(tr, "B_MUTE", on and 0 or 1) end
-end
+-- Talking to whoever you produce: the same talk track as Real time mode's Talk button (lib/live.lua): one track that never records, counted
+-- as nothing armed. (It was a second one of its own, always armed, so a remote Record found "something armed" when nothing was. Review, 0.58.62)
+function producer.talking(proj) return require("live").talking(proj) end
+function producer.talk(proj, on) require("live").talk(proj, on) end
 
 -- The NINJAM route: ReaNINJAM in session mode on the Real time track, so what goes out is what's armed, not the whole mix.
 -- Session mode plays what arrives only as each playhead reaches it, so there's no talkback on this route, even with Xmit on and both stopped.
@@ -247,8 +228,7 @@ function producer.stop(proj, cfg, b)
   if reaper.GetExtState(band.SECTION, "follow " .. tostring(proj)) == name then reaper.DeleteExtState(band.SECTION, "follow " .. tostring(proj), false) end
   require("stamp").read(proj, false)
   ninjam_off(proj)
-  local tr = talk_track(proj, false)
-  if tr then reaper.DeleteTrack(tr) end
+  producer.talk(proj, false) -- (stops talking; the track stays, as Real time mode's Talk button uses it too)
   producer.quiet_tracks(proj, {})
   local live = require("live")
   local sm, si = live.fx(proj, false, live.SONOBUS)

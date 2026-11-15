@@ -1,6 +1,6 @@
 #!/bin/bash
 # StudioSync setup for macOS: installs and sets up everything StudioSync needs, skipping whatever is already there.
-# Run it with "Install StudioSync (Mac).command" (right-click > Open the first time), or in Terminal:
+# Run it with "Install StudioSync (Mac).command" (if macOS blocks it: System Settings > Privacy & Security > Open Anyway), or in Terminal:
 #   curl -fsSL "https://raw.githubusercontent.com/FmsJay/studiosync/main/installer/install_mac.sh?$(date +%s)" | bash
 # (the ?<time>: GitHub's cache handed out the previous installer for minutes after a release, 2026-10-31)
 # REAPER, ReaPack, ReaImGui, Syncthing (the shared folder), StudioSync's scripts (through ReaPack), SonoBus + Tailscale
@@ -52,12 +52,16 @@ done
 # a song's, not a machine's: anyone can host a song (James, 2026-10-31: "are you the band's host" read as a role).
 if [ -n "${BS_HOSTING:-}" ]; then HOSTING="$BS_HOSTING" # (the old way of saying "I'm the first")
 elif [ -n "${BS_HOST_ID:-}" ]; then HOSTING=n # (an invitation: someone is set up, and that's their ID)
-elif yes "$(ask "Is someone in the studio already set up with StudioSync? (y/n)" y)"; then HOSTING=n
-else HOSTING=y; fi
+else
+  # (start or join, with no default: "already set up? [y]" took a newcomer's Return as joining. Beginner review, 0.58.62)
+  sj=""; until printf '%s' "$sj" | grep -q '^[sSjJ]'; do sj="$(ask "Are you starting a new studio, or joining one someone invited you to? (s = start, j = join)")"; done
+  if printf '%s' "$sj" | grep -q '^[sS]'; then HOSTING=y; else HOSTING=n; fi
+fi
 HOST_ID="$(echo "${BS_HOST_ID:-}" | tr '[:lower:]' '[:upper:]')"
 ID_RE='^[A-Z0-9]{7}(-[A-Z0-9]{7}){7}$'
 if ! yes "$HOSTING"; then
   echo "$HOST_ID" | grep -Eq "$ID_RE" || {
+    say "Easiest: close this window and run the line from the invitation they sent you (it has everything in it). Otherwise:"
     say "Their Syncthing device ID is 8 groups of 7 letters and digits, like ABCDEFG-HIJKLMN-...-1234567 (63 characters)."
     say "Easiest: they press 'Invite a collaborator' in their StudioSync panel and send you the line it copies (it has the ID"
     say "in it). Or they find it in Syncthing: Actions > Show ID. Copy all of it and paste it here."
@@ -67,7 +71,7 @@ if ! yes "$HOSTING"; then
     echo "$HOST_ID" | grep -Eq "$ID_RE" || warn "That doesn't look like a device ID (8 groups of 7 letters/digits, joined by dashes)."
   done
 else
-  say "You're the first: at the end you get your Syncthing ID to send to each collaborator who installs."
+  say "You're starting it: at the end, StudioSync's panel has Invite, which makes the message to send each collaborator."
 fi
 # the band (docs/bands-design.md): each its own shared folder. An invitation names it; the first one set up names it.
 FOLDER_ID="$(printf '%s' "${BS_BAND_ID:-}" | LC_ALL=C tr -cd 'a-z0-9-')"
@@ -83,14 +87,16 @@ fi
 DEF_ROOT="$HOME/BandSync"
 if [ "$FOLDER_ID" != bandsync ]; then DEF_ROOT="$HOME/StudioSync $BAND_NAME"; fi
 while :; do
-  ROOT="${BS_ROOT:-$(ask "Where should $BAND_NAME's shared folder be" "$DEF_ROOT")}"
+  # (not asked: nobody new knows what to answer. Beginner review, 0.58.62)
+  ROOT="${BS_ROOT:-$DEF_ROOT}"
   ROOT="$(printf '%s' "$ROOT" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/\\\(.\)/\1/g')" # (dragged in from Finder: "\ " and a trailing space)
   ROOT="${ROOT/#\~/$HOME}"
   ROOT="${ROOT%/}"
   case "$ROOT" in /*) break;; esac
-  warn "That isn't a full folder path (it should start with / or ~). Try again, or drag the folder in from Finder."
+  warn "BS_ROOT isn't a full folder path (it should start with / or ~): using $DEF_ROOT instead."
   BS_ROOT=""
 done
+say "$BAND_NAME's shared folder: $ROOT"
 # The first one set up: an ID of the group's own. They all used to get "bandsync", so someone in two such groups had the two
 # folders treated as one and their files mixed. Run again on the same folder, it keeps the ID it has; a folder from before
 # groups had IDs, with no band.json yet, is "bandsync" (lib/band.lua band.info).
@@ -109,24 +115,24 @@ DRIVE_NAME="BandSync"; [ "$FOLDER_ID" != bandsync ] && DRIVE_NAME="StudioSync - 
 LIVE="${BS_LIVE:-y}"
 SOLO="${BS_SOLO:-y}"
 if [ -z "${BS_PLUGINS:-}" ]; then
-  say "The plug-in pack (free, about 350 MB): Surge XT, Dexed, Airwindows, Dragonfly Reverb, Chow Tape, BYOD"
-  say "guitar/bass amps and tuner, ZL Equalizer and Compressor, ChowMatrix delay, and the Saike, Chokehold and chmaha"
-  say "JSFX with drum kits and keys, so everyone has the same sounds. (Adding the JSFX also updates your other ReaPack packages.)"
+  say "The free plug-in pack (about 350 MB): synths, guitar and bass amps, a tuner, EQ, compressor, reverb, delay, tape,"
+  say "drum kits and keys (Surge XT, Dexed, Airwindows, Dragonfly, Chow, BYOD, ZL and more), so everyone hears the same sounds."
 fi
-PLUGINS="${BS_PLUGINS:-$(ask "Install the plug-in pack? (y/n)" y)}"
+PLUGINS="${BS_PLUGINS:-$(ask "Install it? (recommended) (y/n)" y)}"
 EXTRAS="${BS_EXTRAS:-n}"
-if yes "$PLUGINS" && [ -z "${BS_EXTRAS:-}" ]; then
-  say "The larger extras (about 1.2 GB): Neural Amp Modeler and AIDA-X amp capture players, Odin 2 synth, and the"
-  say "Salamander Grand piano and the MuldjordKit drum kit for sforzando."
+# (extras only asked of whoever starts the studio: 1.2 GB is a lot for a joiner to decide on blind. Beginner review, 0.58.62)
+if yes "$PLUGINS" && yes "$HOSTING" && [ -z "${BS_EXTRAS:-}" ]; then
+  say "The bigger extras (about 1.2 GB): a grand piano, a real drum kit, amp capture players and the Odin 2 synth."
   EXTRAS="$(ask "Install the extras too? (y/n)" n)"
 fi
 if [ -z "${BS_REAPERSONA:-}" ]; then
-  say "Coming to REAPER from another DAW? ReaPersona (free) makes REAPER's shortcuts, mouse and look work like Pro Tools,"
-  say "Logic, Ableton, FL Studio, Cubase, Studio One, Bitwig and more, and switches back any time."
+  say "Used to another music app (Pro Tools, Logic, Ableton, FL Studio, Cubase, Studio One...)? ReaPersona makes REAPER's"
+  say "shortcuts and mouse work like it, and switches off any time."
 fi
 REAPERSONA="${BS_REAPERSONA:-$(ask "Install ReaPersona? (y/n)" n)}"
 echo
 
+say "Downloads show no progress here: a pause of a few minutes on a big one is normal."
 # ---------- 1. apps ----------
 # Mount a disk image, then install the .app or .pkg inside it. Disk images with a license show it first: that's yours to agree to.
 from_dmg() { # url name app-name
@@ -215,7 +221,7 @@ if yes "$LIVE" && [ -x "$TS" ]; then
   open -a Tailscale
   # (a new install runs only once macOS approves its system extension: System Settings > General > Login Items &
   # Extensions, and "Allow" for its VPN configuration. Until then every command fails, and a reset was done for nothing)
-  for i in $(seq 1 120); do
+  for i in $(seq 1 "$(yes "$HOSTING" && echo 120 || echo 5)"); do # (a joiner doesn't wait: below)
     "$TS" status --json 2>/dev/null | grep -q '"BackendState"' && break
     [ $i -eq 5 ] && say "Waiting for Tailscale: if macOS asks, allow its system extension (System Settings > General > Login Items & Extensions) and its VPN configuration."
     sleep 1
@@ -232,6 +238,13 @@ if yes "$LIVE" && [ -x "$TS" ]; then
     # already signed in: left exactly as it is. Re-signing in with the tag logged a Mac OUT when the tag wasn't allowed
     # yet, and the refused tag stuck in its settings so signing in again kept failing (2026-10-28)
     ok "Tailscale is signed in (it signs out by itself every few months: see the end to keep it signed in)"
+  elif ! yes "$HOSTING"; then
+    # (a joiner waited minutes on a sign-in page before their first song: syncing needs no Tailscale, only Play/Jam and the call do. Beginner review, 0.58.62)
+    TS_TAGGED=1; TS_LATER=1
+  elif [ -z "$tsst" ]; then
+    # (Tailscale isn't answering yet: its system extension waits for the person to allow it. Trying to sign in now only failed with a
+    # misleading "sign-in didn't finish": the wait below takes over instead. Mac review, 0.58.62)
+    say "Tailscale needs its system extension allowed first: System Settings > General > Login Items & Extensions (and its VPN configuration)."
   else
     say "Signing in to Tailscale: a browser page opens; sign in with the group's account there. (macOS may first ask"
     say "to allow Tailscale's VPN configuration: click Allow.)"
@@ -255,8 +268,17 @@ if yes "$LIVE" && [ -x "$TS" ]; then
   # what still needs a person, waited for here (James, 2026-10-31: "the installer should wait for you to sign in"):
   # signed in at all, then key expiry off, so it doesn't sign out by itself every few months. Return skips either.
   # (plutil reads the JSON: this Mac's own KeyExpiry, not a bandmate's; a grep can't tell them apart)
-  ts_running() { [ "$("$TS" status --json 2>/dev/null | plutil -extract BackendState raw -o - - 2>/dev/null)" = Running ]; }
-  ts_expires() { "$TS" status --json 2>/dev/null | plutil -extract Self.KeyExpiry raw -o - - >/dev/null 2>&1; }
+  # (plutil's raw output is macOS 12 and later: on an older Mac the waits never ended. Then --peers=false and a grep, which only sees this Mac.
+  # Mac review, 0.58.62)
+  ts_running() {
+    local v; v="$("$TS" status --json 2>/dev/null | plutil -extract BackendState raw -o - - 2>/dev/null)" ||
+      v="$("$TS" status --json --peers=false 2>/dev/null | tr -d '\n ' | grep -o '"BackendState":"[A-Za-z]*"' | cut -d'"' -f4)"
+    [ "$v" = Running ]
+  }
+  ts_expires() {
+    if plutil -help 2>&1 | grep -q raw; then "$TS" status --json 2>/dev/null | plutil -extract Self.KeyExpiry raw -o - - >/dev/null 2>&1
+    else "$TS" status --json --peers=false 2>/dev/null | grep -q '"KeyExpiry"'; fi
+  }
   if [ -z "$TS_TAGGED" ] && ! ts_running; then
     say "Sign in to Tailscale now (its menu-bar icon > Log in). Waiting for it; press Return to skip and do it later."
     while ! ts_running; do read -t 3 -r </dev/tty && break; done
@@ -282,14 +304,17 @@ if yes "$SOLO" && have "Google Drive"; then
     drives | head -1
   }
   account() { echo "$1" | sed -n 's#.*/GoogleDrive-\([^/]*\)/My Drive$#\1#p'; } # the account's e-mail, from its folder
-  if [ -z "$(mydrive)" ]; then
+  if ! yes "$HOSTING" && ! { [ -n "$(mydrive)" ] && [ -d "$(mydrive)/$DRIVE_NAME" ]; }; then
+    # (as Tailscale above: a joiner's songs arrive without it, and the folder usually isn't shared with them yet. Beginner review, 0.58.62)
+    DRIVE_LATER=1
+  elif [ -z "$(mydrive)" ]; then
     open -a "Google Drive"
     say "Sign in to Google Drive in its window, with the Google account the studio's Drive folder is shared with (yours,"
     say "or the studio's own account if you have one). Allow its extension if macOS asks."
     say "Waiting for it; press Return to skip and do it later."
     while [ -z "$(mydrive)" ]; do read -t 3 -r </dev/tty && break; done
   fi
-  MD="$(mydrive)"
+  MD="$(mydrive)"; [ -n "${DRIVE_LATER:-}" ] && MD=""
   if [ -n "$MD" ] && [ ! -d "$MD/$DRIVE_NAME" ] && [ "$(drives | wc -l)" -gt 1 ]; then
     say "Google Drive has several accounts signed in here. Which one is the studio's (it gets the studio's folder)?"
     i=0; while IFS= read -r d; do i=$((i + 1)); echo "    $i) $(account "$d")"; done < <(drives)
@@ -480,7 +505,8 @@ request() { # mode -> runs the helper in REAPER, leaves its JSON result in $HDIR
   done
   [ -f "$HDIR/studiosync_setup_result.json" ]
 }
-say "Setting up StudioSync inside REAPER (REAPER opens; on a first start it scans your plug-ins, which can take a while) ..."
+say "Setting up StudioSync inside REAPER. REAPER opens now; the first time, it scans your plug-ins (a while) and asks a few things:"
+say "  'Select your audio device now?': No is fine (Settings > Audio later). ReaPack's 'Manage repositories' and 'Transaction report': OK."
 say "macOS may ask to let REAPER use the microphone: click Allow, or your takes record silence."
 if request "${BS_SCRIPTS:-reapack}"; then
   if grep -q '"ok": *false' "$HDIR/studiosync_setup_result.json"; then warn "REAPER setup step had problems:"; cat "$HDIR/studiosync_setup_result.json"
@@ -516,6 +542,9 @@ if yes "$LIVE" && yes "$HOSTING"; then # the first one's job, once: then bandmat
 fi
 if yes "$SOLO" && yes "$HOSTING" && [ -n "${DRIVE_OK:-}" ]; then
   echo "  - Google Drive: share the '$DRIVE_NAME' folder in your My Drive with each collaborator (Editor), at drive.google.com."
+elif yes "$SOLO" && [ -n "${DRIVE_LATER:-}" ]; then
+  echo "  - Google Drive (the studio's backup copy, optional): once it's shared with you, at drive.google.com: Shared with me >"
+  echo "    right-click '$DRIVE_NAME' > Organize > Add shortcut > My Drive."
 elif yes "$SOLO" && [ -z "${DRIVE_OK:-}" ]; then
   echo "  - Google Drive (skipped above): sign in, then at drive.google.com: Shared with me > right-click '$DRIVE_NAME' >"
   echo "    Organize > Add shortcut > My Drive."
@@ -523,6 +552,7 @@ fi
 if yes "$HOSTING"; then
   echo "  - In REAPER, open your song's project: the StudioSync panel offers 'Share this project with the studio'."
 else
-  echo "  - In REAPER, the StudioSync panel offers 'Join the studio's project' once your collaborator has let you in: the studio's"
-  echo "    songs arrive by themselves, and the panel lists them."
+  echo "  - Tell whoever invited you that you're set up: they press 'Let you in' in their panel. Then the studio's projects arrive"
+  echo "    by themselves: in REAPER's StudioSync panel, open Projects and double-click one."
+  [ -n "${TS_LATER:-}" ] && echo "  - Tailscale (for Play/Jam and hearing each other live): sign in from its menu-bar icon when you need it."
 fi

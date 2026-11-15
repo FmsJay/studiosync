@@ -7,6 +7,8 @@ local mirror = {}
 -- person's choice) and item grouping (group numbers are per project: another machine's group 3 is other items).
 -- Which notes are selected is each person's too: a selected event is written "e"/"x"/"<x", and goes out as "E"/"X"/"<X"
 -- (opening the MIDI editor sent its VELLANE line, and a moved note went out selected: laptop, 2026-11-01).
+-- GROUP (item grouping) is each computer's own: a group is a number inside one project, and the same number already means another
+-- group in each collaborator's copy, so it would tie their items to yours. (Explained in the README: power-user review, 0.58.62.)
 local LOCAL = { "SEL", "IGUID", "IID", "GUID", "POOLEDEVTS", "POOLCOLOR", "CFGEDITVIEW", "CFGEDIT", "EVTFILTER", "KEYSNAP", "TRACKSEL", "GROUP", "VELLANE" }
 local LOCAL_SET = {}
 for _, k in ipairs(LOCAL) do LOCAL_SET[k] = true end
@@ -258,7 +260,7 @@ end
 -- (measured, REAPER 7.83: no @init, even with a changed parameter). Which envelopes show, which is armed and how
 -- tall its lane is stay each person's own. A receive names its source track by oid (REAPER's chunk says its
 -- position); receives from a track that isn't mirrored (Real time, live views) stay as they are on each machine.
-mirror.HV = 6 -- how object hashes are made: bump it whenever what goes into one changes (events carry it as hv)
+mirror.HV = 7 -- how object hashes are made: bump it whenever what goes into one changes (events carry it as hv)
 mirror.KIND = { T = "track", F = "fx", E = "env", R = "recv", M = "misc", I = "item" } -- (an oid's first letter)
 mirror.PART = { fx = "the plug-ins", env = "the automation", recv = "the sends", misc = "the groups, lock, input FX or note names" }
 mirror.PARTS = { "F", "E", "R", "M" } -- (what a track oid T-x carries: F-x, E-x, R-x, M-x)
@@ -921,6 +923,9 @@ function mirror.track_line(t, local_mix, colour)
   for _, kp in ipairs(mirror.TRACK_MIX) do f[#f + 1] = local_mix and "" or (t[kp[1]] or "") end
   if colour == nil then colour = not mirror.own_colours() end
   if colour then f[#f + 1] = t.color or 0 end -- (left off, not blank, when it doesn't count: the line from before 0.36)
+  -- Automation mode, only when it's Read (power-user review, 0.58.62): left off at the default, so no track's hash changed and nothing was sent
+  -- again. Read or Trim/Read is how the song plays; Touch, Latch and Write are what one person is doing, so they travel as Read.
+  if (tonumber(t.automode) or 0) >= 1 then f[#f + 1] = "am1" end
   for i, v in ipairs(f) do f[i] = tostring(v):gsub("|", "/") end
   return table.concat(f, "|")
 end
@@ -1047,7 +1052,7 @@ function mirror.track_state(proj, tr, local_mix)
     depth = reaper.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH"), mute = reaper.GetMediaTrackInfo_Value(tr, "B_MUTE"),
     solo = reaper.GetMediaTrackInfo_Value(tr, "I_SOLO"), phase = reaper.GetMediaTrackInfo_Value(tr, "B_PHASE"),
     color = require("band").color_out(require("band").track_colour(tr)), icon = select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_ICON", "", false)),
-    autocolour = mirror.own_colours() or nil, freemode = reaper.GetMediaTrackInfo_Value(tr, "I_FREEMODE"), lanes = reaper.GetMediaTrackInfo_Value(tr, "I_NUMFIXEDLANES") } -- (not lanes collapsed: a view, each person's own. It was put back as a bandmate's edit: Mac, 0.42.5)
+    autocolour = mirror.own_colours() or nil, automode = reaper.GetMediaTrackInfo_Value(tr, "I_AUTOMODE") >= 1 and 1 or 0, freemode = reaper.GetMediaTrackInfo_Value(tr, "I_FREEMODE"), lanes = reaper.GetMediaTrackInfo_Value(tr, "I_NUMFIXEDLANES") } -- (not lanes collapsed: a view, each person's own. It was put back as a bandmate's edit: Mac, 0.42.5)
   local held_mute = select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_quiet", "", false)) -- (quiet only here, for now: lib/producer.lua)
   if held_mute ~= "" then t.mute = tonumber(held_mute) or 0 end
   local plays, names = {}, {}
@@ -1091,6 +1096,8 @@ function mirror.set_track_state(proj, tr, t, local_mix)
     if v then reaper.SetMediaTrackInfo_Value(tr, kp[2], v) end
   end
   if t.color and not t.autocolour then require("band").set_track_colour(tr, require("band").color_in(t.color)) end
+  -- (from a StudioSync that sends it; never out of a Touch, Latch or Write someone is using here)
+  if t.automode ~= nil and reaper.GetMediaTrackInfo_Value(tr, "I_AUTOMODE") <= 1 then reaper.SetMediaTrackInfo_Value(tr, "I_AUTOMODE", (tonumber(t.automode) or 0) >= 1 and 1 or 0) end
   reaper.GetSetMediaTrackInfo_String(tr, "P_ICON", t.icon or "", true)
   local l = 0
   for v in ((t.plays or "") .. ","):gmatch("([^,]*),") do
@@ -1907,6 +1914,26 @@ local function keep_track(proj, name)
   return mirror.add_local_track(proj, label, "yours") -- (auto-colouring recoloured Keys when this track went in, on the laptop: 2026-10-31)
 end
 -- A track of this machine's own (never mirrored) at the end, with the band's colours held.
+-- Keep selected tracks local (power-user review, 0.58.62): a track of your own that never goes to the others (a reference mix, a guide, a
+-- scratch idea). Only a track that hasn't gone out yet: a shared one made local would read as deleted, for everyone. When every one given
+-- is local this way already, they're shared again (sent as new). -> how many changed, how many were shared already (left alone), and
+-- true when they were made local, false when shared again.
+function mirror.keep_local(proj, tracks)
+  local key = "P_EXT:band_local"
+  local all_kept = #tracks > 0
+  for _, tr in ipairs(tracks) do if select(2, reaper.GetSetMediaTrackInfo_String(tr, key, "", false)) ~= "kept" then all_kept = false end end
+  local n, shared = 0, 0
+  for _, tr in ipairs(tracks) do
+    if all_kept then reaper.GetSetMediaTrackInfo_String(tr, key, "", true); n = n + 1
+    elseif not local_track(tr) then
+      local oid = trk_oid(tr)
+      local _, h = mirror.known(proj, oid)
+      if oid ~= "" and (h or "") ~= "" then shared = shared + 1
+      else reaper.GetSetMediaTrackInfo_String(tr, key, "kept", true); n = n + 1 end
+    end
+  end
+  return n, shared, not all_kept
+end
 function mirror.add_local_track(proj, name, tag)
   local colours = mirror.track_colours(proj)
   local idx = reaper.CountTracks(proj)

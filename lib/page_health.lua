@@ -149,7 +149,7 @@ function H.maint_rows()
   end
   for _, m in ipairs(s.routed or {}) do
     rows[#rows + 1] = { "routed " .. m.track, false, "yellow", "", string.format("'%s' plays %s on '%s', which doesn't load on this computer: " ..
-      "you hear the studio's print (the wet take) where there is one, and nothing where there isn't. Installing %s brings the notes back here.",
+      "you hear the studio's print where there is one, and nothing where there isn't. Installing %s brings the notes back here.",
       m.track, m.fx, m.dest, m.fx) }
   end
   local daway = reaper.GetExtState(band.SECTION, "drive_root") ~= "off" and require("drive").away

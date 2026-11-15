@@ -397,7 +397,7 @@ function chooser.open(cfg, opts, done)
       local pv = sel and chooser.preview(cfg, sel.song, room)
       if pv then ImGui.TextColored(ctx, #pv.missing > 0 and theme.YELLOW or theme.MUTED, pv.text) else ImGui.Dummy(ctx, 0, ImGui.GetTextLineHeight(ctx)) end
       if pv and #pv.missing > 0 then ImGui.SetItemTooltip(ctx, "Missing here:\n" .. table.concat(pv.missing, "\n") ..
-        "\n\nTheir tracks open with the plug-in offline (settings kept). The Plugins page can set a translation.") end
+        "\n\nTheir tracks open with the plug-in offline (settings kept). The Plugins page can set a stand-in.") end
       local pick_room = (opts.rooms == "new" and band.clean(new_room) ~= "") and band.clean(new_room) or room
       ImGui.BeginDisabled(ctx, not sel)
       if ImGui.Button(ctx, (opts.action or "Open") .. (sel and (" '" .. sel.song .. "'" .. (opts.rooms and (", room " .. tostring(pick_room)) or "")) or ""))

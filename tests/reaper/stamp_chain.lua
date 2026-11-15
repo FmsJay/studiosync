@@ -80,7 +80,7 @@ local ok, err = pcall(function()
   local talk
   for t = 0, reaper.CountTracks(p) - 1 do
     local tr = reaper.GetTrack(p, t)
-    if select(2, reaper.GetTrackName(tr)) == "StudioSync talkback" then talk = tr end
+    if select(2, reaper.GetTrackName(tr)) == require("live").TALK_NAME then talk = tr end -- (one talk track with Real time mode's since 0.58.63)
   end
   check(talk ~= nil and mirror.local_track(talk), "on a track of this computer's")
   check(talk and reaper.GetMediaTrackInfo_Value(talk, "B_MAINSEND") == 0, "you don't hear yourself")

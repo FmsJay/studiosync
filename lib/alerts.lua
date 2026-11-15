@@ -22,6 +22,12 @@ function alerts.body(channel, title, message)
   return band.json_encode({ topic = channel, title = title, message = message, tags = { "musical_note" } })
 end
 
+-- At most `n` bytes, never half a character: cut inside an accent or emoji, the JSON didn't parse and ntfy dropped the alert. Review, 0.58.62. Pure.
+function alerts.cut(s, n)
+  if #s <= n then return s end
+  local ok, at = pcall(utf8.offset, s, 0, n + 1) -- (where the character holding byte n+1 starts)
+  return s:sub(1, ((ok and at) or (n + 1)) - 1)
+end
 local last_sent = {} -- kind -> when: at most one of each kind a minute from this computer
 -- kind: "chat", "take", "mix" (one a minute each). Returns true when one went.
 function alerts.send(cfg, kind, title, message)
@@ -32,7 +38,7 @@ function alerts.send(cfg, kind, title, message)
   last_sent[kind] = now
   local services = require("services")
   local file = services.TMP .. "/bandsync-alert-" .. kind .. ".json"
-  local ok = pcall(band.write_atomic, file, alerts.body(channel, title, message:sub(1, 300)))
+  local ok = pcall(band.write_atomic, file, alerts.body(channel, title, alerts.cut(message, 300)))
   if not ok then return false end
   local url = alerts.server(cfg.root)
   local win = reaper.GetOS():match("^Win") ~= nil

@@ -16,7 +16,7 @@ Machines talk only through a shared folder (Syncthing recommended), with an opti
 For a band, or for one song with someone: it's the same thing, so name it what it is.
 
 1. Run the installer: **Install StudioSync (Windows).cmd**, or on a Mac **Install StudioSync (Mac).command** (see
-   [Setup](#setup-each-person-once) if macOS blocks it). Answer *n* to "Is someone in the studio already set up?" and
+   [Setup](#setup-each-person-once) if macOS blocks it). Answer *s* (start) to "starting a new studio, or joining one?" and
    give it a name. Already have StudioSync? Click the studio pill at the top of the panel, then **Start a new studio**.
 2. In REAPER, open your project, or a new empty tab: the panel shows **Projects**, with **Share** at the top. It goes through the Prepare checklist first.
 3. On the studio's card or on Home, press **Invite**. It copies a message to send each person: a join code if they already have StudioSync, and a line to paste if they don't.
@@ -58,7 +58,7 @@ Everything below is the detail.
       recall/   recall points (every handover, or saved by hand)
       status/   <person>.json           who's here, what they're doing (the panel's Who's here)
       chat/     messages, to-dos, links for the room (the project's and the studio's sit beside it)
-      driver.json, mode.json            who drives; Only the driver / Driver + claims / Anyone
+      driver.json, mode.json            who drives; Only the driver / Driver + claimed tracks / Admins only / Anyone
 ```
 
 - **Publish** (host) makes the project a studio session. The project must be prepared first (a checklist); an
@@ -96,11 +96,11 @@ Everything below is the detail.
   instrument), kept as the item's second take: "dry" is the notes, "wet" the print. A MIDI track that plays an
   instrument on another track (a MIDI send to a sampler or drum-kit track) is printed through that track, with
   only that item feeding it. Each person picks how MIDI plays on their machine (Settings > Options): **Auto** (your
-  instruments when every plug-in it plays through loads here, else the print), **Dry** or **Wet**. That choice
+  instruments when every plug-in it plays through loads here, else the print), **Through my plug-ins** or **As printed**. That choice
   never changes what anyone else hears. When an instrument on another track doesn't load here, Settings > Health
   names it and says you hear the studio's print.
 - **Audio through a plug-in someone lacks** (an amp sim on a guitar, say) gets a wet take the same way: whoever
-  changes the item renders it through the track's plug-ins, and the same Auto / Dry / Wet choice picks which plays.
+  changes the item renders it through the track's plug-ins, and the same Auto / Through my plug-ins / As printed choice picks which plays.
   Only tracks with a plug-in that isn't on everyone's list get one, and only items with a single take. While a
   track plays a wet take, its plug-ins are switched off on that computer only, so the ones that do load there
   don't apply twice (the studio still has them on).
@@ -125,15 +125,22 @@ Everything below is the detail.
 
 ## Setup (each person, once)
 
-**Easiest: the installer.** Download the `installer` folder (or just the one file) and double-click
+**Easiest: the line from an invitation.** On Windows: press Start, type *PowerShell*, open it, paste the line and press
+Enter. On a Mac: press Cmd+Space, type *Terminal*, open it, paste the line and press Return. Starting a studio, with nobody to invite you?
+On Windows paste this into PowerShell the same way:
+`$f="$env:TEMP\studiosync_install.ps1"; iwr -UseBasicParsing "https://raw.githubusercontent.com/FmsJay/studiosync/main/installer/install_windows.ps1" -OutFile $f; powershell -NoProfile -ExecutionPolicy Bypass -File $f`
+(the Mac line is below).
+
+**Or the installer files.** Download the `installer` folder (or just the one file) and double-click
 **Install StudioSync (Windows).cmd**, or on a Mac **Install StudioSync (Mac).command**. It asks your name, whether
-someone in the studio is already set up (if so, their Syncthing device ID: any set-up collaborator's will do; with the line
-from their panel's **Invite a collaborator**, it's already filled in), whether you want the plug-in pack, and whether
-you're coming from another DAW (then it adds [ReaPersona](https://github.com/FmsJay/ReaPersona), which makes REAPER's
+you're starting a studio or joining one (joining with the line from a collaborator's **Invite**, nothing more is asked;
+without it, their Syncthing device ID: any set-up collaborator's will do), whether you want the plug-in pack (and, when starting,
+the bigger extras), and whether you're used to another music app (then it adds [ReaPersona](https://github.com/FmsJay/ReaPersona), which makes REAPER's
 shortcuts, mouse and look work like Pro Tools, Logic, Ableton, FL Studio, Cubase, Studio One, Bitwig and more), then
 installs whatever is missing from official sources: REAPER, ReaPack, ReaImGui, js_ReaScriptAPI, SWS, Syncthing,
-SonoBus and Google Drive for desktop. It sets up the shared folder and pairs it with your collaborator,
-waits while you sign in to Google Drive (and add the studio's folder),
+SonoBus, Tailscale and Google Drive for desktop. It sets up the shared folder (in your home folder, named after the studio) and pairs it
+with your collaborator, waits while you sign in to Tailscale and Google Drive if you're starting the studio (a joiner gets those as
+notes at the end: songs sync without them),
 installs StudioSync through ReaPack and opens the panel. At the end it lists only what's still left, such as your
 collaborator pressing *Let you in*.
 
@@ -210,13 +217,13 @@ By hand:
   records, or renders a mix, one line goes to everyone who subscribed to the studio's channel in the free ntfy app (Android,
   iPhone), even with REAPER closed. The line goes through ntfy.sh (or the studio's own ntfy server, band.json
   `alerts_server`); no audio or project. The channel name is long and random; anyone who knew it could read the lines.
-- **Studio templates**: *Save as studio template* (Restore page) keeps a song's tracks, routing, plug-ins, colours and tempo,
+- **Studio templates**: *Save as studio template* (Mixes tab) keeps a song's tracks, routing, plug-ins, colours and tempo,
   without its recordings and without your own local tracks, in the studio's `_band/templates/`. Everyone in that studio gets
   *New from template* on the Projects page: a new tab to name and share as usual. Each studio has its own.
 - **Studio call**: the owner or an admin pastes a Discord, Zoom or Meet link in Settings > Studio, and everyone gets a **Call** button
   beside Real time mode. The call runs in its own app, video and all, so it never slows REAPER or the sync. Mute its
   microphone while playing: Real time mode carries the music.
-- **Listening page** (Settings > Studio): *Share the listening page* serves a web page of every song's mixes from
+- **Listening page** (the Mixes tab): *Share the listening page* serves a web page of every song's mixes from
   your computer over Tailscale, to play on a phone or any browser without REAPER, while your computer is on. Only devices
   on your Tailscale network reach it, and it serves the page and the mixes, nothing else. With phone alerts on, a comment
   typed under a mix lands in that song's chat with the moment it was about ("Bee on mix 3 at 1:23: ..."). A small server of
@@ -264,6 +271,11 @@ Chat. Point at a slice to read what it does underneath, and click it to do it. E
 again closes the menu. The panel carries the move out, so each choice asks first just as its button there does, and
 the panel opens if it was closed.
 
+**Actions to bind to a key or toolbar button** (Actions list, search "StudioSync"): **Hold my changes** (on/off), **Claim selected
+tracks**, **Local mixing** (on/off; off asks whose mix to keep), **Keep selected tracks local** (new tracks of your own that never go out:
+a reference mix, a guide; again with only those selected, it shares them), plus Take control, Undo, Redo and Radial menu. Like the radial
+menu, the panel does each one.
+
 **StudioSync - Undo** and **StudioSync - Redo**: bind them to Ctrl+Z and Ctrl+Shift+Z (Actions list > Add shortcut). In a
 StudioSync session they step back through your own changes only, for everyone, and ask first only when a collaborator
 changed the same thing since (REAPER's own undo would roll their changes back too). In any other project they're
@@ -299,7 +311,7 @@ Who may change what:
 
 - **Driver**: their changes reach everyone, except on what someone has claimed. *Take control* (next to Who's
   here) makes you the driver; it checks everyone has caught up first, and every handover saves a version.
-- **Editing modes** (Home; the driver picks): **Only the driver**, **Driver + claims** (default: the driver, and
+- **Who can edit** (Home; the driver picks): **Only the driver**, **Driver + claimed tracks** (default: the driver, and
   everyone on what they've claimed; a track you make is claimed for you once it has a name, unless you drive, and
   a track you made stays yours to change until someone claims it, listed on the Claims card) or **Anyone** (anything unclaimed;
   the tempo map, markers and project settings too; a clash goes to whoever owns it, else whoever changed it more: docs/clashes.md).
@@ -327,7 +339,11 @@ Restore (its own page):
   tracks to here** (their items and plug-ins), **Restore whole project to here** (the driver), or **Open in side room**,
   to check it's the right moment first. Every restore goes to the others as new changes, so it can be undone the same way.
 - **Saved versions** (every handover, or *Save this version*), and *Open it as it was before StudioSync* (the copy Publish
-  kept). **Render current mix** puts the whole project's mix, as your master has it, in the shared folder's `<Song>/mixes/` for everyone, and on Drive, and says so in the project's chat (with where to play it on a phone: the Google Drive app). **Export stems** renders one file per shared track, all starting at the song's start, into `<Song>/stems/`. **Compare two mixes (A/B)** plays two renders from `mixes/` in turn from the same place, turned to the same loudness (needs SWS). **Credits draft** writes `<Song>/credits.txt`: who started which tracks, recorded which takes and made which changes, with the splits left for the band to agree. **Back up** keeps the project as it stands: a saved version kept for good, and the project on Drive.
+  kept).
+
+### Mixes
+
+**Render current mix** puts the whole project's mix, as your master has it, in the shared folder's `<Song>/mixes/` for everyone, and on Drive, and says so in the project's chat (with where to play it on a phone: the Google Drive app). **Export stems** renders one file per shared track, all starting at the song's start, into `<Song>/stems/`. **Compare two mixes (A/B)** plays two renders from `mixes/` in turn from the same place, turned to the same loudness (needs SWS). **Credits draft** writes `<Song>/credits.txt`: who started which tracks, recorded which takes and made which changes, with the splits left for the band to agree. **Back up** keeps the project as it stands: a saved version kept for good, and the project on Drive.
 - **Old history is trimmed**: once a day, at the end of a session, the room's driver takes away changes older than
   60 days that nothing needs. Each thing's newest change stays, so does everything a major saved version (end of
   session, "yours before…", or one you saved by hand) needs to restore exactly; only the snapshots before a
@@ -345,8 +361,8 @@ Listen and Produce, and the Plugins page; off, each still shows when it has some
 *Who controls: Anyone*; the driver can tighten it there.
 
 Plugins (its own page): every plug-in the project uses, on which tracks, and who in the studio doesn't have it. Set a
-**translation** for one (something the studio has that's close enough); *Apply translations here* adds it right after
-the original on a machine that's missing it. Translations are that machine's own: they never go to the others, and
+**stand-in** for one (something the studio has that's close enough); *Apply stand-ins here* adds it right after
+the original on a machine that's missing it. Stand-ins are that machine's own: they never go to the others, and
 the original stays for everyone who has it.
 
 Recording and MIDI: record as usual. A new recording goes out a moment after you stop (the file is copied into
@@ -499,7 +515,7 @@ own? Enter `<address>:2049` and click *Save for the studio*.
 
 - **Deleting your local copy** (right-click a project or a folder on the Projects page): to free the space, once it's confirmed elsewhere: Google Drive holds every file, or another computer of the studio has said it holds exactly these files (each one says so itself, every minute or so while REAPER is open). The project goes on this computer's ignore list first, so nobody else's copy is touched, and its files go to the Recycle Bin or Trash. It stays on the page, and opening it brings it back. A closed studio's copy goes the same way, from the Studios page.
 - **A copy outside the studio** (Restore > Save a copy outside the studio): a plain REAPER project in a folder you pick, with every file it uses, as recorded or as WAVs. It opens anywhere with no StudioSync and nothing you do to it goes to anyone. Letting someone in saves a kept version of what's open first.
-- **Who controls** (Home): Only the driver, Driver + claims, Admins only (the owner and admins, and whoever an admin gave tracks to: right-click their name) or Anyone.
+- **Who can edit** (Home): Only the driver, Driver + claimed tracks, Admins only (the owner and admins, and whoever an admin gave tracks to: right-click their name) or Anyone.
 - **Chat**: This room shows only this room's; This project also shows all its rooms'; Studio shows everything, each message saying where it's from.
 
 ## Backups
@@ -529,7 +545,7 @@ included. **Just look** leaves it as it is, with **Make this my project** there 
 ## Limits
 
 - Plug-in chains change only while the transport is stopped (replacing a chain reloads its plug-ins), and a
-  plug-in a collaborator doesn't have stays in their copy as offline, its settings kept (see Plugins: translations).
+  plug-in a collaborator doesn't have stays in their copy as offline, its settings kept (see Plugins: stand-ins).
 - Prints render through the item's track (not parent folders or sends) and only on a machine where all of that
   track's plug-ins load; they leave out the item's own volume and fades (the item applies them to whichever take
   plays). The hidden REAPER that renders them puts its copy in REAPER's recent-projects list until you next quit.
@@ -540,6 +556,10 @@ included. **Just look** leaves it as it is, with **Make this my project** there 
   outputs, record arm, inputs and monitoring stay yours too.
 - Not synced, on purpose: render, metronome and recording settings, and the master fader (each person's own).
   A Melodyne edit reaches the studio as audio (the print), not as an edit they can change.
+- **Item grouping** (Group items, G) stays on each computer: a group is only a number inside one project, and the same number already means
+  another group in each collaborator's copy, so sent along it would tie your items to theirs. Group them again where you need it.
+- **Automation mode**: Read and Trim/Read go to everyone (they change how the song plays back). Touch, Latch and Write stay yours, and go out
+  as Read, so nobody else ends up writing automation because you are.
 - An item's lane travels; a lane's name and which lanes play travel with its track.
 - Both changing one object while apart: the newer change wins everywhere; the other is on the Restore page.
 - Bringing a side room in: an object both rooms changed since the room was made stays as main has it.

@@ -490,7 +490,7 @@ function prints.printing_ui(ctx, ImGui, cfg, b, proj, who)
     sync.set_claims(cfg, b.song, b.room, c)
   end
   if ImGui.Button(ctx, "Print selected tracks here") then
-    if reaper.CountSelectedTracks(proj) == 0 then return band.msg("Select the tracks whose wet takes you want to render first.") end
+    if reaper.CountSelectedTracks(proj) == 0 then return band.msg("Select the tracks you want to print first.") end
     save(function(c)
       for i = 0, reaper.CountSelectedTracks(proj) - 1 do
         local n = sync.base_name(select(2, reaper.GetTrackName(reaper.GetSelectedTrack(proj, i))))
@@ -500,7 +500,7 @@ function prints.printing_ui(ctx, ImGui, cfg, b, proj, who)
       end
     end)
   end
-  ImGui.SetItemTooltip(ctx, "Their wet takes are rendered here, with your plug-ins, whoever changes them: while you're in the project\n" ..
+  ImGui.SetItemTooltip(ctx, "Their prints are rendered here, with your plug-ins, whoever changes them: while you're in the project\n" ..
     "and have every plug-in they play through. Otherwise whoever changed them prints, or someone here who has the plug-ins.")
   local mine, others = {}, {}
   for _, p in pairs(who and who.printers or {}) do
@@ -519,9 +519,9 @@ end
 function prints.options(ctx, ImGui)
   local set, default = reaper.GetExtState(band.SECTION, "bg render"), require("bgrender").default_on()
   local on = set == "on" or (default and set ~= "off")
-  local rv, v = ImGui.Checkbox(ctx, "Render wet takes in the background##bgrender", on)
+  local rv, v = ImGui.Checkbox(ctx, "Render prints in the background##bgrender", on)
   if rv then reaper.SetExtState(band.SECTION, "bg render", v == default and "" or (v and "on" or "off"), true) end
-  ImGui.SetItemTooltip(ctx, "On: a hidden second REAPER renders each wet take while you keep working (a few seconds each).\n" ..
+  ImGui.SetItemTooltip(ctx, "On: a hidden second REAPER renders each print while you keep working (a few seconds each).\n" ..
     "Off: REAPER renders them in front, holding up the screen for a moment each time." ..
     (default and "" or "\nOff by default here: this computer has no way to keep the second REAPER hidden, so it would take the keyboard for a moment each time."))
 end

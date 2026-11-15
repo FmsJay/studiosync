@@ -219,7 +219,7 @@ function chat.draw(ctx, ImGui, cfg, b)
       if tight then typing() end
       -- (what's under this is one row: at some scales a row is taller than the 34 this was, and in a short docker the box and Send went out of reach: James)
       if ImGui.BeginChild(ctx, "msgs", 0, tight and 60 or (h - ImGui.GetFrameHeightWithSpacing(ctx)), ImGui.ChildFlags_Borders) then
-        if #t.msgs == 0 then ImGui.TextDisabled(ctx, "No messages yet.") end
+        if #t.msgs == 0 then ImGui.TextDisabled(ctx, "No messages yet: write one below. Everyone in it sees it, even if they're not in the project right now.") end
         for _, m in ipairs(t.msgs) do
           if shown(m) then
             ImGui.PushID(ctx, m.file)

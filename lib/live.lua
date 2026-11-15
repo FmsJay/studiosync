@@ -351,7 +351,8 @@ live.TALK_NAME = "StudioSync Talk"
 function live.talk_track(proj, add)
   for t = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, t)
-    if select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local", "", false)) == "talk" then return tr end
+    local tag = select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local", "", false))
+    if tag == "talk" or tag == "talkback" then return tr end -- ("talkback": the producer's own, from before 0.58.63)
   end
   if not add then return nil end
   local tr = require("mirror").add_local_track(proj, live.TALK_NAME, "talk")
@@ -360,7 +361,8 @@ function live.talk_track(proj, add)
 end
 -- Armed to record (the talk track is armed while you talk, and never records: not counted). Pure but for reading the track.
 function live.armed(tr)
-  return reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1 and select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local", "", false)) ~= "talk"
+  local tag = select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local", "", false))
+  return reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1 and tag ~= "talk" and tag ~= "talkback"
 end
 function live.talking(proj)
   local tr = live.talk_track(proj)
@@ -373,6 +375,7 @@ function live.talk(proj, on)
   reaper.SetMediaTrackInfo_Value(tr, "I_RECMON", 1)
   reaper.SetMediaTrackInfo_Value(tr, "B_MAINSEND", 0) -- (you don't hear yourself twice)
   reaper.SetMediaTrackInfo_Value(tr, "I_RECARM", on and 1 or 0)
+  reaper.SetMediaTrackInfo_Value(tr, "B_MUTE", 0) -- (the producer's old one was armed for good and muted between words)
   live.rt_sends(proj)
 end
 

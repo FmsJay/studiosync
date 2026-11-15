@@ -35,7 +35,8 @@ local function background(name, cmd, every)
       -- with quotes in it (the curl's -H "X-API-Key: ...") silently never ran (Mac, 2026-10-28). Grouped, so the
       -- whole command's output lands in the file, not only the part after a ||.
       local sh = TMP .. "/bandsync-" .. name .. ".sh"
-      band.write_atomic(sh, "{ " .. cmd .. "; } > '" .. file .. "' 2>/dev/null\nrm -f \"$0\"\n")
+      -- (TAILSCALE_BE_CLI: Tailscale's Mac app answers as its command line only when it can tell it was started from one. Mac review, 0.58.62)
+      band.write_atomic(sh, "export TAILSCALE_BE_CLI=1\n{ " .. cmd .. "; } > '" .. file .. "' 2>/dev/null\nrm -f \"$0\"\n")
       reaper.ExecProcess("/bin/sh '" .. sh .. "'", -1)
     end
   end
@@ -47,7 +48,7 @@ services.background, services.TMP = background, TMP -- (lib/alerts.lua sends thr
 -- Tailscale token: they stayed there for good. Review, 0.58.52). Each is made again when it's next needed.
 function services.tidy_temp()
   for _, f in ipairs(band.files(TMP)) do
-    if f:match("^bandsync%-.+%.cmd$") or f:match("^bandsync%-.+%.sh$") or f:match("^bandsync%-.+%.cfg$") or f:match("^bandsync%-.+%.txt$") then os.remove(TMP .. "/" .. f) end
+    if f:match("^bandsync%-.+%.[%a]+$") and (f:match("%.cmd$") or f:match("%.sh$") or f:match("%.cfg$") or f:match("%.txt$") or f:match("%.done$") or f:match("%.nobin$") or f:match("%.ps1$") or f:match("%.json$")) then os.remove(TMP .. "/" .. f) end -- (.done/.nobin/.ps1: the Recycle Bin moves; .json: alerts. Review, 0.58.62)
   end
 end
 
@@ -222,7 +223,7 @@ end
 local function run_now(cmd, secs)
   if not WIN then
     local sh = TMP .. "/bandsync-ask.sh"
-    band.write_atomic(sh, cmd .. "\n")
+    band.write_atomic(sh, "export TAILSCALE_BE_CLI=1\n" .. cmd .. "\n")
     cmd = "/bin/sh '" .. sh .. "'"
   end
   local r = reaper.ExecProcess(cmd, (secs + 1) * 1000) or ""
@@ -292,18 +293,19 @@ function services.invite_text(id, info, key)
   key = key and key:match("^tskey%-auth%-[%w%-]+$")
   local base = "https://raw.githubusercontent.com/FmsJay/studiosync/main/installer/"
   local q1 = function(s) return "'" .. tostring(s):gsub("'", "") .. "'" end -- (band names are plain: band.clean)
+  -- (newcomers first, in plain steps: most people invited have nothing installed, and the old order led with a panel they didn't have. Beginner review, 0.58.62)
   return "Join " .. info.name .. " on StudioSync.\n\n" ..
-    "Already have StudioSync? In its panel, open your studios, press Paste join code, and paste this message:\n" ..
-    services.join_code(id, info) .. "\n\n" ..
-    "New to it? Paste ONE of these:\n\n" ..
-    "Mac (in Terminal):\n" ..
-    'curl -fsSL "' .. base .. 'install_mac.sh?$(date +%s)" | BS_HOST_ID=' .. id .. " BS_BAND_ID=" .. info.id ..
-    " BS_BAND_NAME=" .. q1(info.name) .. (key and (" BS_TS_KEY=" .. key) or "") .. " bash\n\n" ..
-    "Windows (in PowerShell):\n" ..
+    "New to StudioSync? It sets up everything for you (REAPER included), in about 15 minutes. Copy ONE line below, for your computer:\n\n" ..
+    "Windows: press Start, type PowerShell, open it, paste this line and press Enter:\n" ..
     '$f="$env:TEMP\\studiosync_install.ps1"; iwr -UseBasicParsing "' .. base .. 'install_windows.ps1?$(Get-Random)" -OutFile $f; ' ..
     "powershell -NoProfile -ExecutionPolicy Bypass -File $f -HostId " .. id .. " -BandId " .. info.id .. " -BandName " .. q1(info.name) .. (key and (" -TsKey " .. key) or "") .. "\n\n" ..
+    "Mac: press Cmd+Space, type Terminal, open it, paste this line and press Return:\n" ..
+    'curl -fsSL "' .. base .. 'install_mac.sh?$(date +%s)" | BS_HOST_ID=' .. id .. " BS_BAND_ID=" .. info.id ..
+    " BS_BAND_NAME=" .. q1(info.name) .. (key and (" BS_TS_KEY=" .. key) or "") .. " bash\n\n" ..
+    "Answer its questions, and when it's done, tell me: I let you in from my StudioSync panel.\n\n" ..
     (key and "That works once, within a day: it puts your computer on my Tailscale network as a guest for the day (no account needed). If you use Tailscale for anything else, switch back from its menu afterwards.\n\n" or "") ..
-    "When it's done, tell me: I let you in from my StudioSync panel."
+    "Already have StudioSync? In its panel, open your studios, press Paste join code, and paste this message (or just this line):\n" ..
+    services.join_code(id, info)
 end
 
 -- The line that gets someone with StudioSync into a studio, in an invitation.
@@ -584,12 +586,24 @@ function services.tailscale_name_in(json)
 end
 -- How others reach this machine over Tailscale: its name (a 100.x address changes: the PC's did), or that address if the
 -- tailnet has names turned off; nil when Tailscale isn't installed or signed in.
-function services.tailscale_address()
+-- Tailscale's command line, waited for: on a Mac through a script with TAILSCALE_BE_CLI set (started straight from REAPER, the app could
+-- open its window instead of answering: Mac review, 0.58.62). -> ExecProcess's "<code>\n<output>", or "" without Tailscale.
+function services.ts_exec(args, ms)
   local exe = tailscale_exe()
-  if not exe then return nil end
-  local name = services.tailscale_name_in(reaper.ExecProcess(q(exe) .. " status --json --peers=false", 5000) or "")
+  if not exe then return "" end
+  local cmd = q(exe) .. " " .. args
+  if not WIN then
+    local sh = TMP .. "/bandsync-ts.sh"
+    band.write_atomic(sh, "export TAILSCALE_BE_CLI=1\n" .. cmd .. "\n")
+    cmd = "/bin/sh '" .. sh .. "'"
+  end
+  return reaper.ExecProcess(cmd, ms) or ""
+end
+function services.tailscale_address()
+  if not tailscale_exe() then return nil end
+  local name = services.tailscale_name_in(services.ts_exec("status --json --peers=false", 5000))
   if name and name ~= "" then return name end
-  local out = reaper.ExecProcess(q(exe) .. " ip -4", 5000) or "" -- "0\n100.97.210.49\n"
+  local out = services.ts_exec("ip -4", 5000) -- "0\n100.97.210.49\n"
   return out:match("^0\n%s*(100%.%d+%.%d+%.%d+)")
 end
 
@@ -646,7 +660,7 @@ function services.copy_guest_invite(my_id, info, ctx, ImGui, root)
   local key, why = services.tailscale_guest_key()
   if not key then band.log("couldn't make a guest invitation: " .. tostring(why)); return end
   if root then pcall(require("groups").set_tailnet, root) end -- (the network the guest joins is this studio's)
-  band.copy(services.invite_text(my_id, info, key), ctx, ImGui)
+  require("tools").show_invite(services.invite_text(my_id, info, key), info, ctx, ImGui)
   band.log("a guest invitation is on your clipboard: it also puts their computer on your Tailscale network for a day (no account needed)")
 end
 -- ---- Tailscale accounts: someone in two studios can be on two Tailscale networks, but a computer is on one at a time (Tailscale keeps
@@ -703,7 +717,7 @@ function services.tailscale_switch(id)
   if not exe then return false end
   -- (asked now, not the list from the last look: that one can be from before the last switch, and then this one took itself for a stay put
   -- and wrote no note. Seen in the real switch test, 0.58.58. A click, so waiting the moment it takes is fine)
-  local now_list = services.profiles_in(reaper.ExecProcess(q(exe) .. " switch --list", 8000) or "")
+  local now_list = services.profiles_in(services.ts_exec("switch --list", 8000))
   local note = services.switch_note(now_list, id, band.read_json(services.switch_marker()), os.time())
   if note then pcall(band.write_json, services.switch_marker(), note) else os.remove(services.switch_marker()) end
   background("ts-switch", q(exe) .. " switch " .. id, 0)

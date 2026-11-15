@@ -102,8 +102,32 @@ local let_at, let_device, asked_at, asking = {}, {}, -math.huge, {} -- (let_at, 
 tools.INVITE_TIP = "Copies a message to send them: one line for a Mac and one for Windows that installs everything, already paired with this computer " ..
   "(and a join code if they already have StudioSync).\nWhen they've run it, their request appears at the top of this panel: press Let them in."
 function tools.invite(my_id, info, ctx, ImGui)
-  band.copy(require("services").invite_text(my_id, info), ctx, ImGui)
+  tools.show_invite(require("services").invite_text(my_id, info), info, ctx, ImGui)
   band.log("an invitation to " .. tostring(info.name) .. " is on your clipboard: paste it to your collaborator. When they've run it, their request appears at the top of this panel")
+end
+-- The invitation, shown as well as copied: a toast was all there was, and someone who copied something else meanwhile had to make another
+-- (and didn't know what it said). Beginner review, 0.58.62.
+local shown_invite
+function tools.show_invite(text, info, ctx, ImGui)
+  band.copy(text, ctx, ImGui)
+  shown_invite = { text = text, name = tostring(info and info.name or "the studio"), open = true }
+end
+function tools.invite_popup(ctx, ImGui)
+  local j = shown_invite
+  if not j then return end
+  if j.open then j.open = nil; ImGui.OpenPopup(ctx, "Invitation") end
+  ImGui.SetNextWindowSize(ctx, 520, 0)
+  if ImGui.BeginPopupModal(ctx, "Invitation", nil, ImGui.WindowFlags_NoResize) then
+    ImGui.PushTextWrapPos(ctx, 0)
+    ImGui.Text(ctx, "It's on your clipboard: paste it into a message to each person you're inviting to " .. j.name .. ". It's the same for everyone.")
+    ImGui.PopTextWrapPos(ctx)
+    ImGui.InputTextMultiline(ctx, "##invitation", j.text, -1, ImGui.GetTextLineHeight(ctx) * 9, ImGui.InputTextFlags_ReadOnly)
+    ImGui.TextDisabled(ctx, "When they've run it, their request shows at the top of this panel: press Let them in.")
+    if ImGui.Button(ctx, "Copy again") then band.copy(j.text, ctx, ImGui); band.log("the invitation is on your clipboard again") end
+    ImGui.SameLine(ctx)
+    if ImGui.Button(ctx, "Done") or ImGui.IsKeyPressed(ctx, ImGui.Key_Escape) then shown_invite = nil; ImGui.CloseCurrentPopup(ctx) end
+    ImGui.EndPopup(ctx)
+  end
 end
 
 local function let_in(d, me, day)

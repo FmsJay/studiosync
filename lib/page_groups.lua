@@ -186,6 +186,43 @@ local function people_in(root)
   return people_of[root]
 end
 
+-- The first-run checklist (beginner review, 0.58.62: a newcomer landed on an empty page with nothing saying what came next). Each step ticks
+-- itself from what's on disk. s = { in_studio, starter, waiting, others, projects } -> { { text, done } }, or nil once all are done. Pure.
+function pg.checklist_steps(s)
+  local steps = { { "Start a studio, or paste the join code someone sent you", s.in_studio } }
+  if s.starter then
+    steps[#steps + 1] = { "Share a project: open it in REAPER, then Share at the top of Projects", s.projects }
+    steps[#steps + 1] = { "Invite someone: Invite on the studio's card, and send them what it copies", s.others }
+  else
+    steps[#steps + 1] = { "Get let in: tell whoever invited you that you've joined", s.in_studio and not s.waiting and s.others }
+    steps[#steps + 1] = { "Open a project: Projects, then double-click one", s.projects }
+  end
+  for _, x in ipairs(steps) do if not x[2] then return steps end end
+  return nil
+end
+function pg.checklist(env)
+  if reaper.GetExtState(band.SECTION, "checklist") == "off" then return end
+  local ctx, ImGui = env.ctx, env.ImGui
+  local cfg = env.cfg()
+  local live, g = pg.live_groups(), nil
+  for _, x in ipairs(live) do if x.root == cfg.root then g = x end end
+  g = g or live[1]
+  local p = g and people_in(g.root) or { names = {}, projects = 0 }
+  local others = false
+  for _, n in ipairs(p.names) do if n ~= cfg.user then others = true end end
+  local steps = pg.checklist_steps({ in_studio = g ~= nil, starter = g == nil or groups.role(g.root, cfg.user) == "owner", waiting = g and g.waiting,
+    others = others, projects = p.projects > 0 })
+  if not steps then return end
+  if env.card("checklist") then
+    env.heading("Getting started", 15)
+    for i, x in ipairs(steps) do
+      if x[2] then ImGui.TextColored(ctx, theme.GREEN, "  done  " .. x[1]) else ImGui.Text(ctx, string.format("  %d.  %s", i, x[1])) end
+    end
+    if ImGui.SmallButton(ctx, "Hide this") then reaper.SetExtState(band.SECTION, "checklist", "off", true) end
+    env.card_end()
+  end
+end
+
 -- From inside a project: the way back to it.
 local function back_button(env)
   local song = env.project()
@@ -237,6 +274,15 @@ function pg.draw_groups(env)
         ImGui.TextDisabled(ctx, "(" .. role .. ")")
       end
       local p = people_in(g.root)
+      if g.waiting then
+        ImGui.PushTextWrapPos(ctx, 0)
+        ImGui.TextColored(ctx, theme.YELLOW, "Waiting to be let in. Tell whoever invited you that you've joined: they press Let them in, at the top of their panel. Its projects arrive by themselves after that.")
+        local on, n = require("services").syncthing_peers_now() -- (said where it stands: a joiner couldn't tell waiting on them from not reaching them)
+        ImGui.TextDisabled(ctx, on == nil and "Syncthing isn't answering here: it has to be running (Settings > Health)."
+          or on > 0 and "Connected to their computer: now it's their turn." or (n or 0) > 0 and "Not connected to their computer yet: it has to be on, with Syncthing running. This can take a minute."
+          or "Syncthing doesn't know their computer yet: paste the join code again, or run their invitation again.")
+        ImGui.PopTextWrapPos(ctx)
+      end
       ImGui.TextDisabled(ctx, string.format("%d project%s  ·  %s", p.projects, p.projects == 1 and "" or "s", #p.names > 0 and table.concat(p.names, ", ") or "just you so far"))
       ImGui.SetItemTooltip(ctx, g.root)
       if ImGui.SmallButton(ctx, "Open") then
@@ -456,7 +502,7 @@ function pg.draw_projects(env)
       local pick = band.pick(items)
       if pick then require("extras").open_template({ root = root }, pick) end
     end
-    ImGui.SetItemTooltip(ctx, "A new tab with a template's tracks, routing and plug-ins (made with Save as studio template, on the Restore page).\n" ..
+    ImGui.SetItemTooltip(ctx, "A new tab with a template's tracks, routing and plug-ins (made with Save as studio template, on the Mixes tab).\n" ..
       "Name it and share it with the studio as usual.")
   end
   if ImGui.BeginPopup(ctx, "New folder") then
@@ -483,7 +529,7 @@ function pg.draw_projects(env)
   if wide then ImGui.SameLine(ctx, 0, 14); ImGui.SetCursorPosY(ctx, ImGui.GetCursorPosY(ctx) + 2); keep_all() end
   local_copy_job(env)
   if #rows == 0 then
-    if reaper.file_exists(root .. "/_band/band.json") then ImGui.TextDisabled(ctx, "Nothing's shared here yet.")
+    if reaper.file_exists(root .. "/_band/band.json") then ImGui.TextDisabled(ctx, "Nothing's shared here yet: open a project in REAPER (or a new empty tab), then Share, at the top of this page.")
     else ImGui.TextDisabled(ctx, "Nothing has arrived yet: it comes once a collaborator lets you in.") end
   end
   local names = known_folders(root, rows)

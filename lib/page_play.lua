@@ -73,8 +73,8 @@ function M.section_live(part) -- part: "mode" or "rest" (docked, side by side), 
     ImGui.SetItemTooltip(ctx, "Turns on SonoBus, already set to join your studio: it sends what you play and brings the others in.")
     if on then
       ImGui.SameLine(ctx)
-      if ImGui.Button(ctx, "Leave##sb") then reaper.TrackFX_SetOffline(sm, si, true) end
-      ImGui.TextColored(ctx, GREEN, "SonoBus is on and connected to your studio, until you Leave.")
+      if ImGui.Button(ctx, "Disconnect##sb") then reaper.TrackFX_SetOffline(sm, si, true) end -- (was Leave, as the studio's and the top bar's were: UX review, 0.58.62)
+      ImGui.TextColored(ctx, GREEN, "SonoBus is on and connected to your studio, until you Disconnect.")
     elseif sm then
       ImGui.TextDisabled(ctx, "SonoBus is ready on your master track (off: it sends nothing until you Connect).")
     end
@@ -178,7 +178,7 @@ function M.section_live(part) -- part: "mode" or "rest" (docked, side by side), 
       end
     end
     ImGui.SameLine(ctx)
-    if ImGui.Button(ctx, "Leave") and not live.close_boxes() then
+    if ImGui.Button(ctx, "Disconnect") and not live.close_boxes() then
       reaper.DeleteExtState(band.SECTION, "ninjam shown " .. tostring(proj), false)
       live.closing()
       reaper.TrackFX_Delete(master, idx)
@@ -214,7 +214,7 @@ function M.section_together()
   if ui.want_lag then lag_bars, side_bars_edit, ui.want_lag = ui.want_lag, ui.want_lag, nil end
   local key = tostring(proj)
   -- Side by side: everyone's normal transport buttons drive everyone
-  ImGui.SeparatorText(ctx, "Side by side")
+  ImGui.SeparatorText(ctx, "Play, stop and record together") -- (was "Side by side", which said nothing about what it does: UX review, 0.58.62)
   -- kept in the project (until 0.11.3 it was per tab and lost when the tab was closed and reopened)
   local side = select(2, reaper.GetProjExtState(proj, band.SECTION, "side"))
   local ch, on = check("Follow each other: press play, stop and record as usual", side ~= "")

@@ -31,4 +31,13 @@ j = { call = "https://meet.google.com/abc-defg-hij" }
 assert(alerts.call_link("root") == "https://meet.google.com/abc-defg-hij", "the studio's link")
 j = { call = "javascript:alert(1)" }
 assert(alerts.call_link("root") == nil, "a bad one is ignored")
+
+-- (0.58.63) cut to a length without splitting a character
+assert(alerts.cut("abcdef", 4) == "abcd" and alerts.cut("abc", 10) == "abc", "plain text: as long as asked")
+local s = "ab" .. "\u{e9}" .. "cd" -- a, b, é (2 bytes), c, d
+assert(alerts.cut(s, 3) == "ab", "half an é is dropped, not sent: " .. alerts.cut(s, 3))
+assert(alerts.cut(s, 4) == "ab\u{e9}", "a whole é stays")
+local e = string.rep("x", 299) .. "\u{1F3B8}" -- a guitar emoji, 4 bytes, across the 300 mark
+assert(#alerts.cut(e, 300) == 299, "an emoji across the cut goes whole")
+assert(band.json_decode(alerts.body("c", "t", alerts.cut(e, 300))), "and what's sent is still JSON")
 print("ok")

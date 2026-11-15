@@ -143,12 +143,14 @@ local function idle(id)
 end
 -- The script that moves paths into the Mac's Trash, each named for the project it came from (label, if any). Pure.
 -- shortcut: a plain move, so Finder's Put Back stays greyed out; going through Finder would add an automation prompt, opening the project brings it back anyway.
-function copy.trash_script(paths, label, stamp)
+-- `failed`: a file touched when a move is refused (macOS guards the Trash: a program without Full Disk Access may not write there. Mac review,
+-- 0.58.62), so the message says so instead of "still on its way".
+function copy.trash_script(paths, label, stamp, failed)
   local sq = function(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
   local lines = {}
   for i, p in ipairs(paths) do
     local name = "StudioSync - " .. (label and label .. " - " or "") .. stamp .. " - " .. i .. " " .. p:match("[^/]+$")
-    lines[#lines + 1] = "[ -e " .. sq(p) .. " ] && mv " .. sq(p) .. ' "$HOME/.Trash/"' .. sq(name)
+    lines[#lines + 1] = "[ -e " .. sq(p) .. " ] && mv " .. sq(p) .. ' "$HOME/.Trash/"' .. sq(name) .. (failed and (" || touch " .. sq(failed)) or "")
   end
   return table.concat(lines, "\n") .. "\n"
 end
@@ -166,6 +168,10 @@ function copy.bin_poll(h)
   local done = reaper.file_exists(h.tmp .. ".done") or reaper.time_precise() - h.t0 > (WIN and 20 or 300)
     or (reaper.time_precise() - h.t0 > 1 and left_now(h.paths) == 0)
   if not done then return nil end
+  if reaper.file_exists(h.tmp .. ".notrash") then
+    os.remove(h.tmp .. ".notrash")
+    band.log("macOS didn't let StudioSync move " .. tostring(h.label or "some files") .. " to the Trash, so it's left where it is: delete it in Finder if you mean to")
+  end
   if reaper.file_exists(h.tmp .. ".nobin") then
     os.remove(h.tmp .. ".nobin")
     band.log("left " .. tostring(h.label or "some files") .. " where it is: that drive has no Recycle Bin, so deleting would be for good. Delete it by hand if you mean to")
@@ -209,7 +215,7 @@ function copy.bin_start(paths, label)
     reaper.ExecProcess(string.format('wscript.exe //B //Nologo "%s.vbs" "%s.cmd"', tmp, tmp), -1)
     return h
   end
-  band.write_atomic(tmp .. ".sh", copy.trash_script(paths, label, os.date("%Y-%m-%d %H.%M.%S")) .. "touch '" .. tmp .. ".done'\n")
+  band.write_atomic(tmp .. ".sh", copy.trash_script(paths, label, os.date("%Y-%m-%d %H.%M.%S"), tmp .. ".notrash") .. "touch '" .. tmp .. ".done'\n")
   reaper.ExecProcess("/bin/sh '" .. tmp .. ".sh'", -1)
   return h
 end

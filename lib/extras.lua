@@ -62,7 +62,9 @@ function extras.stems(proj, cfg, b, dry)
     if src then reaper.PCM_Source_Destroy(src) end
     if silent then os.remove(out .. "/" .. f) else made = made + 1 end
   end
-  if made == 0 then os.remove(out) end -- (its own empty folder, not left in the shared folder)
+  if made == 0 then -- (its own empty folder, not left in the shared folder: os.remove can't take a folder on Windows, so it stayed. Review, 0.58.62)
+    if reaper.GetOS():match("^Win") then os.execute('rmdir "' .. out:gsub("/", "\\") .. '" 2>nul') else os.remove(out) end
+  end
   if made == 0 then return nil, "The render made nothing (cancelled, or File > Render's format couldn't write, or every track was silent)." end
   return out, made
 end
@@ -317,6 +319,7 @@ function extras.inbox_name(file)
   return name ~= "" and name or "Stem", bar and tonumber(bar), m and (tonumber(m) * 60 + tonumber(s))
 end
 local inbox_sizes = {} -- path -> size at the last look: a file still growing waits
+local inbox_bad = {} -- path -> the size it had when REAPER couldn't read it: left alone until it changes
 -- -> what was put in, as { "Bass (stem) at bar 17", ... }
 function extras.inbox(proj, cfg, b)
   local dir = band.song_dir(cfg, b.song) .. "/inbox"
@@ -325,7 +328,7 @@ function extras.inbox(proj, cfg, b)
     local path = dir .. "/" .. f
     local size = band.size(path)
     local kind = (f:match("%.([^.]+)$") or ""):lower()
-    local ready = extras.INBOX_EXT[kind] and not f:find("^%.") and size and size > 0 and inbox_sizes[path] == size
+    local ready = extras.INBOX_EXT[kind] and not f:find("^%.") and size and size > 0 and inbox_sizes[path] == size and inbox_bad[path] ~= size
     inbox_sizes[path] = size
     if ready then
       local name, bar, secs = extras.inbox_name(f)
@@ -358,6 +361,11 @@ function extras.inbox(proj, cfg, b)
         os.remove(path)
         inbox_sizes[path] = nil
         out[#out + 1] = string.format("%s at %s", tname, bar and ("bar " .. bar) or string.format("%d:%02d", math.floor(pos / 60), math.floor(pos % 60)))
+      else
+        -- (a file REAPER can't read: copied again every 10 s, a new copy each time, until the disk filled. Review, 0.58.62. Left in the inbox, said once)
+        if ok then os.remove(dest) end
+        inbox_bad[path] = size -- (not tried again until the file changes, and its size with it)
+        band.log("the song's inbox has " .. f .. ", which " .. (ok and "REAPER can't read as audio" or "couldn't be copied") .. ": left in the inbox")
       end
     end
   end

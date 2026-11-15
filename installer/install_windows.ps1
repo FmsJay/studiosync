@@ -66,12 +66,17 @@ $user = $User -replace '[^\w\- ]', ''
 while (-not $user) { $user = (Ask "Your name, as the studio will see it" $env:USERNAME) -replace '[^\w\- ]', '' }
 # Pairing: with whoever in the band is already set up (any of them: every machine passes the folder on). "Host" is
 # a song's, not a machine's: anyone can host a song (James, 2026-10-31: "are you the band's host" read as a role).
-$isHost = if ($Hosting) { $Hosting -eq "yes" } elseif ($HostId) { $false } else { -not (YesNo "Is someone in the studio already set up with StudioSync?" "y") } # (-HostId: an invitation)
-if ($isHost -and -not $Hosting) { Say "You're the first: at the end you get your Syncthing ID to send to each collaborator who installs." }
+# (asked as start or join, with no default: "already set up? [y]" took a newcomer's Enter as joining, then asked for an ID they didn't have. Beginner review, 0.58.62)
+$isHost = if ($Hosting) { $Hosting -eq "yes" } elseif ($HostId) { $false } else {
+  $sj = ""; while ($sj -notmatch '^[sSjJ]') { $sj = Ask "Are you starting a new studio, or joining one someone invited you to? (s = start, j = join)" "" }
+  $sj -match '^[sS]'
+} # (-HostId: an invitation)
+if ($isHost -and -not $Hosting) { Say "You're starting it: at the end, StudioSync's panel has Invite, which makes the message to send each collaborator." }
 $hostId = $HostId.ToUpper()
 $idPattern = '^[A-Z0-9]{7}(-[A-Z0-9]{7}){7}$'
 if (-not $isHost) {
   if ($hostId -notmatch $idPattern) {
+    Say "Easiest: close this window and run the line from the invitation they sent you (it has everything in it). Otherwise:"
     Say "Their Syncthing device ID is 8 groups of 7 letters and digits, like ABCDEFG-HIJKLMN-...-1234567 (63 characters)."
     Say "Easiest: they press 'Invite a collaborator' in their StudioSync panel and send you the line it copies (it has the ID"
     Say "in it). Or they find it in Syncthing: Actions > Show ID. Copy all of it and paste it here."
@@ -91,7 +96,9 @@ $bandName = $BandName -replace '[^\w\- ]', ''
 if ($isHost -and -not $bandName) { while (-not $bandName) { $bandName = (Ask "Name your studio" "My studio") -replace '[^\w\- ]', '' } }
 if (-not $bandName) { $bandName = "the studio" }
 $defRoot = if ($folderId -eq "bandsync") { Join-Path $env:USERPROFILE "BandSync" } else { Join-Path $env:USERPROFILE "StudioSync $bandName" }
-$root = if ($Root) { $Root } else { Ask "Where should $bandName's shared folder be" $defRoot }
+# (not asked: nobody new knows what to answer, and the panel can move it later. Beginner review, 0.58.62)
+$root = if ($Root) { $Root } else { $defRoot }
+Say "$bandName's shared folder: $root"
 # The first one set up: an ID of the group's own. They all used to get "bandsync", so someone in two such groups had the two
 # folders treated as one and their files mixed. Run again on the same folder, it keeps the ID it has; a folder from before
 # groups had IDs, with no band.json yet, is "bandsync" (lib/band.lua band.info).
@@ -110,12 +117,14 @@ $driveName = if ($folderId -eq "bandsync") { "BandSync" } else { "StudioSync - $
 # (James, 2026-10-31: "it feels like a core feature"); -Live no / -Solo no still leave them out.
 $wantLive = $Live -ne "no"
 $wantSolo = $Solo -ne "no"
-$wantPlugins = if ($Plugins) { $Plugins -eq "yes" } else { YesNo "Install the plug-in pack (free, about 150 MB: Surge XT, Dexed, Airwindows, Dragonfly Reverb, Chow Tape, BYOD guitar/bass amps and tuner, ZL Equalizer and Compressor, ChowMatrix delay, and the Saike, Chokehold and chmaha JSFX with drum kits and keys), so everyone has the same sounds? (Adding the JSFX runs a ReaPack sync, which also updates your other ReaPack packages.)" "y" }
-$wantExtras = if ($Extras) { $Extras -eq "yes" } else { $wantPlugins -and (YesNo "Also the larger extras (about 1.2 GB: Neural Amp Modeler and AIDA-X amp capture players, Odin 2 synth, sforzando with the Salamander Grand piano and the MuldjordKit drum kit)?" "n") }
-$wantPersona = if ($ReaPersona) { $ReaPersona -eq "yes" } else { YesNo "Coming to REAPER from another DAW? ReaPersona (free) makes REAPER's shortcuts, mouse and look work like Pro Tools, Logic, Ableton, FL Studio, Cubase, Studio One, Bitwig and more, and switches back any time. Install it?" "n" }
+$wantPlugins = if ($Plugins) { $Plugins -eq "yes" } else { Write-Host "The free plug-in pack (about 150 MB): synths, guitar and bass amps, a tuner, EQ, compressor, reverb, delay, tape, drum kits and keys"; Write-Host "(Surge XT, Dexed, Airwindows, Dragonfly, Chow, BYOD, ZL and more), so everyone in the studio hears the same sounds."; YesNo "Install it? (recommended)" "y" }
+# (extras only asked of whoever starts the studio: a joiner's projects say what they use, and 1.2 GB is a lot to decide on blind. Beginner review, 0.58.62)
+$wantExtras = if ($Extras) { $Extras -eq "yes" } else { $isHost -and $wantPlugins -and (YesNo "Also the bigger extras (about 1.2 GB: a grand piano, a real drum kit, amp capture players and the Odin 2 synth)?" "n") }
+$wantPersona = if ($ReaPersona) { $ReaPersona -eq "yes" } else { YesNo "Used to another music app (Pro Tools, Logic, Ableton, FL Studio, Cubase, Studio One...)? ReaPersona makes REAPER's shortcuts and mouse work like it, and switches off any time. Install it?" "n" }
 Write-Host ""
 
 # ---------- 1. apps ----------
+Say "Downloads show no progress bar here: a pause of a few minutes on a big one is normal."
 $winget = Get-Command winget -ErrorAction SilentlyContinue
 function Install-App($id, $name) {
   $ErrorActionPreference = "Continue" # winget writes to stderr (see ST below)
@@ -331,7 +340,7 @@ if (-not $running) {
   Start-Process $st -ArgumentList $sargs -WindowStyle Hidden
   Ok "Syncthing started (StudioSync's Live sync starts it from now on)"
   # (its first start asks Windows Firewall; declined, everything still syncs but only through Syncthing's slower relays. AgentBox test, 0.58.61)
-  Say "Windows may ask whether Syncthing may use networks: press Allow (private networks are enough). Without it, changes still sync, only slower."
+  Say "Windows Firewall may ask about Syncthing: press 'Allow access' (private networks are enough). Without it, changes still sync, only slower."
 }
 $up = $false
 for ($i = 0; $i -lt 60 -and -not $up; $i++) { $null = STcli show system; $up = $LASTEXITCODE -eq 0; if (-not $up) { Start-Sleep 1 } }
@@ -420,14 +429,16 @@ function Request($mode) {
     if ($i -gt 15 -and -not (Get-Reaper)) { $script:Gone = $true; break }
     # (on a first start REAPER asks about the audio device and ReaPack shows Manage repositories: until they're answered nothing runs, and Tailscale's
     # welcome window can sit on top of them. Windows Sandbox run, 2026-11-10: the setup waited out its 6 minutes behind both)
-    if ($i -eq 30) { Say "Waiting for StudioSync to arrive through ReaPack. Look in REAPER for its first-start windows and answer them: 'select your audio device now?' (No is fine: Preferences > Audio later), then OK on ReaPack's Manage repositories and Transaction report. Tailscale's welcome window may be covering them: close it." }
+    if ($i -eq 90) { Say "Still waiting for StudioSync to arrive through ReaPack. Look in REAPER for its first-start windows and answer them: 'select your audio device now?' (No is fine: Preferences > Audio later), then OK on ReaPack's Manage repositories and Transaction report. Tailscale's welcome window may be covering them: close it." }
   }
   if (-not (Test-Path $result)) { return $null }
   Start-Sleep -Milliseconds 300
   return Get-Content $result -Raw | ConvertFrom-Json
 }
 if ($NoReaper) { Ok "stopping before REAPER, as asked. This computer's Syncthing ID: $myId"; exit 0 }
-Say "Setting up StudioSync inside REAPER (REAPER opens; on a first start it scans your plug-ins and asks a question or two, which need answering) ..."
+Say "Setting up StudioSync inside REAPER. REAPER opens now; the first time, it scans your plug-ins and asks a few things, which need answering:"
+Say "  'Select your audio device now?': No is fine (Preferences > Audio later). ReaPack's 'Manage repositories' and 'Transaction report': OK."
+Say "  If Tailscale's welcome window covers them, close it. This window carries on by itself once StudioSync has arrived."
 $r = Request $Scripts
 if (-not $r) {
   if ($script:Gone) { Warn "REAPER closed unexpectedly during setup. Open REAPER (and your project: File > Recent projects), then run this again." }
@@ -495,6 +506,10 @@ if ($wantLive) {
       # already signed in: left exactly as it is. Re-signing in with the tag logged a Mac OUT when the tag wasn't
       # allowed yet, and the refused tag stuck in its settings so signing in again kept failing (2026-10-28)
       Ok "Tailscale is signed in (it signs out by itself every few months: see below to keep it signed in)"
+    } elseif (-not $isHost) {
+      # (a joiner waited up to five minutes on a sign-in page before their first song: syncing needs no Tailscale, only Play/Jam and the call do. Beginner review, 0.58.62)
+      $left += "Tailscale (for Play/Jam and hearing each other live): sign in from its taskbar icon when you need it. StudioSync's Health page shows whether it's on."
+      $tagged = $true
     } else {
       function Ts-Up($argv) { # runs tailscale up, opens its sign-in page; returns the exit code
         $out = Join-Path $env:TEMP "bandsync_ts_up.txt"
@@ -550,12 +565,18 @@ if ($wantSolo) {
     if ($band) { $band[0] } elseif ($all) { $all[0] } else { $null }
   }
   $driveOk = $false
-  if (-not (& $myDrive)) {
+  if (-not $isHost -and -not ((& $myDrive) -and (Test-Path "$(& $myDrive)\$driveName"))) {
+    # (as Tailscale above: a joiner's songs arrive without it, and the folder usually isn't shared with them yet. Beginner review, 0.58.62)
+    $driveOk = $true
+    $left += "Google Drive (the studio's backup copy, optional): once it's shared with you, at drive.google.com: Shared with me > right-click '$driveName' > Organize > Add shortcut > My Drive."
+  }
+  elseif (-not (& $myDrive)) {
     Say "Sign in to Google Drive (its window, or its taskbar icon), with the Google account the studio's Drive folder is shared with (yours, or the studio's own account if you have one). Waiting for it; press any key to skip."
     $null = Wait-Until { & $myDrive }
   }
   $md = & $myDrive
-  if ($md -and (Test-Path "$md\$driveName")) { Ok "Google Drive: the studio's '$driveName' folder is there"; $driveOk = $true }
+  if ($driveOk) { }
+  elseif ($md -and (Test-Path "$md\$driveName")) { Ok "Google Drive: the studio's '$driveName' folder is there"; $driveOk = $true }
   elseif ($md -and $isHost) { New-Item -ItemType Directory "$md\$driveName" | Out-Null; Ok "Google Drive: made '$driveName' in your My Drive"; $driveOk = $true }
   elseif ($md) {
     Say "Add the studio's Drive folder: in the page that opens, right-click '$driveName' > Organize > Add shortcut > My Drive."
@@ -567,7 +588,7 @@ if ($wantSolo) {
   elseif (-not $driveOk) { $left += "Google Drive (skipped above): sign in, then at drive.google.com: Shared with me > right-click '$driveName' > Organize > Add shortcut > My Drive." }
 }
 if ($isHost) { $left += "In REAPER, open your song's project: the StudioSync panel offers 'Share this project with the studio'." }
-else { $left += "In REAPER, the StudioSync panel offers 'Join the studio's project' once your collaborator has let you in: the studio's projects arrive by themselves, and the panel lists them." }
+else { $left += "Tell whoever invited you that you're set up: they press 'Let you in' in their panel. Then the studio's projects arrive by themselves: in REAPER's StudioSync panel, open Projects and double-click one." }
 foreach ($d in $script:downloads) { Remove-Item -Force $d -ErrorAction SilentlyContinue }
 Remove-Item -Recurse -Force (Join-Path $env:TEMP "studiosync_setup") -ErrorAction SilentlyContinue
 Write-Host ""

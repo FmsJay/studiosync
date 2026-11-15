@@ -53,7 +53,7 @@ local function page(mod, parts, extra)
 end
 page("page_health", { "maint_rows", "maint_level", "maint_health", "maint_upkeep", "about" },
   function(m) check(#m.maint_rows() > 5, "Health's rows are built (" .. #m.maint_rows() .. ")") end)
-page("page_restore", { "section_recall", "section_history" })
+page("page_restore", { "section_recall", "section_history", "section_mixes" })
 page("page_rooms", { "refresh", "squares", "actions", "invites" },
   function(m) check(type(m.view()) == "table" and m.view().room == b.room, "Rooms shows this tab's room") end)
 -- (not start_together: it would start the band's transport for real)

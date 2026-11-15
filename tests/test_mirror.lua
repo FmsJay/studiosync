@@ -555,4 +555,13 @@ do
   assert(mirror.hlc_next() > mine.hlc, "and each next one is later still")
   reaper, package.loaded.together = real_reaper, real_together
 end
+-- (0.58.63) automation mode: in a track's line only when it's Read, so a track at the default hashes as it always did
+do
+  local t = { name = "Gtr", parent = "", depth = 0, mute = 0, phase = 0, icon = "", freemode = 0, lanes = 0, plays = "", lanenames = "", vol = "1", pan = "0" }
+  local plain = mirror.track_line(t, false, false)
+  t.automode = 0
+  assert(mirror.track_line(t, false, false) == plain, "Trim/Read: the same line as before, so nothing is sent again")
+  t.automode = 1
+  assert(mirror.track_line(t, false, false) == plain .. "|am1", "Read: it counts")
+end
 print("ok clock")

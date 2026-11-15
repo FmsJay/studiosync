@@ -225,7 +225,7 @@ local picking, filter, found, used_at, used, open_now, found_all = nil, "", nil,
 -- track, and the track goes. Closing the window without picking just takes the track away again.
 local browsing -- { tr, proj, u, since }
 local function browse(proj, u)
-  local tr = require("mirror").add_local_track(proj, "StudioSync: pick a translation", "pick")
+  local tr = require("mirror").add_local_track(proj, "StudioSync: pick a stand-in", "pick")
   reaper.SetOnlyTrackSelected(tr)
   reaper.Main_OnCommand(40914, 0) -- Track: Set first selected track as last touched track (else it opens a Browse FX with nothing to add to)
   reaper.Main_OnCommand(40291, 0) -- Track: View FX chain for current/last touched track (empty, it opens Add FX)
@@ -245,7 +245,7 @@ local function browse_tick(cfg)
     end
     reaper.RecursiveCreateDirectory(tdir(cfg), 0)
     band.write_json(tfile(cfg, h.u.key), { key = h.u.key, from = h.u.name, to = name, by = cfg.user, time = os.date("!%Y-%m-%dT%H:%M:%SZ") })
-    band.log("translation for " .. (h.u.name:gsub("^%w+:%s*", "")) .. ": " .. (name:gsub("^%w+:%s*", "")))
+    band.log("stand-in for " .. (h.u.name:gsub("^%w+:%s*", "")) .. ": " .. (name:gsub("^%w+:%s*", "")))
     reaper.DeleteTrack(h.tr)
     browsing = nil
   elseif reaper.time_precise() - h.since > 1.5 and reaper.TrackFX_GetChainVisible(h.tr) == -1
@@ -289,14 +289,14 @@ function pp.draw(ctx, ImGui, proj, cfg)
   browse_tick(cfg)
   pp.refresh(proj, cfg)
   local lists, tmap = pp.lists, pp.tmap
-  local about = "Plug-ins in this project, who doesn't have them, and the studio's translation for them."
+  local about = "Plug-ins in this project, who doesn't have them, and the studio's stand-in for them."
   local short = select(2, ImGui.GetContentRegionAvail(ctx)) < 200
   if not short then ImGui.TextDisabled(ctx, about) end
-  if ImGui.Button(ctx, "Apply translations here") then
-    band.log(pp.apply_here(proj, cfg) .. " translation(s) added on this machine (only here: they never go to the others)")
+  if ImGui.Button(ctx, "Apply stand-ins here") then
+    band.log(pp.apply_here(proj, cfg) .. " stand-in(s) added on this machine (only here: they never go to the others)")
     used_at = -math.huge
   end
-  ImGui.SetItemTooltip(ctx, "Adds the studio's translation right after each plug-in this machine doesn't have, so you hear something close. " ..
+  ImGui.SetItemTooltip(ctx, "Adds the studio's stand-in right after each plug-in this machine doesn't have, so you hear something close. " ..
     "Only on this machine; the original stays in the project for everyone who has it.")
   if short then ImGui.SameLine(ctx); ImGui.AlignTextToFramePadding(ctx); ImGui.TextDisabled(ctx, about) end -- (one row: the list has few enough as it is)
   local narrow = ImGui.GetContentRegionAvail(ctx) < 420 -- (four columns in 340 px read "Missing for" as "...": design review)
@@ -305,7 +305,7 @@ function pp.draw(ctx, ImGui, proj, cfg)
     ImGui.TableSetupColumn(ctx, "Plug-in", ImGui.TableColumnFlags_WidthStretch, 3)
     if not narrow then ImGui.TableSetupColumn(ctx, "Tracks", ImGui.TableColumnFlags_WidthStretch, 2) end
     ImGui.TableSetupColumn(ctx, "Missing for", ImGui.TableColumnFlags_WidthStretch, 2)
-    ImGui.TableSetupColumn(ctx, "Translation", ImGui.TableColumnFlags_WidthFixed, narrow and 76 or 120) -- (long track lists squeezed out its button)
+    ImGui.TableSetupColumn(ctx, "Stand-in", ImGui.TableColumnFlags_WidthFixed, narrow and 76 or 120) -- (long track lists squeezed out its button)
     ImGui.TableHeadersRow(ctx)
     for _, u in ipairs(used) do
       ImGui.TableNextRow(ctx)
@@ -327,11 +327,11 @@ function pp.draw(ctx, ImGui, proj, cfg)
       if ImGui.IsItemClicked(ctx, 1) then picking, filter, found, open_now = u, "", nil, true end
       if t then
         ImGui.SameLine(ctx)
-        if ImGui.SmallButton(ctx, "x") and reaper.MB("Remove the studio's translation for " .. (u.name:gsub("^%w+:%s*", "")) .. "?", "StudioSync", 4) == 6 then
+        if ImGui.SmallButton(ctx, "x") and reaper.MB("Remove the studio's stand-in for " .. (u.name:gsub("^%w+:%s*", "")) .. "?", "StudioSync", 4) == 6 then
           os.remove(tfile(cfg, u.key))
-          require("band").log("removed the translation for " .. (u.name:gsub("^%w+:%s*", "")))
+          require("band").log("removed the stand-in for " .. (u.name:gsub("^%w+:%s*", "")))
         end
-        ImGui.SetItemTooltip(ctx, "Remove this translation (set by " .. tostring(t.by) .. ")")
+        ImGui.SetItemTooltip(ctx, "Remove this stand-in (set by " .. tostring(t.by) .. ")")
       end
       ImGui.PopID(ctx)
     end
@@ -339,8 +339,8 @@ function pp.draw(ctx, ImGui, proj, cfg)
   end
   if #used == 0 then ImGui.TextDisabled(ctx, "No plug-ins in this project yet.") end
   if browsing then ImGui.TextColored(ctx, require("theme").YELLOW, "Pick a plug-in in REAPER's window (close it to cancel).") end
-  if open_now then ImGui.OpenPopup(ctx, "Pick a translation"); open_now = false end -- (outside the table's ID scope)
-  if ImGui.BeginPopupModal(ctx, "Pick a translation", true, ImGui.WindowFlags_AlwaysAutoResize) then
+  if open_now then ImGui.OpenPopup(ctx, "Pick a stand-in"); open_now = false end -- (outside the table's ID scope)
+  if ImGui.BeginPopupModal(ctx, "Pick a stand-in", true, ImGui.WindowFlags_AlwaysAutoResize) then
     ImGui.Text(ctx, "Something close to " .. (picking.name:gsub("^%w+:%s*", "")) .. ", from your plug-ins:")
     ImGui.SetNextItemWidth(ctx, 360)
     local ch
@@ -370,7 +370,7 @@ function pp.draw(ctx, ImGui, proj, cfg)
     end
     ImGui.EndPopup(ctx)
   end
-  if picking and not ImGui.IsPopupOpen(ctx, "Pick a translation") then picking = nil end
+  if picking and not ImGui.IsPopupOpen(ctx, "Pick a stand-in") then picking = nil end
 end
 
 return pp

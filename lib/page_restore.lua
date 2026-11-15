@@ -174,56 +174,8 @@ function R.section_recall()
   ImGui.SameLine(ctx)
   local _, k = ImGui.Checkbox(ctx, "Keep for good##keepver", keep_it)
   keep_it = k
-  ImGui.SetItemTooltip(ctx, "Never trimmed, and the project goes to Google Drive too if you use it. (Back up and Save this version were two buttons: one now.)")
-  if ImGui.SmallButton(ctx, "Render current mix") then action("Final mix") end
-  ImGui.SetItemTooltip(ctx, "Renders the whole project as your master has it (in your File > Render format) into the shared folder's mixes/ for everyone, and to Google Drive if you use it.\n" ..
-    "Everyone's parts are in it, yours too. Only tracks that stay on this computer ('yours, not sent', StudioSync's helpers) are left out. Nothing is added to the project.")
-  next_to("Export stems")
-  if ImGui.SmallButton(ctx, "Export stems") then
-    local out, n = require("extras").stems(proj, cfg, b)
-    if out then
-      band.log(string.format("%d stem(s) in %s, for everyone", n, out))
-      pcall(function() require("page_chat").post(cfg, b, string.format("Stems for whoever mixes: %d file(s) in the shared folder's %s", n, out:match("[^/]+/stems/.*$") or out)) end)
-    else band.msg(n) end
-  end
-  ImGui.SetItemTooltip(ctx, "One file per shared track, the whole song, all starting together: into the shared folder's stems/ for everyone.\n" ..
-    "As your master hears them (in your File > Render format). Tracks that stay on this computer are left out, silent ones skipped.")
-  next_to("Dry stems")
-  if ImGui.SmallButton(ctx, "Dry stems") then
-    local out, n = require("extras").stems(proj, cfg, b, true)
-    if out then band.log(string.format("%d dry stem(s) in %s, for everyone", n, out)) else band.msg(n) end
-  end
-  ImGui.SetItemTooltip(ctx, "The same, without each track's effects (instruments still play): what a mixer usually asks for. Your effects are back as they were after.")
-  next_to("Credits draft")
-  if ImGui.SmallButton(ctx, "Credits draft") then
-    local path = require("extras").credits(cfg, b)
-    band.log("credits draft written for everyone: " .. path)
-    band.open_url(path)
-  end
-  ImGui.SetItemTooltip(ctx, "Who started which tracks, recorded which takes and made which changes, from the history: a draft to agree the splits on.\n" ..
-    "Written to the shared folder (credits.txt), with the percentages left for you to fill in.")
-  next_to("Save as studio template")
-  if ImGui.SmallButton(ctx, "Save as studio template") then
-    local ok, name = reaper.GetUserInputs("Save as studio template", 1, "Template name:,extrawidth=120", b.song)
-    if ok then
-      local path, why = require("extras").save_template(proj, cfg, name)
-      if path then band.log("saved '" .. name .. "' as a template for everyone in the studio: Projects > New from template") else band.msg(why) end
-    end
-  end
-  ImGui.SetItemTooltip(ctx, "This song's tracks, routing, plug-ins, colours and tempo, without its recordings: everyone in the studio can start a new song from it\n" ..
-    "(Projects page, New from template). Each studio has its own templates.")
-  next_to("Save a copy outside the studio")
-  if ImGui.SmallButton(ctx, "Save a copy outside the studio") then
-    local keep, wav = "As it is (FLAC, as recorded)", "With WAV files"
-    local pick = band.pick({ "#A plain project of its own, with all its media", keep, wav })
-    if pick == keep or pick == wav then require("export").ask(proj, b.song, pick == wav) end
-  end
-  ImGui.SetItemTooltip(ctx, "A separate plain REAPER project in a folder you pick, with every file it uses, that opens anywhere with no StudioSync. Nothing in the studio changes, and nothing you do to the copy goes to anyone.\n\n" ..
-    "For an older version: click it below, Open in side room, then save the copy from that room.")
-  if ImGui.TreeNodeEx(ctx, "abmixes", "Compare two mixes (A/B)", ImGui.TreeNodeFlags_None) then -- (lib/extras.lua: same place, same loudness)
-    require("extras").ab_draw(ctx, ImGui, cfg, b)
-    ImGui.TreePop(ctx)
-  end
+  ImGui.SetItemTooltip(ctx, "Never trimmed, and the project goes to Google Drive too if you use it.")
+  ImGui.TextDisabled(ctx, "Render, stems, credits, templates and A/B: the Mixes tab.")
   local driving = view.driver == cfg.user
   -- (docked, the list takes the column's height instead of a short box inside it)
   if ImGui.BeginChild(ctx, "points", 0, wide and math.max(70, select(2, ImGui.GetContentRegionAvail(ctx)) - 4) or 110, ImGui.ChildFlags_Borders) then
@@ -253,7 +205,7 @@ function R.section_history()
   else ImGui.SeparatorText(ctx, "Every change, newest first") end
   ImGui.SetItemTooltip(ctx, "Click a change to undo it, restore to it, or open it in a side room.")
   local driving = view.driver == cfg.user
-  if #groups == 0 then ImGui.TextDisabled(ctx, "Nothing has happened in this room yet.") end
+  if #groups == 0 then ImGui.TextDisabled(ctx, "Nothing has happened in this room yet: every change anyone makes shows here, with a way back.") end
   -- filters: who, what kind, which track, and words
   local users, tracks, seen = { "Everyone" }, { "Every track" }, {}
   for _, e in ipairs(entries) do
@@ -348,5 +300,59 @@ end
 
 -- Read History again on the next look (an undo or redo from the top bar changed it).
 function R.refresh_soon() hist_at = 0 end
+
+-- The Mixes page (UX review, 0.58.62: rendering, stems, credits and A/B sat under Restore's saved versions, where nobody looked for them):
+-- what you make from the project, as opposed to Restore's ways back.
+function R.section_mixes()
+  local b, cfg, proj = E.b(), E.cfg(), E.proj()
+  ImGui.SeparatorText(ctx, "The mix")
+  if ImGui.SmallButton(ctx, "Render current mix") then action("Final mix") end
+  ImGui.SetItemTooltip(ctx, "Renders the whole project as your master has it (in your File > Render format) into the shared folder's mixes/ for everyone, and to Google Drive if you use it.\n" ..
+    "Everyone's parts are in it, yours too. Only tracks that stay on this computer ('yours, not sent', StudioSync's helpers) are left out. Nothing is added to the project.")
+  ImGui.SeparatorText(ctx, "Stems, for whoever mixes")
+  if ImGui.SmallButton(ctx, "Export stems") then
+    local out, n = require("extras").stems(proj, cfg, b)
+    if out then
+      band.log(string.format("%d stem(s) in %s, for everyone", n, out))
+      pcall(function() require("page_chat").post(cfg, b, string.format("Stems for whoever mixes: %d file(s) in the shared folder's %s", n, out:match("[^/]+/stems/.*$") or out)) end)
+    else band.msg(n) end
+  end
+  ImGui.SetItemTooltip(ctx, "One file per shared track, the whole song, all starting together: into the shared folder's stems/ for everyone.\n" ..
+    "As your master hears them (in your File > Render format). Tracks that stay on this computer are left out, silent ones skipped.")
+  next_to("Dry stems")
+  if ImGui.SmallButton(ctx, "Dry stems") then
+    local out, n = require("extras").stems(proj, cfg, b, true)
+    if out then band.log(string.format("%d dry stem(s) in %s, for everyone", n, out)) else band.msg(n) end
+  end
+  ImGui.SetItemTooltip(ctx, "The same, without each track's effects (instruments still play): what a mixer usually asks for. Your effects are back as they were after.")
+  ImGui.SeparatorText(ctx, "Finishing up")
+  if ImGui.SmallButton(ctx, "Credits draft") then
+    local path = require("extras").credits(cfg, b)
+    band.log("credits draft written for everyone: " .. path)
+    band.open_url(path)
+  end
+  ImGui.SetItemTooltip(ctx, "Who started which tracks, recorded which takes and made which changes, from the history: a draft to agree the splits on.\n" ..
+    "Written to the shared folder (credits.txt), with the percentages left for you to fill in.")
+  next_to("Save as studio template")
+  if ImGui.SmallButton(ctx, "Save as studio template") then
+    local ok, name = reaper.GetUserInputs("Save as studio template", 1, "Template name:,extrawidth=120", b.song)
+    if ok then
+      local path, why = require("extras").save_template(proj, cfg, name)
+      if path then band.log("saved '" .. name .. "' as a template for everyone in the studio: Projects > New from template") else band.msg(why) end
+    end
+  end
+  ImGui.SetItemTooltip(ctx, "This song's tracks, routing, plug-ins, colours and tempo, without its recordings: everyone in the studio can start a new song from it\n" ..
+    "(Projects page, New from template). Each studio has its own templates.")
+  next_to("Save a copy outside the studio")
+  if ImGui.SmallButton(ctx, "Save a copy outside the studio") then
+    local keep, wav = "As it is (FLAC, as recorded)", "With WAV files"
+    local pick = band.pick({ "#A plain project of its own, with all its media", keep, wav })
+    if pick == keep or pick == wav then require("export").ask(proj, b.song, pick == wav) end
+  end
+  ImGui.SetItemTooltip(ctx, "A separate plain REAPER project in a folder you pick, with every file it uses, that opens anywhere with no StudioSync. Nothing in the studio changes, and nothing you do to the copy goes to anyone.\n\n" ..
+    "For an older version: click it below, Open in side room, then save the copy from that room.")
+  ImGui.SeparatorText(ctx, "Compare two mixes (A/B)") -- (lib/extras.lua: same place, same loudness)
+  require("extras").ab_draw(ctx, ImGui, cfg, b)
+end
 
 return R

@@ -402,6 +402,8 @@ function sync.authority(cfg, song, room, s)
     -- (a claims file speaks only for the person it's named for, or it's one an admin gave: claims/<anything>.json saying user "James"
     -- spoke for James. Review, 0.58.53)
     if c and type(c.user) == "string" and not (f:find("^given%-") or (c.user:gsub("[^%w%-_ ]", "")) .. ".json" == f) then c = nil end
+    -- (and a given one counts only from someone who may give it, as the panel only lets them: anyone could write given-me.json. Review, 0.58.62)
+    if c and f:find("^given%-") and not (type(c.by) == "string" and require("groups").may_manage(cfg.root, c.by)) then c = nil end
     if c and c.user and c.time then
       local gone = released[c.user]
       for _, t in ipairs(c.times or {}) do
@@ -880,6 +882,9 @@ end
 function sync.retry_skipped(proj)
   local list = sync.skipped(proj)
   for _, s in ipairs(list) do setext(proj, sync.APPLIED, s.id, ""); sync.failed[s.id] = nil end
+  -- (and they're looked at again: the cache of settled files kept them as done, so Try again did nothing until a restart. Review, 0.58.62)
+  local mine = tostring(proj)
+  for k in pairs(sync.settled) do if k:sub(1, #mine) == mine then sync.settled[k] = nil end end
   setext(proj, band.SECTION, "skipped", "")
   return #list
 end
@@ -1519,7 +1524,11 @@ end
 function sync.forget_trimmed(proj, cfg, song)
   local here = {}
   for _, r in ipairs(require("rooms").list(cfg, song)) do
-    for _, f in ipairs(band.files(sync.room_dir(cfg, song, r.name) .. "/events", ".json")) do here[f:sub(1, -6)] = true end
+    local files = band.files(sync.room_dir(cfg, song, r.name) .. "/events", ".json")
+    -- (a room that reads empty just now (a drive hiccup, a folder being made again) would have its whole past taken for gone, and things like
+    -- inserted time applied again: nothing is forgotten this time. Trim always leaves each thing's newest, so a real room is never empty. Review, 0.58.62)
+    if #files == 0 then sync.forgot = 0; return 0 end
+    for _, f in ipairs(files) do here[f:sub(1, -6)] = true end
   end
   if next(here) == nil then sync.forgot = 0; return 0 end -- (the folder not reachable just now: nothing is taken for gone)
   local gone, i = {}, 0

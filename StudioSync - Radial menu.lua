@@ -28,16 +28,7 @@ local rt = sm and not reaper.TrackFX_GetOffline(sm, si) and select(2, reaper.Get
 local ping_pos = reaper.BR_PositionAtMouseCursor and reaper.BR_PositionAtMouseCursor(true) or -1
 if ping_pos < 0 then ping_pos = reaper.GetCursorPositionEx(proj) end
 
--- The panel carries the request out ("panel do"); opened first when it isn't running (running it again would close it).
-local function ask(what)
-  reaper.SetExtState(band.SECTION, "panel do", what, false)
-  reaper.DeleteExtState(band.SECTION, "panel minimized", true) -- (the pill doesn't run the panel's pages)
-  local beat = tonumber(reaper.GetExtState(band.SECTION, "panel alive"))
-  if not (beat and reaper.time_precise() - beat < 10) then
-    local id = reaper.AddRemoveReaScript(true, 0, dir .. "/StudioSync - Panel.lua", true)
-    if id > 0 then reaper.Main_OnCommand(id, 0) end
-  end
-end
+local function ask(what) band.panel_do(dir, what) end
 
 -- label (lines), what it does (shown while pointed at), and the move; no move = shown greyed
 local SLICES = {
