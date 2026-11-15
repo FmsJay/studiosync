@@ -310,6 +310,12 @@ if (-not (Test-Path (Join-Path $api "imgui.lua"))) { # ReaImGui's version shim, 
 # ---------- 3. Syncthing: the shared folder ----------
 $st = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links\syncthing.exe"
 if (-not (Test-Path $st)) { $c = Get-Command syncthing -ErrorAction SilentlyContinue; if ($c) { $st = $c.Source } }
+# (a fresh Windows that can't make links gets no shortcut and no PATH entry for this window: winget's own unpacked copy, the newest. AgentBox, 0.58.60)
+if (-not (Test-Path $st)) {
+  $found = Get-ChildItem (Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages\Syncthing.Syncthing_*\syncthing-windows-*\syncthing.exe") -ErrorAction SilentlyContinue |
+    Sort-Object { try { [version]($_.Directory.Name -replace '^.*-v', '') } catch { [version]"0.0" } } | Select-Object -Last 1
+  if ($found) { $st = $found.FullName }
+}
 if (-not (Test-Path $st)) { Warn "Syncthing wasn't found: install it from syncthing.net and run this again."; exit 1 }
 $homeArg = @(); if ($SyncthingHome) { $homeArg = @("--home", $SyncthingHome) }
 # Windows PowerShell 5.1 turns a native program's stderr into errors, and with "Stop" above an error ends the whole

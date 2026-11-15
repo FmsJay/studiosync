@@ -115,13 +115,29 @@ local function first_existing(list)
   for _, p in ipairs(list) do if p and p ~= "" and reaper.file_exists(p) then return p end end
 end
 
+-- Where winget unpacked Syncthing when it made no shortcut in WinGet/Links (a fresh Windows without the right to make links, AgentBox 0.58.60:
+-- the installer said "installed" and then couldn't find it): Packages/Syncthing.Syncthing_*/syncthing-windows-*-v<version>/, the newest. Or nil.
+function services.winget_syncthing(lad)
+  local pk = lad .. "/Microsoft/WinGet/Packages"
+  local best, best_v
+  for _, d in ipairs(band.subdirs(pk)) do
+    if d:find("^Syncthing%.Syncthing_") then
+      for _, s in ipairs(band.subdirs(pk .. "/" .. d)) do
+        local v = s:match("^syncthing%-windows%-[%w]+%-v([%d%.]+)$")
+        local exe = pk .. "/" .. d .. "/" .. s .. "/syncthing.exe"
+        if v and reaper.file_exists(exe) and (not best_v or band.compare_versions(v, best_v) > 0) then best, best_v = exe, v end
+      end
+    end
+  end
+  return best
+end
 function services.syncthing_path()
   local set = reaper.GetExtState(band.SECTION, "syncthing_path")
   local lad = (os.getenv("LOCALAPPDATA") or ""):gsub("\\", "/")
   return first_existing({ set,
     lad .. "/Microsoft/WinGet/Links/syncthing.exe", "C:/Program Files/Syncthing/syncthing.exe", lad .. "/Programs/Syncthing/syncthing.exe",
     "/Applications/Syncthing.app/Contents/Resources/syncthing/syncthing", -- (the Mac app before a Homebrew copy: the installer's)
-    "/opt/homebrew/bin/syncthing", "/usr/local/bin/syncthing", "/usr/bin/syncthing" })
+    "/opt/homebrew/bin/syncthing", "/usr/local/bin/syncthing", "/usr/bin/syncthing" }) or (lad ~= "" and services.winget_syncthing(lad) or nil)
 end
 
 -- Make sure Syncthing runs. Returns "running", "started", or nil + why.

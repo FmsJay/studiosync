@@ -115,4 +115,26 @@ local third = services.profiles_in("c001  third@x.com  third@x.com\nb793  chilio
 local onward = services.switch_note(third, "c001", away, t0 + 120)
 assert(onward.from_id == "4696" and onward.to_id == "c001", "on to a third network: it still says where home is")
 assert(services.switch_note(list, "4696", nil, t0) == nil, "already there: nothing written")
+
+-- (0.58.61) Syncthing where winget unpacked it and made no shortcut (AgentBox's fresh Windows): the newest version's copy
+do
+  local band = package.loaded.band
+  local real_sub, real_cmp, real_fe = band.subdirs, band.compare_versions, reaper.file_exists
+  local tree = { ["L/Microsoft/WinGet/Packages"] = { "astral-sh.uv_x", "Syncthing.Syncthing_Microsoft.Winget.Source_8wekyb3d8bbwe" },
+    ["L/Microsoft/WinGet/Packages/Syncthing.Syncthing_Microsoft.Winget.Source_8wekyb3d8bbwe"] = { "syncthing-windows-amd64-v2.1.7", "syncthing-windows-amd64-v2.1.10", "notes" } }
+  band.subdirs = function(d) return tree[d] or {} end
+  band.compare_versions = function(a, b)
+    local pa, pb = {}, {}
+    for n in a:gmatch("%d+") do pa[#pa + 1] = tonumber(n) end
+    for n in b:gmatch("%d+") do pb[#pb + 1] = tonumber(n) end
+    for i = 1, math.max(#pa, #pb) do if (pa[i] or 0) ~= (pb[i] or 0) then return (pa[i] or 0) > (pb[i] or 0) and 1 or -1 end end
+    return 0
+  end
+  reaper.file_exists = function(p) return p:find("syncthing%.exe$") ~= nil end
+  local got = services.winget_syncthing("L")
+  assert(got and got:find("v2.1.10/syncthing.exe", 1, true), "the newest unpacked copy: " .. tostring(got))
+  tree["L/Microsoft/WinGet/Packages"] = {}
+  assert(services.winget_syncthing("L") == nil, "none there: nil")
+  band.subdirs, band.compare_versions, reaper.file_exists = real_sub, real_cmp, real_fe
+end
 print("ok")

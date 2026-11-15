@@ -462,7 +462,8 @@ capture players), Odin 2 (synth), and sforzando with two SFZ instruments everyon
 the MuldjordKit drum kit (DrumGizmo's kit by Lars Muldjord, CC BY 4.0, ported by sfzinstruments), so a drum part sounds the
 same on every computer, Windows or Mac. Worth adding by hand (free, but they need an account, an email address, or can't be
 passed on): Decent Sampler (the installer reminds you), Vital, Valhalla Supermassive, Spitfire LABS, MeldaProduction
-MFreeFXBundle.
+MFreeFXBundle, and Xfer's Shrub (a free, pared-down Serum, in beta; its VST3 download is "coming soon" at shrub.audio,
+and it plays four notes at once, so it's a bass, lead and sequence synth).
 
 ### Live: hear each other while it happens
 
