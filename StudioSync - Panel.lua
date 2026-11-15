@@ -597,6 +597,48 @@ local function section_alerts()
   else
     ImGui.TextDisabled(ctx, call and ("Call button opens: " .. call) or "None set. The studio's owner or an admin can add one here.")
   end
+  ImGui.SeparatorText(ctx, "Listening page")
+  local listen = require("listen")
+  local sharing = listen.sharing(cfg.root)
+  if sharing then
+    ImGui.TextWrapped(ctx, "Shared from this computer, to phones and computers on your Tailscale network:")
+    ImGui.TextColored(ctx, GREEN, sharing)
+    if ImGui.SmallButton(ctx, "Copy##listen") then band.copy(sharing, ctx, ImGui) end
+    ImGui.SameLine(ctx)
+    if ImGui.SmallButton(ctx, "Open##listen") then band.open_url(sharing) end
+    ImGui.SameLine(ctx)
+    if ImGui.SmallButton(ctx, "Stop sharing##listen") then listen.share(cfg, false) end
+  else
+    if ImGui.SmallButton(ctx, "Share the listening page") then
+      local address, why = listen.share(cfg, true)
+      if address then band.log("the listening page is shared: " .. address) else band.msg(why) end
+    end
+    ImGui.SetItemTooltip(ctx, "A web page with every song's mixes, to play on a phone or any browser without REAPER, with comments that land in the song's chat\n" ..
+      "(comments need phone alerts on). Served from this computer over Tailscale: only devices on your Tailscale network reach it, while this computer is on.")
+  end
+  ImGui.SeparatorText(ctx, "Private live audio")
+  local groups = require("groups")
+  local shost = groups.sonobus_server(cfg.root)
+  ImGui.TextWrapped(ctx, shost and ("Real time mode finds everyone through " .. shost .. " over Tailscale, so the audio travels encrypted. That computer keeps SonoBus's own app open.")
+    or "Real time mode finds everyone through SonoBus's public server, and the audio itself isn't encrypted.")
+  if admin then
+    if not shost and ImGui.SmallButton(ctx, "Host it on this computer") then
+      local name = require("services").tailscale_address()
+      if name and name:find("%.ts%.net$") then
+        groups.set_sonobus_server(cfg.root, name .. ":10999")
+        band.log("private live audio: everyone's SonoBus joins through this computer (" .. name .. ") next time Real time mode connects. Keep SonoBus's own app open here (Start menu: SonoBus)")
+      else band.msg("Tailscale isn't signed in here, or the tailnet has its names turned off (MagicDNS).") end
+    end
+    if not shost then
+      ImGui.SetItemTooltip(ctx, "This computer becomes where the band finds each other: open SonoBus's own app here (not the plug-in) and keep it open while you play.\n" ..
+        "Its connection server is built in. Everyone's SonoBus then joins through this computer's Tailscale name, so the band reaches each other\n" ..
+        "by Tailscale addresses and the audio goes inside Tailscale's encryption.")
+    end
+    if shost and ImGui.SmallButton(ctx, "Back to SonoBus's public server") then
+      groups.set_sonobus_server(cfg.root, nil)
+      band.log("live audio is back on SonoBus's public server (next time Real time mode connects)")
+    end
+  end
 end
 -- Two computers' fingerprints differ for 10-15 s after any edit (each publishes its own every few seconds, and the
 -- print follows the notes), and red then read as a failed sync (James, 2026-11-01). Red once they've stayed apart 30 s.

@@ -56,9 +56,10 @@ function setup.sonobus(cfg, b, proj, open)
   local outs = hear.order(hear.bandmates(cfg, b), cfg.user) -- each bandmate on an output pair of their own (who you hear)
   local new = chunk
   sonobus.use_buffer(reaper.GetExtState(band.SECTION, "rt buffer"))
-  if not sonobus.is_set_up(chunk, group, cfg.user) then
+  local host, port = require("groups").sonobus_server(cfg.root) -- (the studio's own, over Tailscale, or SonoBus's public one)
+  if not sonobus.is_set_up(chunk, group, cfg.user, host) then
     local why
-    new, why = sonobus.join_state(chunk, { user = cfg.user, group = group, password = pw })
+    new, why = sonobus.join_state(chunk, { user = cfg.user, group = group, password = pw, host = host, port = port })
     if not new then return nil, "Couldn't set SonoBus up (" .. why .. "): join by hand with its Connect button." end
   end
   for name, start in pairs(outs) do
@@ -78,7 +79,7 @@ function setup.sonobus(cfg, b, proj, open)
     reaper.SetProjExtState(proj, band.SECTION, "sonobus online", tostring(os.time()))
   end
   reaper.TrackFX_SetOffline(m, i, not open)
-  return live.sonobus_link(group, pw), m, i
+  return live.sonobus_link(group, pw, host and (host .. ":" .. port)), m, i
 end
 
 local function has_subdir(path, name)

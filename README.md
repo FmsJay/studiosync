@@ -212,6 +212,16 @@ By hand:
 - **Studio call**: the owner or an admin pastes a Discord, Zoom or Meet link in Settings, and everyone gets a **Call** button
   beside Real time mode. The call runs in its own app, video and all, so it never slows REAPER or the sync. Mute its
   microphone while playing: Real time mode carries the music.
+- **Listening page** (Settings, Google Drive card): *Share the listening page* serves a web page of every song's mixes from
+  your computer over Tailscale, to play on a phone or any browser without REAPER, while your computer is on. Only devices
+  on your Tailscale network reach it, and it serves the page and the mixes, nothing else. With phone alerts on, a comment
+  typed under a mix lands in that song's chat with the moment it was about ("Bee on mix 3 at 1:23: ..."). A small server of
+  StudioSync's own runs on your computer while it's shared (Tailscale shares a folder only for an administrator) and stops
+  when REAPER closes.
+- **Private live audio** (Settings, the owner or an admin): *Host it on this computer* makes everyone's SonoBus find each
+  other through that computer over Tailscale, instead of SonoBus's public server, so the band reaches each other by
+  Tailscale addresses and the audio goes inside Tailscale's encryption. That computer keeps SonoBus's own app open (its
+  connection server is built in, port 10999).
 - **Talk** (beside Real time mode, while it's on): your microphone to the others without arming a track. Its own track on
   your computer, *StudioSync Talk*, never records, isn't in your own speakers, and goes quiet while anyone records here. It
   uses your first input; pick another on that track.

@@ -538,6 +538,7 @@ local function tailscale_exe()
     "/usr/local/bin/tailscale", "/opt/homebrew/bin/tailscale", "/usr/bin/tailscale" })
 end
 function services.tailscale_installed() return tailscale_exe() ~= nil end
+services.tailscale_exe = tailscale_exe -- (lib/listen.lua shares the listening page with it)
 -- Running and signed in? Asked at most every 20 s: it's for a Health row. Pure part: services.tailscale_running_in.
 function services.tailscale_running_in(json) return json:find('"BackendState":%s*"Running"') ~= nil end
 local ts_at, ts_up, ts_json = -math.huge, false, ""

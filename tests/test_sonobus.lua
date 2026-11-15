@@ -28,6 +28,13 @@ assert(s:find("defnetbuf\0value\0\1\9\4" .. string.pack("<d", 0.15), 1, true), "
 assert(sonobus.is_set_up(joined, "StudioSync abcd") and not sonobus.is_set_up(joined, "StudioSync other"), "set up for its group")
 assert(sonobus.state_user(joined) == "Mary Jo", tostring(sonobus.state_user(joined)))
 assert(sonobus.is_set_up(joined, "StudioSync abcd", "Mary Jo") and not sonobus.is_set_up(joined, "StudioSync abcd", "Mary"), "set up as this bandmate")
+-- (0.58.56) the studio's own server, over Tailscale: written, and a state joined through another server isn't "set up"
+local private = sonobus.join_state(joined, { user = "Mary Jo", group = "StudioSync abcd", password = "pw", host = "james-main.tail1.ts.net", port = 10999 })
+assert(sonobus.state_host(private) == "james-main.tail1.ts.net", "joins through the studio's computer: " .. tostring(sonobus.state_host(private)))
+assert(sonobus.b64decode(private):find("serverPort\0\1\5\1" .. string.pack("<i4", 10999), 1, true), "on its port")
+assert(sonobus.is_set_up(private, "StudioSync abcd", "Mary Jo", "james-main.tail1.ts.net") and not sonobus.is_set_up(joined, "StudioSync abcd", "Mary Jo", "james-main.tail1.ts.net"),
+  "set up only when it's the studio's server")
+assert(sonobus.state_host(joined) == "aoo.sonobus.net" and sonobus.is_set_up(joined, "StudioSync abcd", "Mary Jo", nil), "SonoBus's public one, as before")
 assert(not sonobus.is_set_up(b64, "BandSync SessionTest 4xt2"), "right group but SonoBus's own buffer defaults: not set up")
 assert(not sonobus.join_state("bm90IGEgc3RhdGU=", { user = "x", group = "g", password = "p" }), "garbage refused")
 assert(sonobus.same_user("Laptop 5", "Laptop") and sonobus.same_user("Laptop", "Laptop") and not sonobus.same_user("Laptop 5b", "Laptop")

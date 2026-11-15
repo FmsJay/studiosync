@@ -50,4 +50,5 @@ assert(select(2, live.sonobus_group({}, "bandsync-ab12", "secret-one")) == p1, "
 assert(select(2, live.sonobus_group({ group = "old", password = "kept" }, "bandsync-ab12", "secret-one")) == p1, "a secret overrides an old kept password")
 assert(live.sonobus_link("StudioSync My Song", "ab&c") ==
   "http://go.sonobus.net/sblaunch?s=aoo.sonobus.net&g=StudioSync%20My%20Song&p=ab%26c", live.sonobus_link("StudioSync My Song", "ab&c"))
+assert(live.sonobus_link("G", "p", "pc.tail1.ts.net:10999"):find("s=pc.tail1.ts.net%3A10999&", 1, true), "the studio's own server, when it has one")
 print("ok")

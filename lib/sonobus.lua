@@ -133,14 +133,24 @@ local function param_value(tree, id)
 end
 
 -- Whether a SonoBus state is already in `group` (as `user`, when given) with StudioSync's buffer defaults.
-function sonobus.is_set_up(b64, group, user)
+function sonobus.is_set_up(b64, group, user, host)
   local c = unpack_chunk(b64)
   if not c or sonobus.state_group(b64) ~= group then return false end
+  if (sonobus.state_host(b64) or "aoo.sonobus.net") ~= (host or "aoo.sonobus.net") then return false end -- (the studio moved its live audio's server)
   if user and not sonobus.same_user(sonobus.state_user(b64), user) then return false end -- a renamed bandmate rejoins under the new name
   for id, want in pairs(sonobus.BUFFER) do
     if math.abs((param_value(c.tree, id) or -1) - want) > 1e-6 then return false end
   end
   return true
+end
+
+-- The server SonoBus would rejoin through, or nil.
+function sonobus.state_host(b64)
+  local c = unpack_chunk(b64)
+  local rec = c and child(c.tree, "RecentConnections")
+  local info = rec and rec.children[1]
+  local h = info and prop(info, "serverHost")
+  return h and h[2]:match("^(.*)%z$")
 end
 
 -- The group SonoBus would rejoin (its newest recent connection), or nil.

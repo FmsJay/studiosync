@@ -497,8 +497,8 @@ local function urlenc(s) return (s:gsub("[^%w%-%._~]", function(c) return string
 
 -- SonoBus's join link (its own format, from ConnectView::handleSonobusURL), for joining from SonoBus's own app:
 -- its paste button reads it from the clipboard and fills in group, password and server. Pure.
-function live.sonobus_link(group, password)
-  return "http://go.sonobus.net/sblaunch?s=aoo.sonobus.net&g=" .. urlenc(group) .. "&p=" .. urlenc(password)
+function live.sonobus_link(group, password, server)
+  return "http://go.sonobus.net/sblaunch?s=" .. urlenc(server or "aoo.sonobus.net") .. "&g=" .. urlenc(group) .. "&p=" .. urlenc(password)
 end
 
 -- Parse clipsort.log lines for remote session-mode clips: { guid, user, chan, name, st, len }. Pure.

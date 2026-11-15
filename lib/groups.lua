@@ -64,6 +64,18 @@ save = function(root, change)
   seen[root] = nil
 end
 function groups.edit(root, change) save(root, change) end -- (lib/alerts.lua's channel)
+-- Private live audio (research of other tools, 0.58.53: SonoBus's audio isn't encrypted, and its public server introduces everyone). One
+-- member keeps SonoBus's own app open, which has a connection server built in (port 10999); everyone's SonoBus joins through that computer's
+-- Tailscale name, so the band finds each other by Tailscale addresses and the audio goes inside Tailscale's encryption. band.json
+-- "sonobus_server" = "<name>:<port>". -> host, port; or nil (SonoBus's public server). Pure but for the read.
+function groups.server_ok(s) return type(s) == "string" and s:match("^[%w%.%-]+:%d+$") ~= nil end
+function groups.sonobus_server(root)
+  local s = json_of(root).sonobus_server
+  if not groups.server_ok(s) then return nil end
+  local host, port = s:match("^(.+):(%d+)$")
+  return host, tonumber(port)
+end
+function groups.set_sonobus_server(root, s) save(root, function(j) j.sonobus_server = groups.server_ok(s) and s or nil end) end
 
 -- The owner makes someone an admin or a member again. -> true, or nil + why.
 function groups.set_admin(root, actor, target, on)

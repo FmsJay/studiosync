@@ -1,0 +1,27 @@
+-- The listening page: what it shows, and which comments from the alerts channel are taken in (lupa or Lua 5.4, from the repo root)
+reaper = setmetatable({}, { __index = function() return function() end end })
+package.path = "lib/?.lua;" .. package.path
+local band = require("band")
+local listen = require("listen")
+local songs = { { name = "Sunset Drive", mixes = { "2026-11-15 mix.flac", "2026-11-01 <old>.wav" } }, { name = "Empty", mixes = {} } }
+local page = listen.page("The Band", songs, "studiosync-abc", "https://ntfy.sh")
+assert(page:find("<h2>Sunset Drive</h2>", 1, true) and not page:find("<h2>Empty</h2>", 1, true), "songs with mixes, not the rest")
+assert(page:find('src="../Sunset%20Drive/mixes/2026-11-15%20mix.flac"', 1, true), "each mix plays from the studio folder, its path encoded")
+assert(page:find("2026-11-01 &lt;old&gt;.wav", 1, true) and not page:find("<old>", 1, true), "names are shown as text, never as markup")
+assert(page:find('"studiosync-abc"', 1, true) and page:find("studiosync-note", 1, true), "comments go to the studio's channel")
+local quiet = listen.page("The Band", songs, nil, nil)
+assert(not quiet:find("<script>", 1, true) and quiet:find("phone alerts", 1, true), "no channel: it plays, and says how to get comments")
+assert(listen.page("B", {}, nil, nil):find("No mixes yet", 1, true), "nothing rendered yet: says so")
+
+local known = { ["Sunset Drive"] = true }
+local line = band.json_encode({ id = "abc123", time = 1, event = "message", title = "Note on Sunset Drive", message = "Bee on mix at 1:23: louder bass",
+  tags = { "studiosync-note", "s:Sunset Drive" } })
+local song, text, id = listen.comment(line, known)
+assert(song == "Sunset Drive" and text == "Bee on mix at 1:23: louder bass" and id == "abc123", "a comment: its song and words")
+assert(listen.comment(band.json_encode({ id = "x", event = "message", message = "hi", tags = { "musical_note" } }), known) == nil, "a phone alert isn't a comment")
+assert(listen.comment(band.json_encode({ id = "x", event = "message", message = "hi", tags = { "studiosync-note", "s:Nope" } }), known) == nil, "a song that isn't here: ignored")
+assert(listen.comment(band.json_encode({ id = "x", event = "open" }), known) == nil, "ntfy's own events: ignored")
+assert(listen.comment("not json", known) == nil, "a broken line: ignored")
+local _, long = listen.comment(band.json_encode({ id = "y", event = "message", message = ("a\n"):rep(400), tags = { "studiosync-note", "s:Sunset Drive" } }), known)
+assert(#long <= 500 and not long:find("\n"), "no more than 500 characters, on one line")
+print("ok")

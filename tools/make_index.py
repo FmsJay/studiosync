@@ -51,6 +51,10 @@ for f in sorted((ROOT / "lib" / "ninjam").glob("*")):  # the NINJAM server (tool
     rel = f"lib/ninjam/{f.name}"
     plat = {"ninjamsrv.exe": {"platform": "win64"}, "ninjamsrv": {"platform": "darwin"}, "njrelay": {"platform": "darwin"}}.get(f.name, {})
     ET.SubElement(ver, "source", file=rel, **plat).text = url(rel)
+for f in sorted((ROOT / "lib" / "listen").glob("*")):  # the listening page's little file server (lib/listen.lua)
+    rel = f"lib/listen/{f.name}"
+    plat = {"listen_server.ps1": {"platform": "windows"}, "listen_server.pl": {"platform": "darwin"}}.get(f.name, {})
+    ET.SubElement(ver, "source", file=rel, **plat).text = url(rel)
 
 ET.indent(index)
 ET.ElementTree(index).write(INDEX, encoding="utf-8", xml_declaration=True)
