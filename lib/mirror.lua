@@ -1261,8 +1261,10 @@ function mirror.scan(proj, user, media_dir, local_mix)
 end
 
 -- Media an item uses from outside the room's media folder is copied in (once) so the band has it. Returns the
--- chunk with paths rewritten to the copies.
-function mirror.share_media(chunk, media_dir, it)
+-- chunk with paths rewritten to the copies. `sent`: the item's last change as the band has it; a path already in it as written came
+-- from a bandmate (a shared sample library, say) and is left alone: copied, a bandmate could send a path to any file you have and
+-- have your next edit of the item share it (review, 0.58.53)
+function mirror.share_media(chunk, media_dir, it, sent)
   reaper.RecursiveCreateDirectory(media_dir, 0)
   local room = norm_path(media_dir):match("([^/]+)/media/?$") or "main"
   -- (any quote: a name with a " in it is written between ' or `, and REAPER then turns a ` inside it into ', so the
@@ -1281,6 +1283,7 @@ function mirror.share_media(chunk, media_dir, it)
   return (chunk:gsub('FILE (["\'`])(.-)%1', function(q, written)
     local a, z = "FILE " .. q, q
     if written:find("^{media") then return a .. written .. z end
+    if type(sent) == "string" and sent:find(a .. written .. z, 1, true) then return a .. written .. z end
     local path = actual(written)
     local name = path:gsub("\\", "/"):match("[^/]+$") or "media"
     -- (plain characters only: an accented name can reach a Mac decomposed and come back as other bytes than Windows
@@ -1601,11 +1604,13 @@ function mirror.too_old_to_merge(a, b)
   local _, newest_b = id_span(b.id)
   local base_a, base_b = id_span(a.base_ev), id_span(b.base_ev)
   local newest, base = math.max(newest_a or 0, newest_b or 0), math.min(base_a or math.huge, base_b or math.huge)
-  return newest - base > require("trim").DAYS * 86400
+  return newest - base > mirror.MERGE_DAYS * 86400
 end
+mirror.MERGE_DAYS = 30 -- (lib/trim.lua keeps history twice as long)
 
 -- An item changed apart from the version this computer holds (each started before the other): the two put together, the same on every
 -- computer (mirror.merge_item), so what only one of them changed isn't lost (docs/clashes.md). The merged version, or nil.
+mirror.first_seen = {} -- event id -> when merge_for first couldn't tell (time_precise)
 function mirror.merge_for(proj, ev, room_dir)
   if not (ev.obj == "item" and not ev.gone and type(ev.state) == "string" and ev.base_ev and ev.id) then return nil end
   local krev, _, kev, kord = mirror.known(proj, ev.oid)
@@ -1615,8 +1620,11 @@ function mirror.merge_for(proj, ev, room_dir)
   if mirror.too_old_to_merge(k, ev) then return nil end
   local apart = mirror.apart(room_dir, k, ev)
   if apart == nil then -- (a change in between isn't here yet, most likely still on its way: this one waits for it, two minutes at most)
-    local ms = mirror.order_parts((ev.time or "") .. "x")
-    if ms > 0 and os.time() - ms / 1000 < 120 then return nil, true end
+    -- (two minutes from when it first turned up here, by this computer's clock: timed by the sender's, one running 3 minutes slow never
+    -- waited, and its out-of-order changes settled differently here than where they came in order. Review, 0.58.53)
+    local now = reaper.time_precise()
+    mirror.first_seen[ev.id] = mirror.first_seen[ev.id] or now
+    if now - mirror.first_seen[ev.id] < 120 then return nil, true end
     return nil
   end
   if not apart then return nil end
@@ -2158,7 +2166,8 @@ function mirror.watch(proj, cfg, song, room, opts)
       c.state = o.state
       if o.kind == "item" then
         mirror.copy_failed = nil
-        c.state = mirror.share_media(o.state, media, o.ptr)
+        local last = kev ~= "" and event_file(room_dir, kev) or nil
+        c.state = mirror.share_media(o.state, media, o.ptr, last and last.state)
         if mirror.copy_failed then return false end
       end
     end
@@ -2361,7 +2370,7 @@ function mirror.watch(proj, cfg, song, room, opts)
         local state = o.state
         if o.kind == "item" then
           mirror.copy_failed = nil
-          local shared = mirror.share_media(state, media, o.ptr)
+          local shared = mirror.share_media(state, media, o.ptr, last and last.state)
           if mirror.copy_failed then -- (its audio didn't reach the band's folder: sent, it'd point at a file only we have)
             return say_once("copy" .. o.oid, string.format("couldn't copy the audio of an item on %s into the studio's folder (%s): it goes out once it can",
               name ~= "" and name or "an unnamed track", mirror.copy_failed))

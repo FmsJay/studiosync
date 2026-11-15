@@ -90,6 +90,23 @@ local ok, err = pcall(function()
   check(away.parts and table.concat(away.parts, " | "):find("James: 1 change", 1, true) ~= nil, "what the others did is told: " .. table.concat(away.parts or {}, " | "))
   extras.away_seen(b)
   check(reaper.GetExtState(band.SECTION, "last here " .. song .. "/" .. room) > "2000", "and once seen, the moment moves on")
+
+  -- ---- stems in from anywhere (0.58.54): a WAV dropped in the song's inbox becomes an item at bar 3 on "Bass (stem)", and leaves the inbox
+  local inbox = band.song_dir(cfg, song) .. "/inbox"
+  reaper.RecursiveCreateDirectory(inbox, 0)
+  wav(inbox .. "/Bass @ bar 3.wav", 1, 0)
+  local first = extras.inbox(proj, cfg, b)
+  check(#first == 0, "a file is left one look, in case it's still arriving")
+  local put = extras.inbox(proj, cfg, b)
+  check(#put == 1 and put[1] == "Bass (stem) at bar 3", "then it goes in: " .. table.concat(put, ", "))
+  local st
+  for i = 0, reaper.CountTracks(proj) - 1 do
+    local t = reaper.GetTrack(proj, i)
+    if select(2, reaper.GetSetMediaTrackInfo_String(t, "P_NAME", "", false)) == "Bass (stem)" then st = t end
+  end
+  local it = st and reaper.GetTrackMediaItem(st, 0)
+  check(it and math.abs(reaper.GetMediaItemInfo_Value(it, "D_POSITION") - reaper.TimeMap2_beatsToTime(proj, 0, 2)) < 1e-6, "on its own track, at the start of bar 3")
+  check(not reaper.file_exists(inbox .. "/Bass @ bar 3.wav"), "and the inbox is empty again")
 end)
 if not ok then fails = fails + 1; out[#out + 1] = "FAIL error: " .. tostring(err) end
 reaper.DeleteExtState(band.SECTION, "last here " .. song .. "/" .. room, true)

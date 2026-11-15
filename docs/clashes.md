@@ -21,7 +21,7 @@ both were apart (offline, or Syncthing hadn't caught up), or both changed it wit
    which lost what one side changed in between). When a change in between hasn't arrived yet, nothing is merged: the change waits for it,
    two minutes at most (`mirror.descends` answers "can't tell"), so two quick edits arriving out of order are never taken for a clash.
    Nor when the version they started from is over a month older than the newer change (`mirror.too_old_to_merge`, 0.58.53): someone back
-   after more than a month. History trim may have taken that version away on some computers and not others, so merging only where it's
+   after more than a month. History trim (after 60 days) may have taken that version away on some computers and not others, so merging only where it's
    still there would leave the projects different. Decided from the changes' ids alone, the same everywhere: rule 4 settles it whole.
 4. **Where both changed the same thing, more edits wins,** counted in edits, not nudges: changes to one thing within 30 seconds of your
    last one are one edit (`mirror.SESSION_SECS`), except the owner's, which always jump past what others made meanwhile (rule 2). A tie goes to the hybrid logical clock (milliseconds, never behind any change the computer

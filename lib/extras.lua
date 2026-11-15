@@ -302,4 +302,67 @@ function extras.swap_in_file(item, path)
   return off
 end
 
+-- ---------------------------------------------------------------- stems in from anywhere
+-- A bandmate on other software (or anyone without REAPER at hand) drops an audio file into <Song>/inbox/ in the shared folder: whoever
+-- drives (or is alone) puts it in the song as an item on a track named for it, "<name> (stem)", and it goes to everyone like any change.
+-- Where: "bar 17" in the name (from the start of bar 17), or "@1:23" (minutes:seconds), else the song's start. The file leaves the inbox.
+-- (research of other tools, 0.58.53: the bassist on Logic couldn't join; Export stems went out and nothing came back)
+extras.INBOX_EXT = { wav = true, flac = true, aif = true, aiff = true, mp3 = true, ogg = true }
+-- "Bass @ bar 17.wav" -> "Bass", 17, nil; "Keys @1:23.flac" -> "Keys", nil, 83; "Pad.wav" -> "Pad". Pure.
+function extras.inbox_name(file)
+  local stem = file:gsub("%.[^.]+$", "")
+  local bar = stem:lower():match("bar%s*(%d+)")
+  local m, s = stem:match("@%s*(%d+):(%d%d)")
+  local name = stem:gsub("[Bb][Aa][Rr]%s*%d+", ""):gsub("@%s*%d+:%d%d", ""):gsub("@", ""):gsub("^[%s%-_]+", ""):gsub("[%s%-_]+$", "")
+  return name ~= "" and name or "Stem", bar and tonumber(bar), m and (tonumber(m) * 60 + tonumber(s))
+end
+local inbox_sizes = {} -- path -> size at the last look: a file still growing waits
+-- -> what was put in, as { "Bass (stem) at bar 17", ... }
+function extras.inbox(proj, cfg, b)
+  local dir = band.song_dir(cfg, b.song) .. "/inbox"
+  local out = {}
+  for _, f in ipairs(band.files(dir)) do
+    local path = dir .. "/" .. f
+    local size = band.size(path)
+    local kind = (f:match("%.([^.]+)$") or ""):lower()
+    local ready = extras.INBOX_EXT[kind] and not f:find("^%.") and size and size > 0 and inbox_sizes[path] == size
+    inbox_sizes[path] = size
+    if ready then
+      local name, bar, secs = extras.inbox_name(f)
+      local media = reaper.GetProjectPathEx(proj, ""):gsub("\\", "/")
+      reaper.RecursiveCreateDirectory(media, 0)
+      local dest = media .. "/" .. band.clean(name) .. " (inbox " .. os.date("%Y%m%d-%H%M%S") .. ")." .. kind
+      local ok = pcall(band.copy_atomic, path, dest)
+      local src = ok and reaper.PCM_Source_CreateFromFile(dest)
+      if src then
+        reaper.Undo_BeginBlock2(proj)
+        local tname, tr = name .. " (stem)", nil
+        for i = 0, reaper.CountTracks(proj) - 1 do
+          local t = reaper.GetTrack(proj, i)
+          if select(2, reaper.GetSetMediaTrackInfo_String(t, "P_NAME", "", false)) == tname then tr = t; break end
+        end
+        if not tr then
+          reaper.InsertTrackInProject(proj, reaper.CountTracks(proj), 0)
+          tr = reaper.GetTrack(proj, reaper.CountTracks(proj) - 1)
+          reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", tname, true)
+        end
+        local pos = bar and reaper.TimeMap2_beatsToTime(proj, 0, bar - 1) or secs or 0
+        local it = reaper.AddMediaItemToTrack(tr)
+        local tk = reaper.AddTakeToMediaItem(it)
+        reaper.SetMediaItemTake_Source(tk, src)
+        reaper.GetSetMediaItemTakeInfo_String(tk, "P_NAME", name, true)
+        reaper.SetMediaItemInfo_Value(it, "D_POSITION", pos)
+        reaper.SetMediaItemInfo_Value(it, "D_LENGTH", (reaper.GetMediaSourceLength(src)))
+        reaper.UpdateItemInProject(it)
+        reaper.Undo_EndBlock2(proj, "StudioSync: " .. f .. " from the inbox", -1)
+        os.remove(path)
+        inbox_sizes[path] = nil
+        out[#out + 1] = string.format("%s at %s", tname, bar and ("bar " .. bar) or string.format("%d:%02d", math.floor(pos / 60), math.floor(pos % 60)))
+      end
+    end
+  end
+  if #out > 0 then reaper.UpdateArrange() end
+  return out
+end
+
 return extras

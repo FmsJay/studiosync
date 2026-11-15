@@ -187,20 +187,29 @@ local function conclude()
     local sdir = live:match("^(.*)/")
     local startup = reaper.GetResourcePath() .. "/Scripts/__startup.lua"
     local sf = io.open(startup, "r")
-    local cur = sf and sf:read("a") or ""
+    local cur = sf and sf:read("a") or (not reaper.file_exists(startup) and "" or nil) -- (there but unreadable: left alone, not written over with only ours)
     if sf then sf:close() end
-    if not cur:find(sdir .. "/StudioSync - Autostart.lua", 1, true) and reaper.file_exists(sdir .. "/StudioSync - Autostart.lua") then
+    if cur and not cur:find(sdir .. "/StudioSync - Autostart.lua", 1, true) and reaper.file_exists(sdir .. "/StudioSync - Autostart.lua") then
       -- (a block from before the rename, or from another copy, makes way)
       local a = cur:find("-- BandSync autostart", 1, true)
       local z = a and cur:find("-- /BandSync autostart", a, true)
       if z then cur = cur:sub(1, a - 1) .. cur:sub(z + #"-- /BandSync autostart" + 1) end
-      local wf = io.open(startup, "w")
-      if wf then
-        wf:write(cur .. (cur ~= "" and not cur:match("\n$") and "\n" or "") .. "-- BandSync autostart\ndofile([[" .. sdir ..
-          "/StudioSync - Autostart.lua]])\n-- /BandSync autostart\n")
-        wf:close()
-        dofile(sdir .. "/StudioSync - Autostart.lua") -- and now, for this REAPER session (it just restarted without it)
+      -- (written beside it, then swapped in: cut off half way, the person's own startup scripts were gone)
+      local tmp, old = startup .. ".studiosync.tmp", startup .. ".studiosync.old"
+      local wf = io.open(tmp, "w")
+      local wrote = wf and wf:write(cur .. (cur ~= "" and not cur:match("\n$") and "\n" or "") .. "-- BandSync autostart\ndofile([[" .. sdir ..
+        "/StudioSync - Autostart.lua]])\n-- /BandSync autostart\n")
+      if wf then wf:close() end
+      local placed = wrote and os.rename(tmp, startup) -- (Windows won't rename over a file: the old one steps aside first)
+      if wrote and not placed then
+        os.remove(old)
+        if os.rename(startup, old) then
+          placed = os.rename(tmp, startup)
+          if placed then os.remove(old) else os.rename(old, startup) end
+        end
       end
+      os.remove(tmp)
+      if placed then dofile(sdir .. "/StudioSync - Autostart.lua") end -- and now, for this REAPER session (it just restarted without it)
     end
     local again = io.open(startup, "r")
     local on = again and again:read("a"):find("-- BandSync autostart", 1, true) ~= nil

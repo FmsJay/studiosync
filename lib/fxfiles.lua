@@ -94,6 +94,11 @@ function fxfiles.safe(f)
   if not f.copy:match("^plugin files/[^/\\]+$") or f.copy:find("..", 1, true) then return false end
   local p = f.path:gsub("\\", "/")
   if p:find("/%.%./") or p:find("/%.%.$") or p:find("%z") then return false end
+  -- (nor where settings live: a .json in an editor's or an app's config folder that doesn't exist yet, like .vscode/settings.json, is
+  -- read as settings there. Hidden folders, Startup folders, and loose in a home folder. Review, 0.58.53)
+  local low = p:lower()
+  if p:find("/%.[^/]+/") or low:find("/start menu/", 1, true) or low:find("/startup/", 1, true) then return false end
+  if low:match("^%a:/users/[^/]+/[^/]+$") or low:match("^/users/[^/]+/[^/]+$") or low:match("^/home/[^/]+/[^/]+$") then return false end
   local ext = p:match("%.([%w]+)$")
   return ext ~= nil and fxfiles.EXT[ext:lower()] == true
 end

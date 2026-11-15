@@ -39,5 +39,10 @@ assert(not fx.safe({ path = "C:/Users/Bee/x.wav", copy = "takes/a.wav" }), "a co
 assert(not fx.safe({ path = "C:/Samples/../Windows/x.wav", copy = "plugin files/a.wav" }), "a path climbing out")
 assert(not fx.safe({ path = "C:/Users/Bee/noext", copy = "plugin files/a" }), "no extension")
 assert(not fx.safe({ path = 5, copy = "plugin files/a" }), "not a string")
+-- (0.58.54: never where settings are read)
+assert(not fx.safe({ path = "C:/Users/Bee/proj/.vscode/settings.json", copy = "plugin files/a.json" }), "an editor's settings")
+assert(not fx.safe({ path = "/Users/bee/.claude/settings.json", copy = "plugin files/a.json" }), "a hidden config folder")
+assert(not fx.safe({ path = "C:/Users/Bee/package.json", copy = "plugin files/a.json" }), "loose in the home folder")
+assert(fx.safe({ path = "C:/Users/Bee/Documents/AIDA-X/amp.json", copy = "plugin files/abc-amp.json" }), "an AIDA-X model still goes back")
 
 print("ok")

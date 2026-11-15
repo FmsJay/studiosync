@@ -140,13 +140,13 @@ local function end_of_session(why)
     band.log(ok and out and ("end-of-session project saved to Google Drive: " .. out:match("[^/]+$")) or
       ("couldn't save the end-of-session project to Drive: " .. tostring(ok and err or out)))
   end
-  -- history older than 30 days that nothing needs (lib/trim.lua): the room's driver trims it, at most once a day,
+  -- history older than 60 days that nothing needs (lib/trim.lua): the room's driver trims it, at most once a day,
   -- right after this kept version is saved
   local key = "trimmed " .. b.song .. "/" .. b.room
   if sync.driver(cfg, b.song, b.room, s0) == cfg.user and reaper.GetExtState(band.SECTION, key) ~= os.date("!%Y-%m-%d") then
     reaper.SetExtState(band.SECTION, key, os.date("!%Y-%m-%d"), true)
     local ok, gone = pcall(require("trim").run, cfg, b.song, b.room)
-    if ok and gone > 0 then band.log(string.format("trimmed %d change(s) older than 30 days that no saved version needs (kept in 'StudioSync history archive')", gone))
+    if ok and gone > 0 then band.log(string.format("trimmed %d change(s) older than 60 days that no saved version needs (kept in 'StudioSync history archive')", gone))
     elseif not ok then band.log("couldn't trim old history: " .. tostring(gone)) end
   end
 end
@@ -188,6 +188,7 @@ end
 
 local last_driver
 local drawings_at = -math.huge -- (when this last looked whether the room has drawings to show)
+local inbox_at = -math.huge -- (and the song's inbox for dropped audio)
 -- Where a tick's time goes, part by part: the last tick over 0.15 s is kept in "slow tick <proj>" (not saved), to find what holds REAPER up on a big song
 local laps, lap_t = {}, 0
 local function lap(name) local t = reaper.time_precise(); laps[#laps + 1] = string.format("%s %.0f", name, (t - lap_t) * 1000); lap_t = t end
@@ -336,6 +337,13 @@ local function poll()
   if now - drawings_at > 10 and reaper.GetExtState(band.SECTION, "draw hidden") == "" and reaper.JS_Window_FindChildByID and reaper.APIExists("ImGui_GetBuiltinPath") then
     drawings_at = now
     if band.files(sync.room_dir(cfg, b.song, b.room) .. "/drawings", ".json")[1] then band.start_draw(dir) end
+  end
+  -- audio dropped into <Song>/inbox from anywhere goes into the song, on one computer only: the driver's, or yours when you're alone (lib/extras.lua)
+  if now - inbox_at > 10 and not hold and b.room == "main" and (driver == cfg.user or alone) and s and s.sync == "mirror" then
+    inbox_at = now
+    local iok, put = pcall(require("extras").inbox, proj, cfg, b)
+    if not iok then band.log("inbox: " .. tostring(put))
+    elseif #put > 0 then band.log("from the song's inbox: " .. table.concat(put, ", ") .. " (it goes to everyone like any change)"); mirror_due = true end
   end
 
   do -- (a suggestion arrived or was answered: lib/suggest.lua)
@@ -770,7 +778,9 @@ local function tick_body() -- returns true to keep going
     undo_since, undo_said = nil, nil
   end
   local undoing = undo_since and now - undo_since < 30
-  if not recording and not undoing and now - last > every and not (transport and due_in < 1.5) then
+  -- (Live set, panel Settings: nothing is looked at or applied while playing, as while recording, so a pass can't hold REAPER up mid-song)
+  local live_set = reaper.GetPlayStateEx(proj) & 1 == 1 and reaper.GetExtState(band.SECTION, "live set") == "on"
+  if not recording and not undoing and not live_set and now - last > every and not (transport and due_in < 1.5) then
     last = reaper.time_precise()
     local ok, err = pcall(poll)
     if not ok then band.log("sync error: " .. tostring(err)) end

@@ -359,7 +359,12 @@ if [ -n "$need" ]; then
     done
   fi
   mkdir -p "$PLUG"
-  for n in $need; do curl -fsSL "${n#*=}" -o "$PLUG/${n%%=*}" && ok "${n%%=*} installed" || warn "${n%%=*} didn't download"; done
+  # (to a .part file first: one cut off half way stayed there, broken, and a second run said it was already installed)
+  for n in $need; do
+    f="$PLUG/${n%%=*}"
+    if curl -fsSL "${n#*=}" -o "$f.part" && [ -s "$f.part" ] && mv -f "$f.part" "$f"; then ok "${n%%=*} installed"
+    else rm -f "$f.part"; warn "${n%%=*} didn't download"; fi
+  done
 else ok "ReaPack, ReaImGui, js_ReaScriptAPI and SWS are already installed"; fi
 API="$RES/Scripts/ReaTeam Extensions/API"
 if [ ! -f "$API/imgui.lua" ]; then
@@ -389,7 +394,7 @@ fi
 # per-song sync (lib/songsync.lua writes the same block): a new bandmate gets every song's listing, and a song in
 # full once they open it, so the first sync isn't the whole library. The first one set up keeps everything.
 if ! yes "$HOSTING" && ! grep -q '^// BandSync end$' "$ROOT/.stignore" 2>/dev/null; then
-  printf '%s\n' '// BandSync: what this computer downloads (written by BandSync, up to the line below)' '!/_*' '!/plugins' '!/drummaps' '!/*/session.json' '!/*/folder.json' '!/*/live.json' '!/*/invites' '!/*/rooms/*/room.json' '!/*/rooms/*/summary' '!/*/rooms/*/status' '(?d)/*/*' '// BandSync end' >> "$ROOT/.stignore" && ok "this computer gets each song in full once it's opened (the rest: their listing)"
+  printf '%s\n' '// BandSync: what this computer downloads (written by BandSync, up to the line below)' '!/_*' '!/plugins' '!/drummaps' '!/*/session.json' '!/*/folder.json' '!/*/live.json' '!/*/invites' '!/*/inbox' '!/*/rooms/*/room.json' '!/*/rooms/*/summary' '!/*/rooms/*/status' '(?d)/*/*' '// BandSync end' >> "$ROOT/.stignore" && ok "this computer gets each song in full once it's opened (the rest: their listing)"
 fi
 LABEL="BandSync"; [ "$FOLDER_ID" != bandsync ] && LABEL="StudioSync $BAND_NAME"
 if stcli config folders list | grep -qx "$FOLDER_ID"; then ok "$BAND_NAME's shared folder is already set up"
@@ -435,7 +440,7 @@ request() { # mode -> runs the helper in REAPER, leaves its JSON result in $HDIR
   # instead; only a REAPER that isn't running is started with the helper.
   local HOME_DIR="$RES/StudioSync" HANDED=""; [ -d "$RES/BandSync" ] && HOME_DIR="$RES/BandSync" # (lib/band.lua band.home)
   local REQ="$HOME_DIR/install-request"
-  if pgrep -x REAPER >/dev/null && grep -q "StudioSync autostart" "$RES/Scripts/__startup.lua" 2>/dev/null; then
+  if pgrep -x REAPER >/dev/null && grep -q "BandSync autostart" "$RES/Scripts/__startup.lua" 2>/dev/null; then
     mkdir -p "$HOME_DIR"; printf '%s' "$HELPER" > "$REQ"
     for i in $(seq 1 20); do [ -f "$REQ" ] || { HANDED=1; break; }; sleep 1; done
     rm -f "$REQ" # not picked up (an older StudioSync, or a window holding REAPER): asked the other way below

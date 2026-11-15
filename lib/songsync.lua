@@ -13,7 +13,8 @@ local songsync = {}
 
 local BEGIN, END = "// BandSync: what this computer downloads (written by BandSync, up to the line below)", "// BandSync end"
 songsync.BAND_WIDE = { "/_*", "/plugins", "/drummaps" }
-songsync.LISTING = { "/*/session.json", "/*/folder.json", "/*/live.json", "/*/invites", "/*/chat", "/*/rooms/*/room.json",
+songsync.LISTING = { "/*/session.json", "/*/folder.json", "/*/live.json", "/*/invites", "/*/chat", "/*/inbox", -- (inbox: audio dropped in from any computer, lib/extras.lua)
+  "/*/rooms/*/room.json",
   "/*/rooms/*/summary", "/*/rooms/*/status", "/*/rooms/*/chat" }
 
 -- The block's lines for the songs wanted here. Pure.

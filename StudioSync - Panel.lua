@@ -1340,6 +1340,10 @@ local function settings_sync()
     end
     prints.options(ctx, ImGui) -- rendering in the background
     require("midiview").options(ctx, ImGui)
+    local lch, lv = ImGui.Checkbox(ctx, "Live set: pause syncing while playing##liveset", reaper.GetExtState(band.SECTION, "live set") == "on")
+    if lch then reaper.SetExtState(band.SECTION, "live set", lv and "on" or "", true) end
+    ImGui.SetItemTooltip(ctx, "For playing a set: while REAPER plays, nothing is sent or taken in, so syncing can't make REAPER stutter.\n" ..
+      "Everything catches up as soon as you stop. Only on this computer.")
     require("people").track_options(ctx, ImGui) -- whose colours tracks show here
     if b and can then require("colours").draw(ctx, ImGui, proj, cfg, function(name, tr) -- (a track you made is yours, as mirror.watch has it: Mac, 0.57.6)
       return can(cfg.user, name) or sync.maker_may(require("mirror").track_oid(tr), cfg.user, name, nil, who and who.mode)

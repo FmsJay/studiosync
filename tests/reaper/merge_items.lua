@@ -138,6 +138,28 @@ local ok, err = pcall(function()
   local function both(x) return math.abs(reaper.GetMediaItemInfo_Value(x, "D_FADEINLEN") - 0.25) < 1e-6 and math.abs(reaper.GetMediaItemInfo_Value(x, "D_SNAPOFFSET") - 0.5) < 1e-6 end
   check(ia and ib and both(ia) and both(ib), "Laptop's fade and James's snap offset are both in, on both computers")
   check(mirror.root(pa) == mirror.root(pb), "and the same project, by fingerprint")
+
+  -- ---- a file still arriving (0.58.54): half of it for over 2 minutes isn't skipped for good; once whole it lands. And a file not named
+  -- for its id is never applied as if it were another change
+  local evdir = sync.room_dir(A, song, room) .. "/events"
+  local nid = "James-20261115-120000Z-00001-0042"
+  local full = band.json_encode({ id = nid, type = "note", user = "James", time = "2026-11-15T12:00:00Z", text = "half then whole" })
+  local function put(name, text) local f = io.open(evdir .. "/" .. name .. ".json", "wb"); f:write(text); f:close() end
+  local function applied(p, id) return select(2, reaper.GetProjExtState(p, sync.APPLIED, id)) ~= "" end
+  put(nid, full:sub(1, 30))
+  sync.unreadable[nid] = reaper.time_precise() - 200
+  recv(pa, A)
+  check(not applied(pa, nid), "half a file, 200 s on: still waited for")
+  put(nid, full)
+  recv(pa, A)
+  check(applied(pa, nid) and sync.unreadable[nid] == nil, "once whole, it lands")
+  local odd = "James-20261115-120001Z-00002-0043"
+  put(odd, band.json_encode({ id = "James-20261115-120001Z-00002-0044", type = "note", user = "James", time = "2026-11-15T12:00:01Z", text = "renamed" }))
+  recv(pa, A)
+  check(not applied(pa, "James-20261115-120001Z-00002-0044") and not applied(pa, odd), "a file not named for its id isn't taken in")
+  sync.unreadable[odd] = reaper.time_precise() - sync.UNREADABLE_SECS - 1
+  recv(pa, A)
+  check(applied(pa, odd), "and after 10 minutes it's set aside for good, not read every pass")
 end)
 if not ok then fails = fails + 1; out[#out + 1] = "FAIL error: " .. tostring(err) end
 sync.driver_name = was_driver

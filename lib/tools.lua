@@ -51,7 +51,9 @@ function tools.autostart_on(dir)
   return text:find(MARK_A, 1, true) ~= nil and (not dir or text:find(dir .. "/StudioSync - Autostart.lua", 1, true) ~= nil) -- (dir: and it's this copy)
 end
 function tools.set_autostart(on, dir)
-  local text = band.read(startup_path()) or ""
+  local text = band.read(startup_path())
+  if not text and reaper.file_exists(startup_path()) then return false, "couldn't read " .. startup_path() end -- (written with only ours, the rest was gone)
+  text = text or ""
   local a = text:find(MARK_A, 1, true)
   if a then
     local z = text:find(MARK_Z, a, true)

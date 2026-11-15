@@ -275,7 +275,13 @@ if ($need.Count -gt 0) {
     }
   }
   New-Item -ItemType Directory -Force $userPlugins | Out-Null
-  foreach ($n in $need) { Invoke-WebRequest -UseBasicParsing $n.url -OutFile (Join-Path $userPlugins $n.file); Ok "$($n.file) installed" }
+  # (to a .part file first: one cut off half way stayed there, broken, and a second run said it was already installed)
+  foreach ($n in $need) {
+    $dest = Join-Path $userPlugins $n.file
+    Invoke-WebRequest -UseBasicParsing $n.url -OutFile "$dest.part"
+    if ((Get-Item "$dest.part").Length -gt 0) { Move-Item -Force "$dest.part" $dest; Ok "$($n.file) installed" }
+    else { Remove-Item -Force "$dest.part"; Warn "$($n.file) didn't download" }
+  }
 } else { Ok "ReaPack, ReaImGui, js_ReaScriptAPI and SWS are already installed" }
 $api = Join-Path $res "Scripts\ReaTeam Extensions\API"
 if (-not (Test-Path (Join-Path $api "imgui.lua"))) { # ReaImGui's version shim, which scripts load with require "imgui"
@@ -318,7 +324,7 @@ if ($isHost -and -not (Test-Path $bj)) { # (who this folder is: lib/band.lua ban
 # full once they open it, so the first sync isn't the whole library. The first one set up keeps everything.
 $ign = Join-Path $root ".stignore"
 if (-not $isHost -and -not ((Test-Path $ign) -and (Select-String -Path $ign -Pattern '^// BandSync end$' -Quiet))) {
-  [IO.File]::AppendAllText($ign, ((@('// BandSync: what this computer downloads (written by BandSync, up to the line below)', '!/_*', '!/plugins', '!/drummaps', '!/*/session.json', '!/*/folder.json', '!/*/live.json', '!/*/invites', '!/*/rooms/*/room.json', '!/*/rooms/*/summary', '!/*/rooms/*/status', '(?d)/*/*', '// BandSync end') -join "`n") + "`n")) # (no BOM: PowerShell 5.1's -Encoding UTF8 writes one, and the block's first line then reads as something else)
+  [IO.File]::AppendAllText($ign, ((@('// BandSync: what this computer downloads (written by BandSync, up to the line below)', '!/_*', '!/plugins', '!/drummaps', '!/*/session.json', '!/*/folder.json', '!/*/live.json', '!/*/invites', '!/*/inbox', '!/*/rooms/*/room.json', '!/*/rooms/*/summary', '!/*/rooms/*/status', '(?d)/*/*', '// BandSync end') -join "`n") + "`n")) # (no BOM: PowerShell 5.1's -Encoding UTF8 writes one, and the block's first line then reads as something else)
   Ok "this computer gets each song in full once it's opened (the rest: their listing)"
 }
 $folders = @(STcli config folders list)

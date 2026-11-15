@@ -195,6 +195,13 @@ By hand:
 - **Open collaborators' MIDI edits as they happen** (Settings > Options, off by default, this computer only): when someone's
   change to a MIDI part reaches you, it opens in the MIDI editor with the notes they changed selected. A MIDI editor
   you opened yourself is left alone. Which notes are selected and which lanes an editor shows never go to the others.
+- **Live set: pause syncing while playing** (Settings > Options, off by default, this computer only): while REAPER plays,
+  nothing is sent or taken in, so syncing can't make REAPER stutter mid-song. Everything catches up when you stop. Play and
+  stop together still work.
+- **Stems in from anywhere**: drop an audio file (WAV, FLAC, AIFF, MP3, OGG) into `<Song>/inbox/` in the shared folder, from
+  any computer, and the driver's StudioSync (or yours, when you're alone) puts it in the song on a track named for it,
+  "<name> (stem)", then takes it out of the inbox. "bar 17" in the file name starts it at bar 17, "@1:23" at 1 minute 23;
+  otherwise it starts at the song's start. Handy for a bandmate on other software: someone drops their files in.
 - **Background renders on a Mac** use a private copy of REAPER (about 170 MB in `~/Library/Caches/StudioSync`, made once and
   again after REAPER updates) that macOS keeps in the background, with a small library that keeps its windows
   transparent. It never touches your REAPER. Settings > Options can switch background rendering off.
@@ -287,7 +294,7 @@ Restore (its own page):
 - **Saved versions** (every handover, or *Save this version*), and *Open it as it was before StudioSync* (the copy Publish
   kept). **Render current mix** puts the whole project's mix, as your master has it, in the shared folder's `<Song>/mixes/` for everyone, and on Drive, and says so in the project's chat (with where to play it on a phone: the Google Drive app). **Export stems** renders one file per shared track, all starting at the song's start, into `<Song>/stems/`. **Compare two mixes (A/B)** plays two renders from `mixes/` in turn from the same place, turned to the same loudness (needs SWS). **Credits draft** writes `<Song>/credits.txt`: who started which tracks, recorded which takes and made which changes, with the splits left for the band to agree. **Back up** keeps the project as it stands: a saved version kept for good, and the project on Drive.
 - **Old history is trimmed**: once a day, at the end of a session, the room's driver takes away changes older than
-  30 days that nothing needs. Each thing's newest change stays, so does everything a major saved version (end of
+  60 days that nothing needs. Each thing's newest change stays, so does everything a major saved version (end of
   session, "yours before…", or one you saved by hand) needs to restore exactly; only the snapshots before a
   handover may lose their exact past. Trimmed files go to `StudioSync history archive` beside the studio folder on the
   driver's computer, not away for good.

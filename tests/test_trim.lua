@@ -42,4 +42,15 @@ do
   assert(g.m0, "but not the base's own base: nothing rebuilds from it")
   assert(not g.p and not g.q, "both changes a merged base was made from")
 end
+-- (0.58.54) a change with no time is never taken for old, and what a kept point stands on stays even when everything is past the cutoff
+do
+  local e = { ev("x40", "I-X", 1, "2026-01-01T00:00:00Z"), ev("x35", "I-X", 2, "2026-01-06T00:00:00Z"), ev("x31", "I-X", 3, "2026-01-10T00:00:00Z"),
+    { id = "notime", oid = "I-Y", rev = 1, type = "obj" }, ev("y2", "I-Y", 2, "2026-01-02T00:00:00Z") }
+  local g = {}
+  for _, id in ipairs(trim.plan(e, { { time = "2026-01-08T00:00:00Z", keep = true, label = "end of session" } }, "2026-02-15T00:00:00Z")) do g[id] = true end
+  assert(not g.x35, "the newest at or before the kept point stays")
+  assert(g.x40, "older than that goes")
+  assert(not g.x31, "the newest stays")
+  assert(not g.notime, "a change with no time stays")
+end
 print("ok")

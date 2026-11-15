@@ -27,6 +27,21 @@ do
   local was = band.read(path)
   real_rename(path, dir .. "/.syncthing." .. path:match("[^/]+$") .. ".old.tmp")
   assert(band.read(path) == was, "the next read puts the old copy back: " .. tostring(band.read(path)))
+  -- (0.58.54) the disk fills up mid-write: an error that says so, the old file whole, and nothing half-written left beside it
+  band.write_atomic(path, "before")
+  local real_open = io.open
+  io.open = function(p, mode)
+    if mode == "wb" and p:find(".syncthing.", 1, true) then
+      local f = real_open(p, mode)
+      return setmetatable({ write = function() return nil end, close = function() return f:close() end }, { __index = f })
+    end
+    return real_open(p, mode)
+  end
+  local ok, err = pcall(band.write_atomic, path, "after")
+  io.open = real_open
+  assert(not ok and tostring(err):find("disk", 1, true), "a full disk says so: " .. tostring(err))
+  assert(band.read(path) == "before", "and the old file is whole")
+  assert(not real_open(dir .. "/.syncthing.session.json.tmp", "rb"), "no half-written copy left")
   os.remove(path)
   os.remove(dir)
 end

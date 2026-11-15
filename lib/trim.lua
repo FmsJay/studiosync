@@ -1,6 +1,6 @@
 -- History trim (James, 2026-11-01: "can trim history as long as major restore points are saved"). A room's events
 -- folder keeps every change ever made; after a while that's thousands of files every machine reads. Trimmed:
--- changes older than `days` that nothing needs any more. Kept, always:
+-- changes older than `days` (60) that nothing needs any more. Kept, always:
 --   each object's newest change (what the song is now, and what a machine that was away catches up to);
 --   for each major restore point (kept ones: end of session, "yours before X's work done alone"; and every version
 --   someone saved by hand), each object's newest change at or before it, so it still restores exactly;
@@ -10,7 +10,9 @@
 -- trimmed, so nothing is lost for good.
 local band = require("band")
 local trim = {}
-trim.DAYS = 30 -- how old a change has to be before it may go (mirror.too_old_to_merge counts on it)
+-- how old a change has to be before it may go: twice the age past which a clash isn't merged (mirror.MERGE_DAYS), so a version a
+-- change still merges from is on every computer (review, 0.58.53: one trimmed on day 31 could still be a 25-day-old change's base)
+trim.DAYS = 60
 
 -- What one event is about: an object's oid, the timeline, or nil (kept regardless).
 local function key_of(ev)
@@ -85,7 +87,7 @@ function trim.plan(evs, points, cutoff)
   end
   local out = {}
   for _, ev in ipairs(evs) do
-    if key_of(ev) and not keep[ev.id] and (ev.time or "") < cutoff then out[#out + 1] = ev.id end
+    if key_of(ev) and not keep[ev.id] and type(ev.time) == "string" and ev.time < cutoff then out[#out + 1] = ev.id end -- (no time: never taken for old)
   end
   table.sort(out)
   return out

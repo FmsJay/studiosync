@@ -1300,22 +1300,30 @@ function sync.receive(proj, cfg, song, room, can)
   local drivers = sync.driver_history(proj, cfg, song, room)
   -- (files read once while they wait: a backlog of 300 was read and decoded again on every pass; laptop, 0.34.4)
   local cache, kept = sync.ev_cache[dir] or {}, {}
+  local settled = sync.settled_for(proj, dir)
   for _, f in ipairs(band.files(dir, ".json")) do
-    if ext(proj, sync.APPLIED, f:sub(1, -6)) == "" then
+    if not settled[f] and ext(proj, sync.APPLIED, f:sub(1, -6)) ~= "" then settled[f] = true end
+    if not settled[f] then
       local ev = cache[f] or band.read_json(dir .. "/" .. f)
-      -- a malformed or half-synced file must not stop everything behind it; one still unreadable after 2 minutes
+      -- a malformed or half-synced file must not stop everything behind it; one still unreadable after 10 minutes
       -- (not a file a cloud drive is still writing) is skipped for good, or it counts as "still to come" for ever
       -- and Who's here never shows the same project again (laptop, block K: a truncated file left pending at 1)
       local good = type(ev) == "table" and type(ev.id) == "string" and type(ev.time) == "string" and type(ev.user) == "string" and type(ev.type) == "string"
+      -- (named for its id, or what's applied (by id) never matches the file (by name), and it's applied again every pass: a renamed timeline
+      -- change put the tempo map back every 2 s. No slashes either: ids name files to read. Review, 0.58.53)
+      good = good and ev.id == f:sub(1, -6) and not ev.id:find("[/\\]") and (ev.base_ev == nil or (type(ev.base_ev) == "string" and not ev.base_ev:find("[/\\]")))
+      -- (10 minutes, not 2: Google Drive and OneDrive write a file in place, and a slow one was skipped for good a minute before it was whole.
+      -- Review, 0.58.53)
       if not good then
         local id = f:sub(1, -6)
         sync.unreadable[id] = sync.unreadable[id] or reaper.time_precise()
-        if reaper.time_precise() - sync.unreadable[id] > 120 then
+        if reaper.time_precise() - sync.unreadable[id] > sync.UNREADABLE_SECS then
           setext(proj, sync.APPLIED, id, "1")
           band.log("skipped a file in the studio's folder that StudioSync can't read (" .. f .. ")")
         end
       end
       if good then
+        sync.unreadable[f:sub(1, -6)] = nil
         kept[f] = ev
         -- 0.14.4 sent an edit's previous shape as "was", which is a track's old name everywhere else
         if type(ev.was) == "table" then ev.before, ev.was = ev.before or ev.was, nil end
@@ -1383,7 +1391,7 @@ function sync.receive(proj, cfg, song, room, can)
     if budget_out then break end
     local obj = ev.type == "obj"
     if obj and not (type(ev.oid) == "string" and (ev.obj == "item" or ev.obj == "track" or require("mirror").PART[ev.obj]) and type(ev.rev) == "number"
-        and (ev.gone or ev.state ~= nil) and (ev.name == nil or type(ev.name) == "string") and (ev.pos == nil or type(ev.pos) == "number")) then
+        and (ev.gone or type(ev.state) == (ev.obj == "track" and "table" or "string")) and ev.state ~= require("json").null and (ev.name == nil or type(ev.name) == "string") and (ev.pos == nil or type(ev.pos) == "number")) then
       sync.skip(proj, ev, "StudioSync can't read it") -- malformed (a newer or damaged file): skipped, once, without stopping the rest
       band.log("skipped a change from " .. tostring(ev.user) .. " that StudioSync can't read (" .. tostring(ev.id) .. ")")
     elseif (ev.type == "plays" and newest[ev.track or ""] ~= ev.id) or superseded(proj, ev) or (obj and latest[ev.oid] ~= ev and apart(ev, latest[ev.oid]) == false) then
@@ -1477,14 +1485,46 @@ function sync.holdings(proj)
   return have
 end
 
+-- Files already applied or set aside, per project and events folder: each pass looked every one of thousands up in the project again
+-- (review, 0.58.53). Only ever grows while the project is open: applied stays applied (sync.forget_trimmed drops only files that are gone).
+sync.settled = {}
+function sync.settled_for(proj, dir)
+  local key = tostring(proj) .. "\0" .. dir
+  sync.settled[key] = sync.settled[key] or {}
+  return sync.settled[key]
+end
+
+-- The project remembers every change it has applied, by id, and kept them all after history trim took the files away: the .rpp grew
+-- for good (review, 0.58.53). Those whose file is in none of the song's rooms any more are dropped. -> how many (also sync.forgot).
+function sync.forget_trimmed(proj, cfg, song)
+  local here = {}
+  for _, r in ipairs(require("rooms").list(cfg, song)) do
+    for _, f in ipairs(band.files(sync.room_dir(cfg, song, r.name) .. "/events", ".json")) do here[f:sub(1, -6)] = true end
+  end
+  if next(here) == nil then sync.forgot = 0; return 0 end -- (the folder not reachable just now: nothing is taken for gone)
+  local gone, i = {}, 0
+  while true do
+    local ok, key = reaper.EnumProjExtState(proj, sync.APPLIED, i)
+    if not ok then break end
+    if not here[key] then gone[#gone + 1] = key end
+    i = i + 1
+  end
+  for _, key in ipairs(gone) do reaper.SetProjExtState(proj, sync.APPLIED, key, "") end
+  sync.forgot = #gone
+  return #gone
+end
+
 -- How many of the room's events this project hasn't applied (or set aside) yet.
 function sync.pending_events(proj, cfg, song, room)
   local n = 0
-  for _, f in ipairs(band.files(sync.room_dir(cfg, song, room) .. "/events", ".json")) do
+  local dir = sync.room_dir(cfg, song, room) .. "/events"
+  local settled = sync.settled_for(proj, dir)
+  for _, f in ipairs(band.files(dir, ".json")) do
     local id = f:sub(1, -6)
+    if not settled[f] and ext(proj, sync.APPLIED, id) ~= "" then settled[f] = true end
     -- waiting on a claim isn't "behind", and neither is our own change on its way back (the pill read "Receiving 321"
     -- right after a restore we sent: laptop, 0.34.4)
-    if ext(proj, sync.APPLIED, id) == "" and not sync.deferred[id] and not sync.is_mine(id, cfg.user) then n = n + 1 end
+    if not settled[f] and not sync.deferred[id] and not sync.is_mine(id, cfg.user) then n = n + 1 end
   end
   return n
 end
@@ -1494,6 +1534,7 @@ sync.ev_cache = {} -- events dir -> { file -> decoded event }, for the files sti
 -- changes, read once and then kept up to date from incoming events: { [id] = { time, user } }.
 sync.deferred = {}
 sync.unreadable = {} -- event file id -> when it was first found unreadable (sync.receive)
+sync.UNREADABLE_SECS = 600 -- how long a file may stay unreadable before it's skipped for good
 local driver_cache = {}
 function sync.driver_history(proj, cfg, song, room)
   local key = song .. "/" .. room
@@ -1594,7 +1635,9 @@ function sync.preload(proj, cfg, song, room)
   if not ok then band.log("getting '" .. song .. "' ready: " .. tostring(err)) end
   if total > 0 then band.log(string.format("'%s' is ready: %d change(s) from the others came in as it opened (%.1f s)", song, total, reaper.time_precise() - t0)) end
   -- (saved, so next time it opens from here. A file 27 hours old took 3034 changes in again on the Mac: 0.42.27)
-  if total > 100 and select(2, reaper.EnumProjects(-1)) ~= "" and reaper.EnumProjects(-1) == proj then reaper.Main_SaveProject(proj, false) end
+  -- (after any catch-up, not only past 100: each open took the same changes in again until a big one came along. Review, 0.58.53)
+  pcall(sync.forget_trimmed, proj, cfg, song)
+  if (total > 0 or sync.forgot) and select(2, reaper.EnumProjects(-1)) ~= "" and reaper.EnumProjects(-1) == proj then reaper.Main_SaveProject(proj, false) end
   return total
 end
 
