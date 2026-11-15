@@ -202,7 +202,16 @@ function R.section_recall()
   end
   ImGui.SetItemTooltip(ctx, "Who started which tracks, recorded which takes and made which changes, from the history: a draft to agree the splits on.\n" ..
     "Written to the shared folder (credits.txt), with the percentages left for you to fill in.")
-  ImGui.SetItemTooltip(ctx, "Keeps the project as it stands now: a saved version here that's never trimmed, and the project on Google Drive if you use it. No audio is rendered.")
+  next_to("Save as studio template")
+  if ImGui.SmallButton(ctx, "Save as studio template") then
+    local ok, name = reaper.GetUserInputs("Save as studio template", 1, "Template name:,extrawidth=120", b.song)
+    if ok then
+      local path, why = require("extras").save_template(proj, cfg, name)
+      if path then band.log("saved '" .. name .. "' as a template for everyone in the studio: Projects > New from template") else band.msg(why) end
+    end
+  end
+  ImGui.SetItemTooltip(ctx, "This song's tracks, routing, plug-ins, colours and tempo, without its recordings: everyone in the studio can start a new song from it\n" ..
+    "(Projects page, New from template). Each studio has its own templates.")
   next_to("Save a copy outside the studio")
   if ImGui.SmallButton(ctx, "Save a copy outside the studio") then
     local keep, wav = "As it is (FLAC, as recorded)", "With WAV files"

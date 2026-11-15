@@ -561,6 +561,43 @@ local function section_drive()
     end
   end
 end
+local call_draft -- (the call link being typed, Settings)
+local function section_alerts()
+  local alerts = require("alerts")
+  ImGui.SeparatorText(ctx, "Phone alerts")
+  local channel = alerts.channel(cfg.root)
+  local admin = require("groups").role(cfg.root, cfg.user) ~= "member"
+  if admin then
+    local ach, aon = check("Send phone alerts for this studio", channel ~= nil,
+      "When someone sends a message, records, or renders a mix, a line goes to everyone who subscribed in the free ntfy app, even with REAPER closed.\n" ..
+      "The line goes through ntfy.sh (no audio, no project). Anyone who knew the studio's channel name could read them, so it's long and random. Turning it off and on makes a new one.")
+    if ach then alerts.set(cfg.root, aon) end
+  end
+  if channel then
+    ImGui.TextWrapped(ctx, "Get them on your phone: install ntfy (free, Android and iPhone), tap +, and subscribe to:")
+    ImGui.TextColored(ctx, GREEN, channel)
+    ImGui.SameLine(ctx)
+    if ImGui.SmallButton(ctx, "Copy##alerts") then ImGui.SetClipboardText(ctx, channel) end
+  elseif not admin then
+    ImGui.TextDisabled(ctx, "Off. The studio's owner or an admin can turn them on here.")
+  end
+  ImGui.SeparatorText(ctx, "Studio call")
+  local call = alerts.call_link(cfg.root)
+  if admin then
+    call_draft = call_draft or call or ""
+    ImGui.SetNextItemWidth(ctx, -70)
+    local _, v = ImGui.InputTextWithHint(ctx, "##calllink", "a Discord, Zoom or Meet link (https://...)", call_draft)
+    call_draft = v
+    ImGui.SameLine(ctx)
+    if ImGui.SmallButton(ctx, "Save##calllink") then
+      if call_draft == "" or alerts.call_ok(call_draft) then alerts.set_call(cfg.root, call_draft); band.log(call_draft == "" and "the studio's call link is gone" or "the studio's call link is set: everyone gets a Call button by Real time mode")
+      else band.msg("That isn't a plain https:// link (no spaces, & or %).") end
+    end
+    ImGui.SetItemTooltip(ctx, "Everyone in the studio gets a Call button beside Real time mode that opens this. Video and talking happen there, in its own app.")
+  else
+    ImGui.TextDisabled(ctx, call and ("Call button opens: " .. call) or "None set. The studio's owner or an admin can add one here.")
+  end
+end
 -- Two computers' fingerprints differ for 10-15 s after any edit (each publishes its own every few seconds, and the
 -- print follows the notes), and red then read as a failed sync (James, 2026-11-01). Red once they've stayed apart 30 s.
 local apart = {} -- bandmate -> { key = their fingerprint and ours, since = when that pair first showed }
@@ -1093,10 +1130,27 @@ local function home_play()
   require("page_hear").fit(ctx, ImGui, "Configure SonoBus") -- (beside, or below in a narrow column: it was cut to "Configure Sono")
   if ImGui.SmallButton(ctx, "Configure SonoBus") then sonobus_open() end
   ImGui.SetItemTooltip(ctx, "Opens SonoBus's own window (volume and mute per collaborator, buffer, quality). You don't need it to play together.")
+  if on and b then -- talkback: speak to the others without arming a track that records
+    local live = require("live")
+    local talking = live.talking(proj)
+    require("page_hear").fit(ctx, ImGui, talking and "Talking" or "Talk")
+    if talking then ImGui.PushStyleColor(ctx, ImGui.Col_Button, 0x2E7D4FFF) end
+    if ImGui.SmallButton(ctx, (talking and "Talking" or "Talk") .. "##talkback") then live.talk(proj, not talking) end
+    if talking then ImGui.PopStyleColor(ctx) end
+    ImGui.SetItemTooltip(ctx, "Your microphone to the others through Real time mode, without arming a track: it's never recorded, and it goes quiet while\n" ..
+      "anyone records here. It uses your first input; pick another on the 'StudioSync Talk' track (only on this computer). Click again to stop.")
+  end
   if on then -- (the help for it was in Settings > Advanced, with nothing here pointing at it: UX review, 0.58.52)
     require("page_hear").fit(ctx, ImGui, "Can't hear?")
     if ImGui.SmallButton(ctx, "Can't hear?") then ui.go_settings("Advanced") end
     ImGui.SetItemTooltip(ctx, "What to try when you can't hear someone, or they can't hear you (Settings > Advanced).")
+  end
+  local call = require("alerts").call_link(cfg.root)
+  if call then -- (the studio's own call: Discord, Zoom, Meet, whatever they use. Its own app, so it never slows REAPER or the sync)
+    require("page_hear").fit(ctx, ImGui, "Call")
+    if ImGui.SmallButton(ctx, "Call") then band.open_url(call) end
+    ImGui.SetItemTooltip(ctx, "Opens the studio's call (" .. call .. ") in its own app or browser, with video if it has it.\n" ..
+      "Mute its microphone while you play: Real time mode already carries the music, and two copies echo.")
   end
   if not ui.short then -- (a tall docker has the room)
     ImGui.TextDisabled(ctx, on and "You hear everyone live, and play, stop and record follow whoever presses them."
@@ -1133,7 +1187,7 @@ local function home_who()
   local people, armed = {}, {}
   for i = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, i)
-    if reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1 then armed[#armed + 1] = select(2, reaper.GetTrackName(tr)) end
+    if require("live").armed(tr) then armed[#armed + 1] = select(2, reaper.GetTrackName(tr)) end
   end
   local ps = reaper.GetPlayStateEx(proj)
   people[1] = { name = cfg.user .. " (you)", user = cfg.user, state = "here", armed = armed, recording = ps & 4 == 4, playing = ps & 1 == 1,
@@ -1354,6 +1408,7 @@ end
 local function settings_drive()
   if card("drive") then
     section_drive()
+    section_alerts()
     card_end()
   end
 end
@@ -1775,7 +1830,7 @@ local function frame_app()
     local mine, both = {}, {}
     for i = 0, reaper.CountTracks(proj) - 1 do
       local tr = reaper.GetTrack(proj, i)
-      if reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1 then mine[select(2, reaper.GetTrackName(tr))] = true end
+      if require("live").armed(tr) then mine[select(2, reaper.GetTrackName(tr))] = true end
     end
     for _, r in ipairs(view.rows) do
       if r.state ~= "offline" then

@@ -62,6 +62,7 @@ local function add(cfg, b, kind, v, sc)
   v.user, v.time = cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ")
   band.write_json(d .. "/" .. stamp(cfg) .. ".json", v)
   cache = nil
+  if kind == "msgs" and type(v.text) == "string" then pcall(require("alerts").send, cfg, "chat", "StudioSync: " .. tostring(b.song), cfg.user .. ": " .. v.text) end
 end
 
 -- Something said for the band from elsewhere (a mix rendered, say): a message in this project's chat.

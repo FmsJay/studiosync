@@ -152,17 +152,39 @@ function copy.trash_script(paths, label, stamp)
   end
   return table.concat(lines, "\n") .. "\n"
 end
--- Into the Recycle Bin or Trash. Returns how many paths couldn't go (a file REAPER still has open, usually).
-function copy.bin(paths, label)
-  if #paths == 0 then return 0 end
-  local tmp = (os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp"):gsub("\\", "/"):gsub("/+$", "") .. "/bandsync-bin-" .. os.time() .. "-" .. math.floor(reaper.time_precise() * 1000) % 1000000 -- (two in one second shared one script)
-  local function left_now()
-    local left = 0
-    for _, p in ipairs(paths) do
-      if reaper.file_exists(p) or reaper.EnumerateFiles(p, 0) or reaper.EnumerateSubdirectories(p, 0) then left = left + 1 end
-    end
-    return left
+-- Into the Recycle Bin or Trash, in the background: copy.bin_start, then copy.bin_poll each frame until it says how many paths couldn't go
+-- (a file REAPER still has open, usually). Waited for in a loop, REAPER stood still for up to 20 s (review, 0.58.53).
+local function left_now(paths)
+  local left = 0
+  for _, p in ipairs(paths) do
+    if reaper.file_exists(p) or reaper.EnumerateFiles(p, 0) or reaper.EnumerateSubdirectories(p, 0) then left = left + 1 end
   end
+  return left
+end
+function copy.bin_poll(h)
+  if h.left then return h.left end
+  local done = reaper.file_exists(h.tmp .. ".done") or reaper.time_precise() - h.t0 > (WIN and 20 or 300)
+    or (reaper.time_precise() - h.t0 > 1 and left_now(h.paths) == 0)
+  if not done then return nil end
+  if reaper.file_exists(h.tmp .. ".nobin") then
+    os.remove(h.tmp .. ".nobin")
+    band.log("left " .. tostring(h.label or "some files") .. " where it is: that drive has no Recycle Bin, so deleting would be for good. Delete it by hand if you mean to")
+  end
+  for _, e in ipairs({ ".done", ".cmd", ".vbs", ".ps1", ".sh" }) do if reaper.file_exists(h.tmp .. e) then os.remove(h.tmp .. e) end end
+  h.left = left_now(h.paths) -- shortcut: what hasn't gone by the time limit counts as left, though it may still be on its way
+  return h.left
+end
+-- A whole group's copy (copy.delete_group) still waits here: a one-off its page asks for and expects done.
+function copy.bin(paths, label)
+  local h = copy.bin_start(paths, label)
+  local left
+  repeat left = copy.bin_poll(h) until left
+  return left
+end
+function copy.bin_start(paths, label)
+  if #paths == 0 then return { left = 0 } end
+  local tmp = (os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp"):gsub("\\", "/"):gsub("/+$", "") .. "/bandsync-bin-" .. os.time() .. "-" .. math.floor(reaper.time_precise() * 1000) % 1000000 -- (two in one second shared one script)
+  local h = { tmp = tmp, paths = paths, label = label, t0 = reaper.time_precise() }
   if WIN then
     -- In the background, with no error boxes: a big folder takes minutes, and a file in use raised a box nobody could see on a hidden PowerShell, with REAPER
     -- stopped until it was killed (PC, 0.54.1, 17 minutes). shortcut: what doesn't go in 20 s is reported as left, though it may still be on its way.
@@ -185,22 +207,11 @@ function copy.bin(paths, label)
     band.write_atomic(tmp .. ".cmd", '@powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' .. tmp .. '.ps1"\r\n')
     band.write_atomic(tmp .. ".vbs", 'CreateObject("WScript.Shell").Run """" & WScript.Arguments(0) & """", 0, False\r\n')
     reaper.ExecProcess(string.format('wscript.exe //B //Nologo "%s.vbs" "%s.cmd"', tmp, tmp), -1)
-    local t0 = reaper.time_precise()
-    while not reaper.file_exists(tmp .. ".done") and reaper.time_precise() - t0 < 20 do
-      if reaper.time_precise() - t0 > 1 and left_now() == 0 then break end
-    end
-    if reaper.file_exists(tmp .. ".nobin") then
-      os.remove(tmp .. ".nobin")
-      band.log("left " .. tostring(label or "some files") .. " where it is: that drive has no Recycle Bin, so deleting would be for good. Delete it by hand if you mean to")
-    end
-    os.remove(tmp .. ".done"); os.remove(tmp .. ".cmd"); os.remove(tmp .. ".vbs")
-    if reaper.file_exists(tmp .. ".ps1") then os.remove(tmp .. ".ps1") end
-    return left_now()
+    return h
   end
-  band.write_atomic(tmp .. ".sh", copy.trash_script(paths, label, os.date("%Y-%m-%d %H.%M.%S")))
-  reaper.ExecProcess("/bin/sh '" .. tmp .. ".sh'", 300000)
-  os.remove(tmp .. ".sh")
-  return left_now()
+  band.write_atomic(tmp .. ".sh", copy.trash_script(paths, label, os.date("%Y-%m-%d %H.%M.%S")) .. "touch '" .. tmp .. ".done'\n")
+  reaper.ExecProcess("/bin/sh '" .. tmp .. ".sh'", -1)
+  return h
 end
 
 -- One step of the job. Returns nothing; the job's fields say where it stands. Called each frame by the Projects page.
@@ -289,7 +300,12 @@ function copy.tick()
     for _, p in ipairs(j.paths) do list[#list + 1] = dir .. "/" .. p end
     if reaper.EnumerateFiles(j.local_dir, 0) or reaper.EnumerateSubdirectories(j.local_dir, 0) then list[#list + 1] = j.local_dir end
     reaper.DeleteExtState(band.SECTION, "project file " .. song, true)
-    local left = copy.bin(list, song)
+    j.binning, j.step = copy.bin_start(list, song), "binning"
+    j.words = "Moving '" .. song .. "' to the " .. (WIN and "Recycle Bin" or "Trash")
+  elseif j.step == "binning" then
+    local left = copy.bin_poll(j.binning)
+    if not left then return end
+    j.binning = nil
     j.done[#j.done + 1] = song .. (left > 0 and string.format(" (%d not gone yet: still on its way to the Recycle Bin, or in use. If it stays, restart REAPER and delete again)", left) or "")
     band.log("deleted this computer's copy of '" .. song .. "': confirmed on " .. table.concat(j.places, ", ") .. ". Open it to bring it back")
     j.i, j.step = j.i + 1, "scan"

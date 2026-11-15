@@ -27,19 +27,21 @@ local function background(name, cmd, every)
     -- shortcut: written in place (these outputs are a few hundred bytes); a half-written read just looks like "no answer" once
     if WIN then -- through a hidden-window runner: `cmd /c` without waiting flashes a console window (seen 0.9.7)
       local bat, vbs = TMP .. "/bandsync-" .. name .. ".cmd", TMP .. "/bandsync-hidden.vbs"
-      pcall(band.write_atomic, bat, string.format('@%s > "%s" 2>nul\r\n', cmd, file)) -- (its last run may still hold it, from another script: the same words are there already)
+      -- (the script deletes itself once run: some hold Syncthing's API key, and after a crash tidy_temp never ran. Review, 0.58.53)
+      pcall(band.write_atomic, bat, string.format('@%s > "%s" 2>nul\r\n@(goto) 2>nul & del "%%~f0"\r\n', cmd, file)) -- (its last run may still hold it, from another script: the same words are there already)
       if not reaper.file_exists(vbs) then band.write_atomic(vbs, 'CreateObject("WScript.Shell").Run """" & WScript.Arguments(0) & """", 0, False\r\n') end
       reaper.ExecProcess(string.format('wscript.exe //B //Nologo "%s" "%s"', vbs, bat), -1)
     else -- through a script file too: macOS's ExecProcess doesn't honour \" inside a quoted argument, so any command
       -- with quotes in it (the curl's -H "X-API-Key: ...") silently never ran (Mac, 2026-10-28). Grouped, so the
       -- whole command's output lands in the file, not only the part after a ||.
       local sh = TMP .. "/bandsync-" .. name .. ".sh"
-      band.write_atomic(sh, "{ " .. cmd .. "; } > '" .. file .. "' 2>/dev/null\n")
+      band.write_atomic(sh, "{ " .. cmd .. "; } > '" .. file .. "' 2>/dev/null\nrm -f \"$0\"\n")
       reaper.ExecProcess("/bin/sh '" .. sh .. "'", -1)
     end
   end
   return last[name]
 end
+services.background, services.TMP = background, TMP -- (lib/alerts.lua sends through it)
 
 -- When REAPER quits: the background scripts and config files StudioSync left in the temp folder go (some hold Syncthing's API key or a
 -- Tailscale token: they stayed there for good. Review, 0.58.52). Each is made again when it's next needed.

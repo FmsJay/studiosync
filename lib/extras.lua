@@ -365,4 +365,69 @@ function extras.inbox(proj, cfg, b)
   return out
 end
 
+-- ---------------------------------------------------------------- studio templates
+-- Each studio keeps its own, in <studio>/_band/templates/<name>.rpp (everyone in the studio has them): the tracks, their routing, plug-ins,
+-- colours, the tempo and markers of a song, without its items and without StudioSync's own marks, so a song started from one is a new song.
+-- (research of other tools, 0.58.53: every new song made the same tracks and colours again)
+function extras.template_dir(cfg) return cfg.root .. "/_band/templates" end
+-- A saved project's text made into a template: no items, no StudioSync ids or project state, and none of the tracks that are this computer's
+-- own (Real time mode's, talkback, your local tracks: band_local). Pure.
+function extras.template_text(rpp)
+  local lines = {}
+  for line in (rpp .. "\n"):gmatch("(.-)\r?\n") do lines[#lines + 1] = line end
+  local function block_end(i) -- the line closing the block opened at i
+    local indent = #lines[i]:match("^%s*")
+    for k = i + 1, #lines do if #lines[k]:match("^%s*") == indent and lines[k]:match("^%s*>%s*$") then return k end end
+    return #lines
+  end
+  local function opens(line, tag) return line:match("^%s*<" .. tag .. "$") or line:match("^%s*<" .. tag .. "%s") end
+  local out, i = {}, 1
+  while i <= #lines do
+    local line = lines[i]
+    if opens(line, "ITEM") or opens(line, "EXTSTATE") then
+      i = block_end(i) + 1
+    elseif opens(line, "TRACK") and (function()
+        local z = block_end(i)
+        local own = #line:match("^%s*") + 4 -- (the track's own <EXT>, not an item's inside it)
+        for k = i + 1, z do if #lines[k]:match("^%s*") == own and lines[k]:match("^%s*band_local%s") then return true end end
+      end)() then
+      i = block_end(i) + 1
+    else
+      if not line:match("^%s*band_") then out[#out + 1] = line end
+      i = i + 1
+    end
+  end
+  while out[#out] == "" do out[#out] = nil end
+  return table.concat(out, "\n") .. "\n"
+end
+-- -> its path, or nil + why
+function extras.save_template(proj, cfg, name)
+  name = band.clean(name or "")
+  if name == "" then return nil, "Give the template a name." end
+  local dir = extras.template_dir(cfg)
+  reaper.RecursiveCreateDirectory(dir, 0)
+  local tmp = band.home() .. "/template-scratch.rpp"
+  reaper.Main_SaveProjectEx(proj, tmp, 0) -- (a copy: the project stays where it is)
+  local text = band.read(tmp)
+  os.remove(tmp); os.remove(tmp .. ".bandsync-ids.json")
+  if not text then return nil, "Couldn't save a copy of the project." end
+  local path = dir .. "/" .. name .. ".rpp"
+  band.write_atomic(path, extras.template_text(text))
+  return path
+end
+function extras.templates(cfg)
+  local t = {}
+  for _, f in ipairs(band.files(extras.template_dir(cfg), ".rpp")) do t[#t + 1] = f:gsub("%.[Rr][Pp][Pp]$", "") end
+  table.sort(t)
+  return t
+end
+-- A new tab started from one, untitled: share it as usual (Share ... with the studio).
+function extras.open_template(cfg, name)
+  local path = extras.template_dir(cfg) .. "/" .. name .. ".rpp"
+  if not reaper.file_exists(path) then return false end
+  reaper.Main_OnCommand(40859, 0) -- new project tab
+  reaper.Main_openProject("noprompt:template:" .. path) -- (that order: as the installed scripts use it)
+  return true
+end
+
 return extras

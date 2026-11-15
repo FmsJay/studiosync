@@ -63,6 +63,7 @@ save = function(root, change)
   band.write_json(root .. "/_band/band.json", j)
   seen[root] = nil
 end
+function groups.edit(root, change) save(root, change) end -- (lib/alerts.lua's channel)
 
 -- The owner makes someone an admin or a member again. -> true, or nil + why.
 function groups.set_admin(root, actor, target, on)

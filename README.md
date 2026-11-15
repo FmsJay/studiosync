@@ -202,6 +202,19 @@ By hand:
   any computer, and the driver's StudioSync (or yours, when you're alone) puts it in the song on a track named for it,
   "<name> (stem)", then takes it out of the inbox. "bar 17" in the file name starts it at bar 17, "@1:23" at 1 minute 23;
   otherwise it starts at the song's start. Handy for a bandmate on other software: someone drops their files in.
+- **Phone alerts** (Settings > Google Drive card, the studio's owner or an admin turns them on): when someone sends a message,
+  records, or renders a mix, one line goes to everyone who subscribed to the studio's channel in the free ntfy app (Android,
+  iPhone), even with REAPER closed. The line goes through ntfy.sh (or the studio's own ntfy server, band.json
+  `alerts_server`); no audio or project. The channel name is long and random; anyone who knew it could read the lines.
+- **Studio templates**: *Save as studio template* (Restore page) keeps a song's tracks, routing, plug-ins, colours and tempo,
+  without its recordings and without your own local tracks, in the studio's `_band/templates/`. Everyone in that studio gets
+  *New from template* on the Projects page: a new tab to name and share as usual. Each studio has its own.
+- **Studio call**: the owner or an admin pastes a Discord, Zoom or Meet link in Settings, and everyone gets a **Call** button
+  beside Real time mode. The call runs in its own app, video and all, so it never slows REAPER or the sync. Mute its
+  microphone while playing: Real time mode carries the music.
+- **Talk** (beside Real time mode, while it's on): your microphone to the others without arming a track. Its own track on
+  your computer, *StudioSync Talk*, never records, isn't in your own speakers, and goes quiet while anyone records here. It
+  uses your first input; pick another on that track.
 - **Background renders on a Mac** use a private copy of REAPER (about 170 MB in `~/Library/Caches/StudioSync`, made once and
   again after REAPER updates) that macOS keeps in the background, with a small library that keeps its windows
   transparent. It never touches your REAPER. Settings > Options can switch background rendering off.

@@ -444,6 +444,18 @@ function pg.draw_projects(env)
   if wide then ImGui.SameLine(ctx, 0, 14) end
   if ImGui.Button(ctx, "New folder") then new_folder = ""; ImGui.OpenPopup(ctx, "New folder") end
   ImGui.SetItemTooltip(ctx, "A folder for projects, seen by everyone in this studio. Projects with no folder stay at the top level.")
+  local templates = require("extras").templates({ root = root })
+  if #templates > 0 then
+    ImGui.SameLine(ctx)
+    if ImGui.Button(ctx, "New from template") then
+      local items = { "#Start a new song from" }
+      for _, t in ipairs(templates) do items[#items + 1] = t end
+      local pick = band.pick(items)
+      if pick then require("extras").open_template({ root = root }, pick) end
+    end
+    ImGui.SetItemTooltip(ctx, "A new tab with a template's tracks, routing and plug-ins (made with Save as studio template, on the Restore page).\n" ..
+      "Name it and share it with the studio as usual.")
+  end
   if ImGui.BeginPopup(ctx, "New folder") then
     if ImGui.IsWindowAppearing(ctx) then ImGui.SetKeyboardFocusHere(ctx) end
     ImGui.SetNextItemWidth(ctx, 220)

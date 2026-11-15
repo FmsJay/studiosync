@@ -36,4 +36,44 @@ assert(n == "Lead Vox" and bar == 9, "any case, with a dash: " .. n)
 n, bar, secs = extras.inbox_name("Pad.wav")
 assert(n == "Pad" and not bar and not secs, "nothing said: the start")
 assert(extras.inbox_name("@ bar 2.wav") == "Stem", "no name left: Stem")
+
+-- a studio template: the tracks stay, their items, StudioSync's marks and project state go (0.58.55)
+local rpp = table.concat({
+  '<REAPER_PROJECT 0.1 "7.79/win64" 1',
+  "  TEMPO 120 4 4",
+  "  <TRACK {AAA}",
+  '    NAME "Bass"',
+  "    <EXT",
+  "      band_oid T-JAMES-1",
+  "      mine 1",
+  "    >",
+  "    <ITEM",
+  "      POSITION 0",
+  "      <SOURCE WAVE",
+  '        FILE "x.wav"',
+  "      >",
+  "    >",
+  "    <FXCHAIN",
+  "      BYPASS 0 0 0",
+  "    >",
+  "  >",
+  "  <TRACK {BBB}",
+  '    NAME "StudioSync Real time"',
+  "    <EXT",
+  "      band_local realtime",
+  "    >",
+  "  >",
+  "  <EXTSTATE",
+  "    <BANDSYNC.APPLIED",
+  "      X 1",
+  "    >",
+  "  >",
+  ">" }, "\n")
+local t = extras.template_text(rpp)
+assert(t:find('NAME "Bass"', 1, true) and t:find("<FXCHAIN", 1, true) and t:find("TEMPO 120", 1, true), "tracks, plug-ins and tempo stay")
+assert(not t:find("<ITEM", 1, true) and not t:find("x.wav", 1, true), "no items")
+assert(not t:find("band_oid", 1, true) and t:find("mine 1", 1, true), "StudioSync's marks go, other scripts' stay")
+assert(not t:find("Real time", 1, true) and not t:find("{BBB}", 1, true), "this computer's own tracks are left out")
+assert(not t:find("EXTSTATE", 1, true) and not t:find("APPLIED", 1, true), "no project state")
+assert(t:match(">\n$"), "still a whole project")
 print("ok")

@@ -134,12 +134,16 @@ function removal.tick(now)
         if reaper.GetExtState(band.SECTION, key) == "" then
           local ok, why = services.unshare(g.id, m.device)
           if ok then
-            reaper.SetExtState(band.SECTION, key, "1", true)
+            -- (marked done only once their claims are free too: marked first, a free that failed was never tried again, and their tracks
+            -- stayed locked for everyone. Review, 0.58.53)
+            local freed, ferr = true, nil
             if m.by == me or (m.left and removal.frees(members(g.root), m.user, me, now - (tonumber(m.at) or now))) then
-              pcall(free, g.root, m.user, me)
+              freed, ferr = pcall(free, g.root, m.user, me)
               -- (and the live audio's password changes, once, on this one computer: what they knew of it stops working. 0.58.52)
-              pcall(require("groups").new_sonobus_secret, g.root)
+              if freed then pcall(require("groups").new_sonobus_secret, g.root) end
             end
+            if freed then reaper.SetExtState(band.SECTION, key, "1", true)
+            else band.log("couldn't free " .. m.user .. "'s claims yet (tried again in a minute): " .. tostring(ferr)) end
             band.log(m.user .. " is out of " .. g.name .. ": this computer no longer syncs with theirs")
           else band.log("couldn't stop syncing with " .. m.user .. ": " .. tostring(why)) end
         end

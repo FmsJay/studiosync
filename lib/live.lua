@@ -343,6 +343,39 @@ function live.rt_track(proj, add)
   return tr
 end
 
+-- Talkback (research of other tools, 0.58.53): Real time mode sends only what's armed, so a producer who isn't playing couldn't speak, and
+-- arming a mic put their voice on a recording. A track of its own, on this computer only, that never records (input monitoring only) and
+-- doesn't reach your own speakers: it feeds SonoBus while it's armed, and goes quiet while recording (live.rt_sends). Its input is your first
+-- one until you pick another on the track.
+live.TALK_NAME = "StudioSync Talk"
+function live.talk_track(proj, add)
+  for t = 0, reaper.CountTracks(proj) - 1 do
+    local tr = reaper.GetTrack(proj, t)
+    if select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local", "", false)) == "talk" then return tr end
+  end
+  if not add then return nil end
+  local tr = require("mirror").add_local_track(proj, live.TALK_NAME, "talk")
+  reaper.SetMediaTrackInfo_Value(tr, "I_RECINPUT", 0) -- (mono, input 1)
+  return tr
+end
+-- Armed to record (the talk track is armed while you talk, and never records: not counted). Pure but for reading the track.
+function live.armed(tr)
+  return reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1 and select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local", "", false)) ~= "talk"
+end
+function live.talking(proj)
+  local tr = live.talk_track(proj)
+  return tr ~= nil and reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1
+end
+function live.talk(proj, on)
+  local tr = live.talk_track(proj, on)
+  if not tr then return end
+  reaper.SetMediaTrackInfo_Value(tr, "I_RECMODE", 2) -- record: none (monitoring only): it can never end up in a take
+  reaper.SetMediaTrackInfo_Value(tr, "I_RECMON", 1)
+  reaper.SetMediaTrackInfo_Value(tr, "B_MAINSEND", 0) -- (you don't hear yourself twice)
+  reaper.SetMediaTrackInfo_Value(tr, "I_RECARM", on and 1 or 0)
+  live.rt_sends(proj)
+end
+
 -- Keep Real time mode's sends in step with what's armed: an armed track feeds SonoBus, nothing else does (the
 -- backing is everyone's own copy of the song, so sending it too made everyone hear it twice, out of time). With a
 -- guest (someone with only SonoBus, lib/guest.lua) they have no copy: every band track feeds it then, and so does
@@ -350,6 +383,10 @@ end
 function live.rt_sends(proj)
   local rt = live.rt_track(proj, false)
   if not rt then return 0 end
+  local talk = live.talk_track(proj)
+  if talk then -- (silent while anyone's recording here: a producer's voice in a performer's ears mid-take. Sessionwire does the same)
+    reaper.SetMediaTrackInfo_Value(talk, "B_MUTE", reaper.GetPlayStateEx(proj) & 4 == 4 and 1 or 0)
+  end
   local guest = select(2, reaper.GetProjExtState(proj, band.SECTION, "guest")) == "1"
     or reaper.GetExtState(band.SECTION, "send whole mix " .. tostring(proj)) ~= "" -- (someone's Listening without playing along: lib/hear.lua)
   local function feeds(tr)

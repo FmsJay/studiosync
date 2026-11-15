@@ -2558,7 +2558,14 @@ function mirror.watch(proj, cfg, song, room, opts)
     if sent > 0 and reaper.time_precise() - t_send > 0.25 then mirror.more = true; break end -- (the rest next pass, as above)
     local ok, err = pcall(function()
       local last = event_file(room_dir, g.evid)
-      if not last then -- nothing to go on (its last change isn't here): forgotten, not resurrected or repeated
+      -- (its last change is named but isn't here, so the deletion can't say what it was or check who may make it. Taken for gone, it was deleted
+      -- here only, never sent and never healed: the projects differed for good. Left as it was instead, said once: the band's next change to it
+      -- brings it back here. Review, 0.58.53)
+      if not last and (g.evid or "") ~= "" then
+        return say_once("gone" .. g.oid, "a deleted " .. (g.oid:sub(1, 1) == "T" and "track" or "item") ..
+          " couldn't go to the others (its history isn't on this computer yet), so it may come back: delete it again once Live sync has caught up")
+      end
+      if not last then -- nothing ever sent: forgotten, not resurrected or repeated
         return remember(proj, g.oid, g.rev or 0, "", g.evid)
       end
       local o = { kind = last.obj or (g.oid:sub(1, 1) == "T" and "track" or "item"), oid = g.oid, track = last.track, state = last.state }

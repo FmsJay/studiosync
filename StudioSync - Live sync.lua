@@ -427,7 +427,11 @@ local function poll()
     for i = 0, 512 do
       local p, fn = reaper.EnumProjects(i)
       if not p then break end
-      if p == proj and fn ~= "" then reaper.Main_SaveProject(proj, false) end -- (an unsaved project would ask where)
+      if p == proj and fn ~= "" then -- (an unsaved project would ask where)
+        reaper.Main_SaveProject(proj, false)
+        -- (said, not silent: a save nobody asked for took "close without saving" away unannounced. Review, 0.58.53)
+        band.log("saved the project: a lot of the others' changes came in, so the next open starts from here (every version is on the Restore page)")
+      end
     end
   end
   if now - quiet.checked > 60 then
@@ -478,7 +482,7 @@ local function poll()
   local armed = {}
   for i = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, i)
-    if reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1 then armed[#armed + 1] = select(2, reaper.GetTrackName(tr)) end
+    if require("live").armed(tr) then armed[#armed + 1] = select(2, reaper.GetTrackName(tr)) end
   end
   local info = { driver = driver, role = b.role, song = b.song, hold = hold or nil,
     pending = sync.pending_events(proj, cfg, b.song, b.room), armed = armed, side = side_bars(),
@@ -541,7 +545,7 @@ local function take_cue(ev)
     ev.behind, ev.at = true, math.min(tonumber(ev.at) or together.now(), together.now())
     if ev.rec then -- (nothing armed: REAPER's Record Warning box comes up and holds every script, this one too, until someone answers. Mac, 0.58.45)
       local armed = false
-      for i = 0, reaper.CountTracks(proj) - 1 do armed = armed or reaper.GetMediaTrackInfo_Value(reaper.GetTrack(proj, i), "I_RECARM") == 1 end
+      for i = 0, reaper.CountTracks(proj) - 1 do armed = armed or require("live").armed(reaper.GetTrack(proj, i)) end
       if not armed then
         if ev.id then fired[ev.id] = true end
         return band.log(tostring(ev.lead) .. " asked to record you, but nothing is armed here: arm a track, and they can press Record again")
@@ -737,7 +741,10 @@ local function tick_body() -- returns true to keep going
       status_json = nil -- (and the first pass after it says it's over)
     end
     recording = true
-  elseif recording then recording, stopped_at = false, reaper.time_precise() end
+  elseif recording then
+    recording, stopped_at = false, reaper.time_precise()
+    pcall(require("alerts").send, cfg, "take", "StudioSync: " .. b.song, cfg.user .. " just recorded something in " .. b.song) -- (phone alerts, if the studio has them)
+  end
   local now = reaper.time_precise()
   lap("transport")
   -- Real time mode: only what's armed feeds SonoBus (lib/live.lua rt_sends), checked about once a second

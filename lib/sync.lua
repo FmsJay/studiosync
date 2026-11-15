@@ -272,9 +272,19 @@ end
 -- Claims the driver released for someone away (rooms/<room>/released.json: { user = time }): a claim made before
 -- that time doesn't count. Only the driver writes it; a bandmate's own claims file stays theirs alone, and Live sync
 -- empties it when they're back (James, 2026-10-31: someone who left the band kept their tracks locked for everyone).
+-- (each releaser writes a file of their own, released/<them>.json, read together, the latest time per person: two writing the one file
+-- within a sync lost one release, and a departed member's tracks stayed locked. Review, 0.58.53. released.json is read too, from before)
 function sync.released(cfg, song, room)
-  local r = band.read_json(sync.room_dir(cfg, song, room) .. "/released.json")
-  return type(r) == "table" and r or {}
+  local rdir, out = sync.room_dir(cfg, song, room), {}
+  local files = { rdir .. "/released.json" }
+  for _, f in ipairs(band.files(rdir .. "/released", ".json")) do files[#files + 1] = rdir .. "/released/" .. f end
+  for _, path in ipairs(files) do
+    local r = band.read_json(path)
+    if type(r) == "table" then
+      for user, t in pairs(r) do if type(user) == "string" and type(t) == "string" and (not out[user] or t > out[user]) then out[user] = t end end
+    end
+  end
+  return out
 end
 -- An admin gives someone a claim: their own claims file has one writer (them), so this is a file of its own, read as theirs by
 -- sync.authority at once, even while they're away. Their Live sync folds it into their own file (sync.follow_claims) and removes it.
@@ -290,9 +300,13 @@ function sync.give_claims(cfg, song, room, user, tracks, regions, times)
     { user = user, by = cfg.user, tracks = tracks or {}, regions = regions or {}, times = times or {}, since = since, time = now, given = true })
 end
 function sync.release_claims(cfg, song, room, user)
-  local r = sync.released(cfg, song, room)
+  local dir = sync.room_dir(cfg, song, room) .. "/released"
+  reaper.RecursiveCreateDirectory(dir, 0)
+  local path = dir .. "/" .. (cfg.user:gsub("[^%w%-_ ]", "")) .. ".json"
+  local r = band.read_json(path)
+  r = type(r) == "table" and r or {}
   r[user] = os.date("!%Y-%m-%dT%H:%M:%SZ")
-  band.write_json(sync.room_dir(cfg, song, room) .. "/released.json", r)
+  band.write_json(path, r)
 end
 -- Keep my claims on the tracks I claimed when they're renamed (a claim is by name; the track's id says which one
 -- it was), and drop them if the driver released them while I was away. Run by Live sync every few seconds.
@@ -385,6 +399,9 @@ function sync.authority(cfg, song, room, s)
   local released = sync.released(cfg, song, room) -- (claims the driver let go of for someone who was away)
   for _, f in ipairs(band.files(dir, ".json")) do
     local c = band.read_json(dir .. "/" .. f)
+    -- (a claims file speaks only for the person it's named for, or it's one an admin gave: claims/<anything>.json saying user "James"
+    -- spoke for James. Review, 0.58.53)
+    if c and type(c.user) == "string" and not (f:find("^given%-") or (c.user:gsub("[^%w%-_ ]", "")) .. ".json" == f) then c = nil end
     if c and c.user and c.time then
       local gone = released[c.user]
       for _, t in ipairs(c.times or {}) do
@@ -1328,7 +1345,10 @@ function sync.receive(proj, cfg, song, room, can)
         -- 0.14.4 sent an edit's previous shape as "was", which is a track's old name everywhere else
         if type(ev.was) == "table" then ev.before, ev.was = ev.before or ev.was, nil end
         pending[#pending + 1] = ev
-        if ev.type == "driver" then drivers[ev.id] = { time = ev.time, user = ev.driver or ev.user } end
+        if ev.type == "driver" then
+          drivers[ev.id] = { time = ev.time, user = ev.driver or ev.user }
+          setext(proj, sync.DRIVERS, room .. "/" .. ev.id, ev.time .. "|" .. tostring(ev.driver or ev.user)) -- (kept, so the next open needn't look for it)
+        end
       end
     end
   end
@@ -1536,19 +1556,41 @@ sync.deferred = {}
 sync.unreadable = {} -- event file id -> when it was first found unreadable (sync.receive)
 sync.UNREADABLE_SECS = 600 -- how long a file may stay unreadable before it's skipped for good
 local driver_cache = {}
+-- (the handovers are kept in the project as they're found, so an open reads them from there: reading every change of the room for them, once
+-- each session, held REAPER up at every open of a long song. Review, 0.58.53. A project from before reads them all once, then keeps them)
+sync.DRIVERS = "BandSync.drivers" -- "<room>/<event id>" -> "<time>|<driver>"; "<room>/" -> "1" once all were read
 function sync.driver_history(proj, cfg, song, room)
   local key = song .. "/" .. room
   if driver_cache[key] then return driver_cache[key] end
   local list, dir = {}, sync.room_dir(cfg, song, room) .. "/events"
+  if proj and ext(proj, sync.DRIVERS, room .. "/") ~= "" then
+    local i = 0
+    while true do
+      local ok, k, v = reaper.EnumProjExtState(proj, sync.DRIVERS, i)
+      if not ok then break end
+      i = i + 1
+      local id = k:sub(1, #room + 1) == room .. "/" and k:sub(#room + 2)
+      local t, u = v:match("^([^|]*)|(.*)$")
+      if id and id ~= "" and t then list[id] = { time = t, user = u } end
+    end
+    local s = band.read_json(band.session_path(cfg, song))
+    if s and s.host then list["(host)"] = { time = "", user = s.host } end
+    driver_cache[key] = list
+    return list
+  end
   for _, f in ipairs(band.files(dir, ".json")) do
     -- (only files that can be a handover are decoded: decoding every change of a long song's history, plug-in
     -- chains of a few MB among them, held REAPER up at every start: review, 2026-10-31)
     local text = band.read(dir .. "/" .. f)
     if text and text:find('"driver"', 1, true) then
       local ok, ev = pcall(require("json").decode, text)
-      if ok and type(ev) == "table" and ev.type == "driver" and type(ev.time) == "string" then list[ev.id or f] = { time = ev.time, user = ev.driver or ev.user } end
+      if ok and type(ev) == "table" and ev.type == "driver" and type(ev.time) == "string" then
+        list[ev.id or f] = { time = ev.time, user = ev.driver or ev.user }
+        if proj then setext(proj, sync.DRIVERS, room .. "/" .. (ev.id or f:sub(1, -6)), ev.time .. "|" .. tostring(ev.driver or ev.user)) end
+      end
     end
   end
+  if proj then setext(proj, sync.DRIVERS, room .. "/", "1") end
   local s = band.read_json(band.session_path(cfg, song))
   if s and s.host then list["(host)"] = { time = "", user = s.host } end -- the host drives until the first handover
   driver_cache[key] = list

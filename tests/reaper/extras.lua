@@ -4,7 +4,7 @@
 local D = reaper.GetResourcePath() .. "/StudioSync/tests"
 local lib = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]tests[/\\]reaper[/\\]") .. "/lib/"
 package.path = lib .. "?.lua;" .. package.path
-for _, m in ipairs({ "band", "sync", "mirror", "extras" }) do package.loaded[m] = nil end
+for _, m in ipairs({ "band", "sync", "mirror", "extras", "live" }) do package.loaded[m] = nil end
 local band, sync, mirror, extras = require("band"), require("sync"), require("mirror"), require("extras")
 local root = D .. "/xroot_" .. os.time()
 local song, room = "ExtrasLab", "main"
@@ -107,6 +107,33 @@ local ok, err = pcall(function()
   local it = st and reaper.GetTrackMediaItem(st, 0)
   check(it and math.abs(reaper.GetMediaItemInfo_Value(it, "D_POSITION") - reaper.TimeMap2_beatsToTime(proj, 0, 2)) < 1e-6, "on its own track, at the start of bar 3")
   check(not reaper.file_exists(inbox .. "/Bass @ bar 3.wav"), "and the inbox is empty again")
+
+  -- ---- talkback (0.58.55): a track of its own that feeds Real time mode, never records, isn't heard here, and goes quiet while recording
+  local live = require("live")
+  local rt = live.rt_track(proj, true)
+  live.talk(proj, true)
+  local talk = live.talk_track(proj)
+  check(talk and live.talking(proj) and reaper.GetMediaTrackInfo_Value(talk, "I_RECMODE") == 2 and reaper.GetMediaTrackInfo_Value(talk, "B_MAINSEND") == 0,
+    "talking: armed, recording nothing, not in your own speakers")
+  check(talk and not live.armed(talk), "and it doesn't count as a track armed to record")
+  local feeds = false
+  for s = 0, reaper.GetTrackNumSends(talk, 0) - 1 do feeds = feeds or reaper.GetTrackSendInfo_Value(talk, 0, s, "P_DESTTRACK") == rt end
+  check(feeds, "it feeds Real time mode's track")
+  live.talk(proj, false)
+  check(not live.talking(proj), "and stops")
+
+  -- ---- studio templates (0.58.55): tracks without items or StudioSync's marks, and a new tab from it
+  local tpath = extras.save_template(proj, cfg, "Lab template")
+  local ttext = tpath and band.read(tpath) or ""
+  check(tpath and ttext:find("<TRACK", 1, true) and not ttext:find("<ITEM", 1, true) and not ttext:find("band_oid", 1, true), "a template: tracks, no items, no ids")
+  local names = extras.templates(cfg)
+  check(#names == 1 and names[1] == "Lab template", "listed for the studio: " .. table.concat(names, ", "))
+  local tracks_here = reaper.CountTracks(proj)
+  check(extras.open_template(cfg, "Lab template"), "opened")
+  local tp = reaper.EnumProjects(-1)
+  check(tp ~= proj and reaper.CountTracks(tp) == tracks_here - 2 and reaper.CountMediaItems(tp) == 0, string.format("a new tab with its %d tracks (not Real time's or talkback's) and no items", reaper.CountTracks(tp)))
+  if tp ~= proj then reaper.Main_SaveProjectEx(tp, root .. "/fromtemplate.rpp", 8); reaper.Main_OnCommand(40860, 0) end
+  reaper.SelectProjectInstance(proj)
 end)
 if not ok then fails = fails + 1; out[#out + 1] = "FAIL error: " .. tostring(err) end
 reaper.DeleteExtState(band.SECTION, "last here " .. song .. "/" .. room, true)
