@@ -663,12 +663,37 @@ end
 function services.tailscale_profile_for(tailnet)
   for _, p in ipairs(services.tailscale_profiles()) do if p.tailnet == tailnet then return p end end
 end
+-- (a switch away is written down first, in <StudioSync home>/tailnet-switch.json: { by, from_id, from_tailnet, to_id, to_tailnet, at, until },
+-- and the file goes once it switches back. A computer that others reach over Tailscale, like James's PC with its AI hub, can read it and put
+-- itself back if it's been left on the other network: switched by mistake, or StudioSync gone before it switched back.)
+services.SWITCH_HOURS = 4
+function services.switch_marker() return band.home() .. "/tailnet-switch.json" end
+-- What to write (or nil to remove the marker) for a switch to `to_id`. profiles: services.profiles_in's; old: the marker as it is. Pure.
+function services.switch_note(profiles, to_id, old, now)
+  local from, to
+  for _, p in ipairs(profiles) do
+    if p.current then from = p end
+    if p.id == to_id then to = p end
+  end
+  if type(old) == "table" and old.from_id == to_id then return nil end -- (going back where it came from)
+  if not (from and to) or from.id == to_id then return old end
+  local function iso(t) return os.date("!%Y-%m-%dT%H:%M:%SZ", t) end
+  return { by = "StudioSync", from_id = (type(old) == "table" and old.from_id) or from.id, from_tailnet = (type(old) == "table" and old.from_tailnet) or from.tailnet,
+    to_id = to.id, to_tailnet = to.tailnet, at = iso(now), ["until"] = iso(now + services.SWITCH_HOURS * 3600) }
+end
 function services.tailscale_switch(id)
   if not (type(id) == "string" and id:match("^%x+$")) then return false end
   local exe = tailscale_exe()
   if not exe then return false end
+  -- (asked now, not the list from the last look: that one can be from before the last switch, and then this one took itself for a stay put
+  -- and wrote no note. Seen in the real switch test, 0.58.58. A click, so waiting the moment it takes is fine)
+  local now_list = services.profiles_in(reaper.ExecProcess(q(exe) .. " switch --list", 8000) or "")
+  local note = services.switch_note(now_list, id, band.read_json(services.switch_marker()), os.time())
+  if note then pcall(band.write_json, services.switch_marker(), note) else os.remove(services.switch_marker()) end
   background("ts-switch", q(exe) .. " switch " .. id, 0)
-  ts_at = -math.huge
+  -- (and what's shown is asked again at once: the status and the accounts were up to 20-30 s behind the switch)
+  for _, n in ipairs({ "ts-status", "ts-profiles" }) do started[n], last[n] = nil, nil; os.remove(TMP .. "/bandsync-" .. n .. ".txt") end
+  ts_json = ""
   return true
 end
 

@@ -121,6 +121,13 @@ function H.maint_rows()
         action = prof and { "Switch to " .. want.name, function() services.tailscale_switch(prof.id) end,
           "Tailscale's own account switch, the same as picking it in Tailscale's menu. Takes a few seconds." } or nil }
     end
+    -- (switched away from this computer's usual network: the way back stays in view until it's taken)
+    local away = band.read_json(services.switch_marker())
+    if type(away) == "table" and type(away.from_id) == "string" and type(away.from_tailnet) == "string" and now_name and now_name ~= away.from_tailnet then
+      rows[#rows + 1] = { "switched away", false, "yellow", "", "This computer switched its Tailscale network from " .. away.from_tailnet .. " to " .. tostring(now_name) ..
+        " (" .. tostring(away.at) .. "). Switch back when you're done, so whatever else reaches it over " .. away.from_tailnet .. " works again.",
+        action = { "Switch back to " .. away.from_tailnet, function() services.tailscale_switch(away.from_id) end, "Tailscale's own account switch. Takes a few seconds." } }
+    end
   end
   if ui.play_shown() then
     rows[#rows + 1] = { "server", s.server, "yellow", "Play along server address is set", "No Play along server yet: Connect on the Play/Jam page (Settings > Advanced > Show the Play/Jam tab) starts one on this computer." }

@@ -226,7 +226,10 @@ By hand:
   computer is on one at a time. Each studio remembers its network (from whoever set up a guest invitation, private live
   audio or the listening page there). When this computer is on another one, Settings > Health says so and offers **Switch
   to ...** if this computer is signed in to it, or says to ask the studio's owner for a guest invitation. Only Play along,
-  the listening page and private live audio need the right network: everything else syncs either way.
+  the listening page and private live audio need the right network: everything else syncs either way. A switch away is
+  written to `tailnet-switch.json` in StudioSync's folder (from which account, to which, until when), and Health keeps a
+  **Switch back** button until you do; the file goes when you're back. A computer others reach over Tailscale can read it
+  to put itself back if it's ever left on the other network.
 - **Talk** (beside Real time mode, while it's on): your microphone to the others without arming a track. Its own track on
   your computer, *StudioSync Talk*, never records, isn't in your own speakers, and goes quiet while anyone records here. It
   uses your first input; pick another on that track.

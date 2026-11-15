@@ -103,4 +103,16 @@ assert(list[1].id == "b793" and list[1].tailnet == "chiliocosm01@gmail.com" and 
 assert(list[2].id == "4696" and list[2].account == "jamesalexander190@gmail.com" and list[2].current, "the one in use (marked *)")
 assert(#services.profiles_in("") == 0, "no answer yet: none")
 assert(not services.tailscale_switch("4696; calc") and not services.tailscale_switch(nil), "only a plain account id is ever switched to")
+
+-- (0.58.58) a switch away is written down, so a computer others rely on can put itself back; switching back removes it
+local t0 = 1794775000
+local away = services.switch_note(list, "b793", nil, t0)
+assert(away.from_id == "4696" and away.from_tailnet == "jamesalexander190@gmail.com" and away.to_id == "b793" and away.to_tailnet == "chiliocosm01@gmail.com", "from home to the other")
+assert(away.by == "StudioSync" and away["until"] > away.at, "with a time it's good until")
+local on_b = services.profiles_in("b793  chiliocosm01@gmail.com  chiliocosm01@gmail.com*\n4696  jamesalexander190@gmail.com  jamesalexander190@gmail.com\n")
+assert(services.switch_note(on_b, "4696", away, t0 + 60) == nil, "back where it came from: the note goes")
+local third = services.profiles_in("c001  third@x.com  third@x.com\nb793  chiliocosm01@gmail.com  chiliocosm01@gmail.com*\n4696  jamesalexander190@gmail.com  jamesalexander190@gmail.com\n")
+local onward = services.switch_note(third, "c001", away, t0 + 120)
+assert(onward.from_id == "4696" and onward.to_id == "c001", "on to a third network: it still says where home is")
+assert(services.switch_note(list, "4696", nil, t0) == nil, "already there: nothing written")
 print("ok")
