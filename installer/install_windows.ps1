@@ -14,6 +14,7 @@ param(
   [ValidateSet("", "yes", "no")][string]$Hosting = "", [ValidateSet("", "yes", "no")][string]$Live = "", [ValidateSet("", "yes", "no")][string]$Solo = "",
   [ValidateSet("", "yes", "no")][string]$Plugins = "", # the band plug-in pack (free, open source)
   [ValidateSet("", "yes", "no")][string]$Extras = "", # the larger extras: amp modelers, Odin 2, sforzando + Salamander piano
+  [ValidateSet("", "yes", "no")][string]$ReaPersona = "", # ReaPersona: REAPER set up like the DAW you came from (github.com/FmsJay/ReaPersona)
   [ValidateSet("reapack", "folder", "verify")][string]$Scripts = "reapack", # folder: band-internal copy in <root>/_tools/studiosync
   [string]$SyncthingHome = "",    # testing: drive a separate Syncthing instance (--home)
   [string]$ReaperExe = "",         # testing: this REAPER, as if the installer had just put it there
@@ -37,7 +38,7 @@ $boxed = Get-ChildItem "$env:LOCALAPPDATA\Packages\*\LocalCache\Local\$probe" -E
 Remove-Item (Join-Path $env:LOCALAPPDATA $probe) -ErrorAction SilentlyContinue
 if ($boxed) {
   $argv = @("-Tag", $Tag, "-Scripts", $Scripts)
-  foreach ($k in "User", "HostId", "Root", "BandId", "BandName", "Hosting", "Live", "Solo", "Plugins", "Extras", "SyncthingHome", "ReaperExe", "TsKey") { $v = Get-Variable $k -ValueOnly; if ($v) { $argv += @("-$k", $v) } }
+  foreach ($k in "User", "HostId", "Root", "BandId", "BandName", "Hosting", "Live", "Solo", "Plugins", "Extras", "ReaPersona", "SyncthingHome", "ReaperExe", "TsKey") { $v = Get-Variable $k -ValueOnly; if ($v) { $argv += @("-$k", $v) } }
   if ($NoApps) { $argv += "-NoApps" }
   if ($NoReaper) { $argv += "-NoReaper" }
   $quoted = ($argv | ForEach-Object { if ($_ -match '^-') { $_ } else { '"' + $_ + '"' } }) -join " "
@@ -111,6 +112,7 @@ $wantLive = $Live -ne "no"
 $wantSolo = $Solo -ne "no"
 $wantPlugins = if ($Plugins) { $Plugins -eq "yes" } else { YesNo "Install the plug-in pack (free, about 150 MB: Surge XT, Dexed, Airwindows, Dragonfly Reverb, Chow Tape, BYOD guitar/bass amps and tuner, ZL Equalizer and Compressor, ChowMatrix delay, and the Saike, Chokehold and chmaha JSFX with drum kits and keys), so everyone has the same sounds? (Adding the JSFX runs a ReaPack sync, which also updates your other ReaPack packages.)" "y" }
 $wantExtras = if ($Extras) { $Extras -eq "yes" } else { $wantPlugins -and (YesNo "Also the larger extras (about 820 MB: Neural Amp Modeler and AIDA-X amp capture players, Odin 2 synth, sforzando with the Salamander Grand piano)?" "n") }
+$wantPersona = if ($ReaPersona) { $ReaPersona -eq "yes" } else { YesNo "Coming to REAPER from another DAW? ReaPersona (free) makes REAPER's shortcuts, mouse and look work like Pro Tools, Logic, Ableton, FL Studio, Cubase, Studio One, Bitwig and more, and switches back any time. Install it?" "n" }
 Write-Host ""
 
 # ---------- 1. apps ----------
@@ -372,7 +374,7 @@ $src = Get-ChildItem $work -Directory | Select-Object -First 1
 $helper = Join-Path $src.FullName "installer\studiosync_setup.lua"
 $utf8 = New-Object System.Text.UTF8Encoding($false) # no BOM: the Lua JSON reader wants plain UTF-8
 function Request($mode) {
-  $req = @{ sync_root = ($root -replace '\\', '/'); user = $user; mode = $mode; repo_url = "https://github.com/$Repo/raw/main/index.xml"; open_panel = ($mode -eq "verify"); jsfx = [bool]$wantPlugins } | ConvertTo-Json
+  $req = @{ sync_root = ($root -replace '\\', '/'); user = $user; mode = $mode; repo_url = "https://github.com/$Repo/raw/main/index.xml"; open_panel = ($mode -eq "verify"); jsfx = [bool]$wantPlugins; reapersona = [bool]$wantPersona } | ConvertTo-Json
   [IO.File]::WriteAllText((Join-Path (Split-Path $helper) "studiosync_setup.json"), $req, $utf8)
   $result = Join-Path (Split-Path $helper) "studiosync_setup_result.json"
   Remove-Item $result -ErrorAction SilentlyContinue

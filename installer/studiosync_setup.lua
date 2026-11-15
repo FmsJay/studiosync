@@ -80,27 +80,33 @@ end
 -- window is open crashes REAPER on macOS (2026-10-28), and a re-run is exactly when that window may still be up.
 -- (Until 0.34.4 any registered StudioSync counted: a Mac on 0.13.4 re-ran the installer, was told OK, and stayed on
 -- 0.13.4 without the plug-in pack's JSFX.)
+-- The other ReaPack repositories asked for: the plug-in pack's JSFX, and ReaPersona (REAPER set up to feel like the DAW you came from, by the
+-- same people: github.com/FmsJay/ReaPersona, GPL) for someone moving from another DAW.
+local function extra_repos()
+  local t = {}
+  if req.jsfx then for _, r in ipairs(JSFX_REPOS) do t[#t + 1] = r end end
+  if req.reapersona then t[#t + 1] = { "ReaPersona", "https://raw.githubusercontent.com/FmsJay/ReaPersona/main/index.xml" } end
+  return t
+end
 local function already_installed()
   if not reaper.APIExists("ReaPack_GetRepositoryInfo") then return false end
   local ok, url = reaper.ReaPack_GetRepositoryInfo("StudioSync")
   if not ok or url ~= req.repo_url then return false end
   if not WANT or installed_version() ~= WANT then return false end
-  if req.jsfx then
-    for _, r in ipairs(JSFX_REPOS) do if not reaper.ReaPack_GetRepositoryInfo(r[1]) then return false end end
-  end
+  for _, r in ipairs(extra_repos()) do if not reaper.ReaPack_GetRepositoryInfo(r[1]) then return false end end
   return true
 end
 
 -- The plug-in pack's JSFX without StudioSync's own ReaPack sync to ride along with: a sync of their own, only when
 -- one of them is missing (a re-run with all there leaves ReaPack alone, see above).
 local function jsfx_only()
-  if not (req.jsfx and reaper.APIExists("ReaPack_AddSetRepository")) then return end
+  if not (#extra_repos() > 0 and reaper.APIExists("ReaPack_AddSetRepository")) then return end
   local added = false
-  for _, r in ipairs(JSFX_REPOS) do
+  for _, r in ipairs(extra_repos()) do
     local have = reaper.APIExists("ReaPack_GetRepositoryInfo") and reaper.ReaPack_GetRepositoryInfo(r[1])
     if not have then
       local ok_r, e = reaper.ReaPack_AddSetRepository(r[1], r[2], true, 1)
-      step("add " .. r[1] .. " JSFX repository", ok_r, e ~= "" and e or r[2])
+      step("add " .. r[1] .. " repository", ok_r, e ~= "" and e or r[2])
       added = added or ok_r
     end
   end
@@ -134,11 +140,9 @@ if req.mode == "reapack" then
     end
     local added, err = reaper.ReaPack_AddSetRepository("StudioSync", req.repo_url or "", true, 1) -- 1: auto-install on sync
     step("add StudioSync repository", added, err ~= "" and err or req.repo_url)
-    if req.jsfx then -- the plug-in pack's JSFX (both MIT): in this same ReaPack sync, never one of their own (see above)
-      for _, r in ipairs(JSFX_REPOS) do
-        local ok_r, e = reaper.ReaPack_AddSetRepository(r[1], r[2], true, 1)
-        step("add " .. r[1] .. " JSFX repository", ok_r, e ~= "" and e or r[2])
-      end
+    for _, r in ipairs(extra_repos()) do -- the plug-in pack's JSFX, ReaPersona: in this same ReaPack sync, never one of their own (see above)
+      local ok_r, e = reaper.ReaPack_AddSetRepository(r[1], r[2], true, 1)
+      step("add " .. r[1] .. " repository", ok_r, e ~= "" and e or r[2])
     end
     reaper.ReaPack_ProcessQueue(true)
     local sync = reaper.NamedCommandLookup("_REAPACK_SYNC")

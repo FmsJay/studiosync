@@ -128,7 +128,9 @@ Everything below is the detail.
 **Easiest: the installer.** Download the `installer` folder (or just the one file) and double-click
 **Install StudioSync (Windows).cmd**, or on a Mac **Install StudioSync (Mac).command**. It asks your name, whether
 someone in the studio is already set up (if so, their Syncthing device ID: any set-up collaborator's will do; with the line
-from their panel's **Invite a collaborator**, it's already filled in) and whether you want the plug-in pack, then
+from their panel's **Invite a collaborator**, it's already filled in), whether you want the plug-in pack, and whether
+you're coming from another DAW (then it adds [ReaPersona](https://github.com/FmsJay/ReaPersona), which makes REAPER's
+shortcuts, mouse and look work like Pro Tools, Logic, Ableton, FL Studio, Cubase, Studio One, Bitwig and more), then
 installs whatever is missing from official sources: REAPER, ReaPack, ReaImGui, js_ReaScriptAPI, SWS, Syncthing,
 SonoBus and Google Drive for desktop. It sets up the shared folder and pairs it with your collaborator,
 waits while you sign in to Google Drive (and add the studio's folder),
