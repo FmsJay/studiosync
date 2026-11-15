@@ -561,85 +561,6 @@ local function section_drive()
     end
   end
 end
-local call_draft -- (the call link being typed, Settings)
-local function section_alerts()
-  local alerts = require("alerts")
-  ImGui.SeparatorText(ctx, "Phone alerts")
-  local channel = alerts.channel(cfg.root)
-  local admin = require("groups").role(cfg.root, cfg.user) ~= "member"
-  if admin then
-    local ach, aon = check("Send phone alerts for this studio", channel ~= nil,
-      "When someone sends a message, records, or renders a mix, a line goes to everyone who subscribed in the free ntfy app, even with REAPER closed.\n" ..
-      "The line goes through ntfy.sh (no audio, no project). Anyone who knew the studio's channel name could read them, so it's long and random. Turning it off and on makes a new one.")
-    if ach then alerts.set(cfg.root, aon) end
-  end
-  if channel then
-    ImGui.TextWrapped(ctx, "Get them on your phone: install ntfy (free, Android and iPhone), tap +, and subscribe to:")
-    ImGui.TextColored(ctx, GREEN, channel)
-    ImGui.SameLine(ctx)
-    if ImGui.SmallButton(ctx, "Copy##alerts") then ImGui.SetClipboardText(ctx, channel) end
-  elseif not admin then
-    ImGui.TextDisabled(ctx, "Off. The studio's owner or an admin can turn them on here.")
-  end
-  ImGui.SeparatorText(ctx, "Studio call")
-  local call = alerts.call_link(cfg.root)
-  if admin then
-    call_draft = call_draft or call or ""
-    ImGui.SetNextItemWidth(ctx, -70)
-    local _, v = ImGui.InputTextWithHint(ctx, "##calllink", "a Discord, Zoom or Meet link (https://...)", call_draft)
-    call_draft = v
-    ImGui.SameLine(ctx)
-    if ImGui.SmallButton(ctx, "Save##calllink") then
-      if call_draft == "" or alerts.call_ok(call_draft) then alerts.set_call(cfg.root, call_draft); band.log(call_draft == "" and "the studio's call link is gone" or "the studio's call link is set: everyone gets a Call button by Real time mode")
-      else band.msg("That isn't a plain https:// link (no spaces, & or %).") end
-    end
-    ImGui.SetItemTooltip(ctx, "Everyone in the studio gets a Call button beside Real time mode that opens this. Video and talking happen there, in its own app.")
-  else
-    ImGui.TextDisabled(ctx, call and ("Call button opens: " .. call) or "None set. The studio's owner or an admin can add one here.")
-  end
-  ImGui.SeparatorText(ctx, "Listening page")
-  local listen = require("listen")
-  local sharing = listen.sharing(cfg.root)
-  if sharing then
-    ImGui.TextWrapped(ctx, "Shared from this computer, to phones and computers on your Tailscale network:")
-    ImGui.TextColored(ctx, GREEN, sharing)
-    if ImGui.SmallButton(ctx, "Copy##listen") then band.copy(sharing, ctx, ImGui) end
-    ImGui.SameLine(ctx)
-    if ImGui.SmallButton(ctx, "Open##listen") then band.open_url(sharing) end
-    ImGui.SameLine(ctx)
-    if ImGui.SmallButton(ctx, "Stop sharing##listen") then listen.share(cfg, false) end
-  else
-    if ImGui.SmallButton(ctx, "Share the listening page") then
-      local address, why = listen.share(cfg, true)
-      if address then band.log("the listening page is shared: " .. address) else band.msg(why) end
-    end
-    ImGui.SetItemTooltip(ctx, "A web page with every song's mixes, to play on a phone or any browser without REAPER, with comments that land in the song's chat\n" ..
-      "(comments need phone alerts on). Served from this computer over Tailscale: only devices on your Tailscale network reach it, while this computer is on.")
-  end
-  ImGui.SeparatorText(ctx, "Private live audio")
-  local groups = require("groups")
-  local shost = groups.sonobus_server(cfg.root)
-  ImGui.TextWrapped(ctx, shost and ("Real time mode finds everyone through " .. shost .. " over Tailscale, so the audio travels encrypted. That computer keeps SonoBus's own app open.")
-    or "Real time mode finds everyone through SonoBus's public server, and the audio itself isn't encrypted.")
-  if admin then
-    if not shost and ImGui.SmallButton(ctx, "Host it on this computer") then
-      local name = require("services").tailscale_address()
-      if name and name:find("%.ts%.net$") then
-        groups.set_sonobus_server(cfg.root, name .. ":10999")
-        band.log("private live audio: everyone's SonoBus joins through this computer (" .. name .. ") next time Real time mode connects. Keep SonoBus's own app open here (Start menu: SonoBus)")
-      else band.msg("Tailscale isn't signed in here, or the tailnet has its names turned off (MagicDNS).") end
-    end
-    if not shost then
-      ImGui.SetItemTooltip(ctx, "This computer becomes where the band finds each other: open SonoBus's own app here (not the plug-in) and keep it open while you play.\n" ..
-        "Its connection server is built in. Everyone's SonoBus then joins through this computer's Tailscale name, so the band reaches each other\n" ..
-        "by Tailscale addresses and the audio goes inside Tailscale's encryption.")
-    end
-    if shost and ImGui.SmallButton(ctx, "Back to SonoBus's public server") then
-      groups.set_sonobus_server(cfg.root, nil)
-      band.log("live audio is back on SonoBus's public server (next time Real time mode connects)")
-    end
-  end
-end
 -- Two computers' fingerprints differ for 10-15 s after any edit (each publishes its own every few seconds, and the
 -- print follows the notes), and red then read as a failed sync (James, 2026-11-01). Red once they've stayed apart 30 s.
 local apart = {} -- bandmate -> { key = their fingerprint and ours, since = when that pair first showed }
@@ -1223,7 +1144,7 @@ local function home_who()
   ImGui.SetItemTooltip(ctx, my_id and tools.INVITE_TIP or "Waiting for Syncthing (it has to be running).")
   if my_id and services.tailscale_token() ~= "" then -- (a token: Settings > Advanced)
     next_to("Invite a guest for a day")
-    if ImGui.SmallButton(ctx, "Invite a guest for a day") then services.copy_guest_invite(my_id, band.info(cfg.root), ctx, ImGui) end
+    if ImGui.SmallButton(ctx, "Invite a guest for a day") then services.copy_guest_invite(my_id, band.info(cfg.root), ctx, ImGui, cfg.root) end
     ImGui.SetItemTooltip(ctx, services.GUEST_TIP)
   end
   local people, armed = {}, {}
@@ -1447,10 +1368,150 @@ local function settings_sync()
     card_end()
   end
 end
+local call_draft -- (the call link being typed, Settings > Studio)
+-- Settings > Studio: what the studio shares beyond the projects, one card each, every card saying in a line what it's for and where it stands.
+-- (they were four headings at the bottom of the Google Drive card, where nobody would look for them: 0.58.57)
+local function studio_admin() return require("groups").role(cfg.root, cfg.user) ~= "member" end
+local function needs_tailscale()
+  local services = require("services")
+  if services.tailscale_up() then return false end
+  ImGui.TextColored(ctx, YELLOW, services.tailscale_installed() and "Needs Tailscale: open it and sign in." or "Needs Tailscale (tailscale.com/download, or run StudioSync's installer again).")
+  return true
+end
+local function off_tailnet() -- (on another of your Tailscale accounts than the studio's: said here, and Health has the switch)
+  local want = require("groups").tailnet(cfg.root)
+  local name, suffix = require("services").tailnet_now()
+  if want and suffix and want.suffix ~= suffix then
+    ImGui.TextColored(ctx, YELLOW, "This computer is on the Tailscale network " .. tostring(name) .. ", and this studio uses " .. want.name .. ". Settings > Health can switch.")
+    return true
+  end
+end
+local function studio_alerts()
+  if not card("studio alerts") then return end
+  local alerts = require("alerts")
+  ImGui.SeparatorText(ctx, "Phone alerts")
+  ImGui.TextDisabled(ctx, "A notification on everyone's phone when someone sends a message, records, or renders a mix, even with REAPER closed.")
+  local channel = alerts.channel(cfg.root)
+  if studio_admin() then
+    local ach, aon = check("On for this studio", channel ~= nil,
+      "Each alert is one line through ntfy.sh (no audio, no project). Anyone who knew the studio's channel name could read them, so it's long and random.\n" ..
+      "Turning it off and on makes a new channel: everyone subscribes again.")
+    if ach then alerts.set(cfg.root, aon) end
+  end
+  if channel then
+    ImGui.Text("On your phone:")
+    ImGui.TextWrapped(ctx, "1. Install ntfy (free, Android or iPhone).  2. Tap +.  3. Paste this channel:")
+    ImGui.TextColored(ctx, GREEN, channel)
+    ImGui.SameLine(ctx)
+    if ImGui.SmallButton(ctx, "Copy##alerts") then band.copy(channel, ctx, ImGui) end
+    ImGui.SameLine(ctx)
+    if ImGui.SmallButton(ctx, "Send a test##alerts") then
+      band.log(alerts.send(cfg, "test", "StudioSync: test", cfg.user .. " sent a test alert. If this reached your phone, alerts work.") and
+        "a test alert went to the studio's channel" or "a test was sent less than a minute ago: wait a moment")
+    end
+  elseif not studio_admin() then
+    ImGui.TextDisabled(ctx, "Off. The studio's owner or an admin turns them on here.")
+  end
+  card_end()
+end
+local function studio_call()
+  if not card("studio call") then return end
+  local alerts = require("alerts")
+  ImGui.SeparatorText(ctx, "Studio call")
+  ImGui.TextDisabled(ctx, "Talk and see each other in the app your band already uses (Discord, Zoom, Meet): everyone gets a Call button beside Real time mode.")
+  local call = alerts.call_link(cfg.root)
+  if studio_admin() then
+    call_draft = call_draft or call or ""
+    ImGui.SetNextItemWidth(ctx, -110)
+    local _, v = ImGui.InputTextWithHint(ctx, "##calllink", "paste the call's link (https://...)", call_draft)
+    call_draft = v
+    ImGui.SameLine(ctx)
+    if ImGui.SmallButton(ctx, "Save##calllink") then
+      if call_draft == "" or alerts.call_ok(call_draft) then
+        alerts.set_call(cfg.root, call_draft)
+        band.log(call_draft == "" and "the studio's call link is gone" or "the studio's call link is set: everyone gets a Call button beside Real time mode")
+      else band.msg("That isn't a plain https:// link. Copy it again from Discord, Zoom or Meet (no spaces, & or %).") end
+    end
+    ImGui.SetItemTooltip(ctx, "Discord: right-click the voice channel > Copy Link. Zoom or Meet: the meeting's invite link.")
+  end
+  if call then
+    if not studio_admin() then ImGui.TextWrapped(ctx, "Call button opens: " .. call) end
+    if ImGui.SmallButton(ctx, "Open the call##calllink") then band.open_url(call) end
+    ImGui.SameLine(ctx)
+    ImGui.TextDisabled(ctx, "Mute its microphone while you play: Real time mode carries the music.")
+  elseif not studio_admin() then
+    ImGui.TextDisabled(ctx, "None yet. The studio's owner or an admin adds one here.")
+  end
+  card_end()
+end
+local function studio_listen()
+  if not card("studio listen") then return end
+  local listen = require("listen")
+  ImGui.SeparatorText(ctx, "Listening page")
+  ImGui.TextDisabled(ctx, "A web page of every song's mixes, to play on a phone or any browser without REAPER. Only devices on your Tailscale network reach it, while this computer is on.")
+  local sharing = listen.sharing(cfg.root)
+  if sharing then
+    ImGui.TextWrapped(ctx, "Shared from this computer. Send the others this address:")
+    ImGui.TextColored(ctx, GREEN, sharing)
+    if ImGui.SmallButton(ctx, "Copy##listen") then band.copy(sharing, ctx, ImGui) end
+    ImGui.SameLine(ctx)
+    if ImGui.SmallButton(ctx, "Open##listen") then band.open_url(sharing) end
+    ImGui.SameLine(ctx)
+    if ImGui.SmallButton(ctx, "Stop sharing##listen") then listen.share(cfg, false) end
+    off_tailnet()
+  elseif not needs_tailscale() and not off_tailnet() then
+    if ImGui.SmallButton(ctx, "Share the listening page") then
+      local address, why = listen.share(cfg, true)
+      if address then band.log("the listening page is shared: " .. address .. " (Copy it here to send it)") else band.msg(why) end
+    end
+    ImGui.SetItemTooltip(ctx, "A small server of StudioSync's own serves the page and the mixes (nothing else) on this computer, and Tailscale passes the others to it.\n" ..
+      "It stops when REAPER closes; it comes back with REAPER while sharing is on.")
+  end
+  if not require("alerts").channel(cfg.root) then
+    ImGui.TextDisabled(ctx, "Comments under each mix need phone alerts on (above): they land in the song's chat with the moment they're about.")
+  end
+  card_end()
+end
+local function studio_private_audio()
+  if not card("studio audio") then return end
+  local groups, services = require("groups"), require("services")
+  ImGui.SeparatorText(ctx, "Private live audio")
+  local shost = groups.sonobus_server(cfg.root)
+  ImGui.TextDisabled(ctx, shost and "On: Real time mode's audio travels inside Tailscale's encryption." or
+    "Off: Real time mode finds everyone through SonoBus's public server, and the audio itself isn't encrypted.")
+  if shost then
+    local mine = services.my_tailscale_name() == shost
+    ImGui.TextWrapped(ctx, mine and "This computer is where the band meets: keep SonoBus's own app open here (Start menu: SonoBus) while you play."
+      or ("The band meets through " .. shost .. ". Whoever's computer that is keeps SonoBus's own app open while you play."))
+    off_tailnet()
+  end
+  if studio_admin() then
+    if not shost and not needs_tailscale() and not off_tailnet() and ImGui.SmallButton(ctx, "Host it on this computer") then
+      local name = services.tailscale_address()
+      if name and name:find("%.ts%.net$") then
+        groups.set_sonobus_server(cfg.root, name .. ":10999")
+        groups.set_tailnet(cfg.root) -- (everyone on this network reaches it: Health tells those on another)
+        band.log("private live audio is on: everyone's SonoBus meets through this computer next time Real time mode connects. Keep SonoBus's own app open here (Start menu: SonoBus)")
+      else band.msg("Tailscale has its names turned off on this network (MagicDNS): turn them on at login.tailscale.com/admin/dns.") end
+    end
+    if not shost then
+      ImGui.SetItemTooltip(ctx, "This computer becomes where the band meets: open SonoBus's own app here (not the plug-in) and keep it open while you play.\n" ..
+        "Everyone's SonoBus then finds the others by their Tailscale addresses, so the audio goes inside Tailscale's encryption.")
+    end
+    if shost and ImGui.SmallButton(ctx, "Turn off (back to SonoBus's public server)") then
+      groups.set_sonobus_server(cfg.root, nil)
+      band.log("private live audio is off: SonoBus's public server again, next time Real time mode connects")
+    end
+  end
+  card_end()
+end
+local function settings_studio()
+  ImGui.TextDisabled(ctx, "For everyone in " .. band.info(cfg.root).name .. ". Only the owner and admins change these; everyone can use them.")
+  layout({ { studio_alerts, 360 }, { studio_call, 360 }, { studio_listen, 360 }, { studio_private_audio, 360 } }, true)
+end
 local function settings_drive()
   if card("drive") then
     section_drive()
-    section_alerts()
     card_end()
   end
 end
@@ -1596,6 +1657,7 @@ local function page_setup()
     body("s options", function() layout({ { settings_look, 320 }, { settings_sync, 420 }, { settings_drive, 360 } }, true) end)
     ImGui.EndTabItem(ctx)
   end
+  if tab("Studio") then body("s studio", settings_studio); ImGui.EndTabItem(ctx) end
   if tab("Advanced") then body("s advanced", function() layout({ { ui.settings_advanced, 360 }, { ui.settings_buffer, 420 }, { ui.settings_cant_hear, 640 } }, true) end); ImGui.EndTabItem(ctx) end
   if tab("Console") then
     -- StudioSync's own log, newest first (REAPER's console only shows it while open)

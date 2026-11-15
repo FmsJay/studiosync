@@ -89,4 +89,18 @@ local devs = '{"devices": [{"id": "1", "tags": ["tag:bandsync-guest"], "created"
 local old = services.old_guests(devs, now)
 assert(#old == 1 and old[1] == "1", "only the guest from over a day ago; members and group machines stay")
 assert(#services.old_guests("", now) == 0 and #services.old_guests('{"message": "unauthorized"}', now) == 0, "no answer, an error: nobody")
+
+-- (0.58.57) which Tailscale network this computer is on, and which accounts it's signed in to: from the PC's own output, 2026-11-15
+local status = '{"Version":"1.104.5","BackendState":"Running","CurrentTailnet":{"Name":"jamesalexander190@gmail.com","StableID":"Tybtnk",' ..
+  '"MagicDNSSuffix":"tail99132c.ts.net","MagicDNSEnabled":true},"Self":{"DNSName":"james-main.tail99132c.ts.net."}}'
+local name, suffix = services.tailnet_in(status)
+assert(name == "jamesalexander190@gmail.com" and suffix == "tail99132c.ts.net", "the network it's on: " .. tostring(name) .. " " .. tostring(suffix))
+assert(services.tailnet_in('{"BackendState":"NeedsLogin"}') == nil, "signed out: none")
+local list = services.profiles_in("0\nID    Tailnet                      Account\nb793  chiliocosm01@gmail.com       chiliocosm01@gmail.com\n" ..
+  "4696  jamesalexander190@gmail.com  jamesalexander190@gmail.com*\n")
+assert(#list == 2, "two accounts: " .. #list)
+assert(list[1].id == "b793" and list[1].tailnet == "chiliocosm01@gmail.com" and not list[1].current, "the other one")
+assert(list[2].id == "4696" and list[2].account == "jamesalexander190@gmail.com" and list[2].current, "the one in use (marked *)")
+assert(#services.profiles_in("") == 0, "no answer yet: none")
+assert(not services.tailscale_switch("4696; calc") and not services.tailscale_switch(nil), "only a plain account id is ever switched to")
 print("ok")

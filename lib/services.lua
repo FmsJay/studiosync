@@ -626,12 +626,52 @@ end
 
 services.GUEST_TIP = "As Invite, and their computer joins your Tailscale network for a day without an account, so Play along and Jam reach them.\n" ..
   "The invitation works once, within a day; their computer drops off once it's offline a while, and after a day at most. While it's on, your\nTailscale policy decides what it can reach: all your computers on Tailscale's starting policy, only StudioSync once Set up the tags has limited guests."
-function services.copy_guest_invite(my_id, info, ctx, ImGui)
+function services.copy_guest_invite(my_id, info, ctx, ImGui, root)
   local key, why = services.tailscale_guest_key()
   if not key then band.log("couldn't make a guest invitation: " .. tostring(why)); return end
+  if root then pcall(require("groups").set_tailnet, root) end -- (the network the guest joins is this studio's)
   band.copy(services.invite_text(my_id, info, key), ctx, ImGui)
   band.log("a guest invitation is on your clipboard: it also puts their computer on your Tailscale network for a day (no account needed)")
 end
+-- ---- Tailscale accounts: someone in two studios can be on two Tailscale networks, but a computer is on one at a time (Tailscale keeps
+-- the others signed in, and its menu, or `tailscale switch`, moves between them). Each studio says which network it uses (groups.tailnet);
+-- Health says when this computer is on another one and offers the switch.
+-- From `tailscale status --json`: the network this computer is on, as its name and its address ending ("tail1234.ts.net"). Pure.
+function services.tailnet_in(json)
+  local cur = (json or ""):match('"CurrentTailnet":%s*(%b{})')
+  if not cur then return nil end
+  return cur:match('"Name":%s*"([^"]+)"'), cur:match('"MagicDNSSuffix":%s*"([^"]+)"')
+end
+function services.tailnet_now()
+  if not services.tailscale_up() then return nil end
+  return services.tailnet_in(ts_json)
+end
+function services.my_tailscale_name() return services.tailscale_up() and services.tailscale_name_in(ts_json) or nil end -- (no waiting: from the last status)
+-- From `tailscale switch --list`: { { id, tailnet, account, current } } for each account this computer is signed in to. Pure.
+function services.profiles_in(text)
+  local out = {}
+  for line in (text or ""):gmatch("[^\r\n]+") do
+    local id, tailnet, account = line:match("^(%x+)%s+(%S+)%s+(%S+)%s*$")
+    if id then out[#out + 1] = { id = id, tailnet = tailnet, account = account:gsub("%*$", ""), current = account:sub(-1) == "*" } end
+  end
+  return out
+end
+function services.tailscale_profiles()
+  local exe = tailscale_exe()
+  return exe and services.profiles_in(background("ts-profiles", q(exe) .. " switch --list", 30)) or {}
+end
+function services.tailscale_profile_for(tailnet)
+  for _, p in ipairs(services.tailscale_profiles()) do if p.tailnet == tailnet then return p end end
+end
+function services.tailscale_switch(id)
+  if not (type(id) == "string" and id:match("^%x+$")) then return false end
+  local exe = tailscale_exe()
+  if not exe then return false end
+  background("ts-switch", q(exe) .. " switch " .. id, 0)
+  ts_at = -math.huge
+  return true
+end
+
 -- A guest's key from a pasted invitation (services.parse_join: only key characters): what the installers do with it. In the background: it can take a minute.
 function services.tailscale_join(key)
   local exe = tailscale_exe()

@@ -76,6 +76,20 @@ function groups.sonobus_server(root)
   return host, tonumber(port)
 end
 function groups.set_sonobus_server(root, s) save(root, function(j) j.sonobus_server = groups.server_ok(s) and s or nil end) end
+-- The Tailscale network the studio's Tailscale features use (band.json "tailnet": { name, suffix }): set from the computer that sets one of
+-- them up (a guest invitation, private live audio, the listening page). -> it, or nil. Pure but for the read.
+function groups.tailnet(root)
+  local t = json_of(root).tailnet
+  if type(t) == "table" and type(t.name) == "string" and type(t.suffix) == "string" and t.suffix:match("^[%w%-]+%.ts%.net$") then return t end
+end
+function groups.set_tailnet(root)
+  local name, suffix = require("services").tailnet_now()
+  if not (name and suffix) then return false end
+  local t = groups.tailnet(root)
+  if t and t.suffix == suffix then return true end
+  save(root, function(j) j.tailnet = { name = name, suffix = suffix } end)
+  return true
+end
 
 -- The owner makes someone an admin or a member again. -> true, or nil + why.
 function groups.set_admin(root, actor, target, on)

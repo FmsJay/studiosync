@@ -202,26 +202,31 @@ By hand:
   any computer, and the driver's StudioSync (or yours, when you're alone) puts it in the song on a track named for it,
   "<name> (stem)", then takes it out of the inbox. "bar 17" in the file name starts it at bar 17, "@1:23" at 1 minute 23;
   otherwise it starts at the song's start. Handy for a bandmate on other software: someone drops their files in.
-- **Phone alerts** (Settings > Google Drive card, the studio's owner or an admin turns them on): when someone sends a message,
+- **Phone alerts** (Settings > Studio, the owner or an admin turns them on; *Send a test* checks a phone): when someone sends a message,
   records, or renders a mix, one line goes to everyone who subscribed to the studio's channel in the free ntfy app (Android,
   iPhone), even with REAPER closed. The line goes through ntfy.sh (or the studio's own ntfy server, band.json
   `alerts_server`); no audio or project. The channel name is long and random; anyone who knew it could read the lines.
 - **Studio templates**: *Save as studio template* (Restore page) keeps a song's tracks, routing, plug-ins, colours and tempo,
   without its recordings and without your own local tracks, in the studio's `_band/templates/`. Everyone in that studio gets
   *New from template* on the Projects page: a new tab to name and share as usual. Each studio has its own.
-- **Studio call**: the owner or an admin pastes a Discord, Zoom or Meet link in Settings, and everyone gets a **Call** button
+- **Studio call**: the owner or an admin pastes a Discord, Zoom or Meet link in Settings > Studio, and everyone gets a **Call** button
   beside Real time mode. The call runs in its own app, video and all, so it never slows REAPER or the sync. Mute its
   microphone while playing: Real time mode carries the music.
-- **Listening page** (Settings, Google Drive card): *Share the listening page* serves a web page of every song's mixes from
+- **Listening page** (Settings > Studio): *Share the listening page* serves a web page of every song's mixes from
   your computer over Tailscale, to play on a phone or any browser without REAPER, while your computer is on. Only devices
   on your Tailscale network reach it, and it serves the page and the mixes, nothing else. With phone alerts on, a comment
   typed under a mix lands in that song's chat with the moment it was about ("Bee on mix 3 at 1:23: ..."). A small server of
   StudioSync's own runs on your computer while it's shared (Tailscale shares a folder only for an administrator) and stops
   when REAPER closes.
-- **Private live audio** (Settings, the owner or an admin): *Host it on this computer* makes everyone's SonoBus find each
+- **Private live audio** (Settings > Studio, the owner or an admin): *Host it on this computer* makes everyone's SonoBus find each
   other through that computer over Tailscale, instead of SonoBus's public server, so the band reaches each other by
   Tailscale addresses and the audio goes inside Tailscale's encryption. That computer keeps SonoBus's own app open (its
   connection server is built in, port 10999).
+- **Studios on different Tailscale accounts**: someone in two studios can be signed in to two Tailscale networks, but a
+  computer is on one at a time. Each studio remembers its network (from whoever set up a guest invitation, private live
+  audio or the listening page there). When this computer is on another one, Settings > Health says so and offers **Switch
+  to ...** if this computer is signed in to it, or says to ask the studio's owner for a guest invitation. Only Play along,
+  the listening page and private live audio need the right network: everything else syncs either way.
 - **Talk** (beside Real time mode, while it's on): your microphone to the others without arming a track. Its own track on
   your computer, *StudioSync Talk*, never records, isn't in your own speakers, and goes quiet while anyone records here. It
   uses your first input; pick another on that track.

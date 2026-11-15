@@ -12,6 +12,12 @@ local function esc(s) return (tostring(s):gsub("[&<>\"']", { ["&"] = "&amp;", ["
 local function url(s) return (tostring(s):gsub("[^%w%-%._~/]", function(c) return string.format("%%%02X", c:byte()) end)) end
 function listen.path_of(root) return root .. "/_band/listen.html" end
 
+-- How a mix is named on the page: its file without the song's name (the heading says it) or the extension. Pure.
+function listen.label(song, file)
+  local l = file:gsub("%.[^.]+$", "")
+  if l:sub(1, #song):lower() == song:lower() then l = l:sub(#song + 1):gsub("^[%s%-_]+", "") end
+  return l ~= "" and l or file
+end
 -- The page. songs: { { name, mixes = { file, ... } } } newest first; channel/server: the alerts channel, or nil (no comments). Pure.
 function listen.page(studio, songs, channel, server)
   local h = { [[<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -32,11 +38,12 @@ button{background:#2e7d4f;border:0;margin-top:6px}.ok{color:#8c8;font-size:14px}
       h[#h + 1] = "<h2>" .. esc(s.name) .. "</h2>"
       for _, f in ipairs(s.mixes) do
         n = n + 1
+        local label = listen.label(s.name, f)
         h[#h + 1] = string.format('<div class="mix"><div class="name">%s</div><audio id="a%d" controls preload="none" src="../%s/mixes/%s"></audio>',
-          esc(f), n, url(s.name), url(f))
+          esc(label), n, url(s.name), url(f))
         if channel then
           h[#h + 1] = string.format('<input class="t" id="c%d" placeholder="a comment at this moment"><button onclick="say(%d,%s,%s)">Send</button> <span class="ok" id="k%d"></span>',
-            n, n, esc(band.json_encode(s.name)), esc(band.json_encode(f)), n)
+            n, n, esc(band.json_encode(s.name)), esc(band.json_encode("the " .. label .. " mix")), n)
         end
         h[#h + 1] = "</div>"
       end
@@ -139,10 +146,17 @@ function listen.share(cfg, on)
   end
   local host = services.tailscale_address()
   if not host or not host:find("%.ts%.net$") then return nil, "Tailscale isn't signed in here, or the tailnet has its names turned off (MagicDNS)." end
+  -- (on another of your Tailscale accounts than the studio's: its members couldn't reach the page. Settings > Health offers the switch)
+  local want, now_name = require("groups").tailnet(cfg.root), services.tailnet_now()
+  if want and not host:find(want.suffix, 1, true) then
+    return nil, "This studio uses the Tailscale network " .. want.name .. ", and this computer is on " .. tostring(now_name) ..
+      " right now, so the others couldn't reach the page. Switch Tailscale to " .. want.name .. " first (Settings > Health has a button, or Tailscale's own menu)."
+  end
   listen.write(cfg)
   start_server(cfg)
   local r = reaper.ExecProcess(q(exe) .. " serve --bg --yes --set-path " .. path .. " http://127.0.0.1:" .. listen.port(id), 15000) or ""
   if not r:match("^0\n") then os.remove(beat_file(id)); return nil, "Tailscale didn't share it: " .. r:gsub("^%d+\n", ""):sub(1, 300) end
+  pcall(require("groups").set_tailnet, cfg.root)
   local address = "https://" .. host .. path .. "/_band/listen.html"
   reaper.SetExtState(band.SECTION, key(cfg.root), address, true)
   return address

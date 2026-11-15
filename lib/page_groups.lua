@@ -115,8 +115,11 @@ function pg.join_button(env)
       if root then
         band.log(why == "already" and ("you're already in " .. band.info(root).name) or
           ("joined " .. band.info(root).name .. ": ask whoever invited you to let you in. Its projects arrive after that."))
+        local on_now = services.tailnet_now()
         if code.key and reaper.MB("This invitation also signs this computer in to their Tailscale network as a guest for a day, so Play along and Jam reach them.\n\n" ..
-            "If you use Tailscale for anything else, switch back from its menu afterwards.\n\nSign in?", "StudioSync", 4) == 6 then
+            (on_now and ("This computer is on " .. on_now .. " now. Tailscale keeps you signed in to it, and moves you to theirs: Settings > Health shows a " ..
+              "Switch button in each studio when it's on another network, and Tailscale's own menu does the same.") or
+              "If you use Tailscale for anything else, switch back from its menu afterwards.") .. "\n\nSign in?", "StudioSync", 4) == 6 then
           band.log(services.tailscale_join(code.key) and "signing in to their Tailscale network for the day" or "Tailscale isn't installed here: Play along and Jam need it, the rest works without")
         end
         pg.root = root
@@ -145,7 +148,7 @@ local function invite_button(env, g, id)
   ImGui.SetItemTooltip(ctx, my_id and require("tools").INVITE_TIP or "Waiting for Syncthing (it has to be running).")
   if my_id and services.tailscale_token() ~= "" then -- (a token: Settings > Advanced)
     beside(ctx, ImGui, "Guest")
-    if ImGui.SmallButton(ctx, "Guest##" .. id) then services.copy_guest_invite(my_id, band.info(g.root), ctx, ImGui) end
+    if ImGui.SmallButton(ctx, "Guest##" .. id) then services.copy_guest_invite(my_id, band.info(g.root), ctx, ImGui, g.root) end
     ImGui.SetItemTooltip(ctx, services.GUEST_TIP)
   end
 end

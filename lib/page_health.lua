@@ -107,6 +107,20 @@ function H.maint_rows()
     rows[#rows + 1] = { "tailscale stays", stays == true, "yellow", "Tailscale stays signed in here", "Tailscale signs this computer out on " .. tostring(stays) .. ": at login.tailscale.com/admin/machines, this computer > ... > Disable key expiry. " ..
       "So new computers stay signed in by themselves, whoever owns the Tailscale network adds one line at login.tailscale.com/admin/acls.",
       copy = '"tagOwners": { "tag:bandsync": ["autogroup:member"] },', link = { "Open Tailscale's machines", "https://login.tailscale.com/admin/machines" } }
+    -- (a studio on another of your Tailscale accounts: a computer is on one at a time, so this one's Play along, listening page and private
+    -- live audio can't reach the others until it switches)
+    local want = require("groups").tailnet(cfg.root)
+    local now_name, now_suffix = services.tailnet_now()
+    if want and now_suffix then
+      local prof = want.suffix ~= now_suffix and services.tailscale_profile_for(want.name)
+      rows[#rows + 1] = { "tailnet", want.suffix == now_suffix, "yellow", "On this studio's Tailscale network (" .. want.name .. ")",
+        "This studio uses the Tailscale network " .. want.name .. ", but this computer is on " .. tostring(now_name) .. " right now, so Play along, the " ..
+        "listening page and private live audio can't reach the others. Everything else still syncs. " ..
+        (prof and ("Switching moves the whole computer: studios on " .. tostring(now_name) .. " lose those three until you switch back.")
+          or "This computer isn't signed in to " .. want.name .. ": ask the studio's owner for a guest invitation, or sign in from Tailscale's menu."),
+        action = prof and { "Switch to " .. want.name, function() services.tailscale_switch(prof.id) end,
+          "Tailscale's own account switch, the same as picking it in Tailscale's menu. Takes a few seconds." } or nil }
+    end
   end
   if ui.play_shown() then
     rows[#rows + 1] = { "server", s.server, "yellow", "Play along server address is set", "No Play along server yet: Connect on the Play/Jam page (Settings > Advanced > Show the Play/Jam tab) starts one on this computer." }
