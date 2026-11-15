@@ -330,6 +330,8 @@ if (-not $running) {
   $sargs = @("serve", "--no-browser"); if ($SyncthingHome) { $sargs += @("--home", "`"$SyncthingHome`"") } # (Start-Process doesn't quote a path with spaces)
   Start-Process $st -ArgumentList $sargs -WindowStyle Hidden
   Ok "Syncthing started (StudioSync's Live sync starts it from now on)"
+  # (its first start asks Windows Firewall; declined, everything still syncs but only through Syncthing's slower relays. AgentBox test, 0.58.61)
+  Say "Windows may ask whether Syncthing may use networks: press Allow (private networks are enough). Without it, changes still sync, only slower."
 }
 $up = $false
 for ($i = 0; $i -lt 60 -and -not $up; $i++) { $null = STcli show system; $up = $LASTEXITCODE -eq 0; if (-not $up) { Start-Sleep 1 } }

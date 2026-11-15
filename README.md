@@ -164,7 +164,9 @@ By hand:
 2. Install the scripts, either way:
    - **ReaPack** (recommended): *Extensions > ReaPack > Import repositories*, paste
      `https://github.com/FmsJay/studiosync/raw/main/index.xml`, then install **StudioSync**. Updates come with
-     ReaPack's sync, or run **StudioSync - Update**.
+     ReaPack's sync, or run **StudioSync - Update**. **Update REAPER** beside Settings > Updates > Update opens
+     FeedTheCat's REAPER Update Utility (free, MIT), which finds the newest REAPER and installs it when you say so; if it
+     isn't installed yet, ReaPack opens on it, one click from installed.
    - **From the shared folder** (studio-internal): *Actions > Show action list > New action > Load ReaScript*,
      and load every `StudioSync - *.lua` straight from `<shared folder>/_tools/studiosync`. **StudioSync - Update**
      registers any new scripts that arrive later. The trade-off: anyone who can write to the shared folder can

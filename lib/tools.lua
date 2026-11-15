@@ -258,4 +258,26 @@ function tools.put_back_bar(ctx, ImGui, song, use_mine, may, claim)
   ImGui.PopStyleColor(ctx)
 end
 
+-- Update REAPER (James, 2026-11-15): FeedTheCat's REAPER Update Utility (MIT, the FTC Tools ReaPack repository) finds the newest REAPER
+-- and installs it. Run when it's here; otherwise ReaPack's browser opens on it, one click from installed (ReaPack's API can't install a single
+-- package by itself); without ReaPack, REAPER's download page. -> what happened, in words.
+tools.UPDATER_REPO = { "FTC Tools", "https://raw.githubusercontent.com/iliaspoulakis/Reaper-Tools/master/index.xml" }
+function tools.update_reaper()
+  local script = reaper.GetResourcePath() .. "/Scripts/FTC Tools/Various/REAPER Update Utility.lua"
+  if reaper.file_exists(script) then
+    local id = reaper.AddRemoveReaScript(true, 0, script, true)
+    if id ~= 0 then reaper.Main_OnCommand(id, 0); return "REAPER Update Utility opened" end
+  end
+  if reaper.APIExists("ReaPack_BrowsePackages") then
+    if not reaper.ReaPack_GetRepositoryInfo(tools.UPDATER_REPO[1]) then
+      reaper.ReaPack_AddSetRepository(tools.UPDATER_REPO[1], tools.UPDATER_REPO[2], true, 0) -- (0: not every package of theirs, only the one picked)
+      reaper.ReaPack_ProcessQueue(true)
+    end
+    reaper.ReaPack_BrowsePackages("REAPER Update Utility")
+    return "ReaPack opened on REAPER Update Utility: right-click it > Install, Apply, then press Update REAPER again"
+  end
+  band.open_url("https://www.reaper.fm/download.php")
+  return "REAPER's download page opened"
+end
+
 return tools

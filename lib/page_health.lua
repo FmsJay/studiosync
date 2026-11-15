@@ -252,6 +252,11 @@ function H.maint_upkeep()
     heading("Upkeep and activity", 17)
     section_activity()
     if ImGui.Button(ctx, "Update") then action("Update") end
+    ImGui.SetItemTooltip(ctx, "StudioSync itself, to the newest version.")
+    ImGui.SameLine(ctx)
+    if ImGui.Button(ctx, "Update REAPER") then band.log(require("tools").update_reaper()) end
+    ImGui.SetItemTooltip(ctx, "REAPER " .. reaper.GetAppVersion():gsub("/.*", "") .. " here. Opens the REAPER Update Utility (free, by FeedTheCat), which finds the newest\n" ..
+      "REAPER and installs it; if it isn't installed yet, ReaPack opens on it, one click from installed. Everyone on the same REAPER is safest.")
     card_end()
   end
 end
