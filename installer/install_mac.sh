@@ -116,8 +116,8 @@ fi
 PLUGINS="${BS_PLUGINS:-$(ask "Install the plug-in pack? (y/n)" y)}"
 EXTRAS="${BS_EXTRAS:-n}"
 if yes "$PLUGINS" && [ -z "${BS_EXTRAS:-}" ]; then
-  say "The larger extras (about 880 MB): Neural Amp Modeler and AIDA-X amp capture players, Odin 2 synth, and the"
-  say "Salamander Grand piano for sforzando."
+  say "The larger extras (about 1.2 GB): Neural Amp Modeler and AIDA-X amp capture players, Odin 2 synth, and the"
+  say "Salamander Grand piano and the MuldjordKit drum kit for sforzando."
   EXTRAS="$(ask "Install the extras too? (y/n)" n)"
 fi
 if [ -z "${BS_REAPERSONA:-}" ]; then
@@ -338,6 +338,18 @@ if yes "$PLUGINS"; then
         ok "Salamander Grand piano in $piano: play it with sforzando (free, plogue.com/products/sforzando.html)"
       else warn "the piano didn't download"; fi
     fi
+    # a drum kit everyone has (DrumGizmo's MuldjordKit as SFZ, CC BY 4.0, ported by sfzinstruments): plays in the same sforzando
+    drums="$HOME/Documents/StudioSync Instruments/MuldjordKit drums"
+    if [ -d "$drums" ]; then ok "MuldjordKit drums are already there"
+    else
+      say "Downloading the MuldjordKit drums (about 330 MB) ..."
+      mkdir -p "$(dirname "$drums")"
+      if curl -fsSL "https://github.com/sfzinstruments/DrumGizmo.MuldjordKit/archive/refs/heads/master.zip" -o "$WORK/muldjordkit.zip" &&
+         ditto -x -k "$WORK/muldjordkit.zip" "$(dirname "$drums")" && mv "$(dirname "$drums")/DrumGizmo.MuldjordKit-master" "$drums"; then
+        ok "MuldjordKit drums in $drums: load its .sfz file in sforzando"
+      else warn "the drums didn't download"; fi
+    fi
+    TELL_DECENT=1
   fi
 fi
 have REAPER || { warn "REAPER isn't installed: get it from reaper.fm and run this again."; exit 1; }
@@ -482,6 +494,7 @@ bver="$(grep -o '"version": *"[^"]*"' "$HDIR/studiosync_setup_result.json" | sed
 # ---------- 5. what's left for a human ----------
 echo
 say "Done. What's left (these need you):"
+[ -n "${TELL_DECENT:-}" ] && echo "  - Decent Sampler (free sampler with lots of free instruments) can't be installed for you: its maker asks for an email address first. Get it at decentsamples.com/product/decent-sampler-plugin."
 if yes "$HOSTING"; then
   echo "  - To bring in a collaborator: StudioSync panel > Invite a collaborator, and send them what it copies (their installer is"
   echo "    then already paired with you). When they've run it, the panel shows 'Let them in': press it."

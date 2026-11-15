@@ -457,10 +457,12 @@ e-piano, organ, channel strip...; GPL-3 with MIT/AGPL parts). On Windows the plu
 together at the end without their setup windows, and Windows asks for permission once (say no and each one's own
 setup opens instead).
 
-**Extras** (a second question, about 820 MB on Windows, 880 MB on a Mac, most of it the piano): Neural Amp Modeler
-0.7.13 and AIDA-X (amp capture players), Odin 2 (synth), and the Salamander Grand piano (SFZ) with sforzando to play
-it. Worth adding by hand (free, but they need an account or can't be passed on): Vital, Valhalla Supermassive,
-Spitfire LABS, MeldaProduction MFreeFXBundle.
+**Extras** (a second question, about 1.2 GB, most of it the piano and drums): Neural Amp Modeler 0.7.13 and AIDA-X (amp
+capture players), Odin 2 (synth), and sforzando with two SFZ instruments everyone then has: the Salamander Grand piano and
+the MuldjordKit drum kit (DrumGizmo's kit by Lars Muldjord, CC BY 4.0, ported by sfzinstruments), so a drum part sounds the
+same on every computer, Windows or Mac. Worth adding by hand (free, but they need an account, an email address, or can't be
+passed on): Decent Sampler (the installer reminds you), Vital, Valhalla Supermassive, Spitfire LABS, MeldaProduction
+MFreeFXBundle.
 
 ### Live: hear each other while it happens
 

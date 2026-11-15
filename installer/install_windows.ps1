@@ -111,7 +111,7 @@ $driveName = if ($folderId -eq "bandsync") { "BandSync" } else { "StudioSync - $
 $wantLive = $Live -ne "no"
 $wantSolo = $Solo -ne "no"
 $wantPlugins = if ($Plugins) { $Plugins -eq "yes" } else { YesNo "Install the plug-in pack (free, about 150 MB: Surge XT, Dexed, Airwindows, Dragonfly Reverb, Chow Tape, BYOD guitar/bass amps and tuner, ZL Equalizer and Compressor, ChowMatrix delay, and the Saike, Chokehold and chmaha JSFX with drum kits and keys), so everyone has the same sounds? (Adding the JSFX runs a ReaPack sync, which also updates your other ReaPack packages.)" "y" }
-$wantExtras = if ($Extras) { $Extras -eq "yes" } else { $wantPlugins -and (YesNo "Also the larger extras (about 820 MB: Neural Amp Modeler and AIDA-X amp capture players, Odin 2 synth, sforzando with the Salamander Grand piano)?" "n") }
+$wantExtras = if ($Extras) { $Extras -eq "yes" } else { $wantPlugins -and (YesNo "Also the larger extras (about 1.2 GB: Neural Amp Modeler and AIDA-X amp capture players, Odin 2 synth, sforzando with the Salamander Grand piano and the MuldjordKit drum kit)?" "n") }
 $wantPersona = if ($ReaPersona) { $ReaPersona -eq "yes" } else { YesNo "Coming to REAPER from another DAW? ReaPersona (free) makes REAPER's shortcuts, mouse and look work like Pro Tools, Logic, Ableton, FL Studio, Cubase, Studio One, Bitwig and more, and switches back any time. Install it?" "n" }
 Write-Host ""
 
@@ -246,6 +246,21 @@ if ($wantPlugins) {
         Ok "Salamander Grand piano in $piano (load its .sfz file in sforzando)"
       } catch { Warn "the piano didn't download: $_" }
     }
+    # a drum kit everyone has, so a drum part sounds the same on every computer: DrumGizmo's MuldjordKit as SFZ, played by the same sforzando
+    # (CC BY 4.0, by Lars Muldjord, ported by sfzinstruments). Windows and Mac alike, unlike DrumGizmo itself (Windows only)
+    $drums = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "StudioSync Instruments\MuldjordKit drums"
+    if (Test-Path $drums) { Ok "MuldjordKit drums are already there" } elseif (-not $NoApps) {
+      Say "Downloading the MuldjordKit drums (about 330 MB) ..."
+      $zip = Join-Path $env:TEMP "muldjordkit.zip"
+      try {
+        Invoke-WebRequest "https://github.com/sfzinstruments/DrumGizmo.MuldjordKit/archive/refs/heads/master.zip" -OutFile $zip -UseBasicParsing
+        Expand-Archive $zip (Split-Path $drums) -Force
+        Rename-Item (Join-Path (Split-Path $drums) "DrumGizmo.MuldjordKit-master") $drums -ErrorAction SilentlyContinue
+        Remove-Item $zip -ErrorAction SilentlyContinue
+        Ok "MuldjordKit drums in $drums (load its .sfz file in sforzando)"
+      } catch { Warn "the drums didn't download: $_" }
+    }
+    $tellDecent = $true # (Decent Sampler: in the list of what's left, at the end)
   }
   Install-Quiet
   Ok "plug-in pack done: restart REAPER so it finds them (a re-scan in Preferences shows them, but the studio's 'everyone has' list only takes them after a restart)"
@@ -417,6 +432,7 @@ if ($count -ge 5) { Ok "StudioSync $($r.version) installed: $count actions (the 
 
 # ---------- 5. what's left for a human (only what isn't done yet) ----------
 $left = @()
+if ($tellDecent) { $left += "Decent Sampler (free sampler with lots of free instruments) can't be installed for you: its maker asks for an email address first. Get it at decentsamples.com/product/decent-sampler-plugin." }
 $peers = @()
 try {
   $x = [xml](Get-Content (Join-Path $cfgDir "config.xml"))
