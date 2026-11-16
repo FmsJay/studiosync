@@ -2701,7 +2701,7 @@ function mirror.watch(proj, cfg, song, room, opts)
           if type(author) ~= "string" then author = nil end
           if author and author ~= me and not opts.can(author, name, o.pos) and allowed(o, name, o.pos) then author = me end
           keys_of[tr] = keys_of[tr] or prints.track_keys(tr)
-          local function can(u) if u == me then return prints.track_plays(tr) end return prints.has(cfg, u, keys_of[tr]) end
+          local function can(u) if u == me then return prints.track_plays(tr, true) end return prints.has(cfg, u, keys_of[tr]) end
           may = prints.printer(name, author, here, opts.printers or {}, can) == me
         end
         if may then

@@ -109,8 +109,9 @@ end
 -- Whether a track's plug-in really loads here. A missing VST, AU or CLAP shows offline; a missing JSFX doesn't: REAPER
 -- keeps an empty stand-in (not offline, silent), so its file is looked for in Effects (Mac, 0.39.1: it printed a
 -- JS synth it didn't have, and its silent print replaced the PC's good one).
--- Offline by choice (to save CPU) is still here: it's installed, and plays nothing on purpose, in a print as in the mix. It
--- held every print of its track back (plug-ins review, 0.58.76). Installed: by name, in any format (REAPER's own list, cached).
+-- Offline by choice (to save CPU) is installed, and plays nothing on purpose: it doesn't stop a print (one that leaves an instrument
+-- silent is caught as silent), though the track doesn't play here. It held every print of its track back (plug-ins review, 0.58.76).
+-- Installed: by name, in any format (REAPER's own list, cached).
 local installed = { at = -math.huge }
 local function installed_here(tr, i)
   if reaper.time_precise() - installed.at > 300 then
@@ -121,8 +122,8 @@ local function installed_here(tr, i)
   local ok, name = reaper.TrackFX_GetNamedConfigParm(tr, i, "fx_name")
   return ok and name ~= "" and installed.set[require("plugins").key(name)] == true
 end
-function prints.fx_here(tr, i)
-  if reaper.TrackFX_GetOffline(tr, i) then return installed_here(tr, i) end
+function prints.fx_here(tr, i, offline_ok)
+  if reaper.TrackFX_GetOffline(tr, i) then return offline_ok == true and installed_here(tr, i) end
   local _, kind = reaper.TrackFX_GetNamedConfigParm(tr, i, "fx_type")
   local _, ident = reaper.TrackFX_GetNamedConfigParm(tr, i, "fx_ident") -- (a JSFX's is relative to Effects: "ReaTeam JSFX/Synth/x.jsfx")
   -- a VST or AU that isn't installed doesn't read as offline either: no file behind it, and only REAPER's own three
@@ -135,14 +136,15 @@ end
 
 -- Does every plug-in on the item's track load here (and on the instrument's track, for a routed one)? A missing one
 -- would leave its notes silent.
-function prints.track_plays(tr)
+-- `to_print`: whether it can print here, where a plug-in offline by choice counts (see installed_here).
+function prints.track_plays(tr, to_print)
   for _, i in ipairs(prints.fx_all(tr)) do
-    if not prints.fx_here(tr, i) then return false end
+    if not prints.fx_here(tr, i, to_print) then return false end
   end
   local dest = prints.route(tr)
   if dest then
     for _, i in ipairs(prints.fx_all(dest)) do
-      if not prints.fx_here(dest, i) then return false end
+      if not prints.fx_here(dest, i, to_print) then return false end
     end
   end
   return true
@@ -433,7 +435,7 @@ function prints.refresh(proj, it, media_dir, fx_hash, route_hash, cfg)
   local audio = not midi and prints.audio_take(it)
   if not midi and not audio then return refresh_ara(proj, it, media_dir) end
   local dest = midi and prints.route(tr)
-  if (reaper.TrackFX_GetCount(tr) == 0 and not dest) or not prints.track_plays(tr) then return false end
+  if (reaper.TrackFX_GetCount(tr) == 0 and not dest) or not prints.track_plays(tr, true) then return false end
   if audio and not prints.lacking(tr, cfg) then return false end
   local dry = midi or audio
   local h, old

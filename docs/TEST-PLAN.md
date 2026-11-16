@@ -143,3 +143,35 @@ Left: a change made while StudioSync wasn't running is taken as the plug-in load
 machines (a lasting "differs", no re-send); frozen tracks arrive frozen, without unfreeze data; hardware outputs aren't sent; plug-in sample
 copies keep accented names; a track template with a missing plug-in brings up REAPER's load warning, which blocks scripts; the Linux test
 assumptions above.
+
+## Left items, 2026-11-16 (0.58.78 and ReaPersona 5.9.4)
+
+Windows installer, real run (0.58.77, Windows Sandbox on the laptop, a plain invitation): REAPER 7.86, Syncthing, SonoBus, Tailscale, the four
+extensions, the studio folder and pairing all installed; StudioSync arrived through ReaPack with autostart, the short Actions list (7) and the
+menu extension. It printed "REAPER didn't run the setup step" while REAPER's first-start windows were still up (behind Tailscale's welcome and
+a firewall prompt); once answered, setup finished by itself and the panel opened after ReaPack's Transaction report closed. Mac: 0.58.77 and
+ReaPersona 5.9.3 through ReaPack, the menu items in Extensions and View.
+
+Fixed (plug-ins and data): a plug-in with an LFO or audio control on a knob stays out of the hash and its other knobs count (a fast LFO's chain
+never went out at all before); a knob turned while StudioSync wasn't running goes out at the next open (each chain's knobs are kept in the
+project, as of the last time this machine agreed with the band); frozen tracks carry what unfreezing needs, so anyone can unfreeze them;
+plug-in sample copies get plain-letter names; an AU counts as missing where the studio has a Windows or Linux computer (DirectX likewise off
+Windows), so its parts get prints; a print of notes that comes out silent (an instrument whose library isn't installed) isn't used, and the log
+says why; a plug-in offline by choice no longer holds its track's prints back; restless or modulated take FX stay out of item hashes; a landed
+chain with ReaInsert or ReaStream is mentioned once; audio buffers are cleared before reads.
+Fixed (Linux): the suites' Windows assumptions; background prints work on Linux when switched on (lowercase `reaper`); the installer hands
+REAPER the setup step in REAPER's own login session (XDG_SESSION_ID picks REAPER's instance pipe: from another session it started a second).
+Fixed (installers): GitHub's hourly limit (Syncthing's and SonoBus's own servers, Homebrew, a cached lookup, the release page as fallback);
+a Syncthing already running with its settings elsewhere is used (`--home`; SyncTrayzor is named and has to be quit); REAPER in a custom or
+portable folder; Windows without winget; macOS 11 and older told at the start; the first plug-in scan is waited for (up to 45 minutes while
+REAPER is open) and a timeout no longer says to run it again; non-English letters (transliterated names, `chcp 65001` in written .cmd files);
+Flatpak and AppImage REAPER; Syncthing older than 1.19 skipped; the studio's name shows before its band.json arrives.
+ReaPersona 5.9.4: Remove ReaPersona (Settings) and a startup block that finds any older wording; your own personas get layers of their own
+(and "Make them its own" for one borrowing a DAW's); the Actions-list trim counts mouse modifiers and SWS cycle actions; Linux unpacks .zip/.rar
+theme packs with unzip, unrar, bsdtar or 7z.
+
+Left, by choice: hardware outputs and ReaInsert's channels stay each computer's own (their interfaces differ); REAPER's own warning when a
+track template has a missing plug-in (the person inserting it answers it); prints of multi-out instruments and sidechains render the track
+alone; automation items on plug-in knobs use each computer's own pool; a media file edited in place under the same name isn't sent again;
+frozen audio tracks unfrozen elsewhere point at the freezer's own files; a knob turned on a restless take FX goes out with the item's next
+change. Not tried for real: the new installer paths (no winget, SyncTrayzor, portable REAPER, macOS 11, Flatpak/AppImage, snap Syncthing).
