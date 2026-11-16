@@ -26,8 +26,15 @@ jobs:
             codesign -s - "reaper_$p.dylib"
             lipo -info "reaper_$p.dylib"
           done
+      - name: njrelay for Macs (universal), as the NINJAM README's line
+        run: |
+          cc -O2 -Wall -arch arm64 -arch x86_64 -mmacosx-version-min=10.13 -o njrelay tools/ninjam-relay/njrelay.c
+          codesign -s - njrelay
+          lipo -info njrelay
       - uses: actions/upload-artifact@v4
         with: { name: mac, path: "*.dylib" }
+      - uses: actions/upload-artifact@v4
+        with: { name: mac-njrelay, path: "njrelay" }
 
   linux:
     strategy:
