@@ -12,6 +12,11 @@ local function write(p, text)
 end
 local root = D .. "/group"
 local SONG, ROOM = "Tune", "main"
+-- (0.58.78: a given claim counts once Syncthing says the giver's computer wrote it. It holds no scratch folder, and says so, as "": believed.
+-- A file that names someone else's computer as its writer is the one case answered here otherwise)
+local services = require("services")
+local real_modified_by = services.modified_by
+services.modified_by = function(_, rel) return rel:find("given%-Member%-forged") and "ZZZZZZZ" or "" end
 local saved = {}
 for _, k in ipairs({ "projects gone", "track colours", "projects here", "projects here checked", "projects keep all" }) do saved[k] = reaper.GetExtState(band.SECTION, k) end
 
@@ -45,6 +50,15 @@ local mine = sync.my_claims({ root = root, user = "Member" }, SONG, ROOM)
 check(mine and mine.tracks and mine.tracks[1] == "Keys", "it's in their own claims now")
 can = sync.authority({ root = root, user = "Member" }, SONG, ROOM, { host = "Owner" })
 check(can("Member", "Keys"), "and still counts")
+-- someone else's computer writing a gift in the admin's name: it doesn't count, and isn't folded in (Security review, 0.58.78)
+band.write_json(sync.room_dir(cfg, SONG, ROOM) .. "/claims/given-Member-forged.json",
+  { user = "Member", by = "Admin", tracks = { "Bass" }, regions = {}, times = {}, since = {}, time = "2026-11-16T09:00:00Z", given = true })
+can = sync.authority({ root = root, user = "Member" }, SONG, ROOM, { host = "Owner" })
+check(not can("Member", "Bass") and can("Admin", "Bass"), "a gift in an admin's name from another computer doesn't count")
+sync.follow_claims(track_proj, { root = root, user = "Member" }, SONG, ROOM)
+mine = sync.my_claims({ root = root, user = "Member" }, SONG, ROOM)
+check(mine and #mine.tracks == 1 and mine.tracks[1] == "Keys", "and isn't folded into their own claims")
+os.remove(sync.room_dir(cfg, SONG, ROOM) .. "/claims/given-Member-forged.json")
 sync.set_mode(cfg, SONG, ROOM, "claims", "Owner")
 check(sync.MODES.driver and sync.MODES.open and sync.MODES.claims, "the other modes are all there")
 
@@ -175,5 +189,6 @@ check(hear.trouble("A", "Me", { { user = "Sam", rt = "A", rt_silent = "Lee" } })
 -- (scratch: the group's folder, for the next run)
 for _, f in ipairs(files) do os.remove(sync.room_dir(cfg, SONG, ROOM) .. "/claims/" .. f) end
 pcall(function() require("trust").forget(root) end) -- (its roles, as lib/trust.lua keeps them)
+services.modified_by = real_modified_by
 out[#out + 1] = string.format("control_parts: fails %d of %d", fails, #out)
 return table.concat(out, "\n")

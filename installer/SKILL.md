@@ -78,7 +78,10 @@ it only syncs while running.
 that let the host add any folder to this computer; since 0.58.69 nothing is accepted without asking), then read this machine's ID
 (`syncthing device-id`, or REST `GET /rest/system/status` → `myID`) and give it to the musician to send to
 the host. The host adds it and shares the studio's folder. Because the host is an introducer, every other bandmate appears
-automatically. Hosting: create the folder, then add each bandmate's ID and share that folder with them.
+automatically. Since 0.58.78 StudioSync switches the introducer flag off once the joiner is let in, and meets anyone let in later
+through their own devices file (`lib/removal.lua` removal.known); the installer also hands `host_id` and `band_id` to
+`studiosync_setup.lua`, which records who invited this computer and the studio's folder id (`lib/trust.lua`, `lib/band.lua`).
+Hosting: create the folder, then add each bandmate's ID and share that folder with them.
 
 **macOS prompt:** Syncthing asks for **Local Network** access. It must be **Allow**, or LAN sync silently fails.
 The first full sync of the folder took 4–40 s in testing.

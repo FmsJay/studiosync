@@ -673,9 +673,9 @@ request() { # mode -> runs the helper in REAPER, leaves its JSON result in $HDIR
   local jsfx=false; yes "$PLUGINS" && jsfx=true
   local persona=false; yes "$REAPERSONA" && persona=true
   local js='s/\\/\\\\/g; s/"/\\"/g' # (a " or \ in a path broke the JSON)
-  local bid="" bname=""; [ -n "$JOINING" ] && { bid="$FOLDER_ID"; bname="$BAND_NAME"; } # (the studio's name till its band.json arrives: studiosync_setup.lua)
-  printf '{"sync_root":"%s","user":"%s","mode":"%s","repo_url":"https://github.com/%s/raw/main/index.xml","open_panel":%s,"jsfx":%s,"reapersona":%s,"persona":"%s","syncthing_path":"%s","syncthing_home":"%s","band_id":"%s","band_name":"%s"}' \
-    "$(printf '%s' "$ROOT" | sed -e "$js")" "$USERNAME_BS" "$1" "$REPO" "$panel" "$jsfx" "$persona" "$PERSONA" "$(printf '%s' "$ST" | sed -e "$js")" "$(printf '%s' "$ST_HOME_TOLD" | sed -e "$js")" "$bid" "$bname" > "$HDIR/studiosync_setup.json"
+  local bid="" bname="" inv=""; [ -n "$JOINING" ] && { bid="$FOLDER_ID"; bname="$BAND_NAME"; inv="$(printf '%s' "$HOST_ID" | LC_ALL=C tr -cd 'A-Z0-9-')"; } # (the studio's name till its band.json arrives: studiosync_setup.lua)
+  printf '{"sync_root":"%s","user":"%s","mode":"%s","repo_url":"https://github.com/%s/raw/main/index.xml","open_panel":%s,"jsfx":%s,"reapersona":%s,"persona":"%s","syncthing_path":"%s","syncthing_home":"%s","band_id":"%s","band_name":"%s","host_id":"%s"}' \
+    "$(printf '%s' "$ROOT" | sed -e "$js")" "$USERNAME_BS" "$1" "$REPO" "$panel" "$jsfx" "$persona" "$PERSONA" "$(printf '%s' "$ST" | sed -e "$js")" "$(printf '%s' "$ST_HOME_TOLD" | sed -e "$js")" "$bid" "$bname" "$inv" > "$HDIR/studiosync_setup.json"
   local result="$HDIR/studiosync_setup_result.json" started="$HDIR/studiosync_setup_started" was_up="" asked=1 i=0 at=""
   rm -f "$result" "$started"
   if [ -n "${REOPEN:-}" ] && ! pgrep -x reaper >/dev/null; then

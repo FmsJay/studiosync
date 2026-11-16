@@ -190,7 +190,7 @@ reaper.ExecProcess, services.my_device_id, services.syncthing_path, services.day
 require("trust").pin = real_pin
 for _, k in ipairs(KEYS) do reaper.SetExtState(band.SECTION, k, saved[k], k ~= "removal look" and k ~= "leaving") end
 for _, k in ipairs(ended_keys) do reaper.DeleteExtState(band.SECTION, k, true) end
-for r in pairs(pinned) do require("trust").forget(r) end -- (the scratch studios' roles, kept by lib/trust.lua)
+for r in pairs(pinned) do require("trust").forget(r); band.pin_id(r) end -- (the scratch studios' roles, kept by lib/trust.lua, and their ids, by lib/band.lua)
 if tab and reaper.ValidatePtr2(0, tab, "ReaProject*") then
   reaper.SelectProjectInstance(tab)
   reaper.Main_SaveProjectEx(tab, base .. "/end.rpp", 8)

@@ -594,7 +594,9 @@ $utf8 = New-Object System.Text.UTF8Encoding($false) # no BOM: the Lua JSON reade
 function Request($mode) {
   # (syncthing_*: which Syncthing this set up; band_*: the invitation's studio by name till its band.json arrives. studiosync_setup.lua, 0.58.78)
   $req = @{ sync_root = ($root -replace '\\', '/'); user = $user; mode = $mode; repo_url = "https://github.com/$Repo/raw/main/index.xml"; open_panel = ($mode -eq "verify"); jsfx = [bool]$wantPlugins; reapersona = [bool]$wantPersona; persona = $persona
-    syncthing_path = ($st -replace '\\', '/'); syncthing_home = ($stHomeTold -replace '\\', '/'); band_id = $(if ($joining) { $folderId } else { "" }); band_name = $(if ($joining) { $bandName } else { "" }) } | ConvertTo-Json
+    syncthing_path = ($st -replace '\\', '/'); syncthing_home = ($stHomeTold -replace '\\', '/'); band_id = $(if ($joining) { $folderId } else { "" }); band_name = $(if ($joining) { $bandName } else { "" }) }
+  if ($joining) { $req.host_id = $hostId } # (who invited this computer: lib/trust.lua. Security review, 0.58.78)
+  $req = $req | ConvertTo-Json
   [IO.File]::WriteAllText((Join-Path (Split-Path $helper) "studiosync_setup.json"), $req, $utf8)
   $result = Join-Path (Split-Path $helper) "studiosync_setup_result.json"
   Remove-Item $result -ErrorAction SilentlyContinue

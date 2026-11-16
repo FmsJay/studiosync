@@ -20,6 +20,10 @@ services.unshare = function(folder, id)
 end
 services.my_device_id = function() return "MINE" end
 band.bands = function() return { { root = root, id = "lab", name = "Lab" } } end
+-- (0.58.78: removal.tick also switches introducers off and meets computers asking to connect; this computer's real Syncthing is left alone)
+local real_intro, real_pending = services.introducers_off, services.pending_devices
+services.introducers_off = function() return true end
+services.pending_devices = function() return {} end
 local function tick(now)
   reaper.SetExtState(band.SECTION, "removal look", "0", false)
   removal.tick(now)
@@ -109,6 +113,7 @@ local ok, err = pcall(function()
 end)
 if not ok then fails = fails + 1; out[#out + 1] = "ERROR " .. tostring(err) end
 services.unshare, services.my_device_id, band.bands = real_unshare, real_id, real_bands
+services.introducers_off, services.pending_devices = real_intro, real_pending
 reaper.SetExtState(band.SECTION, "user", real_user, false)
 reaper.SetExtState(band.SECTION, "removal look", real_look, false)
 reaper.SetExtState(band.SECTION, "removed from", real_told, false)

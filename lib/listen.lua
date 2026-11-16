@@ -10,7 +10,10 @@ listen.AUDIO = { wav = true, flac = true, mp3 = true, ogg = true, m4a = true, ai
 
 local function esc(s) return (tostring(s):gsub("[&<>\"']", { ["&"] = "&amp;", ["<"] = "&lt;", [">"] = "&gt;", ['"'] = "&quot;", ["'"] = "&#39;" })) end
 local function url(s) return (tostring(s):gsub("[^%w%-%._~/]", function(c) return string.format("%%%02X", c:byte()) end)) end
-function listen.path_of(root) return root .. "/_band/listen.html" end
+-- (the page lives in this computer's own StudioSync folder, written only by its StudioSync, not in the studio's _band/listen.html: anyone in the
+-- studio could change that file, and the page went out to phones as they'd written it. Still asked for as _band/listen.html, so addresses
+-- already shared keep working; the server answers that one path from here. Security review, 0.58.78)
+function listen.path_of(id) return band.home() .. "/listen-" .. id .. ".html" end
 
 -- How a mix is named on the page: its file without the song's name (the heading says it) or the extension. Pure.
 function listen.label(song, file)
@@ -81,7 +84,8 @@ end
 function listen.write(cfg)
   local alerts = require("alerts")
   local text = listen.page(band.info(cfg.root).name, listen.songs(cfg), alerts.channel(cfg.root), alerts.server(cfg.root))
-  if band.read(listen.path_of(cfg.root)) ~= text then band.write_atomic(listen.path_of(cfg.root), text) end
+  local path = listen.path_of(band.info(cfg.root).id)
+  if band.read(path) ~= text then reaper.RecursiveCreateDirectory(band.home(), 0); band.write_atomic(path, text) end
 end
 
 -- A comment from the channel's JSON stream (one line of ntfy's /json?poll=1), as a song and the words for its chat, or nil. Pure.
@@ -111,17 +115,20 @@ function listen.port(id) -- one per studio, the same every time. Pure.
   for i = 1, #id do h = (h * 31 + id:byte(i)) % 1000 end
   return 47000 + h -- (a thousand to pick from: within a hundred, two studios on one computer met one time in a hundred. Review, 0.58.62)
 end
-local function beat_file(id) return band.home() .. "/listen-" .. id .. ".beat" end
+-- (".alive" since 0.58.78: a server started before then, serving the studio's own copy of the page, has no heartbeat any more and quits within two
+-- minutes; listen.tick_one then finds the port free and starts this one)
+local function beat_file(id) return band.home() .. "/listen-" .. id .. ".alive" end
 local function beat(id) local f = io.open(beat_file(id), "w"); if f then f:write(os.date("!%Y-%m-%dT%H:%M:%SZ")); f:close() end end
 local function start_server(cfg)
   local id = band.info(cfg.root).id
+  os.remove(band.home() .. "/listen-" .. id .. ".beat")
   beat(id)
   local here = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]") .. "/listen/"
   local root, prefix = cfg.root:gsub("\\", "/"), "/studiosync-" .. id
   if WIN then
     local services = require("services")
-    local cmd = string.format('powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%slisten_server.ps1" -Root "%s" -Port %d -Beat "%s" -Prefix "%s"',
-      here, root, listen.port(id), beat_file(id), prefix)
+    local cmd = string.format('powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%slisten_server.ps1" -Root "%s" -Port %d -Beat "%s" -Prefix "%s" -Page "%s"',
+      here, root, listen.port(id), beat_file(id), prefix, listen.path_of(id))
     local bat, vbs = services.TMP .. "/bandsync-listen-" .. id .. ".cmd", services.TMP .. "/bandsync-listen.vbs"
     band.write_atomic(bat, "@chcp 65001 >nul\r\n@" .. cmd .. "\r\n") -- (a non-ASCII Windows user name in its paths: as services.background. Cross-platform review, 0.58.78)
     band.write_atomic(vbs, 'CreateObject("WScript.Shell").Run """" & WScript.Arguments(0) & """", 0, False\r\n')
@@ -132,7 +139,7 @@ local function start_server(cfg)
     local s = function(x) return "'" .. x:gsub("'", "'\\''") .. "'" end
     local sh = require("services").TMP .. "/bandsync-listen-" .. id .. ".sh"
     band.write_atomic(sh, "/usr/bin/perl " .. s(here .. "listen_server.pl") .. " " .. s(root) .. " " .. listen.port(id) .. " " ..
-      s(beat_file(id)) .. " " .. s(prefix) .. " >/dev/null 2>&1 &\n")
+      s(beat_file(id)) .. " " .. s(prefix) .. " " .. s(listen.path_of(id)) .. " >/dev/null 2>&1 &\n")
     reaper.ExecProcess("/bin/sh '" .. sh .. "'", -1)
   end
 end

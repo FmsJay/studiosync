@@ -68,6 +68,13 @@ if probe and user ~= "" then
     local bname = (type(req.band_name) == "string" and req.band_name or ""):gsub("[^%w%-_ ]", "")
     reaper.SetExtState("BandSync", "joining " .. root, json.encode({ name = bname ~= "" and bname or nil, id = bid }), true)
   end
+  -- (an invitation's studio: its Syncthing folder id, which lib/band.lua goes by whatever band.json later says, and the computer that sent it,
+  -- the only one whose writing of the roles a first look believes (lib/trust.lua). The keys are the ones those modules read. Security review, 0.58.78)
+  local ID = "^" .. ("[%u%d]"):rep(7) .. ("%-" .. ("[%u%d]"):rep(7)):rep(7) .. "$"
+  if type(req.host_id) == "string" and req.host_id:match(ID) and type(req.band_id) == "string" and req.band_id:match("^[%w%-_.]+$") then
+    reaper.SetExtState("BandSync", "invited by " .. root:lower(), req.host_id, true)
+    reaper.SetExtState("BandSync", "band id " .. root:lower(), req.band_id, true)
+  end
 end
 -- Which Syncthing the installer set up, and its settings folder when that isn't where Syncthing looks by itself (SyncTrayzor's, a snap's, a
 -- Flatpak REAPER's sandbox looks elsewhere): lib/services.lua runs that one, never a second. An empty home clears an old one. (Installer review, 0.58.78)

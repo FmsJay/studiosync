@@ -137,6 +137,8 @@ local function let_in(d, me, day)
     ok, why = services.share_folder(d.folder, d.id)
     if ok then
       require("removal").let_in(d.root, d.id) -- (taken out before, and back)
+      -- (the roles written out again from here, the computer they were invited by: their first look believes no other. lib/trust.lua, Security review, 0.58.78)
+      pcall(require("groups").edit, d.root, function() end)
       if day then require("removal").guest(d.root, d.id, d.name, me) end -- (and out again in a day, on every computer)
       do -- a kept version of what's open, from before they arrived
         local recall = require("recall")
