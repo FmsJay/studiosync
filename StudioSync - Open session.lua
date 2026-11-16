@@ -17,6 +17,12 @@ if b and b.role == "host" then
   return band.msg("This is the host project for '" .. b.song .. "'. Open it in a new project tab instead.")
 end
 
+-- The tab in front can take the song: empty, untitled, and nothing in it changed. Changed (a cursor move, a script's note), REAPER first asked
+-- "Save unsaved project before closing?" and the song waited behind it (laptop and Linux VM tests, 0.58.75): a tab of its own then.
+local function reusable()
+  local p, fn = reaper.EnumProjects(-1)
+  return fn == "" and reaper.CountTracks(p) == 0 and reaper.IsProjectDirty(p) == 0
+end
 local function open_song(song, room) -- room: for a new tab (nil when refreshing a bound one)
   require("songsync").want(cfg, song) -- (only its listing may be here yet: from now on it comes in full)
   local s = band.read_json(band.session_path(cfg, song))
@@ -59,7 +65,7 @@ local function open_song(song, room) -- room: for a new tab (nil when refreshing
     end
     for _, f in ipairs(files) do
       if room == "main" and f ~= "" and reaper.file_exists(f) then
-        if reaper.CountTracks(0) > 0 or select(2, reaper.EnumProjects(-1)) ~= "" then reaper.Main_OnCommand(40859, 0) end
+        if not reusable() then reaper.Main_OnCommand(40859, 0) end
         require("startup").open_quietly(function() reaper.Main_openProject(f) end)
         local ob = band.binding(reaper.EnumProjects(-1))
         if ob and ob.song == song then
@@ -71,7 +77,7 @@ local function open_song(song, room) -- room: for a new tab (nil when refreshing
         break
       end
     end
-    if reaper.CountTracks(0) > 0 or select(2, reaper.EnumProjects(-1)) ~= "" then reaper.Main_OnCommand(40859, 0) end -- File: New project tab
+    if not reusable() then reaper.Main_OnCommand(40859, 0) end -- File: New project tab
     b = { role = s.host == cfg.user and "host" or "guest", song = song, room = room, root = cfg.root }
   end
 

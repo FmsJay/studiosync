@@ -29,5 +29,10 @@ projects = { { p = "a", fn = "A.rpp" }, { p = "b", fn = "B.rpp" } }; now = 10; s
 assert(#written.tabs == 3, "not at once")
 now = 13.5; startup.note()
 assert(#written.tabs == 2, "3 s later: two")
+-- (0.58.75) a quit held up past the 3 s (a dialog in the way): the plan's gone, but the band tabs of the last 2 minutes come back
+local band_tabs = { { path = "A.rpp", band = true } }
+assert(startup.quit_tabs({}, { tabs = band_tabs, at = 100 }, 150) == band_tabs, "closed by a stalled quit a moment ago: reopened")
+assert(startup.quit_tabs({}, { tabs = band_tabs, at = 100 }, 400) == nil, "closed on purpose minutes before quitting: not")
+assert(startup.quit_tabs(band_tabs, nil, 0) == band_tabs and startup.quit_tabs({ { path = "own.rpp" } }, nil, 0) == nil, "the tabs as noted, when they hold a band song")
 os.remove = _remove
 print("ok")

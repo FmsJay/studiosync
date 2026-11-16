@@ -490,7 +490,13 @@ elif ! pgrep -x syncthing >/dev/null; then
 fi
 up=""; for i in $(seq 1 60); do stcli show system >/dev/null && { up=1; break; }; sleep 1; done
 [ -n "$up" ] || { warn "Syncthing didn't answer; finish its setup by hand (see installer/SKILL.md)"; exit 1; }
+# (a distro's Syncthing can be older than `device-id`: Ubuntu 24.04's 1.27 has only --device-id, and the running one's API answers either way.
+# The ID came out empty there, and with it the device's name. Linux VM, 0.58.75)
 MY_ID="$("$ST" device-id --home "$STHOME" 2>/dev/null | tail -1 | tr -d '[:space:]')"
+is_id() { [[ "$1" =~ ^[A-Z0-9]{7}(-[A-Z0-9]{7}){7}$ ]]; }
+is_id "$MY_ID" || MY_ID="$("$ST" --device-id --home "$STHOME" 2>/dev/null | tail -1 | tr -d '[:space:]')"
+is_id "$MY_ID" || MY_ID="$(stcli show system 2>/dev/null | sed -n 's/.*"myID": *"\([A-Z0-9-]*\)".*/\1/p' | head -1)"
+is_id "$MY_ID" || warn "couldn't read this computer's Syncthing ID (it's in Syncthing's web page: Actions > Show ID)"
 # (run again by someone already in: the folder Syncthing already has for this studio, not the default. Laptop test, 0.58.69)
 if [ -z "${BS_ROOT:-}" ] && [ -n "${FOLDER_ID:-}" ] && HAD="$(stcli config folders "$FOLDER_ID" path get)" && [ -d "$HAD" ] && [ "$HAD" != "$ROOT" ]; then
   ROOT="${HAD%/}"; say "$BAND_NAME's shared folder is already here: $ROOT"

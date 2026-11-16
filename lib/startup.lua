@@ -43,6 +43,7 @@ function startup.note()
   known, fewer_since = tabs, nil
   kept, kept_n = sig, #tabs
   if startup.plan(tabs) then
+    startup.last_band = { tabs = tabs, at = reaper.time_precise() } -- (for on_quit, if a quit that stalls outlasts the 3 s above)
     kept_was = kept_was or reaper.SNM_GetIntConfigVar("loadlastproj", 1)
     band.write_json(FILE, { tabs = tabs, loadlastproj = kept_was })
     set_open_mode(startup.no_open(kept_was))
@@ -65,11 +66,19 @@ function startup.no_open(value) return value - value % 8 + 2 end
 
 function startup.same_path(p) return (p:gsub("\\", "/"):lower()) end
 
+-- What to reopen, as REAPER quits, when no plan is on disk: the tabs as last noted, or the band tabs of the last 2 minutes, which a quit
+-- held up (a dialog in the way, ReaPack's report) had closed long enough for note() to take them as closed on purpose. Pure. Linux VM, 0.58.75
+function startup.quit_tabs(known_tabs, last_band, now)
+  if startup.plan(known_tabs) then return known_tabs end
+  if last_band and now - last_band.at < 120 then return last_band.tabs end
+end
 function startup.on_quit()
   -- (once: Autostart reloaded on an update has asked twice, and the second time read "new project" as the person's own choice)
-  if band.read_json(FILE) or not usable() or not startup.plan(known) then return end
-  local was = reaper.SNM_GetIntConfigVar("loadlastproj", 1)
-  band.write_json(FILE, { tabs = known, loadlastproj = was })
+  if band.read_json(FILE) or not usable() then return end
+  local tabs = startup.quit_tabs(known, startup.last_band, reaper.time_precise())
+  if not tabs then return end
+  local was = kept_was or reaper.SNM_GetIntConfigVar("loadlastproj", 1)
+  band.write_json(FILE, { tabs = tabs, loadlastproj = was })
   set_open_mode(startup.no_open(was))
 end
 
