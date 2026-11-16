@@ -175,7 +175,14 @@ alone; automation items on plug-in knobs use each computer's own pool; a media f
 frozen audio tracks unfrozen elsewhere point at the freezer's own files; a knob turned on a restless take FX goes out with the item's next
 change. Not tried for real: the new installer paths (no winget, SyncTrayzor, portable REAPER, macOS 11, Flatpak/AppImage, snap Syncthing).
 
-## Security items, 0.58.78 (branch `left-security`, not released)
+Invite and Let them in, real run (0.58.78, Windows Sandbox on the laptop, a throwaway studio on the PC): the invitation fetched the
+installer from the v0.58.78 tag; the installer waited through REAPER's first start with its new messages and ended with "Done" (no
+false "didn't run"); the panel showed the studio's own name before and after. Let them in (device, then folder) wrote band.json out
+again with `managers` and `roles_at`; the joiner kept who invited it and the studio's id, pinned James's PC as owner, switched the
+introducer off, and connected directly; a file each way arrived within 15 s. The Sandbox test script now answers commands while the
+installer runs (it waits up to 45 minutes for the first-start windows).
+
+## Security items, 0.58.78
 
 The six left from the 2026-11-16 security review, plus given claims and the new-computer question. Everything Syncthing is asked comes
 through `lib/trust.lua` (modifiedBy); "" (a folder or file Syncthing doesn't hold) is still believed, as since 0.58.69.

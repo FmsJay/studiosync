@@ -22,6 +22,43 @@ if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
 $wg = Get-Command winget -ErrorAction SilentlyContinue
 Note "winget: $(if ($wg) { & winget --version } else { 'MISSING' })"
 
+# What a bandmate's PC looks like, and commands dropped in by the PC, from the start: alongside the installer, which now waits (up to 45 minutes)
+# for REAPER's first-start windows to be answered, so commands only run after it would never answer them (0.58.78 Sandbox run).
+$watch = {
+  param($ss)
+  Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+  function Shot($path) { # the Sandbox's own screen, so its windows can be seen without bringing the Sandbox forward on the laptop
+    $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+    [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+    $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
+  }
+  while ($true) { # what a bandmate's PC looks like now, for the laptop to read
+    foreach ($c in Get-ChildItem "$ss\cmd-*.ps1" -ErrorAction SilentlyContinue) { # commands dropped in by the PC, run once each
+      $o = try { & $c.FullName *>&1 | Out-String } catch { "ERROR $_" }
+      Set-Content ($c.FullName -replace '\.ps1$', '.out') $o
+      Remove-Item $c.FullName
+    }
+    try { Shot "$ss\shot.png" } catch { }
+    $ts = "C:\Program Files\Tailscale\tailscale.exe"
+    $st = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\*\syncthing*\syncthing.exe", "C:\Program Files*\Syncthing\syncthing.exe", "$env:LOCALAPPDATA\Programs\Syncthing\syncthing.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+    $root = "$env:USERPROFILE\StudioSync Sandbox Test"
+    @(
+      "time $(Get-Date -Format HH:mm:ss)"
+      "tailscale: $(if (Test-Path $ts) { (& $ts status --self --peers=false 2>&1 | Out-String).Trim() } else { 'not installed' })"
+      "tailscale ip: $(if (Test-Path $ts) { (cmd /c "`"$ts`" ip -4 2>&1" | Out-String).Trim() })"
+      "syncthing: $(if ($st) { $st.FullName } else { 'not found' }); running: $([bool](Get-Process syncthing -ErrorAction SilentlyContinue))"
+      "syncthing id: $(if ($st) { (& $st.FullName device-id 2>&1 | Out-String).Trim() })"
+      "reaper running: $([bool](Get-Process reaper -ErrorAction SilentlyContinue))"
+      "studio folder: $(Test-Path $root)"
+      "studio files:"
+      (Get-ChildItem $root -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { "  " + $_.FullName.Substring($root.Length) + " " + $_.Length })
+    ) | Set-Content "$ss\status.txt"
+    Start-Sleep -Seconds 10
+  }
+}
+$watcher = Start-Job -ScriptBlock $watch -ArgumentList $ss
+
 $line = (Get-Content "$ss\invite.txt" -Raw).Trim()
 Remove-Item "$ss\invite.txt" -Force # (a single-use guest key: gone from the shared folder once read)
 $answers = " -User 'Sandbox Guest' -Root `"$env:USERPROFILE\StudioSync Sandbox Test`" -Live yes -Solo no -Plugins no -Extras no"
@@ -32,33 +69,4 @@ Set-Content $run ($line + $answers) -Encoding UTF8
 Note "installer finished (exit $LASTEXITCODE)"
 Stop-Transcript | Out-Null
 
-Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-function Shot($path) { # the Sandbox's own screen, so its windows can be seen without bringing the Sandbox forward on the laptop
-  $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-  $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
-  [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
-  $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
-}
-while ($true) { # what a bandmate's PC looks like now, for the laptop to read
-  foreach ($c in Get-ChildItem "$ss\cmd-*.ps1" -ErrorAction SilentlyContinue) { # commands dropped in by the PC, run once each
-    $o = try { & $c.FullName *>&1 | Out-String } catch { "ERROR $_" }
-    Set-Content ($c.FullName -replace '\.ps1$', '.out') $o
-    Remove-Item $c.FullName
-  }
-  try { Shot "$ss\shot.png" } catch { }
-  $ts = "C:\Program Files\Tailscale\tailscale.exe"
-  $st = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\*\syncthing*\syncthing.exe", "C:\Program Files*\Syncthing\syncthing.exe", "$env:LOCALAPPDATA\Programs\Syncthing\syncthing.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-  $root = "$env:USERPROFILE\StudioSync Sandbox Test"
-  @(
-    "time $(Get-Date -Format HH:mm:ss)"
-    "tailscale: $(if (Test-Path $ts) { (& $ts status --self --peers=false 2>&1 | Out-String).Trim() } else { 'not installed' })"
-    "tailscale ip: $(if (Test-Path $ts) { (cmd /c "`"$ts`" ip -4 2>&1" | Out-String).Trim() })"
-    "syncthing: $(if ($st) { $st.FullName } else { 'not found' }); running: $([bool](Get-Process syncthing -ErrorAction SilentlyContinue))"
-    "syncthing id: $(if ($st) { (& $st.FullName device-id 2>&1 | Out-String).Trim() })"
-    "reaper running: $([bool](Get-Process reaper -ErrorAction SilentlyContinue))"
-    "studio folder: $(Test-Path $root)"
-    "studio files:"
-    (Get-ChildItem $root -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { "  " + $_.FullName.Substring($root.Length) + " " + $_.Length })
-  ) | Set-Content "$ss\status.txt"
-  Start-Sleep -Seconds 10
-}
+Wait-Job $watcher | Out-Null # (until the Sandbox closes)
