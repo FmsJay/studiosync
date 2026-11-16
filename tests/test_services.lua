@@ -22,6 +22,7 @@ assert(not services.on_tailnet("[fd7a:115c:a1e1::1]:22000") and not services.on_
 local inv_id = "2MOGZMD-MVLUUSO-D6GXQIG-HMDVUBG-AOW6LHR-LMQQT6P-V4V5P73-6ZR5NQZ"
 local inv = services.invite_text(inv_id, { id = "bandsync", name = "Chilio" })
 assert(inv:find('install_mac.sh?$(date +%s)" | BS_HOST_ID=' .. inv_id .. " BS_BAND_ID=bandsync BS_BAND_NAME='Chilio' bash", 1, true), "Mac line")
+assert(inv:find('install_linux.sh?$(date +%s)" | BS_HOST_ID=' .. inv_id .. " BS_BAND_ID=bandsync BS_BAND_NAME='Chilio' bash", 1, true), "Linux line (0.58.74)")
 assert(inv:find("-File $f -HostId " .. inv_id .. " -BandId bandsync -BandName 'Chilio'", 1, true) and inv:find('"$env:TEMP\\studiosync_install.ps1"', 1, true), "Windows line")
 assert(inv:find("^Join Chilio on StudioSync"), "it says which band")
 local g = services.invite_text(inv_id, { id = "bandsync", name = "Chilio" }, "tskey-auth-kAbc123CNTRL-xyz")

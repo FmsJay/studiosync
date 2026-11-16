@@ -270,8 +270,9 @@ function chat.draw(ctx, ImGui, cfg, b)
           local web = l.url:match("^https?://") ~= nil
           if web or reaper.MB("Open this? It isn't a web link:\n\n" .. l.url, "StudioSync", 4) == 6 then
             if reaper.CF_ShellExecute then reaper.CF_ShellExecute(l.url)
-            elseif reaper.GetOS():find("^Win") then os.execute('start "" "' .. l.url:gsub('"', "") .. '"')
+            elseif band.WIN then os.execute('start "" "' .. l.url:gsub('"', "") .. '"')
             -- (single quotes: inside double ones the shell still runs $(...) and `...` from a link someone typed)
+            elseif band.LINUX then os.execute("xdg-open '" .. l.url:gsub("'", "'\\''") .. "' >/dev/null 2>&1 &")
             else os.execute("open '" .. l.url:gsub("'", "'\\''") .. "'") end
           end
         end

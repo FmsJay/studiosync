@@ -10,6 +10,12 @@ description: Set up StudioSync (remote band recording in REAPER) on this compute
 answering its questions as parameters (`-User -Hosting yes|no -HostId -Root`, and `-Live no` / `-Solo no` only to leave out SonoBus + Tailscale / Google Drive, which otherwise always go in; on macOS the
 `BS_*` environment variables in its header), and use the steps below to explain prompts, repair, or finish what it
 lists as left for a human. Both have been run for real (Windows, and a Mac on 2026-10-31). They wait while the person signs in to Google Drive; any key (Return on a Mac) skips a wait.
+**Linux:** `install_linux.sh` (`curl -fsSL "https://raw.githubusercontent.com/FmsJay/studiosync/main/installer/install_linux.sh?$(date +%s)" | bash`,
+in a terminal on the computer's own desktop) takes the same `BS_*` variables as the Mac one, plus `BS_SUDO=yes|no`. Everything goes in
+per user without sudo: REAPER through its own `install-reaper.sh --install ~/opt --integrate-user-desktop`, Syncthing into
+`~/.local/bin` (a systemd user unit when there is systemd), SonoBus unpacked from sonobus.net's .deb, plug-ins into `~/.vst3` / `~/.clap`.
+Only Tailscale (and SonoBus's JACK/Opus libraries, if missing) need sudo, asked first. No Google Drive (no Linux app; a note mentions
+rclone), no NAM/sforzando (no Linux builds); on ARM fewer plug-ins and no js_ReaScriptAPI. Not yet run on a real machine.
 
 You are installing StudioSync for a musician who is probably not technical. They are at the keyboard.
 Your job is to get them from nothing to "my take landed in the host's project", explaining each
@@ -30,6 +36,8 @@ and macOS 26 (2026-10-26); the times quoted are from those runs.
   - Windows: `& "<REAPER dir>\reaper.exe" -nonewinst "<file.lua>"` (PowerShell `Start-Process` works;
     Git Bash may refuse to exec reaper.exe)
   - macOS: `open -a /Applications/REAPER.app "<file.lua>"`
+  - Linux: `~/opt/REAPER/reaper -nonewinst "<file.lua>"` (started detached, `setsid ... </dev/null &`; with no REAPER running it
+    starts one with the script)
 
   Scripts run this way must not open dialogs (`GetUserInputs`, `MB`); those block REAPER until a human clicks.
   `gfx.showmenu` pickers only work when the user runs the action from REAPER's Action list. Have scripts
@@ -53,6 +61,7 @@ Ask: their name as the band should see it; whether they have an **invitation** (
 |---|---|---|
 | Windows | `winget install --id Syncthing.Syncthing --exact --silent` (official, MPL-2.0) | `syncthing` (on PATH via winget alias) |
 | macOS | official **Syncthing for macOS** .dmg from syncthing.net (signed, notarized; no Homebrew needed) | `/Applications/Syncthing.app/Contents/Resources/syncthing/syncthing cli --home "$HOME/Library/Application Support/Syncthing"` |
+| Linux | the distribution's `syncthing` if present, else `syncthing-linux-<amd64\|arm64\|arm>-v<ver>.tar.gz` from GitHub releases into `~/.local/bin` (no sudo); runs as a systemd user unit | `syncthing cli --home ~/.local/state/syncthing` (or `~/.config/syncthing` if an older one set up there) |
 
 Windows: `syncthing generate`, then start `syncthing serve --no-browser` detached. Ask about starting it at login;
 it only syncs while running.
@@ -121,7 +130,7 @@ restart REAPER. Re-run the helper with `"mode": "verify"` and expect `"reaimgui"
 ## 4. SonoBus and Tailscale
 
 **Real time** uses **SonoBus** (`winget install --id Sonosaurus.SonoBus --exact`; macOS: `sonobus-<ver>-mac.dmg`
-from github.com/sonosaurus/sonobus releases). Nothing else to set up: the panel's Live tab adds it already set to
+from github.com/sonosaurus/sonobus releases; Linux: the .deb from pkg.sonobus.net, unpacked per user into `~/.local/bin` and `~/.vst3`). Nothing else to set up: the panel's Live tab adds it already set to
 join the band's studio under the musician's StudioSync name. REAPER lists a new plug-in only after it restarts, so install SonoBus before REAPER's first start
 or restart REAPER after.
 
@@ -132,6 +141,7 @@ Everyone signs in to the studio's one account (James's choice). Otherwise the ho
 |---|---|---|
 | Windows | `winget install --id Tailscale.Tailscale --exact` | `"C:\Program Files\Tailscale\tailscale.exe"` |
 | macOS | standalone package from tailscale.com/download (or the Mac App Store) | `/Applications/Tailscale.app/Contents/MacOS/Tailscale` |
+| Linux | `curl -fsSL https://tailscale.com/install.sh \| sh` (needs sudo), then `sudo tailscale set --operator=$USER` so sign-in needs no sudo | `tailscale` |
 
 - **Sign-in is the musician's own click,** with their own account (Google, Apple, Microsoft...). Never create an
   account or sign in for them. macOS asks to **add VPN configurations** (and, for the standalone package, to allow a
@@ -155,7 +165,7 @@ Solo edit keeps each song's one real project in a Google Drive folder, so whoeve
 always starts from the latest version.
 
 - Install **Google Drive for desktop** (Windows: `winget install --id Google.GoogleDrive --exact`; macOS: the dmg
-  from google.com/drive/download). Sign-in is the musician's click. macOS asks to allow its File Provider / system
+  from google.com/drive/download; Linux: none exists, rclone can mount the folder instead). Sign-in is the musician's click. macOS asks to allow its File Provider / system
   extension: allow it.
 - **Host:** create a folder **StudioSync** in *My Drive* and share it with each bandmate as **Editor**.
 - **Bandmate:** at drive.google.com, *Shared with me* > right-click **StudioSync** > *Organize* > **Add shortcut** >

@@ -134,6 +134,13 @@ On Windows paste this into PowerShell the same way:
 `$f="$env:TEMP\studiosync_install.ps1"; iwr -UseBasicParsing "https://raw.githubusercontent.com/FmsJay/studiosync/main/installer/install_windows.ps1" -OutFile $f; powershell -NoProfile -ExecutionPolicy Bypass -File $f`
 (the Mac line is below).
 
+**On Linux** (new, not yet run on a real machine): open a terminal on the computer's own desktop and paste the line from an invitation, or
+`curl -fsSL "https://raw.githubusercontent.com/FmsJay/studiosync/main/installer/install_linux.sh?$(date +%s)" | bash`.
+It asks the same questions and installs everything for you only, with no password: REAPER into `~/opt/REAPER`, Syncthing, SonoBus,
+ReaPack, ReaImGui, js_ReaScriptAPI (x86_64 only), SWS and the plug-in pack's Linux builds. Tailscale needs sudo: it asks first, and
+saying no leaves a note instead. Google Drive has no Linux app, so the studio's Drive copy is skipped (rclone can stand in), and so
+are Neural Amp Modeler and sforzando, which have no Linux builds.
+
 **Or the installer files.** Download the `installer` folder (or just the one file) and double-click
 **Install StudioSync (Windows).cmd**, or on a Mac **Install StudioSync (Mac).command**. It first asks for
 the invitation you were sent, if any: paste it (all of it, or its studiosync-join line) and you join that studio; type *s* and

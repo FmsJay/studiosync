@@ -11,4 +11,5 @@ assert(line:find("2 plug-in(s)", 1, true) and line:find("UADx Neve", 1, true) an
 assert(startup.same_path("D:\\A\\B/song.RPP") == startup.same_path("d:/a/b/SONG.rpp"), "one file however it's written")
 assert(startup.hand_over("OSX64", "/Applications", "/a b/c.rpp") == '"/Applications/REAPER.app/Contents/MacOS/REAPER" -nonewinst -ignoreerrors "/a b/c.rpp"', "a Mac's")
 assert(startup.hand_over("Win64", "J:\\R", "J:\\a b\\c.rpp") == '"J:\\R\\reaper.exe" -nonewinst -ignoreerrors "J:\\a b\\c.rpp"', "Windows'")
+assert(startup.hand_over("Other", "/home/s/opt/REAPER", "/a b/c.rpp") == '"/home/s/opt/REAPER/reaper" -nonewinst -ignoreerrors "/a b/c.rpp"', "Linux's")
 print("ok")

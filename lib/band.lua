@@ -40,6 +40,13 @@ end
 
 -- ---- small helpers --------------------------------------------------------------------------
 
+-- Which kind of computer (REAPER's GetOS: "Win64"..., "OSX64" or "macOS-arm64", and "Other" or "linux-..." on Linux). Much of StudioSync took
+-- anything that isn't Windows for a Mac; Linux shares the Mac's shell but not its programs (open, Trash, nc's flags). 0.58.74
+local OSNAME = tostring(reaper and reaper.GetOS and reaper.GetOS() or "")
+band.WIN = OSNAME:find("^Win") ~= nil
+band.MAC = OSNAME:find("^OSX") ~= nil or OSNAME:find("^macOS") ~= nil
+band.LINUX = not band.WIN and not band.MAC
+
 function band.clean(s) return (s:gsub("[^%w%-_ ]", ""):match("^%s*(.-)%s*$")) end
 local function norm(p) return (p:gsub("\\", "/"):gsub("/+$", "")) end
 band.norm = norm
@@ -527,7 +534,9 @@ end
 -- A web page in the browser.
 function band.open_url(url)
   if reaper.CF_ShellExecute then return reaper.CF_ShellExecute(url) end
-  if reaper.GetOS():find("^Win") then os.execute('start "" "' .. url:gsub('"', "") .. '"') else os.execute("open '" .. url:gsub("'", "") .. "'") end
+  if band.WIN then os.execute('start "" "' .. url:gsub('"', "") .. '"')
+  elseif band.LINUX then os.execute("xdg-open '" .. url:gsub("'", "") .. "' >/dev/null 2>&1 &")
+  else os.execute("open '" .. url:gsub("'", "") .. "'") end
 end
 
 -- Text onto the clipboard, saying so. SWS's when it's there: ReaImGui's left a Mac's clipboard as it was (Health's Copy the line, 0.58.20).

@@ -240,7 +240,7 @@ local function persona_keys(core)
   -- (on a Mac GetExePath() is the folder holding REAPER.app, "/Applications", not a path inside it: matching ".app" in it found nothing, REAPER
   -- quit and was never started again. Mac review, 0.58.67. install_shortcuts.py opens a .app with `open -a`)
   local d = reaper.GetExePath():gsub("\\", "/"):gsub("/+$", "")
-  local exe = d .. "/reaper.exe"
+  local exe = d .. (reaper.GetOS():find("^Win") and "/reaper.exe" or "/reaper") -- (Linux: the reaper binary beside it)
   if core.IS_MAC then
     exe = d:match("^(.-%.app)") or d .. "/REAPER.app"
     for _, a in ipairs({ d .. "/REAPER.app", d .. "/REAPER64.app" }) do if not d:match("%.app") and reaper.file_exists(a .. "/Contents/Info.plist") then exe = a; break end end

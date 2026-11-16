@@ -65,6 +65,7 @@ function services.running(exe, fresh)
   return out:match("%d") ~= nil -- pgrep prints the pids
 end
 
+local NC_WAIT = band.LINUX and "-w" or "-G" -- (netcat's connect timeout: -G on a Mac, -w on Linux, which has no -G)
 -- Does something answer at "host:port"? In the background, for a loop (services.answers waits for it). True only once two runs in a row said so: a call
 -- hands back the previous run's answer, and the first after a while was from before a server stopped, which pressed Connect at nothing (Mac, 0.58.21).
 local runs = {}
@@ -76,7 +77,8 @@ function services.port_open(address)
   if WIN then -- (as services.answers; %% is a batch file's %)
     open = (tonumber((background(name, 'curl -s -o NUL -m 3 -w %%{time_connect} "http://' .. host .. ":" .. port .. '/"', 3) or ""):match("[%d%.]+")) or 0) > 0
   else
-    open = (background(name, "/usr/bin/nc -z -G 3 '" .. host .. "' " .. port .. " && echo open || echo shut", 3) or ""):find("open", 1, true) ~= nil
+    -- (Linux's netcat has no -G; its -w is the connect timeout there. 0.58.74)
+    open = (background(name, "/usr/bin/nc -z " .. NC_WAIT .. " 3 '" .. host .. "' " .. port .. " && echo open || echo shut", 3) or ""):find("open", 1, true) ~= nil
   end
   local r = runs[name] or {}
   runs[name] = r
@@ -93,7 +95,7 @@ function services.answers(address)
   -- its exit code can't tell: 28 is both "connected, and nothing came in a second" and "nobody there", which is what an offline Tailscale machine does)
   -- (3 s: Tailscale's first packets to a computer that's been quiet can take over 1, and a live host then read as gone and was taken over)
   if WIN then return (tonumber((reaper.ExecProcess('curl -s -o NUL -m 3 -w %{time_connect} "http://' .. host .. ":" .. port .. '/"', 5000) or ""):match("\n([%d%.]+)")) or 0) > 0 end
-  return (reaper.ExecProcess("/usr/bin/nc -z -G 3 " .. host .. " " .. port, 5000) or ""):match("^0\n") ~= nil
+  return (reaper.ExecProcess("/usr/bin/nc -z " .. NC_WAIT .. " 3 " .. host .. " " .. port, 5000) or ""):match("^0\n") ~= nil
 end
 
 -- Start `path args...` in the background, hidden, in `cwd` (optional). Returns true if launched.
@@ -138,7 +140,9 @@ function services.syncthing_path()
   return first_existing({ set,
     lad .. "/Microsoft/WinGet/Links/syncthing.exe", "C:/Program Files/Syncthing/syncthing.exe", lad .. "/Programs/Syncthing/syncthing.exe",
     "/Applications/Syncthing.app/Contents/Resources/syncthing/syncthing", -- (the Mac app before a Homebrew copy: the installer's)
-    "/opt/homebrew/bin/syncthing", "/usr/local/bin/syncthing", "/usr/bin/syncthing" }) or (lad ~= "" and services.winget_syncthing(lad) or nil)
+    "/opt/homebrew/bin/syncthing", "/usr/local/bin/syncthing", "/usr/bin/syncthing",
+    (os.getenv("HOME") or "~") .. "/.local/bin/syncthing" }) -- (Linux, where the installer puts the release build when the distro has none)
+    or (lad ~= "" and services.winget_syncthing(lad) or nil)
 end
 
 -- Make sure Syncthing runs. Returns "running", "started", or nil + why.
@@ -333,6 +337,9 @@ function services.invite_text(id, info, key)
     "powershell -NoProfile -ExecutionPolicy Bypass -File $f -HostId " .. id .. " -BandId " .. info.id .. " -BandName " .. q1(info.name) .. (key and (" -TsKey " .. key) or "") .. "\n\n" ..
     "Mac: press Cmd+Space, type Terminal, open it, paste this line and press Return:\n" ..
     'curl -fsSL "' .. base .. 'install_mac.sh?$(date +%s)" | BS_HOST_ID=' .. id .. " BS_BAND_ID=" .. info.id ..
+    " BS_BAND_NAME=" .. q1(info.name) .. (key and (" BS_TS_KEY=" .. key) or "") .. " bash\n\n" ..
+    "Linux: open a terminal, paste this line and press Enter:\n" ..
+    'curl -fsSL "' .. base .. 'install_linux.sh?$(date +%s)" | BS_HOST_ID=' .. id .. " BS_BAND_ID=" .. info.id ..
     " BS_BAND_NAME=" .. q1(info.name) .. (key and (" BS_TS_KEY=" .. key) or "") .. " bash\n\n" ..
     "Answer its questions, and when it's done, tell me: I let you in from my StudioSync panel.\n\n" ..
     (key and "That works once, within a day: it puts your computer on my Tailscale network as a guest for the day (no account needed). If you use Tailscale for anything else, switch back from its menu afterwards.\n\n" or "") ..
@@ -925,19 +932,28 @@ function services.ninjam_dir()
   local own = reaper.GetExtState(band.SECTION, "ninjam_dir")
   return own ~= "" and own or (debug.getinfo(1, "S").source:match("^@?(.*)[/\\]") .. "/ninjam")
 end
+-- One of the programs in lib/ninjam for this computer: Linux's are per processor (lib/ninjam/linux-x86_64/, linux-aarch64/: built by
+-- .github/workflows/extension.yml), Windows' and the Mac's (universal) sit in lib/ninjam itself. 0.58.74
+local arch
+function services.ninjam_bin(name)
+  if not band.LINUX then return services.ninjam_dir() .. "/" .. name end
+  arch = arch or ((reaper.ExecProcess("/bin/uname -m", 3000) or ""):match("^0\n(%S+)") or "x86_64")
+  return services.ninjam_dir() .. "/linux-" .. arch .. "/" .. name
+end
 -- It runs from a copy in StudioSync's own folder: a running program couldn't be replaced by the next update.
 function services.ensure_ninjam()
   if services.running("ninjamsrv", true) then return "running" end
   local from, name = services.ninjam_dir(), WIN and "ninjamsrv.exe" or "ninjamsrv"
-  if not reaper.file_exists(from .. "/" .. name) then return nil, "there's no NINJAM server for this computer in " .. from end
+  local bin = services.ninjam_bin(name)
+  if not reaper.file_exists(bin) then return nil, "there's no NINJAM server for this computer (" .. bin .. ")" end
   if not reaper.file_exists(from .. "/bandsync.cfg") then return nil, "no bandsync.cfg in " .. from end
   local dir = band.home():gsub("\\", "/") .. "/ninjam"
   reaper.RecursiveCreateDirectory(dir, 0)
-  pcall(band.copy_atomic, from .. "/" .. name, dir .. "/" .. name) -- (one just started may not show as running yet: it holds the file)
+  pcall(band.copy_atomic, bin, dir .. "/" .. name) -- (one just started may not show as running yet: it holds the file)
   pcall(band.copy_atomic, from .. "/bandsync.cfg", dir .. "/bandsync.cfg")
   if not WIN then
     local sh = TMP .. "/bandsync-ninjam.sh"
-    band.write_atomic(sh, "chmod +x '" .. dir .. "/" .. name .. "'; xattr -c '" .. dir .. "/" .. name .. "'\n")
+    band.write_atomic(sh, "chmod +x '" .. dir .. "/" .. name .. "'" .. (band.MAC and ("; xattr -c '" .. dir .. "/" .. name .. "'") or "") .. "\n")
     reaper.ExecProcess("/bin/sh '" .. sh .. "'", 5000)
   end
   if not launch(dir .. "/" .. name, { "bandsync.cfg" }, dir) then return nil, "couldn't start " .. dir .. "/" .. name end
@@ -971,7 +987,7 @@ end
 -- start (Autostart): a relay from before 0.58.47 doesn't leave when REAPER does, and stayed for days (the Mac, 0.58.68 test). -> true if it stopped one.
 function services.stop_old_relay()
   if WIN or not services.running("njrelay", true) or services.relay_status() ~= "idle" then return false end
-  local from = services.ninjam_dir() .. "/njrelay"
+  local from = services.ninjam_bin("njrelay")
   if not reaper.file_exists(from) or band.read(from) == band.read(relay_dir() .. "/njrelay") then return false end
   local sh = TMP .. "/bandsync-njrelay-stop.sh"
   band.write_atomic(sh, "/usr/bin/pkill -x njrelay; sleep 1\n") -- (gone before the new one takes the port)
@@ -979,7 +995,7 @@ function services.stop_old_relay()
   return true
 end
 function services.relay_for(server)
-  local from = services.ninjam_dir() .. "/njrelay"
+  local from = services.ninjam_bin("njrelay")
   if WIN or not server:match("^.+:%d+$") or not reaper.file_exists(from) or services.relay_status() == "cantlisten" then return server end
   local dir = relay_dir()
   reaper.RecursiveCreateDirectory(dir, 0)
@@ -987,7 +1003,7 @@ function services.relay_for(server)
   if not services.running("njrelay", true) or services.stop_old_relay() then
     pcall(band.copy_atomic, from, dir .. "/njrelay")
     local sh = TMP .. "/bandsync-njrelay.sh"
-    band.write_atomic(sh, "chmod +x '" .. dir .. "/njrelay'; xattr -c '" .. dir .. "/njrelay'\n")
+    band.write_atomic(sh, "chmod +x '" .. dir .. "/njrelay'" .. (band.MAC and ("; xattr -c '" .. dir .. "/njrelay'") or "") .. "\n")
     reaper.ExecProcess("/bin/sh '" .. sh .. "'", 5000)
     os.remove(dir .. "/njrelay.txt")
     if not launch(dir .. "/njrelay", { tostring(services.RELAY_PORT), "njrelay.target", "njrelay.txt" }, dir) then return server end

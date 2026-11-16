@@ -145,13 +145,15 @@ end
 -- shortcut: a plain move, so Finder's Put Back stays greyed out; going through Finder would add an automation prompt, opening the project brings it back anyway.
 -- `failed`: a file touched when a move is refused (macOS guards the Trash: a program without Full Disk Access may not write there. Mac review,
 -- 0.58.62), so the message says so instead of "still on its way".
-function copy.trash_script(paths, label, stamp, failed)
+-- linux: the desktop's own Trash through `gio trash` (its own name kept; Restore puts it back where it was), not the Mac's ~/.Trash. 0.58.74
+function copy.trash_script(paths, label, stamp, failed, linux)
   local sq = function(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
   local lines = {}
   for i, p in ipairs(paths) do
     local name = "StudioSync - " .. (label and label .. " - " or "") .. stamp .. " - " .. i .. " " .. p:match("[^/]+$")
+    local move = linux and ("gio trash " .. sq(p)) or ("mv " .. sq(p) .. ' "$HOME/.Trash/"' .. sq(name))
     -- (if/then: with `[ -e ] && mv || touch` a path already gone, say Syncthing took it meanwhile, read as a refused move. Review, 0.58.67)
-    lines[#lines + 1] = "if [ -e " .. sq(p) .. " ]; then mv " .. sq(p) .. ' "$HOME/.Trash/"' .. sq(name) .. (failed and (" || touch " .. sq(failed)) or "") .. "; fi" -- (one line per path)
+    lines[#lines + 1] = "if [ -e " .. sq(p) .. " ]; then " .. move .. (failed and (" || touch " .. sq(failed)) or "") .. "; fi" -- (one line per path)
   end
   return table.concat(lines, "\n") .. "\n"
 end
@@ -171,7 +173,8 @@ function copy.bin_poll(h)
   if not done then return nil end
   if reaper.file_exists(h.tmp .. ".notrash") then
     os.remove(h.tmp .. ".notrash")
-    band.log("macOS didn't let StudioSync move " .. tostring(h.label or "some files") .. " to the Trash, so it's left where it is: delete it in Finder if you mean to")
+    band.log((band.LINUX and "The Trash refused " or "macOS didn't let StudioSync move ") .. tostring(h.label or "some files") ..
+      (band.LINUX and " (gio trash), so it's left where it is: delete it in your file manager if you mean to" or " to the Trash, so it's left where it is: delete it in Finder if you mean to"))
   end
   if reaper.file_exists(h.tmp .. ".nobin") then
     os.remove(h.tmp .. ".nobin")
@@ -216,7 +219,7 @@ function copy.bin_start(paths, label)
     reaper.ExecProcess(string.format('wscript.exe //B //Nologo "%s.vbs" "%s.cmd"', tmp, tmp), -1)
     return h
   end
-  band.write_atomic(tmp .. ".sh", copy.trash_script(paths, label, os.date("%Y-%m-%d %H.%M.%S"), tmp .. ".notrash") .. "touch '" .. tmp .. ".done'\n")
+  band.write_atomic(tmp .. ".sh", copy.trash_script(paths, label, os.date("%Y-%m-%d %H.%M.%S"), tmp .. ".notrash", band.LINUX) .. "touch '" .. tmp .. ".done'\n")
   reaper.ExecProcess("/bin/sh '" .. tmp .. ".sh'", -1)
   return h
 end

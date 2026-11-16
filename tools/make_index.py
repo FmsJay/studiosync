@@ -47,13 +47,16 @@ for f in sorted((ROOT / "lib" / "mac").glob("*")):  # compiled helpers (tools/ma
     rel = f"lib/mac/{f.name}"
     ET.SubElement(ver, "source", file=rel, platform="darwin").text = url(rel)
 
-for f in sorted((ROOT / "lib" / "ninjam").glob("*")):  # the NINJAM server (tools/ninjam-server): each computer gets its own
-    rel = f"lib/ninjam/{f.name}"
-    plat = {"ninjamsrv.exe": {"platform": "win64"}, "ninjamsrv": {"platform": "darwin"}, "njrelay": {"platform": "darwin"}}.get(f.name, {})
+for f in sorted(p for p in (ROOT / "lib" / "ninjam").rglob("*") if p.is_file()):  # the NINJAM server (tools/ninjam-server): each computer gets its own
+    rel = f.relative_to(ROOT).as_posix()
+    if rel.startswith("lib/ninjam/linux-"):  # (Linux's, per processor: lib/ninjam/linux-x86_64/, linux-aarch64/. services.ninjam_bin)
+        plat = {"platform": "linux64" if "/linux-x86_64/" in rel else "linux-aarch64"}
+    else:
+        plat = {"ninjamsrv.exe": {"platform": "win64"}, "ninjamsrv": {"platform": "darwin"}, "njrelay": {"platform": "darwin"}}.get(f.name, {})
     ET.SubElement(ver, "source", file=rel, **plat).text = url(rel)
 for f in sorted((ROOT / "lib" / "listen").glob("*")):  # the listening page's little file server (lib/listen.lua)
     rel = f"lib/listen/{f.name}"
-    plat = {"listen_server.ps1": {"platform": "windows"}, "listen_server.pl": {"platform": "darwin"}}.get(f.name, {})
+    plat = {"listen_server.ps1": {"platform": "windows"}}.get(f.name, {})  # (the Perl one for Macs and Linux: harmless on Windows)
     ET.SubElement(ver, "source", file=rel, **plat).text = url(rel)
 
 # Extensions > StudioSync and View > StudioSync (extension/reaper_menu.cpp): a package of its own, with a version of its own that goes up

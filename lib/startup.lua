@@ -151,7 +151,9 @@ end
 
 -- The command that hands a project to the REAPER that's running, with no boxes. Pure. exe_dir: reaper.GetExePath().
 function startup.hand_over(os_name, exe_dir, path)
-  local exe = os_name:find("^Win") and (exe_dir .. "\\reaper.exe") or (exe_dir .. "/REAPER.app/Contents/MacOS/REAPER")
+  local mac = os_name:find("^OSX") or os_name:find("^macOS")
+  -- (Linux: the reaper binary sits in the folder GetExePath gives. 0.58.74)
+  local exe = os_name:find("^Win") and (exe_dir .. "\\reaper.exe") or mac and (exe_dir .. "/REAPER.app/Contents/MacOS/REAPER") or (exe_dir .. "/reaper")
   return string.format('"%s" -nonewinst -ignoreerrors "%s"', exe, path)
 end
 startup.HAND_OVER_WAIT = 20 -- seconds for a project to arrive; after that it's opened the ordinary way, and its box waits for someone
