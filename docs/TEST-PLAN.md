@@ -66,12 +66,29 @@ Watch and write down: install time per computer and where it stalled; seconds fr
 and whether Health said *direct* or *relay*; every "put back" banner and whether its person understood it; SonoBus joins and latency; a
 deliberate REAPER kill mid-session and the recovery; Sync and exit times; any `.sync-conflict` file; everything a newcomer asked aloud.
 
+## Results, 2026-11-15 (0.58.68; fixes in 0.58.69 and ReaPersona 5.8.2)
+
+Laptop (Windows, REAPER updated 7.85 -> 7.86, silently): take on the desktop 4 s after stopping; a rename ~5 s; Take control ~5 s;
+Real time mode joined; Sync and exit 15 s and caught up on reopen within 6 s; a rendered mix on the laptop within seconds; every
+connection direct. Found: running the invitation again moved a member onto a new, empty folder (fixed: the folder Syncthing already
+has is used); REAPER's installer leaves a public desktop shortcut (removed by hand).
+
+Mac (macOS 26.5.1, arm64, REAPER 7.84): update and installer re-run pass; Health all green, direct; a take reached the PC's
+index the same second; no "save recorded media?" box; a print with no window shown. Found and fixed: setup looked for ReaPersona
+before ReaPack had brought it; ReaPersona never found Python on a Mac (REAPER runs a bare `python3` as nothing: full paths now);
+quitting with studio tabs open lost the reopen plan (tabs closed one by one with scripts running); a re-run opened Tailscale's page
+every time, told a member to be let in, and printed the Google account. REAPER's own "new version" box held the first update sync.
+
 ## Known and left for after the test
 
-- Roles, removals and closing a studio are files any member can write (trusted bands only). Identity is a chosen name.
-- A joiner pairs with the inviter as a Syncthing *introducer* with auto-accept: how a joiner meets the rest of the band, and also how a
-  hostile inviter could push folders. Fine between people who know each other.
-- The Tailscale API token lives in REAPER's settings in plain text; use a short-lived token.
-- The phone-alert channel isn't changed when someone is removed (changing it means everyone re-subscribes their phone).
-- A take marker's length may be dropped by a collaborator on REAPER 7.85 or older when they re-save that item.
-- ReaPersona's own Install button has the same Mac relaunch bug fixed here in StudioSync (separate repo).
+- Fixed in 0.58.69: roles, removals and closing count only from the owner's or an admin's computer, as Syncthing records who changed the
+  file (`lib/trust.lua`; the Console says when one is set aside). Left: someone in charge on a computer nobody has pinned yet (a new one
+  of theirs) isn't believed until they act from a known one; identity is still a chosen name; claims (`given-*`) still trust their `by`.
+- Fixed in 0.58.69: joiners pair with the inviter as an *introducer* without auto-accept (existing computers switch it off at the next
+  Live sync start), so nobody can add a folder to someone else's computer unasked.
+- Fixed in 0.58.69: the Tailscale API token is encrypted for the Windows account (DPAPI) or kept in the Mac Keychain; Linux keeps it in
+  REAPER's settings.
+- Fixed in 0.58.69: taking someone out gives the phone alerts a new channel; everyone else's StudioSync says to subscribe again.
+- A take marker's length may be dropped by a collaborator on REAPER 7.85 or older when they re-save that item. Left: restoring it on
+  7.86 would make the item differ between the two versions and risk the item syncing back and forth; everyone on 7.86 avoids it.
+- ReaPersona 5.8.1 fixed its own Install button's Mac relaunch; 5.8.2 finds Python on a Mac.

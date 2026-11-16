@@ -195,6 +195,20 @@ local function persona_core()
     end
   end
 end
+-- ReaPersona comes in the same ReaPack sync, and often lands after StudioSync's actions: the setup looked, found nothing and said "hasn't
+-- arrived yet" seconds before it did (Mac test, 0.58.68). With a DAW picked, `then_do` waits for it, up to two and a half minutes.
+local function persona_wait(then_do)
+  local want = type(req.persona) == "string" and req.persona:match("^[%w_]+$")
+  local base, started = reaper.GetResourcePath() .. "/Scripts/ReaPersona", reaper.time_precise()
+  local function here_now()
+    for _, d in ipairs({ base .. "/Workflow", base, base .. "/ReaPersona" }) do if reaper.file_exists(d .. "/reapersona_core.lua") then return true end end
+  end
+  local function look()
+    if not want or here_now() or reaper.time_precise() - started > 150 then return then_do() end
+    reaper.defer(look)
+  end
+  look()
+end
 local function persona_apply(id)
   local core = persona_core()
   if not core then out.persona_note = "ReaPersona hasn't arrived yet: in REAPER, Extensions > ReaPack > Synchronize packages, then Actions > ReaPersona to pick your DAW."; return end
@@ -319,10 +333,10 @@ if req.mode == "reapack" and out.ok then
     -- nothing more for a moment
     if n >= 5 and n == last and (not WANT or installed_version() == WANT) then same = same + 1 else same = 0 end
     last = n
-    if same >= 2 or reaper.time_precise() - started > 240 then return conclude() end
+    if same >= 2 or reaper.time_precise() - started > 240 then return persona_wait(conclude) end
     reaper.defer(wait)
   end
   reaper.defer(wait)
 else
-  conclude()
+  persona_wait(conclude)
 end

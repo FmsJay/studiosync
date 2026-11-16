@@ -1527,13 +1527,23 @@ end
 
 -- The project remembers every change it has applied, by id, and kept them all after history trim took the files away: the .rpp grew
 -- for good (review, 0.58.53). Those whose file is in none of the song's rooms any more are dropped. -> how many (also sync.forgot).
+sync.room_had_events = {}
 function sync.forget_trimmed(proj, cfg, song)
   local here = {}
   for _, r in ipairs(require("rooms").list(cfg, song)) do
-    local files = band.files(sync.room_dir(cfg, song, r.name) .. "/events", ".json")
+    local room = sync.room_dir(cfg, song, r.name)
+    local dir = room .. "/events"
+    local files = band.files(dir, ".json")
     -- (a room that reads empty just now (a drive hiccup, a folder being made again) would have its whole past taken for gone, and things like
-    -- inserted time applied again: nothing is forgotten this time. Trim always leaves each thing's newest, so a real room is never empty. Review, 0.58.62)
-    if #files == 0 then sync.forgot = 0; return 0 end
+    -- inserted time applied again: nothing is forgotten this time. Trim always leaves each thing's newest, so a room that had events is never
+    -- empty. Review, 0.58.62. A room made and never used (its events folder there, and empty every time it's been looked at) has nothing to
+    -- forget, and no longer stops forgetting for the whole song. Review, 0.58.69)
+    if #files > 0 then sync.room_had_events[dir] = true
+    else
+      local there = false
+      for _, d in ipairs(band.subdirs(room)) do if d == "events" then there = true end end
+      if sync.room_had_events[dir] or not there then sync.forgot = 0; return 0 end
+    end
     for _, f in ipairs(files) do here[f:sub(1, -6)] = true end
   end
   if next(here) == nil then sync.forgot = 0; return 0 end -- (the folder not reachable just now: nothing is taken for gone)

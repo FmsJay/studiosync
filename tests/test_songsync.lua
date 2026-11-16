@@ -16,7 +16,7 @@ local own = "// my own\n(?d).DS_Store\n"
 local once = songsync.merge(own, { Lantern = true })
 assert(once:find("(?d).DS_Store", 1, true) and once:find("!/Lantern", 1, true), "own lines kept, block added")
 local twice = songsync.merge(once, { Lantern = true, ["Mirror Test"] = true })
-local _, n = twice:gsub("// BandSync end", "")
+local _, n = twice:gsub("// StudioSync end", "")
 assert(n == 1 and twice:find("!/Mirror Test", 1, true) and twice:find("(?d).DS_Store", 1, true), "replaced in place, once")
 assert(songsync.merge(twice, nil) == own, "keep every song: the block comes out, own lines as they were")
 assert(songsync.merge("", nil) == "", "nothing to write")
@@ -25,6 +25,10 @@ assert(not text:find("!/Saltmarsh", 1, true), "a song not opened here isn't let 
 -- a byte-order mark in front (an editor, or PowerShell 5.1) must not make the block look like someone's own lines
 local bom = "\239\187\191" .. songsync.merge("", {})
 local again = songsync.merge(bom, { Lantern = true })
-local _, blocks = again:gsub("// BandSync end", "")
+local _, blocks = again:gsub("// StudioSync end", "")
 assert(blocks == 1 and again:find("!/Lantern", 1, true), "one block, replaced, despite a byte-order mark")
+-- a block written before the rename (or by an older installer) is replaced, not kept beside the new one
+local old = own .. "// BandSync: what this computer downloads (written by BandSync, up to the line below)\n!/_*\n(?d)/*/*\n// BandSync end\n"
+local renamed = songsync.merge(old, { Lantern = true })
+assert(not renamed:find("BandSync", 1, true) and select(2, renamed:gsub("// StudioSync end", "")) == 1 and renamed:find("(?d).DS_Store", 1, true), "the old block makes way")
 print("ok")

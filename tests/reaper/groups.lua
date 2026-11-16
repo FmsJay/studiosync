@@ -4,7 +4,7 @@
 local D = reaper.GetResourcePath() .. "/StudioSync/tests"
 local lib = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]tests[/\\]reaper[/\\]") .. "/lib/"
 package.path = lib .. "?.lua;" .. package.path
-for _, m in ipairs({ "band", "services", "removal", "groups", "sync", "rooms" }) do package.loaded[m] = nil end
+for _, m in ipairs({ "band", "services", "removal", "groups", "sync", "rooms", "trust" }) do package.loaded[m] = nil end
 local band, services, removal, groups = require("band"), require("services"), require("removal"), require("groups")
 local out, fails = {}, 0
 local function check(ok, what) if not ok then fails = fails + 1 end; out[#out + 1] = (ok and "PASS " or "FAIL ") .. what end
@@ -15,9 +15,12 @@ local real_exec, real_id, real_st, real_quiet = reaper.ExecProcess, services.my_
 local ME = "AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA"
 local PEER = "BBBBBBB-BBBBBBB-BBBBBBB-BBBBBBB-BBBBBBB-BBBBBBB-BBBBBBB-BBBBBBB"
 local cmds, folders = {}, {}
+local pinned, real_pin = {}, require("trust").pin
+require("trust").pin = function(r, ...) pinned[r] = true; return real_pin(r, ...) end
 -- a small Syncthing: what the group code asks of it
 reaper.ExecProcess = function(c)
   cmds[#cmds + 1] = c
+  if c:find(" cli debug file ", 1, true) then return '0\n{ "global": { "modifiedBy": "", "version": [] } }\n' end -- (a folder it doesn't hold: lib/trust.lua believes the files)
   if c:find("folders list", 1, true) then local t = {}; for f in pairs(folders) do t[#t + 1] = f end; return "0\n" .. table.concat(t, "\n") .. "\n" end
   local f = c:match("folders (%S+) devices list")
   if f then return "0\n" .. table.concat(folders[f] or {}, "\n") .. "\n" end
@@ -179,8 +182,10 @@ local ok, err = pcall(function()
 end)
 if not ok then fails = fails + 1; out[#out + 1] = "ERROR " .. tostring(err) end
 reaper.ExecProcess, services.my_device_id, services.syncthing_path, services.days_quiet = real_exec, real_id, real_st, real_quiet
+require("trust").pin = real_pin
 for _, k in ipairs(KEYS) do reaper.SetExtState(band.SECTION, k, saved[k], k ~= "removal look" and k ~= "leaving") end
 for _, k in ipairs(ended_keys) do reaper.DeleteExtState(band.SECTION, k, true) end
+for r in pairs(pinned) do require("trust").forget(r) end -- (the scratch studios' roles, kept by lib/trust.lua)
 if tab and reaper.ValidatePtr2(0, tab, "ReaProject*") then
   reaper.SelectProjectInstance(tab)
   reaper.Main_SaveProjectEx(tab, base .. "/end.rpp", 8)

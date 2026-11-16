@@ -1228,7 +1228,8 @@ local function home_who()
       if p.driving then ImGui.SameLine(ctx, 0, 4); pill("driving", ACCENT, 0xFFFFFFFF); ImGui.SetItemTooltip(ctx, "What nobody has claimed follows them.") end
       if p.armed and #p.armed > 0 then ImGui.TextDisabled(ctx, "armed: " .. table.concat(p.armed, ", "))
       elseif not wide then ImGui.TextDisabled(ctx, "nothing armed") end -- (docked, the line went to saying nothing)
-      if p.version and p.version ~= band.VERSION then ImGui.TextColored(ctx, YELLOW, "StudioSync " .. p.version) end
+      -- (only while they're here: offline, it's what they had the last time they had this song open, days ago maybe. Mac test, 0.58.69)
+      if p.version and p.version ~= band.VERSION and p.state ~= "offline" then ImGui.TextColored(ctx, YELLOW, "StudioSync " .. p.version) end
       if p.mirror and view.my_mirror and p.state == "synced" then -- (while changes are still on their way it's bound to differ)
         if p.mirror == view.my_mirror then ImGui.TextColored(ctx, GREEN, "same project as yours")
         elseif not settled_apart(p, view.my_mirror) then ImGui.TextDisabled(ctx, "settling")

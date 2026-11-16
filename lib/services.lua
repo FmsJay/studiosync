@@ -187,6 +187,20 @@ function services.tune_band_folder(folder)
       set[#set + 1] = "versioning none -> staggered (30 days)"
     end
   end
+  -- (a joiner paired with whoever invited them with auto-accept: any folder that computer offered was added here unasked. Since 0.58.69
+  -- nothing is: the studio's own folder is added by its join, and another studio's offer is asked about on the Studios page. Security review)
+  for id in ((reaper.ExecProcess(q(st) .. " cli config devices list", 8000) or ""):match("^0\n(.*)$") or ""):gmatch("[%u%d%-]+") do
+    if services.is_device_id(id) and (reaper.ExecProcess(q(st) .. " cli config devices " .. id .. " auto-accept-folders get", 8000) or ""):match("^0\ntrue") then
+      reaper.ExecProcess(q(st) .. " cli config devices " .. id .. " auto-accept-folders set false", 8000)
+      set[#set + 1] = "auto-accept-folders off for " .. id:sub(1, 7)
+    end
+  end
+  -- (the first studio's folder was labelled "BandSync" in Syncthing's window: the studio's own name there now, as a new one gets. 0.58.69)
+  if (reaper.ExecProcess(q(st) .. " cli config folders " .. folder .. " label get", 8000) or ""):match("^0\nBandSync%s*$") then
+    for _, x in ipairs(band.bands()) do
+      if x.id == folder then services.set_folder_label(folder, "StudioSync " .. x.name); set[#set + 1] = "label BandSync -> StudioSync " .. x.name end
+    end
+  end
   table.sort(set)
   return set
 end
@@ -287,6 +301,18 @@ function services.my_device_id()
   return services.is_device_id(id) and id or nil
 end
 
+-- Which computer last changed a file in a shared folder, as Syncthing has it (modifiedBy: the first 7 characters of its ID); "" when Syncthing
+-- holds no such folder or file (a studio it doesn't sync, or a file written here a moment ago); nil when it didn't answer (lib/trust.lua).
+function services.parse_modified_by(out)
+  local g = tostring(out or ""):match('"global"%s*:%s*(%b{})')
+  return g and g:match('"modifiedBy"%s*:%s*"([%u%d]*)"') or nil
+end
+function services.modified_by(folder, rel)
+  local st = services.syncthing_path()
+  if not (st and tostring(folder):match("^[%w%-]+$")) then return nil end
+  return services.parse_modified_by(reaper.ExecProcess(q(st) .. " cli debug file " .. folder .. " " .. q(rel), 8000))
+end
+
 -- What a set-up bandmate sends someone new: one line to paste on a Mac and one on Windows, each running the
 -- installer with this machine's ID already in it, so nobody types an ID (Mac, 2026-10-31: "2MOGZMD" + Return was
 -- the first try). The ?<time> keeps GitHub's cache from handing out an installer from before the last release.
@@ -351,7 +377,7 @@ function services.join_band(cfg, code)
   reaper.ExecProcess(q(st) .. " cli config folders " .. code.band .. " order set smallestFirst", 8000)
   services.tune_band_folder(code.band)
   if not (reaper.ExecProcess(q(st) .. " cli config devices " .. code.id .. " name get", 8000) or ""):match("^0\n") then
-    r = reaper.ExecProcess(q(st) .. " cli config devices add --device-id " .. code.id .. " --name " .. q("Collaborator") .. " --introducer --auto-accept-folders", 15000) or ""
+    r = reaper.ExecProcess(q(st) .. " cli config devices add --device-id " .. code.id .. " --name " .. q("Collaborator") .. " --introducer", 15000) or ""
     if not r:match("^0\n") then return nil, "Syncthing didn't pair with them: " .. r:gsub("^%d+\n", "") end
   end
   reaper.ExecProcess(q(st) .. " cli config folders " .. code.band .. " devices add --device-id " .. code.id, 15000)
@@ -613,12 +639,56 @@ function services.tailscale_address()
 end
 
 -- Tailscale's API, optional: with an access token from whoever runs the Tailscale network (login.tailscale.com/admin/settings/keys, it lasts 1-90 days),
--- StudioSync can let a guest in for a day and add the policy lines its tags need. The token's kept in ExtState, as Syncthing's key is in its config, and
--- reaches curl through a config file in the user's temp folder: never on a command line, where any process can read it, or in the log.
+-- StudioSync can let a guest in for a day and add the policy lines its tags need. The token reaches curl through a config file in the user's temp
+-- folder: never on a command line, where any process can read it, or in the log. It's kept locked to this computer's account (0.58.69: it sat in
+-- reaper-extstate.ini as it was, and a portable REAPER folder travels): Windows encrypts it for the account (DPAPI), a Mac keeps it in the Keychain.
+-- shortcut: elsewhere (Linux) it stays in ExtState as it is; and on a Mac it's on security's command line for the moment it's saved.
 local GUEST_TAG = "tag:bandsync-guest"
-function services.tailscale_token() return reaper.GetExtState(band.SECTION, "tailscale_token") end
+local KEYCHAIN = "-a studiosync -s 'StudioSync Tailscale token'"
+local token_cache
+local function token_store(token) -- -> true when it's locked away
+  local f = TMP .. "/bandsync-ts-token.txt"
+  if WIN then
+    if token == "" then reaper.DeleteExtState(band.SECTION, "tailscale_token_dpapi", true); return true end
+    band.write_atomic(f, token)
+    local out = run_now('powershell -NoProfile -NonInteractive -Command "(Get-Content -Raw -LiteralPath \'' .. f .. '\').Trim() | ConvertTo-SecureString -AsPlainText -Force | ConvertFrom-SecureString"', 15)
+    os.remove(f)
+    local blob = out and out:match("(%x%x%x%x%x%x%x%x+)%s*$") -- (the last line: PowerShell can complain about a drive first)
+    if blob then reaper.SetExtState(band.SECTION, "tailscale_token_dpapi", blob, true) end
+    return blob ~= nil
+  elseif reaper.GetOS() ~= "Other" then -- (a Mac: Linux says "Other")
+    if token == "" then run_now("security delete-generic-password " .. KEYCHAIN .. " >/dev/null 2>&1; echo done", 10); return true end
+    band.write_atomic(f, token)
+    local out = run_now("security add-generic-password -U " .. KEYCHAIN .. " -w \"$(cat '" .. f .. "')\" && echo stored", 10)
+    os.remove(f)
+    return out ~= nil and out:match("stored") ~= nil
+  end
+  return false
+end
+local function token_load()
+  if WIN then
+    local blob = reaper.GetExtState(band.SECTION, "tailscale_token_dpapi")
+    if not blob:match("^%x+$") then return "" end
+    return (run_now('powershell -NoProfile -NonInteractive -Command "$s = ConvertTo-SecureString \'' .. blob ..
+      '\'; [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s))"', 15) or ""):match("tskey%-[%w%-]+") or ""
+  elseif reaper.GetOS() ~= "Other" then -- (a Mac: Linux says "Other")
+    return (run_now("security find-generic-password " .. KEYCHAIN .. " -w", 10) or ""):match("tskey%-[%w%-]+") or ""
+  end
+  return ""
+end
+function services.tailscale_token()
+  if token_cache then return token_cache end
+  local plain = reaper.GetExtState(band.SECTION, "tailscale_token")
+  if plain ~= "" then -- (one saved before 0.58.69: locked away now, and taken out of the settings file)
+    if token_store(plain) then reaper.DeleteExtState(band.SECTION, "tailscale_token", true) end
+    token_cache = plain
+  else token_cache = token_load() end
+  return token_cache
+end
 function services.set_tailscale_token(token)
-  reaper.SetExtState(band.SECTION, "tailscale_token", token, true)
+  token_cache = token
+  if not token_store(token) then reaper.SetExtState(band.SECTION, "tailscale_token", token, true) -- (nowhere safer here)
+  else reaper.DeleteExtState(band.SECTION, "tailscale_token", true) end
   os.remove(TMP .. "/bandsync-ts-sweep.cfg") -- (tailscale_sweep_guests writes it again, with this one)
 end
 -- -> the HTTP status, the headers, the body; or nil + why
@@ -895,21 +965,24 @@ function services.relay_up()
   local word, up, t = (band.read(relay_dir() .. "/njrelay.txt") or ""):match("^(%a+) (%a+) (%d+)")
   return word == "idle" and up == "up" and os.time() - tonumber(t) < 15
 end
+-- An update's relay replaces the running one, but only between connections: stopping it under one is the alert this is for. Also at REAPER's
+-- start (Autostart): a relay from before 0.58.47 doesn't leave when REAPER does, and stayed for days (the Mac, 0.58.68 test). -> true if it stopped one.
+function services.stop_old_relay()
+  if WIN or not services.running("njrelay", true) or services.relay_status() ~= "idle" then return false end
+  local from = services.ninjam_dir() .. "/njrelay"
+  if not reaper.file_exists(from) or band.read(from) == band.read(relay_dir() .. "/njrelay") then return false end
+  local sh = TMP .. "/bandsync-njrelay-stop.sh"
+  band.write_atomic(sh, "/usr/bin/pkill -x njrelay; sleep 1\n") -- (gone before the new one takes the port)
+  reaper.ExecProcess("/bin/sh '" .. sh .. "'", 5000)
+  return true
+end
 function services.relay_for(server)
   local from = services.ninjam_dir() .. "/njrelay"
   if WIN or not server:match("^.+:%d+$") or not reaper.file_exists(from) or services.relay_status() == "cantlisten" then return server end
   local dir = relay_dir()
   reaper.RecursiveCreateDirectory(dir, 0)
   if band.read(dir .. "/njrelay.target") ~= server then band.write_atomic(dir .. "/njrelay.target", server) end
-  local running = services.running("njrelay", true)
-  -- (an update's relay replaces the running one, but only between connections: stopping it under one is the alert this is for)
-  if running and services.relay_status() == "idle" and band.read(from) ~= band.read(dir .. "/njrelay") then
-    local sh = TMP .. "/bandsync-njrelay-stop.sh"
-    band.write_atomic(sh, "/usr/bin/pkill -x njrelay; sleep 1\n") -- (gone before the new one takes the port)
-    reaper.ExecProcess("/bin/sh '" .. sh .. "'", 5000)
-    running = false
-  end
-  if not running then
+  if not services.running("njrelay", true) or services.stop_old_relay() then
     pcall(band.copy_atomic, from, dir .. "/njrelay")
     local sh = TMP .. "/bandsync-njrelay.sh"
     band.write_atomic(sh, "chmod +x '" .. dir .. "/njrelay'; xattr -c '" .. dir .. "/njrelay'\n")

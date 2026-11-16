@@ -67,6 +67,7 @@ local function loop()
     pcall(require("undo").auto_keys, dir)
     local ok, why = pcall(require("startup").on_start) -- (the band's songs, opened without REAPER's boxes: lib/startup.lua)
     if not ok then band.log("couldn't open the studio's projects by itself: " .. tostring(why)) end
+    pcall(require("services").stop_old_relay) -- (a Mac's ReaNINJAM relay from an older StudioSync, left running: lib/services.lua)
     reaper.atexit(function()
       pcall(require("undo").auto_keys, dir)
       pcall(require("startup").on_quit)

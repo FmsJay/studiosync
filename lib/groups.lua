@@ -3,8 +3,8 @@
 -- Leaving keeps your copy: the folder stays on this computer and the project's tab stays open as an ordinary project. A mark tells
 -- the others (lib/removal.lua), and this computer's Syncthing lets go a little later, so the mark has time to reach them. Closing is
 -- the owner ending it for everyone: _band/closed.json, and each computer leaves when it sees that.
--- shortcut: these are files anyone in the group could write, so this trusts the people in it (fine among friends). A group that
--- can't would need signed files.
+-- Anyone in the group could write these files: a change to the roles, or a close, is believed only from the owner's or an admin's computer,
+-- as Syncthing tells it (lib/trust.lua, 0.58.69).
 local band = require("band")
 local groups = { WAIT = 20, QUIET_DAYS = 7 } -- seconds the mark gets to reach the others; when nobody's been seen for this long, say so
 
@@ -17,9 +17,9 @@ local seen = {}
 local function who(root) -- read at most every few seconds: the panel asks each frame
   local c = seen[root]
   if not c or reaper.time_precise() - c.at > 5 then
-    local j = json_of(root)
-    c = { at = reaper.time_precise(), owner = j.owner, admins = {} }
-    for _, a in ipairs(type(j.admins) == "table" and j.admins or {}) do c.admins[a] = true end
+    local owner, admins = require("trust").roles(root, json_of(root)) -- (who band.json says, only if someone in charge said it: lib/trust.lua)
+    c = { at = reaper.time_precise(), owner = owner, admins = {} }
+    for _, a in ipairs(admins) do c.admins[a] = true end
     seen[root] = c
   end
   return c
@@ -58,9 +58,14 @@ end
 save = function(root, change)
   local info, j = band.info(root), json_of(root)
   j.name, j.id, j.drive = info.name, info.id, info.drive
+  -- (the roles this computer goes by, not a change it set aside: written back as they were, it would reach everyone as this computer's own)
+  local trust = require("trust")
+  local owner, admins = trust.roles(root, j)
+  j.owner, j.admins = owner, #admins > 0 and admins or nil
   change(j)
   reaper.RecursiveCreateDirectory(root .. "/_band", 0)
   band.write_json(root .. "/_band/band.json", j)
+  if j.owner then trust.pin(root, trust.roles_of(j)) end -- (this computer's own change: its panel checked who may first)
   seen[root] = nil
 end
 function groups.edit(root, change) save(root, change) end -- (lib/alerts.lua's channel)
@@ -224,10 +229,17 @@ function groups.tick(now)
       groups.new_sonobus_secret(g.root)
       band.log(g.name .. "'s live audio has a password of its own now (everyone's SonoBus picks it up the next time Real time mode connects)")
     end
+    -- (the phone alerts' channel changed: someone was taken out (lib/removal.lua), or it was turned off and on. A phone on the old one hears nothing now)
+    local ch, seen_key = require("alerts").channel(g.root), "alerts seen " .. g.id
+    local was = reaper.GetExtState(band.SECTION, seen_key)
+    if ch and was ~= "" and was ~= ch and not groups.is_old(g.root) then
+      band.log(g.name .. "'s phone alerts have a new channel: to keep getting them, subscribe to it in ntfy (Settings > Studio > Phone alerts has it)")
+    end
+    if (ch or "") ~= was then reaper.SetExtState(band.SECTION, seen_key, ch or "", true) end
     local key = "group closed " .. g.id
     if reaper.GetExtState(band.SECTION, key) == "" and not groups.is_old(g.root) then
       local e = band.read_json(g.root .. "/_band/closed.json")
-      if type(e) == "table" and e.by and groups.role(g.root, e.by) ~= "member" then
+      if type(e) == "table" and e.by and groups.role(g.root, e.by) ~= "member" and require("trust").mark_ok(g.root, "_band/closed.json", e) then
         if groups.leave(g.root, me, true) then -- (not: something's recording. The next look does it)
           reaper.SetExtState(band.SECTION, key, "1", true)
           band.log(string.format("%s closed %s: nothing syncs any more, and your copy stays in %s", tostring(e.by), g.name, g.root))

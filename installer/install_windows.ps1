@@ -123,7 +123,7 @@ $bandName = $BandName -replace '[^\w\- ]', ''
 if ($isHost -and -not $bandName) { while (-not $bandName) { $bandName = (Ask "Name your studio" "My studio") -replace '[^\w\- ]', '' } }
 if (-not $bandName) { $bandName = "the studio" }
 # (later: an empty StudioSync folder, so a studio started or joined from the panel goes beside it, in your home folder: services.new_band)
-$defRoot = if ($later) { Join-Path $env:USERPROFILE "StudioSync" } elseif ($folderId -eq "bandsync") { Join-Path $env:USERPROFILE "BandSync" } else { Join-Path $env:USERPROFILE "StudioSync $bandName" }
+$defRoot = if ($later) { Join-Path $env:USERPROFILE "StudioSync" } elseif ($folderId -eq "bandsync") { if (Test-Path (Join-Path $env:USERPROFILE "BandSync")) { Join-Path $env:USERPROFILE "BandSync" } else { Join-Path $env:USERPROFILE "StudioSync" } } # (set up before the rename: its folder stays) else { Join-Path $env:USERPROFILE "StudioSync $bandName" }
 # (not asked: nobody new knows what to answer, and the panel can move it later. Beginner review, 0.58.62)
 $root = if ($Root) { $Root } else { $defRoot }
 if (-not $later) { Say "$bandName's shared folder: $root" }
@@ -139,7 +139,7 @@ if (-not $folderId -and -not $later) {
     $folderId = "studiosync-$slug-" + ('{0:x4}' -f (Get-Random -Maximum 65536))
   }
 }
-$driveName = if ($folderId -eq "bandsync") { "BandSync" } else { "StudioSync - $bandName" }
+$driveName = if ($folderId -eq "bandsync") { "StudioSync" } else { "StudioSync - $bandName" } # (the first studio's Drive folder was renamed StudioSync)
 # SonoBus + Tailscale (hearing each other) and Google Drive (the group's copy) are part of StudioSync, not asked. Tailscale left in 0.50 and came back
 # (James, 2026-11-04: "should not be optional"): the NINJAM route needs it, and it gets round a router that stops SonoBus.
 # (James, 2026-10-31: "it feels like a core feature"); -Live no / -Solo no still leave them out.
@@ -388,6 +388,12 @@ $up = $false
 for ($i = 0; $i -lt 60 -and -not $up; $i++) { $null = STcli show system; $up = $LASTEXITCODE -eq 0; if (-not $up) { Start-Sleep 1 } }
 if (-not $up) { Warn "Syncthing didn't answer; finish its setup by hand (see installer/SKILL.md)"; exit 1 }
 $myId = (ST device-id | Select-Object -Last 1).ToString().Trim()
+# (run again by someone already in: the folder Syncthing already has for this studio, not the default. Laptop test, 0.58.69: an invitation run
+# again moved a member onto a new, empty folder)
+if (-not $Root -and $folderId) {
+  $had = "$(STcli config folders $folderId path get | Select-Object -First 1)".Trim()
+  if ($LASTEXITCODE -eq 0 -and $had -and (Test-Path $had) -and $had -ne $root) { $root = $had; Say "$bandName's shared folder is already here: $root" }
+}
 
 $root = $root.TrimEnd('\', '/')
 New-Item -ItemType Directory -Force $root | Out-Null
@@ -399,13 +405,13 @@ if ($isHost -and -not (Test-Path $bj)) { # (who this folder is: lib/band.lua ban
 # per-song sync (lib/songsync.lua writes the same block): a new bandmate gets every song's listing, and a song in
 # full once they open it, so the first sync isn't the whole library. The first one set up keeps everything.
 $ign = Join-Path $root ".stignore"
-if ($joining -and -not ((Test-Path $ign) -and (Select-String -Path $ign -Pattern '^// BandSync end$' -Quiet))) {
-  [IO.File]::AppendAllText($ign, ((@('// BandSync: what this computer downloads (written by BandSync, up to the line below)', '!/_*', '!/plugins', '!/drummaps', '!/*/session.json', '!/*/folder.json', '!/*/live.json', '!/*/invites', '!/*/inbox', '!/*/rooms/*/room.json', '!/*/rooms/*/summary', '!/*/rooms/*/status', '(?d)/*/*', '// BandSync end') -join "`n") + "`n")) # (no BOM: PowerShell 5.1's -Encoding UTF8 writes one, and the block's first line then reads as something else)
+if ($joining -and -not ((Test-Path $ign) -and (Select-String -Path $ign -Pattern '^// (StudioSync|BandSync) end$' -Quiet))) {
+  [IO.File]::AppendAllText($ign, ((@('// StudioSync: what this computer downloads (written by StudioSync, up to the line below)', '!/_*', '!/plugins', '!/drummaps', '!/*/session.json', '!/*/folder.json', '!/*/live.json', '!/*/invites', '!/*/inbox', '!/*/rooms/*/room.json', '!/*/rooms/*/summary', '!/*/rooms/*/status', '(?d)/*/*', '// StudioSync end') -join "`n") + "`n")) # (no BOM: PowerShell 5.1's -Encoding UTF8 writes one, and the block's first line then reads as something else)
   Ok "this computer gets each song in full once it's opened (the rest: their listing)"
 }
 $folders = @(STcli config folders list)
 if (-not ($folders | Where-Object { $_ })) { STcli config defaults folder path set (Split-Path $root) | Out-Null } # fresh setup only
-$label = if ($folderId -eq "bandsync") { "BandSync" } else { "StudioSync $bandName" }
+$label = "StudioSync $bandName"
 if ($later) { } # (no studio folder yet: the panel makes it when you start or join one)
 elseif ($folders -notcontains $folderId) {
   STcli config folders add --id $folderId --label $label --path $root | Out-Null
@@ -419,7 +425,7 @@ STcli config devices $myId name set $user | Out-Null
 if ($joining) {
   $devices = STcli config devices list
   if ($devices -notcontains $hostId) {
-    STcli config devices add --device-id $hostId --name "Collaborator" --introducer --auto-accept-folders | Out-Null
+    STcli config devices add --device-id $hostId --name "Collaborator" --introducer | Out-Null
   }
   $shared = STcli config folders $folderId devices list
   if ($shared -notcontains $hostId) { STcli config folders $folderId devices add --device-id $hostId | Out-Null }
@@ -582,10 +588,10 @@ if ($wantLive) {
         $p.WaitForExit()
         return $p.ExitCode
       }
-      Say "Signing in to Tailscale: a browser page opens; sign in with the group's account there."
-      if ((Ts-Up @("--advertise-tags=tag:bandsync", "--timeout=300s")) -eq 0) { Ok "Tailscale signed in as a group machine (it stays signed in)"; $tagged = $true }
+      Say "Signing in to Tailscale: a browser page opens; sign in with the studio's account there."
+      if ((Ts-Up @("--advertise-tags=tag:bandsync", "--timeout=300s")) -eq 0) { Ok "Tailscale signed in as a studio machine (it stays signed in)"; $tagged = $true }
       # the refused tag stays in Tailscale's settings and every later sign-in fails on it: clear it, then sign in plainly
-      elseif ((Ts-Up @("--reset", "--advertise-tags=", "--timeout=120s")) -eq 0) { Ok "Tailscale signed in (without the group tag: it signs out by itself every few months; see below)" }
+      elseif ((Ts-Up @("--reset", "--advertise-tags=", "--timeout=120s")) -eq 0) { Ok "Tailscale signed in (without the studio tag: it signs out by itself every few months; see below)" }
       else { Warn "Tailscale sign-in didn't finish: open Tailscale from the Start menu (or its taskbar icon) and sign in." }
     }
   }
@@ -595,20 +601,25 @@ if ($wantLive) {
       Say "Sign in to Tailscale now (its taskbar icon > Log in). Waiting for it; press any key to skip and do it later."
       if (Wait-Until { (& $tsNow).BackendState -eq "Running" }) { Ok "Tailscale signed in" }
     }
-    if (-not $tagged -and (& $tsNow).BackendState -eq "Running" -and (& $tsNow).Self.KeyExpiry) {
+    # (asked once: run again, it opened the page and waited for someone every time. Mac test, 0.58.69. The end list still says it)
+    $tsAsked = Join-Path $env:LOCALAPPDATA "StudioSync\tailscale-expiry-asked"
+    if (-not $tagged -and (& $tsNow).BackendState -eq "Running" -and (& $tsNow).Self.KeyExpiry -and -not (Test-Path $tsAsked)) {
+      New-Item -ItemType File -Force $tsAsked | Out-Null
       Say "One click keeps this PC signed in to Tailscale for good. In the page that opens: this PC's ... menu >"
       Say "Disable key expiry. Waiting for it; press any key to skip (it then signs out by itself every few months)."
       Start-Process "https://login.tailscale.com/admin/machines"
       if (Wait-Until { -not (& $tsNow).Self.KeyExpiry }) { Ok "Tailscale stays signed in"; $tagged = $true }
     }
   }
-  if (-not $tagged) {
+  if (-not $tagged -and (Test-Path $ts) -and (& $tsNow).BackendState -eq "Running") { # (signed in: only the expiry is left)
+    $left += "Tailscale: at login.tailscale.com/admin/machines > this PC > ... > Disable key expiry (otherwise it signs out every few months, maybe right before a session)."
+  } elseif (-not $tagged) {
     $left += "Tailscale (skipped above): sign in from its taskbar icon, then at login.tailscale.com/admin/machines > this PC > ... > Disable key expiry (otherwise it signs out every few months, maybe right before a session)."
   }
   if ($isHost) { # the host's job, once: then bandmates' installers sign their machines in for good
-    $left += "Tailscale, once for the whole group (if not done yet): at login.tailscale.com/admin/acls add this line inside the policy's { }:"
+    $left += "Tailscale, once for the whole studio (if not done yet): at login.tailscale.com/admin/acls add this line inside the policy's { }:"
     $left += "    `"tagOwners`": { `"tag:bandsync`": [`"autogroup:member`"] },"
-    $left += "  Then each collaborator's installer signs their machine in as a group machine that never has to sign in again."
+    $left += "  Then each collaborator's installer signs their machine in as a studio machine that never has to sign in again."
   }
 }
 # Google Drive: signed in, and the band's StudioSync folder in My Drive (the first one makes it; everyone else adds the
@@ -648,6 +659,7 @@ if ($wantSolo) {
 }
 if ($isHost) { $left += "In REAPER, open your song's project: the StudioSync panel offers 'Share this project with the studio'." }
 elseif ($later) { $left += "When you want a studio: REAPER's StudioSync panel has Start a studio, and Paste join code for an invitation someone sends you." }
+elseif (Test-Path (Join-Path $root "_band\band.json")) { $left += "You're already in ${bandName}: nothing more to do here. In REAPER's StudioSync panel, open Projects and double-click one." } # (run again by someone already in. Mac test, 0.58.69)
 elseif ($peers -contains $hostId) { $left += "You're connected to whoever invited you: once they press 'Let you in' in their panel, the studio's projects arrive by themselves: in REAPER's StudioSync panel, open Projects and double-click one." }
 else { $left += "Tell whoever invited you that you're set up: they press 'Let $user in' in their panel (or add your Syncthing ID by hand: $myId). Then the studio's projects arrive by themselves: in REAPER's StudioSync panel, open Projects and double-click one." }
 foreach ($d in $script:downloads) { Remove-Item -Force $d -ErrorAction SilentlyContinue }

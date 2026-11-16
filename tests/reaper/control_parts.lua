@@ -174,5 +174,6 @@ check(hear.trouble("A", "Me", { { user = "Sam", rt = "A", rt_silent = "Me" } }):
 check(hear.trouble("A", "Me", { { user = "Sam", rt = "A", rt_silent = "Lee" } }) == nil, "someone not hearing somebody else isn't")
 -- (scratch: the group's folder, for the next run)
 for _, f in ipairs(files) do os.remove(sync.room_dir(cfg, SONG, ROOM) .. "/claims/" .. f) end
+pcall(function() require("trust").forget(root) end) -- (its roles, as lib/trust.lua keeps them)
 out[#out + 1] = string.format("control_parts: fails %d of %d", fails, #out)
 return table.concat(out, "\n")

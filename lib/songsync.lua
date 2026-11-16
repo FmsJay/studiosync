@@ -11,7 +11,8 @@
 local band = require("band")
 local songsync = {}
 
-local BEGIN, END = "// BandSync: what this computer downloads (written by BandSync, up to the line below)", "// BandSync end"
+local BEGIN, END = "// StudioSync: what this computer downloads (written by StudioSync, up to the line below)", "// StudioSync end"
+local OLD_BEGIN, OLD_END = "// BandSync: what this computer downloads (written by BandSync, up to the line below)", "// BandSync end" -- (from before the rename: replaced the same way)
 songsync.BAND_WIDE = { "/_*", "/plugins", "/drummaps" }
 songsync.LISTING = { "/*/session.json", "/*/folder.json", "/*/live.json", "/*/invites", "/*/chat", "/*/inbox", -- (inbox: audio dropped in from any computer, lib/extras.lua)
   "/*/rooms/*/room.json",
@@ -48,8 +49,8 @@ function songsync.merge(text, wanted, gone)
   local keep, inside = {}, false
   text = (text or ""):gsub("^\239\187\191", "") -- (a byte-order mark would hide the first line: an editor's, or PowerShell's)
   for line in ((text or "") .. "\n"):gmatch("(.-)\r?\n") do
-    if line == BEGIN then inside = true
-    elseif inside and line == END then inside = false
+    if line == BEGIN or line == OLD_BEGIN then inside = true
+    elseif inside and (line == END or line == OLD_END) then inside = false
     elseif not inside then keep[#keep + 1] = line end
   end
   while #keep > 0 and keep[#keep] == "" do keep[#keep] = nil end

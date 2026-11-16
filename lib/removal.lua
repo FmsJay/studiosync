@@ -3,8 +3,8 @@
 -- and the driver's seat comes back, on the computer that removed them. What they made stays in the song and on Restore, and they
 -- keep the copy they already have. Inviting them again and letting them in clears the mark. Which computer is whose: each computer
 -- says so in _band/devices/<name>.json.
--- shortcut: a mark is a file anyone in the group could write, so this trusts the people in it (fine among friends). A group that
--- can't would need signed marks.
+-- A mark is a file anyone in the group could write: it counts only from the owner's or an admin's computer (or, leaving, your own), as
+-- Syncthing tells it (lib/trust.lua, 0.58.69).
 local band = require("band")
 local removal = { GRACE = 60 }
 
@@ -43,7 +43,9 @@ local function all_marks(root)
   for _, f in ipairs(band.files(marks(root), ".json")) do
     local m = band.read_json(marks(root) .. "/" .. f)
     -- (leaving is only yours to say: a "left" mark someone else wrote took anyone out, the host too. Review, 0.58.47)
-    if type(m) == "table" and m.user and ((m.left and m.by == m.user) or require("groups").may_remove(root, m.by, m.user)) then list[#list + 1] = m end
+    -- (and from the computer it says: the owner's or an admin's, or the leaver's own. lib/trust.lua, 0.58.69)
+    if type(m) == "table" and m.user and ((m.left and m.by == m.user) or require("groups").may_remove(root, m.by, m.user))
+      and require("trust").mark_ok(root, "_band/removed/" .. f, m) then list[#list + 1] = m end
   end
   return list
 end
@@ -141,6 +143,9 @@ function removal.tick(now)
               freed, ferr = pcall(free, g.root, m.user, me)
               -- (and the live audio's password changes, once, on this one computer: what they knew of it stops working. 0.58.52)
               if freed then pcall(require("groups").new_sonobus_secret, g.root) end
+              -- (and the phone alerts' channel: they could still read every line sent to it. Everyone left is told to subscribe again, groups.tick. 0.58.69)
+              -- shortcut: like the SonoBus secret, the new one can still reach their computer through someone who hasn't stopped syncing with them yet (up to a minute).
+              if freed and require("alerts").channel(g.root) then pcall(require("alerts").set, g.root, true) end
             end
             if freed then reaper.SetExtState(band.SECTION, key, "1", true)
             else band.log("couldn't free " .. m.user .. "'s claims yet (tried again in a minute): " .. tostring(ferr)) end

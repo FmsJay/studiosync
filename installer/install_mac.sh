@@ -114,7 +114,7 @@ if yes "$HOSTING" && [ -z "$BAND_NAME" ]; then
   while [ -z "$BAND_NAME" ]; do BAND_NAME="$(plain "$(ask "Name your studio" "My studio")")"; done
 fi
 [ -n "$BAND_NAME" ] || BAND_NAME="the studio"
-DEF_ROOT="$HOME/BandSync"
+DEF_ROOT="$HOME/StudioSync"; [ -d "$HOME/BandSync" ] && DEF_ROOT="$HOME/BandSync" # (the first studio, id bandsync: a computer set up before the rename keeps its BandSync folder)
 if [ "$FOLDER_ID" != bandsync ]; then DEF_ROOT="$HOME/StudioSync $BAND_NAME"; fi
 # (later: an empty StudioSync folder, so a studio started or joined from the panel goes beside it, in your home folder: services.new_band)
 [ -n "$LATER" ] && DEF_ROOT="$HOME/StudioSync"
@@ -140,7 +140,7 @@ if [ -z "$FOLDER_ID" ] && [ -z "$LATER" ]; then
     FOLDER_ID="studiosync-${SLUG:-group}-$(printf '%04x' $((RANDOM * 2)))"
   fi
 fi
-DRIVE_NAME="BandSync"; [ "$FOLDER_ID" != bandsync ] && DRIVE_NAME="StudioSync - $BAND_NAME"
+DRIVE_NAME="StudioSync"; [ "$FOLDER_ID" != bandsync ] && DRIVE_NAME="StudioSync - $BAND_NAME" # (the first studio's Drive folder was renamed StudioSync)
 # SonoBus + Tailscale (hearing each other) and Google Drive (the group's copy) are part of StudioSync, not asked. Tailscale left in 0.50 and came back
 # (James, 2026-11-04: "should not be optional"): the NINJAM route needs it, and it gets round a router that stops SonoBus.
 # (James, 2026-10-31: "it feels like a core feature"); BS_LIVE=no / BS_SOLO=no still leave them out.
@@ -292,14 +292,14 @@ if yes "$LIVE" && [ -x "$TS" ]; then
     # misleading "sign-in didn't finish": the wait below takes over instead. Mac review, 0.58.62)
     say "Tailscale needs its system extension allowed first: System Settings > General > Login Items & Extensions (and its VPN configuration)."
   else
-    say "Signing in to Tailscale: a browser page opens; sign in with the group's account there. (macOS may first ask"
+    say "Signing in to Tailscale: a browser page opens; sign in with the studio's account there. (macOS may first ask"
     say "to allow Tailscale's VPN configuration: click Allow.)"
     out="$WORK/ts_up.txt"; : > "$out"
     "$TS" up --advertise-tags=tag:bandsync --timeout=300s >"$out" 2>&1 &
     pid=$!; url=""
     for i in $(seq 1 30); do url="$(grep -o 'https://login.tailscale.com/[^ ]*' "$out" | head -1)"; [ -n "$url" ] && break; kill -0 $pid 2>/dev/null || break; sleep 1; done
     [ -n "$url" ] && open "$url"
-    if wait $pid; then ok "Tailscale signed in as a group machine (it stays signed in)"; TS_TAGGED=1
+    if wait $pid; then ok "Tailscale signed in as a studio machine (it stays signed in)"; TS_TAGGED=1
     elif ! grep -qi 'tag' "$out"; then warn "Tailscale sign-in didn't finish: open Tailscale (in Applications, or its menu-bar icon) and sign in."
     else
       # the refused tag stays in Tailscale's settings and every later sign-in fails on it: clear it, then sign in plainly
@@ -307,7 +307,7 @@ if yes "$LIVE" && [ -x "$TS" ]; then
       pid=$!; url=""
       for i in $(seq 1 30); do url="$(grep -o 'https://login.tailscale.com/[^ ]*' "$out" | head -1)"; [ -n "$url" ] && break; kill -0 $pid 2>/dev/null || break; sleep 1; done
       [ -n "$url" ] && open "$url"
-      if wait $pid; then ok "Tailscale signed in (without the group tag)"
+      if wait $pid; then ok "Tailscale signed in (without the studio tag)"
       else warn "Tailscale sign-in didn't finish: open Tailscale (in Applications, or its menu-bar icon) and sign in."; fi
     fi
   fi
@@ -330,7 +330,10 @@ if yes "$LIVE" && [ -x "$TS" ]; then
     while ! ts_running; do read -t 3 -r </dev/tty && break; done
     ts_running && ok "Tailscale signed in"
   fi
-  if [ -z "$TS_TAGGED" ] && ts_running && ts_expires; then
+  # (asked once: run again, it opened the page and waited for someone every time. Mac test, 0.58.69. The end list still says it)
+  TS_ASKED="$HOME/Library/Application Support/StudioSync/tailscale-expiry-asked"
+  if [ -z "$TS_TAGGED" ] && ts_running && ts_expires && [ ! -f "$TS_ASKED" ]; then
+    mkdir -p "$(dirname "$TS_ASKED")" && touch "$TS_ASKED"
     say "One click keeps this Mac signed in to Tailscale for good. In the page that opens: this Mac's ... menu >"
     say "Disable key expiry. Waiting for it; press Return to skip (it then signs out by itself every few months)."
     open "https://login.tailscale.com/admin/machines"
@@ -368,7 +371,7 @@ if yes "$SOLO" && have "Google Drive"; then
     n="$(ask "Number" 1)"
     PICKED="$(drives | sed -n "${n}p")"; [ -n "$PICKED" ] && MD="$PICKED"
   fi
-  if [ -n "$MD" ] && [ -d "$MD/$DRIVE_NAME" ]; then ok "Google Drive: the studio's '$DRIVE_NAME' folder is there ($(account "$MD"))"; DRIVE_OK=1
+  if [ -n "$MD" ] && [ -d "$MD/$DRIVE_NAME" ]; then ok "Google Drive: the studio's '$DRIVE_NAME' folder is there"; DRIVE_OK=1 # (not the account's e-mail: installer logs get pasted into bug reports. Mac test, 0.58.69)
   elif [ -n "$MD" ] && yes "$HOSTING"; then
     mkdir -p "$MD/$DRIVE_NAME" && ok "Google Drive: made '$DRIVE_NAME' in your My Drive (share it at the end)"; DRIVE_OK=1
   elif [ -n "$MD" ]; then
@@ -475,6 +478,11 @@ fi
 up=""; for i in $(seq 1 60); do stcli show system >/dev/null && { up=1; break; }; sleep 1; done
 [ -n "$up" ] || { warn "Syncthing didn't answer; finish its setup by hand (see installer/SKILL.md)"; exit 1; }
 MY_ID="$("$ST" device-id --home "$STHOME" 2>/dev/null | tail -1 | tr -d '[:space:]')"
+# (run again by someone already in: the folder Syncthing already has for this studio, not the default. Laptop test, 0.58.69: an invitation run
+# again moved a member onto a new, empty folder)
+if [ -z "${BS_ROOT:-}" ] && [ -n "${FOLDER_ID:-}" ] && HAD="$(stcli config folders "$FOLDER_ID" path get)" && [ -d "$HAD" ] && [ "$HAD" != "$ROOT" ]; then
+  ROOT="${HAD%/}"; say "$BAND_NAME's shared folder is already here: $ROOT"
+fi
 mkdir -p "$ROOT"
 if yes "$HOSTING" && [ ! -f "$ROOT/_band/band.json" ]; then # (who this folder is: lib/band.lua band.info; names are plain)
   mkdir -p "$ROOT/_band"
@@ -482,10 +490,10 @@ if yes "$HOSTING" && [ ! -f "$ROOT/_band/band.json" ]; then # (who this folder i
 fi
 # per-song sync (lib/songsync.lua writes the same block): a new bandmate gets every song's listing, and a song in
 # full once they open it, so the first sync isn't the whole library. The first one set up keeps everything.
-if [ -n "$JOINING" ] && ! grep -q '^// BandSync end$' "$ROOT/.stignore" 2>/dev/null; then
-  printf '%s\n' '// BandSync: what this computer downloads (written by BandSync, up to the line below)' '!/_*' '!/plugins' '!/drummaps' '!/*/session.json' '!/*/folder.json' '!/*/live.json' '!/*/invites' '!/*/inbox' '!/*/rooms/*/room.json' '!/*/rooms/*/summary' '!/*/rooms/*/status' '(?d)/*/*' '// BandSync end' >> "$ROOT/.stignore" && ok "this computer gets each song in full once it's opened (the rest: their listing)"
+if [ -n "$JOINING" ] && ! grep -q -e '^// StudioSync end$' -e '^// BandSync end$' "$ROOT/.stignore" 2>/dev/null; then
+  printf '%s\n' '// StudioSync: what this computer downloads (written by StudioSync, up to the line below)' '!/_*' '!/plugins' '!/drummaps' '!/*/session.json' '!/*/folder.json' '!/*/live.json' '!/*/invites' '!/*/inbox' '!/*/rooms/*/room.json' '!/*/rooms/*/summary' '!/*/rooms/*/status' '(?d)/*/*' '// StudioSync end' >> "$ROOT/.stignore" && ok "this computer gets each song in full once it's opened (the rest: their listing)"
 fi
-LABEL="BandSync"; [ "$FOLDER_ID" != bandsync ] && LABEL="StudioSync $BAND_NAME"
+LABEL="StudioSync $BAND_NAME"
 if [ -n "$LATER" ]; then : # (no studio folder yet: the panel makes it when you start or join one)
 elif stcli config folders list | grep -qx "$FOLDER_ID"; then ok "$BAND_NAME's shared folder is already set up"
 else
@@ -498,7 +506,7 @@ if [ -z "$LATER" ]; then
 fi
 stcli config devices "$MY_ID" name set "$USERNAME_BS" >/dev/null
 if [ -n "$JOINING" ]; then
-  stcli config devices list | grep -qx "$HOST_ID" || stcli config devices add --device-id "$HOST_ID" --name "Collaborator" --introducer --auto-accept-folders >/dev/null
+  stcli config devices list | grep -qx "$HOST_ID" || stcli config devices add --device-id "$HOST_ID" --name "Collaborator" --introducer >/dev/null
   stcli config folders "$FOLDER_ID" devices list | grep -qx "$HOST_ID" || stcli config folders "$FOLDER_ID" devices add --device-id "$HOST_ID" >/dev/null
   CONNECTED=""
   stcli show connections 2>/dev/null | tr -d '\n ' | grep -q "\"$HOST_ID\":{[^}]*\"connected\":true" && CONNECTED=1
@@ -578,14 +586,17 @@ if yes "$HOSTING"; then
   echo "    then already paired with you). When they've run it, the panel shows 'Let them in': press it."
   echo "    (Your Syncthing device ID, if they ask for it:  $MY_ID)"
 fi # (a joiner's note is the last one: two said the same thing. AgentBox, 0.58.65)
-if yes "$LIVE" && [ -z "$TS_TAGGED" ]; then
+if yes "$LIVE" && [ -z "$TS_TAGGED" ] && ts_running 2>/dev/null; then # (signed in: only the expiry is left)
+  echo "  - Tailscale: at login.tailscale.com/admin/machines > this Mac > ... > Disable key expiry (otherwise it signs out every"
+  echo "    few months, maybe right before a session)."
+elif yes "$LIVE" && [ -z "$TS_TAGGED" ]; then
   echo "  - Tailscale (skipped above): sign in from its menu-bar icon, then at login.tailscale.com/admin/machines > this"
   echo "    Mac > ... > Disable key expiry (otherwise it signs out every few months, maybe right before a session)."
 fi
 if yes "$LIVE" && yes "$HOSTING"; then # the first one's job, once: then bandmates' installers sign their machines in for good
-  echo "  - Tailscale, once for the whole group (if not done yet): at login.tailscale.com/admin/acls add this line inside the"
+  echo "  - Tailscale, once for the whole studio (if not done yet): at login.tailscale.com/admin/acls add this line inside the"
   echo '    policy'"'"'s { }:   "tagOwners": { "tag:bandsync": ["autogroup:member"] },'
-  echo "    Then each collaborator's installer signs their machine in as a group machine that never has to sign in again."
+  echo "    Then each collaborator's installer signs their machine in as a studio machine that never has to sign in again."
 fi
 if yes "$SOLO" && yes "$HOSTING" && [ -n "${DRIVE_OK:-}" ]; then
   echo "  - Google Drive: share the '$DRIVE_NAME' folder in your My Drive with each collaborator (Editor), at drive.google.com."
@@ -601,6 +612,8 @@ if yes "$HOSTING"; then
 elif [ -n "$LATER" ]; then
   echo "  - When you want a studio: REAPER's StudioSync panel has Start a studio, and Paste join code for an invitation someone sends you."
   [ -n "${TS_LATER:-}" ] && echo "  - Tailscale (for Play/Jam and hearing each other live): sign in from its menu-bar icon when you need it."
+elif [ -f "$ROOT/_band/band.json" ]; then # (run again by someone already in: nobody has to let them in. Mac test, 0.58.69)
+  echo "  - You're already in $BAND_NAME: nothing more to do here. In StudioSync's panel, open Projects and double-click one."
 else
   echo "  - Tell whoever invited you that you're set up: they press 'Let $USERNAME_BS in' in their panel (or add your Syncthing ID"
   echo "    by hand: $MY_ID). Then the studio's projects arrive by themselves: in StudioSync's panel, open Projects and double-click one."

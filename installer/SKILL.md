@@ -60,12 +60,13 @@ it only syncs while running.
 **Before pairing, configure defaults, or folders land in the wrong place:**
 - `cli config defaults folder path set "<parent of the StudioSync folder>"`. It was empty on Windows, which puts the folder in the home dir.
 - Pre-create the folder so it gets the right name and case: folder ID from the invitation (`BandId`; the first machine of a new studio makes its own, `bandsync-<name>-<4 hex digits>`; plain `bandsync` is only for a studio from before IDs), label `StudioSync`, path
-  `<parent>/StudioSync`. Auto-accept otherwise creates a lowercase `~/bandsync` on macOS.
+  `<parent>/StudioSync`. (Before 0.58.69, auto-accept otherwise created a lowercase `~/bandsync` on macOS; now the offer would wait unanswered.)
 - On that folder: `order set smallestFirst` and `fswatcher-delays set 1`. The default 10 s watcher delay added
   10 s to every take.
 - Set this device's name to the musician's name.
 
-**Pairing.** Joining: add the host's device ID with `--introducer --auto-accept-folders`, then read this machine's ID
+**Pairing.** Joining: add the studio's folder first, then the host's device ID with `--introducer` (not `--auto-accept-folders`:
+that let the host add any folder to this computer; since 0.58.69 nothing is accepted without asking), then read this machine's ID
 (`syncthing device-id`, or REST `GET /rest/system/status` → `myID`) and give it to the musician to send to
 the host. The host adds it and shares `bandsync`. Because the host is an introducer, every other bandmate appears
 automatically. Hosting: create the folder, then add each bandmate's ID and share that folder with them.
@@ -125,7 +126,7 @@ join the band's studio under the musician's StudioSync name. REAPER lists a new 
 or restart REAPER after.
 
 **Play along** and **Jam** (the Play/Jam tab: off by default, Settings > Advanced) go through a NINJAM server on the host's machine, reached over Tailscale so it never faces the internet. So does the producer's NINJAM route. Tailscale goes in for everyone; the server is only the host's, if they ask for those.
-Everyone signs in to the group's one account (James's choice). Otherwise the host **shares one machine** with each bandmate, as below.
+Everyone signs in to the studio's one account (James's choice). Otherwise the host **shares one machine** with each bandmate, as below.
 
 | OS | Install | CLI |
 |---|---|---|

@@ -23,7 +23,7 @@ end
 local known = {}
 -- The plan is kept on disk all the time, not only at quit: after a crash REAPER reopened the tabs itself, with its boxes up until
 -- someone answered and the song catching up a little at a time behind them (PC, 2026-11-03: nearly 2 minutes against 20 s).
-local kept, kept_was
+local kept, kept_was, kept_n, fewer_since
 function startup.note()
   local tabs, front = {}, reaper.EnumProjects(-1)
   for i = 0, 512 do
@@ -31,11 +31,17 @@ function startup.note()
     if not p then break end
     if fn ~= "" then tabs[#tabs + 1] = { path = fn, band = band.binding(p) ~= nil or nil, front = p == front or nil } end
   end
-  known = tabs
-  if not usable() then return end
+  if not usable() then known = tabs; return end
   local sig = band.json_encode(tabs)
-  if sig == kept then return end
-  kept = sig
+  if sig == kept then fewer_since = nil; return end
+  -- (fewer tabs than noted: REAPER may be quitting, closing them one at a time with scripts still running in between. A Mac's plan was gone,
+  -- and its loadlastproj put back, by the time REAPER had quit, so the tabs never came back. Mac test, 0.58.69. Noted once it's lasted 3 s)
+  if kept_n and #tabs < kept_n then
+    fewer_since = fewer_since or reaper.time_precise()
+    if reaper.time_precise() - fewer_since < 3 then return end
+  end
+  known, fewer_since = tabs, nil
+  kept, kept_n = sig, #tabs
   if startup.plan(tabs) then
     kept_was = kept_was or reaper.SNM_GetIntConfigVar("loadlastproj", 1)
     band.write_json(FILE, { tabs = tabs, loadlastproj = kept_was })
