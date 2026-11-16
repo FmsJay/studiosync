@@ -20,7 +20,7 @@ require("trust").pin = function(r, ...) pinned[r] = true; return real_pin(r, ...
 -- a small Syncthing: what the group code asks of it
 reaper.ExecProcess = function(c)
   cmds[#cmds + 1] = c
-  if c:find(" cli debug file ", 1, true) then return '0\n{ "global": { "modifiedBy": "", "version": [] } }\n' end -- (a folder it doesn't hold: lib/trust.lua believes the files)
+  if c:find("/rest/db/file", 1, true) or c:find(" cli debug file ", 1, true) then return '0\n{ "global": { "modifiedBy": "", "version": [] } }\n' end -- (a folder it doesn't hold: lib/trust.lua believes the files)
   if c:find("folders list", 1, true) then local t = {}; for f in pairs(folders) do t[#t + 1] = f end; return "0\n" .. table.concat(t, "\n") .. "\n" end
   local f = c:match("folders (%S+) devices list")
   if f then return "0\n" .. table.concat(folders[f] or {}, "\n") .. "\n" end

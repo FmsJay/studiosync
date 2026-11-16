@@ -17,18 +17,29 @@ local function ext_travels(key) return key == "band_oid" or key:sub(1, 7) == "ba
 
 -- A plug-in chain's lines that are this machine's own: FX ids, window positions, which window is open or docked.
 local FX_LOCAL = { FXID = true, FLOATPOS = true, FLOAT = true, WNDRECT = true, SHOW = true, LASTSEL = true, DOCKED = true }
+-- At any depth (FX containers, REAPER 7): those lines of the chain or container a line sits in, and the view lines of a
+-- plug-in's envelope lanes and modulation window. (Showing an FX lane, or opening a plug-in's window inside a container,
+-- resent the whole chain and reloaded everyone's plug-ins: plug-ins review, 0.58.76.) `parent`: the enclosing block's tag.
+local CHAIN_BLOCK = { FXCHAIN = true, TAKEFX = true, CONTAINER = true }
+local PARM_VIEW = { EGUID = true, ARM = true, VIS = true, LANEHEIGHT = true, MODWND = true }
+local function chain_local(parent, key)
+  if not key then return false end
+  if CHAIN_BLOCK[parent] then return FX_LOCAL[key] == true end
+  return (parent == "PARMENV" or parent == "PROGRAMENV") and PARM_VIEW[key] == true
+end
+mirror.chain_local = chain_local
 
 -- Normalized item chunk: what the band shares about this item, byte-identical on every machine that holds it.
 function mirror.normalize_item(chunk)
-  local out, in_ext, takefx = {}, false, 0 -- (takefx: depth inside a take's <TAKEFX chain, 0 outside it)
+  local out, in_ext, fx = {}, false, {} -- (fx: the blocks open inside a take's <TAKEFX chain, empty outside it)
   for line in chunk:gmatch("[^\r\n]+") do
     local s = line:match("^%s*(.-)%s*$")
     local key = s:match("^(%S+)")
-    local fx_top = takefx == 1
-    if takefx > 0 then
-      if s:sub(1, 1) == "<" then takefx = takefx + 1 elseif s == ">" then takefx = takefx - 1 end
-    elseif s == "<TAKEFX" then takefx = 1 end
-    if fx_top and key and FX_LOCAL[key] then -- (a take plug-in's window opened or moved isn't a change)
+    local parent = fx[#fx]
+    if #fx > 0 then
+      if s:sub(1, 1) == "<" then fx[#fx + 1] = s:match("^<(%S+)") elseif s == ">" then fx[#fx] = nil end
+    elseif s == "<TAKEFX" then fx[1] = "TAKEFX" end
+    if chain_local(parent, key) then -- (a take plug-in's window opened or moved isn't a change)
     elseif in_ext then
       if s == ">" then in_ext = false; out[#out + 1] = s
       elseif key and ext_travels(key) then out[#out + 1] = s end
@@ -52,15 +63,15 @@ end
 -- `skip` (optional set of FXIDs) leaves out this machine's own additions (plug-in translations). A plug-in runs
 -- from its BYPASS line to the line before the next BYPASS (FXID and WAK follow its block).
 function mirror.fxchain(track_chunk, skip)
-  local raw, depth, on = {}, 0, false
+  local raw, stack, on = {}, {}, false
   for line in track_chunk:gmatch("[^\r\n]+") do
     local s = line:match("^%s*(.-)%s*$")
     if not on and s == "<FXCHAIN" then on = true end
     if on then
-      local top = depth == 1 -- a line directly inside <FXCHAIN>
-      if s:sub(1, 1) == "<" then depth = depth + 1 elseif s == ">" then depth = depth - 1 end
-      raw[#raw + 1] = { s = s, top = top }
-      if depth == 0 then break end
+      local parent = stack[#stack]
+      if s:sub(1, 1) == "<" then stack[#stack + 1] = s:match("^<(%S+)") elseif s == ">" then stack[#stack] = nil end
+      raw[#raw + 1] = { s = s, top = parent == "FXCHAIN", parent = parent } -- (top: a line directly inside <FXCHAIN>)
+      if #stack == 0 then break end
     end
   end
   if not on then return nil end
@@ -74,7 +85,7 @@ function mirror.fxchain(track_chunk, skip)
     if r.top and key == "BYPASS" then flush(); group = {} end
     if i == #raw then flush() end -- the closing ">"
     if r.top and key == "FXID" and skip and skip[r.s:match("^FXID (%S+)")] then drop = true end
-    if not (r.top and FX_LOCAL[key]) then
+    if not chain_local(r.parent, key) then
       if group then group[#group + 1] = r.s else out[#out + 1] = r.s end
     end
   end
@@ -1440,6 +1451,25 @@ end
 -- media hasn't arrived yet), and the hash now held.
 -- (through JSON, as an event's was: REAPER's 0.0 reads back as 0)
 local function band_json(t) local band = require("band"); return band.json_decode(band.json_encode(t)) end
+-- What first differs between this machine's state and the band's, in a word for the Console: a track's setting, or the
+-- first word of an item's or chain's line ("Not sent ... back as it was" never said what, so nobody could tell what moved:
+-- sync engine review, 0.58.76). Pure.
+function mirror.first_diff(a, b)
+  if type(a) == "table" and type(b) == "table" then
+    local band, keys, seen = require("band"), {}, {}
+    for k in pairs(a) do if not seen[k] then seen[k] = true; keys[#keys + 1] = tostring(k) end end
+    for k in pairs(b) do if not seen[k] then seen[k] = true; keys[#keys + 1] = tostring(k) end end
+    table.sort(keys)
+    for _, k in ipairs(keys) do if band.json_encode(a[k]) ~= band.json_encode(b[k]) then return k end end
+  elseif type(a) == "string" and type(b) == "string" then
+    local la, lb = {}, {}
+    for l in a:gmatch("[^\n]+") do la[#la + 1] = l end
+    for l in b:gmatch("[^\n]+") do lb[#lb + 1] = l end
+    for i = 1, math.max(#la, #lb) do
+      if la[i] ~= lb[i] then return (((la[i] or lb[i]):match("^<?(%S+)")) or "a line"):sub(1, 24) end
+    end
+  end
+end
 function mirror.apply(proj, ev, media_dir, local_mix)
   if ev.obj == "track" then mirror.order_band[tostring(proj)] = true end
   local kind, oid = ev.obj, ev.oid
@@ -1642,6 +1672,7 @@ end
 -- An item landing in a lane resets which lanes play: the track's own settings go back on top (a merged item too: review, 0.58.47).
 local function lanes_back(proj, ev, media_dir, local_mix)
   if not ev.track then return end
+  if mirror.unsent[tostring(proj) .. ev.track] then return end -- (a change of yours not sent yet, held or settling: kept. Sync engine review, 0.58.76)
   local tr = mirror.find(proj, "track", ev.track)
   local krev, _, kev, kord = mirror.known(proj, ev.track)
   if tr and krev then
@@ -2131,7 +2162,7 @@ function mirror.watch(proj, cfg, song, room, opts)
   local mine_prefix = (me:gsub(" ", "_") .. "-"):upper() -- (event ids start with their author's name)
   local function allowed(o, name, pos)
     if opts.can(me, name, pos) then return true end
-    return sync.maker_may(o.kind == "track" and o.oid or o.track, me, name, pos, opts.mode)
+    return sync.maker_may(o.kind == "track" and o.oid or o.track, me, name, pos, opts.mode, o.kind == "item" and o.oid or nil)
   end
   local function say_once(key, text)
     if not mirror.said[key] then mirror.said[key] = true; band.log(text) end
@@ -2427,7 +2458,8 @@ function mirror.watch(proj, cfg, song, room, opts)
             o.hash = mirror.item_hash(o.track, state)
           end
         end
-        local owned = (sync.is_claimed and sync.is_claimed(name, o.pos) and opts.can(me, name, o.pos)) or (opts.mode ~= "open" and me == sync.driver_name)
+        -- (by the studio's rules, not "alone": two edits made alone outvoted the claimant's own. Sync engine review, 0.58.76)
+        local owned = (sync.is_claimed and sync.is_claimed(name, o.pos) and (opts.owner_can or opts.can)(me, name, o.pos)) or (opts.mode ~= "open" and me == sync.driver_name)
         -- (one edit, however many nudges: a change within SESSION_SECS of our own last one to it, nobody's in between, keeps its number, and its
         -- later order makes it the newer. Ten nudges outvoted one careful edit: docs/clashes.md)
         local s = mirror.sessions[rk]
@@ -2457,7 +2489,7 @@ function mirror.watch(proj, cfg, song, room, opts)
         ev.note = credit[o.oid] or bus_note(o, name, last) -- (said on every machine as it lands: sync.receive)
         if ev.note and not credit[o.oid] then band.log(ev.note) end
         if o.kind == "fx" then
-          ev.files = require("fxfiles").share(state, media) -- (samples, IRs, models it loads)
+          ev.files = require("fxfiles").share(state, media, last and last.state, last and last.files) -- (samples, IRs, models it loads)
           ev.restless = mirror.restless_in(state)
           if ev.restless then mirror.fx_knobs[rk] = knobs or mirror.fx_params(o.ptr) end
         end
@@ -2508,8 +2540,10 @@ function mirror.watch(proj, cfg, song, room, opts)
           or (who and who ~= me) and (who .. " is driving and " .. where .. " is nobody's: claim it to edit it")
           or "it isn't yours to change right now: claim it to edit it"
         local claim = not to and not claimed and sync.room_mode == "claims" and (ok_before and name or last.name) or nil -- (the bar's Claim it)
+        local differed = last and mirror.first_diff(o.state, last.state)
         put_back(o, rev, evid, { name = ok_before and name or (last.name or ""), to = to and who or nil, claim = claim ~= "" and claim or nil,
-          text = string.format("Not sent: %s. %s", how, o.kind == "track" and "The track is back as it was" or ((o.kind == "item" and "The item" or mirror.PART[o.kind]:gsub("^%l", string.upper)) .. " is back as it was")) })
+          text = string.format("Not sent: %s. %s%s", how, o.kind == "track" and "The track is back as it was" or ((o.kind == "item" and "The item" or mirror.PART[o.kind]:gsub("^%l", string.upper)) .. " is back as it was"),
+            differed and (" (what differed: " .. differed .. ")") or "") })
       end
     end)
     if not ok then say_once("err" .. o.oid, "mirror sync skipped " .. o.oid .. ": " .. tostring(err)) end
@@ -2825,7 +2859,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
         done = done + 1
         p.landed = true
       end
-    elseif not (opts.can(cfg.user, name, p.t and p.t.pos or nil) or sync.maker_may(p.t and p.t.obj == "track" and p.oid or (p.t and p.t.track) or p.oid, cfg.user, name, p.t and p.t.pos or nil, opts.mode)) then
+    elseif not (opts.can(cfg.user, name, p.t and p.t.pos or nil) or sync.maker_may(p.t and p.t.obj == "track" and p.oid or (p.t and p.t.track) or p.oid, cfg.user, name, p.t and p.t.pos or nil, opts.mode, p.t and p.t.obj == "item" and p.oid or nil)) then
       refused = refused + 1
     elseif p.t then
       local ok, nh = mirror.apply(proj, p.t, media, opts.local_mix)
@@ -3080,7 +3114,8 @@ function mirror.heal(proj, room_dir, local_mix)
   for oid, ev in pairs(newest) do
     ev = mirror.settled(room_dir, ev, all[oid]) -- (a merge of two changes made apart: what every computer holds)
     local _, kh, kev = mirror.known(proj, oid)
-    if kev ~= ev.id then -- (exactly: merge ids are the same everywhere, and "held inside a merge" hid two different ones for good. Review, 0.58.47)
+    if mirror.unsent[tostring(proj) .. oid] then -- a change of yours not sent yet (held, settling): it goes out, or is put back, by mirror.watch. Sync engine review, 0.58.76
+    elseif kev ~= ev.id then -- (exactly: merge ids are the same everywhere, and "held inside a merge" hid two different ones for good. Review, 0.58.47)
       local order = mirror.order_of(ev)
       if ev.gone then
         if kh and kh ~= "" then
@@ -3143,7 +3178,7 @@ function mirror.allowed_into(cfg, song, to, list, session)
   local keep, refused = {}, 0
   for _, ev in ipairs(list) do
     local t = ev.obj == "track" and ev.oid or ev.track
-    if can(cfg.user, ev.name or "", ev.pos) or sync.maker_may(t, cfg.user, ev.name or "", ev.pos, who.mode) then keep[#keep + 1] = ev
+    if can(cfg.user, ev.name or "", ev.pos) or sync.maker_may(t, cfg.user, ev.name or "", ev.pos, who.mode, ev.obj == "item" and ev.oid or nil) then keep[#keep + 1] = ev
     else refused = refused + 1 end
   end
   return keep, refused

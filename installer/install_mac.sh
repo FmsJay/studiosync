@@ -14,6 +14,8 @@
 # Testing: BS_SYNCTHING_HOME drives a separate Syncthing instance, BS_NO_REAPER stops before anything happens inside REAPER.
 # First run on a Mac 2026-10-28 (fixes in c2639a5); reviewed again for 0.34 (2026-10-31).
 set -u
+# (the whole invitation pasted at once runs every line: the Linux one after this. Installer review, 0.58.76)
+[ "$(uname -s)" = Darwin ] || { echo "This is the Mac setup. On Linux, use the invitation's Linux line; on Windows, its Windows line."; exit 1; }
 REPO="FmsJay/studiosync"
 TAG="${BS_TAG:-main}"
 REAIMGUI="0.10.0.5"   # shortcut: pinned, like the Windows installer
@@ -104,11 +106,14 @@ while [ -z "$USERNAME_BS" ]; do
   [ -n "$USERNAME_BS" ] && [ "$USERNAME_BS" != "$typed" ] && say "Using the name '$USERNAME_BS' (plain letters only)."
 done
 # the band (docs/bands-design.md): each its own shared folder. An invitation names it; the first one set up names it.
-FOLDER_ID="$(printf '%s' "${BS_BAND_ID:-}" | LC_ALL=C tr -cd 'a-z0-9-')"
+FOLDER_ID="$(printf '%s' "${BS_BAND_ID:-}" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C tr -cd 'a-z0-9-')"
 if [ -n "$JOINING" ] && [ -z "$FOLDER_ID" ]; then # (someone's device ID typed in by hand, no invitation)
   FOLDER_ID="$(ask "The studio's ID, if whoever set it up gave you one (press Return if not)" bandsync | LC_ALL=C tr -cd 'a-z0-9-')"
   [ -n "$FOLDER_ID" ] || FOLDER_ID=bandsync
 fi
+# (only a StudioSync studio's folder: an invitation naming one you already have, like Syncthing's "default", would share
+# it with whoever sent it. Security review, 0.58.76)
+case "$FOLDER_ID" in bandsync|bandsync-*|studiosync-*|"") ;; *) warn "That studio ID ($FOLDER_ID) isn't a StudioSync one: ask for a new invitation."; exit 1 ;; esac
 BAND_NAME="$(plain "${BS_BAND_NAME:-}")"
 if yes "$HOSTING" && [ -z "$BAND_NAME" ]; then
   while [ -z "$BAND_NAME" ]; do BAND_NAME="$(plain "$(ask "Name your studio" "My studio")")"; done
@@ -208,6 +213,9 @@ gh_asset_tag() { # repo tag regex -> download URL of that release's asset matchi
 # A plug-in's disk image: its .pkg if it has one, else its plug-in bundles copied into your own Plug-Ins folders
 # (no password needed). `pattern`: a glob that's there once it's installed, in /Library or ~/Library.
 plugin_found() { find /Library/Audio/Plug-Ins "$HOME/Library/Audio/Plug-Ins" -maxdepth 2 -name "$1" 2>/dev/null | grep -q .; }
+# (looked for before its download is: every lookup is a GitHub API call, 60 an hour per network, and a band installing in one room
+# ran out, so Syncthing's own download failed. Installer review, 0.58.76)
+have_plugin() { plugin_found "$2" && ok "$1 is already installed"; }
 plugin_dmg() { # url name pattern
   [ -n "$1" ] || { warn "$2: no download found, skipped"; return 1; }
   if plugin_found "$3"; then ok "$2 is already installed"; return 0; fi
@@ -267,7 +275,8 @@ if yes "$LIVE" && [ -x "$TS" ]; then
   open -a Tailscale
   # (a new install runs only once macOS approves its system extension: System Settings > General > Login Items &
   # Extensions, and "Allow" for its VPN configuration. Until then every command fails, and a reset was done for nothing)
-  for i in $(seq 1 "$(yes "$HOSTING" && echo 120 || echo 5)"); do # (a joiner doesn't wait: below)
+  # (a joiner without an invitation key doesn't wait; a guest does, or a new Tailscale refused the key before macOS let it run: installer review, 0.58.76)
+  for i in $(seq 1 "$({ yes "$HOSTING" || [ -n "${BS_TS_KEY:-}" ]; } && echo 120 || echo 5)"); do
     "$TS" status --json 2>/dev/null | grep -q '"BackendState"' && break
     [ $i -eq 5 ] && say "Waiting for Tailscale: if macOS asks, allow its system extension (System Settings > General > Login Items & Extensions) and its VPN configuration."
     sleep 1
@@ -385,20 +394,20 @@ fi
 # the band plug-in pack (optional): free, open-source plug-ins every bandmate can have, each from its official release
 # (never bundled here); what everyone has shows in REAPER's FX browser folder "StudioSync (everyone has)"
 if yes "$PLUGINS"; then
-  plugin_dmg "$(gh_asset_tag surge-synthesizer/releases-xt "$(curl -fsSL https://api.github.com/repos/surge-synthesizer/releases-xt/releases/latest | grep -o '"tag_name": *"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/')" 'macOS-[0-9.]+\.dmg$')" "Surge XT" "Surge XT*"
-  plugin_dmg "$(gh_asset asb2m10/dexed 'macOS\.dmg$')" "Dexed" "Dexed*"
-  plugin_dmg "$(gh_asset_tag baconpaul/airwin2rack DAWPlugin 'macOS.*\.dmg$')" "Airwindows Consolidated" "Airwindows*"
-  plugin_dmg "$(gh_asset michaelwillis/dragonfly-reverb 'macos-universal\.dmg$')" "Dragonfly Reverb" "Dragonfly*"
-  plugin_dmg "$(gh_asset jatinchowdhury18/AnalogTapeModel 'Mac.*\.dmg$')" "Chow Tape Model" "CHOW*"
-  plugin_dmg "$(gh_asset Chowdhury-DSP/BYOD 'Mac-.*\.dmg$')" "BYOD" "BYOD*"
+  have_plugin "Surge XT" "Surge XT*" || plugin_dmg "$(gh_asset_tag surge-synthesizer/releases-xt "$(curl -fsSL https://api.github.com/repos/surge-synthesizer/releases-xt/releases/latest | grep -o '"tag_name": *"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/')" 'macOS-[0-9.]+\.dmg$')" "Surge XT" "Surge XT*"
+  have_plugin "Dexed" "Dexed*" || plugin_dmg "$(gh_asset asb2m10/dexed 'macOS\.dmg$')" "Dexed" "Dexed*"
+  have_plugin "Airwindows Consolidated" "Airwindows*" || plugin_dmg "$(gh_asset_tag baconpaul/airwin2rack DAWPlugin 'macOS.*\.dmg$')" "Airwindows Consolidated" "Airwindows*"
+  have_plugin "Dragonfly Reverb" "Dragonfly*" || plugin_dmg "$(gh_asset michaelwillis/dragonfly-reverb 'macos-universal\.dmg$')" "Dragonfly Reverb" "Dragonfly*"
+  have_plugin "Chow Tape Model" "CHOW*" || plugin_dmg "$(gh_asset jatinchowdhury18/AnalogTapeModel 'Mac.*\.dmg$')" "Chow Tape Model" "CHOW*"
+  have_plugin "BYOD" "BYOD*" || plugin_dmg "$(gh_asset Chowdhury-DSP/BYOD 'Mac-.*\.dmg$')" "BYOD" "BYOD*"
   arch="$( [ "$ARCH" = arm64 ] && echo arm64 || echo x86-64 )"
-  plugin_dmg "$(gh_asset ZL-Audio/ZLEqualizer "macOS-$arch\.dmg$")" "ZL Equalizer 2" "ZL Equalizer*"
-  plugin_dmg "$(gh_asset ZL-Audio/ZLCompressor "macOS-$arch\.dmg$")" "ZL Compressor" "ZL Compressor*"
-  plugin_dmg "$(gh_asset Chowdhury-DSP/ChowMatrix 'Mac-.*\.dmg$')" "ChowMatrix" "ChowMatrix*"
+  have_plugin "ZL Equalizer 2" "ZL Equalizer*" || plugin_dmg "$(gh_asset ZL-Audio/ZLEqualizer "macOS-$arch\.dmg$")" "ZL Equalizer 2" "ZL Equalizer*"
+  have_plugin "ZL Compressor" "ZL Compressor*" || plugin_dmg "$(gh_asset ZL-Audio/ZLCompressor "macOS-$arch\.dmg$")" "ZL Compressor" "ZL Compressor*"
+  have_plugin "ChowMatrix" "ChowMatrix*" || plugin_dmg "$(gh_asset Chowdhury-DSP/ChowMatrix 'Mac-.*\.dmg$')" "ChowMatrix" "ChowMatrix*"
   if yes "$EXTRAS"; then
     # NAM: v0.7.14 and later have no release files; 0.7.13 is the newest that does
-    plugin_dmg "$(gh_asset_tag sdatkinson/NeuralAmpModelerPlugin v0.7.13 'mac\.dmg$')" "Neural Amp Modeler" "NeuralAmpModeler*"
-    plugin_dmg "$(gh_asset AidaDSP/AIDA-X 'macos-universal.*\.dmg$')" "AIDA-X" "AIDA-X*"
+    have_plugin "Neural Amp Modeler" "NeuralAmpModeler*" || plugin_dmg "$(gh_asset_tag sdatkinson/NeuralAmpModelerPlugin v0.7.13 'mac\.dmg$')" "Neural Amp Modeler" "NeuralAmpModeler*"
+    have_plugin "AIDA-X" "AIDA-X*" || plugin_dmg "$(gh_asset AidaDSP/AIDA-X 'macos-universal.*\.dmg$')" "AIDA-X" "AIDA-X*"
     odin="$(gh_asset_tag TheWaveWarden/odin2 NightlyDevel 'MacInstaller\.pkg$')"
     if plugin_found "Odin2*"; then ok "Odin 2 is already installed"
     elif [ -n "$odin" ] && curl -fsSL "$odin" -o "$WORK/odin2.pkg"; then password_note; sudo installer -pkg "$WORK/odin2.pkg" -target / >/dev/null && ok "Odin 2 installed"
@@ -520,6 +529,7 @@ fi
 ZREF="heads/main"; [ "$TAG" != main ] && ZREF="tags/$TAG"
 curl -fsSL "https://codeload.github.com/$REPO/zip/refs/$ZREF" -o "$WORK/bandsync.zip" && ditto -x -k "$WORK/bandsync.zip" "$WORK/src"
 HELPER="$(find "$WORK/src" -path '*/installer/studiosync_setup.lua' | head -1)"
+[ -n "$HELPER" ] || { warn "StudioSync's setup files didn't download: check the internet connection, then run this again."; exit 1; }
 HDIR="$(dirname "$HELPER")"
 request() { # mode -> runs the helper in REAPER, leaves its JSON result in $HDIR/studiosync_setup_result.json
   local panel=false; [ "$1" = verify ] && panel=true

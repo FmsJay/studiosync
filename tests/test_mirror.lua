@@ -119,6 +119,15 @@ local fx2 = mirror.fxchain(tr, { ["{F2}"] = true })
 assert(fx2:find("ReaEQ") and not fx2:find("my translation"), "local translation left out")
 assert(fx2:sub(-2) == ">\n", "closing kept")
 assert(mirror.fxchain("<TRACK\nNAME x\n>") == nil, "no chain")
+-- (0.58.76) inside a container, and a plug-in's envelope lane and modulation window: view lines go at any depth
+local nested = mirror.fxchain("<TRACK\n<FXCHAIN\nSHOW 0\nBYPASS 0 0 0\n<CONTAINER Container \"C\"\nCONTAINER_CFG 2 2 2 0\nSHOW 1\nLASTSEL 0\nBYPASS 0 0 0\n" ..
+  "<VST \"VST: Amp\" amp.dll 0 \"\" 1<56> \"\"\nZGF0YQ==\n>\nFLOATPOS 10 10 300 200\nFXID {N1}\n<PARMENV 2:2 0 1 0.5\nEGUID {E1}\nACT 1 -1\nVIS 1 1 1\n" ..
+  "LANEHEIGHT 0 0\nARM 1\nPT 0 0.5 0\n>\n<PROGRAMENV 3:3 0\nPARAMBASE 0\nMODWND 1 5 5 400 300\n>\nWAK 0 0\n>\nFLOATPOS 0 0 0 0\nFXID {C1}\nWAK 0 0\n>\n>")
+assert(nested:find("CONTAINER_CFG") and nested:find("ZGF0YQ==") and nested:find("PT 0 0.5 0") and nested:find("PARAMBASE 0") and nested:find("ACT 1 -1", 1, true), "the chain itself kept: " .. nested)
+assert(not nested:find("SHOW") and not nested:find("FLOATPOS") and not nested:find("FXID") and not nested:find("LASTSEL"), "nested windows and ids go: " .. nested)
+assert(not nested:find("VIS ") and not nested:find("LANEHEIGHT") and not nested:find("ARM ") and not nested:find("EGUID") and not nested:find("MODWND"), "lane view goes: " .. nested)
+local takefx = mirror.normalize_item("<ITEM\n<TAKEFX\nSHOW 0\nBYPASS 0 0 0\n<CONTAINER Container \"C\"\nSHOW 2\n<JS x \"\"\n0 -\n>\nFLOATPOS 1 1 1 1\nFXID {T1}\n>\nFXID {T2}\n>\n>")
+assert(not takefx:find("SHOW") and not takefx:find("FLOATPOS") and not takefx:find("FXID") and takefx:find("<JS x"), "take FX containers too: " .. takefx)
 
 -- ordering: rev, then time, then user
 assert(mirror.newer({ rev = 3 }, { rev = 2 }) and not mirror.newer({ rev = 2 }, { rev = 3 }), "rev wins")
@@ -564,4 +573,8 @@ do
   t.automode = 1
   assert(mirror.track_line(t, false, false) == plain .. "|am1", "Read: it counts")
 end
+-- (0.58.76) what a put-back says differed
+assert(mirror.first_diff({ name = "Bass", vol = 1, icon = "a.png" }, { name = "Bass", vol = 1, icon = "b.png" }) == "icon", "a track's setting")
+assert(mirror.first_diff("<ITEM\nPOSITION 1\nLENGTH 2\n>", "<ITEM\nPOSITION 1\nLENGTH 3\n>") == "LENGTH", "an item's line")
+assert(mirror.first_diff("<ITEM\n>", "<ITEM\n>") == nil and mirror.first_diff(nil, "x") == nil, "nothing, or nothing to compare")
 print("ok clock")

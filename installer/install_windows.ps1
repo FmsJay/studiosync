@@ -119,11 +119,14 @@ if ($joining -and -not $folderId) { # (someone's device ID typed in by hand, no 
   $folderId = ((Ask "The studio's ID, if whoever set it up gave you one (press Enter if not)" "bandsync").ToLower() -replace '[^a-z0-9-]', '')
   if (-not $folderId) { $folderId = "bandsync" }
 }
+# (only a StudioSync studio's folder: an invitation naming one you already have, like Syncthing's "default", would share it with whoever sent it. Security review, 0.58.76)
+if ($folderId -and $folderId -notmatch '^(bandsync|bandsync-.*|studiosync-.*)$') { Warn "That studio ID ($folderId) isn't a StudioSync one: ask for a new invitation."; exit 1 }
 $bandName = $BandName -replace '[^\w\- ]', ''
 if ($isHost -and -not $bandName) { while (-not $bandName) { $bandName = (Ask "Name your studio" "My studio") -replace '[^\w\- ]', '' } }
 if (-not $bandName) { $bandName = "the studio" }
 # (later: an empty StudioSync folder, so a studio started or joined from the panel goes beside it, in your home folder: services.new_band)
-$defRoot = if ($later) { Join-Path $env:USERPROFILE "StudioSync" } elseif ($folderId -eq "bandsync") { if (Test-Path (Join-Path $env:USERPROFILE "BandSync")) { Join-Path $env:USERPROFILE "BandSync" } else { Join-Path $env:USERPROFILE "StudioSync" } } # (set up before the rename: its folder stays) else { Join-Path $env:USERPROFILE "StudioSync $bandName" }
+# (the old shared "bandsync" studio, set up before the rename: its folder stays)
+$defRoot = if ($later) { Join-Path $env:USERPROFILE "StudioSync" } elseif ($folderId -eq "bandsync") { if (Test-Path (Join-Path $env:USERPROFILE "BandSync")) { Join-Path $env:USERPROFILE "BandSync" } else { Join-Path $env:USERPROFILE "StudioSync" } } else { Join-Path $env:USERPROFILE "StudioSync $bandName" }
 # (not asked: nobody new knows what to answer, and the panel can move it later. Beginner review, 0.58.62)
 $root = if ($Root) { $Root } else { $defRoot }
 if (-not $later) { Say "$bandName's shared folder: $root" }
@@ -446,12 +449,15 @@ New-Item -ItemType Directory -Force $work | Out-Null
 if ($Tag -eq "main") { # the newest released version (what ReaPack serves), not whatever is on main right now
   try {
     $idx = (Invoke-WebRequest -UseBasicParsing "https://github.com/$Repo/raw/main/index.xml").Content
-    $vers = [regex]::Matches($idx, 'version name="([0-9.]+)"') | ForEach-Object { $_.Groups[1].Value }
+    # (StudioSync's own versions only: the menus extension's 1.0.x made this v1.0.1, a tag that doesn't exist. Installer review, 0.58.76)
+    $own = [regex]::Match($idx, '(?s)<reapack name="StudioSync\.lua".*?</reapack>').Value
+    $vers = [regex]::Matches($own, 'version name="([0-9.]+)"') | ForEach-Object { $_.Groups[1].Value }
     if ($vers) { $Tag = "v" + ($vers | Sort-Object { [version]$_ } | Select-Object -Last 1) }
   } catch { }
 }
 $zipRef = if ($Tag -eq "main") { "heads/main" } else { "tags/$Tag" }
-Invoke-WebRequest -UseBasicParsing "https://codeload.github.com/$Repo/zip/refs/$zipRef" -OutFile (Join-Path $work "bandsync.zip")
+try { Invoke-WebRequest -UseBasicParsing "https://codeload.github.com/$Repo/zip/refs/$zipRef" -OutFile (Join-Path $work "bandsync.zip") }
+catch { Warn "StudioSync's scripts didn't download ($($_.Exception.Message)). Check the internet connection, then run this again."; exit 1 }
 Expand-Archive (Join-Path $work "bandsync.zip") $work
 $src = Get-ChildItem $work -Directory | Select-Object -First 1
 $helper = Join-Path $src.FullName "installer\studiosync_setup.lua"

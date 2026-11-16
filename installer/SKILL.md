@@ -15,7 +15,7 @@ in a terminal on the computer's own desktop) takes the same `BS_*` variables as 
 per user without sudo: REAPER through its own `install-reaper.sh --install ~/opt --integrate-user-desktop`, Syncthing into
 `~/.local/bin` (a systemd user unit when there is systemd), SonoBus unpacked from sonobus.net's .deb, plug-ins into `~/.vst3` / `~/.clap`.
 Only Tailscale (and SonoBus's JACK/Opus libraries, if missing) need sudo, asked first. No Google Drive (no Linux app; a note mentions
-rclone), no NAM/sforzando (no Linux builds); on ARM fewer plug-ins and no js_ReaScriptAPI. Not yet run on a real machine.
+rclone), no NAM/sforzando (no Linux builds); on ARM fewer plug-ins and no js_ReaScriptAPI. Run end to end on Ubuntu 24.04 (VMware VM, 2026-11-15).
 
 You are installing StudioSync for a musician who is probably not technical. They are at the keyboard.
 Your job is to get them from nothing to "my take landed in the host's project", explaining each
@@ -68,8 +68,8 @@ it only syncs while running.
 
 **Before pairing, configure defaults, or folders land in the wrong place:**
 - `cli config defaults folder path set "<parent of the StudioSync folder>"`. It was empty on Windows, which puts the folder in the home dir.
-- Pre-create the folder so it gets the right name and case: folder ID from the invitation (`BandId`; the first machine of a new studio makes its own, `bandsync-<name>-<4 hex digits>`; plain `bandsync` is only for a studio from before IDs), label `StudioSync`, path
-  `<parent>/StudioSync`. (Before 0.58.69, auto-accept otherwise created a lowercase `~/bandsync` on macOS; now the offer would wait unanswered.)
+- Pre-create the folder so it gets the right name and case: folder ID from the invitation (`BandId`; the first machine of a new studio makes its own, `studiosync-<name>-<4 hex digits>`; `bandsync-...` and plain `bandsync` are studios from before the rename), label `StudioSync <studio>`, path
+  `<parent>/StudioSync <studio>`. Only those IDs are accepted from an invitation (0.58.76). (Before 0.58.69, auto-accept otherwise created a lowercase `~/bandsync` on macOS; now the offer would wait unanswered.)
 - On that folder: `order set smallestFirst` and `fswatcher-delays set 1`. The default 10 s watcher delay added
   10 s to every take.
 - Set this device's name to the musician's name.
@@ -77,7 +77,7 @@ it only syncs while running.
 **Pairing.** Joining: add the studio's folder first, then the host's device ID with `--introducer` (not `--auto-accept-folders`:
 that let the host add any folder to this computer; since 0.58.69 nothing is accepted without asking), then read this machine's ID
 (`syncthing device-id`, or REST `GET /rest/system/status` → `myID`) and give it to the musician to send to
-the host. The host adds it and shares `bandsync`. Because the host is an introducer, every other bandmate appears
+the host. The host adds it and shares the studio's folder. Because the host is an introducer, every other bandmate appears
 automatically. Hosting: create the folder, then add each bandmate's ID and share that folder with them.
 
 **macOS prompt:** Syncthing asks for **Local Network** access. It must be **Allow**, or LAN sync silently fails.

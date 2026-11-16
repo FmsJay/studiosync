@@ -38,6 +38,7 @@ assert(services.parse_join(g).key == "tskey-auth-kAbc123CNTRL-xyz", "a guest's k
 assert(services.parse_join(inv:gsub("Chilio", "X", 1) .. "\ntskey-auth-x; rm -rf ~").key == "tskey-auth-x", "only key characters")
 code = services.parse_join("powershell -File $f -HostId " .. inv_id .. " -BandId bandsync-x -BandName 'Old One'\n")
 assert(code and code.band == "bandsync-x" and code.name == "Old One", "an old Windows line")
+assert(services.parse_join("studiosync-join:" .. inv_id .. ":default:Evil") == nil and services.parse_join("studiosync-join:" .. inv_id .. ":studiosync-a-1b2c:A").band == "studiosync-a-1b2c", "only a StudioSync folder (0.58.76)")
 code = services.parse_join("curl x | BS_HOST_ID=" .. inv_id .. " BS_BAND_ID=bandsync-y BS_BAND_NAME='Old Two' bash")
 assert(code and code.band == "bandsync-y" and code.name == "Old Two", "an old Mac line")
 assert(services.parse_join("") == nil and services.parse_join("hello") == nil and services.parse_join("studiosync-join:ABC:x:y") == nil, "not a code")

@@ -28,7 +28,8 @@ local function background(name, cmd, every)
     if WIN then -- through a hidden-window runner: `cmd /c` without waiting flashes a console window (seen 0.9.7)
       local bat, vbs = TMP .. "/bandsync-" .. name .. ".cmd", TMP .. "/bandsync-hidden.vbs"
       -- (the script deletes itself once run: some hold Syncthing's API key, and after a crash tidy_temp never ran. Review, 0.58.53)
-      pcall(band.write_atomic, bat, string.format('@%s > "%s" 2>nul\r\n@(goto) 2>nul & del "%%~f0"\r\n', cmd, file)) -- (its last run may still hold it, from another script: the same words are there already)
+      -- (a batch file reads %2 as its argument: a rescan of "Sunset%20Drive" asked for the wrong folder. Cross-platform review, 0.58.76)
+      pcall(band.write_atomic, bat, string.format('@%s > "%s" 2>nul\r\n@(goto) 2>nul & del "%%~f0"\r\n', (cmd:gsub("%%", "%%%%")), file)) -- (its last run may still hold it, from another script: the same words are there already)
       if not reaper.file_exists(vbs) then band.write_atomic(vbs, 'CreateObject("WScript.Shell").Run """" & WScript.Arguments(0) & """", 0, False\r\n') end
       reaper.ExecProcess(string.format('wscript.exe //B //Nologo "%s" "%s"', vbs, bat), -1)
     else -- through a script file too: macOS's ExecProcess doesn't honour \" inside a quoted argument, so any command
@@ -75,9 +76,10 @@ function services.port_open(address)
   host = host:gsub("[^%w%.%-]", "") -- (and each address has its own answer: one file for all read a dead host as up)
   local name, open = "port-" .. host .. "-" .. port, nil
   if WIN then -- (as services.answers; %% is a batch file's %)
-    open = (tonumber((background(name, 'curl -s -o NUL -m 3 -w %%{time_connect} "http://' .. host .. ":" .. port .. '/"', 3) or ""):match("[%d%.]+")) or 0) > 0
+    open = (tonumber((background(name, 'curl -s -o NUL -m 3 -w %{time_connect} "http://' .. host .. ":" .. port .. '/"', 3) or ""):match("[%d%.]+")) or 0) > 0
+  elseif band.LINUX then -- (curl, as on Windows: some distros have no netcat, and every live server read as gone. Cross-platform review, 0.58.76)
+    open = (tonumber((background(name, "curl -s -o /dev/null -m 3 -w '%{time_connect}' 'http://" .. host .. ":" .. port .. "/'", 3) or ""):match("[%d%.]+")) or 0) > 0
   else
-    -- (Linux's netcat has no -G; its -w is the connect timeout there. 0.58.74)
     open = (background(name, "/usr/bin/nc -z " .. NC_WAIT .. " 3 '" .. host .. "' " .. port .. " && echo open || echo shut", 3) or ""):find("open", 1, true) ~= nil
   end
   local r = runs[name] or {}
@@ -95,6 +97,7 @@ function services.answers(address)
   -- its exit code can't tell: 28 is both "connected, and nothing came in a second" and "nobody there", which is what an offline Tailscale machine does)
   -- (3 s: Tailscale's first packets to a computer that's been quiet can take over 1, and a live host then read as gone and was taken over)
   if WIN then return (tonumber((reaper.ExecProcess('curl -s -o NUL -m 3 -w %{time_connect} "http://' .. host .. ":" .. port .. '/"', 5000) or ""):match("\n([%d%.]+)")) or 0) > 0 end
+  if band.LINUX then return (tonumber((reaper.ExecProcess("/usr/bin/curl -s -o /dev/null -m 3 -w %{time_connect} http://" .. host .. ":" .. port .. "/", 5000) or ""):match("\n([%d%.]+)")) or 0) > 0 end
   return (reaper.ExecProcess("/usr/bin/nc -z " .. NC_WAIT .. " 3 " .. host .. " " .. port, 5000) or ""):match("^0\n") ~= nil
 end
 
@@ -310,13 +313,20 @@ end
 -- Which computer last changed a file in a shared folder, as Syncthing has it (modifiedBy: the first 7 characters of its ID); "" when Syncthing
 -- holds no such folder or file (a studio it doesn't sync, or a file written here a moment ago); nil when it didn't answer (lib/trust.lua).
 function services.parse_modified_by(out)
-  local g = tostring(out or ""):match('"global"%s*:%s*(%b{})')
-  return g and g:match('"modifiedBy"%s*:%s*"([%u%d]*)"') or nil
+  out = tostring(out or "")
+  local g = out:match('"global"%s*:%s*(%b{})')
+  if g then return g:match('"modifiedBy"%s*:%s*"([%u%d]*)"') or nil end
+  -- (Syncthing's REST answer for a file or folder it doesn't hold: the same as an empty modifiedBy)
+  local low = out:lower() -- (Syncthing 1.27 says "No such object in the index")
+  if low:find("no such object", 1, true) or low:find("no such folder", 1, true) or low:find("does not exist", 1, true) then return "" end
+  return nil
 end
+-- Through Syncthing's REST database API (/rest/db/file), not `cli debug file`: that one is /rest/debug/file, refused ("Debugging disabled")
+-- unless debugging is switched on, as on Ubuntu's Syncthing 1.27, so a removal or a change of roles was never believed there. Linux VM, 0.58.76
 function services.modified_by(folder, rel)
-  local st = services.syncthing_path()
-  if not (st and tostring(folder):match("^[%w%-]+$")) then return nil end
-  return services.parse_modified_by(reaper.ExecProcess(q(st) .. " cli debug file " .. folder .. " " .. q(rel), 8000))
+  if not tostring(folder):match("^[%w%-]+$") then return nil end
+  local enc = tostring(rel):gsub("[^%w%-%._~]", function(c) return string.format("%%%02X", c:byte()) end)
+  return services.parse_modified_by(services.ask("/rest/db/file?folder=" .. folder .. "&file=" .. enc, 5))
 end
 
 -- What a set-up bandmate sends someone new: one line to paste on a Mac and one on Windows, each running the
@@ -356,7 +366,10 @@ function services.parse_join(text)
   if not id then id, folder, name = text:match("%-HostId%s+([%u%d%-]+)%s+%-BandId%s+([%w%-]+)%s+%-BandName%s+'([^'\r\n]*)'") end
   if not id then id, folder, name = text:match("BS_HOST_ID=([%u%d%-]+)%s+BS_BAND_ID=([%w%-]+)%s+BS_BAND_NAME='([^'\r\n]*)'") end
   if not id or not services.is_device_id(id) then return nil end
-  return { id = id, band = folder:lower(), name = (name:gsub("[^%w%-_ ]", ""):match("^%s*(.-)%s*$")), key = text:match("tskey%-auth%-[%w%-]+") }
+  -- (only a StudioSync studio's folder: one you already have, like Syncthing's "default", would be shared with whoever sent it. Security review, 0.58.76)
+  folder = folder:lower()
+  if not (folder == "bandsync" or folder:match("^bandsync%-") or folder:match("^studiosync%-")) then return nil end
+  return { id = id, band = folder, name = (name:gsub("[^%w%-_ ]", ""):match("^%s*(.-)%s*$")), key = text:match("tskey%-auth%-[%w%-]+") }
 end
 -- Into a studio from a code, with StudioSync already here: what an invitation's installer does (the folder, the pairing), and nothing else to install. Whoever invited
 -- you then sees Let them in. -> its folder, or nil + why.
@@ -665,7 +678,7 @@ local function token_store(token) -- -> true when it's locked away
     local blob = out and out:match("(%x%x%x%x%x%x%x%x+)%s*$") -- (the last line: PowerShell can complain about a drive first)
     if blob then reaper.SetExtState(band.SECTION, "tailscale_token_dpapi", blob, true) end
     return blob ~= nil
-  elseif reaper.GetOS() ~= "Other" then -- (a Mac: Linux says "Other")
+  elseif band.MAC then
     if token == "" then run_now("security delete-generic-password " .. KEYCHAIN .. " >/dev/null 2>&1; echo done", 10); return true end
     band.write_atomic(f, token)
     local out = run_now("security add-generic-password -U " .. KEYCHAIN .. " -w \"$(cat '" .. f .. "')\" && echo stored", 10)
@@ -680,7 +693,7 @@ local function token_load()
     if not blob:match("^%x+$") then return "" end
     return (run_now('powershell -NoProfile -NonInteractive -Command "$s = ConvertTo-SecureString \'' .. blob ..
       '\'; [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s))"', 15) or ""):match("tskey%-[%w%-]+") or ""
-  elseif reaper.GetOS() ~= "Other" then -- (a Mac: Linux says "Other")
+  elseif band.MAC then
     return (run_now("security find-generic-password " .. KEYCHAIN .. " -w", 10) or ""):match("tskey%-[%w%-]+") or ""
   end
   return ""

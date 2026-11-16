@@ -45,4 +45,12 @@ assert(not fx.safe({ path = "/Users/bee/.claude/settings.json", copy = "plugin f
 assert(not fx.safe({ path = "C:/Users/Bee/package.json", copy = "plugin files/a.json" }), "loose in the home folder")
 assert(fx.safe({ path = "C:/Users/Bee/Documents/AIDA-X/amp.json", copy = "plugin files/abc-amp.json" }), "an AIDA-X model still goes back")
 
+-- (0.58.76: where settings and licences live, never copied out or written to; Linux paths found)
+assert(fx.private("C:/Users/Bee/AppData/Roaming/Claude/claude_desktop_config.json") and fx.private("/Users/bee/Library/Preferences/x.json"), "app data")
+assert(fx.private("C:/ProgramData/Vendor/licence.json") and fx.private("/home/bee/.config/x/model.json"), "machine data, hidden folders")
+assert(not fx.private("C:/Users/Bee/Documents/IR Library/hall.wav") and not fx.private("/home/bee/Music/amp.nam"), "a musician's own files")
+assert(not fx.safe({ path = "C:/Users/Bee/AppData/Roaming/Claude/claude_desktop_config.json", copy = "plugin files/a.json" }), "never planted in app data")
+local lin = fx.paths("<JS x \"\"\nfile=/home/bee/Music/amp.nam\n>")
+assert(lin[1] == "/home/bee/Music/amp.nam", "a Linux path found: " .. tostring(lin[1]))
+
 print("ok")

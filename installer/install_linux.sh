@@ -34,6 +34,8 @@ case "$ARCH" in x86_64) GOARCH=amd64; DEBARCH=amd64;; aarch64) GOARCH=arm64; DEB
 CFG="${XDG_CONFIG_HOME:-$HOME/.config}"
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}"
 BIN="$HOME/.local/bin"
+# (the whole invitation pasted at once runs every line: a Mac ran this one after its own. Installer review, 0.58.76)
+[ "$(uname -s)" = Linux ] || { echo "This is the Linux setup. On a Mac, use the invitation's Mac line; on Windows, its Windows line."; exit 1; }
 [ "$(id -u)" = 0 ] && { echo "Run this as yourself, not as root (no sudo in front of it): everything goes in your own home folder, and it asks before the one step that needs sudo."; exit 1; }
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/studiosync_setup.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT # (also when it stops early)
@@ -100,7 +102,7 @@ else
   say "Starting a studio of your own right now? Type s. Neither yet? Just press Enter: start one or join one later, from StudioSync's panel."
   HOSTING=n
   while :; do
-    text=""; read -e -r -p "Invitation: " text </dev/tty
+    text=""; read -r -p "Invitation: " text </dev/tty # (no -e: with bash 5.2's bracketed paste a pasted invitation kept only its first line)
     # (a whole message pasted is several lines: the rest are read here too, or they'd answer the next questions)
     while IFS= read -r -t 1 l </dev/tty; do text="$text"$'\n'"$l"; done
     trimmed="$(printf '%s' "$text" | tr -d '[:space:]')"
@@ -130,11 +132,14 @@ while [ -z "$USERNAME_BS" ]; do
   [ -n "$USERNAME_BS" ] && [ "$USERNAME_BS" != "$typed" ] && say "Using the name '$USERNAME_BS' (plain letters only)."
 done
 # the band (docs/bands-design.md): each its own shared folder. An invitation names it; the first one set up names it.
-FOLDER_ID="$(printf '%s' "${BS_BAND_ID:-}" | LC_ALL=C tr -cd 'a-z0-9-')"
+FOLDER_ID="$(printf '%s' "${BS_BAND_ID:-}" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C tr -cd 'a-z0-9-')"
 if [ -n "$JOINING" ] && [ -z "$FOLDER_ID" ]; then # (someone's device ID typed in by hand, no invitation)
   FOLDER_ID="$(ask "The studio's ID, if whoever set it up gave you one (press Enter if not)" bandsync | LC_ALL=C tr -cd 'a-z0-9-')"
   [ -n "$FOLDER_ID" ] || FOLDER_ID=bandsync
 fi
+# (only a StudioSync studio's folder: an invitation naming one you already have, like Syncthing's "default", would share
+# it with whoever sent it. Security review, 0.58.76)
+case "$FOLDER_ID" in bandsync|bandsync-*|studiosync-*|"") ;; *) warn "That studio ID ($FOLDER_ID) isn't a StudioSync one: ask for a new invitation."; exit 1 ;; esac
 BAND_NAME="$(plain "${BS_BAND_NAME:-}")"
 if yes "$HOSTING" && [ -z "$BAND_NAME" ]; then
   while [ -z "$BAND_NAME" ]; do BAND_NAME="$(plain "$(ask "Name your studio" "My studio")")"; done
@@ -354,6 +359,9 @@ fi
 PLUG_SKIPPED=""
 skip_plugin() { PLUG_SKIPPED="${PLUG_SKIPPED:+$PLUG_SKIPPED; }$1"; }
 plugin_found() { find "$HOME/.vst3" "$HOME/.clap" "$HOME/.lv2" /usr/lib/vst3 /usr/local/lib/vst3 /usr/lib/clap /usr/lib/lv2 /usr/local/lib/lv2 -maxdepth 1 -name "$1" 2>/dev/null | grep -q .; }
+# (looked for before its download is: every lookup is a GitHub API call, 60 an hour per network, and a band installing in one room
+# ran out, so Syncthing's own download failed. Installer review, 0.58.76)
+have_plugin() { plugin_found "$2" && ok "$1 is already installed"; }
 plugin_pkg() { # url name pattern (`pattern`: a glob that's there once it's installed)
   if plugin_found "$3"; then ok "$2 is already installed"; return 0; fi
   [ -n "$1" ] || { warn "$2: no Linux download found, skipped"; skip_plugin "$2 (no download found)"; return 1; }
@@ -384,21 +392,21 @@ if yes "$PLUGINS"; then
   DA="$ARCH"; [ "$ARCH" = aarch64 ] && DA=arm64; [ "$ARCH" = armv7l ] && DA=armhf # (Dragonfly's and AIDA-X's names)
   ZA=""; [ "$ARCH" = x86_64 ] && ZA=x86-64; [ "$ARCH" = aarch64 ] && ZA=arm64      # (ZL's: not AVX2, which older CPUs lack)
   if [ "$ARCH" = x86_64 ]; then
-    plugin_pkg "$(gh_asset surge-synthesizer/releases-xt 'linux-x64-[0-9.]+\.deb$')" "Surge XT" "Surge XT*"
-    plugin_pkg "$(gh_asset asb2m10/dexed '-lnx\.zip$')" "Dexed" "Dexed*"
-    plugin_pkg "$(gh_asset_tag baconpaul/airwin2rack DAWPlugin 'Linux\.zip$')" "Airwindows Consolidated" "Airwindows*"
-    plugin_pkg "$(gh_asset jatinchowdhury18/AnalogTapeModel 'Linux-x64.*\.deb$')" "Chow Tape Model" "CHOW*"
-    plugin_pkg "$(gh_asset Chowdhury-DSP/BYOD 'Linux-x64.*\.deb$')" "BYOD" "BYOD*"
-    plugin_pkg "$(gh_asset Chowdhury-DSP/ChowMatrix 'Linux-x64.*\.deb$')" "ChowMatrix" "ChowMatrix*"
+    have_plugin "Surge XT" "Surge XT*" || plugin_pkg "$(gh_asset surge-synthesizer/releases-xt 'linux-x64-[0-9.]+\.deb$')" "Surge XT" "Surge XT*"
+    have_plugin "Dexed" "Dexed*" || plugin_pkg "$(gh_asset asb2m10/dexed '-lnx\.zip$')" "Dexed" "Dexed*"
+    have_plugin "Airwindows Consolidated" "Airwindows*" || plugin_pkg "$(gh_asset_tag baconpaul/airwin2rack DAWPlugin 'Linux\.zip$')" "Airwindows Consolidated" "Airwindows*"
+    have_plugin "Chow Tape Model" "CHOW*" || plugin_pkg "$(gh_asset jatinchowdhury18/AnalogTapeModel 'Linux-x64.*\.deb$')" "Chow Tape Model" "CHOW*"
+    have_plugin "BYOD" "BYOD*" || plugin_pkg "$(gh_asset Chowdhury-DSP/BYOD 'Linux-x64.*\.deb$')" "BYOD" "BYOD*"
+    have_plugin "ChowMatrix" "ChowMatrix*" || plugin_pkg "$(gh_asset Chowdhury-DSP/ChowMatrix 'Linux-x64.*\.deb$')" "ChowMatrix" "ChowMatrix*"
   else skip_plugin "Surge XT, Dexed, Airwindows, Chow Tape Model, BYOD and ChowMatrix (no $ARCH build)"; fi
-  plugin_pkg "$(gh_asset michaelwillis/dragonfly-reverb "linux-$DA\.tar\.xz$")" "Dragonfly Reverb" "Dragonfly*"
+  have_plugin "Dragonfly Reverb" "Dragonfly*" || plugin_pkg "$(gh_asset michaelwillis/dragonfly-reverb "linux-$DA\.tar\.xz$")" "Dragonfly Reverb" "Dragonfly*"
   if [ -n "$ZA" ]; then
-    plugin_pkg "$(gh_asset ZL-Audio/ZLEqualizer "Linux-$ZA\.zip$")" "ZL Equalizer 2" "ZL Equalizer*"
-    plugin_pkg "$(gh_asset ZL-Audio/ZLCompressor "Linux-$ZA\.zip$")" "ZL Compressor" "ZL Compressor*"
+    have_plugin "ZL Equalizer 2" "ZL Equalizer*" || plugin_pkg "$(gh_asset ZL-Audio/ZLEqualizer "Linux-$ZA\.zip$")" "ZL Equalizer 2" "ZL Equalizer*"
+    have_plugin "ZL Compressor" "ZL Compressor*" || plugin_pkg "$(gh_asset ZL-Audio/ZLCompressor "Linux-$ZA\.zip$")" "ZL Compressor" "ZL Compressor*"
   else skip_plugin "ZL Equalizer 2 and ZL Compressor (no $ARCH build)"; fi
   if yes "$EXTRAS"; then
     skip_plugin "Neural Amp Modeler (no Linux build: AIDA-X plays amp captures instead)"
-    plugin_pkg "$(gh_asset AidaDSP/AIDA-X "linux-$DA\.tar\.xz$")" "AIDA-X" "AIDA-X*"
+    have_plugin "AIDA-X" "AIDA-X*" || plugin_pkg "$(gh_asset AidaDSP/AIDA-X "linux-$DA\.tar\.xz$")" "AIDA-X" "AIDA-X*"
     if [ "$ARCH" = x86_64 ]; then plugin_pkg "$(gh_asset_tag TheWaveWarden/odin2 NightlyDevel '\.deb$')" "Odin 2" "Odin2*"
     else skip_plugin "Odin 2 (no $ARCH build)"; fi
     DOCS="$(xdg-user-dir DOCUMENTS 2>/dev/null)"; { [ -n "$DOCS" ] && [ "$DOCS" != "$HOME" ]; } || DOCS="$HOME/Documents"

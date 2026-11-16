@@ -88,6 +88,24 @@ function prints.midi_only(tr, dest)
   return false
 end
 
+-- Every plug-in on a track, inside FX containers too (REAPER 7), as addresses for the TrackFX_ functions. A container
+-- itself isn't one: it has no file, and its fx_ident ("__builtin_container") read as loaded whatever was missing inside
+-- (plug-ins review, 0.58.76: an amp sim in a container a bandmate lacked was never printed for them).
+function prints.fx_all(tr)
+  local out = {}
+  local function walk(idx)
+    local _, n = reaper.TrackFX_GetNamedConfigParm(tr, idx, "container_count")
+    if tonumber(n) then
+      for k = 0, tonumber(n) - 1 do
+        local _, sub = reaper.TrackFX_GetNamedConfigParm(tr, idx, "container_item." .. k)
+        if tonumber(sub) then walk(math.tointeger(tonumber(sub))) end
+      end
+    else out[#out + 1] = idx end
+  end
+  for i = 0, reaper.TrackFX_GetCount(tr) - 1 do walk(i) end
+  return out
+end
+
 -- Whether a track's plug-in really loads here. A missing VST, AU or CLAP shows offline; a missing JSFX doesn't: REAPER
 -- keeps an empty stand-in (not offline, silent), so its file is looked for in Effects (Mac, 0.39.1: it printed a
 -- JS synth it didn't have, and its silent print replaced the PC's good one).
@@ -106,12 +124,12 @@ end
 -- Does every plug-in on the item's track load here (and on the instrument's track, for a routed one)? A missing one
 -- would leave its notes silent.
 function prints.track_plays(tr)
-  for i = 0, reaper.TrackFX_GetCount(tr) - 1 do
+  for _, i in ipairs(prints.fx_all(tr)) do
     if not prints.fx_here(tr, i) then return false end
   end
   local dest = prints.route(tr)
   if dest then
-    for i = 0, reaper.TrackFX_GetCount(dest) - 1 do
+    for _, i in ipairs(prints.fx_all(dest)) do
       if not prints.fx_here(dest, i) then return false end
     end
   end
@@ -237,7 +255,7 @@ function prints.lacking(tr, cfg)
     common.at, common.set, common.n = reaper.time_precise(), ok and set or nil, ok and #members or 0
   end
   if not common.set or common.n < 2 then return false end
-  for i = 0, reaper.TrackFX_GetCount(tr) - 1 do
+  for _, i in ipairs(prints.fx_all(tr)) do
     local ok, name = reaper.TrackFX_GetNamedConfigParm(tr, i, "fx_name")
     if not ok or name == "" then name = select(2, reaper.TrackFX_GetFXName(tr, i)) end
     if not common.set[plugins.key(name)] then return true end
@@ -439,7 +457,7 @@ end
 function prints.track_keys(tr)
   local plugins, keys = require("plugins"), {}
   for _, t in ipairs({ tr, prints.route(tr) }) do
-    for i = 0, reaper.TrackFX_GetCount(t) - 1 do
+    for _, i in ipairs(prints.fx_all(t)) do
       local ok, name = reaper.TrackFX_GetNamedConfigParm(t, i, "fx_name")
       if not ok or name == "" then name = select(2, reaper.TrackFX_GetFXName(t, i)) end
       keys[#keys + 1] = plugins.key(name)

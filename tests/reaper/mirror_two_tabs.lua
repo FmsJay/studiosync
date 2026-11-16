@@ -102,10 +102,10 @@ local ok, err = pcall(function()
   local s2, back = pass_b(function() return false end)
   check(s2 == 0 and back == 1, "B's move wasn't sent, it was put back (sent " .. s2 .. ", put back " .. back .. ")")
   check(math.abs(reaper.GetMediaItemInfo_Value(reaper.GetTrackMediaItem(reaper.GetTrack(pb, 1), 0), "D_POSITION") - was) < 1e-6, "B's item is where the band has it")
-  -- and a copy B isn't allowed to make goes away
+  -- and a copy B isn't allowed to make goes away (Driver only: in Claims, B's own new item on a track nobody claimed goes out, 0.58.76)
   local _, bch = reaper.GetItemStateChunk(reaper.GetTrackMediaItem(reaper.GetTrack(pb, 1), 0), "", false)
   local bcp = reaper.AddMediaItemToTrack(reaper.GetTrack(pb, 1)); reaper.SetItemStateChunk(bcp, bch, false)
-  pass_b(function() return false end)
+  mirror.watch(pb, B, song, room, { can = function() return false end, mode = "driver" })
   check(reaper.CountTrackMediaItems(reaper.GetTrack(pb, 1)) == 1, "B's unallowed copy left the band's track")
   local kept = false
   for t = 0, reaper.CountTracks(pb) - 1 do

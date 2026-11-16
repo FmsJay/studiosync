@@ -39,14 +39,15 @@ Remove an App Store Tailscale if there is one (the installer adds the standalone
 9. Quit REAPER with a studio tab open; reopen: tabs come back with no boxes.
 10. Run the installer again: "already installed", nothing redone.
 
-## 3. Linux (not supported yet)
+## 3. Linux (supported from 0.58.74)
 
-What works as is: Syncthing, Tailscale, REAPER, SWS, ReaImGui, ReaPack, js_ReaScriptAPI and SonoBus all have Linux builds. What does not:
-every OS branch treats anything that isn't Windows as a Mac (`GetOS()` says "Other" on Linux), so port checks (`nc -G`), opening links
-(`open`), the Trash, the NINJAM server binary (Mac build shipped) and the REAPER relaunch path go wrong; there is no installer and no
-Google Drive client (rclone would stand in). Roughly 3-4 days: an `IS_LINUX` pass over about a dozen branches (half a day), `xdg-open` /
-`gio trash` / `nc -w` swaps, Linux NINJAM builds, an `install_linux.sh` from the Mac one (1-2 days), tests.
-Test it in a VMware Ubuntu 24.04 VM (bridged network, 3D acceleration on); WSL2 has no real audio and fights Tailscale.
+Tested in a VMware Ubuntu 24.04 VM (`J:\VMs\LinuxBox`, REAPER 7.86 portable, distro Syncthing 1.27): `install_linux.sh` with an
+invitation, Let them in, the song matching the PC and Mac byte for byte, takes both ways in ~5 s, a claimed track's rename going in as
+a suggestion, NINJAM server + relay + ReaNINJAM, the listening page (range requests, no symlinks or `..`), the Trash (`gio trash`),
+reopening tabs after a quit, the View/Extensions menus, Ctrl+Z, ReaPersona with its shortcut install and relaunch, the installer run
+again ("already in"), and being taken out of the studio. No Google Drive client on Linux (the Drive tickbox says so).
+Known gaps: needs netcat for NINJAM checks (Ubuntu has it), distro Syncthing older than 1.27 keeps its config where StudioSync doesn't
+look, Flatpak/AppImage REAPER isn't detected, background prints are off (prints render in front), NINJAM binaries need glibc 2.34+.
 
 ## 4. Before the band test
 
@@ -58,6 +59,10 @@ Everyone: wired internet if possible, headphones, the audio interface plugged in
 Installer); Mac password ready; press Allow on Local Network, Microphone and Firewall; after REAPER's "audio device?" question, pick the
 interface in Preferences > Audio; skip Tailscale and Google Drive sign-in unless asked; plug-in pack: yes. Use Discord or Zoom to talk
 (the panel's Call button), Real time mode for hearing each other play, Play/Jam off.
+
+Before anyone opens the song: every computer on the newest StudioSync (Health shows each person's version; an older one replays the
+tempo map on every open and resends beat-timebase items). Claim your track before recording on it, arm it to be heard in Real time mode,
+and on a Mac pick a plug-in's VST3 (or CLAP) rather than its AU, so Windows and Linux count it as the same plug-in.
 
 Agree beforehand: who drives, who records first, that the driver doesn't render a mix mid-session (rendering holds up their REAPER and
 others are told the driver's away), that "put back" banners mean someone else owns that part.
@@ -92,3 +97,31 @@ every time, told a member to be let in, and printed the Google account. REAPER's
 - A take marker's length may be dropped by a collaborator on REAPER 7.85 or older when they re-save that item. Left: restoring it on
   7.86 would make the item differ between the two versions and risk the item syncing back and forth; everyone on 7.86 avoids it.
 - ReaPersona 5.8.1 fixed its own Install button's Mac relaunch; 5.8.2 finds Python on a Mac.
+
+## Reviews, 2026-11-16 (0.58.75; fixes in 0.58.76 and ReaPersona 5.9.3)
+
+Seven read-only reviews (UX, ReaPersona, sync engine, plug-ins and data, security, installers, cross-platform) and a Linux stress test.
+Fixed: the Windows installer couldn't start or join a studio (a comment swallowed the folder line, 0.58.69) and fetched a release that
+doesn't exist (the menus package's 1.0.1); removals, roles and closing never counted on Syncthing 1.27 (REST now); a recording on a
+track nobody claimed stayed "(yours, not sent)"; older tempo maps replayed during catch-up and went out as item edits; held changes
+undone by a landing item or a heal; two edits made alone outvoted a claimant's own; FX containers read as loaded whatever was inside;
+window and lane-view lines inside containers and FX envelopes counted as chain edits; plug-in files under AppData/Library could be
+copied out, or written by a bandmate's event; an invitation could name any Syncthing folder; curly quotes in a file name could run
+code in the Recycle Bin script; rescans of songs with spaces on Windows; Trim Volume applied twice on prints; preload saved every
+open; the Mac and Linux installers ran when the whole invitation was pasted on the other system, a Mac guest's Tailscale key was tried
+before macOS let Tailscale run, and plug-ins already installed still used up GitHub lookups. Put-backs now say what differed.
+
+Left for after the test (by area):
+- Plug-ins: AU and VST3 of one plug-in count as the same (prints and stand-ins miss it); installed-but-missing content (a Kontakt
+  library, an EZX) can make a silent print; prints lose multi-out instruments and sidechains; automation items on plug-in parameters
+  point at each machine's own pool; take FX get none of the restless/readback protections; ReaInsert and ReaStream travel live;
+  offline-by-choice plug-ins block printing; media files edited in place, subprojects and video are copied once and whole.
+- Security (matters for strangers, not a trusted band): `band.json` id and devices files aren't authenticated; first-use trust takes
+  whatever roles are on disk; the listening page is served from the synced folder; the introducer flag stays on; the invitation is a
+  shell line from unpinned `main`; Tailscale guests reach the whole tailnet unless the tag policy is set.
+- Installers: GitHub's 60-requests-an-hour limit (plug-ins already installed no longer ask; Syncthing and SonoBus still do); an existing Syncthing with its
+  config elsewhere (SyncTrayzor, snap, Homebrew); REAPER in a custom or portable folder; Windows without winget; macOS 11 and older;
+  the 6-minute wait for REAPER's first plug-in scan; non-English letters in names.
+- Cross-platform: non-ASCII Windows user names in `.cmd` files; Linux without netcat, older distro Syncthing, Flatpak/AppImage REAPER.
+- ReaPersona: no uninstall (its startup block errors once removed); built-in personas share key layers with your own; trimming the
+  Actions list doesn't look at mouse modifiers or SWS cycle actions; Linux can't open .zip/.rar theme packs.

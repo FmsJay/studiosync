@@ -699,7 +699,8 @@ end
 -- the track, so printed too it applied twice on whoever plays the print (11 dB on Drums: laptop, 0.42.4). -> what puts it back.
 function sync.mix_envelopes_off(tr)
   local back = {}
-  for _, name in ipairs({ "Volume", "Pan", "Width", "Mute" }) do
+  -- (Trim Volume too: it's after the plug-ins, like Volume, and stayed on where the print plays, so it applied twice. Plug-ins review, 0.58.76)
+  for _, name in ipairs({ "Volume", "Pan", "Width", "Mute", "Trim Volume" }) do
     local env = reaper.GetTrackEnvelopeByName(tr, name)
     if env then
       local ok, chunk = reaper.GetEnvelopeStateChunk(env, "", false)
@@ -1106,14 +1107,18 @@ end
 sync.failed = {} -- event id -> how many times applying it threw
 function sync.obj_allowed(ev, can, driver)
   if can(ev.user, ev.name or "", ev.pos, nil, driver) then return true end
-  return sync.maker_may(ev.obj == "track" and ev.oid or ev.track, ev.user, ev.name or "", ev.pos, sync.room_mode)
+  return sync.maker_may(ev.obj == "track" and ev.oid or ev.track, ev.user, ev.name or "", ev.pos, sync.room_mode, ev.obj == "item" and ev.oid or nil)
 end
 
 -- A track's maker may change it and what's on it while nobody has claimed it, unless the room is Driver only. Before
 -- 0.40.3 the maker beat a bandmate's claim too, and nothing showed it (James, 2026-11-01: "it gets confusing"); new
 -- tracks are now claimed by their maker (mirror.watch), and the Claims card lists the unclaimed ones you made.
-function sync.maker_may(oid, user, name, pos, mode)
-  return mode ~= "driver" and mode ~= "admins" and require("mirror").is_creator(oid, user) and not (sync.is_claimed and sync.is_claimed(name, pos))
+-- `item`: an item's own oid. Your own recording on a track nobody claimed goes out too, as the take rule in sync.authority
+-- says (it went to "(yours, not sent)" while the panel said "recording still goes out": UX review, 0.58.76).
+function sync.maker_may(oid, user, name, pos, mode, item)
+  local mirror = require("mirror")
+  return mode ~= "driver" and mode ~= "admins" and (mirror.is_creator(oid, user) or (item ~= nil and mirror.is_creator(item, user)))
+    and not (sync.is_claimed and sync.is_claimed(name, pos))
 end
 
 -- Add tracks to my claims. -> true, or nil and why.
@@ -1375,6 +1380,10 @@ function sync.receive(proj, cfg, song, room, can)
   -- be applied after a newer one
   local newest = {}
   for _, ev in ipairs(pending) do if ev.type == "plays" then newest[ev.track or ""] = ev.id end end
+  -- A timeline event is the whole map: only the newest is applied. (Every older map landing in turn, between looks, re-timed
+  -- beat-timebase items, and those went out as edits: 158 from the laptop in one catch-up. Sync engine review, 0.58.76)
+  local newest_map
+  for _, ev in ipairs(pending) do if ev.type == "timeline" and ev.user ~= cfg.user then newest_map = ev.id end end
   -- Both worked alone (neither could see the other's changes): theirs may undo some of ours. Before
   -- any of them lands, where things are here is saved as a kept restore point, so our side is never lost.
   local mine_alone = ext(proj, band.SECTION, "alone_last")
@@ -1425,7 +1434,7 @@ function sync.receive(proj, cfg, song, room, can)
         and (ev.gone or type(ev.state) == (ev.obj == "track" and "table" or "string")) and ev.state ~= require("json").null and (ev.name == nil or type(ev.name) == "string") and (ev.pos == nil or type(ev.pos) == "number")) then
       sync.skip(proj, ev, "StudioSync can't read it") -- malformed (a newer or damaged file): skipped, once, without stopping the rest
       band.log("skipped a change from " .. tostring(ev.user) .. " that StudioSync can't read (" .. tostring(ev.id) .. ")")
-    elseif (ev.type == "plays" and newest[ev.track or ""] ~= ev.id) or superseded(proj, ev) or (obj and latest[ev.oid] ~= ev and apart(ev, latest[ev.oid]) == false) then
+    elseif (ev.type == "plays" and newest[ev.track or ""] ~= ev.id) or (ev.type == "timeline" and ev.user ~= cfg.user and newest_map ~= ev.id) or superseded(proj, ev) or (obj and latest[ev.oid] ~= ev and apart(ev, latest[ev.oid]) == false) then
       setext(proj, sync.APPLIED, ev.id, "1") -- superseded
     elseif ev.user == cfg.user and not obj then
       setext(proj, sync.APPLIED, ev.id, "1") -- our own: already true here
@@ -1709,7 +1718,7 @@ function sync.preload(proj, cfg, song, room)
   -- (saved, so next time it opens from here. A file 27 hours old took 3034 changes in again on the Mac: 0.42.27)
   -- (after any catch-up, not only past 100: each open took the same changes in again until a big one came along. Review, 0.58.53)
   pcall(sync.forget_trimmed, proj, cfg, song)
-  if (total > 0 or sync.forgot) and select(2, reaper.EnumProjects(-1)) ~= "" and reaper.EnumProjects(-1) == proj then reaper.Main_SaveProject(proj, false) end
+  if (total > 0 or (sync.forgot or 0) > 0) and select(2, reaper.EnumProjects(-1)) ~= "" and reaper.EnumProjects(-1) == proj then reaper.Main_SaveProject(proj, false) end
   return total
 end
 

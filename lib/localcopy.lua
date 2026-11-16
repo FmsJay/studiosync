@@ -198,7 +198,8 @@ function copy.bin_start(paths, label)
   if WIN then
     -- In the background, with no error boxes: a big folder takes minutes, and a file in use raised a box nobody could see on a hidden PowerShell, with REAPER
     -- stopped until it was killed (PC, 0.54.1, 17 minutes). shortcut: what doesn't go in 20 s is reported as left, though it may still be on its way.
-    local q = function(s) return "'" .. s:gsub("'", "''") .. "'" end
+    -- (PowerShell ends a '...' string at the curly quotes too: a file named with one ran the rest of its name as code. Security review, 0.58.76)
+    local q = function(s) return "'" .. s:gsub("'", "''"):gsub("\226\128[\152-\155]", "%0%0") .. "'" end
     local lines = { "Add-Type @'", "using System; using System.Runtime.InteropServices;", "public static class StudioSyncBin {",
       "  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] public struct Op { public IntPtr hwnd; public uint func; public string from; public string to; public ushort flags; public bool aborted; public IntPtr maps; public string title; }",
       '  [DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern int SHFileOperation(ref Op op);',

@@ -27,7 +27,7 @@ local done, failed = 0, 0
 local LIB = (debug.getinfo(1, "S").source or ""):match("^@?(.*)[/\\][^/\\]+$") or "."
 function bg.helpers()
   local d = LIB .. "/mac"
-  if not WIN and reaper.file_exists(d .. "/bandsync-hide.dylib") and reaper.file_exists(d .. "/bandsync-launch") then return d end
+  if require("band").MAC and reaper.file_exists(d .. "/bandsync-hide.dylib") and reaper.file_exists(d .. "/bandsync-launch") then return d end
 end
 -- Whether prints go to the background here (ExtState "bg render": "off" or "on" overrides this default).
 function bg.default_on() return WIN or bg.helpers() ~= nil end

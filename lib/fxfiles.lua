@@ -55,7 +55,8 @@ function fxfiles.paths(chain)
     end
     return best
   end
-  for _, pat in ipairs({ "%a:[\\/][^%c\"<>|*?]+", "/Users/[^%c\"<>|*?]+", "/Volumes/[^%c\"<>|*?]+" }) do
+  for _, pat in ipairs({ "%a:[\\/][^%c\"<>|*?]+", "/Users/[^%c\"<>|*?]+", "/Volumes/[^%c\"<>|*?]+", "/home/[^%c\"<>|*?]+",
+      "/media/[^%c\"<>|*?]+", "/mnt/[^%c\"<>|*?]+" }) do -- (Linux too: cross-platform review, 0.58.76)
     for run in all:gmatch(pat) do
       local path = file_of(run)
       if path and not seen[path:lower()] then seen[path:lower()] = true; found[#found + 1] = path end
@@ -64,12 +65,30 @@ function fxfiles.paths(chain)
   return found
 end
 
+-- Where settings, licences and an app's own data live, not a musician's samples: never copied out of this machine, and
+-- never written to by a bandmate's event (a licence .json under AppData went to the studio with the chain: security and
+-- plug-ins reviews, 0.58.76). A plug-in's factory content there comes with the plug-in on every machine anyway. Pure.
+function fxfiles.private(path)
+  local low = tostring(path):gsub("\\", "/"):lower()
+  return low:match("^%a:/users/[^/]+/appdata/") ~= nil or low:match("^%a:/programdata/") ~= nil or low:match("^%a:/windows/") ~= nil
+    or low:match("^/users/[^/]+/library/") ~= nil or low:match("^/library/") ~= nil or low:match("^/system/") ~= nil
+    or low:find("/%.[^/]+/") ~= nil
+end
+
 -- Sender: copy each existing file the chain loads into <media>/plugin files/ (once). Returns { {path, copy} }.
-function fxfiles.share(chain, media_dir)
-  local band, list = require("band"), {}
+-- `before`, `before_files`: the band's last version of this chain and its files. A path already in it was put there by
+-- whoever made that version: never copied from here (a bandmate could name any file of yours in a chain and have your
+-- next edit upload it: security review, 0.58.76, the rule share_media has had since 0.58.53); their own copy travels on.
+function fxfiles.share(chain, media_dir, before, before_files)
+  local band, list, old = require("band"), {}, {}
+  if type(before) == "string" then for _, p in ipairs(fxfiles.paths(before)) do old[p:lower()] = true end end
   for _, path in ipairs(fxfiles.paths(chain)) do
-    local size = reaper.file_exists(path) and band.size(path) or nil
-    if size and size <= fxfiles.MAX then
+    local size = not old[path:lower()] and not fxfiles.private(path) and reaper.file_exists(path) and band.size(path) or nil
+    if old[path:lower()] then
+      for _, f in ipairs(type(before_files) == "table" and before_files or {}) do
+        if fxfiles.safe(f) and f.path:lower() == path:lower() then list[#list + 1] = { path = f.path, copy = f.copy } end
+      end
+    elseif size and size <= fxfiles.MAX then
       local name = path:gsub("\\", "/"):match("[^/]+$")
       local copy = "plugin files/" .. require("mirror").hash(path:lower()) .. "-" .. name
       local dst = media_dir .. "/" .. copy
@@ -99,6 +118,7 @@ function fxfiles.safe(f)
   local low = p:lower()
   if p:find("/%.[^/]+/") or low:find("/start menu/", 1, true) or low:find("/startup/", 1, true) then return false end
   if low:match("^%a:/users/[^/]+/[^/]+$") or low:match("^/users/[^/]+/[^/]+$") or low:match("^/home/[^/]+/[^/]+$") then return false end
+  if fxfiles.private(p) then return false end
   local ext = p:match("%.([%w]+)$")
   return ext ~= nil and fxfiles.EXT[ext:lower()] == true
 end
@@ -110,7 +130,9 @@ function fxfiles.fetch(list, media_dir, where)
       local src = media_dir .. "/" .. f.copy
       local dir = f.path:gsub("\\", "/"):match("^(.*)/[^/]+$")
       local drive = f.path:match("^(%a:)[\\/]")
-      local can = reaper.file_exists(src) and dir and (not drive or reaper.EnumerateSubdirectories(drive .. "/", 0) ~= nil or reaper.EnumerateFiles(drive .. "/", 0) ~= nil)
+      -- (a Mac's /Users/... has no drive letter, so Windows made \Users\... at the root of REAPER's drive: plug-ins review, 0.58.76)
+      local this_os = (drive ~= nil) == (band.WIN == true)
+      local can = this_os and reaper.file_exists(src) and dir and (not drive or reaper.EnumerateSubdirectories(drive .. "/", 0) ~= nil or reaper.EnumerateFiles(drive .. "/", 0) ~= nil)
       if can then
         reaper.RecursiveCreateDirectory(dir, 0)
         pcall(band.copy_atomic, src, f.path)

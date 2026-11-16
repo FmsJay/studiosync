@@ -389,9 +389,9 @@ local function refresh()
     for _, c in pairs(who.regions) do if c.user == cfg.user then mine = mine + 1 end end
     for _, t in ipairs(who.times or {}) do if t.user == cfg.user then mine = mine + 1 end end
     -- (open: no banner; "x and nil or y" can't say that in Lua, it gives y)
-    if who.mode == "driver" then banner_text = "View only: " .. view.driver .. " is driving. Your changes are put back (recording still goes out)."
+    if who.mode == "driver" then banner_text = "View only: " .. view.driver .. " is driving. Your changes are put back; what you record stays on this computer."
     elseif who.mode == "admins" and not require("groups").may_manage(cfg.root, cfg.user) then
-      banner_text = mine > 0 and "Admins only: you can change what you've been given." or "View only: admins only here. Your changes are put back (recording still goes out)."
+      banner_text = mine > 0 and "Admins only: you can change what you've been given." or "View only: admins only here. Your changes are put back; what you record stays on this computer."
     elseif who.mode ~= "open" then
       -- (tracks you made and nobody has claimed are yours to change too, so "view only" wasn't true: sync.maker_may)
       local made = false
@@ -1433,7 +1433,7 @@ local function studio_alerts()
     if ach then alerts.set(cfg.root, aon) end
   end
   if channel then
-    ImGui.Text("On your phone:")
+    ImGui.Text(ctx, "On your phone:")
     ImGui.TextWrapped(ctx, "1. Install ntfy (free, Android or iPhone).  2. Tap +.  3. Paste this channel:")
     ImGui.TextColored(ctx, GREEN, channel)
     ImGui.SameLine(ctx)

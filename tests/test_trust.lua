@@ -31,4 +31,7 @@ local out = '0\n{ "availability": [], "global": { "deleted": false, "modifiedBy"
 assert(services.parse_modified_by(out) == "2MOGZMD", "global modifiedBy")
 assert(services.parse_modified_by("1\nfolder not found") == nil and services.parse_modified_by(nil) == nil, "no answer: nil")
 assert(services.parse_modified_by('0\n{ "global": { "modifiedBy": "", "version": [] } }') == "", "a folder or file Syncthing doesn't hold: empty (believed as before)")
+-- (0.58.76) the REST database API's answers: a file it doesn't hold, a folder it doesn't have; a refusal is no answer
+assert(services.parse_modified_by("no such object in the index\n") == "" and services.parse_modified_by("no such folder\n") == "", "REST: not held")
+assert(services.parse_modified_by("Debugging disabled") == nil, "a refusal: no answer, asked again later")
 print("ok")
