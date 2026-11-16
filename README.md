@@ -32,6 +32,9 @@ a NINJAM server the others can reach, most easily over Tailscale; nothing else d
 
 **Already have StudioSync?** Click the studio pill at the top of the panel, press **Paste join code**, and paste what they sent. Then step 2.
 
+An invitation line runs an installer, so only run one from someone you know, and check it downloads from
+`raw.githubusercontent.com/FmsJay/studiosync/`. A join code (`studiosync-join:...`) is only data: it runs nothing.
+
 1. Ask whoever invited you for the line from their panel's **Invite a collaborator**, and paste it where it says.
    It runs the installer with everything filled in. (No line? Run the installer as above, answer *y*, and paste their
    **Syncthing device ID** (in Syncthing: Actions > Show ID) and the studio's ID.)
@@ -315,10 +318,10 @@ Who may change what:
 
 - **Driver**: their changes reach everyone, except on what someone has claimed. *Take control* (next to Who's
   here) makes you the driver; it checks everyone has caught up first, and every handover saves a version.
-- **Who can edit** (Home; the driver picks): **Only the driver**, **Driver + claimed tracks** (default: the driver, and
+- **Who can edit** (Home; the driver picks): **Only the driver**, **Driver + claimed tracks** (the driver, and
   everyone on what they've claimed; a track you make is claimed for you once it has a name, unless you drive, and
   a track you made stays yours to change until someone claims it, listed on the Claims card) or **Anyone** (anything unclaimed;
-  the tempo map, markers and project settings too; a clash goes to whoever owns it, else whoever changed it more: docs/clashes.md).
+  the tempo map, markers and project settings too; a clash goes to whoever owns it, else whoever changed it more: docs/clashes.md). A newly shared project starts on **Anyone**; one shared before that setting existed starts on Driver + claimed tracks.
 - **Claims**: *Claim selected tracks*, *Claim region at cursor* or *Claim time selection* (shown to everyone as a
   `[claimed: you]` region). A track claim beats a time claim, which beats a region claim, which beats the driver.
 - **Suggestions**: an edit that reaches someone's claim (a section copied or moved across the project, say) goes out for

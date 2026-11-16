@@ -175,7 +175,7 @@ function tools.join_requests(ctx, ImGui)
       if ImGui.SmallButton(ctx, "Let " .. tostring(d.name) .. " in##" .. d.id .. (d.folder or "")) then let_in(d, me) end
       ImGui.SetItemTooltip(ctx, "Only if you know this computer: anyone who has your Syncthing ID can ask.")
       ImGui.SameLine(ctx)
-      if ImGui.SmallButton(ctx, "For a day##" .. d.id .. (d.folder or "")) then let_in(d, me, true) end
+      if ImGui.SmallButton(ctx, "Guest, for a day##" .. d.id .. (d.folder or "")) then let_in(d, me, true) end -- (was "For a day", beside Let them in with nothing saying which a bandmate needs: band-test review, 0.58.67)
       ImGui.SetItemTooltip(ctx, "A guest: let in now, and every computer stops syncing with theirs a day from now. Their copy stays with them.")
       ImGui.SameLine(ctx)
       if ImGui.SmallButton(ctx, "Not my collaborator##" .. d.id) then

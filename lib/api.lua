@@ -21,11 +21,15 @@ api.VERBS = { "undo", "redo", "realtime", "chat", "history", "hold", "claim", "l
 -- The state as it's published, from what Live sync knows. Pure. t = { song, room, me, driver, mode, alone, others = { names },
 -- tracks = who.tracks (lower name -> { user, name }), hold, local_mix, held }. -> the table that goes out as JSON.
 function api.state_of(t)
-  local claims = {} -- user -> { track names }, sorted
+  -- claims: a list of { user, tracks }, by user, each user's tracks sorted. (A list, not an object keyed by name: an empty Lua table goes out as
+  -- [], so a script got a list with no claims and an object with some. Review, 0.58.67)
+  local by = {}
   for _, c in pairs(t.tracks or {}) do
-    if type(c) == "table" and c.user then claims[c.user] = claims[c.user] or {}; table.insert(claims[c.user], c.name) end
+    if type(c) == "table" and c.user then by[c.user] = by[c.user] or {}; table.insert(by[c.user], c.name) end
   end
-  for _, list in pairs(claims) do table.sort(list) end
+  local claims = {}
+  for user, list in pairs(by) do table.sort(list); claims[#claims + 1] = { user = user, tracks = list } end
+  table.sort(claims, function(a, z) return a.user < z.user end)
   local here_now = {}
   for _, n in ipairs(t.others or {}) do here_now[#here_now + 1] = n end
   table.sort(here_now)

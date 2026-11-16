@@ -9,9 +9,10 @@ local s = api.state_of({ song = "Sunset Drive", room = "main", me = "James", dri
 assert(s.api == api.VERSION and s.version == band.VERSION, "says which API and which StudioSync")
 assert(s.driver == "Bee" and s.driving == false and s.mode == "claims", "who drives, and that it isn't you")
 assert(table.concat(s.here, ",") == "Bee,Sam", "who's here, sorted")
-assert(table.concat(s.claims.James, ",") == "Gtr,Keys" and s.claims.Sam[1] == "Bass", "claims by person, by their track names")
+assert(s.claims[1].user == "James" and table.concat(s.claims[1].tracks, ",") == "Gtr,Keys" and s.claims[2].user == "Sam" and s.claims[2].tracks[1] == "Bass", "claims by person, by their track names")
+assert(band.json_encode(api.state_of({})):find('"claims":[]', 1, true), "none: still a list")
 assert(s.hold == true and s.local_mix == false and s.held == 3, "hold, local mixing, and how many changes are held")
-assert(band.json_decode(band.json_encode(s)).claims.James[2] == "Keys", "and it travels as JSON")
+assert(band.json_decode(band.json_encode(s)).claims[1].tracks[2] == "Keys", "and it travels as JSON")
 assert(api.state_of({ me = "A", driver = "A" }).driving and api.state_of({}).mode == "claims", "driving yourself; claims when no mode is known")
 -- events: numbered, oldest dropped past the limit
 local list, seq = {}, nil

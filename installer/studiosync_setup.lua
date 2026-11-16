@@ -7,6 +7,10 @@
 --   folder:  register every "StudioSync - *.lua" in <sync_root>/_tools/studiosync (re-run after updates)
 local here = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]")
 do -- first: the installer waits for this before handing the step over again (a REAPER already open sometimes misses the first)
+  -- (and a second hand-off that arrives after all runs nothing: two copies would sync ReaPack twice. Review, 0.58.67)
+  local was = io.open(here .. "/studiosync_setup_started", "r")
+  local at = was and tonumber(was:read("a")); if was then was:close() end
+  if at and os.time() - at < 600 then return end
   local s = io.open(here .. "/studiosync_setup_started", "w")
   if s then s:write(tostring(os.time())); s:close() end
 end
@@ -57,6 +61,11 @@ if probe and user ~= "" then
   reaper.SetExtState("BandSync", "bands", table.concat(list, "|"), true)
   reaper.SetExtState("BandSync", "sync_root", root, true)
   reaper.SetExtState("BandSync", "user", user, true)
+end
+-- REAPER's "save recorded media?" box after each take (Preferences > Recording; on by default on some systems): a take waits there, unsent, and
+-- "Delete all" loses it. Off, every take is kept and goes out as it stops. Band-test review, 0.58.67. (promptendrec, read 0 on the PC with SWS)
+if reaper.SNM_GetIntConfigVar and reaper.SNM_GetIntConfigVar("promptendrec", 0) ~= 0 then
+  step("REAPER keeps each take without asking (Preferences > Recording)", reaper.SNM_SetIntConfigVar("promptendrec", 0) == true, "it asked to save or delete every take")
 end
 
 -- The VERSION in a StudioSync lib/band.lua, or nil.
@@ -201,7 +210,9 @@ local function persona_apply(id)
   out.persona = st.name
   -- (on a Mac without the developer tools, /usr/bin/python3 is a stub that pops up an install offer: asked only where a real one is)
   local real_py = not core.IS_MAC or (reaper.ExecProcess("/bin/sh -c 'command -v python3 | grep -qv ^/usr/bin/ || xcode-select -p'", 5000) or ""):match("^0\n")
-  if real_py and core.python() then
+  local unsaved = false -- (REAPER was in use: quitting it asks about unsaved work, and a Cancel left the shortcuts waiting for good. Review, 0.58.67)
+  for i = 0, 99 do local p, fn = reaper.EnumProjects(i); if not p then break end; if reaper.IsProjectDirty(p) ~= 0 and (fn ~= "" or reaper.CountTracks(p) > 0) then unsaved = true end end
+  if real_py and not unsaved and core.python() then
     out.persona_keys = "restart"
     out.persona_note = "ReaPersona: REAPER now looks and clicks like " .. st.name .. ". It restarts once, by itself, to load " .. st.name .. "'s shortcuts."
   else
@@ -212,8 +223,14 @@ end
 local function persona_keys(core)
   local here_p = core.here
   if not reaper.file_exists(here_p .. "/midi_defaults.json") then core.midi_defaults() end
-  local exe = reaper.GetExePath():gsub("\\", "/")
-  exe = core.IS_MAC and exe:match("^(.-%.app)") or (exe .. "/reaper.exe")
+  -- (on a Mac GetExePath() is the folder holding REAPER.app, "/Applications", not a path inside it: matching ".app" in it found nothing, REAPER
+  -- quit and was never started again. Mac review, 0.58.67. install_shortcuts.py opens a .app with `open -a`)
+  local d = reaper.GetExePath():gsub("\\", "/"):gsub("/+$", "")
+  local exe = d .. "/reaper.exe"
+  if core.IS_MAC then
+    exe = d:match("^(.-%.app)") or d .. "/REAPER.app"
+    for _, a in ipairs({ d .. "/REAPER.app", d .. "/REAPER64.app" }) do if not d:match("%.app") and reaper.file_exists(a .. "/Contents/Info.plist") then exe = a; break end end
+  end
   local cfg = reaper.get_ini_file():gsub("\\", "/") -- (a test REAPER with its own -cfgfile comes back on it)
   reaper.ExecProcess(core.py .. ' "' .. here_p .. '/install_shortcuts.py" --after-reaper-quits --relaunch "' .. exe .. '" --cfgfile "' .. cfg .. '"', -1) -- (-1: don't wait)
   reaper.SetExtState("BandSync", "open panel at start", "1", true) -- (StudioSync - Autostart opens the panel when REAPER is back)

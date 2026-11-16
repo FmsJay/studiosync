@@ -556,7 +556,7 @@ request() { # mode -> runs the helper in REAPER, leaves its JSON result in $HDIR
   [ -f "$HDIR/studiosync_setup_result.json" ]
 }
 say "Setting up StudioSync inside REAPER. REAPER opens now; the first time, it scans your plug-ins (a while) and asks a few things:"
-say "  'Select your audio device now?': No is fine (Settings > Audio later). ReaPack's 'Manage repositories' and 'Transaction report': OK."
+say "  'Select your audio device now?': No is fine for now (pick your audio interface in Settings > Audio before you play). ReaPack's 'Manage repositories' and 'Transaction report': OK."
 say "macOS may ask to let REAPER use the microphone: click Allow, or your takes record silence."
 if request "${BS_SCRIPTS:-reapack}"; then
   if grep -q '"ok": *false' "$HDIR/studiosync_setup_result.json"; then warn "REAPER setup step had problems:"; cat "$HDIR/studiosync_setup_result.json"

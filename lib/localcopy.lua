@@ -150,7 +150,8 @@ function copy.trash_script(paths, label, stamp, failed)
   local lines = {}
   for i, p in ipairs(paths) do
     local name = "StudioSync - " .. (label and label .. " - " or "") .. stamp .. " - " .. i .. " " .. p:match("[^/]+$")
-    lines[#lines + 1] = "[ -e " .. sq(p) .. " ] && mv " .. sq(p) .. ' "$HOME/.Trash/"' .. sq(name) .. (failed and (" || touch " .. sq(failed)) or "")
+    -- (if/then: with `[ -e ] && mv || touch` a path already gone, say Syncthing took it meanwhile, read as a refused move. Review, 0.58.67)
+    lines[#lines + 1] = "if [ -e " .. sq(p) .. " ]; then mv " .. sq(p) .. ' "$HOME/.Trash/"' .. sq(name) .. (failed and (" || touch " .. sq(failed)) or "") .. "; fi" -- (one line per path)
   end
   return table.concat(lines, "\n") .. "\n"
 end

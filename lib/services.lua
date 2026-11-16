@@ -250,8 +250,12 @@ function services.syncthing_peers_now()
   local out = background("syncthing-connections", cmd, 20) or ""
   local data = band.json_decode(out)
   if type(data) ~= "table" or type(data.connections) ~= "table" then return nil, "Syncthing didn't answer" end
-  local n, on = 0, 0
-  for _, c in pairs(data.connections) do n = n + 1; if c.connected then on = on + 1 end end
+  local n, on, relayed = 0, 0, 0
+  for _, c in pairs(data.connections) do
+    n = n + 1
+    if c.connected then on = on + 1; if tostring(c.type or ""):find("relay", 1, true) then relayed = relayed + 1 end end
+  end
+  services.peers_relayed = relayed -- (through Syncthing's public relays: a firewall in the way, and every take crawls. Band-test review, 0.58.67)
   return on, n
 end
 
@@ -538,7 +542,8 @@ function services.join_asks(me)
   local groups = require("groups")
   local ask, mine, any = {}, {}, false
   for _, x in ipairs(band.bands()) do
-    if not groups.is_old(x.root) and groups.may_manage(x.root, me) then mine[x.id], any = x, true end
+    -- (not one still waiting to be let in: with no band.json yet it read as an "open" studio, and a joiner saw others' join requests. Review, 0.58.67)
+    if not x.waiting and not groups.is_old(x.root) and groups.may_manage(x.root, me) then mine[x.id], any = x, true end
   end
   if any then for _, d in ipairs(services.pending_devices()) do ask[#ask + 1] = d end end
   for _, f in ipairs(services.pending_folders()) do

@@ -69,6 +69,9 @@ function H.maint_rows()
       s.peers and string.format("Connected to %d of %d collaborator machine(s)", s.peers, s.devices) or "Shared folder is a cloud drive",
       s.peers and "Syncthing is connected to nobody. No collaborator is online, so that's fine: your changes reach them later."
       or "Can't tell whether Syncthing is connected." },
+    { "relay", (require("services").peers_relayed or 0) == 0, "yellow", "Connections to the others are direct (fast)",
+      string.format("%d connection(s) go through a Syncthing relay, so takes and changes arrive slowly. On each computer, let Syncthing through the firewall " ..
+        "(Windows: Windows Security > Firewall > Allow an app; Mac: System Settings > Network > Firewall), then restart Syncthing.", require("services").peers_relayed or 0) },
     { "sonobus", s.sonobus, "yellow", "SonoBus is ready (Real time mode)", "SonoBus isn't set up yet: Real time mode (Home) adds it." },
     (function()
       local c = s.conflicts or {}

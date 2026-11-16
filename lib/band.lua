@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.58.67", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.58.68", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -414,7 +414,8 @@ function band.bands()
     -- (a folder that's gone is left out. One just joined, with nothing arrived yet, is in, marked waiting: it was left out too, and a joiner
     -- read "You're not in a studio yet" until they were let in. Beginner review, 0.58.62)
     local real = false
-    for _, d in ipairs(r ~= "" and band.subdirs(r) or {}) do if d:sub(1, 1) ~= "." then real = true end end
+    -- (_band doesn't count: this computer writes its own device file there within 30 s of joining. Review, 0.58.67)
+    for _, d in ipairs(r ~= "" and band.subdirs(r) or {}) do if d:sub(1, 1) ~= "." and (d ~= "_band" or reaper.file_exists(r .. "/_band/band.json")) then real = true end end
     if r ~= "" and not seen[r] and (real or band.subdirs(r)[1] or reaper.EnumerateFiles(r, 0)) then
       seen[r] = true
       local i = band.info(r)

@@ -210,7 +210,7 @@ function pg.checklist(env)
   local p = g and people_in(g.root) or { names = {}, projects = 0 }
   local others = false
   for _, n in ipairs(p.names) do if n ~= cfg.user then others = true end end
-  local steps = pg.checklist_steps({ in_studio = g ~= nil, starter = g == nil or groups.role(g.root, cfg.user) == "owner", waiting = g and g.waiting,
+  local steps = pg.checklist_steps({ in_studio = g ~= nil, starter = g == nil or (not g.waiting and groups.role(g.root, cfg.user) ~= "member"), waiting = g and g.waiting,
     others = others, projects = p.projects > 0 })
   if not steps then return end
   if env.card("checklist") then

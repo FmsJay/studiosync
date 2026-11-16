@@ -1256,9 +1256,10 @@ function ui.keep_local()
   local list = {}
   for i = 0, reaper.CountSelectedTracks(proj) - 1 do list[#list + 1] = reaper.GetSelectedTrack(proj, i) end
   if #list == 0 then return band.msg("Select the tracks you want to keep on this computer first.") end
-  local n, shared, kept = require("mirror").keep_local(proj, list)
+  local n, shared, kept, helpers = require("mirror").keep_local(proj, list)
+  if helpers > 0 and n == 0 and shared == 0 then return band.log("those are StudioSync's own tracks on this computer: they never go out anyway") end
   if n > 0 then band.log(kept and (n .. " track(s) stay on this computer: nothing on them goes to the others") or (n .. " track(s) shared with the others again")) end
-  if shared > 0 then band.msg(shared .. " of them already went to the others, so they stay shared: made local they'd vanish for everyone.\n\n" ..
+  if shared > 0 then band.msg(shared .. " of them already went to the others (or are a folder whose tracks aren't all selected), so they stay shared: made local they'd vanish for everyone.\n\n" ..
     "To keep a copy of your own, duplicate the track and keep the copy local.") end
 end
 -- (ui.set_local_mix: the switch, and the bindable action through "panel do")
@@ -2175,13 +2176,15 @@ local function frame_app()
       reaper.SetProjExtState(proj, band.SECTION, "hold", on and "1" or "")
       band.log(on and "Hold my changes is on: what you change stays here until you switch it off" or "Hold my changes is off: what you changed goes to the others")
     elseif want == "localmix" then ui.set_local_mix(select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) ~= "1")
+    elseif want == "claim" and who and who.mode == "admins" and not require("groups").may_manage(cfg.root, cfg.user) then
+      band.msg("Admins only here: an admin can give you tracks to work on.") -- (as the panel hides its button: Review, 0.58.67)
     elseif want == "claim" then
       local list = {}
       for i = 0, reaper.CountSelectedTracks(proj) - 1 do list[#list + 1] = part_name(reaper.GetSelectedTrack(proj, i)) end
       if #list == 0 then band.msg("Select the tracks you want to own first.") else claim(list, {}); band.log("claimed " .. table.concat(list, ", ")) end
     elseif want == "keeplocal" then ui.keep_local()
     elseif want == "takecontrol" then dofile(dir .. "/StudioSync - Take control.lua")
-    elseif want:match("^chat ") and b then require("page_chat").post(cfg, b, want:sub(6)) end
+    elseif want:match("^chat ") and b then require("page_chat").post(cfg, b, (want:sub(6, 505):gsub("%c", " "))) end -- (a script's: one line, 500 characters. Security review, 0.58.67)
   end
   if ui.short then ImGui.PushStyleVar(ctx, ImGui.StyleVar_ItemSpacing, 8, 1) end
   ImGui.Separator(ctx)
@@ -2291,6 +2294,10 @@ function ui.frame_lobby()
   ui.sync_problem()
   tools.join_requests(ctx, ImGui)
   tools.invite_popup(ctx, ImGui)
+  do -- (a script's request with no studio project in front: said and dropped, not done to whichever project opens next. Review, 0.58.67)
+    local r = require("api").take_request()
+    if r then band.log("a script asked StudioSync for '" .. r:sub(1, 40) .. "', but no studio project is in front: nothing done") end
+  end
   ImGui.Separator(ctx)
   ImGui.PushStyleVar(ctx, ImGui.StyleVar_WindowPadding, 16, 12)
   if ImGui.BeginChild(ctx, "page", 0, 0, ImGui.ChildFlags_AlwaysUseWindowPadding) then

@@ -22,7 +22,7 @@ API version 1, StudioSync 0.58.64 and later. Fields and verbs are only ever adde
 | `mode` | who can edit: `driver`, `claims` (Driver + claimed tracks), `admins` or `open` (Anyone) |
 | `alone` | nobody else is here (you have full control) |
 | `here` | the others in the project now, sorted |
-| `claims` | `{ "Sam": ["Bass"], "James": ["Gtr", "Keys"] }`: each person's claimed tracks |
+| `claims` | `[ { "user": "James", "tracks": ["Gtr", "Keys"] }, { "user": "Sam", "tracks": ["Bass"] } ]`: each person's claimed tracks (always a list, `[]` when nobody has claimed anything) |
 | `hold`, `held` | Hold my changes is on, and how many changes it's holding |
 | `local_mix` | Keep my mix to myself is on |
 

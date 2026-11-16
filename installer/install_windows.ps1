@@ -494,7 +494,7 @@ function Request($mode) {
 }
 if ($NoReaper) { Ok "stopping before REAPER, as asked. This computer's Syncthing ID: $myId"; exit 0 }
 Say "Setting up StudioSync inside REAPER. REAPER opens now; the first time, it scans your plug-ins and asks a few things, which need answering:"
-Say "  'Select your audio device now?': No is fine (Preferences > Audio later). ReaPack's 'Manage repositories' and 'Transaction report': OK."
+Say "  'Select your audio device now?': No is fine for now (pick your audio interface in Preferences > Audio before you play). ReaPack's 'Manage repositories' and 'Transaction report': OK."
 Say "  If Tailscale's welcome window covers them, close it. This window carries on by itself once StudioSync has arrived."
 $r = Request $Scripts
 if (-not $r) {

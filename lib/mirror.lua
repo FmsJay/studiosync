@@ -1922,17 +1922,36 @@ function mirror.keep_local(proj, tracks)
   local key = "P_EXT:band_local"
   local all_kept = #tracks > 0
   for _, tr in ipairs(tracks) do if select(2, reaper.GetSetMediaTrackInfo_String(tr, key, "", false)) ~= "kept" then all_kept = false end end
-  local n, shared = 0, 0
+  local n, shared, helpers = 0, 0, 0
+  local given = {}
+  for _, tr in ipairs(tracks) do given[tr] = true end
+  -- (a folder's tracks would still go out naming a parent nobody else has, and land in the wrong place for everyone: the folder only
+  -- with all its tracks. Review, 0.58.67)
+  local function whole_folder(tr)
+    if reaper.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH") ~= 1 then return true end
+    local proj_tr = reaper.GetMediaTrackInfo_Value(tr, "IP_TRACKNUMBER")
+    local depth, i = 1, math.floor(proj_tr) -- (IP_TRACKNUMBER is 1-based: index i is the track after the folder)
+    while depth > 0 do
+      local c = reaper.GetTrack(proj, i)
+      if not c then break end
+      if not given[c] and not local_track(c) then return false end
+      depth = depth + reaper.GetMediaTrackInfo_Value(c, "I_FOLDERDEPTH")
+      i = i + 1
+    end
+    return true
+  end
   for _, tr in ipairs(tracks) do
     if all_kept then reaper.GetSetMediaTrackInfo_String(tr, key, "", true); n = n + 1
-    elseif not local_track(tr) then
+    elseif local_track(tr) then helpers = helpers + 1
+    elseif not whole_folder(tr) then shared = shared + 1
+    else
       local oid = trk_oid(tr)
       local _, h = mirror.known(proj, oid)
       if oid ~= "" and (h or "") ~= "" then shared = shared + 1
       else reaper.GetSetMediaTrackInfo_String(tr, key, "kept", true); n = n + 1 end
     end
   end
-  return n, shared, not all_kept
+  return n, shared, not all_kept, helpers
 end
 function mirror.add_local_track(proj, name, tag)
   local colours = mirror.track_colours(proj)

@@ -178,7 +178,11 @@ end
 function listen.tick_one(cfg)
   local id = band.info(cfg.root).id
   beat(id)
-  if not require("services").port_open("127.0.0.1:" .. listen.port(id)) then start_server(cfg) end -- (REAPER restarted, or it stopped: back)
+  if not require("services").port_open("127.0.0.1:" .. listen.port(id)) then -- (REAPER restarted, or it stopped: back)
+    start_server(cfg)
+    -- (and Tailscale pointed at it again: a page shared before 0.58.63 changed the port kept forwarding to the old one, and went dark. Review, 0.58.67)
+    require("services").ts_exec("serve --bg --yes --set-path /studiosync-" .. id .. " http://127.0.0.1:" .. listen.port(id), 15000)
+  end
   pcall(listen.write, cfg)
   local alerts, services = require("alerts"), require("services")
   local channel = alerts.channel(cfg.root)
