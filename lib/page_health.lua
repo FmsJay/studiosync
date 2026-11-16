@@ -90,13 +90,23 @@ function H.maint_rows()
           "Applies them again on Live sync's next pass. If they still fail, they come back here." } }
     end)(),
     (function() -- (an older REAPER can read a newer one's tracks and items differently: review item 33)
-      local mine, other = reaper.GetAppVersion():match("^[%d%.]+"), {}
+      local tools = require("tools")
+      local mine, other, newest = reaper.GetAppVersion():match("^[%d%.]+"), {}, tools.TESTED_REAPER
       for _, r in ipairs(view and view.rows or {}) do
-        if r.reaper and r.reaper ~= mine then other[#other + 1] = r.name .. " " .. r.reaper end
+        if r.reaper and r.reaper ~= mine then
+          other[#other + 1] = r.name .. " " .. r.reaper
+          if band.compare_versions(r.reaper, newest) > 0 then newest = r.reaper end
+        end
       end
-      return { "reaper", #other == 0, "yellow", "Everyone runs the same REAPER (" .. mine .. ")",
-        "REAPER versions differ (you " .. mine .. "; " .. table.concat(other, ", ") .. "). Something made in a newer REAPER can come out " ..
-        "different in an older one: the same version everywhere is safest." }
+      -- (behind the others, or behind what StudioSync is tested on: the button's here, not only in Upkeep. James, 0.58.73)
+      local behind = band.compare_versions(newest, mine) > 0
+      local said = behind and string.format("REAPER %s here is older than %s%s. Something made in a newer REAPER can come out different in an older one.",
+          mine, newest, #other > 0 and (" (" .. table.concat(other, ", ") .. ")") or ", which StudioSync is tested on")
+        or "REAPER versions differ (you " .. mine .. "; " .. table.concat(other, ", ") .. "). Something made in a newer REAPER can come out " ..
+          "different in an older one: the same version everywhere is safest."
+      return { "reaper", #other == 0 and not behind, "yellow", "Everyone runs the same REAPER (" .. mine .. ")", said,
+        action = behind and { "Update REAPER", function() band.log(tools.update_reaper()) end,
+          "Opens the REAPER Update Utility (free, by FeedTheCat), fetching it first if it isn't here: it finds the newest REAPER and installs it." } or nil }
     end)(),
     (function() -- (a Mac bandmate never saw this in the old look. Mac, 0.42.27)
       local undo = require("undo")
@@ -259,7 +269,7 @@ function H.maint_upkeep()
     ImGui.SameLine(ctx)
     if ImGui.Button(ctx, "Update REAPER") then band.log(require("tools").update_reaper()) end
     ImGui.SetItemTooltip(ctx, "REAPER " .. reaper.GetAppVersion():gsub("/.*", "") .. " here. Opens the REAPER Update Utility (free, by FeedTheCat), which finds the newest\n" ..
-      "REAPER and installs it; if it isn't installed yet, ReaPack opens on it, one click from installed. Everyone on the same REAPER is safest.")
+      "REAPER and installs it; it's fetched first if it isn't here. Everyone on the same REAPER is safest.")
     card_end()
   end
 end

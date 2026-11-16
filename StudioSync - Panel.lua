@@ -481,7 +481,7 @@ end
 local drive_root, drive_at = nil, -math.huge
 local MODE_INFO = {
   { "driver", "Only the driver", "Only the driver changes what the studio has. Everyone else's changes are put back (record as usual)." },
-  { "claims", "Driver + claimed tracks", "The driver, and everyone on what they've claimed (a track, a region, a stretch of time). Other changes are put back." },
+  { "claims", "Driver + claims", "The driver, and everyone on what they've claimed (a track, a region, a stretch of time). Other changes are put back." },
   { "admins", "Admins only", "Only the studio's owner and admins change what the studio has, and anyone on what an admin gave them (right-click their name). Other changes are put back." },
   { "open", "Anyone", "Anyone changes anything nobody has claimed, the tempo map and markers too. If two change one thing at once,\n" ..
     "whoever changed it more wins, and the other person gets Use mine." },
@@ -496,7 +496,10 @@ local function section_driver(beside) -- beside: drawn on the box's row (a short
   ImGui.Text(ctx, "Who controls")
   ImGui.SameLine(ctx)
   ImGui.BeginDisabled(ctx, not may_set)
-  ImGui.SetNextItemWidth(ctx, ui.short and 150 or 170)
+  -- (as wide as its longest choice: a fixed 170 cut the name off on a Mac, whose text draws wider. James, 0.58.73)
+  local cw = 0
+  for _, m in ipairs(MODE_INFO) do cw = math.max(cw, (ImGui.CalcTextSize(ctx, m[2]))) end
+  ImGui.SetNextItemWidth(ctx, cw + ImGui.GetFrameHeight(ctx) + 16)
   if ImGui.BeginCombo(ctx, "##whocontrols", cur[2]) then
     for _, m in ipairs(MODE_INFO) do
       if ImGui.Selectable(ctx, m[2], m[1] == mode) and m[1] ~= mode then

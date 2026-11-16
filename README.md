@@ -61,7 +61,7 @@ Everything below is the detail.
       recall/   recall points (every handover, or saved by hand)
       status/   <person>.json           who's here, what they're doing (the panel's Who's here)
       chat/     messages, to-dos, links for the room (the project's and the studio's sit beside it)
-      driver.json, mode.json            who drives; Only the driver / Driver + claimed tracks / Admins only / Anyone
+      driver.json, mode.json            who drives; Only the driver / Driver + claims / Admins only / Anyone
 ```
 
 - **Publish** (host) makes the project a studio session. The project must be prepared first (a checklist); an
@@ -325,10 +325,10 @@ Who may change what:
 
 - **Driver**: their changes reach everyone, except on what someone has claimed. *Take control* (next to Who's
   here) makes you the driver; it checks everyone has caught up first, and every handover saves a version.
-- **Who can edit** (Home; the driver picks): **Only the driver**, **Driver + claimed tracks** (the driver, and
+- **Who can edit** (Home; the driver picks): **Only the driver**, **Driver + claims** (the driver, and
   everyone on what they've claimed; a track you make is claimed for you once it has a name, unless you drive, and
   a track you made stays yours to change until someone claims it, listed on the Claims card) or **Anyone** (anything unclaimed;
-  the tempo map, markers and project settings too; a clash goes to whoever owns it, else whoever changed it more: docs/clashes.md). A newly shared project starts on **Anyone**; one shared before that setting existed starts on Driver + claimed tracks.
+  the tempo map, markers and project settings too; a clash goes to whoever owns it, else whoever changed it more: docs/clashes.md). A newly shared project starts on **Anyone**; one shared before that setting existed starts on Driver + claims.
 - **Claims**: *Claim selected tracks*, *Claim region at cursor* or *Claim time selection* (shown to everyone as a
   `[claimed: you]` region). A track claim beats a time claim, which beats a region claim, which beats the driver.
 - **Suggestions**: an edit that reaches someone's claim (a section copied or moved across the project, say) goes out for
@@ -531,7 +531,7 @@ own? Enter `<address>:2049` and click *Save for the studio*.
 
 - **Deleting your local copy** (right-click a project or a folder on the Projects page): to free the space, once it's confirmed elsewhere: Google Drive holds every file, or another computer of the studio has said it holds exactly these files (each one says so itself, every minute or so while REAPER is open). The project goes on this computer's ignore list first, so nobody else's copy is touched, and its files go to the Recycle Bin or Trash. It stays on the page, and opening it brings it back. A closed studio's copy goes the same way, from the Studios page.
 - **A copy outside the studio** (Restore > Save a copy outside the studio): a plain REAPER project in a folder you pick, with every file it uses, as recorded or as WAVs. It opens anywhere with no StudioSync and nothing you do to it goes to anyone. Letting someone in saves a kept version of what's open first.
-- **Who can edit** (Home): Only the driver, Driver + claimed tracks, Admins only (the owner and admins, and whoever an admin gave tracks to: right-click their name) or Anyone.
+- **Who can edit** (Home): Only the driver, Driver + claims, Admins only (the owner and admins, and whoever an admin gave tracks to: right-click their name) or Anyone.
 - **Chat**: This room shows only this room's; This project also shows all its rooms'; Studio shows everything, each message saying where it's from.
 
 ## For your own scripts: the API

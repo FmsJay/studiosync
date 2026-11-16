@@ -283,25 +283,48 @@ function tools.put_back_bar(ctx, ImGui, song, use_mine, may, claim)
 end
 
 -- Update REAPER (James, 2026-11-15): FeedTheCat's REAPER Update Utility (MIT, the FTC Tools ReaPack repository) finds the newest REAPER
--- and installs it. Run when it's here; otherwise ReaPack's browser opens on it, one click from installed (ReaPack's API can't install a single
--- package by itself); without ReaPack, REAPER's download page. -> what happened, in words.
-tools.UPDATER_REPO = { "FTC Tools", "https://raw.githubusercontent.com/iliaspoulakis/Reaper-Tools/master/index.xml" }
+-- and installs it. Run when it's here (ReaPack's copy, or the one fetched before); otherwise its one file is fetched, the version FTC's
+-- ReaPack index names now (pinned to a commit there), into StudioSync's folder, and run. ReaPack's browser used to open on it instead,
+-- which wasn't clear about what to press (James, Mac, 0.58.73). Nothing fetched: REAPER's download page. -> what happened, in words.
+tools.UPDATER_INDEX = "https://raw.githubusercontent.com/iliaspoulakis/Reaper-Tools/master/index.xml"
+tools.TESTED_REAPER = "7.86" -- (what the installers fetch, and every suite ran on: Health asks to update from anything older)
+-- The newest version's file in FTC's index. Pure.
+function tools.updater_url(xml)
+  local block = tostring(xml or ""):match('<reapack name="REAPER Update Utility%.lua".-</reapack>')
+  local last
+  for v in (block or ""):gmatch("<version.-</version>") do last = v end
+  local url = last and last:match("<source[^>]*>(https://[^<]+)</source>")
+  return url and (url:gsub("&amp;", "&")) or nil
+end
+function tools.fetch_updater(dest) -- (dest: where its one file goes. -> true, or nil + why)
+  local curl = reaper.GetOS():find("^Win") and "curl.exe" or "/usr/bin/curl" -- (a full path on a Mac: REAPER runs a bare name there as nothing)
+  reaper.RecursiveCreateDirectory(dest:match("^(.*)/"), 0)
+  local tmp = dest .. ".index.xml"
+  reaper.ExecProcess(curl .. ' -s -L --max-time 20 -o "' .. tmp .. '" "' .. tools.UPDATER_INDEX .. '"', 25000)
+  local url = tools.updater_url(band.read(tmp))
+  os.remove(tmp)
+  if not url then return nil, "its list wasn't reachable" end
+  reaper.ExecProcess(curl .. ' -s -L --max-time 30 -o "' .. dest .. '.part" "' .. url .. '"', 35000)
+  local got = band.read(dest .. ".part") or ""
+  if #got < 1000 or not got:find("reaper", 1, true) then os.remove(dest .. ".part"); return nil, "the download didn't arrive" end
+  os.remove(dest)
+  if not os.rename(dest .. ".part", dest) then return nil, "it couldn't be put in place" end
+  return true
+end
 function tools.update_reaper()
-  local script = reaper.GetResourcePath() .. "/Scripts/FTC Tools/Various/REAPER Update Utility.lua"
-  if reaper.file_exists(script) then
-    local id = reaper.AddRemoveReaScript(true, 0, script, true)
-    if id ~= 0 then reaper.Main_OnCommand(id, 0); return "REAPER Update Utility opened" end
+  local theirs = reaper.GetResourcePath() .. "/Scripts/FTC Tools/Various/REAPER Update Utility.lua"
+  local ours = band.home():gsub("\\", "/") .. "/REAPER Update Utility/REAPER Update Utility.lua"
+  local script = reaper.file_exists(theirs) and theirs or reaper.file_exists(ours) and ours or nil
+  local why
+  if not script then
+    local ok
+    ok, why = tools.fetch_updater(ours)
+    if ok then script = ours end
   end
-  if reaper.APIExists("ReaPack_BrowsePackages") then
-    if not reaper.ReaPack_GetRepositoryInfo(tools.UPDATER_REPO[1]) then
-      reaper.ReaPack_AddSetRepository(tools.UPDATER_REPO[1], tools.UPDATER_REPO[2], true, 0) -- (0: not every package of theirs, only the one picked)
-      reaper.ReaPack_ProcessQueue(true)
-    end
-    reaper.ReaPack_BrowsePackages("REAPER Update Utility")
-    return "ReaPack opened on REAPER Update Utility: right-click it > Install, Apply, then press Update REAPER again"
-  end
+  local id = script and reaper.AddRemoveReaScript(true, 0, script, true) or 0
+  if id ~= 0 then reaper.Main_OnCommand(id, 0); return "REAPER Update Utility opened: it finds the newest REAPER and installs it" end
   band.open_url("https://www.reaper.fm/download.php")
-  return "REAPER's download page opened"
+  return "couldn't open the REAPER Update Utility (" .. tostring(why or "not registered") .. "): REAPER's download page opened"
 end
 
 return tools
