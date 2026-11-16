@@ -5,7 +5,7 @@ name: extension
 on:
   workflow_dispatch:
   push:
-    paths: ["extension/reaper_menu.cpp", ".github/workflows/extension.yml"]
+    paths: ["extension/reaper_menu.cpp", "tools/ninjam-relay/njrelay.c", ".github/workflows/extension.yml"]
 
 jobs:
   mac:
@@ -53,3 +53,27 @@ jobs:
           done
       - uses: actions/upload-artifact@v4
         with: { name: "linux-${{ matrix.arch }}", path: "*.so" }
+
+  # The NINJAM server and the relay for Linux (lib/ninjam), as tools/ninjam-server/build_mac.sh and the README's njrelay line do for Macs.
+  linux-ninjam:
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-22.04, arch: x86_64 }
+          - { os: ubuntu-22.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: ninjamsrv (the commit build_mac.sh pins)
+        run: |
+          git clone -q https://github.com/justinfrankel/ninjam.git ninjam-src
+          git -C ninjam-src checkout -q f4c0eff3a1d8d5f3ead470d0c7405c3ee37da24e
+          make -C ninjam-src/ninjam/server CXXFLAGS="-O2 -Wno-reorder"
+          cp ninjam-src/ninjam/server/ninjamsrv "ninjamsrv-linux-${{ matrix.arch }}"
+          file "ninjamsrv-linux-${{ matrix.arch }}"
+      - name: njrelay
+        run: |
+          cc -O2 -Wall -o "njrelay-linux-${{ matrix.arch }}" tools/ninjam-relay/njrelay.c
+          file "njrelay-linux-${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v4
+        with: { name: "ninjam-linux-${{ matrix.arch }}", path: "*-linux-*" }

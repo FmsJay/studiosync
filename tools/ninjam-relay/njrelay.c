@@ -16,7 +16,11 @@
  */
 #include <errno.h>
 #include <fcntl.h>
+#ifdef __APPLE__
 #include <libproc.h>
+#else
+#include <dirent.h> /* (Linux: processes from /proc) */
+#endif
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -39,6 +43,24 @@ static pid_t reaper_pid; /* 0: look for any process called REAPER */
  * checking the server every 5 s (Mac, 0.58.42). So with no pid given it looks REAPER up by name. */
 static int reaper_running(void) {
   if (reaper_pid > 0) return !(kill(reaper_pid, 0) != 0 && errno == ESRCH);
+#ifndef __APPLE__
+  /* Linux: a process whose command name is "reaper" (/proc/<pid>/comm) */
+  DIR *d = opendir("/proc");
+  if (!d) return 1; /* (can't tell: carry on) */
+  int seen = 0;
+  struct dirent *e;
+  while (!seen && (e = readdir(d)) != NULL) {
+    if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+    char path[300], name[64] = "";
+    snprintf(path, sizeof path, "/proc/%s/comm", e->d_name);
+    FILE *f = fopen(path, "r");
+    if (!f) continue;
+    if (fgets(name, sizeof name, f)) { name[strcspn(name, "\n")] = 0; if (strcmp(name, "reaper") == 0) seen = 1; }
+    fclose(f);
+  }
+  closedir(d);
+  return seen;
+#else
   int n = proc_listallpids(NULL, 0);
   if (n <= 0) return 1; /* (can't tell: carry on) */
   pid_t *pids = malloc(sizeof(pid_t) * (size_t)(n + 64));
@@ -51,6 +73,7 @@ static int reaper_running(void) {
   }
   free(pids);
   return found;
+#endif
 }
 /* Gone for a minute (two looks 30 s apart: a REAPER restart takes a few seconds, and the next Connect starts this again anyway) */
 static int reaper_gone(void) {
