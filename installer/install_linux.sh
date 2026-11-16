@@ -130,6 +130,8 @@ while [ -z "$USERNAME_BS" ]; do
   typed="$(ask "Your name, as the studio will see it (you can change it later)" "$(plain "${full:-$USER}")")"
   USERNAME_BS="$(plain "$typed")"
   [ -n "$USERNAME_BS" ] && [ "$USERNAME_BS" != "$typed" ] && say "Using the name '$USERNAME_BS' (plain letters only)."
+  # (a name in another alphabet cleans to nothing, and the question came back with no word why. Installer review, 0.58.78)
+  [ -z "$USERNAME_BS" ] && [ -n "$typed" ] && warn "Names here are in Latin letters (A to Z), digits, spaces, - and _: type yours that way."
 done
 # the band (docs/bands-design.md): each its own shared folder. An invitation names it; the first one set up names it.
 FOLDER_ID="$(printf '%s' "${BS_BAND_ID:-}" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C tr -cd 'a-z0-9-')"
@@ -142,7 +144,10 @@ fi
 case "$FOLDER_ID" in bandsync|bandsync-*|studiosync-*|"") ;; *) warn "That studio ID ($FOLDER_ID) isn't a StudioSync one: ask for a new invitation."; exit 1 ;; esac
 BAND_NAME="$(plain "${BS_BAND_NAME:-}")"
 if yes "$HOSTING" && [ -z "$BAND_NAME" ]; then
-  while [ -z "$BAND_NAME" ]; do BAND_NAME="$(plain "$(ask "Name your studio" "My studio")")"; done
+  while [ -z "$BAND_NAME" ]; do
+    typed="$(ask "Name your studio" "My studio")"; BAND_NAME="$(plain "$typed")"
+    [ -z "$BAND_NAME" ] && warn "Names here are in Latin letters (A to Z), digits, spaces, - and _: type it that way."
+  done
 fi
 [ -n "$BAND_NAME" ] || BAND_NAME="the studio"
 DEF_ROOT="$HOME/StudioSync"; [ -d "$HOME/BandSync" ] && DEF_ROOT="$HOME/BandSync" # (the first studio, id bandsync: set up before the rename keeps its BandSync folder)
@@ -208,11 +213,35 @@ echo
 
 say "Downloads show no progress here: a pause of a few minutes on a big one is normal."
 # ---------- 1. apps ----------
+# GitHub's release lookups: each is one of the 60 an hour GitHub allows a network that isn't signed in, and a band installing in one room ran
+# out. So each answer is kept for an hour (a second run asks nothing), and once the limit is reached (403, X-RateLimit-Remaining: 0) the
+# release's own web page is read instead, which isn't counted; said once, with when the limit resets. (Installer review, 0.58.78)
+GH_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/studiosync/github"
+gh_release() { # repo latest|tags/<tag> -> that release's download URLs, one a line
+  local c h tag at
+  c="$GH_CACHE/$(printf '%s_%s' "$1" "$2" | tr -c 'A-Za-z0-9._-' '_')"; h="$WORK/gh_headers"
+  if [ -s "$c" ] && [ -z "$(find "$c" -mmin +60 2>/dev/null)" ]; then cat "$c"; return 0; fi
+  mkdir -p "$GH_CACHE"; : > "$h"
+  curl -fsSL -D "$h" "https://api.github.com/repos/$1/releases/$2" 2>/dev/null | grep -o '"browser_download_url": *"[^"]*"' | sed 's/.*"\(http[^"]*\)"/\1/' > "$c.part"
+  if [ ! -s "$c.part" ]; then
+    if tr -d '\r' < "$h" | grep -qi '^x-ratelimit-remaining: *0$' && [ ! -f "$WORK/gh_told" ]; then
+      : > "$WORK/gh_told"; # (a file: every lookup runs in a $(...) of its own)
+      at="$(tr -d '\r' < "$h" | sed -n 's/^[Xx]-[Rr]ate[Ll]imit-[Rr]eset: *//p' | head -1)"
+      at="$(date -d "@$at" +%H:%M 2>/dev/null || date -r "$at" +%H:%M 2>/dev/null)"
+      warn "GitHub's limit of 60 lookups an hour from this network is used up${at:+ (until $at)}: several computers installing at once? Reading GitHub's download pages instead." >&2 # (stderr: the URLs go to a pipe)
+    fi
+    tag="${2#tags/}"
+    [ "$2" = latest ] && tag="$(curl -fsSI "https://github.com/$1/releases/latest" 2>/dev/null | tr -d '\r' | sed -n 's#^[Ll]ocation: .*/releases/tag/##p' | tail -1)"
+    [ -n "$tag" ] && curl -fsSL "https://github.com/$1/releases/expanded_assets/$tag" 2>/dev/null | grep -o 'href="/[^"]*/releases/download/[^"]*"' | sed 's#^href="#https://github.com#; s#"$##' > "$c.part"
+  fi
+  [ -s "$c.part" ] && mv -f "$c.part" "$c" && cat "$c" && return 0
+  rm -f "$c.part"; return 1
+}
 gh_asset() { # repo regex -> download URL of the latest release asset matching it
-  curl -fsSL "https://api.github.com/repos/$1/releases/latest" | grep -o '"browser_download_url": *"[^"]*"' | sed 's/.*"\(http[^"]*\)"/\1/' | grep -E -e "$2" | head -1
+  gh_release "$1" latest | grep -E -e "$2" | head -1
 }
 gh_asset_tag() { # repo tag regex -> download URL of that release's asset matching it
-  curl -fsSL "https://api.github.com/repos/$1/releases/tags/$2" | grep -o '"browser_download_url": *"[^"]*"' | sed 's/.*"\(http[^"]*\)"/\1/' | grep -E -e "$3" | head -1
+  gh_release "$1" "tags/$2" | grep -E -e "$3" | head -1
 }
 unpack() { # archive dir: a .deb is only unpacked (dpkg-deb -x needs no root), never installed system-wide
   mkdir -p "$2"
@@ -224,15 +253,34 @@ unpack() { # archive dir: a .deb is only unpacked (dpkg-deb -x needs no root), n
   esac
 }
 # REAPER: the running one first (as the Windows installer), then the usual places. Its own install script puts it in ~/opt/REAPER.
+# A Flatpak REAPER (Flathub's fm.reaper.Reaper) answers "flatpak", an AppImage its own file: each starts differently and keeps its settings
+# elsewhere (below). BS_REAPER, or the answer when none is found: a folder holding a portable REAPER. (Cross-platform review, 0.58.78)
 find_reaper() {
   local p c
   p="$(pgrep -x reaper | head -1)"
-  if [ -n "$p" ]; then c="$(readlink -f "/proc/$p/exe" 2>/dev/null)"; [ -x "$c" ] && { echo "$c"; return 0; }; fi
+  if [ -n "$p" ]; then
+    [ -f "/proc/$p/root/.flatpak-info" ] && { echo flatpak; return 0; }
+    c="$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null | sed -n 's/^APPIMAGE=//p' | head -1)"; [ -n "$c" ] && [ -x "$c" ] && { echo "$c"; return 0; }
+    c="$(readlink -f "/proc/$p/exe" 2>/dev/null)"; [ -x "$c" ] && { echo "$c"; return 0; }
+  fi
+  if [ -n "${BS_REAPER:-}" ]; then
+    for c in "$BS_REAPER" "$BS_REAPER/reaper"; do [ -f "$c" ] && [ -x "$c" ] && { echo "$c"; return 0; }; done
+  fi
   c="$(command -v reaper 2>/dev/null)" && c="$(readlink -f "$c")" && [ -x "$c" ] && { echo "$c"; return 0; }
   for c in "$HOME/opt/REAPER/reaper" /opt/REAPER/reaper "$HOME/REAPER/reaper"; do [ -x "$c" ] && { echo "$c"; return 0; }; done
+  command -v flatpak >/dev/null && flatpak info fm.reaper.Reaper >/dev/null 2>&1 && { echo flatpak; return 0; }
+  for c in "$HOME"/Applications/*[Rr][Ee][Aa][Pp][Ee][Rr]*.AppImage "$HOME"/*[Rr][Ee][Aa][Pp][Ee][Rr]*.AppImage "$HOME"/Downloads/*[Rr][Ee][Aa][Pp][Ee][Rr]*.AppImage; do
+    [ -f "$c" ] && [ -x "$c" ] && { echo "$c"; return 0; }
+  done
   return 1
 }
 
+if ! find_reaper >/dev/null && [ -z "${BS_REAPER:-}" ]; then
+  # (a REAPER somewhere this doesn't look is asked for, rather than a second one installed beside it. Installer review, 0.58.78)
+  BS_REAPER="$(ask "REAPER wasn't found. If it's somewhere else (a portable copy), type the folder it's in; or press Enter to install it")"
+  BS_REAPER="$(printf '%s' "$BS_REAPER" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e "s/^'\(.*\)'$/\1/")"; BS_REAPER="${BS_REAPER/#\~/$HOME}"
+  [ -n "$BS_REAPER" ] && ! find_reaper >/dev/null && warn "No REAPER in $BS_REAPER: installing one."
+fi
 if REAPER_BIN="$(find_reaper)"; then ok "REAPER is already installed ($REAPER_BIN)"
 else
   say "Installing REAPER $REAPER_VERSION into ~/opt/REAPER (a 60-day evaluation; see reaper.fm for the license) ..."
@@ -247,14 +295,57 @@ else
     rm -rf "$rtar" "$WORK/reaper_linux_$ARCH"
   else warn "REAPER didn't download: get it from reaper.fm"; fi
 fi
+# An existing Syncthing's settings folder, wherever it keeps them: the running one's --home or --config (a systemd unit, a script), its
+# STHOMEDIR, or the default under its own HOME and XDG folders (a snap's are under ~/snap/syncthing). That one is set up, never a second
+# Syncthing with a second identity beside it. -> the folder, or nothing. (Installer review, 0.58.78)
+st_running_home() {
+  local p v e h d best=""
+  for p in $(pgrep -x syncthing); do
+    v="$(tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | awk 'f { print; exit } /^--?(home|config)=/ { sub(/^[^=]*=/, ""); print; exit } /^--?(home|config)$/ { f = 1 }')"
+    e="$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null)"
+    [ -n "$v" ] || v="$(printf '%s\n' "$e" | sed -n 's/^ST\(HOME\|CONF\)DIR=//p' | head -1)"
+    if [ -z "$v" ]; then # (both defaults can have a config.xml: Syncthing rewrites its own at every start, so the newer one is the one in use)
+      h="$(printf '%s\n' "$e" | sed -n 's/^HOME=//p' | head -1)"; h="${h:-$HOME}"
+      for d in "$(printf '%s\n' "$e" | sed -n 's/^XDG_STATE_HOME=//p' | head -1)" "$h/.local/state" "$(printf '%s\n' "$e" | sed -n 's/^XDG_CONFIG_HOME=//p' | head -1)" "$h/.config"; do
+        [ -n "$d" ] && [ -f "$d/syncthing/config.xml" ] && { [ -z "$best" ] || [ "$d/syncthing/config.xml" -nt "$best/config.xml" ]; } && best="$d/syncthing"
+      done
+      v="$best"
+    fi
+    [ -n "$v" ] && [ -f "$v/config.xml" ] && { echo "$v"; return 0; }
+  done
+  return 1
+}
+# (a distro's Syncthing before 1.19 (Ubuntu 22.04 has 1.18) has no serve, generate or device-id: one that isn't already running is passed
+# over for the current release, in your home folder. Cross-platform review, 0.58.78)
+st_old() { "$1" --version 2>/dev/null | head -1 | grep -Eq ' v(0\.|1\.([0-9]|1[0-8])\.)'; }
 ST="$(command -v syncthing 2>/dev/null)"; [ -z "$ST" ] && [ -x "$BIN/syncthing" ] && ST="$BIN/syncthing"
-if [ -n "$ST" ]; then ok "Syncthing is already installed"
+ST_RUN_HOME="$(st_running_home)"
+p="$(pgrep -x syncthing | head -1)"; [ -z "$ST" ] && [ -n "$p" ] && c="$(readlink -f "/proc/$p/exe" 2>/dev/null)" && [ -x "$c" ] && ST="$c"
+if [ -n "$ST" ] && [ -z "$ST_RUN_HOME" ] && st_old "$ST"; then
+  warn "This computer's Syncthing ($("$ST" --version 2>/dev/null | head -1 | cut -d' ' -f2)) is too old for StudioSync: the current one goes in your home folder beside it."
+  ST=""; [ -x "$BIN/syncthing" ] && ! st_old "$BIN/syncthing" && ST="$BIN/syncthing"
+fi
+if [ -n "$ST" ]; then ok "Syncthing is already installed${ST_RUN_HOME:+ (and running, with its settings in $ST_RUN_HOME)}"
 else
-  say "Installing Syncthing into ~/.local/bin ..."
-  url="$(gh_asset syncthing/syncthing "syncthing-linux-$GOARCH-v[0-9.]+\.tar\.gz$")"
-  if [ -n "$url" ] && curl -fsSL "$url" | tar -xz -C "$WORK" && mkdir -p "$BIN" && install -m 755 "$WORK"/syncthing-linux-*/syncthing "$BIN/syncthing"; then
-    ST="$BIN/syncthing"; ok "Syncthing installed"
-  else warn "Syncthing didn't install: get it from syncthing.net"; fi
+  say "Installing Syncthing ..."
+  # Homebrew first where it's there (it keeps it updated); then Syncthing's own release server (what Syncthing's own upgrades use: not GitHub,
+  # so not one of its 60 lookups an hour), then GitHub's; the distribution's package last, as it needs sudo and is often years old (1.18, 1.27)
+  if command -v brew >/dev/null && brew install syncthing </dev/null >/dev/null 2>&1 && [ -x "$(brew --prefix)/bin/syncthing" ]; then
+    ST="$(brew --prefix)/bin/syncthing"; ok "Syncthing installed (Homebrew)"
+  else
+    url="$(curl -fsSL https://upgrades.syncthing.net/meta.json 2>/dev/null | grep -o "\"url\": *\"https://[^\"]*/syncthing-linux-$GOARCH-v[0-9.]*\.tar\.gz\"" | head -1 | sed 's/.*"\(https[^"]*\)"$/\1/')"
+    [ -n "$url" ] || url="$(gh_asset syncthing/syncthing "syncthing-linux-$GOARCH-v[0-9.]+\.tar\.gz$")"
+    if [ -n "$url" ] && curl -fsSL "$url" | tar -xz -C "$WORK" && mkdir -p "$BIN" && install -m 755 "$WORK"/syncthing-linux-*/syncthing "$BIN/syncthing"; then
+      ST="$BIN/syncthing"; ok "Syncthing installed (into ~/.local/bin)"
+    else
+      pm=""; for c in apt-get dnf zypper pacman; do command -v $c >/dev/null && { pm=$c; break; }; done
+      if [ -n "$pm" ] && sudo_ok "Syncthing from your distribution (its download didn't work)"; then
+        case "$pm" in pacman) sudo pacman -S --noconfirm syncthing;; *) sudo "$pm" install -y syncthing;; esac </dev/null >/dev/null 2>&1
+        ST="$(command -v syncthing 2>/dev/null)"
+      fi
+      [ -n "$ST" ] && ok "Syncthing installed" || warn "Syncthing didn't install: get it from syncthing.net"
+    fi
+  fi
 fi
 SONO_LIBS=""
 if yes "$LIVE"; then
@@ -426,8 +517,13 @@ fi
 REAPER_BIN="$(find_reaper)" || { warn "REAPER isn't installed: get it from reaper.fm and run this again."; exit 1; }
 # REAPER's resource folder, found the way REAPER finds it: a reaper.ini beside the program makes it portable (everything there),
 # else ~/.config/REAPER (XDG_CONFIG_HOME, if set), or an old ~/.REAPER that already has its settings
+# (a Flatpak REAPER starts through flatpak, and keeps its settings in its own folder under ~/.var/app: not the ~/.config/REAPER it
+# would never read. Cross-platform review, 0.58.78)
+FLATPAK_APP="$HOME/.var/app/fm.reaper.Reaper"
 EXE_DIR="$(dirname "$REAPER_BIN")"
-if [ -f "$EXE_DIR/reaper.ini" ]; then RES="$EXE_DIR"
+REAPER_RUN=("$REAPER_BIN")
+if [ "$REAPER_BIN" = flatpak ]; then REAPER_RUN=(flatpak run fm.reaper.Reaper); RES="$FLATPAK_APP/config/REAPER"
+elif [ -f "$EXE_DIR/reaper.ini" ]; then RES="$EXE_DIR"
 elif [ -f "$CFG/REAPER/reaper.ini" ]; then RES="$CFG/REAPER"
 elif [ -f "$HOME/.REAPER/reaper.ini" ]; then RES="$HOME/.REAPER"
 else RES="$CFG/REAPER"; fi
@@ -474,9 +570,17 @@ fi
 # ---------- 3. Syncthing: the shared folder ----------
 [ -n "$ST" ] && [ -x "$ST" ] || { warn "Syncthing wasn't found: install it from syncthing.net and run this again."; exit 1; }
 # its config home: ~/.local/state/syncthing, or ~/.config/syncthing where an older Syncthing set up already (Syncthing keeps using that one)
+# (the one already running: its own, wherever that is. A snap's Syncthing can't write outside ~/snap/syncthing. Installer review, 0.58.78)
+SNAP_ST="$HOME/snap/syncthing/current"
 if [ -n "${BS_SYNCTHING_HOME:-}" ]; then STHOME="$BS_SYNCTHING_HOME"
+elif [ -n "$ST_RUN_HOME" ]; then STHOME="$ST_RUN_HOME"
+elif case "$ST" in /snap/*) true;; *) false;; esac; then
+  STHOME="$SNAP_ST/.local/state/syncthing"; [ -f "$SNAP_ST/.config/syncthing/config.xml" ] && [ ! -f "$STHOME/config.xml" ] && STHOME="$SNAP_ST/.config/syncthing"
 elif [ -f "$CFG/syncthing/config.xml" ] && [ ! -f "$STATE/syncthing/config.xml" ]; then STHOME="$CFG/syncthing"
 else STHOME="$STATE/syncthing"; fi
+# StudioSync's own `syncthing cli` calls are told this folder when Syncthing wouldn't find it by itself: anywhere but the two defaults, or always
+# from a Flatpak REAPER, whose sandbox moves the XDG folders (studiosync_setup.lua keeps it)
+ST_HOME_TOLD=""; [ -z "${BS_SYNCTHING_HOME:-}" ] && { [ "$REAPER_BIN" = flatpak ] || { [ "$STHOME" != "$STATE/syncthing" ] && [ "$STHOME" != "$CFG/syncthing" ]; }; } && ST_HOME_TOLD="$STHOME"
 stcli() { "$ST" cli --home "$STHOME" "$@" 2>&1; }
 [ -f "$STHOME/config.xml" ] || { "$ST" generate --home "$STHOME" >/dev/null 2>&1 && ok "Syncthing set up for the first time"; }
 if [ -n "${BS_SYNCTHING_HOME:-}" ]; then
@@ -545,9 +649,11 @@ fi
 
 # ---------- 4. StudioSync scripts, inside REAPER ----------
 ZREF="heads/main"; [ "$TAG" != main ] && ZREF="tags/$TAG"
-mkdir -p "$WORK/src"
-curl -fsSL "https://codeload.github.com/$REPO/tar.gz/refs/$ZREF" | tar -xz -C "$WORK/src"
-HELPER="$(find "$WORK/src" -path '*/installer/studiosync_setup.lua' | head -1)"
+# (a Flatpak REAPER has a /tmp of its own and can't see this one: the setup files go in its own folder instead. Cross-platform review, 0.58.78)
+SRC="$WORK/src"; [ "$REAPER_BIN" = flatpak ] && { SRC="$FLATPAK_APP/cache/studiosync_setup"; rm -rf "$SRC"; trap 'rm -rf "$WORK" "$SRC"' EXIT; }
+mkdir -p "$SRC"
+curl -fsSL "https://codeload.github.com/$REPO/tar.gz/refs/$ZREF" | tar -xz -C "$SRC"
+HELPER="$(find "$SRC" -path '*/installer/studiosync_setup.lua' | head -1)"
 [ -n "$HELPER" ] || { warn "StudioSync's setup files didn't download: check the internet connection, then run this again."; exit 1; }
 HDIR="$(dirname "$HELPER")"
 # REAPER -nonewinst <file>: to the REAPER that's running, or a new one when none is. On Linux a REAPER finds the running one by a
@@ -557,34 +663,40 @@ HDIR="$(dirname "$HELPER")"
 handoff() {
   local p sid
   p="$(pgrep -x reaper | head -1)"
-  if [ -z "$p" ] || [ ! -r "/proc/$p/environ" ]; then detach "$REAPER_BIN" -nonewinst "$1"; return; fi
+  if [ -z "$p" ] || [ ! -r "/proc/$p/environ" ]; then detach "${REAPER_RUN[@]}" -nonewinst "$1"; return; fi
   sid="$(tr '\0' '\n' < "/proc/$p/environ" | sed -n 's/^XDG_SESSION_ID=//p' | head -1)"
-  if [ -n "$sid" ]; then detach env XDG_SESSION_ID="$sid" "$REAPER_BIN" -nonewinst "$1"
-  else detach env -u XDG_SESSION_ID "$REAPER_BIN" -nonewinst "$1"; fi
+  if [ -n "$sid" ]; then detach env XDG_SESSION_ID="$sid" "${REAPER_RUN[@]}" -nonewinst "$1"
+  else detach env -u XDG_SESSION_ID "${REAPER_RUN[@]}" -nonewinst "$1"; fi
 }
 request() { # mode -> runs the helper in REAPER, leaves its JSON result in $HDIR/studiosync_setup_result.json
   local panel=false; [ "$1" = verify ] && panel=true
   local jsfx=false; yes "$PLUGINS" && jsfx=true
   local persona=false; yes "$REAPERSONA" && persona=true
-  local root_json; root_json="$(printf '%s' "$ROOT" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')" # (a " or \ in the path broke the JSON)
-  printf '{"sync_root":"%s","user":"%s","mode":"%s","repo_url":"https://github.com/%s/raw/main/index.xml","open_panel":%s,"jsfx":%s,"reapersona":%s,"persona":"%s"}' \
-    "$root_json" "$USERNAME_BS" "$1" "$REPO" "$panel" "$jsfx" "$persona" "$PERSONA" > "$HDIR/studiosync_setup.json"
-  local result="$HDIR/studiosync_setup_result.json" started="$HDIR/studiosync_setup_started" was_up="" asked=1 i
+  local js='s/\\/\\\\/g; s/"/\\"/g' # (a " or \ in a path broke the JSON)
+  local bid="" bname=""; [ -n "$JOINING" ] && { bid="$FOLDER_ID"; bname="$BAND_NAME"; } # (the studio's name till its band.json arrives: studiosync_setup.lua)
+  printf '{"sync_root":"%s","user":"%s","mode":"%s","repo_url":"https://github.com/%s/raw/main/index.xml","open_panel":%s,"jsfx":%s,"reapersona":%s,"persona":"%s","syncthing_path":"%s","syncthing_home":"%s","band_id":"%s","band_name":"%s"}' \
+    "$(printf '%s' "$ROOT" | sed -e "$js")" "$USERNAME_BS" "$1" "$REPO" "$panel" "$jsfx" "$persona" "$PERSONA" "$(printf '%s' "$ST" | sed -e "$js")" "$(printf '%s' "$ST_HOME_TOLD" | sed -e "$js")" "$bid" "$bname" > "$HDIR/studiosync_setup.json"
+  local result="$HDIR/studiosync_setup_result.json" started="$HDIR/studiosync_setup_started" was_up="" asked=1 i=0 at=""
   rm -f "$result" "$started"
   if [ -n "${REOPEN:-}" ] && ! pgrep -x reaper >/dev/null; then
     # we had REAPER quit: start it the way you do, so it reopens your project tabs as it always does (started WITH the
     # helper it came back with one tab, Mac 2026-10-28), then hand it the helper once it's up
-    detach "$REAPER_BIN"
+    detach "${REAPER_RUN[@]}"
     for i in $(seq 1 60); do pgrep -x reaper >/dev/null && break; sleep 1; done
-    sleep 8
+    sleep 8; i=0
   fi
   # ONE request: the helper waits inside REAPER for ReaPack itself. -nonewinst hands it to the REAPER that's running, or
   # starts REAPER with it when none is
   pgrep -x reaper >/dev/null && was_up=1
   handoff "$HELPER"
   GONE=""
-  for i in $(seq 1 360); do
-    [ -f "$result" ] && break
+  # (a REAPER's first start scans every plug-in before it runs anything: 6 minutes and more with a big collection, and the 6 minutes this
+  # waited ran out first. Until the helper starts, this waits while REAPER is open, and says what's happening; once it has, the 4 minutes the
+  # helper gives ReaPack and the 2.5 it gives ReaPersona. Installer review, 0.58.78)
+  while [ ! -f "$result" ]; do
+    i=$((i + 1))
+    [ -z "$at" ] && [ -f "$started" ] && at=$i
+    if [ -n "$at" ]; then [ $((i - at)) -gt 420 ] && break; elif [ "$i" -gt 2700 ]; then break; fi
     # (a REAPER that was already open sometimes never gets the hand-off: handed over again, only while the helper hasn't
     # started (its first act writes studiosync_setup_started), so it never runs twice. As install_windows.ps1, AgentBox 0.58.65)
     if [ -n "$was_up" ] && [ $asked -lt 4 ] && [ "$i" -eq $((20 * asked)) ] && [ ! -f "$started" ]; then
@@ -593,7 +705,8 @@ request() { # mode -> runs the helper in REAPER, leaves its JSON result in $HDIR
       asked=$((asked + 1))
     fi
     if [ "$i" -gt 15 ] && ! pgrep -x reaper >/dev/null; then GONE=1; break; fi
-    [ "$i" -eq 90 ] && say "Still waiting for StudioSync to arrive through ReaPack. Look in REAPER for its first-start windows and answer them: the audio device question, then OK on ReaPack's Manage repositories and Transaction report."
+    [ "$i" -eq 90 ] && say "Still waiting for StudioSync to arrive through ReaPack. Look in REAPER for its first-start windows and answer them: the audio device question, then OK on ReaPack's Manage repositories, Notice and Transaction report (another window may be covering them)."
+    [ -z "$at" ] && [ "$i" -gt 90 ] && [ $((i % 120)) -eq 0 ] && say "Still waiting ($((i / 60)) minutes). A first start scans every plug-in on this computer before anything else runs: 10 minutes or more with a big collection (REAPER's window names each one). Nothing is stuck while REAPER is open."
     sleep 1
   done
   [ -f "$result" ]
@@ -605,10 +718,20 @@ if request "${BS_SCRIPTS:-reapack}"; then
   if grep -q '"ok": *false' "$HDIR/studiosync_setup_result.json"; then warn "REAPER setup step had problems:"; cat "$HDIR/studiosync_setup_result.json"
   else ok "REAPER: name, shared folder and StudioSync repository set"; fi
 elif [ -n "$GONE" ]; then warn "REAPER closed unexpectedly during setup. Open REAPER (and your project: File > Recent projects), then run this again."; exit 1
-else warn "REAPER didn't run the setup step. Open REAPER, then run this again."; exit 1; fi
-count="$(grep -o '"registered_actions": *[0-9]*' "$HDIR/studiosync_setup_result.json" | grep -o '[0-9]*$')"
-bver="$(grep -o '"version": *"[^"]*"' "$HDIR/studiosync_setup_result.json" | sed 's/.*"\([^"]*\)"$/\1/')"
-[ "${count:-0}" -ge 5 ] && ok "StudioSync ${bver:-} installed: $count actions (the StudioSync panel opens in REAPER)" || warn "StudioSync's scripts haven't arrived yet: in REAPER, Extensions > ReaPack > Synchronize packages"
+else
+  # (REAPER still on its own first-start windows, often behind another one, or ReaPack still bringing StudioSync: the setup step carries on by
+  # itself once they're answered, so its files stay and the rest of this runs. "Didn't run the setup step ... run this again" was wrong:
+  # Windows Sandbox run, 0.58.78)
+  PENDING=1; trap - EXIT
+  if [ -f "$HDIR/studiosync_setup_started" ]; then warn "StudioSync's setup step is still running inside REAPER (ReaPack is taking its time): it finishes by itself, and StudioSync's panel opens when it's done."
+  else warn "REAPER hasn't got to StudioSync's setup step yet: it's still on its first-start windows (the audio device, ReaPack's Manage repositories, Notice and Transaction report), which other windows may be hiding. Answer them: setup then carries on by itself, and StudioSync's panel opens when it's done."; fi
+  warn "Run this again only if the panel never appears."
+fi
+if [ -z "${PENDING:-}" ]; then
+  count="$(grep -o '"registered_actions": *[0-9]*' "$HDIR/studiosync_setup_result.json" | grep -o '[0-9]*$')"
+  bver="$(grep -o '"version": *"[^"]*"' "$HDIR/studiosync_setup_result.json" | sed 's/.*"\([^"]*\)"$/\1/')"
+  [ "${count:-0}" -ge 5 ] && ok "StudioSync ${bver:-} installed: $count actions (the StudioSync panel opens in REAPER)" || warn "StudioSync's scripts haven't arrived yet: in REAPER, Extensions > ReaPack > Synchronize packages"
+fi
 
 # ---------- 5. what's left for a human ----------
 echo
@@ -618,6 +741,8 @@ pnote="$(grep -o '"persona_note": *"[^"]*"' "$HDIR/studiosync_setup_result.json"
 [ -n "${PLUG_SKIPPED:-}" ] && echo "  - The plug-in pack, without what has no Linux version: $PLUG_SKIPPED. A project that uses one shows it as offline here."
 [ -n "${TELL_SFIZZ:-}" ] && echo "  - The piano and drums are SFZ instruments: play them with sfizz (free, Linux packages for most distributions: sfz.tools/sfizz/downloads). sforzando has no Linux version."
 [ -n "${TELL_DECENT:-}" ] && echo "  - Decent Sampler (free sampler with lots of free instruments, Linux included) can't be installed for you: its maker asks for an email address first. Get it at decentsamples.com/product/decent-sampler-plugin."
+# (said, not hidden: the sandbox runs StudioSync's checks where the programs outside it can't be seen. Cross-platform review, 0.58.78)
+[ "$REAPER_BIN" = flatpak ] && echo "  - This REAPER is the Flatpak one: StudioSync runs inside its sandbox, which can't see programs running outside it. If StudioSync's Health page says Syncthing isn't running when it is, use REAPER from reaper.fm instead (move the Flatpak one aside and run this again: it installs that one in ~/opt/REAPER)."
 [ -n "$JS_NONE" ] && echo "  - js_ReaScriptAPI has no $ARCH build: StudioSync works without it, minus drawing on the tracks and ReaNINJAM's window mode."
 [ -n "$SONO_LIBS" ] && echo "  - SonoBus needs these system libraries before it runs: $SONO_LIBS(on Ubuntu or Debian: sudo apt install libjack-jackd2-0 libopus0)."
 if yes "$HOSTING"; then

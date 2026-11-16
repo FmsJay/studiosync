@@ -9,6 +9,11 @@ local services = {}
 local WIN = reaper.GetOS():match("^Win") ~= nil
 
 local function q(s) return '"' .. s .. '"' end
+-- Syncthing's settings folder when it isn't where Syncthing looks by itself (a snap, a portable SyncTrayzor, a --home, a Flatpak REAPER's own
+-- XDG folders): the installer finds the one that runs and keeps it here, so every `syncthing cli`, the API key and a start reach that
+-- Syncthing, never a second one with a second identity. (Installer review, 0.58.78)
+local function st_home() local h = reaper.GetExtState(band.SECTION, "syncthing_home"); return h ~= "" and h or nil end
+local function cli(st) return q(st) .. " cli" .. (st_home() and (" --home " .. q(st_home())) or "") end
 
 -- Slow checks (tasklist ~150 ms, a curl call up to 3 s) run in the background: REAPER waiting on them froze
 -- its UI for 0.3-0.4 s at every panel refresh (2026-10-28, laptop). Each call starts a fresh run at most every
@@ -30,7 +35,9 @@ local function background(name, cmd, every)
       local bat, vbs = TMP .. "/bandsync-" .. name .. ".cmd", TMP .. "/bandsync-hidden.vbs"
       -- (the script deletes itself once run: some hold Syncthing's API key, and after a crash tidy_temp never ran. Review, 0.58.53)
       -- (a batch file reads %2 as its argument: a rescan of "Sunset%20Drive" asked for the wrong folder. Cross-platform review, 0.58.76)
-      pcall(band.write_atomic, bat, string.format('@%s > "%s" 2>nul\r\n@(goto) 2>nul & del "%%~f0"\r\n', (cmd:gsub("%%", "%%%%")), file)) -- (its last run may still hold it, from another script: the same words are there already)
+      -- (chcp 65001: cmd reads a batch file in the console's old code page, so a Windows user name like "Jürgen" in %TEMP% or Syncthing's
+      -- path came out garbled and nothing ran. Cross-platform review, 0.58.78)
+      pcall(band.write_atomic, bat, string.format('@chcp 65001 >nul\r\n@%s > "%s" 2>nul\r\n@(goto) 2>nul & del "%%~f0"\r\n', (cmd:gsub("%%", "%%%%")), file)) -- (its last run may still hold it, from another script: the same words are there already)
       if not reaper.file_exists(vbs) then band.write_atomic(vbs, 'CreateObject("WScript.Shell").Run """" & WScript.Arguments(0) & """", 0, False\r\n') end
       reaper.ExecProcess(string.format('wscript.exe //B //Nologo "%s" "%s"', vbs, bat), -1)
     else -- through a script file too: macOS's ExecProcess doesn't honour \" inside a quoted argument, so any command
@@ -144,7 +151,7 @@ function services.syncthing_path()
   return first_existing({ set,
     lad .. "/Microsoft/WinGet/Links/syncthing.exe", "C:/Program Files/Syncthing/syncthing.exe", lad .. "/Programs/Syncthing/syncthing.exe",
     "/Applications/Syncthing.app/Contents/Resources/syncthing/syncthing", -- (the Mac app before a Homebrew copy: the installer's)
-    "/opt/homebrew/bin/syncthing", "/usr/local/bin/syncthing", "/usr/bin/syncthing",
+    "/opt/homebrew/bin/syncthing", "/usr/local/bin/syncthing", "/usr/bin/syncthing", "/snap/bin/syncthing",
     (os.getenv("HOME") or "~") .. "/.local/bin/syncthing" }) -- (Linux, where the installer puts the release build when the distro has none)
     or (lad ~= "" and services.winget_syncthing(lad) or nil)
 end
@@ -160,7 +167,9 @@ function services.ensure_syncthing()
     os.execute("/usr/bin/open -gja Syncthing")
     return "started"
   end
-  if not launch(path, { "serve", "--no-browser" }) then return nil, "couldn't start " .. path end
+  local args, h = { "serve", "--no-browser" }, st_home() -- (launch quotes nothing on a Mac or Linux, and Start-Process joins its list unquoted)
+  if h then args[#args + 1] = WIN and ('--home="' .. h .. '"') or ("'--home=" .. h:gsub("'", "'\\''") .. "'") end
+  if not launch(path, args) then return nil, "couldn't start " .. path end
   return "started"
 end
 
@@ -175,37 +184,37 @@ function services.tune_band_folder(folder)
   if not st then return nil, "Syncthing wasn't found" end
   local set = {}
   for key, want in pairs(services.WATCH) do
-    local got = (reaper.ExecProcess(q(st) .. " cli config folders " .. folder .. " " .. key .. " get", 8000) or ""):match("^0\n(.-)%s*$")
+    local got = (reaper.ExecProcess(cli(st) .. " config folders " .. folder .. " " .. key .. " get", 8000) or ""):match("^0\n(.-)%s*$")
     if not got then return nil, "Syncthing didn't answer (is it running, with a folder called " .. folder .. "?)" end
     if tonumber(got) and tonumber(want) and tonumber(got) == tonumber(want) or got == want then -- (2 and 2.0 alike)
     else
-      local r = reaper.ExecProcess(q(st) .. " cli config folders " .. folder .. " " .. key .. " set " .. want, 8000) or ""
+      local r = reaper.ExecProcess(cli(st) .. " config folders " .. folder .. " " .. key .. " set " .. want, 8000) or ""
       if not r:match("^0\n") then return nil, "couldn't set " .. key .. ": " .. r:gsub("^%d+\n", "") end
       set[#set + 1] = key .. " " .. got .. " -> " .. want
     end
   end
   -- (and old versions kept, 30 days, staggered: without them a deletion anywhere, by a bug or a slip, reached every copy with nothing to
   -- go back to. Only where none is set: someone's own choice stays. Review, 0.58.47)
-  local vtype = (reaper.ExecProcess(q(st) .. " cli config folders " .. folder .. " versioning type get", 8000) or ""):match("^0\n(.-)%s*$")
+  local vtype = (reaper.ExecProcess(cli(st) .. " config folders " .. folder .. " versioning type get", 8000) or ""):match("^0\n(.-)%s*$")
   if vtype == "" then
-    local ok = (reaper.ExecProcess(q(st) .. " cli config folders " .. folder .. " versioning type set staggered", 8000) or ""):match("^0\n")
+    local ok = (reaper.ExecProcess(cli(st) .. " config folders " .. folder .. " versioning type set staggered", 8000) or ""):match("^0\n")
     if ok then
-      reaper.ExecProcess(q(st) .. " cli config folders " .. folder .. " versioning params set maxAge 2592000", 8000)
-      reaper.ExecProcess(q(st) .. " cli config folders " .. folder .. " versioning params set cleanInterval 3600", 8000)
+      reaper.ExecProcess(cli(st) .. " config folders " .. folder .. " versioning params set maxAge 2592000", 8000)
+      reaper.ExecProcess(cli(st) .. " config folders " .. folder .. " versioning params set cleanInterval 3600", 8000)
       set[#set + 1] = "versioning none -> staggered (30 days)"
     end
   end
   -- (a joiner paired with whoever invited them with auto-accept: any folder that computer offered was added here unasked. Since 0.58.69
   -- nothing is: the studio's own folder is added by its join, and another studio's offer is asked about on the Studios page. Security review)
-  for id in ((reaper.ExecProcess(q(st) .. " cli config devices list", 8000) or ""):match("^0\n(.*)$") or ""):gmatch("[%u%d%-]+") do
-    if services.is_device_id(id) and (reaper.ExecProcess(q(st) .. " cli config devices " .. id .. " auto-accept-folders get", 8000) or ""):match("^0\ntrue") then
-      reaper.ExecProcess(q(st) .. " cli config devices " .. id .. " auto-accept-folders set false", 8000)
+  for id in ((reaper.ExecProcess(cli(st) .. " config devices list", 8000) or ""):match("^0\n(.*)$") or ""):gmatch("[%u%d%-]+") do
+    if services.is_device_id(id) and (reaper.ExecProcess(cli(st) .. " config devices " .. id .. " auto-accept-folders get", 8000) or ""):match("^0\ntrue") then
+      reaper.ExecProcess(cli(st) .. " config devices " .. id .. " auto-accept-folders set false", 8000)
       set[#set + 1] = "auto-accept-folders off for " .. id:sub(1, 7)
     end
   end
   -- (the first studio's folder was labelled "BandSync" in Syncthing's window, or just its ID where Syncthing added it by itself ("bandsync" on
   -- the Mac): the studio's own name there now, as a new one gets. 0.58.69-70)
-  local label = (reaper.ExecProcess(q(st) .. " cli config folders " .. folder .. " label get", 8000) or ""):match("^0\n(.-)%s*$")
+  local label = (reaper.ExecProcess(cli(st) .. " config folders " .. folder .. " label get", 8000) or ""):match("^0\n(.-)%s*$")
   if label and (label:lower() == "bandsync" or label == folder or label == "") then
     for _, x in ipairs(band.bands()) do
       if x.id == folder then services.set_folder_label(folder, "StudioSync " .. x.name); set[#set + 1] = "label " .. label .. " -> StudioSync " .. x.name end
@@ -228,10 +237,13 @@ function services.syncthing_peers()
 end
 -- Syncthing's API, from its own config: the start of a curl command for `path`, or nil + why.
 local function st_api(path, method)
-  local home = WIN and ((os.getenv("LOCALAPPDATA") or "") .. "/Syncthing")
-    or first_existing({ (os.getenv("HOME") or "") .. "/Library/Application Support/Syncthing/config.xml",
-      (os.getenv("HOME") or "") .. "/.local/state/syncthing/config.xml", (os.getenv("HOME") or "") .. "/.config/syncthing/config.xml" })
-  if home and not WIN then home = home:gsub("/config.xml$", "") end
+  local home = st_home()
+  if not home then
+    home = WIN and ((os.getenv("LOCALAPPDATA") or "") .. "/Syncthing")
+      or first_existing({ (os.getenv("HOME") or "") .. "/Library/Application Support/Syncthing/config.xml",
+        (os.getenv("HOME") or "") .. "/.local/state/syncthing/config.xml", (os.getenv("HOME") or "") .. "/.config/syncthing/config.xml" })
+    if home and not WIN then home = home:gsub("/config.xml$", "") end
+  end
   local f = home and io.open(home .. "/config.xml", "r")
   if not f then return nil, "no Syncthing config found" end
   local xml = f:read("a")
@@ -287,7 +299,7 @@ end
 -- { { id, name, address } }. Answers from a background check at most 20 s old ({} before the first).
 function services.pending_devices()
   local st = services.syncthing_path()
-  local data = st and band.json_decode(background("st-pending", q(st) .. " cli show pending devices", 20) or "")
+  local data = st and band.json_decode(background("st-pending", cli(st) .. " show pending devices", 20) or "")
   local list = {}
   for id, d in pairs(type(data) == "table" and data or {}) do
     if type(d) == "table" and services.is_device_id(id) then list[#list + 1] = { id = id, name = tostring(d.name or ""), address = tostring(d.address or "") } end
@@ -306,7 +318,7 @@ end
 -- This machine's Syncthing device ID, or nil (Syncthing not running, or no answer yet: a background check).
 function services.my_device_id()
   local st = services.syncthing_path()
-  local data = st and band.json_decode(background("st-system", q(st) .. " cli show system", 300) or "")
+  local data = st and band.json_decode(background("st-system", cli(st) .. " show system", 300) or "")
   local id = type(data) == "table" and data.myID
   return services.is_device_id(id) and id or nil
 end
@@ -393,17 +405,17 @@ function services.join_band(cfg, code)
   if not reaper.file_exists(root .. "/.stignore") then -- (each project in full once it's opened; the rest as a listing)
     band.write_atomic(root .. "/.stignore", table.concat(require("songsync").block({}), "\n") .. "\n")
   end
-  local r = reaper.ExecProcess(q(st) .. " cli config folders add --id " .. code.band .. " --label " .. q("StudioSync " .. name) .. " --path " .. q(root), 15000) or ""
-  if not r:match("^0\n") and not (reaper.ExecProcess(q(st) .. " cli config folders " .. code.band .. " label get", 8000) or ""):match("^0\n") then
+  local r = reaper.ExecProcess(cli(st) .. " config folders add --id " .. code.band .. " --label " .. q("StudioSync " .. name) .. " --path " .. q(root), 15000) or ""
+  if not r:match("^0\n") and not (reaper.ExecProcess(cli(st) .. " config folders " .. code.band .. " label get", 8000) or ""):match("^0\n") then
     return nil, "Syncthing didn't add the studio's folder: " .. r:gsub("^%d+\n", "")
   end
-  reaper.ExecProcess(q(st) .. " cli config folders " .. code.band .. " order set smallestFirst", 8000)
+  reaper.ExecProcess(cli(st) .. " config folders " .. code.band .. " order set smallestFirst", 8000)
   services.tune_band_folder(code.band)
-  if not (reaper.ExecProcess(q(st) .. " cli config devices " .. code.id .. " name get", 8000) or ""):match("^0\n") then
-    r = reaper.ExecProcess(q(st) .. " cli config devices add --device-id " .. code.id .. " --name " .. q("Collaborator") .. " --introducer", 15000) or ""
+  if not (reaper.ExecProcess(cli(st) .. " config devices " .. code.id .. " name get", 8000) or ""):match("^0\n") then
+    r = reaper.ExecProcess(cli(st) .. " config devices add --device-id " .. code.id .. " --name " .. q("Collaborator") .. " --introducer", 15000) or ""
     if not r:match("^0\n") then return nil, "Syncthing didn't pair with them: " .. r:gsub("^%d+\n", "") end
   end
-  reaper.ExecProcess(q(st) .. " cli config folders " .. code.band .. " devices add --device-id " .. code.id, 15000)
+  reaper.ExecProcess(cli(st) .. " config folders " .. code.band .. " devices add --device-id " .. code.id, 15000)
   require("groups").forget_old(root) -- (back in one you'd left)
   band.use_band(root)
   return root
@@ -414,7 +426,7 @@ end
 -- most 20 s old. (A new machine is a pending device instead: pending_devices.)
 function services.pending_folders()
   local st = services.syncthing_path()
-  local data = st and band.json_decode(background("st-pending-folders", q(st) .. " cli show pending folders", 20) or "")
+  local data = st and band.json_decode(background("st-pending-folders", cli(st) .. " show pending folders", 20) or "")
   local list = {}
   for folder, f in pairs(type(data) == "table" and data or {}) do
     for id in pairs(type(f) == "table" and type(f.offeredBy) == "table" and f.offeredBy or {}) do
@@ -427,7 +439,7 @@ end
 -- A device's name in Syncthing (what its owner called their computer), or its ID's first 7 characters.
 function services.device_name(id)
   local st = services.syncthing_path()
-  local r = st and reaper.ExecProcess(q(st) .. " cli config devices " .. id .. " name get", 8000) or ""
+  local r = st and reaper.ExecProcess(cli(st) .. " config devices " .. id .. " name get", 8000) or ""
   return r:match("^0\n(.-)%s*$") or id:sub(1, 7)
 end
 -- Share a band's folder with a machine Syncthing already knows. Returns true, or nil + why.
@@ -435,7 +447,7 @@ function services.share_folder(folder, id)
   local st = services.syncthing_path()
   if not st then return nil, "Syncthing wasn't found" end
   if not services.is_device_id(id) then return nil, "not a device ID: " .. tostring(id) end
-  local r = reaper.ExecProcess(q(st) .. " cli config folders " .. folder .. " devices add --device-id " .. id, 15000) or ""
+  local r = reaper.ExecProcess(cli(st) .. " config folders " .. folder .. " devices add --device-id " .. id, 15000) or ""
   if not r:match("^0\n") then return nil, "Syncthing didn't share it: " .. r:gsub("^%d+\n", "") end
   return true
 end
@@ -478,9 +490,9 @@ function services.new_band(cfg, name)
   if band.subdirs(root)[1] then return nil, root .. " is already there: pick another name, or remove that folder." end
   reaper.RecursiveCreateDirectory(root .. "/_band", 0)
   band.write_json(root .. "/_band/band.json", { name = name, id = id, drive = "StudioSync - " .. name, owner = (cfg.base or cfg).user })
-  local r = reaper.ExecProcess(q(st) .. " cli config folders add --id " .. id .. " --label " .. q("StudioSync " .. name) .. " --path " .. q(root), 15000) or ""
+  local r = reaper.ExecProcess(cli(st) .. " config folders add --id " .. id .. " --label " .. q("StudioSync " .. name) .. " --path " .. q(root), 15000) or ""
   if not r:match("^0\n") then return nil, "Syncthing didn't add the studio's folder: " .. r:gsub("^%d+\n", "") end
-  reaper.ExecProcess(q(st) .. " cli config folders " .. id .. " order set smallestFirst", 8000)
+  reaper.ExecProcess(cli(st) .. " config folders " .. id .. " order set smallestFirst", 8000)
   services.tune_band_folder(id)
   band.use_band(root)
   return root
@@ -506,21 +518,21 @@ function services.days_quiet(id)
   if not (st and cmd) then return nil end
   local stats = band.json_decode(background("st-stats", cmd, 300) or "")
   local me, peers = services.my_device_id(), {}
-  for d in (background("st-peers-" .. id, q(st) .. " cli config folders " .. id .. " devices list", 300) or ""):gmatch("[^\r\n]+") do
+  for d in (background("st-peers-" .. id, cli(st) .. " config folders " .. id .. " devices list", 300) or ""):gmatch("[^\r\n]+") do
     if d ~= me then peers[#peers + 1] = d end
   end
   return services.quiet_days(stats, peers, os.time())
 end
 function services.set_folder_label(id, label)
   local st = services.syncthing_path()
-  if st then reaper.ExecProcess(q(st) .. " cli config folders " .. id .. " label set " .. q(label), 8000) end
+  if st then reaper.ExecProcess(cli(st) .. " config folders " .. id .. " label set " .. q(label), 8000) end
 end
 -- This computer stops syncing a group's folder, and forgets the computers only that folder had. Its files stay. -> true when it's gone.
 function services.forget_folder(id)
   local st = services.syncthing_path()
   if not st then return false end
   local function lines(cmd)
-    local r = reaper.ExecProcess(q(st) .. " cli config " .. cmd, 8000) or ""
+    local r = reaper.ExecProcess(cli(st) .. " config " .. cmd, 8000) or ""
     local out = {}
     if r:match("^0\n") then for l in r:gsub("^0\n", ""):gmatch("[^\r\n]+") do out[#out + 1] = l end end
     return out, r:match("^0\n") ~= nil
@@ -531,7 +543,7 @@ function services.forget_folder(id)
   for _, f in ipairs(listed) do there = there or f == id end
   if not there then return true end
   local peers = lines("folders " .. id .. " devices list")
-  if not (reaper.ExecProcess(q(st) .. " cli config folders " .. id .. " delete", 15000) or ""):match("^0\n") then return false end
+  if not (reaper.ExecProcess(cli(st) .. " config folders " .. id .. " delete", 15000) or ""):match("^0\n") then return false end
   local me = services.my_device_id()
   for _, d in ipairs(peers) do
     local used = d == me or not me -- (who "me" is unknown: nobody is forgotten)
@@ -540,7 +552,7 @@ function services.forget_folder(id)
         for _, x in ipairs((lines("folders " .. f .. " devices list"))) do used = used or x == d end
       end
     end
-    if not used then reaper.ExecProcess(q(st) .. " cli config devices " .. d .. " delete", 15000) end
+    if not used then reaper.ExecProcess(cli(st) .. " config devices " .. d .. " delete", 15000) end
   end
   return true
 end
@@ -556,20 +568,20 @@ function services.unshare(folder, id)
   -- (true, false, or nil when Syncthing didn't answer: taken as "not shared", a removal on a computer just started, before Syncthing was,
   -- was noted as done for good and never happened. Review, 0.58.47)
   local function has(f)
-    local r = reaper.ExecProcess(q(st) .. " cli config folders " .. f .. " devices list", 8000) or ""
+    local r = reaper.ExecProcess(cli(st) .. " config folders " .. f .. " devices list", 8000) or ""
     if not r:match("^0\n") then return nil end
     return r:find(id, 1, true) ~= nil
   end
   local shared = has(folder)
   if shared == nil then return nil, "Syncthing didn't answer (it may not be running yet)" end
   if shared then
-    local r = reaper.ExecProcess(q(st) .. " cli config folders " .. folder .. " devices " .. id .. " delete", 15000) or ""
+    local r = reaper.ExecProcess(cli(st) .. " config folders " .. folder .. " devices " .. id .. " delete", 15000) or ""
     if not r:match("^0\n") then return nil, "Syncthing didn't stop sharing: " .. r:gsub("^%d+\n", "") end
   end
-  local listed = reaper.ExecProcess(q(st) .. " cli config folders list", 8000) or ""
+  local listed = reaper.ExecProcess(cli(st) .. " config folders list", 8000) or ""
   if not listed:match("^0\n") then return true end -- (the folder's done; a machine left known does no harm)
   for f in listed:gsub("^0\n", ""):gmatch("[^\r\n]+") do if has(f) then return true end end
-  reaper.ExecProcess(q(st) .. " cli config devices " .. id .. " delete", 15000)
+  reaper.ExecProcess(cli(st) .. " config devices " .. id .. " delete", 15000)
   return true
 end
 function services.add_device(id, name, folder)
@@ -577,8 +589,8 @@ function services.add_device(id, name, folder)
   if not st then return nil, "Syncthing wasn't found" end
   if not services.is_device_id(id) then return nil, "not a device ID: " .. tostring(id) end
   name = (name or ""):gsub("[^%w%-_ ]", "")
-  local r1 = reaper.ExecProcess(q(st) .. " cli config devices add --device-id " .. id .. (name ~= "" and (" --name " .. q(name)) or ""), 15000) or ""
-  local r2 = folder and reaper.ExecProcess(q(st) .. " cli config folders " .. folder .. " devices add --device-id " .. id, 15000) or "0\n"
+  local r1 = reaper.ExecProcess(cli(st) .. " config devices add --device-id " .. id .. (name ~= "" and (" --name " .. q(name)) or ""), 15000) or ""
+  local r2 = folder and reaper.ExecProcess(cli(st) .. " config folders " .. folder .. " devices add --device-id " .. id, 15000) or "0\n"
   if not r1:match("^0\n") then return nil, "Syncthing didn't add it: " .. r1:gsub("^%d+\n", "") end
   if not r2:match("^0\n") then return nil, "added, but the studio folder wasn't shared with it: " .. r2:gsub("^%d+\n", "") end
   return true

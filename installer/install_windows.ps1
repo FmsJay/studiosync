@@ -18,6 +18,7 @@ param(
   [ValidateSet("reapack", "folder", "verify")][string]$Scripts = "reapack", # folder: band-internal copy in <root>/_tools/studiosync
   [string]$SyncthingHome = "",    # testing: drive a separate Syncthing instance (--home)
   [string]$ReaperExe = "",         # testing: this REAPER, as if the installer had just put it there
+  [string]$ReaperPath = "",        # a REAPER somewhere the installer doesn't look (a portable folder): its folder or reaper.exe
   [switch]$NoApps,                # testing: skip installing apps, only configure
   [switch]$NoReaper               # testing: stop before anything happens inside REAPER (the shared folder and pairing only)
 )
@@ -38,12 +39,14 @@ $boxed = Get-ChildItem "$env:LOCALAPPDATA\Packages\*\LocalCache\Local\$probe" -E
 Remove-Item (Join-Path $env:LOCALAPPDATA $probe) -ErrorAction SilentlyContinue
 if ($boxed) {
   $argv = @("-Tag", $Tag, "-Scripts", $Scripts)
-  foreach ($k in "User", "HostId", "Root", "BandId", "BandName", "Hosting", "Live", "Solo", "Plugins", "Extras", "ReaPersona", "SyncthingHome", "ReaperExe", "TsKey") { $v = Get-Variable $k -ValueOnly; if ($v) { $argv += @("-$k", $v) } }
+  foreach ($k in "User", "HostId", "Root", "BandId", "BandName", "Hosting", "Live", "Solo", "Plugins", "Extras", "ReaPersona", "SyncthingHome", "ReaperExe", "ReaperPath", "TsKey") { $v = Get-Variable $k -ValueOnly; if ($v) { $argv += @("-$k", $v) } }
   if ($NoApps) { $argv += "-NoApps" }
   if ($NoReaper) { $argv += "-NoReaper" }
   $quoted = ($argv | ForEach-Object { if ($_ -match '^-') { $_ } else { '"' + $_ + '"' } }) -join " "
   $cmd = Join-Path $env:TEMP "bandsync_install_outside.cmd"
-  Set-Content $cmd "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" $quoted`r`npause" -Encoding ascii
+  # (UTF-8 with chcp 65001: written as ASCII, a user name with accents in the path, or a studio's, came out as "?" and setup never started.
+  # Cross-platform review, 0.58.78)
+  [IO.File]::WriteAllText($cmd, "@echo off`r`nchcp 65001 >nul`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" $quoted`r`npause`r`n", (New-Object System.Text.UTF8Encoding($false)))
   Start-Process explorer.exe -ArgumentList "`"$cmd`""
   Write-Host "This window runs inside another app's sandbox; StudioSync setup continues in a new window. If none appears, double-click 'Install StudioSync (Windows).cmd' yourself." -ForegroundColor Yellow
   exit 0
@@ -54,6 +57,17 @@ function Ok($t) { Write-Host "  OK  $t" -ForegroundColor Green }
 function Warn($t) { Write-Host "  !!  $t" -ForegroundColor Yellow }
 function Ask($q, $def) { $a = Read-Host "$q$(if ($def) { " [$def]" })"; if ($a) { $a.Trim() } else { $def } }
 function YesNo($q, $def) { $a = Ask "$q (y/n)" $def; return $a -match '^[yY]' }
+# Names in plain letters, as the Mac and Linux installers and StudioSync itself keep them (band.clean): accents dropped, a few letters spelled
+# out. \w kept accented letters here, and StudioSync then dropped them, so "J-u-umlaut-rgen" became "Jrgen". (Cross-platform review, 0.58.78)
+# (code points, not the letters: Windows PowerShell reads this file as ANSI)
+$plainMap = @{ 0xF8 = 'o'; 0xD8 = 'O'; 0x142 = 'l'; 0x141 = 'L'; 0x111 = 'd'; 0x110 = 'D'; 0xDF = 'ss'; 0xE6 = 'ae'; 0xC6 = 'AE'; 0x153 = 'oe'; 0x152 = 'OE'; 0xFE = 'th'; 0xDE = 'Th' }
+function Plain($s) {
+  $out = foreach ($ch in "$s".Normalize([Text.NormalizationForm]::FormD).ToCharArray()) {
+    if ($plainMap.ContainsKey([int]$ch)) { $plainMap[[int]$ch] } elseif ([Globalization.CharUnicodeInfo]::GetUnicodeCategory($ch) -ne 'NonSpacingMark') { $ch }
+  }
+  (-join $out) -replace '[^A-Za-z0-9_\- ]', ''
+}
+$latinOnly = "Names here are in Latin letters (A to Z), digits, spaces, - and _: type it that way."
 
 Say "StudioSync setup"
 Write-Host "This installs what StudioSync needs and sets it up. It asks a few questions first (unless given up front); Windows may ask"
@@ -111,8 +125,8 @@ if ($isHost -and -not $Hosting) { Say "Starting a studio: at the end, StudioSync
 if ($later) { Say "No studio yet: when you want one, StudioSync's panel has Start a studio and Paste join code." }
 $hostId = $HostId.ToUpper()
 if ($joining -and $hostId -notmatch $idPattern) { Warn "The invitation's device ID isn't a whole one: ask for a new invitation."; exit 1 }
-$user = $User -replace '[^\w\- ]', ''
-while (-not $user) { $user = (Ask "Your name, as the studio will see it" $env:USERNAME) -replace '[^\w\- ]', '' }
+$user = Plain $User
+while (-not $user) { $typed = Ask "Your name, as the studio will see it" (Plain $env:USERNAME); $user = Plain $typed; if (-not $user -and $typed) { Warn $latinOnly } }
 # the band (docs/bands-design.md): each its own shared folder. An invitation names it; the first one set up names it.
 $folderId = ($BandId.ToLower() -replace '[^a-z0-9-]', '')
 if ($joining -and -not $folderId) { # (someone's device ID typed in by hand, no invitation)
@@ -121,8 +135,8 @@ if ($joining -and -not $folderId) { # (someone's device ID typed in by hand, no 
 }
 # (only a StudioSync studio's folder: an invitation naming one you already have, like Syncthing's "default", would share it with whoever sent it. Security review, 0.58.76)
 if ($folderId -and $folderId -notmatch '^(bandsync|bandsync-.*|studiosync-.*)$') { Warn "That studio ID ($folderId) isn't a StudioSync one: ask for a new invitation."; exit 1 }
-$bandName = $BandName -replace '[^\w\- ]', ''
-if ($isHost -and -not $bandName) { while (-not $bandName) { $bandName = (Ask "Name your studio" "My studio") -replace '[^\w\- ]', '' } }
+$bandName = Plain $BandName
+if ($isHost -and -not $bandName) { while (-not $bandName) { $bandName = Plain (Ask "Name your studio" "My studio"); if (-not $bandName) { Warn $latinOnly } } }
 if (-not $bandName) { $bandName = "the studio" }
 # (later: an empty StudioSync folder, so a studio started or joined from the panel goes beside it, in your home folder: services.new_band)
 # (the old shared "bandsync" studio, set up before the rename: its folder stays)
@@ -171,10 +185,43 @@ Write-Host ""
 # ---------- 1. apps ----------
 Say "Downloads show no progress bar here: a pause of a few minutes on a big one is normal."
 $winget = Get-Command winget -ErrorAction SilentlyContinue
-function Install-App($id, $name) {
+$script:downloads = @() # (installers fetched here: deleted at the end)
+# Without winget (an older Windows 10, or App Installer removed): each app's own download, from its maker, instead. Syncthing's comes from
+# its own release server and SonoBus's from sonobus.net, neither one of GitHub's 60 lookups an hour. (Installer review, 0.58.78)
+function Match-Url($page, $re, $base) { $m = [regex]::Match((Invoke-WebRequest -UseBasicParsing $page).Content, $re); if ($m.Success) { $base + $m.Groups[$m.Groups.Count - 1].Value } }
+$direct = @{
+  "Cockos.REAPER" = { Match-Url "https://www.reaper.fm/download.php" 'files/[0-9.x]+/reaper[0-9]+_x64-install\.exe' "https://www.reaper.fm/" }
+  "Syncthing.Syncthing" = { Match-Url "https://upgrades.syncthing.net/meta.json" '"url":\s*"(https://[^"]*/syncthing-windows-amd64-v[0-9.]+\.zip)"' "" }
+  "Sonosaurus.SonoBus" = { Match-Url "https://www.sonobus.net/" 'releases/sonobus-[0-9.]+-win\.exe' "https://www.sonobus.net/" }
+  "Tailscale.Tailscale" = { "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" }
+  "Google.GoogleDrive" = { "https://dl.google.com/drive-file-stream/GoogleDriveSetup.exe" }
+  "SurgeSynth.SurgeXT" = { (Release-Asset "surge-synthesizer/releases-xt" 'win64-[0-9.]+-setup\.exe$' $null).browser_download_url }
+}
+# $have: where it is once installed (one place or several), looked at before winget, which is slow and only knows what it installed itself
+function Install-App($id, $name, $have) {
   $ErrorActionPreference = "Continue" # winget writes to stderr (see ST below)
   if ($NoApps) { return }
-  if (-not $winget) { Warn "$name : winget isn't available (install 'App Installer' from the Microsoft Store), install $name by hand"; return }
+  $there = { $have -and @($have | Where-Object { Test-Path $_ }).Count -gt 0 }
+  if (& $there) { Ok "$name is already installed"; return }
+  if (-not $winget) {
+    $url = $null; if ($direct[$id]) { try { $url = & $direct[$id] } catch { } }
+    if (-not $url) { Warn "$name : winget isn't available (install 'App Installer' from the Microsoft Store), install $name by hand"; return }
+    $file = Join-Path $env:TEMP ([uri]::UnescapeDataString(($url -split '/')[-1]))
+    Say "Downloading $name from its maker (no winget here) ..."
+    try { Invoke-WebRequest -UseBasicParsing $url -OutFile $file } catch { Warn "$name didn't download: install it by hand"; return }
+    $script:downloads += $file
+    if ($file -match '\.zip$') { # (Syncthing: one program, put where StudioSync looks for it: lib/services.lua syncthing_path)
+      $x = Join-Path $env:TEMP ("bandsync_" + [guid]::NewGuid().ToString("N"))
+      Expand-Archive $file $x -Force
+      $exe = Get-ChildItem $x -Recurse -Filter syncthing.exe | Select-Object -First 1
+      $dest = Join-Path $env:LOCALAPPDATA "Programs\Syncthing"
+      New-Item -ItemType Directory -Force $dest | Out-Null
+      if ($exe) { Copy-Item $exe.FullName $dest -Force }
+      Remove-Item $x -Recurse -Force -ErrorAction SilentlyContinue
+    } else { Say "  $name's own installer opens: click through it (the defaults are fine)."; Start-Process $file -Wait }
+    if (-not $have -or (& $there)) { Ok "$name installed" } else { Warn "$name : not found where expected afterwards ($($have -join ' or ')): install it by hand if it didn't" }
+    return
+  }
   & winget list --id $id --exact --accept-source-agreements *> $null
   if ($LASTEXITCODE -eq 0) { Ok "$name is already installed"; return }
   Say "Installing $name ..."
@@ -184,17 +231,52 @@ function Install-App($id, $name) {
 
 # (a test's -ReaperExe: only that REAPER counts. Any other is someone's real one, and this asked it to close: PC, 0.52.5)
 function Get-Reaper { $all = Get-Process reaper -ErrorAction SilentlyContinue; if ($ReaperExe) { $all | Where-Object { $_.Path -eq $ReaperExe } } else { $all } }
+# REAPER wherever it is: the running one, -ReaperPath (a portable folder), the usual folders, where Windows' list of installed programs says,
+# what opens .rpp files, a REAPER folder at the top of a drive. (Installer review, 0.58.78)
 function Find-Reaper {
   if ($ReaperExe) { return $ReaperExe }
   $p = Get-Reaper | Select-Object -First 1
   if ($p -and $p.Path) { return $p.Path }
-  foreach ($c in @("$env:ProgramFiles\REAPER (x64)\reaper.exe", "$env:ProgramFiles\REAPER\reaper.exe")) { if (Test-Path $c) { return $c } }
+  $c = @()
+  if ($ReaperPath) { $c += $ReaperPath, (Join-Path $ReaperPath "reaper.exe") }
+  $c += "$env:ProgramFiles\REAPER (x64)\reaper.exe", "$env:ProgramFiles\REAPER\reaper.exe"
+  $c += Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*", "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*", "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
+    Where-Object { $_.DisplayName -match '^REAPER' } | ForEach-Object {
+      if ($_.InstallLocation) { Join-Path $_.InstallLocation "reaper.exe" }
+      if ($_.UninstallString) { Join-Path (Split-Path ($_.UninstallString -replace '"', '')) "reaper.exe" }
+    }
+  $type = (Get-ItemProperty "Registry::HKEY_CLASSES_ROOT\.rpp" -ErrorAction SilentlyContinue).'(default)'
+  $open = if ($type) { (Get-ItemProperty "Registry::HKEY_CLASSES_ROOT\$type\shell\open\command" -ErrorAction SilentlyContinue).'(default)' }
+  if ("$open" -match '"([^"]*reaper\.exe)"') { $c += $Matches[1] }
+  $c += [IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady -and $_.DriveType -in 'Fixed', 'Removable' } | ForEach-Object { Join-Path $_.Name "REAPER\reaper.exe"; Join-Path $_.Name "REAPER (x64)\reaper.exe" }
+  foreach ($x in $c) { if ($x -and $x -match 'reaper\.exe$' -and (Test-Path -LiteralPath $x -PathType Leaf)) { return $x } }
   return $null
 }
+if (-not (Find-Reaper) -and -not $ReaperPath -and -not $NoApps) {
+  # (a REAPER somewhere this doesn't look is asked for, rather than a second one installed beside it)
+  $ReaperPath = "$(Ask "REAPER wasn't found. If it's somewhere else (a portable copy), paste the folder it's in; or press Enter to install it" '')".Trim().Trim('"')
+  if ($ReaperPath -and -not (Find-Reaper)) { Warn "No reaper.exe in $ReaperPath : installing REAPER." }
+}
 if (-not (Find-Reaper)) { Install-App "Cockos.REAPER" "REAPER" } else { Ok "REAPER is already installed" }
-Install-App "Syncthing.Syncthing" "Syncthing"
-if ($wantLive) { Install-App "Sonosaurus.SonoBus" "SonoBus"; Install-App "Tailscale.Tailscale" "Tailscale" }
-if ($wantSolo) { Install-App "Google.GoogleDrive" "Google Drive for desktop" }
+# An existing Syncthing, wherever it keeps its settings: the one running (its own copy, and its -home: SyncTrayzor starts its own copy so, as a
+# scheduled task may), else an installed SyncTrayzor's copy, which uses Syncthing's own folder. That one is set up, never a second Syncthing
+# with a second identity beside it. -> @{ exe; home; tray } or $null. (Installer review, 0.58.78)
+function Find-Syncthing {
+  $p = @(Get-CimInstance Win32_Process -Filter "Name='syncthing.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath })[0]
+  if ($p) {
+    $m = [regex]::Match("$($p.CommandLine)", '--?(?:home|config)[= ]+(?:"([^"]+)"|(\S+))')
+    $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($p.ParentProcessId)" -ErrorAction SilentlyContinue
+    return @{ exe = $p.ExecutablePath; home = $(if ($m.Success) { $m.Groups[1].Value + $m.Groups[2].Value }); tray = "$($parent.Name) $($p.ExecutablePath)" -match 'SyncTrayzor' }
+  }
+  $t = Join-Path $env:APPDATA "SyncTrayzor\syncthing.exe"
+  if (Test-Path $t) { return @{ exe = $t; home = $null; tray = $true } }
+  return $null
+}
+$stFound = Find-Syncthing
+if ($stFound) { Ok "Syncthing is already installed$(if ($stFound.tray) { " (SyncTrayzor's)" })" }
+else { Install-App "Syncthing.Syncthing" "Syncthing" (Join-Path $env:LOCALAPPDATA "Programs\Syncthing\syncthing.exe") }
+if ($wantLive) { Install-App "Sonosaurus.SonoBus" "SonoBus" "$env:ProgramFiles\SonoBus\SonoBus.exe"; Install-App "Tailscale.Tailscale" "Tailscale" "$env:ProgramFiles\Tailscale\tailscale.exe" }
+if ($wantSolo) { Install-App "Google.GoogleDrive" "Google Drive for desktop" "$env:ProgramFiles\Google\Drive File Stream" }
 
 $reaper = Find-Reaper
 if (-not $reaper) { Warn "REAPER wasn't found after installing: install it from reaper.fm and run this again."; exit 1 }
@@ -207,9 +289,44 @@ Ok "REAPER: $reaper (settings in $res)"
 # everyone has shows in REAPER's FX browser folder "StudioSync (everyone has)". Installers that come as .exe open for
 # you to click through; a .zip of VST3 bundles goes into REAPER's own plug-in folder (UserPlugins\FX, scanned by
 # REAPER, no admin rights needed).
+# GitHub's release lookups: each is one of the 60 an hour GitHub allows a network that isn't signed in, and a band installing in one room ran
+# out. So each answer is kept for an hour (a second run asks nothing), and once the limit is reached (403, X-RateLimit-Remaining: 0) the
+# release's own web page is read instead, which isn't counted; said once, with when the limit resets. (Installer review, 0.58.78)
+$script:ghTold = $false
 function Release-Asset($repo, $pattern, $tag) {
-  $api = if ($tag) { "https://api.github.com/repos/$repo/releases/tags/$tag" } else { "https://api.github.com/repos/$repo/releases/latest" }
-  try { (Invoke-RestMethod $api -UseBasicParsing).assets | Where-Object { $_.name -match $pattern } | Select-Object -First 1 } catch { $null }
+  $key = Join-Path $env:LOCALAPPDATA ("StudioSync\github\" + ("$repo $(if ($tag) { $tag } else { 'latest' })" -replace '[^A-Za-z0-9._-]', '_'))
+  $urls = @()
+  if ((Test-Path $key) -and (Get-Item $key).LastWriteTime -gt (Get-Date).AddHours(-1)) { $urls = @(Get-Content $key) }
+  if (-not $urls) {
+    $api = if ($tag) { "https://api.github.com/repos/$repo/releases/tags/$tag" } else { "https://api.github.com/repos/$repo/releases/latest" }
+    try { $urls = @((Invoke-RestMethod $api -UseBasicParsing).assets | ForEach-Object { $_.browser_download_url }) } catch {
+      $r = $_.Exception.Response
+      $left = try { "$($r.Headers['X-RateLimit-Remaining'])" } catch { "" }
+      if (-not $script:ghTold -and ($left -eq "0" -or (-not $left -and "$($r.StatusCode)" -match '403|429|Forbidden|TooManyRequests'))) {
+        $script:ghTold = $true
+        $at = try { [DateTimeOffset]::FromUnixTimeSeconds([int64]"$($r.Headers['X-RateLimit-Reset'])").LocalDateTime.ToString("HH:mm") } catch { "" }
+        Warn "GitHub's limit of 60 lookups an hour from this network is used up$(if ($at) { " (until $at)" }): several computers installing at once? Reading GitHub's download pages instead."
+      }
+    }
+    if (-not $urls) {
+      try {
+        $t = $tag
+        if (-not $t) { # (the tag a "latest" leads to, from where GitHub's page lands)
+          $w = Invoke-WebRequest -UseBasicParsing "https://github.com/$repo/releases/latest"
+          $u = if ($w.BaseResponse.ResponseUri) { $w.BaseResponse.ResponseUri.AbsoluteUri } else { $w.BaseResponse.RequestMessage.RequestUri.AbsoluteUri }
+          $t = ($u -split '/releases/tag/')[1]
+        }
+        if ($t) {
+          $html = (Invoke-WebRequest -UseBasicParsing "https://github.com/$repo/releases/expanded_assets/$t").Content
+          $urls = @([regex]::Matches($html, 'href="(/[^"]*/releases/download/[^"]*)"') | ForEach-Object { "https://github.com" + $_.Groups[1].Value })
+        }
+      } catch { }
+    }
+    if ($urls) { New-Item -ItemType Directory -Force (Split-Path $key) | Out-Null; Set-Content $key $urls }
+  }
+  # (matched on the file's name, as GitHub's own list gives it)
+  foreach ($u in $urls) { $n = [uri]::UnescapeDataString(($u -split '/')[-1]); if ($n -match $pattern) { return @{ name = $n; browser_download_url = $u } } }
+  return $null
 }
 # Every plug-in installer here that opens a wizard is an Inno Setup one (2026-11-01: Dexed, Airwindows, Chow Tape,
 # BYOD, ChowMatrix, NAM, AIDA-X, Odin 2). Those run without their windows, all at the end in one go, so Windows asks
@@ -239,7 +356,6 @@ function Install-Quiet {
   }
   $script:Quiet = @()
 }
-$script:downloads = @()
 function Install-Plugin($name, $repo, $pattern, $tag, $have) {
   if ($NoApps) { return }
   # ($have: one place or several where it lands, wildcards allowed)
@@ -273,7 +389,7 @@ function Install-Plugin($name, $repo, $pattern, $tag, $have) {
 }
 if ($wantPlugins) {
   $vst3 = Join-Path $env:CommonProgramFiles "VST3"
-  Install-App "SurgeSynth.SurgeXT" "Surge XT"
+  Install-App "SurgeSynth.SurgeXT" "Surge XT" (Join-Path $vst3 "Surge XT.vst3")
   Install-Plugin "Dexed" "asb2m10/dexed" '-win\.exe$' $null (Join-Path $vst3 "Dexed*")
   Install-Plugin "Airwindows Consolidated" "baconpaul/airwin2rack" '^(?!.*windows7).*Windows-64bit-setup\.exe$' "DAWPlugin" (Join-Path $vst3 "Airwindows*")
   Install-Plugin "Dragonfly Reverb" "michaelwillis/dragonfly-reverb" 'win64\.zip$' $null (Join-Path $res "UserPlugins\FX\Dragonfly*")
@@ -362,8 +478,9 @@ if (-not (Test-Path (Join-Path $api "imgui.lua"))) { # ReaImGui's version shim, 
 }
 
 # ---------- 3. Syncthing: the shared folder ----------
-$st = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links\syncthing.exe"
+$st = if ($stFound) { $stFound.exe } else { Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links\syncthing.exe" } # (the one already there: Find-Syncthing)
 if (-not (Test-Path $st)) { $c = Get-Command syncthing -ErrorAction SilentlyContinue; if ($c) { $st = $c.Source } }
+if (-not (Test-Path $st) -and (Test-Path (Join-Path $env:LOCALAPPDATA "Programs\Syncthing\syncthing.exe"))) { $st = Join-Path $env:LOCALAPPDATA "Programs\Syncthing\syncthing.exe" } # (put there without winget)
 # (a fresh Windows that can't make links gets no shortcut and no PATH entry for this window: winget's own unpacked copy, the newest. AgentBox, 0.58.60)
 if (-not (Test-Path $st)) {
   $found = Get-ChildItem (Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages\Syncthing.Syncthing_*\syncthing-windows-*\syncthing.exe") -ErrorAction SilentlyContinue |
@@ -371,26 +488,38 @@ if (-not (Test-Path $st)) {
   if ($found) { $st = $found.FullName }
 }
 if (-not (Test-Path $st)) { Warn "Syncthing wasn't found: install it from syncthing.net and run this again."; exit 1 }
-$homeArg = @(); if ($SyncthingHome) { $homeArg = @("--home", $SyncthingHome) }
+# (the running one's own settings folder when it was started with one, a portable SyncTrayzor's say: told to REAPER too, studiosync_setup.lua)
+$stHome = if ($SyncthingHome) { $SyncthingHome } elseif ($stFound -and $stFound.home) { $stFound.home } else { "" }
+$stHomeTold = if (-not $SyncthingHome) { $stHome } else { "" }
+$homeArg = @(); if ($stHome) { $homeArg = @("--home", $stHome) }
 # Windows PowerShell 5.1 turns a native program's stderr into errors, and with "Stop" above an error ends the whole
 # installer (seen: Syncthing's "not up yet" while waiting for it killed the run). These calls expect stderr.
 function ST { $ErrorActionPreference = "Continue"; & $st @args @homeArg 2>&1 }
 function STcli { $ErrorActionPreference = "Continue"; & $st cli @homeArg @args 2>&1 }
 
-$cfgDir = if ($SyncthingHome) { $SyncthingHome } else { Join-Path $env:LOCALAPPDATA "Syncthing" }
+$cfgDir = if ($stHome) { $stHome } else { Join-Path $env:LOCALAPPDATA "Syncthing" }
 if (-not (Test-Path (Join-Path $cfgDir "config.xml"))) { ST generate | Out-Null; Ok "Syncthing set up for the first time" }
 $running = if ($SyncthingHome) { $false } else { [bool](Get-Process syncthing -ErrorAction SilentlyContinue) }
 if (-not $running) {
-  $sargs = @("serve", "--no-browser"); if ($SyncthingHome) { $sargs += @("--home", "`"$SyncthingHome`"") } # (Start-Process doesn't quote a path with spaces)
+  $sargs = @("serve", "--no-browser"); if ($stHome) { $sargs += @("--home", "`"$stHome`"") } # (Start-Process doesn't quote a path with spaces)
   Start-Process $st -ArgumentList $sargs -WindowStyle Hidden
   Ok "Syncthing started (StudioSync's Live sync starts it from now on)"
   # (its first start asks Windows Firewall; declined, everything still syncs but only through Syncthing's slower relays. AgentBox test, 0.58.61)
   Say "Windows Firewall may ask about Syncthing: press Allow (it says Allow access on older Windows; private networks are enough). Without it, changes still sync, only slower."
 }
 $up = $false
-for ($i = 0; $i -lt 60 -and -not $up; $i++) { $null = STcli show system; $up = $LASTEXITCODE -eq 0; if (-not $up) { Start-Sleep 1 } }
+$tray = $running -and $stFound -and $stFound.tray # (SyncTrayzor's: refused at once, or not at all)
+for ($i = 0; $i -lt $(if ($tray) { 5 } else { 60 }) -and -not $up; $i++) { $null = STcli show system; $up = $LASTEXITCODE -eq 0; if (-not $up) { Start-Sleep 1 } }
+if (-not $up -and $tray) {
+  # (SyncTrayzor hands its Syncthing a new API key at every start, through the environment, where nothing else can read it. Installer review, 0.58.78)
+  Warn "Syncthing here is run by SyncTrayzor, which gives it a new secret key every time it starts, so StudioSync can't talk to it. Quit SyncTrayzor (its tray icon > Exit) and untick its start with Windows (its Settings), then run this again: StudioSync then runs the same Syncthing itself, with the same folders and identity."
+  exit 1
+}
 if (-not $up) { Warn "Syncthing didn't answer; finish its setup by hand (see installer/SKILL.md)"; exit 1 }
-$myId = (ST device-id | Select-Object -Last 1).ToString().Trim()
+if ($stFound -and $stFound.tray) { $script:trayNote = $true }
+# (an older Syncthing has no device-id: the running one's API answers either way. As install_linux.sh, 0.58.78)
+$myId = "$(ST device-id | Select-Object -Last 1)".Trim()
+if ($myId -notmatch $idPattern) { $myId = [regex]::Match("$(STcli show system | Out-String)", '"myID":\s*"([A-Z0-9-]+)"').Groups[1].Value }
 # (run again by someone already in: the folder Syncthing already has for this studio, not the default. Laptop test, 0.58.69: an invitation run
 # again moved a member onto a new, empty folder)
 if (-not $Root -and $folderId) {
@@ -463,7 +592,9 @@ $src = Get-ChildItem $work -Directory | Select-Object -First 1
 $helper = Join-Path $src.FullName "installer\studiosync_setup.lua"
 $utf8 = New-Object System.Text.UTF8Encoding($false) # no BOM: the Lua JSON reader wants plain UTF-8
 function Request($mode) {
-  $req = @{ sync_root = ($root -replace '\\', '/'); user = $user; mode = $mode; repo_url = "https://github.com/$Repo/raw/main/index.xml"; open_panel = ($mode -eq "verify"); jsfx = [bool]$wantPlugins; reapersona = [bool]$wantPersona; persona = $persona } | ConvertTo-Json
+  # (syncthing_*: which Syncthing this set up; band_*: the invitation's studio by name till its band.json arrives. studiosync_setup.lua, 0.58.78)
+  $req = @{ sync_root = ($root -replace '\\', '/'); user = $user; mode = $mode; repo_url = "https://github.com/$Repo/raw/main/index.xml"; open_panel = ($mode -eq "verify"); jsfx = [bool]$wantPlugins; reapersona = [bool]$wantPersona; persona = $persona
+    syncthing_path = ($st -replace '\\', '/'); syncthing_home = ($stHomeTold -replace '\\', '/'); band_id = $(if ($joining) { $folderId } else { "" }); band_name = $(if ($joining) { $bandName } else { "" }) } | ConvertTo-Json
   [IO.File]::WriteAllText((Join-Path (Split-Path $helper) "studiosync_setup.json"), $req, $utf8)
   $result = Join-Path (Split-Path $helper) "studiosync_setup_result.json"
   Remove-Item $result -ErrorAction SilentlyContinue
@@ -485,8 +616,15 @@ function Request($mode) {
   Start-Process $reaper -ArgumentList ($once + "`"$helper`"")
   $script:Gone = $false
   $asked = 1
-  for ($i = 0; $i -lt 360 -and -not (Test-Path $result); $i++) {
+  # (a REAPER's first start scans every plug-in and asks its questions before it runs anything: the 6 minutes this waited ran out behind them,
+  # though setup then finished by itself. Windows Sandbox run, 0.58.78. Until the helper starts, this waits while REAPER is open, and says what's
+  # happening; once it has, the 4 minutes the helper gives ReaPack and the 2.5 it gives ReaPersona)
+  $at = $null
+  for ($i = 0; -not (Test-Path $result); $i++) {
     Start-Sleep 1
+    if ($null -eq $at -and (Test-Path $started)) { $at = $i }
+    if ($null -ne $at) { if ($i - $at -gt 420) { break } } elseif ($i -gt 2700) { break }
+    if ($null -eq $at -and $i -gt 90 -and $i % 120 -eq 0) { Say "Still waiting ($([int]($i / 60)) minutes). A first start scans every plug-in on this PC before anything else runs: 10 minutes or more with a big collection (REAPER's window names each one), and its questions may be hidden behind other windows. Nothing is stuck while REAPER is open." }
     # (a REAPER that was already open sometimes never gets the hand-off: nothing runs and this waited out its 6 minutes, though handing it
     # over again ran at once. AgentBox, 0.58.65. Again only while the helper hasn't started, so it never runs twice; never to a REAPER
     # still starting, which runs it once its first-start questions are answered)
@@ -498,7 +636,7 @@ function Request($mode) {
     if ($i -gt 15 -and -not (Get-Reaper)) { $script:Gone = $true; break }
     # (on a first start REAPER asks about the audio device and ReaPack shows Manage repositories: until they're answered nothing runs, and Tailscale's
     # welcome window can sit on top of them. Windows Sandbox run, 2026-11-10: the setup waited out its 6 minutes behind both)
-    if ($i -eq 90) { Say "Still waiting for StudioSync to arrive through ReaPack. Look in REAPER for its first-start windows and answer them: 'select your audio device now?' (No is fine: Preferences > Audio later), then OK on ReaPack's Manage repositories and Transaction report. Tailscale's welcome window may be covering them: close it." }
+    if ($i -eq 90) { Say "Still waiting for StudioSync to arrive through ReaPack. Look in REAPER for its first-start windows and answer them: 'select your audio device now?' (No is fine: Preferences > Audio later), then OK on ReaPack's Manage repositories, Notice and Transaction report. Tailscale's welcome window or a firewall question may be covering them: close or answer it." }
   }
   if (-not (Test-Path $result)) { return $null }
   Start-Sleep -Milliseconds 300
@@ -509,14 +647,20 @@ Say "Setting up StudioSync inside REAPER. REAPER opens now; the first time, it s
 Say "  'Select your audio device now?': No is fine for now (pick your audio interface in Preferences > Audio before you play). ReaPack's 'Manage repositories' and 'Transaction report': OK."
 Say "  If Tailscale's welcome window covers them, close it. This window carries on by itself once StudioSync has arrived."
 $r = Request $Scripts
+$pending = $false
 if (-not $r) {
-  if ($script:Gone) { Warn "REAPER closed unexpectedly during setup. Open REAPER (and your project: File > Recent projects), then run this again." }
-  else { Warn "REAPER didn't run the setup step. Open REAPER, then run this again." }
-  exit 1
+  if ($script:Gone) { Warn "REAPER closed unexpectedly during setup. Open REAPER (and your project: File > Recent projects), then run this again."; exit 1 }
+  # (REAPER still on its own first-start windows, often behind another one, or ReaPack still bringing StudioSync: the setup step carries on by
+  # itself once they're answered, so its files stay and the rest of this runs. "Didn't run the setup step ... run this again" was wrong:
+  # Windows Sandbox run, 0.58.78)
+  $pending = $true
+  if (Test-Path (Join-Path (Split-Path $helper) "studiosync_setup_started")) { Warn "StudioSync's setup step is still running inside REAPER (ReaPack is taking its time): it finishes by itself, and StudioSync's panel opens when it's done." }
+  else { Warn "REAPER hasn't got to StudioSync's setup step yet: it's still on its first-start windows (the audio device, ReaPack's Manage repositories, Notice and Transaction report), which Tailscale's welcome window or a firewall question may be hiding. Answer them: setup then carries on by itself, and StudioSync's panel opens when it's done." }
+  Warn "Run this again only if the panel never appears."
 }
 foreach ($s in $r.steps) { if ($s.ok) { Ok "$($s.name): $($s.detail)" } else { Warn "$($s.name): $($s.detail)" } }
 $count = [int]$r.registered_actions
-if ($count -ge 5) { Ok "StudioSync $($r.version) installed: $count actions (the StudioSync panel opens in REAPER)" } else { Warn "StudioSync's scripts haven't arrived yet: in REAPER, Extensions > ReaPack > Synchronize packages" }
+if ($pending) { } elseif ($count -ge 5) { Ok "StudioSync $($r.version) installed: $count actions (the StudioSync panel opens in REAPER)" } else { Warn "StudioSync's scripts haven't arrived yet: in REAPER, Extensions > ReaPack > Synchronize packages" }
 
 # ---------- 5. what's left for a human (only what isn't done yet) ----------
 $left = @()
@@ -668,8 +812,9 @@ elseif ($later) { $left += "When you want a studio: REAPER's StudioSync panel ha
 elseif (Test-Path (Join-Path $root "_band\band.json")) { $left += "You're already in ${bandName}: nothing more to do here. In REAPER's StudioSync panel, open Projects and double-click one." } # (run again by someone already in. Mac test, 0.58.69)
 elseif ($peers -contains $hostId) { $left += "You're connected to whoever invited you: once they press 'Let you in' in their panel, the studio's projects arrive by themselves: in REAPER's StudioSync panel, open Projects and double-click one." }
 else { $left += "Tell whoever invited you that you're set up: they press 'Let $user in' in their panel (or add your Syncthing ID by hand: $myId). Then the studio's projects arrive by themselves: in REAPER's StudioSync panel, open Projects and double-click one." }
+if ($script:trayNote) { $left += "SyncTrayzor is installed: if it starts with Windows, the Syncthing it runs has a secret key StudioSync can't read. In SyncTrayzor's Settings, untick its start with Windows: StudioSync starts the same Syncthing itself." }
 foreach ($d in $script:downloads) { Remove-Item -Force $d -ErrorAction SilentlyContinue }
-Remove-Item -Recurse -Force (Join-Path $env:TEMP "studiosync_setup") -ErrorAction SilentlyContinue
+if (-not $pending) { Remove-Item -Recurse -Force (Join-Path $env:TEMP "studiosync_setup") -ErrorAction SilentlyContinue } # (still waiting in REAPER: it needs its files)
 Write-Host ""
 Say "Done. What's left (these need you):"
 foreach ($l in $left) { Write-Host "  - $l" }

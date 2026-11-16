@@ -125,7 +125,7 @@ local function start_helper()
   local tmp = (os.getenv("TEMP") or os.getenv("TMP") or DIR):gsub("\\", "/")
   local ps, cmd, vbs = tmp .. "/bandsync-answer-boxes.ps1", tmp .. "/bandsync-answer-boxes.cmd", tmp .. "/bandsync-hidden.vbs"
   band.write_atomic(ps, HELPER)
-  band.write_atomic(cmd, string.format('@powershell -NoProfile -ExecutionPolicy Bypass -File "%s" "%s" "%s" "%s"\r\n', ps, BAND_TAB, DONE, SAID))
+  band.write_atomic(cmd, string.format('@chcp 65001 >nul\r\n@powershell -NoProfile -ExecutionPolicy Bypass -File "%s" "%s" "%s" "%s"\r\n', ps, BAND_TAB, DONE, SAID)) -- (chcp: UTF-8 paths, as services.background. 0.58.78)
   if not reaper.file_exists(vbs) then band.write_atomic(vbs, 'CreateObject("WScript.Shell").Run """" & WScript.Arguments(0) & """", 0, False\r\n') end
   reaper.ExecProcess(string.format('wscript.exe //B //Nologo "%s" "%s"', vbs, cmd), -1)
 end
