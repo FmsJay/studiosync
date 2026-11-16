@@ -1527,9 +1527,14 @@ end
 
 -- Files already applied or set aside, per project and events folder: each pass looked every one of thousands up in the project again
 -- (review, 0.58.53). Only ever grows while the project is open: applied stays applied (sync.forget_trimmed drops only files that are gone).
-sync.settled = {}
+-- (a song opened again in the same tab keeps the tab's address, and the cache then said the reopened song had everything: its master track
+-- is a new one, so that's what is checked, as mirror.watch does with its first track. Linux stress test, 0.58.77)
+sync.settled, sync.settled_master = {}, {}
 function sync.settled_for(proj, dir)
   local key = tostring(proj) .. "\0" .. dir
+  local had, master = sync.settled_master[key], reaper.GetMasterTrack(proj)
+  if had and not (had == master and reaper.ValidatePtr2(proj, had, "MediaTrack*")) then sync.settled[key] = nil end
+  sync.settled_master[key] = master
   sync.settled[key] = sync.settled[key] or {}
   return sync.settled[key]
 end

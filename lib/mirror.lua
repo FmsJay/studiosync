@@ -166,13 +166,17 @@ end
 -- Do two chains say the same thing? Each plug-in's saved data is lines of base64, and REAPER re-encodes it on a machine
 -- without the plug-in: the same bytes in different pieces (a Mac's GGD chain read differently on the PC and the laptop,
 -- so the fingerprints stayed apart for good: 0.42.2). Pure.
+local BASE64_BLOCK = { VST = true, AU = true, CLAP = true, LV2 = true, DX = true }
 function mirror.fx_same(a, b)
   if a == b then return true end
   local fxfiles = require("fxfiles")
   local function bytes(chain)
-    local out = {}
+    local out, plug = {}, false
     for _, l in ipairs(chain_lines(chain)) do
-      out[#out + 1] = (l:match("^[A-Za-z0-9+/]+=*$") and #l >= 8) and fxfiles.unbase64(l) or ("\0" .. l .. "\0")
+      -- (inside a plug-in's saved data every line is base64, however short: a Surge XT chain's "AA==" read as text and never matched. Linux stress test, 0.58.77)
+      if l:sub(1, 1) == "<" then plug = BASE64_BLOCK[l:match("^<(%u+)") or ""] == true
+      elseif l == ">" then plug = false end
+      out[#out + 1] = (l:match("^[A-Za-z0-9+/]+=*$") and (#l >= 8 or plug)) and fxfiles.unbase64(l) or ("\0" .. l .. "\0")
     end
     return table.concat(out)
   end
@@ -1301,6 +1305,9 @@ function mirror.share_media(chunk, media_dir, it, sent)
   return (chunk:gsub('FILE (["\'`])(.-)%1', function(q, written)
     local a, z = "FILE " .. q, q
     if written:find("^{media") then return a .. written .. z end
+    -- (a subproject: its .rpp alone went, without its media, and pointing the item at that copy crashed a freshly started REAPER on Linux.
+    -- Held back with a word instead. Linux stress test, 0.58.77)
+    if written:lower():find("%.rpp$") then mirror.copy_failed = "it plays a subproject, which isn't shared: glue it to audio to send it"; return a .. written .. z end
     if type(sent) == "string" and sent:find(a .. written .. z, 1, true) then return a .. written .. z end
     local path = actual(written)
     local name = path:gsub("\\", "/"):match("[^/]+$") or "media"
@@ -2341,9 +2348,10 @@ function mirror.watch(proj, cfg, song, room, opts)
       end
       -- its data changed, but no window of it has been open, no knob moved and the plug-ins are the same: nobody did that. Superior Drummer writes
       -- different data after every playthrough, which claimed the Drums, went to everyone and re-printed every item, each pass (PC, 0.57.5)
-      -- (its knobs as of the end of its loading, or of the last change that went out or landed)
+      -- (its knobs as they landed or were first seen, or as of the last change that went out or landed. Not the knobs of every pass while it
+      -- loads: a knob turned from a control surface in that minute then read as quiet, and never went out. Linux stress test, 0.58.77)
       if o.kind == "fx" and o.ptr and (mirror.fx_quiet[rk] == nil or reaper.time_precise() < math.max(mirror.fx_loading[rk] or 0, mirror.first_look[tostring(proj)] or 0)) then
-        mirror.fx_quiet[rk] = mirror.fx_params(o.ptr)
+        mirror.fx_quiet[rk] = mirror.fx_load_knobs[rk] or mirror.fx_params(o.ptr)
       end
       if o.kind == "fx" and rev and h ~= "" and h ~= o.hash and o.ptr and not mirror.fx_was_open(o.ptr) and mirror.fx_quiet[rk] == mirror.fx_params(o.ptr) then
         local ev = event_file(room_dir, evid)
@@ -2542,7 +2550,8 @@ function mirror.watch(proj, cfg, song, room, opts)
         local claim = not to and not claimed and sync.room_mode == "claims" and (ok_before and name or last.name) or nil -- (the bar's Claim it)
         local differed = last and mirror.first_diff(o.state, last.state)
         put_back(o, rev, evid, { name = ok_before and name or (last.name or ""), to = to and who or nil, claim = claim ~= "" and claim or nil,
-          text = string.format("Not sent: %s. %s%s", how, o.kind == "track" and "The track is back as it was" or ((o.kind == "item" and "The item" or mirror.PART[o.kind]:gsub("^%l", string.upper)) .. " is back as it was"),
+          text = string.format("Not sent: %s. %s%s", how, o.kind == "track" and "The track is back as it was" or o.kind == "item" and "The item is back as it was"
+            or (mirror.PART[o.kind]:gsub("^%l", string.upper)) .. ((o.kind == "env") and " is back as it was" or " are back as they were"),
             differed and (" (what differed: " .. differed .. ")") or "") })
       end
     end)

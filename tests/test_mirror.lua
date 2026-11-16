@@ -70,6 +70,7 @@ do
   local other = '<VST "x" y 0 "" 1\nAAECAwQFBgcICQoLDA0OAA==\n>\n'
   assert(mirror.fx_same(ab, ab) and mirror.fx_same(ab, one), "re-encoded: the same")
   assert(not mirror.fx_same(ab, other), "different bytes: not the same")
+  assert(mirror.fx_same('<VST "x" y 0 "" 1\nAAECAwQFBgc=\nAA==\n>\n', '<VST "x" y 0 "" 1\nAAECAwQFBgcA\n>\n'), "a short base64 line in a plug-in is bytes too")
 end
 -- which notes are selected and which lanes the MIDI editor shows are each person's: opening the editor isn't a change
 local picked = "<ITEM\n<SOURCE MIDI\nHASDATA 1 960 QN\nCCINTERP 32\nVELLANE 64 100 0 0 1\ne 0 90 3c 60\nem 240 80 3c 00\nx 0 90 3e 60 0 0 0\n<x 0 0\n>\nE 0 90 40 60\n>\n>\n"

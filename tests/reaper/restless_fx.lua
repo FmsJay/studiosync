@@ -123,6 +123,16 @@ local ok, err = pcall(function()
   check(sent("Laptop", "fx") == n4 + 1, "another plug-in on the chain still goes out")
   recv(pb, B)
   check(mirror.root(pa) == mirror.root(pb), "and the fingerprints still agree")
+
+  -- a knob turned with no window open (a control surface) in the minute after a chain lands still goes out (it read as the plug-in loading)
+  reaper.SelectProjectInstance(pb)
+  reaper.TrackFX_SetParam(reaper.GetTrack(pb, 0), 0, 0, 0.7)
+  local n5 = sent("James", "fx")
+  t = reaper.time_precise()
+  while reaper.time_precise() - t < 6 and sent("James", "fx") == n5 do watch(pb, B); hold(0.3) end
+  check(sent("James", "fx") == n5 + 1, "a knob turned while the landed chain loads goes out")
+  recv(pa, A)
+  check(math.abs(reaper.TrackFX_GetParam(tr, 0, 0) - 0.7) < 0.01, "and lands back")
 end)
 if not ok then fails = fails + 1; say("ERROR " .. tostring(err)) end
 reaper.SetExtState(band.SECTION, "bg render", was_bg, false)

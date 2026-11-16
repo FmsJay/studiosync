@@ -311,7 +311,13 @@ local function conclude()
   if (req.open_panel or waiting) and count >= 5 and out.reaimgui then
     local id = text:match('SCR %d+ %d+ (%S+) "[^"]*StudioSync %- Panel%.lua"')
     local cmd = id and reaper.NamedCommandLookup("_" .. id) or 0
-    if cmd ~= 0 and reaper.GetToggleCommandState(cmd) ~= 1 then reaper.Main_OnCommand(cmd, 0) end
+    -- (not while ReaPack's Transaction report is up: a panel opened under it never finished a frame and grew REAPER to 7.4 GB, till Linux
+    -- killed it. Linux stress test, 0.58.77)
+    local function open_panel()
+      if reaper.JS_Window_Find and reaper.JS_Window_Find("Transaction report", false) then return reaper.defer(open_panel) end
+      if reaper.GetToggleCommandState(cmd) ~= 1 then reaper.Main_OnCommand(cmd, 0) end
+    end
+    if cmd ~= 0 then open_panel() end
   end
 end
 

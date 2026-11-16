@@ -13,8 +13,9 @@ local function q(s) return '"' .. s .. '"' end
 -- Slow checks (tasklist ~150 ms, a curl call up to 3 s) run in the background: REAPER waiting on them froze
 -- its UI for 0.3-0.4 s at every panel refresh (2026-10-28, laptop). Each call starts a fresh run at most every
 -- `every` seconds, its output going to a file, and returns what the previous run wrote (nil before the first).
--- (macOS: the per-user TMPDIR, not the shared /tmp: the Syncthing check's script carries its API key)
-local TMP = (WIN and (os.getenv("TEMP") or os.getenv("TMP")) or os.getenv("TMPDIR") or "/tmp"):gsub("\\", "/"):gsub("/+$", "")
+-- (macOS: the per-user TMPDIR, not the shared /tmp: the Syncthing check's script carries its API key. Linux: the per-user runtime folder, for
+-- the same reason: the key sat in a /tmp file anyone could read. Linux stress test, 0.58.77)
+local TMP = (WIN and (os.getenv("TEMP") or os.getenv("TMP")) or os.getenv("TMPDIR") or os.getenv("XDG_RUNTIME_DIR") or "/tmp"):gsub("\\", "/"):gsub("/+$", "")
 local started, last = {}, {}
 local function background(name, cmd, every)
   local file = TMP .. "/bandsync-" .. name .. ".txt"
@@ -246,7 +247,7 @@ end
 local function run_now(cmd, secs)
   if not WIN then
     local sh = TMP .. "/bandsync-ask.sh"
-    band.write_atomic(sh, "export TAILSCALE_BE_CLI=1\n" .. cmd .. "\n")
+    band.write_atomic(sh, "rm -f \"$0\"\nexport TAILSCALE_BE_CLI=1\n" .. cmd .. "\n") -- (gone once read: it holds the API key)
     cmd = "/bin/sh '" .. sh .. "'"
   end
   local r = reaper.ExecProcess(cmd, (secs + 1) * 1000) or ""
@@ -647,7 +648,7 @@ function services.ts_exec(args, ms)
   local cmd = q(exe) .. " " .. args
   if not WIN then
     local sh = TMP .. "/bandsync-ts.sh"
-    band.write_atomic(sh, "export TAILSCALE_BE_CLI=1\n" .. cmd .. "\n")
+    band.write_atomic(sh, "rm -f \"$0\"\nexport TAILSCALE_BE_CLI=1\n" .. cmd .. "\n") -- (gone once read: a join carries its key)
     cmd = "/bin/sh '" .. sh .. "'"
   end
   return reaper.ExecProcess(cmd, ms) or ""

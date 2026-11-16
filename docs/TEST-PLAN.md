@@ -125,3 +125,21 @@ Left for after the test (by area):
 - Cross-platform: non-ASCII Windows user names in `.cmd` files; Linux without netcat, older distro Syncthing, Flatpak/AppImage REAPER.
 - ReaPersona: no uninstall (its startup block errors once removed); built-in personas share key layers with your own; trimming the
   Actions list doesn't look at mouse modifiers or SWS cycle actions; Linux can't open .zip/.rar theme packs.
+
+## Linux stress test, 2026-11-16 (0.58.75/76; fixes in 0.58.77)
+
+On the LinuxBox VM: the 43 REAPER suites (756 pass; every failure a test assumption: no Melodyne, background prints off on Linux, timing,
+a test mock written for Windows), two-tab round trips of JSFX, Cockos plug-ins, an FX container, take FX, offline and bypassed FX, parameter
+links and envelopes, RS5K samples, missing VST2/VST3/AU/CLAP chunks, 2,000 notes and CCs with SysEx and lyrics, stretch and take markers,
+automation items, fixed lanes, sends, non-ASCII and very long names: all matched with no echo or put-back. 5,460 events sent in 12 s;
+catch-up ~70 s; StudioSync's own memory levelled at 380–620 MB.
+Fixed in 0.58.77: the 7.4 GB crash (the installer opened the panel while ReaPack's Transaction report was up, and its frames never ended:
+the installer now waits, and the panel draws nothing while frames stand still); a knob turned with no plug-in window open (control surface,
+MIDI learn) in the minute after a chain landed or the song opened was never sent; a subproject item crashed a freshly started REAPER when
+pointed at its shared copy (subprojects are held back now, with a word: glue them); Syncthing's API key sat in a /tmp script anyone could
+read (Linux uses the per-user runtime folder; the scripts delete themselves first); a short base64 line in a plug-in's data read as text;
+a song reopened in the same tab looked fully applied to a long-running script; "The plug-ins is back".
+Left: a change made while StudioSync wasn't running is taken as the plug-in loading; LFO/modulated plug-ins never hash the same on two
+machines (a lasting "differs", no re-send); frozen tracks arrive frozen, without unfreeze data; hardware outputs aren't sent; plug-in sample
+copies keep accented names; a track template with a missing plug-in brings up REAPER's load warning, which blocks scripts; the Linux test
+assumptions above.

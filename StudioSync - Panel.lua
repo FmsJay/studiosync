@@ -2518,6 +2518,7 @@ local function pill_window()
   return keep
 end
 
+local frame_seen
 local function loop()
   require("services").tailscale_sweep_guests()
   if updated() or reload_now then -- reload in place: relaunching itself as an action is ignored (or asks to terminate instances)
@@ -2526,6 +2527,14 @@ local function loop()
     for _, f in ipairs(band.files(dir .. "/lib", ".lua")) do package.loaded[f:sub(1, -5)] = nil end
     return dofile(dir .. "/StudioSync - Panel.lua")
   end
+  -- (frames that never end, as for a panel opened while ReaPack's Transaction report is up, pile every frame's drawing up: 7.4 GB in 12 minutes
+  -- till Linux killed REAPER. So nothing is drawn while the count stands still; it moves on every pass otherwise. Linux stress test, 0.58.77)
+  local fc = ImGui.GetFrameCount(ctx)
+  if fc == frame_seen then
+    reaper.SetExtState(band.SECTION, "panel alive", tostring(reaper.time_precise()), false)
+    return reaper.defer(loop)
+  end
+  frame_seen = fc
   ImGui.SetNextWindowSize(ctx, 560, 640, ImGui.Cond_FirstUseEver)
   local wx, wy = ImGui.Viewport_GetWorkPos(ImGui.GetMainViewport(ctx)) -- first time: inside REAPER, below its menus
   ImGui.SetNextWindowPos(ctx, wx + 60, wy + 90, ImGui.Cond_FirstUseEver)

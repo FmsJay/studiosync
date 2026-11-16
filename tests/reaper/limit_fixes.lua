@@ -352,6 +352,13 @@ local ok, err = pcall(function()
     local media = sync.room_dir(A, song, room) .. "/media"
     local out2 = mirror.share_media("<SOURCE WAVE\nFILE `" .. path .. "`\n>\n", media)
     check(out2:find('FILE "{media:main}/', 1, true) ~= nil and not out2:find("`", 1, true), "any quote: copied and pointed at the copy: " .. out2:gsub("\n", " "))
+    -- a subproject isn't copied or repointed (that crashed a fresh REAPER on Linux): it's held back with a word
+    local sub = root .. "/inner.RPP"
+    f = io.open(sub, "wb"); f:write("<REAPER_PROJECT\n>\n"); f:close()
+    mirror.copy_failed = nil
+    local out3 = mirror.share_media('<SOURCE RPP_PROJECT\nFILE "' .. sub .. '"\n>\n', media)
+    check(out3:find(sub, 1, true) ~= nil and (mirror.copy_failed or ""):find("subproject", 1, true) ~= nil, "a subproject: held back, not repointed")
+    mirror.copy_failed = nil
   end
 
   -- a bandmate's claimed item can't be sent in from a side room
