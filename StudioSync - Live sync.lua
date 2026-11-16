@@ -492,7 +492,7 @@ local function poll()
     if follow == "" and reaper.GetExtState(band.SECTION, "follow driver") ~= "" and driver ~= cfg.user then follow = driver or "" end
     if follow ~= "" then presence.follow(proj, peers, follow) end
     -- tracks in the colour of who's working on them, if this machine wants that (lib/people.lua; shown here only)
-    if now - paint_at > 1 then paint_at = now; require("people").paint(proj, cfg, peers, who.tracks) end
+    if now - paint_at > 1 then paint_at = now; require("people").paint(proj, cfg, peers, who.tracks, b.song .. "/" .. b.room) end
   end
 
   lap("claims, presence")

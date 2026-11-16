@@ -153,12 +153,16 @@ function H.maint_rows()
   if reaper.SNM_GetIntConfigVar and reaper.SNM_GetIntConfigVar("offlineinact", 0) ~= 0 then
     rows[#rows + 1] = { "offline when inactive", false, "yellow", "", "REAPER takes your media offline whenever another app is in front, so parts show OFFLINE then. StudioSync turned this off once and it's back on: turn off 'Set media items offline when application is not active' in Preferences > Media." }
   end
+  do -- a call app beside REAPER (lib/callapps.lua)
+    local ok, words = pcall(require("callapps").health_words)
+    if ok and words then rows[#rows + 1] = { "call app", false, "yellow", "", words } end
+  end
   if view.newer then rows[#rows + 1] = { "update " .. view.newer, false, "yellow", "", "StudioSync " .. view.newer .. " is in use in the studio; you have " .. band.VERSION .. ": press Update below." } end
   pcall(require("drive").root, cfg) -- (what it says next is about the group it last looked at: this tab's, then. Mac, 0.51.12)
   local dmiss = reaper.GetExtState(band.SECTION, "drive_root") ~= "off" and require("drive").missing
   if dmiss then
     local dname = band.info(cfg.root).drive
-    rows[#rows + 1] = { "drive", false, "yellow", "", "Google Drive: no shared " .. dname .. " folder in " .. dmiss .. " (at drive.google.com: Shared with me > right-click " .. dname .. " > Organize > Add shortcut > My Drive)." }
+    rows[#rows + 1] = { "drive", false, "yellow", "", require("drive").name(cfg) .. ": no shared " .. dname .. " folder in " .. dmiss .. ". " .. require("drive").share_hint(cfg, dname) }
   end
   for _, m in ipairs(s.routed or {}) do
     rows[#rows + 1] = { "routed " .. m.track, false, "yellow", "", string.format("'%s' plays %s on '%s', which doesn't load on this computer: " ..
@@ -168,8 +172,8 @@ function H.maint_rows()
   local daway = reaper.GetExtState(band.SECTION, "drive_root") ~= "off" and require("drive").away
   if daway then
     local who = daway:match("GoogleDrive%-([^/]+)/") or daway:match("^(%a:)")
-    rows[#rows + 1] = { "drive away", false, "yellow", "", "Google Drive: the studio's folder (" .. tostring(who) .. ") isn't here now. Is that Google " ..
-      "account signed out of Drive, or switched for another? Everything still syncs between you; the Drive copy catches up once it's back." }
+    rows[#rows + 1] = { "drive away", false, "yellow", "", require("drive").label(require("drive").service_of(daway)) .. ": the studio's folder (" .. tostring(who) .. ") isn't here now. Is that " ..
+      "account signed out, or switched for another? Everything still syncs between you; the cloud copy catches up once it's back." }
   end
   return rows
 end

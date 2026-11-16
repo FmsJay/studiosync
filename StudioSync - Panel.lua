@@ -381,6 +381,7 @@ local function refresh()
   view = status.gather(cfg, b, proj)
   view.group = band.info(cfg.root).name
   can, who = sync.authority(cfg, b.song, b.room, view.session)
+  ui.claim_made()
   local here = false -- the driver is someone else, and they're here
   for _, r in ipairs(view.rows) do if r.name == view.driver and r.age < 45 then here = true end end
   if here and view.driver ~= cfg.user and reaper.GetExtState(band.SECTION, "alone " .. tostring(proj)) == "" then
@@ -534,32 +535,45 @@ local function section_driver(beside) -- beside: drawn on the box's row (a short
   end
 end
 local function section_drive()
-  ImGui.SeparatorText(ctx, "Google Drive")
-  if reaper.time_precise() - drive_at > 30 then drive_at = reaper.time_precise(); drive_root = require("drive").root(cfg) end
+  local drive = require("drive")
+  ImGui.SeparatorText(ctx, "Cloud copy")
+  if reaper.time_precise() - drive_at > 30 then drive_at = reaper.time_precise(); drive_root = drive.root(cfg) end
+  do -- which cloud drive (James, 0.58.79: Dropbox and others, not only Google Drive)
+    local svc = drive.service()
+    ImGui.SetNextItemWidth(ctx, 190)
+    if ImGui.BeginCombo(ctx, "##driveservice", svc == "" and "Whichever is here" or drive.label(svc)) then
+      if ImGui.Selectable(ctx, "Whichever is here", svc == "") then reaper.DeleteExtState(band.SECTION, "drive service", true); drive.forget(); drive_at = -math.huge end
+      for _, s in ipairs(drive.SERVICES) do
+        if ImGui.Selectable(ctx, s[2], svc == s[1]) then reaper.SetExtState(band.SECTION, "drive service", s[1], true); drive.forget(); drive_at = -math.huge end
+      end
+      ImGui.EndCombo(ctx)
+    end
+    ImGui.SetItemTooltip(ctx, "The cloud drive the studio's copy lives in: Google Drive, Dropbox, OneDrive, iCloud Drive or Box, with its desktop app\n" ..
+      "installed and signed in. Whichever is here: the first one with the studio's folder, Google Drive first. Everyone uses the one the studio's owner shared it in.")
+  end
   local off = reaper.GetExtState(band.SECTION, "drive_root") == "off"
-  local dch, don = check("Keep the studio's copy on Google Drive", drive_root ~= nil)
+  local dch, don = check("Keep the studio's copy on " .. drive.name(cfg), drive_root ~= nil)
   if dch then reaper.SetExtState(band.SECTION, "drive_root", don and "" or "off", true); drive_at = -math.huge end
-  local mch, mon = check("Make a Drive folder for each studio I start", require("drive").wanted(),
-    "On, each studio you start gets its folder in your My Drive. You share it with the others at drive.google.com. Off: nothing's made, and you can make one here later.")
+  local mch, mon = check("Make a cloud folder for each studio I start", drive.wanted(),
+    "On, each studio you start gets its folder in your cloud drive. You share it with the others there. Off: nothing's made, and you can make one here later.")
   if mch then reaper.SetExtState(band.SECTION, "drive make", mon and "" or "off", true) end
   ImGui.SetItemTooltip(ctx, drive_root and ("Each room is copied to " .. drive_root .. " (every few minutes, while stopped): what someone " ..
     "does alone reaches the studio whenever they next open the project, and every end-of-session saved version is kept there.")
-    or off and "Off on this machine." or "No Google Drive for desktop here (My Drive not found).")
+    or off and "Off on this machine." or ("No " .. drive.name(cfg) .. " folder found here (is its desktop app installed and signed in?)."))
   if drive_root then -- (which account's Drive it is, in view: with several signed in it matters; Mac, 0.34.5)
-    ImGui.TextDisabled(ctx, "Copies to " .. (drive_root:match("GoogleDrive%-([^/]+)/") or drive_root:match("^(%a:)") or drive_root))
+    ImGui.TextDisabled(ctx, "Copies to " .. drive.name(cfg) .. ": " .. (drive_root:match("GoogleDrive%-([^/]+)/") or drive_root:match("^(%a:)") or drive_root))
     ImGui.SetItemTooltip(ctx, drive_root)
   end
-  local missing = not drive_root and not off and require("drive").missing
+  local missing = not drive_root and not off and drive.missing
   if missing then
     local folder = band.info(cfg.root).drive
     ImGui.PushTextWrapPos(ctx, 0)
-    ImGui.TextColored(ctx, YELLOW, "No " .. folder .. " folder in " .. missing .. ". On drive.google.com, find the studio's " .. folder .. " folder " ..
-      "(Shared with me), right-click > Organize > Add shortcut > My Drive, and keep the name " .. folder .. ". You started this studio? " ..
-      "Make a folder called " .. folder .. " in My Drive and share it with everyone as Editor.")
+    ImGui.TextColored(ctx, YELLOW, "No " .. folder .. " folder in " .. missing .. ". " .. drive.share_hint(cfg, folder) .. " You started this studio? " ..
+      "Make a folder called " .. folder .. " there and share it with everyone, able to edit.")
     ImGui.PopTextWrapPos(ctx)
     if require("groups").role(cfg.root, cfg.user) == "owner" and ImGui.SmallButton(ctx, "Make it now") then
-      local made = require("drive").make(folder)
-      band.log(made and ("made " .. folder .. " in your Google Drive: share it with the others at drive.google.com, as Editor") or "no My Drive found here")
+      local made = drive.make(folder)
+      band.log(made and ("made " .. folder .. " in your " .. drive.name(cfg) .. ": share it with the others there, able to edit") or "no cloud drive found here")
       drive_at = -math.huge
     end
   end
@@ -601,6 +615,7 @@ function ui.claim_chips(owned, short)
     end
     c[o[2]] = keep
     sync.set_claims(cfg, b.song, b.room, c)
+    if o[2] == "tracks" then ui.let_go(o[3]) end
   end
   local avail, used = ImGui.GetContentRegionAvail(ctx), 0
   local h = ImGui.GetFrameHeight(ctx) - 2
@@ -780,17 +795,39 @@ function ui.selected_regions()
   end
   return out
 end
-local function section_claims()
-  local owned = ui.claims_of()
-  if who.mode ~= "driver" and who.mode ~= "admins" and cfg.user ~= who.driver then -- (sync.maker_may: shown, or it looks like a hole in the claims)
-    local mirror, made = require("mirror"), {}
-    for i = 0, reaper.CountTracks(proj) - 1 do
-      local tr = reaper.GetTrack(proj, i)
-      local name = sync.base_name(select(2, reaper.GetTrackName(tr)))
-      if name ~= "" and not who.tracks[name:lower()] and mirror.is_creator(mirror.track_oid(tr), cfg.user) then made[#made + 1] = name end
+-- Tracks you made that nobody has claimed go onto your claims (James, 0.58.79: "don't need the 'you made these' line on
+-- Home, just put them onto your claims automatically"). Not while you drive (what nobody claimed follows you already), not in
+-- Driver only or Admins only, and not a track you let go of here (its x or Release all claims mark it: P_EXT:band_let_go,
+-- this computer only), so letting one go sticks. Once per track per panel run: who.tracks catches up a pass later.
+ui.tried_claim = {}
+function ui.claim_made()
+  if not (b and who) or who.mode == "driver" or who.mode == "admins" or cfg.user == who.driver then return end
+  local mirror, names = require("mirror"), {}
+  for i = 0, reaper.CountTracks(proj) - 1 do
+    local tr = reaper.GetTrack(proj, i)
+    local name = sync.base_name(select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false))) -- (not GetTrackName: an unnamed one is "Track 3")
+    local oid = mirror.track_oid(tr)
+    if name ~= "" and oid ~= "" and not ui.tried_claim[oid] and not who.tracks[name:lower()] and not mirror.local_track(tr)
+        and band.track_ext(tr, "band_let_go") == "" and mirror.is_creator(oid, cfg.user) then
+      ui.tried_claim[oid] = true
+      names[#names + 1] = name
     end
-    if #made > 0 then ImGui.TextDisabled(ctx, "You made these, so they're yours to change until someone claims them: " .. table.concat(made, ", ")) end
   end
+  if #names > 0 and sync.claim_tracks(cfg, b.song, b.room, names) then
+    band.log("claimed for you, as you made " .. (#names == 1 and "it: " or "them: ") .. table.concat(names, ", ") .. " (Home > Claims: its x lets it go)")
+  end
+end
+-- A track claim let go of here: it isn't claimed back for its maker (ui.claim_made). `name` lower or not.
+function ui.let_go(name)
+  for i = 0, reaper.CountTracks(proj) - 1 do
+    local tr = reaper.GetTrack(proj, i)
+    if sync.base_name(select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false))):lower() == name:lower() then
+      reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_let_go", "1", true)
+    end
+  end
+end
+local function section_claims()
+  local owned = ui.claims_of() -- (tracks you made are on it: ui.claim_made)
   if view.driver == cfg.user then -- the driver lets go of claims held by someone who isn't here (left the band, away)
     local away = {}
     for _, o in ipairs(owned) do
@@ -845,6 +882,7 @@ local function section_claims()
   if ImGui.Button(ctx, "Release all claims") and reaper.MB("Release all your claims (tracks, regions and time)? Everything you claimed follows the driver again.",
       "StudioSync", 4) == 6 then
     local c = sync.my_claims(cfg, b.song, b.room) or {} -- (printing duties stay: "Stop printing them" lets those go)
+    for _, n in ipairs(c.tracks or {}) do ui.let_go(n) end
     sync.set_claims(cfg, b.song, b.room, { tracks = {}, regions = {}, times = {}, prints = c.prints })
   end
 end
@@ -961,20 +999,23 @@ local function sel_take()
 end
 local notes_at, notes = 0, {}
 local ideas_at, ideas = 0, {}
-local function section_notes()
+-- The Chat page's Notes tab (`kind` "note") or Likes tab ("like"): they were one card beside the chat (James, 0.58.79: separate tabs).
+local function section_notes(kind)
   local id, it = sel_take()
   local place = id and "Note on selected take" or "Note at cursor"
-  if ui.short then ImGui.SetNextItemWidth(ctx, -(ImGui.CalcTextSize(ctx, place) + ImGui.CalcTextSize(ctx, "Like selected take") + 48)) -- (buttons beside it: two rows and a line of words pushed the notes themselves out of a short docker)
-  else
-    ImGui.SeparatorText(ctx, "Notes and likes")
-    ImGui.SetNextItemWidth(ctx, -1)
+  local entered = false
+  if kind == "note" then
+    if ui.short then ImGui.SetNextItemWidth(ctx, -(ImGui.CalcTextSize(ctx, place) + 30)) -- (the button beside it: two rows pushed the notes themselves out of a short docker)
+    else ImGui.SetNextItemWidth(ctx, -1) end
+    local t
+    entered, t = require("page_chat").input(ctx, ImGui, "##note", "a note for everyone, Enter to post (e.g. 'try the chorus an octave up')", note_text)
+    note_text = t
   end
-  local entered, t = require("page_chat").input(ctx, ImGui, "##note", "a note for everyone, Enter to post (e.g. 'try the chorus an octave up')", note_text)
-  note_text = t
   local whereto = id and string.format("Selected: %s's take on %s, bar %s", (id:match("^(.-)%-%d+%-%d+Z") or "?"):gsub("_", " "),
     sync.track_name(it), bar_of(reaper.GetMediaItemInfo_Value(it, "D_POSITION"))) .. (reaper.SetTakeMarkerInfo and ". With a time selection over it, the note covers that stretch" or "")
-    or "No take selected: notes go at the edit cursor."
-  if ui.short then ImGui.SetItemTooltip(ctx, whereto); ImGui.SameLine(ctx) else ImGui.TextDisabled(ctx, whereto) end
+    or (kind == "note" and "No take selected: notes go at the edit cursor." or "Select a take to like it.")
+  if kind == "like" then whereto = whereto:gsub("%. With a time selection.*$", "") end
+  if ui.short then ImGui.SetItemTooltip(ctx, whereto); if kind == "note" then ImGui.SameLine(ctx) end else ImGui.TextDisabled(ctx, whereto) end
   local function mark(kind, text)
     local pos = reaper.GetCursorPositionEx(proj)
     -- (a time selection over the selected take: the note covers it, shaded across those bars where REAPER has take marker lengths, 7.86.
@@ -991,13 +1032,15 @@ local function section_notes()
     if it then sync.mark_item(it, pos, (kind == "like" and "+1 " or "") .. cfg.user .. (text and (": " .. text) or ""), len) end -- as everyone else gets it
     notes_at = 0
   end
-  ImGui.BeginDisabled(ctx, note_text == "")
-  if (ImGui.Button(ctx, place) or entered) and note_text ~= "" then mark("note", note_text); note_text = "" end
-  ImGui.EndDisabled(ctx)
-  ImGui.SameLine(ctx)
-  ImGui.BeginDisabled(ctx, not id)
-  if ImGui.Button(ctx, "Like selected take") then mark("like", nil) end
-  ImGui.EndDisabled(ctx)
+  if kind == "note" then
+    ImGui.BeginDisabled(ctx, note_text == "")
+    if (ImGui.Button(ctx, place) or entered) and note_text ~= "" then mark("note", note_text); note_text = "" end
+    ImGui.EndDisabled(ctx)
+  else
+    ImGui.BeginDisabled(ctx, not id)
+    if ImGui.Button(ctx, "Like selected take") then mark("like", nil) end
+    ImGui.EndDisabled(ctx)
+  end
   if reaper.time_precise() - notes_at > 4 then
     -- (only notes: it read every change there is on the first click, 4500 files on Sunset Drive, and froze REAPER: James, 0.42.28)
     notes_at, notes = reaper.time_precise(), recall.notes(cfg, b.song, b.room)
@@ -1005,11 +1048,11 @@ local function section_notes()
     for _, f in ipairs(band.files(band.song_dir(cfg, b.song) .. "/chat/resolved", ".json")) do ui.resolved[f:sub(1, -6)] = true end
   end
   -- (docked, the list takes the column's height, as the versions do; a 90 px box left the rest of a tall column empty)
-  if ImGui.BeginChild(ctx, "notes", 0, wide and next(ideas) == nil and math.max(70, select(2, ImGui.GetContentRegionAvail(ctx)) - 4) or 90, ImGui.ChildFlags_Borders) then
-    if #notes == 0 then ImGui.TextDisabled(ctx, "No notes yet: put the edit cursor where you mean and add one, and everyone sees it at that spot.") end
+  -- (the list takes the tab's height)
+  if ImGui.BeginChild(ctx, "notes" .. kind, 0, math.max(70, select(2, ImGui.GetContentRegionAvail(ctx)) - 4), ImGui.ChildFlags_Borders) then
     local shown_n, only = 0, require("page_chat").only()
     for i, e in ipairs(notes) do
-      if only ~= "" and e.user ~= only then goto next_note end
+      if e.type ~= kind or (only ~= "" and e.user ~= only) then goto next_note end
       shown_n = shown_n + 1
       if shown_n > 30 then break end
       ImGui.PushID(ctx, i)
@@ -1035,6 +1078,10 @@ local function section_notes()
       if done then ImGui.TextDisabled(ctx, words) else ImGui.TextWrapped(ctx, words) end
       ImGui.PopID(ctx)
       ::next_note::
+    end
+    if shown_n == 0 then
+      ImGui.TextDisabled(ctx, kind == "note" and "No notes yet: put the edit cursor where you mean and add one, and everyone sees it at that spot."
+        or "No likes yet: select a take you like and press Like selected take. Whoever played it sees it on the take.")
     end
     ImGui.EndChild(ctx)
   end
@@ -1326,14 +1373,19 @@ local function home_claims()
   section_claims()
 end
 -- What the others did here since you last had it open (lib/extras.lua), above Home until you say OK.
+-- Tracks showing what came meanwhile (lib/people.lua, Show what's new) stay in their colours until this OK.
 function ui.away()
   local a = require("extras").away(cfg, b)
-  if not (a.parts and #a.parts > 0) then return end
+  local where = b.song .. "/" .. b.room
+  local held = require("people").held(where)
+  if not (a.parts and #a.parts > 0) and held == 0 then return end
   ImGui.SetCursorPosX(ctx, ImGui.GetCursorPosX(ctx))
-  if ImGui.SmallButton(ctx, "OK##away") then require("extras").away_seen(b) end
-  ImGui.SetItemTooltip(ctx, "Hide it until there's something new.")
+  if ImGui.SmallButton(ctx, "OK##away") then require("extras").away_seen(b); require("people").seen(where) end
+  ImGui.SetItemTooltip(ctx, "Hide it until there's something new" .. (held > 0 and ", and put the tracks showing what changed back in the studio's colours." or "."))
   ImGui.SameLine(ctx)
-  ImGui.TextColored(ctx, ACCENT, "Since you were last here (" .. require("chooser").ago(a.since, os.date("!*t")) .. "): " .. table.concat(a.parts, "  ·  "))
+  local parts = a.parts and #a.parts > 0 and table.concat(a.parts, "  ·  ") or ""
+  if held > 0 then parts = parts .. (parts ~= "" and "  ·  " or "") .. held .. (held == 1 and " track shows" or " tracks show") .. " who changed it" end
+  ImGui.TextColored(ctx, ACCENT, "Since you were last here" .. (a.since and (" (" .. require("chooser").ago(a.since, os.date("!*t")) .. ")") or "") .. ": " .. parts)
 end
 local function page_home()
   ui.away()
@@ -1675,6 +1727,7 @@ function ui.settings_cant_hear()
     if ImGui.SmallButton(ctx, "Get Tailscale") then
       if reaper.CF_ShellExecute then reaper.CF_ShellExecute("https://tailscale.com/download") else band.msg("tailscale.com/download") end
     end
+    require("callapps").card(ctx, ImGui, b and function() ui.go_page("Home") end) -- (Discord and the like beside REAPER: lib/callapps.lua)
     card_end()
   end
 end
@@ -1874,6 +1927,7 @@ function ui.front_changed()
   if not b then page = "Projects"
   elseif had == "" or page == "Groups" or page == "Projects" then page = "Home" end
 end
+function ui.go_page(p) page = p end
 function ui.go_settings(tab)
   page = "Settings"
   reaper.SetExtState(band.SECTION, "setup tab", tab, false)
@@ -2036,7 +2090,7 @@ local function frame_app()
   -- the window's own buttons sit at the right end of the bar (when they fit there), apart from the session's
   local bar_min = docked or native -- (no title bar of ours to put it on: else it sits by the close button)
   -- (Window and Dock: on the title bar when the panel has its own, else here, and never folded into "...": they went missing at some sizes. James, 0.58.23)
-  local labels = bar_min and { "Sync and exit", "Window", docked and "Undock" or "Dock" } or { "Sync and exit" }
+  local labels = bar_min and { "Feedback", "Sync and exit", "Window", docked and "Undock" or "Dock" } or { "Feedback", "Sync and exit" }
   local need = bar_min and 2 * (fh - 6) + 28 or 0 -- (the two window icons: as a word's width, the second fell off the right edge)
   for _, l in ipairs(labels) do need = need + ImGui.CalcTextSize(ctx, l) + 28 end
   ImGui.SameLine(ctx, 0, 8)
@@ -2051,12 +2105,16 @@ local function frame_app()
   end
   if ww < 600 then -- (narrow: a short "Leave", as "Window" wrapped alone onto a row of its own: design review. Not "...": leaving is the one
     -- thing everyone has to find. UX review, 0.58.47)
+    at_row("Feedback")
+    require("feedback").button(ctx, ImGui)
     at_row("Exit")
     if ImGui.Button(ctx, "Exit##leave") then require("leave").start(proj, cfg, b) end
     ImGui.SetItemTooltip(ctx, "Sync and exit: saves, gets everything you've done out to the others, says who has it, then lets you close the project or quit REAPER.")
   else
     if room > need + 12 then ImGui.SetCursorPosX(ctx, ImGui.GetCursorPosX(ctx) + room - need); ImGui.SetCursorPosY(ctx, y0)
-    else at_row("Sync and exit") end
+    else at_row("Feedback") end
+    require("feedback").button(ctx, ImGui) -- (bug reports, feedback, feature requests: James, 0.58.79)
+    at_row("Sync and exit")
     if ImGui.Button(ctx, "Sync and exit") then require("leave").start(proj, cfg, b) end
     ImGui.SetItemTooltip(ctx, "Leaving? Saves, gets everything you've done out to the others, says who has it, then lets you close the project or quit REAPER.")
   end
@@ -2240,7 +2298,10 @@ local function frame_app()
       if wide then layout({ { page_play.section_together, 380 }, { function() page_play.section_live("mode") end, 420 }, { function() page_play.section_live("rest") end, 520 } })
       else layout({ { page_play.section_together, 380 }, { page_play.section_live, 480 } }) end
     elseif page == "Chat" then
-      layout({ { function() require("page_chat").draw(ctx, ImGui, cfg, b) end, 560 }, { function() section_notes(); section_ideas() end, 420 } })
+      local chat_tabs = { { "Notes", function() section_notes("note") end }, { "Likes", function() section_notes("like") end } }
+      local function chat_page() require("page_chat").draw(ctx, ImGui, cfg, b, chat_tabs) end
+      if reaper.time_precise() - ideas_at > 2 then ideas_at, ideas = reaper.time_precise(), tools.ideas(proj) end -- (their column only when there are some)
+      if next(ideas) ~= nil then layout({ { chat_page, 620 }, { section_ideas, 360 } }) else layout({ { chat_page, 900 } }) end
     elseif page == "Restore" then layout({ { restore.section_recall, 400 }, { restore.section_history, 600 } })
     elseif page == "Mixes" then layout({ { restore.section_mixes, 440 }, { studio_listen, 360 } })
     elseif page == "Plugins" then
@@ -2287,11 +2348,13 @@ function ui.frame_lobby()
   ImGui.SetCursorPosY(ctx, y0)
   local docked = ImGui.IsWindowDocked(ctx)
   local room = ImGui.GetContentRegionAvail(ctx)
-  local need = (docked or native) and (ImGui.CalcTextSize(ctx, "Window") + ImGui.CalcTextSize(ctx, docked and "Undock" or "Dock") + 64 + 60) or 0
+  local need = ImGui.CalcTextSize(ctx, "Feedback") + 28 + ((docked or native) and (ImGui.CalcTextSize(ctx, "Window") + ImGui.CalcTextSize(ctx, docked and "Undock" or "Dock") + 64 + 68) or 0)
   if room > need then ImGui.SetCursorPosX(ctx, ImGui.GetCursorPosX(ctx) + room - need); ImGui.SetCursorPosY(ctx, y0)
   else ImGui.SetCursorPos(ctx, 16, y0 + fh + 6); y0 = y0 + fh + 6 end
   local function at_row() ImGui.SameLine(ctx, 0, 8); ImGui.SetCursorPosY(ctx, y0) end
+  require("feedback").button(ctx, ImGui)
   if docked or native then -- (the panel's own title bar has them otherwise)
+    at_row()
     ui.window_button()
     at_row()
     tools.dock_menu(docked)
@@ -2672,6 +2735,7 @@ local function loop()
     ImGui.Dummy(ctx, 0, 0) -- (a frame that ended just after setting the cursor, as while a tab closes: End kills the panel for that)
     ImGui.End(ctx)
   end
+  require("feedback").draw(ctx, ImGui, cfg, proj) -- (its own window, while open: lib/feedback.lua)
   ImGui.PopFont(ctx); pop_theme()
   banner()
   reaper.SetExtState(band.SECTION, "panel alive", tostring(reaper.time_precise()), false) -- (so Autostart never opens a second one)

@@ -38,14 +38,14 @@ function pg.start_button(env, label)
     do
       local drive = require("drive")
       ImGui.PushStyleVar(ctx, ImGui.StyleVar_FramePadding, 4, 1)
-      local ch, on = ImGui.Checkbox(ctx, "Keep a copy on Google Drive", drive.wanted())
+      local ch, on = ImGui.Checkbox(ctx, "Keep a copy on " .. drive.label(drive.service() ~= "" and drive.service() or "google"), drive.wanted())
       ImGui.PopStyleVar(ctx)
       if ch then
         reaper.SetExtState(band.SECTION, "drive make", on and "" or "off", true)
         if on and reaper.GetExtState(band.SECTION, "drive_root") == "off" then reaper.SetExtState(band.SECTION, "drive_root", "", true) end
       end
-      ImGui.SetItemTooltip(ctx, "Makes the studio's folder in your My Drive. What someone does alone then reaches the others whenever they next open the project. " ..
-        "You share the folder with them at drive.google.com. Change it any time in Settings.")
+      ImGui.SetItemTooltip(ctx, "Makes the studio's folder in your cloud drive (Settings > Cloud copy picks Google Drive, Dropbox, OneDrive, iCloud Drive or Box).\n" ..
+        "What someone does alone then reaches the others whenever they next open the project. You share the folder with them there, able to edit.")
     end
     local go = ImGui.Button(ctx, "Start") or ImGui.IsKeyPressed(ctx, ImGui.Key_Enter) or ImGui.IsKeyPressed(ctx, ImGui.Key_KeypadEnter)
     ImGui.SameLine(ctx)
@@ -56,7 +56,7 @@ function pg.start_button(env, label)
         band.log("started " .. band.info(root).name .. " in " .. root)
         local drive = require("drive")
         local made = drive.wanted() and drive.make(band.info(root).drive)
-        if made then band.log("made " .. band.info(root).drive .. " in your Google Drive: share it with the others at drive.google.com, as Editor") end
+        if made then band.log("made " .. band.info(root).drive .. " in your " .. drive.label(drive.service_of(made)) .. ": share it with the others there, able to edit") end
         pg.root = root
         env.reload_cfg()
         ImGui.CloseCurrentPopup(ctx)

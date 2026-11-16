@@ -1,9 +1,11 @@
 -- Each person's colour, and tracks that show who's working on them (James, 2026-11-01).
 -- Everyone has a colour: their own pick (Setup > Options), else a default from the palette nobody has picked, the
--- same on every machine. Drawings use it ("Mine"); tracks may too, as this machine chooses (ExtState "track colours"):
---   "band"     the band's colours only
---   "working"  the default: the band's colours, but a track someone else is editing (its last 15 s, lib/presence.lua) or has
---              claimed shows their colour, and goes back once that ends
+-- same on every machine. Drawings use it ("Mine"); tracks may too, as this machine chooses (ExtState "colour base", and
+-- "colour working" / "colour new" on or off; before 0.58.79 one choice, "track colours"):
+--   "band"     the studio's colours, with either or both of these on top (both by default: James, 0.58.79):
+--              who's working: a track someone else is editing (its last 15 s, lib/presence.lua) or has claimed shows their colour
+--              what's new: a track someone else changed shows their colour, briefly while you're here, and until you say OK
+--              to "Since you were last here" for what came while you were away
 --   "people"   every track in the colour of whoever is editing it, claimed it, or made it
 -- A person's colour on a track is only ever shown here: the band's colour waits in the track's P_EXT:band_colour
 -- meanwhile, and mirror, restore points and the rest read and write that one (band.track_colour), so nothing sends,
@@ -13,16 +15,26 @@ local band = require("band")
 local people = {}
 
 people.PALETTE = { 0xFF5A5A, 0x4CC2FF, 0x7BE07B, 0xFFC24C, 0xC88BFF, 0xFF8BD0, 0x5AE0D0, 0xFF9F5A }
-people.MODES = { { "band", "Studio colours", "Tracks keep the colours the studio gave them." },
-  { "working", "Studio colours + show who's working", "The studio's colours, but a track someone else is editing or has claimed shows their colour until they're done." },
-  { "people", "Whose track", "Every track in the colour of whoever is editing it, claimed it, or made it." },
-  { "new", "Studio colours + what's new", "A track somebody changed in the last hour shows in their colour, fading back to the studio's as it gets older. It keeps itself up to date." } }
-people.NEW_FOR = 3600
--- How strongly a change this old shows: full for 5 minutes, then fading to nothing. Pure.
+people.MODES = { { "band", "Studio colours", "Tracks keep the colours the studio gave them, with what's ticked below on top." },
+  { "people", "Whose track", "Every track in the colour of whoever is editing it, claimed it, or made it." } }
+people.SHOWS = { { "working", "Show who's working", "A track someone else is editing or has claimed shows their colour until they're done." },
+  { "new", "Show what's new", "A track someone else changes shows their colour for a minute or two. What changed while you were away stays in their\n" ..
+    "colour until you press OK on 'Since you were last here' at the top of Home." } }
+people.NEW_FULL, people.NEW_FOR = 20, 120
+-- How strongly a change this old shows while you're here: full for 20 s, then fading to nothing by 2 minutes. Pure.
 function people.fade(age)
-  if age < 300 then return 1 end
+  if age < people.NEW_FULL then return 1 end
   if age >= people.NEW_FOR then return 0 end
-  return 1 - (age - 300) / (people.NEW_FOR - 300)
+  return 1 - (age - people.NEW_FULL) / (people.NEW_FOR - people.NEW_FULL)
+end
+-- "2026-11-16T14:11:00Z" -> "20261116-141100Z", the form changes' ids carry. Pure.
+function people.compact(iso) return ((iso or ""):gsub("[-:]", ""):gsub("T", "-")) end
+-- How strongly a track shows someone's change with id stamp `stamp` (compact UTC), `age` seconds old: in full while it came while
+-- you were away (after `last_here`, before this computer opened the project at `opened`) and you haven't said OK since (`seen`),
+-- else as people.fade. -> strength, held for OK. Pure.
+function people.strength(stamp, age, last_here, opened, seen)
+  if last_here ~= "" and stamp > last_here and stamp <= opened and not (seen ~= "" and seen >= opened) then return 1, true end
+  return people.fade(age), false
 end
 
 local function file(root, user) return root .. "/_band/colours/" .. (user:gsub("[^%w%-_ ]", "")) .. ".json" end
@@ -79,7 +91,17 @@ function people.pick(cfg, rgb)
   end
   cache[cfg.root] = nil
 end
-function people.mode() local m = reaper.GetExtState(band.SECTION, "track colours"); return m ~= "" and m or "working" end
+function people.mode()
+  local m = reaper.GetExtState(band.SECTION, "colour base")
+  if m == "" then m = reaper.GetExtState(band.SECTION, "track colours") end -- (before 0.58.79)
+  return m == "people" and "people" or "band"
+end
+-- Is "working" or "new" on? Both are unless switched off, or "Studio colours" alone was picked before 0.58.79.
+function people.shows(what)
+  local v = reaper.GetExtState(band.SECTION, "colour " .. what)
+  if v ~= "" then return v == "on" end
+  return reaper.GetExtState(band.SECTION, "track colours") ~= "band"
+end
 
 -- Who a track shows, in this machine's mode: someone else editing it, else its claimant, else (Whose track) whoever
 -- made it. `editing`: oid -> user (bandmates' edit holds); `claims`: lower track name -> { user } (sync.authority).
@@ -110,10 +132,10 @@ function people.who(tr, mode, editing, claims, cfg)
   return nil
 end
 
--- What's new: each track's newest change. -> track -> { user, age }. Read every 20 s: it looks at every item.
-local new_at, new_of = {}, {}
+-- What's new: each track's newest change by someone in `names`. -> track -> { user, age, stamp }. Read every 5 s: it looks at every item.
+local new_at, new_of, opened = {}, {}, {}
 local function newest_changes(proj, names)
-  if new_of[proj] and reaper.time_precise() - new_at[proj] < 20 then return new_of[proj] end
+  if new_of[proj] and reaper.time_precise() - new_at[proj] < 5 then return new_of[proj] end
   local mirror, out = require("mirror"), {}
   local now = os.time(os.date("!*t"))
   local prefix = {}
@@ -132,15 +154,17 @@ local function newest_changes(proj, names)
     look(mirror.track_oid(tr))
     for k = 0, reaper.CountTrackMediaItems(tr) - 1 do look(mirror.item_oid(reaper.GetTrackMediaItem(tr, k))) end
     local y, mo, d, h, mi, s = best:match("(%d%d%d%d)(%d%d)(%d%d)%-(%d%d)(%d%d)(%d%d)")
-    if y and who then out[tr] = { user = who, age = now - os.time({ year = y, month = mo, day = d, hour = h, min = mi, sec = s, isdst = false }) } end
+    if y and who then out[tr] = { user = who, stamp = best, age = now - os.time({ year = y, month = mo, day = d, hour = h, min = mi, sec = s, isdst = false }) } end
   end
   new_at[proj], new_of[proj] = reaper.time_precise(), out
   return out
 end
 
--- Show it: each mirrored track in its person's colour, or the band's. `peers`: bandmates' status files.
-function people.paint(proj, cfg, peers, claims)
-  local mode, editing, others = people.mode(), {}, {}
+-- Show it: each mirrored track in its person's colour, or the band's. `peers`: bandmates' status files. `where`: "<song>/<room>",
+-- for what came while you were away (its "last here", lib/extras.lua).
+function people.paint(proj, cfg, peers, claims, where)
+  local base, editing, others = people.mode(), {}, {}
+  local mode = base == "people" and "people" or people.shows("working") and "working" or "band"
   for _, st in ipairs(peers or {}) do
     if type(st.user) == "string" then
       others[#others + 1] = st.user
@@ -149,22 +173,42 @@ function people.paint(proj, cfg, peers, claims)
   end
   local colours = mode ~= "band" and people.colours(cfg.root, others) or {}
   local mirror = require("mirror")
-  local new = mode == "new" and newest_changes(proj, people.colours(cfg.root, { cfg.user, table.unpack(others) }))
+  local new
+  if base == "band" and people.shows("new") then
+    local names = people.colours(cfg.root, { cfg.user, table.unpack(others) })
+    names[cfg.user] = nil -- (your own changes you know about)
+    new = newest_changes(proj, names)
+    opened[proj] = opened[proj] or os.date("!%Y%m%d-%H%M%SZ")
+  end
+  local last_here = where and people.compact(reaper.GetExtState(band.SECTION, "last here " .. where)) or ""
+  local seen = where and reaper.GetExtState(band.SECTION, "new seen " .. where) or ""
+  local held = 0
   for i = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, i)
     if not mirror.local_track(tr) then
       local u = people.who(tr, mode, editing, claims or {}, cfg)
       local rgb = u and (colours[u] or people.colours(cfg.root, { u })[u])
       local fresh = new and not rgb and new[tr]
-      if fresh and people.fade(fresh.age) > 0 then
-        local base, c = band.track_colour(tr), colours[fresh.user] or people.colours(cfg.root, { fresh.user })[fresh.user]
-        local from = base and base ~= 0 and (function() local r, g, b = reaper.ColorFromNative(base & 0xFFFFFF); return (r << 16) | (g << 8) | b end)() or 0x808080
-        rgb = require("colours").mix(from, c, people.fade(fresh.age))
+      local strength, away = 0, false
+      if fresh then strength, away = people.strength(fresh.stamp, fresh.age, last_here, opened[proj], seen) end
+      if away then held = held + 1 end
+      if strength > 0 then
+        local bc, c = band.track_colour(tr), colours[fresh.user] or people.colours(cfg.root, { fresh.user })[fresh.user]
+        local from = bc and bc ~= 0 and (function() local r, g, b = reaper.ColorFromNative(bc & 0xFFFFFF); return (r << 16) | (g << 8) | b end)() or 0x808080
+        rgb = require("colours").mix(from, c, strength)
       end
       band.show_colour(tr, rgb and (reaper.ColorToNative(rgb >> 16, (rgb >> 8) & 0xFF, rgb & 0xFF) | 0x1000000) or nil)
     end
   end
+  -- (the panel's "Since you were last here" shows while tracks are held for it, and its OK lets them go: people.seen)
+  if where then reaper.SetExtState(band.SECTION, "new held " .. where, held > 0 and tostring(held) or "", false) end
 end
+-- OK on "Since you were last here": tracks showing what came while you were away go back to the studio's colours.
+function people.seen(where)
+  reaper.SetExtState(band.SECTION, "new seen " .. where, os.date("!%Y%m%d-%H%M%SZ"), true)
+  reaper.SetExtState(band.SECTION, "new held " .. where, "", false)
+end
+function people.held(where) return tonumber(reaper.GetExtState(band.SECTION, "new held " .. where)) or 0 end
 
 -- Settings: your colour, and how tracks look here. (In this file: the panel is near Lua's 200-locals limit.)
 function people.colour_options(ctx, ImGui, cfg)
@@ -200,14 +244,23 @@ function people.colour_options(ctx, ImGui, cfg)
 end
 function people.track_options(ctx, ImGui)
   ImGui.SeparatorText(ctx, "Track colours here")
+  local function next_to(words)
+    ImGui.SameLine(ctx)
+    if ImGui.GetContentRegionAvail(ctx) < ImGui.CalcTextSize(ctx, words) + 40 then ImGui.NewLine(ctx) end
+  end
   for i, m in ipairs(people.MODES) do
-    if i > 1 then
-      ImGui.SameLine(ctx)
-      if ImGui.GetContentRegionAvail(ctx) < ImGui.CalcTextSize(ctx, m[2]) + 40 then ImGui.NewLine(ctx) end
-    end
-    if ImGui.RadioButton(ctx, m[2] .. "##trackcolours", people.mode() == m[1]) then reaper.SetExtState(band.SECTION, "track colours", m[1], true) end
+    if i > 1 then next_to(m[2]) end
+    if ImGui.RadioButton(ctx, m[2] .. "##trackcolours", people.mode() == m[1]) then reaper.SetExtState(band.SECTION, "colour base", m[1], true) end
     ImGui.SetItemTooltip(ctx, m[3] .. " Only on this computer: nobody else's colours change.")
   end
+  ImGui.BeginDisabled(ctx, people.mode() ~= "band")
+  for i, w in ipairs(people.SHOWS) do -- (on top of the studio's colours, one or both: James, 0.58.79)
+    if i > 1 then next_to(w[2]) end
+    local ch, v = ImGui.Checkbox(ctx, w[2] .. "##colour" .. w[1], people.shows(w[1]))
+    if ch then reaper.SetExtState(band.SECTION, "colour " .. w[1], v and "on" or "off", true) end
+    ImGui.SetItemTooltip(ctx, w[3] .. "\nOnly on this computer.")
+  end
+  ImGui.EndDisabled(ctx)
 end
 
 return people

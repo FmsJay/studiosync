@@ -33,26 +33,89 @@ function drive.find(places, subdirs, has, name)
   return nil, missing
 end
 
--- Where Google Drive for desktop may put My Drive: a drive letter on Windows (G: unless it's taken; one per
--- signed-in account), the user folder (Windows mirroring), ~/Library/CloudStorage/GoogleDrive-<account> on macOS.
-local function places()
+-- The cloud drives a studio's copy can live in (James, 0.58.79: "compatibility for other drive services like Dropbox"). Each is
+-- a folder its desktop app keeps in step with the cloud, and the studio's folder is one the owner shares with everyone in that service
+-- (it shows up in each person's own drive, by name), so finding it by name works the same in all of them.
+drive.SERVICES = {
+  { "google", "Google Drive", "On drive.google.com: Shared with me > right-click %s > Organize > Add shortcut > My Drive, keeping the name." },
+  { "dropbox", "Dropbox", "On dropbox.com: Shared > %s > Add to Dropbox (it lands in your Dropbox folder, keeping the name)." },
+  { "onedrive", "OneDrive", "On onedrive.com: Shared > %s > Add shortcut to My files." },
+  { "icloud", "iCloud Drive", "Accept the invitation to %s (Mail or Files): it shows up in iCloud Drive." },
+  { "box", "Box", "Accept the invitation to %s on box.com: it shows up in your Box folder (Box Drive)." },
+}
+-- Which service a folder belongs to, from its path: "google", "dropbox"... or nil. Pure.
+function drive.service_of(path)
+  local p = (path or ""):lower()
+  if p:find("/my drive", 1, true) or p:find("googledrive%-") then return "google" end
+  if p:find("dropbox", 1, true) then return "dropbox" end
+  if p:find("onedrive", 1, true) then return "onedrive" end
+  if p:find("icloud", 1, true) or p:find("com~apple~clouddocs", 1, true) then return "icloud" end
+  if p:find("/box/", 1, true) or p:find("/box$") or p:find("box%-box") then return "box" end
+  return nil
+end
+function drive.label(service)
+  for _, s in ipairs(drive.SERVICES) do if s[1] == service then return s[2] end end
+  return "your cloud drive"
+end
+-- The service this computer uses for studio copies: ExtState "drive service" ("" = whichever is here, Google Drive first).
+function drive.service() return reaper.GetExtState(band.SECTION, "drive service") end
+
+-- Where each service's desktop app may keep its folder. Google Drive for desktop: a drive letter on Windows (G: unless it's taken;
+-- one per signed-in account), the user folder (Windows mirroring), ~/Library/CloudStorage/GoogleDrive-<account> on macOS.
+-- Dropbox: the paths in its info.json, else ~/Dropbox; OneDrive: its environment variables or CloudStorage/OneDrive-*; iCloud Drive:
+-- ~/iCloudDrive (Windows) or Mobile Documents (macOS); Box: ~/Box or CloudStorage/Box-Box. `only`: one service's.
+local function places(only)
   local out = {}
-  if reaper.GetOS():find("^Win") then -- (drive letters only on Windows: a Mac looked at 23 that can't exist)
-    out[1] = "G:/My Drive"
+  local function add(service, path) if path and (only == nil or only == "" or only == service) then out[#out + 1] = path end end
+  local win = reaper.GetOS():find("^Win")
+  local home = ((win and os.getenv("USERPROFILE") or os.getenv("HOME")) or ""):gsub("\\", "/")
+  if win then -- (drive letters only on Windows: a Mac looked at 23 that can't exist)
+    add("google", "G:/My Drive")
     for c = ("D"):byte(), ("Z"):byte() do
-      if c ~= ("G"):byte() then out[#out + 1] = string.char(c) .. ":/My Drive" end
+      if c ~= ("G"):byte() then add("google", string.char(c) .. ":/My Drive") end
     end
   end
-  local up = os.getenv("USERPROFILE")
-  if up then out[#out + 1] = up:gsub("\\", "/") .. "/My Drive" end
-  local cs = (os.getenv("HOME") or "") .. "/Library/CloudStorage"
-  for _, d in ipairs(band.subdirs(cs)) do
-    if d:match("^GoogleDrive%-") then out[#out + 1] = cs .. "/" .. d .. "/My Drive" end
+  if home ~= "" then add("google", home .. "/My Drive") end
+  local cs = home .. "/Library/CloudStorage"
+  local cloud = band.subdirs(cs)
+  for _, d in ipairs(cloud) do
+    if d:match("^GoogleDrive%-") then add("google", cs .. "/" .. d .. "/My Drive") end
   end
+  for _, info in ipairs({ (os.getenv("LOCALAPPDATA") or ""):gsub("\\", "/") .. "/Dropbox/info.json", (os.getenv("APPDATA") or ""):gsub("\\", "/") .. "/Dropbox/info.json",
+      home .. "/.dropbox/info.json" }) do
+    local j = band.read_json(info)
+    if type(j) == "table" then
+      for _, kind in ipairs({ "personal", "business" }) do
+        if type(j[kind]) == "table" and type(j[kind].path) == "string" then add("dropbox", (j[kind].path:gsub("\\", "/"))) end
+      end
+    end
+  end
+  for _, d in ipairs(cloud) do if d:match("^Dropbox") then add("dropbox", cs .. "/" .. d) end end
+  add("dropbox", home .. "/Dropbox")
+  for _, v in ipairs({ "OneDriveConsumer", "OneDriveCommercial", "OneDrive" }) do
+    local p = os.getenv(v)
+    if p and p ~= "" then add("onedrive", (p:gsub("\\", "/"))) end
+  end
+  for _, d in ipairs(cloud) do if d:match("^OneDrive") then add("onedrive", cs .. "/" .. d) end end
+  add("icloud", win and (home .. "/iCloudDrive") or (home .. "/Library/Mobile Documents/com~apple~CloudDocs"))
+  for _, d in ipairs(cloud) do if d:match("^Box") then add("box", cs .. "/" .. d) end end
+  add("box", home .. "/Box")
   return out
 end
 
 local looked = {} -- per band (its Drive folder's name): { found, at, missing, away }
+function drive.forget() looked = {} end -- (the service was changed: look again now)
+-- The service the studio's copy is in here (or would be), in words: "Google Drive", "Dropbox"...
+function drive.name(cfg)
+  local r = drive.root(cfg)
+  return drive.label(r and drive.service_of(r) or drive.service_of(drive.missing) or (drive.service() ~= "" and drive.service()) or "google")
+end
+-- How someone adds the studio's shared folder `folder` to their drive, in the service the copy is in.
+function drive.share_hint(cfg, folder)
+  local svc = drive.service_of(drive.root(cfg) or drive.missing) or (drive.service() ~= "" and drive.service()) or "google"
+  for _, s in ipairs(drive.SERVICES) do if s[1] == svc then return (s[3]:format(folder)) end end
+  return ""
+end
 drive.missing = nil -- a My Drive with no StudioSync folder in it (the shared folder isn't added yet), for the panel
 function drive.root(cfg)
   local r = reaper.GetExtState(band.SECTION, "drive_root")
@@ -63,7 +126,7 @@ function drive.root(cfg)
   looked[info.drive] = l
   if reaper.time_precise() - l.at >= 300 then
     l.at = reaper.time_precise()
-    l.found, l.missing = drive.find(places(), band.subdirs,
+    l.found, l.missing = drive.find(places(drive.service()), band.subdirs,
       function(p) return reaper.EnumerateSubdirectories(p, 0) ~= nil or reaper.EnumerateFiles(p, 0) ~= nil end, info.drive)
     -- the band's Drive was here and isn't now: that Google account signed out, or Drive switched to another one (Mac,
     -- 2026-10-31: a personal and a band account on one machine). Said, not guessed at: drive.away, for the panel.
@@ -82,7 +145,7 @@ end
 -- -> its path, or nil when there's no My Drive here. shortcut: the first My Drive found, with several Google accounts signed in; it can be moved at drive.google.com.
 function drive.wanted() return reaper.GetExtState(band.SECTION, "drive make") ~= "off" and reaper.GetExtState(band.SECTION, "drive_root") ~= "off" end
 function drive.make(name)
-  for _, md in ipairs(places()) do
+  for _, md in ipairs(places(drive.service())) do
     if reaper.EnumerateSubdirectories(md, 0) ~= nil or reaper.EnumerateFiles(md, 0) ~= nil then
       reaper.RecursiveCreateDirectory(md .. "/" .. name, 0)
       looked[name] = nil

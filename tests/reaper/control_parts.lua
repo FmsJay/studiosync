@@ -131,9 +131,9 @@ check(song_s[SONG] == sdir .. "/chat" and song_s[SONG .. " / main"] and song_s[S
 check(band_s.Studio == root .. "/_band/chat" and band_s[SONG] and band_s[SONG .. " / side"], "the group holds everything")
 
 -- ---- track colours
-reaper.DeleteExtState(band.SECTION, "track colours", false)
-check(people.mode() == "working", "show who's working is the default")
-check(people.MODES[2][2] == "Studio colours + show who's working", "and what it's called")
+for _, k in ipairs({ "track colours", "colour base", "colour working", "colour new" }) do reaper.DeleteExtState(band.SECTION, k, false) end
+check(people.mode() == "band" and people.shows("working") and people.shows("new"), "studio colours, showing who's working and what's new, is the default")
+check(people.SHOWS[1][2] == "Show who's working" and people.SHOWS[2][2] == "Show what's new", "and what they're called")
 
 -- ---- a plain copy's text
 local text = [[

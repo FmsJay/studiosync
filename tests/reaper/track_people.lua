@@ -12,7 +12,15 @@ local function say(s) out[#out + 1] = s end
 local function check(ok, what) if not ok then fails = fails + 1 end; say((ok and "PASS " or "FAIL ") .. what) end
 local function native(rgb) return reaper.ColorToNative(rgb >> 16, (rgb >> 8) & 0xFF, rgb & 0xFF) | 0x1000000 end
 local front = reaper.EnumProjects(-1)
-local mode_was = reaper.GetExtState(band.SECTION, "track colours")
+local colour_was = {}
+for _, k in ipairs({ "track colours", "colour base", "colour working", "colour new" }) do colour_was[k] = reaper.GetExtState(band.SECTION, k) end
+-- the track colours shown here (lib/people.lua, 0.58.79): "band" alone, "working", "new", or "people"
+local function colour_mode(m)
+  reaper.DeleteExtState(band.SECTION, "track colours", false)
+  reaper.SetExtState(band.SECTION, "colour base", m == "people" and "people" or "band", false)
+  reaper.SetExtState(band.SECTION, "colour working", m == "working" and "on" or "off", false)
+  reaper.SetExtState(band.SECTION, "colour new", m == "new" and "on" or "off", false)
+end
 reaper.Main_OnCommand(40859, 0); local p = reaper.EnumProjects(-1)
 local ok, err = pcall(function()
   reaper.RecursiveCreateDirectory(root .. "/plugins", 0)
@@ -39,11 +47,11 @@ local ok, err = pcall(function()
   local before = {}
   for i = 0, 3 do before[i] = mirror.track_hash(mirror.track_state(p, reaper.GetTrack(p, i))) end
   -- band's colours: nothing changes
-  reaper.SetExtState(band.SECTION, "track colours", "band", false)
+  colour_mode("band")
   people.paint(p, cfg, peers, claims)
   check(shown(keys) == BAND[1] and shown(bass) == BAND[2], "Band's colours: tracks keep them")
   -- show who's working: someone editing (an item on the track), someone's claim; not my own edits
-  reaper.SetExtState(band.SECTION, "track colours", "working", false)
+  colour_mode("working")
   people.paint(p, cfg, peers, claims)
   check(shown(keys) == native(0x123456), "Mac editing an item on Keys: Keys in Mac's colour")
   check(shown(bass) == native(col.Laptop), "Bass is Laptop's claim: Laptop's colour")
@@ -56,11 +64,11 @@ local ok, err = pcall(function()
   mirror.set_track_state(p, keys, { name = "Keys", color = band.color_out(native(0x00FF00)) })
   check(shown(keys) == native(0x123456) and band.track_colour(keys) == native(0x00FF00), "the band's new colour waits while Mac's shows")
   -- whose track: the maker too
-  reaper.SetExtState(band.SECTION, "track colours", "people", false)
+  colour_mode("people")
   people.paint(p, cfg, peers, claims)
   check(shown(gtr) == native(col.Laptop) and shown(vox) == native(col.James), "Whose track: Gtr by Laptop, Vox by me (made them)")
   -- everyone done, nothing claimed, back to Show who's working: the band's colours, as they are now
-  reaper.SetExtState(band.SECTION, "track colours", "working", false)
+  colour_mode("working")
   people.paint(p, cfg, {}, {})
   check(shown(keys) == native(0x00FF00) and shown(bass) == BAND[2] and shown(gtr) == BAND[3] and shown(vox) == BAND[4], "done: every track back in the band's colour")
   check(band.track_ext(keys, "band_colour") == "", "and nothing left aside")
@@ -71,7 +79,7 @@ local ok, err = pcall(function()
   check(people.mine(cfg) == people.PALETTE[1], "Default: back to the palette's")
 end)
 if not ok then say("ERROR " .. tostring(err)); fails = fails + 1 end
-if mode_was ~= "" then reaper.SetExtState(band.SECTION, "track colours", mode_was, false) else reaper.DeleteExtState(band.SECTION, "track colours", false) end
+for k, v in pairs(colour_was) do if v ~= "" then reaper.SetExtState(band.SECTION, k, v, true) else reaper.DeleteExtState(band.SECTION, k, true) end end
 if reaper.ValidatePtr2(0, p, "ReaProject*") then
   reaper.SelectProjectInstance(p)
   reaper.Main_SaveProjectEx(p, D .. "/track_people.rpp", 8)

@@ -58,7 +58,12 @@ installs; **Let them in**, never *Guest, for a day*, for band members.
 Everyone: wired internet if possible, headphones, the audio interface plugged in before running the line; Windows 11 (or 10 with App
 Installer); Mac password ready; press Allow on Local Network, Microphone and Firewall; after REAPER's "audio device?" question, pick the
 interface in Preferences > Audio; skip Tailscale and Google Drive sign-in unless asked; plug-in pack: yes. Use Discord or Zoom to talk
-(the panel's Call button), Real time mode for hearing each other play, Play/Jam off.
+(the panel's Call button), Real time mode for hearing each other play, Play/Jam off. On Windows with REAPER on ASIO, Discord may lose the
+interface: Health says so, and Settings > Advanced > Calls lists the ways round it (Talk in Real time mode first).
+
+Feedback (0.58.79): the panel's **Feedback** button (top bar, and on the start screen) takes a bug report, feedback or a feature request,
+with a subject and/or a body. It saves to the studio's `_band/feedback/` (one Markdown file each, with versions and the last activity
+lines) and/or opens a filled-in GitHub issue for the person to submit. After the test, those files are what gets read and worked through.
 
 Before anyone opens the song: every computer on the newest StudioSync (Health shows each person's version; an older one replays the
 tempo map on every open and resends beat-timebase items). Claim your track before recording on it, arm it to be heard in Real time mode,
@@ -70,6 +75,15 @@ others are told the driver's away), that "put back" banners mean someone else ow
 Watch and write down: install time per computer and where it stalled; seconds from stopping a recording to the take landing elsewhere,
 and whether Health said *direct* or *relay*; every "put back" banner and whether its person understood it; SonoBus joins and latency; a
 deliberate REAPER kill mid-session and the recovery; Sync and exit times; any `.sync-conflict` file; everything a newcomer asked aloud.
+
+## 0.58.79, 2026-11-16 (James's requests)
+
+Home no longer lists "You made these": tracks you made that nobody claimed go onto your claims (not while you drive, not in Driver only
+or Admins only; letting one go with its x or Release all claims sticks, P_EXT:band_let_go). Chat: Notes and Likes are tabs of their own;
+Draw and Hide drawings are buttons beside the radio buttons and the Everyone box. Track colours: Studio colours with Show who's working
+and Show what's new, both on by default; what's new shows a bandmate's change briefly (20 s full, gone by 2 min) and keeps what came while
+you were away until OK on "Since you were last here". Cloud copy: Google Drive, Dropbox, OneDrive, iCloud Drive or Box (Settings >
+Cloud copy). Call apps beside REAPER: Health row and Settings > Advanced > Calls. Feedback button. 46 suites pass.
 
 ## Results, 2026-11-15 (0.58.68; fixes in 0.58.69 and ReaPersona 5.8.2)
 

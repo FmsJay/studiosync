@@ -14,7 +14,15 @@ local out, fails = {}, 0
 local function check(ok, what) if not ok then fails = fails + 1 end; out[#out + 1] = (ok and "PASS " or "FAIL ") .. what end
 local front = reaper.EnumProjects(-1)
 reaper.Main_OnCommand(40859, 0); local p = reaper.EnumProjects(-1)
-local mode_was = reaper.GetExtState(band.SECTION, "track colours")
+local colour_was = {}
+for _, k in ipairs({ "track colours", "colour base", "colour working", "colour new" }) do colour_was[k] = reaper.GetExtState(band.SECTION, k) end
+-- the track colours shown here (lib/people.lua, 0.58.79): "band" alone, "working", "new", or "people"
+local function colour_mode(m)
+  reaper.DeleteExtState(band.SECTION, "track colours", false)
+  reaper.SetExtState(band.SECTION, "colour base", m == "people" and "people" or "band", false)
+  reaper.SetExtState(band.SECTION, "colour working", m == "working" and "on" or "off", false)
+  reaper.SetExtState(band.SECTION, "colour new", m == "new" and "on" or "off", false)
+end
 local function watch() repeat mirror.watch(p, A, song, room, { can = yes, mode = "claims" }) until not mirror.more end
 local function sent()
   local dir, n = sync.room_dir(A, song, room) .. "/events", 0
@@ -51,21 +59,22 @@ local ok, err = pcall(function()
   check(n == 4 and col(1) == 0, "as its track takes the colour off")
   watch()
   -- what's new: only here, and it fades
-  reaper.SetExtState(band.SECTION, "track colours", "new", false)
+  colour_mode("new")
   band.set_track_colour(tr, reaper.ColorToNative(10, 20, 30) | 0x1000000)
   watch()
   local before = sent()
-  people.paint(p, A, {}, {})
+  local Bee = { user = "Bee", root = root } -- (what's new shows others' changes: James's, seen by Bee)
+  people.paint(p, Bee, { { user = "James" } }, {})
   local shown = reaper.GetMediaTrackInfo_Value(tr, "I_CUSTOMCOLOR")
   check(shown ~= (reaper.ColorToNative(10, 20, 30) | 0x1000000), "a track just changed shows in its person's colour")
   check(band.track_colour(tr) == (reaper.ColorToNative(10, 20, 30) | 0x1000000), "the studio's colour is kept under it")
   watch()
   check(sent() == before, "and showing it sends nothing (" .. (sent() - before) .. ")")
-  reaper.SetExtState(band.SECTION, "track colours", "band", false)
-  people.paint(p, A, {}, {})
+  colour_mode("band")
+  people.paint(p, Bee, { { user = "James" } }, {})
   check(reaper.GetMediaTrackInfo_Value(tr, "I_CUSTOMCOLOR") == (reaper.ColorToNative(10, 20, 30) | 0x1000000), "off again, the studio's colour is back")
 end)
-if mode_was ~= "" then reaper.SetExtState(band.SECTION, "track colours", mode_was, true) else reaper.DeleteExtState(band.SECTION, "track colours", true) end
+for k, v in pairs(colour_was) do if v ~= "" then reaper.SetExtState(band.SECTION, k, v, true) else reaper.DeleteExtState(band.SECTION, k, true) end end
 if not ok then out[#out + 1] = "ERROR " .. tostring(err); fails = fails + 1 end
 reaper.SelectProjectInstance(p)
 reaper.Main_SaveProjectEx(p, D .. "/colour_items.rpp", 8)
