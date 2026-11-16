@@ -574,6 +574,35 @@ do
   t.automode = 1
   assert(mirror.track_line(t, false, false) == plain .. "|am1", "Read: it counts")
 end
+-- (0.58.78) a plug-in with an LFO on a knob: its saved data out of the hash, the rest still counts
+do
+  local function chain(data, rate, off, inner)
+    return "<FXCHAIN\nBYPASS 0 0 0\n<VST \"VST: ReaComp (Cockos)\" reacomp.dll 0 \"\" 1\n" .. data .. "\nAAAAAAAAAAA=\n>\nFXID {A}\n" ..
+      "<PROGRAMENV 1:_Ratio " .. (off and 1 or 0) .. " \"Ratio\"\nPARAMBASE 0\nLFO 1\nAUDIOCTL 0\nLFOSPEED " .. rate .. " 0\n>\nWAK 0 0\n" ..
+      "BYPASS 0 0 0\n<VST \"VST: ReaEQ (Cockos)\" reaeq.dll 0 \"\" 2\nZXEx\nAAAAAAAAAAA=\n>\nFXID {B}\nWAK 0 0\n" .. (inner or "") .. ">\n"
+  end
+  local m = mirror.modulated(chain("Y29tcDE=", 0.1))
+  assert(m and m[1] and m[1][1] and not m[2], "the LFO's knob, on the first plug-in")
+  assert(mirror.modulated(chain("Y29tcDE=", 0.1, true)) == nil, "modulation switched off: none")
+  assert(mirror.fx_hash(chain("Y29tcDE=", 0.1)) == mirror.fx_hash(chain("Y29tcDI=", 0.1)), "its data moving: the same hash")
+  assert(mirror.fx_hash(chain("Y29tcDE=", 0.1)) ~= mirror.fx_hash(chain("Y29tcDE=", 0.2)), "its LFO changed: a change")
+  local box = "BYPASS 0 0 0\n<CONTAINER Container \"\"\nBYPASS 0 0 0\n<VST \"VST: ReaGate (Cockos)\" reagate.dll 0 \"\" 3\nQUJD\n>\n" ..
+    "FXID {D}\n<PROGRAMENV 0 0\nAUDIOCTL 1\n>\n>\nFXID {C}\n"
+  local mb = mirror.modulated(chain("Y29tcDE=", 0.1, true, box))
+  assert(mb and mb[3] == true, "a container with an audio-controlled plug-in inside")
+  assert(mirror.fx_hash(chain("Y29tcDE=", 0.1, true, box)) == mirror.fx_hash(chain("Y29tcDE=", 0.1, true, (box:gsub("QUJD", "WFla")))), "its data out of the hash")
+  assert(mirror.fx_hash(chain("Y29tcDE=", 0.1, true, box)) ~= mirror.fx_hash(chain("Y29tcDE=", 0.1, true, (box:gsub("ReaGate", "ReaComp")))), "but what's in it still counts")
+  assert(mirror.knobs_count(chain("Y29tcDE=", 0.1)) and not mirror.knobs_count(chain("Y29tcDE=", 0.1, true)), "its knobs speak for it")
+  -- the same as a take FX, inside an item
+  local function itm(data, off)
+    return "<ITEM\n  POSITION 1\n  <TAKEFX\n    BYPASS 0 0 0\n    <VST \"VST: ReaComp (Cockos)\" reacomp.dll 0 \"\" 1\n      " .. data ..
+      "\n      AAAAAAAAAAA=\n    >\n    FXID {A}\n    <PROGRAMENV 1:_Ratio " .. (off and 1 or 0) .. " \"Ratio\"\n      LFO 1\n    >\n    WAK 0 0\n  >\n  NAME x\n>\n"
+  end
+  assert(mirror.item_hash("T", itm("Y29tcDE=")) == mirror.item_hash("T", itm("Y29tcDI=")), "a take FX's LFO: the item reads the same")
+  assert(mirror.item_hash("T", itm("Y29tcDE=", true)) ~= mirror.item_hash("T", itm("Y29tcDI=", true)), "with it switched off, its data counts")
+  local plain = "<ITEM\n  POSITION 1\n  <TAKEFX\n    <JS foo \"\"\n      1 2 3\n    >\n  >\n>\n"
+  assert(mirror.item_hash("T", plain) == mirror.hash("T\n" .. plain), "a take FX with nothing restless hashes as before")
+end
 -- (0.58.76) what a put-back says differed
 assert(mirror.first_diff({ name = "Bass", vol = 1, icon = "a.png" }, { name = "Bass", vol = 1, icon = "b.png" }) == "icon", "a track's setting")
 assert(mirror.first_diff("<ITEM\nPOSITION 1\nLENGTH 2\n>", "<ITEM\nPOSITION 1\nLENGTH 3\n>") == "LENGTH", "an item's line")

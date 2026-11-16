@@ -62,6 +62,22 @@ local ok, err = pcall(function()
   out[#out + 1] = "B after unfreeze: items " .. kinds(btr) .. ", plug-ins [" .. fxn(btr) .. "]"
   check(kinds(btr) == "midi" and fxn(btr):find("ReaSynth") ~= nil, "B has the MIDI item and ReaSynth back")
   check(pass(pb, B) == 0, "B sends nothing back")
+  -- (0.58.78) A freezes it again, and B unfreezes it: what unfreezing needs came along with the freeze
+  reaper.SelectProjectInstance(pa)
+  reaper.SetOnlyTrackSelected(tr)
+  reaper.Main_OnCommand(41223, 0)
+  pass(pa, A); recv(pb, B)
+  check(kinds(btr) == kinds(tr) and fxn(btr) == fxn(tr), "B matches A's track frozen again")
+  check(pass(pb, B) == 0, "and sends nothing back")
+  reaper.SelectProjectInstance(pb)
+  reaper.SetOnlyTrackSelected(btr)
+  reaper.Main_OnCommand(41644, 0)
+  out[#out + 1] = "B unfroze it: items " .. kinds(btr) .. ", plug-ins [" .. fxn(btr) .. "]"
+  check(kinds(btr) == "midi" and fxn(btr):find("ReaSynth") ~= nil, "B unfreezes a track A froze")
+  out[#out + 1] = "B sent " .. pass(pb, B)
+  recv(pa, A)
+  check(kinds(tr) == "midi" and fxn(tr):find("ReaSynth") ~= nil, "and A has it unfrozen too")
+  check(pass(pa, A) == 0, "A sends nothing back")
 end)
 if not ok then fails = fails + 1; out[#out + 1] = "ERROR " .. tostring(err) end
 for _, p in pairs({ pa, pb }) do

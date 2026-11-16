@@ -52,12 +52,14 @@ function plugins.publish(cfg)
   return #names
 end
 
--- What every published list has in common: set of keys, and who published (lists under 90 days old). Pure
--- over `lists` ({ {user, names} }).
+-- What every published list has in common: set of keys, who published (lists under 90 days old), and which kinds of
+-- system they're on ({ mac = true, ... }). Pure over `lists` ({ {user, names, os} }).
 function plugins.common(lists)
-  local count, members = {}, {}
+  local count, members, systems = {}, {}, {}
   for _, l in ipairs(lists) do
     members[#members + 1] = l.user
+    local o = tostring(l.os or ""):lower()
+    systems[(o:find("osx") or o:find("mac")) and "mac" or o:find("win") and "win" or o ~= "" and "linux" or "?"] = true
     local once = {}
     for _, k in ipairs(l.names or {}) do
       if not once[k] then once[k] = true; count[k] = (count[k] or 0) + 1 end
@@ -65,7 +67,18 @@ function plugins.common(lists)
   end
   local set = {}
   for k, n in pairs(count) do if n == #lists then set[k] = true end end
-  return set, members
+  return set, members, systems
+end
+-- Whether a chain saved with this plug-in loads on every kind of system in the band: an AU is a Mac's only, so a Mac's chain
+-- with it is silent on Windows and Linux even where the VST3 of the same plug-in is installed (plugins.key counts them as
+-- one; prints and stand-ins went by that. Plug-ins review, 0.58.76). Pure.
+function plugins.loads_everywhere(name, systems)
+  local kind = plugins.kind(name) or ""
+  for o in pairs(systems or {}) do
+    if (kind == "AU" or kind == "AUi") and o ~= "mac" then return false end
+    if (kind == "DX" or kind == "DXi") and o ~= "win" then return false end
+  end
+  return true
 end
 
 function plugins.band(cfg)

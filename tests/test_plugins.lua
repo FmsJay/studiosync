@@ -26,4 +26,10 @@ assert(t2:find("reaeq.dll=EQ|StudioSync", 1, true) and t2:find("old.dll=Delay\n"
 assert(t2:find("[category]\nAG12.vst3=StudioSync\n", 1, true) and t2:find("[developer]\nreaeq.dll=Cockos", 1, true), "added, developers kept: " .. t2)
 assert(plugins.tags_ini(t2, { ["reaeq.dll"] = true, ["AG12.vst3"] = true }) == t2, "unchanged the second time")
 assert(plugins.tags_ini("", { ["x.dll"] = true }) == "[category]\nx.dll=StudioSync\n", "from nothing")
+-- (0.58.78) an AU loads on a Mac only
+local _, _, sys = plugins.common({ { user = "Chilio", names = {}, os = "macOS-arm64" }, { user = "James", names = {}, os = "Win64" } })
+assert(sys.mac and sys.win, "both kinds of system")
+assert(not plugins.loads_everywhere("AU: Fake Delay (FakeCo)", sys) and plugins.loads_everywhere("VST3: Fake Delay (FakeCo)", sys), "an AU doesn't load on Windows")
+assert(plugins.loads_everywhere("AUi: Fake Synth (FakeCo)", { mac = true }), "a band of Macs")
+assert(not plugins.loads_everywhere("DX: Old Reverb", { win = true, linux = true }), "DirectX is Windows' only")
 print("ok")

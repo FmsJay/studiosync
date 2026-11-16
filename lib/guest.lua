@@ -104,6 +104,7 @@ function guest.read_back(proj, from, to)
   local pos = reaper.GetMediaItemInfo_Value(it, "D_POSITION")
   local n = math.floor((to - from) * sr)
   local buf = reaper.new_array(n * 2)
+  buf.clear() -- (not zeroed when made, and nothing is written past the take's end. Linux test, 0.58.78)
   reaper.GetAudioAccessorSamples(acc, sr, 2, from - pos, n, buf)
   reaper.DestroyAudioAccessor(acc)
   local t, out = buf.table(), {}

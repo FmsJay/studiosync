@@ -278,6 +278,7 @@ function prep.same_audio(proj, a, b)
       local ba, bb = reaper.new_array(chunk * nch), reaper.new_array(chunk * nch)
       while ok and pos < total do
         local n = math.min(chunk, total - pos)
+        ba.clear(); bb.clear() -- (nothing is written past a take's end: the last chunk kept the one before. Linux test, 0.58.78)
         reaper.GetAudioAccessorSamples(acca, sr, nch, pos / sr, n, ba)
         reaper.GetAudioAccessorSamples(accb, sr, nch, pos / sr, n, bb)
         local xa, xb = ba.table(1, n * nch), bb.table(1, n * nch)

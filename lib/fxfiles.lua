@@ -90,7 +90,9 @@ function fxfiles.share(chain, media_dir, before, before_files)
       end
     elseif size and size <= fxfiles.MAX then
       local name = path:gsub("\\", "/"):match("[^/]+$")
-      local copy = "plugin files/" .. require("mirror").hash(path:lower()) .. "-" .. name
+      -- (plain letters only, as media copies have: a sample called "Élan.wav" crossed a Mac's decomposed accents and Windows' code
+      -- pages as two different names. Linux stress test, 0.58.77)
+      local copy = "plugin files/" .. require("mirror").hash(path:lower()) .. "-" .. name:gsub("[^%w%-_.]", "_")
       local dst = media_dir .. "/" .. copy
       if not reaper.file_exists(dst) then
         reaper.RecursiveCreateDirectory(media_dir .. "/plugin files", 0)

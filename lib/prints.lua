@@ -109,8 +109,20 @@ end
 -- Whether a track's plug-in really loads here. A missing VST, AU or CLAP shows offline; a missing JSFX doesn't: REAPER
 -- keeps an empty stand-in (not offline, silent), so its file is looked for in Effects (Mac, 0.39.1: it printed a
 -- JS synth it didn't have, and its silent print replaced the PC's good one).
+-- Offline by choice (to save CPU) is still here: it's installed, and plays nothing on purpose, in a print as in the mix. It
+-- held every print of its track back (plug-ins review, 0.58.76). Installed: by name, in any format (REAPER's own list, cached).
+local installed = { at = -math.huge }
+local function installed_here(tr, i)
+  if reaper.time_precise() - installed.at > 300 then
+    installed.at, installed.set = reaper.time_precise(), {}
+    local plugins = require("plugins")
+    for _, x in ipairs(plugins.installed()) do installed.set[plugins.key(x.name)] = true end
+  end
+  local ok, name = reaper.TrackFX_GetNamedConfigParm(tr, i, "fx_name")
+  return ok and name ~= "" and installed.set[require("plugins").key(name)] == true
+end
 function prints.fx_here(tr, i)
-  if reaper.TrackFX_GetOffline(tr, i) then return false end
+  if reaper.TrackFX_GetOffline(tr, i) then return installed_here(tr, i) end
   local _, kind = reaper.TrackFX_GetNamedConfigParm(tr, i, "fx_type")
   local _, ident = reaper.TrackFX_GetNamedConfigParm(tr, i, "fx_ident") -- (a JSFX's is relative to Effects: "ReaTeam JSFX/Synth/x.jsfx")
   -- a VST or AU that isn't installed doesn't read as offline either: no file behind it, and only REAPER's own three
@@ -251,14 +263,14 @@ function prints.lacking(tr, cfg)
   if not cfg then return false end
   local plugins = require("plugins")
   if reaper.time_precise() - common.at > 60 then
-    local ok, set, members = pcall(plugins.band, cfg)
-    common.at, common.set, common.n = reaper.time_precise(), ok and set or nil, ok and #members or 0
+    local ok, set, members, systems = pcall(plugins.band, cfg)
+    common.at, common.set, common.n, common.systems = reaper.time_precise(), ok and set or nil, ok and #members or 0, ok and systems or nil
   end
   if not common.set or common.n < 2 then return false end
   for _, i in ipairs(prints.fx_all(tr)) do
     local ok, name = reaper.TrackFX_GetNamedConfigParm(tr, i, "fx_name")
     if not ok or name == "" then name = select(2, reaper.TrackFX_GetFXName(tr, i)) end
-    if not common.set[plugins.key(name)] then return true end
+    if not common.set[plugins.key(name)] or not plugins.loads_everywhere(name, common.systems) then return true end
   end
   return false
 end
@@ -430,6 +442,7 @@ function prints.refresh(proj, it, media_dir, fx_hash, route_hash, cfg)
   if print and (take_ext(print, prints.KEY) == h or old and take_ext(print, prints.KEY) == old) then return false end
   local oid = select(2, reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", false))
   local name = print_name(oid, h)
+  if prints.silent[name] then return false end -- (came out silent once: not again until what it's made from changes)
   reaper.RecursiveCreateDirectory(media_dir, 0)
   local sync = require("sync")
   local path = prints.render(oid, name, media_dir, dest and { tr, dest } or { tr }, function()
@@ -437,11 +450,34 @@ function prints.refresh(proj, it, media_dir, fx_hash, route_hash, cfg)
     return sync.print_item(proj, it, dry, media_dir, name, nil, false, true)
   end)
   if not path then return false end
+  -- a print of notes that came out silent: the instrument loaded but its sounds didn't (a Kontakt library or an EZX that isn't
+  -- installed here). Kept, it played silence for everyone who lacked the instrument, and nothing said so (plug-ins review, 0.58.76)
+  if midi and prints.silent[name] == nil then
+    local _, notes = reaper.MIDI_CountEvts(midi)
+    prints.silent[name] = notes > 0 and prints.silent_file(path) or false
+    if prints.silent[name] then
+      os.remove(path)
+      band.log("the print of a part on " .. select(2, reaper.GetTrackName(tr)) .. " came out silent here: its instrument loads, but not its sounds " ..
+        "(a library or kit that isn't installed?). Bandmates without the instrument don't hear that part until someone who has it all prints it")
+    end
+  end
+  if prints.silent[name] then return false end
   if dest then prints.midi_only(tr, dest) end
   attach(it, print, dry, path, h)
   prints.choose(it)
   reaper.UpdateItemInProject(it)
   return true
+end
+
+prints.silent = {} -- print name -> whether it came out silent (looked at once)
+-- Whether an audio file is silent: REAPER answers "no change", 1.0, both to its peak at 0 dB and to its loudness at -23 LUFS
+-- (as extras' stems do; measured, 0.58.52).
+function prints.silent_file(path)
+  local src = reaper.PCM_Source_CreateFromFile(path)
+  if not src then return false end
+  local silent = reaper.CalculateNormalization(src, 2, 0, 0, 0) == 1 and reaper.CalculateNormalization(src, 0, -23, 0, 0) == 1
+  reaper.PCM_Source_Destroy(src)
+  return silent
 end
 
 -- ---- who prints (0.39) -----------------------------------------------------------------------------------------

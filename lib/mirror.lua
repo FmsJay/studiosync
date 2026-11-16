@@ -163,6 +163,35 @@ function mirror.fx_differing(a, b)
   end
   return names
 end
+-- Plug-ins with a knob an LFO or audio control moves: what they save holds that knob as it was at that instant, so the
+-- chain never read the same on two machines, or twice (a lasting "differs". Linux stress test, 0.58.77). Their saved data
+-- stays out of the hash, as a restless plug-in's does, and their other knobs say when they really changed. Pure.
+-- -> { [plug-in block number] = { [knob] = true }, or true for a container with one inside }, or nil.
+function mirror.modulated(chain)
+  local lines = type(chain) == "table" and chain or chain_lines(chain)
+  local function moved(i) -- lines[i] opens a PROGRAMENV: the knob it moves, if an LFO or audio control is on
+    local h = lines[i]:match("^%s*(.-)%s*$")
+    if h:match("^<PROGRAMENV%s+%S+%s+1") then return nil end -- (its modulation switched off)
+    for k = i + 1, #lines do
+      local l = lines[k]:match("^%s*(.-)%s*$")
+      if l == ">" then return nil end
+      if l == "LFO 1" or l == "AUDIOCTL 1" then return tonumber(h:match("^<PROGRAMENV%s+(%d+)")) or -1 end
+    end
+  end
+  local blocks, out = mirror.plugin_blocks(lines), {}
+  for b, x in ipairs(blocks) do
+    for i = x.first + 1, x.last - 1 do
+      if lines[i]:match("^%s*<PROGRAMENV") and moved(i) then out[b] = true; break end
+    end
+    if out[b] == nil then
+      for i = x.last + 1, blocks[b + 1] and blocks[b + 1].first - 1 or #lines do
+        local p = lines[i]:match("^%s*<PROGRAMENV") and moved(i)
+        if p then out[b] = out[b] or {}; out[b][p] = true end
+      end
+    end
+  end
+  return next(out) and out or nil
+end
 -- Do two chains say the same thing? Each plug-in's saved data is lines of base64, and REAPER re-encodes it on a machine
 -- without the plug-in: the same bytes in different pieces (a Mac's GGD chain read differently on the PC and the laptop,
 -- so the fingerprints stayed apart for good: 0.42.2). Pure.
@@ -208,17 +237,24 @@ local function restless_sig()
   return table.concat(all, "\0")
 end
 -- All the knobs of a track's plug-ins, as a string: what says a restless plug-in really changed. This machine's only,
--- as a machine without the plug-in has none, so it never goes into a hash.
+-- as a machine without the plug-in has none, so it never goes into a hash. Knobs an LFO or audio control moves are left
+-- out (mirror.modulated, as of this track's last scan): they never hold still.
+mirror.mod_params = {} -- track -> mirror.modulated of its whole chain
 function mirror.fx_params(tr)
-  local out = {}
+  local out, mods = {}, mirror.mod_params[tr]
   for i = 0, reaper.TrackFX_GetCount(tr) - 1 do
-    for p = 0, math.min(reaper.TrackFX_GetNumParams(tr, i), 3000) - 1 do
-      out[#out + 1] = string.format("%.4f", (reaper.TrackFX_GetParamNormalized(tr, i, p)))
+    local m = mods and mods[i + 1]
+    if m ~= true then
+      for p = 0, math.min(reaper.TrackFX_GetNumParams(tr, i), 3000) - 1 do
+        out[#out + 1] = (m and m[p]) and "~" or string.format("%.4f", (reaper.TrackFX_GetParamNormalized(tr, i, p)))
+      end
     end
     out[#out + 1] = "|"
   end
   return table.concat(out, ",")
 end
+-- A chain whose saved data its own knobs speak for: a restless plug-in on it, or a modulated one. Pure.
+function mirror.knobs_count(chain) return mirror.restless_in(chain) ~= nil or mirror.modulated(chain) ~= nil end
 
 -- A plug-in chain's hash: its normalized text without each VST's last state line. That line is REAPER's program block
 -- for the instance, and a plug-in loaded from a chunk writes its program name there ("Program 1"), so the same chain
@@ -227,11 +263,14 @@ end
 function mirror.fx_hash(chain)
   local lines = {}
   for l in portable(chain):gmatch("[^\n]+") do lines[#lines + 1] = l end
-  if next(mirror.restless) then
+  local mods = mirror.modulated(lines)
+  if next(mirror.restless) or mods then
     local blocks = mirror.plugin_blocks(lines)
     for b = #blocks, 1, -1 do
-      if blocks[b].key and mirror.restless[blocks[b].key] then
+      if blocks[b].key and mirror.restless[blocks[b].key] or mods and type(mods[b]) == "table" then
         for k = blocks[b].last - 1, blocks[b].first + 1, -1 do table.remove(lines, k) end
+      elseif mods and mods[b] then -- (a container: only its plug-ins' data, so one added inside still counts)
+        for k = blocks[b].last - 1, blocks[b].first + 1, -1 do if lines[k]:match("^[A-Za-z0-9+/]+=*$") then table.remove(lines, k) end end
       end
     end
   end
@@ -254,10 +293,39 @@ function mirror.item_hash(track, state)
   -- (on a lane its YPOS is only its share of the track's height, so adding a lane changed every item, and each machine sent
   -- them all: 500 events a minute on Bass Guitar, laptop and PC, 0.42.7. BANDLANE is what counts)
   if state:find("BANDLANE", 1, true) then state = state:gsub("YPOS [^\n]*\n", "") end
-  if not state:find("<VST", 1, true) then return mirror.hash(track .. "\n" .. state) end
   local lines = {}
   for l in (state .. "\n"):gmatch("(.-)\n") do lines[#lines + 1] = l end
   lines[#lines] = nil -- (the one the extra "\n" made)
+  -- take FX that never read the same (a restless plug-in, an LFO on a knob) leave their saved data out, as on a track (mirror.fx_hash):
+  -- an item with one changed on every look, and went out over and over (plug-ins review, 0.58.76). Only those items hash differently.
+  -- shortcut: a knob turned on such a take FX goes out with the item's next other change (items have no knob check, as chains do).
+  local dropped = false
+  if state:find("<TAKEFX", 1, true) then
+    local trimmed, drop, k = {}, {}, 1
+    for n, l in ipairs(lines) do trimmed[n] = l:match("^%s*(.-)%s*$") end
+    while k <= #trimmed do
+      if trimmed[k]:match("^<TAKEFX") then
+        local depth, e = 1, k
+        while depth > 0 and e < #trimmed do
+          e = e + 1
+          if trimmed[e]:sub(1, 1) == "<" then depth = depth + 1 elseif trimmed[e] == ">" then depth = depth - 1 end
+        end
+        local part = table.move(trimmed, k + 1, e - 1, 1, {}) -- (inside it: <TAKEFX itself would read as one plug-in)
+        local mods = mirror.modulated(part)
+        for b, x in ipairs(mirror.plugin_blocks(part)) do
+          if x.key and mirror.restless[x.key] or mods and mods[b] then
+            for d = x.first + 1, x.last - 1 do
+              if mods and mods[b] == true then drop[k + d] = part[d]:match("^[A-Za-z0-9+/]+=*$") ~= nil else drop[k + d] = true end
+            end
+          end
+        end
+        k = e
+      end
+      k = k + 1
+    end
+    for d = #lines, 1, -1 do if drop[d] then table.remove(lines, d); dropped = true end end
+  end
+  if not dropped and not state:find("<VST", 1, true) then return mirror.hash(track .. "\n" .. state) end
   local i = 1
   while i <= #lines do
     if lines[i]:match("^%s*<VST") then
@@ -282,7 +350,9 @@ mirror.PARTS = { "F", "E", "R", "M" } -- (what a track oid T-x carries: F-x, E-x
 local ENV_LOCAL = { EGUID = true, ARM = true, VIS = true, LANEHEIGHT = true, POOLEDENVINST = true }
 local function is_env(u) return u.block and u.tag:find("ENV") and u.tag:sub(1, 3) ~= "AUX" end
 local function is_aux(u) return u.block and u.tag:sub(1, 3) == "AUX" and u.tag:find("ENV") end
-local MISC = { GROUP_FLAGS = true, GROUP_FLAGS_HIGH = true, LOCK = true, FXCHAIN_REC = true, MIDINOTENAMES = true }
+-- (FREEZE: what unfreezing brings back, so anyone can unfreeze a track someone else froze. Linux stress test, 0.58.77)
+-- shortcut: audio items kept in a FREEZE block point at the freezer's own files; a frozen audio track unfrozen elsewhere finds them offline.
+local MISC = { GROUP_FLAGS = true, GROUP_FLAGS_HIGH = true, LOCK = true, FXCHAIN_REC = true, MIDINOTENAMES = true, FREEZE = true }
 local function is_misc(u) return MISC[u.tag] ~= nil end
 
 -- A track chunk's first line, its top-level parts in order ({ tag, lines, block }) and its closing line.
@@ -1207,6 +1277,7 @@ mirror.reopened = {}
 mirror.auto = {} -- proj .. oid -> its next send is a print StudioSync refreshed (Undo skips those)
 mirror.unsent = {} -- proj .. oid -> changed here, not sent yet (settling, playing, Hold my changes): mirror.receive waits
 mirror.anchor_seen = {} -- proj .. oid .. known hash -> its event was checked against what's here (see watch)
+mirror.said_outside = {} -- proj .. oid -> a landed chain's ReaInsert / ReaStream was mentioned
 mirror.orphaned = {} -- proj -> { track oid = true }: changes skipped while that track was gone (sync.receive looks again)
 
 function mirror.scan(proj, user, media_dir, local_mix)
@@ -1239,8 +1310,9 @@ function mirror.scan(proj, user, media_dir, local_mix)
         for g in lfx:gmatch("({[^}]+})for=") do skip[g] = true end
         local fx = mirror.fxchain(chunk, skip) or ""
         local env, recv, misc = mirror.track_parts(chunk, oid_at)
-        return { fx = fx, fxh = mirror.fx_hash(fx), env = env, recv = recv, misc = misc }
+        return { fx = fx, fxh = mirror.fx_hash(fx), env = env, recv = recv, misc = misc, mods = mirror.modulated(mirror.fxchain(chunk) or "") }
       end)
+      mirror.mod_params[tr] = parts.mods -- (every plug-in, in REAPER's order: what mirror.fx_params counts by)
       local fx = parts.fx
       local fo = { kind = "fx", oid = "F" .. oid:sub(2), ptr = tr, track = oid, state = fx, hash = parts.fxh }
       objs[#objs + 1], by_oid[fo.oid] = fo, fo
@@ -1256,6 +1328,7 @@ function mirror.scan(proj, user, media_dir, local_mix)
     local master = reaper.GetMasterTrack(proj)
     local _, mch = reaper.GetTrackStateChunk(master, "", false)
     local mfx = mirror.fxchain(mch, mirror.live_fx(master)) or ""
+    mirror.mod_params[master] = mirror.modulated(mirror.fxchain(mch) or "")
     if mfx:match("^<FXCHAIN[^\n]*\n>%s*$") then mfx = "" end -- (only this computer's live mix on it: Real time mode read as "changed the plug-ins on the master")
     local menv = mirror.track_parts(mch, oid_at) .. mirror.ai_lines(master)
     for _, p in ipairs({ { "F-MASTER", "fx", mfx }, { "E-MASTER", "env", menv } }) do
@@ -1541,6 +1614,13 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     end
     local new = sync.chunk_set_block(chunk, "FXCHAIN", block ~= "" and block or nil)
     if new and new ~= chunk then reaper.SetTrackStateChunk(tr, new, false) end
+    -- (ReaInsert and ReaStream reach outside REAPER: the sender's audio interface channels, or a computer on their network. Here they
+    -- play or send whatever those settings mean on this machine, so it's said, once per track. Plug-ins review, 0.58.76)
+    local outside = block:match('<VST "VSTi?: (ReaInsert)') or block:match('<VST "VSTi?: (ReaStream)')
+    if outside and not mirror.said_outside[tostring(proj) .. ev.oid] then
+      mirror.said_outside[tostring(proj) .. ev.oid] = true
+      require("band").log((ev.name or "a track") .. " has " .. outside .. ", set up for its sender's own audio interface or network: check its settings here before playing it loud")
+    end
     -- the band's chain replaced this machine's translations too: put them back (they're never part of the hash)
     if select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local_fx", "", false)) ~= "" then
       reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local_fx", "", true)
@@ -1550,7 +1630,8 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     local _, after = reaper.GetTrackStateChunk(tr, "", false)
     local skip = ev.track == mirror.MASTER and mirror.live_fx(tr) or {}
     for g in select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local_fx", "", false)):gmatch("({[^}]+})for=") do skip[g] = true end
-    mirror.fx_knobs[tostring(proj) .. ev.oid] = nil -- (its knobs are the band's now: the next look notes them)
+    mirror.fx_knobs[tostring(proj) .. ev.oid], mirror.fxk_ok[tostring(proj) .. ev.oid] = nil, nil -- (its knobs are the band's now: the next look notes them)
+    reaper.SetProjExtState(proj, mirror.SEC, "fxk " .. ev.oid, "") -- (and are stored once it has loaded)
     local here = mirror.fxchain(after, skip) or ""
     local h = mirror.fx_hash(here)
     local key = tostring(proj) .. ev.oid
@@ -1911,6 +1992,22 @@ mirror.fx_knobs = mirror.fx_knobs or {} -- oid -> its knobs when it last went ou
 mirror.fx_alias = mirror.fx_alias or {} -- chain hash and event id -> the event's hash, if the two are the same bytes (else false)
 mirror.track_alias = mirror.track_alias or {} -- track hash and event id -> the event's hash, if only the place differs (else false)
 mirror.FX_LOAD_SECS = 60 -- how long after landing or opening a chain's data may change by itself, with its knobs still
+-- A chain's knobs when this machine last agreed with the band about it (sent, landed and loaded, or read back), kept in the
+-- project: a change made while StudioSync wasn't running read as the plug-in loading at the next open, and never went out
+-- (Linux stress test, 0.58.77). Knobs not as they were left mean someone turned them.
+mirror.fxk_ok = {} -- proj .. oid -> stored this session
+local function loaded(proj, rk) return reaper.time_precise() >= math.max(mirror.fx_loading[rk] or 0, mirror.first_look[tostring(proj)] or 0) end
+local function knobs_as_left(proj, o, rk)
+  if reaper.time_precise() < (mirror.fx_loading[rk] or 0) then return true end -- (just landed: the band's knobs, not the ones stored)
+  local was = select(2, reaper.GetProjExtState(proj, mirror.SEC, "fxk " .. o.oid))
+  return was == "" or was == mirror.hash(mirror.fx_params(o.ptr))
+end
+local function knobs_agreed(proj, o, rk)
+  if not o.ptr or reaper.time_precise() < (mirror.fx_loading[rk] or 0) then return end -- (still loading: once it has)
+  local k = mirror.hash(mirror.fx_params(o.ptr))
+  if select(2, reaper.GetProjExtState(proj, mirror.SEC, "fxk " .. o.oid)) ~= k then reaper.SetProjExtState(proj, mirror.SEC, "fxk " .. o.oid, k) end
+  mirror.fxk_ok[rk] = true
+end
 mirror.fx_readback = mirror.fx_readback or {} -- chain -> what its hash reads as here, now the band's has landed
 mirror.fx_loading = mirror.fx_loading or {} -- chain -> until when it may be still loading
 mirror.fx_load_knobs = mirror.fx_load_knobs or {} -- chain -> its knobs at the start of that
@@ -2341,8 +2438,8 @@ function mirror.watch(proj, cfg, song, room, opts)
             for _, x in ipairs(mirror.plugin_blocks(chain_lines(chain))) do t[#t + 1] = tostring(x.key) end
             return table.concat(t, "\0")
           end
-          if ev and type(ev.state) == "string" and names(ev.state) == names(o.state) and mirror.fx_load_knobs[rk] == mirror.fx_params(o.ptr) then
-            mirror.fx_readback[rk] = o.hash; o.hash = h
+          if ev and type(ev.state) == "string" and names(ev.state) == names(o.state) and mirror.fx_load_knobs[rk] == mirror.fx_params(o.ptr) and knobs_as_left(proj, o, rk) then
+            mirror.fx_readback[rk] = o.hash; o.hash = h; knobs_agreed(proj, o, rk)
           end
         end
       end
@@ -2360,16 +2457,23 @@ function mirror.watch(proj, cfg, song, room, opts)
           for _, x in ipairs(mirror.plugin_blocks(chain_lines(chain))) do t[#t + 1] = tostring(x.key) end
           return table.concat(t, "\0")
         end
-        if ev and type(ev.state) == "string" and names(ev.state) == names(o.state) then mirror.fx_readback[rk] = o.hash; o.hash = h end
+        if ev and type(ev.state) == "string" and names(ev.state) == names(o.state) and knobs_as_left(proj, o, rk) then
+          mirror.fx_readback[rk] = o.hash; o.hash = h; knobs_agreed(proj, o, rk)
+        end
       end
       -- a chain with a restless plug-in: the hash can't see its knobs move, so they're looked at here
       local knobs_moved, knobs
-      if o.kind == "fx" and h == o.hash and mirror.restless_in(o.state) then
+      if o.kind == "fx" and h == o.hash and mirror.knobs_count(o.state) then
         knobs = mirror.fx_params(o.ptr)
         if mirror.fx_knobs[rk] == nil then mirror.fx_knobs[rk] = knobs end
+        -- (loaded, still as first seen, but not as left last time: turned while StudioSync wasn't running)
+        if not mirror.fxk_ok[rk] and loaded(proj, rk) and mirror.fx_knobs[rk] == knobs and not knobs_as_left(proj, o, rk) then mirror.fx_knobs[rk] = "" end
         knobs_moved = mirror.fx_knobs[rk] ~= knobs
       end
-      if h == o.hash and not knobs_moved then mirror.reopened[rk], mirror.unsent[rk] = nil, nil; return end
+      if h == o.hash and not knobs_moved then
+        if o.kind == "fx" and o.ptr and not mirror.fxk_ok[rk] and loaded(proj, rk) then knobs_agreed(proj, o, rk) end
+        mirror.reopened[rk], mirror.unsent[rk] = nil, nil; return
+      end
       if sent > 0 and reaper.time_precise() - t_send > 0.25 then mirror.unsent[rk], mirror.more = true, true; return end
       -- recorded under a hash this machine no longer makes (before 0.34.4 a Mac hashed plug-in files and colours its
       -- own way): what's here IS the band's version, so it's re-anchored, not sent as a change of ours. Once per record.
@@ -2499,10 +2603,10 @@ function mirror.watch(proj, cfg, song, room, opts)
         if o.kind == "fx" then
           ev.files = require("fxfiles").share(state, media, last and last.state, last and last.files) -- (samples, IRs, models it loads)
           ev.restless = mirror.restless_in(state)
-          if ev.restless then mirror.fx_knobs[rk] = knobs or mirror.fx_params(o.ptr) end
+          if ev.restless or mirror.modulated(state) then mirror.fx_knobs[rk] = knobs or mirror.fx_params(o.ptr) end
         end
         local id = sync.post(cfg, song, room, ev)
-        if o.kind == "fx" and o.ptr then mirror.fx_quiet[rk] = mirror.fx_params(o.ptr) end -- (what it's changed from, next time)
+        if o.kind == "fx" and o.ptr then mirror.fx_quiet[rk] = mirror.fx_params(o.ptr); knobs_agreed(proj, o, rk) end -- (what it's changed from, next time)
         remember(proj, o.oid, ev.rev, o.hash, id, mirror.order_of(ev))
         mirror.sessions[rk] = { rev = ev.rev, at = reaper.time_precise(), id = id }
         if name ~= "" and not ev.auto and select(2, reaper.GetProjExtState(proj, band.SECTION, "last_track")) ~= name then
@@ -2607,7 +2711,7 @@ function mirror.watch(proj, cfg, song, room, opts)
           -- and went out, and the print stayed as it was: Mac, 0.42.1)
           local function sounds(f)
             if not f then return nil end
-            if f.print_key == nil then f.print_key = mirror.restless_in(f.state) and (f.hash .. mirror.hash(mirror.fx_params(f.ptr))) or f.hash end
+            if f.print_key == nil then f.print_key = mirror.knobs_count(f.state) and (f.hash .. mirror.hash(mirror.fx_params(f.ptr))) or f.hash end
             return f.print_key
           end
           local ok, did = pcall(prints.refresh, proj, o.ptr, media, sounds(fx), sounds(dfx), cfg)
