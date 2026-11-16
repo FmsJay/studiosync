@@ -2,7 +2,7 @@
 local D = reaper.GetResourcePath() .. "/StudioSync/tests/control"
 local lib = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]tests[/\\]reaper[/\\]") .. "/lib/"
 package.path = lib .. "?.lua;" .. package.path
-for _, m in ipairs({ "band", "sync", "groups", "songsync", "localcopy", "export", "page_chat", "people", "hear", "leave" }) do package.loaded[m] = nil end
+for _, m in ipairs({ "band", "sync", "groups", "songsync", "localcopy", "export", "page_chat", "people", "hear", "leave", "trust" }) do package.loaded[m] = nil end
 local band, sync, groups, ss, copy, ex, chat, people = require("band"), require("sync"), require("groups"), require("songsync"), require("localcopy"), require("export"), require("page_chat"), require("people")
 local out, fails = {}, 0
 local function check(ok, what) if not ok then fails = fails + 1 end; out[#out + 1] = (ok and "PASS " or "FAIL ") .. what end

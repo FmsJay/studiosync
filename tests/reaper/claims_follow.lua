@@ -4,7 +4,7 @@ local D = reaper.GetResourcePath() .. "/StudioSync/tests"
 reaper.RecursiveCreateDirectory(D, 0)
 local lib = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]tests[/\\]reaper[/\\]") .. "/lib/"
 package.path = lib .. "?.lua;" .. package.path
-for _, m in ipairs({ "band", "sync", "mirror", "json" }) do package.loaded[m] = nil end
+for _, m in ipairs({ "band", "sync", "mirror", "json", "trust" }) do package.loaded[m] = nil end
 local band, sync = require("band"), require("sync")
 local stamp = os.time()
 local root = D .. "/clroot_" .. stamp

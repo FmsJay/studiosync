@@ -4,7 +4,7 @@
 local D = reaper.GetResourcePath() .. "/StudioSync/tests"
 local lib = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]tests[/\\]reaper[/\\]") .. "/lib/"
 package.path = lib .. "?.lua;" .. package.path
-for _, m in ipairs({ "band", "sync", "rooms", "removal", "services" }) do package.loaded[m] = nil end
+for _, m in ipairs({ "band", "sync", "rooms", "removal", "services", "trust" }) do package.loaded[m] = nil end
 local band, sync, rooms, removal, services = require("band"), require("sync"), require("rooms"), require("removal"), require("services")
 local root = D .. "/rroot_" .. os.time()
 local song, room = "RemoveLab", "main"

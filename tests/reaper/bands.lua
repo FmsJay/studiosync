@@ -5,7 +5,7 @@
 local D = reaper.GetResourcePath() .. "/StudioSync/tests"
 local lib = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]tests[/\\]reaper[/\\]") .. "/lib/"
 package.path = lib .. "?.lua;" .. package.path
-for _, m in ipairs({ "band", "services", "json" }) do package.loaded[m] = nil end
+for _, m in ipairs({ "band", "services", "json", "trust" }) do package.loaded[m] = nil end
 local band, services = require("band"), require("services")
 local out, fails = {}, 0
 local function say(s) out[#out + 1] = s end
