@@ -4,7 +4,9 @@
 # the tailnet to it. Read-only, GET and HEAD only, with byte ranges (phones seek that way). Quits by itself once the heartbeat file is over
 # 2 minutes old: REAPER closed, or the sharing stopped.
 use strict; use warnings; use IO::Socket::INET; use IO::Select; use Cwd qw(realpath);
-my ($root, $port, $beat, $prefix) = @ARGV;
+# The page itself comes from the fifth argument, a file outside the studio's folder that only this computer's StudioSync writes: the studio's
+# own _band/listen.html is never served, as anyone in the studio could change it (Security review, 0.58.78).
+my ($root, $port, $beat, $prefix, $page) = @ARGV;
 my $real_root = realpath($root) // $root;
 my %types = (html => "text/html; charset=utf-8", wav => "audio/wav", flac => "audio/flac", mp3 => "audio/mpeg", ogg => "audio/ogg",
   m4a => "audio/mp4", aif => "audio/aiff", aiff => "audio/aiff");
@@ -33,11 +35,12 @@ while (alive()) {
   $path = substr($path, length $prefix) if $prefix && index($path, $prefix) == 0;
   $path =~ s{^/+}{};
   my $ok = $path !~ /\.\./ && ($path eq "_band/listen.html" || $path =~ m{^[^/]+/mixes/[^/]+\.(wav|flac|mp3|ogg|m4a|aif|aiff)$}i);
-  my $file = "$root/$path";
+  my $is_page = $path eq "_band/listen.html";
+  my $file = $is_page ? ($page // "") : "$root/$path";
   # (Syncthing syncs symlinks on macOS: a bandmate's mixes/notes.wav pointing at ~/.ssh/... was served. The file, wherever links lead, must be
   # inside the studio. Security review, 0.58.67)
-  my $real = $ok ? (realpath($file) // "") : "";
-  $ok = $ok && !-l $file && index($real, "$real_root/") == 0;
+  my $real = $ok && !$is_page ? (realpath($file) // "") : "";
+  $ok = $ok && $file ne "" && ($is_page || (!-l $file && index($real, "$real_root/") == 0));
   unless ($ok && -f $file) { print $c "HTTP/1.0 404 Not here\r\nContent-Length: 0\r\n\r\n"; close $c; exit 0 }
   my $len = -s $file; my ($from, $to, $status) = (0, $len - 1, "200 OK"); my $extra = "";
   if (($h{range} // "") =~ /^bytes=(\d*)-(\d*)$/) {

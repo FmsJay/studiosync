@@ -16,12 +16,18 @@ function removal.mark(root, user)
   local m = band.read_json(marks(root) .. "/" .. file_name(user))
   return type(m) == "table" and m.user and m or nil
 end
-function removal.device_of(root, user)
+local function said_device(root, user)
   local d = band.read_json(devices(root) .. "/" .. file_name(user))
   return type(d) == "table" and d.device or nil
 end
+-- (only a file the computer it names wrote itself: one naming someone else's computer had that one cut off in their place. lib/trust.lua,
+-- Security review, 0.58.78. Syncthing not answering yet reads as not said yet)
+function removal.device_of(root, user)
+  local id = said_device(root, user)
+  return id and require("trust").device_ok(root, user, id) == true and id or nil
+end
 function removal.publish(root, user, id)
-  if removal.device_of(root, user) == id then return end
+  if said_device(root, user) == id then return end -- (what's there, checked or not: one naming another computer is written over)
   reaper.RecursiveCreateDirectory(devices(root), 0)
   band.write_json(devices(root) .. "/" .. file_name(user), { user = user, device = id })
 end
@@ -83,6 +89,20 @@ function removal.let_in(root, device)
   for _, m in ipairs(all_marks(root)) do if m.device == device then removal.keep(root, m.user) end end
 end
 
+-- A computer asking this one's Syncthing to connect that's already in the studio: its own devices file is there, written by itself (lib/trust.lua),
+-- and no mark has taken it out (a guest's counts once their day is over). The joiner's introducer goes once they're let in (services.introducers_off),
+-- so this is how someone let in after them is met: without it, the two only ever synced through a third computer. Security review, 0.58.78.
+-- -> their name, or nil.
+function removal.known(root, id, now)
+  for _, m in ipairs(all_marks(root)) do
+    if m.device == id and not (m.guest and not removal.due(m, now or os.time())) then return nil end
+  end
+  for _, f in ipairs(band.files(devices(root), ".json")) do
+    local d = band.read_json(devices(root) .. "/" .. f)
+    if type(d) == "table" and d.device == id and type(d.user) == "string" and file_name(d.user) == f and require("trust").device_ok(root, d.user, id) == true then return d.user end
+  end
+end
+
 -- Who frees a leaver's claims: one computer, not all of them at once (each wrote itself into the driver's seat, and their copies of
 -- the claims crossed: review, 0.58.47). The first name among those whose computers have said which they are, but them; after an hour,
 -- anyone, in case that one is away. Pure over its arguments.
@@ -115,6 +135,33 @@ local function free(root, user, me)
   end
 end
 
+-- Joined and let in: the introducer flags off (services.introducers_off), but not for the inviter of a studio still waiting to be let in, and not
+-- at all while one waits whose inviter isn't known (joined before 0.58.78). Asked again only when which studios wait changes: each look is a few
+-- Syncthing commands. And someone already in a studio, asking to connect, is met (removal.known). Security review, 0.58.78.
+local intro_for, met = nil, {}
+local function settle_peers(services, now)
+  local keep, sig, unsure = {}, "", false
+  for _, g in ipairs(band.bands()) do
+    if g.waiting then
+      sig = sig .. g.root .. "|"
+      local inv = require("trust").inviter(g.root)
+      if inv then keep[inv] = true else unsure = true end
+    end
+  end
+  if not unsure and sig ~= intro_for and services.introducers_off(keep) then intro_for = sig end
+  for _, d in ipairs(services.pending_devices()) do
+    for _, g in ipairs(not met[d.id] and band.bands() or {}) do
+      local who = not g.waiting and not require("groups").is_old(g.root) and removal.known(g.root, d.id, now)
+      if who and not met[d.id] then
+        met[d.id] = true
+        local ok, why = services.add_device(d.id, who, g.id)
+        band.log(ok and string.format("%s's computer (%s) is in %s: this one syncs with it directly now", who, d.id:sub(1, 7), g.name)
+          or ("couldn't connect to " .. who .. "'s computer: " .. tostring(why)))
+      end
+    end
+  end
+end
+
 -- Run every so often by Autostart and Live sync (at most every 30 s between them). The marks' work on this computer, once each.
 function removal.tick(now)
   now = now or os.time()
@@ -122,6 +169,7 @@ function removal.tick(now)
   reaper.SetExtState(band.SECTION, "removal look", tostring(now), false)
   local services = require("services")
   pcall(require("groups").tick, now)
+  pcall(settle_peers, services, now)
   local me, id = reaper.GetExtState(band.SECTION, "user"), services.my_device_id()
   local told = ""
   for _, g in ipairs(band.bands()) do

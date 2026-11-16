@@ -424,11 +424,24 @@ function band.start_draw(dir)
 end
 -- <root>/_band/band.json says which band a folder is: { name, id = its Syncthing folder id, drive = its Google Drive
 -- folder's name }. A folder without one is the first band StudioSync had: id "bandsync", Drive folder "BandSync".
+-- (the folder's Syncthing id never changes (groups.rename), and everything that asks Syncthing about the studio goes by it, lib/trust.lua too: a
+-- member rewriting band.json's id sent those questions to a folder Syncthing doesn't have, whose empty answer was believed, and pointed the
+-- role pins at a fresh, empty set. So the id this computer first knew for the folder stands: its own start or join, the invitation the
+-- installer ran (installer/studiosync_setup.lua), else the first band.json it saw (band.bands). Security review, 0.58.78)
+local function id_key(root) return "band id " .. (root:gsub("\\", "/"):gsub("/+$", ""):lower()) end
+function band.pin_id(root, id) -- (no id: forgotten, for a scratch studio)
+  if id then reaper.SetExtState(band.SECTION, id_key(root), id, true) else reaper.DeleteExtState(band.SECTION, id_key(root), true) end
+end
 function band.info(root)
   local j = (root and (band.read_json(root .. "/_band/band.json") or band.json_decode(reaper.GetExtState(band.SECTION, "joining " .. root)))) or {}
   -- (only a plain folder id: it goes into Syncthing's command line, and a space in it added arguments of its own. Review, 0.58.53)
   local id = type(j.id) == "string" and j.id:match("^[%w%-_.]+$") and j.id or "bandsync"
-  return { name = type(j.name) == "string" and j.name ~= "" and j.name or "the studio", id = id,
+  local pinned = root and reaper.GetExtState(band.SECTION, id_key(root))
+  local pin = type(pinned) == "string" and pinned:match("^[%w%-_.]+$") and pinned
+  -- (named: what band.json, or the join waiting for it, says, for band.bands to pin, or to say when it differs)
+  local named = next(j) ~= nil and (j.id ~= nil and tostring(j.id) or "bandsync") or nil
+  if pin then id = pin end
+  return { name = type(j.name) == "string" and j.name ~= "" and j.name or "the studio", id = id, named = named, pinned = pin and true or nil,
     drive = type(j.drive) == "string" and j.drive ~= "" and j.drive or (id == "bandsync" and "BandSync" or ("StudioSync - " .. (j.name or id))) }
 end
 -- The bands this computer is in (persistent ExtState "bands": their folders), the current one always among them:
@@ -450,6 +463,7 @@ function band.update_ok(dir, version)
   return reaper.GetExtState(band.SECTION, "update ok") == version
 end
 
+local id_said = {}
 function band.bands()
   local roots, seen, out = {}, {}, {}
   for r in reaper.GetExtState(band.SECTION, "bands"):gmatch("[^|]+") do roots[#roots + 1] = r end
@@ -463,6 +477,12 @@ function band.bands()
     if r ~= "" and not seen[r] and (real or band.subdirs(r)[1] or reaper.EnumerateFiles(r, 0)) then
       seen[r] = true
       local i = band.info(r)
+      if not i.pinned then
+        if i.named then band.pin_id(r, i.id) end
+      elseif i.named and i.named ~= i.id and not id_said[r] then
+        id_said[r] = true
+        band.log(i.name .. "'s band.json names another Syncthing folder (" .. i.named .. "): StudioSync keeps " .. i.id .. ", the one this computer joined")
+      end
       out[#out + 1] = { root = r, name = i.name, id = i.id, drive = i.drive, waiting = not real or nil }
     end
   end

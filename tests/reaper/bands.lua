@@ -51,6 +51,7 @@ local ok, err = pcall(function()
 end)
 reaper.ExecProcess = real_exec
 if not ok then say("ERROR " .. tostring(err)); fails = fails + 1 end
+band.pin_id(base); band.pin_id((base:gsub("/StudioSync$", "/StudioSync Night Shift"))) -- (the scratch studios' ids, kept by lib/band.lua since 0.58.78)
 reaper.SetExtState(band.SECTION, "sync_root", saved.root, true)
 if saved.bands ~= "" then reaper.SetExtState(band.SECTION, "bands", saved.bands, true) else reaper.DeleteExtState(band.SECTION, "bands", true) end
 say("(put back: sync_root " .. reaper.GetExtState(band.SECTION, "sync_root") .. ")")

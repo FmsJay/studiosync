@@ -463,7 +463,9 @@ $src = Get-ChildItem $work -Directory | Select-Object -First 1
 $helper = Join-Path $src.FullName "installer\studiosync_setup.lua"
 $utf8 = New-Object System.Text.UTF8Encoding($false) # no BOM: the Lua JSON reader wants plain UTF-8
 function Request($mode) {
-  $req = @{ sync_root = ($root -replace '\\', '/'); user = $user; mode = $mode; repo_url = "https://github.com/$Repo/raw/main/index.xml"; open_panel = ($mode -eq "verify"); jsfx = [bool]$wantPlugins; reapersona = [bool]$wantPersona; persona = $persona } | ConvertTo-Json
+  $req = @{ sync_root = ($root -replace '\\', '/'); user = $user; mode = $mode; repo_url = "https://github.com/$Repo/raw/main/index.xml"; open_panel = ($mode -eq "verify"); jsfx = [bool]$wantPlugins; reapersona = [bool]$wantPersona; persona = $persona }
+  if ($joining) { $req.host_id = $hostId; $req.band_id = $folderId } # (who invited this computer, and the studio's folder: lib/trust.lua, lib/band.lua. Security review, 0.58.78)
+  $req = $req | ConvertTo-Json
   [IO.File]::WriteAllText((Join-Path (Split-Path $helper) "studiosync_setup.json"), $req, $utf8)
   $result = Join-Path (Split-Path $helper) "studiosync_setup_result.json"
   Remove-Item $result -ErrorAction SilentlyContinue

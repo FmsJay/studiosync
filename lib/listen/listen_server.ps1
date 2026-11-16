@@ -2,7 +2,9 @@
 # (_band/listen.html) and its songs' mixes (<song>/mixes/<audio file>), nothing else; Tailscale forwards the tailnet to it. Read-only, GET and
 # HEAD only, with byte ranges (phones seek that way). Quits by itself once the heartbeat file is over 2 minutes old: REAPER closed, or the
 # sharing stopped, so it's never left running.
-param([string]$Root, [int]$Port, [string]$Beat, [string]$Prefix)
+# The page itself comes from -Page, a file outside the studio's folder that only this computer's StudioSync writes: the studio's own
+# _band/listen.html is never served, as anyone in the studio could change it (Security review, 0.58.78).
+param([string]$Root, [int]$Port, [string]$Beat, [string]$Prefix, [string]$Page)
 $ErrorActionPreference = "Stop"
 $types = @{ ".html" = "text/html; charset=utf-8"; ".wav" = "audio/wav"; ".flac" = "audio/flac"; ".mp3" = "audio/mpeg"; ".ogg" = "audio/ogg";
   ".m4a" = "audio/mp4"; ".aif" = "audio/aiff"; ".aiff" = "audio/aiff" }
@@ -23,8 +25,9 @@ while (Alive) {
     $path = $path.TrimStart('/')
     $ok = ($c.Request.HttpMethod -eq "GET" -or $c.Request.HttpMethod -eq "HEAD") -and $path -notmatch '\.\.' -and $path -notmatch '[:\\]' -and
       ($path -eq "_band/listen.html" -or $path -match '^[^/]+/mixes/[^/]+\.(wav|flac|mp3|ogg|m4a|aif|aiff)$')
-    $file = if ($ok) { [IO.Path]::GetFullPath((Join-Path $rootFull $path)) } else { $null }
-    if (-not $ok -or -not $file.StartsWith($rootFull) -or -not (Test-Path -LiteralPath $file -PathType Leaf)) {
+    $isPage = $path -eq "_band/listen.html"
+    $file = if (-not $ok) { $null } elseif ($isPage) { $Page } else { [IO.Path]::GetFullPath((Join-Path $rootFull $path)) }
+    if (-not $ok -or -not $file -or -not ($isPage -or $file.StartsWith($rootFull)) -or -not (Test-Path -LiteralPath $file -PathType Leaf)) {
       $res.StatusCode = 404; $res.Close(); continue
     }
     $len = (Get-Item -LiteralPath $file).Length

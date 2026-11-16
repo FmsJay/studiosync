@@ -310,13 +310,20 @@ function sync.release_claims(cfg, song, room, user)
 end
 -- Keep my claims on the tracks I claimed when they're renamed (a claim is by name; the track's id says which one
 -- it was), and drop them if the driver released them while I was away. Run by Live sync every few seconds.
+-- A given claim (claims/given-*.json) counts only from someone who may give it, and only as written by their own computer, as Syncthing tells it:
+-- one naming an admin as its giver counted from anyone, and the person it named folded it into their own claims, where it was theirs for good.
+-- Not known yet (Syncthing didn't say) is not yet. lib/trust.lua, Security review, 0.58.78.
+local function given_ok(cfg, song, room, f, c)
+  return type(c.by) == "string" and require("groups").may_manage(cfg.root, c.by)
+    and require("trust").claim_ok(cfg.root, song .. "/rooms/" .. room .. "/claims/" .. f, c) == true
+end
 function sync.follow_claims(proj, cfg, song, room)
   do -- claims an admin gave me, into my own file
     local dir, prefix = sync.room_dir(cfg, song, room) .. "/claims", "given-" .. (cfg.user:gsub("[^%w%-_ ]", "")) .. "-"
     for _, f in ipairs(band.files(dir, ".json")) do
       if f:sub(1, #prefix) == prefix then
         local g, c = band.read_json(dir .. "/" .. f), sync.my_claims(cfg, song, room)
-        if type(g) == "table" and c then
+        if type(g) == "table" and c and given_ok(cfg, song, room, f, g) then
           for _, kind in ipairs({ "tracks", "regions" }) do
             c[kind] = c[kind] or {}
             for _, n in ipairs(g[kind] or {}) do
@@ -403,7 +410,7 @@ function sync.authority(cfg, song, room, s)
     -- spoke for James. Review, 0.58.53)
     if c and type(c.user) == "string" and not (f:find("^given%-") or (c.user:gsub("[^%w%-_ ]", "")) .. ".json" == f) then c = nil end
     -- (and a given one counts only from someone who may give it, as the panel only lets them: anyone could write given-me.json. Review, 0.58.62)
-    if c and f:find("^given%-") and not (type(c.by) == "string" and require("groups").may_manage(cfg.root, c.by)) then c = nil end
+    if c and f:find("^given%-") and not given_ok(cfg, song, room, f, c) then c = nil end -- (and from their computer: 0.58.78)
     if c and c.user and c.time then
       local gone = released[c.user]
       for _, t in ipairs(c.times or {}) do

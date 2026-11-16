@@ -61,6 +61,13 @@ if probe and user ~= "" then
   reaper.SetExtState("BandSync", "bands", table.concat(list, "|"), true)
   reaper.SetExtState("BandSync", "sync_root", root, true)
   reaper.SetExtState("BandSync", "user", user, true)
+  -- (an invitation's studio: its Syncthing folder id, which lib/band.lua goes by whatever band.json later says, and the computer that sent it,
+  -- the only one whose writing of the roles a first look believes (lib/trust.lua). The keys are the ones those modules read. Security review, 0.58.78)
+  local ID = "^" .. ("[%u%d]"):rep(7) .. ("%-" .. ("[%u%d]"):rep(7)):rep(7) .. "$"
+  if type(req.host_id) == "string" and req.host_id:match(ID) and type(req.band_id) == "string" and req.band_id:match("^[%w%-_.]+$") then
+    reaper.SetExtState("BandSync", "invited by " .. root:lower(), req.host_id, true)
+    reaper.SetExtState("BandSync", "band id " .. root:lower(), req.band_id, true)
+  end
 end
 -- REAPER's "save recorded media?" box after each take (Preferences > Recording; on by default on some systems): a take waits there, unsent, and
 -- "Delete all" loses it. Off, every take is kept and goes out as it stops. Band-test review, 0.58.67. (promptendrec, read 0 on the PC with SWS)

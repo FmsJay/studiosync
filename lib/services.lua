@@ -215,6 +215,25 @@ function services.tune_band_folder(folder)
   return set
 end
 
+-- A joiner pairs with whoever invited them as an introducer (services.join_band, the installers), so the others in the studio are added here
+-- by themselves. Left on, that computer could go on adding any computer it liked to the folders it shares with this one, so it goes once this
+-- one is let in (removal.tick): by then the others have been introduced, and anyone let in later is met through the studio (removal.known).
+-- `keep`: the inviters of studios still waiting to be let in. -> true when Syncthing answered. Security review, 0.58.78.
+function services.introducers_off(keep)
+  local st = services.syncthing_path()
+  if not st then return false end
+  local r = reaper.ExecProcess(q(st) .. " cli config devices list", 8000) or ""
+  if not r:match("^0\n") then return false end
+  for id in r:gsub("^0\n", ""):gmatch("[%u%d%-]+") do
+    if services.is_device_id(id) and not keep[id] and (reaper.ExecProcess(q(st) .. " cli config devices " .. id .. " introducer get", 8000) or ""):match("^0\ntrue") then
+      if (reaper.ExecProcess(q(st) .. " cli config devices " .. id .. " introducer set false", 8000) or ""):match("^0\n") then
+        band.log("you're in: Syncthing no longer adds the computers " .. services.device_name(id) .. " introduces (the others in the studio are met through it)")
+      end
+    end
+  end
+  return true
+end
+
 -- How many of Syncthing's devices it's connected to right now: connected, total. nil + why if it can't tell.
 -- Asks Syncthing's own API with the key from its config. "Running but connected to nobody" is what a second
 -- identity looks like (2026-10-27: one started outside a sandboxed shell knew no other machine).
@@ -338,7 +357,9 @@ end
 function services.invite_text(id, info, key)
   info = info or { id = "bandsync", name = "the studio" }
   key = key and key:match("^tskey%-auth%-[%w%-]+$")
-  local base = "https://raw.githubusercontent.com/FmsJay/studiosync/main/installer/"
+  -- (the installer of this very release, by its tag: from main, whatever was pushed there last ran on the newcomer's computer, and a line sent
+  -- weeks ago ran something nobody had looked at. Every release has its tag. Security review, 0.58.78)
+  local base = "https://raw.githubusercontent.com/FmsJay/studiosync/v" .. band.VERSION .. "/installer/"
   local q1 = function(s) return "'" .. tostring(s):gsub("'", "") .. "'" end -- (band names are plain: band.clean)
   -- (newcomers first, in plain steps: most people invited have nothing installed, and the old order led with a panel they didn't have. Beginner review, 0.58.62)
   return "Join " .. info.name .. " on StudioSync.\n\n" ..
@@ -390,6 +411,8 @@ function services.join_band(cfg, code)
   while band.subdirs(root)[1] and band.info(root).id ~= code.band do n = n + 1; root = parent .. "/StudioSync " .. name .. " " .. n end -- (strangers' studios can share a name)
   reaper.RecursiveCreateDirectory(root, 0)
   reaper.SetExtState(band.SECTION, "joining " .. root, band.json_encode({ name = name, id = code.band }), true) -- (who this folder is, until its own _band/band.json arrives)
+  band.pin_id(root, code.band) -- (and for good: band.info. Security review, 0.58.78)
+  require("trust").set_inviter(root, code.id) -- (the computer that sent the code: the roles on first use are believed only from it. lib/trust.lua)
   if not reaper.file_exists(root .. "/.stignore") then -- (each project in full once it's opened; the rest as a listing)
     band.write_atomic(root .. "/.stignore", table.concat(require("songsync").block({}), "\n") .. "\n")
   end
@@ -478,6 +501,7 @@ function services.new_band(cfg, name)
   if band.subdirs(root)[1] then return nil, root .. " is already there: pick another name, or remove that folder." end
   reaper.RecursiveCreateDirectory(root .. "/_band", 0)
   band.write_json(root .. "/_band/band.json", { name = name, id = id, drive = "StudioSync - " .. name, owner = (cfg.base or cfg).user })
+  band.pin_id(root, id)
   local r = reaper.ExecProcess(q(st) .. " cli config folders add --id " .. id .. " --label " .. q("StudioSync " .. name) .. " --path " .. q(root), 15000) or ""
   if not r:match("^0\n") then return nil, "Syncthing didn't add the studio's folder: " .. r:gsub("^%d+\n", "") end
   reaper.ExecProcess(q(st) .. " cli config folders " .. id .. " order set smallestFirst", 8000)
@@ -754,7 +778,42 @@ end
 
 services.GUEST_TIP = "As Invite, and their computer joins your Tailscale network for a day without an account, so Play along and Jam reach them.\n" ..
   "The invitation works once, within a day; their computer drops off once it's offline a while, and after a day at most. While it's on, your\nTailscale policy decides what it can reach: all your computers on Tailscale's starting policy, only StudioSync once Set up the tags has limited guests."
+-- What a guest could reach on the tailnet, from its policy (HuJSON): "limited" (Set up the tags' guest rule is in), "open" (Tailscale's starting
+-- allow-all: every computer on it), "own rules" (someone wrote their own: they decide); and whether StudioSync's tags are there (without them
+-- Tailscale won't make a guest's key). Pure. Security review, 0.58.78.
+function services.guest_reach(text)
+  local tags = services.policy_with_tags(text) == nil
+  local limited, how = services.policy_with_guest_rule(services.policy_with_tags(text) or text)
+  return limited and "open" or (how == "has it" and "limited" or how), tags
+end
+services.GUEST_WARN = {
+  open = "A guest on your Tailscale network can reach every computer on it: Tailscale's starting policy lets everyone reach everything.\n\n" ..
+    "Set up the tags first? Then guests reach only StudioSync's file sharing (Syncthing) and jams (NINJAM) on your computers, and your own " ..
+    "computers and your collaborators' stay as they are.\n\nYes: set it up, then make the invitation.\nNo: make it anyway.\nCancel: no invitation.",
+  ["own rules"] = "Your Tailscale policy has rules of its own, so StudioSync can't tell what a guest could reach: your rules decide.\n\nMake the guest invitation anyway?",
+  unknown = "StudioSync couldn't read your Tailscale policy, so it can't tell what a guest could reach. On Tailscale's starting policy a guest " ..
+    "reaches every computer on your network (Set up the tags, in Settings, limits that).\n\nMake the guest invitation anyway?",
+  tags = "\n\n(StudioSync adds its tags to the policy first: Tailscale makes no guest key without them. They change nobody's reach.)",
+}
 function services.copy_guest_invite(my_id, info, ctx, ImGui, root)
+  -- (a guest reaches the whole tailnet unless the policy limits them: checked first, as Set up the tags reads it, and said plainly. Security review, 0.58.78)
+  local text, err = services.tailscale_policy()
+  local reach, tags = "unknown", true
+  if text then reach, tags = services.guest_reach(text) end
+  if reach == "open" then
+    local a = reaper.MB(services.GUEST_WARN.open, "StudioSync: guest invitation", 3)
+    if a == 2 then return end
+    if a == 6 then
+      local ok, how = services.tailscale_add_tags(function() return true end)
+      if not ok then band.log("couldn't set up the tags, so no guest invitation: " .. tostring(how)); return end
+      band.log(how == "limited" and "guests reach only StudioSync's file sharing and jams on your computers now" or "Tailscale's policy has StudioSync's tags; guests still reach whatever it allows")
+    end
+  elseif reach == "own rules" or reach == "unknown" then
+    if not text then band.log("couldn't read the Tailscale policy before a guest invitation: " .. tostring(err)) end
+    if reaper.MB(services.GUEST_WARN[reach] .. (tags and "" or services.GUEST_WARN.tags), "StudioSync: guest invitation", 1) ~= 1 then return end
+    -- (without StudioSync's tags Tailscale makes no guest key; they change nobody's reach)
+    if not tags and not services.tailscale_add_tags(function() return false end) then band.log("couldn't add StudioSync's tags, so no guest invitation"); return end
+  end
   local key, why = services.tailscale_guest_key()
   if not key then band.log("couldn't make a guest invitation: " .. tostring(why)); return end
   if root then pcall(require("groups").set_tailnet, root) end -- (the network the guest joins is this studio's)
@@ -895,17 +954,22 @@ function services.policy_with_guest_rule(text)
     or '{"src": ["autogroup:member", "tag:bandsync"], "dst": ["*"], "ip": ["*"]},\n' .. ind ..
        '{"src": ["tag:bandsync-guest"], "dst": ["autogroup:member", "tag:bandsync"], "ip": ["tcp:22000", "udp:22000", "tcp:2049"]}') .. text:sub(e + 1)
 end
+-- The tailnet's policy as written (HuJSON), and the ETag that says which version it is. -> text, etag; or nil + why.
+function services.tailscale_policy()
+  local code, head, text = ts_api("GET", "/tailnet/-/acl", nil, { "Accept: application/hujson" })
+  if not code then return nil, head end
+  return text, head:match("\n[Ee][Tt][Aa][Gg]:%s*([^\r\n]+)")
+end
 -- Adds the tags to the tailnet's policy, and the guest rule when `ok_to_limit()` says yes (only if nobody changed the policy meanwhile: its ETag).
 -- -> true + "limited" / "has it" / "own rules" / nil (guests left as they were); or nil + why
 function services.tailscale_add_tags(ok_to_limit)
-  local code, head, text = ts_api("GET", "/tailnet/-/acl", nil, { "Accept: application/hujson" })
-  if not code then return nil, head end
+  local text, etag = services.tailscale_policy()
+  if not text then return nil, etag end
   local new = services.policy_with_tags(text) or text
   local limited, how = services.policy_with_guest_rule(new)
   if limited and ok_to_limit and ok_to_limit() then new, how = limited, "limited" end
   if new == text then return true, how end
-  local etag = head:match("\n[Ee][Tt][Aa][Gg]:%s*([^\r\n]+)")
-  code, head = ts_api("POST", "/tailnet/-/acl", new, { "Content-Type: application/hujson", "Accept: application/hujson", etag and ("If-Match: " .. etag) or nil })
+  local code, head = ts_api("POST", "/tailnet/-/acl", new, { "Content-Type: application/hujson", "Accept: application/hujson", etag and ("If-Match: " .. etag) or nil })
   if not code then return nil, head end
   band.log(how == "limited" and "set up StudioSync's tags and the guest rule in the Tailscale network's policy" or "added StudioSync's tags to the Tailscale network's policy")
   return true, how

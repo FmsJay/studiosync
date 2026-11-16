@@ -535,9 +535,12 @@ request() { # mode -> runs the helper in REAPER, leaves its JSON result in $HDIR
   local panel=false; [ "$1" = verify ] && panel=true
   local jsfx=false; yes "$PLUGINS" && jsfx=true
   local persona=false; yes "$REAPERSONA" && persona=true
+  # (who invited this computer, and the studio's folder: lib/trust.lua, lib/band.lua. Security review, 0.58.78)
+  local inv="" bid=""
+  if [ -n "$JOINING" ]; then inv="$(printf '%s' "$HOST_ID" | LC_ALL=C tr -cd 'A-Z0-9-')"; bid="$FOLDER_ID"; fi
   local root_json; root_json="$(printf '%s' "$ROOT" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')" # (a " or \ in the path broke the JSON)
-  printf '{"sync_root":"%s","user":"%s","mode":"%s","repo_url":"https://github.com/%s/raw/main/index.xml","open_panel":%s,"jsfx":%s,"reapersona":%s,"persona":"%s"}' \
-    "$root_json" "$USERNAME_BS" "$1" "$REPO" "$panel" "$jsfx" "$persona" "$PERSONA" > "$HDIR/studiosync_setup.json"
+  printf '{"sync_root":"%s","user":"%s","mode":"%s","repo_url":"https://github.com/%s/raw/main/index.xml","open_panel":%s,"jsfx":%s,"reapersona":%s,"persona":"%s","host_id":"%s","band_id":"%s"}' \
+    "$root_json" "$USERNAME_BS" "$1" "$REPO" "$panel" "$jsfx" "$persona" "$PERSONA" "$inv" "$bid" > "$HDIR/studiosync_setup.json"
   rm -f "$HDIR/studiosync_setup_result.json"
   if [ -n "${REOPEN:-}" ] && ! pgrep -x REAPER >/dev/null; then
     # we quit REAPER: start it the way you do, so it reopens your project tabs as it always does (started WITH the

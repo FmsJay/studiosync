@@ -61,11 +61,18 @@ save = function(root, change)
   -- (the roles this computer goes by, not a change it set aside: written back as they were, it would reach everyone as this computer's own)
   local trust = require("trust")
   local owner, admins = trust.roles(root, j)
-  j.owner, j.admins = owner, #admins > 0 and admins or nil
+  -- (an invited computer still waiting for its inviter's writing goes by the inviter alone: the roles on disk go back as they were, and
+  -- aren't pinned as this computer's own. lib/trust.lua, Security review, 0.58.78)
+  local held = trust.held(root)
+  if not held then j.owner, j.admins = owner, #admins > 0 and admins or nil end
   change(j)
+  if j.owner and not held then trust.pin(root, trust.roles_of(j)) end -- (this computer's own change: its panel checked who may first)
+  -- (and, written out with the roles, the computers this one has pinned as whoever's in charge, and when: a computer new to the studio pins
+  -- from these, not from devices files, where anyone can claim a name; and a writing of the same roles is a new one. Security review, 0.58.78)
+  if j.owner and not held then j.managers = trust.managers(root, trust.roles_of(j)) end
+  j.roles_at = os.time()
   reaper.RecursiveCreateDirectory(root .. "/_band", 0)
   band.write_json(root .. "/_band/band.json", j)
-  if j.owner then trust.pin(root, trust.roles_of(j)) end -- (this computer's own change: its panel checked who may first)
   seen[root] = nil
 end
 function groups.edit(root, change) save(root, change) end -- (lib/alerts.lua's channel)

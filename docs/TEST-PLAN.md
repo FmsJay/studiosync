@@ -88,7 +88,7 @@ every time, told a member to be let in, and printed the Google account. REAPER's
 
 - Fixed in 0.58.69: roles, removals and closing count only from the owner's or an admin's computer, as Syncthing records who changed the
   file (`lib/trust.lua`; the Console says when one is set aside). Left: someone in charge on a computer nobody has pinned yet (a new one
-  of theirs) isn't believed until they act from a known one; identity is still a chosen name; claims (`given-*`) still trust their `by`.
+  of theirs) isn't believed until they act from a known one; identity is still a chosen name. (0.58.78: claims checked too; see below.)
 - Fixed in 0.58.69: joiners pair with the inviter as an *introducer* without auto-accept (existing computers switch it off at the next
   Live sync start), so nobody can add a folder to someone else's computer unasked.
 - Fixed in 0.58.69: the Tailscale API token is encrypted for the Windows account (DPAPI) or kept in the Mac Keychain; Linux keeps it in
@@ -116,9 +116,8 @@ Left for after the test (by area):
   library, an EZX) can make a silent print; prints lose multi-out instruments and sidechains; automation items on plug-in parameters
   point at each machine's own pool; take FX get none of the restless/readback protections; ReaInsert and ReaStream travel live;
   offline-by-choice plug-ins block printing; media files edited in place, subprojects and video are copied once and whole.
-- Security (matters for strangers, not a trusted band): `band.json` id and devices files aren't authenticated; first-use trust takes
-  whatever roles are on disk; the listening page is served from the synced folder; the introducer flag stays on; the invitation is a
-  shell line from unpinned `main`; Tailscale guests reach the whole tailnet unless the tag policy is set.
+- Security (matters for strangers, not a trusted band): fixed on the `left-security` branch (0.58.78, not released); see "Security
+  items, 0.58.78" below.
 - Installers: GitHub's 60-requests-an-hour limit (plug-ins already installed no longer ask; Syncthing and SonoBus still do); an existing Syncthing with its
   config elsewhere (SyncTrayzor, snap, Homebrew); REAPER in a custom or portable folder; Windows without winget; macOS 11 and older;
   the 6-minute wait for REAPER's first plug-in scan; non-English letters in names.
@@ -143,3 +142,33 @@ Left: a change made while StudioSync wasn't running is taken as the plug-in load
 machines (a lasting "differs", no re-send); frozen tracks arrive frozen, without unfreeze data; hardware outputs aren't sent; plug-in sample
 copies keep accented names; a track template with a missing plug-in brings up REAPER's load warning, which blocks scripts; the Linux test
 assumptions above.
+
+## Security items, 0.58.78 (branch `left-security`, not released)
+
+The six left from the 2026-11-16 security review, plus given claims and the new-computer question. Everything Syncthing is asked comes
+through `lib/trust.lua` (modifiedBy); "" (a folder or file Syncthing doesn't hold) is still believed, as since 0.58.69.
+- `band.json` id: never followed once known. The id comes from this computer's own start or join, the invitation the installer ran
+  (`studiosync_setup.lua` gets it from the installers now), else the first band.json seen. A rewritten id used to point every Syncthing
+  question at a folder it doesn't have, whose empty answer was believed, and at an empty set of role pins. The Console says when they differ.
+  (A modifiedBy check can't do it: members write band.json legitimately, for the tailnet, private audio and alerts.)
+- Devices files: count only when Syncthing says the computer each names wrote it (removal, role pins, meeting others). Left: a computer
+  can still claim any name for itself; identity is a chosen name.
+- First use: an invited computer believes band.json's roles only if the inviter's computer (its device ID is in the invitation) wrote
+  it; whoever lets someone in writes band.json out again, with `managers` (the computers it has pinned for whoever's in charge) and
+  `roles_at`. Written by anyone else, the inviter alone is in charge on that computer until the inviter's computer writes the roles.
+  Computers joined before 0.58.78 (no inviter recorded) keep the old first look.
+- Listening page: served from `<REAPER>/StudioSync/listen-<id>.html`, written only by StudioSync; still asked for as `_band/listen.html`,
+  so shared addresses keep working. A server started by an older version quits within two minutes (its heartbeat file was renamed).
+- Introducer: switched off once this computer is let in (no studio of its waiting, except that one's inviter). Someone let in later is
+  met directly when they ask to connect, if their own devices file (written by their computer) is in one of this computer's studios and no
+  mark has taken them out. Without that, later joiners synced with earlier ones only through a third computer.
+- Invitation: the installer lines fetch `raw.githubusercontent.com/FmsJay/studiosync/v<version>/installer/...`, cache-buster kept. Left:
+  the installer still reads `index.xml` from main to pick the newest release (what ReaPack serves anyway).
+- Guest invitation: reads the tailnet policy first. Tailscale's starting policy (guests reach everything) asks Yes (set up the tags, then
+  invite) / No (invite anyway) / Cancel; a policy with its own rules, or one that can't be read, says so and asks to go on.
+- Claims (`given-*`): count, and are folded in by the person given them, only when written by the giver's pinned computer (or this one).
+- Someone in charge on a new computer of theirs: still not believed until they act from a known one. Accepted for now: the only automatic
+  fix would take a devices file naming them, and anyone can write one claiming their name, so it would hand control to whoever claims it
+  first. The safe fix is a vouch: on a computer of theirs already known, the person confirms "this new computer is mine", and that writing
+  of band.json (with `managers`) would carry it to everyone (`trust.repin` would then add listed computers to someone already pinned, not
+  only to someone new). It needs a confirmation in the panel, so it waits for after the test.

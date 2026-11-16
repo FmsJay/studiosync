@@ -1,6 +1,7 @@
 -- services.is_device_id / on_tailnet are pure (lupa or any Lua 5.4, from the repo root)
 reaper = reaper or { GetOS = function() return "Win64" end }
 package.loaded.band = package.loaded.band or {}
+package.loaded.band.VERSION = package.loaded.band.VERSION or "0.58.78"
 package.path = "lib/?.lua;" .. package.path
 local services = require("services")
 assert(services.is_device_id("2MOGZMD-MVLUUSO-D6GXQIG-HMDVUBG-AOW6LHR-LMQQT6P-V4V5P73-6ZR5NQZ"), "a real device ID")
@@ -25,6 +26,14 @@ assert(inv:find('install_mac.sh?$(date +%s)" | BS_HOST_ID=' .. inv_id .. " BS_BA
 assert(inv:find('install_linux.sh?$(date +%s)" | BS_HOST_ID=' .. inv_id .. " BS_BAND_ID=bandsync BS_BAND_NAME='Chilio' bash", 1, true), "Linux line (0.58.74)")
 assert(inv:find("-File $f -HostId " .. inv_id .. " -BandId bandsync -BandName 'Chilio'", 1, true) and inv:find('"$env:TEMP\\studiosync_install.ps1"', 1, true), "Windows line")
 assert(inv:find("^Join Chilio on StudioSync"), "it says which band")
+-- (0.58.78) each line fetches this release's installer by its tag, never main, and keeps the cache-buster
+local base = "https://raw.githubusercontent.com/FmsJay/studiosync/v0.58.78/installer/"
+assert(inv:find(base .. 'install_windows.ps1?$(Get-Random)"', 1, true) and inv:find(base .. 'install_mac.sh?$(date +%s)"', 1, true)
+  and inv:find(base .. 'install_linux.sh?$(date +%s)"', 1, true) and not inv:find("/main/", 1, true), "pinned to the release tag")
+-- the installers read the pasted invitation with these patterns (install_windows.ps1, install_mac.sh, install_linux.sh): the pinned lines still match
+local function ps(text) return text:match("%-HostId%s+([%u%d%-]+)%s+%-BandId%s+([%w%-]+)%s+%-BandName%s+'([^'\r\n]*)'") end
+local function sh(text) return text:match("BS_HOST_ID=([%u%d%-]+)%s+BS_BAND_ID=([%w%-]+)%s+BS_BAND_NAME='([^'\r\n]*)'") end
+assert(select(3, ps(inv)) == "Chilio" and ps(inv) == inv_id and sh(inv) == inv_id, "the installers' own patterns")
 local g = services.invite_text(inv_id, { id = "bandsync", name = "Chilio" }, "tskey-auth-kAbc123CNTRL-xyz")
 assert(g:find("BS_BAND_NAME='Chilio' BS_TS_KEY=tskey-auth-kAbc123CNTRL-xyz bash", 1, true) and g:find("-BandName 'Chilio' -TsKey tskey-auth-kAbc123CNTRL-xyz\n", 1, true), "a guest's key, in both lines")
 assert(not services.invite_text(inv_id, { id = "bandsync", name = "Chilio" }, "tskey-auth-x; rm -rf ~"):find("rm -rf", 1, true), "only a key goes into a command")
@@ -138,5 +147,44 @@ do
   tree["L/Microsoft/WinGet/Packages"] = {}
   assert(services.winget_syncthing("L") == nil, "none there: nil")
   band.subdirs, band.compare_versions, reaper.file_exists = real_sub, real_cmp, real_fe
+end
+
+-- (0.58.78) a guest invitation looks at what a guest could reach first: Tailscale's starting policy (everything) asks to set up the tags
+local limited = services.policy_with_guest_rule(services.policy_with_tags(start))
+assert(services.guest_reach(start) == "open" and not select(2, services.guest_reach(start)), "the starting policy: open, no tags yet")
+assert(services.guest_reach(limited) == "limited" and select(2, services.guest_reach(limited)), "after Set up the tags: limited")
+assert(services.guest_reach(services.policy_with_tags('{"grants": [{"src": ["group:band"], "dst": ["*"], "ip": ["*"]}]}')) == "own rules", "someone's own rules")
+do
+  local band = package.loaded.band
+  local real_log, real_mb = band.log, reaper.MB
+  local said, boxes, made, added = {}, {}, 0, {}
+  band.log = function(s) said[#said + 1] = s end
+  local answer = 6
+  reaper.MB = function(msg, title, kind) boxes[#boxes + 1] = { msg = msg, kind = kind }; return answer end
+  local policy, why = start, nil
+  services.tailscale_policy = function() return policy, why end
+  services.tailscale_add_tags = function(ok) added[#added + 1] = ok(); policy = limited; return true, ok() and "limited" or nil end
+  services.tailscale_guest_key = function() made = made + 1; return "tskey-auth-kTest-1" end
+  package.loaded.tools = { show_invite = function() end }
+  package.loaded.groups = { set_tailnet = function() end }
+  local function invite() boxes, added = {}, {}; services.copy_guest_invite(inv_id, { id = "bandsync", name = "Chilio" }, nil, nil, "/r") end
+  invite()
+  assert(#boxes == 1 and boxes[1].kind == 3 and boxes[1].msg:find("every computer on it", 1, true), "open: says so plainly, Yes/No/Cancel")
+  assert(added[1] == true and made == 1, "Yes: the tags and the guest rule first, then the invitation")
+  invite()
+  assert(#boxes == 0 and made == 2, "limited already: no question")
+  policy, answer = start, 2
+  invite()
+  assert(made == 2 and #added == 0, "Cancel: nothing set up, no invitation")
+  answer = 7
+  invite()
+  assert(made == 3 and #added == 0, "No: the invitation anyway, the policy left alone")
+  policy, why, answer = nil, "Tailscale said 403", 1
+  invite()
+  assert(#boxes == 1 and boxes[1].kind == 1 and boxes[1].msg:find("couldn't read", 1, true) and made == 4, "the policy unreadable: says it can't tell, OK goes on")
+  policy, answer = services.policy_with_tags('{"grants": [{"src": ["group:band"], "dst": ["*"], "ip": ["*"]}]}'), 2
+  invite()
+  assert(boxes[1].msg:find("rules of its own", 1, true) and made == 4, "own rules: says those decide; Cancel stops")
+  band.log, reaper.MB = real_log, real_mb
 end
 print("ok")
