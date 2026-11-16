@@ -135,6 +135,9 @@ local ok, err = pcall(function()
   band.log = function(t) logged = t end
   reaper.defer = function() end -- (stepped by hand below)
   mirror.revert_slice = nil
+  -- (a short slice, so it takes several passes on any computer: the Linux VM did all 140 in two 0.1 s ones. 0.58.77)
+  local slice_was = mirror.REVERT_SLICE
+  mirror.REVERT_SLICE = 0.001
   local at_start = mirror.revert(pa, A, song, room, plan, { can = yes, mode = "claims" })
   check(at_start:find("keeps working", 1, true) ~= nil, "it says so and returns (" .. at_start .. ")")
   local worst, steps = 0, 0
@@ -144,6 +147,7 @@ local ok, err = pcall(function()
     worst, steps = math.max(worst, reaper.time_precise() - t), steps + 1
   end
   band.log, reaper.defer = real_log, real_defer
+  mirror.REVERT_SLICE = slice_was
   say(string.format("%d slices, the longest %.3f s: %s", steps, worst, tostring(logged)))
   check(logged ~= nil and steps > 1, "it took more than one pass")
   check(worst < 0.5, string.format("and no pass held REAPER long (%.3f s)", worst))

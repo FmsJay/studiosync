@@ -34,8 +34,9 @@ function bg.default_on() return WIN or bg.helpers() ~= nil end
 function bg.on()
   local set = reaper.GetExtState(band.SECTION, "bg render")
   if set == "off" or (not bg.default_on() and set ~= "on") then return false end
-  if failed >= 2 and done == 0 then return false end
-  return WIN or reaper.GetOS():find("^OSX") ~= nil or reaper.GetOS():find("^macOS") ~= nil
+  -- (Linux too, when switched on: there it ran nowhere, Setup's tick box did nothing, and the binary is lowercase `reaper`. Off by default
+  -- there, as on a Mac without the helpers: nothing keeps the second REAPER's window out of sight. Linux VM, 0.58.77)
+  return not (failed >= 2 and done == 0)
 end
 
 -- The copy, ready for the second REAPER: the plug-ins of every track not in `keep` (REAPER track GUIDs) and the
@@ -324,6 +325,7 @@ end
 local function exe_path()
   local d = reaper.GetExePath():gsub("\\", "/")
   if WIN then return d .. "/reaper.exe" end
+  if band.LINUX then return d .. "/reaper" end -- (lowercase, beside its libSwell.so: Linux VM, 0.58.77)
   for _, p in ipairs({ d .. "/Contents/MacOS/REAPER", d .. "/REAPER.app/Contents/MacOS/REAPER", d .. "/REAPER64.app/Contents/MacOS/REAPER", d .. "/REAPER" }) do
     if reaper.file_exists(p) then return p end
   end

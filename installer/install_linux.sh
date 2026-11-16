@@ -550,6 +550,18 @@ curl -fsSL "https://codeload.github.com/$REPO/tar.gz/refs/$ZREF" | tar -xz -C "$
 HELPER="$(find "$WORK/src" -path '*/installer/studiosync_setup.lua' | head -1)"
 [ -n "$HELPER" ] || { warn "StudioSync's setup files didn't download: check the internet connection, then run this again."; exit 1; }
 HDIR="$(dirname "$HELPER")"
+# REAPER -nonewinst <file>: to the REAPER that's running, or a new one when none is. On Linux a REAPER finds the running one by a
+# pipe in XDG_RUNTIME_DIR whose name comes from XDG_SESSION_ID (reaperctl.<hash>), so started from another login session (a terminal
+# over SSH, or one the desktop started apart from REAPER) it found none and opened a second REAPER, and each hand-over again opened
+# one more. So it's started with the running REAPER's own session, or none if it has none (REAPER 7.86, Linux VM, 0.58.77)
+handoff() {
+  local p sid
+  p="$(pgrep -x reaper | head -1)"
+  if [ -z "$p" ] || [ ! -r "/proc/$p/environ" ]; then detach "$REAPER_BIN" -nonewinst "$1"; return; fi
+  sid="$(tr '\0' '\n' < "/proc/$p/environ" | sed -n 's/^XDG_SESSION_ID=//p' | head -1)"
+  if [ -n "$sid" ]; then detach env XDG_SESSION_ID="$sid" "$REAPER_BIN" -nonewinst "$1"
+  else detach env -u XDG_SESSION_ID "$REAPER_BIN" -nonewinst "$1"; fi
+}
 request() { # mode -> runs the helper in REAPER, leaves its JSON result in $HDIR/studiosync_setup_result.json
   local panel=false; [ "$1" = verify ] && panel=true
   local jsfx=false; yes "$PLUGINS" && jsfx=true
@@ -569,7 +581,7 @@ request() { # mode -> runs the helper in REAPER, leaves its JSON result in $HDIR
   # ONE request: the helper waits inside REAPER for ReaPack itself. -nonewinst hands it to the REAPER that's running, or
   # starts REAPER with it when none is
   pgrep -x reaper >/dev/null && was_up=1
-  detach "$REAPER_BIN" -nonewinst "$HELPER"
+  handoff "$HELPER"
   GONE=""
   for i in $(seq 1 360); do
     [ -f "$result" ] && break
@@ -577,7 +589,7 @@ request() { # mode -> runs the helper in REAPER, leaves its JSON result in $HDIR
     # started (its first act writes studiosync_setup_started), so it never runs twice. As install_windows.ps1, AgentBox 0.58.65)
     if [ -n "$was_up" ] && [ $asked -lt 4 ] && [ "$i" -eq $((20 * asked)) ] && [ ! -f "$started" ]; then
       say "REAPER hasn't picked up the setup step yet: handing it over again."
-      detach "$REAPER_BIN" -nonewinst "$HELPER"
+      handoff "$HELPER"
       asked=$((asked + 1))
     fi
     if [ "$i" -gt 15 ] && ! pgrep -x reaper >/dev/null; then GONE=1; break; fi
