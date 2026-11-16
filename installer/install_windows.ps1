@@ -83,7 +83,9 @@ function Read-Invite($text) {
 # invitation later). The panel then opens on Start a studio / Paste join code, so nothing here has to be decided up front.
 $later = $Hosting -eq "later"
 $isHost = if ($later) { $false } elseif ($Hosting) { $Hosting -eq "yes" } elseif ($HostId) { $false } else {
-  Say "Did someone send you an invitation to their studio? Paste it here (all of it, or just its line starting studiosync-join)."
+  # (Windows Terminal stops a pasted message with "text that contains multiple lines": said here, so nobody takes it for a problem. AgentBox, 0.58.65)
+  Say "Did someone send you an invitation to their studio? Paste it here: its line starting studiosync-join is enough, or all of it (if"
+  Say "Windows warns about pasting several lines, choose Paste anyway, then press Enter)."
   Say "Starting a studio of your own right now? Type s. Neither yet? Just press Enter: start one or join one later, from StudioSync's panel."
   $found = $null
   $start = $false
@@ -380,7 +382,7 @@ if (-not $running) {
   Start-Process $st -ArgumentList $sargs -WindowStyle Hidden
   Ok "Syncthing started (StudioSync's Live sync starts it from now on)"
   # (its first start asks Windows Firewall; declined, everything still syncs but only through Syncthing's slower relays. AgentBox test, 0.58.61)
-  Say "Windows Firewall may ask about Syncthing: press 'Allow access' (private networks are enough). Without it, changes still sync, only slower."
+  Say "Windows Firewall may ask about Syncthing: press Allow (it says Allow access on older Windows; private networks are enough). Without it, changes still sync, only slower."
 }
 $up = $false
 for ($i = 0; $i -lt 60 -and -not $up; $i++) { $null = STcli show system; $up = $LASTEXITCODE -eq 0; if (-not $up) { Start-Sleep 1 } }
@@ -465,10 +467,22 @@ function Request($mode) {
   # (@(...) around it: an `if` hands back a one-item list as a plain string, and + then glued the path onto it: REAPER got
   # `-nonewinst"C:\...lua"`, showed its Usage box and never ran the helper. Windows Sandbox run, 2026-11-10)
   $once = @(if ($ReaperExe) { "-newinst", "-cfgfile", "`"$res\reaper.ini`"" } else { "-nonewinst" })
+  $started = Join-Path (Split-Path $helper) "studiosync_setup_started" # (the helper's first act: it has the request)
+  Remove-Item $started -ErrorAction SilentlyContinue
+  $wasUp = -not $ReaperExe -and [bool](Get-Reaper | Where-Object { $_.MainWindowHandle -ne 0 })
   Start-Process $reaper -ArgumentList ($once + "`"$helper`"")
   $script:Gone = $false
+  $asked = 1
   for ($i = 0; $i -lt 360 -and -not (Test-Path $result); $i++) {
     Start-Sleep 1
+    # (a REAPER that was already open sometimes never gets the hand-off: nothing runs and this waited out its 6 minutes, though handing it
+    # over again ran at once. AgentBox, 0.58.65. Again only while the helper hasn't started, so it never runs twice; never to a REAPER
+    # still starting, which runs it once its first-start questions are answered)
+    if ($wasUp -and $asked -lt 4 -and $i -eq 20 * $asked -and -not (Test-Path $started)) {
+      Say "REAPER hasn't picked up the setup step yet: handing it over again."
+      Start-Process $reaper -ArgumentList ($once + "`"$helper`"")
+      $asked++
+    }
     if ($i -gt 15 -and -not (Get-Reaper)) { $script:Gone = $true; break }
     # (on a first start REAPER asks about the audio device and ReaPack shows Manage repositories: until they're answered nothing runs, and Tailscale's
     # welcome window can sit on top of them. Windows Sandbox run, 2026-11-10: the setup waited out its 6 minutes behind both)
@@ -516,9 +530,7 @@ function Wait-Until($test) {
 if ($isHost) {
   $left += "To bring in a collaborator: StudioSync panel > Invite a collaborator, and send them what it copies (their installer is then already paired with you). When they've run it, the panel shows 'Let them in': press it."
   $left += "(Your Syncthing device ID, if they ask for it:  $myId)"
-} elseif ($joining -and $peers -notcontains $hostId) {
-  $left += "Tell the collaborator whose ID you used: their StudioSync panel shows 'Let $user in' (or they add your Syncthing ID by hand: $myId). The shared folder then arrives by itself."
-}
+} # (a joiner's note is the last one: two said the same thing. AgentBox, 0.58.65)
 if ($wantLive) {
   # Any computer may end up running the NINJAM server. Windows only asks about it the first time it runs, mid-session, on that computer's screen, and until it's
   # answered nobody can connect. Asked now instead, for Tailscale addresses only (the server's own rule, lib/ninjam/bandsync.cfg). James's call, 2026-11-05.
@@ -636,7 +648,8 @@ if ($wantSolo) {
 }
 if ($isHost) { $left += "In REAPER, open your song's project: the StudioSync panel offers 'Share this project with the studio'." }
 elseif ($later) { $left += "When you want a studio: REAPER's StudioSync panel has Start a studio, and Paste join code for an invitation someone sends you." }
-else { $left += "Tell whoever invited you that you're set up: they press 'Let you in' in their panel. Then the studio's projects arrive by themselves: in REAPER's StudioSync panel, open Projects and double-click one." }
+elseif ($peers -contains $hostId) { $left += "You're connected to whoever invited you: once they press 'Let you in' in their panel, the studio's projects arrive by themselves: in REAPER's StudioSync panel, open Projects and double-click one." }
+else { $left += "Tell whoever invited you that you're set up: they press 'Let $user in' in their panel (or add your Syncthing ID by hand: $myId). Then the studio's projects arrive by themselves: in REAPER's StudioSync panel, open Projects and double-click one." }
 foreach ($d in $script:downloads) { Remove-Item -Force $d -ErrorAction SilentlyContinue }
 Remove-Item -Recurse -Force (Join-Path $env:TEMP "studiosync_setup") -ErrorAction SilentlyContinue
 Write-Host ""

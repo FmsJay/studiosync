@@ -577,12 +577,7 @@ if yes "$HOSTING"; then
   echo "  - To bring in a collaborator: StudioSync panel > Invite a collaborator, and send them what it copies (their installer is"
   echo "    then already paired with you). When they've run it, the panel shows 'Let them in': press it."
   echo "    (Your Syncthing device ID, if they ask for it:  $MY_ID)"
-elif [ -n "$JOINING" ]; then
-  if [ -z "${CONNECTED:-}" ]; then
-    echo "  - Tell the collaborator whose ID you used: their StudioSync panel shows 'Let $USERNAME_BS in' (or they add your"
-    echo "    Syncthing ID by hand: $MY_ID). The shared folder then arrives by itself."
-  fi
-fi
+fi # (a joiner's note is the last one: two said the same thing. AgentBox, 0.58.65)
 if yes "$LIVE" && [ -z "$TS_TAGGED" ]; then
   echo "  - Tailscale (skipped above): sign in from its menu-bar icon, then at login.tailscale.com/admin/machines > this"
   echo "    Mac > ... > Disable key expiry (otherwise it signs out every few months, maybe right before a session)."
@@ -607,7 +602,7 @@ elif [ -n "$LATER" ]; then
   echo "  - When you want a studio: REAPER's StudioSync panel has Start a studio, and Paste join code for an invitation someone sends you."
   [ -n "${TS_LATER:-}" ] && echo "  - Tailscale (for Play/Jam and hearing each other live): sign in from its menu-bar icon when you need it."
 else
-  echo "  - Tell whoever invited you that you're set up: they press 'Let you in' in their panel. Then the studio's projects arrive"
-  echo "    by themselves: in REAPER's StudioSync panel, open Projects and double-click one."
+  echo "  - Tell whoever invited you that you're set up: they press 'Let $USERNAME_BS in' in their panel (or add your Syncthing ID"
+  echo "    by hand: $MY_ID). Then the studio's projects arrive by themselves: in StudioSync's panel, open Projects and double-click one."
   [ -n "${TS_LATER:-}" ] && echo "  - Tailscale (for Play/Jam and hearing each other live): sign in from its menu-bar icon when you need it."
 fi

@@ -6,6 +6,10 @@
 --   reapack: add the StudioSync repository and start a ReaPack sync (installs + registers actions)
 --   folder:  register every "StudioSync - *.lua" in <sync_root>/_tools/studiosync (re-run after updates)
 local here = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]")
+do -- first: the installer waits for this before handing the step over again (a REAPER already open sometimes misses the first)
+  local s = io.open(here .. "/studiosync_setup_started", "w")
+  if s then s:write(tostring(os.time())); s:close() end
+end
 -- chmaha's "DSP to JSFX": the effects and instruments REAPER 7.83 bundled and 7.84 removed (drum kits, MDA piano and
 -- e-piano, organ, channel strip, tuner, limiter...), GPL-3.0 with MIT/AGPL parts; new in Oct 2026, still changing
 local JSFX_REPOS = { { "Saike", "https://raw.githubusercontent.com/JoepVanlier/JSFX/master/index.xml" },
