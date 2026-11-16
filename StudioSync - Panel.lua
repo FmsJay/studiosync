@@ -969,13 +969,23 @@ local function section_notes()
   local entered, t = require("page_chat").input(ctx, ImGui, "##note", "a note for everyone, Enter to post (e.g. 'try the chorus an octave up')", note_text)
   note_text = t
   local whereto = id and string.format("Selected: %s's take on %s, bar %s", (id:match("^(.-)%-%d+%-%d+Z") or "?"):gsub("_", " "),
-    sync.track_name(it), bar_of(reaper.GetMediaItemInfo_Value(it, "D_POSITION"))) or "No take selected: notes go at the edit cursor."
+    sync.track_name(it), bar_of(reaper.GetMediaItemInfo_Value(it, "D_POSITION"))) .. (reaper.SetTakeMarkerInfo and ". With a time selection over it, the note covers that stretch" or "")
+    or "No take selected: notes go at the edit cursor."
   if ui.short then ImGui.SetItemTooltip(ctx, whereto); ImGui.SameLine(ctx) else ImGui.TextDisabled(ctx, whereto) end
   local function mark(kind, text)
     local pos = reaper.GetCursorPositionEx(proj)
-    local ev = { type = kind, text = text, take = id, pos = pos, track = it and sync.base_name(select(2, reaper.GetTrackName(reaper.GetMediaItem_Track(it)))) or nil }
+    -- (a time selection over the selected take: the note covers it, shaded across those bars where REAPER has take marker lengths, 7.86.
+    -- James, 0.58.67: "see if the REAPER update can help build the other features")
+    local len
+    local s0, s1 = reaper.GetSet_LoopTimeRange2(proj, false, false, 0, 0, false)
+    if it and kind == "note" and s1 > s0 then
+      local i0 = reaper.GetMediaItemInfo_Value(it, "D_POSITION")
+      local a, z = math.max(s0, i0), math.min(s1, i0 + reaper.GetMediaItemInfo_Value(it, "D_LENGTH"))
+      if z > a then pos, len = a, z - a end
+    end
+    local ev = { type = kind, text = text, take = id, pos = pos, len = len, track = it and sync.base_name(select(2, reaper.GetTrackName(reaper.GetMediaItem_Track(it)))) or nil }
     sync.post(cfg, b.song, b.room, ev)
-    if it then sync.mark_item(it, pos, (kind == "like" and "+1 " or "") .. cfg.user .. (text and (": " .. text) or "")) end -- as everyone else gets it
+    if it then sync.mark_item(it, pos, (kind == "like" and "+1 " or "") .. cfg.user .. (text and (": " .. text) or ""), len) end -- as everyone else gets it
     notes_at = 0
   end
   ImGui.BeginDisabled(ctx, note_text == "")

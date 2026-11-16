@@ -1083,11 +1083,17 @@ local function apply_track(proj, ev)
 end
 
 -- A note on an item shows on every take of it (the print, its dry twin in dry mode, ...), at song position pos.
-function sync.mark_item(it, pos, text)
+-- len (seconds): a note on a stretch, shaded across it, where REAPER has take marker lengths (7.86); elsewhere a point at its start.
+function sync.mark_item(it, pos, text, len)
   local ipos = reaper.GetMediaItemInfo_Value(it, "D_POSITION")
   for k = 0, reaper.CountTakes(it) - 1 do
     local tk = reaper.GetTake(it, k)
-    reaper.SetTakeMarker(tk, -1, text, math.max(0, (pos or ipos) - ipos + reaper.GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS")))
+    -- (in the take's own time: a take played at another rate moves through its source faster or slower. The position ignored that until 0.58.67,
+    -- so a note on a sped-up take landed in the wrong place)
+    local rate = reaper.GetMediaItemTakeInfo_Value(tk, "D_PLAYRATE")
+    if rate <= 0 then rate = 1 end
+    local idx = reaper.SetTakeMarker(tk, -1, text, math.max(0, ((pos or ipos) - ipos) * rate + reaper.GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS")))
+    if tonumber(len) and len > 0 and idx >= 0 and reaper.SetTakeMarkerInfo then reaper.SetTakeMarkerInfo(tk, idx, "LENGTH", len * rate) end
   end
   reaper.UpdateItemInProject(it)
 end
@@ -1150,7 +1156,7 @@ function sync.apply(proj, ev, dir, root, can, me)
   end
   if ev.type == "note" or ev.type == "like" then
     local it2 = ev.take and band.find_take(proj, ev.take)
-    if it2 then sync.mark_item(it2, ev.pos, (ev.type == "like" and "+1 " or "") .. ev.user .. (ev.text and (": " .. ev.text) or "")) end
+    if it2 then sync.mark_item(it2, ev.pos, (ev.type == "like" and "+1 " or "") .. ev.user .. (ev.text and (": " .. ev.text) or ""), ev.len) end
     return true -- notes without a take live in the panel's Notes list (and History)
   end
   if not ev.take then return true end -- "driver" and other take-less events: nothing to change in the project

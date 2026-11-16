@@ -8,7 +8,7 @@ envelope and send, kept
 identical by mirror sync. One person drives (their changes go to everyone); collaborators claim the tracks or
 project sections they work on, and Restore can take back any change, any track, or the whole project.
 
-Plain-Lua ReaScripts (the control panel needs ReaImGui; SWS helps). REAPER 7.18 or newer; 7.83 is tested.
+Plain-Lua ReaScripts (the control panel needs ReaImGui; SWS helps). REAPER 7.18 or newer; 7.86 is tested.
 Machines talk only through a shared folder (Syncthing recommended), with an optional Google Drive copy.
 
 ## Start a new studio
@@ -356,7 +356,9 @@ Restore (its own page):
 
 Chat (its own page): **This room**, **This project** or **Studio**, each with **Messages**, **To-do** (anyone ticks
 them off) and **Links** (lyrics, charts, documents). Beside them, **Notes** pin to the edit cursor or a take: *Go* jumps
-there, and a tick marks one resolved, for everyone. Each message is its own small file, so nothing ever clashes.
+there, and a tick marks one resolved, for everyone. With a take selected and a time selection over it, the note covers that
+stretch ("bars 9 to 12 rush"), shaded across it on REAPER 7.86 and later; on older REAPER it shows at the stretch's start.
+Each message is its own small file, so nothing ever clashes.
 
 Home opens with **Since you were last here**: the others' changes and takes, new messages and notes, until you
 press OK. On the Projects page, right-click a project for its **Stage** (Idea, Writing, Tracking, Mixing, Done), shown
