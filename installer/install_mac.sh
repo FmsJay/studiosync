@@ -64,27 +64,36 @@ read_invite() {
   echo "$bare" | grep -Eq "$ID_RE" && { INV_ID="$bare"; return 0; }
   return 1
 }
-if [ -n "${BS_HOSTING:-}" ]; then HOSTING="$BS_HOSTING" # (the old way of saying "I'm the first")
+# No invitation and no studio of your own yet: everything installs, and the studio waits (James, 0.58.64: you might not need one yet, or get the
+# invitation later). The panel then opens on Start a studio / Paste join code. BS_HOSTING=later says so up front.
+LATER=""
+if [ "${BS_HOSTING:-}" = later ]; then HOSTING=n; LATER=1
+elif [ -n "${BS_HOSTING:-}" ]; then HOSTING="$BS_HOSTING" # (the old way of saying "I'm the first")
 elif [ -n "${BS_HOST_ID:-}" ]; then HOSTING=n # (an invitation's line: someone is set up, and that's their ID)
 else
   say "Did someone send you an invitation to their studio? Paste it here (all of it, or just its line starting studiosync-join)."
-  say "Starting a studio of your own? Just press Return."
-  HOSTING=y
+  say "Starting a studio of your own right now? Type s. Neither yet? Just press Return: start one or join one later, from StudioSync's panel."
+  HOSTING=n
   while :; do
     text=""; read -e -r -p "Invitation: " text </dev/tty
     # (a whole message pasted is several lines: the rest are read here too, or they'd answer the next questions)
     while IFS= read -r -t 1 l </dev/tty; do text="$text"$'\n'"$l"; done
-    [ -z "$(printf '%s' "$text" | tr -d '[:space:]')" ] && break
+    trimmed="$(printf '%s' "$text" | tr -d '[:space:]')"
+    [ -z "$trimmed" ] && { LATER=1; break; }
+    case "$trimmed" in s|S|start|Start) HOSTING=y; break;; esac
     if read_invite "$text"; then
-      HOSTING=n; BS_HOST_ID="$INV_ID"; BS_BAND_ID="$INV_BAND"; BS_BAND_NAME="$INV_NAME"; [ -n "$INV_KEY" ] && [ -z "${BS_TS_KEY:-}" ] && BS_TS_KEY="$INV_KEY"
+      BS_HOST_ID="$INV_ID"; BS_BAND_ID="$INV_BAND"; BS_BAND_NAME="$INV_NAME"; [ -n "$INV_KEY" ] && [ -z "${BS_TS_KEY:-}" ] && BS_TS_KEY="$INV_KEY"
       ok "Joining ${INV_NAME:-their studio}"; break
     fi
-    warn "That isn't an invitation. Paste it again (the line starting studiosync-join is enough), or press Return to start a studio of your own."
+    warn "That isn't an invitation. Paste it again (the line starting studiosync-join is enough), type s to start a studio, or press Return for later."
   done
 fi
+JOINING=""; ! yes "$HOSTING" && [ -z "$LATER" ] && JOINING=1
 HOST_ID="$(echo "${BS_HOST_ID:-}" | tr '[:lower:]' '[:upper:]')"
-if ! yes "$HOSTING"; then
+if [ -n "$JOINING" ]; then
   echo "$HOST_ID" | grep -Eq "$ID_RE" || { warn "The invitation's device ID isn't a whole one: ask for a new invitation."; exit 1; }
+elif [ -n "$LATER" ]; then
+  say "No studio yet: when you want one, StudioSync's panel has Start a studio and Paste join code."
 else
   say "Starting a studio: at the end, StudioSync's panel has Invite, which makes the message to send each collaborator."
 fi
@@ -96,7 +105,7 @@ while [ -z "$USERNAME_BS" ]; do
 done
 # the band (docs/bands-design.md): each its own shared folder. An invitation names it; the first one set up names it.
 FOLDER_ID="$(printf '%s' "${BS_BAND_ID:-}" | LC_ALL=C tr -cd 'a-z0-9-')"
-if ! yes "$HOSTING" && [ -z "$FOLDER_ID" ]; then # (someone's device ID typed in by hand, no invitation)
+if [ -n "$JOINING" ] && [ -z "$FOLDER_ID" ]; then # (someone's device ID typed in by hand, no invitation)
   FOLDER_ID="$(ask "The studio's ID, if whoever set it up gave you one (press Return if not)" bandsync | LC_ALL=C tr -cd 'a-z0-9-')"
   [ -n "$FOLDER_ID" ] || FOLDER_ID=bandsync
 fi
@@ -107,6 +116,8 @@ fi
 [ -n "$BAND_NAME" ] || BAND_NAME="the studio"
 DEF_ROOT="$HOME/BandSync"
 if [ "$FOLDER_ID" != bandsync ]; then DEF_ROOT="$HOME/StudioSync $BAND_NAME"; fi
+# (later: an empty StudioSync folder, so a studio started or joined from the panel goes beside it, in your home folder: services.new_band)
+[ -n "$LATER" ] && DEF_ROOT="$HOME/StudioSync"
 while :; do
   # (not asked: nobody new knows what to answer. Beginner review, 0.58.62)
   ROOT="${BS_ROOT:-$DEF_ROOT}"
@@ -117,11 +128,11 @@ while :; do
   warn "BS_ROOT isn't a full folder path (it should start with / or ~): using $DEF_ROOT instead."
   BS_ROOT=""
 done
-say "$BAND_NAME's shared folder: $ROOT"
+[ -z "$LATER" ] && say "$BAND_NAME's shared folder: $ROOT"
 # The first one set up: an ID of the group's own. They all used to get "bandsync", so someone in two such groups had the two
 # folders treated as one and their files mixed. Run again on the same folder, it keeps the ID it has; a folder from before
 # groups had IDs, with no band.json yet, is "bandsync" (lib/band.lua band.info).
-if [ -z "$FOLDER_ID" ]; then
+if [ -z "$FOLDER_ID" ] && [ -z "$LATER" ]; then
   if [ -f "$ROOT/_band/band.json" ]; then FOLDER_ID="$(sed -n 's/.*"id"[^"]*"\([^"]*\)".*/\1/p' "$ROOT/_band/band.json" | head -1)"
   elif [ -n "$(ls -A "$ROOT" 2>/dev/null)" ]; then FOLDER_ID=bandsync; fi
   if [ -z "$FOLDER_ID" ]; then
@@ -142,7 +153,7 @@ fi
 PLUGINS="${BS_PLUGINS:-$(ask "Install it? (recommended) (y/n)" y)}"
 EXTRAS="${BS_EXTRAS:-n}"
 # (extras only asked of whoever starts the studio: 1.2 GB is a lot for a joiner to decide on blind. Beginner review, 0.58.62)
-if yes "$PLUGINS" && yes "$HOSTING" && [ -z "${BS_EXTRAS:-}" ]; then
+if yes "$PLUGINS" && [ -z "$JOINING" ] && [ -z "${BS_EXTRAS:-}" ]; then
   say "The bigger extras (about 1.2 GB): a grand piano, a real drum kit, amp capture players and the Odin 2 synth."
   EXTRAS="$(ask "Install the extras too? (y/n)" n)"
 fi
@@ -339,7 +350,8 @@ if yes "$SOLO" && have "Google Drive"; then
     drives | head -1
   }
   account() { echo "$1" | sed -n 's#.*/GoogleDrive-\([^/]*\)/My Drive$#\1#p'; } # the account's e-mail, from its folder
-  if ! yes "$HOSTING" && ! { [ -n "$(mydrive)" ] && [ -d "$(mydrive)/$DRIVE_NAME" ]; }; then
+  if [ -n "$LATER" ]; then DRIVE_OK=1 # (no studio yet, so no studio folder to make or add: the panel asks when you start one)
+  elif ! yes "$HOSTING" && ! { [ -n "$(mydrive)" ] && [ -d "$(mydrive)/$DRIVE_NAME" ]; }; then
     # (as Tailscale above: a joiner's songs arrive without it, and the folder usually isn't shared with them yet. Beginner review, 0.58.62)
     DRIVE_LATER=1
   elif [ -z "$(mydrive)" ]; then
@@ -349,7 +361,7 @@ if yes "$SOLO" && have "Google Drive"; then
     say "Waiting for it; press Return to skip and do it later."
     while [ -z "$(mydrive)" ]; do read -t 3 -r </dev/tty && break; done
   fi
-  MD="$(mydrive)"; [ -n "${DRIVE_LATER:-}" ] && MD=""
+  MD="$(mydrive)"; { [ -n "${DRIVE_LATER:-}" ] || [ -n "$LATER" ]; } && MD=""
   if [ -n "$MD" ] && [ ! -d "$MD/$DRIVE_NAME" ] && [ "$(drives | wc -l)" -gt 1 ]; then
     say "Google Drive has several accounts signed in here. Which one is the studio's (it gets the studio's folder)?"
     i=0; while IFS= read -r d; do i=$((i + 1)); echo "    $i) $(account "$d")"; done < <(drives)
@@ -470,19 +482,22 @@ if yes "$HOSTING" && [ ! -f "$ROOT/_band/band.json" ]; then # (who this folder i
 fi
 # per-song sync (lib/songsync.lua writes the same block): a new bandmate gets every song's listing, and a song in
 # full once they open it, so the first sync isn't the whole library. The first one set up keeps everything.
-if ! yes "$HOSTING" && ! grep -q '^// BandSync end$' "$ROOT/.stignore" 2>/dev/null; then
+if [ -n "$JOINING" ] && ! grep -q '^// BandSync end$' "$ROOT/.stignore" 2>/dev/null; then
   printf '%s\n' '// BandSync: what this computer downloads (written by BandSync, up to the line below)' '!/_*' '!/plugins' '!/drummaps' '!/*/session.json' '!/*/folder.json' '!/*/live.json' '!/*/invites' '!/*/inbox' '!/*/rooms/*/room.json' '!/*/rooms/*/summary' '!/*/rooms/*/status' '(?d)/*/*' '// BandSync end' >> "$ROOT/.stignore" && ok "this computer gets each song in full once it's opened (the rest: their listing)"
 fi
 LABEL="BandSync"; [ "$FOLDER_ID" != bandsync ] && LABEL="StudioSync $BAND_NAME"
-if stcli config folders list | grep -qx "$FOLDER_ID"; then ok "$BAND_NAME's shared folder is already set up"
+if [ -n "$LATER" ]; then : # (no studio folder yet: the panel makes it when you start or join one)
+elif stcli config folders list | grep -qx "$FOLDER_ID"; then ok "$BAND_NAME's shared folder is already set up"
 else
   stcli config folders list | grep -q . || stcli config defaults folder path set "$(dirname "$ROOT")" >/dev/null # (fresh setup: new folders land beside it)
   stcli config folders add --id "$FOLDER_ID" --label "$LABEL" --path "$ROOT" >/dev/null && ok "$BAND_NAME's shared folder -> $ROOT"
 fi
-stcli config folders "$FOLDER_ID" order set smallestFirst >/dev/null
-stcli config folders "$FOLDER_ID" fswatcher-delays set 1 >/dev/null  # the default 10 s delay added 10 s to every take
+if [ -z "$LATER" ]; then
+  stcli config folders "$FOLDER_ID" order set smallestFirst >/dev/null
+  stcli config folders "$FOLDER_ID" fswatcher-delays set 1 >/dev/null  # the default 10 s delay added 10 s to every take
+fi
 stcli config devices "$MY_ID" name set "$USERNAME_BS" >/dev/null
-if ! yes "$HOSTING"; then
+if [ -n "$JOINING" ]; then
   stcli config devices list | grep -qx "$HOST_ID" || stcli config devices add --device-id "$HOST_ID" --name "Collaborator" --introducer --auto-accept-folders >/dev/null
   stcli config folders "$FOLDER_ID" devices list | grep -qx "$HOST_ID" || stcli config folders "$FOLDER_ID" devices add --device-id "$HOST_ID" >/dev/null
   CONNECTED=""
@@ -562,7 +577,7 @@ if yes "$HOSTING"; then
   echo "  - To bring in a collaborator: StudioSync panel > Invite a collaborator, and send them what it copies (their installer is"
   echo "    then already paired with you). When they've run it, the panel shows 'Let them in': press it."
   echo "    (Your Syncthing device ID, if they ask for it:  $MY_ID)"
-else
+elif [ -n "$JOINING" ]; then
   if [ -z "${CONNECTED:-}" ]; then
     echo "  - Tell the collaborator whose ID you used: their StudioSync panel shows 'Let $USERNAME_BS in' (or they add your"
     echo "    Syncthing ID by hand: $MY_ID). The shared folder then arrives by itself."
@@ -588,6 +603,9 @@ elif yes "$SOLO" && [ -z "${DRIVE_OK:-}" ]; then
 fi
 if yes "$HOSTING"; then
   echo "  - In REAPER, open your song's project: the StudioSync panel offers 'Share this project with the studio'."
+elif [ -n "$LATER" ]; then
+  echo "  - When you want a studio: REAPER's StudioSync panel has Start a studio, and Paste join code for an invitation someone sends you."
+  [ -n "${TS_LATER:-}" ] && echo "  - Tailscale (for Play/Jam and hearing each other live): sign in from its menu-bar icon when you need it."
 else
   echo "  - Tell whoever invited you that you're set up: they press 'Let you in' in their panel. Then the studio's projects arrive"
   echo "    by themselves: in REAPER's StudioSync panel, open Projects and double-click one."

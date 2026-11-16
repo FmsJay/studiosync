@@ -11,7 +11,7 @@ param(
   [string]$User = "", [string]$HostId = "", [string]$Root = "",
   [string]$BandId = "", [string]$BandName = "", # the band an invitation is for: its Syncthing folder id and name
   [string]$TsKey = "",             # a guest invitation's Tailscale key: on the inviter's Tailscale network for a day, no account (lib/services.lua)
-  [ValidateSet("", "yes", "no")][string]$Hosting = "", [ValidateSet("", "yes", "no")][string]$Live = "", [ValidateSet("", "yes", "no")][string]$Solo = "",
+  [ValidateSet("", "yes", "no", "later")][string]$Hosting = "", [ValidateSet("", "yes", "no")][string]$Live = "", [ValidateSet("", "yes", "no")][string]$Solo = "",
   [ValidateSet("", "yes", "no")][string]$Plugins = "", # the band plug-in pack (free, open source)
   [ValidateSet("", "yes", "no")][string]$Extras = "", # the larger extras: amp modelers, Odin 2, sforzando + Salamander piano
   [string]$ReaPersona = "", # ReaPersona: REAPER set up like the DAW you came from (github.com/FmsJay/ReaPersona): a DAW (pro_tools, logic, ableton...), yes or no
@@ -79,48 +79,56 @@ function Read-Invite($text) {
   if ($bare -match $idPattern) { return @{ id = $bare; band = ""; name = ""; key = $null } }
   return $null
 }
-$isHost = if ($Hosting) { $Hosting -eq "yes" } elseif ($HostId) { $false } else {
+# No invitation and no studio of your own yet: everything installs, and the studio waits (James, 0.58.64: you might not need one yet, or get the
+# invitation later). The panel then opens on Start a studio / Paste join code, so nothing here has to be decided up front.
+$later = $Hosting -eq "later"
+$isHost = if ($later) { $false } elseif ($Hosting) { $Hosting -eq "yes" } elseif ($HostId) { $false } else {
   Say "Did someone send you an invitation to their studio? Paste it here (all of it, or just its line starting studiosync-join)."
-  Say "Starting a studio of your own? Just press Enter."
+  Say "Starting a studio of your own right now? Type s. Neither yet? Just press Enter: start one or join one later, from StudioSync's panel."
   $found = $null
+  $start = $false
   while ($true) {
     $text = Read-Host "Invitation"
     # (a whole message pasted is several lines: the rest are read here too, or they'd answer the next questions)
     try { Start-Sleep -Milliseconds 400; while ([Console]::KeyAvailable) { $text += "`n" + (Read-Host) } } catch { }
-    if (-not "$text".Trim()) { break }
+    if (-not "$text".Trim()) { $later = $true; break }
+    if ("$text".Trim() -match '^(s|start)$') { $start = $true; break }
     $found = Read-Invite $text
     if ($found) { break }
-    Warn "That isn't an invitation. Paste it again (the line starting studiosync-join is enough), or press Enter to start a studio of your own."
+    Warn "That isn't an invitation. Paste it again (the line starting studiosync-join is enough), type s to start a studio, or press Enter for later."
   }
   if ($found) {
     $HostId, $BandId, $BandName = $found.id, $found.band, $found.name
     if ($found.key -and -not $TsKey) { $TsKey = $found.key }
     Ok "Joining $(if ($found.name) { $found.name } else { 'their studio' })"
-    $false
-  } else { $true }
+  }
+  $start
 }
+$joining = -not $isHost -and -not $later
 if ($isHost -and -not $Hosting) { Say "Starting a studio: at the end, StudioSync's panel has Invite, which makes the message to send each collaborator." }
+if ($later) { Say "No studio yet: when you want one, StudioSync's panel has Start a studio and Paste join code." }
 $hostId = $HostId.ToUpper()
-if (-not $isHost -and $hostId -notmatch $idPattern) { Warn "The invitation's device ID isn't a whole one: ask for a new invitation."; exit 1 }
+if ($joining -and $hostId -notmatch $idPattern) { Warn "The invitation's device ID isn't a whole one: ask for a new invitation."; exit 1 }
 $user = $User -replace '[^\w\- ]', ''
 while (-not $user) { $user = (Ask "Your name, as the studio will see it" $env:USERNAME) -replace '[^\w\- ]', '' }
 # the band (docs/bands-design.md): each its own shared folder. An invitation names it; the first one set up names it.
 $folderId = ($BandId.ToLower() -replace '[^a-z0-9-]', '')
-if (-not $isHost -and -not $folderId) { # (someone's device ID typed in by hand, no invitation)
+if ($joining -and -not $folderId) { # (someone's device ID typed in by hand, no invitation)
   $folderId = ((Ask "The studio's ID, if whoever set it up gave you one (press Enter if not)" "bandsync").ToLower() -replace '[^a-z0-9-]', '')
   if (-not $folderId) { $folderId = "bandsync" }
 }
 $bandName = $BandName -replace '[^\w\- ]', ''
 if ($isHost -and -not $bandName) { while (-not $bandName) { $bandName = (Ask "Name your studio" "My studio") -replace '[^\w\- ]', '' } }
 if (-not $bandName) { $bandName = "the studio" }
-$defRoot = if ($folderId -eq "bandsync") { Join-Path $env:USERPROFILE "BandSync" } else { Join-Path $env:USERPROFILE "StudioSync $bandName" }
+# (later: an empty StudioSync folder, so a studio started or joined from the panel goes beside it, in your home folder: services.new_band)
+$defRoot = if ($later) { Join-Path $env:USERPROFILE "StudioSync" } elseif ($folderId -eq "bandsync") { Join-Path $env:USERPROFILE "BandSync" } else { Join-Path $env:USERPROFILE "StudioSync $bandName" }
 # (not asked: nobody new knows what to answer, and the panel can move it later. Beginner review, 0.58.62)
 $root = if ($Root) { $Root } else { $defRoot }
-Say "$bandName's shared folder: $root"
+if (-not $later) { Say "$bandName's shared folder: $root" }
 # The first one set up: an ID of the group's own. They all used to get "bandsync", so someone in two such groups had the two
 # folders treated as one and their files mixed. Run again on the same folder, it keeps the ID it has; a folder from before
 # groups had IDs, with no band.json yet, is "bandsync" (lib/band.lua band.info).
-if (-not $folderId) {
+if (-not $folderId -and -not $later) {
   $known = Join-Path $root "_band\band.json"
   if (Test-Path $known) { try { $folderId = (Get-Content $known -Raw | ConvertFrom-Json).id } catch { } }
   elseif (Get-ChildItem $root -Force -ErrorAction SilentlyContinue | Select-Object -First 1) { $folderId = "bandsync" }
@@ -137,7 +145,7 @@ $wantLive = $Live -ne "no"
 $wantSolo = $Solo -ne "no"
 $wantPlugins = if ($Plugins) { $Plugins -eq "yes" } else { Write-Host "The free plug-in pack (about 150 MB): synths, guitar and bass amps, a tuner, EQ, compressor, reverb, delay, tape, drum kits and keys"; Write-Host "(Surge XT, Dexed, Airwindows, Dragonfly, Chow, BYOD, ZL and more), so everyone in the studio hears the same sounds."; YesNo "Install it? (recommended)" "y" }
 # (extras only asked of whoever starts the studio: a joiner's projects say what they use, and 1.2 GB is a lot to decide on blind. Beginner review, 0.58.62)
-$wantExtras = if ($Extras) { $Extras -eq "yes" } else { $isHost -and $wantPlugins -and (YesNo "Also the bigger extras (about 1.2 GB: a grand piano, a real drum kit, amp capture players and the Odin 2 synth)?" "n") }
+$wantExtras = if ($Extras) { $Extras -eq "yes" } else { -not $joining -and $wantPlugins -and (YesNo "Also the bigger extras (about 1.2 GB: a grand piano, a real drum kit, amp capture players and the Odin 2 synth)?" "n") }
 # ReaPersona: which app you're used to, as one question, and it's set up as that DAW in the same run (James, 0.58.64: yes/no installed it and
 # left the picking for later). The ids are ReaPersona's own (styles.json).
 $personas = @(@("pro_tools", "Pro Tools"), @("logic", "Logic Pro"), @("ableton", "Ableton Live"), @("fl_studio", "FL Studio"), @("cubase", "Cubase or Nuendo"),
@@ -389,21 +397,24 @@ if ($isHost -and -not (Test-Path $bj)) { # (who this folder is: lib/band.lua ban
 # per-song sync (lib/songsync.lua writes the same block): a new bandmate gets every song's listing, and a song in
 # full once they open it, so the first sync isn't the whole library. The first one set up keeps everything.
 $ign = Join-Path $root ".stignore"
-if (-not $isHost -and -not ((Test-Path $ign) -and (Select-String -Path $ign -Pattern '^// BandSync end$' -Quiet))) {
+if ($joining -and -not ((Test-Path $ign) -and (Select-String -Path $ign -Pattern '^// BandSync end$' -Quiet))) {
   [IO.File]::AppendAllText($ign, ((@('// BandSync: what this computer downloads (written by BandSync, up to the line below)', '!/_*', '!/plugins', '!/drummaps', '!/*/session.json', '!/*/folder.json', '!/*/live.json', '!/*/invites', '!/*/inbox', '!/*/rooms/*/room.json', '!/*/rooms/*/summary', '!/*/rooms/*/status', '(?d)/*/*', '// BandSync end') -join "`n") + "`n")) # (no BOM: PowerShell 5.1's -Encoding UTF8 writes one, and the block's first line then reads as something else)
   Ok "this computer gets each song in full once it's opened (the rest: their listing)"
 }
 $folders = @(STcli config folders list)
 if (-not ($folders | Where-Object { $_ })) { STcli config defaults folder path set (Split-Path $root) | Out-Null } # fresh setup only
 $label = if ($folderId -eq "bandsync") { "BandSync" } else { "StudioSync $bandName" }
-if ($folders -notcontains $folderId) {
+if ($later) { } # (no studio folder yet: the panel makes it when you start or join one)
+elseif ($folders -notcontains $folderId) {
   STcli config folders add --id $folderId --label $label --path $root | Out-Null
   Ok "$bandName's shared folder -> $root"
 } else { Ok "$bandName's shared folder is already set up" }
-STcli config folders $folderId order set smallestFirst | Out-Null
-STcli config folders $folderId fswatcher-delays set 1 | Out-Null  # the default 10 s delay added 10 s to every take
+if (-not $later) {
+  STcli config folders $folderId order set smallestFirst | Out-Null
+  STcli config folders $folderId fswatcher-delays set 1 | Out-Null  # the default 10 s delay added 10 s to every take
+}
 STcli config devices $myId name set $user | Out-Null
-if (-not $isHost) {
+if ($joining) {
   $devices = STcli config devices list
   if ($devices -notcontains $hostId) {
     STcli config devices add --device-id $hostId --name "Collaborator" --introducer --auto-accept-folders | Out-Null
@@ -505,7 +516,7 @@ function Wait-Until($test) {
 if ($isHost) {
   $left += "To bring in a collaborator: StudioSync panel > Invite a collaborator, and send them what it copies (their installer is then already paired with you). When they've run it, the panel shows 'Let them in': press it."
   $left += "(Your Syncthing device ID, if they ask for it:  $myId)"
-} elseif ($peers -notcontains $hostId) {
+} elseif ($joining -and $peers -notcontains $hostId) {
   $left += "Tell the collaborator whose ID you used: their StudioSync panel shows 'Let $user in' (or they add your Syncthing ID by hand: $myId). The shared folder then arrives by itself."
 }
 if ($wantLive) {
@@ -598,7 +609,10 @@ if ($wantSolo) {
     if ($band) { $band[0] } elseif ($all) { $all[0] } else { $null }
   }
   $driveOk = $false
-  if (-not $isHost -and -not ((& $myDrive) -and (Test-Path "$(& $myDrive)\$driveName"))) {
+  if ($later) {
+    $driveOk = $true # (no studio yet, so no studio folder to make or add: the panel asks when you start one)
+  }
+  elseif (-not $isHost -and -not ((& $myDrive) -and (Test-Path "$(& $myDrive)\$driveName"))) {
     # (as Tailscale above: a joiner's songs arrive without it, and the folder usually isn't shared with them yet. Beginner review, 0.58.62)
     $driveOk = $true
     $left += "Google Drive (the studio's backup copy, optional): once it's shared with you, at drive.google.com: Shared with me > right-click '$driveName' > Organize > Add shortcut > My Drive."
@@ -621,6 +635,7 @@ if ($wantSolo) {
   elseif (-not $driveOk) { $left += "Google Drive (skipped above): sign in, then at drive.google.com: Shared with me > right-click '$driveName' > Organize > Add shortcut > My Drive." }
 }
 if ($isHost) { $left += "In REAPER, open your song's project: the StudioSync panel offers 'Share this project with the studio'." }
+elseif ($later) { $left += "When you want a studio: REAPER's StudioSync panel has Start a studio, and Paste join code for an invitation someone sends you." }
 else { $left += "Tell whoever invited you that you're set up: they press 'Let you in' in their panel. Then the studio's projects arrive by themselves: in REAPER's StudioSync panel, open Projects and double-click one." }
 foreach ($d in $script:downloads) { Remove-Item -Force $d -ErrorAction SilentlyContinue }
 Remove-Item -Recurse -Force (Join-Path $env:TEMP "studiosync_setup") -ErrorAction SilentlyContinue

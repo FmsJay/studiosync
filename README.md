@@ -16,8 +16,8 @@ Machines talk only through a shared folder (Syncthing recommended), with an opti
 For a band, or for one song with someone: it's the same thing, so name it what it is.
 
 1. Run the installer: **Install StudioSync (Windows).cmd**, or on a Mac **Install StudioSync (Mac).command** (see
-   [Setup](#setup-each-person-once) if macOS blocks it). When it asks for an invitation, just press Enter (you're starting
-   one), and give it a name. Already have StudioSync? Click the studio pill at the top of the panel, then **Start a new studio**.
+   [Setup](#setup-each-person-once) if macOS blocks it). When it asks for an invitation, type *s* (you're starting one) and
+   give it a name. (Or press Enter and start it later, from the panel.) Already have StudioSync? Click the studio pill at the top of the panel, then **Start a new studio**.
 2. In REAPER, open your project, or a new empty tab: the panel shows **Projects**, with **Share** at the top. It goes through the Prepare checklist first.
 3. On the studio's card or on Home, press **Invite**. It copies a message to send each person: a join code if they already have StudioSync, and a line to paste if they don't.
 4. When they've run it, your panel shows **Let *them* in**: press it.
@@ -133,8 +133,9 @@ On Windows paste this into PowerShell the same way:
 
 **Or the installer files.** Download the `installer` folder (or just the one file) and double-click
 **Install StudioSync (Windows).cmd**, or on a Mac **Install StudioSync (Mac).command**. It first asks for
-the invitation you were sent, if any: paste it (all of it, or its studiosync-join line) and you join that studio; press Enter
-and you're starting one. Run from the line in an invitation, it doesn't even ask. Then your name, whether you want the plug-in
+the invitation you were sent, if any: paste it (all of it, or its studiosync-join line) and you join that studio; type *s* and
+you're starting one; press Enter for neither yet, and the panel opens on **Start a studio** and **Paste join code** when you're
+ready. Run from the line in an invitation, it doesn't even ask. Then your name, whether you want the plug-in
 pack (and, when starting, the bigger extras), and which music app you're used to, from a numbered list (Pro Tools, Logic,
 Ableton Live, FL Studio, Cubase, Studio One, Bitwig, Cakewalk, Reason, Audacity, Audition; Enter for none): it then adds
 [ReaPersona](https://github.com/FmsJay/ReaPersona) and sets REAPER up as that app in the same run, its look, mouse and
