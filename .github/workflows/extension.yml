@@ -9,7 +9,7 @@ on:
 
 jobs:
   mac:
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - name: SDK and WDL (reaper_plugin.h includes ../WDL/swell/swell.h beside the sdk folder)
