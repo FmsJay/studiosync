@@ -311,7 +311,7 @@ local function launch(exe, job)
   if WIN then
     local cmd, vbs, ps = job:gsub("%.rpp$", ".cmd"), TMP .. "/hidden.vbs", TMP .. "/launch.ps1"
     if band.read(ps) ~= LAUNCH then band.write_atomic(ps, LAUNCH) end
-    band.write_atomic(cmd, string.format('@powershell -NoProfile -ExecutionPolicy Bypass -File "%s" "%s" "%s" "%s" "%s" "%s"\r\n', ps, exe, job, res, PROFILE, ini))
+    band.write_atomic(cmd, string.format('@chcp 65001 >nul\r\n@powershell -NoProfile -ExecutionPolicy Bypass -File "%s" "%s" "%s" "%s" "%s" "%s"\r\n', ps, exe, job, res, PROFILE, ini)) -- (chcp: UTF-8 paths, as services.background. 0.58.78)
     if not reaper.file_exists(vbs) then band.write_atomic(vbs, 'CreateObject("WScript.Shell").Run """" & WScript.Arguments(0) & """", 0, False\r\n') end
     reaper.ExecProcess(string.format('wscript.exe //B //Nologo "%s" "%s"', vbs, cmd), -1)
   else

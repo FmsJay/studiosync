@@ -215,7 +215,7 @@ function copy.bin_start(paths, label)
     end
     lines[#lines + 1] = "Set-Content -LiteralPath " .. q((tmp:gsub("/", "\\")) .. ".done") .. " 1"
     band.write_atomic(tmp .. ".ps1", "\239\187\191" .. table.concat(lines, "\r\n") .. "\r\n")
-    band.write_atomic(tmp .. ".cmd", '@powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' .. tmp .. '.ps1"\r\n')
+    band.write_atomic(tmp .. ".cmd", '@chcp 65001 >nul\r\n@powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' .. tmp .. '.ps1"\r\n') -- (chcp: UTF-8 paths, as services.background. 0.58.78)
     band.write_atomic(tmp .. ".vbs", 'CreateObject("WScript.Shell").Run """" & WScript.Arguments(0) & """", 0, False\r\n')
     reaper.ExecProcess(string.format('wscript.exe //B //Nologo "%s.vbs" "%s.cmd"', tmp, tmp), -1)
     return h

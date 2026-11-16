@@ -61,6 +61,19 @@ if probe and user ~= "" then
   reaper.SetExtState("BandSync", "bands", table.concat(list, "|"), true)
   reaper.SetExtState("BandSync", "sync_root", root, true)
   reaper.SetExtState("BandSync", "user", user, true)
+  -- (an invitation's studio by its name until its own _band/band.json arrives, as services.join_band keeps it: a joiner not let in yet saw
+  -- "the studio" instead of its name. Windows Sandbox run, 0.58.78)
+  local bid = type(req.band_id) == "string" and req.band_id:lower() or ""
+  if (bid == "bandsync" or bid:match("^bandsync%-[%w%-]+$") or bid:match("^studiosync%-[%w%-]+$")) and not reaper.file_exists(root .. "/_band/band.json") then
+    local bname = (type(req.band_name) == "string" and req.band_name or ""):gsub("[^%w%-_ ]", "")
+    reaper.SetExtState("BandSync", "joining " .. root, json.encode({ name = bname ~= "" and bname or nil, id = bid }), true)
+  end
+end
+-- Which Syncthing the installer set up, and its settings folder when that isn't where Syncthing looks by itself (SyncTrayzor's, a snap's, a
+-- Flatpak REAPER's sandbox looks elsewhere): lib/services.lua runs that one, never a second. An empty home clears an old one. (Installer review, 0.58.78)
+if type(req.syncthing_path) == "string" and req.syncthing_path ~= "" then reaper.SetExtState("BandSync", "syncthing_path", req.syncthing_path, true) end
+if type(req.syncthing_home) == "string" then
+  if req.syncthing_home ~= "" then reaper.SetExtState("BandSync", "syncthing_home", req.syncthing_home, true) else reaper.DeleteExtState("BandSync", "syncthing_home", true) end
 end
 -- REAPER's "save recorded media?" box after each take (Preferences > Recording; on by default on some systems): a take waits there, unsent, and
 -- "Delete all" loses it. Off, every take is kept and goes out as it stops. Band-test review, 0.58.67. (promptendrec, read 0 on the PC with SWS)

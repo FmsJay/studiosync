@@ -16,6 +16,14 @@
 set -u
 # (the whole invitation pasted at once runs every line: the Linux one after this. Installer review, 0.58.76)
 [ "$(uname -s)" = Darwin ] || { echo "This is the Mac setup. On Linux, use the invitation's Linux line; on Windows, its Windows line."; exit 1; }
+# (macOS 11 and older: the Syncthing, Tailscale and Google Drive this sets up no longer support them, and setup failed half way through.
+# Said first, before anything is installed. Installer review, 0.58.78)
+MACOS="$(sw_vers -productVersion 2>/dev/null)"
+if [ -n "$MACOS" ] && [ "${MACOS%%.*}" -lt 12 ] 2>/dev/null; then
+  echo "This Mac runs macOS $MACOS. StudioSync needs macOS 12 (Monterey) or newer: the Syncthing, Tailscale and Google Drive it sets up no longer"
+  echo "support older versions. Update macOS if this Mac can (Apple menu > About This Mac > Software Update), or set StudioSync up on another computer."
+  exit 1
+fi
 REPO="FmsJay/studiosync"
 TAG="${BS_TAG:-main}"
 REAIMGUI="0.10.0.5"   # shortcut: pinned, like the Windows installer
@@ -104,6 +112,8 @@ while [ -z "$USERNAME_BS" ]; do
   typed="$(ask "Your name, as the studio will see it (you can change it later)" "$(plain "$(id -F 2>/dev/null | cut -d' ' -f1)")")"
   USERNAME_BS="$(plain "$typed")"
   [ -n "$USERNAME_BS" ] && [ "$USERNAME_BS" != "$typed" ] && say "Using the name '$USERNAME_BS' (plain letters only)."
+  # (a name in another alphabet cleans to nothing, and the question came back with no word why. Installer review, 0.58.78)
+  [ -z "$USERNAME_BS" ] && [ -n "$typed" ] && warn "Names here are in Latin letters (A to Z), digits, spaces, - and _: type yours that way."
 done
 # the band (docs/bands-design.md): each its own shared folder. An invitation names it; the first one set up names it.
 FOLDER_ID="$(printf '%s' "${BS_BAND_ID:-}" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C tr -cd 'a-z0-9-')"
@@ -116,7 +126,10 @@ fi
 case "$FOLDER_ID" in bandsync|bandsync-*|studiosync-*|"") ;; *) warn "That studio ID ($FOLDER_ID) isn't a StudioSync one: ask for a new invitation."; exit 1 ;; esac
 BAND_NAME="$(plain "${BS_BAND_NAME:-}")"
 if yes "$HOSTING" && [ -z "$BAND_NAME" ]; then
-  while [ -z "$BAND_NAME" ]; do BAND_NAME="$(plain "$(ask "Name your studio" "My studio")")"; done
+  while [ -z "$BAND_NAME" ]; do
+    typed="$(ask "Name your studio" "My studio")"; BAND_NAME="$(plain "$typed")"
+    [ -z "$BAND_NAME" ] && warn "Names here are in Latin letters (A to Z), digits, spaces, - and _: type it that way."
+  done
 fi
 [ -n "$BAND_NAME" ] || BAND_NAME="the studio"
 DEF_ROOT="$HOME/StudioSync"; [ -d "$HOME/BandSync" ] && DEF_ROOT="$HOME/BandSync" # (the first studio, id bandsync: a computer set up before the rename keeps its BandSync folder)
@@ -203,12 +216,36 @@ from_dmg() { # url name app-name
   hdiutil detach "$mnt" -quiet
   [ $rc -eq 0 ] && ok "$2 installed" || warn "$2 didn't install: install it by hand"
 }
+# GitHub's release lookups: each is one of the 60 an hour GitHub allows a network that isn't signed in, and a band installing in one room ran
+# out. So each answer is kept for an hour (a second run asks nothing), and once the limit is reached (403, X-RateLimit-Remaining: 0) the
+# release's own web page is read instead, which isn't counted; said once, with when the limit resets. (Installer review, 0.58.78)
+GH_CACHE="$HOME/Library/Caches/StudioSync/github"
+gh_release() { # repo latest|tags/<tag> -> that release's download URLs, one a line
+  local c h tag at
+  c="$GH_CACHE/$(printf '%s_%s' "$1" "$2" | tr -c 'A-Za-z0-9._-' '_')"; h="$WORK/gh_headers"
+  if [ -s "$c" ] && [ -z "$(find "$c" -mmin +60 2>/dev/null)" ]; then cat "$c"; return 0; fi
+  mkdir -p "$GH_CACHE"; : > "$h"
+  curl -fsSL -D "$h" "https://api.github.com/repos/$1/releases/$2" 2>/dev/null | grep -o '"browser_download_url": *"[^"]*"' | sed 's/.*"\(http[^"]*\)"/\1/' > "$c.part"
+  if [ ! -s "$c.part" ]; then
+    if tr -d '\r' < "$h" | grep -qi '^x-ratelimit-remaining: *0$' && [ ! -f "$WORK/gh_told" ]; then
+      : > "$WORK/gh_told"; # (a file: every lookup runs in a $(...) of its own)
+      at="$(tr -d '\r' < "$h" | sed -n 's/^[Xx]-[Rr]ate[Ll]imit-[Rr]eset: *//p' | head -1)"
+      at="$(date -d "@$at" +%H:%M 2>/dev/null || date -r "$at" +%H:%M 2>/dev/null)"
+      warn "GitHub's limit of 60 lookups an hour from this network is used up${at:+ (until $at)}: several computers installing at once? Reading GitHub's download pages instead." >&2 # (stderr: the URLs go to a pipe)
+    fi
+    tag="${2#tags/}"
+    [ "$2" = latest ] && tag="$(curl -fsSI "https://github.com/$1/releases/latest" 2>/dev/null | tr -d '\r' | sed -n 's#^[Ll]ocation: .*/releases/tag/##p' | tail -1)"
+    [ -n "$tag" ] && curl -fsSL "https://github.com/$1/releases/expanded_assets/$tag" 2>/dev/null | grep -o 'href="/[^"]*/releases/download/[^"]*"' | sed 's#^href="#https://github.com#; s#"$##' > "$c.part"
+  fi
+  [ -s "$c.part" ] && mv -f "$c.part" "$c" && cat "$c" && return 0
+  rm -f "$c.part"; return 1
+}
 gh_asset() { # repo regex -> download URL of the latest release asset matching it
-  curl -fsSL "https://api.github.com/repos/$1/releases/latest" | grep -o '"browser_download_url": *"[^"]*"' | sed 's/.*"\(http[^"]*\)"/\1/' | grep -E "$2" | head -1
+  gh_release "$1" latest | grep -E -e "$2" | head -1
 }
 have() { [ -d "/Applications/$1.app" ]; }
 gh_asset_tag() { # repo tag regex -> download URL of that release's asset matching it
-  curl -fsSL "https://api.github.com/repos/$1/releases/tags/$2" | grep -o '"browser_download_url": *"[^"]*"' | sed 's/.*"\(http[^"]*\)"/\1/' | grep -E "$3" | head -1
+  gh_release "$1" "tags/$2" | grep -E -e "$3" | head -1
 }
 # A plug-in's disk image: its .pkg if it has one, else its plug-in bundles copied into your own Plug-Ins folders
 # (no password needed). `pattern`: a glob that's there once it's installed, in /Library or ~/Library.
@@ -245,17 +282,57 @@ password_note() { # before the first sudo: a bare "Password:" looks like somethi
   say "while you type, that's normal. It's asked once and used only to install."
 }
 
-if have REAPER; then ok "REAPER is already installed"
+# REAPER.app: the running one (a portable REAPER in a folder of its own, REAPER64.app), then the usual places, then Spotlight. BS_REAPER, or
+# the answer when none is found, names another. (Installer review, 0.58.78)
+find_reaper_app() {
+  local p c
+  p="$(pgrep -x REAPER | head -1)"
+  [ -n "$p" ] && c="$(ps -o comm= -p "$p" 2>/dev/null | sed -n 's#^\(.*\.app\)/Contents/MacOS/.*#\1#p')" && [ -d "$c" ] && { echo "$c"; return 0; }
+  for c in "${BS_REAPER:-/-}" "${BS_REAPER:-/-}/REAPER.app" /Applications/REAPER.app /Applications/REAPER64.app "$HOME/Applications/REAPER.app"; do
+    case "$c" in *.app) [ -d "$c/Contents/MacOS" ] && { echo "$c"; return 0; };; esac
+  done
+  c="$(mdfind 'kMDItemCFBundleIdentifier == "com.cockos.reaper"' 2>/dev/null | head -1)"; [ -n "$c" ] && [ -d "$c" ] && { echo "$c"; return 0; }
+  return 1
+}
+if ! find_reaper_app >/dev/null && [ -z "${BS_REAPER:-}" ]; then
+  # (a REAPER somewhere this doesn't look is asked for, rather than a second one installed beside it)
+  BS_REAPER="$(ask "REAPER wasn't found. If it's somewhere else (a portable copy), drag its folder or REAPER.app here; or press Return to install it")"
+  BS_REAPER="$(printf '%s' "$BS_REAPER" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/\\\(.\)/\1/g')"; BS_REAPER="${BS_REAPER/#\~/$HOME}"; BS_REAPER="${BS_REAPER%/}"
+  [ -n "$BS_REAPER" ] && ! find_reaper_app >/dev/null && warn "No REAPER in $BS_REAPER: installing one."
+fi
+if REAPER_APP="$(find_reaper_app)"; then ok "REAPER is already installed ($REAPER_APP)"
 else
   say "Installing REAPER (a 60-day evaluation; see reaper.fm for the license) ..."
   dmg="$(curl -fsSL https://www.reaper.fm/download.php | grep -o 'files/[0-9.x]*/reaper[0-9]*_universal\.dmg' | head -1)"
   from_dmg "https://www.reaper.fm/$dmg" REAPER REAPER
 fi
-if have Syncthing; then ok "Syncthing is already installed"
+# An existing Syncthing, wherever it came from: the running one (its own binary, and its --home when it was given one), the app, Homebrew's.
+# Then Homebrew where it's there, and the app's own download last (a GitHub lookup). Never a second Syncthing beside one already set up.
+# (Installer review, 0.58.78)
+ST=""; ST_RUN_HOME=""
+p="$(pgrep -x syncthing | head -1)"
+if [ -n "$p" ]; then
+  ST="$(ps -o comm= -p "$p" 2>/dev/null)"; [ -x "$ST" ] || ST=""
+  ST_RUN_HOME="$(ps -o args= -p "$p" 2>/dev/null | sed -E -n 's/.*--?(home|config)[= ]+(.*)$/\2/p' | sed -E 's/ --?[a-z].*$//; s/^"(.*)"$/\1/')"
+  [ -f "$ST_RUN_HOME/config.xml" ] || ST_RUN_HOME=""
+fi
+if [ -z "$ST" ]; then
+  for c in /Applications/Syncthing.app/Contents/Resources/syncthing/syncthing "$(command -v syncthing 2>/dev/null)" /opt/homebrew/bin/syncthing /usr/local/bin/syncthing; do
+    [ -n "$c" ] && [ -x "$c" ] && { ST="$c"; break; }
+  done
+fi
+if [ -n "$ST" ]; then ok "Syncthing is already installed"
+elif command -v brew >/dev/null && say "Installing Syncthing (Homebrew) ..." && brew install --cask syncthing-app </dev/null >/dev/null 2>&1 && have Syncthing; then ok "Syncthing installed"
 else say "Installing Syncthing ..."; from_dmg "$(gh_asset syncthing/syncthing-macos '\.dmg$')" Syncthing Syncthing; fi
 if yes "$LIVE"; then
   if have SonoBus; then ok "SonoBus is already installed"
-  else say "Installing SonoBus (may ask for your password) ..."; from_dmg "$(gh_asset sonosaurus/sonobus 'mac\.dmg$')" SonoBus SonoBus; fi
+  elif command -v brew >/dev/null && say "Installing SonoBus (Homebrew; may ask for your password) ..." && brew install --cask sonobus </dev/null >/dev/null 2>&1 && have SonoBus; then ok "SonoBus installed"
+  else
+    say "Installing SonoBus (may ask for your password) ..."
+    # (sonobus.net's own download first: not one of GitHub's 60 lookups an hour)
+    sb="$(curl -fsSL https://www.sonobus.net/ 2>/dev/null | grep -o 'releases/sonobus-[0-9.]*-mac\.dmg' | head -1)"
+    from_dmg "$([ -n "$sb" ] && echo "https://www.sonobus.net/$sb" || gh_asset sonosaurus/sonobus 'mac\.dmg$')" SonoBus SonoBus
+  fi
   if have Tailscale; then ok "Tailscale is already installed"
   else
     say "Installing Tailscale (asks for your password) ..."
@@ -394,7 +471,7 @@ fi
 # the band plug-in pack (optional): free, open-source plug-ins every bandmate can have, each from its official release
 # (never bundled here); what everyone has shows in REAPER's FX browser folder "StudioSync (everyone has)"
 if yes "$PLUGINS"; then
-  have_plugin "Surge XT" "Surge XT*" || plugin_dmg "$(gh_asset_tag surge-synthesizer/releases-xt "$(curl -fsSL https://api.github.com/repos/surge-synthesizer/releases-xt/releases/latest | grep -o '"tag_name": *"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/')" 'macOS-[0-9.]+\.dmg$')" "Surge XT" "Surge XT*"
+  have_plugin "Surge XT" "Surge XT*" || plugin_dmg "$(gh_asset surge-synthesizer/releases-xt 'macOS-[0-9.]+\.dmg$')" "Surge XT" "Surge XT*"
   have_plugin "Dexed" "Dexed*" || plugin_dmg "$(gh_asset asb2m10/dexed 'macOS\.dmg$')" "Dexed" "Dexed*"
   have_plugin "Airwindows Consolidated" "Airwindows*" || plugin_dmg "$(gh_asset_tag baconpaul/airwin2rack DAWPlugin 'macOS.*\.dmg$')" "Airwindows Consolidated" "Airwindows*"
   have_plugin "Dragonfly Reverb" "Dragonfly*" || plugin_dmg "$(gh_asset michaelwillis/dragonfly-reverb 'macos-universal\.dmg$')" "Dragonfly Reverb" "Dragonfly*"
@@ -436,7 +513,10 @@ if yes "$PLUGINS"; then
     TELL_DECENT=1
   fi
 fi
-have REAPER || { warn "REAPER isn't installed: get it from reaper.fm and run this again."; exit 1; }
+REAPER_APP="$(find_reaper_app)" || { warn "REAPER isn't installed: get it from reaper.fm and run this again."; exit 1; }
+# (a portable REAPER keeps its settings beside REAPER.app when that folder has a reaper.ini. Installer review, 0.58.78)
+[ -f "$(dirname "$REAPER_APP")/reaper.ini" ] && RES="$(dirname "$REAPER_APP")"
+ok "REAPER: $REAPER_APP (settings in $RES)"
 
 # ---------- 2. REAPER extensions: ReaPack and ReaImGui ----------
 PLUG="$RES/UserPlugins"
@@ -473,8 +553,9 @@ if [ ! -f "$API/imgui.lua" ]; then
 fi
 
 # ---------- 3. Syncthing: the shared folder ----------
-ST="/Applications/Syncthing.app/Contents/Resources/syncthing/syncthing"
-STHOME="${BS_SYNCTHING_HOME:-$HOME/Library/Application Support/Syncthing}"
+[ -n "$ST" ] && [ -x "$ST" ] || ST="/Applications/Syncthing.app/Contents/Resources/syncthing/syncthing"
+STHOME="${BS_SYNCTHING_HOME:-${ST_RUN_HOME:-$HOME/Library/Application Support/Syncthing}}"
+ST_HOME_TOLD=""; [ -z "${BS_SYNCTHING_HOME:-}" ] && [ "$STHOME" != "$HOME/Library/Application Support/Syncthing" ] && ST_HOME_TOLD="$STHOME" # (studiosync_setup.lua keeps it)
 [ -x "$ST" ] || { warn "Syncthing wasn't found: install it from syncthing.net and run this again."; exit 1; }
 stcli() { "$ST" cli --home "$STHOME" "$@" 2>&1; }
 if [ -n "${BS_SYNCTHING_HOME:-}" ]; then
@@ -482,11 +563,18 @@ if [ -n "${BS_SYNCTHING_HOME:-}" ]; then
   "$ST" serve --no-browser --home "$STHOME" >/dev/null 2>&1 &
 elif ! pgrep -x syncthing >/dev/null; then
   say "Starting Syncthing. macOS asks to let it find devices on your local network: click Allow."
-  open -a Syncthing
+  case "$ST" in
+    */Syncthing.app/*) open -a "${ST%%/Contents/*}";;
+    *) [ -f "$STHOME/config.xml" ] || "$ST" generate --home "$STHOME" >/dev/null # (Homebrew's: no app to start it)
+       nohup "$ST" serve --no-browser --home "$STHOME" >/dev/null 2>&1 </dev/null & ;;
+  esac
 fi
 up=""; for i in $(seq 1 60); do stcli show system >/dev/null && { up=1; break; }; sleep 1; done
 [ -n "$up" ] || { warn "Syncthing didn't answer; finish its setup by hand (see installer/SKILL.md)"; exit 1; }
+# (an older Syncthing (Homebrew's can lag) has no device-id: the running one's API answers either way. As install_linux.sh, 0.58.78)
+is_id() { [[ "$1" =~ ^[A-Z0-9]{7}(-[A-Z0-9]{7}){7}$ ]]; }
 MY_ID="$("$ST" device-id --home "$STHOME" 2>/dev/null | tail -1 | tr -d '[:space:]')"
+is_id "$MY_ID" || MY_ID="$(stcli show system 2>/dev/null | sed -n 's/.*"myID": *"\([A-Z0-9-]*\)".*/\1/p' | head -1)"
 # (run again by someone already in: the folder Syncthing already has for this studio, not the default. Laptop test, 0.58.69: an invitation run
 # again moved a member onto a new, empty folder)
 if [ -z "${BS_ROOT:-}" ] && [ -n "${FOLDER_ID:-}" ] && HAD="$(stcli config folders "$FOLDER_ID" path get)" && [ -d "$HAD" ] && [ "$HAD" != "$ROOT" ]; then
@@ -535,14 +623,15 @@ request() { # mode -> runs the helper in REAPER, leaves its JSON result in $HDIR
   local panel=false; [ "$1" = verify ] && panel=true
   local jsfx=false; yes "$PLUGINS" && jsfx=true
   local persona=false; yes "$REAPERSONA" && persona=true
-  local root_json; root_json="$(printf '%s' "$ROOT" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')" # (a " or \ in the path broke the JSON)
-  printf '{"sync_root":"%s","user":"%s","mode":"%s","repo_url":"https://github.com/%s/raw/main/index.xml","open_panel":%s,"jsfx":%s,"reapersona":%s,"persona":"%s"}' \
-    "$root_json" "$USERNAME_BS" "$1" "$REPO" "$panel" "$jsfx" "$persona" "$PERSONA" > "$HDIR/studiosync_setup.json"
-  rm -f "$HDIR/studiosync_setup_result.json"
+  local js='s/\\/\\\\/g; s/"/\\"/g' # (a " or \ in a path broke the JSON)
+  local bid="" bname=""; [ -n "$JOINING" ] && { bid="$FOLDER_ID"; bname="$BAND_NAME"; } # (the studio's name till its band.json arrives: studiosync_setup.lua)
+  printf '{"sync_root":"%s","user":"%s","mode":"%s","repo_url":"https://github.com/%s/raw/main/index.xml","open_panel":%s,"jsfx":%s,"reapersona":%s,"persona":"%s","syncthing_path":"%s","syncthing_home":"%s","band_id":"%s","band_name":"%s"}' \
+    "$(printf '%s' "$ROOT" | sed -e "$js")" "$USERNAME_BS" "$1" "$REPO" "$panel" "$jsfx" "$persona" "$PERSONA" "$(printf '%s' "$ST" | sed -e "$js")" "$(printf '%s' "$ST_HOME_TOLD" | sed -e "$js")" "$bid" "$bname" > "$HDIR/studiosync_setup.json"
+  rm -f "$HDIR/studiosync_setup_result.json" "$HDIR/studiosync_setup_started"
   if [ -n "${REOPEN:-}" ] && ! pgrep -x REAPER >/dev/null; then
     # we quit REAPER: start it the way you do, so it reopens your project tabs as it always does (started WITH the
     # helper it came back with one tab, 2026-10-28), then hand it the helper once it's up
-    open -a REAPER
+    open -a "$REAPER_APP"
     for i in $(seq 1 60); do pgrep -x REAPER >/dev/null && break; sleep 1; done
     sleep 8
   fi
@@ -562,13 +651,20 @@ request() { # mode -> runs the helper in REAPER, leaves its JSON result in $HDIR
       say "'Transaction report'): one left open makes REAPER quit. Then press Return."
       read -r </dev/tty
     fi
-    open -a REAPER "$HELPER" # ONE request: the helper waits inside REAPER for ReaPack itself
+    open -a "$REAPER_APP" "$HELPER" # ONE request: the helper waits inside REAPER for ReaPack itself
   fi
   GONE=""
-  for i in $(seq 1 360); do
-    [ -f "$HDIR/studiosync_setup_result.json" ] && break
+  # (a REAPER's first start scans every plug-in before it runs anything: 6 minutes and more with a big collection, and the 6 minutes this
+  # waited ran out first. Until the helper starts (its first act writes studiosync_setup_started), this waits while REAPER is open, and says
+  # what's happening; once it has, the 4 minutes the helper gives ReaPack and the 2.5 it gives ReaPersona. Installer review, 0.58.78)
+  local i=0 at=""
+  while [ ! -f "$HDIR/studiosync_setup_result.json" ]; do
+    i=$((i + 1))
+    [ -z "$at" ] && [ -f "$HDIR/studiosync_setup_started" ] && at=$i
+    if [ -n "$at" ]; then [ $((i - at)) -gt 420 ] && break; elif [ $i -gt 2700 ]; then break; fi
     if [ $i -gt 15 ] && ! pgrep -x REAPER >/dev/null; then GONE=1; break; fi
-    [ $i -eq 30 ] && say "Waiting for StudioSync to arrive through ReaPack. ReaPack opens its own windows on a first run (Manage repositories, Transaction report): press OK on them."
+    [ $i -eq 30 ] && say "Waiting for StudioSync to arrive through ReaPack. ReaPack opens its own windows on a first run (Manage repositories, Notice, Transaction report): press OK on them (another window may be covering them)."
+    [ -z "$at" ] && [ $i -gt 90 ] && [ $((i % 120)) -eq 0 ] && say "Still waiting ($((i / 60)) minutes). A first start scans every plug-in on this Mac before anything else runs: 10 minutes or more with a big collection (REAPER's window names each one). Nothing is stuck while REAPER is open."
     sleep 1
   done
   [ -f "$HDIR/studiosync_setup_result.json" ]
@@ -580,10 +676,20 @@ if request "${BS_SCRIPTS:-reapack}"; then
   if grep -q '"ok": *false' "$HDIR/studiosync_setup_result.json"; then warn "REAPER setup step had problems:"; cat "$HDIR/studiosync_setup_result.json"
   else ok "REAPER: name, shared folder and StudioSync repository set"; fi
 elif [ -n "$GONE" ]; then warn "REAPER closed unexpectedly during setup. Open REAPER (and your project: File > Recent projects), then run this again."; exit 1
-else warn "REAPER didn't run the setup step. Open REAPER, then run this again."; exit 1; fi
-count="$(grep -o '"registered_actions": *[0-9]*' "$HDIR/studiosync_setup_result.json" | grep -o '[0-9]*$')"
-bver="$(grep -o '"version": *"[^"]*"' "$HDIR/studiosync_setup_result.json" | sed 's/.*"\([^"]*\)"$/\1/')"
-[ "${count:-0}" -ge 5 ] && ok "StudioSync ${bver:-} installed: $count actions (the StudioSync panel opens in REAPER)" || warn "StudioSync's scripts haven't arrived yet: in REAPER, Extensions > ReaPack > Synchronize packages"
+else
+  # (REAPER still on its own first-start windows, often behind another one, or ReaPack still bringing StudioSync: the setup step carries on by
+  # itself once they're answered, so its files stay and the rest of this runs. "Didn't run the setup step ... run this again" was wrong:
+  # Windows Sandbox run, 0.58.78)
+  PENDING=1; trap - EXIT
+  if [ -f "$HDIR/studiosync_setup_started" ]; then warn "StudioSync's setup step is still running inside REAPER (ReaPack is taking its time): it finishes by itself, and StudioSync's panel opens when it's done."
+  else warn "REAPER hasn't got to StudioSync's setup step yet: it's still on its first-start windows (the audio device, ReaPack's Manage repositories, Notice and Transaction report), which other windows may be hiding. Answer them: setup then carries on by itself, and StudioSync's panel opens when it's done."; fi
+  warn "Run this again only if the panel never appears."
+fi
+if [ -z "${PENDING:-}" ]; then
+  count="$(grep -o '"registered_actions": *[0-9]*' "$HDIR/studiosync_setup_result.json" | grep -o '[0-9]*$')"
+  bver="$(grep -o '"version": *"[^"]*"' "$HDIR/studiosync_setup_result.json" | sed 's/.*"\([^"]*\)"$/\1/')"
+  [ "${count:-0}" -ge 5 ] && ok "StudioSync ${bver:-} installed: $count actions (the StudioSync panel opens in REAPER)" || warn "StudioSync's scripts haven't arrived yet: in REAPER, Extensions > ReaPack > Synchronize packages"
+fi
 
 # ---------- 5. what's left for a human ----------
 echo
