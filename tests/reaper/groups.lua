@@ -175,8 +175,11 @@ local ok, err = pcall(function()
   check(services.quiet_days({}, {}, t) == nil, "nobody there yet isn't quiet either")
   local n = 1000 + os.time() % 9000 -- (a number of days no earlier run's line has)
   services.days_quiet = function(id) return id == "bandsync" and n or nil end
+  local was_closed = reaper.GetExtState(band.SECTION, "group closed bandsync") -- (this computer's real old studio had that id, and was closed: 0.58.79)
+  reaper.DeleteExtState(band.SECTION, "group closed bandsync", false)
   groups.tick(os.time())
   groups.tick(os.time())
+  if was_closed ~= "" then reaper.SetExtState(band.SECTION, "group closed bandsync", was_closed, true) end
   local told = 0
   for _, l in ipairs(band.activity()) do if l:find("has been online for " .. n .. " days", 1, true) then told = told + 1 end end
   check(told == 1, "it says so once (" .. told .. ")")

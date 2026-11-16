@@ -1591,9 +1591,35 @@ local function studio_private_audio()
   end
   card_end()
 end
+-- Sync only through the studio's Tailscale network (services.pin_tailnet, 0.58.80): with a studio on each network, switching networks
+-- switches which studio syncs.
+local function studio_tailscale_sync()
+  if not card("studio tailscale") then return end
+  local groups, services = require("groups"), require("services")
+  ImGui.SeparatorText(ctx, "Sync through Tailscale")
+  local t, on = groups.tailnet(cfg.root), groups.tailscale_only(cfg.root)
+  if not t then
+    ImGui.TextDisabled(ctx, "This studio has no Tailscale network yet: setting up a guest invitation, private live audio or the listening page gives it the one this computer is on.")
+  else
+    ImGui.TextDisabled(ctx, on and ("On: everyone syncs with each other only at their Tailscale names on " .. t.name .. ", so the studio syncs while you're on that network.")
+      or ("Off: Syncthing finds everyone its own way (Tailscale, your network or the internet). The studio's network is " .. t.name .. "."))
+    if studio_admin() then
+      local ch, v = ImGui.Checkbox(ctx, "Sync only through Tailscale##tsonly", on)
+      if ch then
+        groups.set_tailscale_only(cfg.root, v)
+        band.log(v and ("the studio syncs only through Tailscale (" .. t.name .. ") from now: each computer's name there takes a minute to reach the others")
+          or "the studio syncs however Syncthing finds everyone again")
+      end
+      ImGui.SetItemTooltip(ctx, "Everyone needs Tailscale signed in to " .. t.name .. ". A computer whose name there isn't known yet is still found Syncthing's own way,\n" ..
+        "until it has been on that network with StudioSync running. In two studios on two networks, switching networks switches which one syncs.")
+    end
+    off_tailnet()
+  end
+  card_end()
+end
 local function settings_studio()
   ImGui.TextDisabled(ctx, "For everyone in " .. band.info(cfg.root).name .. ". Only the owner and admins change these; everyone can use them.")
-  layout({ { studio_alerts, 360 }, { studio_call, 360 }, { studio_private_audio, 360 } }, true)
+  layout({ { studio_alerts, 360 }, { studio_call, 360 }, { studio_private_audio, 360 }, { studio_tailscale_sync, 360 } }, true)
 end
 local function settings_drive()
   if card("drive") then

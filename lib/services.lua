@@ -896,6 +896,85 @@ function services.tailscale_switch(id)
   return true
 end
 
+-- ---- Syncing through each studio's own Tailscale network (James, 0.58.80: "the point is to have different tailscale accounts for different
+-- studios that I can switch to"). A studio set to "Sync only through Tailscale" (groups.tailscale_only) syncs with each computer at its name on the
+-- studio's network: each computer writes its own name there into its _band/devices file whenever it's on that network (removal.publish), and
+-- every computer gives Syncthing only those names for it. A computer in two such studios has a name on each network; whichever network this one
+-- is on now, that name answers, so a studio syncs while you're on its network. Until a computer's name on a studio's network is known, Syncthing
+-- keeps finding it its own way ("dynamic"), so a newcomer still arrives and publishes it; so does a computer also in a studio that isn't set so.
+-- (Syncthing checks every computer's certificate whatever address it's reached at: a wrong name only stops that sync, it can't stand in for it.)
+-- studios: { { only, suffix, devices = { { device, ts = { [suffix] = name } } } } }. -> device -> its addresses. Pure.
+services.SYNC_PORT = 22000
+function services.tailnet_addresses(studios, me)
+  local acc = {}
+  for _, s in ipairs(studios) do
+    for _, d in ipairs(s.devices or {}) do
+      if type(d.device) == "string" and d.device ~= me then
+        local a = acc[d.device] or { names = {}, dynamic = false }
+        acc[d.device] = a
+        local name = s.only and s.suffix and type(d.ts) == "table" and d.ts[s.suffix]
+        if type(name) == "string" and name:match("^[%w%-%.]+$") and name:sub(-#s.suffix - 1) == "." .. s.suffix then
+          a.names["tcp://" .. name .. ":" .. services.SYNC_PORT] = true
+        else a.dynamic = true end
+      end
+    end
+  end
+  local out = {}
+  for id, a in pairs(acc) do
+    local list = {}
+    for n in pairs(a.names) do list[#list + 1] = n end
+    table.sort(list)
+    if a.dynamic then list[#list + 1] = "dynamic" end
+    out[id] = list
+  end
+  return out
+end
+local pinned, patched = {}, {} -- device -> its addresses as Syncthing has them; the change last asked for, and when (read in the background)
+function services.pin_tailnet(me)
+  if not (services.syncthing_path() and services.is_device_id(me)) then return end
+  local studios = {}
+  for _, g in ipairs(band.bands()) do
+    if not g.waiting and not require("groups").is_old(g.root) then
+      local t = require("groups").tailnet(g.root)
+      local s = { only = require("groups").tailscale_only(g.root), suffix = t and t.suffix, devices = {} }
+      for _, f in ipairs(band.files(g.root .. "/_band/devices", ".json")) do
+        local d = band.read_json(g.root .. "/_band/devices/" .. f)
+        if type(d) == "table" and services.is_device_id(d.device) then s.devices[#s.devices + 1] = d end
+      end
+      studios[#studios + 1] = s
+    end
+  end
+  for id, list in pairs(services.tailnet_addresses(studios, me)) do
+    local want = table.concat(list, " ")
+    if pinned[id] ~= want then
+      local get = st_api("/rest/config/devices/" .. id)
+      local have = get and band.json_decode(background("st-addr-" .. id:sub(1, 7), get, 20) or "")
+      if type(have) == "table" and type(have.addresses) == "table" then
+        local cur = {}
+        for _, a in ipairs(have.addresses) do cur[#cur + 1] = tostring(a) end
+        local sorted = {}
+        for _, a in ipairs(list) do sorted[#sorted + 1] = a end
+        table.sort(cur); table.sort(sorted)
+        if table.concat(cur, " ") == table.concat(sorted, " ") then pinned[id] = want
+        elseif not (patched[id] and patched[id].want == want and os.time() - patched[id].at < 120) then -- (once: the next read can still be from before it)
+          patched[id] = { want = want, at = os.time() }
+          local body = TMP .. "/bandsync-addr-" .. id:sub(1, 7) .. ".json"
+          band.write_atomic(body, band.json_encode({ addresses = list }))
+          local patch = st_api("/rest/config/devices/" .. id, "PATCH")
+          if patch then
+            background("st-pin-" .. id:sub(1, 7), patch .. ' -H "Content-Type: application/json" --data-binary "@' .. body .. '"', 0)
+            local names = {}
+            for _, a in ipairs(list) do if a ~= "dynamic" then names[#names + 1] = (a:gsub("^tcp://", ""):gsub(":%d+$", "")) end end
+            band.log(services.device_name(id) .. (#names == 0 and ": Syncthing finds it its own way again"
+              or (": syncs through Tailscale, at " .. table.concat(names, " or ") .. (list[#list] == "dynamic" and " (and its own way, until every studio knows its name)" or ""))))
+          end
+          started["st-addr-" .. id:sub(1, 7)] = nil -- (read again next time, to see it took)
+        end
+      end
+    end
+  end
+end
+
 -- A guest's key from a pasted invitation (services.parse_join: only key characters): what the installers do with it. In the background: it can take a minute.
 function services.tailscale_join(key)
   local exe = tailscale_exe()

@@ -26,10 +26,18 @@ function removal.device_of(root, user)
   local id = said_device(root, user)
   return id and require("trust").device_ok(root, user, id) == true and id or nil
 end
-function removal.publish(root, user, id)
-  if said_device(root, user) == id then return end -- (what's there, checked or not: one naming another computer is written over)
+-- `ts`: { suffix, name }, this computer's name on the Tailscale network it's on now, kept beside its names on other networks (ts = { suffix = name }):
+-- services.pin_tailnet gives Syncthing those names for it (0.58.80).
+function removal.publish(root, user, id, ts)
+  local path = devices(root) .. "/" .. file_name(user)
+  local d = band.read_json(path)
+  local had = (type(d) == "table" and d.device == id and type(d.ts) == "table") and d.ts or {}
+  if said_device(root, user) == id and (not ts or had[ts[1]] == ts[2]) then return end -- (what's there, checked or not: one naming another computer is written over)
+  local names = {}
+  for k, v in pairs(had) do if type(k) == "string" and type(v) == "string" then names[k] = v end end
+  if ts then names[ts[1]] = ts[2] end
   reaper.RecursiveCreateDirectory(devices(root), 0)
-  band.write_json(devices(root) .. "/" .. file_name(user), { user = user, device = id })
+  band.write_json(path, { user = user, device = id, ts = next(names) and names or nil })
 end
 
 -- Whether the minute is up. Pure.
@@ -170,10 +178,17 @@ function removal.tick(now)
   local services = require("services")
   pcall(require("groups").tick, now)
   pcall(settle_peers, services, now)
+  pcall(services.pin_tailnet, services.my_device_id()) -- (studios that sync only through their Tailscale network: from the names published below)
   local me, id = reaper.GetExtState(band.SECTION, "user"), services.my_device_id()
   local told = ""
+  local ts -- (this computer's name on the Tailscale network it's on now: { suffix, name })
+  do
+    local ok, _, suffix = pcall(services.tailnet_now)
+    local name = ok and suffix and services.my_tailscale_name()
+    if name and name:sub(-#suffix - 1) == "." .. suffix then ts = { suffix, name } end
+  end
   for _, g in ipairs(band.bands()) do
-    if id and me ~= "" then removal.publish(g.root, me, id) end
+    if id and me ~= "" then removal.publish(g.root, me, id, ts) end
     if me ~= "" and not require("groups").is_old(g.root) then pcall(require("localcopy").publish_holds, g.root, me) end
     for _, m in ipairs(all_marks(g.root)) do
       if m.user == me or (id and m.device == id) then

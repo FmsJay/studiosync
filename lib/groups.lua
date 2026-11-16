@@ -102,6 +102,9 @@ function groups.set_tailnet(root)
   save(root, function(j) j.tailnet = { name = name, suffix = suffix } end)
   return true
 end
+-- Does the studio sync only through its Tailscale network (band.json "tailscale_only": services.pin_tailnet)? Set by the owner or an admin.
+function groups.tailscale_only(root) return json_of(root).tailscale_only == true and groups.tailnet(root) ~= nil end
+function groups.set_tailscale_only(root, on) save(root, function(j) j.tailscale_only = on and true or nil end) end
 
 -- The owner makes someone an admin or a member again. -> true, or nil + why.
 function groups.set_admin(root, actor, target, on)
