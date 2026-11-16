@@ -1,0 +1,55 @@
+# The menu extension (extension/reaper_menu.cpp) for macOS and Linux: Windows builds on JAMES-MAIN (extension/build_windows.cmd). Each job
+# leaves its files as an artifact; they go into extension/ here and in the ReaPersona repo, and the extension package's version goes up
+# (EXT_VERSION in tools/make_index.py).
+name: extension
+on:
+  workflow_dispatch:
+  push:
+    paths: ["extension/reaper_menu.cpp", ".github/workflows/extension.yml"]
+
+jobs:
+  mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: SDK and WDL (reaper_plugin.h includes ../WDL/swell/swell.h beside the sdk folder)
+        run: |
+          git clone --depth 1 https://github.com/justinfrankel/reaper-sdk
+          git clone --depth 1 https://github.com/justinfrankel/WDL wdl
+          ln -s "$PWD/wdl/WDL" reaper-sdk/WDL
+      - name: Build universal dylibs
+        run: |
+          for p in studiosync reapersona; do
+            def=""; [ "$p" = reapersona ] && def="-DREAPERSONA"
+            clang++ -std=c++17 -O2 -dynamiclib -arch arm64 -arch x86_64 -mmacosx-version-min=10.13 -DSWELL_PROVIDED_BY_APP $def \
+              -I reaper-sdk/sdk extension/reaper_menu.cpp reaper-sdk/WDL/swell/swell-modstub.mm -framework Cocoa -o "reaper_$p.dylib"
+            codesign -s - "reaper_$p.dylib"
+            lipo -info "reaper_$p.dylib"
+          done
+      - uses: actions/upload-artifact@v4
+        with: { name: mac, path: "*.dylib" }
+
+  linux:
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-22.04, arch: x86_64 }
+          - { os: ubuntu-22.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: SDK and WDL
+        run: |
+          git clone --depth 1 https://github.com/justinfrankel/reaper-sdk
+          git clone --depth 1 https://github.com/justinfrankel/WDL wdl
+          ln -s "$PWD/wdl/WDL" reaper-sdk/WDL
+      - name: Build
+        run: |
+          for p in studiosync reapersona; do
+            def=""; [ "$p" = reapersona ] && def="-DREAPERSONA"
+            g++ -std=c++17 -O2 -shared -fPIC -DSWELL_PROVIDED_BY_APP $def -I reaper-sdk/sdk \
+              extension/reaper_menu.cpp reaper-sdk/WDL/swell/swell-modstub-generic.cpp -o "reaper_$p-${{ matrix.arch }}.so"
+            nm -D --defined-only "reaper_$p-${{ matrix.arch }}.so" | grep -E "ReaperPluginEntry|SWELL"
+          done
+      - uses: actions/upload-artifact@v4
+        with: { name: "linux-${{ matrix.arch }}", path: "*.so" }
