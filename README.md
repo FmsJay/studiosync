@@ -279,8 +279,8 @@ again closes the menu. The panel carries the move out, so each choice asks first
 the panel opens if it was closed.
 
 **Opening StudioSync:** **Extensions > StudioSync** or **View > StudioSync** (ticked while the panel is open), or the action **StudioSync: open the
-panel**. These come from a small extension that ReaPack installs with StudioSync (`extension/`, built for 64-bit Windows; the Mac build is
-on its way). They appear after REAPER's next start.
+panel**. These come from a small extension that ReaPack installs with StudioSync (`extension/`: 64-bit Windows, macOS and Linux;
+the macOS and Linux builds come from `.github/workflows/extension.yml`). They appear after REAPER's next start.
 
 **REAPER's Actions list** keeps only what opens StudioSync, plus Undo, Redo, Live sync and Draw. Turn on **Settings > Advanced > Every
 StudioSync action in REAPER's Actions list** for the rest. An action a key, a toolbar or a menu already uses always stays.
