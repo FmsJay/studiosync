@@ -92,7 +92,9 @@ static time_t last_write = 0;
 static void status(const char *s) {
   char tmp[4096];
   snprintf(tmp, sizeof tmp, "%s.tmp", status_path);
-  snprintf(last_word, sizeof last_word, "%s", s);
+  /* (beat() passes last_word itself: copying a buffer onto itself is undefined, and Linux's C library blanked the word, so StudioSync read
+   * no status at all; macOS's happened to keep it. Linux VM, 0.58.75) */
+  if (s != last_word) snprintf(last_word, sizeof last_word, "%s", s);
   last_write = time(NULL);
   FILE *f = fopen(tmp, "w");
   if (!f) return;
