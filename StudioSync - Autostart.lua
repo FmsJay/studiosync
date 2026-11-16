@@ -8,11 +8,10 @@ local dir = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]")
 package.path = dir .. "/lib/?.lua;" .. package.path
 local band = require("band")
 
-do -- every action of this version is in the Actions list: an update through the shared folder brings new scripts,
-  -- which REAPER doesn't know until they're registered (laptop, 2026-10-31: the radial menu wasn't there)
-  local list = {}
-  for _, f in ipairs(band.files(dir, ".lua")) do if f:match("^StudioSync %- .+%.lua$") then list[#list + 1] = dir .. "/" .. f end end
-  for i, path in ipairs(list) do reaper.AddRemoveReaScript(true, 0, path, i == #list) end
+do -- the Actions list as it should be for this version: an update through the shared folder brings new scripts, which REAPER doesn't
+  -- know until they're registered (laptop, 2026-10-31: the radial menu wasn't there); and only what opens StudioSync, unless you asked for
+  -- them all (band.sync_actions, 0.58.71)
+  band.sync_actions(dir, true)
   local kb = io.open(reaper.GetResourcePath() .. "/reaper-kb.ini", "r")
   if kb then
     local text = kb:read("a")

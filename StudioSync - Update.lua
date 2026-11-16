@@ -15,14 +15,6 @@ if entry then
   return reaper.Main_OnCommand(reaper.NamedCommandLookup("_REAPACK_SYNC"), 0) -- ReaPack: Synchronize packages
 end
 
-local scripts, i = {}, 0
-reaper.EnumerateFiles(dir, -1)
-while true do
-  local name = reaper.EnumerateFiles(dir, i)
-  if not name then break end
-  if name:match("^StudioSync %- .+%.lua$") then scripts[#scripts + 1] = name end
-  i = i + 1
-end
 -- scripts removed or renamed in an update leave dead actions behind: unregister any StudioSync action that
 -- points into this folder at a file that's gone
 local gone = {}
@@ -39,6 +31,6 @@ if kb then
   kb:close()
 end
 for _, p in ipairs(gone) do reaper.AddRemoveReaScript(false, 0, p, false) end
-for n, name in ipairs(scripts) do reaper.AddRemoveReaScript(true, 0, dir .. "/" .. name, n == #scripts) end
-band.msg(string.format("StudioSync %s runs from %s, so updates arrive with that folder.\n\n%d StudioSync actions are registered, including any new ones.%s",
-  band.VERSION, band.norm(dir), #scripts, #gone > 0 and ("\nRemoved " .. #gone .. " action(s) for scripts that no longer exist.") or ""))
+local listed = band.sync_actions(dir) -- (the Actions list as it should be: what opens StudioSync, or all of them if you asked. 0.58.71)
+band.msg(string.format("StudioSync %s runs from %s, so updates arrive with that folder.\n\n%d StudioSync actions are in the Actions list.%s",
+  band.VERSION, band.norm(dir), listed, #gone > 0 and ("\nRemoved " .. #gone .. " action(s) for scripts that no longer exist.") or ""))

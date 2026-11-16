@@ -56,6 +56,25 @@ for f in sorted((ROOT / "lib" / "listen").glob("*")):  # the listening page's li
     plat = {"listen_server.ps1": {"platform": "windows"}, "listen_server.pl": {"platform": "darwin"}}.get(f.name, {})
     ET.SubElement(ver, "source", file=rel, **plat).text = url(rel)
 
+# Extensions > StudioSync and View > StudioSync (extension/reaper_menu.cpp): a package of its own, with a version of its own that goes up
+# only when the extension changes (EXT_VERSION), so StudioSync's updates don't try to replace a file REAPER has loaded. Each platform gets
+# its build, when there is one (a new platform's build: raise EXT_VERSION).
+EXT_VERSION = "1.0.0"
+EXT_FILES = {"reaper_studiosync-x64.dll": "win64", "reaper_studiosync.dylib": "darwin"}  # (the Mac build is universal: arm64 + x86_64)
+cat = index.find("category")
+ext = next((p for p in cat.findall("reapack") if p.get("type") == "extension"), None)
+if ext is None:
+    ext = ET.SubElement(cat, "reapack", name="StudioSync menus.ext", type="extension",
+                        desc="StudioSync in REAPER's Extensions and View menus")
+    ET.SubElement(ET.SubElement(ext, "metadata"), "link", rel="website").text = f"https://github.com/{REPO}"
+if not any(v.get("name") == EXT_VERSION for v in ext.findall("version")):
+    ev = ET.SubElement(ext, "version", name=EXT_VERSION, author="James",
+                       time=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    ET.SubElement(ev, "changelog").text = "StudioSync in the Extensions and View menus, and the action 'StudioSync: open the panel'."
+    for name, plat in EXT_FILES.items():
+        if (ROOT / "extension" / name).exists():
+            ET.SubElement(ev, "source", platform=plat, file=name).text = url(f"extension/{name}")
+
 ET.indent(index)
 ET.ElementTree(index).write(INDEX, encoding="utf-8", xml_declaration=True)
 print(f"index.xml: StudioSync {version}, {len(ver)} entries")

@@ -1597,6 +1597,14 @@ function ui.settings_advanced()
     if cha then reaper.SetExtState(band.SECTION, "show advanced", va and "1" or "0", true); ui.extra_at = -math.huge end
     local ch0, v0 = switch_row("##showplay", "Show the Play/Jam tab", ui.play_shown(), "Starting together, Play along and Jam. Play along and Jam go through NINJAM, which needs a server the others can reach.\nReal time mode, Follow and Listen don't need any of it.")
     if ch0 then reaper.SetExtState(band.SECTION, "show play", v0 and "1" or "", true) end
+    local ch1, v1 = switch_row("##allactions", "Every StudioSync action in REAPER's Actions list", band.all_actions(),
+      "For keyboard shortcuts and toolbar buttons: Hold my changes, Claim selected tracks, Local mixing, Take control and the rest.\n" ..
+      "Off, the Actions list keeps what opens StudioSync (and Undo/Redo); one a key or a toolbar already uses stays either way.")
+    if ch1 then
+      reaper.SetExtState(band.SECTION, "all actions", v1 and "1" or "", true)
+      local listed, out = band.sync_actions(dir)
+      band.log(string.format("the Actions list has %d StudioSync action(s) now%s", listed, out > 0 and (" (" .. out .. " taken out)") or ""))
+    end
     do -- Tailscale's API: guests for a day, and the policy lines (lib/services.lua). Whoever runs the Tailscale network makes the token.
       local services = require("services")
       ImGui.Spacing(ctx)

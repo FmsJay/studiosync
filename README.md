@@ -278,7 +278,14 @@ Chat. Point at a slice to read what it does underneath, and click it to do it. E
 again closes the menu. The panel carries the move out, so each choice asks first just as its button there does, and
 the panel opens if it was closed.
 
-**Actions to bind to a key or toolbar button** (Actions list, search "StudioSync"): **Hold my changes** (on/off), **Claim selected
+**Opening StudioSync:** **Extensions > StudioSync** or **View > StudioSync** (ticked while the panel is open), or the action **StudioSync: open the
+panel**. These come from a small extension that ReaPack installs with StudioSync (`extension/`, built for 64-bit Windows; the Mac build is
+on its way). They appear after REAPER's next start.
+
+**REAPER's Actions list** keeps only what opens StudioSync, plus Undo, Redo, Live sync and Draw. Turn on **Settings > Advanced > Every
+StudioSync action in REAPER's Actions list** for the rest. An action a key, a toolbar or a menu already uses always stays.
+
+**Actions to bind to a key or toolbar button** (with that setting on; Actions list, search "StudioSync"): **Hold my changes** (on/off), **Claim selected
 tracks**, **Local mixing** (on/off; off asks whose mix to keep), **Keep selected tracks local** (new tracks of your own that never go out:
 a reference mix, a guide; again with only those selected, it shares them), plus Take control, Undo, Redo and Radial menu. Like the radial
 menu, the panel does each one.
