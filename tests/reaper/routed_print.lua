@@ -20,6 +20,8 @@ reaper.RecursiveCreateDirectory(media, 0)
 local function peak(tk)
   local acc = reaper.CreateTakeAudioAccessor(tk)
   local sr, n, buf, best = 44100, 44100 * 2, reaper.new_array(44100 * 2 * 2), 0
+  -- (a new array isn't zeroed, and the accessor writes nothing past the take's end: a 1 s take read for 2 s peaked at 8.9e304. Linux VM, 0.58.77)
+  buf.clear()
   reaper.GetAudioAccessorSamples(acc, sr, 2, 0, n, buf)
   for i = 1, n * 2 do local v = math.abs(buf[i]); if v > best then best = v end end
   reaper.DestroyAudioAccessor(acc)
