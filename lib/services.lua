@@ -195,10 +195,12 @@ function services.tune_band_folder(folder)
       set[#set + 1] = "auto-accept-folders off for " .. id:sub(1, 7)
     end
   end
-  -- (the first studio's folder was labelled "BandSync" in Syncthing's window: the studio's own name there now, as a new one gets. 0.58.69)
-  if (reaper.ExecProcess(q(st) .. " cli config folders " .. folder .. " label get", 8000) or ""):match("^0\nBandSync%s*$") then
+  -- (the first studio's folder was labelled "BandSync" in Syncthing's window, or just its ID where Syncthing added it by itself ("bandsync" on
+  -- the Mac): the studio's own name there now, as a new one gets. 0.58.69-70)
+  local label = (reaper.ExecProcess(q(st) .. " cli config folders " .. folder .. " label get", 8000) or ""):match("^0\n(.-)%s*$")
+  if label and (label:lower() == "bandsync" or label == folder or label == "") then
     for _, x in ipairs(band.bands()) do
-      if x.id == folder then services.set_folder_label(folder, "StudioSync " .. x.name); set[#set + 1] = "label BandSync -> StudioSync " .. x.name end
+      if x.id == folder then services.set_folder_label(folder, "StudioSync " .. x.name); set[#set + 1] = "label " .. label .. " -> StudioSync " .. x.name end
     end
   end
   table.sort(set)

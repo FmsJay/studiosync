@@ -1357,7 +1357,7 @@ function sync.receive(proj, cfg, song, room, can)
         if type(ev.was) == "table" then ev.before, ev.was = ev.before or ev.was, nil end
         pending[#pending + 1] = ev
         if ev.type == "driver" then
-          drivers[ev.id] = { time = ev.time, user = ev.driver or ev.user }
+          drivers[ev.id:upper()] = { time = ev.time, user = ev.driver or ev.user }
           setext(proj, sync.DRIVERS, room .. "/" .. ev.id, ev.time .. "|" .. tostring(ev.driver or ev.user)) -- (kept, so the next open needn't look for it)
         end
       end
@@ -1544,14 +1544,16 @@ function sync.forget_trimmed(proj, cfg, song)
       for _, d in ipairs(band.subdirs(room)) do if d == "events" then there = true end end
       if sync.room_had_events[dir] or not there then sync.forgot = 0; return 0 end
     end
-    for _, f in ipairs(files) do here[f:sub(1, -6)] = true end
+    for _, f in ipairs(files) do here[f:sub(1, -6):upper()] = true end
   end
   if next(here) == nil then sync.forgot = 0; return 0 end -- (the folder not reachable just now: nothing is taken for gone)
   local gone, i = {}, 0
   while true do
+    -- (upper-cased both sides: a reopened project hands its keys back upper-cased, so none matched a file's name, every mark was taken for
+    -- gone, and each open took the song's changes in again: 534 on the Mac every time. Mac test, 0.58.70)
     local ok, key = reaper.EnumProjExtState(proj, sync.APPLIED, i)
     if not ok then break end
-    if not here[key] then gone[#gone + 1] = key end
+    if not here[key:upper()] then gone[#gone + 1] = key end
     i = i + 1
   end
   for _, key in ipairs(gone) do reaper.SetProjExtState(proj, sync.APPLIED, key, "") end
@@ -1594,7 +1596,10 @@ function sync.driver_history(proj, cfg, song, room)
       local ok, k, v = reaper.EnumProjExtState(proj, sync.DRIVERS, i)
       if not ok then break end
       i = i + 1
-      local id = k:sub(1, #room + 1) == room .. "/" and k:sub(#room + 2)
+      -- (upper-cased: a reopened project hands its keys back upper-cased, "MAIN/...", and none matched: every handover was lost at each open,
+      -- so whoever drove when a change was made read as the host. Ids are upper-cased everywhere here, for the same tie-break on every
+      -- computer. Mac test, 0.58.70)
+      local id = k:sub(1, #room + 1):upper() == (room .. "/"):upper() and k:sub(#room + 2):upper()
       local t, u = v:match("^([^|]*)|(.*)$")
       if id and id ~= "" and t then list[id] = { time = t, user = u } end
     end
@@ -1610,7 +1615,7 @@ function sync.driver_history(proj, cfg, song, room)
     if text and text:find('"driver"', 1, true) then
       local ok, ev = pcall(require("json").decode, text)
       if ok and type(ev) == "table" and ev.type == "driver" and type(ev.time) == "string" then
-        list[ev.id or f] = { time = ev.time, user = ev.driver or ev.user }
+        list[(ev.id or f):upper()] = { time = ev.time, user = ev.driver or ev.user }
         if proj then setext(proj, sync.DRIVERS, room .. "/" .. (ev.id or f:sub(1, -6)), ev.time .. "|" .. tostring(ev.driver or ev.user)) end
       end
     end
