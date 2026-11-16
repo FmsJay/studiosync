@@ -16,8 +16,8 @@ Machines talk only through a shared folder (Syncthing recommended), with an opti
 For a band, or for one song with someone: it's the same thing, so name it what it is.
 
 1. Run the installer: **Install StudioSync (Windows).cmd**, or on a Mac **Install StudioSync (Mac).command** (see
-   [Setup](#setup-each-person-once) if macOS blocks it). Answer *s* (start) to "starting a new studio, or joining one?" and
-   give it a name. Already have StudioSync? Click the studio pill at the top of the panel, then **Start a new studio**.
+   [Setup](#setup-each-person-once) if macOS blocks it). When it asks for an invitation, just press Enter (you're starting
+   one), and give it a name. Already have StudioSync? Click the studio pill at the top of the panel, then **Start a new studio**.
 2. In REAPER, open your project, or a new empty tab: the panel shows **Projects**, with **Share** at the top. It goes through the Prepare checklist first.
 3. On the studio's card or on Home, press **Invite**. It copies a message to send each person: a join code if they already have StudioSync, and a line to paste if they don't.
 4. When they've run it, your panel shows **Let *them* in**: press it.
@@ -132,11 +132,14 @@ On Windows paste this into PowerShell the same way:
 (the Mac line is below).
 
 **Or the installer files.** Download the `installer` folder (or just the one file) and double-click
-**Install StudioSync (Windows).cmd**, or on a Mac **Install StudioSync (Mac).command**. It asks your name, whether
-you're starting a studio or joining one (joining with the line from a collaborator's **Invite**, nothing more is asked;
-without it, their Syncthing device ID: any set-up collaborator's will do), whether you want the plug-in pack (and, when starting,
-the bigger extras), and whether you're used to another music app (then it adds [ReaPersona](https://github.com/FmsJay/ReaPersona), which makes REAPER's
-shortcuts, mouse and look work like Pro Tools, Logic, Ableton, FL Studio, Cubase, Studio One, Bitwig and more), then
+**Install StudioSync (Windows).cmd**, or on a Mac **Install StudioSync (Mac).command**. It first asks for
+the invitation you were sent, if any: paste it (all of it, or its studiosync-join line) and you join that studio; press Enter
+and you're starting one. Run from the line in an invitation, it doesn't even ask. Then your name, whether you want the plug-in
+pack (and, when starting, the bigger extras), and which music app you're used to, from a numbered list (Pro Tools, Logic,
+Ableton Live, FL Studio, Cubase, Studio One, Bitwig, Cakewalk, Reason, Audacity, Audition; Enter for none): it then adds
+[ReaPersona](https://github.com/FmsJay/ReaPersona) and sets REAPER up as that app in the same run, its look, mouse and
+shortcuts (REAPER restarts once by itself to load the shortcuts when Python is installed; without it, ReaPersona's Home has
+that one step). Then it
 installs whatever is missing from official sources: REAPER, ReaPack, ReaImGui, js_ReaScriptAPI, SWS, Syncthing,
 SonoBus, Tailscale and Google Drive for desktop. It sets up the shared folder (in your home folder, named after the studio) and pairs it
 with your collaborator, waits while you sign in to Tailscale and Google Drive if you're starting the studio (a joiner gets those as
@@ -517,6 +520,14 @@ own? Enter `<address>:2049` and click *Save for the studio*.
 - **A copy outside the studio** (Restore > Save a copy outside the studio): a plain REAPER project in a folder you pick, with every file it uses, as recorded or as WAVs. It opens anywhere with no StudioSync and nothing you do to it goes to anyone. Letting someone in saves a kept version of what's open first.
 - **Who can edit** (Home): Only the driver, Driver + claimed tracks, Admins only (the owner and admins, and whoever an admin gave tracks to: right-click their name) or Anyone.
 - **Chat**: This room shows only this room's; This project also shows all its rooms'; Studio shows everything, each message saying where it's from.
+
+## For your own scripts: the API
+
+Toolbars, controllers and your own scripts can read who drives, who's here, who claimed what and whether Hold or Local mixing is on,
+follow what happens (handovers, people coming and going, changes sent and received, chat, takes, mixes), and ask StudioSync to take
+control, hold, claim, keep tracks local, switch Local mixing or post to chat, each exactly as the panel's control does. It's all in
+REAPER's ExtState (section `StudioSync API`), so Lua, EEL and Python can use it; Lua scripts get a small helper. Fields, events,
+verbs and examples (a toolbar light, an event loop): [docs/API.md](docs/API.md).
 
 ## Backups
 

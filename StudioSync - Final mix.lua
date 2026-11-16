@@ -62,6 +62,7 @@ if src then
 end
 if made then
   band.log("mix rendered for the studio: " .. out .. "/" .. made)
+  pcall(require("api").event, "mix", { file = out .. "/" .. made, song = b.song })
   local droot = require("drive").root(cfg)
   if droot then
     reaper.RecursiveCreateDirectory(droot .. "/" .. b.song .. "/mixes", 0)

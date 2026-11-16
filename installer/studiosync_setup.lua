@@ -168,6 +168,54 @@ end
 -- and on macOS a request arriving while ReaPack's report window was open crashed REAPER (2026-10-28): now there's
 -- one request per installer run.
 local waiting = false
+
+-- ReaPersona as the DAW picked in the installer, all in one go (James, 0.58.64: opting in should set it up and pick the right DAW). Its look,
+-- mouse and toggles go on now, with the startup line that keeps them; its shortcut layers go into REAPER's keymap through its own
+-- install_shortcuts.py, which needs REAPER closed: REAPER restarts once, about 10 seconds (persona_keys, after the result is written).
+-- Without Python that last step is ReaPersona's Home > Install, which explains it. -> the core, or nil.
+local function persona_core()
+  local base = reaper.GetResourcePath() .. "/Scripts/ReaPersona"
+  for _, d in ipairs({ base .. "/Workflow", base, base .. "/ReaPersona" }) do
+    if reaper.file_exists(d .. "/reapersona_core.lua") then
+      local ok, core = pcall(dofile, d .. "/reapersona_core.lua")
+      if ok and type(core) == "table" then return core end
+    end
+  end
+end
+local function persona_apply(id)
+  local core = persona_core()
+  if not core then out.persona_note = "ReaPersona hasn't arrived yet: in REAPER, Extensions > ReaPack > Synchronize packages, then Actions > ReaPersona to pick your DAW."; return end
+  local st = core.by_id(id)
+  if not st then out.persona_note = "ReaPersona doesn't know '" .. id .. "': open it (Actions > ReaPersona) and pick your DAW."; return end
+  local ok, err = pcall(function()
+    if core.scripts_missing() > 0 then core.ensure_scripts() end -- (the scripts its keys run, registered before the keys go in)
+    core.use(st)
+    if not core.startup_on() then core.add_startup() end -- (REAPER forgets the shortcut layer at a restart: this brings it back)
+    reaper.SetExtState(core.SECTION, "welcomed", "1", true) -- (its first-run "which DAW?" is answered)
+  end)
+  if not ok then out.persona_note = "ReaPersona couldn't switch to " .. st.name .. " (" .. tostring(err) .. "): open it (Actions > ReaPersona) and pick it there."; return end
+  out.persona = st.name
+  -- (on a Mac without the developer tools, /usr/bin/python3 is a stub that pops up an install offer: asked only where a real one is)
+  local real_py = not core.IS_MAC or (reaper.ExecProcess("/bin/sh -c 'command -v python3 | grep -qv ^/usr/bin/ || xcode-select -p'", 5000) or ""):match("^0\n")
+  if real_py and core.python() then
+    out.persona_keys = "restart"
+    out.persona_note = "ReaPersona: REAPER now looks and clicks like " .. st.name .. ". It restarts once, by itself, to load " .. st.name .. "'s shortcuts."
+  else
+    out.persona_note = "ReaPersona: REAPER now looks and clicks like " .. st.name .. ". For its shortcuts: open ReaPersona (Actions > ReaPersona), Home, Install (one step, it explains)."
+  end
+  return core
+end
+local function persona_keys(core)
+  local here_p = core.here
+  if not reaper.file_exists(here_p .. "/midi_defaults.json") then core.midi_defaults() end
+  local exe = reaper.GetExePath():gsub("\\", "/")
+  exe = core.IS_MAC and exe:match("^(.-%.app)") or (exe .. "/reaper.exe")
+  local cfg = reaper.get_ini_file():gsub("\\", "/") -- (a test REAPER with its own -cfgfile comes back on it)
+  reaper.ExecProcess(core.py .. ' "' .. here_p .. '/install_shortcuts.py" --after-reaper-quits --relaunch "' .. exe .. '" --cfgfile "' .. cfg .. '"', -1) -- (-1: don't wait)
+  reaper.SetExtState("BandSync", "open panel at start", "1", true) -- (StudioSync - Autostart opens the panel when REAPER is back)
+  reaper.Main_OnCommand(40004, 0) -- File: Quit (REAPER's own save prompt for anything unsaved); install_shortcuts.py starts it again
+end
+
 local function conclude()
   -- optional: the control panel needs ReaImGui (ReaTeam Extensions repository, which ReaPack has by default)
   out.reaimgui = reaper.APIExists("ImGui_GetBuiltinPath")
@@ -220,7 +268,9 @@ local function conclude()
     if again then again:close() end
     step("Live sync starts with REAPER", on, startup)
   end
+  local persona = type(req.persona) == "string" and req.persona:match("^[%w_]+$") and persona_apply(req.persona)
   finish()
+  if persona and out.persona_keys == "restart" then return reaper.defer(function() persona_keys(persona) end) end -- (the panel opens after the restart, from autostart)
 
   -- open_panel: land the musician in the panel, whose first screen offers to publish or open a session
   if (req.open_panel or waiting) and count >= 5 and out.reaimgui then

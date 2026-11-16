@@ -269,6 +269,7 @@ local function poll()
     sync.driver_away = driver_away
     reaper.SetExtState(band.SECTION, "driver_away " .. tostring(proj), driver_away and tostring(driver) or "", false)
   end
+  if last_driver and driver ~= last_driver then pcall(require("api").event, "driver", { from = last_driver, to = driver, song = b.song }) end -- (the API: lib/api.lua)
   if last_driver and driver ~= last_driver then -- handovers are announced, never silent
     band.log(driver == cfg.user and "you're driving now" or (tostring(driver) .. " is driving now" ..
       (last_driver == cfg.user and ": you're no longer driving (what you don't own is view-only)" or "")))
@@ -276,6 +277,23 @@ local function poll()
   last_driver = driver
   -- Hold sync: keep working without sending anything; releasing it sends the net result once
   local hold = select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) ~= ""
+  -- the API (lib/api.lua): the state for other scripts, and what changed since the last look
+  pcall(function()
+    local api = require("api")
+    local was = sync.api_seen or {}
+    local now_here = {}
+    for _, o in ipairs(others) do now_here[o] = true end
+    if sync.api_seen then
+      local joined, left = {}, {}
+      for o in pairs(now_here) do if not was[o] then joined[#joined + 1] = o end end
+      for o in pairs(was) do if not now_here[o] then left[#left + 1] = o end end
+      if #joined + #left > 0 then api.event("people", { joined = joined, left = left, song = b.song }) end
+      if hold ~= sync.api_hold then api.event("hold", { on = hold, song = b.song }) end
+    end
+    sync.api_seen, sync.api_hold = now_here, hold
+    api.publish(proj, { song = b.song, room = b.room, me = cfg.user, driver = driver, mode = who.mode, alone = alone, others = others, tracks = who.tracks,
+      hold = hold, local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1", held = reaper.GetExtState(band.SECTION, "held " .. tostring(proj)) })
+  end)
 
   local now = reaper.time_precise()
   lap("who")
@@ -310,7 +328,7 @@ local function poll()
       local ok, sent = pcall(require("mirror").watch, proj, cfg, b.song, b.room, { can = my_can, mode = who.mode, local_mix = sync.local_mix,
         held = held, hold = hold, here = here, printers = who.printers })
       if not ok then band.log("mirror sync: " .. tostring(sent))
-      elseif sent > 0 then band.log(sent .. " change(s) went to " .. (b.room == "main" and "the others" or ("the room '" .. b.room .. "'"))) end
+      elseif sent > 0 then band.log(sent .. " change(s) went to " .. (b.room == "main" and "the others" or ("the room '" .. b.room .. "'"))); pcall(require("api").event, "sent", { n = sent, song = b.song, room = b.room }) end
       mirror_took = reaper.time_precise() - now
       mirror_cc, mirror_at, mirror_due = reaper.GetProjectStateChangeCount(proj), now, false
       if hold then -- (how many are waiting, for the panel's "Holding N changes")
@@ -366,7 +384,7 @@ local function poll()
     -- a lot came in and it's over: saved, so the next open starts from here and doesn't take it all in again with REAPER held up
     sync.since_save = (sync.since_save or 0) + n
     if n == 0 and sync.since_save >= 100 and reaper.GetPlayStateEx(proj) == 0 then sync.need_save, sync.since_save = true, 0 end
-    if n > 0 then band.log(n .. " change(s) from the others (" .. room .. ")"); mirror_due = true end
+    if n > 0 then band.log(n .. " change(s) from the others (" .. room .. ")"); mirror_due = true; pcall(require("api").event, "received", { n = n, song = b.song, room = room }) end
   end
   lap("receive")
 
@@ -745,6 +763,7 @@ local function tick_body() -- returns true to keep going
   elseif recording then
     recording, stopped_at = false, reaper.time_precise()
     pcall(require("alerts").send, cfg, "take", "StudioSync: " .. b.song, cfg.user .. " just recorded something in " .. b.song) -- (phone alerts, if the studio has them)
+    pcall(require("api").event, "take", { song = b.song, room = b.room })
   end
   local now = reaper.time_precise()
   lap("transport")

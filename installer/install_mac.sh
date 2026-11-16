@@ -42,37 +42,58 @@ echo
 # (names are plain letters, digits, spaces, - and _: the default is shown already cleaned, and a typed name that
 # changes when cleaned is said, not changed silently)
 say "A studio is the people you make music with: StudioSync shares your projects with them as you work."
+# Pairing: with whoever in the band is already set up (any of them: every machine passes the folder on). "Host" is
+# a song's, not a machine's: anyone can host a song (James, 2026-10-31: "are you the band's host" read as a role).
+# Joining or starting comes from the invitation: pasted (or already in the line it gave), you join; none, you start a studio. ("Starting or
+# joining?" was still a question a newcomer could get wrong: James, 0.58.64.) Asked first, so a pasted message can't answer the others.
+ID_RE='^[A-Z0-9]{7}(-[A-Z0-9]{7}){7}$'
+# What was pasted (the invitation message, its studiosync-join line, its install line, or a bare device ID) -> INV_ID, INV_BAND, INV_NAME,
+# INV_KEY; false when it's none of them. (as lib/services.lua parse_join reads it)
+read_invite() {
+  local re1='studiosync-join:([A-Z0-9-]+):([A-Za-z0-9-]+):([^[:cntrl:]]*)'
+  local re2="-HostId[[:space:]]+([A-Z0-9-]+)[[:space:]]+-BandId[[:space:]]+([A-Za-z0-9-]+)[[:space:]]+-BandName[[:space:]]+'([^']*)'"
+  local re3="BS_HOST_ID=([A-Z0-9-]+)[[:space:]]+BS_BAND_ID=([A-Za-z0-9-]+)[[:space:]]+BS_BAND_NAME='([^']*)'"
+  local line bare
+  INV_ID=""; INV_BAND=""; INV_NAME=""; INV_KEY="$(printf '%s' "$1" | grep -o 'tskey-auth-[A-Za-z0-9-]*' | head -1)"
+  while IFS= read -r line; do
+    if [[ "$line" =~ $re1 ]] || [[ "$line" =~ $re2 ]] || [[ "$line" =~ $re3 ]]; then
+      echo "${BASH_REMATCH[1]}" | grep -Eq "$ID_RE" && { INV_ID="${BASH_REMATCH[1]}"; INV_BAND="${BASH_REMATCH[2]}"; INV_NAME="${BASH_REMATCH[3]}"; return 0; }
+    fi
+  done <<< "$1"
+  bare="$(printf '%s' "$1" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
+  echo "$bare" | grep -Eq "$ID_RE" && { INV_ID="$bare"; return 0; }
+  return 1
+}
+if [ -n "${BS_HOSTING:-}" ]; then HOSTING="$BS_HOSTING" # (the old way of saying "I'm the first")
+elif [ -n "${BS_HOST_ID:-}" ]; then HOSTING=n # (an invitation's line: someone is set up, and that's their ID)
+else
+  say "Did someone send you an invitation to their studio? Paste it here (all of it, or just its line starting studiosync-join)."
+  say "Starting a studio of your own? Just press Return."
+  HOSTING=y
+  while :; do
+    text=""; read -e -r -p "Invitation: " text </dev/tty
+    # (a whole message pasted is several lines: the rest are read here too, or they'd answer the next questions)
+    while IFS= read -r -t 1 l </dev/tty; do text="$text"$'\n'"$l"; done
+    [ -z "$(printf '%s' "$text" | tr -d '[:space:]')" ] && break
+    if read_invite "$text"; then
+      HOSTING=n; BS_HOST_ID="$INV_ID"; BS_BAND_ID="$INV_BAND"; BS_BAND_NAME="$INV_NAME"; [ -n "$INV_KEY" ] && [ -z "${BS_TS_KEY:-}" ] && BS_TS_KEY="$INV_KEY"
+      ok "Joining ${INV_NAME:-their studio}"; break
+    fi
+    warn "That isn't an invitation. Paste it again (the line starting studiosync-join is enough), or press Return to start a studio of your own."
+  done
+fi
+HOST_ID="$(echo "${BS_HOST_ID:-}" | tr '[:lower:]' '[:upper:]')"
+if ! yes "$HOSTING"; then
+  echo "$HOST_ID" | grep -Eq "$ID_RE" || { warn "The invitation's device ID isn't a whole one: ask for a new invitation."; exit 1; }
+else
+  say "Starting a studio: at the end, StudioSync's panel has Invite, which makes the message to send each collaborator."
+fi
 USERNAME_BS="$(plain "${BS_USER:-}")"
 while [ -z "$USERNAME_BS" ]; do
   typed="$(ask "Your name, as the studio will see it (you can change it later)" "$(plain "$(id -F 2>/dev/null | cut -d' ' -f1)")")"
   USERNAME_BS="$(plain "$typed")"
   [ -n "$USERNAME_BS" ] && [ "$USERNAME_BS" != "$typed" ] && say "Using the name '$USERNAME_BS' (plain letters only)."
 done
-# Pairing: with whoever in the band is already set up (any of them: every machine passes the folder on). "Host" is
-# a song's, not a machine's: anyone can host a song (James, 2026-10-31: "are you the band's host" read as a role).
-if [ -n "${BS_HOSTING:-}" ]; then HOSTING="$BS_HOSTING" # (the old way of saying "I'm the first")
-elif [ -n "${BS_HOST_ID:-}" ]; then HOSTING=n # (an invitation: someone is set up, and that's their ID)
-else
-  # (start or join, with no default: "already set up? [y]" took a newcomer's Return as joining. Beginner review, 0.58.62)
-  sj=""; until printf '%s' "$sj" | grep -q '^[sSjJ]'; do sj="$(ask "Are you starting a new studio, or joining one someone invited you to? (s = start, j = join)")"; done
-  if printf '%s' "$sj" | grep -q '^[sS]'; then HOSTING=y; else HOSTING=n; fi
-fi
-HOST_ID="$(echo "${BS_HOST_ID:-}" | tr '[:lower:]' '[:upper:]')"
-ID_RE='^[A-Z0-9]{7}(-[A-Z0-9]{7}){7}$'
-if ! yes "$HOSTING"; then
-  echo "$HOST_ID" | grep -Eq "$ID_RE" || {
-    say "Easiest: close this window and run the line from the invitation they sent you (it has everything in it). Otherwise:"
-    say "Their Syncthing device ID is 8 groups of 7 letters and digits, like ABCDEFG-HIJKLMN-...-1234567 (63 characters)."
-    say "Easiest: they press 'Invite a collaborator' in their StudioSync panel and send you the line it copies (it has the ID"
-    say "in it). Or they find it in Syncthing: Actions > Show ID. Copy all of it and paste it here."
-  }
-  until echo "$HOST_ID" | grep -Eq "$ID_RE"; do
-    HOST_ID="$(ask "Paste their Syncthing device ID (in their Syncthing: Actions > Show ID)" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
-    echo "$HOST_ID" | grep -Eq "$ID_RE" || warn "That doesn't look like a device ID (8 groups of 7 letters/digits, joined by dashes)."
-  done
-else
-  say "You're starting it: at the end, StudioSync's panel has Invite, which makes the message to send each collaborator."
-fi
 # the band (docs/bands-design.md): each its own shared folder. An invitation names it; the first one set up names it.
 FOLDER_ID="$(printf '%s' "${BS_BAND_ID:-}" | LC_ALL=C tr -cd 'a-z0-9-')"
 if ! yes "$HOSTING" && [ -z "$FOLDER_ID" ]; then # (someone's device ID typed in by hand, no invitation)
@@ -125,11 +146,25 @@ if yes "$PLUGINS" && yes "$HOSTING" && [ -z "${BS_EXTRAS:-}" ]; then
   say "The bigger extras (about 1.2 GB): a grand piano, a real drum kit, amp capture players and the Odin 2 synth."
   EXTRAS="$(ask "Install the extras too? (y/n)" n)"
 fi
-if [ -z "${BS_REAPERSONA:-}" ]; then
-  say "Used to another music app (Pro Tools, Logic, Ableton, FL Studio, Cubase, Studio One...)? ReaPersona makes REAPER's"
-  say "shortcuts and mouse work like it, and switches off any time."
-fi
-REAPERSONA="${BS_REAPERSONA:-$(ask "Install ReaPersona? (y/n)" n)}"
+# ReaPersona: which app you're used to, as one question, and it's set up as that DAW in the same run (James, 0.58.64: yes/no installed it and
+# left the picking for later). BS_REAPERSONA: a DAW id (ReaPersona's own, styles.json), yes or no.
+PERSONA_IDS="pro_tools logic ableton fl_studio cubase studio_one bitwig cakewalk reason audacity audition"
+PERSONA=""
+case "${BS_REAPERSONA:-}" in
+  [yY]*|[nN]|[nN][oO]) ;;
+  "")
+    say "Used to another music app? REAPER can take on its shortcuts, mouse and look (ReaPersona, free; switch back any time):"
+    i=0; for n in "Pro Tools" "Logic Pro" "Ableton Live" "FL Studio" "Cubase or Nuendo" "Studio One" "Bitwig Studio" "Cakewalk or Sonar" "Reason" "Audacity" "Adobe Audition"; do
+      i=$((i + 1)); printf '  %2d) %s\n' "$i" "$n"; done
+    while :; do
+      n="$(ask "Its number, or Return for none")"
+      [ -z "$n" ] && break
+      case "$n" in *[!0-9]*) ;; *) [ "$n" -ge 1 ] && [ "$n" -le 11 ] && { PERSONA="$(echo $PERSONA_IDS | cut -d' ' -f"$n")"; break; };; esac
+      warn "A number from the list, or Return."
+    done;;
+  *) PERSONA="$(printf '%s' "$BS_REAPERSONA" | tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -cd 'a-z0-9_')";;
+esac
+REAPERSONA=n; { [ -n "$PERSONA" ] || yes "${BS_REAPERSONA:-n}"; } && REAPERSONA=y
 echo
 
 say "Downloads show no progress here: a pause of a few minutes on a big one is normal."
@@ -468,8 +503,8 @@ request() { # mode -> runs the helper in REAPER, leaves its JSON result in $HDIR
   local jsfx=false; yes "$PLUGINS" && jsfx=true
   local persona=false; yes "$REAPERSONA" && persona=true
   local root_json; root_json="$(printf '%s' "$ROOT" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')" # (a " or \ in the path broke the JSON)
-  printf '{"sync_root":"%s","user":"%s","mode":"%s","repo_url":"https://github.com/%s/raw/main/index.xml","open_panel":%s,"jsfx":%s,"reapersona":%s}' \
-    "$root_json" "$USERNAME_BS" "$1" "$REPO" "$panel" "$jsfx" "$persona" > "$HDIR/studiosync_setup.json"
+  printf '{"sync_root":"%s","user":"%s","mode":"%s","repo_url":"https://github.com/%s/raw/main/index.xml","open_panel":%s,"jsfx":%s,"reapersona":%s,"persona":"%s"}' \
+    "$root_json" "$USERNAME_BS" "$1" "$REPO" "$panel" "$jsfx" "$persona" "$PERSONA" > "$HDIR/studiosync_setup.json"
   rm -f "$HDIR/studiosync_setup_result.json"
   if [ -n "${REOPEN:-}" ] && ! pgrep -x REAPER >/dev/null; then
     # we quit REAPER: start it the way you do, so it reopens your project tabs as it always does (started WITH the
@@ -520,6 +555,8 @@ bver="$(grep -o '"version": *"[^"]*"' "$HDIR/studiosync_setup_result.json" | sed
 # ---------- 5. what's left for a human ----------
 echo
 say "Done. What's left (these need you):"
+pnote="$(grep -o '"persona_note": *"[^"]*"' "$HDIR/studiosync_setup_result.json" 2>/dev/null | sed -e 's/^"persona_note": *"//' -e 's/"$//')"
+[ -n "$pnote" ] && echo "  - $pnote" # (ReaPersona set up as your DAW: what it did, and the one step left without Python)
 [ -n "${TELL_DECENT:-}" ] && echo "  - Decent Sampler (free sampler with lots of free instruments) can't be installed for you: its maker asks for an email address first. Get it at decentsamples.com/product/decent-sampler-plugin."
 if yes "$HOSTING"; then
   echo "  - To bring in a collaborator: StudioSync panel > Invite a collaborator, and send them what it copies (their installer is"

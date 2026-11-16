@@ -2152,6 +2152,7 @@ local function frame_app()
   ui.asked_page()
   local want
   want = reaper.GetExtState(band.SECTION, "panel do") -- a choice from the radial menu
+  if want == "" then want = require("api").take_request() or "" end -- (a script's, through the API: lib/api.lua)
   if want ~= "" then
     reaper.DeleteExtState(band.SECTION, "panel do", false)
     if want == "undo" or want == "redo" then undo_redo(want == "redo")
@@ -2168,7 +2169,9 @@ local function frame_app()
       local list = {}
       for i = 0, reaper.CountSelectedTracks(proj) - 1 do list[#list + 1] = part_name(reaper.GetSelectedTrack(proj, i)) end
       if #list == 0 then band.msg("Select the tracks you want to own first.") else claim(list, {}); band.log("claimed " .. table.concat(list, ", ")) end
-    elseif want == "keeplocal" then ui.keep_local() end
+    elseif want == "keeplocal" then ui.keep_local()
+    elseif want == "takecontrol" then dofile(dir .. "/StudioSync - Take control.lua")
+    elseif want:match("^chat ") and b then require("page_chat").post(cfg, b, want:sub(6)) end
   end
   if ui.short then ImGui.PushStyleVar(ctx, ImGui.StyleVar_ItemSpacing, 8, 1) end
   ImGui.Separator(ctx)

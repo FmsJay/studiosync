@@ -23,6 +23,12 @@ do -- every action of this version is in the Actions list: an update through the
   end
 end
 
+if reaper.GetExtState(band.SECTION, "open panel at start") == "1" then -- (the installer's restart for ReaPersona's shortcuts: back in the panel. 0.58.64)
+  reaper.DeleteExtState(band.SECTION, "open panel at start", true)
+  local id = reaper.AddRemoveReaScript(true, 0, dir .. "/StudioSync - Panel.lua", true)
+  if id > 0 then reaper.defer(function() if reaper.GetToggleCommandState(id) ~= 1 then reaper.Main_OnCommand(id, 0) end end) end
+end
+
 local REQUEST = band.home() .. "/install-request"
 local tried = {} -- project key -> when we last started it (don't hammer a Live sync that refuses to run)
 local at, seen_disk = 0, nil

@@ -14,7 +14,7 @@ param(
   [ValidateSet("", "yes", "no")][string]$Hosting = "", [ValidateSet("", "yes", "no")][string]$Live = "", [ValidateSet("", "yes", "no")][string]$Solo = "",
   [ValidateSet("", "yes", "no")][string]$Plugins = "", # the band plug-in pack (free, open source)
   [ValidateSet("", "yes", "no")][string]$Extras = "", # the larger extras: amp modelers, Odin 2, sforzando + Salamander piano
-  [ValidateSet("", "yes", "no")][string]$ReaPersona = "", # ReaPersona: REAPER set up like the DAW you came from (github.com/FmsJay/ReaPersona)
+  [string]$ReaPersona = "", # ReaPersona: REAPER set up like the DAW you came from (github.com/FmsJay/ReaPersona): a DAW (pro_tools, logic, ableton...), yes or no
   [ValidateSet("reapack", "folder", "verify")][string]$Scripts = "reapack", # folder: band-internal copy in <root>/_tools/studiosync
   [string]$SyncthingHome = "",    # testing: drive a separate Syncthing instance (--home)
   [string]$ReaperExe = "",         # testing: this REAPER, as if the installer had just put it there
@@ -62,30 +62,48 @@ Write-Host "A studio is the people you make music with: StudioSync shares your p
 Write-Host ""
 
 # ---------- 0. questions ----------
-$user = $User -replace '[^\w\- ]', ''
-while (-not $user) { $user = (Ask "Your name, as the studio will see it" $env:USERNAME) -replace '[^\w\- ]', '' }
 # Pairing: with whoever in the band is already set up (any of them: every machine passes the folder on). "Host" is
 # a song's, not a machine's: anyone can host a song (James, 2026-10-31: "are you the band's host" read as a role).
-# (asked as start or join, with no default: "already set up? [y]" took a newcomer's Enter as joining, then asked for an ID they didn't have. Beginner review, 0.58.62)
-$isHost = if ($Hosting) { $Hosting -eq "yes" } elseif ($HostId) { $false } else {
-  $sj = ""; while ($sj -notmatch '^[sSjJ]') { $sj = Ask "Are you starting a new studio, or joining one someone invited you to? (s = start, j = join)" "" }
-  $sj -match '^[sS]'
-} # (-HostId: an invitation)
-if ($isHost -and -not $Hosting) { Say "You're starting it: at the end, StudioSync's panel has Invite, which makes the message to send each collaborator." }
-$hostId = $HostId.ToUpper()
+# Joining or starting comes from the invitation: pasted (or already in the line it gave), you join; none, you start a studio. ("Starting or
+# joining?" was still a question a newcomer could get wrong: James, 0.58.64.) Asked first, so a pasted message can't answer the others.
 $idPattern = '^[A-Z0-9]{7}(-[A-Z0-9]{7}){7}$'
-if (-not $isHost) {
-  if ($hostId -notmatch $idPattern) {
-    Say "Easiest: close this window and run the line from the invitation they sent you (it has everything in it). Otherwise:"
-    Say "Their Syncthing device ID is 8 groups of 7 letters and digits, like ABCDEFG-HIJKLMN-...-1234567 (63 characters)."
-    Say "Easiest: they press 'Invite a collaborator' in their StudioSync panel and send you the line it copies (it has the ID"
-    Say "in it). Or they find it in Syncthing: Actions > Show ID. Copy all of it and paste it here."
-  }
-  while ($hostId -notmatch $idPattern) {
-    $hostId = ((Ask "Paste their Syncthing device ID (in their Syncthing: Actions > Show ID)" "") -replace '\s', '').ToUpper()
-    if ($hostId -notmatch $idPattern) { Warn "That doesn't look like a device ID (8 groups of 7 letters/digits, joined by dashes)." }
-  }
+# What was pasted: the invitation message, its studiosync-join line, its install line, or a bare device ID. -> @{ id; band; name; key } or $null.
+# (as lib/services.lua parse_join reads it)
+function Read-Invite($text) {
+  $m = [regex]::Match($text, 'studiosync-join:([A-Z0-9-]+):([A-Za-z0-9-]+):([^\r\n]*)')
+  if (-not $m.Success) { $m = [regex]::Match($text, "-HostId\s+([A-Z0-9-]+)\s+-BandId\s+([A-Za-z0-9-]+)\s+-BandName\s+'([^'\r\n]*)'") }
+  if (-not $m.Success) { $m = [regex]::Match($text, "BS_HOST_ID=([A-Z0-9-]+)\s+BS_BAND_ID=([A-Za-z0-9-]+)\s+BS_BAND_NAME='([^'\r\n]*)'") }
+  $k = [regex]::Match($text, 'tskey-auth-[A-Za-z0-9-]+')
+  if ($m.Success -and $m.Groups[1].Value -cmatch $idPattern) { return @{ id = $m.Groups[1].Value; band = $m.Groups[2].Value; name = $m.Groups[3].Value; key = $(if ($k.Success) { $k.Value }) } }
+  $bare = ($text -replace '\s', '').ToUpper()
+  if ($bare -match $idPattern) { return @{ id = $bare; band = ""; name = ""; key = $null } }
+  return $null
 }
+$isHost = if ($Hosting) { $Hosting -eq "yes" } elseif ($HostId) { $false } else {
+  Say "Did someone send you an invitation to their studio? Paste it here (all of it, or just its line starting studiosync-join)."
+  Say "Starting a studio of your own? Just press Enter."
+  $found = $null
+  while ($true) {
+    $text = Read-Host "Invitation"
+    # (a whole message pasted is several lines: the rest are read here too, or they'd answer the next questions)
+    try { Start-Sleep -Milliseconds 400; while ([Console]::KeyAvailable) { $text += "`n" + (Read-Host) } } catch { }
+    if (-not "$text".Trim()) { break }
+    $found = Read-Invite $text
+    if ($found) { break }
+    Warn "That isn't an invitation. Paste it again (the line starting studiosync-join is enough), or press Enter to start a studio of your own."
+  }
+  if ($found) {
+    $HostId, $BandId, $BandName = $found.id, $found.band, $found.name
+    if ($found.key -and -not $TsKey) { $TsKey = $found.key }
+    Ok "Joining $(if ($found.name) { $found.name } else { 'their studio' })"
+    $false
+  } else { $true }
+}
+if ($isHost -and -not $Hosting) { Say "Starting a studio: at the end, StudioSync's panel has Invite, which makes the message to send each collaborator." }
+$hostId = $HostId.ToUpper()
+if (-not $isHost -and $hostId -notmatch $idPattern) { Warn "The invitation's device ID isn't a whole one: ask for a new invitation."; exit 1 }
+$user = $User -replace '[^\w\- ]', ''
+while (-not $user) { $user = (Ask "Your name, as the studio will see it" $env:USERNAME) -replace '[^\w\- ]', '' }
 # the band (docs/bands-design.md): each its own shared folder. An invitation names it; the first one set up names it.
 $folderId = ($BandId.ToLower() -replace '[^a-z0-9-]', '')
 if (-not $isHost -and -not $folderId) { # (someone's device ID typed in by hand, no invitation)
@@ -120,7 +138,21 @@ $wantSolo = $Solo -ne "no"
 $wantPlugins = if ($Plugins) { $Plugins -eq "yes" } else { Write-Host "The free plug-in pack (about 150 MB): synths, guitar and bass amps, a tuner, EQ, compressor, reverb, delay, tape, drum kits and keys"; Write-Host "(Surge XT, Dexed, Airwindows, Dragonfly, Chow, BYOD, ZL and more), so everyone in the studio hears the same sounds."; YesNo "Install it? (recommended)" "y" }
 # (extras only asked of whoever starts the studio: a joiner's projects say what they use, and 1.2 GB is a lot to decide on blind. Beginner review, 0.58.62)
 $wantExtras = if ($Extras) { $Extras -eq "yes" } else { $isHost -and $wantPlugins -and (YesNo "Also the bigger extras (about 1.2 GB: a grand piano, a real drum kit, amp capture players and the Odin 2 synth)?" "n") }
-$wantPersona = if ($ReaPersona) { $ReaPersona -eq "yes" } else { YesNo "Used to another music app (Pro Tools, Logic, Ableton, FL Studio, Cubase, Studio One...)? ReaPersona makes REAPER's shortcuts and mouse work like it, and switches off any time. Install it?" "n" }
+# ReaPersona: which app you're used to, as one question, and it's set up as that DAW in the same run (James, 0.58.64: yes/no installed it and
+# left the picking for later). The ids are ReaPersona's own (styles.json).
+$personas = @(@("pro_tools", "Pro Tools"), @("logic", "Logic Pro"), @("ableton", "Ableton Live"), @("fl_studio", "FL Studio"), @("cubase", "Cubase or Nuendo"),
+  @("studio_one", "Studio One"), @("bitwig", "Bitwig Studio"), @("cakewalk", "Cakewalk or Sonar"), @("reason", "Reason"), @("audacity", "Audacity"), @("audition", "Adobe Audition"))
+$persona = if ($ReaPersona -eq "no" -or $ReaPersona -eq "yes") { "" } elseif ($ReaPersona) { $ReaPersona.ToLower() -replace '[^a-z0-9_]', '' } else {
+  Write-Host "Used to another music app? REAPER can take on its shortcuts, mouse and look (ReaPersona, free; switch back any time):"
+  for ($i = 0; $i -lt $personas.Count; $i++) { Write-Host ("  {0,2}) {1}" -f ($i + 1), $personas[$i][1]) }
+  $pick = $null
+  while ($null -eq $pick) {
+    $n = Ask "Its number, or Enter for none" ""
+    if (-not $n) { $pick = "" } elseif ($n -match '^\d+$' -and [int]$n -ge 1 -and [int]$n -le $personas.Count) { $pick = $personas[[int]$n - 1][0] } else { Warn "A number from the list, or Enter." }
+  }
+  $pick
+}
+$wantPersona = [bool]$persona -or $ReaPersona -eq "yes"
 Write-Host ""
 
 # ---------- 1. apps ----------
@@ -406,7 +438,7 @@ $src = Get-ChildItem $work -Directory | Select-Object -First 1
 $helper = Join-Path $src.FullName "installer\studiosync_setup.lua"
 $utf8 = New-Object System.Text.UTF8Encoding($false) # no BOM: the Lua JSON reader wants plain UTF-8
 function Request($mode) {
-  $req = @{ sync_root = ($root -replace '\\', '/'); user = $user; mode = $mode; repo_url = "https://github.com/$Repo/raw/main/index.xml"; open_panel = ($mode -eq "verify"); jsfx = [bool]$wantPlugins; reapersona = [bool]$wantPersona } | ConvertTo-Json
+  $req = @{ sync_root = ($root -replace '\\', '/'); user = $user; mode = $mode; repo_url = "https://github.com/$Repo/raw/main/index.xml"; open_panel = ($mode -eq "verify"); jsfx = [bool]$wantPlugins; reapersona = [bool]$wantPersona; persona = $persona } | ConvertTo-Json
   [IO.File]::WriteAllText((Join-Path (Split-Path $helper) "studiosync_setup.json"), $req, $utf8)
   $result = Join-Path (Split-Path $helper) "studiosync_setup_result.json"
   Remove-Item $result -ErrorAction SilentlyContinue
@@ -451,6 +483,7 @@ if ($count -ge 5) { Ok "StudioSync $($r.version) installed: $count actions (the 
 
 # ---------- 5. what's left for a human (only what isn't done yet) ----------
 $left = @()
+if ($r.persona_note) { $left += $r.persona_note } # (ReaPersona set up as your DAW: what it did, and the one step left without Python)
 if ($tellDecent) { $left += "Decent Sampler (free sampler with lots of free instruments) can't be installed for you: its maker asks for an email address first. Get it at decentsamples.com/product/decent-sampler-plugin." }
 $peers = @()
 try {
