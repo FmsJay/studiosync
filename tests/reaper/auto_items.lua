@@ -104,6 +104,19 @@ local ok, err = pcall(function()
   check(bfenv and reaper.CountAutomationItems(bfenv) == 1, "the plug-in envelope's item stays through the chain change")
   same(fenv, bfenv, "after the chain change it")
   check(pass(pb, B) == 0, "B sends nothing back")
+
+  -- 4. the master's FX button
+  local ma, mb = reaper.GetMasterTrack(pa), reaper.GetMasterTrack(pb)
+  reaper.SelectProjectInstance(pa)
+  reaper.SetMediaTrackInfo_Value(ma, "I_FXEN", 0)
+  out[#out + 1] = "A sent " .. pass(pa, A); recv(pb, B)
+  check(reaper.GetMediaTrackInfo_Value(mb, "I_FXEN") == 0, "B's master plug-ins went off")
+  check(pass(pb, B) == 0, "B sends nothing back")
+  reaper.SelectProjectInstance(pa)
+  reaper.SetMediaTrackInfo_Value(ma, "I_FXEN", 1)
+  out[#out + 1] = "A sent " .. pass(pa, A); recv(pb, B)
+  check(reaper.GetMediaTrackInfo_Value(mb, "I_FXEN") == 1, "and back on")
+  check(pass(pb, B) == 0, "B sends nothing back")
 end)
 if not ok then fails = fails + 1; out[#out + 1] = "ERROR " .. tostring(err) end
 for _, p in pairs({ pa, pb }) do

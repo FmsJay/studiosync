@@ -315,3 +315,6 @@ offers Shrinks to the tiny box (the default) and Stays in front. The panel opene
 - Health: a bandmate's clock more than 90 s off from this computer's (status files carry the sender's clock; one behind by more than
   45 s also read as gone); a track group holding tracks made by different people (two people numbering a group alike). Both dismissable.
 - New tests: test_access, test_clock_groups, songsync guest block, container neighbour hash; REAPER suite auto_items (17 checks).
+
+0.58.90: the master's FX button travels (in E-MASTER as "BANDFXEN 0" while off). A computer with SonoBus or NINJAM on its master keeps
+the button on, says so once, and holds the band's setting so it isn't sent back. auto_items checks it (21 checks).

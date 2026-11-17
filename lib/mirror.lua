@@ -478,7 +478,7 @@ function mirror.splice_parts(chunk, what, state, index_of, oid_at)
       if not idx then return nil end
       cur = { tag = "AUXRECV", lines = { "AUXRECV " .. idx .. rest } }
       new[#new + 1] = cur
-    elseif line:match("^BANDAI") then -- (automation items: rebuilt through the API, mirror.set_ai)
+    elseif line:match("^BANDAI") or line:match("^BANDFXEN") then -- (automation items: rebuilt through the API, mirror.set_ai; the master's FX button)
     elseif not (cur and cur.open) and line:sub(1, 1) ~= "<" then -- (a lone line: GROUP_FLAGS, LOCK)
       cur = { tag = line:match("^(%S+)"), lines = { line } }
       new[#new + 1] = cur
@@ -1392,7 +1392,7 @@ function mirror.scan(proj, user, media_dir, local_mix)
     local mfx = mirror.fxchain(mch, mirror.live_fx(master)) or ""
     mirror.mod_params[master] = mirror.modulated(mirror.fxchain(mch) or "")
     if mfx:match("^<FXCHAIN[^\n]*\n>%s*$") then mfx = "" end -- (only this computer's live mix on it: Real time mode read as "changed the plug-ins on the master")
-    local menv = mirror.track_parts(mch, oid_at) .. mirror.ai_lines(master)
+    local menv = mirror.track_parts(mch, oid_at) .. mirror.ai_lines(master) .. mirror.master_fxen_line(proj, master)
     for _, p in ipairs({ { "F-MASTER", "fx", mfx }, { "E-MASTER", "env", menv } }) do
       local po = { kind = p[2], oid = p[1], ptr = master, track = mirror.MASTER, state = p[3], hash = p[2] == "fx" and mirror.fx_hash(p[3]) or mirror.hash(p[3]) }
       objs[#objs + 1], by_oid[po.oid] = po, po
@@ -1465,6 +1465,29 @@ end
 -- pan are each person's listening level. ReaNINJAM and SonoBus on it are this machine's live link, never sent, and so
 -- is StudioSync's live mix (lib/hear.lua: who you hear, and in whose time).
 mirror.MASTER = "T-MASTER"
+-- The master's FX button travels in E-MASTER as "BANDFXEN 0", only while it's off (James, 0.58.89; so a project with it on reads as
+-- before). A computer with its live link on the master (SonoBus, ReaNINJAM) keeps the button on, as switching it off there would cut the
+-- live audio, and holds the band's setting in the project ("master fxen held") so it isn't sent back as a change of its own.
+function mirror.master_fxen_line(proj, master)
+  local _, held = reaper.GetProjExtState(proj, mirror.SEC, "master fxen held")
+  local on = held ~= "" and held ~= "0" or held == "" and reaper.GetMediaTrackInfo_Value(master, "I_FXEN") ~= 0
+  return on and "" or "BANDFXEN 0\n"
+end
+local said_master_fx = {}
+function mirror.set_master_fxen(proj, master, state)
+  local want = state:find("BANDFXEN 0", 1, true) and 0 or 1
+  if want == 0 and next(mirror.live_fx(master)) then
+    reaper.SetProjExtState(proj, mirror.SEC, "master fxen held", "0")
+    if reaper.GetMediaTrackInfo_Value(master, "I_FXEN") == 0 then reaper.SetMediaTrackInfo_Value(master, "I_FXEN", 1) end
+    if not said_master_fx[tostring(proj)] then
+      said_master_fx[tostring(proj)] = true
+      require("band").log("The band switched the master's plug-ins off; here they stay on, as SonoBus or NINJAM runs on the master and would go quiet")
+    end
+    return
+  end
+  reaper.SetProjExtState(proj, mirror.SEC, "master fxen held", "")
+  if reaper.GetMediaTrackInfo_Value(master, "I_FXEN") ~= want then reaper.SetMediaTrackInfo_Value(master, "I_FXEN", want) end
+end
 function mirror.live_fx(tr)
   local set = {}
   for i = 0, reaper.TrackFX_GetCount(tr) - 1 do
@@ -1812,6 +1835,7 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     local _, after = reaper.GetTrackStateChunk(tr, "", false)
     local env, recv, misc = mirror.track_parts(after, oid_at)
     if kind == "env" then mirror.set_ai(proj, tr, ev.state or ""); env = env .. mirror.ai_lines(tr) end
+    if kind == "env" and ev.track == mirror.MASTER then mirror.set_master_fxen(proj, tr, ev.state or ""); env = env .. mirror.master_fxen_line(proj, tr) end
     if kind == "recv" then mirror.set_ai(proj, tr, ev.state or "", "recv"); recv = recv .. mirror.ai_lines(tr, "recv") end
     return true, mirror.hash(kind == "env" and env or kind == "recv" and recv or misc)
   elseif kind == "item" then

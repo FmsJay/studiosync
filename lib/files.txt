@@ -1,4 +1,4 @@
-version 0.58.89
+version 0.58.90
 StudioSync - Autostart.lua	13509
 StudioSync - Claim selected tracks.lua	692
 StudioSync - Draw.lua	26358
@@ -43,7 +43,7 @@ lib/live.lua	37469
 lib/livemidi.lua	10723
 lib/localcopy.lua	20616
 lib/midiview.lua	4359
-lib/mirror.lua	209982
+lib/mirror.lua	211756
 lib/mixlayer.lua	9976
 lib/page_chat.lua	22477
 lib/page_groups.lua	34102
