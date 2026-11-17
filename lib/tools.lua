@@ -136,7 +136,7 @@ local guest_pick = { days = 7, date = "", all = true, songs = {} }
 function tools.guest_invite_button(ctx, ImGui, my_id, root, label)
   local services, removal = require("services"), require("removal")
   if ImGui.SmallButton(ctx, (label or "Invite a guest") .. "##guestinv" .. root) then guest_pick.root = root; ImGui.OpenPopup(ctx, "guestinvite" .. root) end
-  ImGui.SetItemTooltip(ctx, services.GUEST_TIP .. (services.tailscale_token() ~= "" and services.GUEST_TS_TIP or ""))
+  ImGui.SetItemTooltip(ctx, services.GUEST_TIP .. (services.has_tailscale_token() and services.GUEST_TS_TIP or ""))
   if not ImGui.BeginPopup(ctx, "guestinvite" .. root) then return end
   local now = os.time()
   ImGui.Text(ctx, "Their access ends:")
@@ -174,7 +174,7 @@ function tools.guest_invite_button(ctx, ImGui, my_id, root, label)
     if not guest_pick.all then songs = {}; for s in pairs(guest_pick.songs) do songs[#songs + 1] = s end; table.sort(songs) end
     local made = removal.add_invite(root, ends, me, now, songs)
     local ok = true
-    if services.tailscale_token() ~= "" then ok = services.copy_guest_invite(my_id, info, ctx, ImGui, root, ends)
+    if services.has_tailscale_token() then ok = services.copy_guest_invite(my_id, info, ctx, ImGui, root, ends)
     else tools.show_invite(services.invite_text(my_id, info), info, ctx, ImGui) end
     if ok then band.log("a guest invitation to " .. tostring(info.name) .. " is on your clipboard: when they've run it, Let them in gives them until " .. removal.when(ends, now))
     else removal.end_invite(root, made, now) end

@@ -180,6 +180,7 @@ do
   package.loaded.tools = { show_invite = function() end }
   package.loaded.groups = { set_tailnet = function() end, tailnet = function() return nil end }
   services.token_tailnet = function() return nil end
+  services.tailscale_token = function() return "tskey-api-test" end -- (a token for the studio's network: 0.58.94 asks first)
   services.tailnet_now = function() return nil end
   local function invite() boxes, added = {}, {}; services.copy_guest_invite(inv_id, { id = "bandsync", name = "Chilio" }, nil, nil, "/r") end
   invite()
