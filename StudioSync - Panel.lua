@@ -36,10 +36,16 @@ local native = reaper.GetExtState(band.SECTION, "panel_native") == "on"
 ImGui.SetConfigVar(ctx, ImGui.ConfigVar_WindowsResizeFromEdges, 1)
 ImGui.SetConfigVar(ctx, ImGui.ConfigVar_ViewportsNoDecoration, native and 0 or 1)
 -- When you click REAPER (James, 0.58.87: "the studiosync doesn't stay in front... default should be it's a separate window or minimizes"):
--- "" a window of its own, behind REAPER once REAPER's clicked (no default parent: REAPER kept it on top as its tool window); "front" stays
--- on top as before; "box" shrinks to the tiny box when the focus goes elsewhere. A floating panel only: docked, it's part of REAPER.
+-- "" (and "box") shrinks to the tiny box when the focus goes elsewhere; "front" stays on top as before; "behind" a window of its own that goes
+-- behind REAPER, only where ReaImGui can (ConfigVar_ViewportsNoDefaultParent: not in 0.10.0.5, which keeps every window above REAPER, and
+-- the panel stopped on it). A floating panel only: docked, it's part of REAPER.
 local behind = reaper.GetExtState(band.SECTION, "panel behind")
-ImGui.SetConfigVar(ctx, ImGui.ConfigVar_ViewportsNoDefaultParent, behind == "front" and 0 or 1)
+-- (asked through pcall: ReaImGui's compatibility layer throws for a name it doesn't have, even just to look)
+local can_behind, no_parent = pcall(function() return ImGui.ConfigVar_ViewportsNoDefaultParent end)
+can_behind = can_behind and no_parent ~= nil
+if behind == "behind" and not can_behind then behind = "" end
+if behind == "" then behind = "box" end
+if can_behind then ImGui.SetConfigVar(ctx, no_parent, behind == "behind" and 1 or 0) end
 local theme = require("theme")
 local GREEN, YELLOW, GREY, RED = theme.GREEN, theme.YELLOW, theme.GREY, theme.RED
 local function rgba(c) local k = 255 * theme.STATUS; return math.floor(c[1] * k) << 24 | math.floor(c[2] * k) << 16 | math.floor(c[3] * k) << 8 | 0xFF end
@@ -1452,7 +1458,8 @@ local function settings_look()
       "A slim note at the foot of REAPER's timeline saying what you can change (it never takes a click).")
     if ch then reaper.SetExtState(band.SECTION, "banner", v and "" or "off", true) end
     do -- when REAPER is clicked (0.58.87): behind it, in front, or the tiny box. ReaImGui sets a window's parent as it opens: the panel reopens
-      local choices = { { "", "Goes behind it" }, { "front", "Stays in front" }, { "box", "Shrinks to the tiny box" } }
+      local choices = { { "box", "Shrinks to the tiny box" }, { "front", "Stays in front" } }
+      if can_behind then table.insert(choices, 2, { "behind", "Goes behind it" }) end
       local cur = choices[1]
       for _, c in ipairs(choices) do if c[1] == behind then cur = c end end
       ImGui.AlignTextToFramePadding(ctx); ImGui.Text(ctx, "When you click REAPER, the panel"); ImGui.SameLine(ctx)
@@ -1467,8 +1474,9 @@ local function settings_look()
         end
         ImGui.EndCombo(ctx)
       end
-      ImGui.SetItemTooltip(ctx, "Floating only (docked, it's part of REAPER). Goes behind it: a window of its own, like any app's; click it, or the toolbar button,\n" ..
-        "to bring it back. Stays in front: on top of REAPER always. Shrinks to the tiny box: the moment you click away. The panel reopens to switch.")
+      ImGui.SetItemTooltip(ctx, "Floating only (docked, it's part of REAPER). Shrinks to the tiny box: the moment you click away; click the box, or the toolbar\n" ..
+        "button, to bring it back where it was. Stays in front: on top of REAPER always." .. (can_behind and " Goes behind it: a window of its own, like any app's." or
+        "\n(Going behind REAPER needs a newer ReaImGui: this one keeps its windows above REAPER.)"))
     end
     do -- a StudioSync button on REAPER's main toolbar (lib/tools.lua): on unless switched off, as Helgobox's (0.58.82)
       ch, v = switch_row("##tbbtn", "StudioSync button on REAPER's toolbar", tools.toolbar_button(),

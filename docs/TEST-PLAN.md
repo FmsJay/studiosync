@@ -291,3 +291,7 @@ Options, and Health shows a row with "Try in the background again" once it gives
   only the studio's own Tailscale name; outward studio settings only from an owner's or admin's band.json; guest invitations refuse a
   token for another network, keys last two days, guest notes only count from someone in charge, and Tailscale guests are swept by Autostart.
 - Bare pcalls in Live sync and Autostart log their failures (band.try). New tests: test_trusted, take_comps empty-take case.
+
+0.58.88: the panel stopped on opening in 0.58.87: ReaImGui 0.10.0.5 has no ConfigVar_ViewportsNoDefaultParent, and its compatibility
+layer throws even to look a name up (the new log file caught it). Looked up through pcall now; where it's missing, "When you click REAPER"
+offers Shrinks to the tiny box (the default) and Stays in front. The panel opened and ran on the PC afterwards.
