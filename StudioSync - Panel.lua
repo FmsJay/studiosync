@@ -35,6 +35,11 @@ local ctx = ImGui.CreateContext("StudioSync")
 local native = reaper.GetExtState(band.SECTION, "panel_native") == "on"
 ImGui.SetConfigVar(ctx, ImGui.ConfigVar_WindowsResizeFromEdges, 1)
 ImGui.SetConfigVar(ctx, ImGui.ConfigVar_ViewportsNoDecoration, native and 0 or 1)
+-- When you click REAPER (James, 0.58.87: "the studiosync doesn't stay in front... default should be it's a separate window or minimizes"):
+-- "" a window of its own, behind REAPER once REAPER's clicked (no default parent: REAPER kept it on top as its tool window); "front" stays
+-- on top as before; "box" shrinks to the tiny box when the focus goes elsewhere. A floating panel only: docked, it's part of REAPER.
+local behind = reaper.GetExtState(band.SECTION, "panel behind")
+ImGui.SetConfigVar(ctx, ImGui.ConfigVar_ViewportsNoDefaultParent, behind == "front" and 0 or 1)
 local theme = require("theme")
 local GREEN, YELLOW, GREY, RED = theme.GREEN, theme.YELLOW, theme.GREY, theme.RED
 local function rgba(c) local k = 255 * theme.STATUS; return math.floor(c[1] * k) << 24 | math.floor(c[2] * k) << 16 | math.floor(c[3] * k) << 8 | 0xFF end
@@ -497,7 +502,11 @@ local function section_sync()
   end
   if view.newer then
     -- already on disk (an update, or a bandmate's folder install)? Then only this running panel is old
-    local disk = (band.read(dir .. "/lib/band.lua") or ""):match('VERSION = "([^"]+)"')
+    -- (read once in 3 s, not every frame while a bandmate runs a newer version: review, 0.58.87)
+    if not ui.disk_at or reaper.time_precise() - ui.disk_at > 3 then
+      ui.disk_at, ui.disk_ver = reaper.time_precise(), (band.read(dir .. "/lib/band.lua") or ""):match('VERSION = "([^"]+)"')
+    end
+    local disk = ui.disk_ver
     if disk == view.newer then
       ImGui.TextColored(ctx, YELLOW, "StudioSync " .. disk .. " is installed: close and reopen this panel to use it.")
     else
@@ -1159,6 +1168,26 @@ local function home_play()
   require("page_hear").fit(ctx, ImGui, "Configure SonoBus") -- (beside, or below in a narrow column: it was cut to "Configure Sono")
   if ImGui.SmallButton(ctx, "Configure SonoBus") then sonobus_open() end
   ImGui.SetItemTooltip(ctx, "Opens SonoBus's own window (volume and mute per collaborator, buffer, quality). You don't need it to play together.")
+  if b then -- (James, 0.58.87: an easier way to bring in someone with only the SonoBus app: one message, and SonoBus Guest on)
+    require("page_hear").fit(ctx, ImGui, "Invite a SonoBus guest")
+    if ImGui.SmallButton(ctx, "Invite a SonoBus guest") then
+      local link, why = setup.sonobus(cfg, b, proj, true)
+      if not link then band.msg(why) else
+        sb_link = link
+        if not on then set_same_room(true) end
+        require("guest").set(proj, true)
+        local info = band.info(cfg.root)
+        tools.show_invite("Join me live in " .. tostring(info.name) .. " (" .. tostring(b.song) .. ") with SonoBus: you'll hear the song and me, and I'll hear and record you.\n\n" ..
+          "1. Install SonoBus, free: https://sonobus.net (Windows, Mac, iPhone, Android, Linux).\n" ..
+          "2. Open this link, and SonoBus joins us by itself:\n" .. link .. "\n" ..
+          "3. Wear headphones (speakers come back into your mic as an echo), and plug in your mic or instrument.\n" ..
+          "Nothing else to install, no account needed.", info, ctx, ImGui)
+        band.log("a SonoBus guest invitation is on your clipboard; Real time mode and SonoBus Guest are on, so they'll hear the song and you")
+      end
+    end
+    ImGui.SetItemTooltip(ctx, "For someone with only the SonoBus app (no REAPER, no StudioSync): a message with SonoBus's download and a link that joins your\n" ..
+      "studio's live audio. Turns on Real time mode and SonoBus Guest, so they hear your mix and what they play records here.")
+  end
   if on and b then -- talkback: speak to the others without arming a track that records
     local live = require("live")
     local talking = live.talking(proj)
@@ -1422,6 +1451,25 @@ local function settings_look()
     ch, v = switch_row("##banner", "Banner over REAPER while someone else drives", bon,
       "A slim note at the foot of REAPER's timeline saying what you can change (it never takes a click).")
     if ch then reaper.SetExtState(band.SECTION, "banner", v and "" or "off", true) end
+    do -- when REAPER is clicked (0.58.87): behind it, in front, or the tiny box. ReaImGui sets a window's parent as it opens: the panel reopens
+      local choices = { { "", "Goes behind it" }, { "front", "Stays in front" }, { "box", "Shrinks to the tiny box" } }
+      local cur = choices[1]
+      for _, c in ipairs(choices) do if c[1] == behind then cur = c end end
+      ImGui.AlignTextToFramePadding(ctx); ImGui.Text(ctx, "When you click REAPER, the panel"); ImGui.SameLine(ctx)
+      ImGui.SetNextItemWidth(ctx, 190)
+      if ImGui.BeginCombo(ctx, "##behind", cur[2]) then
+        for _, c in ipairs(choices) do
+          if ImGui.Selectable(ctx, c[2], c[1] == behind) and c[1] ~= behind then
+            reaper.SetExtState(band.SECTION, "panel behind", c[1], true)
+            reaper.SetExtState(band.SECTION, "panel page", "Settings", false); reaper.SetExtState(band.SECTION, "setup tab", "Options", false)
+            reload_now = true
+          end
+        end
+        ImGui.EndCombo(ctx)
+      end
+      ImGui.SetItemTooltip(ctx, "Floating only (docked, it's part of REAPER). Goes behind it: a window of its own, like any app's; click it, or the toolbar button,\n" ..
+        "to bring it back. Stays in front: on top of REAPER always. Shrinks to the tiny box: the moment you click away. The panel reopens to switch.")
+    end
     do -- a StudioSync button on REAPER's main toolbar (lib/tools.lua): on unless switched off, as Helgobox's (0.58.82)
       ch, v = switch_row("##tbbtn", "StudioSync button on REAPER's toolbar", tools.toolbar_button(),
         "A button at the end of REAPER's main toolbar that opens the panel, in the toolbar's own style (lit while the panel is open).\n" ..
@@ -1753,6 +1801,18 @@ function ui.settings_buffer()
       end
     end
     ImGui.SetItemTooltip(ctx, "If Their time won't stay lined up, or it crackles, go up one. Over the internet nothing's instant: Real time on Wi-Fi landed about 200-300 ms behind in our tests.")
+    heading("What you send", 15) -- (James, 0.58.87: uncompressed through SonoBus. lib/sonobus.lua sonobus.QUALITY)
+    local q = reaper.GetExtState(band.SECTION, "rt quality")
+    q = q ~= "" and q or "opus"
+    for _, o in ipairs(sonobus.QUALITY) do
+      if ImGui.RadioButton(ctx, o[2] .. "##rtq", q == o[1]) and q ~= o[1] then
+        reaper.SetExtState(band.SECTION, "rt quality", o[1], true)
+        if b and same_room_on() then setup.sonobus(cfg, b, proj, true) end
+      end
+    end
+    ImGui.SetItemTooltip(ctx, "The sound you send each person over SonoBus. Uncompressed is exactly what you play, at the cost of more internet: 24-bit is about\n" ..
+      "2.3 Mbit/s to each person (Opus 96, SonoBus's own, about 0.2). Fine on a home connection for a few people; if it starts to drop out, go back one.\n" ..
+      "For a finished take, Swap in their own file (SonoBus Guest) or the take that syncs is the real thing anyway.")
     card_end()
   end
 end
@@ -2642,7 +2702,6 @@ local loop
 -- (an error stops the panel, as ever, but first goes to the log file with where it happened: REAPER's own box was all there was. 0.58.86)
 local function guarded(fn) return function() local ok, err = xpcall(fn, debug.traceback); if not ok then band.log_error("the panel", err); error(err, 0) end end end
 local function loop_body()
-  require("services").tailscale_sweep_guests()
   if updated() or reload_now then -- reload in place: relaunching itself as an action is ignored (or asks to terminate instances)
     band.log("the panel reloaded for StudioSync " .. tostring(seen_disk))
     restarting = true
@@ -2698,6 +2757,10 @@ local function loop_body()
     local ww, wh = ImGui.GetWindowSize(ctx)
     local was_docked = win_rect and win_rect.docked
     win_rect = { wx, wy, ww, wh, docked = ImGui.IsWindowDocked(ctx) }
+    if behind == "box" and not win_rect.docked then -- (the focus gone from every StudioSync window, after it had it: to the tiny box)
+      local focused = ImGui.IsWindowFocused(ctx, ImGui.FocusedFlags_AnyWindow)
+      if focused then ui.had_focus = true elseif ui.had_focus and not ImGui.IsAnyItemActive(ctx) then ui.had_focus = nil; ui.set_minimized(true) end
+    end
     banner_docked = win_rect.docked
     if was_docked and not banner_docked then -- out of a docker: back to the usual size, not the docker's long thin shape
       local vx, vy = ImGui.Viewport_GetWorkPos(ImGui.GetMainViewport(ctx))

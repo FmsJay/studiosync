@@ -460,7 +460,10 @@ function prints.refresh(proj, it, media_dir, fx_hash, route_hash, cfg)
     local _, notes = reaper.MIDI_CountEvts(midi)
     prints.silent[name] = notes > 0 and prints.silent_file(path) or false
     if prints.silent[name] then
-      os.remove(path)
+      -- (only a print this computer rendered: one found under a bandmate's name was theirs, deleted from the shared folder, and changes
+      -- pointing at it waited for it for good. Review, 0.58.87)
+      local who = (reaper.GetExtState(band.SECTION, "user"):gsub("[^%w%-_]", "_"))
+      if who ~= "" and path:match("%-" .. who:gsub("%p", "%%%0") .. "%.flac$") then os.remove(path) end
       band.log("the print of a part on " .. select(2, reaper.GetTrackName(tr)) .. " came out silent here: its instrument loads, but not its sounds " ..
         "(a library or kit that isn't installed?). Bandmates without the instrument don't hear that part until someone who has it all prints it")
     end
@@ -618,10 +621,6 @@ local function real_takes(it)
   return real
 end
 function prints.takes_into_new_lanes(proj, tr, mine)
-  local plays = 0
-  for l = 0, reaper.GetMediaTrackInfo_Value(tr, "I_NUMFIXEDLANES") - 1 do
-    if reaper.GetMediaTrackInfo_Value(tr, "C_LANEPLAYS:" .. l) > 0 then plays = l; break end
-  end
   local items = {}
   for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
     local it = reaper.GetTrackMediaItem(tr, j)
@@ -664,6 +663,7 @@ function prints.takes_into_new_lanes(proj, tr, mine)
     -- (a copy with ids of its own: REAPER makes them new, and mirror takes it as a new item)
     chunk = chunk:gsub("\n%s*IGUID [^\n]*", ""):gsub("\n%s*GUID [^\n]*", ""):gsub("\n%s*band_oid [^\n]*", ""):gsub("\n%s*band_[%w_]+ [^\n]*", "")
     local cur = reaper.GetMediaItemInfo_Value(it, "I_CURTAKE")
+    local own = math.floor(reaper.GetMediaItemInfo_Value(it, "I_FIXEDLANE"))
     local from0 = reaper.GetMediaItemInfo_Value(it, "D_POSITION")
     local to0 = from0 + reaper.GetMediaItemInfo_Value(it, "D_LENGTH")
     for k = 0, reaper.CountTakes(it) - 1 do
@@ -677,14 +677,15 @@ function prints.takes_into_new_lanes(proj, tr, mine)
       end
     end
     crop_to_active(it)
-    reaper.SetMediaItemInfo_Value(it, "I_FIXEDLANE", plays)
-    -- (the part it was played over moves out of the way, or both sound: real Bass Guitar, Verse 2, laptop, 0.42.7)
+    -- (it stays on its own lane: a pass on a lane that doesn't play was moved into the one that does, and the comp under it went
+    -- silent for everyone. Review, 0.58.87. Only one on a playing lane moves what it was played over out of the way)
+    reaper.SetMediaItemInfo_Value(it, "I_FIXEDLANE", own)
     local from = reaper.GetMediaItemInfo_Value(it, "D_POSITION")
     local to = from + reaper.GetMediaItemInfo_Value(it, "D_LENGTH")
-    for j = reaper.CountTrackMediaItems(tr) - 1, 0, -1 do
+    for j = (reaper.GetMediaTrackInfo_Value(tr, "C_LANEPLAYS:" .. own) > 0 and reaper.CountTrackMediaItems(tr) or 0) - 1, 0, -1 do
       local x = reaper.GetTrackMediaItem(tr, j)
       local x_at = reaper.GetMediaItemInfo_Value(x, "D_POSITION")
-      if x ~= it and not exploding[x] and mine(x) and reaper.GetMediaItemInfo_Value(x, "I_FIXEDLANE") == plays
+      if x ~= it and not exploding[x] and mine(x) and reaper.GetMediaItemInfo_Value(x, "I_FIXEDLANE") == own
         and x_at < to and x_at + reaper.GetMediaItemInfo_Value(x, "D_LENGTH") > from then
         reaper.SetMediaItemInfo_Value(x, "I_FIXEDLANE", new_lane())
       end
@@ -698,13 +699,20 @@ function prints.takes_to_lanes(proj, mine)
   for i = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, i)
     local want, blocked = false, require("mirror").local_track(tr)
+    local in_lanes0 = reaper.GetMediaTrackInfo_Value(tr, "I_FREEMODE") == 2 and reaper.GetMediaTrackInfo_Value(tr, "I_NUMFIXEDLANES") > 1
     for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
       local it = reaper.GetTrackMediaItem(tr, j)
       local real = real_takes(it)
       if real > 1 and prints.ara_take(it) then blocked = true end
       if real > 1 and mine(it) then want = true end
+      -- (a bandmate's: REAPER's explode works on the whole track, and their prints were deleted with ours, where this computer couldn't
+      -- print them again. A locked one: the crop and delete don't happen, so it went round every pass. Review, 0.58.87)
+      if real > 1 and not mine(it) then blocked = true end
+      if not in_lanes0 and select(2, prints.takes(it)) and not mine(it) then blocked = true end
+      if real > 1 and reaper.GetMediaItemInfo_Value(it, "C_LOCK") % 2 == 1 then blocked = true end
     end
     if want and not blocked then
+      reaper.PreventUIRefresh(1) -- (every part was selected and let go one after another, flashing across the project: review, 0.58.87)
       reaper.Undo_BeginBlock2(proj) -- (one point, named StudioSync's: Ctrl+Z on "Crop to active take" brought the takes back, to split again)
       -- wet takes go first, or they'd become lanes of their own; the comp's item prints again. (Waiting for a track with no
       -- wet takes meant any comp on a played part stayed takes, and the takes picked never reached the band: laptop, 0.42.4)
@@ -721,7 +729,8 @@ function prints.takes_to_lanes(proj, mine)
         -- (the take that plays is kept by its place among the real takes: deleting a take can leave a take pointer pointing at nothing,
         -- and REAPER then played the first take, so the comp lost its pick. 0.58.85)
         local pick = require("mirror").picked_take(it)
-        while wet do
+        for _ = 1, 8 do -- (bounded: a take that won't delete can't spin forever)
+          if not wet then break end
           reaper.SetActiveTake(wet)
           reaper.SetMediaItemSelected(it, true)
           reaper.Main_OnCommand(40129, 0) -- Take: Delete active take from items
@@ -750,6 +759,7 @@ function prints.takes_to_lanes(proj, mine)
       end
       reaper.SetTrackSelected(tr, false)
       for _, s in ipairs(sel) do if reaper.ValidatePtr2(proj, s, "MediaTrack*") then reaper.SetTrackSelected(s, true) end end
+      reaper.PreventUIRefresh(-1)
       reaper.Undo_EndBlock2(proj, "StudioSync: takes became lanes", -1)
       band.log("the takes on " .. select(2, reaper.GetTrackName(tr)) .. " became lanes (the takes you picked stay the comp)")
       done = done + 1

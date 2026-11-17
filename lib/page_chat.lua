@@ -193,7 +193,11 @@ function chat.all_tab(ctx, ImGui, cfg, b, notes)
           ImGui.SetItemTooltip(ctx, "Put the edit cursor there: bar " .. math.floor(bars + 1) .. (r.track_oid and ", and show its track" or ""))
           ImGui.SameLine(ctx)
         elseif r.url then
-          if ImGui.SmallButton(ctx, "Open") then band.open_url(r.url) end
+          -- (a bandmate typed it: a web link opens, anything else is shown first, as on the Links tab. It opened a synced file or a program
+          -- with one click: security review, 0.58.87)
+          if ImGui.SmallButton(ctx, "Open") and (tostring(r.url):match("^https?://") or reaper.MB("Open this? It isn't a web link:\n\n" .. tostring(r.url), "StudioSync", 4) == 6) then
+            band.open_url(r.url)
+          end
           ImGui.SetItemTooltip(ctx, tostring(r.url))
           ImGui.SameLine(ctx)
         end

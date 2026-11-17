@@ -146,8 +146,14 @@ end
 -- what nobody had went straight out to everyone, with no say (James, 0.57.7). So it isn't synced: it can become a side room, or be looked at.
 -- As a side room its unsent edits go out to that room alone, which is what Bring into main then offers; anything older is there to Send selected.
 function rooms.own_files(cfg, song) -- this computer's usual places for the song, lower case with forward slashes. Pure but for the settings.
-  local here = (band.home() .. "/" .. song .. "/"):gsub("\\", "/"):lower()
-  return { here .. song:lower() .. ".rpp", here .. song:lower() .. " - " .. tostring(cfg.user):lower() .. ".rpp" }
+  local out = {}
+  local sid = band.studio_key(cfg.root)
+  for _, d in ipairs({ band.home() .. "/" .. song .. "/", sid ~= "" and (band.home() .. "/" .. sid .. "/" .. song .. "/") or nil }) do
+    local here = d:gsub("\\", "/"):lower()
+    out[#out + 1] = here .. song:lower() .. ".rpp"
+    out[#out + 1] = here .. song:lower() .. " - " .. tostring(cfg.user):lower() .. ".rpp"
+  end
+  return out
 end
 rooms.file_of = file_of
 function rooms.is_copy(proj, cfg, b)
@@ -157,7 +163,7 @@ function rooms.is_copy(proj, cfg, b)
   if reaper.GetExtState(band.SECTION, band.autosync_key(f)) == "1" or reaper.GetExtState(band.SECTION, "autosync " .. f:lower()) == "1" then return false end
   local low = f:gsub("\\", "/"):lower()
   if low:find(" (room).rpp", 1, true) then return false end
-  if low == reaper.GetExtState(band.SECTION, "project file " .. b.song):gsub("\\", "/"):lower() then return false end
+  if low == band.project_file(band.for_tab(cfg, b).root, b.song):gsub("\\", "/"):lower() then return false end
   for _, own in ipairs(rooms.own_files(cfg, b.song)) do if low == own then return false end end
   return true
 end
@@ -167,7 +173,7 @@ function rooms.from_backup(proj, cfg, b)
   local taken = {}
   for _, r in ipairs(rooms.list(cfg, b.song)) do taken[r.name:lower()] = true end
   while taken[name:lower()] do n = n + 1; name = stem .. " " .. n end
-  local file = reaper.GetExtState(band.SECTION, "project file " .. b.song):gsub("\\", "/"):match("^(.*)/")
+  local file = band.project_file(band.for_tab(cfg, b).root, b.song):gsub("\\", "/"):match("^(.*)/")
   local dir = file or (band.home() .. "/" .. b.song):gsub("\\", "/")
   reaper.RecursiveCreateDirectory(dir, 0)
   local from = { }

@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.58.86", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.58.87", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -85,9 +85,12 @@ function band.start_live(dir)
     if n > 0 then
       local d = reaper.GetResourcePath() .. "/Scripts/StudioSync tabs"
       path = d .. "/StudioSync - Live sync (tab " .. n .. ").lua"
-      if not reaper.file_exists(path) then
+      -- (written again when it points elsewhere: after moving from the shared folder to ReaPack, or a renamed folder, extra tabs ran the
+      -- old copy, or nothing. Review, 0.58.87)
+      local want = "-- StudioSync: Live sync for one more session tab at once (see group.start_live)\ndofile([[" .. main .. "]])\n"
+      if band.read(path) ~= want then
         reaper.RecursiveCreateDirectory(d, 0)
-        band.write_atomic(path, "-- StudioSync: Live sync for one more session tab at once (see group.start_live)\ndofile([[" .. main .. "]])\n")
+        band.write_atomic(path, want)
       end
     end
     local cmd = reaper.AddRemoveReaScript(true, 0, path, true)
@@ -136,6 +139,17 @@ end
 -- An error and where it happened (a traceback): to the file in full, to the Console as one line.
 function band.log_error(where, err)
   band.log_file("ERROR in " .. where .. ": " .. tostring(err))
+end
+-- pcall that says so: a step that fails goes to the log file with where (once per different message), and the rest carries on. Bare pcalls
+-- swallowed failures of the end-of-session save, removals, the tabs to reopen... with nothing anywhere (review, 0.58.87).
+local tried = {}
+function band.try(where, fn, ...)
+  local res = table.pack(xpcall(fn, debug.traceback, ...))
+  if not res[1] then
+    local k = where .. "\0" .. tostring(res[2]):match("^[^\n]*")
+    if not tried[k] then tried[k] = true; band.log_error(where, res[2]) end
+  end
+  return table.unpack(res, 1, res.n)
 end
 function band.log(text)
   local lines = {}
@@ -405,6 +419,27 @@ function band.binding(proj)
 end
 -- Another tab already syncing this song's room (the same .rpp opened twice): that tab, or nil. A second copy's Live
 -- sync would work on a stale or empty copy of the song (laptop, block K: the panel offered Start in it).
+-- Two studios' folders the same one? A binding from before studios names none: that counts as any (it was the only one). (A song of the
+-- same name in two studios was taken for one: opening the second switched to the first's tab, or opened its file and took the second's
+-- changes in. Review, 0.58.87)
+function band.same_studio(a, b)
+  if (a or "") == "" or (b or "") == "" then return true end
+  return band.norm(a):lower() == band.norm(b):lower()
+end
+-- This computer's own project file for a studio's song: remembered per studio ("project file <studio id>/<song>", 0.58.87), else as before
+-- by song alone. And the studio's own local folder for songs opened from now on.
+function band.studio_key(root) return band.clean(tostring(band.info(root or "").id or "")) end
+function band.project_file(root, song)
+  local f = root and reaper.GetExtState(band.SECTION, "project file " .. band.studio_key(root) .. "/" .. song) or ""
+  return f ~= "" and f or reaper.GetExtState(band.SECTION, "project file " .. song)
+end
+function band.set_project_file(root, song, path)
+  reaper.SetExtState(band.SECTION, "project file " .. band.studio_key(root) .. "/" .. song, path, true)
+end
+function band.forget_project_file(root, song)
+  reaper.DeleteExtState(band.SECTION, "project file " .. band.studio_key(root) .. "/" .. song, true)
+  reaper.DeleteExtState(band.SECTION, "project file " .. song, true)
+end
 function band.synced_elsewhere(proj)
   local b = band.binding(proj)
   if not b then return nil end
@@ -412,7 +447,7 @@ function band.synced_elsewhere(proj)
     local p = reaper.EnumProjects(k)
     if not p then break end
     local o = p ~= proj and band.binding(p)
-    if o and o.song == b.song and (o.room or "main") == (b.room or "main") then
+    if o and o.song == b.song and (o.room or "main") == (b.room or "main") and band.same_studio(o.root, b.root) then
       local beat = tonumber(reaper.GetExtState(band.SECTION, "live " .. tostring(p)))
       if beat and reaper.time_precise() - beat < 30 then return p end
     end

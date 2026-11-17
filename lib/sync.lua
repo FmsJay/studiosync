@@ -140,6 +140,11 @@ end
 -- tempo change still lands on its beat.
 -- (the 4th part is the format: a signature noted in another format is a first look, never a change to send or put back)
 local function timeline_sig(proj) return band.json_encode({ band.capture_tempo(proj), band.capture_markers(proj), band.capture_project(proj), 2 }) end
+-- The tempo map alone, said one way (round-tripped through JSON), to tell a tempo change from a marker or notes one: only a tempo change
+-- moves parts by itself (mirror.tempo_changed). A marker set the window going too, and for 15 s a nudge, a fade or automation drawn
+-- went nowhere. Review, 0.58.87.
+local function tempo_sig(tempo) return band.json_encode(band.json_decode(band.json_encode(tempo or {}))) end
+sync.tempo_sig = tempo_sig
 sync.timeline_sig = timeline_sig
 
 -- Whether this project follows the beat (REAPER's default) rather than the clock: then positions travel in beats.
@@ -771,7 +776,9 @@ local function render_item(it, take, out, name, wet, tail, bare)
       reaper.SetTrackSendInfo_Value(tr, -1, r, "B_MUTE", 1)
     end
     local envs_back = sync.mix_envelopes_off(tr)
-    band.render({ RENDER_SETTINGS = 32, RENDER_BOUNDSFLAG = 4, RENDER_SRATE = 0, RENDER_CHANNELS = wet and 2 or math.min(nch, 2),
+    -- (whatever the render does, everything set aside for it comes back: an error here left the track muted, its item's fades at zero
+    -- and its envelopes off, and the next save kept them. Review, 0.58.87)
+    local okr, err = pcall(band.render, { RENDER_SETTINGS = 32, RENDER_BOUNDSFLAG = 4, RENDER_SRATE = 0, RENDER_CHANNELS = wet and 2 or math.min(nch, 2),
       RENDER_TAILFLAG = tail and 16 or 0, RENDER_TAILMS = tail and math.floor(tail * 1000) or 0, -- 16: tail for selected items
       RENDER_ADDTOPROJ = 0 }, -- &32: selected media items, through their track
       { RENDER_FILE = out, RENDER_PATTERN = name, RENDER_FORMAT = band.FLAC, RENDER_FORMAT2 = band.OPUS })
@@ -781,6 +788,7 @@ local function render_item(it, take, out, name, wet, tail, bare)
     reaper.SetMediaItemInfo_Value(it, "B_MUTE", imute)
     for k, v in pairs(item_was) do reaper.SetMediaItemInfo_Value(it, k, v) end
     if lane then set_lanes_playing(tr, playing) end
+    if not okr then error(err, 0) end
     return out .. "/" .. name
   end
 end
@@ -865,9 +873,9 @@ function sync.print_routed(proj, it, take, dest, out, name)
     if not keep[t] and reaper.GetMediaTrackInfo_Value(t, "B_MUTE") == 0 then track(t, "B_MUTE", 1) end
   end
   reaper.SetOnlyTrackSelected(dest)
-  band.render({ RENDER_SETTINGS = 2, RENDER_BOUNDSFLAG = 0, RENDER_STARTPOS = pos, RENDER_ENDPOS = pos + len, RENDER_SRATE = 0,
+  local okr, err = pcall(band.render, { RENDER_SETTINGS = 2, RENDER_BOUNDSFLAG = 0, RENDER_STARTPOS = pos, RENDER_ENDPOS = pos + len, RENDER_SRATE = 0,
     RENDER_CHANNELS = 2, RENDER_TAILFLAG = 0, RENDER_TAILMS = 0, RENDER_ADDTOPROJ = 0 }, -- &2: stems only (the selected track), 0: this time range
-    { RENDER_FILE = out, RENDER_PATTERN = name, RENDER_FORMAT = band.FLAC, RENDER_FORMAT2 = band.OPUS })
+    { RENDER_FILE = out, RENDER_PATTERN = name, RENDER_FORMAT = band.FLAC, RENDER_FORMAT2 = band.OPUS }) -- (put back whatever happens: review, 0.58.87)
   for r, m in pairs(receives) do reaper.SetTrackSendInfo_Value(dest, -1, r, "B_MUTE", m) end
   for i = #undo, 1, -1 do undo[i]() end
   if lane then set_lanes_playing(src, lanes) end
@@ -875,6 +883,7 @@ function sync.print_routed(proj, it, take, dest, out, name)
   for i = 0, reaper.CountTracks(proj) - 1 do reaper.SetTrackSelected(reaper.GetTrack(proj, i), false) end
   for _, t in ipairs(sel_tracks) do if reaper.ValidatePtr2(proj, t, "MediaTrack*") then reaper.SetTrackSelected(t, true) end end
   reaper.PreventUIRefresh(-1)
+  if not okr then error(err, 0) end
   -- a stem render may name the file after the track as well: whatever it made under this name is the print
   if not reaper.file_exists(out .. "/" .. name .. ".flac") then
     for _, f in ipairs(band.files(out)) do
@@ -1166,7 +1175,7 @@ function sync.apply(proj, ev, dir, root, can, me)
     return true
   end
   if ev.type == "timeline" then -- REAPER moves the items for the new map, as it would for a local change
-    require("mirror").tempo_changed(proj)
+    if tempo_sig(ev.tempo) ~= tempo_sig(band.capture_tempo(proj)) then require("mirror").tempo_changed(proj) end
     sync.audio_follow_tempo(proj)
     band.apply_tempo(proj, ev.tempo or {})
     band.apply_project(proj, ev.project) -- (title, notes, group names, timebase, ruler lanes: from 0.31.1; before the markers that sit in them)
@@ -1293,7 +1302,8 @@ function sync.watch_timeline(proj, cfg, song, room, can)
     end
   end
   if seen ~= sig then
-    require("mirror").tempo_changed(proj)
+    local was = seen ~= "" and band.json_decode(seen)
+    if not (type(was) == "table" and tempo_sig(was[1]) == tempo_sig(band.capture_tempo(proj))) then require("mirror").tempo_changed(proj) end
     if seen ~= "" then
       if can(me, nil, nil) then -- the song's timeline is the driver's
         local tempo, markers = band.capture_tempo(proj), band.capture_markers(proj)
@@ -1642,7 +1652,7 @@ local driver_cache = {}
 -- each session, held REAPER up at every open of a long song. Review, 0.58.53. A project from before reads them all once, then keeps them)
 sync.DRIVERS = "BandSync.drivers" -- "<room>/<event id>" -> "<time>|<driver>"; "<room>/" -> "1" once all were read
 function sync.driver_history(proj, cfg, song, room)
-  local key = song .. "/" .. room
+  local key = tostring(cfg.root) .. "|" .. song .. "/" .. room -- (the studio too: two studios' songs of one name shared one history)
   if driver_cache[key] then return driver_cache[key] end
   local list, dir = {}, sync.room_dir(cfg, song, room) .. "/events"
   if proj and ext(proj, sync.DRIVERS, room .. "/") ~= "" then
@@ -1731,6 +1741,9 @@ end
 sync.PRELOAD_SECS = 20
 function sync.preload(proj, cfg, song, room)
   if select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) ~= "" then return 0 end
+  -- (this person's own mix, if they keep one: preload runs in Autostart's or Open session's own Lua, where it was never set, and the
+  -- studio's faders and pan landed over theirs as the project opened. Review, 0.58.87)
+  sync.local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1"
   local s = band.read_json(band.session_path(cfg, song))
   if not (s and s.sync == "mirror") then return 0 end
   local mirror = require("mirror")

@@ -26,15 +26,19 @@ function removal.device_of(root, user)
   local id = said_device(root, user)
   return id and require("trust").device_ok(root, user, id) == true and id or nil
 end
--- `ts`: { suffix, name }, this computer's name on the Tailscale network it's on now, kept beside its names on other networks (ts = { suffix = name }):
--- services.pin_tailnet gives Syncthing those names for it (0.58.80).
-function removal.publish(root, user, id, ts)
+-- `ts`: { suffix, name }, this computer's name on the Tailscale network it's on now (ts = { suffix = name }): services.pin_tailnet gives
+-- Syncthing those names for it (0.58.80). Only the studio's own network's (`keep`, its suffix): every network this computer had been on went
+-- into every studio's file, so one studio learned the names on another's, a personal network's too. Security review, 0.58.87.
+function removal.publish(root, user, id, ts, keep)
   local path = devices(root) .. "/" .. file_name(user)
   local d = band.read_json(path)
   local had = (type(d) == "table" and d.device == id and type(d.ts) == "table") and d.ts or {}
-  if said_device(root, user) == id and (not ts or had[ts[1]] == ts[2]) then return end -- (what's there, checked or not: one naming another computer is written over)
+  local foreign = false
+  for k in pairs(had) do foreign = foreign or k ~= keep end
+  if ts and ts[1] ~= keep then ts = nil end
+  if said_device(root, user) == id and not foreign and (not ts or had[ts[1]] == ts[2]) then return end -- (what's there, checked or not: one naming another computer is written over)
   local names = {}
-  for k, v in pairs(had) do if type(k) == "string" and type(v) == "string" then names[k] = v end end
+  for k, v in pairs(had) do if type(k) == "string" and type(v) == "string" and k == keep then names[k] = v end end
   if ts then names[ts[1]] = ts[2] end
   reaper.RecursiveCreateDirectory(devices(root), 0)
   band.write_json(path, { user = user, device = id, ts = next(names) and names or nil })
@@ -101,11 +105,16 @@ function removal.add_invite(root, ends, by, now)
   band.write_json(invites_dir(root) .. "/" .. now .. "-" .. file_name(by), { made = now, ends = ends, by = by })
   return now
 end
+-- (only from the owner's or an admin's computer, as Syncthing says, or this one's own not yet looked at: anyone could write a note giving a
+-- guest a month. Security review, 0.58.87)
 function removal.invites(root)
-  local out = {}
+  local out, me = {}, reaper.GetExtState(band.SECTION, "user")
   for _, f in ipairs(band.files(invites_dir(root), ".json")) do
     local v = band.read_json(invites_dir(root) .. "/" .. f)
-    if type(v) == "table" and tonumber(v.made) and tonumber(v.ends) then out[#out + 1] = v end
+    if type(v) == "table" and tonumber(v.made) and tonumber(v.ends) then
+      local okt, ok = pcall(require("trust").from_manager_file, root, "_band/guest-invites/" .. f)
+      if not okt or ok == true or (ok == nil and v.by == me) then out[#out + 1] = v end
+    end
   end
   return out
 end
@@ -263,7 +272,10 @@ function removal.tick(now)
     if name and name:sub(-#suffix - 1) == "." .. suffix then ts = { suffix, name } end
   end
   for _, g in ipairs(band.bands()) do
-    if id and me ~= "" then removal.publish(g.root, me, id, ts) end
+    if id and me ~= "" then
+      local okn, net = pcall(function() return require("groups").tailnet(g.root) end)
+      removal.publish(g.root, me, id, ts, okn and net and net.suffix or nil)
+    end
     if me ~= "" and not require("groups").is_old(g.root) then pcall(require("localcopy").publish_holds, g.root, me) end
     for _, m in ipairs(all_marks(g.root)) do
       if m.user == me or (id and m.device == id) then

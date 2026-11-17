@@ -111,7 +111,7 @@ assert(#old == 1 and old[1] == "2", "each by the newest invitation made before i
 local rq = services.guest_key_request(nil, now)
 assert(rq.expirySeconds == 86400 and rq.capabilities.devices.create.ephemeral == true, "no end given: a day, ephemeral")
 rq = services.guest_key_request(now + 14 * 86400, now)
-assert(rq.expirySeconds == 7 * 86400 and rq.capabilities.devices.create.ephemeral == false, "two weeks: the key lasts a week, and the guest isn't ephemeral")
+assert(rq.expirySeconds == 2 * 86400 and rq.capabilities.devices.create.ephemeral == false, "two weeks: the key lasts two days, and the guest isn't ephemeral")
 
 -- (0.58.57) which Tailscale network this computer is on, and which accounts it's signed in to: from the PC's own output, 2026-11-15
 local status = '{"Version":"1.104.5","BackendState":"Running","CurrentTailnet":{"Name":"jamesalexander190@gmail.com","StableID":"Tybtnk",' ..
@@ -178,7 +178,9 @@ do
   services.tailscale_add_tags = function(ok) added[#added + 1] = ok(); policy = limited; return true, ok() and "limited" or nil end
   services.tailscale_guest_key = function() made = made + 1; return "tskey-auth-kTest-1" end
   package.loaded.tools = { show_invite = function() end }
-  package.loaded.groups = { set_tailnet = function() end }
+  package.loaded.groups = { set_tailnet = function() end, tailnet = function() return nil end }
+  services.token_tailnet = function() return nil end
+  services.tailnet_now = function() return nil end
   local function invite() boxes, added = {}, {}; services.copy_guest_invite(inv_id, { id = "bandsync", name = "Chilio" }, nil, nil, "/r") end
   invite()
   assert(#boxes == 1 and boxes[1].kind == 3 and boxes[1].msg:find("every computer on it", 1, true), "open: says so plainly, Yes/No/Cancel")

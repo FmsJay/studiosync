@@ -206,8 +206,10 @@ function services.tune_band_folder(folder)
   end
   -- (a joiner paired with whoever invited them with auto-accept: any folder that computer offered was added here unasked. Since 0.58.69
   -- nothing is: the studio's own folder is added by its join, and another studio's offer is asked about on the Studios page. Security review)
+  -- (only computers in a studio: every device's was switched, the person's own phones and other computers too. Security review, 0.58.87)
+  local peers = services.studio_peers(st)
   for id in ((reaper.ExecProcess(cli(st) .. " config devices list", 8000) or ""):match("^0\n(.*)$") or ""):gmatch("[%u%d%-]+") do
-    if services.is_device_id(id) and (reaper.ExecProcess(cli(st) .. " config devices " .. id .. " auto-accept-folders get", 8000) or ""):lower():match("^0\ntrue") then -- (Syncthing 2 says "True": it never matched. 0.58.78)
+    if services.is_device_id(id) and peers[id] and (reaper.ExecProcess(cli(st) .. " config devices " .. id .. " auto-accept-folders get", 8000) or ""):lower():match("^0\ntrue") then -- (Syncthing 2 says "True": it never matched. 0.58.78)
       reaper.ExecProcess(cli(st) .. " config devices " .. id .. " auto-accept-folders set false", 8000)
       set[#set + 1] = "auto-accept-folders off for " .. id:sub(1, 7)
     end
@@ -228,13 +230,32 @@ end
 -- by themselves. Left on, that computer could go on adding any computer it liked to the folders it shares with this one, so it goes once this
 -- one is let in (removal.tick): by then the others have been introduced, and anyone let in later is met through the studio (removal.known).
 -- `keep`: the inviters of studios still waiting to be let in. -> true when Syncthing answered. Security review, 0.58.78.
+-- The computers this one shares a StudioSync folder with (folder ids "bandsync..." or "studiosync-..."): the only ones StudioSync changes
+-- Syncthing settings for. -> set of device ids.
+function services.studio_peers(st)
+  local peers = {}
+  for f in ((reaper.ExecProcess(cli(st) .. " config folders list", 8000) or ""):match("^0\n(.*)$") or ""):gmatch("%S+") do
+    if f:lower():find("^bandsync") or f:lower():find("^studiosync%-") then
+      for id in ((reaper.ExecProcess(cli(st) .. " config folders " .. f .. " devices list", 8000) or ""):match("^0\n(.*)$") or ""):gmatch("[%u%d%-]+") do
+        if services.is_device_id(id) then peers[id] = true end
+      end
+    end
+  end
+  -- (and whoever invited this computer to a studio, its folder not here yet: the very computer whose offers mustn't be taken unasked)
+  for _, x in ipairs(band.bands()) do
+    local inv = require("trust").inviter(x.root)
+    if inv then peers[inv] = true end
+  end
+  return peers
+end
 function services.introducers_off(keep)
   local st = services.syncthing_path()
   if not st then return false end
   local r = reaper.ExecProcess(cli(st) .. " config devices list", 8000) or ""
   if not r:match("^0\n") then return false end
+  local peers = services.studio_peers(st) -- (only computers in a studio: the person's own other devices keep their settings. Review, 0.58.87)
   for id in r:gsub("^0\n", ""):gmatch("[%u%d%-]+") do
-    if services.is_device_id(id) and not keep[id] and (reaper.ExecProcess(cli(st) .. " config devices " .. id .. " introducer get", 8000) or ""):lower():match("^0\ntrue") then -- (Syncthing 2 says "True")
+    if services.is_device_id(id) and not keep[id] and peers[id] and (reaper.ExecProcess(cli(st) .. " config devices " .. id .. " introducer get", 8000) or ""):lower():match("^0\ntrue") then -- (Syncthing 2 says "True")
       if (reaper.ExecProcess(cli(st) .. " config devices " .. id .. " introducer set false", 8000) or ""):match("^0\n") then
         band.log("you're in: Syncthing no longer adds the computers " .. services.device_name(id) .. " introduces (the others in the studio are met through it)")
       end
@@ -782,8 +803,15 @@ end
 -- guest is ephemeral too (it drops off once it's been offline a while); a longer one isn't, or a night with the laptop shut ended it. -> the key, or nil + why.
 function services.guest_key_request(ends, now)
   local left = math.max(3600, (ends or now + 86400) - now)
-  return { keyType = "auth", description = "StudioSync guest", expirySeconds = math.floor(math.min(left, 7 * 86400)),
+  -- (the key itself, to join with, lasts two days at most: it sits in the message in plain text. Security review, 0.58.87)
+  return { keyType = "auth", description = "StudioSync guest", expirySeconds = math.floor(math.min(left, 2 * 86400)),
     capabilities = { devices = { create = { reusable = false, ephemeral = left <= 86400 + 60, preauthorized = true, tags = { GUEST_TAG } } } } }
+end
+-- Which Tailscale network the access token is for: its devices' names end in it ("tail1234.ts.net"). -> the suffix, or nil.
+function services.token_tailnet()
+  local code, _, out = ts_api("GET", "/tailnet/-/devices")
+  if not code then return nil end
+  return tostring(out or ""):match('"name"%s*:%s*"[^"]-%.([%w%-]+%.ts%.net)"')
 end
 function services.tailscale_guest_key(ends)
   local code, head, out = ts_api("POST", "/tailnet/-/keys", band.json_encode(services.guest_key_request(ends, os.time())), { "Content-Type: application/json" })
@@ -832,6 +860,16 @@ function services.copy_guest_invite(my_id, info, ctx, ImGui, root, ends)
     if reaper.MB(services.GUEST_WARN[reach] .. (tags and "" or services.GUEST_WARN.tags), "StudioSync: guest invitation", 1) ~= 1 then return end
     -- (without StudioSync's tags Tailscale makes no guest key; they change nobody's reach)
     if not tags and not services.tailscale_add_tags(function() return false end) then band.log("couldn't add StudioSync's tags, so no guest invitation"); return end
+  end
+  -- (the token's network must be the studio's: one token per computer made every guest a guest of its network, so a guest invited to one
+  -- studio landed on another's, a personal one. Security review, 0.58.87)
+  local want = root and require("groups").tailnet(root)
+  local want_suffix = want and want.suffix or select(2, services.tailnet_now())
+  local token_suffix = services.token_tailnet()
+  if want_suffix and token_suffix and want_suffix ~= token_suffix then
+    band.msg("This computer's Tailscale access token is for another Tailscale network (" .. token_suffix .. ") than this studio's (" .. want_suffix .. ").\n\n" ..
+      "Make a token on the studio's network (login.tailscale.com, signed in to that account) and add it under Settings > Advanced, or invite without Tailscale.")
+    return
   end
   local key, why = services.tailscale_guest_key(ends)
   if not key then band.log("couldn't make a guest invitation: " .. tostring(why)); return end

@@ -56,6 +56,7 @@ function setup.sonobus(cfg, b, proj, open)
   local outs = hear.order(hear.bandmates(cfg, b), cfg.user) -- each bandmate on an output pair of their own (who you hear)
   local new = chunk
   sonobus.use_buffer(reaper.GetExtState(band.SECTION, "rt buffer"))
+  sonobus.use_quality(reaper.GetExtState(band.SECTION, "rt quality"))
   local host, port = require("groups").sonobus_server(cfg.root) -- (the studio's own, over Tailscale, or SonoBus's public one)
   if not sonobus.is_set_up(chunk, group, cfg.user, host) then
     local why
@@ -68,6 +69,7 @@ function setup.sonobus(cfg, b, proj, open)
   if not sonobus.buffer_ok(new, sonobus.BUFFER.defnetbuf * 1000, sonobus.BUFFER.defnetauto) then
     new = sonobus.set_buffer(new, sonobus.BUFFER.defnetbuf * 1000, sonobus.BUFFER.defnetauto) or new
   end
+  if not sonobus.quality_ok(new, sonobus.SEND) then new = sonobus.set_quality(new, sonobus.SEND) or new end
   if new ~= chunk then
     reaper.TrackFX_SetNamedConfigParm(m, i, "vst_chunk", new)
     reaper.TrackFX_SetOffline(m, i, true) -- reloading it with that state is what makes it join

@@ -57,8 +57,8 @@ end
 local my_token = string.format("%.6f-%d", reaper.time_precise(), math.random(1, 1e9))
 reaper.SetExtState(band.SECTION, "live owner " .. tostring(proj), my_token, false)
 local host = b.role == "host"
-pcall(require("songsync").want, cfg, b.song) -- (a song syncing in a tab here comes in full: per-song sync)
-pcall(band.stay_online)
+band.try("songsync.want", require("songsync").want, cfg, b.song) -- (a song syncing in a tab here comes in full: per-song sync)
+band.try("band.stay_online", band.stay_online)
 local s0 = band.read_json(band.session_path(cfg, b.song)) or {}
 local baseline = sync.mark_baseline(proj)
 sync.audio_follow_tempo(proj) -- band audio follows tempo changes piece by piece (REAPER auto-stretch), never drifting
@@ -348,7 +348,7 @@ local function poll()
     local leaving = reaper.GetExtState(band.SECTION, "end session " .. tostring(proj))
     if leaving ~= "" then
       reaper.DeleteExtState(band.SECTION, "end session " .. tostring(proj), false)
-      pcall(end_of_session, leaving)
+      band.try("end_of_session", end_of_session, leaving)
       mirror_due = true
     end
     local more = require("mirror").more and "changes" or require("bgrender").waiting() and "prints rendering" or require("prints").waiting() and "prints waiting" or nil
@@ -384,7 +384,9 @@ local function poll()
     local room_can = room == b.room and can or sync.authority(cfg, b.song, room, s)
     local n = 0
     -- (and not before the look has seen your last change: sync.seen_mine)
-    if sync.seen_mine(reaper.GetProjectStateChangeCount(proj), mirror_cc, now, mirror_at) and not editing() and not redo_pending() then n = sync.receive(proj, cfg, b.song, room, room_can) end
+    -- (not before this tab's first look: with the mouse held on the first pass, the band's changes landed over edits not yet marked
+    -- as ours. Review, 0.58.87)
+    if (mirror_at > -math.huge or not (s and s.sync == "mirror")) and sync.seen_mine(reaper.GetProjectStateChangeCount(proj), mirror_cc, now, mirror_at) and not editing() and not redo_pending() then n = sync.receive(proj, cfg, b.song, room, room_can) end
     -- a lot came in and it's over: saved, so the next open starts from here and doesn't take it all in again with REAPER held up
     sync.since_save = (sync.since_save or 0) + n
     if n == 0 and sync.since_save >= 100 and reaper.GetPlayStateEx(proj) == 0 then sync.need_save, sync.since_save = true, 0 end
@@ -458,8 +460,8 @@ local function poll()
   end
   if now - quiet.checked > 60 then
     quiet.checked = now
-    pcall(require("removal").tick) -- (Autostart does this too, where it's on)
-    pcall(require("listen").tick)
+    band.try("removal.tick", require("removal").tick) -- (Autostart does this too, where it's on)
+    band.try("listen.tick", require("listen").tick)
     local n = event_count()
     if n ~= quiet.n then quiet.n, quiet.since = n, now
     elseif now - quiet.since > 1200 then pcall(end_of_session, "20 minutes with no changes") end
@@ -481,7 +483,7 @@ local function poll()
       if ok then moved, more = moved + n, more or m
       elseif drive_said ~= tostring(n) then drive_said = tostring(n); band.log("Google Drive copy: " .. tostring(n)) end
     end
-    pcall(require("sessionfile").catch_up, b.song, 0.1) -- your recordings the end-of-session projects use
+    band.try("sessionfile.catch_up", require("sessionfile").catch_up, b.song, 0.1) -- your recordings the end-of-session projects use
     if more and not drive_more then band.log("Google Drive: bringing the studio's copy of this room up to date (carries on between passes)") end
     if moved > 0 and not more then band.log(string.format("Google Drive copy up to date (%d file(s) this pass)", moved)) end
     drive_more = more
@@ -499,7 +501,7 @@ local function poll()
     followed = presence.followed(peers, cfg.user, driver)
     -- tracks in the colour of who's working on them, if this machine wants that (lib/people.lua; shown here only)
     if now - paint_at > 1 then paint_at = now; require("people").paint(proj, cfg, peers, who.tracks, b.song .. "/" .. b.room) end
-    if now - format_at > 10 and reaper.GetPlayStateEx(proj) & 4 == 0 then -- (everyone records 24-bit FLAC at the project's rate: lib/prep.lua; never mid-recording)
+    if now - format_at > 10 and reaper.GetPlayStateEx(proj) == 0 then -- (stopped: not mid-take, nor while playing. Review, 0.58.87) -- (everyone records 24-bit FLAC at the project's rate: lib/prep.lua; never mid-recording)
       format_at = now
       local ok, said = pcall(require("prep").keep_format, proj, cfg, b)
       if ok and said then band.log(said .. " (the studio records the same way on every computer)") end
@@ -774,8 +776,8 @@ local function tick_body() -- returns true to keep going
     recording = true
   elseif recording then
     recording, stopped_at = false, reaper.time_precise()
-    pcall(require("alerts").send, cfg, "take", "StudioSync: " .. b.song, cfg.user .. " just recorded something in " .. b.song) -- (phone alerts, if the studio has them)
-    pcall(require("api").event, "take", { song = b.song, room = b.room })
+    band.try("alerts.send", require("alerts").send, cfg, "take", "StudioSync: " .. b.song, cfg.user .. " just recorded something in " .. b.song) -- (phone alerts, if the studio has them)
+    band.try("api.event", require("api").event, "take", { song = b.song, room = b.room })
   end
   local now = reaper.time_precise()
   lap("transport")
@@ -784,9 +786,9 @@ local function tick_body() -- returns true to keep going
     rt_at = now
     local ok, e = pcall(require("hear").answer_listeners, proj, cfg, b)
     if not ok then band.log("listen: " .. tostring(e)) end
-    pcall(require("hear").watch_silence, proj, cfg, require("presence").peers(cfg, b.song, b.room), now)
-    pcall(require("hear").check, proj, cfg, require("presence").peers(cfg, b.song, b.room), now)
-    pcall(live.rt_sends, proj); pcall(live.join_check, proj); pcall(sync.follow_claims, proj, cfg, b.song, b.room)
+    band.try("hear.watch_silence", require("hear").watch_silence, proj, cfg, require("presence").peers(cfg, b.song, b.room), now)
+    band.try("hear.check", require("hear").check, proj, cfg, require("presence").peers(cfg, b.song, b.room), now)
+    band.try("live.rt_sends", live.rt_sends, proj); band.try("live.join_check", live.join_check, proj); band.try("sync.follow_claims", sync.follow_claims, proj, cfg, b.song, b.room)
     local okp, ep = pcall(require("producer").tick, proj, cfg, b, require("presence").peers(cfg, b.song, b.room))
     if not okp then band.log("producer: " .. tostring(ep)) end
   end
@@ -860,8 +862,8 @@ tick = function()
   laps, lap_t = {}, t0
   if reaper.time_precise() - sws_at > 1 then
     sws_at = reaper.time_precise()
-    pcall(band.sws_colours) -- (lib/band.lua)
-    pcall(require("mirror").note_open_fx, proj)
+    band.try("band.sws_colours", band.sws_colours) -- (lib/band.lua)
+    band.try("mirror.note_open_fx", require("mirror").note_open_fx, proj)
     -- (with no audio device REAPER builds no peaks by itself: a bandmate's take stayed a blank box: Mac, 0.57.6)
     if sync.landed_media and reaper.Audio_IsRunning() ~= 1 and reaper.EnumProjects(-1) == proj then
       sync.landed_media = nil

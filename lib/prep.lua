@@ -170,18 +170,26 @@ function prep.scan(proj, cfg, b)
     add("save", "Save the project first", "File conversions and copies need the project's folder: save the project, then open this again.", 0, nil, false)
   end
 
-  -- clutter: empty items and tiny slivers
-  local clutter = {}
+  -- clutter: empty items; and tiny slivers, a row of their own that isn't ticked (a drum slice or a one-shot is that short too)
+  local clutter, slivers = {}, {}
   for i = 0, reaper.CountMediaItems(proj) - 1 do
     local it = reaper.GetMediaItem(proj, i)
     -- (empty: no take with anything in it. One playing an empty take on purpose, a comp's silence, still holds its other takes: it was
-    -- removed, and them with it. 0.58.85)
-    local empty = true
+    -- removed, and them with it. 0.58.85. Nor one with notes on it (lyrics, a section's name), a source that isn't a file (a click, timecode,
+    -- video or text), or take plug-ins: review, 0.58.87)
+    local empty = select(2, reaper.GetSetMediaItemInfo_String(it, "P_NOTES", "", false)) == ""
     for k = 0, reaper.CountTakes(it) - 1 do
       local tk = reaper.GetTake(it, k)
-      if tk and (reaper.TakeIsMIDI(tk) or src_file(tk) ~= "") then empty = false end
+      if tk then
+        local src = reaper.GetMediaItemTake_Source(tk)
+        local kind = src and reaper.GetMediaSourceType(src, "") or ""
+        if reaper.TakeIsMIDI(tk) or src_file(tk) ~= "" or (kind ~= "" and kind ~= "EMPTY") or reaper.TakeFX_GetCount(tk) > 0 then empty = false end
+      end
     end
-    if not bands(it) and (empty or reaper.GetMediaItemInfo_Value(it, "D_LENGTH") < 0.05) and mine(reaper.GetMediaItem_Track(it)) then clutter[#clutter + 1] = it end
+    if not bands(it) and mine(reaper.GetMediaItem_Track(it)) then
+      if empty then clutter[#clutter + 1] = it
+      elseif reaper.GetMediaItemInfo_Value(it, "D_LENGTH") < 0.05 then slivers[#slivers + 1] = it end
+    end
   end
   if next(left_out) then
     local names = {}
@@ -191,8 +199,12 @@ function prep.scan(proj, cfg, b)
       "Not changed: " .. table.concat(names, ", ") .. ". Claim a track, or take control, and open this again to include it.", #names, nil, false)
   end
   if #clutter > 0 then
-    add("clutter", string.format("Remove %d empty item(s) and slivers under 50 ms", #clutter),
+    add("clutter", string.format("Remove %d empty item(s)", #clutter),
       "Leftovers from editing: they'd go out to the others as takes of nothing.", #clutter, clutter)
+  end
+  if #slivers > 0 then
+    add("slivers", string.format("Remove %d sliver(s) under 50 ms", #slivers),
+      "Usually leftovers from editing, but a drum slice or a one-shot can be that short: look before ticking this.", #slivers, slivers, false)
   end
 
   -- ripple editing moves other people's parts, which StudioSync then puts back
@@ -347,12 +359,14 @@ function prep.apply(proj, cfg, b, rows, dir)
   -- whatever goes wrong below, REAPER's screen and undo must not be left paused/open (a test run left both stuck)
   local okb, errb = pcall(function()
 
-  if on.clutter then
-    local n = 0
-    for _, it in ipairs(on.clutter.todo) do
-      if reaper.ValidatePtr2(proj, it, "MediaItem*") then reaper.DeleteTrackMediaItem(reaper.GetMediaItem_Track(it), it); n = n + 1 end
+  for _, key in ipairs({ "clutter", "slivers" }) do
+    if on[key] then
+      local n = 0
+      for _, it in ipairs(on[key].todo) do
+        if reaper.ValidatePtr2(proj, it, "MediaItem*") then reaper.DeleteTrackMediaItem(reaper.GetMediaItem_Track(it), it); n = n + 1 end
+      end
+      done[#done + 1] = "Removed " .. n .. (key == "clutter" and " empty item(s)" or " sliver(s)")
     end
-    done[#done + 1] = "Removed " .. n .. " empty item(s) and slivers"
   end
 
   local media = reaper.GetProjectPathEx(proj, ""):gsub("\\", "/")
@@ -368,16 +382,9 @@ function prep.apply(proj, cfg, b, rows, dir)
       if out then
         repoint(proj, f, out)
         n = n + 1
-        if inside then -- ours: the original goes to the backup folder (one outside the project stays where it is)
-          reaper.RecursiveCreateDirectory(keep, 0)
-          local name = f:match("[^/]+$")
-          local base, ext = name:match("^(.*)(%.[^.]+)$")
-          base, ext = base or name, ext or ""
-          local to, k = keep .. "/" .. name, 2
-          while reaper.file_exists(to) do to = keep .. "/" .. base .. " " .. k .. ext; k = k + 1 end -- two "take1.wav"s from two folders
-          if os.rename(f, to) then moved[f] = to else stuck = stuck + 1 end
-          os.remove(f .. ".reapeaks")
-        end
+        -- (the original stays where it is: moved to "StudioSync originals", every other project using it lost its audio, older versions
+        -- and alternate mixes too. Review, 0.58.87. The backup copy plays it from there)
+        local _ = inside
       else
         bad[#bad + 1] = f:match("[^/]+$") .. ": " .. tostring(why)
       end
@@ -394,7 +401,7 @@ function prep.apply(proj, cfg, b, rows, dir)
       end
       band.write_atomic(backup, text)
     end
-    done[#done + 1] = string.format("Converted %d file(s) to FLAC (originals in 'StudioSync originals')%s%s", n,
+    done[#done + 1] = string.format("Converted %d file(s) to FLAC (the originals stay where they were)%s%s", n,
       stuck > 0 and string.format("; %d original(s) couldn't be moved yet (in use): move them after closing REAPER", stuck) or "",
       #bad > 0 and ("; kept as they were: " .. table.concat(bad, "; ")) or "")
   end
@@ -411,27 +418,30 @@ function prep.apply(proj, cfg, b, rows, dir)
   end
 
   if on.lanes then
-    -- the take that plays goes to the top first: exploded, the top lane is the one that plays (so what you hear stays)
-    reaper.SelectAllMediaItems(proj, false)
-    for _, list in ipairs({ on.lanes.todo.set, on.lanes.todo.explode }) do
-      for _, tr in ipairs(list) do
-        for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
-          local it = reaper.GetTrackMediaItem(tr, j)
-          if reaper.CountTakes(it) > 1 and not bands(it) then reaper.SetMediaItemSelected(it, true) end
-        end
-      end
-    end
-    reaper.Main_OnCommand(41380, 0) -- Item: Move active takes to top
+    -- Takes become lanes the way Live sync makes them (lib/prints.lua): a track with takes through REAPER's "explode takes to fixed lanes
+    -- and add comp areas from active takes" (a comp lane that plays each piece's pick, a lane per take), one without just in lane mode, and
+    -- one already in lanes StudioSync's own way. (Moving each piece's pick to the top first kept what plays, but take 3 of one piece sat on
+    -- a lane with take 2 of the next: which pass was which was lost. Review, 0.58.87)
     reaper.SelectAllMediaItems(proj, false)
     local n = 0
-    for _, step in ipairs({ { on.lanes.todo.set, 42661 }, -- Track properties: Set fixed lanes (convert takes to lanes)
-        { on.lanes.todo.explode, 42635 } }) do -- Take: Explode takes on selected tracks to fixed lanes
-      reaper.Main_OnCommand(40297, 0) -- Track: Unselect all tracks
-      local any = false
-      for _, tr in ipairs(step[1]) do
-        if reaper.ValidatePtr2(proj, tr, "MediaTrack*") then reaper.SetTrackSelected(tr, true); n = n + 1; any = true end
+    local function select_only(tr) reaper.Main_OnCommand(40297, 0); reaper.SetTrackSelected(tr, true) end -- 40297: Track: Unselect all tracks
+    for _, tr in ipairs(on.lanes.todo.set) do
+      if reaper.ValidatePtr2(proj, tr, "MediaTrack*") then
+        local takes = false
+        for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
+          local it = reaper.GetTrackMediaItem(tr, j)
+          takes = takes or (reaper.CountTakes(it) > 1 and not bands(it))
+        end
+        select_only(tr)
+        reaper.Main_OnCommand(takes and 42636 or 42661, 0) -- explode with comp areas / Track properties: Set fixed lanes
+        n = n + 1
       end
-      if any then reaper.Main_OnCommand(step[2], 0) end
+    end
+    for _, tr in ipairs(on.lanes.todo.explode) do
+      if reaper.ValidatePtr2(proj, tr, "MediaTrack*") then
+        require("prints").takes_into_new_lanes(proj, tr, function(it) return not bands(it) end)
+        n = n + 1
+      end
     end
     reaper.Main_OnCommand(40297, 0)
     done[#done + 1] = "Lanes on " .. n .. " track(s)"

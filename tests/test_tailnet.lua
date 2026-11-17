@@ -39,16 +39,22 @@ assert(#out[B] == 1 and out[B][1] == "dynamic", "a studio not set to Tailscale o
 local bad = { only = true, suffix = "tail99.ts.net", devices = { { device = B, ts = { ["tail99.ts.net"] = "evil.example.com" } } } }
 assert(services.tailnet_addresses({ bad }, A)[B][1] == "dynamic", "a name off the studio's network isn't used")
 
--- removal.publish: the name on the network it's on now joins the ones it had
+-- removal.publish: only the name on the studio's own network (0.58.87: a studio learned the names on every network its members had been on)
 local root = "/s"
-removal.publish(root, "Laptop", B, { "tail99.ts.net", "james-laptop.tail99.ts.net" })
-removal.publish(root, "Laptop", B, { "tailc1.ts.net", "james.tailc1.ts.net" })
+removal.publish(root, "Laptop", B, { "tail99.ts.net", "james-laptop.tail99.ts.net" }, "tailc1.ts.net")
 local d = band.read_json(root .. "/_band/devices/Laptop.json")
-assert(d.device == B and d.ts["tail99.ts.net"] == "james-laptop.tail99.ts.net" and d.ts["tailc1.ts.net"] == "james.tailc1.ts.net", "both networks' names kept")
+assert(d.device == B and d.ts == nil, "on another network than the studio's: no name written")
+removal.publish(root, "Laptop", B, { "tailc1.ts.net", "james.tailc1.ts.net" }, "tailc1.ts.net")
+d = band.read_json(root .. "/_band/devices/Laptop.json")
+assert(d.ts["tailc1.ts.net"] == "james.tailc1.ts.net" and d.ts["tail99.ts.net"] == nil, "on the studio's: that one, and no other")
+fs[root .. "/_band/devices/Laptop.json"] = band.json_encode({ user = "Laptop", device = B, ts = { ["tailc1.ts.net"] = "james.tailc1.ts.net", ["tail99.ts.net"] = "james-laptop.tail99.ts.net" } })
+removal.publish(root, "Laptop", B, nil, "tailc1.ts.net")
+d = band.read_json(root .. "/_band/devices/Laptop.json")
+assert(d.ts["tail99.ts.net"] == nil and d.ts["tailc1.ts.net"] == "james.tailc1.ts.net", "a name from before, on another network, goes")
 local before = fs[root .. "/_band/devices/Laptop.json"]
-removal.publish(root, "Laptop", B, { "tailc1.ts.net", "james.tailc1.ts.net" })
-removal.publish(root, "Laptop", B, nil)
+removal.publish(root, "Laptop", B, { "tailc1.ts.net", "james.tailc1.ts.net" }, "tailc1.ts.net")
+removal.publish(root, "Laptop", B, nil, "tailc1.ts.net")
 assert(fs[root .. "/_band/devices/Laptop.json"] == before, "nothing new: not written again")
-removal.publish(root, "Laptop", C, nil)
+removal.publish(root, "Laptop", C, nil, "tailc1.ts.net")
 assert(band.read_json(root .. "/_band/devices/Laptop.json").ts == nil, "another computer under that name: the old names go with it")
 print("ok")

@@ -45,16 +45,23 @@ local function open_song(song, room) -- room: for a new tab (nil when refreshing
       local p = reaper.EnumProjects(i)
       if not p then break end
       local ob = band.binding(p)
-      if ob and ob.song == song and ob.room == room and ob.role ~= "solo" and not require("rooms").is_copy(p, cfg, ob) then -- (a backup left open isn't the song)
+      if ob and ob.song == song and ob.room == room and band.same_studio(ob.root, cfg.root) and ob.role ~= "solo" and not require("rooms").is_copy(p, cfg, ob) then -- (a backup left open isn't the song)
         reaper.SelectProjectInstance(p)
         return band.msg("'" .. song .. "' (room " .. room .. ") is already open in another tab: switched to it.")
       end
     end
     -- been here before: back into your own project. (It made another from nothing each time, "Sunset Drive - Laptop.rpp" beside
     -- the host's own, and took every change in again: laptop, 0.42.4.)
+    -- (each studio's songs in a folder of their own, and the file remembered per studio: a song of the same name in two studios shared
+    -- both. Review, 0.58.87. The old folder and key still count, for songs opened before; a file of another studio's is closed again below)
+    local sid = band.clean(tostring(band.info(cfg.root).id or ""))
     local here = band.home() .. "/" .. song .. "/"
+    local scoped = sid ~= "" and (band.home() .. "/" .. sid .. "/" .. song .. "/") or here
     local own, as_guest = here .. song .. ".rpp", here .. song .. " - " .. cfg.user .. ".rpp"
-    local files = { reaper.GetExtState(band.SECTION, "project file " .. song), s.host == cfg.user and own or as_guest, s.host == cfg.user and as_guest or own }
+    local s_own, s_guest = scoped .. song .. ".rpp", scoped .. song .. " - " .. cfg.user .. ".rpp"
+    local remembered = band.project_file(cfg.root, song)
+    local files = { remembered, s.host == cfg.user and s_own or s_guest, s.host == cfg.user and s_guest or s_own,
+      s.host == cfg.user and own or as_guest, s.host == cfg.user and as_guest or own }
     if reaper.JS_File_Stat then -- (the one last worked on: with two files for a song it opened one 2 hours older, and sent its old comps: laptop, 0.42.9)
       local stamp = {}
       for _, f in ipairs(files) do
@@ -68,7 +75,7 @@ local function open_song(song, room) -- room: for a new tab (nil when refreshing
         if not reusable() then reaper.Main_OnCommand(40859, 0) end
         require("startup").open_quietly(function() reaper.Main_openProject(f) end)
         local ob = band.binding(reaper.EnumProjects(-1))
-        if ob and ob.song == song then
+        if ob and ob.song == song and band.same_studio(ob.root, cfg.root) then
           require("sync").preload(reaper.EnumProjects(-1), cfg, song, room)
           band.start_live(dir)
           return band.log(string.format("opened your project for '%s'", song))
@@ -84,11 +91,12 @@ local function open_song(song, room) -- room: for a new tab (nil when refreshing
   local proj, projfile = reaper.EnumProjects(-1)
   -- First open: saved into a local (not synced) folder; recordings are copied to the room's media folder as they go out
   local first_open = projfile == ""
-  if first_open then
-    local local_dir = band.home() .. "/" .. song
+  if first_open then -- (in the studio's own folder: review, 0.58.87)
+    local sid = band.clean(tostring(band.info(cfg.root).id or ""))
+    local local_dir = band.home() .. "/" .. (sid ~= "" and (sid .. "/") or "") .. song
     reaper.RecursiveCreateDirectory(local_dir, 0)
     reaper.Main_SaveProjectEx(proj, local_dir .. "/" .. song .. " - " .. cfg.user .. ".rpp", 8) -- &8: becomes this project's file
-    reaper.SetExtState(band.SECTION, "project file " .. song, local_dir .. "/" .. song .. " - " .. cfg.user .. ".rpp", true)
+    band.set_project_file(cfg.root, song, local_dir .. "/" .. song .. " - " .. cfg.user .. ".rpp")
   end
 
   reaper.Undo_BeginBlock2(proj)

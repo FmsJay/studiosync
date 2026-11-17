@@ -26,7 +26,7 @@
 #define REAPERAPI_WANT_GetExtState
 #define REAPERAPI_WANT_SetExtState
 #define REAPERAPI_WANT_RefreshToolbar2
-#define EXT_VERSION "1.0.4" // (tools/make_index.py EXT_VERSION: what the panel reads to know this build adds toolbar buttons)
+#define EXT_VERSION "1.0.5" // (tools/make_index.py EXT_VERSION: what the panel reads to know this build adds toolbar buttons)
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"
 
@@ -34,7 +34,7 @@
 static const char *NAME = "ReaPersona", *SCRIPT = "ReaPersona.lua", *CMD = "REAPERSONA_OPEN", *DESC = "ReaPersona: open";
 static const char *SECTION = "ReaPersona", *ICON = "toolbar_reapersona", *ICON_FILE = "toolbar_reapersona.png";
 #else
-static const char *NAME = "StudioSync", *SCRIPT = "StudioSync - Panel.lua", *CMD = "STUDIOSYNC_OPEN", *DESC = "StudioSync: open the panel";
+static const char *NAME = "StudioSync", *SCRIPT = "StudioSync - Panel.lua", *CMD = "STUDIOSYNC_OPEN", *DESC = "StudioSync"; // (James, 0.58.87: just "StudioSync", it was "StudioSync: open the panel")
 static const char *SECTION = "BandSync", *ICON = "toolbar_studiosync", *ICON_FILE = "toolbar_studiosync.png"; // (StudioSync's settings section kept its first name)
 #endif
 
@@ -135,15 +135,15 @@ static bool g_added = false; // the button there is the one this extension added
 static int g_ticks = 0;
 static const char *TOOLBAR = "Main toolbar";
 
-// Where the button is on the main toolbar (-1: not there), and how many items it has.
-static int find_button(int *count)
+// Where the button is on the main toolbar (-1: not there), and how many items it has; `old_label`: whether it's labelled other than DESC.
+static int find_button(int *count, bool *old_label, int *old_flags)
 {
   int at = -1, i = 0;
   for (;; i++) {
     int cmd = 0, flags = 0;
     const char *label = nullptr, *icon = nullptr;
     if (!g_get_item(TOOLBAR, i, &cmd, &flags, &label, &icon)) break;
-    if (cmd == g_cmd && at < 0) at = i;
+    if (cmd == g_cmd && at < 0) { at = i; *old_label = label && strcmp(label, DESC) != 0; *old_flags = flags; }
     if (i > 500) break; // (a guard: no toolbar is that long)
   }
   *count = i;
@@ -166,9 +166,12 @@ static void on_timer()
   g_ticks = 0;
   const int want = toolbar_wanted() ? 1 : 0;
   if (want == g_shown) return;
-  int count = 0;
-  const int at = find_button(&count);
+  int count = 0, flags = 0;
+  bool old_label = false;
+  const int at = find_button(&count, &old_label, &flags);
   if (want && at < 0) g_added = g_add_item(TOOLBAR, count, g_cmd, 0, DESC, ICON_FILE, 0);
+  // (a button put there under an older name, "StudioSync: open the panel" by hand: the same place, today's name. James, 0.58.87)
+  else if (want && old_label && g_delete_item(TOOLBAR, at, 1)) g_added = g_add_item(TOOLBAR, at, g_cmd, flags, DESC, ICON_FILE, 0);
   else if (!want && at >= 0 && g_added) { g_delete_item(TOOLBAR, at, 0); g_added = false; }
   g_shown = want;
 }

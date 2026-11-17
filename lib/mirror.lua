@@ -46,7 +46,9 @@ function mirror.normalize_item(chunk)
     elseif s == "<EXT" or s == "<EXTI" then -- (REAPER writes an item's P_EXT as <EXTI, a track's or take's as <EXT)
       in_ext = true; out[#out + 1] = s
     elseif key == "TAKE" then
-      out[#out + 1] = "TAKE" -- ("TAKE SEL" marks the active take: local)
+      -- ("TAKE SEL" marks the active take, which travels as BANDTAKE. An empty take stays one, "TAKE NULL": as a bare "TAKE" it arrived as a
+      -- real take with nothing in it, and the item never read back as it was sent. Review, 0.58.87)
+      out[#out + 1] = s:match("^TAKE%s+NULL") and "TAKE NULL" or "TAKE"
     elseif s == "<SOURCE MIDIPOOL" then
       out[#out + 1] = "<SOURCE MIDI" -- (a pooled copy arrives as an item of its own: REAPER writes it as plain MIDI there)
     elseif s:match("^[ex]m? ") or s:match("^<x ") then
@@ -614,7 +616,7 @@ end
 -- same take's audio or notes (its <SOURCE>), the loser's take comes along as one more take, named for them, so nothing they recorded is lost.
 -- base, winner, loser: normalized item states (mirror.item_state). -> the merged state, and the keys both changed. Pure.
 local ITEM_LEVEL = { POSITION = true, SNAPOFFS = true, LENGTH = true, LOOP = true, ALLTAKES = true, FADEIN = true, FADEOUT = true, MUTE = true,
-  BEAT = true, COLOR = true, LOCK = true, GROUP = true, IMGRESOURCEFLAGS = true, ["<NOTES"] = true, ["<EXTI"] = true, BANDLANE = true }
+  BEAT = true, COLOR = true, LOCK = true, GROUP = true, IMGRESOURCEFLAGS = true, ["<NOTES"] = true, ["<EXTI"] = true, BANDLANE = true, BANDTAKE = true }
 local function elements(state)
   local els, order, nth, section, depth, block = {}, {}, {}, 0, 0, nil
   local function add(key, text)
@@ -631,6 +633,7 @@ local function elements(state)
     elseif depth == 1 then
       if line == ">" then depth = 0
       elseif line == "TAKE" then section = section + 1
+      elseif line == "TAKE NULL" then section = section + 1; add("TAKE NULL", line) -- (an empty take: a section with only this in it)
       elseif line:sub(1, 1) == "<" then block = { word = line:match("^(%S+)"), lines = { line } }; depth = 2
       else add(line:match("^(%S+)") or line, line) end
     else
@@ -670,10 +673,11 @@ function mirror.merge_item(base, winner, loser, loser_name)
   local lines, section, after = { "<ITEM" }, 0, {}
   for _, e in ipairs(seq) do
     local v = out[e.key]
-    if v and e.word == "BANDLANE" then after[#after + 1] = v
+    if v and (e.word == "BANDLANE" or e.word == "BANDTAKE") then after[#after + 1] = v -- (both after the item, as mirror.item_state has them)
     elseif v then
-      while section < e.section do section = section + 1; lines[#lines + 1] = "TAKE" end
-      lines[#lines + 1] = v
+      local null = v == "TAKE NULL"
+      while section < e.section do section = section + 1; lines[#lines + 1] = (null and section == e.section) and "TAKE NULL" or "TAKE" end
+      if not null then lines[#lines + 1] = v end
     end
   end
   -- the loser's own take of whatever both re-recorded: one more take, its take-level lines, named for them
@@ -1260,10 +1264,13 @@ function mirror.item_state(it, media_dir)
   if pick then st = st .. "BANDTAKE " .. pick .. "\n" end
   return st
 end
--- A state from before 0.58.85 (no BANDTAKE) that's this one but for the BANDTAKE line: the same item, read the way this version reads one. Pure.
+-- A state from an older version that's this one but for what that version left out: the BANDTAKE line (before 0.58.85), and empty takes
+-- written as bare "TAKE" (before 0.58.87). The same item, read the way this version reads one. Pure.
+local function older_form(s) return (s:gsub("BANDTAKE %d+\n", ""):gsub("\nTAKE NULL\n", "\nTAKE\n"):gsub("\nTAKE NULL\n", "\nTAKE\n")) end
 function mirror.only_pick_new(track, here, theirs)
-  if type(theirs) ~= "string" or theirs:find("BANDTAKE", 1, true) or not here:find("BANDTAKE", 1, true) then return false end
-  return mirror.item_hash(track, mirror.normalize_item(theirs)) == mirror.item_hash(track, (here:gsub("BANDTAKE %d+\n", "")))
+  if type(theirs) ~= "string" or theirs:find("BANDTAKE", 1, true) or theirs:find("\nTAKE NULL\n", 1, true) then return false end
+  if not (here:find("BANDTAKE", 1, true) or here:find("\nTAKE NULL\n", 1, true)) then return false end
+  return mirror.item_hash(track, older_form(mirror.normalize_item(theirs))) == mirror.item_hash(track, older_form(here))
 end
 
 -- Every mirrored object in the project, with its normalized state and hash. Objects with no oid, or a copy that
@@ -2599,7 +2606,13 @@ function mirror.watch(proj, cfg, song, room, opts)
               name ~= "" and name or "an unnamed track", mirror.copy_failed))
           end
           if shared ~= state then -- it now plays the shared copy here too, so the next look sees the same thing
-            reaper.SetItemStateChunk(o.ptr, mirror.resolve_media((shared:gsub("BANDLANE %d+\n?", "")), media), false)
+            -- (which take plays, the selection and its group put back: the normalized chunk has none of them, so a new recording's first
+            -- send played its first take, for everyone. And no BANDTAKE line inside REAPER's chunk. Review, 0.58.87)
+            local cur, sel, grp = reaper.GetMediaItemInfo_Value(o.ptr, "I_CURTAKE"), reaper.IsMediaItemSelected(o.ptr), reaper.GetMediaItemInfo_Value(o.ptr, "I_GROUPID")
+            reaper.SetItemStateChunk(o.ptr, mirror.resolve_media((shared:gsub("BANDLANE %d+\n?", ""):gsub("BANDTAKE %d+\n?", "")), media), false)
+            if cur < reaper.CountTakes(o.ptr) then reaper.SetMediaItemInfo_Value(o.ptr, "I_CURTAKE", cur) end
+            reaper.SetMediaItemSelected(o.ptr, sel)
+            if grp > 0 then reaper.SetMediaItemInfo_Value(o.ptr, "I_GROUPID", grp) end
             state = mirror.item_state(o.ptr, media)
             o.hash = mirror.item_hash(o.track, state)
           end

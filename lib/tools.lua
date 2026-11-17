@@ -456,7 +456,7 @@ function tools.toolbar_button_blocked()
     return "Shows once StudioSync's menu extension " .. tools.TOOLBAR_EXT .. " is loaded: restart REAPER (after Extensions > ReaPack > Synchronize packages, if it isn't installed yet)."
   end
   if reaper.GetExtState(band.SECTION, "menu extension toolbar") == "0" then
-    return "This REAPER is too old to add a toolbar button (7.11 or newer can): add 'StudioSync: open the panel' to the toolbar yourself " ..
+    return "This REAPER is too old to add a toolbar button (7.11 or newer can): add 'StudioSync' to the toolbar yourself " ..
       "(right-click the toolbar > Customize toolbar > Add), and it gets StudioSync's image."
   end
 end

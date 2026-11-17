@@ -310,7 +310,7 @@ function copy.tick()
     local list = {}
     for _, p in ipairs(j.paths) do list[#list + 1] = dir .. "/" .. p end
     if reaper.EnumerateFiles(j.local_dir, 0) or reaper.EnumerateSubdirectories(j.local_dir, 0) then list[#list + 1] = j.local_dir end
-    reaper.DeleteExtState(band.SECTION, "project file " .. song, true)
+    band.forget_project_file(j.root, song)
     j.binning, j.step = copy.bin_start(list, song), "binning"
     j.words = "Moving '" .. song .. "' to the " .. (WIN and "Recycle Bin" or "Trash")
   elseif j.step == "binning" then

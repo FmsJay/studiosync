@@ -1,5 +1,6 @@
 -- Phone alerts: what's sent, and which channel names and servers are taken from the studio's band.json (lupa or Lua 5.4, from the repo root)
-reaper = setmetatable({}, { __index = function() return function() end end })
+local clock = 0 -- (settings are read at most every 5 s: lib/groups.lua groups.trusted. Each look here is 10 s on)
+reaper = setmetatable({ time_precise = function() clock = clock + 10; return clock end }, { __index = function() return function() end end })
 package.path = "lib/?.lua;" .. package.path
 local band = require("band")
 local alerts = require("alerts")

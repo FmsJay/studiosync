@@ -23,7 +23,7 @@ do -- the Actions list as it should be for this version: an update through the s
   end
 end
 
-pcall(require("tools").toolbar_default) -- (StudioSync's button on the main toolbar from the first restart after installing: 0.58.82)
+band.try("tools.toolbar_default", require("tools").toolbar_default) -- (StudioSync's button on the main toolbar from the first restart after installing: 0.58.82)
 
 if reaper.GetExtState(band.SECTION, "open panel at start") == "1" then -- (the installer's restart for ReaPersona's shortcuts: back in the panel. 0.58.64)
   reaper.DeleteExtState(band.SECTION, "open panel at start", true)
@@ -69,24 +69,29 @@ local function loop_body()
   end
   if not keys_set then -- (Ctrl+Z never rolls back a bandmate's work: lib/undo.lua. Not in the hidden renderer, above)
     keys_set, BANDSYNC_AUTOSTART_STARTED = true, true
-    pcall(require("undo").auto_keys, dir)
+    band.try("undo.auto_keys", require("undo").auto_keys, dir)
     local ok, why = pcall(require("startup").on_start) -- (the band's songs, opened without REAPER's boxes: lib/startup.lua)
     if not ok then band.log("couldn't open the studio's projects by itself: " .. tostring(why)) end
-    pcall(require("services").stop_old_relay) -- (a Mac's ReaNINJAM relay from an older StudioSync, left running: lib/services.lua)
+    band.try("services.stop_old_relay", require("services").stop_old_relay) -- (a Mac's ReaNINJAM relay from an older StudioSync, left running: lib/services.lua)
     reaper.atexit(function()
-      pcall(require("undo").auto_keys, dir)
-      pcall(require("startup").on_quit)
-      pcall(require("services").tidy_temp)
+      band.try("undo.auto_keys", require("undo").auto_keys, dir)
+      band.try("startup.on_quit", require("startup").on_quit)
+      band.try("services.tidy_temp", require("services").tidy_temp)
     end)
   end
-  pcall(require("startup").note)
-  pcall(band.sws_colours) -- (SWS auto-colouring off while a band song is in front, back on otherwise)
-  pcall(require("removal").tick) -- (someone taken out of a group, and which computer is whose: lib/removal.lua)
-  pcall(require("listen").tick) -- (the listening page, where this computer shares it)
+  band.try("startup.note", require("startup").note)
+  band.try("band.sws_colours", band.sws_colours) -- (SWS auto-colouring off while a band song is in front, back on otherwise)
+  band.try("removal.tick", require("removal").tick) -- (someone taken out of a group, and which computer is whose: lib/removal.lua)
+  band.try("listen.tick", require("listen").tick) -- (the listening page, where this computer shares it)
+  -- (guests off Tailscale when their time is up, with or without the panel open: it ran only in the panel. Security review, 0.58.87)
+  band.try("services.tailscale_sweep_guests", require("services").tailscale_sweep_guests)
   -- an update: the new code takes over in place (once the version on disk has held for two looks), as Live sync does;
   -- before 0.21.3 a running Autostart kept its old rules until REAPER restarted
   local disk = (band.read(dir .. "/lib/band.lua") or ""):match('VERSION = "([^"]+)"')
-  if disk and disk ~= band.VERSION and disk == seen_disk and not band.update_ok(dir, disk) and reaper.GetExtState(band.SECTION, "update asked") ~= disk then
+  -- (asked only while nothing plays or records anywhere: the box holds every script, so every tab's Live sync stopped mid-take until someone
+  -- answered, and the band saw this computer as away. Review, 0.58.87)
+  if disk and disk ~= band.VERSION and disk == seen_disk and not band.update_ok(dir, disk) and reaper.GetExtState(band.SECTION, "update asked") ~= disk
+      and reaper.GetPlayState() == 0 then
     reaper.SetExtState(band.SECTION, "update asked", disk, true) -- (once per version)
     if reaper.MB("StudioSync " .. disk .. " has arrived in the shared folder (this computer runs StudioSync from there).\n\n" ..
         "Anyone in the studio can put a new version there. Only say Yes if you expected an update from your studio.\n\nSwitch to it now?", "StudioSync", 4) == 6 then

@@ -8,11 +8,11 @@ local band = require("band")
 local alerts = {}
 
 function alerts.channel(root)
-  local j = band.read_json(root .. "/_band/band.json")
+  local j = require("groups").trusted(root) -- (only as someone in charge set it: lib/groups.lua)
   return type(j) == "table" and type(j.alerts) == "string" and j.alerts:match("^[%w%-_]+$") and j.alerts or nil
 end
 function alerts.server(root)
-  local j = band.read_json(root .. "/_band/band.json")
+  local j = require("groups").trusted(root) -- (a member pointed everyone's alerts at their own server: review, 0.58.87)
   local s = type(j) == "table" and type(j.alerts_server) == "string" and j.alerts_server or ""
   return s:match("^https://[%w%.%-]+[%w/%-]*$") and s:gsub("/+$", "") or "https://ntfy.sh"
 end
@@ -53,7 +53,7 @@ function alerts.call_ok(url)
   return type(url) == "string" and #url < 300 and url:match("^https://[%w%-%._~:/%?#=@+]+$") ~= nil
 end
 function alerts.call_link(root)
-  local j = root and band.read_json(root .. "/_band/band.json")
+  local j = root and require("groups").trusted(root)
   return type(j) == "table" and alerts.call_ok(j.call) and j.call or nil
 end
 function alerts.set_call(root, url)

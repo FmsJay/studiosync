@@ -122,6 +122,19 @@ function sonobus.use_buffer(name)
   end
 end
 
+-- What SonoBus sends each person (James, 0.58.87: "is there a way to get the uncompressed audio through sonobus"): its send formats, from
+-- SonoBus's own list (SonobusAudioProcessor::initFormats, GPL-3.0): 0-7 Opus 16-256 kbps a channel, 8 PCM 16-bit, 9 PCM 24-bit, 10 PCM
+-- 32-bit float; 4 (Opus 96) its default. Set as its "defsendqual" parameter (new people) and each person's saved "sendformat". Uncompressed
+-- 24-bit stereo at 48 kHz is about 2.3 Mbit/s to each person, twelve times Opus 96's: fine on a home connection for a few people, not on
+-- a phone's. This computer's choice: Settings > Advanced.
+sonobus.QUALITY = { { "opus", "Compressed (Opus 96 kbps, SonoBus's own)", 4 }, { "opus_hi", "Compressed, finer (Opus 256 kbps)", 7 },
+  { "pcm16", "Uncompressed 16-bit", 8 }, { "pcm24", "Uncompressed 24-bit (about 2.3 Mbit/s to each person)", 9 } }
+sonobus.SEND = 4
+function sonobus.use_quality(name)
+  sonobus.SEND = 4
+  for _, q in ipairs(sonobus.QUALITY) do if q[1] == name then sonobus.SEND = q[3] end end
+end
+
 local function param_value(tree, id)
   for _, pc in ipairs(tree.children) do
     local pid = pc.type == "PARAM" and prop(pc, "id")
@@ -256,7 +269,7 @@ function sonobus.set_outputs(b64, outs)
     if not found then
       local e = { type = "PeerStateCache", children = {}, props = {
         { "name", v_str(name) }, { "netbuf", v_double(sonobus.BUFFER.defnetbuf * 1000) }, { "netbufauto", v_int(sonobus.BUFFER.defnetauto) },
-        { "sendformat", v_int(4) }, { "numChanGroups", v_int(1) }, { "level", v_double(1) }, { "orderpriority", v_int(-1) },
+        { "sendformat", v_int(sonobus.SEND) }, { "numChanGroups", v_int(1) }, { "level", v_double(1) }, { "orderpriority", v_int(-1) },
         { "numMultiChanGroups", v_int(0) }, { "modifiedChanGroups", V_FALSE },
       } }
       e.children = { { type = "ChannelGroups", props = {}, children = { channel_group(start) } }, { type = "MultiChannelGroups", props = {}, children = {} } }
@@ -290,6 +303,33 @@ function sonobus.set_buffer(b64, ms, auto)
     local nb, na = prop(e, "netbuf"), prop(e, "netbufauto")
     if nb then nb[2] = v_double(ms) else e.props[#e.props + 1] = { "netbuf", v_double(ms) } end
     if na then na[2] = v_int(auto) else e.props[#e.props + 1] = { "netbufauto", v_int(auto) } end
+  end
+  return pack_chunk(c)
+end
+
+-- Whether SonoBus sends format `idx` (sonobus.QUALITY) to new people and to everyone it remembers.
+function sonobus.quality_ok(b64, idx)
+  local c = unpack_chunk(b64)
+  if not c then return true end
+  local v = param_value(c.tree, "defsendqual")
+  if v and math.floor(v + 0.5) ~= idx then return false end
+  local map = child(c.tree, "PeerStateCacheMap")
+  for _, e in ipairs(map and map.children or {}) do
+    local f = prop(e, "sendformat")
+    if f and f[2] ~= v_int(idx) then return false end
+  end
+  return true
+end
+function sonobus.set_quality(b64, idx)
+  local c = unpack_chunk(b64)
+  if not c then return nil, "not a SonoBus state StudioSync understands" end
+  local _, pc = param_value(c.tree, "defsendqual")
+  local v = pc and prop(pc, "value")
+  if v then v[2] = v_double(idx) elseif pc then pc.props[#pc.props + 1] = { "value", v_double(idx) } end
+  local map = child(c.tree, "PeerStateCacheMap")
+  for _, e in ipairs(map and map.children or {}) do
+    local f = prop(e, "sendformat")
+    if f then f[2] = v_int(idx) else e.props[#e.props + 1] = { "sendformat", v_int(idx) } end
   end
   return pack_chunk(c)
 end

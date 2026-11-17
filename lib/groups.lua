@@ -13,6 +13,30 @@ local function json_of(root)
   return type(j) == "table" and j or {}
 end
 
+-- The studio's settings that reach outside it (James's review, 0.58.87: any member could rewrite band.json): where alerts go, the call link,
+-- the private live-audio server, the studio's Tailscale network and Sync only through Tailscale. Taken from band.json only when Syncthing says
+-- the owner's or an admin's computer wrote it (lib/trust.lua); one from anyone else leaves the last trusted values standing (ExtState "trusted
+-- settings <root>", kept). Syncthing not saying yet, or a studio from before owners: band.json as it is, as before. Read at most every 5 s.
+local SETTINGS = { "alerts", "alerts_server", "call", "sonobus_server", "tailnet", "tailscale_only" }
+local trusted_at = {}
+function groups.trusted(root)
+  local c, now = trusted_at[root], reaper.time_precise() or 0
+  if c and now - c.at < 5 then return c.j end
+  local j = json_of(root)
+  local okt, ok = pcall(require("trust").from_manager_file, root, "_band/band.json")
+  local key = "trusted settings " .. band.norm(root):lower()
+  local out = {}
+  if okt and ok == false then
+    out = band.json_decode(reaper.GetExtState(band.SECTION, key)) or {}
+  else
+    for _, k in ipairs(SETTINGS) do out[k] = j[k] end
+    if okt and ok == true then reaper.SetExtState(band.SECTION, key, band.json_encode(out), true) end
+  end
+  trusted_at[root] = { at = now, j = out }
+  return out
+end
+function groups.forget_trusted(root) trusted_at[root] = nil end
+
 local seen = {}
 local function who(root) -- read at most every few seconds: the panel asks each frame
   local c = seen[root]
@@ -56,6 +80,7 @@ function groups.new_sonobus_secret(root)
 end
 
 save = function(root, change)
+  trusted_at[root] = nil -- (a setting changed here shows at once)
   local info, j = band.info(root), json_of(root)
   j.name, j.id, j.drive = info.name, info.id, info.drive
   -- (the roles this computer goes by, not a change it set aside: written back as they were, it would reach everyone as this computer's own)
@@ -82,7 +107,7 @@ function groups.edit(root, change) save(root, change) end -- (lib/alerts.lua's c
 -- "sonobus_server" = "<name>:<port>". -> host, port; or nil (SonoBus's public server). Pure but for the read.
 function groups.server_ok(s) return type(s) == "string" and s:match("^[%w%.%-]+:%d+$") ~= nil end
 function groups.sonobus_server(root)
-  local s = json_of(root).sonobus_server
+  local s = groups.trusted(root).sonobus_server
   if not groups.server_ok(s) then return nil end
   local host, port = s:match("^(.+):(%d+)$")
   return host, tonumber(port)
@@ -91,7 +116,7 @@ function groups.set_sonobus_server(root, s) save(root, function(j) j.sonobus_ser
 -- The Tailscale network the studio's Tailscale features use (band.json "tailnet": { name, suffix }): set from the computer that sets one of
 -- them up (a guest invitation, private live audio, the listening page). -> it, or nil. Pure but for the read.
 function groups.tailnet(root)
-  local t = json_of(root).tailnet
+  local t = groups.trusted(root).tailnet
   if type(t) == "table" and type(t.name) == "string" and type(t.suffix) == "string" and t.suffix:match("^[%w%-]+%.ts%.net$") then return t end
 end
 function groups.set_tailnet(root)
@@ -103,7 +128,7 @@ function groups.set_tailnet(root)
   return true
 end
 -- Does the studio sync only through its Tailscale network (band.json "tailscale_only": services.pin_tailnet)? Set by the owner or an admin.
-function groups.tailscale_only(root) return json_of(root).tailscale_only == true and groups.tailnet(root) ~= nil end
+function groups.tailscale_only(root) return groups.trusted(root).tailscale_only == true and groups.tailnet(root) ~= nil end
 function groups.set_tailscale_only(root, on) save(root, function(j) j.tailscale_only = on and true or nil end) end
 
 -- The owner makes someone an admin or a member again. -> true, or nil + why.

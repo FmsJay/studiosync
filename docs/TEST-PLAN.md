@@ -272,3 +272,22 @@ box, Live sync every error (the Console still says it once in 30 s); the Console
 opens the folder. The background print renderer keeps trying until 5 fail with none done (was 2), says how it's going under Settings >
 Options, and Health shows a row with "Try in the background again" once it gives up. Nostalgia's Track 8 and 10 comps rebuilt from the
 "before StudioSync" copy (1168 points checked against it).
+
+0.58.87 (after a four-reviewer pass; what's still open is in docs/REVIEW-2026-11-16.md):
+- Panel: "When you click REAPER, the panel" goes behind it (default; its own window, ConfigVar_ViewportsNoDefaultParent), stays in front, or
+  shrinks to the tiny box. The action and toolbar button are called just "StudioSync" (menu extension 1.0.5 relabels a button added by hand).
+- SonoBus: Settings > Advanced > What you send (Opus 96 default, Opus 256, PCM 16, PCM 24) as defsendqual and every person's sendformat;
+  Home: Invite a SonoBus guest (one message with SonoBus's download and the join link; Real time and SonoBus Guest on).
+- Takes to lanes: an item keeps its own lane; a track with a bandmate's takes or prints, or a locked item with takes, isn't converted here;
+  bounded delete loop; the screen held still (the likely "MIDI items flashing"). Prepare's lanes go through REAPER's explode with comp areas.
+- Mirror: empty takes travel as "TAKE NULL" (they arrived as a real empty-source take); the first send of an item keeps its pick, selection
+  and group; a marker or notes change no longer opens the 15 s tempo window that swallowed nudges, fades and automation.
+- Prepare: originals stay where they are when converted to FLAC; clutter spares items with notes, non-file sources or take FX; slivers are
+  a row of their own, unticked. Recording format put back only while stopped. Print renders always put the track back.
+- Same song name in two studios: matched by studio too (open, Live sync, driver history); new local projects go in a folder per studio.
+- Opening a project keeps your own mix; nothing comes in before Live sync's first look; extra-tab launchers rewritten when stale; the update
+  question waits until nothing plays; the panel reads band.lua once in 3 s.
+- Security: chat overview's Open asks for anything not a web link; Syncthing settings changed only for studio peers; devices files carry
+  only the studio's own Tailscale name; outward studio settings only from an owner's or admin's band.json; guest invitations refuse a
+  token for another network, keys last two days, guest notes only count from someone in charge, and Tailscale guests are swept by Autostart.
+- Bare pcalls in Live sync and Autostart log their failures (band.try). New tests: test_trusted, take_comps empty-take case.

@@ -170,6 +170,22 @@ local ok, err = pcall(function()
   check(mirror.only_pick_new("T-TEST-20261116000000-4", here, (here:gsub("BANDTAKE %d+\n", ""))), "and the same item from before reads as itself but for the pick (no flood of changes on updating)")
   check(not mirror.only_pick_new("T-TEST-20261116000000-4", here, (here:gsub("BANDTAKE %d+\n", ""):gsub("POSITION [^\n]*", "POSITION 31"))), "but not one that moved meanwhile")
   check(not mirror.only_pick_new("T-TEST-20261116000000-4", here, here), "nor a version that says its pick")
+  -- (0.58.87, review) an item with an empty take ("TAKE NULL") playing a take after it: through mirror, the empty take stays empty and in its place
+  local nul = recording(t4, 40, 4, {}, { 1 }, false)[1]
+  do
+    local _, chunk = reaper.GetItemStateChunk(nul, "", false)
+    reaper.SetItemStateChunk(nul, (chunk:gsub(">%s*$", "TAKE NULL\n>\n")), false)
+    reaper.SetMediaItemInfo_Value(nul, "I_CURTAKE", 2)
+  end
+  local nst = mirror.item_state(nul, dir .. "/media")
+  mirror.apply(p, { obj = "item", oid = "I-TEST-20261116000000-10", track = "T-TEST-20261116000000-4", state = nst }, dir .. "/media", false)
+  local nfresh = mirror.find(p, "item", "I-TEST-20261116000000-10")
+  local okn = nfresh and reaper.CountTakes(nfresh) == reaper.CountTakes(nul) and reaper.GetTake(nfresh, 3) == nil and reaper.GetTake(nfresh, 2) ~= nil
+    and reaper.GetMediaItemInfo_Value(nfresh, "I_CURTAKE") == 2
+  check(okn, "an empty take arrives empty, in its place, and the pick plays the same take (" .. (nfresh and (reaper.CountTakes(nfresh) .. " takes, playing " ..
+    reaper.GetMediaItemInfo_Value(nfresh, "I_CURTAKE") .. ", take 4 " .. tostring(reaper.GetTake(nfresh, 3))) or "none") .. ")")
+  local function sans_id(s) return (s:gsub("<EXTI\n.->\n", "")) end -- (the arrival carries its id; the original here has none)
+  check(nfresh and mirror.item_hash("T", sans_id(mirror.item_state(nfresh, dir .. "/media"))) == mirror.item_hash("T", sans_id(nst)), "and it reads back the same as it was sent")
 
   -- 5. sharing a song (Prepare's "lanes" step): a comp with a piece that plays an empty take on purpose, and its other takes kept
   reaper.InsertTrackInProject(p, 4, 0)

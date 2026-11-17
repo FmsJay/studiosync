@@ -462,6 +462,8 @@ With Real time mode on:
   syncing with theirs a day later by itself (a guest invitation's Tailscale access ends then too); their copy stays with them.
 - **The live audio's password** is the studio's own: worked out from a secret the owner's computer keeps in the studio's
   settings, not from the studio's ID that invitations show. It changes when someone is taken out.
+- **Invite a SonoBus guest** (Home, beside Configure SonoBus): one message with SonoBus's free download and a link that joins your studio's
+  live audio; it turns on Real time mode and SonoBus Guest, so they hear your mix and what they play records here.
 - **SonoBus Guest**: for someone who joins with only SonoBus (a singer at home, no REAPER, no copy of the project). They hear
   your whole mix, and what they sing is recorded on the Real time track whenever you record. **Measure their delay**
   plays them a bar of count-in and 8 clicks to clap along to, and times where the claps land (the whole round trip;
@@ -508,6 +510,9 @@ MFreeFXBundle, and Xfer's Shrub (a free, pared-down Serum, in beta; its VST3 dow
 and it plays four notes at once, so it's a bass, lead and sequence synth).
 
 ### Live: hear each other while it happens
+
+**What you send** (Settings > Advanced, under Real time buffer): Opus 96 kbps (SonoBus's own), Opus 256, or uncompressed PCM 16 or
+24-bit. Uncompressed is exactly what you play, at about 2.3 Mbit/s to each person for 24-bit stereo at 48 kHz (twelve times Opus 96).
 
 **Real time buffer** (Settings > Advanced, this computer's choice): how much sound SonoBus keeps in hand. Steady (150 ms, the default) holds still, so Their time can stay set; Rock steady (250 ms) for a rough connection; Lowest delay wanders. Measured laptop on Wi-Fi to PC, against the PC's grid: 278 ms holding with one 25 ms step at Steady, 486.8 ms and no movement at Rock steady, 162-221 ms wandering at Lowest. It doesn't line up by itself.
 

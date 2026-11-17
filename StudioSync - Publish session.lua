@@ -57,7 +57,7 @@ if not b.song then
   reaper.Main_SaveProjectEx(proj, pdir .. "/" .. song .. " (before StudioSync).rpp", 0) -- a copy; History offers it back
   reaper.SetProjExtState(proj, band.SECTION, "before_bandsync", pdir .. "/" .. song .. " (before StudioSync).rpp")
 end
-reaper.SetExtState(band.SECTION, "project file " .. song, (select(2, reaper.EnumProjects(-1)):gsub("\\", "/")), true)
+band.set_project_file(cfg.root, song, (select(2, reaper.EnumProjects(-1)):gsub("\\", "/")))
 reaper.RecursiveCreateDirectory(band.song_dir(cfg, song) .. "/rooms/main/media", 0)
 -- A new project starts with anyone editing (James, 0.58.47: a collaborator's first edit was refused under "Driver + claims", the biggest
 -- first-day wall). The driver can tighten it under Who controls; an existing project keeps what it has.
