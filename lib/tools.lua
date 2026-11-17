@@ -415,7 +415,7 @@ end
 -- when ExtState "toolbar button" is "1", with toolbar_studiosync.png from REAPER's Data/toolbar_icons (copied there from lib/toolbar_icons,
 -- in REAPER's toolbar style: grey, lighter grey under the mouse, StudioSync's blue while the panel is open). REAPER builds the toolbar as it
 -- starts, so a change shows after a restart; a main toolbar someone customized isn't built from the default, so it isn't added there.
-tools.TOOLBAR_EXT = "1.0.3"
+tools.TOOLBAR_EXT = "1.0.4"
 function tools.toolbar_button() return reaper.GetExtState(band.SECTION, "toolbar button") == "1" end
 -- On unless you switched it off, as Helgobox's is (James, 0.58.82): "" is never chosen (StudioSync - Autostart and the panel switch it on then),
 -- "0" off. The menu extension reads "1" only.

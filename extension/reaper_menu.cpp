@@ -25,7 +25,8 @@
 #define REAPERAPI_WANT_ShowMessageBox
 #define REAPERAPI_WANT_GetExtState
 #define REAPERAPI_WANT_SetExtState
-#define EXT_VERSION "1.0.3" // (tools/make_index.py EXT_VERSION: what the panel reads to know this build adds toolbar buttons)
+#define REAPERAPI_WANT_RefreshToolbar2
+#define EXT_VERSION "1.0.4" // (tools/make_index.py EXT_VERSION: what the panel reads to know this build adds toolbar buttons)
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"
 
@@ -149,10 +150,19 @@ static int find_button(int *count)
   return at;
 }
 
-// REAPER's timer (about 30 times a second): a look about once a second, never more than the setting's change needs.
+// REAPER's timer (about 30 times a second). The button lit while the tool's window is open, however it was opened: the script's action is
+// looked for here, not only on a click (opened from its own action or at start, the button stayed dark: James, 0.58.83), and the toolbar is
+// told when that changes, about 6 times a second. The button itself, about once a second.
+static int g_lit = -1, g_look = 0, g_search = 0;
 static void on_timer()
 {
-  if (++g_ticks < 30) return;
+  if (++g_look >= 5) {
+    g_look = 0;
+    if (!g_target && g_search++ % 30 == 0) g_target = find_target(); // (every 5 s until found: it reads the whole Actions list)
+    const int lit = on_toggle(g_cmd);
+    if (lit != g_lit) { g_lit = lit; RefreshToolbar2(0, g_cmd); }
+  }
+  if (!g_add_item || !g_delete_item || !g_get_item || ++g_ticks < 30) return;
   g_ticks = 0;
   const int want = toolbar_wanted() ? 1 : 0;
   if (want == g_shown) return;
@@ -187,7 +197,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_H
   g_delete_item = (DeleteItemFn)rec->GetFunc("DeleteCustomMenuOrToolbarItem");
   g_get_item = (GetItemFn)rec->GetFunc("GetCustomMenuOrToolbarItem");
   const bool toolbar_api = g_add_item && g_delete_item && g_get_item;
-  if (toolbar_api) rec->Register("timer", (void *)on_timer);
+  rec->Register("timer", (void *)on_timer);
   SetExtState(SECTION, "menu extension", EXT_VERSION, false);
   SetExtState(SECTION, "menu extension toolbar", toolbar_api ? "1" : "0", false); // (REAPER before 7.11 has no way: the panel says so)
   AddExtensionsMainMenu();

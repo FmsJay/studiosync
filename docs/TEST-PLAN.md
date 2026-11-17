@@ -253,3 +253,6 @@ second per pass, then builds missing peaks. The minimized box's count is small.
 0.58.83: the toolbar button is the StudioSync logo in a button frame like the toolbar's own (tools/make_toolbar_icon.py; normal, hover,
 on). Menu extension 1.0.3 adds it to whatever main toolbar there is, customized or not, through REAPER's AddCustomMenuOrToolbarItem (7.11
 on, not saved into the toolbar), a second after REAPER starts and whenever the setting changes; one added by hand isn't doubled.
+
+0.58.84: menu extension 1.0.4: the toolbar button shows "on" while the panel is open however it opened (the panel's own action, at start),
+not only after the button was clicked; the extension finds the panel's script itself and refreshes the button when it opens or closes.
