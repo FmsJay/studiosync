@@ -1424,10 +1424,10 @@ local function settings_look()
     do -- a StudioSync button on REAPER's main toolbar (lib/tools.lua): on unless switched off, as Helgobox's (0.58.82)
       ch, v = switch_row("##tbbtn", "StudioSync button on REAPER's toolbar", tools.toolbar_button(),
         "A button at the end of REAPER's main toolbar that opens the panel, in the toolbar's own style (lit while the panel is open).\n" ..
-        "REAPER builds its toolbar as it starts, so a change shows after a restart. Only on this computer.")
+        "On whatever main toolbar you have, customized or not, without changing your toolbar's own setup; a change shows within a second. Only on this computer.")
       if ch then
         local ok, why = tools.set_toolbar_button(v)
-        if ok then band.log(v and "the StudioSync button joins the main toolbar when REAPER next starts" or "the StudioSync button leaves the main toolbar when REAPER next starts")
+        if ok then band.log(v and "the StudioSync button joins the main toolbar" or "the StudioSync button leaves the main toolbar (one you added by hand stays: right-click it > Customize toolbar to remove it)")
         else band.msg(why) end
       end
       local blocked = tools.toolbar_button() and tools.toolbar_button_blocked()

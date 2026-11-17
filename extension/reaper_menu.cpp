@@ -2,8 +2,11 @@
 // tool's own script (found in the Actions list by its file name: a script's command id differs per computer and per run). The menu item is
 // ticked while the tool's window is open (its script's toggle). Shared by StudioSync and ReaPersona; build with -DREAPERSONA for ReaPersona.
 // And, when the tool's settings ask for it (ExtState <SECTION> "toolbar button" = "1"), a button for it at the end of REAPER's main toolbar,
-// with its own image (toolbar_<name>.png in REAPER's Data/toolbar_icons, put there by the tool): added each time REAPER builds the default
-// toolbar, as Helgobox adds Playtime's (James, 0.58.81), so it comes and goes with the setting, not by editing the toolbar.
+// with its own image (toolbar_<name>.png in REAPER's Data/toolbar_icons, put there by the tool). Added through REAPER's own
+// AddCustomMenuOrToolbarItem (7.11 on; not in the SDK header, nor open to scripts: the signatures are reaper-rs's bindings, MIT), which works
+// on a toolbar someone customized too and isn't saved into it, as Helgobox adds Playtime's: checked a second after REAPER starts and whenever
+// the setting changes, so it comes and goes with the setting. (1.0.2 added it only while REAPER built the default toolbar, and James's
+// toolbar was customized by then: it never showed. 0.58.83)
 // REAPER's ReaScript API has no way to add menu items, and editing reaper-menu.ini replaces the whole menu (hiding what SWS and ReaPack add).
 // GPL-3.0-or-later, as the tools it opens.
 #ifdef _WIN32
@@ -22,16 +25,16 @@
 #define REAPERAPI_WANT_ShowMessageBox
 #define REAPERAPI_WANT_GetExtState
 #define REAPERAPI_WANT_SetExtState
-#define EXT_VERSION "1.0.2" // (tools/make_index.py EXT_VERSION: what the panel reads to know this build adds toolbar buttons)
+#define EXT_VERSION "1.0.3" // (tools/make_index.py EXT_VERSION: what the panel reads to know this build adds toolbar buttons)
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"
 
 #ifdef REAPERSONA
 static const char *NAME = "ReaPersona", *SCRIPT = "ReaPersona.lua", *CMD = "REAPERSONA_OPEN", *DESC = "ReaPersona: open";
-static const char *SECTION = "ReaPersona", *ICON = "toolbar_reapersona";
+static const char *SECTION = "ReaPersona", *ICON = "toolbar_reapersona", *ICON_FILE = "toolbar_reapersona.png";
 #else
 static const char *NAME = "StudioSync", *SCRIPT = "StudioSync - Panel.lua", *CMD = "STUDIOSYNC_OPEN", *DESC = "StudioSync: open the panel";
-static const char *SECTION = "BandSync", *ICON = "toolbar_studiosync"; // (StudioSync's settings section kept its first name)
+static const char *SECTION = "BandSync", *ICON = "toolbar_studiosync", *ICON_FILE = "toolbar_studiosync.png"; // (StudioSync's settings section kept its first name)
 #endif
 
 static int g_cmd = 0, g_target = 0;
@@ -117,15 +120,47 @@ static void on_menu(const char *id, HMENU menu, int flag)
   if (flag != 0 || !g_cmd || !id || !menu) return;
   if (!strcmp(id, "Main extensions")) add_item(menu, false);
   else if (!strcmp(id, "Main view")) add_item(menu, true);
-  else if (!strcmp(id, "Main toolbar") && toolbar_wanted()) {
-    MENUITEMINFO mi = {};
-    mi.cbSize = sizeof(mi);
-    mi.fMask = MIIM_TYPE | MIIM_ID;
-    mi.fType = MFT_STRING;
-    mi.dwTypeData = (char *)NAME;
-    mi.wID = g_cmd;
-    InsertMenuItem(menu, GetMenuItemCount(menu), TRUE, &mi);
+}
+
+// The toolbar button. Last extra_flags: 0 refreshes the toolbar now, 1 doesn't. Get's command out: > 0 a command, -1 a separator.
+typedef bool (*AddItemFn)(const char *menu, int pos, int command, int toolbarflags, const char *label, const char *iconfn, int extra_flags);
+typedef bool (*DeleteItemFn)(const char *menu, int pos, int extra_flags);
+typedef bool (*GetItemFn)(const char *menu, int pos, int *command, int *toolbarflags, const char **label, const char **iconfn);
+static AddItemFn g_add_item;
+static DeleteItemFn g_delete_item;
+static GetItemFn g_get_item;
+static int g_shown = -1; // what the toolbar has been made to match: -1 not looked yet, 0 no button wanted, 1 wanted
+static bool g_added = false; // the button there is the one this extension added (one put there by hand stays when the setting goes off)
+static int g_ticks = 0;
+static const char *TOOLBAR = "Main toolbar";
+
+// Where the button is on the main toolbar (-1: not there), and how many items it has.
+static int find_button(int *count)
+{
+  int at = -1, i = 0;
+  for (;; i++) {
+    int cmd = 0, flags = 0;
+    const char *label = nullptr, *icon = nullptr;
+    if (!g_get_item(TOOLBAR, i, &cmd, &flags, &label, &icon)) break;
+    if (cmd == g_cmd && at < 0) at = i;
+    if (i > 500) break; // (a guard: no toolbar is that long)
   }
+  *count = i;
+  return at;
+}
+
+// REAPER's timer (about 30 times a second): a look about once a second, never more than the setting's change needs.
+static void on_timer()
+{
+  if (++g_ticks < 30) return;
+  g_ticks = 0;
+  const int want = toolbar_wanted() ? 1 : 0;
+  if (want == g_shown) return;
+  int count = 0;
+  const int at = find_button(&count);
+  if (want && at < 0) g_added = g_add_item(TOOLBAR, count, g_cmd, 0, DESC, ICON_FILE, 0);
+  else if (!want && at >= 0 && g_added) { g_delete_item(TOOLBAR, at, 0); g_added = false; }
+  g_shown = want;
 }
 
 // The button's image, wherever the command sits on a toolbar (REAPER asks per toolbar, command and state).
@@ -148,7 +183,13 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_H
   rec->Register("toggleaction", (void *)on_toggle);
   rec->Register("hookcustommenu", (void *)on_menu);
   rec->Register("toolbar_icon_map", (void *)on_icon);
+  g_add_item = (AddItemFn)rec->GetFunc("AddCustomMenuOrToolbarItem");
+  g_delete_item = (DeleteItemFn)rec->GetFunc("DeleteCustomMenuOrToolbarItem");
+  g_get_item = (GetItemFn)rec->GetFunc("GetCustomMenuOrToolbarItem");
+  const bool toolbar_api = g_add_item && g_delete_item && g_get_item;
+  if (toolbar_api) rec->Register("timer", (void *)on_timer);
   SetExtState(SECTION, "menu extension", EXT_VERSION, false);
+  SetExtState(SECTION, "menu extension toolbar", toolbar_api ? "1" : "0", false); // (REAPER before 7.11 has no way: the panel says so)
   AddExtensionsMainMenu();
   return 1;
 }

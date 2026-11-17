@@ -415,7 +415,7 @@ end
 -- when ExtState "toolbar button" is "1", with toolbar_studiosync.png from REAPER's Data/toolbar_icons (copied there from lib/toolbar_icons,
 -- in REAPER's toolbar style: grey, lighter grey under the mouse, StudioSync's blue while the panel is open). REAPER builds the toolbar as it
 -- starts, so a change shows after a restart; a main toolbar someone customized isn't built from the default, so it isn't added there.
-tools.TOOLBAR_EXT = "1.0.2"
+tools.TOOLBAR_EXT = "1.0.3"
 function tools.toolbar_button() return reaper.GetExtState(band.SECTION, "toolbar button") == "1" end
 -- On unless you switched it off, as Helgobox's is (James, 0.58.82): "" is never chosen (StudioSync - Autostart and the panel switch it on then),
 -- "0" off. The menu extension reads "1" only.
@@ -448,17 +448,15 @@ function tools.set_toolbar_button(on)
   reaper.SetExtState(band.SECTION, "toolbar button", on and "1" or "0", true)
   return true
 end
--- Why it won't show, or nil: the menu extension is missing or older than 1.0.2, or the main toolbar was customized.
+-- Why it won't show, or nil: the menu extension is missing or older than 1.0.3, or REAPER is older than 7.11 (no way to add a button then).
+-- (A customized toolbar is no bar since 1.0.3: the extension adds the button to whatever main toolbar there is. 0.58.83)
 function tools.toolbar_button_blocked()
   local have = reaper.GetExtState(band.SECTION, "menu extension")
   if have == "" or band.compare_versions(have, tools.TOOLBAR_EXT) < 0 then
-    return "Needs StudioSync's menu extension " .. tools.TOOLBAR_EXT .. " (Extensions > ReaPack > Synchronize packages, then restart REAPER)."
+    return "Shows once StudioSync's menu extension " .. tools.TOOLBAR_EXT .. " is loaded: restart REAPER (after Extensions > ReaPack > Synchronize packages, if it isn't installed yet)."
   end
-  local f = io.open(reaper.GetResourcePath() .. "/reaper-menu.ini", "rb")
-  local ini = f and f:read("a") or ""
-  if f then f:close() end
-  if ini:find("\n%[Main toolbar%]") or ini:find("^%[Main toolbar%]") then
-    return "Your main toolbar is customized, so REAPER doesn't build it from the default: add 'StudioSync: open the panel' to it yourself " ..
+  if reaper.GetExtState(band.SECTION, "menu extension toolbar") == "0" then
+    return "This REAPER is too old to add a toolbar button (7.11 or newer can): add 'StudioSync: open the panel' to the toolbar yourself " ..
       "(right-click the toolbar > Customize toolbar > Add), and it gets StudioSync's image."
   end
 end

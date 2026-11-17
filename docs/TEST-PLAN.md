@@ -249,3 +249,7 @@ mix on meanwhile) and gives yours back when you stop. In Real time mode the per-
 says when Voicemeeter sends REAPER's output back into its input (the echo; lib/vmloop.ps1 reads its routing, read only). Your colour is
 the same in every studio you're in. The toolbar button is on by default (Settings > Options > Look). Opening a project catches up a
 second per pass, then builds missing peaks. The minimized box's count is small.
+
+0.58.83: the toolbar button is the StudioSync logo in a button frame like the toolbar's own (tools/make_toolbar_icon.py; normal, hover,
+on). Menu extension 1.0.3 adds it to whatever main toolbar there is, customized or not, through REAPER's AddCustomMenuOrToolbarItem (7.11
+on, not saved into the toolbar), a second after REAPER starts and whenever the setting changes; one added by hand isn't doubled.
