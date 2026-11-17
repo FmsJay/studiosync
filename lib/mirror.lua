@@ -1217,8 +1217,38 @@ function mirror.clean_lane(lane, lanes)
   return lanes > 0 and math.min(lane, lanes - 1) or lane
 end
 
+-- Which take an item plays, when it has a choice: its takes that aren't prints (an empty take counts, a comp can pick silence), and
+-- which of them is playing, counted from 0. Which take plays was each machine's own before 0.58.85 ("TAKE SEL" is still left out
+-- of the chunk), so a comp made by picking takes (split, a take each) never reached anyone, and an item arriving new played its
+-- first take: Nostalgia's take comps turned into lanes with the wrong takes and silences (James, 0.58.85). The print-or-dry choice
+-- stays each machine's: a print playing counts as the first real take, the one a print is made from.
+local PRINT_KEY = "P_EXT:band_m_print" -- (prints.KEY: on a print take)
+function mirror.real_takes(it)
+  local out = {}
+  for k = 0, reaper.CountTakes(it) - 1 do
+    local tk = reaper.GetTake(it, k)
+    if not (tk and select(2, reaper.GetSetMediaItemTakeInfo_String(tk, PRINT_KEY, "", false)) ~= "") then out[#out + 1] = k end
+  end
+  return out
+end
+-- -> the playing take's place among the real ones (0 = first), or nil with fewer than two real takes.
+function mirror.picked_take(it)
+  local list = mirror.real_takes(it)
+  if #list < 2 then return nil end
+  local cur = reaper.GetMediaItemInfo_Value(it, "I_CURTAKE")
+  for i, k in ipairs(list) do if k == cur then return i - 1 end end
+  return 0
+end
+-- Play the `pick`th real take (from 0). -> true when there is one.
+function mirror.pick_take(it, pick)
+  local k = mirror.real_takes(it)[(tonumber(pick) or -1) + 1]
+  if not k then return false end
+  if reaper.GetMediaItemInfo_Value(it, "I_CURTAKE") ~= k then reaper.SetMediaItemInfo_Value(it, "I_CURTAKE", k) end
+  return true
+end
+
 -- An item's travelling state: its normalized chunk, plus its lane (REAPER keeps an item's fixed lane out of the
--- item's chunk, so it gets a line of its own).
+-- item's chunk, so it gets a line of its own), and which take it plays when it has a choice (BANDTAKE: mirror.picked_take).
 function mirror.item_state(it, media_dir)
   local _, chunk = reaper.GetItemStateChunk(it, "", false)
   local st = mirror.memo("i\0" .. media_dir .. "\0" .. chunk, function() return mirror.tokenize_media(mirror.normalize_item(chunk), media_dir) end)
@@ -1226,7 +1256,14 @@ function mirror.item_state(it, media_dir)
   if reaper.GetMediaTrackInfo_Value(tr, "I_FREEMODE") == 2 then
     st = st .. "BANDLANE " .. mirror.clean_lane(reaper.GetMediaItemInfo_Value(it, "I_FIXEDLANE"), reaper.GetMediaTrackInfo_Value(tr, "I_NUMFIXEDLANES")) .. "\n"
   end
+  local pick = mirror.picked_take(it)
+  if pick then st = st .. "BANDTAKE " .. pick .. "\n" end
   return st
+end
+-- A state from before 0.58.85 (no BANDTAKE) that's this one but for the BANDTAKE line: the same item, read the way this version reads one. Pure.
+function mirror.only_pick_new(track, here, theirs)
+  if type(theirs) ~= "string" or theirs:find("BANDTAKE", 1, true) or not here:find("BANDTAKE", 1, true) then return false end
+  return mirror.item_hash(track, mirror.normalize_item(theirs)) == mirror.item_hash(track, (here:gsub("BANDTAKE %d+\n", "")))
 end
 
 -- Every mirrored object in the project, with its normalized state and hash. Objects with no oid, or a copy that
@@ -1690,13 +1727,15 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     if not it then it = reaper.AddMediaItemToTrack(tr)
     elseif reaper.GetMediaItem_Track(it) ~= tr then reaper.MoveMediaItemToTrack(it, tr) end
     local sel = reaper.IsMediaItemSelected(it)
-    -- (which take plays is each person's own and isn't in what travels: setting the chunk put it back to the first,
-    -- so an audio comp lost its pick on every update from the band: review, 2026-10-31)
+    -- (which take plays: the sender's pick, BANDTAKE, from 0.58.85. A version from before says nothing, and this machine's own
+    -- pick stays: setting the chunk put it back to the first, so an audio comp lost its pick on every update. Review, 2026-10-31)
     local active = reaper.CountTakes(it) > 1 and reaper.GetMediaItemInfo_Value(it, "I_CURTAKE")
     local lane = tonumber(ev.state:match("BANDLANE (%d+)"))
-    reaper.SetItemStateChunk(it, mirror.resolve_media((ev.state:gsub("BANDLANE %d+\n?", "")), media_dir), false)
+    local pick = tonumber(ev.state:match("BANDTAKE (%d+)"))
+    reaper.SetItemStateChunk(it, mirror.resolve_media((ev.state:gsub("BANDLANE %d+\n?", ""):gsub("BANDTAKE %d+\n?", "")), media_dir), false)
     reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", oid, true)
-    if active and active < reaper.CountTakes(it) then reaper.SetMediaItemInfo_Value(it, "I_CURTAKE", active) end
+    if pick then mirror.pick_take(it, pick)
+    elseif active and active < reaper.CountTakes(it) then reaper.SetMediaItemInfo_Value(it, "I_CURTAKE", active) end
     if lane then reaper.SetMediaItemInfo_Value(it, "I_FIXEDLANE", lane < mirror.BAD_LANE and lane or 0) end -- (events from 0.42.7 hold 255)
     require("prints").choose(it) -- notes or the print, as this machine chose (never part of what travels)
     reaper.SetMediaItemSelected(it, sel)
@@ -2477,6 +2516,11 @@ function mirror.watch(proj, cfg, song, room, opts)
             or o.kind == "fx" and type(ev.state) == "string" and mirror.fx_hash(ev.state) == o.hash
             -- (or the same but for its 14th digit, a tempo map put back: the Mac sent its Keys part as its own change, 0.42.8)
             or o.kind == "item" and type(ev.state) == "string" and mirror.rounded(mirror.normalize_item(ev.state)) == mirror.rounded(o.state)) then
+          remember(proj, o.oid, rev, o.hash, evid, kord); return
+        end
+        -- (an item with takes, the band's version from before which take plays travelled: its own author sends the pick it plays, so
+        -- their comp reaches everyone; anyone else keeps theirs till it comes, and isn't sending or putting back a "change". 0.58.85)
+        if ev and o.kind == "item" and mirror.only_pick_new(o.track, o.state, ev.state) and not mine(evid) then
           remember(proj, o.oid, rev, o.hash, evid, kord); return
         end
       end

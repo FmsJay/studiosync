@@ -789,15 +789,21 @@ end
 -- were. Returns the .flac path, or nil. Active tab only. (Solo edit keeps wet prints beside dry recordings.)
 function sync.print_item(proj, it, take, out, name, tail, dry, bare) -- (dry: the take's own plug-ins only, not its track's)
   local sel, playing = selection(proj), reaper.GetActiveTake(it)
+  -- (the screen held still meanwhile: each part flashed selected and back, one after another across the project, whenever prints
+  -- rendered here rather than in the background. James, 0.58.85)
+  reaper.PreventUIRefresh(1)
   reaper.SetActiveTake(take)
   -- (one by one: SelectAllMediaItems on a selected item leaves an undo point, "Unselect all items", on top of the edit
   -- being printed, so Ctrl+Z undid that and took the print with it, and the note stayed moved: PC, 0.41.0)
   for _, s in ipairs(sel) do reaper.SetMediaItemSelected(s, false) end
   reaper.SetMediaItemSelected(it, true)
-  local path = render_item(it, take, out, name, not dry, tail, bare) .. ".flac"
+  local okr, base = pcall(render_item, it, take, out, name, not dry, tail, bare) -- (the hold always let go, whatever the render does)
   reaper.SetActiveTake(playing)
   reaper.SetMediaItemSelected(it, false)
   for _, s in ipairs(sel) do if reaper.ValidatePtr2(proj, s, "MediaItem*") then reaper.SetMediaItemSelected(s, true) end end
+  reaper.PreventUIRefresh(-1)
+  if not okr then error(base, 0) end
+  local path = base .. ".flac"
   return reaper.file_exists(path) and path or nil
 end
 

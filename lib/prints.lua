@@ -199,6 +199,8 @@ function prints.choose(it)
     if reaper.GetActiveTake(it) ~= want then reaper.SetActiveTake(want); reaper.UpdateItemInProject(it) end
     return
   end
+  -- (an item with a choice of real takes plays the one picked, the band's: the print was the first's, and choosing it here undid a comp. 0.58.85)
+  if #require("mirror").real_takes(it) > 1 then return end
   local dry = midi or (print and prints.audio_take(it))
   if not (dry and print) then return end
   local mode = prints.mode()
@@ -617,6 +619,25 @@ function prints.takes_into_new_lanes(proj, tr, mine)
     reaper.SetMediaTrackInfo_Value(tr, "C_LANEPLAYS:" .. lanes, 0)
     return lanes
   end
+  -- Each take's place gets one lane, shared by every item's take in that place where they don't overlap (a comp split into twenty
+  -- pieces made twenty lanes for each take, 0.58.85): the second takes together, the third together, as REAPER's explode lays them out.
+  local lane_of_slot = {}
+  local function free_at(lane, from, to, except)
+    for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
+      local x = reaper.GetTrackMediaItem(tr, j)
+      if x ~= except and reaper.GetMediaItemInfo_Value(x, "I_FIXEDLANE") == lane then
+        local a = reaper.GetMediaItemInfo_Value(x, "D_POSITION")
+        -- (a crossfade's few milliseconds aren't a clash: each piece of a comp overlaps the next by that much)
+        if a < to - 0.1 and a + reaper.GetMediaItemInfo_Value(x, "D_LENGTH") > from + 0.1 then return false end
+      end
+    end
+    return true
+  end
+  local function lane_for(slot, from, to, except)
+    local l = lane_of_slot[slot]
+    if not (l and free_at(l, from, to, except)) then l = new_lane(); lane_of_slot[slot] = l end
+    return l
+  end
   local function crop_to_active(it)
     reaper.SetMediaItemSelected(it, true)
     reaper.Main_OnCommand(40131, 0) -- Take: Crop to active take in items
@@ -626,14 +647,17 @@ function prints.takes_into_new_lanes(proj, tr, mine)
     local _, chunk = reaper.GetItemStateChunk(it, "", false)
     -- (a copy with ids of its own: REAPER makes them new, and mirror takes it as a new item)
     chunk = chunk:gsub("\n%s*IGUID [^\n]*", ""):gsub("\n%s*GUID [^\n]*", ""):gsub("\n%s*band_oid [^\n]*", ""):gsub("\n%s*band_[%w_]+ [^\n]*", "")
-    local active = reaper.GetActiveTake(it)
-    for k = reaper.CountTakes(it) - 1, 0, -1 do
-      if reaper.GetTake(it, k) ~= active then
+    local cur = reaper.GetMediaItemInfo_Value(it, "I_CURTAKE")
+    local from0 = reaper.GetMediaItemInfo_Value(it, "D_POSITION")
+    local to0 = from0 + reaper.GetMediaItemInfo_Value(it, "D_LENGTH")
+    for k = 0, reaper.CountTakes(it) - 1 do
+      -- (by place, not by pointer: an empty take has none, and two empty ones looked alike, so the playing one was copied too)
+      if k ~= cur and reaper.GetTake(it, k) then -- (an empty take holds nothing to put on a lane)
         local copy = reaper.AddMediaItemToTrack(tr)
         reaper.SetItemStateChunk(copy, chunk, false)
-        reaper.SetActiveTake(reaper.GetTake(copy, k))
+        reaper.SetMediaItemInfo_Value(copy, "I_CURTAKE", k)
         crop_to_active(copy)
-        reaper.SetMediaItemInfo_Value(copy, "I_FIXEDLANE", new_lane())
+        reaper.SetMediaItemInfo_Value(copy, "I_FIXEDLANE", lane_for(k, from0, to0, copy))
       end
     end
     crop_to_active(it)
@@ -678,16 +702,17 @@ function prints.takes_to_lanes(proj, mine)
         -- one from an old version holds three, and the other two came out as plain parts on lanes of their own)
         local _, wet = prints.takes(it)
         if in_lanes and not (real_takes(it) > 1 and mine(it)) then wet = nil end
+        -- (the take that plays is kept by its place among the real takes: deleting a take can leave a take pointer pointing at nothing,
+        -- and REAPER then played the first take, so the comp lost its pick. 0.58.85)
+        local pick = require("mirror").picked_take(it)
         while wet do
-          local was = reaper.GetActiveTake(it)
-          if was == wet then was = prints.takes(it) end
           reaper.SetActiveTake(wet)
           reaper.SetMediaItemSelected(it, true)
           reaper.Main_OnCommand(40129, 0) -- Take: Delete active take from items
           reaper.SetMediaItemSelected(it, false)
-          if was and reaper.ValidatePtr2(proj, was, "MediaItem_Take*") then reaper.SetActiveTake(was) end
           wet = select(2, prints.takes(it))
         end
+        if pick then require("mirror").pick_take(it, pick) end
       end
       for _, x in ipairs(picked) do if reaper.ValidatePtr2(proj, x, "MediaItem*") then reaper.SetMediaItemSelected(x, true) end end
       local sel = {}

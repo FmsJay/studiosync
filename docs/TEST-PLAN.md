@@ -256,3 +256,12 @@ on, not saved into the toolbar), a second after REAPER starts and whenever the s
 
 0.58.84: menu extension 1.0.4: the toolbar button shows "on" while the panel is open however it opened (the panel's own action, at start),
 not only after the button was clicked; the extension finds the panel's script itself and refreshes the button when it opens or closes.
+
+0.58.85: which take an item plays travels (BANDTAKE in mirror's item state, for items with two or more real takes; prints stay each
+machine's choice): a take comp (split pieces, a take picked in each) now reaches everyone, and an item arriving new plays the sender's
+pick, not its first take (Nostalgia's Track 8 and 10: their comp lanes held the first take and silences). A version from before reads as
+the same item: its author sends the pick, anyone else keeps theirs. Takes becoming lanes keep the pick by its place, not a take pointer
+(deleting a print take could leave it dangling); in a track already in lanes each take gets one lane shared by every piece. Prepare no
+longer removes a piece that plays an empty take on purpose (with real takes in it). Suite take_comps: what plays at every moment, before
+and after, on a plain track, empty takes, a track in lanes, mirror apply and Prepare's lanes. Prints rendered in front hold the screen
+still (no parts flashing selected one after another). "SonoBus-only singer" is "SonoBus Guest". The Voicemeeter Health row is gone.

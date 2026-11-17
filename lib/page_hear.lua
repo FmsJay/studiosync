@@ -72,8 +72,8 @@ function page.realtime(ctx, ImGui, proj)
     ImGui.SetItemTooltip(ctx, "How much later your backing comes. Drag, or double-click to type.")
   end
   local g = guest.on(proj)
-  beside("SonoBus-only singer")
-  local chg, gv = ImGui.Checkbox(ctx, "SonoBus-only singer", g) -- (not "Guest": that's the day invitation. UX review, 0.58.47)
+  beside("SonoBus Guest")
+  local chg, gv = ImGui.Checkbox(ctx, "SonoBus Guest", g) -- (James, 0.58.85; was "SonoBus-only singer")
   if chg then guest.set(proj, gv) end
   ImGui.SetItemTooltip(ctx, "Someone joining from the SonoBus app alone, a singer at home, say. They hear your mix,\n" ..
     "and their singing records on the Real time track when you record. Send them your SonoBus link (Configure SonoBus).")

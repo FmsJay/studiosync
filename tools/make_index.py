@@ -43,9 +43,6 @@ for f in sorted(ROOT.glob("StudioSync - *.lua")):
 for f in sorted((ROOT / "lib").glob("*.lua")):
     rel = f"lib/{f.name}"
     ET.SubElement(ver, "source", file=rel).text = url(rel)
-for f in sorted((ROOT / "lib").glob("*.ps1")):  # Windows helpers run in the background (lib/vmloop.ps1: Voicemeeter's routing, read only)
-    rel = f"lib/{f.name}"
-    ET.SubElement(ver, "source", file=rel, platform="windows").text = url(rel)
 for f in sorted((ROOT / "lib" / "mac").glob("*")):  # compiled helpers (tools/mac/build.sh): Macs only
     rel = f"lib/mac/{f.name}"
     ET.SubElement(ver, "source", file=rel, platform="darwin").text = url(rel)

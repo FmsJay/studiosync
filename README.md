@@ -462,7 +462,7 @@ With Real time mode on:
   syncing with theirs a day later by itself (a guest invitation's Tailscale access ends then too); their copy stays with them.
 - **The live audio's password** is the studio's own: worked out from a secret the owner's computer keeps in the studio's
   settings, not from the studio's ID that invitations show. It changes when someone is taken out.
-- **SonoBus-only singer**: for someone who joins with only SonoBus (a singer at home, no REAPER, no copy of the project). They hear
+- **SonoBus Guest**: for someone who joins with only SonoBus (a singer at home, no REAPER, no copy of the project). They hear
   your whole mix, and what they sing is recorded on the Real time track whenever you record. **Measure their delay**
   plays them a bar of count-in and 8 clicks to clap along to, and times where the claps land (the whole round trip;
   the idea is from ReaConnect). Measure right before you record: the delay drifts as SonoBus adjusts its buffers

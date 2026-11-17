@@ -174,8 +174,13 @@ function prep.scan(proj, cfg, b)
   local clutter = {}
   for i = 0, reaper.CountMediaItems(proj) - 1 do
     local it = reaper.GetMediaItem(proj, i)
-    local tk = reaper.GetActiveTake(it)
-    local empty = not tk or (not reaper.TakeIsMIDI(tk) and src_file(tk) == "")
+    -- (empty: no take with anything in it. One playing an empty take on purpose, a comp's silence, still holds its other takes: it was
+    -- removed, and them with it. 0.58.85)
+    local empty = true
+    for k = 0, reaper.CountTakes(it) - 1 do
+      local tk = reaper.GetTake(it, k)
+      if tk and (reaper.TakeIsMIDI(tk) or src_file(tk) ~= "") then empty = false end
+    end
     if not bands(it) and (empty or reaper.GetMediaItemInfo_Value(it, "D_LENGTH") < 0.05) and mine(reaper.GetMediaItem_Track(it)) then clutter[#clutter + 1] = it end
   end
   if next(left_out) then
