@@ -13,10 +13,12 @@ local transport -- a pending start/stop (lib/together.lua)
 local clip_said -- when we last warned about the master clipping
 local due_in = math.huge -- seconds until a pending start/stop fires
 
+-- (what an update's reload hands over, taken before anything can return early, so none of it reaches the next Live sync started here. 0.58.93)
+local reload_proj, reload_ended = BANDSYNC_LIVE_PROJ, BANDSYNC_ENDED_AT
+BANDSYNC_LIVE_PROJ, BANDSYNC_ENDED_AT = nil, nil
 local cfg = band.settings()
 if not cfg then return end
-local proj = BANDSYNC_LIVE_PROJ or reaper.EnumProjects(-1) -- (set when an update reloads us: our tab, not the front one)
-BANDSYNC_LIVE_PROJ = nil
+local proj = reload_proj or reaper.EnumProjects(-1) -- (set when an update reloads us: our tab, not the front one)
 do -- (Autostart asks for a tab behind the front one by name: starting it never has to bring it forward)
   local asked = reaper.GetExtState(band.SECTION, "live start for")
   if asked ~= "" then
@@ -33,8 +35,9 @@ end
 local past = 0
 local function reached(t, theirs)
   if not (t.type == "stop" and t.follow and theirs and t.pos and reaper.GetPlayStateEx(proj) & 1 == 1) then past = 0; return false end
-  past = reaper.GetPlayPosition2Ex(proj) >= t.pos - 0.005 and past + 1 or 0
-  return past >= 2
+  local hit
+  past, hit = together.count_reading(past, reaper.GetPlayPosition2Ex(proj), t.pos)
+  return hit
 end
 local b = band.binding(proj)
 if not b then return band.msg("This project isn't shared yet: share it, or open it from Projects in the StudioSync panel.") end
@@ -126,8 +129,7 @@ toggle(1)
 -- be closed hard), only when something changed since the last one.
 local recall = require("recall")
 local function event_count() return #band.files(sync.room_dir(cfg, b.song, b.room) .. "/events", ".json") end
-local ended_at_n = BANDSYNC_ENDED_AT or event_count() -- (after an update's reload, the count the session had: no end-of-session save was made. 0.58.92)
-BANDSYNC_ENDED_AT = nil
+local ended_at_n = reload_ended or event_count() -- (after an update's reload, the count the session had: no end-of-session save was made. 0.58.92)
 local quiet = { n = ended_at_n, since = reaper.time_precise(), checked = 0 }
 local function end_of_session(why)
   local n = event_count()
@@ -431,13 +433,14 @@ local function poll()
       if services.on_tailnet(d.address) and joined[d.id] ~= true and now - (joined[d.id] or -math.huge) > 60 then
         -- (never someone taken out, nor anyone while a guest invitation is open: a guest is on the studio's Tailscale too and was let in here
         -- as a full member, with no end and no project list, and someone removed came straight back. Those ask in the panel. Review, 0.58.92)
-        local out = removal.who_was(cfg.root, d.id)
-        if out or removal.invite_for(removal.invites(cfg.root), os.time()) then
+        local may, out = removal.may_auto_admit(cfg.root, d.id, os.time())
+        if not may then
           joined[d.id] = true
           band.log(string.format("'%s' (%s) is asking to join: let them in from the panel%s", d.name, d.id:sub(1, 7), out and (" (" .. out .. " was taken out)") or ""))
         else
           local ok, why = services.add_device(d.id, d.name, band.info(cfg.root).id)
           joined[d.id] = ok or now -- (a failed add is tried again in a minute, not never)
+          if ok then require("access").clear(cfg.root, d.id) end -- (a band computer: no project list from a guest visit before. 0.58.93)
           band.log(ok and string.format("'%s' (%s) joined the studio folder: it asked over the studio's Tailscale", d.name, d.id:sub(1, 7))
             or ("couldn't add '" .. d.name .. "': " .. tostring(why)))
         end
@@ -719,7 +722,7 @@ local function tick_body() -- returns true to keep going
     if tnow - fire > 30 then -- arrived long after the fact (offline, sync stalled): don't start a song out of nowhere
       band.log(string.format("missed a %s from %s (%.0f s ago)", transport.type, tostring(transport.user), tnow - fire))
       transport = nil
-    elseif due and theirs and not transport.remote and ((recording and not together_take) or busy_elsewhere) then
+    elseif together.leave_alone(due, theirs, transport.remote, recording, together_take, busy_elsewhere) then
       band.log(string.format("%s %s together, but %s: left as it is", tostring(transport.user or transport.lead), transport.type == "stop" and "stopped" or "started",
         recording and "you're recording here" or "another tab is playing here"))
       if transport.id then fired[transport.id] = true end
@@ -747,6 +750,7 @@ local function tick_body() -- returns true to keep going
           if front ~= proj then band.log("recording together: switched to '" .. b.song .. "', as REAPER records only in the tab in front") end
           reaper.SelectProjectInstance(proj)
           reaper.Main_OnCommand(1013, 0) -- Transport: Record (the active project)
+          if reaper.GetPlayStateEx(proj) & 4 == 0 then together_take = nil end -- (REAPER's Record Warning cancelled it: no take started together. 0.58.93)
         else
           reaper.OnPlayButtonEx(proj)
         end
@@ -815,7 +819,6 @@ local function tick_body() -- returns true to keep going
   local now = reaper.time_precise()
   -- (a long take: the 15 s status write is in poll, which waits while recording, so after 45 s the others read you as gone and took full
   -- control mid-take. Review, 0.58.92)
-  if recording and status_info and now - last_status > 15 then last_status = now; pcall(sync.write_status, proj, cfg, b.song, b.room, status_info) end
   lap("transport")
   -- Real time mode: only what's armed feeds SonoBus (lib/live.lua rt_sends), checked about once a second
   if now - rt_at > 1 then
@@ -857,6 +860,9 @@ local function tick_body() -- returns true to keep going
   local undoing = undo_since and now - undo_since < 30
   -- (Live set, panel Settings: nothing is looked at or applied while playing, as while recording, so a pass can't hold REAPER up mid-song)
   local live_set = reaper.GetPlayStateEx(proj) & 1 == 1 and reaper.GetExtState(band.SECTION, "live set") == "on"
+  -- (while poll waits, a take, Live set playing or the undo wait, its 15 s status write waits too: after 45 s the others read you as gone and
+  -- took full control. Review, 0.58.92-93)
+  if together.heartbeat_due(recording or undoing or live_set, status_info ~= nil, now, last_status) then last_status = now; pcall(sync.write_status, proj, cfg, b.song, b.room, status_info) end
   if not recording and not undoing and not live_set and now - last > every and not (transport and due_in < 1.5) then
     last = reaper.time_precise()
     local ok, err = pcall(poll)

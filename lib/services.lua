@@ -21,15 +21,20 @@ local function label_q(s) return q((tostring(s):gsub('["`$\\%%]', ""))) end
 -- Syncthing's command line and API, with a back-off: when a call runs into its time limit, Syncthing is hung or still starting, and the
 -- next dozen each waited out their own limit with REAPER frozen (a removal, at start: tens of seconds, again every 30 s). For a minute after,
 -- they answer nothing at once. Review, 0.58.92
+-- Only questions wait: a change (add, delete, set) always goes, or one slow look blocked pairing a new bandmate and the folder's settings. A
+-- timeout is what REAPER hands back then: "259" (still running) on Windows, curl's own "28" for its -m, or simply the whole limit gone. Measured,
+-- 0.58.93: the first version waited for an empty answer, which never came.
 local stuck_until = {}
 local function exec(cmd, ms, key)
   key = key or "cli"
   local t0 = reaper.time_precise()
-  if (stuck_until[key] or 0) > t0 then return nil end
+  local change = cmd:find(" add ", 1, true) or cmd:find(" delete", 1, true) or cmd:find(" set ", 1, true)
+  if not change and (stuck_until[key] or 0) > t0 then return nil end
   local r = reaper.ExecProcess(cmd, ms)
-  if (not r or r == "") and ms > 0 and reaper.time_precise() - t0 >= ms / 1000 * 0.9 then
+  local hung = ms > 0 and (reaper.time_precise() - t0 >= ms / 1000 * 0.9 or (type(r) == "string" and (r:match("^259\n") or r:match("^28\n"))))
+  if hung then
+    if (stuck_until[key] or 0) <= reaper.time_precise() then band.log("Syncthing didn't answer within " .. math.floor(ms / 1000) .. " s: StudioSync leaves it alone for a minute") end
     stuck_until[key] = reaper.time_precise() + 60
-    band.log("Syncthing didn't answer within " .. math.floor(ms / 1000) .. " s: StudioSync leaves it alone for a minute")
   end
   return r
 end
@@ -316,7 +321,10 @@ local function st_api(path, method)
   -- it. Review, 0.58.92)
   local kf = TMP .. "/bandsync-st.cfg"
   local line = 'header = "X-API-Key: ' .. key .. '"\n'
-  if band.read(kf) ~= line then band.write_atomic(kf, line) end
+  if band.read(kf) ~= line then
+    band.write_atomic(kf, line)
+    if not WIN then os.execute("chmod 600 " .. sh_q(kf)) end -- (this user's only: Linux falls back to /tmp, which others can read. 0.58.93)
+  end
   return string.format('curl -s -m 3 %s%s-K "%s" "%s://%s%s"', tls and "-k " or "", method and ("-X " .. method .. " ") or "",
     kf, tls and "https" or "http", addr, path)
 end

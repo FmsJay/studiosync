@@ -97,6 +97,7 @@ end
 function trim.print_refs(text, room, into)
   into = into or {}
   for r, name in text:gmatch('{media:([^}]+)}/(print%-[^"/]+)%.flac') do if not room or r == room then into[name] = true end end
+  for name in text:gmatch('{media}/(print%-[^"/]+)%.flac') do into[name] = true end -- (the older form, the event's own room: counted either way. 0.58.93)
   return into
 end
 -- Prints only the changes that just went named (a print is a new file for every edit, and none ever left the media folder: review, 0.58.92)
@@ -105,12 +106,14 @@ function trim.prints(cfg, song, room, evs, took, archive)
   local gone_ids, cand, still, moved = {}, {}, {}, {}
   for _, id in ipairs(took) do gone_ids[id] = true end
   for _, ev in ipairs(evs) do
-    if type(ev.state) == "string" then
-      if gone_ids[ev.id] then trim.print_refs(ev.state, room, cand) else trim.print_refs(ev.state, nil, still) end
-    end
+    if type(ev.state) == "string" and gone_ids[ev.id] then trim.print_refs(ev.state, room, cand) end
   end
   if not next(cand) then return moved end
   local sync = require("sync")
+  -- (what's still named, read from this room's folder as it is now: one that arrived during the trim, or couldn't be read as an event, named a
+  -- print too. 0.58.93)
+  local here = sync.room_dir(cfg, song, room) .. "/events"
+  for _, f in ipairs(band.files(here, ".json")) do trim.print_refs(band.read(here .. "/" .. f) or "", nil, still) end
   local rooms_dir = sync.room_dir(cfg, song, room):gsub("/[^/]+$", "")
   for i = 0, math.huge do
     local r = reaper.EnumerateSubdirectories(rooms_dir, i)

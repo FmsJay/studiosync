@@ -49,4 +49,14 @@ local ok, err = pcall(function()
   check(type(list) == "table" and type(list.media) == "table" and #list.media == 2, "listed for the Drive copy (" .. tostring(list and list.media and #list.media) .. ")")
 end)
 if not ok then say("ERROR " .. tostring(err)); fails = fails + 1 end
+local function rm(dir) -- (the scratch tree and its archive, gone afterwards: 0.58.93)
+  for i = 0, math.huge do local s = reaper.EnumerateSubdirectories(dir, i); if not s then break end; rm(dir .. "/" .. s) end
+  reaper.EnumerateFiles(dir, -1)
+  local fs = {}
+  for i = 0, math.huge do local f = reaper.EnumerateFiles(dir, i); if not f then break end; fs[#fs + 1] = f end
+  for _, f in ipairs(fs) do os.remove(dir .. "/" .. f) end
+  os.remove(dir)
+end
+local top = base:match("^(.*)/[^/]+$")
+rm(base); rm(top .. "/StudioSync history archive/" .. song); rm(top .. "/StudioSync history archive"); os.remove(top)
 return (fails == 0 and "ALL PASS" or (fails .. " FAILED")) .. "\n" .. table.concat(out, "\n")

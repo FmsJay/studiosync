@@ -1290,6 +1290,7 @@ end
 -- A state from an older version that's this one but for what that version left out: the BANDTAKE line (before 0.58.85), and empty takes
 -- written as bare "TAKE" (before 0.58.87). The same item, read the way this version reads one. Pure.
 local function older_form(s) return (s:gsub("BANDTAKE %d+\n", ""):gsub("\nTAKE NULL%f[\n]", "\nTAKE")) end -- (any run of empty takes, not two at most. 0.58.92)
+mirror.older_form = older_form
 function mirror.only_pick_new(track, here, theirs)
   if type(theirs) ~= "string" or theirs:find("BANDTAKE", 1, true) or theirs:find("\nTAKE NULL\n", 1, true) then return false end
   if not (here:find("BANDTAKE", 1, true) or here:find("\nTAKE NULL\n", 1, true)) then return false end
@@ -1729,7 +1730,12 @@ function mirror.apply(proj, ev, media_dir, local_mix)
       for i = reaper.CountTrackMediaItems(p) - 1, 0, -1 do
         local it = reaper.GetTrackMediaItem(p, i)
         local io = itm_oid(it)
-        if io == "" or not mirror.known(proj, io) or mirror.unsent[tostring(proj) .. io] then reaper.MoveMediaItemToTrack(it, mirror.keep_track(proj, tname)) end
+        if io == "" or not mirror.known(proj, io) or mirror.unsent[tostring(proj) .. io] then
+          reaper.MoveMediaItemToTrack(it, mirror.keep_track(proj, tname))
+          -- (yours now: not the band's item, and nothing waits on it, or the band's delete of it waited for good. 0.58.93)
+          reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", true)
+          mirror.unsent[tostring(proj) .. io] = nil
+        end
       end
       local colours = mirror.track_colours(proj)
       reaper.DeleteTrack(p)
@@ -2488,7 +2494,8 @@ function mirror.watch(proj, cfg, song, room, opts)
       if ok then remember(proj, o.oid, ev.rev, h, ev.id, mirror.order_of(ev))
       elseif mirror.PART[o.kind] then return -- (waits for this tab to come to the front)
       elseif o.kind == "item" and ev.track and mirror.find(proj, "track", ev.track) then
-        return -- (its track is here, so its recording is still on its way: deleted, your item was gone until the next change. Review, 0.58.92)
+        -- (its track is here, so its recording is still on its way: deleted, your item was gone until the next change. Review, 0.58.92)
+        return say_once("arriving" .. o.oid, "an item's put-back waits: the band's version of it needs a recording that hasn't reached this computer yet")
       else -- it can't land here (its track is gone): the band's state wins, and that has no such item
         if o.kind == "item" and o.ptr and reaper.ValidatePtr2(proj, o.ptr, "MediaItem*") then reaper.DeleteTrackMediaItem(reaper.GetMediaItem_Track(o.ptr), o.ptr) end
         remember(proj, o.oid, rev or 0, "", evid, mirror.order_of(ev))

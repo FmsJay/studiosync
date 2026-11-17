@@ -208,9 +208,10 @@ function prints.choose(it)
   -- (the track's FX hold is looked at on the way out too: an item that lost its print, or got a second real take, left the FX off for good.
   -- Review, 0.58.92)
   local tr = reaper.GetMediaItem_Track(it)
-  if #require("mirror").real_takes(it) > 1 then return prints.hold_fx(tr) end
+  local function recheck() if band.track_ext(tr, prints.FXEN) ~= "" then prints.hold_fx(tr) end end -- (only a track holding its FX: 0.58.93)
+  if #require("mirror").real_takes(it) > 1 then return recheck() end
   local dry = midi or (print and prints.audio_take(it))
-  if not (dry and print) then return prints.hold_fx(tr) end
+  if not (dry and print) then return recheck() end
   local mode = prints.mode()
   local want = mode == "sound" and print or mode == "notes" and dry or (prints.track_plays(tr) and dry or print)
   if reaper.GetActiveTake(it) ~= want then reaper.SetActiveTake(want); reaper.UpdateItemInProject(it) end

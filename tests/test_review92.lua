@@ -18,18 +18,22 @@ assert(n == 2, "a recording isn't a print")
 local raw = '{"state":"FILE \\"{media:main}/print-I-A-3-0badf00d-James.flac\\"\\nTAKE"}'
 assert(trim.print_refs(raw, nil)["print-I-A-3-0badf00d-James"], "read from a raw file too")
 
--- empty takes from an older version, any run of them (mirror's older_form pattern)
-local function older(s) return (s:gsub("\nTAKE NULL%f[\n]", "\nTAKE")) end
+-- empty takes from an older version, any run of them (mirror.older_form itself)
+reaper = setmetatable({}, { __index = function() return function() end end })
+package.loaded.band = nil
+local mirror = require("mirror")
+local older = mirror.older_form
 assert(older("A\nTAKE NULL\nTAKE NULL\nTAKE NULL\nB") == "A\nTAKE\nTAKE\nTAKE\nB", "three in a row")
 assert(older("A\nTAKE NULL SEL\nB") == "A\nTAKE NULL SEL\nB", "only a bare TAKE NULL line")
 
 -- a print's FX hold and the timeline order: the newest map by time then id, ours included
-local function newest(list, at)
-  local id
-  for _, ev in ipairs(list) do if ev.type == "timeline" and (ev.time .. ev.id) > at then id = ev.id end end
-  return id
-end
+local sync = require("sync")
+local newest = sync.newest_map
 local pending = { { type = "timeline", time = "2026-11-17T12:00:05Z", id = "Laptop-a" }, { type = "timeline", time = "2026-11-17T12:00:10Z", id = "James-b" } }
 assert(newest(pending, "") == "James-b", "the later map wins, whoever made it")
 assert(newest({ pending[1] }, "2026-11-17T12:00:10ZJames-b") == nil, "an older map of theirs doesn't land over the newer one we have")
+-- (0.58.93) a map made on a computer whose clock is behind still comes after the newest it had seen: its order says so
+local slow = { type = "timeline", time = "2026-11-17T11:55:00Z", id = "Laptop-c", order = "2026-11-17T12:00:10ZJames-b+" }
+assert(newest({ slow }, "2026-11-17T12:00:10ZJames-b") == "Laptop-c", "a later map from a slow clock isn't refused")
+assert(trim.print_refs('FILE "{media}/print-I-L-1-cafe1234-James.flac"', "main")["print-I-L-1-cafe1234-James"], "the older {media} form counts too")
 print("ok")

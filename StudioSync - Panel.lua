@@ -409,6 +409,7 @@ local function action(name)
 end
 
 local proj, b, view, can, who, points, last, err = nil, nil, nil, nil, nil, {}, 0, nil
+local bars_said -- (an error in the bars above the page, said once)
 local banner_text -- what the banner over REAPER says while someone else drives (set with the view, drawn by banner())
 local label = ""
 local function refresh()
@@ -2349,7 +2350,9 @@ local function frame_app()
   end, function(name) return can(cfg.user, name) end, b and function(name) claim({ name }, {}) end)
   end)
   if bars_open then ImGui.Unindent(ctx, 16); ImGui.EndChild(ctx) end
-  if not bars_ok and err ~= tostring(bars_err) then err = tostring(bars_err); reaper.ShowConsoleMsg("StudioSync panel: " .. err .. "\n") end
+  -- (said once in the console; the rest of the panel goes on: `err` swapped the whole panel for the error page, and refresh cleared it, so it
+  -- was said again every 1.5 s. 0.58.93)
+  if not bars_ok and bars_said ~= tostring(bars_err) then bars_said = tostring(bars_err); reaper.ShowConsoleMsg("StudioSync panel: " .. bars_said .. "\n") end
   local _, bars_h = ImGui.GetItemRectSize(ctx)
   if bars_h < 6 then ImGui.SetCursorPosY(ctx, bars_at) end -- (nothing in them: no gap. An empty child is still 4 px tall, and 8 more of spacing)
   ui.asked_page()

@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.58.92", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.58.93", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -388,8 +388,8 @@ function band.rename(root, old, new)
     dev.user = new
     band.write_json(root .. "/_band/devices/" .. file(new), dev)
   end
-  os.remove(root .. "/_band/devices/" .. file(old))
-  os.remove(root .. "/plugins/" .. file(old))
+  band.remove(root .. "/_band/devices/" .. file(old))
+  band.remove(root .. "/plugins/" .. file(old))
   local col = band.read_json(root .. "/_band/colours/" .. file(old))
   if type(col) == "table" then
     col.user = new

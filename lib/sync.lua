@@ -69,6 +69,8 @@ local function newest_key(ev, name)
   if ev.type == "edit" and ev.take then return "take:" .. ev.take:lower() end
   if ev.type == "track" and (name or ev.track) then return "track:" .. (name or ev.track):lower() end
   if ev.type == "mix" then return "mix" end -- the whole mix layer: the newest one stands
+  if ev.type == "timeline" then return "timeline" end -- (the tempo map and markers: ordered like the rest, so a computer whose clock ran ahead
+  -- didn't make every later map look older. Review, 0.58.93)
 end
 -- The order is time..id, except that a change made here always comes after the newest one seen here (a machine
 -- whose clock runs ahead would otherwise win over every later change to that take).
@@ -900,6 +902,18 @@ local ev_seq = 0
 -- With `proj`, an edit or track change is ordered after the newest change to it seen here, and remembered as that.
 -- Changes from the band this project gave up on (they failed again and again, or couldn't be read): kept, so Health says so and can try
 -- them again. Marked as done and only logged, the project stayed different for good with nothing to show it. Review, 0.58.47.
+-- Of the timeline changes waiting (in time order), the one to apply: the newest, ours included, and newer than what this project already has
+-- (`have`: time .. id). -> its id, or nil. Pure (review, 0.58.92).
+function sync.newest_map(pending, have)
+  local id, best = nil, have or ""
+  for _, ev in ipairs(pending) do
+    if ev.type == "timeline" then
+      local o = ev.order or ((ev.time or "") .. (ev.id or "")) -- (the order sync.post gives it: after the newest seen where it was made)
+      if o > best then id, best = ev.id, o end
+    end
+  end
+  return id
+end
 function sync.skipped(proj) return band.json_decode(ext(proj, band.SECTION, "skipped")) or {} end
 function sync.skip(proj, ev, why)
   local list = sync.skipped(proj)
@@ -1175,7 +1189,6 @@ function sync.apply(proj, ev, dir, root, can, me)
     return true
   end
   if ev.type == "timeline" then -- REAPER moves the items for the new map, as it would for a local change
-    if type(ev.time) == "string" and type(ev.id) == "string" and (ev.time .. ev.id) > ext(proj, band.SECTION, "timeline at") then setext(proj, band.SECTION, "timeline at", ev.time .. ev.id) end
     if tempo_sig(ev.tempo) ~= tempo_sig(band.capture_tempo(proj)) then require("mirror").tempo_changed(proj) end
     sync.audio_follow_tempo(proj)
     band.apply_tempo(proj, ev.tempo or {})
@@ -1446,8 +1459,7 @@ function sync.receive(proj, cfg, song, room, can)
   local newest_map
   -- (ours count too, and the newest this project already has: an older map of theirs landed over our newer one, theirs took ours, and the two
   -- projects kept different tempo maps. Review, 0.58.92)
-  local map_at = ext(proj, band.SECTION, "timeline at")
-  for _, ev in ipairs(pending) do if ev.type == "timeline" and (ev.time .. ev.id) > map_at then newest_map = ev.id end end
+  newest_map = sync.newest_map(pending, ext(proj, sync.NEWEST, "timeline"))
   -- Both worked alone (neither could see the other's changes): theirs may undo some of ours. Before
   -- any of them lands, where things are here is saved as a kept restore point, so our side is never lost.
   local mine_alone = ext(proj, band.SECTION, "alone_last")
@@ -1502,7 +1514,6 @@ function sync.receive(proj, cfg, song, room, can)
       setext(proj, sync.APPLIED, ev.id, "1") -- superseded
     elseif ev.user == cfg.user and not obj then
       setext(proj, sync.APPLIED, ev.id, "1") -- our own: already true here
-      if ev.type == "timeline" and (ev.time .. ev.id) > ext(proj, band.SECTION, "timeline at") then setext(proj, band.SECTION, "timeline at", ev.time .. ev.id) end
       stamp(proj, ev) -- and what we change next comes after it, even one stamped while our clock ran ahead
     elseif not obj and refused(ev) and reaper.time_precise() - sync.refused_since(ev.id) <= 60 then
       -- (the older kinds of change) not theirs to change, as far as this machine knows: their claim or the handover may simply not have

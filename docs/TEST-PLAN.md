@@ -341,3 +341,8 @@ the button on, says so once, and holds the band's setting so it isn't sent back.
 - REAPER suites: the full run (suites52.sh) after the fixes. Not covered by a suite: Live sync's heartbeat during a take, the stop-reading
   count, together_take; Tailscale auto-admit; the guest list failing closed; the Syncthing back-off; Drive; the print archive in trim.run;
   Prepare's backup of an unsaved project; the local-copy re-check. Each is small and read against the code; first real use is their test.
+
+0.58.93 (the second look, docs/REVIEW-2026-11-17.md): test_review93 (together.count_reading / leave_alone / heartbeat_due, drive.mine with
+longer names, drive.arriving, localcopy.still_confirmed, access.get/mine/read failing closed and keeping verdicts, the back-off including
+Windows' "259" and changes going through, the curl key file), test_review92 (sync.newest_map with a slow clock's order, mirror.older_form,
+the older {media} form), REAPER suites removal (may_auto_admit), prepare_backup, print_archive, and the full run.

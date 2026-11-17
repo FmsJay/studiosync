@@ -176,6 +176,22 @@ end
 function removal.who_was(root, device)
   for _, m in ipairs(all_marks(root)) do if m.device == device then return m.user end end
 end
+-- Whether a computer asking over the studio's Tailscale may be let in without a click: never someone taken out, and nobody while a guest
+-- invitation is open (a guest is on the studio's Tailscale too). -> may, and who it was if taken out. Review, 0.58.92
+function removal.may_auto_admit(root, device, now)
+  now = now or os.time()
+  -- (marks and invitations as written, checked or not: one still waiting for Syncthing's word counted as none, and in that window someone just
+  -- taken out could come straight back. For letting in without a click, the careful reading. 0.58.93)
+  for _, f in ipairs(band.files(marks(root), ".json")) do
+    local m = band.read_json(marks(root) .. "/" .. f)
+    if type(m) == "table" and m.device == device then return false, tostring(m.user or "someone") end
+  end
+  for _, f in ipairs(band.files(invites_dir(root), ".json")) do
+    local v = band.read_json(invites_dir(root) .. "/" .. f)
+    if type(v) == "table" and tonumber(v.made) and tonumber(v.ends) and removal.invite_for({ v }, now) then return false end
+  end
+  return true
+end
 -- A computer let in again: whatever mark names it is over.
 function removal.let_in(root, device)
   for _, m in ipairs(all_marks(root)) do if m.device == device then removal.keep(root, m.user) end end
@@ -242,11 +258,13 @@ local function settle_peers(services, now)
   end
   if not unsure and sig ~= intro_for and services.introducers_off(keep) then intro_for = sig end
   for _, d in ipairs(services.pending_devices()) do
-    for _, g in ipairs(not met[d.id] and band.bands() or {}) do
+    local due = met[d.id] == nil or (met[d.id] ~= true and now - met[d.id] > 120) -- (a failed add tried again in two minutes, not never. 0.58.93)
+    for _, g in ipairs(due and band.bands() or {}) do
       local who = not g.waiting and not require("groups").is_old(g.root) and removal.known(g.root, d.id, now)
-      if who and not met[d.id] then
-        met[d.id] = true
+      if who and due then
+        due = false
         local ok, why = services.add_device(d.id, who, g.id)
+        met[d.id] = ok and true or now
         band.log(ok and string.format("%s's computer (%s) is in %s: this one syncs with it directly now", who, d.id:sub(1, 7), g.name)
           or ("couldn't connect to " .. who .. "'s computer: " .. tostring(why)))
       end

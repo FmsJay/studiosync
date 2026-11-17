@@ -236,11 +236,20 @@ local first_seen = {} -- path -> when we first saw it missing on Drive
 -- Drive. Set by drive.mirror from the events it reads. Review, 0.58.92)
 local longer = {}
 local function owned(f, u) return f:sub(1, #u + 1) == u .. "-" or f:find("Z-" .. u .. "-", 1, true) ~= nil end
-local function mine(f, user)
+local function mine(f, user, others) -- (others: the longer names; drive.mirror's own by default)
   local u = (user or ""):gsub("[^%w%-_]", "_")
   if u == "" or not owned(f, u) then return false end
-  for _, l in ipairs(longer) do if owned(f, l) then return false end end
+  for _, l in ipairs(others or longer) do if owned(f, l) then return false end end
   return true
+end
+-- Bandmates' names (from events) that start with this one's and a dash, cleaned as file names have them. Pure.
+function drive.longer_names(events, user)
+  local u, seen, out = (user or ""):gsub("[^%w%-_]", "_"), {}, {}
+  for _, e in ipairs(events) do
+    local l = type(e.user) == "string" and e.user:gsub("[^%w%-_]", "_") or ""
+    if not seen[l] and #l > #u + 1 and l:sub(1, #u + 1) == u .. "-" then seen[l] = true; out[#out + 1] = l end
+  end
+  return out
 end
 local function due(path, f, user, wait)
   if mine(f, user) then return true end
@@ -279,7 +288,8 @@ local function trimmed(dir)
   return out, media
 end
 -- Syncthing's files while one arrives (".syncthing.x.tmp", "~syncthing~x.tmp"): copied to Drive mid-download, they came back from it for good
-local function arriving(f) return f:match("^%.syncthing%.") or f:match("^~") or f:match("%.tmp$") end
+local function arriving(f) return (f:match("^%.syncthing%.") or f:match("^~") or f:match("%.tmp$")) and true or false end
+drive.arriving = arriving
 
 local function into_trash_index(dir, f)
   local idx = band.read_json(dir .. "/index.json") or {}
@@ -300,14 +310,7 @@ function drive.mirror(here, there, budget, user, wait)
   local events = read_events(here .. "/events", t0 + (budget or 1.5))
   if not events then return 0, true end -- (who owns which recording isn't known yet: nothing's copied on half a list)
   local owners = drive.media_owners(events, here:match("([^/]+)$"))
-  do
-    local u, seen = (user or ""):gsub("[^%w%-_]", "_"), {}
-    longer = {}
-    for _, e in ipairs(events) do
-      local l = type(e.user) == "string" and e.user:gsub("[^%w%-_]", "_") or ""
-      if not seen[l] and #l > #u + 1 and l:sub(1, #u + 1) == u .. "-" then seen[l] = true; longer[#longer + 1] = l end
-    end
-  end
+  longer = drive.longer_names(events, user)
   for _, sub in ipairs({ "trimmed", "events", "recall", "midi", "media" }) do -- (media: recordings and prints the items use)
     local A, B = {}, {}
     for _, f in ipairs(band.files(here .. "/" .. sub)) do if not arriving(f) then A[#A + 1] = f end end

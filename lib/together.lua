@@ -36,6 +36,20 @@ function together.bars_after(proj, pos, bars)
   return reaper.TimeMap2_QNToTime(proj, reaper.TimeMap2_timeToQN(proj, pos) + bars * num * 4 / den) - pos
 end
 
+-- A side-by-side stop's playhead readings: `past` readings in a row at or beyond `target` so far, and this one at `pos`. -> the new count, and
+-- whether that's two in a row (one reading can be a few hundred ms off for a moment). Pure; asked once a pass (review, 0.58.92).
+function together.count_reading(past, pos, target)
+  past = pos >= target - 0.005 and past + 1 or 0
+  return past, past >= 2
+end
+-- Someone else's start or stop that's due here is left alone when you're recording a take you started yourself (one started together
+-- may be stopped together), or when it would start a recording here while another tab plays. Pure (review, 0.58.91).
+function together.leave_alone(due, theirs, remote, recording, together_take, busy_elsewhere)
+  return (due and theirs and not remote and ((recording and not together_take) or busy_elsewhere)) and true or false
+end
+-- The status write while poll waits (a take, Live set playing, the undo wait): every 15 s. Pure (review, 0.58.92-93).
+function together.heartbeat_due(waiting, has_status, now, last) return (waiting and has_status and now - last > 15) and true or false end
+
 -- Wall clock with sub-second precision: os.time() only counts whole seconds, so note where reaper.time_precise()
 -- stands when the second ticks over (call tick() often; precise to about one defer cycle after the first tick).
 local offset, last_sec

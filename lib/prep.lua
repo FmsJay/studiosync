@@ -350,7 +350,7 @@ function prep.apply(proj, cfg, b, rows, dir)
   do -- (an unsaved project's goes to StudioSync's own folder: it was promised a backup and got none. Review, 0.58.92)
     if file == "" then reaper.RecursiveCreateDirectory(band.home() .. "/backups", 0) end
     local base = file ~= "" and file:gsub("%.[Rr][Pp][Pp]$", "") or (band.home() .. "/backups/Untitled")
-    backup = base .. " - before StudioSync " .. os.date("%Y%m%d-%H%M") .. ".rpp"
+    backup = base .. " - before StudioSync " .. os.date("%Y%m%d-%H%M%S") .. ".rpp" -- (to the second: two in one minute, the second wrote over the first. 0.58.93)
     reaper.Main_SaveProjectEx(proj, backup, 0) -- 0: a copy; this tab keeps its own file
     done[#done + 1] = "Backup copy saved: " .. (file ~= "" and backup:match("[^/\\]+$") or backup)
   end

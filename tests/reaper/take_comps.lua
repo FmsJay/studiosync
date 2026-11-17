@@ -220,7 +220,10 @@ local ok, err = pcall(function()
   local listed = false
   for _, it in ipairs(clutter_row and clutter_row.todo or {}) do listed = listed or it == four[3] end
   check(not listed, "a piece playing an empty take, with real takes in it, isn't 'an empty item' to remove")
-  prep.apply(p, nil, nil, rows, dir)
+  for _, line in ipairs(prep.apply(p, nil, nil, rows, dir) or {}) do -- (the backup an unsaved tab now gets, in StudioSync's folder: removed. 0.58.93)
+    local made = line:match("^Backup copy saved: (.+)$")
+    if made and made:find("[/\\]") then os.remove(made) end
+  end
   local ok5, why5 = same(before5, snapshot(t5, pts5), pts5)
   check(ok5, "Prepare's lanes: what plays is the comp, the silent piece silent (" .. (why5 ~= "" and why5 or "every point") .. ")")
   local kept = 0

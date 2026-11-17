@@ -17,7 +17,7 @@ if reaper.GetPlayStateEx(proj) & 4 == 4 then return band.msg("Stop recording fir
 
 local out = band.song_dir(cfg, b.song) .. "/mixes"
 reaper.RecursiveCreateDirectory(out, 0)
-local name = band.clean(string.format("%s %s %s", b.song, os.date("%Y-%m-%d %H%M"), cfg.user))
+local name = band.clean(string.format("%s %s %s", b.song, os.date("%Y-%m-%d %H%M%S"), cfg.user)) -- (to the second: a second render in the same minute wrote over the first, which then didn't count as new. 0.58.93)
 
 local saved = {}
 for _, k in ipairs({ "RENDER_FILE", "RENDER_PATTERN" }) do saved[k] = select(2, reaper.GetSetProjectInfo_String(proj, k, "", false)) end

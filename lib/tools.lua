@@ -206,7 +206,7 @@ function tools.guests_list(ctx, ImGui, root, may)
       ImGui.SetItemTooltip(ctx, "Which projects " .. g.user .. " sees (the others stay hidden on their computer): every one, or only those ticked.")
       if ImGui.BeginPopup(ctx, "gprojects" .. g.device) then
         local acc = require("access")
-        local set = acc.get(root, g.device)
+        local set = acc.read(root, g.device) -- (as written: the checked reading showed nothing ticked while a check waited. 0.58.93)
         if ImGui.RadioButton(ctx, "Every project##gpa" .. g.device, set == nil) and set then acc.clear(root, g.device); band.log(g.user .. " sees every project now") end
         ImGui.SameLine(ctx)
         if ImGui.RadioButton(ctx, "Only these##gps" .. g.device, set ~= nil) and not set then acc.set(root, g.device, {}, reaper.GetExtState(band.SECTION, "user")) end
@@ -254,7 +254,8 @@ local function let_in(d, me, ends)
         local inv = require("removal").invite_for(require("removal").invites(d.root), os.time())
         require("removal").guest(d.root, d.id, d.name, me, os.time(), type(ends) == "number" and ends or (inv and inv.ends), inv and inv.made)
         -- (the projects the invitation gave them, if it named some: they see only those. lib/access.lua)
-        if inv and type(inv.songs) == "table" then require("access").set(d.root, d.id, inv.songs, me) end
+        if inv and type(inv.songs) == "table" then require("access").set(d.root, d.id, inv.songs, me)
+        else require("access").clear(d.root, d.id) end -- (invited for every project: a list from a visit before no longer applies. 0.58.93)
       else
         require("access").clear(d.root, d.id) -- (let in as a member: a project list left from a guest visit no longer applies)
       end

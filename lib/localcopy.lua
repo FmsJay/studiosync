@@ -54,6 +54,11 @@ function copy.digest(files)
   return string.format("%016x", h), #names
 end
 -- Who else says they hold exactly this: their names. `lists`: { { user, songs = { [song] = { digest } } } }. Pure.
+-- Still confirmed elsewhere, asked again once you've said yes: Drive had it, or someone still holds exactly this. Pure (review, 0.58.92).
+function copy.still_confirmed(places, holders)
+  for _, p in ipairs(places) do if p == "Google Drive" then return true end end
+  return #holders > 0
+end
 function copy.holders(lists, song, digest, me)
   local out = {}
   for _, l in ipairs(lists) do
@@ -266,12 +271,12 @@ function copy.tick()
               local status, _, _, modified = reaper.JS_File_Stat(there)
               if status == 0 and modified and copy.is_young(tostring(modified), os.date("%Y.%m.%d %H:%M:%S", os.time() - copy.DRIVE_SETTLED)) then j.drive_young = true end
             else
-              j.drive_young = true -- (without js_ReaScriptAPI nothing tells how long it's been there: Drive doesn't count. Review, 0.58.92)
+              j.drive_nojs = true -- (without js_ReaScriptAPI nothing tells how long it's been there: Drive doesn't count. Review, 0.58.92)
             end
           end
         end
         if not found then j.drive_bad = rel; break end
-        if j.drive_young then j.drive_bad = rel; break end
+        if j.drive_young or j.drive_nojs then j.drive_bad = rel; break end
       end
       j.at = j.at + 1
     end
@@ -281,7 +286,8 @@ function copy.tick()
     local local_dir = band.home() .. "/" .. song
     if #j.places == 0 then
       j.skipped[#j.skipped + 1] = song .. " (no other copy confirmed: nobody else has said they hold exactly this" ..
-        (j.drive_young and ", and Drive only got its files in the last half hour, so they may not be uploaded yet" or j.drive_bad and (", and Drive lacks " .. j.drive_bad:match("[^/]+$")) or "") .. ". If someone does, open REAPER there, wait a minute or two, and try again)"
+        (j.drive_nojs and ", and Drive can't count without the js_ReaScriptAPI extension (Extensions > ReaPack), which tells how long its files have been there"
+          or j.drive_young and ", and Drive only got its files in the last half hour, so they may not be uploaded yet" or j.drive_bad and (", and Drive lacks " .. j.drive_bad:match("[^/]+$")) or "") .. ". If someone does, open REAPER there, wait a minute or two, and try again)"
       j.i, j.step = j.i + 1, "scan"
       return
     end
@@ -291,9 +297,7 @@ function copy.tick()
   elseif j.step == "ignore" then -- first, so the delete can't reach anyone
     -- (who holds it, asked again now you've said yes: two computers each confirmed on the other, both said yes, and the last full copies
     -- went to the bin. Review, 0.58.92)
-    local on_drive = false
-    for _, p in ipairs(j.places) do on_drive = on_drive or p == "Google Drive" end
-    if not on_drive and #copy.holders(copy.read_holds(j.root), song, copy.digest(j.files), j.user) == 0 then
+    if not copy.still_confirmed(j.places, copy.holders(copy.read_holds(j.root), song, copy.digest(j.files), j.user)) then
       j.skipped[#j.skipped + 1] = song .. " (the other copy it was confirmed on is being deleted too: this one stays)"
       j.i, j.step = j.i + 1, "scan"
       return
