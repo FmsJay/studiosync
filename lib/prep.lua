@@ -487,4 +487,33 @@ function prep.apply(proj, cfg, b, rows, dir)
   return done
 end
 
+-- Everyone records the same way (James, 0.58.81: "make sure anyone on the project will be recording in the right format as well, FLAC, right
+-- sample rate"): 24-bit FLAC, at the sample rate the project was shared at (session.json srate). Set on a first open and when sharing; Live
+-- sync puts it back if it's changed since (a project setting someone changed, or a copy from before). -> what it put back, in words, or nil.
+-- (REAPER records at the interface's own rate: when the interface can't run at the project's, Health says so: prep.device_rate_off)
+function prep.keep_format(proj, cfg, b)
+  local s = band.read_json(band.session_path(cfg, b.song))
+  local want = s and tonumber(s.srate)
+  local fixed = {}
+  if select(2, reaper.GetSetProjectInfo_String(proj, "RECORD_FORMAT", "", false)) ~= band.FLAC then
+    reaper.GetSetProjectInfo_String(proj, "RECORD_FORMAT", band.FLAC, true)
+    fixed[#fixed + 1] = "recording format back to 24-bit FLAC"
+  end
+  if want and want > 0 and (reaper.GetSetProjectInfo(proj, "PROJECT_SRATE_USE", 0, false) ~= 1 or reaper.GetSetProjectInfo(proj, "PROJECT_SRATE", 0, false) ~= want) then
+    reaper.GetSetProjectInfo(proj, "PROJECT_SRATE", want, true)
+    reaper.GetSetProjectInfo(proj, "PROJECT_SRATE_USE", 1, true)
+    fixed[#fixed + 1] = string.format("project sample rate back to %d Hz", want)
+  end
+  return #fixed > 0 and table.concat(fixed, ", ") or nil
+end
+-- The interface runs at another rate than the project's (it can't switch, or REAPER isn't asking it to): recordings come out at the interface's.
+-- -> the two rates, or nil when they agree or it can't tell.
+function prep.device_rate_off(proj, cfg, b)
+  local s = band.read_json(band.session_path(cfg, b.song))
+  local want = s and tonumber(s.srate)
+  local ok, have, dev = pcall(reaper.GetAudioDeviceInfo, "SRATE")
+  dev = ok and have and tonumber(dev)
+  if want and dev and dev > 0 and math.abs(dev - want) > 1 then return dev, want end
+end
+
 return prep

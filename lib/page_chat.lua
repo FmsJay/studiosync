@@ -117,7 +117,101 @@ function chat.input(ctx, ImGui, id, hint, text)
   return ImGui.IsItemDeactivated(ctx) and (ImGui.IsKeyPressed(ctx, ImGui.Key_Enter) or ImGui.IsKeyPressed(ctx, ImGui.Key_KeypadEnter)), v
 end
 
--- `tabs`: more tabs after Links, { { label, draw } } (the panel's Notes and Likes).
+-- ---------------------------------------------------------------- All (James, 0.58.81)
+-- Everything said or marked here, newest first: messages, to-dos and links (in the scope picked above), and this room's notes, likes and
+-- drawings, each with its time, and Go for what sits on the timeline. Filters along the top; the Everyone box applies too.
+chat.KINDS = { { "msgs", "Messages" }, { "todo", "To-dos" }, { "links", "Links" }, { "note", "Notes" }, { "like", "Likes" }, { "draw", "Drawings" } }
+local drawn_at, drawn = -math.huge, {}
+local function drawings(cfg, b)
+  if reaper.time_precise() - drawn_at < 3 then return drawn end
+  drawn_at, drawn = reaper.time_precise(), {}
+  local d = band.song_dir(cfg, b.song) .. "/rooms/" .. (b.room or "main") .. "/drawings"
+  for _, f in ipairs(band.files(d, ".json")) do
+    local s = band.read_json(d .. "/" .. f)
+    if type(s) == "table" and type(s.points) == "table" and type(s.points[1]) == "table" then drawn[#drawn + 1] = s end
+  end
+  return drawn
+end
+-- The rows, newest first. `notes`: the room's notes and likes (recall.notes). Pure but for reading the folders.
+function chat.all_rows(cfg, b, notes)
+  local t, rows = load(cfg, b), {}
+  for _, kind in ipairs({ "msgs", "todo", "links" }) do
+    for _, v in ipairs(t[kind]) do
+      rows[#rows + 1] = { kind = kind, time = v.time or "", user = v.user, where = v.where,
+        text = kind == "links" and ((v.title ~= "" and v.title or v.url) .. "  " .. tostring(v.url)) or (kind == "todo" and ((v.done and "[done] " or "[ ] ") .. tostring(v.text)) or tostring(v.text)),
+        url = kind == "links" and v.url or nil }
+    end
+  end
+  for _, e in ipairs(notes or {}) do
+    if e.type == "note" or e.type == "like" then
+      rows[#rows + 1] = { kind = e.type, time = e.time or "", user = e.user, text = e.type == "like" and ("liked a take" .. (e.track and (" on " .. e.track) or "")) or tostring(e.text or ""),
+        pos = e.pos, take = e.take }
+    end
+  end
+  for _, s in ipairs(drawings(cfg, b)) do
+    local what = s.kind == "text" and ("text: " .. tostring(s.text)) or (s.kind or "pen") .. " drawing"
+    rows[#rows + 1] = { kind = "draw", time = s.time or "", user = s.user, text = what, pos = tonumber(s.points[1][1]), track_oid = s.points[1][2] }
+  end
+  table.sort(rows, function(a, z) return a.time > z.time end)
+  return rows
+end
+local function shown_kinds()
+  local off = reaper.GetExtState(band.SECTION, "chat all off")
+  local on = {}
+  for _, k in ipairs(chat.KINDS) do on[k[1]] = not off:find("|" .. k[1] .. "|", 1, true) end
+  return on
+end
+function chat.all_tab(ctx, ImGui, cfg, b, notes)
+  local on = shown_kinds()
+  for i, k in ipairs(chat.KINDS) do
+    if i > 1 then ImGui.SameLine(ctx, 0, 10); if ImGui.GetContentRegionAvail(ctx) < ImGui.CalcTextSize(ctx, k[2]) + 30 then ImGui.NewLine(ctx) end end
+    local ch, v = ImGui.Checkbox(ctx, k[2] .. "##allf", on[k[1]])
+    if ch then
+      on[k[1]] = v
+      local off = "|"
+      for _, x in ipairs(chat.KINDS) do if not on[x[1]] then off = off .. x[1] .. "|" end end
+      reaper.SetExtState(band.SECTION, "chat all off", off == "|" and "" or off, true)
+    end
+  end
+  local only = chat.only()
+  local proj = reaper.EnumProjects(-1)
+  local accent = require("theme").ACCENT
+  if ImGui.BeginChild(ctx, "allrows", 0, 0, ImGui.ChildFlags_Borders) then
+    local n = 0
+    for i, r in ipairs(chat.all_rows(cfg, b, notes)) do
+      if on[r.kind] and (only == "" or r.user == only) then
+        n = n + 1
+        if n > 300 then break end
+        ImGui.PushID(ctx, i)
+        if r.pos then
+          if ImGui.SmallButton(ctx, "Go") then
+            reaper.SetEditCurPos2(proj, r.pos, true, false)
+            local tr = r.track_oid and require("mirror").find(proj, "track", r.track_oid)
+            if tr then reaper.SetOnlyTrackSelected(tr); reaper.Main_OnCommand(40913, 0) end -- (Track: Vertical scroll selected tracks into view)
+          end
+          local _, bars = reaper.TimeMap2_timeToBeats(proj, r.pos)
+          ImGui.SetItemTooltip(ctx, "Put the edit cursor there: bar " .. math.floor(bars + 1) .. (r.track_oid and ", and show its track" or ""))
+          ImGui.SameLine(ctx)
+        elseif r.url then
+          if ImGui.SmallButton(ctx, "Open") then band.open_url(r.url) end
+          ImGui.SetItemTooltip(ctx, tostring(r.url))
+          ImGui.SameLine(ctx)
+        end
+        ImGui.TextDisabled(ctx, when(r.time))
+        ImGui.SameLine(ctx)
+        local label = ({ msgs = "message", todo = "to-do", links = "link", note = "note", like = "like", draw = "drawing" })[r.kind]
+        ImGui.TextColored(ctx, accent, label)
+        ImGui.SameLine(ctx)
+        ImGui.TextWrapped(ctx, tostring(r.user) .. ": " .. r.text .. (r.where and r.where ~= b.song and ("  (" .. r.where .. ")") or ""))
+        ImGui.PopID(ctx)
+      end
+    end
+    if n == 0 then ImGui.TextDisabled(ctx, "Nothing here yet with these filters.") end
+    ImGui.EndChild(ctx)
+  end
+end
+
+-- `tabs`: more tabs, { { label, draw, first } } (the panel's All, Notes and Likes): `first` ones before Messages, the rest after Links.
 function chat.draw(ctx, ImGui, cfg, b, tabs)
   if not b or not b.song then return ImGui.TextDisabled(ctx, "Open a studio project to chat about it.") end
   -- next to the last thing, or on a new line when `w` more won't fit (the Everyone box ran off the right of the panel)
@@ -210,6 +304,9 @@ function chat.draw(ctx, ImGui, cfg, b, tabs)
   local only = chat.only()
   local function shown(v) return only == "" or v.user == only end
   if ImGui.BeginTabBar(ctx, "chat") then
+    for _, tab in ipairs(tabs or {}) do
+      if tab[3] and ImGui.BeginTabItem(ctx, tab[1]) then tab[2](); ImGui.EndTabItem(ctx) end
+    end
     if ImGui.BeginTabItem(ctx, "Messages") then
       local newest = t.msgs[#t.msgs] and t.msgs[#t.msgs].file:match("[/\\]([^/\\]+)$"):sub(1, 15) or ""
       if reaper.GetExtState(band.SECTION, seen_key(b, scope)) < newest then reaper.SetExtState(band.SECTION, seen_key(b, scope), newest, true) end
@@ -298,7 +395,7 @@ function chat.draw(ctx, ImGui, cfg, b, tabs)
       ImGui.EndTabItem(ctx)
     end
     for _, tab in ipairs(tabs or {}) do
-      if ImGui.BeginTabItem(ctx, tab[1]) then tab[2](); ImGui.EndTabItem(ctx) end
+      if not tab[3] and ImGui.BeginTabItem(ctx, tab[1]) then tab[2](); ImGui.EndTabItem(ctx) end
     end
     ImGui.EndTabBar(ctx)
   end

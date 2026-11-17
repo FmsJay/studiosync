@@ -85,6 +85,19 @@ and Show what's new, both on by default; what's new shows a bandmate's change br
 you were away until OK on "Since you were last here". Cloud copy: Google Drive, Dropbox, OneDrive, iCloud Drive or Box (Settings >
 Cloud copy). Call apps beside REAPER: Health row and Settings > Advanced > Calls. Feedback button. 46 suites pass.
 
+## 0.58.80-81, 2026-11-16 (James's requests)
+
+0.58.80: Settings > Studio > Sync through Tailscale: each computer publishes its Tailscale name per network in _band/devices, and Syncthing
+reaches the studio's computers only at those names (lib/services.lua pin_tailnet). Smiley Studios (James's personal tailnet) and Chilio
+(chiliocosm01) both on; switching Tailscale accounts switches which studio syncs.
+
+0.58.81: an empty take lane ("TAKE NULL") no longer stops sharing or Live sync (band.take_ext nil-safe; suite empty_takes). Everyone records
+24-bit FLAC at the project's shared sample rate (Live sync puts it back every 10 s; Health warns when the interface runs at another rate).
+The sync status is a button of its own after a divider: outlined while running, a pulsing red "Sync off - click to start" that starts it
+(no Start button). "Control your own mix" is back. Chat has an All tab (filters; Go for notes, likes and drawings). Settings: a StudioSync
+button on REAPER's main toolbar (menu extension 1.0.2 adds it when REAPER builds the default toolbar; image lib/toolbar_icons, Helgobox's
+style). Change name renames you in every studio, and the old name's devices, plug-in list and colour files go.
+
 ## Results, 2026-11-15 (0.58.68; fixes in 0.58.69 and ReaPersona 5.8.2)
 
 Laptop (Windows, REAPER updated 7.85 -> 7.86, silently): take on the desktop 4 s after stopping; a rename ~5 s; Take control ~5 s;

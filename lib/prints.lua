@@ -7,7 +7,7 @@ local band = require("band")
 local prints = {}
 prints.KEY = "band_m_print" -- on the print take: the source hash it was made from (travels: band_m_ keys do)
 
-local function take_ext(tk, k) return select(2, reaper.GetSetMediaItemTakeInfo_String(tk, "P_EXT:" .. k, "", false)) end
+local function take_ext(tk, k) return tk and select(2, reaper.GetSetMediaItemTakeInfo_String(tk, "P_EXT:" .. k, "", false)) or "" end
 
 function prints.takes(it)
   local midi, print

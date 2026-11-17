@@ -153,6 +153,13 @@ function H.maint_rows()
   if reaper.SNM_GetIntConfigVar and reaper.SNM_GetIntConfigVar("offlineinact", 0) ~= 0 then
     rows[#rows + 1] = { "offline when inactive", false, "yellow", "", "REAPER takes your media offline whenever another app is in front, so parts show OFFLINE then. StudioSync turned this off once and it's back on: turn off 'Set media items offline when application is not active' in Preferences > Media." }
   end
+  if b then -- the interface at another rate than the project: recordings would come out at the interface's (lib/prep.lua)
+    local ok, dev, want = pcall(require("prep").device_rate_off, proj, cfg, b)
+    if ok and dev then
+      rows[#rows + 1] = { "device rate", false, "yellow", "", string.format("Your audio interface runs at %d Hz and this project at %d Hz, so what you record " ..
+        "comes out at %d Hz. Set the interface to %d Hz (Preferences > Audio > Device, or its own control panel) before recording.", dev, want, dev, want) }
+    end
+  end
   do -- a call app beside REAPER (lib/callapps.lua)
     local ok, words = pcall(require("callapps").health_words)
     if ok and words then rows[#rows + 1] = { "call app", false, "yellow", "", words } end

@@ -263,7 +263,7 @@ function band.settings(force)
     local old = reaper.GetExtState(band.SECTION, "user")
     reaper.SetExtState(band.SECTION, "sync_root", root, true)
     reaper.SetExtState(band.SECTION, "user", user, true)
-    if old ~= "" and old ~= user then band.rename(root, old, user) end
+    if old ~= "" and old ~= user then band.rename_everywhere(old, user, root) end
   end
   return { root = root, user = user }
 end
@@ -298,6 +298,21 @@ function band.rename(root, old, new)
     for i, a in ipairs(type(j.admins) == "table" and j.admins or {}) do if a == old then j.admins[i] = new end end
     band.write_json(root .. "/_band/band.json", j)
   end
+  -- (this computer's files under the old name: its devices file and plug-in list are written again under the new one at the next look, and the
+  -- old ones stayed, a second member with the old name on every computer: James, 0.58.81. A colour picked moves over.)
+  local dev = band.read_json(root .. "/_band/devices/" .. file(old)) -- (its names on each Tailscale network go along: services.pin_tailnet)
+  if type(dev) == "table" and not reaper.file_exists(root .. "/_band/devices/" .. file(new)) then
+    dev.user = new
+    band.write_json(root .. "/_band/devices/" .. file(new), dev)
+  end
+  os.remove(root .. "/_band/devices/" .. file(old))
+  os.remove(root .. "/plugins/" .. file(old))
+  local col = band.read_json(root .. "/_band/colours/" .. file(old))
+  if type(col) == "table" then
+    col.user = new
+    band.write_json(root .. "/_band/colours/" .. file(new), col)
+    os.remove(root .. "/_band/colours/" .. file(old))
+  end
   local n = 0
   for _, song in ipairs(band.subdirs(root)) do
     for _, room in ipairs(band.subdirs(root .. "/" .. song .. "/rooms")) do
@@ -316,6 +331,18 @@ function band.rename(root, old, new)
   end
   band.log(string.format("you're %s now (was %s): who drives and your claims moved over in %d place(s); your tracks stay yours. " ..
     "Changes you made as %s stay under that name in Restore (Undo only steps back through changes made as %s).", new, old, n, old, new))
+end
+
+-- Your name is this computer's in every studio it's in, so a new one goes to all of them (James, 0.58.81: "make the names stay the same across
+-- my studios"; it went only to the studio open then). `extra`: a studio not on the list yet.
+function band.rename_everywhere(old, new, extra)
+  local done = {}
+  local roots = {}
+  for _, x in ipairs(band.bands()) do roots[#roots + 1] = x.root end
+  if extra then roots[#roots + 1] = extra end
+  for _, r in ipairs(roots) do
+    if not done[r] then done[r] = true; band.rename(r, old, new) end
+  end
 end
 
 -- A project is bound to one song: role (host/guest), song, room, version, take_mode.
@@ -786,8 +813,9 @@ end
 function band.set_track_ext(tr, key, v) reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:" .. key, v, true) end
 function band.item_ext(it, key) return select(2, reaper.GetSetMediaItemInfo_String(it, "P_EXT:" .. key, "", false)) end
 function band.set_item_ext(it, key, v) reaper.GetSetMediaItemInfo_String(it, "P_EXT:" .. key, v, true) end
-function band.take_ext(tk, key) return select(2, reaper.GetSetMediaItemTakeInfo_String(tk, "P_EXT:" .. key, "", false)) end
-function band.set_take_ext(tk, key, v) reaper.GetSetMediaItemTakeInfo_String(tk, "P_EXT:" .. key, v, true) end
+-- (a take lane can be empty: GetTake gives nil for it, and sharing a project with one stopped at "MediaItem_Take expected": James's Nostalgia, 0.58.81)
+function band.take_ext(tk, key) return tk and select(2, reaper.GetSetMediaItemTakeInfo_String(tk, "P_EXT:" .. key, "", false)) or "" end
+function band.set_take_ext(tk, key, v) if tk then reaper.GetSetMediaItemTakeInfo_String(tk, "P_EXT:" .. key, v, true) end end
 
 function band.add_item(track, path, pos, len)
   local src = reaper.PCM_Source_CreateFromFile(path)
@@ -915,7 +943,7 @@ local function add_take_to(best, t, path)
   if np < p then -- grow left: shift every existing take's offset so its audio stays put
     for k = 0, reaper.CountTakes(best) - 1 do
       local tk = reaper.GetTake(best, k)
-      reaper.SetMediaItemTakeInfo_Value(tk, "D_STARTOFFS", reaper.GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS") - (p - np))
+      if tk then reaper.SetMediaItemTakeInfo_Value(tk, "D_STARTOFFS", reaper.GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS") - (p - np)) end
     end
     reaper.SetMediaItemInfo_Value(best, "D_POSITION", np)
   end

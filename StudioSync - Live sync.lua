@@ -165,6 +165,7 @@ local drive_at, drive_more, drive_said = -math.huge, false, nil
 local sizes, last, recording, stopped_at = {}, 0, false, 0
 local status_info -- (the status as last written: tick_body says "recording" with it, as the pass that writes it waits while recording)
 local paint_at = -math.huge -- when tracks were last coloured for who's working on them
+local format_at = -math.huge -- when the recording format was last checked
 local claims_at = -math.huge -- when our claims on gone tracks were last looked for (sync.drop_gone_claims)
 local last_status, status_json = 0, ""
 local rt_at = 0 -- when Real time mode's sends were last matched to what's armed
@@ -493,6 +494,11 @@ local function poll()
     if follow ~= "" then presence.follow(proj, peers, follow) end
     -- tracks in the colour of who's working on them, if this machine wants that (lib/people.lua; shown here only)
     if now - paint_at > 1 then paint_at = now; require("people").paint(proj, cfg, peers, who.tracks, b.song .. "/" .. b.room) end
+    if now - format_at > 10 and reaper.GetPlayStateEx(proj) & 4 == 0 then -- (everyone records 24-bit FLAC at the project's rate: lib/prep.lua; never mid-recording)
+      format_at = now
+      local ok, said = pcall(require("prep").keep_format, proj, cfg, b)
+      if ok and said then band.log(said .. " (the studio records the same way on every computer)") end
+    end
   end
 
   lap("claims, presence")

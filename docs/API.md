@@ -24,7 +24,7 @@ API version 1, StudioSync 0.58.64 and later. Fields and verbs are only ever adde
 | `here` | the others in the project now, sorted |
 | `claims` | `[ { "user": "James", "tracks": ["Gtr", "Keys"] }, { "user": "Sam", "tracks": ["Bass"] } ]`: each person's claimed tracks (always a list, `[]` when nobody has claimed anything) |
 | `hold`, `held` | Hold my changes is on, and how many changes it's holding |
-| `local_mix` | Keep my mix to myself is on |
+| `local_mix` | Control your own mix is on |
 
 `GetExtState("StudioSync API", "beat")` is the `reaper.time_precise()` of Live sync's last look. If it's more than 10 seconds old
 (no studio project in front, or Live sync stopped), the state is out of date: treat it as "no session".

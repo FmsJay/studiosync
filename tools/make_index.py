@@ -54,6 +54,9 @@ for f in sorted(p for p in (ROOT / "lib" / "ninjam").rglob("*") if p.is_file()):
     else:
         plat = {"ninjamsrv.exe": {"platform": "win64"}, "ninjamsrv": {"platform": "darwin"}, "njrelay": {"platform": "darwin"}}.get(f.name, {})
     ET.SubElement(ver, "source", file=rel, **plat).text = url(rel)
+for f in sorted(p for p in (ROOT / "lib" / "toolbar_icons").rglob("*.png")):  # the toolbar button's image, copied into REAPER's toolbar_icons by the panel
+    rel = f.relative_to(ROOT).as_posix()
+    ET.SubElement(ver, "source", file=rel).text = url(rel)
 for f in sorted((ROOT / "lib" / "listen").glob("*")):  # the listening page's little file server (lib/listen.lua)
     rel = f"lib/listen/{f.name}"
     plat = {"listen_server.ps1": {"platform": "windows"}}.get(f.name, {})  # (the Perl one for Macs and Linux: harmless on Windows)
@@ -62,7 +65,7 @@ for f in sorted((ROOT / "lib" / "listen").glob("*")):  # the listening page's li
 # Extensions > StudioSync and View > StudioSync (extension/reaper_menu.cpp): a package of its own, with a version of its own that goes up
 # only when the extension changes (EXT_VERSION), so StudioSync's updates don't try to replace a file REAPER has loaded. Each platform gets
 # its build, when there is one (a new platform's build: raise EXT_VERSION).
-EXT_VERSION = "1.0.1"  # (1.0.1: macOS and Linux builds, from .github/workflows/extension.yml)
+EXT_VERSION = "1.0.2"  # (1.0.1: macOS and Linux builds, from .github/workflows/extension.yml; 1.0.2: toolbar button, icon map)
 EXT_FILES = {"reaper_studiosync-x64.dll": "win64", "reaper_studiosync.dylib": "darwin",  # (the Mac build is universal: arm64 + x86_64)
              "reaper_studiosync-x86_64.so": "linux64", "reaper_studiosync-aarch64.so": "linux-aarch64"}
 cat = index.find("category")

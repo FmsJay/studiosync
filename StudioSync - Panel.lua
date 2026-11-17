@@ -58,6 +58,34 @@ local function pill(text, bg, fg, height)
   ImGui.DrawList_AddRectFilled(dl, x, y, x + w + 16, y + ph, bg, ph / 2)
   ImGui.DrawList_AddText(dl, x + 8, y + (ph - h) / 2, fg or DARK, text)
 end
+-- The sync status as a button of its own (James, 0.58.81): apart from the studio/project/room crumbs (a divider, and outlined rather than filled,
+-- so a green "Synced" can't be taken for one more coloured crumb), and when sync is off a solid red that pulses, saying click to start: the
+-- button itself starts it (there was a Start button beside it). `can_start`: off, and this tab may sync. -> clicked.
+function ui.sync_button(label, colour, running, can_start, h)
+  local dl = ImGui.GetWindowDrawList(ctx)
+  local x, y = ImGui.GetCursorScreenPos(ctx)
+  ImGui.DrawList_AddLine(dl, x - 9, y + 4, x - 9, y + h - 4, MUTED, 1) -- (the divider)
+  local text = can_start and "Sync off  -  click to start" or label
+  local tw, th = ImGui.CalcTextSize(ctx, text)
+  local dot = h * 0.18
+  local w = tw + 22 + dot * 2
+  local clicked = ImGui.InvisibleButton(ctx, "##syncbtn", w, h)
+  local hovered = ImGui.IsItemHovered(ctx)
+  if can_start then
+    local a = 0.72 + 0.28 * math.abs(math.sin(reaper.time_precise() * 2.6)) -- (a slow pulse: the nudge)
+    local fill = (RED & 0xFFFFFF00) | math.floor(255 * (hovered and 1 or a))
+    ImGui.DrawList_AddRectFilled(dl, x, y, x + w, y + h, fill, h / 2)
+    ImGui.DrawList_AddRect(dl, x - 2, y - 2, x + w + 2, y + h + 2, (RED & 0xFFFFFF00) | math.floor(120 * (1 - a) + 30), h / 2 + 2, 0, 2)
+    ImGui.DrawList_AddCircleFilled(dl, x + 10 + dot, y + h / 2, dot, 0xFFFFFFFF)
+    ImGui.DrawList_AddText(dl, x + 14 + dot * 2, y + (h - th) / 2, 0xFFFFFFFF, text)
+  else
+    ImGui.DrawList_AddRectFilled(dl, x, y, x + w, y + h, hovered and CARD or (DARK & 0xFFFFFF00) | 0x55, h / 2)
+    ImGui.DrawList_AddRect(dl, x, y, x + w, y + h, colour, h / 2, 0, 1.5)
+    ImGui.DrawList_AddCircleFilled(dl, x + 10 + dot, y + h / 2, dot, colour)
+    ImGui.DrawList_AddText(dl, x + 14 + dot * 2, y + (h - th) / 2, theme.TEXT, text)
+  end
+  return clicked and can_start
+end
 -- An on/off switch: returns changed, new value.
 local function switch(id, on)
   local dl = ImGui.GetWindowDrawList(ctx)
@@ -1328,7 +1356,7 @@ function ui.set_local_mix(v)
 end
 local function local_mix_row()
   local on = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1"
-  local ch, v = switch_row("##localmix", "Keep my mix to myself", on, "Your faders and pan stay yours: nobody else's reach you, and yours don't go out.")
+  local ch, v = switch_row("##localmix", "Control your own mix", on, "Your faders and pan stay yours: nobody else's reach you, and yours don't go out.")
   if ch then ui.set_local_mix(v) end
 end
 -- A gap between two parts sharing a column.
@@ -1361,7 +1389,7 @@ end
 
 local function home_rules()
   if ui.short then -- (the box and Local mixing share a row, and "Who controls" is the column's title)
-    return section_driver(function() next_to(ImGui.CalcTextSize(ctx, "Keep my mix to myself") + ImGui.GetFrameHeight(ctx) * 2); local_mix_row() end)
+    return section_driver(function() next_to(ImGui.CalcTextSize(ctx, "Control your own mix") + ImGui.GetFrameHeight(ctx) * 2); local_mix_row() end)
   end
   heading("Who can edit", 17)
   ImGui.SetItemTooltip(ctx, "Who changes what")
@@ -1447,6 +1475,18 @@ local function settings_sync()
     if lch then reaper.SetExtState(band.SECTION, "live set", lv and "on" or "", true) end
     ImGui.SetItemTooltip(ctx, "For playing a set: while REAPER plays, nothing is sent or taken in, so syncing can't make REAPER stutter.\n" ..
       "Everything catches up as soon as you stop. Only on this computer.")
+    do -- a StudioSync button on REAPER's main toolbar (lib/tools.lua)
+      local tch, tv = ImGui.Checkbox(ctx, "StudioSync button on the main toolbar##tbbtn", tools.toolbar_button())
+      if tch then
+        local ok, why = tools.set_toolbar_button(tv)
+        if ok then band.log(tv and "the StudioSync button joins the main toolbar when REAPER next starts" or "the StudioSync button leaves the main toolbar when REAPER next starts")
+        else band.msg(why) end
+      end
+      ImGui.SetItemTooltip(ctx, "A button at the end of REAPER's main toolbar that opens the panel, in the toolbar's own style (lit while the panel is open).\n" ..
+        "REAPER builds its toolbar as it starts, so it shows after a restart. Only on this computer.")
+      local blocked = tools.toolbar_button() and tools.toolbar_button_blocked()
+      if blocked then ImGui.TextColored(ctx, YELLOW, blocked) end
+    end
     require("people").track_options(ctx, ImGui) -- whose colours tracks show here
     if b and can then require("colours").draw(ctx, ImGui, proj, cfg, function(name, tr) -- (a track you made is yours, as mirror.watch has it: Mac, 0.57.6)
       return can(cfg.user, name) or sync.maker_may(require("mirror").track_oid(tr), cfg.user, name, nil, who and who.mode)
@@ -1639,7 +1679,7 @@ function ui.settings_you()
       name = ok and band.clean(name) or ""
       if name ~= "" and name ~= cfg.user then
         reaper.SetExtState(band.SECTION, "user", name, true)
-        band.rename(cfg.root, cfg.user, name)
+        band.rename_everywhere(cfg.user, name, cfg.root)
         cfg.user = name
       end
     end
@@ -2040,10 +2080,16 @@ local function frame_app()
   local driver_gone = reaper.GetExtState(band.SECTION, "alone " .. tostring(proj)) ~= "" or reaper.GetExtState(band.SECTION, "driver_away " .. tostring(proj)) ~= "" -- (Mac, 0.58.5: "James drives" beside "you have full control")
   local drives = view.driver == cfg.user and "you drive" or view.driver and (view.driver .. (driver_gone and " drives (away)" or " drives")) or "nobody drives yet"
   ui.status = { label = label, colour = colour, tip = tip, drives = drives }
-  at_row(label)
-  if ImGui.GetCursorPosX(ctx) > 17 then ImGui.SetCursorPosX(ctx, ImGui.GetCursorPosX(ctx) + 10) end -- (apart from the coloured pills: those say where you are, this how sync is going)
-  pill(label, colour, DARK, fh)
-  ImGui.SetItemTooltip(ctx, tip)
+  local is_copy = not running and rooms.is_copy(proj, cfg, b)
+  local elsewhere = not running and not is_copy and band.synced_elsewhere(proj)
+  local can_start = not running and not is_copy and not elsewhere
+  at_row(can_start and "Sync off  -  click to start" or label)
+  if ImGui.GetCursorPosX(ctx) > 17 then ImGui.SetCursorPosX(ctx, ImGui.GetCursorPosX(ctx) + 20) end -- (apart from the coloured crumbs: those say where you are, this how sync is going)
+  if ui.sync_button(label, colour, running, can_start, fh) then
+    reaper.DeleteExtState(band.SECTION, "stop " .. key, false)
+    band.start_live(dir)
+  end
+  ImGui.SetItemTooltip(ctx, can_start and "Live sync is off in this tab: nothing goes out or comes in. Click to start it." or tip)
   if select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) ~= "" then -- (Hold my changes was invisible once on: review)
     local n = tonumber(reaper.GetExtState(band.SECTION, "held " .. key)) or 0
     local held = n > 0 and string.format("Holding %d change%s", n, n == 1 and "" or "s") or "Holding your changes"
@@ -2071,18 +2117,15 @@ local function frame_app()
         "Fine for trying parts; otherwise agree who records it, or record onto a track of your own.")
     end
   end
-  if not running and rooms.is_copy(proj, cfg, b) then
+  if is_copy then
     at_row("older copy")
     pill("older copy", YELLOW, DARK, fh)
     ImGui.SetItemTooltip(ctx, "A backup or autosave of this project, not your working copy of it. Nothing goes in or out of it.")
-  elseif not running and band.synced_elsewhere(proj) then -- (a second copy of the song: syncing it would work on a stale one)
+  elseif elsewhere then -- (a second copy of the song: syncing it would work on a stale one)
     at_row("open in another tab")
     pill("open in another tab", YELLOW, DARK, fh)
     ImGui.SetItemTooltip(ctx, "This project is already open and syncing in another tab: work there. This tab is a second copy, not synced.")
-  elseif not running then -- (Stop is in Settings: nobody needs it at hand, and it sat next to buttons people do press)
-    at_row("Start")
-    if ImGui.Button(ctx, "Start") then reaper.DeleteExtState(band.SECTION, "stop " .. key, false); band.start_live(dir) end
-  end
+  end -- (Start was a button here: the sync button starts it now. Stop is in Settings: nobody needs it at hand)
   at_row(drives)
   ImGui.SetCursorPosY(ctx, y0 + (fh - ImGui.GetTextLineHeight(ctx)) / 2) -- (not AlignTextToFramePadding: it carries along the row, and the page tabs sat low: design review)
   ImGui.TextDisabled(ctx, drives)
@@ -2324,7 +2367,10 @@ local function frame_app()
       if wide then layout({ { page_play.section_together, 380 }, { function() page_play.section_live("mode") end, 420 }, { function() page_play.section_live("rest") end, 520 } })
       else layout({ { page_play.section_together, 380 }, { page_play.section_live, 480 } }) end
     elseif page == "Chat" then
-      local chat_tabs = { { "Notes", function() section_notes("note") end }, { "Likes", function() section_notes("like") end } }
+      local chat_tabs = { { "All", function() -- (everything, newest first, with Go for what's on the timeline: James, 0.58.81)
+          if reaper.time_precise() - notes_at > 4 then notes_at, notes = reaper.time_precise(), recall.notes(cfg, b.song, b.room) end
+          require("page_chat").all_tab(ctx, ImGui, cfg, b, notes)
+        end, true }, { "Notes", function() section_notes("note") end }, { "Likes", function() section_notes("like") end } }
       local function chat_page() require("page_chat").draw(ctx, ImGui, cfg, b, chat_tabs) end
       if reaper.time_precise() - ideas_at > 2 then ideas_at, ideas = reaper.time_precise(), tools.ideas(proj) end -- (their column only when there are some)
       if next(ideas) ~= nil then layout({ { chat_page, 620 }, { section_ideas, 360 } }) else layout({ { chat_page, 900 } }) end

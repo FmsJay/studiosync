@@ -1096,12 +1096,14 @@ function sync.mark_item(it, pos, text, len)
   local ipos = reaper.GetMediaItemInfo_Value(it, "D_POSITION")
   for k = 0, reaper.CountTakes(it) - 1 do
     local tk = reaper.GetTake(it, k)
+    if not tk then goto next_take end -- (an empty take lane)
     -- (in the take's own time: a take played at another rate moves through its source faster or slower. The position ignored that until 0.58.67,
     -- so a note on a sped-up take landed in the wrong place)
     local rate = reaper.GetMediaItemTakeInfo_Value(tk, "D_PLAYRATE")
     if rate <= 0 then rate = 1 end
     local idx = reaper.SetTakeMarker(tk, -1, text, math.max(0, ((pos or ipos) - ipos) * rate + reaper.GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS")))
     if tonumber(len) and len > 0 and idx >= 0 and reaper.SetTakeMarkerInfo then reaper.SetTakeMarkerInfo(tk, idx, "LENGTH", len * rate) end
+    ::next_take::
   end
   reaper.UpdateItemInProject(it)
 end
@@ -1227,7 +1229,7 @@ function sync.apply(proj, ev, dir, root, can, me)
     local offs = band.base_offs(tk) + (ev.offs or 0) -- offsets travel relative to where each print was placed
     for k = 0, reaper.CountTakes(it) - 1 do
       local t2 = reaper.GetTake(it, k)
-      if t2 == tk or band.take_ext(t2, "band_dry"):lower() == ev.take:lower() then reaper.SetMediaItemTakeInfo_Value(t2, "D_STARTOFFS", offs) end
+      if t2 and (t2 == tk or band.take_ext(t2, "band_dry"):lower() == ev.take:lower()) then reaper.SetMediaItemTakeInfo_Value(t2, "D_STARTOFFS", offs) end
     end
     if ev.lane then
       local tr = reaper.GetMediaItem_Track(it)

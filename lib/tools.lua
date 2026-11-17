@@ -329,4 +329,52 @@ function tools.update_reaper()
   return "couldn't open the REAPER Update Utility (" .. tostring(why or "not registered") .. "): REAPER's download page opened"
 end
 
+-- ---------------------------------------------------------------- a StudioSync button on REAPER's main toolbar (James, 0.58.81: "like Helgobox's
+-- 'add button to toolbar'"). The menu extension (extension/reaper_menu.cpp, 1.0.2 on) adds it each time REAPER builds the default main toolbar,
+-- when ExtState "toolbar button" is "1", with toolbar_studiosync.png from REAPER's Data/toolbar_icons (copied there from lib/toolbar_icons,
+-- in REAPER's toolbar style: grey, lighter grey under the mouse, StudioSync's blue while the panel is open). REAPER builds the toolbar as it
+-- starts, so a change shows after a restart; a main toolbar someone customized isn't built from the default, so it isn't added there.
+tools.TOOLBAR_EXT = "1.0.2"
+function tools.toolbar_button() return reaper.GetExtState(band.SECTION, "toolbar button") == "1" end
+local function copy_file(from, to)
+  local f = io.open(from, "rb")
+  if not f then return false end
+  local data = f:read("a")
+  f:close()
+  local g = io.open(to, "wb")
+  if not g then return false end
+  g:write(data)
+  g:close()
+  return true
+end
+-- -> true, or nil and why.
+function tools.set_toolbar_button(on)
+  if on then
+    local lib = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]") or ""
+    local res = reaper.GetResourcePath() .. "/Data/toolbar_icons"
+    for _, sub in ipairs({ "", "/150", "/200" }) do
+      reaper.RecursiveCreateDirectory(res .. sub, 0)
+      if not copy_file(lib .. "/toolbar_icons" .. sub .. "/toolbar_studiosync.png", res .. sub .. "/toolbar_studiosync.png") and sub == "" then
+        return nil, "The button's image isn't in StudioSync's lib/toolbar_icons folder: update StudioSync, then try again."
+      end
+    end
+  end
+  reaper.SetExtState(band.SECTION, "toolbar button", on and "1" or "", true)
+  return true
+end
+-- Why it won't show, or nil: the menu extension is missing or older than 1.0.2, or the main toolbar was customized.
+function tools.toolbar_button_blocked()
+  local have = reaper.GetExtState(band.SECTION, "menu extension")
+  if have == "" or band.compare_versions(have, tools.TOOLBAR_EXT) < 0 then
+    return "Needs StudioSync's menu extension " .. tools.TOOLBAR_EXT .. " (Extensions > ReaPack > Synchronize packages, then restart REAPER)."
+  end
+  local f = io.open(reaper.GetResourcePath() .. "/reaper-menu.ini", "rb")
+  local ini = f and f:read("a") or ""
+  if f then f:close() end
+  if ini:find("\n%[Main toolbar%]") or ini:find("^%[Main toolbar%]") then
+    return "Your main toolbar is customized, so REAPER doesn't build it from the default: add 'StudioSync: open the panel' to it yourself " ..
+      "(right-click the toolbar > Customize toolbar > Add), and it gets StudioSync's image."
+  end
+end
+
 return tools
