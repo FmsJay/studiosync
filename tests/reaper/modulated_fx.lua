@@ -81,12 +81,26 @@ local ok, err = pcall(function()
   for _ = 1, 8 do watch(pb, B); hold(0.3); recv(pb, B) end
   check(sent("James") == 0, "without coming back")
 
+  -- a patch loaded in its own window moves no knob: the window closing sends the chain (0.58.91)
+  reaper.SelectProjectInstance(pa)
+  reaper.TrackFX_Show(tr, 0, 3)
+  for _ = 1, 4 do watch(pa, A); hold(0.3) end
+  check(sent("Laptop", "fx") == 2, "nothing goes out while its window is open")
+  reaper.TrackFX_Show(tr, 0, 2)
+  hold(0.3); watch(pa, A); watch(pa, A)
+  check(sent("Laptop", "fx") == 3, "closing its window sends the chain")
+  for _ = 1, 6 do watch(pa, A); hold(0.3) end
+  check(sent("Laptop", "fx") == 3, "once")
+  recv(pb, B)
+  for _ = 1, 6 do watch(pb, B); hold(0.3); recv(pb, B) end
+  check(sent("James") == 0, "and the bandmate sends nothing back")
+
   -- and the LFO switched off is a change too
   reaper.SelectProjectInstance(pa)
   reaper.TrackFX_SetNamedConfigParm(tr, 0, "param.1.mod.active", "0")
   t = reaper.time_precise()
-  while reaper.time_precise() - t < 10 and sent("Laptop", "fx") == 2 do watch(pa, A); hold(0.3) end
-  check(sent("Laptop", "fx") == 3, "switching its modulation off goes out")
+  while reaper.time_precise() - t < 10 and sent("Laptop", "fx") == 3 do watch(pa, A); hold(0.3) end
+  check(sent("Laptop", "fx") == 4, "switching its modulation off goes out")
   recv(pb, B)
   local _, on = reaper.TrackFX_GetNamedConfigParm(tb, 0, "param.1.mod.active")
   check(on == "0", "and lands")

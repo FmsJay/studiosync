@@ -1377,8 +1377,13 @@ function sync.receive(proj, cfg, song, room, can)
   -- (files read once while they wait: a backlog of 300 was read and decoded again on every pass; laptop, 0.34.4)
   local cache, kept = sync.ev_cache[dir] or {}, {}
   local settled = sync.settled_for(proj, dir)
+  -- (reading, too, a pass's budget at a time: back from a week away, every new file was read and decoded in one go, and REAPER stood still
+  -- meanwhile. What's read waits in the cache, and nothing is applied until all of it is: the newest-only rules below need every file.
+  -- Review, 0.58.91)
+  local t_read, cut = reaper.time_precise(), false
   for _, f in ipairs(band.files(dir, ".json")) do
     if not settled[f] and ext(proj, sync.APPLIED, f:sub(1, -6)) ~= "" then settled[f] = true end
+    if not settled[f] and not cache[f] and reaper.time_precise() - t_read > budget then cut = true; break end
     if not settled[f] then
       local ev = cache[f] or band.read_json(dir .. "/" .. f)
       -- a malformed or half-synced file must not stop everything behind it; one still unreadable after 10 minutes
@@ -1410,6 +1415,11 @@ function sync.receive(proj, cfg, song, room, can)
         end
       end
     end
+  end
+  if cut then
+    for f, ev in pairs(cache) do kept[f] = kept[f] or ev end
+    sync.ev_cache[dir] = kept
+    return 0
   end
   table.sort(pending, function(a, x) return (a.time .. a.id) < (x.time .. x.id) end)
   local function driver_at(t) -- who drove when this happened
@@ -1482,10 +1492,11 @@ function sync.receive(proj, cfg, song, room, can)
     elseif ev.user == cfg.user and not obj then
       setext(proj, sync.APPLIED, ev.id, "1") -- our own: already true here
       stamp(proj, ev) -- and what we change next comes after it, even one stamped while our clock ran ahead
-    elseif not obj and refused(ev) then
-      -- (the older kinds of change) not theirs to change, as far as this machine knows: their claim or the handover may
-      -- simply not have synced here yet, so it waits a while before it's dropped
-      if iso_age(ev.time) > 600 then setext(proj, sync.APPLIED, ev.id, "1") else sync.deferred[ev.id] = true end
+    elseif not obj and refused(ev) and reaper.time_precise() - sync.refused_since(ev.id) <= 60 then
+      -- (the older kinds of change) not theirs to change, as far as this machine knows: their claim or the handover may simply not have
+      -- synced here yet, so it waits a minute from when it arrived, then lands like any other, as an object change does. Dropped once
+      -- 10 minutes old, one that came in before the handover it rested on was lost for good. Review, 0.58.91
+      sync.deferred[ev.id] = true
     elseif obj and iso_age(ev.time) <= 60 and refused(ev) then
       -- An object change: the sender checked it against the claims as they had them when they made it. What looks
       -- refused here is most likely a claim or handover still on its way, either way: it waits a minute, then lands
@@ -1645,6 +1656,8 @@ sync.ev_cache = {} -- events dir -> { file -> decoded event }, for the files sti
 -- Events refused for now (authority not synced here yet): retried until 10 minutes old. And the room's driver
 -- changes, read once and then kept up to date from incoming events: { [id] = { time, user } }.
 sync.deferred = {}
+local refused_at = {} -- event id -> when it was first found refused here
+function sync.refused_since(id) refused_at[id] = refused_at[id] or reaper.time_precise(); return refused_at[id] end
 sync.unreadable = {} -- event file id -> when it was first found unreadable (sync.receive)
 sync.UNREADABLE_SECS = 600 -- how long a file may stay unreadable before it's skipped for good
 local driver_cache = {}

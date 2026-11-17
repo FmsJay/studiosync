@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.58.90", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.58.91", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -51,6 +51,13 @@ function band.clean(s) return (s:gsub("[^%w%-_ ]", ""):match("^%s*(.-)%s*$")) en
 local function norm(p) return (p:gsub("\\", "/"):gsub("/+$", "")) end
 band.norm = norm
 
+-- ReaImGui's 0.10 interface, or nil after saying what to do: an older ReaImGui threw from inside require, and REAPER's own error box was
+-- all anyone saw (review, 0.58.91).
+function band.imgui()
+  local ok, ImGui = pcall(function() return require "imgui" "0.10" end)
+  if ok then return ImGui end
+  band.msg("StudioSync needs ReaImGui 0.10 or newer. Update it in ReaPack (Extensions > ReaPack > Synchronize packages), then run this again.")
+end
 function band.msg(text) reaper.MB(text, "StudioSync", 0) end
 -- A request the panel carries out ("panel do": the radial menu's slices, the bindable actions), so each asks first exactly as its button there does.
 -- The panel is opened first when it isn't running (running it again would close it). `dir`: the scripts' folder.
@@ -879,12 +886,44 @@ function band.apply_project(proj, p)
 end
 band.LANE_KEYS = { "DEFAULT", "LOCKED", "COLOR", "TIMEBASE" }
 
-function band.apply_markers(proj, list)
-  for i = reaper.CountProjectMarkers(proj) - 1, 0, -1 do
-    local _, _, _, _, name = reaper.EnumProjectMarkers3(proj, i)
-    if not band.is_local_mark(name) then reaper.DeleteProjectMarkerByIndex(proj, i) end
+-- Which marker here each wanted one is (review, 0.58.91: they were all deleted and added again, so their numbers changed on every
+-- update, and a region's place in the render matrix went with it). Same kind, then position and name, then name (moved), then position
+-- (renamed). -> { [wanted index] = index into have }. Pure.
+function band.match_markers(have, want)
+  local used, out = {}, {}
+  local tests = {
+    function(h, w) return math.abs(h.pos - w.pos) < 1e-9 and h.name == w.name end,
+    function(h, w) return h.name == w.name and w.name ~= "" end,
+    function(h, w) return math.abs(h.pos - w.pos) < 1e-9 end,
+  }
+  for _, same in ipairs(tests) do
+    for wi, w in ipairs(want) do
+      if not out[wi] then
+        for hi, h in ipairs(have) do
+          if not used[hi] and h.region == w.region and same(h, w) then out[wi], used[hi] = hi, true; break end
+        end
+      end
+    end
   end
-  for _, m in ipairs(list) do reaper.AddProjectMarker2(proj, m.region, m.pos, m["end"], m.name, -1, band.color_in(m.color)) end
+  return out, used
+end
+function band.apply_markers(proj, list)
+  local have = {}
+  for i = 0, reaper.CountProjectMarkers(proj) - 1 do
+    local _, rgn, pos, rend, name, num, color = reaper.EnumProjectMarkers3(proj, i)
+    if not band.is_local_mark(name) then have[#have + 1] = { region = rgn, pos = pos, ["end"] = rend, name = name, num = num, color = color } end
+  end
+  local match, used = band.match_markers(have, list)
+  -- (each changed in place by its number, so it keeps it; the ones that went, deleted; the new ones, added with the next free number)
+  for wi, m in ipairs(list) do
+    local h = match[wi] and have[match[wi]]
+    local c = band.color_in(m.color)
+    if h and (math.abs(h.pos - m.pos) > 1e-9 or math.abs(h["end"] - m["end"]) > 1e-9 or h.name ~= m.name or h.color ~= c) then
+      reaper.SetProjectMarker4(proj, h.num, m.region, m.pos, m["end"], m.name, c, m.name == "" and 1 or 0)
+    end
+  end
+  for hi, h in ipairs(have) do if not used[hi] then reaper.DeleteProjectMarker(proj, h.num, h.region) end end
+  for wi, m in ipairs(list) do if not match[wi] then reaper.AddProjectMarker2(proj, m.region, m.pos, m["end"], m.name, -1, band.color_in(m.color)) end end
   if not reaper.GetRegionOrMarker then return end
   -- each one back in its ruler lane (matched by kind, position and name: AddProjectMarker2 gives no handle)
   for i = 0, reaper.GetNumRegionsOrMarkers(proj) - 1 do

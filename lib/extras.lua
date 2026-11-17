@@ -214,16 +214,22 @@ function extras.away(cfg, b)
   local since = reaper.GetExtState(band.SECTION, "last here " .. key)
   local now = os.date("!%Y-%m-%dT%H:%M:%SZ")
   if since == "" then reaper.SetExtState(band.SECTION, "last here " .. key, now, true); away[key] = {}; return away[key] end
-  local function read_all(dir)
+  -- (changes only from files named since then: they carry their UTC stamp, so a week's history isn't read and decoded to count today's.
+  -- Review, 0.58.91)
+  local after = since:gsub("[-:]", ""):gsub("T", "-"):gsub("Z$", "")
+  local function read_all(dir, by_name)
     local t = {}
-    for _, f in ipairs(band.files(dir, ".json")) do local v = band.read_json(dir .. "/" .. f); if type(v) == "table" then t[#t + 1] = v end end
+    for _, f in ipairs(band.files(dir, ".json")) do
+      local stamp = by_name and f:match("%-(%d%d%d%d%d%d%d%d%-%d%d%d%d%d%d)Z%-")
+      if not stamp or stamp >= after then local v = band.read_json(dir .. "/" .. f); if type(v) == "table" then t[#t + 1] = v end end
+    end
     return t
   end
   local rdir = band.song_dir(cfg, b.song) .. "/rooms/" .. b.room
   local takes = {}
   for _, m in ipairs(read_all(band.takes_dir(cfg, b.song, b.room))) do takes[#takes + 1] = { user = m.user, sent = (m.origin and m.origin.sent) or m.sent } end
   local chat = band.song_dir(cfg, b.song) .. "/chat"
-  local parts = extras.away_counts(read_all(rdir .. "/events"), takes, read_all(chat .. "/msgs"), since, cfg.user)
+  local parts = extras.away_counts(read_all(rdir .. "/events", true), takes, read_all(chat .. "/msgs"), since, cfg.user)
   away[key] = { parts = parts, since = since, now = now }
   return away[key]
 end

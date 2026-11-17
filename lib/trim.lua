@@ -107,12 +107,17 @@ function trim.run(cfg, song, room, days)
   local gone = trim.plan(evs, recall.list(cfg, song, room), cutoff)
   if #gone == 0 then return 0 end
   local root = cfg.root:gsub("[/\\]+$", "")
-  local archive = (root:match("^(.*)[/\\][^/\\]+$") or root) .. "/StudioSync history archive/" .. song .. "/" .. room
+  -- (a shared folder at the top of a drive has no folder above it: the archive went inside it then, to every computer. StudioSync's own
+  -- folder takes it instead. Review, 0.58.91)
+  local parent = root:match("^(.*)[/\\][^/\\]+$")
+  local archive = ((parent and parent ~= "") and parent or band.home())
+    .. "/StudioSync history archive/" .. song .. "/" .. room
   reaper.RecursiveCreateDirectory(archive, 0)
   local n, took = 0, {}
   for _, id in ipairs(gone) do
     local from, to = dir .. "/" .. id .. ".json", archive .. "/" .. id .. ".json"
-    if os.rename(from, to) or (band.copy_atomic and band.copy_atomic(from, to) and os.remove(from)) then n, took[#took + 1] = n + 1, id end
+    -- (another drive: copied, then the original removed once the copy is there. copy_atomic returns nothing, so the original always stayed)
+    if os.rename(from, to) or (pcall(band.copy_atomic, from, to) and reaper.file_exists(to) and os.remove(from)) then n, took[#took + 1] = n + 1, id end
   end
   -- what went, for the band: the Google Drive copy still has these, and would bring them back (lib/drive.lua)
   if #took > 0 then

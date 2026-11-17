@@ -101,10 +101,20 @@ local ok, err = pcall(function()
   local before1 = snapshot(t1, pts1)
   check(before1[1]:find("takeB", 1, true) and before1[#before1]:find("takeB", 1, true), "the comp plays B, A, C, B: " .. before1[1] .. " ... " .. before1[#before1])
   check(mirror.picked_take(pieces[3]) == 2 and #mirror.real_takes(pieces[3]) == 3, "the print take isn't one of the real takes")
+  reaper.Undo_OnStateChange2(p, "take comps: the recording") -- (an undo point of its own, so Ctrl+Z below stops at the takes)
   prints.takes_to_lanes(p, all)
   local ok1, why1 = same(before1, snapshot(t1, pts1), pts1)
   check(ok1, "plain track: the lanes play exactly the comp (" .. (why1 ~= "" and why1 or "every point") .. ")")
   check(reaper.GetMediaTrackInfo_Value(t1, "I_FREEMODE") == 2, "and it's in lanes now")
+  -- 1b. Ctrl+Z on it sticks: the next pass leaves the takes (0.58.91)
+  local function takes_back()
+    for j = 0, reaper.CountTrackMediaItems(t1) - 1 do if #mirror.real_takes(reaper.GetTrackMediaItem(t1, j)) > 1 then return true end end
+    return false
+  end
+  reaper.Undo_DoUndo2(p)
+  check(takes_back(), "Ctrl+Z puts the takes back")
+  prints.takes_to_lanes(p, all)
+  check(takes_back() and band.track_ext(t1, "band_keep_takes") ~= "", "and the next pass leaves them as takes")
 
   -- 2. like Nostalgia's Track 10 and 8: pieces holding empty takes (REAPER's "TAKE NULL"), playing a take that isn't the first,
   -- and one piece that picked an empty take (silence, on purpose)

@@ -30,12 +30,16 @@ local function chain_local(parent, key)
 end
 mirror.chain_local = chain_local
 
+-- A take envelope's lines that are this computer's view of it: shown or not, its lane's height, armed (review, 0.58.91: they went out as edits).
+local TAKE_ENV_VIEW = { EGUID = true, VIS = true, LANEHEIGHT = true, ARM = true }
 -- Normalized item chunk: what the band shares about this item, byte-identical on every machine that holds it.
 function mirror.normalize_item(chunk)
   local out, in_ext, fx = {}, false, {} -- (fx: the blocks open inside a take's <TAKEFX chain, empty outside it)
+  local tenv = false -- (inside a take's envelope)
   for line in chunk:gmatch("[^\r\n]+") do
     local s = line:match("^%s*(.-)%s*$")
     local key = s:match("^(%S+)")
+    if #fx == 0 and not tenv and key and key:match("^<%u+ENV%d*$") then tenv = true elseif tenv and s == ">" then tenv = false end
     local parent = fx[#fx]
     if #fx > 0 then
       if s:sub(1, 1) == "<" then fx[#fx + 1] = s:match("^<(%S+)") elseif s == ">" then fx[#fx] = nil end
@@ -54,6 +58,7 @@ function mirror.normalize_item(chunk)
       out[#out + 1] = "<SOURCE MIDI" -- (a pooled copy arrives as an item of its own: REAPER writes it as plain MIDI there)
     elseif s:match("^[ex]m? ") or s:match("^<x ") then
       out[#out + 1] = s:gsub("^(<?)(.)", function(lt, c) return lt .. c:upper() end, 1)
+    elseif tenv and TAKE_ENV_VIEW[key] then -- (left out)
     elseif not (key and LOCAL_SET[key]) then
       out[#out + 1] = s
     end
@@ -1853,7 +1858,7 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     if it and require("prints").ara_take(it) then reaper.DeleteTrackMediaItem(reaper.GetMediaItem_Track(it), it); it = nil end
     if not it then it = reaper.AddMediaItemToTrack(tr)
     elseif reaper.GetMediaItem_Track(it) ~= tr then reaper.MoveMediaItemToTrack(it, tr) end
-    local sel = reaper.IsMediaItemSelected(it)
+    local sel, grp = reaper.IsMediaItemSelected(it), reaper.GetMediaItemInfo_Value(it, "I_GROUPID") -- (item groups are this computer's: kept. 0.58.91)
     -- (which take plays: the sender's pick, BANDTAKE, from 0.58.85. A version from before says nothing, and this machine's own
     -- pick stays: setting the chunk put it back to the first, so an audio comp lost its pick on every update. Review, 2026-10-31)
     local active = reaper.CountTakes(it) > 1 and reaper.GetMediaItemInfo_Value(it, "I_CURTAKE")
@@ -1866,6 +1871,7 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     if lane then reaper.SetMediaItemInfo_Value(it, "I_FIXEDLANE", lane < mirror.BAD_LANE and lane or 0) end -- (events from 0.42.7 hold 255)
     require("prints").choose(it) -- notes or the print, as this machine chose (never part of what travels)
     reaper.SetMediaItemSelected(it, sel)
+    if grp > 0 then reaper.SetMediaItemInfo_Value(it, "I_GROUPID", grp) end
     reaper.UpdateItemInProject(it)
     return true, mirror.item_hash(ev.track, mirror.item_state(it, media_dir))
   end
@@ -2180,6 +2186,7 @@ mirror.fx_loading = mirror.fx_loading or {} -- chain -> until when it may be sti
 mirror.fx_load_knobs = mirror.fx_load_knobs or {} -- chain -> its knobs at the start of that
 -- When each track last had a plug-in window open, looked at once a second: a change inside a plug-in's own window often moves no knob.
 mirror.fx_open_at = {}
+mirror.fx_open_text = mirror.fx_open_text or {} -- chain whose data the hash can't see -> its text when a window of it was first seen open
 mirror.cc_seen = {}
 mirror.fx_quiet = mirror.fx_quiet or {}
 local function fx_open_now(tr)
@@ -2451,6 +2458,20 @@ function mirror.watch(proj, cfg, song, room, opts)
     local ev = event_file(room_dir, evid)
     if ev and not ev.gone then
       if o.kind == "fx" and playing then return end -- (reloading plug-ins mid-song: after the stop)
+      -- (your edit to someone else's item, refused: a copy of yours first goes to a track of your own, as a new item would. Not when it went to
+      -- them as a suggestion: that holds it, and accepted, a copy would be a second part. Only a selected one: what you just edited, not every
+      -- part a refused tempo change moved, say. Review, 0.58.91)
+      if o.kind == "item" and why.copy and not why.to and why.text and o.ptr and reaper.ValidatePtr2(proj, o.ptr, "MediaItem*") and reaper.IsMediaItemSelected(o.ptr) then
+        local got, ch = reaper.GetItemStateChunk(o.ptr, "", false)
+        if got then
+          local on = select(2, reaper.GetTrackName(reaper.GetMediaItem_Track(o.ptr)))
+          local copy = reaper.AddMediaItemToTrack(keep_track(proj, on))
+          -- (new ids, and out of any pool: plain MIDI, as a pooled copy travels. A pool entry left behind is what REAPER's MIDI code crashed on)
+          reaper.SetItemStateChunk(copy, (ch:gsub("\n%s*POOLEDEVTS[^\n]*", ""):gsub("\n%s*I?GUID[^\n]*", ""):gsub("<SOURCE MIDIPOOL", "<SOURCE MIDI")), false)
+          reaper.GetSetMediaItemInfo_String(copy, "P_EXT:band_oid", "", true)
+          why.text = why.text .. ". Your version is on '" .. on .. " (yours, not sent)'"
+        end
+      end
       local ok, h = mirror.apply(proj, ev, media, opts.local_mix)
       if ok then remember(proj, o.oid, ev.rev, h, ev.id, mirror.order_of(ev))
       elseif mirror.PART[o.kind] then return -- (waits for this tab to come to the front)
@@ -2629,6 +2650,13 @@ function mirror.watch(proj, cfg, song, room, opts)
         -- (loaded, still as first seen, but not as left last time: turned while StudioSync wasn't running)
         if not mirror.fxk_ok[rk] and loaded(proj, rk) and mirror.fx_knobs[rk] == knobs and not knobs_as_left(proj, o, rk) then mirror.fx_knobs[rk] = "" end
         knobs_moved = mirror.fx_knobs[rk] ~= knobs
+        -- (a patch or IR loaded in a modulated or restless plug-in moves no knob, and its data is out of the hash: when its window closes
+        -- with the chain's text changed, the chain goes out. With an LFO running the text always differs, so closing it sends once. 0.58.91)
+        if o.ptr and fx_open_now(o.ptr) then mirror.fx_open_text[rk] = mirror.fx_open_text[rk] or mirror.hash(o.state)
+        elseif mirror.fx_open_text[rk] then
+          if mirror.fx_open_text[rk] ~= mirror.hash(o.state) then knobs_moved = true end
+          mirror.fx_open_text[rk] = nil
+        end
       end
       if h == o.hash and not knobs_moved then
         if o.kind == "fx" and o.ptr and not mirror.fxk_ok[rk] and loaded(proj, rk) then knobs_agreed(proj, o, rk) end
@@ -2824,7 +2852,7 @@ function mirror.watch(proj, cfg, song, room, opts)
           or "it isn't yours to change right now: claim it to edit it"
         local claim = not to and not claimed and sync.room_mode == "claims" and (ok_before and name or last.name) or nil -- (the bar's Claim it)
         local differed = last and mirror.first_diff(o.state, last.state)
-        put_back(o, rev, evid, { name = ok_before and name or (last.name or ""), to = to and who or nil, claim = claim ~= "" and claim or nil,
+        put_back(o, rev, evid, { name = ok_before and name or (last.name or ""), to = to and who or nil, claim = claim ~= "" and claim or nil, copy = true,
           text = string.format("Not sent: %s. %s%s", how, o.kind == "track" and "The track is back as it was" or o.kind == "item" and "The item is back as it was"
             or (mirror.PART[o.kind]:gsub("^%l", string.upper)) .. ((o.kind == "env") and " is back as it was" or " are back as they were"),
             differed and (" (what differed: " .. differed .. ")") or "") })

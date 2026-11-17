@@ -694,24 +694,40 @@ function prints.takes_into_new_lanes(proj, tr, mine)
   reaper.UpdateArrange()
 end
 
+prints.LANES_UNDO = "StudioSync: takes became lanes"
 function prints.takes_to_lanes(proj, mine)
   local done = 0
+  -- (Ctrl+Z on it: the next pass split them again. Undone, the track keeps its takes from then on, until none has two. Review, 0.58.91)
+  if reaper.Undo_CanRedo2 and reaper.Undo_CanRedo2(proj) == prints.LANES_UNDO then
+    local _, g = reaper.GetProjExtState(proj, band.SECTION, "lanes last")
+    local tr = g ~= "" and reaper.BR_GetMediaTrackByGUID and reaper.BR_GetMediaTrackByGUID(proj, g)
+    if not tr then for i = 0, reaper.CountTracks(proj) - 1 do if reaper.GetTrackGUID(reaper.GetTrack(proj, i)) == g then tr = reaper.GetTrack(proj, i) end end end
+    if tr and band.track_ext(tr, "band_keep_takes") == "" then
+      band.set_track_ext(tr, "band_keep_takes", "1")
+      band.log("you undid the takes on " .. select(2, reaper.GetTrackName(tr)) .. " becoming lanes: they stay takes")
+    end
+  end
   for i = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, i)
     local want, blocked = false, require("mirror").local_track(tr)
+    local keep = band.track_ext(tr, "band_keep_takes") ~= ""
+    local any = false
     local in_lanes0 = reaper.GetMediaTrackInfo_Value(tr, "I_FREEMODE") == 2 and reaper.GetMediaTrackInfo_Value(tr, "I_NUMFIXEDLANES") > 1
     for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
       local it = reaper.GetTrackMediaItem(tr, j)
       local real = real_takes(it)
       if real > 1 and prints.ara_take(it) then blocked = true end
       if real > 1 and mine(it) then want = true end
+      if real > 1 then any = true end
       -- (a bandmate's: REAPER's explode works on the whole track, and their prints were deleted with ours, where this computer couldn't
       -- print them again. A locked one: the crop and delete don't happen, so it went round every pass. Review, 0.58.87)
       if real > 1 and not mine(it) then blocked = true end
       if not in_lanes0 and select(2, prints.takes(it)) and not mine(it) then blocked = true end
       if real > 1 and reaper.GetMediaItemInfo_Value(it, "C_LOCK") % 2 == 1 then blocked = true end
     end
-    if want and not blocked then
+    if keep and not any then band.set_track_ext(tr, "band_keep_takes", "") end -- (no takes left to keep: split again from now on)
+    if want and not blocked and not keep then
+      reaper.SetProjExtState(proj, band.SECTION, "lanes last", reaper.GetTrackGUID(tr))
       reaper.PreventUIRefresh(1) -- (every part was selected and let go one after another, flashing across the project: review, 0.58.87)
       reaper.Undo_BeginBlock2(proj) -- (one point, named StudioSync's: Ctrl+Z on "Crop to active take" brought the takes back, to split again)
       -- wet takes go first, or they'd become lanes of their own; the comp's item prints again. (Waiting for a track with no
@@ -760,7 +776,7 @@ function prints.takes_to_lanes(proj, mine)
       reaper.SetTrackSelected(tr, false)
       for _, s in ipairs(sel) do if reaper.ValidatePtr2(proj, s, "MediaTrack*") then reaper.SetTrackSelected(s, true) end end
       reaper.PreventUIRefresh(-1)
-      reaper.Undo_EndBlock2(proj, "StudioSync: takes became lanes", -1)
+      reaper.Undo_EndBlock2(proj, prints.LANES_UNDO, -1)
       band.log("the takes on " .. select(2, reaper.GetTrackName(tr)) .. " became lanes (the takes you picked stay the comp)")
       done = done + 1
     end

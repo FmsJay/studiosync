@@ -318,3 +318,19 @@ offers Shrinks to the tiny box (the default) and Stays in front. The panel opene
 
 0.58.90: the master's FX button travels (in E-MASTER as "BANDFXEN 0" while off). A computer with SonoBus or NINJAM on its master keeps
 the button on, says so once, and holds the band's setting so it isn't sent back. auto_items checks it (21 checks).
+
+0.58.91 (the review's sync-behaviour and robustness items):
+- A modulated or restless plug-in's chain goes out when its window closes with its text changed (a patch or IR loaded inside it moves no
+  knob and its data is out of the hash). With an LFO running, closing it always sends once. modulated_fx checks it.
+- Markers and regions are changed in place by number (band.match_markers: kind, then position and name, then name, then position), so
+  they keep their numbers and render-matrix places; new ones get the next free number. markers_keep, test_markers.
+- A refused edit to someone else's item leaves a copy of yours on "<track> (yours, not sent)". Local item groups survive incoming updates.
+- Someone else's start or stop together doesn't cut a recording you started yourself (one started together can be stopped together), and
+  a record cue doesn't pull you off another tab that's playing; switching tabs to record is said. (Live sync: not covered by a suite.)
+- Ctrl+Z on "takes became lanes" sticks: the track keeps its takes until none has two (band_keep_takes). take_comps checks it.
+- Take envelopes' view lines (shown, height, armed, EGUID) are left out of items: those items read differently once after updating.
+- Catching up reads within the pass's budget and applies only once everything is read; "Since you were last here" reads only events
+  named after then; the quick cue listing runs every 0.25 s only while someone else is here (2 s alone).
+- An older kind of change refused here waits a minute from when it arrived, then lands, as object changes do.
+- History archive: across drives the original is removed once the copy is there; a shared folder at a drive's top archives into
+  StudioSync's own folder. An older ReaImGui gets a message instead of REAPER's error box (band.imgui).

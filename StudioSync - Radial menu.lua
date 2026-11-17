@@ -11,7 +11,8 @@ if not reaper.APIExists("ImGui_GetBuiltinPath") then
   return band.msg("The radial menu needs ReaImGui. Install it with ReaPack (Extensions > ReaPack > Browse packages: ReaImGui), then run this again.")
 end
 package.path = reaper.ImGui_GetBuiltinPath() .. "/?.lua;" .. package.path
-local ImGui = require "imgui" "0.10"
+local ImGui = band.imgui()
+if not ImGui then return end
 
 local cfg = band.settings()
 if not cfg then return end

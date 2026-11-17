@@ -98,10 +98,20 @@ local ok, err = pcall(function()
   -- 3. B may not change anything: its move is put back
   local bi = reaper.GetTrackMediaItem(reaper.GetTrack(pb, 1), 0)
   local was = reaper.GetMediaItemInfo_Value(bi, "D_POSITION")
+  reaper.SetMediaItemSelected(bi, true) -- (as a drag leaves it: what you just edited)
   reaper.SetMediaItemInfo_Value(bi, "D_POSITION", was + 3)
   local s2, back = pass_b(function() return false end)
   check(s2 == 0 and back == 1, "B's move wasn't sent, it was put back (sent " .. s2 .. ", put back " .. back .. ")")
   check(math.abs(reaper.GetMediaItemInfo_Value(reaper.GetTrackMediaItem(reaper.GetTrack(pb, 1), 0), "D_POSITION") - was) < 1e-6, "B's item is where the band has it")
+  local function own_items() -- (the items on B's "(yours, not sent)" track)
+    for t2 = 0, reaper.CountTracks(pb) - 1 do
+      local tr2 = reaper.GetTrack(pb, t2)
+      if select(2, reaper.GetSetMediaTrackInfo_String(tr2, "P_NAME", "", false)):find("yours, not sent", 1, true) then return tr2 end
+    end
+  end
+  local own = own_items()
+  local cp1 = own and reaper.GetTrackMediaItem(own, 0)
+  check(cp1 and math.abs(reaper.GetMediaItemInfo_Value(cp1, "D_POSITION") - (was + 3)) < 1e-6, "and a copy of B's moved version is on a track of B's own (0.58.91)")
   -- and a copy B isn't allowed to make goes away (Driver only: in Claims, B's own new item on a track nobody claimed goes out, 0.58.76)
   local _, bch = reaper.GetItemStateChunk(reaper.GetTrackMediaItem(reaper.GetTrack(pb, 1), 0), "", false)
   local bcp = reaper.AddMediaItemToTrack(reaper.GetTrack(pb, 1)); reaper.SetItemStateChunk(bcp, bch, false)
@@ -110,7 +120,7 @@ local ok, err = pcall(function()
   local kept = false
   for t = 0, reaper.CountTracks(pb) - 1 do
     local nm = select(2, reaper.GetSetMediaTrackInfo_String(reaper.GetTrack(pb, t), "P_NAME", "", false))
-    if nm:find("yours, not sent", 1, true) and reaper.CountTrackMediaItems(reaper.GetTrack(pb, t)) == 1 then kept = true end
+    if nm:find("yours, not sent", 1, true) and reaper.CountTrackMediaItems(reaper.GetTrack(pb, t)) == 2 then kept = true end -- (with the moved copy)
   end
   check(kept, "...and is kept on a track of B's own (not sent)")
   same("after B's put-backs")

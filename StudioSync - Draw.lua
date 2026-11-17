@@ -12,7 +12,8 @@ if not reaper.APIExists("ImGui_GetBuiltinPath") or not reaper.JS_Window_FindChil
   return band.msg("Drawing needs ReaImGui and js_ReaScriptAPI (ReaPack: both are in StudioSync's installer).")
 end
 package.path = reaper.ImGui_GetBuiltinPath() .. "/?.lua;" .. package.path
-local ImGui = require "imgui" "0.10"
+local ImGui = band.imgui()
+if not ImGui then return end
 local cfg = band.settings()
 if not cfg then return end
 local sync, mirror = require("sync"), require("mirror")

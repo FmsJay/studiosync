@@ -561,6 +561,7 @@ local key = tostring(proj)
 local fired, seen_ev, quick_at = {}, {}, 0
 -- The newest cue wins: an older one (a second copy arriving through the regular poll, say) is ignored.
 local cue_at = -math.huge
+local together_take -- (this tab's recording was started together, so a stop together may end it)
 local produce_lag, stamp_seen -- (producing someone: how far behind this pass really runs; the stream's start already acted on)
 -- Whose play, pause and stop this tab follows: "follow <proj>" holds a name, "follow driver" (kept) means whoever drives. Real time mode's
 -- side by side follows everyone. (lib/presence.lua moves the view along too.)
@@ -666,7 +667,10 @@ local function tick_body() -- returns true to keep going
     take_cue(band.json_decode(tjson))
   end
   lap("start")
-  if not transport and reaper.time_precise() - quick_at > 0.25 then -- a start/stop can't wait for the 2 s poll
+  -- (a start/stop can't wait for the 2 s poll. Only while someone else is here, though: alone, nobody can send one, and listing the
+  -- whole events folder four times a second in every tab was most of an idle Live sync's work. Review, 0.58.91)
+  local quick_every = #require("presence").peers(cfg, b.song, b.room) > 0 and 0.25 or 2
+  if not transport and reaper.time_precise() - quick_at > quick_every then
     quick_at = reaper.time_precise()
     take_cue(quick_transport())
     local producing = require("producer").who(proj)
@@ -692,8 +696,20 @@ local function tick_body() -- returns true to keep going
     if transport.type == "stop" and transport.follow and theirs and transport.pos then fire = fire + 2 end -- the position decides; time is a backstop
     if transport.type == "start" and tnow < fire then reaper.SetExtState(band.SECTION, "together_at " .. key, tostring(fire), false) end
     due_in = fire - tnow -- the regular poll can take 100-200 ms: it waits while a start/stop is close
+    -- (never into the middle of your own take: a recording you started yourself isn't cut by someone else's start or stop, and a record cue
+    -- doesn't take you away from another tab that's playing or recording. Review, 0.58.91)
+    local recording = reaper.GetPlayStateEx(proj) & 4 == 4
+    if not recording then together_take = nil end -- (a take started together that has since stopped)
+    local front = reaper.EnumProjects(-1)
+    local busy_elsewhere = transport.type == "start" and transport.rec and front ~= proj and reaper.GetPlayStateEx(front) ~= 0
     if tnow - fire > 30 then -- arrived long after the fact (offline, sync stalled): don't start a song out of nowhere
       band.log(string.format("missed a %s from %s (%.0f s ago)", transport.type, tostring(transport.user), tnow - fire))
+      transport = nil
+    elseif (tnow >= fire or reached(transport, theirs)) and theirs and not transport.remote and ((recording and not together_take) or busy_elsewhere) then
+      band.log(string.format("%s %s together, but %s: left as it is", tostring(transport.user or transport.lead), transport.type == "stop" and "stopped" or "started",
+        recording and "you're recording here" or "another tab is playing here"))
+      if transport.id then fired[transport.id] = true end
+      reaper.DeleteExtState(band.SECTION, "together_at " .. key, false)
       transport = nil
     elseif tnow >= fire or reached(transport, theirs) then -- a follower stops where the leader stopped
       if transport.type == "stop" then
@@ -712,7 +728,9 @@ local function tick_body() -- returns true to keep going
         if reaper.GetPlayStateEx(proj) ~= 0 then reaper.OnStopButtonEx(proj) end
         reaper.SetEditCurPos2(proj, from, false, false)
         if transport.click and (transport.countin or 0) > 0 then click_until(transport.pos or from) end
-        if transport.rec and not (transport.follow and theirs) then -- side by side: the one who records records, the rest listen
+        together_take = transport.rec and not (transport.follow and theirs) -- (a take started together may be stopped together)
+        if together_take then -- side by side: the one who records records, the rest listen
+          if front ~= proj then band.log("recording together: switched to '" .. b.song .. "', as REAPER records only in the tab in front") end
           reaper.SelectProjectInstance(proj)
           reaper.Main_OnCommand(1013, 0) -- Transport: Record (the active project)
         else

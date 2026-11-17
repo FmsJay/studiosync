@@ -172,7 +172,8 @@ function chooser.open(cfg, opts, done)
     return done(song, room)
   end
   package.path = reaper.ImGui_GetBuiltinPath() .. "/?.lua;" .. package.path
-  local ImGui = require "imgui" "0.10"
+  local ImGui = band.imgui()
+  if not ImGui then return done() end
   local ctx = ImGui.CreateContext("StudioSync: choose")
   local theme = require("theme")
   local ui_font = ImGui.CreateFont("sans-serif")
