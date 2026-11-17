@@ -34,7 +34,7 @@ function api.state_of(t)
   for _, n in ipairs(t.others or {}) do here_now[#here_now + 1] = n end
   table.sort(here_now)
   return { api = api.VERSION, version = band.VERSION, song = t.song, room = t.room, me = t.me, driver = t.driver, driving = t.driver == t.me,
-    mode = t.mode or "claims", alone = t.alone == true, here = here_now, claims = claims, hold = t.hold == true, local_mix = t.local_mix == true,
+    mode = t.mode or require("sync").DEFAULT_MODE, alone = t.alone == true, here = here_now, claims = claims, hold = t.hold == true, local_mix = t.local_mix == true,
     held = tonumber(t.held) or 0 }
 end
 

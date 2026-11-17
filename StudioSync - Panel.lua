@@ -409,7 +409,7 @@ local function refresh()
   view = status.gather(cfg, b, proj)
   view.group = band.info(cfg.root).name
   can, who = sync.authority(cfg, b.song, b.room, view.session)
-  ui.claim_made()
+  require("people").mine(cfg) -- (your colour, the same in every studio you're in: lib/people.lua)
   local here = false -- the driver is someone else, and they're here
   for _, r in ipairs(view.rows) do if r.name == view.driver and r.age < 45 then here = true end end
   if here and view.driver ~= cfg.user and reaper.GetExtState(band.SECTION, "alone " .. tostring(proj)) == "" then
@@ -421,7 +421,7 @@ local function refresh()
     if who.mode == "driver" then banner_text = "View only: " .. view.driver .. " is driving. Your changes are put back; what you record stays on this computer."
     elseif who.mode == "admins" and not require("groups").may_manage(cfg.root, cfg.user) then
       banner_text = mine > 0 and "Admins only: you can change what you've been given." or "View only: admins only here. Your changes are put back; what you record stays on this computer."
-    elseif who.mode ~= "open" then
+    elseif who.mode == "claims" then
       -- (tracks you made and nobody has claimed are yours to change too, so "view only" wasn't true: sync.maker_may)
       local made = false
       for i = 0, reaper.CountTracks(proj) - 1 do
@@ -491,6 +491,7 @@ local function section_sync()
   end
   if not tools.autostart_on(dir) and not tools.autostart_tried then -- always on: StudioSync projects start Live sync with REAPER
     tools.autostart_tried = true
+    pcall(tools.toolbar_default) -- (and the toolbar button, on unless switched off: 0.58.82)
     if not tools.set_autostart(true, dir) then band.log("couldn't add StudioSync to Scripts/__startup.lua: Live sync won't start with REAPER") end
   end
   if view.newer then
@@ -508,18 +509,20 @@ end
 
 
 local drive_root, drive_at = nil, -math.huge
-local MODE_INFO = {
-  { "driver", "Only the driver", "Only the driver changes what the studio has. Everyone else's changes are put back (record as usual)." },
-  { "claims", "Driver + claims", "The driver, and everyone on what they've claimed (a track, a region, a stretch of time). Other changes are put back." },
+local MODE_INFO = { -- (the names on disk are older than these: sync.MODES)
+  { "open", "Claims", "Anyone changes anything nobody else has claimed, the tempo map and markers too. What someone has claimed (a track,\n" ..
+    "a region, a stretch of time) only they change, the driver too. If two change one thing at once, whoever changed it more wins,\nand the other person gets Use mine." },
+  { "claims", "Driver + claims", "The driver changes anything, claimed or not. Everyone else changes what they've claimed. Other changes are put back." },
+  { "driver", "Driver only", "Only the driver changes what the studio has. Everyone else's changes are put back (record as usual)." },
+  { "everyone", "Everyone", "Anyone changes anything, claimed or not: claims don't hold. If two change one thing at once, whoever changed it more wins,\n" ..
+    "and the other person gets Use mine." },
   { "admins", "Admins only", "Only the studio's owner and admins change what the studio has, and anyone on what an admin gave them (right-click their name). Other changes are put back." },
-  { "open", "Anyone", "Anyone changes anything nobody has claimed, the tempo map and markers too. If two change one thing at once,\n" ..
-    "whoever changed it more wins, and the other person gets Use mine." },
 }
 local function section_driver(beside) -- beside: drawn on the box's row (a short docker has no row to spare)
   local driving = view.driver == cfg.user
-  local mode, alone = who.mode or "claims", reaper.GetExtState(band.SECTION, "alone " .. tostring(proj)) ~= ""
-  local may_set = driving or alone or require("groups").may_manage(cfg.root, cfg.user)
-  local cur = MODE_INFO[2]
+  local mode = who.mode or sync.DEFAULT_MODE
+  local may_set = require("groups").may_manage(cfg.root, cfg.user) -- (the studio's owner and admins only: James, 0.58.82)
+  local cur = MODE_INFO[1]
   for _, m in ipairs(MODE_INFO) do if m[1] == mode then cur = m end end
   ImGui.AlignTextToFramePadding(ctx)
   ImGui.Text(ctx, "Who controls")
@@ -541,11 +544,12 @@ local function section_driver(beside) -- beside: drawn on the box's row (a short
     ImGui.EndCombo(ctx)
   end
   ImGui.EndDisabled(ctx)
-  ImGui.SetItemTooltip(ctx, cur[3] .. (may_set and "" or "\nThe driver or an admin picks this."))
-  if not may_set then ImGui.SameLine(ctx); ImGui.TextDisabled(ctx, "the driver or an admin picks") end
+  ImGui.SetItemTooltip(ctx, cur[3] .. (may_set and "" or "\nThe studio's owner or an admin picks this."))
+  if not may_set then ImGui.SameLine(ctx); ImGui.TextDisabled(ctx, "the owner or an admin picks") end
   if beside then beside() end
   if driving or reaper.GetExtState(band.SECTION, "alone " .. tostring(proj)) == "" then -- (alone, "James is driving" sat right above "you have full control": Mac, 0.57.6)
-    ImGui.Text(ctx, driving and "You're driving: what nobody has claimed follows you." or (tostring(view.driver) .. " is driving."))
+    local yours = ({ claims = "You're driving: you change anything, claimed or not.", driver = "You're driving: only you change things." })[mode] or "You're driving."
+    ImGui.Text(ctx, driving and yours or (tostring(view.driver) .. " is driving."))
   end
   local away = reaper.GetExtState(band.SECTION, "driver_away " .. tostring(proj))
   if away ~= "" and not driving then
@@ -643,7 +647,6 @@ function ui.claim_chips(owned, short)
     end
     c[o[2]] = keep
     sync.set_claims(cfg, b.song, b.room, c)
-    if o[2] == "tracks" then ui.let_go(o[3]) end
   end
   local avail, used = ImGui.GetContentRegionAvail(ctx), 0
   local h = ImGui.GetFrameHeight(ctx) - 2
@@ -767,20 +770,22 @@ function ui.person_name(p, size)
     ImGui.TextDisabled(ctx, role)
   end
 end
--- Hear someone: their whole mix, or (following them) what they play, on top of your own copy of the song. lib/hear.lua.
+-- Solo someone (was "Listen", beside a "hear" switch that read the same: James, 0.58.82): only them in your ears, their whole mix, or
+-- (following them) what they play, on top of your own copy of the song. lib/hear.lua.
 function ui.listen_button(p)
   local hear = require("hear")
   local key = "listen " .. tostring(proj)
   local on = reaper.GetExtState(band.SECTION, key) == p.user
   if on then ImGui.PushStyleColor(ctx, ImGui.Col_Button, ACCENT) end
-  if ImGui.SmallButton(ctx, "Listen##" .. p.user) then
+  if ImGui.SmallButton(ctx, (on and "Soloed" or "Solo") .. "##listen" .. p.user) then
     local ok, why = hear.listen(proj, cfg, b, not on and p.user or nil)
     if ok == nil then band.msg(tostring(why))
     else band.log(on and ("stopped listening to " .. p.user) or ("listening to " .. p.user .. ": they get asked by their computer, a few seconds' wait")) end
   end
   if on then ImGui.PopStyleColor(ctx) end
-  ImGui.SetItemTooltip(ctx, on and ("You hear only " .. p.user .. ". Click to stop.") or
-    ("Hear only " .. p.user .. ", through SonoBus. With Follow off you get their whole mix; with Follow on you get what they're playing or recording, over your own copy of the song, so it's in better quality and you can watch it land."))
+  ImGui.SetItemTooltip(ctx, on and ("You hear only " .. p.user .. ". Click to hear everyone again.") or
+    ("Solo " .. p.user .. ": only them in your ears, through SonoBus (Mute leaves the others on and turns one person off). With Follow off you get their whole mix;\n" ..
+    "with Follow on you get what they're playing or recording, over your own copy of the song, so it's in better quality and you can watch it land."))
 end
 -- Under a person in Who's here (James, 2026-11-02): what they're working in or last worked in, opening to all they've claimed.
 function ui.person_claims(user, last_track)
@@ -823,39 +828,8 @@ function ui.selected_regions()
   end
   return out
 end
--- Tracks you made that nobody has claimed go onto your claims (James, 0.58.79: "don't need the 'you made these' line on
--- Home, just put them onto your claims automatically"). Not while you drive (what nobody claimed follows you already), not in
--- Driver only or Admins only, and not a track you let go of here (its x or Release all claims mark it: P_EXT:band_let_go,
--- this computer only), so letting one go sticks. Once per track per panel run: who.tracks catches up a pass later.
-ui.tried_claim = {}
-function ui.claim_made()
-  if not (b and who) or who.mode == "driver" or who.mode == "admins" or cfg.user == who.driver then return end
-  local mirror, names = require("mirror"), {}
-  for i = 0, reaper.CountTracks(proj) - 1 do
-    local tr = reaper.GetTrack(proj, i)
-    local name = sync.base_name(select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false))) -- (not GetTrackName: an unnamed one is "Track 3")
-    local oid = mirror.track_oid(tr)
-    if name ~= "" and oid ~= "" and not ui.tried_claim[oid] and not who.tracks[name:lower()] and not mirror.local_track(tr)
-        and band.track_ext(tr, "band_let_go") == "" and mirror.is_creator(oid, cfg.user) then
-      ui.tried_claim[oid] = true
-      names[#names + 1] = name
-    end
-  end
-  if #names > 0 and sync.claim_tracks(cfg, b.song, b.room, names) then
-    band.log("claimed for you, as you made " .. (#names == 1 and "it: " or "them: ") .. table.concat(names, ", ") .. " (Home > Claims: its x lets it go)")
-  end
-end
--- A track claim let go of here: it isn't claimed back for its maker (ui.claim_made). `name` lower or not.
-function ui.let_go(name)
-  for i = 0, reaper.CountTracks(proj) - 1 do
-    local tr = reaper.GetTrack(proj, i)
-    if sync.base_name(select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false))):lower() == name:lower() then
-      reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_let_go", "1", true)
-    end
-  end
-end
 local function section_claims()
-  local owned = ui.claims_of() -- (tracks you made are on it: ui.claim_made)
+  local owned = ui.claims_of()
   if view.driver == cfg.user then -- the driver lets go of claims held by someone who isn't here (left the band, away)
     local away = {}
     for _, o in ipairs(owned) do
@@ -910,7 +884,6 @@ local function section_claims()
   if ImGui.Button(ctx, "Release all claims") and reaper.MB("Release all your claims (tracks, regions and time)? Everything you claimed follows the driver again.",
       "StudioSync", 4) == 6 then
     local c = sync.my_claims(cfg, b.song, b.room) or {} -- (printing duties stay: "Stop printing them" lets those go)
-    for _, n in ipairs(c.tracks or {}) do ui.let_go(n) end
     sync.set_claims(cfg, b.song, b.room, { tracks = {}, regions = {}, times = {}, prints = c.prints })
   end
 end
@@ -1235,11 +1208,11 @@ local function home_who()
   if ImGui.SmallButton(ctx, "Invite a collaborator") then tools.invite(my_id, band.info(cfg.root), ctx, ImGui) end
   ImGui.EndDisabled(ctx)
   ImGui.SetItemTooltip(ctx, my_id and tools.INVITE_TIP or "Waiting for Syncthing (it has to be running).")
-  if my_id and services.tailscale_token() ~= "" then -- (a token: Settings > Advanced)
-    next_to("Invite a guest for a day")
-    if ImGui.SmallButton(ctx, "Invite a guest for a day") then services.copy_guest_invite(my_id, band.info(cfg.root), ctx, ImGui, cfg.root) end
-    ImGui.SetItemTooltip(ctx, services.GUEST_TIP)
+  if my_id then -- (how long they stay is picked there: James, 0.58.82; with a Tailscale token, Settings > Advanced, they join that too)
+    next_to("Invite a guest")
+    tools.guest_invite_button(ctx, ImGui, my_id, cfg.root)
   end
+  tools.guests_list(ctx, ImGui, cfg.root, require("groups").may_manage(cfg.root, cfg.user))
   local people, armed = {}, {}
   for i = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, i)
@@ -1255,7 +1228,7 @@ local function home_who()
   do -- following whoever drives, whoever that is
     if wide then next_to(ImGui.CalcTextSize(ctx, "Always follow the driver") + ImGui.GetFrameHeight(ctx) * 2 + 16) end -- (beside the heading: docked, its row is a person's)
     local on = reaper.GetExtState(band.SECTION, "follow driver") ~= ""
-    local ch, v = switch_row("##followdriver", "Always follow the driver", on, "Your playhead and view follow the driver: they press play, you play along. Only they record.")
+    local ch, v = switch_row("##followdriver", "Always follow the driver", on, "Your playhead, view and mix follow the driver: they press play, you play along, hearing what they hear. Only they record.")
     if ch then
       reaper.SetExtState(band.SECTION, "follow driver", v and "1" or "", true)
       if v then reaper.DeleteExtState(band.SECTION, "follow " .. tostring(proj), false) end
@@ -1277,7 +1250,7 @@ local function home_who()
       if p.state ~= "here" and p.state ~= "offline" then
         next_to("Following"); tools.follow_button(p.name)
         if ui.advanced() or require("producer").who(proj) == p.user then
-          next_to("Listen"); ui.listen_button(p); next_to("Producing")
+          next_to("Soloed"); ui.listen_button(p); next_to("Producing")
           require("page_hear").produce_button(ctx, ImGui, proj, cfg, b, p.user)
         end
       end
@@ -1448,6 +1421,18 @@ local function settings_look()
     ch, v = switch_row("##banner", "Banner over REAPER while someone else drives", bon,
       "A slim note at the foot of REAPER's timeline saying what you can change (it never takes a click).")
     if ch then reaper.SetExtState(band.SECTION, "banner", v and "" or "off", true) end
+    do -- a StudioSync button on REAPER's main toolbar (lib/tools.lua): on unless switched off, as Helgobox's (0.58.82)
+      ch, v = switch_row("##tbbtn", "StudioSync button on REAPER's toolbar", tools.toolbar_button(),
+        "A button at the end of REAPER's main toolbar that opens the panel, in the toolbar's own style (lit while the panel is open).\n" ..
+        "REAPER builds its toolbar as it starts, so a change shows after a restart. Only on this computer.")
+      if ch then
+        local ok, why = tools.set_toolbar_button(v)
+        if ok then band.log(v and "the StudioSync button joins the main toolbar when REAPER next starts" or "the StudioSync button leaves the main toolbar when REAPER next starts")
+        else band.msg(why) end
+      end
+      local blocked = tools.toolbar_button() and tools.toolbar_button_blocked()
+      if blocked then ImGui.TextColored(ctx, YELLOW, blocked) end
+    end
     card_end()
   end
 end
@@ -1475,22 +1460,10 @@ local function settings_sync()
     if lch then reaper.SetExtState(band.SECTION, "live set", lv and "on" or "", true) end
     ImGui.SetItemTooltip(ctx, "For playing a set: while REAPER plays, nothing is sent or taken in, so syncing can't make REAPER stutter.\n" ..
       "Everything catches up as soon as you stop. Only on this computer.")
-    do -- a StudioSync button on REAPER's main toolbar (lib/tools.lua)
-      local tch, tv = ImGui.Checkbox(ctx, "StudioSync button on the main toolbar##tbbtn", tools.toolbar_button())
-      if tch then
-        local ok, why = tools.set_toolbar_button(tv)
-        if ok then band.log(tv and "the StudioSync button joins the main toolbar when REAPER next starts" or "the StudioSync button leaves the main toolbar when REAPER next starts")
-        else band.msg(why) end
-      end
-      ImGui.SetItemTooltip(ctx, "A button at the end of REAPER's main toolbar that opens the panel, in the toolbar's own style (lit while the panel is open).\n" ..
-        "REAPER builds its toolbar as it starts, so it shows after a restart. Only on this computer.")
-      local blocked = tools.toolbar_button() and tools.toolbar_button_blocked()
-      if blocked then ImGui.TextColored(ctx, YELLOW, blocked) end
-    end
     require("people").track_options(ctx, ImGui) -- whose colours tracks show here
     if b and can then require("colours").draw(ctx, ImGui, proj, cfg, function(name, tr) -- (a track you made is yours, as mirror.watch has it: Mac, 0.57.6)
       return can(cfg.user, name) or sync.maker_may(require("mirror").track_oid(tr), cfg.user, name, nil, who and who.mode)
-    end, view.driver == cfg.user or (who and who.mode) == "open") end
+    end, view.driver == cfg.user or (who and (who.mode == "open" or who.mode == "everyone"))) end
     card_end()
   end
 end
@@ -1714,9 +1687,9 @@ function ui.settings_advanced()
       if ImGui.Button(ctx, "Prepare this project") then action("Prepare session") end
       ImGui.SetItemTooltip(ctx, "Takes into lanes, FLAC (recording and existing WAVs), clear track names, media in the project folder, tidy-up: a checklist first. A shared project's changes go to everyone.")
     end
-    local cha, va = switch_row("##showadv", "Show advanced controls", ui.advanced(), "Side rooms, claiming regions and time, Listen and Produce, and the Plugins page.\nOff, each still shows when it's needed: a side room, a missing plug-in, someone you're producing.")
+    local cha, va = switch_row("##showadv", "Show advanced controls", ui.advanced(), "Side rooms, claiming regions and time, Solo and Produce, and the Plugins page.\nOff, each still shows when it's needed: a side room, a missing plug-in, someone you're producing.")
     if cha then reaper.SetExtState(band.SECTION, "show advanced", va and "1" or "0", true); ui.extra_at = -math.huge end
-    local ch0, v0 = switch_row("##showplay", "Show the Play/Jam tab", ui.play_shown(), "Starting together, Play along and Jam. Play along and Jam go through NINJAM, which needs a server the others can reach.\nReal time mode, Follow and Listen don't need any of it.")
+    local ch0, v0 = switch_row("##showplay", "Show the Play/Jam tab", ui.play_shown(), "Starting together, Play along and Jam. Play along and Jam go through NINJAM, which needs a server the others can reach.\nReal time mode, Follow and Solo don't need any of it.")
     if ch0 then reaper.SetExtState(band.SECTION, "show play", v0 and "1" or "", true) end
     local ch1, v1 = switch_row("##allactions", "Every StudioSync action in REAPER's Actions list", band.all_actions(),
       "For keyboard shortcuts and toolbar buttons: Hold my changes, Claim selected tracks, Local mixing, Take control and the rest.\n" ..
@@ -1726,11 +1699,11 @@ function ui.settings_advanced()
       local listed, out = band.sync_actions(dir)
       band.log(string.format("the Actions list has %d StudioSync action(s) now%s", listed, out > 0 and (" (" .. out .. " taken out)") or ""))
     end
-    do -- Tailscale's API: guests for a day, and the policy lines (lib/services.lua). Whoever runs the Tailscale network makes the token.
+    do -- Tailscale's API: guests until a day you pick, and the policy lines (lib/services.lua). Whoever runs the Tailscale network makes the token.
       local services = require("services")
       ImGui.Spacing(ctx)
       if services.tailscale_token() == "" then
-        ImGui.TextDisabled(ctx, "Run the studio's Tailscale network? An access token lets StudioSync invite a guest for a day and set up its tags for you.")
+        ImGui.TextDisabled(ctx, "Run the studio's Tailscale network? An access token lets StudioSync put guests on your Tailscale network too, and set up its tags for you.")
         if ImGui.SmallButton(ctx, "Make a token") then band.open_url("https://login.tailscale.com/admin/settings/keys") end
         ImGui.SetItemTooltip(ctx, "Tailscale's Keys page: Generate access token. It lasts 1 to 90 days; copy it, then Add the token here.")
         next_to("Add the token")
@@ -1756,7 +1729,7 @@ function ui.settings_advanced()
             or "Tailscale's policy has StudioSync's tags; guests can still reach whatever your policy allows")
         end
         ImGui.SetItemTooltip(ctx, "Adds the tagOwners lines to the Tailscale network's policy: computers StudioSync's installer signs in then stay signed in,\n" ..
-          "and 'Invite a guest for a day' works. On Tailscale's starting policy it also offers to limit guests to StudioSync's file sharing and jams.")
+          "and guest invitations put guests on Tailscale too. On Tailscale's starting policy it also offers to limit guests to StudioSync's file sharing and jams.")
         next_to("Forget the token")
         if ImGui.SmallButton(ctx, "Forget the token") then services.set_tailscale_token(""); band.log("Tailscale access token forgotten on this computer") end
       end
@@ -1849,7 +1822,7 @@ local PAGES = {
 }
 local LOBBY = { Groups = true, Projects = true, Settings = true } -- (what there is with no group project in front. Groups isn't a tab: the group pill goes there)
 function ui.play_shown() return reaper.GetExtState(band.SECTION, "show play") == "1" end
--- Advanced controls (Settings > Advanced): side rooms, region and time claims, Listen and Produce, the Plugins page. Off, a first studio shows
+-- Advanced controls (Settings > Advanced): side rooms, region and time claims, Solo and Produce, the Plugins page. Off, a first studio shows
 -- what everyone needs; each still shows when it has something to say (a side room exists, a plug-in is missing, you're producing someone).
 -- Whoever already had a studio before 0.58.47 starts with them on, so nothing they use disappears. (UX review, 0.58.47)
 function ui.advanced()
@@ -1898,8 +1871,9 @@ tools.follow_button = function(name)
     end
   end
   if on then ImGui.PopStyleColor(ctx) end
-  ImGui.SetItemTooltip(ctx, on and ("You follow " .. name .. ": their play, pause, stop and record, and their view. Click to stop.")
-    or ("Follow " .. name .. ": your playhead goes with theirs (play, pause, stop, jumps; when they record you play along), and your view goes where theirs is."))
+  ImGui.SetItemTooltip(ctx, on and ("You follow " .. name .. ": their play, pause, stop and record, their view, and their mix. Click to stop: your own mix comes back.")
+    or ("Follow " .. name .. ": your playhead goes with theirs (play, pause, stop, jumps; when they record you play along), your view goes where theirs is,\n" ..
+      "and you hear their mix (faders, pan, what they've soloed; mutes are everyone's already). Your own mix comes back when you stop."))
 end
 
 -- Floating, one button for where the window goes: Dock and Full screen were two more, and the row wrapped. Right-click arms drag-to-dock, as Dock's did.
@@ -2641,11 +2615,16 @@ local function pill_window()
     ImGui.DrawList_AddRect(dl, x + 1, y + 1, x + S - 1, y + S - 1, live_on and GREEN or RED, S / 4, 0, 2)
     end
     if not strip and waiting > 0 then -- what's waiting, in the corner
-      local n = waiting > 99 and "99" or tostring(waiting)
+      -- (small, to the box's size: in the panel's own text size the number covered half the box. James, 0.58.82)
+      local n = waiting > 9 and "9+" or tostring(waiting)
+      local fs = math.max(8, math.floor(S * 0.32 + 0.5))
+      ImGui.PushFont(ctx, nil, fs)
       local tw, th = ImGui.CalcTextSize(ctx, n)
-      local cx, cy, r = x + S - 9, y + 9, math.max(tw, th) / 2 + 2
+      ImGui.PopFont(ctx)
+      local r = math.max(th * 0.5, tw * 0.5 + 1.5)
+      local cx, cy = x + S - r, y + r
       ImGui.DrawList_AddCircleFilled(dl, cx, cy, r, RED)
-      ImGui.DrawList_AddText(dl, cx - tw / 2, cy - th / 2, 0xFFFFFFFF, n)
+      ImGui.DrawList_AddTextEx(dl, nil, fs, cx - tw / 2, cy - th / 2, 0xFFFFFFFF, n)
     end
     ImGui.End(ctx)
   end

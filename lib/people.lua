@@ -80,16 +80,52 @@ function people.colours(root, extra)
   for _, u in ipairs(extra or {}) do known[#known + 1] = u end
   return people.assign(c.picked, known)
 end
-function people.mine(cfg) return people.colours(cfg.root, { cfg.user })[cfg.user] end
--- Pick a colour (nil: back to the default).
-function people.pick(cfg, rgb)
-  if rgb then
-    reaper.RecursiveCreateDirectory(cfg.root .. "/_band/colours", 0)
-    band.write_json(file(cfg.root, cfg.user), { user = cfg.user, colour = rgb, time = os.date("!%Y-%m-%dT%H:%M:%SZ") })
-  else
-    os.remove(file(cfg.root, cfg.user))
+-- Your colour is the same in every studio you're in (James, 0.58.82: "make the colour settings sync across studios"): a pick goes to all of
+-- them, and a studio without one takes the newest you made elsewhere (once a panel run each: a studio joined later catches up).
+-- (only from one of this computer's studios, as you: a scratch folder, or a test picking for someone else, stays where it is)
+local function my_studios(cfg)
+  local roots, seen, inside = { cfg.root }, { [cfg.root] = true }, false
+  for _, x in ipairs(band.bands()) do
+    if x.root == cfg.root then inside = true end
+    if x.root and not seen[x.root] then seen[x.root] = true; roots[#roots + 1] = x.root end
   end
-  cache[cfg.root] = nil
+  if not inside or cfg.user ~= reaper.GetExtState(band.SECTION, "user") then return { cfg.root } end
+  return roots
+end
+-- The newest pick of `user`'s among their own files in `roots`: the file's table, or nil. Pure but for reading them.
+function people.newest_pick(roots, user)
+  local best
+  for _, root in ipairs(roots) do
+    local p = band.read_json(file(root, user))
+    if type(p) == "table" and p.user == user and math.tointeger(tonumber(p.colour)) and (not best or tostring(p.time) > tostring(best.time)) then best = p end
+  end
+  return best
+end
+local aligned = {}
+function people.mine(cfg)
+  if not aligned[cfg.root .. "|" .. cfg.user] then
+    aligned[cfg.root .. "|" .. cfg.user] = true
+    local p = people.newest_pick(my_studios(cfg), cfg.user)
+    local here = band.read_json(file(cfg.root, cfg.user))
+    if p and not (type(here) == "table" and here.colour == p.colour) then
+      reaper.RecursiveCreateDirectory(cfg.root .. "/_band/colours", 0)
+      band.write_json(file(cfg.root, cfg.user), p)
+      cache[cfg.root] = nil
+    end
+  end
+  return people.colours(cfg.root, { cfg.user })[cfg.user]
+end
+-- Pick a colour (nil: back to the default), in every studio you're in.
+function people.pick(cfg, rgb)
+  for _, root in ipairs(my_studios(cfg)) do
+    if rgb then
+      reaper.RecursiveCreateDirectory(root .. "/_band/colours", 0)
+      band.write_json(file(root, cfg.user), { user = cfg.user, colour = rgb, time = os.date("!%Y-%m-%dT%H:%M:%SZ") })
+    else
+      os.remove(file(root, cfg.user))
+    end
+    cache[root] = nil
+  end
 end
 function people.mode()
   local m = reaper.GetExtState(band.SECTION, "colour base")
@@ -138,8 +174,7 @@ local function newest_changes(proj, names)
   if new_of[proj] and reaper.time_precise() - new_at[proj] < 5 then return new_of[proj] end
   local mirror, out = require("mirror"), {}
   local now = os.time(os.date("!*t"))
-  local prefix = {}
-  for u in pairs(names) do prefix[(u:gsub(" ", "_"):upper()) .. "-"] = u end
+  local sync = require("sync")
   for i = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, i)
     local best, who = "", nil
@@ -148,7 +183,7 @@ local function newest_changes(proj, names)
       local stamp = (ev or ""):match("%d%d%d%d%d%d%d%d%-%d%d%d%d%d%dZ")
       if stamp and stamp > best then
         best, who = stamp, nil
-        for p, u in pairs(prefix) do if ev:upper():sub(1, #p) == p then who = u end end
+        for u in pairs(names) do if sync.is_mine(ev, u) then who = u end end -- (not a prefix: "James" would take "James-Laptop"'s. 0.58.82)
       end
     end
     look(mirror.track_oid(tr))
@@ -240,10 +275,10 @@ function people.colour_options(ctx, ImGui, cfg)
   ImGui.SetItemTooltip(ctx, "Any colour of your own")
   next_to(70)
   if ImGui.SmallButton(ctx, "Default##colour") then people.pick(cfg, nil) end
-  ImGui.TextDisabled(ctx, "Everyone sees you in it: your drawings, and tracks you're working on where they show that.")
+  ImGui.TextDisabled(ctx, "Everyone sees you in it, in every studio you're in: your drawings, and tracks you're working on where they show that.")
 end
 function people.track_options(ctx, ImGui)
-  ImGui.SeparatorText(ctx, "Track colours here")
+  ImGui.SeparatorText(ctx, "Track colours you see")
   local function next_to(words)
     ImGui.SameLine(ctx)
     if ImGui.GetContentRegionAvail(ctx) < ImGui.CalcTextSize(ctx, words) + 40 then ImGui.NewLine(ctx) end
@@ -251,14 +286,14 @@ function people.track_options(ctx, ImGui)
   for i, m in ipairs(people.MODES) do
     if i > 1 then next_to(m[2]) end
     if ImGui.RadioButton(ctx, m[2] .. "##trackcolours", people.mode() == m[1]) then reaper.SetExtState(band.SECTION, "colour base", m[1], true) end
-    ImGui.SetItemTooltip(ctx, m[3] .. " Only on this computer: nobody else's colours change.")
+    ImGui.SetItemTooltip(ctx, m[3] .. "\nYour view, in every project and studio on this computer. Nobody else's colours change.")
   end
   ImGui.BeginDisabled(ctx, people.mode() ~= "band")
   for i, w in ipairs(people.SHOWS) do -- (on top of the studio's colours, one or both: James, 0.58.79)
     if i > 1 then next_to(w[2]) end
     local ch, v = ImGui.Checkbox(ctx, w[2] .. "##colour" .. w[1], people.shows(w[1]))
     if ch then reaper.SetExtState(band.SECTION, "colour " .. w[1], v and "on" or "off", true) end
-    ImGui.SetItemTooltip(ctx, w[3] .. "\nOnly on this computer.")
+    ImGui.SetItemTooltip(ctx, w[3] .. "\nYour view, in every project and studio on this computer.")
   end
   ImGui.EndDisabled(ctx)
 end

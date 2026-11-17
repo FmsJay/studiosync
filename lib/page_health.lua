@@ -164,6 +164,10 @@ function H.maint_rows()
     local ok, words = pcall(require("callapps").health_words)
     if ok and words then rows[#rows + 1] = { "call app", false, "yellow", "", words } end
   end
+  do -- REAPER hearing itself through Voicemeeter: echoes in Real time mode (lib/callapps.lua, 0.58.82)
+    local ok, words = pcall(require("callapps").loop_words)
+    if ok and words then rows[#rows + 1] = { "echo", false, "red", "", words } end
+  end
   if view.newer then rows[#rows + 1] = { "update " .. view.newer, false, "yellow", "", "StudioSync " .. view.newer .. " is in use in the studio; you have " .. band.VERSION .. ": press Update below." } end
   pcall(require("drive").root, cfg) -- (what it says next is about the group it last looked at: this tab's, then. Mac, 0.51.12)
   local dmiss = reaper.GetExtState(band.SECTION, "drive_root") ~= "off" and require("drive").missing

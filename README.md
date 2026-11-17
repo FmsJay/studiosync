@@ -61,7 +61,7 @@ Everything below is the detail.
       recall/   recall points (every handover, or saved by hand)
       status/   <person>.json           who's here, what they're doing (the panel's Who's here)
       chat/     messages, to-dos, links for the room (the project's and the studio's sit beside it)
-      driver.json, mode.json            who drives; Only the driver / Driver + claims / Admins only / Anyone
+      driver.json, mode.json            who drives; Claims / Driver + claims / Driver only / Everyone / Admins only
 ```
 
 - **Publish** (host) makes the project a studio session. The project must be prepared first (a checklist); an
@@ -330,12 +330,13 @@ plug-ins this machine doesn't have.
 
 Who may change what:
 
-- **Driver**: their changes reach everyone, except on what someone has claimed. *Take control* (next to Who's
+- **Driver**: leads play and record; in *Driver + claims* and *Driver only* their changes reach everyone (in Driver + claims, claimed parts too). *Take control* (next to Who's
   here) makes you the driver; it checks everyone has caught up first, and every handover saves a version.
-- **Who can edit** (Home; the driver picks): **Only the driver**, **Driver + claims** (the driver, and
-  everyone on what they've claimed; a track you make is claimed for you once it has a name, unless you drive, and
-  a track you made stays yours to change until someone claims it, listed on the Claims card) or **Anyone** (anything unclaimed;
-  the tempo map, markers and project settings too; a clash goes to whoever owns it, else whoever changed it more: docs/clashes.md). A newly shared project starts on **Anyone**; one shared before that setting existed starts on Driver + claims.
+- **Who can edit** (Home; the studio's owner or an admin picks): **Claims**, the default (anyone changes anything nobody else
+  has claimed, the tempo map, markers and project settings too; what someone claimed only they change, the driver too; a clash
+  goes to whoever owns it, else whoever changed it more: docs/clashes.md), **Driver + claims** (the driver changes anything,
+  claimed or not; everyone else what they've claimed), **Driver only**, **Everyone** (anything, claimed or not: claims don't
+  hold) or **Admins only**. Nothing is ever claimed for you by itself: a track you made stays yours to change until someone claims it.
 - **Claims**: *Claim selected tracks*, *Claim region at cursor* or *Claim time selection* (shown to everyone as a
   `[claimed: you]` region). A track claim beats a time claim, which beats a region claim, which beats the driver.
 - **Suggestions**: an edit that reaches someone's claim (a section copied or moved across the project, say) goes out for
@@ -344,7 +345,7 @@ Who may change what:
   so the claim never moves, and their undo key takes it back. Anything new stays on your own "(yours, not sent)" track until
   then. A part they've changed since is left as it is. Plug-in changes aren't suggested: a plug-in can change its own
   data, which would ask its owner about nothing.
-- **Tempo**: the driver's, or anyone's in *Anyone*. The parts it moves aren't anyone's edit, whoever claimed them.
+- **Tempo**: the driver's, or anyone's in *Claims* and *Everyone*. The parts it moves aren't anyone's edit, whoever claimed them.
 - **Buses, folders, VCA faders and the master**: a change to one still goes through under the usual rules, and says whose claimed parts it affects.
   One holding someone's claimed part can't be deleted: it comes back, and says why.
 - **A copy of someone's claimed track** goes out as yours, as "Keys (James's copy)", and says whose it was. The original isn't touched.
@@ -380,8 +381,8 @@ Each message is its own small file, so nothing ever clashes.
 Home opens with **Since you were last here**: the others' changes and takes, new messages and notes, until you
 press OK. On the Projects page, right-click a project for its **Stage** (Idea, Writing, Tracking, Mixing, Done), shown
 beside its name for everyone. **Settings > Advanced > Show advanced controls** shows side rooms, region and time claims,
-Listen and Produce, and the Plugins page; off, each still shows when it has something to say. A new project starts with
-*Who controls: Anyone*; the driver can tighten it there.
+Solo and Produce, and the Plugins page; off, each still shows when it has something to say. A new project starts with
+*Who controls: Claims*; the studio's owner or an admin can change it there.
 
 Plugins (its own page): every plug-in the project uses, on which tracks, and who in the studio doesn't have it. Set a
 **stand-in** for one (something the studio has that's close enough); *Apply stand-ins here* adds it right after
@@ -512,9 +513,10 @@ and it plays four notes at once, so it's a bass, lead and sequence synth).
 
 **Sync and exit** (top row): saves, waits until what you changed has gone out, says who has it, then closes the project or quits REAPER.
 
-**Real time mode**, **Follow** and **Listen** are on Home and need nothing but SonoBus. **Follow** on someone's card: your
-playhead goes with theirs (play, pause, stop, jumps; when they record, you play along), and your view too. **Always follow the driver** does
-that for whoever's driving. **Listen** on someone's card: you hear only them, their whole mix, or with Follow on just what they're
+**Real time mode**, **Follow** and **Solo** are on Home and need nothing but SonoBus. **Follow** on someone's card: your
+playhead goes with theirs (play, pause, stop, jumps; when they record, you play along), your view too, and their mix (faders, pan, solos;
+your own comes back when you stop). **Always follow the driver** does that for whoever's driving. **Mute** beside someone in Real time mode turns
+their live playing off for you only. **Solo** on someone's card: you hear only them, their whole mix, or with Follow on just what they're
 playing over your own copy of the song. Their computer turns SonoBus on by itself for as long as someone's listening, and says who. SonoBus
 carries sound; the notes and the take arrive through the shared folder and are swapped in when they stop, so MIDI is never sent live.
 
@@ -538,7 +540,7 @@ own? Enter `<address>:2049` and click *Save for the studio*.
 
 - **Deleting your local copy** (right-click a project or a folder on the Projects page): to free the space, once it's confirmed elsewhere: Google Drive holds every file, or another computer of the studio has said it holds exactly these files (each one says so itself, every minute or so while REAPER is open). The project goes on this computer's ignore list first, so nobody else's copy is touched, and its files go to the Recycle Bin or Trash. It stays on the page, and opening it brings it back. A closed studio's copy goes the same way, from the Studios page.
 - **A copy outside the studio** (Restore > Save a copy outside the studio): a plain REAPER project in a folder you pick, with every file it uses, as recorded or as WAVs. It opens anywhere with no StudioSync and nothing you do to it goes to anyone. Letting someone in saves a kept version of what's open first.
-- **Who can edit** (Home): Only the driver, Driver + claims, Admins only (the owner and admins, and whoever an admin gave tracks to: right-click their name) or Anyone.
+- **Who can edit** (Home, owner and admins only): Claims, Driver + claims, Driver only, Everyone, or Admins only (the owner and admins, and whoever an admin gave tracks to: right-click their name).
 - **Chat**: This room shows only this room's; This project also shows all its rooms'; Studio shows everything, each message saying where it's from.
 
 ## For your own scripts: the API

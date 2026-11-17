@@ -1,0 +1,17 @@
+-- Guests until a day you pick (lib/removal.lua, 0.58.82): which invitation someone arriving came with, typed days, and how a day reads (lupa or Lua 5.4)
+reaper = setmetatable({}, { __index = function() return function() end end })
+package.path = "lib/?.lua;" .. package.path
+local removal = require("removal")
+local now = os.time({ year = 2026, month = 11, day = 16, hour = 18, min = 0, sec = 0 })
+local list = { { made = now - 8 * 86400, ends = now + 86400 }, { made = now - 3600, ends = now + 7 * 86400 }, { made = now - 600, ends = now - 60 } }
+assert(removal.invite_for(list, now).made == now - 3600, "the newest one still running, made within a week")
+assert(removal.invite_for({ list[1] }, now) == nil, "over a week old: none")
+assert(removal.invite_for({}, now) == nil, "none made: none")
+local d = removal.parse_day("2026-11-23", now)
+assert(d and os.date("*t", d).day == 23 and os.date("*t", d).hour == 23, "a typed day lasts to its end")
+assert(removal.parse_day("2026-11-10", now) == nil and removal.parse_day("2026-02-30", now) == nil and removal.parse_day("next week", now) == nil, "past, no such day, not a day: nil")
+assert(removal.parse_day(" 2026-12-1 ", now), "a one-figure day, spaces round it")
+assert(removal.when(now + 3600, now):find("^today "), "within today")
+assert(removal.when(now + 86400, now):find("^tomorrow "), "tomorrow")
+assert(removal.when(now + 5 * 86400, now) == os.date("%a %b %d", now + 5 * 86400), "later: the day")
+print("ok")

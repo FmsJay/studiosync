@@ -1819,7 +1819,8 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   end
   -- both changed it while apart: theirs wins everywhere (the same on every machine); ours stays in History
   local krev, _, kev = mirror.known(proj, ev.oid)
-  if me and krev and ev.base and ev.base < krev and kev:sub(1, #me + 1):upper() == (me:gsub(" ", "_") .. "-"):upper() then
+  -- (sync.is_mine, not the name as a prefix: "James" took "James-Laptop"'s changes for its own, and said you both changed it. James, 0.58.82)
+  if me and krev and ev.base and ev.base < krev and require("sync").is_mine(kev, me) then
     -- (within seconds of each other it was a race, not time apart: "while you were apart" read wrong, laptop round 2)
     local function secs(y, mo, d, h, mi, s) return y and os.time({ year = y, month = mo, day = d, hour = h, min = mi, sec = s }) end
     local mine = secs(kev:match("%-(%d%d%d%d)(%d%d)(%d%d)%-(%d%d)(%d%d)(%d%d)Z"))
@@ -2263,7 +2264,7 @@ function mirror.watch(proj, cfg, song, room, opts)
   end
   mirror.order_seen[order_key], mirror.order_band[order_key] = order, nil
   local playing = reaper.GetPlayStateEx(proj) & 1 == 1
-  local mine_prefix = (me:gsub(" ", "_") .. "-"):upper() -- (event ids start with their author's name)
+  local function mine(id) return sync.is_mine(id, me) end -- (event ids start with their author's name, then the date: "James" isn't "James-Laptop". 0.58.82)
   local function allowed(o, name, pos)
     if opts.can(me, name, pos) then return true end
     return sync.maker_may(o.kind == "track" and o.oid or o.track, me, name, pos, opts.mode, o.kind == "item" and o.oid or nil)
@@ -2323,17 +2324,6 @@ function mirror.watch(proj, cfg, song, room, opts)
     end
     back = back + 1
     if why.text then sync.put_back(why.text, nil, why.claim) end
-  end
-  -- A track made here is claimed by whoever made it, once it has a name (James, 2026-11-01: an unseen "the maker may
-  -- change it" let the PC change Bass I; a claim shows on the Claims card and can be released). Not by the driver
-  -- (everything nobody claimed is theirs already) nor in Driver only. Only tracks first sent from 0.40.3 on.
-  local function claim_new(o, rev, name)
-    local k = "P_EXT:band_claim_new"
-    if not rev then reaper.GetSetMediaTrackInfo_String(o.ptr, k, "1", true) end
-    if name == "" or select(2, reaper.GetSetMediaTrackInfo_String(o.ptr, k, "", false)) ~= "1" then return end
-    reaper.GetSetMediaTrackInfo_String(o.ptr, k, "", true)
-    if opts.mode == "driver" or me == sync.driver_name or (sync.is_claimed and sync.is_claimed(name)) then return end
-    if sync.claim_tracks(cfg, song, room, { name }) then band.log("you made track " .. name .. ": it's claimed for you (Home > Claims: release it to share it)") end
   end
   -- What was refused goes to whoever claimed it, as a suggestion, if it's a claim that refused it. -> true when it went.
   local function propose(o, rev, who, claim_name, pos, name, gone)
@@ -2571,7 +2561,8 @@ function mirror.watch(proj, cfg, song, room, opts)
           end
         end
         -- (by the studio's rules, not "alone": two edits made alone outvoted the claimant's own. Sync engine review, 0.58.76)
-        local owned = (sync.is_claimed and sync.is_claimed(name, o.pos) and (opts.owner_can or opts.can)(me, name, o.pos)) or (opts.mode ~= "open" and me == sync.driver_name)
+        local free = opts.mode == "open" or opts.mode == "everyone" -- (nobody's ahead by being the driver; in Everyone, by a claim either)
+        local owned = (opts.mode ~= "everyone" and sync.is_claimed and sync.is_claimed(name, o.pos) and (opts.owner_can or opts.can)(me, name, o.pos)) or (not free and me == sync.driver_name)
         -- (one edit, however many nudges: a change within SESSION_SECS of our own last one to it, nobody's in between, keeps its number, and its
         -- later order makes it the newer. Ten nudges outvoted one careful edit: docs/clashes.md)
         local s = mirror.sessions[rk]
@@ -2615,7 +2606,6 @@ function mirror.watch(proj, cfg, song, room, opts)
         mirror.unsent[tostring(proj) .. o.oid] = nil -- (gone out: the band's next change to it may land)
         require("presence").touch(proj, o.oid)
         sent = sent + 1
-        if o.kind == "track" and o.ptr then claim_new(o, rev, name) end
       else
         -- only its place in the list differs: a track above it went (a bandmate's, say, joining late, or one that's coming
         -- back), and nobody changed this one, so it isn't news ("Track Mac Audio ... put back": laptop, 0.42.2)
@@ -2672,7 +2662,7 @@ function mirror.watch(proj, cfg, song, room, opts)
     if require("sync").pending_events(proj, cfg, song, room) == 0 then
       prints.takes_to_lanes(proj, function(it)
         local _, _, k = mirror.known(proj, itm_oid(it))
-        return not k or k == "" or k:upper():sub(1, #mine_prefix) == mine_prefix
+        return not k or k == "" or mine(k)
       end)
     end
     local here = { [me] = true } -- (bandmates in the song now: who may print in place of whoever changed an item)
@@ -2697,7 +2687,7 @@ function mirror.watch(proj, cfg, song, room, opts)
         end
         if fx and kev and not same_as_parent then
           local tr = reaper.GetMediaItem_Track(o.ptr)
-          local author = kev:upper():sub(1, #mine_prefix) == mine_prefix and me or (event_file(room_dir, kev) or {}).user
+          local author = mine(kev) and me or (event_file(room_dir, kev) or {}).user
           if type(author) ~= "string" then author = nil end
           if author and author ~= me and not opts.can(author, name, o.pos) and allowed(o, name, o.pos) then author = me end
           keys_of[tr] = keys_of[tr] or prints.track_keys(tr)
@@ -2768,7 +2758,7 @@ function mirror.watch(proj, cfg, song, room, opts)
         put_back(o, g.rev, g.evid, { name = name })
       elseif mirror.PART[o.kind] then -- (its track went: the track's own deletion covers it)
         remember(proj, g.oid, (g.rev or 0) + 1, "", g.evid)
-      elseif o.kind == "item" and th == "" and (tev or ""):upper():sub(1, #mine_prefix) ~= mine_prefix
+      elseif o.kind == "item" and th == "" and not mine(tev)
           and not mirror.find(proj, "track", o.track) then
         -- the band deleted its track, and the item went with it here before the item's own delete arrived: theirs,
         -- not ours (the Mac put back 226 of a deleted track's items one by one: laptop's restore, 0.34.4). Same rev,

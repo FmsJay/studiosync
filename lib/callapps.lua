@@ -65,6 +65,51 @@ function callapps.health_words()
     "for music (Settings > Advanced > Calls)."
 end
 
+-- REAPER hearing itself through Voicemeeter (James, 0.58.82: echoes in Real time mode; his PC played to VAIO3, whose strip went to B2, and recorded
+-- from B2): what it plays comes back in, an armed track sends it to SonoBus, and everyone hears themselves come back late. Windows with
+-- Voicemeeter only: lib/vmloop.ps1 reads its routing in the background (read only). The virtual input strips by Voicemeeter's type
+-- (1 Basic, 2 Banana, 3 Potato), 0-based, in the order VAIO, AUX, VAIO3.
+callapps.VM_STRIPS = { [1] = { 2 }, [2] = { 3, 4 }, [3] = { 5, 6, 7 } }
+-- Which virtual strip a REAPER output device plays into, and which B bus an input device records from (WASAPI/MME names). Pure.
+function callapps.vm_strip(out_name, vtype)
+  local n, v = tostring(out_name or ""):lower(), callapps.VM_STRIPS[vtype]
+  if not v or not n:find("voicemeeter") then return nil end
+  if n:find("vaio3") then return v[3], "VAIO3" end
+  if n:find("aux") then return v[2], "AUX" end
+  if n:find("input") then return v[1], "VAIO" end
+end
+function callapps.vm_bus(in_name)
+  local n = tostring(in_name or ""):lower()
+  if not n:find("voicemeeter") then return nil end
+  local b = n:match("out b(%d)")
+  if b then return tonumber(b) end
+  if n:find("vaio3 output") then return 3 end
+  if n:find("aux output") then return 2 end
+  if n:find("output") then return 1 end
+end
+-- From vmloop.ps1's report: does the strip REAPER plays into feed the bus it records from? -> words for Health, or nil. Pure.
+function callapps.vm_loop(out_name, in_name, report)
+  local vtype = tonumber(tostring(report or ""):match("type=(%d)"))
+  local strip, sname = callapps.vm_strip(out_name, vtype)
+  local bus = callapps.vm_bus(in_name)
+  if not (strip and bus) then return nil end
+  local flags = tostring(report):match("s" .. strip .. "=([%d,]+)")
+  local on = flags and select(bus, flags:match("(%d),(%d),(%d)"))
+  if on ~= "1" then return nil end
+  return string.format("Voicemeeter sends what REAPER plays (its %s strip) back into what REAPER records from (B%d), so REAPER hears itself: in Real time mode " ..
+    "the others hear themselves come back as an echo, and monitoring while you record can feed back. In Voicemeeter, switch B%d off on the %s strip, " ..
+    "or have REAPER record from another bus.", sname, bus, bus, sname)
+end
+function callapps.loop_words()
+  if not band.WIN then return nil end
+  local _, out_name = reaper.GetAudioDeviceInfo("IDENT_OUT", "")
+  local _, in_name = reaper.GetAudioDeviceInfo("IDENT_IN", "")
+  if not (callapps.vm_bus(in_name) and tostring(out_name):lower():find("voicemeeter")) then return nil end
+  local ps = (debug.getinfo(1, "S").source:match("^@?(.*)[/\\]") or "") .. "/vmloop.ps1"
+  local report = require("services").background("vmloop", 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' .. ps .. '"', 30)
+  return callapps.vm_loop(out_name, in_name, report)
+end
+
 -- Settings > Advanced: the ways round it, in the order to try them.
 function callapps.card(ctx, ImGui, go_real_time)
   ImGui.SeparatorText(ctx, "Calls (Discord, Zoom, Teams...)")

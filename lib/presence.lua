@@ -88,6 +88,79 @@ function presence.follow(proj, list, name)
   end
 end
 
+-- Following someone takes on their mix too (James, 0.58.82: "following someone should probably also adopt their mix including what they have
+-- muted or soloed"). Whoever is followed puts their faders, pan and solos in their status (presence.my_mix); the follower's tracks take them, with
+-- Control your own mix on meanwhile so none of it goes out, and get their own back when they stop following. Mutes are the studio's, the same
+-- for everyone already. What's saved to come back to: the project's "follow mix saved" ({ local_mix, tracks = { oid = { v, p, s } } }).
+local function round(x, n) local m = 10 ^ n; return math.floor(x * m + 0.5) / m end
+-- This computer's mix, by track: { oid = { v, p, s } }. Only tracks the studio has (not local ones).
+function presence.my_mix(proj)
+  local mirror, out = require("mirror"), {}
+  for i = 0, reaper.CountTracks(proj) - 1 do
+    local tr = reaper.GetTrack(proj, i)
+    local oid = mirror.track_oid(tr)
+    if oid ~= "" and not mirror.local_track(tr) then
+      out[oid] = { v = round(reaper.GetMediaTrackInfo_Value(tr, "D_VOL"), 4), p = round(reaper.GetMediaTrackInfo_Value(tr, "D_PAN"), 3),
+        s = math.floor(reaper.GetMediaTrackInfo_Value(tr, "I_SOLO")) }
+    end
+  end
+  return out
+end
+-- Is anyone following `me` (by name, or Always follow the driver while I drive)? Pure over the peers list.
+function presence.followed(list, me, driver)
+  for _, st in ipairs(list) do
+    if st.follow == me or (st.follow_driver and driver == me and st.user ~= me) then return true end
+  end
+  return false
+end
+-- Which track values differ between a mix and what `want` says: { { oid, key, value } }. Pure.
+function presence.mix_changes(have, want)
+  local out = {}
+  for oid, w in pairs(want or {}) do
+    local h = have[oid]
+    if h and type(w) == "table" then
+      if tonumber(w.v) and math.abs(h.v - w.v) > 1e-4 then out[#out + 1] = { oid, "D_VOL", w.v } end
+      if tonumber(w.p) and math.abs(h.p - w.p) > 1e-3 then out[#out + 1] = { oid, "D_PAN", w.p } end
+      if tonumber(w.s) and h.s ~= w.s then out[#out + 1] = { oid, "I_SOLO", w.s } end
+    end
+  end
+  table.sort(out, function(a, b) return a[1] .. a[2] < b[1] .. b[2] end)
+  return out
+end
+local function set_mix(proj, list)
+  local mirror = require("mirror")
+  for _, c in ipairs(list) do
+    local tr = mirror.find(proj, "track", c[1])
+    if tr then reaper.SetMediaTrackInfo_Value(tr, c[2], c[3]) end
+  end
+end
+-- Each Live sync pass: `name` is who this computer follows ("" for nobody). `ctx`: { cfg, song, room } for giving the studio's mix back.
+function presence.follow_mix(proj, list, name, ctx)
+  local saved = band.json_decode(select(2, reaper.GetProjExtState(proj, band.SECTION, "follow mix saved")))
+  local st
+  for _, s in ipairs(list) do if s.user == name then st = s end end
+  if name == "" then
+    if type(saved) ~= "table" then return end
+    reaper.SetProjExtState(proj, band.SECTION, "follow mix saved", "")
+    set_mix(proj, presence.mix_changes(presence.my_mix(proj), saved.tracks))
+    if saved.local_mix ~= "1" then
+      reaper.SetProjExtState(proj, band.SECTION, "local_mix", "")
+      require("mirror").end_local_mix(proj, ctx.cfg, ctx.song, ctx.room, true) -- (the studio's faders and pan, as before you followed)
+    end
+    band.log("stopped following: your own mix is back")
+    return
+  end
+  if not (st and type(st.mix) == "table") then return end -- (not here, or older StudioSync: yours stays as it is)
+  local have = presence.my_mix(proj)
+  if type(saved) ~= "table" then
+    local lm = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix"))
+    reaper.SetProjExtState(proj, band.SECTION, "follow mix saved", band.json_encode({ local_mix = lm, tracks = have }))
+    if lm ~= "1" then reaper.SetProjExtState(proj, band.SECTION, "local_mix", "1"); require("mirror").begin_local_mix(proj) end
+    band.log("following " .. name .. ": you hear their mix (faders, pan, solos) until you stop following")
+  end
+  set_mix(proj, presence.mix_changes(have, st.mix))
+end
+
 -- Pings: a bandmate's new ping shows as a marker here (and a line in the Activity list) for PING_SHOWN seconds.
 local shown = {} -- proj .. user -> the ping's time, once shown
 function presence.pings(proj, list)

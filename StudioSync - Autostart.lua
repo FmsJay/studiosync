@@ -22,6 +22,8 @@ do -- the Actions list as it should be for this version: an update through the s
   end
 end
 
+pcall(require("tools").toolbar_default) -- (StudioSync's button on the main toolbar from the first restart after installing: 0.58.82)
+
 if reaper.GetExtState(band.SECTION, "open panel at start") == "1" then -- (the installer's restart for ReaPersona's shortcuts: back in the panel. 0.58.64)
   reaper.DeleteExtState(band.SECTION, "open panel at start", true)
   local id = reaper.AddRemoveReaScript(true, 0, dir .. "/StudioSync - Panel.lua", true)

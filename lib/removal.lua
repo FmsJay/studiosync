@@ -80,13 +80,88 @@ function removal.left(root, user, id)
   band.write_json(marks(root) .. "/" .. file_name(user), { user = user, device = id, by = user, at = os.time(), left = true })
 end
 function removal.keep(root, user) os.remove(marks(root) .. "/" .. file_name(user)) end
--- A guest for a day: the same mark, dated so it falls due a day from now, by their computer (their StudioSync name isn't known yet when
+-- A guest: the same mark, dated so it falls due when their time is up, by their computer (their StudioSync name isn't known yet when
 -- they're let in). A guest invitation's day was Tailscale's only: their computer kept the shared folder until someone took it out (review, 0.58.52).
+-- How long is picked when inviting them (James, 0.58.82: "invite guest and set for when theirs expires"; it was always a day): the invitation
+-- leaves a note in the studio (_band/guest-invites/<made>-<by>.json: { made, ends, by }), and whoever lets them in gives them that long.
+-- `invite`: that note's `made`, kept in the mark, so ending them early ends what Tailscale let in too (services.old_guests).
 removal.DAY = 86400
-function removal.guest(root, device, name, by, now)
+removal.GUEST_FOR = { { "1 day", 1 }, { "3 days", 3 }, { "1 week", 7 }, { "2 weeks", 14 }, { "1 month", 30 } }
+removal.INVITE_KEEPS = 7 * 86400 -- an invitation lets someone in within a week of being made
+function removal.guest(root, device, name, by, now, ends, invite)
+  now = now or os.time()
   reaper.RecursiveCreateDirectory(marks(root), 0)
   band.write_json(marks(root) .. "/" .. file_name("guest " .. device:sub(1, 7)),
-    { user = tostring(name or "a guest"), device = device, by = by, at = (now or os.time()) + removal.DAY - removal.GRACE, guest = true })
+    { user = tostring(name or "a guest"), device = device, by = by, at = (ends or now + removal.DAY) - removal.GRACE, guest = true, invite = invite, since = now })
+end
+local function invites_dir(root) return root .. "/_band/guest-invites" end
+function removal.add_invite(root, ends, by, now)
+  now = now or os.time()
+  reaper.RecursiveCreateDirectory(invites_dir(root), 0)
+  band.write_json(invites_dir(root) .. "/" .. now .. "-" .. file_name(by), { made = now, ends = ends, by = by })
+  return now
+end
+function removal.invites(root)
+  local out = {}
+  for _, f in ipairs(band.files(invites_dir(root), ".json")) do
+    local v = band.read_json(invites_dir(root) .. "/" .. f)
+    if type(v) == "table" and tonumber(v.made) and tonumber(v.ends) then out[#out + 1] = v end
+  end
+  return out
+end
+-- The invitation someone arriving now most likely came with: the newest made within INVITE_KEEPS, still running. -> it, or nil. Pure.
+function removal.invite_for(list, now)
+  local best
+  for _, v in ipairs(list) do
+    if now - v.made <= removal.INVITE_KEEPS and v.ends > now and (not best or v.made > best.made) then best = v end
+  end
+  return best
+end
+-- When an invitation made at `made` ends now (an early end moves it): rewritten in place. Its file is named by when and who.
+function removal.end_invite(root, made, ends)
+  for _, f in ipairs(band.files(invites_dir(root), ".json")) do
+    local v = band.read_json(invites_dir(root) .. "/" .. f)
+    if type(v) == "table" and v.made == made then v.ends = ends; band.write_json(invites_dir(root) .. "/" .. f, v) end
+  end
+end
+-- Guests whose time isn't up: { user, device, ends, invite }, soonest first.
+function removal.guests(root, now)
+  local out = {}
+  for _, m in ipairs(all_marks(root)) do
+    if m.guest and m.device and not removal.due(m, now) then out[#out + 1] = { user = m.user, device = m.device, ends = m.at + removal.GRACE, invite = m.invite } end
+  end
+  table.sort(out, function(a, b) return a.ends < b.ends end)
+  return out
+end
+-- A guest's time moved: to now (ended: every computer stops syncing with theirs within a minute), or later.
+function removal.guest_ends(root, device, ends)
+  for _, f in ipairs(band.files(marks(root), ".json")) do
+    local m = band.read_json(marks(root) .. "/" .. f)
+    if type(m) == "table" and m.guest and m.device == device then
+      m.at = ends - removal.GRACE
+      band.write_json(marks(root) .. "/" .. f, m)
+      if tonumber(m.invite) then removal.end_invite(root, m.invite, ends) end
+    end
+  end
+end
+-- "Sat Nov 23" for a time; "today 18:00" / "tomorrow 18:00" when that close. Pure but for the clock's time zone.
+function removal.when(t, now)
+  local d, n = os.date("*t", t), os.date("*t", now)
+  local function day(x) return os.time({ year = x.year, month = x.month, day = x.day, hour = 12 }) end
+  local diff = math.floor((day(d) - day(n)) / 86400 + 0.5)
+  if diff == 0 then return "today " .. os.date("%H:%M", t) end
+  if diff == 1 then return "tomorrow " .. os.date("%H:%M", t) end
+  return os.date("%a %b %d", t)
+end
+-- "YYYY-MM-DD" typed in -> that day's end (23:59 local), or nil when it isn't a date after `now`. Pure but for the time zone.
+function removal.parse_day(text, now)
+  local y, mo, d = tostring(text or ""):match("^%s*(%d%d%d%d)%-(%d%d?)%-(%d%d?)%s*$")
+  if not y then return nil end
+  y, mo, d = tonumber(y), tonumber(mo), tonumber(d)
+  if mo < 1 or mo > 12 or d < 1 or d > 31 then return nil end
+  local t = os.time({ year = y, month = mo, day = d, hour = 23, min = 59, sec = 0 })
+  if os.date("*t", t).day ~= d then return nil end -- (Feb 30 rolls over)
+  return t > now and t or nil
 end
 -- Who a mark says this computer belongs to, if it's been taken out of the group. (Its Syncthing keeps asking: that isn't someone new.)
 function removal.who_was(root, device)
@@ -192,7 +267,7 @@ function removal.tick(now)
     if me ~= "" and not require("groups").is_old(g.root) then pcall(require("localcopy").publish_holds, g.root, me) end
     for _, m in ipairs(all_marks(g.root)) do
       if m.user == me or (id and m.device == id) then
-        if m.guest and removal.due(m, now) then told = string.format("Your day as a guest in %s is over: nothing syncs with the studio any more, and your copy stays here.", g.name)
+        if m.guest and removal.due(m, now) then told = string.format("Your time as a guest in %s is over: nothing syncs with the studio any more, and your copy stays here.", g.name)
         elseif not m.left and not m.guest then told = string.format("%s took you out of %s: nothing syncs with the studio any more, and your copy stays here. Ask to be invited again to come back.", tostring(m.by), g.name) end
       elseif removal.due(m, now) and m.device and (m.device == removal.device_of(g.root, m.user) or m.guest) then -- (only their own computer: a mark can name any; a guest's names it)
         local key = "removal done " .. g.id .. " " .. m.user .. " " .. tostring(m.at)

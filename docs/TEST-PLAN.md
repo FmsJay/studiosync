@@ -238,3 +238,14 @@ through `lib/trust.lua` (modifiedBy); "" (a folder or file Syncthing doesn't hol
   first. The safe fix is a vouch: on a computer of theirs already known, the person confirms "this new computer is mine", and that writing
   of band.json (with `managers`) would carry it to everyone (`trust.repin` would then add listed computers to someone already pinned, not
   only to someone new). It needs a confirmation in the panel, so it waits for after the test.
+
+0.58.82: Who can edit is the studio owner's or an admin's to pick, and reads Claims (the default: anyone, except on what someone else
+claimed, the driver too), Driver + claims (the driver over claims), Driver only, Everyone (claims don't hold) and Admins only. Nothing is
+claimed by itself any more (not when sharing, not tracks you make). Event ids are matched by name then date everywhere (sync.is_mine):
+"James" took "James-Laptop"'s changes for its own and said you'd both changed something. Guests: Invite a guest picks how long they stay
+(or a date), the invitation leaves a note in the studio, Let them in gives them that long, and Who's here lists guests with End now and
+Longer; Tailscale guests are taken off at the same time. Follow takes on the followed person's faders, pan and solos (Control your own
+mix on meanwhile) and gives yours back when you stop. In Real time mode the per-person switch is Mute/Muted and Listen is Solo. Health
+says when Voicemeeter sends REAPER's output back into its input (the echo; lib/vmloop.ps1 reads its routing, read only). Your colour is
+the same in every studio you're in. The toolbar button is on by default (Settings > Options > Look). Opening a project catches up a
+second per pass, then builds missing peaks. The minimized box's count is small.

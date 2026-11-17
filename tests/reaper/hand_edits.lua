@@ -1,6 +1,6 @@
 -- Run inside REAPER (ReaScript). What a hand edit in the MIDI editor leaves behind (0.40.3): opening the editor and
 -- selecting notes aren't changes; undoing a move finds the old print by its notes, selected or not; a print made
--- under the old fingerprint stays current; a new track is claimed by its maker, whose claim shows and can be released;
+-- under the old fingerprint stays current; a new track isn't claimed for its maker (0.58.82);
 -- a maker no longer beats a bandmate's claim; and a bandmate's edit can open in the MIDI editor here.
 -- Two scratch tabs, a scratch shared folder; both saved there and closed at the end.
 local D = reaper.GetResourcePath() .. "/StudioSync/tests"
@@ -57,29 +57,23 @@ local ok, err = pcall(function()
   local h0, f0 = print_of(it), file_of(it)
   check(h0 ~= "", "the part has its print")
 
-  -- a new track is claimed by whoever made it, once it goes out named
+  -- a new track isn't claimed for anyone, named or not (0.58.82, James: auto-claims "just make things more troublesome")
   sync.driver_name = "James"
   reaper.InsertTrackInProject(pa, 1, 0)
   local tn = reaper.GetTrack(pa, 1)
   watch(pa, A)
   local c = sync.my_claims(A, song, room)
-  check(#(c.tracks or {}) == 0, "an unnamed new track isn't claimed yet")
+  check(#(c.tracks or {}) == 0, "an unnamed new track isn't claimed")
   reaper.GetSetMediaTrackInfo_String(tn, "P_NAME", "Pad", true)
   watch(pa, A)
   c = sync.my_claims(A, song, room)
-  check(c.tracks and c.tracks[1] == "Pad", "named, it's claimed by its maker")
-  c.tracks = {}
-  sync.set_claims(A, song, room, c)
-  reaper.GetSetMediaTrackInfo_String(tn, "P_NAME", "Pad 2", true)
-  watch(pa, A)
-  c = sync.my_claims(A, song, room)
-  check(#(c.tracks or {}) == 0, "released, it isn't claimed again")
+  check(#(c.tracks or {}) == 0, "named, it isn't claimed either: only Claim does that")
   sync.driver_name = "Laptop"
   reaper.InsertTrackInProject(pa, 2, 0)
   reaper.GetSetMediaTrackInfo_String(reaper.GetTrack(pa, 2), "P_NAME", "Drv", true)
   watch(pa, A)
   c = sync.my_claims(A, song, room)
-  check(#(c.tracks or {}) == 0, "the driver's new track isn't claimed: it's theirs anyway")
+  check(#(c.tracks or {}) == 0, "nor while someone else drives")
   sync.driver_name = nil
   watch(pa, A); hold(3.3); watch(pa, A)
   recv(pb, B)

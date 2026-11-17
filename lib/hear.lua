@@ -308,7 +308,7 @@ function hear.check(proj, cfg, peers, now)
       say = hear.trouble(mine, cfg.user, peers)
     end
   elseif reaper.GetExtState(band.SECTION, "listen " .. tab) ~= "" then
-    say = "You're listening to " .. reaper.GetExtState(band.SECTION, "listen " .. tab) .. ", but SonoBus isn't running here. Press Listen again."
+    say = "You're listening to " .. reaper.GetExtState(band.SECTION, "listen " .. tab) .. ", but SonoBus isn't running here. Press Solo again."
   end
   local before = reaper.GetExtState(band.SECTION, key)
   if (say or "") == before then return end

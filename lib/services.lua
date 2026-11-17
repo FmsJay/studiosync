@@ -365,7 +365,7 @@ end
 -- installer with this machine's ID already in it, so nobody types an ID (Mac, 2026-10-31: "2MOGZMD" + Return was
 -- the first try). The ?<time> keeps GitHub's cache from handing out an installer from before the last release.
 -- With the band (band.info): its folder id and name ride along, so the installer joins that band.
--- `key` (services.tailscale_guest_key): a guest's, whose installer signs Tailscale in to this network for a day with it.
+-- `key` (services.tailscale_guest_key): a guest's, whose installer signs Tailscale in to this network until their time is up with it.
 function services.invite_text(id, info, key)
   info = info or { id = "bandsync", name = "the studio" }
   key = key and key:match("^tskey%-auth%-[%w%-]+$")
@@ -386,7 +386,7 @@ function services.invite_text(id, info, key)
     'curl -fsSL "' .. base .. 'install_linux.sh?$(date +%s)" | BS_HOST_ID=' .. id .. " BS_BAND_ID=" .. info.id ..
     " BS_BAND_NAME=" .. q1(info.name) .. (key and (" BS_TS_KEY=" .. key) or "") .. " bash\n\n" ..
     "Answer its questions, and when it's done, tell me: I let you in from my StudioSync panel.\n\n" ..
-    (key and "That works once, within a day: it puts your computer on my Tailscale network as a guest for the day (no account needed). If you use Tailscale for anything else, switch back from its menu afterwards.\n\n" or "") ..
+    (key and "That works once, within a week: it puts your computer on my Tailscale network as a guest, for as long as I invited you (no account needed). If you use Tailscale for anything else, switch back from its menu afterwards.\n\n" or "") ..
     "Already have StudioSync? In its panel, open your studios, press Paste join code, and paste this message (or just this line):\n" ..
     services.join_code(id, info)
 end
@@ -698,7 +698,7 @@ function services.tailscale_address()
 end
 
 -- Tailscale's API, optional: with an access token from whoever runs the Tailscale network (login.tailscale.com/admin/settings/keys, it lasts 1-90 days),
--- StudioSync can let a guest in for a day and add the policy lines its tags need. The token reaches curl through a config file in the user's temp
+-- StudioSync can let a guest onto Tailscale until a day you pick and add the policy lines its tags need. The token reaches curl through a config file in the user's temp
 -- folder: never on a command line, where any process can read it, or in the log. It's kept locked to this computer's account (0.58.69: it sat in
 -- reaper-extstate.ini as it was, and a portable REAPER folder travels): Windows encrypts it for the account (DPAPI), a Mac keeps it in the Keychain.
 -- shortcut: elsewhere (Linux) it stays in ExtState as it is; and on a Mac it's on security's command line for the moment it's saved.
@@ -777,19 +777,26 @@ local function ts_api(method, path, body, headers)
   return code, head, rest
 end
 
--- A key that lets one computer onto the Tailscale network for a day, without an account: usable once, within 24 h; the computer it signs in is a guest
--- (tag:bandsync-guest) that drops off once it's been offline a while, and services.tailscale_sweep_guests takes it off after a day. -> the key, or nil + why.
-function services.tailscale_guest_key()
-  local code, head, out = ts_api("POST", "/tailnet/-/keys", band.json_encode({ keyType = "auth", description = "StudioSync guest", expirySeconds = 86400,
-    capabilities = { devices = { create = { reusable = false, ephemeral = true, preauthorized = true, tags = { GUEST_TAG } } } } }), { "Content-Type: application/json" })
+-- A key that lets one computer onto the Tailscale network until `ends` (a time; a day from now without one), without an account: usable once, within a
+-- week at most; the computer it signs in is a guest (tag:bandsync-guest), and services.tailscale_sweep_guests takes it off when its time is up. A day's
+-- guest is ephemeral too (it drops off once it's been offline a while); a longer one isn't, or a night with the laptop shut ended it. -> the key, or nil + why.
+function services.guest_key_request(ends, now)
+  local left = math.max(3600, (ends or now + 86400) - now)
+  return { keyType = "auth", description = "StudioSync guest", expirySeconds = math.floor(math.min(left, 7 * 86400)),
+    capabilities = { devices = { create = { reusable = false, ephemeral = left <= 86400 + 60, preauthorized = true, tags = { GUEST_TAG } } } } }
+end
+function services.tailscale_guest_key(ends)
+  local code, head, out = ts_api("POST", "/tailnet/-/keys", band.json_encode(services.guest_key_request(ends, os.time())), { "Content-Type: application/json" })
   if not code then return nil, head end
   local key = (band.json_decode(out) or {}).key
   if type(key) == "string" and key:match("^tskey%-auth%-[%w%-]+$") then return key end
   return nil, "Tailscale didn't hand back a key"
 end
 
-services.GUEST_TIP = "As Invite, and their computer joins your Tailscale network for a day without an account, so Play along and Jam reach them.\n" ..
-  "The invitation works once, within a day; their computer drops off once it's offline a while, and after a day at most. While it's on, your\nTailscale policy decides what it can reach: all your computers on Tailscale's starting policy, only StudioSync once Set up the tags has limited guests."
+services.GUEST_TIP = "A guest until the day you pick: let in when they've run the invitation, and every computer stops syncing with theirs when their time\n" ..
+  "is up (their copy stays with them). You can end it early, or give them longer, under Guests in Who's here."
+services.GUEST_TS_TIP = "\nWith a Tailscale access token (yours), their computer also joins your Tailscale network until then, without an account, so Play along and\n" ..
+  "Jam reach them. While it's on, your Tailscale policy decides what it can reach: all your computers on Tailscale's starting policy, only StudioSync\nonce Set up the tags has limited guests."
 -- What a guest could reach on the tailnet, from its policy (HuJSON): "limited" (Set up the tags' guest rule is in), "open" (Tailscale's starting
 -- allow-all: every computer on it), "own rules" (someone wrote their own: they decide); and whether StudioSync's tags are there (without them
 -- Tailscale won't make a guest's key). Pure. Security review, 0.58.78.
@@ -807,7 +814,7 @@ services.GUEST_WARN = {
     "reaches every computer on your network (Set up the tags, in Settings, limits that).\n\nMake the guest invitation anyway?",
   tags = "\n\n(StudioSync adds its tags to the policy first: Tailscale makes no guest key without them. They change nobody's reach.)",
 }
-function services.copy_guest_invite(my_id, info, ctx, ImGui, root)
+function services.copy_guest_invite(my_id, info, ctx, ImGui, root, ends)
   -- (a guest reaches the whole tailnet unless the policy limits them: checked first, as Set up the tags reads it, and said plainly. Security review, 0.58.78)
   local text, err = services.tailscale_policy()
   local reach, tags = "unknown", true
@@ -826,11 +833,12 @@ function services.copy_guest_invite(my_id, info, ctx, ImGui, root)
     -- (without StudioSync's tags Tailscale makes no guest key; they change nobody's reach)
     if not tags and not services.tailscale_add_tags(function() return false end) then band.log("couldn't add StudioSync's tags, so no guest invitation"); return end
   end
-  local key, why = services.tailscale_guest_key()
+  local key, why = services.tailscale_guest_key(ends)
   if not key then band.log("couldn't make a guest invitation: " .. tostring(why)); return end
   if root then pcall(require("groups").set_tailnet, root) end -- (the network the guest joins is this studio's)
   require("tools").show_invite(services.invite_text(my_id, info, key), info, ctx, ImGui)
-  band.log("a guest invitation is on your clipboard: it also puts their computer on your Tailscale network for a day (no account needed)")
+  band.log("a guest invitation is on your clipboard: it also puts their computer on your Tailscale network until " .. require("removal").when(ends or os.time() + 86400, os.time()) .. " (no account needed)")
+  return true
 end
 -- ---- Tailscale accounts: someone in two studios can be on two Tailscale networks, but a computer is on one at a time (Tailscale keeps
 -- the others signed in, and its menu, or `tailscale switch`, moves between them). Each studio says which network it uses (groups.tailnet);
@@ -1067,17 +1075,26 @@ function services.tailscale_add_tags(ok_to_limit)
 end
 
 -- Guests in `json` (GET /tailnet/-/devices) that came on more than a day before `now` (seconds, UTC): their ids. Pure.
-function services.old_guests(json, now)
+-- Guests whose time is up: a guest device's time is its invitation's (`invites`: { made, ends } from the studios, lib/removal.lua: the newest
+-- made before it joined, within the week a key lasts), else a day from when it joined. `now` and the invitations' times as UTC. Pure.
+function services.old_guests(json, now, invites)
   local old = {}
   for _, d in ipairs((band.json_decode(json) or {}).devices or {}) do
     local guest = false
     for _, t in ipairs(type(d.tags) == "table" and d.tags or {}) do guest = guest or t == GUEST_TAG end
     local y, mo, da, h, mi, s = tostring(d.created or ""):match("^(%d+)%-(%d+)%-(%d+)T(%d+):(%d+):(%d+)")
-    if guest and y and now - os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(da), hour = tonumber(h), min = tonumber(mi), sec = tonumber(s) }) > 86400 then old[#old + 1] = tostring(d.id) end
+    if guest and y then
+      local joined = os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(da), hour = tonumber(h), min = tonumber(mi), sec = tonumber(s) })
+      local ends, made = joined + 86400, nil
+      for _, v in ipairs(invites or {}) do
+        if v.made <= joined + 60 and joined - v.made <= 7 * 86400 and (not made or v.made > made) then made, ends = v.made, v.ends end
+      end
+      if now > ends then old[#old + 1] = tostring(d.id) end
+    end
   end
   return old
 end
-local swept = {}
+local swept, sweep_at = {}, nil
 -- Takes guests off after a day, while a token's set. In the background every 15 min: its config file stays in the user's temp folder meanwhile.
 function services.tailscale_sweep_guests()
   local token = services.tailscale_token()
@@ -1086,12 +1103,19 @@ function services.tailscale_sweep_guests()
   local curl = 'curl -s -m 10 -K "' .. cfgf .. '" '
   if not reaper.file_exists(cfgf) then band.write_atomic(cfgf, 'header = "Authorization: Bearer ' .. token .. '"\n') end
   local out = background("ts-devices", curl .. '"https://api.tailscale.com/api/v2/tailnet/-/devices"', 900)
-  -- (os.time reads a table as local time: both sides that way, the difference is right)
-  for _, id in ipairs(out and services.old_guests(out, os.time(os.date("!*t"))) or {}) do
+  if not out or reaper.time_precise() - (sweep_at or -math.huge) < 60 then return end
+  sweep_at = reaper.time_precise()
+  -- (os.time reads a table as local time: both sides that way, the difference is right. Invitations are kept in os.time(): moved to the same footing)
+  local shift = os.time(os.date("!*t")) - os.time()
+  local invites = {}
+  for _, x in ipairs(band.bands()) do
+    for _, v in ipairs(require("removal").invites(x.root)) do invites[#invites + 1] = { made = v.made + shift, ends = v.ends + shift } end
+  end
+  for _, id in ipairs(services.old_guests(out, os.time(os.date("!*t")), invites)) do
     if id:match("^%w+$") and not swept[id] then
       swept[id] = true
       background("ts-del-" .. id, curl .. '-X DELETE "https://api.tailscale.com/api/v2/device/' .. id .. '"', 3600)
-      band.log("took a Tailscale guest off after a day")
+      band.log("took a Tailscale guest off: their time was up")
     end
   end
 end

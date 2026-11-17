@@ -166,6 +166,8 @@ local sizes, last, recording, stopped_at = {}, 0, false, 0
 local status_info -- (the status as last written: tick_body says "recording" with it, as the pass that writes it waits while recording)
 local paint_at = -math.huge -- when tracks were last coloured for who's working on them
 local format_at = -math.huge -- when the recording format was last checked
+local followed = false -- someone follows this computer: its mix goes in the status (lib/presence.lua)
+sync.loading[tostring(proj)] = true -- (opening it: its first catch-up goes faster, then its peaks. lib/sync.lua)
 local claims_at = -math.huge -- when our claims on gone tracks were last looked for (sync.drop_gone_claims)
 local last_status, status_json = 0, ""
 local rt_at = 0 -- when Real time mode's sends were last matched to what's armed
@@ -492,6 +494,8 @@ local function poll()
     local follow = reaper.GetExtState(band.SECTION, "follow " .. tostring(proj))
     if follow == "" and reaper.GetExtState(band.SECTION, "follow driver") ~= "" and driver ~= cfg.user then follow = driver or "" end
     if follow ~= "" then presence.follow(proj, peers, follow) end
+    presence.follow_mix(proj, peers, follow, { cfg = cfg, song = b.song, room = b.room }) -- (and their mix, till you stop: 0.58.82)
+    followed = presence.followed(peers, cfg.user, driver)
     -- tracks in the colour of who's working on them, if this machine wants that (lib/people.lua; shown here only)
     if now - paint_at > 1 then paint_at = now; require("people").paint(proj, cfg, peers, who.tracks, b.song .. "/" .. b.room) end
     if now - format_at > 10 and reaper.GetPlayStateEx(proj) & 4 == 0 then -- (everyone records 24-bit FLAC at the project's rate: lib/prep.lua; never mid-recording)
@@ -520,6 +524,7 @@ local function poll()
     produce = require("producer").who(proj), produce_via = require("producer").who(proj) and require("producer").via(proj) or nil, stamping = reaper.GetExtState(band.SECTION, "stamping " .. tostring(proj)) ~= "" or nil,
     lets = require("producer").lets() or nil } -- (whoever produces me may start and stop my transport: their panel shows its buttons)
   if info.follow == "" then info.follow = nil end
+  if followed then info.mix = require("presence").my_mix(proj) end -- (someone follows you: they hear your mix. lib/presence.lua)
   if not info.playing then info.cursor = math.floor(reaper.GetCursorPositionEx(proj) * 1000 + 0.5) / 1000 end -- (followers' cursors go here: lib/presence.lua)
   do
     local sm, si = live.fx(proj, false, live.SONOBUS)

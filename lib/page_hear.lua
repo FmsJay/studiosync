@@ -19,24 +19,24 @@ function page.fit(ctx, ImGui, label, extra)
   if ImGui.GetContentRegionAvail(ctx) < ImGui.CalcTextSize(ctx, label) + pad + (extra or 0) then ImGui.NewLine(ctx) end
 end
 
--- After a bandmate's name in Who's here: "hear" / "muted". Only while Real time mode is on (SonoBus online): the live
--- mix stays on the master after, and the button stayed with it (laptop, 0.33.1).
+-- After a bandmate's name in Who's here: "Mute" / "Muted", as on a mixer (it was "hear" / "muted" beside Listen, and the two read alike:
+-- James, 0.58.82). Only while Real time mode is on (SonoBus online): the live mix stays on the master after, and the button stayed with it (laptop, 0.33.1).
 function page.person(ctx, ImGui, proj, name)
   if not hear.mix(proj, false) then return end
   local live = require("live")
   local sm, si = live.fx(proj, false, live.SONOBUS)
   if not sm or reaper.TrackFX_GetOffline(sm, si) then return end
   local on = hear.is_on(proj, name)
-  page.fit(ctx, ImGui, "muted")
+  page.fit(ctx, ImGui, "Muted")
   if on then
-    if ImGui.SmallButton(ctx, "hear##" .. name) then hear.set_on(proj, name, false) end
+    if ImGui.SmallButton(ctx, "Mute##" .. name) then hear.set_on(proj, name, false) end
   else
     ImGui.PushStyleColor(ctx, ImGui.Col_Text, require("theme").RED)
-    if ImGui.SmallButton(ctx, "muted##" .. name) then hear.set_on(proj, name, true) end
+    if ImGui.SmallButton(ctx, "Muted##" .. name) then hear.set_on(proj, name, true) end
     ImGui.PopStyleColor(ctx)
   end
-  ImGui.SetItemTooltip(ctx, (on and ("You hear " .. name .. " live. Click to stop hearing them (only here: they still hear you).")
-    or ("You don't hear " .. name .. " live. Click to hear them again.")) ..
+  ImGui.SetItemTooltip(ctx, (on and ("You hear " .. name .. " playing live. Mute them here (only for you: they still hear you, and everyone else still hears them).")
+    or ("You've muted " .. name .. "'s live playing. Click to hear them again.")) ..
     (hear.own_pair(proj, name) and "" or "\n(They share one level with anyone else SonoBus has no pair for: they get their own when Real time mode next starts.)"))
 end
 

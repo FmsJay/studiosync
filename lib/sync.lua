@@ -382,16 +382,19 @@ end
 -- Who owns a take: its track's claimant, else the newest claim on a stretch of time it starts in (a time selection),
 -- else the claimant of the named region it starts in, else the driver. A take's author may change it (move, trim,
 -- mute) wherever nobody has claimed it that way.
--- How a room shares editing, set by its driver (rooms/<room>/mode.json):
---   "driver"  only the driver changes what the band has (claims are kept, but don't count while it's on)
---   "claims"  the default: the driver, and everyone on what they've claimed
---   "open"    anyone changes anything nobody has claimed (the newest change wins), the tempo map and markers too
---   "admins"  only the group's owner and admins, and everyone on what's been claimed for them (lib/groups.lua; an admin can give a claim)
+-- How a room shares editing, set by the studio's owner or an admin (rooms/<room>/mode.json). The names on disk are older than the
+-- panel's (James, 0.58.82: "Claims" for everyone-but-claims, the driver over claims in "Driver + claims", and "Everyone" with no claims):
+--   "open"      Claims, the default: anyone changes anything nobody else has claimed (the newest change wins), the tempo map and markers too
+--   "claims"    Driver + claims: the driver changes anything, claimed or not; everyone else what they've claimed
+--   "driver"    Driver only: only the driver changes what the band has (claims are kept, but don't count while it's on)
+--   "everyone"  Everyone: anyone changes anything; claims are kept but don't hold
+--   "admins"    only the group's owner and admins, and everyone on what's been claimed for them (lib/groups.lua; an admin can give a claim)
 -- Changes someone may not make are put back where the band has them, never kept on their machine only.
-sync.MODES = { driver = true, claims = true, open = true, admins = true }
+sync.MODES = { driver = true, claims = true, open = true, everyone = true, admins = true }
+sync.DEFAULT_MODE = "open"
 function sync.mode(cfg, song, room)
   local m = band.read_json(sync.room_dir(cfg, song, room) .. "/mode.json")
-  return type(m) == "table" and sync.MODES[m.mode] and m.mode or "claims"
+  return type(m) == "table" and sync.MODES[m.mode] and m.mode or sync.DEFAULT_MODE
 end
 function sync.set_mode(cfg, song, room, mode, user)
   band.write_json(sync.room_dir(cfg, song, room) .. "/mode.json", { mode = mode, by = user, time = os.date("!%Y-%m-%dT%H:%M:%SZ") })
@@ -470,6 +473,8 @@ function sync.authority(cfg, song, room, s)
   sync.is_claimed = claimed -- (sync.maker_may)
   return function(user, track, pos, take, drv) -- drv: the driver to judge by (an event's own time), else today's
       if mode == "driver" then return user == (drv or driver) end
+      if mode == "everyone" then return true end
+      if mode == "claims" and user == (drv or driver) then return true end -- (the driver over claims: James, 0.58.82)
       if mode == "admins" then
         if claimed(track, pos) then return owner(track, pos, drv) == user end
         return require("groups").may_manage(cfg.root, user)
@@ -1120,8 +1125,8 @@ function sync.obj_allowed(ev, can, driver)
 end
 
 -- A track's maker may change it and what's on it while nobody has claimed it, unless the room is Driver only. Before
--- 0.40.3 the maker beat a bandmate's claim too, and nothing showed it (James, 2026-11-01: "it gets confusing"); new
--- tracks are now claimed by their maker (mirror.watch), and the Claims card lists the unclaimed ones you made.
+-- 0.40.3 the maker beat a bandmate's claim too, and nothing showed it (James, 2026-11-01: "it gets confusing"). Nothing is
+-- claimed for anyone by itself since 0.58.82 (James: auto-claims "just make things more troublesome"): only Claim does.
 -- `item`: an item's own oid. Your own recording on a track nobody claimed goes out too, as the take rule in sync.authority
 -- says (it went to "(yours, not sent)" while the panel said "recording still goes out": UX review, 0.58.76).
 function sync.maker_may(oid, user, name, pos, mode, item)
@@ -1336,7 +1341,20 @@ end
 function sync.seen_mine(cc, looked_cc, now, looked_at) return cc == looked_cc or now - looked_at > 30 end
 
 -- Apply events this project hasn't applied yet, oldest first, from whoever may make each one.
+-- Opening a project (James, 0.58.82: "is there any way to pre-load everything better when loading a project?"): until its first catch-up is
+-- done, with the transport stopped, it takes a second of applying per pass instead of a quarter (you're waiting for it then, not playing),
+-- with the arrange view held still meanwhile; then REAPER builds the peaks of everything that arrived, so the first play and the first
+-- zoom don't stall on them. Live sync marks a project loading as it starts (sync.loading).
+sync.loading = {} -- tostring(proj) -> true until its first catch-up is done
+sync.LOAD_BUDGET, sync.BUDGET = 1.0, 0.25
+local peaks_due = {}
 function sync.receive(proj, cfg, song, room, can)
+  local pk = tostring(proj)
+  if peaks_due[pk] and reaper.EnumProjects(-1) == proj and reaper.GetPlayStateEx(proj) == 0 then -- (an action works on the tab in front)
+    peaks_due[pk] = nil
+    reaper.Main_OnCommand(40047, 0) -- Peaks: Build any missing peaks
+  end
+  local budget = (sync.loading[pk] and reaper.GetPlayStateEx(proj) == 0) and sync.LOAD_BUDGET or sync.BUDGET
   local dir = sync.room_dir(cfg, song, room) .. "/events"
   local pending = {}
   local drivers = sync.driver_history(proj, cfg, song, room)
@@ -1431,7 +1449,7 @@ function sync.receive(proj, cfg, song, room, can)
     end
   end
   sync.ev_cache[dir] = kept
-  local t0, budget_out = reaper.time_precise(), false -- (and a quarter second of applying per pass: the rest next pass)
+  local t0, budget_out = reaper.time_precise(), false -- (and a quarter second of applying per pass, a second while loading: the rest next pass)
   require("mirror").index_for(proj)
   local applied, done, undo_open = 0, {}, false
   sync.backlog = false
@@ -1477,7 +1495,7 @@ function sync.receive(proj, cfg, song, room, can)
         setext(proj, sync.APPLIED, ev.id, "1")
         stamp(proj, ev)
         if type(ev.note) == "string" and ev.user ~= cfg.user and iso_age(ev.time) < 3600 then band.log(ev.note) end -- (a copy's credit, a bus: mirror.watch)
-        if reaper.time_precise() - t0 > 0.25 then budget_out, sync.backlog = true, true end
+        if reaper.time_precise() - t0 > budget then budget_out, sync.backlog = true, true end
         local theirs = ev.user ~= cfg.user -- (your own changes come back too: they aren't "from the band")
         if theirs then applied = applied + 1 end
         local what = ({ plays = "now playing on " .. tostring(ev.track), track = "changed track " .. tostring(ev.track),
@@ -1512,6 +1530,14 @@ function sync.receive(proj, cfg, song, room, can)
     if next(orph) == nil then mirror.orphaned[tostring(proj)] = nil end
   end
   if undo_open then reaper.Undo_EndBlock2(proj, "StudioSync: changes from the others", -1) end
+  if sync.loading[pk] and not budget_out then
+    sync.loading[pk] = nil
+    peaks_due[pk] = true
+    if sync.load_count and sync.load_count[pk] and sync.load_count[pk] > 0 then
+      band.log(string.format("loaded: the studio's %d change(s) since you last had this open are in; building the waveforms of what arrived", sync.load_count[pk]))
+    end
+  end
+  if sync.loading[pk] then sync.load_count = sync.load_count or {}; sync.load_count[pk] = (sync.load_count[pk] or 0) + applied end
   for _, d in ipairs(done) do band.log(d) end
   return applied
 end

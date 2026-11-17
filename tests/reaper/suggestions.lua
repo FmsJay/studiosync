@@ -26,6 +26,8 @@ local front = reaper.EnumProjects(-1)
 reaper.Main_OnCommand(40859, 0); local pa = reaper.EnumProjects(-1)
 reaper.Main_OnCommand(40859, 0); local pb = reaper.EnumProjects(-1)
 local media = room_dir .. "/media"
+reaper.RecursiveCreateDirectory(room_dir, 0)
+sync.set_mode(A, song, room, "open", "James") -- (Claims: a claim holds against the driver too. In Driver + claims the driver is over claims since 0.58.82)
 local function can() return (sync.authority(A, song, room, session)) end
 local function pass_a() reaper.SelectProjectInstance(pa); return mirror.watch(pa, A, song, room, { can = can(), mode = "claims" }) end
 local function pass_b() reaper.SelectProjectInstance(pb); return mirror.watch(pb, B, song, room, { can = can(), mode = "claims" }) end
@@ -183,7 +185,8 @@ local ok, err = pcall(function()
   sync_all()
   same("after the repeats")
 
-  -- 7. Tempo: the driver's change moves everyone's parts, and that's nobody's edit
+  -- 7. Tempo: the driver's change moves everyone's parts, and that's nobody's edit (Driver + claims: only the driver's tempo)
+  sync.set_mode(A, song, room, "claims", "James")
   sync.watch_timeline(pa, A, song, room, can()); sync.watch_timeline(pb, B, song, room, can())
   local waits = #suggest.all(room_dir)
   local item_on_keys = reaper.GetTrackMediaItem(keys, 0)
@@ -212,7 +215,7 @@ local ok, err = pcall(function()
   sync.watch_timeline(pb, B, song, room, can())
   recv(pa, A)
   check(math.abs(reaper.TimeMap2_GetDividedBpmAtTime(pa, 0) - 90) < 0.01, "Open: Mac's tempo change reaches James")
-  sync.set_mode(A, song, room, "claims", "James")
+  sync.set_mode(A, song, room, "open", "James") -- (Claims again: Mac's claim holds against the driver)
   sync_all()
 
   -- 8. A bus: James's change on it says whose part it affects; deleting it is refused while it holds Mac's

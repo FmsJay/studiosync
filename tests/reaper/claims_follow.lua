@@ -41,6 +41,7 @@ local ok, err = pcall(function()
   check(c.regions[1] == "Verse" and c.times[1] and c.times[1].to == 20, "and both fold into James's own claims")
   -- the driver releases James's claims while he's away; when James's Live sync next looks, his file is emptied
   sync.release_claims({ user = "Laptop", root = root }, song, room, "James")
+  sync.set_mode(cfg, song, room, "claims", "Laptop") -- (Driver + claims: in Claims, the default since 0.58.82, what's unclaimed is anyone's)
   can = sync.authority(cfg, song, room, { host = "Laptop" })
   check(not can("James", "Bass Guitar", 0), "released: it follows the driver")
   sync.follow_claims(p, cfg, song, room)

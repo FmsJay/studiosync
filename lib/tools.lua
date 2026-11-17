@@ -130,7 +130,78 @@ function tools.invite_popup(ctx, ImGui)
   end
 end
 
-local function let_in(d, me, day)
+-- Inviting a guest (James, 0.58.82): how long they stay is picked here, a choice or a date typed in, and the invitation leaves a note in the studio
+-- (removal.add_invite) so whoever lets them in gives them that long. With a Tailscale token their computer also joins the Tailscale network till then.
+local guest_pick = { days = 7, date = "" }
+function tools.guest_invite_button(ctx, ImGui, my_id, root, label)
+  local services, removal = require("services"), require("removal")
+  if ImGui.SmallButton(ctx, (label or "Invite a guest") .. "##guestinv" .. root) then guest_pick.root = root; ImGui.OpenPopup(ctx, "guestinvite" .. root) end
+  ImGui.SetItemTooltip(ctx, services.GUEST_TIP .. (services.tailscale_token() ~= "" and services.GUEST_TS_TIP or ""))
+  if not ImGui.BeginPopup(ctx, "guestinvite" .. root) then return end
+  local now = os.time()
+  ImGui.Text(ctx, "Their access ends:")
+  for _, c in ipairs(removal.GUEST_FOR) do
+    if ImGui.RadioButton(ctx, c[1] .. "##gfor", guest_pick.date == "" and guest_pick.days == c[2]) then guest_pick.days, guest_pick.date = c[2], "" end
+    ImGui.SameLine(ctx)
+  end
+  ImGui.NewLine(ctx)
+  ImGui.SetNextItemWidth(ctx, 120)
+  local _, v = ImGui.InputTextWithHint(ctx, "##gdate", "or a day: YYYY-MM-DD", guest_pick.date)
+  guest_pick.date = v
+  local ends = guest_pick.date ~= "" and removal.parse_day(guest_pick.date, now) or (guest_pick.date == "" and now + guest_pick.days * removal.DAY) or nil
+  ImGui.SameLine(ctx)
+  if ends then ImGui.TextDisabled(ctx, "until " .. removal.when(ends, now)) else ImGui.TextColored(ctx, require("theme").YELLOW, "not a day to come") end
+  ImGui.BeginDisabled(ctx, not ends or not my_id)
+  if ImGui.Button(ctx, "Copy the invitation##guest") then
+    local me = reaper.GetExtState(band.SECTION, "user")
+    local info = band.info(root)
+    local made = removal.add_invite(root, ends, me, now)
+    local ok = true
+    if services.tailscale_token() ~= "" then ok = services.copy_guest_invite(my_id, info, ctx, ImGui, root, ends)
+    else tools.show_invite(services.invite_text(my_id, info), info, ctx, ImGui) end
+    if ok then band.log("a guest invitation to " .. tostring(info.name) .. " is on your clipboard: when they've run it, Let them in gives them until " .. removal.when(ends, now))
+    else removal.end_invite(root, made, now) end
+    ImGui.CloseCurrentPopup(ctx)
+  end
+  ImGui.EndDisabled(ctx)
+  ImGui.SameLine(ctx)
+  if ImGui.Button(ctx, "Cancel##guest") then ImGui.CloseCurrentPopup(ctx) end
+  ImGui.EndPopup(ctx)
+end
+-- Guests in a studio, with when each one's time is up, End now and Longer (owner and admins: a mark from anyone else doesn't count).
+local guests_at, guests_of = {}, {} -- (read every 2 s, not every frame: the marks are files)
+function tools.guests_list(ctx, ImGui, root, may)
+  local removal = require("removal")
+  local now = os.time()
+  if not guests_at[root] or reaper.time_precise() - guests_at[root] > 2 then guests_at[root], guests_of[root] = reaper.time_precise(), removal.guests(root, now) end
+  for _, g in ipairs(guests_of[root]) do
+    ImGui.TextDisabled(ctx, string.format("Guest: %s, until %s", g.user, removal.when(g.ends, now)))
+    if may then
+      ImGui.SameLine(ctx)
+      if ImGui.SmallButton(ctx, "End now##gend" .. g.device) and reaper.MB(g.user .. "'s time as a guest ends now: every computer stops syncing with theirs within a minute, in every studio" ..
+          " of yours they're a guest in, and Tailscale lets them go too. Their copy stays with them.\n\nEnd it?", "StudioSync", 4) == 6 then
+        for _, x in ipairs(band.bands()) do removal.guest_ends(x.root, g.device, now) end
+        guests_at[root] = nil
+        band.log(g.user .. "'s time as a guest is over: nothing syncs with their computer from a minute from now")
+      end
+      ImGui.SameLine(ctx)
+      if ImGui.SmallButton(ctx, "Longer##glong" .. g.device) then ImGui.OpenPopup(ctx, "glonger" .. g.device) end
+      if ImGui.BeginPopup(ctx, "glonger" .. g.device) then
+        for _, c in ipairs(removal.GUEST_FOR) do
+          if ImGui.Selectable(ctx, "+ " .. c[1]) then
+            local ends = math.max(g.ends, now) + c[2] * removal.DAY
+            removal.guest_ends(root, g.device, ends)
+            guests_at[root] = nil
+            band.log(g.user .. " is a guest until " .. removal.when(ends, now) .. " now")
+          end
+        end
+        ImGui.EndPopup(ctx)
+      end
+    end
+  end
+end
+
+local function let_in(d, me, ends)
   local services = require("services")
   local ok, why
   if d.folder then
@@ -139,7 +210,10 @@ local function let_in(d, me, day)
       require("removal").let_in(d.root, d.id) -- (taken out before, and back)
       -- (the roles written out again from here, the computer they were invited by: their first look believes no other. lib/trust.lua, Security review, 0.58.78)
       pcall(require("groups").edit, d.root, function() end)
-      if day then require("removal").guest(d.root, d.id, d.name, me) end -- (and out again in a day, on every computer)
+      if ends then -- (and out again when their time is up, on every computer: the invitation's, else a day)
+        local inv = require("removal").invite_for(require("removal").invites(d.root), os.time())
+        require("removal").guest(d.root, d.id, d.name, me, os.time(), type(ends) == "number" and ends or (inv and inv.ends), inv and inv.made)
+      end
       do -- a kept version of what's open, from before they arrived
         local recall = require("recall")
         local base = { root = reaper.GetExtState(band.SECTION, "sync_root"), user = me }
@@ -155,12 +229,13 @@ local function let_in(d, me, day)
     end
   else
     ok, why = services.add_device(d.id, d.name)
-    if ok then let_device[d.id] = day and "day" or true end
+    if ok then let_device[d.id] = ends or true end
   end
   if ok then let_at[d.id .. (d.folder or "")] = reaper.time_precise() end
   band.log(ok and (d.folder and ("let '" .. tostring(d.name) .. "' into " .. d.band .. ": the projects reach them now") or ("let '" .. tostring(d.name) .. "' connect: the studio they were invited to follows in a moment"))
     or ("couldn't add '" .. tostring(d.name) .. "': " .. tostring(why)))
 end
+local invites_at, invites_of = {}, {} -- (a studio's guest invitations, read every 2 s)
 function tools.join_requests(ctx, ImGui)
   local me = reaper.GetExtState(band.SECTION, "user")
   if reaper.time_precise() - asked_at > 2 then asked_at, asking = reaper.time_precise(), require("services").join_asks(me) end
@@ -168,17 +243,23 @@ function tools.join_requests(ctx, ImGui)
   local skip = band.json_decode(reaper.GetExtState(band.SECTION, "join skipped")) or {}
   for _, d in ipairs(asking) do
     if not skip[d.id] and reaper.time_precise() - (let_at[d.id .. (d.folder or "")] or -math.huge) > 40 and d.folder and let_device[d.id] then
-      local day = let_device[d.id] == "day" -- (for a day, if that's how the first press let them connect)
+      local ends = let_device[d.id] ~= true and let_device[d.id] or nil -- (as a guest, if that's how the first press let them connect)
       let_device[d.id] = nil -- (the one press covers the studio they were invited to; another one later asks again)
-      let_in(d, me, day)
+      let_in(d, me, ends)
     elseif not skip[d.id] and reaper.time_precise() - (let_at[d.id .. (d.folder or "")] or -math.huge) > 40 then
       -- (buttons first: the words pushed them off a narrow panel)
       ImGui.SetCursorPosX(ctx, math.max(ImGui.GetCursorPosX(ctx), 16)) -- (no project open, there is no margin here: Mac, 0.52.5)
       if ImGui.SmallButton(ctx, "Let " .. tostring(d.name) .. " in##" .. d.id .. (d.folder or "")) then let_in(d, me) end
       ImGui.SetItemTooltip(ctx, "Only if you know this computer: anyone who has your Syncthing ID can ask.")
       ImGui.SameLine(ctx)
-      if ImGui.SmallButton(ctx, "Guest, for a day##" .. d.id .. (d.folder or "")) then let_in(d, me, true) end -- (was "For a day", beside Let them in with nothing saying which a bandmate needs: band-test review, 0.58.67)
-      ImGui.SetItemTooltip(ctx, "A guest: let in now, and every computer stops syncing with theirs a day from now. Their copy stays with them.")
+      -- (until what the guest invitation said, else a day: James, 0.58.82)
+      local removal = require("removal")
+      if d.folder and (not invites_at[d.root] or reaper.time_precise() - invites_at[d.root] > 2) then invites_at[d.root], invites_of[d.root] = reaper.time_precise(), removal.invites(d.root) end
+      local inv = d.folder and removal.invite_for(invites_of[d.root] or {}, os.time())
+      local ends = inv and inv.ends or os.time() + removal.DAY
+      if ImGui.SmallButton(ctx, "Guest until " .. removal.when(ends, os.time()) .. "##" .. d.id .. (d.folder or "")) then let_in(d, me, ends) end
+      ImGui.SetItemTooltip(ctx, "A guest: let in now, and every computer stops syncing with theirs " .. removal.when(ends, os.time()) ..
+        (inv and " (as the guest invitation said)" or "") .. ". Their copy stays with them. Guests in Who's here can end it early or give them longer.")
       ImGui.SameLine(ctx)
       if ImGui.SmallButton(ctx, "Not my collaborator##" .. d.id) then
         skip[d.id] = true
@@ -336,6 +417,11 @@ end
 -- starts, so a change shows after a restart; a main toolbar someone customized isn't built from the default, so it isn't added there.
 tools.TOOLBAR_EXT = "1.0.2"
 function tools.toolbar_button() return reaper.GetExtState(band.SECTION, "toolbar button") == "1" end
+-- On unless you switched it off, as Helgobox's is (James, 0.58.82): "" is never chosen (StudioSync - Autostart and the panel switch it on then),
+-- "0" off. The menu extension reads "1" only.
+function tools.toolbar_default()
+  if reaper.GetExtState(band.SECTION, "toolbar button") == "" then return tools.set_toolbar_button(true) end
+end
 local function copy_file(from, to)
   local f = io.open(from, "rb")
   if not f then return false end
@@ -359,7 +445,7 @@ function tools.set_toolbar_button(on)
       end
     end
   end
-  reaper.SetExtState(band.SECTION, "toolbar button", on and "1" or "", true)
+  reaper.SetExtState(band.SECTION, "toolbar button", on and "1" or "0", true)
   return true
 end
 -- Why it won't show, or nil: the menu extension is missing or older than 1.0.2, or the main toolbar was customized.

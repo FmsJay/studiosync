@@ -13,7 +13,7 @@ assert(s.claims[1].user == "James" and table.concat(s.claims[1].tracks, ",") == 
 assert(band.json_encode(api.state_of({})):find('"claims":[]', 1, true), "none: still a list")
 assert(s.hold == true and s.local_mix == false and s.held == 3, "hold, local mixing, and how many changes are held")
 assert(band.json_decode(band.json_encode(s)).claims[1].tracks[2] == "Keys", "and it travels as JSON")
-assert(api.state_of({ me = "A", driver = "A" }).driving and api.state_of({}).mode == "claims", "driving yourself; claims when no mode is known")
+assert(api.state_of({ me = "A", driver = "A" }).driving and api.state_of({}).mode == "open", "driving yourself; the default (Claims) when no mode is known")
 -- events: numbered, oldest dropped past the limit
 local list, seq = {}, nil
 for i = 1, 5 do list, seq = api.push(list, seq, { kind = "sent", n = i }, 3, "T" .. i) end

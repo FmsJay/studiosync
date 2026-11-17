@@ -100,6 +100,18 @@ local devs = '{"devices": [{"id": "1", "tags": ["tag:bandsync-guest"], "created"
 local old = services.old_guests(devs, now)
 assert(#old == 1 and old[1] == "1", "only the guest from over a day ago; members and group machines stay")
 assert(#services.old_guests("", now) == 0 and #services.old_guests('{"message": "unauthorized"}', now) == 0, "no answer, an error: nobody")
+-- (0.58.82) a guest's time is their invitation's: the newest made before they joined, within a week
+local inv = { { made = now - 2 * 86400, ends = now + 5 * 86400 } }
+old = services.old_guests(devs, now, inv)
+assert(#old == 0, "a week's invitation keeps both guests on")
+old = services.old_guests(devs, now, { { made = now - 2 * 86400, ends = now - 60 } })
+assert(#old == 2, "ended early: both go")
+old = services.old_guests(devs, now, { { made = now - 2 * 86400, ends = now + 86400 }, { made = now - 86400, ends = now - 60 } })
+assert(#old == 1 and old[1] == "2", "each by the newest invitation made before it joined: " .. table.concat(old, ","))
+local rq = services.guest_key_request(nil, now)
+assert(rq.expirySeconds == 86400 and rq.capabilities.devices.create.ephemeral == true, "no end given: a day, ephemeral")
+rq = services.guest_key_request(now + 14 * 86400, now)
+assert(rq.expirySeconds == 7 * 86400 and rq.capabilities.devices.create.ephemeral == false, "two weeks: the key lasts a week, and the guest isn't ephemeral")
 
 -- (0.58.57) which Tailscale network this computer is on, and which accounts it's signed in to: from the PC's own output, 2026-11-15
 local status = '{"Version":"1.104.5","BackendState":"Running","CurrentTailnet":{"Name":"jamesalexander190@gmail.com","StableID":"Tybtnk",' ..
