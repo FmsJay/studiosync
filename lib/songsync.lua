@@ -44,8 +44,23 @@ function songsync.block_except(gone)
   return out
 end
 
--- The ignore file's text with StudioSync's block replaced (or added at the end; nil wanted = taken out). `gone`: keep everything but these. Pure.
-function songsync.merge(text, wanted, gone)
+-- A guest who sees only some projects (lib/access.lua): the band-wide folders and their projects, in full, and nothing else at the top
+-- of the folder, not even another project's listing, so they never learn the others' names. Pure.
+function songsync.block_guest(allowed)
+  local out = { BEGIN }
+  for _, p in ipairs(songsync.BAND_WIDE) do out[#out + 1] = "!" .. p end
+  local list = {}
+  for s in pairs(allowed) do list[#list + 1] = s end
+  table.sort(list)
+  for _, s in ipairs(list) do out[#out + 1] = "!/" .. s end
+  out[#out + 1] = "(?d)/*"
+  out[#out + 1] = END
+  return out
+end
+
+-- The ignore file's text with StudioSync's block replaced (or added at the end; nil wanted = taken out). `gone`: keep everything but these.
+-- `allowed`: a guest's projects (they win over the rest). Pure.
+function songsync.merge(text, wanted, gone, allowed)
   local keep, inside = {}, false
   text = (text or ""):gsub("^\239\187\191", "") -- (a byte-order mark would hide the first line: an editor's, or PowerShell's)
   for line in ((text or "") .. "\n"):gmatch("(.-)\r?\n") do
@@ -54,9 +69,9 @@ function songsync.merge(text, wanted, gone)
     elseif not inside then keep[#keep + 1] = line end
   end
   while #keep > 0 and keep[#keep] == "" do keep[#keep] = nil end
-  if wanted or (gone and next(gone)) then
+  if allowed or wanted or (gone and next(gone)) then
     if #keep > 0 then keep[#keep + 1] = "" end
-    for _, l in ipairs(wanted and songsync.block(wanted) or songsync.block_except(gone)) do keep[#keep + 1] = l end
+    for _, l in ipairs(allowed and songsync.block_guest(allowed) or wanted and songsync.block(wanted) or songsync.block_except(gone)) do keep[#keep + 1] = l end
   end
   return #keep > 0 and (table.concat(keep, "\n") .. "\n") or ""
 end
@@ -100,7 +115,8 @@ function songsync.apply(cfg)
   if not cfg or not cfg.root or cfg.root == "" then return false end
   local path = cfg.root .. "/.stignore"
   local old = band.read(path) or ""
-  local new = songsync.merge(old, not songsync.keep_all() and songsync.wanted(cfg) or nil, songsync.keep_all() and songsync.gone() or nil)
+  local okc, allowed = pcall(function() return require("access").mine(cfg.root) end) -- (a guest with a list: theirs only. 0.58.89)
+  local new = songsync.merge(old, not songsync.keep_all() and songsync.wanted(cfg) or nil, songsync.keep_all() and songsync.gone() or nil, okc and allowed or nil)
   if new == old then return false end
   band.write_atomic(path, new)
   pcall(function() require("services").rescan(band.info(cfg.root).id) end)

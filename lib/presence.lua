@@ -44,20 +44,80 @@ end
 -- ---- the others' ----------------------------------------------------------------------------------
 local peers_at, peers = {}, {}
 -- Bandmates' fresh status files (seen in the last 45 s), read at most once a second per room.
+-- Clocks (review, 0.58.89): a status file carries its writer's own clock. Each one that changes is a few seconds old when it arrives, so a
+-- bigger gap, either way, is a clock that's off: theirs or this computer's. One behind by more than 45 s read as gone, though here.
+presence.skew = {} -- user -> seconds their clock is behind ours (negative: ahead), only while it's more than presence.SKEW
+presence.SKEW = 90
+local last_time = {} -- user -> { time = their last status time, at = when it changed here }
+function presence.clock_gap(age, changed_ago) -- (pure: how far off a clock is, given a just-changed stamp's age; nil when within reason)
+  if changed_ago > 10 then return nil end
+  local gap = age - changed_ago
+  return math.abs(gap) > presence.SKEW and gap or nil
+end
 function presence.peers(cfg, song, room)
   local key = song .. "/" .. room
   if peers_at[key] and reaper.time_precise() - peers_at[key] < 1 then return peers[key] end
   local dir, out = require("sync").room_dir(cfg, song, room) .. "/status", {}
+  local now = reaper.time_precise()
   for _, f in ipairs(band.files(dir, ".json")) do
     local st = band.read_json(dir .. "/" .. f)
-    if type(st) == "table" and type(st.user) == "string" and st.user ~= cfg.user and type(st.time) == "string" and band.age(st.time) < 45 then
-      out[#out + 1] = st
+    if type(st) == "table" and type(st.user) == "string" and st.user ~= cfg.user and type(st.time) == "string" then
+      local l = last_time[st.user]
+      if not l or l.time ~= st.time then l = { time = st.time, at = l and now or -math.huge }; last_time[st.user] = l end
+      local age = band.age(st.time)
+      local gap = presence.clock_gap(age, now - l.at)
+      if now - l.at <= 10 then presence.skew[st.user] = gap end -- (known only from a fresh change: kept between them)
+      if age < 45 or gap or now - l.at < 45 then out[#out + 1] = st end -- (still writing, whatever their clock says)
     end
   end
   peers_at[key], peers[key] = reaper.time_precise(), out
   return out
 end
 -- Who else is editing this object right now (nil when nobody is). Pure apart from the peers list.
+-- Track groups that tie together tracks made by different people (review, 0.58.89): a group number travels as it is, so two people who
+-- each made "group 5" apart tie each other's tracks together. `tracks`: { { maker, low, high } } with each track's group bits. Pure.
+function presence.group_clashes(tracks)
+  local makers = {} -- group number -> { maker = true }
+  for _, t in ipairs(tracks) do
+    for half, bits in ipairs({ t[2] or 0, t[3] or 0 }) do
+      for b = 0, 31 do
+        if bits & (1 << b) ~= 0 then
+          local n = (half - 1) * 32 + b + 1
+          makers[n] = makers[n] or {}
+          makers[n][t[1]] = true
+        end
+      end
+    end
+  end
+  local out = {}
+  for n, who in pairs(makers) do
+    local list = {}
+    for u in pairs(who) do list[#list + 1] = u end
+    if #list > 1 then table.sort(list); out[#out + 1] = { group = n, makers = list } end
+  end
+  table.sort(out, function(a, b) return a.group < b.group end)
+  return out
+end
+local GROUP_PARAMS = { "VOLUME_LEAD", "VOLUME_FOLLOW", "PAN_LEAD", "PAN_FOLLOW", "MUTE_LEAD", "MUTE_FOLLOW", "SOLO_LEAD", "SOLO_FOLLOW",
+  "RECARM_LEAD", "RECARM_FOLLOW", "VOLUME_VCA_LEAD", "VOLUME_VCA_FOLLOW", "SELECTED_LEAD", "SELECTED_FOLLOW" }
+function presence.track_groups(proj)
+  local tracks = {}
+  for i = 0, reaper.CountTracks(proj) - 1 do
+    local tr = reaper.GetTrack(proj, i)
+    local oid = select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_oid", "", false))
+    local maker = oid:match("^(.-)%-%d%d%d%d%d%d%d%d%-")
+    if maker then
+      local lo, hi = 0, 0
+      for _, p in ipairs(GROUP_PARAMS) do
+        lo = lo | math.floor(reaper.GetSetTrackGroupMembership(tr, p, 0, 0))
+        if reaper.GetSetTrackGroupMembershipHigh then hi = hi | math.floor(reaper.GetSetTrackGroupMembershipHigh(tr, p, 0, 0)) end
+      end
+      if lo ~= 0 or hi ~= 0 then tracks[#tracks + 1] = { maker:lower(), lo & 0xFFFFFFFF, hi & 0xFFFFFFFF } end
+    end
+  end
+  return presence.group_clashes(tracks)
+end
+
 function presence.holder(list, oid)
   for _, st in ipairs(list) do
     for _, o in ipairs(type(st.editing) == "table" and st.editing or {}) do if o == oid then return st.user end end

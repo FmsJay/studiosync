@@ -458,8 +458,11 @@ With Real time mode on:
 - **My time / Their time**: in your time you hear them as it arrives, a little late. *Their time* holds your own
   backing back by that much, so what they play lines up with it: for listening along, not for playing. SonoBus's window
   shows each person's delay (the number after the down arrow); with a guest, use their measured delay.
-- **A guest for a day**: when their computer asks to join, press **For a day** beside **Let them in**. Every computer stops
-  syncing with theirs a day later by itself (a guest invitation's Tailscale access ends then too); their copy stays with them.
+- **Guests**: **Invite a guest** picks how long they stay (days, or a date) and which projects they see (every one, or only those
+  ticked). When their computer asks to join, Let them in uses that invitation. Every computer stops syncing with theirs when it
+  ends (a guest invitation's Tailscale access ends then too); their copy stays with them. The guests list has **End now**,
+  **Longer** and **Projects**. A guest given some projects doesn't see the others anywhere in StudioSync and doesn't download them,
+  not even their listing; that's hidden, not locked (someone who knows Syncthing could undo it on their own computer).
 - **The live audio's password** is the studio's own: worked out from a secret the owner's computer keeps in the studio's
   settings, not from the studio's ID that invitations show. It changes when someone is taken out.
 - **Invite a SonoBus guest** (Home, beside Configure SonoBus): one message with SonoBus's free download and a link that joins your studio's

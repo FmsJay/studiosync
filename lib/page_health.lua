@@ -168,6 +168,20 @@ function H.maint_rows()
         action = { "Try in the background again", function() require("prints").bg_retry() end, "Starts the hidden second REAPER again for the next print." } }
     end
   end
+  if b then -- clocks off between computers, and track groups two people numbered alike (lib/presence.lua, 0.58.89)
+    local presence = require("presence")
+    pcall(presence.peers, cfg, b.song, b.room)
+    for u, gap in pairs(presence.skew) do
+      rows[#rows + 1] = { "clock " .. u, false, "yellow", "", string.format("%s's clock and this computer's are %d min apart (theirs %s). Who changed what first, " ..
+        "who's here and holds go by the clock: on both, turn on setting the time automatically (Windows: Settings > Time & language; Mac: System Settings > General > Date & Time).",
+        u, math.floor(math.abs(gap) / 60 + 0.5), gap > 0 and "behind" or "ahead") }
+    end
+    local okg, clashes = pcall(presence.track_groups, proj)
+    for _, c in ipairs(okg and clashes or {}) do
+      rows[#rows + 1] = { "group " .. c.group, false, "yellow", "", string.format("Track group %d has tracks made by %s. If nobody put them together on purpose, two of you " ..
+        "made a group with the same number and the tracks now move together: give one a free number in the Track grouping matrix (View menu).", c.group, table.concat(c.makers, " and ")) }
+    end
+  end
   do -- a call app beside REAPER (lib/callapps.lua)
     local ok, words = pcall(require("callapps").health_words)
     if ok and words then rows[#rows + 1] = { "call app", false, "yellow", "", words } end

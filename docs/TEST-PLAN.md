@@ -295,3 +295,23 @@ Options, and Health shows a row with "Try in the background again" once it gives
 0.58.88: the panel stopped on opening in 0.58.87: ReaImGui 0.10.0.5 has no ConfigVar_ViewportsNoDefaultParent, and its compatibility
 layer throws even to look a name up (the new log file caught it). Looked up through pcall now; where it's missing, "When you click REAPER"
 offers Shrinks to the tiny box (the default) and Stays in front. The panel opened and ran on the PC afterwards.
+
+0.58.89 (the rest of the 2026-11-16 review, and guests who see only some projects):
+- Guests: an invitation can name the projects they see ("Only these"), and Guests > Projects changes it later (_band/guest-access/<id>.json,
+  believed only from an owner's or admin's computer: lib/access.lua). On the guest's computer the others aren't listed anywhere in
+  StudioSync, and its Syncthing ignore file brings only the band-wide folders and their projects, not even another project's listing
+  (songsync.block_guest; Autostart keeps every studio's ignore file in step every 30 s). Hidden, not locked: one shared folder goes to
+  every computer in it, so it's left out on the guest's side.
+- Mirror: looped, rate-changed and trimmed automation items rebuild as they were (the pool's length in beats travels, points as one pass of
+  the pool); automation items on a send's envelopes travel (in the sends part); a plug-in envelope's items travel in the automation part,
+  each with a pool of its own here (the sender's pool number no longer travels) and kept through an incoming chain change; a new item's
+  own default point is removed before the sent points go in. Inside a container, only a modulated plug-in's data is out of the hash, not
+  its neighbours'. A chain change with no window open and no knob moved still goes out if a plug-in's preset changed (a script's or an
+  action's preset load).
+- Project defaults travel with the project settings: pan law, pan mode, pan law flags, item mixing, default pitch-shift mode.
+- Updates from the shared folder wait until every file of the release has arrived whole (lib/files.txt, written by tools/make_index.py).
+- The studios list, folder in use, your name, this computer's id and each studio's role pins and inviter are kept in
+  <StudioSync home>/settings.json too, and put back from there when REAPER comes up without them (a crash loses persisted ExtState).
+- Health: a bandmate's clock more than 90 s off from this computer's (status files carry the sender's clock; one behind by more than
+  45 s also read as gone); a track group holding tracks made by different people (two people numbering a group alike). Both dismissable.
+- New tests: test_access, test_clock_groups, songsync guest block, container neighbour hash; REAPER suite auto_items (17 checks).

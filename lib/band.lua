@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.58.88", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.58.89", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -571,7 +571,63 @@ end
 -- everyone within seconds (review, 0.58.52). (It still runs when REAPER next starts: Settings > Health says so, and ReaPack is the safer install.)
 function band.update_ok(dir, version)
   if not band.from_shared(dir) then return true end
-  return reaper.GetExtState(band.SECTION, "update ok") == version
+  return reaper.GetExtState(band.SECTION, "update ok") == version and band.files_complete(dir)
+end
+-- Has every file of the version in `dir` arrived whole? The release lists its code files and their lengths (lib/files.txt, counted without
+-- carriage returns so Windows' and a Mac's line endings agree: tools/make_index.py). Syncthing brings files one at a time, small ones first
+-- on a joiner, so band.lua's new VERSION arrived before mirror.lua and the panel, and the reload ran half-new, half-old code until REAPER
+-- restarted (review, 0.58.89). No list (older versions): true. Each version is looked over at most every 3 s, and believed once whole.
+local complete_seen, complete_at = {}, -math.huge
+function band.files_list(text)
+  local out = {}
+  for path, n in (text or ""):gmatch("([^\t\r\n]+)\t(%d+)") do out[#out + 1] = { path = path, len = tonumber(n) } end
+  return out
+end
+function band.files_complete(dir)
+  local list_text = band.read(dir .. "/lib/files.txt")
+  if not list_text then return true end
+  local v = list_text:match("^version (%S+)") or ""
+  if complete_seen[dir .. v] then return true end
+  if reaper.time_precise() - complete_at < 3 then return false end
+  complete_at = reaper.time_precise()
+  for _, f in ipairs(band.files_list(list_text)) do
+    local s = band.read(dir .. "/" .. f.path)
+    if not s or #s - select(2, s:gsub("\r", "")) ~= f.len then return false end
+  end
+  complete_seen[dir .. v] = true
+  return true
+end
+
+-- The few settings a crash can lose (persisted ExtState reaches disk only at a clean exit): the studios list, the folder in use, your
+-- name, this computer's id, and each studio's pinned roles and inviter. Kept in <StudioSync home>/settings.json as well, and put back
+-- from there when REAPER comes up without them. A crash right after joining lost the studio from the list, and its security pins. Review, 0.58.89.
+function band.kept_keys()
+  local keys = { "bands", "sync_root", "user", "machine id" }
+  for r in reaper.GetExtState(band.SECTION, "bands"):gmatch("[^|]+") do
+    local n = (r:gsub("\\", "/"):gsub("/+$", ""):lower())
+    keys[#keys + 1] = "role pins " .. tostring(band.info(r).id) .. " " .. n
+    keys[#keys + 1] = "invited by " .. n
+  end
+  return keys
+end
+local kept_text
+function band.keep_settings()
+  local t = {}
+  for _, k in ipairs(band.kept_keys()) do
+    local v = reaper.GetExtState(band.SECTION, k)
+    if v ~= "" then t[k] = v end
+  end
+  local text = band.json_encode(t)
+  if text ~= kept_text and next(t) then kept_text = text; pcall(band.write_atomic, band.home() .. "/settings.json", text) end
+end
+function band.restore_settings()
+  local t = band.read_json(band.home() .. "/settings.json")
+  if type(t) ~= "table" then return 0 end
+  local n = 0
+  for k, v in pairs(t) do
+    if type(k) == "string" and type(v) == "string" and reaper.GetExtState(band.SECTION, k) == "" then reaper.SetExtState(band.SECTION, k, v, true); n = n + 1 end
+  end
+  return n
 end
 
 local id_said = {}
@@ -689,8 +745,11 @@ function band.takes_dir(cfg, song, room) return band.song_dir(cfg, song) .. "/ro
 -- Newest publish first (the song you're working on now is at the top of the menu).
 function band.songs(cfg)
   local out, when = {}, {}
+  -- (a guest who was given only some projects sees only those: lib/access.lua, 0.58.89)
+  local oka, allowed = pcall(function() return require("access").mine(cfg.root) end)
+  if not oka then allowed = nil end
   for _, d in ipairs(band.subdirs(cfg.root)) do
-    local s = reaper.file_exists(band.session_path(cfg, d)) and band.read_json(band.session_path(cfg, d))
+    local s = (not allowed or allowed[d]) and reaper.file_exists(band.session_path(cfg, d)) and band.read_json(band.session_path(cfg, d))
     if s then out[#out + 1], when[d] = d, s.published or "" end
   end
   table.sort(out, function(x, y) if when[x] ~= when[y] then return when[x] > when[y] end return x < y end)
@@ -768,6 +827,11 @@ function band.capture_project(proj)
   end
   if reaper.SNM_GetIntConfigVarEx then -- (no setter in REAPER's API: SWS reaches the project's own config)
     p.timebase = reaper.SNM_GetIntConfigVarEx(proj, "itemtimelock", -1) .. " " .. reaper.SNM_GetIntConfigVarEx(proj, "tempoenvtimelock", -1)
+    -- the project's defaults that change what's heard: its pan law and pan mode (tracks on "project default" use them), whether overlapping
+    -- items mix, and the default pitch-shift mode (review, 0.58.89: equal only from the first copy, then each computer's own)
+    p.defaults = { panmode = reaper.SNM_GetIntConfigVarEx(proj, "panmode", -1), panlawflags = reaper.SNM_GetIntConfigVarEx(proj, "panlawflags", -1),
+      itemmixflag = reaper.SNM_GetIntConfigVarEx(proj, "itemmixflag", -1), defpitchcfg = reaper.SNM_GetIntConfigVarEx(proj, "defpitchcfg", -1),
+      panlaw = reaper.SNM_GetDoubleConfigVarEx and math.floor(reaper.SNM_GetDoubleConfigVarEx(proj, "panlaw", -1) * 1e6 + 0.5) / 1e6 or nil }
   end
   return p
 end
@@ -786,6 +850,16 @@ function band.apply_project(proj, p)
       if type(want) == "string" and select(2, reaper.GetSetProjectInfo_String(proj, "TRACK_GROUP_NAME:" .. g, "", false)) ~= want then
         reaper.GetSetProjectInfo_String(proj, "TRACK_GROUP_NAME:" .. g, want, true)
       end
+    end
+  end
+  if type(p.defaults) == "table" and reaper.SNM_SetIntConfigVarEx then
+    for _, k in ipairs({ "panmode", "panlawflags", "itemmixflag", "defpitchcfg" }) do
+      local v = math.tointeger(tonumber(p.defaults[k]))
+      if v and v >= 0 and reaper.SNM_GetIntConfigVarEx(proj, k, -1) ~= v then reaper.SNM_SetIntConfigVarEx(proj, k, v) end
+    end
+    local law = tonumber(p.defaults.panlaw)
+    if law and law >= 0 and reaper.SNM_SetDoubleConfigVarEx and math.abs(reaper.SNM_GetDoubleConfigVarEx(proj, "panlaw", -1) - law) > 1e-6 then
+      reaper.SNM_SetDoubleConfigVarEx(proj, "panlaw", law)
     end
   end
   local it, te = tostring(p.timebase or ""):match("^(%-?%d+) (%-?%d+)$")

@@ -592,6 +592,12 @@ do
   assert(mb and mb[3] == true, "a container with an audio-controlled plug-in inside")
   assert(mirror.fx_hash(chain("Y29tcDE=", 0.1, true, box)) == mirror.fx_hash(chain("Y29tcDE=", 0.1, true, (box:gsub("QUJD", "WFla")))), "its data out of the hash")
   assert(mirror.fx_hash(chain("Y29tcDE=", 0.1, true, box)) ~= mirror.fx_hash(chain("Y29tcDE=", 0.1, true, (box:gsub("ReaGate", "ReaComp")))), "but what's in it still counts")
+  -- (0.58.89) a plug-in beside the modulated one in the container: its data still counts
+  local box2 = box:gsub("\n>\nFXID {C}\n$", "\nBYPASS 0 0 0\n<VST \"VST: ReaEQ (Cockos)\" reaeq.dll 0 \"\" 4\nRVFFUQ==\n>\nFXID {E}\n>\nFXID {C}\n")
+  assert(box2 ~= box, "the second plug-in went in")
+  local c2 = function(gate, eq) return chain("Y29tcDE=", 0.1, true, (box2:gsub("QUJD", gate):gsub("RVFFUQ==", eq))) end
+  assert(mirror.fx_hash(c2("QUJD", "RVFFUQ==")) == mirror.fx_hash(c2("WFla", "RVFFUQ==")), "the modulated one's data still out")
+  assert(mirror.fx_hash(c2("QUJD", "RVFFUQ==")) ~= mirror.fx_hash(c2("QUJD", "TkVXRVE=")), "its neighbour's patch is a change")
   assert(mirror.knobs_count(chain("Y29tcDE=", 0.1)) and not mirror.knobs_count(chain("Y29tcDE=", 0.1, true)), "its knobs speak for it")
   -- the same as a take FX, inside an item
   local function itm(data, off)

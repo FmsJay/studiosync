@@ -99,10 +99,10 @@ function removal.guest(root, device, name, by, now, ends, invite)
     { user = tostring(name or "a guest"), device = device, by = by, at = (ends or now + removal.DAY) - removal.GRACE, guest = true, invite = invite, since = now })
 end
 local function invites_dir(root) return root .. "/_band/guest-invites" end
-function removal.add_invite(root, ends, by, now)
+function removal.add_invite(root, ends, by, now, songs) -- (`songs`: the projects they see, or nil for all of them: lib/access.lua)
   now = now or os.time()
   reaper.RecursiveCreateDirectory(invites_dir(root), 0)
-  band.write_json(invites_dir(root) .. "/" .. now .. "-" .. file_name(by), { made = now, ends = ends, by = by })
+  band.write_json(invites_dir(root) .. "/" .. now .. "-" .. file_name(by), { made = now, ends = ends, by = by, songs = songs })
   return now
 end
 -- (only from the owner's or an admin's computer, as Syncthing says, or this one's own not yet looked at: anyone could write a note giving a

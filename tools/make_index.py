@@ -20,6 +20,12 @@ args = ap.parse_args()
 def url(rel):
     return f"https://github.com/{REPO}/raw/v{version}/{urllib.parse.quote(rel)}"
 
+# lib/files.txt: every code file and its length without carriage returns, so a computer running StudioSync from the shared folder takes an
+# update only once all of it has arrived (lib/band.lua band.files_complete; review, 0.58.89)
+code = sorted(ROOT.glob("StudioSync - *.lua")) + sorted((ROOT / "lib").glob("*.lua"))
+lines = [f"version {version}"] + [f"{f.relative_to(ROOT).as_posix()}\t{len(f.read_bytes().replace(b'\r', b''))}" for f in code]
+(ROOT / "lib" / "files.txt").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+
 if INDEX.exists():
     index = ET.parse(INDEX).getroot()
     pkg = index.find("category/reapack")

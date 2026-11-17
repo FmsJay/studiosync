@@ -23,6 +23,7 @@ do -- the Actions list as it should be for this version: an update through the s
   end
 end
 
+band.try("band.restore_settings", band.restore_settings) -- (what a crash lost, back from settings.json: lib/band.lua, 0.58.89)
 band.try("tools.toolbar_default", require("tools").toolbar_default) -- (StudioSync's button on the main toolbar from the first restart after installing: 0.58.82)
 
 if reaper.GetExtState(band.SECTION, "open panel at start") == "1" then -- (the installer's restart for ReaPersona's shortcuts: back in the panel. 0.58.64)
@@ -51,6 +52,7 @@ local function say_problem(words)
 end
 local st_at, st_up = -math.huge, true
 local BEHIND, loop_began = 8, reaper.time_precise()
+local songsync_at -- (when the studios' ignore files were last kept in step)
 local held_until = -math.huge -- (after REAPER held every script, Live sync's beat is old too: it isn't stopped, it's catching up)
 local loop
 -- (an error stops it, as ever, but first goes to the log file with where it happened. 0.58.86)
@@ -80,6 +82,19 @@ local function loop_body()
     end)
   end
   band.try("startup.note", require("startup").note)
+  band.try("band.keep_settings", band.keep_settings)
+  if reaper.time_precise() - (songsync_at or -math.huge) > 30 then -- (each studio's ignore file kept in step: a guest's projects, lib/access.lua)
+    songsync_at = reaper.time_precise()
+    local me = reaper.GetExtState(band.SECTION, "user")
+    for _, x in ipairs(band.bands()) do
+      -- (only where this computer is a guest with a list, or its ignore file still has a guest's block to undo: elsewhere it's written
+      -- only when a project is opened or kept, as before)
+      local okm, set = pcall(require("access").mine, x.root)
+      if (okm and set) or (band.read(x.root .. "/.stignore") or ""):find("\n(?d)/*\n", 1, true) then
+        band.try("songsync.apply", require("songsync").apply, { root = x.root, user = me })
+      end
+    end
+  end
   band.try("band.sws_colours", band.sws_colours) -- (SWS auto-colouring off while a band song is in front, back on otherwise)
   band.try("removal.tick", require("removal").tick) -- (someone taken out of a group, and which computer is whose: lib/removal.lua)
   band.try("listen.tick", require("listen").tick) -- (the listening page, where this computer shares it)
@@ -91,7 +106,7 @@ local function loop_body()
   -- (asked only while nothing plays or records anywhere: the box holds every script, so every tab's Live sync stopped mid-take until someone
   -- answered, and the band saw this computer as away. Review, 0.58.87)
   if disk and disk ~= band.VERSION and disk == seen_disk and not band.update_ok(dir, disk) and reaper.GetExtState(band.SECTION, "update asked") ~= disk
-      and reaper.GetPlayState() == 0 then
+      and reaper.GetPlayState() == 0 and band.files_complete(dir) then -- (and only once every file has arrived: lib/band.lua)
     reaper.SetExtState(band.SECTION, "update asked", disk, true) -- (once per version)
     if reaper.MB("StudioSync " .. disk .. " has arrived in the shared folder (this computer runs StudioSync from there).\n\n" ..
         "Anyone in the studio can put a new version there. Only say Yes if you expected an update from your studio.\n\nSwitch to it now?", "StudioSync", 4) == 6 then

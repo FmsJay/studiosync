@@ -31,4 +31,12 @@ assert(blocks == 1 and again:find("!/Lantern", 1, true), "one block, replaced, d
 local old = own .. "// BandSync: what this computer downloads (written by BandSync, up to the line below)\n!/_*\n(?d)/*/*\n// BandSync end\n"
 local renamed = songsync.merge(old, { Lantern = true })
 assert(not renamed:find("BandSync", 1, true) and select(2, renamed:gsub("// StudioSync end", "")) == 1 and renamed:find("(?d).DS_Store", 1, true), "the old block makes way")
+-- a guest with a list (lib/access.lua): the band-wide folders and their projects only, no other project's listing, nothing else at the top
+local g = songsync.block_guest({ Lantern = true })
+local function gat(s) for i, l in ipairs(g) do if l == s then return i end end end
+assert(gat("!/_*") and gat("!/plugins") and gat("!/Lantern") and gat("!/Lantern") < gat("(?d)/*"), "their project, then everything else ignored")
+assert(not gat("!/*/session.json"), "no other project's listing reaches a guest")
+local gm = songsync.merge(own, { ["Mirror Test"] = true }, nil, { Lantern = true })
+assert(gm:find("!/Lantern", 1, true) and not gm:find("!/Mirror Test", 1, true) and gm:find("(?d).DS_Store", 1, true), "a guest's list wins over what was opened here")
+assert(songsync.merge(own, nil, nil, {}):find("(?d)/*", 1, true), "an empty list hides every project")
 print("ok")

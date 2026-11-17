@@ -1,0 +1,80 @@
+version 0.58.89
+StudioSync - Autostart.lua	13509
+StudioSync - Claim selected tracks.lua	692
+StudioSync - Draw.lua	26358
+StudioSync - Final mix.lua	5306
+StudioSync - Hold my changes.lua	766
+StudioSync - Keep selected tracks local.lua	760
+StudioSync - Live sync.lua	60085
+StudioSync - Local mixing.lua	721
+StudioSync - Measure guest delay.lua	4099
+StudioSync - Open session.lua	9029
+StudioSync - Panel.lua	183733
+StudioSync - Prepare session.lua	6292
+StudioSync - Publish session.lua	4919
+StudioSync - Radial menu.lua	7692
+StudioSync - Redo.lua	797
+StudioSync - Settings.lua	449
+StudioSync - Status.lua	3314
+StudioSync - Take control.lua	3817
+StudioSync - Undo.lua	941
+StudioSync - Update.lua	2143
+lib/access.lua	3677
+lib/alerts.lua	4164
+lib/api.lua	6949
+lib/band.lua	65955
+lib/bgrender.lua	28968
+lib/callapps.lua	6144
+lib/chooser.lua	21919
+lib/colours.lua	19331
+lib/drive.lua	22446
+lib/drummap.lua	5670
+lib/export.lua	7538
+lib/extras.lua	25506
+lib/feedback.lua	8370
+lib/fxfiles.lua	8525
+lib/groups.lua	16733
+lib/guest.lua	7314
+lib/hear.lua	15681
+lib/json.lua	6114
+lib/leave.lua	9484
+lib/listen.lua	14853
+lib/live.lua	37469
+lib/livemidi.lua	10723
+lib/localcopy.lua	20616
+lib/midiview.lua	4359
+lib/mirror.lua	209982
+lib/mixlayer.lua	9976
+lib/page_chat.lua	22477
+lib/page_groups.lua	34102
+lib/page_health.lua	23242
+lib/page_hear.lua	14358
+lib/page_play.lua	19301
+lib/page_plugins.lua	19351
+lib/page_restore.lua	23557
+lib/page_rooms.lua	16164
+lib/people.lua	16623
+lib/plugins.lua	10078
+lib/prep.lua	29398
+lib/presence.lua	13710
+lib/prints.lua	46025
+lib/producer.lua	25734
+lib/recall.lua	23298
+lib/removal.lua	18658
+lib/rooms.lua	23686
+lib/services.lua	87150
+lib/sessionfile.lua	7035
+lib/setup.lua	7057
+lib/songsync.lua	8463
+lib/sonobus.lua	17140
+lib/stamp.lua	11856
+lib/startup.lua	13764
+lib/status.lua	5633
+lib/suggest.lua	15010
+lib/sync.lua	107505
+lib/theme.lua	5575
+lib/together.lua	2798
+lib/tools.lua	31352
+lib/trim.lua	6828
+lib/trust.lua	15987
+lib/undo.lua	7299

@@ -132,7 +132,7 @@ end
 
 -- Inviting a guest (James, 0.58.82): how long they stay is picked here, a choice or a date typed in, and the invitation leaves a note in the studio
 -- (removal.add_invite) so whoever lets them in gives them that long. With a Tailscale token their computer also joins the Tailscale network till then.
-local guest_pick = { days = 7, date = "" }
+local guest_pick = { days = 7, date = "", all = true, songs = {} }
 function tools.guest_invite_button(ctx, ImGui, my_id, root, label)
   local services, removal = require("services"), require("removal")
   if ImGui.SmallButton(ctx, (label or "Invite a guest") .. "##guestinv" .. root) then guest_pick.root = root; ImGui.OpenPopup(ctx, "guestinvite" .. root) end
@@ -151,11 +151,28 @@ function tools.guest_invite_button(ctx, ImGui, my_id, root, label)
   local ends = guest_pick.date ~= "" and removal.parse_day(guest_pick.date, now) or (guest_pick.date == "" and now + guest_pick.days * removal.DAY) or nil
   ImGui.SameLine(ctx)
   if ends then ImGui.TextDisabled(ctx, "until " .. removal.when(ends, now)) else ImGui.TextColored(ctx, require("theme").YELLOW, "not a day to come") end
-  ImGui.BeginDisabled(ctx, not ends or not my_id)
+  -- (which projects they see: all, or only those ticked. lib/access.lua, 0.58.89)
+  ImGui.Text(ctx, "They see:")
+  if ImGui.RadioButton(ctx, "Every project##gall", guest_pick.all) then guest_pick.all = true end
+  ImGui.SameLine(ctx)
+  if ImGui.RadioButton(ctx, "Only these##gsome", not guest_pick.all) then guest_pick.all = false end
+  ImGui.SetItemTooltip(ctx, "The others stay in the studio, out of their sight: StudioSync doesn't list them on their computer and doesn't download them there.\n" ..
+    "Hidden rather than locked: someone who knows Syncthing could undo that on their own computer.")
+  local some = 0
+  if not guest_pick.all then
+    for _, s in ipairs(band.songs({ root = root, user = "" })) do
+      local ch, v = ImGui.Checkbox(ctx, s .. "##gsong", guest_pick.songs[s] == true)
+      if ch then guest_pick.songs[s] = v or nil end
+      if guest_pick.songs[s] then some = some + 1 end
+    end
+  end
+  ImGui.BeginDisabled(ctx, not ends or not my_id or (not guest_pick.all and some == 0))
   if ImGui.Button(ctx, "Copy the invitation##guest") then
     local me = reaper.GetExtState(band.SECTION, "user")
     local info = band.info(root)
-    local made = removal.add_invite(root, ends, me, now)
+    local songs
+    if not guest_pick.all then songs = {}; for s in pairs(guest_pick.songs) do songs[#songs + 1] = s end; table.sort(songs) end
+    local made = removal.add_invite(root, ends, me, now, songs)
     local ok = true
     if services.tailscale_token() ~= "" then ok = services.copy_guest_invite(my_id, info, ctx, ImGui, root, ends)
     else tools.show_invite(services.invite_text(my_id, info), info, ctx, ImGui) end
@@ -183,6 +200,29 @@ function tools.guests_list(ctx, ImGui, root, may)
         for _, x in ipairs(band.bands()) do removal.guest_ends(x.root, g.device, now) end
         guests_at[root] = nil
         band.log(g.user .. "'s time as a guest is over: nothing syncs with their computer from a minute from now")
+      end
+      ImGui.SameLine(ctx)
+      if ImGui.SmallButton(ctx, "Projects##gproj" .. g.device) then ImGui.OpenPopup(ctx, "gprojects" .. g.device) end
+      ImGui.SetItemTooltip(ctx, "Which projects " .. g.user .. " sees (the others stay hidden on their computer): every one, or only those ticked.")
+      if ImGui.BeginPopup(ctx, "gprojects" .. g.device) then
+        local acc = require("access")
+        local set = acc.get(root, g.device)
+        if ImGui.RadioButton(ctx, "Every project##gpa" .. g.device, set == nil) and set then acc.clear(root, g.device); band.log(g.user .. " sees every project now") end
+        ImGui.SameLine(ctx)
+        if ImGui.RadioButton(ctx, "Only these##gps" .. g.device, set ~= nil) and not set then acc.set(root, g.device, {}, reaper.GetExtState(band.SECTION, "user")) end
+        if set then
+          for _, s in ipairs(band.songs({ root = root, user = "" })) do
+            local ch, v = ImGui.Checkbox(ctx, s .. "##gpsong" .. g.device, set[s] == true)
+            if ch then
+              set[s] = v or nil
+              local list = {}
+              for x in pairs(set) do list[#list + 1] = x end
+              acc.set(root, g.device, list, reaper.GetExtState(band.SECTION, "user"))
+              band.log(v and (g.user .. " can see " .. s .. " now") or (s .. " is hidden from " .. g.user .. " now"))
+            end
+          end
+        end
+        ImGui.EndPopup(ctx)
       end
       ImGui.SameLine(ctx)
       if ImGui.SmallButton(ctx, "Longer##glong" .. g.device) then ImGui.OpenPopup(ctx, "glonger" .. g.device) end
@@ -213,6 +253,8 @@ local function let_in(d, me, ends)
       if ends then -- (and out again when their time is up, on every computer: the invitation's, else a day)
         local inv = require("removal").invite_for(require("removal").invites(d.root), os.time())
         require("removal").guest(d.root, d.id, d.name, me, os.time(), type(ends) == "number" and ends or (inv and inv.ends), inv and inv.made)
+        -- (the projects the invitation gave them, if it named some: they see only those. lib/access.lua)
+        if inv and type(inv.songs) == "table" then require("access").set(d.root, d.id, inv.songs, me) end
       end
       do -- a kept version of what's open, from before they arrived
         local recall = require("recall")

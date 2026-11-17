@@ -21,7 +21,8 @@ local FX_LOCAL = { FXID = true, FLOATPOS = true, FLOAT = true, WNDRECT = true, S
 -- plug-in's envelope lanes and modulation window. (Showing an FX lane, or opening a plug-in's window inside a container,
 -- resent the whole chain and reloaded everyone's plug-ins: plug-ins review, 0.58.76.) `parent`: the enclosing block's tag.
 local CHAIN_BLOCK = { FXCHAIN = true, TAKEFX = true, CONTAINER = true }
-local PARM_VIEW = { EGUID = true, ARM = true, VIS = true, LANEHEIGHT = true, MODWND = true }
+local PARM_VIEW = { EGUID = true, ARM = true, VIS = true, LANEHEIGHT = true, MODWND = true,
+  POOLEDENVINST = true } -- (its pool number is this computer's: another's means another item. The items travel in the automation part, 0.58.89)
 local function chain_local(parent, key)
   if not key then return false end
   if CHAIN_BLOCK[parent] then return FX_LOCAL[key] == true end
@@ -256,26 +257,43 @@ function mirror.fx_params(tr)
   return table.concat(out, ",")
 end
 -- A chain whose saved data its own knobs speak for: a restless plug-in on it, or a modulated one. Pure.
+-- Each plug-in's preset name: a script or an action that loads one changes the data with no window open, often with no knob moving.
+function mirror.fx_presets(tr)
+  local out = {}
+  for i = 0, reaper.TrackFX_GetCount(tr) - 1 do out[#out + 1] = select(2, reaper.TrackFX_GetPreset(tr, i, "")) or "" end
+  return table.concat(out, "|")
+end
+mirror.fx_quiet_presets = mirror.fx_quiet_presets or {} -- (the presets as of the knobs in mirror.fx_quiet)
 function mirror.knobs_count(chain) return mirror.restless_in(chain) ~= nil or mirror.modulated(chain) ~= nil end
 
 -- A plug-in chain's hash: its normalized text without each VST's last state line. That line is REAPER's program block
 -- for the instance, and a plug-in loaded from a chunk writes its program name there ("Program 1"), so the same chain
 -- read differently on every machine that received it (laptop, 2026-10-31). It still travels; only the hash skips it.
 -- A restless plug-in counts by its first line only.
-function mirror.fx_hash(chain)
-  local lines = {}
-  for l in portable(chain):gmatch("[^\n]+") do lines[#lines + 1] = l end
-  local mods = mirror.modulated(lines)
-  if next(mirror.restless) or mods then
-    local blocks = mirror.plugin_blocks(lines)
-    for b = #blocks, 1, -1 do
-      if blocks[b].key and mirror.restless[blocks[b].key] or mods and type(mods[b]) == "table" then
-        for k = blocks[b].last - 1, blocks[b].first + 1, -1 do table.remove(lines, k) end
-      elseif mods and mods[b] then -- (a container: only its plug-ins' data, so one added inside still counts)
-        for k = blocks[b].last - 1, blocks[b].first + 1, -1 do if lines[k]:match("^[A-Za-z0-9+/]+=*$") then table.remove(lines, k) end end
+-- The saved data of the restless and modulated plug-ins in lines[from..to] taken out, back to front. Inside a container, only those of
+-- its plug-ins (one modulated plug-in in a container hid every plug-in's data in it, so a patch changed beside it never went out:
+-- review, 0.58.89); a container's own lines stay, so one added inside still counts.
+local function hide_moving(lines, from, to)
+  local sub = {}
+  for k = from, to do sub[#sub + 1] = lines[k] end
+  local mods, blocks = mirror.modulated(sub), mirror.plugin_blocks(sub)
+  for b = #blocks, 1, -1 do
+    local first, last = from + blocks[b].first - 1, from + blocks[b].last - 1
+    if blocks[b].key and mirror.restless[blocks[b].key] or mods and type(mods[b]) == "table" then
+      for k = last - 1, first + 1, -1 do table.remove(lines, k) end
+    elseif mods and mods[b] and last - first > 1 then
+      local before = #lines
+      hide_moving(lines, first + 1, last - 1)
+      if #lines == before then -- (the container's own knob is the modulated one: its plug-ins' data, as before)
+        for k = last - 1, first + 1, -1 do if lines[k]:match("^[A-Za-z0-9+/]+=*$") then table.remove(lines, k) end end
       end
     end
   end
+end
+function mirror.fx_hash(chain)
+  local lines = {}
+  for l in portable(chain):gmatch("[^\n]+") do lines[#lines + 1] = l end
+  if next(mirror.restless) or mirror.modulated(lines) then hide_moving(lines, 1, #lines) end
   local i = 1
   while i <= #lines do
     if lines[i]:match("^<VST") then
@@ -1361,7 +1379,7 @@ function mirror.scan(proj, user, media_dir, local_mix)
       local fo = { kind = "fx", oid = "F" .. oid:sub(2), ptr = tr, track = oid, state = fx, hash = parts.fxh }
       objs[#objs + 1], by_oid[fo.oid] = fo, fo
       local env, recv, misc = parts.env, parts.recv, parts.misc
-      env = env .. mirror.ai_lines(tr)
+      env, recv = env .. mirror.ai_lines(tr), recv .. mirror.ai_lines(tr, "recv")
       for _, p in ipairs({ { "E", "env", env }, { "R", "recv", recv }, { "M", "misc", misc } }) do
         local po = { kind = p[2], oid = p[1] .. oid:sub(2), ptr = tr, track = oid, state = p[3], hash = mirror.hash(p[3]) }
         objs[#objs + 1], by_oid[po.oid] = po, po
@@ -1491,45 +1509,118 @@ function mirror.find(proj, kind, oid)
   end
 end
 
--- A track's automation items (on its own envelopes, not plug-in or send ones), as lines: "BANDAI <envelope> position
--- length offset rate baseline amplitude loop mute" and each point "BANDAIPT <envelope> <item> time value shape tension".
--- Their pools live outside the track, so each arrives as an item of its own (unpooled, like a MIDI copy).
+-- A track's automation items, as lines: "BANDAI <envelope> position length offset rate baseline amplitude loop mute poollength" and each
+-- point "BANDAIPT <envelope> <item> time value shape tension". Their pools live outside the track, so each arrives as an item of its own
+-- (unpooled, like a MIDI copy). <envelope>: the chunk name of one of the track's own ("VOLENV2"); "PARMENV:<fx>:<param>" for a plug-in's
+-- (in the automation part, which owns them); "AUX:<source track>:<nth from it>:<VOLENV|PANENV|MUTEENV>" for a receive's (in the sends
+-- part: `which` = "recv"). From 0.58.89 the pool's length in beats comes last and the points are one pass of the pool (the 0x10000000
+-- flag), so a looped, rate-changed or trimmed item rebuilds as it was; an older version's item has neither and its points are what showed.
 local AI_KEYS = { "D_POSITION", "D_LENGTH", "D_STARTOFFS", "D_PLAYRATE", "D_BASELINE", "D_AMPLITUDE", "D_LOOPSRC", "D_MUTE" }
-local function env_tag(env)
-  local _, ch = reaper.GetEnvelopeStateChunk(env, "", false)
-  local tag = ch:match("^%s*<(%S+)")
-  return tag and tag ~= "PARMENV" and tag:sub(1, 3) ~= "AUX" and tag or nil
+local ONE_PASS = 0x10000000
+local AUX_ENVS = { "VOLENV", "PANENV", "MUTEENV" }
+local function env_head(env) return (select(2, reaper.GetEnvelopeStateChunk(env, "", false)):match("^%s*<(%S+)")) end
+local function env_tag(env, tr)
+  local tag = env_head(env)
+  if tag == "PARMENV" then
+    local _, fx, param = reaper.Envelope_GetParentTrack(env)
+    return fx and fx >= 0 and param and param >= 0 and ("PARMENV:" .. math.floor(fx) .. ":" .. math.floor(param)) or nil
+  end
+  return tag and tag:sub(1, 3) ~= "AUX" and tag or nil
 end
-function mirror.ai_lines(tr)
-  local out = {}
-  for e = 0, reaper.CountTrackEnvelopes(tr) - 1 do
-    local env = reaper.GetTrackEnvelope(tr, e)
-    local n = reaper.CountAutomationItems(env)
-    local tag = n > 0 and env_tag(env)
-    for a = 0, tag and n - 1 or -1 do
-      local v = {}
-      for _, k in ipairs(AI_KEYS) do v[#v + 1] = string.format("%.10g", reaper.GetSetAutomationItemInfo(env, a, k, 0, false)) end
-      out[#out + 1] = "BANDAI " .. tag .. " " .. table.concat(v, " ")
-      for p = 0, reaper.CountEnvelopePointsEx(env, a) - 1 do
-        local _, t, val, shape, ten = reaper.GetEnvelopePointEx(env, a, p)
-        out[#out + 1] = string.format("BANDAIPT %s %d %.10g %.10g %d %.6g", tag, a, t, val, shape, ten)
+-- A track's receives from mirrored tracks: { { env = { VOLENV = env, ... }, tag = "AUX:<source>:<n>" } } (the nth from that source).
+local function receives(tr)
+  local out, nth = {}, {}
+  for r = 0, reaper.GetTrackNumSends(tr, -1) - 1 do
+    local src = reaper.GetTrackSendInfo_Value(tr, -1, r, "P_SRCTRACK")
+    local o = src and src ~= 0 and trk_oid(src) or ""
+    if o ~= "" then
+      nth[o] = (nth[o] or 0) + 1
+      local e = {}
+      for _, name in ipairs(AUX_ENVS) do
+        local env = reaper.GetTrackSendInfo_Value(tr, -1, r, "P_ENV:<" .. name)
+        if env and env ~= 0 then e[name] = env end
       end
+      out[#out + 1] = { env = e, tag = "AUX:" .. o .. ":" .. nth[o] }
+    end
+  end
+  return out
+end
+local function item_lines(env, tag, out)
+  for a = 0, reaper.CountAutomationItems(env) - 1 do
+    local v = {}
+    for _, k in ipairs(AI_KEYS) do v[#v + 1] = string.format("%.10g", reaper.GetSetAutomationItemInfo(env, a, k, 0, false)) end
+    v[#v + 1] = string.format("%.10g", reaper.GetSetAutomationItemInfo(env, a, "D_POOL_QNLEN", 0, false))
+    out[#out + 1] = "BANDAI " .. tag .. " " .. table.concat(v, " ")
+    for p = 0, reaper.CountEnvelopePointsEx(env, a | ONE_PASS) - 1 do
+      local _, t, val, shape, ten = reaper.GetEnvelopePointEx(env, a | ONE_PASS, p)
+      out[#out + 1] = string.format("BANDAIPT %s %d %.10g %.10g %d %.6g", tag, a, t, val, shape, ten)
+    end
+  end
+end
+function mirror.ai_lines(tr, which)
+  local out = {}
+  if which == "recv" then
+    for _, r in ipairs(receives(tr)) do
+      for _, name in ipairs(AUX_ENVS) do
+        local env = r.env[name]
+        if env and reaper.CountAutomationItems(env) > 0 then item_lines(env, r.tag .. ":" .. name, out) end
+      end
+    end
+  else
+    for e = 0, reaper.CountTrackEnvelopes(tr) - 1 do
+      local env = reaper.GetTrackEnvelope(tr, e)
+      local tag = reaper.CountAutomationItems(env) > 0 and env_tag(env, tr)
+      if tag and (which ~= "parm" or tag:sub(1, 8) == "PARMENV:") then item_lines(env, tag, out) end
     end
   end
   return #out > 0 and (table.concat(out, "\n") .. "\n") or ""
 end
 
--- Rebuild the automation items a travelling envelope part lists (the chunk splice left the track with none). Each
--- gets a pool of its own: one past the highest in the project.
-function mirror.set_ai(proj, tr, state)
-  if not state:find("BANDAI ", 1, true) then return end
+-- One past the highest pool number in the project: the track envelopes (a plug-in's among them) and every receive's.
+local function next_pool(proj)
   local pool = 0
+  local function look(env) for a = 0, reaper.CountAutomationItems(env) - 1 do pool = math.max(pool, reaper.GetSetAutomationItemInfo(env, a, "D_POOL_ID", 0, false) + 1) end end
   for t = -1, reaper.CountTracks(proj) - 1 do
     local track = t < 0 and reaper.GetMasterTrack(proj) or reaper.GetTrack(proj, t)
-    for e = 0, reaper.CountTrackEnvelopes(track) - 1 do
-      local env = reaper.GetTrackEnvelope(track, e)
-      for a = 0, reaper.CountAutomationItems(env) - 1 do pool = math.max(pool, reaper.GetSetAutomationItemInfo(env, a, "D_POOL_ID", 0, false) + 1) end
+    for e = 0, reaper.CountTrackEnvelopes(track) - 1 do look(reaper.GetTrackEnvelope(track, e)) end
+    for r = 0, reaper.GetTrackNumSends(track, -1) - 1 do
+      for _, name in ipairs(AUX_ENVS) do
+        local env = reaper.GetTrackSendInfo_Value(track, -1, r, "P_ENV:<" .. name)
+        if env and env ~= 0 then look(env) end
+      end
     end
+  end
+  return pool
+end
+-- An envelope without its automation items (no API removes one: its instance lines come out of its chunk).
+local function clear_ai(env)
+  if reaper.CountAutomationItems(env) == 0 then return end
+  local _, ch = reaper.GetEnvelopeStateChunk(env, "", false)
+  local new = ch:gsub("[ \t]*POOLEDENVINST[^\n]*\n", "")
+  if new ~= ch then reaper.SetEnvelopeStateChunk(env, new, false) end
+end
+
+-- Rebuild the automation items a travelling part lists. The envelope part's splice left the track's own envelopes with none, and the
+-- sends part's its receives'; a plug-in's are cleared here first (its chain isn't part of the splice). `which`: "recv" for the sends part,
+-- "parm" for a plug-in's only (put back after an incoming chain replaced them), else the envelope part. Each item gets a pool of its own.
+function mirror.set_ai(proj, tr, state, which)
+  if which ~= "recv" then
+    for e = 0, reaper.CountTrackEnvelopes(tr) - 1 do
+      local env = reaper.GetTrackEnvelope(tr, e)
+      if env_head(env) == "PARMENV" then clear_ai(env) end
+    end
+  end
+  if not state:find("BANDAI ", 1, true) then return end
+  local pool = next_pool(proj)
+  local aux = {}
+  if which == "recv" then for _, r in ipairs(receives(tr)) do for name, env in pairs(r.env) do aux[r.tag .. ":" .. name] = env end end end
+  local function find(tag)
+    if which == "recv" then return aux[tag] end
+    if tag:sub(1, 4) == "AUX:" then return nil end
+    local fx, param = tag:match("^PARMENV:(%d+):(%d+)$")
+    if fx then return reaper.GetFXEnvelope(tr, tonumber(fx), tonumber(param), true) end
+    if which == "parm" then return nil end
+    return reaper.GetTrackEnvelopeByChunkName(tr, "<" .. tag)
   end
   local made, count = {}, {}
   for line in state:gmatch("[^\n]+") do
@@ -1537,14 +1628,17 @@ function mirror.set_ai(proj, tr, state)
     if tag then
       local v = {}
       for x in rest:gmatch("%S+") do v[#v + 1] = tonumber(x) end
-      local env = reaper.GetTrackEnvelopeByChunkName(tr, "<" .. tag)
+      local env = find(tag)
       local k = count[tag] or 0
       count[tag] = k + 1
       if env and v[2] then
         local a = reaper.InsertAutomationItem(env, pool, v[1], v[2])
         pool = pool + 1
+        local pass = v[#AI_KEYS + 1] and ONE_PASS or 0 -- (an older version's: the points that showed, as before)
+        if pass ~= 0 then reaper.GetSetAutomationItemInfo(env, a, "D_POOL_QNLEN", v[#AI_KEYS + 1], true) end
         for i = 3, #AI_KEYS do if v[i] then reaper.GetSetAutomationItemInfo(env, a, AI_KEYS[i], v[i], true) end end
-        made[tag .. " " .. k] = { env, a }
+        for _ = 1, reaper.CountEnvelopePointsEx(env, a | ONE_PASS) do reaper.DeleteEnvelopePointEx(env, a | ONE_PASS, 0) end -- (a new item's own point)
+        made[tag .. " " .. k] = { env, a | pass }
       end
     else
       local ptag, k, t, val, shape, ten = line:match("^BANDAIPT (%S+) (%d+) (%S+) (%S+) (%S+) (%S+)$")
@@ -1656,8 +1750,9 @@ function mirror.apply(proj, ev, media_dir, local_mix)
         block = block ~= "" and block:gsub("\n>$", "\n" .. table.concat(live, "\n") .. "\n>") or ("<FXCHAIN\n" .. table.concat(live, "\n") .. "\n>")
       end
     end
+    local parm_ai = mirror.ai_lines(tr, "parm") -- (the plug-ins' automation items belong to the automation part: kept through this)
     local new = sync.chunk_set_block(chunk, "FXCHAIN", block ~= "" and block or nil)
-    if new and new ~= chunk then reaper.SetTrackStateChunk(tr, new, false) end
+    if new and new ~= chunk then reaper.SetTrackStateChunk(tr, new, false); mirror.set_ai(proj, tr, parm_ai, "parm") end
     -- (ReaInsert and ReaStream reach outside REAPER: the sender's audio interface channels, or a computer on their network. Here they
     -- play or send whatever those settings mean on this machine, so it's said, once per track. Plug-ins review, 0.58.76)
     local outside = block:match('<VST "VSTi?: (ReaInsert)') or block:match('<VST "VSTi?: (ReaStream)')
@@ -1683,7 +1778,7 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     -- what was sent (Superior Drummer on the laptop), so fingerprints never agreed and whoever claimed the track re-rendered
     -- every part. What it reads as here, and for a while as it finishes loading, isn't a change.
     mirror.fx_readback[key], mirror.fx_loading[key], mirror.fx_load_knobs[key] = h, reaper.time_precise() + mirror.FX_LOAD_SECS, mirror.fx_params(tr)
-    mirror.fx_quiet[key] = mirror.fx_load_knobs[key]
+    mirror.fx_quiet[key], mirror.fx_quiet_presets[key] = mirror.fx_load_knobs[key], nil
     if ev.hash then h = ev.hash end
     -- (a part that arrived before its plug-ins chose its take with nothing missing, and stayed on silent notes: laptop, 0.42.4)
     local prints = require("prints")
@@ -1717,6 +1812,7 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     local _, after = reaper.GetTrackStateChunk(tr, "", false)
     local env, recv, misc = mirror.track_parts(after, oid_at)
     if kind == "env" then mirror.set_ai(proj, tr, ev.state or ""); env = env .. mirror.ai_lines(tr) end
+    if kind == "recv" then mirror.set_ai(proj, tr, ev.state or "", "recv"); recv = recv .. mirror.ai_lines(tr, "recv") end
     return true, mirror.hash(kind == "env" and env or kind == "recv" and recv or misc)
   elseif kind == "item" then
     local tr = mirror.find(proj, "track", ev.track)
@@ -2485,8 +2581,12 @@ function mirror.watch(proj, cfg, song, room, opts)
       -- loads: a knob turned from a control surface in that minute then read as quiet, and never went out. Linux stress test, 0.58.77)
       if o.kind == "fx" and o.ptr and (mirror.fx_quiet[rk] == nil or reaper.time_precise() < math.max(mirror.fx_loading[rk] or 0, mirror.first_look[tostring(proj)] or 0)) then
         mirror.fx_quiet[rk] = mirror.fx_load_knobs[rk] or mirror.fx_params(o.ptr)
+        mirror.fx_quiet_presets[rk] = mirror.fx_presets(o.ptr)
       end
-      if o.kind == "fx" and rev and h ~= "" and h ~= o.hash and o.ptr and not mirror.fx_was_open(o.ptr) and mirror.fx_quiet[rk] == mirror.fx_params(o.ptr) then
+      -- (and no preset was loaded: a script's or an action's, which opens no window and may move no knob, read as noise. Review, 0.58.89)
+      if o.kind == "fx" and o.ptr and mirror.fx_quiet_presets[rk] == nil then mirror.fx_quiet_presets[rk] = mirror.fx_presets(o.ptr) end
+      if o.kind == "fx" and rev and h ~= "" and h ~= o.hash and o.ptr and not mirror.fx_was_open(o.ptr) and mirror.fx_quiet[rk] == mirror.fx_params(o.ptr)
+          and mirror.fx_quiet_presets[rk] == mirror.fx_presets(o.ptr) then
         local ev = event_file(room_dir, evid)
         local function names(chain)
           local t = {}
@@ -2654,7 +2754,7 @@ function mirror.watch(proj, cfg, song, room, opts)
           if ev.restless or mirror.modulated(state) then mirror.fx_knobs[rk] = knobs or mirror.fx_params(o.ptr) end
         end
         local id = sync.post(cfg, song, room, ev)
-        if o.kind == "fx" and o.ptr then mirror.fx_quiet[rk] = mirror.fx_params(o.ptr); knobs_agreed(proj, o, rk) end -- (what it's changed from, next time)
+        if o.kind == "fx" and o.ptr then mirror.fx_quiet[rk], mirror.fx_quiet_presets[rk] = mirror.fx_params(o.ptr), mirror.fx_presets(o.ptr); knobs_agreed(proj, o, rk) end -- (what it's changed from, next time)
         remember(proj, o.oid, ev.rev, o.hash, id, mirror.order_of(ev))
         mirror.sessions[rk] = { rev = ev.rev, at = reaper.time_precise(), id = id }
         if name ~= "" and not ev.auto and select(2, reaper.GetProjExtState(proj, band.SECTION, "last_track")) ~= name then
