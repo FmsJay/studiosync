@@ -182,7 +182,7 @@ function chooser.open(cfg, opts, done)
   local in_folder -- the folder open in the folder view, nil at the top
   local text, sel, room, new_room, show_hidden, hide = "", nil, nil, "", false, hidden()
   local picked_for -- the text the selection was last picked for: new text picks the best match again
-  local new_folder = "" -- typed in a song's right-click menu
+  local new_folder, typed_at = "", -math.huge -- typed in a song's right-click menu (and when Enter last finished it)
   local now = os.date("!*t") -- (band.age's "now")
   local function visible_rows()
     local out = {}
@@ -236,6 +236,7 @@ function chooser.open(cfg, opts, done)
             ImGui.SetNextItemWidth(ctx, 200)
             local enter, nf = ImGui.InputTextWithHint(ctx, "##newfolder", "New folder: type, then Enter", new_folder, ImGui.InputTextFlags_EnterReturnsTrue)
             new_folder = nf
+            if enter then typed_at = reaper.time_precise() end -- (that Enter isn't Open's too: it opened the song. Review, 0.58.92)
             if enter and band.clean(nf) ~= "" then
               r.folder = chooser.set_folder(cfg, r.song, nf)
               new_folder = ""
@@ -402,7 +403,7 @@ function chooser.open(cfg, opts, done)
       local pick_room = (opts.rooms == "new" and band.clean(new_room) ~= "") and band.clean(new_room) or room
       ImGui.BeginDisabled(ctx, not sel)
       if ImGui.Button(ctx, (opts.action or "Open") .. (sel and (" '" .. sel.song .. "'" .. (opts.rooms and (", room " .. tostring(pick_room)) or "")) or ""))
-          or (sel and ImGui.IsKeyPressed(ctx, ImGui.Key_Enter)) then
+          or (sel and ImGui.IsKeyPressed(ctx, ImGui.Key_Enter) and reaper.time_precise() - typed_at > 0.3) then
         result = { sel.song, pick_room }
       end
       ImGui.EndDisabled(ctx)

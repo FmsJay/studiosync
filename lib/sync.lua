@@ -909,7 +909,7 @@ function sync.skip(proj, ev, why)
 end
 function sync.retry_skipped(proj)
   local list = sync.skipped(proj)
-  for _, s in ipairs(list) do setext(proj, sync.APPLIED, s.id, ""); sync.failed[s.id] = nil end
+  for _, s in ipairs(list) do setext(proj, sync.APPLIED, s.id, ""); sync.failed[s.id] = nil; sync.unreadable[s.id] = nil end
   -- (and they're looked at again: the cache of settled files kept them as done, so Try again did nothing until a restart. Review, 0.58.62)
   local mine = tostring(proj)
   for k in pairs(sync.settled) do if k:sub(1, #mine) == mine then sync.settled[k] = nil end end
@@ -1175,6 +1175,7 @@ function sync.apply(proj, ev, dir, root, can, me)
     return true
   end
   if ev.type == "timeline" then -- REAPER moves the items for the new map, as it would for a local change
+    if type(ev.time) == "string" and type(ev.id) == "string" and (ev.time .. ev.id) > ext(proj, band.SECTION, "timeline at") then setext(proj, band.SECTION, "timeline at", ev.time .. ev.id) end
     if tempo_sig(ev.tempo) ~= tempo_sig(band.capture_tempo(proj)) then require("mirror").tempo_changed(proj) end
     sync.audio_follow_tempo(proj)
     band.apply_tempo(proj, ev.tempo or {})
@@ -1291,9 +1292,12 @@ function sync.watch_timeline(proj, cfg, song, room, can)
       local tempo_off = plain(s.tempo) ~= plain(band.capture_tempo(proj))
       if tempo_off or plain(s.markers) ~= plain(band.capture_markers(proj)) then
         reaper.Undo_BeginBlock2(proj)
-        if tempo_off then band.apply_tempo(proj, s.tempo); require("mirror").tempo_changed(proj) end
-        band.apply_markers(proj, s.markers)
+        local ok, e = pcall(function() -- (the undo point closed whatever happens: review, 0.58.92)
+          if tempo_off then band.apply_tempo(proj, s.tempo); require("mirror").tempo_changed(proj) end
+          band.apply_markers(proj, s.markers)
+        end)
         reaper.Undo_EndBlock2(proj, "StudioSync: the song's tempo map and markers", -1)
+        if not ok then error(e, 0) end
         sig = timeline_sig(proj)
         seen = sig
         setext(proj, band.SECTION, "timeline", sig)
@@ -1335,10 +1339,13 @@ function sync.watch_timeline(proj, cfg, song, room, can)
         local before = band.json_decode(seen)
         if type(before) == "table" and type(before[1]) == "table" and #before[1] > 0 then
           reaper.Undo_BeginBlock2(proj)
-          band.apply_tempo(proj, before[1])
-          band.apply_project(proj, before[3])
-          band.apply_markers(proj, before[2] or {})
+          local ok, e = pcall(function()
+            band.apply_tempo(proj, before[1])
+            band.apply_project(proj, before[3])
+            band.apply_markers(proj, before[2] or {})
+          end)
           reaper.Undo_EndBlock2(proj, "StudioSync: put the studio's tempo map and markers back", -1)
+          if not ok then error(e, 0) end
           sig = timeline_sig(proj)
           sync.put_back("Not sent: only the driver changes the tempo, markers and project settings. Take control, or ask them to set Who controls to Anyone")
         else
@@ -1399,7 +1406,8 @@ function sync.receive(proj, cfg, song, room, can)
         local id = f:sub(1, -6)
         sync.unreadable[id] = sync.unreadable[id] or reaper.time_precise()
         if reaper.time_precise() - sync.unreadable[id] > sync.UNREADABLE_SECS then
-          setext(proj, sync.APPLIED, id, "1")
+          -- (on Health's skipped list, so Try again can have it once it's whole: marked done, it was never looked at again. Review, 0.58.92)
+          sync.skip(proj, { id = id, user = type(ev) == "table" and type(ev.user) == "string" and ev.user or "?" }, "its file couldn't be read (half-synced or damaged)")
           band.log("skipped a file in the studio's folder that StudioSync can't read (" .. f .. ")")
         end
       end
@@ -1436,7 +1444,10 @@ function sync.receive(proj, cfg, song, room, can)
   -- A timeline event is the whole map: only the newest is applied. (Every older map landing in turn, between looks, re-timed
   -- beat-timebase items, and those went out as edits: 158 from the laptop in one catch-up. Sync engine review, 0.58.76)
   local newest_map
-  for _, ev in ipairs(pending) do if ev.type == "timeline" and ev.user ~= cfg.user then newest_map = ev.id end end
+  -- (ours count too, and the newest this project already has: an older map of theirs landed over our newer one, theirs took ours, and the two
+  -- projects kept different tempo maps. Review, 0.58.92)
+  local map_at = ext(proj, band.SECTION, "timeline at")
+  for _, ev in ipairs(pending) do if ev.type == "timeline" and (ev.time .. ev.id) > map_at then newest_map = ev.id end end
   -- Both worked alone (neither could see the other's changes): theirs may undo some of ours. Before
   -- any of them lands, where things are here is saved as a kept restore point, so our side is never lost.
   local mine_alone = ext(proj, band.SECTION, "alone_last")
@@ -1491,13 +1502,16 @@ function sync.receive(proj, cfg, song, room, can)
       setext(proj, sync.APPLIED, ev.id, "1") -- superseded
     elseif ev.user == cfg.user and not obj then
       setext(proj, sync.APPLIED, ev.id, "1") -- our own: already true here
+      if ev.type == "timeline" and (ev.time .. ev.id) > ext(proj, band.SECTION, "timeline at") then setext(proj, band.SECTION, "timeline at", ev.time .. ev.id) end
       stamp(proj, ev) -- and what we change next comes after it, even one stamped while our clock ran ahead
     elseif not obj and refused(ev) and reaper.time_precise() - sync.refused_since(ev.id) <= 60 then
       -- (the older kinds of change) not theirs to change, as far as this machine knows: their claim or the handover may simply not have
       -- synced here yet, so it waits a minute from when it arrived, then lands like any other, as an object change does. Dropped once
       -- 10 minutes old, one that came in before the handover it rested on was lost for good. Review, 0.58.91
       sync.deferred[ev.id] = true
-    elseif obj and iso_age(ev.time) <= 60 and refused(ev) then
+    elseif obj and refused(ev) and reaper.time_precise() - sync.refused_since(ev.id) <= 60 then
+      -- (the minute is from when it arrived here, not the sender's own clock: one running a minute or more behind had a refused change land at
+      -- once. Review, 0.58.92)
       -- An object change: the sender checked it against the claims as they had them when they made it. What looks
       -- refused here is most likely a claim or handover still on its way, either way: it waits a minute, then lands
       -- like any other. Judging it by today's claims and dropping it after 10 minutes left a machine that was away

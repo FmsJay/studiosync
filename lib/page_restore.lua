@@ -58,6 +58,9 @@ local function back_button(i, what, single)
       or "This kind of change (tempo, a handover, a note) isn't undone on its own: restore the whole project to here instead.")
     next_to("Restore selected tracks to here")
   end
+  -- (a version older than everything in History has nothing to rebuild it from: restored, every track and item went, for everyone. Review, 0.58.92)
+  local before_history = i < 1
+  ImGui.BeginDisabled(ctx, before_history)
   if ImGui.SmallButton(ctx, "Restore selected tracks to here") then
     local scope = mirror.selection_scope(proj)
     if not scope then band.msg("Select the tracks to put back first (click their names in REAPER).")
@@ -65,10 +68,12 @@ local function back_button(i, what, single)
       band.log(mirror.revert(proj, cfg, b.song, b.room, mirror.plan_restore(entries, i, scope), opts)); hist_at = 0
     end
   end
-  ImGui.SetItemTooltip(ctx, "The tracks selected in REAPER, as they were " .. what .. ". It goes to the others as new changes.")
+  ImGui.EndDisabled(ctx)
+  ImGui.SetItemTooltip(ctx, before_history and "This version is older than every change kept in History, so it can't be rebuilt from it." or
+    ("The tracks selected in REAPER, as they were " .. what .. ". It goes to the others as new changes."))
   next_to("Restore whole project to here")
   local driving = view.driver == cfg.user
-  ImGui.BeginDisabled(ctx, not driving)
+  ImGui.BeginDisabled(ctx, not driving or before_history)
   if ImGui.SmallButton(ctx, "Restore whole project to here") and reaper.MB("Make the whole project look like it did " .. what .. "?\n\n" ..
       "Everything since then is undone, for everyone. It's a change like any other, so you can come back the same way.", "StudioSync", 4) == 6 then
     sync.restore_timeline(proj, cfg, b.song, b.room, entries, i, view.session)
@@ -76,7 +81,8 @@ local function back_button(i, what, single)
     E.refresh_now(); hist_at = 0
   end
   ImGui.EndDisabled(ctx)
-  ImGui.SetItemTooltip(ctx, driving and ("The whole project, as it was " .. what .. ". It goes to the others as new changes.") or "The driver does this.")
+  ImGui.SetItemTooltip(ctx, before_history and "This version is older than every change kept in History, so it can't be rebuilt from it." or
+    driving and ("The whole project, as it was " .. what .. ". It goes to the others as new changes.") or "The driver does this.")
   next_to("Open in side room")
   if ImGui.SmallButton(ctx, "Open in side room") then
     -- a look at that moment that touches nobody's work: a new room, put back to then. Archive it (Rooms) when you've heard it.

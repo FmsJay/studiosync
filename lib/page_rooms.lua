@@ -189,7 +189,7 @@ function M.squares()
   end
   if #room_view.binned > 0 and ImGui.TreeNodeEx(ctx, "archived", string.format("Archived rooms (%d)", #room_view.binned), ImGui.TreeNodeFlags_SpanAvailWidth) then
     for _, r in ipairs(room_view.binned) do
-      if ImGui.SmallButton(ctx, "Bring back##" .. r.name) then rooms.bin(cfg, b.song, r.name, nil); E.refresh_now() end
+      if ImGui.SmallButton(ctx, "Bring back##" .. r.name) and reaper.MB("Bring room '" .. r.name .. "' back for everyone?", "StudioSync", 4) == 6 then rooms.bin(cfg, b.song, r.name, nil); E.refresh_now() end
       ImGui.SameLine(ctx)
       ImGui.TextDisabled(ctx, r.name .. "  (archived by " .. tostring(r.binned) .. ")")
     end

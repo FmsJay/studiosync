@@ -255,6 +255,8 @@ local function let_in(d, me, ends)
         require("removal").guest(d.root, d.id, d.name, me, os.time(), type(ends) == "number" and ends or (inv and inv.ends), inv and inv.made)
         -- (the projects the invitation gave them, if it named some: they see only those. lib/access.lua)
         if inv and type(inv.songs) == "table" then require("access").set(d.root, d.id, inv.songs, me) end
+      else
+        require("access").clear(d.root, d.id) -- (let in as a member: a project list left from a guest visit no longer applies)
       end
       do -- a kept version of what's open, from before they arrived
         local recall = require("recall")

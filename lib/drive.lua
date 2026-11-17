@@ -232,9 +232,15 @@ end
 -- with a "Can't sync file" message each time (2026-10-28). Reading from Drive is anyone's.
 -- `wait` (tests only): others' files too, once missing that many seconds.
 local first_seen = {} -- path -> when we first saw it missing on Drive
+-- (bandmates whose name starts with ours and a dash, "James-Laptop" for "James": their files read as ours, so both computers wrote them on
+-- Drive. Set by drive.mirror from the events it reads. Review, 0.58.92)
+local longer = {}
+local function owned(f, u) return f:sub(1, #u + 1) == u .. "-" or f:find("Z-" .. u .. "-", 1, true) ~= nil end
 local function mine(f, user)
   local u = (user or ""):gsub("[^%w%-_]", "_")
-  return u ~= "" and (f:sub(1, #u + 1) == u .. "-" or f:find("Z-" .. u .. "-", 1, true) ~= nil)
+  if u == "" or not owned(f, u) then return false end
+  for _, l in ipairs(longer) do if owned(f, l) then return false end end
+  return true
 end
 local function due(path, f, user, wait)
   if mine(f, user) then return true end
@@ -262,14 +268,18 @@ end
 -- Changes the history trim took out of the room (lib/trim.lua lists them in trimmed/): Drive's copy still has them.
 local seen_trims = {} -- path -> its list (written once)
 local function trimmed(dir)
-  local out = {}
+  local out, media = {}, {}
   for _, f in ipairs(band.files(dir, ".json")) do
     local p = dir .. "/" .. f
     seen_trims[p] = seen_trims[p] or band.read_json(p) or nil
-    for _, id in ipairs(type(seen_trims[p]) == "table" and seen_trims[p] or {}) do out[tostring(id) .. ".json"] = true end
+    local list = type(seen_trims[p]) == "table" and seen_trims[p] or {}
+    for _, id in ipairs(list) do out[tostring(id) .. ".json"] = true end
+    for _, m in ipairs(type(list.media) == "table" and list.media or {}) do media[tostring(m)] = true end -- (prints that followed them: 0.58.92)
   end
-  return out
+  return out, media
 end
+-- Syncthing's files while one arrives (".syncthing.x.tmp", "~syncthing~x.tmp"): copied to Drive mid-download, they came back from it for good
+local function arriving(f) return f:match("^%.syncthing%.") or f:match("^~") or f:match("%.tmp$") end
 
 local function into_trash_index(dir, f)
   local idx = band.read_json(dir .. "/index.json") or {}
@@ -290,11 +300,24 @@ function drive.mirror(here, there, budget, user, wait)
   local events = read_events(here .. "/events", t0 + (budget or 1.5))
   if not events then return 0, true end -- (who owns which recording isn't known yet: nothing's copied on half a list)
   local owners = drive.media_owners(events, here:match("([^/]+)$"))
+  do
+    local u, seen = (user or ""):gsub("[^%w%-_]", "_"), {}
+    longer = {}
+    for _, e in ipairs(events) do
+      local l = type(e.user) == "string" and e.user:gsub("[^%w%-_]", "_") or ""
+      if not seen[l] and #l > #u + 1 and l:sub(1, #u + 1) == u .. "-" then seen[l] = true; longer[#longer + 1] = l end
+    end
+  end
   for _, sub in ipairs({ "trimmed", "events", "recall", "midi", "media" }) do -- (media: recordings and prints the items use)
-    local A, B = band.files(here .. "/" .. sub), band.files(there .. "/" .. sub)
+    local A, B = {}, {}
+    for _, f in ipairs(band.files(here .. "/" .. sub)) do if not arriving(f) then A[#A + 1] = f end end
+    for _, f in ipairs(band.files(there .. "/" .. sub)) do if not arriving(f) then B[#B + 1] = f end end
     local inA, inB = {}, {}
     for _, f in ipairs(A) do inA[f] = true end
     for _, f in ipairs(B) do inB[f] = true end
+    if sub == "media" then -- (prints a trim archived: left where each side has them, not brought back from Drive)
+      for f in pairs(select(2, trimmed(here .. "/trimmed"))) do inA[f], inB[f] = true, true end
+    end
     if sub == "events" then -- trimmed: not brought back from Drive, and gone from it once whoever made them sees that
       for f in pairs(trimmed(here .. "/trimmed")) do -- ("trimmed" goes first: a list may have just come from Drive)
         inA[f], inB[f] = true, true
@@ -318,7 +341,7 @@ function drive.mirror(here, there, budget, user, wait)
     for _, pair in ipairs(mine(u .. "-", user) and { { here, there }, { there, here } } or { { there, here } }) do
       local a, z = pair[1] .. "/fx/" .. u, pair[2] .. "/fx/" .. u
       for _, f in ipairs(band.files(a)) do
-        if not reaper.file_exists(z .. "/" .. f) then if out_of_time() then return n, true end; copy(a .. "/" .. f, z .. "/" .. f) end
+        if not arriving(f) and not reaper.file_exists(z .. "/" .. f) then if out_of_time() then return n, true end; copy(a .. "/" .. f, z .. "/" .. f) end
       end
     end
   end

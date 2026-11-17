@@ -1289,7 +1289,7 @@ function mirror.item_state(it, media_dir)
 end
 -- A state from an older version that's this one but for what that version left out: the BANDTAKE line (before 0.58.85), and empty takes
 -- written as bare "TAKE" (before 0.58.87). The same item, read the way this version reads one. Pure.
-local function older_form(s) return (s:gsub("BANDTAKE %d+\n", ""):gsub("\nTAKE NULL\n", "\nTAKE\n"):gsub("\nTAKE NULL\n", "\nTAKE\n")) end
+local function older_form(s) return (s:gsub("BANDTAKE %d+\n", ""):gsub("\nTAKE NULL%f[\n]", "\nTAKE")) end -- (any run of empty takes, not two at most. 0.58.92)
 function mirror.only_pick_new(track, here, theirs)
   if type(theirs) ~= "string" or theirs:find("BANDTAKE", 1, true) or theirs:find("\nTAKE NULL\n", 1, true) then return false end
   if not (here:find("BANDTAKE", 1, true) or here:find("\nTAKE NULL\n", 1, true)) then return false end
@@ -1723,6 +1723,14 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     local p = mirror.find(proj, kind == "fx" and "track" or kind, kind == "fx" and ev.track or oid)
     if p and kind == "item" then reaper.DeleteTrackMediaItem(reaper.GetMediaItem_Track(p), p)
     elseif p and kind == "track" then -- (auto-colour rules recolour the rest when a track goes: theirs are the band's)
+      -- (your items on it the band doesn't have yet, a held or just-made recording, go to "<track> (yours, not sent)" first: deleted with the
+      -- track, they were lost with no copy. Review, 0.58.92)
+      local tname = select(2, reaper.GetTrackName(p))
+      for i = reaper.CountTrackMediaItems(p) - 1, 0, -1 do
+        local it = reaper.GetTrackMediaItem(p, i)
+        local io = itm_oid(it)
+        if io == "" or not mirror.known(proj, io) or mirror.unsent[tostring(proj) .. io] then reaper.MoveMediaItemToTrack(it, mirror.keep_track(proj, tname)) end
+      end
       local colours = mirror.track_colours(proj)
       reaper.DeleteTrack(p)
       mirror.hold_colours(proj, colours)
@@ -1936,7 +1944,10 @@ local function lanes_back(proj, ev, media_dir, local_mix)
   local tr = mirror.find(proj, "track", ev.track)
   local krev, _, kev, kord = mirror.known(proj, ev.track)
   if tr and krev then
-    local tev = kev ~= "" and require("band").read_json(media_dir:gsub("/media$", "") .. "/events/" .. kev .. ".json")
+    local tev = kev ~= "" and mirror.event_file((media_dir:gsub("/media$", "")), kev)
+    -- (through event_file, which finds a side room's in its main room; and when it can't be read, nothing is remembered: the reset lane plays
+    -- were taken for the band's and the comp played the wrong lane here. Review, 0.58.92)
+    if kev ~= "" and type(tev) ~= "table" then return end
     if type(tev) == "table" and type(tev.state) == "table" then mirror.set_track_state(proj, tr, tev.state, local_mix) end
     local t = mirror.track_state(proj, tr, local_mix)
     remember(proj, ev.track, krev, mirror.track_hash(t, local_mix), kev, kord)
@@ -2037,7 +2048,7 @@ local function plain_event(room_dir, evid)
   local ev = band.read_json(room_dir .. "/events/" .. evid .. ".json")
   if not ev then
     room_parent[room_dir] = room_parent[room_dir] or (band.read_json(room_dir .. "/room.json") or {}).parent -- (it may not have synced here yet: not noted as none)
-    ev = room_parent[room_dir] and plain_event((room_dir:gsub("[^/]+$", room_parent[room_dir])), evid) or nil
+    ev = room_parent[room_dir] and plain_event((room_dir:gsub("[^/]+$", (room_parent[room_dir]:gsub("%%", "%%%%")))), evid) or nil
   end
   if type(ev) == "table" then
     if plain_n > 20000 then plain_cache, plain_n = {}, 0 end -- shortcut: a whole flush past 20,000 events, enough for any song's working set
@@ -2222,6 +2233,7 @@ local function keep_track(proj, name)
   end
   return mirror.add_local_track(proj, label, "yours") -- (auto-colouring recoloured Keys when this track went in, on the laptop: 2026-10-31)
 end
+mirror.keep_track = keep_track
 -- A track of this machine's own (never mirrored) at the end, with the band's colours held.
 -- Keep selected tracks local (power-user review, 0.58.62): a track of your own that never goes to the others (a reference mix, a guide, a
 -- scratch idea). Only a track that hasn't gone out yet: a shared one made local would read as deleted, for everyone. When every one given
@@ -2475,6 +2487,8 @@ function mirror.watch(proj, cfg, song, room, opts)
       local ok, h = mirror.apply(proj, ev, media, opts.local_mix)
       if ok then remember(proj, o.oid, ev.rev, h, ev.id, mirror.order_of(ev))
       elseif mirror.PART[o.kind] then return -- (waits for this tab to come to the front)
+      elseif o.kind == "item" and ev.track and mirror.find(proj, "track", ev.track) then
+        return -- (its track is here, so its recording is still on its way: deleted, your item was gone until the next change. Review, 0.58.92)
       else -- it can't land here (its track is gone): the band's state wins, and that has no such item
         if o.kind == "item" and o.ptr and reaper.ValidatePtr2(proj, o.ptr, "MediaItem*") then reaper.DeleteTrackMediaItem(reaper.GetMediaItem_Track(o.ptr), o.ptr) end
         remember(proj, o.oid, rev or 0, "", evid, mirror.order_of(ev))
@@ -2866,6 +2880,7 @@ function mirror.watch(proj, cfg, song, room, opts)
   if reaper.EnumProjects(-1) == proj and not playing and not mirror.more and not opts.hold then -- (prints wait until a burst has gone, and Hold is off)
     local prints, made = require("prints"), 0
     prints.watch_ara(proj) -- (a Melodyne window closed: that take gets a new print below)
+    pcall(prints.release_held, proj) -- (FX held off for a part that's gone)
     -- takes become lanes, by whoever owns them (their newest change, or not sent yet). Once caught up: an old file reopened
     -- split its old comps and sent them before the band's newer versions had landed (laptop, 0.42.9)
     if require("sync").pending_events(proj, cfg, song, room) == 0 then
@@ -2930,7 +2945,9 @@ function mirror.watch(proj, cfg, song, room, opts)
     if not ok then break end
     i = i + 1
     local rev, h, evid = mirror.known(proj, oid)
-    if not seen[oid] and h ~= "" then
+    -- (object records only, "rev|hash|event|order": the section also keeps "fxk <oid>" and "master fxen held", which read as gone and were
+    -- overwritten with "0|||" every pass: knob checks failed after the first minute and the band's master FX switch went back on. Review, 0.58.92)
+    if not seen[oid] and rev and h ~= "" then
       if opts.hold then mirror.unsent[tostring(proj) .. oid] = true -- (held: the delete goes out when Hold is switched off)
       elseif oid:sub(1, 1) == "I" and mirror.find(proj, "item", oid) then
         -- still here, on a track of this machine's own (Real time, "yours, not sent"): not deleted. Sent as gone, it

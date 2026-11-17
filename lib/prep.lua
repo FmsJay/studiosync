@@ -75,7 +75,7 @@ function prep.scan(proj, cfg, b)
       local n = 0
       for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
         local it = reaper.GetTrackMediaItem(tr, j)
-        if not bands(it) and reaper.CountTakes(it) > 1 then n = n + 1 end
+        if not bands(it) and #require("mirror").real_takes(it) > 1 then n = n + 1 end -- (a print isn't a take to choose)
       end
       if reaper.GetMediaTrackInfo_Value(tr, "I_FREEMODE") ~= 2 then lanes.set[#lanes.set + 1] = tr
       elseif n > 0 then lanes.explode[#lanes.explode + 1] = tr end
@@ -347,10 +347,12 @@ function prep.apply(proj, cfg, b, rows, dir)
   for _, r in ipairs(rows) do if r.on then on[r.key] = r end end
   local file = select(2, reaper.EnumProjects(-1))
   local backup
-  if file ~= "" then
-    backup = file:gsub("%.[Rr][Pp][Pp]$", "") .. " - before StudioSync " .. os.date("%Y%m%d-%H%M") .. ".rpp"
+  do -- (an unsaved project's goes to StudioSync's own folder: it was promised a backup and got none. Review, 0.58.92)
+    if file == "" then reaper.RecursiveCreateDirectory(band.home() .. "/backups", 0) end
+    local base = file ~= "" and file:gsub("%.[Rr][Pp][Pp]$", "") or (band.home() .. "/backups/Untitled")
+    backup = base .. " - before StudioSync " .. os.date("%Y%m%d-%H%M") .. ".rpp"
     reaper.Main_SaveProjectEx(proj, backup, 0) -- 0: a copy; this tab keeps its own file
-    done[#done + 1] = "Backup copy saved: " .. backup:match("[^/\\]+$")
+    done[#done + 1] = "Backup copy saved: " .. (file ~= "" and backup:match("[^/\\]+$") or backup)
   end
   reaper.Undo_BeginBlock2(proj)
   reaper.PreventUIRefresh(1)
@@ -430,7 +432,7 @@ function prep.apply(proj, cfg, b, rows, dir)
         local takes = false
         for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
           local it = reaper.GetTrackMediaItem(tr, j)
-          takes = takes or (reaper.CountTakes(it) > 1 and not bands(it))
+          takes = takes or (#require("mirror").real_takes(it) > 1 and not bands(it))
         end
         select_only(tr)
         reaper.Main_OnCommand(takes and 42636 or 42661, 0) -- explode with comp areas / Track properties: Set fixed lanes

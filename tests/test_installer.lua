@@ -61,7 +61,8 @@ assert(calls[#calls]:find(' cli --home "C:/Users/J\195\188rgen/SyncTrayzor/data/
 calls = {}
 assert(services.ensure_syncthing() == "started")
 local started = false
-for _, c in ipairs(calls) do started = started or c:find('--home="C:/Users/J\195\188rgen/SyncTrayzor/data/syncthing"', 1, true) ~= nil end
+-- (its quotes escaped for the outer ones round the PowerShell command: unescaped, they ended them. 0.58.92)
+for _, c in ipairs(calls) do started = started or c:find('--home=\\"C:/Users/J\195\188rgen/SyncTrayzor/data/syncthing\\"', 1, true) ~= nil end
 assert(started, "and started on it: " .. table.concat(calls, " | "))
 band.write_atomic = real_write
 package.loaded.services = nil

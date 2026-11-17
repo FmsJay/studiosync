@@ -171,6 +171,11 @@ end
 function prints.source(it, mtk, fx_hash)
   local mirror, raw = require("mirror"), select(2, reaper.MIDI_GetHash(mtk, false, ""))
   local tail = (fx_hash or "") .. string.format("%.6f", reaper.GetMediaItemInfo_Value(it, "D_LENGTH"))
+  -- (and where in its notes the item starts and how fast it plays: a slip edit kept the old print. Only when not the usual, so prints made
+  -- before stay current. Review, 0.58.92)
+  local offs, rate = reaper.GetMediaItemTakeInfo_Value(mtk, "D_STARTOFFS"), reaper.GetMediaItemTakeInfo_Value(mtk, "D_PLAYRATE")
+  if math.abs(offs) > 1e-6 then tail = tail .. string.format("|o%.6f", offs) end
+  if math.abs(rate - 1) > 1e-6 then tail = tail .. string.format("|r%.6f", rate) end
   return mirror.hash(unselected(raw, mtk) .. tail), mirror.hash(raw .. tail)
 end
 
@@ -200,11 +205,13 @@ function prints.choose(it)
     return
   end
   -- (an item with a choice of real takes plays the one picked, the band's: the print was the first's, and choosing it here undid a comp. 0.58.85)
-  if #require("mirror").real_takes(it) > 1 then return end
-  local dry = midi or (print and prints.audio_take(it))
-  if not (dry and print) then return end
-  local mode = prints.mode()
+  -- (the track's FX hold is looked at on the way out too: an item that lost its print, or got a second real take, left the FX off for good.
+  -- Review, 0.58.92)
   local tr = reaper.GetMediaItem_Track(it)
+  if #require("mirror").real_takes(it) > 1 then return prints.hold_fx(tr) end
+  local dry = midi or (print and prints.audio_take(it))
+  if not (dry and print) then return prints.hold_fx(tr) end
+  local mode = prints.mode()
   local want = mode == "sound" and print or mode == "notes" and dry or (prints.track_plays(tr) and dry or print)
   if reaper.GetActiveTake(it) ~= want then reaper.SetActiveTake(want); reaper.UpdateItemInProject(it) end
   prints.hold_fx(tr)
@@ -242,6 +249,15 @@ function prints.hold_fx(tr)
   elseif not wet and held ~= "" then
     reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:" .. prints.FXEN, "", true)
     reaper.SetMediaTrackInfo_Value(tr, "I_FXEN", tonumber(held) or 1)
+  end
+end
+
+-- Tracks whose FX are held off for a print, looked at again: a part deleted (here or by the band) never passes through choose, and the
+-- FX stayed off. Review, 0.58.92
+function prints.release_held(proj)
+  for t = 0, reaper.CountTracks(proj) - 1 do
+    local tr = reaper.GetTrack(proj, t)
+    if band.track_ext(tr, prints.FXEN) ~= "" then prints.hold_fx(tr) end
   end
 end
 
@@ -730,6 +746,7 @@ function prints.takes_to_lanes(proj, mine)
       reaper.SetProjExtState(proj, band.SECTION, "lanes last", reaper.GetTrackGUID(tr))
       reaper.PreventUIRefresh(1) -- (every part was selected and let go one after another, flashing across the project: review, 0.58.87)
       reaper.Undo_BeginBlock2(proj) -- (one point, named StudioSync's: Ctrl+Z on "Crop to active take" brought the takes back, to split again)
+      local lanes_ok, lanes_err = pcall(function() -- (an error in here left REAPER's screen frozen and the undo point open. Review, 0.58.92)
       -- wet takes go first, or they'd become lanes of their own; the comp's item prints again. (Waiting for a track with no
       -- wet takes meant any comp on a played part stayed takes, and the takes picked never reached the band: laptop, 0.42.4)
       local picked = {}
@@ -775,8 +792,10 @@ function prints.takes_to_lanes(proj, mine)
       end
       reaper.SetTrackSelected(tr, false)
       for _, s in ipairs(sel) do if reaper.ValidatePtr2(proj, s, "MediaTrack*") then reaper.SetTrackSelected(s, true) end end
+      end)
       reaper.PreventUIRefresh(-1)
       reaper.Undo_EndBlock2(proj, prints.LANES_UNDO, -1)
+      if not lanes_ok then error(lanes_err, 0) end
       band.log("the takes on " .. select(2, reaper.GetTrackName(tr)) .. " became lanes (the takes you picked stay the comp)")
       done = done + 1
     end

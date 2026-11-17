@@ -213,7 +213,8 @@ end
 -- A removal or closing file: from someone in charge (or, for someone leaving, from their own computer)? Asked once per file and date. -> true/false/nil.
 local marks = {}
 function trust.mark_ok(root, rel, m)
-  local k = root .. rel .. tostring(m.at)
+  local k = root .. rel .. tostring(m.at) .. "\0" .. tostring(m.user) .. "\0" .. tostring(m.device) .. "\0" .. tostring(m.by) -- (the mark as read: rewritten with the
+  -- same time, another person's mark took the verdict cached for the first. Review, 0.58.92)
   if marks[k] ~= nil then return marks[k] end
   local pins = trust.pins(root)
   -- (a studio from before owners: everyone in it may. An invited computer still waiting for its first look: not yet. 0.58.78)
@@ -235,7 +236,7 @@ end
 -- and time. Security review, 0.58.78. -> true, false, or nil (not yet: ask again later).
 local claims = {}
 function trust.claim_ok(root, rel, c)
-  local k = root .. rel .. tostring(c.time)
+  local k = root .. rel .. tostring(c.time) .. "\0" .. band.json_encode(c) -- (the claim as read, as for marks above)
   if claims[k] ~= nil then return claims[k] end
   local pins = trust.pins(root)
   if not pins then if trust.held(root) then return nil end return true end -- (as trust.mark_ok)

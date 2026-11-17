@@ -403,9 +403,10 @@ end
 local function end_job(j)
   local pid = tonumber((band.read(j.dir .. "/pid.txt") or ""):match("^%d+"))
   if not pid then return false end
-  if not WIN then reaper.ExecProcess("/bin/kill -9 " .. pid, -1); return true end
+  -- (only if that id is still a REAPER: it may have quit already, and ids come round again. Review, 0.58.92)
+  if not WIN then reaper.ExecProcess("/bin/sh -c 'ps -p " .. pid .. " -o comm= | grep -qi reaper && kill -9 " .. pid .. "'", -1); return true end
   local kill = TMP .. "/kill" .. pid .. ".cmd" -- (one each, deleting itself: jobs can end together)
-  band.write_atomic(kill, "@taskkill /PID " .. pid .. ' /T /F\r\n@del "%~f0"\r\n')
+  band.write_atomic(kill, "@taskkill /PID " .. pid .. ' /FI "IMAGENAME eq reaper.exe" /T /F\r\n@del "%~f0"\r\n')
   reaper.ExecProcess(string.format('wscript.exe //B //Nologo "%s" "%s"', TMP .. "/hidden.vbs", kill), -1)
   return true
 end

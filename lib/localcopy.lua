@@ -265,6 +265,8 @@ function copy.tick()
             if reaper.JS_File_Stat then -- (not `a and f()`: that keeps one return value, and every file read as new, so Drive never counted: Mac, 0.51.12)
               local status, _, _, modified = reaper.JS_File_Stat(there)
               if status == 0 and modified and copy.is_young(tostring(modified), os.date("%Y.%m.%d %H:%M:%S", os.time() - copy.DRIVE_SETTLED)) then j.drive_young = true end
+            else
+              j.drive_young = true -- (without js_ReaScriptAPI nothing tells how long it's been there: Drive doesn't count. Review, 0.58.92)
             end
           end
         end
@@ -287,6 +289,15 @@ function copy.tick()
       song, table.concat(j.places, ", "), #j.files, WIN and "Recycle Bin" or "Trash", #j.places == 1 and j.places[1] == "Google Drive" and " from Drive" or " from them")
     j.local_dir = local_dir
   elseif j.step == "ignore" then -- first, so the delete can't reach anyone
+    -- (who holds it, asked again now you've said yes: two computers each confirmed on the other, both said yes, and the last full copies
+    -- went to the bin. Review, 0.58.92)
+    local on_drive = false
+    for _, p in ipairs(j.places) do on_drive = on_drive or p == "Google Drive" end
+    if not on_drive and #copy.holders(copy.read_holds(j.root), song, copy.digest(j.files), j.user) == 0 then
+      j.skipped[#j.skipped + 1] = song .. " (the other copy it was confirmed on is being deleted too: this one stays)"
+      j.i, j.step = j.i + 1, "scan"
+      return
+    end
     local gone = ss.gone()
     gone[song] = true
     ss.save_gone(gone)

@@ -59,6 +59,8 @@ local started, last = reaper.time_precise(), 0
 local function wait()
   if reaper.time_precise() - last < 2 then return reaper.defer(wait) end
   last = reaper.time_precise()
+  -- (the tab closed or another song in front while waiting: no handover for a song that isn't here. Review, 0.58.92)
+  if not reaper.ValidatePtr2(0, proj, "ReaProject*") or reaper.EnumProjects(-1) ~= proj then return band.log("stopped waiting to take control of '" .. b.song .. "': its tab isn't in front") end
   c = status.handover_check(cfg, b, proj)
   if #c.problems == 0 then return handover() end
   if last - started < 120 then return reaper.defer(wait) end

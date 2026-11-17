@@ -93,6 +93,48 @@ function trim.plan(evs, points, cutoff)
   return out
 end
 
+-- The print files named by `refs` (state strings) in `room`'s media. Pure. -> { name = true } ("print-...", no extension)
+function trim.print_refs(text, room, into)
+  into = into or {}
+  for r, name in text:gmatch('{media:([^}]+)}/(print%-[^"/]+)%.flac') do if not room or r == room then into[name] = true end end
+  return into
+end
+-- Prints only the changes that just went named (a print is a new file for every edit, and none ever left the media folder: review, 0.58.92)
+-- follow them into the archive. One that any change still here names, in any room of the song, stays. -> the files moved
+function trim.prints(cfg, song, room, evs, took, archive)
+  local gone_ids, cand, still, moved = {}, {}, {}, {}
+  for _, id in ipairs(took) do gone_ids[id] = true end
+  for _, ev in ipairs(evs) do
+    if type(ev.state) == "string" then
+      if gone_ids[ev.id] then trim.print_refs(ev.state, room, cand) else trim.print_refs(ev.state, nil, still) end
+    end
+  end
+  if not next(cand) then return moved end
+  local sync = require("sync")
+  local rooms_dir = sync.room_dir(cfg, song, room):gsub("/[^/]+$", "")
+  for i = 0, math.huge do
+    local r = reaper.EnumerateSubdirectories(rooms_dir, i)
+    if not r then break end
+    if r ~= room then -- (a side room's items may play the main room's prints)
+      for _, f in ipairs(band.files(rooms_dir .. "/" .. r .. "/events", ".json")) do trim.print_refs(band.read(rooms_dir .. "/" .. r .. "/events/" .. f) or "", nil, still) end
+    end
+  end
+  local media = sync.room_dir(cfg, song, room) .. "/media"
+  reaper.RecursiveCreateDirectory(archive .. "/media", 0)
+  for name in pairs(cand) do
+    if not still[name] then
+      for _, ext in ipairs({ ".flac", ".opus" }) do
+        local from, to = media .. "/" .. name .. ext, archive .. "/media/" .. name .. ext
+        if reaper.file_exists(from) and (os.rename(from, to) or (pcall(band.copy_atomic, from, to) and reaper.file_exists(to) and os.remove(from))) then
+          moved[#moved + 1] = name .. ext
+        end
+      end
+    end
+  end
+  table.sort(moved)
+  return moved
+end
+
 -- Trim one room now. Returns how many went. `days`: how old a change has to be (trim.DAYS).
 function trim.run(cfg, song, room, days)
   days = days or trim.DAYS
@@ -119,11 +161,14 @@ function trim.run(cfg, song, room, days)
     -- (another drive: copied, then the original removed once the copy is there. copy_atomic returns nothing, so the original always stayed)
     if os.rename(from, to) or (pcall(band.copy_atomic, from, to) and reaper.file_exists(to) and os.remove(from)) then n, took[#took + 1] = n + 1, id end
   end
+  local prints_gone = trim.prints(cfg, song, room, evs, took, archive)
   -- what went, for the band: the Google Drive copy still has these, and would bring them back (lib/drive.lua)
   if #took > 0 then
     local list = dir:gsub("/events$", "/trimmed")
     reaper.RecursiveCreateDirectory(list, 0)
-    band.write_json(list .. "/" .. cfg.user:gsub("[^%w%-_]", "_") .. "-" .. os.date("!%Y%m%d-%H%M%S") .. ".json", took)
+    local stamp = cfg.user:gsub("[^%w%-_]", "_") .. "-" .. os.date("!%Y%m%d-%H%M%S")
+    band.write_json(list .. "/" .. stamp .. ".json", took)
+    if #prints_gone > 0 then band.write_json(list .. "/" .. stamp .. "-media.json", { media = prints_gone }) end
   end
   return n
 end

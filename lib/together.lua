@@ -41,7 +41,12 @@ end
 local offset, last_sec
 function together.tick()
   local s = os.time()
-  if last_sec and s ~= last_sec then offset = s - reaper.time_precise() end
+  if last_sec and s ~= last_sec then
+    -- (each look comes a little after the second ticked over, so it reads a little low and the highest is nearest: one late tick (REAPER busy
+    -- for half a second) put every start that far out until the next second. A clock set back or forward starts it again. Review, 0.58.92)
+    local o = s - reaper.time_precise()
+    if not offset or o > offset or offset - o > 1 then offset = o end
+  end
   last_sec = s
 end
 function together.now()

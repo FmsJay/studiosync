@@ -403,8 +403,9 @@ end
 -- Actions run as REAPER actions (so they see their own action context), registered on first use.
 local ids = {}
 local function action(name)
-  ids[name] = ids[name] or reaper.AddRemoveReaScript(true, 0, dir .. "/StudioSync - " .. name .. ".lua", true)
-  if ids[name] > 0 then reaper.Main_OnCommand(ids[name], 0) end
+  if not ids[name] or ids[name] == 0 then ids[name] = reaper.AddRemoveReaScript(true, 0, dir .. "/StudioSync - " .. name .. ".lua", true) end
+  if ids[name] > 0 then reaper.Main_OnCommand(ids[name], 0)
+  else band.log("couldn't register 'StudioSync - " .. name .. "' as an action (is the Scripts folder read-only?)") end -- (it did nothing, silently. 0.58.92)
 end
 
 local proj, b, view, can, who, points, last, err = nil, nil, nil, nil, nil, {}, 0, nil
@@ -2290,6 +2291,8 @@ local function frame_app()
   ImGui.SetNextWindowSizeConstraints(ctx, 0, 0, 100000, (wide or wh < 440) and (ImGui.GetFrameHeightWithSpacing(ctx) * 2 + 2) or wh * 0.25)
   local bars_open = ImGui.BeginChild(ctx, "bars", 0, 0, ImGui.ChildFlags_AutoResizeY)
   if bars_open then ImGui.Indent(ctx, 16) end
+  -- (they read files bandmates write: one malformed file threw inside this child, and End then found it open and the whole panel died. Review, 0.58.92)
+  local bars_ok, bars_err = pcall(function()
   tools.removed_bar(ctx, ImGui)
   ui.sync_problem()
   require("leave").draw(ctx, ImGui)
@@ -2344,7 +2347,9 @@ local function frame_app()
     band.log(tostring(require("mirror").use_mine(proj, cfg, b.song, b.room, mine, { can = can, mode = who and who.mode,
       local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1" })))
   end, function(name) return can(cfg.user, name) end, b and function(name) claim({ name }, {}) end)
+  end)
   if bars_open then ImGui.Unindent(ctx, 16); ImGui.EndChild(ctx) end
+  if not bars_ok and err ~= tostring(bars_err) then err = tostring(bars_err); reaper.ShowConsoleMsg("StudioSync panel: " .. err .. "\n") end
   local _, bars_h = ImGui.GetItemRectSize(ctx)
   if bars_h < 6 then ImGui.SetCursorPosY(ctx, bars_at) end -- (nothing in them: no gap. An empty child is still 4 px tall, and 8 more of spacing)
   ui.asked_page()

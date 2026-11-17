@@ -416,7 +416,7 @@ local function loop()
       end
       ImGui.SetItemTooltip(ctx, "Take away your last drawing (everyone's copy goes too).")
       ImGui.SameLine(ctx, 0, 24)
-      if button("Clear mine") then
+      if button("Clear mine") and reaper.MB("Take away every drawing you made in this room, for everyone? This can't be undone.", "StudioSync", 4) == 6 then
         for _, s in ipairs(load(b)) do if s.user == cfg.user then os.remove(s.file) end end
         cache_at, stroke = -math.huge, nil
       end

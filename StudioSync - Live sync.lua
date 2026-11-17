@@ -126,7 +126,8 @@ toggle(1)
 -- be closed hard), only when something changed since the last one.
 local recall = require("recall")
 local function event_count() return #band.files(sync.room_dir(cfg, b.song, b.room) .. "/events", ".json") end
-local ended_at_n = event_count()
+local ended_at_n = BANDSYNC_ENDED_AT or event_count() -- (after an update's reload, the count the session had: no end-of-session save was made. 0.58.92)
+BANDSYNC_ENDED_AT = nil
 local quiet = { n = ended_at_n, since = reaper.time_precise(), checked = 0 }
 local function end_of_session(why)
   local n = event_count()
@@ -144,7 +145,8 @@ local function end_of_session(why)
   -- history older than 60 days that nothing needs (lib/trim.lua): the room's driver trims it, at most once a day,
   -- right after this kept version is saved
   local key = "trimmed " .. b.song .. "/" .. b.room
-  if sync.driver(cfg, b.song, b.room, s0) == cfg.user and reaper.GetExtState(band.SECTION, key) ~= os.date("!%Y-%m-%d") then
+  -- (in 20 quiet minutes only: it reads every change the room has, and on the way out REAPER hung on closing. Review, 0.58.92)
+  if why:find("20 minutes", 1, true) and sync.driver(cfg, b.song, b.room, s0) == cfg.user and reaper.GetExtState(band.SECTION, key) ~= os.date("!%Y-%m-%d") then
     reaper.SetExtState(band.SECTION, key, os.date("!%Y-%m-%d"), true)
     local ok, gone = pcall(require("trim").run, cfg, b.song, b.room)
     if ok and gone > 0 then band.log(string.format("trimmed %d change(s) older than 60 days that no saved version needs (kept in 'StudioSync history archive')", gone))
@@ -153,6 +155,7 @@ local function end_of_session(why)
 end
 local reloaded -- this instance handed over to the updated code (which saves the end of session itself)
 reaper.atexit(function()
+  if click and reaper.GetToggleCommandStateEx(0, 40364) == 1 then reaper.Main_OnCommand(40364, 0) end -- (stopped mid count-in: the click left on. 0.58.92)
   if not reloaded then pcall(end_of_session, "Live sync stopped") end
   toggle(0)
 end)
@@ -423,12 +426,21 @@ local function poll()
   -- machines are on it) is let in at once; with several bands, never on its own. The rest ask in the panel (tools.join_requests).
   if host and #band.bands() <= 1 and require("groups").may_manage(cfg.root, cfg.user) then
     local services = require("services")
+    local removal = require("removal")
     for _, d in ipairs(services.pending_devices()) do
-      if services.on_tailnet(d.address) and not joined[d.id] then
-        joined[d.id] = true
-        local ok, why = services.add_device(d.id, d.name, band.info(cfg.root).id)
-        band.log(ok and string.format("'%s' (%s) joined the studio folder: it asked over the studio's Tailscale", d.name, d.id:sub(1, 7))
-          or ("couldn't add '" .. d.name .. "': " .. tostring(why)))
+      if services.on_tailnet(d.address) and joined[d.id] ~= true and now - (joined[d.id] or -math.huge) > 60 then
+        -- (never someone taken out, nor anyone while a guest invitation is open: a guest is on the studio's Tailscale too and was let in here
+        -- as a full member, with no end and no project list, and someone removed came straight back. Those ask in the panel. Review, 0.58.92)
+        local out = removal.who_was(cfg.root, d.id)
+        if out or removal.invite_for(removal.invites(cfg.root), os.time()) then
+          joined[d.id] = true
+          band.log(string.format("'%s' (%s) is asking to join: let them in from the panel%s", d.name, d.id:sub(1, 7), out and (" (" .. out .. " was taken out)") or ""))
+        else
+          local ok, why = services.add_device(d.id, d.name, band.info(cfg.root).id)
+          joined[d.id] = ok or now -- (a failed add is tried again in a minute, not never)
+          band.log(ok and string.format("'%s' (%s) joined the studio folder: it asked over the studio's Tailscale", d.name, d.id:sub(1, 7))
+            or ("couldn't add '" .. d.name .. "': " .. tostring(why)))
+        end
       end
     end
   end
@@ -600,9 +612,9 @@ local function quick_transport()
     if not f then break end
     i = i + 1
     if not seen_ev[f] then
-      seen_ev[f] = true
-      if f:sub(-5) == ".json" and not sync.is_mine(f, cfg.user) then
+      if f:sub(-5) ~= ".json" or sync.is_mine(f, cfg.user) then seen_ev[f] = true else
         local ev = band.read_json(dir .. "/" .. f)
+        if ev then seen_ev[f] = true end -- (one caught mid-write is read again next time, not skipped: review, 0.58.92)
         if ev and (ev.type == "start" or ev.type == "stop") and not fired[ev.id] and together.now() - (ev.at or 0) < 30 then found = ev end
       end
     end
@@ -702,16 +714,18 @@ local function tick_body() -- returns true to keep going
     if not recording then together_take = nil end -- (a take started together that has since stopped)
     local front = reaper.EnumProjects(-1)
     local busy_elsewhere = transport.type == "start" and transport.rec and front ~= proj and reaper.GetPlayStateEx(front) ~= 0
+    -- (asked once a pass: reached() counts readings, and asked twice in one pass a single glitch counted as two. Review, 0.58.92)
+    local due = tnow >= fire or reached(transport, theirs)
     if tnow - fire > 30 then -- arrived long after the fact (offline, sync stalled): don't start a song out of nowhere
       band.log(string.format("missed a %s from %s (%.0f s ago)", transport.type, tostring(transport.user), tnow - fire))
       transport = nil
-    elseif (tnow >= fire or reached(transport, theirs)) and theirs and not transport.remote and ((recording and not together_take) or busy_elsewhere) then
+    elseif due and theirs and not transport.remote and ((recording and not together_take) or busy_elsewhere) then
       band.log(string.format("%s %s together, but %s: left as it is", tostring(transport.user or transport.lead), transport.type == "stop" and "stopped" or "started",
         recording and "you're recording here" or "another tab is playing here"))
       if transport.id then fired[transport.id] = true end
       reaper.DeleteExtState(band.SECTION, "together_at " .. key, false)
       transport = nil
-    elseif tnow >= fire or reached(transport, theirs) then -- a follower stops where the leader stopped
+    elseif due then -- a follower stops where the leader stopped
       if transport.type == "stop" then
         local at_pos = reaper.GetPlayPosition2Ex(proj)
         reaper.OnStopButtonEx(proj)
@@ -794,10 +808,14 @@ local function tick_body() -- returns true to keep going
     recording = true
   elseif recording then
     recording, stopped_at = false, reaper.time_precise()
+    together_take = nil -- (the take started together is over: a redo of your own isn't someone else's to stop. Review, 0.58.92)
     band.try("alerts.send", require("alerts").send, cfg, "take", "StudioSync: " .. b.song, cfg.user .. " just recorded something in " .. b.song) -- (phone alerts, if the studio has them)
     band.try("api.event", require("api").event, "take", { song = b.song, room = b.room })
   end
   local now = reaper.time_precise()
+  -- (a long take: the 15 s status write is in poll, which waits while recording, so after 45 s the others read you as gone and took full
+  -- control mid-take. Review, 0.58.92)
+  if recording and status_info and now - last_status > 15 then last_status = now; pcall(sync.write_status, proj, cfg, b.song, b.room, status_info) end
   lap("transport")
   -- Real time mode: only what's armed feeds SonoBus (lib/live.lua rt_sends), checked about once a second
   if now - rt_at > 1 then
@@ -873,7 +891,7 @@ tick = function()
     reloaded = true
     reaper.DeleteExtState(band.SECTION, "live " .. key, false)
     for _, f in ipairs(band.files(dir .. "/lib", ".lua")) do package.loaded[f:sub(1, -5)] = nil end
-    BANDSYNC_LIVE_PROJ = proj
+    BANDSYNC_LIVE_PROJ, BANDSYNC_ENDED_AT = proj, ended_at_n
     return dofile(dir .. "/StudioSync - Live sync.lua")
   end
   local t0 = reaper.time_precise()

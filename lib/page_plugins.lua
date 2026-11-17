@@ -328,8 +328,8 @@ function pp.draw(ctx, ImGui, proj, cfg)
       if t then
         ImGui.SameLine(ctx)
         if ImGui.SmallButton(ctx, "x") and reaper.MB("Remove the studio's stand-in for " .. (u.name:gsub("^%w+:%s*", "")) .. "?", "StudioSync", 4) == 6 then
-          os.remove(tfile(cfg, u.key))
-          require("band").log("removed the stand-in for " .. (u.name:gsub("^%w+:%s*", "")))
+          local gone, why = os.remove(tfile(cfg, u.key))
+          require("band").log(gone and ("removed the stand-in for " .. (u.name:gsub("^%w+:%s*", ""))) or ("couldn't remove the stand-in: " .. tostring(why)))
         end
         ImGui.SetItemTooltip(ctx, "Remove this stand-in (set by " .. tostring(t.by) .. ")")
       end

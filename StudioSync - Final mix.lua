@@ -36,6 +36,8 @@ reaper.GetSetProjectInfo(proj, "RENDER_SETTINGS", 0, true) -- the master mix
 reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 1, true) -- the entire project
 reaper.GetSetProjectInfo(proj, "RENDER_ADDTOPROJ", 0, true)
 for k, v in pairs(band.LIMIT) do reaper.GetSetProjectInfo(proj, k, v, true) end -- (over full scale it's limited, not clipped: lib/band.lua)
+local before = {} -- (what's there already: a cancelled render picked up an earlier one of the same minute. Review, 0.58.92)
+for i = 0, math.huge do local f = reaper.EnumerateFiles(out, i); if not f then break end; before[f] = true end
 reaper.Main_OnCommand(42230, 0) -- File: Render project, using the most recent render settings, auto-close render dialog
 
 -- (the render blocks: Live sync's loop hasn't run since the mutes, so they never reach the band)
@@ -48,7 +50,7 @@ local made
 for i = 0, math.huge do
   local f = reaper.EnumerateFiles(out, i)
   if not f then break end
-  if f:sub(1, #name) == name then made = f end
+  if f:sub(1, #name) == name and not before[f] then made = f end
 end
 -- (it clipped in every section, and only a measurement showed it: Mac and laptop, 0.42.7. And each machine's master is its own.)
 -- (from the file: RENDER_STATS opens a box asking to enable a preference where it's off, and a fixed-point file holds no peak over 0)

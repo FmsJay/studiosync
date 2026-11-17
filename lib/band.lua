@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.58.91", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.58.92", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -204,6 +204,14 @@ function band.read(path)
   return s
 end
 
+-- Remove a file and a leftover of an interrupted rename beside it (band.read puts that back: a removal mark or a guest list deleted on purpose
+-- came back from it. Review, 0.58.92)
+function band.remove(path)
+  local dir, name = path:match("^(.*)/([^/]+)$")
+  if dir then os.remove(dir .. "/.syncthing." .. name .. ".old.tmp") end
+  return os.remove(path)
+end
+
 function band.size(path)
   local f = io.open(path, "rb")
   if not f then return nil end
@@ -355,18 +363,23 @@ end
 function band.rename(root, old, new)
   local tag = function(u) return ((u or "x"):gsub("[^%w]", "_")):upper() end
   local file = function(u) return (u:gsub("[^%w%-_ ]", "")) .. ".json" end
-  local map = band.read_json(root .. "/_band/names.json") or {}
-  for k, v in pairs(map) do if v == old then map[k] = new end end -- (renamed before: those names lead here too)
-  map[tag(old)] = new
-  map[tag(new)] = nil
-  reaper.RecursiveCreateDirectory(root .. "/_band", 0)
-  band.write_json(root .. "/_band/names.json", map)
+  local npath = root .. "/_band/names.json"
+  local map = band.read_json(npath)
+  if map or not reaper.file_exists(npath) then -- (half-synced: left as it is, not written back empty. Review, 0.58.92)
+    map = map or {}
+    for k, v in pairs(map) do if v == old then map[k] = new end end -- (renamed before: those names lead here too)
+    map[tag(old)] = new
+    map[tag(new)] = nil
+    reaper.RecursiveCreateDirectory(root .. "/_band", 0)
+    band.write_json(npath, map)
+  end
   names_at[root] = nil
   local j = band.read_json(root .. "/_band/band.json") -- (who runs the group: lib/groups.lua)
-  if type(j) == "table" and (j.owner == old or type(j.admins) == "table") then
-    if j.owner == old then j.owner = new end
-    for i, a in ipairs(type(j.admins) == "table" and j.admins or {}) do if a == old then j.admins[i] = new end end
-    band.write_json(root .. "/_band/band.json", j)
+  if type(j) == "table" then -- (only when a role named them: written by anyone renaming, a newly invited computer set the roles aside. Review, 0.58.92)
+    local changed = j.owner == old
+    if changed then j.owner = new end
+    for i, a in ipairs(type(j.admins) == "table" and j.admins or {}) do if a == old then j.admins[i] = new; changed = true end end
+    if changed then band.write_json(root .. "/_band/band.json", j) end
   end
   -- (this computer's files under the old name: its devices file and plug-in list are written again under the new one at the next look, and the
   -- old ones stayed, a second member with the old name on every computer: James, 0.58.81. A colour picked moves over.)

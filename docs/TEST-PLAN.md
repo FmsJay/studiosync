@@ -334,3 +334,10 @@ the button on, says so once, and holds the band's setting so it isn't sent back.
 - An older kind of change refused here waits a minute from when it arrived, then lands, as object changes do.
 - History archive: across drives the original is removed once the copy is there; a shared folder at a drive's top archives into
   StudioSync's own folder. An older ReaImGui gets a message instead of REAPER's error box (band.imgui).
+
+0.58.92 (the second review, docs/REVIEW-2026-11-17.md):
+- Pure: test_review92 (prints a change names, in one room or any, raw or decoded; any run of empty takes; the newest tempo map wins, ours
+  included). test_installer: a --home's quotes are escaped inside PowerShell's outer ones.
+- REAPER suites: the full run (suites52.sh) after the fixes. Not covered by a suite: Live sync's heartbeat during a take, the stop-reading
+  count, together_take; Tailscale auto-admit; the guest list failing closed; the Syncthing back-off; Drive; the print archive in trim.run;
+  Prepare's backup of an unsaved project; the local-copy re-check. Each is small and read against the code; first real use is their test.

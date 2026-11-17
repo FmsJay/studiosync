@@ -22,7 +22,7 @@ function access.set(root, device, songs, by)
   access.forget()
 end
 function access.clear(root, device)
-  os.remove(dir(root) .. "/" .. file_name(device))
+  band.remove(dir(root) .. "/" .. file_name(device))
   access.forget()
 end
 
@@ -32,8 +32,10 @@ function access.get(root, device)
   local v = band.read_json(root .. "/" .. rel)
   if not (type(v) == "table" and v.device == device and type(v.songs) == "table") then return nil end
   local okt, ok = pcall(require("trust").from_manager_file, root, rel)
-  if okt and ok == false then return nil end
-  if okt and ok == nil and v.by ~= reaper.GetExtState(band.SECTION, "user") then return nil end -- (not looked at by Syncthing yet: only this computer's own)
+  -- (a list that can't be checked yet, or wasn't written by someone in charge, shows nothing rather than everything: a guest saw every project
+  -- while Syncthing was slow to answer, and what came then stayed. Review, 0.58.92)
+  if okt and ok == false then return {} end
+  if okt and ok == nil and v.by ~= reaper.GetExtState(band.SECTION, "user") then return {} end -- (not looked at by Syncthing yet: only this computer's own)
   local set = {}
   for _, s in ipairs(v.songs) do if type(s) == "string" then set[s] = true end end
   return set
@@ -48,10 +50,20 @@ function access.mine(root)
   if c and now - c.at < 5 then return c.set end
   local set
   local me = require("services").my_device_id()
+  local key = "guest list " .. root
   if me then
-    local guest = false
-    for _, g in ipairs(require("removal").guests(root, os.time())) do guest = guest or g.device == me end
-    if guest then set = access.get(root, me) end
+    -- (a list for this computer counts whether or not its guest mark can be checked yet: a new guest's couldn't, and they saw everything.
+    -- A guest let in as a member has theirs cleared: lib/tools.lua let_in. Review, 0.58.92)
+    set = access.get(root, me)
+    local list = {}
+    for s in pairs(set or {}) do list[#list + 1] = s end
+    table.sort(list)
+    local keep = set and band.json_encode(list) or ""
+    if reaper.GetExtState(band.SECTION, key) ~= keep then reaper.SetExtState(band.SECTION, key, keep, true) end
+  else
+    -- (Syncthing not answering yet: the last list this computer had. Started before Syncthing, a guest saw everything)
+    local was = band.json_decode(reaper.GetExtState(band.SECTION, key))
+    if type(was) == "table" then set = {}; for _, s in ipairs(was) do if type(s) == "string" then set[s] = true end end end
   end
   cache[root] = { at = now, set = set }
   return set
