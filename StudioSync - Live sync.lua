@@ -40,6 +40,7 @@ local b = band.binding(proj)
 if not b then return band.msg("This project isn't shared yet: share it, or open it from Projects in the StudioSync panel.") end
 cfg = band.for_tab(cfg, b) -- (this tab's own band, whichever band this computer is working in now)
 require("sync").current_song = b.song -- (whose notices these are: a tab's own)
+band.WHO = "live " .. b.song -- (which script a line in the log file came from)
 if not b.root then reaper.SetProjExtState(proj, band.SECTION, "root", cfg.root); b.root = cfg.root end -- (a tab from before bands: its band, from now on)
 -- one Live sync per song tab: triggering this action again while it runs does nothing (no "terminate instances?"
 -- box); another tab's runs from a launcher action of its own (band.start_live), and starting it again for this tab
@@ -868,9 +869,10 @@ tick = function()
     end
   end
   lap("colours, open fx")
-  local ok, go = pcall(tick_body)
+  local ok, go = xpcall(tick_body, debug.traceback)
   if not ok then
-    if reaper.time_precise() - said_at > 30 then said_at = reaper.time_precise(); band.log("live sync error: " .. tostring(go)) end
+    band.log_error("live sync", go) -- (every time, with where, in the log file: the Console says it once in 30 s)
+    if reaper.time_precise() - said_at > 30 then said_at = reaper.time_precise(); band.log("live sync error: " .. tostring(go):match("^[^\n]*")) end
     go = true
   end
   local took = reaper.time_precise() - t0

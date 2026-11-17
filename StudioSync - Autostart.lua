@@ -7,6 +7,7 @@
 local dir = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]")
 package.path = dir .. "/lib/?.lua;" .. package.path
 local band = require("band")
+band.WHO = "autostart" -- (which script a line in the log file came from)
 
 do -- the Actions list as it should be for this version: an update through the shared folder brings new scripts, which REAPER doesn't
   -- know until they're registered (laptop, 2026-10-31: the radial menu wasn't there); and only what opens StudioSync, unless you asked for
@@ -51,7 +52,10 @@ end
 local st_at, st_up = -math.huge, true
 local BEHIND, loop_began = 8, reaper.time_precise()
 local held_until = -math.huge -- (after REAPER held every script, Live sync's beat is old too: it isn't stopped, it's catching up)
-local function loop()
+local loop
+-- (an error stops it, as ever, but first goes to the log file with where it happened. 0.58.86)
+local function guarded(fn) return function() local ok, err = xpcall(fn, debug.traceback); if not ok then band.log_error("autostart", err); error(err, 0) end end end
+local function loop_body()
   if reaper.time_precise() - at < 2 then return reaper.defer(loop) end -- every 2 s is plenty
   -- (a gap here means a box held all of REAPER, this too: a Record Warning left two minutes, and every Live sync's beat was old. Restarted then,
   -- each replaced one saved a kept "end of session" in the middle of a session. Mac, 0.58.45. So a look after a gap waits half a minute)
@@ -171,4 +175,5 @@ local function loop()
   end
   say_problem(problem)
 end
+loop = guarded(loop_body)
 reaper.defer(loop)

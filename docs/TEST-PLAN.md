@@ -265,3 +265,10 @@ the same item: its author sends the pick, anyone else keeps theirs. Takes becomi
 longer removes a piece that plays an empty take on purpose (with real takes in it). Suite take_comps: what plays at every moment, before
 and after, on a plain track, empty takes, a track in lanes, mirror apply and Prepare's lanes. Prints rendered in front hold the screen
 still (no parts flashing selected one after another). "SonoBus-only singer" is "SonoBus Guest". The Voicemeeter Health row is gone.
+
+0.58.86: a log on disk as it goes: every Console line and every error with its traceback in <StudioSync home>/logs/studiosync-YYYY-MM-DD.log
+(14 days kept), each line naming its script (panel, live <song>, autostart); the panel and Autostart write their error before REAPER's
+box, Live sync every error (the Console still says it once in 30 s); the Console starts from today's file after a restart; Console > Log files
+opens the folder. The background print renderer keeps trying until 5 fail with none done (was 2), says how it's going under Settings >
+Options, and Health shows a row with "Try in the background again" once it gives up. Nostalgia's Track 8 and 10 comps rebuilt from the
+"before StudioSync" copy (1168 points checked against it).

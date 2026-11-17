@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.58.85", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.58.86", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -101,20 +101,69 @@ function band.start_live(dir)
   end
   return false
 end
--- What StudioSync did, for the panel's Activity list (the last 80 lines, this REAPER session). It no longer opens the
+-- What StudioSync did, for the panel's Activity list (the last 80 lines). It no longer opens the
 -- ReaScript console, which popped up in front on every send and read like an error (Mac, 2026-10-28). Nor does it copy
 -- a line there when the console is open: finding that out searched every window, 0.38 s a line, which froze REAPER on
 -- every change the band sent (PC, 0.42.2). Setup > Console shows them.
-band.LOG_KEY, band.LOG_MAX = "activity", 80
+-- And on disk, as it goes (James, 0.58.86: "make sure logs/console and everything is saved as we go for debugging"): every line, and
+-- every error with where it happened, in <StudioSync home>/logs/studiosync-YYYY-MM-DD.log, a file a day kept LOG_DAYS days, each line
+-- saying which script wrote it (band.WHO). The Console starts from today's file after a restart.
+band.LOG_KEY, band.LOG_MAX, band.LOG_DAYS = "activity", 80, 14
+band.WHO = "script" -- (each script says what it is: "panel", "live <song>", "autostart")
+function band.log_dir() return band.home() .. "/logs" end
+local log_ready
+-- Log files older than `days` before `today` (a time), by the date in their names. Pure.
+function band.old_logs(names, today, days)
+  local out = {}
+  for _, n in ipairs(names) do
+    local y, m, d = n:match("^studiosync%-(%d%d%d%d)%-(%d%d)%-(%d%d)%.log$")
+    if y and today - os.time({ year = tonumber(y), month = tonumber(m), day = tonumber(d), hour = 12 }) > days * 86400 then out[#out + 1] = n end
+  end
+  return out
+end
+function band.log_file(text)
+  local dir = band.log_dir()
+  if not log_ready then
+    log_ready = true
+    reaper.RecursiveCreateDirectory(dir, 0)
+    for _, n in ipairs(band.old_logs(band.files(dir, ".log"), os.time(), band.LOG_DAYS)) do os.remove(dir .. "/" .. n) end
+  end
+  local f = io.open(dir .. "/studiosync-" .. os.date("%Y-%m-%d") .. ".log", "a")
+  if not f then return end
+  f:write(os.date("%H:%M:%S ") .. "[" .. tostring(band.WHO) .. "] " .. (tostring(text):gsub("\r?\n", "\n    ")) .. "\n")
+  f:close()
+end
+-- An error and where it happened (a traceback): to the file in full, to the Console as one line.
+function band.log_error(where, err)
+  band.log_file("ERROR in " .. where .. ": " .. tostring(err))
+end
 function band.log(text)
   local lines = {}
   for l in reaper.GetExtState(band.SECTION, band.LOG_KEY):gmatch("[^\n]+") do lines[#lines + 1] = l end
   lines[#lines + 1] = os.date("%H:%M ") .. tostring(text):gsub("\n", " ")
   while #lines > band.LOG_MAX do table.remove(lines, 1) end
   reaper.SetExtState(band.SECTION, band.LOG_KEY, table.concat(lines, "\n"), false)
+  pcall(band.log_file, text)
 end
--- The Activity lines, newest first.
+-- Lines from a log file, as the Console shows them ("HH:MM text"), the last `n`. Continuation lines (a traceback) are left out. Pure.
+function band.console_lines(text, n)
+  local out = {}
+  for l in (text or ""):gmatch("[^\n]+") do
+    local hm, rest = l:match("^(%d%d:%d%d):%d%d %[[^%]]*%] (.*)$")
+    if hm then out[#out + 1] = hm .. " " .. rest end
+  end
+  while #out > n do table.remove(out, 1) end
+  return out
+end
+-- The Activity lines, newest first. After a restart (nothing this session yet), today's file's last lines.
+local activity_loaded
 function band.activity()
+  if not activity_loaded and reaper.GetExtState(band.SECTION, band.LOG_KEY) == "" then
+    activity_loaded = true
+    local text = band.read(band.log_dir() .. "/studiosync-" .. os.date("%Y-%m-%d") .. ".log")
+    local back = band.console_lines(text, band.LOG_MAX)
+    if #back > 0 then reaper.SetExtState(band.SECTION, band.LOG_KEY, table.concat(back, "\n"), false) end
+  end
   local lines = {}
   for l in reaper.GetExtState(band.SECTION, band.LOG_KEY):gmatch("[^\n]+") do table.insert(lines, 1, l) end
   return lines

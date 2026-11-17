@@ -7,7 +7,9 @@
 -- doesn't go through switched offline, so only what it needs loads.
 -- Costs: the second REAPER writes reaper.ini when it quits (as it read it when it started) and puts the copy in the
 -- recent-projects list; this REAPER writes its own over both when it quits. Where background renders don't work
--- (two failures, none done), prints render in front again for the rest of the session.
+-- (GIVE_UP failures, none done: it was two, James 0.58.86), prints render in front again, and the panel says so (Health, and
+-- Settings beside the setting) with a button to try the background again (ExtState "bg render retry"). Live sync publishes how it's
+-- going in ExtState "bg render state": { failed, done, why, gave_up }.
 local band = require("band")
 local bg = {}
 
@@ -19,6 +21,13 @@ bg.SPACING = 0.5 -- seconds between starting them
 local last_start, cancelled, ini_slot = -math.huge, 0, 0
 local jobs = {} -- name -> { dir, started, sizes, at }
 local done, failed = 0, 0
+bg.GIVE_UP = 5
+local retry_seen
+local function publish(why)
+  local st = band.json_decode(reaper.GetExtState(band.SECTION, "bg render state")) or {}
+  reaper.SetExtState(band.SECTION, "bg render state", band.json_encode({ failed = failed, done = done, why = why or st.why,
+    gave_up = (failed >= bg.GIVE_UP and done == 0) or nil, at = os.time() }), false)
+end
 
 -- The Mac's helpers (lib/mac, built by tools/mac/build.sh, shipped by ReaPack to Macs only): the folder, or nil.
 -- A second REAPER on a Mac took the keyboard for ~0.7 s and showed its windows, and there's no hidden desktop to put it
@@ -36,7 +45,12 @@ function bg.on()
   if set == "off" or (not bg.default_on() and set ~= "on") then return false end
   -- (Linux too, when switched on: there it ran nowhere, Setup's tick box did nothing, and the binary is lowercase `reaper`. Off by default
   -- there, as on a Mac without the helpers: nothing keeps the second REAPER's window out of sight. Linux VM, 0.58.77)
-  return not (failed >= 2 and done == 0)
+  local r = reaper.GetExtState(band.SECTION, "bg render retry") -- (the panel's "Try in the background again")
+  if r ~= "" and r ~= retry_seen then
+    retry_seen = r
+    if failed > 0 then failed = 0; publish("trying again"); band.log("prints: trying the background renderer again") end
+  end
+  return not (failed >= bg.GIVE_UP and done == 0)
 end
 
 -- The copy, ready for the second REAPER: the plug-ins of every track not in `keep` (REAPER track GUIDs) and the
@@ -407,7 +421,10 @@ local function timed_out(key)
   drop(key)
   if never then
     failed = failed + 1
-    band.log("a print stopped in the background before it finished: it renders here instead" .. ((failed >= 2 and done == 0) and " (and so will the rest this session)" or ""))
+    local why = (band.read(j.dir .. "/pid.txt") or ""):match("^failed") and "the second REAPER didn't start" or "the second REAPER quit without a print"
+    publish(why)
+    band.log("a print stopped in the background before it finished (" .. why .. "): it renders here instead" ..
+      ((failed >= bg.GIVE_UP and done == 0) and (" (and so will the rest, after " .. failed .. " tries: Settings > Options can try the background again)") or (" (try " .. failed .. " of " .. bg.GIVE_UP .. ")")))
     return "failed"
   end
   bg.stuck[j.name] = true
@@ -460,7 +477,7 @@ function bg.claim(key, name, out)
     if (moved or reaper.file_exists(to)) and ext == "flac" then flac = to end
   end
   drop(key)
-  if flac then done = done + 1 end
+  if flac then done = done + 1; if done == 1 then publish() end end
   return flac, not flac and "failed" or nil
 end
 

@@ -5,6 +5,7 @@
 local dir = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]")
 package.path = dir .. "/lib/?.lua;" .. package.path
 local band = require("band")
+band.WHO = "panel" -- (which script a line in the log file came from)
 local sync = require("sync")
 local recall = require("recall")
 local status = require("status")
@@ -1799,6 +1800,10 @@ local function page_setup()
     ImGui.SameLine(ctx)
     if ImGui.SmallButton(ctx, "Copy") then band.copy(table.concat(band.activity(), "\n"), ctx, ImGui) end
     ImGui.SetItemTooltip(ctx, "Copy the whole log, to paste it in a message when something went wrong.")
+    ImGui.SameLine(ctx)
+    if ImGui.SmallButton(ctx, "Log files") then reaper.RecursiveCreateDirectory(band.log_dir(), 0); band.open_url(band.log_dir()) end
+    ImGui.SetItemTooltip(ctx, "The folder with a log file per day (the last " .. band.LOG_DAYS .. " days): everything here, and every error with where it\n" ..
+      "happened, written as it goes, so it's still there after a restart or a crash.")
     if ImGui.BeginChild(ctx, "console", 0, 0, ImGui.ChildFlags_Borders) then
       for _, l in ipairs(band.activity()) do ImGui.TextWrapped(ctx, l) end
       ImGui.EndChild(ctx)
@@ -2633,7 +2638,10 @@ local function pill_window()
 end
 
 local frame_seen
-local function loop()
+local loop
+-- (an error stops the panel, as ever, but first goes to the log file with where it happened: REAPER's own box was all there was. 0.58.86)
+local function guarded(fn) return function() local ok, err = xpcall(fn, debug.traceback); if not ok then band.log_error("the panel", err); error(err, 0) end end end
+local function loop_body()
   require("services").tailscale_sweep_guests()
   if updated() or reload_now then -- reload in place: relaunching itself as an action is ignored (or asks to terminate instances)
     band.log("the panel reloaded for StudioSync " .. tostring(seen_disk))
@@ -2791,6 +2799,7 @@ local function loop()
   banner()
   reaper.SetExtState(band.SECTION, "panel alive", tostring(reaper.time_precise()), false) -- (so Autostart never opens a second one)
   if open then return reaper.defer(loop) end
+  band.log_file("the panel closed")
   if reaper.GetExtState(band.SECTION, "sync problem") == "" then -- (it keeps syncing: Live sync is its own script, one per tab)
     local mx, my = reaper.GetMousePosition()
     local at = reaper.time_precise()
@@ -2802,4 +2811,6 @@ local function loop()
     reaper.defer(clear)
   end
 end
+loop = guarded(loop_body)
+band.log_file("the panel opened (StudioSync " .. band.VERSION .. ", REAPER " .. reaper.GetAppVersion() .. ")")
 reaper.defer(loop)

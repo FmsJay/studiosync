@@ -582,6 +582,22 @@ function prints.options(ctx, ImGui)
   ImGui.SetItemTooltip(ctx, "On: a hidden second REAPER renders each print while you keep working (a few seconds each).\n" ..
     "Off: REAPER renders them in front, holding up the screen for a moment each time." ..
     (default and "" or "\nOff by default here: this computer has no way to keep the second REAPER hidden, so it would take the keyboard for a moment each time."))
+  -- (how it's going, from Live sync: lib/bgrender.lua. Given up, prints render here in front: James, 0.58.86, "it should show")
+  local st = on and prints.bg_state()
+  if st and st.gave_up then
+    ImGui.TextColored(ctx, require("theme").YELLOW, string.format("The background renderer failed %d times (%s), so prints render here, in front.", st.failed or 0, st.why or "no reason given"))
+    if ImGui.SmallButton(ctx, "Try in the background again##bgretry") then prints.bg_retry() end
+    ImGui.SetItemTooltip(ctx, "Starts the hidden second REAPER again for the next print. Each failure is in the log (Console > Log files).")
+  elseif st and (st.failed or 0) > 0 then
+    ImGui.TextDisabled(ctx, string.format("Background renders: %d done, %d failed (%s). It keeps trying until %d fail with none done.", st.done or 0, st.failed, st.why or "?", require("bgrender").GIVE_UP))
+  end
+end
+-- What Live sync's background renderer says (ExtState "bg render state"), or nil.
+function prints.bg_state() return band.json_decode(reaper.GetExtState(band.SECTION, "bg render state")) end
+function prints.bg_retry()
+  reaper.SetExtState(band.SECTION, "bg render retry", tostring(os.time()), false)
+  reaper.DeleteExtState(band.SECTION, "bg render state", false)
+  band.log("prints: the background renderer gets another go with the next print")
 end
 
 -- ---- takes become lanes (0.39) -----------------------------------------------------------------------------------

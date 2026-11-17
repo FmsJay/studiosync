@@ -160,6 +160,14 @@ function H.maint_rows()
         "comes out at %d Hz. Set the interface to %d Hz (Preferences > Audio > Device, or its own control panel) before recording.", dev, want, dev, want) }
     end
   end
+  do -- prints rendering in front: the background renderer gave up (lib/bgrender.lua, 0.58.86)
+    local st = require("prints").bg_state()
+    if st and st.gave_up then
+      rows[#rows + 1] = { "prints in front", false, "yellow", "", string.format("The background renderer failed %d times (%s), so prints render here in front, " ..
+        "holding REAPER for a moment each.", st.failed or 0, st.why or "no reason given"),
+        action = { "Try in the background again", function() require("prints").bg_retry() end, "Starts the hidden second REAPER again for the next print." } }
+    end
+  end
   do -- a call app beside REAPER (lib/callapps.lua)
     local ok, words = pcall(require("callapps").health_words)
     if ok and words then rows[#rows + 1] = { "call app", false, "yellow", "", words } end
