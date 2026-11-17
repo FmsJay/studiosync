@@ -19,7 +19,7 @@ For a band, or for one song with someone: it's the same thing, so name it what i
    [Setup](#setup-each-person-once) if macOS blocks it). When it asks for an invitation, type *s* (you're starting one) and
    give it a name. (Or press Enter and start it later, from the panel.) Already have StudioSync? Click the studio pill at the top of the panel, then **Start a new studio**.
 2. In REAPER, open your project, or a new empty tab: the panel shows **Projects**, with **Share** at the top. It goes through the Prepare checklist first.
-3. On the studio's card or on Home, press **Invite**. It copies a message to send each person: a join code if they already have StudioSync, and a line to paste if they don't.
+3. On the studio's card or on Home, press **Invite a collaborator**. It copies a message to send each person: a join code if they already have StudioSync, and a line to paste if they don't.
 4. When they've run it, your panel shows **Let *them* in**: press it.
 5. Finished? **Close** on its card (click the studio pill) stops it on every computer. Everyone keeps their copy, and its projects stay
    open as ordinary projects.
@@ -197,7 +197,7 @@ By hand:
 4. **Install ReaImGui** (*Extensions > ReaPack > Browse packages*): the panel, and with it the Live and
    Restore pages, needs it.
 5. Optional extras:
-   - **Tailscale** comes with the installers, and everyone signs in to one account. *Play along*, *Jam* and the producer's
+   - **Tailscale** comes with the installers. Everyone in a studio signs in to its Tailscale network (a guest invitation puts a guest on it with no account; each studio can have its own). *Play along*, *Jam* and the producer's
      NINJAM route reach the NINJAM server on the host's machine through it (show the Play/Jam tab in Settings > Advanced),
      and it gets round a router that stops SonoBus (Settings > Advanced > Can't hear each other?).
    - **The Google Drive copy** (optional, recommended) needs **Google Drive for desktop**, each person signed in

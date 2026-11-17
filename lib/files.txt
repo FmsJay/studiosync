@@ -1,4 +1,4 @@
-version 0.58.94
+version 0.58.95
 StudioSync - Autostart.lua	13509
 StudioSync - Claim selected tracks.lua	692
 StudioSync - Draw.lua	26499
@@ -9,7 +9,7 @@ StudioSync - Live sync.lua	64511
 StudioSync - Local mixing.lua	721
 StudioSync - Measure guest delay.lua	4099
 StudioSync - Open session.lua	9029
-StudioSync - Panel.lua	186948
+StudioSync - Panel.lua	187551
 StudioSync - Prepare session.lua	6311
 StudioSync - Publish session.lua	4919
 StudioSync - Radial menu.lua	7711
@@ -43,11 +43,11 @@ lib/live.lua	37469
 lib/livemidi.lua	10723
 lib/localcopy.lua	21723
 lib/midiview.lua	4359
-lib/mirror.lua	216366
+lib/mirror.lua	217371
 lib/mixlayer.lua	9976
 lib/page_chat.lua	22477
-lib/page_groups.lua	34102
-lib/page_health.lua	23242
+lib/page_groups.lua	34157
+lib/page_health.lua	23317
 lib/page_hear.lua	14358
 lib/page_play.lua	19301
 lib/page_plugins.lua	19435
@@ -59,10 +59,10 @@ lib/prep.lua	29831
 lib/presence.lua	13710
 lib/prints.lua	48602
 lib/producer.lua	25734
-lib/recall.lua	23298
+lib/recall.lua	23365
 lib/removal.lua	19892
 lib/rooms.lua	23686
-lib/services.lua	93319
+lib/services.lua	96614
 lib/sessionfile.lua	7035
 lib/setup.lua	7057
 lib/songsync.lua	8463
@@ -71,10 +71,10 @@ lib/stamp.lua	11856
 lib/startup.lua	13764
 lib/status.lua	5633
 lib/suggest.lua	15010
-lib/sync.lua	110137
+lib/sync.lua	110301
 lib/theme.lua	5575
-lib/together.lua	4285
-lib/tools.lua	31714
+lib/together.lua	4589
+lib/tools.lua	32051
 lib/trim.lua	9953
 lib/trust.lua	16280
 lib/undo.lua	7299

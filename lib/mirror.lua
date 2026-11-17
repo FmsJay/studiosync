@@ -1717,6 +1717,14 @@ function mirror.first_diff(a, b)
     end
   end
 end
+-- An item whose newest version is this computer's, from the last two minutes: a track deleted elsewhere may have gone before it arrived there
+-- (a take just recorded and sent), so it's kept here, not lost with the track. Review, 0.58.95
+function mirror.just_made_here(proj, io, now_ms)
+  local order = select(4, mirror.known(proj, io))
+  local h, who = tostring(order or ""):match("^(%d+)|(.*)$")
+  local me = reaper.GetExtState(require("band").SECTION, "user")
+  return h ~= nil and me ~= "" and who == me and (now_ms or require("together").now() * 1000) - tonumber(h) < 120000
+end
 function mirror.apply(proj, ev, media_dir, local_mix)
   if ev.obj == "track" then mirror.order_band[tostring(proj)] = true end
   local kind, oid = ev.obj, ev.oid
@@ -1730,7 +1738,7 @@ function mirror.apply(proj, ev, media_dir, local_mix)
       for i = reaper.CountTrackMediaItems(p) - 1, 0, -1 do
         local it = reaper.GetTrackMediaItem(p, i)
         local io = itm_oid(it)
-        if io == "" or not mirror.known(proj, io) or mirror.unsent[tostring(proj) .. io] then
+        if io == "" or not mirror.known(proj, io) or mirror.unsent[tostring(proj) .. io] or mirror.just_made_here(proj, io) then
           reaper.MoveMediaItemToTrack(it, mirror.keep_track(proj, tname))
           -- (yours now: not the band's item, and nothing waits on it, or the band's delete of it waited for good. 0.58.93)
           reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", true)
@@ -2177,6 +2185,7 @@ local function perm_name(o, by_oid)
 end
 
 mirror.said = mirror.said or {} -- (things said once per session, not every pass)
+mirror.copied = mirror.copied or {} -- proj .. oid .. event id -> a refused edit's copy was made
 mirror.fx_seen = mirror.fx_seen or {} -- oid -> { hash, since }: a plug-in chain goes out once it has settled
 mirror.fx_knobs = mirror.fx_knobs or {} -- oid -> its knobs when it last went out or landed (chains with a restless plug-in)
 mirror.fx_alias = mirror.fx_alias or {} -- chain hash and event id -> the event's hash, if the two are the same bytes (else false)
@@ -2479,7 +2488,10 @@ function mirror.watch(proj, cfg, song, room, opts)
       -- (your edit to someone else's item, refused: a copy of yours first goes to a track of your own, as a new item would. Not when it went to
       -- them as a suggestion: that holds it, and accepted, a copy would be a second part. Only a selected one: what you just edited, not every
       -- part a refused tempo change moved, say. Review, 0.58.91)
-      if o.kind == "item" and why.copy and not why.to and why.text and o.ptr and reaper.ValidatePtr2(proj, o.ptr, "MediaItem*") and reaper.IsMediaItemSelected(o.ptr) then
+      -- (once for that edit: while the band's version waits for its recording the put-back returns, and every pass made another copy. Review, 0.58.95)
+      local copy_key = tostring(proj) .. o.oid .. tostring(evid)
+      if o.kind == "item" and why.copy and not why.to and why.text and not mirror.copied[copy_key] and o.ptr and reaper.ValidatePtr2(proj, o.ptr, "MediaItem*") and reaper.IsMediaItemSelected(o.ptr) then
+        mirror.copied[copy_key] = true
         local got, ch = reaper.GetItemStateChunk(o.ptr, "", false)
         if got then
           local on = select(2, reaper.GetTrackName(reaper.GetMediaItem_Track(o.ptr)))

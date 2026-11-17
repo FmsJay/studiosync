@@ -361,8 +361,8 @@ if yes "$LIVE" && [ -x "$TS" ]; then
   tsst="$("$TS" status --json 2>/dev/null | tr -d '\n ')"
   TS_RUNNING=""; echo "$tsst" | grep -q '"BackendState":"Running"' && TS_RUNNING=1
   if [ -n "${BS_TS_KEY:-}" ]; then # a guest: `login` adds the inviter's network beside any of their own (switch back from Tailscale's menu)
-    if "$TS" login --authkey="$BS_TS_KEY" --timeout=120s >/dev/null 2>&1; then ok "Tailscale joined the studio's network as a guest, for a day"
-    else warn "Tailscale couldn't join with the invitation's key (it works once, for a day): ask for a new invitation."; fi
+    if "$TS" login --authkey="$BS_TS_KEY" --timeout=120s >/dev/null 2>&1; then ok "Tailscale joined the studio's network as a guest, until your invitation ends"
+    else warn "Tailscale couldn't join with the invitation's key (it works once, within 2 days of the invitation): ask for a new invitation."; fi
     TS_TAGGED=1
   elif echo "$tsst" | grep -q '"Tags":\["tag:bandsync"' || { [ -n "$TS_RUNNING" ] && ! echo "$tsst" | grep -q '"KeyExpiry"'; }; then
     ok "Tailscale signed in, and stays signed in"; TS_TAGGED=1 # tagged, or its key expiry was turned off by hand
@@ -378,7 +378,7 @@ if yes "$LIVE" && [ -x "$TS" ]; then
     # misleading "sign-in didn't finish": the wait below takes over instead. Mac review, 0.58.62)
     say "Tailscale needs its system extension allowed first: System Settings > General > Login Items & Extensions (and its VPN configuration)."
   else
-    say "Signing in to Tailscale: a browser page opens; sign in with the studio's account there. (macOS may first ask"
+    say "Signing in to Tailscale: a browser page opens; sign in there (a free account: the one your studio's Tailscale uses, if it has one). (macOS may first ask"
     say "to allow Tailscale's VPN configuration: click Allow.)"
     out="$WORK/ts_up.txt"; : > "$out"
     "$TS" up --advertise-tags=tag:bandsync --timeout=300s >"$out" 2>&1 &
@@ -710,8 +710,8 @@ elif yes "$LIVE" && [ -z "$TS_TAGGED" ]; then
   echo "    Mac > ... > Disable key expiry (otherwise it signs out every few months, maybe right before a session)."
 fi
 if yes "$LIVE" && yes "$HOSTING"; then # the first one's job, once: then bandmates' installers sign their machines in for good
-  echo "  - Tailscale, once for the whole studio (if not done yet): at login.tailscale.com/admin/acls add this line inside the"
-  echo '    policy'"'"'s { }:   "tagOwners": { "tag:bandsync": ["autogroup:member"] },'
+  echo "  - Tailscale, once for the whole studio (if not done yet): in REAPER, StudioSync's panel > Settings > Advanced: add a"
+  echo "    Tailscale access token, then press Set up the tags (it adds the policy line for you)."
   echo "    Then each collaborator's installer signs their machine in as a studio machine that never has to sign in again."
 fi
 if yes "$SOLO" && yes "$HOSTING" && [ -n "${DRIVE_OK:-}" ]; then

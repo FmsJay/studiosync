@@ -406,8 +406,8 @@ if yes "$LIVE" && [ -n "$TS" ]; then
   TS_RUNNING=""; echo "$tsst" | grep -q '"BackendState":"Running"' && TS_RUNNING=1
   out="$WORK/ts.txt"
   if [ -n "${BS_TS_KEY:-}" ]; then # a guest: `login` adds the inviter's network beside any of their own (switch back with tailscale switch)
-    if ts_run "$out" login --authkey="$BS_TS_KEY" --timeout=120s; then ok "Tailscale joined the studio's network as a guest, for a day"
-    else warn "Tailscale couldn't join with the invitation's key (it works once, for a day): ask for a new invitation."; fi
+    if ts_run "$out" login --authkey="$BS_TS_KEY" --timeout=120s; then ok "Tailscale joined the studio's network as a guest, until your invitation ends"
+    else warn "Tailscale couldn't join with the invitation's key (it works once, within 2 days of the invitation): ask for a new invitation."; fi
     TS_TAGGED=1
   elif echo "$tsst" | grep -q '"Tags":\["tag:bandsync"' || { [ -n "$TS_RUNNING" ] && ! echo "$tsst" | grep -q '"KeyExpiry"'; }; then
     ok "Tailscale signed in, and stays signed in"; TS_TAGGED=1 # tagged, or its key expiry was turned off by hand
@@ -418,7 +418,7 @@ if yes "$LIVE" && [ -n "$TS" ]; then
     # (a joiner's songs sync without Tailscale: only Play/Jam and the call need it. Beginner review, 0.58.62)
     TS_TAGGED=1; TS_LATER=1
   else
-    say "Signing in to Tailscale: a browser page opens; sign in with the studio's account there."
+    say "Signing in to Tailscale: a browser page opens; sign in there (a free account: the one your studio's Tailscale uses, if it has one)."
     if ts_run "$out" up --advertise-tags=tag:bandsync --timeout=300s; then ok "Tailscale signed in as a studio machine (it stays signed in)"; TS_TAGGED=1
     elif ! grep -qi 'tag' "$out"; then warn "Tailscale sign-in didn't finish: run  tailscale up  in a terminal and sign in on the page it shows."
     # the refused tag stays in Tailscale's settings and every later sign-in fails on it: clear it, then sign in plainly
@@ -761,8 +761,8 @@ elif yes "$LIVE" && [ -z "$TS_TAGGED" ]; then
   echo "    this computer > ... > Disable key expiry (otherwise it signs out every few months, maybe right before a session)."
 fi
 if yes "$LIVE" && yes "$HOSTING"; then # the first one's job, once: then bandmates' installers sign their machines in for good
-  echo "  - Tailscale, once for the whole studio (if not done yet): at login.tailscale.com/admin/acls add this line inside the"
-  echo '    policy'"'"'s { }:   "tagOwners": { "tag:bandsync": ["autogroup:member"] },'
+  echo "  - Tailscale, once for the whole studio (if not done yet): in REAPER, StudioSync's panel > Settings > Advanced: add a"
+  echo "    Tailscale access token, then press Set up the tags (it adds the policy line for you)."
   echo "    Then each collaborator's installer signs their machine in as a studio machine that never has to sign in again."
 fi
 if yes "$SOLO" && [ -z "$LATER" ]; then

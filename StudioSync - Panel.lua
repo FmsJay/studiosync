@@ -1690,7 +1690,7 @@ local function studio_tailscale_sync()
   end
   -- (setting the studio's network directly, 0.58.94: before, only a guest invitation, private live audio or the listening page set it)
   local here_name, here = services.tailnet_now()
-  if studio_admin() and here and (not t or t.suffix ~= here) then
+  if studio_admin() and here_name and here and (not t or t.suffix ~= here) then
     if ImGui.SmallButton(ctx, "Use " .. here_name .. " for this studio##usenet") then
       local go = not t or reaper.MB("This studio uses the Tailscale network " .. t.name .. " now. Move it to " .. here_name .. "?\n\n" ..
         "Everyone then needs Tailscale signed in to " .. here_name .. " for this studio: Health offers them the switch." ..
@@ -1800,7 +1800,7 @@ function ui.settings_advanced()
       else
         for _, net in ipairs(nets) do
           ImGui.AlignTextToFramePadding(ctx)
-          ImGui.Text(ctx, net == "" and "Tailscale access token saved (from before tokens were kept per network)"
+          ImGui.Text(ctx, net == "" and "Tailscale access token saved (StudioSync checks which network it's for the first time it's used)"
             or ("Tailscale access token for " .. net .. (net == here and " (this computer is on it)" or "")))
           next_to("Forget")
           if ImGui.SmallButton(ctx, "Forget##tstok" .. net) then
@@ -1811,6 +1811,12 @@ function ui.settings_advanced()
         add_button("Add a token for another network")
         next_to("Set up the tags")
         if ImGui.SmallButton(ctx, "Set up the tags") then
+         if services.tailscale_token(here) == "" then
+          local have = {}
+          for _, n in ipairs(services.tailscale_token_nets()) do if n ~= "" then have[#have + 1] = n end end
+          band.msg(here and ("This computer is on " .. here .. ", and there's no access token for it here" .. (#have > 0 and (" (only for " .. table.concat(have, ", ") .. ")") or "") ..
+            ".\n\nSwitch Tailscale to the network your token is for, or add a token for this one.") or "Tailscale isn't on here: turn it on (or sign in) first.")
+         else
           local ok, how = services.tailscale_add_tags(function()
             return reaper.MB("Your Tailscale network lets every computer on it reach every other one, guests included.\n\n" ..
               "StudioSync can change that one rule so guests reach only its file sharing (Syncthing) and jams (NINJAM) on your computers. " ..
@@ -1820,6 +1826,7 @@ function ui.settings_advanced()
             or (how == "limited" or how == "has it") and "Tailscale's policy has StudioSync's tags, and guests reach only its file sharing and jams on your computers"
             or how == "own rules" and "Tailscale's policy has StudioSync's tags. It has rules of its own, so StudioSync left those alone: guests reach whatever they allow"
             or "Tailscale's policy has StudioSync's tags; guests can still reach whatever your policy allows")
+         end
         end
         ImGui.SetItemTooltip(ctx, "Adds the tagOwners lines to the Tailscale network's policy: computers StudioSync's installer signs in then stay signed in,\n" ..
           "and guest invitations put guests on Tailscale too. On Tailscale's starting policy it also offers to limit guests to StudioSync's file sharing and jams.\n" ..

@@ -52,14 +52,17 @@ function together.heartbeat_due(waiting, has_status, now, last) return (waiting 
 
 -- Wall clock with sub-second precision: os.time() only counts whole seconds, so note where reaper.time_precise()
 -- stands when the second ticks over (call tick() often; precise to about one defer cycle after the first tick).
-local offset, last_sec
+local offset, offset_at, last_sec
 function together.tick()
   local s = os.time()
   if last_sec and s ~= last_sec then
     -- (each look comes a little after the second ticked over, so it reads a little low and the highest is nearest: one late tick (REAPER busy
     -- for half a second) put every start that far out until the next second. A clock set back or forward starts it again. Review, 0.58.92)
-    local o = s - reaper.time_precise()
-    if not offset or o > offset or offset - o > 1 then offset = o end
+    -- (the best of the last half minute, not of all time: a wall clock running a little slow, or pulled back under a second, kept an old high
+    -- reading for good, up to a second out by the end of a long session. Review, 0.58.95)
+    local t = reaper.time_precise()
+    local o = s - t
+    if not offset or o > offset or offset - o > 1 or t - (offset_at or t) > 30 then offset, offset_at = o, t end
   end
   last_sec = s
 end

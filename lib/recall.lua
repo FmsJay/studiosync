@@ -314,7 +314,7 @@ function recall.restore_state(proj, cfg, song, room, st, label, saved)
   if st.timeline and st.timeline.tempo and band.json_encode({ st.timeline.tempo, st.timeline.markers or {} }) ~= sync.timeline_sig(proj) then
     band.apply_tempo(proj, st.timeline.tempo)
     band.apply_markers(proj, st.timeline.markers or {})
-    sync.post(cfg, song, room, { type = "timeline", tempo = st.timeline.tempo, markers = st.timeline.markers or {} })
+    sync.post(cfg, song, room, { type = "timeline", tempo = st.timeline.tempo, markers = st.timeline.markers or {} }, proj) -- (ordered after the newest map seen here. Review, 0.58.95)
     sync.setext(proj, band.SECTION, "timeline", sync.timeline_sig(proj))
   end
   for lid, hit in pairs(idx) do -- here now, not in the recall point: delete (it goes to _trash, recoverable)

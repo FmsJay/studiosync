@@ -113,13 +113,13 @@ function H.maint_rows()
       return { "keys", #undo.keys_left(dir) == 0, "yellow", undo.key_name() .. " never rolls back a collaborator's work",
         undo.key_name() .. " can roll back a collaborator's work: it isn't set to StudioSync's Undo yet." }
     end)(),
-    { "tailscale", services.tailscale_up(), "yellow", "Tailscale is on", services.tailscale_installed() and "Tailscale is off or not signed in: open it and turn it on. The NINJAM route needs it." or "Tailscale isn't installed: run StudioSync's installer again, or get it from tailscale.com/download." },
+    { "tailscale", services.tailscale_up(), "yellow", "Tailscale is on", services.tailscale_installed() and "Tailscale is off or not signed in: open it and turn it on. Play along, Jam, private live audio, the listening page and a studio that syncs only through Tailscale need it; nothing else does." or "Tailscale isn't installed: run StudioSync's installer again, or get it from tailscale.com/download." },
   }
   if services.tailscale_up() then
     local stays = services.tailscale_stays()
     rows[#rows + 1] = { "tailscale stays", stays == true, "yellow", "Tailscale stays signed in here", "Tailscale signs this computer out on " .. tostring(stays) .. ": at login.tailscale.com/admin/machines, this computer > ... > Disable key expiry. " ..
-      "So new computers stay signed in by themselves, whoever owns the Tailscale network adds one line at login.tailscale.com/admin/acls.",
-      copy = '"tagOwners": { "tag:bandsync": ["autogroup:member"] },', link = { "Open Tailscale's machines", "https://login.tailscale.com/admin/machines" } }
+      "So new computers stay signed in by themselves, whoever runs the studio's Tailscale network presses Settings > Advanced > Set up the tags (with its access token) once.",
+      link = { "Open Tailscale's machines", "https://login.tailscale.com/admin/machines" } }
     -- (a studio on another of your Tailscale accounts: a computer is on one at a time, so this one's Play along, listening page and private
     -- live audio can't reach the others until it switches)
     local want = require("groups").tailnet(cfg.root)

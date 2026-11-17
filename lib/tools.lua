@@ -136,7 +136,7 @@ local guest_pick = { days = 7, date = "", all = true, songs = {} }
 function tools.guest_invite_button(ctx, ImGui, my_id, root, label)
   local services, removal = require("services"), require("removal")
   if ImGui.SmallButton(ctx, (label or "Invite a guest") .. "##guestinv" .. root) then guest_pick.root = root; ImGui.OpenPopup(ctx, "guestinvite" .. root) end
-  ImGui.SetItemTooltip(ctx, services.GUEST_TIP .. (services.has_tailscale_token() and services.GUEST_TS_TIP or ""))
+  if ImGui.IsItemHovered(ctx) then ImGui.SetTooltip(ctx, services.GUEST_TIP .. (services.has_token_for(services.studio_net(root)) and services.GUEST_TS_TIP or "")) end
   if not ImGui.BeginPopup(ctx, "guestinvite" .. root) then return end
   local now = os.time()
   ImGui.Text(ctx, "Their access ends:")
@@ -174,7 +174,7 @@ function tools.guest_invite_button(ctx, ImGui, my_id, root, label)
     if not guest_pick.all then songs = {}; for s in pairs(guest_pick.songs) do songs[#songs + 1] = s end; table.sort(songs) end
     local made = removal.add_invite(root, ends, me, now, songs)
     local ok = true
-    if services.has_tailscale_token() then ok = services.copy_guest_invite(my_id, info, ctx, ImGui, root, ends)
+    if services.has_token_for(services.studio_net(root)) then ok = services.copy_guest_invite(my_id, info, ctx, ImGui, root, ends)
     else tools.show_invite(services.invite_text(my_id, info), info, ctx, ImGui) end
     if ok then band.log("a guest invitation to " .. tostring(info.name) .. " is on your clipboard: when they've run it, Let them in gives them until " .. removal.when(ends, now))
     else removal.end_invite(root, made, now) end
@@ -245,17 +245,19 @@ local function let_in(d, me, ends)
   local services = require("services")
   local ok, why
   if d.folder then
+    -- (a guest's project list is written before the folder is shared, so it's there in what reaches them first: written after, they saw every
+    -- project until it arrived. Review, 0.58.95)
+    local inv = ends and require("removal").invite_for(require("removal").invites(d.root), os.time())
+    if ends and inv and type(inv.songs) == "table" then require("access").set(d.root, d.id, inv.songs, me) end
     ok, why = services.share_folder(d.folder, d.id)
     if ok then
       require("removal").let_in(d.root, d.id) -- (taken out before, and back)
       -- (the roles written out again from here, the computer they were invited by: their first look believes no other. lib/trust.lua, Security review, 0.58.78)
       pcall(require("groups").edit, d.root, function() end)
       if ends then -- (and out again when their time is up, on every computer: the invitation's, else a day)
-        local inv = require("removal").invite_for(require("removal").invites(d.root), os.time())
         require("removal").guest(d.root, d.id, d.name, me, os.time(), type(ends) == "number" and ends or (inv and inv.ends), inv and inv.made)
-        -- (the projects the invitation gave them, if it named some: they see only those. lib/access.lua)
-        if inv and type(inv.songs) == "table" then require("access").set(d.root, d.id, inv.songs, me)
-        else require("access").clear(d.root, d.id) end -- (invited for every project: a list from a visit before no longer applies. 0.58.93)
+        -- (the projects the invitation gave them, if it named some: they see only those, written above. lib/access.lua)
+        if not (inv and type(inv.songs) == "table") then require("access").clear(d.root, d.id) end -- (invited for every project: a list from a visit before no longer applies. 0.58.93)
       else
         require("access").clear(d.root, d.id) -- (let in as a member: a project list left from a guest visit no longer applies)
       end

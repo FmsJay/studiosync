@@ -701,7 +701,7 @@ function sync.restore_timeline(proj, cfg, song, room, entries, upto, session, fr
   sync.audio_follow_tempo(proj)
   band.apply_tempo(proj, t.tempo)
   band.apply_markers(proj, t.markers or {})
-  sync.post(cfg, song, room, { type = "timeline", tempo = t.tempo, markers = t.markers or {} })
+  sync.post(cfg, song, room, { type = "timeline", tempo = t.tempo, markers = t.markers or {} }, proj) -- (proj: ordered after the newest map seen here. Review, 0.58.95)
   sync.setext(proj, band.SECTION, "timeline", sync.timeline_sig(proj))
   return true
 end
@@ -1324,7 +1324,7 @@ function sync.watch_timeline(proj, cfg, song, room, can)
     if seen ~= "" then
       if can(me, nil, nil) then -- the song's timeline is the driver's
         local tempo, markers = band.capture_tempo(proj), band.capture_markers(proj)
-        sync.post(cfg, song, room, { type = "timeline", tempo = tempo, markers = markers, project = band.capture_project(proj) })
+        sync.post(cfg, song, room, { type = "timeline", tempo = tempo, markers = markers, project = band.capture_project(proj) }, proj) -- (proj: without it no order was set, 0.58.93's fix never applied. Review, 0.58.95)
         sync.session_timeline(cfg, song, tempo, markers)
         local before = band.json_decode(seen) or {}
         local now, what = band.json_decode(sig) or {}, {} -- (say what changed: it was "tempo map and markers" whatever it was)

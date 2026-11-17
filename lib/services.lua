@@ -329,13 +329,13 @@ local function st_api(path, method)
     kf, tls and "https" or "http", addr, path)
 end
 -- Syncthing's REST answer, now: for what someone just asked for, not for every frame. -> the text, or nil.
-local function run_now(cmd, secs)
+local function run_now(cmd, secs, key) -- (key: its own back-off; a hung Syncthing made the token look gone and Tailscale calls fail. Review, 0.58.95)
   if not WIN then
     local sh = TMP .. "/bandsync-ask.sh"
     band.write_atomic(sh, "rm -f \"$0\"\nexport TAILSCALE_BE_CLI=1\n" .. cmd .. "\n") -- (gone once read: it holds the API key)
     cmd = "/bin/sh '" .. sh .. "'"
   end
-  local r = exec(cmd, (secs + 1) * 1000, "api") or ""
+  local r = exec(cmd, (secs + 1) * 1000, key or "api") or ""
   if not r:match("^0\n") then return nil end
   local out = r:gsub("^0\n", "")
   return out ~= "" and out or nil
@@ -429,7 +429,8 @@ function services.invite_text(id, info, key)
   local q1 = function(s) return "'" .. tostring(s):gsub("'", "") .. "'" end -- (band names are plain: band.clean)
   -- (newcomers first, in plain steps: most people invited have nothing installed, and the old order led with a panel they didn't have. Beginner review, 0.58.62)
   return "Join " .. info.name .. " on StudioSync.\n\n" ..
-    "New to StudioSync? It sets up everything for you (REAPER included), in about 15 minutes. Copy ONE line below, for your computer:\n\n" ..
+    "New to StudioSync? It sets up everything for you (REAPER included), in about 15 minutes. Your computer asks for permission a few times: say Yes. " ..
+    "When REAPER first opens, answer its windows. Copy ONE line below, for your computer:\n\n" ..
     "Windows: press Start, type PowerShell, open it, paste this line and press Enter:\n" ..
     '$f="$env:TEMP\\studiosync_install.ps1"; iwr -UseBasicParsing "' .. base .. 'install_windows.ps1?$(Get-Random)" -OutFile $f; ' ..
     "powershell -NoProfile -ExecutionPolicy Bypass -File $f -HostId " .. id .. " -BandId " .. info.id .. " -BandName " .. q1(info.name) .. (key and (" -TsKey " .. key) or "") .. "\n\n" ..
@@ -440,8 +441,8 @@ function services.invite_text(id, info, key)
     'curl -fsSL "' .. base .. 'install_linux.sh?$(date +%s)" | BS_HOST_ID=' .. id .. " BS_BAND_ID=" .. info.id ..
     " BS_BAND_NAME=" .. q1(info.name) .. (key and (" BS_TS_KEY=" .. key) or "") .. " bash\n\n" ..
     "Answer its questions, and when it's done, tell me: I let you in from my StudioSync panel.\n\n" ..
-    (key and "That works once, within a week: it puts your computer on my Tailscale network as a guest, for as long as I invited you (no account needed). If you use Tailscale for anything else, switch back from its menu afterwards.\n\n" or "") ..
-    "Already have StudioSync? In its panel, open your studios, press Paste join code, and paste this message (or just this line):\n" ..
+    (key and "That works once, within 2 days: it puts your computer on my Tailscale network as a guest, for as long as I invited you (no account needed). If you use Tailscale for anything else, switch back from its menu afterwards.\n\n" or "") ..
+    "Already have StudioSync? In its panel, click the studio name at the top, press Paste join code, and paste this message (or just this line):\n" ..
     services.join_code(id, info)
 end
 
@@ -463,7 +464,7 @@ end
 -- you then sees Let them in. -> its folder, or nil + why.
 function services.join_band(cfg, code)
   local st = services.syncthing_path()
-  if not st then return nil, "Syncthing wasn't found" end
+  if not st then return nil, "Syncthing wasn't found: Settings > Health > Set up everything I can installs and starts it" end
   if code.id == services.my_device_id() then return nil, "That's your own join code: send it to whoever you're inviting." end
   for _, x in ipairs(band.bands()) do
     if x.id == code.band and not require("groups").is_old(x.root) then band.use_band(x.root); return x.root, "already" end
@@ -775,7 +776,7 @@ local function token_store(token, net) -- -> true when it's locked away
   if WIN then
     if token == "" then reaper.DeleteExtState(band.SECTION, slot_key(net), true); return true end
     band.write_atomic(f, token)
-    local out = run_now('powershell -NoProfile -NonInteractive -Command "(Get-Content -Raw -LiteralPath \'' .. f .. '\').Trim() | ConvertTo-SecureString -AsPlainText -Force | ConvertFrom-SecureString"', 15)
+    local out = run_now('powershell -NoProfile -NonInteractive -Command "(Get-Content -Raw -LiteralPath \'' .. f .. '\').Trim() | ConvertTo-SecureString -AsPlainText -Force | ConvertFrom-SecureString"', 15, "token")
     os.remove(f)
     local blob = out and out:match("(%x%x%x%x%x%x%x%x+)%s*$") -- (the last line: PowerShell can complain about a drive first)
     if blob then reaper.SetExtState(band.SECTION, slot_key(net), blob, true) end
@@ -783,50 +784,78 @@ local function token_store(token, net) -- -> true when it's locked away
   elseif band.MAC then
     if token == "" then run_now("security delete-generic-password " .. keychain(net) .. " >/dev/null 2>&1; echo done", 10); return true end
     band.write_atomic(f, token)
-    local out = run_now("security add-generic-password -U " .. keychain(net) .. " -w \"$(cat '" .. f .. "')\" && echo stored", 10)
+    local out = run_now("security add-generic-password -U " .. keychain(net) .. " -w \"$(cat '" .. f .. "')\" && echo stored", 10, "token")
     os.remove(f)
     return out ~= nil and out:match("stored") ~= nil
   end
   return false
 end
-local function token_load(net)
+local function token_load(net) -- -> the token, "" when there's none, nil when it couldn't be read just now (not remembered then)
+  local out
   if WIN then
     local blob = reaper.GetExtState(band.SECTION, slot_key(net))
     if not blob:match("^%x+$") then return "" end
-    return (run_now('powershell -NoProfile -NonInteractive -Command "$s = ConvertTo-SecureString \'' .. blob ..
-      '\'; [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s))"', 15) or ""):match("tskey%-[%w%-]+") or ""
+    out = run_now('powershell -NoProfile -NonInteractive -Command "$s = ConvertTo-SecureString \'' .. blob ..
+      '\'; [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s))"', 15, "token")
   elseif band.MAC then
-    return (run_now("security find-generic-password " .. keychain(net) .. " -w", 10) or ""):match("tskey%-[%w%-]+") or ""
-  end
-  return ""
+    out = run_now("security find-generic-password " .. keychain(net) .. " -w 2>/dev/null || echo none", 10, "token")
+  else return "" end
+  if not out then return nil end
+  return out:match("tskey%-[%w%-]+") or ""
 end
 local function plain_key(net) return "tailscale_token" .. (net ~= "" and (" " .. net) or "") end
+-- (each script has its own copy of the tokens: a change in one, say Forget in the panel, bumps "tailscale_token_gen" and the others read
+-- them again. Autostart kept sweeping with a forgotten token. Review, 0.58.95)
+local gen_seen
+local function fresh()
+  local g = reaper.GetExtState(band.SECTION, "tailscale_token_gen")
+  if g ~= gen_seen then token_cache, gen_seen = {}, g end
+end
 local function token_in(net)
+  fresh()
   if token_cache[net] then return token_cache[net] end
   local plain = reaper.GetExtState(band.SECTION, plain_key(net))
   if plain ~= "" then -- (one saved before 0.58.69, or where nothing locks it away: locked away now if it can be, and taken out of the settings file)
     if WIN or band.MAC then if token_store(plain, net) then reaper.DeleteExtState(band.SECTION, plain_key(net), true) end end
     token_cache[net] = plain
-  else token_cache[net] = token_load(net) end
+  else
+    local t = token_load(net)
+    if t == nil then return "" end
+    token_cache[net] = t
+  end
   return token_cache[net]
 end
 function services.tailscale_token_nets()
   local old = token_in("") ~= ""
   return services.token_nets_in(reaper.GetExtState(band.SECTION, "tailscale_token_nets"), old)
 end
--- The token for `net` (a network's name ending), or for the network this computer is on; an older one (network not known) when there's none for it.
+-- The token for `net` (a network's name ending), or for the network this computer is on. An older token (its network not known) is checked
+-- with Tailscale first and moved under its own network: used for any network, it could change another network's policy. Review, 0.58.95
+-- (Asks Tailscale, so only from something the user pressed.)
 function services.tailscale_token(net)
   net = net or select(2, services.tailnet_now())
-  local t = net_ok(net) and net ~= "" and token_in(net) or ""
+  if not (net_ok(net) and net ~= "") then return "" end
+  local t = token_in(net)
   if t ~= "" then return t end
-  return token_in("")
+  local old = token_in("")
+  if old == "" then return "" end
+  local its = services.check_old_token(old)
+  return its == net and old or ""
 end
 function services.has_tailscale_token() return #services.tailscale_token_nets() > 0 end
+-- Might there be a token for `net`? From what's saved, never asking anyone: for drawing (an older token counts, its network not checked yet).
+function services.has_token_for(net)
+  for _, n in ipairs(services.tailscale_token_nets()) do if n == "" or (net and n == net) then return true end end
+  return false
+end
 local function sweep_cfg(net) return TMP .. "/bandsync-ts-sweep" .. (net ~= "" and ("-" .. net) or "") .. ".cfg" end
 -- Saves `token` under `net` (nil or "": the older, network-not-known place); "" as the token forgets it. A name that isn't a network's: nothing saved.
 function services.set_tailscale_token(token, net)
   net = net or ""
   if not net_ok(net) then return false end
+  fresh()
+  gen_seen = tostring((tonumber(gen_seen) or 0) + 1) .. "." .. math.floor(reaper.time_precise() * 1000)
+  reaper.SetExtState(band.SECTION, "tailscale_token_gen", gen_seen, false) -- (the other scripts read theirs again; this one keeps its own, set here)
   token_cache[net] = token
   if not token_store(token, net) and token ~= "" then reaper.SetExtState(band.SECTION, plain_key(net), token, true) -- (nowhere safer here)
   else reaper.DeleteExtState(band.SECTION, plain_key(net), true) end
@@ -847,7 +876,7 @@ local function ts_call(token, method, path, body, headers)
   band.write_atomic(cfgf, table.concat(lines, "\n") .. "\n")
   if body then band.write_atomic(bodyf, body) end
   local out = run_now(string.format('curl -s -i -m 15 -X %s -K "%s" %s"https://api.tailscale.com/api/v2%s"', method, cfgf,
-    body and ('--data-binary "@' .. bodyf .. '" ') or "", path), 16)
+    body and ('--data-binary "@' .. bodyf .. '" ') or "", path), 16, "ts")
   os.remove(cfgf); os.remove(bodyf)
   if not out then return nil, "no answer from Tailscale" end
   local head, rest = "", out
@@ -863,7 +892,15 @@ local function ts_call(token, method, path, body, headers)
   end
   return code, head, rest
 end
-local function ts_api(method, path, body, headers, net) return ts_call(services.tailscale_token(net), method, path, body, headers) end
+local function ts_api(method, path, body, headers, net)
+  net = net or select(2, services.tailnet_now())
+  local token = services.tailscale_token(net)
+  if token == "" then
+    return nil, net and ("no Tailscale access token for " .. net .. " (this computer's network, or the studio's): add one under Settings > Advanced")
+      or "Tailscale isn't on here, so StudioSync can't tell which network's token to use"
+  end
+  return ts_call(token, method, path, body, headers)
+end
 
 -- A key that lets one computer onto the Tailscale network until `ends` (a time; a day from now without one), without an account: usable once, within a
 -- week at most; the computer it signs in is a guest (tag:bandsync-guest), and services.tailscale_sweep_guests takes it off when its time is up. A day's
@@ -884,14 +921,22 @@ function services.token_tailnet(net)
   if not code then return nil end
   return services.devices_tailnet(out)
 end
--- Saves a token under the network it's for (Tailscale says, from its devices; else the network this computer is on). -> that network, or nil + why.
+-- Saves a token under the network it's for (Tailscale says, from its devices). -> that network, or nil + why.
+-- (no guessing from the network this computer is on: a token filed under the wrong one made guests on its real one. Review, 0.58.95)
 function services.add_tailscale_token(token)
   local code, why, out = ts_call(token, "GET", "/tailnet/-/devices")
   local net = code and services.devices_tailnet(out) or nil
-  if not net and code then net = select(2, services.tailnet_now()) end
-  if not net then return nil, tostring(why or "Tailscale didn't say which network it's for") end
+  if not net then return nil, tostring(code and "Tailscale didn't say which network it's for (it has no computers on it yet?)" or why) end
   services.set_tailscale_token(token, net)
   return net
+end
+-- The older token (saved before tokens were per network): which network it's for, and moved there. -> that network, or nil.
+function services.check_old_token(old)
+  local code, _, out = ts_call(old, "GET", "/tailnet/-/devices")
+  local its = code and services.devices_tailnet(out) or nil
+  if its and token_in(its) == "" then services.set_tailscale_token(old, its) end
+  if its then services.set_tailscale_token("", "") end
+  return its
 end
 function services.tailscale_guest_key(ends, net)
   local code, head, out = ts_api("POST", "/tailnet/-/keys", band.json_encode(services.guest_key_request(ends, os.time())), { "Content-Type: application/json" }, net)
@@ -929,10 +974,11 @@ function services.studio_net(root)
 end
 function services.copy_guest_invite(my_id, info, ctx, ImGui, root, ends)
   local net = services.studio_net(root)
-  if services.tailscale_token(net) == "" then
-    band.msg("This computer has no Tailscale access token for this studio's network" .. (net and (" (" .. net .. ")") or "") .. ".\n\n" ..
-      "Make a token on the studio's network (login.tailscale.com, signed in to that account) and add it under Settings > Advanced, or forget this computer's tokens to invite without Tailscale.")
-    return
+  if services.tailscale_token(net) == "" then -- (it refused any invitation: one without Tailscale now, and said. Review, 0.58.95)
+    band.log("no Tailscale access token for this studio's network" .. (net and (" (" .. net .. ")") or "") ..
+      ", so this invitation leaves Tailscale out: add that network's token under Settings > Advanced to put guests on it")
+    require("tools").show_invite(services.invite_text(my_id, info), info, ctx, ImGui)
+    return true
   end
   -- (a guest reaches the whole tailnet unless the policy limits them: checked first, as Set up the tags reads it, and said plainly. Security review, 0.58.78)
   local text, err = services.tailscale_policy(net)
@@ -977,9 +1023,14 @@ function services.tailnet_in(json)
   if not cur then return nil end
   return cur:match('"Name":%s*"([^"]+)"'), cur:match('"MagicDNSSuffix":%s*"([^"]+)"')
 end
-function services.tailnet_now()
-  if not services.tailscale_up() then return nil end
-  return services.tailnet_in(ts_json)
+local tn_at, tn_name, tn_suffix = -math.huge, nil, nil
+function services.tailnet_now() -- (once a second at most: the panel asks every frame. Review, 0.58.95)
+  local t = reaper.time_precise()
+  if t - tn_at >= 1 or t < tn_at then
+    tn_at = t
+    if services.tailscale_up() then tn_name, tn_suffix = services.tailnet_in(ts_json) else tn_name, tn_suffix = nil, nil end
+  end
+  return tn_name, tn_suffix
 end
 function services.my_tailscale_name() return services.tailscale_up() and services.tailscale_name_in(ts_json) or nil end -- (no waiting: from the last status)
 -- From `tailscale switch --list`: { { id, tailnet, account, current } } for each account this computer is signed in to. Pure.
@@ -1226,16 +1277,20 @@ local swept, sweep_at = {}, {}
 -- Takes guests off when their time is up, on every network this computer has a token for. In the background every 15 min: its config file
 -- stays in the user's temp folder meanwhile.
 function services.tailscale_sweep_guests()
+  local read = false -- (one token unlocked per pass: each is a PowerShell or Keychain call REAPER waits on. Review, 0.58.95)
   for _, net in ipairs(services.tailscale_token_nets()) do
-    local token = token_in(net)
-    if token:match("^tskey%-api%-[%w%-]+$") then services.sweep_net(net, token) end
+    if token_cache[net] ~= nil or not read then
+      read = read or token_cache[net] == nil
+      local token = token_in(net)
+      if token:match("^tskey%-api%-[%w%-]+$") then services.sweep_net(net, token) end
+    end
   end
 end
 function services.sweep_net(net, token)
   local cfgf = sweep_cfg(net)
   local curl = 'curl -s -m 10 -K "' .. cfgf .. '" '
   if not reaper.file_exists(cfgf) then band.write_atomic(cfgf, 'header = "Authorization: Bearer ' .. token .. '"\n') end
-  local tag = net ~= "" and ("-" .. net:gsub("%W", "")) or ""
+  local tag = net ~= "" and ("-" .. (net:gsub("%.", "_"))) or ""
   local out = background("ts-devices" .. tag, curl .. '"https://api.tailscale.com/api/v2/tailnet/-/devices"', 900)
   if not out or reaper.time_precise() - (sweep_at[net] or -math.huge) < 60 then return end
   sweep_at[net] = reaper.time_precise()

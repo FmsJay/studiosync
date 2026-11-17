@@ -568,7 +568,7 @@ if ($joining) {
 # stops the run before section 5, so the invitation's key went unused and the guest never reached anyone (Windows Sandbox run, 2026-11-10).
 if ($wantLive -and $TsKey -and (Test-Path "$env:ProgramFiles\Tailscale\tailscale.exe")) {
   $ErrorActionPreference = "Continue"; & "$env:ProgramFiles\Tailscale\tailscale.exe" login "--authkey=$TsKey" --timeout=120s 2>$null | Out-Null; $code = $LASTEXITCODE; $ErrorActionPreference = "Stop"
-  if ($code -eq 0) { Ok "Tailscale joined the studio's network as a guest, for a day" } else { Warn "Tailscale couldn't join with the invitation's key (it works once, for a day): ask for a new invitation." }
+  if ($code -eq 0) { Ok "Tailscale joined the studio's network as a guest, until your invitation ends" } else { Warn "Tailscale couldn't join with the invitation's key (it works once, within 2 days of the invitation): ask for a new invitation." }
 }
 
 # ---------- 4. StudioSync scripts, inside REAPER ----------
@@ -740,7 +740,7 @@ if ($wantLive) {
         $p.WaitForExit()
         return $p.ExitCode
       }
-      Say "Signing in to Tailscale: a browser page opens; sign in with the studio's account there."
+      Say "Signing in to Tailscale: a browser page opens; sign in there (a free account: the one your studio's Tailscale uses, if it has one)."
       if ((Ts-Up @("--advertise-tags=tag:bandsync", "--timeout=300s")) -eq 0) { Ok "Tailscale signed in as a studio machine (it stays signed in)"; $tagged = $true }
       # the refused tag stays in Tailscale's settings and every later sign-in fails on it: clear it, then sign in plainly
       elseif ((Ts-Up @("--reset", "--advertise-tags=", "--timeout=120s")) -eq 0) { Ok "Tailscale signed in (without the studio tag: it signs out by itself every few months; see below)" }
@@ -769,8 +769,7 @@ if ($wantLive) {
     $left += "Tailscale (skipped above): sign in from its taskbar icon, then at login.tailscale.com/admin/machines > this PC > ... > Disable key expiry (otherwise it signs out every few months, maybe right before a session)."
   }
   if ($isHost) { # the host's job, once: then bandmates' installers sign their machines in for good
-    $left += "Tailscale, once for the whole studio (if not done yet): at login.tailscale.com/admin/acls add this line inside the policy's { }:"
-    $left += "    `"tagOwners`": { `"tag:bandsync`": [`"autogroup:member`"] },"
+    $left += "Tailscale, once for the whole studio (if not done yet): in REAPER, StudioSync's panel > Settings > Advanced: add a Tailscale access token, then press Set up the tags (it adds the policy line for you)."
     $left += "  Then each collaborator's installer signs their machine in as a studio machine that never has to sign in again."
   }
 }

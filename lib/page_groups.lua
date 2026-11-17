@@ -145,7 +145,7 @@ local function invite_button(env, g, id)
   ImGui.BeginDisabled(ctx, not my_id)
   if ImGui.SmallButton(ctx, "Invite a collaborator##" .. id) then require("tools").invite(my_id, band.info(g.root), ctx, ImGui) end
   ImGui.EndDisabled(ctx)
-  ImGui.SetItemTooltip(ctx, my_id and require("tools").INVITE_TIP or "Waiting for Syncthing (it has to be running).")
+  ImGui.SetItemTooltip(ctx, my_id and require("tools").INVITE_TIP or "Waiting for Syncthing (it has to be running): Settings > Health > Set up everything I can starts it.")
   if my_id then -- (how long they stay is picked there; with a Tailscale token they join that too. 0.58.82)
     beside(ctx, ImGui, "Guest")
     require("tools").guest_invite_button(ctx, ImGui, my_id, g.root, "Guest")
