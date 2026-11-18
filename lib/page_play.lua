@@ -226,6 +226,7 @@ function M.time_sync(on)
     if was ~= "" then reaper.SetProjExtState(proj, band.SECTION, "side", was == "none" and "" or was); reaper.SetProjExtState(proj, band.SECTION, "side before timesync", "") end
     return band.log("Time-sync off")
   end
+  if same_room_on() then set_same_room(false) end -- (one or the other: with SonoBus on too, everyone heard you twice. James, 0.59.4)
   live_mode = "synced"
   reaper.SetProjExtState(proj, band.SECTION, "live_mode", "synced")
   local ok, why = M.connect("synced")

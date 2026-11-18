@@ -40,31 +40,41 @@ function page.person(ctx, ImGui, proj, name)
     (hear.own_pair(proj, name) and "" or "\n(They share one level with anyone else SonoBus has no pair for: they get their own when Real time mode next starts.)"))
 end
 
--- Under the Real time mode switch, while it's on.
-function page.realtime(ctx, ImGui, proj)
-  if not hear.mix(proj, false) then return end
-  local function beside(label, extra) page.fit(ctx, ImGui, label, extra) end
-  local their = ext(proj, "hear their time") == "1"
-  local ms = math.floor(hear.delay(proj) + 0.5)
-  if ImGui.RadioButton(ctx, "My time", not their) and their then
+-- My time / their time (Home's Real time choices since 0.59.4; the Play/Jam page's radios): `their` true delays your backing so the others line up.
+function page.their_time_on(proj) return ext(proj, "hear their time") == "1" end
+function page.set_their_time(proj, their)
+  if their == page.their_time_on(proj) then return end
+  if not their then
     reaper.SetProjExtState(proj, band.SECTION, "hear their time", "")
     hear.set_delay(proj, 0)
-    band.log("you hear in your own time again: your backing on time, the others as they arrive")
+    return band.log("you hear in your own time again: your backing on time, the others as they arrive")
   end
-  ImGui.SetItemTooltip(ctx, "You hear everyone as it arrives: your backing on time, them a little late (the network).")
-  -- (the label says whose side moves: "Their time" alone read as their audio being delayed, on the laptop)
-  beside("Their time (my backing later)")
-  if ImGui.RadioButton(ctx, "Their time (my backing later)", their) and not their then
-    reaper.SetProjExtState(proj, band.SECTION, "hear their time", "1")
-    local want = guest.on(proj) and guest.delay(proj) or tonumber(ext(proj, "their ms")) or 100
-    hear.set_delay(proj, want)
-    ms = want
-    band.log(string.format("you hear in their time: your backing %d ms later, so the others line up with it (listening, not playing)", want))
+  reaper.SetProjExtState(proj, band.SECTION, "hear their time", "1")
+  local want = guest.on(proj) and guest.delay(proj) or tonumber(ext(proj, "their ms")) or 100
+  hear.set_delay(proj, want)
+  band.log(string.format("you hear in their time: your backing %d ms later, so the others line up with it (listening, not playing)", want))
+end
+page.MY_TIME_TIP = "You hear everyone as it arrives: your backing on time, them a little late (the network)."
+page.THEIR_TIME_TIP = "Delays your backing so their playing lines up with it. For listening along, not for playing.\n" ..
+  "The delay to set: a guest's measured one, or each collaborator's in SonoBus's window (the number after the down arrow)."
+
+-- Under the Real time mode switch, while it's on. `no_radios`: Home draws My time / Their time itself (with Time-sync beside them).
+function page.realtime(ctx, ImGui, proj, no_radios)
+  if not hear.mix(proj, false) then return end
+  local function beside(label, extra) page.fit(ctx, ImGui, label, extra) end
+  local their = page.their_time_on(proj)
+  local ms = math.floor(hear.delay(proj) + 0.5)
+  if not no_radios then
+    if ImGui.RadioButton(ctx, "My time", not their) and their then page.set_their_time(proj, false) end
+    ImGui.SetItemTooltip(ctx, page.MY_TIME_TIP)
+    -- (the label says whose side moves: "Their time" alone read as their audio being delayed, on the laptop)
+    beside("Their time (my backing later)")
+    if ImGui.RadioButton(ctx, "Their time (my backing later)", their) and not their then page.set_their_time(proj, true); ms = math.floor(hear.delay(proj) + 0.5) end
+    ImGui.SetItemTooltip(ctx, page.THEIR_TIME_TIP)
   end
-  ImGui.SetItemTooltip(ctx, "Delays your backing so their playing lines up with it. For listening along, not for playing.\n" ..
-    "The delay to set: a guest's measured one, or each collaborator's in SonoBus's window (the number after the down arrow).")
   if their then
-    beside("", 90)
+    if no_radios then ImGui.AlignTextToFramePadding(ctx); ImGui.TextDisabled(ctx, "Your backing later by") else beside("", 90) end
+    if no_radios then ImGui.SameLine(ctx) end
     ImGui.SetNextItemWidth(ctx, 90)
     local ch, v = ImGui.DragInt(ctx, "##their", ms, 1, 0, hear.MAX_MS, "%d ms")
     if ch then hear.set_delay(proj, v); reaper.SetProjExtState(proj, band.SECTION, "their ms", tostring(v)) end

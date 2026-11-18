@@ -103,7 +103,21 @@ local function places(only)
   return out
 end
 
-local looked = {} -- per band (its Drive folder's name): { found, at, missing, away }
+-- Several cloud drives on one computer (James, 0.59.4: "make sure it won't mess up if someone has multiple on the same system"): the folder
+-- this studio's copy was last in (`seen`) stays the one while it's there, though another drive has a folder of the same name earlier in the
+-- order; and it never jumps to another service's folder on its own (Google Drive not up yet at login, and a OneDrive folder of that name
+-- took the copies, where nobody else looks). `chosen`: a service picked in Settings > Cloud copy, which may move it. -> the folder to use or
+-- nil, the one that's away (nil if none), and another service's folder of that name, left alone (for the panel). Pure.
+function drive.settle(found, seen, exists, chosen)
+  seen = seen ~= "" and seen or nil
+  if not seen or found == seen then return found end
+  if not (chosen and chosen ~= "" and drive.service_of(seen) ~= chosen) and exists(seen) then return seen end
+  if not found then return nil, seen end
+  if (chosen and chosen ~= "") or drive.service_of(found) == drive.service_of(seen) then return found end -- (picked, or the same drive on another letter)
+  return nil, seen, found
+end
+
+local looked = {} -- per band (its Drive folder's name): { found, at, missing, away, other }
 function drive.forget() looked = {} end -- (the service was changed: look again now)
 -- The service the studio's copy is in here (or would be), in words: "Google Drive", "Dropbox"...
 function drive.name(cfg)
@@ -132,12 +146,13 @@ function drive.root(cfg)
     -- 2026-10-31: a personal and a band account on one machine). Said, not guessed at: drive.away, for the panel.
     local key = "drive_seen" .. (info.id == "bandsync" and "" or (" " .. info.id)) -- (the first band keeps its old key)
     local seen = reaper.GetExtState(band.SECTION, key)
-    l.away = nil
+    local function exists(p) return reaper.EnumerateSubdirectories(p, 0) ~= nil or reaper.EnumerateFiles(p, 0) ~= nil end
+    l.found, l.away, l.other = drive.settle(l.found, seen, exists, drive.service())
     if l.found then
       if seen ~= l.found then reaper.SetExtState(band.SECTION, key, l.found, true) end
-    elseif seen ~= "" then l.away, l.missing = seen, nil end
+    elseif l.away then l.missing = nil end
   end
-  drive.missing, drive.away = l.missing, l.away -- (this band's, for the panel)
+  drive.missing, drive.away, drive.other = l.missing, l.away, l.other -- (this band's, for the panel)
   return l.found
 end
 

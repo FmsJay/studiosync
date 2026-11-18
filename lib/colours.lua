@@ -20,7 +20,7 @@ colours.SCHEMES = {
   { "person", "By who made it", "Each track in the colour of the person who made it, kept even when nobody's working." },
   { "stripes", "Stripes", "Two colours taking turns, folder by folder: easy to follow across a long list." },
   { "rainbow", "Rainbow", "The whole colour wheel, top to bottom." },
-  { "newest", "Newest work", "The longest untouched cool, the latest changed warm: where the project's been moving lately." },
+  { "newest", "Newest work", "Where the project's been moving lately: the palette's first colour for the track untouched longest, its last for the latest changed." },
   { "confetti", "Confetti", "A bright colour of its own for each name, the same every time." },
 }
 
@@ -218,12 +218,12 @@ end
 
 colours.ITEM_SCHEMES = {
   { "section", "By section", "Everything in a verse one colour, everything in a chorus another, from the region it starts in." },
-  { "song", "Along the song", "Start of the song to the end, through the palette." },
+  { "song", "Chronologically", "Start of the song to the end, from the palette's first colour to its last." },
   { "person", "By who recorded it", "Each item in the colour of the person who made it." },
   { "lane", "By lane", "Each fixed lane its own colour: comps and alternatives stand apart." },
-  { "take", "By takes", "One-take items one colour, the more takes the warmer: where there's a choice still to make." },
-  { "kind", "By kind", "Recordings, MIDI parts and printed parts each their own colour: what's audio and what's notes, at a glance." },
-  { "newest", "Newest work", "The longest untouched cool, the latest changed warm: where the song's been moving lately." },
+  { "take", "By takes", "One-take items the palette's first colour, the more takes the further along it: where there's a choice still to make." },
+  { "kind", "By kind", "MIDI parts, printed parts and recordings each their own colour from the palette: what's audio and what's notes, at a glance." },
+  { "newest", "Newest work", "Where the song's been moving lately: the palette's first colour for what's untouched longest, its last for the latest changed." },
   { "clear", "As its track", "Takes item colours off, so items follow their track again." },
 }
 -- The colour of each item (false: none). items: { { pos, section (a name, or nil), maker (a colour, or nil), lane, takes } }. opt: { stops, last (the song's end) }. Pure.
@@ -311,8 +311,25 @@ function colours.look_of(proj, root)
   if type(own) == "table" and type(own.scheme) == "string" then return own, "project" end
   local studio = root and require("groups").colours(root)
   if studio then return studio, "studio" end
+  local last = band.json_decode(reaper.GetExtState(band.SECTION, "colour look"))
+  if type(last) == "table" and type(last.scheme) == "string" then return last, "computer" end
   local function saved(key, default) local v = reaper.GetExtState(band.SECTION, key); return v ~= "" and v or default end
   return { scheme = saved("colour scheme", "gradient"), palette = saved("colour palette", "Sunset"), from = saved("colour from", "2F7BFF"), to = saved("colour to", "FF8A3D") }, "computer"
+end
+-- Tracks, items and regions each have their own way and palette (James, 0.59.4: "gradient on the tracks and then color items based on what's new
+-- with a different gradient and regions with another"). Tracks: the look itself, as before; items and regions: look.items / look.regions,
+-- each { scheme, palette, from, to }, missing in a look from before (then their old defaults, in the tracks' palette). Pure.
+colours.REGION_SCHEMES = {
+  { "sections", "By section", "Every verse one colour, every chorus another: the common sections keep their own colours in every song, the rest from the palette." },
+  { "song", "Chronologically", "Start of the song to the end, from the palette's first colour to its last." },
+}
+local ROW_DEFAULT = { items = "section", regions = "sections" }
+function colours.part(look, row)
+  look = type(look) == "table" and look or {}
+  local p = row == "tracks" and look or (type(look[row]) == "table" and look[row] or {})
+  local function str(v, d) return type(v) == "string" and v ~= "" and v or d end
+  return { scheme = str(p.scheme, row == "tracks" and "gradient" or ROW_DEFAULT[row]), palette = str(p.palette, str(look.palette, "Sunset")),
+    from = str(p.from, str(look.from, "2F7BFF")), to = str(p.to, str(look.to, "FF8A3D")) }
 end
 function colours.stops_of(look)
   for _, p in ipairs(colours.PALETTES) do if p[1] == look.palette then return p[2] end end
@@ -412,23 +429,42 @@ end
 -- Put back after a reload. Review, 0.58.98)
 function colours.put_back_all() for p in pairs(tries) do colours.put_back(p) end end
 
-local item_pick = "section"
+-- A small bar of the palette, words at each end: which end is which (James, 0.59.4: "the descriptions adapted for most recent vs oldest").
+local function legend(ctx, ImGui, stops, left, right)
+  ImGui.TextDisabled(ctx, left); ImGui.SameLine(ctx, 0, 6)
+  local x, y = ImGui.GetCursorScreenPos(ctx)
+  local dl, w, h = ImGui.GetWindowDrawList(ctx), 90, ImGui.GetTextLineHeight(ctx)
+  for i = 0, 29 do ImGui.DrawList_AddRectFilled(dl, x + i * w / 30, y + 2, x + (i + 1) * w / 30, y + h - 2, (colours.ramp(stops, i / 29) << 8) | 0xFF) end
+  ImGui.Dummy(ctx, w, h); ImGui.SameLine(ctx, 0, 6)
+  ImGui.TextDisabled(ctx, right)
+end
+local LEGENDS = { -- row.scheme -> the words at either end of the palette
+  ["tracks.gradient"] = { "top", "bottom" }, ["tracks.newest"] = { "untouched longest", "changed most recently" },
+  ["items.song"] = { "start", "end" }, ["items.newest"] = { "untouched longest", "changed most recently" }, ["items.take"] = { "one take", "five or more" },
+  ["items.lane"] = { "lane 1", "lane 5" }, ["regions.song"] = { "start", "end" },
+}
+local USES_PALETTE = { tracks = { gradient = true, folders = true, stripes = true, newest = true },
+  items = { section = true, song = true, lane = true, take = true, kind = true, newest = true }, regions = { sections = true, song = true } }
+local ROWS = { { "tracks", "Tracks:", colours.SCHEMES }, { "items", "Items:", colours.ITEM_SCHEMES }, { "regions", "Regions:", colours.REGION_SCHEMES } }
 function colours.draw(ctx, ImGui, proj, cfg, may, timeline_ok)
   ImGui.SeparatorText(ctx, "Colour the project")
   local look, from = colours.look_of(proj, cfg.root)
-  local scheme, palette = look.scheme, look.palette or "Sunset"
-  local a, z = tonumber(look.from or "2F7BFF", 16) or 0x2F7BFF, tonumber(look.to or "FF8A3D", 16) or 0xFF8A3D
-  -- (a change of look is this project's own from now: the studio's stays the default for new ones)
-  local function set(field, value)
-    local t = { scheme = scheme, palette = palette, from = string.format("%06X", a), to = string.format("%06X", z) }
-    t[field] = value
-    reaper.SetProjExtState(proj, band.SECTION, "colours", band.json_encode(t))
-    local keys = { scheme = "colour scheme", palette = "colour palette", from = "colour from", to = "colour to" }
-    reaper.SetExtState(band.SECTION, keys[field], value, true) -- (and this computer's last pick)
+  local parts = { tracks = colours.part(look, "tracks"), items = colours.part(look, "items"), regions = colours.part(look, "regions") }
+  local function whole() local t = parts.tracks; return { scheme = t.scheme, palette = t.palette, from = t.from, to = t.to, items = parts.items, regions = parts.regions } end
+  -- (a change of look is this project's own from now: the studio's stays the default for new ones; and this computer's last pick)
+  local function set(row, field, value)
+    parts[row][field] = value
+    local t = band.json_encode(whole())
+    reaper.SetProjExtState(proj, band.SECTION, "colours", t)
+    reaper.SetExtState(band.SECTION, "colour look", t, true)
     cache.at = -math.huge
   end
+  local function beside(label) -- (on the row while it fits, else the next line: a narrow column cut them off)
+    ImGui.SameLine(ctx)
+    if ImGui.GetContentRegionAvail(ctx) < ImGui.CalcTextSize(ctx, label) + 2 * ImGui.GetStyleVar(ctx, ImGui.StyleVar_FramePadding) + 4 then ImGui.NewLine(ctx) end
+  end
   ImGui.PushTextWrapPos(ctx, 0)
-  ImGui.TextDisabled(ctx, "Pick a look, try it here, then keep it for everyone. " .. (from == "project" and "This project has a look of its own." or
+  ImGui.TextDisabled(ctx, "Tracks, items and regions each their own way and colours. Try it here, then keep it for everyone. " .. (from == "project" and "This project has a look of its own." or
     from == "studio" and "This project uses the studio's look." or "No look picked for the studio yet: new projects keep their own colours."))
   ImGui.PopTextWrapPos(ctx)
   if colours.trying(proj) then
@@ -442,117 +478,131 @@ function colours.draw(ctx, ImGui, proj, cfg, may, timeline_ok)
     end
     ImGui.PopStyleColor(ctx)
   end
-  local label, tip = scheme, ""
-  for _, s in ipairs(colours.SCHEMES) do if s[1] == scheme then label, tip = s[2], s[3] end end
-  ImGui.AlignTextToFramePadding(ctx); ImGui.Text(ctx, "Tracks:"); ImGui.SameLine(ctx)
-  ImGui.SetNextItemWidth(ctx, 170)
-  if ImGui.BeginCombo(ctx, "##colourscheme", label) then
-    for _, s in ipairs(colours.SCHEMES) do
-      if ImGui.Selectable(ctx, s[2], s[1] == scheme) then set("scheme", s[1]); scheme = s[1] end
-      ImGui.SetItemTooltip(ctx, s[3])
-    end
-    ImGui.EndCombo(ctx)
-  end
-  ImGui.SetItemTooltip(ctx, "How tracks are coloured: " .. tip)
-  local uses = scheme == "gradient" or scheme == "folders" or scheme == "stripes" or scheme == "newest"
-  ImGui.SameLine(ctx)
-  ImGui.SetNextItemWidth(ctx, 120)
-  if ImGui.BeginCombo(ctx, "##colourpalette", palette) then
-    for _, p in ipairs(colours.PALETTES) do
-      if ImGui.Selectable(ctx, p[1], p[1] == palette) then set("palette", p[1]); palette = p[1] end
-    end
-    if ImGui.Selectable(ctx, "Your own", palette == "Your own") then set("palette", "Your own"); palette = "Your own" end
-    ImGui.EndCombo(ctx)
-  end
-  ImGui.SetItemTooltip(ctx, uses and "The colours it runs through. Items and regions use them too." or "For items and regions. This way of colouring tracks has its own colours.")
-  if scheme == "newest" then -- (which end is which: James, 0.59.3)
-    local st = colours.stops_of({ palette = palette, from = string.format("%06X", a), to = string.format("%06X", z) })
-    ImGui.ColorButton(ctx, "##newold", (st[1] << 8) | 0xFF, ImGui.ColorEditFlags_NoTooltip, 14, 14); ImGui.SameLine(ctx, 0, 4)
-    ImGui.TextDisabled(ctx, "untouched longest"); ImGui.SameLine(ctx, 0, 12)
-    ImGui.ColorButton(ctx, "##newnew", (st[#st] << 8) | 0xFF, ImGui.ColorEditFlags_NoTooltip, 14, 14); ImGui.SameLine(ctx, 0, 4)
-    ImGui.TextDisabled(ctx, "changed most recently")
-  elseif scheme == "instrument" then -- the instruments' colours, yours to set
-    local set = colours.kind_colours()
-    for i, name in ipairs(colours.KIND_NAMES) do
-      local ch, v = ImGui.ColorEdit3(ctx, name .. "##kind" .. i, set[i], ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel)
-      if ch then colours.set_kind_colour(i, v); cache.at = -math.huge end
-      if i % 2 == 1 and i < #colours.KIND_NAMES then ImGui.SameLine(ctx, 180) end
-    end
-    if ImGui.SmallButton(ctx, "Instrument colours as they were##kinds") then reaper.DeleteExtState(band.SECTION, "colour kinds", true); kind_cache = nil; cache.at = -math.huge end
-    ImGui.SetItemTooltip(ctx, "Each instrument's colour, found from the track's name (drums, bass, guitars...). Only on this computer, until you colour the tracks.")
-  end
-  local stops = colours.stops_of({ palette = palette, from = string.format("%06X", a), to = string.format("%06X", z) })
-  if palette == "Your own" then
-    ImGui.SameLine(ctx)
-    local ch1, v1 = ImGui.ColorEdit3(ctx, "##colourfrom", a, ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel)
-    ImGui.SameLine(ctx)
-    local ch2, v2 = ImGui.ColorEdit3(ctx, "##colourto", z, ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel)
-    if ch1 then a = v1; set("from", string.format("%06X", v1)) end
-    if ch2 then z = v2; set("to", string.format("%06X", v2)) end
-  end
-  if reaper.time_precise() - cache.at > 2 or cache.proj ~= proj then
-    cache.at, cache.proj = reaper.time_precise(), proj
-    cache.list = colours.read(proj, cfg)
-    cache.plan = colours.plan(cache.list, scheme, { stops = stops })
-  end
-  local w = ImGui.GetContentRegionAvail(ctx)
-  local x, y = ImGui.GetCursorScreenPos(ctx)
-  local dl, n = ImGui.GetWindowDrawList(ctx), #cache.list
-  for i, rgb in ipairs(cache.plan) do
-    local x0 = x + (i - 1) * w / n
-    ImGui.DrawList_AddRectFilled(dl, x0, y, x0 + w / n - 1, y + 16, (rgb << 8) | 0xFF, 2)
-  end
-  ImGui.InvisibleButton(ctx, "##colourpreview", math.max(1, w), 16)
-  if ImGui.IsItemHovered(ctx) and n > 0 then
-    local i = math.max(1, math.min(n, math.floor((select(1, ImGui.GetMousePos(ctx)) - x) / w * n) + 1))
-    ImGui.SetTooltip(ctx, cache.list[i].name)
-  end
   local first = reaper.GetExtState(band.SECTION, "colour try") ~= "off"
   local function go(fn) if first then try_first(proj, fn) else fn() end end
-  if ImGui.Button(ctx, "Colour all tracks") then go(function() colours.run(proj, cfg, may, false) end) end
-  ImGui.SetItemTooltip(ctx, "Every track you may change, in the look above. Someone else's stays as it is.")
-  ImGui.SameLine(ctx)
-  if ImGui.Button(ctx, "Selected tracks only") then go(function() colours.run(proj, cfg, may, true) end) end
-  ImGui.SetItemTooltip(ctx, "Only the tracks selected in REAPER.")
-  -- items: pick how, then a button (picking in the list coloured everything at once: James, 0.58.98 "a little confusing")
-  local ilabel, itip = item_pick, ""
-  for _, s in ipairs(colours.ITEM_SCHEMES) do if s[1] == item_pick then ilabel, itip = s[2], s[3] end end
-  ImGui.AlignTextToFramePadding(ctx); ImGui.Text(ctx, "Items:"); ImGui.SameLine(ctx)
-  ImGui.SetNextItemWidth(ctx, 170)
-  if ImGui.BeginCombo(ctx, "##colouritems", ilabel) then
-    for _, s in ipairs(colours.ITEM_SCHEMES) do
-      if ImGui.Selectable(ctx, s[2], s[1] == item_pick) then item_pick = s[1] end
-      ImGui.SetItemTooltip(ctx, s[3])
+  local stops_of_row = {}
+  for _, r in ipairs(ROWS) do
+    local row, words, schemes = r[1], r[2], r[3]
+    local p = parts[row]
+    local stops = colours.stops_of(p)
+    stops_of_row[row] = stops
+    ImGui.PushID(ctx, row)
+    ImGui.Spacing(ctx)
+    ImGui.AlignTextToFramePadding(ctx); ImGui.Text(ctx, words); ImGui.SameLine(ctx, 70)
+    local label, tip = p.scheme, ""
+    for _, sc in ipairs(schemes) do if sc[1] == p.scheme then label, tip = sc[2], sc[3] end end
+    ImGui.SetNextItemWidth(ctx, 150)
+    if ImGui.BeginCombo(ctx, "##scheme", label) then
+      for _, sc in ipairs(schemes) do
+        if ImGui.Selectable(ctx, sc[2], sc[1] == p.scheme) then set(row, "scheme", sc[1]) end
+        ImGui.SetItemTooltip(ctx, sc[3])
+      end
+      ImGui.EndCombo(ctx)
     end
-    ImGui.EndCombo(ctx)
+    if USES_PALETTE[row][p.scheme] then
+      ImGui.SameLine(ctx)
+      ImGui.SetNextItemWidth(ctx, 110)
+      if ImGui.BeginCombo(ctx, "##palette", p.palette) then
+        for _, pal in ipairs(colours.PALETTES) do
+          if ImGui.Selectable(ctx, pal[1], pal[1] == p.palette) then set(row, "palette", pal[1]) end
+        end
+        if ImGui.Selectable(ctx, "Your own", p.palette == "Your own") then set(row, "palette", "Your own") end
+        ImGui.EndCombo(ctx)
+      end
+      ImGui.SetItemTooltip(ctx, "The colours " .. words:sub(1, -2):lower() .. " run through. Only " .. words:sub(1, -2):lower() .. ".")
+      if p.palette == "Your own" then
+        local a, z = tonumber(p.from, 16) or 0x2F7BFF, tonumber(p.to, 16) or 0xFF8A3D
+        ImGui.SameLine(ctx)
+        local ch1, v1 = ImGui.ColorEdit3(ctx, "##from", a, ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel)
+        ImGui.SetItemTooltip(ctx, "The first colour")
+        ImGui.SameLine(ctx)
+        local ch2, v2 = ImGui.ColorEdit3(ctx, "##to", z, ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel)
+        ImGui.SetItemTooltip(ctx, "The last colour")
+        if ch1 then set(row, "from", string.format("%06X", v1)) end
+        if ch2 then set(row, "to", string.format("%06X", v2)) end
+      end
+    end
+    -- its button(s), on the row
+    if row == "tracks" then
+      beside("Colour all tracks")
+      if ImGui.Button(ctx, "Colour all tracks") then go(function() colours.run(proj, cfg, may, false) end) end
+      ImGui.SetItemTooltip(ctx, "Every track you may change, this way. Someone else's stays as it is.")
+      beside("Selected only")
+      if ImGui.Button(ctx, "Selected only") then go(function() colours.run(proj, cfg, may, true) end) end
+      ImGui.SetItemTooltip(ctx, "Only the tracks selected in REAPER.")
+    elseif row == "items" then
+      beside("Colour items")
+      if ImGui.Button(ctx, "Colour items") then
+        go(function()
+          local n, left = colours.apply_items(proj, cfg, p.scheme, stops, may)
+          band.log(string.format("coloured %d item%s%s", n, n == 1 and "" or "s", left > 0 and string.format(": %d of someone else's left as they are", left) or ""))
+        end)
+      end
+      ImGui.SetItemTooltip(ctx, "Items on the tracks you may change, " .. label:lower() .. ".")
+    else
+      beside("Colour regions")
+      ImGui.BeginDisabled(ctx, not timeline_ok)
+      if ImGui.Button(ctx, "Colour regions") then
+        go(function() band.log(string.format("coloured %d regions and markers, %s", colours.apply_marks(proj, p.scheme, stops), label:lower())) end)
+      end
+      ImGui.EndDisabled(ctx)
+      ImGui.SetItemTooltip(ctx, timeline_ok and "Every region and marker, " .. label:lower() .. "." or "The timeline is the driver's: they do this.")
+    end
+    -- what it does, and which colour means what
+    ImGui.Indent(ctx, 70)
+    ImGui.PushTextWrapPos(ctx, 0)
+    ImGui.TextDisabled(ctx, tip)
+    ImGui.PopTextWrapPos(ctx)
+    local ends = LEGENDS[row .. "." .. p.scheme]
+    if ends then legend(ctx, ImGui, stops, ends[1], ends[2])
+    elseif row == "items" and p.scheme == "kind" then
+      for i, k in ipairs({ { stops[1], "MIDI" }, { colours.ramp(stops, 0.5), "printed" }, { stops[#stops], "recordings" } }) do
+        if i > 1 then ImGui.SameLine(ctx, 0, 12) end
+        ImGui.ColorButton(ctx, "##kind" .. i, (k[1] << 8) | 0xFF, ImGui.ColorEditFlags_NoTooltip, 14, 14); ImGui.SameLine(ctx, 0, 4); ImGui.TextDisabled(ctx, k[2])
+      end
+    elseif row == "tracks" and p.scheme == "instrument" then -- the instruments' colours, yours to set
+      local kc = colours.kind_colours()
+      for i, name in ipairs(colours.KIND_NAMES) do
+        local ch, v = ImGui.ColorEdit3(ctx, name .. "##kind" .. i, kc[i], ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel)
+        if ch then colours.set_kind_colour(i, v); cache.at = -math.huge end
+        if i % 2 == 1 and i < #colours.KIND_NAMES then ImGui.SameLine(ctx, 180) end
+      end
+      if ImGui.SmallButton(ctx, "Instrument colours as they were##kinds") then reaper.DeleteExtState(band.SECTION, "colour kinds", true); kind_cache = nil; cache.at = -math.huge end
+      ImGui.SetItemTooltip(ctx, "Each instrument's colour, found from the track's name (drums, bass, guitars...). Only on this computer, until you colour the tracks.")
+    end
+    ImGui.Unindent(ctx, 70)
+    if row == "tracks" then -- what the tracks would look like
+      if reaper.time_precise() - cache.at > 2 or cache.proj ~= proj then
+        cache.at, cache.proj = reaper.time_precise(), proj
+        cache.list = colours.read(proj, cfg)
+        cache.plan = colours.plan(cache.list, p.scheme, { stops = stops })
+      end
+      local w = ImGui.GetContentRegionAvail(ctx)
+      local x, y = ImGui.GetCursorScreenPos(ctx)
+      local dl, n = ImGui.GetWindowDrawList(ctx), #cache.list
+      for i, rgb in ipairs(cache.plan) do
+        local x0 = x + (i - 1) * w / n
+        ImGui.DrawList_AddRectFilled(dl, x0, y, x0 + w / n - 1, y + 12, (rgb << 8) | 0xFF, 2)
+      end
+      ImGui.InvisibleButton(ctx, "##preview", math.max(1, w), 12)
+      if ImGui.IsItemHovered(ctx) and n > 0 then
+        local i = math.max(1, math.min(n, math.floor((select(1, ImGui.GetMousePos(ctx)) - x) / w * n) + 1))
+        ImGui.SetTooltip(ctx, cache.list[i].name)
+      end
+    end
+    ImGui.PopID(ctx)
   end
-  ImGui.SetItemTooltip(ctx, itip)
-  ImGui.SameLine(ctx)
-  if ImGui.Button(ctx, "Colour items") then
-    go(function()
-      local n, left = colours.apply_items(proj, cfg, item_pick, stops, may)
-      band.log(string.format("coloured %d item%s%s", n, n == 1 and "" or "s", left > 0 and string.format(": %d of someone else's left as they are", left) or ""))
-    end)
-  end
-  ImGui.SetItemTooltip(ctx, "Items on the tracks you may change, " .. ilabel:lower() .. ", in the palette above.")
-  ImGui.AlignTextToFramePadding(ctx); ImGui.Text(ctx, "Regions:"); ImGui.SameLine(ctx)
-  ImGui.BeginDisabled(ctx, not timeline_ok)
-  if ImGui.Button(ctx, "By section") then go(function() band.log(string.format("coloured %d regions and markers: the same section, the same colour", colours.apply_marks(proj, "sections", stops))) end) end
-  ImGui.SetItemTooltip(ctx, timeline_ok and "Every verse one colour, every chorus another." or "The timeline is the driver's: they do this.")
-  ImGui.SameLine(ctx)
-  if ImGui.Button(ctx, "Along the song") then go(function() band.log(string.format("coloured %d regions and markers along the song", colours.apply_marks(proj, "song", stops))) end) end
-  ImGui.SetItemTooltip(ctx, timeline_ok and "Start to end, through the palette." or "The timeline is the driver's: they do this.")
-  ImGui.EndDisabled(ctx)
+  ImGui.Spacing(ctx)
   local ch, v = ImGui.Checkbox(ctx, "Try it on this computer first##colourtryfirst", first)
   if ch then reaper.SetExtState(band.SECTION, "colour try", v and "" or "off", true) end
   ImGui.SetItemTooltip(ctx, "On: a colour button changes this computer only, with sending held, until you press Keep it for everyone (or Put it back).\n" ..
     "Off: it goes to everyone straight away (" .. require("undo").key_name() .. " still takes it back).")
   if require("groups").may_manage(cfg.root, cfg.user) then
     if ImGui.SmallButton(ctx, "Make this the studio's look") then
-      require("groups").set_colours(cfg.root, { scheme = scheme, palette = palette, from = string.format("%06X", a), to = string.format("%06X", z) })
+      require("groups").set_colours(cfg.root, whole())
       band.log("new projects in " .. tostring(band.info(cfg.root).name) .. " start in this look (a project with colours of its own keeps them)")
     end
-    ImGui.SetItemTooltip(ctx, "New projects in this studio are coloured this way by themselves, unless they already have colours. Any project can still pick its own.")
+    ImGui.SetItemTooltip(ctx, "New projects in this studio get these track colours by themselves, unless they already have colours. Any project can still pick its own.")
   end
   if from == "project" then
     ImGui.SameLine(ctx)

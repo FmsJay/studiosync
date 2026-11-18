@@ -245,6 +245,7 @@ function people.seen(where)
 end
 function people.held(where) return tonumber(reaper.GetExtState(band.SECTION, "new held " .. where)) or 0 end
 
+local wheel_at -- (the wheel's colour while it's open)
 -- Settings: your colour, and how tracks look here. (In this file: the panel is near Lua's 200-locals limit.)
 function people.colour_options(ctx, ImGui, cfg)
   ImGui.SeparatorText(ctx, "Your colour")
@@ -261,6 +262,9 @@ function people.colour_options(ctx, ImGui, cfg)
     ImGui.SameLine(ctx)
     if ImGui.GetContentRegionAvail(ctx) < width then ImGui.NewLine(ctx) end
   end
+  local listed = false
+  for _, c in ipairs(list) do listed = listed or c == mine end
+  if mine and not listed then list[#list + 1] = mine end -- (one from the wheel: a swatch like the rest, the bigger one. James, 0.59.4)
   for i, c in ipairs(list) do
     if i > 1 then next_to(30) end
     ImGui.PushID(ctx, i)
@@ -271,11 +275,17 @@ function people.colour_options(ctx, ImGui, cfg)
     if others[c] then ImGui.SetItemTooltip(ctx, others[c] .. "'s") end
     ImGui.PopID(ctx)
   end
-  next_to(30)
-  local rv, picked = ImGui.ColorEdit3(ctx, "##own", mine, ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel) -- (a wheel: James, 0.58.99)
-  if rv and picked ~= mine then people.pick(cfg, picked) end
-  ImGui.SetItemTooltip(ctx, "Any colour of your own: click for the colour wheel")
-  ImGui.SameLine(ctx, 0, 4); ImGui.TextDisabled(ctx, "any colour")
+  -- Any colour: a wheel until you've picked on it (James, 0.59.4: "no extra box", it was a second swatch of your colour)
+  next_to(90)
+  if ImGui.SmallButton(ctx, "Any colour##owncolour") then wheel_at = mine or list[1]; ImGui.OpenPopup(ctx, "owncolour") end
+  ImGui.SetItemTooltip(ctx, "A colour wheel: pick any colour of your own.")
+  if ImGui.BeginPopup(ctx, "owncolour") then
+    local rv, c = ImGui.ColorPicker3(ctx, "##ownwheel", wheel_at or 0x808080,
+      ImGui.ColorEditFlags_PickerHueWheel | ImGui.ColorEditFlags_NoSidePreview | ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_NoAlpha)
+    if rv then wheel_at = c end
+    if ImGui.IsItemDeactivatedAfterEdit(ctx) then people.pick(cfg, wheel_at); ImGui.CloseCurrentPopup(ctx) end -- (picked: on letting go)
+    ImGui.EndPopup(ctx)
+  end
   next_to(70)
   if ImGui.SmallButton(ctx, "Default##colour") then people.pick(cfg, nil) end
   ImGui.TextDisabled(ctx, "Everyone sees you in it, in every studio you're in: your drawings, and tracks you're working on where they show that.")

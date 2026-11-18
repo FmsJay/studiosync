@@ -51,4 +51,19 @@ assert(drive.service_of("C:/Users/x/OneDrive/S") == "onedrive", "OneDrive")
 assert(drive.service_of("/Users/x/Library/Mobile Documents/com~apple~CloudDocs/S") == "icloud" and drive.service_of("C:/Users/x/iCloudDrive/S") == "icloud", "iCloud")
 assert(drive.service_of("C:/Users/x/Box/S") == "box" and drive.service_of("/Users/x/Library/CloudStorage/Box-Box/S") == "box", "Box")
 assert(drive.service_of("D:/Music/S") == nil and drive.label("dropbox") == "Dropbox", "nothing known")
+-- several cloud drives on one computer (0.59.4)
+local g, o, g2 = "G:/My Drive/S", "C:/Users/x/OneDrive/S", "H:/My Drive/S"
+local here = { [g] = true, [o] = true, [g2] = true }
+local function ex(p) return here[p] == true end
+assert(drive.settle(g, "", ex) == g, "first time: the one found")
+assert(drive.settle(o, g, ex) == g, "the one in use stays while it's there, though another drive's comes first now")
+here[g] = nil
+local use, away, other = drive.settle(o, g, ex)
+assert(use == nil and away == g and other == o, "Google Drive not up: no jump to OneDrive's folder of that name")
+assert(drive.settle(g2, g, ex) == g2, "the same Google Drive on another letter")
+assert(drive.settle(o, g, ex, "onedrive") == o, "OneDrive picked in Settings: it moves")
+here[g] = true
+assert(drive.settle(o, g, ex, "onedrive") == o, "picked, though the old one's still there")
+use, away = drive.settle(nil, g2, function() return false end)
+assert(use == nil and away == g2, "nothing here now")
 print("ok")

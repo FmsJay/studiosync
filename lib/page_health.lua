@@ -202,7 +202,9 @@ function H.maint_rows()
   if daway then
     local who = daway:match("GoogleDrive%-([^/]+)/") or daway:match("^(%a:)")
     rows[#rows + 1] = { "drive away", false, "yellow", "", require("drive").label(require("drive").service_of(daway)) .. ": the studio's folder (" .. tostring(who) .. ") isn't here now. Is that " ..
-      "account signed out, or switched for another? Everything still syncs between you; the cloud copy catches up once it's back." }
+      "account signed out, or switched for another? Everything still syncs between you; the cloud copy catches up once it's back." ..
+      (require("drive").other and ("\nThere's a folder of that name in " .. require("drive").label(require("drive").service_of(require("drive").other)) ..
+        " too, left alone: to use that one, pick it in Settings > Cloud copy.") or "") }
   end
   return rows
 end

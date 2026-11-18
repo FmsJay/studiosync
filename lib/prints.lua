@@ -196,7 +196,8 @@ end
 function prints.mode() local m = reaper.GetExtState(band.SECTION, "midi_plays"); return m ~= "" and m or "auto" end
 -- A track's own choice, this computer's (James, 0.59.2: "right click the track and switch dry or wet"): "dry" (every part plays itself,
 -- through the track's plug-ins, which come back on), "wet" (every part plays the studio's print, the track's plug-ins held off so nothing
--- goes through them twice), or "" (as the choice above). In the project's own state by the track's GUID: never sent to anyone.
+-- goes through them twice), "auto" (as Auto does: through the plug-ins when they all load here, else the print; James, 0.59.4: "dry wet
+-- auto like the other setting"), or "" (never set: as Settings > Options > Parts play says). In the project's own state by the track's GUID: never sent to anyone.
 prints.PLAYS = "BandSync plays"
 function prints.track_choice(proj, tr) return select(2, reaper.GetProjExtState(proj, prints.PLAYS, reaper.GetTrackGUID(tr))) end
 function prints.set_track_choice(proj, tr, choice)
@@ -224,7 +225,7 @@ function prints.choose(it)
   if not (dry and print) then return recheck() end
   local mode = prints.mode()
   local own = prints.track_choice(reaper.GetItemProjectContext(it), tr) -- (the track's own choice first)
-  if own == "dry" then mode = "notes" elseif own == "wet" then mode = "sound" end
+  if own == "dry" then mode = "notes" elseif own == "wet" then mode = "sound" elseif own == "auto" then mode = "auto" end
   local want = mode == "sound" and print or mode == "notes" and dry or (prints.track_plays(tr) and dry or print)
   if reaper.GetActiveTake(it) ~= want then reaper.SetActiveTake(want); reaper.UpdateItemInProject(it) end
   prints.hold_fx(tr)

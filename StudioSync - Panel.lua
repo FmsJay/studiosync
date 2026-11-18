@@ -1019,6 +1019,9 @@ end
 local function set_same_room(v)
   local _, sm, si = same_room_on()
   if v then
+    -- (one or the other: both send your mix, so with both on everyone heard you twice, live and again bars later, and following
+    -- each other wants 0 bars behind for one and an interval for the other. James, 0.59.4)
+    if b and page_play.time_sync_on() then page_play.time_sync(false) end
     local link, why = setup.sonobus(cfg, b, proj, true)
     if not link then return band.msg(why) end
     sb_link = link
@@ -1280,10 +1283,53 @@ function ui.call_tab()
     ImGui.TextDisabled(ctx, "Real time mode on: talk to everyone with Talk, no other app needed, and set each person's volume.")
   end
 end
+-- Real time mode's three ways (James, 0.59.4: "my time, their time for SonoBus and then time sync for NINJAM, each stating what they do").
+-- One at a time: SonoBus and NINJAM both carry your mix, so with both on everyone hears you twice. The last one picked comes back with the switch.
+local RT_KINDS = {
+  { "my", "My time", "Live through SonoBus: you hear everyone the moment it arrives, a little late (the network). For playing and talking together." },
+  { "their", "Their time", "Live through SonoBus, your backing delayed so the others line up with it. For listening along, not for playing." },
+  { "timesync", "Time-sync", "Through NINJAM: everyone plays to their own copy of the song and hears the others exactly in time with it, %s late. For playing along to a take; no Talk." },
+}
+function ui.rt_kind()
+  if page_play.time_sync_on() then return "timesync" end
+  if same_room_on() then return require("page_hear").their_time_on(proj) and "their" or "my" end
+  return nil
+end
+function ui.set_rt_kind(kind) -- nil: off
+  local now = ui.rt_kind()
+  if kind == now then return end
+  if kind then reaper.SetProjExtState(proj, band.SECTION, "rt kind", kind) end
+  if kind == "timesync" then
+    if not b then return band.msg("Time-sync needs a studio project open.") end
+    if same_room_on() then set_same_room(false) end
+    page_play.time_sync(true)
+  elseif kind then
+    if not same_room_on() then set_same_room(true) end
+    require("page_hear").set_their_time(proj, kind == "their")
+  elseif now == "timesync" then page_play.time_sync(false)
+  else set_same_room(false) end
+end
 local function home_play()
-  local on = same_room_on()
+  local kind = ui.rt_kind()
+  local on, sb = kind ~= nil, kind == "my" or kind == "their"
   local ch, v = switch_row("##rt", "Real time mode", on, SAME_ROOM_TIP)
-  if ch then set_same_room(v) end
+  if ch then
+    local last = select(2, reaper.GetProjExtState(proj, band.SECTION, "rt kind"))
+    ui.set_rt_kind(v and (last ~= "" and (b or last ~= "timesync") and last or "my") or nil)
+    kind = ui.rt_kind(); on, sb = kind ~= nil, kind == "my" or kind == "their"
+  end
+  if on then
+    local bars = b and page_play.interval_bars() or 1
+    ImGui.Indent(ctx, 26)
+    for _, k in ipairs(RT_KINDS) do
+      ImGui.BeginDisabled(ctx, k[1] == "timesync" and not b)
+      if ImGui.RadioButton(ctx, k[2] .. "##rtkind", kind == k[1]) and kind ~= k[1] then ui.set_rt_kind(k[1]) end
+      ImGui.EndDisabled(ctx)
+      local says = k[3]:format(string.format("%d bar%s", bars, bars == 1 and "" or "s"))
+      if ui.short then ImGui.SetItemTooltip(ctx, says) else ImGui.TextDisabled(ctx, says) end
+    end
+    ImGui.Unindent(ctx, 26)
+  end
   require("page_hear").fit(ctx, ImGui, "Configure SonoBus") -- (beside, or below in a narrow column: it was cut to "Configure Sono")
   if ImGui.SmallButton(ctx, "Configure SonoBus") then sonobus_open() end
   ImGui.SetItemTooltip(ctx, "Opens SonoBus's own window (volume and mute per collaborator, buffer, quality). You don't need it to play together.")
@@ -1293,7 +1339,7 @@ local function home_play()
       local link, why = setup.sonobus(cfg, b, proj, true)
       if not link then band.msg(why) else
         sb_link = link
-        if not on then set_same_room(true) end
+        if not sb then set_same_room(true) end
         require("guest").set(proj, true)
         local info = band.info(cfg.root)
         tools.show_invite("Join me live in " .. tostring(info.name) .. " (" .. tostring(b.song) .. ") with SonoBus: you'll hear the song and me, and I'll hear and record you.\n\n" ..
@@ -1307,8 +1353,8 @@ local function home_play()
     ImGui.SetItemTooltip(ctx, "For someone with only the SonoBus app (no REAPER, no StudioSync): a message with SonoBus's download and a link that joins your\n" ..
       "studio's live audio. Turns on Real time mode and SonoBus Guest, so they hear your mix and what they play records here.")
   end
-  ui.talk_controls(on)
-  if on then -- (the help for it was in Settings > Advanced, with nothing here pointing at it: UX review, 0.58.52)
+  ui.talk_controls(sb)
+  if sb then -- (the help for it was in Settings > Advanced, with nothing here pointing at it: UX review, 0.58.52)
     require("page_hear").fit(ctx, ImGui, "Can't hear?")
     if ImGui.SmallButton(ctx, "Can't hear?") then ui.go_settings("Advanced") end
     ImGui.SetItemTooltip(ctx, "What to try when you can't hear someone, or they can't hear you (Settings > Advanced).")
@@ -1320,23 +1366,10 @@ local function home_play()
     ImGui.SetItemTooltip(ctx, "Opens the studio's call (" .. call .. ") in its own app or browser, with video if it has it.\n" ..
       "Mute its microphone while you play: Real time mode already carries the music, and two copies echo.")
   end
-  if b then -- Time-sync (James, 0.58.99): hear each other in time with the song, a bar or two late, through NINJAM (the Play/Jam page's Play along)
-    local ts = page_play.time_sync_on()
-    local one = page_play.interval_bars()
-    ImGui.Indent(ctx, 26) -- (a setting under Real time mode: James, 0.59.3)
-    local tch, tv = ImGui.Checkbox(ctx, string.format("Time-sync: in time with the song, %d bar%s late##timesync", one, one == 1 and "" or "s"), ts)
-    ImGui.Unindent(ctx, 26)
-    ImGui.SetItemTooltip(ctx, string.format("Everyone plays to their own copy of the song, and hears the others in time with it, %d bar%s late " ..
-      "here (a whole NINJAM interval, about 2.4 s, and a second's margin: more bars in a fast song):\nexactly how the person recording played it, which Real time mode's live audio can't promise over the internet.\n" ..
-      "For listening to a take and playing along, not for talking (that's Real time mode). It needs Tailscale; this computer runs the server if nobody does.",
-      one, one == 1 and "" or "s"))
-    if tch then page_play.time_sync(tv) end
+  if not ui.short and not on then -- (a tall docker has the room)
+    ImGui.TextDisabled(ctx, "Off: changes still sync, but you don't hear each other live or follow each other's play and stop.")
   end
-  if not ui.short then -- (a tall docker has the room)
-    ImGui.TextDisabled(ctx, on and "You hear everyone live, and play, stop and record follow whoever presses them."
-      or "Off: changes still sync, but you don't hear each other live or follow each other's play and stop.")
-  end
-  if on then require("page_hear").realtime(ctx, ImGui, proj) end
+  if sb then require("page_hear").realtime(ctx, ImGui, proj, true) end
   local silent = reaper.GetExtState(band.SECTION, "rt silent " .. tostring(proj))
   if silent ~= "" then ImGui.TextColored(ctx, YELLOW, silent) end
   local trouble = reaper.GetExtState(band.SECTION, "rt trouble " .. tostring(proj))
@@ -1529,25 +1562,29 @@ function ui.driver_rows()
     if v then reaper.DeleteExtState(band.SECTION, "follow " .. tostring(proj), false) end
   end
 end
--- The selected tracks dry or wet here (James, 0.59.3: "an easy way to switch a track between wet and dry from the panel"). Only on this computer.
+-- The selected tracks dry, wet or auto here (James, 0.59.3: "an easy way to switch a track between wet and dry from the panel"; 0.59.4: "dry wet
+-- auto like the other setting, and move it to advanced"). Only on this computer. Lit: what the first selected track does now.
 function ui.track_plays_row()
+  local prints = require("prints")
   local sel = reaper.GetSelectedTrack(proj, 0)
-  local cur = sel and require("prints").track_choice(proj, sel) or nil
+  local cur = sel and prints.track_choice(proj, sel) or nil
+  if cur == "" then cur = ({ notes = "dry", sound = "wet" })[prints.mode()] or "auto" end -- (never set: as Parts play says)
   ImGui.AlignTextToFramePadding(ctx); ImGui.Text(ctx, "Selected tracks play:"); ImGui.SameLine(ctx)
-  for _, c in ipairs({ { "dry", "Dry" }, { "wet", "Wet" }, { "", "As set" } }) do
+  for _, c in ipairs({ { "dry", "Dry" }, { "wet", "Wet" }, { "auto", "Auto" } }) do
     local here = sel and cur == c[1]
     if here then ImGui.PushStyleColor(ctx, ImGui.Col_Button, theme.SELECTED) end
-    if ImGui.SmallButton(ctx, c[2] .. "##homeplays") then
+    if ImGui.SmallButton(ctx, c[2] .. "##trackplays") then
       local n = reaper.CountSelectedTracks(proj)
       if n == 0 then band.msg("Select the tracks first.") else
-        for i = 0, n - 1 do require("prints").set_track_choice(proj, reaper.GetSelectedTrack(proj, i), c[1]) end
-        band.log(string.format("%d track%s: %s here", n, n == 1 and "" or "s", c[1] == "" and "as Settings > Options > Parts play says" or c[1]))
+        for i = 0, n - 1 do prints.set_track_choice(proj, reaper.GetSelectedTrack(proj, i), c[1]) end
+        band.log(string.format("%d track%s: %s here", n, n == 1 and "" or "s", c[1]))
       end
     end
     if here then ImGui.PopStyleColor(ctx) end
     ImGui.SetItemTooltip(ctx, ({ dry = "Each part plays itself through the track's plug-ins (they come back on): try other effects here.",
       wet = "Each part plays the studio's print, exactly what was heard; the track's plug-ins are held off so nothing goes through them twice.",
-      [""] = "As Settings > Options > Parts play says, like the rest." })[c[1]] .. "\nOnly on this computer.")
+      auto = "Through the track's plug-ins when every one of them loads here, else the studio's print." })[c[1]] ..
+      "\nOnly on this computer. Also as actions, for the track's right-click menu: StudioSync - Selected tracks play dry / wet / as chosen.")
     ImGui.SameLine(ctx)
   end
   ImGui.NewLine(ctx)
@@ -1559,7 +1596,6 @@ local function home_session()
     section_driver()
     ui.driver_rows()
     local_mix_row()
-    ui.track_plays_row()
     section_claims()
     card_end()
   end
@@ -1575,7 +1611,6 @@ local function home_rules()
   section_driver()
   ui.driver_rows()
   local_mix_row()
-  ui.track_plays_row()
 end
 local function home_claims()
   heading("Claims", 17)
@@ -1712,23 +1747,7 @@ local function settings_sync()
     -- MIDI wet/dry, this machine's choice (lib/prints.lua): never changes what anyone else hears
     -- (Dry and Wet read as an effect's mix knob, and as MIDI only: it's every part, audio too. UX review, 0.58.62)
     ImGui.SeparatorText(ctx, "Parts play (MIDI and audio)")
-    do -- a track's own (0.59.2): the selected tracks dry or wet here, whatever the choice below
-      ImGui.AlignTextToFramePadding(ctx); ImGui.Text(ctx, "Selected tracks:"); ImGui.SameLine(ctx)
-      for _, c in ipairs({ { "dry", "Dry" }, { "wet", "Wet" }, { "", "As below" } }) do
-        if ImGui.SmallButton(ctx, c[2] .. "##trackplays") then
-          local n = reaper.CountSelectedTracks(proj)
-          if n == 0 then band.msg("Select the tracks first.") else
-            for i = 0, n - 1 do require("prints").set_track_choice(proj, reaper.GetSelectedTrack(proj, i), c[1]) end
-            band.log(string.format("%d track%s: %s here", n, n == 1 and "" or "s", c[1] == "" and "as chosen below" or c[1]))
-          end
-        end
-        ImGui.SetItemTooltip(ctx, ({ dry = "Every part on the selected tracks plays itself, through the track's plug-ins (they come back on).",
-          wet = "Every part on the selected tracks plays the studio's print; the track's plug-ins are held off so nothing goes through them twice.",
-          [""] = "The selected tracks play as chosen below, like the rest." })[c[1]] .. "\nOnly on this computer. Also as actions, for the track's right-click menu: StudioSync - Selected tracks play dry / wet / as chosen.")
-        ImGui.SameLine(ctx)
-      end
-      ImGui.NewLine(ctx)
-    end
+    -- (the selected tracks' own Dry / Wet / Auto: Settings > Advanced, 0.59.4)
     local prints = require("prints")
     for _, m in ipairs({ { "auto", "Auto", "Through your plug-ins when every plug-in the part plays through loads here, else as the studio printed it." },
         { "notes", "Through my plug-ins", "Always the part itself through your own plug-ins: a MIDI part's notes through your instruments, a recording through\n" ..
@@ -2050,6 +2069,7 @@ function ui.settings_advanced()
   if card("advanced") then
     if not ui.short then heading("Advanced", 17) end
     if b then
+      ui.track_plays_row() -- (from Who can edit and Options: James, 0.59.4)
       if ImGui.SmallButton(ctx, "Keep selected tracks local") then ui.keep_local() end -- (moved off Home: confusing beside claims. James, 0.59.3)
       ImGui.SetItemTooltip(ctx, "New tracks of your own that never go to the others: a reference mix, a guide, a scratch idea. Only tracks that haven't gone out yet\n" ..
         "(a shared one would vanish for everyone). Pressed again with only such tracks selected, it shares them.")
