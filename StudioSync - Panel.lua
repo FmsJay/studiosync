@@ -3038,7 +3038,7 @@ for k, v in pairs({ same_room_on = same_room_on, set_same_room = set_same_room, 
     sb_link = function() return sb_link end }) do ui.env[k] = v end
 page_play.init(ui.env)
 local function frame()
-  if b and cfg then recall.warm(cfg, b.song, b.room, 0.004) end
+  if b and cfg then recall.warm(cfg, b.song, b.room, 0.004, page ~= "Restore" and page ~= "Chat") end -- (relisted only where it's shown: 0.59.14, review)
   if reaper.time_precise() - last > 1.5 or reaper.EnumProjects(-1) ~= proj then
     last = reaper.time_precise()
     local ok, e = pcall(refresh)

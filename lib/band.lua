@@ -204,9 +204,14 @@ function band.read(path)
   return s
 end
 
+-- Shared folder listings (band.listing): dir -> { at, raw, ["<ext>|<sorted>"] = filtered }. Emptied by every write and removal here, so
+-- this script never misses a file it made itself. (0.59.14, review: a room's events folder, 20,000 files in a big song, was read from disk,
+-- filtered and sorted four to six times per Live sync poll.)
+local listed = {}
 -- Remove a file and a leftover of an interrupted rename beside it (band.read puts that back: a removal mark or a guest list deleted on purpose
 -- came back from it. Review, 0.58.92)
 function band.remove(path)
+  listed = {}
   local dir, name = path:match("^(.*)/([^/]+)$")
   if dir then os.remove(dir .. "/.syncthing." .. name .. ".old.tmp") end
   return os.remove(path)
@@ -224,6 +229,7 @@ end
 -- A write that didn't all reach the disk (a full disk) raises, and the old file stays: renaming a cut-off file into
 -- place made it the band's copy (review, 2026-10-31).
 local function finish(tmp, path, f, want)
+  listed = {}
   local ok_close = f:close()
   if not ok_close or band.size(tmp) ~= want then
     os.remove(tmp)
@@ -278,7 +284,7 @@ function band.write_json(path, t) band.write_atomic(path, json.encode(t, true)) 
 function band.json_encode(t) return json.encode(t) end -- keys sorted: equal tables give equal strings
 function band.json_decode(s) local ok, v = pcall(json.decode, s); return ok and v or nil end
 
-local function enum(fn, dir)
+local function enum(fn, dir, unsorted)
   local out, i = {}, 0
   fn(dir, -1) -- invalidate REAPER's directory cache so newly synced files show up
   while true do
@@ -286,19 +292,42 @@ local function enum(fn, dir)
     if not name then break end
     out[#out + 1] = name; i = i + 1
   end
-  table.sort(out)
+  if not unsorted then table.sort(out) end
   return out
 end
 
 -- Sync conflict copies ("x.sync-conflict-20261028-071122-ABCDEF.json", Drive's "x (1).json") aren't files of
 -- ours: a copy of an event would be applied again on every pass (it never counts as applied).
 function band.is_conflict_copy(f) return f:find(".sync-conflict-", 1, true) ~= nil or f:match(" %(%d+%)%.[^.]+$") ~= nil end
-function band.files(dir, ext)
+local function ours(names, ext)
   local out = {}
-  for _, f in ipairs(enum(reaper.EnumerateFiles, dir)) do
+  for _, f in ipairs(names) do
     if (not ext or f:lower():sub(-#ext) == ext) and not band.is_conflict_copy(f) then out[#out + 1] = f end
   end
   return out
+end
+function band.files(dir, ext) return ours(enum(reaper.EnumerateFiles, dir), ext) end -- (filtered after sorting or before: the same list)
+
+-- The same as band.files, but one listing a folder shares for LISTING_SECS among everyone in this script who asks (0.59.14, review: receive,
+-- pending_events twice, the event count and the cue watch each listed the events folder again). `sorted` false: in the folder's own order,
+-- for callers that only count or look names up (sorting 20,000 names was most of a listing's cost). The table is shared: never change it.
+band.LISTING_SECS = 0.2
+-- Every name in the folder, unfiltered and in its own order (shared: never change it). `fresh`: read it now (the cue watch: a start or stop
+-- isn't held back 0.2 s), and everyone else shares that read.
+function band.raw_listing(dir, fresh)
+  local now, c = reaper.time_precise(), listed[dir]
+  if fresh or not c or now - c.at > band.LISTING_SECS then c = { at = now, raw = enum(reaper.EnumerateFiles, dir, true) }; listed[dir] = c end
+  return c.raw
+end
+function band.listing(dir, ext, sorted)
+  band.raw_listing(dir)
+  local c = listed[dir]
+  local key = tostring(ext) .. "|" .. tostring(sorted == true)
+  if not c[key] then
+    c[key] = ours(c.raw, ext)
+    if sorted then table.sort(c[key]) end
+  end
+  return c[key]
 end
 
 function band.subdirs(dir) return enum(reaper.EnumerateSubdirectories, dir) end

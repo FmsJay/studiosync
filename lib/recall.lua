@@ -87,18 +87,33 @@ function recall.save(proj, cfg, song, room, label, keep)
   return file
 end
 
--- Newest first: { file, label, by, time, takes = count }
-function recall.list(cfg, song, room)
-  local dir, out = recall.dir(cfg, song, room), {}
-  local files = band.files(dir, ".json")
+-- Newest first: { file, label, by, time, takes = count }. The rows are shared between calls: never change them.
+-- (0.59.14, review: the panel read and decoded every saved version, each up to 1 MB, every 1.5 s. A version's file never changes once
+-- written, and its name carries its time, who and label: each is read once, and only new ones after that.)
+local list_rows = {} -- versions folder -> { file name -> its row }
+-- The rows for `files` (sorted, oldest first), newest first, reading (`read(name)` -> the decoded file or nil) only names not in `had`.
+-- -> rows, and the name -> row map to pass as `had` next time (names gone drop out; one that didn't read is tried again). Pure.
+function recall.rows(files, had, read)
+  local out, now = {}, {}
   for i = #files, 1, -1 do
-    local st = band.read_json(dir .. "/" .. files[i])
-    if st then
-      local n = 0
-      for _ in pairs(st.takes or {}) do n = n + 1 end
-      out[#out + 1] = { file = files[i], label = st.label or files[i], by = st.by, time = st.time, takes = n, keep = st.keep }
+    local f = files[i]
+    local row = had[f]
+    if not row then
+      local st = read(f)
+      if st then
+        local n = 0
+        for _ in pairs(st.takes or {}) do n = n + 1 end
+        row = { file = f, label = st.label or f, by = st.by, time = st.time, takes = n, keep = st.keep }
+      end
     end
+    if row then now[f] = row; out[#out + 1] = row end
   end
+  return out, now
+end
+function recall.list(cfg, song, room)
+  local dir = recall.dir(cfg, song, room)
+  local out, rows = recall.rows(band.files(dir, ".json"), list_rows[dir] or {}, function(f) return band.read_json(dir .. "/" .. f) end)
+  list_rows[dir] = rows
   return out
 end
 
@@ -109,12 +124,15 @@ end
 recall.ev_cache = {} -- event file path -> its event (files never change once written: read once per session)
 -- Reads the room's changes a few at a time, for `secs` per call, so nothing has to read thousands at once when a page opens.
 -- -> whether they've all been read, how many have, how many there are.
+-- `idle`: nobody is looking at what it reads just now: the first read of everything carries on, but once that's done the folder isn't looked
+-- at again every 5 s (0.59.14, review: a listing of 20,000 names and a pass over them, every 5 s on every page). Back on the page, the next
+-- call looks again at once (it's been more than 5 s) and reads only what's new.
 local warming = {}
-function recall.warm(cfg, song, room, secs)
+function recall.warm(cfg, song, room, secs, idle)
   local rdir = sync.room_dir(cfg, song, room)
   local w, t0 = warming[rdir], reaper.time_precise()
-  if not w or (w.i > #w.files and t0 - w.at > 5) then
-    w = { files = band.files(rdir .. "/events", ".json"), i = 1, at = t0, notes = w and w.notes or {}, noted = w and w.noted or {} }
+  if not w or (w.i > #w.files and t0 - w.at > 5 and not idle) then
+    w = { files = band.listing(rdir .. "/events", ".json", true), i = 1, at = t0, notes = w and w.notes or {}, noted = w and w.noted or {} }
     warming[rdir] = w
   end
   while w.i <= #w.files and reaper.time_precise() - t0 < secs do

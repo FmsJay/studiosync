@@ -42,7 +42,7 @@ function presence.my_ping(proj)
 end
 
 -- ---- the others' ----------------------------------------------------------------------------------
-local peers_at, peers = {}, {}
+local peers_at, peers, everyone = {}, {}, {} -- (everyone: every bandmate's status file as read, fresh or not: presence.all)
 -- Bandmates' fresh status files (seen in the last 45 s), read at most once a second per room.
 -- Clocks (review, 0.58.89): a status file carries its writer's own clock. Each one that changes is a few seconds old when it arrives, so a
 -- bigger gap, either way, is a clock that's off: theirs or this computer's. One behind by more than 45 s read as gone, though here.
@@ -57,11 +57,12 @@ end
 function presence.peers(cfg, song, room)
   local key = song .. "/" .. room
   if peers_at[key] and reaper.time_precise() - peers_at[key] < 1 then return peers[key] end
-  local dir, out = require("sync").room_dir(cfg, song, room) .. "/status", {}
+  local dir, out, all = require("sync").room_dir(cfg, song, room) .. "/status", {}, {}
   local now = reaper.time_precise()
   for _, f in ipairs(band.files(dir, ".json")) do
     local st = band.read_json(dir .. "/" .. f)
     if type(st) == "table" and type(st.user) == "string" and st.user ~= cfg.user and type(st.time) == "string" then
+      all[#all + 1] = st
       local l = last_time[st.user]
       if not l or l.time ~= st.time then l = { time = st.time, at = l and now or -math.huge }; last_time[st.user] = l end
       local age = band.age(st.time)
@@ -70,8 +71,14 @@ function presence.peers(cfg, song, room)
       if age < 45 or gap or now - l.at < 45 then out[#out + 1] = st end -- (still writing, whatever their clock says)
     end
   end
-  peers_at[key], peers[key] = reaper.time_precise(), out
+  peers_at[key], peers[key], everyone[key] = reaper.time_precise(), out, all
   return out
+end
+-- Every bandmate's status file, however old, from the same read as presence.peers (at most a second old). Shared: never change them.
+-- (0.59.14, review: sync.present read every status file again each poll, right beside presence.peers.)
+function presence.all(cfg, song, room)
+  presence.peers(cfg, song, room)
+  return everyone[song .. "/" .. room]
 end
 -- Who else is editing this object right now (nil when nobody is). Pure apart from the peers list.
 -- Track groups that tie together tracks made by different people (review, 0.58.89): a group number travels as it is, so two people who

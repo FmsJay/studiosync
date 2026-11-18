@@ -12,6 +12,25 @@ function status.ago(sec)
   return math.floor(sec / 60) .. " min ago"
 end
 
+-- The newest change anyone posted (event file names carry their UTC stamp), as an ISO time ("" for none). Each name's stamp is worked out
+-- once: names never change, and doing it for all 20,000 of a big room every 1.5 s was most of a panel refresh (0.59.14, review). Pure.
+local iso_of, last_files, last_newest = {}, nil, "" -- file name -> its ISO stamp, or false; the listing last looked at and its answer
+function status.newest_event(files)
+  if files == last_files then return last_newest end -- (the same shared listing: band.listing)
+  local newest = ""
+  for _, f in ipairs(files) do
+    local iso = iso_of[f]
+    if iso == nil then
+      local d, t = f:match("(%d%d%d%d%d%d%d%d)%-(%d%d%d%d%d%d)Z")
+      iso = d and string.format("%s-%s-%sT%s:%s:%sZ", d:sub(1, 4), d:sub(5, 6), d:sub(7, 8), t:sub(1, 2), t:sub(3, 4), t:sub(5, 6)) or false
+      iso_of[f] = iso -- shortcut: names trimmed away stay here (a few bytes each), fine for a session
+    end
+    if iso and iso > newest then newest = iso end
+  end
+  last_files, last_newest = files, newest
+  return newest
+end
+
 -- { rows = { name, age, version, missing, has, mine, state }, total, mine, my_missing, my_age, newer, driver, print }
 function status.gather(cfg, b, proj)
   local view = {}
@@ -36,14 +55,7 @@ function status.gather(cfg, b, proj)
   end
   local me = sync.holdings(proj)
   -- the newest change anyone posted (event file names carry their UTC stamp), as an ISO time
-  local newest_event = ""
-  for _, f in ipairs(band.files(sync.room_dir(cfg, b.song, b.room) .. "/events", ".json")) do
-    local d, t = f:match("(%d%d%d%d%d%d%d%d)%-(%d%d%d%d%d%d)Z")
-    if d then
-      local iso = string.format("%s-%s-%sT%s:%s:%sZ", d:sub(1, 4), d:sub(5, 6), d:sub(7, 8), t:sub(1, 2), t:sub(3, 4), t:sub(5, 6))
-      if iso > newest_event then newest_event = iso end
-    end
-  end
+  local newest_event = status.newest_event(band.listing(sync.room_dir(cfg, b.song, b.room) .. "/events", ".json"))
   view.newest_event = newest_event
   local rows, seen = {}, require("removal").gone(cfg.root) -- (someone taken out of the group isn't listed)
   seen[cfg.user] = nil
