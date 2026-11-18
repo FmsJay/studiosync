@@ -200,11 +200,22 @@ end
 -- Time-sync (James, 0.58.99): Home's switch for Play along. You play to your copy of the song; the others hear you in time with theirs,
 -- one NINJAM interval (a bar or two) behind, exactly as you played it. Real time mode is the one for hearing each other at once.
 function M.time_sync_on() return live.fx(E.proj(), false) ~= nil and live_mode == "synced" end
+-- How many of this song's bars the listener has to be behind. NINJAM sends in intervals of the SERVER's beats and tempo (bandsync.cfg:
+-- 4 beats at 100, 2.4 s) whatever the song's tempo, so a whole interval has to be uploaded and fetched before it can play: the interval's
+-- length, a second's margin for the network, in bars at the song's tempo where the cursor is. A fast song needs more bars (James, 0.59.1:
+-- "depending on the tempo more bars may be needed"). Pure: M.bars_behind; M.interval_bars reads the server's settings and the project.
+function M.bars_behind(server_bpm, server_bpi, song_bpm, beats_per_bar, margin)
+  local interval = (server_bpi or 4) * 60 / math.max(1, server_bpm or 100)
+  local bar = (beats_per_bar or 4) * 60 / math.max(1, song_bpm or 120)
+  return math.max(1, math.ceil((interval + (margin or 1)) / bar)), interval
+end
 function M.interval_bars()
-  local ok_cfg, bpi = pcall(function() return tonumber((band.read(services.ninjam_dir() .. "/bandsync.cfg") or ""):match("DefaultBPI%s+(%d+)")) end)
-  bpi = ok_cfg and bpi or 4
-  local _, _, _, num = reaper.TimeMap_GetTimeSigAtTime(E.proj(), reaper.GetCursorPositionEx(E.proj()))
-  return math.max(1, math.ceil(bpi / math.max(1, num or 4))), bpi
+  local text = band.read(services.ninjam_dir() .. "/bandsync.cfg") or ""
+  local bpi = tonumber(text:match("DefaultBPI%s+(%d+)")) or 4
+  local bpm = tonumber(text:match("DefaultBPM%s+(%d+)")) or 100
+  local proj = E.proj()
+  local num, _, tempo = reaper.TimeMap_GetTimeSigAtTime(proj, reaper.GetCursorPositionEx(proj))
+  return M.bars_behind(bpm, bpi, tempo, num), bpi
 end
 function M.time_sync(on)
   local proj = E.proj()

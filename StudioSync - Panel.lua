@@ -1236,7 +1236,7 @@ local function home_play()
     local ts = page_play.time_sync_on()
     local one = page_play.interval_bars()
     local tch, tv = switch_row("##timesync", "Time-sync", ts, string.format("Everyone plays to their own copy of the song, and hears the others in time with it, %d bar%s late " ..
-      "(one NINJAM interval):\nexactly how the person recording played it, which Real time mode's live audio can't promise over the internet.\n" ..
+      "here (a whole NINJAM interval, about 2.4 s, and a second's margin: more bars in a fast song):\nexactly how the person recording played it, which Real time mode's live audio can't promise over the internet.\n" ..
       "For listening to a take and playing along, not for talking (that's Real time mode). It needs Tailscale; this computer runs the server if nobody does.",
       one, one == 1 and "" or "s"))
     if tch then page_play.time_sync(tv) end
@@ -2585,6 +2585,9 @@ local function frame_app()
       if #list == 0 then band.msg("Select the tracks you want to own first.") else claim(list, {}); band.log("claimed " .. table.concat(list, ", ")) end
     elseif want == "keeplocal" then ui.keep_local()
     elseif want == "takecontrol" then dofile(dir .. "/StudioSync - Take control.lua")
+    elseif want:match("^timesync") and b then -- ("timesync" flips it; "timesync on" / "timesync off": a script's, or an action. 0.59.1)
+      local on = want == "timesync on" or (want == "timesync" and not page_play.time_sync_on())
+      if on ~= page_play.time_sync_on() then page_play.time_sync(on) end
     elseif want:match("^chat ") and b then require("page_chat").post(cfg, b, (want:sub(6, 505):gsub("%c", " "))) end -- (a script's: one line, 500 characters. Security review, 0.58.67)
   end
   if ui.short then ImGui.PushStyleVar(ctx, ImGui.StyleVar_ItemSpacing, 8, 1) end

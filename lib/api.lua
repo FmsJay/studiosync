@@ -16,7 +16,7 @@ local api = { VERSION = 1, SECTION = "StudioSync API", KEEP = 50 }
 -- chat: a message from you (text). take: you recorded something. mix: a mix was rendered (file). hold: Hold my changes (on).
 api.KINDS = { "driver", "people", "sent", "received", "chat", "take", "mix", "hold" }
 -- What a request may ask: each is what its control on the panel does. "chat <text>" posts to the project's chat as you.
-api.VERBS = { "undo", "redo", "realtime", "chat", "history", "hold", "claim", "localmix", "keeplocal", "takecontrol" }
+api.VERBS = { "undo", "redo", "realtime", "chat", "history", "hold", "claim", "localmix", "keeplocal", "takecontrol", "timesync" }
 
 -- The state as it's published, from what Live sync knows. Pure. t = { song, room, me, driver, mode, alone, others = { names },
 -- tracks = who.tracks (lower name -> { user, name }), hold, local_mix, held }. -> the table that goes out as JSON.
