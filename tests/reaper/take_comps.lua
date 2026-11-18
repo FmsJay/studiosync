@@ -226,12 +226,16 @@ local ok, err = pcall(function()
   end
   local ok5, why5 = same(before5, snapshot(t5, pts5), pts5)
   check(ok5, "Prepare's lanes: what plays is the comp, the silent piece silent (" .. (why5 ~= "" and why5 or "every point") .. ")")
-  local kept = 0
+  -- (each take still on some lane: on a Mac, REAPER merges a take's pieces into one item per lane, so counting pieces said 6 for 9.
+  -- Mac test, 0.59.16)
+  local kept, seen = 0, {}
   for j = 0, reaper.CountTrackMediaItems(t5) - 1 do
     local tk = reaper.GetActiveTake(reaper.GetTrackMediaItem(t5, j))
-    if tk and reaper.GetMediaSourceFileName(reaper.GetMediaItemTake_Source(tk), ""):find("take", 1, true) then kept = kept + 1 end
+    local src = tk and reaper.GetMediaSourceFileName(reaper.GetMediaItemTake_Source(tk), "") or ""
+    local which = src:match("(take[ABC])%.wav$")
+    if which then kept = kept + 1; seen[which] = true end
   end
-  check(kept >= 9, "and the other takes are all still there, on lanes: " .. kept .. " parts")
+  check(seen.takeA and seen.takeB and seen.takeC, "and the other takes are all still there, on lanes: " .. kept .. " parts")
   local _ = h
 end)
 if not ok then fails = fails + 1; out[#out + 1] = "ERROR " .. tostring(err) end

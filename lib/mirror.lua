@@ -163,12 +163,26 @@ function mirror.restless_in(chain)
   end
   return #names > 0 and names or nil
 end
+-- (inside a container, the plug-ins in it, never the container: "Container" went on the list, and everything inside every container, in
+-- every song and on every computer, was left out of the hash from then. Plug-in test, 0.59.17)
 function mirror.fx_differing(a, b)
-  local x, y, names = mirror.plugin_blocks(chain_lines(a)), mirror.plugin_blocks(chain_lines(b)), {}
-  if #x ~= #y then return names end
-  for i, p in ipairs(x) do
-    if p.key and p.key == y[i].key and p.text ~= y[i].text then names[#names + 1] = p.key end
+  local names = {}
+  local function cmp(la, lb)
+    local x, y = mirror.plugin_blocks(la), mirror.plugin_blocks(lb)
+    if #x ~= #y then return end
+    for i, p in ipairs(x) do
+      local q = y[i]
+      if p.key and p.key == q.key and p.text ~= q.text then
+        if p.text:match("^<CONTAINER") then
+          local ia, ib = {}, {}
+          for k = p.first + 1, p.last - 1 do ia[#ia + 1] = la[k] end
+          for k = q.first + 1, q.last - 1 do ib[#ib + 1] = lb[k] end
+          cmp(ia, ib)
+        else names[#names + 1] = p.key end
+      end
+    end
   end
+  cmp(chain_lines(a), chain_lines(b))
   return names
 end
 -- Plug-ins with a knob an LFO or audio control moves: what they save holds that knob as it was at that instant, so the
@@ -222,13 +236,13 @@ end
 function mirror.restless_load()
   if mirror.restless_loaded or not (reaper and reaper.GetExtState) then return end
   mirror.restless_loaded = true
-  for n in reaper.GetExtState("BandSync", RESTLESS_KEY):gmatch("[^\n]+") do mirror.restless[n] = true end
+  for n in reaper.GetExtState("BandSync", RESTLESS_KEY):gmatch("[^\n]+") do if n ~= "Container" then mirror.restless[n] = true end end -- (one put there before 0.59.17)
 end
 -- Add names (from this machine's own finding, or a bandmate's event). -> whether any is new.
 function mirror.restless_add(names)
   local new = false
   for _, n in ipairs(type(names) == "table" and names or {}) do
-    if type(n) == "string" and not mirror.restless[n] then mirror.restless[n], new = true, true end
+    if type(n) == "string" and n ~= "Container" and not mirror.restless[n] then mirror.restless[n], new = true, true end -- (never a container: 0.59.17)
   end
   if new and reaper and reaper.SetExtState then
     local all = {}
@@ -1082,11 +1096,27 @@ mirror.TRACK_MORE = { { "fxen", "I_FXEN" }, { "nchan", "I_NCHAN" }, { "mainsend"
   { "solodefeat", "B_SOLO_DEFEAT" }, { "lanesettings", "C_LANESETTINGS" }, { "panlaw", "D_PANLAW" }, { "panlawflags", "I_PANLAW_FLAGS" } }
 mirror.TRACK_MIX = { { "width", "D_WIDTH" }, { "panmode", "I_PANMODE" }, { "dualpanl", "D_DUALPANL" }, { "dualpanr", "D_DUALPANR" } }
 
+-- A track icon, the same on every computer: one of REAPER's own track icons by its name in Data/track_icons (each computer's REAPER is
+-- somewhere else: J:\ on one, D:\ on another, ~/Library on a Mac), any other picture as it is. Pure. (The laptop's REAPER rewrote the
+-- desktop's J:\...\bass4.png as its own D:\ path, read that as an edit, put it back, and round again: 104 times on 11-18. 0.59.17)
+function mirror.icon_key(icon)
+  icon = tostring(icon or "")
+  local name = icon:gsub("\\", "/"):match("/[Tt]rack_icons/(.+)$")
+  return name and ("track_icons/" .. name) or icon
+end
+-- ...and on this computer: its own REAPER's copy of one of those, when it has it.
+function mirror.icon_here(icon)
+  local key = mirror.icon_key(icon)
+  local name = key:match("^track_icons/(.+)$")
+  if not name then return icon or "" end
+  local here = reaper.GetResourcePath():gsub("\\", "/") .. "/Data/track_icons/" .. name
+  return reaper.file_exists(here) and here or (icon or "")
+end
 function mirror.track_line(t, local_mix, colour)
   -- (its parent left out, "" in its place: it follows from the depths above it, which travel, so a folder change arriving in pieces made the
   -- tracks under it read as edited, and put back or sent each other back and forth. 0.59.14, review. An older event's hash names it, which the
   -- band's-hash checks in watch and apply take as the same track: nothing goes out again for it)
-  local f = { t.name or "", "", t.depth or 0, t.mute or 0, "", t.phase or 0, t.icon or "", -- ("": solo is each person's own)
+  local f = { t.name or "", "", t.depth or 0, t.mute or 0, "", t.phase or 0, mirror.icon_key(t.icon), -- ("": solo is each person's own)
     t.freemode or 0, t.lanes or 0, t.plays or "", t.lanenames or "", 0, local_mix and "" or (t.vol or ""), local_mix and "" or (t.pan or "") }
   for _, kp in ipairs(mirror.TRACK_MORE) do f[#f + 1] = t[kp[1]] or "" end
   for _, kp in ipairs(mirror.TRACK_MIX) do f[#f + 1] = local_mix and "" or (t[kp[1]] or "") end
@@ -1295,7 +1325,7 @@ function mirror.set_track_state(proj, tr, t, local_mix)
   if t.color and not t.autocolour then require("band").set_track_colour(tr, require("band").color_in(t.color)) end
   -- (from a StudioSync that sends it; never out of a Touch, Latch or Write someone is using here)
   if t.automode ~= nil and reaper.GetMediaTrackInfo_Value(tr, "I_AUTOMODE") <= 1 then reaper.SetMediaTrackInfo_Value(tr, "I_AUTOMODE", (tonumber(t.automode) or 0) >= 1 and 1 or 0) end
-  reaper.GetSetMediaTrackInfo_String(tr, "P_ICON", t.icon or "", true)
+  reaper.GetSetMediaTrackInfo_String(tr, "P_ICON", mirror.icon_here(t.icon), true) -- (this computer's own copy of a REAPER icon: 0.59.17)
   local l = 0
   for v in ((t.plays or "") .. ","):gmatch("([^,]*),") do
     if v ~= "" then reaper.SetMediaTrackInfo_Value(tr, "C_LANEPLAYS:" .. l, tonumber(v) or 0) end
@@ -1807,7 +1837,12 @@ function mirror.first_diff(a, b)
     for k in pairs(a) do if not seen[k] then seen[k] = true; keys[#keys + 1] = tostring(k) end end
     for k in pairs(b) do if not seen[k] then seen[k] = true; keys[#keys + 1] = tostring(k) end end
     table.sort(keys)
-    for _, k in ipairs(keys) do if band.json_encode(a[k]) ~= band.json_encode(b[k]) then return k end end
+    for _, k in ipairs(keys) do
+      local x, y = a[k], b[k]
+      if k == "icon" then x, y = mirror.icon_key(x), mirror.icon_key(y) end
+      -- (autocolour says whether that computer colours its own tracks: never what differs. 0.59.17)
+      if k ~= "autocolour" and band.json_encode(x) ~= band.json_encode(y) then return k end
+    end
   elseif type(a) == "string" and type(b) == "string" then
     local la, lb = {}, {}
     for l in a:gmatch("[^\n]+") do la[#la + 1] = l end
@@ -1934,6 +1969,7 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     for g in select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local_fx", "", false)):gmatch("({[^}]+})for=") do skip[g] = true end
     mirror.fx_knobs[tostring(proj) .. ev.oid], mirror.fxk_ok[tostring(proj) .. ev.oid] = nil, nil -- (its knobs are the band's now: the next look notes them)
     reaper.SetProjExtState(proj, mirror.SEC, "fxk " .. ev.oid, "") -- (and are stored once it has loaded)
+    reaper.SetProjExtState(proj, mirror.SEC, "fxp " .. ev.oid, "") -- (its presets likewise: 0.59.17)
     local here = mirror.fxchain(after, skip) or ""
     local h = mirror.fx_hash(here)
     local key = tostring(proj) .. ev.oid
@@ -2346,12 +2382,18 @@ local function loaded(proj, rk) return reaper.time_precise() >= math.max(mirror.
 local function knobs_as_left(proj, o, rk)
   if reaper.time_precise() < (mirror.fx_loading[rk] or 0) then return true end -- (just landed: the band's knobs, not the ones stored)
   local was = select(2, reaper.GetProjExtState(proj, mirror.SEC, "fxk " .. o.oid))
-  return was == "" or was == mirror.hash(mirror.fx_params(o.ptr))
+  if was ~= "" and was ~= mirror.hash(mirror.fx_params(o.ptr)) then return false end
+  -- (and its presets: a preset loaded in the first minute after the project opened, with no window open and no knob moving, read as the
+  -- plug-in loading and never went out. Plug-in test, 0.59.17)
+  local wp = select(2, reaper.GetProjExtState(proj, mirror.SEC, "fxp " .. o.oid))
+  return wp == "" or wp == mirror.hash(mirror.fx_presets(o.ptr))
 end
 local function knobs_agreed(proj, o, rk)
   if not o.ptr or reaper.time_precise() < (mirror.fx_loading[rk] or 0) then return end -- (still loading: once it has)
   local k = mirror.hash(mirror.fx_params(o.ptr))
   if select(2, reaper.GetProjExtState(proj, mirror.SEC, "fxk " .. o.oid)) ~= k then reaper.SetProjExtState(proj, mirror.SEC, "fxk " .. o.oid, k) end
+  local pk = mirror.hash(mirror.fx_presets(o.ptr))
+  if select(2, reaper.GetProjExtState(proj, mirror.SEC, "fxp " .. o.oid)) ~= pk then reaper.SetProjExtState(proj, mirror.SEC, "fxp " .. o.oid, pk) end
   mirror.fxk_ok[rk] = true
 end
 mirror.fx_set_at = mirror.fx_set_at or {} -- proj .. chain oid -> when a band's chain last replaced it here

@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.59.16", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.59.17", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -337,6 +337,13 @@ function band.listing(dir, ext, sorted)
 end
 
 function band.subdirs(dir) return enum(reaper.EnumerateSubdirectories, dir) end
+-- A take's media replaced, and the source it had destroyed: REAPER leaves that to the caller, and a replaced print's file stayed open
+-- until REAPER restarted (Windows can't remove an open file). Plug-in test, 0.59.17
+function band.set_take_source(tk, src)
+  local old = reaper.GetMediaItemTake_Source(tk)
+  reaper.SetMediaItemTake_Source(tk, src)
+  if old and old ~= src then reaper.PCM_Source_Destroy(old) end
+end
 
 -- Pop a menu at the mouse (or at x, y); returns the chosen string or nil. Lines starting "#" are greyed headers.
 function band.pick(items, x, y)
@@ -1222,7 +1229,7 @@ function band.add_item(track, path, pos, len)
   if not src then return nil end
   local item = reaper.AddMediaItemToTrack(track)
   local take = reaper.AddTakeToMediaItem(item)
-  reaper.SetMediaItemTake_Source(take, src)
+  band.set_take_source(take, src)
   reaper.SetMediaItemInfo_Value(item, "D_POSITION", pos)
   reaper.SetMediaItemInfo_Value(item, "D_LENGTH", len or (reaper.GetMediaSourceLength(src)))
   band.follow_tempo(item, take)

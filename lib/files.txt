@@ -1,4 +1,4 @@
-version 0.59.16
+version 0.59.17
 StudioSync - Autostart.lua	15080
 StudioSync - Claim selected tracks.lua	692
 StudioSync - Draw.lua	27162
@@ -25,7 +25,7 @@ StudioSync - Update.lua	2143
 lib/access.lua	5942
 lib/alerts.lua	3960
 lib/api.lua	6961
-lib/band.lua	75026
+lib/band.lua	75434
 lib/bgrender.lua	36419
 lib/callapps.lua	6144
 lib/callwin.lua	7337
@@ -34,8 +34,8 @@ lib/colours.lua	47852
 lib/debugmode.lua	5732
 lib/drive.lua	29252
 lib/drummap.lua	5670
-lib/export.lua	7538
-lib/extras.lua	27748
+lib/export.lua	7528
+lib/extras.lua	27728
 lib/feedback.lua	8370
 lib/fxfiles.lua	8525
 lib/groups.lua	17608
@@ -48,7 +48,7 @@ lib/live.lua	44491
 lib/livemidi.lua	10723
 lib/localcopy.lua	22464
 lib/midiview.lua	4574
-lib/mirror.lua	235950
+lib/mirror.lua	238593
 lib/mixlayer.lua	1668
 lib/page_chat.lua	24132
 lib/page_groups.lua	35397
@@ -60,9 +60,9 @@ lib/page_restore.lua	25441
 lib/page_rooms.lua	16325
 lib/people.lua	18318
 lib/plugins.lua	10493
-lib/prep.lua	29980
+lib/prep.lua	29950
 lib/presence.lua	14212
-lib/prints.lua	55563
+lib/prints.lua	55814
 lib/producer.lua	26342
 lib/recall.lua	15603
 lib/removal.lua	20474

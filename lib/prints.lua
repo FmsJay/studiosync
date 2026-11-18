@@ -129,7 +129,9 @@ function prints.fx_here(tr, i, offline_ok)
   -- a VST or AU that isn't installed doesn't read as offline either: no file behind it, and only REAPER's own three
   -- knobs (bypass, wet, delta). Taken as loaded, its notes printed silent, and in Auto they played silent where the
   -- print should have (laptop and PC, 0.42.2)
-  if kind ~= "JS" then return (ident or "") ~= "" or reaper.TrackFX_GetNumParams(tr, i) > 3 end
+  -- (sforzando's CLAP: loaded, no ident and no knobs of its own, read as missing, so its parts never printed and Auto played the print.
+  -- A missing CLAP shows offline. Plug-in test, 0.59.17)
+  if kind ~= "JS" then return (ident or "") ~= "" or reaper.TrackFX_GetNumParams(tr, i) > 3 or (tostring(kind):find("CLAP") ~= nil and installed_here(tr, i)) end
   ident = (ident or ""):gsub("\\", "/")
   return ident == "" or reaper.file_exists(reaper.GetResourcePath() .. "/Effects/" .. ident) or reaper.file_exists(ident)
 end
@@ -453,7 +455,7 @@ end
 local function attach(it, print, dry, path, h)
   local was = reaper.GetActiveTake(it)
   local ptk = print or reaper.AddTakeToMediaItem(it)
-  reaper.SetMediaItemTake_Source(ptk, reaper.PCM_Source_CreateFromFile(path))
+  band.set_take_source(ptk, reaper.PCM_Source_CreateFromFile(path))
   reaper.SetMediaItemTakeInfo_Value(ptk, "D_STARTOFFS", 0)
   label_takes(dry, ptk)
   reaper.GetSetMediaItemTakeInfo_String(ptk, "P_EXT:" .. prints.KEY, h, true)

@@ -241,7 +241,7 @@ function prep.to_flac(proj, file, dest_dir)
   reaper.SetMediaTrackInfo_Value(tr, "D_PANLAW", 1) -- 0 dB: nothing changes level in the middle
   local it = reaper.AddMediaItemToTrack(tr)
   local tk = reaper.AddTakeToMediaItem(it)
-  reaper.SetMediaItemTake_Source(tk, src)
+  band.set_take_source(tk, src)
   reaper.SetMediaItemInfo_Value(it, "D_POSITION", 0)
   reaper.SetMediaItemInfo_Value(it, "D_LENGTH", len)
   reaper.SetMediaItemInfo_Value(it, "D_FADEINLEN", 0)
@@ -277,7 +277,7 @@ function prep.same_audio(proj, a, b)
     if not src then return nil end
     local it = reaper.AddMediaItemToTrack(tr)
     local tk = reaper.AddTakeToMediaItem(it)
-    reaper.SetMediaItemTake_Source(tk, src)
+    band.set_take_source(tk, src)
     reaper.SetMediaItemInfo_Value(it, "D_LENGTH", reaper.GetMediaSourceLength(src))
     return tk, src
   end
@@ -330,7 +330,7 @@ local function repoint(proj, from, to)
       local old = tk and reaper.GetMediaItemTake_Source(tk)
       -- a section (reversed, a loop of part of a file) wraps the file: left as it is, it keeps working
       if old and reaper.GetMediaSourceType(old, "") ~= "SECTION" and reaper.GetMediaSourceFileName(old, ""):gsub("\\", "/") == from then
-        reaper.SetMediaItemTake_Source(tk, reaper.PCM_Source_CreateFromFile(to))
+        band.set_take_source(tk, reaper.PCM_Source_CreateFromFile(to))
         reaper.PCM_Source_Destroy(old) -- (the take doesn't free it: and it holds the file open)
         n = n + 1
       end
