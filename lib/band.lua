@@ -609,7 +609,7 @@ function band.from_shared(dir)
 end
 -- May a running script switch to the version now on disk? Installed through ReaPack (or by hand), yes: you asked for it. Run from a shared
 -- folder, only once you've said yes to that version (Autostart asks): any computer in the studio can put new code there, and it ran on
--- everyone within seconds (review, 0.58.52). (It still runs when REAPER next starts: Settings > Health says so, and ReaPack is the safer install.)
+-- everyone within seconds (review, 0.58.52). (A script started later is held to the code you said yes to too: band.code_guard, 0.59.14. ReaPack is still the safer install.)
 function band.update_ok(dir, version)
   if not band.from_shared(dir) then return true end
   return reaper.GetExtState(band.SECTION, "update ok") == version and band.files_complete(dir)
@@ -636,6 +636,96 @@ function band.files_complete(dir)
     if not s or #s - select(2, s:gsub("\r", "")) ~= f.len then return false end
   end
   complete_seen[dir .. v] = true
+  return true
+end
+
+-- The code itself, run from a shared folder. band.update_ok held back only a running script's switch to a new VERSION: any script started
+-- later (the next REAPER start, any action) loaded whatever lib/*.lua the shared folder held, and a member or guest could change lib/mirror.lua
+-- without touching VERSION; lib/files.txt only has lengths, and it can be rewritten too. So the code files you said yes to (a version's
+-- "update ok", or as first found here) are remembered by hash in this computer's own StudioSync folder, never the shared one, and a script
+-- run from the shared folder loads only those (band.code_guard, at the end of this file). Review, 0.59.14.
+-- shortcut: 64-bit FNV-1a isn't a cryptographic hash, and someone who rewrites band.lua, json.lua (loaded before the check) or the entry
+-- script itself takes this check out with it; ReaPack (not the shared folder) is the safe install, and a local copy of the approved code is the upgrade if folder installs stay.
+function band.code_hash(s)
+  s = s:gsub("\r", "") -- (counted without carriage returns, as lib/files.txt is: a Windows and a Mac copy agree)
+  local h, byte = -3750763034362895579, string.byte -- (FNV-1a's 64-bit offset basis; the multiply wraps at 64 bits in Lua 5.3+)
+  for i = 1, #s do h = (h ~ byte(s, i)) * 1099511628211 end
+  return string.format("%016x", h)
+end
+-- What to do with the code found (`now`: { path = hash }) against what was said yes to (`had`: { version, files } or nil), the version on disk
+-- and the "update ok" one: "same", "record" (the first look here, or a version you said yes to) or "ask"; and the files that differ. Pure.
+function band.code_verdict(had, now, version, update_ok)
+  if type(had) ~= "table" or type(had.files) ~= "table" then return "record", {} end
+  local changed = {}
+  for p, h in pairs(now) do if had.files[p] ~= h then changed[#changed + 1] = p end end
+  for p in pairs(had.files) do if now[p] == nil then changed[#changed + 1] = p end end
+  table.sort(changed)
+  if not changed[1] then return "same", changed end
+  -- (a new version once you said yes to it: Autostart asks, and the reload after it lands here. The same version changed is asked about.)
+  if version and version == update_ok and version ~= had.version then return "record", changed end
+  return "ask", changed
+end
+local function approved_path() return band.home() .. "/approved code.json" end
+local function code_key(dir) return norm(dir):lower() end
+function band.code_files(dir)
+  local out = {}
+  for _, f in ipairs(band.files(dir, ".lua")) do
+    if f:find("^StudioSync %- ") then out[f] = band.code_hash(band.read(dir .. "/" .. f) or "") end
+  end
+  for _, f in ipairs(band.files(dir .. "/lib", ".lua")) do out["lib/" .. f] = band.code_hash(band.read(dir .. "/lib/" .. f) or "") end
+  return out
+end
+local function disk_version(dir) return (band.read(dir .. "/lib/band.lua") or ""):match('VERSION = "([^"]+)"') end
+local function code_record(dir, now)
+  local all = band.read_json(approved_path())
+  if type(all) ~= "table" then all = {} end
+  all[code_key(dir)] = { version = disk_version(dir), files = now }
+  reaper.RecursiveCreateDirectory(band.home(), 0)
+  band.write_json(approved_path(), all)
+  return all[code_key(dir)]
+end
+-- Run from a shared folder: the code there checked against what you said yes to, before anything else of it loads; a changed file is asked
+-- about (No stops the script, and isn't asked again until REAPER restarts or the files change again). Every lib module required later
+-- is checked as it loads too: Autostart and Live sync run for hours and require some only when first needed.
+local SEARCHER_KEY = "BANDSYNC_CODE_SEARCHER"
+function band.code_guard(dir)
+  if not band.from_shared(dir) then return true end
+  local all, key = band.read_json(approved_path()), code_key(dir)
+  local had = type(all) == "table" and all[key] or nil
+  local now, version = band.code_files(dir), disk_version(dir)
+  local verdict, changed = band.code_verdict(had, now, version, reaper.GetExtState(band.SECTION, "update ok"))
+  if verdict == "record" then
+    had = code_record(dir, now)
+    if changed[1] then band.log("StudioSync " .. tostring(version) .. " from the shared folder: its code is remembered as the one you said yes to") end
+  elseif verdict == "ask" then
+    local sig = band.code_hash(band.json_encode(now))
+    local list = table.concat(changed, ", ", 1, math.min(#changed, 6)) .. (#changed > 6 and (" and " .. (#changed - 6) .. " more") or "")
+    local yes = reaper.GetExtState(band.SECTION, "code refused " .. key) ~= sig and
+      reaper.MB("StudioSync's code in the shared folder has changed since you said yes to it (" .. list .. ").\n\n" ..
+        "Anyone in the studio can change it. Only say Yes if you expected an update from your studio.\n\nUse it?", "StudioSync", 4) == 6
+    if not yes then
+      if reaper.GetExtState(band.SECTION, "code refused " .. key) ~= sig then
+        reaper.SetExtState(band.SECTION, "code refused " .. key, sig, false)
+        band.log("StudioSync's changed code in the shared folder wasn't used (you said no): " .. list .. ". Ask your studio about it")
+      end
+      error("StudioSync didn't start: its code in the shared folder isn't the code you said yes to (" .. list .. "). Ask your studio about it.", 0)
+    end
+    had = code_record(dir, now)
+    band.log("StudioSync's changed code in the shared folder was said yes to (" .. list .. ")")
+  end
+  -- (each lib module required from now on: only as said yes to. Replaces the one an earlier load of this file put in, over an update's reload.)
+  local files, libdir = had.files, norm(dir) .. "/lib/"
+  local function searcher(name)
+    local text = name:find("^[%w_]+$") and band.read(libdir .. name .. ".lua")
+    if not text then return nil end
+    if files["lib/" .. name .. ".lua"] ~= band.code_hash(text) then
+      error("StudioSync won't load lib/" .. name .. ".lua: it changed in the shared folder since you said yes to StudioSync's code. Restart REAPER to be asked about it", 0)
+    end
+    return assert(load(text, "@" .. libdir .. name .. ".lua")), libdir .. name .. ".lua"
+  end
+  for i = #package.searchers, 1, -1 do if package.searchers[i] == _G[SEARCHER_KEY] then table.remove(package.searchers, i) end end
+  _G[SEARCHER_KEY] = searcher
+  table.insert(package.searchers, 2, searcher)
   return true
 end
 
@@ -1319,6 +1409,12 @@ function band.to_track_map(root, buf, from, tr)
   if not root or (from or "") == "" or to == "" or from == to then return buf end
   local dm = require("drummap")
   return dm.translate(buf, dm.table(dm.load(root, from), dm.load(root, to)))
+end
+
+-- (run from a shared folder: only the code you said yes to loads from here on. Review, 0.59.14)
+do
+  local code_dir = debug.getinfo(1, "S").source:match("^@(.+)[/\\]lib[/\\]band%.lua$")
+  if code_dir and type(reaper) == "table" and reaper.GetExtState and reaper.EnumerateFiles then band.code_guard(code_dir) end
 end
 
 return band
