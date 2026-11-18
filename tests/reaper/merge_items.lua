@@ -144,7 +144,8 @@ local ok, err = pcall(function()
   local evdir = sync.room_dir(A, song, room) .. "/events"
   local nid = "James-20261115-120000Z-00001-0042"
   local full = band.json_encode({ id = nid, type = "note", user = "James", time = "2026-11-15T12:00:00Z", text = "half then whole" })
-  local function put(name, text) local f = io.open(evdir .. "/" .. name .. ".json", "wb"); f:write(text); f:close() end
+  -- (through band's own writer: a file arriving from Syncthing is seen within 0.2 s, but this script's own writes clear the shared listing at once)
+  local function put(name, text) band.write_atomic(evdir .. "/" .. name .. ".json", text) end
   local function applied(p, id) return select(2, reaper.GetProjExtState(p, sync.APPLIED, id)) ~= "" end
   put(nid, full:sub(1, 30))
   sync.unreadable[nid] = reaper.time_precise() - 200

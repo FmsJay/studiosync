@@ -42,7 +42,7 @@ local ok, err = pcall(function()
   local _, wet = prints.takes(quiet)
   check(wet == nil and reaper.CountTakes(quiet) == 1, "the item keeps its notes alone")
   check(#band.files(media, ".flac") == 0, "and the silent file is gone")
-  check(logged[#logged] and logged[#logged]:find("came out silent", 1, true) ~= nil, "the log says why: " .. tostring(logged[#logged]))
+  check(logged[#logged] and logged[#logged]:find("printed silent", 1, true) ~= nil, "the log says why: " .. tostring(logged[#logged]))
   local n = #logged
   check(prints.refresh(p, quiet, media, "fx") == false and #logged == n and #band.files(media, ".flac") == 0, "it isn't rendered or said again")
   check(prints.refresh(p, loud, media, "fx") == true, "a part that sounds gets its print")

@@ -7,6 +7,7 @@ package.path = lib .. "?.lua;" .. package.path
 for _, m in ipairs({ "band", "sync", "mirror", "prints", "plugins", "json", "bgrender" }) do package.loaded[m] = nil end
 require("prints").SETTLE = 0
 local band, sync, mirror, prints, bg = require("band"), require("sync"), require("mirror"), require("prints"), require("bgrender")
+mirror.FX_SET_GAP = 0 -- (chains land back to back here, faster than any band: 0.59.14)
 local root = D .. "/lroot_" .. os.time()
 local song, room = "LimitLab", "main"
 local A, B = { user = "Laptop", root = root }, { user = "James", root = root }

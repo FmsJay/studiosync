@@ -7,6 +7,7 @@ local lib = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]tests[/\\]reaper[/\\
 package.path = lib .. "?.lua;" .. package.path
 for _, m in ipairs({ "band", "sync", "mirror", "recall", "json", "fxfiles" }) do package.loaded[m] = nil end
 local band, sync, mirror = require("band"), require("sync"), require("mirror")
+mirror.FX_SET_GAP = 0 -- (chains land back to back here, faster than any band: 0.59.14)
 local stamp = os.time()
 local root = D .. "/airoot_" .. stamp
 local song, room = "AiLab", "main"

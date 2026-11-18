@@ -703,7 +703,8 @@ local function elements(state)
 end
 -- Where an item sits and what part of its source plays: one thing, not separate lines. (0.59.14, review: one person's left trim, POSITION
 -- LENGTH and SOFFS, merged with another's move, POSITION alone, gave a state neither made, its audio off by the trim.)
-local TIMING = { POSITION = true, LENGTH = true, SNAPOFFS = true, SOFFS = true, PLAYRATE = true, SM = true, FADEIN = true, FADEOUT = true }
+-- (not the snap offset or the fades: one person's fade and another's snap offset are both kept, as before. merge_items suite, 0.59.14)
+local TIMING = { POSITION = true, LENGTH = true, SOFFS = true, PLAYRATE = true, SM = true }
 function mirror.merge_item(base, winner, loser, loser_name)
   local b, border = elements(base)
   local w, worder = elements(winner)
@@ -1898,7 +1899,7 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     -- (not again within 5 s of the last: a second chain replaced RS5K seconds after the first had loaded its sample, and REAPER crashed in
     -- the middle of it, the sample perhaps still loading. Plug-in test, 0.59.14. Tried again on a later pass)
     local set_key = tostring(proj) .. ev.oid
-    if reaper.time_precise() - (mirror.fx_set_at[set_key] or -math.huge) < 5 then return false end
+    if reaper.time_precise() - (mirror.fx_set_at[set_key] or -math.huge) < mirror.FX_SET_GAP then return false end
     require("fxfiles").fetch(ev.files, media_dir, (ev.name or "") ~= "" and ev.name or "a track") -- (before the plug-ins load)
     local _, chunk = reaper.GetTrackStateChunk(tr, "", false)
     local sync = require("sync")
@@ -2354,6 +2355,7 @@ local function knobs_agreed(proj, o, rk)
   mirror.fxk_ok[rk] = true
 end
 mirror.fx_set_at = mirror.fx_set_at or {} -- proj .. chain oid -> when a band's chain last replaced it here
+mirror.FX_SET_GAP = 5 -- seconds between two of the band's chains replacing one track's here (tests that land chains back to back set 0)
 mirror.fx_readback = mirror.fx_readback or {} -- chain -> what its hash reads as here, now the band's has landed
 mirror.fx_loading = mirror.fx_loading or {} -- chain -> until when it may be still loading
 mirror.fx_load_knobs = mirror.fx_load_knobs or {} -- chain -> its knobs at the start of that

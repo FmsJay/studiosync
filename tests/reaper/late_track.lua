@@ -8,6 +8,7 @@ local lib = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]tests[/\\]reaper[/\\
 package.path = lib .. "?.lua;" .. package.path
 for _, m in ipairs({ "band", "sync", "mirror", "recall", "json" }) do package.loaded[m] = nil end
 local band, sync, mirror = require("band"), require("sync"), require("mirror")
+band.LISTING_SECS = 0 -- (files renamed into place by hand here, faster than Syncthing: seen at once. 0.59.14)
 local root = D .. "/lroot_" .. os.time()
 local song, room = "LateTrackLab", "main"
 local A, B = { user = "Laptop", root = root }, { user = "Mac", root = root }
