@@ -1499,9 +1499,15 @@ function sync.receive(proj, cfg, song, room, can)
     if not (x.obj == "item" and w and not x.gone and not w.gone and x.base_ev and w.base_ev) then return false end
     return require("mirror").apart(sync.room_dir(cfg, song, room), x, w)
   end
+  -- An object change StudioSync can read. (Checked before the newest of each object is picked: a malformed or newer-format one, picked as the
+  -- newest, marked the readable ones before it superseded, and was then skipped itself. 0.59.14, review)
+  local function readable(ev)
+    return type(ev.oid) == "string" and (ev.obj == "item" or ev.obj == "track" or require("mirror").PART[ev.obj]) and type(ev.rev) == "number"
+      and (ev.gone or type(ev.state) == (ev.obj == "track" and "table" or "string")) and ev.state ~= require("json").null and (ev.name == nil or type(ev.name) == "string") and (ev.pos == nil or type(ev.pos) == "number")
+  end
   local latest = {}
   for _, ev in ipairs(pending) do
-    if ev.type == "obj" and type(ev.oid) == "string" and type(ev.rev) == "number" then
+    if ev.type == "obj" and readable(ev) then
       local cur = latest[ev.oid]
       if not cur or mirror_newer(ev, cur) then latest[ev.oid] = ev end
     end
@@ -1515,8 +1521,7 @@ function sync.receive(proj, cfg, song, room, can)
   for _, ev in ipairs(pending) do
     if budget_out then break end
     local obj = ev.type == "obj"
-    if obj and not (type(ev.oid) == "string" and (ev.obj == "item" or ev.obj == "track" or require("mirror").PART[ev.obj]) and type(ev.rev) == "number"
-        and (ev.gone or type(ev.state) == (ev.obj == "track" and "table" or "string")) and ev.state ~= require("json").null and (ev.name == nil or type(ev.name) == "string") and (ev.pos == nil or type(ev.pos) == "number")) then
+    if obj and not readable(ev) then
       sync.skip(proj, ev, "StudioSync can't read it") -- malformed (a newer or damaged file): skipped, once, without stopping the rest
       band.log("skipped a change from " .. tostring(ev.user) .. " that StudioSync can't read (" .. tostring(ev.id) .. ")")
     elseif (ev.type == "plays" and newest[ev.track or ""] ~= ev.id) or (ev.type == "timeline" and ev.user ~= cfg.user and newest_map ~= ev.id) or superseded(proj, ev) or (obj and latest[ev.oid] ~= ev and apart(ev, latest[ev.oid]) == false) then
@@ -1541,11 +1546,15 @@ function sync.receive(proj, cfg, song, room, can)
       -- one undo point per pass, only when something lands: reading our own change back opened one too, which sat on
       -- top of the edit and held its print, so Ctrl+Z took two presses and the first left the note moved (PC, 0.40.3)
       local m = require("mirror")
-      local lands = not obj or m.wins(proj, ev.oid, ev.rev or 0, m.order_of(ev)) or m.merge_for(proj, ev, sync.room_dir(cfg, song, room)) ~= nil -- (or it's merged in)
-      if lands and not undo_open then reaper.Undo_BeginBlock2(proj); undo_open = true end
       -- one bad event must never block everything behind it (2026-10-28: a take-less "driver" event threw on every
       -- pass, so the handover's edits and tempo change never applied): log it and move on
-      local ok, res = pcall(sync.apply, proj, ev, sync.room_dir(cfg, song, room), cfg.root, can, cfg.user)
+      -- (whether it lands, inside the same pcall: wins and merge_for read the event too, and an error there stopped the pass with an undo
+      -- block open. 0.59.14, review)
+      local ok, res = pcall(function()
+        local lands = not obj or m.wins(proj, ev.oid, ev.rev or 0, m.order_of(ev)) or m.merge_for(proj, ev, sync.room_dir(cfg, song, room)) ~= nil -- (or it's merged in)
+        if lands and not undo_open then reaper.Undo_BeginBlock2(proj); undo_open = true end
+        return sync.apply(proj, ev, sync.room_dir(cfg, song, room), cfg.root, can, cfg.user)
+      end)
       if not ok then
         sync.failed[ev.id] = (sync.failed[ev.id] or 0) + 1
         if not obj or sync.failed[ev.id] >= 5 then
