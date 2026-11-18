@@ -11,6 +11,31 @@ project sections they work on, and Restore can take back any change, any track, 
 Plain-Lua ReaScripts (the control panel needs ReaImGui; SWS helps). REAPER 7.18 or newer; 7.86 is tested.
 Machines talk only through a shared folder (Syncthing recommended), with an optional Google Drive copy.
 
+## Install
+
+Invited by someone? Paste the line from their invitation instead: it joins their studio with everything filled in.
+Otherwise, one line for your computer installs REAPER (if you don't have it), StudioSync and everything they need, in about 15 minutes:
+
+- **Windows:** press Start, type *PowerShell*, open it, paste this and press Enter:
+
+  ```powershell
+  $f="$env:TEMP\studiosync_install.ps1"; iwr -UseBasicParsing "https://raw.githubusercontent.com/FmsJay/studiosync/main/installer/install_windows.ps1" -OutFile $f; powershell -NoProfile -ExecutionPolicy Bypass -File $f
+  ```
+- **Mac:** press Cmd+Space, type *Terminal*, open it, paste this and press Return:
+
+  ```bash
+  curl -fsSL "https://raw.githubusercontent.com/FmsJay/studiosync/main/installer/install_mac.sh?$(date +%s)" | bash
+  ```
+- **Linux:** in a terminal on the computer's own desktop:
+
+  ```bash
+  curl -fsSL "https://raw.githubusercontent.com/FmsJay/studiosync/main/installer/install_linux.sh?$(date +%s)" | bash
+  ```
+
+It always installs the newest released version. Coming from another DAW? It asks which one, and sets REAPER up to feel like it
+([ReaPersona](https://github.com/FmsJay/ReaPersona)). Already use REAPER with ReaPack? Add `https://github.com/FmsJay/studiosync/raw/main/index.xml`
+as a repository and install **StudioSync**. More detail: [Setup](#setup-each-person-once).
+
 ## Start a new studio
 
 For a band, or for one song with someone: it's the same thing, so name it what it is.
@@ -134,7 +159,7 @@ On Windows paste this into PowerShell the same way:
 `$f="$env:TEMP\studiosync_install.ps1"; iwr -UseBasicParsing "https://raw.githubusercontent.com/FmsJay/studiosync/main/installer/install_windows.ps1" -OutFile $f; powershell -NoProfile -ExecutionPolicy Bypass -File $f`
 (the Mac line is below).
 
-**On Linux** (new, not yet run on a real machine): open a terminal on the computer's own desktop and paste the line from an invitation, or
+**On Linux** (tested on Ubuntu 24.04): open a terminal on the computer's own desktop and paste the line from an invitation, or
 `curl -fsSL "https://raw.githubusercontent.com/FmsJay/studiosync/main/installer/install_linux.sh?$(date +%s)" | bash`.
 It asks the same questions and installs everything for you only, with no password: REAPER into `~/opt/REAPER`, Syncthing, SonoBus,
 ReaPack, ReaImGui, js_ReaScriptAPI (x86_64 only), SWS and the plug-in pack's Linux builds. Tailscale needs sudo: it asks first, and
@@ -146,11 +171,11 @@ are Neural Amp Modeler and sforzando, which have no Linux builds.
 the invitation you were sent, if any: paste it (all of it, or its studiosync-join line) and you join that studio; type *s* and
 you're starting one; press Enter for neither yet, and the panel opens on **Start a studio** and **Paste join code** when you're
 ready. Run from the line in an invitation, it doesn't even ask. Then your name, whether you want the plug-in
-pack (and, when starting, the bigger extras), and which music app you're used to, from a numbered list (Pro Tools, Logic,
-Ableton Live, FL Studio, Cubase, Studio One, Bitwig, Cakewalk, Reason, Audacity, Audition; Enter for none): it then adds
-[ReaPersona](https://github.com/FmsJay/ReaPersona) and sets REAPER up as that app in the same run, its look, mouse and
-shortcuts (REAPER restarts once by itself to load the shortcuts when Python is installed; without it, ReaPersona's Home has
-that one step). Then it
+pack (and, when starting, the bigger extras), and which music app you're used to, from a numbered list (Pro Tools, Pro Tools
+Intro, Logic, GarageBand, Ableton Live, FL Studio, Cubase, Nuendo, Studio One, Bitwig, Cakewalk, Reason, Audacity, Audition; Enter for
+none): it then adds [ReaPersona](https://github.com/FmsJay/ReaPersona) and sets REAPER up as that app in the same run, its look, mouse
+and shortcuts (REAPER restarts once by itself to load the shortcuts). Joined with a code instead? Settings > You > **Coming from
+another DAW?** does the same later. Then it
 installs whatever is missing from official sources: REAPER, ReaPack, ReaImGui, js_ReaScriptAPI, SWS, Syncthing,
 SonoBus, Tailscale and Google Drive for desktop. It sets up the shared folder (in your home folder, named after the studio) and pairs it
 with your collaborator, waits while you sign in to Tailscale and Google Drive if you're starting the studio (a joiner gets those as
