@@ -164,7 +164,7 @@ $driveName = if ($folderId -eq "bandsync") { "StudioSync" } else { "StudioSync -
 # (James, 2026-10-31: "it feels like a core feature"); -Live no / -Solo no still leave them out.
 $wantLive = $Live -ne "no"
 $wantSolo = $Solo -ne "no"
-$wantPlugins = if ($Plugins) { $Plugins -eq "yes" } else { Write-Host "The free plug-in pack (about 150 MB): synths, guitar and bass amps, a tuner, EQ, compressor, reverb, delay, tape, drum kits and keys"; Write-Host "(Surge XT, Dexed, Airwindows, Dragonfly, Chow, BYOD, ZL and more), so everyone in the studio hears the same sounds."; YesNo "Install it? (recommended)" "y" }
+$wantPlugins = if ($Plugins) { $Plugins -eq "yes" } else { Write-Host "The free plug-in pack (about 180 MB): synths, guitar and bass amps, a tuner, EQ, compressor, reverb, delay, tape, drum kits and keys"; Write-Host "(Surge XT, Dexed, OB-Xf, Airwindows, Dragonfly, Chow, BYOD, ZL and more), so everyone in the studio hears the same sounds."; YesNo "Install it? (recommended)" "y" }
 # (extras only asked of whoever starts the studio: a joiner's projects say what they use, and 1.2 GB is a lot to decide on blind. Beginner review, 0.58.62)
 $wantExtras = if ($Extras) { $Extras -eq "yes" } else { -not $joining -and $wantPlugins -and (YesNo "Also the bigger extras (about 1.2 GB: a grand piano, a real drum kit, amp capture players and the Odin 2 synth)?" "n") }
 # ReaPersona: which app you're used to, as one question, and it's set up as that DAW in the same run (James, 0.58.64: yes/no installed it and
@@ -401,6 +401,8 @@ if ($wantPlugins) {
   Install-Plugin "ZL Equalizer 2" "ZL-Audio/ZLEqualizer" 'Windows-x86-64\.msi$' $null (Join-Path $vst3 "ZL Equalizer*")
   Install-Plugin "ZL Compressor" "ZL-Audio/ZLCompressor" 'Windows-x86-64\.msi$' $null (Join-Path $vst3 "ZL Compressor*")
   Install-Plugin "ChowMatrix (delay)" "Chowdhury-DSP/ChowMatrix" 'Win-.*\.exe$' $null (Join-Path $vst3 "ChowMatrix*")
+  # (an Oberheim-style poly synth, the Surge team's open OB-Xd successor: its setup brings the presets, which the .zip leaves out. 0.59.20)
+  Install-Plugin "OB-Xf (analog poly synth)" "surge-synthesizer/OB-Xf" '^ob-xf-Windows-v[0-9.]+\.exe$' $null (Join-Path $vst3 "OB-Xf*")
   if ($wantExtras) {
     # NAM: v0.7.14 and later have no release files; 0.7.13 is the newest that does
     Install-Plugin "Neural Amp Modeler" "sdatkinson/NeuralAmpModelerPlugin" '-win\.zip$' "v0.7.13" @((Join-Path $res "UserPlugins\FX\NeuralAmpModeler*"), (Join-Path $env:CommonProgramFiles "VST3\NeuralAmpModeler*"))

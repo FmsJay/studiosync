@@ -174,8 +174,8 @@ DRIVE_NAME="StudioSync"; [ "$FOLDER_ID" != bandsync ] && DRIVE_NAME="StudioSync 
 LIVE="${BS_LIVE:-y}"
 SOLO="${BS_SOLO:-y}"
 if [ -z "${BS_PLUGINS:-}" ]; then
-  say "The free plug-in pack (about 350 MB): synths, guitar and bass amps, a tuner, EQ, compressor, reverb, delay, tape,"
-  say "drum kits and keys (Surge XT, Dexed, Airwindows, Dragonfly, Chow, BYOD, ZL and more), so everyone hears the same sounds."
+  say "The free plug-in pack (about 410 MB): synths, guitar and bass amps, a tuner, EQ, compressor, reverb, delay, tape,"
+  say "drum kits and keys (Surge XT, Dexed, OB-Xf, Airwindows, Dragonfly, Chow, BYOD, ZL and more), so everyone hears the same sounds."
 fi
 PLUGINS="${BS_PLUGINS:-$(ask "Install it? (recommended) (y/n)" y)}"
 EXTRAS="${BS_EXTRAS:-n}"
@@ -485,6 +485,7 @@ if yes "$PLUGINS"; then
   have_plugin "ZL Equalizer 2" "ZL Equalizer*" || plugin_dmg "$(gh_asset ZL-Audio/ZLEqualizer "macOS-$arch\.dmg$")" "ZL Equalizer 2" "ZL Equalizer*"
   have_plugin "ZL Compressor" "ZL Compressor*" || plugin_dmg "$(gh_asset ZL-Audio/ZLCompressor "macOS-$arch\.dmg$")" "ZL Compressor" "ZL Compressor*"
   have_plugin "ChowMatrix" "ChowMatrix*" || plugin_dmg "$(gh_asset Chowdhury-DSP/ChowMatrix 'Mac-.*\.dmg$')" "ChowMatrix" "ChowMatrix*"
+  have_plugin "OB-Xf" "OB-Xf*" || plugin_dmg "$(gh_asset surge-synthesizer/OB-Xf 'ob-xf-macOS-v[0-9.]+\.dmg$')" "OB-Xf" "OB-Xf*" # (Oberheim-style poly: 0.59.20)
   if yes "$EXTRAS"; then
     # NAM: v0.7.14 and later have no release files; 0.7.13 is the newest that does
     have_plugin "Neural Amp Modeler" "NeuralAmpModeler*" || plugin_dmg "$(gh_asset_tag sdatkinson/NeuralAmpModelerPlugin v0.7.13 'mac\.dmg$')" "Neural Amp Modeler" "NeuralAmpModeler*"

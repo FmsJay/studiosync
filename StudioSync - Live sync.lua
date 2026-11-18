@@ -54,6 +54,28 @@ if beat0 and reaper.time_precise() - beat0 < 5 then return band.log("Live sync i
 if band.synced_elsewhere(proj) then
   return band.log("'" .. b.song .. "' is already syncing in another tab: work there (this tab is a second copy of the project, and isn't synced)")
 end
+-- One REAPER per song and room on this computer (review, 0.59.18: the same song open in two REAPERs synced from both, each taking the
+-- other's changes for its own). Each REAPER has an id for its session (ExtState "instance id", not persisted: one per process), and the
+-- REAPER syncing a song keeps <home>/locks/<song> <room>.json fresh. Another REAPER's fresh lock: not here, and Autostart is told why.
+-- (here, with the other refusals: before anything is set up or written for the song. 0.59.19)
+local instance = reaper.GetExtState(band.SECTION, "instance id")
+if instance == "" then instance = string.format("%d-%d", os.time(), math.random(1, 1e9)); reaper.SetExtState(band.SECTION, "instance id", instance, false) end
+local lock_file = band.home() .. "/locks/" .. (b.song .. " " .. b.room):gsub("[^%w%-_ ]", "_") .. ".json"
+do
+  local lk = band.read_json(lock_file)
+  if type(lk) == "table" and lk.instance ~= instance and tonumber(lk.at) and os.time() - tonumber(lk.at) < 20 then
+    reaper.SetExtState(band.SECTION, "elsewhere " .. tostring(proj), tostring(reaper.time_precise()), false)
+    return band.log("'" .. b.song .. "' is syncing in another REAPER on this computer: work there, or close it there first. This one doesn't sync it")
+  end
+  reaper.DeleteExtState(band.SECTION, "elsewhere " .. tostring(proj), false)
+end
+local lock_at = -math.huge
+local function keep_lock()
+  if reaper.time_precise() - lock_at < 5 then return end
+  lock_at = reaper.time_precise()
+  reaper.RecursiveCreateDirectory(band.home() .. "/locks", 0)
+  pcall(band.write_json, lock_file, { instance = instance, at = os.time() })
+end
 -- the newest Live sync for a tab owns it: while a dialog is open every script pauses, its heartbeat goes stale, and
 -- Autostart may start another one for the tab; when the dialog closes the older one sees it was replaced and stops
 -- (2026-10-29, laptop: tabs could end up with two Live syncs after a long dialog)
@@ -642,27 +664,6 @@ do -- what's already there is history, not a cue
   local dir, i = sync.room_dir(cfg, b.song, b.room) .. "/events", 0
   reaper.EnumerateFiles(dir, -1)
   while true do local f = reaper.EnumerateFiles(dir, i); if not f then break end; seen_ev[f] = true; i = i + 1 end
-end
--- One REAPER per song and room on this computer (review, 0.59.18: the same song open in two REAPERs synced from both, each taking the
--- other's changes for its own). Each REAPER has an id for its session (ExtState "instance id", not persisted: one per process), and the
--- REAPER syncing a song keeps <home>/locks/<song> <room>.json fresh. Another REAPER's fresh lock: not here, and Autostart is told why.
-local instance = reaper.GetExtState(band.SECTION, "instance id")
-if instance == "" then instance = string.format("%d-%d", os.time(), math.random(1, 1e9)); reaper.SetExtState(band.SECTION, "instance id", instance, false) end
-local lock_file = band.home() .. "/locks/" .. (b.song .. " " .. b.room):gsub("[^%w%-_ ]", "_") .. ".json"
-do
-  local lk = band.read_json(lock_file)
-  if type(lk) == "table" and lk.instance ~= instance and tonumber(lk.at) and os.time() - tonumber(lk.at) < 20 then
-    reaper.SetExtState(band.SECTION, "elsewhere " .. tostring(proj), tostring(reaper.time_precise()), false)
-    return band.log("'" .. b.song .. "' is syncing in another REAPER on this computer: work there, or close it there first. This one doesn't sync it")
-  end
-  reaper.DeleteExtState(band.SECTION, "elsewhere " .. tostring(proj), false)
-end
-local lock_at = -math.huge
-local function keep_lock()
-  if reaper.time_precise() - lock_at < 5 then return end
-  lock_at = reaper.time_precise()
-  reaper.RecursiveCreateDirectory(band.home() .. "/locks", 0)
-  pcall(band.write_json, lock_file, { instance = instance, at = os.time() })
 end
 -- StudioSync - Autostart.lua restarts us for this project after REAPER restarts, until the person stops us
 -- (our tab's file, not the front one's: an update reloads every tab's Live sync while one tab is in front)

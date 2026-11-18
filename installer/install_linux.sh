@@ -190,7 +190,7 @@ LIVE="${BS_LIVE:-y}"
 SOLO="${BS_SOLO:-y}"
 if [ -z "${BS_PLUGINS:-}" ]; then
   say "The free plug-in pack: synths, guitar and bass amps, a tuner, EQ, compressor, reverb, delay, tape, drum kits and keys"
-  say "(Surge XT, Dexed, Airwindows, Dragonfly, Chow, BYOD, ZL and more: the ones with a Linux version), so everyone hears the same sounds."
+  say "(Surge XT, Dexed, OB-Xf, Airwindows, Dragonfly, Chow, BYOD, ZL and more: the ones with a Linux version), so everyone hears the same sounds."
 fi
 PLUGINS="${BS_PLUGINS:-$(ask "Install it? (recommended) (y/n)" y)}"
 EXTRAS="${BS_EXTRAS:-n}"
@@ -499,7 +499,8 @@ if yes "$PLUGINS"; then
     have_plugin "Chow Tape Model" "CHOW*" || plugin_pkg "$(gh_asset jatinchowdhury18/AnalogTapeModel 'Linux-x64.*\.deb$')" "Chow Tape Model" "CHOW*"
     have_plugin "BYOD" "BYOD*" || plugin_pkg "$(gh_asset Chowdhury-DSP/BYOD 'Linux-x64.*\.deb$')" "BYOD" "BYOD*"
     have_plugin "ChowMatrix" "ChowMatrix*" || plugin_pkg "$(gh_asset Chowdhury-DSP/ChowMatrix 'Linux-x64.*\.deb$')" "ChowMatrix" "ChowMatrix*"
-  else skip_plugin "Surge XT, Dexed, Airwindows, Chow Tape Model, BYOD and ChowMatrix (no $ARCH build)"; fi
+    have_plugin "OB-Xf" "OB-Xf*" || plugin_pkg "$(gh_asset surge-synthesizer/OB-Xf 'ob-xf-Linux-v[0-9.]+\.deb$')" "OB-Xf" "OB-Xf*" # (0.59.20)
+  else skip_plugin "Surge XT, Dexed, Airwindows, Chow Tape Model, BYOD, ChowMatrix and OB-Xf (no $ARCH build)"; fi
   have_plugin "Dragonfly Reverb" "Dragonfly*" || plugin_pkg "$(gh_asset michaelwillis/dragonfly-reverb "linux-$DA\.tar\.xz$")" "Dragonfly Reverb" "Dragonfly*"
   if [ -n "$ZA" ]; then
     have_plugin "ZL Equalizer 2" "ZL Equalizer*" || plugin_pkg "$(gh_asset ZL-Audio/ZLEqualizer "Linux-$ZA\.zip$")" "ZL Equalizer 2" "ZL Equalizer*"
