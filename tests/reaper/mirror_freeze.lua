@@ -7,6 +7,7 @@ package.path = lib .. "?.lua;" .. package.path
 for _, m in ipairs({ "band", "sync", "mirror", "recall", "json", "prints" }) do package.loaded[m] = nil end
 require("prints").SETTLE = 0 -- (print_bursts covers the wait)
 local sync, mirror = require("sync"), require("mirror")
+mirror.FX_SET_GAP = 0 -- (frozen and unfrozen back to back, faster than any band: 0.59.14)
 local stamp = os.time()
 local root = D .. "/froot_" .. stamp
 local song, room = "FreezeLab", "main"
