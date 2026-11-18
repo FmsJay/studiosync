@@ -83,6 +83,10 @@ save = function(root, change)
   trusted_at[root] = nil -- (a setting changed here shows at once)
   local info, j = band.info(root), json_of(root)
   j.name, j.id, j.drive = info.name, info.id, info.drive
+  -- (the outward settings as last trusted, not as the file has them: written back from a manager's computer, a call link or alerts server a
+  -- member or guest slipped into band.json became trusted, and some saves need no click (removal.tick, groups.tick, set_tailnet). Review, 0.59.14)
+  local t = groups.trusted(root)
+  for _, k in ipairs(SETTINGS) do j[k] = t[k] end
   -- (the roles this computer goes by, not a change it set aside: written back as they were, it would reach everyone as this computer's own)
   local trust = require("trust")
   local owner, admins = trust.roles(root, j)
@@ -98,7 +102,7 @@ save = function(root, change)
   j.roles_at = os.time()
   reaper.RecursiveCreateDirectory(root .. "/_band", 0)
   band.write_json(root .. "/_band/band.json", j)
-  seen[root] = nil
+  seen[root], trusted_at[root] = nil, nil
 end
 function groups.edit(root, change) save(root, change) end -- (lib/alerts.lua's channel)
 -- Private live audio (research of other tools, 0.58.53: SonoBus's audio isn't encrypted, and its public server introduces everyone). One

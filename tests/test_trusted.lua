@@ -20,4 +20,13 @@ assert(alerts.server("/s") == "https://alerts.example.org", "Syncthing not sayin
 ext = {} -- (a studio never checked here: from before owners, or the first look)
 groups = nil; package.loaded.groups = nil; package.loaded.alerts = nil; groups = require("groups"); alerts = require("alerts")
 assert(alerts.server("/t") == "https://new.example.org", "never checked here (a studio from before owners): band.json as it is")
+-- (a manager's computer saving band.json writes the outward settings back as last trusted, not as a member left them. Review, 0.59.14)
+package.loaded.trust.held = function() return false end
+local wrote
+band.write_json = function(_, t) wrote = t end
+j, verdict = { call = "https://meet.example.org/u" }, true
+assert(groups.trusted("/u").call == "https://meet.example.org/u", "trusted from someone in charge")
+j, verdict = { call = "https://evil.example.com/x", alerts_server = "https://evil.example.com" }, false
+groups.set_debug("/u", true)
+assert(wrote.call == "https://meet.example.org/u" and wrote.alerts_server == nil and wrote.debug == true, "a save keeps the trusted settings and makes its own change")
 print("ok")
