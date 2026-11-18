@@ -127,25 +127,8 @@ function M.section_live(part) -- part: "mode" or "rest" (docked, side by side), 
   local master, idx = live.fx(proj, false)
   if not master then
     if ImGui.Button(ctx, "Connect") then
-      local why
-      if live_server == ((band.read_json(lfile) or {}).server or "") then -- (or an address typed in just now, not saved: that one)
-        local server, said = services.ninjam_for(cfg, lfile, true)
-        if server then live_server = server else why = said end
-      end
-      if why then band.msg(why) else
-      local sdir = (reaper.GetProjectName(proj) ~= "" and reaper.GetProjectPathEx(proj) or reaper.GetResourcePath()):gsub("\\", "/") .. "/bandsync_live"
-      reaper.RecursiveCreateDirectory(sdir, 0)
-      reaper.SetProjExtState(proj, band.SECTION, "live_dir", sdir)
-      local ok, e = live.configure(cfg, live_server, live_mode, live_send, sdir)
-      if not ok then band.msg(e) else
-        local m2, i2 = live.fx(proj, true)
-        if m2 then
-          reaper.TrackFX_Show(m2, i2, 3)
-          live.keep_hidden(proj)
-          reaper.SetExtState(band.SECTION, "ninjam connect " .. tostring(proj), "1", false) -- (Live sync presses Connect: lib/producer.lua)
-        else band.msg("Couldn't add ReaNINJAM to the master track.") end
-      end
-      end
+      local ok, why = M.connect(live_mode)
+      if not ok then band.msg(why) end
     end
     ImGui.SetItemTooltip(ctx, "Adds ReaNINJAM to your master track with everything filled in, and connects it. If nobody's running a server, this computer does.")
   else
@@ -178,15 +161,62 @@ function M.section_live(part) -- part: "mode" or "rest" (docked, side by side), 
       end
     end
     ImGui.SameLine(ctx)
-    if ImGui.Button(ctx, "Disconnect") and not live.close_boxes() then
-      reaper.DeleteExtState(band.SECTION, "ninjam shown " .. tostring(proj), false)
-      live.closing()
-      reaper.TrackFX_Delete(master, idx)
-    end -- (lib/live.lua: a second press, with one of its boxes up)
+    if ImGui.Button(ctx, "Disconnect") then M.disconnect() end
   end
   ImGui.TextDisabled(ctx, "(?) about changing mode or server")
   ImGui.SetItemTooltip(ctx, "ReaNINJAM reads its mode once per REAPER session: after changing it, restart REAPER. The server follows by itself. " ..
     "Play along ideas appear when the listener disconnects (ReaNINJAM writes what it heard only then).")
+end
+
+-- Connect: ReaNINJAM on the master track, set up for `mode`, the studio's server (this computer runs one if nobody does). -> true, or nil + why.
+function M.connect(mode)
+  local b, cfg, proj = E.b(), E.cfg(), E.proj()
+  local lfile = band.song_dir(cfg, b.song) .. "/live.json"
+  live_server = live_server or (band.read_json(lfile) or {}).server or ""
+  if live_server == ((band.read_json(lfile) or {}).server or "") then -- (or an address typed in just now, not saved: that one)
+    local server, said = services.ninjam_for(cfg, lfile, true)
+    if server then live_server = server else return nil, said end
+  end
+  local sdir = (reaper.GetProjectName(proj) ~= "" and reaper.GetProjectPathEx(proj) or reaper.GetResourcePath()):gsub("\\", "/") .. "/bandsync_live"
+  reaper.RecursiveCreateDirectory(sdir, 0)
+  reaper.SetProjExtState(proj, band.SECTION, "live_dir", sdir)
+  local ok, e = live.configure(cfg, live_server, mode or live_mode, live_send, sdir)
+  if not ok then return nil, e end
+  local m2, i2 = live.fx(proj, true)
+  if not m2 then return nil, "Couldn't add ReaNINJAM to the master track." end
+  reaper.TrackFX_Show(m2, i2, 3)
+  live.keep_hidden(proj)
+  reaper.SetExtState(band.SECTION, "ninjam connect " .. tostring(proj), "1", false) -- (Live sync presses Connect: lib/producer.lua)
+  return true
+end
+function M.disconnect()
+  local proj = E.proj()
+  local master, idx = live.fx(proj, false)
+  if not master or live.close_boxes() then return end -- (lib/live.lua: a second press, with one of its boxes up)
+  reaper.DeleteExtState(band.SECTION, "ninjam shown " .. tostring(proj), false)
+  live.closing()
+  reaper.TrackFX_Delete(master, idx)
+end
+-- Time-sync (James, 0.58.99): Home's switch for Play along. You play to your copy of the song; the others hear you in time with theirs,
+-- one NINJAM interval (a bar or two) behind, exactly as you played it. Real time mode is the one for hearing each other at once.
+function M.time_sync_on() return live.fx(E.proj(), false) ~= nil and live_mode == "synced" end
+function M.interval_bars()
+  local ok_cfg, bpi = pcall(function() return tonumber((band.read(services.ninjam_dir() .. "/bandsync.cfg") or ""):match("DefaultBPI%s+(%d+)")) end)
+  bpi = ok_cfg and bpi or 4
+  local _, _, _, num = reaper.TimeMap_GetTimeSigAtTime(E.proj(), reaper.GetCursorPositionEx(E.proj()))
+  return math.max(1, math.ceil(bpi / math.max(1, num or 4))), bpi
+end
+function M.time_sync(on)
+  local proj = E.proj()
+  if not on then M.disconnect(); return band.log("Time-sync off") end
+  live_mode = "synced"
+  reaper.SetProjExtState(proj, band.SECTION, "live_mode", "synced")
+  local ok, why = M.connect("synced")
+  if not ok then return band.msg(why) end
+  local one = M.interval_bars()
+  ui.want_lag = one
+  if not same_room_on() then reaper.SetProjExtState(proj, band.SECTION, "side", tostring(one)) end -- (listeners an interval behind: what they hear lines up)
+  band.log(string.format("Time-sync on: the others hear you in time with the song, %d bar%s behind (one NINJAM interval)", one, one == 1 and "" or "s"))
 end
 
 local function go(ev) -- post it for the band, and fire it here through our own Live sync

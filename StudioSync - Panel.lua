@@ -1232,6 +1232,15 @@ local function home_play()
   local on = same_room_on()
   local ch, v = switch_row("##rt", "Real time mode", on, SAME_ROOM_TIP)
   if ch then set_same_room(v) end
+  if b then -- Time-sync (James, 0.58.99): hear each other in time with the song, a bar or two late, through NINJAM (the Play/Jam page's Play along)
+    local ts = page_play.time_sync_on()
+    local one = page_play.interval_bars()
+    local tch, tv = switch_row("##timesync", "Time-sync", ts, string.format("Everyone plays to their own copy of the song, and hears the others in time with it, %d bar%s late " ..
+      "(one NINJAM interval):\nexactly how the person recording played it, which Real time mode's live audio can't promise over the internet.\n" ..
+      "For listening to a take and playing along, not for talking (that's Real time mode). It needs Tailscale; this computer runs the server if nobody does.",
+      one, one == 1 and "" or "s"))
+    if tch then page_play.time_sync(tv) end
+  end
   require("page_hear").fit(ctx, ImGui, "Configure SonoBus") -- (beside, or below in a narrow column: it was cut to "Configure Sono")
   if ImGui.SmallButton(ctx, "Configure SonoBus") then sonobus_open() end
   ImGui.SetItemTooltip(ctx, "Opens SonoBus's own window (volume and mute per collaborator, buffer, quality). You don't need it to play together.")
