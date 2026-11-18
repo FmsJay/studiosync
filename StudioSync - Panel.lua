@@ -1013,6 +1013,15 @@ local function section_plugins()
     plug_info = not ok and ("Error: " .. tostring(n)) or n and string.format("%d plug-ins everyone has (lists from %s). Reopen the FX browser to see them.",
       n, table.concat(members or {}, ", ")) or why
   end
+  -- (and getting the studio's pack and extras: lib/pack.lua. James, 0.59.22)
+  ImGui.Spacing(ctx)
+  heading("The plug-in pack", 17)
+  require("pack").draw(ctx, ImGui, cfg)
+end
+-- Settings > Plug-ins: the pack and its extras (always there: the Plugins page shows only with something missing, or in Advanced)
+function ui.settings_pack()
+  heading("The plug-in pack", 17)
+  require("pack").draw(ctx, ImGui, cfg)
 end
 
 -- Live: hear each other while it happens, through ReaNINJAM and the band's NINJAM server.
@@ -2419,6 +2428,7 @@ local function page_setup()
     ImGui.EndTabItem(ctx)
   end
   if tab("Studio") then body("s studio", settings_studio); ImGui.EndTabItem(ctx) end
+  if tab("Plug-ins") then body("s pack", ui.settings_pack); ImGui.EndTabItem(ctx) end -- (the pack and extras: lib/pack.lua, 0.59.22)
   if tab("Advanced") then body("s advanced", function() layout({ { ui.settings_advanced, 360 }, { ui.settings_buffer, 420 } }, true) end); ImGui.EndTabItem(ctx) end
   if tab("Console") then
     -- StudioSync's own log, newest first (REAPER's console only shows it while open)

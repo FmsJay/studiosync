@@ -20,7 +20,9 @@ param(
   [string]$ReaperExe = "",         # testing: this REAPER, as if the installer had just put it there
   [string]$ReaperPath = "",        # a REAPER somewhere the installer doesn't look (a portable folder): its folder or reaper.exe
   [switch]$NoApps,                # testing: skip installing apps, only configure
-  [switch]$NoReaper               # testing: stop before anything happens inside REAPER (the shared folder and pairing only)
+  [switch]$NoReaper,              # testing: stop before anything happens inside REAPER (the shared folder and pairing only)
+  [switch]$PluginsOnly,           # only the plug-in pack (and -Extras yes: the extras), into the REAPER at -ResPath: the panel's Plugins page
+  [string]$ResPath = ""            # with -PluginsOnly: REAPER's resource folder (reaper.GetResourcePath)
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue" # Invoke-WebRequest is 10x slower with the progress bar
@@ -42,6 +44,7 @@ if ($boxed) {
   foreach ($k in "User", "HostId", "Root", "BandId", "BandName", "Hosting", "Live", "Solo", "Plugins", "Extras", "ReaPersona", "SyncthingHome", "ReaperExe", "ReaperPath", "TsKey") { $v = Get-Variable $k -ValueOnly; if ($v) { $argv += @("-$k", $v) } }
   if ($NoApps) { $argv += "-NoApps" }
   if ($NoReaper) { $argv += "-NoReaper" }
+  if ($PluginsOnly) { $argv += @("-PluginsOnly", "-ResPath", $ResPath) }
   $quoted = ($argv | ForEach-Object { if ($_ -match '^-') { $_ } else { '"' + $_ + '"' } }) -join " "
   $cmd = Join-Path $env:TEMP "bandsync_install_outside.cmd"
   # (UTF-8 with chcp 65001: written as ASCII, a user name with accents in the path, or a studio's, came out as "?" and setup never started.
@@ -59,6 +62,26 @@ function Ask($q, $def) { $a = Read-Host "$q$(if ($def) { " [$def]" })"; if ($a) 
 function YesNo($q, $def) { $a = Ask "$q (y/n)" $def; return $a -match '^[yY]' }
 # (the whole invitation pasted instead of its one line: the lines after it waited in this window and answered the questions below. 0.59.10)
 try { $Host.UI.RawUI.FlushInputBuffer() } catch { }
+# Only the plug-ins (the panel's Plugins page, Get the plug-in pack: 0.59.22). This script's own functions and its plug-in pack section (the
+# "if ($wantPlugins)" block below), read out of this file and run, so the list lives in one place; nothing else here runs.
+if ($PluginsOnly) {
+  if (-not $ResPath -or -not (Test-Path -LiteralPath $ResPath)) { Warn "REAPER's folder wasn't given (or isn't there): $ResPath"; Read-Host "Press Enter to close"; exit 1 }
+  $self = [System.Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$null, [ref]$null)
+  foreach ($f in $self.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) { . ([scriptblock]::Create($f.Extent.Text)) }
+  $set = $self.Find({ $args[0] -is [System.Management.Automation.Language.AssignmentStatementAst] -and $args[0].Left.Extent.Text -eq '$direct' }, $true)
+  if ($set) { . ([scriptblock]::Create($set.Extent.Text)) } # (each app's own download, without winget)
+  $pack = $self.Find({ $args[0] -is [System.Management.Automation.Language.IfStatementAst] -and $args[0].Clauses[0].Item1.Extent.Text -eq '$wantPlugins' }, $true)
+  $winget = Get-Command winget -ErrorAction SilentlyContinue
+  $script:downloads = @(); $script:Quiet = @(); $script:ghTold = $false
+  $res, $wantPlugins, $wantExtras, $tellDecent = $ResPath, $true, ($Extras -eq "yes"), $false
+  Say "Getting StudioSync's plug-in pack$(if ($wantExtras) { ' and the extras' }) for the REAPER in $res"
+  Say "Downloads show no progress bar here: a pause of a few minutes on a big one is normal."
+  . ([scriptblock]::Create((($pack.Clauses[0].Item2.Statements | ForEach-Object { $_.Extent.Text }) -join "`n")))
+  if ($tellDecent) { Say "Decent Sampler (free, lots of free instruments) can't be installed for you: its maker asks for an email address first. decentsamples.com/product/decent-sampler-plugin" }
+  foreach ($d in $script:downloads) { Remove-Item -Force $d -ErrorAction SilentlyContinue }
+  Read-Host "Done. Restart REAPER so it finds them, then press Enter to close this window"
+  exit 0
+}
 # Names in plain letters, as the Mac and Linux installers and StudioSync itself keep them (band.clean): accents dropped, a few letters spelled
 # out. \w kept accented letters here, and StudioSync then dropped them, so "J-u-umlaut-rgen" became "Jrgen". (Cross-platform review, 0.58.78)
 # (code points, not the letters: Windows PowerShell reads this file as ANSI)
@@ -165,8 +188,12 @@ $driveName = if ($folderId -eq "bandsync") { "StudioSync" } else { "StudioSync -
 $wantLive = $Live -ne "no"
 $wantSolo = $Solo -ne "no"
 $wantPlugins = if ($Plugins) { $Plugins -eq "yes" } else { Write-Host "The free plug-in pack (about 190 MB): synths, guitar and bass amps, a tuner, EQ, compressor, reverb, delay, tape, drum kits and keys"; Write-Host "(Surge XT, Dexed, OB-Xf, Airwindows, Dragonfly, Chow, BYOD, ZL and more), so everyone in the studio hears the same sounds."; YesNo "Install it? (recommended)" "y" }
-# (extras only asked of whoever starts the studio: a joiner's projects say what they use, and 1.2 GB is a lot to decide on blind. Beginner review, 0.58.62)
-$wantExtras = if ($Extras) { $Extras -eq "yes" } else { -not $joining -and $wantPlugins -and (YesNo "Also the bigger extras (about 1.3 GB: a grand piano, a real drum kit, amp capture players, vocal tuning, a 303 bass, mallets, and the Odin 2 and Monique synths)?" "n") }
+# (the extras asked of everyone: asked only of whoever started the studio (beginner review, 0.58.62), a joiner could hear those parts, through
+# their prints, but not play or change them. James, 0.59.22. Also any time later: the panel's Plugins page, Get the extras.)
+$wantExtras = if ($Extras) { $Extras -eq "yes" } else { $wantPlugins -and $(
+  Write-Host "The bigger extras (about 1.3 GB): a grand piano, a real drum kit, amp capture players, vocal tuning, a 303 bass, mallets, and the Odin 2 and Monique synths."
+  if ($joining) { Write-Host "Without them you still hear parts made with them, but can't play or change those sounds. You can add them later: StudioSync's Plugins page." }
+  YesNo "Install the extras too?" "n") }
 # ReaPersona: which app you're used to, as one question, and it's set up as that DAW in the same run (James, 0.58.64: yes/no installed it and
 # left the picking for later). The ids are ReaPersona's own (styles.json).
 $personas = @(@("pro_tools", "Pro Tools"), @("pro_tools_intro", "Pro Tools Intro (the free one)"), @("logic", "Logic Pro"), @("garageband", "GarageBand"),
@@ -390,6 +417,7 @@ function Install-Plugin($name, $repo, $pattern, $tag, $have) {
   }
   if (& $there) { Ok "$name installed" } else { Warn "$name : not found where expected afterwards ($($have -join ' or ')); check it in REAPER's FX browser" }
 }
+# (-PluginsOnly runs this block on its own: its condition stays exactly "$wantPlugins")
 if ($wantPlugins) {
   $vst3 = Join-Path $env:CommonProgramFiles "VST3"
   Install-App "SurgeSynth.SurgeXT" "Surge XT" (Join-Path $vst3 "Surge XT.vst3")

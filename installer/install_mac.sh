@@ -57,6 +57,12 @@ echo "front); macOS asks for your password to install some apps, and to allow a 
 echo "come). Nothing already installed is changed."
 echo
 
+# Only the plug-ins (BS_PLUGINS_ONLY=1, and BS_EXTRAS=y for the extras: the panel's Plugins page, Get the plug-in pack. 0.59.22): the
+# questions, the apps and everything after the plug-in pack are skipped; the helpers they share still load.
+if [ -n "${BS_PLUGINS_ONLY:-}" ]; then
+  PLUGINS=y; EXTRAS="${BS_EXTRAS:-n}"
+  say "Getting StudioSync's plug-in pack$(yes "$EXTRAS" && echo ' and the extras') ..."
+else
 # ---------- 0. questions ----------
 # (names are plain letters, digits, spaces, - and _: the default is shown already cleaned, and a typed name that
 # changes when cleaned is said, not changed silently)
@@ -179,9 +185,11 @@ if [ -z "${BS_PLUGINS:-}" ]; then
 fi
 PLUGINS="${BS_PLUGINS:-$(ask "Install it? (recommended) (y/n)" y)}"
 EXTRAS="${BS_EXTRAS:-n}"
-# (extras only asked of whoever starts the studio: 1.2 GB is a lot for a joiner to decide on blind. Beginner review, 0.58.62)
-if yes "$PLUGINS" && [ -z "$JOINING" ] && [ -z "${BS_EXTRAS:-}" ]; then
+# (asked of everyone: asked only of whoever started the studio (beginner review, 0.58.62), a joiner could hear those parts through their
+# prints but not play or change them. James, 0.59.22. Also any time later: the panel's Plugins page.)
+if yes "$PLUGINS" && [ -z "${BS_EXTRAS:-}" ]; then
   say "The bigger extras (about 1.4 GB): a grand piano, a real drum kit, amp capture players, vocal tuning, a 303 bass, mallets, and the Odin 2 and Monique synths."
+  [ -n "$JOINING" ] && say "Without them you still hear parts made with them, but can't play or change those sounds. You can add them later: StudioSync's Plugins page."
   EXTRAS="$(ask "Install the extras too? (y/n)" n)"
 fi
 # ReaPersona: which app you're used to, as one question, and it's set up as that DAW in the same run (James, 0.58.64: yes/no installed it and
@@ -205,6 +213,7 @@ esac
 REAPERSONA=n; { [ -n "$PERSONA" ] || yes "${BS_REAPERSONA:-n}"; } && REAPERSONA=y
 echo
 
+fi # (BS_PLUGINS_ONLY: the questions)
 say "Downloads show no progress here: a pause of a few minutes on a big one is normal."
 # ---------- 1. apps ----------
 # Mount a disk image, then install the .app or .pkg inside it. Disk images with a license show it first: that's yours to agree to.
@@ -319,6 +328,7 @@ find_reaper_app() {
   c="$(mdfind 'kMDItemCFBundleIdentifier == "com.cockos.reaper"' 2>/dev/null | head -1)"; [ -n "$c" ] && [ -d "$c" ] && { echo "$c"; return 0; }
   return 1
 }
+if [ -z "${BS_PLUGINS_ONLY:-}" ]; then # (BS_PLUGINS_ONLY: not the apps)
 if ! find_reaper_app >/dev/null && [ -z "${BS_REAPER:-}" ]; then
   # (a REAPER somewhere this doesn't look is asked for, rather than a second one installed beside it)
   BS_REAPER="$(ask "REAPER wasn't found. If it's somewhere else (a portable copy), drag its folder or REAPER.app here; or press Return to install it")"
@@ -488,6 +498,7 @@ if yes "$SOLO" && have "Google Drive"; then
     [ -d "$MD/$DRIVE_NAME" ] && { ok "Google Drive: the studio's '$DRIVE_NAME' folder is there"; DRIVE_OK=1; }
   fi
 fi
+fi # (BS_PLUGINS_ONLY: the apps)
 # the band plug-in pack (optional): free, open-source plug-ins every bandmate can have, each from its official release
 # (never bundled here); what everyone has shows in REAPER's FX browser folder "StudioSync (everyone has)"
 if yes "$PLUGINS"; then
@@ -539,6 +550,11 @@ if yes "$PLUGINS"; then
     fi
     TELL_DECENT=1
   fi
+fi
+if [ -n "${BS_PLUGINS_ONLY:-}" ]; then # (only the plug-ins: done here)
+  [ -n "${TELL_DECENT:-}" ] && say "Decent Sampler (free, lots of free instruments) can't be installed for you: its maker asks for an email address first. decentsamples.com/product/decent-sampler-plugin"
+  ok "Done: restart REAPER so it finds them."
+  exit 0
 fi
 REAPER_APP="$(find_reaper_app)" || { warn "REAPER isn't installed: get it from reaper.fm and run this again."; exit 1; }
 # (a portable REAPER keeps its settings beside REAPER.app when that folder has a reaper.ini. Installer review, 0.58.78)

@@ -535,7 +535,11 @@ e-piano, organ, channel strip...; GPL-3 with MIT/AGPL parts). On Windows the plu
 together at the end without their setup windows, and Windows asks for permission once (say no and each one's own
 setup opens instead).
 
-**Extras** (a second question, about 1.3 GB, most of it the piano and drums): Neural Amp Modeler 0.7.13 and AIDA-X (amp
+**Getting them later:** the panel's **Settings > Plug-ins** (and the Plugins page) says how many of the pack and the extras this
+computer has, which ones others in the studio have that it doesn't, and **Get the pack** / **Get the extras** open this release's
+installer in a window of its own, doing only the plug-ins (`-PluginsOnly` on Windows, `BS_PLUGINS_ONLY=1` on Mac and Linux).
+
+**Extras** (a second question, asked of everyone, about 1.3 GB, most of it the piano and drums): Neural Amp Modeler 0.7.13 and AIDA-X (amp
 capture players), Odin 2 (synth), SnapTune (vocal pitch correction, AGPL-3), JC303 (TB-303 bass, GPL-3), RipplerX (modelled
 mallets, bells and plucks, GPL-3), Monique (a mono synth sold before it was opened, GPL-3; its nightly build, the only release
 it has), and sforzando with two SFZ instruments everyone then has: the Salamander Grand piano and
