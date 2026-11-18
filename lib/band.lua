@@ -15,15 +15,21 @@ function band.compare_versions(a, b)
   return 0
 end
 
+-- An ISO UTC time ("2026-10-27T02:43:22Z") in seconds: os.time of its fields with isdst false, so summer time can't skew it.
+-- Compare it only with times made the same way (band.age's "now"). nil if it can't be read. Pure.
+function band.iso_time(iso)
+  local y, m, d, H, M, S = tostring(iso or ""):match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
+  return y and os.time({ year = y, month = m, day = d, hour = H, min = M, sec = S, isdst = false }) or nil
+end
 -- Seconds since an ISO UTC timestamp ("2026-10-27T02:43:22Z"). Both sides are broken-down UTC times
 -- run through os.time, which reads them as local time: the offset cancels only if neither applies DST,
 -- and os.date("!*t") can carry isdst = true (it did on a UTC-6 laptop in October: every age read +1 h).
 function band.age(iso, now)
-  local y, m, d, H, M, S = (iso or ""):match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
-  if not y then return math.huge end
+  local made = band.iso_time(iso)
+  if not made then return math.huge end
   local n = now or os.date("!*t") -- copied: os.time normalises (rewrites) the table it is given
   local t = { year = n.year, month = n.month, day = n.day, hour = n.hour, min = n.min, sec = n.sec, isdst = false }
-  return os.time(t) - os.time({ year = y, month = m, day = d, hour = H, min = M, sec = S, isdst = false })
+  return os.time(t) - made
 end
 
 -- Say once per run when a bandmate's file was made with a newer StudioSync than this one: in the log, and Health shows it. Never a box: one

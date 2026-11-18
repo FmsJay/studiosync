@@ -40,15 +40,6 @@ function sync.put_back(text, mine, claim) -- mine: { oid, ev, name } when it was
   end
 end
 local function ext(proj, sec, key) return select(2, reaper.GetProjExtState(proj, sec, key)) end
--- Seconds since an ISO UTC time ("2026-10-28T07:05:36Z"); huge if it can't be read.
-local function iso_age(iso)
-  local y, mo, d, h, mi, s = (iso or ""):match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
-  if not y then return math.huge end
-  local t = os.time({ year = y, month = mo, day = d, hour = h, min = mi, sec = s, isdst = false })
-  local utc_now = os.date("!*t")
-  utc_now.isdst = false
-  return os.time(utc_now) - t
-end
 local function setext(proj, sec, key, v) reaper.SetProjExtState(proj, sec, key, v) end
 sync.ext, sync.setext = ext, setext
 
@@ -1337,7 +1328,7 @@ function sync.receive(proj, cfg, song, room, can)
       elseif res then
         setext(proj, sync.APPLIED, ev.id, "1")
         stamp(proj, ev)
-        if type(ev.note) == "string" and ev.user ~= cfg.user and iso_age(ev.time) < 3600 then band.log(ev.note) end -- (a copy's credit, a bus: mirror.watch)
+        if type(ev.note) == "string" and ev.user ~= cfg.user and band.age(ev.time) < 3600 then band.log(ev.note) end -- (a copy's credit, a bus: mirror.watch)
         if reaper.time_precise() - t0 > budget then budget_out, sync.backlog = true, true end
         local theirs = ev.user ~= cfg.user -- (your own changes come back too: they aren't "from the band")
         if theirs then applied = applied + 1 end

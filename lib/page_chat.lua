@@ -111,9 +111,8 @@ end
 
 -- "2026-10-30T21:05:00Z" -> "Thu 21:05" (this machine's time)
 local function when(iso)
-  local y, mo, d, h, mi, sec = (iso or ""):match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
-  if not y then return "" end
-  local utc = os.time({ year = y, month = mo, day = d, hour = h, min = mi, sec = sec, isdst = false })
+  local utc = band.iso_time(iso)
+  if not utc then return "" end
   local now = os.time()
   local offset = os.difftime(now, os.time(os.date("!*t", now)))
   local t = utc + offset

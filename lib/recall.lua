@@ -247,10 +247,7 @@ end
 -- Consecutive entries by one person, while one driver drives and without a long pause, form a group:
 -- { user, driver, first, last (entry indexes), from, to (times) }.
 -- A pause of more than 3 minutes also starts a new group, so a long session doesn't become one restore point.
-local function secs(iso)
-  local y, mo, d, h, mi, s = (iso or ""):match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
-  return y and os.time({ year = y, month = mo, day = d, hour = h, min = mi, sec = s }) or 0
-end
+local function secs(iso) return band.iso_time(iso) or 0 end
 function recall.groups(entries, host)
   local groups, driver = {}, host
   for i, e in ipairs(entries) do

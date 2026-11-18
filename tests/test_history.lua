@@ -1,7 +1,8 @@
 -- recall.groups / describe are pure: run them on a hand-made history (lupa or any Lua 5.4)
-package.loaded.band = { files = function() return {} end }
-package.loaded.sync = { base_name = function(n) return n end }
 package.path = "lib/?.lua;" .. package.path
+reaper = reaper or {} -- band.lua only touches reaper.* inside functions
+require("band").files = function() return {} end
+package.loaded.sync = { base_name = function(n) return n end }
 local recall = require("recall")
 local E = {
   { kind = "take", time = "2026-10-27T01:00:00Z", id = "A-20261027-010000Z-1", take = "A-20261027-010000Z-1", user = "A", track = "Gtr", pos = 1, len = 4 },

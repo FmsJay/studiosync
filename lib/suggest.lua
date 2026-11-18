@@ -28,14 +28,6 @@ function suggest.words(h)
   if (h.removes or 0) > 0 then bits[#bits + 1] = h.removes .. " removed" end
   return table.concat(bits, ", ") .. " on " .. table.concat(h.names or {}, ", ")
 end
--- How long ago, in a few words. `now`: os.time() of UTC as a table's fields go. Pure.
-function suggest.age(iso, now)
-  local y, mo, d, hh, mi, ss = tostring(iso or ""):match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
-  if not y then return "" end
-  local secs = now - os.time({ year = y, month = mo, day = d, hour = hh, min = mi, sec = ss, isdst = false })
-  if secs < 90 then return "just now" elseif secs < 5400 then return math.floor(secs / 60 + 0.5) .. " min ago" elseif secs < 129600 then return math.floor(secs / 3600 + 0.5) .. " h ago" end
-  return math.floor(secs / 86400 + 0.5) .. " days ago"
-end
 suggest.FADER_TIP = "A grouped fader moves their track too, so it waits for them. To mix across someone's parts, use a folder's fader or a VCA: those go straight through."
 function suggest.count(h) return #(h.oids or {}) end
 
@@ -222,7 +214,7 @@ function suggest.bar(ctx, ImGui, proj, cfg, room_dir, can, local_mix)
   sig = table.concat(sig, ",")
   if sig ~= suggest.bar_sig then suggest.bar_sig, suggest.bar_at = sig, reaper.time_precise() end
   ImGui.BeginDisabled(ctx, suggest.settling())
-  local now = os.time(os.date("!*t"))
+  local now = os.date("!*t") -- (chooser.ago's)
   local function answer_row(h)
     ImGui.PushID(ctx, h.id)
     if ImGui.SmallButton(ctx, "Accept") then
@@ -243,7 +235,7 @@ function suggest.bar(ctx, ImGui, proj, cfg, room_dir, can, local_mix)
     ImGui.SetItemTooltip(ctx, "Your tracks stay as they are. " .. tostring(h.from) .. " keeps a copy of anything new on a track of their own.")
     ImGui.SameLine(ctx)
     ImGui.PushStyleColor(ctx, ImGui.Col_Text, require("theme").YELLOW)
-    ImGui.TextWrapped(ctx, string.format("%s's edit touches your parts: %s (%s)", tostring(h.from), suggest.words(h), suggest.age(h.time, now)))
+    ImGui.TextWrapped(ctx, string.format("%s's edit touches your parts: %s (%s)", tostring(h.from), suggest.words(h), require("chooser").ago(h.time, now)))
     ImGui.PopStyleColor(ctx)
     ImGui.PopID(ctx)
   end
