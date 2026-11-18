@@ -12,7 +12,7 @@ local band = require("band")
 
 local STUDIO, SONG = CROSS_STUDIO or "Smiley Studios", CROSS_SONG or "Cross Test"
 local ROLES = CROSS_ROLES or { ["James"] = "A", ["James-Laptop"] = "B", ["Chilio-Mac"] = "C" }
-local WAIT, JOIN = 120, 180 -- seconds a change has to arrive in; seconds to wait for the others to start
+local WAIT, JOIN = 120, CROSS_JOIN or 180 -- seconds a change has to arrive in; seconds to wait for the others to start (CROSS_JOIN: longer)
 local cfg = band.settings()
 if not cfg then return "StudioSync isn't set up here" end
 local role = CROSS_ROLE or ROLES[cfg.user]
@@ -191,7 +191,10 @@ local function tick()
     if not p and not opened and band.read_json(band.session_path({ root = root, user = cfg.user }, SONG)) then opened = true; share_or_open(); p = find_proj() end
     here_roles = {}
     for _, r in ipairs({ "A", "B", "C" }) do if have(r .. "-hello") then here_roles[#here_roles + 1] = r end end
-    if p and (#here_roles == 3 or t - t0 > JOIN) then
+    -- (A decides who's in and writes it; the others start once they have that, so everyone skips the same steps)
+    local roster = role ~= "A" and have("A-roster")
+    if p and ((role == "A" and (#here_roles == 3 or t - t0 > JOIN)) or roster) then
+      if roster then here_roles = roster.roles end
       reaper.SelectProjectInstance(p)
       say("starting with " .. table.concat(here_roles, ", "))
       put(role .. "-roster", { roles = here_roles })
