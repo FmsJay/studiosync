@@ -23,7 +23,7 @@ local function ev(dir, id, oid, rev, day, prints)
     time = string.format("2026-01-%02dT00:00:00Z", day), state = state .. ">" })
 end
 local ok, err = pcall(function()
-  for _, n in ipairs({ "A1", "A2", "C1", "D1", "D2" }) do
+  for _, n in ipairs({ "A1", "A2", "C1", "D1", "D2", "E1", "E2" }) do
     band.write_atomic(media .. "/" .. p(n) .. ".flac", "flac " .. n)
     band.write_atomic(media .. "/" .. p(n) .. ".opus", "opus " .. n)
   end
@@ -35,14 +35,19 @@ local ok, err = pcall(function()
   ev(side, "James-20260103-000000Z-6-s", "I-S", 1, 3, { "C1" }) -- (a side room's item plays the main room's C1)
   ev(events, "James-20260101-000000Z-7-d", "I-D", 1, 1, { "D1" })
   ev(events, "James-20260102-000000Z-8-d", "I-D", 2, 2, { "D2" })
+  ev(events, "James-20260101-000000Z-9-e", "I-E", 1, 1, { "E1" })
+  ev(events, "James-20260102-000000Z-10-e", "I-E", 2, 2, { "E2" })
+  -- (the side room's copy was made while I-E played E1: no change of its own names it, its note does. lib/rooms.lua note_prints, 0.59.10)
+  band.write_json(sync.room_dir(A, song, "side") .. "/plays-Laptop.json", { p("E1") })
   local n = trim.run(A, song, room, -1)
   say("trimmed " .. n)
-  check(n == 3, "the three superseded changes went (a1, c1, d1)")
+  check(n == 4, "the four superseded changes went (a1, c1, d1, e1)")
   local archive = base:match("^(.*)/[^/]+$") .. "/StudioSync history archive/" .. song .. "/" .. room .. "/media"
   check(reaper.file_exists(archive .. "/" .. p("D1") .. ".flac") and reaper.file_exists(archive .. "/" .. p("D1") .. ".opus"), "D1, named only by d1, is in the archive (flac and opus)")
   check(not reaper.file_exists(media .. "/" .. p("D1") .. ".flac"), "and gone from the media folder")
   check(reaper.file_exists(media .. "/" .. p("A1") .. ".flac"), "A1 stays: I-B's newest change still plays it")
   check(reaper.file_exists(media .. "/" .. p("C1") .. ".flac"), "C1 stays: the side room still plays it")
+  check(reaper.file_exists(media .. "/" .. p("E1") .. ".flac"), "E1 stays: the side room's copy plays it, by its note")
   check(reaper.file_exists(media .. "/" .. p("A2") .. ".flac") and reaper.file_exists(media .. "/" .. p("D2") .. ".flac"), "the newest prints stay")
   local list
   for _, f in ipairs(band.files(sync.room_dir(A, song, room) .. "/trimmed", ".json")) do if f:find("%-media%.json$") then list = band.read_json(sync.room_dir(A, song, room) .. "/trimmed/" .. f) end end

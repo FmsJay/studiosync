@@ -134,7 +134,9 @@ $env:BANDSYNC_RENDER = "1" # (inherited: Scripts/__startup.lua's guard skips the
 # ([NullString]::Value, not $null: PowerShell passes $null to a string parameter as "", and CreateProcess refuses "")
 if ($desk -ne [IntPtr]::Zero -and [StudioSyncDesk]::CreateProcess([NullString]::Value, $cmd, [IntPtr]::Zero, [IntPtr]::Zero, $false, 0, [IntPtr]::Zero, [NullString]::Value, [ref]$si, [ref]$pi)) {
   Set-Content (Join-Path $dir "pid.txt") $pi.pid
-  try { Wait-Process -Id $pi.pid -Timeout 600 -ErrorAction SilentlyContinue } catch {}
+  # (still there after 10 minutes: stuck on something nobody can see. Ended, not left: a Live sync that reloaded had forgotten it, its folder
+  # went after an hour with its pid.txt, and it stayed for good, hidden. 13 of them on the PC, 0.59.10)
+  try { Wait-Process -Id $pi.pid -Timeout 600 -ErrorAction Stop } catch { Stop-Process -Id $pi.pid -Force -ErrorAction SilentlyContinue }
   if (Test-Path $dir) { Set-Content (Join-Path $dir "done.txt") "1" }
 } else { Set-Content (Join-Path $dir "pid.txt") "failed" }
 ]==]
@@ -306,8 +308,10 @@ else
 fi
 p=$!
 echo "$p" > "$D/pid.txt"
+( sleep 600; kill -9 "$p" 2>/dev/null ) & w=$! # (still there after 10 minutes: stuck, ended, as on Windows. 0.59.10)
 wait "$p"
 echo "$?" > "$D/done.txt"
+kill "$w" 2>/dev/null
 ]==]
 function bg.mac_script(t)
   local function q(s) return "'" .. tostring(s or ""):gsub("'", "'\\''") .. "'" end

@@ -512,7 +512,7 @@ function tools.toolbar_button() return reaper.GetExtState(band.SECTION, "toolbar
 -- On unless you switched it off, as Helgobox's is (James, 0.58.82): "" is never chosen (StudioSync - Autostart and the panel switch it on then),
 -- "0" off. The menu extension reads "1" only.
 -- (ICON: the image's version. 2: grey until the panel is open, coloured while it is (James, 0.58.99); copied again once when it changes)
-tools.TOOLBAR_ICON = "3"
+tools.TOOLBAR_ICON = "4" -- (4: the amber-dot images, menu extension 1.0.6. 0.59.10)
 function tools.toolbar_default()
   local on = reaper.GetExtState(band.SECTION, "toolbar button")
   if on == "" or (on == "1" and reaper.GetExtState(band.SECTION, "toolbar icon") ~= tools.TOOLBAR_ICON) then
@@ -539,6 +539,7 @@ function tools.set_toolbar_button(on)
     for _, sub in ipairs({ "", "/150", "/200" }) do
       reaper.RecursiveCreateDirectory(res .. sub, 0)
       copy_file(lib .. "/toolbar_icons" .. sub .. "/toolbar_studiosync_on.png", res .. sub .. "/toolbar_studiosync_on.png") -- (REAPER's image while it's on: coloured. 0.59.3)
+      for _, w in ipairs({ "toolbar_studiosync_warn.png", "toolbar_studiosync_warn_on.png" }) do copy_file(lib .. "/toolbar_icons" .. sub .. "/" .. w, res .. sub .. "/" .. w) end -- (something stopped syncing: 0.59.10)
       if not copy_file(lib .. "/toolbar_icons" .. sub .. "/toolbar_studiosync.png", res .. sub .. "/toolbar_studiosync.png") and sub == "" then
         return nil, "The button's image isn't in StudioSync's lib/toolbar_icons folder: update StudioSync, then try again."
       end

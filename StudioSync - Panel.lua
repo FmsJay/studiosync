@@ -1464,6 +1464,15 @@ function ui.live_icons(p)
     end, function() ui.go_chat("Call") end)
   end
 end
+-- Your live audio for your card: each look scans every track's plug-ins, so it's looked at every quarter second (review, 0.59.10).
+local live_seen = { at = -math.huge }
+function ui.live_now()
+  local t = reaper.time_precise()
+  if t - live_seen.at > 0.25 or live_seen.proj ~= proj then
+    live_seen = { at = t, proj = proj, kind = ui.rt_kind(), call = ui.call_on() and live.sonobus_online(proj) or nil }
+  end
+  return live_seen.kind, live_seen.call
+end
 local function home_who()
   require("page_hear").producer(ctx, ImGui, proj, cfg, b, view and view.rows or {}) -- (at the top: at 560 wide it was past all three people. Mac, 0.58.5)
   if not wide then home_play() end -- (real time mode first: it's what a session starts with, and it was under every person's card. UX review, 0.58.62)
@@ -1486,10 +1495,10 @@ local function home_who()
     if require("live").armed(tr) then armed[#armed + 1] = select(2, reaper.GetTrackName(tr)) end
   end
   local ps = reaper.GetPlayStateEx(proj)
-  local my_kind = ui.rt_kind()
+  local my_kind, my_call = ui.live_now()
   people[1] = { name = cfg.user .. " (you)", user = cfg.user, state = "here", armed = armed, recording = ps & 4 == 4, playing = ps & 1 == 1,
     driving = view.driver == cfg.user, last_track = select(2, reaper.GetProjExtState(proj, band.SECTION, "last_track")),
-    live = my_kind == "timesync" and "ts" or my_kind and "rt" or nil, call = ui.call_on() and live.sonobus_online(proj) or nil }
+    live = my_kind == "timesync" and "ts" or my_kind and "rt" or nil, call = my_call }
   -- (away people hidden on request: James, 0.59.3. ExtState "who hide away")
   local hide_away, away = reaper.GetExtState(band.SECTION, "who hide away") ~= "", 0
   for _, r in ipairs(view.rows) do
@@ -2404,16 +2413,20 @@ tools.follow_button = function(name)
 end
 
 -- Floating, one button for where the window goes: Dock and Full screen were two more, and the row wrapped. Right-click arms drag-to-dock, as Dock's did.
--- The page eases to where the wheel sends it, instead of jumping a few lines a notch (James, 0.58.23). Whatever moved it this frame (the wheel, here or passed up
--- from a card that couldn't scroll, or a keyboard) is added to where it's heading; it then covers a third of the way each frame. Dragging the scrollbar is left alone.
+-- The page eases to where the wheel sends it, instead of jumping a few lines a notch (James, 0.58.23), drawn where it is on the way: it shook,
+-- a jump ahead and a step back each notch (0.59.10). lib/smooth.lua. Dragging the scrollbar is left alone. Right after the page's BeginChild,
+-- and ui.smooth_scroll_end before its EndChild (the content drawn higher keeps its height).
 ui.scrolls = {}
 function ui.smooth_scroll(key)
+  local was = ui.scrolls[key]
+  local st, off, set = require("smooth").step(was, ImGui.GetScrollY(ctx), ImGui.GetScrollMaxY(ctx) - math.max(0, was and was.off or 0), ImGui.IsMouseDown(ctx, 0))
+  ui.scrolls[key] = st
+  if off ~= 0 then ImGui.SetCursorPosY(ctx, ImGui.GetCursorPosY(ctx) + off) end
+  if set then ImGui.SetScrollY(ctx, set) end
+end
+function ui.smooth_scroll_end(key)
   local st = ui.scrolls[key]
-  local y = ImGui.GetScrollY(ctx)
-  if not st or ImGui.IsMouseDown(ctx, 0) then ui.scrolls[key] = { at = y, to = y }; return end
-  if math.abs(y - st.at) > 0.5 then st.to = math.max(0, math.min(ImGui.GetScrollMaxY(ctx), st.to + (y - st.at))) end
-  st.at = math.abs(st.to - st.at) < 1 and st.to or st.at + (st.to - st.at) * 0.35
-  if math.abs(st.at - y) > 0.5 then ImGui.SetScrollY(ctx, st.at) end
+  if st and st.off < 0 then ImGui.Dummy(ctx, 1, -st.off) end
 end
 function ui.window_button(small)
   local armed = reaper.GetExtState(band.SECTION, "dock armed") ~= ""
@@ -2863,8 +2876,9 @@ local function frame_app()
     ImGui.PushStyleVar(ctx, ImGui.StyleVar_ItemSpacing, 8, 5)
   end
   local was_wide = wide
+  local scroll_key = page -- (the page may change below: its end goes with its start)
   if ImGui.BeginChild(ctx, "page", 0, 0, ImGui.ChildFlags_AlwaysUseWindowPadding, wide and ImGui.WindowFlags_HorizontalScrollbar or 0) then
-    ui.smooth_scroll(page)
+    ui.smooth_scroll(scroll_key)
     ImGui.PushTextWrapPos(ctx, 0) -- text wraps to the page, whatever its width
     if page == "Play/Jam" and not ui.play_shown() then page = "Home" end
     if page == "Groups" then ui.page_body(function() require("page_groups").draw_groups(ui.env) end)
@@ -2891,6 +2905,7 @@ local function frame_app()
       layout({ { function() require("page_plugins").draw(ctx, ImGui, proj, cfg) end, 760 }, { function() require("page_plugins").drums(ctx, ImGui, proj, cfg) end, 420 }, { section_plugins, 420 } })
     elseif page == "Settings" then page_setup() end
     ImGui.PopTextWrapPos(ctx)
+    ui.smooth_scroll_end(scroll_key)
     ImGui.EndChild(ctx)
   end
   if was_wide then ImGui.PopStyleVar(ctx, 2) end
@@ -2958,13 +2973,15 @@ function ui.frame_lobby()
   end
   ImGui.Separator(ctx)
   ImGui.PushStyleVar(ctx, ImGui.StyleVar_WindowPadding, 16, 12)
+  local setup_key = "setup " .. tostring(page)
   if ImGui.BeginChild(ctx, "page", 0, 0, ImGui.ChildFlags_AlwaysUseWindowPadding) then
-    ui.smooth_scroll("setup " .. tostring(page))
+    ui.smooth_scroll(setup_key)
     ImGui.PushTextWrapPos(ctx, 0)
     if page == "Groups" then ui.page_body(function() pg.checklist(ui.env); pg.draw_groups(ui.env) end)
     elseif page == "Projects" then ui.page_body(function() pg.checklist(ui.env); pg.draw_projects(ui.env) end)
     else page_setup() end
     ImGui.PopTextWrapPos(ctx)
+    ui.smooth_scroll_end(setup_key)
     ImGui.EndChild(ctx)
   end
   ImGui.PopStyleVar(ctx)

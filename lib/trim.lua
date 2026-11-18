@@ -122,6 +122,16 @@ function trim.prints(cfg, song, room, evs, took, archive)
     if not r then break end
     if r ~= room then -- (a side room's items may play the main room's prints)
       for _, f in ipairs(band.files(rooms_dir .. "/" .. r .. "/events", ".json")) do trim.print_refs(band.read(rooms_dir .. "/" .. r .. "/events/" .. f) or "", nil, still) end
+      -- (and what its copy was made with, which no change names: lib/rooms.lua note_prints. A side room from before that keeps every print. 0.59.10)
+      local noted = false
+      for _, f in ipairs(band.files(rooms_dir .. "/" .. r, ".json")) do
+        if f:match("^plays%-") then
+          noted = true
+          local t = band.read_json(rooms_dir .. "/" .. r .. "/" .. f)
+          for _, n in ipairs(type(t) == "table" and t or {}) do still[tostring(n)] = true end
+        end
+      end
+      if not noted and r ~= "main" then return moved end
     end
   end
   local media = sync.room_dir(cfg, song, room) .. "/media"

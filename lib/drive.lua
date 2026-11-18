@@ -69,17 +69,27 @@ local function places(only)
   local function add(service, path) if path and (only == nil or only == "" or only == service) then out[#out + 1] = path end end
   local win = reaper.GetOS():find("^Win")
   local home = ((win and os.getenv("USERPROFILE") or os.getenv("HOME")) or ""):gsub("\\", "/")
+  -- ("My Drive" is in the computer's language: "Meine Ablage", "Mi unidad"... So every folder at the top of Google's drive is looked in, after
+  -- "My Drive". A drive letter is Google's if it has My Drive, or Google's own .shortcut-targets-by-id or .Encrypted. 0.59.10)
+  local function google(root, sure)
+    local subs = band.subdirs(root)
+    local is = sure
+    for _, d in ipairs(subs) do if d == "My Drive" or d == ".shortcut-targets-by-id" or d == ".Encrypted" then is = true end end
+    if not is then return end
+    add("google", root .. "/My Drive")
+    for _, d in ipairs(subs) do if d:sub(1, 1) ~= "." and d ~= "$RECYCLE.BIN" and d ~= "My Drive" then add("google", root .. "/" .. d) end end
+  end
   if win then -- (drive letters only on Windows: a Mac looked at 23 that can't exist)
-    add("google", "G:/My Drive")
+    google("G:", false)
     for c = ("D"):byte(), ("Z"):byte() do
-      if c ~= ("G"):byte() then add("google", string.char(c) .. ":/My Drive") end
+      if c ~= ("G"):byte() then google(string.char(c) .. ":", false) end
     end
   end
   if home ~= "" then add("google", home .. "/My Drive") end
   local cs = home .. "/Library/CloudStorage"
   local cloud = band.subdirs(cs)
   for _, d in ipairs(cloud) do
-    if d:match("^GoogleDrive%-") then add("google", cs .. "/" .. d .. "/My Drive") end
+    if d:match("^GoogleDrive%-") then google(cs .. "/" .. d, true) end
   end
   for _, info in ipairs({ (os.getenv("LOCALAPPDATA") or ""):gsub("\\", "/") .. "/Dropbox/info.json", (os.getenv("APPDATA") or ""):gsub("\\", "/") .. "/Dropbox/info.json",
       home .. "/.dropbox/info.json" }) do
@@ -147,9 +157,12 @@ function drive.root(cfg)
     local key = "drive_seen" .. (info.id == "bandsync" and "" or (" " .. info.id)) -- (the first band keeps its old key)
     local seen = reaper.GetExtState(band.SECTION, key)
     local function exists(p) return reaper.EnumerateSubdirectories(p, 0) ~= nil or reaper.EnumerateFiles(p, 0) ~= nil end
-    l.found, l.away, l.other = drive.settle(l.found, seen, exists, drive.service())
+    local chosen = drive.service()
+    l.found, l.away, l.other = drive.settle(l.found, seen, exists, chosen)
     if l.found then
       if seen ~= l.found then reaper.SetExtState(band.SECTION, key, l.found, true) end
+    elseif l.away and l.missing and chosen ~= "" and drive.service_of(l.away) ~= chosen then
+      l.away = nil -- (another service picked in Settings, with no studio folder yet: its "add the shared folder" hint, not the old one's. 0.59.10)
     elseif l.away then l.missing = nil end
   end
   drive.missing, drive.away, drive.other = l.missing, l.away, l.other -- (this band's, for the panel)
@@ -318,7 +331,12 @@ function drive.mirror(here, there, budget, user, wait)
   local function out_of_time() return reaper.time_precise() - t0 > (budget or 1.5) end
   local function copy(a, z)
     reaper.RecursiveCreateDirectory(z:match("^(.*)/"), 0)
+    -- (a file still being written, on Drive or here: a change that doesn't read yet, or a size that moved while it copied. Left for a later
+    -- pass, so half a file never takes the whole one's place: it isn't copied again once it's there. 0.59.10)
+    if a:match("%.json$") and band.read_json(a) == nil then return end
+    local size = band.size(a)
     band.copy_atomic(a, z)
+    if band.size(a) ~= size or band.size(z) ~= size then os.remove(z); return end
     n = n + 1
   end
   -- written once: whatever's missing goes across

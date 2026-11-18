@@ -11,11 +11,14 @@ local WHAT_IS = "A studio is its own shared folder, with its own projects, colla
 local new_name, why_not, join_text = "", nil, ""
 
 -- Live: not left or closed here. -> the groups, and the old ones.
+local lg, lg_at = nil, -math.huge -- (asked several times a frame, and each reads every studio's folder: once a second. Review, 0.59.10)
 function pg.live_groups()
+  if lg and reaper.time_precise() - lg_at < 1 then return lg end
   local list = {}
   for _, g in ipairs(band.bands()) do
     if not groups.is_old(g.root) and not reaper.file_exists(g.root .. "/_band/closed.json") then list[#list + 1] = g end
   end
+  lg, lg_at = list, reaper.time_precise()
   return list
 end
 

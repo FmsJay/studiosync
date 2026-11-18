@@ -46,6 +46,8 @@ warn() { printf '\033[33m  !!  %s\033[0m\n' "$*"; }
 ask()  { local a; read -e -r -p "$1${2:+ [$2]} " a </dev/tty; echo "${a:-${2:-}}"; } # (-e: arrow keys edit, not type escape codes)
 plain() { printf '%s' "$1" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | LC_ALL=C tr -cd 'A-Za-z0-9 _-'; } # "CHILIØ" -> "CHILIO"
 yes()  { case "$1" in [yY]*) return 0;; *) return 1;; esac; }
+# (the whole invitation pasted instead of its one line: the lines after it waited and answered the questions below. 0.59.10)
+while IFS= read -r -t 0.3 _ </dev/tty 2>/dev/null; do :; done
 # (curl | bash: bash reads the rest of this script from stdin, so nothing started here may read it: </dev/null)
 detach() { setsid "$@" >/dev/null 2>&1 </dev/null & }
 browse() { say "  Opening $1"; command -v xdg-open >/dev/null && detach xdg-open "$1"; } # (said too: no browser on some desktops)

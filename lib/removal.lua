@@ -173,8 +173,11 @@ function removal.parse_day(text, now)
   return t > now and t or nil
 end
 -- Who a mark says this computer belongs to, if it's been taken out of the group. (Its Syncthing keeps asking: that isn't someone new.)
+local marks_seen = {} -- root -> { at, list }: who_was is asked every frame a join request shows (review, 0.59.10)
 function removal.who_was(root, device)
-  for _, m in ipairs(all_marks(root)) do if m.device == device then return m.user end end
+  local c = marks_seen[root]
+  if not c or reaper.time_precise() - c.at > 5 then c = { at = reaper.time_precise(), list = all_marks(root) }; marks_seen[root] = c end
+  for _, m in ipairs(c.list) do if m.device == device then return m.user end end
 end
 -- Whether a computer asking over the studio's Tailscale may be let in without a click: never someone taken out, and nobody while a guest
 -- invitation is open (a guest is on the studio's Tailscale too). -> may, and who it was if taken out. Review, 0.58.92

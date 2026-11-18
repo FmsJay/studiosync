@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.59.9", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.59.10", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -320,13 +320,30 @@ function band.settings(force)
   local root = reaper.GetExtState(band.SECTION, "sync_root")
   local user = reaper.GetExtState(band.SECTION, "user")
   if force or root == "" or user == "" then
-    if root == "" and reaper.JS_Dialog_BrowseForFolder then
-      local ok, picked = reaper.JS_Dialog_BrowseForFolder("StudioSync: pick the shared (Syncthing) folder", "")
-      if ok == 1 then root = picked end
+    local ok, csv
+    if not force then
+      -- (a first run from ReaPack: a folder of its own in your home folder, not a question someone joining can't answer yet, and a Cancel that
+      -- said nothing. A studio you join goes beside it. Onboarding review, 0.59.10)
+      if root == "" then
+        root = norm(((os.getenv("HOME") or os.getenv("USERPROFILE") or ""):gsub("\\", "/")) .. "/StudioSync")
+        reaper.RecursiveCreateDirectory(root, 0)
+      end
+      ok, csv = true, root .. "|" .. user
+      if user == "" then
+        local got
+        ok, got = reaper.GetUserInputs("StudioSync", 1, "Your name (what your collaborators see),extrawidth=150", "")
+        csv = root .. "|" .. (got or "")
+      end
+      if not ok then band.msg("StudioSync needs your name before it starts: open it again when you're ready."); return nil end
+    else
+      if root == "" and reaper.JS_Dialog_BrowseForFolder then
+        local bok, picked = reaper.JS_Dialog_BrowseForFolder("StudioSync: pick the shared (Syncthing) folder", "")
+        if bok == 1 then root = picked end
+      end
+      ok, csv = reaper.GetUserInputs("StudioSync settings", 2,
+        "Shared folder (Syncthing),Your name,separator=|,extrawidth=250", root .. "|" .. user)
+      if not ok then return nil end
     end
-    local ok, csv = reaper.GetUserInputs("StudioSync settings", 2,
-      "Shared folder (Syncthing),Your name,separator=|,extrawidth=250", root .. "|" .. user)
-    if not ok then return nil end
     root, user = csv:match("^(.-)|(.*)$")
     root = root:gsub("^~", os.getenv("HOME") or os.getenv("USERPROFILE") or "~")
     root, user = norm(root), band.clean(user)

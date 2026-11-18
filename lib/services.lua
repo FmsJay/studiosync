@@ -437,7 +437,7 @@ function services.invite_text(id, info, key, who)
   local q1 = function(s) return "'" .. tostring(s):gsub("'", "") .. "'" end -- (band names are plain: band.clean)
   -- (newcomers first, in plain steps: most people invited have nothing installed, and the old order led with a panel they didn't have. Beginner review, 0.58.62)
   return "Join " .. info.name .. " on StudioSync.\n\n" ..
-    "New to StudioSync? It sets up everything for you (REAPER included), in about 15 minutes. Your computer asks for permission a few times: say Yes. " ..
+    "New to StudioSync? It sets up everything for you, REAPER included, in about 15 minutes. Your computer asks for permission a few times: say Yes. " ..
     "When REAPER first opens, answer its windows. Copy ONE line below, for your computer:\n\n" ..
     "Windows: press Start, type PowerShell, open it, paste this line and press Enter:\n" ..
     '$f="$env:TEMP\\studiosync_install.ps1"; iwr -UseBasicParsing "' .. base .. 'install_windows.ps1?$(Get-Random)" -OutFile $f; ' ..
@@ -448,7 +448,7 @@ function services.invite_text(id, info, key, who)
     "Linux: open a terminal, paste this line and press Enter:\n" ..
     'curl -fsSL "' .. base .. 'install_linux.sh?$(date +%s)" | BS_HOST_ID=' .. id .. " BS_BAND_ID=" .. info.id ..
     " BS_BAND_NAME=" .. q1(info.name) .. (key and (" BS_TS_KEY=" .. key) or "") .. " bash\n\n" ..
-    "Answer its questions, and when it's done, tell me: I let you in from my StudioSync panel." ..
+    "Answer its questions, and when it finishes, tell me: I let you in from my StudioSync panel." .. -- (no ' or brackets in its words: pasted whole into PowerShell, a ' kept the rest from running and (REAPER included) ran REAPER. 0.59.10)
     (key and ("\n\n" .. guest_note:gsub("\n\n$", "")) or "") ..
     (who == "new" and "" or ("\n\nAlready have StudioSync? In its panel, click the studio name at the top, press Paste join code, and paste this message (or just this line):\n" ..
       services.join_code(id, info)))
@@ -802,8 +802,11 @@ local function token_store(token, net) -- -> true when it's locked away
     return blob ~= nil
   elseif band.MAC then
     if token == "" then run_now("security delete-generic-password " .. keychain(net) .. " >/dev/null 2>&1; echo done", 10); return true end
-    band.write_atomic(f, token)
-    local out = run_now("security add-generic-password -U " .. keychain(net) .. " -w \"$(cat '" .. f .. "')\" && echo stored", 10, "token")
+    -- (security reads the command from a file, not its command line, where any program could see the token for a moment. Only a token's
+    -- characters go in. Left item of the 0.58.98 review, done 0.59.10)
+    if not tostring(token):match("^tskey%-[%w%-]+$") or not net_ok(net) then return false end
+    band.write_atomic(f, "add-generic-password -U " .. keychain(net) .. " -w " .. token .. "\n")
+    local out = run_now("security -i < '" .. f .. "' && echo stored", 10, "token")
     os.remove(f)
     return out ~= nil and out:match("stored") ~= nil
   end

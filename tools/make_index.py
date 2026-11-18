@@ -71,7 +71,7 @@ for f in sorted((ROOT / "lib" / "listen").glob("*")):  # the listening page's li
 # Extensions > StudioSync and View > StudioSync (extension/reaper_menu.cpp): a package of its own, with a version of its own that goes up
 # only when the extension changes (EXT_VERSION), so StudioSync's updates don't try to replace a file REAPER has loaded. Each platform gets
 # its build, when there is one (a new platform's build: raise EXT_VERSION).
-EXT_VERSION = "1.0.5"  # (1.0.1: macOS and Linux builds, from .github/workflows/extension.yml; 1.0.2: toolbar button, icon map; 1.0.3: on any main toolbar; 1.0.4: lit while the panel is open, however it opened; 1.0.5: the action is called just StudioSync)
+EXT_VERSION = "1.0.6"  # (1.0.1: macOS and Linux builds, from .github/workflows/extension.yml; 1.0.2: toolbar button, icon map; 1.0.3: on any main toolbar; 1.0.4: lit while the panel is open, however it opened; 1.0.5: the action is called just StudioSync; 1.0.6: an amber dot while something stopped syncing)
 EXT_FILES = {"reaper_studiosync-x64.dll": "win64", "reaper_studiosync.dylib": "darwin",  # (the Mac build is universal: arm64 + x86_64)
              "reaper_studiosync-x86_64.so": "linux64", "reaper_studiosync-aarch64.so": "linux-aarch64"}
 cat = index.find("category")

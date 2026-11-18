@@ -109,8 +109,19 @@ function rooms.open(from, cfg, b, name, copy_dir)
     for _, k in ipairs({ "alone_last", "side", "hold" }) do reaper.SetProjExtState(p, band.SECTION, k, "") end
     live_offline(p)
     reaper.Main_SaveProject(p, false)
+    pcall(rooms.note_prints, path, cfg, b.song, name)
   end
   return p
+end
+-- The prints a side room's new copy plays (its items came from the room it was made from, and no change of its own names their prints): kept
+-- in the room's folder per computer, so the history trim leaves them (lib/trim.lua). Left item of the 0.58.98 review, done 0.59.10.
+function rooms.note_prints(path, cfg, song, name)
+  local seen, list = {}, {}
+  for n in (band.read(path) or ""):gmatch("[/\\](print%-[^/\\\"]+)%.flac") do if not seen[n] then seen[n] = true; list[#list + 1] = n end end
+  table.sort(list)
+  local dir = sync.room_dir(cfg, song, name)
+  reaper.RecursiveCreateDirectory(dir, 0)
+  band.write_json(dir .. "/plays-" .. tostring(cfg.user):gsub("[^%w%-_]", "_") .. ".json", list)
 end
 
 -- Why a room name can't be used, or nil. Pure. (Windows can't make folders called CON, NUL, COM1... at all.)

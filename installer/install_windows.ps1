@@ -57,6 +57,8 @@ function Ok($t) { Write-Host "  OK  $t" -ForegroundColor Green }
 function Warn($t) { Write-Host "  !!  $t" -ForegroundColor Yellow }
 function Ask($q, $def) { $a = Read-Host "$q$(if ($def) { " [$def]" })"; if ($a) { $a.Trim() } else { $def } }
 function YesNo($q, $def) { $a = Ask "$q (y/n)" $def; return $a -match '^[yY]' }
+# (the whole invitation pasted instead of its one line: the lines after it waited in this window and answered the questions below. 0.59.10)
+try { $Host.UI.RawUI.FlushInputBuffer() } catch { }
 # Names in plain letters, as the Mac and Linux installers and StudioSync itself keep them (band.clean): accents dropped, a few letters spelled
 # out. \w kept accented letters here, and StudioSync then dropped them, so "J-u-umlaut-rgen" became "Jrgen". (Cross-platform review, 0.58.78)
 # (code points, not the letters: Windows PowerShell reads this file as ANSI)
