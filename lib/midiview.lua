@@ -12,8 +12,11 @@ function midiview.on() return reaper.GetExtState(require("band").SECTION, "show 
 function midiview.recent(time, now)
   local y, mo, d, h, mi, s = (time or ""):match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
   if not y then return false end
-  local t = os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(d), hour = tonumber(h), min = tonumber(mi), sec = tonumber(s) })
-  return math.abs((now or os.time(os.date("!*t"))) - t) <= midiview.RECENT
+  -- (both sides as UTC with no summer time: os.time guessed it for one and not the other, an hour out from spring to autumn. Review, 0.59.14)
+  local t = os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(d), hour = tonumber(h), min = tonumber(mi), sec = tonumber(s), isdst = false })
+  local n = now
+  if not n then n = os.date("!*t"); n.isdst = false; n = os.time(n) end
+  return math.abs(n - t) <= midiview.RECENT
 end
 
 -- Pure. Two lists of note keys -> the positions in `after` that are new, and how many of `before` are gone.

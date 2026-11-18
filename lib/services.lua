@@ -809,9 +809,10 @@ local function token_store(token, net) -- -> true when it's locked away
     -- characters go in. Left item of the 0.58.98 review, done 0.59.10)
     if not tostring(token):match("^tskey%-[%w%-]+$") or not net_ok(net) then return false end
     band.write_atomic(f, "add-generic-password -U " .. keychain(net) .. " -w " .. token .. "\n")
-    local out = run_now("security -i < '" .. f .. "' && echo stored", 10, "token")
+    -- (stored only when it reads back as the token: the plain-text copy is deleted on the strength of this. Review, 0.59.14)
+    local out = run_now("security -i < '" .. f .. "' >/dev/null 2>&1; security find-generic-password " .. keychain(net) .. " -w 2>/dev/null", 10, "token")
     os.remove(f)
-    return out ~= nil and out:match("stored") ~= nil
+    return out ~= nil and out:find(token, 1, true) ~= nil
   end
   return false
 end

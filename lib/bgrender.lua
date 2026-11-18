@@ -32,7 +32,7 @@ function bg.rate_of(list)
 end
 local function rate() return bg.rate_of(reaper.GetExtState(band.SECTION, "bg render rates")) end
 local function learn(secs, took, passes) -- (a finished print: how fast this computer renders, for the next one's limit)
-  if not secs or secs < 5 or not took or not passes or passes < 1 then return end
+  if not secs or secs < 30 or not took or not passes or passes < 1 then return end -- (a short part is mostly its plug-ins loading: rates of 5 from a 6 s part. Review, 0.59.14)
   local r = math.max(0.01, (took - 10) / (secs * passes))
   local list = {}
   for x in reaper.GetExtState(band.SECTION, "bg render rates"):gmatch("[%d%.]+") do list[#list + 1] = x end
@@ -45,7 +45,10 @@ local max_seen
 function bg.max()
   if not max_seen then
     local n = tonumber(os.getenv("NUMBER_OF_PROCESSORS") or "")
-    if not n and not WIN then n = tonumber((reaper.ExecProcess("/bin/sh -c 'sysctl -n hw.ncpu 2>/dev/null || nproc'", 2000) or ""):match("\n%s*(%d+)")) end
+    -- (through a script file, as everything else on a Mac: its ExecProcess has mangled quoted arguments. Asked in the background: until it
+    -- answers, as many as 8 cores would allow)
+    if not n and not WIN then n = tonumber((require("services").run_hidden("ncpu", "sysctl -n hw.ncpu 2>/dev/null || nproc", 3600) or ""):match("(%d+)")) end
+    if not n and not WIN then return bg.MAX end
     max_seen = (n or 8) >= 8 and bg.MAX or (n or 8) >= 4 and 2 or 1
   end
   return max_seen
@@ -289,7 +292,11 @@ end
 -- this REAPER's have changed.
 local function read_only(on)
   if WIN then reaper.ExecProcess(string.format('cmd /c attrib %sR "%s\\reaper-*.ini"', on and "+" or "-", (PROFILE:gsub("/", "\\"))), 5000)
-  else reaper.ExecProcess(string.format("/bin/sh -c \"chmod %s '%s'/reaper-*.ini\"", on and "a-w" or "u+w", PROFILE), 5000) end
+  else -- (a script file, not a quoted argument: macOS's ExecProcess mangles those. Mac review, 0.59.14)
+    local sh = TMP .. "/bandsync-chmod.sh"
+    band.write_atomic(sh, string.format("chmod %s '%s'/reaper-*.ini\n", on and "a-w" or "u+w", (PROFILE:gsub("'", "'\\''"))))
+    reaper.ExecProcess("/bin/sh '" .. sh .. "'", 5000)
+  end
 end
 local function profile()
   local res = reaper.GetResourcePath():gsub("\\", "/")
@@ -351,7 +358,7 @@ echo "$p" > "$D/pid.txt"
 ( sleep @LIMIT@; kill -9 "$p" 2>/dev/null ) & w=$! # (still there past its limit: stuck, ended, as on Windows. 0.59.10)
 wait "$p"
 echo "$?" > "$D/done.txt"
-kill "$w" 2>/dev/null
+pkill -P "$w" 2>/dev/null; kill "$w" 2>/dev/null # (its sleep too: left, one per print. Mac review, 0.59.14)
 ]==]
 function bg.mac_script(t)
   local function q(s) return "'" .. tostring(s or ""):gsub("'", "'\\''") .. "'" end
@@ -409,7 +416,7 @@ function bg.start(key, name, keep, render, secs, quick, where) -- secs: how long
   band.write_atomic(job, bg.prepare(band.read(job), set))
   if quick then band.write_atomic(dir .. "/maxpasses.txt", "1") end -- (twice through a long part for nothing: James, 0.59.12)
   local limit = bg.time_limit(secs, rate())
-  launch(exe_path(), job, limit + 180) -- (its launcher ends it a while after Live sync would have)
+  launch(exe_path(), job, math.min(limit + 180, 32767)) -- (its launcher ends it a while after Live sync would; Wait-Process refuses more than 32767 s, and ended it at once. Review, 0.59.14)
   jobs[key] = { name = name, dir = dir, started = reaper.time_precise(), secs = secs, limit = limit, progress_at = reaper.time_precise(), sig = "", where = where }
   last_start = reaper.time_precise()
   return true
@@ -471,7 +478,7 @@ local function end_job(j)
   local pid = tonumber((band.read(j.dir .. "/pid.txt") or ""):match("^%d+"))
   if not pid then return false end
   -- (only if that id is still a REAPER: it may have quit already, and ids come round again. Review, 0.58.92)
-  if not WIN then reaper.ExecProcess("/bin/sh -c 'ps -p " .. pid .. " -o comm= | grep -qi reaper && kill -9 " .. pid .. "'", -1); return true end
+  if not WIN then require("services").run_hidden("endjob" .. pid, "ps -p " .. pid .. " -o comm= | grep -qi reaper && kill -9 " .. pid, 30); return true end
   local kill = TMP .. "/kill" .. pid .. ".cmd" -- (one each, deleting itself: jobs can end together)
   band.write_atomic(kill, "@taskkill /PID " .. pid .. ' /FI "IMAGENAME eq reaper.exe" /T /F\r\n@del "%~f0"\r\n')
   reaper.ExecProcess(string.format('wscript.exe //B //Nologo "%s" "%s"', TMP .. "/hidden.vbs", kill), -1)
@@ -503,7 +510,7 @@ local function timed_out(key)
   local long = reaper.time_precise() - j.started > (j.limit or bg.WAIT)
   require("prints").problem("The print of a part" .. (j.where and (" on " .. j.where) or "") .. (long and string.format(" took over %d s to render (its limit for its length on this computer) and was stopped", math.floor(j.limit or bg.WAIT))
     or (" stopped getting anywhere for " .. bg.WAIT .. " s and was stopped")) ..
-    ": a plug-in may be waiting for an answer (a licence, missing hardware). Bandmates keep the last one until that part changes")
+    ": a plug-in may be waiting on a licence or setup window. Open the track's plug-ins, close any pop-up, then Try again. Collaborators keep the last print meanwhile.")
   return "stuck"
 end
 

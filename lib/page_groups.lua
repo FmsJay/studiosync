@@ -119,11 +119,11 @@ function pg.join_button(env)
         band.log(why == "already" and ("you're already in " .. band.info(root).name) or
           ("joined " .. band.info(root).name .. ": ask whoever invited you to let you in. Its projects arrive after that."))
         local on_now = services.tailnet_now()
-        if code.key and reaper.MB("This invitation also signs this computer in to their Tailscale network as a guest, for as long as they invited you, so Play along and Jam reach them.\n\n" ..
+        if code.key and reaper.MB("This invitation also signs this computer in to their Tailscale network as a guest, for as long as they invited you, so Time-sync and Jam reach them.\n\n" ..
             (on_now and ("This computer is on " .. on_now .. " now. Tailscale keeps you signed in to it, and moves you to theirs: Settings > Health shows a " ..
               "Switch button in each studio when it's on another network, and Tailscale's own menu does the same.") or
               "If you use Tailscale for anything else, switch back from its menu afterwards.") .. "\n\nSign in?", "StudioSync", 4) == 6 then
-          band.log(services.tailscale_join(code.key) and "signing in to their Tailscale network as a guest" or "Tailscale isn't installed here: Play along and Jam need it, the rest works without")
+          band.log(services.tailscale_join(code.key) and "signing in to their Tailscale network as a guest" or "Tailscale isn't installed here: Time-sync and Jam need it, the rest works without")
         end
         pg.root = root
         env.reload_cfg()

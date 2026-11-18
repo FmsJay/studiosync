@@ -198,6 +198,14 @@ function H.maint_rows()
       "you hear the studio's print where there is one, and nothing where there isn't. Installing %s brings the notes back here.",
       m.track, m.fx, m.dest, m.fx) }
   end
+  do -- (the scripts came by the shared folder, so ReaPack never updated the extension: no amber dot on a Mac. Mac review, 0.59.14)
+    local have = reaper.GetExtState(band.SECTION, "menu extension")
+    local want = require("tools").EXT_WANT
+    if have ~= "" and band.compare_versions(have, want) < 0 then
+      rows[#rows + 1] = { "menu ext", false, "yellow", "", "StudioSync's menu extension here is " .. have .. ", older than this StudioSync's " .. want ..
+        ": Extensions > ReaPack > Synchronize packages, then restart REAPER." }
+    end
+  end
   -- (without them less works, quietly: onboarding review, 0.59.9)
   if not reaper.APIExists("CF_GetSWSVersion") then
     rows[#rows + 1] = { "sws", false, "yellow", "", "SWS isn't installed: reopening a project without REAPER's warning boxes is off. It's free: sws-extension.org, or Extensions > ReaPack > Browse packages." }

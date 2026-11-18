@@ -15,7 +15,7 @@ end
 
 local live_mode, live_send, live_server = "synced", true, nil
 local srv_at, srv_up, srv_by, srv_addr = 0, false, nil, nil
-local LIVE_MODES = { { "synced", "Play along (synced to the project)" }, { "listen", "Real time (SonoBus, lowest delay)" }, { "jam", "Jam (NINJAM intervals)" } }
+local LIVE_MODES = { { "synced", "Time-sync (play along, in time with the project)" }, { "listen", "Real time (SonoBus, lowest delay)" }, { "jam", "Jam (NINJAM intervals)" } }
 local countin, lag_bars, bars = 1, 0, 1
 local server_at = 0
 -- Reach the server: curl connects, and with nothing to say it runs out of time (28) or ends clean (0); it can't connect otherwise. (Blocks up to 3 s: only on a click.)

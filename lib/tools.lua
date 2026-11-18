@@ -85,6 +85,7 @@ end
 -- What StudioSync just did, for a few seconds. Exactly one line is held for it: a toast that wrapped moved the page under the mouse and back (Mac, 0.51.9),
 -- so a longer one lies over the page, on its own background, and what's under it stays put and clickable.
 function tools.toast_show(ctx, ImGui, line, place)
+  line = tools.toast_words(line) -- (an error from inside the sync, in words: UX review, 0.59.14)
   local x, y = ImGui.GetCursorScreenPos(ctx)
   local w, lh = (ImGui.GetContentRegionAvail(ctx)), ImGui.GetTextLineHeight(ctx)
   if place then x, y, w = place.x, place.y, place.w else ImGui.Dummy(ctx, 0, lh) end
@@ -342,7 +343,7 @@ function tools.join_requests(ctx, ImGui)
       -- (buttons first: the words pushed them off a narrow panel)
       ImGui.SetCursorPosX(ctx, math.max(ImGui.GetCursorPosX(ctx), 16)) -- (no project open, there is no margin here: Mac, 0.52.5)
       if ImGui.SmallButton(ctx, "Let " .. tostring(d.name) .. " in##" .. d.id .. (d.folder or "")) then let_in(d, me) end
-      ImGui.SetItemTooltip(ctx, "Only if you know this computer: anyone who has your Syncthing ID can ask.")
+      ImGui.SetItemTooltip(ctx, "Only if you know who this is: anyone with your invitation can ask.")
       ImGui.SameLine(ctx)
       -- (until what the guest invitation said, else a day: James, 0.58.82)
       local removal = require("removal")
@@ -422,6 +423,12 @@ function tools.print_problem_bar(ctx, ImGui)
   if not (pp and pp.text) or (pp.at and os.time() - pp.at > 1800) then return end
   if ImGui.SmallButton(ctx, "OK##printproblem") then reaper.DeleteExtState(band.SECTION, "print problem", false) end
   ImGui.SetItemTooltip(ctx, "Hide this. Every print problem is also in Settings > Console.")
+  ImGui.SameLine(ctx)
+  if ImGui.SmallButton(ctx, "Try again##printproblem") then -- (Live sync clears what it gave up on, at its next pass: lib/prints.lua)
+    reaper.SetExtState(band.SECTION, "prints retry", tostring(os.time()), false)
+    reaper.DeleteExtState(band.SECTION, "print problem", false)
+  end
+  ImGui.SetItemTooltip(ctx, "Tries every print that failed again, now.")
   local said = tostring(pp.text) .. ((pp.n or 1) > 1 and string.format("  (%d print problems lately)", pp.n) or "")
   ImGui.SameLine(ctx)
   if ImGui.CalcTextSize(ctx, said) + 16 > ImGui.GetContentRegionAvail(ctx) then ImGui.NewLine(ctx) end
@@ -430,6 +437,14 @@ function tools.print_problem_bar(ctx, ImGui)
   ImGui.Text(ctx, said)
   ImGui.PopTextWrapPos(ctx)
   ImGui.PopStyleColor(ctx)
+end
+-- What the toast shows for a line from the log: an error from inside the sync, in words, the details left in Settings > Console. Pure.
+function tools.toast_words(l)
+  if not l then return l end
+  for _, p in ipairs({ "^mirror sync: ", "^sync error: ", "^inbox: ", "^suggestions: ", "^tempo/markers: ", "^live sync error" }) do
+    if l:find(p) then return "Something went wrong while syncing: Settings > Console has the details (Copy, and send it to whoever set you up)." end
+  end
+  return l
 end
 function tools.put_back_bar(ctx, ImGui, song, use_mine, may, claim)
   local pb = band.json_decode(reaper.GetExtState(band.SECTION, "put back"))
@@ -523,6 +538,7 @@ end
 -- in REAPER's toolbar style: grey, lighter grey under the mouse, StudioSync's blue while the panel is open). REAPER builds the toolbar as it
 -- starts, so a change shows after a restart; a main toolbar someone customized isn't built from the default, so it isn't added there.
 tools.TOOLBAR_EXT = "1.0.4"
+tools.EXT_WANT = "1.0.6" -- (the menu extension this StudioSync goes with: tools/make_index.py EXT_VERSION. Health says when it's older)
 function tools.toolbar_button() return reaper.GetExtState(band.SECTION, "toolbar button") == "1" end
 -- On unless you switched it off, as Helgobox's is (James, 0.58.82): "" is never chosen (StudioSync - Autostart and the panel switch it on then),
 -- "0" off. The menu extension reads "1" only.

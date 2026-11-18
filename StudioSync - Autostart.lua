@@ -207,7 +207,7 @@ local function loop_body()
         band.start_live(dir)
         reaper.DeleteExtState(band.SECTION, "live start for", false)
       elseif proj == front and n.n >= 3 then
-        problem = problem or "Live sync stopped in this project and wouldn't start again: your changes aren't going out. Open the panel and press Start."
+        problem = problem or "Live sync stopped in this project and wouldn't start again: your changes aren't going out. Click the red Sync off button at the top of the panel."
       end
     end
   end

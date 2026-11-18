@@ -64,6 +64,7 @@ function drive.service() return reaper.GetExtState(band.SECTION, "drive service"
 -- one per signed-in account), the user folder (Windows mirroring), ~/Library/CloudStorage/GoogleDrive-<account> on macOS.
 -- Dropbox: the paths in its info.json, else ~/Dropbox; OneDrive: its environment variables or CloudStorage/OneDrive-*; iCloud Drive:
 -- ~/iCloudDrive (Windows) or Mobile Documents (macOS); Box: ~/Box or CloudStorage/Box-Box. `only`: one service's.
+drive.extra = {} -- top folders of Google's drive other than My Drive (looked in, never made in)
 drive.BIG = 16 * 1024 * 1024 -- bytes: a file this big is copied in the background (drive.mirror)
 local function places(only)
   local out = {}
@@ -72,13 +73,13 @@ local function places(only)
   local home = ((win and os.getenv("USERPROFILE") or os.getenv("HOME")) or ""):gsub("\\", "/")
   -- ("My Drive" is in the computer's language: "Meine Ablage", "Mi unidad"... So every folder at the top of Google's drive is looked in, after
   -- "My Drive". A drive letter is Google's if it has My Drive, or Google's own .shortcut-targets-by-id or .Encrypted. 0.59.10)
-  local function google(root, sure)
+  local function google(root, sure) -- (the extra folders are for finding a studio's folder: drive.make never makes one there)
     local subs = band.subdirs(root)
     local is = sure
     for _, d in ipairs(subs) do if d == "My Drive" or d == ".shortcut-targets-by-id" or d == ".Encrypted" then is = true end end
     if not is then return end
     add("google", root .. "/My Drive")
-    for _, d in ipairs(subs) do if d:sub(1, 1) ~= "." and d ~= "$RECYCLE.BIN" and d ~= "My Drive" then add("google", root .. "/" .. d) end end
+    for _, d in ipairs(subs) do if d:sub(1, 1) ~= "." and d ~= "$RECYCLE.BIN" and d ~= "My Drive" then add("google", root .. "/" .. d); drive.extra[root .. "/" .. d] = true end end
   end
   if win then -- (drive letters only on Windows: a Mac looked at 23 that can't exist)
     google("G:", false)
@@ -175,10 +176,11 @@ end
 function drive.wanted() return reaper.GetExtState(band.SECTION, "drive make") ~= "off" and reaper.GetExtState(band.SECTION, "drive_root") ~= "off" end
 function drive.make(name)
   for _, md in ipairs(places(drive.service())) do
-    if reaper.EnumerateSubdirectories(md, 0) ~= nil or reaper.EnumerateFiles(md, 0) ~= nil then
+    if not drive.extra[md] and (reaper.EnumerateSubdirectories(md, 0) ~= nil or reaper.EnumerateFiles(md, 0) ~= nil) then
       reaper.RecursiveCreateDirectory(md .. "/" .. name, 0)
       looked[name] = nil
-      return md .. "/" .. name
+      -- (only once it's there: a folder that couldn't be made was named as the copy anyway. Review, 0.59.14)
+      for _, d in ipairs(band.subdirs(md)) do if d == name then return md .. "/" .. name end end
     end
   end
 end
@@ -349,7 +351,7 @@ function drive.mirror(here, there, budget, user, wait)
         local q = function(p) return "'" .. p:gsub("'", "'\\''") .. "'" end
         cmd = "cp " .. q(a) .. " " .. q(tmp) .. " && mv " .. q(tmp) .. " " .. q(z)
       end
-      require("services").run_hidden("drivecopy-" .. require("mirror").hash(z), cmd, 60)
+      require("services").run_hidden("drivecopy-" .. require("mirror").hash(z), cmd, 900) -- (a quarter of an hour: one still downloading from Drive was started again over itself. Mac review, 0.59.14)
       return
     end
     band.copy_atomic(a, z)

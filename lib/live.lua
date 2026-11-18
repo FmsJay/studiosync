@@ -30,7 +30,11 @@ local function closed_ones() return reaper.GetExtState(band.SECTION, "ninjam clo
 -- (but ReaNINJAM keeps one main window per REAPER process: added again after a Leave, it took the window it had, still on the list as closed, and
 -- StudioSync found no window to press Connect in, for good: Mac, 0.58.38. So an add after the last close means every window listed may be the live one)
 local function stamp(key) return tonumber(reaper.GetExtState(band.SECTION, key)) or -math.huge end
-function live.added() reaper.SetExtState(band.SECTION, "ninjam added at", tostring(reaper.time_precise()), false) end
+function live.added(proj)
+  reaper.SetExtState(band.SECTION, "ninjam added at", tostring(reaper.time_precise()), false)
+  -- (switched on by hand: Live sync starting afterwards leaves it on. It deleted a Time-sync that was running. Review, 0.59.14)
+  if proj then reaper.SetExtState(band.SECTION, "live began " .. tostring(proj), "1", false) end
+end
 function live.window()
   if not reaper.JS_Window_ListFind then return reaper.JS_Window_Find and reaper.JS_Window_Find(live.FX, true) end
   local _, list = reaper.JS_Window_ListFind(live.FX, true)
@@ -324,7 +328,7 @@ function live.fx(proj, add, fx)
   end
   local i = reaper.TrackFX_AddByName(master, fx, false, -1)
   if i < 0 then return nil end
-  if fx == live.FX then live.added() end
+  if fx == live.FX then live.added(proj) end
   return master, i
 end
 

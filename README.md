@@ -50,8 +50,8 @@ For a band, or for one song with someone: it's the same thing, so name it what i
    open as ordinary projects.
 
 Syncing needs no account: only your two computers and the shared folder, and files move while both are online. The
-optional Google Drive copy uses a Google account. *Play along* and *Jam* (the Play/Jam tab, hidden until you switch it on) need
-a NINJAM server the others can reach, most easily over Tailscale; nothing else does. REAPER keeps its own licence (reaper.fm).
+optional Google Drive copy uses a Google account. *Time-sync* (under Real time mode on Home) and *Jam* (the Play/Jam tab, hidden
+until you switch it on) need a NINJAM server the others can reach, over the studio's Tailscale network; nothing else does. REAPER keeps its own licence (reaper.fm).
 
 ## Collaborators: start here
 
@@ -132,10 +132,10 @@ Everything below is the detail.
   Only tracks with a plug-in that isn't on everyone's list get one, and only items with a single take. While a
   track plays a wet take, its plug-ins are switched off on that computer only, so the ones that do load there
   don't apply twice (the studio still has them on).
-- **Your colour, and who's working where** (Settings > Options): everyone has a colour, their own pick or a default
+- **Your colour, and who's working where** (Settings > Look; your colour also from a right-click on your name): everyone has a colour, their own pick or a default
   nobody else has, the same on every computer; drawings use it. Each computer chooses how tracks look: **Studio's
   colours**; **Show who's working** (the studio's colours, but a track a collaborator is editing or has claimed shows their
-  colour until they're done); or **Whose track** (every track in the colour of whoever is editing it, claimed it, or
+  colour until they're done); or **Track owner** (every track in the colour of whoever is editing it, claimed it, or
   made it). Only on that computer: the studio's own colours are kept aside meanwhile, never sent or lost.
 - **Prints render in the background**: a second, hidden REAPER renders each one from a copy of the project while you
   carry on (a few seconds each, one at a time), and it's added when it's done; on Windows it runs on a desktop of its
@@ -280,9 +280,14 @@ By hand:
   written to `tailnet-switch.json` in StudioSync's folder (from which account, to which, until when), and Health keeps a
   **Switch back** button until you do; the file goes when you're back. A computer others reach over Tailscale can read it
   to put itself back if it's ever left on the other network.
-- **Talk** (beside Real time mode, while it's on): your microphone to the others without arming a track. Its own track on
-  your computer, *StudioSync Talk*, never records, isn't in your own speakers, and goes quiet while anyone records here. It
-  uses your first input; pick another on that track.
+- **Real time mode** (Home): hear each other live. **My time** and **Their time** go through SonoBus (Their time delays
+  your backing so the others line up); **Time-sync** goes through NINJAM, everyone playing to their own copy and hearing
+  the others exactly in time, a couple of bars late. Live audio starts off each time a project opens.
+- **The call** (Chat > Call): **Join the call**, then **Talk** to speak to everyone without arming a track, with **Mic** to
+  pick your talk input. Its own track on your computer, *StudioSync Talk*, never records and isn't in your own speakers; it
+  goes quiet only while that same input is recording. **Video call** on Home opens the studio's Discord/Zoom/Meet link.
+- **Dry and wet**: each part shows only the take it plays (Settings > Options > Parts play, or per track in Settings >
+  Advanced). **Show both takes in each part** (Settings > Advanced) shows the dry take and the studio's print together.
 - **Background renders on a Mac** use a private copy of REAPER (about 170 MB in `~/Library/Caches/StudioSync`, made once and
   again after REAPER updates) that macOS keeps in the background, with a small library that keeps its windows
   transparent. It never touches your REAPER. Settings > Options can switch background rendering off.
@@ -290,7 +295,7 @@ By hand:
   changed longest ago first, so a part you're still editing doesn't hold up the others and doesn't render every step.
   A render of a version that's gone is ended. Going back to a version already printed needs no render and doesn't wait.
 - **Minimize** (top bar, or closing the panel) shrinks it to a small square over REAPER: its edge is green while sync runs, red when it doesn't, and a count in the corner says what's waiting (hover for the words). Click it and the panel opens where it was, floating or docked. Drag it and it stays there, pinned to REAPER's window; right-click to lock it, close the panel or remove the square.
-- **Themes**: Settings > Options > Look: Dark, Light, Midnight or Warm, per computer.
+- **Themes**: Settings > Look: Dark, Light, Midnight, Warm or Custom (your own colours), per computer.
 - **Nothing clips in a render**: prints and the final mix go through REAPER's render limiter at -0.3 dB. Only what goes over is touched, and timing stays as it was. It stops a clip, not a mix that's too hot: the final mix says so when the limiter was working.
 - **Removing someone**: the driver or the song's host has **Remove** on their card in Who's here. You get a minute to change your mind (**Keep them**), then every computer in the studio stops syncing with theirs, each on its own as it comes online. Their claims go free, and what they made stays in the songs and on Restore. They keep the copy they already have, and the studio's Google Drive folder is yours to take them off. Invite them again to bring them back.
 - **Pages**: **Home** (Who's here with *Take control*, Real time mode, who changes what, Local mixing, claims),

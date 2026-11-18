@@ -109,8 +109,10 @@ function rooms.open(from, cfg, b, name, copy_dir)
     for _, k in ipairs({ "alone_last", "side", "hold" }) do reaper.SetProjExtState(p, band.SECTION, k, "") end
     live_offline(p)
     reaper.Main_SaveProject(p, false)
-    pcall(rooms.note_prints, path, cfg, b.song, name)
   end
+  -- (each time its copy opens here, not only when made: a copy from before 0.59.10 had no note, and its prints went to the archive. Review, 0.59.14)
+  local okn, why = pcall(rooms.note_prints, path, cfg, b.song, name)
+  if not okn then band.log("couldn't note the prints side room " .. name .. " plays: " .. tostring(why)) end
   return p
 end
 -- The prints a side room's new copy plays (its items came from the room it was made from, and no change of its own names their prints): kept

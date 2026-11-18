@@ -207,7 +207,7 @@ function prints.set_track_choice(proj, tr, choice)
 end
 
 -- Make the item play what this machine chose.
-function prints.choose(it)
+function prints.choose(it, no_hold) -- no_hold: the caller holds the track's FX once, after all its items
   local midi, print = prints.takes(it)
   local ara = print and not midi and prints.ara_take(it)
   if ara then -- an ARA take: editable only where it was edited (see prints.ARA)
@@ -228,7 +228,7 @@ function prints.choose(it)
   if own == "dry" then mode = "notes" elseif own == "wet" then mode = "sound" elseif own == "auto" then mode = "auto" end
   local want = mode == "sound" and print or mode == "notes" and dry or (prints.track_plays(tr) and dry or print)
   if reaper.GetActiveTake(it) ~= want then reaper.SetActiveTake(want); reaper.UpdateItemInProject(it) end
-  prints.hold_fx(tr)
+  if not no_hold then prints.hold_fx(tr) end
 end
 
 -- A wet take already went through its track's plug-ins: played through them again, the ones that load here would
@@ -358,6 +358,16 @@ function prints.problem(text)
   reaper.SetExtState(band.SECTION, "print problem", band.json_encode({ text = text, n = n, at = os.time() }), false)
 end
 prints.failed = {} -- print name -> true: rendered here and nothing came out (this session; tried again once what it's made from changes)
+prints.front_only = {} -- print name -> true: its background render failed, so it renders here (this session)
+-- One render pass is enough only through REAPER's own plug-ins: an amp sim or IR loader (TONEX, NAM, Neural DSP) can load its model in the
+-- background and print dry on a first pass, as an instrument can. (Review, 0.59.14)
+local function stock_only(tr)
+  for i = 0, reaper.TrackFX_GetCount(tr) - 1 do
+    local n = select(2, reaper.TrackFX_GetFXName(tr, i, ""))
+    if not (n:find("^JS:") or n:find("(Cockos)", 1, true)) then return false end
+  end
+  return true
+end
 -- How long REAPER has been left alone: the mouse where it was, no edit, the transport as it was. Asked every pass.
 local quiet = { at = 0 }
 local function quiet_for()
@@ -368,7 +378,14 @@ local function quiet_for()
 end
 prints.QUIET = 20 -- seconds left alone before a long print renders here, in front (it holds REAPER while it does)
 local said_waiting = {}
+local retry_seen -- (the alert bar's Try again: ExtState "prints retry")
 function prints.render(oid, name, out, tracks, render, secs, quick) -- secs: the part's length; quick: no instrument, one render pass will do
+  local retry = reaper.GetExtState(band.SECTION, "prints retry")
+  if retry ~= "" and retry ~= retry_seen then
+    retry_seen = retry
+    prints.failed, prints.silent = {}, {}
+    require("bgrender").stuck = {}
+  end
   -- already printed: a print's name says what it was made from and who rendered it, so going back to a state it had
   -- (an undo, a note put back) finds its print here. Rendered again, its file (still open in REAPER) couldn't be
   -- replaced, so the background print was dropped and rendered in front as "-2" (laptop, 0.40.0).
@@ -386,7 +403,10 @@ function prints.render(oid, name, out, tracks, render, secs, quick) -- secs: the
     local path, state = bg.claim(oid, name, out)
     if path then return path end
     if state == "running" or state == "stuck" then return nil end
-    if state ~= "failed" then
+    if state == "failed" then prints.front_only[name] = true end
+    -- (once failed in the background it renders in front: it started a hidden REAPER again every few seconds while the long part waited for
+    -- REAPER to be left alone. Review, 0.59.14)
+    if state ~= "failed" and not prints.front_only[name] then
       if not my_turn(oid, name) or bg.busy() then return nil end
       queue[oid] = nil
       local keep = {}
@@ -398,6 +418,7 @@ function prints.render(oid, name, out, tracks, render, secs, quick) -- secs: the
   -- (in front, REAPER holds still for as long as the render takes: a long part waits till you've left it alone a while. James, 0.59.12)
   if (secs or 0) > 30 and quiet_for() < prints.QUIET then
     if not said_waiting[name] then said_waiting[name] = true; band.log("a long part's print waits till REAPER's been left alone for " .. prints.QUIET .. " s: it renders here, and holds REAPER while it does") end
+    queue[oid] = nil -- (to the back of the line: it held every other print up while it waited. Review, 0.59.14)
     return nil
   end
   queue[oid] = nil
@@ -405,8 +426,8 @@ function prints.render(oid, name, out, tracks, render, secs, quick) -- secs: the
   if ok and path then return path end
   prints.failed[name] = true -- (it rendered again at every pass, holding REAPER each time)
   local where = tracks[1] and select(2, reaper.GetTrackName(tracks[1])) or "a track"
-  prints.problem("A print of a part on " .. where .. " didn't come out" .. (ok and "" or (" (" .. tostring(path):gsub("\n.*", "") .. ")")) ..
-    ": bandmates without its plug-ins don't hear that part until it changes and prints again")
+  if not ok then band.log("print error on " .. where .. ": " .. tostring(path)) end -- (the details, for the console)
+  prints.problem("A part on " .. where .. " didn't print, so collaborators without its plug-ins can't hear it yet. Press Try again, or nudge the part.")
   return nil
 end
 
@@ -513,7 +534,7 @@ function prints.refresh(proj, it, media_dir, fx_hash, route_hash, cfg)
   local path = prints.render(oid, name, media_dir, dest and { tr, dest } or { tr }, function()
     if dest then return sync.print_routed(proj, it, midi, dest, media_dir, name) end
     return sync.print_item(proj, it, dry, media_dir, name, nil, false, true)
-  end, reaper.GetMediaItemInfo_Value(it, "D_LENGTH"), audio and reaper.TrackFX_GetInstrument(tr) < 0) -- (quick: audio through effects, nothing to load)
+  end, reaper.GetMediaItemInfo_Value(it, "D_LENGTH"), audio and stock_only(tr)) -- (quick: audio through REAPER's own effects, nothing to load)
   if not path then return false end
   -- a print of notes that came out silent: the instrument loaded but its sounds didn't (a Kontakt library or an EZX that isn't
   -- installed here). Kept, it played silence for everyone who lacked the instrument, and nothing said so (plug-ins review, 0.58.76)
@@ -525,8 +546,8 @@ function prints.refresh(proj, it, media_dir, fx_hash, route_hash, cfg)
       -- pointing at it waited for it for good. Review, 0.58.87)
       local who = (reaper.GetExtState(band.SECTION, "user"):gsub("[^%w%-_]", "_"))
       if who ~= "" and path:match("%-" .. who:gsub("%p", "%%%0") .. "%.flac$") then os.remove(path) end
-      prints.problem("The print of a part on " .. select(2, reaper.GetTrackName(tr)) .. " came out silent here: its instrument loads, but not its sounds " ..
-        "(a library or kit that isn't installed?). Bandmates without the instrument don't hear that part until someone who has it all prints it")
+      prints.problem("A part on " .. select(2, reaper.GetTrackName(tr)) .. " printed silent: its instrument loaded but its sounds didn't (is its library or kit " ..
+        "installed here?). Fix that, then Try again. Until then, collaborators without the instrument don't hear that part.")
     end
   end
   if prints.silent[name] then return false end

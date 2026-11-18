@@ -395,7 +395,7 @@ local function poll()
     -- a lot came in and it's over: saved, so the next open starts from here and doesn't take it all in again with REAPER held up
     sync.since_save = (sync.since_save or 0) + n
     if n == 0 and sync.since_save >= 100 and reaper.GetPlayStateEx(proj) == 0 then sync.need_save, sync.since_save = true, 0 end
-    if n > 0 then band.log(n .. " change(s) from the others (" .. room .. ")"); mirror_due = true; pcall(require("api").event, "received", { n = n, song = b.song, room = room }) end
+    if n > 0 then band.log(string.format("%d change%s from the others (%s)", n, n == 1 and "" or "s", room)); mirror_due = true; pcall(require("api").event, "received", { n = n, song = b.song, room = room }) end
   end
   lap("receive")
 
@@ -419,7 +419,7 @@ local function poll()
       healed_at, heal_since = now, nil
       local ok, n = pcall(require("mirror").heal, proj, sync.room_dir(cfg, b.song, b.room), sync.local_mix)
       if not ok then band.log("couldn't bring the project in line with the studio: " .. tostring(n))
-      elseif n > 0 then band.log(string.format("brought %d thing(s) in line with the studio's newest version (they hadn't landed here)", n)); mirror_due = true end
+      elseif n > 0 then band.log(string.format("caught up on %d change%s that hadn't arrived here", n, n == 1 and "" or "s")); mirror_due = true end
     end
   end
 
@@ -500,7 +500,7 @@ local function poll()
     end
     band.try("sessionfile.catch_up", require("sessionfile").catch_up, b.song, 0.1) -- your recordings the end-of-session projects use
     if more and not drive_more then band.log("Google Drive: bringing the studio's copy of this room up to date (carries on between passes)") end
-    if moved > 0 and not more then band.log(string.format("Google Drive copy up to date (%d file(s) this pass)", moved)) end
+    if moved > 0 and not more then band.log(string.format("Google Drive copy up to date (%d file%s this pass)", moved, moved == 1 and "" or "s")) end
     drive_more = more
   end
   lap("save, drive")
@@ -653,7 +653,7 @@ if autokey ~= "autosync " then band.set_autosync(our_file, true) end
 if reload_proj ~= proj and reaper.GetExtState(band.SECTION, "live began " .. tostring(proj)) == "" then -- (a reload for an update carries on as it was)
   reaper.SetExtState(band.SECTION, "live began " .. tostring(proj), "1", false)
   local ok, was = pcall(live.all_off, proj)
-  if ok and was then band.log("live audio starts off when a project opens: Real time mode, Time-sync and the call are off (switch them on on Home and in Chat > Call)") end
+  if ok and was then band.log("live audio starts off when a project opens: Real time mode (and Time-sync) and the call are off. Switch them on on Home and in Chat > Call") end
 end
 reaper.SetExtState(band.SECTION, "live began " .. tostring(proj), "1", false)
 local tick
@@ -704,7 +704,8 @@ local function tick_body() -- returns true to keep going
     local peak = math.max(reaper.Track_GetPeakInfo(m, 0), reaper.Track_GetPeakInfo(m, 1))
     if peak >= 0.999 and reaper.time_precise() - (clip_said or -1e9) > 30 then
       clip_said = reaper.time_precise()
-      band.log(string.format("your master is clipping at %.2f s: pull the master (or the loudest tracks) down", reaper.GetPlayPosition2Ex(proj)))
+      local at = reaper.format_timestr_pos(reaper.GetPlayPosition2Ex(proj), "", 2):match("^(%d+)") or "?"
+      band.log("your master is clipping at bar " .. at .. ": turn it (or the loudest tracks) down")
     end
   end
   together.tick()

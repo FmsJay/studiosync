@@ -82,7 +82,7 @@ local function back_button(i, what, single)
   end
   ImGui.EndDisabled(ctx)
   ImGui.SetItemTooltip(ctx, before_history and "This version is older than every change kept in History, so it can't be rebuilt from it." or
-    driving and ("The whole project, as it was " .. what .. ". It goes to the others as new changes.") or "The driver does this.")
+    driving and ("The whole project, as it was " .. what .. ". It goes to the others as new changes.") or "Only the driver can restore the whole project: ask them, or take control.")
   next_to("Open in side room")
   if ImGui.SmallButton(ctx, "Open in side room") then
     -- a look at that moment that touches nobody's work: a new room, put back to then. Archive it (Rooms) when you've heard it.

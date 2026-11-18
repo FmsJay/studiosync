@@ -47,9 +47,8 @@ function undo.strip_old(text)
 end
 -- Sets what's missing for the next time REAPER starts: at its start, and again as it quits (a new action registered meanwhile
 -- rewrites the file from REAPER's memory). A key once seen set and now gone was removed by its owner: not set again.
--- shortcut: Windows and Linux (Ctrl+Z on both), not a Mac, as Cmd+Z's line is unverified there; Setup's button does it there until it's checked.
+-- (a Mac too, since 0.59.14: its Cmd+Z lines are the ones Setup's button writes, seen working in a bandmate's reaper-kb.ini)
 function undo.auto_keys(dir)
-  if band.MAC then return end
   local kb_path = reaper.GetResourcePath() .. "/reaper-kb.ini"
   local kb_text = band.read(kb_path)
   if kb_text and undo.strip_old(kb_text) ~= kb_text then pcall(band.write_atomic, kb_path, undo.strip_old(kb_text)) end

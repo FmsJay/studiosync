@@ -578,11 +578,11 @@ end
 local drive_root, drive_at = nil, -math.huge
 local MODE_INFO = { -- (the names on disk are older than these: sync.MODES)
   { "open", "Claims", "Anyone changes anything nobody else has claimed, the tempo map and markers too. What someone has claimed (a track,\n" ..
-    "a region, a stretch of time) only they change, the driver too. If two change one thing at once, whoever changed it more wins,\nand the other person gets Use mine." },
+    "a region, a stretch of time) only they change, the driver too. If two change one thing at once, whoever changed it more wins,\nand the other person gets a Use mine button to put theirs back." },
   { "claims", "Driver + claims", "The driver changes anything, claimed or not. Everyone else changes what they've claimed. Other changes are put back." },
   { "driver", "Driver only", "Only the driver changes what the studio has. Everyone else's changes are put back (record as usual)." },
   { "everyone", "Everyone", "Anyone changes anything, claimed or not: claims don't hold. If two change one thing at once, whoever changed it more wins,\n" ..
-    "and the other person gets Use mine." },
+    "and the other person gets a Use mine button to put theirs back." },
   { "admins", "Admins only", "Only the studio's owner and admins change what the studio has, and anyone on what an admin gave them (right-click their name). Other changes are put back." },
 }
 local function section_driver(beside) -- beside: drawn on the box's row (a short docker has no row to spare)
@@ -825,7 +825,19 @@ function ui.person_menu(p)
   ImGui.EndPopup(ctx)
 end
 -- A name, with its role beside it. Right-clicking it opens the menu.
+local swatch_at, swatch_of = -math.huge, {}
 function ui.person_name(p, size)
+  -- (their colour beside their name: tracks take people's colours, and nothing said whose was whose. UX review, 0.59.14)
+  if reaper.time_precise() - swatch_at > 2 then swatch_at, swatch_of = reaper.time_precise(), {} end
+  local who_name = tostring(p.user or p.name)
+  if swatch_of[who_name] == nil then swatch_of[who_name] = require("people").colours(cfg.root, { who_name })[who_name] or false end
+  if swatch_of[who_name] then
+    local x, y = ImGui.GetCursorScreenPos(ctx)
+    local hh = ImGui.GetTextLineHeight(ctx)
+    ImGui.DrawList_AddRectFilled(ImGui.GetWindowDrawList(ctx), x, y + hh * 0.2, x + hh * 0.6, y + hh * 0.8, (swatch_of[who_name] << 8) | 0xFF, 2)
+    ImGui.Dummy(ctx, hh * 0.6, hh)
+    ImGui.SameLine(ctx, 0, 5)
+  end
   ImGui.PushFont(ctx, ui.bold, size or 15)
   ImGui.Text(ctx, p.name)
   ImGui.PopFont(ctx)
@@ -1037,7 +1049,7 @@ local function set_same_room(v)
       live.rt_sends(proj)
     elseif sm and not live.sonobus_wanted(proj) then reaper.TrackFX_SetOffline(sm, si, true) end -- (a listener, Solo, producing: it stays)
     reaper.SetProjExtState(proj, band.SECTION, "side", "")
-    band.log("Real time mode off: side by side is off (edits still sync)")
+    band.log("Real time mode off: changes still sync, but you don't hear each other live")
   end
 end
 -- The call (Chat > Call): Talk to everyone through SonoBus, on its own, whatever Real time mode and Time-sync are doing (James, 0.59.6:
@@ -1064,7 +1076,7 @@ function ui.set_call(v)
   live.rt_sends(proj)
   band.log("the call is on: press Talk to speak to everyone")
 end
-local SAME_ROOM_TIP = "Hear each other live (My time and Their time through SonoBus, Time-sync through NINJAM), and play, stop and record together.\nWhat someone records lands as a take when they stop. Edits sync either way."
+local SAME_ROOM_TIP = "Hear each other live, and play, stop and record together (My time and Their time go through SonoBus, Time-sync through NINJAM).\nWhat someone records lands as a take when they stop. Edits sync either way."
 
 local setup_at, st = 0, {}
 -- What StudioSync did lately (sends, what arrived, what was put back and why): it used to pop the console up
@@ -1258,7 +1270,7 @@ local health = require("page_health")
 local function maint_health() return health.maint_health() end
 local function dot(col) return health.dot(col) end
 
--- Talk and its mic (Home's Real time row, and Chat's Call tab: 0.59.2)
+-- Talk and its mic (Chat's Call tab only: James, 0.59.6)
 function ui.talk_controls(on)
   if on and b then -- talkback: speak to the others without arming a track that records
     local live = require("live")
@@ -1304,7 +1316,7 @@ function ui.call_tab()
   -- (its own switch: it was Real time mode's, and switching it on turned Time-sync off. James, 0.59.6)
   local on = b and ui.call_on()
   ImGui.BeginDisabled(ctx, not b)
-  local ch, v = switch_row("##callsw", "Talk to everyone", on, "Talk through SonoBus with your talk mic, whatever Real time mode and Time-sync are doing.\n" ..
+  local ch, v = switch_row("##callsw", "Join the call", on, "Talk to everyone with your talk mic (press Talk), whatever Real time mode and Time-sync are doing.\n" ..
     "Without Real time mode it carries only your talk mic, never your playing.")
   ImGui.EndDisabled(ctx)
   if ch then ui.set_call(v) end
@@ -1321,9 +1333,9 @@ end
 -- Real time mode's three ways (James, 0.59.4: "my time, their time for SonoBus and then time sync for NINJAM, each stating what they do").
 -- One at a time: SonoBus and NINJAM both carry your mix, so with both on everyone hears you twice. The last one picked comes back with the switch.
 local RT_KINDS = {
-  { "my", "My time", "Live through SonoBus: you hear everyone the moment it arrives, a little late (the network). For playing and talking together." },
-  { "their", "Their time", "Live through SonoBus, your backing delayed so the others line up with it. For listening along, not for playing." },
-  { "timesync", "Time-sync", "Through NINJAM: everyone plays to their own copy of the song and hears the others exactly in time with it, %s late. For playing along to a take. Talk: Chat > Call." },
+  { "my", "My time", "You hear everyone the moment it arrives, a little late (the network). For playing and talking together." },
+  { "their", "Their time", "Your backing is delayed so the others line up with it. For listening along, not for playing." },
+  { "timesync", "Time-sync", "Everyone plays to their own copy of the song and hears the others exactly in time, %s late. For playing along to a take. Talk: Chat > Call." },
 }
 function ui.rt_kind()
   if page_play.time_sync_on() then return "timesync" end
@@ -1371,18 +1383,20 @@ local function home_play()
       ImGui.BeginDisabled(ctx, k[1] == "timesync" and (not b or no_ts) and kind ~= k[1])
       if ImGui.RadioButton(ctx, k[2] .. "##rtkind", kind == k[1]) and kind ~= k[1] then ui.set_rt_kind(k[1]) end
       ImGui.EndDisabled(ctx)
-      local says = no_ts and "Needs Tailscale on, and signed in to the studio's network (ask whoever runs the studio for an invitation). Health shows it."
+      local says = no_ts and "Time-sync needs the studio's private network (Tailscale): ask whoever runs the studio for a guest invitation. Health shows it."
         or k[3]:format(string.format("%d bar%s", bars, bars == 1 and "" or "s"))
       if ui.short then ImGui.SetItemTooltip(ctx, says) else ImGui.TextDisabled(ctx, says) end
     end
     ImGui.Unindent(ctx, 26)
   end
-  require("page_hear").fit(ctx, ImGui, "Configure SonoBus") -- (beside, or below in a narrow column: it was cut to "Configure Sono")
-  if ImGui.SmallButton(ctx, "Configure SonoBus") then sonobus_open() end
-  ImGui.SetItemTooltip(ctx, "Opens SonoBus's own window (volume and mute per collaborator, buffer, quality). You don't need it to play together.")
+  if sb or ui.call_on() then -- (only while SonoBus is on: it said "Configure SonoBus" with nothing live. UX review, 0.59.14)
+    require("page_hear").fit(ctx, ImGui, "Each person's volume") -- (beside, or below in a narrow column)
+    if ImGui.SmallButton(ctx, "Each person's volume") then sonobus_open() end
+    ImGui.SetItemTooltip(ctx, "Opens SonoBus's own window: volume and mute for each collaborator, buffer and quality. You don't need it to play together.")
+  end
   if b then -- (James, 0.58.87: an easier way to bring in someone with only the SonoBus app: one message, and SonoBus Guest on)
-    require("page_hear").fit(ctx, ImGui, "Invite a SonoBus guest")
-    if ImGui.SmallButton(ctx, "Invite a SonoBus guest") then
+    require("page_hear").fit(ctx, ImGui, "Invite someone without REAPER")
+    if ImGui.SmallButton(ctx, "Invite someone without REAPER") then
       local link, why = setup.sonobus(cfg, b, proj, true)
       if not link then band.msg(why) else
         sb_link = link
@@ -1407,8 +1421,8 @@ local function home_play()
   end
   local call = require("alerts").call_link(cfg.root)
   if call then -- (the studio's own call: Discord, Zoom, Meet, whatever they use. Its own app, so it never slows REAPER or the sync)
-    require("page_hear").fit(ctx, ImGui, "Call")
-    if ImGui.SmallButton(ctx, "Call") then band.open_url(call) end
+    require("page_hear").fit(ctx, ImGui, "Video call")
+    if ImGui.SmallButton(ctx, "Video call") then band.open_url(call) end -- (was "Call": read as the talk line in Chat > Call. UX review, 0.59.14)
     ImGui.SetItemTooltip(ctx, "Opens the studio's call (" .. call .. ") in its own app or browser, with video if it has it.\n" ..
       "Mute its microphone while you play: Real time mode already carries the music, and two copies echo.")
   end
@@ -1553,18 +1567,21 @@ local function home_who()
     if card("who " .. p.name, w) then -- (grows with what they have armed)
       ui.person_name(p, 16)
       -- (in words: "synced", "here" and "no receipt" were the code's names for them. UX review, 0.58.52)
-      local words = ({ here = "you", synced = "up to date", syncing = "getting changes", offline = "away", ["no receipt"] = "never synced here" })[p.state] or p.state
+      local words = ({ here = "you", synced = "up to date", syncing = "getting changes", offline = "away", ["no receipt"] = "not opened here yet" })[p.state] or p.state
       pill(words, p.state == "here" and GREEN or rgba(status.COLORS[p.state] or { 0.55, 0.55, 0.55 }))
       ImGui.SetItemTooltip(ctx, ({ here = "This machine.", ["synced"] = "Has every change.", ["syncing"] = "Still getting changes (yours or the studio's).",
         offline = "Not seen for over a minute.", ["no receipt"] = "Has sent takes, but never ran Live sync here." })[p.state] or p.state)
       if p.recording then ImGui.SameLine(ctx, 0, 4); pill("recording", RED)
       elseif p.playing and p.state ~= "offline" then ImGui.SameLine(ctx, 0, 4); pill("playing", ACCENT, 0xFFFFFFFF) end
-      if p.driving then ImGui.SameLine(ctx, 0, 4); pill("driving", ACCENT, 0xFFFFFFFF); ImGui.SetItemTooltip(ctx, "What nobody has claimed follows them.") end
+      if p.driving then ImGui.SameLine(ctx, 0, 4); pill("driving", ACCENT, 0xFFFFFFFF); ImGui.SetItemTooltip(ctx, "They drive: play, stop and the place in the song follow them. Who changes what: Who can edit.") end
       ui.live_icons(p)
       if p.armed and #p.armed > 0 then ImGui.TextDisabled(ctx, "armed: " .. table.concat(p.armed, ", "))
       elseif not wide then ImGui.TextDisabled(ctx, "nothing armed") end -- (docked, the line went to saying nothing)
       -- (only while they're here: offline, it's what they had the last time they had this song open, days ago maybe. Mac test, 0.58.69)
-      if p.version and p.version ~= band.VERSION and p.state ~= "offline" then ImGui.TextColored(ctx, YELLOW, "StudioSync " .. p.version) end
+      if p.version and p.version ~= band.VERSION and p.state ~= "offline" then
+        local older = band.compare_versions(p.version, band.VERSION) < 0
+        ImGui.TextColored(ctx, YELLOW, (older and "Older StudioSync (" or "Newer StudioSync (") .. p.version .. (older and "): ask them to update" or "): update yours"))
+      end
       if p.mirror and view.my_mirror and p.state == "synced" then -- (while changes are still on their way it's bound to differ)
         if p.mirror == view.my_mirror then ImGui.TextColored(ctx, GREEN, "same project as yours")
         elseif not settled_apart(p, view.my_mirror) then ImGui.TextDisabled(ctx, "settling")
@@ -1617,7 +1634,7 @@ function ui.set_local_mix(v)
 end
 local function local_mix_row()
   local on = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1"
-  local ch, v = switch_row("##localmix", "Control your own mix", on, "Your faders and pan stay yours: nobody else's reach you, and yours don't go out.")
+  local ch, v = switch_row("##localmix", "Local mixing (your faders and pan stay yours)", on, "Nobody else's faders and pan reach you, and yours don't go out. Also as the action StudioSync - Local mixing.")
   if ch then ui.set_local_mix(v) end
 end
 -- A gap between two parts sharing a column.
@@ -1854,10 +1871,11 @@ local function settings_sync()
     ImGui.SeparatorText(ctx, "Parts play (MIDI and audio)")
     -- (the selected tracks' own Dry / Wet / Auto: Settings > Advanced, 0.59.4)
     local prints = require("prints")
-    for _, m in ipairs({ { "auto", "Auto", "Through your plug-ins when every plug-in the part plays through loads here, else as the studio printed it." },
-        { "notes", "Through my plug-ins", "Always the part itself through your own plug-ins: a MIDI part's notes through your instruments, a recording through\n" ..
+    -- (Dry / Wet / Auto, as the selected tracks' choice says it: "Through my plug-ins / As printed" was a second set of words. UX review, 0.59.14)
+    for _, m in ipairs({ { "auto", "Auto", "Dry when every plug-in the part plays through loads here, else wet (the studio's print)." },
+        { "notes", "Dry (my plug-ins)", "Always the part itself through your own plug-ins: a MIDI part's notes through your instruments, a recording through\n" ..
           "your amp sims and effects, so you can change the sound. A plug-in you don't have plays nothing." },
-        { "sound", "As printed", "Always the studio's print: the part rendered through the track's plug-ins by whoever changed it, exactly what they heard." } }) do
+        { "sound", "Wet (studio's print)", "Always the studio's print: the part rendered through the track's plug-ins by whoever changed it, exactly what they heard." } }) do
       if m[1] ~= "auto" then next_to(m[2]) end -- (longer words now: onto the next line when they don't fit)
       if ImGui.RadioButton(ctx, m[2] .. "##midiplays", prints.mode() == m[1]) then
         reaper.SetExtState(band.SECTION, "midi_plays", m[1], true)
@@ -2650,7 +2668,12 @@ local function frame_app()
   at_row(drives)
   ImGui.SetCursorPosY(ctx, y0 + (fh - ImGui.GetTextLineHeight(ctx)) / 2) -- (not AlignTextToFramePadding: it carries along the row, and the page tabs sat low: design review)
   ImGui.TextDisabled(ctx, drives)
-  ImGui.SetItemTooltip(ctx, "The driver's changes go to everyone, except on what someone has claimed.")
+  do -- (what driving means in the mode the studio is in: it said claims-and-driver in the default, where anyone changes what's unclaimed. UX review, 0.59.14)
+    local m = (who and who.mode) or sync.DEFAULT_MODE
+    local said = MODE_INFO[1][3]
+    for _, x in ipairs(MODE_INFO) do if x[1] == m then said = x[3] end end
+    ImGui.SetItemTooltip(ctx, "The driver's play, stop and place in the song go to everyone. Who changes what:\n" .. said)
+  end
   -- (no buttons for these: Ctrl+Z and Ctrl+Shift+Z do it, and Edit > Undo: Live sync steps in. The radial menu still asks for them here.)
   local function undo_redo(redo) -- (lib/undo.lua: the same as the StudioSync - Undo / Redo actions, but always asks)
     local res, why = require("undo").step(proj, cfg, b, redo, { ask = true, describe = describe })
@@ -2738,7 +2761,13 @@ local function frame_app()
     tools.toast_newest = newest
     -- (a routine count doesn't push out what's being said: a first comp's warning lasted an instant, Mac 0.42.27. Both can arrive
     -- between two frames, the count on top, so this looks through all that's new: Mac, 0.45.0)
-    local routine = function(l) return l:find("change(s) went to the others", 1, true) end
+    -- (routine counts don't pop up: they flashed by all session. UX review, 0.59.14)
+    local routine = function(l)
+      for _, r in ipairs({ "change(s) went to the others", "went to the others", "from the others (", "Google Drive copy up to date", "caught up on ",
+          "Syncthing's studio folder tuned", "Syncthing is answering" }) do
+        if l:find(r, 1, true) then return true end
+      end
+    end
     local say = newest
     for _, l in ipairs(log) do
       if l == before then break end
@@ -3118,7 +3147,7 @@ local function pill_window()
     local waiting = unread
     local pb = band.json_decode(reaper.GetExtState(band.SECTION, "put back"))
     if pb and pb.text then
-      words = words .. string.format("  ·  %d edit%s undone", pb.n or 1, (pb.n or 1) == 1 and "" or "s")
+      words = words .. string.format("  ·  %d edit%s not sent", pb.n or 1, (pb.n or 1) == 1 and "" or "s")
       waiting = waiting + (pb.n or 1)
     end
     local pp = band.json_decode(reaper.GetExtState(band.SECTION, "print problem"))

@@ -42,7 +42,7 @@ ask()  { local a; read -e -r -p "$1${2:+ [$2]} " a </dev/tty; echo "${a:-${2:-}}
 plain() { printf '%s' "$1" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | LC_ALL=C tr -cd 'A-Za-z0-9 _-'; } # "CHILIØ" -> "CHILIO"
 yes()  { case "$1" in [yY]*) return 0;; *) return 1;; esac; }
 # (the whole invitation pasted instead of its one line: the lines after it waited and answered the questions below. 0.59.10)
-while IFS= read -r -t 0.3 _ </dev/tty 2>/dev/null; do :; done
+{ while IFS= read -r -t 1 _ </dev/tty; do :; done; } 2>/dev/null # (whole seconds: macOS's bash 3.2 refuses -t 0.3, and the loop ended at once. Mac review, 0.59.14)
 
 say "StudioSync setup"
 echo "This installs what StudioSync needs and sets it up. It asks a few questions first (unless they were given up"

@@ -2061,7 +2061,8 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
     local tr = mirror.find(proj, "track", ev.track)
     if tr then
       local prints = require("prints")
-      for i = 0, reaper.CountTrackMediaItems(tr) - 1 do prints.choose(reaper.GetTrackMediaItem(tr, i)) end
+      for i = 0, reaper.CountTrackMediaItems(tr) - 1 do prints.choose(reaper.GetTrackMediaItem(tr, i), true) end
+      prints.hold_fx(tr) -- (once for the track, not once per item: review, 0.59.14)
     end
   end
   return ok
