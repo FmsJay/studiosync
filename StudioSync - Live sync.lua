@@ -197,13 +197,6 @@ local function ready(path)
   return ok
 end
 
--- what sync itself just placed or updated is the band's state, not a local edit (else it'd be sent, or put back)
-local function remember(id)
-  local hit = band.take_index(proj)[id:lower()]
-  if hit then sync.remember(proj, id, hit[1], hit[2]) end
-end
-
-
 local last_driver
 local drawings_at = -math.huge -- (when this last looked whether the room has drawings to show)
 local inbox_at = -math.huge -- (and the song's inbox for dropped audio)
