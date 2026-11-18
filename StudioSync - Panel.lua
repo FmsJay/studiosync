@@ -354,9 +354,13 @@ local WINDOW_MENU = { "Fill this screen", "Left half", "Right half", "Top half",
 local function place_window(how)
   if how == "Dock" or how == "Undock" then dock_req = how == "Dock" and -1 or 0; return end -- (asked for from a script)
   local sw, sh = how:match("^size (%d+) (%d+)$") -- (likewise)
-  if sw and win_rect then place_req = { win_rect[1], win_rect[2], tonumber(sw), tonumber(sh) }; return end
+  if sw then if win_rect then place_req = { win_rect[1], win_rect[2], tonumber(sw), tonumber(sh) } end; return end
   local h = reaper.JS_Window_Find and reaper.JS_Window_Find("StudioSync", true)
-  if not h then return band.msg("Placing the window needs js_ReaScriptAPI (ReaPack: 'js_ReaScriptAPI').") end
+  -- (only a missing extension says so: shrunk to its box, there was no window to find, and it said js_ReaScriptAPI was missing. 0.59.14)
+  if not h then
+    if not reaper.JS_Window_Find then return band.msg("Placing the window needs js_ReaScriptAPI (ReaPack: 'js_ReaScriptAPI').") end
+    return band.log("the panel's window wasn't found to place it (open the panel first)")
+  end
   local _, l, t, r, btm = reaper.JS_Window_GetRect(h)
   -- moving the system window from outside only stretches what ReaImGui drew: ReaImGui sizes its windows itself, so
   -- the screen's pixels are turned into its units (they differ with display scaling) and it places the window
@@ -3335,7 +3339,8 @@ local function loop_body()
     end
   end
   local ask = reaper.GetExtState(band.SECTION, "panel place") -- (the Window menu, asked for from a script)
-  if ask ~= "" then reaper.DeleteExtState(band.SECTION, "panel place", false); place_window(ask) end
+  -- (a size waits for the window: shrunk to its box there's none to size. 0.59.14)
+  if ask ~= "" and (win_rect or not ask:match("^size ")) then reaper.DeleteExtState(band.SECTION, "panel place", false); place_window(ask) end
   if place_req then
     ImGui.SetNextWindowPos(ctx, place_req[1], place_req[2])
     ImGui.SetNextWindowSize(ctx, place_req[3], place_req[4])
