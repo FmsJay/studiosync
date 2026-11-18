@@ -1228,42 +1228,8 @@ local health = require("page_health")
 local function maint_health() return health.maint_health() end
 local function dot(col) return health.dot(col) end
 
-local function home_play()
-  local on = same_room_on()
-  local ch, v = switch_row("##rt", "Real time mode", on, SAME_ROOM_TIP)
-  if ch then set_same_room(v) end
-  if b then -- Time-sync (James, 0.58.99): hear each other in time with the song, a bar or two late, through NINJAM (the Play/Jam page's Play along)
-    local ts = page_play.time_sync_on()
-    local one = page_play.interval_bars()
-    local tch, tv = switch_row("##timesync", "Time-sync", ts, string.format("Everyone plays to their own copy of the song, and hears the others in time with it, %d bar%s late " ..
-      "here (a whole NINJAM interval, about 2.4 s, and a second's margin: more bars in a fast song):\nexactly how the person recording played it, which Real time mode's live audio can't promise over the internet.\n" ..
-      "For listening to a take and playing along, not for talking (that's Real time mode). It needs Tailscale; this computer runs the server if nobody does.",
-      one, one == 1 and "" or "s"))
-    if tch then page_play.time_sync(tv) end
-  end
-  require("page_hear").fit(ctx, ImGui, "Configure SonoBus") -- (beside, or below in a narrow column: it was cut to "Configure Sono")
-  if ImGui.SmallButton(ctx, "Configure SonoBus") then sonobus_open() end
-  ImGui.SetItemTooltip(ctx, "Opens SonoBus's own window (volume and mute per collaborator, buffer, quality). You don't need it to play together.")
-  if b then -- (James, 0.58.87: an easier way to bring in someone with only the SonoBus app: one message, and SonoBus Guest on)
-    require("page_hear").fit(ctx, ImGui, "Invite a SonoBus guest")
-    if ImGui.SmallButton(ctx, "Invite a SonoBus guest") then
-      local link, why = setup.sonobus(cfg, b, proj, true)
-      if not link then band.msg(why) else
-        sb_link = link
-        if not on then set_same_room(true) end
-        require("guest").set(proj, true)
-        local info = band.info(cfg.root)
-        tools.show_invite("Join me live in " .. tostring(info.name) .. " (" .. tostring(b.song) .. ") with SonoBus: you'll hear the song and me, and I'll hear and record you.\n\n" ..
-          "1. Install SonoBus, free: https://sonobus.net (Windows, Mac, iPhone, Android, Linux).\n" ..
-          "2. Open this link, and SonoBus joins us by itself:\n" .. link .. "\n" ..
-          "3. Wear headphones (speakers come back into your mic as an echo), and plug in your mic or instrument.\n" ..
-          "Nothing else to install, no account needed.", info, ctx, ImGui)
-        band.log("a SonoBus guest invitation is on your clipboard; Real time mode and SonoBus Guest are on, so they'll hear the song and you")
-      end
-    end
-    ImGui.SetItemTooltip(ctx, "For someone with only the SonoBus app (no REAPER, no StudioSync): a message with SonoBus's download and a link that joins your\n" ..
-      "studio's live audio. Turns on Real time mode and SonoBus Guest, so they hear your mix and what they play records here.")
-  end
+-- Talk and its mic (Home's Real time row, and Chat's Call tab: 0.59.2)
+function ui.talk_controls(on)
   if on and b then -- talkback: speak to the others without arming a track that records
     local live = require("live")
     local talking = live.talking(proj)
@@ -1290,6 +1256,62 @@ local function home_play()
       ImGui.EndPopup(ctx)
     end
   end
+end
+-- Chat's Call tab (James, 0.59.2: "a separate call or comms channel folded into the chat tab"): the studio's call link, talking through
+-- Real time mode with your call mic, and each person's volume and mute (SonoBus's own window has them, per person, separate from what's recorded).
+function ui.call_tab()
+  heading("Call", 17)
+  local call = require("alerts").call_link(cfg.root)
+  if call then
+    if ImGui.Button(ctx, "Join the studio's call") then band.open_url(call) end
+    ImGui.SetItemTooltip(ctx, "Opens " .. call .. " in its own app or browser, with video if it has it. Mute its microphone while you play: Real time mode carries the music.")
+  else
+    ImGui.TextDisabled(ctx, "No call link for the studio yet (Discord, Zoom, Meet...): the owner or an admin sets it in Settings > Studio.")
+    if ImGui.SmallButton(ctx, "Set it up##calllink") then ui.go_settings("Studio") end
+  end
+  ImGui.Spacing(ctx)
+  ImGui.SeparatorText(ctx, "Talk inside StudioSync")
+  local on = same_room_on()
+  local ch, v = switch_row("##rtcall", "Real time mode", on, SAME_ROOM_TIP)
+  if ch then set_same_room(v) end
+  if on then
+    ui.talk_controls(on)
+    ImGui.Spacing(ctx)
+    if ImGui.SmallButton(ctx, "Each person's volume and mute") then sonobus_open() end
+    ImGui.SetItemTooltip(ctx, "SonoBus's own window: a level and a mute for each person you hear, only for you, and nothing to do with what's recorded.")
+    ImGui.TextDisabled(ctx, "Talk is never recorded, and goes quiet while anyone records here. To record a vocal, arm its track as usual.")
+  else
+    ImGui.TextDisabled(ctx, "Real time mode on: talk to everyone with Talk, no other app needed, and set each person's volume.")
+  end
+end
+local function home_play()
+  local on = same_room_on()
+  local ch, v = switch_row("##rt", "Real time mode", on, SAME_ROOM_TIP)
+  if ch then set_same_room(v) end
+  require("page_hear").fit(ctx, ImGui, "Configure SonoBus") -- (beside, or below in a narrow column: it was cut to "Configure Sono")
+  if ImGui.SmallButton(ctx, "Configure SonoBus") then sonobus_open() end
+  ImGui.SetItemTooltip(ctx, "Opens SonoBus's own window (volume and mute per collaborator, buffer, quality). You don't need it to play together.")
+  if b then -- (James, 0.58.87: an easier way to bring in someone with only the SonoBus app: one message, and SonoBus Guest on)
+    require("page_hear").fit(ctx, ImGui, "Invite a SonoBus guest")
+    if ImGui.SmallButton(ctx, "Invite a SonoBus guest") then
+      local link, why = setup.sonobus(cfg, b, proj, true)
+      if not link then band.msg(why) else
+        sb_link = link
+        if not on then set_same_room(true) end
+        require("guest").set(proj, true)
+        local info = band.info(cfg.root)
+        tools.show_invite("Join me live in " .. tostring(info.name) .. " (" .. tostring(b.song) .. ") with SonoBus: you'll hear the song and me, and I'll hear and record you.\n\n" ..
+          "1. Install SonoBus, free: https://sonobus.net (Windows, Mac, iPhone, Android, Linux).\n" ..
+          "2. Open this link, and SonoBus joins us by itself:\n" .. link .. "\n" ..
+          "3. Wear headphones (speakers come back into your mic as an echo), and plug in your mic or instrument.\n" ..
+          "Nothing else to install, no account needed.", info, ctx, ImGui)
+        band.log("a SonoBus guest invitation is on your clipboard; Real time mode and SonoBus Guest are on, so they'll hear the song and you")
+      end
+    end
+    ImGui.SetItemTooltip(ctx, "For someone with only the SonoBus app (no REAPER, no StudioSync): a message with SonoBus's download and a link that joins your\n" ..
+      "studio's live audio. Turns on Real time mode and SonoBus Guest, so they hear your mix and what they play records here.")
+  end
+  ui.talk_controls(on)
   if on then -- (the help for it was in Settings > Advanced, with nothing here pointing at it: UX review, 0.58.52)
     require("page_hear").fit(ctx, ImGui, "Can't hear?")
     if ImGui.SmallButton(ctx, "Can't hear?") then ui.go_settings("Advanced") end
@@ -1301,6 +1323,15 @@ local function home_play()
     if ImGui.SmallButton(ctx, "Call") then band.open_url(call) end
     ImGui.SetItemTooltip(ctx, "Opens the studio's call (" .. call .. ") in its own app or browser, with video if it has it.\n" ..
       "Mute its microphone while you play: Real time mode already carries the music, and two copies echo.")
+  end
+  if b then -- Time-sync (James, 0.58.99): hear each other in time with the song, a bar or two late, through NINJAM (the Play/Jam page's Play along)
+    local ts = page_play.time_sync_on()
+    local one = page_play.interval_bars()
+    local tch, tv = switch_row("##timesync", "Time-sync", ts, string.format("Everyone plays to their own copy of the song, and hears the others in time with it, %d bar%s late " ..
+      "here (a whole NINJAM interval, about 2.4 s, and a second's margin: more bars in a fast song):\nexactly how the person recording played it, which Real time mode's live audio can't promise over the internet.\n" ..
+      "For listening to a take and playing along, not for talking (that's Real time mode). It needs Tailscale; this computer runs the server if nobody does.",
+      one, one == 1 and "" or "s"))
+    if tch then page_play.time_sync(tv) end
   end
   if not ui.short then -- (a tall docker has the room)
     ImGui.TextDisabled(ctx, on and "You hear everyone live, and play, stop and record follow whoever presses them."
@@ -1624,6 +1655,23 @@ local function settings_sync()
     -- MIDI wet/dry, this machine's choice (lib/prints.lua): never changes what anyone else hears
     -- (Dry and Wet read as an effect's mix knob, and as MIDI only: it's every part, audio too. UX review, 0.58.62)
     ImGui.SeparatorText(ctx, "Parts play (MIDI and audio)")
+    do -- a track's own (0.59.2): the selected tracks dry or wet here, whatever the choice below
+      ImGui.AlignTextToFramePadding(ctx); ImGui.Text(ctx, "Selected tracks:"); ImGui.SameLine(ctx)
+      for _, c in ipairs({ { "dry", "Dry" }, { "wet", "Wet" }, { "", "As below" } }) do
+        if ImGui.SmallButton(ctx, c[2] .. "##trackplays") then
+          local n = reaper.CountSelectedTracks(proj)
+          if n == 0 then band.msg("Select the tracks first.") else
+            for i = 0, n - 1 do require("prints").set_track_choice(proj, reaper.GetSelectedTrack(proj, i), c[1]) end
+            band.log(string.format("%d track%s: %s here", n, n == 1 and "" or "s", c[1] == "" and "as chosen below" or c[1]))
+          end
+        end
+        ImGui.SetItemTooltip(ctx, ({ dry = "Every part on the selected tracks plays itself, through the track's plug-ins (they come back on).",
+          wet = "Every part on the selected tracks plays the studio's print; the track's plug-ins are held off so nothing goes through them twice.",
+          [""] = "The selected tracks play as chosen below, like the rest." })[c[1]] .. "\nOnly on this computer. Also as actions, for the track's right-click menu: StudioSync - Selected tracks play dry / wet / as chosen.")
+        ImGui.SameLine(ctx)
+      end
+      ImGui.NewLine(ctx)
+    end
     local prints = require("prints")
     for _, m in ipairs({ { "auto", "Auto", "Through your plug-ins when every plug-in the part plays through loads here, else as the studio printed it." },
         { "notes", "Through my plug-ins", "Always the part itself through your own plug-ins: a MIDI part's notes through your instruments, a recording through\n" ..
@@ -2635,7 +2683,7 @@ local function frame_app()
       local chat_tabs = { { "All", function() -- (everything, newest first, with Go for what's on the timeline: James, 0.58.81)
           if reaper.time_precise() - notes_at > 4 then notes_at, notes = reaper.time_precise(), recall.notes(cfg, b.song, b.room) end
           require("page_chat").all_tab(ctx, ImGui, cfg, b, notes)
-        end, true }, { "Notes", function() section_notes("note") end }, { "Likes", function() section_notes("like") end } }
+        end, true }, { "Notes", function() section_notes("note") end }, { "Likes", function() section_notes("like") end }, { "Call", function() ui.call_tab() end } }
       local function chat_page() require("page_chat").draw(ctx, ImGui, cfg, b, chat_tabs) end
       if reaper.time_precise() - ideas_at > 2 then ideas_at, ideas = reaper.time_precise(), tools.ideas(proj) end -- (their column only when there are some)
       if next(ideas) ~= nil then layout({ { chat_page, 620 }, { section_ideas, 360 } }) else layout({ { chat_page, 900 } }) end

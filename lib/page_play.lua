@@ -219,14 +219,24 @@ function M.interval_bars()
 end
 function M.time_sync(on)
   local proj = E.proj()
-  if not on then M.disconnect(); return band.log("Time-sync off") end
+  if not on then
+    M.disconnect()
+    -- (the bars behind back as they were: Start together and Follow read them too. 0.59.2)
+    local was = select(2, reaper.GetProjExtState(proj, band.SECTION, "side before timesync"))
+    if was ~= "" then reaper.SetProjExtState(proj, band.SECTION, "side", was == "none" and "" or was); reaper.SetProjExtState(proj, band.SECTION, "side before timesync", "") end
+    return band.log("Time-sync off")
+  end
   live_mode = "synced"
   reaper.SetProjExtState(proj, band.SECTION, "live_mode", "synced")
   local ok, why = M.connect("synced")
   if not ok then return band.msg(why) end
   local one = M.interval_bars()
   ui.want_lag = one
-  if not same_room_on() then reaper.SetProjExtState(proj, band.SECTION, "side", tostring(one)) end -- (listeners an interval behind: what they hear lines up)
+  if not same_room_on() then -- (listeners an interval behind: what they hear lines up; what it was is kept for when it goes off)
+    local was = select(2, reaper.GetProjExtState(proj, band.SECTION, "side"))
+    if select(2, reaper.GetProjExtState(proj, band.SECTION, "side before timesync")) == "" then reaper.SetProjExtState(proj, band.SECTION, "side before timesync", was ~= "" and was or "none") end
+    reaper.SetProjExtState(proj, band.SECTION, "side", tostring(one))
+  end
   band.log(string.format("Time-sync on: the others hear you in time with the song, %d bar%s behind (one NINJAM interval)", one, one == 1 and "" or "s"))
 end
 
