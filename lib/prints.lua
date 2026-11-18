@@ -568,6 +568,15 @@ function prints.refresh(proj, it, media_dir, fx_hash, route_hash, cfg)
         "installed here?). Fix that, then Try again. Until then, collaborators without the instrument don't hear that part.")
     end
   end
+  if audio and prints.silent[name] == nil then -- (an audio print came out silent with no word: plug-in test, 0.59.14)
+    local src = reaper.GetMediaSourceFileName(reaper.GetMediaItemTake_Source(audio), "")
+    prints.silent[name] = prints.silent_file(path) and src ~= "" and not prints.silent_file(src) or false
+    if prints.silent[name] then
+      local who = (reaper.GetExtState(band.SECTION, "user"):gsub("[^%w%-_]", "_"))
+      if who ~= "" and path:match("%-" .. who:gsub("%p", "%%%0") .. "%.flac$") then os.remove(path) end
+      prints.problem("A part on " .. select(2, reaper.GetTrackName(tr)) .. " printed silent though its recording isn't: a plug-in may not have loaded in time. Press Try again.")
+    end
+  end
   if prints.silent[name] then return false end
   if dest then prints.midi_only(tr, dest) end
   attach(it, print, dry, path, h)

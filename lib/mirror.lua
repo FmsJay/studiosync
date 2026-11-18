@@ -248,6 +248,26 @@ end
 -- as a machine without the plug-in has none, so it never goes into a hash. Knobs an LFO or audio control moves are left
 -- out (mirror.modulated, as of this track's last scan): they never hold still.
 mirror.mod_params = {} -- track -> mirror.modulated of its whole chain
+-- The plug-ins inside a container at top-level index i, at any depth: their addresses (REAPER's container_item.k), or nil for a plain one.
+-- (A knob or preset changed inside a container was never sent: only the top-level plug-ins were looked at, and the container's own knobs
+-- didn't move. Plug-in test, 0.59.14)
+local function inside(tr, i)
+  local _, n = reaper.TrackFX_GetNamedConfigParm(tr, i, "container_count")
+  if not tonumber(n) then return nil end
+  local out = {}
+  local function walk(idx)
+    local _, c = reaper.TrackFX_GetNamedConfigParm(tr, idx, "container_count")
+    if tonumber(c) then
+      for k = 0, tonumber(c) - 1 do
+        local _, sub = reaper.TrackFX_GetNamedConfigParm(tr, idx, "container_item." .. k)
+        if tonumber(sub) then walk(math.tointeger(tonumber(sub))) end
+      end
+    elseif idx ~= i then out[#out + 1] = idx end
+  end
+  walk(i)
+  return out
+end
+mirror.fx_inside = inside
 function mirror.fx_params(tr)
   local out, mods = {}, mirror.mod_params[tr]
   for i = 0, reaper.TrackFX_GetCount(tr) - 1 do
@@ -255,6 +275,11 @@ function mirror.fx_params(tr)
     if m ~= true then
       for p = 0, math.min(reaper.TrackFX_GetNumParams(tr, i), 3000) - 1 do
         out[#out + 1] = (m and m[p]) and "~" or string.format("%.4f", (reaper.TrackFX_GetParamNormalized(tr, i, p)))
+      end
+      -- (a container: the knobs of what's in it too. Only then: a plain chain reads as before, so what's stored for it still agrees)
+      for _, sub in ipairs(inside(tr, i) or {}) do
+        out[#out + 1] = ":"
+        for p = 0, math.min(reaper.TrackFX_GetNumParams(tr, sub), 3000) - 1 do out[#out + 1] = string.format("%.4f", (reaper.TrackFX_GetParamNormalized(tr, sub, p))) end
       end
     end
     out[#out + 1] = "|"
@@ -265,7 +290,11 @@ end
 -- Each plug-in's preset name: a script or an action that loads one changes the data with no window open, often with no knob moving.
 function mirror.fx_presets(tr)
   local out = {}
-  for i = 0, reaper.TrackFX_GetCount(tr) - 1 do out[#out + 1] = select(2, reaper.TrackFX_GetPreset(tr, i, "")) or "" end
+  for i = 0, reaper.TrackFX_GetCount(tr) - 1 do
+    local w = select(2, reaper.TrackFX_GetPreset(tr, i, "")) or ""
+    for _, sub in ipairs(inside(tr, i) or {}) do w = w .. ":" .. (select(2, reaper.TrackFX_GetPreset(tr, sub, "")) or "") end -- (inside a container too)
+    out[#out + 1] = w
+  end
   return table.concat(out, "|")
 end
 mirror.fx_quiet_presets = mirror.fx_quiet_presets or {} -- (the presets as of the knobs in mirror.fx_quiet)
@@ -2339,7 +2368,10 @@ mirror.cc_seen = {}
 mirror.fx_quiet = mirror.fx_quiet or {}
 local function fx_open_now(tr)
   if reaper.TrackFX_GetChainVisible(tr) ~= -1 then return true end
-  for i = 0, reaper.TrackFX_GetCount(tr) - 1 do if reaper.TrackFX_GetOpen(tr, i) then return true end end
+  for i = 0, reaper.TrackFX_GetCount(tr) - 1 do
+    if reaper.TrackFX_GetOpen(tr, i) then return true end
+    for _, sub in ipairs(mirror.fx_inside(tr, i) or {}) do if reaper.TrackFX_GetOpen(tr, sub) then return true end end -- (floated from a container)
+  end
   return false
 end
 function mirror.note_open_fx(proj)
