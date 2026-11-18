@@ -136,13 +136,6 @@ assert(mirror.newer({ rev = 2, time = "b" }, { rev = 2, time = "a" }), "then tim
 assert(mirror.newer({ rev = 2, time = "a", user = "Z" }, { rev = 2, time = "a", user = "A" }), "then user")
 assert(mirror.newer({ rev = 1 }, nil) and not mirror.newer(nil, { rev = 1 }), "nil")
 
--- three-way
-assert(mirror.merge3("a", "a", "a") == "same")
-assert(mirror.merge3("a", "a", "b") == "take")
-assert(mirror.merge3("a", "b", "a") == "send")
-assert(mirror.merge3("a", "b", "c") == "both")
-assert(mirror.merge3("a", "b", "b") == "same")
-
 -- media tokens: Windows path in, Mac path out
 local tok = mirror.tokenize_media(item, "J:/Portable Workstation/StudioSync/Lantern/rooms/main/media")
 assert(tok:find('FILE "{media:main}/bass1.flac"'), "tokenized: " .. tok:match('FILE "[^"]*"'))

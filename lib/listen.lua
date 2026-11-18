@@ -109,7 +109,6 @@ end
 local function key(root) return "listen sharing " .. root end
 function listen.sharing(root) return reaper.GetExtState(band.SECTION, key(root)) ~= "" and reaper.GetExtState(band.SECTION, key(root)) or nil end
 local WIN = (reaper.GetOS() or ""):match("^Win") ~= nil
-local function q(s) return '"' .. s .. '"' end
 function listen.port(id) -- one per studio, the same every time. Pure.
   local h = 0
   for i = 1, #id do h = (h * 31 + id:byte(i)) % 1000 end

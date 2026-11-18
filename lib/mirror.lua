@@ -769,15 +769,6 @@ function mirror.merge_item(base, winner, loser, loser_name)
   return table.concat(lines, "\n") .. "\n" .. (#after > 0 and (table.concat(after, "\n") .. "\n") or ""), both
 end
 
--- Three-way decision for one object after working offline: base = the hash it had when last in sync, mine = here
--- now, theirs = the room's newest. Returns "same", "send" (only mine changed), "take" (only theirs) or "both".
-function mirror.merge3(base, mine, theirs)
-  if mine == theirs then return "same" end
-  if mine == base then return "take" end
-  if theirs == base then return "send" end
-  return "both"
-end
-
 -- Going back (History). `entries` are History's (recall.entries: mirror events have kind "obj"). A plan maps
 -- oid -> the revision to bring back, or false (the object didn't exist then: it goes). Pure.
 -- Restore project / selection state: every object in scope as it was right after entries[upto].
