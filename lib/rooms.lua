@@ -78,7 +78,7 @@ local function live_offline(proj)
     local tr = t < 0 and reaper.GetMasterTrack(proj) or reaper.GetTrack(proj, t)
     for i = 0, reaper.TrackFX_GetCount(tr) - 1 do
       local _, name = reaper.TrackFX_GetFXName(tr, i, "")
-      if name:find("SonoBus", 1, true) or name:find("ReaNINJAM", 1, true) then reaper.TrackFX_SetOffline(tr, i, true) end
+      if require("live").is_live_fx(name) then reaper.TrackFX_SetOffline(tr, i, true) end
     end
   end
 end

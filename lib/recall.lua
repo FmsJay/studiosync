@@ -1,8 +1,7 @@
 -- Recall points: snapshots of the shared arrangement (which takes exist, where they sit, which take or lane
--- plays, track mute/solo/colour/icon), saved at every handover and whenever someone asks. Restoring one
--- makes the driver's project match it; Live sync then posts the differences as usual, so everyone follows.
--- Takes deleted since come back out of _trash. Restoring saves a "before restore" point first, so going
--- back and forth between options is always possible.
+-- plays, track mute/solo/colour/icon), saved at every handover and whenever someone asks, listed as saved versions.
+-- Also the room's history (recall.entries), grouped and described for the Restore page; going back to a moment in
+-- it is mirror.plan_restore and mirror.revert's (lib/page_restore.lua).
 local band = require("band")
 local sync = require("sync")
 local recall = {}
@@ -180,42 +179,6 @@ function recall.entries(cfg, song, room)
   return out
 end
 
--- The arrangement after entries[1..upto], in recall-point form ({ takes, plays, tracks }). Pure: no REAPER calls.
-function recall.replay(entries, upto)
-  local st = { takes = {}, plays = {}, tracks = {} }
-  local gone = {} -- deleted takes keep their last shape, for an undelete
-  for i = 1, math.min(upto or #entries, #entries) do
-    local e = entries[i]
-    local id = e.take and e.take:lower()
-    if e.kind == "take" then
-      st.takes[id] = { id = e.take, track = e.track, pos = e.pos, len = e.len, lane = e.lane, mute = 0, offs = 0 }
-    elseif e.kind == "delete" and st.takes[id] then
-      gone[id], st.takes[id] = st.takes[id], nil
-    elseif e.kind == "undelete" and gone[id] then
-      st.takes[id], gone[id] = gone[id], nil
-    elseif e.kind == "edit" and st.takes[id] then
-      local t = st.takes[id]
-      t.track, t.pos, t.len, t.lane = e.track or t.track, e.pos or t.pos, e.len or t.len, e.lane
-      t.mute, t.offs = e.mute or t.mute, e.offs or t.offs
-    elseif e.kind == "plays" then
-      st.plays[e.track] = e.takes or {}
-    elseif e.kind == "track" then
-      if e.was and st.tracks[e.was] then st.tracks[e.was] = nil end
-      st.tracks[e.track] = { mute = e.mute, solo = e.solo, color = e.color, icon = e.icon }
-    elseif e.kind == "timeline" or (e.kind == "shift" and e.tempo) then -- an insert/remove carries the map it left
-      st.timeline = { tempo = e.tempo, markers = e.markers }
-    end
-  end
-  -- which takes play: the newest "plays" per track picks the active take of each item
-  local active = {}
-  for _, list in pairs(st.plays) do for _, id in ipairs(list) do active[id:lower()] = true end end
-  local out = { takes = {}, plays = st.plays, tracks = st.tracks, timeline = st.timeline, musical = true }
-  for lid, t in pairs(st.takes) do
-    out.takes[t.id] = { track = t.track, pos = t.pos, len = t.len, lane = t.lane, mute = t.mute, offs = t.offs, active = active[lid] or nil }
-  end
-  return out
-end
-
 -- One line per entry, for the history list.
 function recall.describe(e)
   local whose = e.take and ((e.take:match("^(.-)%-%d+%-%d+Z") or e.take) .. "'s take") or ""
@@ -283,10 +246,7 @@ end
 -- Consecutive entries by one person, while one driver drives and without a long pause, form a group:
 -- { user, driver, first, last (entry indexes), from, to (times) }.
 -- A pause of more than 3 minutes also starts a new group, so a long session doesn't become one restore point.
-local function secs(iso)
-  local y, mo, d, h, mi, s = (iso or ""):match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
-  return y and os.time({ year = y, month = mo, day = d, hour = h, min = mi, sec = s }) or 0
-end
+local function secs(iso) return band.iso_time(iso) or 0 end
 function recall.groups(entries, host)
   local groups, driver = {}, host
   for i, e in ipairs(entries) do

@@ -15,15 +15,21 @@ function band.compare_versions(a, b)
   return 0
 end
 
+-- An ISO UTC time ("2026-10-27T02:43:22Z") in seconds: os.time of its fields with isdst false, so summer time can't skew it.
+-- Compare it only with times made the same way (band.age's "now"). nil if it can't be read. Pure.
+function band.iso_time(iso)
+  local y, m, d, H, M, S = tostring(iso or ""):match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
+  return y and os.time({ year = y, month = m, day = d, hour = H, min = M, sec = S, isdst = false }) or nil
+end
 -- Seconds since an ISO UTC timestamp ("2026-10-27T02:43:22Z"). Both sides are broken-down UTC times
 -- run through os.time, which reads them as local time: the offset cancels only if neither applies DST,
 -- and os.date("!*t") can carry isdst = true (it did on a UTC-6 laptop in October: every age read +1 h).
 function band.age(iso, now)
-  local y, m, d, H, M, S = (iso or ""):match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
-  if not y then return math.huge end
+  local made = band.iso_time(iso)
+  if not made then return math.huge end
   local n = now or os.date("!*t") -- copied: os.time normalises (rewrites) the table it is given
   local t = { year = n.year, month = n.month, day = n.day, hour = n.hour, min = n.min, sec = n.sec, isdst = false }
-  return os.time(t) - os.time({ year = y, month = m, day = d, hour = H, min = M, sec = S, isdst = false })
+  return os.time(t) - made
 end
 
 -- Say once per run when a bandmate's file was made with a newer StudioSync than this one: in the log, and Health shows it. Never a box: one
@@ -1267,15 +1273,6 @@ function band.new_track(proj, name)
   return tr
 end
 
-
--- ---- stems ----------------------------------------------------------------------------------
-
-local function best(dir, st)
-  local full, prev = dir .. "/" .. st.file, st.preview and (dir .. "/" .. st.preview)
-  if reaper.file_exists(full) then return full, "full" end
-  if prev and reaper.file_exists(prev) then return prev, "preview" end
-end
-
 -- ---- takes ----------------------------------------------------------------------------------
 
 function band.take_state(proj, id) return select(2, reaper.GetProjExtState(proj, band.TAKES, id)) end
@@ -1310,118 +1307,12 @@ function band.find_take(proj, id)
   if hit then return hit[1], hit[2] end
 end
 
--- "takes" mode: add the incoming take to the item on the matching track it overlaps most, so a
--- bandmate's passes stack as takes of one item. The item grows to fit; nothing already in it moves
--- (REAPER honours negative take start offsets: silence until the source begins).
--- The track a take for `name` belongs on. A wet print already carries the sender's FX, so it goes on a
--- StudioSync mirror track (no FX of ours, never processed twice): `name` itself when we have no track by
--- that name, else "name (studio)" beside our own. Dry takes go on our real track, through our FX once.
-function band.dest_track(proj, name, wet)
-  if not wet then return band.find_track(proj, name, true) or band.new_track(proj, name) end
-  for _, n in ipairs({ name, name .. " (studio)", name .. " (band)" }) do
-    local tr = band.find_track(proj, n, true)
-    if tr and band.track_ext(tr, "band_mirror") ~= "" then return tr end
-  end
-  local tr = band.new_track(proj, band.find_track(proj, name, true) and (name .. " (studio)") or name)
-  if tr then reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_mirror", "1", true) end
-  return tr
-end
-
--- Add take t as another take of item `best`, growing the item to fit without moving anything in it.
-local function add_take_to(best, t, path)
-  local src = reaper.PCM_Source_CreateFromFile(path)
-  if not src then return nil end
-  local p = reaper.GetMediaItemInfo_Value(best, "D_POSITION")
-  local e = p + reaper.GetMediaItemInfo_Value(best, "D_LENGTH")
-  local np, ne = math.min(p, t.pos), math.max(e, t.pos + t.len)
-  if np < p then -- grow left: shift every existing take's offset so its audio stays put
-    for k = 0, reaper.CountTakes(best) - 1 do
-      local tk = reaper.GetTake(best, k)
-      if tk then reaper.SetMediaItemTakeInfo_Value(tk, "D_STARTOFFS", reaper.GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS") - (p - np)) end
-    end
-    reaper.SetMediaItemInfo_Value(best, "D_POSITION", np)
-  end
-  reaper.SetMediaItemInfo_Value(best, "D_LENGTH", ne - np)
-  reaper.SetMediaItemInfo_Value(best, "B_LOOPSRC", 0) -- a grown item must play silence, not repeat a shorter take
-  local playing = reaper.GetActiveTake(best)
-  local take = reaper.AddTakeToMediaItem(best)
-  reaper.SetMediaItemTake_Source(take, src)
-  reaper.SetMediaItemTakeInfo_Value(take, "D_STARTOFFS", np - t.pos)
-  if playing then reaper.SetActiveTake(playing) end -- never change what is already playing
-  reaper.UpdateItemInProject(best)
-  return best, take
-end
-
-
--- "mirror" (the default): rebuild the sender's structure. Passes of one sender item (same group) stay
--- one item here, in the same lane, on a track with the same lane layout; so takes and lanes coexist
--- exactly as they do for the sender.
-local function mirror(proj, t, path)
-  if t.based_on then -- a shared sound: an extra take in the band item holding the original. Not in the owner's own
-    -- item: that's on their real track, whose plug-ins would process the print a second time; there it goes on the
-    -- FX-free mirror track like any print
-    local it, tk = band.find_take(proj, t.based_on)
-    if it and band.take_ext(tk, "band_take") ~= "" then return add_take_to(it, t, path) end
-  end
-  local tr = band.dest_track(proj, t.track, t.wet)
-  if not tr then return nil end
-  if t.lane then
-    if reaper.GetMediaTrackInfo_Value(tr, "I_FREEMODE") ~= 2 then
-      reaper.SetMediaTrackInfo_Value(tr, "I_FREEMODE", 2)
-      reaper.UpdateTimeline()
-    end
-    if reaper.GetMediaTrackInfo_Value(tr, "I_NUMFIXEDLANES") < t.lane + 1 then
-      reaper.SetMediaTrackInfo_Value(tr, "I_NUMFIXEDLANES", t.lane + 1)
-    end
-  end
-  if t.group then
-    for i = 0, reaper.CountTrackMediaItems(tr) - 1 do
-      local it = reaper.GetTrackMediaItem(tr, i)
-      if band.item_ext(it, "band_group") == t.group then return add_take_to(it, t, path) end
-    end
-  end
-  local it, tk = band.add_item(tr, path, t.pos, t.len)
-  if not it then return nil end
-  if t.group then band.set_item_ext(it, "band_group", t.group) end
-  if t.lane then
-    reaper.SetMediaItemInfo_Value(it, "I_FIXEDLANE", t.lane)
-    if t.lane_name and t.lane_name ~= "" then reaper.GetSetMediaTrackInfo_String(tr, "P_LANENAME:" .. t.lane, t.lane_name, true) end
-  end
-  return it, tk
-end
-
--- Where a take lands. mode: "lanes" (new fixed lane on the matching track), "takes" (see above),
--- "person" ("Takes - <user>" track) or "inbox" (one muted "StudioSync inbox" track).
-local function target(proj, t, mode)
-  if mode == "person" then
-    local name = "Takes - " .. t.user
-    return band.find_track(proj, name) or band.new_track(proj, name)
-  elseif mode == "inbox" then
-    local tr = band.find_track(proj, "StudioSync inbox")
-    if not tr then
-      tr = band.new_track(proj, "StudioSync inbox")
-      if tr then reaper.SetMediaTrackInfo_Value(tr, "B_MUTE", 1) end
-    end
-    return tr
-  end
-  local tr = band.dest_track(proj, t.track, t.wet)
-  if not tr or reaper.CountTrackMediaItems(tr) == 0 then return tr end -- first take on an empty part just plays
-  if reaper.GetMediaTrackInfo_Value(tr, "I_FREEMODE") ~= 2 then
-    reaper.SetMediaTrackInfo_Value(tr, "I_FREEMODE", 2)
-    reaper.UpdateTimeline()
-  end
-  local lane = math.floor(reaper.GetMediaTrackInfo_Value(tr, "I_NUMFIXEDLANES"))
-  reaper.SetMediaTrackInfo_Value(tr, "I_NUMFIXEDLANES", lane + 1)
-  return tr, lane
-end
-
 function band.base_offs(tk) return tonumber(band.take_ext(tk, "band_base_offs")) or 0 end
 
 
 -- ---- MIDI copies ------------------------------------------------------------------------------
--- A MIDI take's notes travel with its print. Each receiver gets them as an editable MIDI item (tagged
--- band_midi = id) on a muted "<track> (MIDI)" track: edit the notes and everyone follows, or put your own
--- instrument on that track and "Print my MIDI" to replace the print everyone hears.
+-- The take sync before 0.32.0 gave each receiver a MIDI take's notes as a MIDI item (tagged band_midi = id) on a
+-- muted "<track> (MIDI)" track; projects from then may still hold them.
 
 function band.find_midi(proj, id)
   local lid = id:lower()
@@ -1430,14 +1321,6 @@ function band.find_midi(proj, id)
     local tk = reaper.GetActiveTake(it)
     if tk and band.take_ext(tk, "band_midi"):lower() == lid then return it, tk end
   end
-end
-
--- Notes in drum map `from` (a take's), rewritten into the drum map set on track tr ("" or unset: as they are).
-function band.to_track_map(root, buf, from, tr)
-  local to = band.track_ext(tr, "band_drummap")
-  if not root or (from or "") == "" or to == "" or from == to then return buf end
-  local dm = require("drummap")
-  return dm.translate(buf, dm.table(dm.load(root, from), dm.load(root, to)))
 end
 
 -- (run from a shared folder: only the code you said yes to loads from here on. Review, 0.59.14)

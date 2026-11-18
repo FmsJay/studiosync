@@ -104,12 +104,5 @@ function access.mine(root)
 end
 -- Whether a song shows here. Pure over `set`.
 function access.shows(set, song) return not set or set[song] == true end
--- The songs left out here, given every song folder in the studio (`all`), or nil when nothing is. Pure over its arguments.
-function access.left_out(set, all)
-  if not set then return nil end
-  local out = {}
-  for _, s in ipairs(all) do if not set[s] then out[s] = true end end
-  return out
-end
 
 return access

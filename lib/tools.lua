@@ -555,17 +555,7 @@ function tools.toolbar_default()
     return tools.set_toolbar_button(true)
   end
 end
-local function copy_file(from, to)
-  local f = io.open(from, "rb")
-  if not f then return false end
-  local data = f:read("a")
-  f:close()
-  local g = io.open(to, "wb")
-  if not g then return false end
-  g:write(data)
-  g:close()
-  return true
-end
+local function copy_file(from, to) return (pcall(band.copy_atomic, from, to)) end
 -- -> true, or nil and why.
 function tools.set_toolbar_button(on)
   if on then

@@ -29,4 +29,6 @@ assert(groups.trusted("/u").call == "https://meet.example.org/u", "trusted from 
 j, verdict = { call = "https://evil.example.com/x", alerts_server = "https://evil.example.com" }, false
 groups.set_debug("/u", true)
 assert(wrote.call == "https://meet.example.org/u" and wrote.alerts_server == nil and wrote.debug == true, "a save keeps the trusted settings and makes its own change")
+assert(groups.server_ok("sonobus.example.org:10999") and groups.server_ok("10.0.0.2:1"), "host:port")
+assert(not groups.server_ok("example.org") and not groups.server_ok("a b:1") and not groups.server_ok("x:1;rm") and not groups.server_ok(nil) and not groups.server_ok(5), "anything else")
 print("ok")

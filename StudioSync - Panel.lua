@@ -25,7 +25,6 @@ if not cfg then return end
 if reaper.set_action_options then reaper.set_action_options(1) end -- running it again closes it (no task dialog)
 local section, cmd = select(3, reaper.get_action_context())
 if cmd > 0 then reaper.SetToggleCommandState(section, cmd, 1); reaper.RefreshToolbar2(section, cmd) end
-reaper.DeleteExtState(band.SECTION, "panel_open", true) -- (0.21.5 kept this; Autostart now opens the panel with any StudioSync session)
 local restarting = false -- an update landed: a new panel took over, and its toolbar state is on
 local closed_here = false -- closed by its own close button or menu (not stopped from outside, as the toolbar button stops it)
 -- (the toolbar button on a minimized panel stopped it, so the box was gone and nothing opened: James, 0.58.98. It now asks Autostart to open it
