@@ -1098,6 +1098,22 @@ function mirror.band_faders(state, band_state)
   return out
 end
 
+-- An item's take plug-ins: their blocks' lines alone (what fxfiles looks through for files they load; the item's own FILE lines are its
+-- media, shared by share_media). Pure.
+function mirror.take_fx(state)
+  local out, depth = {}, 0
+  for line in (state or ""):gmatch("[^\n]+") do
+    local t = line:match("^%s*(.-)%s*$")
+    if depth == 0 then
+      if t:match("^<TAKEFX") then depth = 1; out[#out + 1] = line end
+    else
+      out[#out + 1] = line
+      if t:sub(1, 1) == "<" then depth = depth + 1 elseif t == ">" then depth = depth - 1 end
+    end
+  end
+  return table.concat(out, "\n")
+end
+
 -- What runs through each track: its folder's tracks, what it receives, the tracks a VCA fader on it leads, and what runs through
 -- those. Tracks with nothing running through them aren't listed. Pure. tracks: { { oid, parent, recv, lead, follow } } (recv: its R- part;
 -- lead, follow: the VCA groups it leads and follows, as bits). A VCA moves no follower's own fader, only how it sounds: a bus, as far
@@ -1947,6 +1963,7 @@ function mirror.apply(proj, ev, media_dir, local_mix)
         return false
       end
     end
+    require("fxfiles").fetch(ev.files, media_dir, (ev.name or "") ~= "" and ev.name or "a track") -- (what its take plug-ins load, before they do: 0.59.14)
     local it = mirror.find(proj, "item", oid)
     -- (its take open in the MIDI editor here: rewritten under it, what's being edited there goes. Later, once it's closed or on another item.
     -- 0.59.14, review)
@@ -2960,10 +2977,18 @@ function mirror.watch(proj, cfg, song, room, opts)
           ev.files = require("fxfiles").share(state, media, last and last.state, last and last.files) -- (samples, IRs, models it loads)
           ev.restless = mirror.restless_in(state)
           if ev.restless or mirror.modulated(state) then mirror.fx_knobs[rk] = knobs or mirror.fx_params(o.ptr) end
+        elseif o.kind == "item" and state:find("<TAKEFX", 1, true) then
+          -- (and a take plug-in's: a sampler, RS5k or a convolution reverb as take FX played silent on everyone else's. 0.59.14)
+          local files = require("fxfiles").share(mirror.take_fx(state), media, last and type(last.state) == "string" and mirror.take_fx(last.state) or nil, last and last.files)
+          if #files > 0 then ev.files = files end
         end
         local id = sync.post(cfg, song, room, ev)
         if o.kind == "fx" and o.ptr then mirror.fx_quiet[rk], mirror.fx_quiet_presets[rk] = mirror.fx_params(o.ptr), mirror.fx_presets(o.ptr); knobs_agreed(proj, o, rk) end -- (what it's changed from, next time)
         remember(proj, o.oid, ev.rev, o.hash, id, mirror.order_of(ev))
+        -- (your claimed track renamed: the claim goes with it. 0.59.14)
+        if o.kind == "track" and last and not last.gone and type(last.name) == "string" and last.name ~= "" and name ~= "" and last.name ~= name then
+          pcall(sync.claim_renamed, cfg, song, room, last.name, name)
+        end
         mirror.sessions[rk] = { rev = ev.rev, at = reaper.time_precise(), id = id }
         if name ~= "" and not ev.auto and select(2, reaper.GetProjExtState(proj, band.SECTION, "last_track")) ~= name then
           reaper.SetProjExtState(proj, band.SECTION, "last_track", name) -- (what they're working in: Who's here)
@@ -3182,10 +3207,12 @@ function mirror.watch(proj, cfg, song, room, opts)
   mirror.summary(proj, cfg, room_dir, objs, media)
   suggest.flush()
   do -- (what each track holds, for the next look: a deleted track's can't be read any more)
-    local list, names = {}, {}
+    local list, names, silent = {}, {}, {}
     for _, o in ipairs(objs) do
       if o.kind == "track" then
         names[o.oid] = o.state.name
+        if tostring(o.state.mainsend) == "0" and not mirror.said["hwout" .. tostring(proj) .. o.oid]
+            and reaper.GetTrackNumSends(o.ptr, 0) == 0 and reaper.GetTrackNumSends(o.ptr, 1) == 0 then silent[#silent + 1] = o end
         -- shortcut: VCA groups 1 to 32 only (the rest are a second pair of calls): a VCA in 33 to 64 isn't seen as holding anything.
         list[#list + 1] = { oid = o.oid, parent = o.state.parent, recv = by_oid["R" .. o.oid:sub(2)] and by_oid["R" .. o.oid:sub(2)].state,
           lead = reaper.GetSetTrackGroupMembership(o.ptr, "VOLUME_VCA_LEAD", 0, 0), follow = reaper.GetSetTrackGroupMembership(o.ptr, "VOLUME_VCA_FOLLOW", 0, 0) }
@@ -3198,6 +3225,18 @@ function mirror.watch(proj, cfg, song, room, opts)
       now[oid] = { oids = oids, names = held, name = names[oid] or "" }
     end
     mirror.holds[tostring(proj)] = now
+    -- A bandmate's track with its master send off and no send here plays silent: hardware outputs never travel. Said once, once caught up
+    -- (its sends may still be on their way before). 0.59.14
+    if #silent > 0 and sync.pending_events(proj, cfg, song, room) == 0 then
+      for _, o in ipairs(silent) do
+        local _, _, evid = mirror.known(proj, o.oid)
+        local ev = evid and evid ~= "" and not mine(evid) and event_file(room_dir, evid)
+        if ev and type(ev.user) == "string" then
+          say_once("hwout" .. tostring(proj) .. o.oid, string.format("%s goes only to a hardware output on %s's computer: it's silent here",
+            (o.state.name or "") ~= "" and o.state.name or "A track", ev.user))
+        end
+      end
+    end
   end
   return sent, back
 end

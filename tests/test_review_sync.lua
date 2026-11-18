@@ -45,4 +45,11 @@ do
   assert(out.mute == 1 and out.name == "Keys" and mine.vol == "0.5", "the rest is yours, and the state itself untouched")
   assert(mirror.band_faders(mine, nil) == mine, "a track the band hasn't had: its own")
 end
+-- the files take plug-ins load are looked for in their blocks only, never the item's own media
+do
+  local st = "<ITEM\nPOSITION 0\nNAME \"a\"\n<TAKEFX\nSHOW 0\n<VST \"VSTi: ReaSamplOmatic5000\" x 0\nQUJD\n>\nFLOATPOS 0 0 0 0\n>\n<SOURCE WAVE\nFILE \"C:/a/b.wav\"\n>\n>\n"
+  local fx = mirror.take_fx(st)
+  assert(fx:find("^<TAKEFX\n") and fx:find("ReaSamplOmatic5000", 1, true) and fx:find("FLOATPOS", 1, true) and not fx:find("FILE", 1, true), "the take FX block whole, nothing else")
+  assert(mirror.take_fx("<ITEM\nPOSITION 0\n>\n") == "", "no take FX: nothing")
+end
 print("ok")

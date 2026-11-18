@@ -259,7 +259,30 @@ function sync.drop_gone_claims(proj, cfg, song, room)
   return #dropped
 end
 
-function sync.set_claims(cfg, song, room, claims)
+-- Your claim on a track you renamed goes to its new name, keeping its date: dropped after GONE_WAIT, the claim was lost, and a new track
+-- someone made under the old name took it over. -> whether it moved. 0.59.14
+function sync.claim_renamed(cfg, song, room, from, to)
+  local c = sync.my_claims(cfg, song, room)
+  if not c then return false end
+  from, to = base_name(from), base_name(to)
+  local moved = false
+  for _, k in ipairs({ "tracks", "prints" }) do
+    local list, has = {}, false
+    for _, n in ipairs(c[k] or {}) do if n:lower() == to:lower() then has = true end end
+    for _, n in ipairs(c[k] or {}) do
+      if n:lower() == from:lower() then
+        moved = true
+        if not has then list[#list + 1] = to; has = true end
+      else list[#list + 1] = n end
+    end
+    c[k] = list
+  end
+  if moved then sync.set_claims(cfg, song, room, c, { [to:lower()] = from }) end
+  return moved
+end
+
+-- `renamed` (optional): new lower name -> old name, whose claim date the new one keeps (sync.claim_renamed).
+function sync.set_claims(cfg, song, room, claims, renamed)
   local now = os.date("!%Y-%m-%dT%H:%M:%SZ")
   -- each track/region keeps the date it was claimed: claiming something else later mustn't re-date (and so win
   -- back) an older contested claim
@@ -267,7 +290,8 @@ function sync.set_claims(cfg, song, room, claims)
   local since = {}
   for _, k in ipairs({ "tracks", "regions", "prints" }) do
     for _, name in ipairs(claims[k] or {}) do
-      since[k .. ":" .. name:lower()] = (old.since or {})[k .. ":" .. name:lower()] or now
+      local was = k ~= "regions" and renamed and renamed[name:lower()] or name
+      since[k .. ":" .. name:lower()] = (old.since or {})[k .. ":" .. name:lower()] or (old.since or {})[k .. ":" .. was:lower()] or now
     end
   end
   claims.since = since
