@@ -349,7 +349,7 @@ end
 
 -- Render a print: in the background where that works (lib/bgrender.lua: nil while it renders, and a later pass
 -- picks it up), else here and now. `render()` renders it in front and returns its path; `tracks`: what it goes through.
-function prints.render(oid, name, out, tracks, render)
+function prints.render(oid, name, out, tracks, render, secs) -- secs: the part's length (how long a background render may take)
   -- already printed: a print's name says what it was made from and who rendered it, so going back to a state it had
   -- (an undo, a note put back) finds its print here. Rendered again, its file (still open in REAPER) couldn't be
   -- replaced, so the background print was dropped and rendered in front as "-2" (laptop, 0.40.0).
@@ -372,7 +372,7 @@ function prints.render(oid, name, out, tracks, render)
       queue[oid] = nil
       local keep = {}
       for _, t in ipairs(tracks) do keep[#keep + 1] = reaper.GetTrackGUID(t) end
-      if bg.start(oid, name, keep, render) then return nil end
+      if bg.start(oid, name, keep, render, secs) then return nil end
     end
   elseif not my_turn(oid, name) then return nil end
   queue[oid] = nil
@@ -442,7 +442,7 @@ local function refresh_ara(proj, it, media_dir)
   reaper.RecursiveCreateDirectory(media_dir, 0)
   local name = print_name(oid, h)
   local path = prints.render(oid, name, media_dir, { reaper.GetMediaItem_Track(it) },
-    function() return require("sync").print_item(proj, it, ara, media_dir, name, nil, true, true) end)
+    function() return require("sync").print_item(proj, it, ara, media_dir, name, nil, true, true) end, reaper.GetMediaItemInfo_Value(it, "D_LENGTH"))
   if not path then return false end
   attach(it, print, ara, path, h)
   reaper.GetSetMediaItemTakeInfo_String(ara, "P_EXT:" .. prints.HERE, h, true)
@@ -482,7 +482,7 @@ function prints.refresh(proj, it, media_dir, fx_hash, route_hash, cfg)
   local path = prints.render(oid, name, media_dir, dest and { tr, dest } or { tr }, function()
     if dest then return sync.print_routed(proj, it, midi, dest, media_dir, name) end
     return sync.print_item(proj, it, dry, media_dir, name, nil, false, true)
-  end)
+  end, reaper.GetMediaItemInfo_Value(it, "D_LENGTH"))
   if not path then return false end
   -- a print of notes that came out silent: the instrument loaded but its sounds didn't (a Kontakt library or an EZX that isn't
   -- installed here). Kept, it played silence for everyone who lacked the instrument, and nothing said so (plug-ins review, 0.58.76)

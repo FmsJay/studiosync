@@ -4,6 +4,12 @@ reaper = reaper or {}
 reaper.GetOS = reaper.GetOS or function() return "Win64" end
 package.loaded.band = package.loaded.band or {}
 local bg = require("bgrender")
+-- 0.59.11: how long a print may take, by its length and how fast this computer renders
+assert(bg.time_limit(0, 1) == bg.WAIT, "a short part: the stall limit, as ever")
+assert(bg.time_limit(600, 1) == bg.WAIT + 600 * 4 * 2, "a 10-minute part at real time: room for four slow passes")
+assert(bg.time_limit(600, 0.05) == bg.WAIT + 600 * 4 * 0.5, "a fast computer: never less than half real time a pass")
+assert(bg.rate_of("") == 1 and bg.rate_of("0.100 0.400 0.200") == 0.4, "the slowest recent rate, real time with none")
+assert(bg.mac_script({ limit = 1234.7 }):find("sleep 1234;", 1, true), "the Mac's launcher ends it at its limit")
 local rpp = table.concat({
   '<REAPER_PROJECT 0.1 "7.84/win64" 1 0',
   '  <MASTERFXLIST',

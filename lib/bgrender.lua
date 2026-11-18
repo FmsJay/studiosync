@@ -15,8 +15,41 @@ local bg = {}
 
 local WIN = reaper.GetOS():find("^Win") ~= nil
 local TMP = ((WIN and (os.getenv("TEMP") or os.getenv("TMP")) or os.getenv("TMPDIR") or "/tmp"):gsub("\\", "/"):gsub("/+$", "")) .. "/bandsync-render"
-bg.WAIT = 180 -- seconds before a job that hasn't finished counts as failed
-bg.MAX = 3 -- renders at once
+bg.WAIT = 180 -- seconds a job may go without progress (starting, loading its plug-ins, or between passes) before it counts as stuck
+bg.MAX = 3 -- renders at once (fewer on a computer with fewer cores: bg.max)
+-- How long a print may take in all, by how long it is and how fast this computer has rendered (James, 0.59.11: "renders doing a really long
+-- stretch of audio... base it on the actual length... could depend on the power of the system"). A whole song through heavy plug-ins on a
+-- slower computer went past a flat 3 minutes every time and never printed. `rate`: seconds of rendering per second of audio, the slowest
+-- of this computer's recent prints (1, real time, until it has some). Four passes' worth, twice as slow as seen, at least half real time. Pure.
+function bg.time_limit(secs, rate)
+  return bg.WAIT + (tonumber(secs) or 0) * 4 * math.max((tonumber(rate) or 1) * 2, 0.5)
+end
+-- The rate to go by from the recent ones kept (ExtState "bg render rates", newest last): the slowest. Pure.
+function bg.rate_of(list)
+  local worst
+  for x in tostring(list or ""):gmatch("[%d%.]+") do local r = tonumber(x); if r and (not worst or r > worst) then worst = r end end
+  return worst or 1
+end
+local function rate() return bg.rate_of(reaper.GetExtState(band.SECTION, "bg render rates")) end
+local function learn(secs, took, passes) -- (a finished print: how fast this computer renders, for the next one's limit)
+  if not secs or secs < 5 or not took or not passes or passes < 1 then return end
+  local r = math.max(0.01, (took - 10) / (secs * passes))
+  local list = {}
+  for x in reaper.GetExtState(band.SECTION, "bg render rates"):gmatch("[%d%.]+") do list[#list + 1] = x end
+  list[#list + 1] = string.format("%.3f", r)
+  while #list > 8 do table.remove(list, 1) end
+  reaper.SetExtState(band.SECTION, "bg render rates", table.concat(list, " "), true)
+end
+-- Renders at once by this computer's cores: each is a whole REAPER with the part's plug-ins, and three on four cores slowed all of them.
+local max_seen
+function bg.max()
+  if not max_seen then
+    local n = tonumber(os.getenv("NUMBER_OF_PROCESSORS") or "")
+    if not n and not WIN then n = tonumber((reaper.ExecProcess("/bin/sh -c 'sysctl -n hw.ncpu 2>/dev/null || nproc'", 2000) or ""):match("\n%s*(%d+)")) end
+    max_seen = (n or 8) >= 8 and bg.MAX or (n or 8) >= 4 and 2 or 1
+  end
+  return max_seen
+end
 bg.SPACING = 0.5 -- seconds between starting them
 local last_start, cancelled, ini_slot = -math.huge, 0, 0
 local jobs = {} -- name -> { dir, started, sizes, at }
@@ -101,7 +134,7 @@ end
 -- hidden .cmd don't stop that. The launcher stays until that REAPER quits (a desktop goes with its last handle),
 -- writes its process id to pid.txt, and tidies empty job folders.
 local LAUNCH = [==[
-param($exe, $job, $res, $profile, $ini)
+param($exe, $job, $res, $profile, $ini, $limit = 600)
 Add-Type @"
 using System; using System.Runtime.InteropServices;
 public static class StudioSyncDesk {
@@ -121,9 +154,10 @@ foreach ($d in "Effects", "Data") {
 New-Item -ItemType Directory -Force (Join-Path $profile "UserPlugins") | Out-Null
 $fx = Join-Path $profile "UserPlugins\FX"
 if (-not (Test-Path $fx) -and (Test-Path (Join-Path $res "UserPlugins\FX"))) { New-Item -ItemType Junction -Path $fx -Target (Join-Path $res "UserPlugins\FX") | Out-Null }
-# job folders done with: empty ones, and any an hour old (its item went before its print was picked up: laptop, 0.40.0)
+# job folders done with: empty ones, and any six hours old (its item went before its print was picked up: laptop, 0.40.0. An hour, till a long
+# print could run that long: 0.59.11)
 Get-ChildItem (Split-Path $dir) -Directory -ErrorAction SilentlyContinue | Where-Object { $_.FullName -ne $dir -and $_.Name -ne "profile" -and -not $_.LinkType -and
-  (-not (Get-ChildItem $_.FullName -Force) -or $_.LastWriteTime -lt (Get-Date).AddHours(-1)) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+  (-not (Get-ChildItem $_.FullName -Force) -or $_.LastWriteTime -lt (Get-Date).AddHours(-6)) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 $desk = [StudioSyncDesk]::CreateDesktop("StudioSyncRender", [IntPtr]::Zero, [IntPtr]::Zero, 0, 0x10000000, [IntPtr]::Zero)
 $si = New-Object StudioSyncDesk+SI
 $si.cb = [Runtime.InteropServices.Marshal]::SizeOf($si)
@@ -134,9 +168,9 @@ $env:BANDSYNC_RENDER = "1" # (inherited: Scripts/__startup.lua's guard skips the
 # ([NullString]::Value, not $null: PowerShell passes $null to a string parameter as "", and CreateProcess refuses "")
 if ($desk -ne [IntPtr]::Zero -and [StudioSyncDesk]::CreateProcess([NullString]::Value, $cmd, [IntPtr]::Zero, [IntPtr]::Zero, $false, 0, [IntPtr]::Zero, [NullString]::Value, [ref]$si, [ref]$pi)) {
   Set-Content (Join-Path $dir "pid.txt") $pi.pid
-  # (still there after 10 minutes: stuck on something nobody can see. Ended, not left: a Live sync that reloaded had forgotten it, its folder
-  # went after an hour with its pid.txt, and it stayed for good, hidden. 13 of them on the PC, 0.59.10)
-  try { Wait-Process -Id $pi.pid -Timeout 600 -ErrorAction Stop } catch { Stop-Process -Id $pi.pid -Force -ErrorAction SilentlyContinue }
+  # (still there past its limit (bg.time_limit, and a few minutes): stuck on something nobody can see. Ended, not left: a Live sync that
+  # reloaded had forgotten it, its folder went after an hour with its pid.txt, and it stayed for good, hidden. 13 of them on the PC, 0.59.10)
+  try { Wait-Process -Id $pi.pid -Timeout ([int]$limit) -ErrorAction Stop } catch { Stop-Process -Id $pi.pid -Force -ErrorAction SilentlyContinue }
   if (Test-Path $dir) { Set-Content (Join-Path $dir "done.txt") "1" }
 } else { Set-Content (Join-Path $dir "pid.txt") "failed" }
 ]==]
@@ -278,7 +312,7 @@ bg.PROFILE = PROFILE
 -- and again after REAPER or a helper changes (`built` says what it was made from), in a job's own script so this REAPER
 -- never waits for it. pid.txt lets a job be ended; done.txt says its REAPER has quit, so its files are complete.
 local MAC_JOB = [==[
-find @TMP@ -mindepth 1 -maxdepth 1 -type d ! -name profile \( -empty -o -mmin +60 \) -exec rm -rf {} + 2>/dev/null
+find @TMP@ -mindepth 1 -maxdepth 1 -type d ! -name profile \( -empty -o -mmin +360 \) -exec rm -rf {} + 2>/dev/null
 P=@PROFILE@; R=@RES@; X=@EXE@; J=@JOB@; H=@HELPERS@
 D="${J%/*}"
 for d in Effects Data; do [ -e "$P/$d" ] || [ ! -d "$R/$d" ] || ln -s "$R/$d" "$P/$d"; done
@@ -308,18 +342,19 @@ else
 fi
 p=$!
 echo "$p" > "$D/pid.txt"
-( sleep 600; kill -9 "$p" 2>/dev/null ) & w=$! # (still there after 10 minutes: stuck, ended, as on Windows. 0.59.10)
+( sleep @LIMIT@; kill -9 "$p" 2>/dev/null ) & w=$! # (still there past its limit: stuck, ended, as on Windows. 0.59.10)
 wait "$p"
 echo "$?" > "$D/done.txt"
 kill "$w" 2>/dev/null
 ]==]
 function bg.mac_script(t)
   local function q(s) return "'" .. tostring(s or ""):gsub("'", "'\\''") .. "'" end
-  local vals = { TMP = q(t.tmp), PROFILE = q(t.profile), RES = q(t.res), EXE = q(t.exe), JOB = q(t.job), HELPERS = q(t.helpers), INI = t.ini }
+  local vals = { TMP = q(t.tmp), PROFILE = q(t.profile), RES = q(t.res), EXE = q(t.exe), JOB = q(t.job), HELPERS = q(t.helpers), INI = t.ini,
+    LIMIT = tostring(math.floor(tonumber(t.limit) or 600)) }
   return (MAC_JOB:gsub("@(%u+)@", vals))
 end
 
-local function launch(exe, job)
+local function launch(exe, job, limit)
   -- (each time: only what's changed or gone is rewritten. A profile a temp clean-up took came back with a job out as
   -- settings and no plug-in lists, and that REAPER scanned every plug-in until its time ran out: laptop, 0.42.2)
   local res = profile()
@@ -330,12 +365,12 @@ local function launch(exe, job)
   if WIN then
     local cmd, vbs, ps = job:gsub("%.rpp$", ".cmd"), TMP .. "/hidden.vbs", TMP .. "/launch.ps1"
     if band.read(ps) ~= LAUNCH then band.write_atomic(ps, LAUNCH) end
-    band.write_atomic(cmd, string.format('@chcp 65001 >nul\r\n@powershell -NoProfile -ExecutionPolicy Bypass -File "%s" "%s" "%s" "%s" "%s" "%s"\r\n', ps, exe, job, res, PROFILE, ini)) -- (chcp: UTF-8 paths, as services.background. 0.58.78)
+    band.write_atomic(cmd, string.format('@chcp 65001 >nul\r\n@powershell -NoProfile -ExecutionPolicy Bypass -File "%s" "%s" "%s" "%s" "%s" "%s" %d\r\n', ps, exe, job, res, PROFILE, ini, math.floor(limit or 600))) -- (chcp: UTF-8 paths, as services.background. 0.58.78)
     if not reaper.file_exists(vbs) then band.write_atomic(vbs, 'CreateObject("WScript.Shell").Run """" & WScript.Arguments(0) & """", 0, False\r\n') end
     reaper.ExecProcess(string.format('wscript.exe //B //Nologo "%s" "%s"', vbs, cmd), -1)
   else
     local sh = job:gsub("%.rpp$", ".sh")
-    band.write_atomic(sh, bg.mac_script({ tmp = TMP, profile = PROFILE, res = res, exe = exe, ini = ini, job = job, helpers = bg.helpers() }))
+    band.write_atomic(sh, bg.mac_script({ tmp = TMP, profile = PROFILE, res = res, exe = exe, ini = ini, job = job, helpers = bg.helpers(), limit = limit }))
     reaper.ExecProcess("/bin/sh '" .. sh .. "'", -1)
   end
 end
@@ -353,7 +388,7 @@ end
 -- Render in the background, up to bg.MAX at once and one per item (`key`): `render(dir)` sets the project up and calls
 -- band.render as it always does (which saves the copy into `dir` instead of rendering); `keep`: the tracks the
 -- print goes through. Active tab only.
-function bg.start(key, name, keep, render)
+function bg.start(key, name, keep, render, secs) -- secs: how long the part is
   local dir = TMP .. "/" .. name
   reaper.RecursiveCreateDirectory(dir, 0)
   for _, f in ipairs(band.files(dir)) do os.remove(dir .. "/" .. f) end
@@ -366,8 +401,9 @@ function bg.start(key, name, keep, render)
   local set = {}
   for _, g in ipairs(keep) do set[g:upper()] = true end
   band.write_atomic(job, bg.prepare(band.read(job), set))
-  launch(exe_path(), job)
-  jobs[key] = { name = name, dir = dir, started = reaper.time_precise() }
+  local limit = bg.time_limit(secs, rate())
+  launch(exe_path(), job, limit + 180) -- (its launcher ends it a while after Live sync would have)
+  jobs[key] = { name = name, dir = dir, started = reaper.time_precise(), secs = secs, limit = limit, progress_at = reaper.time_precise(), sig = "" }
   last_start = reaper.time_precise()
   return true
 end
@@ -396,6 +432,26 @@ local function drop(key)
   local j = jobs[key]
   for _, f in ipairs(band.files(j.dir)) do os.remove(j.dir .. "/" .. f) end
   jobs[key] = nil
+end
+-- Still going: something new in its folder lately (a pass begun, its file growing), within the limit for its length. -> true / false
+local function alive(j)
+  local t = reaper.time_precise()
+  local pass, size = 0, 0
+  for _, d in ipairs(band.subdirs(j.dir)) do
+    local n = tonumber(d:match("^pass(%d+)$"))
+    if n and n > pass then pass = n end
+  end
+  local unread = false
+  if pass > 0 then
+    for _, f in ipairs(band.files(j.dir .. "/pass" .. pass)) do
+      local n = band.size(j.dir .. "/pass" .. pass .. "/" .. f)
+      if n then size = size + n else unread = true end
+    end
+  end
+  local sig = pass .. ":" .. size
+  -- (a file REAPER holds that can't be read for its size: going by its length's limit alone, not taken for stuck in the middle of a pass)
+  if sig ~= j.sig or unread then j.sig, j.progress_at = sig, t end
+  return t - (j.progress_at or j.started) <= bg.WAIT and t - j.started <= (j.limit or bg.WAIT)
 end
 local function launch_failed(j)
   if (band.read(j.dir .. "/pid.txt") or ""):match("^failed") then return true end
@@ -433,7 +489,10 @@ local function timed_out(key)
     return "failed"
   end
   bg.stuck[j.name] = true
-  band.log("a wet take took over " .. bg.WAIT .. " s to render and was stopped: a plug-in may be waiting for an answer (a licence, missing hardware). Collaborators keep the last one until that part changes")
+  local long = reaper.time_precise() - j.started > (j.limit or bg.WAIT)
+  band.log((long and string.format("a wet take took over %d s to render (its limit for its length on this computer) and was stopped", math.floor(j.limit or bg.WAIT))
+    or ("a wet take stopped getting anywhere for " .. bg.WAIT .. " s and was stopped")) ..
+    ": a plug-in may be waiting for an answer (a licence, missing hardware). Collaborators keep the last one until that part changes")
   return "stuck"
 end
 
@@ -443,11 +502,11 @@ function bg.busy()
   local running = 0
   for key, j in pairs(jobs) do
     if not finished(j) then
-      if reaper.time_precise() - j.started <= bg.WAIT and not launch_failed(j) then running = running + 1
+      if alive(j) and not launch_failed(j) then running = running + 1
       else timed_out(key) end
     end
   end
-  return running >= bg.MAX or reaper.time_precise() - last_start < bg.SPACING
+  return running >= bg.max() or reaper.time_precise() - last_start < bg.SPACING
 end
 
 -- The item's print `name`, moved into `out` once rendered: its .flac path. Else nil and "running", "failed", or
@@ -464,10 +523,11 @@ function bg.claim(key, name, out)
   end
   local files = finished(j)
   if not files then
-    if reaper.time_precise() - j.started <= bg.WAIT and not launch_failed(j) then return nil, "running" end
+    if alive(j) and not launch_failed(j) then return nil, "running" end
     return nil, timed_out(key)
   end
   end_job(j) -- (its print is done: if a question stops it quitting, it mustn't stay on, unseen)
+  if not j.learned then j.learned = true; learn(j.secs, reaper.time_precise() - j.started, tonumber(band.read(j.dir .. "/passes.txt") or "")) end
   if j.name ~= name then drop(key); return nil end
   reaper.RecursiveCreateDirectory(out, 0)
   local flac
