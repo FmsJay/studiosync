@@ -1402,7 +1402,7 @@ function sync.receive(proj, cfg, song, room, can)
   -- meanwhile. What's read waits in the cache, and nothing is applied until all of it is: the newest-only rules below need every file.
   -- Review, 0.58.91)
   local t_read, cut = reaper.time_precise(), false
-  for _, f in ipairs(band.files(dir, ".json")) do
+  for _, f in ipairs(band.listing(dir, ".json", true)) do -- (shared with this poll's other looks at the folder, in the same order: 0.59.14, review)
     if not settled[f] and ext(proj, sync.APPLIED, f:sub(1, -6)) ~= "" then settled[f] = true end
     if not settled[f] and not cache[f] and reaper.time_precise() - t_read > budget then cut = true; break end
     if not settled[f] then
@@ -1676,7 +1676,7 @@ function sync.pending_events(proj, cfg, song, room)
   local n = 0
   local dir = sync.room_dir(cfg, song, room) .. "/events"
   local settled = sync.settled_for(proj, dir)
-  for _, f in ipairs(band.files(dir, ".json")) do
+  for _, f in ipairs(band.listing(dir, ".json")) do -- (a count: the shared listing, unsorted. 0.59.14, review)
     local id = f:sub(1, -6)
     if not settled[f] and ext(proj, sync.APPLIED, id) ~= "" then settled[f] = true end
     -- waiting on a claim isn't "behind", and neither is our own change on its way back (the pill read "Receiving 321"
@@ -1742,11 +1742,10 @@ end
 -- Who else is in the room now: everyone whose status receipt is under `within` s old (45: receipts are written every
 -- 15 s and take a few seconds to sync). A machine whose Syncthing can't reach us counts as away.
 function sync.present(cfg, song, room, within)
-  local dir, out = sync.room_dir(cfg, song, room) .. "/status", {}
-  for _, f in ipairs(band.files(dir, ".json")) do
-    local st = band.read_json(dir .. "/" .. f)
-    if type(st) == "table" and type(st.user) == "string" and st.user ~= cfg.user and type(st.time) == "string"
-        and band.age(st.time) < (within or 45) then out[#out + 1] = st.user end
+  local out = {}
+  -- (the files as presence.peers read them, within the second, with the same checks: 0.59.14, review)
+  for _, st in ipairs(require("presence").all(cfg, song, room)) do
+    if band.age(st.time) < (within or 45) then out[#out + 1] = st.user end
   end
   table.sort(out)
   return out

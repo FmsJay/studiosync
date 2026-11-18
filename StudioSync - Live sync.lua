@@ -97,8 +97,12 @@ for _, d in ipairs(band.subdirs(cfg.root)) do
     local services = require("services")
     local ok, why = services.ensure_syncthing()
     if ok == "started" then band.log("started Syncthing"); st_started = reaper.time_precise() elseif not ok then band.log("Syncthing: " .. why) end
-    if ok then -- quick hand-off for live use (lib/services.lua): the live MIDI view a couple of seconds behind
+    -- (tuned once per REAPER session per folder, not at every tab's start and every update's reload of each: up to a dozen Syncthing calls
+    -- of up to 8 s each, with REAPER waiting. Syncthing keeps what's set. A stamp that isn't kept between sessions. 0.59.14, review)
+    local tuned_key = "syncthing tuned " .. tostring(band.info(cfg.root).id)
+    if ok and reaper.GetExtState(band.SECTION, tuned_key) == "" then -- quick hand-off for live use (lib/services.lua): the live MIDI view a couple of seconds behind
       local set, err = services.tune_band_folder(band.info(cfg.root).id)
+      if set then reaper.SetExtState(band.SECTION, tuned_key, "1", false) end
       if set and #set > 0 then band.log("Syncthing's studio folder tuned for live use: " .. table.concat(set, ", "))
       elseif not set then
         -- just started, it doesn't answer for a few seconds (2026-10-29, laptop): try again for a few minutes
@@ -111,9 +115,14 @@ end
 
 -- which plug-ins this machine has goes to the band, and the FX browser's "StudioSync (everyone has)" folder follows
 -- what everyone has (lib/plugins.lua); a failure here must never stop syncing
-do
+-- (once per REAPER session per studio: every tab's start, and every update's reload of each, went through the ~1,100 installed plug-ins twice
+-- and rewrote the FX browser's files. Until the folder is made (lists still to come), each start tries again; the panel's "Update the folder
+-- now" does it any time. A stamp that isn't kept between sessions. 0.59.14, review)
+local plugins_key = "plugins done " .. cfg.root
+if reaper.GetExtState(band.SECTION, plugins_key) == "" then
   local plugins = require("plugins")
   local ok, n, why = pcall(function() plugins.publish(cfg); return plugins.update_folder(cfg) end)
+  if ok and n then reaper.SetExtState(band.SECTION, plugins_key, "1", false) end
   if ok and n then band.log(string.format("%d plug-ins everyone in the studio has: FX browser folder '%s'", n, plugins.FOLDER))
   elseif not ok then band.log("plug-in list: " .. tostring(n)) end
 end
@@ -128,7 +137,7 @@ toggle(1)
 -- shows where every session ended. Saved when Live sync stops and after 20 minutes without a change (REAPER might
 -- be closed hard), only when something changed since the last one.
 local recall = require("recall")
-local function event_count() return #band.files(sync.room_dir(cfg, b.song, b.room) .. "/events", ".json") end
+local function event_count() return #band.listing(sync.room_dir(cfg, b.song, b.room) .. "/events", ".json") end -- (shared, unsorted: 0.59.14, review)
 local ended_at_n = reload_ended or event_count() -- (after an update's reload, the count the session had: no end-of-session save was made. 0.58.92)
 local quiet = { n = ended_at_n, since = reaper.time_precise(), checked = 0 }
 local function end_of_session(why)
@@ -238,6 +247,7 @@ local function poll()
     tune_left, tune_at = tune_left - 1, reaper.time_precise()
     local set, err = require("services").tune_band_folder(band.info(cfg.root).id)
     if set then
+      reaper.SetExtState(band.SECTION, "syncthing tuned " .. tostring(band.info(cfg.root).id), "1", false) -- (once a session: see the start)
       tune_left = 0
       band.log(#set > 0 and ("Syncthing's studio folder tuned for live use: " .. table.concat(set, ", ")) or "Syncthing is answering")
     elseif tune_left == 0 then
@@ -541,7 +551,9 @@ local function poll()
     pending = sync.pending_events(proj, cfg, b.song, b.room), armed = armed, side = side_bars(),
     playing = reaper.GetPlayStateEx(proj) & 1 == 1 or nil, recording = reaper.GetPlayStateEx(proj) & 4 == 4 or nil,
     front = reaper.EnumProjects(-1) == proj, mirror = s and s.sync == "mirror" and require("mirror").root(proj) or nil,
-    editing = require("presence").editing(proj), view = require("presence").view(proj), ping = require("presence").my_ping(proj),
+    -- (the view and the cursor only while someone follows you, their one reader (presence.follow): each scroll or click rewrote this file and
+    -- Syncthing sent it to everyone. Being followed puts them in at once, as the follower's own status shows it. 0.59.14, review)
+    editing = require("presence").editing(proj), view = followed and require("presence").view(proj) or nil, ping = require("presence").my_ping(proj),
     last_track = select(2, reaper.GetProjExtState(proj, band.SECTION, "last_track")),
     follow = reaper.GetExtState(band.SECTION, "follow " .. tostring(proj)), follow_driver = reaper.GetExtState(band.SECTION, "follow driver") ~= "" or nil,
     listen = reaper.GetExtState(band.SECTION, "listen " .. tostring(proj)),
@@ -549,7 +561,7 @@ local function poll()
     lets = require("producer").lets() or nil } -- (whoever produces me may start and stop my transport: their panel shows its buttons)
   if info.follow == "" then info.follow = nil end
   if followed then info.mix = require("presence").my_mix(proj) end -- (someone follows you: they hear your mix. lib/presence.lua)
-  if not info.playing then info.cursor = math.floor(reaper.GetCursorPositionEx(proj) * 1000 + 0.5) / 1000 end -- (followers' cursors go here: lib/presence.lua)
+  if followed and not info.playing then info.cursor = math.floor(reaper.GetCursorPositionEx(proj) * 1000 + 0.5) / 1000 end -- (followers' cursors go here: lib/presence.lua)
   -- (what live audio you're in, for the little icons on your card: Real time mode or Time-sync, and the call. James, 0.59.8)
   info.live = live.realtime_on(proj) and "rt" or (live.ninjam_master(proj) and select(2, reaper.GetProjExtState(proj, band.SECTION, "live_mode")) ~= "jam" and "ts") or nil
   info.call = select(2, reaper.GetProjExtState(proj, band.SECTION, "call")) == "1" and (live.sonobus_online(proj)) or nil
@@ -565,7 +577,7 @@ local function poll()
   if info.listen == "" then info.listen = nil end
   local fingerprint = tostring(info.live) .. tostring(info.call) .. tostring(info.follow) .. tostring(info.follow_driver) .. tostring(info.listen) .. tostring(info.rt) .. tostring(info.rt_silent) .. tostring(info.cursor) .. band.json_encode(sync.holdings(proj)) .. tostring(driver) .. info.pending .. tostring(hold) .. band.json_encode(armed) ..
     tostring(info.side) .. tostring(info.playing) .. tostring(info.recording) .. tostring(info.front) .. tostring(info.mirror) .. tostring(info.lets) ..
-    band.json_encode({ info.editing, info.view, info.ping or false }) .. info.last_track
+    band.json_encode({ info.editing, info.view or false, info.ping or false }) .. info.last_track
   if fingerprint ~= status_json or now - last_status > 15 then
     status_json, last_status, status_info = fingerprint, now, info
     sync.write_status(proj, cfg, b.song, b.room, info)
@@ -617,12 +629,9 @@ end
 
 local function quick_transport()
   local dir = sync.room_dir(cfg, b.song, b.room) .. "/events"
-  local i, found = 0, nil
-  reaper.EnumerateFiles(dir, -1) -- re-read the folder (REAPER caches listings)
-  while true do
-    local f = reaper.EnumerateFiles(dir, i)
-    if not f then break end
-    i = i + 1
+  local found = nil
+  -- (read now, as before, but shared: the poll's own looks at the folder within 0.2 s use this read. 0.59.14, review)
+  for _, f in ipairs(band.raw_listing(dir, true)) do
     if not seen_ev[f] then
       if f:sub(-5) ~= ".json" or sync.is_mine(f, cfg.user) then seen_ev[f] = true else
         local ev = band.read_json(dir .. "/" .. f)
