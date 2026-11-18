@@ -1,4 +1,4 @@
-version 0.59.4
+version 0.59.5
 StudioSync - Autostart.lua	14814
 StudioSync - Claim selected tracks.lua	692
 StudioSync - Draw.lua	27162
@@ -9,7 +9,7 @@ StudioSync - Live sync.lua	65789
 StudioSync - Local mixing.lua	721
 StudioSync - Measure guest delay.lua	4099
 StudioSync - Open session.lua	9173
-StudioSync - Panel.lua	210065
+StudioSync - Panel.lua	210364
 StudioSync - Prepare session.lua	6311
 StudioSync - Publish session.lua	5206
 StudioSync - Radial menu.lua	7711
@@ -29,7 +29,7 @@ lib/band.lua	70050
 lib/bgrender.lua	29622
 lib/callapps.lua	6144
 lib/chooser.lua	22179
-lib/colours.lua	36722
+lib/colours.lua	44970
 lib/debugmode.lua	5732
 lib/drive.lua	25647
 lib/drummap.lua	5670
@@ -39,11 +39,11 @@ lib/feedback.lua	8370
 lib/fxfiles.lua	8525
 lib/groups.lua	17213
 lib/guest.lua	7314
-lib/hear.lua	16215
+lib/hear.lua	16290
 lib/json.lua	6080
 lib/leave.lua	9484
 lib/listen.lua	14941
-lib/live.lua	38384
+lib/live.lua	38953
 lib/livemidi.lua	10723
 lib/localcopy.lua	21916
 lib/midiview.lua	4359
@@ -53,11 +53,11 @@ lib/page_chat.lua	23890
 lib/page_groups.lua	34159
 lib/page_health.lua	23632
 lib/page_hear.lua	15161
-lib/page_play.lua	22842
+lib/page_play.lua	23843
 lib/page_plugins.lua	19338
 lib/page_restore.lua	24603
 lib/page_rooms.lua	15977
-lib/people.lua	17648
+lib/people.lua	18207
 lib/plugins.lua	10493
 lib/prep.lua	29980
 lib/presence.lua	13710

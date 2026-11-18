@@ -85,6 +85,43 @@ function colours.kind_of(name)
   return colours.OTHER
 end
 
+-- Colours set by name (James, 0.59.4: "a way to set colors for each region, folder etc like we have for instruments"), per computer:
+-- ExtState "colour <kind>" = { [name] = "RRGGBB" }. kind "folders" (a top-level folder's name, lower case), "sections" (verse, chorus...:
+-- colours.section_key), "itemkinds" (midi, print, audio).
+local named_cache = {}
+function colours.named(kind)
+  local c = named_cache[kind]
+  if c and reaper.time_precise() - c.at < 2 then return c.v end
+  local saved, out = band.json_decode(reaper.GetExtState(band.SECTION, "colour " .. kind)), {}
+  if type(saved) == "table" then
+    for k, v in pairs(saved) do local n = type(k) == "string" and tonumber(tostring(v), 16); if n then out[k] = n end end
+  end
+  named_cache[kind] = { at = reaper.time_precise(), v = out }
+  return out
+end
+function colours.set_named(kind, key, rgb)
+  local saved = band.json_decode(reaper.GetExtState(band.SECTION, "colour " .. kind))
+  if type(saved) ~= "table" then saved = {} end
+  saved[key] = rgb and string.format("%06X", rgb) or nil
+  reaper.SetExtState(band.SECTION, "colour " .. kind, band.json_encode(saved), true)
+  named_cache[kind] = nil
+end
+function colours.forget_named(kind) reaper.DeleteExtState(band.SECTION, "colour " .. kind, true); named_cache[kind] = nil end
+
+-- Each family's base colour for "By folder": the one set for its folder's name, else along the palette. -> { [family] = rgb }. Pure.
+function colours.folder_bases(tracks, stops, named)
+  local families, out = 0, {}
+  for _, t in ipairs(tracks) do families = math.max(families, t.family or 0) end
+  for _, t in ipairs(tracks) do
+    local f = t.family or 0
+    if out[f] == nil then
+      local key = t.folder and t.folder:lower()
+      out[f] = (named and key and named[key]) or colours.ramp(stops, families > 1 and (f - 1) / (families - 1) or 0)
+    end
+  end
+  return out
+end
+
 local function hash01(s)
   local h = 2166136261
   for i = 1, #s do h = ((h ~ s:byte(i)) * 16777619) & 0xFFFFFFFF end
@@ -92,7 +129,7 @@ local function hash01(s)
 end
 
 -- The colour of each track. tracks: { { name, family (its top-level folder's number), maker (a colour, or nil), newest ("" if unknown) } }.
--- opt: { stops }. Pure.
+-- opt: { stops, folders (colours set by folder name) }. Pure.
 function colours.plan(tracks, scheme, opt)
   local stops, n, out = opt.stops, #tracks, {}
   local families, members = 0, {}
@@ -110,13 +147,13 @@ function colours.plan(tracks, scheme, opt)
     end)
     for r, i in ipairs(order) do rank[i] = r end
   end
-  local seen = {}
+  local seen, bases = {}, scheme == "folders" and colours.folder_bases(tracks, stops, opt.folders) or nil
   for i, t in ipairs(tracks) do
     local f, at = t.family or 0, i == 1 and 0 or (i - 1) / math.max(1, n - 1)
     seen[f] = (seen[f] or 0) + 1
     if scheme == "gradient" then out[i] = colours.ramp(stops, at)
     elseif scheme == "folders" then
-      local base = colours.ramp(stops, families > 1 and (f - 1) / (families - 1) or 0)
+      local base = bases[f]
       out[i] = colours.mix(base, 0xFFFFFF, (members[f] or 1) > 1 and 0.45 * (seen[f] - 1) / (members[f] - 1) or 0)
     elseif scheme == "instrument" then out[i] = colours.kind_of(t.name)
     elseif scheme == "person" then out[i] = t.maker or colours.OTHER
@@ -135,23 +172,28 @@ local SECTIONS = { intro = 0x7E8798, verse = 0x4C9BE8, pre = 0x36C4B4, prechorus
 function colours.section_key(name)
   return (name or ""):lower():gsub("[^%a]", " "):gsub("^%s*pre%s+chorus", "prechorus"):match("%a+") or ""
 end
--- The colour of each region or marker. marks: { { name, region } }. mode: "sections" (the same section, the same colour) or "song" (along the song). Pure.
-function colours.plan_marks(marks, mode, stops)
-  local out, regions, at, other, n = {}, 0, 0, {}, 0
+-- The common sections, for setting their colours.
+colours.SECTION_NAMES = { { "intro", "Intro" }, { "verse", "Verse" }, { "prechorus", "Pre-chorus" }, { "chorus", "Chorus" }, { "bridge", "Bridge" },
+  { "solo", "Solo" }, { "break", "Break" }, { "drop", "Drop" }, { "outro", "Outro" } }
+-- A section's colour: its own if one's set, else the common sections' (the same in every song), else spread along the palette (`other`:
+-- { n = 0, map = {} }, shared across one plan so a name keeps its colour). Pure.
+function colours.section_colour(key, stops, named, other)
+  if named and named[key] then return named[key] end
+  if SECTIONS[key] then return SECTIONS[key] end
+  if key == "" then return colours.OTHER end
+  if not other.map[key] then other.n = other.n + 1; other.map[key] = colours.ramp(stops, (other.n * 0.381966) % 1) end -- (spread out however many there turn out to be)
+  return other.map[key]
+end
+-- The colour of each region or marker. marks: { { name, region } }. mode: "sections" (the same section, the same colour) or "song"
+-- (chronologically). named: colours set by section. Pure.
+function colours.plan_marks(marks, mode, stops, named)
+  local out, regions, at, other = {}, 0, 0, { n = 0, map = {} }
   for _, m in ipairs(marks) do if m.region then regions = regions + 1 end end
   for i, m in ipairs(marks) do
     if mode == "song" then
       out[i] = colours.ramp(stops, regions > 1 and at / (regions - 1) or 0)
       if m.region then at = at + 1 end
-    else
-      local key = colours.section_key(m.name)
-      if SECTIONS[key] then out[i] = SECTIONS[key]
-      elseif key == "" then out[i] = colours.OTHER
-      else
-        if not other[key] then n = n + 1; other[key] = colours.ramp(stops, (n * 0.381966) % 1) end -- (spread out however many there turn out to be)
-        out[i] = other[key]
-      end
-    end
+    else out[i] = colours.section_colour(colours.section_key(m.name), stops, named, other) end
   end
   return out
 end
@@ -163,10 +205,14 @@ function colours.read(proj, cfg)
   local mirror, people = require("mirror"), require("people")
   local by_tag = {}
   for u, c in pairs(people.colours(cfg.root, { cfg.user })) do by_tag[mirror.user_tag(u)] = c end
-  local list, depth, family = {}, 0, 0
+  local list, depth, family, folder, top = {}, 0, 0, nil, false
   for i = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, i)
-    if depth == 0 then family = family + 1 end
+    if depth == 0 then -- (a new family: a top-level folder, or a track on its own; the folder's name goes with each of its tracks)
+      family = family + 1
+      top = reaper.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH") >= 1
+      folder = (select(2, reaper.GetTrackName(tr)):gsub(" %(band%)$", ""):gsub(" %(studio%)$", ""))
+    end
     if not mirror.local_track(tr) then
       local oid = mirror.track_oid(tr)
       local newest = ""
@@ -177,7 +223,7 @@ function colours.read(proj, cfg)
       end
       look(oid)
       for k = 0, reaper.CountTrackMediaItems(tr) - 1 do look(mirror.item_oid(reaper.GetTrackMediaItem(tr, k))) end
-      list[#list + 1] = { ptr = tr, name = (select(2, reaper.GetTrackName(tr)):gsub(" %(band%)$", ""):gsub(" %(studio%)$", "")), family = family, maker = by_tag[mirror.creator(oid)], newest = newest }
+      list[#list + 1] = { ptr = tr, name = (select(2, reaper.GetTrackName(tr)):gsub(" %(band%)$", ""):gsub(" %(studio%)$", "")), family = family, folder = folder, in_folder = top or nil, maker = by_tag[mirror.creator(oid)], newest = newest }
     end
     depth = depth + math.floor(reaper.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH"))
     if depth < 0 then depth = 0 end
@@ -199,16 +245,18 @@ function colours.apply(proj, cfg, list, plan, may, only_selected)
   return done, left
 end
 
-function colours.apply_marks(proj, mode, stops)
-  local marks, idx = {}, {}
+-- The project's regions and markers (not this computer's own).
+function colours.read_marks(proj)
+  local idx = {}
   for i = 0, reaper.CountProjectMarkers(proj) - 1 do
     local _, region, pos, rend, name, num = reaper.EnumProjectMarkers3(proj, i)
-    if not band.is_local_mark(name) then
-      marks[#marks + 1] = { region = region, name = name }
-      idx[#idx + 1] = { i = i, region = region, pos = pos, rend = rend, name = name, num = num }
-    end
+    if not band.is_local_mark(name) then idx[#idx + 1] = { i = i, region = region, pos = pos, rend = rend, name = name, num = num } end
   end
-  local plan = colours.plan_marks(marks, mode, stops)
+  return idx
+end
+function colours.apply_marks(proj, mode, stops, named)
+  local idx = colours.read_marks(proj)
+  local plan = colours.plan_marks(idx, mode, stops, named or colours.named("sections"))
   reaper.Undo_BeginBlock2(proj)
   for k, m in ipairs(idx) do reaper.SetProjectMarkerByIndex2(proj, m.i, m.region, m.pos, m.rend, m.num, m.name, native(plan[k]), 0) end
   reaper.Undo_EndBlock2(proj, "Colour regions", 8)
@@ -217,19 +265,20 @@ function colours.apply_marks(proj, mode, stops)
 end
 
 colours.ITEM_SCHEMES = {
-  { "section", "By section", "Everything in a verse one colour, everything in a chorus another, from the region it starts in." },
+  { "section", "By section", "Everything in a verse one colour, everything in a chorus another, from the region it starts in: the same colours as regions by section." },
   { "song", "Chronologically", "Start of the song to the end, from the palette's first colour to its last." },
   { "person", "By who recorded it", "Each item in the colour of the person who made it." },
   { "lane", "By lane", "Each fixed lane its own colour: comps and alternatives stand apart." },
   { "take", "By takes", "One-take items the palette's first colour, the more takes the further along it: where there's a choice still to make." },
-  { "kind", "By kind", "MIDI parts, printed parts and recordings each their own colour from the palette: what's audio and what's notes, at a glance." },
+  { "kind", "By kind", "MIDI parts, printed parts and recordings each their own colour (from the palette, or set below): what's audio and what's notes, at a glance." },
   { "newest", "Newest work", "Where the song's been moving lately: the palette's first colour for what's untouched longest, its last for the latest changed." },
   { "clear", "As its track", "Takes item colours off, so items follow their track again." },
 }
--- The colour of each item (false: none). items: { { pos, section (a name, or nil), maker (a colour, or nil), lane, takes } }. opt: { stops, last (the song's end) }. Pure.
+-- The colour of each item (false: none). items: { { pos, section (a name, or nil), maker (a colour, or nil), lane, takes, kind } }.
+-- opt: { stops, last (the song's end), sections (colours set by section), kinds (by kind: midi, print, audio) }. Pure.
 function colours.plan_items(items, scheme, opt)
   local out, stops = {}, opt.stops
-  local keys, n, rank = {}, 0, {}
+  local n, rank, other, kc = 0, {}, { n = 0, map = {} }, opt.kinds or {}
   if scheme == "newest" then
     local order = {}
     for i in ipairs(items) do order[i] = i end
@@ -240,28 +289,23 @@ function colours.plan_items(items, scheme, opt)
     for r, i in ipairs(order) do rank[i] = r end
     n = #items
   end
-  if scheme == "section" then
-    for _, it in ipairs(items) do
-      local k = colours.section_key(it.section or "")
-      if not keys[k] then keys[k] = n; n = n + 1 end
-    end
-  end
   for i, it in ipairs(items) do
     if scheme == "section" then
-      out[i] = it.section and colours.ramp(stops, n > 1 and keys[colours.section_key(it.section)] / (n - 1) or 0) or colours.OTHER
+      out[i] = it.section and colours.section_colour(colours.section_key(it.section), stops, opt.sections, other) or colours.OTHER
     elseif scheme == "song" then out[i] = colours.ramp(stops, (opt.last or 0) > 0 and it.pos / opt.last or 0)
     elseif scheme == "person" then out[i] = it.maker or colours.OTHER
     elseif scheme == "lane" then out[i] = colours.ramp(stops, ((it.lane or 0) % 5) / 4)
     elseif scheme == "take" then out[i] = colours.ramp(stops, math.min((it.takes or 1) - 1, 4) / 4)
-    elseif scheme == "kind" then out[i] = it.kind == "midi" and stops[1] or it.kind == "print" and colours.ramp(stops, 0.5) or it.kind == "audio" and stops[#stops] or colours.OTHER
+    elseif scheme == "kind" then out[i] = it.kind == "midi" and (kc.midi or stops[1]) or it.kind == "print" and (kc.print or colours.ramp(stops, 0.5))
+      or it.kind == "audio" and (kc.audio or stops[#stops]) or colours.OTHER
     elseif scheme == "newest" then out[i] = colours.ramp(stops, n > 1 and (rank[i] - 1) / (n - 1) or 1)
     else out[i] = false end
   end
   return out
 end
 
--- Every item on tracks this person may change gets its colour. -> how many, how many left. They go out like any change, a burst at a time.
-function colours.apply_items(proj, cfg, scheme, stops, may)
+-- The project's items as plan_items needs them, on tracks `may(name, track)` allows (nil: every one). -> the list, how many left out, the song's end.
+function colours.read_items(proj, cfg, may)
   local mirror, people = require("mirror"), require("people")
   local marks = {}
   for i = 0, reaper.CountProjectMarkers(proj) - 1 do
@@ -277,7 +321,7 @@ function colours.apply_items(proj, cfg, scheme, stops, may)
       local name = select(2, reaper.GetTrackName(tr)):gsub(" %(band%)$", ""):gsub(" %(studio%)$", "")
       for k = 0, reaper.CountTrackMediaItems(tr) - 1 do
         local it = reaper.GetTrackMediaItem(tr, k)
-        if may(name, tr) then
+        if not may or may(name, tr) then
           local pos = reaper.GetMediaItemInfo_Value(it, "D_POSITION")
           last = math.max(last, pos)
           local section
@@ -286,14 +330,20 @@ function colours.apply_items(proj, cfg, scheme, stops, may)
           local kind = tk and (select(2, reaper.GetSetMediaItemTakeInfo_String(tk, "P_EXT:band_m_print", "", false)) ~= "" and "print"
             or reaper.TakeIsMIDI(tk) and "midi" or "audio") or nil
           local _, _, evid = mirror.known(proj, mirror.item_oid(it))
-          list[#list + 1] = { ptr = it, pos = pos, section = section, maker = by_tag[mirror.creator(mirror.item_oid(it))], kind = kind,
+          list[#list + 1] = { ptr = it, pos = pos, track = name, section = section, maker = by_tag[mirror.creator(mirror.item_oid(it))], kind = kind,
             newest = (evid or ""):match("%d%d%d%d%d%d%d%d%-%d%d%d%d%d%dZ") or "",
             lane = math.floor(reaper.GetMediaItemInfo_Value(it, "I_FIXEDLANE")), takes = mirror.filled_takes(it) } -- (a print isn't a take still to choose)
         else left = left + 1 end
       end
     end
   end
-  local plan = colours.plan_items(list, scheme, { stops = stops, last = last })
+  return list, left, last
+end
+function colours.item_kinds() local k = colours.named("itemkinds"); return { midi = k.midi, print = k.print, audio = k.audio } end
+-- Every item on tracks this person may change gets its colour. -> how many, how many left. They go out like any change, a burst at a time.
+function colours.apply_items(proj, cfg, scheme, stops, may)
+  local list, left, last = colours.read_items(proj, cfg, may)
+  local plan = colours.plan_items(list, scheme, { stops = stops, last = last, sections = colours.named("sections"), kinds = colours.item_kinds() })
   reaper.Undo_BeginBlock2(proj)
   for i, x in ipairs(list) do reaper.SetMediaItemInfo_Value(x.ptr, "I_CUSTOMCOLOR", plan[i] and native(plan[i]) or 0) end
   reaper.Undo_EndBlock2(proj, "Colour items", 4)
@@ -357,7 +407,7 @@ function colours.auto(proj, cfg, may)
   end
   if state == "" and uncoloured < #list then reaper.SetProjExtState(proj, band.SECTION, "colours auto", "had"); return end
   if #todo == 0 then return end
-  local plan = colours.plan(list, look.scheme, { stops = colours.stops_of(look) })
+  local plan = colours.plan(list, look.scheme, { stops = colours.stops_of(look), folders = colours.named("folders") })
   reaper.Undo_BeginBlock2(proj)
   local done = 0
   for _, i in ipairs(todo) do
@@ -438,6 +488,61 @@ local function legend(ctx, ImGui, stops, left, right)
   ImGui.Dummy(ctx, w, h); ImGui.SameLine(ctx, 0, 6)
   ImGui.TextDisabled(ctx, right)
 end
+-- The long bar: what each would look like, with what each piece is on hover (James, 0.59.4: "the long one with details for each").
+-- segs: { { from 0-1, to 0-1, rgb, words } }.
+local function preview(ctx, ImGui, segs, none)
+  if #segs == 0 then return ImGui.TextDisabled(ctx, none) end
+  local w = ImGui.GetContentRegionAvail(ctx)
+  local x, y = ImGui.GetCursorScreenPos(ctx)
+  local dl = ImGui.GetWindowDrawList(ctx)
+  ImGui.DrawList_AddRectFilled(dl, x, y, x + w, y + 12, 0x80808030, 2)
+  for _, sg in ipairs(segs) do ImGui.DrawList_AddRectFilled(dl, x + sg[1] * w, y, math.max(x + sg[1] * w + 1, x + sg[2] * w - 1), y + 12, (sg[3] << 8) | 0xFF, 2) end
+  ImGui.InvisibleButton(ctx, "##preview", math.max(1, w), 12)
+  if ImGui.IsItemHovered(ctx) then
+    local mx, best = (select(1, ImGui.GetMousePos(ctx)) - x) / math.max(1, w), nil
+    for _, sg in ipairs(segs) do if mx >= sg[1] and mx <= sg[2] then best = sg end end
+    if best then ImGui.SetTooltip(ctx, best[4]) end
+  end
+end
+-- Colours set by name, for one kind: entries { { key, label, colour now } }.
+local function name_editors(ctx, ImGui, kind, entries, words)
+  for i, e in ipairs(entries) do
+    local ch, v = ImGui.ColorEdit3(ctx, e[2] .. "##" .. kind .. e[1], e[3], ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel)
+    if ch then colours.set_named(kind, e[1], v); cache.at = -math.huge end
+    if i % 2 == 1 and i < #entries then ImGui.SameLine(ctx, 180) end
+  end
+  if next(colours.named(kind)) and ImGui.SmallButton(ctx, words .. " as they were##" .. kind) then colours.forget_named(kind); cache.at = -math.huge end
+  ImGui.SetItemTooltip(ctx, "Only on this computer, until you colour them; then everyone sees what you coloured.")
+end
+local function bar_at(pos) return (reaper.format_timestr_pos(pos, "", 2):match("^(%d+)")) or "?" end
+-- What the three bars show, read every few seconds (reading every item is too much for every frame).
+local function refresh(proj, cfg, parts, stops_of_row)
+  if reaper.time_precise() - cache.at <= 3 and cache.proj == proj then return end
+  cache.at, cache.proj = reaper.time_precise(), proj
+  cache.list = colours.read(proj, cfg)
+  local t = parts.tracks
+  cache.plan = colours.plan(cache.list, t.scheme, { stops = stops_of_row.tracks, folders = colours.named("folders") })
+  cache.tsegs = {}
+  for i, x in ipairs(cache.list) do cache.tsegs[i] = { (i - 1) / #cache.list, i / #cache.list, cache.plan[i], x.name } end
+  local items, _, last = colours.read_items(proj, cfg, nil)
+  table.sort(items, function(a, z) return a.pos < z.pos end)
+  local ip = colours.plan_items(items, parts.items.scheme, { stops = stops_of_row.items, last = last, sections = colours.named("sections"), kinds = colours.item_kinds() })
+  cache.isegs = {}
+  for i, x in ipairs(items) do
+    cache.isegs[#cache.isegs + 1] = { (i - 1) / #items, i / #items, ip[i] or 0x5A5F6A, string.format("%s, bar %s%s", x.track, bar_at(x.pos), ip[i] and "" or " (as its track)") }
+  end
+  local marks = colours.read_marks(proj)
+  local mp = colours.plan_marks(marks, parts.regions.scheme, stops_of_row.regions, colours.named("sections"))
+  local endt = 0
+  for _, m in ipairs(marks) do endt = math.max(endt, m.region and m.rend or m.pos) end
+  cache.msegs, cache.keys = {}, {}
+  for i, m in ipairs(marks) do
+    local a = endt > 0 and m.pos / endt or 0
+    cache.msegs[#cache.msegs + 1] = { a, m.region and endt > 0 and m.rend / endt or a + 0.004, mp[i], (m.name ~= "" and m.name or "(no name)") .. ", bar " .. bar_at(m.pos) }
+    local k = colours.section_key(m.name)
+    if m.region and k ~= "" then cache.keys[k] = cache.keys[k] or m.name end
+  end
+end
 local LEGENDS = { -- row.scheme -> the words at either end of the palette
   ["tracks.gradient"] = { "top", "bottom" }, ["tracks.newest"] = { "untouched longest", "changed most recently" },
   ["items.song"] = { "start", "end" }, ["items.newest"] = { "untouched longest", "changed most recently" }, ["items.take"] = { "one take", "five or more" },
@@ -480,12 +585,11 @@ function colours.draw(ctx, ImGui, proj, cfg, may, timeline_ok)
   end
   local first = reaper.GetExtState(band.SECTION, "colour try") ~= "off"
   local function go(fn) if first then try_first(proj, fn) else fn() end end
-  local stops_of_row = {}
+  local stops_of_row = { tracks = colours.stops_of(parts.tracks), items = colours.stops_of(parts.items), regions = colours.stops_of(parts.regions) }
   for _, r in ipairs(ROWS) do
     local row, words, schemes = r[1], r[2], r[3]
     local p = parts[row]
-    local stops = colours.stops_of(p)
-    stops_of_row[row] = stops
+    local stops = stops_of_row[row]
     ImGui.PushID(ctx, row)
     ImGui.Spacing(ctx)
     ImGui.AlignTextToFramePadding(ctx); ImGui.Text(ctx, words); ImGui.SameLine(ctx, 70)
@@ -543,7 +647,7 @@ function colours.draw(ctx, ImGui, proj, cfg, may, timeline_ok)
       beside("Colour regions")
       ImGui.BeginDisabled(ctx, not timeline_ok)
       if ImGui.Button(ctx, "Colour regions") then
-        go(function() band.log(string.format("coloured %d regions and markers, %s", colours.apply_marks(proj, p.scheme, stops), label:lower())) end)
+        go(function() band.log(string.format("coloured %d regions and markers, %s", colours.apply_marks(proj, p.scheme, stops, colours.named("sections")), label:lower())) end)
       end
       ImGui.EndDisabled(ctx)
       ImGui.SetItemTooltip(ctx, timeline_ok and "Every region and marker, " .. label:lower() .. "." or "The timeline is the driver's: they do this.")
@@ -554,42 +658,46 @@ function colours.draw(ctx, ImGui, proj, cfg, may, timeline_ok)
     ImGui.TextDisabled(ctx, tip)
     ImGui.PopTextWrapPos(ctx)
     local ends = LEGENDS[row .. "." .. p.scheme]
-    if ends then legend(ctx, ImGui, stops, ends[1], ends[2])
-    elseif row == "items" and p.scheme == "kind" then
-      for i, k in ipairs({ { stops[1], "MIDI" }, { colours.ramp(stops, 0.5), "printed" }, { stops[#stops], "recordings" } }) do
-        if i > 1 then ImGui.SameLine(ctx, 0, 12) end
-        ImGui.ColorButton(ctx, "##kind" .. i, (k[1] << 8) | 0xFF, ImGui.ColorEditFlags_NoTooltip, 14, 14); ImGui.SameLine(ctx, 0, 4); ImGui.TextDisabled(ctx, k[2])
-      end
-    elseif row == "tracks" and p.scheme == "instrument" then -- the instruments' colours, yours to set
-      local kc = colours.kind_colours()
-      for i, name in ipairs(colours.KIND_NAMES) do
-        local ch, v = ImGui.ColorEdit3(ctx, name .. "##kind" .. i, kc[i], ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel)
+    if ends then legend(ctx, ImGui, stops, ends[1], ends[2]) end
+    -- colours of your own, by name (instruments, folders, sections, kinds)
+    if row == "tracks" and p.scheme == "instrument" then
+      local kc, entries = colours.kind_colours(), {}
+      for i, name in ipairs(colours.KIND_NAMES) do entries[i] = { i, name, kc[i] } end
+      for i, e in ipairs(entries) do
+        local ch, v = ImGui.ColorEdit3(ctx, e[2] .. "##kind" .. i, e[3], ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel)
         if ch then colours.set_kind_colour(i, v); cache.at = -math.huge end
-        if i % 2 == 1 and i < #colours.KIND_NAMES then ImGui.SameLine(ctx, 180) end
+        if i % 2 == 1 and i < #entries then ImGui.SameLine(ctx, 180) end
       end
       if ImGui.SmallButton(ctx, "Instrument colours as they were##kinds") then reaper.DeleteExtState(band.SECTION, "colour kinds", true); kind_cache = nil; cache.at = -math.huge end
       ImGui.SetItemTooltip(ctx, "Each instrument's colour, found from the track's name (drums, bass, guitars...). Only on this computer, until you colour the tracks.")
+    elseif row == "tracks" and p.scheme == "folders" then
+      local bases, entries, seen = colours.folder_bases(cache.list or {}, stops, colours.named("folders")), {}, {}
+      for _, t in ipairs(cache.list or {}) do
+        if t.in_folder and not seen[t.family] then seen[t.family] = true; entries[#entries + 1] = { t.folder:lower(), t.folder, bases[t.family] } end
+      end
+      if #entries == 0 then ImGui.TextDisabled(ctx, "No folders in this project.") else name_editors(ctx, ImGui, "folders", entries, "Folder colours") end
+    elseif (row == "regions" and p.scheme == "sections") or (row == "items" and p.scheme == "section") then
+      local named, other, entries, have = colours.named("sections"), { n = 0, map = {} }, {}, {}
+      for _, sn in ipairs(colours.SECTION_NAMES) do entries[#entries + 1] = { sn[1], sn[2] }; have[sn[1]] = true end
+      local extra = {}
+      for k, name in pairs(cache.keys or {}) do if not have[k] then extra[#extra + 1] = { k, name } end end
+      table.sort(extra, function(x1, x2) return x1[1] < x2[1] end)
+      for _, e in ipairs(extra) do entries[#entries + 1] = e end
+      for _, e in ipairs(entries) do e[3] = colours.section_colour(e[1], stops, named, other) end
+      if ImGui.TreeNode(ctx, "Section colours (" .. (row == "items" and "shared with regions" or "shared with items") .. ")##secnames") then
+        name_editors(ctx, ImGui, "sections", entries, "Section colours")
+        ImGui.TreePop(ctx)
+      end
+    elseif row == "items" and p.scheme == "kind" then
+      local kc = colours.item_kinds()
+      name_editors(ctx, ImGui, "itemkinds", { { "midi", "MIDI", kc.midi or stops[1] }, { "print", "Printed", kc.print or colours.ramp(stops, 0.5) },
+        { "audio", "Recordings", kc.audio or stops[#stops] } }, "Kind colours")
     end
     ImGui.Unindent(ctx, 70)
-    if row == "tracks" then -- what the tracks would look like
-      if reaper.time_precise() - cache.at > 2 or cache.proj ~= proj then
-        cache.at, cache.proj = reaper.time_precise(), proj
-        cache.list = colours.read(proj, cfg)
-        cache.plan = colours.plan(cache.list, p.scheme, { stops = stops })
-      end
-      local w = ImGui.GetContentRegionAvail(ctx)
-      local x, y = ImGui.GetCursorScreenPos(ctx)
-      local dl, n = ImGui.GetWindowDrawList(ctx), #cache.list
-      for i, rgb in ipairs(cache.plan) do
-        local x0 = x + (i - 1) * w / n
-        ImGui.DrawList_AddRectFilled(dl, x0, y, x0 + w / n - 1, y + 12, (rgb << 8) | 0xFF, 2)
-      end
-      ImGui.InvisibleButton(ctx, "##preview", math.max(1, w), 12)
-      if ImGui.IsItemHovered(ctx) and n > 0 then
-        local i = math.max(1, math.min(n, math.floor((select(1, ImGui.GetMousePos(ctx)) - x) / w * n) + 1))
-        ImGui.SetTooltip(ctx, cache.list[i].name)
-      end
-    end
+    refresh(proj, cfg, parts, stops_of_row)
+    if row == "tracks" then preview(ctx, ImGui, cache.tsegs, "No tracks yet.")
+    elseif row == "items" then preview(ctx, ImGui, cache.isegs, "No items yet.")
+    else preview(ctx, ImGui, cache.msegs, "No regions or markers yet.") end
     ImGui.PopID(ctx)
   end
   ImGui.Spacing(ctx)

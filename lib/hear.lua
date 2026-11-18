@@ -253,7 +253,7 @@ function hear.watch_silence(proj, cfg, peers, now)
   local sm, si = live.fx(proj, false, live.SONOBUS)
   local key = "rt silent " .. tostring(proj)
   local expecting
-  if rt and sm and not reaper.TrackFX_GetOffline(sm, si) then
+  if rt and sm and not reaper.TrackFX_GetOffline(sm, si) and not live.talk_only(proj) then -- (talk only: their playing comes by NINJAM)
     local listen = reaper.GetExtState(band.SECTION, "listen " .. tostring(proj))
     for _, st in ipairs(peers) do
       if st.rt and st.playing and ((type(st.armed) == "table" and #st.armed > 0) or listen == st.user) then expecting = st.user end

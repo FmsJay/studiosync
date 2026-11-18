@@ -245,7 +245,6 @@ function people.seen(where)
 end
 function people.held(where) return tonumber(reaper.GetExtState(band.SECTION, "new held " .. where)) or 0 end
 
-local wheel_at -- (the wheel's colour while it's open)
 -- Settings: your colour, and how tracks look here. (In this file: the panel is near Lua's 200-locals limit.)
 function people.colour_options(ctx, ImGui, cfg)
   ImGui.SeparatorText(ctx, "Your colour")
@@ -264,7 +263,6 @@ function people.colour_options(ctx, ImGui, cfg)
   end
   local listed = false
   for _, c in ipairs(list) do listed = listed or c == mine end
-  if mine and not listed then list[#list + 1] = mine end -- (one from the wheel: a swatch like the rest, the bigger one. James, 0.59.4)
   for i, c in ipairs(list) do
     if i > 1 then next_to(30) end
     ImGui.PushID(ctx, i)
@@ -275,16 +273,27 @@ function people.colour_options(ctx, ImGui, cfg)
     if others[c] then ImGui.SetItemTooltip(ctx, others[c] .. "'s") end
     ImGui.PopID(ctx)
   end
-  -- Any colour: a wheel until you've picked on it (James, 0.59.4: "no extra box", it was a second swatch of your colour)
-  next_to(90)
-  if ImGui.SmallButton(ctx, "Any colour##owncolour") then wheel_at = mine or list[1]; ImGui.OpenPopup(ctx, "owncolour") end
-  ImGui.SetItemTooltip(ctx, "A colour wheel: pick any colour of your own.")
-  if ImGui.BeginPopup(ctx, "owncolour") then
-    local rv, c = ImGui.ColorPicker3(ctx, "##ownwheel", wheel_at or 0x808080,
-      ImGui.ColorEditFlags_PickerHueWheel | ImGui.ColorEditFlags_NoSidePreview | ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_NoAlpha)
-    if rv then wheel_at = c end
-    if ImGui.IsItemDeactivatedAfterEdit(ctx) then people.pick(cfg, wheel_at); ImGui.CloseCurrentPopup(ctx) end -- (picked: on letting go)
-    ImGui.EndPopup(ctx)
+  -- Any colour: the last swatch, with a colour wheel on it; it takes the colour you pick, and is the bigger one then (James, 0.59.4: "a color
+  -- wheel icon on the swatch... then it switches based on what you pick"). The wheel's window is ColorEdit's own, as before.
+  next_to(30)
+  local own = mine and not listed
+  local pad = own and 6 or 3 -- (26 or 20 high, as the others)
+  ImGui.PushStyleVar(ctx, ImGui.StyleVar_FramePadding, pad, (( own and 26 or 20) - ImGui.GetFontSize(ctx)) / 2)
+  local rv, picked = ImGui.ColorEdit3(ctx, "##own", own and mine or 0x6A6F7A, ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel | ImGui.ColorEditFlags_NoTooltip)
+  ImGui.PopStyleVar(ctx)
+  if rv and picked ~= mine then people.pick(cfg, picked) end
+  ImGui.SetItemTooltip(ctx, "Any colour of your own: click for the colour wheel")
+  do -- the wheel on it: a ring of hues, small in the corner once it shows your colour
+    local x0, y0 = ImGui.GetItemRectMin(ctx)
+    local x1, y1 = ImGui.GetItemRectMax(ctx)
+    local h = math.min(x1 - x0, y1 - y0)
+    local r = own and h * 0.22 or h * 0.36
+    local cx, cy = own and (x1 - r - 2) or (x0 + h / 2), own and (y1 - r - 2) or (y0 + h / 2)
+    local dl, hsv = ImGui.GetWindowDrawList(ctx), require("colours").hsv
+    for k = 0, 11 do
+      local t0, t1 = k / 12 * 2 * math.pi, (k + 1) / 12 * 2 * math.pi
+      ImGui.DrawList_AddTriangleFilled(dl, cx, cy, cx + r * math.cos(t0), cy + r * math.sin(t0), cx + r * math.cos(t1), cy + r * math.sin(t1), (hsv(k / 12, 0.85, 1) << 8) | 0xFF)
+    end
   end
   next_to(70)
   if ImGui.SmallButton(ctx, "Default##colour") then people.pick(cfg, nil) end

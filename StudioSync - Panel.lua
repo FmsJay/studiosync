@@ -1022,6 +1022,7 @@ local function set_same_room(v)
     -- (one or the other: both send your mix, so with both on everyone heard you twice, live and again bars later, and following
     -- each other wants 0 bars behind for one and an interval for the other. James, 0.59.4)
     if b and page_play.time_sync_on() then page_play.time_sync(false) end
+    reaper.SetProjExtState(proj, band.SECTION, "rt talk only", "")
     local link, why = setup.sonobus(cfg, b, proj, true)
     if not link then return band.msg(why) end
     sb_link = link
@@ -1273,6 +1274,7 @@ function ui.call_tab()
   local on = same_room_on()
   local ch, v = switch_row("##rtcall", "Real time mode", on, SAME_ROOM_TIP)
   if ch then set_same_room(v) end
+  if not on and b and page_play.time_sync_on() then ui.talk_controls(true) end -- (Time-sync's Talk: talk mics only, 0.59.4)
   if on then
     ui.talk_controls(on)
     ImGui.Spacing(ctx)
@@ -1288,7 +1290,7 @@ end
 local RT_KINDS = {
   { "my", "My time", "Live through SonoBus: you hear everyone the moment it arrives, a little late (the network). For playing and talking together." },
   { "their", "Their time", "Live through SonoBus, your backing delayed so the others line up with it. For listening along, not for playing." },
-  { "timesync", "Time-sync", "Through NINJAM: everyone plays to their own copy of the song and hears the others exactly in time with it, %s late. For playing along to a take; no Talk." },
+  { "timesync", "Time-sync", "Through NINJAM: everyone plays to their own copy of the song and hears the others exactly in time with it, %s late. For playing along to a take; Talk still works, on talk mics only." },
 }
 function ui.rt_kind()
   if page_play.time_sync_on() then return "timesync" end
@@ -1353,7 +1355,7 @@ local function home_play()
     ImGui.SetItemTooltip(ctx, "For someone with only the SonoBus app (no REAPER, no StudioSync): a message with SonoBus's download and a link that joins your\n" ..
       "studio's live audio. Turns on Real time mode and SonoBus Guest, so they hear your mix and what they play records here.")
   end
-  ui.talk_controls(sb)
+  ui.talk_controls(on) -- (with Time-sync too: SonoBus then carries only the talk mic. James, 0.59.4)
   if sb then -- (the help for it was in Settings > Advanced, with nothing here pointing at it: UX review, 0.58.52)
     require("page_hear").fit(ctx, ImGui, "Can't hear?")
     if ImGui.SmallButton(ctx, "Can't hear?") then ui.go_settings("Advanced") end

@@ -400,17 +400,22 @@ end
 -- backing is everyone's own copy of the song, so sending it too made everyone hear it twice, out of time). With a
 -- guest (someone with only SonoBus, lib/guest.lua) they have no copy: every band track feeds it then, and so does
 -- the measuring click. Returns how many tracks feed it.
+-- Talk only (James, 0.59.4: "can time-sync have talk since talk should just be on the talk mics"): with Time-sync, SonoBus carries
+-- nothing but the talk mic, so nobody hears your playing twice (NINJAM has it, in time). ProjExtState "rt talk only".
+function live.talk_only(proj) return select(2, reaper.GetProjExtState(proj, band.SECTION, "rt talk only")) == "1" end
 function live.rt_sends(proj)
   local rt = live.rt_track(proj, false)
   if not rt then return 0 end
+  local talk_only = live.talk_only(proj)
   local talk = live.talk_track(proj)
   if talk then -- (silent while anyone's recording here: a producer's voice in a performer's ears mid-take. Sessionwire does the same)
     reaper.SetMediaTrackInfo_Value(talk, "B_MUTE", reaper.GetPlayStateEx(proj) & 4 == 4 and 1 or 0)
   end
-  local guest = select(2, reaper.GetProjExtState(proj, band.SECTION, "guest")) == "1"
-    or reaper.GetExtState(band.SECTION, "send whole mix " .. tostring(proj)) ~= "" -- (someone's Listening without playing along: lib/hear.lua)
+  local guest = not talk_only and (select(2, reaper.GetProjExtState(proj, band.SECTION, "guest")) == "1"
+    or reaper.GetExtState(band.SECTION, "send whole mix " .. tostring(proj)) ~= "") -- (someone's Listening without playing along: lib/hear.lua)
   local function feeds(tr)
     local tag = select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local", "", false))
+    if talk_only then return tr ~= rt and (tag == "talk" or tag == "talkback") and reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1 end
     return tr ~= rt and (reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1 or tag == "click" or (guest and tag == ""))
   end
   -- its receives, in order, by source track number (the chunk's AUXRECV lines: core REAPER can't hand a send's
