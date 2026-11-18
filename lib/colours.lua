@@ -257,7 +257,7 @@ function colours.read(proj, cfg)
     if depth == 0 then -- (a new family: a top-level folder, or a track on its own; the folder's name goes with each of its tracks)
       family = family + 1
       top = reaper.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH") >= 1
-      folder = (select(2, reaper.GetTrackName(tr)):gsub(" %(band%)$", ""):gsub(" %(studio%)$", ""))
+      folder = require("sync").base_name(select(2, reaper.GetTrackName(tr)))
     end
     if not mirror.local_track(tr) then
       local oid = mirror.track_oid(tr)
@@ -269,7 +269,7 @@ function colours.read(proj, cfg)
       end
       look(oid)
       for k = 0, reaper.CountTrackMediaItems(tr) - 1 do look(mirror.item_oid(reaper.GetTrackMediaItem(tr, k))) end
-      list[#list + 1] = { ptr = tr, name = (select(2, reaper.GetTrackName(tr)):gsub(" %(band%)$", ""):gsub(" %(studio%)$", "")), family = family, folder = folder, in_folder = top or nil, maker = by_tag[mirror.creator(oid)], newest = newest }
+      list[#list + 1] = { ptr = tr, name = require("sync").base_name(select(2, reaper.GetTrackName(tr))), family = family, folder = folder, in_folder = top or nil, maker = by_tag[mirror.creator(oid)], newest = newest }
     end
     depth = depth + math.floor(reaper.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH"))
     if depth < 0 then depth = 0 end
@@ -364,7 +364,7 @@ function colours.read_items(proj, cfg, may)
   for t = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, t)
     if not mirror.local_track(tr) then
-      local name = select(2, reaper.GetTrackName(tr)):gsub(" %(band%)$", ""):gsub(" %(studio%)$", "")
+      local name = require("sync").base_name(select(2, reaper.GetTrackName(tr)))
       for k = 0, reaper.CountTrackMediaItems(tr) - 1 do
         local it = reaper.GetTrackMediaItem(tr, k)
         if not may or may(name, tr) then

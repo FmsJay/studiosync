@@ -244,11 +244,11 @@ end
 -- What's being sung over stays quiet here while it's sung: pass 1 under pass 2, doubled. Only here: the track's own mute is what's kept and sent.
 function producer.quiet_tracks(proj, names)
   local want = {}
-  for _, n in ipairs(names) do want[n:gsub(" %(band%)$", ""):gsub(" %(studio%)$", "")] = true end
+  for _, n in ipairs(names) do want[require("sync").base_name(n)] = true end
   for t = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, t)
     local held = select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_quiet", "", false))
-    local name = select(2, reaper.GetTrackName(tr)):gsub(" %(band%)$", ""):gsub(" %(studio%)$", "")
+    local name = require("sync").base_name(select(2, reaper.GetTrackName(tr)))
     local local_one = require("mirror").local_track(tr)
     if want[name] and not local_one then
       if held == "" then
