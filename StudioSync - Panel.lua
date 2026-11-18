@@ -1725,6 +1725,12 @@ function ui.settings_you()
     if ImGui.SmallButton(ctx, "Change name") then
       local ok, name = reaper.GetUserInputs("StudioSync: your name", 1, "Your name (collaborators see it),extrawidth=120", cfg.user)
       name = ok and band.clean(name) or ""
+      local mine, taken = require("services").my_device_id(), nil
+      for _, g in ipairs(band.bands()) do
+        local d = band.read_json(g.root .. "/_band/devices/" .. name:gsub("[^%w%-_ ]", "") .. ".json")
+        if type(d) == "table" and d.device and mine and d.device ~= mine and name:lower() ~= cfg.user:lower() then taken = g.name end
+      end
+      if taken then band.msg("Another computer in " .. taken .. " is already called " .. name .. ". Pick a name of your own (say, " .. name .. "-Laptop)."); name = "" end
       if name ~= "" and name ~= cfg.user then
         reaper.SetExtState(band.SECTION, "user", name, true)
         band.rename_everywhere(cfg.user, name, cfg.root)
@@ -1745,7 +1751,44 @@ function ui.settings_you()
     if wide then ImGui.SameLine(ctx, 0, 32); studios() end -- (docked: on your name's row, or it was below the fold)
     require("people").colour_options(ctx, ImGui, cfg)
     if not wide then ImGui.Spacing(ctx); studios() end
+    ui.persona_row()
     card_end()
+  end
+end
+-- Coming from another DAW: ReaPersona (REAPER set up to feel like it, by the same people). The installer asks; someone who joined with a
+-- join code never met that question, so it's here too. (0.58.96, James: collaborators coming from another DAW)
+local persona_at, persona_file = -math.huge, nil
+function ui.persona_row()
+  if reaper.time_precise() - persona_at > 5 then -- (looked for every few seconds, not every frame)
+    persona_at, persona_file = reaper.time_precise(), nil
+    local base = reaper.GetResourcePath() .. "/Scripts/ReaPersona"
+    for _, f in ipairs({ base .. "/ReaPersona.lua", base .. "/Workflow/ReaPersona.lua", base .. "/ReaPersona/ReaPersona.lua" }) do
+      if not persona_file and reaper.file_exists(f) then persona_file = f end
+    end
+  end
+  ImGui.Spacing(ctx)
+  ImGui.AlignTextToFramePadding(ctx)
+  ImGui.Text(ctx, "Coming from another DAW?")
+  ImGui.SameLine(ctx)
+  if persona_file then
+    if ImGui.SmallButton(ctx, "Open ReaPersona") then
+      local id = reaper.AddRemoveReaScript(true, 0, persona_file, true)
+      if id > 0 then reaper.Main_OnCommand(id, 0) end
+    end
+    ImGui.SetItemTooltip(ctx, "ReaPersona makes REAPER's shortcuts, mouse and look feel like the app you know: Pro Tools, Logic, Ableton, FL Studio,\n" ..
+      "Cubase, Nuendo, Studio One, GarageBand and more. Free, by the same people; switch back to plain REAPER any time.")
+  elseif reaper.APIExists("ReaPack_AddSetRepository") then
+    if ImGui.SmallButton(ctx, "Get ReaPersona") then
+      local ok, err = reaper.ReaPack_AddSetRepository("ReaPersona", "https://raw.githubusercontent.com/FmsJay/ReaPersona/main/index.xml", true, 1)
+      reaper.ReaPack_ProcessQueue(true)
+      local sync = reaper.NamedCommandLookup("_REAPACK_SYNC")
+      if ok and sync ~= 0 then reaper.Main_OnCommand(sync, 0) end
+      band.log(ok and "ReaPersona is on its way: ReaPack brings it in a minute, then this button says Open ReaPersona" or ("couldn't add ReaPersona to ReaPack: " .. tostring(err)))
+    end
+    ImGui.SetItemTooltip(ctx, "ReaPersona makes REAPER's shortcuts, mouse and look feel like the app you know (Pro Tools, Logic, Ableton, FL Studio and more).\n" ..
+      "Free, by the same people, through ReaPack like StudioSync; switch back to plain REAPER any time.")
+  else
+    ImGui.TextDisabled(ctx, "ReaPersona (REAPER that feels like your old app) comes through ReaPack: install ReaPack first (reapack.com).")
   end
 end
 

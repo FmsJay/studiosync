@@ -130,7 +130,7 @@ local function start_server(cfg)
     local cmd = string.format('powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%slisten_server.ps1" -Root "%s" -Port %d -Beat "%s" -Prefix "%s" -Page "%s"',
       here, root, listen.port(id), beat_file(id), prefix, listen.path_of(id))
     local bat, vbs = services.TMP .. "/bandsync-listen-" .. id .. ".cmd", services.TMP .. "/bandsync-listen.vbs"
-    band.write_atomic(bat, "@chcp 65001 >nul\r\n@" .. cmd .. "\r\n") -- (a non-ASCII Windows user name in its paths: as services.background. Cross-platform review, 0.58.78)
+    band.write_atomic(bat, "@chcp 65001 >nul\r\n@" .. cmd:gsub("%%", "%%%%") .. "\r\n") -- (% doubled: a batch file reads %x as a variable. Review, 0.58.96) -- (a non-ASCII Windows user name in its paths: as services.background. Cross-platform review, 0.58.78)
     band.write_atomic(vbs, 'CreateObject("WScript.Shell").Run """" & WScript.Arguments(0) & """", 0, False\r\n')
     reaper.ExecProcess(string.format('wscript.exe //B //Nologo "%s" "%s"', vbs, bat), -1)
   else

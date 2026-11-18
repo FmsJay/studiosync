@@ -1,7 +1,7 @@
 -- Taking someone out of a group. A mark in the shared folder (_band/removed/<name>.json) says who; a minute later every computer in
 -- the group stops syncing with theirs, each doing it itself, so nobody has to be online at the same moment. Their claims go free
 -- and the driver's seat comes back, on the computer that removed them. What they made stays in the song and on Restore, and they
--- keep the copy they already have. Inviting them again and letting them in clears the mark. Which computer is whose: each computer
+-- keep the copy they already have. Inviting them again and letting them in clears the mark (a guest's too: removal.let_in). Which computer is whose: each computer
 -- says so in _band/devices/<name>.json.
 -- A mark is a file anyone in the group could write: it counts only from the owner's or an admin's computer (or, leaving, your own), as
 -- Syncthing tells it (lib/trust.lua, 0.58.69).
@@ -83,7 +83,7 @@ function removal.left(root, user, id)
   reaper.RecursiveCreateDirectory(marks(root), 0)
   band.write_json(marks(root) .. "/" .. file_name(user), { user = user, device = id, by = user, at = os.time(), left = true })
 end
-function removal.keep(root, user) os.remove(marks(root) .. "/" .. file_name(user)) end
+function removal.keep(root, user) band.remove(marks(root) .. "/" .. file_name(user)) end
 -- A guest: the same mark, dated so it falls due when their time is up, by their computer (their StudioSync name isn't known yet when
 -- they're let in). A guest invitation's day was Tailscale's only: their computer kept the shared folder until someone took it out (review, 0.58.52).
 -- How long is picked when inviting them (James, 0.58.82: "invite guest and set for when theirs expires"; it was always a day): the invitation
@@ -194,7 +194,11 @@ function removal.may_auto_admit(root, device, now)
 end
 -- A computer let in again: whatever mark names it is over.
 function removal.let_in(root, device)
-  for _, m in ipairs(all_marks(root)) do if m.device == device then removal.keep(root, m.user) end end
+  -- (by file: a guest's mark is named by their computer, so removal.keep(m.user) left it, and they stayed "taken out". Review, 0.58.96)
+  for _, f in ipairs(band.files(marks(root), ".json")) do
+    local m = band.read_json(marks(root) .. "/" .. f)
+    if type(m) == "table" and m.device == device then band.remove(marks(root) .. "/" .. f) end
+  end
 end
 
 -- A computer asking this one's Syncthing to connect that's already in the studio: its own devices file is there, written by itself (lib/trust.lua),

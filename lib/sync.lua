@@ -1440,8 +1440,10 @@ function sync.receive(proj, cfg, song, room, can)
   if cut then
     for f, ev in pairs(cache) do kept[f] = kept[f] or ev end
     sync.ev_cache[dir] = kept
+    sync.read_cut = true -- (preload: not "nothing to do", only "not read yet". Review, 0.58.96)
     return 0
   end
+  sync.read_cut = nil
   table.sort(pending, function(a, x) return (a.time .. a.id) < (x.time .. x.id) end)
   local function driver_at(t) -- who drove when this happened
     local best
@@ -1804,7 +1806,7 @@ function sync.preload(proj, cfg, song, room)
       say()
       local n = sync.receive(proj, cfg, song, room, can)
       total = total + n
-      if n == 0 then break end
+      if n == 0 and not sync.read_cut then break end -- (a big catch-up's first reads run past their budget: it gave up on exactly that)
     end
   end)
   reaper.PreventUIRefresh(-1)

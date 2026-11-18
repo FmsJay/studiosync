@@ -198,12 +198,12 @@ By hand:
    Restore pages, needs it.
 5. Optional extras:
    - **Tailscale** comes with the installers. Everyone in a studio signs in to its Tailscale network (a guest invitation puts a guest on it with no account; each studio can have its own). *Play along*, *Jam* and the producer's
-     NINJAM route reach the NINJAM server on the host's machine through it (show the Play/Jam tab in Settings > Advanced),
+     NINJAM route reach the NINJAM server (on whichever computer connects first) through it (show the Play/Jam tab in Settings > Advanced),
      and it gets round a router that stops SonoBus (Settings > Advanced > Can't hear each other?).
    - **The Google Drive copy** (optional, recommended) needs **Google Drive for desktop**, each person signed in
      with their **own** Google account (two computers on one account lose files: "Lost and Found"). The host makes a
-     `StudioSync` folder in My Drive and shares it with everyone as Editor; each collaborator adds it to their own Drive
-     with *Shared with me > right-click > Organize > Add shortcut > My Drive*, keeping the name `StudioSync`, or it
+     `StudioSync - <studio name>` folder in My Drive (the installer names it) and shares it with everyone as Editor; each collaborator adds it to their own Drive
+     with *Shared with me > right-click > Organize > Add shortcut > My Drive*, keeping its name, or it
      never reaches their computer. StudioSync finds it in any My Drive on the machine (any drive letter, the Windows
      user folder, every macOS account) and never makes one itself; Settings says when the shortcut is
      missing. Anything else goes in the `drive_root` setting (ExtState), and Settings

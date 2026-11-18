@@ -137,8 +137,8 @@ from github.com/sonosaurus/sonobus releases; Linux: the .deb from pkg.sonobus.ne
 join the band's studio under the musician's StudioSync name. REAPER lists a new plug-in only after it restarts, so install SonoBus before REAPER's first start
 or restart REAPER after.
 
-**Play along** and **Jam** (the Play/Jam tab: off by default, Settings > Advanced) go through a NINJAM server on the host's machine, reached over Tailscale so it never faces the internet. So does the producer's NINJAM route. Tailscale goes in for everyone; the server is only the host's, if they ask for those.
-Everyone signs in to the studio's one account (James's choice). Otherwise the host **shares one machine** with each bandmate, as below.
+**Play along** and **Jam** (the Play/Jam tab: off by default, Settings > Advanced) go through a NINJAM server on whichever computer connects first, reached over Tailscale so it never faces the internet. So does the producer's NINJAM route. Tailscale goes in for everyone.
+Each studio has its own Tailscale network (account); everyone in it signs in to that one, and a guest invitation puts a guest on it with no account (its key works once, within 2 days). Whoever runs the network adds a Tailscale access token in StudioSync's Settings > Advanced (one per network) and presses **Set up the tags** once; Settings > Studio > **Use <network> for this studio** records which network a studio uses.
 
 | OS | Install | CLI |
 |---|---|---|
@@ -149,11 +149,7 @@ Everyone signs in to the studio's one account (James's choice). Otherwise the ho
 - **Sign-in is the musician's own click,** with their own account (Google, Apple, Microsoft...). Never create an
   account or sign in for them. macOS asks to **add VPN configurations** (and, for the standalone package, to allow a
   system extension): both must be allowed.
-- **Host:** in the admin console (login.tailscale.com/admin/machines), the server machine's **...** menu > **Share**,
-  then invite each bandmate by email or send them the link. The host's Tailscale name is on that page.
-- **Bandmate:** open the share link while signed in and accept. Check: `tailscale status` lists the host's machine,
-  and `tailscale ping <host IP>` answers. A share is one-way (they reach the host, not the reverse), which is all
-  Live needs: everyone connects to the host's server.
+- **Check:** `tailscale status` lists the others' computers, and `tailscale ping <name>` answers.
 - **Hosting Live**: nothing to do. The NINJAM server ships with StudioSync and the first computer to connect runs it
   (`tools/ninjam-server/README.md`). Windows or macOS may ask once whether to let it accept connections: allow it.
 

@@ -594,7 +594,7 @@ function pg.draw_projects(env)
         local here_songs = {}
         for _, r in ipairs(list) do if ss.is_here(cfg, r.song) then here_songs[#here_songs + 1] = r.song end end
         if ImGui.MenuItem(ctx, "Delete my local copies of what's in it...", nil, false, #here_songs > 0) then ask_delete(root, cfg.user, here_songs) end
-        if ImGui.MenuItem(ctx, "Remove this folder", nil, false, #list == 0) then os.remove(folders_file(root) .. "/" .. f .. ".json") end
+        if ImGui.MenuItem(ctx, "Remove this folder", nil, false, #list == 0) then band.remove(folders_file(root) .. "/" .. f .. ".json") end
         ImGui.EndPopup(ctx)
       end
       if open then

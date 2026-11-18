@@ -23,6 +23,8 @@ local function key_of(ev)
 end
 local TRANSPORT = "\0transport"
 local function later(a, b) -- the same order every machine uses (lib/mirror.lua newer: rev, then the clock, then the name), then id
+  -- (a tempo map or a cue: as sync orders them, ev.order first. Review, 0.58.96: by the sender's clock, trim could keep an older map)
+  if a.type ~= "obj" and b.type ~= "obj" then return (a.order or ((a.time or "") .. (a.id or ""))) > (b.order or ((b.time or "") .. (b.id or ""))) end
   local mirror = require("mirror")
   local x, y = { rev = a.rev, time = mirror.order_of(a) }, { rev = b.rev, time = mirror.order_of(b) }
   if mirror.newer(x, y) ~= mirror.newer(y, x) then return mirror.newer(x, y) end
@@ -158,6 +160,10 @@ function trim.run(cfg, song, room, days)
   local archive = ((parent and parent ~= "") and parent or band.home())
     .. "/StudioSync history archive/" .. song .. "/" .. room
   reaper.RecursiveCreateDirectory(archive, 0)
+  -- (what goes is listed first: a computer that saw the events gone before the list arrived copied them back from Drive. Review, 0.58.96)
+  local list = dir:gsub("/events$", "/trimmed")
+  local stamp = cfg.user:gsub("[^%w%-_]", "_") .. "-" .. os.date("!%Y%m%d-%H%M%S")
+  if #gone > 0 then reaper.RecursiveCreateDirectory(list, 0); band.write_json(list .. "/" .. stamp .. ".json", gone) end
   local n, took = 0, {}
   for _, id in ipairs(gone) do
     local from, to = dir .. "/" .. id .. ".json", archive .. "/" .. id .. ".json"
@@ -166,13 +172,7 @@ function trim.run(cfg, song, room, days)
   end
   local prints_gone = trim.prints(cfg, song, room, evs, took, archive)
   -- what went, for the band: the Google Drive copy still has these, and would bring them back (lib/drive.lua)
-  if #took > 0 then
-    local list = dir:gsub("/events$", "/trimmed")
-    reaper.RecursiveCreateDirectory(list, 0)
-    local stamp = cfg.user:gsub("[^%w%-_]", "_") .. "-" .. os.date("!%Y%m%d-%H%M%S")
-    band.write_json(list .. "/" .. stamp .. ".json", took)
-    if #prints_gone > 0 then band.write_json(list .. "/" .. stamp .. "-media.json", { media = prints_gone }) end
-  end
+  if #took > 0 and #prints_gone > 0 then band.write_json(list .. "/" .. stamp .. "-media.json", { media = prints_gone }) end
   return n
 end
 

@@ -483,7 +483,18 @@ function bg.claim(key, name, out)
 end
 
 -- Whether any job is out (Live sync then looks every second, so a finished print goes in at once).
-function bg.waiting() return next(jobs) ~= nil end
+-- (a finished print nobody collected (its part undone to one already printed, or deleted) kept the tab "waiting" all session: Live sync
+-- looked at full speed and Sync and exit never got past sending. Dropped half a minute after it's done. Review, 0.58.96)
+function bg.waiting()
+  local t = reaper.time_precise()
+  for key, j in pairs(jobs) do
+    if finished(j) then
+      j.done_seen = j.done_seen or t
+      if t - j.done_seen > 30 then drop(key) end
+    end
+  end
+  return next(jobs) ~= nil
+end
 
 -- Prints done in the background this session, and jobs that failed (tests, Health).
 function bg.counts() return done, failed, cancelled end

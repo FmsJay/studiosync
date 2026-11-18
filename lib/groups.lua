@@ -35,7 +35,6 @@ function groups.trusted(root)
   trusted_at[root] = { at = now, j = out }
   return out
 end
-function groups.forget_trusted(root) trusted_at[root] = nil end
 
 local seen = {}
 local function who(root) -- read at most every few seconds: the panel asks each frame

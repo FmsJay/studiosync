@@ -18,6 +18,7 @@ for _, m in ipairs({ "band", "services" }) do package.loaded[m] = nil end
 local band = require("band")
 local kept = {}
 band.write_atomic = function(p, s) kept[p] = s; return true end -- (curl's config files: in memory, never the real temp folder)
+os.execute = function() return true end -- (no chmod on files the test keeps in memory)
 local services = require("services")
 local here = "tail2.ts.net"
 services.tailnet_now = function() return "net2@example", here end
@@ -39,7 +40,7 @@ assert(services.set_tailscale_token("tskey-api-BAD", "evil'; rm -rf ~ #") == fal
 -- an older token (saved before 0.58.94): never used for a network until Tailscale says it's that one's, then moved there (0.58.95)
 ext["tailscale_token"] = "tskey-api-OLD"
 ext["tailscale_token_gen"] = "from another script" -- (as a change elsewhere would: this script reads its tokens again)
-assert(services.has_token_for("tail5.ts.net") and services.has_tailscale_token(), "drawing: it might be anyone's, so it counts (nothing asked)")
+assert(services.has_token_for("tail5.ts.net") and #services.tailscale_token_nets() > 0, "drawing: it might be anyone's, so it counts (nothing asked)")
 assert(#ran == 0, "nothing asked of Tailscale just to draw")
 answer = devices("tail4.ts.net")
 assert(services.tailscale_token("tail5.ts.net") == "", "for another network: not used (it could change that network's policy)")

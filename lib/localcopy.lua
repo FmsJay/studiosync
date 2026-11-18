@@ -10,7 +10,9 @@ local copy = { DRIVE_SETTLED = 1800 }
 
 local WIN = reaper.GetOS():find("^Win") ~= nil
 -- What stays of a project, as the ignore list keeps it (songsync.LISTING).
-local KEEP_TOP = { ["session.json"] = true, ["folder.json"] = true, ["live.json"] = true, invites = true, chat = true, rooms = true }
+-- (inbox too, as songsync.LISTING has it since 0.58.54: deleting your copy put a dropped-in recording in the Trash, and Syncthing took it off
+-- every computer. Review, 0.58.96)
+local KEEP_TOP = { ["session.json"] = true, ["folder.json"] = true, ["live.json"] = true, invites = true, chat = true, rooms = true, inbox = true }
 local KEEP_ROOM = { ["room.json"] = true, summary = true, status = true, chat = true }
 
 -- Every file of the project that would go, relative to its folder, and the top-most paths to remove. Reads the folders.

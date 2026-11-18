@@ -35,8 +35,8 @@ second(1000.0) -- (offset 4001.0: a tick read on time)
 assert(math.abs(together.now() - (clock + 4001.0)) < 1e-6, "the first reading")
 second(1001.3) -- (a late look: lower)
 assert(math.abs(together.now() - clock - 4001.0) < 1e-6, "a late look doesn't move it")
-for i = 1, 40 do second(1001.3 + i * 1.0002) end -- (the wall clock now runs a little slow)
-assert(math.abs((together.now() - clock) - (wall - clock)) < 0.01, "after half a minute it follows the clock as it is: " .. (together.now() - clock) - (wall - clock))
+for i = 1, 100 do second(1001.3 + i * 1.0002) end -- (the wall clock now runs a little slow; the best of this half minute and the last is kept)
+assert(math.abs((together.now() - clock) - (wall - clock)) < 0.02, "a minute on it follows the clock as it is: " .. (together.now() - clock) - (wall - clock))
 os.time = real_time
 
 -- a track deleted elsewhere: an item whose newest version is mine and from the last two minutes stays here

@@ -10,7 +10,7 @@
 # Answers can be given up front as environment variables: BS_USER, BS_HOSTING (yes: the first one set up; later: no studio yet),
 # BS_HOST_ID (a set-up bandmate's Syncthing ID), BS_ROOT, BS_LIVE / BS_SOLO (no: leave out SonoBus + Tailscale / the Google Drive note),
 # BS_SCRIPTS (reapack/folder/verify), BS_TAG, BS_BAND_ID / BS_BAND_NAME (the band an invitation is for: its Syncthing folder id and
-# name; the first band is "bandsync"), BS_TS_KEY (a guest invitation's Tailscale key: on the inviter's Tailscale network for a day,
+# name; the first band is "bandsync"), BS_TS_KEY (a guest invitation's Tailscale key: on the inviter's Tailscale network until the invitation ends,
 # no account; lib/services.lua), BS_PLUGINS, BS_EXTRAS, BS_REAPERSONA (a DAW id, yes or no), and BS_SUDO (yes/no: the sudo steps).
 # A bandmate's panel (Invite a collaborator) hands out the curl line above with BS_HOST_ID already in it.
 # Testing: BS_SYNCTHING_HOME drives a separate Syncthing instance, BS_NO_REAPER stops before anything happens inside REAPER.
@@ -192,18 +192,18 @@ if yes "$PLUGINS" && [ -z "$JOINING" ] && [ -z "${BS_EXTRAS:-}" ]; then
 fi
 # ReaPersona: which app you're used to, as one question, and it's set up as that DAW in the same run. BS_REAPERSONA: a DAW id
 # (ReaPersona's own, styles.json), yes or no.
-PERSONA_IDS="pro_tools logic ableton fl_studio cubase studio_one bitwig cakewalk reason audacity audition"
+PERSONA_IDS="pro_tools pro_tools_intro logic garageband ableton fl_studio cubase nuendo studio_one bitwig cakewalk reason audacity audition"
 PERSONA=""
 case "${BS_REAPERSONA:-}" in
   [yY]*|[nN]|[nN][oO]) ;;
   "")
     say "Used to another music app? REAPER can take on its shortcuts, mouse and look (ReaPersona, free; switch back any time):"
-    i=0; for n in "Pro Tools" "Logic Pro" "Ableton Live" "FL Studio" "Cubase or Nuendo" "Studio One" "Bitwig Studio" "Cakewalk or Sonar" "Reason" "Audacity" "Adobe Audition"; do
+    i=0; for n in "Pro Tools" "Pro Tools Intro (the free one)" "Logic Pro" "GarageBand" "Ableton Live" "FL Studio" "Cubase" "Nuendo" "Studio One or Fender Studio Pro" "Bitwig Studio" "Cakewalk or Sonar" "Reason" "Audacity" "Adobe Audition"; do
       i=$((i + 1)); printf '  %2d) %s\n' "$i" "$n"; done
     while :; do
       n="$(ask "Its number, or Enter for none")"
       [ -z "$n" ] && break
-      case "$n" in *[!0-9]*) ;; *) [ "$n" -ge 1 ] && [ "$n" -le 11 ] && { PERSONA="$(echo "$PERSONA_IDS" | cut -d' ' -f"$n")"; break; };; esac
+      case "$n" in *[!0-9]*) ;; *) [ "$n" -ge 1 ] && [ "$n" -le 14 ] && { PERSONA="$(echo "$PERSONA_IDS" | cut -d' ' -f"$n")"; break; };; esac
       warn "A number from the list, or Enter."
     done;;
   *) PERSONA="$(printf '%s' "$BS_REAPERSONA" | tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -cd 'a-z0-9_')";;
@@ -648,6 +648,11 @@ fi
 [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || { warn "There's no desktop here (over SSH?): REAPER can't open. Run this again in a terminal on the computer's own desktop."; exit 1; }
 
 # ---------- 4. StudioSync scripts, inside REAPER ----------
+if [ "$TAG" = main ]; then # the newest released version (what ReaPack serves), as Windows does: main's setup could be ahead of any release
+  V="$(curl -fsSL "https://github.com/$REPO/raw/main/index.xml" 2>/dev/null | awk '/<reapack name="StudioSync.lua"/{f=1} f&&/<\/reapack>/{f=0} f' |
+    grep -o 'version name="[0-9.]*"' | grep -o '[0-9][0-9.]*' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
+  [ -n "$V" ] && TAG="v$V"
+fi
 ZREF="heads/main"; [ "$TAG" != main ] && ZREF="tags/$TAG"
 # (a Flatpak REAPER has a /tmp of its own and can't see this one: the setup files go in its own folder instead. Cross-platform review, 0.58.78)
 SRC="$WORK/src"; [ "$REAPER_BIN" = flatpak ] && { SRC="$FLATPAK_APP/cache/studiosync_setup"; rm -rf "$SRC"; trap 'rm -rf "$WORK" "$SRC"' EXIT; }

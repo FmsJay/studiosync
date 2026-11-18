@@ -10,7 +10,7 @@ param(
   [string]$Tag = "main",          # which StudioSync version's helper files to use (the .cmd passes its own)
   [string]$User = "", [string]$HostId = "", [string]$Root = "",
   [string]$BandId = "", [string]$BandName = "", # the band an invitation is for: its Syncthing folder id and name
-  [string]$TsKey = "",             # a guest invitation's Tailscale key: on the inviter's Tailscale network for a day, no account (lib/services.lua)
+  [string]$TsKey = "",             # a guest invitation's Tailscale key: on the inviter's Tailscale network until the invitation ends, no account (lib/services.lua)
   [ValidateSet("", "yes", "no", "later")][string]$Hosting = "", [ValidateSet("", "yes", "no")][string]$Live = "", [ValidateSet("", "yes", "no")][string]$Solo = "",
   [ValidateSet("", "yes", "no")][string]$Plugins = "", # the band plug-in pack (free, open source)
   [ValidateSet("", "yes", "no")][string]$Extras = "", # the larger extras: amp modelers, Odin 2, sforzando + Salamander piano
@@ -46,7 +46,7 @@ if ($boxed) {
   $cmd = Join-Path $env:TEMP "bandsync_install_outside.cmd"
   # (UTF-8 with chcp 65001: written as ASCII, a user name with accents in the path, or a studio's, came out as "?" and setup never started.
   # Cross-platform review, 0.58.78)
-  [IO.File]::WriteAllText($cmd, "@echo off`r`nchcp 65001 >nul`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" $quoted`r`npause`r`n", (New-Object System.Text.UTF8Encoding($false)))
+  [IO.File]::WriteAllText($cmd, "@echo off`r`nchcp 65001 >nul`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" $quoted`r`npause`r`n(goto) 2>nul & del `"%~f0`"`r`n", (New-Object System.Text.UTF8Encoding($false)))
   Start-Process explorer.exe -ArgumentList "`"$cmd`""
   Write-Host "This window runs inside another app's sandbox; StudioSync setup continues in a new window. If none appears, double-click 'Install StudioSync (Windows).cmd' yourself." -ForegroundColor Yellow
   exit 0
@@ -167,8 +167,9 @@ $wantPlugins = if ($Plugins) { $Plugins -eq "yes" } else { Write-Host "The free 
 $wantExtras = if ($Extras) { $Extras -eq "yes" } else { -not $joining -and $wantPlugins -and (YesNo "Also the bigger extras (about 1.2 GB: a grand piano, a real drum kit, amp capture players and the Odin 2 synth)?" "n") }
 # ReaPersona: which app you're used to, as one question, and it's set up as that DAW in the same run (James, 0.58.64: yes/no installed it and
 # left the picking for later). The ids are ReaPersona's own (styles.json).
-$personas = @(@("pro_tools", "Pro Tools"), @("logic", "Logic Pro"), @("ableton", "Ableton Live"), @("fl_studio", "FL Studio"), @("cubase", "Cubase or Nuendo"),
-  @("studio_one", "Studio One"), @("bitwig", "Bitwig Studio"), @("cakewalk", "Cakewalk or Sonar"), @("reason", "Reason"), @("audacity", "Audacity"), @("audition", "Adobe Audition"))
+$personas = @(@("pro_tools", "Pro Tools"), @("pro_tools_intro", "Pro Tools Intro (the free one)"), @("logic", "Logic Pro"), @("garageband", "GarageBand"),
+  @("ableton", "Ableton Live"), @("fl_studio", "FL Studio"), @("cubase", "Cubase"), @("nuendo", "Nuendo"), @("studio_one", "Studio One or Fender Studio Pro"),
+  @("bitwig", "Bitwig Studio"), @("cakewalk", "Cakewalk or Sonar"), @("reason", "Reason"), @("audacity", "Audacity"), @("audition", "Adobe Audition"))
 $persona = if ($ReaPersona -eq "no" -or $ReaPersona -eq "yes") { "" } elseif ($ReaPersona) { $ReaPersona.ToLower() -replace '[^a-z0-9_]', '' } else {
   Write-Host "Used to another music app? REAPER can take on its shortcuts, mouse and look (ReaPersona, free; switch back any time):"
   for ($i = 0; $i -lt $personas.Count; $i++) { Write-Host ("  {0,2}) {1}" -f ($i + 1), $personas[$i][1]) }

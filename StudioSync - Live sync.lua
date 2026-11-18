@@ -647,6 +647,9 @@ local function tick_body() -- returns true to keep going
   if sync.tip_at and reaper.time_precise() - sync.tip_at > 6 then sync.tip_at = nil; reaper.TrackCtl_SetToolTip("", 0, 0, true) end
   if not reaper.ValidatePtr2(0, proj, "ReaProject*") then -- project closed: stop, and say so
     reaper.DeleteExtState(band.SECTION, "live " .. key, false)
+    -- (the tab's own settings go too: a new tab can get the same address, and took its follow, produce or listen. Review, 0.58.96)
+    for _, k in ipairs({ "follow", "listen", "listen had", "listeners", "send whole mix", "alone", "held", "produce", "transport", "together",
+        "sonobus for listeners", "outbox", "live owner", "ping", "slow tick", "last here", "draw" }) do reaper.DeleteExtState(band.SECTION, k .. " " .. key, false) end
     return band.log("live sync stopped: '" .. b.song .. "'" .. (b.room ~= "main" and (", side room '" .. b.room .. "',") or "") .. " was closed (it starts again by itself when you reopen it)")
   end
   local now_b = band.binding(proj)
@@ -716,7 +719,8 @@ local function tick_body() -- returns true to keep going
     local recording = reaper.GetPlayStateEx(proj) & 4 == 4
     if not recording then together_take = nil end -- (a take started together that has since stopped)
     local front = reaper.EnumProjects(-1)
-    local busy_elsewhere = transport.type == "start" and transport.rec and front ~= proj and reaper.GetPlayStateEx(front) ~= 0
+    -- (and any cue while the tab in front records: a play cue for a following tab behind it could stop that take. Review, 0.58.96)
+    local busy_elsewhere = front ~= proj and ((transport.type == "start" and transport.rec and reaper.GetPlayStateEx(front) ~= 0) or reaper.GetPlayStateEx(front) & 4 == 4)
     -- (asked once a pass: reached() counts readings, and asked twice in one pass a single glitch counted as two. Review, 0.58.92)
     local due = tnow >= fire or reached(transport, theirs)
     if tnow - fire > 30 then -- arrived long after the fact (offline, sync stalled): don't start a song out of nowhere

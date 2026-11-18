@@ -203,7 +203,7 @@ function hear.listen(proj, cfg, b, name)
   -- Real time mode off: SonoBus goes with it
   local live = require("live")
   local sm, si = live.fx(proj, false, live.SONOBUS)
-  if sm and select(2, reaper.GetProjExtState(proj, band.SECTION, "side")) ~= "0" and not hear.listeners_here then reaper.TrackFX_SetOffline(sm, si, true) end
+  if sm and select(2, reaper.GetProjExtState(proj, band.SECTION, "side")) ~= "0" and not hear.has_listeners(proj) then reaper.TrackFX_SetOffline(sm, si, true) end
   return true
 end
 -- Someone is listening to this computer: SonoBus comes on for as long as they do, and if they aren't playing along (following you) they have
@@ -222,6 +222,7 @@ function hear.answer_listeners(proj, cfg, b)
   reaper.SetExtState(band.SECTION, key, now, false)
   reaper.SetExtState(band.SECTION, "send whole mix " .. tostring(proj), whole and "1" or "", false)
   hear.listeners_here = #names > 0 or nil
+  if #names == 0 then reaper.DeleteExtState(band.SECTION, "listeners " .. tostring(proj), false) else reaper.SetExtState(band.SECTION, "listeners " .. tostring(proj), "1", false) end
   if now == before then return end
   local live = require("live")
   local sm, si = live.fx(proj, false, live.SONOBUS)
@@ -333,5 +334,9 @@ function hear.set_delay(proj, ms)
   local m, i = hear.mix(proj, false)
   if m then reaper.TrackFX_SetParam(m, i, 0, math.max(0, math.min(hear.MAX_MS, ms))) end
 end
+
+-- Is someone listening to this computer in `proj`? From ExtState: the panel (Solo, Produce) runs in its own Lua, where Live sync's
+-- hear.listeners_here was never set, and switching Solo off cut a listener off. Review, 0.58.96
+function hear.has_listeners(proj) return reaper.GetExtState(band.SECTION, "listeners " .. tostring(proj)) ~= "" end
 
 return hear

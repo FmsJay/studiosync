@@ -232,7 +232,7 @@ function producer.stop(proj, cfg, b)
   producer.quiet_tracks(proj, {})
   local live = require("live")
   local sm, si = live.fx(proj, false, live.SONOBUS)
-  if sm and ext(proj, "side") ~= "0" and reaper.GetExtState(band.SECTION, "listen " .. tostring(proj)) == "" and not require("hear").listeners_here then
+  if sm and ext(proj, "side") ~= "0" and reaper.GetExtState(band.SECTION, "listen " .. tostring(proj)) == "" and not require("hear").has_listeners(proj) then
     reaper.TrackFX_SetOffline(sm, si, true)
   end
   band.log("stopped producing " .. tostring(name))

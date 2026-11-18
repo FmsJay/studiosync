@@ -1,6 +1,6 @@
--- Minimal JSON encode/decode for the Oxygen Pro editor (pure Lua 5.3/5.4, no dependencies).
+-- Minimal JSON encode/decode for StudioSync (pure Lua 5.3/5.4, no dependencies).
 -- encode: arrays are tables with only 1..n integer keys (empty table -> []), objects have sorted keys.
--- decode: strict JSON; objects -> tables, arrays -> tables with n = #array; null -> json.null.
+-- decode: strict JSON; objects and arrays -> tables; null -> json.null.
 
 local json = {}
 json.null = setmetatable({}, { __tostring = function() return "null" end })

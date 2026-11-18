@@ -591,7 +591,14 @@ function services.quiet_days(stats, peers, now)
   end
   return newest and math.floor((now - newest) / 86400) or nil
 end
-function services.days_quiet(id)
+local quiet_at, quiet_of = {}, {}
+function services.days_quiet(id) -- (held 30 s: the studios page draws it for every card, every frame. Review, 0.58.96)
+  if quiet_at[id] and reaper.time_precise() - quiet_at[id] < 30 then return quiet_of[id] end
+  quiet_at[id] = reaper.time_precise()
+  quiet_of[id] = services.days_quiet_now(id)
+  return quiet_of[id]
+end
+function services.days_quiet_now(id)
   local st = services.syncthing_path()
   local cmd = st_api("/rest/stats/device")
   if not (st and cmd) then return nil end
@@ -776,7 +783,8 @@ local function token_store(token, net) -- -> true when it's locked away
   if WIN then
     if token == "" then reaper.DeleteExtState(band.SECTION, slot_key(net), true); return true end
     band.write_atomic(f, token)
-    local out = run_now('powershell -NoProfile -NonInteractive -Command "(Get-Content -Raw -LiteralPath \'' .. f .. '\').Trim() | ConvertTo-SecureString -AsPlainText -Force | ConvertFrom-SecureString"', 15, "token")
+    -- (a ' in the temp folder's path, O'Brien, broke the command and the token was kept as it is: doubled for PowerShell. Review, 0.58.96)
+    local out = run_now('powershell -NoProfile -NonInteractive -Command "(Get-Content -Raw -LiteralPath \'' .. f:gsub("'", "''") .. '\').Trim() | ConvertTo-SecureString -AsPlainText -Force | ConvertFrom-SecureString"', 15, "token")
     os.remove(f)
     local blob = out and out:match("(%x%x%x%x%x%x%x%x+)%s*$") -- (the last line: PowerShell can complain about a drive first)
     if blob then reaper.SetExtState(band.SECTION, slot_key(net), blob, true) end
@@ -842,7 +850,6 @@ function services.tailscale_token(net)
   local its = services.check_old_token(old)
   return its == net and old or ""
 end
-function services.has_tailscale_token() return #services.tailscale_token_nets() > 0 end
 -- Might there be a token for `net`? From what's saved, never asking anyone: for drawing (an older token counts, its network not checked yet).
 function services.has_token_for(net)
   for _, n in ipairs(services.tailscale_token_nets()) do if n == "" or (net and n == net) then return true end end
@@ -874,6 +881,7 @@ local function ts_call(token, method, path, body, headers)
   local lines = { 'header = "Authorization: Bearer ' .. token .. '"' }
   for _, h in ipairs(headers or {}) do lines[#lines + 1] = 'header = "' .. h:gsub('"', '\\"') .. '"' end
   band.write_atomic(cfgf, table.concat(lines, "\n") .. "\n")
+  if not WIN then os.execute("chmod 600 " .. sh_q(cfgf)) end -- (the token: this user's only, as Syncthing's key file. Review, 0.58.96)
   if body then band.write_atomic(bodyf, body) end
   local out = run_now(string.format('curl -s -i -m 15 -X %s -K "%s" %s"https://api.tailscale.com/api/v2%s"', method, cfgf,
     body and ('--data-binary "@' .. bodyf .. '" ') or "", path), 16, "ts")
@@ -1263,7 +1271,8 @@ function services.old_guests(json, now, invites)
     for _, t in ipairs(type(d.tags) == "table" and d.tags or {}) do guest = guest or t == GUEST_TAG end
     local y, mo, da, h, mi, s = tostring(d.created or ""):match("^(%d+)%-(%d+)%-(%d+)T(%d+):(%d+):(%d+)")
     if guest and y then
-      local joined = os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(da), hour = tonumber(h), min = tonumber(mi), sec = tonumber(s) })
+      -- (isdst false, as the UTC "now" it's compared with: in summer time guests went an hour early. Review, 0.58.96)
+      local joined = os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(da), hour = tonumber(h), min = tonumber(mi), sec = tonumber(s), isdst = false })
       local ends, made = joined + 86400, nil
       for _, v in ipairs(invites or {}) do
         if v.made <= joined + 60 and joined - v.made <= 7 * 86400 and (not made or v.made > made) then made, ends = v.made, v.ends end
@@ -1289,7 +1298,10 @@ end
 function services.sweep_net(net, token)
   local cfgf = sweep_cfg(net)
   local curl = 'curl -s -m 10 -K "' .. cfgf .. '" '
-  if not reaper.file_exists(cfgf) then band.write_atomic(cfgf, 'header = "Authorization: Bearer ' .. token .. '"\n') end
+  if not reaper.file_exists(cfgf) then
+    band.write_atomic(cfgf, 'header = "Authorization: Bearer ' .. token .. '"\n')
+    if not WIN then os.execute("chmod 600 " .. sh_q(cfgf)) end
+  end
   local tag = net ~= "" and ("-" .. (net:gsub("%.", "_"))) or ""
   local out = background("ts-devices" .. tag, curl .. '"https://api.tailscale.com/api/v2/tailnet/-/devices"', 900)
   if not out or reaper.time_precise() - (sweep_at[net] or -math.huge) < 60 then return end

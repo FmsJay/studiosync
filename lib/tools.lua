@@ -135,7 +135,10 @@ end
 local guest_pick = { days = 7, date = "", all = true, songs = {} }
 function tools.guest_invite_button(ctx, ImGui, my_id, root, label)
   local services, removal = require("services"), require("removal")
-  if ImGui.SmallButton(ctx, (label or "Invite a guest") .. "##guestinv" .. root) then guest_pick.root = root; ImGui.OpenPopup(ctx, "guestinvite" .. root) end
+  if ImGui.SmallButton(ctx, (label or "Invite a guest") .. "##guestinv" .. root) then
+    if guest_pick.root ~= root then guest_pick.songs = {} end -- (ticks from another studio's list went into this one's invitation. Review, 0.58.96)
+    guest_pick.root = root; ImGui.OpenPopup(ctx, "guestinvite" .. root)
+  end
   if ImGui.IsItemHovered(ctx) then ImGui.SetTooltip(ctx, services.GUEST_TIP .. (services.has_token_for(services.studio_net(root)) and services.GUEST_TS_TIP or "")) end
   if not ImGui.BeginPopup(ctx, "guestinvite" .. root) then return end
   local now = os.time()
@@ -197,7 +200,8 @@ function tools.guests_list(ctx, ImGui, root, may)
       ImGui.SameLine(ctx)
       if ImGui.SmallButton(ctx, "End now##gend" .. g.device) and reaper.MB(g.user .. "'s time as a guest ends now: every computer stops syncing with theirs within a minute, in every studio" ..
           " of yours they're a guest in, and Tailscale lets them go too. Their copy stays with them.\n\nEnd it?", "StudioSync", 4) == 6 then
-        for _, x in ipairs(band.bands()) do removal.guest_ends(x.root, g.device, now) end
+        -- (only where you're in charge: elsewhere your mark is set aside, and the trusted one was gone. Review, 0.58.96)
+        for _, x in ipairs(band.bands()) do if require("groups").may_manage(x.root, reaper.GetExtState(band.SECTION, "user")) then removal.guest_ends(x.root, g.device, now) end end
         guests_at[root] = nil
         band.log(g.user .. "'s time as a guest is over: nothing syncs with their computer from a minute from now")
       end
@@ -255,7 +259,7 @@ local function let_in(d, me, ends)
       -- (the roles written out again from here, the computer they were invited by: their first look believes no other. lib/trust.lua, Security review, 0.58.78)
       pcall(require("groups").edit, d.root, function() end)
       if ends then -- (and out again when their time is up, on every computer: the invitation's, else a day)
-        require("removal").guest(d.root, d.id, d.name, me, os.time(), type(ends) == "number" and ends or (inv and inv.ends), inv and inv.made)
+        require("removal").guest(d.root, d.id, d.name, me, os.time(), (inv and inv.ends) or (type(ends) == "number" and ends) or nil, inv and inv.made)
         -- (the projects the invitation gave them, if it named some: they see only those, written above. lib/access.lua)
         if not (inv and type(inv.songs) == "table") then require("access").clear(d.root, d.id) end -- (invited for every project: a list from a visit before no longer applies. 0.58.93)
       else
@@ -276,7 +280,7 @@ local function let_in(d, me, ends)
     end
   else
     ok, why = services.add_device(d.id, d.name)
-    if ok then let_device[d.id] = ends or true end
+    if ok then let_device[d.id] = ends and "guest" or true end -- (the invitation's time is found once their studio is known)
   end
   if ok then let_at[d.id .. (d.folder or "")] = reaper.time_precise() end
   band.log(ok and (d.folder and ("let '" .. tostring(d.name) .. "' into " .. d.band .. ": the projects reach them now") or ("let '" .. tostring(d.name) .. "' connect: the studio they were invited to follows in a moment"))
@@ -290,7 +294,9 @@ function tools.join_requests(ctx, ImGui)
   local skip = band.json_decode(reaper.GetExtState(band.SECTION, "join skipped")) or {}
   for _, d in ipairs(asking) do
     if not skip[d.id] and reaper.time_precise() - (let_at[d.id .. (d.folder or "")] or -math.huge) > 40 and d.folder and let_device[d.id] then
-      local ends = let_device[d.id] ~= true and let_device[d.id] or nil -- (as a guest, if that's how the first press let them connect)
+      -- (as a guest, if that's how the first press let them connect: "guest", the invitation's time found now that their studio is known.
+      -- A day was stored at the first press, before the studio was known, so "1 month" ended after a day. Review, 0.58.96)
+      local ends = let_device[d.id] ~= true and let_device[d.id] or nil
       let_device[d.id] = nil -- (the one press covers the studio they were invited to; another one later asks again)
       let_in(d, me, ends)
     elseif not skip[d.id] and reaper.time_precise() - (let_at[d.id .. (d.folder or "")] or -math.huge) > 40 then
