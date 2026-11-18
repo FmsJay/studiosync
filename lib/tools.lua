@@ -92,9 +92,13 @@ function tools.toast_show(ctx, ImGui, line, place)
   if not line then return end
   local theme, text = require("theme"), line:sub(7)
   local dl = ImGui.GetForegroundDrawList(ctx)
-  local _, th = ImGui.CalcTextSize(ctx, text, nil, nil, false, w)
-  if th > lh + 1 then ImGui.DrawList_AddRectFilled(dl, x - 6, y - 3, x + w + 6, y + th + 5, theme.BG, 4) end
-  ImGui.DrawList_AddTextEx(dl, nil, ImGui.GetFontSize(ctx), x, y, theme.TOAST, text, w)
+  -- (one line: wrapped, it painted over the first rows of the page, open lists too, for 6 s. Layout review, 0.59.14)
+  if ImGui.CalcTextSize(ctx, text) > w then
+    local lo, hi = 0, #text
+    while lo < hi do local mid = (lo + hi + 1) // 2; if ImGui.CalcTextSize(ctx, text:sub(1, mid) .. "...") <= w then lo = mid else hi = mid - 1 end end
+    text = text:sub(1, lo):gsub("[\128-\191]+$", ""):gsub("[\192-\255]$", "") .. "..."
+  end
+  ImGui.DrawList_AddText(dl, x, y, theme.TOAST, text)
 end
 
 local let_at, let_device, asked_at, asking = {}, {}, -math.huge, {} -- (let_at, who was just let in: Syncthing's own list says they're asking for up to 20 s more, and the row stayed)
@@ -354,7 +358,7 @@ function tools.join_requests(ctx, ImGui)
       ImGui.SetItemTooltip(ctx, "A guest: let in now, and every computer stops syncing with theirs " .. removal.when(ends, os.time()) ..
         (inv and " (as the guest invitation said)" or "") .. ". Their copy stays with them. Guests in Who's here can end it early or give them longer.")
       ImGui.SameLine(ctx)
-      if ImGui.SmallButton(ctx, "Not my collaborator##" .. d.id) then
+      if ImGui.SmallButton(ctx, "Not my collaborator##" .. d.id .. (d.folder or "")) then -- (one computer asking for two studios: two the same. Review, 0.59.14)
         skip[d.id] = true
         reaper.SetExtState(band.SECTION, "join skipped", band.json_encode(skip), false)
         require("services").dismiss_pending(d.id) -- (only hidden, it came back at every restart)

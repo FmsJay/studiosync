@@ -27,9 +27,11 @@ local function go_room(name)
 end
 function M.refresh()
   local b, cfg, proj, view, wide = E.b(), E.cfg(), E.proj(), E.view(), E.wide()
-  if reaper.time_precise() - room_at < 2 and room_view and room_view.room == b.room then return end
+  -- (another tab's plan to bring in: dropped, not sent into this room. Review, 0.59.14)
+  if merge and merge.key and merge.key ~= tostring(proj) .. "|" .. b.song .. "|" .. b.room then merge = nil end
+  if reaper.time_precise() - room_at < 2 and room_view and room_view.room == b.room and room_view.song == b.song then return end
   room_at = reaper.time_precise()
-  room_view = { room = b.room, list = {}, binned = {}, people = {}, meta = rooms.meta(cfg, b.song, b.room) }
+  room_view = { song = b.song, room = b.room, list = {}, binned = {}, people = {}, meta = rooms.meta(cfg, b.song, b.room) }
   for _, r in ipairs(rooms.list(cfg, b.song)) do
     table.insert((r.binned and r.name ~= b.room) and room_view.binned or room_view.list, r)
   end
@@ -43,7 +45,7 @@ local function look_merge(parent)
   local b, cfg, proj, view, wide = E.b(), E.cfg(), E.proj(), E.view(), E.wide()
   local mirror = require("mirror")
   local bring, clash = mirror.bring_plan(sync.room_dir(cfg, b.song, b.room), sync.room_dir(cfg, b.song, parent), b.room)
-  merge = { bring = bring, clash = clash, parent = parent }
+  merge = { bring = bring, clash = clash, parent = parent, key = tostring(proj) .. "|" .. b.song .. "|" .. b.room } -- (only for this tab's room: review, 0.59.14)
 end
 
 local function section_merge()

@@ -27,6 +27,7 @@ end
 function M.section_live(part) -- part: "mode" or "rest" (docked, side by side), nil for all of it
   local b, cfg, proj, view, wide, who = E.b(), E.cfg(), E.proj(), E.view(), E.wide(), E.who()
   local lfile = band.song_dir(cfg, b.song) .. "/live.json"
+  M.server_for(proj, lfile)
   -- the host may fill the address in after this panel opened (it arrives through the shared folder): re-read it
   -- every few seconds while it's still empty here
   if not live_server or (live_server == "" and reaper.time_precise() - server_at > 3) then
@@ -169,10 +170,17 @@ function M.section_live(part) -- part: "mode" or "rest" (docked, side by side), 
 end
 
 -- Connect: ReaNINJAM on the master track, set up for `mode`, the studio's server (this computer runs one if nobody does). -> true, or nil + why.
+-- (the address and mode held here are one song's: another song's, or another studio's, connected to the wrong server. Review, 0.59.14)
+local server_for
+function M.server_for(proj, lfile)
+  local key = tostring(proj) .. "|" .. lfile
+  if key ~= server_for then server_for, live_server = key, nil; M.reset_start = true end
+end
 function M.connect(mode)
   local b, cfg, proj = E.b(), E.cfg(), E.proj()
   if same_room_on() then set_same_room(false) end -- (NINJAM and Real time's SonoBus never both carry your playing: review, 0.59.8)
   local lfile = band.song_dir(cfg, b.song) .. "/live.json"
+  M.server_for(proj, lfile)
   live_server = live_server or (band.read_json(lfile) or {}).server or ""
   if live_server == ((band.read_json(lfile) or {}).server or "") then -- (or an address typed in just now, not saved: that one)
     local server, said = services.ninjam_for(cfg, lfile, true)
@@ -331,6 +339,7 @@ function M.start_together(play_along)
   local rg = regions()
   local names = { "the edit cursor (bar " .. bar_of(reaper.GetCursorPositionEx(proj)) .. ")" }
   for _, r in ipairs(rg) do names[#names + 1] = r.name .. " (bar " .. bar_of(r.pos) .. ")" end
+  if M.reset_start then start_from, M.reset_start = 0, nil end
   if start_from > #rg then start_from = 0 end
   ImGui.SetNextItemWidth(ctx, math.max(120, math.min(260, ImGui.GetContentRegionAvail(ctx) - 90)))
   if ImGui.BeginCombo(ctx, "start from", names[start_from + 1]) then

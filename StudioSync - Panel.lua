@@ -77,6 +77,15 @@ local function pop_theme() theme.pop(ctx, ImGui) end
 
 -- A rounded label: status at a glance. `height`: line it up with buttons (their frame height).
 local function pill(text, bg, fg, height)
+  return ui.pill_draw(text, bg, fg, height)
+end
+-- A pill after what's on the line, or on the next when it won't fit (people cards: review, 0.59.14).
+local function pill_after(text, bg, fg, gap)
+  ImGui.SameLine(ctx, 0, gap or 4)
+  if ImGui.GetContentRegionAvail(ctx) < ImGui.CalcTextSize(ctx, text) + 16 then ImGui.NewLine(ctx) end
+  pill(text, bg, fg)
+end
+function ui.pill_draw(text, bg, fg, height)
   local dl = ImGui.GetWindowDrawList(ctx)
   local x, y = ImGui.GetCursorScreenPos(ctx)
   local w, h = ImGui.CalcTextSize(ctx, text)
@@ -1056,6 +1065,14 @@ end
 -- "they just shouldn't be mutually exclusive... real-time mode on and talk/call on separately"). Without Real time mode, SonoBus carries
 -- only the talk mic.
 function ui.call_on() return select(2, reaper.GetProjExtState(proj, band.SECTION, "call")) == "1" end
+-- Who else is in the call, by their status (the call window's list).
+function ui.call_people()
+  local out = {}
+  for _, r in ipairs(view and view.rows or {}) do
+    if r.call and r.state ~= "offline" and r.name ~= cfg.user then out[#out + 1] = r.name end
+  end
+  return out
+end
 function ui.set_call(v)
   local _, sm, si = same_room_on()
   if not v then
@@ -1235,6 +1252,26 @@ local function layout(parts, bare) -- { { fn, width } }; bare: what's in them is
   local avail, h = ImGui.GetContentRegionAvail(ctx)
   local total = 0
   for _, part in ipairs(parts) do total = total + (part[2] or 340) end
+  -- (a docker part of the width: whole columns sat off the right, Claims among them. As many as fit at 0.8, the rest stacked in the last.
+  -- Layout review, 0.59.14)
+  if #parts > 1 and total * 0.8 + 10 * (#parts - 1) > avail then
+    local cols, used = {}, 0
+    for _, part in ipairs(parts) do
+      local pw = (part[2] or 340) * 0.8
+      if #cols == 0 or used + 10 + pw <= avail then cols[#cols + 1] = { part }; used = used + (#cols > 1 and 10 or 0) + pw
+      else table.insert(cols[#cols], part) end
+    end
+    if #cols < #parts then
+      local merged = {}
+      for _, col in ipairs(cols) do
+        local w = 0
+        for _, sp in ipairs(col) do w = math.max(w, sp[2] or 340) end
+        merged[#merged + 1] = { #col == 1 and col[1][1] or function() for k, sp in ipairs(col) do if k > 1 then ui.spacer() end; sp[1]() end end, w }
+      end
+      parts, total = merged, 0
+      for _, part in ipairs(parts) do total = total + (part[2] or 340) end
+    end
+  end
   local scale = math.max(0.72, (avail - 10 * (#parts - 1)) / total) -- (fixed widths left the right of a wide docker empty: design review; a narrower one had them run off the right: Mac, 0.57.7)
   for i, part in ipairs(parts) do
     if i > 1 then ImGui.SameLine(ctx, 0, 10) end
@@ -1320,6 +1357,9 @@ function ui.call_tab()
     "Without Real time mode it carries only your talk mic, never your playing.")
   ImGui.EndDisabled(ctx)
   if ch then ui.set_call(v) end
+  ImGui.SameLine(ctx)
+  if ImGui.SmallButton(ctx, "Pop out##callpop") then require("callwin").set_open(true) end -- (James, 0.59.14)
+  ImGui.SetItemTooltip(ctx, "The call in a small window of its own: mute and unmute, hold to talk, your mic, volumes, deafen and who's in. It stays while the panel is shrunk.")
   if on then
     ui.talk_controls(true)
     ImGui.Spacing(ctx)
@@ -1444,6 +1484,7 @@ function ui.live_icons(p)
   local h = ImGui.GetTextLineHeight(ctx)
   local function slot(id, tip, col, draw, click)
     ImGui.SameLine(ctx, 0, 6)
+    if ImGui.GetContentRegionAvail(ctx) < h then ImGui.NewLine(ctx) end -- (cut off at the card's edge, the phone with it: review, 0.59.14)
     local x, y = ImGui.GetCursorScreenPos(ctx)
     if ImGui.InvisibleButton(ctx, id, h, h) and click then click() end
     local c = ImGui.IsItemHovered(ctx) and theme.TEXT or col
@@ -1535,7 +1576,7 @@ local function home_who()
       dot(p.state == "here" and GREEN or rgba(status.COLORS[p.state] or { 0.55, 0.55, 0.55 }))
       ImGui.SameLine(ctx, 0, 4)
       ui.person_name(p)
-      if p.recording then ImGui.SameLine(ctx, 0, 6); pill("recording", RED) elseif p.driving then ImGui.SameLine(ctx, 0, 6); pill("driving", ACCENT, 0xFFFFFFFF) end
+      if p.recording then pill_after("recording", RED, nil, 6) elseif p.driving then pill_after("driving", ACCENT, 0xFFFFFFFF, 6) end
       ui.live_icons(p)
       if p.state == "syncing" then ImGui.SameLine(ctx, 0, 6); ImGui.TextColored(ctx, YELLOW, "getting changes") end -- (the bar just says "Sending")
       if p.mirror and view.my_mirror and p.state == "synced" then -- (as on the cards: the docked list said nothing, match or not)
@@ -1571,9 +1612,9 @@ local function home_who()
       pill(words, p.state == "here" and GREEN or rgba(status.COLORS[p.state] or { 0.55, 0.55, 0.55 }))
       ImGui.SetItemTooltip(ctx, ({ here = "This machine.", ["synced"] = "Has every change.", ["syncing"] = "Still getting changes (yours or the studio's).",
         offline = "Not seen for over a minute.", ["no receipt"] = "Has sent takes, but never ran Live sync here." })[p.state] or p.state)
-      if p.recording then ImGui.SameLine(ctx, 0, 4); pill("recording", RED)
-      elseif p.playing and p.state ~= "offline" then ImGui.SameLine(ctx, 0, 4); pill("playing", ACCENT, 0xFFFFFFFF) end
-      if p.driving then ImGui.SameLine(ctx, 0, 4); pill("driving", ACCENT, 0xFFFFFFFF); ImGui.SetItemTooltip(ctx, "They drive: play, stop and the place in the song follow them. Who changes what: Who can edit.") end
+      if p.recording then pill_after("recording", RED)
+      elseif p.playing and p.state ~= "offline" then pill_after("playing", ACCENT, 0xFFFFFFFF) end
+      if p.driving then pill_after("driving", ACCENT, 0xFFFFFFFF); ImGui.SetItemTooltip(ctx, "They drive: play, stop and the place in the song follow them. Who changes what: Who can edit.") end
       ui.live_icons(p)
       if p.armed and #p.armed > 0 then ImGui.TextDisabled(ctx, "armed: " .. table.concat(p.armed, ", "))
       elseif not wide then ImGui.TextDisabled(ctx, "nothing armed") end -- (docked, the line went to saying nothing)
@@ -1686,8 +1727,9 @@ function ui.track_plays_row()
   local sel = reaper.GetSelectedTrack(proj, 0)
   local cur = sel and prints.track_choice(proj, sel) or nil
   if cur == "" then cur = ({ notes = "dry", sound = "wet" })[prints.mode()] or "auto" end -- (never set: as Parts play says)
-  ImGui.AlignTextToFramePadding(ctx); ImGui.Text(ctx, "Selected tracks play:"); ImGui.SameLine(ctx)
+  ImGui.AlignTextToFramePadding(ctx); ImGui.Text(ctx, "Selected tracks play:")
   for _, c in ipairs({ { "dry", "Dry" }, { "wet", "Wet" }, { "auto", "Auto" } }) do
+    next_to(c[2]) -- (a narrow column cut Wet and lost Auto: review, 0.59.14)
     local here = sel and cur == c[1]
     if here then ImGui.PushStyleColor(ctx, ImGui.Col_Button, theme.SELECTED) end
     if ImGui.SmallButton(ctx, c[2] .. "##trackplays") then
@@ -1702,12 +1744,10 @@ function ui.track_plays_row()
       wet = "Each part plays the studio's print, exactly what was heard; the track's plug-ins are held off so nothing goes through them twice.",
       auto = "Through the track's plug-ins when every one of them loads here, else the studio's print." })[c[1]] ..
       "\nOnly on this computer. Also as actions, for the track's right-click menu: StudioSync - Selected tracks play dry / wet / as chosen.")
-    ImGui.SameLine(ctx)
   end
-  ImGui.NewLine(ctx)
   -- (one take a part, the one it plays, unless this is on: Live sync sets REAPER's Show all takes in lanes for each studio project. 0.59.13)
   local both = reaper.GetExtState(band.SECTION, "show both takes") == "1"
-  local bch, bv = ImGui.Checkbox(ctx, "Show both takes in each part (dry and wet)##bothtakes", both)
+  local bch, bv = ImGui.Checkbox(ctx, "Show dry and wet takes##bothtakes", both)
   if bch then reaper.SetExtState(band.SECTION, "show both takes", bv and "1" or "", true) end
   ImGui.SetItemTooltip(ctx, "Off: each part shows only the take it plays (as Dry, Wet or Auto picks), so a big project stays compact.\n" ..
     "On: the dry take and the studio's print both show in each part, one above the other. Only on this computer.")
@@ -1754,21 +1794,25 @@ function ui.away()
   if held > 0 then parts = parts .. (parts ~= "" and "  ·  " or "") .. held .. (held == 1 and " track shows" or " tracks show") .. " who changed it" end
   ImGui.TextColored(ctx, ACCENT, "Since you were last here" .. (a.since and (" (" .. require("chooser").ago(a.since, os.date("!*t")) .. ")") or "") .. ": " .. parts)
 end
+-- live ideas (what came over Real time or Time-sync, to keep or drop): on Home while either is on (James, 0.59.3: not in Chat)
+local function home_ideas()
+  if same_room_on() or page_play.time_sync_on() then
+    if reaper.time_precise() - ideas_at > 2 then ideas_at, ideas = reaper.time_precise(), tools.ideas(proj) end
+    if next(ideas) ~= nil and card("home ideas") then section_ideas(); card_end() end
+  end
+end
 local function page_home()
   ui.away()
   if ui.short then -- (Real time had to be scrolled to, under the people: design review)
     -- (hearing or producing someone, Real time's column has rows and rows of controls: it takes the width from the others, so they all fit without scrolling)
     local busy = same_room_on() or require("producer").who(proj)
-    layout(busy and { { home_play, 440 }, { home_who, 500 }, { home_rules, 300 }, { home_claims, 200 } }
-      or { { home_play, 280 }, { home_who, 540 }, { home_rules, 340 }, { home_claims, 280 } })
+    -- (the ideas under Real time in its column: below the columns, which fill the page, they were out of reach. Layout review, 0.59.14)
+    local play = function() home_play(); home_ideas() end
+    layout(busy and { { play, 440 }, { home_who, 500 }, { home_rules, 300 }, { home_claims, 200 } }
+      or { { play, 280 }, { home_who, 540 }, { home_rules, 340 }, { home_claims, 280 } })
   elseif wide then -- (a tall docker: the people as cards, and nothing left alone in a tall column)
-    layout({ { function() home_play(); ui.feed(true) end, 480 }, { home_who, 760 }, { function() home_rules(); ui.spacer(); home_claims() end, 480 } })
-  else layout({ { home_who, 360 }, { home_session, 400 } }) end
-  -- live ideas (what came over Real time or Time-sync, to keep or drop): here while either is on (James, 0.59.3: not in Chat)
-  if same_room_on() or page_play.time_sync_on() then
-    if reaper.time_precise() - ideas_at > 2 then ideas_at, ideas = reaper.time_precise(), tools.ideas(proj) end
-    if next(ideas) ~= nil and card("home ideas") then section_ideas(); card_end() end
-  end
+    layout({ { function() home_play(); home_ideas(); ui.feed(true) end, 480 }, { home_who, 760 }, { function() home_rules(); ui.spacer(); home_claims() end, 480 } })
+  else layout({ { home_who, 360 }, { home_session, 400 } }); home_ideas() end
   ui.hide_row()
 end
 -- Home's "Hide when not in use" (James, 0.58.98): the same as Settings > Look > When you click REAPER, shrinks to the tiny box or stays
@@ -1892,7 +1936,7 @@ local function settings_sync()
     card_end()
   end
 end
-local call_draft -- (the call link being typed, Settings > Studio)
+local call_draft, call_draft_for -- (the call link being typed, Settings > Studio; the studio it's for: another's showed. Review, 0.59.14)
 -- Settings > Studio: what the studio shares beyond the projects, one card each, every card saying in a line what it's for and where it stands.
 -- (they were four headings at the bottom of the Google Drive card, where nobody would look for them: 0.58.57)
 local function studio_admin() return require("groups").role(cfg.root, cfg.user) ~= "member" end
@@ -1920,6 +1964,8 @@ local function studio_alerts()
     local ach, aon = check("On for this studio", channel ~= nil,
       "Each alert is one line through ntfy.sh (no audio, no project). Anyone who knew the studio's channel name could read them, so it's long and random.\n" ..
       "Turning it off and on makes a new channel: everyone subscribes again.")
+    -- (off deletes the channel, and on makes a new one: every phone stops getting alerts until it subscribes again. Review, 0.59.14)
+    if ach and not aon and reaper.MB("Turn phone alerts off for the studio?\n\nTurning them on again makes a new channel: everyone has to subscribe again.", "StudioSync", 4) ~= 6 then ach = false end
     if ach then alerts.set(cfg.root, aon) end
   end
   if channel then
@@ -1945,6 +1991,7 @@ local function studio_call()
   ImGui.TextDisabled(ctx, "Talk and see each other in the app your band already uses (Discord, Zoom, Meet): everyone gets a Call button beside Real time mode.")
   local call = alerts.call_link(cfg.root)
   if studio_admin() then
+    if call_draft_for ~= cfg.root then call_draft, call_draft_for = nil, cfg.root end
     call_draft = call_draft or call or ""
     ImGui.SetNextItemWidth(ctx, -110)
     local _, v = ImGui.InputTextWithHint(ctx, "##calllink", "paste the call's link (https://...)", call_draft)
@@ -2043,6 +2090,9 @@ local function studio_tailscale_sync()
       or ("Off: Syncthing finds everyone its own way (Tailscale, your network or the internet). The studio's network is " .. t.name .. "."))
     if studio_admin() then
       local ch, v = ImGui.Checkbox(ctx, "Sync only through Tailscale##tsonly", on)
+      -- (a confirm, as Use <network> has: on, it stops syncing for anyone not on that network. Review, 0.59.14)
+      if ch and v and reaper.MB("Sync only through Tailscale (" .. t.name .. ")?\n\nAnyone in the studio who isn't on that Tailscale network stops syncing until they join it.",
+          "StudioSync", 4) ~= 6 then ch = false end
       if ch then
         groups.set_tailscale_only(cfg.root, v)
         band.log(v and ("the studio syncs only through Tailscale (" .. t.name .. ") from now: each computer's name there takes a minute to reach the others")
@@ -2331,7 +2381,7 @@ local function page_setup()
     if ImGui.BeginChild(ctx, id, 0, 0, 0, wide and ImGui.WindowFlags_HorizontalScrollbar or 0) then
       if ImGui.IsWindowAppearing(ctx) then ImGui.SetScrollY(ctx, 0) end -- (the red row and the newest lines were out of sight, where it had last been left: Mac, 0.57.7)
       ImGui.PushTextWrapPos(ctx, 0)
-      fn()
+      ui.page_body(fn) -- (an error in a Settings tab left its child and tab open, and End killed the panel. Review, 0.59.14)
       ImGui.PopTextWrapPos(ctx)
       ImGui.EndChild(ctx)
     end
@@ -2562,7 +2612,7 @@ local function frame_app()
   -- docked at REAPER's left or right (narrow and tall): pages as a row of tabs, one column, never the sidebar
   local dock_id = ImGui.GetWindowDockID(ctx)
   local side = dock_id < 0 and reaper.DockGetPosition(~dock_id) -- (ReaImGui dock id -1 is REAPER's docker 0)
-  if side == 1 or side == 3 or ww < 520 then compact, wide = true, false end
+  if side == 1 or side == 3 or ww < 680 then compact, wide = true, false end -- (680: the sidebar took a quarter of a 600 px panel. Layout review, 0.59.14)
   -- (a docker as low as the mixer lets it go, 235 px here: every row above the page gets tight, and what's said in a line of words moves
   -- to a tooltip when it would push out what you press. Taller, the pages have room and rearrange: see page_home)
   ui.short = wide and wh < 320
@@ -2680,7 +2730,20 @@ local function frame_app()
     if res then band.log(res) elseif why then band.msg(why) end
     restore.refresh_soon()
   end
+  local tabs_below = false
   if wide then -- the pages, in the bar
+    -- (a docker that isn't the whole width, the mixer beside it: they ran off the right, Settings with them. Then under the bar, as when
+    -- narrow. Layout review, 0.59.14)
+    local tw = 24
+    for _, p in ipairs(ui.pages()) do tw = tw + ImGui.CalcTextSize(ctx, p[1]) + 30 + (nav_dot(p[1]) and 12 or 0) end
+    local wl = { "Feedback", "Sync and exit" }
+    if ImGui.IsWindowDocked(ctx) or native then wl[#wl + 1] = "Window"; wl[#wl + 1] = "Undock" end
+    local wneed = 2 * (fh - 6) + 28
+    for _, l in ipairs(wl) do wneed = wneed + ImGui.CalcTextSize(ctx, l) + 28 end
+    ImGui.SameLine(ctx, 0, 0)
+    tabs_below = ImGui.GetContentRegionAvail(ctx) < tw + wneed
+  end
+  if wide and not tabs_below then -- the pages, in the bar
     ImGui.PushStyleVar(ctx, ImGui.StyleVar_SelectableTextAlign, 0.5, 0.5)
     ImGui.PushStyleVar(ctx, ImGui.StyleVar_ItemSpacing, 8, 0) -- (a selectable grows by the spacing: the highlight stood taller than the pills)
     for i, p in ipairs(ui.pages()) do
@@ -2740,7 +2803,7 @@ local function frame_app()
   if bar_min then ui.window_buttons(at_row, y0, fh) end
   ImGui.SetCursorPos(ctx, 16, y0 + fh + (ui.short and 2 or 5)) -- (closer to the page: more of it shows, docked above all. James, 0.58.23)
   -- narrow: the pages first, so a row arriving under them can't slide them from under the mouse (design review)
-  if compact and not wide then
+  if (compact and not wide) or tabs_below then
     ImGui.PushStyleVar(ctx, ImGui.StyleVar_SelectableTextAlign, 0.5, 0.5)
     for i, p in ipairs(ui.pages()) do
       local w = ImGui.CalcTextSize(ctx, p[1]) + 28 + (nav_dot(p[1]) and 12 or 0)
@@ -2789,7 +2852,7 @@ local function frame_app()
   end
   tools.toast_show(ctx, ImGui, saying, toast_place)
   local bars_at = ImGui.GetCursorPosY(ctx)
-  ImGui.SetNextWindowSizeConstraints(ctx, 0, 0, 100000, (wide or wh < 440) and (ImGui.GetFrameHeightWithSpacing(ctx) * 2 + 2) or wh * 0.25)
+  ImGui.SetNextWindowSizeConstraints(ctx, 0, 0, 100000, (wide or wh < 440) and (ImGui.GetFrameHeightWithSpacing(ctx) * 3 + 2) or wh * 0.25) -- (3 rows: review, 0.59.14)
   local bars_open = ImGui.BeginChild(ctx, "bars", 0, 0, ImGui.ChildFlags_AutoResizeY)
   if bars_open then ImGui.Indent(ctx, 16) end
   -- (they read files bandmates write: one malformed file threw inside this child, and End then found it open and the whole panel died. Review, 0.58.92)
@@ -2921,10 +2984,12 @@ local function frame_app()
     elseif page == "Projects" then ui.page_body(function() require("page_groups").draw_projects(ui.env) end)
     elseif page == "Home" then ui.page_body(page_home)
     elseif page == "Rooms" then
-      page_rooms.refresh()
-      local room_view = page_rooms.view()
-      if ui.short and not (room_view.meta and room_view.meta.parent) then layout({ { page_rooms.squares, 900 } })
-      else layout({ { page_rooms.squares, 900 }, { page_rooms.actions, 300 } }) end
+      ui.page_body(function() -- (it reads bandmates' room files: one malformed one ended the panel. Review, 0.59.14)
+        page_rooms.refresh()
+        local room_view = page_rooms.view()
+        if ui.short and not (room_view.meta and room_view.meta.parent) then layout({ { page_rooms.squares, 900 } })
+        else layout({ { page_rooms.squares, 900 }, { page_rooms.actions, 300 } }) end
+      end)
     elseif page == "Play/Jam" then
       if wide then layout({ { page_play.section_together, 380 }, { function() page_play.section_live("mode") end, 420 }, { function() page_play.section_live("rest") end, 520 } })
       else layout({ { page_play.section_together, 380 }, { page_play.section_live, 480 } }) end
@@ -3189,6 +3254,7 @@ local function pill_window()
     ImGui.SetItemTooltip(ctx, words .. (pb and pb.text and ("\nUndone: " .. pb.text) or "") .. "\n" .. how)
     if ImGui.BeginPopupContextItem(ctx, "pillmenu") then
       if ImGui.Selectable(ctx, "Open the panel") then ui.set_minimized(false) end
+      if ImGui.Selectable(ctx, "Call window", require("callwin").is_open()) then require("callwin").set_open(not require("callwin").is_open()) end -- (0.59.14)
       if ImGui.Selectable(ctx, "Lock position", locked) then reaper.SetExtState(band.SECTION, "pill lock", locked and "" or "1", true) end
       if ImGui.Selectable(ctx, strip and "Make it a tiny box" or "Make it a strip") then ui.set_minimized(strip and true or "strip") end
       if not strip and ImGui.BeginMenu(ctx, "Size") then
@@ -3208,6 +3274,8 @@ local function pill_window()
     ImGui.SetCursorScreenPos(ctx, x + (S - L * 0.93) / 2, y + (S - L) / 2)
     logo(L)
     ImGui.DrawList_AddRect(dl, x + 1, y + 1, x + S - 1, y + S - 1, live_on and GREEN or RED, S / 4, 0, 2)
+    -- (sync off is a slash too, not only a red edge: red and green read alike to a colour-blind eye. UX review, 0.59.14)
+    if not live_on then ImGui.DrawList_AddLine(dl, x + S * 0.22, y + S * 0.78, x + S * 0.78, y + S * 0.22, RED, math.max(2, S / 12)) end
     end
     if not strip and waiting > 0 then -- what's waiting, in the corner
       -- (small, to the box's size: in the panel's own text size the number covered half the box. James, 0.58.82)
@@ -3231,6 +3299,8 @@ local frame_seen
 local loop
 -- (an error stops the panel, as ever, but first goes to the log file with where it happened: REAPER's own box was all there was. 0.58.86)
 local function guarded(fn) return function() local ok, err = xpcall(fn, debug.traceback); if not ok then band.log_error("the panel", err); error(err, 0) end end end
+local frame_said -- (the last frame error said in the console)
+local min_look_at = -math.huge -- (shrunk to its box: when the project in front last changed under it)
 local function loop_body()
   if updated() or reload_now then -- reload in place: relaunching itself as an action is ignored (or asks to terminate instances)
     band.log("the panel reloaded for StudioSync " .. tostring(seen_disk))
@@ -3276,6 +3346,8 @@ local function loop_body()
   local visible, open = false, true
   -- (the system frame is the panel's: the box and strip went out with one too. James, 0.58.98)
   ImGui.SetConfigVar(ctx, ImGui.ConfigVar_ViewportsNoDecoration, (native and not minimized) and 0 or 1)
+  -- (shrunk, nothing refreshed: the box and the banner went on describing the tab before. Review, 0.59.14)
+  if minimized and reaper.EnumProjects(-1) ~= proj and reaper.time_precise() - min_look_at > 1 then min_look_at = reaper.time_precise(); pcall(refresh) end
   if minimized then open = pill_window()
   else
     if ui.focus_req then ui.focus_req = nil; ImGui.SetNextWindowFocus(ctx) end
@@ -3336,7 +3408,7 @@ local function loop_body()
     local ok, e = pcall(frame) -- an error in our logic must still reach End
     if not ok then -- (and End must find no card open: 0.33.2's broken lib file failed inside one, and End killed the panel)
       err = tostring(e)
-      reaper.ShowConsoleMsg("StudioSync panel: " .. err .. "\n") -- (a failure inside a plain child ends the panel with ImGui's complaint instead of this)
+      if frame_said ~= err then frame_said = err; reaper.ShowConsoleMsg("StudioSync panel: " .. err .. "\n") end -- (once: it reopened the console every 1.5 s. Review, 0.59.14)
       for _ = 1, open_cards do ImGui.PopTextWrapPos(ctx); ImGui.EndChild(ctx) end
       open_cards = 0
     end
@@ -3406,6 +3478,11 @@ local function loop_body()
     ImGui.End(ctx)
   end
   require("feedback").draw(ctx, ImGui, cfg, proj) -- (its own window, while open: lib/feedback.lua)
+  -- (the call in its own window, while open, the panel full or shrunk to its box: lib/callwin.lua. James, 0.59.14)
+  if require("callwin").is_open() then
+    pcall(require("callwin").draw, { ctx = ctx, ImGui = ImGui, proj = proj, b = b, call_on = ui.call_on, set_call = ui.set_call,
+      sonobus_open = sonobus_open, people = ui.call_people, call_link = function() return cfg and require("alerts").call_link(cfg.root) end })
+  end
   ImGui.PopFont(ctx); pop_theme()
   banner()
   reaper.SetExtState(band.SECTION, "panel alive", tostring(reaper.time_precise()), false) -- (so Autostart never opens a second one)

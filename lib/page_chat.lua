@@ -325,7 +325,7 @@ function chat.draw(ctx, ImGui, cfg, b, tabs)
   draw_buttons()
   local only = chat.only()
   local function shown(v) return only == "" or v.user == only end
-  if ImGui.BeginTabBar(ctx, "chat") then
+  if ImGui.BeginTabBar(ctx, "chat", ImGui.TabBarFlags_FittingPolicyScroll) then -- (squeezed to "Mes..." docked at the side: review, 0.59.14)
     for _, tab in ipairs(tabs or {}) do
       if tab[3] and ImGui.BeginTabItem(ctx, tab[1]) then tab[2](); ImGui.EndTabItem(ctx) end
     end
@@ -409,10 +409,10 @@ function chat.draw(ctx, ImGui, cfg, b, tabs)
         ::next_link::
       end
       ImGui.SetNextItemWidth(ctx, 160)
-      _, link_title = ImGui.InputTextWithHint(ctx, "##lt", "title (lyrics, chart...)", link_title)
+      link_title = select(2, ImGui.InputTextWithHint(ctx, "##lt", "title (lyrics, chart...)", link_title))
       ImGui.SameLine(ctx)
       ImGui.SetNextItemWidth(ctx, -60)
-      _, link_url = ImGui.InputTextWithHint(ctx, "##lu", "link or file path", link_url)
+      link_url = select(2, ImGui.InputTextWithHint(ctx, "##lu", "link or file path", link_url))
       ImGui.SameLine(ctx)
       if ImGui.Button(ctx, "Add##l") and link_url:match("%S") then add(cfg, b, "links", { title = link_title, url = link_url }); link_title, link_url = "", "" end
       ImGui.EndTabItem(ctx)

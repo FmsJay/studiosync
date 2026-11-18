@@ -532,6 +532,7 @@ local function legend(ctx, ImGui, stops, left, right)
   local dl, w, h = ImGui.GetWindowDrawList(ctx), 90, ImGui.GetTextLineHeight(ctx)
   for i = 0, 29 do ImGui.DrawList_AddRectFilled(dl, x + i * w / 30, y + 2, x + (i + 1) * w / 30, y + h - 2, (colours.ramp(stops, i / 29) << 8) | 0xFF) end
   ImGui.Dummy(ctx, w, h); ImGui.SameLine(ctx, 0, 6)
+  if ImGui.GetContentRegionAvail(ctx) < ImGui.CalcTextSize(ctx, right) then ImGui.NewLine(ctx) end -- (cut mid-word: review, 0.59.14)
   ImGui.TextDisabled(ctx, right)
 end
 -- The long bar: what each would look like, with what each piece is on hover (James, 0.59.4: "the long one with details for each").
@@ -655,6 +656,7 @@ function colours.draw(ctx, ImGui, proj, cfg, may, timeline_ok)
     end
     if USES_PALETTE[row][p.scheme] then
       ImGui.SameLine(ctx)
+      if ImGui.GetContentRegionAvail(ctx) < 110 then ImGui.NewLine(ctx) end -- (cut off in a narrow column: layout review, 0.59.14)
       ImGui.SetNextItemWidth(ctx, 110)
       if ImGui.BeginCombo(ctx, "##palette", p.palette) then
         for _, pal in ipairs(colours.PALETTES) do
@@ -667,6 +669,7 @@ function colours.draw(ctx, ImGui, proj, cfg, may, timeline_ok)
       if p.palette == "Your own" then
         local a, z = tonumber(p.from, 16) or 0x2F7BFF, tonumber(p.to, 16) or 0xFF8A3D
         ImGui.SameLine(ctx)
+        if ImGui.GetContentRegionAvail(ctx) < 2 * ImGui.GetFrameHeight(ctx) + 12 then ImGui.NewLine(ctx) end
         colours.edit3(ctx, ImGui, "##from" .. tostring(row), a, function(v) set(row, "from", string.format("%06X", v)) end)
         ImGui.SetItemTooltip(ctx, "The first colour")
         ImGui.SameLine(ctx)

@@ -285,7 +285,12 @@ function copy.tick()
     if j.at > #j.files and not j.drive_bad then j.places[#j.places + 1] = "Google Drive"; j.step = "ask"
     elseif j.drive_bad then j.step = "ask" end
   elseif j.step == "ask" then
-    local local_dir = band.home() .. "/" .. song
+    -- (this studio's project folder only, where its project file is: band.home()/<song> was another studio's "Demo" with recordings
+    -- that existed nowhere else. Review, 0.59.14)
+    local pf = (band.project_file(j.root, song) or ""):gsub("\\", "/")
+    local home = band.home():gsub("\\", "/")
+    local local_dir = pf:match("^(.*)/[^/]+$")
+    if not (local_dir and local_dir:sub(1, #home + 1):lower() == (home .. "/"):lower() and local_dir:lower() ~= home:lower()) then local_dir = nil end
     if #j.places == 0 then
       j.skipped[#j.skipped + 1] = song .. " (no other copy confirmed: nobody else has said they hold exactly this" ..
         (j.drive_nojs and ", and Drive can't count without the js_ReaScriptAPI extension (Extensions > ReaPack), which tells how long its files have been there"
@@ -293,8 +298,9 @@ function copy.tick()
       j.i, j.step = j.i + 1, "scan"
       return
     end
-    j.ask = string.format("Delete this computer's copy of '%s'?\n\nConfirmed on: %s.\n\nIts files (%d) go to the %s, nothing changes for anyone else, and it stays on the Projects page: opening it brings it back%s.",
-      song, table.concat(j.places, ", "), #j.files, WIN and "Recycle Bin" or "Trash", #j.places == 1 and j.places[1] == "Google Drive" and " from Drive" or " from them")
+    j.ask = string.format("Delete this computer's copy of '%s'?\n\nConfirmed on: %s.\n\nIts files (%d) go to the %s%s, nothing changes for anyone else, and it stays on the Projects page: opening it brings it back%s.",
+      song, table.concat(j.places, ", "), #j.files, WIN and "Recycle Bin" or "Trash", local_dir and (", with its project folder (" .. local_dir .. ")") or "",
+      #j.places == 1 and j.places[1] == "Google Drive" and " from Drive" or " from them")
     j.local_dir = local_dir
   elseif j.step == "ignore" then -- first, so the delete can't reach anyone
     -- (who holds it, asked again now you've said yes: two computers each confirmed on the other, both said yes, and the last full copies
@@ -326,7 +332,7 @@ function copy.tick()
   elseif j.step == "bin" then
     local list = {}
     for _, p in ipairs(j.paths) do list[#list + 1] = dir .. "/" .. p end
-    if reaper.EnumerateFiles(j.local_dir, 0) or reaper.EnumerateSubdirectories(j.local_dir, 0) then list[#list + 1] = j.local_dir end
+    if j.local_dir and (reaper.EnumerateFiles(j.local_dir, 0) or reaper.EnumerateSubdirectories(j.local_dir, 0)) then list[#list + 1] = j.local_dir end
     band.forget_project_file(j.root, song)
     j.binning, j.step = copy.bin_start(list, song), "binning"
     j.words = "Moving '" .. song .. "' to the " .. (WIN and "Recycle Bin" or "Trash")

@@ -25,8 +25,17 @@ local KINDS = {
 }
 local hf = { who = "", kind = 1, track = "", text = "" }
 local entries, groups, hist_at = {}, {}, 0
+-- (the tab and room the list is of: switching tabs left the old list up, and its buttons restored that room's history into this project,
+-- for everyone. Review, 0.59.14)
+local entries_key
+local function check_key()
+  local b, proj = E.b(), E.proj()
+  local key = b and (tostring(proj) .. "|" .. tostring(b.song) .. "|" .. tostring(b.room)) or nil
+  if key ~= entries_key then entries, groups, hf.open, hist_at, entries_key = {}, {}, nil, 0, key end
+end
 local function refresh_history()
   local b, cfg, proj, view, wide, points, can, who = E.b(), E.cfg(), E.proj(), E.view(), E.wide(), E.points(), E.can(), E.who()
+  check_key()
   entries = recall.entries(cfg, b.song, b.room)
   table.sort(entries, function(a, x) return (a.time .. a.id) < (x.time .. x.id) end)
   groups = recall.groups(entries, view.session and view.session.host)
@@ -165,13 +174,16 @@ local function history_filtered(driving)
   if n == 0 then ImGui.TextDisabled(ctx, "Nothing matches.") end
 end
 function R.section_recall()
+  check_key()
   local b, cfg, proj, view, wide, points, can, who = E.b(), E.cfg(), E.proj(), E.view(), E.wide(), E.points(), E.can(), E.who()
   if not ui.short then ImGui.SeparatorText(ctx, "Saved versions") end -- (short: the box's own words say it, and the list gets the row)
   -- (room for the button and Keep for good beside it: -250 cut it off. James, 0.59.3)
-  ImGui.SetNextItemWidth(ctx, -(ImGui.CalcTextSize(ctx, "Save this version") + ImGui.CalcTextSize(ctx, "Save permanently") + ImGui.GetFrameHeight(ctx) + 70))
+  local reserve = ImGui.CalcTextSize(ctx, "Save this version") + ImGui.CalcTextSize(ctx, "Save permanently") + ImGui.GetFrameHeight(ctx) + 70
+  local own_line = ImGui.GetContentRegionAvail(ctx) - reserve < 160 -- (a narrow column: the box shrank to 1 px. Layout review, 0.59.14)
+  ImGui.SetNextItemWidth(ctx, own_line and -1 or -reserve)
   local _, v = ImGui.InputTextWithHint(ctx, "##label", "name this version (e.g. 'chorus with double guitars')", label, ImGui.InputTextFlags_None)
   label = v
-  ImGui.SameLine(ctx)
+  if not own_line then ImGui.SameLine(ctx) end
   if ImGui.Button(ctx, "Save this version") then
     if keep_it then recall.back_up(proj, cfg, b, label ~= "" and label or nil) -- (kept for good, and the project on Drive: what Back up did)
     else recall.save(proj, cfg, b.song, b.room, label ~= "" and label or "saved by " .. cfg.user) end
@@ -204,6 +216,7 @@ function R.section_recall()
 end
 
 function R.section_history()
+  check_key()
   local b, cfg, proj, view, wide, points, can, who = E.b(), E.cfg(), E.proj(), E.view(), E.wide(), E.points(), E.can(), E.who()
   local warm, read, total = recall.warm(cfg, b.song, b.room, 0.01)
   if not warm then return ImGui.TextDisabled(ctx, string.format("Reading the history: %d of %d changes...", read, total)) end

@@ -64,6 +64,7 @@ function drive.service() return reaper.GetExtState(band.SECTION, "drive service"
 -- one per signed-in account), the user folder (Windows mirroring), ~/Library/CloudStorage/GoogleDrive-<account> on macOS.
 -- Dropbox: the paths in its info.json, else ~/Dropbox; OneDrive: its environment variables or CloudStorage/OneDrive-*; iCloud Drive:
 -- ~/iCloudDrive (Windows) or Mobile Documents (macOS); Box: ~/Box or CloudStorage/Box-Box. `only`: one service's.
+local copy_said = {} -- (a file that failed to copy, said once)
 drive.extra = {} -- top folders of Google's drive other than My Drive (looked in, never made in)
 drive.BIG = 16 * 1024 * 1024 -- bytes: a file this big is copied in the background (drive.mirror)
 local function places(only)
@@ -342,7 +343,7 @@ function drive.mirror(here, there, budget, user, wait)
     -- doesn't hold still while it goes. James, 0.59.12. Once a minute at most per file: the next pass sees it there)
     if (size or 0) > drive.BIG then
       local dir, name = z:match("^(.*)/([^/]+)$")
-      local tmp = dir .. "/.syncthing." .. name .. ".tmp"
+      local tmp = dir .. "/.syncthing." .. name .. "." .. tostring(math.random(100000, 999999)) .. ".tmp" -- (its own: two tabs copying one file shared one. Review, 0.59.14)
       local cmd
       if reaper.GetOS():find("^Win") then
         local w = function(p) return '"' .. p:gsub("/", "\\") .. '"' end
@@ -354,7 +355,11 @@ function drive.mirror(here, there, budget, user, wait)
       require("services").run_hidden("drivecopy-" .. require("mirror").hash(z), cmd, 900) -- (a quarter of an hour: one still downloading from Drive was started again over itself. Mac review, 0.59.14)
       return
     end
-    band.copy_atomic(a, z)
+    local okc, why = pcall(band.copy_atomic, a, z) -- (one that fails, a Drive file that won't download offline, is skipped: it stopped the whole room each pass)
+    if not okc then
+      if not copy_said[a] then copy_said[a] = true; band.log("couldn't copy " .. a:match("[^/]+$") .. " for the cloud copy: " .. tostring(why)) end
+      return
+    end
     if band.size(a) ~= size or band.size(z) ~= size then os.remove(z); return end
     n = n + 1
   end
@@ -469,7 +474,8 @@ function drive.upkeep(cfg, droot, songs, skip, budget)
   for _, room in ipairs(band.subdirs(band.song_dir(cfg, song) .. "/rooms")) do
     local left = (budget or 1) - (reaper.time_precise() - t0)
     if left <= 0 then more = true; break end
-    local k, m = drive.mirror(band.song_dir(cfg, song) .. "/rooms/" .. room, droot .. "/" .. song .. "/rooms/" .. room, left, cfg.user)
+    local okm, k, m = pcall(drive.mirror, band.song_dir(cfg, song) .. "/rooms/" .. room, droot .. "/" .. song .. "/rooms/" .. room, left, cfg.user)
+    if not okm then turn.more = false; return n, false, song end -- (on to the next song next time: it stayed on this one. Review, 0.59.14)
     n, more = n + k, more or m
   end
   turn.more = more

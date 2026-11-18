@@ -422,8 +422,26 @@ function prints.render(oid, name, out, tracks, render, secs, quick) -- secs: the
     return nil
   end
   queue[oid] = nil
-  local ok, path = pcall(render)
-  if ok and path then return path end
+  -- (rendered into a folder of this computer's, then moved in whole: one cut short by a crash sat in the shared folder under its final
+  -- name, was taken for done at the next open and went to everyone. Review, 0.59.14)
+  local tmp = band.home() .. "/print-render"
+  reaper.RecursiveCreateDirectory(tmp, 0)
+  for _, f in ipairs(band.files(tmp)) do os.remove(tmp .. "/" .. f) end
+  local ok, path = pcall(render, nil, tmp)
+  if ok and path then
+    local base, moved = tostring(path):gsub("\\", "/"):match("([^/]+)%.flac$"), nil
+    for _, ext in ipairs({ ".flac", ".opus" }) do
+      local a, z = tmp .. "/" .. tostring(base) .. ext, out .. "/" .. tostring(base) .. ext
+      if base and reaper.file_exists(a) then
+        os.remove(z)
+        if os.rename(a, z) or (pcall(band.copy_atomic, a, z) and reaper.file_exists(z) and os.remove(a)) then
+          if ext == ".flac" then moved = z end
+        end
+      end
+    end
+    if moved then return moved end
+    ok, path = false, "couldn't move it into the studio's media folder"
+  end
   prints.failed[name] = true -- (it rendered again at every pass, holding REAPER each time)
   local where = tracks[1] and select(2, reaper.GetTrackName(tracks[1])) or "a track"
   if not ok then band.log("print error on " .. where .. ": " .. tostring(path)) end -- (the details, for the console)
@@ -494,7 +512,7 @@ local function refresh_ara(proj, it, media_dir)
   reaper.RecursiveCreateDirectory(media_dir, 0)
   local name = print_name(oid, h)
   local path = prints.render(oid, name, media_dir, { reaper.GetMediaItem_Track(it) },
-    function() return require("sync").print_item(proj, it, ara, media_dir, name, nil, true, true) end, reaper.GetMediaItemInfo_Value(it, "D_LENGTH")) -- (not quick: ARA)
+    function(_, front) return require("sync").print_item(proj, it, ara, front or media_dir, name, nil, true, true) end, reaper.GetMediaItemInfo_Value(it, "D_LENGTH")) -- (not quick: ARA. front: rendered here, into this folder first)
   if not path then return false end
   attach(it, print, ara, path, h)
   reaper.GetSetMediaItemTakeInfo_String(ara, "P_EXT:" .. prints.HERE, h, true)
@@ -531,9 +549,9 @@ function prints.refresh(proj, it, media_dir, fx_hash, route_hash, cfg)
   if prints.silent[name] then return false end -- (came out silent once: not again until what it's made from changes)
   reaper.RecursiveCreateDirectory(media_dir, 0)
   local sync = require("sync")
-  local path = prints.render(oid, name, media_dir, dest and { tr, dest } or { tr }, function()
-    if dest then return sync.print_routed(proj, it, midi, dest, media_dir, name) end
-    return sync.print_item(proj, it, dry, media_dir, name, nil, false, true)
+  local path = prints.render(oid, name, media_dir, dest and { tr, dest } or { tr }, function(_, front) -- (front: rendered here, into this folder first)
+    if dest then return sync.print_routed(proj, it, midi, dest, front or media_dir, name) end
+    return sync.print_item(proj, it, dry, front or media_dir, name, nil, false, true)
   end, reaper.GetMediaItemInfo_Value(it, "D_LENGTH"), audio and stock_only(tr)) -- (quick: audio through REAPER's own effects, nothing to load)
   if not path then return false end
   -- a print of notes that came out silent: the instrument loaded but its sounds didn't (a Kontakt library or an EZX that isn't

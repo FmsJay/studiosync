@@ -278,7 +278,7 @@ local function step()
   end
   if last then clear(last.dir) end
   last = { dir = out, size = size }
-  at = reaper.time_precise() + (pass == 1 and 0 or WAIT)
+  at = reaper.time_precise() + WAIT -- (the second pass waits too: two at once, a sampler still loading, came out equally silent. Review, 0.59.14)
   reaper.defer(step)
 end
 reaper.defer(step)
@@ -378,7 +378,8 @@ local function launch(exe, job, limit)
   if WIN then
     local cmd, vbs, ps = job:gsub("%.rpp$", ".cmd"), TMP .. "/hidden.vbs", TMP .. "/launch.ps1"
     if band.read(ps) ~= LAUNCH then band.write_atomic(ps, LAUNCH) end
-    band.write_atomic(cmd, string.format('@chcp 65001 >nul\r\n@powershell -NoProfile -ExecutionPolicy Bypass -File "%s" "%s" "%s" "%s" "%s" "%s" %d\r\n', ps, exe, job, res, PROFILE, ini, math.floor(limit or 600))) -- (chcp: UTF-8 paths, as services.background. 0.58.78)
+    local function pc(s) return (tostring(s):gsub("%%", "%%%%")) end -- (a % in a path is a variable to cmd: doubled. Review, 0.59.14)
+    band.write_atomic(cmd, string.format('@chcp 65001 >nul\r\n@powershell -NoProfile -ExecutionPolicy Bypass -File "%s" "%s" "%s" "%s" "%s" "%s" %d\r\n', pc(ps), pc(exe), pc(job), pc(res), pc(PROFILE), pc(ini), math.floor(limit or 600))) -- (chcp: UTF-8 paths, as services.background. 0.58.78)
     if not reaper.file_exists(vbs) then band.write_atomic(vbs, 'CreateObject("WScript.Shell").Run """" & WScript.Arguments(0) & """", 0, False\r\n') end
     reaper.ExecProcess(string.format('wscript.exe //B //Nologo "%s" "%s"', vbs, cmd), -1)
   else
@@ -405,6 +406,12 @@ function bg.start(key, name, keep, render, secs, quick, where) -- secs: how long
   local dir = TMP .. "/" .. name
   reaper.RecursiveCreateDirectory(dir, 0)
   for _, f in ipairs(band.files(dir)) do os.remove(dir .. "/" .. f) end
+  -- (and its pass folders: one left by a job ended part-way held a print of this name, and the hidden REAPER stopped on REAPER's "files
+  -- exist" box, out of sight, till it timed out and blamed a plug-in. Review, 0.59.14)
+  for _, sub in ipairs(band.subdirs(dir)) do
+    for _, f in ipairs(band.files(dir .. "/" .. sub)) do os.remove(dir .. "/" .. sub .. "/" .. f) end
+    os.remove(dir .. "/" .. sub)
+  end
   local job = dir .. "/job.rpp"
   pcall(require("tools").render_guard) -- (the person's startup scripts don't run in it)
   band.render_job = { dir = dir, copy = job }
