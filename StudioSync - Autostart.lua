@@ -7,6 +7,7 @@
 local dir = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]")
 package.path = dir .. "/lib/?.lua;" .. package.path
 local band = require("band")
+if require("fromfolder").handoff(debug.getinfo(1, "S").source) then return end -- (an old copy's button or key: the copy this computer runs from now. 0.59.24)
 band.WHO = "autostart" -- (which script a line in the log file came from)
 
 do -- the Actions list as it should be for this version: an update through the shared folder brings new scripts, which REAPER doesn't
@@ -112,6 +113,7 @@ local function loop_body()
   end
   band.try("band.sws_colours", band.sws_colours) -- (SWS auto-colouring off while a band song is in front, back on otherwise)
   band.try("removal.tick", require("removal").tick) -- (someone taken out of a group, and which computer is whose: lib/removal.lua)
+  band.try("fromfolder.tick", require("fromfolder").tick, dir) -- (a studio that updates through its folder: lib/fromfolder.lua, 0.59.24)
   band.try("listen.tick", require("listen").tick) -- (the listening page, where this computer shares it)
   -- (guests off Tailscale when their time is up, with or without the panel open: it ran only in the panel. Security review, 0.58.87)
   band.try("services.tailscale_sweep_guests", require("services").tailscale_sweep_guests)

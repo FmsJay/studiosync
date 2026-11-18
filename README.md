@@ -218,6 +218,11 @@ By hand:
      registers any new scripts that arrive later. The trade-off: anyone who can write to the shared folder can
      change everyone's scripts. Only share it with your studio. A new version that arrives there asks before it takes
      over a running session (it still runs when REAPER next starts), and Settings > Health keeps a yellow line saying so.
+   - **Everyone from the studio's folder** (Settings > Studio > Updates, owner and admins): every computer in the studio moves to
+     `<studio>/_tools/studiosync` by itself once all of it has arrived there (and it's that version or newer), so a new version put
+     in the folder reaches everyone, each asked once by the code guard. Someone invited installs as usual and moves once they're
+     let in: the invitation needs nothing more. An old copy's toolbar button, menu or key hands over to the folder's copy, and a
+     copy run from a git checkout (a developer's) stays where it is.
 3. Open **StudioSync - Panel**: the first time, it asks for the shared folder and your name (later: Settings > You).
 4. **Install ReaImGui** (*Extensions > ReaPack > Browse packages*): the panel, and with it the Live and
    Restore pages, needs it.
@@ -495,14 +500,19 @@ With Real time mode on:
   not even their listing; that's hidden, not locked (someone who knows Syncthing could undo it on their own computer).
 - **The live audio's password** is the studio's own: worked out from a secret the owner's computer keeps in the studio's
   settings, not from the studio's ID that invitations show. It changes when someone is taken out.
-- **Invite a SonoBus guest** (Home, beside Configure SonoBus): one message with SonoBus's free download and a link that joins your studio's
-  live audio; it turns on Real time mode and SonoBus Guest, so they hear your mix and what they play records here.
+- **Invite a SonoBus guest** (Home > Who's here, beside Invite a collaborator and Invite a guest): for someone with only the SonoBus app.
+  One message with SonoBus's free download and a link that joins your studio's live audio, and a step asking them to send uncompressed
+  (SonoBus's gear > Default Send Quality: PCM 24 bit); it turns on Real time mode and SonoBus Guest, so they hear your mix and what they
+  play records here. Invite a collaborator or a guest is the one for someone new who should have everything: its "New" choice sets up
+  REAPER too.
 - **SonoBus Guest**: for someone who joins with only SonoBus (a singer at home, no REAPER, no copy of the project). They hear
   your whole mix, and what they sing is recorded on the Real time track whenever you record. **Measure their delay**
   plays them a bar of count-in and 8 clicks to clap along to, and times where the claps land (the whole round trip;
   the idea is from ReaConnect). Measure right before you record: the delay drifts as SonoBus adjusts its buffers
   (tested PC to laptop over Wi-Fi: 426 to 555 ms within two minutes), so a take can land that far off and need a nudge. **Line up their takes** then moves what you recorded onto a studio track of theirs,
-  earlier by that delay, and the others get it like any take.
+  earlier by that delay, and the others get it like any take. **Uncompressed from them** opens SonoBus at their name's Preferred
+  Recv Quality (PCM 24 bit: what records is what they played; SonoBus keeps that request while they're connected). **Use a file they
+  recorded** still swaps in their own recording, lined up by ear, when they have one.
 - SonoBus has to actually join the studio's studio: StudioSync checks it did (SonoBus saves each join), tries twice more,
   then tells you to press Connect in its window. Turning Real time mode on also takes any other tab's SonoBus offline,
   so you're only in the studio once.
@@ -538,6 +548,12 @@ setup opens instead).
 **Getting them later:** the panel's **Settings > Plug-ins** (and the Plugins page) says how many of the pack and the extras this
 computer has, which ones others in the studio have that it doesn't, and **Get the pack** / **Get the extras** open this release's
 installer in a window of its own, doing only the plug-ins (`-PluginsOnly` on Windows, `BS_PLUGINS_ONLY=1` on Mac and Linux).
+
+**Find a plug-in** (Settings > Plug-ins and the Plugins page): a search, REAPER's own categories (its FX browser's Category list:
+EQ, Dynamics, Reverb...) and Instruments, and **Only what everyone has** on or off (off: all of yours, the ones everyone has marked).
+Add puts it on the selected track. REAPER's FX folders can't hold folders of their own, so this is where the categories are; the
+"StudioSync (everyone has)" folder stays as it was, made again whenever a bandmate's plug-in list changes (every 2 minutes Live
+sync looks; REAPER's FX browser shows it after a restart, the finder at once).
 
 **Extras** (a second question, asked of everyone, about 1.3 GB, most of it the piano and drums): Neural Amp Modeler 0.7.13 and AIDA-X (amp
 capture players), Odin 2 (synth), SnapTune (vocal pitch correction, AGPL-3), JC303 (TB-303 bass, GPL-3), RipplerX (modelled

@@ -6,6 +6,7 @@
 local dir = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]")
 package.path = dir .. "/lib/?.lua;" .. package.path
 local band = require("band")
+if require("fromfolder").handoff(debug.getinfo(1, "S").source) then return end -- (an old copy's button or key: the copy this computer runs from now. 0.59.24)
 local sync = require("sync")
 local live = require("live")
 local together = require("together")
@@ -683,6 +684,7 @@ if reload_proj ~= proj and reaper.GetExtState(band.SECTION, "live began " .. tos
   if ok and was then band.log("live audio starts off when a project opens: Real time mode (and Time-sync) and the call are off. Switch them on on Home and in Chat > Call") end
 end
 reaper.SetExtState(band.SECTION, "live began " .. tostring(proj), "1", false)
+local plugins_looked -- (when bandmates' plug-in lists were last looked at: tick_body)
 local tick
 local livemidi = require("livemidi")
 local midi_view_at, midi_view_err = 0, nil
@@ -711,6 +713,24 @@ local function tick_body() -- returns true to keep going
   end
   reaper.SetExtState(band.SECTION, "live " .. key, tostring(reaper.time_precise()), false)
   keep_lock() -- (this REAPER syncs this song: 0.59.18)
+  -- A bandmate's plug-in list changed (they installed some, or the pack): the "everyone has" folder made again here, not only at the next
+  -- start. Looked at every 2 minutes, by whichever tab of the studio looks first. (James, 0.59.24: "make sure the studiosync plugins are
+  -- refreshed for users to see what everyone has")
+  if reaper.time_precise() - (plugins_looked or -math.huge) > 120 then
+    plugins_looked = reaper.time_precise()
+    local sig = {}
+    for _, f in ipairs(band.files(cfg.root .. "/plugins", ".json")) do sig[#sig + 1] = f .. "@" .. tostring(band.size(cfg.root .. "/plugins/" .. f)) end
+    sig = table.concat(sig, "|")
+    local seen_key = "plugins seen " .. cfg.root
+    if reaper.GetExtState(band.SECTION, seen_key) ~= sig then
+      local had = reaper.GetExtState(band.SECTION, seen_key) ~= ""
+      reaper.SetExtState(band.SECTION, seen_key, sig, false)
+      if had then
+        local ok, n = pcall(require("plugins").update_folder, cfg)
+        if ok and n then band.log(string.format("a bandmate's plug-ins changed: %d everyone has now (FX browser folder '%s'; REAPER shows it after a restart, StudioSync's Find a plug-in now)", n, require("plugins").FOLDER)) end
+      end
+    end
+  end
   -- Each part shows only the take it plays, dry or wet (James, 0.59.13: "having a wet and dry take might take up too much space... only show
   -- one or the other"), unless Settings > Advanced shows both (ExtState "show both takes"). REAPER's Show all takes in lanes (action 40435) is
   -- the project's own: set once in front, and again only when the setting changes, so Ctrl+L still works. A band song's takes are only ever

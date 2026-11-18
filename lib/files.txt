@@ -1,27 +1,27 @@
-version 0.59.23
-StudioSync - Autostart.lua	16163
-StudioSync - Claim selected tracks.lua	692
-StudioSync - Draw.lua	27162
-StudioSync - Final mix.lua	5637
-StudioSync - Hold my changes.lua	766
-StudioSync - Keep selected tracks local.lua	760
-StudioSync - Live sync.lua	71777
-StudioSync - Local mixing.lua	721
-StudioSync - Measure guest delay.lua	4099
-StudioSync - Open session.lua	8975
-StudioSync - Panel.lua	228234
-StudioSync - Prepare session.lua	6311
-StudioSync - Publish session.lua	5552
-StudioSync - Radial menu.lua	7656
-StudioSync - Redo.lua	797
-StudioSync - Selected tracks play as chosen.lua	1207
-StudioSync - Selected tracks play dry.lua	1505
-StudioSync - Selected tracks play wet.lua	1339
-StudioSync - Settings.lua	449
-StudioSync - Status.lua	3314
-StudioSync - Take control.lua	4129
-StudioSync - Undo.lua	941
-StudioSync - Update.lua	2143
+version 0.59.24
+StudioSync - Autostart.lua	16460
+StudioSync - Claim selected tracks.lua	851
+StudioSync - Draw.lua	27321
+StudioSync - Final mix.lua	5796
+StudioSync - Hold my changes.lua	925
+StudioSync - Keep selected tracks local.lua	919
+StudioSync - Live sync.lua	73247
+StudioSync - Local mixing.lua	880
+StudioSync - Measure guest delay.lua	4258
+StudioSync - Open session.lua	9134
+StudioSync - Panel.lua	231364
+StudioSync - Prepare session.lua	6470
+StudioSync - Publish session.lua	5711
+StudioSync - Radial menu.lua	7815
+StudioSync - Redo.lua	956
+StudioSync - Selected tracks play as chosen.lua	1366
+StudioSync - Selected tracks play dry.lua	1664
+StudioSync - Selected tracks play wet.lua	1498
+StudioSync - Settings.lua	608
+StudioSync - Status.lua	3473
+StudioSync - Take control.lua	4288
+StudioSync - Undo.lua	1100
+StudioSync - Update.lua	2302
 lib/access.lua	5942
 lib/alerts.lua	3960
 lib/api.lua	6961
@@ -37,8 +37,10 @@ lib/drummap.lua	5670
 lib/export.lua	7528
 lib/extras.lua	27728
 lib/feedback.lua	8370
+lib/fromfolder.lua	5160
 lib/fxfiles.lua	8525
-lib/groups.lua	17608
+lib/fxpick.lua	6673
+lib/groups.lua	17762
 lib/guest.lua	7314
 lib/hear.lua	16197
 lib/json.lua	6080
@@ -54,7 +56,7 @@ lib/pack.lua	9095
 lib/page_chat.lua	24132
 lib/page_groups.lua	35397
 lib/page_health.lua	25316
-lib/page_hear.lua	15161
+lib/page_hear.lua	16032
 lib/page_play.lua	24846
 lib/page_plugins.lua	19338
 lib/page_restore.lua	25441
@@ -81,7 +83,7 @@ lib/suggest.lua	14428
 lib/sync.lua	97780
 lib/theme.lua	8224
 lib/together.lua	4950
-lib/tools.lua	38777
+lib/tools.lua	39300
 lib/trim.lua	10927
 lib/trust.lua	16280
 lib/undo.lua	7249

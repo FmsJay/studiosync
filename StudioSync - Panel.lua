@@ -5,6 +5,7 @@
 local dir = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]")
 package.path = dir .. "/lib/?.lua;" .. package.path
 local band = require("band")
+if require("fromfolder").handoff(debug.getinfo(1, "S").source) then return end -- (an old copy's button or key: the copy this computer runs from now. 0.59.24)
 band.WHO = "panel" -- (which script a line in the log file came from)
 local sync = require("sync")
 local recall = require("recall")
@@ -1023,6 +1024,11 @@ function ui.settings_pack()
   heading("The plug-in pack", 17)
   require("pack").draw(ctx, ImGui, cfg)
 end
+-- Finding a plug-in by REAPER's categories, only what everyone has or all of yours (lib/fxpick.lua. James, 0.59.24)
+function ui.settings_find()
+  heading("Find a plug-in", 17)
+  require("fxpick").draw(ctx, ImGui, cfg, proj)
+end
 
 -- Live: hear each other while it happens, through ReaNINJAM and the band's NINJAM server.
 local live = require("live")
@@ -1355,15 +1361,7 @@ end
 -- Real time mode with your call mic, and each person's volume and mute (SonoBus's own window has them, per person, separate from what's recorded).
 function ui.call_tab()
   heading("Call", 17)
-  local call = require("alerts").call_link(cfg.root)
-  if call then
-    if ImGui.Button(ctx, "Join the studio's call") then band.open_url(call) end
-    ImGui.SetItemTooltip(ctx, "Opens " .. call .. " in its own app or browser, with video if it has it. Mute its microphone while you play: Real time mode carries the music.")
-  else
-    ImGui.TextDisabled(ctx, "No call link for the studio yet (Discord, Zoom, Meet...): the owner or an admin sets it in Settings > Studio.")
-    if ImGui.SmallButton(ctx, "Set it up##calllink") then ui.go_settings("Studio") end
-  end
-  ImGui.Spacing(ctx)
+  -- (StudioSync's own call first, the studio's call link under it as "3rd party call service". James, 0.59.24)
   ImGui.SeparatorText(ctx, "Talk inside StudioSync")
   -- (its own switch: it was Real time mode's, and switching it on turned Time-sync off. James, 0.59.6)
   local on = b and ui.call_on()
@@ -1384,13 +1382,23 @@ function ui.call_tab()
   else
     ImGui.TextDisabled(ctx, b and "On: talk to everyone with Talk, no other app needed, and set each person's volume." or "Open a studio project to talk.")
   end
+  ImGui.Spacing(ctx)
+  ImGui.SeparatorText(ctx, "3rd party call service")
+  local call = require("alerts").call_link(cfg.root)
+  if call then
+    if ImGui.Button(ctx, "Join the studio's call") then band.open_url(call) end
+    ImGui.SetItemTooltip(ctx, "Opens " .. call .. " in its own app or browser, with video if it has it. Mute its microphone while you play: Real time mode carries the music.")
+  else
+    ImGui.TextDisabled(ctx, "No call link for the studio yet (Discord, Zoom, Meet...): the owner or an admin sets it in Settings > Studio.")
+    if ImGui.SmallButton(ctx, "Set it up##calllink") then ui.go_settings("Studio") end
+  end
 end
 -- Real time mode's three ways (James, 0.59.4: "my time, their time for SonoBus and then time sync for NINJAM, each stating what they do").
 -- One at a time: SonoBus and NINJAM both carry your mix, so with both on everyone hears you twice. The last one picked comes back with the switch.
 local RT_KINDS = {
   { "my", "My time", "You hear everyone the moment it arrives, a little late (the network). For playing and talking together." },
   { "their", "Their time", "Your backing is delayed so the others line up with it. For listening along, not for playing." },
-  { "timesync", "Time-sync", "Everyone plays to their own copy of the song and hears the others exactly in time, %s late. For playing along to a take. Talk: Chat > Call." },
+  { "timesync", "Time-sync (recommended)", "Everyone plays to their own copy of the song and hears the others exactly in time, %s late (one NINJAM interval at this tempo:\nit follows the song's tempo and the server's interval). For playing along to a take. Talk: Chat > Call." },
 }
 function ui.rt_kind()
   if page_play.time_sync_on() then return "timesync" end
@@ -1417,7 +1425,8 @@ end
 function ui.rt_switch(v)
   if not v then return ui.set_rt_kind(nil) end
   local last = select(2, reaper.GetProjExtState(proj, band.SECTION, "rt kind"))
-  local want = last ~= "" and (b or last ~= "timesync") and last or "my"
+  local ts_ok = b and require("services").tailscale_up() -- (Time-sync first, the recommended way, when it can come on. James, 0.59.24)
+  local want = last ~= "" and (b or last ~= "timesync") and last or (ts_ok and "timesync" or "my")
   ui.set_rt_kind(want)
   if want ~= "my" and not ui.rt_kind() then ui.set_rt_kind("my") end
 end
@@ -1432,15 +1441,17 @@ local function home_play()
   if on then
     local bars = b and page_play.interval_bars() or 1
     ImGui.Indent(ctx, 26)
-    for _, k in ipairs(RT_KINDS) do
+    -- (side by side, what each does on hover: three paragraphs under each other took half of Home. James, 0.59.24)
+    for i, k in ipairs(RT_KINDS) do
       -- (NINJAM goes over Tailscale: without it, Time-sync came on and nothing arrived. Onboarding review, 0.59.9)
       local no_ts = k[1] == "timesync" and b and not require("services").tailscale_up()
+      if i > 1 then require("page_hear").fit(ctx, ImGui, k[2], 26) end -- (beside the last while it fits)
       ImGui.BeginDisabled(ctx, k[1] == "timesync" and (not b or no_ts) and kind ~= k[1])
       if ImGui.RadioButton(ctx, k[2] .. "##rtkind", kind == k[1]) and kind ~= k[1] then ui.set_rt_kind(k[1]) end
       ImGui.EndDisabled(ctx)
       local says = no_ts and "Time-sync needs the studio's private network (Tailscale): ask whoever runs the studio for a guest invitation. Health shows it."
         or k[3]:format(string.format("%d bar%s", bars, bars == 1 and "" or "s"))
-      if ui.short then ImGui.SetItemTooltip(ctx, says) else ImGui.TextDisabled(ctx, says) end
+      ImGui.SetItemTooltip(ctx, says)
     end
     ImGui.Unindent(ctx, 26)
   end
@@ -1448,26 +1459,6 @@ local function home_play()
     require("page_hear").fit(ctx, ImGui, "Each person's volume") -- (beside, or below in a narrow column)
     if ImGui.SmallButton(ctx, "Each person's volume") then sonobus_open() end
     ImGui.SetItemTooltip(ctx, "Opens SonoBus's own window: volume and mute for each collaborator, buffer and quality. You don't need it to play together.")
-  end
-  if b then -- (James, 0.58.87: an easier way to bring in someone with only the SonoBus app: one message, and SonoBus Guest on)
-    require("page_hear").fit(ctx, ImGui, "Invite someone without REAPER")
-    if ImGui.SmallButton(ctx, "Invite someone without REAPER") then
-      local link, why = setup.sonobus(cfg, b, proj, true)
-      if not link then band.msg(why) else
-        sb_link = link
-        if not sb then set_same_room(true) end
-        require("guest").set(proj, true)
-        local info = band.info(cfg.root)
-        tools.show_invite("Join me live in " .. tostring(info.name) .. " (" .. tostring(b.song) .. ") with SonoBus: you'll hear the song and me, and I'll hear and record you.\n\n" ..
-          "1. Install SonoBus, free: https://sonobus.net (Windows, Mac, iPhone, Android, Linux).\n" ..
-          "2. Open this link, and SonoBus joins us by itself:\n" .. link .. "\n" ..
-          "3. Wear headphones (speakers come back into your mic as an echo), and plug in your mic or instrument.\n" ..
-          "Nothing else to install, no account needed.", info, ctx, ImGui)
-        band.log("a SonoBus guest invitation is on your clipboard; Real time mode and SonoBus Guest are on, so they'll hear the song and you")
-      end
-    end
-    ImGui.SetItemTooltip(ctx, "For someone with only the SonoBus app (no REAPER, no StudioSync): a message with SonoBus's download and a link that joins your\n" ..
-      "studio's live audio. Turns on Real time mode and SonoBus Guest, so they hear your mix and what they play records here.")
   end
   if sb then -- (the help for it was in Settings > Advanced, with nothing here pointing at it: UX review, 0.58.52)
     require("page_hear").fit(ctx, ImGui, "Can't hear?")
@@ -1558,6 +1549,31 @@ local function home_who()
     next_to("Invite a guest")
     tools.guest_invite_button(ctx, ImGui, my_id, cfg.root)
   end
+  -- (someone with only the SonoBus app: it was under Real time mode as "Invite someone without REAPER", which read as the one that installs
+  -- REAPER. Here with the others, named for who it's for. James, 0.59.24)
+  if b then
+  next_to("Invite a SonoBus guest")
+  if ImGui.SmallButton(ctx, "Invite a SonoBus guest") then
+    local link, why = setup.sonobus(cfg, b, proj, true)
+    if not link then band.msg(why) else
+      sb_link = link
+      if not same_room_on() then set_same_room(true) end
+      require("guest").set(proj, true)
+      local info = band.info(cfg.root)
+      tools.show_invite("Join me live in " .. tostring(info.name) .. " (" .. tostring(b.song) .. ") with SonoBus: you'll hear the song and me, and I'll hear and record you.\n\n" ..
+        "1. Install SonoBus, free: https://sonobus.net (Windows, Mac, iPhone, Android, Linux).\n" ..
+        "2. Open this link, and SonoBus joins us by itself:\n" .. link .. "\n" ..
+        "3. Wear headphones (speakers come back into your mic as an echo), and plug in your mic or instrument.\n" ..
+        "4. For the best recording, send uncompressed: in SonoBus press the gear (Options), and set Default Send Quality to PCM 24 bit. " ..
+        "On a weak connection (a phone on mobile data) leave it as it is.\n" ..
+        "Nothing else to install, no account needed.", info, ctx, ImGui)
+      band.log("a SonoBus guest invitation is on your clipboard; Real time mode and SonoBus Guest are on, so they'll hear the song and you")
+    end
+  end
+  ImGui.SetItemTooltip(ctx, "For someone with only the SonoBus app, no REAPER: a message with SonoBus's download and a link that joins your studio's live\n" ..
+    "audio. Turns on Real time mode and SonoBus Guest, so they hear your mix and what they play records here. (Invite a collaborator or a guest\n" ..
+    "sets up everything for someone new, REAPER included.)")
+  end -- (b: a studio project open)
   tools.guests_list(ctx, ImGui, cfg.root, require("groups").may_manage(cfg.root, cfg.user))
   local people, armed = {}, {}
   for i = 0, reaper.CountTracks(proj) - 1 do
@@ -2166,9 +2182,30 @@ local function studio_debug()
   end
   card_end()
 end
+-- Updates through the studio's folder (lib/fromfolder.lua. James, 0.59.24)
+local function studio_updates()
+  if not card("studio updates") then return end
+  local ff = require("fromfolder")
+  ImGui.SeparatorText(ctx, "Updates")
+  local on = ff.on(cfg.root)
+  local run = reaper.GetExtState(band.SECTION, "run from")
+  local here = run ~= "" and band.norm(run):lower() == band.norm(ff.target(cfg.root)):lower()
+  ImGui.TextDisabled(ctx, on and ("On: every computer in the studio runs StudioSync from its folder (_tools/studiosync), so a new version put there reaches everyone, " ..
+    "each asked once. New people move there once they're let in. This computer: " .. (here and "runs from it." or "not yet (it moves at its next look, once all of it has arrived; a developer's own copy stays as it is).")) or
+    "Off: each computer updates StudioSync itself (ReaPack). On, everyone runs it from the studio's folder, and a new version put there reaches them all.")
+  if studio_admin() then
+    local ch, v = ImGui.Checkbox(ctx, "Everyone runs StudioSync from the studio's folder##studioupdates", on)
+    if ch then
+      require("groups").set_folder_updates(cfg.root, v)
+      band.log(v and "the studio's computers run StudioSync from its folder from now on (each moves at its next look)" or "the studio's computers update StudioSync themselves again (those already moved stay on the folder's copy)")
+    end
+    ImGui.SetItemTooltip(ctx, "Owner and admins. For a studio working on StudioSync together: one copy, the folder's, everywhere. The code guard still asks\non each computer before running code that changed in the folder.")
+  end
+  card_end()
+end
 local function settings_studio()
   ImGui.TextDisabled(ctx, "For everyone in " .. band.info(cfg.root).name .. ". Only the owner and admins change these; everyone can use them.")
-  layout({ { studio_alerts, 360 }, { studio_call, 360 }, { studio_private_audio, 360 }, { studio_tailscale_sync, 360 }, { studio_debug, 360 } }, true)
+  layout({ { studio_alerts, 360 }, { studio_call, 360 }, { studio_private_audio, 360 }, { studio_tailscale_sync, 360 }, { studio_updates, 360 }, { studio_debug, 360 } }, true)
 end
 local function settings_drive()
   if card("drive") then
@@ -2428,7 +2465,7 @@ local function page_setup()
     ImGui.EndTabItem(ctx)
   end
   if tab("Studio") then body("s studio", settings_studio); ImGui.EndTabItem(ctx) end
-  if tab("Plug-ins") then body("s pack", ui.settings_pack); ImGui.EndTabItem(ctx) end -- (the pack and extras: lib/pack.lua, 0.59.22)
+  if tab("Plug-ins") then body("s pack", function() layout({ { ui.settings_find, 520 }, { ui.settings_pack, 380 } }, true) end); ImGui.EndTabItem(ctx) end -- (the pack and extras: lib/pack.lua, 0.59.22)
   if tab("Advanced") then body("s advanced", function() layout({ { ui.settings_advanced, 360 }, { ui.settings_buffer, 420 } }, true) end); ImGui.EndTabItem(ctx) end
   if tab("Console") then
     -- StudioSync's own log, newest first (REAPER's console only shows it while open)
@@ -3035,7 +3072,7 @@ local function frame_app()
     elseif page == "Restore" then layout({ { restore.section_recall, 400 }, { restore.section_history, 600 } })
     elseif page == "Mixes" then layout({ { restore.section_mixes, 440 }, { studio_listen, 360 } })
     elseif page == "Plugins" then
-      layout({ { function() require("page_plugins").draw(ctx, ImGui, proj, cfg) end, 760 }, { function() require("page_plugins").drums(ctx, ImGui, proj, cfg) end, 420 }, { section_plugins, 420 } })
+      layout({ { function() require("page_plugins").draw(ctx, ImGui, proj, cfg) end, 760 }, { ui.settings_find, 520 }, { function() require("page_plugins").drums(ctx, ImGui, proj, cfg) end, 420 }, { section_plugins, 420 } })
     elseif page == "Settings" then page_setup() end
     ImGui.PopTextWrapPos(ctx)
     ui.smooth_scroll_end(scroll_key)

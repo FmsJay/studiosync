@@ -89,18 +89,16 @@ function page.realtime(ctx, ImGui, proj, no_radios)
     "and their singing records on the Real time track when you record. Send them your SonoBus link (Configure SonoBus).")
   if g then
     local d = guest.delay(proj)
-    beside("Swap in their own file")
-    if ImGui.SmallButton(ctx, "Swap in their own file") then
-      local item = reaper.GetSelectedMediaItem(proj, 0)
-      local ok, path = item and reaper.GetUserFileNameForRead("", "Their own recording of this take", "")
-      if not item then band.msg("Select what you recorded from them first (their item).")
-      elseif ok then
-        local off, why = require("extras").swap_in_file(item, path)
-        band.log(off and string.format("their own recording is in as a new take, lined up by ear (%.3f s into the file)", off) or tostring(why))
-      end
+    -- (what records from them is only as good as what SonoBus sends: uncompressed, it's what they played. Their own file swapped in was
+    -- the only way before, and it read as confusing. James, 0.59.24. SonoBus keeps the request only while they're connected.)
+    beside("Uncompressed from them")
+    if ImGui.SmallButton(ctx, "Uncompressed from them") then
+      local on, sm, si = require("live").sonobus_online(proj)
+      if on and sm then reaper.TrackFX_Show(sm, si, 3) end
+      band.msg("In SonoBus's window: click their name, then set Preferred Recv Quality to PCM 24 bit.\n\n" ..
+        "It holds while they're connected. Their invitation asks them to send PCM 24 bit as well (SonoBus's gear > Default Send Quality), which keeps it every time.")
     end
-    ImGui.SetItemTooltip(ctx, "What came over SonoBus is compressed. Their own recording (SonoBus can record on their side) is the real thing:\n" ..
-      "select what you recorded from them, pick their file, and it goes in as a new take, lined up with what's there.")
+    ImGui.SetItemTooltip(ctx, "What records from them is what SonoBus sends: compressed, unless they send uncompressed. Opens SonoBus to ask for uncompressed.")
     local label = d and string.format("Measure again (%d ms)", d) or "Measure their delay"
     beside(label)
     if ImGui.SmallButton(ctx, label) then run("Measure guest delay") end
@@ -120,6 +118,18 @@ function page.realtime(ctx, ImGui, proj, no_radios)
       ImGui.SetItemTooltip(ctx, "Moves what you recorded from them onto a studio track of their own, earlier by their delay, so it sits\n" ..
         "where they sang it. The others get it like any take.")
     end
+    beside("Use a file they recorded")
+    if ImGui.SmallButton(ctx, "Use a file they recorded") then
+      local item = reaper.GetSelectedMediaItem(proj, 0)
+      local ok, path = item and reaper.GetUserFileNameForRead("", "Their own recording of this take", "")
+      if not item then band.msg("Select what you recorded from them first (their item).")
+      elseif ok then
+        local off, why = require("extras").swap_in_file(item, path)
+        band.log(off and string.format("their own recording is in as a new take, lined up by ear (%.3f s into the file)", off) or tostring(why))
+      end
+    end
+    ImGui.SetItemTooltip(ctx, "If they recorded on their side too (SonoBus can): select what you recorded from them, pick their file,\n" ..
+      "and it goes in as a new take, lined up with what's there.")
   end
 end
 

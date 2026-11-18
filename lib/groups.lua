@@ -138,6 +138,7 @@ function groups.set_tailscale_only(root, on) save(root, function(j) j.tailscale_
 function groups.colours(root) local c = groups.trusted(root).colours; return type(c) == "table" and type(c.scheme) == "string" and c or nil end
 function groups.set_colours(root, c) save(root, function(j) j.colours = c end) end
 function groups.set_debug(root, on) save(root, function(j) j.debug = on and true or nil end) end -- (lib/debugmode.lua: owner and admins)
+function groups.set_folder_updates(root, on) save(root, function(j) j.updates = on and "folder" or nil end) end -- (lib/fromfolder.lua: owner and admins)
 
 -- The owner makes someone an admin or a member again. -> true, or nil + why.
 function groups.set_admin(root, actor, target, on)

@@ -5,6 +5,7 @@ local CHOICE, WORDS = "wet", [[wet: the studio's print, the track's plug-ins hel
 local dir = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]")
 package.path = dir .. "/lib/?.lua;" .. package.path
 local band = require("band")
+if require("fromfolder").handoff(debug.getinfo(1, "S").source) then return end -- (an old copy's button or key: the copy this computer runs from now. 0.59.24)
 local proj = reaper.EnumProjects(-1)
 if not band.binding(proj) then return band.msg("This project isn't shared yet: share it, or open it from Projects in the StudioSync panel.") end
 local n = reaper.CountSelectedTracks(proj)

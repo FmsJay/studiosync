@@ -50,7 +50,8 @@ function tools.autostart_on(dir)
   local text = band.read(startup_path()) or ""
   return text:find(MARK_A, 1, true) ~= nil and (not dir or text:find(dir .. "/StudioSync - Autostart.lua", 1, true) ~= nil) -- (dir: and it's this copy)
 end
-function tools.set_autostart(on, dir)
+-- `fallback`: a copy to start instead when `dir` isn't there any more (a studio's folder this computer ran from, left since: lib/fromfolder.lua)
+function tools.set_autostart(on, dir, fallback)
   local text = band.read(startup_path())
   if not text and reaper.file_exists(startup_path()) then return false, "couldn't read " .. startup_path() end -- (written with only ours, the rest was gone)
   text = text or ""
@@ -61,7 +62,8 @@ function tools.set_autostart(on, dir)
   end
   if on then
     text = text .. (text ~= "" and not text:match("\n$") and "\n" or "") ..
-      MARK_A .. "\ndofile([[" .. dir .. "/StudioSync - Autostart.lua]])\n" .. MARK_Z .. "\n"
+      MARK_A .. "\n" .. (fallback and ("for _, f in ipairs({ [[" .. dir .. "/StudioSync - Autostart.lua]], [[" .. fallback .. "/StudioSync - Autostart.lua]] }) do " ..
+        "if reaper.file_exists(f) then dofile(f) break end end") or ("dofile([[" .. dir .. "/StudioSync - Autostart.lua]])")) .. "\n" .. MARK_Z .. "\n"
   end
   reaper.RecursiveCreateDirectory(reaper.GetResourcePath() .. "/Scripts", 0)
   return pcall(band.write_atomic, startup_path(), text) -- (write_atomic returns nothing: it raises when it can't)
@@ -119,7 +121,8 @@ function tools.show_invite(text, info, ctx, ImGui, parts)
   band.copy(text, ctx, ImGui)
   shown_invite = { text = text, info = info, parts = parts, who = "both", name = tostring(info and info.name or "the studio"), open = true }
 end
-local WHO = { { "new", "Doesn't have StudioSync" }, { "has", "Has StudioSync" }, { "both", "Not sure" } } -- (in this order: James, 0.58.98)
+-- (in this order: James, 0.58.98. "new" named for what it does, setting up REAPER too: James, 0.59.24)
+local WHO = { { "new", "New: sets up REAPER and everything" }, { "has", "Has StudioSync" }, { "both", "Not sure" } }
 function tools.invite_popup(ctx, ImGui)
   local j = shown_invite
   if not j then return end
@@ -143,7 +146,7 @@ function tools.invite_popup(ctx, ImGui)
     end
     ImGui.PushTextWrapPos(ctx, 0)
     ImGui.Text(ctx, "It's on your clipboard: paste it into a message to each person you're inviting to " .. j.name .. "." ..
-      (j.who == "new" and " For someone without StudioSync: it installs everything." or j.who == "has" and " For someone who has StudioSync: a join code to paste in its panel." or " It works whether they have StudioSync or not."))
+      (j.who == "new" and " For someone new, with or without REAPER: it installs REAPER (if it isn't there), StudioSync and everything it uses." or j.who == "has" and " For someone who has StudioSync: a join code to paste in its panel." or " It works whether they have StudioSync or not."))
     ImGui.PopTextWrapPos(ctx)
     local foot = ImGui.GetFrameHeightWithSpacing(ctx) + ImGui.GetTextLineHeightWithSpacing(ctx) * 2.5
     ImGui.InputTextMultiline(ctx, "##invitation", j.text, -1, math.max(ImGui.GetTextLineHeight(ctx) * 4, select(2, ImGui.GetContentRegionAvail(ctx)) - foot),
