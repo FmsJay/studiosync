@@ -666,7 +666,7 @@ local function tick_body() -- returns true to keep going
     reaper.DeleteExtState(band.SECTION, "live " .. key, false)
     -- (the tab's own settings go too: a new tab can get the same address, and took its follow, produce or listen. Review, 0.58.96)
     for _, k in ipairs({ "follow", "listen", "listen had", "listeners", "send whole mix", "alone", "held", "produce", "transport", "together",
-        "sonobus for listeners", "outbox", "live owner", "ping", "slow tick", "last here", "draw", "live began" }) do reaper.DeleteExtState(band.SECTION, k .. " " .. key, false) end
+        "sonobus for listeners", "outbox", "live owner", "ping", "slow tick", "last here", "draw", "live began", "takelanes" }) do reaper.DeleteExtState(band.SECTION, k .. " " .. key, false) end
     return band.log("live sync stopped: '" .. b.song .. "'" .. (b.room ~= "main" and (", side room '" .. b.room .. "',") or "") .. " was closed (it starts again by itself when you reopen it)")
   end
   local now_b = band.binding(proj)
@@ -686,6 +686,17 @@ local function tick_body() -- returns true to keep going
     return band.log("live sync stopped for '" .. b.song .. "'")
   end
   reaper.SetExtState(band.SECTION, "live " .. key, tostring(reaper.time_precise()), false)
+  -- Each part shows only the take it plays, dry or wet (James, 0.59.13: "having a wet and dry take might take up too much space... only show
+  -- one or the other"), unless Settings > Advanced shows both (ExtState "show both takes"). REAPER's Show all takes in lanes (action 40435) is
+  -- the project's own: set once in front, and again only when the setting changes, so Ctrl+L still works. A band song's takes are only ever
+  -- dry and wet: its comps are lanes.
+  if reaper.EnumProjects(-1) == proj then
+    local want = reaper.GetExtState(band.SECTION, "show both takes") == "1" and 1 or 0
+    if reaper.GetExtState(band.SECTION, "takelanes " .. key) ~= tostring(want) then
+      if reaper.GetToggleCommandStateEx(0, 40435) ~= want then reaper.Main_OnCommand(40435, 0) end
+      reaper.SetExtState(band.SECTION, "takelanes " .. key, tostring(want), false)
+    end
+  end
   if cmd > 0 then reaper.SetExtState(band.SECTION, "live cmd " .. cmd, tostring(reaper.time_precise()), false) end -- (band.start_live)
   -- the band's takes add up on your master: say so when it clips (at most every 30 s)
   if reaper.EnumProjects(-1) == proj and reaper.GetPlayState() & 1 == 1 then

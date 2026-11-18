@@ -1688,6 +1688,12 @@ function ui.track_plays_row()
     ImGui.SameLine(ctx)
   end
   ImGui.NewLine(ctx)
+  -- (one take a part, the one it plays, unless this is on: Live sync sets REAPER's Show all takes in lanes for each studio project. 0.59.13)
+  local both = reaper.GetExtState(band.SECTION, "show both takes") == "1"
+  local bch, bv = ImGui.Checkbox(ctx, "Show both takes in each part (dry and wet)##bothtakes", both)
+  if bch then reaper.SetExtState(band.SECTION, "show both takes", bv and "1" or "", true) end
+  ImGui.SetItemTooltip(ctx, "Off: each part shows only the take it plays (as Dry, Wet or Auto picks), so a big project stays compact.\n" ..
+    "On: the dry take and the studio's print both show in each part, one above the other. Only on this computer.")
 end
 local function home_session()
   if card("session") then

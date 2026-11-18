@@ -2055,6 +2055,15 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
       mirror.PART[ev.obj] and (mirror.PART[ev.obj] .. " on " .. where) or ev.obj == "track" and ("track " .. where) or ("an item on " .. where)))
   end
   if ok and ev.obj == "item" then lanes_back(proj, ev, media_dir, local_mix) end
+  -- (a plug-in chain landed: its track's parts pick again, so one with a plug-in you don't have plays its print on Auto, not the dry take
+  -- through a plug-in that isn't there. It waited for that part's next change. James, 0.59.13)
+  if ok and ev.obj == "fx" and not ev.gone then
+    local tr = mirror.find(proj, "track", ev.track)
+    if tr then
+      local prints = require("prints")
+      for i = 0, reaper.CountTrackMediaItems(tr) - 1 do prints.choose(reaper.GetTrackMediaItem(tr, i)) end
+    end
+  end
   return ok
 end
 

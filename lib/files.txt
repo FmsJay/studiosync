@@ -1,15 +1,15 @@
-version 0.59.12
+version 0.59.13
 StudioSync - Autostart.lua	14827
 StudioSync - Claim selected tracks.lua	692
 StudioSync - Draw.lua	27162
 StudioSync - Final mix.lua	5637
 StudioSync - Hold my changes.lua	766
 StudioSync - Keep selected tracks local.lua	760
-StudioSync - Live sync.lua	67174
+StudioSync - Live sync.lua	68062
 StudioSync - Local mixing.lua	721
 StudioSync - Measure guest delay.lua	4099
 StudioSync - Open session.lua	9173
-StudioSync - Panel.lua	217554
+StudioSync - Panel.lua	218220
 StudioSync - Prepare session.lua	6311
 StudioSync - Publish session.lua	5206
 StudioSync - Radial menu.lua	7656
@@ -47,7 +47,7 @@ lib/live.lua	43739
 lib/livemidi.lua	10723
 lib/localcopy.lua	21916
 lib/midiview.lua	4359
-lib/mirror.lua	222131
+lib/mirror.lua	222641
 lib/mixlayer.lua	9976
 lib/page_chat.lua	24171
 lib/page_groups.lua	35399
