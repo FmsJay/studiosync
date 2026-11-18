@@ -186,6 +186,13 @@ local function loop_body()
     if not proj then break end
     local key = tostring(proj)
     if fn ~= "" and band.autosync(fn) and band.binding(proj) then -- (the ExtState, the old key, or autosync.json: band.autosync)
+      -- A tab just opened: its live audio off now, as Live sync does when it starts there ("live began <tab>", this REAPER session). A song
+      -- saved with ReaNINJAM in it opens with its windows up, and a tab behind waited up to half a minute for its Live sync (James, 0.59.19).
+      if reaper.GetExtState(band.SECTION, "live began " .. key) == "" then
+        reaper.SetExtState(band.SECTION, "live began " .. key, "1", false)
+        local ok, was = pcall(require("live").all_off, proj)
+        if ok and was then band.log("live audio starts off when a project opens: Real time mode (and Time-sync) and the call are off. Switch them on on Home and in Chat > Call") end
+      end
       local beat = tonumber(reaper.GetExtState(band.SECTION, "live " .. key))
       -- (30 s, not 5: a dialog left open a few seconds pauses every script, and isn't a Live sync that stopped)
       local alive = beat and reaper.time_precise() - beat < 30 or reaper.time_precise() < held_until

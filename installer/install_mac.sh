@@ -39,7 +39,14 @@ say()  { printf '\033[36m%s\033[0m\n' "$*"; }
 ok()   { printf '\033[32m  OK  %s\033[0m\n' "$*"; }
 warn() { printf '\033[33m  !!  %s\033[0m\n' "$*"; }
 ask()  { local a; read -e -r -p "$1${2:+ [$2]} " a </dev/tty; echo "${a:-${2:-}}"; } # (-e: arrow keys edit, not type escape codes)
-plain() { printf '%s' "$1" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | LC_ALL=C tr -cd 'A-Za-z0-9 _-'; } # "CHILIØ" -> "CHILIO"
+# Plain letters, as StudioSync's band.clean makes them, letter by letter: accents dropped, Ø -> O, Æ -> AE, ß -> ss, Þ -> Th ("CHILIØ" -> "CHILIO").
+# (perl, not iconv: macOS's iconv mangles whole names, "Łódź Ñandú" -> "Lozo Nanu", where each letter alone comes out right. 0.59.19)
+plain() {
+  local t
+  t="$(printf '%s' "$1" | perl -CS -MUnicode::Normalize -e 'my %m = (0xC6,"AE",0xE6,"ae",0xD8,"O",0xF8,"o",0xDF,"ss",0xDE,"Th",0xFE,"th",0xD7,"x",0xD0,"D",0xF0,"d",0x152,"OE",0x153,"oe",0x141,"L",0x142,"l",0x110,"D",0x111,"d",0x126,"H",0x127,"h",0x131,"i",0x132,"IJ",0x133,"ij",0x138,"k",0x13F,"L",0x140,"l",0x149,"n",0x14A,"N",0x14B,"n",0x166,"T",0x167,"t",0x17F,"s"); local $/; $_ = NFD(<STDIN>); s/\p{Mn}//g; s{([^\x00-\x7f])}{$m{ord $1} // ""}ge; print' 2>/dev/null)" ||
+    t="$(printf '%s' "$1" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null)"
+  printf '%s' "$t" | LC_ALL=C tr -cd 'A-Za-z0-9 _-' | sed 's/^ *//; s/ *$//'
+}
 yes()  { case "$1" in [yY]*) return 0;; *) return 1;; esac; }
 # (the whole invitation pasted instead of its one line: the lines after it waited and answered the questions below. 0.59.10)
 { while IFS= read -r -t 1 _ </dev/tty; do :; done; } 2>/dev/null # (whole seconds: macOS's bash 3.2 refuses -t 0.3, and the loop ended at once. Mac review, 0.59.14)

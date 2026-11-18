@@ -58,7 +58,29 @@ local function print_name(oid, h)
   local who = (reaper.GetExtState(band.SECTION, "user"):gsub("[^%w%-_]", "_"))
   return "print-" .. (oid ~= "" and oid or "item") .. "-" .. h .. (who ~= "" and ("-" .. who) or "")
 end
-function prints.route(tr)
+-- What a track's prints go through doesn't change in the middle of a look, but it was worked out again for each of its items (a fifth of
+-- a look at 2,000 items). mirror.watch opens a look (prints.begin_look) and ends it (prints.end_look); 2 s at most, should it never end.
+-- (Not "while the project's change count holds": StudioSync's own writes in the look move it.) Nothing in a look changes a track's
+-- instrument, sends or plug-ins: holding a track's FX off (hold_fx) is its enable, which neither answer reads.
+-- (the track checked against the front project, where prints run: a project kept from the look's start may be a tab closed since,
+-- and handed to ValidatePtr2 that's a freed pointer. 0.59.19)
+local look, looking, look_at = {}, false, -math.huge
+function prints.begin_look() look, looking, look_at = {}, true, reaper.time_precise() end
+function prints.end_look() looking = false end
+local function in_look(key, tr, make)
+  if not looking or reaper.time_precise() - look_at > 2 or not reaper.ValidatePtr(tr, "MediaTrack*") then return make() end
+  local k = key .. tostring(tr)
+  local v = look[k]
+  if v == nil then
+    v = make()
+    if v == nil then v = false end -- ("none" kept as false: `v == nil and false or v` came out nil, and nothing was kept)
+    look[k] = v
+  end
+  return v or nil
+end
+local route
+function prints.route(tr) return in_look("r", tr, function() return route(tr) end) end
+function route(tr)
   if has_instrument(tr) then return nil end
   for s = 0, reaper.GetTrackNumSends(tr, 0) - 1 do
     local dest = reaper.GetTrackSendInfo_Value(tr, 0, s, "P_DESTTRACK")
@@ -139,7 +161,9 @@ end
 -- Does every plug-in on the item's track load here (and on the instrument's track, for a routed one)? A missing one
 -- would leave its notes silent.
 -- `to_print`: whether it can print here, where a plug-in offline by choice counts (see installed_here).
-function prints.track_plays(tr, to_print)
+local track_plays
+function prints.track_plays(tr, to_print) return in_look(to_print and "P" or "p", tr, function() return track_plays(tr, to_print) end) end
+function track_plays(tr, to_print)
   for _, i in ipairs(prints.fx_all(tr)) do
     if not prints.fx_here(tr, i, to_print) then return false end
   end
@@ -331,6 +355,13 @@ end
 prints.SETTLE = 3 -- seconds a part must stay unchanged
 local queue = {} -- item oid -> { name, since, seen }
 local QUEUE_SEEN = 5
+-- The media folder, made if it isn't there: once every 10 s per folder, not for every part waiting to print at every look (680 calls, a
+-- quarter of a second, at 2,000 items. 0.59.19)
+local dirs_made = {}
+local function made_dir(d)
+  local now = reaper.time_precise()
+  if now - (dirs_made[d] or -math.huge) > 10 then reaper.RecursiveCreateDirectory(d, 0); dirs_made[d] = now end
+end
 local function my_turn(oid, name)
   if prints.SETTLE <= 0 then return true end
   local now, w = reaper.time_precise(), queue[oid]
@@ -395,7 +426,7 @@ function prints.render(oid, name, out, tracks, render, secs, quick) -- secs: the
   -- laptop's state rendered the PC's own copy of it (PC, 0.40.1).
   if reaper.file_exists(out .. "/" .. name .. ".flac") then return out .. "/" .. name .. ".flac" end
   local base = name:match("^(print%-.+%-%x%x%x%x%x%x%x%x)%-") or name
-  for _, f in ipairs(band.files(out, ".flac")) do
+  for _, f in ipairs(band.listing(out, ".flac", true)) do -- (the shared listing: the folder was read once per part, every look. 0.59.19)
     local rest = f:sub(#base + 1)
     if f:sub(1, #base) == base and (rest == ".flac" or rest:sub(1, 1) == "-") then return out .. "/" .. f end
   end
@@ -511,7 +542,7 @@ local function refresh_ara(proj, it, media_dir)
   local h = prints.ara_source(it, ara)
   if print and take_ext(print, prints.KEY) == h then return false end
   local oid = select(2, reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", false))
-  reaper.RecursiveCreateDirectory(media_dir, 0)
+  made_dir(media_dir)
   local name = print_name(oid, h)
   local path = prints.render(oid, name, media_dir, { reaper.GetMediaItem_Track(it) },
     function(_, front) return require("sync").print_item(proj, it, ara, front or media_dir, name, nil, true, true) end, reaper.GetMediaItemInfo_Value(it, "D_LENGTH")) -- (not quick: ARA. front: rendered here, into this folder first)
@@ -549,7 +580,7 @@ function prints.refresh(proj, it, media_dir, fx_hash, route_hash, cfg)
   local oid = select(2, reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", false))
   local name = print_name(oid, h)
   if prints.silent[name] then return false end -- (came out silent once: not again until what it's made from changes)
-  reaper.RecursiveCreateDirectory(media_dir, 0)
+  made_dir(media_dir)
   local sync = require("sync")
   local path = prints.render(oid, name, media_dir, dest and { tr, dest } or { tr }, function(_, front) -- (front: rendered here, into this folder first)
     if dest then return sync.print_routed(proj, it, midi, dest, front or media_dir, name) end
@@ -818,7 +849,7 @@ function prints.takes_to_lanes(proj, mine)
     local in_lanes0 = reaper.GetMediaTrackInfo_Value(tr, "I_FREEMODE") == 2 and reaper.GetMediaTrackInfo_Value(tr, "I_NUMFIXEDLANES") > 1
     for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
       local it = reaper.GetTrackMediaItem(tr, j)
-      local real = require("mirror").filled_takes(it)
+      local real = reaper.CountTakes(it) > 1 and require("mirror").filled_takes(it) or 0 -- (only "more than one" matters: one take, nothing to read. 0.59.19)
       if real > 1 and prints.ara_take(it) then blocked = true end
       if real > 1 and mine(it) then want = true end
       if real > 1 then any = true end

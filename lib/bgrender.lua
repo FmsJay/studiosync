@@ -260,6 +260,14 @@ local function step()
     return reaper.defer(step)
   end
   if at and reaper.time_precise() < at then return reaper.defer(step) end
+  -- (selected items to render and none selected: REAPER's "Nothing to render!" box, where nobody sees it, until the job counted as stuck
+  -- (3 minutes) and blamed a plug-in. Said at once instead: the print renders in front. Review, 0.59.19)
+  local items = math.floor(reaper.GetSetProjectInfo(proj, "RENDER_SETTINGS", 0, false)) & 32 ~= 0 or reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 0, false) == 4
+  if not pass and items and reaper.CountSelectedMediaItems(proj) == 0 then
+    local h = io.open(dir .. "/empty.txt", "w")
+    if h then h:close() end
+    return reaper.Main_OnCommand(40004, 0) -- File: Quit REAPER
+  end
   pass = (pass or 0) + 1
   local out = dir .. "/pass" .. pass
   reaper.RecursiveCreateDirectory(out, 0)
@@ -475,7 +483,7 @@ local function alive(j)
   return t - (j.progress_at or j.started) <= bg.WAIT and t - j.started <= (j.limit or bg.WAIT)
 end
 local function launch_failed(j)
-  if (band.read(j.dir .. "/pid.txt") or ""):match("^failed") then return true end
+  if (band.read(j.dir .. "/pid.txt") or ""):match("^failed") or reaper.file_exists(j.dir .. "/empty.txt") then return true end
   -- (it quit with no print, or its folder's gone: known now, not at the time limit, with newer edits waiting: laptop, 0.42.2)
   if not reaper.file_exists(j.dir .. "/job.rpp") and not finished(j) then return true end
   return reaper.file_exists(j.dir .. "/done.txt") and not finished(j)
@@ -499,11 +507,17 @@ bg.stuck = {} -- print name -> true (this session)
 local function timed_out(key)
   local j = jobs[key]
   local never = launch_failed(j)
+  -- (read before drop empties its folder: after it, every one read as "quit without a print". 0.59.19)
+  local no_start, empty = (band.read(j.dir .. "/pid.txt") or ""):match("^failed"), reaper.file_exists(j.dir .. "/empty.txt")
   end_job(j)
   drop(key)
+  if empty then -- (not the background's fault: not counted toward giving up on it)
+    band.log("a print's background copy had nothing selected to render: it renders here instead")
+    return "failed"
+  end
   if never then
     failed = failed + 1
-    local why = (band.read(j.dir .. "/pid.txt") or ""):match("^failed") and "the second REAPER didn't start" or "the second REAPER quit without a print"
+    local why = no_start and "the second REAPER didn't start" or "the second REAPER quit without a print"
     publish(why)
     local gave_up = failed >= bg.GIVE_UP and done == 0
     local words = "a print stopped in the background before it finished (" .. why .. "): it renders here instead" ..

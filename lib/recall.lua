@@ -121,6 +121,26 @@ end
 -- first placement) or an event as posted. Sorted by time, then id.
 
 recall.ev_cache = {} -- event file path -> its event (files never change once written: read once per session)
+-- An event as History keeps it: without its state (the track or item text, nearly all of its size: a long history held 100-300 MB),
+-- which is read from its file again only when something asks for it (going back to it). Review, 0.59.19.
+local lazy = { __index = function(ev, k) if k == "state" then local full = band.read_json(rawget(ev, "path_")); return full and full.state end end }
+-- (and walked whole, state too, its path left out: a copy made through json lost the state. restore_lanes, 0.59.19)
+lazy.__pairs = function(ev)
+  local whole = {}
+  for k, v in next, ev do if k ~= "path_" then whole[k] = v end end
+  whole.state = ev.state
+  return next, whole, nil
+end
+local function cached_event(path)
+  local ev = recall.ev_cache[path]
+  if ev then return ev end
+  ev = band.read_json(path)
+  if not (ev and ev.id and ev.time) then return nil end
+  ev.kind, ev.path_ = ev.type, path
+  if ev.state ~= nil then ev.state = nil; setmetatable(ev, lazy) end
+  recall.ev_cache[path] = ev
+  return ev
+end
 -- Reads the room's changes a few at a time, for `secs` per call, so nothing has to read thousands at once when a page opens.
 -- -> whether they've all been read, how many have, how many there are.
 -- `idle`: nobody is looking at what it reads just now: the first read of everything carries on, but once that's done the folder isn't looked
@@ -136,11 +156,7 @@ function recall.warm(cfg, song, room, secs, idle)
   end
   while w.i <= #w.files and reaper.time_precise() - t0 < secs do
     local path = rdir .. "/events/" .. w.files[w.i]
-    local ev = recall.ev_cache[path]
-    if not ev then
-      ev = band.read_json(path)
-      if ev and ev.id and ev.time then ev.kind = ev.type; recall.ev_cache[path] = ev end
-    end
+    local ev = cached_event(path)
     if ev and (ev.kind == "note" or ev.kind == "like") and not w.noted[path] then w.noted[path] = true; w.notes[#w.notes + 1] = ev end
     w.i = w.i + 1
   end
@@ -167,13 +183,8 @@ function recall.entries(cfg, song, room)
     end
   end
   for _, f in ipairs(band.files(rdir .. "/events", ".json")) do
-    local path = rdir .. "/events/" .. f
-    local ev = recall.ev_cache[path]
-    if not ev then
-      ev = band.read_json(path)
-      if ev and ev.id and ev.time then ev.kind = ev.type; recall.ev_cache[path] = ev end
-    end
-    if ev and ev.id and ev.time then out[#out + 1] = ev end
+    local ev = cached_event(rdir .. "/events/" .. f)
+    if ev then out[#out + 1] = ev end
   end
   table.sort(out, function(a, x) return (a.time .. a.id) < (x.time .. x.id) end)
   return out

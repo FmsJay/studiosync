@@ -359,7 +359,13 @@ end
 -- An item's hash: the same, with take plug-ins' program lines left out as above (laptop, block K: an item with ReaEQ
 -- as a take FX read "Program 1" on the machine that applied it, and the two projects differed for good). Only items
 -- with a VST take FX hash differently from before, so an update doesn't make everyone send every item again.
+-- (kept per exact text, as the scan's own work is: four passes over every item's text each look, a quarter of a look at 2,000 items.
+-- The restless list is part of the key, as its take FX part depends on it. 0.59.19)
+local item_hash
 function mirror.item_hash(track, state)
+  return mirror.memo("ih\0" .. restless_sig() .. "\0" .. track .. "\0" .. state, function() return item_hash(track, state) end)
+end
+function item_hash(track, state)
   state = portable(state)
   -- (on a lane its YPOS is only its share of the track's height, so adding a lane changed every item, and each machine sent
   -- them all: 500 events a minute on Bass Guitar, laptop and PC, 0.42.7. BANDLANE is what counts)
@@ -604,15 +610,20 @@ end
 -- 32-bit FNV-1a: cheap, stable on every Lua; enough to tell versions apart (not a security hash).
 -- Results for text seen before (a whole look reads every track and item; most haven't changed since the last one,
 -- and working them out again in Lua was most of a look's time: 0.5 s at 60 tracks and 2,000 items, measured
--- 2026-10-31). Keyed by the exact text, so any change misses and is worked out afresh. Emptied when its keys reach
--- 64 MB (a track's text holds all its items, so a busy session makes big ones), or 50,000 of them.
+-- 2026-10-31). Keyed by the exact text, so any change misses and is worked out afresh. Emptied when its keys and what
+-- they hold reach 128 MB (a track's text holds all its items, so a busy session makes big ones), or 50,000 of them.
+-- (128 counting both is what 64 counting keys alone came to: 0.59.19)
 local memo, memo_n, memo_bytes = {}, 0, 0
 function mirror.memo(key, make)
   local v = memo[key]
   if v == nil then
-    if memo_n > 50000 or memo_bytes > 64 * 1048576 then memo, memo_n, memo_bytes = {}, 0, 0 end
+    if memo_n > 50000 or memo_bytes > 128 * 1048576 then memo, memo_n, memo_bytes = {}, 0, 0 end
     v = make()
-    memo[key], memo_n, memo_bytes = v, memo_n + 1, memo_bytes + #key
+    -- (what it holds counts too, not just its key: a track's parts or an item's text are as big as the key. Review, 0.59.19)
+    local size = #key
+    if type(v) == "string" then size = size + #v
+    elseif type(v) == "table" then for _, x in pairs(v) do if type(x) == "string" then size = size + #x end end end
+    memo[key], memo_n, memo_bytes = v, memo_n + 1, memo_bytes + size
   end
   return v
 end
@@ -624,8 +635,18 @@ local function fnv(s)
   end
   return string.format("%08x", h)
 end
+-- (short ones too, in a table of their own: hashed afresh byte by byte in Lua, they were 7% of a look at 2,000 items, and kept in the
+-- memo they'd fill its 50,000 and empty it of the big ones. 0.59.19)
+local short, short_n = {}, 0
 function mirror.hash(s)
-  if #s < 256 then return fnv(s) end
+  if #s < 256 then
+    local h = short[s]
+    if not h then
+      if short_n > 20000 then short, short_n = {}, 0 end
+      h = fnv(s); short[s], short_n = h, short_n + 1
+    end
+    return h
+  end
   return mirror.memo("h\0" .. s, function() return fnv(s) end)
 end
 
@@ -1383,6 +1404,7 @@ function mirror.filled_takes(it)
 end
 -- -> the playing take's place among the real ones (0 = first), or nil with fewer than two real takes.
 function mirror.picked_take(it)
+  if reaper.CountTakes(it) < 2 then return nil end -- (most items: no choice, and no take's P_EXT read for it. 0.59.19)
   local list = mirror.real_takes(it)
   if #list < 2 then return nil end
   local cur = reaper.GetMediaItemInfo_Value(it, "I_CURTAKE")
@@ -3159,6 +3181,7 @@ function mirror.watch(proj, cfg, song, room, opts)
   -- turns re-printing one item. Rendering needs this tab in front and the transport stopped; two per pass at most.
   if reaper.EnumProjects(-1) == proj and not playing and not mirror.more and not opts.hold then -- (prints wait until a burst has gone, and Hold is off)
     local prints, made = require("prints"), 0
+    prints.begin_look() -- (each track's routing and plug-ins worked out once for all its items, not once each: 0.59.19)
     prints.watch_ara(proj) -- (a Melodyne window closed: that take gets a new print below)
     pcall(prints.release_held, proj) -- (FX held off for a part that's gone)
     -- takes become lanes, by whoever owns them (their newest change, or not sent yet). Once caught up: an old file reopened
@@ -3216,6 +3239,7 @@ function mirror.watch(proj, cfg, song, room, opts)
     -- (a print just went on: out on the very next pass. It waited for the 10-second look: 9 s on a print that was
     -- already there, 18 s on a rendered one: PC, 0.41.1)
     if made > 0 then mirror.more = true end
+    prints.end_look()
   end
   local undeleted = {}
   -- gone here: deleted (sent, if allowed) or put back

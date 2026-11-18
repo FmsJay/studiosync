@@ -917,9 +917,13 @@ function sync.retry_skipped(proj)
 end
 -- A name as it starts an event's id: letters, digits, "-" and "_" only ("&", "(" and ")" split merge ids, mirror.split_merge. Review, 0.58.47).
 function sync.id_user(user) return ((user or "x"):gsub("[^%w%-_]", "_")) end
+local mine_pat = {} -- user -> the pattern sync.is_mine looks for (made once: it ran for every event file at every look. 0.59.19)
 -- Is this event id (or file name) one `user` made? The name, then the date: "Al" isn't "Al-B" (their cues were skipped as ours. Review).
 function sync.is_mine(id, user)
-  return (id or ""):lower():find("^" .. sync.id_user(user):lower():gsub("%p", "%%%0") .. "%-%d%d%d%d%d%d%d%d%-") ~= nil
+  local key = user or ""
+  local pat = mine_pat[key]
+  if not pat then pat = "^" .. sync.id_user(user):lower():gsub("%p", "%%%0") .. "%-%d%d%d%d%d%d%d%d%-"; mine_pat[key] = pat end
+  return (id or ""):lower():find(pat) ~= nil
 end
 function sync.post(cfg, song, room, ev, proj)
   ev_seq = ev_seq + 1

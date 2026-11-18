@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.59.18", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.59.19", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -53,7 +53,26 @@ band.WIN = OSNAME:find("^Win") ~= nil
 band.MAC = OSNAME:find("^OSX") ~= nil or OSNAME:find("^macOS") ~= nil
 band.LINUX = not band.WIN and not band.MAC
 
-function band.clean(s) return (s:gsub("[^%w%-_ ]", ""):match("^%s*(.-)%s*$")) end
+-- Plain letters, digits, spaces, - and _. Accented letters become their plain ones, as the Mac and Linux installers' iconv makes them
+-- ("CHILIØ" -> "CHILIO", "José" -> "Jose"): they were dropped here ("CHILI"), and one name came out two ways. Decomposed accents (a
+-- Mac's) lose their marks the same way. Review, 0.59.19.
+-- (Latin-1 and Latin Extended-A, letter by letter as macOS's iconv makes each: Þ -> Th, × -> x, Ł -> L)
+local LATIN1 = { [0xC6] = "AE", [0xDE] = "Th", [0xDF] = "ss", [0xE6] = "ae", [0xF7] = "", [0xFE] = "th", [0x132] = "IJ", [0x133] = "ij", [0x152] = "OE", [0x153] = "oe" }
+for c, ch in pairs({ [0xC0] = "AAAAAA", [0xC7] = "CEEEEIIIIDNOOOOOxOUUUUY", [0xE0] = "aaaaaa", [0xE7] = "ceeeeiiiidnooooo", [0xF8] = "ouuuuy", [0xFF] = "y",
+  [0x100] = "AaAaAaCcCcCcCcDdDdEeEeEeEeEeGgGgGgGgHhHhIiIiIiIiIiIiJjKkkLlLlLlLlLlNnNnNnnNnOoOoOoOoRrRrRrSsSsSsSsTtTtTtUuUuUuUuUuUuWwYyYZzZzZzs" }) do
+  for i = 1, #ch do LATIN1[c + i - 1] = LATIN1[c + i - 1] or ch:sub(i, i) end
+end
+function band.clean(s)
+  if s:find("[\128-\255]") then
+    local ok, out = pcall(function()
+      local t = {}
+      for _, c in utf8.codes(s) do t[#t + 1] = c < 128 and string.char(c) or LATIN1[c] or "" end
+      return table.concat(t)
+    end)
+    s = ok and out or s -- (not UTF-8: its odd bytes are dropped below, as before)
+  end
+  return (s:gsub("[^A-Za-z0-9%-_ ]", ""):match("^%s*(.-)%s*$")) -- (spelled out: %w follows the C library's locale, which can count Latin-1 letters)
+end
 local function norm(p) return (p:gsub("\\", "/"):gsub("/+$", "")) end
 band.norm = norm
 
