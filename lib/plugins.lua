@@ -81,15 +81,19 @@ function plugins.loads_everywhere(name, systems)
   return true
 end
 
-function plugins.band(cfg)
+-- Everyone's plug-in lists that still count: not 90 days old, and not someone taken out of the studio, who left, or a guest whose time is up
+-- (James, 0.58.99: removing the Mac from a studio should stop its plug-ins showing as missing). `gone`: removal.gone's set, for a test.
+function plugins.lists(cfg, gone)
+  gone = gone or require("removal").gone(cfg.root)
   local lists = {}
   for _, f in ipairs(band.files(dir(cfg), ".json")) do
     local l = band.read_json(dir(cfg) .. "/" .. f)
     if type(l) == "table" and type(l.user) == "string" and type(l.names) == "table" and type(l.time) == "string"
-        and band.age(l.time) < 90 * 86400 then lists[#lists + 1] = l end
+        and band.age(l.time) < 90 * 86400 and not gone[l.user] then lists[#lists + 1] = l end
   end
-  return plugins.common(lists)
+  return lists
 end
+function plugins.band(cfg) return plugins.common(plugins.lists(cfg)) end
 
 -- reaper-fxfolders.ini with our folder set to `items` ({ {ident, type} }), every other folder as it was. Pure.
 function plugins.folders_ini(text, name, items)

@@ -445,9 +445,9 @@ function colours.draw(ctx, ImGui, proj, cfg, may, timeline_ok)
   local stops = colours.stops_of({ palette = palette, from = string.format("%06X", a), to = string.format("%06X", z) })
   if palette == "Your own" then
     ImGui.SameLine(ctx)
-    local ch1, v1 = ImGui.ColorEdit3(ctx, "##colourfrom", a, ImGui.ColorEditFlags_NoInputs)
+    local ch1, v1 = ImGui.ColorEdit3(ctx, "##colourfrom", a, ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel)
     ImGui.SameLine(ctx)
-    local ch2, v2 = ImGui.ColorEdit3(ctx, "##colourto", z, ImGui.ColorEditFlags_NoInputs)
+    local ch2, v2 = ImGui.ColorEdit3(ctx, "##colourto", z, ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel)
     if ch1 then a = v1; set("from", string.format("%06X", v1)) end
     if ch2 then z = v2; set("to", string.format("%06X", v2)) end
   end

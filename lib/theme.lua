@@ -3,7 +3,7 @@
 -- Setup > Options picks it, per computer (ExtState "theme"). The panel reloads to change; the others pick it up on their next frame.
 local theme = {}
 
-theme.NAMES = { "Dark", "Light", "Midnight", "Warm" }
+theme.NAMES = { "Dark", "Light", "Midnight", "Warm", "Custom" }
 local PALETTES = {
   Dark = { bg = 0x1A1C1F, card = 0x26292E, nav = 0x1F2124, text = 0xE6E8EB, muted = 0x8D939B, accent = 0x4C8DF6,
     green = 0x59CC73, yellow = 0xF2BF40, red = 0xE0605A, on_status = 0x15171A, steel = 0xC9CED6 },
@@ -25,10 +25,36 @@ local function mix(a, b, t) -- a towards b, each channel; no alpha
 end
 local function solid(c) return c << 8 | 0xFF end
 
+-- Your own theme (James, 0.58.99: "create custom themes"): four colours you pick (ExtState "theme custom": { bg, card, text, accent } as
+-- RRGGBB), the rest worked out from them as the others are. Starts from Dark.
+theme.CUSTOM_KEYS = { { "bg", "Background" }, { "card", "Cards" }, { "text", "Text" }, { "accent", "Accent" } }
+function theme.custom()
+  local saved = require("band").json_decode(reaper.GetExtState(require("band").SECTION, "theme custom"))
+  local d, out = PALETTES.Dark, {}
+  for _, k in ipairs(theme.CUSTOM_KEYS) do
+    local v = type(saved) == "table" and tonumber(tostring(saved[k[1]] or ""), 16)
+    out[k[1]] = v or d[k[1]]
+  end
+  return out
+end
+function theme.set_custom(c)
+  local t = {}
+  for _, k in ipairs(theme.CUSTOM_KEYS) do t[k[1]] = string.format("%06X", c[k[1]]) end
+  reaper.SetExtState(require("band").SECTION, "theme custom", require("band").json_encode(t), true)
+end
+local function custom_palette()
+  local c, d = theme.custom(), PALETTES.Dark
+  local light = ((c.bg >> 16 & 0xFF) * 0.299 + (c.bg >> 8 & 0xFF) * 0.587 + (c.bg & 0xFF) * 0.114) > 140
+  return { bg = c.bg, card = c.card, nav = mix(c.bg, c.text, 0.04), text = c.text, muted = mix(c.text, c.bg, 0.45), accent = c.accent,
+    green = light and PALETTES.Light.green or d.green, yellow = light and PALETTES.Light.yellow or d.yellow, red = light and PALETTES.Light.red or d.red,
+    on_status = c.bg, steel = mix(c.text, c.bg, 0.2), status = light and 0.72 or nil }
+end
+
 local cols, vars
 local cols_for -- (which theme `cols` was built for)
 -- Which theme this script draws in.
 function theme.use(name)
+  if name == "Custom" then PALETTES.Custom = custom_palette() end
   local p = PALETTES[name] or PALETTES.Dark
   theme.name = PALETTES[name] and name or "Dark"
   local bg, text = p.bg, p.text
@@ -89,6 +115,10 @@ function theme.pop(ctx, ImGui, padding)
   ImGui.PopStyleColor(ctx, #cols)
 end
 -- The chooser and the drawing bar, once a frame before pushing: Setup may have just changed it.
-function theme.follow() local n = current(); if (PALETTES[n] and n or "Dark") ~= theme.name then theme.use(n) end end
+function theme.follow()
+  local n = current()
+  if n == "Custom" and not PALETTES.Custom then PALETTES.Custom = custom_palette() end
+  if (PALETTES[n] and n or "Dark") ~= theme.name then theme.use(n) end
+end
 
 return theme

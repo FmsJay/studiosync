@@ -62,6 +62,8 @@ local loop
 local function guarded(fn) return function() local ok, err = xpcall(fn, debug.traceback); if not ok then band.log_error("autostart", err); error(err, 0) end end end
 local function loop_body()
   -- the toolbar button stopped a minimized panel: it opens again, full (Panel's atexit asks; 0.58.98). Looked at every pass: a click wants it now
+  local tip = tonumber(reaper.GetExtState(band.SECTION, "tooltip until")) -- (the panel's closing words: taken away here, 0.58.99)
+  if tip and reaper.time_precise() > tip then reaper.DeleteExtState(band.SECTION, "tooltip until", false); reaper.TrackCtl_SetToolTip("", 0, 0, true) end
   local reopen = tonumber(reaper.GetExtState(band.SECTION, "panel reopen"))
   if reopen then
     reaper.DeleteExtState(band.SECTION, "panel reopen", false)

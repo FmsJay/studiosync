@@ -27,7 +27,11 @@ function chat.sources(cfg, b, sc)
     out[#out + 1] = { dir .. "/chat", song }
     for _, room in ipairs(band.subdirs(dir .. "/rooms")) do out[#out + 1] = { dir .. "/rooms/" .. room .. "/chat", song .. " / " .. room } end
   end
-  if sc == "room" then out[1] = { chat.dir(cfg, b, "room"), b.room or "main" }
+  -- (This room: its own chat, and the project's messages sent from it. Typed under This project (where Chat starts), or posted by StudioSync
+  -- (a new mix), they were in the project's chat only, and This room seemed to have lost them. James, 0.58.99)
+  if sc == "room" then
+    out[1] = { chat.dir(cfg, b, "room"), b.room or "main" }
+    out[2] = { chat.dir(cfg, b, "song"), b.room or "main", room = b.room or "main" }
   elseif sc == "song" then project(b.song)
   else
     out[1] = { cfg.root .. "/_band/chat", "Studio" }
@@ -44,7 +48,8 @@ local function load(cfg, b)
       for _, f in ipairs(band.files(src[1] .. "/" .. kind, ".json")) do
         local v = band.read_json(src[1] .. "/" .. kind .. "/" .. f)
         -- (a link with no url, from a bandmate's damaged or newer file, errored every frame. Review, 0.58.47)
-        if type(v) == "table" and (kind ~= "links" or type(v.url) == "string") then
+        local here = not src.room or v == nil or type(v) ~= "table" or v.room == src.room or (v.room == nil and src.room == "main")
+        if here and type(v) == "table" and (kind ~= "links" or type(v.url) == "string") then
           if type(v.title) ~= "string" then v.title = "" end
           v.file, v.where = src[1] .. "/" .. kind .. "/" .. f, src[2]; t[kind][#t[kind] + 1] = v
         end
@@ -59,7 +64,7 @@ end
 local function add(cfg, b, kind, v, sc)
   local d = chat.dir(cfg, b, sc or scope) .. "/" .. kind
   reaper.RecursiveCreateDirectory(d, 0)
-  v.user, v.time = cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ")
+  v.user, v.time, v.room = cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ"), b and b.room or "main" -- (the room it was sent from: This room shows it)
   band.write_json(d .. "/" .. stamp(cfg) .. ".json", v)
   cache = nil
   if kind == "msgs" and type(v.text) == "string" then

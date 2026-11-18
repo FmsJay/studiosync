@@ -511,8 +511,14 @@ tools.TOOLBAR_EXT = "1.0.4"
 function tools.toolbar_button() return reaper.GetExtState(band.SECTION, "toolbar button") == "1" end
 -- On unless you switched it off, as Helgobox's is (James, 0.58.82): "" is never chosen (StudioSync - Autostart and the panel switch it on then),
 -- "0" off. The menu extension reads "1" only.
+-- (ICON: the image's version. 2: grey until the panel is open, coloured while it is (James, 0.58.99); copied again once when it changes)
+tools.TOOLBAR_ICON = "2"
 function tools.toolbar_default()
-  if reaper.GetExtState(band.SECTION, "toolbar button") == "" then return tools.set_toolbar_button(true) end
+  local on = reaper.GetExtState(band.SECTION, "toolbar button")
+  if on == "" or (on == "1" and reaper.GetExtState(band.SECTION, "toolbar icon") ~= tools.TOOLBAR_ICON) then
+    reaper.SetExtState(band.SECTION, "toolbar icon", tools.TOOLBAR_ICON, true)
+    return tools.set_toolbar_button(true)
+  end
 end
 local function copy_file(from, to)
   local f = io.open(from, "rb")

@@ -266,13 +266,10 @@ function pp.refresh(proj, cfg)
   if reaper.time_precise() - used_at <= 3 and pp.lists_root == cfg.root then return end
   used_at, used = reaper.time_precise(), pp.used(proj)
   local lists = {}
-  for _, f in ipairs(band.files(cfg.root .. "/plugins", ".json")) do
-    local l = band.read_json(cfg.root .. "/plugins/" .. f)
-    if type(l) == "table" and type(l.names) == "table" and l.user then
-      local set = {}
-      for _, k in ipairs(l.names) do set[k] = true end
-      lists[#lists + 1] = { user = l.user, set = set }
-    end
+  for _, l in ipairs(require("plugins").lists(cfg)) do -- (only people still in the studio: plugins.lists. 0.58.99)
+    local set = {}
+    for _, k in ipairs(l.names) do set[k] = true end
+    lists[#lists + 1] = { user = l.user, set = set }
   end
   pp.lists, pp.tmap, pp.lists_root = lists, pp.translations(cfg), cfg.root
 end

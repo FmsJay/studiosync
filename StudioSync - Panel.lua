@@ -1309,11 +1309,6 @@ local function home_who()
   require("page_hear").producer(ctx, ImGui, proj, cfg, b, view and view.rows or {}) -- (at the top: at 560 wide it was past all three people. Mac, 0.58.5)
   if not wide then home_play() end -- (real time mode first: it's what a session starts with, and it was under every person's card. UX review, 0.58.62)
   heading("Who's here")
-  if view.driver ~= cfg.user then -- next to the people: who drives is about them
-    next_to("Take control")
-    if ImGui.SmallButton(ctx, "Take control") then action("Take control") end
-    ImGui.SetItemTooltip(ctx, tostring(view.driver) .. " is driving. Take control to make what nobody has claimed follow you (tell them first).")
-  end
   next_to("Invite a collaborator")
   local services = require("services")
   local my_id = services.my_device_id()
@@ -1337,15 +1332,6 @@ local function home_who()
   for _, r in ipairs(view.rows) do
     people[#people + 1] = { name = r.name, user = r.name, state = r.state, armed = r.armed, recording = r.recording, playing = r.playing,
       driving = r.name == view.driver, version = r.version, mirror = r.mirror, last_track = r.last_track }
-  end
-  do -- following whoever drives, whoever that is
-    if wide then next_to(ImGui.CalcTextSize(ctx, "Always follow the driver") + ImGui.GetFrameHeight(ctx) * 2 + 16) end -- (beside the heading: docked, its row is a person's)
-    local on = reaper.GetExtState(band.SECTION, "follow driver") ~= ""
-    local ch, v = switch_row("##followdriver", "Always follow the driver", on, "Your playhead, view and mix follow the driver: they press play, you play along, hearing what they hear. Only they record.")
-    if ch then
-      reaper.SetExtState(band.SECTION, "follow driver", v and "1" or "", true)
-      if v then reaper.DeleteExtState(band.SECTION, "follow " .. tostring(proj), false) end
-    end
   end
   if ui.short then
     for _, p in ipairs(people) do
@@ -1462,11 +1448,26 @@ function ui.feed(apart) -- apart: a line between it and what's above
     ImGui.EndChild(ctx)
   end
 end
+-- Who drives, in Who can edit (James, 0.58.99: Take control and Always follow the driver sat with the people, away from who controls what).
+function ui.driver_rows()
+  if view.driver ~= cfg.user then
+    if ImGui.SmallButton(ctx, "Take control") then action("Take control") end
+    ImGui.SetItemTooltip(ctx, tostring(view.driver) .. " is driving. Take control to make what nobody has claimed follow you (tell them first).")
+    ImGui.SameLine(ctx)
+  end
+  local on = reaper.GetExtState(band.SECTION, "follow driver") ~= ""
+  local ch, v = switch_row("##followdriver", "Always follow the driver", on, "Your playhead, view and mix follow the driver: they press play, you play along, hearing what they hear. Only they record.")
+  if ch then
+    reaper.SetExtState(band.SECTION, "follow driver", v and "1" or "", true)
+    if v then reaper.DeleteExtState(band.SECTION, "follow " .. tostring(proj), false) end
+  end
+end
 local function home_session()
   if card("session") then
     heading("Who can edit", 17)
     ImGui.SetItemTooltip(ctx, "Who changes what")
     section_driver()
+    ui.driver_rows()
     local_mix_row()
     section_claims()
     card_end()
@@ -1475,11 +1476,13 @@ end
 
 local function home_rules()
   if ui.short then -- (the box and Local mixing share a row, and "Who controls" is the column's title)
-    return section_driver(function() next_to(ImGui.CalcTextSize(ctx, "Control your own mix") + ImGui.GetFrameHeight(ctx) * 2); local_mix_row() end)
+    section_driver(function() next_to(ImGui.CalcTextSize(ctx, "Control your own mix") + ImGui.GetFrameHeight(ctx) * 2); local_mix_row() end)
+    return ui.driver_rows()
   end
   heading("Who can edit", 17)
   ImGui.SetItemTooltip(ctx, "Who changes what")
   section_driver()
+  ui.driver_rows()
   local_mix_row()
 end
 local function home_claims()
@@ -1513,7 +1516,7 @@ local function page_home()
   else layout({ { home_who, 360 }, { home_session, 400 } }) end
   ui.hide_row()
 end
--- Home's "Hide when not in use" (James, 0.58.98): the same as Settings > Options > When you click REAPER, shrinks to the tiny box or stays
+-- Home's "Hide when not in use" (James, 0.58.98): the same as Settings > Look > When you click REAPER, shrinks to the tiny box or stays
 -- in front. A floating panel only; the panel reopens to switch (ReaImGui sets a window's parent as it opens).
 function ui.hide_row()
   if win_rect and win_rect.docked then return end
@@ -1536,9 +1539,27 @@ local function settings_look()
       if pick and pick ~= theme.name then
         reaper.SetExtState(band.SECTION, "theme", pick, true)
         -- (back where you were: it went to Home, a second trip here each time when comparing them: Mac, 0.45.0)
-        reaper.SetExtState(band.SECTION, "panel page", "Settings", false); reaper.SetExtState(band.SECTION, "setup tab", "Options", false)
+        reaper.SetExtState(band.SECTION, "panel page", "Settings", false); reaper.SetExtState(band.SECTION, "setup tab", "Look", false)
         reload_now = true
       end
+    end
+    if theme.name == "Custom" then -- your own theme: four colours, the rest worked out (it reopens when you let go of a colour)
+      local c = theme.custom()
+      for _, k in ipairs(theme.CUSTOM_KEYS) do
+        local ch, v = ImGui.ColorEdit3(ctx, k[2] .. "##themecustom" .. k[1], c[k[1]], ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel)
+        if ch then c[k[1]] = v; theme.set_custom(c) end
+        if ImGui.IsItemDeactivatedAfterEdit(ctx) then
+          reaper.SetExtState(band.SECTION, "panel page", "Settings", false); reaper.SetExtState(band.SECTION, "setup tab", "Look", false)
+          reload_now = true
+        end
+        ImGui.SameLine(ctx)
+      end
+      if ImGui.SmallButton(ctx, "Start again from Dark##themecustom") then
+        reaper.DeleteExtState(band.SECTION, "theme custom", true)
+        reaper.SetExtState(band.SECTION, "panel page", "Settings", false); reaper.SetExtState(band.SECTION, "setup tab", "Look", false)
+        reload_now = true
+      end
+      ImGui.SetItemTooltip(ctx, "Your theme's four colours back to the Dark theme's.")
     end
     local ch, v = switch_row("##native", "System window frame", native,
       "On: the system's window frame instead of the panel's own title bar (no docking by dragging the title then: use Dock).\n" ..
@@ -1546,7 +1567,7 @@ local function settings_look()
       "Either way, the Window button fills a screen or half of one.")
     if ch then
       reaper.SetExtState(band.SECTION, "panel_native", v and "on" or "", true); reload_now = true
-      reaper.SetExtState(band.SECTION, "panel page", "Settings", false); reaper.SetExtState(band.SECTION, "setup tab", "Options", false) -- (it went to Home)
+      reaper.SetExtState(band.SECTION, "panel page", "Settings", false); reaper.SetExtState(band.SECTION, "setup tab", "Look", false) -- (it went to Home)
     end
     local bon = reaper.GetExtState(band.SECTION, "banner") ~= "off"
     ch, v = switch_row("##banner", "Banner over REAPER while someone else drives", bon,
@@ -1563,7 +1584,7 @@ local function settings_look()
         for _, c in ipairs(choices) do
           if ImGui.Selectable(ctx, c[2], c[1] == behind) and c[1] ~= behind then
             reaper.SetExtState(band.SECTION, "panel behind", c[1], true)
-            reaper.SetExtState(band.SECTION, "panel page", "Settings", false); reaper.SetExtState(band.SECTION, "setup tab", "Options", false)
+            reaper.SetExtState(band.SECTION, "panel page", "Settings", false); reaper.SetExtState(band.SECTION, "setup tab", "Look", false)
             reload_now = true
           end
         end
@@ -2033,8 +2054,10 @@ local function page_setup()
   local function tab(name) return ImGui.BeginTabItem(ctx, name, nil, go_tab == name and ImGui.TabItemFlags_SetSelected or 0) end
   if b and tab("Health") then body("s health", function() maint_health(); if wide then ui.feed() end end); ImGui.EndTabItem(ctx) end
   if tab("You") then body("s you", ui.settings_you); ImGui.EndTabItem(ctx) end
+  -- (the look in a tab of its own: Options was long. James, 0.58.99)
+  if tab("Look") then body("s look", function() layout({ { settings_look, 360 } }, true) end); ImGui.EndTabItem(ctx) end
   if tab("Options") then
-    body("s options", function() layout({ { settings_look, 320 }, { settings_sync, 420 }, { settings_drive, 360 } }, true) end)
+    body("s options", function() layout({ { settings_sync, 420 }, { settings_drive, 360 } }, true) end)
     ImGui.EndTabItem(ctx)
   end
   if tab("Studio") then body("s studio", settings_studio); ImGui.EndTabItem(ctx) end
@@ -3075,13 +3098,10 @@ local function loop_body()
   band.log_file("the panel closed")
   if reaper.GetExtState(band.SECTION, "sync problem") == "" then -- (it keeps syncing: Live sync is its own script, one per tab)
     local mx, my = reaper.GetMousePosition()
-    local at = reaper.time_precise()
     reaper.TrackCtl_SetToolTip("StudioSync keeps syncing with the panel closed.\nIf sync stops, the tiny box comes back in red to say so.", mx + 14, my + 14, true)
-    local function clear()
-      if reaper.time_precise() - at < 5 then return reaper.defer(clear) end
-      reaper.TrackCtl_SetToolTip("", 0, 0, true)
-    end
-    reaper.defer(clear)
+    -- (Autostart takes it away in 5 s: a timer of its own here kept the panel's script running, and the toolbar button pressed meanwhile only
+    -- stopped that, so the panel didn't open. James, 0.58.99)
+    reaper.SetExtState(band.SECTION, "tooltip until", tostring(reaper.time_precise() + 5), false)
   end
 end
 loop = guarded(loop_body)

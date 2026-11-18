@@ -270,7 +270,7 @@ function people.colour_options(ctx, ImGui, cfg)
     ImGui.PopID(ctx)
   end
   next_to(30)
-  local rv, picked = ImGui.ColorEdit3(ctx, "##own", mine, ImGui.ColorEditFlags_NoInputs)
+  local rv, picked = ImGui.ColorEdit3(ctx, "##own", mine, ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel) -- (a wheel: James, 0.58.99)
   if rv and picked ~= mine then people.pick(cfg, picked) end
   ImGui.SetItemTooltip(ctx, "Any colour of your own")
   next_to(70)
