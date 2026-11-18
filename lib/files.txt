@@ -1,4 +1,4 @@
-version 0.59.25
+version 0.59.26
 StudioSync - Autostart.lua	16460
 StudioSync - Claim selected tracks.lua	851
 StudioSync - Draw.lua	27321

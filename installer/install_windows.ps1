@@ -420,7 +420,8 @@ function Install-Plugin($name, $repo, $pattern, $tag, $have) {
 # (-PluginsOnly runs this block on its own: its condition stays exactly "$wantPlugins")
 if ($wantPlugins) {
   $vst3 = Join-Path $env:CommonProgramFiles "VST3"
-  Install-App "SurgeSynth.SurgeXT" "Surge XT" (Join-Path $vst3 "Surge XT.vst3")
+  # (the Surge team's setups put theirs in a folder of their own, "Surge Synth Team": looked for there too, or each run installed them again. 0.59.26)
+  Install-App "SurgeSynth.SurgeXT" "Surge XT" @((Join-Path $vst3 "Surge XT.vst3"), (Join-Path $vst3 "Surge Synth Team\Surge XT.vst3"))
   Install-Plugin "Dexed" "asb2m10/dexed" '-win\.exe$' $null (Join-Path $vst3 "Dexed*")
   Install-Plugin "Airwindows Consolidated" "baconpaul/airwin2rack" '^(?!.*windows7).*Windows-64bit-setup\.exe$' "DAWPlugin" (Join-Path $vst3 "Airwindows*")
   Install-Plugin "Dragonfly Reverb" "michaelwillis/dragonfly-reverb" 'win64\.zip$' $null (Join-Path $res "UserPlugins\FX\Dragonfly*")
@@ -432,7 +433,7 @@ if ($wantPlugins) {
   # (an Oberheim-style poly synth, the Surge team's open OB-Xd successor: its setup brings the presets, which the .zip leaves out. 0.59.20)
   # (a big ambient reverb, Cloud Seed's engine: what Dragonfly's rooms and halls don't do. Its .zip's VST3 goes in REAPER's own folder. 0.59.21)
   Install-Plugin "CloudReverb (ambient reverb)" "xunil-cloud/CloudReverb" '^CloudReverb-v[0-9.]+-Windows-x86_64\.zip$' $null (Join-Path $res "UserPlugins\FX\CloudReverb*")
-  Install-Plugin "OB-Xf (analog poly synth)" "surge-synthesizer/OB-Xf" '^ob-xf-Windows-v[0-9.]+\.exe$' $null (Join-Path $vst3 "OB-Xf*")
+  Install-Plugin "OB-Xf (analog poly synth)" "surge-synthesizer/OB-Xf" '^ob-xf-Windows-v[0-9.]+\.exe$' $null @((Join-Path $vst3 "OB-Xf*"), (Join-Path $vst3 "Surge Synth Team\OB-Xf*"))
   if ($wantExtras) {
     # NAM: v0.7.14 and later have no release files; 0.7.13 is the newest that does
     Install-Plugin "Neural Amp Modeler" "sdatkinson/NeuralAmpModelerPlugin" '-win\.zip$' "v0.7.13" @((Join-Path $res "UserPlugins\FX\NeuralAmpModeler*"), (Join-Path $env:CommonProgramFiles "VST3\NeuralAmpModeler*"))
