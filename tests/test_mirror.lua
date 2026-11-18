@@ -606,4 +606,17 @@ end
 assert(mirror.first_diff({ name = "Bass", vol = 1, icon = "a.png" }, { name = "Bass", vol = 1, icon = "b.png" }) == "icon", "a track's setting")
 assert(mirror.first_diff("<ITEM\nPOSITION 1\nLENGTH 2\n>", "<ITEM\nPOSITION 1\nLENGTH 3\n>") == "LENGTH", "an item's line")
 assert(mirror.first_diff("<ITEM\n>", "<ITEM\n>") == nil and mirror.first_diff(nil, "x") == nil, "nothing, or nothing to compare")
+-- descends: does version v build on version `of`? (walks base_ev / merge ids through the room's event files, stubbed here)
+do
+  local files = { A = { id = "A" }, B = { id = "B", base_ev = "A" }, C = { id = "C", base_ev = "B", hlc = 1 }, D = { id = "D", base_ev = "X" } }
+  local real = mirror.event_file
+  mirror.event_file = function(_, id) return files[id] end
+  assert(mirror.descends("r", files.C, "A") == true and mirror.descends("r", files.C, "B") == true, "through its bases")
+  assert(mirror.descends("r", files.A, "C") == false, "an older version doesn't build on a newer one")
+  assert(mirror.descends("r", files.D, "A") == nil, "a base not here yet: can't tell")
+  assert(mirror.descends("r", { id = "m(B&Q)" }, "Q") == true and mirror.descends("r", { id = "m(Q&C)" }, "A") == true, "a merge builds on both sides")
+  assert(mirror.descends("r", files.C, "A", 5) == false, "made before `of` (by hlc): not walked")
+  assert(mirror.descends("r", nil, "A") == false and mirror.descends("r", files.C, nil) == false, "nothing to compare")
+  mirror.event_file = real
+end
 print("ok clock")
