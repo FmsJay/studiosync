@@ -325,7 +325,7 @@ if [ -n "$ST" ]; then ok "Syncthing is already installed"
 elif command -v brew >/dev/null && say "Installing Syncthing (Homebrew) ..." && brew install --cask syncthing-app </dev/null >/dev/null 2>&1 && have Syncthing; then ok "Syncthing installed"
 else say "Installing Syncthing ..."; from_dmg "$(gh_asset syncthing/syncthing-macos '\.dmg$')" Syncthing Syncthing; fi
 if yes "$LIVE"; then
-  if have SonoBus; then ok "SonoBus is already installed"
+  if have SonoBus && { [ -d /Library/Audio/Plug-Ins/VST3/SonoBus.vst3 ] || [ -d "$HOME/Library/Audio/Plug-Ins/VST3/SonoBus.vst3" ]; }; then ok "SonoBus is already installed"
   elif command -v brew >/dev/null && say "Installing SonoBus (Homebrew; may ask for your password) ..." && brew install --cask sonobus </dev/null >/dev/null 2>&1 && have SonoBus; then ok "SonoBus installed"
   else
     say "Installing SonoBus (may ask for your password) ..."
@@ -727,11 +727,11 @@ if yes "$HOSTING"; then
   echo "  - In REAPER, open your song's project: the StudioSync panel offers 'Share this project with the studio'."
 elif [ -n "$LATER" ]; then
   echo "  - When you want a studio: REAPER's StudioSync panel has Start a studio, and Paste join code for an invitation someone sends you."
-  [ -n "${TS_LATER:-}" ] && echo "  - Tailscale (for Play/Jam and hearing each other live): sign in from its menu-bar icon when you need it."
+  [ -n "${TS_LATER:-}" ] && echo "  - Tailscale (only for Time-sync and Play along; Real time mode and the call don't need it): ask whoever runs the studio for an invitation to its Tailscale network, then sign in from its menu-bar icon."
 elif [ -f "$ROOT/_band/band.json" ]; then # (run again by someone already in: nobody has to let them in. Mac test, 0.58.69)
   echo "  - You're already in $BAND_NAME: nothing more to do here. In StudioSync's panel, open Projects and double-click one."
 else
   echo "  - Tell whoever invited you that you're set up: they press 'Let $USERNAME_BS in' in their panel (or add your Syncthing ID"
   echo "    by hand: $MY_ID). Then the studio's projects arrive by themselves: in StudioSync's panel, open Projects and double-click one."
-  [ -n "${TS_LATER:-}" ] && echo "  - Tailscale (for Play/Jam and hearing each other live): sign in from its menu-bar icon when you need it."
+  [ -n "${TS_LATER:-}" ] && echo "  - Tailscale (only for Time-sync and Play along; Real time mode and the call don't need it): ask whoever runs the studio for an invitation to its Tailscale network, then sign in from its menu-bar icon."
 fi

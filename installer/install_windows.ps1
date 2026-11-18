@@ -726,7 +726,7 @@ if ($wantLive) {
       Ok "Tailscale is signed in (it signs out by itself every few months: see below to keep it signed in)"
     } elseif (-not $isHost) {
       # (a joiner waited up to five minutes on a sign-in page before their first song: syncing needs no Tailscale, only Play/Jam and the call do. Beginner review, 0.58.62)
-      $left += "Tailscale (for Play/Jam and hearing each other live): sign in from its taskbar icon when you need it. StudioSync's Health page shows whether it's on."
+      $left += "Tailscale (only for Time-sync and Play along; Real time mode and the call don't need it): ask whoever runs the studio for an invitation to its Tailscale network, then sign in from its taskbar icon. StudioSync's Health page shows whether it's on."
       $tagged = $true
     } else {
       function Ts-Up($argv) { # runs tailscale up, opens its sign-in page; returns the exit code

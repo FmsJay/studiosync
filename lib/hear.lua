@@ -222,7 +222,6 @@ function hear.answer_listeners(proj, cfg, b)
   reaper.SetExtState(band.SECTION, key, now, false)
   reaper.SetExtState(band.SECTION, "send whole mix " .. tostring(proj), whole and "1" or "", false)
   hear.listeners_here = #names > 0 or nil
-  if #names == 0 then reaper.DeleteExtState(band.SECTION, "listeners " .. tostring(proj), false) else reaper.SetExtState(band.SECTION, "listeners " .. tostring(proj), "1", false) end
   if now == before then return end
   local live = require("live")
   local sm, si = live.fx(proj, false, live.SONOBUS)

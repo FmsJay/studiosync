@@ -2203,6 +2203,12 @@ mirror.FX_LOAD_SECS = 60 -- how long after landing or opening a chain's data may
 -- project: a change made while StudioSync wasn't running read as the plug-in loading at the next open, and never went out
 -- (Linux stress test, 0.58.77). Knobs not as they were left mean someone turned them.
 mirror.fxk_ok = {} -- proj .. oid -> stored this session
+-- A chain's plug-ins, in order (their keys): one added, removed or moved changes this; data or knobs don't.
+local function plugin_keys(chain)
+  local t = {}
+  for _, x in ipairs(mirror.plugin_blocks(chain_lines(chain))) do t[#t + 1] = tostring(x.key) end
+  return table.concat(t, "\0")
+end
 local function loaded(proj, rk) return reaper.time_precise() >= math.max(mirror.fx_loading[rk] or 0, mirror.first_look[tostring(proj)] or 0) end
 local function knobs_as_left(proj, o, rk)
   if reaper.time_precise() < (mirror.fx_loading[rk] or 0) then return true end -- (just landed: the band's knobs, not the ones stored)
@@ -2663,12 +2669,7 @@ function mirror.watch(proj, cfg, song, room, opts)
           -- (knobs as they were when it opened or landed, and the band's plug-ins: one added, removed or moved changes those,
           -- as freezing and unfreezing a track do)
           local ev = event_file(room_dir, evid)
-          local function names(chain)
-            local t = {}
-            for _, x in ipairs(mirror.plugin_blocks(chain_lines(chain))) do t[#t + 1] = tostring(x.key) end
-            return table.concat(t, "\0")
-          end
-          if ev and type(ev.state) == "string" and names(ev.state) == names(o.state) and mirror.fx_load_knobs[rk] == mirror.fx_params(o.ptr) and knobs_as_left(proj, o, rk) then
+          if ev and type(ev.state) == "string" and plugin_keys(ev.state) == plugin_keys(o.state) and mirror.fx_load_knobs[rk] == mirror.fx_params(o.ptr) and knobs_as_left(proj, o, rk) then
             mirror.fx_readback[rk] = o.hash; o.hash = h; knobs_agreed(proj, o, rk)
           end
         end
@@ -2686,12 +2687,7 @@ function mirror.watch(proj, cfg, song, room, opts)
       if o.kind == "fx" and rev and h ~= "" and h ~= o.hash and o.ptr and not mirror.fx_was_open(o.ptr) and mirror.fx_quiet[rk] == mirror.fx_params(o.ptr)
           and mirror.fx_quiet_presets[rk] == mirror.fx_presets(o.ptr) then
         local ev = event_file(room_dir, evid)
-        local function names(chain)
-          local t = {}
-          for _, x in ipairs(mirror.plugin_blocks(chain_lines(chain))) do t[#t + 1] = tostring(x.key) end
-          return table.concat(t, "\0")
-        end
-        if ev and type(ev.state) == "string" and names(ev.state) == names(o.state) and knobs_as_left(proj, o, rk) then
+        if ev and type(ev.state) == "string" and plugin_keys(ev.state) == plugin_keys(o.state) and knobs_as_left(proj, o, rk) then
           mirror.fx_readback[rk] = o.hash; o.hash = h; knobs_agreed(proj, o, rk)
         end
       end
@@ -2776,8 +2772,12 @@ function mirror.watch(proj, cfg, song, room, opts)
                 knobs = mirror.fx_params(o.ptr)
                 mirror.fx_knobs[rk] = knobs
                 -- (its knobs didn't move: what it reads as now stands for the band's. Going by its knobs isn't a change, and it went out
-                -- to everyone as one, at every open where it was found again. 0.59.8)
-                mirror.fx_readback[rk] = o.hash
+                -- to everyone as one, at every open where it was found again. 0.59.8. Only if the band's chain has the same plug-ins and
+                -- its knobs are as left: a plug-in just added, restless from the start, never went out. Review, 0.59.9)
+                local ev = rev and h ~= "" and event_file(room_dir, evid)
+                if ev and type(ev.state) == "string" and plugin_keys(ev.state) == plugin_keys(o.state) and knobs_as_left(proj, o, rk) then
+                  mirror.fx_readback[rk] = o.hash
+                end
                 n = { hash = o.hash, knobs = nil, since = now }
               end
             end
@@ -2895,12 +2895,11 @@ function mirror.watch(proj, cfg, song, room, opts)
         -- (James, 0.59.8: TONEX and Pro-L 2 on the laptop, "2 edits not sent" on opening Nostalgia, and put back, which loads it again).
         -- Nobody's edit: what it reads as here stands for the band's, as the readback above has it.
         if o.kind == "fx" and o.ptr and last and type(last.state) == "string" and not mirror.fx_was_open(o.ptr) and not loaded(proj, rk) then
-          local function names(chain)
-            local t = {}
-            for _, x in ipairs(mirror.plugin_blocks(chain_lines(chain))) do t[#t + 1] = tostring(x.key) end
-            return table.concat(t, "\0")
-          end
-          if names(last.state) == names(o.state) then
+          -- (and its knobs and presets as they were: a knob turned from the mixer, a control surface or a preset action in that minute
+          -- is someone's edit, and stays one. Review, 0.59.9)
+          local lk = mirror.fx_load_knobs[rk]
+          if plugin_keys(last.state) == plugin_keys(o.state) and (lk == nil or lk == mirror.fx_params(o.ptr)) and knobs_as_left(proj, o, rk)
+              and (mirror.fx_quiet_presets[rk] == nil or mirror.fx_quiet_presets[rk] == mirror.fx_presets(o.ptr)) then
             mirror.fx_readback[rk], mirror.unsent[rk] = o.hash, nil
             return
           end

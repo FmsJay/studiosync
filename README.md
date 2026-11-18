@@ -8,7 +8,7 @@ envelope and send, kept
 identical by mirror sync. One person drives (their changes go to everyone); collaborators claim the tracks or
 project sections they work on, and Restore can take back any change, any track, or the whole project.
 
-Plain-Lua ReaScripts (the control panel needs ReaImGui; SWS helps). REAPER 7.18 or newer; 7.86 is tested.
+Plain-Lua ReaScripts (the control panel needs ReaImGui; SWS and js_ReaScriptAPI help, and Health says what's off without them). REAPER 7.18 or newer; 7.86 is tested.
 Machines talk only through a shared folder (Syncthing recommended), with an optional Google Drive copy.
 
 ## Install
@@ -61,8 +61,8 @@ An invitation line runs an installer, so only run one from someone you know, and
 `raw.githubusercontent.com/FmsJay/studiosync/`. A join code (`studiosync-join:...`) is only data: it runs nothing.
 
 1. Ask whoever invited you for the line from their panel's **Invite a collaborator**, and paste it where it says.
-   It runs the installer with everything filled in. (No line? Run the installer as above, answer *y*, and paste their
-   **Syncthing device ID** (in Syncthing: Actions > Show ID) and the studio's ID.)
+   It runs the installer with everything filled in. (No line? Run the installer as above and, where it asks for
+   **Invitation:**, paste their join code, or their **Syncthing device ID** (in Syncthing: Actions > Show ID).)
 2. Tell them you've installed: their StudioSync panel shows **Let *you* in**. Once they press it, the studio's projects
    arrive in your shared folder by themselves.
 3. In REAPER's StudioSync panel: **Projects**, then double-click one. Its tracks arrive over the next moments.
@@ -210,15 +210,15 @@ By hand:
 2. Install the scripts, either way:
    - **ReaPack** (recommended): *Extensions > ReaPack > Import repositories*, paste
      `https://github.com/FmsJay/studiosync/raw/main/index.xml`, then install **StudioSync**. Updates come with
-     ReaPack's sync, or run **StudioSync - Update**. **Update REAPER** beside Settings > Updates > Update opens
+     ReaPack's sync, or press Update in the panel's Settings > Updates. **Update REAPER** beside Settings > Updates > Update opens
      FeedTheCat's REAPER Update Utility (free, MIT), which finds the newest REAPER and installs it when you say so; if it
      isn't installed yet, ReaPack opens on it, one click from installed.
    - **From the shared folder** (studio-internal): *Actions > Show action list > New action > Load ReaScript*,
-     and load every `StudioSync - *.lua` straight from `<shared folder>/_tools/studiosync`. **StudioSync - Update**
+     and load every `StudioSync - *.lua` straight from `<shared folder>/_tools/studiosync`. The panel's Settings > Updates
      registers any new scripts that arrive later. The trade-off: anyone who can write to the shared folder can
      change everyone's scripts. Only share it with your studio. A new version that arrives there asks before it takes
      over a running session (it still runs when REAPER next starts), and Settings > Health keeps a yellow line saying so.
-3. Run **StudioSync - Settings**: choose the shared folder and enter your name.
+3. Open **StudioSync - Panel**: the first time, it asks for the shared folder and your name (later: Settings > You).
 4. **Install ReaImGui** (*Extensions > ReaPack > Browse packages*): the panel, and with it the Live and
    Restore pages, needs it.
 5. Optional extras:

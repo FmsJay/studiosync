@@ -672,6 +672,7 @@ local function tick_body() -- returns true to keep going
   local now_b = band.binding(proj)
   if not now_b or now_b.role ~= b.role or now_b.song ~= b.song then -- became a solo working copy (or unbound): not ours any more
     reaper.DeleteExtState(band.SECTION, "live " .. key, false)
+    reaper.DeleteExtState(band.SECTION, "live began " .. key, false) -- (another song opened in this tab: its live audio starts off. 0.59.9)
     return band.log("live sync stopped: this tab is now " .. (now_b and now_b.role == "solo" and "a Solo edit working copy" or "no longer this session"))
   end
   if reaper.GetExtState(band.SECTION, "live owner " .. key) ~= my_token then -- a newer Live sync took this tab over

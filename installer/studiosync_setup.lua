@@ -48,6 +48,8 @@ if probe then probe:close(); os.remove(root .. "/.bandsync-write-test") end
 step("shared folder writable", probe ~= nil, root)
 local user = (req.user or ""):gsub("[^%w%-_ ]", "")
 step("name", user ~= "", user)
+-- (the studio registered here counted as one from before 0.58.47, and a first-day bandmate saw every advanced control. Onboarding review, 0.59.9)
+if reaper.GetExtState("BandSync", "show advanced") == "" then reaper.SetExtState("BandSync", "show advanced", "0", true) end
 if probe and user ~= "" then
   -- joining another band: the band this computer was in stays one of its bands (Setup > Options > Bands)
   local was, bands = reaper.GetExtState("BandSync", "sync_root"), reaper.GetExtState("BandSync", "bands")

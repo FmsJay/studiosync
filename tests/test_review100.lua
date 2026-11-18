@@ -13,7 +13,7 @@ local live = require("live")
 live.fx = function(_, _, fx) if fx then return nil end; return master_fx, master_fx and 0 end
 assert(not live.rt_flag(0), "nothing set: off")
 px.side = "0"
-assert(live.rt_flag(0), "a project from before: side 0 is Real time")
+assert(not live.rt_flag(0), "no flag: off, whatever the bars (Follow at 0 bars isn't Real time)")
 px.rt = "0"
 assert(not live.rt_flag(0), "its own flag wins: bars at 0 don't switch it on")
 px.rt, px.side = "1", ""

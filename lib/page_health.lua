@@ -198,6 +198,13 @@ function H.maint_rows()
       "you hear the studio's print where there is one, and nothing where there isn't. Installing %s brings the notes back here.",
       m.track, m.fx, m.dest, m.fx) }
   end
+  -- (without them less works, quietly: onboarding review, 0.59.9)
+  if not reaper.APIExists("CF_GetSWSVersion") then
+    rows[#rows + 1] = { "sws", false, "yellow", "", "SWS isn't installed: reopening a project without REAPER's warning boxes is off. It's free: sws-extension.org, or Extensions > ReaPack > Browse packages." }
+  end
+  if not reaper.APIExists("JS_ReaScriptAPI_Version") then
+    rows[#rows + 1] = { "js api", false, "yellow", "", "js_ReaScriptAPI isn't installed: counting the cloud copy's files and putting windows back where they were don't work. Extensions > ReaPack > Browse packages: js_ReaScriptAPI." }
+  end
   local daway = reaper.GetExtState(band.SECTION, "drive_root") ~= "off" and require("drive").away
   if daway then
     local who = daway:match("GoogleDrive%-([^/]+)/") or daway:match("^(%a:)")

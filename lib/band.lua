@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.59.8", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.59.9", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -762,11 +762,20 @@ function band.autosync_key(path) return "autosync " .. (path or ""):gsub("\\", "
 -- (and in <StudioSync home>/autosync.json: a REAPER that didn't close cleanly lost the ExtState, and the project came back with sync off.
 -- James, 0.59.8: "reopened reaper and sync was off")
 local function autosync_file() return band.home() .. "/autosync.json" end
+local as_cache, as_at = nil, -math.huge -- (the studios page asks every frame: review, 0.59.9)
+local function autosync_read()
+  if reaper.time_precise() - as_at > 2 then
+    local t = band.read_json(autosync_file())
+    as_cache, as_at = type(t) == "table" and t or {}, reaper.time_precise()
+  end
+  return as_cache
+end
 function band.set_autosync(path, on)
   local k = band.autosync_key(path)
   if on then reaper.SetExtState(band.SECTION, k, "1", true) else reaper.DeleteExtState(band.SECTION, k, true) end
   local t = band.read_json(autosync_file())
   if type(t) ~= "table" then t = {} end
+  as_at = -math.huge
   local name = k:sub(10)
   if (t[name] == true) ~= (on == true) then
     t[name] = on and true or nil
@@ -776,8 +785,7 @@ end
 function band.autosync(path)
   local k = band.autosync_key(path)
   if reaper.GetExtState(band.SECTION, k) == "1" or reaper.GetExtState(band.SECTION, "autosync " .. (path or ""):lower()) == "1" then return true end
-  local t = band.read_json(autosync_file())
-  return type(t) == "table" and t[k:sub(10)] == true
+  return autosync_read()[k:sub(10)] == true
 end
 
 function band.bind(proj, b)

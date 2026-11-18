@@ -34,7 +34,7 @@ end
 
 local REQUEST = band.home() .. "/install-request"
 local tried = {} -- project key -> when we last started it (don't hammer a Live sync that refuses to run)
-local at, seen_disk = 0, nil
+local at, seen_disk = reaper.time_precise(), nil -- (0 read as a gap, and held the first look back 30 s after REAPER opened. Onboarding review, 0.59.9)
 local keys_set = BANDSYNC_AUTOSTART_STARTED == true -- (carried over an update's reload: the startup steps ran again, reopening tabs and switching the front one. Review, 0.58.47)
 -- Something stopped syncing: the panel says so in red, and with the panel closed the tiny box comes back to say it. (Said once: closing the box again keeps it closed.)
 local function say_problem(words)

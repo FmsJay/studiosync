@@ -485,6 +485,9 @@ function services.join_band(cfg, code)
   local root, n = parent .. "/StudioSync " .. name, 1
   while band.subdirs(root)[1] and band.info(root).id ~= code.band do n = n + 1; root = parent .. "/StudioSync " .. name .. " " .. n end -- (strangers' studios can share a name)
   reaper.RecursiveCreateDirectory(root, 0)
+  local probe = io.open(root .. "/.studiosync-probe", "w") -- (a home folder on a Mac put it in /Users, where nobody can write. Onboarding review, 0.59.9)
+  if not probe then return nil, "Couldn't make the studio's folder at " .. root .. ": pick a shared folder you can write to in Settings > You, and paste the code again." end
+  probe:close(); os.remove(root .. "/.studiosync-probe")
   reaper.SetExtState(band.SECTION, "joining " .. root, band.json_encode({ name = name, id = code.band }), true) -- (who this folder is, until its own _band/band.json arrives)
   band.pin_id(root, code.band) -- (and for good: band.info. Security review, 0.58.78)
   require("trust").set_inviter(root, code.id) -- (the computer that sent the code: the roles on first use are believed only from it. lib/trust.lua)

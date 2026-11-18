@@ -215,8 +215,10 @@ function M.bars_behind(server_bpm, server_bpi, song_bpm, beats_per_bar, margin)
   local bar = (beats_per_bar or 4) * 60 / math.max(1, song_bpm or 120)
   return math.max(1, math.ceil((interval + (margin or 1)) / bar)), interval
 end
+local cfg_text, cfg_at = "", -math.huge -- (Home asks every frame while Real time mode is on: review, 0.59.9)
 function M.interval_bars()
-  local text = band.read(services.ninjam_dir() .. "/bandsync.cfg") or ""
+  if reaper.time_precise() - cfg_at > 2 then cfg_text, cfg_at = band.read(services.ninjam_dir() .. "/bandsync.cfg") or "", reaper.time_precise() end
+  local text = cfg_text
   local bpi = tonumber(text:match("DefaultBPI%s+(%d+)")) or 4
   local bpm = tonumber(text:match("DefaultBPM%s+(%d+)")) or 100
   local proj = E.proj()

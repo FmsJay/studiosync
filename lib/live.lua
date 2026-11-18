@@ -420,12 +420,9 @@ end
 -- SonoBus on for the call while Real time mode isn't, carrying nothing but the talk mic, so nobody hears your playing twice (Time-sync's
 -- NINJAM has it, in time). ProjExtState "rt talk only"; "call" says the call's on.
 -- Real time mode, from its own flag (ProjExtState "rt": "1" on, "0" off; 0.59.8, review: it was read off "side" == "0", so unticking Follow
--- each other, or setting its bars to 0, switched it off or on behind the switch's back). A project from before has no flag: "side" then.
-function live.rt_flag(proj)
-  local f = select(2, reaper.GetProjExtState(proj, band.SECTION, "rt"))
-  if f ~= "" then return f == "1" end
-  return select(2, reaper.GetProjExtState(proj, band.SECTION, "side")) == "0"
-end
+-- each other, or setting its bars to 0, switched it off or on behind the switch's back). No flag is off: a project from before 0.59.8 that had
+-- it on comes back with it off (live.all_off), and the old reading, "side" == "0", let Follow at 0 bars switch it on. Review, 0.59.9.
+function live.rt_flag(proj) return select(2, reaper.GetProjExtState(proj, band.SECTION, "rt")) == "1" end
 function live.sonobus_online(proj)
   local sm, si = live.fx(proj, false, live.SONOBUS)
   return sm ~= nil and not reaper.TrackFX_GetOffline(sm, si), sm, si
@@ -441,15 +438,23 @@ end
 function live.all_off(proj)
   local px = function(k) return select(2, reaper.GetProjExtState(proj, band.SECTION, k)) end
   local set = function(k, v) if px(k) ~= v then reaper.SetProjExtState(proj, band.SECTION, k, v) end end
-  local tr, i = live.fx(proj, false)
-  if tr then live.closing(); reaper.TrackFX_Delete(tr, i) end
+  -- (StudioSync's ReaNINJAM: on the master, or the producer's on the Real time track. One on a track of someone's own stays. Review, 0.59.9)
+  local tr
+  for _, t in ipairs({ reaper.GetMasterTrack(proj), live.rt_track(proj, false) }) do
+    for i = reaper.TrackFX_GetCount(t) - 1, 0, -1 do
+      if select(2, reaper.TrackFX_GetFXName(t, i)):find(live.FX, 1, true) then
+        if not tr then live.closing() end
+        tr = t; reaper.TrackFX_Delete(t, i)
+      end
+    end
+  end
   local on, sm, si = live.sonobus_online(proj)
   if on then reaper.TrackFX_SetOffline(sm, si, true) end
   if live.talking(proj) then live.talk(proj, false) end
   local was = px("side before timesync")
   if was ~= "" then set("side", was == "none" and "" or was); set("side before timesync", "")
-  elseif live.rt_flag(proj) then set("side", "") end
-  if px("rt") == "1" or (px("rt") == "" and px("side") == "0") then set("rt", "0") end
+  elseif live.rt_flag(proj) or (px("rt") == "" and px("side") == "0") then set("side", "") end -- (Real time's 0 bars; before 0.59.8 too)
+  if px("rt") == "1" then set("rt", "0") end
   set("call", ""); set("rt talk only", "")
   if px("hear their time") == "1" then set("hear their time", ""); require("hear").set_delay(proj, 0) end
   return tr ~= nil or on

@@ -667,10 +667,10 @@ function colours.draw(ctx, ImGui, proj, cfg, may, timeline_ok)
       if p.palette == "Your own" then
         local a, z = tonumber(p.from, 16) or 0x2F7BFF, tonumber(p.to, 16) or 0xFF8A3D
         ImGui.SameLine(ctx)
-        colours.edit3(ctx, ImGui, "##from", a, function(v) set(row, "from", string.format("%06X", v)) end)
+        colours.edit3(ctx, ImGui, "##from" .. tostring(row), a, function(v) set(row, "from", string.format("%06X", v)) end)
         ImGui.SetItemTooltip(ctx, "The first colour")
         ImGui.SameLine(ctx)
-        colours.edit3(ctx, ImGui, "##to", z, function(v) set(row, "to", string.format("%06X", v)) end)
+        colours.edit3(ctx, ImGui, "##to" .. tostring(row), z, function(v) set(row, "to", string.format("%06X", v)) end)
         ImGui.SetItemTooltip(ctx, "The last colour")
       end
     end

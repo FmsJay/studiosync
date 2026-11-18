@@ -1027,6 +1027,7 @@ local function set_same_room(v)
     sb_link = link
     reaper.SetProjExtState(proj, band.SECTION, "rt", "1")
     reaper.SetProjExtState(proj, band.SECTION, "side", "0")
+    reaper.SetExtState(band.SECTION, "live began " .. tostring(proj), "1", false) -- (Live sync starting later leaves it on: review, 0.59.9)
     band.log("Real time mode on: you hear everyone, and play, stop and record go to everyone")
   else
     reaper.SetProjExtState(proj, band.SECTION, "rt", "0")
@@ -1034,7 +1035,7 @@ local function set_same_room(v)
     if sm and select(2, reaper.GetProjExtState(proj, band.SECTION, "call")) == "1" then
       reaper.SetProjExtState(proj, band.SECTION, "rt talk only", "1") -- (the call stays: SonoBus now carries only the talk mic. 0.59.6)
       live.rt_sends(proj)
-    elseif sm then reaper.TrackFX_SetOffline(sm, si, true) end
+    elseif sm and not live.sonobus_wanted(proj) then reaper.TrackFX_SetOffline(sm, si, true) end -- (a listener, Solo, producing: it stays)
     reaper.SetProjExtState(proj, band.SECTION, "side", "")
     band.log("Real time mode off: side by side is off (edits still sync)")
   end
@@ -1050,7 +1051,7 @@ function ui.set_call(v)
     if live.talking(proj) then live.talk(proj, false) end
     if not same_room_on() then
       reaper.SetProjExtState(proj, band.SECTION, "rt talk only", "")
-      if sm then reaper.TrackFX_SetOffline(sm, si, true) end
+      if sm and not live.sonobus_wanted(proj) then reaper.TrackFX_SetOffline(sm, si, true) end -- (review, 0.59.9)
     end
     return band.log("the call is off")
   end
@@ -1058,11 +1059,12 @@ function ui.set_call(v)
   local link, why = setup.sonobus(cfg, b, proj, true)
   if not link then reaper.SetProjExtState(proj, band.SECTION, "rt talk only", ""); return band.msg(why) end
   sb_link = link
+  reaper.SetExtState(band.SECTION, "live began " .. tostring(proj), "1", false)
   reaper.SetProjExtState(proj, band.SECTION, "call", "1")
   live.rt_sends(proj)
   band.log("the call is on: press Talk to speak to everyone")
 end
-local SAME_ROOM_TIP = "Hear each other live (through SonoBus), and play, stop and record together.\nWhat someone records lands as a take when they stop. Edits sync either way."
+local SAME_ROOM_TIP = "Hear each other live (My time and Their time through SonoBus, Time-sync through NINJAM), and play, stop and record together.\nWhat someone records lands as a take when they stop. Edits sync either way."
 
 local setup_at, st = 0, {}
 -- What StudioSync did lately (sends, what arrived, what was put back and why): it used to pop the console up
@@ -1331,7 +1333,6 @@ end
 function ui.set_rt_kind(kind) -- nil: off
   local now = ui.rt_kind()
   if kind == now then return end
-  if kind then reaper.SetProjExtState(proj, band.SECTION, "rt kind", kind) end
   if kind == "timesync" then
     if not b then return band.msg("Time-sync needs a studio project open.") end
     if same_room_on() then set_same_room(false) end
@@ -1341,24 +1342,37 @@ function ui.set_rt_kind(kind) -- nil: off
     if same_room_on() then require("page_hear").set_their_time(proj, kind == "their") end -- (not if it didn't come on: review, 0.59.8)
   elseif now == "timesync" then page_play.time_sync(false)
   else set_same_room(false) end
+  -- (kept once it's on: a Time-sync that failed, with no Tailscale, was kept, tried again at every press of the switch, and My time never came
+  -- back from Home. Onboarding review, 0.59.9)
+  if kind and ui.rt_kind() == kind then reaper.SetProjExtState(proj, band.SECTION, "rt kind", kind) end
+end
+-- The Real time switch (Home, the radial menu): the way picked last, or My time when that one doesn't come on.
+function ui.rt_switch(v)
+  if not v then return ui.set_rt_kind(nil) end
+  local last = select(2, reaper.GetProjExtState(proj, band.SECTION, "rt kind"))
+  local want = last ~= "" and (b or last ~= "timesync") and last or "my"
+  ui.set_rt_kind(want)
+  if want ~= "my" and not ui.rt_kind() then ui.set_rt_kind("my") end
 end
 local function home_play()
   local kind = ui.rt_kind()
   local on, sb = kind ~= nil, kind == "my" or kind == "their"
   local ch, v = switch_row("##rt", "Real time mode", on, SAME_ROOM_TIP)
   if ch then
-    local last = select(2, reaper.GetProjExtState(proj, band.SECTION, "rt kind"))
-    ui.set_rt_kind(v and (last ~= "" and (b or last ~= "timesync") and last or "my") or nil)
+    ui.rt_switch(v)
     kind = ui.rt_kind(); on, sb = kind ~= nil, kind == "my" or kind == "their"
   end
   if on then
     local bars = b and page_play.interval_bars() or 1
     ImGui.Indent(ctx, 26)
     for _, k in ipairs(RT_KINDS) do
-      ImGui.BeginDisabled(ctx, k[1] == "timesync" and not b)
+      -- (NINJAM goes over Tailscale: without it, Time-sync came on and nothing arrived. Onboarding review, 0.59.9)
+      local no_ts = k[1] == "timesync" and b and not require("services").tailscale_up()
+      ImGui.BeginDisabled(ctx, k[1] == "timesync" and (not b or no_ts) and kind ~= k[1])
       if ImGui.RadioButton(ctx, k[2] .. "##rtkind", kind == k[1]) and kind ~= k[1] then ui.set_rt_kind(k[1]) end
       ImGui.EndDisabled(ctx)
-      local says = k[3]:format(string.format("%d bar%s", bars, bars == 1 and "" or "s"))
+      local says = no_ts and "Needs Tailscale on, and signed in to the studio's network (ask whoever runs the studio for an invitation). Health shows it."
+        or k[3]:format(string.format("%d bar%s", bars, bars == 1 and "" or "s"))
       if ui.short then ImGui.SetItemTooltip(ctx, says) else ImGui.TextDisabled(ctx, says) end
     end
     ImGui.Unindent(ctx, 26)
@@ -2268,7 +2282,8 @@ function ui.settings_cant_hear()
     ImGui.BulletText(ctx, "Configure SonoBus (Home) shows each person and how their connection is doing. Disconnect and connect again.")
     ImGui.BulletText(ctx, "Wired internet, rather than Wi-Fi.")
     ImGui.BulletText(ctx, "Forward a UDP port on your router to this computer. SonoBus's options can fix the port it uses.")
-    ImGui.BulletText(ctx, "A strict router or a work network can stop computers reaching each other directly. A VPN between you gets around that: Tailscale comes with StudioSync, so check everyone's signed in to the one account.")
+    ImGui.BulletText(ctx, "A strict router or a work network can stop computers reaching each other directly. A VPN between you gets around that: Tailscale comes with StudioSync. Ask whoever runs the studio to invite you to its Tailscale network, and sign in from that invitation.")
+    ImGui.BulletText(ctx, "On a Mac: System Settings > Privacy & Security > Microphone, with REAPER switched on. Without it, Talk and Real time send silence.")
     if ImGui.SmallButton(ctx, "Get Tailscale") then
       if reaper.CF_ShellExecute then reaper.CF_ShellExecute("https://tailscale.com/download") else band.msg("tailscale.com/download") end
     end
@@ -2800,8 +2815,7 @@ local function frame_app()
     reaper.DeleteExtState(band.SECTION, "panel do", false)
     if want == "undo" or want == "redo" then undo_redo(want == "redo")
     elseif want == "realtime" and b then -- (as the switch does: the way picked last, or off. Review, 0.59.8)
-      local last = select(2, reaper.GetProjExtState(proj, band.SECTION, "rt kind"))
-      ui.set_rt_kind(not ui.rt_kind() and (last ~= "" and last or "my") or nil)
+      ui.rt_switch(not ui.rt_kind())
     elseif want == "chat" then page = "Chat"
     elseif want:match("^history") then page = "Restore"
     -- (the bindable actions, power-user review 0.58.62: each does what its control on the panel does)
