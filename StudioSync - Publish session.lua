@@ -34,6 +34,11 @@ if name == "" then ok, name = reaper.GetUserInputs("StudioSync: share this proje
 if not ok then return end
 local song = band.clean(name)
 if song == "" then return band.msg("Give the project a name.") end
+-- (one that differs from an existing song only by case is that song: on Linux "demo" beside "Demo" made a second folder, which Syncthing
+-- on Windows and Mac refuses as a case conflict. Review, 0.59.18)
+for _, s in ipairs(band.songs(cfg)) do
+  if s ~= song and s:lower() == song:lower() then song = s; break end
+end
 require("songsync").want(cfg, song) -- (yours: it syncs here in full, whatever this computer downloads of others)
 local old = old_for(song)
 if old and old.host ~= cfg.user and b.song ~= song then

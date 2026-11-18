@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.59.17", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.59.18", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -337,6 +337,25 @@ function band.listing(dir, ext, sorted)
 end
 
 function band.subdirs(dir) return enum(reaper.EnumerateSubdirectories, dir) end
+-- A big file copied by the system, hidden and in the background, to a temporary name Syncthing and Drive leave alone and then into place,
+-- so REAPER doesn't hold still while it goes (a long recording, a video). Started at most once a quarter of an hour per file; whoever asks
+-- looks again later for `to`. (Drive's big copies, 0.59.12; a big file shared into the studio, 0.59.18)
+band.BIG = 16 * 1024 * 1024
+function band.copy_background(from, to)
+  local dir, name = to:match("^(.*)/([^/]+)$")
+  if not dir then return end
+  reaper.RecursiveCreateDirectory(dir, 0)
+  local tmp = dir .. "/.syncthing." .. name .. "." .. tostring(math.random(100000, 999999)) .. ".tmp" -- (its own: two copies of one file shared one)
+  local cmd
+  if reaper.GetOS():find("^Win") then
+    local w = function(p) return '"' .. p:gsub("/", "\\") .. '"' end
+    cmd = "copy /b /y " .. w(from) .. " " .. w(tmp) .. " >nul && move /y " .. w(tmp) .. " " .. w(to) .. " >nul"
+  else
+    local q = function(p) return "'" .. p:gsub("'", "'\\''") .. "'" end
+    cmd = "cp " .. q(from) .. " " .. q(tmp) .. " && mv " .. q(tmp) .. " " .. q(to)
+  end
+  require("services").run_hidden("bigcopy-" .. require("mirror").hash(to), cmd, 900)
+end
 -- A take's media replaced, and the source it had destroyed: REAPER leaves that to the caller, and a replaced print's file stayed open
 -- until REAPER restarted (Windows can't remove an open file). Plug-in test, 0.59.17
 function band.set_take_source(tk, src)

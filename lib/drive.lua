@@ -341,20 +341,7 @@ function drive.mirror(here, there, budget, user, wait)
     local size = band.size(a)
     -- (a big one, a long print or recording: copied by the system in the background, to a temporary name and then into place, so REAPER
     -- doesn't hold still while it goes. James, 0.59.12. Once a minute at most per file: the next pass sees it there)
-    if (size or 0) > drive.BIG then
-      local dir, name = z:match("^(.*)/([^/]+)$")
-      local tmp = dir .. "/.syncthing." .. name .. "." .. tostring(math.random(100000, 999999)) .. ".tmp" -- (its own: two tabs copying one file shared one. Review, 0.59.14)
-      local cmd
-      if reaper.GetOS():find("^Win") then
-        local w = function(p) return '"' .. p:gsub("/", "\\") .. '"' end
-        cmd = "copy /b /y " .. w(a) .. " " .. w(tmp) .. " >nul && move /y " .. w(tmp) .. " " .. w(z) .. " >nul"
-      else
-        local q = function(p) return "'" .. p:gsub("'", "'\\''") .. "'" end
-        cmd = "cp " .. q(a) .. " " .. q(tmp) .. " && mv " .. q(tmp) .. " " .. q(z)
-      end
-      require("services").run_hidden("drivecopy-" .. require("mirror").hash(z), cmd, 900) -- (a quarter of an hour: one still downloading from Drive was started again over itself. Mac review, 0.59.14)
-      return
-    end
+    if (size or 0) > drive.BIG then band.copy_background(a, z); return end -- (band.copy_background: a quarter of an hour at most per file)
     local okc, why = pcall(band.copy_atomic, a, z) -- (one that fails, a Drive file that won't download offline, is skipped: it stopped the whole room each pass)
     if not okc then
       if not copy_said[a] then copy_said[a] = true; band.log("couldn't copy " .. a:match("[^/]+$") .. " for the cloud copy: " .. tostring(why)) end

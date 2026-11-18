@@ -643,6 +643,27 @@ do -- what's already there is history, not a cue
   reaper.EnumerateFiles(dir, -1)
   while true do local f = reaper.EnumerateFiles(dir, i); if not f then break end; seen_ev[f] = true; i = i + 1 end
 end
+-- One REAPER per song and room on this computer (review, 0.59.18: the same song open in two REAPERs synced from both, each taking the
+-- other's changes for its own). Each REAPER has an id for its session (ExtState "instance id", not persisted: one per process), and the
+-- REAPER syncing a song keeps <home>/locks/<song> <room>.json fresh. Another REAPER's fresh lock: not here, and Autostart is told why.
+local instance = reaper.GetExtState(band.SECTION, "instance id")
+if instance == "" then instance = string.format("%d-%d", os.time(), math.random(1, 1e9)); reaper.SetExtState(band.SECTION, "instance id", instance, false) end
+local lock_file = band.home() .. "/locks/" .. (b.song .. " " .. b.room):gsub("[^%w%-_ ]", "_") .. ".json"
+do
+  local lk = band.read_json(lock_file)
+  if type(lk) == "table" and lk.instance ~= instance and tonumber(lk.at) and os.time() - tonumber(lk.at) < 20 then
+    reaper.SetExtState(band.SECTION, "elsewhere " .. tostring(proj), tostring(reaper.time_precise()), false)
+    return band.log("'" .. b.song .. "' is syncing in another REAPER on this computer: work there, or close it there first. This one doesn't sync it")
+  end
+  reaper.DeleteExtState(band.SECTION, "elsewhere " .. tostring(proj), false)
+end
+local lock_at = -math.huge
+local function keep_lock()
+  if reaper.time_precise() - lock_at < 5 then return end
+  lock_at = reaper.time_precise()
+  reaper.RecursiveCreateDirectory(band.home() .. "/locks", 0)
+  pcall(band.write_json, lock_file, { instance = instance, at = os.time() })
+end
 -- StudioSync - Autostart.lua restarts us for this project after REAPER restarts, until the person stops us
 -- (our tab's file, not the front one's: an update reloads every tab's Live sync while one tab is in front)
 local our_file = ""
@@ -688,6 +709,7 @@ local function tick_body() -- returns true to keep going
     return band.log("Live sync restarted for '" .. b.song .. "' (room " .. b.room .. "): nothing to do")
   end
   reaper.SetExtState(band.SECTION, "live " .. key, tostring(reaper.time_precise()), false)
+  keep_lock() -- (this REAPER syncs this song: 0.59.18)
   -- Each part shows only the take it plays, dry or wet (James, 0.59.13: "having a wet and dry take might take up too much space... only show
   -- one or the other"), unless Settings > Advanced shows both (ExtState "show both takes"). REAPER's Show all takes in lanes (action 40435) is
   -- the project's own: set once in front, and again only when the setting changes, so Ctrl+L still works. A band song's takes are only ever

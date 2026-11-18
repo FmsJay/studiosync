@@ -1587,8 +1587,13 @@ function mirror.share_media(chunk, media_dir, it, sent)
     end
     local dst = media_dir .. "/" .. copy
     if not reaper.file_exists(dst) and reaper.file_exists(path) then
-      local ok, err = pcall(band.copy_atomic, path, dst)
-      if not ok then mirror.copy_failed = tostring(err) end -- (watch holds the item back and says so: mirror.local_files)
+      -- (a big one, a long recording or a video, in the background: copied here, REAPER held still for the whole copy. Its item waits till
+      -- it's there. Review, 0.59.18)
+      if (size or 0) > band.BIG then band.copy_background(path, dst); mirror.copy_pending = true
+      else
+        local ok, err = pcall(band.copy_atomic, path, dst)
+        if not ok then mirror.copy_failed = tostring(err) end -- (watch holds the item back and says so: mirror.local_files)
+      end
     end
     -- (only once the copy is really there: pointing at a copy that was never made left everyone waiting for it)
     if reaper.file_exists(dst) then return 'FILE "{media:' .. room .. "}/" .. copy .. '"' end
@@ -2709,6 +2714,24 @@ function mirror.watch(proj, cfg, song, room, opts)
           why.text = why.text .. ". Your version is on '" .. on .. " (yours, not sent)'"
         end
       end
+      -- (your plug-in settings, refused, saved first as an FX chain to load back: a song's knob work made while playing went for good when the
+      -- driver changed hands before the stop. Review, 0.59.18. Once for that edit, as the item copy above)
+      if o.kind == "fx" and why.text and not why.to and not mirror.copied[copy_key] and type(o.state) == "string" and o.state:find("\n<", 1, true) then
+        mirror.copied[copy_key] = true
+        local band = require("band")
+        local dir = band.home() .. "/kept plug-ins"
+        reaper.RecursiveCreateDirectory(dir, 0)
+        local nm = ((why.name or "") ~= "" and why.name or "a track"):gsub("[^%w%-_ ]", "")
+        local path = dir .. "/" .. nm .. " " .. os.date("%Y-%m-%d %H%M%S") .. ".RfxChain"
+        local body = {}
+        for l in o.state:gmatch("[^\n]+") do body[#body + 1] = l end
+        table.remove(body, 1); table.remove(body) -- (the <FXCHAIN around it: a chain file is what's inside)
+        local keep = {}
+        for _, l in ipairs(body) do if not l:match("^WNDRECT ") and not l:match("^SHOW ") and not l:match("^LASTSEL ") and not l:match("^DOCKED ") then keep[#keep + 1] = l end end
+        if pcall(band.write_atomic, path, table.concat(keep, "\n") .. "\n") then
+          why.text = why.text .. ". Your plug-in settings are saved as an FX chain (load it from the track's FX window: FX > Load FX chain): " .. path
+        end
+      end
       local ok, h = mirror.apply(proj, ev, media, opts.local_mix)
       if ok then remember(proj, o.oid, ev.rev, h, ev.id, mirror.order_of(ev))
       elseif mirror.PART[o.kind] then return -- (waits for this tab to come to the front)
@@ -2768,10 +2791,10 @@ function mirror.watch(proj, cfg, song, room, opts)
         c.state = mirror.band_faders(o.state, last and not last.gone and last.state)
       end
       if o.kind == "item" then
-        mirror.copy_failed = nil
+        mirror.copy_failed, mirror.copy_pending = nil, nil
         local last = kev ~= "" and event_file(room_dir, kev) or nil
         c.state = mirror.share_media(o.state, media, o.ptr, last and last.state)
-        if mirror.copy_failed then return false end
+        if mirror.copy_failed or mirror.copy_pending then return false end
       end
     end
     return suggest.add(room_dir, me, who, c)
@@ -2995,8 +3018,13 @@ function mirror.watch(proj, cfg, song, room, opts)
       if ok_now and ok_before then
         local state = o.state
         if o.kind == "item" then
-          mirror.copy_failed = nil
+          mirror.copy_failed, mirror.copy_pending = nil, nil
           local shared = mirror.share_media(state, media, o.ptr, last and last.state)
+          if mirror.copy_pending then -- (a big file still on its way into the studio's folder: it goes once it's there. 0.59.18)
+            mirror.unsent[tostring(proj) .. o.oid] = true
+            return say_once("copying" .. o.oid, string.format("copying a big file on %s into the studio's folder: it goes out to everyone once it's there",
+              name ~= "" and name or "an unnamed track"))
+          end
           if mirror.copy_failed then -- (its audio didn't reach the band's folder: sent, it'd point at a file only we have)
             return say_once("copy" .. o.oid, string.format("couldn't copy the audio of an item on %s into the studio's folder (%s): it goes out once it can",
               name ~= "" and name or "an unnamed track", mirror.copy_failed))

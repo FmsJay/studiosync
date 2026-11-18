@@ -589,11 +589,11 @@ end
 
 local drive_root, drive_at = nil, -math.huge
 local MODE_INFO = { -- (the names on disk are older than these: sync.MODES)
-  { "open", "Claims", "Anyone changes anything nobody else has claimed, the tempo map and markers too. What someone has claimed (a track,\n" ..
+  { "open", "Anyone (claims hold)", "Anyone changes anything nobody else has claimed, the tempo map and markers too. What someone has claimed (a track,\n" ..
     "a region, a stretch of time) only they change, the driver too. If two change one thing at once, whoever changed it more wins,\nand the other person gets a Use mine button to put theirs back." },
   { "claims", "Driver + claims", "The driver changes anything, claimed or not. Everyone else changes what they've claimed. Other changes are put back." },
   { "driver", "Driver only", "Only the driver changes what the studio has. Everyone else's changes are put back (record as usual)." },
-  { "everyone", "Everyone", "Anyone changes anything, claimed or not: claims don't hold. If two change one thing at once, whoever changed it more wins,\n" ..
+  { "everyone", "Anyone (claims ignored)", "Anyone changes anything, claimed or not: claims don't hold. If two change one thing at once, whoever changed it more wins,\n" ..
     "and the other person gets a Use mine button to put theirs back." },
   { "admins", "Admins only", "Only the studio's owner and admins change what the studio has, and anyone on what an admin gave them (right-click their name). Other changes are put back." },
 }
@@ -1286,11 +1286,14 @@ local function layout(parts, bare) -- { { fn, width } }; bare: what's in them is
     ImGui.PopStyleColor(ctx)
     local more = false
     if open then
+      local skey = "col " .. tostring(ui.cur_page) .. " " .. i -- (each column eases as the page does: they jumped a few lines a notch. 0.59.18)
+      ui.smooth_scroll(skey)
       ImGui.PushTextWrapPos(ctx, 0)
       ui.bare_cards = bare
       ui.page_body(part[1])
       ui.bare_cards = nil
       ImGui.PopTextWrapPos(ctx)
+      ui.smooth_scroll_end(skey)
       -- (a fade at the foot says there's more; a line of words cost every column its height, whether it hid anything or not: design review)
       more = ImGui.GetScrollMaxY(ctx) - ImGui.GetScrollY(ctx) > ImGui.GetTextLineHeight(ctx)
       if more then
@@ -1459,7 +1462,7 @@ local function home_play()
   end
   if sb then -- (the help for it was in Settings > Advanced, with nothing here pointing at it: UX review, 0.58.52)
     require("page_hear").fit(ctx, ImGui, "Can't hear?")
-    if ImGui.SmallButton(ctx, "Can't hear?") then ui.go_settings("Advanced") end
+    if ImGui.SmallButton(ctx, "Can't hear?") then ui.go_settings("Health") end
     ImGui.SetItemTooltip(ctx, "What to try when you can't hear someone, or they can't hear you (Settings > Advanced).")
   end
   local call = require("alerts").call_link(cfg.root)
@@ -2179,7 +2182,20 @@ function ui.settings_you()
         local d = band.read_json(g.root .. "/_band/devices/" .. name:gsub("[^%w%-_ ]", "") .. ".json")
         if type(d) == "table" and d.device and mine and d.device ~= mine and name:lower() ~= cfg.user:lower() then taken = g.name end
       end
-      if taken then band.msg("Another computer in " .. taken .. " is already called " .. name .. ". Pick a name of your own (say, " .. name .. "-Laptop)."); name = "" end
+      -- (nor one that differs only by spaces, dashes or underscores: StudioSync's own tags for who made what can't tell "Al-B" from "Al_B".
+      -- Review, 0.59.18)
+      local near
+      if name ~= "" and not taken then
+        local tag = function(s) return ((s or ""):lower():gsub("[^%w]", "")) end
+        for _, g in ipairs(band.bands()) do
+          for _, f in ipairs(band.files(g.root .. "/_band/devices", ".json")) do
+            local other = f:sub(1, -6)
+            if tag(other) == tag(name) and other:lower() ~= name:lower() and other:lower() ~= cfg.user:lower() then taken, near = g.name, other end
+          end
+        end
+      end
+      if taken then band.msg("Another computer in " .. taken .. " is already called " .. (near or name) .. (near and (", which StudioSync can't tell apart from " .. name) or "") ..
+        ". Pick a name of your own (say, " .. name .. "-Laptop)."); name = "" end
       if name ~= "" and name ~= cfg.user then
         reaper.SetExtState(band.SECTION, "user", name, true)
         band.rename_everywhere(cfg.user, name, cfg.root)
@@ -2393,7 +2409,8 @@ local function page_setup()
   local go_tab = reaper.GetExtState(band.SECTION, "setup tab")
   if go_tab ~= "" then reaper.DeleteExtState(band.SECTION, "setup tab", false) end
   local function tab(name) return ImGui.BeginTabItem(ctx, name, nil, go_tab == name and ImGui.TabItemFlags_SetSelected or 0) end
-  if b and tab("Health") then body("s health", function() maint_health(); if wide then ui.feed() end end); ImGui.EndTabItem(ctx) end
+  -- (Can't hear? is under Health, with the rest of what to check when something doesn't work: it was in Advanced. UX review, 0.59.18)
+  if b and tab("Health") then body("s health", function() maint_health(); ImGui.Spacing(ctx); ui.settings_cant_hear(); if wide then ui.feed() end end); ImGui.EndTabItem(ctx) end
   if tab("You") then body("s you", ui.settings_you); ImGui.EndTabItem(ctx) end
   -- (the look in a tab of its own: Options was long. James, 0.58.99)
   if tab("Look") then body("s look", function() layout({ { settings_look, 360 }, { ui.settings_colours, 460 } }, true) end); ImGui.EndTabItem(ctx) end
@@ -2402,7 +2419,7 @@ local function page_setup()
     ImGui.EndTabItem(ctx)
   end
   if tab("Studio") then body("s studio", settings_studio); ImGui.EndTabItem(ctx) end
-  if tab("Advanced") then body("s advanced", function() layout({ { ui.settings_advanced, 360 }, { ui.settings_buffer, 420 }, { ui.settings_cant_hear, 640 } }, true) end); ImGui.EndTabItem(ctx) end
+  if tab("Advanced") then body("s advanced", function() layout({ { ui.settings_advanced, 360 }, { ui.settings_buffer, 420 } }, true) end); ImGui.EndTabItem(ctx) end
   if tab("Console") then
     -- StudioSync's own log, newest first (REAPER's console only shows it while open)
     if ImGui.SmallButton(ctx, "Clear") then reaper.DeleteExtState(band.SECTION, band.LOG_KEY, false) end
@@ -2982,6 +2999,7 @@ local function frame_app()
   local scroll_key = page -- (the page may change below: its end goes with its start)
   if ImGui.BeginChild(ctx, "page", 0, 0, ImGui.ChildFlags_AlwaysUseWindowPadding, wide and ImGui.WindowFlags_HorizontalScrollbar or 0) then
     ui.smooth_scroll(scroll_key)
+    ui.cur_page = scroll_key -- (for the columns' own easing: layout)
     ImGui.PushTextWrapPos(ctx, 0) -- text wraps to the page, whatever its width
     if page == "Play/Jam" and not ui.play_shown() then page = "Home" end
     if page == "Groups" then ui.page_body(function() require("page_groups").draw_groups(ui.env) end)

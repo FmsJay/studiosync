@@ -195,7 +195,11 @@ local function loop_body()
       -- (by tab and file: REAPER reuses a closed tab's address, and a new project there was "wouldn't start again" from the first look. Review, 0.59.14)
       local n = tried[key .. "|" .. fn] or { at = -1e9, n = 0 }
       tried[key .. "|" .. fn] = n
+      -- (another REAPER on this computer syncs this song: not started here, and said why. 0.59.18)
+      local away = tonumber(reaper.GetExtState(band.SECTION, "elsewhere " .. key))
       if alive then n.n = 0
+      elseif away and reaper.time_precise() - away < 120 then
+        if proj == front then problem = problem or "This song is syncing in another REAPER on this computer: work there, or close it there first." end
       elseif proj == front and n.n < 3 and reaper.time_precise() - n.at > 30 then
         n.at, n.n = reaper.time_precise(), n.n + 1
         band.log("starting Live sync again for " .. fn)

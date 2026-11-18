@@ -1,17 +1,17 @@
-version 0.59.17
-StudioSync - Autostart.lua	15080
+version 0.59.18
+StudioSync - Autostart.lua	15476
 StudioSync - Claim selected tracks.lua	692
 StudioSync - Draw.lua	27162
 StudioSync - Final mix.lua	5637
 StudioSync - Hold my changes.lua	766
 StudioSync - Keep selected tracks local.lua	760
-StudioSync - Live sync.lua	70096
+StudioSync - Live sync.lua	71682
 StudioSync - Local mixing.lua	721
 StudioSync - Measure guest delay.lua	4099
 StudioSync - Open session.lua	8975
-StudioSync - Panel.lua	226494
+StudioSync - Panel.lua	227690
 StudioSync - Prepare session.lua	6311
-StudioSync - Publish session.lua	5234
+StudioSync - Publish session.lua	5552
 StudioSync - Radial menu.lua	7656
 StudioSync - Redo.lua	797
 StudioSync - Selected tracks play as chosen.lua	1207
@@ -25,14 +25,14 @@ StudioSync - Update.lua	2143
 lib/access.lua	5942
 lib/alerts.lua	3960
 lib/api.lua	6961
-lib/band.lua	75434
+lib/band.lua	76642
 lib/bgrender.lua	36419
 lib/callapps.lua	6144
 lib/callwin.lua	7337
 lib/chooser.lua	22179
 lib/colours.lua	47852
 lib/debugmode.lua	5732
-lib/drive.lua	29252
+lib/drive.lua	28487
 lib/drummap.lua	5670
 lib/export.lua	7528
 lib/extras.lua	27728
@@ -48,7 +48,7 @@ lib/live.lua	44491
 lib/livemidi.lua	10723
 lib/localcopy.lua	22464
 lib/midiview.lua	4574
-lib/mirror.lua	238593
+lib/mirror.lua	240806
 lib/mixlayer.lua	1668
 lib/page_chat.lua	24132
 lib/page_groups.lua	35397
