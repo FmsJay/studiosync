@@ -1203,7 +1203,8 @@ function sync.apply(proj, ev, dir, root, can, me)
     return true
   end
   if ev.type == "note" or ev.type == "like" then
-    local it2 = ev.take and band.find_take(proj, ev.take)
+    -- (a part in mirror sync is found by its item id: it has no take id. 0.58.98)
+    local it2 = (ev.take and band.find_take(proj, ev.take)) or (type(ev.item) == "string" and require("mirror").find(proj, "item", ev.item))
     if it2 then sync.mark_item(it2, ev.pos, (ev.type == "like" and "+1 " or "") .. ev.user .. (ev.text and (": " .. ev.text) or ""), ev.len) end
     return true -- notes without a take live in the panel's Notes list (and History)
   end

@@ -27,7 +27,20 @@ local section, cmd = select(3, reaper.get_action_context())
 if cmd > 0 then reaper.SetToggleCommandState(section, cmd, 1); reaper.RefreshToolbar2(section, cmd) end
 reaper.DeleteExtState(band.SECTION, "panel_open", true) -- (0.21.5 kept this; Autostart now opens the panel with any StudioSync session)
 local restarting = false -- an update landed: a new panel took over, and its toolbar state is on
-reaper.atexit(function() if cmd > 0 and not restarting then reaper.SetToggleCommandState(section, cmd, 0); reaper.RefreshToolbar2(section, cmd) end end)
+local closed_here = false -- closed by its own close button or menu (not stopped from outside, as the toolbar button stops it)
+-- (the toolbar button on a minimized panel stopped it, so the box was gone and nothing opened: James, 0.58.98. It now asks Autostart to open it
+-- again, full: running itself from here, while it stops, isn't reliable)
+reaper.atexit(function()
+  if cmd > 0 and not restarting then reaper.SetToggleCommandState(section, cmd, 0); reaper.RefreshToolbar2(section, cmd) end
+  if not restarting and not closed_here and reaper.GetExtState(band.SECTION, "panel minimized") ~= "" then
+    reaper.SetExtState(band.SECTION, "panel reopen", tostring(reaper.time_precise()), false)
+  end
+end)
+-- Opened by hand (the toolbar button, an action), it opens full: only Autostart asks for the tiny box ("panel start small"), and a reload keeps
+-- what it was. (It opened as the box or strip it was last left as. James, 0.58.98)
+if STUDIOSYNC_PANEL_RELOAD then STUDIOSYNC_PANEL_RELOAD = nil
+elseif reaper.GetExtState(band.SECTION, "panel start small") ~= "" then reaper.DeleteExtState(band.SECTION, "panel start small", false)
+else reaper.DeleteExtState(band.SECTION, "panel minimized", true) end
 
 local ctx = ImGui.CreateContext("StudioSync")
 -- resizable from any edge (a window taller than the screen can still be shrunk from the top). The Window menu
@@ -287,8 +300,42 @@ local function wordmark(size)
 end
 -- The panel as a small square ("1"), or a strip with words ("strip"), over REAPER (pill_window), kept across restarts.
 function ui.set_minimized(on)
+  -- (the focus starts afresh each way: minimized with its button, the panel kept "had the focus", opened again without it, and shrank straight
+  -- back to the box: the box or strip seemed not to open, after the toolbar button above all. James, 0.58.98)
+  ui.had_focus = nil
   if on then reaper.SetExtState(band.SECTION, "panel minimized", on == "strip" and "strip" or "1", true)
-  else reaper.DeleteExtState(band.SECTION, "panel minimized", true) end
+  else
+    reaper.DeleteExtState(band.SECTION, "panel minimized", true)
+    ui.focus_req, ui.opened_at = true, reaper.time_precise()
+  end
+end
+-- Should the panel shrink to the box now the focus has gone? Only for a REAPER window it was in front of (James, 0.58.98: "clicking onto other
+-- windows shouldn't minimize studiosync, only clicking onto another reaper window that would have been blocked by it"): another app, a
+-- dialog or menu (StudioSync's own boxes made it vanish), a click on the panel itself, or a REAPER window it doesn't cover (it's on another
+-- monitor) leave it open. Without js_ReaScriptAPI, any REAPER window counts, as before.
+function ui.should_hide(rect)
+  -- (where the mouse really is: ImGui's own position stays where it last was over the panel, so every click away read as one on it)
+  local mx, my = reaper.GetMousePosition()
+  if ImGui.PointConvertNative then mx, my = ImGui.PointConvertNative(ctx, mx, my) end
+  if rect and mx >= rect[1] and mx <= rect[1] + rect[3] and my >= rect[2] and my <= rect[2] + rect[4] then return false end -- (a click on it)
+  if not reaper.JS_Window_GetForeground then return true end
+  local fg = reaper.JS_Window_GetForeground()
+  if not fg then return false end
+  local class = reaper.JS_Window_GetClassName and reaper.JS_Window_GetClassName(fg) or ""
+  if class == "#32770" or class == "#32768" then return false end -- (a dialog box, a menu: Windows' own classes)
+  local main = reaper.GetMainHwnd()
+  local mine = fg == main or (reaper.JS_Window_GetParent and reaper.JS_Window_GetParent(fg) == main)
+  if not mine then return false end -- (another app)
+  local title = reaper.JS_Window_GetTitle and reaper.JS_Window_GetTitle(fg) or ""
+  if title:find("StudioSync", 1, true) then return false end -- (one of its own windows)
+  if not (rect and reaper.JS_Window_GetRect and ImGui.PointConvertNative) then return true end
+  local ok, l, t, r, bt = reaper.JS_Window_GetRect(fg)
+  if not ok then return true end
+  local x1, y1 = ImGui.PointConvertNative(ctx, l, t)
+  local x2, y2 = ImGui.PointConvertNative(ctx, r, bt)
+  x1, x2 = math.min(x1, x2), math.max(x1, x2)
+  y1, y2 = math.min(y1, y2), math.max(y1, y2)
+  return x1 < rect[1] + rect[3] and x2 > rect[1] and y1 < rect[2] + rect[4] and y2 > rect[2] -- (it covers part of that window)
 end
 local reload_now, dock_req, dock_side -- (Settings: switching the window frame reopens the panel; Dock / Undock; the side its new docker goes to)
 local placed_from, placed_how -- where the window was before the Window menu moved it (screen pixels), and how it's placed
@@ -875,11 +922,11 @@ local function section_claims()
     if #list == 0 then band.msg("Select the tracks you want to own first.") else claim(list, {}) end
   end
   ImGui.SetItemTooltip(ctx, "The tracks you've selected become yours: only you can change them, whoever's driving.")
+  if not ui.advanced() then return end -- (keeping tracks local, regions and time: advanced controls. James, 0.58.98)
   next_to("Keep selected tracks local")
   if ImGui.Button(ctx, "Keep selected tracks local") then ui.keep_local() end
   ImGui.SetItemTooltip(ctx, "New tracks of your own that never go to the others: a reference mix, a guide, a scratch idea. Only tracks that haven't gone out yet\n" ..
     "(a shared one would vanish for everyone). Pressed again with only such tracks selected, it shares them.")
-  if not ui.advanced() then return end -- (regions and time: advanced controls)
   next_to("Claim selected region")
   if ImGui.Button(ctx, "Claim selected region") then
     local list = ui.selected_regions()
@@ -1010,12 +1057,16 @@ end
 
 -- ---- Together: start/stop at once, notes and likes, live ideas, and the tools (lib/tools.lua) ----------------
 local note_text = ""
+-- -> an id for the selected take (an older take id), its item, its take, and the item's mirror id. A part in mirror sync (a take in lanes, a
+-- MIDI part) has no take id, only the item's: likes and notes went nowhere on them, the button greyed out. James, 0.58.98.
 local function sel_take()
   local it = reaper.GetSelectedMediaItem(proj, 0)
   local tk = it and reaper.GetActiveTake(it)
   if not tk then return nil end
   local id = band.take_id(tk) or (band.take_ext(tk, "band_dry") ~= "" and band.take_ext(tk, "band_dry")) or nil
-  return id, it, tk
+  local oid = require("mirror").item_oid(it)
+  if not id and oid ~= "" then id = "item " .. oid end
+  return id, it, tk, oid ~= "" and oid or nil
 end
 local notes_at, notes = 0, {}
 local ideas_at, ideas = 0, {}
@@ -1031,8 +1082,8 @@ local function section_notes(kind)
     entered, t = require("page_chat").input(ctx, ImGui, "##note", "a note for everyone, Enter to post (e.g. 'try the chorus an octave up')", note_text)
     note_text = t
   end
-  local whereto = id and string.format("Selected: %s's take on %s, bar %s", (id:match("^(.-)%-%d+%-%d+Z") or "?"):gsub("_", " "),
-    sync.track_name(it), bar_of(reaper.GetMediaItemInfo_Value(it, "D_POSITION"))) .. (reaper.SetTakeMarkerInfo and ". With a time selection over it, the note covers that stretch" or "")
+  local whose = id and not id:match("^item ") and (id:match("^(.-)%-%d+%-%d+Z") or "?"):gsub("_", " ") .. "'s take" or "the part"
+  local whereto = id and string.format("Selected: %s on %s, bar %s", whose, sync.track_name(it), bar_of(reaper.GetMediaItemInfo_Value(it, "D_POSITION"))) .. (reaper.SetTakeMarkerInfo and ". With a time selection over it, the note covers that stretch" or "")
     or (kind == "note" and "No take selected: notes go at the edit cursor." or "Select a take to like it.")
   if kind == "like" then whereto = whereto:gsub("%. With a time selection.*$", "") end
   if ui.short then ImGui.SetItemTooltip(ctx, whereto); if kind == "note" then ImGui.SameLine(ctx) end else ImGui.TextDisabled(ctx, whereto) end
@@ -1047,7 +1098,13 @@ local function section_notes(kind)
       local a, z = math.max(s0, i0), math.min(s1, i0 + reaper.GetMediaItemInfo_Value(it, "D_LENGTH"))
       if z > a then pos, len = a, z - a end
     end
-    local ev = { type = kind, text = text, take = id, pos = pos, len = len, track = it and sync.base_name(select(2, reaper.GetTrackName(reaper.GetMediaItem_Track(it)))) or nil }
+    -- (a like at the cursor landed past the part when the cursor wasn't over it: at its start then)
+    if it and not len then
+      local i0 = reaper.GetMediaItemInfo_Value(it, "D_POSITION")
+      if pos < i0 or pos > i0 + reaper.GetMediaItemInfo_Value(it, "D_LENGTH") then pos = i0 end
+    end
+    local oid = id and id:match("^item (.+)$")
+    local ev = { type = kind, text = text, take = not oid and id or nil, item = oid, pos = pos, len = len, track = it and sync.base_name(select(2, reaper.GetTrackName(reaper.GetMediaItem_Track(it)))) or nil }
     sync.post(cfg, b.song, b.room, ev)
     if it then sync.mark_item(it, pos, (kind == "like" and "+1 " or "") .. cfg.user .. (text and (": " .. text) or ""), len) end -- as everyone else gets it
     notes_at = 0
@@ -1204,8 +1261,24 @@ local function home_play()
     if talking then ImGui.PushStyleColor(ctx, ImGui.Col_Button, 0x2E7D4FFF) end
     if ImGui.SmallButton(ctx, (talking and "Talking" or "Talk") .. "##talkback") then live.talk(proj, not talking) end
     if talking then ImGui.PopStyleColor(ctx) end
+    local inputs = live.talk_inputs()
+    local cur = live.talk_input()
+    local mic = "input " .. (cur + 1)
+    for _, i in ipairs(inputs) do if i[1] == cur then mic = i[2] end end
     ImGui.SetItemTooltip(ctx, "Your microphone to the others through Real time mode, without arming a track: it's never recorded, and it goes quiet while\n" ..
-      "anyone records here. It uses your first input; pick another on the 'StudioSync Talk' track (only on this computer). Click again to stop.")
+      "anyone records here. No other call app needed. Mic: " .. mic .. " (Mic, beside it, picks another; only on this computer). Click again to stop.")
+    -- the call mic, picked here (0.58.98: it was the first input, changed only on the hidden 'StudioSync Talk' track)
+    ImGui.SameLine(ctx)
+    if ImGui.SmallButton(ctx, "Mic##talkmic") then ImGui.OpenPopup(ctx, "talkmic") end
+    ImGui.SetItemTooltip(ctx, "Which input Talk uses: your call mic (" .. mic .. ").")
+    if ImGui.BeginPopup(ctx, "talkmic") then
+      ImGui.TextDisabled(ctx, "Talk uses (this computer only):")
+      for _, i in ipairs(inputs) do
+        if ImGui.Selectable(ctx, i[2] .. "##mic" .. i[1], i[1] == cur) then live.set_talk_input(proj, i[1]); band.log("Talk uses " .. i[2] .. " now") end
+      end
+      if #inputs == 0 then ImGui.TextDisabled(ctx, "No audio inputs: pick your interface in REAPER's Preferences > Audio > Device.") end
+      ImGui.EndPopup(ctx)
+    end
   end
   if on then -- (the help for it was in Settings > Advanced, with nothing here pointing at it: UX review, 0.58.52)
     require("page_hear").fit(ctx, ImGui, "Can't hear?")
@@ -1437,6 +1510,21 @@ local function page_home()
   elseif wide then -- (a tall docker: the people as cards, and nothing left alone in a tall column)
     layout({ { function() home_play(); ui.feed(true) end, 480 }, { home_who, 760 }, { function() home_rules(); ui.spacer(); home_claims() end, 480 } })
   else layout({ { home_who, 360 }, { home_session, 400 } }) end
+  ui.hide_row()
+end
+-- Home's "Hide when not in use" (James, 0.58.98): the same as Settings > Options > When you click REAPER, shrinks to the tiny box or stays
+-- in front. A floating panel only; the panel reopens to switch (ReaImGui sets a window's parent as it opens).
+function ui.hide_row()
+  if win_rect and win_rect.docked then return end
+  ImGui.Spacing(ctx)
+  local ch, v = ImGui.Checkbox(ctx, "Hide the panel when not in use##hiderow", behind == "box")
+  ImGui.SetItemTooltip(ctx, "On: clicking a REAPER window it covers shrinks it to the tiny box; click the box, or the toolbar button, to bring it back.\n" ..
+    "Other apps, dialog boxes and windows it doesn't cover (on another monitor) leave it open. Off: it stays in front.")
+  if ch then
+    reaper.SetExtState(band.SECTION, "panel behind", v and "box" or "front", true)
+    reaper.SetExtState(band.SECTION, "panel page", "Home", false)
+    reload_now = true
+  end
 end
 
 local function settings_look()
@@ -1455,7 +1543,10 @@ local function settings_look()
       "On: the system's window frame instead of the panel's own title bar (no docking by dragging the title then: use Dock).\n" ..
       "Off (the default): the panel's own dark title bar; right-click it or use Dock to dock. The panel reopens to switch.\n" ..
       "Either way, the Window button fills a screen or half of one.")
-    if ch then reaper.SetExtState(band.SECTION, "panel_native", v and "on" or "", true); reload_now = true end
+    if ch then
+      reaper.SetExtState(band.SECTION, "panel_native", v and "on" or "", true); reload_now = true
+      reaper.SetExtState(band.SECTION, "panel page", "Settings", false); reaper.SetExtState(band.SECTION, "setup tab", "Options", false) -- (it went to Home)
+    end
     local bon = reaper.GetExtState(band.SECTION, "banner") ~= "off"
     ch, v = switch_row("##banner", "Banner over REAPER while someone else drives", bon,
       "A slim note at the foot of REAPER's timeline saying what you can change (it never takes a click).")
@@ -2804,6 +2895,7 @@ local function loop_body()
   if updated() or reload_now then -- reload in place: relaunching itself as an action is ignored (or asks to terminate instances)
     band.log("the panel reloaded for StudioSync " .. tostring(seen_disk))
     restarting = true
+    STUDIOSYNC_PANEL_RELOAD = true -- (the next one keeps the box or strip as it is)
     for _, f in ipairs(band.files(dir .. "/lib", ".lua")) do package.loaded[f:sub(1, -5)] = nil end
     return dofile(dir .. "/StudioSync - Panel.lua")
   end
@@ -2841,8 +2933,11 @@ local function loop_body()
   end
   local minimized = reaper.GetExtState(band.SECTION, "panel minimized") ~= ""
   local visible, open = false, true
+  -- (the system frame is the panel's: the box and strip went out with one too. James, 0.58.98)
+  ImGui.SetConfigVar(ctx, ImGui.ConfigVar_ViewportsNoDecoration, (native and not minimized) and 0 or 1)
   if minimized then open = pill_window()
   else
+    if ui.focus_req then ui.focus_req = nil; ImGui.SetNextWindowFocus(ctx) end
     ImGui.PushStyleVar(ctx, ImGui.StyleVar_WindowTitleAlign, 0.5, 0.5) -- (the logo has the left corner)
     ImGui.PushStyleColor(ctx, ImGui.Col_Button, 0) -- (the little triangle in a docked window's corner is drawn in this colour as it begins)
     -- the name only where it clears Window and Dock: under 500 px wide it ran beneath them (0.58.28)
@@ -2856,9 +2951,17 @@ local function loop_body()
     local ww, wh = ImGui.GetWindowSize(ctx)
     local was_docked = win_rect and win_rect.docked
     win_rect = { wx, wy, ww, wh, docked = ImGui.IsWindowDocked(ctx) }
-    if behind == "box" and not win_rect.docked then -- (the focus gone from every StudioSync window, after it had it: to the tiny box)
+    local now_t = reaper.time_precise()
+    -- (a box StudioSync opened held the panel while it was up, and the focus came back to REAPER, not here: not a click away. 0.58.98)
+    if ui.frame_t and now_t - ui.frame_t > 0.5 then ui.had_focus = nil end
+    ui.frame_t = now_t
+    if behind == "box" and not win_rect.docked and now_t - (ui.opened_at or 0) > 1.5 then -- (the focus gone from every StudioSync window, after it had it)
       local focused = ImGui.IsWindowFocused(ctx, ImGui.FocusedFlags_AnyWindow)
-      if focused then ui.had_focus = true elseif ui.had_focus and not ImGui.IsAnyItemActive(ctx) then ui.had_focus = nil; ui.set_minimized(true) end
+      if focused then ui.had_focus = true
+      elseif ui.had_focus and not ImGui.IsAnyItemActive(ctx) then
+        ui.had_focus = nil
+        if ui.should_hide(win_rect) then ui.set_minimized(true) end
+      end
     end
     banner_docked = win_rect.docked
     if was_docked and not banner_docked then -- out of a docker: back to the usual size, not the docker's long thin shape
@@ -2930,8 +3033,14 @@ local function loop_body()
           local st = ui.status
           if st then
             ImGui.DrawList_AddCircleFilled(ImGui.GetWindowDrawList(ctx), wx + 7 + (tbh - 4) * 0.93 + 9, wy + tbh / 2, 4.5, st.colour)
-            if ImGui.IsMouseHoveringRect(ctx, wx + 7, wy, wx + ww - pad - s * 3 - 20, wy + tbh) and ImGui.IsWindowHovered(ctx, ImGui.HoveredFlags_RootAndChildWindows) then
-              ImGui.SetTooltip(ctx, st.tip .. "\n\n" .. st.drives)
+            -- (over the logo and the dot only: the whole title bar showed it, in the way while moving the window. James, 0.58.98)
+            if ImGui.IsMouseHoveringRect(ctx, wx + 4, wy, wx + 7 + (tbh - 4) * 0.93 + 16, wy + tbh) and ImGui.IsWindowHovered(ctx, ImGui.HoveredFlags_RootAndChildWindows) then
+              if ImGui.BeginTooltip(ctx) then
+                ImGui.PushTextWrapPos(ctx, ImGui.GetFontSize(ctx) * 32)
+                ImGui.Text(ctx, st.tip .. "\n\n" .. st.drives)
+                ImGui.PopTextWrapPos(ctx)
+                ImGui.EndTooltip(ctx)
+              end
             end
           end
         end
@@ -2961,6 +3070,7 @@ local function loop_body()
   banner()
   reaper.SetExtState(band.SECTION, "panel alive", tostring(reaper.time_precise()), false) -- (so Autostart never opens a second one)
   if open then return reaper.defer(loop) end
+  closed_here = true
   band.log_file("the panel closed")
   if reaper.GetExtState(band.SECTION, "sync problem") == "" then -- (it keeps syncing: Live sync is its own script, one per tab)
     local mx, my = reaper.GetMousePosition()

@@ -1,15 +1,15 @@
-version 0.58.97
-StudioSync - Autostart.lua	13509
+version 0.58.98
+StudioSync - Autostart.lua	14271
 StudioSync - Claim selected tracks.lua	692
 StudioSync - Draw.lua	26499
-StudioSync - Final mix.lua	5679
+StudioSync - Final mix.lua	5637
 StudioSync - Hold my changes.lua	766
 StudioSync - Keep selected tracks local.lua	760
-StudioSync - Live sync.lua	65131
+StudioSync - Live sync.lua	65545
 StudioSync - Local mixing.lua	721
 StudioSync - Measure guest delay.lua	4099
 StudioSync - Open session.lua	9029
-StudioSync - Panel.lua	190529
+StudioSync - Panel.lua	197919
 StudioSync - Prepare session.lua	6311
 StudioSync - Publish session.lua	4919
 StudioSync - Radial menu.lua	7711
@@ -26,20 +26,20 @@ lib/band.lua	68759
 lib/bgrender.lua	29622
 lib/callapps.lua	6144
 lib/chooser.lua	22179
-lib/colours.lua	19375
+lib/colours.lua	29850
 lib/drive.lua	24288
 lib/drummap.lua	5670
 lib/export.lua	7538
-lib/extras.lua	25880
+lib/extras.lua	27357
 lib/feedback.lua	8370
 lib/fxfiles.lua	8525
-lib/groups.lua	16669
+lib/groups.lua	17046
 lib/guest.lua	7314
 lib/hear.lua	16215
 lib/json.lua	6080
 lib/leave.lua	9484
 lib/listen.lua	14941
-lib/live.lua	37469
+lib/live.lua	38519
 lib/livemidi.lua	10723
 lib/localcopy.lua	21916
 lib/midiview.lua	4359
@@ -47,11 +47,11 @@ lib/mirror.lua	219338
 lib/mixlayer.lua	9976
 lib/page_chat.lua	22477
 lib/page_groups.lua	34159
-lib/page_health.lua	23317
+lib/page_health.lua	23387
 lib/page_hear.lua	14358
 lib/page_play.lua	19301
 lib/page_plugins.lua	19435
-lib/page_restore.lua	24059
+lib/page_restore.lua	24391
 lib/page_rooms.lua	15977
 lib/people.lua	16623
 lib/plugins.lua	10078
@@ -62,7 +62,7 @@ lib/producer.lua	25739
 lib/recall.lua	16377
 lib/removal.lua	20173
 lib/rooms.lua	11066
-lib/services.lua	97382
+lib/services.lua	98124
 lib/sessionfile.lua	7035
 lib/setup.lua	7057
 lib/songsync.lua	8463
@@ -71,10 +71,10 @@ lib/stamp.lua	11856
 lib/startup.lua	13764
 lib/status.lua	5633
 lib/suggest.lua	15010
-lib/sync.lua	110526
+lib/sync.lua	110692
 lib/theme.lua	5575
 lib/together.lua	4950
-lib/tools.lua	32702
+lib/tools.lua	35340
 lib/trim.lua	10377
 lib/trust.lua	16280
 lib/undo.lua	7299

@@ -9,19 +9,40 @@ local extras = {}
 -- its track. As your master hears it (each machine's master is its own), StudioSync's own and your local tracks left out, silent ones
 -- skipped. Your render settings and selection are put back. -> the folder, and how many files; or nil + why.
 -- dry: without the tracks' effects (their instruments still play), as a mixer wants them; put back after.
+-- (0.58.98, James: "these buttons should bring up the render with preset settings so you can double check things", "industry standard
+-- export settings", WAV: REAPER's Render window opens set up (extras.STANDARD: 24-bit WAV at the project's rate, stereo, no dither or
+-- normalizing), you check it and press Render; your own render settings are back after it closes. Dry stems are only tracks with parts:
+-- a bus or folder with its effects off passed its sources through again.)
+extras.WAV24 = "ZXZhdxgAAQ==" -- (REAPER's WAV sink, 24-bit: the "Default" render preset on this rig)
+function extras.STANDARD(proj)
+  return { RENDER_FORMAT = extras.WAV24, RENDER_SRATE = band.srate(proj), RENDER_CHANNELS = 2, RENDER_DITHER = 0, RENDER_NORMALIZE = 0 }
+end
+extras.RENDER_KEYS_S = { "RENDER_FILE", "RENDER_PATTERN", "RENDER_FORMAT" }
+extras.RENDER_KEYS_N = { "RENDER_SETTINGS", "RENDER_BOUNDSFLAG", "RENDER_ADDTOPROJ", "RENDER_SRATE", "RENDER_CHANNELS", "RENDER_DITHER", "RENDER_NORMALIZE", "RENDER_BRICKWALL" }
+function extras.save_render(proj)
+  local saved = {}
+  for _, k in ipairs(extras.RENDER_KEYS_S) do saved[k] = select(2, reaper.GetSetProjectInfo_String(proj, k, "", false)) end
+  for _, k in ipairs(extras.RENDER_KEYS_N) do saved[k] = reaper.GetSetProjectInfo(proj, k, 0, false) end
+  return saved
+end
+function extras.set_render(proj, t)
+  for k, v in pairs(t) do
+    if type(v) == "string" then reaper.GetSetProjectInfo_String(proj, k, v, true) else reaper.GetSetProjectInfo(proj, k, v, true) end
+  end
+end
+-- REAPER's Render window, as set up: it's modal, so this returns once it's closed (rendered or cancelled).
+function extras.render_window() reaper.Main_OnCommand(40015, 0) end -- File: Render project to disk...
 function extras.stems(proj, cfg, b, dry)
   if reaper.GetPlayStateEx(proj) & 4 == 4 then return nil, "Stop recording first." end
   local mirror = require("mirror")
   local out = band.song_dir(cfg, b.song) .. "/stems/" .. os.date("%Y-%m-%d %H%M") .. " " .. band.clean(cfg.user) .. (dry and " dry" or "")
   reaper.RecursiveCreateDirectory(out, 0)
-  local saved = {}
-  for _, k in ipairs({ "RENDER_FILE", "RENDER_PATTERN" }) do saved[k] = select(2, reaper.GetSetProjectInfo_String(proj, k, "", false)) end
-  for _, k in ipairs({ "RENDER_SETTINGS", "RENDER_BOUNDSFLAG", "RENDER_ADDTOPROJ" }) do saved[k] = reaper.GetSetProjectInfo(proj, k, 0, false) end
+  local saved = extras.save_render(proj)
   local selected, n = {}, 0
   for i = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, i)
     selected[tr] = reaper.IsTrackSelected(tr)
-    local share = not mirror.local_track(tr)
+    local share = not mirror.local_track(tr) and (not dry or reaper.CountTrackMediaItems(tr) > 0)
     reaper.SetTrackSelected(tr, share)
     if share then n = n + 1 end
   end
@@ -45,7 +66,8 @@ function extras.stems(proj, cfg, b, dry)
   reaper.GetSetProjectInfo(proj, "RENDER_SETTINGS", 3, true) -- stems of the selected tracks (3, not 2: 2 rendered the master. FINDINGS F-0036)
   reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 1, true) -- the entire project: every stem starts at the song's start, so they line up
   reaper.GetSetProjectInfo(proj, "RENDER_ADDTOPROJ", 2, true) -- (&2: silent stems skipped)
-  reaper.Main_OnCommand(42230, 0) -- File: Render project, using the most recent render settings, auto-close render dialog
+  extras.set_render(proj, extras.STANDARD(proj))
+  extras.render_window()
   for _, x in ipairs(bypassed) do if reaper.ValidatePtr2(proj, x[1], "MediaTrack*") then reaper.TrackFX_SetEnabled(x[1], x[2], true) end end
   for tr, was in pairs(selected) do if reaper.ValidatePtr2(proj, tr, "MediaTrack*") then reaper.SetTrackSelected(tr, was) end end
   for k, v in pairs(saved) do
@@ -65,7 +87,7 @@ function extras.stems(proj, cfg, b, dry)
   if made == 0 then -- (its own empty folder, not left in the shared folder: os.remove can't take a folder on Windows, so it stayed. Review, 0.58.62)
     if reaper.GetOS():match("^Win") then os.execute('rmdir "' .. out:gsub("/", "\\") .. '" 2>nul') else os.remove(out) end
   end
-  if made == 0 then return nil, "The render made nothing (cancelled, or File > Render's format couldn't write, or every track was silent)." end
+  if made == 0 then return nil, "No stems were made (the Render window was cancelled, its folder or names were changed, or every track was silent)." end
   return out, made
 end
 

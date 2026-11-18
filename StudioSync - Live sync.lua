@@ -520,6 +520,10 @@ local function poll()
       format_at = now
       local ok, said = pcall(require("prep").keep_format, proj, cfg, b)
       if ok and said then band.log(said .. " (the studio records the same way on every computer)") end
+      -- a new project in the studio's (or its own) look, on the driver's computer only: the rest receive the colours (lib/colours.lua, 0.58.98)
+      if driver == cfg.user and not require("colours").trying(proj) then
+        pcall(require("colours").auto, proj, cfg, function(name, tr) return my_can(cfg.user, name) or sync.maker_may(require("mirror").track_oid(tr), cfg.user, name, nil, who.mode) end)
+      end
     end
   end
 

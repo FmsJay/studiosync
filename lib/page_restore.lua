@@ -313,7 +313,8 @@ function R.section_mixes()
   local b, cfg, proj = E.b(), E.cfg(), E.proj()
   ImGui.SeparatorText(ctx, "The mix")
   if ImGui.SmallButton(ctx, "Render current mix") then action("Final mix") end
-  ImGui.SetItemTooltip(ctx, "Renders the whole project as your master has it (in your File > Render format) into the shared folder's mixes/ for everyone, and to Google Drive if you use it.\n" ..
+  ImGui.SetItemTooltip(ctx, "Opens REAPER's Render window set up for the studio: the whole project as your master has it, 24-bit WAV at the project's sample rate,\n" ..
+    "with a safety limiter, into the shared folder's mixes/ (and Google Drive if you use it). Check it and press Render; your own render settings are back after.\n" ..
     "Everyone's parts are in it, yours too. Only tracks that stay on this computer ('yours, not sent', StudioSync's helpers) are left out. Nothing is added to the project.")
   ImGui.SeparatorText(ctx, "Stems, for whoever mixes")
   if ImGui.SmallButton(ctx, "Export stems") then
@@ -323,14 +324,16 @@ function R.section_mixes()
       pcall(function() require("page_chat").post(cfg, b, string.format("Stems for whoever mixes: %d file(s) in the shared folder's %s", n, out:match("[^/]+/stems/.*$") or out)) end)
     else band.msg(n) end
   end
-  ImGui.SetItemTooltip(ctx, "One file per shared track, the whole song, all starting together: into the shared folder's stems/ for everyone.\n" ..
-    "As your master hears them (in your File > Render format). Tracks that stay on this computer are left out, silent ones skipped.")
+  ImGui.SetItemTooltip(ctx, "Opens REAPER's Render window set up for stems: one file per shared track, the whole song, all starting together, 24-bit WAV at the\n" ..
+    "project's sample rate, no normalizing or dither, into the shared folder's stems/ for everyone. Check it and press Render; your settings are back after.\n" ..
+    "Tracks that stay on this computer are left out, silent ones skipped.")
   next_to("Dry stems")
   if ImGui.SmallButton(ctx, "Dry stems") then
     local out, n = require("extras").stems(proj, cfg, b, true)
     if out then band.log(string.format("%d dry stem(s) in %s, for everyone", n, out)) else band.msg(n) end
   end
-  ImGui.SetItemTooltip(ctx, "The same, without each track's effects (instruments still play): what a mixer usually asks for. Your effects are back as they were after.")
+  ImGui.SetItemTooltip(ctx, "The same, without each track's effects (instruments still play), only tracks with parts on them (not buses or folders): what a mixer\n" ..
+    "usually asks for. Your effects are back as they were after.")
   ImGui.SeparatorText(ctx, "Finishing up")
   if ImGui.SmallButton(ctx, "Credits draft") then
     local path = require("extras").credits(cfg, b)

@@ -350,6 +350,20 @@ end
 -- doesn't reach your own speakers: it feeds SonoBus while it's armed, and goes quiet while recording (live.rt_sends). Its input is your first
 -- one until you pick another on the track.
 live.TALK_NAME = "StudioSync Talk"
+-- The call mic (James, 0.58.98: "a way to set your call mic track or device"): the input Talk uses, this computer's own, as REAPER's
+-- record-input number (mono input n: n - 1). ExtState "talk input"; the first input when unset.
+function live.talk_input() return math.floor(tonumber(reaper.GetExtState(band.SECTION, "talk input")) or 0) end
+function live.set_talk_input(proj, v)
+  reaper.SetExtState(band.SECTION, "talk input", tostring(math.floor(v)), true)
+  local tr = live.talk_track(proj)
+  if tr then reaper.SetMediaTrackInfo_Value(tr, "I_RECINPUT", math.floor(v)) end
+end
+-- -> { { value, name } } of this computer's audio inputs, mono, as REAPER names them.
+function live.talk_inputs()
+  local out = {}
+  for i = 0, (reaper.GetNumAudioInputs() or 0) - 1 do out[#out + 1] = { i, reaper.GetInputChannelName(i) or ("Input " .. (i + 1)) } end
+  return out
+end
 function live.talk_track(proj, add)
   for t = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, t)
@@ -358,7 +372,7 @@ function live.talk_track(proj, add)
   end
   if not add then return nil end
   local tr = require("mirror").add_local_track(proj, live.TALK_NAME, "talk")
-  reaper.SetMediaTrackInfo_Value(tr, "I_RECINPUT", 0) -- (mono, input 1)
+  reaper.SetMediaTrackInfo_Value(tr, "I_RECINPUT", live.talk_input()) -- (mono: the call mic picked, else input 1)
   return tr
 end
 -- Armed to record (the talk track is armed while you talk, and never records: not counted). Pure but for reading the track.
@@ -373,6 +387,7 @@ end
 function live.talk(proj, on)
   local tr = live.talk_track(proj, on)
   if not tr then return end
+  if on and reaper.GetExtState(band.SECTION, "talk input") ~= "" then reaper.SetMediaTrackInfo_Value(tr, "I_RECINPUT", live.talk_input()) end
   reaper.SetMediaTrackInfo_Value(tr, "I_RECMODE", 2) -- record: none (monitoring only): it can never end up in a take
   reaper.SetMediaTrackInfo_Value(tr, "I_RECMON", 1)
   reaper.SetMediaTrackInfo_Value(tr, "B_MAINSEND", 0) -- (you don't hear yourself twice)

@@ -420,9 +420,17 @@ end
 -- the first try). The ?<time> keeps GitHub's cache from handing out an installer from before the last release.
 -- With the band (band.info): its folder id and name ride along, so the installer joins that band.
 -- `key` (services.tailscale_guest_key): a guest's, whose installer signs Tailscale in to this network until their time is up with it.
-function services.invite_text(id, info, key)
+-- `who`: "new" (they've no StudioSync yet: the install lines only), "has" (they have it: the join code only), nil (not sure: both). James,
+-- 0.58.98: whoever invites says which, in the Invitation window.
+function services.invite_text(id, info, key, who)
   info = info or { id = "bandsync", name = "the studio" }
   key = key and key:match("^tskey%-auth%-[%w%-]+$")
+  local guest_note = key and "That works once, within 2 days: it puts your computer on my Tailscale network as a guest, for as long as I invited you (no account needed). If you use Tailscale for anything else, switch back from its menu afterwards.\n\n" or ""
+  if who == "has" then
+    return "Join " .. info.name .. " on StudioSync. In StudioSync's panel, click the studio name at the top, press Paste join code, and paste this whole message " ..
+      "(or just the line below). Then tell me: I let you in from my panel.\n\n" .. (key and (guest_note .. "Tailscale key: " .. key .. "\n\n") or "") ..
+      services.join_code(id, info)
+  end
   -- (the installer of this very release, by its tag: from main, whatever was pushed there last ran on the newcomer's computer, and a line sent
   -- weeks ago ran something nobody had looked at. Every release has its tag. Security review, 0.58.78)
   local base = "https://raw.githubusercontent.com/FmsJay/studiosync/v" .. band.VERSION .. "/installer/"
@@ -440,10 +448,10 @@ function services.invite_text(id, info, key)
     "Linux: open a terminal, paste this line and press Enter:\n" ..
     'curl -fsSL "' .. base .. 'install_linux.sh?$(date +%s)" | BS_HOST_ID=' .. id .. " BS_BAND_ID=" .. info.id ..
     " BS_BAND_NAME=" .. q1(info.name) .. (key and (" BS_TS_KEY=" .. key) or "") .. " bash\n\n" ..
-    "Answer its questions, and when it's done, tell me: I let you in from my StudioSync panel.\n\n" ..
-    (key and "That works once, within 2 days: it puts your computer on my Tailscale network as a guest, for as long as I invited you (no account needed). If you use Tailscale for anything else, switch back from its menu afterwards.\n\n" or "") ..
-    "Already have StudioSync? In its panel, click the studio name at the top, press Paste join code, and paste this message (or just this line):\n" ..
-    services.join_code(id, info)
+    "Answer its questions, and when it's done, tell me: I let you in from my StudioSync panel." ..
+    (key and ("\n\n" .. guest_note:gsub("\n\n$", "")) or "") ..
+    (who == "new" and "" or ("\n\nAlready have StudioSync? In its panel, click the studio name at the top, press Paste join code, and paste this message (or just this line):\n" ..
+      services.join_code(id, info)))
 end
 
 -- The line that gets someone with StudioSync into a studio, in an invitation.
@@ -985,7 +993,7 @@ function services.copy_guest_invite(my_id, info, ctx, ImGui, root, ends)
   if services.tailscale_token(net) == "" then -- (it refused any invitation: one without Tailscale now, and said. Review, 0.58.95)
     band.log("no Tailscale access token for this studio's network" .. (net and (" (" .. net .. ")") or "") ..
       ", so this invitation leaves Tailscale out: add that network's token under Settings > Advanced to put guests on it")
-    require("tools").show_invite(services.invite_text(my_id, info), info, ctx, ImGui)
+    require("tools").show_invite(services.invite_text(my_id, info), info, ctx, ImGui, { id = my_id })
     return true
   end
   -- (a guest reaches the whole tailnet unless the policy limits them: checked first, as Set up the tags reads it, and said plainly. Security review, 0.58.78)
@@ -1018,7 +1026,7 @@ function services.copy_guest_invite(my_id, info, ctx, ImGui, root, ends)
   local key, why = services.tailscale_guest_key(ends, net)
   if not key then band.log("couldn't make a guest invitation: " .. tostring(why)); return end
   if root then pcall(require("groups").set_tailnet, root) end -- (the network the guest joins is this studio's)
-  require("tools").show_invite(services.invite_text(my_id, info, key), info, ctx, ImGui)
+  require("tools").show_invite(services.invite_text(my_id, info, key), info, ctx, ImGui, { id = my_id, key = key })
   band.log("a guest invitation is on your clipboard: it also puts their computer on your Tailscale network until " .. require("removal").when(ends or os.time() + 86400, os.time()) .. " (no account needed)")
   return true
 end

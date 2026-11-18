@@ -19,9 +19,8 @@ local out = band.song_dir(cfg, b.song) .. "/mixes"
 reaper.RecursiveCreateDirectory(out, 0)
 local name = band.clean(string.format("%s %s %s", b.song, os.date("%Y-%m-%d %H%M%S"), cfg.user)) -- (to the second: a second render in the same minute wrote over the first, which then didn't count as new. 0.58.93)
 
-local saved = {}
-for _, k in ipairs({ "RENDER_FILE", "RENDER_PATTERN" }) do saved[k] = select(2, reaper.GetSetProjectInfo_String(proj, k, "", false)) end
-for _, k in ipairs({ "RENDER_SETTINGS", "RENDER_BOUNDSFLAG", "RENDER_ADDTOPROJ", "RENDER_NORMALIZE", "RENDER_BRICKWALL" }) do saved[k] = reaper.GetSetProjectInfo(proj, k, 0, false) end
+local extras = require("extras")
+local saved = extras.save_render(proj)
 local muted = {}
 for i = 0, reaper.CountTracks(proj) - 1 do
   local tr = reaper.GetTrack(proj, i)
@@ -35,10 +34,13 @@ reaper.GetSetProjectInfo_String(proj, "RENDER_PATTERN", name, true)
 reaper.GetSetProjectInfo(proj, "RENDER_SETTINGS", 0, true) -- the master mix
 reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 1, true) -- the entire project
 reaper.GetSetProjectInfo(proj, "RENDER_ADDTOPROJ", 0, true)
+-- (REAPER's Render window opens set up, to check and press Render: 24-bit WAV at the project's rate, and the safety limiter, which shows there.
+-- It rendered straight away in whatever format File > Render had. James, 0.58.98)
+extras.set_render(proj, extras.STANDARD(proj))
 for k, v in pairs(band.LIMIT) do reaper.GetSetProjectInfo(proj, k, v, true) end -- (over full scale it's limited, not clipped: lib/band.lua)
 local before = {} -- (what's there already: a cancelled render picked up an earlier one of the same minute. Review, 0.58.92)
 for i = 0, math.huge do local f = reaper.EnumerateFiles(out, i); if not f then break end; before[f] = true end
-reaper.Main_OnCommand(42230, 0) -- File: Render project, using the most recent render settings, auto-close render dialog
+extras.render_window()
 
 -- (the render blocks: Live sync's loop hasn't run since the mutes, so they never reach the band)
 for _, tr in ipairs(muted) do reaper.SetMediaTrackInfo_Value(tr, "B_MUTE", 0) end
@@ -77,5 +79,5 @@ if made then
     require("page_chat").post(cfg, b, "New mix: " .. made .. (droot and (". On your phone: the Google Drive app, " .. b.song .. " > mixes.") or
       ". It's in the shared folder's " .. b.song .. "/mixes."))
   end)
-else band.msg("The render didn't make a file (cancelled, or File > Render's format couldn't write). Nothing was changed.") end
+else band.msg("No mix was made in the studio's mixes folder (the Render window was cancelled, or its folder or name was changed). Your render settings are as they were.") end
 reaper.defer(function() end) -- (no "ReaScript: Run" on the undo list: Ctrl+Z would be spent on it)

@@ -102,27 +102,50 @@ local let_at, let_device, asked_at, asking = {}, {}, -math.huge, {} -- (let_at, 
 tools.INVITE_TIP = "Copies a message to send them: one line for a Mac and one for Windows that installs everything, already paired with this computer " ..
   "(and a join code if they already have StudioSync).\nWhen they've run it, their request appears at the top of this panel: press Let them in."
 function tools.invite(my_id, info, ctx, ImGui)
-  tools.show_invite(require("services").invite_text(my_id, info), info, ctx, ImGui)
+  tools.show_invite(require("services").invite_text(my_id, info), info, ctx, ImGui, { id = my_id })
   band.log("an invitation to " .. tostring(info.name) .. " is on your clipboard: paste it to your collaborator. When they've run it, their request appears at the top of this panel")
 end
 -- The invitation, shown as well as copied: a toast was all there was, and someone who copied something else meanwhile had to make another
 -- (and didn't know what it said). Beginner review, 0.58.62.
 local shown_invite
-function tools.show_invite(text, info, ctx, ImGui)
+-- `parts` ({ id, key }): an invitation to a studio, which can be put for someone new, someone with StudioSync, or either (James, 0.58.98:
+-- "have the share let you choose if the person you're inviting has it or not"). Without it (SonoBus's), the text as it is.
+function tools.show_invite(text, info, ctx, ImGui, parts)
   band.copy(text, ctx, ImGui)
-  shown_invite = { text = text, name = tostring(info and info.name or "the studio"), open = true }
+  shown_invite = { text = text, info = info, parts = parts, who = "both", name = tostring(info and info.name or "the studio"), open = true }
 end
+local WHO = { { "new", "Doesn't have StudioSync" }, { "has", "Has StudioSync" }, { "both", "Not sure" } } -- (in this order: James, 0.58.98)
 function tools.invite_popup(ctx, ImGui)
   local j = shown_invite
   if not j then return end
   if j.open then j.open = nil; ImGui.OpenPopup(ctx, "Invitation") end
-  ImGui.SetNextWindowSize(ctx, 520, 0)
-  if ImGui.BeginPopupModal(ctx, "Invitation", nil, ImGui.WindowFlags_NoResize) then
+  -- (resizable, and the text wraps: it was a fixed 520 px box. James, 0.58.98)
+  ImGui.SetNextWindowSize(ctx, 560, 420, ImGui.Cond_Appearing)
+  ImGui.SetNextWindowSizeConstraints(ctx, 380, 260, 1600, 1200)
+  if ImGui.BeginPopupModal(ctx, "Invitation", nil) then
+    if j.parts then
+      ImGui.Text(ctx, "Who is it for?")
+      for _, w in ipairs(WHO) do
+        -- (beside the last while it fits, else on the next line: the third was cut off at the window's first width)
+        local need = ImGui.CalcTextSize(ctx, w[2]) + ImGui.GetFrameHeight(ctx) + 14
+        if select(1, ImGui.GetItemRectMax(ctx)) + need < select(1, ImGui.GetWindowPos(ctx)) + ImGui.GetWindowWidth(ctx) - 16 then ImGui.SameLine(ctx) end
+        if ImGui.RadioButton(ctx, w[2] .. "##who" .. w[1], j.who == w[1]) and j.who ~= w[1] then
+          j.who = w[1]
+          j.text = require("services").invite_text(j.parts.id, j.info, j.parts.key, w[1] ~= "both" and w[1] or nil)
+          band.copy(j.text, ctx, ImGui)
+        end
+      end
+    end
     ImGui.PushTextWrapPos(ctx, 0)
-    ImGui.Text(ctx, "It's on your clipboard: paste it into a message to each person you're inviting to " .. j.name .. ". It's the same for everyone.")
+    ImGui.Text(ctx, "It's on your clipboard: paste it into a message to each person you're inviting to " .. j.name .. "." ..
+      (j.who == "new" and " For someone without StudioSync: it installs everything." or j.who == "has" and " For someone who has StudioSync: a join code to paste in its panel." or " It works whether they have StudioSync or not."))
     ImGui.PopTextWrapPos(ctx)
-    ImGui.InputTextMultiline(ctx, "##invitation", j.text, -1, ImGui.GetTextLineHeight(ctx) * 9, ImGui.InputTextFlags_ReadOnly)
+    local foot = ImGui.GetFrameHeightWithSpacing(ctx) + ImGui.GetTextLineHeightWithSpacing(ctx) * 2.5
+    ImGui.InputTextMultiline(ctx, "##invitation", j.text, -1, math.max(ImGui.GetTextLineHeight(ctx) * 4, select(2, ImGui.GetContentRegionAvail(ctx)) - foot),
+      ImGui.InputTextFlags_ReadOnly)
+    ImGui.PushTextWrapPos(ctx, 0)
     ImGui.TextDisabled(ctx, "When they've run it, their request shows at the top of this panel: press Let them in.")
+    ImGui.PopTextWrapPos(ctx)
     if ImGui.Button(ctx, "Copy again") then band.copy(j.text, ctx, ImGui); band.log("the invitation is on your clipboard again") end
     ImGui.SameLine(ctx)
     if ImGui.Button(ctx, "Done") or ImGui.IsKeyPressed(ctx, ImGui.Key_Escape) then shown_invite = nil; ImGui.CloseCurrentPopup(ctx) end
@@ -137,17 +160,28 @@ function tools.guest_invite_button(ctx, ImGui, my_id, root, label)
   local services, removal = require("services"), require("removal")
   if ImGui.SmallButton(ctx, (label or "Invite a guest") .. "##guestinv" .. root) then
     if guest_pick.root ~= root then guest_pick.songs = {} end -- (ticks from another studio's list went into this one's invitation. Review, 0.58.96)
-    guest_pick.root = root; ImGui.OpenPopup(ctx, "guestinvite" .. root)
+    guest_pick.root = root; ImGui.OpenPopup(ctx, "Invite a guest###guestinvite" .. root)
   end
   if ImGui.IsItemHovered(ctx) then ImGui.SetTooltip(ctx, services.GUEST_TIP .. (services.has_token_for(services.studio_net(root)) and services.GUEST_TS_TIP or "")) end
-  if not ImGui.BeginPopup(ctx, "guestinvite" .. root) then return end
+  -- (a window of its own you can resize, the words wrapped: a fixed popup cut its text off. James, 0.58.98)
+  ImGui.SetNextWindowSize(ctx, 440, 0, ImGui.Cond_Appearing)
+  ImGui.SetNextWindowSizeConstraints(ctx, 320, 180, 1400, 1200)
+  if not ImGui.BeginPopupModal(ctx, "Invite a guest###guestinvite" .. root, true) then return end
   local now = os.time()
+  ImGui.PushTextWrapPos(ctx, 0)
+  ImGui.Text(ctx, "Invite a guest to " .. tostring(band.info(root).name) .. ": they're let in until the day you pick, then every computer stops syncing with theirs (their copy stays with them).")
+  ImGui.PopTextWrapPos(ctx)
+  ImGui.Separator(ctx)
   ImGui.Text(ctx, "Their access ends:")
-  for _, c in ipairs(removal.GUEST_FOR) do
+  for i, c in ipairs(removal.GUEST_FOR) do
+    if i > 1 then
+      -- (beside the last one while it fits the window's width, else on the next line)
+      local w = ImGui.CalcTextSize(ctx, c[1]) + ImGui.GetFrameHeight(ctx) + 12
+      local right = select(1, ImGui.GetWindowPos(ctx)) + ImGui.GetWindowWidth(ctx) - 16
+      if select(1, ImGui.GetItemRectMax(ctx)) + w < right then ImGui.SameLine(ctx) end
+    end
     if ImGui.RadioButton(ctx, c[1] .. "##gfor", guest_pick.date == "" and guest_pick.days == c[2]) then guest_pick.days, guest_pick.date = c[2], "" end
-    ImGui.SameLine(ctx)
   end
-  ImGui.NewLine(ctx)
   ImGui.SetNextItemWidth(ctx, 120)
   local _, v = ImGui.InputTextWithHint(ctx, "##gdate", "or a day: YYYY-MM-DD", guest_pick.date)
   guest_pick.date = v
@@ -163,10 +197,15 @@ function tools.guest_invite_button(ctx, ImGui, my_id, root, label)
     "Hidden rather than locked: someone who knows Syncthing could undo that on their own computer.")
   local some = 0
   if not guest_pick.all then
-    for _, s in ipairs(band.songs({ root = root, user = "" })) do
-      local ch, v = ImGui.Checkbox(ctx, s .. "##gsong", guest_pick.songs[s] == true)
-      if ch then guest_pick.songs[s] = v or nil end
-      if guest_pick.songs[s] then some = some + 1 end
+    local list = band.songs({ root = root, user = "" })
+    -- (a long list scrolls in its own box, the buttons stay in sight)
+    if ImGui.BeginChild(ctx, "##gsongs", 0, math.min(#list, 8) * ImGui.GetFrameHeightWithSpacing(ctx) + 8, ImGui.ChildFlags_Borders) then
+      for _, s in ipairs(list) do
+        local ch, v = ImGui.Checkbox(ctx, s .. "##gsong", guest_pick.songs[s] == true)
+        if ch then guest_pick.songs[s] = v or nil end
+        if guest_pick.songs[s] then some = some + 1 end
+      end
+      ImGui.EndChild(ctx)
     end
   end
   ImGui.BeginDisabled(ctx, not ends or not my_id or (not guest_pick.all and some == 0))
@@ -178,7 +217,7 @@ function tools.guest_invite_button(ctx, ImGui, my_id, root, label)
     local made = removal.add_invite(root, ends, me, now, songs)
     local ok = true
     if services.has_token_for(services.studio_net(root)) then ok = services.copy_guest_invite(my_id, info, ctx, ImGui, root, ends)
-    else tools.show_invite(services.invite_text(my_id, info), info, ctx, ImGui) end
+    else tools.show_invite(services.invite_text(my_id, info), info, ctx, ImGui, { id = my_id }) end
     if ok then band.log("a guest invitation to " .. tostring(info.name) .. " is on your clipboard: when they've run it, Let them in gives them until " .. removal.when(ends, now))
     else removal.end_invite(root, made, now) end
     ImGui.CloseCurrentPopup(ctx)

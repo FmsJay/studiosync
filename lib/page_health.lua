@@ -297,7 +297,7 @@ function H.maint_upkeep()
   if card("upkeep") then
     heading("Upkeep and activity", 17)
     section_activity()
-    if ImGui.Button(ctx, "Update") then action("Update") end
+    if ImGui.Button(ctx, "Update StudioSync") then action("Update") end -- (beside Update REAPER: which one, said. James, 0.58.98)
     ImGui.SetItemTooltip(ctx, "StudioSync itself, to the newest version.")
     ImGui.SameLine(ctx)
     if ImGui.Button(ctx, "Update REAPER") then band.log(require("tools").update_reaper()) end

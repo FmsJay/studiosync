@@ -17,7 +17,7 @@ end
 -- the private live-audio server, the studio's Tailscale network and Sync only through Tailscale. Taken from band.json only when Syncthing says
 -- the owner's or an admin's computer wrote it (lib/trust.lua); one from anyone else leaves the last trusted values standing (ExtState "trusted
 -- settings <root>", kept). Syncthing not saying yet, or a studio from before owners: band.json as it is, as before. Read at most every 5 s.
-local SETTINGS = { "alerts", "alerts_server", "call", "sonobus_server", "tailnet", "tailscale_only" }
+local SETTINGS = { "alerts", "alerts_server", "call", "sonobus_server", "tailnet", "tailscale_only", "colours" }
 local trusted_at = {}
 function groups.trusted(root)
   local c, now = trusted_at[root], reaper.time_precise() or 0
@@ -129,6 +129,9 @@ end
 -- Does the studio sync only through its Tailscale network (band.json "tailscale_only": services.pin_tailnet)? Set by the owner or an admin.
 function groups.tailscale_only(root) return groups.trusted(root).tailscale_only == true and groups.tailnet(root) ~= nil end
 function groups.set_tailscale_only(root, on) save(root, function(j) j.tailscale_only = on and true or nil end) end
+-- The studio's look (0.58.98): { scheme, palette, from, to }, what a new project is coloured in (lib/colours.lua auto). Owner and admins.
+function groups.colours(root) local c = groups.trusted(root).colours; return type(c) == "table" and type(c.scheme) == "string" and c or nil end
+function groups.set_colours(root, c) save(root, function(j) j.colours = c end) end
 
 -- The owner makes someone an admin or a member again. -> true, or nil + why.
 function groups.set_admin(root, actor, target, on)

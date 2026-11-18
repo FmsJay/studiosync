@@ -46,6 +46,7 @@ local function say_problem(words)
   local beat = tonumber(reaper.GetExtState(band.SECTION, "panel alive"))
   if not (beat and reaper.time_precise() - beat < 10) then
     reaper.SetExtState(band.SECTION, "panel minimized", "1", true)
+    reaper.SetExtState(band.SECTION, "panel start small", "1", false) -- (opened by hand it opens full: this is the one that asks for the box)
     local id = reaper.AddRemoveReaScript(true, 0, dir .. "/StudioSync - Panel.lua", true)
     if id > 0 and reaper.GetToggleCommandState(id) ~= 1 then reaper.Main_OnCommand(id, 0) end
   end
@@ -58,6 +59,16 @@ local loop
 -- (an error stops it, as ever, but first goes to the log file with where it happened. 0.58.86)
 local function guarded(fn) return function() local ok, err = xpcall(fn, debug.traceback); if not ok then band.log_error("autostart", err); error(err, 0) end end end
 local function loop_body()
+  -- the toolbar button stopped a minimized panel: it opens again, full (Panel's atexit asks; 0.58.98). Looked at every pass: a click wants it now
+  local reopen = tonumber(reaper.GetExtState(band.SECTION, "panel reopen"))
+  if reopen then
+    reaper.DeleteExtState(band.SECTION, "panel reopen", false)
+    if reaper.time_precise() - reopen < 5 then
+      reaper.DeleteExtState(band.SECTION, "panel minimized", true)
+      local id = reaper.AddRemoveReaScript(true, 0, dir .. "/StudioSync - Panel.lua", true)
+      if id > 0 and reaper.GetToggleCommandState(id) ~= 1 then reaper.Main_OnCommand(id, 0) end
+    end
+  end
   if reaper.time_precise() - at < 2 then return reaper.defer(loop) end -- every 2 s is plenty
   -- (a gap here means a box held all of REAPER, this too: a Record Warning left two minutes, and every Live sync's beat was old. Restarted then,
   -- each replaced one saved a kept "end of session" in the middle of a session. Mac, 0.58.45. So a look after a gap waits half a minute)

@@ -43,8 +43,11 @@ local ok, err = pcall(function()
     reaper.CreateNewMIDIItemInProj(tr, 0, 2, false)
     if name ~= "Quiet" then reaper.TrackFX_AddByName(tr, "JS: synthesis/tonegenerator", false, -1) end
   end
+  extras.render_window = function() reaper.Main_OnCommand(42230, 0) end -- (the Render window waits for a click: rendered straight away here, as set up)
+  local fmt = select(2, reaper.GetSetProjectInfo_String(proj, "RENDER_FORMAT", "", false))
   local dir, n = extras.stems(proj, cfg, b)
   check(dir ~= nil, "stems rendered: " .. tostring(dir or n))
+  check(select(2, reaper.GetSetProjectInfo_String(proj, "RENDER_FORMAT", "", false)) == fmt, "and this project's own render format is back as it was")
   if dir then
     local files = band.files(dir)
     local names = table.concat(files, ", ")
