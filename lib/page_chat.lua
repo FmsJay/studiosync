@@ -418,8 +418,10 @@ function chat.draw(ctx, ImGui, cfg, b, tabs)
       ImGui.EndTabItem(ctx)
     end
     for _, tab in ipairs(tabs or {}) do
-      if not tab[3] and ImGui.BeginTabItem(ctx, tab[1]) then tab[2](); ImGui.EndTabItem(ctx) end
+      local flags = chat.want_tab == tab[1] and ImGui.TabItemFlags_SetSelected or ImGui.TabItemFlags_None
+      if not tab[3] and ImGui.BeginTabItem(ctx, tab[1], nil, flags) then tab[2](); ImGui.EndTabItem(ctx) end
     end
+    chat.want_tab = nil -- (a tab asked for from elsewhere: the phone on a person's card opens Call. 0.59.8)
     ImGui.EndTabBar(ctx)
   end
 end

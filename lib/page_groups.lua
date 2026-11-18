@@ -255,6 +255,14 @@ function pg.draw_groups(env)
     end
   end
   if #list == 0 then ImGui.TextDisabled(ctx, "You're not in a studio yet. Start one, or paste the join code someone sent you.") end
+  -- (a studio's name is StudioSync's: Rename changes it for everyone and leaves its folders as they are. This shows those. James, 0.59.8)
+  local show_folders = reaper.GetExtState(band.SECTION, "show folder names") == "1"
+  if #list > 0 then
+    local fch, fv = ImGui.Checkbox(ctx, "Show folder names##showfolders", show_folders)
+    if fch then reaper.SetExtState(band.SECTION, "show folder names", fv and "1" or "", true); show_folders = fv end
+    ImGui.SetItemTooltip(ctx, "Each studio's folder on this computer, and on Google Drive, under its name. Renaming a studio changes only the name\n" ..
+      "StudioSync shows, for everyone: its folders keep the name they were made with, so nothing has to move.")
+  end
   local base = (cfg.base or cfg).root
   local room = ImGui.GetContentRegionAvail(ctx)
   local per = math.max(1, math.floor((room + 8) / 448)) -- (one card filled a wide docker, its buttons cut off: design review)
@@ -271,6 +279,11 @@ function pg.draw_groups(env)
       if g.root == cfg.root and (role == "owner" or role == "admin") then
         ImGui.SameLine(ctx)
         ImGui.TextDisabled(ctx, "(" .. role .. ")")
+      end
+      if show_folders then
+        local folder = (g.root:gsub("\\", "/"):gsub("/+$", ""):match("([^/]+)$")) or g.root
+        ImGui.TextDisabled(ctx, "Folder: " .. folder .. (g.drive and ("  ·  Drive: " .. g.drive) or ""))
+        ImGui.SetItemTooltip(ctx, g.root)
       end
       local p = people_in(g.root)
       if g.waiting then

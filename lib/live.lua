@@ -419,7 +419,54 @@ end
 -- Talk only (James, 0.59.4: "can time-sync have talk since talk should just be on the talk mics"; 0.59.6: its own switch, Chat > Call):
 -- SonoBus on for the call while Real time mode isn't, carrying nothing but the talk mic, so nobody hears your playing twice (Time-sync's
 -- NINJAM has it, in time). ProjExtState "rt talk only"; "call" says the call's on.
-function live.talk_only(proj) return select(2, reaper.GetProjExtState(proj, band.SECTION, "rt talk only")) == "1" end
+-- Real time mode, from its own flag (ProjExtState "rt": "1" on, "0" off; 0.59.8, review: it was read off "side" == "0", so unticking Follow
+-- each other, or setting its bars to 0, switched it off or on behind the switch's back). A project from before has no flag: "side" then.
+function live.rt_flag(proj)
+  local f = select(2, reaper.GetProjExtState(proj, band.SECTION, "rt"))
+  if f ~= "" then return f == "1" end
+  return select(2, reaper.GetProjExtState(proj, band.SECTION, "side")) == "0"
+end
+function live.sonobus_online(proj)
+  local sm, si = live.fx(proj, false, live.SONOBUS)
+  return sm ~= nil and not reaper.TrackFX_GetOffline(sm, si), sm, si
+end
+function live.realtime_on(proj) return live.rt_flag(proj) and (live.sonobus_online(proj)) end
+-- ReaNINJAM on the master track: Time-sync or Jam (the producer's own is on the Real time track).
+function live.ninjam_master(proj)
+  local tr = live.fx(proj, false)
+  return tr ~= nil and tr == reaper.GetMasterTrack(proj)
+end
+-- Live audio off (James, 0.59.8: "when reopening a project have real-time mode turned off"; ReaNINJAM came back with the project, its
+-- windows up and connecting). Real time mode, Time-sync, the call: off, the bars behind back as they were. Only what differs is written.
+function live.all_off(proj)
+  local px = function(k) return select(2, reaper.GetProjExtState(proj, band.SECTION, k)) end
+  local set = function(k, v) if px(k) ~= v then reaper.SetProjExtState(proj, band.SECTION, k, v) end end
+  local tr, i = live.fx(proj, false)
+  if tr then live.closing(); reaper.TrackFX_Delete(tr, i) end
+  local on, sm, si = live.sonobus_online(proj)
+  if on then reaper.TrackFX_SetOffline(sm, si, true) end
+  if live.talking(proj) then live.talk(proj, false) end
+  local was = px("side before timesync")
+  if was ~= "" then set("side", was == "none" and "" or was); set("side before timesync", "")
+  elseif live.rt_flag(proj) then set("side", "") end
+  if px("rt") == "1" or (px("rt") == "" and px("side") == "0") then set("rt", "0") end
+  set("call", ""); set("rt talk only", "")
+  if px("hear their time") == "1" then set("hear their time", ""); require("hear").set_delay(proj, 0) end
+  return tr ~= nil or on
+end
+-- Does anything here still want SonoBus on: Real time mode, the call, Solo, someone listening to you, producing someone? Every place that
+-- takes it offline asks first (0.59.8, review: un-Soloing someone ended a call that was on).
+function live.sonobus_wanted(proj)
+  local px = function(k) return select(2, reaper.GetProjExtState(proj, band.SECTION, k)) end
+  return live.rt_flag(proj) or px("call") == "1" or reaper.GetExtState(band.SECTION, "listen " .. tostring(proj)) ~= ""
+    or require("hear").has_listeners(proj) or require("producer").who(proj) ~= nil
+end
+-- SonoBus carries only the talk mic: the call without Real time mode, or whenever NINJAM has your playing (Time-sync, Jam), so nobody
+-- hears it twice (0.59.8, review: Solo or Produce during Time-sync sent your tracks both ways).
+function live.talk_only(proj)
+  if live.rt_flag(proj) then return false end
+  return select(2, reaper.GetProjExtState(proj, band.SECTION, "rt talk only")) == "1" or live.ninjam_master(proj)
+end
 function live.rt_sends(proj)
   local rt = live.rt_track(proj, false)
   if not rt then return 0 end

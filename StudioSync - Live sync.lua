@@ -550,6 +550,9 @@ local function poll()
   if info.follow == "" then info.follow = nil end
   if followed then info.mix = require("presence").my_mix(proj) end -- (someone follows you: they hear your mix. lib/presence.lua)
   if not info.playing then info.cursor = math.floor(reaper.GetCursorPositionEx(proj) * 1000 + 0.5) / 1000 end -- (followers' cursors go here: lib/presence.lua)
+  -- (what live audio you're in, for the little icons on your card: Real time mode or Time-sync, and the call. James, 0.59.8)
+  info.live = live.realtime_on(proj) and "rt" or (live.ninjam_master(proj) and select(2, reaper.GetProjExtState(proj, band.SECTION, "live_mode")) ~= "jam" and "ts") or nil
+  info.call = select(2, reaper.GetProjExtState(proj, band.SECTION, "call")) == "1" and (live.sonobus_online(proj)) or nil
   do
     local sm, si = live.fx(proj, false, live.SONOBUS)
     info.rt = sm and not reaper.TrackFX_GetOffline(sm, si) or nil
@@ -560,7 +563,7 @@ local function poll()
     end
   end
   if info.listen == "" then info.listen = nil end
-  local fingerprint = tostring(info.follow) .. tostring(info.follow_driver) .. tostring(info.listen) .. tostring(info.rt) .. tostring(info.rt_silent) .. tostring(info.cursor) .. band.json_encode(sync.holdings(proj)) .. tostring(driver) .. info.pending .. tostring(hold) .. band.json_encode(armed) ..
+  local fingerprint = tostring(info.live) .. tostring(info.call) .. tostring(info.follow) .. tostring(info.follow_driver) .. tostring(info.listen) .. tostring(info.rt) .. tostring(info.rt_silent) .. tostring(info.cursor) .. band.json_encode(sync.holdings(proj)) .. tostring(driver) .. info.pending .. tostring(hold) .. band.json_encode(armed) ..
     tostring(info.side) .. tostring(info.playing) .. tostring(info.recording) .. tostring(info.front) .. tostring(info.mirror) .. tostring(info.lets) ..
     band.json_encode({ info.editing, info.view, info.ping or false }) .. info.last_track
   if fingerprint ~= status_json or now - last_status > 15 then
@@ -644,7 +647,15 @@ for i = 0, 512 do
   if p == proj then our_file = f or "" end
 end
 local autokey = band.autosync_key(our_file)
-if autokey ~= "autosync " then reaper.SetExtState(band.SECTION, autokey, "1", true) end
+if autokey ~= "autosync " then band.set_autosync(our_file, true) end
+-- A project just opened (not this Live sync reloaded): its live audio starts off. ReaNINJAM came back with it, windows up and connecting,
+-- and SonoBus would join by itself (James, 0.59.8). "live began <tab>" lasts this REAPER session, and goes when the tab closes.
+if reload_proj ~= proj and reaper.GetExtState(band.SECTION, "live began " .. tostring(proj)) == "" then -- (a reload for an update carries on as it was)
+  reaper.SetExtState(band.SECTION, "live began " .. tostring(proj), "1", false)
+  local ok, was = pcall(live.all_off, proj)
+  if ok and was then band.log("live audio starts off when a project opens: Real time mode, Time-sync and the call are off (switch them on on Home and in Chat > Call)") end
+end
+reaper.SetExtState(band.SECTION, "live began " .. tostring(proj), "1", false)
 local tick
 local livemidi = require("livemidi")
 local midi_view_at, midi_view_err = 0, nil
@@ -655,7 +666,7 @@ local function tick_body() -- returns true to keep going
     reaper.DeleteExtState(band.SECTION, "live " .. key, false)
     -- (the tab's own settings go too: a new tab can get the same address, and took its follow, produce or listen. Review, 0.58.96)
     for _, k in ipairs({ "follow", "listen", "listen had", "listeners", "send whole mix", "alone", "held", "produce", "transport", "together",
-        "sonobus for listeners", "outbox", "live owner", "ping", "slow tick", "last here", "draw" }) do reaper.DeleteExtState(band.SECTION, k .. " " .. key, false) end
+        "sonobus for listeners", "outbox", "live owner", "ping", "slow tick", "last here", "draw", "live began" }) do reaper.DeleteExtState(band.SECTION, k .. " " .. key, false) end
     return band.log("live sync stopped: '" .. b.song .. "'" .. (b.room ~= "main" and (", side room '" .. b.room .. "',") or "") .. " was closed (it starts again by itself when you reopen it)")
   end
   local now_b = band.binding(proj)
@@ -670,7 +681,7 @@ local function tick_body() -- returns true to keep going
   if reaper.GetExtState(band.SECTION, "stop " .. key) ~= "" then
     reaper.DeleteExtState(band.SECTION, "stop " .. key, false)
     reaper.DeleteExtState(band.SECTION, "live " .. key, false)
-    reaper.DeleteExtState(band.SECTION, autokey, true)
+    band.set_autosync(our_file, false)
     return band.log("live sync stopped for '" .. b.song .. "'")
   end
   reaper.SetExtState(band.SECTION, "live " .. key, tostring(reaper.time_precise()), false)

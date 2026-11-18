@@ -2775,6 +2775,9 @@ function mirror.watch(proj, cfg, song, room, opts)
                 o.hash = mirror.fx_hash(o.state)
                 knobs = mirror.fx_params(o.ptr)
                 mirror.fx_knobs[rk] = knobs
+                -- (its knobs didn't move: what it reads as now stands for the band's. Going by its knobs isn't a change, and it went out
+                -- to everyone as one, at every open where it was found again. 0.59.8)
+                mirror.fx_readback[rk] = o.hash
                 n = { hash = o.hash, knobs = nil, since = now }
               end
             end
@@ -2887,6 +2890,20 @@ function mirror.watch(proj, cfg, song, room, opts)
           local x, y = band_json(o.state), band_json(last.state)
           x.depth, y.depth = 0, 0
           if mirror.same_line(x, y, opts.local_mix) then return put_back(o, rev, evid, { name = name }) end
+        end
+        -- a chain that only just landed or opened, none of its windows open, the same plug-ins: it reads back its own way here as it loads
+        -- (James, 0.59.8: TONEX and Pro-L 2 on the laptop, "2 edits not sent" on opening Nostalgia, and put back, which loads it again).
+        -- Nobody's edit: what it reads as here stands for the band's, as the readback above has it.
+        if o.kind == "fx" and o.ptr and last and type(last.state) == "string" and not mirror.fx_was_open(o.ptr) and not loaded(proj, rk) then
+          local function names(chain)
+            local t = {}
+            for _, x in ipairs(mirror.plugin_blocks(chain_lines(chain))) do t[#t + 1] = tostring(x.key) end
+            return table.concat(t, "\0")
+          end
+          if names(last.state) == names(o.state) then
+            mirror.fx_readback[rk], mirror.unsent[rk] = o.hash, nil
+            return
+          end
         end
         local where = (ok_before and name or last.name or "") ~= "" and (ok_before and name or last.name) or "an unnamed track"
         -- whose it is, and what would let you: "or take control" told the driver to take control (laptop, round 2)

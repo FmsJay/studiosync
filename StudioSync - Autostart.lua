@@ -185,8 +185,7 @@ local function loop_body()
     local proj, fn = reaper.EnumProjects(i)
     if not proj then break end
     local key = tostring(proj)
-    if fn ~= "" and (reaper.GetExtState(band.SECTION, band.autosync_key(fn)) == "1"
-        or reaper.GetExtState(band.SECTION, "autosync " .. fn:lower()) == "1") and band.binding(proj) then -- (the old key: until Live sync writes the new)
+    if fn ~= "" and band.autosync(fn) and band.binding(proj) then -- (the ExtState, the old key, or autosync.json: band.autosync)
       local beat = tonumber(reaper.GetExtState(band.SECTION, "live " .. key))
       -- (30 s, not 5: a dialog left open a few seconds pauses every script, and isn't a Live sync that stopped)
       local alive = beat and reaper.time_precise() - beat < 30 or reaper.time_precise() < held_until

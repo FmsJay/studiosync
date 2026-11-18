@@ -158,7 +158,7 @@ function rooms.is_copy(proj, cfg, b)
   if not b or b.role == "solo" then return false end
   local f = file_of(proj) or ""
   if f == "" then return true end -- (REAPER opens an .rpp-bak with no file name, "[Unsaved]": only a backup is bound and has none. Mac, 0.58.3)
-  if reaper.GetExtState(band.SECTION, band.autosync_key(f)) == "1" or reaper.GetExtState(band.SECTION, "autosync " .. f:lower()) == "1" then return false end
+  if band.autosync(f) then return false end
   local low = f:gsub("\\", "/"):lower()
   if low:find(" (room).rpp", 1, true) then return false end
   if low == band.project_file(band.for_tab(cfg, b).root, b.song):gsub("\\", "/"):lower() then return false end

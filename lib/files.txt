@@ -1,18 +1,18 @@
-version 0.59.7
-StudioSync - Autostart.lua	14814
+version 0.59.8
+StudioSync - Autostart.lua	14704
 StudioSync - Claim selected tracks.lua	692
 StudioSync - Draw.lua	27162
 StudioSync - Final mix.lua	5637
 StudioSync - Hold my changes.lua	766
 StudioSync - Keep selected tracks local.lua	760
-StudioSync - Live sync.lua	65789
+StudioSync - Live sync.lua	67033
 StudioSync - Local mixing.lua	721
 StudioSync - Measure guest delay.lua	4099
 StudioSync - Open session.lua	9173
-StudioSync - Panel.lua	212030
+StudioSync - Panel.lua	215061
 StudioSync - Prepare session.lua	6311
 StudioSync - Publish session.lua	5206
-StudioSync - Radial menu.lua	7711
+StudioSync - Radial menu.lua	7656
 StudioSync - Redo.lua	797
 StudioSync - Selected tracks play as chosen.lua	1207
 StudioSync - Selected tracks play dry.lua	1505
@@ -25,7 +25,7 @@ StudioSync - Update.lua	2143
 lib/access.lua	6238
 lib/alerts.lua	3960
 lib/api.lua	6961
-lib/band.lua	70050
+lib/band.lua	71316
 lib/bgrender.lua	29622
 lib/callapps.lua	6144
 lib/chooser.lua	22179
@@ -39,21 +39,21 @@ lib/feedback.lua	8370
 lib/fxfiles.lua	8525
 lib/groups.lua	17213
 lib/guest.lua	7314
-lib/hear.lua	16290
+lib/hear.lua	16146
 lib/json.lua	6080
 lib/leave.lua	9484
 lib/listen.lua	14941
-lib/live.lua	40220
+lib/live.lua	43288
 lib/livemidi.lua	10723
 lib/localcopy.lua	21916
 lib/midiview.lua	4359
-lib/mirror.lua	220439
+lib/mirror.lua	221626
 lib/mixlayer.lua	9976
-lib/page_chat.lua	23944
-lib/page_groups.lua	34159
+lib/page_chat.lua	24171
+lib/page_groups.lua	35155
 lib/page_health.lua	23632
 lib/page_hear.lua	15161
-lib/page_play.lua	23166
+lib/page_play.lua	24177
 lib/page_plugins.lua	19338
 lib/page_restore.lua	24687
 lib/page_rooms.lua	15977
@@ -62,18 +62,18 @@ lib/plugins.lua	10493
 lib/prep.lua	29980
 lib/presence.lua	13710
 lib/prints.lua	49714
-lib/producer.lua	25739
+lib/producer.lua	26035
 lib/recall.lua	16458
 lib/removal.lua	20202
-lib/rooms.lua	11066
+lib/rooms.lua	10952
 lib/services.lua	98124
 lib/sessionfile.lua	7035
-lib/setup.lua	7057
+lib/setup.lua	7789
 lib/songsync.lua	8463
 lib/sonobus.lua	17140
 lib/stamp.lua	11856
 lib/startup.lua	13764
-lib/status.lua	5633
+lib/status.lua	5680
 lib/suggest.lua	15010
 lib/sync.lua	111448
 lib/theme.lua	8224

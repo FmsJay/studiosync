@@ -23,8 +23,7 @@ if reaper.set_action_options then reaper.set_action_options(1) end -- the shortc
 
 local live = require("live")
 local driving = require("sync").driver(cfg, b.song, b.room, band.read_json(band.session_path(cfg, b.song))) == cfg.user
-local sm, si = live.fx(proj, false, live.SONOBUS)
-local rt = sm and not reaper.TrackFX_GetOffline(sm, si) and select(2, reaper.GetProjExtState(proj, band.SECTION, "side")) == "0"
+local rt = live.realtime_on(proj) or live.ninjam_master(proj) -- (Real time mode in any of its ways, Time-sync too: 0.59.8)
 -- where a ping goes: the timeline under the mouse as the menu opens (SWS), else the edit cursor
 local ping_pos = reaper.BR_PositionAtMouseCursor and reaper.BR_PositionAtMouseCursor(true) or -1
 if ping_pos < 0 then ping_pos = reaper.GetCursorPositionEx(proj) end

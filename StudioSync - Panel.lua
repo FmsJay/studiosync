@@ -1012,23 +1012,24 @@ end
 -- with no lag: whoever presses play, stop or record, everyone follows at the same spot and hears it at once; what
 -- they record shows on your timeline as they play (MIDI notes) and lands as a take when they stop.
 local function same_room_on()
-  local sm, si = live.fx(proj, false, live.SONOBUS)
-  local sb_on = sm and not reaper.TrackFX_GetOffline(sm, si)
-  return sb_on and select(2, reaper.GetProjExtState(proj, band.SECTION, "side")) == "0", sm, si
+  local sb_on, sm, si = live.sonobus_online(proj)
+  return sb_on and live.rt_flag(proj), sm, si -- (its own flag: lib/live.lua rt_flag)
 end
 local function set_same_room(v)
   local _, sm, si = same_room_on()
   if v then
     -- (one or the other: both send your mix, so with both on everyone heard you twice, live and again bars later, and following
     -- each other wants 0 bars behind for one and an interval for the other. James, 0.59.4)
-    if b and page_play.time_sync_on() then page_play.time_sync(false) end
+    if b and live.ninjam_master(proj) and not page_play.time_sync(false) then return end -- (Time-sync, or Jam from Play/Jam) -- (it didn't go off: not both. Review, 0.59.8)
     reaper.SetProjExtState(proj, band.SECTION, "rt talk only", "")
     local link, why = setup.sonobus(cfg, b, proj, true)
     if not link then return band.msg(why) end
     sb_link = link
+    reaper.SetProjExtState(proj, band.SECTION, "rt", "1")
     reaper.SetProjExtState(proj, band.SECTION, "side", "0")
     band.log("Real time mode on: you hear everyone, and play, stop and record go to everyone")
   else
+    reaper.SetProjExtState(proj, band.SECTION, "rt", "0")
     require("page_hear").set_their_time(proj, false) -- (your backing on time again: the delay was for Their time)
     if sm and select(2, reaper.GetProjExtState(proj, band.SECTION, "call")) == "1" then
       reaper.SetProjExtState(proj, band.SECTION, "rt talk only", "1") -- (the call stays: SonoBus now carries only the talk mic. 0.59.6)
@@ -1337,7 +1338,7 @@ function ui.set_rt_kind(kind) -- nil: off
     page_play.time_sync(true)
   elseif kind then
     if not same_room_on() then set_same_room(true) end
-    require("page_hear").set_their_time(proj, kind == "their")
+    if same_room_on() then require("page_hear").set_their_time(proj, kind == "their") end -- (not if it didn't come on: review, 0.59.8)
   elseif now == "timesync" then page_play.time_sync(false)
   else set_same_room(false) end
 end
@@ -1408,6 +1409,47 @@ local function home_play()
   local who_listens = reaper.GetExtState(band.SECTION, "listeners " .. tostring(proj))
   if who_listens ~= "" then ImGui.TextColored(ctx, ACCENT, who_listens .. " is listening to you") end
 end
+-- Little icons after someone's name: Real time mode (bars), Time-sync (a clock), in the call (a phone, which opens Chat > Call). James,
+-- 0.59.8: "indicators to see who has it on... and who's in call... little icons to keep things clean". From their status (lib/status.lua).
+function ui.live_icons(p)
+  if p.state == "offline" or not (p.live or p.call) then return end
+  local h = ImGui.GetTextLineHeight(ctx)
+  local function slot(id, tip, col, draw, click)
+    ImGui.SameLine(ctx, 0, 6)
+    local x, y = ImGui.GetCursorScreenPos(ctx)
+    if ImGui.InvisibleButton(ctx, id, h, h) and click then click() end
+    local c = ImGui.IsItemHovered(ctx) and theme.TEXT or col
+    draw(ImGui.GetWindowDrawList(ctx), x, y, c)
+    ImGui.SetItemTooltip(ctx, tip)
+    if click and ImGui.IsItemHovered(ctx) then ImGui.SetMouseCursor(ctx, ImGui.MouseCursor_Hand) end
+  end
+  local who = p.user == cfg.user and "You're" or (p.user .. " is")
+  if p.live == "rt" then
+    slot("##rt" .. p.user, who .. " in Real time mode (live through SonoBus)", ACCENT, function(dl, x, y, c)
+      for k, f in ipairs({ 0.45, 0.85, 0.6 }) do
+        local bx = x + h * (0.12 + 0.28 * (k - 1))
+        ImGui.DrawList_AddRectFilled(dl, bx, y + h * (0.95 - f), bx + h * 0.18, y + h * 0.95, c, 1)
+      end
+    end)
+  elseif p.live == "ts" then
+    slot("##ts" .. p.user, who .. " in Time-sync (in time with the song, through NINJAM)", ACCENT, function(dl, x, y, c)
+      local cx, cy, r = x + h / 2, y + h / 2, h * 0.4
+      ImGui.DrawList_AddCircle(dl, cx, cy, r, c, 0, 1.6)
+      ImGui.DrawList_AddLine(dl, cx, cy, cx, cy - r * 0.7, c, 1.6)
+      ImGui.DrawList_AddLine(dl, cx, cy, cx + r * 0.55, cy, c, 1.6)
+    end)
+  end
+  if p.call then
+    slot("##call" .. p.user, who .. " in the call. Click: Chat > Call", GREEN, function(dl, x, y, c)
+      local cx, cy, r = x + h / 2, y + h / 2, h * 0.34
+      ImGui.DrawList_PathArcTo(dl, cx, cy, r, math.pi * 0.6, math.pi * 1.4)
+      ImGui.DrawList_PathStroke(dl, c, ImGui.DrawFlags_None, h * 0.16)
+      for _, a in ipairs({ math.pi * 0.6, math.pi * 1.4 }) do
+        ImGui.DrawList_AddCircleFilled(dl, cx + r * math.cos(a), cy + r * math.sin(a), h * 0.15, c)
+      end
+    end, function() ui.go_chat("Call") end)
+  end
+end
 local function home_who()
   require("page_hear").producer(ctx, ImGui, proj, cfg, b, view and view.rows or {}) -- (at the top: at 560 wide it was past all three people. Mac, 0.58.5)
   if not wide then home_play() end -- (real time mode first: it's what a session starts with, and it was under every person's card. UX review, 0.58.62)
@@ -1430,14 +1472,16 @@ local function home_who()
     if require("live").armed(tr) then armed[#armed + 1] = select(2, reaper.GetTrackName(tr)) end
   end
   local ps = reaper.GetPlayStateEx(proj)
+  local my_kind = ui.rt_kind()
   people[1] = { name = cfg.user .. " (you)", user = cfg.user, state = "here", armed = armed, recording = ps & 4 == 4, playing = ps & 1 == 1,
-    driving = view.driver == cfg.user, last_track = select(2, reaper.GetProjExtState(proj, band.SECTION, "last_track")) }
+    driving = view.driver == cfg.user, last_track = select(2, reaper.GetProjExtState(proj, band.SECTION, "last_track")),
+    live = my_kind == "timesync" and "ts" or my_kind and "rt" or nil, call = ui.call_on() and live.sonobus_online(proj) or nil }
   -- (away people hidden on request: James, 0.59.3. ExtState "who hide away")
   local hide_away, away = reaper.GetExtState(band.SECTION, "who hide away") ~= "", 0
   for _, r in ipairs(view.rows) do
     if hide_away and r.state == "offline" then away = away + 1 else
       people[#people + 1] = { name = r.name, user = r.name, state = r.state, armed = r.armed, recording = r.recording, playing = r.playing,
-        driving = r.name == view.driver, version = r.version, mirror = r.mirror, last_track = r.last_track }
+        driving = r.name == view.driver, version = r.version, mirror = r.mirror, last_track = r.last_track, live = r.live, call = r.call }
     end
   end
   do
@@ -1455,6 +1499,7 @@ local function home_who()
       ImGui.SameLine(ctx, 0, 4)
       ui.person_name(p)
       if p.recording then ImGui.SameLine(ctx, 0, 6); pill("recording", RED) elseif p.driving then ImGui.SameLine(ctx, 0, 6); pill("driving", ACCENT, 0xFFFFFFFF) end
+      ui.live_icons(p)
       if p.state == "syncing" then ImGui.SameLine(ctx, 0, 6); ImGui.TextColored(ctx, YELLOW, "getting changes") end -- (the bar just says "Sending")
       if p.mirror and view.my_mirror and p.state == "synced" then -- (as on the cards: the docked list said nothing, match or not)
         ImGui.SameLine(ctx, 0, 6)
@@ -1492,6 +1537,7 @@ local function home_who()
       if p.recording then ImGui.SameLine(ctx, 0, 4); pill("recording", RED)
       elseif p.playing and p.state ~= "offline" then ImGui.SameLine(ctx, 0, 4); pill("playing", ACCENT, 0xFFFFFFFF) end
       if p.driving then ImGui.SameLine(ctx, 0, 4); pill("driving", ACCENT, 0xFFFFFFFF); ImGui.SetItemTooltip(ctx, "What nobody has claimed follows them.") end
+      ui.live_icons(p)
       if p.armed and #p.armed > 0 then ImGui.TextDisabled(ctx, "armed: " .. table.concat(p.armed, ", "))
       elseif not wide then ImGui.TextDisabled(ctx, "nothing armed") end -- (docked, the line went to saying nothing)
       -- (only while they're here: offline, it's what they had the last time they had this song open, days ago maybe. Mac test, 0.58.69)
@@ -2434,6 +2480,7 @@ function ui.front_changed()
   elseif had == "" or page == "Groups" or page == "Projects" then page = "Home" end
 end
 function ui.go_page(p) page = p end
+function ui.go_chat(tab) page = "Chat"; require("page_chat").want_tab = tab end -- (Chat at one of its tabs: the phone on a card. 0.59.8)
 function ui.go_settings(tab)
   page = "Settings"
   reaper.SetExtState(band.SECTION, "setup tab", tab, false)
@@ -2752,7 +2799,9 @@ local function frame_app()
   if want ~= "" then
     reaper.DeleteExtState(band.SECTION, "panel do", false)
     if want == "undo" or want == "redo" then undo_redo(want == "redo")
-    elseif want == "realtime" then set_same_room(not same_room_on())
+    elseif want == "realtime" and b then -- (as the switch does: the way picked last, or off. Review, 0.59.8)
+      local last = select(2, reaper.GetProjExtState(proj, band.SECTION, "rt kind"))
+      ui.set_rt_kind(not ui.rt_kind() and (last ~= "" and last or "my") or nil)
     elseif want == "chat" then page = "Chat"
     elseif want:match("^history") then page = "Restore"
     -- (the bindable actions, power-user review 0.58.62: each does what its control on the panel does)

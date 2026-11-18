@@ -171,6 +171,7 @@ end
 -- Connect: ReaNINJAM on the master track, set up for `mode`, the studio's server (this computer runs one if nobody does). -> true, or nil + why.
 function M.connect(mode)
   local b, cfg, proj = E.b(), E.cfg(), E.proj()
+  if same_room_on() then set_same_room(false) end -- (NINJAM and Real time's SonoBus never both carry your playing: review, 0.59.8)
   local lfile = band.song_dir(cfg, b.song) .. "/live.json"
   live_server = live_server or (band.read_json(lfile) or {}).server or ""
   if live_server == ((band.read_json(lfile) or {}).server or "") then -- (or an address typed in just now, not saved: that one)
@@ -187,6 +188,7 @@ function M.connect(mode)
   reaper.TrackFX_Show(m2, i2, 3)
   live.keep_hidden(proj)
   reaper.SetExtState(band.SECTION, "ninjam connect " .. tostring(proj), "1", false) -- (Live sync presses Connect: lib/producer.lua)
+  if live.fx(proj, false, live.SONOBUS) then pcall(require("hear").route, proj, (live.rt_track(proj, false))) end -- (the live mix after NINJAM)
   return true
 end
 function M.disconnect()
@@ -199,7 +201,11 @@ function M.disconnect()
 end
 -- Time-sync (James, 0.58.99): Home's switch for Play along. You play to your copy of the song; the others hear you in time with theirs,
 -- one NINJAM interval (a bar or two) behind, exactly as you played it. Real time mode is the one for hearing each other at once.
-function M.time_sync_on() return live.fx(E.proj(), false) ~= nil and live_mode == "synced" end
+function M.time_sync_on() -- (on the master: the producer's ReaNINJAM on the Real time track isn't Time-sync. This tab's mode, not the page's. 0.59.8)
+  local proj = E.proj()
+  local m = select(2, reaper.GetProjExtState(proj, band.SECTION, "live_mode"))
+  return live.ninjam_master(proj) and (m == "" or m == "synced")
+end
 -- How many of this song's bars the listener has to be behind. NINJAM sends in intervals of the SERVER's beats and tempo (bandsync.cfg:
 -- 4 beats at 100, 2.4 s) whatever the song's tempo, so a whole interval has to be uploaded and fetched before it can play: the interval's
 -- length, a second's margin for the network, in bars at the song's tempo where the cursor is. A fast song needs more bars (James, 0.59.1:
@@ -217,20 +223,25 @@ function M.interval_bars()
   local num, _, tempo = reaper.TimeMap_GetTimeSigAtTime(proj, reaper.GetCursorPositionEx(proj))
   return M.bars_behind(bpm, bpi, tempo, num), bpi
 end
-function M.time_sync(on)
+function M.time_sync(on) -- -> true when it is as asked
   local proj = E.proj()
   if not on then
     M.disconnect()
+    if live.ninjam_master(proj) then -- (its connect or error box was up: that closed, ReaNINJAM stayed. Review, 0.59.8)
+      band.msg("ReaNINJAM is still connecting: try again in a moment, or press Disconnect on Play/Jam.")
+      return false
+    end
     -- (the bars behind back as they were: Start together and Follow read them too. 0.59.2)
     local was = select(2, reaper.GetProjExtState(proj, band.SECTION, "side before timesync"))
     if was ~= "" then reaper.SetProjExtState(proj, band.SECTION, "side", was == "none" and "" or was); reaper.SetProjExtState(proj, band.SECTION, "side before timesync", "") end
-    return band.log("Time-sync off")
+    band.log("Time-sync off")
+    return true
   end
   if same_room_on() then set_same_room(false) end -- (one or the other: with SonoBus on too, everyone heard you twice. James, 0.59.4)
   live_mode = "synced"
   reaper.SetProjExtState(proj, band.SECTION, "live_mode", "synced")
   local ok, why = M.connect("synced")
-  if not ok then return band.msg(why) end
+  if not ok then band.msg(why); return false end
   local one = M.interval_bars()
   ui.want_lag = one
   if not same_room_on() then -- (listeners an interval behind: what they hear lines up; what it was is kept for when it goes off)
@@ -272,7 +283,11 @@ function M.section_together()
   ImGui.SeparatorText(ctx, "Play, stop and record together") -- (was "Side by side", which said nothing about what it does: UX review, 0.58.62)
   -- kept in the project (until 0.11.3 it was per tab and lost when the tab was closed and reopened)
   local side = select(2, reaper.GetProjExtState(proj, band.SECTION, "side"))
+  local rt_now = same_room_on() -- (Real time mode is following at 0 bars: switch it off on Home. Review, 0.59.8)
+  ImGui.BeginDisabled(ctx, rt_now)
   local ch, on = check("Follow each other: press play, stop and record as usual", side ~= "")
+  ImGui.EndDisabled(ctx)
+  if rt_now then ch = false end
   if ch then
     reaper.SetProjExtState(proj, band.SECTION, "side", on and tostring(side_bars_edit) or "")
   end

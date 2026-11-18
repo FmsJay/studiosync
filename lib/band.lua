@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.59.7", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.59.8", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -626,7 +626,9 @@ end
 -- name, this computer's id, and each studio's pinned roles and inviter. Kept in <StudioSync home>/settings.json as well, and put back
 -- from there when REAPER comes up without them. A crash right after joining lost the studio from the list, and its security pins. Review, 0.58.89.
 function band.kept_keys()
-  local keys = { "bands", "sync_root", "user", "machine id" }
+  -- (and the plug-ins found to rewrite their data by themselves: forgotten after a REAPER that didn't close cleanly, TONEX was found again at
+  -- every open, and each time its chain went out to everyone. 0.59.8)
+  local keys = { "bands", "sync_root", "user", "machine id", "restless plugins" }
   for r in reaper.GetExtState(band.SECTION, "bands"):gmatch("[^|]+") do
     local n = (r:gsub("\\", "/"):gsub("/+$", ""):lower())
     keys[#keys + 1] = "role pins " .. tostring(band.info(r).id) .. " " .. n
@@ -757,6 +759,26 @@ function band.copy(text, ctx, ImGui)
 end
 
 function band.autosync_key(path) return "autosync " .. (path or ""):gsub("\\", "/"):lower() end
+-- (and in <StudioSync home>/autosync.json: a REAPER that didn't close cleanly lost the ExtState, and the project came back with sync off.
+-- James, 0.59.8: "reopened reaper and sync was off")
+local function autosync_file() return band.home() .. "/autosync.json" end
+function band.set_autosync(path, on)
+  local k = band.autosync_key(path)
+  if on then reaper.SetExtState(band.SECTION, k, "1", true) else reaper.DeleteExtState(band.SECTION, k, true) end
+  local t = band.read_json(autosync_file())
+  if type(t) ~= "table" then t = {} end
+  local name = k:sub(10)
+  if (t[name] == true) ~= (on == true) then
+    t[name] = on and true or nil
+    pcall(band.write_atomic, autosync_file(), band.json_encode(t))
+  end
+end
+function band.autosync(path)
+  local k = band.autosync_key(path)
+  if reaper.GetExtState(band.SECTION, k) == "1" or reaper.GetExtState(band.SECTION, "autosync " .. (path or ""):lower()) == "1" then return true end
+  local t = band.read_json(autosync_file())
+  return type(t) == "table" and t[k:sub(10)] == true
+end
 
 function band.bind(proj, b)
   for k, v in pairs(b) do reaper.SetProjExtState(proj, band.SECTION, k, tostring(v)) end

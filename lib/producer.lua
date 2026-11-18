@@ -80,7 +80,12 @@ local function ninjam_on(proj, cfg, b, send)
   if not ok then return nil, e end
   local rt = live.rt_track(proj, true)
   local tr, i = live.fx(proj, false)
-  if tr and tr ~= rt then live.closing(); reaper.TrackFX_Delete(tr, i); tr = nil end
+  if tr and tr ~= rt then
+    live.closing(); reaper.TrackFX_Delete(tr, i); tr = nil
+    -- (Time-sync's, on the master: it's gone, so the bars behind go back as they were, as Time-sync off does. Review, 0.59.8)
+    local was = ext(proj, "side before timesync")
+    if was ~= "" then reaper.SetProjExtState(proj, band.SECTION, "side", was == "none" and "" or was); reaper.SetProjExtState(proj, band.SECTION, "side before timesync", "") end
+  end
   if not tr then
     live.fx(proj, false) -- (REAPER runs one per process: another tab's goes first, as live.fx does)
     for p = 0, math.huge do
@@ -232,9 +237,7 @@ function producer.stop(proj, cfg, b)
   producer.quiet_tracks(proj, {})
   local live = require("live")
   local sm, si = live.fx(proj, false, live.SONOBUS)
-  if sm and ext(proj, "side") ~= "0" and reaper.GetExtState(band.SECTION, "listen " .. tostring(proj)) == "" and not require("hear").has_listeners(proj) then
-    reaper.TrackFX_SetOffline(sm, si, true)
-  end
+  if sm and not live.sonobus_wanted(proj) then reaper.TrackFX_SetOffline(sm, si, true) end -- (the call, Real time, a listener: it stays)
   band.log("stopped producing " .. tostring(name))
 end
 
@@ -362,7 +365,7 @@ function producer.tick(proj, cfg, b, peers)
       started_sending[tab] = nil
       local live = require("live")
       local m, i = live.fx(proj, false, live.SONOBUS)
-      if m and ext(proj, "side") ~= "0" then reaper.TrackFX_SetOffline(m, i, true) end
+      if m and not live.sonobus_wanted(proj) then reaper.TrackFX_SetOffline(m, i, true) end
     end
   end
   -- anyone's stamps on their right channel: everyone else hears their voice, not the bursts

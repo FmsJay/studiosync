@@ -203,7 +203,7 @@ function hear.listen(proj, cfg, b, name)
   -- Real time mode off: SonoBus goes with it
   local live = require("live")
   local sm, si = live.fx(proj, false, live.SONOBUS)
-  if sm and select(2, reaper.GetProjExtState(proj, band.SECTION, "side")) ~= "0" and not hear.has_listeners(proj) then reaper.TrackFX_SetOffline(sm, si, true) end
+  if sm and not live.sonobus_wanted(proj) then reaper.TrackFX_SetOffline(sm, si, true) end -- (the call, Real time, a listener: it stays)
   return true
 end
 -- Someone is listening to this computer: SonoBus comes on for as long as they do, and if they aren't playing along (following you) they have
@@ -234,8 +234,7 @@ function hear.answer_listeners(proj, cfg, b)
     end
     band.log(now .. " is listening to you" .. (whole and " (your whole mix)" or " (what you play)"))
   else
-    if sm and reaper.GetExtState(band.SECTION, "sonobus for listeners " .. tostring(proj)) ~= "" and select(2, reaper.GetProjExtState(proj, band.SECTION, "side")) ~= "0"
-        and reaper.GetExtState(band.SECTION, "listen " .. tostring(proj)) == "" then
+    if sm and reaper.GetExtState(band.SECTION, "sonobus for listeners " .. tostring(proj)) ~= "" and not live.sonobus_wanted(proj) then
       reaper.TrackFX_SetOffline(sm, si, true)
     end
     reaper.DeleteExtState(band.SECTION, "sonobus for listeners " .. tostring(proj), false)

@@ -46,7 +46,16 @@ function setup.sonobus(cfg, b, proj, open)
       if not p then break end
       local om, oi
       if p ~= proj then om, oi = live.fx(p, false, live.SONOBUS) end
-      if om and not reaper.TrackFX_GetOffline(om, oi) then reaper.TrackFX_SetOffline(om, oi, true) end
+      if om and not reaper.TrackFX_GetOffline(om, oi) then
+        reaper.TrackFX_SetOffline(om, oi, true)
+        -- (and what it was on for, so that tab doesn't show a call or Real time mode that's gone, or follow at 0 bars: review, 0.59.8)
+        if live.rt_flag(p) then reaper.SetProjExtState(p, band.SECTION, "rt", "0"); reaper.SetProjExtState(p, band.SECTION, "side", "") end
+        reaper.SetProjExtState(p, band.SECTION, "call", ""); reaper.SetProjExtState(p, band.SECTION, "rt talk only", "")
+        if select(2, reaper.GetProjExtState(p, band.SECTION, "hear their time")) == "1" then
+          reaper.SetProjExtState(p, band.SECTION, "hear their time", ""); require("hear").set_delay(p, 0)
+        end
+        band.log("live audio moved to the project in front: the other tab's Real time mode and call are off")
+      end
     end
   end
   local was_offline = reaper.TrackFX_GetOffline(m, i)

@@ -126,7 +126,9 @@ end
 local room_s, song_s, band_s = wheres("room"), wheres("song"), wheres("band")
 local n = 0
 for _ in pairs(room_s) do n = n + 1 end
-check(n == 1 and room_s.main == sdir .. "/rooms/main/chat", "this room holds only its own")
+-- (0.58.99: This room is its own chat and the project's messages sent from it)
+local rs = chat.sources(cfg, b, "room")
+check(#rs == 2 and rs[1][1] == sdir .. "/rooms/main/chat" and rs[2][1] == sdir .. "/chat" and rs[2].room == "main", "this room: its own, and the project's sent from it")
 check(song_s[SONG] == sdir .. "/chat" and song_s[SONG .. " / main"] and song_s[SONG .. " / side"], "this project holds its own and all its rooms'")
 check(band_s.Studio == root .. "/_band/chat" and band_s[SONG] and band_s[SONG .. " / side"], "the group holds everything")
 
