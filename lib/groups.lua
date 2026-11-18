@@ -17,7 +17,7 @@ end
 -- the private live-audio server, the studio's Tailscale network and Sync only through Tailscale. Taken from band.json only when Syncthing says
 -- the owner's or an admin's computer wrote it (lib/trust.lua); one from anyone else leaves the last trusted values standing (ExtState "trusted
 -- settings <root>", kept). Syncthing not saying yet, or a studio from before owners: band.json as it is, as before. Read at most every 5 s.
-local SETTINGS = { "alerts", "alerts_server", "call", "sonobus_server", "tailnet", "tailscale_only", "colours", "debug" }
+local SETTINGS = { "alerts", "alerts_server", "call", "sonobus_server", "tailnet", "tailscale_only", "colours", "debug", "updates" } -- ("updates": lib/fromfolder.lua, 0.59.25)
 local trusted_at = {}
 function groups.trusted(root)
   local c, now = trusted_at[root], reaper.time_precise() or 0
