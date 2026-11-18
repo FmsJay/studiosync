@@ -16,7 +16,7 @@ local people = {}
 
 people.PALETTE = { 0xFF5A5A, 0x4CC2FF, 0x7BE07B, 0xFFC24C, 0xC88BFF, 0xFF8BD0, 0x5AE0D0, 0xFF9F5A }
 people.MODES = { { "band", "Studio colours", "Tracks keep the colours the studio gave them, with what's ticked below on top." },
-  { "people", "Whose track", "Every track in the colour of whoever is editing it, claimed it, or made it." } }
+  { "people", "Track owner", "Every track in the colour of whoever is editing it, claimed it, or made it." } }
 people.SHOWS = { { "working", "Show who's working", "A track someone else is editing or has claimed shows their colour until they're done." },
   { "new", "Show what's new", "A track someone else changes shows their colour for a minute or two. What changed while you were away stays in their\n" ..
     "colour until you press OK on 'Since you were last here' at the top of Home." } }
@@ -251,7 +251,9 @@ function people.colour_options(ctx, ImGui, cfg)
   local mine = people.mine(cfg)
   local list = {}
   for _, c in ipairs(people.PALETTE) do list[#list + 1] = c end
-  for _, c in ipairs({ 0xE0E0E0, 0x8A6BFF, 0x3DFF8A, 0xFFE05A }) do list[#list + 1] = c end
+  -- (more to pick from: James, 0.59.3)
+  for _, c in ipairs({ 0xE0E0E0, 0x8A6BFF, 0x3DFF8A, 0xFFE05A, 0xFF3D7F, 0x00B3A4, 0xB5E550, 0xFFB000, 0x6A8CFF, 0xD96BFF, 0xFF6F3D, 0x8FD3FF,
+    0x2ECC71, 0xE74C3C, 0x9B59B6, 0xF1C40F }) do list[#list + 1] = c end
   local others = {} -- (a colour someone else shows in can't be picked: picking it moved their default, Mac 0.39.0)
   for u, c in pairs(people.colours(cfg.root, { cfg.user })) do if u ~= cfg.user then others[c] = u end end
   -- (on the same row while it fits: in a narrow column the last ones were cut off, with no way to reach them)
@@ -272,7 +274,8 @@ function people.colour_options(ctx, ImGui, cfg)
   next_to(30)
   local rv, picked = ImGui.ColorEdit3(ctx, "##own", mine, ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel) -- (a wheel: James, 0.58.99)
   if rv and picked ~= mine then people.pick(cfg, picked) end
-  ImGui.SetItemTooltip(ctx, "Any colour of your own")
+  ImGui.SetItemTooltip(ctx, "Any colour of your own: click for the colour wheel")
+  ImGui.SameLine(ctx, 0, 4); ImGui.TextDisabled(ctx, "any colour")
   next_to(70)
   if ImGui.SmallButton(ctx, "Default##colour") then people.pick(cfg, nil) end
   ImGui.TextDisabled(ctx, "Everyone sees you in it, in every studio you're in: your drawings, and tracks you're working on where they show that.")

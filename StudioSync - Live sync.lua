@@ -520,6 +520,7 @@ local function poll()
       format_at = now
       local ok, said = pcall(require("prep").keep_format, proj, cfg, b)
       if ok and said then band.log(said .. " (the studio records the same way on every computer)") end
+      pcall(require("debugmode").tick, cfg, proj, b) -- (the studio's debug mode: a report every 5 minutes into _debug. 0.59.3)
       -- a new project in the studio's (or its own) look, on the driver's computer only: the rest receive the colours (lib/colours.lua, 0.58.98)
       -- (the driver's, or yours working alone; not while sending is held: a look may be being tried in the panel. Review, 0.58.98)
       if (driver == cfg.user or alone) and not hold then

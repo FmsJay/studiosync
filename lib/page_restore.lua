@@ -167,7 +167,8 @@ end
 function R.section_recall()
   local b, cfg, proj, view, wide, points, can, who = E.b(), E.cfg(), E.proj(), E.view(), E.wide(), E.points(), E.can(), E.who()
   if not ui.short then ImGui.SeparatorText(ctx, "Saved versions") end -- (short: the box's own words say it, and the list gets the row)
-  ImGui.SetNextItemWidth(ctx, -250)
+  -- (room for the button and Keep for good beside it: -250 cut it off. James, 0.59.3)
+  ImGui.SetNextItemWidth(ctx, -(ImGui.CalcTextSize(ctx, "Save this version") + ImGui.CalcTextSize(ctx, "Save permanently") + ImGui.GetFrameHeight(ctx) + 70))
   local _, v = ImGui.InputTextWithHint(ctx, "##label", "name this version (e.g. 'chorus with double guitars')", label, ImGui.InputTextFlags_None)
   label = v
   ImGui.SameLine(ctx)
@@ -178,7 +179,7 @@ function R.section_recall()
     E.refresh_now()
   end
   ImGui.SameLine(ctx)
-  local _, k = ImGui.Checkbox(ctx, "Keep for good##keepver", keep_it)
+  local _, k = ImGui.Checkbox(ctx, "Save permanently##keepver", keep_it)
   keep_it = k
   ImGui.SetItemTooltip(ctx, "Never trimmed, and the project goes to Google Drive too if you use it.")
   ImGui.TextDisabled(ctx, "Render, stems, credits, templates and A/B: the Mixes tab.")

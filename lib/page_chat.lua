@@ -39,6 +39,18 @@ function chat.sources(cfg, b, sc)
   end
   return out
 end
+-- Where a message came from, in words, or nil when it's from here (James, 0.59.3): This room says nothing; This project names a room only when it
+-- isn't the one you're in; Studio names a project only when it isn't the one you're in.
+function chat.where_label(where, b, sc)
+  if not where or sc == "room" then return nil end
+  local here_song, here_room = b.song or "", b.song and (b.song .. " / " .. (b.room or "main")) or ""
+  if sc == "song" then
+    if where == here_song or where == here_room or where == (b.room or "main") then return nil end
+    return (where:gsub("^" .. here_song:gsub("%p", "%%%0") .. " / ", ""))
+  end
+  if where == "Studio" or where == here_song or where:sub(1, #here_song + 3) == here_song .. " / " then return nil end
+  return where
+end
 local function load(cfg, b)
   local key = scope .. (b.song or "") .. (b.room or "")
   if cache and key == cache_key and reaper.time_precise() - cache_at < 3 then return cache end
@@ -211,7 +223,8 @@ function chat.all_tab(ctx, ImGui, cfg, b, notes)
         local label = ({ msgs = "message", todo = "to-do", links = "link", note = "note", like = "like", draw = "drawing" })[r.kind]
         ImGui.TextColored(ctx, accent, label)
         ImGui.SameLine(ctx)
-        ImGui.TextWrapped(ctx, tostring(r.user) .. ": " .. r.text .. (r.where and r.where ~= b.song and ("  (" .. r.where .. ")") or ""))
+        local wl = chat.where_label(r.where, b, scope)
+        ImGui.TextWrapped(ctx, tostring(r.user) .. ": " .. r.text .. (wl and ("  (" .. wl .. ")") or ""))
         ImGui.PopID(ctx)
       end
     end
@@ -337,8 +350,9 @@ function chat.draw(ctx, ImGui, cfg, b, tabs)
         for _, m in ipairs(t.msgs) do
           if shown(m) then
             ImGui.PushID(ctx, m.file)
-            if m.where and scope ~= "room" then -- (where it was sent from, on the left)
-              ImGui.TextColored(ctx, require("theme").ACCENT, m.where)
+            local wl = chat.where_label(m.where, b, scope)
+            if wl then -- (where it was sent from, on the left: only when it isn't here)
+              ImGui.TextColored(ctx, require("theme").ACCENT, wl)
               ImGui.SameLine(ctx)
             end
             ImGui.TextDisabled(ctx, when(m.time))

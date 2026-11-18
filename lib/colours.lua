@@ -54,10 +54,33 @@ local KINDS = {
   { 0x36C4B4, { "string", "violin", "viola", "cello", "brass", "horn", "trumpet", "sax", "flute" } },
 }
 colours.OTHER = 0xA9B0BD
+-- Their names, for setting their colours (James, 0.59.3: "color tracks based on instrument should get a way to set those colors"), kept per
+-- computer (ExtState "colour kinds": { [name] = "RRGGBB" }).
+colours.KIND_NAMES = { "Buses and effects", "Drums", "Bass", "Guitars", "Keys", "Synths", "Vocals", "Strings and horns" }
+local kind_cache, kind_at = nil, -math.huge
+function colours.kind_colours()
+  if kind_cache and reaper.time_precise() - kind_at < 2 then return kind_cache end
+  local saved = band.json_decode(reaper.GetExtState(band.SECTION, "colour kinds"))
+  local out = {}
+  for i, k in ipairs(KINDS) do
+    local v = type(saved) == "table" and tonumber(tostring(saved[colours.KIND_NAMES[i]] or ""), 16)
+    out[i] = v or k[1]
+  end
+  kind_cache, kind_at = out, reaper.time_precise()
+  return out
+end
+function colours.set_kind_colour(i, rgb)
+  local saved = band.json_decode(reaper.GetExtState(band.SECTION, "colour kinds"))
+  if type(saved) ~= "table" then saved = {} end
+  saved[colours.KIND_NAMES[i]] = rgb and string.format("%06X", rgb) or nil
+  reaper.SetExtState(band.SECTION, "colour kinds", band.json_encode(saved), true)
+  kind_cache = nil
+end
 function colours.kind_of(name)
   local n = (name or ""):lower()
-  for _, k in ipairs(KINDS) do
-    for _, w in ipairs(k[2]) do if n:find(w) then return k[1] end end
+  local set = reaper and reaper.GetExtState and colours.kind_colours() or nil
+  for i, k in ipairs(KINDS) do
+    for _, w in ipairs(k[2]) do if n:find(w) then return set and set[i] or k[1] end end
   end
   return colours.OTHER
 end
@@ -442,6 +465,22 @@ function colours.draw(ctx, ImGui, proj, cfg, may, timeline_ok)
     ImGui.EndCombo(ctx)
   end
   ImGui.SetItemTooltip(ctx, uses and "The colours it runs through. Items and regions use them too." or "For items and regions. This way of colouring tracks has its own colours.")
+  if scheme == "newest" then -- (which end is which: James, 0.59.3)
+    local st = colours.stops_of({ palette = palette, from = string.format("%06X", a), to = string.format("%06X", z) })
+    ImGui.ColorButton(ctx, "##newold", (st[1] << 8) | 0xFF, ImGui.ColorEditFlags_NoTooltip, 14, 14); ImGui.SameLine(ctx, 0, 4)
+    ImGui.TextDisabled(ctx, "untouched longest"); ImGui.SameLine(ctx, 0, 12)
+    ImGui.ColorButton(ctx, "##newnew", (st[#st] << 8) | 0xFF, ImGui.ColorEditFlags_NoTooltip, 14, 14); ImGui.SameLine(ctx, 0, 4)
+    ImGui.TextDisabled(ctx, "changed most recently")
+  elseif scheme == "instrument" then -- the instruments' colours, yours to set
+    local set = colours.kind_colours()
+    for i, name in ipairs(colours.KIND_NAMES) do
+      local ch, v = ImGui.ColorEdit3(ctx, name .. "##kind" .. i, set[i], ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel)
+      if ch then colours.set_kind_colour(i, v); cache.at = -math.huge end
+      if i % 2 == 1 and i < #colours.KIND_NAMES then ImGui.SameLine(ctx, 180) end
+    end
+    if ImGui.SmallButton(ctx, "Instrument colours as they were##kinds") then reaper.DeleteExtState(band.SECTION, "colour kinds", true); kind_cache = nil; cache.at = -math.huge end
+    ImGui.SetItemTooltip(ctx, "Each instrument's colour, found from the track's name (drums, bass, guitars...). Only on this computer, until you colour the tracks.")
+  end
   local stops = colours.stops_of({ palette = palette, from = string.format("%06X", a), to = string.format("%06X", z) })
   if palette == "Your own" then
     ImGui.SameLine(ctx)

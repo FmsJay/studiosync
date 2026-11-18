@@ -923,11 +923,7 @@ local function section_claims()
     if #list == 0 then band.msg("Select the tracks you want to own first.") else claim(list, {}) end
   end
   ImGui.SetItemTooltip(ctx, "The tracks you've selected become yours: only you can change them, whoever's driving.")
-  if not ui.advanced() then return end -- (keeping tracks local, regions and time: advanced controls. James, 0.58.98)
-  next_to("Keep selected tracks local")
-  if ImGui.Button(ctx, "Keep selected tracks local") then ui.keep_local() end
-  ImGui.SetItemTooltip(ctx, "New tracks of your own that never go to the others: a reference mix, a guide, a scratch idea. Only tracks that haven't gone out yet\n" ..
-    "(a shared one would vanish for everyone). Pressed again with only such tracks selected, it shares them.")
+  if not ui.advanced() then return end -- (regions and time: advanced controls. Keeping tracks local is in Settings > Advanced: James, 0.59.3)
   next_to("Claim selected region")
   if ImGui.Button(ctx, "Claim selected region") then
     local list = ui.selected_regions()
@@ -1327,7 +1323,10 @@ local function home_play()
   if b then -- Time-sync (James, 0.58.99): hear each other in time with the song, a bar or two late, through NINJAM (the Play/Jam page's Play along)
     local ts = page_play.time_sync_on()
     local one = page_play.interval_bars()
-    local tch, tv = switch_row("##timesync", "Time-sync", ts, string.format("Everyone plays to their own copy of the song, and hears the others in time with it, %d bar%s late " ..
+    ImGui.Indent(ctx, 26) -- (a setting under Real time mode: James, 0.59.3)
+    local tch, tv = ImGui.Checkbox(ctx, string.format("Time-sync: in time with the song, %d bar%s late##timesync", one, one == 1 and "" or "s"), ts)
+    ImGui.Unindent(ctx, 26)
+    ImGui.SetItemTooltip(ctx, string.format("Everyone plays to their own copy of the song, and hears the others in time with it, %d bar%s late " ..
       "here (a whole NINJAM interval, about 2.4 s, and a second's margin: more bars in a fast song):\nexactly how the person recording played it, which Real time mode's live audio can't promise over the internet.\n" ..
       "For listening to a take and playing along, not for talking (that's Real time mode). It needs Tailscale; this computer runs the server if nobody does.",
       one, one == 1 and "" or "s"))
@@ -1369,9 +1368,22 @@ local function home_who()
   local ps = reaper.GetPlayStateEx(proj)
   people[1] = { name = cfg.user .. " (you)", user = cfg.user, state = "here", armed = armed, recording = ps & 4 == 4, playing = ps & 1 == 1,
     driving = view.driver == cfg.user, last_track = select(2, reaper.GetProjExtState(proj, band.SECTION, "last_track")) }
+  -- (away people hidden on request: James, 0.59.3. ExtState "who hide away")
+  local hide_away, away = reaper.GetExtState(band.SECTION, "who hide away") ~= "", 0
   for _, r in ipairs(view.rows) do
-    people[#people + 1] = { name = r.name, user = r.name, state = r.state, armed = r.armed, recording = r.recording, playing = r.playing,
-      driving = r.name == view.driver, version = r.version, mirror = r.mirror, last_track = r.last_track }
+    if hide_away and r.state == "offline" then away = away + 1 else
+      people[#people + 1] = { name = r.name, user = r.name, state = r.state, armed = r.armed, recording = r.recording, playing = r.playing,
+        driving = r.name == view.driver, version = r.version, mirror = r.mirror, last_track = r.last_track }
+    end
+  end
+  do
+    local any_away = away > 0
+    for _, r in ipairs(view.rows) do any_away = any_away or r.state == "offline" end
+    if any_away then
+      local ch, v = ImGui.Checkbox(ctx, (hide_away and string.format("Show who's away (%d)", away) or "Show who's away") .. "##whoaway", not hide_away)
+      if ch then reaper.SetExtState(band.SECTION, "who hide away", v and "" or "1", true) end
+      ImGui.SetItemTooltip(ctx, "Off: only the people here now have cards. Their claims and parts are the same either way.")
+    end
   end
   if ui.short then
     for _, p in ipairs(people) do
@@ -1436,6 +1448,10 @@ local function home_who()
       if p.state ~= "here" then pcall(function() require("page_hear").person(ctx, ImGui, proj, p.name) end) end -- (hear them live or not)
       ui.person_claims(p.user, p.last_track)
       ui.leaving_row(p)
+      -- (a right-click anywhere on the card, not only on the name: James, 0.59.3)
+      if ImGui.IsWindowHovered(ctx, ImGui.HoveredFlags_ChildWindows) and ImGui.IsMouseClicked(ctx, 1) and not ImGui.IsAnyItemHovered(ctx) then
+        ImGui.OpenPopup(ctx, "person " .. p.user)
+      end
       card_end()
     end
   end
@@ -1488,12 +1504,23 @@ function ui.feed(apart) -- apart: a line between it and what's above
     ImGui.EndChild(ctx)
   end
 end
+-- Colours (James, 0.59.3: "colors should go under look"): the track colours you see here, and colouring the project.
+function ui.settings_colours()
+  if card("colours") then
+    heading("Colours", 17)
+    require("people").track_options(ctx, ImGui) -- whose colours tracks show here
+    if b and can then require("colours").draw(ctx, ImGui, proj, cfg, function(name, tr) -- (a track you made is yours, as mirror.watch has it: Mac, 0.57.6)
+      return can(cfg.user, name) or sync.maker_may(require("mirror").track_oid(tr), cfg.user, name, nil, who and who.mode)
+    end, view.driver == cfg.user or (who and (who.mode == "open" or who.mode == "everyone")))
+    elseif not b then ImGui.TextDisabled(ctx, "Colouring a project: open a studio project.") end
+    card_end()
+  end
+end
 -- Who drives, in Who can edit (James, 0.58.99: Take control and Always follow the driver sat with the people, away from who controls what).
 function ui.driver_rows()
-  if view.driver ~= cfg.user then
+  if view.driver ~= cfg.user then -- (on its own line: beside the switch it moved it about. James, 0.59.3)
     if ImGui.SmallButton(ctx, "Take control") then action("Take control") end
     ImGui.SetItemTooltip(ctx, tostring(view.driver) .. " is driving. Take control to make what nobody has claimed follow you (tell them first).")
-    ImGui.SameLine(ctx)
   end
   local on = reaper.GetExtState(band.SECTION, "follow driver") ~= ""
   local ch, v = switch_row("##followdriver", "Always follow the driver", on, "Your playhead, view and mix follow the driver: they press play, you play along, hearing what they hear. Only they record.")
@@ -1502,6 +1529,29 @@ function ui.driver_rows()
     if v then reaper.DeleteExtState(band.SECTION, "follow " .. tostring(proj), false) end
   end
 end
+-- The selected tracks dry or wet here (James, 0.59.3: "an easy way to switch a track between wet and dry from the panel"). Only on this computer.
+function ui.track_plays_row()
+  local sel = reaper.GetSelectedTrack(proj, 0)
+  local cur = sel and require("prints").track_choice(proj, sel) or nil
+  ImGui.AlignTextToFramePadding(ctx); ImGui.Text(ctx, "Selected tracks play:"); ImGui.SameLine(ctx)
+  for _, c in ipairs({ { "dry", "Dry" }, { "wet", "Wet" }, { "", "As set" } }) do
+    local here = sel and cur == c[1]
+    if here then ImGui.PushStyleColor(ctx, ImGui.Col_Button, theme.SELECTED) end
+    if ImGui.SmallButton(ctx, c[2] .. "##homeplays") then
+      local n = reaper.CountSelectedTracks(proj)
+      if n == 0 then band.msg("Select the tracks first.") else
+        for i = 0, n - 1 do require("prints").set_track_choice(proj, reaper.GetSelectedTrack(proj, i), c[1]) end
+        band.log(string.format("%d track%s: %s here", n, n == 1 and "" or "s", c[1] == "" and "as Settings > Options > Parts play says" or c[1]))
+      end
+    end
+    if here then ImGui.PopStyleColor(ctx) end
+    ImGui.SetItemTooltip(ctx, ({ dry = "Each part plays itself through the track's plug-ins (they come back on): try other effects here.",
+      wet = "Each part plays the studio's print, exactly what was heard; the track's plug-ins are held off so nothing goes through them twice.",
+      [""] = "As Settings > Options > Parts play says, like the rest." })[c[1]] .. "\nOnly on this computer.")
+    ImGui.SameLine(ctx)
+  end
+  ImGui.NewLine(ctx)
+end
 local function home_session()
   if card("session") then
     heading("Who can edit", 17)
@@ -1509,6 +1559,7 @@ local function home_session()
     section_driver()
     ui.driver_rows()
     local_mix_row()
+    ui.track_plays_row()
     section_claims()
     card_end()
   end
@@ -1524,6 +1575,7 @@ local function home_rules()
   section_driver()
   ui.driver_rows()
   local_mix_row()
+  ui.track_plays_row()
 end
 local function home_claims()
   heading("Claims", 17)
@@ -1554,6 +1606,11 @@ local function page_home()
   elseif wide then -- (a tall docker: the people as cards, and nothing left alone in a tall column)
     layout({ { function() home_play(); ui.feed(true) end, 480 }, { home_who, 760 }, { function() home_rules(); ui.spacer(); home_claims() end, 480 } })
   else layout({ { home_who, 360 }, { home_session, 400 } }) end
+  -- live ideas (what came over Real time or Time-sync, to keep or drop): here while either is on (James, 0.59.3: not in Chat)
+  if same_room_on() or page_play.time_sync_on() then
+    if reaper.time_precise() - ideas_at > 2 then ideas_at, ideas = reaper.time_precise(), tools.ideas(proj) end
+    if next(ideas) ~= nil and card("home ideas") then section_ideas(); card_end() end
+  end
   ui.hide_row()
 end
 -- Home's "Hide when not in use" (James, 0.58.98): the same as Settings > Look > When you click REAPER, shrinks to the tiny box or stays
@@ -1690,10 +1747,6 @@ local function settings_sync()
     if lch then reaper.SetExtState(band.SECTION, "live set", lv and "on" or "", true) end
     ImGui.SetItemTooltip(ctx, "For playing a set: while REAPER plays, nothing is sent or taken in, so syncing can't make REAPER stutter.\n" ..
       "Everything catches up as soon as you stop. Only on this computer.")
-    require("people").track_options(ctx, ImGui) -- whose colours tracks show here
-    if b and can then require("colours").draw(ctx, ImGui, proj, cfg, function(name, tr) -- (a track you made is yours, as mirror.watch has it: Mac, 0.57.6)
-      return can(cfg.user, name) or sync.maker_may(require("mirror").track_oid(tr), cfg.user, name, nil, who and who.mode)
-    end, view.driver == cfg.user or (who and (who.mode == "open" or who.mode == "everyone"))) end
     card_end()
   end
 end
@@ -1875,9 +1928,39 @@ local function studio_tailscale_sync()
   end
   card_end()
 end
+-- Debug mode (James, 0.59.3): every computer in the studio saves its report, log and errors into _debug every 5 minutes (lib/debugmode.lua).
+local function studio_debug()
+  if not card("studio debug") then return end
+  local groups, dm = require("groups"), require("debugmode")
+  ImGui.SeparatorText(ctx, "Debug mode")
+  local on = dm.on(cfg.root)
+  ImGui.TextDisabled(ctx, on and ("On: every computer in the studio saves what it sees (versions, the project as it has it, what's waiting or was skipped, " ..
+    "its log and errors) into the studio's _debug folder every 5 minutes, for working out what went wrong.") or
+    "Off. On, every computer in the studio saves a report, its log and errors into the studio's _debug folder every 5 minutes.")
+  if studio_admin() then
+    local ch, v = ImGui.Checkbox(ctx, "Debug mode for everyone##studiodebug", on)
+    if ch then
+      groups.set_debug(cfg.root, v)
+      band.log(v and "debug mode is on for the studio: reports go into _debug every 5 minutes" or "debug mode is off for the studio")
+    end
+    ImGui.SetItemTooltip(ctx, "Owner and admins. Each computer's files are written over each time (a few hundred KB each), and hold no keys or passwords.")
+  end
+  if ImGui.SmallButton(ctx, "Save a report now##debugnow") then
+    local d = dm.write(cfg, proj, b)
+    band.log("debug report saved: " .. tostring(d))
+  end
+  ImGui.SetItemTooltip(ctx, "This computer's report, log and errors into the studio's _debug folder now (with debug mode off too).")
+  ImGui.SameLine(ctx)
+  if ImGui.SmallButton(ctx, "Open the _debug folder") then
+    local d = cfg.root .. "/_debug"
+    reaper.RecursiveCreateDirectory(d, 0)
+    band.open_url(d)
+  end
+  card_end()
+end
 local function settings_studio()
   ImGui.TextDisabled(ctx, "For everyone in " .. band.info(cfg.root).name .. ". Only the owner and admins change these; everyone can use them.")
-  layout({ { studio_alerts, 360 }, { studio_call, 360 }, { studio_private_audio, 360 }, { studio_tailscale_sync, 360 } }, true)
+  layout({ { studio_alerts, 360 }, { studio_call, 360 }, { studio_private_audio, 360 }, { studio_tailscale_sync, 360 }, { studio_debug, 360 } }, true)
 end
 local function settings_drive()
   if card("drive") then
@@ -1967,6 +2050,9 @@ function ui.settings_advanced()
   if card("advanced") then
     if not ui.short then heading("Advanced", 17) end
     if b then
+      if ImGui.SmallButton(ctx, "Keep selected tracks local") then ui.keep_local() end -- (moved off Home: confusing beside claims. James, 0.59.3)
+      ImGui.SetItemTooltip(ctx, "New tracks of your own that never go to the others: a reference mix, a guide, a scratch idea. Only tracks that haven't gone out yet\n" ..
+        "(a shared one would vanish for everyone). Pressed again with only such tracks selected, it shares them.")
       local hold = select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) ~= ""
       local ch, v = switch_row("##hold", "Hold my changes", hold, "Try things: your changes go out once, when you switch this off. Anything someone else changes on the same parts meanwhile clashes with yours.")
       if ch then reaper.SetProjExtState(proj, band.SECTION, "hold", v and "1" or "") end
@@ -2112,7 +2198,7 @@ local function page_setup()
   if b and tab("Health") then body("s health", function() maint_health(); if wide then ui.feed() end end); ImGui.EndTabItem(ctx) end
   if tab("You") then body("s you", ui.settings_you); ImGui.EndTabItem(ctx) end
   -- (the look in a tab of its own: Options was long. James, 0.58.99)
-  if tab("Look") then body("s look", function() layout({ { settings_look, 360 } }, true) end); ImGui.EndTabItem(ctx) end
+  if tab("Look") then body("s look", function() layout({ { settings_look, 360 }, { ui.settings_colours, 460 } }, true) end); ImGui.EndTabItem(ctx) end
   if tab("Options") then
     body("s options", function() layout({ { settings_sync, 420 }, { settings_drive, 360 } }, true) end)
     ImGui.EndTabItem(ctx)
@@ -2685,8 +2771,7 @@ local function frame_app()
           require("page_chat").all_tab(ctx, ImGui, cfg, b, notes)
         end, true }, { "Notes", function() section_notes("note") end }, { "Likes", function() section_notes("like") end }, { "Call", function() ui.call_tab() end } }
       local function chat_page() require("page_chat").draw(ctx, ImGui, cfg, b, chat_tabs) end
-      if reaper.time_precise() - ideas_at > 2 then ideas_at, ideas = reaper.time_precise(), tools.ideas(proj) end -- (their column only when there are some)
-      if next(ideas) ~= nil then layout({ { chat_page, 620 }, { section_ideas, 360 } }) else layout({ { chat_page, 900 } }) end
+      layout({ { chat_page, 900 } }) -- (live ideas are on Home with Real time mode or Time-sync: James, 0.59.3)
     elseif page == "Restore" then layout({ { restore.section_recall, 400 }, { restore.section_history, 600 } })
     elseif page == "Mixes" then layout({ { restore.section_mixes, 440 }, { studio_listen, 360 } })
     elseif page == "Plugins" then
