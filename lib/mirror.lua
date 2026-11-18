@@ -269,7 +269,10 @@ function mirror.fx_presets(tr)
   return table.concat(out, "|")
 end
 mirror.fx_quiet_presets = mirror.fx_quiet_presets or {} -- (the presets as of the knobs in mirror.fx_quiet)
-function mirror.knobs_count(chain) return mirror.restless_in(chain) ~= nil or mirror.modulated(chain) ~= nil end
+-- (memoized by the restless list and the text: every look asked it of every unchanged chain, parsing it twice. 0.59.14, review)
+function mirror.knobs_count(chain)
+  return mirror.memo("k\0" .. restless_sig() .. "\0" .. chain, function() return mirror.restless_in(chain) ~= nil or mirror.modulated(chain) ~= nil end)
+end
 
 -- A plug-in chain's hash: its normalized text without each VST's last state line. That line is REAPER's program block
 -- for the instance, and a plug-in loaded from a chunk writes its program name there ("Program 1"), so the same chain
@@ -318,6 +321,8 @@ function mirror.item_hash(track, state)
   -- (on a lane its YPOS is only its share of the track's height, so adding a lane changed every item, and each machine sent
   -- them all: 500 events a minute on Bass Guitar, laptop and PC, 0.42.7. BANDLANE is what counts)
   if state:find("BANDLANE", 1, true) then state = state:gsub("YPOS [^\n]*\n", "") end
+  -- (nothing below changes an item with neither: its hash as the end of this has it, without splitting every item into lines each look. 0.59.14, review)
+  if not state:find("<TAKEFX", 1, true) and not state:find("<VST", 1, true) then return mirror.hash(track .. "\n" .. state) end
   local lines = {}
   for l in (state .. "\n"):gmatch("(.-)\n") do lines[#lines + 1] = l end
   lines[#lines] = nil -- (the one the extra "\n" made)
@@ -368,7 +373,7 @@ end
 -- (measured, REAPER 7.83: no @init, even with a changed parameter). Which envelopes show, which is armed and how
 -- tall its lane is stay each person's own. A receive names its source track by oid (REAPER's chunk says its
 -- position); receives from a track that isn't mirrored (Real time, live views) stay as they are on each machine.
-mirror.HV = 7 -- how object hashes are made: bump it whenever what goes into one changes (events carry it as hv)
+mirror.HV = 8 -- how object hashes are made: bump it whenever what goes into one changes (events carry it as hv). 8: a track's line leaves out its parent (0.59.14)
 mirror.KIND = { T = "track", F = "fx", E = "env", R = "recv", M = "misc", I = "item" } -- (an oid's first letter)
 mirror.PART = { fx = "the plug-ins", env = "the automation", recv = "the sends", misc = "the groups, lock, input FX or note names" }
 mirror.PARTS = { "F", "E", "R", "M" } -- (what a track oid T-x carries: F-x, E-x, R-x, M-x)
@@ -667,10 +672,24 @@ local function elements(state)
   end
   return els, order
 end
+-- Where an item sits and what part of its source plays: one thing, not separate lines. (0.59.14, review: one person's left trim, POSITION
+-- LENGTH and SOFFS, merged with another's move, POSITION alone, gave a state neither made, its audio off by the trim.)
+local TIMING = { POSITION = true, LENGTH = true, SNAPOFFS = true, SOFFS = true, PLAYRATE = true, SM = true, FADEIN = true, FADEOUT = true }
 function mirror.merge_item(base, winner, loser, loser_name)
-  local b = elements(base)
+  local b, border = elements(base)
   local w, worder = elements(winner)
   local l, lorder = elements(loser)
+  -- both changed the timing (a line of it changed, added or taken away): the winner's whole timing stands
+  local w_timed, l_timed = false, false
+  for _, list in ipairs({ border, worder, lorder }) do
+    for _, e in ipairs(list) do
+      if TIMING[e.word] then
+        w_timed = w_timed or w[e.key] ~= b[e.key]
+        l_timed = l_timed or l[e.key] ~= b[e.key]
+      end
+    end
+  end
+  local timing_clash = w_timed and l_timed
   local out, both, keep_take = {}, {}, {}
   local seq, at = {}, {} -- (the winner's order; what only the loser has goes in after the element it followed there)
   for _, e in ipairs(worder) do seq[#seq + 1] = e; at[e.key] = true end
@@ -686,7 +705,10 @@ function mirror.merge_item(base, winner, loser, loser_name)
   end
   for _, e in ipairs(seq) do
     local bv, wv, lv = b[e.key], w[e.key], l[e.key]
-    if wv == lv or lv == bv then out[e.key] = wv
+    if timing_clash and TIMING[e.word] then
+      out[e.key] = wv
+      if wv ~= lv then both[#both + 1] = e.key end
+    elseif wv == lv or lv == bv then out[e.key] = wv
     elseif wv == bv then out[e.key] = lv
     else
       out[e.key] = wv; both[#both + 1] = e.key
@@ -736,11 +758,20 @@ local function won(a, x)
   return not x or mirror.newer({ rev = a.rev or 0, time = mirror.order_of(a) }, { rev = x.rev or 0, time = mirror.order_of(x) })
 end
 mirror.won = won
+-- Is this entry where its object began? A first version names none before it (an owner's starts past 1, so the rev alone can't say).
+-- (0.59.14, review: trimming takes changes older than 60 days away but keeps each object's newest, so an object whose first version
+-- was trimmed had nothing at or before an older row, was planned as "didn't exist then", and went for everyone.) Pure.
+function mirror.began(e)
+  if e.base_ev then return false end -- (made from a version before it: that one existed)
+  if e.base ~= nil then return e.base == 0 end
+  return (e.rev or 0) <= 1 -- (an event too old to carry its base)
+end
 function mirror.plan_restore(entries, upto, in_scope)
-  local at, last = {}, {}
+  local at, last, first = {}, {}, {}
   for i, e in ipairs(entries) do
     if e.kind == "obj" and e.oid then
       if won(e, last[e.oid]) then last[e.oid] = e end
+      if not first[e.oid] or won(first[e.oid], e) then first[e.oid] = e end
       if i <= upto and won(e, at[e.oid]) then at[e.oid] = e end
     end
   end
@@ -748,7 +779,8 @@ function mirror.plan_restore(entries, upto, in_scope)
   for oid, l in pairs(last) do
     if not in_scope or in_scope(oid, l, at[oid]) then
       local t = at[oid]
-      plan[oid] = (t and not t.gone) and t or false
+      -- (nothing then, and its oldest version kept isn't its first: it existed, in a version trimmed away. Left as it is)
+      if t or mirror.began(first[oid]) then plan[oid] = (t and not t.gone) and t or false end
     end
   end
   return plan
@@ -763,6 +795,7 @@ function mirror.plan_undo(entries, i)
     if j ~= i and p.kind == "obj" and p.oid == e.oid and (p.time or "") <= (e.time or "") and won(e, p) and won(p, best) then best = p end -- (made before it)
   end
   if best then return { [e.oid] = (not best.gone) and best or false } end
+  if not mirror.began(e) then return {} end -- (its version before was trimmed away: not "it was new", nothing to plan. 0.59.14, review)
   return { [e.oid] = false }
 end
 
@@ -912,7 +945,7 @@ function mirror.plan_undo_moment(entries, i)
   for _, j in ipairs(mirror.same_moment(entries, i)) do
     for oid, v in pairs(mirror.plan_undo(entries, j) or {}) do plan = plan or {}; plan[oid] = v end
   end
-  return plan
+  return plan or {} -- (nothing to plan, a trimmed chain say: an empty plan, never nil for revert to fail on. 0.59.14)
 end
 
 -- The top bar's Undo / Redo (your own changes only, for everyone). Pure, over History's entries:
@@ -1029,7 +1062,10 @@ mirror.TRACK_MORE = { { "fxen", "I_FXEN" }, { "nchan", "I_NCHAN" }, { "mainsend"
 mirror.TRACK_MIX = { { "width", "D_WIDTH" }, { "panmode", "I_PANMODE" }, { "dualpanl", "D_DUALPANL" }, { "dualpanr", "D_DUALPANR" } }
 
 function mirror.track_line(t, local_mix, colour)
-  local f = { t.name or "", t.parent or "", t.depth or 0, t.mute or 0, "", t.phase or 0, t.icon or "", -- ("": solo is each person's own)
+  -- (its parent left out, "" in its place: it follows from the depths above it, which travel, so a folder change arriving in pieces made the
+  -- tracks under it read as edited, and put back or sent each other back and forth. 0.59.14, review. An older event's hash names it, which the
+  -- band's-hash checks in watch and apply take as the same track: nothing goes out again for it)
+  local f = { t.name or "", "", t.depth or 0, t.mute or 0, "", t.phase or 0, t.icon or "", -- ("": solo is each person's own)
     t.freemode or 0, t.lanes or 0, t.plays or "", t.lanenames or "", 0, local_mix and "" or (t.vol or ""), local_mix and "" or (t.pan or "") }
   for _, kp in ipairs(mirror.TRACK_MORE) do f[#f + 1] = t[kp[1]] or "" end
   for _, kp in ipairs(mirror.TRACK_MIX) do f[#f + 1] = local_mix and "" or (t[kp[1]] or "") end
@@ -1048,6 +1084,34 @@ end
 function mirror.same_line(x, y, local_mix)
   local function plain(t) return (mirror.track_line(t, local_mix):gsub("(%d)%.0%f[|\0]", "%1")) end
   return plain(x) == plain(y)
+end
+
+-- With Local mixing on, a track's faders and pan here are this person's own: what goes out carries the band's (its last event's) in their
+-- place. They always went out, so a rename sent your own mix to everyone not on Local mixing, and Follow's copy of a bandmate's faders with
+-- it (0.59.14, review). A track the band hasn't had yet: its own, there's nothing else. Pure.
+function mirror.band_faders(state, band_state)
+  if type(state) ~= "table" or type(band_state) ~= "table" then return state end
+  local out = {}
+  for k, v in pairs(state) do out[k] = v end
+  out.vol, out.pan = band_state.vol, band_state.pan
+  for _, kp in ipairs(mirror.TRACK_MIX) do out[kp[1]] = band_state[kp[1]] end
+  return out
+end
+
+-- An item's take plug-ins: their blocks' lines alone (what fxfiles looks through for files they load; the item's own FILE lines are its
+-- media, shared by share_media). Pure.
+function mirror.take_fx(state)
+  local out, depth = {}, 0
+  for line in (state or ""):gmatch("[^\n]+") do
+    local t = line:match("^%s*(.-)%s*$")
+    if depth == 0 then
+      if t:match("^<TAKEFX") then depth = 1; out[#out + 1] = line end
+    else
+      out[#out + 1] = line
+      if t:sub(1, 1) == "<" then depth = depth + 1 elseif t == ">" then depth = depth - 1 end
+    end
+  end
+  return table.concat(out, "\n")
 end
 
 -- What runs through each track: its folder's tracks, what it receives, the tracks a VCA fader on it leads, and what runs through
@@ -1462,10 +1526,17 @@ function mirror.share_media(chunk, media_dir, it, sent)
     local name = path:gsub("\\", "/"):match("[^/]+$") or "media"
     -- (plain characters only: an accented name can reach a Mac decomposed and come back as other bytes than Windows
     -- wrote, and the item then reads as different on each machine)
-    local copy = mirror.hash(path:lower()) .. "-" .. name:gsub("[^%w%-_.]", "_")
+    -- (and its size: by path alone, a file bounced again at the same path and dragged in again played the old shared copy for everyone, with
+    -- no word. A copy under the old name is still used when it's the same size. 0.59.14, review)
+    local band = require("band")
+    local size, safe = band.size(path), name:gsub("[^%w%-_.]", "_")
+    local copy = mirror.hash(path:lower()) .. "-" .. safe
+    if size and not (reaper.file_exists(media_dir .. "/" .. copy) and band.size(media_dir .. "/" .. copy) == size) then -- (no source to measure: the old name, as before)
+      copy = mirror.hash(path:lower() .. "|" .. tostring(size or "")) .. "-" .. safe
+    end
     local dst = media_dir .. "/" .. copy
     if not reaper.file_exists(dst) and reaper.file_exists(path) then
-      local ok, err = pcall(require("band").copy_atomic, path, dst)
+      local ok, err = pcall(band.copy_atomic, path, dst)
       if not ok then mirror.copy_failed = tostring(err) end -- (watch holds the item back and says so: mirror.local_files)
     end
     -- (only once the copy is really there: pointing at a copy that was never made left everyone waiting for it)
@@ -1736,6 +1807,15 @@ end
 function mirror.apply(proj, ev, media_dir, local_mix)
   if ev.obj == "track" then mirror.order_band[tostring(proj)] = true end
   local kind, oid = ev.obj, ev.oid
+  if ev.gone and mirror.PART[kind] then
+    -- a part back to "didn't exist" (a track's first plug-in undone, say): an empty one, as put_back does for misc. Gone did nothing to a
+    -- part, so the chain stayed everywhere and went out again. 0.59.14, review. (Its track from its oid when the event doesn't name it;
+    -- no track here: nothing to empty)
+    local toid = ev.track or ("T" .. oid:sub(2))
+    if not mirror.find(proj, "track", toid) then return true, "" end
+    if not mirror.apply(proj, { obj = kind, oid = oid, track = toid, name = ev.name, state = "" }, media_dir, local_mix) then return false end -- (playing, or its tab behind: later)
+    return true, ""
+  end
   if ev.gone then
     local p = mirror.find(proj, kind == "fx" and "track" or kind, kind == "fx" and ev.track or oid)
     if p and kind == "item" then reaper.DeleteTrackMediaItem(reaper.GetMediaItem_Track(p), p)
@@ -1874,6 +1954,7 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     if kind == "recv" then mirror.set_ai(proj, tr, ev.state or "", "recv"); recv = recv .. mirror.ai_lines(tr, "recv") end
     return true, mirror.hash(kind == "env" and env or kind == "recv" and recv or misc)
   elseif kind == "item" then
+    mirror.in_editor = nil -- (set below when its take is open in the MIDI editor: put_back then waits quietly)
     local tr = mirror.find(proj, "track", ev.track)
     if not tr then return false end
     for _, path in ipairs(mirror.media_needed(ev.state, media_dir)) do
@@ -1882,7 +1963,15 @@ function mirror.apply(proj, ev, media_dir, local_mix)
         return false
       end
     end
+    require("fxfiles").fetch(ev.files, media_dir, (ev.name or "") ~= "" and ev.name or "a track") -- (what its take plug-ins load, before they do: 0.59.14)
     local it = mirror.find(proj, "item", oid)
+    -- (its take open in the MIDI editor here: rewritten under it, what's being edited there goes. Later, once it's closed or on another item.
+    -- 0.59.14, review)
+    if it and reaper.MIDIEditor_GetActive then
+      local ed = reaper.MIDIEditor_GetActive()
+      local tk = ed and reaper.MIDIEditor_GetTake(ed)
+      if tk and reaper.ValidatePtr2(proj, tk, "MediaItem_Take*") and reaper.GetMediaItemTake_Item(tk) == it then mirror.in_editor = oid; return false end
+    end
     -- (an item with Melodyne / ARA on a take isn't rebuilt in place from a chunk without take ids: REAPER kept one
     -- take of two (measured 7.83). A fresh item takes it whole.)
     if it and require("prints").ara_take(it) then reaper.DeleteTrackMediaItem(reaper.GetMediaItem_Track(it), it); it = nil end
@@ -1894,6 +1983,13 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     local active = reaper.CountTakes(it) > 1 and reaper.GetMediaItemInfo_Value(it, "I_CURTAKE")
     local lane = tonumber(ev.state:match("BANDLANE (%d+)"))
     local pick = tonumber(ev.state:match("BANDTAKE (%d+)"))
+    -- (a pooled MIDI ghost copy here: out of its pool first, as the put-backs do. Given a plain <SOURCE MIDI>, its pool-mates kept an entry
+    -- for it, which REAPER's MIDI code crashed on at a later tab close. 0.59.14, review)
+    do
+      local got, ch = reaper.GetItemStateChunk(it, "", false)
+      local unpooled, n = (ch or ""):gsub("\n%s*POOLEDEVTS[^\n]*", "")
+      if got and n > 0 then reaper.SetItemStateChunk(it, unpooled, false) end
+    end
     reaper.SetItemStateChunk(it, mirror.resolve_media((ev.state:gsub("BANDLANE %d+\n?", ""):gsub("BANDTAKE %d+\n?", "")), media_dir), false)
     reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", oid, true)
     if pick then mirror.pick_take(it, pick)
@@ -1985,14 +2081,9 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   local merging, wait = mirror.merge_for(proj, ev, (media_dir:gsub("/media$", "")))
   if wait then return false end
   if not merging and not mirror.wins(proj, ev.oid, ev.rev or 0, order) then return true end
-  -- a change of ours to it hasn't gone out yet (Hold my changes is on, plug-ins and automation waiting to settle or
-  -- for playback to stop, a long edit): theirs waits until ours has gone, then the two are settled like any clash.
-  -- Applied at once, ours was lost with no trace, not even on the Restore page (review, 2026-10-31).
-  -- (watch marks those: comparing hashes here also caught what applying the band's last change had changed as a
-  -- side effect, like a frozen track's items, and held it back for good)
-  if mirror.unsent[tostring(proj) .. ev.oid] then return false end
   -- (on a track the band has deleted since: nothing to apply it to, ever. Waiting for it kept "still to come" above
-  -- 0 for good: review, 2026-10-31)
+  -- 0 for good: review, 2026-10-31. Before the unsent check below: a flag
+  -- left on a part of a deleted track held this back for good. 0.59.14, review)
   if ev.obj ~= "track" and ev.track and ev.track ~= mirror.MASTER then
     local trev, th = mirror.known(proj, ev.track)
     if trev and th == "" and not mirror.find(proj, "track", ev.track) then
@@ -2004,6 +2095,12 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
       return true
     end
   end
+  -- a change of ours to it hasn't gone out yet (Hold my changes is on, plug-ins and automation waiting to settle or
+  -- for playback to stop, a long edit): theirs waits until ours has gone, then the two are settled like any clash.
+  -- Applied at once, ours was lost with no trace, not even on the Restore page (review, 2026-10-31).
+  -- (watch marks those: comparing hashes here also caught what applying the band's last change had changed as a
+  -- side effect, like a frozen track's items, and held it back for good)
+  if mirror.unsent[tostring(proj) .. ev.oid] then return false end
   if merging then
     local ok, h = mirror.apply(proj, merging, media_dir, local_mix)
     if ok then
@@ -2045,6 +2142,7 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   -- StudioSync hashed fewer of a track's settings, so it always reads as different; the laptop saw 4 on its first open)
   -- (nor when the colour counts on one machine and not the other: SWS auto-colouring)
   local same_way = ev.obj ~= "track" or type(ev.state) ~= "table" or (ev.state.autocolour == true) == (mirror.own_colours() == true)
+    and (ev.local_mix == true) == (local_mix == true) -- (nor when one has Local mixing on and the other not: their faders count differently. 0.59.14)
   if ok and ev.hash and ev.hv == mirror.HV and same_way and h ~= ev.hash and not ev.gone then
     local band = require("band")
     local n = (tonumber(reaper.GetExtState(band.SECTION, "mirror drift " .. tostring(proj))) or 0) + 1
@@ -2450,7 +2548,8 @@ function mirror.watch(proj, cfg, song, room, opts)
     local at = o.kind == "track" and o.oid or o.track
     local what = o.kind == "fx" and "the plug-ins on" or o.kind == "env" and "the automation on"
     if o.kind == "track" and last and type(last.state) == "table" then
-      for _, f in ipairs({ "vol", "pan", "mute", "fxen", "phase", "width" }) do
+      -- (with Local mixing on, faders, pan and width here are your own and don't go out: not said. 0.59.14)
+      for _, f in ipairs(opts.local_mix and { "mute", "fxen", "phase" } or { "vol", "pan", "mute", "fxen", "phase", "width" }) do
         if tostring(o.state[f]) ~= tostring(last.state[f]) then what = "the fader, pan or mute of" end
       end
     end
@@ -2541,6 +2640,7 @@ function mirror.watch(proj, cfg, song, room, opts)
       local ok, h = mirror.apply(proj, ev, media, opts.local_mix)
       if ok then remember(proj, o.oid, ev.rev, h, ev.id, mirror.order_of(ev))
       elseif mirror.PART[o.kind] then return -- (waits for this tab to come to the front)
+      elseif o.kind == "item" and mirror.in_editor == o.oid then return -- (open in the MIDI editor: once it's closed)
       elseif o.kind == "item" and ev.track and mirror.find(proj, "track", ev.track) then
         -- (its track is here, so its recording is still on its way: deleted, your item was gone until the next change. Review, 0.58.92)
         return say_once("arriving" .. o.oid, "an item's put-back waits: the band's version of it needs a recording that hasn't reached this computer yet")
@@ -2591,6 +2691,10 @@ function mirror.watch(proj, cfg, song, room, opts)
     end
     if not gone then
       c.state = o.state
+      if o.kind == "track" and opts.local_mix then -- (the band's faders, not your own: see band_faders)
+        local last = kev ~= "" and event_file(room_dir, kev) or nil
+        c.state = mirror.band_faders(o.state, last and not last.gone and last.state)
+      end
       if o.kind == "item" then
         mirror.copy_failed = nil
         local last = kev ~= "" and event_file(room_dir, kev) or nil
@@ -2601,6 +2705,7 @@ function mirror.watch(proj, cfg, song, room, opts)
     return suggest.add(room_dir, me, who, c)
   end
   local seen = {}
+  mirror.index_for(proj) -- (put-backs find items through the index, not a walk through every item each: 0.59.14, review)
   -- a burst (hundreds of items moved at once) goes out a quarter second a pass, the rest on the next passes, which
   -- Live sync runs straight after: writing all 320 at once held REAPER up for 4.7 s (laptop, 0.34.5). What waits is
   -- marked unsent, so the band's changes to it wait too. `mirror.more`: there's more to send.
@@ -2721,7 +2826,8 @@ function mirror.watch(proj, cfg, song, room, opts)
         if o.kind == "fx" and o.ptr and not mirror.fxk_ok[rk] and loaded(proj, rk) then knobs_agreed(proj, o, rk) end
         mirror.reopened[rk], mirror.unsent[rk] = nil, nil; return
       end
-      if sent > 0 and reaper.time_precise() - t_send > 0.25 then mirror.unsent[rk], mirror.more = true, true; return end
+      -- (put-backs count too: each rewrites an item or chain, and hundreds refused at once held REAPER up as sends did. 0.59.14, review)
+      if sent + back > 0 and reaper.time_precise() - t_send > 0.25 then mirror.unsent[rk], mirror.more = true, true; return end
       -- recorded under a hash this machine no longer makes (before 0.34.4 a Mac hashed plug-in files and colours its
       -- own way): what's here IS the band's version, so it's re-anchored, not sent as a change of ours. Once per record.
       if rev and h ~= "" and not knobs_moved and not mirror.anchor_seen[rk .. "\0" .. h] then
@@ -2849,6 +2955,7 @@ function mirror.watch(proj, cfg, song, room, opts)
         local ev = { type = "obj", obj = o.kind, oid = o.oid, rev = same_edit and rev or mirror.next_rev(rev, owned), base = rev or 0, state = state, track = o.track,
           base_ev = evid ~= "" and evid or nil, -- (the version this one started from: a merge finds the base there, mirror.merge_item)
           name = name, pos = o.pos, hash = o.hash, hv = mirror.HV } -- (hash: what it is here; every receiver checks it came out the same)
+        if o.kind == "track" and opts.local_mix then ev.state, ev.local_mix = mirror.band_faders(state, last and not last.gone and last.state), true end
         if o.kind == "track" and o.ptr and (tonumber(o.state.lanes) or 0) > 1 then
           -- (the first comp area: REAPER's new lane holds only that piece, and the rest of the part goes silent, with no word: Mac, 0.42.10)
           local items = {}
@@ -2870,10 +2977,18 @@ function mirror.watch(proj, cfg, song, room, opts)
           ev.files = require("fxfiles").share(state, media, last and last.state, last and last.files) -- (samples, IRs, models it loads)
           ev.restless = mirror.restless_in(state)
           if ev.restless or mirror.modulated(state) then mirror.fx_knobs[rk] = knobs or mirror.fx_params(o.ptr) end
+        elseif o.kind == "item" and state:find("<TAKEFX", 1, true) then
+          -- (and a take plug-in's: a sampler, RS5k or a convolution reverb as take FX played silent on everyone else's. 0.59.14)
+          local files = require("fxfiles").share(mirror.take_fx(state), media, last and type(last.state) == "string" and mirror.take_fx(last.state) or nil, last and last.files)
+          if #files > 0 then ev.files = files end
         end
         local id = sync.post(cfg, song, room, ev)
         if o.kind == "fx" and o.ptr then mirror.fx_quiet[rk], mirror.fx_quiet_presets[rk] = mirror.fx_params(o.ptr), mirror.fx_presets(o.ptr); knobs_agreed(proj, o, rk) end -- (what it's changed from, next time)
         remember(proj, o.oid, ev.rev, o.hash, id, mirror.order_of(ev))
+        -- (your claimed track renamed: the claim goes with it. 0.59.14)
+        if o.kind == "track" and last and not last.gone and type(last.name) == "string" and last.name ~= "" and name ~= "" and last.name ~= name then
+          pcall(sync.claim_renamed, cfg, song, room, last.name, name)
+        end
         mirror.sessions[rk] = { rev = ev.rev, at = reaper.time_precise(), id = id }
         if name ~= "" and not ev.auto and select(2, reaper.GetProjExtState(proj, band.SECTION, "last_track")) ~= name then
           reaper.SetProjExtState(proj, band.SECTION, "last_track", name) -- (what they're working in: Who's here)
@@ -3029,7 +3144,10 @@ function mirror.watch(proj, cfg, song, room, opts)
     return a.oid < b.oid
   end)
   for _, g in ipairs(gone) do
-    if sent > 0 and reaper.time_precise() - t_send > 0.25 then mirror.more = true; break end -- (the rest next pass, as above)
+    if sent + back > 0 and reaper.time_precise() - t_send > 0.25 then mirror.more = true; break end -- (the rest next pass, as above)
+    -- (gone here, whatever happens to it below: nothing of ours waits on it. A flag left on a deleted track's plug-ins held a bandmate's
+    -- restored chain back for good, and an empty chain won. 0.59.14, review)
+    mirror.unsent[tostring(proj) .. g.oid] = nil
     local ok, err = pcall(function()
       local last = event_file(room_dir, g.evid)
       -- (its last change is named but isn't here, so the deletion can't say what it was or check who may make it. Taken for gone, it was deleted
@@ -3083,15 +3201,18 @@ function mirror.watch(proj, cfg, song, room, opts)
   for name, n in pairs(undeleted) do
     sync.put_back(string.format("%s on %s %s yours to delete: %s back", n == 1 and "that item" or (n .. " items"), name ~= "" and name or "an unnamed track", n == 1 and "isn't" or "aren't", n == 1 and "it's" or "they're"))
   end
+  mirror.index_for(nil)
   mirror.save_ids(proj)
   if rescheme and not mirror.more then reaper.SetProjExtState(proj, mirror.CSEC, "colours", scheme) end
   mirror.summary(proj, cfg, room_dir, objs, media)
   suggest.flush()
   do -- (what each track holds, for the next look: a deleted track's can't be read any more)
-    local list, names = {}, {}
+    local list, names, silent = {}, {}, {}
     for _, o in ipairs(objs) do
       if o.kind == "track" then
         names[o.oid] = o.state.name
+        if tostring(o.state.mainsend) == "0" and not mirror.said["hwout" .. tostring(proj) .. o.oid]
+            and reaper.GetTrackNumSends(o.ptr, 0) == 0 and reaper.GetTrackNumSends(o.ptr, 1) == 0 then silent[#silent + 1] = o end
         -- shortcut: VCA groups 1 to 32 only (the rest are a second pair of calls): a VCA in 33 to 64 isn't seen as holding anything.
         list[#list + 1] = { oid = o.oid, parent = o.state.parent, recv = by_oid["R" .. o.oid:sub(2)] and by_oid["R" .. o.oid:sub(2)].state,
           lead = reaper.GetSetTrackGroupMembership(o.ptr, "VOLUME_VCA_LEAD", 0, 0), follow = reaper.GetSetTrackGroupMembership(o.ptr, "VOLUME_VCA_FOLLOW", 0, 0) }
@@ -3104,6 +3225,18 @@ function mirror.watch(proj, cfg, song, room, opts)
       now[oid] = { oids = oids, names = held, name = names[oid] or "" }
     end
     mirror.holds[tostring(proj)] = now
+    -- A bandmate's track with its master send off and no send here plays silent: hardware outputs never travel. Said once, once caught up
+    -- (its sends may still be on their way before). 0.59.14
+    if #silent > 0 and sync.pending_events(proj, cfg, song, room) == 0 then
+      for _, o in ipairs(silent) do
+        local _, _, evid = mirror.known(proj, o.oid)
+        local ev = evid and evid ~= "" and not mine(evid) and event_file(room_dir, evid)
+        if ev and type(ev.user) == "string" then
+          say_once("hwout" .. tostring(proj) .. o.oid, string.format("%s goes only to a hardware output on %s's computer: it's silent here",
+            (o.state.name or "") ~= "" and o.state.name or "A track", ev.user))
+        end
+      end
+    end
   end
   return sent, back
 end
@@ -3126,7 +3259,8 @@ function mirror.summary(proj, cfg, room_dir, objs, media)
   for _, o in ipairs(objs) do
     if o.kind == "track" then tracks = tracks + 1 end
     if o.kind == "fx" then
-      for _, n in ipairs(mirror.fx_names(o.state)) do if not seen[n] then seen[n] = true; names[#names + 1] = n end end
+      -- (the names once per chain text, not every chain's every look: 0.59.14, review)
+      for _, n in ipairs(mirror.memo("n\0" .. o.state, function() return mirror.fx_names(o.state) end)) do if not seen[n] then seen[n] = true; names[#names + 1] = n end end
     end
   end
   table.sort(names)
@@ -3217,7 +3351,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
     if p.t and p.t.obj == "track" then place(p) elseif not placed[p] then placed[p] = true; sorted[#sorted + 1] = p end
   end
   list = sorted
-  local done, refused, kept, kept_names, there = 0, 0, 0, {}, 0
+  local done, refused, kept, kept_names, there, waiting = 0, 0, 0, {}, 0, 0
   local function one(p)
     local rev, h, evid = mirror.known(proj, p.oid)
     local name = p.t and p.t.name or ""
@@ -3252,7 +3386,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
         remember(proj, p.oid, ev.rev, nh, id, mirror.order_of(ev))
         done = done + 1
         p.landed = true
-      end
+      else waiting = waiting + 1 end -- (can't land here now: not sent, and said. 0.59.14, review)
     elseif not (opts.can(cfg.user, name, p.t and p.t.pos or nil) or sync.maker_may(p.t and p.t.obj == "track" and p.oid or (p.t and p.t.track) or p.oid, cfg.user, name, p.t and p.t.pos or nil, opts.mode, p.t and p.t.obj == "item" and p.oid or nil)) then
       refused = refused + 1
     elseif p.t then
@@ -3264,10 +3398,12 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
         remember(proj, p.oid, ev.rev, nh, id, mirror.order_of(ev))
         done = done + 1
         p.landed = true
-      end
+      else waiting = waiting + 1 end
     else
       local kind = mirror.KIND[p.oid:sub(1, 1)] or "item"
-      mirror.apply(proj, { obj = kind, oid = p.oid, gone = true }, media, opts.local_mix)
+      -- (a part: emptied on its track, which apply needs named. One that can't change now isn't sent: sent, this computer's chain went out
+      -- again as a change of its own. 0.59.14, review)
+      if not mirror.apply(proj, { obj = kind, oid = p.oid, gone = true, track = last and last.track }, media, opts.local_mix) then waiting = waiting + 1; return end
       local gev = { type = "obj", obj = kind, oid = p.oid, rev = (rev or 0) + 1, base = rev or 0, base_ev = evid ~= "" and evid or nil, gone = true, undoes = opts.undoes, redoes = opts.redoes,
         name = last and last.name, track = last and last.track, pos = last and last.pos } -- (named: read later, it said "an unnamed track")
       local id = sync.post(cfg, song, room, gev)
@@ -3293,9 +3429,10 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
     local names = {}
     for n in pairs(kept_names) do names[#names + 1] = n end
     table.sort(names)
-    if done == 0 and there > 0 and refused == 0 and kept == 0 then return "it's already back: REAPER rebuilt it from its pass, so nothing changed" end
-    return string.format("%d change(s) brought back and sent to the others%s%s", done, refused > 0 and string.format(" (%d not yours to change, left as they are)", refused) or "",
-      kept > 0 and string.format(" (kept what collaborators added since: %s)", table.concat(names, ", ")) or "")
+    if done == 0 and there > 0 and refused == 0 and kept == 0 and waiting == 0 then return "it's already back: REAPER rebuilt it from its pass, so nothing changed" end
+    return string.format("%d change(s) brought back and sent to the others%s%s%s", done, refused > 0 and string.format(" (%d not yours to change, left as they are)", refused) or "",
+      kept > 0 and string.format(" (kept what collaborators added since: %s)", table.concat(names, ", ")) or "",
+      waiting > 0 and string.format(". %d couldn't change here yet and weren't sent (plug-ins change only while stopped, and plug-ins, automation and sends only with this song's tab in front; an item may still be arriving, or open in the MIDI editor): do it again then", waiting) or "")
   end
   if #list <= mirror.REVERT_AT_ONCE or opts.at_once then
     reaper.Undo_BeginBlock2(proj)
@@ -3513,9 +3650,11 @@ function mirror.heal(proj, room_dir, local_mix)
       local order = mirror.order_of(ev)
       if ev.gone then
         if kh and kh ~= "" then
-          mirror.apply(proj, { obj = ev.obj, oid = oid, gone = true, track = ev.track }, room_dir .. "/media", local_mix)
-          remember(proj, oid, ev.rev, "", ev.id, order)
-          n = n + 1
+          -- (a part that can't change now, playing or its tab behind: next time, not recorded as gone with its chain still here. 0.59.14)
+          if mirror.apply(proj, { obj = ev.obj, oid = oid, gone = true, track = ev.track }, room_dir .. "/media", local_mix) then
+            remember(proj, oid, ev.rev, "", ev.id, order)
+            n = n + 1
+          end
         end
       else
         local ok, applied, h = pcall(mirror.apply, proj, ev, room_dir .. "/media", local_mix)
@@ -3588,7 +3727,9 @@ function mirror.post_into(cfg, song, from, to, list, here)
     local new = { type = "obj", obj = ev.obj, oid = ev.oid, rev = (cur and cur.rev or 0) + 1, base = cur and cur.rev or 0, base_ev = cur and cur.id,
       state = ev.state, track = ev.track, name = ev.name, pos = ev.pos, gone = ev.gone, from_room = from }
     sync.post(cfg, song, to, new)
-    if here and reaper.ValidatePtr2(0, here, "ReaProject*") then mirror.receive(here, new, tdir .. "/media", false) end
+    if here and reaper.ValidatePtr2(0, here, "ReaProject*") then -- (with that tab's own Local mixing: off, its faders took the band's. 0.59.14, review)
+      mirror.receive(here, new, tdir .. "/media", select(2, reaper.GetProjExtState(here, band.SECTION, "local_mix")) == "1")
+    end
     n = n + 1
   end
   return n
