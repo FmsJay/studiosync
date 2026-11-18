@@ -114,7 +114,7 @@ function pack.get(extras)
   return false, "no terminal found: run " .. path .. " in one"
 end
 
--- The section: on Settings > Plug-ins and the Plugins page.
+-- The section: on Settings > Extras and the Plugins page.
 local said
 function pack.draw(ctx, ImGui, cfg)
   local s = pack.status(cfg)

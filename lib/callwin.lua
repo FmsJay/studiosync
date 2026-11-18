@@ -24,6 +24,23 @@ local function volume(ctx, ImGui, label, tr, tip)
   return ch
 end
 
+-- Their voices (the call) and their playing (everyone's music), each its own level, only for you (lib/hear.lua: the live mix's "The call"
+-- and "Their playing"). Nothing recorded moves with either. (James, 0.59.27: "so call and recording audio can be changed separately")
+local function level(ctx, ImGui, label, proj, which, tip)
+  local hear = require("hear")
+  local db = db_of(hear.level(proj, which))
+  ImGui.SetNextItemWidth(ctx, -1)
+  local ch, v = ImGui.SliderDouble(ctx, label, math.max(-60, math.min(6, db)), -60, 6, db <= -60 and "off" or "%.1f dB")
+  if ch then hear.set_level(proj, which, v <= -60 and 0 or vol_of(v)) end
+  ImGui.SetItemTooltip(ctx, tip .. " Ctrl+click to type a value.")
+end
+function cw.levels(ctx, ImGui, proj)
+  ImGui.Text(ctx, "Their voices (the call)")
+  level(ctx, ImGui, "##cwcall", proj, "call", "How loud everyone's talk comes in, only for you. Their playing, and anything recorded, stay as they are.")
+  ImGui.Text(ctx, "Their playing")
+  level(ctx, ImGui, "##cwmusic", proj, "music", "How loud everyone's playing comes in (Real time mode), only for you. Their talk, and anything recorded, stay as they are.")
+end
+
 -- e: { ctx, ImGui, proj, b (the studio project in front, or nil), call_on(), set_call(v), sonobus_open(), people() -> names in the call,
 -- call_link() -> the studio's video call link or nil }
 function cw.draw(e)
@@ -83,8 +100,7 @@ function cw.draw(e)
         -- everyone coming in: the Real time track, where SonoBus brings the others in
         local rt = live.rt_track(proj, false)
         if rt then
-          ImGui.Text(ctx, "Everyone")
-          volume(ctx, ImGui, "##cwin", rt, "How loud everyone in the call (and in Real time mode) comes in, only for you.")
+          cw.levels(ctx, ImGui, proj)
           local deaf = reaper.GetMediaTrackInfo_Value(rt, "B_MUTE") == 1
           local dch, dv = ImGui.Checkbox(ctx, "Deafen (hear nobody)##cwdeaf", deaf)
           if dch then reaper.SetMediaTrackInfo_Value(rt, "B_MUTE", dv and 1 or 0) end

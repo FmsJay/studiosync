@@ -66,6 +66,32 @@ function ff.tick(dir, cfg)
   return t
 end
 
+-- The menu extension (extension/reaper_menu.cpp) from the copy StudioSync runs from, when it's newer than the one REAPER loaded: ReaPack
+-- updates it only for a ReaPack install, so a computer running StudioSync from a studio's folder or a checkout kept an old one, and Health
+-- said "older" for good (James's desktop and laptop: 1.0.5 against 1.0.6, 0.59.27). The loaded file is renamed, not overwritten (Windows
+-- holds it; a Mac's loaded dylib mustn't change under it), and the new one goes in beside it: REAPER loads it at its next start.
+-- -> true when it put one in.
+local ext_done = false
+function ff.extension_tick(dir)
+  if ext_done then return end
+  local have, want = reaper.GetExtState(band.SECTION, "menu extension"), require("tools").EXT_WANT
+  if have == "" or band.compare_versions(have, want) >= 0 then return end
+  local name = band.WIN and "reaper_studiosync-x64.dll" or band.MAC and "reaper_studiosync.dylib"
+    or (reaper.GetOS():find("arm") or reaper.GetOS():find("aarch64")) and "reaper_studiosync-aarch64.so" or "reaper_studiosync-x86_64.so"
+  local from, to = band.norm(dir) .. "/extension/" .. name, band.norm(reaper.GetResourcePath()) .. "/UserPlugins/" .. name
+  local new = band.read(from)
+  if not new or #new < 10000 then return end
+  if band.read(to) == new then ext_done = true; return end -- (already in, waiting for REAPER's restart)
+  ext_done = true
+  local old = to .. ".old-" .. have
+  os.remove(old)
+  if reaper.file_exists(to) and not os.rename(to, old) then band.log("couldn't put the new menu extension in (" .. to .. " is held): restart REAPER and it tries again"); return end
+  local ok, err = pcall(band.write_atomic, to, new)
+  if not ok then os.rename(old, to); band.log("couldn't put the new menu extension in: " .. tostring(err)); return end
+  band.log("StudioSync's menu extension " .. want .. " is in place of " .. have .. ": REAPER loads it when it next starts")
+  return true
+end
+
 -- At the top of each StudioSync script: run from a copy this computer has moved away from (an old toolbar button or key), it starts the
 -- same script in the copy it runs from now, and stops. `source`: debug.getinfo(1, "S").source. -> true when it handed over.
 function ff.handoff(source)

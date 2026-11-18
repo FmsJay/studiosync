@@ -22,10 +22,17 @@ assert(plugins.tag_key("C:\\VST3\\AG12.vst3", "VST3i") == "AG12.vst3" and plugin
 assert(plugins.tag_key("C:\\VST3\\WaveShell1.vst3<965085892", "VST3") == nil and plugins.tag_key("analysis/gfxscope", "JS") == nil, "no key for a shell or a JSFX")
 local tags = "[developer]\nreaeq.dll=Cockos\n\n[category]\nreaeq.dll=EQ\nold.dll=Delay|StudioSync\ngone.dll=StudioSync\n"
 local t2 = plugins.tags_ini(tags, { ["reaeq.dll"] = true, ["AG12.vst3"] = true })
-assert(t2:find("reaeq.dll=EQ|StudioSync", 1, true) and t2:find("old.dll=Delay\n", 1, true) and not t2:find("gone.dll", 1, true), "updated: " .. t2)
+assert(t2:find("reaeq.dll=EQ|StudioSync|StudioSync: EQ\n", 1, true) and t2:find("old.dll=Delay\n", 1, true) and not t2:find("gone.dll", 1, true), "updated: " .. t2)
 assert(t2:find("[category]\nAG12.vst3=StudioSync\n", 1, true) and t2:find("[developer]\nreaeq.dll=Cockos", 1, true), "added, developers kept: " .. t2)
 assert(plugins.tags_ini(t2, { ["reaeq.dll"] = true, ["AG12.vst3"] = true }) == t2, "unchanged the second time")
 assert(plugins.tags_ini("", { ["x.dll"] = true }) == "[category]\nx.dll=StudioSync\n", "from nothing")
+-- (0.59.27) "StudioSync: <category>" beside each of its own, Instruments for an instrument, and taken off with StudioSync
+local t3 = plugins.tags_ini("[category]\ncomp.dll=Dynamics|Mastering\nsynth.vst3=Synth\n", { ["comp.dll"] = true, ["synth.vst3"] = "i", ["new.vst3"] = "i" })
+assert(t3:find("comp.dll=Dynamics|Mastering|StudioSync|StudioSync: Dynamics|StudioSync: Mastering\n", 1, true), t3)
+assert(t3:find("synth.vst3=Synth|StudioSync|StudioSync: Synth|StudioSync: Instruments\n", 1, true), t3)
+assert(t3:find("new.vst3=StudioSync|StudioSync: Instruments\n", 1, true), t3)
+assert(plugins.tags_ini(t3, { ["comp.dll"] = true, ["synth.vst3"] = "i", ["new.vst3"] = "i" }) == t3, "unchanged the second time")
+assert(plugins.tags_ini(t3, {}) == "[category]\ncomp.dll=Dynamics|Mastering\nsynth.vst3=Synth\n", "all of StudioSync's taken off: " .. plugins.tags_ini(t3, {}))
 -- (0.58.78) an AU loads on a Mac only
 local _, _, sys = plugins.common({ { user = "Chilio", names = {}, os = "macOS-arm64" }, { user = "James", names = {}, os = "Win64" } })
 assert(sys.mac and sys.win, "both kinds of system")

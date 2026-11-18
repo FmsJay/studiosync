@@ -286,11 +286,20 @@ By hand:
   **Switch back** button until you do; the file goes when you're back. A computer others reach over Tailscale can read it
   to put itself back if it's ever left on the other network.
 - **Real time mode** (Home): hear each other live. **My time** and **Their time** go through SonoBus (Their time delays
-  your backing so the others line up); **Time-sync** goes through NINJAM, everyone playing to their own copy and hearing
-  the others exactly in time, a couple of bars late. Live audio starts off each time a project opens.
-- **The call** (Chat > Call): **Join the call**, then **Talk** to speak to everyone without arming a track, with **Mic** to
-  pick your talk input. Its own track on your computer, *StudioSync Talk*, never records and isn't in your own speakers; it
-  goes quiet only while that same input is recording. **Video call** on Home opens the studio's Discord/Zoom/Meet link.
+  your backing so the others line up); **Time-sync (recommended)** goes through NINJAM, everyone playing to their own copy and
+  hearing the others exactly in time, one NINJAM interval late (it follows the song's tempo and the server's interval, so the
+  "2 bars" figure changes with them). The three sit side by side, what each does on hover. The switch comes back as the way you
+  picked last (this song's, else the last anywhere); if you've never picked one, it shows the three and waits for you. Live
+  audio starts off each time a project opens.
+- **The call** (Chat > Call, StudioSync's own first, the studio's link under it as **3rd party call service**): **Join the call**,
+  then **Talk** to speak to everyone without arming a track, with **Mic** to pick your talk input. Its own track on your
+  computer, *StudioSync Talk*, never records and isn't in your own speakers; it goes quiet only while that same input is
+  recording. **The call apart from the playing**: your talk mic goes to SonoBus as a channel group of its own (Talk, mono,
+  beside Music), and on everyone's computer the call lands on a pair of its own, so **Their voices** and **Their playing**
+  (Chat > Call and the pop-out call window) are two levels, only for you, and what records from someone is their playing
+  alone. Each bandmate gets their own pair for their playing (six at most; the eighth pair is the call's). A bandmate on an
+  older StudioSync still comes through, talk and playing together on their pair. **Video call** on Home opens the studio's
+  Discord/Zoom/Meet link.
 - **Dry and wet**: each part shows only the take it plays (Settings > Options > Parts play, or per track in Settings >
   Advanced). **Show both takes in each part** (Settings > Advanced) shows the dry take and the studio's print together.
 - **Background renders on a Mac** use a private copy of REAPER (about 170 MB in `~/Library/Caches/StudioSync`, made once and
@@ -545,11 +554,15 @@ e-piano, organ, channel strip...; GPL-3 with MIT/AGPL parts). On Windows the plu
 together at the end without their setup windows, and Windows asks for permission once (say no and each one's own
 setup opens instead).
 
-**Getting them later:** the panel's **Settings > Plug-ins** (and the Plugins page) says how many of the pack and the extras this
+**Getting them later:** the panel's **Settings > Extras** (and the Plugins page) says how many of the pack and the extras this
 computer has, which ones others in the studio have that it doesn't, and **Get the pack** / **Get the extras** open this release's
 installer in a window of its own, doing only the plug-ins (`-PluginsOnly` on Windows, `BS_PLUGINS_ONLY=1` on Mac and Linux).
 
-**Find a plug-in** (Settings > Plug-ins and the Plugins page): a search, REAPER's own categories (its FX browser's Category list:
+**In REAPER's own FX browser**: the Category list has **StudioSync** (everything everyone has) and beside it **StudioSync: EQ**,
+**StudioSync: Dynamics**, **StudioSync: Instruments** and so on, each REAPER category of what everyone has: a StudioSync filter by
+kind in REAPER's own list (shown after REAPER restarts; made again when a bandmate's plug-ins change).
+
+**Find a plug-in** (a tab of the Plugins page, which is always there): a search, REAPER's own categories (its FX browser's Category list:
 EQ, Dynamics, Reverb...) and Instruments, and **Only what everyone has** on or off (off: all of yours, the ones everyone has marked).
 Add puts it on the selected track. REAPER's FX folders can't hold folders of their own, so this is where the categories are; the
 "StudioSync (everyone has)" folder stays as it was, made again whenever a bandmate's plug-in list changes (every 2 minutes Live

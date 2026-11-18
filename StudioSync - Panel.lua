@@ -1019,7 +1019,7 @@ local function section_plugins()
   heading("The plug-in pack", 17)
   require("pack").draw(ctx, ImGui, cfg)
 end
--- Settings > Plug-ins: the pack and its extras (always there: the Plugins page shows only with something missing, or in Advanced)
+-- Settings > Extras: the plug-in pack and its extras (James, 0.59.27: the tab was "Plug-ins")
 function ui.settings_pack()
   heading("The plug-in pack", 17)
   require("pack").draw(ctx, ImGui, cfg)
@@ -1376,6 +1376,8 @@ function ui.call_tab()
   if on then
     ui.talk_controls(true)
     ImGui.Spacing(ctx)
+    require("callwin").levels(ctx, ImGui, proj) -- (their voices and their playing, each its own level: 0.59.27)
+    ImGui.Spacing(ctx)
     if ImGui.SmallButton(ctx, "Each person's volume and mute") then sonobus_open() end
     ImGui.SetItemTooltip(ctx, "SonoBus's own window: a level and a mute for each person you hear, only for you, and nothing to do with what's recorded.")
     ImGui.TextDisabled(ctx, "Talk is never recorded. It goes quiet only while a track here records from your talk mic; then they hear that take as usual. To record a vocal, arm its track.")
@@ -1405,6 +1407,7 @@ function ui.rt_kind()
   if same_room_on() then return require("page_hear").their_time_on(proj) and "their" or "my" end
   return nil
 end
+local rt_choosing -- (the switch on with no way picked yet: the three show, nothing's on till one is. 0.59.27)
 function ui.set_rt_kind(kind) -- nil: off
   local now = ui.rt_kind()
   if kind == now then return end
@@ -1419,26 +1422,38 @@ function ui.set_rt_kind(kind) -- nil: off
   else set_same_room(false) end
   -- (kept once it's on: a Time-sync that failed, with no Tailscale, was kept, tried again at every press of the switch, and My time never came
   -- back from Home. Onboarding review, 0.59.9)
-  if kind and ui.rt_kind() == kind then reaper.SetProjExtState(proj, band.SECTION, "rt kind", kind) end
+  if kind and ui.rt_kind() == kind then
+    reaper.SetProjExtState(proj, band.SECTION, "rt kind", kind)
+    reaper.SetExtState(band.SECTION, "rt kind last", kind, true) -- (the last way picked, for a song that has none yet: 0.59.27)
+  end
+  rt_choosing = nil
 end
 -- The Real time switch (Home, the radial menu): the way picked last, or My time when that one doesn't come on.
 function ui.rt_switch(v)
   if not v then return ui.set_rt_kind(nil) end
+  -- (the way picked last: this song's, else the last picked anywhere; never picked, none: the three show and you pick. James, 0.59.27)
   local last = select(2, reaper.GetProjExtState(proj, band.SECTION, "rt kind"))
-  local ts_ok = b and require("services").tailscale_up() -- (Time-sync first, the recommended way, when it can come on. James, 0.59.24)
-  local want = last ~= "" and (b or last ~= "timesync") and last or (ts_ok and "timesync" or "my")
+  if last == "" then last = reaper.GetExtState(band.SECTION, "rt kind last") end
+  if last == "" or (last == "timesync" and not b) then
+    rt_choosing = true
+    band.log("Real time mode: pick My time, Their time or Time-sync on Home (none was picked before)") -- (from the radial menu, nothing showed)
+    return
+  end
+  local want = last
   ui.set_rt_kind(want)
   if want ~= "my" and not ui.rt_kind() then ui.set_rt_kind("my") end
 end
 local function home_play()
   local kind = ui.rt_kind()
   local on, sb = kind ~= nil, kind == "my" or kind == "their"
-  local ch, v = switch_row("##rt", "Real time mode", on, SAME_ROOM_TIP)
+  local ch, v = switch_row("##rt", "Real time mode", on or rt_choosing == true, SAME_ROOM_TIP)
   if ch then
+    if not v then rt_choosing = nil end
     ui.rt_switch(v)
     kind = ui.rt_kind(); on, sb = kind ~= nil, kind == "my" or kind == "their"
   end
-  if on then
+  if rt_choosing and not on then ImGui.TextDisabled(ctx, "Pick a way:") end
+  if on or rt_choosing then
     local bars = b and page_play.interval_bars() or 1
     ImGui.Indent(ctx, 26)
     -- (side by side, what each does on hover: three paragraphs under each other took half of Home. James, 0.59.24)
@@ -1551,8 +1566,7 @@ local function home_who()
   end
   -- (someone with only the SonoBus app: it was under Real time mode as "Invite someone without REAPER", which read as the one that installs
   -- REAPER. Here with the others, named for who it's for. James, 0.59.24)
-  if b then
-  next_to("Invite a SonoBus guest")
+  if b then -- (a line of its own: beside the others it wrapped at some widths and not others. James, 0.59.27)
   if ImGui.SmallButton(ctx, "Invite a SonoBus guest") then
     local link, why = setup.sonobus(cfg, b, proj, true)
     if not link then band.msg(why) else
@@ -2465,7 +2479,7 @@ local function page_setup()
     ImGui.EndTabItem(ctx)
   end
   if tab("Studio") then body("s studio", settings_studio); ImGui.EndTabItem(ctx) end
-  if tab("Plug-ins") then body("s pack", function() layout({ { ui.settings_find, 520 }, { ui.settings_pack, 380 } }, true) end); ImGui.EndTabItem(ctx) end -- (the pack and extras: lib/pack.lua, 0.59.22)
+  if tab("Extras") then body("s pack", ui.settings_pack); ImGui.EndTabItem(ctx) end -- (the plug-in pack and its extras: lib/pack.lua, 0.59.22; named Extras, 0.59.27)
   if tab("Advanced") then body("s advanced", function() layout({ { ui.settings_advanced, 360 }, { ui.settings_buffer, 420 } }, true) end); ImGui.EndTabItem(ctx) end
   if tab("Console") then
     -- StudioSync's own log, newest first (REAPER's console only shows it while open)
@@ -2495,7 +2509,7 @@ local PAGES = {
   { "Chat", "Messages, to-dos, notes and links for this room, this project or the whole studio." },
   { "Restore", "Every change, and three ways back: the whole project, the selected tracks, or one change." },
   { "Mixes", "Render the mix, export stems, compare two mixes, a credits draft, studio templates, a copy outside the studio, and the listening page." },
-  { "Plugins", "Every plug-in in this project, who doesn't have it, and the studio's stand-ins for it." },
+  { "Plugins", "Every plug-in in this project, who doesn't have it, the studio's stand-ins for it, and Find a plug-in." },
   { "Settings", "You, options, health (red: needs fixing, yellow: worth a look), the console and updates." },
 }
 local LOBBY = { Groups = true, Projects = true, Settings = true } -- (what there is with no group project in front. Groups isn't a tab: the group pill goes there)
@@ -2524,7 +2538,8 @@ end
 function ui.pages()
   local out = {}
   for _, p in ipairs(PAGES) do
-    local shown = (p[1] ~= "Play/Jam" or ui.play_shown()) and (ui.advanced() or (p[1] ~= "Rooms" or extras().rooms) and (p[1] ~= "Plugins" or extras().plugins))
+    -- (Plugins always: it has Find a plug-in. It showed only with something missing, or in Advanced. James, 0.59.27)
+    local shown = (p[1] ~= "Play/Jam" or ui.play_shown()) and (ui.advanced() or (p[1] ~= "Rooms" or extras().rooms))
     if b and p[1] ~= "Projects" and shown or not b and LOBBY[p[1]] then out[#out + 1] = p end
   end
   return out
@@ -3072,7 +3087,15 @@ local function frame_app()
     elseif page == "Restore" then layout({ { restore.section_recall, 400 }, { restore.section_history, 600 } })
     elseif page == "Mixes" then layout({ { restore.section_mixes, 440 }, { studio_listen, 360 } })
     elseif page == "Plugins" then
-      layout({ { function() require("page_plugins").draw(ctx, ImGui, proj, cfg) end, 760 }, { ui.settings_find, 520 }, { function() require("page_plugins").drums(ctx, ImGui, proj, cfg) end, 420 }, { section_plugins, 420 } })
+      -- (two tabs: this project's plug-ins, and Find a plug-in. James, 0.59.27)
+      if ImGui.BeginTabBar(ctx, "plugtabs") then
+        if ImGui.BeginTabItem(ctx, "This project") then
+          layout({ { function() require("page_plugins").draw(ctx, ImGui, proj, cfg) end, 760 }, { function() require("page_plugins").drums(ctx, ImGui, proj, cfg) end, 420 }, { section_plugins, 420 } })
+          ImGui.EndTabItem(ctx)
+        end
+        if ImGui.BeginTabItem(ctx, "Find a plug-in") then require("fxpick").draw(ctx, ImGui, cfg, proj); ImGui.EndTabItem(ctx) end
+        ImGui.EndTabBar(ctx)
+      end
     elseif page == "Settings" then page_setup() end
     ImGui.PopTextWrapPos(ctx)
     ui.smooth_scroll_end(scroll_key)

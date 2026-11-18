@@ -18,7 +18,7 @@ function fxpick.categories(text)
       local k, v = line:match("^(.-)=(.*)$")
       if k then
         local cats = {}
-        for c in (v .. "|"):gmatch("([^|]*)|") do if c ~= "" and c ~= plugins.CATEGORY and c ~= "BandSync" then cats[#cats + 1] = c end end
+        for c in (v .. "|"):gmatch("([^|]*)|") do if c ~= "" and c ~= "BandSync" and c:sub(1, #plugins.CATEGORY) ~= plugins.CATEGORY then cats[#cats + 1] = c end end
         out[k] = cats
       end
     end

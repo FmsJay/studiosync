@@ -156,6 +156,10 @@ function plugins.tag_key(ident, kind)
   if (kind or ""):match("^VST") and not ident:find("<", 1, true) then return ident:match("[^\\/]+$") end
 end
 -- reaper-fxtags.ini with "StudioSync" on exactly the keys in `set`, every other category kept. Pure.
+-- And "StudioSync: <its category>" beside each of its own (REAPER's FX browser lists categories in order, so "StudioSync: Dynamics",
+-- "StudioSync: EQ"... sit together under StudioSync: what everyone has, by kind, in REAPER's own list), and "StudioSync: Instruments" for
+-- an instrument (`set[key]` == "i"). James, 0.59.27: "a way to do a studiosync filter on the regular plugin list for reaper".
+local function ours(c) return c == plugins.CATEGORY or c == "BandSync" or c:sub(1, #plugins.CATEGORY + 2) == plugins.CATEGORY .. ": " end
 function plugins.tags_ini(text, set)
   local lines, sec, seen, at, out = {}, nil, {}, nil, {}
   for line in ((text or "") .. "\n"):gmatch("([^\r\n]*)\r?\n") do lines[#lines + 1] = line end
@@ -169,15 +173,21 @@ function plugins.tags_ini(text, set)
     elseif sec == "category" and line:find("=", 1, true) then
       local k, v = line:match("^(.-)=(.*)$")
       local cats = {}
-      for c in (v .. "|"):gmatch("([^|]*)|") do if c ~= "" and c ~= plugins.CATEGORY and c ~= "BandSync" then cats[#cats + 1] = c end end
-      if set[k] then cats[#cats + 1] = plugins.CATEGORY; seen[k] = true end
+      for c in (v .. "|"):gmatch("([^|]*)|") do if c ~= "" and not ours(c) then cats[#cats + 1] = c end end
+      if set[k] then
+        local own = #cats
+        cats[#cats + 1] = plugins.CATEGORY
+        for i = 1, own do cats[#cats + 1] = plugins.CATEGORY .. ": " .. cats[i] end
+        if set[k] == "i" then cats[#cats + 1] = plugins.CATEGORY .. ": Instruments" end
+        seen[k] = true
+      end
       if #cats > 0 then out[#out + 1] = k .. "=" .. table.concat(cats, "|") end
     else
       out[#out + 1] = line
     end
   end
   local add = {}
-  for k in pairs(set) do if not seen[k] then add[#add + 1] = k .. "=" .. plugins.CATEGORY end end
+  for k, v in pairs(set) do if not seen[k] then add[#add + 1] = k .. "=" .. plugins.CATEGORY .. (v == "i" and ("|" .. plugins.CATEGORY .. ": Instruments") or "") end end
   table.sort(add)
   if not at then out[#out + 1] = "[category]"; at = #out end
   for i, l in ipairs(add) do table.insert(out, at + i, l) end
@@ -203,7 +213,7 @@ function plugins.update_folder(cfg, min_members)
   if new ~= old then band.write_atomic(path, new) end
   -- and the StudioSync category (REAPER reads both when it starts: a new list shows after a restart)
   local keys = {}
-  for _, it in ipairs(items) do local k = plugins.tag_key(it.ident, it.kind); if k then keys[k] = true end end
+  for _, it in ipairs(items) do local k = plugins.tag_key(it.ident, it.kind); if k then keys[k] = it.kind:match("i$") and "i" or true end end
   local tpath = reaper.GetResourcePath() .. "/reaper-fxtags.ini"
   local told = band.read(tpath) or ""
   local tnew = plugins.tags_ini(told, keys)

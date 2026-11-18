@@ -41,7 +41,7 @@ for k = 1, 10 do many[k] = "P" .. string.format("%02d", k) end
 local m = hear.order(many, "x")
 local c = 0
 for _ in pairs(m) do c = c + 1 end
-assert(c == hear.PAIRS - 1 and m.P01 == 2 and m.P07 == 14 and m.P08 == nil, "7 pairs of their own at most")
+assert(c == hear.PAIRS - 2 and m.P01 == 2 and m.P06 == 12 and m.P07 == nil, "6 pairs of their own at most (the last is the call's: 0.59.27)")
 -- (only plain names from the status files: they go into SonoBus's saved state as they are. Review, 0.59.14)
 local band = package.loaded.band
 band.clean = function(s) return (s:gsub("[^%w%-_ ]", ""):match("^%s*(.-)%s*$")) end

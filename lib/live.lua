@@ -522,6 +522,15 @@ function live.rt_sends(proj)
       if not fed[tr] then reaper.CreateTrackSend(tr, rt) end
     end
   end
+  -- (the talk mic into SonoBus's Talk group: mono from its input, onto the Real time track's channel 3, never 1-2 with the playing. 0.59.27)
+  if talk then
+    for s = 0, reaper.GetTrackNumSends(talk, 0) - 1 do
+      if reaper.GetTrackSendInfo_Value(talk, 0, s, "P_DESTTRACK") == rt then
+        if reaper.GetTrackSendInfo_Value(talk, 0, s, "I_SRCCHAN") ~= 1024 then reaper.SetTrackSendInfo_Value(talk, 0, s, "I_SRCCHAN", 1024) end
+        if reaper.GetTrackSendInfo_Value(talk, 0, s, "I_DSTCHAN") ~= 2 then reaper.SetTrackSendInfo_Value(talk, 0, s, "I_DSTCHAN", 2) end
+      end
+    end
+  end
   return n
 end
 

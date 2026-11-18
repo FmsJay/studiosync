@@ -79,6 +79,9 @@ function setup.sonobus(cfg, b, proj, open)
     new = sonobus.set_buffer(new, sonobus.BUFFER.defnetbuf * 1000, sonobus.BUFFER.defnetauto) or new
   end
   if not sonobus.quality_ok(new, sonobus.SEND) then new = sonobus.set_quality(new, sonobus.SEND) or new end
+  -- (the talk mic as a group of its own, and each bandmate's talk to the call's pair: the call apart from the playing. 0.59.27)
+  if not sonobus.input_split_ok(new) then new = sonobus.set_input_split(new) or new end
+  if not sonobus.talk_ok(new, outs, hear.TALK) then new = sonobus.set_talk(new, outs, hear.TALK) or new end
   if new ~= chunk then
     reaper.TrackFX_SetNamedConfigParm(m, i, "vst_chunk", new)
     reaper.TrackFX_SetOffline(m, i, true) -- reloading it with that state is what makes it join

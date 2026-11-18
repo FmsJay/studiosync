@@ -7,15 +7,21 @@ local band = require("band")
 local hear = {}
 
 hear.NAME = "StudioSync live mix"
-hear.PAIRS = 8 -- SonoBus pairs on the Real time track: 1 for everyone without their own, 7 for bandmates
+hear.PAIRS = 8 -- SonoBus pairs on the Real time track: 1 for everyone without their own, 6 for bandmates, 1 for the call
+-- The call apart from the playing (James, 0.59.27: "can they be separate so call and recording audio can be changed separately?"): each
+-- computer sends its talk mic as a SonoBus channel group of its own (lib/sonobus.lua set_input_split), and here every bandmate's talk
+-- goes to the last pair (hear.TALK, 0-based), which the live mix plays at the call's own level. Their playing stays on their own pair, so
+-- what records from them has no talk in it, and the call's level never moves what's recorded.
+hear.TALK = 2 * (hear.PAIRS - 1)
 hear.MAX_MS = 1000
 
 hear.JSFX = [[
 desc:StudioSync live mix
 //tags: StudioSync
 // Written by StudioSync (lib/hear.lua) and rewritten when StudioSync changes it: edits here don't last.
-// Channels 1-2: your own backing and playing. 3-18: what SonoBus brings in, a pair per person (3-4: everyone without
-// their own pair). Out on 1-2: the backing (delayed by "their time") plus each person at their level.
+// Channels 1-2: your own backing and playing. 3-16: what SonoBus brings in, a pair per person (3-4: everyone without
+// their own pair). 17-18: everyone's talk (the call). Out on 1-2: the backing (delayed by "their time"), each person at
+// their level times "Their playing", and the call at its own level.
 slider1:0<0,1000,1>Their time: your backing later by (ms)
 slider2:1<0,2,0.01>Everyone else
 slider3:1<0,2,0.01>Bandmate 1
@@ -24,8 +30,9 @@ slider5:1<0,2,0.01>Bandmate 3
 slider6:1<0,2,0.01>Bandmate 4
 slider7:1<0,2,0.01>Bandmate 5
 slider8:1<0,2,0.01>Bandmate 6
-slider9:1<0,2,0.01>Bandmate 7
+slider9:1<0,2,0.01>The call (everyone's talk)
 slider10:0<0,255,1>Pairs whose right channel is a position stamp (bits)
+slider11:1<0,2,0.01>Their playing (everyone's music)
 in_pin:backing L
 in_pin:backing R
 in_pin:everyone else L
@@ -42,7 +49,7 @@ in_pin:bandmate 5 L
 in_pin:bandmate 5 R
 in_pin:bandmate 6 L
 in_pin:bandmate 6 R
-in_pin:bandmate 7 L
+in_pin:call L
 in_pin:bandmate 7 R
 out_pin:L
 out_pin:R
@@ -78,8 +85,8 @@ stamped ? (
   stamped & 1 ? spl3 = spl2; stamped & 2 ? spl5 = spl4; stamped & 4 ? spl7 = spl6; stamped & 8 ? spl9 = spl8;
   stamped & 16 ? spl11 = spl10; stamped & 32 ? spl13 = spl12; stamped & 64 ? spl15 = spl14; stamped & 128 ? spl17 = spl16;
 );
-l += slider2 * spl2 + slider3 * spl4 + slider4 * spl6 + slider5 * spl8 + slider6 * spl10 + slider7 * spl12 + slider8 * spl14 + slider9 * spl16;
-r += slider2 * spl3 + slider3 * spl5 + slider4 * spl7 + slider5 * spl9 + slider6 * spl11 + slider7 * spl13 + slider8 * spl15 + slider9 * spl17;
+l += slider11 * (slider2 * spl2 + slider3 * spl4 + slider4 * spl6 + slider5 * spl8 + slider6 * spl10 + slider7 * spl12 + slider8 * spl14) + slider9 * spl16;
+r += slider11 * (slider2 * spl3 + slider3 * spl5 + slider4 * spl7 + slider5 * spl9 + slider6 * spl11 + slider7 * spl13 + slider8 * spl15) + slider9 * spl17;
 spl0 = l; spl1 = r;
 spl2 = spl3 = spl4 = spl5 = spl6 = spl7 = spl8 = spl9 = spl10 = spl11 = spl12 = spl13 = spl14 = spl15 = spl16 = spl17 = 0;
 ]]
@@ -142,7 +149,7 @@ function hear.order(names, me)
   local list, out = {}, {}
   for _, n in ipairs(names) do if n ~= me then list[#list + 1] = n end end
   table.sort(list)
-  for k = 1, math.min(#list, hear.PAIRS - 1) do out[list[k]] = 2 * k end
+  for k = 1, math.min(#list, hear.PAIRS - 2) do out[list[k]] = 2 * k end -- (the last pair is the call's: hear.TALK)
   return out
 end
 function hear.bandmates(cfg, b)
@@ -176,6 +183,16 @@ end
 function hear.set_on(proj, name, on)
   local m, i = hear.mix(proj, false)
   if m then reaper.TrackFX_SetParam(m, i, slot(proj, name), on and 1 or 0) end
+end
+-- The call's level and everyone's playing's, as gains (0-2: the live mix's "The call" and "Their playing"). Only for you; nothing recorded moves.
+local LEVEL = { call = 8, music = 10 }
+function hear.level(proj, which)
+  local m, i = hear.mix(proj, false)
+  return m and reaper.TrackFX_GetParam(m, i, LEVEL[which]) or 1
+end
+function hear.set_level(proj, which, gain)
+  local m, i = hear.mix(proj, false)
+  if m then reaper.TrackFX_SetParam(m, i, LEVEL[which], math.max(0, math.min(2, gain))) end
 end
 -- Whether `name` has a pair of their own here (else they share "everyone else" with anyone else without one).
 function hear.own_pair(proj, name) return hear.pairs(proj)[name] ~= nil end

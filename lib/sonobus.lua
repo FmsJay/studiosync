@@ -334,6 +334,98 @@ function sonobus.set_quality(b64, idx)
   return pack_chunk(c)
 end
 
+-- The talk mic as a channel group of its own (James, 0.59.27: the call apart from the playing). What this computer sends: group 1
+-- "Music", stereo from input 1 (the Real time track's 1-2: armed tracks, the click, a guest's mix), and group 2 "Talk", mono from input 3
+-- (where the talk track's send lands: lib/live.lua rt_sends). Each is a copy of SonoBus's own first group (from 1.7.2's saved state,
+-- InputChannelGroups { numChanGroups } with a ChannelGroup each), so its levels and processing stay as they were.
+sonobus.SPLIT = { { 0, 2, "Music" }, { 2, 1, "Talk" } }
+local function deep(t)
+  local c = { type = t.type, props = {}, children = {} }
+  for i, p in ipairs(t.props) do c.props[i] = { p[1], p[2] } end
+  for i, ch in ipairs(t.children) do c.children[i] = deep(ch) end
+  return c
+end
+local function setp(t, name, raw)
+  local p = prop(t, name)
+  if p then p[2] = raw else t.props[#t.props + 1] = { name, raw } end
+end
+local function int_of(t, name) local p = prop(t, name); return p and p[2]:sub(1, 1) == "\1" and string.unpack("<i4", p[2], 2) or nil end
+function sonobus.input_split_ok(b64)
+  local c = unpack_chunk(b64)
+  local g = c and child(c.tree, "InputChannelGroups")
+  if not g then return c == nil end
+  if int_of(g, "numChanGroups") ~= #sonobus.SPLIT or #g.children ~= #sonobus.SPLIT then return false end
+  for k, s in ipairs(sonobus.SPLIT) do
+    if int_of(g.children[k], "chanstart") ~= s[1] or int_of(g.children[k], "numchan") ~= s[2] then return false end
+  end
+  return true
+end
+function sonobus.set_input_split(b64)
+  local c = unpack_chunk(b64)
+  if not c then return nil, "not a SonoBus state StudioSync understands" end
+  local g = child(c.tree, "InputChannelGroups")
+  if not g then g = { type = "InputChannelGroups", props = {}, children = {} }; table.insert(c.tree.children, g) end
+  local first = g.children[1] or channel_group(0)
+  local list = {}
+  for k, s in ipairs(sonobus.SPLIT) do
+    local cg = deep(first)
+    setp(cg, "chanstart", v_int(s[1])); setp(cg, "numchan", v_int(s[2])); setp(cg, "name", v_str(s[3]))
+    list[k] = cg
+  end
+  g.children = list
+  setp(g, "numChanGroups", v_int(#sonobus.SPLIT))
+  return pack_chunk(c)
+end
+-- Each bandmate's two groups here, as they send them (Music stereo, Talk mono): their music on their own pair, their talk on the call's
+-- (`talk`, 0-based). Marked as set by hand, with the same channel count as they send, so SonoBus keeps it when they join (SonoBus
+-- applyLayoutFormatToPeer: only an unmodified layout, or one whose channel count changed, is laid out again). A bandmate on an older
+-- StudioSync sends one group: SonoBus lays that out afresh and their playing still lands on their pair.
+local function split_groups(e, start, talk)
+  local groups = child(e, "ChannelGroups")
+  if not groups then groups = { type = "ChannelGroups", props = {}, children = {} }; table.insert(e.children, groups) end
+  local first = groups.children[1] or channel_group(start)
+  local music, voice = deep(first), deep(first)
+  setp(music, "chanstart", v_int(0)); setp(music, "numchan", v_int(2)); setp(music, "pandeststart", v_int(start)); setp(music, "pandestchans", v_int(2))
+  setp(voice, "chanstart", v_int(2)); setp(voice, "numchan", v_int(1)); setp(voice, "pandeststart", v_int(talk)); setp(voice, "pandestchans", v_int(2))
+  setp(voice, "name", v_str("Talk"))
+  groups.children = { music, voice }
+  setp(e, "numChanGroups", v_int(2))
+  setp(e, "modifiedChanGroups", "\2")
+end
+-- Whether every bandmate in `outs` has their talk on `talk` here.
+function sonobus.talk_ok(b64, outs, talk)
+  local c = unpack_chunk(b64)
+  local map = c and child(c.tree, "PeerStateCacheMap")
+  if not map then return c == nil end
+  for name in pairs(outs) do
+    local hit = false
+    for _, e in ipairs(map.children) do
+      local n = prop(e, "name")
+      if n and n[2] == v_str(name) then
+        local g = child(e, "ChannelGroups")
+        local v = g and g.children[2]
+        hit = v ~= nil and int_of(v, "pandeststart") == talk and int_of(v, "chanstart") == 2
+      end
+    end
+    if not hit then return false end
+  end
+  return true
+end
+function sonobus.set_talk(b64, outs, talk)
+  local c = unpack_chunk(b64)
+  if not c then return nil, "not a SonoBus state StudioSync understands" end
+  local map = child(c.tree, "PeerStateCacheMap")
+  if not map then return b64 end
+  for _, e in ipairs(map.children) do
+    local n = prop(e, "name")
+    local en = n and n[2]:match("^\5(.*)%z$")
+    for name, start in pairs(outs) do
+      if en and sonobus.same_user(en, name) then split_groups(e, start, talk) end
+    end
+  end
+  return pack_chunk(c)
+end
+
 -- Where SonoBus sends `name` (first output channel), or nil when it has no entry for them.
 function sonobus.output_of(b64, name)
   local c = unpack_chunk(b64)

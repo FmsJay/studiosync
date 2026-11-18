@@ -206,7 +206,7 @@ function H.maint_rows()
     local want = require("tools").EXT_WANT
     if have ~= "" and band.compare_versions(have, want) < 0 then
       rows[#rows + 1] = { "menu ext", false, "yellow", "", "StudioSync's menu extension here is " .. have .. ", older than this StudioSync's " .. want ..
-        ": Extensions > ReaPack > Synchronize packages, then restart REAPER." }
+        ": restart REAPER. (StudioSync puts the new one in by itself from the copy it runs from; a ReaPack install gets it with Extensions > ReaPack > Synchronize packages.)" }
     end
   end
   -- (without them less works, quietly: onboarding review, 0.59.9)
