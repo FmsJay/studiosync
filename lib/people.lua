@@ -127,6 +127,36 @@ function people.pick(cfg, rgb)
     cache[root] = nil
   end
 end
+-- How far apart two colours look (0xRRGGBB): the "redmean" distance, which weighs red, green and blue as eyes do, 0 to about 765. Pure.
+function people.distance(a, b)
+  local r1, g1, b1 = (a >> 16) & 255, (a >> 8) & 255, a & 255
+  local r2, g2, b2 = (b >> 16) & 255, (b >> 8) & 255, b & 255
+  local rm, dr, dg, db = (r1 + r2) / 2, r1 - r2, g1 - g2, b1 - b2
+  return math.sqrt((2 + rm / 256) * dr * dr + 4 * dg * dg + (2 + (255 - rm) / 256) * db * db)
+end
+people.ALIKE = 70 -- (under this, two people's tracks are hard to tell apart at a glance: the palette's nearest two, yellow and orange, are 73 apart)
+-- The pairs of people whose colours look alike, { { a, b }, ... } in name order. `colours`: { user = rgb }. Pure.
+function people.alike(colours)
+  local names, out = {}, {}
+  for u in pairs(colours) do names[#names + 1] = u end
+  table.sort(names)
+  for i = 1, #names do
+    for j = i + 1, #names do
+      if people.distance(colours[names[i]], colours[names[j]]) < people.ALIKE then out[#out + 1] = { names[i], names[j] } end
+    end
+  end
+  return out
+end
+-- The palette colour farthest from everyone else's, for `me`. Pure.
+function people.distinct(colours, me)
+  local best, best_d
+  for _, c in ipairs(people.PALETTE) do
+    local d = math.huge
+    for u, x in pairs(colours) do if u ~= me then d = math.min(d, people.distance(c, x)) end end
+    if not best_d or d > best_d then best, best_d = c, d end
+  end
+  return best
+end
 function people.mode()
   local m = reaper.GetExtState(band.SECTION, "colour base")
   if m == "" then m = reaper.GetExtState(band.SECTION, "track colours") end -- (before 0.58.79)

@@ -126,7 +126,11 @@ local function loop_body()
   if disk and disk ~= band.VERSION and disk == seen_disk and not band.update_ok(dir, disk) and reaper.GetExtState(band.SECTION, "update asked") ~= disk
       and reaper.GetPlayState() == 0 and band.files_complete(dir) then -- (and only once every file has arrived: lib/band.lua)
     reaper.SetExtState(band.SECTION, "update asked", disk, true) -- (once per version)
-    if reaper.MB("StudioSync " .. disk .. " has arrived in the shared folder (this computer runs StudioSync from there).\n\n" ..
+    local trusted = select(2, pcall(require("fromfolder").trusted_copy, dir)) == true
+    if trusted then -- (the studio updates through its folder: taken without asking. lib/fromfolder.lua, 0.59.32)
+      reaper.SetExtState(band.SECTION, "update ok", disk, true)
+      band.log("StudioSync " .. disk .. " arrived in the studio's folder: switching to it (the studio updates through its folder)")
+    elseif reaper.MB("StudioSync " .. disk .. " has arrived in the shared folder (this computer runs StudioSync from there).\n\n" ..
         "Anyone in the studio can put a new version there. Only say Yes if you expected an update from your studio.\n\nSwitch to it now?", "StudioSync", 4) == 6 then
       reaper.SetExtState(band.SECTION, "update ok", disk, true)
     else band.log("StudioSync " .. disk .. " in the shared folder wasn't switched to (you said no). StudioSync asks again when it next starts (lib/band.lua band.code_guard, 0.59.14): ask your studio about it") end

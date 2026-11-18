@@ -237,6 +237,12 @@ function tools.guest_invite_button(ctx, ImGui, my_id, root, label)
 end
 -- Guests in a studio, with when each one's time is up, End now and Longer (owner and admins: a mark from anyone else doesn't count).
 local guests_at, guests_of = {}, {} -- (read every 2 s, not every frame: the marks are files)
+-- When `user`'s time as a guest of this studio is up, in words, or nil: they aren't one. (Who's here's clock icon, 0.59.32)
+function tools.guest_until(root, user)
+  local removal = require("removal")
+  if not guests_at[root] or reaper.time_precise() - guests_at[root] > 2 then guests_at[root], guests_of[root] = reaper.time_precise(), removal.guests(root, os.time()) end
+  for _, g in ipairs(guests_of[root]) do if g.user == user then return removal.when(g.ends, os.time()) end end
+end
 function tools.guests_list(ctx, ImGui, root, may)
   local removal = require("removal")
   local now = os.time()

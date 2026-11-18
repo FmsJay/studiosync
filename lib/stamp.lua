@@ -200,6 +200,8 @@ on ? (
             ) : ( next_offset = new_off; next_from = burst_at; );
             last_stamp = s_now;
             gmem[0] = count; gmem[1] = k * EVERY;
+            // (how late it is here: your playhead when the burst began, less where they played it. Their time measures with it: lib/latency.lua)
+            playing ? ( gmem[7] = (rpos - (s_now - burst_at)) / srate - k * EVERY; gmem[8] += 1; );
           ) : ( gmem[6] += 1; );
         );
       );
@@ -295,6 +297,11 @@ function stamp.read(proj, on, start)
   reaper.TrackFX_SetParam(tr, i, 0, on and 1 or 0)
   if on then reaper.TrackFX_SetParam(tr, i, 1, start or 0) end
   return true
+end
+-- How late the newest burst was here (seconds: your playhead against where they played it) and how many have been timed so far.
+function stamp.lateness()
+  if reaper.gmem_attach then reaper.gmem_attach("StudioSyncStamp") end
+  return { late = reaper.gmem_read(7), n = reaper.gmem_read(8) }
 end
 -- What the reader's found, for this computer: { count, pos (the newest stamp's song position), written (how far the tape goes), active (they're playing), at (your playhead) }.
 function stamp.status()

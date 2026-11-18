@@ -50,13 +50,13 @@ function page.set_their_time(proj, their)
     return band.log("you hear in your own time again: your backing on time, the others as they arrive")
   end
   reaper.SetProjExtState(proj, band.SECTION, "hear their time", "1")
-  local want = guest.on(proj) and guest.delay(proj) or tonumber(ext(proj, "their ms")) or 100
+  local want = guest.on(proj) and guest.delay(proj) or require("latency").delay(proj) or tonumber(ext(proj, "their ms")) or 100
   hear.set_delay(proj, want)
   band.log(string.format("you hear in their time: your backing %d ms later, so the others line up with it (listening, not playing)", want))
 end
 page.MY_TIME_TIP = "You hear everyone as it arrives: your backing on time, them a little late (the network)."
 page.THEIR_TIME_TIP = "Delays your backing so their playing lines up with it. For listening along, not for playing.\n" ..
-  "The delay to set: a guest's measured one, or each collaborator's in SonoBus's window (the number after the down arrow)."
+  "The delay is measured: while you play, StudioSync times each collaborator who's playing too, and holds your backing back by the latest."
 
 -- Under the Real time mode switch, while it's on. `no_radios`: Home draws My time / Their time itself (with Time-sync beside them).
 function page.realtime(ctx, ImGui, proj, no_radios)
@@ -79,8 +79,20 @@ function page.realtime(ctx, ImGui, proj, no_radios)
     local ch, v = ImGui.DragInt(ctx, "##their", ms, 1, 0, hear.MAX_MS, "%d ms")
     if ch then hear.set_delay(proj, v); reaper.SetProjExtState(proj, band.SECTION, "their ms", tostring(v)) end
     if ImGui.IsItemDeactivatedAfterEdit(ctx) then band.log(string.format("their time: your backing %d ms later", math.floor(hear.delay(proj) + 0.5))) end
-    ImGui.SetItemTooltip(ctx, "How much later your backing comes. Drag, or double-click to type.")
+    ImGui.SetItemTooltip(ctx, "How much later your backing comes: measured while you play (lib/latency.lua), or drag, or double-click to type.")
   end
+  -- (what each one measured: James, 0.59.32)
+  local said = {}
+  for name in pairs(hear.pairs(proj)) do
+    local v = require("latency").of(proj, name)
+    if v then said[#said + 1] = string.format("%s %d ms", name, v) end
+  end
+  table.sort(said)
+  local timing = require("latency").asking(proj)
+  local line = timing and ("timing " .. timing .. "...") or (#said > 0 and ("measured: " .. table.concat(said, ", ")) or "measured once you both play")
+  beside(line)
+  ImGui.TextDisabled(ctx, line)
+  ImGui.SetItemTooltip(ctx, "How late each collaborator arrives here, timed with short bursts on their right channel while you both play (you hear them in mono for those few seconds). Again every two minutes in Their time, which holds your backing back by the latest; every ten in My time, which only shows it.")
   local g = guest.on(proj)
   beside("SonoBus Guest")
   local chg, gv = ImGui.Checkbox(ctx, "SonoBus Guest", g) -- (James, 0.58.85; was "SonoBus-only singer")
@@ -146,8 +158,11 @@ function page.produce_button(ctx, ImGui, proj, cfg, b, name)
     end
   end
   if on then ImGui.PopStyleColor(ctx) end
+  -- (in plainer words, and what you choose: James found it confusing, 0.59.32)
   ImGui.SetItemTooltip(ctx, on and ("You're producing " .. name .. ". Click to stop.") or
-    ("Hear " .. name .. " record, on your grid, as it happens: your song plays a moment behind theirs, from your own copy, so they land right on it.\n" .. (producer.via(proj) == "stamp" and "You can talk to them between takes. " or "") .. "They needn't do anything."))
+    ("Produce " .. name .. ": you hear them as they record, lined up with your copy of the song. Yours plays a moment behind theirs, so what they play lands in time on your grid.\n\n" ..
+    "You choose who runs their transport (on Home, under Producing): you (Play, Record, Stop and the loop, from your cursor) or them." ..
+    (producer.via(proj) == "stamp" and " You can talk to them between takes." or "") .. " They needn't set anything up."))
 end
 
 -- ReaNINJAM's window stays out of sight (lib/live.lua): what it says about its connection, here instead. Read once a second: it walks the window's controls.
@@ -166,10 +181,11 @@ function page.producer(ctx, ImGui, proj, cfg, b, rows)
   if by ~= "" then
     ImGui.TextColored(ctx, theme.ACCENT, by .. " is producing you")
     ImGui.SetItemTooltip(ctx, "They hear what you record on their grid, a moment behind you. Nothing changes for you: record as usual.")
-    local ch, on = ImGui.Checkbox(ctx, "Let them start and stop my transport##letdrive", producer.lets() == by)
-    if ch then producer.set_lets(on and by or nil); band.log(on and (by .. " can now play, record and stop your transport from their panel") or "only you start and stop your transport now") end
-    ImGui.SetItemTooltip(ctx, "Gives " .. by .. " Play, Record and Stop for your REAPER, from their cursor: handy when your hands are on an instrument.\n" ..
-      "Only " .. by .. ", only while they produce you. Remembered on this computer.")
+    -- (the producer chooses who runs your transport: lib/producer.lua producer.ctl. James, 0.59.32)
+    local ctl = producer.lets_for(proj)
+    ImGui.TextDisabled(ctx, ctl and (ctl .. " starts, stops and loops your transport") or "You start and stop your transport")
+    ImGui.SetItemTooltip(ctx, ctl and ("While producing you, " .. ctl .. " presses Play, Record and Stop for your REAPER, from where their cursor is, and your loop follows theirs. They chose it (Produce > who controls the transport); it ends when they stop producing you.")
+      or (by .. " hears you on their grid but leaves Play, Record and Stop to you. They chose it, and can change it."))
     page.ninjam_line(ctx, ImGui)
     for _, st in ipairs(require("presence").peers(cfg, b.song, b.room)) do
       if st.produce == cfg.user and st.playing and reaper.GetPlayStateEx(proj) & 1 == 0 then
@@ -216,7 +232,16 @@ function page.producer(ctx, ImGui, proj, cfg, b, rows)
   page.fit(ctx, ImGui, "Stop")
   if ImGui.SmallButton(ctx, "Stop") then producer.stop(proj, cfg, b) end
   ImGui.SetItemTooltip(ctx, "Back to your own transport.")
-  -- their transport, from here, if they let you (lib/producer.lua producer.remote)
+  -- who runs their transport: your choice (lib/producer.lua producer.ctl)
+  ImGui.AlignTextToFramePadding(ctx)
+  ImGui.TextDisabled(ctx, "Transport:")
+  for _, c in ipairs({ { "producer", "I control it", "You press Play, Record and Stop for " .. name .. ", from your cursor, and their loop follows yours. They see that you do." },
+      { "them", name .. " controls it", name .. " starts and stops their own transport; you follow a moment behind." } }) do
+    page.fit(ctx, ImGui, c[2], 26)
+    if ImGui.RadioButton(ctx, c[2] .. "##prodctl", producer.ctl(proj) == c[1]) then producer.set_ctl(proj, c[1]) end
+    ImGui.SetItemTooltip(ctx, c[3])
+  end
+  -- their transport, from here, once their computer has taken your choice (lib/producer.lua producer.remote)
   if them and producer.has(them.lets, cfg.user) then
     ImGui.AlignTextToFramePadding(ctx)
     ImGui.TextDisabled(ctx, name .. "'s transport:")
@@ -233,8 +258,8 @@ function page.producer(ctx, ImGui, proj, cfg, b, rows)
       ImGui.SetItemTooltip(ctx, btn[4])
     end
     if not armed then ImGui.SameLine(ctx); ImGui.TextDisabled(ctx, "(nothing armed)") end
-  elseif them then
-    ImGui.TextDisabled(ctx, name .. " can let you start and stop their transport (on their Home)")
+  elseif them and producer.ctl(proj) == "producer" then
+    ImGui.TextDisabled(ctx, "Waiting for " .. name .. "'s computer to hand you their transport...")
   end
 end
 

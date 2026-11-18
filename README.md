@@ -423,7 +423,10 @@ stretch ("bars 9 to 12 rush"), shaded across it on REAPER 7.86 and later; on old
 Each message is its own small file, so nothing ever clashes.
 
 Home opens with **Since you were last here**: the others' changes and takes, new messages and notes, until you
-press OK. On the Projects page, right-click a project for its **Stage** (Idea, Writing, Tracking, Mixing, Done), shown
+press OK. **See what changed** opens Restore with only those changes; click one, then **Show it**, and StudioSync selects
+what it touched (the item, or its track), scrolls to it and flashes it. In Who's here, **Working in "track"** is a link too: it
+selects that track and puts the edit cursor where they last changed something. The owner shows a crown, admins a shield and
+guests a clock, each with its role on hover. On the Projects page, right-click a project for its **Stage** (Idea, Writing, Tracking, Mixing, Done), shown
 beside its name for everyone. **Settings > Advanced > Show advanced controls** shows side rooms, region and time claims,
 Solo and Produce, and the Plugins page; off, each still shows when it has something to say. A new project starts with
 *Who controls: Claims*; the studio's owner or an admin can change it there.
@@ -465,6 +468,9 @@ Google Drive copy, and nobody in your other studios sees it. `_band/band.json` i
 (name, Syncthing folder id, Drive folder name); a folder without one is the first studio (Syncthing id `bandsync`,
 Drive folder `StudioSync`).
 
+- **Produce**: you hear someone record, lined up on your grid a moment behind them. You choose who runs their transport (Home,
+  under Producing): **I control it** (Play, Record and Stop from your cursor, and their loop follows yours) or **They control it**.
+  Their computer goes by your choice and shows it.
 - **Who runs a studio**: whoever started it is its **owner**, and can make people **admins** on their cards in Who's here. Admins let people in, rename it and remove members. Only the owner can remove an admin, make someone else the owner, or close it. This trusts the people in the studio: the list is a shared file, not a lock.
 - **Rename**, **Close** and **Leave** (the Studios page, for any studio you're in): a new name reaches everyone, and folder names stay as they are. Leaving stops this computer syncing it: you keep your copy, its projects stay open as ordinary projects, and someone can invite you again. The owner hands it over first, or closes it. Your only studio can't be left, unless nobody in it has been online for a week: closed or removed while you were offline, nothing can reach you to say so, and the panel says so then.
 - **Start a new studio** (the Studios page): makes its folder beside your first studio's (`StudioSync <Name>`) and its
@@ -500,8 +506,10 @@ With Real time mode on:
   master with **StudioSync live mix**, a small effect of your own that never goes to the others. Up to 7 collaborators get a
   pair; anyone else (a guest, an eighth collaborator) shares one.
 - **My time / Their time**: in your time you hear them as it arrives, a little late. *Their time* holds your own
-  backing back by that much, so what they play lines up with it: for listening along, not for playing. SonoBus's window
-  shows each person's delay (the number after the down arrow); with a guest, use their measured delay.
+  backing back by that much, so what they play lines up with it: for listening along, not for playing. The delay is
+  measured: while you both play, StudioSync times each collaborator with the position bursts Produce uses (a few seconds on
+  their right channel, heard in mono meanwhile) and holds your backing back by the latest, again every two minutes. My time
+  shows the same measurements (every ten minutes) without moving anything. With a guest, use their measured delay.
 - **Guests**: **Invite a guest** picks how long they stay (days, or a date) and which projects they see (every one, or only those
   ticked). When their computer asks to join, Let them in uses that invitation. Every computer stops syncing with theirs when it
   ends (a guest invitation's Tailscale access ends then too); their copy stays with them. The guests list has **End now**,

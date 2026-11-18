@@ -579,11 +579,12 @@ local function poll()
     -- (the view and the cursor only while someone follows you, their one reader (presence.follow): each scroll or click rewrote this file and
     -- Syncthing sent it to everyone. Being followed puts them in at once, as the follower's own status shows it. 0.59.14, review)
     editing = require("presence").editing(proj), view = followed and require("presence").view(proj) or nil, ping = require("presence").my_ping(proj),
-    last_track = select(2, reaper.GetProjExtState(proj, band.SECTION, "last_track")),
+    last_track = select(2, reaper.GetProjExtState(proj, band.SECTION, "last_track")), last_at = tonumber((select(2, reaper.GetProjExtState(proj, band.SECTION, "last_at")))),
     follow = reaper.GetExtState(band.SECTION, "follow " .. tostring(proj)), follow_driver = reaper.GetExtState(band.SECTION, "follow driver") ~= "" or nil,
     listen = reaper.GetExtState(band.SECTION, "listen " .. tostring(proj)),
     produce = require("producer").who(proj), produce_via = require("producer").who(proj) and require("producer").via(proj) or nil, stamping = reaper.GetExtState(band.SECTION, "stamping " .. tostring(proj)) ~= "" or nil,
-    lets = require("producer").lets() or nil } -- (whoever produces me may start and stop my transport: their panel shows its buttons)
+    produce_ctl = require("producer").who(proj) and require("producer").ctl(proj) or nil, measure = require("latency").asking(proj),
+    lets = require("producer").lets_for(proj) } -- (whoever produces me may start and stop my transport: their panel shows its buttons)
   if info.follow == "" then info.follow = nil end
   if followed then info.mix = require("presence").my_mix(proj) end -- (someone follows you: they hear your mix. lib/presence.lua)
   if followed and not info.playing then info.cursor = math.floor(reaper.GetCursorPositionEx(proj) * 1000 + 0.5) / 1000 end -- (followers' cursors go here: lib/presence.lua)
@@ -601,8 +602,8 @@ local function poll()
   end
   if info.listen == "" then info.listen = nil end
   local fingerprint = tostring(info.live) .. tostring(info.call) .. tostring(info.follow) .. tostring(info.follow_driver) .. tostring(info.listen) .. tostring(info.rt) .. tostring(info.rt_silent) .. tostring(info.cursor) .. band.json_encode(sync.holdings(proj)) .. tostring(driver) .. info.pending .. tostring(hold) .. band.json_encode(armed) ..
-    tostring(info.side) .. tostring(info.playing) .. tostring(info.recording) .. tostring(info.front) .. tostring(info.mirror) .. tostring(info.lets) ..
-    band.json_encode({ info.editing, info.view or false, info.ping or false }) .. info.last_track
+    tostring(info.side) .. tostring(info.playing) .. tostring(info.recording) .. tostring(info.front) .. tostring(info.mirror) .. tostring(info.lets) .. tostring(info.produce_ctl) .. tostring(info.measure) ..
+    band.json_encode({ info.editing, info.view or false, info.ping or false }) .. info.last_track .. tostring(info.last_at)
   if fingerprint ~= status_json or now - last_status > 15 then
     status_json, last_status, status_info = fingerprint, now, info
     sync.write_status(proj, cfg, b.song, b.room, info)
@@ -634,7 +635,7 @@ end
 local function take_cue(ev)
   if not ev or (ev.id and fired[ev.id]) or (not ev.remote and (ev.at or 0) < cue_at) then return end
   if ev.remote then -- a producer starting or stopping someone's transport (lib/producer.lua): only theirs, with their say-so
-    if not require("producer").remote_ok(ev, cfg.user, require("producer").lets(), reaper.GetExtState(band.SECTION, "produced by " .. key), together.now()) then return end
+    if not require("producer").remote_ok(ev, cfg.user, require("producer").lets_for(proj), reaper.GetExtState(band.SECTION, "produced by " .. key), together.now()) then return end
     -- (from where they asked, however late it arrived: a take starts where it was meant to. Fired as it lands, not at their clock's moment, and it
     -- doesn't hold back the band's own cues: a producer whose clock ran ahead made this one wait, and everything after it. Review, 0.58.45)
     ev.behind, ev.at = true, math.min(tonumber(ev.at) or together.now(), together.now())
@@ -646,6 +647,12 @@ local function take_cue(ev)
         return band.log(tostring(ev.lead) .. " asked to record you, but nothing is armed here: arm a track, and they can press Record again")
       end
     end
+    if ev.loop then -- (their loop comes with it: lib/producer.lua producer.remote)
+      if type(ev.loop) == "table" and tonumber(ev.loop[1]) and tonumber(ev.loop[2]) then
+        reaper.GetSet_LoopTimeRange2(proj, true, true, tonumber(ev.loop[1]), tonumber(ev.loop[2]), false)
+        reaper.GetSetRepeatEx(proj, 1)
+      end
+    elseif ev.loop == false then reaper.GetSetRepeatEx(proj, 0) end
     transport = ev
     return
   elseif ev.follow and not side_bars() and not follows(ev.lead) then return end
@@ -703,7 +710,7 @@ local function tick_body() -- returns true to keep going
     for _, k in ipairs({ "follow", "listen", "listen had", "listeners", "send whole mix", "alone", "held", "produce", "transport", "together",
         "sonobus for listeners", "outbox", "live owner", "ping", "slow tick", "last here", "draw", "live began", "takelanes",
         -- (and these: a new tab at the same address showed a count-in, a producer, a SonoBus trouble or a drift that were the closed tab's. Review, 0.59.14)
-        "end session", "produced by", "stamping", "together_at", "rt group", "rt silent", "rt silent who", "rt trouble", "driver_away", "mirror drift",
+        "end session", "produced by", "producer controls", "timing", "produce ctl", "stamping", "together_at", "rt group", "rt silent", "rt silent who", "rt trouble", "driver_away", "mirror drift",
         "ninjam shown", "ninjam off", "ninjam start", "ninjam connect", "ninjam host" }) do reaper.DeleteExtState(band.SECTION, k .. " " .. key, false) end
     return band.log("live sync stopped: '" .. b.song .. "'" .. (b.room ~= "main" and (", side room '" .. b.room .. "',") or "") .. " was closed (it starts again by itself when you reopen it)")
   end

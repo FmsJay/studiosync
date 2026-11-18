@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.59.31", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.59.32", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -777,6 +777,10 @@ function band.code_guard(dir)
   if verdict == "record" then
     had = code_record(dir, now)
     if changed[1] then band.log("StudioSync " .. tostring(version) .. " from the shared folder: its code is remembered as the one you said yes to") end
+  elseif verdict == "ask" and select(2, pcall(function() return require("fromfolder").trusted_copy(dir) end)) == true then
+    -- (a studio that updates through its folder: its members are trusted, so what's there is used without asking. 0.59.32)
+    had = code_record(dir, now)
+    band.log("StudioSync's code in the studio's folder changed (" .. table.concat(changed, ", ", 1, math.min(#changed, 6)) .. "): used, as the studio updates through its folder")
   elseif verdict == "ask" then
     local sig = band.code_hash(band.json_encode(now))
     local list = table.concat(changed, ", ", 1, math.min(#changed, 6)) .. (#changed > 6 and (" and " .. (#changed - 6) .. " more") or "")

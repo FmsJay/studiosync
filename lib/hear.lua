@@ -102,6 +102,14 @@ function hear.install()
     f:write(hear.JSFX)
     f:close()
   end
+  -- (the live mix from before the rename stays where it was, for songs that still have it until their live audio is set up again: but
+  -- named for StudioSync, as REAPER lists it. James, 0.59.32)
+  local old = reaper.GetResourcePath() .. "/Effects/BandSync/BandSync live mix.jsfx"
+  local text = band.read(old)
+  if text and text:find("BandSync", 1, true) then
+    local f = io.open(old, "wb")
+    if f then f:write((text:gsub("desc:BandSync live mix", "desc:StudioSync live mix (older copy)"):gsub("//tags: BandSync", "//tags: StudioSync"):gsub("BandSync", "StudioSync"))); f:close() end
+  end
   return "JS:StudioSync/StudioSync live mix.jsfx"
 end
 
@@ -115,14 +123,15 @@ function hear.mix(proj, add)
   local m = reaper.GetMasterTrack(proj)
   for i = 0, reaper.TrackFX_GetCount(m) - 1 do
     local name = select(2, reaper.TrackFX_GetFXName(m, i, ""))
-    if name:find(hear.NAME, 1, true) then
+    local older = name:find("BandSync live mix", 1, true) or name:find("live mix (older copy)", 1, true)
+    if name:find(hear.NAME, 1, true) and not older then
       if not add or reaper.TrackFX_GetNumParams(m, i) >= SLIDERS + 3 then return m, i end -- (+3: REAPER's own wet, bypass and delta)
       carried = {}
       for p = 0, reaper.TrackFX_GetNumParams(m, i) - 4 do carried[p] = reaper.TrackFX_GetParam(m, i, p) end -- (its sliders: the last 3 are REAPER's own)
       reaper.TrackFX_Delete(m, i)
       break
     end
-    if name:find("BandSync live mix", 1, true) then -- (from before the rename: its levels are set again each look)
+    if older then -- (from before the rename: its levels are set again each look)
       if not add then return m, i end
       reaper.TrackFX_Delete(m, i)
       break

@@ -33,12 +33,26 @@ local function has(list, name) for _, who in ipairs(names(list)) do if who == na
 producer.has = has
 function producer.lets() local v = reaper.GetExtState(band.SECTION, producer.LET); return v ~= "" and v ~= "1" and v or nil end -- ("1": before 0.58.45, for anyone)
 function producer.set_lets(who) if who and who ~= "" then reaper.SetExtState(band.SECTION, producer.LET, who, true) else reaper.DeleteExtState(band.SECTION, producer.LET, true) end end
+-- Who starts, stops and loops the performer's transport while you produce them: the producer chooses ("producer", the default, or "them"), and
+-- the performer's computer goes by it (their status says so: producer.tick). It was the performer's own tick box, which nobody found while
+-- their hands were on an instrument. James, 0.59.32.
+function producer.ctl(proj) return reaper.GetExtState(band.SECTION, "produce ctl " .. tostring(proj)) == "them" and "them" or "producer" end
+function producer.set_ctl(proj, v) reaper.SetExtState(band.SECTION, "produce ctl " .. tostring(proj), v == "them" and "them" or "producer", true) end
+-- The producers this tab takes Play, Record and Stop from: those producing it who chose to control it ("A, B"), or nil.
+function producer.lets_for(proj)
+  local v = reaper.GetExtState(band.SECTION, "producer controls " .. tostring(proj))
+  return v ~= "" and v or nil
+end
 -- kind: "start" or "stop"; rec: record, not just play. -> the cue's id, or nil + why
 function producer.remote(proj, cfg, b, kind, rec)
   local name = producer.who(proj)
   if not name then return nil, "you're not producing anyone" end
   local ev = { type = kind, at = require("together").now(), pos = reaper.GetCursorPositionEx(proj), countin = 0, lead = cfg.user, remote = name,
     rec = kind == "start" and rec or nil }
+  if kind == "start" then -- (and your loop: theirs loops the same, or stops looping. James, 0.59.32)
+    local ls, le = reaper.GetSet_LoopTimeRange2(proj, false, true, 0, 0, false)
+    ev.loop = reaper.GetSetRepeatEx(proj, -1) == 1 and le > ls and { ls, le } or false
+  end
   local id = require("sync").post(cfg, b.song, b.room, ev)
   band.log(string.format("%s %s %s", kind == "stop" and "stopping" or (rec and "recording" or "playing"), name,
     kind == "stop" and "" or string.format("from %.2f s (your cursor)", ev.pos)))
@@ -267,13 +281,20 @@ local started_sending, ninjam_up, ninjam_said, ninjam_at = {}, {}, {}, {}
 function producer.tick(proj, cfg, b, peers)
   local stamp = require("stamp")
   -- someone's producing me: stamps go out for as long as they do
-  local tab, by = tostring(proj), {}
+  local tab, by, ctl, asked = tostring(proj), {}, {}, {}
   local through_ninjam = false
   for _, st in ipairs(peers) do
     if st.produce == cfg.user then
       by[#by + 1] = st.user
+      if st.produce_ctl == "producer" then ctl[#ctl + 1] = st.user end
       through_ninjam = through_ninjam or st.produce_via == "ninjam"
     end
+    if st.measure == cfg.user then asked[#asked + 1] = st.user end -- (timing you for their Their time: lib/latency.lua)
+  end
+  local ctl_now = table.concat(ctl, ", ")
+  if ctl_now ~= reaper.GetExtState(band.SECTION, "producer controls " .. tab) then
+    reaper.SetExtState(band.SECTION, "producer controls " .. tab, ctl_now, false)
+    band.log(ctl_now ~= "" and (ctl_now .. " starts, stops and loops your transport while producing you") or "you start and stop your own transport")
   end
   local now = table.concat(by, ", ")
   local was = reaper.GetExtState(band.SECTION, "produced by " .. tab)
@@ -345,13 +366,13 @@ function producer.tick(proj, cfg, b, peers)
       if ok then band.log(now .. " hears you through the NINJAM server")
       elseif ninjam_said[tab] ~= why then ninjam_said[tab] = why; band.log(now .. " wants to hear you, but: " .. tostring(why)) end
     end
-  elseif now ~= "" then
+  elseif now ~= "" or (#asked > 0 and require("live").realtime_on(proj)) then -- (bursts for whoever times you, too: lib/latency.lua)
     if ninjam_up[tab] then ninjam_off(proj); ninjam_up[tab] = nil end
     local live, m, i = require("live"), nil, nil
     m, i = live.fx(proj, false, live.SONOBUS)
     if not m or reaper.TrackFX_GetOffline(m, i) then
       local link, why = require("setup").sonobus(cfg, b, proj, true)
-      if not link then return band.log(now .. " wants to hear you, but: " .. tostring(why)) end
+      if not link then return band.log((now ~= "" and now or table.concat(asked, ", ")) .. " wants to hear you, but: " .. tostring(why)) end
       started_sending[tab] = true
     end
     local inp, out = reaper.GetInputOutputLatency()
@@ -359,7 +380,7 @@ function producer.tick(proj, cfg, b, peers)
     if srate <= 0 then srate = tonumber(select(2, reaper.GetAudioDeviceInfo("SRATE"))) or 48000 end
     stamp.send(proj, true, ((inp or 0) + (out or 0)) / srate * 1000)
     reaper.SetExtState(band.SECTION, "stamping " .. tab, "1", false)
-  elseif was ~= "" then
+  elseif was ~= "" or reaper.GetExtState(band.SECTION, "stamping " .. tab) ~= "" then
     if ninjam_up[tab] then ninjam_off(proj) end
     ninjam_up[tab], ninjam_said[tab], ninjam_at[tab] = nil, nil, nil
     stamp.send(proj, false)
@@ -380,6 +401,7 @@ function producer.tick(proj, cfg, b, peers)
     end
   end
   hear.set_stamped(proj, mask)
+  pcall(require("latency").tick, proj, cfg, b, peers) -- (Their time, timed: lib/latency.lua)
   -- I'm producing someone
   local name = producer.who(proj)
   if not name then return end

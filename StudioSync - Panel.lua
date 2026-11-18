@@ -439,6 +439,19 @@ local TIPS = {
   ["Not now"] = "Hide this invitation.",
   ["Come see!"] = "Ask everyone with this project open to come to this room.",
 }
+-- Text size (Settings > Look; the review's "a text size setting"): every size the panel asks for, scaled. 0.59.32.
+local text_scale, text_scale_at = 1, -1
+function ui.text_scale()
+  if reaper.time_precise() - text_scale_at > 1 then
+    text_scale_at = reaper.time_precise()
+    text_scale = math.max(0.8, math.min(1.6, tonumber(reaper.GetExtState(band.SECTION, "text size")) or 1))
+  end
+  return text_scale
+end
+do
+  local push = ImGui.PushFont
+  ImGui.PushFont = function(c, font, size) return push(c, font, size and math.floor(size * ui.text_scale() + 0.5) or size) end
+end
 ImGui.SetItemTooltip = function(c, text)
   if ImGui.BeginItemTooltip(c) then
     ImGui.PushTextWrapPos(c, ImGui.GetFontSize(c) * 26)
@@ -856,11 +869,36 @@ function ui.person_name(p, size)
   ImGui.PopFont(ctx)
   ImGui.SetItemTooltip(ctx, p.user == cfg.user and "You. Right-click: your name and colour." or "Right-click: their role, what they can change, or take them out.")
   ui.person_menu(p)
+  -- (an icon, its role on hover: the word "admin" wrapped beside a long name. James, 0.59.32)
   local role = require("groups").role(cfg.root, p.user)
-  if role == "owner" or role == "admin" then
-    ImGui.SameLine(ctx, 0, 6)
-    ImGui.TextDisabled(ctx, role)
+  local until_ = tools.guest_until(cfg.root, p.user)
+  if until_ then role = "guest" end
+  local tips = { owner = "Owner: runs the studio. Lets people in and out, makes admins, and can close it.",
+    admin = "Admin: lets people in, renames, and takes members out.",
+    guest = "Guest: invited for a while, until " .. tostring(until_) .. ". Nothing syncs with their computer after that." }
+  if not tips[role] then return end
+  local h = ImGui.GetTextLineHeight(ctx)
+  ImGui.SameLine(ctx, 0, 6)
+  local x, y = ImGui.GetCursorScreenPos(ctx)
+  ImGui.InvisibleButton(ctx, "##role" .. tostring(p.user), h, h)
+  local dl, c = ImGui.GetWindowDrawList(ctx), ImGui.IsItemHovered(ctx) and theme.TEXT or (role == "owner" and YELLOW or role == "admin" and ACCENT or theme.MUTED)
+  if role == "owner" then -- a crown
+    local b, t = y + h * 0.8, y + h * 0.25
+    ImGui.DrawList_AddRectFilled(dl, x + h * 0.15, b - h * 0.14, x + h * 0.85, b, c, 1)
+    ImGui.DrawList_AddTriangleFilled(dl, x + h * 0.15, b - h * 0.12, x + h * 0.15, t + h * 0.15, x + h * 0.38, b - h * 0.12, c)
+    ImGui.DrawList_AddTriangleFilled(dl, x + h * 0.3, b - h * 0.12, x + h * 0.5, t, x + h * 0.7, b - h * 0.12, c)
+    ImGui.DrawList_AddTriangleFilled(dl, x + h * 0.62, b - h * 0.12, x + h * 0.85, t + h * 0.15, x + h * 0.85, b - h * 0.12, c)
+  elseif role == "admin" then -- a shield
+    local cx = x + h / 2
+    ImGui.DrawList_AddQuadFilled(dl, x + h * 0.18, y + h * 0.2, x + h * 0.82, y + h * 0.2, x + h * 0.82, y + h * 0.5, x + h * 0.18, y + h * 0.5, c)
+    ImGui.DrawList_AddTriangleFilled(dl, x + h * 0.18, y + h * 0.5, x + h * 0.82, y + h * 0.5, cx, y + h * 0.9, c)
+  else -- a clock: here for a while
+    local cx, cy, r = x + h / 2, y + h / 2, h * 0.38
+    ImGui.DrawList_AddCircle(dl, cx, cy, r, c, 0, 1.5)
+    ImGui.DrawList_AddLine(dl, cx, cy, cx, cy - r * 0.7, c, 1.5)
+    ImGui.DrawList_AddLine(dl, cx, cy, cx + r * 0.55, cy, c, 1.5)
   end
+  ImGui.SetItemTooltip(ctx, tips[role])
 end
 -- Solo someone (was "Listen", beside a "hear" switch that read the same: James, 0.58.82): only them in your ears, their whole mix, or
 -- (following them) what they play, on top of your own copy of the song. lib/hear.lua.
@@ -880,21 +918,36 @@ function ui.listen_button(p)
     "with Follow on you get what they're playing or recording, over your own copy of the song, so it's in better quality and you can watch it land."))
 end
 -- Under a person in Who's here (James, 2026-11-02): what they're working in or last worked in, opening to all they've claimed.
-function ui.person_claims(user, last_track)
+function ui.person_claims(user, last_track, last_at)
   local list = ui.claims_of(user)
+  local there
   if (last_track or "") ~= "" then -- (a track that's gone isn't where anyone's working: Mac, 0.50.4)
-    local there = false
-    for i = 0, reaper.CountTracks(proj) - 1 do there = there or select(2, reaper.GetTrackName(reaper.GetTrack(proj, i))) == last_track end
+    for i = 0, reaper.CountTracks(proj) - 1 do
+      local tr = reaper.GetTrack(proj, i)
+      if not there and select(2, reaper.GetTrackName(tr)) == last_track then there = tr end
+    end
     if not there then last_track = "" end
   end
   if #list == 0 and (last_track or "") == "" then return end
   local head = (last_track or "") ~= "" and ('Working in "' .. last_track .. '"') or list[1].short
   if #list > 0 then head = head .. string.format("  (%d claim%s)", #list, #list == 1 and "" or "s") end
   if ui.short then next_to(ImGui.CalcTextSize(ctx, head) + 34) end -- (beside the name: a line each cost three people half the column)
-  if #list == 0 then return ImGui.TextDisabled(ctx, head) end
+  -- (a click goes there: their track selected and in view, the edit cursor where they last changed something. James, 0.59.32)
+  local function go_there()
+    if not there then return end
+    ImGui.SetItemTooltip(ctx, "Click: go to " .. last_track .. (last_at and (" at " .. reaper.format_timestr_pos(last_at, "", -1)) or "") ..
+      ", where " .. (user == cfg.user and "you" or user) .. " last changed something.")
+    if ImGui.IsItemHovered(ctx) then ImGui.SetMouseCursor(ctx, ImGui.MouseCursor_Hand) end
+    if not ImGui.IsItemClicked(ctx, 0) then return end
+    reaper.SetOnlyTrackSelected(there)
+    reaper.Main_OnCommandEx(40913, 0, proj) -- Track: Vertical scroll selected tracks into view
+    if last_at then reaper.SetEditCurPos2(proj, last_at, true, false) end
+  end
+  if #list == 0 then ImGui.TextDisabled(ctx, head); return go_there() end
   local open = ImGui.TreeNodeEx(ctx, "claims " .. user, "", ImGui.TreeNodeFlags_None)
   ImGui.SameLine(ctx, 0, 0)
   ImGui.TextWrapped(ctx, head) -- (a tree node's own label doesn't wrap: a long track name ran off the card)
+  go_there()
   if open then
     ImGui.PushID(ctx, user)
     ui.claim_chips(list, true)
@@ -1597,14 +1650,14 @@ local function home_who()
   local ps = reaper.GetPlayStateEx(proj)
   local my_kind, my_call = ui.live_now()
   people[1] = { name = cfg.user .. " (you)", user = cfg.user, state = "here", armed = armed, recording = ps & 4 == 4, playing = ps & 1 == 1,
-    driving = view.driver == cfg.user, last_track = select(2, reaper.GetProjExtState(proj, band.SECTION, "last_track")),
+    driving = view.driver == cfg.user, last_track = select(2, reaper.GetProjExtState(proj, band.SECTION, "last_track")), last_at = tonumber((select(2, reaper.GetProjExtState(proj, band.SECTION, "last_at")))),
     live = my_kind == "timesync" and "ts" or my_kind and "rt" or nil, call = my_call }
   -- (away people hidden on request: James, 0.59.3. ExtState "who hide away")
   local hide_away, away = reaper.GetExtState(band.SECTION, "who hide away") ~= "", 0
   for _, r in ipairs(view.rows) do
     if hide_away and r.state == "offline" then away = away + 1 else
       people[#people + 1] = { name = r.name, user = r.name, state = r.state, armed = r.armed, recording = r.recording, playing = r.playing,
-        driving = r.name == view.driver, version = r.version, mirror = r.mirror, last_track = r.last_track, live = r.live, call = r.call }
+        driving = r.name == view.driver, version = r.version, mirror = r.mirror, last_track = r.last_track, last_at = r.last_at, live = r.live, call = r.call }
     end
   end
   do
@@ -1638,7 +1691,7 @@ local function home_who()
         end
       end
       if p.state ~= "here" then pcall(function() require("page_hear").person(ctx, ImGui, proj, p.name) end) end -- (hear them live or not)
-      ui.person_claims(p.user, p.last_track)
+      ui.person_claims(p.user, p.last_track, p.last_at)
       ui.leaving_row(p)
     end
     if #view.rows == 0 then ImGui.TextDisabled(ctx, "Nobody else is in this room yet. Invite a collaborator (above) copies a message to send them; once they're in, they show here.") end
@@ -1682,7 +1735,7 @@ local function home_who()
         end
       end
       if p.state ~= "here" then pcall(function() require("page_hear").person(ctx, ImGui, proj, p.name) end) end -- (hear them live or not)
-      ui.person_claims(p.user, p.last_track)
+      ui.person_claims(p.user, p.last_track, p.last_at)
       ui.leaving_row(p)
       -- (a right-click anywhere on the card, not only on the name: James, 0.59.3)
       if ImGui.IsWindowHovered(ctx, ImGui.HoveredFlags_ChildWindows) and ImGui.IsMouseClicked(ctx, 1) and not ImGui.IsAnyItemHovered(ctx) then
@@ -1838,6 +1891,15 @@ function ui.away()
   local parts = a.parts and #a.parts > 0 and table.concat(a.parts, "  ·  ") or ""
   if held > 0 then parts = parts .. (parts ~= "" and "  ·  " or "") .. held .. (held == 1 and " track shows" or " tracks show") .. " who changed it" end
   ImGui.TextColored(ctx, ACCENT, "Since you were last here" .. (a.since and (" (" .. require("chooser").ago(a.since, os.date("!*t")) .. ")") or "") .. ": " .. parts)
+  -- (to the changes themselves: Restore, filtered to them, each with Show it. James, 0.59.32)
+  if a.since and a.parts and #a.parts > 0 then
+    ImGui.SameLine(ctx, 0, 8)
+    if ImGui.SmallButton(ctx, "See what changed##away") then
+      require("page_restore").show_since(a.since)
+      reaper.SetExtState(band.SECTION, "panel do", "history", false)
+    end
+    ImGui.SetItemTooltip(ctx, "Restore's list of changes, only what the others did since you were last here. Click one, then Show it, to go to it.")
+  end
 end
 -- live ideas (what came over Real time or Time-sync, to keep or drop): on Home while either is on (James, 0.59.3: not in Chat)
 local function home_ideas()
@@ -1886,6 +1948,12 @@ local function settings_look()
         reaper.SetExtState(band.SECTION, "panel page", "Settings", false); reaper.SetExtState(band.SECTION, "setup tab", "Look", false)
         reload_now = true
       end
+    end
+    do -- (the review's "a text size setting": every word in the panel, bigger or smaller. 0.59.32)
+      ImGui.SetNextItemWidth(ctx, 160)
+      local ch, v = ImGui.SliderDouble(ctx, "Text size##textsize", ui.text_scale() * 100, 80, 160, "%.0f%%")
+      if ch then reaper.SetExtState(band.SECTION, "text size", string.format("%.2f", v / 100), true); text_scale_at = -1 end
+      ImGui.SetItemTooltip(ctx, "How big the panel's words are on this computer, 80% to 160%. Double-click to type.")
     end
     if theme.name == "Custom" then -- your own theme: four colours, the rest worked out (it reopens when you let go of a colour)
       local c = theme.custom()
@@ -2318,6 +2386,66 @@ function ui.persona_row()
 end
 
 -- What most people never need: Hold my changes causes more clashes than it saves, and prints happen by themselves.
+-- Tailscale's API: guests until a day you pick, and the policy lines (lib/services.lua). Whoever runs the Tailscale network makes the token.
+function ui.tailscale_token()
+  local services = require("services")
+  ImGui.Spacing(ctx)
+  -- (one token per network, 0.58.94: someone running two studios' networks keeps a token for each)
+  local nets = services.tailscale_token_nets()
+  local here = select(2, services.tailnet_now())
+  local function add_button(label)
+    if ImGui.SmallButton(ctx, "Make a token") then band.open_url("https://login.tailscale.com/admin/settings/keys") end
+    ImGui.SetItemTooltip(ctx, "Tailscale's Keys page, signed in to the account that runs the network: Generate access token. It lasts 1 to 90 days; copy it, then add it here.")
+    next_to(label)
+    if ImGui.SmallButton(ctx, label) then
+      local ok, t = reaper.GetUserInputs("StudioSync: Tailscale access token", 1, "Token (tskey-api-...),extrawidth=260", "")
+      t = ok and t:match("^%s*(tskey%-api%-[%w%-]+)%s*$")
+      if t then
+        local net, why = services.add_tailscale_token(t)
+        band.log(net and ("Tailscale access token for " .. net .. " saved on this computer") or ("couldn't save the token: " .. tostring(why)))
+      elseif ok then band.log("that isn't a Tailscale access token: it starts tskey-api-") end
+    end
+    ImGui.SetItemTooltip(ctx, "Kept for the Tailscale network it belongs to (Tailscale says which), so each studio's guests go on that studio's network.")
+  end
+  if #nets == 0 then
+    ImGui.TextDisabled(ctx, "Run the studio's Tailscale network? An access token lets StudioSync put guests on your Tailscale network too, and set up its tags for you.")
+    add_button("Add the token")
+  else
+    for _, net in ipairs(nets) do
+      ImGui.AlignTextToFramePadding(ctx)
+      ImGui.Text(ctx, net == "" and "Tailscale access token saved (StudioSync checks which network it's for the first time it's used)"
+        or ("Tailscale access token for " .. net .. (net == here and " (this computer is on it)" or "")))
+      next_to("Forget")
+      if ImGui.SmallButton(ctx, "Forget##tstok" .. net) then
+        services.set_tailscale_token("", net)
+        band.log("Tailscale access token" .. (net ~= "" and (" for " .. net) or "") .. " forgotten on this computer")
+      end
+    end
+    add_button("Add a token for another network")
+    next_to("Set up the tags")
+    if ImGui.SmallButton(ctx, "Set up the tags") then
+     if services.tailscale_token(here) == "" then
+      local have = {}
+      for _, n in ipairs(services.tailscale_token_nets()) do if n ~= "" then have[#have + 1] = n end end
+      band.msg(here and ("This computer is on " .. here .. ", and there's no access token for it here" .. (#have > 0 and (" (only for " .. table.concat(have, ", ") .. ")") or "") ..
+        ".\n\nSwitch Tailscale to the network your token is for, or add a token for this one.") or "Tailscale isn't on here: turn it on (or sign in) first.")
+     else
+      local ok, how = services.tailscale_add_tags(function()
+        return reaper.MB("Your Tailscale network lets every computer on it reach every other one, guests included.\n\n" ..
+          "StudioSync can change that one rule so guests reach only its file sharing (Syncthing) and jams (NINJAM) on your computers. " ..
+          "Your own computers and your collaborators' stay as they are.\n\nIf a later StudioSync needs more than that, its notes will say so.\n\nLimit what guests can reach?", "StudioSync", 4) == 6
+      end, here)
+      band.log(not ok and ("couldn't set up the tags: " .. tostring(how))
+        or (how == "limited" or how == "has it") and "Tailscale's policy has StudioSync's tags, and guests reach only its file sharing and jams on your computers"
+        or how == "own rules" and "Tailscale's policy has StudioSync's tags. It has rules of its own, so StudioSync left those alone: guests reach whatever they allow"
+        or "Tailscale's policy has StudioSync's tags; guests can still reach whatever your policy allows")
+     end
+    end
+    ImGui.SetItemTooltip(ctx, "Adds the tagOwners lines to the Tailscale network's policy: computers StudioSync's installer signs in then stay signed in,\n" ..
+      "and guest invitations put guests on Tailscale too. On Tailscale's starting policy it also offers to limit guests to StudioSync's file sharing and jams.\n" ..
+      "It works on the network this computer is on now" .. (here and (" (" .. here .. ")") or "") .. ", with that network's token.")
+  end
+end
 function ui.settings_advanced()
   if card("advanced") then
     if not ui.short then heading("Advanced", 17) end
@@ -2346,65 +2474,8 @@ function ui.settings_advanced()
       local listed, out = band.sync_actions(dir)
       band.log(string.format("the Actions list has %d StudioSync action(s) now%s", listed, out > 0 and (" (" .. out .. " taken out)") or ""))
     end
-    do -- Tailscale's API: guests until a day you pick, and the policy lines (lib/services.lua). Whoever runs the Tailscale network makes the token.
-      local services = require("services")
-      ImGui.Spacing(ctx)
-      -- (one token per network, 0.58.94: someone running two studios' networks keeps a token for each)
-      local nets = services.tailscale_token_nets()
-      local here = select(2, services.tailnet_now())
-      local function add_button(label)
-        if ImGui.SmallButton(ctx, "Make a token") then band.open_url("https://login.tailscale.com/admin/settings/keys") end
-        ImGui.SetItemTooltip(ctx, "Tailscale's Keys page, signed in to the account that runs the network: Generate access token. It lasts 1 to 90 days; copy it, then add it here.")
-        next_to(label)
-        if ImGui.SmallButton(ctx, label) then
-          local ok, t = reaper.GetUserInputs("StudioSync: Tailscale access token", 1, "Token (tskey-api-...),extrawidth=260", "")
-          t = ok and t:match("^%s*(tskey%-api%-[%w%-]+)%s*$")
-          if t then
-            local net, why = services.add_tailscale_token(t)
-            band.log(net and ("Tailscale access token for " .. net .. " saved on this computer") or ("couldn't save the token: " .. tostring(why)))
-          elseif ok then band.log("that isn't a Tailscale access token: it starts tskey-api-") end
-        end
-        ImGui.SetItemTooltip(ctx, "Kept for the Tailscale network it belongs to (Tailscale says which), so each studio's guests go on that studio's network.")
-      end
-      if #nets == 0 then
-        ImGui.TextDisabled(ctx, "Run the studio's Tailscale network? An access token lets StudioSync put guests on your Tailscale network too, and set up its tags for you.")
-        add_button("Add the token")
-      else
-        for _, net in ipairs(nets) do
-          ImGui.AlignTextToFramePadding(ctx)
-          ImGui.Text(ctx, net == "" and "Tailscale access token saved (StudioSync checks which network it's for the first time it's used)"
-            or ("Tailscale access token for " .. net .. (net == here and " (this computer is on it)" or "")))
-          next_to("Forget")
-          if ImGui.SmallButton(ctx, "Forget##tstok" .. net) then
-            services.set_tailscale_token("", net)
-            band.log("Tailscale access token" .. (net ~= "" and (" for " .. net) or "") .. " forgotten on this computer")
-          end
-        end
-        add_button("Add a token for another network")
-        next_to("Set up the tags")
-        if ImGui.SmallButton(ctx, "Set up the tags") then
-         if services.tailscale_token(here) == "" then
-          local have = {}
-          for _, n in ipairs(services.tailscale_token_nets()) do if n ~= "" then have[#have + 1] = n end end
-          band.msg(here and ("This computer is on " .. here .. ", and there's no access token for it here" .. (#have > 0 and (" (only for " .. table.concat(have, ", ") .. ")") or "") ..
-            ".\n\nSwitch Tailscale to the network your token is for, or add a token for this one.") or "Tailscale isn't on here: turn it on (or sign in) first.")
-         else
-          local ok, how = services.tailscale_add_tags(function()
-            return reaper.MB("Your Tailscale network lets every computer on it reach every other one, guests included.\n\n" ..
-              "StudioSync can change that one rule so guests reach only its file sharing (Syncthing) and jams (NINJAM) on your computers. " ..
-              "Your own computers and your collaborators' stay as they are.\n\nIf a later StudioSync needs more than that, its notes will say so.\n\nLimit what guests can reach?", "StudioSync", 4) == 6
-          end, here)
-          band.log(not ok and ("couldn't set up the tags: " .. tostring(how))
-            or (how == "limited" or how == "has it") and "Tailscale's policy has StudioSync's tags, and guests reach only its file sharing and jams on your computers"
-            or how == "own rules" and "Tailscale's policy has StudioSync's tags. It has rules of its own, so StudioSync left those alone: guests reach whatever they allow"
-            or "Tailscale's policy has StudioSync's tags; guests can still reach whatever your policy allows")
-         end
-        end
-        ImGui.SetItemTooltip(ctx, "Adds the tagOwners lines to the Tailscale network's policy: computers StudioSync's installer signs in then stay signed in,\n" ..
-          "and guest invitations put guests on Tailscale too. On Tailscale's starting policy it also offers to limit guests to StudioSync's file sharing and jams.\n" ..
-          "It works on the network this computer is on now" .. (here and (" (" .. here .. ")") or "") .. ", with that network's token.")
-      end
-    end
+    -- (the Tailscale token and tags: Settings > Studio for its owner and admins, here for anyone else. Review list, 0.59.32)
+    if not require("groups").may_manage(cfg.root, cfg.user) then ui.tailscale_token() end
     card_end()
   end
 end
@@ -2478,7 +2549,10 @@ local function page_setup()
     body("s options", function() layout({ { settings_sync, 420 }, { settings_drive, 360 } }, true) end)
     ImGui.EndTabItem(ctx)
   end
-  if tab("Studio") then body("s studio", settings_studio); ImGui.EndTabItem(ctx) end
+  if tab("Studio") then body("s studio", function()
+    settings_studio()
+    if cfg and require("groups").may_manage(cfg.root, cfg.user) and card("tailscale token") then heading("Tailscale", 17); ui.tailscale_token(); card_end() end
+  end); ImGui.EndTabItem(ctx) end
   if tab("Extras") then body("s pack", ui.settings_pack); ImGui.EndTabItem(ctx) end -- (the plug-in pack and its extras: lib/pack.lua, 0.59.22; named Extras, 0.59.27)
   if tab("Advanced") then body("s advanced", function() layout({ { ui.settings_advanced, 360 }, { ui.settings_buffer, 420 } }, true) end); ImGui.EndTabItem(ctx) end
   if tab("Console") then
@@ -3003,6 +3077,7 @@ local function frame_app()
   local _, bars_h = ImGui.GetItemRectSize(ctx)
   if bars_h < 6 then ImGui.SetCursorPosY(ctx, bars_at) end -- (nothing in them: no gap. An empty child is still 4 px tall, and 8 more of spacing)
   ui.asked_page()
+  restore.flash_tick() -- (Restore's Show it: what a change touched blinks a moment)
   local want
   want = reaper.GetExtState(band.SECTION, "panel do") -- a choice from the radial menu
   if want == "" then want = require("api").take_request() or "" end -- (a script's, through the API: lib/api.lua)

@@ -88,9 +88,27 @@ function H.maint_rows()
     (function()
       local skipped = sync.skipped(proj)
       return { "skipped", #skipped == 0, "yellow", "Every change from the others landed here",
-        string.format("%d change(s) from the others couldn't be applied here (the first: %s, from %s).", #skipped, skipped[1] and skipped[1].why or "", skipped[1] and tostring(skipped[1].user) or ""),
+        string.format("%d change(s) from the others couldn't be applied here. The first, from %s: %s.", #skipped, skipped[1] and tostring(skipped[1].user) or "", skipped[1] and skipped[1].why or ""),
         action = { "Try again", function() band.log(sync.retry_skipped(proj) .. " change(s) from the others will be tried again") end,
           "Applies them again on Live sync's next pass. If they still fail, they come back here." } }
+    end)(),
+    (function() -- (two people whose tracks look the same colour: James, 0.59.32)
+      local people = require("people")
+      local cols = people.colours(cfg.root, { cfg.user })
+      local pairs_, mine = people.alike(cols), false
+      local said = {}
+      for _, pr in ipairs(pairs_) do
+        said[#said + 1] = pr[1] .. " and " .. pr[2]
+        mine = mine or pr[1] == cfg.user or pr[2] == cfg.user
+      end
+      return { "colours", #pairs_ == 0, "yellow", "Everyone's colour is easy to tell apart",
+        "These colours look alike, so their tracks are hard to tell apart: " .. table.concat(said, "; ") .. ". " ..
+          (mine and "Pick another for yourself (right-click your name in Who's here), or let StudioSync pick." or "One of them can pick another: right-click their name in Who's here."),
+        action = mine and { "Pick one for me", function()
+          local c = people.distinct(cols, cfg.user)
+          people.pick(cfg, c)
+          band.log(string.format("your colour is now #%06X, the one farthest from everyone else's, in every studio you're in", c))
+        end, "Gives you the colour from StudioSync's palette that's least like anyone else's. You can change it any time." } or nil }
     end)(),
     (function() -- (an older REAPER can read a newer one's tracks and items differently: review item 33)
       local tools = require("tools")

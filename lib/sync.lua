@@ -913,6 +913,9 @@ function sync.retry_skipped(proj)
   local mine = tostring(proj)
   for k in pairs(sync.settled) do if k:sub(1, #mine) == mine then sync.settled[k] = nil end end
   setext(proj, band.SECTION, "skipped", "")
+  -- (and told to whichever script receives: Health's Try again runs in the panel, Autostart receives, and its own cache still had them as
+  -- done, so nothing was tried until REAPER restarted. 0.59.32)
+  setext(proj, band.SECTION, "retry", tostring(reaper.time_precise()))
   return #list
 end
 -- A name as it starts an event's id: letters, digits, "-" and "_" only ("&", "(" and ")" split merge ids, mirror.split_merge. Review, 0.58.47).
@@ -1395,12 +1398,14 @@ end
 -- (review, 0.58.53). Only ever grows while the project is open: applied stays applied (sync.forget_trimmed drops only files that are gone).
 -- (a song opened again in the same tab keeps the tab's address, and the cache then said the reopened song had everything: its master track
 -- is a new one, so that's what is checked, as mirror.watch does with its first track. Linux stress test, 0.58.77)
-sync.settled, sync.settled_master = {}, {}
+sync.settled, sync.settled_master, sync.settled_retry = {}, {}, {}
 function sync.settled_for(proj, dir)
   local key = tostring(proj) .. "\0" .. dir
   local had, master = sync.settled_master[key], reaper.GetMasterTrack(proj)
   if had and not (had == master and reaper.ValidatePtr2(proj, had, "MediaTrack*")) then sync.settled[key] = nil end
   sync.settled_master[key] = master
+  local retry = ext(proj, band.SECTION, "retry") -- (Try again, from another script: sync.retry_skipped)
+  if sync.settled_retry[key] ~= retry then sync.settled[key], sync.settled_retry[key] = nil, retry end
   sync.settled[key] = sync.settled[key] or {}
   return sync.settled[key]
 end

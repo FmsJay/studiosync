@@ -44,10 +44,55 @@ end
 -- whole project: driver only), or a look at it in a side room. (Buttons on every row were clutter, and a radio above the list picking
 -- what every row does hid Undo behind it, and acted on whatever was clicked next: review D29, James 2026-11-03.)
 -- i: History index (the state right after entries[i]); what: words for the confirm box; single: a change of its own.
+-- Where a change happened, shown: its item selected with the edit cursor at it, or its track selected; scrolled into view and flashed in
+-- the arrange view. -> nil, or why not. (James, 0.59.32: from "Since you were last here", a change you could read about but not find.)
+function R.show_change(proj, e)
+  local mirror = require("mirror")
+  mirror.index_for(proj)
+  local item = e.obj == "item" and not e.gone and mirror.find(proj, "item", e.oid)
+  local track = item and reaper.GetMediaItem_Track(item)
+    or (e.obj == "track" and not e.gone and mirror.find(proj, "track", e.oid))
+    or (type(e.track) == "string" and e.track ~= "" and mirror.find(proj, "track", e.track)) or nil
+  if not (item or track) then return e.gone and "it was deleted: Undo this change brings it back" or "it isn't in the project any more" end
+  reaper.PreventUIRefresh(1)
+  if item then
+    reaper.SelectAllMediaItems(proj, false)
+    reaper.SetMediaItemSelected(item, true)
+    reaper.SetEditCurPos2(proj, reaper.GetMediaItemInfo_Value(item, "D_POSITION"), true, false)
+  elseif tonumber(e.pos) then reaper.SetEditCurPos2(proj, tonumber(e.pos), true, false) end
+  if track then
+    reaper.SetOnlyTrackSelected(track)
+    reaper.Main_OnCommandEx(40913, 0, proj) -- Track: Vertical scroll selected tracks into view
+  end
+  reaper.PreventUIRefresh(-1)
+  reaper.UpdateArrange()
+  R.flash = { item = item, track = track, until_ = reaper.time_precise() + 2.5 }
+end
+-- The flash itself, from the panel's frame: the item or track blinks for a moment (its own selection, toggled), then stays selected.
+function R.flash_tick()
+  local f = R.flash
+  if not f then return end
+  local on = f.until_ <= reaper.time_precise() or math.floor(reaper.time_precise() * 4) % 2 == 0
+  if f.item and reaper.ValidatePtr(f.item, "MediaItem*") then reaper.SetMediaItemSelected(f.item, on); reaper.UpdateItemInProject(f.item)
+  elseif f.track and reaper.ValidatePtr(f.track, "MediaTrack*") then reaper.SetTrackSelected(f.track, on) end
+  if f.until_ <= reaper.time_precise() then R.flash = nil end
+end
+-- History showing only what the others changed since `since` (UTC, as event times are): "Since you were last here"'s See what changed.
+function R.show_since(since)
+  hf = { who = "", kind = 1, track = "", text = "", since = since }
+end
 local function back_button(i, what, single)
   local b, cfg, proj, view, wide, points, can, who = E.b(), E.cfg(), E.proj(), E.view(), E.wide(), E.points(), E.can(), E.who()
   local e, mirror = entries[i], require("mirror")
   local opts = { can = can, mode = who and who.mode, local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1" }
+  if single and e and e.kind == "obj" then
+    if ImGui.SmallButton(ctx, "Show it") then
+      local why = R.show_change(proj, e)
+      if why then band.msg("Can't show it: " .. why .. ".") end
+    end
+    ImGui.SetItemTooltip(ctx, "Selects what this changed (the item, or its track), scrolls to it and flashes it.")
+    next_to("Undo this change")
+  end
   if single then
     ImGui.BeginDisabled(ctx, not e or e.kind ~= "obj")
     if ImGui.SmallButton(ctx, "Undo this change") then
@@ -157,7 +202,7 @@ local function history_filtered(driving)
     local e = entries[i]
     local line = describe(e)
     local lane = require("mirror").lane_words(entries, i) -- (in the search too: "lane" found nothing though every row said it: Mac, 0.45.0)
-    local ok = not e.auto and (hf.who == "" or e.user == hf.who) and (not want or (type(want) == "function" and want(e)) or (type(want) == "table" and want[e.kind]))
+    local ok = not e.auto and (hf.who == "" or e.user == hf.who) and (not hf.since or ((e.time or "") > hf.since and e.user ~= cfg.user)) and (not want or (type(want) == "function" and want(e)) or (type(want) == "table" and want[e.kind]))
       and (hf.track == "" or (e.name or e.track or ""):lower() == hf.track:lower())
       and (text == "" or (line .. lane .. " " .. tostring(e.user)):lower():find(text, 1, true))
     local moment = ok and require("mirror").same_moment(entries, i) or { i }
@@ -250,7 +295,11 @@ function R.section_history()
     hf.text = t
     ImGui.SetItemTooltip(ctx, "Only changes whose description has these words (a take, a track, a note's text...).")
   end
-  local filtered = hf.who ~= "" or hf.kind ~= 1 or hf.track ~= "" or hf.text ~= ""
+  local filtered = hf.who ~= "" or hf.kind ~= 1 or hf.track ~= "" or hf.text ~= "" or hf.since ~= nil
+  if hf.since then
+    ImGui.TextColored(ctx, theme.ACCENT, "What the others changed since you were last here")
+    ImGui.SetItemTooltip(ctx, "Click a change, then Show it: StudioSync takes you to it. Clear filters shows everything again.")
+  end
   if wide or ImGui.GetContentRegionAvail(ctx) < 520 then -- (four rows of them came before the first change: design review)
     if ImGui.SmallButton(ctx, filtered and "Filter (on)..." or "Filter...") then ImGui.OpenPopup(ctx, "hfilters") end
     if ImGui.BeginPopup(ctx, "hfilters") then filters(); ImGui.EndPopup(ctx) end

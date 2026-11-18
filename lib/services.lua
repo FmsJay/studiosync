@@ -188,7 +188,7 @@ end
 function services.ensure_syncthing()
   if services.running("syncthing", true) then return "running" end
   local path = services.syncthing_path()
-  if not path then return nil, "Syncthing isn't running and wasn't found (set its path: ExtState BandSync/syncthing_path)" end
+  if not path then return nil, "Syncthing isn't running and wasn't found: start it, or run StudioSync's installer again" end
   -- on a Mac with Syncthing.app: the app starts it (its own copy, started beside the app, found the database and
   -- ports taken when the app opened later, or at login)
   if path:find("/Syncthing.app/", 1, true) then

@@ -7,7 +7,8 @@ local band = require("band")
 local plugins = require("plugins")
 local pack = {}
 
--- name, what it is, the start of its plug-in key (plugins.key: "surge xt (surge synth team)"), extra
+-- name, what it is, the start of its plug-in key (plugins.key: "surge xt (surge synth team)"), extra; `linux`: false (none there), or the key
+-- of what stands in for it there (the installers' own say: install_linux.sh. Linux test, 0.59.32)
 pack.ITEMS = {
   { "Surge XT", "synth and effects", "surge xt (" },
   { "Dexed", "FM synth", "dexed (" },
@@ -20,14 +21,14 @@ pack.ITEMS = {
   { "ZL Compressor", "compressor", "zl compressor" },
   { "ChowMatrix", "delay", "chowmatrix" },
   { "CloudReverb", "ambient reverb", "cloudreverb" },
-  { "Neural Amp Modeler", "amp captures", "neuralampmodeler", true },
+  { "Neural Amp Modeler", "amp captures", "neuralampmodeler", true, linux = false }, -- (no Linux build: AIDA-X plays the captures)
   { "AIDA-X", "amp captures", "aida-x", true },
   { "Odin 2", "synth", "odin2", true },
   { "SnapTune", "vocal tuning", "snaptune", true },
   { "JC303", "303 bass", "jc303", true },
   { "RipplerX", "mallets, bells, plucks", "ripplerx", true },
   { "Monique", "mono synth", "monique", true },
-  { "sforzando", "plays the piano and drum kit", "sforzando", true },
+  { "sforzando", "plays the piano and drum kit", "sforzando", true, linux = "sfizz" }, -- (no Linux build: sfizz plays the same SFZ files)
 }
 
 -- Is item `it` in a set of plug-in keys? Pure.
@@ -53,7 +54,10 @@ function pack.status(cfg)
     end end end
   end
   local s = { pack = { have = 0, total = 0, missing = {} }, extras = { have = 0, total = 0, missing = {} }, others = {}, here = {} }
-  for _, it in ipairs(pack.ITEMS) do
+  for _, item in ipairs(pack.ITEMS) do
+    local it = item
+    if band.LINUX and item.linux ~= nil then it = item.linux and { item[1], item[2], item.linux, item[4] } or nil end
+    if not it then goto next_item end
     local g = it[4] and s.extras or s.pack
     g.total = g.total + 1
     if pack.has(mine, it) then g.have, s.here[it[1]] = g.have + 1, true
@@ -63,6 +67,7 @@ function pack.status(cfg)
         if pack.has(l.set, it) then s.others[it[1]] = s.others[it[1]] or {}; table.insert(s.others[it[1]], l.user) end
       end
     end
+    ::next_item::
   end
   cached, cached_at, cached_root = s, reaper.time_precise(), cfg and cfg.root
   return s
@@ -147,8 +152,9 @@ function pack.draw(ctx, ImGui, cfg)
   if said then ImGui.TextDisabled(ctx, said) end
   if ImGui.TreeNode(ctx, "What's in them") then
     for _, it in ipairs(pack.ITEMS) do
-      ImGui.Text(ctx, (s.here[it[1]] and "  here   " or "  -      ") .. it[1])
-      ImGui.SameLine(ctx); ImGui.TextDisabled(ctx, it[2] .. (it[4] and " (extras)" or ""))
+      local none = band.LINUX and it.linux == false
+      ImGui.Text(ctx, (s.here[it[1]] and "  here   " or "  -      ") .. it[1] .. (band.LINUX and it.linux and " (sfizz on Linux)" or ""))
+      ImGui.SameLine(ctx); ImGui.TextDisabled(ctx, none and "no Linux version" or (it[2] .. (it[4] and " (extras)" or "")))
     end
     ImGui.TreePop(ctx)
   end

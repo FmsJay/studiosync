@@ -25,6 +25,12 @@ function ff.at_least(a, b)
 end
 function ff.target(root) return band.norm(root) .. "/_tools/studiosync" end
 function ff.on(root) return root and require("groups").trusted(root).updates == "folder" end
+-- Is `dir` the copy in a studio that updates through its folder (its owner chose it)? Then a new version put there is taken without asking:
+-- a studio sharing a folder trusts its members (James, 0.59.19), and Chilio's computer asked at every release. 0.59.32.
+function ff.trusted_copy(dir)
+  local root = band.norm(dir or ""):match("^(.*)/_tools/studiosync$")
+  return root ~= nil and ff.on(root) == true
+end
 local function dev_copy(dir) return reaper.file_exists(band.norm(dir) .. "/.git/HEAD") or reaper.file_exists(band.norm(dir) .. "/.git") end
 
 -- The studio this computer should run StudioSync from (the one in front first), or nil.

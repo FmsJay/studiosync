@@ -14,12 +14,34 @@ function undo.native(top) return (top or "") ~= "" and not top:find("^StudioSync
 -- for each) is for where that doesn't apply. What's still without one:
 local ids = {}
 local KEYS = { { "Undo", 0, "the main window", 9 }, { "Undo", 32060, "the MIDI editor", 9 }, { "Redo", 0, "the main window", 13 }, { "Redo", 32060, "the MIDI editor", 13 } }
+-- Every copy of the script reaper-kb.ini knows, by section: { "Undo0" = { "_RS..", .. } }. Pure.
+function undo.copies(text)
+  local out = {}
+  for sec, rs, what in (text or ""):gmatch('SCR %d+ (%d+) (%S+) "[^"]*StudioSync %- ([UR]%a+)%.lua"') do
+    local key = what .. sec
+    out[key] = out[key] or {}
+    table.insert(out[key], "_" .. rs)
+  end
+  return out
+end
+local copies, copies_at = {}, -1e9
+-- Is a key on another copy of this script? Each copy hands over to the one StudioSync runs from (lib/fromfolder.lua), so Ctrl+Z on the
+-- copy it ran from before still undoes through StudioSync: Health called it unset on the laptop and the Mac once they ran from the
+-- studio's folder. James, 0.59.32.
+local function keyed_elsewhere(k, key)
+  if reaper.time_precise() - copies_at > 10 then copies, copies_at = undo.copies(band.read(reaper.GetResourcePath() .. "/reaper-kb.ini")), reaper.time_precise() end
+  for _, rs in ipairs(copies[key] or {}) do
+    local cmd = reaper.NamedCommandLookup(rs)
+    if cmd ~= 0 and reaper.CountActionShortcuts(reaper.SectionFromUniqueID(k[2]), cmd) > 0 then return true end
+  end
+  return false
+end
 function undo.keys_left(dir)
   local left = {}
   for _, k in ipairs(KEYS) do
     local key = k[1] .. k[2]
     ids[key] = ids[key] or reaper.AddRemoveReaScript(true, k[2], dir .. "/StudioSync - " .. k[1] .. ".lua", true)
-    if ids[key] ~= 0 and reaper.CountActionShortcuts(reaper.SectionFromUniqueID(k[2]), ids[key]) == 0 then
+    if ids[key] ~= 0 and reaper.CountActionShortcuts(reaper.SectionFromUniqueID(k[2]), ids[key]) == 0 and not keyed_elsewhere(k, key) then
       left[#left + 1] = { what = k[1], section = k[2], where = k[3], id = ids[key], mod = k[4], key = key }
     end
   end

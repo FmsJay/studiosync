@@ -3115,6 +3115,10 @@ function mirror.watch(proj, cfg, song, room, opts)
         if name ~= "" and not ev.auto and select(2, reaper.GetProjExtState(proj, band.SECTION, "last_track")) ~= name then
           reaper.SetProjExtState(proj, band.SECTION, "last_track", name) -- (what they're working in: Who's here)
         end
+        -- (and where in the song: clicking "Working in" goes there. An item's own place, or the edit cursor's. James, 0.59.32)
+        if name ~= "" and not ev.auto then
+          reaper.SetProjExtState(proj, band.SECTION, "last_at", string.format("%.3f", tonumber(ev.pos) or reaper.GetCursorPositionEx(proj)))
+        end
         mirror.unsent[tostring(proj) .. o.oid] = nil -- (gone out: the band's next change to it may land)
         require("presence").touch(proj, o.oid)
         sent = sent + 1
