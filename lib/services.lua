@@ -771,6 +771,9 @@ function services.ts_exec(args, ms)
 end
 function services.tailscale_address()
   if not tailscale_exe() then return nil end
+  -- (the last background status first: asked again and waited for, a producer's lost server cost two more 5 s waits each time. Review, 0.59.14)
+  local known = services.my_tailscale_name()
+  if known and known ~= "" then return known end
   local name = services.tailscale_name_in(services.ts_exec("status --json --peers=false", 5000))
   if name and name ~= "" then return name end
   local out = services.ts_exec("ip -4", 5000) -- "0\n100.97.210.49\n"

@@ -65,11 +65,11 @@ function producer.talk(proj, on) require("live").talk(proj, on) end
 
 -- The NINJAM route: ReaNINJAM in session mode on the Real time track, so what goes out is what's armed, not the whole mix.
 -- Session mode plays what arrives only as each playhead reaches it, so there's no talkback on this route, even with Xmit on and both stopped.
-local function ninjam_on(proj, cfg, b, send)
+local function ninjam_on(proj, cfg, b, send, force) -- (force: the song's server is known gone, take it here: services.ninjam_for)
   local live, setup = require("live"), require("setup")
   local services = require("services")
   reaper.DeleteExtState(band.SECTION, "ninjam off " .. tostring(proj), false)
-  local server, why = services.ninjam_for(cfg, setup.live_file(cfg, b), not send)
+  local server, why = services.ninjam_for(cfg, setup.live_file(cfg, b), not send, force)
   if not server then return nil, why end
   reaper.SetExtState(band.SECTION, "ninjam host " .. tostring(proj), server, false) -- (this tab's: another song's may be elsewhere)
   reaper.SetExtState(band.SECTION, "ninjam start " .. tostring(proj), tostring(reaper.time_precise()), false)
@@ -311,12 +311,15 @@ function producer.tick(proj, cfg, b, peers)
     local there, host = (band.read_json(require("setup").live_file(cfg, b)) or {}).server or "", reaper.GetExtState(band.SECTION, "ninjam host " .. tab)
     local lost = pressing and there == host and live.connect(false) ~= "connected"
     server_lost[tab] = lost and (server_lost[tab] or reaper.time_precise()) or nil
-    if lost and reaper.time_precise() - server_lost[tab] > 25 and not services.answers(host) then
+    -- (asked in the background while it's lost, and taken over without asking again: each ~35 s round waited on up to four checks of up to
+    -- 5 s while a producer's server stayed gone. Review, 0.59.14)
+    local answers = lost and services.port_open(host)
+    if lost and reaper.time_precise() - server_lost[tab] > 25 and not answers then
       band.log("the NINJAM server's gone: running it here")
       server_lost[tab] = nil
       ninjam_off(proj)
       connecting[tab] = nil
-      local ok, why = ninjam_on(proj, cfg, b, false)
+      local ok, why = ninjam_on(proj, cfg, b, false, true)
       if not ok then band.log("NINJAM server: " .. tostring(why)) end
     elseif lost and reaper.time_precise() - server_lost[tab] > 25 then
       server_at[tab] = reaper.time_precise() + 20 -- (it answers, and something else is wrong: asking again holds REAPER up for as long as it takes)
