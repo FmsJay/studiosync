@@ -29,10 +29,14 @@ end
 function cw.draw(e)
   if not cw.is_open() then return end
   local ctx, ImGui, proj = e.ctx, e.ImGui, e.proj
-  ImGui.SetNextWindowSize(ctx, 300, 0, ImGui.Cond_Always)
+  -- (300 wide, as tall as what's in it; first opened beside REAPER's top left, under its menus: it opened over them. 0.59.16)
+  ImGui.SetNextWindowSizeConstraints(ctx, 300, 0, 300, 4000)
+  local vx, vy = ImGui.Viewport_GetWorkPos(ImGui.GetMainViewport(ctx))
+  ImGui.SetNextWindowPos(ctx, vx + 80, vy + 140, ImGui.Cond_FirstUseEver)
   local flags = ImGui.WindowFlags_NoCollapse | ImGui.WindowFlags_AlwaysAutoResize | ImGui.WindowFlags_NoDocking
   local visible, open = ImGui.Begin(ctx, "StudioSync call###studiosync_call", true, flags)
   if visible then
+    ImGui.PushTextWrapPos(ctx, 0) -- (the words wrap to the window: they ran out past its edge. 0.59.16)
     local ok, err = pcall(function() -- (whatever happens inside, End must still be reached)
       if not e.b then ImGui.TextDisabled(ctx, "Open a studio project to talk."); return end
       local live = require("live")
@@ -101,6 +105,7 @@ function cw.draw(e)
         ImGui.SetItemTooltip(ctx, "Opens the studio's video call (" .. link .. "). Mute its microphone: this call already carries your voice.")
       end
     end)
+    ImGui.PopTextWrapPos(ctx)
     if not ok then
       ImGui.TextDisabled(ctx, "Something went wrong here: Settings > Console has the details.")
       if cw.said ~= tostring(err) then cw.said = tostring(err); band.log("call window: " .. cw.said) end -- (once, not every frame)

@@ -1880,6 +1880,7 @@ local function settings_look()
       local cur = choices[1]
       for _, c in ipairs(choices) do if c[1] == behind then cur = c end end
       ImGui.AlignTextToFramePadding(ctx); ImGui.Text(ctx, "When you click REAPER, the panel"); ImGui.SameLine(ctx)
+      if ImGui.GetContentRegionAvail(ctx) < 190 then ImGui.NewLine(ctx) end -- (ran off the right of a narrow panel: 0.59.16)
       ImGui.SetNextItemWidth(ctx, 190)
       if ImGui.BeginCombo(ctx, "##behind", cur[2]) then
         for _, c in ipairs(choices) do
@@ -2635,9 +2636,9 @@ local function frame_app()
   local y0 = ImGui.GetCursorPosY(ctx) + (ui.short and -4 or 8)
   ImGui.SetCursorPos(ctx, 16, y0)
   if ui.crumb(view.group or "", 0, 1 / 3, fh, "The studio this project belongs to. Click: all your studios.") then page = "Groups"; require("page_groups").root = nil end
-  local function at_row(label) -- next to the last piece, or on a new line when `label`'s piece doesn't fit
+  local function at_row(label, extra) -- next to the last piece, or on a new line when `label`'s piece doesn't fit (extra: what it adds to its words)
     ImGui.SameLine(ctx, 0, 8)
-    if label and ImGui.GetContentRegionAvail(ctx) < ImGui.CalcTextSize(ctx, label) + 24 then
+    if label and ImGui.GetContentRegionAvail(ctx) < ImGui.CalcTextSize(ctx, label) + 24 + (extra or 0) then
       ImGui.SetCursorPos(ctx, 16, y0 + fh + 6)
       y0 = y0 + fh + 6
     else
@@ -2675,7 +2676,7 @@ local function frame_app()
   local is_copy = not running and rooms.is_copy(proj, cfg, b)
   local elsewhere = not running and not is_copy and band.synced_elsewhere(proj)
   local can_start = not running and not is_copy and not elsewhere
-  at_row(can_start and "Sync off  -  click to start" or label)
+  at_row(can_start and "Sync off  -  click to start" or label, 20 + fh * 0.4) -- (its gap and dot too: cut off at the right of a 380 px panel. 0.59.16)
   if ImGui.GetCursorPosX(ctx) > 17 then ImGui.SetCursorPosX(ctx, ImGui.GetCursorPosX(ctx) + 20) end -- (apart from the coloured crumbs: those say where you are, this how sync is going)
   if ui.sync_button(label, colour, running, can_start, fh) then
     reaper.DeleteExtState(band.SECTION, "stop " .. key, false)
