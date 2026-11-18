@@ -209,7 +209,7 @@ function prints.choose(it)
   -- Review, 0.58.92)
   local tr = reaper.GetMediaItem_Track(it)
   local function recheck() if band.track_ext(tr, prints.FXEN) ~= "" then prints.hold_fx(tr) end end -- (only a track holding its FX: 0.58.93)
-  if #require("mirror").real_takes(it) > 1 then return recheck() end
+  if require("mirror").filled_takes(it) > 1 then return recheck() end
   local dry = midi or (print and prints.audio_take(it))
   if not (dry and print) then return recheck() end
   local mode = prints.mode()
@@ -629,14 +629,7 @@ end
 -- a track holding a wet take (or an ARA one) waits, as exploding would split print from item. Returns tracks done.
 -- A track already in lanes: each item with several takes keeps the one playing, in the lane that plays, and each other take
 -- becomes its own item on a new lane at the bottom.
-local function real_takes(it)
-  local real = 0
-  for k = 0, reaper.CountTakes(it) - 1 do
-    local tk = reaper.GetTake(it, k)
-    if tk and take_ext(tk, prints.KEY) == "" then real = real + 1 end
-  end
-  return real
-end
+local function real_takes(it) return require("mirror").filled_takes(it) end -- (one count everywhere)
 function prints.takes_into_new_lanes(proj, tr, mine)
   local items = {}
   for j = 0, reaper.CountTrackMediaItems(tr) - 1 do

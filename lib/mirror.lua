@@ -1258,6 +1258,14 @@ function mirror.real_takes(it)
   end
   return out
 end
+-- How many real takes have something in them: an empty take (REAPER's TAKE NULL) isn't one to choose. For deciding whether a print plays or
+-- takes go into lanes; the pick index (picked_take, pick_take) keeps counting them, as every computer's does. Review, 0.58.97: prints counted
+-- one way and this the other, so a take, an empty take and a print never played the print.
+function mirror.filled_takes(it)
+  local n = 0
+  for _, k in ipairs(mirror.real_takes(it)) do if reaper.GetTake(it, k) then n = n + 1 end end
+  return n
+end
 -- -> the playing take's place among the real ones (0 = first), or nil with fewer than two real takes.
 function mirror.picked_take(it)
   local list = mirror.real_takes(it)
@@ -3496,6 +3504,33 @@ function mirror.plan_bring(side, main, everything)
   local o = { track = 1, fx = 2, item = 3 } -- a new track before what sits on it
   table.sort(bring, function(a, x) return (o[a.obj] or 3) < (o[x.obj] or 3) end)
   return bring, clash
+end
+
+-- Bring a side room into its parent: what the side room changed comes in, unless the parent's version has moved on from the one the side
+-- room started from (a clash: the parent keeps its own). Decided by versions, not clocks: "changed since the room was made" was each
+-- author's clock against the room's, so a slow clock's change in the parent was missed and overwritten. Review, 0.58.97.
+-- What the parent already has as the side room has it (brought before) isn't brought again. -> bring, clash.
+function mirror.bring_plan(side_dir, main_dir, side_name)
+  local side, side_all = mirror.room_newest(side_dir)
+  local main = mirror.room_newest(main_dir)
+  local moved = {}
+  for oid, list in pairs(side_all) do
+    local m = main[oid]
+    if m and m.from_room ~= side_name then -- (the parent's newest is what this room brought: not a change of the parent's own)
+      local first
+      for _, ev in ipairs(list) do
+        if not first or mirror.newer({ rev = first.rev, time = mirror.order_of(first) }, { rev = ev.rev, time = mirror.order_of(ev) }) then first = ev end
+      end
+      if m.id ~= first.base_ev then moved[oid] = m end
+    end
+  end
+  local bring, clash = mirror.plan_bring(side, moved, main)
+  local out = {}
+  for _, ev in ipairs(bring) do
+    local m = main[ev.oid]
+    if not (m and m.state == ev.state and (m.gone or false) == (ev.gone or false)) then out[#out + 1] = ev end
+  end
+  return out, clash
 end
 
 -- Send revisions into room `to` (as its newest revisions there). `here`:

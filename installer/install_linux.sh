@@ -406,7 +406,9 @@ if yes "$LIVE" && [ -n "$TS" ]; then
   TS_RUNNING=""; echo "$tsst" | grep -q '"BackendState":"Running"' && TS_RUNNING=1
   out="$WORK/ts.txt"
   if [ -n "${BS_TS_KEY:-}" ]; then # a guest: `login` adds the inviter's network beside any of their own (switch back with tailscale switch)
-    if ts_run "$out" login --authkey="$BS_TS_KEY" --timeout=120s; then ok "Tailscale joined the studio's network as a guest, until your invitation ends"
+    if "$TS" status --json --peers=false 2>/dev/null | tr -d '\n ' | grep -q '"tag:bandsync-guest"'; then ok "Tailscale is already on the studio's network as a guest"
+    # (run again, the used key always failed and said to ask for a new invitation, with the computer already on. Review, 0.58.97)
+    elif ts_run "$out" login --authkey="$BS_TS_KEY" --timeout=120s; then ok "Tailscale joined the studio's network as a guest, until your invitation ends"
     else warn "Tailscale couldn't join with the invitation's key (it works once, within 2 days of the invitation): ask for a new invitation."; fi
     TS_TAGGED=1
   elif echo "$tsst" | grep -q '"Tags":\["tag:bandsync"' || { [ -n "$TS_RUNNING" ] && ! echo "$tsst" | grep -q '"KeyExpiry"'; }; then
@@ -419,10 +421,9 @@ if yes "$LIVE" && [ -n "$TS" ]; then
     TS_TAGGED=1; TS_LATER=1
   else
     say "Signing in to Tailscale: a browser page opens; sign in there (a free account: the one your studio's Tailscale uses, if it has one)."
-    if ts_run "$out" up --advertise-tags=tag:bandsync --timeout=300s; then ok "Tailscale signed in as a studio machine (it stays signed in)"; TS_TAGGED=1
-    elif ! grep -qi 'tag' "$out"; then warn "Tailscale sign-in didn't finish: run  tailscale up  in a terminal and sign in on the page it shows."
-    # the refused tag stays in Tailscale's settings and every later sign-in fails on it: clear it, then sign in plainly
-    elif ts_run "$out" up --reset --advertise-tags= --timeout=120s; then ok "Tailscale signed in (without the studio tag)"
+    # (plainly: the studio tag needs Settings > Advanced > Set up the tags, done after this, so on a new network asking for it was always
+    # refused and a second sign-in page followed. --reset clears a tag a run before left behind. Review, 0.58.97)
+    if ts_run "$out" up --reset --timeout=300s; then ok "Tailscale signed in"
     else warn "Tailscale sign-in didn't finish: run  tailscale up  in a terminal and sign in on the page it shows."; fi
   fi
   # what still needs a person, waited for here: signed in at all, then key expiry off. Enter skips either.

@@ -41,12 +41,8 @@ end
 -- what both changed stays as the parent has it (listed).
 local function look_merge(parent)
   local b, cfg, proj, view, wide = E.b(), E.cfg(), E.proj(), E.view(), E.wide()
-  local m = room_view.meta or {}
   local mirror = require("mirror")
-  local since = m.time
-  if not since then merge = { why = "This room has no start time (made with an older StudioSync)." }; return end
-  local bring, clash = mirror.plan_bring(mirror.room_newest(sync.room_dir(cfg, b.song, b.room), since),
-    mirror.room_newest(sync.room_dir(cfg, b.song, parent), since), mirror.room_newest(sync.room_dir(cfg, b.song, parent)))
+  local bring, clash = mirror.bring_plan(sync.room_dir(cfg, b.song, b.room), sync.room_dir(cfg, b.song, parent), b.room)
   merge = { bring = bring, clash = clash, parent = parent }
 end
 

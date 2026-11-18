@@ -58,7 +58,7 @@ local ok, err = pcall(function()
   local zo = mirror.item_oid(z)
   reaper.SetMediaItemInfo_Value(y, "D_POSITION", 6) -- main changes something else meanwhile
   mirror.watch(pa, A, song, "main", { can = yes, mode = "claims" })
-  local bring, clash = mirror.plan_bring(mirror.room_newest(sync.room_dir(A, song, "side"), since), mirror.room_newest(sync.room_dir(A, song, "main"), since))
+  local bring, clash = mirror.bring_plan(sync.room_dir(A, song, "side"), sync.room_dir(A, song, "main"), "side") -- (what the Rooms page calls, 0.58.97)
   check(#bring == 2 and #clash == 0, string.format("plan: %d to bring, %d clash(es)", #bring, #clash))
   mirror.post_into(A, song, "side", "main", bring, pa)
   local mx, mz = mirror.find(pa, "item", xo), mirror.find(pa, "item", zo)
@@ -69,7 +69,10 @@ local ok, err = pcall(function()
   -- both change the same item: a clash, main keeps its own
   reaper.SetMediaItemInfo_Value(mirror.find(ps, "item", yo), "D_POSITION", 9)
   mirror.watch(ps, A, song, "side", { can = yes, mode = "claims" })
-  bring, clash = mirror.plan_bring(mirror.room_newest(sync.room_dir(A, song, "side"), since), mirror.room_newest(sync.room_dir(A, song, "main"), since))
+  bring, clash = mirror.bring_plan(sync.room_dir(A, song, "side"), sync.room_dir(A, song, "main"), "side")
+  local xagain = false
+  for _, e in ipairs(bring) do if e.oid == xo then xagain = true end end
+  check(not xagain, "what was brought before isn't brought again")
   local yclash = false
   for _, e in ipairs(clash) do if e.oid == yo then yclash = true end end
   check(yclash, "both moved the same item: listed as a clash")

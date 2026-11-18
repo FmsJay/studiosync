@@ -246,7 +246,7 @@ function colours.apply_items(proj, cfg, scheme, stops, may)
           local section
           for _, m in ipairs(marks) do if pos >= m.pos - 0.001 and pos < m.rend then section = m.name end end
           list[#list + 1] = { ptr = it, pos = pos, section = section, maker = by_tag[mirror.creator(mirror.item_oid(it))],
-            lane = math.floor(reaper.GetMediaItemInfo_Value(it, "I_FIXEDLANE")), takes = #mirror.real_takes(it) } -- (a print isn't a take still to choose)
+            lane = math.floor(reaper.GetMediaItemInfo_Value(it, "I_FIXEDLANE")), takes = mirror.filled_takes(it) } -- (a print isn't a take still to choose)
         else left = left + 1 end
       end
     end

@@ -51,8 +51,10 @@ end
 function prep.scan(proj, cfg, b)
   local out = {}
   local function add(key, title, detail, n, todo, on) out[#out + 1] = { key = key, title = title, detail = detail, n = n, todo = todo, on = on ~= false } end
-  local saved = select(2, reaper.EnumProjects(-1)) ~= ""
-  local home = saved and (select(2, reaper.EnumProjects(-1)):gsub("\\", "/"):match("^(.*)/")) or nil -- the project's folder
+  -- (this project's own file, not the tab in front's: switching tabs with the window open named the backup after the other one. Review, 0.58.97)
+  local pfile = require("rooms").file_of(proj) or ""
+  local saved = pfile ~= ""
+  local home = saved and (pfile:gsub("\\", "/"):match("^(.*)/")) or nil -- the project's folder
   local root = cfg and band.norm(cfg.root) or nil
   -- A shared project: only what this person may change. The rest would only be put back, with what it made kept on "(yours, not sent)" tracks.
   local can = b and cfg and b.song and require("sync").authority(cfg, b.song, b.room)
@@ -75,7 +77,7 @@ function prep.scan(proj, cfg, b)
       local n = 0
       for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
         local it = reaper.GetTrackMediaItem(tr, j)
-        if not bands(it) and #require("mirror").real_takes(it) > 1 then n = n + 1 end -- (a print isn't a take to choose)
+        if not bands(it) and require("mirror").filled_takes(it) > 1 then n = n + 1 end -- (a print isn't a take to choose)
       end
       if reaper.GetMediaTrackInfo_Value(tr, "I_FREEMODE") ~= 2 then lanes.set[#lanes.set + 1] = tr
       elseif n > 0 then lanes.explode[#lanes.explode + 1] = tr end
@@ -338,14 +340,14 @@ local function repoint(proj, from, to)
 end
 
 local function project_dir(proj)
-  return (select(2, reaper.EnumProjects(-1)):gsub("\\", "/"):match("^(.*)/") or "")
+  return ((require("rooms").file_of(proj) or ""):gsub("\\", "/"):match("^(.*)/") or "")
 end
 
 -- Do the chosen rows (from scan(), with .on). Saves a backup copy of the project first. Returns summary lines.
 function prep.apply(proj, cfg, b, rows, dir)
   local done, on = {}, {}
   for _, r in ipairs(rows) do if r.on then on[r.key] = r end end
-  local file = select(2, reaper.EnumProjects(-1))
+  local file = require("rooms").file_of(proj) or ""
   local backup
   do -- (an unsaved project's goes to StudioSync's own folder: it was promised a backup and got none. Review, 0.58.92)
     if file == "" then reaper.RecursiveCreateDirectory(band.home() .. "/backups", 0) end
@@ -432,7 +434,7 @@ function prep.apply(proj, cfg, b, rows, dir)
         local takes = false
         for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
           local it = reaper.GetTrackMediaItem(tr, j)
-          takes = takes or (#require("mirror").real_takes(it) > 1 and not bands(it))
+          takes = takes or (require("mirror").filled_takes(it) > 1 and not bands(it))
         end
         select_only(tr)
         reaper.Main_OnCommand(takes and 42636 or 42661, 0) -- explode with comp areas / Track properties: Set fixed lanes

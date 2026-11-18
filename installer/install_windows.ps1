@@ -568,8 +568,11 @@ if ($joining) {
 # A guest's Tailscale sign-in, before REAPER (as the Mac installer does it): it needs nothing from REAPER, and a REAPER step that doesn't finish
 # stops the run before section 5, so the invitation's key went unused and the guest never reached anyone (Windows Sandbox run, 2026-11-10).
 if ($wantLive -and $TsKey -and (Test-Path "$env:ProgramFiles\Tailscale\tailscale.exe")) {
-  $ErrorActionPreference = "Continue"; & "$env:ProgramFiles\Tailscale\tailscale.exe" login "--authkey=$TsKey" --timeout=120s 2>$null | Out-Null; $code = $LASTEXITCODE; $ErrorActionPreference = "Stop"
-  if ($code -eq 0) { Ok "Tailscale joined the studio's network as a guest, until your invitation ends" } else { Warn "Tailscale couldn't join with the invitation's key (it works once, within 2 days of the invitation): ask for a new invitation." }
+  # (run again, the used key always failed and said to ask for a new invitation, with the computer already on: looked at first. Review, 0.58.97)
+  $gst = $null; try { $ErrorActionPreference = "Continue"; $gst = & "$env:ProgramFiles\Tailscale\tailscale.exe" status --json --peers=false 2>$null | ConvertFrom-Json } catch { } finally { $ErrorActionPreference = "Stop" }
+  if ($gst -and @($gst.Self.Tags) -contains "tag:bandsync-guest") { $code = -1; Ok "Tailscale is already on the studio's network as a guest" }
+  else { $ErrorActionPreference = "Continue"; & "$env:ProgramFiles\Tailscale\tailscale.exe" login "--authkey=$TsKey" --timeout=120s 2>$null | Out-Null; $code = $LASTEXITCODE; $ErrorActionPreference = "Stop" }
+  if ($code -eq -1) { } elseif ($code -eq 0) { Ok "Tailscale joined the studio's network as a guest, until your invitation ends" } else { Warn "Tailscale couldn't join with the invitation's key (it works once, within 2 days of the invitation): ask for a new invitation." }
 }
 
 # ---------- 4. StudioSync scripts, inside REAPER ----------
@@ -742,9 +745,9 @@ if ($wantLive) {
         return $p.ExitCode
       }
       Say "Signing in to Tailscale: a browser page opens; sign in there (a free account: the one your studio's Tailscale uses, if it has one)."
-      if ((Ts-Up @("--advertise-tags=tag:bandsync", "--timeout=300s")) -eq 0) { Ok "Tailscale signed in as a studio machine (it stays signed in)"; $tagged = $true }
-      # the refused tag stays in Tailscale's settings and every later sign-in fails on it: clear it, then sign in plainly
-      elseif ((Ts-Up @("--reset", "--advertise-tags=", "--timeout=120s")) -eq 0) { Ok "Tailscale signed in (without the studio tag: it signs out by itself every few months; see below)" }
+      # (plainly: the studio tag needs Settings > Advanced > Set up the tags, done after this, so on a new network asking for it was always
+      # refused and a second sign-in page followed. --reset clears a tag a run before left behind. Review, 0.58.97)
+      if ((Ts-Up @("--reset", "--timeout=300s")) -eq 0) { Ok "Tailscale signed in" }
       else { Warn "Tailscale sign-in didn't finish: open Tailscale from the Start menu (or its taskbar icon) and sign in." }
     }
   }
