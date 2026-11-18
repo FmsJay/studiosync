@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.59.27", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.59.28", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -803,10 +803,18 @@ function band.code_guard(dir)
     end
     return assert(load(text, "@" .. libdir .. name .. ".lua")), libdir .. name .. ".lua"
   end
-  for i = #package.searchers, 1, -1 do if package.searchers[i] == _G[SEARCHER_KEY] then table.remove(package.searchers, i) end end
+  band.drop_code_searcher()
   _G[SEARCHER_KEY] = searcher
   table.insert(package.searchers, 2, searcher)
   return true
+end
+-- Before a script reloads itself for a new version (the panel, Live sync, Autostart): the check of the version it started with goes, or it
+-- refused the new band.lua itself as "changed since you said yes", though you'd said yes to it (the laptop, running from Smiley Studios'
+-- folder: a ReaScript Error box that held every script. 0.59.28). The reload happens only for a version said yes to (band.update_ok), and
+-- the new band.lua checks its code again as it loads (band.code_guard, at the end of this file).
+function band.drop_code_searcher()
+  for i = #package.searchers, 1, -1 do if package.searchers[i] == _G[SEARCHER_KEY] then table.remove(package.searchers, i) end end
+  _G[SEARCHER_KEY] = nil
 end
 
 -- The few settings a crash can lose (persisted ExtState reaches disk only at a clean exit): the studios list, the folder in use, your

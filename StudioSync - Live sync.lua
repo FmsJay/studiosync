@@ -977,6 +977,7 @@ tick = function()
     reloaded = true
     reaper.DeleteExtState(band.SECTION, "live " .. key, false)
     for _, f in ipairs(band.files(dir .. "/lib", ".lua")) do package.loaded[f:sub(1, -5)] = nil end
+    band.drop_code_searcher() -- (the check of the old version: it refused the new code you'd said yes to. 0.59.28)
     BANDSYNC_LIVE_PROJ, BANDSYNC_ENDED_AT = proj, ended_at_n
     return dofile(dir .. "/StudioSync - Live sync.lua")
   end

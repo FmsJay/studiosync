@@ -3400,6 +3400,7 @@ local function loop_body()
     STUDIOSYNC_PANEL_RELOAD = true -- (the next one keeps the box or strip as it is)
     pcall(require("colours").put_back_all) -- (a look being tried doesn't outlive the panel's Lua)
     for _, f in ipairs(band.files(dir .. "/lib", ".lua")) do package.loaded[f:sub(1, -5)] = nil end
+    band.drop_code_searcher() -- (the check of the old version: it refused the new code you'd said yes to. 0.59.28)
     return dofile(dir .. "/StudioSync - Panel.lua")
   end
   -- (frames that never end, as for a panel opened while ReaPack's Transaction report is up, pile every frame's drawing up: 7.4 GB in 12 minutes

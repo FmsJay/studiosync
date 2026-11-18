@@ -133,6 +133,7 @@ local function loop_body()
   end
   if disk and disk ~= band.VERSION and disk == seen_disk and band.update_ok(dir, disk) then
     for _, f in ipairs(band.files(dir .. "/lib", ".lua")) do package.loaded[f:sub(1, -5)] = nil end
+    band.drop_code_searcher() -- (the check of the old version: it refused the new code you'd said yes to. 0.59.28)
     return dofile(dir .. "/StudioSync - Autostart.lua")
   end
   seen_disk = disk

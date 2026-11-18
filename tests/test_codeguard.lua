@@ -66,4 +66,13 @@ fs[D .. "/lib/band.lua"] = 'local band = { VERSION = "2" }\n'
 ext["BandSync/update ok"] = "2"
 assert(band.code_guard(D) and boxes == 2, "a new version you said yes to (Autostart asks) loads without asking again")
 assert(band.code_guard("/elsewhere/studiosync"), "a copy outside the shared folders (ReaPack) isn't checked")
+-- (0.59.28) a script reloading itself for a new version you said yes to: the old version's check would refuse the new modules
+assert(band.code_guard(D), "version 2's check in place")
+fs[D .. "/lib/mod.lua"] = "return { n = 4 }\n" -- (version 3's: arrives while version 2's check is in place)
+fs[D .. "/lib/band.lua"] = 'local band = { VERSION = "3" }\n'
+ext["BandSync/update ok"] = "3"
+package.loaded.mod = nil
+assert(not pcall(require, "mod"), "under the old version's check, the new module is refused")
+band.drop_code_searcher() -- (what the reload does: the new band.lua then runs its own check as it loads)
+assert(band.code_guard(D) and boxes == 2 and require("mod").n == 4, "the new version's own check says yes to it, without asking, and it loads")
 print("ok")
