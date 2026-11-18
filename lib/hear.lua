@@ -106,11 +106,22 @@ function hear.install()
 end
 
 -- The live mix on the master (added when `add`), and its index.
+-- (an older live mix keeps running its old code after StudioSync rewrites the file: REAPER loads an effect's code once. The laptop's master
+-- still had 0.59.26's, the call pair a seventh bandmate's and no "Their playing" level, so the new sliders did nothing. Live test, 0.59.30.
+-- When it's set up again (add), one with fewer sliders than this version's is replaced, its levels carried over.)
+local SLIDERS = select(2, hear.JSFX:gsub("\nslider%d+:", ""))
+local carried
 function hear.mix(proj, add)
   local m = reaper.GetMasterTrack(proj)
   for i = 0, reaper.TrackFX_GetCount(m) - 1 do
     local name = select(2, reaper.TrackFX_GetFXName(m, i, ""))
-    if name:find(hear.NAME, 1, true) then return m, i end
+    if name:find(hear.NAME, 1, true) then
+      if not add or reaper.TrackFX_GetNumParams(m, i) >= SLIDERS + 3 then return m, i end -- (+3: REAPER's own wet, bypass and delta)
+      carried = {}
+      for p = 0, reaper.TrackFX_GetNumParams(m, i) - 4 do carried[p] = reaper.TrackFX_GetParam(m, i, p) end -- (its sliders: the last 3 are REAPER's own)
+      reaper.TrackFX_Delete(m, i)
+      break
+    end
     if name:find("BandSync live mix", 1, true) then -- (from before the rename: its levels are set again each look)
       if not add then return m, i end
       reaper.TrackFX_Delete(m, i)
@@ -121,6 +132,11 @@ function hear.mix(proj, add)
   local name = hear.install()
   local i = name and reaper.TrackFX_AddByName(m, name, false, -1) or -1
   if i < 0 then return nil end
+  if carried then -- (the old one's levels: the delay, everyone else, each bandmate's, the stamps. Its seventh bandmate's level was the call's slot)
+    for p, v in pairs(carried) do if p <= 9 then reaper.TrackFX_SetParam(m, i, p, v) end end
+    reaper.TrackFX_SetParam(m, i, 8, 1) -- (the call's level starts full, whatever that seventh bandmate's was)
+    carried = nil
+  end
   return m, i
 end
 

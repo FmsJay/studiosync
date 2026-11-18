@@ -1,4 +1,4 @@
-version 0.59.29
+version 0.59.30
 StudioSync - Autostart.lua	16719
 StudioSync - Claim selected tracks.lua	851
 StudioSync - Draw.lua	27321
@@ -42,7 +42,7 @@ lib/fxfiles.lua	8525
 lib/fxpick.lua	6699
 lib/groups.lua	17817
 lib/guest.lua	7314
-lib/hear.lua	17472
+lib/hear.lua	18668
 lib/json.lua	6080
 lib/leave.lua	9484
 lib/listen.lua	14894
