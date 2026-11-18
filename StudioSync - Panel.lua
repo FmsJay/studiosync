@@ -1400,7 +1400,7 @@ end
 local RT_KINDS = {
   { "my", "My time", "You hear everyone the moment it arrives, a little late (the network). For playing and talking together." },
   { "their", "Their time", "Your backing is delayed so the others line up with it. For listening along, not for playing." },
-  { "timesync", "Time-sync (recommended)", "Everyone plays to their own copy of the song and hears the others exactly in time, %s late (one NINJAM interval at this tempo:\nit follows the song's tempo and the server's interval). For playing along to a take. Talk: Chat > Call." },
+  { "timesync", "Time-sync (recommended)", "Everyone plays to their own copy of the song and hears the others exactly in time, %s late (one NINJAM interval at this tempo: it follows the song's tempo and the server's interval). For playing along to a take. Talk: Chat > Call." },
 }
 function ui.rt_kind()
   if page_play.time_sync_on() then return "timesync" end
