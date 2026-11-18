@@ -721,12 +721,11 @@ end
 -- a track holding a wet take (or an ARA one) waits, as exploding would split print from item. Returns tracks done.
 -- A track already in lanes: each item with several takes keeps the one playing, in the lane that plays, and each other take
 -- becomes its own item on a new lane at the bottom.
-local function real_takes(it) return require("mirror").filled_takes(it) end -- (one count everywhere)
 function prints.takes_into_new_lanes(proj, tr, mine)
   local items = {}
   for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
     local it = reaper.GetTrackMediaItem(tr, j)
-    if real_takes(it) > 1 and mine(it) then items[#items + 1] = it end
+    if require("mirror").filled_takes(it) > 1 and mine(it) then items[#items + 1] = it end
   end
   local exploding = {}
   for _, it in ipairs(items) do exploding[it] = true end
@@ -817,7 +816,7 @@ function prints.takes_to_lanes(proj, mine)
     local in_lanes0 = reaper.GetMediaTrackInfo_Value(tr, "I_FREEMODE") == 2 and reaper.GetMediaTrackInfo_Value(tr, "I_NUMFIXEDLANES") > 1
     for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
       local it = reaper.GetTrackMediaItem(tr, j)
-      local real = real_takes(it)
+      local real = require("mirror").filled_takes(it)
       if real > 1 and prints.ara_take(it) then blocked = true end
       if real > 1 and mine(it) then want = true end
       if real > 1 then any = true end
@@ -844,7 +843,7 @@ function prints.takes_to_lanes(proj, mine)
         -- (in lanes only the items being split: the others kept their prints and bandmates' parts were re-sent. And every wet take:
         -- one from an old version holds three, and the other two came out as plain parts on lanes of their own)
         local _, wet = prints.takes(it)
-        if in_lanes and not (real_takes(it) > 1 and mine(it)) then wet = nil end
+        if in_lanes and not (require("mirror").filled_takes(it) > 1 and mine(it)) then wet = nil end
         -- (the take that plays is kept by its place among the real takes: deleting a take can leave a take pointer pointing at nothing,
         -- and REAPER then played the first take, so the comp lost its pick. 0.58.85)
         local pick = require("mirror").picked_take(it)

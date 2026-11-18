@@ -1,7 +1,6 @@
--- StudioSync sync engine: printing and sending takes, reprinting them when their sound changes, and keeping
--- everyone's project in step with the session driver's changes (deletes, moves/trims/lane moves, which
--- take or lane plays). Changes travel as small event files; each person writes only files named after
--- themselves, so a sync client never sees two people writing the same file.
+-- StudioSync sync engine: event files in and out (mirror sync's object changes, lib/mirror.lua, plus the timeline,
+-- handovers, play/stop cues, notes and likes), claims and who may change what, and rendering prints. Each person
+-- writes only files named after themselves, so a sync client never sees two people writing the same file.
 local band = require("band")
 local sync = {
   SNAP = "BandSync.snap",       -- id -> "<original-case id>|pos|len|offs|lane" as last seen/applied

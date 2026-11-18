@@ -1,8 +1,7 @@
 -- Recall points: snapshots of the shared arrangement (which takes exist, where they sit, which take or lane
--- plays, track mute/solo/colour/icon), saved at every handover and whenever someone asks. Restoring one
--- makes the driver's project match it; Live sync then posts the differences as usual, so everyone follows.
--- Takes deleted since come back out of _trash. Restoring saves a "before restore" point first, so going
--- back and forth between options is always possible.
+-- plays, track mute/solo/colour/icon), saved at every handover and whenever someone asks, listed as saved versions.
+-- Also the room's history (recall.entries), grouped and described for the Restore page; going back to a moment in
+-- it is mirror.plan_restore and mirror.revert's (lib/page_restore.lua).
 local band = require("band")
 local sync = require("sync")
 local recall = {}
