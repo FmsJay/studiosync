@@ -16,6 +16,9 @@ local live = {}
 live.FLAGS = { synced = 4, jam = 0 }
 live.FX = "ReaNINJAM"
 live.SONOBUS = "SonoBus"
+-- A plug-in (name, or a chunk's line) that is this machine's live link: never sent, never doubled in another tab. Pure.
+-- (mirror.lua's master-chain check also counts the live-mix JSFX, hear.NAME.)
+function live.is_live_fx(name) return name:find(live.SONOBUS, 1, true) ~= nil or name:find(live.FX, 1, true) ~= nil end
 live.TRACK_SUFFIX = " (live)"
 
 function live.ini_path()

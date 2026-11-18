@@ -23,7 +23,7 @@ function mix.split_live(block)
   for _, l in ipairs(head) do out[#out + 1] = l end
   for _, g in ipairs(groups) do
     local is_live = false
-    for _, l in ipairs(g) do if l:match("^%s*<") and (l:find("SonoBus", 1, true) or l:find("ReaNINJAM", 1, true)) then is_live = true end end
+    for _, l in ipairs(g) do if l:match("^%s*<") and require("live").is_live_fx(l) then is_live = true end end
     if is_live then live[#live + 1] = table.concat(g, "\n") else out[#out + 1] = table.concat(g, "\n") end
   end
   out[#out + 1] = lines[#lines]
