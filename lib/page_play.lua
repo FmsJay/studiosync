@@ -224,12 +224,6 @@ function M.time_sync(on)
     -- (the bars behind back as they were: Start together and Follow read them too. 0.59.2)
     local was = select(2, reaper.GetProjExtState(proj, band.SECTION, "side before timesync"))
     if was ~= "" then reaper.SetProjExtState(proj, band.SECTION, "side", was == "none" and "" or was); reaper.SetProjExtState(proj, band.SECTION, "side before timesync", "") end
-    if live.talk_only(proj) then -- (SonoBus was there for Talk only: it goes with Time-sync)
-      reaper.SetProjExtState(proj, band.SECTION, "rt talk only", "")
-      if live.talking(proj) then live.talk(proj, false) end
-      local sm, si = live.fx(proj, false, live.SONOBUS)
-      if sm then reaper.TrackFX_SetOffline(sm, si, true) end
-    end
     return band.log("Time-sync off")
   end
   if same_room_on() then set_same_room(false) end -- (one or the other: with SonoBus on too, everyone heard you twice. James, 0.59.4)
@@ -244,13 +238,9 @@ function M.time_sync(on)
     if select(2, reaper.GetProjExtState(proj, band.SECTION, "side before timesync")) == "" then reaper.SetProjExtState(proj, band.SECTION, "side before timesync", was ~= "" and was or "none") end
     reaper.SetProjExtState(proj, band.SECTION, "side", tostring(one))
   end
-  -- Talk: SonoBus with nothing but the talk mic on it (James, 0.59.4). After NINJAM, so StudioSync's live mix stays last on the master and
-  -- what SonoBus brings in (their voices) never reaches NINJAM. Your backing on time: Their time's delay is for listening over SonoBus.
-  reaper.SetProjExtState(proj, band.SECTION, "rt talk only", "1")
-  require("page_hear").set_their_time(proj, false)
-  local okt, link, why = pcall(setup.sonobus, E.cfg(), E.b(), proj, true)
-  if not (okt and link) then band.log("Time-sync: Talk needs SonoBus (" .. tostring(okt and why or link) .. "); the playing goes by NINJAM either way") end
-  pcall(live.rt_sends, proj)
+  -- (the call, Chat > Call, is its own: it stays as it is. James, 0.59.6. If it's on, SonoBus carries only the talk mic now, and the live mix
+  -- moves after NINJAM again, so their voices never reach NINJAM)
+  if live.fx(proj, false, live.SONOBUS) then pcall(require("hear").route, proj, (live.rt_track(proj, false))) end
   band.log(string.format("Time-sync on: the others hear you in time with the song, %d bar%s behind (one NINJAM interval)", one, one == 1 and "" or "s"))
 end
 

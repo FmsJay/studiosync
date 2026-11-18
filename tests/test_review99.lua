@@ -32,4 +32,13 @@ local ip = colours.plan_items({ { section = "Verse 2" }, { section = "Chorus 1" 
 assert(mk[1] == 0x010203 and ip[1] == 0x010203 and ip[2] == mk[2], "items by section in the regions' colours")
 local kp = colours.plan_items({ { kind = "midi" }, { kind = "audio" }, { kind = "print" } }, "kind", { stops = st, kinds = { audio = 0x0000FF } })
 assert(kp[1] == 0x000000 and kp[2] == 0x0000FF and kp[3] ~= kp[1], "a kind's own colour")
+-- 0.59.6: regions chronologically by where they start; Talk quiet only while its own mic records
+local cm = colours.plan_marks({ { name = "B", region = true, pos = 20 }, { name = "A", region = true, pos = 0 }, { name = "C", region = true, pos = 40 } }, "song", st)
+assert(cm[2] == 0x000000 and cm[3] == 0xFFFFFF and cm[1] ~= cm[2] and cm[1] ~= cm[3], "listed out of order: coloured by where they are")
+package.loaded.live = nil
+local live = require("live")
+assert(live.uses_input(3, 3) and not live.uses_input(3, 4), "mono input 4")
+assert(live.uses_input(1024 + 2, 3) and live.uses_input(1024 + 2, 2) and not live.uses_input(1024 + 2, 4), "a stereo pair takes in both")
+assert(live.uses_input(2048 + 0, 5, 6) and not live.uses_input(2048 + 0, 6, 6), "multichannel: as many as the track has")
+assert(not live.uses_input(4096 + 63 * 32, 0) and not live.uses_input(-1, 0), "MIDI, or no input")
 print("ok")

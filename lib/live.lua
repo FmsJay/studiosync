@@ -400,16 +400,34 @@ end
 -- backing is everyone's own copy of the song, so sending it too made everyone hear it twice, out of time). With a
 -- guest (someone with only SonoBus, lib/guest.lua) they have no copy: every band track feeds it then, and so does
 -- the measuring click. Returns how many tracks feed it.
--- Talk only (James, 0.59.4: "can time-sync have talk since talk should just be on the talk mics"): with Time-sync, SonoBus carries
--- nothing but the talk mic, so nobody hears your playing twice (NINJAM has it, in time). ProjExtState "rt talk only".
+-- Does a track's record input (I_RECINPUT) take in mono input `mono`? Audio only: low 10 bits the first channel, 1024 stereo, 2048 as many
+-- as the track has (nchan). Pure.
+function live.uses_input(recinput, mono, nchan)
+  if not recinput or recinput < 0 or recinput & 4096 ~= 0 then return false end
+  local first = recinput & 1023
+  local width = recinput & 2048 ~= 0 and (nchan or 2) or recinput & 1024 ~= 0 and 2 or 1
+  return mono >= first and mono < first + width
+end
+-- Is a track armed here (not Talk's own) recording from mono input `mono`?
+function live.mic_recording(proj, mono)
+  for t = 0, reaper.CountTracks(proj) - 1 do
+    local tr = reaper.GetTrack(proj, t)
+    if live.armed(tr) and live.uses_input(math.floor(reaper.GetMediaTrackInfo_Value(tr, "I_RECINPUT")), mono, reaper.GetMediaTrackInfo_Value(tr, "I_NCHAN")) then return true end
+  end
+  return false
+end
+-- Talk only (James, 0.59.4: "can time-sync have talk since talk should just be on the talk mics"; 0.59.6: its own switch, Chat > Call):
+-- SonoBus on for the call while Real time mode isn't, carrying nothing but the talk mic, so nobody hears your playing twice (Time-sync's
+-- NINJAM has it, in time). ProjExtState "rt talk only"; "call" says the call's on.
 function live.talk_only(proj) return select(2, reaper.GetProjExtState(proj, band.SECTION, "rt talk only")) == "1" end
 function live.rt_sends(proj)
   local rt = live.rt_track(proj, false)
   if not rt then return 0 end
   local talk_only = live.talk_only(proj)
   local talk = live.talk_track(proj)
-  if talk then -- (silent while anyone's recording here: a producer's voice in a performer's ears mid-take. Sessionwire does the same)
-    reaper.SetMediaTrackInfo_Value(talk, "B_MUTE", reaper.GetPlayStateEx(proj) & 4 == 4 and 1 or 0)
+  if talk then -- (quiet only while that mic is recording here: it'd be in the take twice. James, 0.59.6: "not when recording unless recording with that mic")
+    local quiet = reaper.GetPlayStateEx(proj) & 4 == 4 and live.mic_recording(proj, live.talk_input())
+    reaper.SetMediaTrackInfo_Value(talk, "B_MUTE", quiet and 1 or 0)
   end
   local guest = not talk_only and (select(2, reaper.GetProjExtState(proj, band.SECTION, "guest")) == "1"
     or reaper.GetExtState(band.SECTION, "send whole mix " .. tostring(proj)) ~= "") -- (someone's Listening without playing along: lib/hear.lua)

@@ -1029,10 +1029,37 @@ local function set_same_room(v)
     reaper.SetProjExtState(proj, band.SECTION, "side", "0")
     band.log("Real time mode on: you hear everyone, and play, stop and record go to everyone")
   else
-    if sm then reaper.TrackFX_SetOffline(sm, si, true) end
+    require("page_hear").set_their_time(proj, false) -- (your backing on time again: the delay was for Their time)
+    if sm and select(2, reaper.GetProjExtState(proj, band.SECTION, "call")) == "1" then
+      reaper.SetProjExtState(proj, band.SECTION, "rt talk only", "1") -- (the call stays: SonoBus now carries only the talk mic. 0.59.6)
+      live.rt_sends(proj)
+    elseif sm then reaper.TrackFX_SetOffline(sm, si, true) end
     reaper.SetProjExtState(proj, band.SECTION, "side", "")
-    band.log("Real time mode off: SonoBus left the studio and side by side is off (edits still sync)")
+    band.log("Real time mode off: side by side is off (edits still sync)")
   end
+end
+-- The call (Chat > Call): Talk to everyone through SonoBus, on its own, whatever Real time mode and Time-sync are doing (James, 0.59.6:
+-- "they just shouldn't be mutually exclusive... real-time mode on and talk/call on separately"). Without Real time mode, SonoBus carries
+-- only the talk mic.
+function ui.call_on() return select(2, reaper.GetProjExtState(proj, band.SECTION, "call")) == "1" end
+function ui.set_call(v)
+  local _, sm, si = same_room_on()
+  if not v then
+    reaper.SetProjExtState(proj, band.SECTION, "call", "")
+    if live.talking(proj) then live.talk(proj, false) end
+    if not same_room_on() then
+      reaper.SetProjExtState(proj, band.SECTION, "rt talk only", "")
+      if sm then reaper.TrackFX_SetOffline(sm, si, true) end
+    end
+    return band.log("the call is off")
+  end
+  if not same_room_on() then reaper.SetProjExtState(proj, band.SECTION, "rt talk only", "1") end
+  local link, why = setup.sonobus(cfg, b, proj, true)
+  if not link then reaper.SetProjExtState(proj, band.SECTION, "rt talk only", ""); return band.msg(why) end
+  sb_link = link
+  reaper.SetProjExtState(proj, band.SECTION, "call", "1")
+  live.rt_sends(proj)
+  band.log("the call is on: press Talk to speak to everyone")
 end
 local SAME_ROOM_TIP = "Hear each other live (through SonoBus), and play, stop and record together.\nWhat someone records lands as a take when they stop. Edits sync either way."
 
@@ -1241,8 +1268,8 @@ function ui.talk_controls(on)
     local cur = live.talk_input()
     local mic = "input " .. (cur + 1)
     for _, i in ipairs(inputs) do if i[1] == cur then mic = i[2] end end
-    ImGui.SetItemTooltip(ctx, "Your microphone to the others through Real time mode, without arming a track: it's never recorded, and it goes quiet while\n" ..
-      "anyone records here. No other call app needed. Mic: " .. mic .. " (Mic, beside it, picks another; only on this computer). Click again to stop.")
+    ImGui.SetItemTooltip(ctx, "Your microphone to the others, without arming a track: it's never recorded, and it goes quiet only while a track here\n" ..
+      "records from that same mic. No other call app needed. Mic: " .. mic .. " (Mic, beside it, picks another; only on this computer). Click again to stop.")
     -- the call mic, picked here (0.58.98: it was the first input, changed only on the hidden 'StudioSync Talk' track)
     ImGui.SameLine(ctx)
     if ImGui.SmallButton(ctx, "Mic##talkmic") then ImGui.OpenPopup(ctx, "talkmic") end
@@ -1271,18 +1298,21 @@ function ui.call_tab()
   end
   ImGui.Spacing(ctx)
   ImGui.SeparatorText(ctx, "Talk inside StudioSync")
-  local on = same_room_on()
-  local ch, v = switch_row("##rtcall", "Real time mode", on, SAME_ROOM_TIP)
-  if ch then set_same_room(v) end
-  if not on and b and page_play.time_sync_on() then ui.talk_controls(true) end -- (Time-sync's Talk: talk mics only, 0.59.4)
+  -- (its own switch: it was Real time mode's, and switching it on turned Time-sync off. James, 0.59.6)
+  local on = b and ui.call_on()
+  ImGui.BeginDisabled(ctx, not b)
+  local ch, v = switch_row("##callsw", "Talk to everyone", on, "Talk through SonoBus with your talk mic, whatever Real time mode and Time-sync are doing.\n" ..
+    "Without Real time mode it carries only your talk mic, never your playing.")
+  ImGui.EndDisabled(ctx)
+  if ch then ui.set_call(v) end
   if on then
-    ui.talk_controls(on)
+    ui.talk_controls(true)
     ImGui.Spacing(ctx)
     if ImGui.SmallButton(ctx, "Each person's volume and mute") then sonobus_open() end
     ImGui.SetItemTooltip(ctx, "SonoBus's own window: a level and a mute for each person you hear, only for you, and nothing to do with what's recorded.")
-    ImGui.TextDisabled(ctx, "Talk is never recorded, and goes quiet while anyone records here. To record a vocal, arm its track as usual.")
+    ImGui.TextDisabled(ctx, "Talk is never recorded. It goes quiet only while a track here records from your talk mic; then they hear that take as usual. To record a vocal, arm its track.")
   else
-    ImGui.TextDisabled(ctx, "Real time mode on: talk to everyone with Talk, no other app needed, and set each person's volume.")
+    ImGui.TextDisabled(ctx, b and "On: talk to everyone with Talk, no other app needed, and set each person's volume." or "Open a studio project to talk.")
   end
 end
 -- Real time mode's three ways (James, 0.59.4: "my time, their time for SonoBus and then time sync for NINJAM, each stating what they do").
@@ -1290,7 +1320,7 @@ end
 local RT_KINDS = {
   { "my", "My time", "Live through SonoBus: you hear everyone the moment it arrives, a little late (the network). For playing and talking together." },
   { "their", "Their time", "Live through SonoBus, your backing delayed so the others line up with it. For listening along, not for playing." },
-  { "timesync", "Time-sync", "Through NINJAM: everyone plays to their own copy of the song and hears the others exactly in time with it, %s late. For playing along to a take; Talk still works, on talk mics only." },
+  { "timesync", "Time-sync", "Through NINJAM: everyone plays to their own copy of the song and hears the others exactly in time with it, %s late. For playing along to a take. Talk: Chat > Call." },
 }
 function ui.rt_kind()
   if page_play.time_sync_on() then return "timesync" end
@@ -1355,7 +1385,6 @@ local function home_play()
     ImGui.SetItemTooltip(ctx, "For someone with only the SonoBus app (no REAPER, no StudioSync): a message with SonoBus's download and a link that joins your\n" ..
       "studio's live audio. Turns on Real time mode and SonoBus Guest, so they hear your mix and what they play records here.")
   end
-  ui.talk_controls(on) -- (with Time-sync too: SonoBus then carries only the talk mic. James, 0.59.4)
   if sb then -- (the help for it was in Settings > Advanced, with nothing here pointing at it: UX review, 0.58.52)
     require("page_hear").fit(ctx, ImGui, "Can't hear?")
     if ImGui.SmallButton(ctx, "Can't hear?") then ui.go_settings("Advanced") end

@@ -279,9 +279,10 @@ function people.colour_options(ctx, ImGui, cfg)
   local own = mine and not listed
   local pad = own and 6 or 3 -- (26 or 20 high, as the others)
   ImGui.PushStyleVar(ctx, ImGui.StyleVar_FramePadding, pad, (( own and 26 or 20) - ImGui.GetFontSize(ctx)) / 2)
-  local rv, picked = ImGui.ColorEdit3(ctx, "##own", own and mine or 0x6A6F7A, ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel | ImGui.ColorEditFlags_NoTooltip)
+  -- (held while you drag, picked when you let go: picking on every frame wrote to every studio's folder, and the wheel spun. 0.59.6)
+  require("colours").edit3(ctx, ImGui, "##own", own and mine or 0x6A6F7A, function(v) if v ~= mine then people.pick(cfg, v) end end,
+    ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel | ImGui.ColorEditFlags_NoTooltip)
   ImGui.PopStyleVar(ctx)
-  if rv and picked ~= mine then people.pick(cfg, picked) end
   ImGui.SetItemTooltip(ctx, "Any colour of your own: click for the colour wheel")
   do -- the wheel on it: a ring of hues, small in the corner once it shows your colour
     local x0, y0 = ImGui.GetItemRectMin(ctx)

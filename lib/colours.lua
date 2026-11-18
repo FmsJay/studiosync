@@ -122,6 +122,22 @@ function colours.folder_bases(tracks, stops, named)
   return out
 end
 
+-- A colour swatch with ColorEdit's wheel that keeps its own colour while you drag in it, and hands it over once you let go (James, 0.59.6:
+-- dragging in the triangle could spin it round: the colour passed back each frame came from elsewhere, a little off, and the wheel took its
+-- hue from that). commit(rgb) on letting go. -> changed, done.
+local held = {}
+function colours.edit3(ctx, ImGui, label, value, commit, flags)
+  local ch, v = ImGui.ColorEdit3(ctx, label, held[label] or value, flags or (ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel))
+  if ch then held[label] = v end
+  local done = ImGui.IsItemDeactivatedAfterEdit(ctx)
+  if done or (held[label] and not ImGui.IsItemActive(ctx)) then
+    local x = held[label]
+    held[label] = nil
+    if x then commit(x) end
+  end
+  return ch, done
+end
+
 local function hash01(s)
   local h = 2166136261
   for i = 1, #s do h = ((h ~ s:byte(i)) * 16777619) & 0xFFFFFFFF end
@@ -187,12 +203,21 @@ end
 -- The colour of each region or marker. marks: { { name, region } }. mode: "sections" (the same section, the same colour) or "song"
 -- (chronologically). named: colours set by section. Pure.
 function colours.plan_marks(marks, mode, stops, named)
-  local out, regions, at, other = {}, 0, 0, { n = 0, map = {} }
-  for _, m in ipairs(marks) do if m.region then regions = regions + 1 end end
+  local out, regions, other = {}, 0, { n = 0, map = {} }
+  -- (chronologically: by where each starts, not the order they're listed in; a marker the colour of the next region to start)
+  local order, place = {}, {}
+  for i, m in ipairs(marks) do order[i] = i end
+  table.sort(order, function(a, z)
+    local pa, pz = marks[a].pos or a, marks[z].pos or z
+    if pa ~= pz then return pa < pz end
+    return a < z
+  end)
+  local at = 0
+  for _, i in ipairs(order) do place[i] = at; if marks[i].region then at = at + 1 end end
+  regions = at
   for i, m in ipairs(marks) do
     if mode == "song" then
-      out[i] = colours.ramp(stops, regions > 1 and at / (regions - 1) or 0)
-      if m.region then at = at + 1 end
+      out[i] = colours.ramp(stops, regions > 1 and math.min(place[i], regions - 1) / (regions - 1) or 0)
     else out[i] = colours.section_colour(colours.section_key(m.name), stops, named, other) end
   end
   return out
@@ -330,7 +355,7 @@ function colours.read_items(proj, cfg, may)
           local kind = tk and (select(2, reaper.GetSetMediaItemTakeInfo_String(tk, "P_EXT:band_m_print", "", false)) ~= "" and "print"
             or reaper.TakeIsMIDI(tk) and "midi" or "audio") or nil
           local _, _, evid = mirror.known(proj, mirror.item_oid(it))
-          list[#list + 1] = { ptr = it, pos = pos, track = name, section = section, maker = by_tag[mirror.creator(mirror.item_oid(it))], kind = kind,
+          list[#list + 1] = { ptr = it, pos = pos, len = reaper.GetMediaItemInfo_Value(it, "D_LENGTH"), track = name, section = section, maker = by_tag[mirror.creator(mirror.item_oid(it))], kind = kind,
             newest = (evid or ""):match("%d%d%d%d%d%d%d%d%-%d%d%d%d%d%dZ") or "",
             lane = math.floor(reaper.GetMediaItemInfo_Value(it, "I_FIXEDLANE")), takes = mirror.filled_takes(it) } -- (a print isn't a take still to choose)
         else left = left + 1 end
@@ -507,8 +532,7 @@ end
 -- Colours set by name, for one kind: entries { { key, label, colour now } }.
 local function name_editors(ctx, ImGui, kind, entries, words)
   for i, e in ipairs(entries) do
-    local ch, v = ImGui.ColorEdit3(ctx, e[2] .. "##" .. kind .. e[1], e[3], ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel)
-    if ch then colours.set_named(kind, e[1], v); cache.at = -math.huge end
+    colours.edit3(ctx, ImGui, e[2] .. "##" .. kind .. e[1], e[3], function(v) colours.set_named(kind, e[1], v); cache.at = -math.huge end)
     if i % 2 == 1 and i < #entries then ImGui.SameLine(ctx, 180) end
   end
   if next(colours.named(kind)) and ImGui.SmallButton(ctx, words .. " as they were##" .. kind) then colours.forget_named(kind); cache.at = -math.huge end
@@ -524,12 +548,17 @@ local function refresh(proj, cfg, parts, stops_of_row)
   cache.plan = colours.plan(cache.list, t.scheme, { stops = stops_of_row.tracks, folders = colours.named("folders") })
   cache.tsegs = {}
   for i, x in ipairs(cache.list) do cache.tsegs[i] = { (i - 1) / #cache.list, i / #cache.list, cache.plan[i], x.name } end
+  -- items where they are in the song, across its length (James, 0.59.6: "show by each time segment, based on project length"; one after
+  -- another, items at the same time on several tracks looked out of order)
   local items, _, last = colours.read_items(proj, cfg, nil)
-  table.sort(items, function(a, z) return a.pos < z.pos end)
   local ip = colours.plan_items(items, parts.items.scheme, { stops = stops_of_row.items, last = last, sections = colours.named("sections"), kinds = colours.item_kinds() })
+  local iend = 0
+  for _, x in ipairs(items) do iend = math.max(iend, x.pos + (x.len or 0)) end
   cache.isegs = {}
   for i, x in ipairs(items) do
-    cache.isegs[#cache.isegs + 1] = { (i - 1) / #items, i / #items, ip[i] or 0x5A5F6A, string.format("%s, bar %s%s", x.track, bar_at(x.pos), ip[i] and "" or " (as its track)") }
+    if iend > 0 then
+      cache.isegs[#cache.isegs + 1] = { x.pos / iend, (x.pos + (x.len or 0)) / iend, ip[i] or 0x5A5F6A, string.format("%s, bar %s%s", x.track, bar_at(x.pos), ip[i] and "" or " (as its track)") }
+    end
   end
   local marks = colours.read_marks(proj)
   local mp = colours.plan_marks(marks, parts.regions.scheme, stops_of_row.regions, colours.named("sections"))
@@ -617,13 +646,11 @@ function colours.draw(ctx, ImGui, proj, cfg, may, timeline_ok)
       if p.palette == "Your own" then
         local a, z = tonumber(p.from, 16) or 0x2F7BFF, tonumber(p.to, 16) or 0xFF8A3D
         ImGui.SameLine(ctx)
-        local ch1, v1 = ImGui.ColorEdit3(ctx, "##from", a, ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel)
+        colours.edit3(ctx, ImGui, "##from", a, function(v) set(row, "from", string.format("%06X", v)) end)
         ImGui.SetItemTooltip(ctx, "The first colour")
         ImGui.SameLine(ctx)
-        local ch2, v2 = ImGui.ColorEdit3(ctx, "##to", z, ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel)
+        colours.edit3(ctx, ImGui, "##to", z, function(v) set(row, "to", string.format("%06X", v)) end)
         ImGui.SetItemTooltip(ctx, "The last colour")
-        if ch1 then set(row, "from", string.format("%06X", v1)) end
-        if ch2 then set(row, "to", string.format("%06X", v2)) end
       end
     end
     -- its button(s), on the row
@@ -664,8 +691,7 @@ function colours.draw(ctx, ImGui, proj, cfg, may, timeline_ok)
       local kc, entries = colours.kind_colours(), {}
       for i, name in ipairs(colours.KIND_NAMES) do entries[i] = { i, name, kc[i] } end
       for i, e in ipairs(entries) do
-        local ch, v = ImGui.ColorEdit3(ctx, e[2] .. "##kind" .. i, e[3], ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel)
-        if ch then colours.set_kind_colour(i, v); cache.at = -math.huge end
+        colours.edit3(ctx, ImGui, e[2] .. "##kind" .. i, e[3], function(v) colours.set_kind_colour(i, v); cache.at = -math.huge end)
         if i % 2 == 1 and i < #entries then ImGui.SameLine(ctx, 180) end
       end
       if ImGui.SmallButton(ctx, "Instrument colours as they were##kinds") then reaper.DeleteExtState(band.SECTION, "colour kinds", true); kind_cache = nil; cache.at = -math.huge end
