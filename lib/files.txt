@@ -1,11 +1,11 @@
-version 0.59.28
+version 0.59.29
 StudioSync - Autostart.lua	16719
 StudioSync - Claim selected tracks.lua	851
 StudioSync - Draw.lua	27321
 StudioSync - Final mix.lua	5796
 StudioSync - Hold my changes.lua	925
 StudioSync - Keep selected tracks local.lua	919
-StudioSync - Live sync.lua	73363
+StudioSync - Live sync.lua	73711
 StudioSync - Local mixing.lua	880
 StudioSync - Measure guest delay.lua	4258
 StudioSync - Open session.lua	9134

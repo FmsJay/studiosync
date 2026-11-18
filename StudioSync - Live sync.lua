@@ -191,6 +191,12 @@ local reloaded -- this instance handed over to the updated code (which saves the
 reaper.atexit(function()
   if click and reaper.GetToggleCommandStateEx(0, 40364) == 1 then reaper.Main_OnCommand(40364, 0) end -- (stopped mid count-in: the click left on. 0.58.92)
   if not reloaded then pcall(end_of_session, "Live sync stopped") end
+  -- (this REAPER's lock for the song goes with it: restarted within 20 s, the new REAPER read it as another one syncing the song and waited
+  -- two minutes, saying so. Chilio's Mac, 0.59.29)
+  if not reloaded then
+    local lk = band.read_json(lock_file)
+    if type(lk) == "table" and lk.instance == instance then os.remove(lock_file) end
+  end
   toggle(0)
 end)
 
