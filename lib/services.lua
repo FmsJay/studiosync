@@ -46,7 +46,10 @@ end
 -- the same reason: the key sat in a /tmp file anyone could read. Linux stress test, 0.58.77)
 local TMP = (WIN and (os.getenv("TEMP") or os.getenv("TMP")) or os.getenv("TMPDIR") or os.getenv("XDG_RUNTIME_DIR") or "/tmp"):gsub("\\", "/"):gsub("/+$", "")
 local started, last = {}, {}
-local function background(name, cmd, every)
+local background
+-- Run a command hidden, without waiting, once per `every` seconds under `name` (lib/drive.lua copies big files with it). -> its last output
+function services.run_hidden(name, cmd, every) return background(name, cmd, every) end
+function background(name, cmd, every)
   local file = TMP .. "/bandsync-" .. name .. ".txt"
   -- read before starting the next run: a run truncates its file as it starts, and read after that, every call that started one handed back an answer from
   -- long before (only port_open calls so seldom that each starts one: a closed server read as answering. Mac, 0.58.22)

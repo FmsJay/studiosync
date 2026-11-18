@@ -416,6 +416,21 @@ function tools.removed_bar(ctx, ImGui)
   ImGui.PopStyleColor(ctx)
 end
 
+-- A print that didn't come out (lib/prints.lua prints.problem), until dismissed or half an hour old.
+function tools.print_problem_bar(ctx, ImGui)
+  local pp = band.json_decode(reaper.GetExtState(band.SECTION, "print problem"))
+  if not (pp and pp.text) or (pp.at and os.time() - pp.at > 1800) then return end
+  if ImGui.SmallButton(ctx, "OK##printproblem") then reaper.DeleteExtState(band.SECTION, "print problem", false) end
+  ImGui.SetItemTooltip(ctx, "Hide this. Every print problem is also in Settings > Console.")
+  local said = tostring(pp.text) .. ((pp.n or 1) > 1 and string.format("  (%d print problems lately)", pp.n) or "")
+  ImGui.SameLine(ctx)
+  if ImGui.CalcTextSize(ctx, said) + 16 > ImGui.GetContentRegionAvail(ctx) then ImGui.NewLine(ctx) end
+  ImGui.PushStyleColor(ctx, ImGui.Col_Text, require("theme").YELLOW)
+  ImGui.PushTextWrapPos(ctx, ImGui.GetWindowWidth(ctx) - 16)
+  ImGui.Text(ctx, said)
+  ImGui.PopTextWrapPos(ctx)
+  ImGui.PopStyleColor(ctx)
+end
 function tools.put_back_bar(ctx, ImGui, song, use_mine, may, claim)
   local pb = band.json_decode(reaper.GetExtState(band.SECTION, "put back"))
   if not (pb and pb.text) then return end

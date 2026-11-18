@@ -64,6 +64,7 @@ function drive.service() return reaper.GetExtState(band.SECTION, "drive service"
 -- one per signed-in account), the user folder (Windows mirroring), ~/Library/CloudStorage/GoogleDrive-<account> on macOS.
 -- Dropbox: the paths in its info.json, else ~/Dropbox; OneDrive: its environment variables or CloudStorage/OneDrive-*; iCloud Drive:
 -- ~/iCloudDrive (Windows) or Mobile Documents (macOS); Box: ~/Box or CloudStorage/Box-Box. `only`: one service's.
+drive.BIG = 16 * 1024 * 1024 -- bytes: a file this big is copied in the background (drive.mirror)
 local function places(only)
   local out = {}
   local function add(service, path) if path and (only == nil or only == "" or only == service) then out[#out + 1] = path end end
@@ -335,6 +336,22 @@ function drive.mirror(here, there, budget, user, wait)
     -- pass, so half a file never takes the whole one's place: it isn't copied again once it's there. 0.59.10)
     if a:match("%.json$") and band.read_json(a) == nil then return end
     local size = band.size(a)
+    -- (a big one, a long print or recording: copied by the system in the background, to a temporary name and then into place, so REAPER
+    -- doesn't hold still while it goes. James, 0.59.12. Once a minute at most per file: the next pass sees it there)
+    if (size or 0) > drive.BIG then
+      local dir, name = z:match("^(.*)/([^/]+)$")
+      local tmp = dir .. "/.syncthing." .. name .. ".tmp"
+      local cmd
+      if reaper.GetOS():find("^Win") then
+        local w = function(p) return '"' .. p:gsub("/", "\\") .. '"' end
+        cmd = "copy /b /y " .. w(a) .. " " .. w(tmp) .. " >nul && move /y " .. w(tmp) .. " " .. w(z) .. " >nul"
+      else
+        local q = function(p) return "'" .. p:gsub("'", "'\\''") .. "'" end
+        cmd = "cp " .. q(a) .. " " .. q(tmp) .. " && mv " .. q(tmp) .. " " .. q(z)
+      end
+      require("services").run_hidden("drivecopy-" .. require("mirror").hash(z), cmd, 60)
+      return
+    end
     band.copy_atomic(a, z)
     if band.size(a) ~= size or band.size(z) ~= size then os.remove(z); return end
     n = n + 1

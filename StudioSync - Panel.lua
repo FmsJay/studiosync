@@ -2813,6 +2813,7 @@ local function frame_app()
     band.log(tostring(require("mirror").use_mine(proj, cfg, b.song, b.room, mine, { can = can, mode = who and who.mode,
       local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1" })))
   end, function(name) return can(cfg.user, name) end, b and function(name) claim({ name }, {}) end)
+  tools.print_problem_bar(ctx, ImGui)
   end)
   if bars_open then ImGui.Unindent(ctx, 16); ImGui.EndChild(ctx) end
   -- (said once in the console; the rest of the panel goes on: `err` swapped the whole panel for the error page, and refresh cleared it, so it
@@ -3113,6 +3114,11 @@ local function pill_window()
     if pb and pb.text then
       words = words .. string.format("  ·  %d edit%s undone", pb.n or 1, (pb.n or 1) == 1 and "" or "s")
       waiting = waiting + (pb.n or 1)
+    end
+    local pp = band.json_decode(reaper.GetExtState(band.SECTION, "print problem"))
+    if pp and pp.text and not (pp.at and os.time() - pp.at > 1800) then -- (a print that didn't come out: lib/prints.lua prints.problem. 0.59.12)
+      words = words .. string.format("  ·  %d print problem%s", pp.n or 1, (pp.n or 1) == 1 and "" or "s")
+      waiting = waiting + (pp.n or 1)
     end
     if b then
       local asks = #require("suggest").rows(sync.room_dir(cfg, b.song, b.room), cfg.user)

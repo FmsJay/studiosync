@@ -218,6 +218,12 @@ local function pass_script()
 -- StudioSync's background render (written by lib/bgrender.lua; only the hidden REAPER runs this)
 if not os.getenv("BANDSYNC_RENDER") then return end
 local PASSES, WAIT, SAME = %d, %d, %.2f
+local function max_passes(dir) -- (a part with no instrument, nothing to load: one render. bg.start writes it. 0.59.12)
+  local f = dir and io.open(dir .. "/maxpasses.txt", "r")
+  if not f then return PASSES end
+  local n = tonumber(f:read("a")); f:close()
+  return n or PASSES
+end
 local function flac_size(dir)
   for i = 0, 99 do
     local f = reaper.EnumerateFiles(dir, i)
@@ -259,7 +265,7 @@ local function step()
   local size = flac_size(out)
   local same = last and last.size > 0 and math.abs(size - last.size) <= SAME * math.max(size, last.size)
     or last and last.size == size
-  if same or pass >= PASSES then
+  if same or pass >= max_passes(dir) then
     if last then clear(last.dir) end
     clear(out, dir)
     local h = io.open(dir .. "/passes.txt", "w") -- (its print is ready, whether or not anything stops it quitting)
@@ -388,7 +394,7 @@ end
 -- Render in the background, up to bg.MAX at once and one per item (`key`): `render(dir)` sets the project up and calls
 -- band.render as it always does (which saves the copy into `dir` instead of rendering); `keep`: the tracks the
 -- print goes through. Active tab only.
-function bg.start(key, name, keep, render, secs) -- secs: how long the part is
+function bg.start(key, name, keep, render, secs, quick, where) -- secs: how long the part is; quick: one pass will do; where: its track
   local dir = TMP .. "/" .. name
   reaper.RecursiveCreateDirectory(dir, 0)
   for _, f in ipairs(band.files(dir)) do os.remove(dir .. "/" .. f) end
@@ -401,9 +407,10 @@ function bg.start(key, name, keep, render, secs) -- secs: how long the part is
   local set = {}
   for _, g in ipairs(keep) do set[g:upper()] = true end
   band.write_atomic(job, bg.prepare(band.read(job), set))
+  if quick then band.write_atomic(dir .. "/maxpasses.txt", "1") end -- (twice through a long part for nothing: James, 0.59.12)
   local limit = bg.time_limit(secs, rate())
   launch(exe_path(), job, limit + 180) -- (its launcher ends it a while after Live sync would have)
-  jobs[key] = { name = name, dir = dir, started = reaper.time_precise(), secs = secs, limit = limit, progress_at = reaper.time_precise(), sig = "" }
+  jobs[key] = { name = name, dir = dir, started = reaper.time_precise(), secs = secs, limit = limit, progress_at = reaper.time_precise(), sig = "", where = where }
   last_start = reaper.time_precise()
   return true
 end
@@ -484,15 +491,19 @@ local function timed_out(key)
     failed = failed + 1
     local why = (band.read(j.dir .. "/pid.txt") or ""):match("^failed") and "the second REAPER didn't start" or "the second REAPER quit without a print"
     publish(why)
-    band.log("a print stopped in the background before it finished (" .. why .. "): it renders here instead" ..
-      ((failed >= bg.GIVE_UP and done == 0) and (" (and so will the rest, after " .. failed .. " tries: Settings > Options can try the background again)") or (" (try " .. failed .. " of " .. bg.GIVE_UP .. ")")))
+    local gave_up = failed >= bg.GIVE_UP and done == 0
+    local words = "a print stopped in the background before it finished (" .. why .. "): it renders here instead" ..
+      (gave_up and (" (and so will the rest, after " .. failed .. " tries: Settings > Options can try the background again)") or (" (try " .. failed .. " of " .. bg.GIVE_UP .. ")"))
+    if gave_up and failed == bg.GIVE_UP then -- (once, when it gives up: before then each still printed, in front)
+      require("prints").problem("Prints can't render in the background here (" .. why .. "), so they render in front and REAPER holds still while they do. Settings > Options can try the background again.")
+    else band.log(words) end
     return "failed"
   end
   bg.stuck[j.name] = true
   local long = reaper.time_precise() - j.started > (j.limit or bg.WAIT)
-  band.log((long and string.format("a wet take took over %d s to render (its limit for its length on this computer) and was stopped", math.floor(j.limit or bg.WAIT))
-    or ("a wet take stopped getting anywhere for " .. bg.WAIT .. " s and was stopped")) ..
-    ": a plug-in may be waiting for an answer (a licence, missing hardware). Collaborators keep the last one until that part changes")
+  require("prints").problem("The print of a part" .. (j.where and (" on " .. j.where) or "") .. (long and string.format(" took over %d s to render (its limit for its length on this computer) and was stopped", math.floor(j.limit or bg.WAIT))
+    or (" stopped getting anywhere for " .. bg.WAIT .. " s and was stopped")) ..
+    ": a plug-in may be waiting for an answer (a licence, missing hardware). Bandmates keep the last one until that part changes")
   return "stuck"
 end
 

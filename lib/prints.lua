@@ -349,7 +349,26 @@ end
 
 -- Render a print: in the background where that works (lib/bgrender.lua: nil while it renders, and a later pass
 -- picks it up), else here and now. `render()` renders it in front and returns its path; `tracks`: what it goes through.
-function prints.render(oid, name, out, tracks, render, secs) -- secs: the part's length (how long a background render may take)
+-- A print that didn't come out goes up in the panel's bar, as an undone edit does, and on its small box (James, 0.59.12: "when a print or
+-- render fails it should probably come up at the alert box"): ExtState "print problem", { text, n, at }, until it's dismissed or half an hour old.
+function prints.problem(text)
+  band.log(text)
+  local old = band.json_decode(reaper.GetExtState(band.SECTION, "print problem")) or {}
+  local n = old.at and os.time() - old.at < 1800 and (tonumber(old.n) or 0) + 1 or 1
+  reaper.SetExtState(band.SECTION, "print problem", band.json_encode({ text = text, n = n, at = os.time() }), false)
+end
+prints.failed = {} -- print name -> true: rendered here and nothing came out (this session; tried again once what it's made from changes)
+-- How long REAPER has been left alone: the mouse where it was, no edit, the transport as it was. Asked every pass.
+local quiet = { at = 0 }
+local function quiet_for()
+  local x, y = reaper.GetMousePosition()
+  local key = x .. "," .. y .. "," .. reaper.GetProjectStateChangeCount(0) .. "," .. reaper.GetPlayState()
+  if key ~= quiet.key then quiet.key, quiet.at = key, reaper.time_precise() end
+  return reaper.time_precise() - quiet.at
+end
+prints.QUIET = 20 -- seconds left alone before a long print renders here, in front (it holds REAPER while it does)
+local said_waiting = {}
+function prints.render(oid, name, out, tracks, render, secs, quick) -- secs: the part's length; quick: no instrument, one render pass will do
   -- already printed: a print's name says what it was made from and who rendered it, so going back to a state it had
   -- (an undo, a note put back) finds its print here. Rendered again, its file (still open in REAPER) couldn't be
   -- replaced, so the background print was dropped and rendered in front as "-2" (laptop, 0.40.0).
@@ -372,11 +391,23 @@ function prints.render(oid, name, out, tracks, render, secs) -- secs: the part's
       queue[oid] = nil
       local keep = {}
       for _, t in ipairs(tracks) do keep[#keep + 1] = reaper.GetTrackGUID(t) end
-      if bg.start(oid, name, keep, render, secs) then return nil end
+      if bg.start(oid, name, keep, render, secs, quick, tracks[1] and select(2, reaper.GetTrackName(tracks[1]))) then return nil end
     end
   elseif not my_turn(oid, name) then return nil end
+  if prints.failed[name] then return nil end
+  -- (in front, REAPER holds still for as long as the render takes: a long part waits till you've left it alone a while. James, 0.59.12)
+  if (secs or 0) > 30 and quiet_for() < prints.QUIET then
+    if not said_waiting[name] then said_waiting[name] = true; band.log("a long part's print waits till REAPER's been left alone for " .. prints.QUIET .. " s: it renders here, and holds REAPER while it does") end
+    return nil
+  end
   queue[oid] = nil
-  return render()
+  local ok, path = pcall(render)
+  if ok and path then return path end
+  prints.failed[name] = true -- (it rendered again at every pass, holding REAPER each time)
+  local where = tracks[1] and select(2, reaper.GetTrackName(tracks[1])) or "a track"
+  prints.problem("A print of a part on " .. where .. " didn't come out" .. (ok and "" or (" (" .. tostring(path):gsub("\n.*", "") .. ")")) ..
+    ": bandmates without its plug-ins don't hear that part until it changes and prints again")
+  return nil
 end
 
 -- The print goes in as the item's wet take (replacing an older one), the playing take left as it was.
@@ -442,7 +473,7 @@ local function refresh_ara(proj, it, media_dir)
   reaper.RecursiveCreateDirectory(media_dir, 0)
   local name = print_name(oid, h)
   local path = prints.render(oid, name, media_dir, { reaper.GetMediaItem_Track(it) },
-    function() return require("sync").print_item(proj, it, ara, media_dir, name, nil, true, true) end, reaper.GetMediaItemInfo_Value(it, "D_LENGTH"))
+    function() return require("sync").print_item(proj, it, ara, media_dir, name, nil, true, true) end, reaper.GetMediaItemInfo_Value(it, "D_LENGTH")) -- (not quick: ARA)
   if not path then return false end
   attach(it, print, ara, path, h)
   reaper.GetSetMediaItemTakeInfo_String(ara, "P_EXT:" .. prints.HERE, h, true)
@@ -482,7 +513,7 @@ function prints.refresh(proj, it, media_dir, fx_hash, route_hash, cfg)
   local path = prints.render(oid, name, media_dir, dest and { tr, dest } or { tr }, function()
     if dest then return sync.print_routed(proj, it, midi, dest, media_dir, name) end
     return sync.print_item(proj, it, dry, media_dir, name, nil, false, true)
-  end, reaper.GetMediaItemInfo_Value(it, "D_LENGTH"))
+  end, reaper.GetMediaItemInfo_Value(it, "D_LENGTH"), audio and reaper.TrackFX_GetInstrument(tr) < 0) -- (quick: audio through effects, nothing to load)
   if not path then return false end
   -- a print of notes that came out silent: the instrument loaded but its sounds didn't (a Kontakt library or an EZX that isn't
   -- installed here). Kept, it played silence for everyone who lacked the instrument, and nothing said so (plug-ins review, 0.58.76)
@@ -494,7 +525,7 @@ function prints.refresh(proj, it, media_dir, fx_hash, route_hash, cfg)
       -- pointing at it waited for it for good. Review, 0.58.87)
       local who = (reaper.GetExtState(band.SECTION, "user"):gsub("[^%w%-_]", "_"))
       if who ~= "" and path:match("%-" .. who:gsub("%p", "%%%0") .. "%.flac$") then os.remove(path) end
-      band.log("the print of a part on " .. select(2, reaper.GetTrackName(tr)) .. " came out silent here: its instrument loads, but not its sounds " ..
+      prints.problem("The print of a part on " .. select(2, reaper.GetTrackName(tr)) .. " came out silent here: its instrument loads, but not its sounds " ..
         "(a library or kit that isn't installed?). Bandmates without the instrument don't hear that part until someone who has it all prints it")
     end
   end
