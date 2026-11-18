@@ -8,11 +8,15 @@
 local here = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]")
 local lib = here:gsub("[/\\]tests[/\\]cross$", "") .. "/lib/"
 package.path = lib .. "?.lua;" .. package.path
+-- (StudioSync's modules fresh from this folder: a dev hook's Lua kept an older band.lua, and the summary named the wrong version)
+for name in pairs(package.loaded) do if type(name) == "string" and reaper.file_exists(lib .. name .. ".lua") then package.loaded[name] = nil end end
 local band = require("band")
 
 local STUDIO, SONG = CROSS_STUDIO or "Smiley Studios", CROSS_SONG or "Cross Test"
 local ROLES = CROSS_ROLES or { ["James"] = "A", ["James-Laptop"] = "B", ["Chilio-Mac"] = "C" }
-local WAIT, JOIN = 120, CROSS_JOIN or 180 -- seconds a change has to arrive in; seconds to wait for the others to start (CROSS_JOIN: longer)
+-- (PAUSE: before each step's change, longer than presence.HOLD: a change to what someone changed in the last 15 s is put back as
+-- "<name> is editing that right now", by design. The first run moved A's part 14 s after it arrived and was refused.)
+local WAIT, JOIN, PAUSE = 120, CROSS_JOIN or 180, 25 -- seconds a change has to arrive in; seconds to wait for the others to start (CROSS_JOIN: longer)
 local cfg = band.settings()
 if not cfg then return "StudioSync isn't set up here" end
 local role = CROSS_ROLE or ROLES[cfg.user]
@@ -100,14 +104,21 @@ end
 
 -- The steps: who acts, what they do, and what everyone else waits to see. (A step whose actor isn't here is skipped by all.)
 local STEPS = {
+  { "A clears the project from an earlier run", "A", function(p)
+      reaper.Undo_BeginBlock2(p)
+      for i = reaper.CountTracks(p) - 1, 0, -1 do reaper.DeleteTrack(reaper.GetTrack(p, i)) end
+      reaper.SetCurrentBPM(p, 120, true)
+      reaper.Undo_EndBlock2(p, "Cross test: clear", -1)
+    end, function(p) return reaper.CountTracks(p) == 0 and math.abs(reaper.TimeMap2_GetDividedBpmAtTime(p, 0) - 120) < 0.01 end },
   { "A adds a track and a part", "A", function(p) add_part(p, "XT Drums A", 0) end,
     function(p) local it = first_item(p, "XT Drums A"); return it and math.abs(reaper.GetMediaItemInfo_Value(it, "D_POSITION")) < 0.01 end },
   { "B adds a track and a part", "B", function(p) add_part(p, "XT Bass B", 4) end, function(p) return first_item(p, "XT Bass B") ~= nil end },
   { "C adds a track and a part", "C", function(p) add_part(p, "XT Keys C", 8) end, function(p) return first_item(p, "XT Keys C") ~= nil end },
   { "C changes the tempo to 100", "C", function(p) reaper.SetCurrentBPM(p, 100, true) end,
     function(p) return math.abs(reaper.TimeMap2_GetDividedBpmAtTime(p, 0) - 100) < 0.01 end },
-  { "A changes it to 120 right after (the newest map wins everywhere)", "A", function(p) reaper.SetCurrentBPM(p, 120, true) end,
-    function(p) return math.abs(reaper.TimeMap2_GetDividedBpmAtTime(p, 0) - 120) < 0.01 end },
+  -- (130, not REAPER's starting 120: a check that passes before anything arrives proves nothing)
+  { "A changes it to 130 after (the newest map wins everywhere)", "A", function(p) reaper.SetCurrentBPM(p, 130, true) end,
+    function(p) return math.abs(reaper.TimeMap2_GetDividedBpmAtTime(p, 0) - 130) < 0.01 end },
   { "B moves A's part to bar 2", "B", function(p)
       local it = first_item(p, "XT Drums A")
       if it then reaper.Undo_BeginBlock2(p); reaper.SetMediaItemInfo_Value(it, "D_POSITION", 2); reaper.Undo_EndBlock2(p, "Cross test: move", -1); reaper.UpdateArrange() end
@@ -212,7 +223,7 @@ local function tick()
     if not mine then
       if not present then put(role .. "-step" .. step, { skipped = true }); say(s[1] .. ": skipped (" .. s[2] .. " isn't here)")
       elseif s[2] == role then
-        s[3](p); put(role .. "-step" .. step, { acted = true, ok = true, at = utc() }); say(s[1] .. ": done")
+        if t - t0 >= PAUSE then s[3](p); put(role .. "-step" .. step, { acted = true, ok = true, at = utc() }); say(s[1] .. ": done") end
       elseif have(s[2] .. "-step" .. step) then -- (counted from when the actor says it acted)
         results[step] = results[step] or t
         if s[4](p) then put(role .. "-step" .. step, { ok = true, secs = math.floor(t - results[step] + 0.5) }); say(s[1] .. ": arrived")
@@ -221,7 +232,7 @@ local function tick()
     else -- everyone's in for this step (or the wait ran out): the next one
       local all = true
       for _, r in ipairs(roster and roster.roles or here_roles) do all = all and have(r .. "-step" .. step) ~= nil end
-      if all or t - t0 > WAIT + 30 then step, t0 = step + 1, t; results[step] = nil end
+      if all or t - t0 > WAIT + PAUSE + 30 then step, t0 = step + 1, t; results[step] = nil end
     end
   elseif phase == "final" then
     if t - t0 > 15 then -- (a moment for the last changes to settle everywhere)

@@ -2,8 +2,8 @@
 
 `cross_test.lua` runs the same scenario on every computer of a studio at once, through the real Live sync and Syncthing:
 
-1. Each computer adds a track with a part (desktop, laptop, Mac in turn), and the others wait for it to arrive.
-2. The Mac sets the tempo to 100, then the desktop sets 120 straight after: the newest map has to win everywhere.
+1. The desktop clears the project from an earlier run; each computer adds a track with a part (desktop, laptop, Mac in turn), and the others wait for it to arrive.
+2. The Mac sets the tempo to 100, then the desktop sets 130 after it: the newest map has to win everywhere.
 3. The laptop moves the desktop's part; the desktop deletes the laptop's track.
 4. Each computer writes the project's shape (tracks, parts, tempo), and the desktop compares them.
 
