@@ -192,8 +192,9 @@ local function loop_body()
       -- The tab in front first, three tries, then it says so once. Tabs behind it follow, one a look and none of them brought forward: flipping
       -- them to the front never stopped with 38 tabs open and REAPER couldn't be clicked (PC, 2026-10-30), and left alone, their bandmates saw
       -- this person as offline until they switched to the tab (Mac, 0.57.6). One try each, and at most BEHIND of them.
-      local n = tried[key] or { at = -1e9, n = 0 }
-      tried[key] = n
+      -- (by tab and file: REAPER reuses a closed tab's address, and a new project there was "wouldn't start again" from the first look. Review, 0.59.14)
+      local n = tried[key .. "|" .. fn] or { at = -1e9, n = 0 }
+      tried[key .. "|" .. fn] = n
       if alive then n.n = 0
       elseif proj == front and n.n < 3 and reaper.time_precise() - n.at > 30 then
         n.at, n.n = reaper.time_precise(), n.n + 1
