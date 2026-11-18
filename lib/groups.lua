@@ -26,8 +26,12 @@ function groups.trusted(root)
   local okt, ok = pcall(require("trust").from_manager_file, root, "_band/band.json")
   local key = "trusted settings " .. band.norm(root):lower()
   local out = {}
+  local stored = band.json_decode(reaper.GetExtState(band.SECTION, key))
+  -- (not known yet, Syncthing slow or held back: the last checked settings, not the file as anyone wrote it. Review, 0.58.98)
   if okt and ok == false then
-    out = band.json_decode(reaper.GetExtState(band.SECTION, key)) or {}
+    out = stored or {}
+  elseif not (okt and ok == true) and type(stored) == "table" then
+    out = stored
   else
     for _, k in ipairs(SETTINGS) do out[k] = j[k] end
     if okt and ok == true then reaper.SetExtState(band.SECTION, key, band.json_encode(out), true) end
@@ -72,10 +76,7 @@ function groups.sonobus_secret(root)
 end
 local save
 function groups.new_sonobus_secret(root)
-  math.randomseed(os.time() + math.floor(reaper.time_precise() * 1000) % 100000)
-  local chars, t = "abcdefghjkmnpqrstuvwxyz23456789", {}
-  for i = 1, 24 do local k = math.random(#chars); t[i] = chars:sub(k, k) end
-  save(root, function(j) j.sonobus = table.concat(t) end)
+  save(root, function(j) j.sonobus = band.secret(24) end)
 end
 
 save = function(root, change)

@@ -1414,6 +1414,12 @@ function sync.receive(proj, cfg, song, room, can)
       -- (named for its id, or what's applied (by id) never matches the file (by name), and it's applied again every pass: a renamed timeline
       -- change put the tempo map back every 2 s. No slashes either: ids name files to read. Review, 0.58.53)
       good = good and ev.id == f:sub(1, -6) and not ev.id:find("[/\\]") and (ev.base_ev == nil or (type(ev.base_ev) == "string" and not ev.base_ev:find("[/\\]")))
+      -- (the fields the bookkeeping reads before anything's applied: a number for a take, a table for an order, an hlc that isn't a whole
+      -- number threw every pass, outside the per-event pcall, and nothing was received from then. Review, 0.58.98)
+      local function str_or_nil(v) return v == nil or type(v) == "string" end
+      local hlc = type(ev) ~= "table" or ev.hlc == nil or (tonumber(ev.hlc) and tonumber(ev.hlc) == math.floor(tonumber(ev.hlc)) and math.abs(tonumber(ev.hlc)) < 2 ^ 53)
+      good = good and str_or_nil(ev.take) and str_or_nil(ev.track) and str_or_nil(ev.was) and str_or_nil(ev.order) and str_or_nil(ev.item)
+        and str_or_nil(ev.oid) and hlc and true or false
       -- (10 minutes, not 2: Google Drive and OneDrive write a file in place, and a slow one was skipped for good a minute before it was whole.
       -- Review, 0.58.53)
       if not good then
@@ -1557,7 +1563,7 @@ function sync.receive(proj, cfg, song, room, can)
           delete = "deleted " .. tostring(ev.take), undelete = "brought back " .. tostring(ev.take),
           midi = "edited the notes of " .. tostring(ev.take), timeline = "changed the tempo map / markers",
           start = (ev.rec and "record" or "play") .. " together at " .. tostring(ev.pos), stop = "stop together",
-          note = "note: " .. tostring(ev.text), like = "liked " .. tostring(ev.take),
+          note = "note: " .. tostring(ev.text), like = "liked " .. tostring(ev.take or (ev.track and ("a part on " .. ev.track)) or "a part"),
           mix = "changed the mix (buses, sends, master plug-ins)",
           obj = (ev.gone and "deleted " or "changed ") .. (require("mirror").PART[ev.obj] or (ev.obj == "item" and "an item" or "a track")) ..
             " on " .. ((ev.name or "") ~= "" and ev.name or "an unnamed track"),

@@ -3512,7 +3512,7 @@ end
 -- What the parent already has as the side room has it (brought before) isn't brought again. -> bring, clash.
 function mirror.bring_plan(side_dir, main_dir, side_name)
   local side, side_all = mirror.room_newest(side_dir)
-  local main = mirror.room_newest(main_dir)
+  local main, main_all = mirror.room_newest(main_dir)
   local moved = {}
   for oid, list in pairs(side_all) do
     local m = main[oid]
@@ -3521,7 +3521,10 @@ function mirror.bring_plan(side_dir, main_dir, side_name)
       for _, ev in ipairs(list) do
         if not first or mirror.newer({ rev = first.rev, time = mirror.order_of(first) }, { rev = ev.rev, time = mirror.order_of(ev) }) then first = ev end
       end
-      if m.id ~= first.base_ev then moved[oid] = m end
+      -- (the parent's version may be a merge, which the side room started from as "m(a&b)": the parent's newest plain id never matched it,
+      -- and every such item was a clash. Review, 0.58.98)
+      local settled = main_all[oid] and mirror.settled(main_dir, m, main_all[oid])
+      if m.id ~= first.base_ev and not (settled and settled.id == first.base_ev) then moved[oid] = m end
     end
   end
   local bring, clash = mirror.plan_bring(side, moved, main)

@@ -15,10 +15,13 @@ local extras = {}
 -- a bus or folder with its effects off passed its sources through again.)
 extras.WAV24 = "ZXZhdxgAAQ==" -- (REAPER's WAV sink, 24-bit: the "Default" render preset on this rig)
 function extras.STANDARD(proj)
-  return { RENDER_FORMAT = extras.WAV24, RENDER_SRATE = band.srate(proj), RENDER_CHANNELS = 2, RENDER_DITHER = 0, RENDER_NORMALIZE = 0 }
+  -- (no second format: one left on wrote an MP3 beside the WAV, and Final mix could pick either. Review, 0.58.98)
+  return { RENDER_FORMAT = extras.WAV24, RENDER_FORMAT2 = "", RENDER_SRATE = band.srate(proj), RENDER_CHANNELS = 2, RENDER_DITHER = 0, RENDER_NORMALIZE = 0 }
 end
-extras.RENDER_KEYS_S = { "RENDER_FILE", "RENDER_PATTERN", "RENDER_FORMAT" }
-extras.RENDER_KEYS_N = { "RENDER_SETTINGS", "RENDER_BOUNDSFLAG", "RENDER_ADDTOPROJ", "RENDER_SRATE", "RENDER_CHANNELS", "RENDER_DITHER", "RENDER_NORMALIZE", "RENDER_BRICKWALL" }
+-- (everything the Render window can change, so a preset picked there doesn't stay: review, 0.58.98)
+extras.RENDER_KEYS_S = { "RENDER_FILE", "RENDER_PATTERN", "RENDER_FORMAT", "RENDER_FORMAT2" }
+extras.RENDER_KEYS_N = { "RENDER_SETTINGS", "RENDER_BOUNDSFLAG", "RENDER_ADDTOPROJ", "RENDER_SRATE", "RENDER_CHANNELS", "RENDER_DITHER", "RENDER_NORMALIZE",
+  "RENDER_BRICKWALL", "RENDER_TAILFLAG", "RENDER_TAILMS", "RENDER_STARTPOS", "RENDER_ENDPOS", "RENDER_FADEIN", "RENDER_FADEOUT", "RENDER_NORMALIZE_TARGET" }
 function extras.save_render(proj)
   local saved = {}
   for _, k in ipairs(extras.RENDER_KEYS_S) do saved[k] = select(2, reaper.GetSetProjectInfo_String(proj, k, "", false)) end

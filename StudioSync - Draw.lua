@@ -62,13 +62,21 @@ local arrange = reaper.JS_Window_FindChildByID(main, 1000) -- (REAPER's arrange 
 local cache, cache_at, n_made, was_drawing, placed, was_down = {}, -math.huge, 0, false, nil, false
 local stroke -- the one being drawn: { points = { {time, track oid, y fraction} } }
 local function drawings_dir(b) return sync.room_dir(cfg, b.song, b.room) .. "/drawings" end
-local function load(b) -- every stroke in the room, re-read once a second
-  if reaper.time_precise() - cache_at < 1 then return cache end
-  cache_at, cache = reaper.time_precise(), {}
+local cache_dir
+local function load(b) -- every stroke in the room, re-read once a second, and at once in another room (a tab switch showed the last one's)
   local d = drawings_dir(b)
+  if d == cache_dir and reaper.time_precise() - cache_at < 1 then return cache end
+  cache_at, cache, cache_dir = reaper.time_precise(), {}, d
   for _, f in ipairs(band.files(d, ".json")) do
     local s = band.read_json(d .. "/" .. f)
-    if type(s) == "table" and type(s.points) == "table" then s.file = d .. "/" .. f; cache[#cache + 1] = s end
+    -- (each point a { time, track, height } of numbers and a name: one bad file stopped the drawings for everyone. Review, 0.58.98)
+    local ok = type(s) == "table" and type(s.points) == "table"
+    if ok then
+      for _, p in ipairs(s.points) do
+        if not (type(p) == "table" and type(p[1]) == "number" and (type(p[2]) == "string" or p[2] == false) and type(p[3]) == "number") then ok = false; break end
+      end
+    end
+    if ok then s.file = d .. "/" .. f; cache[#cache + 1] = s end
   end
   return cache
 end
@@ -157,7 +165,8 @@ local function loop()
   if reaper.GetExtState(band.SECTION, "draw quit") ~= "" then reaper.DeleteExtState(band.SECTION, "draw quit", false); return end -- (Hide drawings)
   local proj = reaper.EnumProjects(-1)
   local b = band.binding(proj)
-  if not b then return reaper.defer(loop) end -- (not a StudioSync tab: nothing to show; keeps running for when one is)
+  if not b then hold_mouse(false); return reaper.defer(loop) end -- (not a StudioSync tab: nothing to show; keeps running for when one is.
+  -- The arrange view's clicks given back: drawing on, a switch to another tab left them held, and clicking there did nothing. Review, 0.58.98)
   -- ReaImGui lets go of a context that went a frame unused (the frames above, in another tab), so it's made again:
   -- the laptop's "expected a valid ImGui_Context*" after closing a second Mirror Test tab (block K)
   if not ImGui.ValidatePtr(ctx, "ImGui_Context*") then ctx, placed = ImGui.CreateContext("StudioSync drawings"), nil; ui_font = make_font() end

@@ -137,7 +137,7 @@ end
 function removal.guests(root, now)
   local out = {}
   for _, m in ipairs(all_marks(root)) do
-    if m.guest and m.device and not removal.due(m, now) then out[#out + 1] = { user = m.user, device = m.device, ends = m.at + removal.GRACE, invite = m.invite } end
+    if m.guest and m.device and tonumber(m.at) and not removal.due(m, now) then out[#out + 1] = { user = m.user, device = m.device, ends = tonumber(m.at) + removal.GRACE, invite = m.invite } end
   end
   table.sort(out, function(a, b) return a.ends < b.ends end)
   return out

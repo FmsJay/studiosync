@@ -46,9 +46,11 @@ local function say_problem(words)
   local beat = tonumber(reaper.GetExtState(band.SECTION, "panel alive"))
   if not (beat and reaper.time_precise() - beat < 10) then
     reaper.SetExtState(band.SECTION, "panel minimized", "1", true)
-    reaper.SetExtState(band.SECTION, "panel start small", "1", false) -- (opened by hand it opens full: this is the one that asks for the box)
     local id = reaper.AddRemoveReaScript(true, 0, dir .. "/StudioSync - Panel.lua", true)
-    if id > 0 and reaper.GetToggleCommandState(id) ~= 1 then reaper.Main_OnCommand(id, 0) end
+    if id > 0 and reaper.GetToggleCommandState(id) ~= 1 then
+      reaper.SetExtState(band.SECTION, "panel start small", "1", false) -- (opened by hand it opens full: this is the one that asks for the box)
+      reaper.Main_OnCommand(id, 0)
+    end
   end
 end
 local st_at, st_up = -math.huge, true
@@ -145,7 +147,11 @@ local function loop_body()
   local beat = tonumber(reaper.GetExtState(band.SECTION, "panel alive"))
   if opened and not (beat and reaper.time_precise() - beat < 10) then
     local id = reaper.AddRemoveReaScript(true, 0, dir .. "/StudioSync - Panel.lua", true)
-    if id > 0 and reaper.GetToggleCommandState(id) ~= 1 then reaper.Main_OnCommand(id, 0) end
+    if id > 0 and reaper.GetToggleCommandState(id) ~= 1 then
+      -- (opened with a session: as you last left it, the box or strip kept. Review, 0.58.98)
+      if reaper.GetExtState(band.SECTION, "panel minimized") ~= "" then reaper.SetExtState(band.SECTION, "panel start small", "1", false) end
+      reaper.Main_OnCommand(id, 0)
+    end
   end
   local helper = band.read(REQUEST)
   if helper then

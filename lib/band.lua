@@ -572,8 +572,12 @@ function band.info(root)
   -- (named: what band.json, or the join waiting for it, says, for band.bands to pin, or to say when it differs)
   local named = next(j) ~= nil and (j.id ~= nil and tostring(j.id) or "bandsync") or nil
   if pin then id = pin end
-  return { name = type(j.name) == "string" and j.name ~= "" and j.name or "the studio", id = id, named = named, pinned = pin and true or nil,
-    drive = type(j.drive) == "string" and j.drive ~= "" and j.drive or (id == "bandsync" and "BandSync" or ("StudioSync - " .. (j.name or id))) }
+  -- (anyone in the studio can write band.json: a name that isn't words, or a Drive folder with a path in it, pointed every computer's Drive
+  -- copy somewhere else or stopped band.info everywhere. Review, 0.58.98)
+  local name = type(j.name) == "string" and j.name ~= "" and not j.name:find("[%c/\\]") and j.name or "the studio"
+  local drive = type(j.drive) == "string" and j.drive ~= "" and not j.drive:find("[%c/\\]") and not j.drive:find("..", 1, true) and j.drive or nil
+  return { name = name, id = id, named = named, pinned = pin and true or nil,
+    drive = drive or (id == "bandsync" and "BandSync" or ("StudioSync - " .. (type(j.name) == "string" and name or tostring(id)))) }
 end
 -- The bands this computer is in (persistent ExtState "bands": their folders), the current one always among them:
 -- { { root, name, id, drive } }, by name.
@@ -1008,6 +1012,20 @@ function band.set_track_colour(tr, c)
   else
     reaper.SetMediaTrackInfo_Value(tr, "I_CUSTOMCOLOR", c)
   end
+end
+-- A project file name that isn't taken: `base`.rpp, else `base` (2).rpp and on. (Saving a new project over a file that was there lost
+-- whatever it held: Open session and Publish session, review 0.58.98.)
+function band.free_rpp(base)
+  if not reaper.file_exists(base .. ".rpp") then return base .. ".rpp" end
+  for n = 2, 999 do if not reaper.file_exists(base .. " (" .. n .. ").rpp") then return base .. " (" .. n .. ").rpp" end end
+  return base .. " (" .. os.time() .. ").rpp"
+end
+-- A secret for the studio's own channels (alerts, SonoBus, NINJAM): from REAPER's GUIDs, 128 bits each, not math.random reseeded from the
+-- clock (a removed member who knew when one was made could try them all: review, 0.58.98). -> `n` lower-case hex characters.
+function band.secret(n)
+  local t = ""
+  while #t < n do t = t .. reaper.genGuid(""):gsub("[^%x]", ""):lower() end
+  return t:sub(1, n)
 end
 -- Show `c` (native) on a track here only, or (nil) the band's colour again.
 function band.show_colour(tr, c)

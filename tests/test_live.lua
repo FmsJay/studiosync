@@ -36,6 +36,7 @@ assert(not live.replaces("Laptop-20261028-004305Z-1", "Laptop", S, "20261028-003
 
 -- SonoBus: one group for the band, made once and then kept; the join link is what SonoBus's paste parser reads
 reaper = { time_precise = function() return 1.5 end }
+package.loaded.band.secret = function(n) return ("0123456789abcdef"):rep(4):sub(1, n) end -- (band.secret: REAPER's GUIDs, 0.58.98)
 local data = {}
 local g, p = live.sonobus_group(data)
 assert(g:match("^StudioSync %w%w%w%w%w%w$") and #p == 12 and data.group == g and data.password == p, g .. " / " .. p)

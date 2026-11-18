@@ -81,7 +81,7 @@ local function open_song(song, room) -- room: for a new tab (nil when refreshing
           return band.log(string.format("opened your project for '%s'", song))
         end
         reaper.Main_OnCommand(40860, 0) -- File: Close current project tab
-        break
+        -- (and on to the next: it stopped at the first that wasn't this song's, and a new project was saved over your own file. Review, 0.58.98)
       end
     end
     if not reusable() then reaper.Main_OnCommand(40859, 0) end -- File: New project tab
@@ -95,8 +95,9 @@ local function open_song(song, room) -- room: for a new tab (nil when refreshing
     local sid = band.clean(tostring(band.info(cfg.root).id or ""))
     local local_dir = band.home() .. "/" .. (sid ~= "" and (sid .. "/") or "") .. song
     reaper.RecursiveCreateDirectory(local_dir, 0)
-    reaper.Main_SaveProjectEx(proj, local_dir .. "/" .. song .. " - " .. cfg.user .. ".rpp", 8) -- &8: becomes this project's file
-    band.set_project_file(cfg.root, song, local_dir .. "/" .. song .. " - " .. cfg.user .. ".rpp")
+    local file = band.free_rpp(local_dir .. "/" .. song .. " - " .. cfg.user) -- (never over a file that's there)
+    reaper.Main_SaveProjectEx(proj, file, 8) -- &8: becomes this project's file
+    band.set_project_file(cfg.root, song, file)
   end
 
   reaper.Undo_BeginBlock2(proj)

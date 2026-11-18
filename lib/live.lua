@@ -504,10 +504,7 @@ function live.sonobus_group(data, id, secret)
     data.group, data.password = "StudioSync " .. word(-3750763034362895579, 8), word(7046029254386353087, 14, secret and (id .. "\0" .. secret) or nil)
     return data.group, data.password
   end
-  local chars, pw = "abcdefghjkmnpqrstuvwxyz23456789", {}
-  math.randomseed(os.time() + math.floor(reaper.time_precise() * 1000))
-  for i = 1, 18 do local k = math.random(#chars); pw[i] = chars:sub(k, k) end
-  pw = table.concat(pw)
+  local pw = band.secret(18) -- (128-bit GUIDs, not math.random from the clock: review, 0.58.98)
   data.group = "StudioSync " .. pw:sub(13) -- group names are global on the public server
   data.password = pw:sub(1, 12)
   return data.group, data.password

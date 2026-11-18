@@ -62,10 +62,7 @@ end
 
 -- The owner's switch: a new random channel, or none.
 function alerts.set(root, on)
-  local chars, t = "abcdefghjkmnpqrstuvwxyz23456789", {}
-  math.randomseed(os.time() + math.floor(reaper.time_precise() * 1000) % 100000)
-  for i = 1, 20 do local k = math.random(#chars); t[i] = chars:sub(k, k) end
-  require("groups").edit(root, function(j) j.alerts = on and ("studiosync-" .. table.concat(t)) or nil end)
+  require("groups").edit(root, function(j) j.alerts = on and ("studiosync-" .. require("band").secret(20)) or nil end)
 end
 
 return alerts

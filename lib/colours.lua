@@ -305,15 +305,25 @@ function colours.auto(proj, cfg, may)
   if from == "computer" then return end -- (nobody picked a look for the studio or the project: nothing automatic)
   local list = colours.read(proj, cfg)
   if #list == 0 then return end
+  -- (the band's colour, not a "who's working" one painted over it here: band.track_colour. A track coloured once and reset by someone stays
+  -- reset: P_EXT:band_autocol. Review, 0.58.98)
+  local todo = {}
   local uncoloured = 0
-  for _, t in ipairs(list) do if reaper.GetMediaTrackInfo_Value(t.ptr, "I_CUSTOMCOLOR") == 0 then uncoloured = uncoloured + 1 end end
+  for i, t in ipairs(list) do
+    if band.track_colour(t.ptr) == 0 then
+      uncoloured = uncoloured + 1
+      if band.track_ext(t.ptr, "band_autocol") == "" and may(t.name, t.ptr) then todo[#todo + 1] = i end
+    end
+  end
   if state == "" and uncoloured < #list then reaper.SetProjExtState(proj, band.SECTION, "colours auto", "had"); return end
-  if uncoloured == 0 then return end
+  if #todo == 0 then return end
   local plan = colours.plan(list, look.scheme, { stops = colours.stops_of(look) })
   reaper.Undo_BeginBlock2(proj)
   local done = 0
-  for i, t in ipairs(list) do
-    if reaper.GetMediaTrackInfo_Value(t.ptr, "I_CUSTOMCOLOR") == 0 and may(t.name, t.ptr) then band.set_track_colour(t.ptr, native(plan[i])); done = done + 1 end
+  for _, i in ipairs(todo) do
+    band.set_track_colour(list[i].ptr, native(plan[i]))
+    reaper.GetSetMediaTrackInfo_String(list[i].ptr, "P_EXT:band_autocol", "1", true)
+    done = done + 1
   end
   reaper.Undo_EndBlock2(proj, "Colour tracks", 1)
   if state == "" then reaper.SetProjExtState(proj, band.SECTION, "colours auto", "auto") end
@@ -322,46 +332,62 @@ end
 
 -- ---- trying a look here first (0.58.98, James: "an easy way to test/audition a look before applying it to everyone"): sending is held
 -- (Hold sync, lib/sync.lua) while it's tried, and what was there is kept, so Put back puts exactly that back, and Keep lets it go to everyone.
-local trying -- { proj, held_before, tracks = { ptr -> colour }, items = { ptr -> colour }, marks = { index -> {...} } }
+-- (one per project tab: a second tab's try replaced the first's, which was left held with no Put back. Review, 0.58.98)
+local tries = {} -- proj -> { proj, held_before, tracks = { ptr -> colour }, items = { ptr -> colour }, marks = { {num, region, colour} } }
+local trying
 local function snapshot(proj)
   local t = { proj = proj, held_before = select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")), tracks = {}, items = {}, marks = {} }
   for i = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, i)
-    t.tracks[tr] = reaper.GetMediaTrackInfo_Value(tr, "I_CUSTOMCOLOR")
+    t.tracks[tr] = band.track_colour(tr) -- (the band's colour: a "who's working" paint over it isn't it. Review, 0.58.98)
     for k = 0, reaper.CountTrackMediaItems(tr) - 1 do local it = reaper.GetTrackMediaItem(tr, k); t.items[it] = reaper.GetMediaItemInfo_Value(it, "I_CUSTOMCOLOR") end
   end
   for i = 0, reaper.CountProjectMarkers(proj) - 1 do
-    local _, region, pos, rend, name, num, colour = reaper.EnumProjectMarkers3(proj, i)
-    t.marks[#t.marks + 1] = { i = i, region = region, pos = pos, rend = rend, name = name, num = num, colour = colour }
+    local _, region, _, _, _, num, colour = reaper.EnumProjectMarkers3(proj, i)
+    t.marks[#t.marks + 1] = { region = region, num = num, colour = colour }
   end
   return t
 end
 local function try_first(proj, fn)
-  if not trying or trying.proj ~= proj then
-    trying = snapshot(proj)
+  if not tries[proj] then
+    tries[proj] = snapshot(proj)
     reaper.SetProjExtState(proj, band.SECTION, "hold", "1") -- (nothing goes out while it's tried)
   end
   fn()
 end
-function colours.trying(proj) return trying ~= nil and trying.proj == proj end
+function colours.trying(proj) return tries[proj] ~= nil end
 function colours.keep(proj)
-  if not colours.trying(proj) then return end
-  reaper.SetProjExtState(proj, band.SECTION, "hold", trying.held_before or "")
+  trying = tries[proj]
+  if not trying then return end
+  if reaper.ValidatePtr2(0, proj, "ReaProject*") then reaper.SetProjExtState(proj, band.SECTION, "hold", trying.held_before or "") end
   band.log((trying.held_before or "") ~= "" and "kept the new look (Hold sync was already on: it goes out when you release it)" or "kept the new look: it goes to everyone now")
-  trying = nil
+  tries[proj] = nil
 end
 function colours.put_back(proj)
-  if not colours.trying(proj) then return end
+  trying = tries[proj]
+  if not trying then return end
+  tries[proj] = nil
+  if not reaper.ValidatePtr2(0, proj, "ReaProject*") then return end
   reaper.Undo_BeginBlock2(proj)
-  for tr, c in pairs(trying.tracks) do if reaper.ValidatePtr2(proj, tr, "MediaTrack*") then reaper.SetMediaTrackInfo_Value(tr, "I_CUSTOMCOLOR", c) end end
+  for tr, c in pairs(trying.tracks) do if reaper.ValidatePtr2(proj, tr, "MediaTrack*") then band.set_track_colour(tr, c) end end
   for it, c in pairs(trying.items) do if reaper.ValidatePtr2(proj, it, "MediaItem*") then reaper.SetMediaItemInfo_Value(it, "I_CUSTOMCOLOR", c) end end
-  for _, m in ipairs(trying.marks) do reaper.SetProjectMarkerByIndex2(proj, m.i, m.region, m.pos, m.rend, m.num, m.name, m.colour, 0) end
+  -- (each marker's colour only, found by its number: one added or removed meanwhile moved the indices, and old positions and names went
+  -- onto the wrong markers. Review, 0.58.98)
+  local was = {}
+  for _, m in ipairs(trying.marks) do was[(m.region and "r" or "m") .. m.num] = m.colour end
+  for i = 0, reaper.CountProjectMarkers(proj) - 1 do
+    local _, region, pos, rend, name, num, colour = reaper.EnumProjectMarkers3(proj, i)
+    local c = was[(region and "r" or "m") .. num]
+    if c and c ~= colour then reaper.SetProjectMarkerByIndex2(proj, i, region, pos, rend, num, name, c, 0) end
+  end
   reaper.Undo_EndBlock2(proj, "Colours put back", -1)
   reaper.SetProjExtState(proj, band.SECTION, "hold", trying.held_before or "")
-  trying = nil
   reaper.TrackList_AdjustWindows(false); reaper.UpdateArrange(); reaper.UpdateTimeline()
   band.log("the look you tried is put back: nothing went to the others")
 end
+-- Before the panel reloads or closes: a look being tried is put back (the trial lived in the panel's Lua, and Hold stayed on with no
+-- Put back after a reload. Review, 0.58.98)
+function colours.put_back_all() for p in pairs(tries) do colours.put_back(p) end end
 
 local item_pick = "section"
 function colours.draw(ctx, ImGui, proj, cfg, may, timeline_ok)

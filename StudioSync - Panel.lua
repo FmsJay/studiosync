@@ -31,6 +31,7 @@ local closed_here = false -- closed by its own close button or menu (not stopped
 -- (the toolbar button on a minimized panel stopped it, so the box was gone and nothing opened: James, 0.58.98. It now asks Autostart to open it
 -- again, full: running itself from here, while it stops, isn't reliable)
 reaper.atexit(function()
+  if package.loaded.colours then pcall(package.loaded.colours.put_back_all) end -- (a look being tried: put back, never left held)
   if cmd > 0 and not restarting then reaper.SetToggleCommandState(section, cmd, 0); reaper.RefreshToolbar2(section, cmd) end
   if not restarting and not closed_here and reaper.GetExtState(band.SECTION, "panel minimized") ~= "" then
     reaper.SetExtState(band.SECTION, "panel reopen", tostring(reaper.time_precise()), false)
@@ -2896,6 +2897,7 @@ local function loop_body()
     band.log("the panel reloaded for StudioSync " .. tostring(seen_disk))
     restarting = true
     STUDIOSYNC_PANEL_RELOAD = true -- (the next one keeps the box or strip as it is)
+    pcall(require("colours").put_back_all) -- (a look being tried doesn't outlive the panel's Lua)
     for _, f in ipairs(band.files(dir .. "/lib", ".lua")) do package.loaded[f:sub(1, -5)] = nil end
     return dofile(dir .. "/StudioSync - Panel.lua")
   end
@@ -2958,9 +2960,8 @@ local function loop_body()
     if behind == "box" and not win_rect.docked and now_t - (ui.opened_at or 0) > 1.5 then -- (the focus gone from every StudioSync window, after it had it)
       local focused = ImGui.IsWindowFocused(ctx, ImGui.FocusedFlags_AnyWindow)
       if focused then ui.had_focus = true
-      elseif ui.had_focus and not ImGui.IsAnyItemActive(ctx) then
-        ui.had_focus = nil
-        if ui.should_hide(win_rect) then ui.set_minimized(true) end
+      elseif ui.had_focus and not ImGui.IsAnyItemActive(ctx) and ui.should_hide(win_rect) then
+        ui.set_minimized(true) -- (kept while another app has the focus: a click on REAPER under it afterwards still shrinks it. Review, 0.58.98)
       end
     end
     banner_docked = win_rect.docked

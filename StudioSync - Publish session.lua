@@ -47,9 +47,12 @@ end
 -- an untitled project takes the song's name and is saved first; either way a copy as it was before StudioSync is kept
 local pdir
 if projfile == "" then
-  pdir = band.home() .. "/" .. song
+  -- (in the studio's own folder, as Open session keeps them, and never over a file that's there: a song of the same name in another studio
+  -- was overwritten. Review, 0.58.98)
+  local sid = band.clean(tostring(band.info(cfg.root).id or ""))
+  pdir = band.home() .. "/" .. (sid ~= "" and (sid .. "/") or "") .. song
   reaper.RecursiveCreateDirectory(pdir, 0)
-  reaper.Main_SaveProjectEx(proj, pdir .. "/" .. song .. ".rpp", 8) -- &8: becomes this project's file
+  reaper.Main_SaveProjectEx(proj, band.free_rpp(pdir .. "/" .. song), 8) -- &8: becomes this project's file
 else
   pdir = projfile:match("^(.*)[/\\]")
 end

@@ -160,7 +160,7 @@ function tools.guest_invite_button(ctx, ImGui, my_id, root, label)
   local services, removal = require("services"), require("removal")
   if ImGui.SmallButton(ctx, (label or "Invite a guest") .. "##guestinv" .. root) then
     if guest_pick.root ~= root then guest_pick.songs = {} end -- (ticks from another studio's list went into this one's invitation. Review, 0.58.96)
-    guest_pick.root = root; ImGui.OpenPopup(ctx, "Invite a guest###guestinvite" .. root)
+    guest_pick.root, guest_pick.name = root, tostring(band.info(root).name); ImGui.OpenPopup(ctx, "Invite a guest###guestinvite" .. root)
   end
   if ImGui.IsItemHovered(ctx) then ImGui.SetTooltip(ctx, services.GUEST_TIP .. (services.has_token_for(services.studio_net(root)) and services.GUEST_TS_TIP or "")) end
   -- (a window of its own you can resize, the words wrapped: a fixed popup cut its text off. James, 0.58.98)
@@ -169,7 +169,7 @@ function tools.guest_invite_button(ctx, ImGui, my_id, root, label)
   if not ImGui.BeginPopupModal(ctx, "Invite a guest###guestinvite" .. root, true) then return end
   local now = os.time()
   ImGui.PushTextWrapPos(ctx, 0)
-  ImGui.Text(ctx, "Invite a guest to " .. tostring(band.info(root).name) .. ": they're let in until the day you pick, then every computer stops syncing with theirs (their copy stays with them).")
+  ImGui.Text(ctx, "Invite a guest to " .. tostring(guest_pick.name or "the studio") .. ": they're let in until the day you pick, then every computer stops syncing with theirs (their copy stays with them).")
   ImGui.PopTextWrapPos(ctx)
   ImGui.Separator(ctx)
   ImGui.Text(ctx, "Their access ends:")
