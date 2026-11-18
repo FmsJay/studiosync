@@ -1904,6 +1904,10 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     if not tr then return false end
     if reaper.GetPlayStateEx(proj) ~= 0 then return false end -- replacing a chain reloads plug-ins: only while stopped
     if reaper.EnumProjects(-1) ~= proj then return false end -- (see below: a track chunk waits for its tab to be in front)
+    -- (not again within 5 s of the last: a second chain replaced RS5K seconds after the first had loaded its sample, and REAPER crashed in
+    -- the middle of it, the sample perhaps still loading. Plug-in test, 0.59.14. Tried again on a later pass)
+    local set_key = tostring(proj) .. ev.oid
+    if reaper.time_precise() - (mirror.fx_set_at[set_key] or -math.huge) < 5 then return false end
     require("fxfiles").fetch(ev.files, media_dir, (ev.name or "") ~= "" and ev.name or "a track") -- (before the plug-ins load)
     local _, chunk = reaper.GetTrackStateChunk(tr, "", false)
     local sync = require("sync")
@@ -1919,7 +1923,7 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     end
     local parm_ai = mirror.ai_lines(tr, "parm") -- (the plug-ins' automation items belong to the automation part: kept through this)
     local new = sync.chunk_set_block(chunk, "FXCHAIN", block ~= "" and block or nil)
-    if new and new ~= chunk then reaper.SetTrackStateChunk(tr, new, false); mirror.set_ai(proj, tr, parm_ai, "parm") end
+    if new and new ~= chunk then reaper.SetTrackStateChunk(tr, new, false); mirror.set_ai(proj, tr, parm_ai, "parm"); mirror.fx_set_at[set_key] = reaper.time_precise() end
     -- (ReaInsert and ReaStream reach outside REAPER: the sender's audio interface channels, or a computer on their network. Here they
     -- play or send whatever those settings mean on this machine, so it's said, once per track. Plug-ins review, 0.58.76)
     local outside = block:match('<VST "VSTi?: (ReaInsert)') or block:match('<VST "VSTi?: (ReaStream)')
@@ -2358,6 +2362,7 @@ local function knobs_agreed(proj, o, rk)
   if select(2, reaper.GetProjExtState(proj, mirror.SEC, "fxk " .. o.oid)) ~= k then reaper.SetProjExtState(proj, mirror.SEC, "fxk " .. o.oid, k) end
   mirror.fxk_ok[rk] = true
 end
+mirror.fx_set_at = mirror.fx_set_at or {} -- proj .. chain oid -> when a band's chain last replaced it here
 mirror.fx_readback = mirror.fx_readback or {} -- chain -> what its hash reads as here, now the band's has landed
 mirror.fx_loading = mirror.fx_loading or {} -- chain -> until when it may be still loading
 mirror.fx_load_knobs = mirror.fx_load_knobs or {} -- chain -> its knobs at the start of that
