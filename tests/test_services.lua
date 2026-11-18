@@ -2,6 +2,7 @@
 reaper = reaper or { GetOS = function() return "Win64" end }
 package.loaded.band = package.loaded.band or {}
 package.loaded.band.VERSION = package.loaded.band.VERSION or "0.58.78"
+package.loaded.band.clean = package.loaded.band.clean or function(s) return (s:gsub("[^%w%-_ ]", ""):match("^%s*(.-)%s*$")) end -- (lib/band.lua's)
 package.path = "lib/?.lua;" .. package.path
 local services = require("services")
 assert(services.is_device_id("2MOGZMD-MVLUUSO-D6GXQIG-HMDVUBG-AOW6LHR-LMQQT6P-V4V5P73-6ZR5NQZ"), "a real device ID")
@@ -37,6 +38,10 @@ assert(select(3, ps(inv)) == "Chilio" and ps(inv) == inv_id and sh(inv) == inv_i
 local g = services.invite_text(inv_id, { id = "bandsync", name = "Chilio" }, "tskey-auth-kAbc123CNTRL-xyz")
 assert(g:find("BS_BAND_NAME='Chilio' BS_TS_KEY=tskey-auth-kAbc123CNTRL-xyz bash", 1, true) and g:find("-BandName 'Chilio' -TsKey tskey-auth-kAbc123CNTRL-xyz\n", 1, true), "a guest's key, in both lines")
 assert(not services.invite_text(inv_id, { id = "bandsync", name = "Chilio" }, "tskey-auth-x; rm -rf ~"):find("rm -rf", 1, true), "only a key goes into a command")
+local evil = { id = "bandsync", name = 'Night $(touch x) "Shift"' } -- (pasted whole into PowerShell or Terminal: review, 0.59.14)
+local ev = services.invite_text(inv_id, evil)
+assert(ev:match("^[^\n]*") =="Join Night touch x Shift on StudioSync." and ev:find("-BandName 'Night touch x Shift'", 1, true) and not ev:find("touch x)", 1, true), "the studio name as band.clean keeps it")
+assert(services.join_code(inv_id, evil):match(":Night touch x Shift$"), "in the join code too")
 -- the join code: on its own, in the whole message, from an old invitation's lines; nothing else reads as one
 local code = services.parse_join(services.join_code(inv_id, { id = "bandsync-night-shift-1a2b", name = "Night Shift" }))
 assert(code and code.id == inv_id and code.band == "bandsync-night-shift-1a2b" and code.name == "Night Shift", "the code")

@@ -149,7 +149,11 @@ function hear.bandmates(cfg, b)
   local dir, names, seen = require("sync").room_dir(cfg, b.song, b.room or "main") .. "/status", {}, {}
   for _, f in ipairs(band.files(dir, ".json")) do
     local st = band.read_json(dir .. "/" .. f)
-    if type(st) == "table" and type(st.user) == "string" and not seen[st.user] then seen[st.user] = true; names[#names + 1] = st.user end
+    -- (only a plain name: it's written into SonoBus's saved state as it is (lib/sonobus.lua set_outputs), and a status file is anyone's to
+    -- write. Review, 0.59.14)
+    if type(st) == "table" and type(st.user) == "string" and st.user ~= "" and band.clean(st.user) == st.user and not seen[st.user] then
+      seen[st.user] = true; names[#names + 1] = st.user
+    end
   end
   return names
 end

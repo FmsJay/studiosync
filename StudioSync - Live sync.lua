@@ -436,7 +436,10 @@ local function poll()
   lap("in line")
   -- new band machines: on the host of a computer in one band, a machine asking over the band's Tailscale (only band
   -- machines are on it) is let in at once; with several bands, never on its own. The rest ask in the panel (tools.join_requests).
-  if host and #band.bands() <= 1 and require("groups").may_manage(cfg.root, cfg.user) then
+  -- (and only while this computer is on the studio's own Tailscale network: switched to another one, or behind an internet provider's own
+  -- 100.64/10 addresses, anyone asking from such an address was let in. Review, 0.59.14)
+  local studio_net = host and require("groups").tailnet(cfg.root)
+  if host and #band.bands() <= 1 and require("groups").may_manage(cfg.root, cfg.user) and studio_net and studio_net.suffix == select(2, require("services").tailnet_now()) then
     local services = require("services")
     local removal = require("removal")
     for _, d in ipairs(services.pending_devices()) do
@@ -675,7 +678,10 @@ local function tick_body() -- returns true to keep going
     reaper.DeleteExtState(band.SECTION, "live " .. key, false)
     -- (the tab's own settings go too: a new tab can get the same address, and took its follow, produce or listen. Review, 0.58.96)
     for _, k in ipairs({ "follow", "listen", "listen had", "listeners", "send whole mix", "alone", "held", "produce", "transport", "together",
-        "sonobus for listeners", "outbox", "live owner", "ping", "slow tick", "last here", "draw", "live began", "takelanes" }) do reaper.DeleteExtState(band.SECTION, k .. " " .. key, false) end
+        "sonobus for listeners", "outbox", "live owner", "ping", "slow tick", "last here", "draw", "live began", "takelanes",
+        -- (and these: a new tab at the same address showed a count-in, a producer, a SonoBus trouble or a drift that were the closed tab's. Review, 0.59.14)
+        "end session", "produced by", "stamping", "together_at", "rt group", "rt silent", "rt silent who", "rt trouble", "driver_away", "mirror drift",
+        "ninjam shown", "ninjam off", "ninjam start", "ninjam connect", "ninjam host" }) do reaper.DeleteExtState(band.SECTION, k .. " " .. key, false) end
     return band.log("live sync stopped: '" .. b.song .. "'" .. (b.room ~= "main" and (", side room '" .. b.room .. "',") or "") .. " was closed (it starts again by itself when you reopen it)")
   end
   local now_b = band.binding(proj)
@@ -687,12 +693,6 @@ local function tick_body() -- returns true to keep going
   if reaper.GetExtState(band.SECTION, "live owner " .. key) ~= my_token then -- a newer Live sync took this tab over
     reloaded = true -- (it carries on the session: this one ending isn't the session's end, so no kept "end of session" from here)
     return band.log("Live sync restarted for '" .. b.song .. "' (room " .. b.room .. "): nothing to do")
-  end
-  if reaper.GetExtState(band.SECTION, "stop " .. key) ~= "" then
-    reaper.DeleteExtState(band.SECTION, "stop " .. key, false)
-    reaper.DeleteExtState(band.SECTION, "live " .. key, false)
-    band.set_autosync(our_file, false)
-    return band.log("live sync stopped for '" .. b.song .. "'")
   end
   reaper.SetExtState(band.SECTION, "live " .. key, tostring(reaper.time_precise()), false)
   -- Each part shows only the take it plays, dry or wet (James, 0.59.13: "having a wet and dry take might take up too much space... only show
@@ -935,7 +935,8 @@ end
 local said_at, sws_at = -math.huge, -math.huge
 tick = function()
   -- (the tab may have just been closed: check before asking about it, or REAPER stops us with an error box)
-  if reaper.ValidatePtr2(0, proj, "ReaProject*") and reaper.GetPlayStateEx(proj) & 4 == 0 and updated() then
+  -- (and not during a count-in or a start or stop still to come: the reload lost them, leaving the metronome on and "together_at" set. Review, 0.59.14)
+  if reaper.ValidatePtr2(0, proj, "ReaProject*") and reaper.GetPlayStateEx(proj) & 4 == 0 and not click and not transport and updated() then
     band.log("live sync for '" .. b.song .. "' reloaded for StudioSync " .. tostring(seen_disk))
     reloaded = true
     reaper.DeleteExtState(band.SECTION, "live " .. key, false)

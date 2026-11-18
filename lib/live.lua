@@ -495,6 +495,11 @@ function live.rt_sends(proj)
     if talk_only then return tr ~= rt and (tag == "talk" or tag == "talkback") and reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1 end
     return tr ~= rt and (reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1 or tag == "click" or (guest and tag == ""))
   end
+  -- (a guest gets the top-level tracks: a folder's children already reach it through the folder. The same rule for the receives kept, or a
+  -- child's receive from before stayed and the guest heard that track twice. Review, 0.59.14)
+  local function wanted(tr)
+    return feeds(tr) and (not guest or reaper.GetParentTrack(tr) == nil or reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1)
+  end
   -- its receives, in order, by source track number (the chunk's AUXRECV lines: core REAPER can't hand a send's
   -- track to Lua without SWS, which not every bandmate has)
   local _, chunk = reaper.GetTrackStateChunk(rt, "", false)
@@ -503,14 +508,14 @@ function live.rt_sends(proj)
   local fed = {}
   for r = #from, 1, -1 do -- from the end, so the receive numbers stay right while removing
     local src = reaper.GetTrack(proj, from[r])
-    if src and feeds(src) and not fed[src] then fed[src] = true
+    if src and wanted(src) and not fed[src] then fed[src] = true
     else reaper.RemoveTrackSend(rt, -1, r - 1) end
   end
   local n = 0
   for t = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, t)
-    if feeds(tr) and (not guest or reaper.GetParentTrack(tr) == nil or reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1) then
-      n = n + 1 -- (a guest gets the top-level tracks: a folder's children already reach it through the folder)
+    if wanted(tr) then
+      n = n + 1
       if not fed[tr] then reaper.CreateTrackSend(tr, rt) end
     end
   end

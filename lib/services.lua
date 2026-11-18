@@ -427,10 +427,14 @@ end
 -- 0.58.98: whoever invites says which, in the Invitation window.
 function services.invite_text(id, info, key, who)
   info = info or { id = "bandsync", name = "the studio" }
+  -- (the name as band.clean keeps it, everywhere in the message: band.json's own allowed $(...) and ", and people paste the whole message into
+  -- PowerShell or Terminal, where the first line ran it. Review, 0.59.14)
+  local name = band.clean(tostring(info.name))
+  if name == "" then name = "the studio" end
   key = key and key:match("^tskey%-auth%-[%w%-]+$")
   local guest_note = key and "That works once, within 2 days: it puts your computer on my Tailscale network as a guest, for as long as I invited you (no account needed). If you use Tailscale for anything else, switch back from its menu afterwards.\n\n" or ""
   if who == "has" then
-    return "Join " .. info.name .. " on StudioSync. In StudioSync's panel, click the studio name at the top, press Paste join code, and paste this whole message " ..
+    return "Join " .. name .. " on StudioSync. In StudioSync's panel, click the studio name at the top, press Paste join code, and paste this whole message " ..
       "(or just the line below). Then tell me: I let you in from my panel.\n\n" .. (key and (guest_note .. "Tailscale key: " .. key .. "\n\n") or "") ..
       services.join_code(id, info)
   end
@@ -439,18 +443,18 @@ function services.invite_text(id, info, key, who)
   local base = "https://raw.githubusercontent.com/FmsJay/studiosync/v" .. band.VERSION .. "/installer/"
   local q1 = function(s) return "'" .. tostring(s):gsub("'", "") .. "'" end -- (band names are plain: band.clean)
   -- (newcomers first, in plain steps: most people invited have nothing installed, and the old order led with a panel they didn't have. Beginner review, 0.58.62)
-  return "Join " .. info.name .. " on StudioSync.\n\n" ..
+  return "Join " .. name .. " on StudioSync.\n\n" ..
     "New to StudioSync? It sets up everything for you, REAPER included, in about 15 minutes. Your computer asks for permission a few times: say Yes. " ..
     "When REAPER first opens, answer its windows. Copy ONE line below, for your computer:\n\n" ..
     "Windows: press Start, type PowerShell, open it, paste this line and press Enter:\n" ..
     '$f="$env:TEMP\\studiosync_install.ps1"; iwr -UseBasicParsing "' .. base .. 'install_windows.ps1?$(Get-Random)" -OutFile $f; ' ..
-    "powershell -NoProfile -ExecutionPolicy Bypass -File $f -HostId " .. id .. " -BandId " .. info.id .. " -BandName " .. q1(info.name) .. (key and (" -TsKey " .. key) or "") .. "\n\n" ..
+    "powershell -NoProfile -ExecutionPolicy Bypass -File $f -HostId " .. id .. " -BandId " .. info.id .. " -BandName " .. q1(name) .. (key and (" -TsKey " .. key) or "") .. "\n\n" ..
     "Mac: press Cmd+Space, type Terminal, open it, paste this line and press Return:\n" ..
     'curl -fsSL "' .. base .. 'install_mac.sh?$(date +%s)" | BS_HOST_ID=' .. id .. " BS_BAND_ID=" .. info.id ..
-    " BS_BAND_NAME=" .. q1(info.name) .. (key and (" BS_TS_KEY=" .. key) or "") .. " bash\n\n" ..
+    " BS_BAND_NAME=" .. q1(name) .. (key and (" BS_TS_KEY=" .. key) or "") .. " bash\n\n" ..
     "Linux: open a terminal, paste this line and press Enter:\n" ..
     'curl -fsSL "' .. base .. 'install_linux.sh?$(date +%s)" | BS_HOST_ID=' .. id .. " BS_BAND_ID=" .. info.id ..
-    " BS_BAND_NAME=" .. q1(info.name) .. (key and (" BS_TS_KEY=" .. key) or "") .. " bash\n\n" ..
+    " BS_BAND_NAME=" .. q1(name) .. (key and (" BS_TS_KEY=" .. key) or "") .. " bash\n\n" ..
     "Answer its questions, and when it finishes, tell me: I let you in from my StudioSync panel." .. -- (no ' or brackets in its words: pasted whole into PowerShell, a ' kept the rest from running and (REAPER included) ran REAPER. 0.59.10)
     (key and ("\n\n" .. guest_note:gsub("\n\n$", "")) or "") ..
     (who == "new" and "" or ("\n\nAlready have StudioSync? In its panel, click the studio name at the top, press Paste join code, and paste this message (or just this line):\n" ..
@@ -458,7 +462,7 @@ function services.invite_text(id, info, key, who)
 end
 
 -- The line that gets someone with StudioSync into a studio, in an invitation.
-function services.join_code(id, info) return "studiosync-join:" .. id .. ":" .. info.id .. ":" .. tostring(info.name):gsub("[\r\n]", "") end
+function services.join_code(id, info) return "studiosync-join:" .. id .. ":" .. info.id .. ":" .. band.clean(tostring(info.name)) end -- (band.clean: 0.59.14)
 -- What was pasted: the code, on its own or in the whole message, or an invitation from before there were codes (the installer's own lines). -> { id, band, name }, or nil. Pure.
 function services.parse_join(text)
   text = tostring(text or "")
@@ -767,6 +771,9 @@ function services.ts_exec(args, ms)
 end
 function services.tailscale_address()
   if not tailscale_exe() then return nil end
+  -- (the last background status first: asked again and waited for, a producer's lost server cost two more 5 s waits each time. Review, 0.59.14)
+  local known = services.my_tailscale_name()
+  if known and known ~= "" then return known end
   local name = services.tailscale_name_in(services.ts_exec("status --json --peers=false", 5000))
   if name and name ~= "" then return name end
   local out = services.ts_exec("ip -4", 5000) -- "0\n100.97.210.49\n"
@@ -833,20 +840,41 @@ local function plain_key(net) return "tailscale_token" .. (net ~= "" and (" " ..
 -- (each script has its own copy of the tokens: a change in one, say Forget in the panel, bumps "tailscale_token_gen" and the others read
 -- them again. Autostart kept sweeping with a forgotten token. Review, 0.58.95)
 local gen_seen
+-- (a saved token that won't unlock: DPAPI ties it to the Windows user and computer, and this REAPER is portable. It was tried again on every
+-- call, a PowerShell REAPER waits on each time, every Autostart pass and every panel frame. Now left for 10 minutes, said once, and Health
+-- asks for it again. Review, 0.59.14)
+local unreadable, UNREADABLE_SECS = {}, 600
 local function fresh()
   local g = reaper.GetExtState(band.SECTION, "tailscale_token_gen")
-  if g ~= gen_seen then token_cache, gen_seen = {}, g end
+  if g ~= gen_seen then token_cache, unreadable, gen_seen = {}, {}, g end
+end
+-- The networks whose saved token wouldn't unlock here ("" for the older one, its network not known): for Health.
+function services.token_unreadable()
+  fresh()
+  local out = {}
+  for n in pairs(unreadable) do out[#out + 1] = n end
+  table.sort(out)
+  return out
 end
 local function token_in(net)
   fresh()
   if token_cache[net] then return token_cache[net] end
+  if reaper.time_precise() - (unreadable[net] or -math.huge) < UNREADABLE_SECS then return "" end
   local plain = reaper.GetExtState(band.SECTION, plain_key(net))
   if plain ~= "" then -- (one saved before 0.58.69, or where nothing locks it away: locked away now if it can be, and taken out of the settings file)
     if WIN or band.MAC then if token_store(plain, net) then reaper.DeleteExtState(band.SECTION, plain_key(net), true) end end
     token_cache[net] = plain
   else
     local t = token_load(net)
-    if t == nil then return "" end
+    if t == nil then
+      if not unreadable[net] then
+        band.log("the Tailscale access token saved here" .. (net ~= "" and (" for " .. net) or "") .. " couldn't be unlocked (REAPER moved to " ..
+          "another computer or Windows user?): StudioSync tries again in 10 minutes. Settings > Health says how to enter it again")
+      end
+      unreadable[net] = reaper.time_precise()
+      return ""
+    end
+    unreadable[net] = nil
     token_cache[net] = t
   end
   return token_cache[net]
@@ -881,7 +909,7 @@ function services.set_tailscale_token(token, net)
   fresh()
   gen_seen = tostring((tonumber(gen_seen) or 0) + 1) .. "." .. math.floor(reaper.time_precise() * 1000)
   reaper.SetExtState(band.SECTION, "tailscale_token_gen", gen_seen, false) -- (the other scripts read theirs again; this one keeps its own, set here)
-  token_cache[net] = token
+  token_cache[net], unreadable[net] = token, nil
   if not token_store(token, net) and token ~= "" then reaper.SetExtState(band.SECTION, plain_key(net), token, true) -- (nowhere safer here)
   else reaper.DeleteExtState(band.SECTION, plain_key(net), true) end
   if net ~= "" then

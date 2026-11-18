@@ -42,4 +42,13 @@ local m = hear.order(many, "x")
 local c = 0
 for _ in pairs(m) do c = c + 1 end
 assert(c == hear.PAIRS - 1 and m.P01 == 2 and m.P07 == 14 and m.P08 == nil, "7 pairs of their own at most")
+-- (only plain names from the status files: they go into SonoBus's saved state as they are. Review, 0.59.14)
+local band = package.loaded.band
+band.clean = function(s) return (s:gsub("[^%w%-_ ]", ""):match("^%s*(.-)%s*$")) end
+local status = { ["a.json"] = { user = "Drums" }, ["b.json"] = { user = "Bad\0name" }, ["c.json"] = { user = "" }, ["d.json"] = { user = "Keys" } }
+band.files = function() return { "a.json", "b.json", "c.json", "d.json" } end
+band.read_json = function(p) return status[p:match("[^/]+$")] end
+package.loaded.sync = { room_dir = function() return "/s/song/rooms/main" end }
+local names = hear.bandmates({}, { song = "song" })
+assert(#names == 2 and names[1] == "Drums" and names[2] == "Keys", "a name band.clean would change is left out")
 print("ok")
