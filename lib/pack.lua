@@ -137,11 +137,12 @@ function pack.draw(ctx, ImGui, cfg)
   end
   row("Plug-in pack", s.pack, false)
   row("Extras", s.extras, true)
-  local lack = {}
-  for _, it in ipairs(pack.ITEMS) do if s.others[it[1]] then lack[#lack + 1] = it[1] .. " (" .. table.concat(s.others[it[1]], ", ") .. ")" end end
-  if #lack > 0 then
-    ImGui.TextColored(ctx, require("theme").YELLOW, "Others in the studio have " .. table.concat(lack, ", ") .. ". Without them you hear those parts, " ..
-      "but can't play or change them.")
+  local lack, who = {}, {}
+  for _, it in ipairs(pack.ITEMS) do if s.others[it[1]] then lack[#lack + 1] = it[1]; who[#who + 1] = it[1] .. ": " .. table.concat(s.others[it[1]], ", ") end end
+  if #lack > 0 then -- (names only, who has each on hover: with ten of them the line filled the section)
+    ImGui.TextColored(ctx, require("theme").YELLOW, "Others in the studio have " .. (#lack > 4 and (#lack .. " you don't (" .. table.concat(lack, ", ", 1, 4) .. "...)")
+      or table.concat(lack, ", ")) .. ". Without them you hear those parts, but can't play or change them.")
+    ImGui.SetItemTooltip(ctx, table.concat(who, "\n"))
   end
   if said then ImGui.TextDisabled(ctx, said) end
   if ImGui.TreeNode(ctx, "What's in them") then
