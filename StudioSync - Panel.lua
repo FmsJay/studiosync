@@ -1709,12 +1709,11 @@ local function settings_look()
     if theme.name == "Custom" then -- your own theme: four colours, the rest worked out (it reopens when you let go of a colour)
       local c = theme.custom()
       for _, k in ipairs(theme.CUSTOM_KEYS) do
-        local ch, v = ImGui.ColorEdit3(ctx, k[2] .. "##themecustom" .. k[1], c[k[1]], ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel)
-        if ch then c[k[1]] = v; theme.set_custom(c) end
-        if ImGui.IsItemDeactivatedAfterEdit(ctx) then
+        require("colours").edit3(ctx, ImGui, k[2] .. "##themecustom" .. k[1], c[k[1]], function(v) -- (a steady wheel, and set when you let go: 0.59.7)
+          c[k[1]] = v; theme.set_custom(c)
           reaper.SetExtState(band.SECTION, "panel page", "Settings", false); reaper.SetExtState(band.SECTION, "setup tab", "Look", false)
           reload_now = true
-        end
+        end)
         ImGui.SameLine(ctx)
       end
       if ImGui.SmallButton(ctx, "Start again from Dark##themecustom") then

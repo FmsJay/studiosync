@@ -50,6 +50,27 @@ local function custom_palette()
     on_status = c.bg, steel = mix(c.text, c.bg, 0.2), status = light and 0.72 or nil }
 end
 
+-- Text that reads on this theme (James, 0.59.7: "certain colors may need more contrast on chat or restore tab depending on theme"): a
+-- person's colour, or the accent, moved toward the theme's text colour until it stands out from both the background and the cards (4.5:1,
+-- the usual bar for text). Colours as 0xRRGGBBAA.
+local function lum(rgb)
+  local function c(x) x = x / 255; return x <= 0.03928 and x / 12.92 or ((x + 0.055) / 1.055) ^ 2.4 end
+  return 0.2126 * c(rgb >> 16 & 0xFF) + 0.7152 * c(rgb >> 8 & 0xFF) + 0.0722 * c(rgb & 0xFF)
+end
+function theme.contrast(a, b) -- 0xRRGGBB each. Pure.
+  local x, y = lum(a), lum(b)
+  if x < y then x, y = y, x end
+  return (x + 0.05) / (y + 0.05)
+end
+function theme.readable(rgba, min)
+  local rgb, text = rgba >> 8, theme.TEXT >> 8
+  for i = 0, 10 do
+    local c = mix(rgb, text, i / 10)
+    if math.min(theme.contrast(c, theme.BG >> 8), theme.contrast(c, theme.CARD >> 8)) >= (min or 4.5) then return c << 8 | (rgba & 0xFF) end
+  end
+  return theme.TEXT
+end
+
 local cols, vars
 local cols_for -- (which theme `cols` was built for)
 -- Which theme this script draws in.

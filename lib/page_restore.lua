@@ -105,7 +105,7 @@ local function person_colour(user)
   local cfg = E.cfg()
   local name = user:gsub(" %(.-%)$", "")
   local rgb = require("people").colours(cfg.root, { name })[name]
-  return rgb and ((rgb << 8) | 0xFF) or theme.TEXT
+  return rgb and theme.readable((rgb << 8) | 0xFF) or theme.TEXT -- (a pale colour on Light, a dark one on Dark: made to read. 0.59.7)
 end
 -- What a change did, at a glance: taken out in red, brought back in green.
 local function change_tint(e) return e.gone and RED or e.restored ~= nil and GREEN or nil end

@@ -125,15 +125,36 @@ end
 -- A colour swatch with ColorEdit's wheel that keeps its own colour while you drag in it, and hands it over once you let go (James, 0.59.6:
 -- dragging in the triangle could spin it round: the colour passed back each frame came from elsewhere, a little off, and the wheel took its
 -- hue from that). commit(rgb) on letting go. -> changed, done.
-local held = {}
+-- (0.59.7: it still wiggled. Handed RGB, the wheel works its hue out again from 8-bit numbers every frame, and near grey that hue jumps
+-- about; handed HSV (InputHSV) it keeps the hue it's given. So the swatch is given HSV, held as it was dragged, and turned into RGB here.)
+function colours.to_hsv(rgb) -- 0xRRGGBB -> h, s, v (0 to 1). Pure.
+  local r, g, b = ((rgb >> 16) & 255) / 255, ((rgb >> 8) & 255) / 255, (rgb & 255) / 255
+  local mx, mn = math.max(r, g, b), math.min(r, g, b)
+  local d, h = mx - mn, 0
+  if d > 0 then
+    if mx == r then h = ((g - b) / d) % 6 elseif mx == g then h = (b - r) / d + 2 else h = (r - g) / d + 4 end
+    h = h / 6
+  end
+  return h, mx > 0 and d / mx or 0, mx
+end
+local function pack(h, s, v) local function q(x) return math.floor(x * 255 + 0.5) end; return (q(h) << 16) | (q(s) << 8) | q(v) end
+function colours.hsv_int(rgb) return pack(colours.to_hsv(rgb)) end
+function colours.rgb_of_hsv(x) return colours.hsv(((x >> 16) & 255) / 255, ((x >> 8) & 255) / 255, (x & 255) / 255) end
+local held, last = {}, {}
 function colours.edit3(ctx, ImGui, label, value, commit, flags)
-  local ch, v = ImGui.ColorEdit3(ctx, label, held[label] or value, flags or (ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel))
+  local l = last[label]
+  local shown = held[label] or (l and l.rgb == value and l.hsv) or colours.hsv_int(value) -- (the hue it was left at, while the colour's the one it gave)
+  local ch, v = ImGui.ColorEdit3(ctx, label, shown, (flags or (ImGui.ColorEditFlags_NoInputs | ImGui.ColorEditFlags_PickerHueWheel)) | ImGui.ColorEditFlags_InputHSV)
   if ch then held[label] = v end
   local done = ImGui.IsItemDeactivatedAfterEdit(ctx)
   if done or (held[label] and not ImGui.IsItemActive(ctx)) then
     local x = held[label]
     held[label] = nil
-    if x then commit(x) end
+    if x then
+      local rgb = colours.rgb_of_hsv(x)
+      last[label] = { rgb = rgb, hsv = x }
+      commit(rgb)
+    end
   end
   return ch, done
 end

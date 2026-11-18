@@ -425,6 +425,9 @@ function live.rt_sends(proj)
   if not rt then return 0 end
   local talk_only = live.talk_only(proj)
   local talk = live.talk_track(proj)
+  local mirror = require("mirror")
+  mirror.hide_helper(rt, "realtime") -- (an older project's, shown at the bottom: out of sight)
+  if talk then mirror.hide_helper(talk, "talk") end
   if talk then -- (quiet only while that mic is recording here: it'd be in the take twice. James, 0.59.6: "not when recording unless recording with that mic")
     local quiet = reaper.GetPlayStateEx(proj) & 4 == 4 and live.mic_recording(proj, live.talk_input())
     reaper.SetMediaTrackInfo_Value(talk, "B_MUTE", quiet and 1 or 0)

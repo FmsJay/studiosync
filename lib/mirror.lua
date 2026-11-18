@@ -2304,8 +2304,20 @@ function mirror.add_local_track(proj, name, tag)
   local tr = reaper.GetTrack(proj, idx)
   reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", name, true)
   reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local", tag, true)
+  mirror.hide_helper(tr, tag)
   mirror.hold_colours(proj, colours)
   return tr
+end
+-- StudioSync's own working tracks stay out of sight (James, 0.59.7: "can see the extra tracks at the bottom"; 0.58.99: no visible track
+-- for anyone's mic unless invisible). Hidden tracks still play, monitor and feed SonoBus. Older projects' are hidden as they're found.
+mirror.HELPERS = { realtime = true, talk = true, talkback = true, click = true }
+function mirror.hide_helper(tr, tag)
+  if not mirror.HELPERS[tag] then return end
+  if reaper.GetMediaTrackInfo_Value(tr, "B_SHOWINTCP") ~= 0 or reaper.GetMediaTrackInfo_Value(tr, "B_SHOWINMIXER") ~= 0 then
+    reaper.SetMediaTrackInfo_Value(tr, "B_SHOWINTCP", 0)
+    reaper.SetMediaTrackInfo_Value(tr, "B_SHOWINMIXER", 0)
+    reaper.TrackList_AdjustWindows(false)
+  end
 end
 -- The band's track colours (by REAPER GUID), as they are before a track goes in or out: auto-colour rules recolour
 -- the rest then, and again a moment later, so mirror.hold_colours puts them back for 5 s. The hold is kept in

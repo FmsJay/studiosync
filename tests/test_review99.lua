@@ -41,4 +41,17 @@ assert(live.uses_input(3, 3) and not live.uses_input(3, 4), "mono input 4")
 assert(live.uses_input(1024 + 2, 3) and live.uses_input(1024 + 2, 2) and not live.uses_input(1024 + 2, 4), "a stereo pair takes in both")
 assert(live.uses_input(2048 + 0, 5, 6) and not live.uses_input(2048 + 0, 6, 6), "multichannel: as many as the track has")
 assert(not live.uses_input(4096 + 63 * 32, 0) and not live.uses_input(-1, 0), "MIDI, or no input")
+-- 0.59.7: the wheel gets HSV (a steady hue); text colours made to read on the theme
+for _, c in ipairs({ 0xFF0000, 0x00FF00, 0x2F7BFF, 0x808080, 0x000000, 0xFFFFFF, 0xF7B2C4 }) do
+  local back = colours.rgb_of_hsv(colours.hsv_int(c))
+  for sh = 0, 16, 8 do assert(math.abs(((back >> sh) & 255) - ((c >> sh) & 255)) <= 2, string.format("%06X round trip: %06X", c, back)) end
+end
+local h = colours.to_hsv(0x00FF00)
+assert(math.abs(h - 1 / 3) < 0.01, "green's hue")
+package.loaded.theme = nil
+local theme = require("theme")
+assert(theme.contrast(0x000000, 0xFFFFFF) > 20 and theme.contrast(0x777777, 0x777777) == 1, "contrast")
+local pale = theme.readable(0x2A2D33FF) -- (Dark: a near-background colour)
+assert(theme.contrast(pale >> 8, theme.BG >> 8) >= 4.5, "made to read")
+assert(theme.readable(0xFF8A3DFF) == 0xFF8A3DFF, "a colour that already reads stays")
 print("ok")
