@@ -82,6 +82,9 @@ function H.maint_rows()
     end)(),
     { "shared code", not band.from_shared(dir), "yellow", "StudioSync is installed on this computer",
       "StudioSync runs from the shared folder here, so anyone in the studio can change what runs on this computer. Installing it through ReaPack is safer (the README says how)." },
+    -- (a saved token that won't unlock: lib/services.lua token_in. Review, 0.59.14)
+    { "tailscale token", #services.token_unreadable() == 0, "yellow", "Your Tailscale access token can be read",
+      "A Tailscale access token saved here can't be unlocked (REAPER moved to another computer or Windows user?), so guests' time isn't kept: enter it again under Settings > Advanced." },
     (function()
       local skipped = sync.skipped(proj)
       return { "skipped", #skipped == 0, "yellow", "Every change from the others landed here",
