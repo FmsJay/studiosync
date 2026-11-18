@@ -174,14 +174,14 @@ DRIVE_NAME="StudioSync"; [ "$FOLDER_ID" != bandsync ] && DRIVE_NAME="StudioSync 
 LIVE="${BS_LIVE:-y}"
 SOLO="${BS_SOLO:-y}"
 if [ -z "${BS_PLUGINS:-}" ]; then
-  say "The free plug-in pack (about 410 MB): synths, guitar and bass amps, a tuner, EQ, compressor, reverb, delay, tape,"
+  say "The free plug-in pack (about 425 MB): synths, guitar and bass amps, a tuner, EQ, compressor, reverb, delay, tape,"
   say "drum kits and keys (Surge XT, Dexed, OB-Xf, Airwindows, Dragonfly, Chow, BYOD, ZL and more), so everyone hears the same sounds."
 fi
 PLUGINS="${BS_PLUGINS:-$(ask "Install it? (recommended) (y/n)" y)}"
 EXTRAS="${BS_EXTRAS:-n}"
 # (extras only asked of whoever starts the studio: 1.2 GB is a lot for a joiner to decide on blind. Beginner review, 0.58.62)
 if yes "$PLUGINS" && [ -z "$JOINING" ] && [ -z "${BS_EXTRAS:-}" ]; then
-  say "The bigger extras (about 1.2 GB): a grand piano, a real drum kit, amp capture players and the Odin 2 synth."
+  say "The bigger extras (about 1.4 GB): a grand piano, a real drum kit, amp capture players, vocal tuning, a 303 bass, mallets, and the Odin 2 and Monique synths."
   EXTRAS="$(ask "Install the extras too? (y/n)" n)"
 fi
 # ReaPersona: which app you're used to, as one question, and it's set up as that DAW in the same run (James, 0.58.64: yes/no installed it and
@@ -281,6 +281,22 @@ plugin_dmg() { # url name pattern
     find "$mnt" -maxdepth 3 -name '*.clap' -prune | while read -r b; do ditto "$b" "$d/CLAP/$(basename "$b")"; done
   fi
   hdiutil detach "$mnt" -quiet
+  plugin_found "$3" && ok "$2 installed" || warn "$2 didn't install: install it by hand"
+}
+# A plug-in that comes as a .zip of bundles: its VST3, AU and CLAP copied into your own Plug-Ins folders (no password; its standalone app
+# isn't). (CloudReverb, SnapTune, JC303, RipplerX: 0.59.21)
+plugin_zip() { # url name pattern
+  [ -n "$1" ] || { warn "$2: no download found, skipped"; return 1; }
+  if plugin_found "$3"; then ok "$2 is already installed"; return 0; fi
+  local z="$WORK/$2.zip" x="$WORK/plugin_zip" d="$HOME/Library/Audio/Plug-Ins"
+  say "Installing $2 ..."
+  curl -fsSL "$1" -o "$z" || { warn "$2: download failed"; return 1; }
+  rm -rf "$x"; mkdir -p "$x"; ditto -x -k "$z" "$x" || { warn "$2: couldn't unpack it"; rm -rf "$z" "$x"; return 1; }
+  mkdir -p "$d/VST3" "$d/Components" "$d/CLAP"
+  find "$x" -name '*.vst3' -prune | while read -r b; do ditto "$b" "$d/VST3/$(basename "$b")"; done
+  find "$x" -name '*.component' -prune | while read -r b; do ditto "$b" "$d/Components/$(basename "$b")"; done
+  find "$x" -name '*.clap' -prune | while read -r b; do ditto "$b" "$d/CLAP/$(basename "$b")"; done
+  rm -rf "$z" "$x"
   plugin_found "$3" && ok "$2 installed" || warn "$2 didn't install: install it by hand"
 }
 told_pw=""
@@ -485,11 +501,17 @@ if yes "$PLUGINS"; then
   have_plugin "ZL Equalizer 2" "ZL Equalizer*" || plugin_dmg "$(gh_asset ZL-Audio/ZLEqualizer "macOS-$arch\.dmg$")" "ZL Equalizer 2" "ZL Equalizer*"
   have_plugin "ZL Compressor" "ZL Compressor*" || plugin_dmg "$(gh_asset ZL-Audio/ZLCompressor "macOS-$arch\.dmg$")" "ZL Compressor" "ZL Compressor*"
   have_plugin "ChowMatrix" "ChowMatrix*" || plugin_dmg "$(gh_asset Chowdhury-DSP/ChowMatrix 'Mac-.*\.dmg$')" "ChowMatrix" "ChowMatrix*"
+  have_plugin "CloudReverb" "CloudReverb*" || plugin_zip "$(gh_asset xunil-cloud/CloudReverb 'CloudReverb-v[0-9.]+-macOS\.zip$')" "CloudReverb" "CloudReverb*" # (ambient reverb: 0.59.21)
   have_plugin "OB-Xf" "OB-Xf*" || plugin_dmg "$(gh_asset surge-synthesizer/OB-Xf 'ob-xf-macOS-v[0-9.]+\.dmg$')" "OB-Xf" "OB-Xf*" # (Oberheim-style poly: 0.59.20)
   if yes "$EXTRAS"; then
     # NAM: v0.7.14 and later have no release files; 0.7.13 is the newest that does
     have_plugin "Neural Amp Modeler" "NeuralAmpModeler*" || plugin_dmg "$(gh_asset_tag sdatkinson/NeuralAmpModelerPlugin v0.7.13 'mac\.dmg$')" "Neural Amp Modeler" "NeuralAmpModeler*"
     have_plugin "AIDA-X" "AIDA-X*" || plugin_dmg "$(gh_asset AidaDSP/AIDA-X 'macos-universal.*\.dmg$')" "AIDA-X" "AIDA-X*"
+    # (vocal tuning, a 303 bass, mallets and bells, Monique: 0.59.21. Monique's Nightly is the only release it has)
+    have_plugin "SnapTune" "SnapTune*" || plugin_zip "$(gh_asset NicoFerni/snaptune 'SnapTune-[0-9.]+-macOS\.zip$')" "SnapTune" "SnapTune*"
+    have_plugin "JC303" "JC303*" || plugin_zip "$(gh_asset midilab/jc303 'jc303-[0-9.]+-macos_universal-plugins\.zip$')" "JC303" "JC303*"
+    have_plugin "RipplerX" "RipplerX*" || plugin_zip "$(gh_asset tiagolr/ripplerx 'ripplerx-macos-v[0-9.]+\.zip$')" "RipplerX" "RipplerX*"
+    have_plugin "Monique" "Monique*" || plugin_dmg "$(gh_asset_tag surge-synthesizer/monique-monosynth Nightly 'macOS-.*\.dmg$')" "Monique" "Monique*"
     odin="$(gh_asset_tag TheWaveWarden/odin2 NightlyDevel 'MacInstaller\.pkg$')"
     if plugin_found "Odin2*"; then ok "Odin 2 is already installed"
     elif [ -n "$odin" ] && curl -fsSL "$odin" -o "$WORK/odin2.pkg"; then password_note; sudo installer -pkg "$WORK/odin2.pkg" -target / >/dev/null && ok "Odin 2 installed"

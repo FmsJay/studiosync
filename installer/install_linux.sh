@@ -196,7 +196,7 @@ PLUGINS="${BS_PLUGINS:-$(ask "Install it? (recommended) (y/n)" y)}"
 EXTRAS="${BS_EXTRAS:-n}"
 # (extras only asked of whoever starts the studio: 1.2 GB is a lot for a joiner to decide on blind. Beginner review, 0.58.62)
 if yes "$PLUGINS" && [ -z "$JOINING" ] && [ -z "${BS_EXTRAS:-}" ]; then
-  say "The bigger extras (about 1.1 GB): a grand piano, a real drum kit, an amp capture player and the Odin 2 synth."
+  say "The bigger extras (about 1.2 GB): a grand piano, a real drum kit, an amp capture player, vocal tuning, a 303 bass, mallets, and the Odin 2 and Monique synths."
   EXTRAS="$(ask "Install the extras too? (y/n)" n)"
 fi
 # ReaPersona: which app you're used to, as one question, and it's set up as that DAW in the same run. BS_REAPERSONA: a DAW id
@@ -499,8 +499,9 @@ if yes "$PLUGINS"; then
     have_plugin "Chow Tape Model" "CHOW*" || plugin_pkg "$(gh_asset jatinchowdhury18/AnalogTapeModel 'Linux-x64.*\.deb$')" "Chow Tape Model" "CHOW*"
     have_plugin "BYOD" "BYOD*" || plugin_pkg "$(gh_asset Chowdhury-DSP/BYOD 'Linux-x64.*\.deb$')" "BYOD" "BYOD*"
     have_plugin "ChowMatrix" "ChowMatrix*" || plugin_pkg "$(gh_asset Chowdhury-DSP/ChowMatrix 'Linux-x64.*\.deb$')" "ChowMatrix" "ChowMatrix*"
+    have_plugin "CloudReverb" "CloudReverb*" || plugin_pkg "$(gh_asset xunil-cloud/CloudReverb 'CloudReverb-v[0-9.]+-Linux-x86_64\.zip$')" "CloudReverb" "CloudReverb*" # (0.59.21)
     have_plugin "OB-Xf" "OB-Xf*" || plugin_pkg "$(gh_asset surge-synthesizer/OB-Xf 'ob-xf-Linux-v[0-9.]+\.deb$')" "OB-Xf" "OB-Xf*" # (0.59.20)
-  else skip_plugin "Surge XT, Dexed, Airwindows, Chow Tape Model, BYOD, ChowMatrix and OB-Xf (no $ARCH build)"; fi
+  else skip_plugin "Surge XT, Dexed, Airwindows, Chow Tape Model, BYOD, ChowMatrix, OB-Xf and CloudReverb (no $ARCH build)"; fi
   have_plugin "Dragonfly Reverb" "Dragonfly*" || plugin_pkg "$(gh_asset michaelwillis/dragonfly-reverb "linux-$DA\.tar\.xz$")" "Dragonfly Reverb" "Dragonfly*"
   if [ -n "$ZA" ]; then
     have_plugin "ZL Equalizer 2" "ZL Equalizer*" || plugin_pkg "$(gh_asset ZL-Audio/ZLEqualizer "Linux-$ZA\.zip$")" "ZL Equalizer 2" "ZL Equalizer*"
@@ -511,6 +512,16 @@ if yes "$PLUGINS"; then
     have_plugin "AIDA-X" "AIDA-X*" || plugin_pkg "$(gh_asset AidaDSP/AIDA-X "linux-$DA\.tar\.xz$")" "AIDA-X" "AIDA-X*"
     if [ "$ARCH" = x86_64 ]; then plugin_pkg "$(gh_asset_tag TheWaveWarden/odin2 NightlyDevel '\.deb$')" "Odin 2" "Odin2*"
     else skip_plugin "Odin 2 (no $ARCH build)"; fi
+    # (vocal tuning, a 303 bass, mallets and bells, Monique: 0.59.21. SnapTune has an arm64 build too; Monique's Nightly is its only release)
+    if [ "$ARCH" = x86_64 ]; then
+      have_plugin "SnapTune" "SnapTune*" || plugin_pkg "$(gh_asset NicoFerni/snaptune 'SnapTune-[0-9.]+-Linux\.tar\.gz$')" "SnapTune" "SnapTune*"
+      have_plugin "JC303" "JC303*" || plugin_pkg "$(gh_asset midilab/jc303 'jc303-[0-9.]+-linux_x64-plugins\.zip$')" "JC303" "JC303*"
+      have_plugin "RipplerX" "RipplerX*" || plugin_pkg "$(gh_asset tiagolr/ripplerx 'ripplerx-linux-v[0-9.]+\.zip$')" "RipplerX" "RipplerX*"
+      have_plugin "Monique" "Monique*" || plugin_pkg "$(gh_asset_tag surge-synthesizer/monique-monosynth Nightly '-Linux\.zip$')" "Monique" "Monique*"
+    elif [ "$ARCH" = aarch64 ]; then
+      have_plugin "SnapTune" "SnapTune*" || plugin_pkg "$(gh_asset NicoFerni/snaptune 'SnapTune-[0-9.]+-Linux-arm64\.tar\.gz$')" "SnapTune" "SnapTune*"
+      skip_plugin "JC303, RipplerX and Monique (no $ARCH build)"
+    else skip_plugin "SnapTune, JC303, RipplerX and Monique (no $ARCH build)"; fi
     DOCS="$(xdg-user-dir DOCUMENTS 2>/dev/null)"; { [ -n "$DOCS" ] && [ "$DOCS" != "$HOME" ]; } || DOCS="$HOME/Documents"
     piano="$DOCS/StudioSync Instruments/Salamander Grand Piano"
     [ -d "$piano" ] || say "Downloading the Salamander Grand piano (about 715 MB) ..."

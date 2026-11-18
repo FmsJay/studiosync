@@ -164,9 +164,9 @@ $driveName = if ($folderId -eq "bandsync") { "StudioSync" } else { "StudioSync -
 # (James, 2026-10-31: "it feels like a core feature"); -Live no / -Solo no still leave them out.
 $wantLive = $Live -ne "no"
 $wantSolo = $Solo -ne "no"
-$wantPlugins = if ($Plugins) { $Plugins -eq "yes" } else { Write-Host "The free plug-in pack (about 180 MB): synths, guitar and bass amps, a tuner, EQ, compressor, reverb, delay, tape, drum kits and keys"; Write-Host "(Surge XT, Dexed, OB-Xf, Airwindows, Dragonfly, Chow, BYOD, ZL and more), so everyone in the studio hears the same sounds."; YesNo "Install it? (recommended)" "y" }
+$wantPlugins = if ($Plugins) { $Plugins -eq "yes" } else { Write-Host "The free plug-in pack (about 190 MB): synths, guitar and bass amps, a tuner, EQ, compressor, reverb, delay, tape, drum kits and keys"; Write-Host "(Surge XT, Dexed, OB-Xf, Airwindows, Dragonfly, Chow, BYOD, ZL and more), so everyone in the studio hears the same sounds."; YesNo "Install it? (recommended)" "y" }
 # (extras only asked of whoever starts the studio: a joiner's projects say what they use, and 1.2 GB is a lot to decide on blind. Beginner review, 0.58.62)
-$wantExtras = if ($Extras) { $Extras -eq "yes" } else { -not $joining -and $wantPlugins -and (YesNo "Also the bigger extras (about 1.2 GB: a grand piano, a real drum kit, amp capture players and the Odin 2 synth)?" "n") }
+$wantExtras = if ($Extras) { $Extras -eq "yes" } else { -not $joining -and $wantPlugins -and (YesNo "Also the bigger extras (about 1.3 GB: a grand piano, a real drum kit, amp capture players, vocal tuning, a 303 bass, mallets, and the Odin 2 and Monique synths)?" "n") }
 # ReaPersona: which app you're used to, as one question, and it's set up as that DAW in the same run (James, 0.58.64: yes/no installed it and
 # left the picking for later). The ids are ReaPersona's own (styles.json).
 $personas = @(@("pro_tools", "Pro Tools"), @("pro_tools_intro", "Pro Tools Intro (the free one)"), @("logic", "Logic Pro"), @("garageband", "GarageBand"),
@@ -402,12 +402,20 @@ if ($wantPlugins) {
   Install-Plugin "ZL Compressor" "ZL-Audio/ZLCompressor" 'Windows-x86-64\.msi$' $null (Join-Path $vst3 "ZL Compressor*")
   Install-Plugin "ChowMatrix (delay)" "Chowdhury-DSP/ChowMatrix" 'Win-.*\.exe$' $null (Join-Path $vst3 "ChowMatrix*")
   # (an Oberheim-style poly synth, the Surge team's open OB-Xd successor: its setup brings the presets, which the .zip leaves out. 0.59.20)
+  # (a big ambient reverb, Cloud Seed's engine: what Dragonfly's rooms and halls don't do. Its .zip's VST3 goes in REAPER's own folder. 0.59.21)
+  Install-Plugin "CloudReverb (ambient reverb)" "xunil-cloud/CloudReverb" '^CloudReverb-v[0-9.]+-Windows-x86_64\.zip$' $null (Join-Path $res "UserPlugins\FX\CloudReverb*")
   Install-Plugin "OB-Xf (analog poly synth)" "surge-synthesizer/OB-Xf" '^ob-xf-Windows-v[0-9.]+\.exe$' $null (Join-Path $vst3 "OB-Xf*")
   if ($wantExtras) {
     # NAM: v0.7.14 and later have no release files; 0.7.13 is the newest that does
     Install-Plugin "Neural Amp Modeler" "sdatkinson/NeuralAmpModelerPlugin" '-win\.zip$' "v0.7.13" @((Join-Path $res "UserPlugins\FX\NeuralAmpModeler*"), (Join-Path $env:CommonProgramFiles "VST3\NeuralAmpModeler*"))
     Install-Plugin "AIDA-X" "AidaDSP/AIDA-X" 'win64-installer\.exe$' $null (Join-Path $vst3 "AIDA-X*")
     Install-Plugin "Odin 2" "TheWaveWarden/odin2" 'WinInstaller\.exe$' "NightlyDevel" (Join-Path $vst3 "Odin2*")
+    # (0.59.21: vocal tuning, a TB-303 bass, modelled mallets and bells, and Monique, a mono synth that was sold before it was opened. Their
+    # .zips' VST3s go in REAPER's own folder. Monique has no numbered releases: its Nightly is the one there is.)
+    Install-Plugin "SnapTune (vocal tuning)" "NicoFerni/snaptune" '^SnapTune-[0-9.]+-Windows\.zip$' $null (Join-Path $res "UserPlugins\FX\SnapTune*")
+    Install-Plugin "JC303 (303 bass)" "midilab/jc303" '^jc303-[0-9.]+-windows_x64-plugins\.zip$' $null (Join-Path $res "UserPlugins\FX\JC303*")
+    Install-Plugin "RipplerX (mallets, bells, plucks)" "tiagolr/ripplerx" '^ripplerx-win-v[0-9.]+\.zip$' $null (Join-Path $res "UserPlugins\FX\RipplerX*")
+    Install-Plugin "Monique (mono synth)" "surge-synthesizer/monique-monosynth" '-Windows-64bit\.zip$' "Nightly" (Join-Path $res "UserPlugins\FX\Monique*")
     Install-App "plogue.sforzando" "sforzando (plays the piano below)"
     $piano = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "StudioSync Instruments\Salamander Grand Piano"
     if (Test-Path $piano) { Ok "Salamander Grand piano is already there" } elseif (-not $NoApps) {

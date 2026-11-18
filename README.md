@@ -525,9 +525,9 @@ a plug-in comes in several formats, since Windows and Mac both have VST3). Use t
 every machine. The **Plugins** page updates it on demand. REAPER's own effects (ReaPlugs and the
 JSFX) are on every machine; JSFX from ReaPack work on Windows and Mac alike, once everyone installs the same package.
 
-**The studio plug-in pack** (the installers ask; free, each from its official release, nothing bundled, about 180 MB
-on Windows and 410 MB on a Mac): Surge XT (synth + effects, GPL-3), Dexed (FM synth, GPL-3), OB-Xf (Oberheim-style poly synth,
-GPL-3), Airwindows Consolidated
+**The studio plug-in pack** (the installers ask; free, each from its official release, nothing bundled, about 190 MB
+on Windows and 425 MB on a Mac): Surge XT (synth + effects, GPL-3), Dexed (FM synth, GPL-3), OB-Xf (Oberheim-style poly synth,
+GPL-3), CloudReverb (ambient reverb, GPL-3), Airwindows Consolidated
 (MIT), Dragonfly Reverb (GPL-3), Chow Tape Model (GPL-3), BYOD (guitar and bass amps, tuner; GPL-3), ZL Equalizer 2
 and ZL Compressor (AGPL-3), ChowMatrix (delay, BSD-3), and through ReaPack the JSFX of Saike and Chokehold (MIT) and
 chmaha's *DSP to JSFX* (the effects and instruments REAPER 7.83 bundled and 7.84 removed: drum kits, piano and
@@ -535,8 +535,10 @@ e-piano, organ, channel strip...; GPL-3 with MIT/AGPL parts). On Windows the plu
 together at the end without their setup windows, and Windows asks for permission once (say no and each one's own
 setup opens instead).
 
-**Extras** (a second question, about 1.2 GB, most of it the piano and drums): Neural Amp Modeler 0.7.13 and AIDA-X (amp
-capture players), Odin 2 (synth), and sforzando with two SFZ instruments everyone then has: the Salamander Grand piano and
+**Extras** (a second question, about 1.3 GB, most of it the piano and drums): Neural Amp Modeler 0.7.13 and AIDA-X (amp
+capture players), Odin 2 (synth), SnapTune (vocal pitch correction, AGPL-3), JC303 (TB-303 bass, GPL-3), RipplerX (modelled
+mallets, bells and plucks, GPL-3), Monique (a mono synth sold before it was opened, GPL-3; its nightly build, the only release
+it has), and sforzando with two SFZ instruments everyone then has: the Salamander Grand piano and
 the MuldjordKit drum kit (DrumGizmo's kit by Lars Muldjord, CC BY 4.0, ported by sfzinstruments), so a drum part sounds the
 same on every computer, Windows or Mac. Worth adding by hand (free, but they need an account, an email address, or can't be
 passed on): Decent Sampler (the installer reminds you), Vital, Valhalla Supermassive, Spitfire LABS, MeldaProduction
