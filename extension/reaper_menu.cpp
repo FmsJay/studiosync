@@ -26,7 +26,7 @@
 #define REAPERAPI_WANT_GetExtState
 #define REAPERAPI_WANT_SetExtState
 #define REAPERAPI_WANT_RefreshToolbar2
-#define EXT_VERSION "1.0.5" // (tools/make_index.py EXT_VERSION: what the panel reads to know this build adds toolbar buttons)
+#define EXT_VERSION "1.0.6" // (tools/make_index.py EXT_VERSION: what the panel reads to know this build adds toolbar buttons)
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"
 
@@ -39,6 +39,13 @@ static const char *SECTION = "BandSync", *ICON = "toolbar_studiosync", *ICON_FIL
 #endif
 
 static int g_cmd = 0, g_target = 0;
+#ifndef REAPERSONA
+// An amber dot on the button while something has stopped syncing (ExtState "sync problem", which StudioSync - Autostart sets and clears), so
+// it's seen with the panel closed: toolbar_studiosync_warn(_on).png beside the others. (1.0.6, StudioSync 0.59.10)
+static const char *ICON_WARN = "toolbar_studiosync_warn";
+static int g_warn = -1;
+static bool warn_now() { const char *v = GetExtState(SECTION, "sync problem"); return v && *v; }
+#endif
 static gaccel_register_t g_accel = { { 0, 0, 0 }, nullptr };
 
 // The script's action: an entry in the main section named "<anything>: <SCRIPT>" ("Script: ..." from ReaPack, "Custom: ..." otherwise). -> 0 if none.
@@ -161,6 +168,10 @@ static void on_timer()
     if (!g_target && g_search++ % 30 == 0) g_target = find_target(); // (every 5 s until found: it reads the whole Actions list)
     const int lit = on_toggle(g_cmd);
     if (lit != g_lit) { g_lit = lit; RefreshToolbar2(0, g_cmd); }
+#ifndef REAPERSONA
+    const int warn = warn_now() ? 1 : 0;
+    if (warn != g_warn) { g_warn = warn; RefreshToolbar2(0, g_cmd); }
+#endif
   }
   if (!g_add_item || !g_delete_item || !g_get_item || ++g_ticks < 30) return;
   g_ticks = 0;
@@ -179,7 +190,11 @@ static void on_timer()
 // The button's image, wherever the command sits on a toolbar (REAPER asks per toolbar, command and state).
 static const char *on_icon(const char *toolbar, int cmd, int state)
 {
+#ifndef REAPERSONA
+  if (cmd == g_cmd && toolbar && (!strcmp(toolbar, "Main toolbar") || !strncmp(toolbar, "Floating toolbar", 16))) return g_warn == 1 ? ICON_WARN : ICON;
+#else
   if (cmd == g_cmd && toolbar && (!strcmp(toolbar, "Main toolbar") || !strncmp(toolbar, "Floating toolbar", 16))) return ICON;
+#endif
   return nullptr;
 }
 
