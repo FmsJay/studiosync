@@ -5,7 +5,7 @@ name: extension
 on:
   workflow_dispatch:
   push:
-    paths: ["extension/reaper_menu.cpp", "extension/direct.cpp", "extension/direct_audio.cpp", "extension/direct.h", "extension/sign.cpp", "extension/sign.h", "extension/webui.cpp", "extension/webui.h", "tests/direct_test.cpp", "tests/webui_test.cpp", "tests/sign_test.cpp", "tools/ninjam-relay/njrelay.c", ".github/workflows/extension.yml"]
+    paths: ["extension/reaper_menu.cpp", "extension/direct.cpp", "extension/direct_audio.cpp", "extension/direct.h", "extension/sign.cpp", "extension/sign.h", "extension/webui.cpp", "extension/webui.h", "extension/hop.cpp", "plugin/hop_shm.h", "tests/direct_test.cpp", "tests/webui_test.cpp", "tests/sign_test.cpp", "tools/ninjam-relay/njrelay.c", ".github/workflows/extension.yml"]
 
 jobs:
   mac:
@@ -20,7 +20,7 @@ jobs:
       - name: Build universal dylibs
         run: |
           for p in studiosync reapersona; do
-            def=""; src="extension/reaper_menu.cpp extension/direct.cpp extension/direct_audio.cpp extension/sign.cpp extension/webui.cpp"; [ "$p" = reapersona ] && def="-DREAPERSONA" && src="extension/reaper_menu.cpp"
+            def=""; src="extension/reaper_menu.cpp extension/direct.cpp extension/direct_audio.cpp extension/sign.cpp extension/webui.cpp extension/hop.cpp"; [ "$p" = reapersona ] && def="-DREAPERSONA" && src="extension/reaper_menu.cpp"
             clang++ -std=c++17 -O2 -dynamiclib -arch arm64 -arch x86_64 -mmacosx-version-min=10.13 -DSWELL_PROVIDED_BY_APP $def \
               -I reaper-sdk/sdk $src reaper-sdk/WDL/swell/swell-modstub.mm -framework Cocoa -o "reaper_$p.dylib"
             codesign -s - "reaper_$p.dylib"
@@ -66,7 +66,7 @@ jobs:
       - name: Build
         run: |
           for p in studiosync reapersona; do
-            def=""; src="extension/reaper_menu.cpp extension/direct.cpp extension/direct_audio.cpp extension/sign.cpp extension/webui.cpp"; [ "$p" = reapersona ] && def="-DREAPERSONA" && src="extension/reaper_menu.cpp"
+            def=""; src="extension/reaper_menu.cpp extension/direct.cpp extension/direct_audio.cpp extension/sign.cpp extension/webui.cpp extension/hop.cpp"; [ "$p" = reapersona ] && def="-DREAPERSONA" && src="extension/reaper_menu.cpp"
             g++ -std=c++17 -O2 -shared -fPIC -pthread -DSWELL_PROVIDED_BY_APP $def -I reaper-sdk/sdk \
               $src reaper-sdk/WDL/swell/swell-modstub-generic.cpp -o "reaper_$p-${{ matrix.arch }}.so"
             nm -D --defined-only "reaper_$p-${{ matrix.arch }}.so" | grep -E "ReaperPluginEntry|SWELL"

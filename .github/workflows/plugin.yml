@@ -1,0 +1,53 @@
+# StudioSync Hop, the remote plug-ins endpoint (plugin/, docs/realtime-roadmap.md 4b): VST3 and CLAP for macOS (universal) and Linux,
+# plus its native test (tests/hop_test.cpp: the shared-memory ring, the fixed-latency timing, the extension's loopback). Windows builds on
+# JAMES-MAIN (plugin/build_windows.cmd). Each job leaves the plug-ins as an artifact.
+name: plugin
+on:
+  workflow_dispatch:
+  push:
+    paths: ["plugin/**", "extension/hop.cpp", "tests/hop_test.cpp", ".github/workflows/plugin.yml"]
+
+jobs:
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The Hop's own test
+        run: |
+          clang++ -std=c++17 -O2 -DHOP_STANDALONE tests/hop_test.cpp extension/hop.cpp -o hop_test
+          ./hop_test
+      - name: Build VST3 and CLAP (universal)
+        run: |
+          cmake -S plugin -B plugin/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          cmake --build plugin/build --config Release
+          cd plugin/build/bin
+          # (on macOS the bundle's Info.plist names the binary, so only the folders get the plug-in's name)
+          mv studiosync-hop.vst3 "StudioSync Hop.vst3"
+          mv studiosync-hop.clap "StudioSync Hop.clap"
+          codesign --force --deep -s - "StudioSync Hop.vst3" "StudioSync Hop.clap"
+          lipo -info "StudioSync Hop.vst3/Contents/MacOS/studiosync-hop" "StudioSync Hop.clap/Contents/MacOS/studiosync-hop"
+      - uses: actions/upload-artifact@v4
+        with: { name: hop-mac, path: "plugin/build/bin/StudioSync Hop.*" }
+
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, arch: x86_64 }
+          - { os: ubuntu-22.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: The Hop's own test
+        run: |
+          g++ -std=c++17 -O2 -pthread -DHOP_STANDALONE tests/hop_test.cpp extension/hop.cpp -o hop_test
+          ./hop_test
+      - name: Build VST3 and CLAP
+        run: |
+          cmake -S plugin -B plugin/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build plugin/build
+          ls -R plugin/build/bin
+          nm -D --defined-only "plugin/build/bin/StudioSync Hop.clap" | grep clap_entry
+      - uses: actions/upload-artifact@v4
+        with: { name: "hop-linux-${{ matrix.arch }}", path: "plugin/build/bin/StudioSync Hop.*" }
