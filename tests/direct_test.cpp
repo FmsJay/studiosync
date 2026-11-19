@@ -258,7 +258,7 @@ static void reaper_like_take(const std::string &studio, const char *peer, const 
     int lines = 0;
     for (size_t at = 0; (at = t.find("Song A/REAPER take.flac | ", at)) != std::string::npos; ++at) ++lines;
     printf("     stream trace: %d passes logged, e.g. %s\n", lines, t.substr(0, t.find('\n')).c_str());
-    CHECK(lines >= 10 && t.find(" off ") != std::string::npos && t.find("standard=") != std::string::npos,
+    CHECK(lines >= 10 && t.find(" off ") != std::string::npos && (t.find("standard=") != std::string::npos || t.find("seek-end=") != std::string::npos), // (Windows reads the size four ways, Mac/Linux one)
           "the stream trace logs every pass while the take is open (size, how each way read it, each peer's place)");
   }
   CHECK(sized, async ?"the open take's size, read the stream's way, is what's been written after every block (unbuffered writer)" : "the open take's size, read the stream's way, is what's been written after every block (no flush, handle kept open)");
