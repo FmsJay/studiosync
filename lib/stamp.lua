@@ -144,6 +144,9 @@ function tape_write(p, v) local(x) (
 );
 @block
 on = slider1 > 0.5;
+// (switched off, it says so: "active" stayed 1 from the last bursts it heard, for every reader after it. Live test, 0.59.35)
+!on && was_on ? ( gmem[5] = 0; last_stamp = -1000000000000; );
+was_on = on;
 ch = slider2 | 0;
 playing = play_state & 1;
 rpos = floor(play_position * srate + 0.5);

@@ -1,4 +1,4 @@
-version 0.59.35
+version 0.59.36
 StudioSync - Autostart.lua	17119
 StudioSync - Claim selected tracks.lua	851
 StudioSync - Draw.lua	27321
@@ -77,7 +77,7 @@ lib/setup.lua	8114
 lib/smooth.lua	1506
 lib/songsync.lua	8463
 lib/sonobus.lua	22842
-lib/stamp.lua	12670
+lib/stamp.lua	12872
 lib/startup.lua	13764
 lib/status.lua	6506
 lib/suggest.lua	14428
