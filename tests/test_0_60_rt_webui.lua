@@ -107,4 +107,27 @@ assert(url == nil and why:find("direct link"), "no phone link while the link isn
 reaper.StudioSync_DirectStatus = function() return '{"listening":true}' end
 package.loaded.services = { my_tailscale_name = function() return "james-main.tail99.ts.net" end }
 assert(webui.phone_link(cfg) == "http://james-main.tail99.ts.net:47281/?t=abc123", "the phone link")
+
+-- Nobody looking (no open stream, no request for LOOK_GRACE s): nothing built. A page arriving gets everything on its first tick.
+local st = { clients = 0, served = 7 }
+reaper.StudioSync_WebUIStatus = function() return ('{"listening":true,"port":47281,"token":"abc123","clients":%d,"served":%d,"refused":0}'):format(st.clients, st.served) end
+local reads = 0
+package.loaded.sync.authority = function() reads = reads + 1; return function() end, { driver = "James", tracks = {}, regions = {}, times = {} } end
+webui.tick("P1", cfg, b, handlers) -- (served moved from the old stand-in's none: a request, so still looking)
+local r0 = reads
+clock = clock + 31
+for _ = 1, 5 do clock = clock + 2; webui.tick("P1", cfg, b, handlers) end
+assert(reads == r0, "nobody looking: no presence built (claims not read)")
+local n = #pub
+package.loaded.page_chat.read = function() return { msgs = { { user = "chilio", text = "while you were away" } } } end
+st.clients = 1
+webui.tick("P1", cfg, b, handlers)
+assert(reads == r0 + 1 and #pub == n + 1 and pub[#pub][1] == "chat" and pub[#pub][2]:find("while you were away"), "a page opens: built at once, the new chat published")
+st.clients, st.served = 0, 8 -- (a polling page: no open connection, the served count moves)
+clock = clock + 31
+webui.tick("P1", cfg, b, handlers)
+assert(reads == r0 + 2, "a page polling /api/state counts as looking")
+clock = clock + 31
+webui.tick("P1", cfg, b, handlers)
+assert(reads == r0 + 2, "and stops counting LOOK_GRACE s after its last request")
 print("ok")
