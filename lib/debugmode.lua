@@ -1,6 +1,8 @@
 -- Debug mode for a studio (James, 0.59.3: "a debug mode for anyone on my studios that saves all details to use later for debugging"). The
--- owner or an admin turns it on (band.json "debug", a trusted setting: lib/groups.lua); then every computer in the studio writes, every few
--- minutes, into <studio>/_debug/<name>/ (which Syncthing carries to everyone, so the owner has every computer's):
+-- owner or an admin turns it on (band.json "debug", a trusted setting: lib/groups.lua); then every computer in the studio writes into
+-- <studio>/_debug/<name>/ (which Syncthing carries to the owner and admins) at the end of each session, when a bug report is sent, and when
+-- REAPER starts after it didn't close cleanly (a crash never reaches an end). Not every few minutes: nothing needs it sooner, and each copy of
+-- a big project held REAPER up. James, 0.59.43:
 --   report.json   what this computer is and sees: versions, the project open, who drives, what's waiting to go out or come in, what was
 --                 skipped, held or undone, the mirror's view of each track and item (ids, revisions, hashes), and the log's last lines
 --   log-<date>.txt  today's whole log file (every script's lines and errors, lib/band.lua log_file)
@@ -9,7 +11,7 @@
 --   computer.json  REAPER, audio and MIDI devices, extensions, where StudioSync runs from, whether REAPER closed cleanly last time
 --   crash <id>.txt  REAPER's crash reports from the system (Windows Error Reporting, a Mac's DiagnosticReports), not the memory dumps
 -- Only the owner and admins download everyone's (lib/songsync.lua debug lines); the others keep their own. computer.json and the crash
--- reports come from Autostart, so they come with no studio project open, and after a crash.
+-- reports come from Autostart (as REAPER quits, and at the start after a crash), so they come with no studio project open too.
 -- Each file is written over each time: a few hundred KB per computer, not a growing pile. Nothing secret goes in (no keys or tokens).
 local band = require("band")
 local dm = {}
@@ -70,11 +72,12 @@ function dm.report(cfg, proj, b)
 end
 
 -- Write this computer's report, log and errors into the studio's _debug folder. -> the folder, or nil + why.
-function dm.write(cfg, proj, b)
+function dm.write(cfg, proj, b, why)
   local d = dm.dir(cfg.root, cfg.user)
   reaper.RecursiveCreateDirectory(d, 0)
   local ok, r = pcall(dm.report, cfg, proj, b)
   if not ok then r = { made = os.date("!%Y-%m-%dT%H:%M:%SZ"), user = cfg.user, error = tostring(r) } end
+  r.why = why -- (what it was made for: "end of session", "bug report", ...)
   band.write_json(d .. "/report.json", r)
   -- (the project itself, as it is here now, unsaved changes too, as a copy: the project keeps its own name and stays unsaved. Not while
   -- recording. James, 0.59.40: "all projects from other users ... lands on this pc")
@@ -151,6 +154,7 @@ function dm.write_computer(cfg)
 end
 -- REAPER closing cleanly or not (Autostart: at its start, and as REAPER quits). A start that finds the mark still there means the last
 -- session ended without its quit: a crash, or the process ended.
+-- -> true when the last session ended without its quit.
 function dm.session_start()
   local was = reaper.GetExtState(band.SECTION, "running since")
   if was ~= "" then
@@ -158,24 +162,19 @@ function dm.session_start()
     band.log("REAPER didn't close cleanly last time (it crashed, or was ended): the session from " .. was .. ". Debug mode sends the crash report")
   end
   reaper.SetExtState(band.SECTION, "running since", os.date("%Y-%m-%d %H:%M:%S"), true)
+  return was ~= ""
 end
 function dm.session_end() reaper.DeleteExtState(band.SECTION, "running since", true) end
--- Autostart, every pass: each studio with debug mode on gets this computer's report every 5 minutes, the first a minute after REAPER starts.
-local computer_at = reaper.time_precise() - 240
-function dm.computer_tick(me)
-  if reaper.time_precise() - computer_at < 300 or not me or me == "" then return end
-  computer_at = reaper.time_precise()
+-- This computer's part, for each studio with debug mode on (Autostart: as REAPER quits, and at the start after a crash; a bug report).
+function dm.computer_all(me)
+  if not me or me == "" then return end
   for _, x in ipairs(band.bands()) do
     if dm.on(x.root) then pcall(dm.write_computer, { root = x.root, user = me }) end
   end
 end
-
--- Live sync calls this every pass: a report every 5 minutes while the studio's debug mode is on.
-local last_at = -math.huge
-function dm.tick(cfg, proj, b)
-  if reaper.time_precise() - last_at < 300 then return end
-  last_at = reaper.time_precise()
-  if dm.on(cfg.root) then pcall(dm.write, cfg, proj, b) end
+-- A project's part, if its studio has debug mode on (Live sync: its session ending; a bug report). `why`: what it's for.
+function dm.collect(cfg, proj, b, why)
+  if cfg and cfg.root and dm.on(cfg.root) then pcall(dm.write, cfg, proj, b, why) end
 end
 
 return dm

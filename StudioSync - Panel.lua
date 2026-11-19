@@ -2244,21 +2244,23 @@ local function studio_tailscale_sync()
   end
   card_end()
 end
--- Debug mode (James, 0.59.3): every computer in the studio saves its report, log and errors into _debug every 5 minutes (lib/debugmode.lua).
+-- Debug mode (James, 0.59.3): every computer in the studio saves its report, log and errors into _debug at the end of each session, with each
+-- bug report and after a crash (lib/debugmode.lua, 0.59.43).
 local function studio_debug()
   if not card("studio debug") then return end
   local groups, dm = require("groups"), require("debugmode")
   ImGui.SeparatorText(ctx, "Debug mode")
   local on = dm.on(cfg.root)
   ImGui.TextDisabled(ctx, on and ("On: every computer in the studio saves what it sees (versions, a copy of the project as it has it, what's waiting or was skipped, " ..
-    "its setup, log and errors, and REAPER's crash reports) into the studio's _debug folder every 5 minutes, for working out what went wrong. " ..
+    "its setup, log and errors, and REAPER's crash reports) into the studio's _debug folder at the end of each session, with each bug report and " ..
+    "after a crash, for working out what went wrong. " ..
     "Only the owner and admins get everyone's; the others keep their own.") or
-    "Off. On, every computer in the studio saves a report, a copy of its project, its log, errors and crash reports into the studio's _debug folder every 5 minutes, for the owner and admins.")
+    "Off. On, every computer in the studio saves a report, a copy of its project, its log, errors and crash reports into the studio's _debug folder at the end of each session, with each bug report and after a crash, for the owner and admins.")
   if studio_admin() then
     local ch, v = ImGui.Checkbox(ctx, "Debug mode for everyone##studiodebug", on)
     if ch then
       groups.set_debug(cfg.root, v)
-      band.log(v and "debug mode is on for the studio: reports go into _debug every 5 minutes" or "debug mode is off for the studio")
+      band.log(v and "debug mode is on for the studio: reports go into _debug at the end of each session, with bug reports and after a crash" or "debug mode is off for the studio")
     end
     ImGui.SetItemTooltip(ctx, "Owner and admins. Each computer's files are written over each time (a few hundred KB each), and hold no keys or passwords.")
   end

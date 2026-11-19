@@ -1,15 +1,15 @@
-version 0.59.42
-StudioSync - Autostart.lua	17735
+version 0.59.43
+StudioSync - Autostart.lua	17934
 StudioSync - Claim selected tracks.lua	851
 StudioSync - Draw.lua	27321
 StudioSync - Final mix.lua	5796
 StudioSync - Hold my changes.lua	925
 StudioSync - Keep selected tracks local.lua	919
-StudioSync - Live sync.lua	76600
+StudioSync - Live sync.lua	76736
 StudioSync - Local mixing.lua	880
 StudioSync - Measure guest delay.lua	4258
 StudioSync - Open session.lua	9134
-StudioSync - Panel.lua	244155
+StudioSync - Panel.lua	244377
 StudioSync - Prepare session.lua	6470
 StudioSync - Publish session.lua	5711
 StudioSync - Radial menu.lua	7815
@@ -31,12 +31,12 @@ lib/callapps.lua	6144
 lib/callwin.lua	8369
 lib/chooser.lua	22179
 lib/colours.lua	47699
-lib/debugmode.lua	11719
+lib/debugmode.lua	11924
 lib/drive.lua	29264
 lib/drummap.lua	5670
 lib/export.lua	7528
 lib/extras.lua	27728
-lib/feedback.lua	8370
+lib/feedback.lua	8732
 lib/fromfolder.lua	7508
 lib/fxfiles.lua	8525
 lib/fxpick.lua	6699

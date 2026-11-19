@@ -118,6 +118,14 @@ function feedback.draw(ctx, ImGui, cfg, proj)
       extra = "## This computer\n\n" .. feedback.system(proj) .. "\n\n## Activity (newest first)\n\n" .. table.concat(lines, "\n")
     end
     local said = {}
+    -- (the studio's debug mode: this computer's report, project copy, setup and crash reports go with it. lib/debugmode.lua, 0.59.43)
+    if has_studio then
+      local dm = require("debugmode")
+      if dm.on(cfg.root) then
+        pcall(dm.collect, cfg, proj, proj and band.binding(proj), "bug report")
+        pcall(dm.write_computer, cfg)
+      end
+    end
     if st.folder then
       local path, why = feedback.save(cfg, st.kind, title, body, extra)
       said[#said + 1] = path and ("saved in " .. (has_studio and "the studio's feedback folder" or path)) or ("couldn't save it: " .. tostring(why))

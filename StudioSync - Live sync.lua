@@ -191,6 +191,7 @@ local reloaded -- this instance handed over to the updated code (which saves the
 reaper.atexit(function()
   if click and reaper.GetToggleCommandStateEx(0, 40364) == 1 then reaper.Main_OnCommand(40364, 0) end -- (stopped mid count-in: the click left on. 0.58.92)
   if not reloaded then pcall(end_of_session, "Live sync stopped") end
+  if not reloaded then pcall(require("debugmode").collect, cfg, proj, b, "end of session") end -- (the studio's debug mode: lib/debugmode.lua)
   -- (this REAPER's lock for the song goes with it: restarted within 20 s, the new REAPER read it as another one syncing the song and waited
   -- two minutes, saying so. Chilio's Mac, 0.59.29)
   if not reloaded then
@@ -394,6 +395,7 @@ function P.outbox_inbox(t)
     if leaving ~= "" then
       reaper.DeleteExtState(band.SECTION, "end session " .. tostring(proj), false)
       band.try("end_of_session", end_of_session, leaving)
+      pcall(require("debugmode").collect, cfg, proj, b, "sync and exit") -- (the studio's debug mode: lib/debugmode.lua)
       mirror_due = true
     end
     local more = require("mirror").more and "changes" or require("bgrender").waiting() and "prints rendering" or require("prints").waiting() and "prints waiting" or nil
@@ -579,7 +581,6 @@ function P.presence(t)
       format_at = now
       local ok, said = pcall(require("prep").keep_format, proj, cfg, b)
       if ok and said then band.log(said .. " (the studio records the same way on every computer)") end
-      pcall(require("debugmode").tick, cfg, proj, b) -- (the studio's debug mode: a report every 5 minutes into _debug. 0.59.3)
       -- a new project in the studio's (or its own) look, on the driver's computer only: the rest receive the colours (lib/colours.lua, 0.58.98)
       -- (the driver's, or yours working alone; not while sending is held: a look may be being tried in the panel. Review, 0.58.98)
       if (driver == cfg.user or alone) and not hold then

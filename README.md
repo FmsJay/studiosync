@@ -257,7 +257,7 @@ By hand:
   any computer, and the driver's StudioSync (or yours, when you're alone) puts it in the song on a track named for it,
   "<name> (stem)", then takes it out of the inbox. "bar 17" in the file name starts it at bar 17, "@1:23" at 1 minute 23;
   otherwise it starts at the song's start. Handy for a bandmate on other software: someone drops their files in.
-- **Debug mode** (Settings > Studio, the owner or an admin): every computer saves a report, a copy of its project as it has it, its setup, log, errors and REAPER's crash reports into the studio's `_debug` folder every 5 minutes. Only the owner and admins download everyone's; the others keep their own.
+- **Debug mode** (Settings > Studio, the owner or an admin): every computer saves a report, a copy of its project as it has it, its setup, log, errors and REAPER's crash reports into the studio's `_debug` folder at the end of each session, when a bug report is sent, and when REAPER starts after a crash. Only the owner and admins download everyone's; the others keep their own.
 - **Phone alerts** (Settings > Studio, the owner or an admin turns them on; *Send a test* checks a phone): when someone sends a message,
   records, or renders a mix, one line goes to everyone who subscribed to the studio's channel in the free ntfy app (Android,
   iPhone), even with REAPER closed. The line goes through ntfy.sh (or the studio's own ntfy server, band.json
