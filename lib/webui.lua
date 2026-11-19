@@ -188,13 +188,13 @@ function webui.tick(proj, cfg, b, handlers)
     local _, who = sync.authority(cfg, b.song, b.room)
     publish("presence", webui.presence_model(b.song, b.room, me, require("presence").peers(cfg, b.song, b.room), who))
   end
-  -- (video calls: a message in or out shows at once; who's open is looked at again every second, as their "here"s age out)
-  if webcall.dirty() or now - rtc_at >= 1 then rtc_at = now; publish("rtc", webcall.model(webcall.me(cfg), os.time())) end
   if now - chat_at >= webui.CHAT_EVERY then
     chat_at = now
     local t = chat.read(cfg, b, "song")
     publish("chat", webui.chat_model(t.msgs, function(w) return chat.where_label(w, b, "song") end))
   end
+  -- (video calls: a message in or out shows at once; who's open is looked at again every second, as their "here"s age out)
+  if webcall.dirty() or now - rtc_at >= 1 then rtc_at = now; publish("rtc", webcall.model(webcall.me(cfg), os.time())) end
 end
 
 return webui
