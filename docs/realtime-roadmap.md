@@ -361,10 +361,33 @@ Like Helgobox's move away from REAPER's own widgets, now that the extension is m
 - **Limits for now:** one studio at a time (the tab in front's); chat is the project scope only; the phone acts as this computer's
   user (whoever has the token is in the studio); the driver comes from driver.json only (not the session's host fallback).
 
+### Docked view built (rt-dock, 2026-11-19: links and runs headless; not run in REAPER yet)
+- **Window:** `extension/webui_dock.cpp/.h` (+ `webui_dock_mac.mm`). A REAPER window "StudioSync" with a web view on
+  `http://127.0.0.1:<port>/?host=docked|floating`; the server stays the only channel to the engine. Docked with `DockWindowAddEx`
+  (ident `studiosync_webui`: REAPER remembers the docker and the place); the page's **Dock / Undock** button makes the window again the
+  other way; the floating size and place in ExtState `web ui rect`, docked or not in `web ui docked`. Action **"StudioSync: Web UI
+  (docked)"** (toggle, ticked while showing; a docker tab behind another is brought forward), in View after StudioSync, and
+  `reaper.StudioSync_WebUIDock(mode)` (1 open, 0 close, -1 toggle -> 1/0/-1; why in ExtState `web ui dock error`). Closed at `atexit`
+  and unload, before the server. Started by the action itself when nothing has yet (the folder lib/webui.lua notes in `web ui folder`,
+  no secret: this computer only, until Live sync sets the token).
+- **Windows:** WebView2 SDK 1.0.4314.35 from nuget.org (BSD-style, `extension/third_party/README.md`), the static loader (no extra DLL),
+  user-data folder `<resource path>/Data/StudioSync/WebView2`. No runtime: says so and offers the browser. Browser shortcuts, the
+  status bar and zoom off.
+- **macOS:** WKWebView in the SWELL window (WebKit's own data store; a separate one needs macOS 14). **Linux:** the action opens the
+  browser (TODO: WebKitGTK where it's there; SWELL windows aren't GTK).
+- **Keys:** the view has REAPER's keys while focused, so `app.js` posts each one it doesn't use (`key:<vk>:<mods>`; outside a field all
+  but Tab and Enter on a button; in a field only non-editing Ctrl/Cmd/Alt combinations and F-keys; Esc leaves the field) and the
+  extension runs it through the main section (`kbd_translateAccelerator`). macOS: the accelerator hook gives the view its keys first.
+- **Safety:** only the pages' origin in the view; clicked http(s) links and new windows go to the browser; messages only from the
+  pages' origin, and only keys and Dock / Undock.
+- **Panel:** the Chat page's **Web UI** opens the docked view (Shift-click, an older extension, or no view here: the browser, with the
+  reason logged). **Pages:** the Dock / Undock button (only inside the view) and a compact layout under 320 px.
+- **Tests:** `tests/webui_dock_test.cpp` (`tests/build_webui_dock_test.cmd`; pure parts in the Mac and Linux CI jobs): port, address,
+  user-data folder, origin rule, key messages; on Windows the view made in a hidden window with a fresh folder and loading the pages
+  from the server. `tests/test_0_60_rt_dock.lua`: the panel button's choices and a link check of lib/webui.
+
 ### Web UI: what remains (TODO)
-- **Docking:** a dockable REAPER window hosting WebView2 (Windows), WKWebView (macOS), WebKitGTK (Linux) that opens
-  `http://127.0.0.1:<port>/`: the server is already its message channel, so no second bridge. Needs the WebView2 SDK download: James's
-  OK first. Then keyboard focus and REAPER's shortcuts with the view docked.
+- **Docking:** built (above); check it in REAPER on Windows and a Mac. WebKitGTK on Linux still to do.
 - **Pages, then parity:** scopes and to-dos/links in chat, Health, Play together; the ReaImGui panel stays until each page matches.
 - **Shared DAW view, view-only first** (stage 1 above): tracks, items, markers and cursors from the synced model, follow, play/stop.
 - **Video and screen share** (step 5) over WebRTC inside the view; the Studio browser after it.

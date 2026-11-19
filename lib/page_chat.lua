@@ -361,8 +361,9 @@ function chat.draw(ctx, ImGui, cfg, b, tabs)
     local webui = require("webui")
     if webui.available() then
       fits(ImGui.CalcTextSize(ctx, "Web UI") + 24, 24)
-      if ImGui.Button(ctx, "Web UI##webui") then webui.open(cfg) end
-      ImGui.SetItemTooltip(ctx, "Opens who's here and this project's chat in your browser (this computer only). Live sync shows and sends them.")
+      if ImGui.Button(ctx, "Web UI##webui") then webui.dock(cfg, ImGui.GetKeyMods(ctx) & ImGui.Mod_Shift ~= 0) end
+      ImGui.SetItemTooltip(ctx, "Opens who's here and this project's chat in a REAPER window that docks (Shift-click: in your browser; " ..
+        "this computer only). Live sync shows and sends them.")
       fits(ImGui.CalcTextSize(ctx, "Copy phone link") + 24)
       if ImGui.Button(ctx, "Copy phone link##webui") then
         local url, why = webui.phone_link(cfg)
