@@ -42,8 +42,13 @@ put(R .. "/_band/band.json", '{"name":"S","id":"studiosync-s-0001"}')
 put(D .. "/StudioSync - Panel.lua", "panel()\n")
 put(D .. "/lib/band.lua", slurp(BAND_SRC or "lib/band.lua"))
 put(D .. "/lib/json.lua", slurp("lib/json.lua"))
-TRUSTED = false
-local function fromfolder(n) put(D .. "/lib/fromfolder.lua", "-- " .. n .. "\nlocal band = require('band')\nreturn { trusted_copy = function(dir) return TRUSTED end }\n") end
+local function fromfolder(n) put(D .. "/lib/fromfolder.lua", "-- " .. n .. "\nlocal band = require('band')\nreturn { trusted_copy = function(dir) return true end }\n") end
+-- (0.59.48, Round 3 review: "updates through its folder" is told by band.json and the settings this computer last verified (lib/groups.lua
+-- trusted), with no module of the shared folder loaded first: its own fromfolder decided whether changed code, itself too, was trusted)
+local function trusted(file_says, verified)
+  put(R .. "/_band/band.json", '{"name":"S","id":"studiosync-s-0001"' .. (file_says and ',"updates":"folder"' or "") .. '}')
+  ext["BandSync/trusted settings " .. R:lower()] = verified and '{"updates":"folder"}' or nil
+end
 fromfolder(1)
 mkdir(T .. "/res/StudioSync")
 ext["BandSync/bands"] = R
@@ -60,13 +65,15 @@ local function check(cond, what) if not cond then clean(); error(what .. " (boxe
 check(ok and boxes == 0 and reaper.file_exists(T .. "/res/StudioSync/approved code.json"), "the first load is remembered without asking")
 check(package.loaded.band and package.loaded.band.code_guard, "and band loads")
 
-fromfolder(2); TRUSTED = true
+fromfolder(2); trusted(true, true)
 ok, e = fresh()
 check(ok and boxes == 0, "changed, in a studio that updates through its folder: used without asking (it asked once per level)")
+check(package.loaded.fromfolder == nil, "and nothing of the shared folder loaded to decide it")
 
-fromfolder(3); TRUSTED = false; answer = 6 -- Yes
+fromfolder(3); trusted(true, false); answer = 6 -- Yes
 ok, e = fresh()
-check(ok and boxes == 1, "changed, not such a studio: asked once (it was asked once per level), and Yes loads it")
+check(ok and boxes == 1, "band.json says folder updates but nothing verified here does (a member wrote it): asked once, and Yes loads it")
+trusted(false, false)
 
 fromfolder(4); answer = 7 -- No
 ok, e = fresh()
@@ -74,5 +81,26 @@ check(not ok and boxes == 2 and tostring(e):find("didn't start", 1, true), "No s
 check(package.loaded.band == nil, "and a refused band isn't left loaded for the next require")
 ok, e = fresh()
 check(not ok and boxes == 2, "and isn't asked about again")
+
+-- a reload (band.reload) passes the version it approved: the new band.lua records it without a box; anything else inside a reload is
+-- refused with a line in the log, no box, and the old code carries on (0.59.48, James's decision)
+fromfolder(5); answer = 6
+ok, e = fresh()
+check(ok and boxes == 3, "a fresh start, said yes to")
+put(D .. "/StudioSync - Main.lua", "require('band')\n")
+local function version(v) put(D .. "/lib/band.lua", (slurp(BAND_SRC or "lib/band.lua"):gsub('VERSION = "[^"]+"', 'VERSION = "' .. v .. '"', 1))) end
+local old = package.loaded.band
+version("9.9.1")
+local r, why = old.reload(D, "StudioSync - Main.lua", "9.9.1")
+check(r == true and boxes == 3 and package.loaded.band ~= old, "a reload to the approved version: switched, no box (" .. tostring(why) .. ")")
+check(_G.STUDIOSYNC_RELOAD_APPROVED == nil, "and the approval doesn't outlive the reload")
+old = package.loaded.band
+version("9.9.2")
+r, why = old.reload(D, "StudioSync - Main.lua", nil)
+check(r == false and boxes == 3 and package.loaded.band == old and tostring(why):find("wasn't switched to", 1, true),
+  "a reload to a version not approved: refused, no box, the old code kept (" .. tostring(why) .. ")")
+version("9.9.3"); trusted(true, true)
+r, why = old.reload(D, "StudioSync - Main.lua", nil)
+check(r == true and boxes == 3, "inside a reload, a studio that updates through its folder: switched, no box (" .. tostring(why) .. ")")
 clean()
 print("ok")

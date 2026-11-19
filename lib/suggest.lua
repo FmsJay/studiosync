@@ -145,7 +145,7 @@ function suggest.accept(proj, cfg, room_dir, h, may, local_mix)
     if ra ~= rb then return ra < rb end
     return a.oid < b.oid
   end)
-  local did, stale, refused, left = 0, 0, 0, {} -- (left: the oids that didn't go in, for the answer: its sender keeps those. Round 1 review, 0.59.45)
+  local did, stale, refused, left, failed = 0, 0, 0, {}, 0 -- (left: the oids that didn't go in, for the answer: its sender keeps those. Round 1 review, 0.59.45)
   reaper.PreventUIRefresh(1)
   reaper.Undo_BeginBlock2(proj)
   for _, c in ipairs(list) do
@@ -158,7 +158,7 @@ function suggest.accept(proj, cfg, room_dir, h, may, local_mix)
       else
         -- (in `left` too, so its sender keeps it: dropped, the edit was gone on both sides, a MIDI editor open on the part being enough. Round 2
         -- review, 0.59.46)
-        refused, left[#left + 1] = refused + 1, c.oid
+        refused, left[#left + 1], failed = refused + 1, c.oid, failed + 1
         band.log("couldn't accept a change on " .. tostring(c.name) .. ": " .. tostring(ok and "it can't land here" or res))
       end
     end
@@ -168,7 +168,7 @@ function suggest.accept(proj, cfg, room_dir, h, may, local_mix)
   reaper.Undo_EndBlock2(proj, "Accept " .. tostring(h.from) .. "'s suggestion", 1 | 4 | 32)
   reaper.PreventUIRefresh(-1)
   reaper.UpdateArrange()
-  return did, stale, refused, left
+  return did, stale, refused, left, failed -- (failed: of `refused`, those that didn't apply, and may on a later try)
 end
 
 -- What Live sync says when a suggestion arrives or is answered, once. And its sender tidies up: the parts are no longer
@@ -243,6 +243,14 @@ end
 -- Whether the rows just changed, so what's under them has just moved.
 function suggest.settling() return suggest.bar_at ~= nil and reaper.time_precise() - suggest.bar_at < 0.6 end
 
+-- What Accept says when nothing landed. "Try again" only when a part failed to apply (the MIDI editor open on it, say): all of it changed since,
+-- or not yours to change, gives the same answer every press. UX review, Round 3, 0.59.48. Pure.
+function suggest.none_landed(refused, failed)
+  if (failed or 0) > 0 then
+    return "Nothing of it could land here now (it changed since, isn't yours, or couldn't apply: is the part open in the MIDI editor?). Try again, or Decline."
+  elseif (refused or 0) == 0 then return "It all changed since they suggested it: Decline, and they keep their version." end
+  return "It changed since they suggested it, or isn't yours to change now: Decline, and they keep their version."
+end
 function suggest.bar(ctx, ImGui, proj, cfg, room_dir, can, local_mix)
   local band = require("band")
   local mine, waiting = suggest.rows(room_dir, cfg.user)
@@ -258,9 +266,9 @@ function suggest.bar(ctx, ImGui, proj, cfg, room_dir, can, local_mix)
   local function answer_row(h)
     ImGui.PushID(ctx, h.id)
     if ImGui.SmallButton(ctx, "Accept") then
-      local did, stale, refused, left = suggest.accept(proj, cfg, room_dir, h, function(name, pos) return can(cfg.user, name, pos) end, local_mix)
+      local did, stale, refused, left, failed = suggest.accept(proj, cfg, room_dir, h, function(name, pos) return can(cfg.user, name, pos) end, local_mix)
       -- (not answered "accepted" when nothing landed: it stays to try again or decline. Round 2 review, 0.59.46)
-      if did == 0 then suggest.note = "Nothing of it could land here now (it changed since, isn't yours, or couldn't apply: is the part open in the MIDI editor?). Try again, or Decline."
+      if did == 0 then suggest.note = suggest.none_landed(refused, failed)
       elseif did then
         suggest.note = nil
         suggest.answer(room_dir, h, cfg.user, "accepted", { left = stale + refused, left_oids = left })

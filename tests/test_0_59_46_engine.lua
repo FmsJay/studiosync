@@ -146,11 +146,11 @@ assert(sync.too_new({ type = "loop" }) and sync.too_new({ type = "obj", format =
 -- C: a version saved while behind is marked and has no map; one caught up writes its map beside it, not inside
 local recall = require("recall")
 reaper.CountMediaItems, reaper.CountTracks = function() return 0 end, function() return 0 end
-sync.pending_events = function() return 3 end
+sync.loading.PR = true -- (its first catch-up: Round 3 review, 0.59.48, not any pending change)
 local f1 = recall.save("PR", { user = "Me", root = "root" }, "S", "main", "end of session", true)
 local dir = recall.dir({ user = "Me", root = "root" }, "S", "main")
-assert(written[dir .. "/" .. f1].behind == 3 and written[dir .. "/known/" .. f1] == nil, "behind: marked, no map")
-sync.pending_events = function() return 0 end
+assert(written[dir .. "/" .. f1].behind == true and written[dir .. "/known/" .. f1] == nil, "behind: marked, no map")
+sync.loading.PR = nil
 reaper.SetProjExtState("PR", mirror.SEC, "I-K", "2|abc|Me-7|1|Me")
 clock = clock + 2
 local f2 = recall.save("PR", { user = "Me", root = "root" }, "S", "main", "later", true)

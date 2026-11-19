@@ -327,7 +327,7 @@ function copy.tick()
   elseif j.step == "ask" then
     -- (this studio's project folder only, where its project file is: band.home()/<song> was another studio's "Demo" with recordings
     -- that existed nowhere else. Review, 0.59.14)
-    local pf = (band.project_file(j.root, song) or ""):gsub("\\", "/")
+    local pf = (band.project_file(j.root, song, true) or ""):gsub("\\", "/") -- (this studio's key only: Round 3 review, 0.59.48)
     local home = band.home():gsub("\\", "/")
     local local_dir = pf:match("^(.*)/[^/]+$")
     if not (local_dir and local_dir:sub(1, #home + 1):lower() == (home .. "/"):lower() and local_dir:lower() ~= home:lower()) then local_dir = nil end

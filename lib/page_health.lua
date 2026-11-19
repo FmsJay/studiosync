@@ -139,21 +139,21 @@ function H.maint_rows()
       return { "keys", #undo.keys_left(dir) == 0, "yellow", undo.key_name() .. " never rolls back a collaborator's work",
         undo.key_name() .. " can roll back a collaborator's work: it isn't set to StudioSync's Undo yet." }
     end)(),
-    { "tailscale", services.tailscale_up(), "yellow", "Tailscale is on", services.tailscale_installed() and "Tailscale is off or not signed in: open it and turn it on. Play along, Jam, private live audio, the listening page and a studio that syncs only through Tailscale need it; nothing else does." or "Tailscale isn't installed: run StudioSync's installer again, or get it from tailscale.com/download." },
+    { "tailscale", services.tailscale_up(), "yellow", "Tailscale is on", services.tailscale_installed() and "Tailscale is off or not signed in: open it and turn it on. Time-sync, Jam, private live audio, the listening page and a studio that syncs only through Tailscale need it; nothing else does." or "Tailscale isn't installed: run StudioSync's installer again, or get it from tailscale.com/download." },
   }
   if services.tailscale_up() then
     local stays = services.tailscale_stays()
     rows[#rows + 1] = { "tailscale stays", stays == true, "yellow", "Tailscale stays signed in here", "Tailscale signs this computer out on " .. tostring(stays) .. ": at login.tailscale.com/admin/machines, this computer > ... > Disable key expiry. " ..
       "So new computers stay signed in by themselves, whoever runs the studio's Tailscale network presses Set up the tags (" .. require("live").PLACES.token_admin .. ", with its access token) once.",
       link = { "Open Tailscale's machines", "https://login.tailscale.com/admin/machines" } }
-    -- (a studio on another of your Tailscale accounts: a computer is on one at a time, so this one's Play along, listening page and private
+    -- (a studio on another of your Tailscale accounts: a computer is on one at a time, so this one's Time-sync, listening page and private
     -- live audio can't reach the others until it switches)
     local want = require("groups").tailnet(cfg.root)
     local now_name, now_suffix = services.tailnet_now()
     if want and now_suffix then
       local prof = want.suffix ~= now_suffix and services.tailscale_profile_for(want.name)
       rows[#rows + 1] = { "tailnet", want.suffix == now_suffix, "yellow", "On this studio's Tailscale network (" .. want.name .. ")",
-        "This studio uses the Tailscale network " .. want.name .. ", but this computer is on " .. tostring(now_name) .. " right now, so Play along, the " ..
+        "This studio uses the Tailscale network " .. want.name .. ", but this computer is on " .. tostring(now_name) .. " right now, so Time-sync, the " ..
         "listening page and private live audio can't reach the others. Everything else still syncs. " ..
         (prof and ("Switching moves the whole computer: studios on " .. tostring(now_name) .. " lose those three until you switch back.")
           or "This computer isn't signed in to " .. want.name .. ": ask the studio's owner for a guest invitation, or sign in from Tailscale's menu."),
@@ -168,8 +168,8 @@ function H.maint_rows()
         action = { "Switch back to " .. away.from_tailnet, function() services.tailscale_switch(away.from_id) end, "Tailscale's own account switch. Takes a few seconds." } }
     end
   end
-  if ui.play_shown() then
-    rows[#rows + 1] = { "server", s.server, "yellow", "Play along server address is set", "No Play along server yet: Connect on the Play/Jam page (Settings > Advanced > Show the Play/Jam tab) starts one on this computer." }
+  if ui.play_shown() then -- (Time-sync, the name Home and the Play/Jam page give it: this said "Play along". Round 3 review, 0.59.48)
+    rows[#rows + 1] = { "server", s.server, "yellow", "Time-sync server address is set", "No Time-sync server yet: Connect on the Play/Jam page (Settings > Advanced > Show the Play/Jam tab) starts one on this computer." }
     if s.hosting then
       rows[#rows + 1] = { "ninjam", s.ninjam, "yellow", "NINJAM server is running here", "NINJAM server isn't running here: Connect on the Play/Jam page (Settings > Advanced > Show the Play/Jam tab) starts it." }
       rows[#rows + 1] = { "ninjam firewall", services.firewall_knows_ninjam(), "yellow", "Windows lets the NINJAM server accept connections", "Nobody can reach the NINJAM server on this computer until Windows allows it: answer Windows' box when it asks. If it was answered No: Windows Security > Firewall > Allow an app, ninjamsrv." }

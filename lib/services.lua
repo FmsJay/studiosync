@@ -176,7 +176,17 @@ end
 -- (Windows' own Program Files, not always on C: (Round 1 review, 0.59.45))
 -- (ProgramW6432 first: a 32-bit REAPER's ProgramFiles is "Program Files (x86)", and Syncthing and Tailscale weren't found. Round 2 review, 0.59.46)
 local function program_files() return ((os.getenv("ProgramW6432") or os.getenv("ProgramFiles") or "C:/Program Files"):gsub("\\", "/")) end
+-- (none found: that answer kept 5 s. The no-studio lobby asks every frame, and each ask checked ten paths and listed WinGet/Packages. Round 3
+-- review, 0.59.48)
+local st_missing_at
 function services.syncthing_path()
+  local now = tonumber(reaper.time_precise())
+  if now and st_missing_at and now - st_missing_at < 5 and now >= st_missing_at then return nil end
+  local p = services.find_syncthing()
+  st_missing_at = not p and now or nil
+  return p
+end
+function services.find_syncthing()
   local set = reaper.GetExtState(band.SECTION, "syncthing_path")
   local lad = (os.getenv("LOCALAPPDATA") or ""):gsub("\\", "/")
   return first_existing({ set,
@@ -513,7 +523,7 @@ function services.join_band(cfg, code)
   end
   local r = exec(cli(st) .. " config folders add --id " .. code.band .. " --label " .. label_q("StudioSync " .. name) .. " --path " .. q(root), 15000) or ""
   if not r:match("^0\n") and not (exec(cli(st) .. " config folders " .. code.band .. " label get", 8000) or ""):match("^0\n") then
-    return nil, "Syncthing didn't add the studio's folder: " .. r:gsub("^%d+\n", "")
+    return nil, services.add_failed(r)
   end
   exec(cli(st) .. " config folders " .. code.band .. " order set smallestFirst", 8000)
   services.tune_band_folder(code.band)
@@ -578,6 +588,13 @@ function services.band_id(name)
   return "studiosync-" .. (slug ~= "" and slug or "band")
 end
 
+-- Why Syncthing's folder add failed, as the Studios page shows it: Syncthing just started and not answering yet says so, not its raw
+-- connection error. One local ask, only on a failed press. (Round 3 review, 0.59.48)
+services.STILL_STARTING = "Syncthing is still starting: press again in a few seconds."
+function services.add_failed(r)
+  if not services.my_device_id(true) then return services.STILL_STARTING end
+  return "Syncthing didn't add the studio's folder: " .. (tostring(r):gsub("^%d+\n", ""))
+end
 -- Start a band (docs/bands-design.md): its own shared folder beside this band's (<parent>/StudioSync <Name>), with
 -- _band/band.json saying who it is, and its own Syncthing folder (shared with nobody yet: Invite a bandmate). This
 -- computer then works in it. Returns its folder, or nil + why.
@@ -601,8 +618,9 @@ function services.new_band(cfg, name)
   reaper.RecursiveCreateDirectory(root, 0)
   local r = exec(cli(st) .. " config folders add --id " .. id .. " --label " .. label_q("StudioSync " .. name) .. " --path " .. q(root), 15000) or ""
   if not r:match("^0\n") then
-    os.remove(root) -- (empty, so nothing is lost: the next try isn't refused for it)
-    return nil, "Syncthing didn't add the studio's folder: " .. r:gsub("^%d+\n", "")
+    -- (empty, so nothing is lost: the next try isn't refused for it. rmdir on Windows, where os.remove deletes files only. Round 3 review, 0.59.48)
+    if WIN then reaper.ExecProcess('cmd.exe /c rmdir "' .. root:gsub("/", "\\") .. '"', 3000) else os.remove(root) end
+    return nil, services.add_failed(r)
   end
   reaper.RecursiveCreateDirectory(root .. "/_band", 0)
   band.write_json(root .. "/_band/band.json", { name = name, id = id, drive = "StudioSync - " .. name, owner = (cfg.base or cfg).user })

@@ -18,7 +18,7 @@ local wrote = {}
 band.write_json = function(p, t) files[p] = t; wrote[#wrote + 1] = p end
 local writer, asks, mine = "", 0, "MMMMMMM-MINE"
 package.loaded.services = { modified_by = function() asks = asks + 1; return writer end, my_device_id = function() return mine end,
-  device_name = function(x) return tostring(x) end, is_device_id = function(x) return type(x) == "string" end }
+  device_name = function(x) return tostring(x) end, is_device_id = function(x) return type(x) == "string" and x ~= "" end }
 local trust = require("trust")
 local groups = require("groups")
 
@@ -50,7 +50,12 @@ files[R .. "/_band/devices/Adam2.json"] = { user = "Adam2", device = "AAAAAAA-1"
 writer = "AAAAAAA"
 assert(trust.roles(R, files[R .. "/_band/band.json"]) == "Olive" and not trust.pins(R).devices.Adam2, "before names.json: the roles it had")
 files[R .. "/_band/names.json"] = { ADAM = "Adam2" }
+local real_time = os.time
+local _, a0 = trust.roles(R, files[R .. "/_band/band.json"])
+assert(a0[1] == "Adam", "within a minute of that \"no\": not asked again yet (Round 3 review, 0.59.48: it was asked every look)")
+os.time = function(t) return t and real_time(t) or real_time() + 61 end
 local _, a2 = trust.roles(R, files[R .. "/_band/band.json"])
+os.time = real_time
 assert(a2[1] == "Adam2", "names.json arrived: the rename is taken, not refused for the session")
 assert(trust.pins(R).devices.Adam2 and trust.pins(R).devices.Adam2[1] == "AAAAAAA-1", "and they keep the computer pinned under the old name")
 

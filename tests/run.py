@@ -5,7 +5,7 @@ Round 2 review, 0.59.46: also tools/files_check.py (lib/files.txt against the co
 list is made at release by tools/make_index.py), and LuaLS through tools/luals_check.py --gate when it's installed (skipped otherwise, or with
 --no-luals: it takes a minute)."""
 import glob, os, subprocess, sys
-import lupa
+import lupa.lua54 as lupa  # (REAPER embeds Lua 5.4; plain lupa is 5.5 here. Round 3 review, 0.59.48)
 
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 release, luals = "--release" in sys.argv, "--no-luals" not in sys.argv

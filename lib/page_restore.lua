@@ -308,7 +308,7 @@ function R.section_kept()
         -- (the file stays, marked: it goes once the automation has gone out as yours (lib/mirror.lua), or with Let it go. Deleted here, a second
         -- refusal of the same automation kept nothing and it was lost. Round 1 review, 0.59.45)
         local path = k.path
-        k.path, k.back = nil, true
+        k.path, k.back = nil, os.time() -- (when: the next send of it drops the file, lib/mirror.lua. Round 3 review, 0.59.48)
         pcall(band.write_json, path, k)
         k.path, kept_at = path, -math.huge
         band.log("your automation on " .. tostring(k.name) .. " is back: it goes to the others as your change, if it's yours to change now (the kept copy stays until it has)")

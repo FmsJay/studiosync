@@ -195,11 +195,42 @@ end
 local reloaded -- this instance handed over to the updated code (which saves the end of session itself)
 -- The studio's debug mode (lib/debugmode.lua) collects this project, telling the person first; a failure is logged. (Round 1 review, 0.59.45)
 local function debug_collect(why) band.try("debugmode.collect", require("debugmode").collect, cfg, proj, b, why) end
+-- Work only this computer has in this tab: unsent changes, items held back, or your own tracks with something on them (Delete my copy leaves
+-- the project's folder alone while any room of the song has some: lib/localcopy.lua).
+local function own_work()
+  local mirror = require("mirror")
+  local key = tostring(proj)
+  for k in pairs(mirror.unsent) do if k:sub(1, #key) == key then return true end end
+  if next(mirror.held_back and mirror.held_back[key] or {}) ~= nil then return true end
+  for i = 0, reaper.CountTracks(proj) - 1 do
+    local tr = reaper.GetTrack(proj, i)
+    local tag = select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local", "", false))
+    if (tag == "kept" or tag == "yours") and reaper.CountTrackMediaItems(tr) > 0 then return true end
+  end
+  return false
+end
+-- This tab's room on the song's "local work" mark (kept between sessions), or off it (live.mark_room. Round 3 review, 0.59.48)
+local function mark_room(on)
+  local k = band.local_work_key(cfg.root, b.song)
+  local v = live.mark_room(reaper.GetExtState(band.SECTION, k), b.room, on)
+  if v == "" then reaper.DeleteExtState(band.SECTION, k, true) elseif v then reaper.SetExtState(band.SECTION, k, v, true) end
+end
 reaper.atexit(function()
   if click and reaper.GetToggleCommandStateEx(0, 40364) == 1 then reaper.Main_OnCommand(40364, 0) end -- (stopped mid count-in: the click left on. 0.58.92)
   if not reloaded then band.try("end_of_session", end_of_session, "Live sync stopped") end -- (logged when it fails: Round 1 review, 0.59.45)
-  -- (the main room's tab stopping with nothing only here: the song's "local work" mark goes. Round 2 review, 0.59.46)
-  if not reloaded and b.room == "main" and sync.local_work == false then reaper.DeleteExtState(band.SECTION, band.local_work_key(cfg.root, b.song), true) end
+  if not reloaded then
+    -- (this tab's room taken off the "local work" mark only when a look ran and a last check, now, finds nothing: a take recorded since the last
+    -- look was missed, and Delete my copy then binned the folder holding its only copy. Round 3 review, 0.59.48)
+    local own = sync.local_work
+    if own ~= nil and reaper.ValidatePtr2(0, proj, "ReaProject*") then
+      local ok, now_own = band.try("own_work", own_work)
+      own = not ok or now_own
+    end
+    if own ~= nil then band.try("mark_room", mark_room, own) end
+    -- (and its unsent list goes: only closing the tab took it away, so after Stop the panel's Restore and Undo went on skipping those objects and
+    -- Bring into main waited on them. Round 3 review, 0.59.48)
+    reaper.DeleteExtState(band.SECTION, "unsent " .. tostring(proj), false)
+  end
   if not reloaded then debug_collect("end of session") end
   -- (this REAPER's lock for the song goes with it: restarted within 20 s, the new REAPER read it as another one syncing the song and waited
   -- two minutes, saying so. Chilio's Mac, 0.59.29)
@@ -394,19 +425,11 @@ function P.look(t)
       require("leave").mine_went_out(sync.autosave, ok and sent or 0, n) -- (something of yours: no auto-save over it, P.receive)
       -- Delete my copy leaves this project's folder alone while it holds work only this computer has (unsent changes, items held back, or your own
       -- tracks with something on them): lib/localcopy.lua reads this. Kept between sessions: set the first time there's such work, taken away only
-      -- when the main room's Live sync stops with none (at exit), so a song not opened since a restart is covered too, and a side room's tab
-      -- never clears the main tab's. (Round 1 review, 0.59.45; persisted, Round 2 review, 0.59.46)
-      local own = n > 0 or next(mirror.held_back and mirror.held_back[key] or {}) ~= nil
-      for i = 0, reaper.CountTracks(proj) - 1 do
-        if own then break end
-        local tr = reaper.GetTrack(proj, i)
-        local tag = select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local", "", false))
-        own = (tag == "kept" or tag == "yours") and reaper.CountTrackMediaItems(tr) > 0
-      end
+      -- when this room's Live sync stops with none (at exit), so a song not opened since a restart is covered too. (Round 1 review, 0.59.45;
+      -- persisted, Round 2 review, 0.59.46; per room, Round 3 review, 0.59.48: own_work, mark_room)
+      local own = n > 0 or own_work()
       sync.local_work = own
-      if own and reaper.GetExtState(band.SECTION, band.local_work_key(cfg.root, b.song)) ~= "1" then
-        reaper.SetExtState(band.SECTION, band.local_work_key(cfg.root, b.song), "1", true)
-      end
+      if own then mark_room(true) end
       lap("look")
     end
   end
@@ -807,6 +830,20 @@ for i = 0, 512 do
 end
 local autokey = band.autosync_key(our_file)
 if autokey ~= "autosync " then band.set_autosync(our_file, true) end
+-- The tab saved under another name (REAPER's Save As, or "Save new version of project"): the new file is the one that syncs, starts with REAPER,
+-- and (the main room's) opens from Projects. It read as a backup, and Sync and exit skipped holding, saving and sending. Looked at every 5 s.
+-- (Round 3 review, 0.59.48)
+local file_at = -math.huge
+local function follow_file(now)
+  if now - file_at < 5 then return end
+  file_at = now
+  local f = require("rooms").file_of(proj) or ""
+  if f == "" or f == our_file then return end
+  our_file = f
+  band.set_autosync(f, true)
+  if b.room == "main" then band.set_project_file(cfg.root, b.song, (f:gsub("\\", "/"))) end
+  band.log("'" .. b.song .. "' is saved as " .. f:gsub("\\", "/"):match("[^/]*$") .. " now: that file syncs from here on")
+end
 -- A project just opened (not this Live sync reloaded): its live audio starts off. ReaNINJAM came back with it, windows up and connecting,
 -- and SonoBus would join by itself (James, 0.59.8). "live began <tab>" lasts this REAPER session, and goes when the tab closes.
 if reload_proj ~= proj and reaper.GetExtState(band.SECTION, "live began " .. tostring(proj)) == "" then -- (a reload for an update carries on as it was)
@@ -844,6 +881,7 @@ local function tick_body() -- returns true to keep going
   end
   reaper.SetExtState(band.SECTION, "live " .. key, tostring(reaper.time_precise()), false)
   keep_lock() -- (this REAPER syncs this song: 0.59.18)
+  follow_file(reaper.time_precise())
   -- A bandmate's plug-in list changed (they installed some, or the pack): the "everyone has" folder made again here, not only at the next
   -- start. Looked at every 2 minutes, by whichever tab of the studio looks first. (James, 0.59.24: "make sure the studiosync plugins are
   -- refreshed for users to see what everyone has")
@@ -1092,16 +1130,22 @@ end
 -- running", so an old Live sync carried on through two updates (laptop, 2026-10-28: 0.13.3 skipped mix events as
 -- unknown and marked them applied). Once the installed version has changed (and held for two looks, so a half-copied
 -- update isn't loaded), the new code takes over in place, for this same tab.
-local seen_disk, disk_at = nil, 0
+local seen_disk, disk_at, partial_seen = nil, 0, false
 local function updated()
   if reaper.time_precise() - disk_at < 5 then return false end
   disk_at = reaper.time_precise()
-  local disk = band.version_on_disk(dir) -- (its first bytes, not 85 KB: Round 1 review, 0.59.45)
+  -- (with fallbacks for an older band.lua beside this file, as Autostart has them: a part-arrived copy pairs them, and tick() runs outside the
+  -- xpcall, so the update check failed on every tick, or gave REAPER's error box at the tab's start, and never reached the reload that mends it.
+  -- Round 3 review, 0.59.48)
+  local disk = band.version_on_disk and band.version_on_disk(dir) or (band.read(dir .. "/lib/band.lua") or ""):match('VERSION = "([^"]+)"') -- (its first bytes, not 85 KB: Round 1 review, 0.59.45)
   local ready = disk and disk ~= band.VERSION and disk == seen_disk and band.update_ok(dir, disk) -- (from a shared folder, once you said yes: Autostart asks)
   seen_disk = disk
-  ready = ready or (disk and band.started_partial(dir)) -- (started on a part-arrived copy, whole now: 0.59.44)
   -- (this tab's own mark as well as the shared one: one tab failing held every tab back. Round 1 review, 0.59.45)
-  return ready and reaper.GetExtState(band.SECTION, band.reload_failed_key("StudioSync - Live sync.lua", key)) ~= disk
+  local failed = band.reload_failed_key and band.reload_failed_key("StudioSync - Live sync.lua", key) or ("reload failed StudioSync - Live sync.lua " .. key)
+  local partial = disk and band.started_partial(dir) -- (started on a part-arrived copy, whole now: 0.59.44)
+  -- (once whole, a failure on the part-arrived copy doesn't hold the whole version back: its mark goes, once. Round 3 review, 0.59.48)
+  if partial and not partial_seen then partial_seen = true; reaper.DeleteExtState(band.SECTION, failed, false) end
+  return (ready or partial) and reaper.GetExtState(band.SECTION, failed) ~= disk
 end
 -- an error anywhere in a tick (a malformed cue from someone's machine, say) is logged, and Live sync carries on
 local said_at, sws_at = -math.huge, -math.huge

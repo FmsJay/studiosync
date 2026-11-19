@@ -75,7 +75,8 @@ function recall.back_up(proj, cfg, b, label)
   end
 end
 
-function recall.save(proj, cfg, song, room, label, keep)
+-- `mapped`: its map written even mid catch-up ("yours before X's work done alone": exactly what this computer holds is what it keeps).
+function recall.save(proj, cfg, song, room, label, keep, mapped)
   local st = capture(proj)
   st.label, st.by, st.time, st.keep = label, cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ"), keep or nil
   st.timeline = { tempo = band.capture_tempo(proj), markers = band.capture_markers(proj) } -- positions are in its seconds
@@ -89,11 +90,17 @@ function recall.save(proj, cfg, song, room, label, keep)
   -- (not when this computer was still catching up: its map named what it held, week-old versions say, and restoring an "end of session" saved
   -- half a minute into a catch-up put those back for everyone. Marked, it restores by time, as before 0.59.45, and its row says so. James,
   -- Round 2 review, 0.59.46. Cost: one count, on the shared listing)
-  local behind = sync.pending_events(proj, cfg, song, room)
-  if behind > 0 then st.behind = behind
+  -- ("catching up" is the project's first catch-up after it opened (sync.loading; the panel reads Live sync's "loading <proj>" while Live sync
+  -- runs there), not any change still waiting: one held by Hold, a part open in the MIDI editor or audio on its way marked every version
+  -- saved meanwhile, and "yours before X's work" restored by time brought X's earlier work. Cost: none, cheaper than the count. Round 3
+  -- review, 0.59.48)
+  local pk = tostring(proj)
+  if not mapped and (sync.loading[pk] or (reaper.GetExtState(band.SECTION, "loading " .. pk) ~= "" and band.live_here(proj))) then st.behind = true
   else
     reaper.RecursiveCreateDirectory(dir .. "/known", 0)
-    pcall(band.write_json, dir .. "/known/" .. file, require("mirror").known_map(proj))
+    local ok, err = pcall(band.write_json, dir .. "/known/" .. file, require("mirror").known_map(proj))
+    -- (said: without its map it restores by time, and its row can't tell. Round 3 review, 0.59.48)
+    if not ok then band.log("couldn't keep the saved version's exact map (it restores by time): " .. tostring(err)) end
   end
   band.write_json(dir .. "/" .. file, st)
   return file

@@ -133,6 +133,28 @@ function leave.settled(st)
   return true
 end
 
+-- Live sync runs in this tab (its heartbeat is fresh).
+local function live_here(p)
+  local beat = tonumber(reaper.GetExtState(band.SECTION, "live " .. tostring(p)))
+  return beat ~= nil and reaper.time_precise() - beat <= 10
+end
+-- A backup or autosave: not the song's project file, and no Live sync in it. (Only when Live sync isn't running there, as the panel's sync pill
+-- has it: after REAPER's Save As or "Save new version", the tab Live sync was syncing read as a backup, and Sync and exit skipped holding,
+-- saving and sending. Round 3 review, 0.59.48)
+function leave.is_backup(p, cfg, b)
+  if live_here(p) then return false end
+  local okc, copy = pcall(require("rooms").is_copy, p, cfg, b)
+  return okc and copy == true
+end
+-- Quit REAPER saves this tab first? Only a group project's own file: not a second copy of one syncing in another tab, nor a backup (saved last,
+-- an older second tab went over the file the syncing tab uses. Round 3 review, 0.59.48). f: its file name, from EnumProjects.
+function leave.quit_saves(p, f, cfg)
+  local b = (f or "") ~= "" and band.binding(p)
+  if not b then return false end
+  if band.synced_elsewhere(p) then return false end
+  return not leave.is_backup(p, cfg, b)
+end
+
 function leave.start(proj, cfg, b)
   -- (with Hold my changes on, it asks first: it sent what you held on the click, before anything was asked, and Cancel couldn't take it back.
   -- Full review, 0.59.44)
@@ -140,8 +162,7 @@ function leave.start(proj, cfg, b)
   leave.job = { proj = proj, cfg = cfg, b = b, step = held and "hold?" or "save", since = reaper.time_precise(), words = "Saving", open = true }
   -- (a backup or autosave never syncs: no saving, sending or Start sync for it. Its Start sync sent an old copy's state to everyone with no
   -- question. Round 2 review, 0.59.46)
-  local okc, copy = pcall(require("rooms").is_copy, proj, cfg, b)
-  if okc and copy then
+  if leave.is_backup(proj, cfg, b) then
     leave.job.step, leave.job.problem = "done", "This is a backup or autosave, not your project for it: nothing of it syncs. Close it as you like."
   end
 end
@@ -303,12 +324,14 @@ function leave.draw(ctx, ImGui, dir)
       for _, l in ipairs(j.lines or {}) do ImGui.Text(ctx, l) end
       ImGui.Spacing(ctx)
       if j.shut then ImGui.TextDisabled(ctx, j.shut) end
-      local hit = buttons(ctx, ImGui, { "Close this project", "Quit REAPER", "Stay" })
+      -- (a backup or a second tab: nothing saved, and no Quit. Close saved it first, so a backup popped Save As right after "Close it as you
+      -- like", and a second tab went over the syncing tab's file. REAPER asks its own question about unsaved changes. Round 3 review, 0.59.48)
+      local hit = buttons(ctx, ImGui, j.problem and { "Close this project", "Stay" } or { "Close this project", "Quit REAPER", "Stay" })
       if hit == "Close this project" then
         leave.job = nil
         ImGui.CloseCurrentPopup(ctx)
         reaper.SelectProjectInstance(j.proj) -- (the project it was for, not whichever tab is in front now: the box doesn't stop tab changes)
-        reaper.Main_SaveProject(j.proj, false) -- (a change can land while this box is up: REAPER would ask again)
+        if not j.problem then reaper.Main_SaveProject(j.proj, false) end -- (a change can land while this box is up: REAPER would ask again)
         reaper.Main_OnCommand(40860, 0) -- Close current project tab
       elseif hit == "Quit REAPER" then
         leave.job = nil
@@ -316,7 +339,7 @@ function leave.draw(ctx, ImGui, dir)
         for i = 0, 512 do -- (every group project: anything else may be someone's to decide, and REAPER asks about those)
           local p, f = reaper.EnumProjects(i)
           if not p then break end
-          if f ~= "" and band.binding(p) then reaper.Main_SaveProject(p, false) end
+          if leave.quit_saves(p, f, j.cfg) then reaper.Main_SaveProject(p, false) end
         end
         reaper.Main_OnCommand(40004, 0) -- File: Quit REAPER
       elseif hit == "Stay" or esc then leave.job = nil; ImGui.CloseCurrentPopup(ctx) end

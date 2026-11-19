@@ -371,7 +371,8 @@ function drive.mirror(here, there, budget, user, wait)
   if not events then return 0, true end -- (who owns which recording isn't known yet: nothing's copied on half a list)
   local owners = drive.media_owners(events, here:match("([^/]+)$"))
   longer = drive.longer_names(events, user)
-  for _, sub in ipairs({ "trimmed", "events", "recall", "midi", "media" }) do -- (media: recordings and prints the items use)
+  -- (recall/known: a saved version's map, beside it since 0.59.46: one brought back from the cloud restored by time. Round 3 review, 0.59.48)
+  for _, sub in ipairs({ "trimmed", "events", "recall", "recall/known", "midi", "media" }) do -- (media: recordings and prints the items use)
     local A, B = {}, {}
     for _, f in ipairs(band.files(here .. "/" .. sub)) do if not arriving(f) then A[#A + 1] = f end end
     -- (the Drive side's listing, kept 30 s: listing a cloud drive's folders is the slow part, and in a quiet room every pass listed all five

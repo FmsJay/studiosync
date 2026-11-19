@@ -283,3 +283,17 @@ returned, and the check's require("fromfolder") required band again: band.lua lo
 asked "Use it?" at the deepest level (the Mac hung behind the box; the laptop asked twice), and the 0.59.32 "studio updates through its
 folder" check never answered. band.lua now registers itself before the check and unregisters on a refusal. tests/test_0_59_47.lua loads
 band.lua for real from a temp shared folder (fails on 0.59.46). Release flow: "update ok" is now set on each computer before the files go out.
+
+## 0.59.48 (round 3 fixes; reports by fresh Opus 5.5 reviewers, 13 medium findings)
+
+Done: the panel recovers from an error without losing its ReaImGui context; a change that waited gets a full undo point
+(Undo_OnStateChangeEx2), and no empty one on its first wait; Sync and exit no longer calls a Live-synced tab a backup after
+Save As (Live sync follows the renamed file), and its problem cases offer no save; an invited computer stays held until its
+first look, and roles.json is ignored while held; templates don't carry planted plug-in file paths, record or render paths;
+"not trusted" answers are cached (120 s); unchanged tracks reuse their items' states (one serialization per look); the
+whole-copy check needs band.lua's version to match files.txt; the startup block is replaced in place and upgraded on every
+Autostart load; a computer moved back to last good moves on again; saved versions are "behind" only during the first
+catch-up, and "yours before X" always keeps its map; the code check reads band.json + stored trusted settings instead of
+loading shared modules, and a reload never opens a box (James). Debug pill replaced by "StudioSync (debugging)" in the
+window title (James). Many lows (see round3_fixes in the session notes). Tests: test_0_59_48_engine/trust/trust_install/ui;
+tests run on Lua 5.4 (lupa.lua54). Held: first heal reading only recent history (could pick an older version).

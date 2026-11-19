@@ -1087,6 +1087,7 @@ function sync.seen_mine(cc, looked_cc, now, looked_at) return cc == looked_cc or
 sync.loading = {} -- tostring(proj) -> true until its first catch-up is done
 sync.LOAD_BUDGET, sync.BUDGET = 1.0, 0.25
 local peaks_due = {}
+local loading_said = {} -- tostring(proj) -> true: "loading <proj>" is published (sync.receive)
 -- A change from a newer StudioSync: a kind this one doesn't know, or a newer file format. Pure.
 sync.KNOWN = { obj = true, timeline = true, start = true, stop = true, note = true, like = true, driver = true, shift = true, solo = true }
 function sync.too_new(ev)
@@ -1104,6 +1105,9 @@ function sync.receive(proj, cfg, song, room, can)
       sync.retry_skipped(proj)
     end
   end
+  -- (published while its first catch-up runs, for saved versions made from the panel: lib/recall.lua. Not kept past REAPER, and read only
+  -- while Live sync runs in the tab. Round 3 review, 0.59.48)
+  if sync.loading[pk] and not loading_said[pk] then loading_said[pk] = true; reaper.SetExtState(band.SECTION, "loading " .. pk, "1", false) end
   if peaks_due[pk] and reaper.EnumProjects(-1) == proj and reaper.GetPlayStateEx(proj) == 0 then -- (an action works on the tab in front)
     peaks_due[pk] = nil
     reaper.Main_OnCommand(40047, 0) -- Peaks: Build any missing peaks
@@ -1187,7 +1191,8 @@ function sync.receive(proj, cfg, song, room, can)
   for _, ev in ipairs(pending) do
     -- (whatever its time: they may have worked alone an hour before us, or after; either way the two versions split)
     if ev.alone and ev.user ~= cfg.user and mine_alone ~= "" and not superseded(proj, ev) then
-      require("recall").save(proj, cfg, song, room, "yours before " .. ev.user .. "'s work done alone", true)
+      -- (with its map even mid catch-up: what it holds is exactly "yours before", and by time it brought their earlier work. Round 3 review, 0.59.48)
+      require("recall").save(proj, cfg, song, room, "yours before " .. ev.user .. "'s work done alone", true, true)
       setext(proj, band.SECTION, "alone_last", "") -- once per meeting
       band.log(ev.user .. " also worked on this while you were both alone: where you were is kept as a saved version " ..
         "(Restore) before their changes land")
@@ -1218,7 +1223,9 @@ function sync.receive(proj, cfg, song, room, can)
   end
   local latest = {}
   for _, ev in ipairs(pending) do
-    if ev.type == "obj" and readable(ev) then
+    -- (not one too new for this version: it waits, sync.too_new, and picked as the newest it marked the older ones done, so this computer stayed
+    -- on an even older state until it updated. Round 3 review, 0.59.48)
+    if ev.type == "obj" and readable(ev) and not sync.too_new(ev) then
       local cur = latest[ev.oid]
       if not cur or mirror_newer(ev, cur) then latest[ev.oid] = ev end
     end
@@ -1277,6 +1284,8 @@ function sync.receive(proj, cfg, song, room, can)
       local ok, res = pcall(function()
         local lands = not obj or m.wins(proj, ev.oid, ev.rev or 0, m.order_of(ev)) or m.merge_for(proj, ev, sync.room_dir(cfg, song, room)) ~= nil -- (or it's merged in)
         if ev.type == "timeline" and sync.timeline_waits(proj) then lands = false end
+        -- (nor on its first wait, where that's cheap to know: mirror.will_wait. Round 3 review, 0.59.48)
+        if lands and not waited and obj and m.will_wait(proj, ev) then waited = true end
         if lands and not waited and not undo_open then reaper.Undo_BeginBlock2(proj); undo_open = true end
         return sync.apply(proj, ev, sync.room_dir(cfg, song, room), can, cfg.user)
       end)
@@ -1320,14 +1329,21 @@ function sync.receive(proj, cfg, song, room, can)
     end
     if next(orph) == nil then mirror.orphaned[tostring(proj)] = nil end
   end
-  if mirror.heal_due[pk] and not budget_out then -- (an edit landed over a deletion held here: mirror.receive. Round 2 review, 0.59.46)
+  -- (an edit landed over a deletion held here: mirror.receive. Round 2 review, 0.59.46. Held until the tab is in front and stopped, as Live sync's
+  -- own heal is: the session's first heal reads the room's whole history, up to a second or more, and it landed mid-playback in any tab.
+  -- Round 3 review, 0.59.48)
+  if mirror.heal_due[pk] and not budget_out and reaper.EnumProjects(-1) == proj and reaper.GetPlayStateEx(proj) == 0 then
     mirror.heal_due[pk] = nil
-    pcall(mirror.heal, proj, rdir, sync.local_mix)
+    local hok, n = pcall(mirror.heal, proj, rdir, sync.local_mix)
+    if hok and n > 0 then late_point = true end -- (on a later pass than the edit's, perhaps: an undo point of its own)
   end
   if undo_open then reaper.Undo_EndBlock2(proj, "StudioSync: changes from the others", -1)
-  elseif late_point then reaper.Undo_OnStateChange2(proj, "StudioSync: changes from the others") end -- (a change that waited, landed: its point now)
+  -- (a change that waited, landed: its point now. Every kind of state, not items only (Undo_OnStateChange2): a plug-in chain, automation or
+  -- track change landing under an items-only point was taken back by your next native Ctrl+Z and sent as your change. Round 3 review, 0.59.48)
+  elseif late_point then reaper.Undo_OnStateChangeEx2(proj, "StudioSync: changes from the others", -1, -1) end
   if sync.loading[pk] and not budget_out then
-    sync.loading[pk] = nil
+    sync.loading[pk], loading_said[pk] = nil, nil
+    reaper.DeleteExtState(band.SECTION, "loading " .. pk, false)
     peaks_due[pk] = true
     if sync.load_count and sync.load_count[pk] and sync.load_count[pk] > 0 then
       band.log(string.format("loaded: the studio's %d change(s) since you last had this open are in; building the waveforms of what arrived", sync.load_count[pk]))

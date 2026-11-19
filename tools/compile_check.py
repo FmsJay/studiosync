@@ -1,7 +1,7 @@
 """Compile every Lua file in the repo (lupa, Lua 5.4) and exit non-zero on the first that doesn't: run before a
 release, so a broken file can't ship (0.33.2 did: a string split across lines in lib/page_hear.lua)."""
 import glob, os, sys
-import lupa
+import lupa.lua54 as lupa  # (REAPER embeds Lua 5.4; plain lupa is 5.5 here. Round 3 review, 0.59.48)
 
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 check = lupa.LuaRuntime().eval('function(s, n) local f, e = load(s, "@" .. n) return e or "ok" end')

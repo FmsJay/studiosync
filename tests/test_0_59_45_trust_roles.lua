@@ -13,7 +13,7 @@ band.read_json = function(p) return files[p] end
 band.read = function(p) return files[p] and band.json_encode(files[p]) or nil end
 local writer, mine = "", "MMMMMMM-MINE"
 package.loaded.services = { modified_by = function() return writer end, my_device_id = function() return mine end, device_name = function(x) return tostring(x) end,
-  is_device_id = function(x) return type(x) == "string" end }
+  is_device_id = function(x) return type(x) == "string" and x ~= "" end }
 local trust = require("trust")
 local groups = require("groups")
 

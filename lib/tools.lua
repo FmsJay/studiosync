@@ -93,6 +93,12 @@ function tools.startup_block(dirs)
     "  if not started and last then reaper.ShowConsoleMsg(\"" .. CURRENT .. "\" .. last .. \"\\n\") end\n" ..
     "end\n" .. MARK_Z .. "\n"
 end
+-- __startup.lua with `block` where the old one was (`before` and `after` it; `after` nil: there was none, so at the end). Pure.
+-- installer/studiosync_setup.lua has the same. (Round 3 review, 0.59.48)
+function tools.place_block(before, after, block)
+  if not after then return before .. (before ~= "" and not before:match("\n$") and "\n" or "") .. block end
+  return before .. block .. after:gsub("^\r?\n", "", 1)
+end
 -- `fallback`: a copy to start instead when `dir` isn't there any more (a studio's folder this computer ran from, left since: lib/fromfolder.lua).
 -- None given: the block's own fallback stays (the panel's toggle wrote the block again without it). The last-good copy always goes second.
 function tools.set_autostart(on, dir, fallback)
@@ -101,6 +107,7 @@ function tools.set_autostart(on, dir, fallback)
   text = text or ""
   local good = band.last_good_dir()
   local a = text:find(MARK_A, 1, true)
+  local before, after = text, nil -- (the file around the block: the new block goes where the old one was)
   if a then
     local z = text:find(MARK_Z, a, true)
     if not fallback then -- (a block's fallback is any copy after its first: a block with one copy has none)
@@ -111,13 +118,17 @@ function tools.set_autostart(on, dir, fallback)
         if i > 1 and not fallback and n ~= band.norm(dir or ""):lower() and n ~= good:lower() then fallback = p end
       end
     end
-    text = text:sub(1, a - 1) .. (z and text:sub(z + #MARK_Z + 1) or "")
+    before, after = text:sub(1, a - 1), (z and text:sub(z + #MARK_Z + 1) or "")
   end
   if on then
     local dirs = { dir }
     if band.norm(dir):lower() ~= good:lower() then dirs[#dirs + 1] = good end
     if fallback and band.norm(fallback):lower() ~= band.norm(dir):lower() and band.norm(fallback):lower() ~= good:lower() then dirs[#dirs + 1] = fallback end
-    text = text .. (text ~= "" and not text:match("\n$") and "\n" or "") .. tools.startup_block(dirs)
+    -- (in place, appended only when there was none: moved to the end, any startup line above it that raised (a script on a drive that isn't
+    -- mounted) stopped Autostart, Syncthing's start and the update path with it. Round 3 review, 0.59.48)
+    text = tools.place_block(before, after, tools.startup_block(dirs))
+  else
+    text = before .. (after or "")
   end
   reaper.RecursiveCreateDirectory(reaper.GetResourcePath() .. "/Scripts", 0)
   return pcall(band.write_atomic, startup_path(), text) -- (write_atomic returns nothing: it raises when it can't)

@@ -247,7 +247,7 @@ By hand:
 - **Top bar**: `Project: <song>`, the room, **Sync on** (green: Live sync is running; red **Sync off  -  click to start**: click it),
   who drives, **Undo** / **Redo** (your own changes, for everyone; each asks first, and says if a collaborator changed the
   same thing since), **Dock** and **Window** (fill the screen, half of it, the next screen, back; docked, the docker's side or Undock),
-  and a yellow **Debug** while the studio's debug mode is on (hover it for what's collected).
+  and "StudioSync (debugging)" in the window's title while the studio's debug mode is on (hover the logo for what's collected).
   Under the bar, what StudioSync just did shows for a few seconds.
 - **Open collaborators' MIDI edits as they happen** (Settings > Options, off by default, this computer only): when someone's
   change to a MIDI part reaches you, it opens in the MIDI editor with the notes they changed selected. A MIDI editor
@@ -599,7 +599,9 @@ and it plays four notes at once, so it's a bass, lead and sequence synth).
 
 **Sync and exit** (top row): with Hold my changes on it first asks whether to send what you're holding or keep holding it; then it saves,
 waits until what you changed has gone out, says who has it and whether it's safe to shut down, then closes the project or quits REAPER.
-On a backup or autosave copy it only says that nothing of it syncs.
+On a backup or autosave copy, or a second tab of a project syncing in another, it only says that nothing of it syncs, and closes it
+without saving (REAPER asks about unsaved changes); Quit REAPER saves only each project's own syncing tab. A project you saved
+under a new name while Live sync runs (Save As, Save new version) syncs under that name from then on.
 
 **Real time mode**, **Follow** and **Solo** are on Home and need nothing but SonoBus. **Follow** on someone's card: your
 playhead goes with theirs (play, pause, stop, jumps; when they record, you play along), your view too, and their mix (faders, pan, solos;

@@ -28,8 +28,10 @@ folder[#folder + 1] = "E-20261027-010400Z-5.json"
 assert(#band.raw_listing("ev", true) == 7, "fresh: read now")
 assert(#band.listing("ev", ".json") == 5, "and everyone shares that read")
 folder[#folder + 1] = "F-20261027-010500Z-6.json"
-band.remove("nowhere/none.json") -- (a removal, or a write, here: nothing listed before it is trusted)
-assert(#band.listing("ev", ".json") == 6, "after a removal: read again")
+band.remove("nowhere/none.json") -- (Round 3 review, 0.59.48: a removal or write elsewhere leaves this folder's listing alone)
+assert(#band.listing("ev", ".json") == 5, "a removal in another folder: the shared listing still")
+band.remove("ev\\none.json") -- (a removal, or a write, in this folder, in either spelling: nothing listed before it is trusted)
+assert(#band.listing("ev", ".json") == 6, "after a removal here: read again")
 
 -- status.newest_event: the newest stamp in the names, each name worked out once
 package.loaded.sync = {}

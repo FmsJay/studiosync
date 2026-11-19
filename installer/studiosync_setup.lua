@@ -337,9 +337,11 @@ local function conclude()
     if sf then sf:close() end
     if cur and not cur:find(sdir .. "/StudioSync - Autostart.lua", 1, true) and reaper.file_exists(sdir .. "/StudioSync - Autostart.lua") then
       -- (a block from before the rename, or from another copy, makes way)
+      -- (and the new block goes where it was, appended only when there was none: lib/tools.lua place_block. Round 3 review, 0.59.48)
       local a = cur:find("-- BandSync autostart", 1, true)
       local z = a and cur:find("-- /BandSync autostart", a, true)
-      if z then cur = cur:sub(1, a - 1) .. cur:sub(z + #"-- /BandSync autostart" + 1) end
+      local after
+      if z then cur, after = cur:sub(1, a - 1), cur:sub(z + #"-- /BandSync autostart" + 1):gsub("^\r?\n", "", 1) end
       -- (written beside it, then swapped in: cut off half way, the person's own startup scripts were gone)
       local tmp, old = startup .. ".studiosync.tmp", startup .. ".studiosync.old"
       local wf = io.open(tmp, "w")
@@ -348,7 +350,7 @@ local function conclude()
       local res = reaper.GetResourcePath():gsub("\\", "/")
       local home = (reaper.EnumerateSubdirectories(res .. "/BandSync", 0) or reaper.EnumerateFiles(res .. "/BandSync", 0)) and (res .. "/BandSync") or (res .. "/StudioSync")
       local block = startup_block({ sdir, home .. "/last good" })
-      local wrote = wf and wf:write(cur .. (cur ~= "" and not cur:match("\n$") and "\n" or "") .. block)
+      local wrote = wf and wf:write(after and (cur .. block .. after) or (cur .. (cur ~= "" and not cur:match("\n$") and "\n" or "") .. block))
       if wf then wf:close() end
       local placed = wrote and os.rename(tmp, startup) -- (Windows won't rename over a file: the old one steps aside first)
       if wrote and not placed then

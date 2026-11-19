@@ -1,11 +1,11 @@
--- Who's online and who has which takes, from the receipts every Live sync writes (rooms/<room>/status).
+-- Who's online and what they're doing, from the receipts every Live sync writes (rooms/<room>/status).
 -- Shared by the Status window and the control panel.
 local band = require("band")
 local sync = require("sync")
 local status = {}
 
 status.COLORS = { ["synced"] = { 0.35, 0.8, 0.45 }, ["syncing"] = { 0.95, 0.75, 0.25 },
-  offline = { 0.55, 0.55, 0.55 }, ["no receipt"] = { 0.55, 0.55, 0.55 } }
+  offline = { 0.55, 0.55, 0.55 } } -- ("no receipt" went with the take-based sync: nobody is listed without one. Round 3 review, 0.59.48)
 
 function status.ago(sec)
   if sec == math.huge then return "never" elseif sec < 60 then return math.floor(sec) .. " s ago" end
@@ -80,7 +80,7 @@ function status.handover_check(cfg, b, proj)
   if mine > 0 then out[#out + 1] = string.format("you: %d change(s) from the others not applied yet", mine) end
   if select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) ~= "" then out[#out + 1] = "you: Hold sync is on" end
   for _, r in ipairs(v.rows) do
-    if r.state == "offline" or r.state == "no receipt" then offline[#offline + 1] = r.name
+    if r.state == "offline" then offline[#offline + 1] = r.name
     elseif r.hold then out[#out + 1] = r.name .. " is holding sync (their changes haven't gone out)"
     elseif r.behind then out[#out + 1] = r.name .. ": still applying the latest changes" end
   end

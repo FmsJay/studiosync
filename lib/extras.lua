@@ -412,6 +412,9 @@ end
 function extras.template_dir(cfg) return cfg.root .. "/_band/templates" end
 -- A saved project's text made into a template: no items, no StudioSync ids or project state, and none of the tracks that are this computer's
 -- own (Real time mode's, talkback, your local tracks: band_local). Pure.
+-- (nor its recording and render paths: a template could point a new song's recordings into the shared folder, so every take, discarded and
+-- keep-local ones too, synced to everyone as it was made. Nor a master chain that names a file: the master's chain has no record of the
+-- band's paths (a track's has: extras.open_template), so sharing the song copied that file into the studio. Security, Round 3 review, 0.59.48)
 function extras.template_text(rpp)
   local lines = {}
   for line in (rpp .. "\n"):gmatch("(.-)\r?\n") do lines[#lines + 1] = line end
@@ -426,6 +429,10 @@ function extras.template_text(rpp)
     local line = lines[i]
     if opens(line, "ITEM") or opens(line, "EXTSTATE") then
       i = block_end(i) + 1
+    elseif opens(line, "MASTERFXLIST") and #require("fxfiles").paths(table.concat(lines, "\n", i, block_end(i))) > 0 then
+      i = block_end(i) + 1
+    elseif line:match("^%s*RECORD_PATH%s") or line:match("^%s*RENDER_FILE%s") then
+      i = i + 1
     elseif opens(line, "TRACK") and (function()
         local z = block_end(i)
         local own = #line:match("^%s*") + 4 -- (the track's own <EXT>, not an item's inside it)
@@ -473,6 +480,15 @@ function extras.open_template(cfg, name)
   if not pcall(band.write_atomic, scratch, extras.template_text(text)) then return false end
   reaper.Main_OnCommand(40859, 0) -- new project tab
   reaper.Main_openProject("noprompt:template:" .. scratch) -- (that order: as the installed scripts use it)
+  -- (every path a track's chain names is recorded as the band's (mirror.theirs), as a band's chain landing is: never copied out by a send. The
+  -- template is anyone's to write, and sharing a song made from it uploaded a file of yours its chain named. Security, Round 3 review,
+  -- 0.59.48. Cost: one chunk read a track, at the click)
+  local proj, mirror, fxfiles = reaper.EnumProjects(-1), require("mirror"), require("fxfiles")
+  for t = 0, reaper.CountTracks(proj) - 1 do
+    local tr = reaper.GetTrack(proj, t)
+    local ok, chunk = reaper.GetTrackStateChunk(tr, "", false)
+    if ok then mirror.note_theirs(tr, true, fxfiles.paths(chunk)) end
+  end
   return true
 end
 

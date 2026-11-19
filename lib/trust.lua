@@ -121,7 +121,7 @@ function trust.inviter(root)
   return require("services").is_device_id(id) and id or nil
 end
 
-local verdicts, said, asked = {}, {}, {}
+local verdicts, said, asked, names_wait = {}, {}, {}, {}
 -- Which computer changed it, from Syncthing. After no answer, not asked again for 30 s (the panel asks each frame); an answer is cached by the caller.
 local function changed_by(root, rel)
   local k = root .. rel
@@ -207,11 +207,12 @@ function trust.from_manager_file(root, rel, pins)
   return trust.from_manager(pins, by, not pins.held and services.my_device_id() or nil), by
 end
 -- Is this an invited computer still waiting for its inviter's writing of the roles (trust.roles' first look)? Then it goes by the inviter alone.
+-- (an invited computer with no pins yet is held whatever band.json says: a member who took "owner" out of it had every new joiner take anyone's
+-- removal marks. A studio from before owners stays closed to a joiner then. James's decision, Round 3 review, 0.59.48)
 function trust.held(root)
   local p = trust.pins(root)
   if p then return p.held == true end
-  local j = band.read_json(root .. "/_band/band.json")
-  return trust.inviter(root) ~= nil and type(j) == "table" and type(j.owner) == "string" -- (no owner: a studio from before owners, open to all)
+  return trust.inviter(root) ~= nil
 end
 
 -- Which writing of the roles a verdict is for: the roles, and when they were written out (band.json "roles_at", every groups save: 0.58.78).
@@ -232,11 +233,15 @@ function trust.roles(root, j)
   -- (the roles go by _band/roles.json where there is one: only the owner's computer writes it (groups save), so an admin's band.json save,
   -- which carries the roles as that computer had them, can't mask the owner's change. band.json keeps the roles for older versions. James's
   -- decision, Round 2 review, 0.59.46)
+  -- (not while held: the roles file comes only from the owner's computer, which held pins don't know, so an invited computer that looked
+  -- before its inviter's writing never left held and took the inviter as owner for good. By band.json then, as before 0.59.46. Round 3 review, 0.59.48)
   local rel = "_band/band.json"
-  local r = band.read_json(root .. "/_band/roles.json")
+  local r = not pins.held and band.read_json(root .. "/_band/roles.json")
   if type(r) == "table" and type(r.owner) == "string" then j, rel = r, "_band/roles.json"; owner, admins = trust.roles_of(r) end
   if trust.same(pins, owner, admins) then return owner, admins end
   local v = (rel == "_band/band.json" and "" or "roles.json\0") .. trust.version(j, owner, admins) -- (band.json's key as first_look writes it)
+  -- (a "no" only for want of names.json is asked again after a minute, not every look. Round 3 review, 0.59.48)
+  if verdicts[root .. v] == nil and os.time() - (names_wait[root .. v] or -math.huge) < 60 then return pins.owner, pins.admins end
   if verdicts[root .. v] == nil then
     local ok, by = trust.from_manager_file(root, rel, pins)
     if ok == nil then return pins.owner, pins.admins end
@@ -253,7 +258,7 @@ function trust.roles(root, j)
         if type(d) == "table" and d.device then newd = d.device end
       end
       ok, why = trust.self_rename(pins, owner, admins, by, band.read_json(root .. "/_band/names.json"), newd)
-      if why == "names" then return pins.owner, pins.admins end
+      if why == "names" then names_wait[root .. v] = os.time(); return pins.owner, pins.admins end
     end
     verdicts[root .. v] = ok
     if not ok and not said[root .. v] then

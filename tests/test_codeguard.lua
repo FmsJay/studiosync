@@ -50,7 +50,11 @@ fs[D .. "/lib/mod.lua"] = "return { n = 1 }\n"
 ext["BandSync/bands"] = "/s"
 assert(band.from_shared(D), "the test's folder is a shared one")
 assert(band.code_guard(D) and fs["/res/StudioSync/approved code.json"] and boxes == 0, "the first look is remembered without asking")
+local hashes, real_hash = 0, band.code_hash
+band.code_hash = function(s) hashes = hashes + 1; return real_hash(s) end
 assert(require("mod").n == 1, "a module said yes to loads")
+assert(hashes == 0, "and isn't hashed again: its text is the one the check just read (Round 3 review, 0.59.48: every module was hashed twice per start)")
+band.code_hash = real_hash
 package.loaded.mod = nil
 fs[D .. "/lib/mod.lua"] = "return { n = 2 }\n" -- (changed after the script started: Autostart requires some modules only when first needed)
 assert(not pcall(require, "mod"), "a module changed since then won't load")

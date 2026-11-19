@@ -108,8 +108,7 @@ local function open_song(song, room) -- room: for a new tab (nil when refreshing
   -- the band's timeline, not a local edit: Live sync mustn't send it back (lib/sync.lua timeline_sig)
   reaper.SetProjExtState(proj, band.SECTION, "timeline", band.json_encode({ band.capture_tempo(proj), band.capture_markers(proj) }))
   b.version = s.version
-  band.bind(proj, b)
-  reaper.RecursiveCreateDirectory(band.takes_dir(cfg, song, b.room), 0)
+  band.bind(proj, b) -- (no takes folder made: nothing uses one since the take-based sync went. Round 3 review, 0.59.48)
   reaper.PreventUIRefresh(-1)
   reaper.TrackList_AdjustWindows(false)
   reaper.UpdateArrange()

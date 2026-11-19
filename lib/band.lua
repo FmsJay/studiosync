@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.59.47", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.59.48", FORMAT = 1, SECTION = "BandSync" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -255,10 +255,18 @@ end
 -- this script never misses a file it made itself. (0.59.14, review: a room's events folder, 20,000 files in a big song, was read from disk,
 -- filtered and sorted four to six times per Live sync poll.)
 local listed = {}
+-- (only the written file's own folder's listing is emptied: Live sync's lock file, written every 5 s, emptied every cached listing, the events
+-- folder's too. Matched in one spelling, as callers may pass either slash. Round 3 review, 0.59.48)
+local function unlist(path)
+  local dir = path:match("^(.*)[/\\]")
+  if not dir then listed = {}; return end
+  dir = norm(dir):lower()
+  for k in pairs(listed) do if norm(k):lower() == dir then listed[k] = nil end end
+end
 -- Remove a file and a leftover of an interrupted rename beside it (band.read puts that back: a removal mark or a guest list deleted on purpose
 -- came back from it. Review, 0.58.92)
 function band.remove(path)
-  listed = {}
+  unlist(path)
   local dir, name = path:match("^(.*)/([^/]+)$")
   if dir then os.remove(dir .. "/.syncthing." .. name .. ".old.tmp") end
   return os.remove(path)
@@ -276,7 +284,7 @@ end
 -- A write that didn't all reach the disk (a full disk) raises, and the old file stays: renaming a cut-off file into
 -- place made it the band's copy (review, 2026-10-31).
 local function finish(tmp, path, f, want)
-  listed = {}
+  unlist(path)
   local ok_close = f:close()
   if not ok_close or band.size(tmp) ~= want then
     os.remove(tmp)
@@ -387,8 +395,10 @@ end
 -- (a time to the second: trusted only when it's 2 s older than the listing, so a file landing in that same second isn't missed)
 local function settled(mt)
   local y, mo, d, h, mi, s = tostring(mt):match("(%d+)%D(%d+)%D(%d+)%D+(%d+)%D(%d+)%D(%d+)")
-  local t = y and os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(d), hour = tonumber(h), min = tonumber(mi), sec = tonumber(s) })
-  return t ~= nil and os.time() - t >= 2
+  -- (in a pcall: a time os.time can't represent (1601, a zeroed FILETIME) raised inside every events listing. Round 3 review, 0.59.48)
+  if not y then return false end
+  local ok, t = pcall(os.time, { year = tonumber(y), month = tonumber(mo), day = tonumber(d), hour = tonumber(h), min = tonumber(mi), sec = tonumber(s) })
+  return ok and t ~= nil and os.time() - t >= 2
 end
 function band.raw_listing(dir, fresh)
   local now, c = reaper.time_precise(), listed[dir]
@@ -608,16 +618,20 @@ end
 -- This computer's own project file for a studio's song: remembered per studio ("project file <studio id>/<song>", 0.58.87), else as before
 -- by song alone. And the studio's own local folder for songs opened from now on.
 function band.studio_key(root) return band.clean(tostring(band.info(root or "").id or "")) end
-function band.project_file(root, song)
+-- (`scoped`: this studio's key only, no song-name fallback: Delete my copy binned another studio's folder of the same song name through it.
+-- Round 3 review, 0.59.48)
+function band.project_file(root, song, scoped)
   local f = root and reaper.GetExtState(band.SECTION, "project file " .. band.studio_key(root) .. "/" .. song) or ""
-  return f ~= "" and f or reaper.GetExtState(band.SECTION, "project file " .. song)
+  return (f ~= "" or scoped) and f or reaper.GetExtState(band.SECTION, "project file " .. song)
 end
 function band.set_project_file(root, song, path)
   reaper.SetExtState(band.SECTION, "project file " .. band.studio_key(root) .. "/" .. song, path, true)
 end
 function band.forget_project_file(root, song)
-  reaper.DeleteExtState(band.SECTION, "project file " .. band.studio_key(root) .. "/" .. song, true)
-  reaper.DeleteExtState(band.SECTION, "project file " .. song, true)
+  local k = "project file " .. band.studio_key(root) .. "/" .. song
+  -- (the song-name-only key only when it's this studio's file: another studio's song of the same name lost its key. Round 3 review, 0.59.48)
+  if reaper.GetExtState(band.SECTION, "project file " .. song) == reaper.GetExtState(band.SECTION, k) then reaper.DeleteExtState(band.SECTION, "project file " .. song, true) end
+  reaper.DeleteExtState(band.SECTION, k, true)
 end
 function band.synced_elsewhere(proj)
   local b = band.binding(proj)
@@ -813,7 +827,9 @@ function band.files_complete(dir, force)
     return false
   end
   local v = list_text:match("^version (%S+)") or ""
-  if complete_seen[dir .. v] then return true end
+  -- (and only while band.lua is still that version: a new band.lua landing beside the old list read as whole in every script that had seen the
+  -- old version whole. One 512-byte read. Round 3 review, 0.59.48)
+  if complete_seen[dir .. v] and band.version_on_disk(dir) == v then return true end
   local now = reaper.time_precise()
   if not force and now - complete_at < 3 then return false end
   local fl = failed_look[dir]
@@ -868,7 +884,11 @@ function band.recording_anywhere()
   end
   return false
 end
-function band.reload(dir, script)
+-- (`approved`: the version band.update_ok approved, handed to the new band.lua's code check (band.code_guard): it records that version without
+-- asking, and inside a reload any other unsure check logs and refuses (the old code carries on) instead of a box. James's decision, Round 3
+-- review, 0.59.48)
+local APPROVED_KEY = "STUDIOSYNC_RELOAD_APPROVED"
+function band.reload(dir, script, approved)
   if band.recording_anywhere() then return false, "something is recording", "busy" end
   local libs = band.files(dir .. "/lib", ".lua")
   for _, f in ipairs(libs) do
@@ -882,7 +902,9 @@ function band.reload(dir, script)
   local saved, path, searcher = {}, package.path, _G[SEARCHER_KEY]
   for _, f in ipairs(libs) do local m = f:sub(1, -5); saved[m] = package.loaded[m] or false; package.loaded[m] = nil end
   band.drop_code_searcher() -- (the check of the old version: it refused the new code you'd said yes to. 0.59.28)
+  _G[APPROVED_KEY] = approved and tostring(approved) or false -- (false: a reload, nothing approved)
   local ok, e = pcall(main)
+  _G[APPROVED_KEY] = nil
   if ok then return true end
   for m, v in pairs(saved) do package.loaded[m] = v or nil end
   band.drop_code_searcher() -- (the failed start's own check, if it got that far)
@@ -893,11 +915,12 @@ end
 -- Every lib module of the copy in `dir`, loaded now, at the script's start (James's decision, Round 2 review, 0.59.46): a module first needed
 -- later was refused by the code check once a newer version's file had arrived, and that stopped the panel with an error box on an unattended
 -- Mac for three hours. 60-100 ms per script start. A module that fails to load is left for its first use, as before. -> how many loaded.
+-- (and its failure goes to the log file, once: a module the code check refused left no trace until its first use. Round 3 review, 0.59.48)
 function band.preload(dir)
   local n = 0
   for _, f in ipairs(band.files(dir .. "/lib", ".lua")) do
     local m = f:sub(1, -5)
-    if package.loaded[m] == nil and m:find("^[%w_]+$") and pcall(require, m) then n = n + 1 end
+    if package.loaded[m] == nil and m:find("^[%w_]+$") and band.try("band.preload " .. m, require, m) then n = n + 1 end
   end
   return n
 end
@@ -906,7 +929,7 @@ end
 function band.reload_failed_key(script, suffix) return "reload failed " .. script .. (suffix and (" " .. tostring(suffix)) or "") end
 -- The caller's side: reloads, or says once per version why it couldn't and goes on with the code it has. Something recording: tried again later.
 function band.reload_or_say(dir, script, version, suffix)
-  local ok, why, busy = band.reload(dir, script)
+  local ok, why, busy = band.reload(dir, script, not band.recording_anywhere() and band.update_ok(dir, tostring(version)) and version or nil)
   if ok then return true end
   if busy then return false, "busy" end -- (the caller says nothing and does nothing: it was announced as done every few seconds. Round 2 review, 0.59.46)
   local key = band.reload_failed_key(script, suffix)
@@ -951,7 +974,7 @@ function band.save_copy(proj, path)
   local dirty = reaper.IsProjectDirty(proj) ~= 0
   reaper.Main_SaveProjectEx(proj, path, 0)
   if dirty and reaper.IsProjectDirty(proj) == 0 then reaper.MarkProjectDirty(proj) end
-  return true -- (callers write `band.save_copy and band.save_copy(...) or <old save>`: with nothing returned, the copy was saved twice. Round 2 review, 0.59.46)
+  return true -- (for callers that test it: every caller now calls it plainly. Round 2 review, 0.59.46; comment Round 3 review, 0.59.48)
 end
 
 -- Live sync marks a song that has work here not sent yet, or only here ("local work <studio id>/<song>" = "1", this REAPER session's ExtState),
@@ -986,13 +1009,29 @@ function band.code_verdict(had, now, version, update_ok)
 end
 local function approved_path() return band.home() .. "/approved code.json" end
 local function code_key(dir) return norm(dir):lower() end
-function band.code_files(dir)
+-- (`texts`: filled with each lib module's text as read, for the code check's searcher to compare before hashing again: every module was hashed
+-- twice per script start, here and as band.preload required it. Round 3 review, 0.59.48)
+function band.code_files(dir, texts)
   local out = {}
   for _, f in ipairs(band.files(dir, ".lua")) do
     if f:find("^StudioSync %- ") then out[f] = band.code_hash(band.read(dir .. "/" .. f) or "") end
   end
-  for _, f in ipairs(band.files(dir .. "/lib", ".lua")) do out["lib/" .. f] = band.code_hash(band.read(dir .. "/lib/" .. f) or "") end
+  for _, f in ipairs(band.files(dir .. "/lib", ".lua")) do
+    local text = band.read(dir .. "/lib/" .. f) or ""
+    out["lib/" .. f] = band.code_hash(text)
+    if texts then texts["lib/" .. f] = text end
+  end
   return out
+end
+-- Does the studio whose folder holds this copy (<root>/_tools/studiosync) update through it? Its band.json says so, and so do the settings this
+-- computer last verified as written from the owner's or an admin's computer (lib/groups.lua trusted keeps them, "trusted settings <root>").
+-- No module of the shared folder is loaded for it: its own fromfolder, groups and trust decided whether changed code, theirs too, was trusted.
+-- James's decision, Round 3 review, 0.59.48.
+function band.folder_updates(dir)
+  local root = norm(dir or ""):match("^(.*)/_tools/studiosync$")
+  if not root then return false end
+  local j, t = band.read_json(root .. "/_band/band.json"), band.ext_json(band.SECTION, "trusted settings " .. root:lower())
+  return type(j) == "table" and j.updates == "folder" and type(t) == "table" and t.updates == "folder"
 end
 local function disk_version(dir) return (band.read(dir .. "/lib/band.lua") or ""):match('VERSION = "([^"]+)"') end
 local function code_record(dir, now)
@@ -1010,18 +1049,25 @@ function band.code_guard(dir)
   if not band.from_shared(dir) then return true end
   local all, key = band.read_json(approved_path()), code_key(dir)
   local had = type(all) == "table" and all[key] or nil
-  local now, version = band.code_files(dir), disk_version(dir)
-  local verdict, changed = band.code_verdict(had, now, version, reaper.GetExtState(band.SECTION, "update ok"))
+  local texts = {}
+  local now, version = band.code_files(dir, texts), disk_version(dir)
+  -- (inside a reload (band.reload): the version it approved counts as said yes to, and an unsure check refuses with a line in the log, no box;
+  -- the old code carries on and the box comes at the next start. James's decision, Round 3 review, 0.59.48)
+  local approved = _G[APPROVED_KEY]
+  local verdict, changed = band.code_verdict(had, now, version, approved or reaper.GetExtState(band.SECTION, "update ok"))
+  local list = table.concat(changed, ", ", 1, math.min(#changed, 6)) .. (#changed > 6 and (" and " .. (#changed - 6) .. " more") or "")
   if verdict == "record" then
     had = code_record(dir, now)
     if changed[1] then band.log("StudioSync " .. tostring(version) .. " from the shared folder: its code is remembered as the one you said yes to") end
-  elseif verdict == "ask" and select(2, pcall(function() return require("fromfolder").trusted_copy(dir) end)) == true then
+  elseif verdict == "ask" and band.folder_updates(dir) then
     -- (a studio that updates through its folder: its members are trusted, so what's there is used without asking. 0.59.32)
     had = code_record(dir, now)
-    band.log("StudioSync's code in the studio's folder changed (" .. table.concat(changed, ", ", 1, math.min(#changed, 6)) .. "): used, as the studio updates through its folder")
+    band.log("StudioSync's code in the studio's folder changed (" .. list .. "): used, as the studio updates through its folder")
+  elseif verdict == "ask" and approved ~= nil then
+    band.log("StudioSync " .. tostring(version) .. "'s code in the shared folder isn't the code you said yes to (" .. list .. "): carrying on with the version running. StudioSync asks about it when it next starts")
+    error("StudioSync " .. tostring(version) .. " wasn't switched to: its code in the shared folder isn't the code you said yes to (" .. list .. ")", 0)
   elseif verdict == "ask" then
     local sig = band.code_hash(band.json_encode(now))
-    local list = table.concat(changed, ", ", 1, math.min(#changed, 6)) .. (#changed > 6 and (" and " .. (#changed - 6) .. " more") or "")
     local yes = reaper.GetExtState(band.SECTION, "code refused " .. key) ~= sig and
       reaper.MB("StudioSync's code in the shared folder has changed since you said yes to it (" .. list .. ").\n\n" ..
         "Anyone in the studio can change it. Only say Yes if you expected an update from your studio.\n\nUse it?", "StudioSync", 4) == 6
@@ -1040,7 +1086,10 @@ function band.code_guard(dir)
   local function searcher(name)
     local text = name:find("^[%w_]+$") and band.read(libdir .. name .. ".lua")
     if not text then return nil end
-    if files["lib/" .. name .. ".lua"] ~= band.code_hash(text) then
+    local k = "lib/" .. name .. ".lua"
+    local read_then = texts[k] == text -- (the text hashed above: what's said yes to, so not hashed again. Kept only until it loads)
+    texts[k] = nil
+    if not read_then and files[k] ~= band.code_hash(text) then
       error("StudioSync won't load lib/" .. name .. ".lua: it changed in the shared folder since you said yes to StudioSync's code. Restart REAPER to be asked about it", 0)
     end
     return assert(load(text, "@" .. libdir .. name .. ".lua")), libdir .. name .. ".lua"
@@ -1074,6 +1123,9 @@ function band.kept_keys()
     -- again. Round 2 review, 0.59.46)
     keys[#keys + 1] = "marks kept " .. n
     keys[#keys + 1] = "guest list " .. r
+    -- (and the studio's settings as last verified (lib/groups.lua trusted): lost in a crash, a manager's next save wrote empty ones, and the
+    -- code check asked about a folder-updating studio's new code. Round 3 review, 0.59.48)
+    keys[#keys + 1] = "trusted settings " .. n
   end
   return keys
 end
@@ -1576,9 +1628,6 @@ end
 
 -- ---- takes ----------------------------------------------------------------------------------
 
-function band.take_state(proj, id) return select(2, reaper.GetProjExtState(proj, band.TAKES, id)) end
-function band.set_take_state(proj, id, v) reaper.SetProjExtState(proj, band.TAKES, id, v) end
-
 -- A take's StudioSync id: received takes carry band_take, our own sent takes band_sent.
 function band.take_id(tk)
   local id = band.take_ext(tk, "band_take")
@@ -1629,7 +1678,8 @@ do
   local code_dir = debug.getinfo(1, "S").source:match("^@(.+)[/\\]lib[/\\]band%.lua$")
   if code_dir and type(reaper) == "table" and reaper.GetExtState and reaper.EnumerateFiles then
     -- (the check's require("fromfolder") requires band: before this file returned, that loaded band.lua again, round and round to Lua's
-    -- C-stack limit, then asked once per level, and the "studio updates through its folder" check never answered. Hung the Mac, 0.59.47)
+    -- C-stack limit, then asked once per level, and the "studio updates through its folder" check never answered. Hung the Mac, 0.59.47.
+    -- The check requires no module since 0.59.48 (band.folder_updates); band stays registered first all the same)
     package.loaded.band = band
     local ok, e = pcall(band.code_guard, code_dir)
     if not ok then package.loaded.band = nil; error(e, 0) end

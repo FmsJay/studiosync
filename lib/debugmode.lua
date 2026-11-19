@@ -208,7 +208,7 @@ function dm.computer_all(me)
 end
 -- Each computer is told once that debug mode is on in a studio (Autostart, at its start): it was said only on the admin's own computer, and
 -- the people whose reports it sends never knew. Told again if it's switched off and on. Full review, 0.59.44.
--- The words for it, for the log and the panel's Debug pill.
+-- The words for it, for the log and the panel's window title ("StudioSync (debugging)", 0.59.48).
 function dm.notice(name)
   return "Debug mode is on in " .. tostring(name) .. ": at the end of each session, with each bug report and after a crash, " ..
     "this computer saves a report, a copy of this project as you have it (unsent and local work too), its setup, its log and REAPER's crash " ..
@@ -232,7 +232,7 @@ end
 function dm.collect(cfg, proj, b, why)
   if cfg and cfg.root and dm.on(cfg.root) then pcall(dm.tell, cfg.user); pcall(dm.write, cfg, proj, b, why) end
 end
--- For the panel's "Debug" pill: the studio in front (cfg.root) first, else any studio here with debug mode on. -> its name and the notice, or
+-- For the panel's window title ("StudioSync (debugging)"; was a pill until 0.59.48): the studio in front (cfg.root) first, else any studio here with debug mode on. -> its name and the notice, or
 -- nil. Looked at every 5 s at most (the panel asks each frame). Round 1 review, 0.59.45.
 local any_at, any_name = -math.huge, nil
 function dm.on_any(cfg)

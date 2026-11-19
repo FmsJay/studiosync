@@ -61,13 +61,21 @@ live.DRIVING = {
 function live.driving(mode) return live.DRIVING[mode] or live.DRIVING.open end
 
 -- Is any project recording? Nothing reloads then (band.reload says "busy"), and the scripts behind the take do no full passes. (Round 2 review, 0.59.46)
-function live.recording_anywhere()
-  for i = 0, 512 do
-    local p = reaper.EnumProjects(i)
-    if not p then return false end
-    if reaper.GetPlayStateEx(p) & 4 == 4 then return true end
+-- (band's one copy: this was a second, the same. False with an older band.lua beside this file, as band.reload doesn't wait then either.
+-- Round 3 review, 0.59.48)
+function live.recording_anywhere() return band.recording_anywhere ~= nil and band.recording_anywhere() end
+-- The song's "local work" mark (band.local_work_key) lists the rooms that have work only here, "|" between them; each Live sync tab adds or
+-- takes away only its own room. A mark from before 0.59.48 ("1") is left as it is: it keeps the folder, as it did. v: the mark now; on: this
+-- room has some. -> the new mark ("" for none), or nil when it stays as it is. Pure. (One mark per song: the main room's tab cleared it over a
+-- side room's kept work. Round 3 review, 0.59.48)
+function live.mark_room(v, room, on)
+  local me, list, had = tostring(room):gsub("|", "/"), {}, false
+  for r in tostring(v or ""):gmatch("[^|]+") do
+    if r == me then had = true else list[#list + 1] = r end
   end
-  return false
+  if had == (on == true) then return nil end
+  if on then list[#list + 1] = me end
+  return table.concat(list, "|")
 end
 -- A script's reload in place to the code on disk (band.reload_or_say), for the panel and Live sync. While anything records it isn't tried and
 -- nothing is said or done: `before` (the hand-over's side effects) runs only when it's tried, `said` is logged only once the new code took over,

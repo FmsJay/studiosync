@@ -82,7 +82,7 @@ me = "MEMBERID999"
 assert(shows("Song B"), "a computer with no list sees everything")
 
 -- the Syncthing back-off, and the API key off the command line (lib/services.lua)
-local dir = ((os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp"):gsub("\\", "/")) .. "/ss_r93_" .. os.time()
+local dir = ((os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp"):gsub("\\", "/")) .. "/ss_r93_" .. os.time() .. "_" .. math.random(100000, 999999) -- (two runs in one second shared it: Round 3 review, 0.59.48)
 os.execute(package.config:sub(1, 1) == "\\" and ('mkdir "' .. dir:gsub("/", "\\") .. '"') or ("mkdir -p '" .. dir .. "'"))
 local f = assert(io.open(dir .. "/config.xml", "wb"))
 f:write('<configuration><gui enabled="true" tls="false"><address>127.0.0.1:8384</address><apikey>SECRETKEY123</apikey></gui></configuration>')

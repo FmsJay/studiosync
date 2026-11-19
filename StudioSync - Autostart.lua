@@ -41,6 +41,13 @@ do -- (the startup block tried a copy that failed to load and started this one i
 end
 band.try("band.restore_settings", band.restore_settings) -- (what a crash lost, back from settings.json: lib/band.lua, 0.58.89)
 band.try("tools.toolbar_default", require("tools").toolbar_default) -- (StudioSync's button on the main toolbar from the first restart after installing: 0.58.82)
+-- (the startup block as it's written now: an older block (a bare dofile) was never rewritten, so the last-good fallback was on no computer. Round 2
+-- review, 0.59.46. Once per load of this file, a reload too: run only at REAPER's start, a computer that updated in place kept the old block
+-- until the very start the safety net is for. One read of __startup.lua, a no-op on a current block. Round 3 review, 0.59.48)
+do
+  local okt, tools = pcall(require, "tools")
+  if okt and tools.upgrade_startup and select(2, band.try("tools.upgrade_startup", tools.upgrade_startup)) == true then band.log("StudioSync's start in Scripts/__startup.lua is written as it is now: it falls back to the last copy that started fine") end
+end
 
 if reaper.GetExtState(band.SECTION, "open panel at start") == "1" then -- (the installer's restart for ReaPersona's shortcuts: back in the panel. 0.58.64)
   reaper.DeleteExtState(band.SECTION, "open panel at start", true)
@@ -74,6 +81,7 @@ local BEHIND, loop_began = 8, reaper.time_precise()
 local songsync_at -- (when the studios' ignore files were last kept in step)
 local held_until = -math.huge -- (after REAPER held every script, Live sync's beat is old too: it isn't stopped, it's catching up)
 local loop
+local partial_retried = false -- (the "reload failed" key cleared once this copy, started part-arrived, is whole)
 -- An update: the new code takes over in place (once the version on disk has held for two looks), as Live sync does; before 0.21.3 a running
 -- Autostart kept its old rules until REAPER restarted. -> "stop" when it reloaded (the new code runs its own loop).
 local function update_check()
@@ -82,7 +90,8 @@ local function update_check()
   -- answered, and the band saw this computer as away. Review, 0.58.87)
   if disk and disk ~= band.VERSION and disk == seen_disk and not band.update_ok(dir, disk) and reaper.GetExtState(band.SECTION, "update asked") ~= disk
       and reaper.GetPlayState() == 0 and band.files_complete(dir) then -- (and only once every file has arrived: lib/band.lua)
-    reaper.SetExtState(band.SECTION, "update asked", disk, true) -- (once per version)
+    -- (once per version and REAPER session: persisted, the log line below ("asks again when it next starts") wasn't true. Round 3 review, 0.59.48)
+    reaper.SetExtState(band.SECTION, "update asked", disk, false)
     local trusted = select(2, pcall(require("fromfolder").trusted_copy, dir)) == true
     if trusted then -- (the studio updates through its folder: taken without asking. lib/fromfolder.lua, 0.59.32)
       reaper.SetExtState(band.SECTION, "update ok", disk, true)
@@ -90,7 +99,13 @@ local function update_check()
     elseif reaper.MB("StudioSync " .. disk .. " has arrived in the shared folder (this computer runs StudioSync from there).\n\n" ..
         "Anyone in the studio can put a new version there. Only say Yes if you expected an update from your studio.\n\nSwitch to it now?", "StudioSync", 4) == 6 then
       reaper.SetExtState(band.SECTION, "update ok", disk, true)
-    else band.log("StudioSync " .. disk .. " in the shared folder wasn't switched to (you said no). StudioSync asks again when it next starts: ask your studio about it") end
+    else band.log("StudioSync " .. disk .. " in the shared folder wasn't switched to (you said no). StudioSync asks again when REAPER next starts: ask your studio about it") end
+  end
+  -- (a version that failed to start on a part-arrived copy is tried once more when the copy is whole: the failure held it back until REAPER
+  -- restarted. Once, as it turns whole, not every look. Round 3 review, 0.59.48)
+  if not partial_retried and band.started_partial(dir) then
+    partial_retried = true
+    reaper.DeleteExtState(band.SECTION, failed_key(), false)
   end
   if disk and ((disk ~= band.VERSION and disk == seen_disk and band.update_ok(dir, disk)) or band.started_partial(dir))
       and reaper.GetExtState(band.SECTION, failed_key()) ~= disk then
@@ -148,10 +163,6 @@ local function loop_body()
     -- (Syncthing started here, once, when this computer is in a studio: only Live sync started it, and a version whose Live sync failed as it
     -- started left a restarted Windows or Mac computer without it, so the fix couldn't arrive. Not a login item. James's decision, Round 2 review, 0.59.46)
     if #band.bands() > 0 then band.try("services.ensure_syncthing", require("services").ensure_syncthing) end
-    -- (and the startup block as it's written now, once per start: an older block (a bare dofile) was never rewritten, so the last-good fallback
-    -- was on no computer. Round 2 review, 0.59.46)
-    local okt, tools = pcall(require, "tools")
-    if okt and tools.upgrade_startup and select(2, band.try("tools.upgrade_startup", tools.upgrade_startup)) == true then band.log("StudioSync's start in Scripts/__startup.lua is written as it is now: it falls back to the last copy that started fine") end
     local ok, why = pcall(require("startup").on_start) -- (the band's songs, opened without REAPER's boxes: lib/startup.lua)
     if not ok then band.log("couldn't open the studio's projects by itself: " .. tostring(why)) end
     band.try("services.stop_old_relay", require("services").stop_old_relay) -- (a Mac's ReaNINJAM relay from an older StudioSync, left running: lib/services.lua)
@@ -203,7 +214,9 @@ local function loop_body()
   good_at = good_at or reaper.time_precise()
   if good_at ~= true and reaper.time_precise() - good_at > 60 and not next(erred) and band.save_last_good and not band.recording_anywhere() then
     local okg, res = band.try("band.save_last_good", band.save_last_good, dir)
-    good_at = (okg and res == nil) and reaper.time_precise() or true
+    -- (a copy that failed (a full disk) is tried again in a minute too: it left the last-good folder half copied until REAPER restarted.
+    -- Round 3 review, 0.59.48)
+    good_at = (not okg or res == nil) and reaper.time_precise() or true
   end
   -- a StudioSync session that opens (or is open when REAPER starts) opens the panel, once per opening: closing the panel
   -- keeps it closed until another StudioSync session opens. (Marks aren't persisted, and survive an Autostart reload.)

@@ -72,6 +72,8 @@ local function rgba(c) local k = 255 * theme.STATUS; return math.floor(c[1] * k)
 local ui_font = ImGui.CreateFont("sans-serif")
 ImGui.Attach(ctx, ui_font)
 local ui = {} -- (what's new goes here: the panel's main chunk is at Lua's limit of 200 locals)
+-- The version of the copy on disk, with a fallback for an older band.lua beside this file (StudioSync - Autostart.lua's). (Round 3 review, 0.59.48)
+function ui.disk_version() return band.version_on_disk and band.version_on_disk(dir) or (band.read(dir .. "/lib/band.lua") or ""):match('VERSION = "([^"]+)"') end
 ui.bold = ImGui.CreateFont("sans-serif", ImGui.FontFlags_Bold)
 ImGui.Attach(ctx, ui.bold)
 local ACCENT, CARD, NAV, MUTED, DARK = theme.ACCENT, theme.CARD, theme.NAV, theme.MUTED, theme.DARK
@@ -106,14 +108,14 @@ do -- (through pcall: ReaImGui's compatibility layer throws for a name it doesn'
   local ok, v = pcall(function() return ImGui.ButtonFlags_EnableNav end)
   ui.NAV = ok and v or 0
 end
--- The studio's debug mode is on (lib/debugmode.lua on_any: the studio in front, else any here; it looks every 5 s): -> the notice, or nil. Shown as a
--- "Debug" pill in the project's bar and, with no project open, the lobby's (the computer's part is collected at quit then too). (Round 2 review, 0.59.46)
+-- The studio's debug mode is on (lib/debugmode.lua on_any: the studio in front, else any here; it looks every 5 s): -> the notice, or nil. Shown as
+-- "StudioSync (debugging)" in the window's title, the notice in the logo's tooltip (a yellow "Debug" pill in the bars was too much: James, Round 3
+-- review, 0.59.48).
 function ui.debug_notice()
   local dm = require("debugmode")
   local ok, name, notice = pcall(dm.on_any, cfg)
   if ok and name then return notice or ("Debug mode is on in " .. tostring(name) .. ".") end
 end
-function ui.debug_pill(notice, h) pill("Debug", YELLOW, DARK, h); ImGui.SetItemTooltip(ctx, notice) end
 function ui.sync_button(label, colour, running, can_start, h)
   local dl = ImGui.GetWindowDrawList(ctx)
   local x, y = ImGui.GetCursorScreenPos(ctx)
@@ -606,7 +608,7 @@ local function section_sync()
     -- already on disk (an update, or a bandmate's folder install)? Then only this running panel is old
     -- (read once in 3 s, not every frame while a bandmate runs a newer version: review, 0.58.87)
     if not ui.disk_at or reaper.time_precise() - ui.disk_at > 3 then
-      ui.disk_at, ui.disk_ver = reaper.time_precise(), band.version_on_disk(dir)
+      ui.disk_at, ui.disk_ver = reaper.time_precise(), ui.disk_version()
     end
     local disk = ui.disk_ver
     if disk == view.newer then
@@ -1721,11 +1723,12 @@ local function home_who()
     if (i - 1) % per ~= 0 then ImGui.SameLine(ctx, 0, gap) end
     if card("who " .. p.name, w) then -- (grows with what they have armed)
       ui.person_name(p, 16)
-      -- (in words: "synced", "here" and "no receipt" were the code's names for them. UX review, 0.58.52)
-      local words = ({ here = "you", synced = "up to date", syncing = "getting changes", offline = "away", ["no receipt"] = "not opened here yet" })[p.state] or p.state
+      -- (in words: "synced" and "here" were the code's names for them. UX review, 0.58.52; "no receipt", the take-based sync's, can't happen now:
+      -- Round 3 review, 0.59.48)
+      local words = ({ here = "you", synced = "up to date", syncing = "getting changes", offline = "away" })[p.state] or p.state
       pill(words, p.state == "here" and GREEN or rgba(status.COLORS[p.state] or { 0.55, 0.55, 0.55 }))
       ImGui.SetItemTooltip(ctx, ({ here = "This machine.", ["synced"] = "Has every change.", ["syncing"] = "Still getting changes (yours or the studio's).",
-        offline = "Not seen for over a minute.", ["no receipt"] = "Has sent takes, but never ran Live sync here." })[p.state] or p.state)
+        offline = "Not seen for over a minute." })[p.state] or p.state)
       if p.recording then pill_after("recording", RED)
       elseif p.playing and p.state ~= "offline" then pill_after("playing", ACCENT, 0xFFFFFFFF) end
       if p.driving then pill_after("driving", ACCENT, 0xFFFFFFFF); ImGui.SetItemTooltip(ctx, "They drive: whoever follows the driver plays, stops and moves with them. Who changes what: Who can edit.") end -- (Round 2 review, 0.59.46)
@@ -1968,7 +1971,9 @@ local function settings_look()
     do -- (the review's "a text size setting": every word in the panel, bigger or smaller. 0.59.32)
       ImGui.SetNextItemWidth(ctx, 160)
       local ch, v = ImGui.SliderDouble(ctx, "Text size##textsize", ui.text_scale() * 100, 80, 160, "%.0f%%")
-      if ch then reaper.SetExtState(band.SECTION, "text size", string.format("%.2f", v / 100), true); text_scale_at = -1 end
+      -- (kept between sessions only when you let go: it rewrote REAPER's saved state every frame of the drag. Round 3 review, 0.59.48)
+      if ch then reaper.SetExtState(band.SECTION, "text size", string.format("%.2f", v / 100), false); text_scale_at = -1 end
+      if ImGui.IsItemDeactivatedAfterEdit(ctx) then reaper.SetExtState(band.SECTION, "text size", reaper.GetExtState(band.SECTION, "text size"), true) end
       ImGui.SetItemTooltip(ctx, "How big the panel's words are on this computer, 80% to 160%. Double-click to type.")
     end
     do -- (the review's "keyboard focus rings, releasing a claim from the keyboard": ImGui's own keyboard navigation, opt-in. 0.59.37)
@@ -2884,7 +2889,7 @@ function F.top_bar()
   if running then
     local online, behind, lines = 0, {}, {}
     for _, r in ipairs(view.rows) do
-      local here = r.state ~= "offline" and r.state ~= "no receipt"
+      local here = r.state ~= "offline"
       if here then online = online + 1 end
       if here and r.state == "syncing" then behind[#behind + 1] = r.name end
       lines[#lines + 1] = r.name .. ": " .. (not here and "not here (gets your changes when back)" or r.state == "syncing" and "still getting changes" or "has everything")
@@ -2916,10 +2921,6 @@ function F.top_bar()
     at_row("Send now")
     if ImGui.SmallButton(ctx, "Send now##hold") then reaper.SetProjExtState(proj, band.SECTION, "hold", "") end
     ImGui.SetItemTooltip(ctx, "Switch Hold my changes off: everything you changed goes to the others.")
-  end
-  do -- (the studio's debug mode is on: said where everyone sees it, what it collects on hover. James, Round 1 review, 0.59.45. on_any looks every 5 s)
-    local notice = ui.debug_notice()
-    if notice then at_row("Debug"); ui.debug_pill(notice, fh) end
   end
   do -- two people armed on one track: both record onto it at once (review item 33)
     local mine, both = {}, {}
@@ -3163,7 +3164,10 @@ function F.bars(t)
     end
   end
   tools.put_back_bar(ctx, ImGui, b and b.song, b and can and function(mine) -- (an edit of yours that was undone, and why: stays until dismissed)
+    -- (driver and is_claimed too, as Restore and Undo pass them: the driver's Use mine took +1, not the owner step, and a non-owner's later edit
+    -- made apart could win over it. Round 3 review, 0.59.48)
     band.log(tostring(require("mirror").use_mine(proj, cfg, b.song, b.room, mine, { can = can, mode = who and who.mode,
+      driver = who and who.driver, is_claimed = who and who.is_claimed,
       local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1" })))
   end, function(name) return can(cfg.user, name) end, b and function(name) claim({ name }, {}) end)
   tools.print_problem_bar(ctx, ImGui)
@@ -3312,8 +3316,6 @@ function ui.frame_lobby()
     ImGui.SameLine(ctx, 0, 12)
     ImGui.SetCursorPosY(ctx, y0)
   end
-  local dnotice = ui.debug_notice()
-  if dnotice then ui.debug_pill(dnotice, fh); ImGui.SameLine(ctx, 0, 12); ImGui.SetCursorPosY(ctx, y0) end
   ImGui.PushStyleVar(ctx, ImGui.StyleVar_SelectableTextAlign, 0.5, 0.5)
   for i, p in ipairs(ui.pages()) do
     if p[1] ~= "Groups" and not (none and p[1] == "Projects") then
@@ -3419,11 +3421,15 @@ local seen_disk, disk_at = nil, 0
 local function updated()
   if reaper.time_precise() - disk_at < 3 then return false end
   disk_at = reaper.time_precise()
-  local disk = band.version_on_disk(dir)
+  -- (with a fallback for an older band.lua beside this file, as Autostart has it: a part-arrived copy pairs them, and the check failed on every
+  -- pass and never reached the reload that mends it. Round 3 review, 0.59.48)
+  local disk = ui.disk_version()
   local ready = disk and disk ~= band.VERSION and disk == seen_disk and band.update_ok(dir, disk) -- (from a shared folder, once you said yes: Autostart asks)
   seen_disk = disk
-  ready = ready or (disk and band.started_partial(dir)) -- (started on a part-arrived copy, whole now: 0.59.44)
-  return ready and reaper.GetExtState(band.SECTION, "reload failed StudioSync - Panel.lua") ~= disk
+  local partial = disk and band.started_partial(dir) -- (started on a part-arrived copy, whole now: 0.59.44)
+  -- (once whole, a failure on the part-arrived copy doesn't hold the whole version back: its mark goes, once. Round 3 review, 0.59.48)
+  if partial and not ui.partial_seen then ui.partial_seen = true; reaper.DeleteExtState(band.SECTION, "reload failed StudioSync - Panel.lua", false) end
+  return (ready or partial) and reaper.GetExtState(band.SECTION, "reload failed StudioSync - Panel.lua") ~= disk
 end
 
 -- While someone else drives and is here, a slim banner at the foot of REAPER's arrange view says what you can change.
@@ -3492,6 +3498,7 @@ local function pill_window()
   local f = ImGui.WindowFlags_NoDecoration | ImGui.WindowFlags_AlwaysAutoResize | ImGui.WindowFlags_NoDocking | ImGui.WindowFlags_NoMove |
     ImGui.WindowFlags_NoSavedSettings | ImGui.WindowFlags_NoFocusOnAppearing | ImGui.WindowFlags_NoNav
   if ImGui.Begin(ctx, "StudioSync pill", nil, f) then
+    ui.open_win = 3 -- (its three style vars too)
     local x, y = ImGui.GetCursorScreenPos(ctx)
     if strip then ui.strip_w = ImGui.GetWindowSize(ctx) end
     local problem = reaper.GetExtState(band.SECTION, "sync problem")
@@ -3579,6 +3586,7 @@ local function pill_window()
       ImGui.DrawList_AddTextEx(dl, nil, fs, cx - tw / 2, cy - th / 2, 0xFFFFFFFF, n)
     end
     ImGui.End(ctx)
+    ui.open_win = nil
   end
   ImGui.PopStyleVar(ctx, 3)
   return keep
@@ -3586,19 +3594,30 @@ end
 
 local frame_seen
 local loop
--- An error in a pass goes to the log file with where it happened, shows in the panel, and the panel carries on half a second later. It rethrew,
--- and REAPER's error box held every script on an unattended computer for hours (Chilio's Mac). After 30 in a row it stops quietly, saying so.
+-- An error in a pass goes to the log file with where it happened, shows in the panel, and the panel carries on. It rethrew, and REAPER's error
+-- box held every script on an unattended computer for hours (Chilio's Mac). After 15 s of errors in a row it stops quietly, saying so.
 -- (James, Round 2 review, 0.59.46)
+-- (tried again on the next defer cycle, with the context used in this one: half a second with no ImGui call let ReaImGui drop the context,
+-- which lives only while used in each defer cycle, and the panel vanished. What the failed pass left open (its window, the top corners' clip,
+-- the theme and font) is closed in this same cycle. Logged once per different error. Round 3 review, 0.59.48)
 local function guarded(fn) return function()
   local ok, e = xpcall(fn, debug.traceback)
-  if ok then ui.loop_fails = 0; return end
-  band.log_error("the panel", e)
+  if ok then ui.fail_since = nil; return end
+  if ui.clip then pcall(ImGui.PopClipRect, ctx) end
+  if ui.open_win then
+    pcall(ImGui.End, ctx)
+    if ui.open_win > 0 then pcall(ImGui.PopStyleVar, ctx, ui.open_win) end
+  end
+  if ui.pushed then pcall(ImGui.PopFont, ctx); pcall(pop_theme) end
+  ui.clip, ui.open_win, ui.pushed = nil, nil, nil
   err = tostring(e):match("^[^\n]*")
-  ui.loop_fails = (ui.loop_fails or 0) + 1
-  if ui.loop_fails >= 30 then return band.log("the panel stopped: an error kept coming back (the log file has it). Open it again from the toolbar or the Actions list") end
-  local at = reaper.time_precise()
-  local function wait() if reaper.time_precise() - at < 0.5 then return reaper.defer(wait) end; loop() end
-  reaper.defer(wait)
+  if err ~= ui.fail_said then ui.fail_said = err; band.log_error("the panel", e) end
+  local now = reaper.time_precise()
+  ui.fail_since = ui.fail_since or now
+  if now - ui.fail_since > 15 or not pcall(ImGui.GetFrameCount, ctx) then
+    return band.log("the panel stopped: an error kept coming back (the log file has it). Open it again from the toolbar or the Actions list")
+  end
+  reaper.defer(loop)
 end end
 local frame_said -- (the last frame error said in the console)
 local min_look_at = -math.huge -- (shrunk to its box: when the project in front last changed under it)
@@ -3628,7 +3647,7 @@ local function loop_body()
   local wx, wy = ImGui.Viewport_GetWorkPos(ImGui.GetMainViewport(ctx)) -- first time: inside REAPER, below its menus
   ImGui.SetNextWindowPos(ctx, wx + 60, wy + 90, ImGui.Cond_FirstUseEver)
   -- no collapse arrow: collapsed and opened again, the window came back tiny on macOS (dock it, or close it instead)
-  push_theme(); ImGui.PushFont(ctx, ui_font, 15)
+  push_theme(); ImGui.PushFont(ctx, ui_font, 15); ui.pushed = true -- (ui.pushed, ui.open_win, ui.clip: what guarded closes after an error)
   -- (the app's pages scroll inside; the window itself never does, so the top bar stays put)
   local flags = ImGui.WindowFlags_NoCollapse | ImGui.WindowFlags_NoScrollbar | ImGui.WindowFlags_NoScrollWithMouse
     | (native and ImGui.WindowFlags_NoTitleBar or 0) -- (the system frame has the title; docked, REAPER's tab does)
@@ -3670,12 +3689,17 @@ local function loop_body()
     ImGui.PushStyleVar(ctx, ImGui.StyleVar_WindowTitleAlign, 0.5, 0.5) -- (the logo has the left corner)
     ImGui.PushStyleColor(ctx, ImGui.Col_Button, 0) -- (the little triangle in a docked window's corner is drawn in this colour as it begins)
     -- the name only where it clears Window and Dock: under 500 px wide it ran beneath them (0.58.28)
-    visible, open = ImGui.Begin(ctx, (ui.title_w or 0) >= 500 and "StudioSync###StudioSync" or "###StudioSync", true, flags)
+    -- (debug mode on: "StudioSync (debugging)", wider, so from 600 px; the ###StudioSync id stays, so the place and docker are kept. James,
+    -- Round 3 review, 0.59.48)
+    ui.title_notice = ui.debug_notice()
+    local tw = ui.title_w or 0
+    visible, open = ImGui.Begin(ctx, (ui.title_notice and tw >= 600 and "StudioSync (debugging)###StudioSync") or (tw >= 500 and "StudioSync###StudioSync") or "###StudioSync", true, flags)
     ui.title_w = ImGui.GetWindowWidth(ctx)
     ImGui.PopStyleColor(ctx)
     ImGui.PopStyleVar(ctx)
   end
   if visible then
+    ui.open_win = 0
     local wx, wy = ImGui.GetWindowPos(ctx)
     local ww, wh = ImGui.GetWindowSize(ctx)
     local was_docked = win_rect and win_rect.docked
@@ -3743,7 +3767,7 @@ local function loop_body()
     if banner_docked then reaper.DeleteExtState(band.SECTION, "dock armed", false) -- docked: drag-to-dock did its job
     elseif not native then
       -- the top corners resize too (Dear ImGui only has grips at the bottom); the grips sit over the frame's corners
-      ImGui.PushClipRect(ctx, wx, wy, wx + ww, wy + wh, false)
+      ImGui.PushClipRect(ctx, wx, wy, wx + ww, wy + wh, false); ui.clip = true
       for k, x in ipairs({ wx, wx + ww - 12 }) do
         ImGui.SetCursorScreenPos(ctx, x, wy)
         ImGui.InvisibleButton(ctx, "##grip" .. k, 12, 12)
@@ -3772,7 +3796,7 @@ local function loop_body()
             if ImGui.IsMouseHoveringRect(ctx, wx + 4, wy, wx + 7 + (tbh - 4) * 0.93 + 16, wy + tbh) and ImGui.IsWindowHovered(ctx, ImGui.HoveredFlags_RootAndChildWindows) then
               if ImGui.BeginTooltip(ctx) then
                 ImGui.PushTextWrapPos(ctx, ImGui.GetFontSize(ctx) * 32)
-                ImGui.Text(ctx, st.tip .. "\n\n" .. st.drives)
+                ImGui.Text(ctx, st.tip .. "\n\n" .. st.drives .. (ui.title_notice and ("\n\n" .. ui.title_notice) or ""))
                 ImGui.PopTextWrapPos(ctx)
                 ImGui.EndTooltip(ctx)
               end
@@ -3795,10 +3819,11 @@ local function loop_body()
         ImGui.SetCursorScreenPos(ctx, wx + ww - pad - s * 3 - 14, by)
         if ui.window_icon("##tobox", "box", s, "Shrink to a tiny box over REAPER. Click it and the panel opens where it was.") then ui.set_minimized(true) end
       end
-      ImGui.PopClipRect(ctx)
+      ImGui.PopClipRect(ctx); ui.clip = nil
     end
     ImGui.Dummy(ctx, 0, 0) -- (a frame that ended just after setting the cursor, as while a tab closes: End kills the panel for that)
     ImGui.End(ctx)
+    ui.open_win = nil
   end
   require("feedback").draw(ctx, ImGui, cfg, proj) -- (its own window, while open: lib/feedback.lua)
   -- (the call in its own window, while open, the panel full or shrunk to its box: lib/callwin.lua. James, 0.59.14)
@@ -3806,7 +3831,7 @@ local function loop_body()
     pcall(require("callwin").draw, { ctx = ctx, ImGui = ImGui, proj = proj, b = b, call_on = ui.call_on, set_call = ui.set_call,
       sonobus_open = sonobus_open, people = ui.call_people, call_link = function() return cfg and require("alerts").call_link(cfg.root) end })
   end
-  ImGui.PopFont(ctx); pop_theme()
+  ImGui.PopFont(ctx); pop_theme(); ui.pushed = nil
   banner()
   reaper.SetExtState(band.SECTION, "panel alive", tostring(reaper.time_precise()), false) -- (so Autostart never opens a second one)
   if open then return reaper.defer(loop) end

@@ -25,38 +25,46 @@ local SETTINGS = { "alerts", "alerts_server", "call", "sonobus_server", "tailnet
 local trusted_at, trusted_asked = {}, {}
 local function pins_of(root) local ok, p = pcall(require("trust").pins, root); return ok and p or nil end
 local function pinned(root) return pins_of(root) ~= nil end
+local function invited(root) local ok, i = pcall(function() return require("trust").inviter(root) end); return ok and i ~= nil end
+-- (and a third answer, `checked`: false while nothing is verified here (no answer from Syncthing, or "not from a manager" with nothing kept),
+-- for groups save. Round 3 review, 0.59.48)
+groups.RECHECK = 120 -- (seconds before a "not from a manager" answer is asked again: Round 3 review, 0.59.48)
 function groups.trusted(root)
   local c, now = trusted_at[root], reaper.time_precise() or 0
-  if c and now - c.at < 5 and now >= c.at then return c.j, c.sure end
+  if c and now - c.at < 5 and now >= c.at then return c.j, c.sure, c.checked end
   local j = json_of(root)
   local p = pins_of(root)
   local sig = band.json_encode(j) .. "\0" .. (p and band.json_encode(p) or "")
   local a = trusted_asked[root]
   local okt, ok
-  if a and a.sig == sig and a.ok ~= nil then okt, ok = true, a.ok
+  -- (a "no" is kept too, and asked again after RECHECK: `okt and ok or nil` made it nil, so a band.json last written from a computer not pinned
+  -- as a manager's was asked about every 5 s by every script. Round 3 review, 0.59.48)
+  if a and a.sig == sig and a.ok ~= nil and (a.ok or (now - a.at < groups.RECHECK and now >= a.at)) then okt, ok = true, a.ok
   else
     okt, ok = pcall(require("trust").from_manager_file, root, "_band/band.json")
-    trusted_asked[root] = { sig = sig, ok = okt and ok or nil }
+    if okt and ok ~= nil then trusted_asked[root] = { sig = sig, ok = ok, at = now } else trusted_asked[root] = { sig = sig } end
   end
   local key = "trusted settings " .. band.norm(root):lower()
-  local out, sure = {}, true
+  local out, sure, checked = {}, true, true
   local stored = band.ext_json(band.SECTION, key)
   -- (not known yet, Syncthing slow or held back: the last checked settings, not the file as anyone wrote it. Review, 0.58.98)
   if okt and ok == false then
-    out = stored or {}
+    out, checked = stored or {}, type(stored) == "table"
   elseif not (okt and ok == true) and type(stored) == "table" then
     out = stored
-  elseif not (okt and ok == true) and (type(j.owner) == "string" or pinned(root)) then
+  -- (an invited computer with no pins yet too, whatever band.json's owner says: a member who took "owner" out of band.json had every new
+  -- joiner believe her settings, "updates" included. James's decision, Round 3 review, 0.59.48)
+  elseif not (okt and ok == true) and (type(j.owner) == "string" or pinned(root) or invited(root)) then
     -- (an owner named and nothing checked yet here: nothing, until Syncthing says who wrote it. Believed as written, a member could switch a new
     -- joiner to folder code in a studio that never chose it. The inviter writes band.json again at Let in, so the answer comes within seconds.
     -- A studio from before owners: as written, as before. Round 1 review, 0.59.45)
-    out, sure = {}, false
+    out, sure, checked = {}, false, false
   else
     for _, k in ipairs(SETTINGS) do out[k] = j[k] end
     if okt and ok == true and band.json_encode(out) ~= band.json_encode(stored or false) then band.set_ext_json(band.SECTION, key, out, true) end
   end
-  trusted_at[root] = { at = now, j = out, sure = sure }
-  return out, sure
+  trusted_at[root] = { at = now, j = out, sure = sure, checked = checked }
+  return out, sure, checked
 end
 
 local seen = {}
@@ -95,18 +103,21 @@ function groups.sonobus_secret(root)
 end
 local save
 function groups.new_sonobus_secret(root)
-  save(root, function(j) j.sonobus = band.secret(24) end)
+  save(root, function(j) j.sonobus = band.secret(24) end, nil, true) -- (no click: groups.tick and lib/removal.lua)
 end
 
-save = function(root, change, owner_said)
+-- (`quiet`: a save nobody clicked for (removal.tick, groups.tick, set_tailnet). While nothing is verified here it isn't made: it wrote empty
+-- settings as a manager's, which everyone took, or a member's planted ones. Round 3 review, 0.59.48) -> false when it wasn't made.
+save = function(root, change, owner_said, quiet)
   trusted_at[root] = nil -- (a setting changed here shows at once)
-  local info, j = band.info(root), json_of(root)
-  j.name, j.id, j.drive = info.name, info.id, info.drive
   -- (the outward settings as last trusted, not as the file has them: written back from a manager's computer, a call link or alerts server a
   -- member or guest slipped into band.json became trusted, and some saves need no click (removal.tick, groups.tick, set_tailnet). Review, 0.59.14)
   -- (nothing checked here yet, with Syncthing not answering: the file's own values, not the empty ones this computer goes by meanwhile,
   -- which wiped every outward setting for everyone, "updates" too. Round 2 review, 0.59.46)
-  local t, sure = groups.trusted(root)
+  local t, sure, checked = groups.trusted(root)
+  if quiet and not owner_said and checked == false then return false end
+  local info, j = band.info(root), json_of(root)
+  j.name, j.id, j.drive = info.name, info.id, info.drive
   if sure ~= false then for _, k in ipairs(SETTINGS) do j[k] = t[k] end end
   -- (the roles this computer goes by, not a change it set aside: written back as they were, it would reach everyone as this computer's own)
   local trust = require("trust")
@@ -161,7 +172,7 @@ function groups.set_tailnet(root)
   if not (name and suffix) then return false end
   local t = groups.tailnet(root)
   if t and t.suffix == suffix then return true end
-  save(root, function(j) j.tailnet = { name = name, suffix = suffix } end)
+  save(root, function(j) j.tailnet = { name = name, suffix = suffix } end, nil, true)
   return true
 end
 -- Does the studio sync only through its Tailscale network (band.json "tailscale_only": services.pin_tailnet)? Set by the owner or an admin.
@@ -307,7 +318,7 @@ end
 
 -- Run from removal.tick, every 30 s or so: Syncthing lets go of what this computer left, a closed group is over here too, and a group
 -- nobody's been seen in for a week gets a word (closed or removed while this computer was off: nothing can reach it to say so).
-local said_quiet = {}
+local said_quiet, backfilled = {}, {}
 function groups.tick(now)
   local services = require("services")
   local leaving = band.ext_json(band.SECTION, "leaving")
@@ -325,9 +336,13 @@ function groups.tick(now)
     if me ~= "" and groups.role(g.root, me) == "owner" and not groups.sonobus_secret(g.root) and not groups.is_old(g.root) then
       groups.new_sonobus_secret(g.root)
       band.log(g.name .. "'s live audio has a password of its own now (everyone's SonoBus picks it up the next time Real time mode connects)")
-    elseif me ~= "" and not groups.is_old(g.root) and not reaper.file_exists(g.root .. "/_band/roles.json") and groups.role(g.root, me) == "owner"
-        and not require("trust").held(g.root) then
-      pcall(save, g.root, function() end) -- (a studio from before the roles file: the owner's computer writes it once. Round 2 review, 0.59.46)
+    elseif me ~= "" and not backfilled[g.root] and not groups.is_old(g.root) and not reaper.file_exists(g.root .. "/_band/roles.json")
+        and groups.role(g.root, me) == "owner" and not require("trust").held(g.root) then
+      -- (a studio from before the roles file: the owner's computer writes it once (Round 2 review, 0.59.46). Once per studio and session, and a
+      -- failure logged: a roles file that couldn't be written, or one someone deleted, rewrote band.json for everyone on every removal tick.
+      -- Round 3 review, 0.59.48)
+      local ok, made = band.try("groups roles file", save, g.root, function() end, nil, true)
+      backfilled[g.root] = not (ok and made == false) -- (not made as nothing is verified yet: tried again)
     end
     -- (the phone alerts' channel changed: someone was taken out (lib/removal.lua), or it was turned off and on. A phone on the old one hears nothing now)
     local ch, seen_key = require("alerts").channel(g.root), "alerts seen " .. g.id
