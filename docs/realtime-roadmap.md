@@ -952,3 +952,9 @@ Problems found, not fixed (risky or a behaviour change; for James to pick):
   its direct link listening and all three peers reached.
 - **Live audio:** in 1.0.13 on Windows and Linux; the Mac build waits for a fix (macOS CI: a peer given the right secret while running is
   never heard; Windows/Linux hear it 103 ms after). Not tried between computers yet: it needs the UDP rule beside the direct link's TCP one.
+- **Live audio between computers (1.0.13, James OK'd the UDP rule 2026-11-19):** the direct link rule's UDP twin added on the desktop and
+  laptop (same name, reaper.exe, 47281, 100.64.0.0/10). With the studio's Live audio on, desktop and laptop streamed to each other: round trip
+  59-75 ms, latency 69-78 ms (35 ms buffer), loss 0, a few underruns at the start only, audio block work 0.1-0.23 ms. LinuxBox (PulseAudio in
+  a VM) streamed at first (43 ms to the desktop over the LAN) then kept resetting with hundreds of underruns: a VM audio clock, not a real
+  computer's. The Mac (1.0.12) has no live audio yet. Levels were 0 (nothing on input 1), so nothing was heard. Switched off again after.
+  Next: an audible check with a mic or instrument on each end, then the hour-long run that's the roadmap's gate.
