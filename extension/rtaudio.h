@@ -22,6 +22,9 @@ void rt_stop(RtLink *l);
 int rt_peers(RtLink *l, const char *json);
 // A peer's level in the cue mix (gain: linear, 0..4) and mute. -> 1 when that peer is in the list.
 int rt_peer_set(RtLink *l, const char *peer, double gain, int mute);
+// What this computer sends. peer "" (or null): everything, on 0 = silence while the stream stays up (Mute me, push-to-talk; kept across
+// restarts). A peer in the list: whether it gets this computer's stream (talkback). -> 1 done, 0 when that peer isn't in the list. (James, rt)
+int rt_send(RtLink *l, const char *peer, int on);
 std::string rt_status(RtLink *l); // JSON: the link, and per peer latency, jitter buffer, loss, level (see rtaudio.cpp)
 // The audio thread (REAPER's hook, or the test's clock): capture before REAPER's processing, mix after. No lock, allocation or REAPER call.
 void rt_capture(RtLink *l, const double *const *in, int nin, int len, double srate);
