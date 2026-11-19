@@ -783,3 +783,13 @@ Built:
 - **Colour parity checked (0.59.49.20):** Health's row green on desktop, laptop and Mac ("every computer here shows the project's own colours,
   alike"); the master track's colour set on the desktop showed the same RGB on the laptop and the Mac (the Mac's colour byte order handled),
   and a reset to no colour reached both; rt_prefs (41 checks, the colour group included) green on all 3.
+- **Round 1 features checked in REAPER (0.59.49.20):**
+  - Punch-in assist: with time-selection auto-punch and one bar of pre-roll on the desktop, the laptop and the Mac showed "[punch] James punches
+    in-out" (3.69-7.38 s) and a pre-roll marker one bar before; both went at stop; none reached the band's markers or an event file.
+  - FLAC hint: In time at 1 bar on a FLAC project gives the yellow row (2-5 s steps, use 3 bars or WAV); 3 bars clears it.
+  - Forks: "XT Fork" made on the desktop, listed as "fork of main" on the laptop, its room.json carrying the origin and version; its tab
+    closed without saving. Compare/adopt not run (adopt rewrites main: a test room of its own first).
+  - Client links: the link's folder made in the Google Drive copy with the mix and comments.txt; a client line came back once as a note event
+    (and never twice). studio-notes.txt lists notes from the panel's history cache, so it fills in from the Mixes page, not a bare script.
+  - Not yet: late joiner and producer level (need a mid-take join), cloud update files (the test studio has no update key: deploys
+    unsigned), Ableton Link (needs a Link app on the LAN).
