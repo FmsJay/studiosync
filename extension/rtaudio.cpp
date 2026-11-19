@@ -39,6 +39,7 @@ typedef SOCKET sock_t;
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 typedef int sock_t;
 #define BAD_SOCK (-1)
@@ -49,6 +50,7 @@ typedef int sock_t;
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
