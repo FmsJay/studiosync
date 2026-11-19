@@ -301,13 +301,21 @@ local joined = {} -- machines this Live sync has already let in
 -- (A drag counts as no change until the drop: laptop, 2026-10-31, a band change applied 2 s into a drag undid it.)
 local function mouse_down() return reaper.JS_Mouse_GetState ~= nil and reaper.JS_Mouse_GetState(1) & 1 == 1 end
 local change_count, changed_at, held_since = -1, -math.huge, nil
-local function editing()
+local direct_in_at = -math.huge -- (when an event file last came over the direct link: the quiet window is 0.4 s then. James, rt)
+local direct_held = false -- (one came over the link and no receive has run since: a pass as the quiet window ends, sync.receive_now. James, rt)
+local polled_at, pass_took = -math.huge, 0 -- (when the last pass started, and how long it took: sync.look_now. James, rt)
+-- Only your edits count: noted at the start of each tick, and whatever the tick itself changed (looks, receives, heal, prints attaching,
+-- paint) taken in at its end. Nothing else runs in between, so a count that moved meanwhile was StudioSync's. (Noted only in receive, any
+-- write of ours since the last look read as "you editing" and held a direct-link change 2 s. James, rt)
+local function note_change()
   local c = reaper.GetProjectStateChangeCount(proj)
-  local t = reaper.time_precise()
-  if c ~= change_count then change_count, changed_at = c, t end
-  local busy = t - changed_at < 2 or mouse_down()
-  if busy then held_since = held_since or t else held_since = nil end
-  return busy and t - held_since < 10
+  if c ~= change_count then change_count, changed_at = c, reaper.time_precise() end
+end
+local function took_in() change_count = reaper.GetProjectStateChangeCount(proj) end
+local function editing()
+  local busy
+  busy, held_since = sync.editing_now(reaper.time_precise(), changed_at, held_since, sync.quiet_for(reaper.time_precise(), direct_in_at), mouse_down())
+  return busy
 end
 -- Something to redo (you just pressed undo): the band's changes wait up to 30 s, as any undo point of theirs would
 -- take your redo away (laptop, block K: Ctrl+Z, then Ctrl+Shift+Z did nothing). A new action of yours ends the wait.
@@ -437,9 +445,7 @@ function P.look(t)
       if not ok then band.log("mirror sync: " .. tostring(sent))
       elseif sent > 0 then band.log(sent .. " change(s) went to " .. (b.room == "main" and "the others" or ("the room '" .. b.room .. "'"))); pcall(require("api").event, "sent", { n = sent, song = b.song, room = b.room }) end
       mirror_took = reaper.time_precise() - now
-      -- (the look's own writes aren't you editing: counted as such, receive waited 2 s after each look. Only when editing() had already seen the count
-      -- the look started from, so an edit made meanwhile still counts. Round 1 review, 0.59.45)
-      if cc == change_count then change_count = reaper.GetProjectStateChangeCount(proj) end
+      -- (the look's own writes aren't you editing: the tick takes them in at its end, took_in. Round 1 review, 0.59.45; James, rt)
       mirror_cc, mirror_at, mirror_due = reaper.GetProjectStateChangeCount(proj), now, false
       local mirror = require("mirror")
       local n, key, ids = 0, tostring(proj), {}
@@ -517,8 +523,8 @@ function P.receive(t)
     if (mirror_at > -math.huge or not (s and s.sync == "mirror")) and sync.seen_mine(reaper.GetProjectStateChangeCount(proj), mirror_cc, now, mirror_at) and not editing() and not redo_pending() then
       dirty = reaper.IsProjectDirty(proj) ~= 0
       n = sync.receive(proj, cfg, b.song, room, room_can)
-      -- (receive's own changes aren't you editing: counted so, a backlog waited 2 s after every quarter second of applying. Round 1 review, 0.59.45)
-      if n > 0 then change_count = reaper.GetProjectStateChangeCount(proj) end
+      direct_held = false
+      -- (receive's own changes aren't you editing: the tick takes them in at its end, took_in. Round 1 review, 0.59.45; James, rt)
     end
     -- a lot came in and it's over: saved, so the next open starts from here and doesn't take it all in again with REAPER held up; only when
     -- nothing unsaved was yours before it came (James, Round 1 review, 0.59.45: lib/leave.lua leave.autosave)
@@ -979,7 +985,7 @@ local function tick_body() -- returns true to keep going
   together.tick()
   -- (the direct link: an event file that arrived brings a receive pass and a cue look now, not in up to 2 s; messages go where they belong)
   local dok, arrived = band.try("direct.live_tick", direct.live_tick, cfg, b.song, b.room, live_handlers)
-  if dok and (arrived or 0) > 0 then cue_left, quick_at, last = true, -math.huge, -math.huge end
+  if dok and (arrived or 0) > 0 then cue_left, quick_at, last, direct_in_at, direct_held = true, -math.huge, -math.huge, reaper.time_precise(), true end
   local tjson = reaper.GetExtState(band.SECTION, "transport " .. key) -- a start/stop from the panel or the band
   if tjson ~= "" then
     reaper.DeleteExtState(band.SECTION, "transport " .. key, false)
@@ -1172,10 +1178,17 @@ local function tick_body() -- returns true to keep going
   -- front, so that's GetPlayState's. The 15 s status heartbeat carries on. Round 1 review, 0.59.45)
   local rec_any = recording or live.recording_anywhere()
   if together.heartbeat_due(rec_any or undoing or live_set, status_info ~= nil, now, last_status) then last_status = now; pcall(sync.write_status, proj, cfg, b.song, b.room, status_info) end
-  if not rec_any and not undoing and not live_set and now - last > every and not (transport and due_in < 1.5) then
+  -- (or 0.1 s after an edit of yours settles: it goes out now, not at the next 2 s pass; and as the quiet window ends, for what came over the
+  -- link meanwhile. sync.look_now, sync.receive_now. James, rt)
+  local mouse = mouse_down()
+  if not rec_any and not undoing and not live_set and (now - last > every or sync.look_now(changed_at, polled_at, pass_took, now, mouse)
+      or sync.receive_now(direct_held, changed_at, sync.quiet_for(now, direct_in_at), polled_at, pass_took, now, mouse))
+      and not (transport and due_in < 1.5) then
     last = reaper.time_precise()
+    polled_at = last
     local ok, err = pcall(poll)
     if not ok then band.log("sync error: " .. tostring(err)) end
+    pass_took = reaper.time_precise() - polled_at
     -- more of the band's changes waiting than one pass applies: the next pass in 0.3 s, not 2 s (320 moved items
     -- took 73 s to land at 2 s a pass; laptop, 0.34.4). Each pass still applies at most a quarter second.
     -- (and when a burst of ours is still going out: mirror.watch sends a quarter second of it per pass)
@@ -1224,6 +1237,8 @@ tick = function()
       reaper.SetExtState(band.SECTION, "live owner " .. key, my_token, false)
     end) then return end
   local t0 = reaper.time_precise()
+  local open = reaper.ValidatePtr2(0, proj, "ReaProject*") -- (asked about only while open: the error box above)
+  if open then note_change() end -- (your edits since the last tick, before anything of ours: took_in below)
   laps, lap_t = {}, t0
   if reaper.time_precise() - sws_at > 1 then
     sws_at = reaper.time_precise()
@@ -1242,6 +1257,7 @@ tick = function()
     if reaper.time_precise() - said_at > 30 then said_at = reaper.time_precise(); band.log("live sync error: " .. tostring(go):match("^[^\n]*")) end
     go = true
   end
+  if open and reaper.ValidatePtr2(0, proj, "ReaProject*") then took_in() end -- (what this tick changed was StudioSync's, not you editing)
   local took = reaper.time_precise() - t0
   if took > 0.15 then
     lap("rest")

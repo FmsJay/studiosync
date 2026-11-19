@@ -1136,6 +1136,30 @@ end
 -- most. cc: the project's change count now; looked_cc, looked_at: the count just after the last look, and when it ran.
 function sync.seen_mine(cc, looked_cc, now, looked_at) return cc == looked_cc or now - looked_at > 30 end
 
+-- Real-time cadence (pure; Live sync's tick). A look goes 0.1 s after your last edit settles, not at the next 2 s pass (desktop -> laptop
+-- took 1.6-2.3 s with a 30 ms link. James, rt). SETTLE: a drag's drop or a burst of edits is one look. Never mid-drag, and the pass
+-- gets at most a fifth of REAPER's time on a big song, as the look's own mirror_took guard.
+-- changed_at: when your last edit was seen; polled_at, pass_took: when the last pass started and how long it took.
+sync.SETTLE, sync.QUIET, sync.QUIET_DIRECT, sync.DIRECT_FRESH = 0.1, 2, 0.4, 10
+function sync.look_now(changed_at, polled_at, pass_took, now, mouse)
+  return not mouse and changed_at > polled_at and now - changed_at >= sync.SETTLE and now - polled_at > pass_took * 5
+end
+-- How long after your last edit the band's changes wait: 0.4 s while they come over the direct link (arrived in the last 10 s), 2 s on
+-- Syncthing alone as before. (Unsent edits stay protected per object in mirror.receive, a drag by the mouse gate. James, rt)
+function sync.quiet_for(now, direct_at) return now - (direct_at or -math.huge) < sync.DIRECT_FRESH and sync.QUIET_DIRECT or sync.QUIET end
+-- A pass the moment the quiet window ends, for what came over the link and waited for your edit: else it waited for the next 2 s pass.
+-- Once: the last pass ran inside the window (that's why it waited), and the window is over now. held: something arrived and isn't in yet.
+function sync.receive_now(held, changed_at, quiet, polled_at, pass_took, now, mouse)
+  return held and not mouse and polled_at < changed_at + quiet and now >= changed_at + quiet and now - polled_at > pass_took * 5
+end
+-- Are you editing? Your last edit within `quiet` s, or the mouse held; never more than 10 s in a row, so a long edit can't hold the band's
+-- changes up for good. -> busy, held_since (kept by the caller).
+function sync.editing_now(now, changed_at, held_since, quiet, mouse)
+  local busy = now - changed_at < quiet or mouse
+  if busy then held_since = held_since or now else held_since = nil end
+  return busy and now - held_since < 10, held_since
+end
+
 -- Apply events this project hasn't applied yet, oldest first, from whoever may make each one.
 -- Opening a project (James, 0.58.82: "is there any way to pre-load everything better when loading a project?"): until its first catch-up is
 -- done, with the transport stopped, it takes a second of applying per pass instead of a quarter (you're waiting for it then, not playing),

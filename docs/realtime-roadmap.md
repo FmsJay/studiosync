@@ -178,6 +178,25 @@ refuses the keyed folder copy and runs its last good copy), and EXT_VERSION 1.0.
 lib/tools.lua EXT_WANT.
 
 ### Things that can go, or shrink, in the new style
+- **Takes to lanes becomes a studio setting (James, 2026-11-19).** The automatic "takes become lanes" pass
+  (prints.takes_to_lanes) stays, as a studio setting the owner controls, on by default (as today), so everyone's songs
+  stay alike across different REAPER setups. Items with several takes print their active take (today they get no print).
+  "Set up this project" and its lane setup stay as they are.
+
+### Shared settings: everything that isn't visual (James, 2026-11-19)
+- **Project settings, per song** (travel with the timeline, the driver changes them), added to what's shared already
+  (title, notes, group names, ruler lanes, timebase, pan law/mode, item mixing, pitch mode): project sample rate,
+  recording format (WAV/FLAC, bit depth), metronome and count-in, grid and snap, project start / measure offset,
+  playrate and preserve pitch, frame rate, render format. Not shared: record path, media folder, render output path
+  (each computer's own folders), and anything only visual (zoom, scroll, view).
+- **A studio preference set** for the global REAPER preferences that shape recording and editing (they live in each
+  computer's reaper.ini, not the song): auto-crossfade and default fades, record mode and takes-vs-lanes on record,
+  MIDI record/quantize options, item trim/overlap behaviour. Chosen by the owner, applied while working in that
+  studio's songs, your own values put back after, the way a persona swaps settings; built on ReaPersona's apply/restore
+  rather than a second mechanism. Each preference marked live or restart-needed.
+- **Never shared:** audio device, buffer, latency settings, paths, theme, layout, zoom, colours.
+- **Other StudioSync-imposed restrictions** are reviewed at the end of the branch and dropped where the link makes them
+  unnecessary: edit holds and "X is editing that", held-back items, waits for audio still arriving, the 2 s quiet gate.
 - Presence, heartbeat, status, cue and live-MIDI files: become link messages (the shared folder gets much quieter).
 - The waits for audio "still arriving" and the held-back/retry machinery: shrink as media streams over the link.
 - Polling every ~2 s: replaced by change callbacks plus link arrivals.

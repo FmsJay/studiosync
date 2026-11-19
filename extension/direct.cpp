@@ -484,30 +484,56 @@ bool kind_ok(const std::string &k)
 void sleep_ms(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 
 // ---- receiving a stream ----------------------------------------------------------------------------------------------------------------
-void put_le32(FILE *f, long long at, unsigned v)
+// (the stream file is unbuffered, so each of these is one write that reaches the file in the order made: a reader never sees a header ahead
+// of the bytes it describes. stdio flushed at its own moments before. James, rt)
+static FILE *open_stream(const std::string &p, const char *mode)
 {
-  const unsigned char b[4] = { (unsigned char)v, (unsigned char)(v >> 8), (unsigned char)(v >> 16), (unsigned char)(v >> 24) };
-  if (seek64(f, at) == 0) fwrite(b, 1, 4, f);
+  FILE *f = open_shared(p, mode);
+  if (f) setvbuf(f, nullptr, _IONBF, 0);
+  return f;
 }
-void put_le64(FILE *f, long long at, unsigned long long v) { put_le32(f, at, (unsigned)v); put_le32(f, at + 4, (unsigned)(v >> 32)); }
+static bool put_at(FILE *f, long long at, const char *d, size_t n) { return n == 0 || (seek64(f, at) == 0 && fwrite(d, 1, n, f) == n); }
 // A WAV arriving while it's still being recorded has the recorder's placeholder sizes: the copy here gets the sizes of what has arrived (whole
-// sample frames), after every chunk, so REAPER can open it and play it as it grows. The sender's own header comes at the end (op 3).
-void wav_patch(InStream &s)
+// sample frames), with every chunk, so REAPER can open it and play it as it grows. The sender's own header comes at the end (op 3).
+// The size fields for `len` bytes, in the order they're written: (offset, little-endian bytes). RIFF's first, then data's: a look in between
+// sees RIFF already covering bytes that are there, and data's the last one. (data's went first, and a look between the two read RIFF behind
+// data: Linux CI's "playable WAV mid-stream" failure. James, rt)
+static std::vector<std::pair<long long, std::string>> wav_sizes(const InStream &s, long long len)
 {
-  if (s.data_off == -2 || s.len < 12) return;
-  if (s.data_off < 0) {
-    std::string head((size_t)std::min<long long>(s.len, (long long)STREAM_HEAD), '\0');
-    if (seek64(s.f, 0) != 0 || fread(&head[0], 1, head.size(), s.f) != head.size()) return;
-    if (!direct_wav_layout(head, s.data_off, s.block_align, s.rf64, s.ds64_off)) {
-      const bool riff = head.compare(0, 4, "RIFF") == 0 || head.compare(0, 4, "RF64") == 0;
-      s.data_off = (!riff || s.len >= (long long)STREAM_HEAD) ? -2 : -1; // (not a WAV, or no "data" in its first 64 KB: left as it comes)
-      return;
-    }
-  }
-  if (s.len < s.data_off) return;
-  const long long data = (s.len - s.data_off) / s.block_align * s.block_align, riff = s.data_off + data - 8;
-  if (s.rf64) { put_le64(s.f, s.ds64_off, (unsigned long long)riff); put_le64(s.f, s.ds64_off + 8, (unsigned long long)data); put_le64(s.f, s.ds64_off + 16, (unsigned long long)(data / s.block_align)); }
-  else if (riff <= 0xffffffffLL) { put_le32(s.f, s.data_off - 4, (unsigned)data); put_le32(s.f, 4, (unsigned)riff); } // (data's first: RIFF's never behind it)
+  std::vector<std::pair<long long, std::string>> out;
+  if (s.data_off < 0 || len < s.data_off) return out;
+  const long long data = (len - s.data_off) / s.block_align * s.block_align, riff = s.data_off + data - 8;
+  auto le = [](unsigned long long v, int n) { std::string b((size_t)n, '\0'); for (int i = 0; i < n; ++i) b[(size_t)i] = (char)(v >> (8 * i)); return b; };
+  if (s.rf64) { out.push_back({ s.ds64_off, le(riff, 8) }); out.push_back({ s.ds64_off + 8, le(data, 8) }); out.push_back({ s.ds64_off + 16, le(data / s.block_align, 8) }); }
+  else if (riff <= 0xffffffffLL) { out.push_back({ 4, le(riff, 4) }); out.push_back({ s.data_off - 4, le(data, 4) }); }
+  return out;
+}
+// The layout, while it isn't known yet (data_off -1), from what's here and the chunk arriving: a WAV whose sizes are kept, or not one (-2).
+static void wav_learn(InStream &s, const char *q, size_t qn)
+{
+  if (s.data_off != -1) return;
+  std::string head((size_t)std::min<long long>(s.len, (long long)STREAM_HEAD), '\0');
+  if (!head.empty() && (seek64(s.f, 0) != 0 || fread(&head[0], 1, head.size(), s.f) != head.size())) return;
+  head.append(q, std::min(qn, (size_t)STREAM_HEAD - head.size()));
+  if (head.size() < 12 || direct_wav_layout(head, s.data_off, s.block_align, s.rf64, s.ds64_off)) return;
+  const bool riff = head.compare(0, 4, "RIFF") == 0 || head.compare(0, 4, "RF64") == 0;
+  s.data_off = (!riff || head.size() >= STREAM_HEAD) ? -2 : -1; // (not a WAV, or no "data" in its first 64 KB: left as it comes)
+}
+// A chunk appended at s.len: the audio first; then the header part this chunk brings (the first one, usually), already holding the new sizes;
+// then the sizes already on disk, RIFF's before data's. A look at any moment sees a WAV claiming only whole frames that are there (or no
+// header yet). shortcut: a header split over two chunks shows its placeholder sizes for a moment; the recorder writes it in one go.
+static bool wav_append(InStream &s, const char *q, size_t qn)
+{
+  const bool keep = !s.finalizing && s.codec == 0;
+  if (keep) wav_learn(s, q, qn);
+  const size_t cut = keep && s.data_off > s.len ? (size_t)std::min<long long>(s.data_off - s.len, (long long)qn) : 0;
+  std::string head(q, cut);
+  for (auto &f : wav_sizes(s, s.len + (long long)qn))
+    for (size_t i = 0; i < f.second.size(); ++i) if (f.first + (long long)i >= s.len && f.first + (long long)i < s.len + (long long)cut) head[(size_t)(f.first + (long long)i - s.len)] = f.second[i];
+  if (!put_at(s.f, s.len + (long long)cut, q + cut, qn - cut) || !put_at(s.f, s.len, head.data(), cut)) return false;
+  s.len += (long long)qn;
+  if (keep) for (auto &f : wav_sizes(s, s.len)) put_at(s.f, f.first, f.second.data(), f.second.size());
+  return true;
 }
 // One stream frame: op (0 begin, its payload the codec id: 0 = the file's own bytes, 1 = Opus packets later; 1 bytes at an offset, 3 the header rewritten, 2 done), u64 offset, payload. -> the answer: 0 kept; 7 + u64
 // what's here (a gap: send from there); 8 done but the copy doesn't match (begin again); 1, 5, 6 as for files.
@@ -539,13 +565,13 @@ std::string take_stream(const Studio &st, const std::string &studio, const std::
   auto fresh = [&]() {
     if (s.f) fclose(s.f);
     make_dirs(s.path.substr(0, s.path.find_last_of('/')));
-    s.f = open_shared(s.path, "w+b");
+    s.f = open_stream(s.path, "w+b");
     s.len = 0; s.total = -1; s.data_off = -1; s.finalizing = s.done = s.ok = false;
   };
   if (op == 0) { fresh(); s.codec = pn > 0 ? (unsigned char)p[0] : 0; if (!s.f) reply = std::string("\6", 1); }
   else {
     if (!s.f) { // (a restart here, or closed after done: what's on disk counts)
-      s.f = open_shared(s.path, "r+b");
+      s.f = open_stream(s.path, "r+b");
       if (s.f) { s.len = size64(s.f); s.data_off = -1; s.done = s.ok = false; }
       else if (op == 1 && off == 0) fresh();
     }
@@ -554,8 +580,7 @@ std::string take_stream(const Studio &st, const std::string &studio, const std::
       if (off > s.len) reply = gap();
       else if (off + (long long)pn > s.len) { // (bytes already here are skipped: a resend after a lost answer)
         const size_t skip = (size_t)(s.len - off);
-        if (seek64(s.f, s.len) != 0 || fwrite(p + skip, 1, pn - skip, s.f) != pn - skip) reply = std::string("\6", 1);
-        else { s.len += (long long)(pn - skip); if (!s.finalizing && s.codec == 0) wav_patch(s); }
+        if (!wav_append(s, p + skip, pn - skip)) reply = std::string("\6", 1);
         s.done = false;
         fflush(s.f);
       }
