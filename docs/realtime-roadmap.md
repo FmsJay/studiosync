@@ -579,3 +579,14 @@ Video audio plays through each person's system audio by default, with an option 
   time" at 1 bar keeps the transport one bar behind, but the newest few seconds of a FLAC take haven't arrived yet. Until step 4: Health
   could say "use 4+ bars, or record WAV, for in-time listening"; with step 4 the audio hook sends what's recorded straight from the input
   (Opus or raw, ~10-20 ms frames), and the file stream becomes the lossless follow-up ("fast first, lossless after").
+
+## Step 3, online half, checked in REAPER (0.59.49.11, 2026-11-19)
+- A fresh 4 s WAV put on a new track on the desktop: the laptop had the item playing its real file about 1 s later, the Mac within a few
+  seconds (each link look ~3-4 s apart, so the Mac's moment is an upper bound). Before, media waited on Syncthing (4-7 s, more for big files).
+- Syncthing takes the file we placed first as the same file (identical blocks): no conflict copies, every folder idle with nothing needed, and
+  the receiver's copy simply becomes the global version (modifiedBy that computer).
+- Found and fixed: Syncthing's own download, a moment behind, found the file there and left its full-size temp (`~syncthing~<name>.tmp` on
+  Windows, `.syncthing.<name>.tmp` elsewhere) for a day: double disk use for big media. Now the receiver asks Syncthing to rescan that file
+  the moment it's placed (the Mac then made no temp at all), and a whole-size temp untouched for a minute beside a placed file is removed.
+- Still open: takes go twice (the step-2 stream, then the shared copy as media): announce "media X = stream Y" to skip the second send.
+  Offline catch-up (step 3's second half) is next.
