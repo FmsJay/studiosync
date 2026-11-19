@@ -232,6 +232,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_H
   direct_audio_register(rec); // (reaper.StudioSync_DirectAudio*: the step-4 spike, idle until started)
   webui_register(rec); // (reaper.StudioSync_WebUI*: lib/webui.lua; idle until Live sync or the panel starts it)
   { void sign_register(reaper_plugin_info_t *); sign_register(rec); } // (reaper.StudioSync_Verify*, KeyCreate, Sign, FileHash: signed updates, extension/sign.cpp)
+  { void hop_register(reaper_plugin_info_t *); hop_register(rec); } // (reaper.StudioSync_HopLoopback, HopStatus: the Hop plug-in's end, extension/hop.cpp; idle until asked)
 #endif
   SetExtState(SECTION, "menu extension", EXT_VERSION, false);
   SetExtState(SECTION, "menu extension toolbar", toolbar_api ? "1" : "0", false); // (REAPER before 7.11 has no way: the panel says so)

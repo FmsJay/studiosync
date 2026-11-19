@@ -101,6 +101,31 @@ Hear a plug-in you don't have, live, through the bandmate's REAPER that does hav
   change during playback makes REAPER recompute PDC, which can glitch); if the network falls behind the margin the hop
   plays the print (or the dry signal) for that block instead of drifting. Live monitoring through a remote plug-in can't
   be compensated: prints and local plug-ins stay the answer there.
+- **First Hop plug-in built (rt-hop branch, 2026-11-19; offline tests and a CLAP smoke host only, not run in REAPER yet):**
+  - `plugin/`: `StudioSync Hop`, VST3 + CLAP on DPF (pinned commit, ISC: `plugin/third_party/README.md`), no UI. Parameters: Hop id
+    (1-64), Latency budget (256-8192 samples, default 7200 = 150 ms at 48 kHz), Dry when late (1 dry, 0 silence), Bypass (the host's bypass;
+    dry at the same latency), Late blocks (output). Latency and hop id changes wait until the transport is stopped.
+  - Timing (`plugin/hop_core.h`): frame i outputs the return for frame i - L; a return not back in time plays the input from i - L
+    (or silence) and counts the block as late, so the timing never moves. Checked to the sample in `tests/hop_test.cpp`.
+  - Channel (`plugin/hop_shm.h`, one C header for both sides): a named shared mapping per hop, `StudioSyncHop-<REAPER pid>-<hop id>`
+    (CreateFileMapping on Windows, shm_open elsewhere), not a StudioSync_* function: a bridged or sandboxed plug-in (reaper_host64)
+    can't call into the extension, and finds REAPER's pid as its parent's. Two stereo rings indexed by an absolute frame number:
+    `send` (plug-in writes, publishes `send_w`), `ret` (extension writes, publishes `ret_w`); ret frame i is the processed send frame i.
+  - Extension (`extension/hop.cpp`): `StudioSync_HopLoopback(hop_id, delay_samples)` (each frame back after `delay_samples` more were
+    sent; negative stops) and `StudioSync_HopStatus(hop_id)` (JSON: latency, frames sent and returned, late blocks).
+  - **For rtaudio (the network leg):** open the hop's mapping with `hop_shm_open(&m, hop_reaper_pid(), id)`; read send frames
+    `[r, send_w)` with `hop_copy_out`, send them tagged with their frame number; the bandmate's side runs them through the synced chain
+    and returns the same numbers; write them with `hop_copy_in(ret, frame, ...)` and move `ret_w` forward with `hop_store` only over a
+    contiguous run (conceal or zero a lost packet first). Set `ext_mode = HOP_EXT_NETWORK`. The bandmate's side (`Hop (source)` ->
+    plug-ins -> `Hop (sink)` on a hidden track) is the next step; `reserved[]` in the header is room for its round trip and losses.
+  - Limits for now: stereo only; one plug-in instance per hop id (two would both write `send`); a POSIX mapping's name is removed when
+    REAPER quits.
+  - Build: Windows with MSVC 14.29 (VS 2019 Build Tools, vcvars64) and CMake's NMake generator, `pluginuild_windows.cmd`, static CRT
+    (the plug-ins need only KERNEL32); macOS universal and Linux x86_64/aarch64 in `.github/workflows/plugin.yml`, which also runs
+    `tests/hop_test.cpp`. Output in `plugin/build/bin` (not committed). The budget must also cover the host's block size: a block longer
+    than the latency can never come back in time.
+  - To check in REAPER: the Hop loads as VST3 and CLAP, in-process and bridged ("Run as: separate process"); its latency shows in the
+    FX window's PDC and other tracks line up; the loopback is exact and stays in time; a too-long loopback plays dry without moving.
 
 ### 5. Video and screen share
 - The extension serves a small page on this computer and opens it in the browser; the browser's own WebRTC does
