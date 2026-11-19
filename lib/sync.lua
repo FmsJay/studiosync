@@ -891,6 +891,7 @@ function sync.is_mine(id, user)
 end
 function sync.post(cfg, song, room, ev, proj)
   ev_seq = ev_seq + 1
+  sync.posted = ev_seq -- (Live sync's cloud pass comes sooner after changes went out: James, rt)
   ev.format, ev.user, ev.time = band.FORMAT, cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ")
   if ev.type == "obj" and not ev.hlc then ev.hlc = require("mirror").hlc_next() end -- (what equal revisions are settled by: mirror.order_of)
   -- made with nobody else here (full control): everyone takes it when it reaches them, whoever drove then

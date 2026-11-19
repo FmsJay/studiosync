@@ -158,4 +158,22 @@ dc.id, dc.file = "Cy-2", "other.wav"
 assert(not streams.on_media_want(cfg, b, dc), "a file not here")
 dc.id, dc.file, dc.size = "Cy-3", "big.wav", 1234
 assert(not streams.on_media_want(cfg, b, dc), "another version here: Syncthing sorts it out")
+
+-- ---- nobody on the link, but a cloud copy: Live sync's cloud pass is asked for (James, rt) ----
+here, here_dev = {}, {}
+need_text = band.json_encode({ rest = { { name = "Song/rooms/main/media/cloudonly.wav", size = 77 }, { name = "Song/rooms/main/media/nowhere.wav", size = 5 } } })
+local asks_before, sent_before = need_asks, #sent
+clock = clock + streams.CLOUD_EVERY
+streams.cloud_root, streams.cloud_due = nil, nil
+assert(streams.catchup_tick(cfg, b) == 0 and need_asks == asks_before, "no peer, no cloud copy: Syncthing isn't even asked")
+streams.cloud_root = "C"
+clock = clock + streams.CATCHUP_LOOK
+assert(streams.catchup_tick(cfg, b) == 0 and not streams.cloud_due, "the cloud copy hasn't got them: no pass for nothing")
+disk["C/Song/rooms/main/media/cloudonly.wav"] = 77
+clock = clock + streams.CATCHUP_LOOK
+assert(streams.catchup_tick(cfg, b) == 0 and streams.cloud_due == true and #sent == sent_before, "it's in the cloud copy: a cloud pass, nothing on the link")
+streams.cloud_due = nil
+clock = clock + streams.CATCHUP_LOOK
+assert(streams.catchup_tick(cfg, b) == 0 and not streams.cloud_due, "asked at most every CLOUD_EVERY")
+streams.cloud_root = nil
 print("ok")

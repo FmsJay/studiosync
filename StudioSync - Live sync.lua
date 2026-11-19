@@ -277,6 +277,7 @@ end)
 -- while stopped: copying a long FLAC can hold up REAPER's screen for a moment.
 local drive = require("drive")
 local drive_at, drive_more, drive_said = -math.huge, false, nil
+local drive_posted, drive_soon_at = 0, nil -- (changes seen going out; when the cloud pass they bring is due)
 
 local last, recording, stopped_at = 0, false, 0
 local status_info -- (the status as last written: tick_body says "recording" with it, as the pass that writes it waits while recording)
@@ -635,22 +636,33 @@ function P.save_drive(t)
     elseif now - quiet.since > 1200 then band.try("end_of_session", end_of_session, "20 minutes with no changes") end
   end
   local droot = drive.root(cfg)
-  -- every 3 minutes (each pass while a big copy is still going): store-and-forward needs no hurry, and Drive limits
-  -- how often one account may change files. A pass copies for 0.1 s, and not in a pass that looked: 1.5 s every 10 s held
-  -- REAPER up that long each time while a big song's room went across (3,150 changes, 2026-11-10)
-  if droot and reaper.GetPlayStateEx(proj) == 0 and now - drive_at > (drive_more and 0 or 180) and mirror_at ~= now then
-    drive_at = now
-    local moved, more = 0, false
+  require("streams").cloud_root = droot -- (catch-up asks for a cloud pass when nobody on the link has what Syncthing still needs)
+  -- every 3 minutes (each pass while a big copy is still going): Drive limits how often one account may change files. A pass copies for 0.1 s,
+  -- and not in a pass that looked: 1.5 s every 10 s held REAPER up that long each time while a big song's room went across (3,150 changes,
+  -- 2026-11-10). Half a minute after your changes went out, or when catch-up wants the cloud copy, sooner (drive.pass_due: the cloud copy
+  -- as the studio's backup and its always-on member where there's no hub. James, rt)
+  if (sync.posted or 0) ~= drive_posted then drive_posted, drive_soon_at = sync.posted or 0, drive_soon_at or (now + drive.SOON) end
+  if droot and reaper.GetPlayStateEx(proj) == 0 and mirror_at ~= now and drive.pass_due(now, drive_at, drive_more, drive_soon_at, require("streams").cloud_due) then
+    drive_at, drive_soon_at, require("streams").cloud_due = now, nil, nil
+    local moved, more, err = 0, false, nil
     for _, room in ipairs(rooms) do
       local ok, n, m = pcall(drive.mirror, sync.room_dir(cfg, b.song, room), droot .. "/" .. b.song .. "/rooms/" .. room, 0.1, cfg.user)
       if ok then moved, more = moved + n, more or m
-      elseif drive_said ~= tostring(n) then drive_said = tostring(n); band.log(drive.label(drive.service_of(droot)) .. " copy: " .. tostring(n)) end
+      else err = tostring(n); if drive_said ~= err then drive_said = err; band.log(drive.label(drive.service_of(droot)) .. " copy: " .. err) end end
     end
     if not more then -- then the other songs here, one a pass: each keeps a copy a bandmate can open from Drive
       local ok, n, m = pcall(drive.upkeep, cfg, droot, require("songsync").here(cfg), b.song, 0.1)
       if ok then moved, more = moved + n, more or m
-      elseif drive_said ~= tostring(n) then drive_said = tostring(n); band.log(drive.label(drive.service_of(droot)) .. " copy: " .. tostring(n)) end
+      else err = tostring(n); if drive_said ~= err then drive_said = err; band.log(drive.label(drive.service_of(droot)) .. " copy: " .. err) end end
     end
+    -- (media brought from the cloud copy: Syncthing told at once and its temp download tidied, as for the link's. lib/streams.lua)
+    for _, path in ipairs(drive.landed) do
+      local s = require("streams")
+      s.placed_at[#s.placed_at + 1] = { target = path, size = band.size(path) or -1, at = now }
+      band.try("services.rescan", function() require("services").rescan(band.info(cfg.root).id, path:sub(#cfg.root + 2)) end)
+    end
+    drive.landed = {}
+    reaper.SetExtState(band.SECTION, "drive status", band.json_encode({ at = os.time(), moved = moved, more = more or nil, err = err }), false)
     band.try("sessionfile.catch_up", require("sessionfile").catch_up, b.song, 0.1) -- your recordings the end-of-session projects use
     -- (the service's own name, not always Google Drive: Round 1 review, 0.59.45. The panel keeps "copy up to date (" out of its toasts)
     if more and not drive_more then band.log(drive.label(drive.service_of(droot)) .. ": bringing the studio's copy of this room up to date (carries on between passes)") end

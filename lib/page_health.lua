@@ -248,6 +248,12 @@ function H.maint_rows()
   if not reaper.APIExists("JS_ReaScriptAPI_Version") then
     rows[#rows + 1] = { "js api", false, "yellow", "", "js_ReaScriptAPI isn't installed: counting the cloud copy's files and putting windows back where they were don't work. Extensions > ReaPack > Browse packages: js_ReaScriptAPI." }
   end
+  do -- (the cloud copy: the studio's backup, and its always-on member where there's no hub. Live sync records each pass. James, rt)
+    local dr = require("drive")
+    local okr, droot = pcall(dr.root, cfg)
+    local row = okr and droot and dr.health_row(band.json_decode(reaper.GetExtState(band.SECTION, "drive status")), os.time(), dr.label(dr.service_of(droot)))
+    if row then rows[#rows + 1] = row end
+  end
   local daway = reaper.GetExtState(band.SECTION, "drive_root") ~= "off" and require("drive").away
   if daway then
     local who = daway:match("GoogleDrive%-([^/]+)/") or daway:match("^(%a:)")

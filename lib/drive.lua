@@ -403,7 +403,14 @@ function drive.mirror(here, there, budget, user, wait)
     end
     if n ~= n_before then drive.listed[td] = nil end
     if fresh and tidy(td) > 0 then drive.listed[td] = nil end -- (Drive's "name (1).ext" copies: looked for with the listing, not every pass)
-    for _, f in ipairs(B) do if not inA[f] then if out_of_time() then return n, true end; copy(there .. "/" .. sub .. "/" .. f, here .. "/" .. sub .. "/" .. f) end end
+    for _, f in ipairs(B) do
+      if not inA[f] then
+        if out_of_time() then return n, true end
+        local k = n
+        copy(there .. "/" .. sub .. "/" .. f, here .. "/" .. sub .. "/" .. f)
+        if sub == "media" and n > k then drive.landed[#drive.landed + 1] = here .. "/media/" .. f end
+      end
+    end
   end
   -- plug-in chains: rewritten by their owner, so a differing copy is only refreshed where it's missing (Syncthing
   -- and the owner's own pass keep the rest current)
@@ -470,6 +477,37 @@ function drive.mirror(here, there, budget, user, wait)
     end
   end
   return n, false
+end
+
+-- ---- the cloud copy as the studio's backup and its always-on member where there's no hub (James, 2026-11-19, rt) ----
+-- A pass every EVERY s when nothing's happening; SOON s after changes went out (yours reach the cloud copy within half a minute, not three),
+-- or after catch-up found files Syncthing still needs and nobody on the link to bring them (the cloud may have them); straight on while a
+-- pass has work left. Never closer than SOON apart: Drive limits how often one account may change files. Pure.
+drive.EVERY, drive.SOON = 180, 30
+function drive.pass_due(now, last, more, soon_at, cloud_want)
+  if more then return true end
+  if now - last < drive.SOON then return false end
+  return (soon_at ~= nil and now >= soon_at) or cloud_want == true or now - last > drive.EVERY
+end
+-- Media a pass brought here from the cloud copy (Live sync has Syncthing rescan each and its temp tidied, as for the link's: lib/streams.lua)
+drive.landed = {}
+-- Health's row for the cloud copy from Live sync's record of its last pass ({ at, moved, more, err }, os.time()), or nil (no cloud copy here,
+-- or nothing recorded yet). label: the service's name. Pure.
+function drive.health_row(st, now, label)
+  if type(st) ~= "table" or not tonumber(st.at) then return nil end
+  local ago = now - st.at
+  local when = ago < 90 and "under a minute ago" or string.format("%d minutes ago", math.floor(ago / 60))
+  if st.err then
+    return { "cloud copy", false, "yellow", label .. ": last pass failed", label .. " copy: the last pass (" .. when .. ") failed: " .. tostring(st.err) ..
+      ". Everything still syncs between you; it tries again each pass." }
+  end
+  if ago > 15 * 60 then
+    return { "cloud copy", false, "yellow", label .. ": no pass lately", label .. " copy: no pass for " .. math.floor(ago / 60) ..
+      " minutes (passes run while REAPER is stopped, at most every 3 minutes). The backup is that far behind." }
+  end
+  local text = st.more and (label .. " copy: still copying (" .. tostring(st.moved or 0) .. " files last pass), carries on between passes")
+    or (label .. " copy: up to date, last pass " .. when)
+  return { "cloud copy", true, st.more and "grey" or "green", text, text .. ". The studio's backup, and what anyone opening the song brings when nobody else is on." }
 end
 
 -- Every song here in full keeps its copy on Drive, not only the one open (James, 2026-11-01): a song a bandmate

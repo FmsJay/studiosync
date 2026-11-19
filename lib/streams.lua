@@ -739,23 +739,40 @@ end
 -- The asker's side, from Live sync's tick (streams.tick). -> how many it asked for. Never raises (band.try around streams.tick).
 streams.asked, streams.served = {}, {} -- key -> { at, tries }; dev\0key -> when
 local look_at, need_text, need_song, need_wants, served_n = -math.huge, nil, nil, {}, 0
+local cloud_asked_at = -math.huge
+streams.CLOUD_EVERY = 60
+streams.cloud_root, streams.cloud_due = nil, nil -- (Live sync's: the cloud copy's root here; a cloud pass wanted now)
 function streams.catchup_tick(cfg, b)
   local now = reaper.time_precise()
   if now - look_at < streams.CATCHUP_LOOK then return 0 end
   look_at = now
-  if not direct.live_available() or not direct.ensure(cfg) then return 0 end -- (ensure: false with the studio's direct setting off)
-  local peers, dev_of = direct.peers(cfg, b.song, b.room)
-  if #peers == 0 then return 0 end -- (nobody here: Syncthing isn't even asked)
+  local peers, dev_of = {}, nil
+  if direct.live_available() and direct.ensure(cfg) then peers, dev_of = direct.peers(cfg, b.song, b.room) end -- (ensure: false with the direct setting off)
+  -- (nobody on the link: the cloud copy may have what Syncthing still needs, so Live sync's cloud pass is asked for, at most every CLOUD_EVERY
+  -- s; drive.mirror brings what this song's rooms lack. With no cloud copy either, Syncthing isn't even asked. James, rt)
+  local to_cloud = #peers == 0 and streams.cloud_root and now - cloud_asked_at >= streams.CLOUD_EVERY
+  if #peers == 0 and not to_cloud then return 0 end
   local services = require("services")
-  local me = services.my_device_id()
-  if not me then return 0 end
   -- (the list is read every look but Syncthing asked only every CATCHUP_EVERY s; read again only when its answer changed)
   local text = services.need(band.info(cfg.root).id, streams.CATCHUP_EVERY)
   if text ~= need_text or b.song ~= need_song then need_text, need_song, need_wants = text, b.song, streams.catchup_wants(band.json_decode(text or ""), b.song) end
   local rooms = cfg.root .. "/" .. b.song .. "/rooms/"
-  local due = streams.catchup_due(need_wants, streams.asked, function(w)
-    return band.size(rooms .. w.room .. "/media/" .. w.file) ~= nil or #band.subdirs(rooms .. w.room) == 0 -- (on_media would refuse it)
-  end, streams.media, b.song, now)
+  local function skip(w) return band.size(rooms .. w.room .. "/media/" .. w.file) ~= nil or #band.subdirs(rooms .. w.room) == 0 end -- (on_media would refuse it)
+  if to_cloud then
+    local cloud_rooms = streams.cloud_root .. "/" .. b.song .. "/rooms/"
+    for k, w in ipairs(need_wants) do
+      if k > streams.CATCHUP_BATCH then break end
+      if not skip(w) and band.size(cloud_rooms .. w.room .. "/media/" .. w.file) == w.size then
+        streams.cloud_due, cloud_asked_at = true, now
+        streams.trace("cloud catch-up: " .. w.key .. " is in the cloud copy, nobody on the link: a cloud pass now")
+        break
+      end
+    end
+    return 0
+  end
+  local me = services.my_device_id()
+  if not me then return 0 end
+  local due = streams.catchup_due(need_wants, streams.asked, skip, streams.media, b.song, now)
   for _, w in ipairs(due) do
     local tries = (streams.asked[w.key] or {}).tries or 0
     local peer = streams.catchup_peer(peers, dev_of or {}, w.by, tries)
