@@ -162,6 +162,9 @@ function ff.extension_tick(dir)
   local new = band.read(from)
   if not new or #new < 10000 then return end
   if band.read(to) == new then ext_done = true; return end -- (already in, waiting for REAPER's restart)
+  -- (only the build this code wants, EXT_VERSION as the binary holds it: the realtime branch shipped a 1.0.6 Mac build beside a 1.0.11
+  -- want, and the Mac's 1.0.10 was swapped for it at the next start. rt)
+  if not new:find(want .. "\0", 1, true) then ext_done = true; band.log("The menu extension in " .. band.norm(dir) .. " isn't " .. want .. ": left as it is"); return end
   ext_done = true
   local old = to .. ".old-" .. have
   os.remove(old)
