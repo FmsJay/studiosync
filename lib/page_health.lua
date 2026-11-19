@@ -216,6 +216,10 @@ function H.maint_rows()
     local ok, words = pcall(require("callapps").health_words)
     if ok and words then rows[#rows + 1] = { "call app", false, "yellow", "", words } end
   end
+  do -- Syncthing's view of each studio folder, and free disk here and on the others (lib/rthealth.lua. James, rt)
+    local okh, hrows = pcall(require("rthealth").rows, cfg, b, proj)
+    for _, r in ipairs(okh and hrows or {}) do rows[#rows + 1] = r end
+  end
   if view.newer then rows[#rows + 1] = { "update " .. view.newer, false, "yellow", "", "StudioSync " .. view.newer .. " is in use in the studio; you have " .. band.VERSION .. ": " .. require("live").PLACES.update .. "." } end
   pcall(require("drive").root, cfg) -- (what it says next is about the group it last looked at: this tab's, then. Mac, 0.51.12)
   local dmiss = reaper.GetExtState(band.SECTION, "drive_root") ~= "off" and require("drive").missing

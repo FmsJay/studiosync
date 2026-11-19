@@ -381,6 +381,12 @@ function services.need(folder, every)
   local cmd = st_api("/rest/db/need?folder=" .. folder)
   return cmd and background("st-need-" .. (tostring(folder):gsub("[^%w%-]", "_")), cmd, every or 30) or nil
 end
+-- Any Syncthing REST answer in the background under `name`, asked again at most every `every` seconds (lib/rthealth.lua: Health's folder
+-- rows. James, rt). -> the last answer's text, nil before the first or without Syncthing's config.
+function services.st_bg(name, path, every)
+  local cmd = st_api(path)
+  return cmd and background(name, cmd, every) or nil
+end
 function services.syncthing_peers_now()
   local cmd, why = st_api("/rest/system/connections")
   if not cmd then return nil, why end
