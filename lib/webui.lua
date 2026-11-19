@@ -127,7 +127,7 @@ function webui.clean_text(t)
   return t
 end
 -- An action's JSON (StudioSync_WebUIPoll) -> its topic and the table, or nil. Only the topics the pages may send.
-webui.ACTIONS = { chat = true }
+webui.ACTIONS = { chat = true, rtc = true } -- (rtc: a video call or screen share's setup, lib/webcall.lua)
 function webui.parse_action(s)
   local a = type(s) == "string" and s ~= "" and band.json_decode(s)
   if type(a) ~= "table" or type(a.topic) ~= "string" or not webui.ACTIONS[a.topic] then return nil end
@@ -135,7 +135,7 @@ function webui.parse_action(s)
 end
 
 -- ---- Live sync's tick -------------------------------------------------------------------------------------------------------------------
-local published, pres_at, chat_at, was_front, was_looking = {}, -math.huge, -math.huge, false, false
+local published, pres_at, chat_at, rtc_at, was_front, was_looking = {}, -math.huge, -math.huge, -math.huge, false, false
 -- Is a page open? An open event stream is a client; a page polling /api/state (no EventSource) shows as the served count moving. The
 -- status is a short string and only two numbers are wanted, so no JSON decode each tick. (The first read counts as a request: the grace
 -- covers a page already open when Live sync starts.) (James, rt)
@@ -159,12 +159,15 @@ function webui.tick(proj, cfg, b, handlers)
   if front ~= was_front then was_front, published, pres_at, chat_at = front, {}, -math.huge, -math.huge end
   if not front or not webui.start(cfg) then return end
   local chat = require("page_chat")
+  local webcall = require("webcall")
   if type(handlers) == "table" and not handlers.chat then handlers.chat = function(d) chat.from_msg(cfg, d) end end
+  if type(handlers) == "table" and not handlers.rtc then handlers.rtc = function(d) webcall.link(cfg, b, d) end end
   for _ = 1, 20 do
     local topic, a = webui.parse_action(reaper.StudioSync_WebUIPoll())
     if not topic then break end
     local text = topic == "chat" and webui.clean_text(a.text)
     if text then chat.post(cfg, b, text, "song"); chat_at = -math.huge end
+    if topic == "rtc" then webcall.page(cfg, b, a) end
   end
   local now = reaper.time_precise()
   -- Nobody looking: no presence (sync.authority reads every claims file) and no chat built. A page arriving gets both on this tick, so the
@@ -185,6 +188,8 @@ function webui.tick(proj, cfg, b, handlers)
     local _, who = sync.authority(cfg, b.song, b.room)
     publish("presence", webui.presence_model(b.song, b.room, me, require("presence").peers(cfg, b.song, b.room), who))
   end
+  -- (video calls: a message in or out shows at once; who's open is looked at again every second, as their "here"s age out)
+  if webcall.dirty() or now - rtc_at >= 1 then rtc_at = now; publish("rtc", webcall.model(webcall.me(cfg), os.time())) end
   if now - chat_at >= webui.CHAT_EVERY then
     chat_at = now
     local t = chat.read(cfg, b, "song")

@@ -1,0 +1,37 @@
+/* StudioSync's video calls and screen share (call.js). Uses style.css's colours, so light and dark follow it. GPL-3.0-or-later. */
+#sharebar { display: flex; align-items: center; gap: 10px; padding: 8px 16px; background: var(--rec); color: #fff; font-weight: 600; }
+#sharebar[hidden], #call[hidden], .call-browser[hidden] { display: none; }
+#sharebar span { flex: 1; min-width: 0; }
+#sharebar button { background: #fff; color: var(--rec); border-color: #fff; font-weight: 700; }
+#call { padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); max-height: 60vh; overflow-y: auto; }
+#call h2 { display: inline-block; margin-right: 12px; }
+.call-opt { font-size: 13px; color: var(--dim); }
+.call-note { font-size: 13px; margin: 6px 0 0; }
+.call-note:empty { display: none; }
+.call-browser { display: inline-block; font-size: 13px; color: var(--accent); margin-top: 4px; }
+.call-people li, .call-now li, .ring { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 0; }
+.call-people .name { font-weight: 600; }
+.call-people li > button:first-of-type, .call-now li > button { margin-left: auto; }
+.call-people button, .call-now button, .ring button { padding: 3px 10px; font-size: 13px; }
+.ring { background: var(--me); border: 1px solid var(--accent); border-radius: 10px; padding: 8px 10px; margin: 6px 0; }
+.ring button.go { margin-left: auto; background: var(--play); border-color: var(--play); color: #fff; }
+button.stop { background: var(--rec); border-color: var(--rec); color: #fff; }
+button:disabled { opacity: .5; cursor: default; }
+.call-big, .call-tiles { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.call-big:empty, .call-tiles:empty { display: none; }
+.tile { position: relative; margin: 0; flex: 1 1 200px; max-width: 320px; background: #000; border-radius: 8px; overflow: hidden; }
+.tile.big { flex: 1 1 100%; max-width: none; }
+.tile video { display: block; width: 100%; height: auto; max-height: 45vh; object-fit: contain; background: #000; }
+.tile.big video { cursor: crosshair; }
+.tile.mirror video { transform: scaleX(-1); }
+.tile figcaption { position: absolute; left: 6px; bottom: 6px; font-size: 12px; color: #fff; background: rgba(0, 0, 0, .55); padding: 1px 6px; border-radius: 6px; }
+/* the pointer: a dot where the viewer clicked, named, gone after a moment */
+.dot { position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; background: var(--accent); border: 2px solid #fff;
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, .35); pointer-events: none; animation: ss-dot 2.5s ease-out forwards;
+  font-size: 11px; line-height: 14px; color: #fff; text-indent: 22px; white-space: nowrap; text-shadow: 0 0 3px #000; } /* (the name beside it) */
+@keyframes ss-dot { 0% { transform: scale(1.6); opacity: 1; } 70% { opacity: 1; } 100% { transform: scale(1); opacity: 0; } }
+@media (max-width: 320px) {
+  #sharebar { padding: 6px 8px; font-size: 12px; }
+  #call { padding: 8px; }
+  .tile { flex-basis: 100%; max-width: none; }
+}

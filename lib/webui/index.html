@@ -7,7 +7,9 @@
 <meta name="color-scheme" content="light dark">
 <title>StudioSync</title>
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="call.css">
 <script src="app.js" defer></script>
+<script src="call.js" defer></script>
 </head>
 <body>
 <header>
@@ -19,6 +21,8 @@
   <button id="dock" type="button" hidden>Undock</button>
   <button id="theme" type="button" aria-label="Switch light or dark">&#9680;</button>
 </header>
+<div id="sharebar" role="status" hidden></div>
+<section id="call" aria-labelledby="call-h" hidden></section>
 <main>
   <section id="here" aria-labelledby="here-h">
     <h2 id="here-h">Here</h2>
