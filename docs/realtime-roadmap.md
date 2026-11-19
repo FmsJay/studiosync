@@ -390,7 +390,7 @@ Like Helgobox's move away from REAPER's own widgets, now that the extension is m
 - **Docking:** built (above); check it in REAPER on Windows and a Mac. WebKitGTK on Linux still to do.
 - **Pages, then parity:** scopes and to-dos/links in chat, Health, Play together; the ReaImGui panel stays until each page matches.
 - **Shared DAW view, view-only first** (stage 1 above): tracks, items, markers and cursors from the synced model, follow, play/stop.
-- **Video and screen share** (step 5) over WebRTC inside the view; the Studio browser after it.
+- **Video and screen share** (step 5): first version built (step 5 above: calls, screen share, pointer); check it in REAPER on two computers. The Studio browser after it.
 
 ### What the web UI makes possible (James: "keep them coming")
 - **Sharing each other's REAPER.** Screen share of the REAPER window inside the docker, with a live pointer ("look
