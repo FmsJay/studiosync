@@ -258,6 +258,53 @@ function R.section_recall()
     end
     ImGui.EndChild(ctx)
   end
+  R.section_kept()
+end
+
+-- Automation of yours that was refused and kept (lib/mirror.lua put_back, 0.59.39): put back on its track, where it goes out as your change if
+-- it may by then, or let go. Read every few seconds: they're files in this computer's StudioSync folder.
+local kept_at, kept = -math.huge, {}
+local function kept_list()
+  if reaper.time_precise() - kept_at < 3 then return kept end
+  kept_at, kept = reaper.time_precise(), {}
+  local dir = band.home() .. "/kept automation"
+  for _, f in ipairs(band.files(dir, ".json")) do
+    local k = band.read_json(dir .. "/" .. f)
+    if type(k) == "table" and type(k.state) == "string" and type(k.track) == "string" then k.path = dir .. "/" .. f; kept[#kept + 1] = k end
+  end
+  table.sort(kept, function(a, x) return tostring(a.time) > tostring(x.time) end)
+  return kept
+end
+function R.section_kept()
+  local list = kept_list()
+  if #list == 0 then return end
+  local b, cfg, proj = E.b(), E.cfg(), E.proj()
+  local room = b and sync.room_dir(cfg, b.song, b.room)
+  ImGui.SeparatorText(ctx, "Kept automation")
+  ImGui.TextDisabled(ctx, "Automation of yours that wasn't sent (it wasn't yours to change then).")
+  for i, k in ipairs(list) do
+    ImGui.PushID(ctx, "kept" .. i)
+    local tr = k.room == room and mirror.find(proj, "track", k.track)
+    ImGui.AlignTextToFramePadding(ctx)
+    ImGui.Text(ctx, string.format("%s  ·  %s", tostring(k.name or "a track"), local_time(k.time or "")))
+    next_to("Put mine back")
+    ImGui.BeginDisabled(ctx, not tr)
+    if ImGui.SmallButton(ctx, "Put mine back") then
+      local local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1"
+      if mirror.apply(proj, { obj = "env", oid = k.oid, track = k.track, name = k.name, state = k.state }, nil, local_mix) then
+        os.remove(k.path); kept_at = -math.huge
+        band.log("your automation on " .. tostring(k.name) .. " is back: it goes to the others as your change, if it's yours to change now")
+      else band.msg("Not now: bring this project to the front, and stop recording, then try again.") end
+    end
+    ImGui.EndDisabled(ctx)
+    ImGui.SetItemTooltip(ctx, tr and "Puts your automation back on the track. If the track is yours to change now, it goes to the others like any change; if not, it's kept again."
+      or "Its track isn't in this project (it was kept from another one, or the track is gone).")
+    next_to("Let it go")
+    if ImGui.SmallButton(ctx, "Let it go") and reaper.MB("Forget this automation of yours on " .. tostring(k.name) .. "? It can't be brought back after.", "StudioSync", 4) == 6 then
+      os.remove(k.path); kept_at = -math.huge
+    end
+    ImGui.PopID(ctx)
+  end
 end
 
 function R.section_history()

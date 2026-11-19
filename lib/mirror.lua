@@ -1227,6 +1227,19 @@ function mirror.whose(list)
   return table.concat(out, " and ")
 end
 
+-- Automation without what a tempo change moves: each point's time (and an automation item's place and length), its value and shape kept.
+-- (Just after a tempo change landed, any automation that differed was taken for REAPER moving it with the tempo, and kept here as the band's:
+-- a point drawn then was neither sent nor put back. Now only one that differs in its times alone is. 0.59.39) Pure.
+function mirror.env_sans_tempo(state)
+  local out = {}
+  for line in (state or ""):gmatch("[^\n]+") do
+    local kw, rest = line:match("^%s*(%S+)%s*(.*)$")
+    if kw == "PT" then out[#out + 1] = "PT " .. rest:gsub("^%S+%s*", "")
+    elseif kw == "POOLEDENVINST" then out[#out + 1] = "POOLEDENVINST " .. rest:gsub("^%S+%s+%S+%s+%S+%s*", "")
+    else out[#out + 1] = line end
+  end
+  return table.concat(out, "\n")
+end
 -- An item without what a tempo change moves: where it sits, how long, and how fast. Pure.
 local TEMPO_MOVES = { POSITION = true, LENGTH = true, PLAYRATE = true, SOFFS = true, SNAPOFFS = true, FADEIN = true, FADEOUT = true }
 function mirror.sans_tempo(state)
@@ -2794,6 +2807,19 @@ function mirror.watch(proj, cfg, song, room, opts)
           why.text = why.text .. ". Your plug-in settings are saved as an FX chain (load it from the track's FX window: FX > Load FX chain): " .. path
         end
       end
+      -- (your automation, refused, kept likewise: there's no envelope file REAPER loads, so Restore > Kept automation puts it back on the track,
+      -- where it goes out as your change if it may by then. Automation drawn while playing was lost when the driver changed hands before the
+      -- stop. James, 0.59.39)
+      if o.kind == "env" and why.text and not why.to and not mirror.copied[copy_key] and type(o.state) == "string" and o.state ~= "" then
+        mirror.copied[copy_key] = true
+        local band = require("band")
+        local dir = band.home() .. "/kept automation"
+        reaper.RecursiveCreateDirectory(dir, 0)
+        local nm = ((why.name or "") ~= "" and why.name or "a track"):gsub("[^%w%-_ ]", "")
+        local path = dir .. "/" .. nm .. " " .. os.date("%Y-%m-%d %H%M%S") .. ".json"
+        local keep = { oid = o.oid, track = o.track or ("T" .. o.oid:sub(2)), name = why.name, state = o.state, room = room_dir, time = os.date("!%Y-%m-%dT%H:%M:%SZ") }
+        if pcall(band.write_json, path, keep) then why.text = why.text .. ". Your automation is kept: Restore > Kept automation puts it back" end
+      end
       local ok, h = mirror.apply(proj, ev, media, opts.local_mix)
       if ok then remember(proj, o.oid, ev.rev, h, ev.id, mirror.order_of(ev))
       elseif mirror.PART[o.kind] then return -- (waits for this tab to come to the front)
@@ -3170,8 +3196,9 @@ function mirror.watch(proj, cfg, song, room, opts)
         end
         -- the tempo changed and REAPER moved this with it: nobody's edit. It's where it should be, and whoever may change it sends
         -- it. (Put back, a bandmate's part sat at its old time, out of step with the new tempo, until theirs arrived.)
-        if last and reaper.time_precise() < (mirror.tempo_until[tostring(proj)] or 0) and (o.kind == "env"
-            or o.kind == "item" and type(last.state) == "string" and mirror.sans_tempo(o.state) == mirror.sans_tempo(last.state)) then
+        if last and reaper.time_precise() < (mirror.tempo_until[tostring(proj)] or 0) and type(last.state) == "string" and (o.kind == "env"
+            and mirror.env_sans_tempo(o.state) == mirror.env_sans_tempo(last.state)
+            or o.kind == "item" and mirror.sans_tempo(o.state) == mirror.sans_tempo(last.state)) then
           mirror.unsent[rk] = nil
           return remember(proj, o.oid, rev, o.hash, evid, kord)
         end
