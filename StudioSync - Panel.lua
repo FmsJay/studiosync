@@ -2250,9 +2250,10 @@ local function studio_debug()
   local groups, dm = require("groups"), require("debugmode")
   ImGui.SeparatorText(ctx, "Debug mode")
   local on = dm.on(cfg.root)
-  ImGui.TextDisabled(ctx, on and ("On: every computer in the studio saves what it sees (versions, the project as it has it, what's waiting or was skipped, " ..
-    "its log and errors) into the studio's _debug folder every 5 minutes, for working out what went wrong.") or
-    "Off. On, every computer in the studio saves a report, its log and errors into the studio's _debug folder every 5 minutes.")
+  ImGui.TextDisabled(ctx, on and ("On: every computer in the studio saves what it sees (versions, a copy of the project as it has it, what's waiting or was skipped, " ..
+    "its setup, log and errors, and REAPER's crash reports) into the studio's _debug folder every 5 minutes, for working out what went wrong. " ..
+    "Only the owner and admins get everyone's; the others keep their own.") or
+    "Off. On, every computer in the studio saves a report, a copy of its project, its log, errors and crash reports into the studio's _debug folder every 5 minutes, for the owner and admins.")
   if studio_admin() then
     local ch, v = ImGui.Checkbox(ctx, "Debug mode for everyone##studiodebug", on)
     if ch then
@@ -2771,7 +2772,9 @@ function ui.sync_problem()
   ImGui.SetCursorPosX(ctx, 16)
   ImGui.TextColored(ctx, RED, words)
 end
-local function frame_app()
+-- frame_app's parts (split, 0.59.40): the top bar, the bars under it, then the page. t: what the top bar worked out that the rest uses.
+local F = {}
+function F.top_bar()
   local ww, wh = ImGui.GetWindowSize(ctx)
   local compact = wh < 440 or ww > wh * 2.4 -- a bottom dock: a row of pages instead of a sidebar
   if reaper.time_precise() - level_at > 2 then level_at, level = reaper.time_precise(), health.maint_level() end
@@ -2988,6 +2991,10 @@ local function frame_app()
     ImGui.PopStyleVar(ctx)
     ImGui.SetCursorPosX(ctx, 16)
   end
+  return { wh = wh, compact = compact, fh = fh, nav_item = nav_item, y0 = y0, undo_redo = undo_redo, toast_place = toast_place }
+end
+function F.bars(t)
+  local wh, compact, fh, nav_item, y0, undo_redo, toast_place = t.wh, t.compact, t.fh, t.nav_item, t.y0, t.undo_redo, t.toast_place
   -- what StudioSync just did, under the bar for a few seconds (actions used to report only to the Console)
   local log = band.activity()
   local newest = log[1]
@@ -3009,7 +3016,7 @@ local function frame_app()
       if not routine(l) then say = l; break end
     end
     local saying = tools.toast_at and reaper.time_precise() - tools.toast_at < 6
-    local kept = band.json_decode(reaper.GetExtState(band.SECTION, "put back"))
+    local kept = band.ext_json(band.SECTION, "put back")
     local in_bar = kept and kept.text and say and say:find(kept.text, 1, true) -- (the bar says it and stays: Mac, 0.57.6)
     if not in_bar and not (saying and say and routine(say)) then
       tools.toast_line, tools.toast_at = say, tools.toast_seen and reaper.time_precise() or -math.huge
@@ -3091,6 +3098,9 @@ local function frame_app()
   if not bars_ok and bars_said ~= tostring(bars_err) then bars_said = tostring(bars_err); reaper.ShowConsoleMsg("StudioSync panel: " .. bars_said .. "\n") end
   local _, bars_h = ImGui.GetItemRectSize(ctx)
   if bars_h < 6 then ImGui.SetCursorPosY(ctx, bars_at) end -- (nothing in them: no gap. An empty child is still 4 px tall, and 8 more of spacing)
+end
+function F.page(t)
+  local wh, compact, fh, nav_item, y0, undo_redo, toast_place = t.wh, t.compact, t.fh, t.nav_item, t.y0, t.undo_redo, t.toast_place
   ui.asked_page()
   restore.flash_tick() -- (Restore's Go to it: what a change touched blinks a moment)
   local want
@@ -3194,6 +3204,11 @@ local function frame_app()
   if was_wide then ImGui.PopStyleVar(ctx, 2) end
   ImGui.EndDisabled(ctx)
   ImGui.PopStyleVar(ctx)
+end
+local function frame_app()
+  local t = F.top_bar()
+  F.bars(t)
+  F.page(t)
 end
 
 local start_songs -- (the start screen's song list, read every few seconds)
@@ -3392,12 +3407,12 @@ local function pill_window()
     local words = "StudioSync  ·  " .. (problem ~= "" and problem or live_on and (ui.status and ui.status.label or "Sync on") or "Sync off") .. (view and view.driver and ("  ·  " .. (view.driver == cfg.user and "you drive" or (view.driver .. " drives"))) or "") ..
       (unread > 0 and string.format("  ·  %d new message%s", unread, unread == 1 and "" or "s") or "")
     local waiting = unread
-    local pb = band.json_decode(reaper.GetExtState(band.SECTION, "put back"))
+    local pb = band.ext_json(band.SECTION, "put back")
     if pb and pb.text then
       words = words .. string.format("  ·  %d edit%s not sent", pb.n or 1, (pb.n or 1) == 1 and "" or "s")
       waiting = waiting + (pb.n or 1)
     end
-    local pp = band.json_decode(reaper.GetExtState(band.SECTION, "print problem"))
+    local pp = band.ext_json(band.SECTION, "print problem")
     if pp and pp.text and not (pp.at and os.time() - pp.at > 1800) then -- (a print that didn't come out: lib/prints.lua prints.problem. 0.59.12)
       words = words .. string.format("  ·  %d print problem%s", pp.n or 1, (pp.n or 1) == 1 and "" or "s")
       waiting = waiting + (pp.n or 1)
@@ -3514,7 +3529,7 @@ local function loop_body()
   if reaper.GetExtState(band.SECTION, "panel clipped") == "?" or ui.clipped then -- (the test reads it back, then clears it to stop)
     if ui.clipped and reaper.GetExtState(band.SECTION, "panel clipped") == "" then ui.clipped = nil
     else
-      if ui.clipped then reaper.SetExtState(band.SECTION, "panel clipped", band.json_encode(ui.clipped), false) end
+      if ui.clipped then band.set_ext_json(band.SECTION, "panel clipped", ui.clipped, false) end
       ui.clipped = {}
     end
   end

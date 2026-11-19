@@ -76,7 +76,7 @@ function access.mine(root)
   local key = "guest list " .. root
   local kept
   do
-    local was = band.json_decode(reaper.GetExtState(band.SECTION, key))
+    local was = band.ext_json(band.SECTION, key)
     if type(was) == "table" then kept = {}; for _, s in ipairs(was) do if type(s) == "string" then kept[s] = true end end end
   end
   local set

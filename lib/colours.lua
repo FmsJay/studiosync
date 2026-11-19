@@ -60,7 +60,7 @@ colours.KIND_NAMES = { "Buses and effects", "Drums", "Bass", "Guitars", "Keys", 
 local kind_cache, kind_at = nil, -math.huge
 function colours.kind_colours()
   if kind_cache and reaper.time_precise() - kind_at < 2 then return kind_cache end
-  local saved = band.json_decode(reaper.GetExtState(band.SECTION, "colour kinds"))
+  local saved = band.ext_json(band.SECTION, "colour kinds")
   local out = {}
   for i, k in ipairs(KINDS) do
     local v = type(saved) == "table" and tonumber(tostring(saved[colours.KIND_NAMES[i]] or ""), 16)
@@ -70,10 +70,10 @@ function colours.kind_colours()
   return out
 end
 function colours.set_kind_colour(i, rgb)
-  local saved = band.json_decode(reaper.GetExtState(band.SECTION, "colour kinds"))
+  local saved = band.ext_json(band.SECTION, "colour kinds")
   if type(saved) ~= "table" then saved = {} end
   saved[colours.KIND_NAMES[i]] = rgb and string.format("%06X", rgb) or nil
-  reaper.SetExtState(band.SECTION, "colour kinds", band.json_encode(saved), true)
+  band.set_ext_json(band.SECTION, "colour kinds", saved, true)
   kind_cache = nil
 end
 function colours.kind_of(name)
@@ -92,7 +92,7 @@ local named_cache = {}
 function colours.named(kind)
   local c = named_cache[kind]
   if c and reaper.time_precise() - c.at < 2 then return c.v end
-  local saved, out = band.json_decode(reaper.GetExtState(band.SECTION, "colour " .. kind)), {}
+  local saved, out = band.ext_json(band.SECTION, "colour " .. kind), {}
   if type(saved) == "table" then
     for k, v in pairs(saved) do local n = type(k) == "string" and tonumber(tostring(v), 16); if n then out[k] = n end end
   end
@@ -100,10 +100,10 @@ function colours.named(kind)
   return out
 end
 function colours.set_named(kind, key, rgb)
-  local saved = band.json_decode(reaper.GetExtState(band.SECTION, "colour " .. kind))
+  local saved = band.ext_json(band.SECTION, "colour " .. kind)
   if type(saved) ~= "table" then saved = {} end
   saved[key] = rgb and string.format("%06X", rgb) or nil
-  reaper.SetExtState(band.SECTION, "colour " .. kind, band.json_encode(saved), true)
+  band.set_ext_json(band.SECTION, "colour " .. kind, saved, true)
   named_cache[kind] = nil
 end
 function colours.forget_named(kind) reaper.DeleteExtState(band.SECTION, "colour " .. kind, true); named_cache[kind] = nil end
@@ -407,7 +407,7 @@ function colours.look_of(proj, root)
   if type(own) == "table" and type(own.scheme) == "string" then return own, "project" end
   local studio = root and require("groups").colours(root)
   if studio then return studio, "studio" end
-  local last = band.json_decode(reaper.GetExtState(band.SECTION, "colour look"))
+  local last = band.ext_json(band.SECTION, "colour look")
   if type(last) == "table" and type(last.scheme) == "string" then return last, "computer" end
   local function saved(key, default) local v = reaper.GetExtState(band.SECTION, key); return v ~= "" and v or default end
   return { scheme = saved("colour scheme", "gradient"), palette = saved("colour palette", "Sunset"), from = saved("colour from", "2F7BFF"), to = saved("colour to", "FF8A3D") }, "computer"

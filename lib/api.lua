@@ -63,10 +63,10 @@ end
 function api.event(kind, fields)
   local ev = fields or {}
   ev.kind = kind
-  local list = band.json_decode(reaper.GetExtState(api.SECTION, "events")) or {}
+  local list = band.ext_json(api.SECTION, "events") or {}
   local seq
   list, seq = api.push(list, reaper.GetExtState(api.SECTION, "event_seq"), ev, api.KEEP, os.date("!%Y-%m-%dT%H:%M:%SZ"))
-  reaper.SetExtState(api.SECTION, "events", band.json_encode(list), false)
+  band.set_ext_json(api.SECTION, "events", list, false)
   reaper.SetExtState(api.SECTION, "event_seq", tostring(seq), false)
 end
 -- A script's request is waiting (the panel's box opens for it). 0.59.37
@@ -86,14 +86,14 @@ end
 function api.state()
   local beat = tonumber(reaper.GetExtState(api.SECTION, "beat"))
   if not (beat and reaper.time_precise() - beat < 10) then return nil end
-  return band.json_decode(reaper.GetExtState(api.SECTION, "state"))
+  return band.ext_json(api.SECTION, "state")
 end
 -- Events newer than `seq` (0 or nil: all that are kept), oldest first, and the newest seq to pass next time. In a defer loop:
 --   local seq = ss.newest(); local function loop() local evs; evs, seq = ss.events_since(seq); ... reaper.defer(loop) end
 function api.events_since(seq)
   seq = tonumber(seq) or 0
   local out = {}
-  for _, ev in ipairs(band.json_decode(reaper.GetExtState(api.SECTION, "events")) or {}) do if (ev.seq or 0) > seq then out[#out + 1] = ev end end
+  for _, ev in ipairs(band.ext_json(api.SECTION, "events") or {}) do if (ev.seq or 0) > seq then out[#out + 1] = ev end end
   return out, math.max(seq, tonumber(reaper.GetExtState(api.SECTION, "event_seq")) or 0)
 end
 function api.newest() return tonumber(reaper.GetExtState(api.SECTION, "event_seq")) or 0 end

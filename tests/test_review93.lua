@@ -52,6 +52,8 @@ assert(copy.still_confirmed({ "Google Drive" }, {}), "Drive had it all: it goes"
 local files, verdict, me = {}, nil, "GUESTID1234"
 package.loaded.band = { SECTION = "StudioSync", read_json = function(p) return files[p] end, json_encode = function(t) return table.concat(t, "\n") end,
   json_decode = function(s) if s == "" then return nil end; local t = {}; for x in s:gmatch("[^\n]+") do t[#t + 1] = x end; return t end }
+package.loaded.band.ext_json = function(sec, key) return package.loaded.band.json_decode(reaper.GetExtState(sec, key)) end
+package.loaded.band.set_ext_json = function(sec, key, v, p) reaper.SetExtState(sec, key, package.loaded.band.json_encode(v), p) end
 package.loaded.trust = { from_manager_file = function() return verdict end, pins = function() return {} end, held = function() return false end }
 package.loaded.services = { my_device_id = function() return me end }
 package.loaded.access = nil

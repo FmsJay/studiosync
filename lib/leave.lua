@@ -66,7 +66,7 @@ end
 -- Live sync has looked since we saved, and has nothing waiting (it says so each pass: "outbox").
 local function sent(j, now)
   local key = tostring(j.proj)
-  local box = band.json_decode(reaper.GetExtState(band.SECTION, "outbox " .. key))
+  local box = band.ext_json(band.SECTION, "outbox " .. key)
   if type(box) ~= "table" then return false end
   return (tonumber(box.at) or 0) > j.saved_at + 0.5 and not box.more and now - j.saved_at > 2, box
 end

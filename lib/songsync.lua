@@ -60,7 +60,14 @@ end
 
 -- The ignore file's text with StudioSync's block replaced (or added at the end; nil wanted = taken out). `gone`: keep everything but these.
 -- `allowed`: a guest's projects (they win over the rest). Pure.
-function songsync.merge(text, wanted, gone, allowed)
+-- The studio's debug reports (lib/debugmode.lua, <studio>/_debug/<name>/): everyone's reach the owner and admins only. Anyone else keeps
+-- their own folder (so it's sent) and doesn't download the rest: a member's projects and logs went to every member. 0.59.40.
+-- `debug`: { me = this computer's folder name, hide = true when it isn't the owner's or an admin's } or nil. -> lines for the block. Pure.
+function songsync.debug_lines(debug)
+  if not (debug and debug.hide and debug.me and debug.me ~= "") then return {} end
+  return { "!/_debug/" .. debug.me, "/_debug" }
+end
+function songsync.merge(text, wanted, gone, allowed, debug)
   local keep, inside = {}, false
   text = (text or ""):gsub("^\239\187\191", "") -- (a byte-order mark would hide the first line: an editor's, or PowerShell's)
   for line in ((text or "") .. "\n"):gmatch("(.-)\r?\n") do
@@ -69,9 +76,14 @@ function songsync.merge(text, wanted, gone, allowed)
     elseif not inside then keep[#keep + 1] = line end
   end
   while #keep > 0 and keep[#keep] == "" do keep[#keep] = nil end
-  if allowed or wanted or (gone and next(gone)) then
+  local dbg = songsync.debug_lines(debug)
+  if allowed or wanted or (gone and next(gone)) or #dbg > 0 then
     if #keep > 0 then keep[#keep + 1] = "" end
-    for _, l in ipairs(allowed and songsync.block_guest(allowed) or wanted and songsync.block(wanted) or songsync.block_except(gone)) do keep[#keep + 1] = l end
+    local block = allowed and songsync.block_guest(allowed) or wanted and songsync.block(wanted) or songsync.block_except(gone or {})
+    for i, l in ipairs(block) do
+      keep[#keep + 1] = l
+      if i == 1 then for _, d in ipairs(dbg) do keep[#keep + 1] = d end end -- (first: Syncthing goes by the first line that matches)
+    end
   end
   return #keep > 0 and (table.concat(keep, "\n") .. "\n") or ""
 end
@@ -111,12 +123,26 @@ function songsync.save(set)
 end
 
 -- Write the ignore file for this machine's choices and have Syncthing look again. Returns true when it changed.
+-- This computer's part in the studio's debug reports: its folder's name, and whether it downloads only its own (not the owner or an admin).
+function songsync.debug_of(cfg)
+  if not (cfg and cfg.root and cfg.user and cfg.user ~= "") then return nil end
+  local ok, may = pcall(function() return require("groups").may_manage(cfg.root, cfg.user) end)
+  return { me = (tostring(cfg.user):gsub("[^%w%-_ ]", "_")), hide = not (ok and may) }
+end
+-- Whether the studio's ignore file already has this computer's debug lines as they should be.
+function songsync.debug_ok(cfg)
+  local text = band.read(cfg.root .. "/.stignore") or ""
+  local want = songsync.debug_lines(songsync.debug_of(cfg))
+  local has = text:find("\n/_debug\n", 1, true) ~= nil or text:find("^/_debug\n") ~= nil
+  if #want == 0 then return not has end
+  return has and text:find("!/_debug/" .. want[1]:sub(10), 1, true) ~= nil
+end
 function songsync.apply(cfg)
   if not cfg or not cfg.root or cfg.root == "" then return false end
   local path = cfg.root .. "/.stignore"
   local old = band.read(path) or ""
   local okc, allowed = pcall(function() return require("access").mine(cfg.root) end) -- (a guest with a list: theirs only. 0.58.89)
-  local new = songsync.merge(old, not songsync.keep_all() and songsync.wanted(cfg) or nil, songsync.keep_all() and songsync.gone() or nil, okc and allowed or nil)
+  local new = songsync.merge(old, not songsync.keep_all() and songsync.wanted(cfg) or nil, songsync.keep_all() and songsync.gone() or nil, okc and allowed or nil, songsync.debug_of(cfg))
   if new == old then return false end
   band.write_atomic(path, new)
   pcall(function() require("services").rescan(band.info(cfg.root).id) end)

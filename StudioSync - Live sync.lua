@@ -257,7 +257,10 @@ local function redo_pending()
   return r ~= nil and reaper.time_precise() - redo_at < 30
 end
 
-local function poll()
+-- poll's parts (split, 0.59.40), in the order a pass runs them. t: what this pass worked out about the session (P.who) and
+-- the rooms it takes changes from (P.receive).
+local P = {}
+function P.syncthing()
   if st_started and reaper.time_precise() - st_started > 20 then
     st_started = nil
     if not require("services").running("syncthing", true) then
@@ -276,6 +279,8 @@ local function poll()
       band.log("Syncthing: " .. tostring(err) .. " (Settings > Health shows whether the shared folder syncs)")
     end
   end
+end
+function P.who(t)
   local s = band.read_json(band.session_path(cfg, b.song)) or last_session
   last_session = s
   local can, who = sync.authority(cfg, b.song, b.room, s)
@@ -335,9 +340,10 @@ local function poll()
     api.publish(proj, { song = b.song, room = b.room, me = cfg.user, driver = driver, mode = who.mode, alone = alone, others = others, tracks = who.tracks,
       hold = hold, local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1", held = reaper.GetExtState(band.SECTION, "held " .. tostring(proj)) })
   end)
-
-  local now = reaper.time_precise()
-  lap("who")
+  t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold = s, can, who, driver, others, alone, my_can, hold
+end
+function P.look(t)
+  local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
   -- mirror sync (docs/mirror-design.md): the whole project travels object by object. What changed here goes out
   -- before the band's changes come in, so an edit still unsent is never overwritten unseen
   sync.local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1"
@@ -380,7 +386,9 @@ local function poll()
       lap("look")
     end
   end
-
+end
+function P.outbox_inbox(t)
+  local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
   do -- Sync and exit (lib/leave.lua): what's still waiting to go out, and a kept version of the session when it asks
     local leaving = reaper.GetExtState(band.SECTION, "end session " .. tostring(proj))
     if leaving ~= "" then
@@ -389,7 +397,7 @@ local function poll()
       mirror_due = true
     end
     local more = require("mirror").more and "changes" or require("bgrender").waiting() and "prints rendering" or require("prints").waiting() and "prints waiting" or nil
-    reaper.SetExtState(band.SECTION, "outbox " .. tostring(proj), band.json_encode({ at = mirror_at, more = more }), false)
+    band.set_ext_json(band.SECTION, "outbox " .. tostring(proj), { at = mirror_at, more = more }, false)
   end
   -- what's drawn in a room shows without anyone asking, unless this person hid them: nobody would see a drawing until they
   -- pressed Show drawings on the Chat page (James, 2026-11-02: "other people can see the drawings too, right?")
@@ -409,7 +417,9 @@ local function poll()
     local nok, nerr = pcall(require("suggest").notices, proj, cfg, sync.room_dir(cfg, b.song, b.room))
     if not nok then band.log("suggestions: " .. tostring(nerr)) end
   end
-
+end
+function P.receive(t)
+  local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
   -- the host's project gathers the rooms bandmates record into (StudioSync before side rooms), never a side room:
   -- that's its own tab, brought in when someone chooses to (lib/rooms.lua)
   local rooms = { b.room }
@@ -430,7 +440,10 @@ local function poll()
     if n > 0 then band.log(string.format("%d change%s from the others (%s)", n, n == 1 and "" or "s", room)); mirror_due = true; pcall(require("api").event, "received", { n = n, song = b.song, room = room }) end
   end
   lap("receive")
-
+  t.rooms = rooms
+end
+function P.heal(t)
+  local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
   -- a bandmate who has every change has had a different project from ours for a minute, and we're caught up too:
   -- something never landed here. Bring it in line with the band's newest version (at most every 5 minutes).
   if s and s.sync == "mirror" and not hold then
@@ -456,6 +469,9 @@ local function poll()
   end
 
   lap("in line")
+end
+function P.joins(t)
+  local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
   -- new band machines: on the host of a computer in one band, a machine asking over the band's Tailscale (only band
   -- machines are on it) is let in at once; with several bands, never on its own. The rest ask in the panel (tools.join_requests).
   -- (and only while this computer is on the studio's own Tailscale network: switched to another one, or behind an internet provider's own
@@ -482,7 +498,9 @@ local function poll()
       end
     end
   end
-
+end
+function P.live_clips(t)
+  local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
   -- live (ReaNINJAM synced mode): received clips land as placeholders until the real takes replace them
   local live_dir = select(2, reaper.GetProjExtState(proj, band.SECTION, "live_dir"))
   if live_dir == "" and reaper.GetProjectName(proj) ~= "" then live_dir = reaper.GetProjectPathEx(proj):gsub("\\", "/") .. "/bandsync_live" end -- set up by hand: the usual place
@@ -496,6 +514,9 @@ local function poll()
   end
 
   lap("joins, live clips")
+end
+function P.save_drive(t)
+  local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
   if sync.need_save then -- a delete went out: the project is saved, so a crash can't bring the take back here
     sync.need_save = nil
     for i = 0, 512 do
@@ -539,6 +560,9 @@ local function poll()
     drive_more = more
   end
   lap("save, drive")
+end
+function P.presence(t)
+  local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
   sync.draw_claims(proj, who.times) -- who claimed which stretch of time, as regions (this machine only)
   do -- bandmates' pings show here; following someone keeps the view on theirs (lib/presence.lua)
     local presence = require("presence")
@@ -565,6 +589,9 @@ local function poll()
   end
 
   lap("claims, presence")
+end
+function P.status(t)
+  local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
   -- status receipt for the Status window: written when it changes, else every 15 s as a heartbeat
   -- pending + hold let "Take control" wait until everyone has caught up before switching
   local armed = {}
@@ -614,6 +641,23 @@ local function poll()
   reaper.TrackList_AdjustWindows(false)
   reaper.UpdateArrange()
   lap("redraw")
+end
+
+local function poll()
+  P.syncthing()
+  local t = {}
+  P.who(t)
+  t.now = reaper.time_precise()
+  lap("who")
+  P.look(t)
+  P.outbox_inbox(t)
+  P.receive(t)
+  P.heal(t)
+  P.joins(t)
+  P.live_clips(t)
+  P.save_drive(t)
+  P.presence(t)
+  P.status(t)
 end
 
 -- The panel stops us with a flag (re-running the action would raise REAPER's task-control dialog), and sees

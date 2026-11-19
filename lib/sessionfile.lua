@@ -11,8 +11,8 @@ local sessionfile = {}
 
 -- media still to copy, per song (persistent ExtState, so a restart carries on): JSON { {from, to} }
 local function pending_key(song) return "session_media " .. song end
-local function get_pending(song) return band.json_decode(reaper.GetExtState(band.SECTION, pending_key(song))) or {} end
-local function set_pending(song, list) reaper.SetExtState(band.SECTION, pending_key(song), band.json_encode(list), true) end
+local function get_pending(song) return band.ext_json(band.SECTION, pending_key(song)) or {} end
+local function set_pending(song, list) band.set_ext_json(band.SECTION, pending_key(song), list, true) end
 
 -- The FILE lines of a project's text with their paths changed by `map(path) -> new path or nil` (unchanged). Pure.
 function sessionfile.map_files(text, map)

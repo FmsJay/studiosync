@@ -182,7 +182,7 @@ end
 -- which leaves the moved note selected, rendered the same notes again (laptop, 2026-11-01). Second value: the hash
 -- before 0.40.3, so prints made then stay current until their notes change (no re-render of every part at once).
 local function unselected(raw, mtk)
-  return require("mirror").memo("ms\0" .. raw, function()
+  return require("mirror").memo("ms", raw, function()
     local ok, buf = reaper.MIDI_GetAllEvts(mtk, "")
     if not ok then return raw end
     local out, pos = {}, 1
@@ -386,9 +386,9 @@ end
 -- render fails it should probably come up at the alert box"): ExtState "print problem", { text, n, at }, until it's dismissed or half an hour old.
 function prints.problem(text)
   band.log(text)
-  local old = band.json_decode(reaper.GetExtState(band.SECTION, "print problem")) or {}
+  local old = band.ext_json(band.SECTION, "print problem") or {}
   local n = old.at and os.time() - old.at < 1800 and (tonumber(old.n) or 0) + 1 or 1
-  reaper.SetExtState(band.SECTION, "print problem", band.json_encode({ text = text, n = n, at = os.time() }), false)
+  band.set_ext_json(band.SECTION, "print problem", { text = text, n = n, at = os.time() }, false)
 end
 prints.failed = {} -- print name -> true: rendered here and nothing came out (this session; tried again once what it's made from changes)
 prints.front_only = {} -- print name -> true: its background render failed, so it renders here (this session)
@@ -738,7 +738,7 @@ function prints.options(ctx, ImGui)
   end
 end
 -- What Live sync's background renderer says (ExtState "bg render state"), or nil.
-function prints.bg_state() return band.json_decode(reaper.GetExtState(band.SECTION, "bg render state")) end
+function prints.bg_state() return band.ext_json(band.SECTION, "bg render state") end
 function prints.bg_retry()
   reaper.SetExtState(band.SECTION, "bg render retry", tostring(os.time()), false)
   reaper.DeleteExtState(band.SECTION, "bg render state", false)

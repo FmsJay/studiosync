@@ -234,7 +234,7 @@ function hear.listen(proj, cfg, b, name)
       local had = {}
       for n in pairs(hear.pairs(proj)) do had[n] = hear.is_on(proj, n) end
       had["\0"] = hear.is_on(proj, nil)
-      reaper.SetExtState(band.SECTION, "listen had " .. tostring(proj), band.json_encode(had), false)
+      band.set_ext_json(band.SECTION, "listen had " .. tostring(proj), had, false)
     end
     for n in pairs(hear.pairs(proj)) do hear.set_on(proj, n, n == name) end
     hear.set_on(proj, nil, not hear.own_pair(proj, name)) -- (someone without a pair of their own shares this one)
@@ -242,7 +242,7 @@ function hear.listen(proj, cfg, b, name)
     return true
   end
   reaper.DeleteExtState(band.SECTION, key, false)
-  local had = band.json_decode(reaper.GetExtState(band.SECTION, "listen had " .. tostring(proj))) or {}
+  local had = band.ext_json(band.SECTION, "listen had " .. tostring(proj)) or {}
   for n in pairs(hear.pairs(proj)) do hear.set_on(proj, n, had[n] ~= false) end
   hear.set_on(proj, nil, had["\0"] ~= false)
   reaper.DeleteExtState(band.SECTION, "listen had " .. tostring(proj), false)

@@ -91,13 +91,16 @@ local function loop_body()
     local ok, why = pcall(require("startup").on_start) -- (the band's songs, opened without REAPER's boxes: lib/startup.lua)
     if not ok then band.log("couldn't open the studio's projects by itself: " .. tostring(why)) end
     band.try("services.stop_old_relay", require("services").stop_old_relay) -- (a Mac's ReaNINJAM relay from an older StudioSync, left running: lib/services.lua)
+    band.try("debugmode.session_start", require("debugmode").session_start) -- (did REAPER close cleanly last time? lib/debugmode.lua, 0.59.40)
     reaper.atexit(function()
+      band.try("debugmode.session_end", require("debugmode").session_end)
       band.try("undo.auto_keys", require("undo").auto_keys, dir)
       band.try("startup.on_quit", require("startup").on_quit)
       band.try("services.tidy_temp", require("services").tidy_temp)
     end)
   end
   band.try("startup.note", require("startup").note)
+  band.try("debugmode.computer_tick", require("debugmode").computer_tick, reaper.GetExtState(band.SECTION, "user")) -- (debug mode: this computer's report)
   band.try("band.keep_settings", band.keep_settings)
   if reaper.time_precise() - (songsync_at or -math.huge) > 30 then -- (each studio's ignore file kept in step: a guest's projects, lib/access.lua)
     songsync_at = reaper.time_precise()
@@ -106,7 +109,9 @@ local function loop_body()
       -- (only where this computer is a guest with a list, or its ignore file still has a guest's block to undo: elsewhere it's written
       -- only when a project is opened or kept, as before)
       local okm, set = pcall(require("access").mine, x.root)
-      if (okm and set) or (band.read(x.root .. "/.stignore") or ""):find("\n(?d)/*\n", 1, true) then
+      -- (and where its debug lines aren't as they should be: only the owner and admins download everyone's reports. 0.59.40)
+      local okd, dbg_ok = pcall(require("songsync").debug_ok, { root = x.root, user = me })
+      if (okd and not dbg_ok) or (okm and set) or (band.read(x.root .. "/.stignore") or ""):find("\n(?d)/*\n", 1, true) then
         band.try("songsync.apply", require("songsync").apply, { root = x.root, user = me })
       end
     end

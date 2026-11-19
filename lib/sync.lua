@@ -19,7 +19,7 @@ local sync = {
 function sync.put_back(text, mine, claim) -- mine: { oid, ev, name } when it was a clash your version lost, for Use mine; claim: a track the bar can claim
   band.log(text)
   -- (the count is this song's, lately: another song's flood carried over as "1352 edits undone": laptop, 0.42.5)
-  local old = band.json_decode(reaper.GetExtState(band.SECTION, "put back")) or {}
+  local old = band.ext_json(band.SECTION, "put back") or {}
   local same = old.song == sync.current_song and old.at and os.time() - old.at < 600
   local n = same and (tonumber(old.n) or 0) + 1 or 1
   local list = same and mine and type(old.mine) == "table" and old.mine or nil -- (several at once: Use mine takes all of them back)
@@ -29,7 +29,7 @@ function sync.put_back(text, mine, claim) -- mine: { oid, ev, name } when it was
     for _, m in ipairs(list) do if m.oid == mine.oid then seen = true end end -- (the first of yours that lost is the one you made)
     if not seen and #list < 200 then list[#list + 1] = mine end
   end
-  reaper.SetExtState(band.SECTION, "put back", band.json_encode({ text = text, n = n, at = os.time(), song = sync.current_song, mine = list, claim = claim }), false)
+  band.set_ext_json(band.SECTION, "put back", { text = text, n = n, at = os.time(), song = sync.current_song, mine = list, claim = claim }, false)
   local beat = tonumber(reaper.GetExtState(band.SECTION, "panel alive"))
   local shown = beat and reaper.time_precise() - beat < 5 and reaper.GetExtState(band.SECTION, "panel minimized") == ""
   if not shown then
@@ -1047,7 +1047,7 @@ function sync.apply(proj, ev, dir, can, me)
     return true
   end
   if ev.type == "start" or ev.type == "stop" then -- Live sync's tick fires it at the right moment (lib/together.lua)
-    reaper.SetExtState(band.SECTION, "transport " .. tostring(proj), band.json_encode(ev), false)
+    band.set_ext_json(band.SECTION, "transport " .. tostring(proj), ev, false)
     return true
   end
   if ev.type == "note" or ev.type == "like" then

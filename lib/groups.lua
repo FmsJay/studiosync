@@ -26,7 +26,7 @@ function groups.trusted(root)
   local okt, ok = pcall(require("trust").from_manager_file, root, "_band/band.json")
   local key = "trusted settings " .. band.norm(root):lower()
   local out = {}
-  local stored = band.json_decode(reaper.GetExtState(band.SECTION, key))
+  local stored = band.ext_json(band.SECTION, key)
   -- (not known yet, Syncthing slow or held back: the last checked settings, not the file as anyone wrote it. Review, 0.58.98)
   if okt and ok == false then
     out = stored or {}
@@ -34,7 +34,7 @@ function groups.trusted(root)
     out = stored
   else
     for _, k in ipairs(SETTINGS) do out[k] = j[k] end
-    if okt and ok == true then reaper.SetExtState(band.SECTION, key, band.json_encode(out), true) end
+    if okt and ok == true then band.set_ext_json(band.SECTION, key, out, true) end
   end
   trusted_at[root] = { at = now, j = out }
   return out
@@ -197,20 +197,20 @@ end
 
 -- Groups this computer has left, or that were closed: nothing syncs, the copy stays until you delete it (the Groups page).
 function groups.old()
-  local t = band.json_decode(reaper.GetExtState(band.SECTION, "old groups"))
+  local t = band.ext_json(band.SECTION, "old groups")
   return type(t) == "table" and t or {}
 end
 function groups.remember_old(root, name, id)
   local t = groups.old()
   for _, o in ipairs(t) do if o.root == root then return end end
   t[#t + 1] = { root = root, name = name, id = id, at = os.time() }
-  reaper.SetExtState(band.SECTION, "old groups", band.json_encode(t), true)
+  band.set_ext_json(band.SECTION, "old groups", t, true)
 end
 -- A folder taken off the list: the copy was deleted, or it stays and nobody needs telling.
 function groups.forget_old(root)
   local t = {}
   for _, o in ipairs(groups.old()) do if o.root ~= root then t[#t + 1] = o end end
-  reaper.SetExtState(band.SECTION, "old groups", band.json_encode(t), true)
+  band.set_ext_json(band.SECTION, "old groups", t, true)
 end
 function groups.is_old(root)
   for _, o in ipairs(groups.old()) do if o.root == root then return true end end
@@ -232,10 +232,10 @@ function groups.leave(root, me, over)
   local id = require("services").my_device_id()
   if id then require("removal").left(root, me, id) end
   groups.remember_old(root, info.name, info.id)
-  local leaving = band.json_decode(reaper.GetExtState(band.SECTION, "leaving"))
+  local leaving = band.ext_json(band.SECTION, "leaving")
   leaving = type(leaving) == "table" and leaving or {}
   leaving[#leaving + 1] = { id = info.id, at = os.time() }
-  reaper.SetExtState(band.SECTION, "leaving", band.json_encode(leaving), true)
+  band.set_ext_json(band.SECTION, "leaving", leaving, true)
   if #others > 0 then
     reaper.SetExtState(band.SECTION, "bands", table.concat(others, "|"), true)
     if reaper.GetExtState(band.SECTION, "sync_root") == root then reaper.SetExtState(band.SECTION, "sync_root", others[1], true) end
@@ -258,7 +258,7 @@ end
 local said_quiet = {}
 function groups.tick(now)
   local services = require("services")
-  local leaving = band.json_decode(reaper.GetExtState(band.SECTION, "leaving"))
+  local leaving = band.ext_json(band.SECTION, "leaving")
   if type(leaving) == "table" and #leaving > 0 then
     local still = {}
     for _, l in ipairs(leaving) do
@@ -301,7 +301,7 @@ end
 
 -- Is Syncthing still to let go of this folder (it was left or closed a moment ago)? Deleting the copy before that reached everyone. Review, 0.58.47.
 function groups.still_leaving(id)
-  local leaving = band.json_decode(reaper.GetExtState(band.SECTION, "leaving"))
+  local leaving = band.ext_json(band.SECTION, "leaving")
   for _, l in ipairs(type(leaving) == "table" and leaving or {}) do if l.id == id then return true end end
   return false
 end

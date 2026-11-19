@@ -344,7 +344,7 @@ function tools.join_requests(ctx, ImGui)
   local me = reaper.GetExtState(band.SECTION, "user")
   if reaper.time_precise() - asked_at > 2 then asked_at, asking = reaper.time_precise(), require("services").join_asks(me) end
   if not asking[1] then return end
-  local skip = band.json_decode(reaper.GetExtState(band.SECTION, "join skipped")) or {}
+  local skip = band.ext_json(band.SECTION, "join skipped") or {}
   for _, d in ipairs(asking) do
     if not skip[d.id] and reaper.time_precise() - (let_at[d.id .. (d.folder or "")] or -math.huge) > 40 and d.folder and let_device[d.id] then
       -- (as a guest, if that's how the first press let them connect: "guest", the invitation's time found now that their studio is known.
@@ -369,7 +369,7 @@ function tools.join_requests(ctx, ImGui)
       ImGui.SameLine(ctx)
       if ImGui.SmallButton(ctx, "Not my collaborator##" .. d.id .. (d.folder or "")) then -- (one computer asking for two studios: two the same. Review, 0.59.14)
         skip[d.id] = true
-        reaper.SetExtState(band.SECTION, "join skipped", band.json_encode(skip), false)
+        band.set_ext_json(band.SECTION, "join skipped", skip, false)
         require("services").dismiss_pending(d.id) -- (only hidden, it came back at every restart)
       end
       ImGui.SetItemTooltip(ctx, "Dismiss this request. Nothing is shared with it. It only comes back if that computer asks again.")
@@ -432,7 +432,7 @@ end
 
 -- A print that didn't come out (lib/prints.lua prints.problem), until dismissed or half an hour old.
 function tools.print_problem_bar(ctx, ImGui)
-  local pp = band.json_decode(reaper.GetExtState(band.SECTION, "print problem"))
+  local pp = band.ext_json(band.SECTION, "print problem")
   if not (pp and pp.text) or (pp.at and os.time() - pp.at > 1800) then return end
   if ImGui.SmallButton(ctx, "OK##printproblem") then reaper.DeleteExtState(band.SECTION, "print problem", false) end
   ImGui.SetItemTooltip(ctx, "Hide this. Every print problem is also in Settings > Console.")
@@ -460,7 +460,7 @@ function tools.toast_words(l)
   return l
 end
 function tools.put_back_bar(ctx, ImGui, song, use_mine, may, claim)
-  local pb = band.json_decode(reaper.GetExtState(band.SECTION, "put back"))
+  local pb = band.ext_json(band.SECTION, "put back")
   if not (pb and pb.text) then return end
   if pb.song and song and pb.song ~= song then return end -- (another song's, in another tab: laptop, 0.42.4)
   if pb.at and os.time() - pb.at > 600 then return end -- (old news: it's still in Setup > Console. Mac, 0.42.4)

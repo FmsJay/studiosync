@@ -270,7 +270,7 @@ local function go(ev) -- post it for the band, and fire it here through our own 
   ev.at = math.floor(os.time()) + together.LEAD
   sync.post(cfg, b.song, b.room, ev)
   ev.user = cfg.user
-  reaper.SetExtState(band.SECTION, "transport " .. tostring(proj), band.json_encode(ev), false)
+  band.set_ext_json(band.SECTION, "transport " .. tostring(proj), ev, false)
 end
 local start_from, click_on, side_bars_edit = 0, true, 2 -- start_from: 0 = edit cursor, n = the nth region
 local function regions()

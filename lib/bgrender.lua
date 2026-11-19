@@ -60,9 +60,9 @@ local done, failed = 0, 0
 bg.GIVE_UP = 5
 local retry_seen
 local function publish(why)
-  local st = band.json_decode(reaper.GetExtState(band.SECTION, "bg render state")) or {}
-  reaper.SetExtState(band.SECTION, "bg render state", band.json_encode({ failed = failed, done = done, why = why or st.why,
-    gave_up = (failed >= bg.GIVE_UP and done == 0) or nil, at = os.time() }), false)
+  local st = band.ext_json(band.SECTION, "bg render state") or {}
+  band.set_ext_json(band.SECTION, "bg render state", { failed = failed, done = done, why = why or st.why,
+    gave_up = (failed >= bg.GIVE_UP and done == 0) or nil, at = os.time() }, false)
 end
 
 -- The Mac's helpers (lib/mac, built by tools/mac/build.sh, shipped by ReaPack to Macs only): the folder, or nil.

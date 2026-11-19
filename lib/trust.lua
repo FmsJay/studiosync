@@ -77,7 +77,7 @@ function trust.managers_of(pins, owner, admins, me, mine)
 end
 
 function trust.pins(root)
-  local p = band.json_decode(reaper.GetExtState(band.SECTION, key(root)))
+  local p = band.ext_json(band.SECTION, key(root))
   if type(p) ~= "table" or type(p.admins) ~= "table" or type(p.devices) ~= "table" then return nil end
   return p
 end
@@ -134,7 +134,7 @@ local function device_of(root)
 end
 function trust.pin(root, owner, admins, listed)
   local p = trust.repin(trust.pins(root), owner, admins, device_of(root), listed)
-  reaper.SetExtState(band.SECTION, key(root), band.json_encode(p), true)
+  band.set_ext_json(band.SECTION, key(root), p, true)
   return p
 end
 
@@ -154,7 +154,7 @@ local function first_look(root, j, owner, admins, inv)
   if by and trust.wrote_itself(inv, by) then trust.pin(root, owner, admins, j.managers); return owner, admins end
   local who = name_of(root, inv) or trust.INVITER
   if not by then return who, {} end -- (Syncthing didn't say yet: asked again in 30 s)
-  reaper.SetExtState(band.SECTION, key(root), band.json_encode({ owner = who, admins = {}, devices = { [who] = { inv } }, held = true }), true)
+  band.set_ext_json(band.SECTION, key(root), { owner = who, admins = {}, devices = { [who] = { inv } }, held = true }, true)
   said[root .. trust.version(j, owner, admins)] = true -- (said here: the set-aside that follows needn't say it again)
   band.log(string.format("%s's roles were last written by a computer (%s) that isn't the one that invited you: StudioSync takes %s as in charge until theirs writes them",
     band.info(root).name, require("services").device_name(by), who))

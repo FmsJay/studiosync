@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.59.39", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.59.40", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -308,6 +308,10 @@ end
 function band.write_json(path, t) band.write_atomic(path, json.encode(t, true)) end
 function band.json_encode(t) return json.encode(t) end -- keys sorted: equal tables give equal strings
 function band.json_decode(s) local ok, v = pcall(json.decode, s); return ok and v or nil end
+-- A table kept in ExtState as JSON, read (nil when there's none or it isn't JSON) and written. (Review list, 0.59.40: the same two lines in
+-- 53 places.) `persist` as reaper.SetExtState's.
+function band.ext_json(section, key) return band.json_decode(reaper.GetExtState(section, key)) end
+function band.set_ext_json(section, key, v, persist) reaper.SetExtState(section, key, band.json_encode(v), persist) end
 
 local function enum(fn, dir, unsorted)
   local out, i = {}, 0
@@ -666,7 +670,7 @@ function band.pin_id(root, id) -- (no id: forgotten, for a scratch studio)
   if id then reaper.SetExtState(band.SECTION, id_key(root), id, true) else reaper.DeleteExtState(band.SECTION, id_key(root), true) end
 end
 function band.info(root)
-  local j = (root and (band.read_json(root .. "/_band/band.json") or band.json_decode(reaper.GetExtState(band.SECTION, "joining " .. root)))) or {}
+  local j = (root and (band.read_json(root .. "/_band/band.json") or band.ext_json(band.SECTION, "joining " .. root))) or {}
   -- (only a plain folder id: it goes into Syncthing's command line, and a space in it added arguments of its own. Review, 0.58.53)
   local id = type(j.id) == "string" and j.id:match("^[%w%-_.]+$") and j.id or "bandsync"
   local pinned = root and reaper.GetExtState(band.SECTION, id_key(root))
