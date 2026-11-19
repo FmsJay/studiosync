@@ -1470,7 +1470,7 @@ function sync.receive(proj, cfg, song, room, can)
     for toid in pairs(orph) do if mirror.find(proj, "track", toid) then orph[toid] = nil; back = true end end
     if back then -- (only when such a track exists again: a track that stays deleted costs one lookup a pass)
       local hok, n = pcall(mirror.heal, proj, rdir, sync.local_mix)
-      if hok and n > 0 then band.log(string.format("%d change(s) landed once their track was back", n)) end
+      if hok and n > 0 then sync.redraw = true; band.log(string.format("%d change(s) landed once their track was back", n)) end -- (no undo point, not in `applied`: Live sync's redraw. James, rt)
     end
     if next(orph) == nil then mirror.orphaned[tostring(proj)] = nil end
   end

@@ -1837,15 +1837,18 @@ function band.secret(n)
   return t:sub(1, n)
 end
 -- Show `c` (native) on a track here only, or (nil) the band's colour again.
+-- -> true when the track's colour was written (Live sync redraws only after a pass that changed something. James, rt)
 function band.show_colour(tr, c)
   local held = band.track_ext(tr, "band_colour")
   if c then
     if held == "" then reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_colour", tostring(math.floor(reaper.GetMediaTrackInfo_Value(tr, "I_CUSTOMCOLOR"))), true) end
-    if reaper.GetMediaTrackInfo_Value(tr, "I_CUSTOMCOLOR") ~= c then reaper.SetMediaTrackInfo_Value(tr, "I_CUSTOMCOLOR", c) end
+    if reaper.GetMediaTrackInfo_Value(tr, "I_CUSTOMCOLOR") ~= c then reaper.SetMediaTrackInfo_Value(tr, "I_CUSTOMCOLOR", c); return true end
   elseif held ~= "" then
     reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_colour", "", true)
     reaper.SetMediaTrackInfo_Value(tr, "I_CUSTOMCOLOR", tonumber(held) or 0)
+    return true
   end
+  return false
 end
 function band.set_track_ext(tr, key, v) reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:" .. key, v, true) end
 function band.item_ext(it, key) return select(2, reaper.GetSetMediaItemInfo_String(it, "P_EXT:" .. key, "", false)) end

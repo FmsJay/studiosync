@@ -247,14 +247,16 @@ end
 -- for what came while you were away (its "last here", lib/extras.lua).
 -- Colour parity on (the studio's, lib/groups.lua): no overlay anywhere, and any left from before goes back to the band's colour.
 function people.parity(cfg) local ok, on = pcall(require("groups").colour_parity, cfg.root); return not ok or on end
+-- -> true when any track's colour was written (Live sync's redraw. James, rt)
 function people.paint(proj, cfg, peers, claims, where)
+  local wrote = false
   if people.parity(cfg) then
     for i = 0, reaper.CountTracks(proj) - 1 do
       local tr = reaper.GetTrack(proj, i)
-      if band.track_ext(tr, "band_colour") ~= "" then band.show_colour(tr, nil) end
+      if band.track_ext(tr, "band_colour") ~= "" and band.show_colour(tr, nil) then wrote = true end
     end
     if where then reaper.SetExtState(band.SECTION, "new held " .. where, "", false) end
-    return
+    return wrote
   end
   local base, editing, others = people.mode(), {}, {}
   local mode = base == "people" and "people" or people.shows("working") and "working" or "band"
@@ -290,11 +292,12 @@ function people.paint(proj, cfg, peers, claims, where)
         local from = bc and bc ~= 0 and (function() local r, g, b = reaper.ColorFromNative(bc & 0xFFFFFF); return (r << 16) | (g << 8) | b end)() or 0x808080
         rgb = require("colours").mix(from, c, strength)
       end
-      band.show_colour(tr, rgb and (reaper.ColorToNative(rgb >> 16, (rgb >> 8) & 0xFF, rgb & 0xFF) | 0x1000000) or nil)
+      if band.show_colour(tr, rgb and (reaper.ColorToNative(rgb >> 16, (rgb >> 8) & 0xFF, rgb & 0xFF) | 0x1000000) or nil) then wrote = true end
     end
   end
   -- (the panel's "Since you were last here" shows while tracks are held for it, and its OK lets them go: people.seen)
   if where then reaper.SetExtState(band.SECTION, "new held " .. where, held > 0 and tostring(held) or "", false) end
+  return wrote
 end
 -- OK on "Since you were last here": tracks showing what came while you were away go back to the studio's colours.
 function people.seen(where)
