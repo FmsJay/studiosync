@@ -2734,6 +2734,36 @@ function ui.window_buttons(at_row, y0, fh)
   ImGui.SameLine(ctx, 0, 4); ImGui.SetCursorPosY(ctx, y0 + 3)
   if ui.window_icon("##tobox", "box", s, "Shrink to a tiny box over REAPER. Click it and the panel opens where it was.") then ui.set_minimized(true) end
 end
+-- The same as Window, Dock and the two window icons, folded into one "..." on the bar's row, where they'd wrap to a row of their own:
+-- docked short, that row cost the page 33 px (James chose this, 2026-11-18). -> its width, for fitting the row.
+function ui.window_more_width() return ImGui.CalcTextSize(ctx, "...") + 2 * select(1, ImGui.GetStyleVar(ctx, ImGui.StyleVar_FramePadding)) end
+function ui.window_more(docked)
+  if ImGui.Button(ctx, "...##window more") then ImGui.OpenPopup(ctx, "window more") end
+  ImGui.SetItemTooltip(ctx, "Window, dock, minimize")
+  local rx, ry = ImGui.GetItemRectMax(ctx)
+  local want
+  ImGui.SetNextWindowPos(ctx, rx, ry, ImGui.Cond_Appearing, 1, 0) -- (opening leftward from its right edge: at the panel's edge it ran off the docker)
+  if ImGui.BeginPopup(ctx, "window more") then
+    if ImGui.Selectable(ctx, "Window...") then want = "window" end -- (its own menu, once this one has closed)
+    if docked then
+      if ImGui.Selectable(ctx, "Undock") then dock_req = 0 end
+    else
+      for _, side in ipairs({ { "Dock at the bottom", 0 }, { "Dock at the left", 1 }, { "Dock at the right", 3 } }) do
+        if ImGui.Selectable(ctx, side[1]) then tools.dock_at(side[2]) end
+      end
+      local armed = reaper.GetExtState(band.SECTION, "dock armed") ~= ""
+      if ImGui.Selectable(ctx, "Drag to dock", armed) then
+        if armed then reaper.DeleteExtState(band.SECTION, "dock armed", false) else reaper.SetExtState(band.SECTION, "dock armed", "1", false) end
+      end
+      ImGui.SetItemTooltip(ctx, "On: drag the window onto a REAPER docker to dock it (or hold Shift while dragging).")
+    end
+    ImGui.Separator(ctx)
+    if ImGui.Selectable(ctx, "Minimize to a strip") then ui.set_minimized("strip") end
+    if ImGui.Selectable(ctx, "Shrink to the box") then ui.set_minimized(true) end
+    ImGui.EndPopup(ctx)
+  end
+  if want == "window" then ui.window_menu() end
+end
 -- A page asked for from elsewhere (a new room opens on Rooms; a project just opened, on Home).
 function ui.asked_page()
   local want = reaper.GetExtState(band.SECTION, "panel page")
@@ -2937,7 +2967,8 @@ function F.top_bar()
   local docked = ImGui.IsWindowDocked(ctx)
   -- the window's own buttons sit at the right end of the bar (when they fit there), apart from the session's
   local bar_min = docked or native -- (no title bar of ours to put it on: else it sits by the close button)
-  -- (Window and Dock: on the title bar when the panel has its own, else here, and never folded into "...": they went missing at some sizes. James, 0.58.23)
+  -- (Window and Dock: on the title bar when the panel has its own, else here. Folded into "..." only where they'd wrap to a row of their own, and
+  -- always on this row: they went missing at some sizes once, 0.58.23. James, 2026-11-18)
   local labels = bar_min and { "Feedback", "Sync and exit", "Window", docked and "Undock" or "Dock" } or { "Feedback", "Sync and exit" }
   local need = bar_min and 2 * (fh - 6) + 28 or 0 -- (the two window icons: as a word's width, the second fell off the right edge)
   for _, l in ipairs(labels) do need = need + ImGui.CalcTextSize(ctx, l) + 28 end
@@ -2951,12 +2982,18 @@ function F.top_bar()
   else -- (no room in the bar: over the top of the page while it's being said. A blank row for it cost every page 30 px, for something shown 6 s at a time)
     toast_place = { x = ImGui.GetWindowPos(ctx) + 16, w = ww - 32, over = true }
   end
+  local fold = false -- (Window, Dock and the icons as one "...", on this row: see ui.window_more)
   if ww < 600 or room <= need + 12 then -- (narrow: a short "Leave", as "Window" wrapped alone onto a row of its own: design review. Not "...": leaving is the one
     -- thing everyone has to find. UX review, 0.58.47. And wherever the long one doesn't fit: docked short, Window and Dock wrapped to a second
     -- row of their own, 33 px of a short docker. Review list, 0.59.37)
     local need_s = need - ImGui.CalcTextSize(ctx, "Sync and exit") + ImGui.CalcTextSize(ctx, "Exit")
     if ww >= 600 and room > need_s + 12 then ImGui.SetCursorPosX(ctx, ImGui.GetCursorPosX(ctx) + room - need_s); ImGui.SetCursorPosY(ctx, y0)
-    else at_row("Feedback") end
+    else
+      fold = bar_min
+      local need_f = ImGui.CalcTextSize(ctx, "Feedback") + 28 + ImGui.CalcTextSize(ctx, "Exit") + 28 + (fold and ui.window_more_width() + 8 or 0)
+      if room > need_f + 12 then ImGui.SetCursorPosX(ctx, ImGui.GetCursorPosX(ctx) + room - need_f); ImGui.SetCursorPosY(ctx, y0)
+      else at_row("Feedback") end
+    end
     require("feedback").button(ctx, ImGui)
     at_row("Exit")
     if ImGui.Button(ctx, "Exit##leave") then require("leave").start(proj, cfg, b) end
@@ -2969,13 +3006,16 @@ function F.top_bar()
     if ImGui.Button(ctx, "Sync and exit") then require("leave").start(proj, cfg, b) end
     ImGui.SetItemTooltip(ctx, "Leaving? Saves, gets everything you've done out to the others, says who has it, then lets you close the project or quit REAPER.")
   end
-  if bar_min then
+  if fold then
+    at_row("...")
+    ui.window_more(docked)
+  elseif bar_min then
     at_row("Window")
     ui.window_button()
     at_row(docked and "Undock" or "Dock")
     tools.dock_menu(docked)
+    ui.window_buttons(at_row, y0, fh)
   end
-  if bar_min then ui.window_buttons(at_row, y0, fh) end
   ImGui.SetCursorPos(ctx, 16, y0 + fh + (ui.short and 2 or 5)) -- (closer to the page: more of it shows, docked above all. James, 0.58.23)
   -- narrow: the pages first, so a row arriving under them can't slide them from under the mouse (design review)
   if (compact and not wide) or tabs_below then
@@ -3245,17 +3285,22 @@ function ui.frame_lobby()
   local docked = ImGui.IsWindowDocked(ctx)
   local room = ImGui.GetContentRegionAvail(ctx)
   local need = ImGui.CalcTextSize(ctx, "Feedback") + 28 + ((docked or native) and (ImGui.CalcTextSize(ctx, "Window") + ImGui.CalcTextSize(ctx, docked and "Undock" or "Dock") + 64 + 68) or 0)
+  local fold = (docked or native) and room <= need -- (as with a project: "..." on this row, not Window and Dock on a row of their own)
+  if fold then need = ImGui.CalcTextSize(ctx, "Feedback") + 28 + ui.window_more_width() + 8 end
   if room > need then ImGui.SetCursorPosX(ctx, ImGui.GetCursorPosX(ctx) + room - need); ImGui.SetCursorPosY(ctx, y0)
   else ImGui.SetCursorPos(ctx, 16, y0 + fh + 6); y0 = y0 + fh + 6 end
   local function at_row() ImGui.SameLine(ctx, 0, 8); ImGui.SetCursorPosY(ctx, y0) end
   require("feedback").button(ctx, ImGui)
-  if docked or native then -- (the panel's own title bar has them otherwise)
+  if fold then
+    at_row()
+    ui.window_more(docked)
+  elseif docked or native then -- (the panel's own title bar has them otherwise)
     at_row()
     ui.window_button()
     at_row()
     tools.dock_menu(docked)
+    ui.window_buttons(at_row, y0, fh)
   end
-  if docked or native then ui.window_buttons(at_row, y0, fh) end
   ImGui.SetCursorPos(ctx, 16, y0 + fh + 8)
   local log = band.activity()
   if log[1] ~= tools.toast_newest then tools.toast_line, tools.toast_at = tools.toast_seen and log[1] or nil, reaper.time_precise(); tools.toast_newest = log[1] end
