@@ -30,6 +30,7 @@
 #ifndef REAPERSONA
 #include "direct.h" // (the direct link: extension/direct.cpp. James, 0.59.50; before reaper_plugin.h: SWELL's min/max macros broke its C++ headers on Linux)
 #include "webui.h" // (the web UI server: extension/webui.cpp. James, rt)
+#include "rtaudio.h" // (live audio over the link, AOO + Opus: extension/rtaudio.cpp. James, rt)
 #endif
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"
@@ -207,6 +208,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_H
   if (!rec) { // (unloading: the direct link's threads stop)
 #ifndef REAPERSONA
     direct_audio_stop();
+    rtaudio_shutdown();
     webui_shutdown(); // (first: it takes HTTP from the link's listener)
     direct_shutdown();
 #endif
@@ -230,6 +232,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_H
 #ifndef REAPERSONA
   direct_register(rec); // (reaper.StudioSync_Direct*: lib/direct.lua)
   direct_audio_register(rec); // (reaper.StudioSync_DirectAudio*: the step-4 spike, idle until started)
+  rtaudio_register(rec); // (reaper.StudioSync_LiveAudio*: live audio, lib/liveaudio.lua; idle until started)
   webui_register(rec); // (reaper.StudioSync_WebUI*: lib/webui.lua; idle until Live sync or the panel starts it)
   { void sign_register(reaper_plugin_info_t *); sign_register(rec); } // (reaper.StudioSync_Verify*, KeyCreate, Sign, FileHash: signed updates, extension/sign.cpp)
 #endif
