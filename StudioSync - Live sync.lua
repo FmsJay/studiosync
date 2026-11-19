@@ -865,6 +865,17 @@ end
 --  - at most CUE_READS files a tick; the rest next tick. What's read goes into receive's own cache (sync.ev_cache), so it isn't read twice.
 local CUE_READS, CUE_BYTES, CUE_TRIES = 20, 4096, 20
 local dir_m, dir_m_at, cue_left, listed_at, cue_bad = nil, -math.huge, true, -math.huge, {}
+-- seen_ev and fired held every event name and cue id of the session (the folder's whole history to start with), trimmed files too. Each minute
+-- a name not in the folder (nor the link's inbox) at two looks running goes: gone a minute or more, and a cue is acted on only within 30 s
+-- of its time, so one coming back can't fire again. (James, rt)
+local seen_pruned_at, seen_gone = reaper.time_precise(), {}
+local function prune_seen(names)
+  local here, gone = {}, {}
+  for _, f in ipairs(names) do here[f] = true end
+  for f in pairs(seen_ev) do if not here[f] then if seen_gone[f] then seen_ev[f] = nil else gone[f] = true end end end
+  for id in pairs(fired) do local f = id .. ".json"; if not here[f] then if seen_gone[f] then fired[id] = nil else gone[f] = true end end end
+  seen_gone = gone
+end
 local function folder_moved(dir)
   local now = reaper.time_precise()
   if cue_left or not reaper.JS_File_Stat or now - listed_at >= 2 then return true end
@@ -894,6 +905,7 @@ local function quick_transport()
   -- (read now, as before, but shared: the poll's own looks at the folder within 0.2 s use this read. 0.59.14, review)
   -- (with what came over the direct link, from its inbox: lib/direct.lua. James, 0.60.0-rt)
   local names, from = direct.merge(cfg, dir, band.raw_listing(dir, true))
+  if listed_at - seen_pruned_at >= 60 then seen_pruned_at = listed_at; prune_seen(names) end
   for _, f in ipairs(names) do
     if not seen_ev[f] then
       if f:sub(-5) ~= ".json" or sync.is_mine(f, cfg.user) then seen_ev[f] = true

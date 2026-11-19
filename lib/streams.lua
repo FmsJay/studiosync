@@ -457,7 +457,7 @@ function streams.send_tick(proj, cfg, b, recording)
       local to = {}
       for _, p in ipairs(peers) do to[p] = true end
       rec.takes[#rec.takes + 1] = { id = id, rel = rel, path = path, name = name, msg = msg, to = to } -- (path, name, msg, to: for late joiners)
-      streams.streamed[band.norm(path):lower()] = { file = m.file, rel = rel } -- (its shared copy then goes as "this stream": offer_media)
+      streams.streamed[band.norm(path):lower()] = { file = m.file, rel = rel, at = reaper.time_precise() } -- (its shared copy then goes as "this stream": offer_media)
       direct.send_live(cfg, "take", msg, b.song, b.room, id, peers)
     end
   end
@@ -703,8 +703,17 @@ end
 -- The sender's side: after a change goes out (mirror's W.send, beside sync.post), its new media to the others here. Only a file made or written
 -- in the last MEDIA_FRESH seconds (one copied in, rendered or printed now: an older one they have), once per script, and never one this script
 -- put in place from the link. -> how many went. Never raises.
-streams.sent_media, streams.placed = {}, {} -- song/room/file -> true
-streams.streamed = {} -- a take's file streamed as it was recorded (normalized, lower case) -> { file, rel }
+streams.sent_media, streams.placed = {}, {} -- song/room/file -> when (reaper.time_precise)
+streams.streamed = {} -- a take's file streamed as it was recorded (normalized, lower case) -> { file, rel, at }
+-- (these, and streams.asked, held one entry per file all session: media_tick drops those over KEEP s old, a streamed take only once the
+-- extension's stream is gone too. Only files written in the last MEDIA_FRESH s go out, so an hour-old entry can't change what's sent. James, rt)
+streams.KEEP = 3600
+function streams.forget_old(t, now, at_of)
+  for k, v in pairs(t) do
+    local at = at_of(v)
+    if type(at) == "number" and now - at > streams.KEEP then t[k] = nil end
+  end
+end
 -- The take stream a media file is a byte-for-byte copy of (mirror.share_media's record), while the extension still has that stream: { file, rel },
 -- or nil. Not "finished": the change naming the copy goes out ~0.1 s after the stop, before the stream's last pass; each receiver places its
 -- copy only once it's done, SHA-256 checked and the size announced, else Syncthing brings it. media_from, streamed, outs passed in. Pure.
@@ -738,7 +747,7 @@ function streams.offer_media(cfg, song, room, media_dir, ev, last)
       local rel = not take and size and size > 0 and direct.stream_start(cfg, path, song, room, streams.MEDIA_INTERVAL_MS, name)
       if rel then direct.stream_end(cfg, rel) end -- (it's complete: begun and ended at once, so the rest, its length and SHA-256 follow straight away)
       if rel or take then
-        streams.sent_media[key], sent = true, sent + 1
+        streams.sent_media[key], sent = reaper.time_precise(), sent + 1
         local id = media_id(cfg)
         direct.send_live(cfg, "media", { id = id, user = cfg.user, room = r, file = m.file, size = size, take = take and take.file or nil }, song, room, id)
         streams.trace("media out " .. (rel or ("as the streamed take " .. take.rel)) .. " " .. size .. " bytes")
@@ -828,7 +837,7 @@ function streams.media_tick(cfg, b)
       end
     end
     if done then
-      streams.media[rel], streams.placed[e.key], placed = nil, true, placed + 1
+      streams.media[rel], streams.placed[e.key], placed = nil, now, placed + 1
       streams.placed_at[#streams.placed_at + 1] = { target = e.target, size = e.size, at = now }
       -- (Syncthing told at once, so it indexes our copy before pulling its own: otherwise its download, a moment behind, found the file there,
       -- gave up and left its full-size temp for a day. 0.59.49.10 test, James, rt)
@@ -840,6 +849,12 @@ function streams.media_tick(cfg, b)
   if now - media_pruned >= streams.PRUNE_EVERY then
     media_pruned = now
     streams.placed_at = streams.tidy_syncthing_temps(streams.placed_at, now, os.time(), band.size, reaper.StudioSync_DirectFileTime, os.remove)
+    local going = {}
+    for _, o in ipairs(direct.streams(cfg).out) do going[o.rel] = true end
+    streams.forget_old(streams.asked, now, function(a) return a.at end)
+    streams.forget_old(streams.sent_media, now, function(at) return at end)
+    streams.forget_old(streams.placed, now, function(at) return at end)
+    streams.forget_old(streams.streamed, now, function(s) return not going[s.rel] and s.at end)
     local folder = direct.inbox(cfg.root) .. "/.streams/" .. b.song
     for _, f in ipairs(streams.media_prunable(band.files(folder), streams.media, by_name, os.time())) do os.remove(folder .. "/" .. f) end
   end

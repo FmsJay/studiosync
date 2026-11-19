@@ -1578,8 +1578,18 @@ sync.waited = {} -- event id -> true: its apply said "later" last pass (no undo 
 -- Events refused for now (authority not synced here yet): retried until 10 minutes old. And the room's driver
 -- changes, read once and then kept up to date from incoming events: { [id] = { time, user } }.
 sync.deferred = {}
-local refused_at = {} -- event id -> when it was first found refused here
-function sync.refused_since(id) refused_at[id] = refused_at[id] or reaper.time_precise(); return refused_at[id] end
+local refused_at, refused_pruned = {}, -math.huge -- event id -> when it was first found refused here
+-- (a refused change lands after a minute anyway, so an entry an hour old is spent: they're dropped every 10 minutes, as the table grew all
+-- session. One still waiting then would wait one more minute. James, rt)
+function sync.refused_since(id)
+  local now = reaper.time_precise()
+  if now - refused_pruned > 600 then
+    refused_pruned = now
+    for k, at in pairs(refused_at) do if now - at > 3600 then refused_at[k] = nil end end
+  end
+  refused_at[id] = refused_at[id] or now
+  return refused_at[id]
+end
 sync.unreadable = {} -- event file id -> when it was first found unreadable (sync.receive)
 sync.UNREADABLE_SECS = 600 -- how long a file may stay unreadable before it's skipped for good
 local driver_cache = {}
