@@ -563,3 +563,19 @@ Video audio plays through each person's system audio by default, with an option 
   skip of the peer, and says why in `StudioSync_DirectStreams` (`error`, with the Windows error) and Health. Stop-and-wait at 64 KB gives
   about 1 MB/s at a 57 ms round trip, several times a FLAC take's rate. With REAPER's 256 KB write blocks a 24-bit FLAC take reaches the
   link in ~1-2 s steps: fine for "in time", and the floor for "as it comes".
+
+## Step 2 checked in REAPER (1.0.11, 0.59.49.9, 2026-11-19: desktop records, laptop and Mac receive)
+- **As it comes:** a 61 s FLAC take streamed to the laptop and the Mac while it recorded: the copy grew in REAPER's own write steps and the
+  placeholder grew with the take (6.7 s -> 57.9 s); at stop the real take replaced it on both within ~6 s. Arm and Record in the same
+  instant streams the same way.
+- **The "stuck at 64 KB" take:** not a stale size. The stream trace (ExtState "stream trace" = 1, `<home>/direct/stream_trace.log`) read
+  the size four ways on all 535 passes and they always agreed; both peers' offsets kept up with it. The cause was the branch shipping the
+  1.0.6 Mac build beside a 1.0.11 want: the Mac's extension was swapped down at its next start (no direct link there). Now a shipped build
+  is only put in when it holds the wanted version (lib/fromfolder.lua), and the branch ships CI's current Mac and Linux builds.
+- **In time:** wired into the cue path (it was offered in Settings but not used). Following the desktop's take at 1 bar, the laptop played
+  1.85-1.87 s behind on the shared clock (one bar at the song's tempo) and stopped where the desktop stopped.
+- **The limit found:** the take reaches the link only as fast as REAPER writes it. A tone recorded to FLAC came in ~200 KB steps every
+  ~4.6 s (very compressible audio; a real take compresses less and steps faster; 24-bit 48 kHz stereo WAV is ~0.9 s per 256 KB). So "In
+  time" at 1 bar keeps the transport one bar behind, but the newest few seconds of a FLAC take haven't arrived yet. Until step 4: Health
+  could say "use 4+ bars, or record WAV, for in-time listening"; with step 4 the audio hook sends what's recorded straight from the input
+  (Opus or raw, ~10-20 ms frames), and the file stream becomes the lossless follow-up ("fast first, lossless after").
