@@ -76,4 +76,28 @@ for _ = 1, N do direct.status(cfg) end
 local t_status = (os.clock() - t0) / N * 1e6
 print(string.format("timing: decoding the status %.1f us; direct.status with it decoded once %.1f us", t_decode, t_status))
 
+-- ---- Health's rows, built at most once a second (lib/page_health.lua: the Health tab asks every frame) ----
+package.loaded.sync, package.loaded.setup, package.loaded.theme = {}, {}, { GREEN = 1, YELLOW = 2, GREY = 3, RED = 4 }
+local H = require("page_health")
+local tab, song = "P1", { song = "Song" }
+H.init({ b = function() return song end, cfg = function() return { root = "S" } end, proj = function() return tab end, view = function() return {} end,
+  wide = function() return false end })
+local builds = 0
+H.build_rows = function() builds = builds + 1; return { { "x", true, "red", "fine", "not" } } end
+clock = 2000
+local r1, r2 = H.maint_rows(), H.maint_rows()
+assert(builds == 1 and r1 == r2, "two frames: built once")
+clock = 2000.5; H.maint_rows()
+assert(builds == 1, "half a second on: the same rows")
+clock = 2001.01; H.maint_rows()
+assert(builds == 2, "a second on: built again")
+H.maint_at = 0; H.maint_rows()
+assert(builds == 3, "a button changed something (H.maint_at): built again at once")
+tab = "P2"; H.maint_rows()
+assert(builds == 4, "another tab in front: built again")
+song = { song = "Other" }; H.maint_rows()
+assert(builds == 5, "another song: built again")
+clock = 1990; H.maint_rows()
+assert(builds == 6, "the clock went back: built again")
+
 print("ok rt perf")

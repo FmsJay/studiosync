@@ -17,7 +17,22 @@ end
 -- look (dismissable). The sidebar shows the worst one still open.
 local maint_st
 H.maint_at = -math.huge
+-- The rows as last built, given out again for up to ROWS_EVERY s: the Health tab asks every frame, and a build reads session.json and the
+-- Tailscale switch marker, walks every track's group bits (presence.track_groups), and decodes the direct link's status. A button that
+-- changes something sets H.maint_at, which builds them again at once, as does another tab, song or studio. (James, rt: efficiency pass)
+H.ROWS_EVERY = 1
+local rows_c
 function H.maint_rows()
+  local b, cfg, proj, now = E.b(), E.cfg(), E.proj(), reaper.time_precise()
+  local c = rows_c
+  if c and c.proj == proj and c.song == (b and b.song) and c.root == (cfg and cfg.root) and c.maint_at == H.maint_at and now - c.at < H.ROWS_EVERY and now >= c.at then
+    return c.rows
+  end
+  local rows = H.build_rows()
+  rows_c = { proj = proj, song = b and b.song, root = cfg and cfg.root, maint_at = H.maint_at, at = now, rows = rows }
+  return rows
+end
+function H.build_rows()
   local b, cfg, proj, view, wide = E.b(), E.cfg(), E.proj(), E.view(), E.wide()
   if not maint_st or maint_st.for_proj ~= proj or reaper.time_precise() - H.maint_at > 10 then -- (another tab's said "Live sync is off" here: laptop, 0.34.9)
     H.maint_at, maint_st = reaper.time_precise(), setup.check(cfg, b, proj)
