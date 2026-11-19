@@ -943,6 +943,9 @@ local live_handlers = {
   -- (a bandmate's take as they record it: lib/streams.lua. James, rt)
   take = function(d) require("streams").on_take(cfg, b, d) end,
   take_end = function(d) require("streams").on_take_end(d) end,
+  -- (where a bandmate punches in and their pre-roll, shown on this timeline till their recording ends: lib/streams.lua on_punch. James, rt)
+  punch = function(d) require("streams").on_punch(proj, cfg, b, d) end,
+  punch_end = function(d) require("streams").on_punch_end(proj, d) end,
   -- (a media file a bandmate just put in the shared folder, coming over the link: lib/streams.lua on_media. James, rt)
   media = function(d) require("streams").on_media(cfg, b, d) end,
   -- (a bandmate catching up asks for a media file its Syncthing still needs; sent back if it's here: lib/streams.lua on_media_want. James, rt)

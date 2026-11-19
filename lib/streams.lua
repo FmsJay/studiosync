@@ -17,8 +17,9 @@
 -- tolerance) is the take's; they're matched to the armed tracks by the track's name in the file name, then its number, then (same count
 -- left) in order. Arming and pressing Record at once works: no listing beforehand. Limits: another audio file written into the record
 -- folder in those seconds can be taken for a take's (matched only when it fits a track); a second record path, files renamed at stop
--- (REAPER's "rename recorded files" box) and recording formats REAPER writes elsewhere aren't followed; a bandmate who joins mid-take gets
--- no stream for it (the real take still comes). Those takes simply arrive the normal way.
+-- (REAPER's "rename recorded files" box) and recording formats REAPER writes elsewhere aren't followed. Those takes simply arrive the normal
+-- way. A bandmate who joins mid-take gets it from its start (the same stream, the extension sends a peer added later from byte 0).
+-- Punch-in assist: a recording with auto-punch or pre-roll tells the others where (a "punch" message), shown on their timeline till it ends.
 local band = require("band")
 local direct = require("direct")
 local streams = { INTERVAL_MS = 100, FIND_SECS = 3, FILE_TOL = 3, END_DELAY = 0.5, MIN_BYTES = 4096, CHECK_EVERY = 1,
@@ -73,10 +74,45 @@ function streams.match(tracks, files)
 end
 -- Where the take starts: the edit cursor when recording began from it: the playhead a little past it, or still before it in a count-in or
 -- pre-roll (the first real run read the playhead there: a bar early, 1.84 s for 3.69 s at 130 BPM). Else where the playhead is.
--- shortcut: an auto-punch range's start isn't read, the placeholder then sits at the cursor.
-function streams.start_pos(cursor, play)
-  if play - cursor < 5 then return cursor end
-  return play
+-- punch_from: time selection auto-punch's start, when on: REAPER writes only from there, so a take that starts before it starts there.
+function streams.start_pos(cursor, play, punch_from)
+  local p = play - cursor < 5 and cursor or play
+  if punch_from and punch_from > p then return punch_from end
+  return p
+end
+-- Late joiners (James, rt): the peers here now that a take hasn't gone to yet (to: peer -> true). Pure.
+function streams.newcomers(peers, to)
+  local out = {}
+  for _, p in ipairs(peers or {}) do if not to[p] then out[#out + 1] = p end end
+  return out
+end
+-- Punch-in assist (James, rt: "go again from the bridge" unambiguous). What a recording tells the others: auto (time selection auto-punch
+-- on), the time selection, the take's start, and the pre-roll in seconds (0: off). -> { start, stop (the punch out, nil without auto-punch),
+-- preroll (nil: none) }, or nil when there's nothing to show beyond the take itself. Pure.
+function streams.punch_info(auto, ts_s, ts_e, pos, preroll)
+  local stop = auto and ts_s and ts_e and ts_e > ts_s and ts_e > pos and ts_e or nil
+  local pre = (tonumber(preroll) or 0) > 0 and preroll or nil
+  if not stop and not pre then return nil end
+  return { start = stop and math.max(ts_s, pos) or pos, stop = stop, preroll = pre }
+end
+streams.PUNCH_MARK, streams.PUNCH_KEEP = "[punch] ", 1800 -- (a name band.is_local_mark keeps off the band's markers; dropped after 30 min with no end)
+-- A "punch" message checked, or nil. Pure.
+function streams.valid_punch(d, me)
+  if type(d) ~= "table" or type(d.id) ~= "string" or #d.id > 120 or not d.id:match("^[%w%-_]+$") then return nil end
+  if type(d.user) ~= "string" or d.user == me or not direct.plain(d.user) or #d.user > 60 then return nil end
+  local s, e, pre = tonumber(d.start), tonumber(d.stop), tonumber(d.preroll)
+  if not s or s ~= s or s < 0 or s > 1e6 then return nil end
+  if d.stop ~= nil and not (e and e > s and e <= 1e6) then return nil end
+  if d.preroll ~= nil and not (pre and pre > 0 and pre <= 600) then return nil end
+  return { id = d.id, user = d.user, start = s, stop = e, preroll = pre }
+end
+-- The markers and regions a punch shows: { { region, pos, rend, name } }. Pure.
+function streams.punch_marks(p)
+  local who, out = streams.PUNCH_MARK .. p.user, {}
+  if p.stop then out[1] = { region = true, pos = p.start, rend = p.stop, name = who .. " punches in-out" }
+  else out[1] = { region = false, pos = p.start, rend = 0, name = who .. " records from here" } end
+  if p.preroll then out[#out + 1] = { region = false, pos = math.max(0, p.start - p.preroll), rend = 0, name = who .. " pre-roll" } end
+  return out
 end
 -- The stream's file name on the link: <room>~<user>~<file>, plain characters, at most 200 bytes (the file's start trimmed). nil if it can't be.
 local function safe(s) return (tostring(s or ""):gsub("[^%w%-_. ]", "_")) end
@@ -206,6 +242,53 @@ function streams.mode()
   return (m == "in_time" or m == "show") and m or "as_it_comes"
 end
 function streams.bars() return math.max(1, math.min(16, math.floor(tonumber(reaper.GetExtState(band.SECTION, "stream bars")) or 1))) end
+-- Producer listen (James, rt): bandmates' takes as they come play at this level here (the placeholder's item volume: never sent, mirror skips
+-- the item), so a producer sets them against the mix on their own monitors without touching the track's fader, which is the band's.
+function streams.listen_db() return math.max(-60, math.min(6, tonumber(reaper.GetExtState(band.SECTION, "stream listen db")) or 0)) end
+function streams.listen_vol(db) return db <= -60 and 0 or 10 ^ (db / 20) end -- (pure)
+
+-- The recording-format hint (James, rt; roadmap "Step 2 checked in REAPER"): REAPER writes a take in 256 KB blocks, so a FLAC take reaches
+-- the link in steps of about 2-5 s (24-bit WAV: under 1 s), and "In time" one bar behind hears its newest seconds late.
+streams.FLAC_STEP, streams.WAV24 = 5, "ZXZhdxgAAQ==" -- (seconds; REAPER's 24-bit WAV sink, as lib/extras.lua's)
+-- A sink config (base64, as GetSetProjectInfo_String "RECORD_FORMAT" gives it) -> its kind: "flac", "wave", ... (REAPER stores the four
+-- letters backwards: "calf", "evaw"). Pure.
+function streams.fourcc(cfg_b64)
+  local raw = require("fxfiles").unbase64(tostring(cfg_b64 or ""):sub(1, 8)):sub(1, 4)
+  return #raw == 4 and raw:reverse() or ""
+end
+-- This computer records 24-bit WAV instead of the studio's FLAC, for in-time listening (its own choice: lib/prep.lua keep_format holds it).
+function streams.record_wav() return reaper.GetExtState(band.SECTION, "record wav") == "1" end
+function streams.record_want() return streams.record_wav() and streams.WAV24 or band.FLAC end
+function streams.format_ok(fmt) if streams.record_wav() then return streams.fourcc(fmt) == "wave" end return fmt == band.FLAC end
+-- Enough bars behind to cover a FLAC step, for a bar this many seconds long. Pure.
+function streams.flac_bars(bar_secs) return math.min(16, math.max(2, math.ceil(streams.FLAC_STEP / math.max(0.1, bar_secs or 2)))) end
+-- What to say (nil: nothing): this computer records FLAC, "In time" is chosen and the bars behind don't cover a FLAC step. Pure.
+function streams.format_hint(kind, mode, bars, bar_secs)
+  if mode ~= "in_time" or kind ~= "flac" or bars * (bar_secs or 2) >= streams.FLAC_STEP then return nil end
+  return string.format("Takes recorded to FLAC (this computer's, and the studio's way) reach the others in steps of 2-5 s, so %d bar%s behind " ..
+    "hears the newest seconds late. Use %d bars behind, or record WAV here (steps under a second; your takes are about twice the size in the " ..
+    "shared folder).", bars, bars == 1 and "" or "s", streams.flac_bars(bar_secs))
+end
+local function format_state(proj)
+  proj = proj or reaper.EnumProjects(-1)
+  local fmt = proj and select(2, reaper.GetSetProjectInfo_String(proj, "RECORD_FORMAT", "", false)) or ""
+  local bar = proj and require("together").bars_after(proj, reaper.GetCursorPositionEx(proj), 1) or 2
+  return proj, streams.fourcc(fmt), bar
+end
+function streams.use_wav(proj, on)
+  reaper.SetExtState(band.SECTION, "record wav", on and "1" or "", true)
+  reaper.GetSetProjectInfo_String(proj, "RECORD_FORMAT", on and streams.WAV24 or band.FLAC, true)
+  band.log(on and "this computer records 24-bit WAV now, so bandmates listening in time hear your takes under a second behind" or
+    "this computer records the studio's 24-bit FLAC again")
+end
+-- Health's row for it (lib/page_health.lua), nil when there's nothing to say.
+function streams.format_row(proj)
+  local p, kind, bar = format_state(proj)
+  local text = p and streams.format_hint(kind, streams.mode(), streams.bars(), bar)
+  if not text then return nil end
+  return { "stream format", false, "yellow", "", text, action = { "Record WAV here", function() streams.use_wav(p, true) end,
+    "This computer records 24-bit WAV from now on (Settings > Options, Parts play, puts FLAC back)." } }
+end
 function streams.options(ctx, ImGui)
   ImGui.Text(ctx, "Bandmates' takes while they record:")
   for _, m in ipairs(MODES) do
@@ -216,7 +299,30 @@ function streams.options(ctx, ImGui)
     ImGui.SetNextItemWidth(ctx, 118)
     local ch, v = ImGui.InputInt(ctx, "bars behind (the interval)##streambars", streams.bars())
     if ch then reaper.SetExtState(band.SECTION, "stream bars", tostring(math.max(1, math.min(16, v))), true) end
-    ImGui.SetItemTooltip(ctx, "How far behind the one recording your playback runs. One bar is plenty over Tailscale (a take arrives in about 0.2 s).")
+    ImGui.SetItemTooltip(ctx, "How far behind the one recording your playback runs. One bar is plenty for WAV takes over Tailscale; FLAC takes need more.")
+    local proj, kind, bar = format_state()
+    local hint = proj and streams.format_hint(kind, "in_time", streams.bars(), bar)
+    if hint then
+      ImGui.TextWrapped(ctx, hint)
+      if ImGui.SmallButton(ctx, "Use " .. streams.flac_bars(bar) .. " bars##streamflacbars") then reaper.SetExtState(band.SECTION, "stream bars", tostring(streams.flac_bars(bar)), true) end
+      ImGui.SameLine(ctx)
+      if ImGui.SmallButton(ctx, "Record WAV here##streamwav") then streams.use_wav(proj, true) end
+      ImGui.SetItemTooltip(ctx, "This computer records 24-bit WAV from now on, in every studio project (the studio's way is FLAC).")
+    end
+  end
+  if streams.mode() ~= "show" then
+    ImGui.SetNextItemWidth(ctx, 160)
+    local db = streams.listen_db()
+    local ch, v = ImGui.SliderDouble(ctx, "their takes' level here##streamdb", db, -60, 6, db <= -60 and "off" or "%.1f dB")
+    if ch then reaper.SetExtState(band.SECTION, "stream listen db", string.format("%.1f", v), true) end
+    ImGui.SetItemTooltip(ctx, "How loud a bandmate's take plays here while they record (producing them, say): only on this computer, the track's\n" ..
+      "fader and everyone else's mix stay as they are. The real take, once it lands, plays as the track has it.")
+  end
+  if streams.record_wav() then
+    ImGui.TextDisabled(ctx, "This computer records 24-bit WAV (for in-time listening).")
+    ImGui.SameLine(ctx)
+    local proj = reaper.EnumProjects(-1)
+    if proj and ImGui.SmallButton(ctx, "Back to FLAC##streamflac") then streams.use_wav(proj, false) end
   end
 end
 
@@ -252,14 +358,15 @@ function streams.send_tick(proj, cfg, b, recording)
   if not direct.live_available() then return end
   local now = reaper.time_precise()
   if not recording then
-    if rec and rec.takes and #rec.takes > 0 then
+    if rec and ((rec.takes and #rec.takes > 0) or rec.punch) then
       rec.stopped_at = rec.stopped_at or now
       if now - rec.stopped_at < streams.END_DELAY then return end -- (REAPER writes the real header as it stops: the stream's last pass reads it)
       for _, t in ipairs(rec.takes) do
         streams.trace("stream_end " .. t.rel .. " -> " .. tostring(direct.stream_end(cfg, t.rel)))
         direct.send_live(cfg, "take_end", { id = t.id }, b.song, b.room, t.id)
       end
-      band.log(string.format("your take%s went out to the others as you recorded", #rec.takes > 1 and "s" or ""))
+      if #rec.takes > 0 then band.log(string.format("your take%s went out to the others as you recorded", #rec.takes > 1 and "s" or "")) end
+      if rec.punch then direct.send_live(cfg, "punch_end", { id = rec.punch.id }, b.song, b.room, rec.punch.id) end
     end
     rec = nil
     return
@@ -267,21 +374,63 @@ function streams.send_tick(proj, cfg, b, recording)
   if not rec then
     rec = { t0 = now, wall = os.time(), dir = record_dir(proj), found = {}, old = {}, takes = {}, looked = -math.huge, first = true }
     rec.tracks = armed_audio(proj)
-    if #rec.tracks == 0 or #direct.peers(cfg, b.song, b.room) == 0 then
-      streams.trace(string.format("record start: %d armed audio tracks, %d peers: not streamed", #rec.tracks, #direct.peers(cfg, b.song, b.room)))
+    local peers = direct.peers(cfg, b.song, b.room)
+    if #peers == 0 then
+      streams.trace(string.format("record start: %d armed audio tracks, no peers: not streamed", #rec.tracks))
       rec.none = true
       return
     end
     local play = reaper.GetPlayPositionEx(proj)
-    rec.pos = streams.start_pos(reaper.GetCursorPositionEx(proj), play)
+    -- (where the punch is, read once as recording begins: time selection auto-punch is action 40076's state, pre-roll 41819's and
+    -- "prerollmeas" bars before the take's start. James, rt)
+    local auto = reaper.GetToggleCommandStateEx(0, 40076) == 1
+    local ts_s, ts_e = reaper.GetSet_LoopTimeRange2(proj, false, false, 0, 0, false)
+    rec.pos = streams.start_pos(reaper.GetCursorPositionEx(proj), play, auto and ts_s and ts_e and ts_e > ts_s and ts_s or nil)
+    local pre = 0
+    if reaper.GetToggleCommandStateEx(0, 41819) == 1 then
+      local ok, bars = reaper.get_config_var_string("prerollmeas")
+      pre = ok and require("together").bars_before(proj, rec.pos, tonumber(bars) or 0) or 0
+    end
+    local punch = streams.punch_info(auto, ts_s, ts_e, rec.pos, pre)
+    if punch then -- (MIDI and audio alike: sent whatever is armed)
+      punch.id, punch.user = string.format("%s-%s-%03dp", (cfg.user:gsub("[^%w%-_]", "_")), os.date("!%Y%m%d-%H%M%SZ"), math.floor(now * 1000) % 1000), cfg.user
+      rec.punch, rec.punch_to = punch, {}
+      for _, p in ipairs(peers) do rec.punch_to[p] = true end
+      direct.send_live(cfg, "punch", punch, b.song, b.room, punch.id, peers)
+    end
     local sn = direct.shared_now()
     rec.at = sn and sn - (play - rec.pos) or nil -- (in a count-in, a moment still to come)
+    rec.cap = 30 + math.max(0, rec.pos - play) -- (looked for at most this long: longer when a punch-in is still ahead)
+    if #rec.tracks == 0 then
+      streams.trace("record start: no armed audio tracks: not streamed")
+      rec.none = true
+    end
+  end
+  if rec.punch then -- (someone who arrives mid-take sees the punch too)
+    for _, p in ipairs(streams.newcomers(direct.peers(cfg, b.song, b.room), rec.punch_to)) do
+      rec.punch_to[p] = true
+      direct.send_live(cfg, "punch", rec.punch, b.song, b.room, rec.punch.id, { p })
+    end
   end
   if rec.none then return end
+  -- Late-joiner catch-up (James, rt): a bandmate who appears here while a take streams gets it from its start. StudioSync_DirectStream again
+  -- with the same name and file adds the peer to the running stream (extension/direct.cpp api_stream: "a peer added later starts from the
+  -- beginning"); the others carry on where they are. Their "take" message makes their placeholder.
+  if #rec.takes > 0 then
+    local peers = direct.peers(cfg, b.song, b.room)
+    for _, t in ipairs(rec.takes) do
+      for _, p in ipairs(streams.newcomers(peers, t.to)) do
+        t.to[p] = true
+        local rel = direct.stream_start(cfg, t.path, b.song, b.room, streams.INTERVAL_MS, t.name, { p })
+        streams.trace("late joiner " .. p .. ": " .. t.rel .. " from its start -> " .. tostring(rel))
+        if rel then direct.send_live(cfg, "take", t.msg, b.song, b.room, t.id, { p }) end
+      end
+    end
+  end
   -- (looked for until FIND_SECS after the playhead reaches the take's start: a count-in or pre-roll comes first, and REAPER may make the file
   -- only as it ends)
   if not rec.find_until and reaper.GetPlayPositionEx(proj) >= rec.pos - 0.01 then rec.find_until = now + streams.FIND_SECS end
-  if (rec.find_until and now > rec.find_until) or now - rec.t0 > 30 or now - rec.looked < streams.TICK then return end
+  if (rec.find_until and now > rec.find_until) or now - rec.t0 > rec.cap or now - rec.looked < streams.TICK then return end
   rec.looked = now
   local fresh, time_of = {}, reaper.StudioSync_DirectFileTime
   for _, f in ipairs(band.files(rec.dir)) do
@@ -299,14 +448,17 @@ function streams.send_tick(proj, cfg, b, recording)
   for _, m in ipairs(streams.match(left, fresh)) do
     m.track.taken, rec.found[m.file] = true, true
     local id = string.format("%s-%s-%03d%d", (cfg.user:gsub("[^%w%-_]", "_")), os.date("!%Y%m%d-%H%M%SZ"), math.floor(rec.t0 * 1000) % 1000, #rec.takes + 1)
-    local path = rec.dir .. "/" .. m.file
-    local rel = direct.stream_start(cfg, path, b.song, b.room, streams.INTERVAL_MS, streams.stream_name(b.room, cfg.user, m.file))
+    local path, name, peers = rec.dir .. "/" .. m.file, streams.stream_name(b.room, cfg.user, m.file), direct.peers(cfg, b.song, b.room)
+    local rel = direct.stream_start(cfg, path, b.song, b.room, streams.INTERVAL_MS, name, peers)
     streams.trace("stream_start " .. path .. " for " .. m.track.name .. " -> " .. tostring(rel))
     if rel then
-      rec.takes[#rec.takes + 1] = { id = id, rel = rel }
+      local msg = { id = id, user = cfg.user, track = m.track.oid, name = m.track.name, file = m.file, pos = rec.pos, at = rec.at,
+        srate = srate(proj), nch = m.track.nch, fmt = m.file:match("%.(%w+)$"):lower() }
+      local to = {}
+      for _, p in ipairs(peers) do to[p] = true end
+      rec.takes[#rec.takes + 1] = { id = id, rel = rel, path = path, name = name, msg = msg, to = to } -- (path, name, msg, to: for late joiners)
       streams.streamed[band.norm(path):lower()] = { file = m.file, rel = rel } -- (its shared copy then goes as "this stream": offer_media)
-      direct.send_live(cfg, "take", { id = id, user = cfg.user, track = m.track.oid, name = m.track.name, file = m.file, pos = rec.pos, at = rec.at,
-        srate = srate(proj), nch = m.track.nch, fmt = m.file:match("%.(%w+)$"):lower() }, b.song, b.room, id)
+      direct.send_live(cfg, "take", msg, b.song, b.room, id, peers)
     end
   end
 end
@@ -322,6 +474,35 @@ function streams.on_take(cfg, b, d)
   return true
 end
 function streams.on_take_end(d) local e = type(d) == "table" and streams.book[d.id]; if e then e.ended = true end end
+
+-- Punch-in assist, the others' side: a bandmate's punch range (a region) or start (a marker), and their pre-roll (a marker), in their colour,
+-- named "[punch] <user> ..." so they're this computer's only (band.is_local_mark), gone when their recording ends.
+streams.punches = {} -- id -> { user, marks, at }
+local function drop_punch(proj, id)
+  local p = streams.punches[id]
+  streams.punches[id] = nil
+  if not (p and proj) then return end
+  for i = reaper.CountProjectMarkers(proj) - 1, 0, -1 do
+    local _, rgn, pos, _, name = reaper.EnumProjectMarkers3(proj, i)
+    for _, m in ipairs(p.marks) do
+      if m.region == rgn and m.name == name and math.abs(m.pos - pos) < 1e-6 then reaper.DeleteProjectMarkerByIndex(proj, i); break end
+    end
+  end
+  reaper.UpdateArrange()
+end
+function streams.on_punch(proj, cfg, b, d)
+  local p = streams.valid_punch(d, cfg.user)
+  if not p or streams.punches[p.id] or not proj then return false end
+  for id, q in pairs(streams.punches) do if q.user == p.user then drop_punch(proj, id) end end -- (their last one, if its end never came)
+  local rgb = require("people").colours(cfg.root, { p.user })[p.user]
+  local col = rgb and (reaper.ColorToNative((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255) | 0x1000000) or 0
+  p.marks, p.at = streams.punch_marks(p), reaper.time_precise()
+  for _, m in ipairs(p.marks) do reaper.AddProjectMarker2(proj, m.region, m.pos, m.rend, m.name, -1, col) end
+  streams.punches[p.id] = p
+  reaper.UpdateArrange()
+  return true
+end
+function streams.on_punch_end(proj, d) if type(d) == "table" and streams.punches[d.id] then drop_punch(proj, d.id) end end
 
 local function find_item(proj, tr, guid)
   for i = 0, reaper.CountTrackMediaItems(tr) - 1 do
@@ -368,6 +549,7 @@ function streams.receive_tick(proj, cfg, b, recording)
   local now = reaper.time_precise()
   if now - tick_at < streams.TICK then return end
   tick_at = now
+  for id, p in pairs(streams.punches) do if now - p.at > streams.PUNCH_KEEP then drop_punch(proj, id) end end -- (its end never came)
   if not next(streams.book) and now - pruned_at < streams.PRUNE_EVERY then return end
   local s = direct.streams(cfg)
   local inn, active = {}, {}
@@ -375,7 +557,7 @@ function streams.receive_tick(proj, cfg, b, recording)
     inn[i.rel] = i
     if not i.done then active[tostring(i.rel):match("[^/]+$") or ""] = true end
   end
-  local mirror, mode = require("mirror"), streams.mode()
+  local mirror, mode, listen_db = require("mirror"), streams.mode(), streams.listen_db()
   for _, e in pairs(streams.book) do
     streams.update(e, inn[e.rel], now)
     local tr = mirror.find(proj, "track", e.track)
@@ -415,6 +597,8 @@ function streams.receive_tick(proj, cfg, b, recording)
       if it then
         local mute = mode == "show" and 1 or 0
         if reaper.GetMediaItemInfo_Value(it, "B_MUTE") ~= mute then reaper.SetMediaItemInfo_Value(it, "B_MUTE", mute) end
+        local vol = streams.listen_vol(listen_db) -- (producer listen: this computer's level for takes as they come)
+        if math.abs(reaper.GetMediaItemInfo_Value(it, "D_VOL") - vol) > 1e-6 then reaper.SetMediaItemInfo_Value(it, "D_VOL", vol) end
         local tk = reaper.GetActiveTake(it)
         if tk and select(2, reaper.GetSetMediaItemTakeInfo_String(tk, "P_NAME", "", false)) ~= label(e) then reaper.GetSetMediaItemTakeInfo_String(tk, "P_NAME", label(e), true) end
         if e.peaks then -- (the finished take's waveform, a step each tick: PCM_Source_BuildPeaks 1 until it says 0, then 2)

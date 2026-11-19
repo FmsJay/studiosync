@@ -240,6 +240,9 @@ function H.maint_rows()
     -- and the shared clock. lib/direct.lua health_rows. James, 0.60.0-rt)
     local okd, drows = pcall(require("direct").health_rows, cfg)
     for _, r in ipairs(okd and drows or {}) do rows[#rows + 1] = r end
+    -- (recording FLAC with "In time" listening chosen: takes arrive in 2-5 s steps; WAV or more bars. lib/streams.lua format_row. James, rt)
+    local okf, frow = pcall(require("streams").format_row, proj)
+    if okf and frow then rows[#rows + 1] = frow end
   end
   -- (without them less works, quietly: onboarding review, 0.59.9)
   if not reaper.APIExists("CF_GetSWSVersion") then
