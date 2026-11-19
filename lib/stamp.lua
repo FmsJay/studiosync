@@ -256,14 +256,17 @@ local function find(tr, name)
   end
 end
 -- One of them on the Real time track: the sender before SonoBus, the reader after it.
-local looked = false
+-- (an effect already loaded keeps the old code until it's put on again: so each one, on each track, is put on afresh the first time this run
+-- places it. It was once per run for whichever came first: the laptop placed the sender first, and its reader kept running the code from
+-- before Their time's timing, so it never timed anyone. Live test, 0.59.35)
+local placed = {}
 local function place(tr, name, first)
   local i = find(tr, name)
-  if not looked then -- (once per run: an effect already loaded keeps the old code until it's put on again)
-    looked = true
-    local ok, changed = stamp.install()
-    if not ok then return nil end
-    if changed and i then reaper.TrackFX_Delete(tr, i); i = nil end
+  local key = tostring(tr) .. name
+  if not placed[key] then
+    placed[key] = true
+    if not stamp.install() then return nil end
+    if i then reaper.TrackFX_Delete(tr, i); i = nil end
   end
   if not i then
     if not stamp.install() then return nil end

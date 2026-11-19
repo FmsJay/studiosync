@@ -426,6 +426,26 @@ function sonobus.set_talk(b64, outs, talk)
   return pack_chunk(c)
 end
 
+-- Everyone SonoBus remembers, as saved: { { name, level, groups = { { start, chans, chanstart, muted, gain } } } }. (For working out who lands
+-- where: a "James 3" with no entry of its own goes to SonoBus's default outputs. 0.59.35)
+function sonobus.peers(b64)
+  local c = unpack_chunk(b64)
+  local map = c and child(c.tree, "PeerStateCacheMap")
+  local out = {}
+  for _, e in ipairs(map and map.children or {}) do
+    local n = prop(e, "name")
+    local lv = prop(e, "level")
+    local p = { name = n and n[2]:match("^\5(.*)%z$"), level = lv and lv[2]:sub(1, 1) == "\4" and string.unpack("<d", lv[2], 2) or nil, groups = {} }
+    local g = child(e, "ChannelGroups")
+    for _, x in ipairs(g and g.children or {}) do
+      local m, gn = prop(x, "muted"), prop(x, "gain")
+      p.groups[#p.groups + 1] = { start = int_of(x, "pandeststart"), chans = int_of(x, "pandestchans"), chanstart = int_of(x, "chanstart"),
+        muted = m and m[2] == "\2", gain = gn and gn[2]:sub(1, 1) == "\4" and string.unpack("<d", gn[2], 2) or nil }
+    end
+    out[#out + 1] = p
+  end
+  return out
+end
 -- Where SonoBus sends `name` (first output channel), or nil when it has no entry for them.
 function sonobus.output_of(b64, name)
   local c = unpack_chunk(b64)

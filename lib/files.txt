@@ -1,4 +1,4 @@
-version 0.59.34
+version 0.59.35
 StudioSync - Autostart.lua	17119
 StudioSync - Claim selected tracks.lua	851
 StudioSync - Draw.lua	27321
@@ -44,7 +44,7 @@ lib/groups.lua	17817
 lib/guest.lua	7314
 lib/hear.lua	19350
 lib/json.lua	6080
-lib/latency.lua	4924
+lib/latency.lua	5320
 lib/leave.lua	9484
 lib/listen.lua	14894
 lib/live.lua	45086
@@ -57,7 +57,7 @@ lib/pack.lua	9704
 lib/page_chat.lua	24132
 lib/page_groups.lua	35397
 lib/page_health.lua	26639
-lib/page_hear.lua	18024
+lib/page_hear.lua	18038
 lib/page_play.lua	24846
 lib/page_plugins.lua	19338
 lib/page_restore.lua	28432
@@ -76,8 +76,8 @@ lib/sessionfile.lua	7035
 lib/setup.lua	8114
 lib/smooth.lua	1506
 lib/songsync.lua	8463
-lib/sonobus.lua	21759
-lib/stamp.lua	12397
+lib/sonobus.lua	22842
+lib/stamp.lua	12670
 lib/startup.lua	13764
 lib/status.lua	6506
 lib/suggest.lua	14428

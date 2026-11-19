@@ -2,7 +2,7 @@
 -- unless you read each person's off SonoBus's window. Now, while you play in Their time, each bandmate who's playing too is timed in
 -- turn: their computer sends the position bursts Produce uses (lib/stamp.lua) for a few seconds, and your reader times each one against
 -- your own playhead. That is the whole delay at once: the network, SonoBus's buffer, both audio interfaces, and how far apart the two
--- transports started. The latest of them is what your backing waits for. Again every two minutes, as SonoBus's buffer can move.
+-- transports started. The latest of them is what your backing waits for. At each start, and again every two minutes, as SonoBus's buffer can move.
 -- Their computer is asked through your status file (`measure`), as Produce asks: producer.tick answers.
 local band = require("band")
 local L = {}
@@ -47,10 +47,16 @@ function L.delay(proj)
 end
 
 -- Each pass of Live sync, with the others' status files.
+local was_on = {} -- tab -> whether it was timing-ready (playing in Real time) at the last pass
 function L.tick(proj, cfg, b, peers)
   local tab, stamp = tostring(proj), require("stamp")
   local c = cur[tab]
-  if not L.wanted(proj) or require("producer").who(proj) then -- (producing someone, the reader is theirs)
+  local on = L.wanted(proj)
+  if on and not was_on[tab] then -- (each new start: the two transports start a little apart each time, and that's part of the delay. Live test, 0.59.35)
+    for k in pairs(done_at) do if k:sub(1, #tab) == tab then done_at[k] = nil end end
+  end
+  was_on[tab] = on
+  if not on or require("producer").who(proj) then -- (producing someone, the reader is theirs)
     if c then stamp.read(proj, false); set_cur(tab, nil) end
     return
   end

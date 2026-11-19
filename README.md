@@ -508,7 +508,7 @@ With Real time mode on:
 - **My time / Their time**: in your time you hear them as it arrives, a little late. *Their time* holds your own
   backing back by that much, so what they play lines up with it: for listening along, not for playing. The delay is
   measured: while you both play, StudioSync times each collaborator with the position bursts Produce uses (a few seconds on
-  their right channel, heard in mono meanwhile) and holds your backing back by the latest, again every two minutes. My time
+  their right channel, heard in mono meanwhile) and holds your backing back by the latest, at each start and again every two minutes. My time
   shows the same measurements (every ten minutes) without moving anything. With a guest, use their measured delay.
 - **Guests**: **Invite a guest** picks how long they stay (days, or a date) and which projects they see (every one, or only those
   ticked). When their computer asks to join, Let them in uses that invitation. Every computer stops syncing with theirs when it
