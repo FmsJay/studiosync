@@ -30,7 +30,8 @@ const char *direct_clock(); // JSON: { now, peers = { ["host:port"] = { offset_m
 double direct_now();        // this computer's clock, seconds since 1970: wall time at start, then a monotonic high-resolution clock
 double direct_file_time(const char *path); // a file's newest of made / last written, seconds since 1970 (through a handle: current while it's being written); -1 if it can't be read
 // A growing file (a take being recorded) streamed to `peers` every interval_ms; direct_stream_end: it's complete, send the rest and
-// "done" with its length and SHA-256. Received into <inbox>/.streams/<rel>, rel = "<song>/<name>.<wav|w64|flac|aif|aiff|ogg|opus|mp3|mid>".
+// "done" with its length and SHA-256. Received into <inbox>/.streams/<rel>, rel = "<song>/<name>.<ext>": audio, MIDI, and (1.0.12) the vetted
+// studio files in direct_stream_rel_ok (video, pdf, pictures, notes, presets, als, zip; nothing that runs).
 int direct_stream(const char *studio, const char *rel, const char *path, const char *peers, int interval_ms);
 int direct_stream_end(const char *studio, const char *rel);
 const char *direct_streams(); // JSON: { out = [ { studio, rel, size, ended, peers = { [peer] = { sent, done, error } } } ], in = [ ... ] }
@@ -60,6 +61,7 @@ bool direct_wav_layout(const std::string &head, long long &data_off, int &block_
 void direct_test_knobs(long long skew_us, int delay_max_ms, int ping_ms); // the listener's clock skewed, its answers delayed 0..max ms
 void direct_test_bandwidth(int kbps); // the listener reads at most this fast (0: as fast as it comes)
 void direct_test_stream_gap(int ms); // a received stream's audio and its header written this far apart (the window a reader could fall into)
+void direct_test_link(int rtt_ms, int window_max); // the sender takes each answer no sooner than rtt_ms after its frame; stream frames in flight at most window_max (0: no cap)
 #endif
 
 #ifndef DIRECT_STANDALONE

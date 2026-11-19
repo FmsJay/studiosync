@@ -271,15 +271,55 @@ function direct.tick(cfg)
   return n
 end
 
+-- Which way Tailscale takes to each computer, from `tailscale status --json`: { [its name, lower case, no last dot] = { path = "direct" |
+-- "relay" (a Tailscale DERP server: `region`) | "peer relay" } }. A computer Tailscale isn't talking to just now (not Active) has no CurAddr
+-- whichever way it would take: left out. Pure. (James, rt: link speed per bandmate)
+function direct.paths_in(json)
+  local out, j = {}, band.json_decode(tostring(json or ""))
+  for _, p in pairs(type(j) == "table" and type(j.Peer) == "table" and j.Peer or {}) do
+    local name = type(p) == "table" and type(p.DNSName) == "string" and p.DNSName:gsub("%.$", ""):lower()
+    local cur, peer_relay, relay = type(p) == "table" and p.CurAddr or "", type(p) == "table" and p.PeerRelay or "", type(p) == "table" and p.Relay or ""
+    if name and name ~= "" then
+      if type(cur) == "string" and cur ~= "" then out[name] = { path = "direct" }
+      elseif type(peer_relay) == "string" and peer_relay ~= "" then out[name] = { path = "peer relay" }
+      elseif p.Active == true and type(relay) == "string" and relay ~= "" then out[name] = { path = "relay", region = relay } end
+    end
+  end
+  return out
+end
+-- The same, from a background `tailscale status --json` every 30 s ({} before the first answer, or without Tailscale).
+local paths_seen = { text = nil, map = {} }
+function direct.paths()
+  local services = require("services")
+  local exe = services.tailscale_exe and services.tailscale_exe()
+  local out = exe and services.run_hidden("ts-peers", '"' .. exe .. '" status --json', 30)
+  if out and out ~= paths_seen.text and out:find("}%s*$") then paths_seen.text, paths_seen.map = out, direct.paths_in(out) end -- (a half-written answer: the last whole one)
+  return paths_seen.map
+end
+-- Whose computer a peer ("name:port") is: the person's name from the studio's devices files, else the computer's first name. Pure.
+function direct.who_of(devs, peer)
+  local host = tostring(peer):match("^(.-):%d+$") or tostring(peer)
+  for _, d in ipairs(devs or {}) do
+    for _, name in pairs(type(d) == "table" and type(d.ts) == "table" and d.ts or {}) do
+      if type(name) == "string" and name:lower() == host:lower() and type(d.user) == "string" then return d.user end
+    end
+  end
+  return host:match("^([^%.]+)") or host
+end
+
 -- For Health: { available, enabled, firewall, listening, bind, error, received, rejected, last_reject, peers = { { peer, ok, ms, error, at,
--- sent } } }, and a line to show: ok (true, false, or nil: off, nothing to say), text.
+-- sent, rate (bytes/s the last streams went at; 0: none yet), rate_at, rtt_ms (the way's round trip), window, path ("direct", "relay",
+-- "peer relay", or nil: not known), region (a relay's) } } }, and a line to show: ok (true, false, or nil: off, nothing to say), text.
 function direct.status(cfg)
   local s = { available = direct.available(), enabled = cfg and direct.enabled(cfg.root) or false, firewall = direct.firewall_ok(), peers = {} }
   if s.available then
     local j = band.json_decode(reaper.StudioSync_DirectStatus()) or {}
     for _, k in ipairs({ "listening", "bind", "error", "received", "rejected", "last_reject" }) do s[k] = j[k] end
+    local ok_paths, paths = pcall(direct.paths)
     for peer, p in pairs(type(j.peers) == "table" and j.peers or {}) do
-      s.peers[#s.peers + 1] = { peer = peer, ok = p.ok == true, ms = tonumber(p.ms), error = p.error, at = tonumber(p.at), sent = tonumber(p.sent) }
+      local way = ok_paths and paths[(tostring(peer):match("^(.-):%d+$") or ""):lower()] or {}
+      s.peers[#s.peers + 1] = { peer = peer, ok = p.ok == true, ms = tonumber(p.ms), error = p.error, at = tonumber(p.at), sent = tonumber(p.sent),
+        rate = tonumber(p.rate) or 0, rate_at = tonumber(p.rate_at), rtt_ms = tonumber(p.rtt_ms), window = tonumber(p.window), path = way.path, region = way.region }
     end
     table.sort(s.peers, function(a, b) return a.peer < b.peer end)
   end
@@ -300,6 +340,31 @@ function direct.health_line(cfg)
   if #failed > 0 then text = text .. "; can't reach " .. table.concat(failed, ", ") .. " (Syncthing carries theirs)" end
   if (tonumber(s.rejected) or 0) > 0 then text = text .. string.format("; refused %d (last: %s)", s.rejected, tostring(s.last_reject)) end
   return s.listening and #failed == 0, text
+end
+
+-- Link speed per bandmate (extension 1.0.12), so people know before recording together what the link carries to each: "Bo: 4.1 MB/s
+-- direct, 18 ms". peers: direct.status's; who(peer) -> a name. -> ok (no relayed way), text; nil when the link reaches nobody. Pure.
+local function per_sec(r) return r >= 1e6 and string.format("%.1f MB/s", r / 1e6) or string.format("%.0f KB/s", r / 1e3) end
+function direct.speed_line_of(peers, who)
+  local each, relayed = {}, false
+  for _, p in ipairs(peers or {}) do
+    if p.ok then
+      local way = p.path == "relay" and ("relayed by Tailscale" .. (p.region and (" (" .. p.region .. ")") or "")) or p.path == "peer relay" and "through a peer relay" or p.path
+      relayed = relayed or p.path == "relay" or p.path == "peer relay"
+      local what = ((p.rate or 0) > 0 and per_sec(p.rate) or "") .. ((p.rate or 0) > 0 and way and " " or "") .. (way or "")
+      local rtt = (p.rtt_ms or 0) > 0 and p.rtt_ms or p.ms
+      local ms = rtt and rtt >= 0 and string.format("%.0f ms", rtt) or nil
+      each[#each + 1] = who(p.peer) .. ": " .. what .. (what ~= "" and ms and ", " or "") .. (ms or "")
+    end
+  end
+  if #each == 0 then return nil end
+  table.sort(each)
+  return not relayed, "Link speed: " .. table.concat(each, "; ") ..
+    (relayed and ". A relayed way is slower: for listening in time, use more bars, or record WAV." or "")
+end
+function direct.speed_line(cfg)
+  local devs = devices(cfg.root)
+  return direct.speed_line_of(direct.status(cfg).peers, function(peer) return direct.who_of(devs, peer) end)
 end
 
 -- ---- the live layer (extension 1.0.8, docs/realtime-roadmap.md steps 1-2) -------------------------------------------------------------
@@ -479,7 +544,7 @@ function direct.live_tick(cfg, song, room, handlers)
 end
 
 -- ---- the extension is mandatory (James, 2026-11-19) ---------------------------------------------------------------------------------------
-direct.WANT = "1.0.8" -- (the direct link's messages, clock and streams; lib/tools.lua EXT_WANT says the same)
+direct.WANT = "1.0.12" -- (the direct link's messages, clock and streams; 1.0.12: several frames in flight, send anything, link speed. lib/tools.lua EXT_WANT says the same)
 -- Why the extension can't carry the link here (missing, or older than WANT), or nil. Its version as the panel reads it: ExtState "menu extension".
 function direct.ext_problem()
   local have = reaper.GetExtState(band.SECTION, "menu extension")
@@ -528,6 +593,8 @@ function direct.health_rows(cfg)
   end
   local cok, ctext = direct.clock_line()
   local rows = { row, { "direct clock", cok, "grey", ctext, ctext } }
+  local vok, vgood, vtext = pcall(direct.speed_line, cfg) -- (link speed per bandmate, 1.0.12. James, rt)
+  if vok and vtext then rows[#rows + 1] = { "direct speed", vgood, "yellow", vtext, vtext } end
   local sok, srow = pcall(function() return require("streams").health_row(cfg) end) -- (takes streaming in and out: lib/streams.lua. James, rt)
   if sok and srow then rows[#rows + 1] = srow end
   return rows
@@ -564,13 +631,18 @@ function direct.studio_ui(ctx, ImGui, cfg, may)
 end
 
 -- Streams: a take sent while it's recorded. Its name on the link is "<song>/<file name>" (the extension's rule: a plain song folder name,
--- a plain file name with an audio or MIDI extension); the others get it in <inbox>/.streams/<song>/<file>, outside the shared folder.
-local STREAM_EXT = { wav = true, w64 = true, flac = true, aif = true, aiff = true, ogg = true, opus = true, mp3 = true, mid = true }
+-- a plain file name with an extension on its list); the others get it in <inbox>/.streams/<song>/<file>, outside the shared folder.
+-- The list (extension 1.0.12, "send anything"): audio and MIDI, and the other files a studio passes round: video references, PDF charts,
+-- pictures, notes, plug-in presets and patches, Ableton sets, zips. Never anything that runs (exe, dll, dylib, so, lua, py, sh, bat, cmd, ps1,
+-- js): they're simply not on it. The same as extension/direct.cpp direct_stream_rel_ok. (James, rt)
+local STREAM_EXT = { wav = true, w64 = true, flac = true, aif = true, aiff = true, ogg = true, opus = true, mp3 = true, mid = true,
+  mp4 = true, mov = true, webm = true, pdf = true, png = true, jpg = true, jpeg = true, txt = true, md = true,
+  fxp = true, fxb = true, vstpreset = true, nam = true, sfz = true, als = true, zip = true }
+function direct.stream_ext(name) local e = tostring(name or ""):match("%.(%w+)$"); return e ~= nil and STREAM_EXT[e:lower()] == true end
 local function plain(s) return type(s) == "string" and #s > 0 and #s <= 200 and s:sub(1, 1) ~= "." and not s:find("[%. ]$") and not s:find('[%c/\\:%*%?"<>|\127]') end
 function direct.stream_rel(song, path)
   local name = tostring(path or ""):match("([^/\\]+)$")
-  local ext = name and name:match("%.([%w]+)$")
-  if not (plain(song) and plain(name) and ext and STREAM_EXT[ext:lower()]) then return nil end
+  if not (plain(song) and plain(name) and direct.stream_ext(name)) then return nil end
   local rel = song .. "/" .. name
   return #rel <= 512 and rel or nil
 end

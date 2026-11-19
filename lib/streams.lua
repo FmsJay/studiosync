@@ -471,13 +471,14 @@ function streams.media_new(state, last_state, files, last_files)
   table.sort(out, function(a, b) return (a.room or "") .. "\0" .. a.file < (b.room or "") .. "\0" .. b.file end)
   return out
 end
--- The stream's name on the link for a room's media file, or nil when it can't go (not audio the link takes, a name the link won't take, a
--- folder other than "plugin files/"): Syncthing carries those. Both ends work it out, so nothing in a message ever names a path. Pure.
+-- The stream's name on the link for a room's media file, or nil when it can't go (not a kind of file the link takes: direct.stream_ext, audio
+-- and the vetted studio files since "send anything"; a name the link won't take; a folder other than "plugin files/"): Syncthing carries those.
+-- Both ends work it out, so nothing in a message ever names a path. Pure.
 function streams.media_name(room, file)
   if not direct.plain(room) or type(file) ~= "string" then return nil end
   local sub, name = file:match("^(plugin files)/([^/]+)$")
   name = name or file
-  if not direct.plain(name) or not streams.audio_ext(name) then return nil end
+  if not direct.plain(name) or not direct.stream_ext(name) then return nil end
   local n = "~media~" .. room .. "~" .. (sub and (sub .. "~") or "") .. name
   return #n <= 200 and n or nil
 end

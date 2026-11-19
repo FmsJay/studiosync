@@ -92,7 +92,7 @@ assert(direct.available() == false and direct.ensure(cfg) == false and direct.of
 assert(direct.listing(cfg, edir) == listings[edir], "the shared listing itself, untouched")
 assert(direct.tick(cfg) == 0 and direct.path(cfg, edir, "a.json") == edir .. "/a.json", "nothing ticks, paths are the shared folder's")
 local okh, text = direct.health_line(cfg)
-assert(okh == nil and text:find("1.0.8"), "Health says what's needed")
+assert(okh == nil and text:find(direct.WANT, 1, true), "Health says what's needed")
 
 -- A stand-in extension
 local calls, polled = {}, { "1\tstudiosync-smiley\t" .. ok_rel, "2\tstudiosync-smiley\t" .. ok_rel }
