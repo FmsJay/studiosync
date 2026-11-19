@@ -1656,16 +1656,23 @@ function sync.machine()
   end
   return id
 end
+-- (the file read back for the two-computers-one-name check at most every CLASH_EVERY s, and not once it's been said: it was read on every
+-- write, each change and every 15 s. The other computer writes as often, so a clash still shows within a minute or two. James, rt)
+sync.CLASH_EVERY = 45
+local clash_at = {} -- status path -> when it was last read back
 function sync.write_status(proj, cfg, song, room, info)
   local dir = sync.room_dir(cfg, song, room) .. "/status"
   reaper.RecursiveCreateDirectory(dir, 0)
   local path = dir .. "/" .. (cfg.user:gsub("[^%w%-_ ]", "")) .. ".json"
-  local was = band.read_json(path)
-  if type(was) == "table" and was.machine and was.machine ~= sync.machine() and type(was.time) == "string" and band.age(was.time) < 45
-      and not sync.name_clash_said then
-    sync.name_clash_said = true
-    sync.put_back("another computer is also using the name " .. cfg.user .. ", so your changes and theirs get mixed up. " ..
-      "Change the name on one of them: Settings > You")
+  local now = reaper.time_precise()
+  if not sync.name_clash_said and now - (clash_at[path] or -math.huge) >= sync.CLASH_EVERY then
+    clash_at[path] = now
+    local was = band.read_json(path)
+    if type(was) == "table" and was.machine and was.machine ~= sync.machine() and type(was.time) == "string" and band.age(was.time) < 45 then
+      sync.name_clash_said = true
+      sync.put_back("another computer is also using the name " .. cfg.user .. ", so your changes and theirs get mixed up. " ..
+        "Change the name on one of them: Settings > You")
+    end
   end
   info.machine = sync.machine()
   info.user, info.time, info.version, info.room = cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ"), band.VERSION, room
