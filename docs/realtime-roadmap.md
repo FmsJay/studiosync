@@ -211,7 +211,8 @@ lib/tools.lua EXT_WANT.
 - SonoBus state editing (lib/sonobus.lua's state parser): replaced by built-in audio (at James's gate).
 - Hidden background REAPER instances for prints (bgrender): far fewer prints needed once remote plug-ins play live; the
   hub renders what's left.
-- The Google Drive cloud copy at session end: the hub keeps copies; Drive becomes optional.
+- ~~The Google Drive cloud copy at session end: the hub keeps copies; Drive becomes optional.~~ Reversed (James, 2026-11-19): the cloud
+  copy stays and grows, as the always-on member for studios without a hub. See "The cloud copy as the hub" below.
 - Debug-mode collections written to the shared folder: sent straight to the owner over the link.
 - The ReaImGui panel: replaced by the web UI, page by page.
 
@@ -607,3 +608,24 @@ Video audio plays through each person's system audio by default, with an option 
   running low is told (and the recorder warned) before a take fails to land.
 - **One copy per file across songs:** the same audio used in two songs (a loop, a sample, a reference) stored once by hash in the studio, not
   once per song: less for Syncthing and the link to carry.
+
+## Catch-up over the link, checked in REAPER (0.59.49.13, 2026-11-19)
+- The laptop's Syncthing capped at 10 KiB/s, a 20 MB noise WAV dropped into the desktop's media folder (no change sent, so only catch-up
+  could carry it): 5 s later the laptop asked the desktop for it ("media_want", to the desktop alone), the desktop streamed it to the laptop
+  alone, and it was in place 23 s after the ask (~0.9 MB/s, the 64 KB stop-and-wait over Tailscale). Syncthing at that cap: ~35 minutes.
+- Syncthing makes its temp download full-size at once (preallocated), so "whole size" isn't a finished download: the temp tidy relies on a
+  minute with no writes, and on Windows a temp Syncthing still holds can't be removed anyway.
+- Next for speed: more than one 64 KB frame in flight per peer (a window), since a big catch-up or print is link-rate bound today.
+
+## The cloud copy as the hub (James, 2026-11-19: "imperative, especially for studios without a hub")
+The Drive copy (lib/drive.lua: each room mirrored to a shared cloud folder, any sync client) becomes a full member, not a session-end post box:
+- **Always current:** new media, takes, prints and events go to the cloud copy as they land (after the link has carried them), not only at
+  session end, so a computer opening the song later finds everything there even when nobody else is on.
+- **Catch-up's last source:** when no peer on the link has a file Syncthing still needs (nobody online, or the one who made it is away),
+  catch-up takes it from the cloud copy once the sync client has it whole (some clients keep files online-only: those are asked to download,
+  or skipped), then places it as the link would; Syncthing stays the judge of what's missing.
+- **The hub's stand-in:** with no hub online, the cloud copy holds what the hub would (snapshots, restore points, the studio's settings and
+  update files), so failover is "hub, else the cloud", never "nothing".
+- **Health:** the cloud copy's state per computer (signed in, the shortcut there, last upload, files waiting), as Syncthing's gets its row.
+- Risks: the cloud services' rate limits (Drive's userRateLimitExceeded, seen 2026-10-28), online-only files, a service's own conflict copies;
+  a studio without a cloud folder keeps today's behaviour.
