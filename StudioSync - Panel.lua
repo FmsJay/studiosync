@@ -1891,14 +1891,14 @@ function ui.away()
   local parts = a.parts and #a.parts > 0 and table.concat(a.parts, "  ·  ") or ""
   if held > 0 then parts = parts .. (parts ~= "" and "  ·  " or "") .. held .. (held == 1 and " track shows" or " tracks show") .. " who changed it" end
   ImGui.TextColored(ctx, ACCENT, "Since you were last here" .. (a.since and (" (" .. require("chooser").ago(a.since, os.date("!*t")) .. ")") or "") .. ": " .. parts)
-  -- (to the changes themselves: Restore, filtered to them, each with Show it. James, 0.59.32)
+  -- (to the changes themselves: Restore, filtered to them, each with Go to it. James, 0.59.32)
   if a.since and a.parts and #a.parts > 0 then
     ImGui.SameLine(ctx, 0, 8)
     if ImGui.SmallButton(ctx, "See what changed##away") then
       require("page_restore").show_since(a.since)
       reaper.SetExtState(band.SECTION, "panel do", "history", false)
     end
-    ImGui.SetItemTooltip(ctx, "Restore's list of changes, only what the others did since you were last here. Click one, then Show it, to go to it.")
+    ImGui.SetItemTooltip(ctx, "Restore's list of changes, only what the others did since you were last here. Click one, then Go to it.")
   end
 end
 -- live ideas (what came over Real time or Time-sync, to keep or drop): on Home while either is on (James, 0.59.3: not in Chat)
@@ -3077,7 +3077,7 @@ local function frame_app()
   local _, bars_h = ImGui.GetItemRectSize(ctx)
   if bars_h < 6 then ImGui.SetCursorPosY(ctx, bars_at) end -- (nothing in them: no gap. An empty child is still 4 px tall, and 8 more of spacing)
   ui.asked_page()
-  restore.flash_tick() -- (Restore's Show it: what a change touched blinks a moment)
+  restore.flash_tick() -- (Restore's Go to it: what a change touched blinks a moment)
   local want
   want = reaper.GetExtState(band.SECTION, "panel do") -- a choice from the radial menu
   if want == "" then want = require("api").take_request() or "" end -- (a script's, through the API: lib/api.lua)

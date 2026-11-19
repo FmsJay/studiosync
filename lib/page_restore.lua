@@ -86,7 +86,7 @@ local function back_button(i, what, single)
   local e, mirror = entries[i], require("mirror")
   local opts = { can = can, mode = who and who.mode, local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1" }
   if single and e and e.kind == "obj" then
-    if ImGui.SmallButton(ctx, "Show it") then
+    if ImGui.SmallButton(ctx, "Go to it") then
       local why = R.show_change(proj, e)
       if why then band.msg("Can't show it: " .. why .. ".") end
     end
@@ -298,7 +298,7 @@ function R.section_history()
   local filtered = hf.who ~= "" or hf.kind ~= 1 or hf.track ~= "" or hf.text ~= "" or hf.since ~= nil
   if hf.since then
     ImGui.TextColored(ctx, theme.ACCENT, "What the others changed since you were last here")
-    ImGui.SetItemTooltip(ctx, "Click a change, then Show it: StudioSync takes you to it. Clear filters shows everything again.")
+    ImGui.SetItemTooltip(ctx, "Click a change, then Go to it: StudioSync takes you there. Clear filters shows everything again.")
   end
   if wide or ImGui.GetContentRegionAvail(ctx) < 520 then -- (four rows of them came before the first change: design review)
     if ImGui.SmallButton(ctx, filtered and "Filter (on)..." or "Filter...") then ImGui.OpenPopup(ctx, "hfilters") end

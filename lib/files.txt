@@ -1,4 +1,4 @@
-version 0.59.32
+version 0.59.33
 StudioSync - Autostart.lua	17119
 StudioSync - Claim selected tracks.lua	851
 StudioSync - Draw.lua	27321
@@ -9,7 +9,7 @@ StudioSync - Live sync.lua	74465
 StudioSync - Local mixing.lua	880
 StudioSync - Measure guest delay.lua	4258
 StudioSync - Open session.lua	9134
-StudioSync - Panel.lua	237522
+StudioSync - Panel.lua	237512
 StudioSync - Prepare session.lua	6470
 StudioSync - Publish session.lua	5711
 StudioSync - Radial menu.lua	7815
@@ -60,7 +60,7 @@ lib/page_health.lua	26639
 lib/page_hear.lua	18024
 lib/page_play.lua	24846
 lib/page_plugins.lua	19338
-lib/page_restore.lua	28430
+lib/page_restore.lua	28432
 lib/page_rooms.lua	16325
 lib/people.lua	19756
 lib/plugins.lua	11323

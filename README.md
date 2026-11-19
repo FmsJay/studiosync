@@ -423,7 +423,7 @@ stretch ("bars 9 to 12 rush"), shaded across it on REAPER 7.86 and later; on old
 Each message is its own small file, so nothing ever clashes.
 
 Home opens with **Since you were last here**: the others' changes and takes, new messages and notes, until you
-press OK. **See what changed** opens Restore with only those changes; click one, then **Show it**, and StudioSync selects
+press OK. **See what changed** opens Restore with only those changes; click one, then **Go to it**, and StudioSync selects
 what it touched (the item, or its track), scrolls to it and flashes it. In Who's here, **Working in "track"** is a link too: it
 selects that track and puts the edit cursor where they last changed something. The owner shows a crown, admins a shield and
 guests a clock, each with its role on hover. On the Projects page, right-click a project for its **Stage** (Idea, Writing, Tracking, Mixing, Done), shown
