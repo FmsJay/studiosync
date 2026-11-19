@@ -7,6 +7,9 @@
 local band = require("band")
 local prints = {}
 prints.KEY = "band_m_print" -- on the print take: the source hash it was made from (travels: band_m_ keys do)
+-- (and, on an item with several takes, which real take it was made from, counted from 0 as mirror.picked_take counts: a print follows the
+-- picked take, and stands in for that one only. Read by mirror.picked_take too. James, rt)
+prints.FROM = "band_m_printof"
 
 local function take_ext(tk, k) return tk and select(2, reaper.GetSetMediaItemTakeInfo_String(tk, "P_EXT:" .. k, "", false)) or "" end
 
@@ -19,7 +22,19 @@ function prints.takes(it)
       elseif reaper.TakeIsMIDI(tk) then midi = midi or tk end
     end
   end
+  -- (several takes: the notes are the picked take's, when it's MIDI; it was always the first's. James, rt)
+  local pick = midi and require("mirror").picked_take(it)
+  if pick then
+    local k = require("mirror").real_takes(it)[pick + 1]
+    local tk = k and reaper.GetTake(it, k)
+    if tk and reaper.TakeIsMIDI(tk) then midi = tk end
+  end
   return midi, print
+end
+-- Which real take a print stands for on an item with several (prints.FROM), or nil for an item with one. Shared by refresh and choose.
+local function several_pick(it)
+  local mirror = require("mirror")
+  return reaper.CountTakes(it) > 1 and mirror.filled_takes(it) > 1 and mirror.picked_take(it) or nil
 end
 
 -- A MIDI track that plays an instrument on another track: no instrument of its own, and a send carrying MIDI to a
@@ -259,9 +274,18 @@ function prints.choose(it, no_hold) -- no_hold: the caller holds the track's FX 
   -- Review, 0.58.92)
   local tr = reaper.GetMediaItem_Track(it)
   local function recheck() if band.track_ext(tr, prints.FXEN) ~= "" then prints.hold_fx(tr) end end -- (only a track holding its FX: 0.58.93)
-  if require("mirror").filled_takes(it) > 1 then return recheck() end
   local dry = midi or (print and prints.audio_take(it))
   if not (dry and print) then return recheck() end
+  -- (several takes: the print plays only for the take it was made from (prints.FROM), and only where the track's plug-ins don't load: the
+  -- picked take is the band's comp choice, so Sound / a track set to wet don't override it. Another take picked plays itself until its own
+  -- print lands. James, rt)
+  local pick = several_pick(it)
+  if pick then
+    local want = tostring(pick) == take_ext(print, prints.FROM) and not prints.track_plays(tr) and print or dry
+    if reaper.GetActiveTake(it) ~= want then reaper.SetActiveTake(want); reaper.UpdateItemInProject(it) end
+    if not no_hold then prints.hold_fx(tr) end
+    return
+  end
   local mode = prints.mode()
   local own = prints.track_choice(reaper.GetItemProjectContext(it), tr) -- (the track's own choice first)
   if own == "dry" then mode = "notes" elseif own == "wet" then mode = "sound" elseif own == "auto" then mode = "auto" end
@@ -315,18 +339,22 @@ function prints.release_held(proj)
 end
 
 -- Audio (0.37): the take a wet print stands in for, on an audio item whose track has a plug-in someone in the band
--- lacks: its one take that isn't the print (an item with several takes gets none). nil for MIDI and ARA items.
+-- lacks: its one take that isn't the print, or with several, the one picked (mirror.picked_take: a playing print counts as the take it
+-- was made from. It was none: James, rt). nil for MIDI and ARA items, and when the picked take is an empty one.
 function prints.audio_take(it)
   local dry, n = nil, 0
   for k = 0, reaper.CountTakes(it) - 1 do
     local tk = reaper.GetTake(it, k)
     if tk and take_ext(tk, prints.KEY) == "" then
       if reaper.TakeIsMIDI(tk) then return nil end
-      dry, n = tk, n + 1
+      dry, n = dry or tk, n + 1
     end
   end
-  if n ~= 1 or prints.ara_take(it) then return nil end
-  return dry
+  if n == 0 or prints.ara_take(it) then return nil end
+  if n == 1 then return dry end
+  local mirror = require("mirror")
+  local k = mirror.real_takes(it)[(mirror.picked_take(it) or 0) + 1]
+  return k and reaper.GetTake(it, k) or nil
 end
 
 -- Whether a track has a plug-in someone in the band doesn't have (everyone's published list, lib/plugins.lua; by
@@ -565,13 +593,15 @@ function prints.render(oid, name, out, tracks, render, secs, quick) -- secs: the
 end
 
 -- The print goes in as the item's wet take (replacing an older one), the playing take left as it was.
-local function attach(it, print, dry, path, h)
+local function attach(it, print, dry, path, h, pick)
   local was = reaper.GetActiveTake(it)
   local ptk = print or reaper.AddTakeToMediaItem(it)
   band.set_take_source(ptk, reaper.PCM_Source_CreateFromFile(path))
   reaper.SetMediaItemTakeInfo_Value(ptk, "D_STARTOFFS", 0)
   label_takes(dry, ptk)
   reaper.GetSetMediaItemTakeInfo_String(ptk, "P_EXT:" .. prints.KEY, h, true)
+  -- (which take it's of, on an item with several: written only then, so a one-take item's state stays as it was. James, rt)
+  if pick or take_ext(ptk, prints.FROM) ~= "" then reaper.GetSetMediaItemTakeInfo_String(ptk, "P_EXT:" .. prints.FROM, pick and tostring(pick) or "", true) end
   if was then reaper.SetActiveTake(was) end
   return ptk
 end
@@ -898,6 +928,9 @@ function prints.refresh(proj, it, media_dir, fx_hash, route_hash, cfg, relay)
   local h, old
   if midi then h, old = prints.source(it, midi, (fx_hash or "") .. (dest and ("\0" .. (route_hash or "")) or ""))
   else h = prints.audio_source(it, audio, fx_hash) end
+  -- (several takes: which one is picked is part of what it's made from, so picking another prints again. James, rt)
+  local pick = several_pick(it)
+  if pick then h, old = require("mirror").hash(h .. "|t" .. pick), nil end
   if print and (take_ext(print, prints.KEY) == h or old and take_ext(print, prints.KEY) == old) then return false end
   -- (one that no longer prints, with a print of notes it no longer has: the print comes off, and the part goes out without it. Kept, Sound and a
   -- track set to "wet" went on playing the old notes everywhere. Cost: one notes hash, only for such a part with a print. Round 4 review, 0.59.49)
@@ -958,7 +991,7 @@ function prints.refresh(proj, it, media_dir, fx_hash, route_hash, cfg, relay)
     return false, true
   end
   if dest then prints.midi_only(tr, dest) end
-  attach(it, print, dry, path, h)
+  attach(it, print, dry, path, h, pick)
   if stage then clear_stages(media_dir, oid) end
   prints.choose(it)
   reaper.UpdateItemInProject(it)
@@ -1104,6 +1137,23 @@ function prints.hops_ui(ctx, ImGui, cfg, may)
   end
   if may then ImGui.SetItemTooltip(ctx, "Owner and admins. 2 covers two computers that each lack something the other has.") end
 end
+-- Settings > Studio: "Takes become lanes" (band.json "takes_to_lanes", on unless it's false: lib/groups.lua). `may`: owner or admin. (James, rt)
+function prints.lanes_ui(ctx, ImGui, cfg, may)
+  ImGui.SeparatorText(ctx, "Takes become lanes")
+  local on = require("groups").takes_to_lanes(cfg.root)
+  ImGui.TextDisabled(ctx, on and ("On: keeps everyone's songs alike across REAPER setups. A part recorded with several takes becomes fixed lanes " ..
+    "(the takes you picked stay the comp), whoever's REAPER recorded it, so every computer plays and edits it the same way.") or
+    ("Off: takes stay takes, as each REAPER recorded them; the picked take is still the studio's, and it gets a print where someone lacks a plug-in. " ..
+    "On keeps everyone's songs alike across REAPER setups."))
+  if may then
+    local ch, v = ImGui.Checkbox(ctx, "Takes become lanes##studiolanes", on)
+    if ch then
+      require("groups").set_takes_to_lanes(cfg.root, v)
+      band.log(v and "takes become lanes again for the studio" or "takes stay takes for the studio from now on (Settings > Studio)")
+    end
+    ImGui.SetItemTooltip(ctx, "Owner and admins. \"Set up this project\" and its lane setup stay as they are either way.")
+  end
+end
 
 -- What Live sync's background renderer says (ExtState "bg render state"), or nil.
 function prints.bg_state() return band.ext_json(band.SECTION, "bg render state") end
@@ -1197,7 +1247,9 @@ function prints.takes_into_new_lanes(proj, tr, mine)
 end
 
 prints.LANES_UNDO = "StudioSync: takes became lanes"
-function prints.takes_to_lanes(proj, mine)
+-- `root`: the studio, whose setting (band.json "takes_to_lanes", on unless false) says whether this runs at all; nil (the tests) runs it.
+function prints.takes_to_lanes(proj, mine, root)
+  if root and not require("groups").takes_to_lanes(root) then return 0 end -- (a studio setting now, the owner's. James, rt)
   local done = 0
   -- (Ctrl+Z on it: the next pass split them again. Undone, the track keeps its takes from then on, until none has two. Review, 0.58.91)
   if reaper.Undo_CanRedo2 and reaper.Undo_CanRedo2(proj) == prints.LANES_UNDO then

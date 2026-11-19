@@ -1520,6 +1520,11 @@ function mirror.picked_take(it)
   if #list < 2 then return nil end
   local cur = reaper.GetMediaItemInfo_Value(it, "I_CURTAKE")
   for i, k in ipairs(list) do if k == cur then return i - 1 end end
+  -- (a print playing: the take it was made from (prints.FROM), else the first. Prints follow the picked take now, so playing one here mustn't
+  -- send everyone back to the first take. James, rt)
+  local tk = reaper.GetTake(it, cur)
+  local from = tk and math.tointeger(tonumber(select(2, reaper.GetSetMediaItemTakeInfo_String(tk, "P_EXT:band_m_printof", "", false))))
+  if from and from >= 0 and from < #list then return from end
   return 0
 end
 -- Play the `pick`th real take (from 0). -> true when there is one.
@@ -3755,7 +3760,7 @@ function W.prints(w)
       prints.takes_to_lanes(proj, function(it)
         local _, _, k = mirror.known(proj, itm_oid(it))
         return not k or k == "" or mine(k)
-      end)
+      end, cfg.root) -- (only while the studio's setting is on: Settings > Studio. James, rt)
     end
     local here = { [me] = true } -- (bandmates in the song now: who may print in place of whoever changed an item)
     for u in pairs(opts.here or {}) do here[u] = true end

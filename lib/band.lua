@@ -1525,7 +1525,116 @@ function band.capture_project(proj)
       itemmixflag = reaper.SNM_GetIntConfigVarEx(proj, "itemmixflag", -1), defpitchcfg = reaper.SNM_GetIntConfigVarEx(proj, "defpitchcfg", -1),
       panlaw = reaper.SNM_GetDoubleConfigVarEx and math.floor(reaper.SNM_GetDoubleConfigVarEx(proj, "panlaw", -1) * 1e6 + 0.5) / 1e6 or nil }
   end
+  p.settings = band.capture_settings(proj) -- (rt: older versions ignore it)
   return p
+end
+
+-- ---- the song's other settings (James, 2026-11-19: "everything that isn't visual") ---------------------------------------------------
+-- Travel in p.settings with the timeline (the driver changes them). Each is read only where this REAPER and SWS have it: one missing is
+-- left out, and left alone when one arrives. Never: the record path, media folder, render path, nor anything only seen (zoom, scroll, view,
+-- colours). Names checked against REAPER 7.79's own config names (reaper.exe) and .RPP lines; the core calls against the SDK header.
+-- (Not here: the recording format and project sample rate. prep.keep_format already holds every computer to 24-bit FLAC at session.json's
+-- rate (James, 0.58.81); sent with the timeline too, a change to them would bounce between the two. James, rt)
+band.PROJECT_STR = { "RENDER_FORMAT", "RENDER_FORMAT2" } -- (GetSetProjectInfo_String: the render format and its second one)
+band.PROJECT_NUM = { "RENDER_SRATE", "RENDER_CHANNELS" } -- (GetSetProjectInfo: the render's sample rate (0: the project's) and channels)
+band.PROJECT_CFG = { -- { SWS project config name, "i" int / "d" double, what it is; mask: the bits shared, the rest stay each computer's }
+  { "autoxfade", "i", "auto-crossfade and trim content behind items when editing (AUTOXFADE in the .RPP)" },
+  { "projrecmode", "i", "record mode: normal, time selection auto-punch, selected items auto-punch (RECMODE)" },
+  { "projmetroen", "i", "metronome and count-in switches (<METRONOME>'s first number)", mask = ~1 }, -- (&1, the click on or off: Live sync's count-in turns it on)
+  { "projmetrocountin", "i", "count-in length" },
+  { "projmetropattern", "i", "the click's beat pattern (<METRONOME> PATTERN)" },
+  { "projtimeoffs", "d", "project start time (PROJOFFS)" },
+  { "projmeasoffs", "i", "project start measure (PROJOFFS)" },
+  { "projfrbase", "i", "frame rate (TIMEMODE)" },
+  { "projfrdrop", "i", "drop-frame timecode" },
+}
+band.FRONT_TOGGLES = { snap = 1157, preserve_pitch = 40671 } -- (Options: Toggle snapping; Transport: preserve pitch when changing the playrate)
+local function round6(x) return math.floor((tonumber(x) or 0) * 1e6 + 0.5) / 1e6 end
+-- A project config value through SWS, in the size it's declared: -> it, or nil when this REAPER/SWS doesn't have it. Asked with two error
+-- values, as SWS answers its error value for a name it doesn't know or a size it won't read (so a set never writes the wrong size).
+local NO1, NO2 = -2147480001, -2147480002
+function band.proj_cfg(proj, k, kind)
+  local get = kind == "d" and reaper.SNM_GetDoubleConfigVarEx or kind == "i" and reaper.SNM_GetIntConfigVarEx or nil
+  if not get then return nil end
+  local a = get(proj, k, NO1)
+  if type(a) ~= "number" or a ~= get(proj, k, NO2) then return nil end
+  return kind == "d" and round6(a) or math.tointeger(a)
+end
+local function set_cfg(proj, k, kind, v)
+  if kind == "d" then return reaper.SNM_SetDoubleConfigVarEx and reaper.SNM_SetDoubleConfigVarEx(proj, k, v) end
+  v = math.tointeger(v)
+  return v and reaper.SNM_SetIntConfigVarEx and reaper.SNM_SetIntConfigVarEx(proj, k, v)
+end
+-- Snap and preserve pitch are REAPER actions, for the tab in front only (no call reads them per project): kept in the project's own state,
+-- read while it's in front; one arriving for a tab behind waits there ("1!") and is set once it's in front. -> 0/1, or nil (never in front).
+local function front_toggle(proj, id, want)
+  if not reaper.GetToggleCommandStateEx then return nil end
+  local key = "front " .. id
+  local _, kept = reaper.GetProjExtState(proj, band.SECTION, key)
+  local new
+  if reaper.EnumProjects(-1) == proj then
+    local w = want or tonumber(kept:match("^(%d)!$"))
+    if w and reaper.GetToggleCommandStateEx(0, id) ~= w then reaper.Main_OnCommand(id, 0) end
+    local st = reaper.GetToggleCommandStateEx(0, id)
+    new = st >= 0 and tostring(st) or nil
+  elseif want then new = want .. "!" end
+  if new and new ~= kept then reaper.SetProjExtState(proj, band.SECTION, key, new) end
+  return tonumber(((new or kept) or ""):match("^(%d)"))
+end
+function band.capture_settings(proj)
+  local gp, gps, s = reaper.GetSetProjectInfo, reaper.GetSetProjectInfo_String, { cfg = {} }
+  for _, k in ipairs(band.PROJECT_STR) do
+    local ok, v = gps(proj, k, "", false)
+    if ok then s[k] = v end
+  end
+  for _, k in ipairs(band.PROJECT_NUM) do s[k] = round6(gp(proj, k, 0, false)) end
+  if reaper.GetSetProjectGrid then
+    local _, div, swing, amt = reaper.GetSetProjectGrid(proj, false)
+    if div then s.grid = { round6(div), math.floor(tonumber(swing) or 0), round6(amt) } end
+  end
+  if reaper.Master_GetPlayRate then s.playrate = round6(reaper.Master_GetPlayRate(proj)) end
+  for name, id in pairs(band.FRONT_TOGGLES) do s[name] = front_toggle(proj, id) end
+  for _, c in ipairs(band.PROJECT_CFG) do
+    local v = band.proj_cfg(proj, c[1], c[2])
+    if v and c.mask then v = v & c.mask end
+    s.cfg[c[1]] = v
+  end
+  return s
+end
+function band.apply_settings(proj, s)
+  local gp, gps = reaper.GetSetProjectInfo, reaper.GetSetProjectInfo_String
+  for _, k in ipairs(band.PROJECT_STR) do -- (only the second render format may be "", which turns it off)
+    local v = s[k]
+    if type(v) == "string" and (v ~= "" or k == "RENDER_FORMAT2") and select(2, gps(proj, k, "", false)) ~= v then gps(proj, k, v, true) end
+  end
+  for _, k in ipairs(band.PROJECT_NUM) do
+    local v = tonumber(s[k])
+    if v and v >= 0 and math.abs(gp(proj, k, 0, false) - v) > 1e-6 then gp(proj, k, v, true) end
+  end
+  if type(s.grid) == "table" and tonumber(s.grid[1]) and reaper.GetSetProjectGrid then
+    local _, div, swing, amt = reaper.GetSetProjectGrid(proj, false)
+    local w = { tonumber(s.grid[1]), math.tointeger(tonumber(s.grid[2])) or 0, tonumber(s.grid[3]) or 0 }
+    if w[1] > 0 and (round6(div) ~= round6(w[1]) or math.floor(tonumber(swing) or 0) ~= w[2] or round6(amt) ~= round6(w[3])) then
+      reaper.GetSetProjectGrid(proj, true, w[1], w[2], w[3])
+    end
+  end
+  local rate = tonumber(s.playrate)
+  if rate and rate >= 0.25 and rate <= 4 and reaper.Master_GetPlayRate and math.abs(reaper.Master_GetPlayRate(proj) - rate) > 1e-6 then
+    -- (REAPER's call sets the tab in front's; a tab behind gets it through SWS, where it has the name)
+    if reaper.EnumProjects(-1) == proj then reaper.CSurf_OnPlayRateChange(rate)
+    elseif band.proj_cfg(proj, "playrate", "d") then set_cfg(proj, "playrate", "d", rate) end
+  end
+  for name, id in pairs(band.FRONT_TOGGLES) do
+    local w = math.tointeger(tonumber(s[name]))
+    if w == 0 or w == 1 then front_toggle(proj, id, w) end
+  end
+  for _, c in ipairs(type(s.cfg) == "table" and band.PROJECT_CFG or {}) do
+    local want, have = tonumber(s.cfg[c[1]]), band.proj_cfg(proj, c[1], c[2])
+    if want and have then
+      if c.mask then want = (have & ~c.mask) | ((math.tointeger(want) or 0) & c.mask) end
+      if math.abs(have - want) > 1e-6 then set_cfg(proj, c[1], c[2], want) end
+    end
+  end
 end
 
 function band.apply_project(proj, p)
@@ -1567,6 +1676,11 @@ function band.apply_project(proj, p)
         if tonumber(lane[k]) then reaper.GetSetProjectInfo(proj, "RULER_LANE_" .. k .. ":" .. (l - 1), tonumber(lane[k]), true) end
       end
     end
+  end
+  -- (the song's other settings, rt: one that won't take never stops the tempo map and markers after it. James, rt)
+  if type(p.settings) == "table" then
+    local ok, e = pcall(band.apply_settings, proj, p.settings)
+    if not ok then band.log("a project setting from the studio didn't take: " .. tostring(e)) end
   end
 end
 band.LANE_KEYS = { "DEFAULT", "LOCKED", "COLOR", "TIMEBASE" }

@@ -264,6 +264,11 @@ reaper.atexit(function()
     local lk = band.read_json(lock_file)
     if type(lk) == "table" and lk.instance == instance then os.remove(lock_file) end
   end
+  -- (the studio's shared preferences out, yours back: unless another song is in front, whose Live sync goes on, or this one reloads. James, rt)
+  if not reloaded then
+    local front = reaper.EnumProjects(-1)
+    if front == proj or not (front and band.binding(front)) then band.try("shared prefs", require("sharedprefs").tick, nil, true) end
+  end
   toggle(0)
 end)
 
@@ -970,6 +975,13 @@ local function tick_body() -- returns true to keep going
       if reaper.GetToggleCommandStateEx(0, 40435) ~= want then reaper.Main_OnCommand(40435, 0) end
       reaper.SetExtState(band.SECTION, "takelanes " .. key, tostring(want), false)
     end
+  end
+  -- the studio's shared preferences while its song is in front; yours back when no song is (another song's Live sync does its studio's.
+  -- lib/sharedprefs.lua. James, rt)
+  do
+    local front = reaper.EnumProjects(-1)
+    if front == proj then band.try("shared prefs", require("sharedprefs").tick, cfg.root)
+    elseif not (front and band.binding(front)) then band.try("shared prefs", require("sharedprefs").tick, nil) end
   end
   if cmd > 0 then reaper.SetExtState(band.SECTION, "live cmd " .. cmd, tostring(reaper.time_precise()), false) end -- (band.start_live)
   -- the band's takes add up on your master: say so when it clips (at most every 30 s)

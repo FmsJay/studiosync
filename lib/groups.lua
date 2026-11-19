@@ -20,6 +20,8 @@ end
 local SETTINGS = { "alerts", "alerts_server", "call", "sonobus_server", "tailnet", "tailscale_only", "colours", "debug", "updates", -- ("updates": lib/fromfolder.lua, 0.59.25)
   "print_hops", -- ("print_hops": chained prints, lib/prints.lua hops_cap. James, 0.59.49)
   "direct", -- ("direct": the direct link, lib/direct.lua enabled; on unless false. James, 0.60.0-rt)
+  "takes_to_lanes", -- ("takes_to_lanes": the takes-become-lanes pass, lib/prints.lua takes_to_lanes; on unless false. James, rt)
+  "shared_prefs", -- ("shared_prefs": the studio's REAPER preferences, lib/sharedprefs.lua; { key = value }. James, rt)
   "update_key" } -- ("update_key": signed updates, the owner's Ed25519 public key: lib/band.lua studio_update_key. James, rt)
 -- (Round 2 review, 0.59.46: Syncthing is asked again only when band.json or this computer's pins changed, or the last answer was "not known",
 -- and the kept settings are written only when they differ: it was a blocking call and a saved-state write every 5 s per script and studio,
@@ -192,6 +194,15 @@ function groups.set_folder_updates(root, on) save(root, function(j) j.updates = 
 function groups.set_print_hops(root, v) save(root, function(j) j.print_hops = v end) end
 -- The direct link for the studio (lib/direct.lua): on unless band.json says false, so only "off" is written. Owner and admins. (James, 0.60.0-rt)
 function groups.set_direct(root, on) save(root, function(j) if on then j.direct = nil else j.direct = false end end) end
+-- Takes become lanes for the studio (lib/prints.lua takes_to_lanes): on unless band.json says false, so only "off" is written. Owner and
+-- admins. (James, rt)
+function groups.takes_to_lanes(root) return groups.trusted(root).takes_to_lanes ~= false end
+function groups.set_takes_to_lanes(root, on) save(root, function(j) if on then j.takes_to_lanes = nil else j.takes_to_lanes = false end end) end
+-- The studio's shared REAPER preferences (lib/sharedprefs.lua): { key = value }, only keys on its list (sharedprefs.clean). Owner and admins.
+function groups.set_shared_prefs(root, t)
+  t = require("sharedprefs").clean(t)
+  save(root, function(j) j.shared_prefs = next(t) and t or nil end)
+end
 
 -- The owner makes someone an admin or a member again. -> true, or nil + why.
 function groups.set_admin(root, actor, target, on)

@@ -118,8 +118,10 @@ end
 -- REAPER moves (and, in its default "beats (position, length, rate)" timebase, stretches) each item exactly as it
 -- would for a local tempo change. Positions also travel in quarter notes, so a take that crosses paths with a
 -- tempo change still lands on its beat.
--- (the 4th part is the format: a signature noted in another format is a first look, never a change to send or put back)
-local function timeline_sig(proj) return band.json_encode({ band.capture_tempo(proj), band.capture_markers(proj), band.capture_project(proj), 2 }) end
+-- (the 4th part is the format: a signature noted in another format is a first look, never a change to send or put back. 3: the project's
+-- settings, rt, so the first look after the update isn't taken for an edit of them. James, rt)
+sync.TIMELINE_FORMAT = 3
+local function timeline_sig(proj) return band.json_encode({ band.capture_tempo(proj), band.capture_markers(proj), band.capture_project(proj), sync.TIMELINE_FORMAT }) end
 -- The tempo map alone, said one way (round-tripped through JSON), to tell a tempo change from a marker or notes one: only a tempo change
 -- moves parts by itself (mirror.tempo_changed). A marker set the window going too, and for 15 s a nudge, a fade or automation drawn
 -- went nowhere. Review, 0.58.87.
@@ -1055,7 +1057,7 @@ function sync.watch_timeline(proj, cfg, song, room, can)
   local me = cfg.user
   -- tempo map / markers first: if they changed, REAPER has just moved items for it, and those moves aren't edits
   local sig, seen = timeline_sig(proj), ext(proj, band.SECTION, "timeline")
-  if seen ~= sig and seen ~= "" and (band.json_decode(seen) or {})[4] ~= 2 then seen = "" end -- (noted in an older format: a first look)
+  if seen ~= sig and seen ~= "" and (band.json_decode(seen) or {})[4] ~= sync.TIMELINE_FORMAT then seen = "" end -- (noted in an older format: a first look)
   -- opened behind the song (closed without its last save, say): nothing of ours waits, and your own marker has no event coming back to you (Mac, 0.57.6)
   if not sync.timeline_looked[proj] then
     sync.timeline_looked[proj] = true
@@ -1088,7 +1090,7 @@ function sync.watch_timeline(proj, cfg, song, room, can)
         sync.session_timeline(cfg, song, tempo, markers)
         local before = band.json_decode(seen) or {}
         local now, what = band.json_decode(sig) or {}, {} -- (say what changed: it was "tempo map and markers" whatever it was)
-        for i, word in ipairs({ "the tempo map", "the markers", "the project settings (notes, title, timebase, lanes)" }) do
+        for i, word in ipairs({ "the tempo map", "the markers", "the project settings (notes, title, timebase, lanes, grid, metronome, render format)" }) do
           if band.json_encode(before[i] or {}) ~= band.json_encode(now[i] or {}) then what[#what + 1] = word end
         end
         band.log("sent " .. (#what > 0 and table.concat(what, " and ") or "the timeline") .. " to the studio")

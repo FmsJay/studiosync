@@ -2352,6 +2352,8 @@ local function settings_studio()
   layout({ { studio_alerts, 360 }, { studio_call, 360 }, { studio_private_audio, 360 }, { studio_tailscale_sync, 360 }, { studio_updates, 360 },
     { function() if card("studio prints") then require("prints").hops_ui(ctx, ImGui, cfg, studio_admin()); card_end() end end, 360 }, -- (chained prints, 0.59.49)
     { function() if card("studio direct") then require("direct").studio_ui(ctx, ImGui, cfg, studio_admin()); card_end() end end, 360 }, -- (the direct link: James, 0.60.0-rt)
+    { function() if card("studio lanes") then require("prints").lanes_ui(ctx, ImGui, cfg, studio_admin()); card_end() end end, 360 }, -- (takes become lanes: James, rt)
+    { function() if card("studio prefs") then require("sharedprefs").studio_ui(ctx, ImGui, cfg, studio_admin()); card_end() end end, 360 }, -- (shared preferences: James, rt)
     { studio_debug, 360 } }, true)
 end
 local function settings_drive()
