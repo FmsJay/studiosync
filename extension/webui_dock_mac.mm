@@ -32,6 +32,17 @@ static std::string str(NSString *s) { const char *c = s ? s.UTF8String : nullptr
   h(WKNavigationActionPolicyCancel);
   if (a.navigationType == WKNavigationTypeLinkActivated && webui_dock_external_ok(u)) dock_open_external(u.c_str());
 }
+// Camera and microphone for video calls (lib/webui/call.js), for the pages' own origin only (webui_dock_permission). macOS 12+; before
+// that WebKit asks nothing here and the page can't capture (it offers the browser). REAPER's own Info.plist has NSCameraUsageDescription and
+// NSMicrophoneUsageDescription and its signature the camera and audio-input entitlements (7.86, checked 2026-11-19), so macOS asks the
+// person once, for REAPER itself. Screen capture (getDisplayMedia) also needs REAPER allowed under Screen Recording in System Settings,
+// and isn't in every macOS's WKWebView: the page then offers "Open StudioSync in your browser". (James, rt)
+- (void)webView:(WKWebView *)w requestMediaCapturePermissionForOrigin:(WKSecurityOrigin *)o initiatedByFrame:(WKFrameInfo *)f
+           type:(WKMediaCaptureType)type decisionHandler:(void (^)(WKPermissionDecision))h API_AVAILABLE(macos(12.0))
+{
+  const std::string origin = str([NSString stringWithFormat:@"%@://%@:%ld", o.protocol, o.host, (long)o.port]);
+  h(webui_dock_permission(g_page, origin, type == WKMediaCaptureTypeMicrophone ? 1 : 2) > 0 ? WKPermissionDecisionGrant : WKPermissionDecisionDeny);
+}
 // target="_blank" and window.open: the browser, never a second view.
 - (WKWebView *)webView:(WKWebView *)w createWebViewWithConfiguration:(WKWebViewConfiguration *)c forNavigationAction:(WKNavigationAction *)a
        windowFeatures:(WKWindowFeatures *)f
@@ -56,6 +67,7 @@ bool dock_view_create(void *hwnd, const char *url, const char *, dock_msg_fn on_
   if (!g_delegate) g_delegate = [[StudioSyncDockDelegate alloc] init];
   WKWebViewConfiguration *cfg = [[WKWebViewConfiguration alloc] init];
   [cfg.userContentController addScriptMessageHandler:g_delegate name:HANDLER];
+  cfg.mediaTypesRequiringUserActionForPlayback = WKAudiovisualMediaTypeNone; // (a bandmate's video, and their call audio when it's on, plays)
   g_view = [[WKWebView alloc] initWithFrame:parent.bounds configuration:cfg];
   [cfg release];
   if (!g_view) { err = "WebKit couldn't make its view."; return false; }

@@ -82,6 +82,12 @@ bool webui_dock_external_ok(const std::string &uri)
   return true;
 }
 
+int webui_dock_permission(const std::string &page, const std::string &uri, int kind)
+{
+  if (!webui_dock_same_origin(page, uri)) return -1;
+  return kind == 1 || kind == 2 ? 1 : 0;
+}
+
 bool webui_dock_key(const char *m, int *vk, int *mods)
 {
   int k = 0, f = 0, n = 0;
@@ -127,6 +133,37 @@ static void fail(int gen, const char *what, HRESULT hr)
   g_fn(b);
 }
 
+// ---- camera, microphone and screen capture (video calls and screen share: lib/webui/call.js) ---------------------------------------------
+// WebView2 asks the host. The camera and microphone are allowed for the pages' own origin only (webui_dock_permission: the call page asks
+// only on a click, Call / Answer / Share, and only our pages are ever in the view); any other origin is refused. Screen capture isn't one
+// of those kinds: WebView2 shows its own picker, and ScreenCaptureStarting (runtimes that have it) cancels it for anything but the pages'
+// origin. (James, rt)
+static_assert(COREWEBVIEW2_PERMISSION_KIND_MICROPHONE == 1 && COREWEBVIEW2_PERMISSION_KIND_CAMERA == 2, "webui_dock_permission's kind numbers");
+static void media_permissions()
+{
+  EventRegistrationToken t;
+  g_wv->add_PermissionRequested(Callback<ICoreWebView2PermissionRequestedEventHandler>(
+    [](ICoreWebView2 *, ICoreWebView2PermissionRequestedEventArgs *a) -> HRESULT {
+      LPWSTR u = nullptr;
+      COREWEBVIEW2_PERMISSION_KIND k = COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
+      a->get_Uri(&u);
+      a->get_PermissionKind(&k);
+      const int r = webui_dock_permission(g_page, take(u), (int)k);
+      if (r) a->put_State(r > 0 ? COREWEBVIEW2_PERMISSION_STATE_ALLOW : COREWEBVIEW2_PERMISSION_STATE_DENY);
+      return S_OK;
+    }).Get(), &t);
+  ComPtr<ICoreWebView2_27> w27;
+  if (FAILED(g_wv.As(&w27)) || !w27) return; // (an older runtime: its picker, and only our pages are in the view)
+  w27->add_ScreenCaptureStarting(Callback<ICoreWebView2ScreenCaptureStartingEventHandler>(
+    [](ICoreWebView2 *, ICoreWebView2ScreenCaptureStartingEventArgs *a) -> HRESULT {
+      ComPtr<ICoreWebView2FrameInfo> f;
+      LPWSTR src = nullptr;
+      if (SUCCEEDED(a->get_OriginalSourceFrameInfo(&f)) && f) f->get_Source(&src);
+      if (!webui_dock_same_origin(g_page, take(src))) a->put_Cancel(TRUE);
+      return S_OK;
+    }).Get(), &t);
+}
+
 static void setup(ICoreWebView2Controller *c, int gen)
 {
   g_ctl = c;
@@ -168,6 +205,7 @@ static void setup(ICoreWebView2Controller *c, int gen)
       if (webui_dock_external_ok(uri)) dock_open_external(uri.c_str());
       return S_OK;
     }).Get(), &t);
+  media_permissions();
   dock_view_resize();
   g_wv->Navigate(wide(g_page).c_str());
 }
