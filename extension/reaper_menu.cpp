@@ -26,9 +26,12 @@
 #define REAPERAPI_WANT_GetExtState
 #define REAPERAPI_WANT_SetExtState
 #define REAPERAPI_WANT_RefreshToolbar2
-#define EXT_VERSION "1.0.6" // (tools/make_index.py EXT_VERSION: what the panel reads to know this build adds toolbar buttons)
+#define EXT_VERSION "1.0.8" // (tools/make_index.py EXT_VERSION: what the panel reads to know this build adds toolbar buttons; 1.0.7: the direct link; 1.0.8: its messages, clock, streams, audio spike)
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"
+#ifndef REAPERSONA
+#include "direct.h" // (the direct link: extension/direct.cpp. James, 0.59.50)
+#endif
 
 #ifdef REAPERSONA
 static const char *NAME = "ReaPersona", *SCRIPT = "ReaPersona.lua", *CMD = "REAPERSONA_OPEN", *DESC = "ReaPersona: open";
@@ -200,7 +203,13 @@ static const char *on_icon(const char *toolbar, int cmd, int state)
 
 extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_HINSTANCE hInstance, reaper_plugin_info_t *rec)
 {
-  if (!rec) return 0; // (unloading: nothing to free)
+  if (!rec) { // (unloading: the direct link's threads stop)
+#ifndef REAPERSONA
+    direct_audio_stop();
+    direct_shutdown();
+#endif
+    return 0;
+  }
   if (rec->caller_version != REAPER_PLUGIN_VERSION || !rec->GetFunc || REAPERAPI_LoadAPI(rec->GetFunc) != 0) return 0;
   g_cmd = rec->Register("command_id", (void *)CMD);
   if (!g_cmd) return 0;
@@ -216,6 +225,10 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_H
   g_get_item = (GetItemFn)rec->GetFunc("GetCustomMenuOrToolbarItem");
   const bool toolbar_api = g_add_item && g_delete_item && g_get_item;
   rec->Register("timer", (void *)on_timer);
+#ifndef REAPERSONA
+  direct_register(rec); // (reaper.StudioSync_Direct*: lib/direct.lua)
+  direct_audio_register(rec); // (reaper.StudioSync_DirectAudio*: the step-4 spike, idle until started)
+#endif
   SetExtState(SECTION, "menu extension", EXT_VERSION, false);
   SetExtState(SECTION, "menu extension toolbar", toolbar_api ? "1" : "0", false); // (REAPER before 7.11 has no way: the panel says so)
   AddExtensionsMainMenu();

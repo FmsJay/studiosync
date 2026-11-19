@@ -79,7 +79,7 @@ for f in sorted((ROOT / "lib" / "listen").glob("*")):  # the listening page's li
 # Extensions > StudioSync and View > StudioSync (extension/reaper_menu.cpp): a package of its own, with a version of its own that goes up
 # only when the extension changes (EXT_VERSION), so StudioSync's updates don't try to replace a file REAPER has loaded. Each platform gets
 # its build, when there is one (a new platform's build: raise EXT_VERSION).
-EXT_VERSION = "1.0.6"  # (1.0.1: macOS and Linux builds, from .github/workflows/extension.yml; 1.0.2: toolbar button, icon map; 1.0.3: on any main toolbar; 1.0.4: lit while the panel is open, however it opened; 1.0.5: the action is called just StudioSync; 1.0.6: an amber dot while something stopped syncing)
+EXT_VERSION = "1.0.8"  # (1.0.1: macOS and Linux builds, from .github/workflows/extension.yml; 1.0.2: toolbar button, icon map; 1.0.3: on any main toolbar; 1.0.4: lit while the panel is open, however it opened; 1.0.5: the action is called just StudioSync; 1.0.6: an amber dot while something stopped syncing; 1.0.7: the direct link, extension/direct.cpp; 1.0.8: its small messages, shared clock, streamed takes and the audio spike)
 EXT_FILES = {"reaper_studiosync-x64.dll": "win64", "reaper_studiosync.dylib": "darwin",  # (the Mac build is universal: arm64 + x86_64)
              "reaper_studiosync-x86_64.so": "linux64", "reaper_studiosync-aarch64.so": "linux-aarch64"}
 cat = index.find("category")
@@ -91,7 +91,7 @@ if ext is None:
 if not any(v.get("name") == EXT_VERSION for v in ext.findall("version")):
     ev = ET.SubElement(ext, "version", name=EXT_VERSION, author="James",
                        time=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
-    ET.SubElement(ev, "changelog").text = "StudioSync in the Extensions and View menus, and the action 'StudioSync: open the panel', now for macOS and Linux too."
+    ET.SubElement(ev, "changelog").text = "The direct link: changes, messages (chat, cues, claims, presence, live MIDI) and takes as they record reach the others over Tailscale in well under a second, on a clock shared by the studio."
     for name, plat in EXT_FILES.items():
         if (ROOT / "extension" / name).exists():
             ET.SubElement(ev, "source", platform=plat, file=name).text = url(f"extension/{name}")
