@@ -115,6 +115,10 @@ local STEPS = {
   { "A clears the project from an earlier run", "A", function(p)
       reaper.Undo_BeginBlock2(p)
       for i = reaper.CountTracks(p) - 1, 0, -1 do reaper.DeleteTrack(reaper.GetTrack(p, i)) end
+      -- (SetCurrentBPM edits the tempo where the edit cursor is: a cursor left at bar 3 by another test added a marker there and the song's
+      -- start tempo never changed. Cursor to 0 and only the first marker kept, so the map is one tempo again)
+      for i = reaper.CountTempoTimeSigMarkers(p) - 1, 1, -1 do reaper.DeleteTempoTimeSigMarker(p, i) end
+      reaper.SetEditCurPos2(p, 0, false, false)
       reaper.SetCurrentBPM(p, 120, true)
       reaper.Undo_EndBlock2(p, "Cross test: clear", -1)
     end, function(p) return reaper.CountTracks(p) == 0 and math.abs(reaper.TimeMap2_GetDividedBpmAtTime(p, 0) - 120) < 0.01 end },
@@ -122,10 +126,10 @@ local STEPS = {
     function(p) local it = first_item(p, "XT Drums A"); return it and math.abs(reaper.GetMediaItemInfo_Value(it, "D_POSITION")) < 0.01 end },
   { "B adds a track and a part", "B", function(p) add_part(p, "XT Bass B", 4) end, function(p) return first_item(p, "XT Bass B") ~= nil end },
   { "C adds a track and a part", "C", function(p) add_part(p, "XT Keys C", 8) end, function(p) return first_item(p, "XT Keys C") ~= nil end },
-  { "C changes the tempo to 100", "C", function(p) reaper.SetCurrentBPM(p, 100, true) end,
+  { "C changes the tempo to 100", "C", function(p) reaper.SetEditCurPos2(p, 0, false, false); reaper.SetCurrentBPM(p, 100, true) end,
     function(p) return math.abs(reaper.TimeMap2_GetDividedBpmAtTime(p, 0) - 100) < 0.01 end },
   -- (130, not REAPER's starting 120: a check that passes before anything arrives proves nothing)
-  { "A changes it to 130 after (the newest map wins everywhere)", "A", function(p) reaper.SetCurrentBPM(p, 130, true) end,
+  { "A changes it to 130 after (the newest map wins everywhere)", "A", function(p) reaper.SetEditCurPos2(p, 0, false, false); reaper.SetCurrentBPM(p, 130, true) end,
     function(p) return math.abs(reaper.TimeMap2_GetDividedBpmAtTime(p, 0) - 130) < 0.01 end },
   { "B moves A's part to bar 2", "B", function(p)
       local it = first_item(p, "XT Drums A")
