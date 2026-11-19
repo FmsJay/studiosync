@@ -549,6 +549,23 @@ end
 
 -- Everyone else's side.
 streams.media = {} -- rel -> entry (this tab's song)
+streams.placed_at = {} -- { target, size, at }: files put in place from the link in the last TEMP_WATCH seconds
+streams.TEMP_WATCH, streams.TEMP_IDLE = 900, 60
+-- Syncthing's temp download of a file we put in place first (Windows "~syncthing~<name>.tmp", elsewhere ".syncthing.<name>.tmp"), removed once
+-- it's the whole size and untouched for TEMP_IDLE seconds: a download still going is written to (and Windows holds it open). Syncthing would
+-- keep it a day. size_of/time_of/remove passed in (tests). -> the placed list, entries older than TEMP_WATCH dropped.
+function streams.tidy_syncthing_temps(list, now, wall, size_of, time_of, remove)
+  local keep = {}
+  for _, p in ipairs(list) do
+    local dir, base = p.target:match("^(.*)/([^/]+)$")
+    for _, t in ipairs({ dir .. "/~syncthing~" .. base .. ".tmp", dir .. "/.syncthing." .. base .. ".tmp" }) do
+      local ft = time_of and time_of(t) or -1
+      if ft >= 0 and wall - ft >= streams.TEMP_IDLE and size_of(t) == p.size and size_of(p.target) == p.size then remove(t) end
+    end
+    if now - p.at < streams.TEMP_WATCH then keep[#keep + 1] = p end
+  end
+  return keep
+end
 local media_at, media_pruned = -math.huge, -math.huge
 function streams.on_media(cfg, b, d)
   local e = streams.valid_media(d, b.song, cfg.user, reaper.time_precise())
@@ -603,11 +620,17 @@ function streams.media_tick(cfg, b)
     end
     if done then
       streams.media[rel], streams.placed[e.key], placed = nil, true, placed + 1
+      streams.placed_at[#streams.placed_at + 1] = { target = e.target, size = e.size, at = now }
+      -- (Syncthing told at once, so it indexes our copy before pulling its own: otherwise its download, a moment behind, found the file there,
+      -- gave up and left its full-size temp for a day. 0.59.49.10 test, James, rt)
+      local rel_in = e.target:sub(#cfg.root + 2)
+      band.try("services.rescan", function() require("services").rescan(band.info(cfg.root).id, rel_in) end)
       streams.trace("media in " .. rel .. " -> " .. e.target)
     end
   end
   if now - media_pruned >= streams.PRUNE_EVERY then
     media_pruned = now
+    streams.placed_at = streams.tidy_syncthing_temps(streams.placed_at, now, os.time(), band.size, reaper.StudioSync_DirectFileTime, os.remove)
     local folder = direct.inbox(cfg.root) .. "/.streams/" .. b.song
     for _, f in ipairs(streams.media_prunable(band.files(folder), streams.media, by_name, os.time())) do os.remove(folder .. "/" .. f) end
   end

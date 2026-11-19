@@ -165,6 +165,21 @@ streams.media_tick(cfg, b)
 assert(#removed == 1 and removed[1] == "H/direct/studio1/.streams/Song/~media~main~left.wav", "only the media leftover")
 os.rename, os.remove, band.size = real_rename, real_remove, real_size
 
+-- ---- Syncthing's leftover temp download beside a file we placed first ----
+do
+  local T = "R/Song/rooms/main/media"
+  local sizes = { [T .. "/a.wav"] = 100, [T .. "/~syncthing~a.wav.tmp"] = 100, [T .. "/.syncthing.b.wav.tmp"] = 40, [T .. "/b.wav"] = 100,
+    [T .. "/~syncthing~c.wav.tmp"] = 100, [T .. "/c.wav"] = 100 }
+  local times = { [T .. "/~syncthing~a.wav.tmp"] = 5000 - 90, [T .. "/.syncthing.b.wav.tmp"] = 5000 - 90, [T .. "/~syncthing~c.wav.tmp"] = 5000 - 10 }
+  local gone = {}
+  local list = { { target = T .. "/a.wav", size = 100, at = 100 }, { target = T .. "/b.wav", size = 100, at = 100 },
+    { target = T .. "/c.wav", size = 100, at = 100 }, { target = T .. "/old.wav", size = 100, at = 100 - 1000 } }
+  local keep = streams.tidy_syncthing_temps(list, 200, 5000, function(p) return sizes[p] end, function(p) return times[p] or -1 end,
+    function(p) gone[#gone + 1] = p end)
+  assert(#gone == 1 and gone[1] == T .. "/~syncthing~a.wav.tmp", "only a whole-size temp untouched for a minute: " .. table.concat(gone, ", "))
+  assert(#keep == 3, "an entry past TEMP_WATCH is dropped")
+end
+
 -- ---- Health's line names a media file plainly ----
 local text = streams.health_text({ out = {}, inn = { { rel = "Song/~media~main~ab12-Bass.wav", bytes = 1048576, done = false } } })
 assert(text and text:find("in media ab12-Bass.wav: 1.00 MB so far", 1, true), text)
