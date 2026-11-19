@@ -766,6 +766,7 @@ local fired, seen_ev, quick_at = {}, {}, 0
 local cue_at = -math.huge
 local together_take -- (this tab's recording was started together, so a stop together may end it)
 local produce_lag, stamp_seen -- (producing someone: how far behind this pass really runs; the stream's start already acted on)
+local in_time -- (Parts play "In time": { lead, lag } while you play along one interval behind someone's take. lib/streams.lua in_time_lag)
 -- Whose play, pause and stop this tab follows: "follow <proj>" holds a name, "follow driver" (kept) means whoever drives. Real time mode's
 -- side by side follows everyone. (lib/presence.lua moves the view along too.)
 local function follows(name)
@@ -1040,6 +1041,12 @@ local function tick_body() -- returns true to keep going
     local behind = transport.follow and theirs and require("producer").behind(proj, transport.lead)
     if behind then -- (a lag this computer chose; a stop comes as far behind as the pass really was)
       transport.behind, transport.lag = true, transport.type == "stop" and math.max(behind, produce_lag or 0) or behind
+    elseif not transport.lag_set then -- (In time: one interval behind a take you follow, its stop as far behind. Asked once per cue)
+      local s = require("streams")
+      local lag
+      lag, in_time = s.in_time_lag(transport, cfg.user, s.mode(), together.bars_after(proj, transport.pos or 0, s.bars()), in_time)
+      if lag then transport.lag = lag end
+      transport.lag_set = true
     end
     local fire = transport.type == "stop" and ((transport.at or 0) + (theirs and (transport.lag or 0) or 0)) or together.plan(transport, cfg.user, nil)
     if transport.type == "stop" and transport.follow and theirs and transport.pos then fire = fire + 2 end -- the position decides; time is a backstop
