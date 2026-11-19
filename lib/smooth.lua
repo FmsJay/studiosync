@@ -10,7 +10,8 @@ function smooth.step(st, y, maxy, held)
   if not st or held then return { at = y, to = y, set = y, prev = y, off = 0 }, 0, nil end
   -- (something moved it: the wheel, here or passed up from a card that can't scroll, or a key. ImGui's move replaces the one asked for
   -- last frame, so it counts from where the page was then)
-  if math.abs(y - st.set) > 0.5 then st.to = st.to + (y - st.prev) end
+  -- (any move, however small: a trackpad's momentum ends in moves under half a pixel a frame, and the page stopped a few pixels short. 0.59.37)
+  if math.abs(y - st.set) > 0.01 then st.to = st.to + (y - st.prev) end
   st.to = math.max(0, math.min(maxy, st.to))
   local at = math.abs(st.to - st.at) < 1 and st.to or st.at + (st.to - st.at) * 0.35
   st.at, st.prev = at, y

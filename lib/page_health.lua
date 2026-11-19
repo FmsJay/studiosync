@@ -55,7 +55,7 @@ function H.maint_rows()
   local beat = tonumber(reaper.GetExtState(band.SECTION, "live " .. tostring(proj)))
   s.sync = beat ~= nil and reaper.time_precise() - beat < 5
   local rows = {
-    { "audio", s.audio, "red", "Audio device is running", "REAPER's audio device is closed: pick one in Preferences > Audio > Device." },
+    { "audio", s.audio, "red", "Audio device is running", "REAPER's audio device is closed: pick one in Preferences > Audio > Device. Until it runs, some plug-ins (CLAP above all) don't take a knob you turn, so the others get it only once audio is back on." },
     { "folder", s.folder, "red", "Shared folder is syncing", "Syncthing isn't running: nothing reaches the studio or comes in." },
     { "sync", s.sync, "red", "Live sync is running", "Live sync is off in this tab: press Start at the top." },
     { "same", (tonumber(reaper.GetExtState(band.SECTION, "mirror drift " .. tostring(proj))) or 0) == 0, "red", "Changes from the others come out the same here",

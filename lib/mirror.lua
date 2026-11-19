@@ -2139,8 +2139,47 @@ function mirror.merge_for(proj, ev, room_dir)
     return nil
   end
   if not apart then return nil end
+  -- (three or more made apart: put together in one order, from the versions themselves, not in the order they arrived. Merged pairwise as
+  -- they came, two computers that got them in different orders built different merges, and the projects came apart. Review list, 0.59.37.
+  -- Two of them come out as before: the newer wins.)
+  local leaves, seen = {}, {}
+  local function flat(id)
+    local w, l = mirror.split_merge(id)
+    if w then flat(w); flat(l) elseif not seen[id] then seen[id] = true; leaves[#leaves + 1] = id end
+  end
+  flat(kev); flat(ev.id)
+  local list = {}
+  for _, id in ipairs(leaves) do
+    local x = id == ev.id and ev or mirror.event_file(room_dir, id)
+    if not x then return nil end
+    list[#list + 1] = x
+  end
+  local keep = {}
+  for i, x in ipairs(list) do -- (one that another builds on is in that one already)
+    local under = false
+    for j, y in ipairs(list) do if i ~= j and not under and mirror.descends(room_dir, y, x.id, x.hlc) then under = true end end
+    if not under then keep[#keep + 1] = { id = x.id, rev = x.rev, order = mirror.order_of(x) } end
+  end
+  if #keep >= 3 then return mirror.event_file(room_dir, mirror.merge_order(keep)) end
+  -- (two: exactly as before, this one against what's held here. Through merge_order, an edit already merged in was merged again and the
+  -- next one never was: merge_items, 0.59.37)
   local theirs = mirror.newer({ rev = ev.rev, time = mirror.order_of(ev) }, { rev = krev, time = kord })
   return mirror.event_file(room_dir, mirror.merge_id(theirs and ev.id or kev, theirs and kev or ev.id))
+end
+-- Versions made apart, as one merged version's id, the same whatever order they're given in: oldest first, each newer one winning over
+-- what came before. `leaves`: { { id, rev, order } }. Pure.
+function mirror.merge_order(leaves)
+  local t = {}
+  for i, x in ipairs(leaves) do t[i] = x end
+  table.sort(t, function(a, b)
+    if a.id == b.id then return false end
+    local an, bn = mirror.newer({ rev = a.rev, time = a.order }, { rev = b.rev, time = b.order }), mirror.newer({ rev = b.rev, time = b.order }, { rev = a.rev, time = a.order })
+    if an ~= bn then return bn end -- (a older than b: first)
+    return a.id < b.id
+  end)
+  local acc = t[1] and t[1].id
+  for i = 2, #t do acc = mirror.merge_id(t[i].id, acc) end
+  return acc
 end
 
 -- An item landing in a lane resets which lanes play: the track's own settings go back on top (a merged item too: review, 0.58.47).
@@ -2442,6 +2481,7 @@ local function fx_open_now(tr)
   return false
 end
 function mirror.note_open_fx(proj)
+  if not reaper.ValidatePtr2(0, proj, "ReaProject*") then return end -- (the tab closing just now: it was an error in the log. Laptop, 0.59.37)
   local now = reaper.time_precise()
   for t = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, t)
@@ -3117,7 +3157,7 @@ function mirror.watch(proj, cfg, song, room, opts)
         end
         -- (and where in the song: clicking "Working in" goes there. An item's own place, or the edit cursor's. James, 0.59.32)
         if name ~= "" and not ev.auto then
-          reaper.SetProjExtState(proj, band.SECTION, "last_at", string.format("%.3f", tonumber(ev.pos) or reaper.GetCursorPositionEx(proj)))
+          reaper.SetExtState(band.SECTION, "last_at " .. tostring(proj), string.format("%.3f", tonumber(ev.pos) or reaper.GetCursorPositionEx(proj)), false) -- (not in the project: a ProjExtState write counts as a project change, and the race guard read it as an edit not yet seen. merge_items, 0.59.37)
         end
         mirror.unsent[tostring(proj) .. o.oid] = nil -- (gone out: the band's next change to it may land)
         require("presence").touch(proj, o.oid)

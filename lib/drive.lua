@@ -7,6 +7,7 @@
 -- revision), so where each one belongs is worked out from the room's events and manifests, and both sides end up so.
 local band = require("band")
 local drive = {}
+drive.listed = {} -- Drive folder -> { at, files }: its listing, kept a little while (drive.mirror)
 
 -- Where the Drive copy lives, or nil (no Drive on this machine, or turned off: ExtState drive_root = "off").
 -- Looking is cached for 5 minutes: listing My Drive asks Google's servers, and doing it every Live sync poll and
@@ -304,6 +305,7 @@ local function tidy(dir)
     i = i + 1
   end
   for _, f in ipairs(gone) do os.remove(dir .. "/" .. f) end
+  return #gone
 end
 
 -- Changes the history trim took out of the room (lib/trim.lua lists them in trimmed/): Drive's copy still has them.
@@ -358,7 +360,14 @@ function drive.mirror(here, there, budget, user, wait)
   for _, sub in ipairs({ "trimmed", "events", "recall", "midi", "media" }) do -- (media: recordings and prints the items use)
     local A, B = {}, {}
     for _, f in ipairs(band.files(here .. "/" .. sub)) do if not arriving(f) then A[#A + 1] = f end end
-    for _, f in ipairs(band.files(there .. "/" .. sub)) do if not arriving(f) then B[#B + 1] = f end end
+    -- (the Drive side's listing, kept 30 s: listing a cloud drive's folders is the slow part, and in a quiet room every pass listed all five
+    -- for nothing. Dropped whenever this pass writes or tidies there. Review list, 0.59.37)
+    local td = there .. "/" .. sub
+    local lc = drive.listed[td]
+    local fresh = not (lc and reaper.time_precise() - lc.at < 30)
+    if fresh then lc = { at = reaper.time_precise(), files = band.files(td) }; drive.listed[td] = lc end
+    for _, f in ipairs(lc.files) do if not arriving(f) then B[#B + 1] = f end end
+    local n_before = n
     local inA, inB = {}, {}
     for _, f in ipairs(A) do inA[f] = true end
     for _, f in ipairs(B) do inB[f] = true end
@@ -368,7 +377,7 @@ function drive.mirror(here, there, budget, user, wait)
     if sub == "events" then -- trimmed: not brought back from Drive, and gone from it once whoever made them sees that
       for f in pairs(trimmed(here .. "/trimmed")) do -- ("trimmed" goes first: a list may have just come from Drive)
         inA[f], inB[f] = true, true
-        if mine(f, user) and reaper.file_exists(there .. "/events/" .. f) then os.remove(there .. "/events/" .. f) end
+        if mine(f, user) and reaper.file_exists(there .. "/events/" .. f) then os.remove(there .. "/events/" .. f); drive.listed[td] = nil end
       end
     end
     for _, f in ipairs(A) do
@@ -377,7 +386,8 @@ function drive.mirror(here, there, budget, user, wait)
         copy(here .. "/" .. sub .. "/" .. f, there .. "/" .. sub .. "/" .. f)
       end
     end
-    tidy(there .. "/" .. sub)
+    if n ~= n_before then drive.listed[td] = nil end
+    if fresh and tidy(td) > 0 then drive.listed[td] = nil end -- (Drive's "name (1).ext" copies: looked for with the listing, not every pass)
     for _, f in ipairs(B) do if not inA[f] then if out_of_time() then return n, true end; copy(there .. "/" .. sub .. "/" .. f, here .. "/" .. sub .. "/" .. f) end end
   end
   -- plug-in chains: rewritten by their owner, so a differing copy is only refreshed where it's missing (Syncthing

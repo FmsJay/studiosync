@@ -579,7 +579,7 @@ local function poll()
     -- (the view and the cursor only while someone follows you, their one reader (presence.follow): each scroll or click rewrote this file and
     -- Syncthing sent it to everyone. Being followed puts them in at once, as the follower's own status shows it. 0.59.14, review)
     editing = require("presence").editing(proj), view = followed and require("presence").view(proj) or nil, ping = require("presence").my_ping(proj),
-    last_track = select(2, reaper.GetProjExtState(proj, band.SECTION, "last_track")), last_at = tonumber((select(2, reaper.GetProjExtState(proj, band.SECTION, "last_at")))),
+    last_track = select(2, reaper.GetProjExtState(proj, band.SECTION, "last_track")), last_at = tonumber(reaper.GetExtState(band.SECTION, "last_at " .. tostring(proj))),
     follow = reaper.GetExtState(band.SECTION, "follow " .. tostring(proj)), follow_driver = reaper.GetExtState(band.SECTION, "follow driver") ~= "" or nil,
     listen = reaper.GetExtState(band.SECTION, "listen " .. tostring(proj)),
     produce = require("producer").who(proj), produce_via = require("producer").who(proj) and require("producer").via(proj) or nil, stamping = reaper.GetExtState(band.SECTION, "stamping " .. tostring(proj)) ~= "" or nil,
@@ -710,7 +710,7 @@ local function tick_body() -- returns true to keep going
     for _, k in ipairs({ "follow", "listen", "listen had", "listeners", "send whole mix", "alone", "held", "produce", "transport", "together",
         "sonobus for listeners", "outbox", "live owner", "ping", "slow tick", "last here", "draw", "live began", "takelanes",
         -- (and these: a new tab at the same address showed a count-in, a producer, a SonoBus trouble or a drift that were the closed tab's. Review, 0.59.14)
-        "end session", "produced by", "producer controls", "timing", "produce ctl", "stamping", "together_at", "rt group", "rt silent", "rt silent who", "rt trouble", "driver_away", "mirror drift",
+        "end session", "produced by", "producer controls", "timing", "produce ctl", "last_at", "stamping", "together_at", "rt group", "rt silent", "rt silent who", "rt trouble", "driver_away", "mirror drift",
         "ninjam shown", "ninjam off", "ninjam start", "ninjam connect", "ninjam host" }) do reaper.DeleteExtState(band.SECTION, k .. " " .. key, false) end
     return band.log("live sync stopped: '" .. b.song .. "'" .. (b.room ~= "main" and (", side room '" .. b.room .. "',") or "") .. " was closed (it starts again by itself when you reopen it)")
   end

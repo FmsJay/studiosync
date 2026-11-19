@@ -69,6 +69,8 @@ function api.event(kind, fields)
   reaper.SetExtState(api.SECTION, "events", band.json_encode(list), false)
   reaper.SetExtState(api.SECTION, "event_seq", tostring(seq), false)
 end
+-- A script's request is waiting (the panel's box opens for it). 0.59.37
+function api.pending() return reaper.GetExtState(api.SECTION, "request") ~= "" end
 -- The panel, every frame: a script's request, handed to the same "panel do" its own controls and the bindable actions use. -> the verb, or nil.
 function api.take_request()
   local r = reaper.GetExtState(api.SECTION, "request")

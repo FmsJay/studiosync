@@ -291,6 +291,7 @@ end
 -- With add, ReaNINJAM is also taken off every other open project's master first: REAPER runs one ReaNINJAM per
 -- process, so a copy in another tab leaves this one "could not be loaded" while still listed on the master
 -- (2026-10-28 test: Play along in a second song tab silently did nothing).
+live.fx_cache = {} -- (proj .. name -> { tr, i } where it was last found, or { at } when it wasn't: live.fx)
 function live.fx(proj, add, fx)
   fx = fx or live.FX
   local master = reaper.GetMasterTrack(proj)
@@ -305,6 +306,15 @@ function live.fx(proj, add, fx)
       end
     end
   end
+  -- (where it was found last, if it's still there: this ran dozens of times a pass, every track's every plug-in's name each time, and
+  -- a song with 60 tracks of chains spent most of a look on it. Review list, 0.59.37)
+  local key = tostring(proj) .. "\0" .. fx
+  local c = live.fx_cache[key]
+  if c and freed == 0 then
+    if c.tr and reaper.ValidatePtr2(proj, c.tr, "MediaTrack*") and c.i < reaper.TrackFX_GetCount(c.tr) and select(2, reaper.TrackFX_GetFXName(c.tr, c.i)):find(fx, 1, true) then return c.tr, c.i end
+    if not c.tr and not add and reaper.time_precise() - c.at < 0.5 then return nil end -- (none, looked at just now)
+  end
+  live.fx_cache[key] = nil
   -- the master first (where StudioSync puts it), then any track (someone may listen on a track of their own)
   for t = -1, reaper.CountTracks(proj) - 1 do
     local tr = t < 0 and master or reaper.GetTrack(proj, t)
@@ -314,11 +324,12 @@ function live.fx(proj, add, fx)
       -- another shape: it was found by name, then the join check could never see it join)
       if name:find(fx, 1, true) and not name:find("Instrument", 1, true) and (fx ~= live.SONOBUS or name:find("^VST3")) then
         if freed > 0 then reaper.TrackFX_SetOffline(tr, i, true); reaper.TrackFX_SetOffline(tr, i, false) end -- load it now that it may
+        live.fx_cache[key] = { tr = tr, i = i }
         return tr, i
       end
     end
   end
-  if not add then return nil end
+  if not add then live.fx_cache[key] = { at = reaper.time_precise() }; return nil end
   if fx == live.SONOBUS then -- Real time mode: SonoBus on a track of its own, fed only by what's armed (live.rt_sends)
     local rt = live.rt_track(proj, true)
     local i = reaper.TrackFX_AddByName(rt, "VST3:SonoBus (Sonosaurus)", false, -1)

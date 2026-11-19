@@ -30,4 +30,8 @@ assert(math.abs(shown[#shown] - 250) < 1, "down 400, up 150: 250 (" .. shown[#sh
 
 shown = run({ [2] = 500 }, 60, 200)
 assert(math.abs(shown[#shown] - 200) < 1 and math.max(table.unpack(shown)) <= 200 + 1e-9, "never past the bottom")
+local tail = {}
+for f = 2, 31 do tail[f] = 0.3 end -- (a trackpad's momentum tail: thirty moves of under half a pixel)
+shown = run(tail, 90, 10000)
+assert(math.abs(shown[#shown] - 9) < 0.05, "the tail's every bit counts: 9 (" .. shown[#shown] .. ")")
 print("ok smooth")

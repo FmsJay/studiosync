@@ -451,6 +451,9 @@ end
 do
   local push = ImGui.PushFont
   ImGui.PushFont = function(c, font, size) return push(c, font, size and math.floor(size * ui.text_scale() + 0.5) or size) end
+  -- (and the boxes the words sit in: at 130% a combo's text ran out of its fixed width. A negative width is a gap to the edge, left as it is. 0.59.37)
+  local width = ImGui.SetNextItemWidth
+  ImGui.SetNextItemWidth = function(c, w) return width(c, (w and w > 0) and math.floor(w * ui.text_scale() + 0.5) or w) end
 end
 ImGui.SetItemTooltip = function(c, text)
   if ImGui.BeginItemTooltip(c) then
@@ -1650,7 +1653,7 @@ local function home_who()
   local ps = reaper.GetPlayStateEx(proj)
   local my_kind, my_call = ui.live_now()
   people[1] = { name = cfg.user .. " (you)", user = cfg.user, state = "here", armed = armed, recording = ps & 4 == 4, playing = ps & 1 == 1,
-    driving = view.driver == cfg.user, last_track = select(2, reaper.GetProjExtState(proj, band.SECTION, "last_track")), last_at = tonumber((select(2, reaper.GetProjExtState(proj, band.SECTION, "last_at")))),
+    driving = view.driver == cfg.user, last_track = select(2, reaper.GetProjExtState(proj, band.SECTION, "last_track")), last_at = tonumber(reaper.GetExtState(band.SECTION, "last_at " .. tostring(proj))),
     live = my_kind == "timesync" and "ts" or my_kind and "rt" or nil, call = my_call }
   -- (away people hidden on request: James, 0.59.3. ExtState "who hide away")
   local hide_away, away = reaper.GetExtState(band.SECTION, "who hide away") ~= "", 0
@@ -1698,7 +1701,7 @@ local function home_who()
     return
   end
   local avail = ImGui.GetContentRegionAvail(ctx)
-  local w, gap = 214, 8
+  local w, gap = math.floor(214 * ui.text_scale()), 8 -- (wider with bigger text: Settings > Look)
   local per = math.max(1, math.floor((avail + gap) / (w + gap)))
   w = math.floor((avail - gap * (per - 1)) / per) -- (they fill the page: a strip was left empty on the right)
   for i, p in ipairs(people) do
@@ -1954,6 +1957,13 @@ local function settings_look()
       local ch, v = ImGui.SliderDouble(ctx, "Text size##textsize", ui.text_scale() * 100, 80, 160, "%.0f%%")
       if ch then reaper.SetExtState(band.SECTION, "text size", string.format("%.2f", v / 100), true); text_scale_at = -1 end
       ImGui.SetItemTooltip(ctx, "How big the panel's words are on this computer, 80% to 160%. Double-click to type.")
+    end
+    do -- (the review's "keyboard focus rings, releasing a claim from the keyboard": ImGui's own keyboard navigation, opt-in. 0.59.37)
+      local kb = reaper.GetExtState(band.SECTION, "keyboard nav") ~= ""
+      local ch, v = ImGui.Checkbox(ctx, "Keyboard navigation##kbnav", kb)
+      if ch then reaper.SetExtState(band.SECTION, "keyboard nav", v and "1" or "", true) end
+      ImGui.SetItemTooltip(ctx, "Tab and the arrow keys move between the panel's buttons (a ring shows which), Space or Enter presses one, Esc leaves. " ..
+        "While the panel has the keyboard, those keys don't reach REAPER (Space won't play): click REAPER to give them back.")
     end
     if theme.name == "Custom" then -- your own theme: four colours, the rest worked out (it reopens when you let go of a colour)
       local c = theme.custom()
@@ -2530,10 +2540,12 @@ local function page_setup()
   -- (the tabs stay put: only what's under them scrolls)
   local function body(id, fn)
     if ImGui.BeginChild(ctx, id, 0, 0, 0, wide and ImGui.WindowFlags_HorizontalScrollbar or 0) then
-      if ImGui.IsWindowAppearing(ctx) then ImGui.SetScrollY(ctx, 0) end -- (the red row and the newest lines were out of sight, where it had last been left: Mac, 0.57.7)
+      if ImGui.IsWindowAppearing(ctx) then ImGui.SetScrollY(ctx, 0); ui.scrolls[id] = nil end -- (the red row and the newest lines were out of sight, where it had last been left: Mac, 0.57.7)
+      ui.smooth_scroll(id) -- (Settings eases too, as the pages and docked columns do: review list, 0.59.37)
       ImGui.PushTextWrapPos(ctx, 0)
       ui.page_body(fn) -- (an error in a Settings tab left its child and tab open, and End killed the panel. Review, 0.59.14)
       ImGui.PopTextWrapPos(ctx)
+      ui.smooth_scroll_end(id)
       ImGui.EndChild(ctx)
     end
   end
@@ -2936,9 +2948,12 @@ local function frame_app()
   else -- (no room in the bar: over the top of the page while it's being said. A blank row for it cost every page 30 px, for something shown 6 s at a time)
     toast_place = { x = ImGui.GetWindowPos(ctx) + 16, w = ww - 32, over = true }
   end
-  if ww < 600 then -- (narrow: a short "Leave", as "Window" wrapped alone onto a row of its own: design review. Not "...": leaving is the one
-    -- thing everyone has to find. UX review, 0.58.47)
-    at_row("Feedback")
+  if ww < 600 or room <= need + 12 then -- (narrow: a short "Leave", as "Window" wrapped alone onto a row of its own: design review. Not "...": leaving is the one
+    -- thing everyone has to find. UX review, 0.58.47. And wherever the long one doesn't fit: docked short, Window and Dock wrapped to a second
+    -- row of their own, 33 px of a short docker. Review list, 0.59.37)
+    local need_s = need - ImGui.CalcTextSize(ctx, "Sync and exit") + ImGui.CalcTextSize(ctx, "Exit")
+    if ww >= 600 and room > need_s + 12 then ImGui.SetCursorPosX(ctx, ImGui.GetCursorPosX(ctx) + room - need_s); ImGui.SetCursorPosY(ctx, y0)
+    else at_row("Feedback") end
     require("feedback").button(ctx, ImGui)
     at_row("Exit")
     if ImGui.Button(ctx, "Exit##leave") then require("leave").start(proj, cfg, b) end
@@ -3114,7 +3129,7 @@ local function frame_app()
     ImGui.PushStyleColor(ctx, ImGui.Col_ChildBg, NAV)
     ImGui.PushStyleVar(ctx, ImGui.StyleVar_WindowPadding, 8, 10)
     ImGui.PushStyleVar(ctx, ImGui.StyleVar_SelectableTextAlign, 0, 0.5)
-    if ImGui.BeginChild(ctx, "nav", 150, 0, ImGui.ChildFlags_AlwaysUseWindowPadding) then
+    if ImGui.BeginChild(ctx, "nav", math.floor(150 * ui.text_scale()), 0, ImGui.ChildFlags_AlwaysUseWindowPadding) then
       ImGui.PushFont(ctx, nil, 16)
       for _, p in ipairs(ui.pages()) do nav_item(p, 0, 36) end
       ImGui.PopFont(ctx)
@@ -3511,7 +3526,16 @@ local function loop_body()
     ImGui.SetNextWindowSize(ctx, place_req[3], place_req[4])
     place_req = nil
   end
+  do -- keyboard navigation (Settings > Look), as this computer has it set
+    local flags = ImGui.GetConfigVar(ctx, ImGui.ConfigVar_Flags)
+    local want = reaper.GetExtState(band.SECTION, "keyboard nav") ~= ""
+    local has = flags & ImGui.ConfigFlags_NavEnableKeyboard ~= 0
+    if want ~= has then ImGui.SetConfigVar(ctx, ImGui.ConfigVar_Flags, want and (flags | ImGui.ConfigFlags_NavEnableKeyboard) or (flags & ~ImGui.ConfigFlags_NavEnableKeyboard)) end
+  end
   local minimized = reaper.GetExtState(band.SECTION, "panel minimized") ~= ""
+  -- (a request from outside opens it: the box doesn't run the pages, so a script's or an action's request waited until someone clicked the box.
+  -- band.panel_do unfolds it too; this covers anything that only asks. 0.59.37)
+  if minimized and (reaper.GetExtState(band.SECTION, "panel do") ~= "" or require("api").pending()) then ui.set_minimized(false); minimized = false end
   local visible, open = false, true
   -- (the system frame is the panel's: the box and strip went out with one too. James, 0.58.98)
   ImGui.SetConfigVar(ctx, ImGui.ConfigVar_ViewportsNoDecoration, (native and not minimized) and 0 or 1)
