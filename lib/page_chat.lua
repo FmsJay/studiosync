@@ -70,12 +70,14 @@ function chat.take_live(cfg)
   local ok, msgs = pcall(direct.messages, cfg)
   if ok then direct.dispatch(msgs, nil, nil, { chat = function(d) chat.from_msg(cfg, d) end }) end
 end
-local function load(cfg, b)
-  chat.take_live(cfg)
-  local key = scope .. (b.song or "") .. (b.room or "")
+-- What a scope shows (sc: "room", "song" or "band"; the page's own by default): { msgs, todo, links }, each oldest first, with the live
+-- messages not yet here as files. Kept 3 s. (The web UI reads it from Live sync, which takes the link's messages itself: lib/webui.lua. James, rt)
+function chat.read(cfg, b, sc)
+  sc = sc or scope
+  local key = sc .. (b.song or "") .. (b.room or "")
   if cache and key == cache_key and reaper.time_precise() - cache_at < 3 then return cache end
   local t = { msgs = {}, todo = {}, links = {} }
-  for _, src in ipairs(chat.sources(cfg, b, scope)) do
+  for _, src in ipairs(chat.sources(cfg, b, sc)) do
     for kind in pairs(t) do
       for _, f in ipairs(band.files(src[1] .. "/" .. kind, ".json")) do
         local v = band.read_json(src[1] .. "/" .. kind .. "/" .. f)
@@ -91,7 +93,7 @@ local function load(cfg, b)
   for path, v in pairs(live_msgs) do -- (until its file is here)
     if reaper.file_exists(path) then live_msgs[path] = nil
     else
-      for _, src in ipairs(chat.sources(cfg, b, scope)) do
+      for _, src in ipairs(chat.sources(cfg, b, sc)) do
         if path:sub(1, #src[1] + 6) == src[1] .. "/msgs/" and (not src.room or v.room == src.room or (v.room == nil and src.room == "main")) then
           local m = {}
           for k, x in pairs(v) do m[k] = x end
@@ -105,6 +107,10 @@ local function load(cfg, b)
   for kind in pairs(t) do table.sort(t[kind], function(a, x) return (a.time or "") < (x.time or "") end) end
   cache, cache_at, cache_key = t, reaper.time_precise(), key
   return t
+end
+local function load(cfg, b)
+  chat.take_live(cfg)
+  return chat.read(cfg, b, scope)
 end
 
 local function add(cfg, b, kind, v, sc)
@@ -124,7 +130,8 @@ local function add(cfg, b, kind, v, sc)
 end
 
 -- Something said for the band from elsewhere (a mix rendered, say): a message in this project's chat.
-function chat.post(cfg, b, text) add(cfg, b, "msgs", { text = text }, "song") end
+-- sc: another scope ("room", "band"); the project's by default. (The web UI's messages come this way: lib/webui.lua)
+function chat.post(cfg, b, text, sc) add(cfg, b, "msgs", { text = text }, sc or "song") end
 
 -- Messages newer than the last time this person looked at the song's chat (for the tab's count).
 local unread_at, unread_n, unread_song = -math.huge, 0, nil
@@ -350,6 +357,20 @@ function chat.draw(ctx, ImGui, cfg, b, tabs)
       end
     end
     ImGui.SetItemTooltip(ctx, running and "Stop showing the others' drawings on this computer. They stay for everyone else." or "Show what the others drew, over the arrange view (clicks still go to REAPER).")
+    -- the web UI (lib/webui.lua): who's here and this chat in a browser, and the link for a phone on the studio's Tailscale (James, rt)
+    local webui = require("webui")
+    if webui.available() then
+      fits(ImGui.CalcTextSize(ctx, "Web UI") + 24, 24)
+      if ImGui.Button(ctx, "Web UI##webui") then webui.open(cfg) end
+      ImGui.SetItemTooltip(ctx, "Opens who's here and this project's chat in your browser (this computer only). Live sync shows and sends them.")
+      fits(ImGui.CalcTextSize(ctx, "Copy phone link") + 24)
+      if ImGui.Button(ctx, "Copy phone link##webui") then
+        local url, why = webui.phone_link(cfg)
+        if url then band.copy(url, ctx, ImGui) else band.log("no phone link: " .. tostring(why)) end
+      end
+      ImGui.SetItemTooltip(ctx, "The web UI's link for a phone or another computer on the studio's Tailscale. It carries the studio's key: " ..
+        "share it only with the band (a phone keeps it after the first visit).")
+    end
   end
   local function to_button()
     local now = "?"

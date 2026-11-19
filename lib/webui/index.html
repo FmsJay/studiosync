@@ -1,0 +1,38 @@
+<!doctype html>
+<!-- StudioSync's web UI (lib/webui.lua, extension/webui.cpp): who's here and the project's chat, in a browser or on a phone. GPL-3.0-or-later. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>StudioSync</title>
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<header>
+  <div class="title">
+    <strong>StudioSync</strong>
+    <span id="where" class="dim"></span>
+  </div>
+  <span id="conn" class="conn" role="status">connecting</span>
+  <button id="theme" type="button" aria-label="Switch light or dark">&#9680;</button>
+</header>
+<main>
+  <section id="here" aria-labelledby="here-h">
+    <h2 id="here-h">Here</h2>
+    <ul id="people"></ul>
+    <h3>Claims</h3>
+    <ul id="claims"><li class="dim">None</li></ul>
+  </section>
+  <section id="chat" aria-labelledby="chat-h">
+    <h2 id="chat-h">Chat <span class="dim">(this project)</span></h2>
+    <ol id="msgs" aria-live="polite"></ol>
+    <form id="say" autocomplete="off">
+      <input id="text" maxlength="2000" placeholder="Message the band" aria-label="Message" enterkeyhint="send">
+      <button type="submit">Send</button>
+    </form>
+  </section>
+</main>
+</body>
+</html>

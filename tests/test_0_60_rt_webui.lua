@@ -1,0 +1,110 @@
+-- The web UI's Lua side (lib/webui.lua): its addresses, what the pages are shown (who's here, claims, chat), what a page may send, and
+-- Live sync's tick against a stand-in extension: started, published only on change and only from the tab in front, a chat send applied
+-- through the Chat page's own store, the link's chat messages handed to it. The server itself: tests/webui_test.cpp.
+package.path = "lib/?.lua;" .. package.path
+local clock, ext, front = 1000, {}, "P1"
+local pub, actions, started = {}, {}, 0
+reaper = setmetatable({
+  time_precise = function() return clock end,
+  GetOS = function() return "Win64" end,
+  GetExtState = function(s, k) return ext[s .. "/" .. k] or "" end,
+  SetExtState = function(s, k, v) ext[s .. "/" .. k] = v end,
+  GetExePath = function() return "C:/REAPER" end,
+  GetResourcePath = function() return "C:/res" end,
+  EnumProjects = function() return front end,
+  GetPlayStateEx = function() return 5 end, -- playing and recording
+  CountTracks = function() return 2 end,
+  GetTrack = function(_, i) return i end,
+  GetTrackName = function(tr) return true, tr == 0 and "Gtr" or "Vox" end,
+}, { __index = function(_, k) if not tostring(k):find("^StudioSync_") then return function() return "" end end end })
+local band = require("band")
+local webui = require("webui")
+assert(not webui.available(), "an older extension: nothing")
+assert(webui.tick("P1", {}, { song = "S", room = "main" }, {}) == nil, "and the tick does nothing")
+
+-- Addresses
+assert(webui.local_url(47281) == "http://127.0.0.1:47281/" and webui.local_url(nil) == "http://127.0.0.1:47281/", "this computer's")
+assert(webui.phone_url("james-main.tail99.ts.net", 47281, "0123abcd") == "http://james-main.tail99.ts.net:47281/?t=0123abcd", "a phone's")
+for _, bad in ipairs({ { nil, "ab" }, { "a b.ts.net", "ab" }, { "x/y", "ab" }, { "-x", "ab" }, { "pc.ts.net", "" }, { "pc.ts.net", "zz" }, { "pc.ts.net", nil } }) do
+  assert(webui.phone_url(bad[1], 47281, bad[2]) == nil, "no link from a bad name or token: " .. tostring(bad[1]) .. " " .. tostring(bad[2]))
+end
+
+-- Who's here
+local me = { user = "James", playing = true, recording = false, armed = { "Gtr", 5 } }
+local peers = { { user = "chilio", playing = true, armed = { "Bass" }, live = "rt", call = "x" }, { user = "James" }, { user = "Andie", recording = true }, { nope = 1 } }
+local who = { driver = "Andie", mode = "claims", tracks = { gtr = { user = "James", name = "Gtr" } }, regions = { chorus = { user = "Andie", name = "Chorus" } },
+  times = { { user = "chilio", from = 10, to = 20 }, { user = "x", from = "a" } }, owner = function() end }
+local m = webui.presence_model("Song", "main", me, peers, who)
+assert(m.song == "Song" and m.room == "main" and m.driver == "Andie" and m.mode == "claims", "song, room, driver, mode")
+local names = {}
+for _, p in ipairs(m.people) do names[#names + 1] = p.user end
+assert(table.concat(names, ",") == "James,Andie,chilio", "me first, then the others by name (me once): " .. table.concat(names, ","))
+assert(m.people[1].me and m.people[1].playing and not m.people[1].recording and #m.people[1].armed == 1, "my state, armed names only")
+assert(m.people[2].recording and not m.people[2].me and m.people[3].live == "rt" and m.people[3].call == true and m.people[3].armed[1] == "Bass", "theirs")
+assert(#m.claims == 3 and m.claims[1].user == "Andie" and m.claims[1].kind == "region" and m.claims[1].name == "Chorus"
+  and m.claims[2].user == "James" and m.claims[2].kind == "track" and m.claims[3].kind == "time" and m.claims[3].from == 10, "claims, a bad one left out")
+assert(band.json_encode(webui.presence_model("S", "r", { user = "J" }, nil, nil)):find('"claims":%[%]'), "nobody and no claims: empty lists")
+
+-- Chat
+local msgs = {}
+for i = 1, 105 do msgs[i] = { user = "u" .. i, text = "t" .. i, time = "2026-11-19T10:00:00Z", where = i == 105 and "main" or nil } end
+msgs[104] = { user = "x" } -- (no text: left out)
+local c = webui.chat_model(msgs, function(w) return w and ("room " .. w) or nil end)
+assert(c.scope == "song" and #c.msgs == 99 and c.msgs[1].text == "t6" and c.msgs[#c.msgs].text == "t105" and c.msgs[#c.msgs].where == "room main", "the newest 100, oldest first")
+assert(#webui.chat_model(nil).msgs == 0, "no messages")
+
+-- What a page may send
+assert(webui.clean_text("  hi\tthere\n ") == "hi there", "control characters become spaces, ends trimmed")
+assert(webui.clean_text("") == nil and webui.clean_text("   ") == nil and webui.clean_text(5) == nil and webui.clean_text(("x"):rep(2001)) == nil
+  and webui.clean_text("\255\254") == nil, "empty, not text, too long or not UTF-8: nothing")
+assert(webui.clean_text("héllo") == "héllo", "UTF-8 kept")
+local t, a = webui.parse_action('{"topic":"chat","text":"yo"}')
+assert(t == "chat" and a.text == "yo", "a chat action")
+for _, bad in ipairs({ "", "nope", '{"topic":"exec","cmd":"x"}', '{"text":"x"}', "[1]", nil }) do assert(webui.parse_action(bad) == nil, "refused: " .. tostring(bad)) end
+
+-- Live sync's tick, with a stand-in extension
+reaper.StudioSync_WebUIStart = function(folder, secret, port) started = started + 1; assert(folder:find("lib/webui$") and secret == "sek" and port == 47281); return 1 end
+reaper.StudioSync_WebUIPublish = function(topic, json) pub[#pub + 1] = { topic, json } end
+reaper.StudioSync_WebUIPoll = function() return table.remove(actions, 1) or "" end
+reaper.StudioSync_WebUIStatus = function() return '{"listening":true,"port":47281,"token":"abc123"}' end
+package.loaded.groups = { sonobus_secret = function() return "sek" end }
+package.loaded.direct = { port = function() return 47281 end }
+package.loaded.live = { armed = function(tr) return tr == 1 end }
+package.loaded.presence = { peers = function() return { { user = "chilio" } } end }
+package.loaded.sync = { authority = function() return function() end, { driver = "James", tracks = {}, regions = {}, times = {} } end }
+local posted, from_msg = {}, {}
+package.loaded.page_chat = {
+  post = function(_, b, text, sc) posted[#posted + 1] = { b.song, text, sc } end,
+  read = function() return { msgs = { { user = "chilio", text = "hey", time = "2026-11-19T10:00:00Z" } } } end,
+  where_label = function() return nil end,
+  from_msg = function(_, d) from_msg[#from_msg + 1] = d end,
+}
+assert(webui.available(), "the extension has it")
+local cfg, b, handlers = { root = "R", user = "James" }, { song = "S", room = "main" }, {}
+actions = { '{"topic":"chat","text":" from my phone "}', '{"topic":"chat","text":""}', '{"topic":"rm","path":"x"}' }
+webui.tick("P1", cfg, b, handlers)
+assert(started == 1, "started")
+assert(#posted == 1 and posted[1][1] == "S" and posted[1][2] == "from my phone" and posted[1][3] == "song", "the chat send applied once, cleaned; junk dropped")
+assert(#pub == 2 and pub[1][1] == "presence" and pub[2][1] == "chat", "presence and chat published")
+local pj = band.json_decode(pub[1][2])
+assert(pj.driver == "James" and pj.people[1].user == "James" and pj.people[1].recording and pj.people[1].armed[1] == "Vox" and pj.people[2].user == "chilio", "presence: " .. pub[1][2])
+assert(band.json_decode(pub[2][2]).msgs[1].text == "hey", "chat: " .. pub[2][2])
+assert(type(handlers.chat) == "function", "the link's chat messages go to the Chat page's store")
+handlers.chat({ x = 1 })
+assert(from_msg[1].x == 1, "handed over")
+clock = clock + 5
+webui.tick("P1", cfg, b, handlers)
+assert(#pub == 2 and started == 1, "nothing changed: nothing published, not started again within 10 s")
+front = "P2"
+clock = clock + 5
+webui.tick("P1", cfg, b, handlers)
+assert(#pub == 2, "a tab behind publishes nothing")
+front = "P1"
+webui.tick("P1", cfg, b, handlers)
+assert(#pub == 4 and started == 2, "back in front: everything again (another tab's was showing)")
+local url, why = webui.phone_link(cfg)
+assert(url == nil and why:find("direct link"), "no phone link while the link isn't listening: " .. tostring(why))
+reaper.StudioSync_DirectStatus = function() return '{"listening":true}' end
+package.loaded.services = { my_tailscale_name = function() return "james-main.tail99.ts.net" end }
+assert(webui.phone_link(cfg) == "http://james-main.tail99.ts.net:47281/?t=abc123", "the phone link")
+print("ok")

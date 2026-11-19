@@ -120,7 +120,7 @@ def code_files(root):
 def shipped_files(root):
     """Every file a copy runs or hands out: the code, the helpers ReaPack ships (tools/make_index.py), the extension binaries."""
     out = code_files(root)
-    for sub in ("lib/mac", "lib/ninjam", "lib/listen", "lib/toolbar_icons"):
+    for sub in ("lib/mac", "lib/ninjam", "lib/listen", "lib/toolbar_icons", "lib/webui"):
         out += sorted(f for f in (root / sub).rglob("*") if f.is_file() and not f.name.startswith("."))
     out += [root / "extension" / n for n in EXTENSIONS if (root / "extension" / n).is_file()]
     return out
