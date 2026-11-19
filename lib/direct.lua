@@ -51,16 +51,18 @@ function direct.id_time(name)
   local now = os.time()
   return t + (os.time(os.date("*t", now)) - os.time(os.date("!*t", now))) -- (os.time reads the table as local time)
 end
--- The Windows firewall rule's netsh words (run elevated): reaper.exe, that port, from Tailscale's addresses only.
-function direct.firewall_command(exe, port)
-  return string.format('advfirewall firewall add rule name="%s" dir=in action=allow program="%s" protocol=TCP localport=%d remoteip=100.64.0.0/10 profile=any enable=yes',
-    direct.RULE, exe, math.floor(port))
+-- The Windows firewall rule's netsh words (run elevated): reaper.exe, that port, from Tailscale's addresses only. proto: "TCP" (the link, the
+-- default) or "UDP" (live audio's twin on the same port, lib/liveaudio.lua. James, rt).
+function direct.firewall_command(exe, port, proto)
+  return string.format('advfirewall firewall add rule name="%s" dir=in action=allow program="%s" protocol=%s localport=%d remoteip=100.64.0.0/10 profile=any enable=yes',
+    direct.RULE, exe, proto or "TCP", math.floor(port))
 end
 -- From `netsh advfirewall firewall show rule name=... verbose`: is our rule there, for this reaper.exe and port? (The rule's name only shows
--- when it exists, whatever Windows' language.)
-function direct.firewall_in(out, exe, port)
+-- when it exists, whatever Windows' language.) proto ("UDP"): and one of that protocol among them (the word itself isn't translated).
+function direct.firewall_in(out, exe, port, proto)
   out = tostring(out or ""):lower()
   return out:find(direct.RULE:lower(), 1, true) ~= nil and out:find(tostring(exe):lower(), 1, true) ~= nil and out:find("%f[%d]" .. math.floor(port) .. "%f[%D]") ~= nil
+    and (not proto or out:find("%f[%a]" .. proto:lower() .. "%f[%A]") ~= nil)
 end
 
 -- ---- the extension -------------------------------------------------------------------------------------------------------------------
@@ -80,23 +82,26 @@ local function exe_path() return ((reaper.GetExePath() .. "/reaper.exe"):gsub("/
 
 -- Is the Windows firewall rule there? (Not Windows: true.) Asked in the background every minute, every 5 s for two minutes after setting it up.
 local fw_fast_until = -math.huge
-function direct.firewall_ok()
+-- proto: nil for the link's TCP rule; "UDP" for live audio's twin (lib/liveaudio.lua).
+function direct.firewall_ok(proto)
   if not band.WIN then return true end
   local every = reaper.time_precise() < fw_fast_until and 5 or 60
   local out = require("services").run_hidden("direct-fw", 'netsh advfirewall firewall show rule name="' .. direct.RULE .. '" verbose', every)
-  return direct.firewall_in(out, exe_path(), direct.port())
+  return direct.firewall_in(out, exe_path(), direct.port(), proto)
 end
 -- Adds the rule, through Windows' own UAC prompt (one, for removing an older rule and adding this one). -> true, or nil + why.
 -- The button: Health's direct-link row, while direct.firewall_ok() is false on Windows.
 function direct.setup_firewall()
   if not band.WIN then
     return nil, band.MAC and "On a Mac, allow REAPER when macOS asks about incoming connections (only with its firewall on)."
-      or "On Linux nothing is usually needed; with ufw or firewalld on, allow TCP " .. direct.port() .. " from 100.64.0.0/10."
+      or "On Linux nothing is usually needed; with ufw or firewalld on, allow TCP and UDP " .. direct.port() .. " from 100.64.0.0/10."
   end
   local exe = exe_path()
   if exe:find('["%c]') then return nil, "REAPER's folder has a character the firewall rule can't hold" end
   local services = require("services")
-  local args = string.format('/c netsh advfirewall firewall delete rule name="%s" >nul & netsh %s', direct.RULE, direct.firewall_command(exe, direct.port()))
+  -- (and its UDP twin on the same port, for live audio: one UAC for both, and the delete clears any older pair. James, rt)
+  local args = string.format('/c netsh advfirewall firewall delete rule name="%s" >nul & netsh %s & netsh %s', direct.RULE,
+    direct.firewall_command(exe, direct.port()), direct.firewall_command(exe, direct.port(), "UDP"))
   local ps1 = services.TMP .. "/bandsync-direct-fw.ps1"
   -- (PowerShell's single quotes: ' is written ''. Start-Process hands a single ArgumentList string over as it is)
   band.write_atomic(ps1, "Start-Process -FilePath cmd.exe -Verb RunAs -WindowStyle Hidden -Wait -ArgumentList '" .. args:gsub("'", "''") .. "'\r\n")
@@ -589,7 +594,7 @@ function direct.health_rows(cfg)
     row.action = { "Set up direct link", function()
       local done, why2 = direct.setup_firewall()
       band.log(done and "direct link: Windows asks once (UAC) to let REAPER take the others' changes directly; Health turns green within a minute" or ("direct link: " .. tostring(why2)))
-    end, "Adds a Windows Firewall rule for reaper.exe, TCP " .. direct.port() .. ", from Tailscale's addresses only (100.64.0.0/10). Windows asks once." }
+    end, "Adds a Windows Firewall rule for reaper.exe, TCP and UDP " .. direct.port() .. ", from Tailscale's addresses only (100.64.0.0/10). Windows asks once." }
   end
   local cok, ctext = direct.clock_line()
   local rows = { row, { "direct clock", cok, "grey", ctext, ctext } }
@@ -599,6 +604,8 @@ function direct.health_rows(cfg)
   if sok and srow then rows[#rows + 1] = srow end
   local aok, arow = pcall(function() return require("ablink").health_row() end) -- (Ableton Link, when it's on here: lib/ablink.lua. James, rt)
   if aok and arow then rows[#rows + 1] = arow end
+  local lok, lrow = pcall(function() return require("liveaudio").health_row(cfg) end) -- (live audio per bandmate, when the studio has it on: lib/liveaudio.lua. James, rt)
+  if lok and lrow then rows[#rows + 1] = lrow end
   return rows
 end
 
@@ -616,6 +623,7 @@ function direct.studio_ui(ctx, ImGui, cfg, may)
     end
     ImGui.SetItemTooltip(ctx, "Owner and admins. Needs StudioSync's extension " .. direct.WANT .. " and Tailscale on each computer (Health says what's missing).")
   end
+  require("liveaudio").studio_ui(ctx, ImGui, cfg, may) -- (live audio over the link, off unless the studio turns it on: lib/liveaudio.lua. James, rt)
   -- (signed updates: the owner signs each version with a key kept on their computer, and every computer checks it before it runs. James, rt)
   ImGui.SeparatorText(ctx, "Signed updates")
   local key = band.studio_update_key and band.studio_update_key(cfg.root)
