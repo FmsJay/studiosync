@@ -320,6 +320,7 @@ local change_count, changed_at, held_since = -1, -math.huge, nil
 local direct_in_at = -math.huge -- (when an event file last came over the direct link: the quiet window is 0.4 s then. James, rt)
 local direct_held = false -- (one came over the link and no receive has run since: a pass as the quiet window ends, sync.receive_now. James, rt)
 local polled_at, pass_took = -math.huge, 0 -- (when the last pass started, and how long it took: sync.look_now. James, rt)
+local redraw_cc -- (the project's change count at the last redraw: P.status. James, rt)
 -- Only your edits count: noted at the start of each tick, and whatever the tick itself changed (looks, receives, heal, prints attaching,
 -- paint) taken in at its end. Nothing else runs in between, so a count that moved meanwhile was StudioSync's. (Noted only in receive, any
 -- write of ours since the last look read as "you editing" and held a direct-link change 2 s. James, rt)
@@ -457,6 +458,7 @@ function P.look(t)
       local held = function(oid) return presence.holder(presence.peers(cfg, b.song, b.room), oid) end -- (edit holds)
       local here = {} -- (bandmates in the song now: one of them may print what its author can't, lib/prints.lua)
       for _, st in ipairs(presence.peers(cfg, b.song, b.room)) do here[st.user] = true end
+      t.redraw = true -- (a look can put back a refused edit, copy it to a track of yours or delete an item, with no undo point: always redrawn)
       local ok, sent = pcall(require("mirror").watch, proj, cfg, b.song, b.room, { can = my_can, owner_can = can, mode = who.mode, local_mix = sync.local_mix, is_claimed = who.is_claimed, owner_of = who.owner_of,
         held = held, hold = hold, here = here, printers = who.printers })
       if not ok then band.log("mirror sync: " .. tostring(sent))
@@ -513,7 +515,7 @@ function P.outbox_inbox(t)
     inbox_at = now
     local iok, put = pcall(require("extras").inbox, proj, cfg, b)
     if not iok then band.log("inbox: " .. tostring(put))
-    elseif #put > 0 then band.log("from the song's inbox: " .. table.concat(put, ", ") .. " (it goes to everyone like any change)"); mirror_due = true end
+    elseif #put > 0 then band.log("from the song's inbox: " .. table.concat(put, ", ") .. " (it goes to everyone like any change)"); mirror_due, t.redraw = true, true end
   end
 
   do -- (a suggestion arrived or was answered: lib/suggest.lua)
@@ -547,6 +549,8 @@ function P.receive(t)
     -- nothing unsaved was yours before it came (James, Round 1 review, 0.59.45: lib/leave.lua leave.autosave)
     if require("leave").autosave(sync.autosave, n, dirty, reaper.GetPlayStateEx(proj) == 0) then sync.need_save = true end
     if n > 0 then band.log(string.format("%d change%s from the others (%s)", n, n == 1 and "" or "s", room)); mirror_due = true; pcall(require("api").event, "received", { n = n, song = b.song, room = room }) end
+    if n > 0 or sync.redraw then t.redraw, sync.redraw = true, nil end
+    if n > 0 then require("streams").catchup_wake() end -- (changes came: catch-up while alone looks at Syncthing's need list soon again)
   end
   lap("receive")
   t.rooms = rooms
@@ -577,7 +581,7 @@ function P.heal(t)
       healed_at, heal_since, t.mirror_root = now, nil, nil
       local ok, n = pcall(require("mirror").heal, proj, sync.room_dir(cfg, b.song, b.room), sync.local_mix)
       if not ok then band.log("couldn't bring the project in line with the studio: " .. tostring(n))
-      elseif n > 0 then band.log(string.format("caught up on %d change%s that hadn't arrived here", n, n == 1 and "" or "s")); mirror_due = true end
+      elseif n > 0 then band.log(string.format("caught up on %d change%s that hadn't arrived here", n, n == 1 and "" or "s")); mirror_due, t.redraw = true, true end
     end
   end
 
@@ -621,7 +625,7 @@ function P.live_clips(t)
   if live_dir ~= "" and live.fx(proj, false) and not require("producer").who(proj) and reaper.GetExtState(band.SECTION, "produced by " .. tostring(proj)) == "" then
     live.note_clips(proj, live_dir) -- when each clip arrived, so only takes recorded then replace it
     local added, retired = live.place_clips(proj, live_dir), live.retire(proj)
-    if added + retired > 0 then reaper.Undo_OnStateChange2(proj, "StudioSync: live placeholders") end -- one undo point, only when something changed
+    if added + retired > 0 then reaper.Undo_OnStateChange2(proj, "StudioSync: live placeholders"); t.redraw = true end -- one undo point, only when something changed
     if added > 0 then band.log(added .. " live clip(s) placed as placeholders") end
     if retired > 0 then band.log(retired .. " placeholder(s) replaced by the real takes") end
   end
@@ -689,18 +693,18 @@ function P.save_drive(t)
 end
 function P.presence(t)
   local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
-  sync.draw_claims(proj, who.times) -- who claimed which stretch of time, as regions (this machine only)
+  if sync.draw_claims(proj, who.times) then t.redraw = true end -- who claimed which stretch of time, as regions (this machine only)
   do -- bandmates' pings show here; following someone keeps the view on theirs (lib/presence.lua)
     local presence = require("presence")
     local peers = presence.peers(cfg, b.song, b.room)
-    presence.pings(proj, peers)
+    if presence.pings(proj, peers) then t.redraw = true end
     local follow = reaper.GetExtState(band.SECTION, "follow " .. tostring(proj))
     if follow == "" and reaper.GetExtState(band.SECTION, "follow driver") ~= "" and driver ~= cfg.user then follow = driver or "" end
-    if follow ~= "" then presence.follow(proj, peers, follow) end
-    presence.follow_mix(proj, peers, follow, { cfg = cfg, song = b.song, room = b.room }) -- (and their mix, till you stop: 0.58.82)
+    if follow ~= "" then presence.follow(proj, peers, follow); t.redraw = true end -- (their view and cursor: always redrawn while following)
+    if presence.follow_mix(proj, peers, follow, { cfg = cfg, song = b.song, room = b.room }) then t.redraw = true end -- (and their mix, till you stop: 0.58.82)
     followed = presence.followed(peers, cfg.user, driver)
     -- tracks in the colour of who's working on them, if this machine wants that (lib/people.lua; shown here only)
-    if now - paint_at > 1 then paint_at = now; require("people").paint(proj, cfg, peers, who.tracks, b.song .. "/" .. b.room) end
+    if now - paint_at > 1 then paint_at = now; if require("people").paint(proj, cfg, peers, who.tracks, b.song .. "/" .. b.room) then t.redraw = true end end
     if now - format_at > 10 and reaper.GetPlayStateEx(proj) == 0 then -- (stopped: not mid-take, nor while playing. Review, 0.58.87) -- (everyone records 24-bit FLAC at the project's rate: lib/prep.lua; never mid-recording)
       format_at = now
       local ok, said = pcall(require("prep").keep_format, proj, cfg, b)
@@ -763,8 +767,16 @@ function P.status(t)
 
   lap("status")
   if s then band.check_version(s.bandsync, "'" .. b.song .. "'") end
-  reaper.TrackList_AdjustWindows(false)
-  reaper.UpdateArrange()
+  -- A full redraw only after a pass that changed something: a part of the pass that wrote (t.redraw: the look always, a receive or heal that
+  -- landed, live clips, claim regions, pings, following, paint), or the project's change count moved since the last redraw, which takes in
+  -- everything with an undo point (receives, timeline, colours) and whatever else ran in the tick since. Was every pass, idle or not: a whole
+  -- arrange redraw every 0.5-2 s per tab. (James, rt)
+  local cc = reaper.GetProjectStateChangeCount(proj)
+  if t.redraw or cc ~= redraw_cc then
+    reaper.TrackList_AdjustWindows(false)
+    reaper.UpdateArrange()
+    redraw_cc = reaper.GetProjectStateChangeCount(proj)
+  end
   lap("redraw")
 end
 
@@ -854,6 +866,17 @@ end
 --  - at most CUE_READS files a tick; the rest next tick. What's read goes into receive's own cache (sync.ev_cache), so it isn't read twice.
 local CUE_READS, CUE_BYTES, CUE_TRIES = 20, 4096, 20
 local dir_m, dir_m_at, cue_left, listed_at, cue_bad = nil, -math.huge, true, -math.huge, {}
+-- seen_ev and fired held every event name and cue id of the session (the folder's whole history to start with), trimmed files too. Each minute
+-- a name not in the folder (nor the link's inbox) at two looks running goes: gone a minute or more, and a cue is acted on only within 30 s
+-- of its time, so one coming back can't fire again. (James, rt)
+local seen_pruned_at, seen_gone = reaper.time_precise(), {}
+local function prune_seen(names)
+  local here, gone = {}, {}
+  for _, f in ipairs(names) do here[f] = true end
+  for f in pairs(seen_ev) do if not here[f] then if seen_gone[f] then seen_ev[f] = nil else gone[f] = true end end end
+  for id in pairs(fired) do local f = id .. ".json"; if not here[f] then if seen_gone[f] then fired[id] = nil else gone[f] = true end end end
+  seen_gone = gone
+end
 local function folder_moved(dir)
   local now = reaper.time_precise()
   if cue_left or not reaper.JS_File_Stat or now - listed_at >= 2 then return true end
@@ -883,6 +906,7 @@ local function quick_transport()
   -- (read now, as before, but shared: the poll's own looks at the folder within 0.2 s use this read. 0.59.14, review)
   -- (with what came over the direct link, from its inbox: lib/direct.lua. James, 0.60.0-rt)
   local names, from = direct.merge(cfg, dir, band.raw_listing(dir, true))
+  if listed_at - seen_pruned_at >= 60 then seen_pruned_at = listed_at; prune_seen(names) end
   for _, f in ipairs(names) do
     if not seen_ev[f] then
       if f:sub(-5) ~= ".json" or sync.is_mine(f, cfg.user) then seen_ev[f] = true

@@ -244,8 +244,10 @@ local function set_mix(proj, list)
     local tr = mirror.find(proj, "track", c[1])
     if tr then reaper.SetMediaTrackInfo_Value(tr, c[2], c[3]) end
   end
+  return #list > 0
 end
 -- Each Live sync pass: `name` is who this computer follows ("" for nobody). `ctx`: { cfg, song, room } for giving the studio's mix back.
+-- -> true when it changed a track (Live sync's redraw. James, rt)
 function presence.follow_mix(proj, list, name, ctx)
   local saved = band.json_decode(select(2, reaper.GetProjExtState(proj, band.SECTION, "follow mix saved")))
   local st
@@ -259,7 +261,7 @@ function presence.follow_mix(proj, list, name, ctx)
       require("mirror").end_local_mix(proj, ctx.cfg, ctx.song, ctx.room, true) -- (the studio's faders and pan, as before you followed)
     end
     band.log("stopped following: your own mix is back")
-    return
+    return true
   end
   if not (st and type(st.mix) == "table") then return end -- (not here, or older StudioSync: yours stays as it is)
   local have = presence.my_mix(proj)
@@ -269,18 +271,21 @@ function presence.follow_mix(proj, list, name, ctx)
     if lm ~= "1" then reaper.SetProjExtState(proj, band.SECTION, "local_mix", "1"); require("mirror").begin_local_mix(proj) end
     band.log("following " .. name .. ": you hear their mix (faders, pan, solos) until you stop following")
   end
-  set_mix(proj, presence.mix_changes(have, st.mix))
+  return set_mix(proj, presence.mix_changes(have, st.mix))
 end
 
 -- Pings: a bandmate's new ping shows as a marker here (and a line in the Activity list) for PING_SHOWN seconds.
 local shown = {} -- proj .. user -> the ping's time, once shown
+-- -> true when a marker was added or taken away (Live sync's redraw. James, rt)
 function presence.pings(proj, list)
+  local wrote = false
   for _, st in ipairs(list) do
     local p = type(st.ping) == "table" and st.ping
     local key = tostring(proj) .. st.user
     if p and tonumber(p.pos) and type(p.at) == "string" and band.age(p.at) < presence.PING_SHOWN and shown[key] ~= p.at then
       shown[key] = p.at
       reaper.AddProjectMarker2(proj, false, p.pos, 0, presence.MARK .. st.user, -1, reaper.ColorToNative(255, 170, 0) | 0x1000000)
+      wrote = true
       band.log(string.format("%s pinged a spot at %.2f s: their marker shows there for %d seconds", st.user, p.pos, presence.PING_SHOWN))
     end
   end
@@ -294,9 +299,10 @@ function presence.pings(proj, list)
         if st.user == who and type(st.ping) == "table" and tonumber(st.ping.pos) and math.abs(st.ping.pos - pos) < 1e-3
             and band.age(st.ping.at or "") < presence.PING_SHOWN then still = true end
       end
-      if not still then reaper.DeleteProjectMarkerByIndex(proj, i) end
+      if not still then reaper.DeleteProjectMarkerByIndex(proj, i); wrote = true end
     end
   end
+  return wrote
 end
 
 return presence

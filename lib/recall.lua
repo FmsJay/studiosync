@@ -186,8 +186,16 @@ function recall.warm(cfg, song, room, secs, idle)
   local rdir = sync.room_dir(cfg, song, room)
   local w, t0 = warming[rdir], reaper.time_precise()
   if not w or (w.i > #w.files and t0 - w.at > 5 and not idle) then
-    w = { files = band.listing(rdir .. "/events", ".json", true), i = 1, at = t0, notes = w and w.notes or {}, noted = w and w.noted or {} }
+    w = { files = band.listing(rdir .. "/events", ".json", true), i = 1, at = t0, notes = w and w.notes or {}, noted = w and w.noted or {},
+      pruned = w and w.pruned or t0 }
     warming[rdir] = w
+    -- (ev_cache kept every event read all session, trimmed ones too: every 10 minutes, this room's names no longer listed go. James, rt)
+    if t0 - w.pruned > 600 then
+      w.pruned = t0
+      local here, pre = {}, rdir .. "/events/"
+      for _, f in ipairs(w.files) do here[pre .. f] = true end
+      for path in pairs(recall.ev_cache) do if path:sub(1, #pre) == pre and not here[path] then recall.ev_cache[path] = nil end end
+    end
   end
   while w.i <= #w.files and reaper.time_precise() - t0 < secs do
     local path = rdir .. "/events/" .. w.files[w.i]

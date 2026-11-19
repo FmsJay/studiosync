@@ -422,6 +422,38 @@ function sync.set_mode(cfg, song, room, mode, user)
   band.write_json(sync.room_dir(cfg, song, room) .. "/mode.json", { mode = mode, by = user, time = os.date("!%Y-%m-%dT%H:%M:%SZ") })
 end
 
+-- Every claims file in `dir` -> { { f, c } } in name order, c as band.read_json gives it (nil when unreadable). Asked each pass and each
+-- second by the web UI, so a file is read again only when its size or modified time moves (js_ReaScriptAPI's JS_File_Stat; without it,
+-- read every time as before). Modified times are to the second, and Syncthing copies a bandmate's: two same-size writes in one second
+-- would look alike, so a file is trusted from cache only once it was read CLAIMS_SETTLE s after its time. The listing is band.listing's
+-- (a fraction of a second, longer while the folder's time stands still). The tables are shared: never change them. (James, rt)
+sync.CLAIMS_SETTLE = 60
+local claims_cache = {} -- dir -> f -> { key, c, settled }
+function sync.claims_files(dir)
+  local stat = reaper and reaper.JS_File_Stat
+  local names = band.listing and band.listing(dir, ".json", true) or band.files(dir, ".json")
+  local was, now_c, out = claims_cache[dir] or {}, {}, {}
+  for _, f in ipairs(names) do
+    local path, c = dir .. "/" .. f, nil
+    if stat then
+      local ok, status, size, _, mt = pcall(stat, path)
+      local key = ok and status == 0 and tostring(size) .. "|" .. tostring(mt) or nil
+      local e = was[f]
+      if key and e and e.key == key and e.settled then c = e.c
+      else
+        c = band.read_json(path)
+        -- (a read that failed, the file busy mid-replace, isn't kept: it would hide that claim until the file changed again)
+        e = key and c and { key = key, c = c, settled = (band.file_age(mt) or -1) >= sync.CLAIMS_SETTLE } or nil
+      end
+      now_c[f] = e
+    else
+      c = band.read_json(path)
+    end
+    out[#out + 1] = { f, c }
+  end
+  claims_cache[dir] = now_c -- (only what's listed now: a removed file's entry goes with it)
+  return out
+end
 function sync.authority(cfg, song, room, s)
   local driver = sync.driver(cfg, song, room, s)
   local mode = sync.mode(cfg, song, room)
@@ -430,8 +462,8 @@ function sync.authority(cfg, song, room, s)
   local dir = sync.room_dir(cfg, song, room) .. "/claims"
   local released = sync.released(cfg, song, room) -- (claims the driver let go of for someone who was away)
   local list, live, from_file = {}, sync.live_claims[song .. "/" .. room] or {}, {}
-  for _, f in ipairs(band.files(dir, ".json")) do
-    local c = band.read_json(dir .. "/" .. f)
+  for _, fc in ipairs(sync.claims_files(dir)) do
+    local f, c = fc[1], fc[2]
     -- (a claims file speaks only for the person it's named for, or it's one an admin gave: claims/<anything>.json saying user "James"
     -- spoke for James. Review, 0.58.53)
     if c and type(c.user) == "string" and not (f:find("^given%-") or (c.user:gsub("[^%w%-_ ]", "")) .. ".json" == f) then c = nil end
@@ -1438,7 +1470,7 @@ function sync.receive(proj, cfg, song, room, can)
     for toid in pairs(orph) do if mirror.find(proj, "track", toid) then orph[toid] = nil; back = true end end
     if back then -- (only when such a track exists again: a track that stays deleted costs one lookup a pass)
       local hok, n = pcall(mirror.heal, proj, rdir, sync.local_mix)
-      if hok and n > 0 then band.log(string.format("%d change(s) landed once their track was back", n)) end
+      if hok and n > 0 then sync.redraw = true; band.log(string.format("%d change(s) landed once their track was back", n)) end -- (no undo point, not in `applied`: Live sync's redraw. James, rt)
     end
     if next(orph) == nil then mirror.orphaned[tostring(proj)] = nil end
   end
@@ -1546,8 +1578,18 @@ sync.waited = {} -- event id -> true: its apply said "later" last pass (no undo 
 -- Events refused for now (authority not synced here yet): retried until 10 minutes old. And the room's driver
 -- changes, read once and then kept up to date from incoming events: { [id] = { time, user } }.
 sync.deferred = {}
-local refused_at = {} -- event id -> when it was first found refused here
-function sync.refused_since(id) refused_at[id] = refused_at[id] or reaper.time_precise(); return refused_at[id] end
+local refused_at, refused_pruned = {}, -math.huge -- event id -> when it was first found refused here
+-- (a refused change lands after a minute anyway, so an entry an hour old is spent: they're dropped every 10 minutes, as the table grew all
+-- session. One still waiting then would wait one more minute. James, rt)
+function sync.refused_since(id)
+  local now = reaper.time_precise()
+  if now - refused_pruned > 600 then
+    refused_pruned = now
+    for k, at in pairs(refused_at) do if now - at > 3600 then refused_at[k] = nil end end
+  end
+  refused_at[id] = refused_at[id] or now
+  return refused_at[id]
+end
 sync.unreadable = {} -- event file id -> when it was first found unreadable (sync.receive)
 sync.UNREADABLE_SECS = 600 -- how long a file may stay unreadable before it's skipped for good
 local driver_cache = {}
@@ -1614,16 +1656,23 @@ function sync.machine()
   end
   return id
 end
+-- (the file read back for the two-computers-one-name check at most every CLASH_EVERY s, and not once it's been said: it was read on every
+-- write, each change and every 15 s. The other computer writes as often, so a clash still shows within a minute or two. James, rt)
+sync.CLASH_EVERY = 45
+local clash_at = {} -- status path -> when it was last read back
 function sync.write_status(proj, cfg, song, room, info)
   local dir = sync.room_dir(cfg, song, room) .. "/status"
   reaper.RecursiveCreateDirectory(dir, 0)
   local path = dir .. "/" .. (cfg.user:gsub("[^%w%-_ ]", "")) .. ".json"
-  local was = band.read_json(path)
-  if type(was) == "table" and was.machine and was.machine ~= sync.machine() and type(was.time) == "string" and band.age(was.time) < 45
-      and not sync.name_clash_said then
-    sync.name_clash_said = true
-    sync.put_back("another computer is also using the name " .. cfg.user .. ", so your changes and theirs get mixed up. " ..
-      "Change the name on one of them: Settings > You")
+  local now = reaper.time_precise()
+  if not sync.name_clash_said and now - (clash_at[path] or -math.huge) >= sync.CLASH_EVERY then
+    clash_at[path] = now
+    local was = band.read_json(path)
+    if type(was) == "table" and was.machine and was.machine ~= sync.machine() and type(was.time) == "string" and band.age(was.time) < 45 then
+      sync.name_clash_said = true
+      sync.put_back("another computer is also using the name " .. cfg.user .. ", so your changes and theirs get mixed up. " ..
+        "Change the name on one of them: Settings > You")
+    end
   end
   info.machine = sync.machine()
   info.user, info.time, info.version, info.room = cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ"), band.VERSION, room

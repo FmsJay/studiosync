@@ -134,10 +134,12 @@ stub.GetMediaTrackInfo_Value = function(tr, k) if k == "I_CUSTOMCOLOR" then retu
 stub.SetMediaTrackInfo_Value = function(tr, k, v) if k == "I_CUSTOMCOLOR" then tr.colour = v end end
 studios.S = {}
 gext[band.SECTION .. "\0new held S1/main"] = "3"
-people.paint("proj", { root = "S", user = "Dan" }, { { user = "Bee", editing = { "T-1" } } }, {}, "S1/main")
+local wrote = people.paint("proj", { root = "S", user = "Dan" }, { { user = "Bee", editing = { "T-1" } } }, {}, "S1/main")
 assert(tracks[1].colour == 0x1000000 | 0x112233 and tracks[1].ext.band_colour == "", "a who's-working colour left from before goes back to the band's")
 assert(tracks[2].colour == 0x1000000 | 0x00FF00, "the others keep theirs")
 assert(people.held("S1/main") == 0, "nothing held for 'Since you were last here'")
+-- (and says it wrote, once: Live sync redraws only after a pass that changed something. James, rt)
+assert(wrote == true and people.paint("proj", { root = "S", user = "Dan" }, {}, {}, "S1/main") == false, "paint says when it changed a colour")
 
 -- ---- 5. markers put back to the default colour, ruler lanes and the master in one byte order --------------------------------------
 local marks = { { rgn = false, pos = 1, rend = 1, name = "Verse", num = 1, color = 0x1000000 | 0xFF0000 } }

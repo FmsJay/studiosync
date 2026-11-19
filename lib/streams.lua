@@ -328,10 +328,19 @@ end
 
 -- ---- the recorder's side ---------------------------------------------------------------------------------------------------------------
 -- A line in the stream trace (lib/direct.lua trace_path: ExtState "stream trace" = "1"), beside the extension's own.
+-- (rolled at TRACE_MAX bytes, one older copy kept as .1: left on for testing, it grew without end. The extension writes the same file and
+-- should roll it the same way. James, rt)
+streams.TRACE_MAX = 5 * 1024 * 1024
 function streams.trace(text)
   local p = direct.trace_path()
   if p == "" then return end
   local f = io.open(p, "a")
+  if f and (f:seek("end") or 0) > streams.TRACE_MAX then
+    f:close()
+    os.remove(p .. ".1")
+    os.rename(p, p .. ".1") -- (the extension holding it a moment: the next line tries again)
+    f = io.open(p, "a")
+  end
   if f then f:write(string.format("%.3f lua %s\n", os.time() + reaper.time_precise() % 1, text)); f:close() end
 end
 local rec -- this recording: { t0, wall, dir, tracks, pos, at, found = set, old = set, takes = { { id, rel } }, none, stopped_at, find_until }
@@ -457,7 +466,7 @@ function streams.send_tick(proj, cfg, b, recording)
       local to = {}
       for _, p in ipairs(peers) do to[p] = true end
       rec.takes[#rec.takes + 1] = { id = id, rel = rel, path = path, name = name, msg = msg, to = to } -- (path, name, msg, to: for late joiners)
-      streams.streamed[band.norm(path):lower()] = { file = m.file, rel = rel } -- (its shared copy then goes as "this stream": offer_media)
+      streams.streamed[band.norm(path):lower()] = { file = m.file, rel = rel, at = reaper.time_precise() } -- (its shared copy then goes as "this stream": offer_media)
       direct.send_live(cfg, "take", msg, b.song, b.room, id, peers)
     end
   end
@@ -703,8 +712,17 @@ end
 -- The sender's side: after a change goes out (mirror's W.send, beside sync.post), its new media to the others here. Only a file made or written
 -- in the last MEDIA_FRESH seconds (one copied in, rendered or printed now: an older one they have), once per script, and never one this script
 -- put in place from the link. -> how many went. Never raises.
-streams.sent_media, streams.placed = {}, {} -- song/room/file -> true
-streams.streamed = {} -- a take's file streamed as it was recorded (normalized, lower case) -> { file, rel }
+streams.sent_media, streams.placed = {}, {} -- song/room/file -> when (reaper.time_precise)
+streams.streamed = {} -- a take's file streamed as it was recorded (normalized, lower case) -> { file, rel, at }
+-- (these, and streams.asked, held one entry per file all session: media_tick drops those over KEEP s old, a streamed take only once the
+-- extension's stream is gone too. Only files written in the last MEDIA_FRESH s go out, so an hour-old entry can't change what's sent. James, rt)
+streams.KEEP = 3600
+function streams.forget_old(t, now, at_of)
+  for k, v in pairs(t) do
+    local at = at_of(v)
+    if type(at) == "number" and now - at > streams.KEEP then t[k] = nil end
+  end
+end
 -- The take stream a media file is a byte-for-byte copy of (mirror.share_media's record), while the extension still has that stream: { file, rel },
 -- or nil. Not "finished": the change naming the copy goes out ~0.1 s after the stop, before the stream's last pass; each receiver places its
 -- copy only once it's done, SHA-256 checked and the size announced, else Syncthing brings it. media_from, streamed, outs passed in. Pure.
@@ -738,7 +756,7 @@ function streams.offer_media(cfg, song, room, media_dir, ev, last)
       local rel = not take and size and size > 0 and direct.stream_start(cfg, path, song, room, streams.MEDIA_INTERVAL_MS, name)
       if rel then direct.stream_end(cfg, rel) end -- (it's complete: begun and ended at once, so the rest, its length and SHA-256 follow straight away)
       if rel or take then
-        streams.sent_media[key], sent = true, sent + 1
+        streams.sent_media[key], sent = reaper.time_precise(), sent + 1
         local id = media_id(cfg)
         direct.send_live(cfg, "media", { id = id, user = cfg.user, room = r, file = m.file, size = size, take = take and take.file or nil }, song, room, id)
         streams.trace("media out " .. (rel or ("as the streamed take " .. take.rel)) .. " " .. size .. " bytes")
@@ -828,7 +846,7 @@ function streams.media_tick(cfg, b)
       end
     end
     if done then
-      streams.media[rel], streams.placed[e.key], placed = nil, true, placed + 1
+      streams.media[rel], streams.placed[e.key], placed = nil, now, placed + 1
       streams.placed_at[#streams.placed_at + 1] = { target = e.target, size = e.size, at = now }
       -- (Syncthing told at once, so it indexes our copy before pulling its own: otherwise its download, a moment behind, found the file there,
       -- gave up and left its full-size temp for a day. 0.59.49.10 test, James, rt)
@@ -840,6 +858,12 @@ function streams.media_tick(cfg, b)
   if now - media_pruned >= streams.PRUNE_EVERY then
     media_pruned = now
     streams.placed_at = streams.tidy_syncthing_temps(streams.placed_at, now, os.time(), band.size, reaper.StudioSync_DirectFileTime, os.remove)
+    local going = {}
+    for _, o in ipairs(direct.streams(cfg).out) do going[o.rel] = true end
+    streams.forget_old(streams.asked, now, function(a) return a.at end)
+    streams.forget_old(streams.sent_media, now, function(at) return at end)
+    streams.forget_old(streams.placed, now, function(at) return at end)
+    streams.forget_old(streams.streamed, now, function(s) return not going[s.rel] and s.at end)
     local folder = direct.inbox(cfg.root) .. "/.streams/" .. b.song
     for _, f in ipairs(streams.media_prunable(band.files(folder), streams.media, by_name, os.time())) do os.remove(folder .. "/" .. f) end
   end
@@ -926,6 +950,12 @@ streams.asked, streams.served = {}, {} -- key -> { at, tries }; dev\0key -> when
 local look_at, need_text, need_song, need_wants, served_n = -math.huge, nil, nil, {}, 0
 local cloud_asked_at = -math.huge
 streams.CLOUD_EVERY = 60
+-- Alone with a cloud copy, Syncthing's need list was asked for every CATCHUP_EVERY s for as long as you were alone. Now a wait with nothing of
+-- it found in the cloud doubles the next (CATCHUP_EVERY up to CLOUD_WAIT_MAX s); a peer on the link, a changed list, something found or changes
+-- arriving (streams.catchup_wake, from Live sync's receive) start again at CATCHUP_EVERY. (James, rt)
+streams.CLOUD_WAIT_MAX = 300
+local cloud_wait, cloud_quiet_at = nil, nil
+function streams.catchup_wake() cloud_wait, cloud_quiet_at = nil, nil end
 streams.cloud_root, streams.cloud_due = nil, nil -- (Live sync's: the cloud copy's root here; a cloud pass wanted now)
 function streams.catchup_tick(cfg, b)
   local now = reaper.time_precise()
@@ -933,14 +963,18 @@ function streams.catchup_tick(cfg, b)
   look_at = now
   local peers, dev_of = {}, nil
   if direct.live_available() and direct.ensure(cfg) then peers, dev_of = direct.peers(cfg, b.song, b.room) end -- (ensure: false with the direct setting off)
+  if #peers > 0 then streams.catchup_wake() end
   -- (nobody on the link: the cloud copy may have what Syncthing still needs, so Live sync's cloud pass is asked for, at most every CLOUD_EVERY
   -- s; drive.mirror brings what this song's rooms lack. With no cloud copy either, Syncthing isn't even asked. James, rt)
   local to_cloud = #peers == 0 and streams.cloud_root and now - cloud_asked_at >= streams.CLOUD_EVERY
   if #peers == 0 and not to_cloud then return 0 end
   local services = require("services")
   -- (the list is read every look but Syncthing asked only every CATCHUP_EVERY s; read again only when its answer changed)
-  local text = services.need(band.info(cfg.root).id, streams.CATCHUP_EVERY)
-  if text ~= need_text or b.song ~= need_song then need_text, need_song, need_wants = text, b.song, streams.catchup_wants(band.json_decode(text or ""), b.song) end
+  local text = services.need(band.info(cfg.root).id, to_cloud and cloud_wait or streams.CATCHUP_EVERY)
+  if text ~= need_text or b.song ~= need_song then
+    need_text, need_song, need_wants = text, b.song, streams.catchup_wants(band.json_decode(text or ""), b.song)
+    streams.catchup_wake()
+  end
   local rooms = cfg.root .. "/" .. b.song .. "/rooms/"
   local function skip(w) return band.size(rooms .. w.room .. "/media/" .. w.file) ~= nil or #band.subdirs(rooms .. w.room) == 0 end -- (on_media would refuse it)
   if to_cloud then
@@ -952,6 +986,11 @@ function streams.catchup_tick(cfg, b)
         streams.trace("cloud catch-up: " .. w.key .. " is in the cloud copy, nobody on the link: a cloud pass now")
         break
       end
+    end
+    if streams.cloud_due then streams.catchup_wake()
+    else
+      cloud_quiet_at, cloud_wait = cloud_quiet_at or now, cloud_wait or streams.CATCHUP_EVERY
+      if now - cloud_quiet_at >= cloud_wait then cloud_quiet_at, cloud_wait = now, math.min(cloud_wait * 2, streams.CLOUD_WAIT_MAX) end
     end
     return 0
   end

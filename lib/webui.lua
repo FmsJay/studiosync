@@ -11,6 +11,7 @@ webui.PRESENCE_EVERY = 1 -- seconds between presence builds (each reads the stat
 webui.CHAT_EVERY = 2     -- seconds between chat reads (page_chat keeps its own read 3 s)
 webui.CHAT_MAX = 100     -- messages the pages get: the newest
 webui.TEXT_MAX = 2000    -- bytes in one message from a page
+webui.LOOK_GRACE = 30    -- seconds a page counts as looking after its last request (one polling /api/state holds no connection open)
 
 function webui.available()
   return reaper.StudioSync_WebUIStart ~= nil and reaper.StudioSync_WebUIPublish ~= nil and reaper.StudioSync_WebUIPoll ~= nil and reaper.StudioSync_WebUIStatus ~= nil
@@ -134,7 +135,17 @@ function webui.parse_action(s)
 end
 
 -- ---- Live sync's tick -------------------------------------------------------------------------------------------------------------------
-local published, pres_at, chat_at, was_front = {}, -math.huge, -math.huge, false
+local published, pres_at, chat_at, was_front, was_looking = {}, -math.huge, -math.huge, false, false
+-- Is a page open? An open event stream is a client; a page polling /api/state (no EventSource) shows as the served count moving. The
+-- status is a short string and only two numbers are wanted, so no JSON decode each tick. (The first read counts as a request: the grace
+-- covers a page already open when Live sync starts.) (James, rt)
+local seen = { served = false, at = -math.huge }
+local function looking(now)
+  local s = reaper.StudioSync_WebUIStatus() or ""
+  local served = s:match('"served":(%d+)')
+  if served ~= seen.served then seen.served, seen.at = served, now end
+  return (tonumber(s:match('"clients":(%d+)')) or 0) > 0 or now - seen.at < webui.LOOK_GRACE
+end
 local function publish(topic, t)
   local s = band.json_encode(t)
   if published[topic] ~= s then published[topic] = s; reaper.StudioSync_WebUIPublish(topic, s) end
@@ -156,6 +167,12 @@ function webui.tick(proj, cfg, b, handlers)
     if text then chat.post(cfg, b, text, "song"); chat_at = -math.huge end
   end
   local now = reaper.time_precise()
+  -- Nobody looking: no presence (sync.authority reads every claims file) and no chat built. A page arriving gets both on this tick, so the
+  -- server's older copy shows for one tick at most. (James, rt)
+  local look = looking(now)
+  if look and not was_looking then pres_at, chat_at = -math.huge, -math.huge end
+  was_looking = look
+  if not look then return end
   if now - pres_at >= webui.PRESENCE_EVERY then
     pres_at = now
     local ps = reaper.GetPlayStateEx(proj)
