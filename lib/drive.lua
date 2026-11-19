@@ -532,4 +532,126 @@ function drive.upkeep(cfg, droot, songs, skip, budget)
   return n, more, song
 end
 
+-- Health's grey row for a computer with no cloud copy of the studio: what one would bring it, and how to add it (`how`: drive.share_hint;
+-- `place`: where another service is picked). The laptop here had none and nothing said what it missed (James, rt). Pure.
+function drive.join_hint(label, how, place)
+  local text = "No " .. label .. " copy of the studio here. One would give this computer a backup of every song, songs that open when nobody " ..
+    "else is on, and StudioSync updates while the owner is away. Install " .. label .. "'s desktop app and sign in, then: " .. how ..
+    " (another service: " .. place .. ")."
+  return { "cloud copy hint", false, "grey", text, text }
+end
+
+-- ---- the studio's update files in the cloud copy (James, 2026-11-19: updates for a member who's never on when the owner is, rt) ----
+-- <studio>/_tools/studiosync (the studio's own StudioSync, signed by its owner: lib/fromfolder.lua, band.signed_ok) goes to
+-- <cloud>/_tools/studiosync from the owner's computer, and a computer whose studio folder has an older one brings the cloud's into it. Only in a
+-- studio with an update key, and only a copy that checks as signed with the key pinned on this computer, checked again just before it's copied:
+-- anyone with the cloud folder can write there, so it's never a way round the signature. What it brings then goes through the usual update
+-- flow, which checks it all again before any of it runs (band.update_ok, band.code_guard); "update ok" isn't touched, as a keyed studio's
+-- signature decides, not that. Never an older version over a newer one, and not while Syncthing is still bringing _tools here (it may be
+-- bringing the newer one). Members only read the cloud's copy; only the owner writes it (drive.mine's one-writer rule).
+-- shortcut: the copies are dated when they're made, so a version the owner signed and never got to the cloud before going offline can lose a
+-- Syncthing conflict to the older signed copy a member brought, once they meet; date the copies as the cloud's (an extension call) if it bites.
+
+-- A signed copy's files, from its lib/files.txt: each one with a SHA-256 row, then lib/files.txt, and lib/files.txt.sig last (a copy half across
+-- never checks as signed). nil when there are none, or a path could step outside the copy (the list came from a folder others can write). Pure.
+function drive.tools_files(text)
+  local out = {}
+  for line in (text or ""):gmatch("[^\r\n]+") do
+    local p = line:match("^sha256 %x+ (.+)$")
+    if p then
+      if p:find("..", 1, true) or p:find("^/") or p:find("[:\\%c]") then return nil end
+      if p ~= "lib/files.txt" and p ~= "lib/files.txt.sig" then out[#out + 1] = p end
+    end
+  end
+  if not out[1] then return nil end
+  out[#out + 1] = "lib/files.txt"
+  out[#out + 1] = "lib/files.txt.sig"
+  return out
+end
+-- Which way the update files go: "in" (the cloud's signed copy into the studio folder: strictly newer than the version there, signed or not, so
+-- a version still arriving by Syncthing is never written over by an older one), "out" (the studio's signed copy to the cloud, from the owner:
+-- the cloud has none, an unsigned one, or another signature of a version no newer), or nil. `hv`: the studio copy's version on disk; `h`, `t`:
+-- { version, sig } of the studio's and the cloud's copies when signed with the studio's key, else nil. Pure.
+function drive.tools_way(hv, h, t, owner)
+  local newer = require("fromfolder").at_least
+  if t and t.version and (not hv or not newer(hv, t.version)) then return "in" end
+  if owner and h and h.version and (not t or (h.sig ~= t.sig and newer(h.version, t.version))) then return "out" end
+  return nil
+end
+
+local tools_memo, tools_said = {}, {}
+-- { version, sig } of the copy in `dir` when it checks as signed with `key`, else nil: checked once per lib/files.txt and .sig (a whole copy's
+-- SHA-256s each pass would be most of it). Only for choosing the way: what's copied is checked again first.
+local function signed_copy(dir, key)
+  local text, sig = band.read(dir .. "/lib/files.txt"), band.read(dir .. "/lib/files.txt.sig")
+  if not (text and sig) then return nil end
+  local m = tools_memo[dir]
+  if not (m and m.text == text and m.sig == sig and m.key == key) then
+    m = { text = text, sig = sig, key = key, ok = band.signed_ok(dir, key) == true }
+    tools_memo[dir] = m
+  end
+  return m.ok and { version = text:match("^version (%S+)"), sig = sig } or nil
+end
+-- The signed copy in `from` over `to`: checked, copied where a file differs (in drive.tools_files' order), code files `to` has that the list
+-- doesn't name taken away (a module the new version dropped: the copy never checks as whole with it), then `to` checked. -> files changed, or
+-- nil and why.
+local function send_tools(from, to, key)
+  local ok, why = band.signed_ok(from, key)
+  if not ok then return nil, why end
+  local files = drive.tools_files(band.read(from .. "/lib/files.txt"))
+  if not files then return nil, "its lib/files.txt names a file outside the copy" end
+  local n, keep = 0, {}
+  for _, rel in ipairs(files) do
+    keep[rel] = true
+    local a = band.read(from .. "/" .. rel)
+    if not a then return nil, "couldn't read " .. rel end
+    if band.read(to .. "/" .. rel) ~= a then
+      reaper.RecursiveCreateDirectory((to .. "/" .. rel):match("^(.*)/"), 0)
+      band.copy_atomic(from .. "/" .. rel, to .. "/" .. rel)
+      n = n + 1
+    end
+  end
+  local code = {}
+  for _, f in ipairs(band.files(to, ".lua")) do if f:find("^StudioSync %- ") then code[#code + 1] = f end end
+  for _, f in ipairs(band.files(to .. "/lib", ".lua")) do code[#code + 1] = "lib/" .. f end
+  for _, rel in ipairs(code) do if not keep[rel] and os.remove(to .. "/" .. rel) then n = n + 1 end end
+  tools_memo[to] = nil
+  ok, why = band.signed_ok(to, key)
+  if not ok then return nil, "copied, but the copy doesn't check: " .. tostring(why) end
+  return n
+end
+-- From Live sync's cloud pass, at most every EVERY s (reads two small files in the cloud copy, and a listing only when there's work).
+drive.tools_at = -math.huge
+function drive.tools_pass(cfg, droot, now)
+  if now - drive.tools_at < drive.EVERY then return end
+  drive.tools_at = now
+  local key = band.studio_update_key(cfg.root)
+  if not key then return end
+  -- (a guest's computer never runs or syncs the studio's copy: lib/fromfolder.lua wanted)
+  if select(2, pcall(function() return require("access").mine(cfg.root) ~= nil or require("removal").am_guest(cfg.root) end)) == true then return end
+  local here, there = require("fromfolder").target(cfg.root), droot .. "/_tools/studiosync"
+  local hv = band.version_on_disk(here)
+  local t = signed_copy(there, key)
+  local way = drive.tools_way(hv, signed_copy(here, key), t, require("groups").role(cfg.root, cfg.user) == "owner")
+  if not way then return end
+  if way == "in" then -- (not while Syncthing still needs anything in _tools here, or before it has said: that may be a newer version arriving)
+    local need = require("services").need(band.info(cfg.root).id, 60)
+    if not need or need:find("_tools[/\\]+studiosync") then return end
+  end
+  local cloud = drive.label(drive.service_of(droot))
+  local n, why = send_tools(way == "in" and there or here, way == "in" and here or there, key)
+  local v = way == "in" and t.version or hv
+  local said = way .. " " .. tostring(v) .. " " .. tostring(n and "ok" or why)
+  if tools_said[said] then return n end
+  tools_said[said] = true
+  if not n then
+    band.log("StudioSync " .. tostring(v) .. (way == "in" and (" in the " .. cloud .. " copy wasn't brought into the studio's folder: ") or
+      (" couldn't go to the " .. cloud .. " copy: ")) .. tostring(why))
+  elseif n > 0 then
+    band.log(way == "in" and ("StudioSync " .. tostring(v) .. " came from the " .. cloud .. " copy into the studio's folder (signed with the studio's update key): it updates from there as usual")
+      or ("StudioSync " .. tostring(v) .. " is in the " .. cloud .. " copy, for anyone in the studio who isn't on when you are"))
+  end
+  return n
+end
+
 return drive

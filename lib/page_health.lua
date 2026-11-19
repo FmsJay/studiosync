@@ -252,7 +252,11 @@ function H.maint_rows()
     local dr = require("drive")
     local okr, droot = pcall(dr.root, cfg)
     local row = okr and droot and dr.health_row(band.json_decode(reaper.GetExtState(band.SECTION, "drive status")), os.time(), dr.label(dr.service_of(droot)))
-    if row then rows[#rows + 1] = row end
+    if row then rows[#rows + 1] = row
+    -- (none here, and no other row about it (the shared folder missing, the account away, turned off): what one would bring. James, rt)
+    elseif okr and not droot and not dmiss and not dr.away and reaper.GetExtState(band.SECTION, "drive_root") ~= "off" then
+      rows[#rows + 1] = dr.join_hint(dr.name(cfg), dr.share_hint(cfg, band.info(cfg.root).drive), require("live").PLACES.cloud)
+    end
   end
   local daway = reaper.GetExtState(band.SECTION, "drive_root") ~= "off" and require("drive").away
   if daway then

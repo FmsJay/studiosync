@@ -152,8 +152,59 @@ function sessionfile.export(proj, cfg, b, droot, room_dir)
   local out = string.format("%s/%s-%s-%s.rpp", sdir, os.date("!%Y%m%d-%H%M%SZ"), user, (b.room:gsub("[^%w%-_]", "_")))
   band.write_atomic(out, text)
   set_pending(b.song, pending)
+  local okp, why = pcall(sessionfile.prune, sdir, user, (b.room:gsub("[^%w%-_]", "_")))
+  if not okp then band.log("couldn't tidy old end-of-session projects in the cloud copy: " .. tostring(why)) end
   sessionfile.catch_up(b.song, 1.5)
   return out
+end
+
+-- How many end-of-session projects the cloud copy keeps (James, rt: "the studio's backup", not one that grows without limit): each person's
+-- newest KEEP per room, and only the recordings of theirs those still use (sessions/media/<you>/). One is written at every session's end and
+-- after every 20 quiet minutes, so they piled up. Nothing of the song's history goes: every end-of-session saved version (rooms/<room>/recall)
+-- stays in the cloud copy for good and restores exactly from Restore > Saved versions; only an old session's plain-REAPER project goes, and
+-- the copies of recordings only it used (the originals are in the studio folder). Each computer tidies only its own files (drive.mine's
+-- one-writer rule). shortcut: "James" in room "Laptop-main" and "James-Laptop" in "main" share one name; nobody names rooms so.
+sessionfile.KEEP = 10
+-- Which of `files` (names in sessions/) go: `user`'s projects of `room` (both as file names have them) beyond the newest `keep`. Names are
+-- <yyyymmdd-hhmmssZ>-<user>-<room>.rpp, so they sort by time. Pure.
+function sessionfile.prune_plan(files, user, room, keep)
+  local mine, tail = {}, "-" .. user .. "-" .. room .. ".rpp"
+  for _, f in ipairs(files) do
+    if f:match("^%d%d%d%d%d%d%d%d%-%d%d%d%d%d%dZ%-") and f:sub(17) == tail then mine[#mine + 1] = f end
+  end
+  table.sort(mine, function(a, b) return a > b end)
+  local out = {}
+  for i = keep + 1, #mine do out[#out + 1] = mine[i] end
+  return out
+end
+-- Which of `names` (files in sessions/media/<user>/) none of `texts` (that user's projects still there) uses. Pure.
+function sessionfile.unused_media(names, texts, user)
+  local used, prefix = {}, "media/" .. user .. "/"
+  for _, t in ipairs(texts) do
+    sessionfile.map_files(t, function(p) if p:sub(1, #prefix) == prefix then used[p:sub(#prefix + 1)] = true end end)
+  end
+  local out = {}
+  for _, n in ipairs(names) do if not used[n] then out[#out + 1] = n end end
+  return out
+end
+-- -> how many projects went. Recordings are looked at only when one did, and left alone if any of this user's projects doesn't read.
+function sessionfile.prune(sdir, user, room)
+  local gone = sessionfile.prune_plan(band.files(sdir, ".rpp"), user, room, sessionfile.KEEP)
+  for _, f in ipairs(gone) do os.remove(sdir .. "/" .. f) end
+  if not gone[1] then return 0 end
+  local texts, who = {}, "-" .. user .. "-"
+  for _, f in ipairs(band.files(sdir, ".rpp")) do
+    if f:sub(17, 16 + #who) == who then -- (any room of theirs; a longer name that starts with theirs too, which only keeps more)
+      local t = band.read(sdir .. "/" .. f)
+      if not t then return #gone end
+      texts[#texts + 1] = t
+    end
+  end
+  local media = sdir .. "/media/" .. user
+  for _, f in ipairs(sessionfile.unused_media(band.files(media), texts, user)) do
+    if not require("drive").arriving(f) then os.remove(media .. "/" .. f) end
+  end
+  return #gone
 end
 
 -- Copy media the exported projects still need, for up to `budget` seconds (called from the Drive pass, so a big

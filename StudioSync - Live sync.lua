@@ -664,6 +664,7 @@ function P.save_drive(t)
     drive.landed = {}
     reaper.SetExtState(band.SECTION, "drive status", band.json_encode({ at = os.time(), moved = moved, more = more or nil, err = err }), false)
     band.try("sessionfile.catch_up", require("sessionfile").catch_up, b.song, 0.1) -- your recordings the end-of-session projects use
+    band.try("drive.tools_pass", drive.tools_pass, cfg, droot, now) -- the studio's signed update files, both ways (lib/drive.lua. James, rt)
     -- (the service's own name, not always Google Drive: Round 1 review, 0.59.45. The panel keeps "copy up to date (" out of its toasts)
     if more and not drive_more then band.log(drive.label(drive.service_of(droot)) .. ": bringing the studio's copy of this room up to date (carries on between passes)") end
     if moved > 0 and not more then band.log(string.format("%s copy up to date (%d file%s this pass)", drive.label(drive.service_of(droot)), moved, moved == 1 and "" or "s")) end
