@@ -1,11 +1,11 @@
-# The menu extension (extension/reaper_menu.cpp, and for StudioSync the direct link, extension/direct.cpp, and the web UI server, extension/webui.cpp) for macOS and Linux: Windows builds on JAMES-MAIN (extension/build_windows.cmd). Each job
+# The menu extension (extension/reaper_menu.cpp, and for StudioSync the direct link, extension/direct.cpp, the web UI server, extension/webui.cpp, and live audio, extension/rtaudio.cpp with AOO and Opus from extension/third_party, built in statically) for macOS and Linux: Windows builds on JAMES-MAIN (extension/build_windows.cmd). Each job
 # leaves its files as an artifact; they go into extension/ here and in the ReaPersona repo, and the extension package's version goes up
 # (EXT_VERSION in tools/make_index.py).
 name: extension
 on:
   workflow_dispatch:
   push:
-    paths: ["extension/reaper_menu.cpp", "extension/direct.cpp", "extension/direct_audio.cpp", "extension/direct.h", "extension/sign.cpp", "extension/sign.h", "extension/webui.cpp", "extension/webui.h", "tests/direct_test.cpp", "tests/webui_test.cpp", "tests/sign_test.cpp", "tools/ninjam-relay/njrelay.c", ".github/workflows/extension.yml"]
+    paths: ["extension/reaper_menu.cpp", "extension/direct.cpp", "extension/direct_audio.cpp", "extension/direct.h", "extension/sign.cpp", "extension/sign.h", "extension/webui.cpp", "extension/webui.h", "tests/direct_test.cpp", "tests/webui_test.cpp", "tests/sign_test.cpp", "extension/rtaudio.cpp", "extension/rtaudio.h", "tests/rtaudio_test.cpp", "extension/third_party/**", "tools/ninjam-relay/njrelay.c", ".github/workflows/extension.yml"]
 
 jobs:
   mac:
@@ -17,12 +17,16 @@ jobs:
           git clone --depth 1 https://github.com/justinfrankel/reaper-sdk
           git clone --depth 1 https://github.com/justinfrankel/WDL wdl
           ln -s "$PWD/wdl/WDL" reaper-sdk/WDL
+      - name: Live audio's libraries (AOO + Opus, universal, static; timed)
+        run: time sh extension/third_party/build_unix.sh libssdeps.a -arch arm64 -arch x86_64 -mmacosx-version-min=10.13
       - name: Build universal dylibs
         run: |
+          rti="-I extension/third_party/aoo -I extension/third_party/aoo/include -I extension/third_party/opus/include"
           for p in studiosync reapersona; do
-            def=""; src="extension/reaper_menu.cpp extension/direct.cpp extension/direct_audio.cpp extension/sign.cpp extension/webui.cpp"; [ "$p" = reapersona ] && def="-DREAPERSONA" && src="extension/reaper_menu.cpp"
+            def=""; src="extension/reaper_menu.cpp extension/direct.cpp extension/direct_audio.cpp extension/sign.cpp extension/webui.cpp extension/rtaudio.cpp libssdeps.a"; inc="$rti"
+            [ "$p" = reapersona ] && def="-DREAPERSONA" && src="extension/reaper_menu.cpp" && inc=""
             clang++ -std=c++17 -O2 -dynamiclib -arch arm64 -arch x86_64 -mmacosx-version-min=10.13 -DSWELL_PROVIDED_BY_APP $def \
-              -I reaper-sdk/sdk $src reaper-sdk/WDL/swell/swell-modstub.mm -framework Cocoa -o "reaper_$p.dylib"
+              -I reaper-sdk/sdk $inc $src reaper-sdk/WDL/swell/swell-modstub.mm -framework Cocoa -o "reaper_$p.dylib"
             codesign -s - "reaper_$p.dylib"
             lipo -info "reaper_$p.dylib"
           done
@@ -38,6 +42,11 @@ jobs:
         run: |
           clang++ -std=c++17 -O2 -DSIGN_STANDALONE -DDIRECT_STANDALONE tests/sign_test.cpp extension/sign.cpp extension/direct.cpp extension/direct_audio.cpp -o sign_test
           ./sign_test
+      - name: Live audio's own test (tests/rtaudio_test.cpp, on localhost)
+        run: |
+          clang++ -std=c++17 -O2 -DRTAUDIO_STANDALONE -DDIRECT_STANDALONE -I extension/third_party/aoo -I extension/third_party/aoo/include -I extension/third_party/opus/include \
+            tests/rtaudio_test.cpp extension/rtaudio.cpp extension/direct.cpp extension/direct_audio.cpp libssdeps.a -o rtaudio_test
+          ./rtaudio_test
       - name: njrelay for Macs (universal), as the NINJAM README's line
         run: |
           cc -O2 -Wall -arch arm64 -arch x86_64 -mmacosx-version-min=10.13 -o njrelay tools/ninjam-relay/njrelay.c
@@ -63,12 +72,16 @@ jobs:
           git clone --depth 1 https://github.com/justinfrankel/reaper-sdk
           git clone --depth 1 https://github.com/justinfrankel/WDL wdl
           ln -s "$PWD/wdl/WDL" reaper-sdk/WDL
+      - name: Live audio's libraries (AOO + Opus, static; timed)
+        run: time sh extension/third_party/build_unix.sh libssdeps.a
       - name: Build
         run: |
+          rti="-I extension/third_party/aoo -I extension/third_party/aoo/include -I extension/third_party/opus/include"
           for p in studiosync reapersona; do
-            def=""; src="extension/reaper_menu.cpp extension/direct.cpp extension/direct_audio.cpp extension/sign.cpp extension/webui.cpp"; [ "$p" = reapersona ] && def="-DREAPERSONA" && src="extension/reaper_menu.cpp"
-            g++ -std=c++17 -O2 -shared -fPIC -pthread -DSWELL_PROVIDED_BY_APP $def -I reaper-sdk/sdk \
-              $src reaper-sdk/WDL/swell/swell-modstub-generic.cpp -o "reaper_$p-${{ matrix.arch }}.so"
+            def=""; src="extension/reaper_menu.cpp extension/direct.cpp extension/direct_audio.cpp extension/sign.cpp extension/webui.cpp extension/rtaudio.cpp"; inc="$rti"; lib="libssdeps.a"
+            [ "$p" = reapersona ] && def="-DREAPERSONA" && src="extension/reaper_menu.cpp" && inc="" && lib=""
+            g++ -std=c++17 -O2 -shared -fPIC -pthread -DSWELL_PROVIDED_BY_APP $def -I reaper-sdk/sdk $inc \
+              $src reaper-sdk/WDL/swell/swell-modstub-generic.cpp $lib -o "reaper_$p-${{ matrix.arch }}.so"
             nm -D --defined-only "reaper_$p-${{ matrix.arch }}.so" | grep -E "ReaperPluginEntry|SWELL"
           done
       - name: The direct link's own test (tests/direct_test.cpp, on localhost)
@@ -83,6 +96,11 @@ jobs:
         run: |
           g++ -std=c++17 -O2 -pthread -DSIGN_STANDALONE -DDIRECT_STANDALONE tests/sign_test.cpp extension/sign.cpp extension/direct.cpp extension/direct_audio.cpp -o sign_test
           ./sign_test
+      - name: Live audio's own test (tests/rtaudio_test.cpp, on localhost)
+        run: |
+          g++ -std=c++17 -O2 -pthread -DRTAUDIO_STANDALONE -DDIRECT_STANDALONE -I extension/third_party/aoo -I extension/third_party/aoo/include -I extension/third_party/opus/include \
+            tests/rtaudio_test.cpp extension/rtaudio.cpp extension/direct.cpp extension/direct_audio.cpp libssdeps.a -o rtaudio_test
+          ./rtaudio_test
       - uses: actions/upload-artifact@v4
         with: { name: "linux-${{ matrix.arch }}", path: "*.so" }
 

@@ -23,7 +23,8 @@ one plain-C build runs on every CPU).
 **Built by.** `sources.txt` in each folder lists the files compiled (taken from upstream's `CMakeLists.txt` / `opus_sources.mk`,
 `silk_sources.mk`, `celt_sources.mk` for a float build without SIMD). Windows: `build_windows.cmd` here (MSVC, /MT, into
 `build/studiosync_deps-x64.lib`, kept out of git), called by `extension/build_windows.cmd` when the library is missing. macOS and
-Linux: `.github/workflows/extension.yml` compiles the same lists. The `AOO_*` defines must match the top of `extension/rtaudio.cpp`.
+Linux: `build_unix.sh` here (cc/c++, symbols hidden so another plug-in's own AOO or Opus can't clash), run by
+`.github/workflows/extension.yml`. The `AOO_*` defines must match the top of `extension/rtaudio.cpp`.
 
 **Updating.** Fetch the new tag from the same place, copy the same folders over, check `sources.txt` against upstream's lists,
 update the table above, delete `build/`, rebuild and run `tests/build_rtaudio_test.cmd`.

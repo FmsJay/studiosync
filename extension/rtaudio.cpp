@@ -15,7 +15,10 @@
 // link's frames, direct.cpp), so only studio computers are heard; AOO's own passwords live in its server/client part, not built here.
 // GPL-3.0-or-later. AOO (BSD-3-Clause) and Opus (BSD-3-Clause): extension/third_party/README.md.
 
-// AOO's compile-time settings: they must match extension/third_party/build_windows.cmd and the CI's (AOO's headers read them too).
+// AOO's compile-time settings: they must match extension/third_party/build_windows.cmd and build_unix.sh (AOO's headers read them too).
+#ifndef _WIN32
+#define AOO_HAVE_PTHREAD_RWLOCK 1
+#endif
 #define AOO_NET 0
 #define AOO_USE_OPUS 1
 #define AOO_USE_IPV6 0
