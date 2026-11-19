@@ -530,6 +530,8 @@ function direct.health_rows(cfg)
   local rows = { row, { "direct clock", cok, "grey", ctext, ctext } }
   local sok, srow = pcall(function() return require("streams").health_row(cfg) end) -- (takes streaming in and out: lib/streams.lua. James, rt)
   if sok and srow then rows[#rows + 1] = srow end
+  local aok, arow = pcall(function() return require("ablink").health_row() end) -- (Ableton Link, when it's on here: lib/ablink.lua. James, rt)
+  if aok and arow then rows[#rows + 1] = arow end
   return rows
 end
 

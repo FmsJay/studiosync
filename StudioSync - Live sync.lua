@@ -397,6 +397,7 @@ function P.who(t)
   last_driver = driver
   -- Hold sync: keep working without sending anything; releasing it sends the net result once
   local hold = select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) ~= ""
+  sync.timeline_mine = my_can(cfg.user, nil, nil) and not hold -- (may a Link app's tempo become the song's: lib/ablink.lua. James, rt)
   -- the API (lib/api.lua): the state for other scripts, and what changed since the last look
   pcall(function()
     local api = require("api")
@@ -947,6 +948,8 @@ local live_handlers = {
   media = function(d) require("streams").on_media(cfg, b, d) end,
   -- (a bandmate catching up asks for a media file its Syncthing still needs; sent back if it's here: lib/streams.lua on_media_want. James, rt)
   media_want = function(d) require("streams").on_media_want(cfg, b, d) end,
+  -- (a bandmate's Ableton Link state: their Link apps and ours line up on the bar. lib/ablink.lua. James, rt)
+  ablink = function(d) require("ablink").on_msg(cfg, b, proj, d) end,
 }
 live_handlers.start, live_handlers.stop = live_handlers.cue, live_handlers.cue
 local function tick_body() -- returns true to keep going
@@ -1027,6 +1030,7 @@ local function tick_body() -- returns true to keep going
   -- (the direct link: an event file that arrived brings a receive pass and a cue look now, not in up to 2 s; messages go where they belong)
   local dok, arrived = band.try("direct.live_tick", direct.live_tick, cfg, b.song, b.room, live_handlers)
   if dok and (arrived or 0) > 0 then cue_left, quick_at, last, direct_in_at, direct_held = true, -math.huge, -math.huge, reaper.time_precise(), true end
+  band.try("ablink.tick", require("ablink").tick, cfg, b, proj) -- (this computer's Ableton Link session, when it's on here. James, rt)
   local tjson = reaper.GetExtState(band.SECTION, "transport " .. key) -- a start/stop from the panel or the band
   if tjson ~= "" then
     reaper.DeleteExtState(band.SECTION, "transport " .. key, false)

@@ -2550,6 +2550,7 @@ function ui.settings_advanced()
       local listed, out = band.sync_actions(dir)
       band.log(string.format("the Actions list has %d StudioSync action(s) now%s", listed, out > 0 and (" (" .. out .. " taken out)") or ""))
     end
+    require("ablink").settings_ui(ctx, ImGui) -- (Ableton Link, only on this computer: lib/ablink.lua. James, rt)
     -- (the Tailscale token and tags: Settings > Studio for its owner and admins, here for anyone else. Review list, 0.59.32)
     if not require("groups").may_manage(cfg.root, cfg.user) then ui.tailscale_token() end
     card_end()
