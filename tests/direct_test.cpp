@@ -33,6 +33,9 @@
 
 static int fails = 0;
 #define CHECK(c, what) do { if (c) printf("ok   %s\n", what); else { printf("FAIL %s\n", what); ++fails; } } while (0)
+#define CHECK_QUIET(c) do { if (!(c)) { printf("FAIL %s (line %d)\n", #c, __LINE__); ++fails; } } while (0)
+// A file's length through a handle that lets everyone else go on writing (fopen's default on Windows does too)
+static long long file_len(const std::string &p) { FILE *f = fopen(p.c_str(), "rb"); if (!f) return -1; fseek(f, 0, SEEK_END); const long long n = ftell(f); fclose(f); return n; }
 static double now_ms() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 static std::string hex(const unsigned char *p, size_t n) { std::string s; char b[3]; for (size_t i = 0; i < n; ++i) { snprintf(b, 3, "%02x", p[i]); s += b; } return s; }
 static std::string slurp(const std::string &p) { std::string s; FILE *f = fopen(p.c_str(), "rb"); if (!f) return "\x01missing"; char b[4096]; size_t n; while ((n = fread(b, 1, sizeof b, f)) > 0) s.append(b, n); fclose(f); return s; }
@@ -186,6 +189,113 @@ static bool wav_playable(const std::string &f)
   return true;
 }
 
+// A take written the way REAPER writes one (James, rt: on the desktop the laptop's copy sat at the first 64 KB until stop): 24-bit FLAC
+// bytes in 256 KB blocks, the file held open for writing the whole time, other handles allowed only to read (WDL_FileWrite's
+// FILE_SHARE_READ). `async`: Windows only, its unbuffered overlapped writes (FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED, sector-aligned
+// blocks, the tail cut with SetEndOfFile at the end). Each block must be in the received copy within one pass of the 100 ms interval (500 ms
+// allowed: localhost); at stop the header block is rewritten (FLAC's STREAMINFO), and the copy must end byte for byte the same.
+static void reaper_like_take(const std::string &studio, const char *peer, const std::string &inbox, const std::string &dir, bool async)
+{
+  const std::string name = async ? "REAPER async take.flac" : "REAPER take.flac", take = dir + "/" + name, rel = "Song A/" + name, got = inbox + "/.streams/" + rel;
+  const size_t BLOCK = 256 * 1024;
+  const int blocks = 8;
+  std::string all;
+  unsigned x = 7;
+  for (int b = 0; b < blocks; ++b) for (size_t i = 0; i < BLOCK; ++i) { x = x * 1103515245u + 12345u; all += (char)(x >> 16); }
+  memcpy(&all[0], "fLaC\0\0\0\x22", 8); // (STREAMINFO with "length unknown" until the end)
+  const size_t tail = 70000; // (the last block's real length: the rest is padding a sector writer cuts off)
+  std::string fin = all.substr(0, (blocks - 1) * BLOCK + tail);
+  fin[20] = '\x11'; // (the header rewritten at stop)
+#ifdef _WIN32
+  HANDLE h = CreateFileA(take.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+                         FILE_ATTRIBUTE_NORMAL | (async ? FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED : 0), nullptr);
+  char *buf = (char *)VirtualAlloc(nullptr, BLOCK, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE); // (sector-aligned, as unbuffered writes need)
+  auto put = [&](long long at, const std::string &d) {
+    memcpy(buf, d.data(), d.size());
+    OVERLAPPED o = {}; o.Offset = (DWORD)at; o.OffsetHigh = (DWORD)(at >> 32);
+    o.hEvent = async ? CreateEventA(nullptr, TRUE, FALSE, nullptr) : nullptr;
+    DWORD n = 0;
+    BOOL ok = WriteFile(h, buf, (DWORD)d.size(), async ? nullptr : &n, &o);
+    if (!ok && GetLastError() == ERROR_IO_PENDING) ok = GetOverlappedResult(h, &o, &n, TRUE);
+    if (o.hEvent) CloseHandle(o.hEvent);
+    return ok && n == d.size();
+  };
+  CHECK(h != INVALID_HANDLE_VALUE, async ? "REAPER-like writer (unbuffered, overlapped, share read only) opened" : "REAPER-like writer (share read only) opened");
+#else
+  FILE *wf = fopen(take.c_str(), "wb");
+  auto put = [&](long long at, const std::string &d) { return fseeko(wf, (off_t)at, SEEK_SET) == 0 && fwrite(d.data(), 1, d.size(), wf) == d.size() && fflush(wf) == 0; };
+  CHECK(wf != nullptr, "REAPER-like writer opened");
+#endif
+  {
+    const double wall = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count(), ft = direct_file_time(take.c_str());
+    CHECK(fabs(ft - wall) < 5, "the open take's file time is now (lib/streams.lua: is this the take REAPER just began?)");
+    CHECK(direct_file_time((dir + "/no such.flac").c_str()) < 0, "no file: -1");
+  }
+  bool started = false, each = true;
+  std::vector<double> lag;
+  for (int b = 0; b < blocks; ++b) {
+    CHECK_QUIET(put((long long)b * BLOCK, all.substr((size_t)b * BLOCK, BLOCK)));
+    if (!started) { started = direct_stream(studio.c_str(), rel.c_str(), take.c_str(), peer, 100) == 1; CHECK(started, "the open take is streamed"); }
+    const double t0 = now_ms();
+    const size_t want = (size_t)(b + 1) * BLOCK;
+    long long have = 0;
+    while (now_ms() - t0 < 500 && (have = file_len(got)) < (long long)want) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    if (have < (long long)want) { each = false; printf("     block %d: the copy has %lld of %d bytes after 500 ms: %s\n", b + 1, have, (int)want, direct_streams()); }
+    else lag.push_back(now_ms() - t0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  }
+  CHECK(each, async ? "every 256 KB block of the open take reached the copy within a pass (unbuffered writer)" : "every 256 KB block of the open take reached the copy within a pass");
+  if (!lag.empty()) stats(async ? "256 KB block written -> in the copy (unbuffered writer, 100 ms interval)" : "256 KB block written -> in the copy (100 ms interval)", lag);
+  // stop: the header block again, the tail cut to the real length, closed
+  CHECK_QUIET(put(0, fin.substr(0, BLOCK)));
+#ifdef _WIN32
+  LARGE_INTEGER end; end.QuadPart = (LONGLONG)fin.size();
+  CHECK_QUIET(SetFilePointerEx(h, end, nullptr, FILE_BEGIN) && SetEndOfFile(h));
+  CloseHandle(h);
+  VirtualFree(buf, 0, MEM_RELEASE);
+#else
+  fclose(wf);
+  CHECK_QUIET(truncate(take.c_str(), (off_t)fin.size()) == 0);
+#endif
+  CHECK(direct_stream_end(studio.c_str(), rel.c_str()) == 1, "the take's stream ended");
+  std::string ss;
+  for (double t0 = now_ms(); now_ms() - t0 < 10000; std::this_thread::sleep_for(std::chrono::milliseconds(5))) {
+    ss = direct_streams();
+    const size_t at = ss.find("\"rel\":\"" + rel + "\"");
+    if (at != std::string::npos && ss.find("\"finished\":true", at) < ss.find('}', ss.find("\"peers\"", at))) break;
+  }
+  CHECK(slurp(got) == fin, "the received take matches byte for byte (header rewritten, tail cut)");
+}
+
+// The same over a slow way (400 kbit/s, as a Tailscale relay can be): REAPER's first 64 KB, then a 256 KB block while the file stays open.
+// Each stream frame waits for its answer up to 3 s, so a frame must cross in well under that (James, rt: the laptop's copy sat at the first
+// 64 KB while 256 KB frames timed out, each failure skipping the peer 10 s; at stop the path had gone direct).
+static void slow_link_take(const std::string &studio, const char *peer, const std::string &inbox, const std::string &dir)
+{
+  const std::string name = "slow take.flac", take = dir + "/" + name, rel = "Song A/" + name, got = inbox + "/.streams/" + rel;
+  std::string head(65536, 'h'), block(256 * 1024, 'b');
+  memcpy(&head[0], "fLaC", 4);
+  FILE *wf = fopen(take.c_str(), "wb");
+  fwrite(head.data(), 1, head.size(), wf); fflush(wf);
+  direct_test_bandwidth(400);
+  CHECK(direct_stream(studio.c_str(), rel.c_str(), take.c_str(), peer, 100) == 1, "a take streamed over a slow way (400 kbit/s)");
+  for (double t0 = now_ms(); now_ms() - t0 < 5000 && file_len(got) < 65536;) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  fwrite(block.data(), 1, block.size(), wf); fflush(wf);
+  const double t0 = now_ms();
+  const std::string want_sent = "\"rel\":\"" + rel + "\",\"size\":327680";
+  std::string ss;
+  auto acked = [&]() { ss = direct_streams(); const size_t at = ss.find(want_sent); return at != std::string::npos && ss.find("\"sent\":327680", at) < ss.find("}}", at); };
+  while (now_ms() - t0 < 9000 && !acked()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  const long long have = file_len(got);
+  printf("     slow way: 256 KB block -> %lld bytes in the copy, answered, after %.0f ms\n", have, now_ms() - t0);
+  CHECK(have == 65536 + (long long)block.size() && acked(), "the 256 KB block crosses the slow way while the take is still open, every frame answered in time (no dropped connection, no 10 s wait)");
+  direct_test_bandwidth(0);
+  fclose(wf);
+  direct_stream_end(studio.c_str(), rel.c_str());
+  for (double t1 = now_ms(); now_ms() - t1 < 5000 && slurp(got) != head + block;) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  CHECK(slurp(got) == head + block, "and ends whole");
+}
+
 static void live_layer_tests(const std::string &studio, const std::string &secret, const std::string &key, int port, const char *peer, const std::string &inbox, const std::string &dir)
 {
   (void)secret;
@@ -323,6 +433,11 @@ static void live_layer_tests(const std::string &studio, const std::string &secre
   const double tbe = now_ms() - tb;
   printf("     64 MB streamed, hashed both ends and checked: %.0f ms (%.0f MB/s)\n", tbe, 64000.0 / tbe);
   CHECK(slurp(inbox + "/.streams/" + brel) == slurp(big), "the 64 MB file arrived intact");
+  reaper_like_take(studio, peer, inbox, dir, false);
+#ifdef _WIN32
+  reaper_like_take(studio, peer, inbox, dir, true);
+#endif
+  slow_link_take(studio, peer, inbox, dir);
 }
 
 static void audio_tests(const std::string &dir)

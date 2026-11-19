@@ -12,15 +12,16 @@
 -- take starts in the song), at (the shared clock when the playhead was at pos), srate, nch, fmt } and "take_end" { id }. The stream's name
 -- on the link is the receiver's own work from those (streams.stream_name): <song>/<room>~<user>~<file>.
 --
--- Finding the files REAPER is writing (no API names them before stop): the record path (GetProjectPathEx) is listed every few seconds
--- while stopped with an audio track armed (the baseline) and again in the first seconds of a recording; the new audio files are matched to
--- the armed tracks by the track's name in the file name, then its number, then (same count left) in order. Limits: a file that appeared
--- after the last baseline but before Record (within ~5 s) can be taken for the new take's; a second record path, files renamed at stop
+-- Finding the files REAPER is writing (no API names them before stop): in the first seconds of a recording (after any count-in) the record
+-- path (GetProjectPathEx) is listed, and an audio file made or written since the recording began (its time through the extension, 3 s
+-- tolerance) is the take's; they're matched to the armed tracks by the track's name in the file name, then its number, then (same count
+-- left) in order. Arming and pressing Record at once works: no listing beforehand. Limits: another audio file written into the record
+-- folder in those seconds can be taken for a take's (matched only when it fits a track); a second record path, files renamed at stop
 -- (REAPER's "rename recorded files" box) and recording formats REAPER writes elsewhere aren't followed; a bandmate who joins mid-take gets
 -- no stream for it (the real take still comes). Those takes simply arrive the normal way.
 local band = require("band")
 local direct = require("direct")
-local streams = { INTERVAL_MS = 100, FIND_SECS = 3, BASELINE_EVERY = 5, END_DELAY = 0.5, MIN_BYTES = 4096, CHECK_EVERY = 1,
+local streams = { INTERVAL_MS = 100, FIND_SECS = 3, FILE_TOL = 3, END_DELAY = 0.5, MIN_BYTES = 4096, CHECK_EVERY = 1,
   DONE_KEEP = 900, STALL = 300, PRUNE_EVERY = 30, TICK = 0.1 }
 
 -- ---- pure ------------------------------------------------------------------------------------------------------------------------------
@@ -31,12 +32,12 @@ local FILE_MODES = { [0] = true, [1] = true, [3] = true, [5] = true, [6] = true 
 function streams.records_audio(arm, input, mode)
   return arm == 1 and input >= 0 and input & 4096 == 0 and FILE_MODES[math.floor(mode)] == true
 end
--- Names in `names` that weren't in `before` (a set), audio files only, sorted.
-function streams.new_files(before, names)
-  local out = {}
-  for _, f in ipairs(names) do if not before[f] and streams.audio_ext(f) then out[#out + 1] = f end end
-  table.sort(out)
-  return out
+-- Is a file in the record folder one REAPER began for this recording? Its newest time (made or written, StudioSync_DirectFileTime: through
+-- a handle, so current while REAPER writes it) at or after the recording began (`wall`, os.time's whole seconds), less FILE_TOL. Without
+-- that function (an older extension): only files that appear after the first look (`first`: this is it).
+function streams.made_since(t, wall, first)
+  if tonumber(t) and t >= 0 then return t >= wall - streams.FILE_TOL end
+  return not first
 end
 local function alnum(s) return (tostring(s or ""):lower():gsub("[^%w]", "")) end
 -- tracks: { { name, num, ... } } (armed audio tracks, in track order); files: new file names. -> { { track, file } }, by the track's name in
@@ -70,10 +71,11 @@ function streams.match(tracks, files)
   if #lt == #lf then for k = 1, #lt do take(lt[k], lf[k]) end end
   return pairs_
 end
--- Where the take starts: the edit cursor when recording began from it (the play position a little past it), else where the playhead is
--- (auto-punch, recording started from elsewhere). shortcut: a punch range's start isn't read, the placeholder then sits at the cursor.
+-- Where the take starts: the edit cursor when recording began from it: the playhead a little past it, or still before it in a count-in or
+-- pre-roll (the first real run read the playhead there: a bar early, 1.84 s for 3.69 s at 130 BPM). Else where the playhead is.
+-- shortcut: an auto-punch range's start isn't read, the placeholder then sits at the cursor.
 function streams.start_pos(cursor, play)
-  if cursor <= play + 0.001 and play - cursor < 5 then return cursor end
+  if play - cursor < 5 then return cursor end
   return play
 end
 -- The stream's file name on the link: <room>~<user>~<file>, plain characters, at most 200 bytes (the file's start trimmed). nil if it can't be.
@@ -144,7 +146,8 @@ function streams.prunable(names, book, active, room)
   for _, e in pairs(book) do mine[e.rel:match("[^/]+$")] = true end
   local p = safe(room) .. "~"
   for _, f in ipairs(names) do
-    if f:sub(1, #p) == p and not mine[f] and not active[f] and not f:match("%.part$") then out[#out + 1] = f end
+    local audio = f:gsub("%.reapeaks$", "") -- (a placeholder's peaks go with its file, not before)
+    if f:sub(1, #p) == p and not mine[audio] and not active[audio] and not f:match("%.part$") then out[#out + 1] = f end
   end
   return out
 end
@@ -161,20 +164,32 @@ function streams.in_time_lag(ev, me, mode, interval, state)
   if ev.type == "start" then return nil, nil end -- (a plain play: not in time with a take)
   return nil, state
 end
--- Health: what's streaming, from direct.streams (out, inn). -> text, or nil when nothing is or was.
+-- Health: what's streaming, from direct.streams (out, inn), each stream with its bytes so one that's stuck shows: on the recorder, how much
+-- REAPER has written and how much each bandmate has; on theirs, how much has come. -> text, or nil when nothing is or was.
+local function mb(n) return string.format("%.2f MB", (tonumber(n) or 0) / 1048576) end
+local function take_name(rel) return ((tostring(rel or ""):match("[^/]+$") or ""):gsub("^[^~]*~", ""):gsub("~", "'s ", 1)) end
 function streams.health_text(s)
-  local out_n, out_mb, in_n, in_mb, bad = 0, 0, 0, 0, 0
+  local parts, bad = {}, 0
   for _, o in ipairs(s.out or {}) do
-    if not o.finished then out_n, out_mb = out_n + 1, out_mb + (tonumber(o.size) or 0) / 1048576 end
-    for _, p in pairs(type(o.peers) == "table" and o.peers or {}) do if (p.error or "") ~= "" then bad = bad + 1 end end
+    local each = {}
+    for peer, p in pairs(type(o.peers) == "table" and o.peers or {}) do
+      local err = p.error or ""
+      if not o.finished then each[#each + 1] = (tostring(peer):match("^([^%.:]+)") or peer) .. " has " .. mb(p.sent) .. (err ~= "" and (" (" .. err .. ")") or "")
+      elseif err ~= "" then bad = bad + 1 end
+    end
+    table.sort(each)
+    if not o.finished then
+      parts[#parts + 1] = string.format("out %s: %s written%s%s", take_name(o.rel), mb(o.size), #each > 0 and (", " .. table.concat(each, ", ")) or "",
+        (o.error or "") ~= "" and ("; " .. o.error) or "")
+    end
   end
   for _, i in ipairs(s.inn or {}) do
-    if not i.done then in_n, in_mb = in_n + 1, in_mb + (tonumber(i.bytes) or 0) / 1048576
+    if not i.done then parts[#parts + 1] = string.format("in %s: %s so far", take_name(i.rel), mb(i.bytes))
     elseif i.ok ~= true then bad = bad + 1 end
   end
-  if out_n + in_n + bad == 0 then return nil end
-  return string.format("Takes streaming: %d out (%.1f MB), %d in (%.1f MB)%s", out_n, out_mb, in_n, in_mb,
-    bad > 0 and string.format("; %d didn't get through whole (their real takes still come through the shared folder)", bad) or "")
+  if #parts + bad == 0 then return nil end
+  return "Takes streaming: " .. (#parts > 0 and table.concat(parts, "; ") or "none now") ..
+    (bad > 0 and string.format("; %d didn't get through whole (their real takes still come through the shared folder)", bad) or "")
 end
 
 -- ---- settings (this computer's: Settings > Options, "Parts play", beside the MIDI view)--------------------------------------------------------------
@@ -202,10 +217,8 @@ function streams.options(ctx, ImGui)
 end
 
 -- ---- the recorder's side ---------------------------------------------------------------------------------------------------------------
-local base -- { dir, names = set, at }: the record path before recording
-local rec -- this recording: { t0, dir, tracks, pos, at, found = set, takes = { { id, rel } }, none, stopped_at }
+local rec -- this recording: { t0, wall, dir, tracks, pos, at, found = set, old = set, takes = { { id, rel } }, none, stopped_at, find_until }
 local function record_dir(proj) return (reaper.GetProjectPathEx(proj, "")) end
-local function listing(dir) local set = {}; for _, f in ipairs(band.files(dir)) do set[f] = true end; return set end
 local function armed_audio(proj)
   local mirror, out = require("mirror"), {}
   for i = 0, reaper.CountTracks(proj) - 1 do
@@ -237,28 +250,31 @@ function streams.send_tick(proj, cfg, b, recording)
       end
       band.log(string.format("your take%s went out to the others as you recorded", #rec.takes > 1 and "s" or ""))
     end
-    if rec then base = nil end -- (the files just recorded belong in the next baseline)
     rec = nil
-    if (not base or now - base.at > streams.BASELINE_EVERY) and #direct.peers(cfg, b.song, b.room) > 0 then
-      base = { at = now }
-      if #armed_audio(proj) > 0 then base.dir = record_dir(proj); base.names = listing(base.dir) end
-    end
     return
   end
   if not rec then
-    local dir = record_dir(proj)
-    rec = { t0 = now, dir = dir, found = {}, takes = {}, looked = -math.huge }
+    rec = { t0 = now, wall = os.time(), dir = record_dir(proj), found = {}, old = {}, takes = {}, looked = -math.huge, first = true }
     rec.tracks = armed_audio(proj)
-    if #rec.tracks == 0 or not (base and base.names and base.dir == dir) then rec.none = true; return end
+    if #rec.tracks == 0 or #direct.peers(cfg, b.song, b.room) == 0 then rec.none = true; return end
     local play = reaper.GetPlayPositionEx(proj)
     rec.pos = streams.start_pos(reaper.GetCursorPositionEx(proj), play)
     local sn = direct.shared_now()
-    rec.at = sn and sn - (play - rec.pos) or nil
+    rec.at = sn and sn - (play - rec.pos) or nil -- (in a count-in, a moment still to come)
   end
-  if rec.none or now - rec.t0 > streams.FIND_SECS or now - rec.looked < streams.TICK then return end
+  if rec.none then return end
+  -- (looked for until FIND_SECS after the playhead reaches the take's start: a count-in or pre-roll comes first, and REAPER may make the file
+  -- only as it ends)
+  if not rec.find_until and reaper.GetPlayPositionEx(proj) >= rec.pos - 0.01 then rec.find_until = now + streams.FIND_SECS end
+  if (rec.find_until and now > rec.find_until) or now - rec.t0 > 30 or now - rec.looked < streams.TICK then return end
   rec.looked = now
-  local fresh = {}
-  for _, f in ipairs(streams.new_files(base.names, band.files(rec.dir))) do if not rec.found[f] then fresh[#fresh + 1] = f end end
+  local fresh, time_of = {}, reaper.StudioSync_DirectFileTime
+  for _, f in ipairs(band.files(rec.dir)) do
+    if streams.audio_ext(f) and not rec.found[f] and not rec.old[f] then
+      if streams.made_since(time_of and time_of(rec.dir .. "/" .. f), rec.wall, rec.first) then fresh[#fresh + 1] = f else rec.old[f] = true end
+    end
+  end
+  rec.first = false
   if #fresh == 0 then return end
   local left = {}
   for _, t in ipairs(rec.tracks) do if not t.taken then left[#left + 1] = t end end
@@ -387,7 +403,8 @@ function streams.receive_tick(proj, cfg, b, recording)
         reaper.UpdateItemInProject(it)
       end
     end
-    if tr and it and not busy and streams.book[e.id] and now - (e.checked_at or -math.huge) >= streams.CHECK_EVERY then
+    -- (with or without a placeholder: a take too short to have made one still has its streamed copy to go. Laptop, rt: 2-3 KB copies stayed)
+    if tr and not busy and streams.book[e.id] and now - (e.checked_at or -math.huge) >= streams.CHECK_EVERY then
       e.checked_at = now
       local real, pending = real_take(proj, tr, e, it)
       if pending then e.held_at = now end

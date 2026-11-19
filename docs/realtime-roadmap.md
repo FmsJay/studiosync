@@ -487,14 +487,17 @@ Built in the extension (extension/direct.cpp, direct_audio.cpp; protocol, API an
   audio-to-MIDI, mastering/mix feedback, chords/key/tempo/structure; local and cloud options compared in docs/ai-research.md.
 
 ## Step 2 wired (2026-11-19, lib/streams.lua; not run in REAPER yet)
-- **Recorder:** Live sync's tab in front lists the record path (`GetProjectPathEx`) every 5 s while stopped with an audio track armed and
-  someone here on the link (the baseline), and every 0.1 s in the first 3 s of a recording. New audio files are matched to the armed audio
+- **Recorder:** Live sync's tab in front lists the record path (`GetProjectPathEx`) every 0.1 s from Record until 3 s after the playhead
+  reaches the take's start (a count-in or pre-roll comes first). An audio file made or written since Record (`StudioSync_DirectFileTime`,
+  extension 1.0.10: through a handle, current while REAPER writes; 3 s tolerance) is a take's, so arming and pressing Record at once works
+  (an older extension: only files that appear after the first look). They're matched to the armed audio
   tracks (`I_RECARM`, an audio `I_RECINPUT`, `I_RECMODE` 0/1/3/5/6, mirrored and with an oid) by the track's name in the file name (longest
   first), then its number at the start of the name, then in order when as many files as tracks are left; anything else isn't streamed.
   Each match: `direct.stream_start` (100 ms interval) under the link name `<song>/<room>~<user>~<file>`, then a "take" message `{ id, user,
-  track, name, file, pos, at, srate, nch, fmt }` (`pos`: the edit cursor if recording began from it, else the playhead; `at`: the shared
-  clock when the playhead was at `pos`). 0.5 s after stop: `direct.stream_end` and a "take_end" message.
-  Limits: a file that appeared within 5 s before Record can be taken for the take's; auto-punch starts aren't read (the placeholder sits at
+  track, name, file, pos, at, srate, nch, fmt }` (`pos`: the edit cursor when the playhead is before it, as in a count-in, or under 5 s past
+  it, else the playhead; `at`: the shared clock when the playhead is at `pos`). 0.5 s after stop: `direct.stream_end` and a "take_end"
+  message. Limits: another audio file written into the record folder in those seconds can be taken for a take's (only when it fits a
+  track); auto-punch starts aren't read (the placeholder sits at
   the cursor); a second record path, files renamed at stop and a bandmate who joins mid-take aren't followed. All of those still arrive the
   normal way.
 - **Live MIDI:** each change goes as a link message (`<since>-L<n>`) within 50 ms, `at` every 0.25 s; the 1-second files are written only
@@ -552,3 +555,10 @@ A "Studio browser" panel in the web UI for browsing the web, playing videos and 
   ("reference for the chorus" at the chorus).
 Video audio plays through each person's system audio by default, with an option to route it into the call.
 
+- **First real run (desktop -> laptop, 24-bit FLAC, fixed in 1.0.10):** REAPER writes a FLAC take in 256 KB blocks (its first 64 KB first);
+  the stream sent each block as one 256 KB frame, and each frame waits up to 3 s for its answer: over a slow way (a Tailscale relay's few
+  hundred kbit/s) every such frame timed out ("the connection dropped") and skipped the peer 10 s, so the copy sat at the first 64 KB until
+  stop. Frames are 64 KB now, halved per peer after a dropped one (down to 16 KB); a read problem on the recorder is its own, never a 10 s
+  skip of the peer, and says why in `StudioSync_DirectStreams` (`error`, with the Windows error) and Health. Stop-and-wait at 64 KB gives
+  about 1 MB/s at a 57 ms round trip, several times a FLAC take's rate. With REAPER's 256 KB write blocks a 24-bit FLAC take reaches the
+  link in ~1-2 s steps: fine for "in time", and the floor for "as it comes".

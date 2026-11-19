@@ -26,7 +26,7 @@
 #define REAPERAPI_WANT_GetExtState
 #define REAPERAPI_WANT_SetExtState
 #define REAPERAPI_WANT_RefreshToolbar2
-#define EXT_VERSION "1.0.9" // (tools/make_index.py EXT_VERSION: what the panel reads to know this build adds toolbar buttons; 1.0.7: the direct link; 1.0.8: its messages, clock, streams, audio spike; 1.0.9: signed updates, extension/sign.cpp)
+#define EXT_VERSION "1.0.10" // (tools/make_index.py EXT_VERSION: what the panel reads to know this build adds toolbar buttons; 1.0.7: the direct link; 1.0.8: its messages, clock, streams, audio spike; 1.0.9: signed updates, extension/sign.cpp; 1.0.10: streams in 64 KB frames, StudioSync_DirectFileTime, a stream's read errors in DirectStreams)
 #ifndef REAPERSONA
 #include "direct.h" // (the direct link: extension/direct.cpp. James, 0.59.50; before reaper_plugin.h: SWELL's min/max macros broke its C++ headers on Linux)
 #endif

@@ -28,6 +28,7 @@ const char *direct_msg_poll(int after); // "<seq>\t<studio>\t<kind>\t<data>" (th
 int direct_peers(const char *studio, const char *peers);
 const char *direct_clock(); // JSON: { now, peers = { ["host:port"] = { offset_ms, rtt_ms, spread_ms, samples, at } } }
 double direct_now();        // this computer's clock, seconds since 1970: wall time at start, then a monotonic high-resolution clock
+double direct_file_time(const char *path); // a file's newest of made / last written, seconds since 1970 (through a handle: current while it's being written); -1 if it can't be read
 // A growing file (a take being recorded) streamed to `peers` every interval_ms; direct_stream_end: it's complete, send the rest and
 // "done" with its length and SHA-256. Received into <inbox>/.streams/<rel>, rel = "<song>/<name>.<wav|w64|flac|aif|aiff|ogg|opus|mp3|mid>".
 int direct_stream(const char *studio, const char *rel, const char *path, const char *peers, int interval_ms);
@@ -53,6 +54,7 @@ std::string direct_frame(const std::string &key, const std::string &studio, cons
 bool direct_wav_layout(const std::string &head, long long &data_off, int &block_align, bool &rf64, long long &ds64_off);
 #ifdef DIRECT_STANDALONE
 void direct_test_knobs(long long skew_us, int delay_max_ms, int ping_ms); // the listener's clock skewed, its answers delayed 0..max ms
+void direct_test_bandwidth(int kbps); // the listener reads at most this fast (0: as fast as it comes)
 #endif
 
 #ifndef DIRECT_STANDALONE

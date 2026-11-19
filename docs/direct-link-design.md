@@ -182,7 +182,7 @@ the starter picks `start_at = shared_now + lead`; each computer starts when `rea
 The sender reads the file through a handle shared for read, write and delete (Windows: REAPER can keep writing, and delete a take it
 discards), and gets its size from that handle (NTFS's directory entry lags behind a file someone is writing). Each pass, for each peer:
 op 0 begin (payload: the codec id, 0 = the file's own bytes; 1 reserved for Opus packets, "fast first, lossless after"), then op 1 chunks
-of up to 256 KB from where that peer is, 8 MB a pass at most. After DirectStreamEnd, once everything's sent: op 3 (the first 64 KB again:
+of up to 64 KB from where that peer is (halved after a frame that timed out, down to 16 KB: 1.0.10), 8 MB a pass at most. After DirectStreamEnd, once everything's sent: op 3 (the first 64 KB again:
 the header the recorder rewrote at stop) and op 2 done (length + SHA-256). The receiver writes `<inbox>/.streams/<song>/<name>` (`.streams`
 can't be a song's name), skips bytes it already has, answers a gap with its length, and checks the hash at done.
 

@@ -255,24 +255,75 @@ static FILE *open_shared(const std::string &p, const char *mode) { return fopen(
 static int seek64(FILE *f, long long at) { return fseeko(f, (off_t)at, SEEK_SET); }
 static long long size64(FILE *f) { return fseeko(f, 0, SEEK_END) == 0 ? (long long)ftello(f) : -1; }
 #endif
-// (the size from an open handle: NTFS's directory entry, what stat reads, lags behind a file someone has open for writing)
-static long long file_size(const std::string &p)
+// (the size from an open handle: NTFS's directory entry, what stat, Explorer and Get-Item read, lags behind a file someone has open for
+// writing. On Windows a handle asking only for its attributes: no share mode can refuse that, whatever REAPER's writer allows. James, rt)
+#ifdef _WIN32
+static std::string win_err(const char *what)
+{
+  const DWORD e = GetLastError();
+  char b[160];
+  snprintf(b, sizeof b, "%s (Windows error %lu%s)", what, (unsigned long)e, e == ERROR_SHARING_VIOLATION ? ": REAPER holds it without letting others read" : e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND ? ": not there" : "");
+  return b;
+}
+static long long file_size(const std::string &p, std::string *why = nullptr)
+{
+  HANDLE h = CreateFileW(widen(p).c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) { if (why) *why = win_err("can't see the file"); return -1; }
+  LARGE_INTEGER n;
+  const bool ok = GetFileSizeEx(h, &n) != 0;
+  if (!ok && why) *why = win_err("can't read the file's size");
+  CloseHandle(h);
+  return ok ? (long long)n.QuadPart : -1;
+}
+#else
+static long long file_size(const std::string &p, std::string *why = nullptr)
 {
   FILE *f = open_shared(p, "rb");
-  if (!f) return -1;
+  if (!f) { if (why) *why = std::string("can't open the file (") + strerror(errno) + ")"; return -1; }
   const long long n = size64(f);
   fclose(f);
   return n;
 }
-static bool read_at(const std::string &p, long long at, size_t n, std::string &out)
+#endif
+// A file's newest time, made or last written (lib/streams.lua: is this file the take REAPER began just now? No API names it before stop. James, rt)
+double direct_file_time(const char *path)
+{
+  if (!path || !*path) return -1;
+#ifdef _WIN32
+  HANDLE h = CreateFileW(widen(path).c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return -1;
+  FILETIME made, wrote;
+  const bool ok = GetFileTime(h, &made, nullptr, &wrote) != 0;
+  CloseHandle(h);
+  if (!ok) return -1;
+  auto secs = [](const FILETIME &t) { return (double)((((unsigned long long)t.dwHighDateTime << 32) | t.dwLowDateTime) - 116444736000000000ULL) / 1e7; };
+  return std::max(secs(made), secs(wrote));
+#else
+  struct stat st;
+  if (stat(path, &st) != 0) return -1;
+  return (double)std::max(st.st_mtime, st.st_ctime);
+#endif
+}
+// Up to n bytes at `at`: -> how many were read (fewer near the end, or where a writer hasn't got to yet), -1 if it can't be opened (why).
+static long long read_some(const std::string &p, long long at, size_t n, std::string &out, std::string *why = nullptr)
 {
   FILE *f = open_shared(p, "rb");
-  if (!f) return false;
+  if (!f) {
+#ifdef _WIN32
+    if (why) *why = win_err("can't open the file to read it");
+#else
+    if (why) *why = std::string("can't open the file to read it (") + strerror(errno) + ")";
+#endif
+    out.clear();
+    return -1;
+  }
   out.resize(n);
-  const bool ok = n == 0 || (seek64(f, at) == 0 && fread(&out[0], 1, n, f) == n);
+  const size_t got = n == 0 || seek64(f, at) != 0 ? 0 : fread(&out[0], 1, n, f);
   fclose(f);
-  return ok;
+  out.resize(got);
+  return (long long)got;
 }
+static bool read_at(const std::string &p, long long at, size_t n, std::string &out) { return read_some(p, at, n, out) == (long long)n; }
 // SHA-256 of a file's first `len` bytes (-> false: shorter, or unreadable).
 static bool sha_file(FILE *f, long long len, unsigned char out[32])
 {
@@ -406,9 +457,9 @@ struct Peer {
   // the clock (1.0.8): the last pings' samples, and the estimate from the lowest round trips among them
   double next_ping = 0; int pings = 0; std::deque<Sample> samples; double offset_ms = 0, rtt_ms = -1, spread_ms = 0; long long clock_at = 0; std::string clock_err;
 };
-struct OutPeer { long long off = 0; bool begun = false, done = false; int resends = 0; std::string err; };
+struct OutPeer { long long off = 0; bool begun = false, done = false; int resends = 0; size_t chunk = 0; std::string err; }; // (chunk: 0 = STREAM_CHUNK)
 struct OutStream {
-  std::string studio, rel, path; std::map<std::string, OutPeer> peers; int interval_ms = 250, codec = 0; bool ended = false; // (codec 0 only, for now)
+  std::string studio, rel, path, err; std::map<std::string, OutPeer> peers; int interval_ms = 250, codec = 0; bool ended = false; // (codec 0 only, for now; err: reading it here)
   double next_at = 0, finished_at = 0; long long size = 0, sha_len = -1; unsigned char sha[32] = { 0 };
 };
 struct InStream {
@@ -441,9 +492,12 @@ std::atomic<bool> g_stop_listen{ false }, g_stop_send{ false };
 sock_t g_listen_sock = BAD_SOCK;
 bool g_wsa = false;
 std::string g_poll_out, g_status_out, g_msg_out, g_clock_out, g_streams_out; // (what the last call handed back: REAPER copies it before the next)
-long long g_skew_us = 0; int g_delay_max_ms = 0; double g_ping_s = 1.0; // (the test's knobs; 0, 0, 1 s otherwise)
+long long g_skew_us = 0; int g_delay_max_ms = 0; double g_ping_s = 1.0; int g_listen_kbps = 0; // (the test's knobs; 0, 0, 1 s, 0 otherwise)
 
-const size_t MSG_KEEP = 512, MSG_KEEP_BYTES = 8 * 1024 * 1024, STREAM_CHUNK = 256 * 1024, STREAM_HEAD = 64 * 1024;
+// (STREAM_CHUNK: each stream frame waits up to 3 s for its answer, so it has to cross in well under that on a slow way too. At 256 KB a
+// Tailscale relay's few hundred kbit/s timed out every frame after REAPER's first 64 KB, each failure skipping the peer 10 s: the laptop's copy
+// sat at 64 KB till stop. 64 KB, halved per peer after a dropped frame, down to 16 KB. James, rt)
+const size_t MSG_KEEP = 512, MSG_KEEP_BYTES = 8 * 1024 * 1024, STREAM_CHUNK = 64 * 1024, STREAM_CHUNK_MIN = 16 * 1024, STREAM_HEAD = 64 * 1024;
 const long long STREAM_MAX = 16LL << 30; // (a take over 16 GB isn't one)
 const int CLOCK_WINDOW = 16, CLOCK_BEST = 3;
 
@@ -704,6 +758,7 @@ void listen_loop(sock_t ls, bool loopback_ok)
         const int k = (int)recv(c.s, chunk.data(), (int)chunk.size(), 0);
         const long long t_recv = clock_us(); // (a ping's t1: as soon as its bytes are here)
         if (k > 0) {
+          if (g_listen_kbps > 0) sleep_ms(k * 8 / g_listen_kbps); // (the test: a slow way here, a Tailscale relay)
           c.last = t;
           c.buf.insert(c.buf.end(), chunk.data(), chunk.data() + k);
           set_nonblock(c.s, false); set_timeouts(c.s, 3000); // (the answer is sent blocking, briefly)
@@ -889,11 +944,14 @@ double do_pings()
 
 // One pass of a stream for each of its peers: what's been written since, in chunks (op 1); once it's ended and all sent, the file's first
 // 64 KB again (op 3: the header the recorder rewrote at the end) and done (op 2) with the length and SHA-256.
+// (trouble reading the file here is this computer's, never the peer's: it isn't skipped for 10 s for it, as a peer that doesn't answer is, and
+// the stream's own `err` says what. A read that comes back short sends what it got. James, rt: a take's tail sat unsent while REAPER wrote it)
 void stream_tick(OutStream &s, const std::string &key)
 {
-  const long long size = file_size(s.path);
-  if (size < 0) { for (auto &kv : s.peers) if (!kv.second.done) kv.second.err = "can't read the file (not there yet, or held)"; return; }
+  const long long size = file_size(s.path, &s.err);
+  if (size < 0) return;
   s.size = size;
+  s.err.clear();
   for (auto &kv : s.peers) {
     OutPeer &o = kv.second;
     if (o.done || o.resends > 2) continue;
@@ -917,9 +975,10 @@ void stream_tick(OutStream &s, const std::string &key)
     long long budget = 8LL << 20; // (8 MB a pass to each: a long file started late doesn't hold the others up)
     for (int tries = 0; code == 0 || code == 7;) {
       if (!o.begun || o.off >= size || budget <= 0 || ++tries > 64) break;
-      const size_t n = (size_t)std::min<long long>((long long)STREAM_CHUNK, size - o.off);
-      if (!read_at(s.path, o.off, n, chunk)) { code = -1; why = "couldn't read the file"; break; }
-      if (op(1, o.off, chunk) == 0) { o.off += (long long)n; budget -= (long long)n; }
+      const size_t n = (size_t)std::min<long long>((long long)(o.chunk ? o.chunk : STREAM_CHUNK), size - o.off);
+      if (read_some(s.path, o.off, n, chunk, &s.err) <= 0) { if (s.err.empty()) s.err = "the file's newest bytes aren't readable yet"; break; } // (next pass)
+      if (op(1, o.off, chunk) == 0) { o.off += (long long)chunk.size(); budget -= (long long)chunk.size(); }
+      else if (code < 0) o.chunk = std::max(STREAM_CHUNK_MIN, (o.chunk ? o.chunk : STREAM_CHUNK) / 2); // (too slow a way for this size)
     }
     if (o.begun && (code == 0 || code == 7) && s.ended && o.off >= size) {
       if (s.sha_len != size) {
@@ -964,7 +1023,7 @@ double do_streams()
     if (it == g_out.end()) continue;
     OutStream &o = it->second; // (only what the pass changed: `ended` and new peers are the main thread's)
     for (auto &kv : s.peers) o.peers[kv.first] = kv.second;
-    o.size = s.size; o.sha_len = s.sha_len; memcpy(o.sha, s.sha, 32);
+    o.size = s.size; o.sha_len = s.sha_len; memcpy(o.sha, s.sha, 32); o.err = s.err;
     bool all = o.ended;
     for (auto &kv : o.peers) all = all && (kv.second.done || kv.second.resends > 2);
     if (all) o.finished_at = now_s();
@@ -1057,6 +1116,7 @@ void json_str(std::string &o, const std::string &s)
 } // namespace
 
 #ifdef DIRECT_STANDALONE
+void direct_test_bandwidth(int kbps) { g_listen_kbps = kbps; }
 void direct_test_knobs(long long skew_us, int delay_max_ms, int ping_ms)
 {
   g_skew_us = skew_us;
@@ -1247,8 +1307,10 @@ const char *direct_streams()
     o += first ? "{\"studio\":" : ",{\"studio\":";
     first = false;
     json_str(o, s.studio); o += ",\"rel\":"; json_str(o, s.rel);
-    snprintf(num, sizeof(num), ",\"size\":%lld,\"ended\":%s,\"finished\":%s,\"peers\":{", s.size, s.ended ? "true" : "false", s.finished_at > 0 ? "true" : "false");
+    snprintf(num, sizeof(num), ",\"size\":%lld,\"ended\":%s,\"finished\":%s,\"error\":", s.size, s.ended ? "true" : "false", s.finished_at > 0 ? "true" : "false");
     o += num;
+    json_str(o, s.err);
+    o += ",\"peers\":{";
     bool pf = true;
     for (const auto &pk : s.peers) {
       if (!pf) o += ',';
@@ -1350,6 +1412,7 @@ static double api_now() { return direct_now(); }
 static int api_stream(const char *studio, const char *rel, const char *path, const char *peers, int ms) { return direct_stream(studio, rel, path, peers, ms); }
 static int api_stream_end(const char *studio, const char *rel) { return direct_stream_end(studio, rel); }
 static const char *api_streams() { return direct_streams(); }
+static double api_file_time(const char *path) { return direct_file_time(path); }
 #define S_(i) (n > (i) ? (const char *)a[i] : nullptr)
 static void *va_msg(void **a, int n) { return (void *)(INT_PTR)api_msg(S_(0), S_(1), S_(2), S_(3)); }
 static void *va_msg_poll(void **a, int n) { return (void *)api_msg_poll(n > 0 ? (int)(INT_PTR)a[0] : 0); }
@@ -1359,6 +1422,7 @@ static void *va_now(void **, int) { static double v; v = api_now(); return &v; }
 static void *va_stream(void **a, int n) { return (void *)(INT_PTR)api_stream(S_(0), S_(1), S_(2), S_(3), n > 4 ? (int)(INT_PTR)a[4] : 0); }
 static void *va_stream_end(void **a, int n) { return (void *)(INT_PTR)api_stream_end(S_(0), S_(1)); }
 static void *va_streams(void **, int) { return (void *)api_streams(); }
+static void *va_file_time(void **a, int n) { static double v; v = api_file_time(S_(0)); return &v; }
 #undef S_
 
 void direct_register(reaper_plugin_info_t *rec)
@@ -1394,6 +1458,8 @@ void direct_register(reaper_plugin_info_t *rec)
       "int\0const char*,const char*\0studio,relpath\0The streamed file is complete: send the rest, then its length and SHA-256." },
     { "StudioSync_DirectStreams", (void *)api_streams, (void *)va_streams,
       "const char*\0\0\0Streams going out and coming in, as JSON (bytes so far, done, hash ok, the received copy's path)." },
+    { "StudioSync_DirectFileTime", (void *)api_file_time, (void *)va_file_time,
+      "double\0const char*\0path\0A file's newest time, made or last written, seconds since 1970 (current while it's being written); -1 if it can't be read." },
   };
   char key[96];
   for (const auto &f : fns) {

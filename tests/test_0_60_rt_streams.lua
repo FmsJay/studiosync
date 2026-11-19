@@ -22,9 +22,8 @@ local direct = require("direct")
 assert(streams.audio_ext("a.FLAC") and streams.audio_ext("x.wav") and not streams.audio_ext("x.wav.reapeaks") and not streams.audio_ext("x.mid") and not streams.audio_ext("x.rpp-bak"), "audio files only")
 assert(streams.records_audio(1, 0, 0) and streams.records_audio(1, 1024 + 2, 0) and streams.records_audio(1, 0, 1), "armed audio input or output to a file")
 assert(not streams.records_audio(0, 0, 0) and not streams.records_audio(1, -1, 0) and not streams.records_audio(1, 4096 + 33, 0) and not streams.records_audio(1, 0, 2) and not streams.records_audio(1, 0, 7), "not armed, no input, MIDI, none, MIDI overdub")
-local base = { ["old.flac"] = true, ["old.flac.reapeaks"] = true, ["Song.rpp"] = true }
-local new = streams.new_files(base, { "old.flac", "Song.rpp", "Song.rpp-bak", "Bass-001.flac", "Bass-001.flac.reapeaks", "Gtr-001.flac" })
-assert(#new == 2 and new[1] == "Bass-001.flac" and new[2] == "Gtr-001.flac", "new audio files since the baseline, sorted")
+assert(streams.made_since(1000, 1000, true) and streams.made_since(997.5, 1000, true) and not streams.made_since(996, 1000, true), "made or written since Record (3 s tolerance)")
+assert(not streams.made_since(nil, 1000, true) and streams.made_since(nil, 1000, false) and not streams.made_since(-1, 1000, true), "no file time (older extension): only what appears after the first look")
 local tracks = { { name = "Gtr", num = 1 }, { name = "Gtr 2", num = 2 }, { name = "Bass", num = 3 } }
 local m = streams.match(tracks, { "Bass-001.flac", "Gtr 2-001.flac", "Gtr-001.flac" })
 local got = {}
@@ -40,7 +39,8 @@ m = streams.match({ { name = "Vox", num = 1 }, { name = "Keys", num = 2 } }, { "
 assert(#m == 0, "can't tell which is whose: none streamed (they come the normal way)")
 m = streams.match({ { name = "Vox", num = 1 }, { name = "Keys", num = 2 } }, { "Keys-1.wav", "rec_0002.wav", "x.wav" })
 assert(#m == 1 and m[1].track.name == "Keys", "the named one only, when the rest can't be told apart")
-assert(streams.start_pos(10, 10.04) == 10 and streams.start_pos(10, 30) == 30 and streams.start_pos(12, 10) == 10, "from the cursor, else where the playhead is")
+assert(streams.start_pos(10, 10.04) == 10 and streams.start_pos(10, 30) == 30, "from the cursor, else where the playhead is")
+assert(math.abs(streams.start_pos(3.6923, 1.8462) - 3.6923) < 1e-9, "in a count-in the playhead is a bar before the cursor: the take starts at the cursor (beat 8 at 130 BPM)")
 
 -- ---- the stream's name and the message ----
 local nm = streams.stream_name("main", "Chilio_Mac", "Bass-001.flac")
@@ -88,8 +88,9 @@ e.held_at = 600
 assert(not streams.expired(e, 9 + 901) and streams.expired(e, 600 + 901), "mirror's stand-in for the real take keeps it")
 assert(streams.expired({ progress_at = 0 }, 301) and not streams.expired({ progress_at = 0 }, 299), "no bytes for 5 minutes")
 local book = { a = { rel = "Song/main~Bo~keep.flac" } }
-local gone = streams.prunable({ "main~Bo~keep.flac", "main~Bo~old.flac", "main~Bo~coming.flac", "side~Bo~x.flac", "main~Bo~y.flac.part", "other.wav" }, book, { ["main~Bo~coming.flac"] = true }, "main")
-assert(#gone == 1 and gone[1] == "main~Bo~old.flac", "this room's, not kept, not arriving, not a part file")
+local gone = streams.prunable({ "main~Bo~keep.flac", "main~Bo~keep.flac.reapeaks", "main~Bo~old.flac", "main~Bo~old.flac.reapeaks", "main~Bo~coming.flac",
+  "side~Bo~x.flac", "main~Bo~y.flac.part", "other.wav" }, book, { ["main~Bo~coming.flac"] = true }, "main")
+assert(#gone == 2 and gone[1] == "main~Bo~old.flac" and gone[2] == "main~Bo~old.flac.reapeaks", "this room's, not kept, not arriving, not a part file; peaks with their file")
 
 -- ---- in time ----
 local st
@@ -111,8 +112,11 @@ assert(lag == nil and st == nil, "a plain play: not a take, no lag")
 
 -- ---- Health ----
 assert(streams.health_text({ out = {}, inn = {} }) == nil, "nothing: no line")
-local h = streams.health_text({ out = { { size = 2097152, finished = false, peers = { p = { error = "" } } } }, inn = { { bytes = 1048576, done = false }, { done = true, ok = false } } })
-assert(h:find("1 out %(2%.0 MB%), 1 in %(1%.0 MB%)") and h:find("1 didn't get through whole"), h)
+local h = streams.health_text({ out = { { rel = "Song/main~James~Bass-001.flac", size = 1048576, finished = false, error = "", peers = { ["james-laptop.tail99.ts.net:47281"] = { sent = 65536, error = "" } } } },
+  inn = { { rel = "Song/main~Bo~Keys-002.flac", bytes = 524288, done = false }, { done = true, ok = false } } })
+assert(h:find("out James's Bass%-001%.flac: 1%.00 MB written, james%-laptop has 0%.06 MB") and h:find("in Bo's Keys%-002%.flac: 0%.50 MB so far") and h:find("1 didn't get through whole"), h)
+h = streams.health_text({ out = { { rel = "Song/main~James~B.flac", size = 0, finished = false, error = "can't open the file to read it (Windows error 32: REAPER holds it without letting others read)", peers = {} } }, inn = {} })
+assert(h:find("Windows error 32"), "a stream this computer can't read says why")
 
 -- ---- a placeholder's life, with a stand-in REAPER ----
 local items, guid_n, srcs = {}, 0, 0
@@ -229,8 +233,24 @@ clock = clock + 1
 streams.receive_tick(nil, cfg, b, false)
 assert(streams.book[d2.id] == nil and removed[e2.path], "complete: its file goes")
 
+-- A take too short for a placeholder (3 KB streamed): its copy still goes once the real take is in (laptop, rt: 2-3 KB copies stayed)
+local d3 = { id = "Bo-20261119-120200Z-0003", user = "Bo", track = "T-BO-20261119-1", name = "Bass", file = "Bass_1153.flac", pos = 40 }
+streams.on_take(cfg, b, d3)
+local e3 = streams.book[d3.id]
+inn[3] = { studio = "studio1", rel = e3.rel, bytes = 3379, total = 3379, done = true, ok = true }
+exists[e3.path] = true
+clock = clock + 1.1
+streams.receive_tick(nil, cfg, b, false)
+assert(streams.book[d3.id] and not e3.guid, "no placeholder, no real take yet: kept")
+local real3 = new_item(TR, "R/Song/rooms/main/media/ff00-Bass_1153.flac", 40, 0.05)
+exists[real3.takes[1].src.file] = true
+clock = clock + 1.1
+streams.receive_tick(nil, cfg, b, false)
+assert(streams.book[d3.id] == nil and removed[e3.path], "the real take is in: the streamed copy goes")
+
 -- ---- the recorder's side, with a stand-in REAPER ----
 local rec_dir, tracks_here = { "old.flac" }, { { name = "Bass", arm = 1, input = 1024, mode = 0, oid = "T-JAMES-1" }, { name = "Keys", arm = 0, input = 0, mode = 0, oid = "T-JAMES-2" } }
+local made = { ["C:/Rec/old.flac"] = 100 } -- path -> its file time
 local sent, started, ended = {}, {}, {}
 local play_pos, cursor = 8.05, 8
 for k, v in pairs({
@@ -243,6 +263,7 @@ for k, v in pairs({
   GetCursorPositionEx = function() return cursor end,
   GetSetProjectInfo = function() return 0 end,
   GetAudioDeviceInfo = function() return true, "48000" end,
+  StudioSync_DirectFileTime = function(p) return made[p] or -1 end,
 }) do rawset(reaper, k, v) end
 package.loaded.mirror = { local_track = function() return false end, track_oid = function(tr) return tr.oid end }
 local real_files = band.files
@@ -252,14 +273,17 @@ direct.stream_start = function(_, path, song, room, ms, name) started[#started +
 direct.stream_end = function(_, rel) ended[#ended + 1] = rel; return true end
 direct.send_live = function(_, kind, dd, song, room, id) sent[#sent + 1] = { kind = kind, d = dd, id = id } end
 local me = { root = "R", user = "James" }
-streams.send_tick(nil, me, b, false) -- (stopped, Bass armed: the baseline)
-rec_dir[#rec_dir + 1] = "Bass-001.flac"
-clock = clock + 0.05
+local real_time = os.time
+local wall = 2000
+os.time = function(t) if t then return real_time(t) end; return wall end
+-- armed and Record pressed at once, with a one-bar count-in: no listing beforehand, the file made as the count-in starts
+rec_dir[#rec_dir + 1] = "Bass-001.flac"; made["C:/Rec/Bass-001.flac"] = 2000.4
+cursor, play_pos = 3.6923, 1.8462
 streams.send_tick(nil, me, b, true)
-assert(#started == 1 and started[1].path == "C:/Rec/Bass-001.flac" and started[1].name == "main~James~Bass-001.flac" and started[1].ms == 100, "the new file streams, under its link name")
+assert(#started == 1 and started[1].path == "C:/Rec/Bass-001.flac" and started[1].name == "main~James~Bass-001.flac" and started[1].ms == 100, "the new file streams at once, under its link name")
 local tk = sent[1]
-assert(tk.kind == "take" and tk.d.track == "T-JAMES-1" and tk.d.file == "Bass-001.flac" and tk.d.pos == 8 and tk.d.nch == 2 and tk.d.srate == 48000 and tk.d.fmt == "flac", "the take message")
-assert(math.abs(tk.d.at - (1.7e9 + 3 - 0.05)) < 1e-6, "at: the shared clock when the playhead was at the take's start")
+assert(tk.kind == "take" and tk.d.track == "T-JAMES-1" and tk.d.file == "Bass-001.flac" and tk.d.pos == 3.6923 and tk.d.nch == 2 and tk.d.srate == 48000 and tk.d.fmt == "flac", "the take message: it starts at the cursor, not the count-in's playhead")
+assert(math.abs(tk.d.at - (1.7e9 + 3 + (3.6923 - 1.8462))) < 1e-6, "at: the shared clock when the playhead reaches the take's start, still to come")
 assert(streams.valid_take(tk.d, "Song", "main", "Bo", clock), "and the others take it")
 clock = clock + 0.2
 streams.send_tick(nil, me, b, true)
@@ -270,21 +294,27 @@ assert(#ended == 0, "stopped: the header REAPER writes at stop first")
 clock = clock + 0.6
 streams.send_tick(nil, me, b, false)
 assert(#ended == 1 and ended[1] == "Song/main~James~Bass-001.flac" and sent[2].kind == "take_end" and sent[2].d.id == tk.d.id, "then the rest, and the others told")
-rec_dir[#rec_dir + 1] = "Bass-002.flac" -- (a file that came while stopped, not ours: the next baseline has it)
-clock = clock + 6
-streams.send_tick(nil, me, b, false)
-clock = clock + 0.05
-streams.send_tick(nil, me, b, true)
-assert(#started == 1, "a file already there before Record isn't the take's")
+-- the next take: the file only appears after the count-in, and an older one written long before isn't taken
+wall, cursor, play_pos = 2100, 10, 8
+rec_dir[#rec_dir + 1] = "Bass-000.flac"; made["C:/Rec/Bass-000.flac"] = 1500
 clock = clock + 1
-streams.send_tick(nil, me, b, false)
-tracks_here[1].arm = 0
-clock = clock + 6
-streams.send_tick(nil, me, b, false)
-rec_dir[#rec_dir + 1] = "Bass-003.flac"
-clock = clock + 0.05
 streams.send_tick(nil, me, b, true)
-assert(#started == 1, "nothing armed: nothing streams")
+assert(#started == 1, "nothing new yet (and Bass-000 is old)")
+clock = clock + 3.5
+streams.send_tick(nil, me, b, true)
+play_pos = 10.02
+rec_dir[#rec_dir + 1] = "Bass-002.flac"; made["C:/Rec/Bass-002.flac"] = 2102
+clock = clock + 0.15
+streams.send_tick(nil, me, b, true)
+assert(#started == 2 and started[2].path == "C:/Rec/Bass-002.flac", "made after a long count-in: still looked for, and found")
+clock = clock + 1
+streams.send_tick(nil, me, b, false); clock = clock + 1; streams.send_tick(nil, me, b, false)
+tracks_here[1].arm = 0
+rec_dir[#rec_dir + 1] = "Bass-003.flac"; made["C:/Rec/Bass-003.flac"] = 2200; wall = 2200
+clock = clock + 1
+streams.send_tick(nil, me, b, true)
+assert(#started == 2, "nothing armed: nothing streams")
+os.time = real_time
 
 -- ---- live MIDI over the link ----
 package.loaded.sync, package.loaded.live = package.loaded.sync or {}, package.loaded.live or {}
