@@ -679,3 +679,13 @@ The Drive copy (lib/drive.lua: each room mirrored to a shared cloud folder, any 
   main now matches the fork on another computer too, Restore in main can go back. Notes: add one on an item, save a version, edit that item:
   the note says "made on version N; that spot changed since". Client link: Render current mix, Make a client link, edit comments.txt in the cloud
   folder, wait a minute on the Mixes page: the comment shows in Notes as from the client, and studio-notes.txt lists it.
+
+## Colour parity (James, 2026-11-19: "everyone should share the same colours for tracks and everything")
+Track and item colours already travel as edits, and Colour the project recolours for everyone. What still differs between computers:
+- local overlays: who's-working colours painted over tracks on some computers and not others;
+- the theme: one track colour looks different under different themes (tinting, brightness), and theme colours are "never shared";
+- personal colour preferences (MIDI note colouring, take/region colours, auto-colour for new tracks);
+- each person's own colour, which should be the same on every computer.
+Plan: a studio "Colour parity" setting (on by default) that keeps the project's colours identical everywhere (overlays become a badge,
+not a recolour), shares the colour-affecting display settings with the studio preferences, fixes each person's colour studio-wide, and
+checks parity in Health.
