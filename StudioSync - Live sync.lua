@@ -187,6 +187,7 @@ local function end_of_session(why)
   recall.save(proj, cfg, b.song, b.room, why:find("20 minutes", 1, true) and "20 quiet minutes" or "end of session", true)
   ended_at_n = n -- (only once it's saved: marked first, a failed save was never tried again. Round 1 review, 0.59.45)
   band.log("saved an end-of-session version (" .. why .. "): it's kept for good (Restore > Saved versions)")
+  band.try("recap.write", require("recap").write, proj, cfg, b) -- (a few bullets on the session, from its events: lib/recap.lua. James, rt)
   local droot = require("drive").root(cfg) -- and the project itself, for anyone to open from Drive (lib/sessionfile.lua)
   if droot then
     local ok, out, err = pcall(require("sessionfile").export, proj, cfg, b, droot, sync.room_dir(cfg, b.song, b.room))
@@ -281,6 +282,7 @@ local drive_at, drive_more, drive_said = -math.huge, false, nil
 local drive_posted, drive_soon_at = 0, nil -- (changes seen going out; when the cloud pass they bring is due)
 
 local last, recording, stopped_at = 0, false, 0
+local rec_had -- (the takes on the armed tracks as this recording began: smart take names, lib/recap.lua)
 local status_info -- (the status as last written: tick_body says "recording" with it, as the pass that writes it waits while recording)
 local paint_at = -math.huge -- when tracks were last coloured for who's working on them
 local format_at = -math.huge -- when the recording format was last checked
@@ -1213,6 +1215,10 @@ local function tick_body() -- returns true to keep going
   local st = reaper.GetPlayStateEx(proj)
   if st & 4 ~= 0 then
     if not recording then band.try("rthealth.record_check", require("rthealth").record_check, proj, cfg, b) end -- (low disk here or on a bandmate: a line, never a box. James, rt)
+    if not recording then -- (the takes there before it: lib/recap.lua)
+      local ok, had = band.try("recap.before_record", require("recap").before_record, proj)
+      rec_had = ok and had or nil
+    end
     if not recording and status_info then
       status_info.playing, status_info.recording, status_info.cursor = true, true, nil
       sync.write_status(proj, cfg, b.song, b.room, status_info)
@@ -1222,6 +1228,9 @@ local function tick_body() -- returns true to keep going
   elseif recording then
     recording, stopped_at = false, reaper.time_precise()
     together_take = nil -- (the take started together is over: a redo of your own isn't someone else's to stop. Review, 0.58.92)
+    -- (new takes named "Bridge - James - take 3" before the next look sends them, so the name goes out with them: lib/recap.lua. James, rt)
+    band.try("recap.name_takes", require("recap").name_takes, proj, cfg, rec_had)
+    rec_had = nil
     band.try("alerts.send", require("alerts").send, cfg, "take", "StudioSync: " .. b.song, cfg.user .. " just recorded something in " .. b.song) -- (phone alerts, if the studio has them)
     band.try("api.event", require("api").event, "take", { song = b.song, room = b.room })
   end

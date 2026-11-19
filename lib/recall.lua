@@ -176,6 +176,7 @@ local function cached_event(path)
   recall.ev_cache[path] = ev
   return ev
 end
+recall.event = cached_event -- (one event file, cached and its state read only when asked: the session recap, lib/recap.lua. James, rt)
 -- Reads the room's changes a few at a time, for `secs` per call, so nothing has to read thousands at once when a page opens.
 -- -> whether they've all been read, how many have, how many there are.
 -- `idle`: nobody is looking at what it reads just now: the first read of everything carries on, but once that's done the folder isn't looked
