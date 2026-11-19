@@ -5,6 +5,7 @@
 local dir = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]")
 package.path = dir .. "/lib/?.lua;" .. package.path
 local band = require("band")
+band.note_start(dir) -- (was all of this copy here as it started? band.started_partial. Full review, 0.59.44)
 if require("fromfolder").handoff(debug.getinfo(1, "S").source) then return end -- (an old copy's button or key: the copy this computer runs from now. 0.59.24)
 band.WHO = "panel" -- (which script a line in the log file came from)
 local sync = require("sync")
@@ -2253,8 +2254,8 @@ local function studio_debug()
   local on = dm.on(cfg.root)
   ImGui.TextDisabled(ctx, on and ("On: every computer in the studio saves what it sees (versions, a copy of the project as it has it, what's waiting or was skipped, " ..
     "its setup, log and errors, and REAPER's crash reports) into the studio's _debug folder at the end of each session, with each bug report and " ..
-    "after a crash, for working out what went wrong. " ..
-    "Only the owner and admins get everyone's; the others keep their own.") or
+    "after a crash, for working out what went wrong. Each computer is told. " ..
+    "Only the owner and admins get everyone's; the others keep their own (hidden from them, not locked: Syncthing sends one folder to everyone).") or
     "Off. On, every computer in the studio saves a report, a copy of its project, its log, errors and crash reports into the studio's _debug folder at the end of each session, with each bug report and after a crash, for the owner and admins.")
   if studio_admin() then
     local ch, v = ImGui.Checkbox(ctx, "Debug mode for everyone##studiodebug", on)
@@ -2294,7 +2295,7 @@ local function studio_updates()
       require("groups").set_folder_updates(cfg.root, v)
       band.log(v and "the studio's computers run StudioSync from its folder from now on (each moves at its next look)" or "the studio's computers update StudioSync themselves again (those already moved stay on the folder's copy)")
     end
-    ImGui.SetItemTooltip(ctx, "Owner and admins. For a studio working on StudioSync together: one copy, the folder's, everywhere. The code guard still asks\non each computer before running code that changed in the folder.")
+    ImGui.SetItemTooltip(ctx, "Owner and admins. For a studio working on StudioSync together: one copy, the folder's, everywhere. Each computer takes what's\nput there without asking (the studio trusts its members). Guests never run it, and don't sync it.")
   end
   card_end()
 end
@@ -3388,7 +3389,8 @@ local function updated()
   local disk = (band.read(dir .. "/lib/band.lua") or ""):match('VERSION = "([^"]+)"')
   local ready = disk and disk ~= band.VERSION and disk == seen_disk and band.update_ok(dir, disk) -- (from a shared folder, once you said yes: Autostart asks)
   seen_disk = disk
-  return ready
+  ready = ready or (disk and band.started_partial(dir)) -- (started on a part-arrived copy, whole now: 0.59.44)
+  return ready and reaper.GetExtState(band.SECTION, "reload failed StudioSync - Panel.lua") ~= disk
 end
 
 -- While someone else drives and is here, a slim banner at the foot of REAPER's arrange view says what you can change.
@@ -3561,9 +3563,8 @@ local function loop_body()
     restarting = true
     STUDIOSYNC_PANEL_RELOAD = true -- (the next one keeps the box or strip as it is)
     pcall(require("colours").put_back_all) -- (a look being tried doesn't outlive the panel's Lua)
-    for _, f in ipairs(band.files(dir .. "/lib", ".lua")) do package.loaded[f:sub(1, -5)] = nil end
-    band.drop_code_searcher() -- (the check of the old version: it refused the new code you'd said yes to. 0.59.28)
-    return dofile(dir .. "/StudioSync - Panel.lua")
+    if band.reload_or_say(dir, "StudioSync - Panel.lua", seen_disk) then return end
+    restarting, STUDIOSYNC_PANEL_RELOAD, reload_now = false, nil, false -- (it couldn't start: this one carries on. 0.59.44)
   end
   -- (frames that never end, as for a panel opened while ReaPack's Transaction report is up, pile every frame's drawing up: 7.4 GB in 12 minutes
   -- till Linux killed REAPER. So nothing is drawn while the count stands still; it moves on every pass otherwise. Linux stress test, 0.58.77)

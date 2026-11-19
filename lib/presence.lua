@@ -74,6 +74,19 @@ function presence.peers(cfg, song, room)
   peers_at[key], peers[key], everyone[key] = reaper.time_precise(), out, all
   return out
 end
+-- Who's here within `within` seconds, by peers' rule: their own stamp says so, or their file changed here that recently, whatever their clock
+-- says. (Who's alone was decided on the stamp alone: a bandmate whose clock ran 90 s behind read as gone, and you got full control over their
+-- claims. Full review, 0.59.44.) -> their names, sorted.
+function presence.here(cfg, song, room, within)
+  presence.peers(cfg, song, room)
+  local now, out = reaper.time_precise(), {}
+  for _, st in ipairs(everyone[song .. "/" .. room] or {}) do
+    local l = last_time[st.user]
+    if band.age(st.time) < within or (l and now - l.at < within) then out[#out + 1] = st.user end
+  end
+  table.sort(out)
+  return out
+end
 -- Every bandmate's status file, however old, from the same read as presence.peers (at most a second old). Shared: never change them.
 -- (0.59.14, review: sync.present read every status file again each poll, right beside presence.peers.)
 function presence.all(cfg, song, room)

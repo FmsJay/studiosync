@@ -180,8 +180,23 @@ function suggest.notices(proj, cfg, room_dir)
       if a.answer == "accepted" then
         band.log(string.format("%s accepted your suggestion (%s)%s", tostring(h.owner), suggest.words(h),
           (a.left or 0) > 0 and string.format("; %d had changed since or weren't theirs, and stay as they are", a.left) or ""))
-      elseif a.answer == "declined" then
-        band.log(string.format("%s declined your suggestion (%s). Anything new you added is still on your '(yours, not sent)' tracks", tostring(h.owner), suggest.words(h)))
+      end
+      -- (declined or withdrawn: what you did to their parts is kept here before its files go, on '(yours, not sent)' tracks and in Kept
+      -- automation: those files were its only copy. Full review, 0.59.44)
+      local kept = 0
+      if a.answer ~= "accepted" then
+        for _, f in ipairs(band.files(parts_of(room_dir, h.id), ".json")) do
+          local ok, did = pcall(mirror.keep_suggested, proj, band.read_json(parts_of(room_dir, h.id) .. "/" .. f), room_dir)
+          if ok and did then kept = kept + 1 end
+        end
+        if kept > 0 then reaper.UpdateArrange() end
+      end
+      local still = kept > 0 and " What you did is kept here: items on your '(yours, not sent)' tracks, automation under Restore > Kept automation" or
+        " Anything new you added is still on your '(yours, not sent)' tracks"
+      if a.answer == "declined" then
+        band.log(string.format("%s declined your suggestion (%s).%s", tostring(h.owner), suggest.words(h), still))
+      elseif a.answer == "withdrawn" and kept > 0 then
+        band.log(string.format("you withdrew your suggestion (%s).%s", suggest.words(h), still))
       end
       for _, f in ipairs(band.files(parts_of(room_dir, h.id), ".json")) do os.remove(parts_of(room_dir, h.id) .. "/" .. f) end
       os.remove(parts_of(room_dir, h.id))

@@ -1517,13 +1517,8 @@ end
 -- Who else is in the room now: everyone whose status receipt is under `within` s old (45: receipts are written every
 -- 15 s and take a few seconds to sync). A machine whose Syncthing can't reach us counts as away.
 function sync.present(cfg, song, room, within)
-  local out = {}
-  -- (the files as presence.peers read them, within the second, with the same checks: 0.59.14, review)
-  for _, st in ipairs(require("presence").all(cfg, song, room)) do
-    if band.age(st.time) < (within or 45) then out[#out + 1] = st.user end
-  end
-  table.sort(out)
-  return out
+  -- (the files as presence.peers read them, within the second, with the same checks: 0.59.14, review. And its clock rule: 0.59.44)
+  return require("presence").here(cfg, song, room, within or 45)
 end
 
 -- This computer's own id (made once, kept in REAPER's settings): two computers with the same name wrote one status

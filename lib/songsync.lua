@@ -47,7 +47,9 @@ end
 -- A guest who sees only some projects (lib/access.lua): the band-wide folders and their projects, in full, and nothing else at the top
 -- of the folder, not even another project's listing, so they never learn the others' names. Pure.
 function songsync.block_guest(allowed)
-  local out = { BEGIN }
+  -- (but not the studio's copy of StudioSync: band-wide, a guest's edit there reached every computer that updates through the folder, and ran.
+  -- First match wins, so this goes before the band-wide lines. Full review, 0.59.44)
+  local out = { BEGIN, "/_tools" }
   for _, p in ipairs(songsync.BAND_WIDE) do out[#out + 1] = "!" .. p end
   local list = {}
   for s in pairs(allowed) do list[#list + 1] = s end

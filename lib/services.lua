@@ -1180,7 +1180,11 @@ function services.pin_tailnet(me)
       local s = { only = require("groups").tailscale_only(g.root), suffix = t and t.suffix, devices = {} }
       for _, f in ipairs(band.files(g.root .. "/_band/devices", ".json")) do
         local d = band.read_json(g.root .. "/_band/devices/" .. f)
-        if type(d) == "table" and services.is_device_id(d.device) then s.devices[#s.devices + 1] = d end
+        -- (only a file its own computer wrote: a guest rewriting everyone's names pointed every computer at wrong addresses, and the studio
+        -- stopped syncing, the correction too. Asked once per file; one not answered yet is taken as before. Full review, 0.59.44)
+        local user = f:sub(1, -6)
+        local okd, said = pcall(require("trust").device_ok, g.root, user, type(d) == "table" and d.device) -- (by its file's name, which device_ok reads)
+        if type(d) == "table" and services.is_device_id(d.device) and not (okd and said == false) then s.devices[#s.devices + 1] = d end
       end
       studios[#studios + 1] = s
     end

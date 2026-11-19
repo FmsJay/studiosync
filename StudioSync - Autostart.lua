@@ -7,6 +7,7 @@
 local dir = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]")
 package.path = dir .. "/lib/?.lua;" .. package.path
 local band = require("band")
+band.note_start(dir) -- (was all of this copy here as it started? band.started_partial. Full review, 0.59.44)
 if require("fromfolder").handoff(debug.getinfo(1, "S").source) then return end -- (an old copy's button or key: the copy this computer runs from now. 0.59.24)
 band.WHO = "autostart" -- (which script a line in the log file came from)
 
@@ -94,6 +95,7 @@ local function loop_body()
     -- (did REAPER close cleanly last time? If not, debug mode sends this computer's part now, with the crash report. lib/debugmode.lua)
     local okd, unclean = pcall(require("debugmode").session_start)
     if okd and unclean then band.try("debugmode.computer_all", require("debugmode").computer_all, reaper.GetExtState(band.SECTION, "user")) end
+    band.try("debugmode.tell", require("debugmode").tell, reaper.GetExtState(band.SECTION, "user")) -- (debug mode on here? Said once)
     reaper.atexit(function()
       band.try("debugmode.computer_all", require("debugmode").computer_all, reaper.GetExtState(band.SECTION, "user")) -- (debug mode: as REAPER quits)
       band.try("debugmode.session_end", require("debugmode").session_end)
@@ -142,10 +144,9 @@ local function loop_body()
       reaper.SetExtState(band.SECTION, "update ok", disk, true)
     else band.log("StudioSync " .. disk .. " in the shared folder wasn't switched to (you said no). StudioSync asks again when it next starts (lib/band.lua band.code_guard, 0.59.14): ask your studio about it") end
   end
-  if disk and disk ~= band.VERSION and disk == seen_disk and band.update_ok(dir, disk) then
-    for _, f in ipairs(band.files(dir .. "/lib", ".lua")) do package.loaded[f:sub(1, -5)] = nil end
-    band.drop_code_searcher() -- (the check of the old version: it refused the new code you'd said yes to. 0.59.28)
-    return dofile(dir .. "/StudioSync - Autostart.lua")
+  if disk and ((disk ~= band.VERSION and disk == seen_disk and band.update_ok(dir, disk)) or band.started_partial(dir))
+      and reaper.GetExtState(band.SECTION, "reload failed StudioSync - Autostart.lua") ~= disk then
+    if band.reload_or_say(dir, "StudioSync - Autostart.lua", disk) then return end -- (safe: band.reload. 0.59.44)
   end
   seen_disk = disk
   reaper.defer(loop)

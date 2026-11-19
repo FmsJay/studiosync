@@ -54,7 +54,9 @@ function dm.report(cfg, proj, b)
     studio = band.info(cfg.root).name, activity = band.activity() }
   if b and proj then
     local ext = function(k) return select(2, reaper.GetProjExtState(proj, band.SECTION, k)) end
-    r.project = { song = b.song, room = b.room, role = b.role, file = select(2, reaper.EnumProjects(-1)), tracks = reaper.CountTracks(proj),
+    local file = ""
+    for i = 0, 512 do local p, f = reaper.EnumProjects(i); if not p then break end; if p == proj then file = f end end -- (this one's, not the tab in front: 0.59.44)
+    r.project = { song = b.song, room = b.room, role = b.role, file = file, tracks = reaper.CountTracks(proj),
       items = reaper.CountMediaItems(proj), hold = ext("hold") ~= "" or nil, local_mix = ext("local_mix") == "1" or nil, alone_last = ext("alone_last"),
       timeline = ext("timeline"), skipped = sync.skipped(proj), outbox = band.ext_json(band.SECTION, "outbox " .. tostring(proj)),
       put_back = band.ext_json(band.SECTION, "put back"), drift = reaper.GetExtState(band.SECTION, "mirror drift " .. tostring(proj)) }
@@ -97,17 +99,38 @@ end
 -- ---- the computer itself (0.59.40): written by Autostart, so it comes even with no studio project open, after a crash above all ----
 -- The system's crash reports for REAPER: Windows Error Reporting's Report.wer files (UTF-16 text, a few KB, naming the module and place it
 -- crashed in), a Mac's DiagnosticReports. Not the memory dumps: gigabytes each. -> { { name, text } }, newest last where the names say.
-function dm.crash_reports()
+-- (Windows names its folders by hashes, so the eight kept were the last by name, not the newest: on the desktop, eight from 11-03 and none of
+-- the 11-15..18 crashes. Now by each report's own EventTime, read from its first few hundred bytes; hangs too; the full text only for the
+-- newest. `have(name)`: true when that one was sent already (not read again). Full review, 0.59.44)
+local function head(path, n)
+  local f = io.open(path, "rb")
+  if not f then return nil end
+  local t = f:read(n)
+  f:close()
+  return t
+end
+function dm.crash_reports(have)
   local out = {}
   if band.WIN then
-    for _, base in ipairs({ "C:/ProgramData/Microsoft/Windows/WER/ReportArchive", "C:/ProgramData/Microsoft/Windows/WER/ReportQueue" }) do
+    local pd = (os.getenv("ProgramData") or "C:/ProgramData"):gsub("\\", "/")
+    local found = {}
+    for _, base in ipairs({ pd .. "/Microsoft/Windows/WER/ReportArchive", pd .. "/Microsoft/Windows/WER/ReportQueue" }) do
       for _, sub in ipairs(band.subdirs(base)) do
-        if sub:lower():find("^appcrash_reaper%.exe") then
-          local t = band.read(base .. "/" .. sub .. "/Report.wer")
-          if t then out[#out + 1] = { name = sub:sub(-12), text = (t:gsub("%z", ""):gsub("^\255\254", "")) } end
+        local low = sub:lower()
+        if low:find("^appcrash_reaper%.exe") or low:find("^apphang_reaper%.exe") then
+          local h = head(base .. "/" .. sub .. "/Report.wer", 600)
+          local at = h and tonumber((h:gsub("%z", "")):match("EventTime=(%d+)"))
+          if at then found[#found + 1] = { name = sub:sub(-12), path = base .. "/" .. sub .. "/Report.wer", at = at } end
         end
       end
     end
+    table.sort(found, function(a, x) return a.at > x.at end)
+    for i = 1, math.min(8, #found) do
+      local c = found[i]
+      local t = not (have and have(c.name)) and band.read(c.path)
+      out[#out + 1] = { name = c.name, text = t and (t:gsub("%z", ""):gsub("^\255\254", "")) or nil, at = c.at }
+    end
+    return out
   elseif band.MAC then
     local dir = (os.getenv("HOME") or "") .. "/Library/Logs/DiagnosticReports"
     for _, f in ipairs(band.files(dir)) do
@@ -141,12 +164,17 @@ function dm.write_computer(cfg)
   reaper.RecursiveCreateDirectory(d, 0)
   local ok, s = pcall(dm.setup)
   band.write_json(d .. "/computer.json", ok and s or { error = tostring(s) })
-  local okc, crashes = pcall(dm.crash_reports)
+  local function crash_path(name) return d .. "/crash " .. name:gsub("[^%w%-_ ]", "_") .. ".txt" end
+  local okc, crashes = pcall(dm.crash_reports, function(name) return reaper.file_exists(crash_path(name)) end)
   if okc then
+    local keep = {}
     for _, c in ipairs(crashes) do
-      local path = d .. "/crash " .. c.name:gsub("[^%w%-_ ]", "_") .. ".txt"
-      if not reaper.file_exists(path) then pcall(band.write_atomic, path, c.text) end
+      local path = crash_path(c.name)
+      keep[path:match("[^/]+$")] = true
+      if c.text and not reaper.file_exists(path) then pcall(band.write_atomic, path, c.text) end
     end
+    -- (only the newest eight stay: older ones went on piling up. 0.59.44)
+    for _, f in ipairs(band.files(d, ".txt")) do if f:find("^crash ") and not keep[f] then os.remove(d .. "/" .. f) end end
   end
   copy_text(band.log_dir() .. "/studiosync-" .. os.date("%Y-%m-%d") .. ".log", d .. "/log-" .. os.date("%Y-%m-%d") .. ".txt", 4 * 1024 * 1024)
   copy_text(band.home() .. "/errors.log", d .. "/errors.txt", 1024 * 1024)
@@ -170,6 +198,22 @@ function dm.computer_all(me)
   if not me or me == "" then return end
   for _, x in ipairs(band.bands()) do
     if dm.on(x.root) then pcall(dm.write_computer, { root = x.root, user = me }) end
+  end
+end
+-- Each computer is told once that debug mode is on in a studio (Autostart, at its start): it was said only on the admin's own computer, and
+-- the people whose reports it sends never knew. Told again if it's switched off and on. Full review, 0.59.44.
+function dm.tell(me)
+  for _, x in ipairs(band.bands()) do
+    local key = "debug told " .. tostring(band.info(x.root).id)
+    local on = dm.on(x.root)
+    if on and reaper.GetExtState(band.SECTION, key) == "" then
+      reaper.SetExtState(band.SECTION, key, "1", true)
+      band.log("Debug mode is on in " .. tostring(band.info(x.root).name) .. ": at the end of each session, with each bug report and after a crash, " ..
+        "this computer saves a report, a copy of the project, its setup, log and REAPER's crash reports into the studio's _debug folder for the " ..
+        "owner and admins (hidden from the others, not locked). The owner or an admin can switch it off in Settings > Studio")
+    elseif not on and reaper.GetExtState(band.SECTION, key) ~= "" then
+      reaper.DeleteExtState(band.SECTION, key, true)
+    end
   end
 end
 -- A project's part, if its studio has debug mode on (Live sync: its session ending; a bug report). `why`: what it's for.

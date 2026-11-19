@@ -99,8 +99,9 @@ local d1 = copy.digest({ "a/b.flac", "c/d.json" })
 check(d1 == copy.digest({ "c/d.json", "a/b.flac" }), "the same files read in another order say the same")
 check(d1 ~= copy.digest({ "a/b.flac" }), "a file short says something else")
 check(d1 == copy.digest({ "a/b.flac", "c/d.json", "a/.syncthing.x.tmp", "a/~tmp", "a/x.sync-conflict-1.json" }), "half-arrived files and conflict copies don't count")
-local who_holds = copy.holders({ { user = "Me", songs = { Tune = { digest = d1 } } }, { user = "Sam", songs = { Tune = { digest = d1 } } },
-  { user = "Lee", songs = { Tune = { digest = "other" } } }, { user = "Kim", songs = { Other = { digest = d1 } } }, { user = "Nil" } }, "Tune", d1, "Me")
+local now_t = os.date("!%Y-%m-%dT%H:%M:%SZ") -- (lists said lately: an old one no longer counts. 0.59.44)
+local who_holds = copy.holders({ { user = "Me", time = now_t, songs = { Tune = { digest = d1 } } }, { user = "Sam", time = now_t, songs = { Tune = { digest = d1 } } },
+  { user = "Lee", time = now_t, songs = { Tune = { digest = "other" } } }, { user = "Kim", time = now_t, songs = { Other = { digest = d1 } } }, { user = "Nil" } }, "Tune", d1, "Me")
 check(#who_holds == 1 and who_holds[1] == "Sam", "only someone else saying they hold exactly this counts")
 local dp = copy.drive_paths("rooms/main/takes/t.flac")
 check(dp[1] == "rooms/main/takes/t.flac" and dp[2] == "rooms/main/_trash/t.flac", "a take may be in takes or _trash on Drive")

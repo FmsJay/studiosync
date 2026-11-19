@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.59.43", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.59.44", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -707,25 +707,78 @@ end
 -- carriage returns so Windows' and a Mac's line endings agree: tools/make_index.py). Syncthing brings files one at a time, small ones first
 -- on a joiner, so band.lua's new VERSION arrived before mirror.lua and the panel, and the reload ran half-new, half-old code until REAPER
 -- restarted (review, 0.58.89). No list (older versions): true. Each version is looked over at most every 3 s, and believed once whole.
+-- (Full review, 0.59.44: and the list's version must be band.lua's own, and each file must match its hash where the list has one: lengths
+-- alone passed a new band.lua beside the old list and old modules (0.59.43 changed band.lua's version line only), and a same-length change.
+-- The hashes are worked out once per version, only once the lengths all agree, and the answer is shared by REAPER's scripts (ExtState), so
+-- a pass costs what it did.)
 local complete_seen, complete_at = {}, -math.huge
 function band.files_list(text)
   local out = {}
-  for path, n in (text or ""):gmatch("([^\t\r\n]+)\t(%d+)") do out[#out + 1] = { path = path, len = tonumber(n) } end
+  for line in (text or ""):gmatch("[^\r\n]+") do
+    local path, n, h = line:match("^([^\t]+)\t(%d+)\t?(%x*)$")
+    if path then out[#out + 1] = { path = path, len = tonumber(n), hash = h ~= "" and h or nil } end
+  end
   return out
 end
-function band.files_complete(dir)
+function band.files_complete(dir, force)
   local list_text = band.read(dir .. "/lib/files.txt")
   if not list_text then return true end
   local v = list_text:match("^version (%S+)") or ""
   if complete_seen[dir .. v] then return true end
-  if reaper.time_precise() - complete_at < 3 then return false end
+  if not force and reaper.time_precise() - complete_at < 3 then return false end
   complete_at = reaper.time_precise()
-  for _, f in ipairs(band.files_list(list_text)) do
+  local list, texts = band.files_list(list_text), {}
+  for _, f in ipairs(list) do
     local s = band.read(dir .. "/" .. f.path)
     if not s or #s - select(2, s:gsub("\r", "")) ~= f.len then return false end
+    if f.path == "lib/band.lua" and s:match('VERSION = "([^"]+)"') ~= v then return false end
+    texts[f.path] = s
+  end
+  local key = "files ok " .. band.norm(dir):lower()
+  if reaper.GetExtState(band.SECTION, key) ~= v then
+    for _, f in ipairs(list) do if f.hash and band.code_hash(texts[f.path]) ~= f.hash then return false end end
+    reaper.SetExtState(band.SECTION, key, v, false)
   end
   complete_seen[dir .. v] = true
   return true
+end
+-- Each script notes at its start whether the copy it loaded was whole (band.files_complete): one started while a version was still arriving
+-- ran that mix, and as band.VERSION already read new, it never reloaded when the rest came (full review, 0.59.44). -> true when it should
+-- reload now: it started on a part-arrived copy, and the copy is whole now.
+local started_partial = {}
+function band.note_start(dir)
+  if band.from_shared(dir) then started_partial[dir] = not band.files_complete(dir, true) end
+end
+function band.started_partial(dir) return started_partial[dir] == true and band.files_complete(dir) end
+-- Reload in place to the code on disk, safely (full review, 0.59.44): every file is compiled first, and if the new code fails as it starts,
+-- the old modules come back and the old loop carries on (one bad version in the folder stopped Autostart, Live sync and the panel on every
+-- computer, with no way back but by hand). Returns only when it couldn't: false, why. `script`: the entry script's file name.
+function band.reload(dir, script)
+  local libs = band.files(dir .. "/lib", ".lua")
+  for _, f in ipairs(libs) do
+    local fn, err = loadfile(dir .. "/lib/" .. f)
+    if not fn then return false, tostring(err) end
+  end
+  local main, err = loadfile(dir .. "/" .. script)
+  if not main then return false, tostring(err) end
+  local saved = {}
+  for _, f in ipairs(libs) do local m = f:sub(1, -5); saved[m] = package.loaded[m]; package.loaded[m] = nil end
+  band.drop_code_searcher() -- (the check of the old version: it refused the new code you'd said yes to. 0.59.28)
+  local ok, e = pcall(main)
+  if ok then return true end
+  for m, v in pairs(saved) do package.loaded[m] = v end
+  return false, tostring(e)
+end
+-- The caller's side: reloads, or says once per version why it couldn't and goes on with the code it has.
+function band.reload_or_say(dir, script, version)
+  local ok, why = band.reload(dir, script)
+  if ok then return true end
+  local key = "reload failed " .. script
+  if reaper.GetExtState(band.SECTION, key) ~= tostring(version) then
+    reaper.SetExtState(band.SECTION, key, tostring(version), false)
+    band.log("StudioSync " .. tostring(version) .. " couldn't start (" .. script .. "): carrying on with " .. band.VERSION .. ". " .. why:sub(1, 300))
+  end
+  return false
 end
 
 -- The code itself, run from a shared folder. band.update_ok held back only a running script's switch to a new VERSION: any script started

@@ -6,7 +6,8 @@
 -- and it's this version or newer. A new person installs as usual (ReaPack) and moves once they're let in and the folder has come, so the
 -- invitation needs nothing more. An action of the copy it ran from before (a toolbar button, a menu, a key) hands over to the folder's
 -- (fromfolder.handoff, at the top of each script), so old code never runs beside new. A copy run from a git checkout (a developer's) stays
--- where it is. The code guard still asks once on each computer for code that changed in the folder (band.code_guard).
+-- where it is. Code that changes in the folder is taken without asking (the studio trusts its members: band.code_guard, since 0.59.32).
+-- A guest's computer never moves to it, and a guest with a project list doesn't sync _tools at all (lib/songsync.lua). Full review, 0.59.44.
 local band = require("band")
 local ff = {}
 
@@ -38,7 +39,10 @@ function ff.wanted(cfg)
   local list = {}
   if cfg and cfg.root then list[1] = cfg.root end
   for _, g in ipairs(band.bands()) do list[#list + 1] = g.root end
-  for _, r in ipairs(list) do if ff.on(r) and reaper.file_exists(r .. "/_band/band.json") then return r end end
+  for _, r in ipairs(list) do
+    local guest = select(2, pcall(function() return require("access").mine(r) ~= nil end)) == true -- (a guest with a list: not theirs to run)
+    if ff.on(r) and not guest and reaper.file_exists(r .. "/_band/band.json") then return r end
+  end
 end
 
 -- From Autostart: moves this computer to the studio's copy when it should. `dir`: where this copy runs from. -> the copy it moved to, or nil.

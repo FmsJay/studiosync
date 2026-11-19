@@ -283,7 +283,8 @@ function groups.tick(now)
     local key = "group closed " .. g.id
     if reaper.GetExtState(band.SECTION, key) == "" and not groups.is_old(g.root) then
       local e = band.read_json(g.root .. "/_band/closed.json")
-      if type(e) == "table" and e.by and groups.role(g.root, e.by) ~= "member" and require("trust").mark_ok(g.root, "_band/closed.json", e) then
+      -- (the owner's only, as groups.close is: an admin's hand-written file closed the studio for everyone. Full review, 0.59.44)
+      if type(e) == "table" and e.by and groups.role(g.root, e.by) == "owner" and require("trust").mark_ok(g.root, "_band/closed.json", e) then
         if groups.leave(g.root, me, true) then -- (not: something's recording. The next look does it)
           reaper.SetExtState(band.SECTION, key, "1", true)
           band.log(string.format("%s closed %s: nothing syncs any more, and your copy stays in %s", tostring(e.by), g.name, g.root))

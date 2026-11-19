@@ -36,6 +36,7 @@ local g = songsync.block_guest({ Lantern = true })
 local function gat(s) for i, l in ipairs(g) do if l == s then return i end end end
 assert(gat("!/_*") and gat("!/plugins") and gat("!/Lantern") and gat("!/Lantern") < gat("(?d)/*"), "their project, then everything else ignored")
 assert(not gat("!/*/session.json"), "no other project's listing reaches a guest")
+assert(gat("/_tools") and gat("/_tools") < gat("!/_*"), "the studio's copy of StudioSync isn't a guest's to sync: before the band-wide line (0.59.44)")
 local gm = songsync.merge(own, { ["Mirror Test"] = true }, nil, { Lantern = true })
 assert(gm:find("!/Lantern", 1, true) and not gm:find("!/Mirror Test", 1, true) and gm:find("(?d).DS_Store", 1, true), "a guest's list wins over what was opened here")
 assert(songsync.merge(own, nil, nil, {}):find("(?d)/*", 1, true), "an empty list hides every project")

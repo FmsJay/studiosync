@@ -1637,6 +1637,11 @@ function mirror.share_media(chunk, media_dir, it, sent)
     end
     -- (only once the copy is really there: pointing at a copy that was never made left everyone waiting for it)
     if reaper.file_exists(dst) then return 'FILE "{media:' .. room .. "}/" .. copy .. '"' end
+    -- (its file isn't here at all (an unplugged drive, a moved folder): sent as it was, it pointed everyone at a path only this computer ever
+    -- had, and their copy of the item went silent. Held back with a word, as a failed copy is. Full review, 0.59.44)
+    if not mirror.copy_pending and not mirror.copy_failed and not reaper.file_exists(path) then
+      mirror.copy_failed = "its audio file isn't on this computer (" .. name .. "): reconnect the drive or folder it's on"
+    end
     return a .. written .. z
   end))
 end
@@ -2528,6 +2533,33 @@ local function keep_track(proj, name)
   return mirror.add_local_track(proj, label, "yours") -- (auto-colouring recoloured Keys when this track went in, on the laptop: 2026-10-31)
 end
 mirror.keep_track = keep_track
+-- Automation that didn't go out, kept as a file in StudioSync's folder for Restore > Kept automation (James, 0.59.39). -> the path, or nil.
+local function keep_automation(oid, track, name, state, room_dir)
+  local band = require("band")
+  local dir = band.home() .. "/kept automation"
+  reaper.RecursiveCreateDirectory(dir, 0)
+  local nm = ((name or "") ~= "" and name or "a track"):gsub("[^%w%-_ ]", "")
+  local path = dir .. "/" .. nm .. " " .. os.date("%Y-%m-%d %H%M%S") .. ".json"
+  local keep = { oid = oid, track = track or ("T" .. oid:sub(2)), name = name, state = state, room = room_dir, time = os.date("!%Y-%m-%dT%H:%M:%SZ") }
+  if pcall(band.write_json, path, keep) then return path end
+end
+-- A suggestion that didn't go in (declined or withdrawn): what you did to the part stays here, as a refusal keeps it. An item on a track of
+-- your own ("(yours, not sent)"), automation in Kept automation. Its parts file was the only copy, and went once answered. Full review,
+-- 0.59.44. -> true when something was kept.
+function mirror.keep_suggested(proj, c, room_dir)
+  if type(c) ~= "table" or c.gone or type(c.state) ~= "string" or c.state == "" then return false end
+  if (tonumber(c.rev) or 0) == 0 then return false end -- (something new: already on '(yours, not sent)', as a refusal put it there)
+  if c.obj == "item" then
+    local it = reaper.AddMediaItemToTrack(keep_track(proj, c.name or ""))
+    local chunk = mirror.resolve_media((c.state:gsub("BANDLANE %d+\n?", ""):gsub("BANDTAKE %d+\n?", "")), room_dir .. "/media")
+    reaper.SetItemStateChunk(it, (chunk:gsub("\n%s*POOLEDEVTS[^\n]*", ""):gsub("\n%s*I?GUID[^\n]*", ""):gsub("<SOURCE MIDIPOOL", "<SOURCE MIDI")), false)
+    reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", true)
+    return true
+  elseif c.obj == "env" then
+    return keep_automation(c.oid, c.track, c.name, c.state, room_dir) ~= nil
+  end
+  return false
+end
 -- A track of this machine's own (never mirrored) at the end, with the band's colours held.
 -- Keep selected tracks local (power-user review, 0.58.62): a track of your own that never goes to the others (a reference mix, a guide, a
 -- scratch idea). Only a track that hasn't gone out yet: a shared one made local would read as deleted, for everyone. When every one given
@@ -2785,7 +2817,9 @@ function W.put_back(w, o, rev, evid, why)
     -- them as a suggestion: that holds it, and accepted, a copy would be a second part. Only a selected one: what you just edited, not every
     -- part a refused tempo change moved, say. Review, 0.58.91)
     -- (once for that edit: while the band's version waits for its recording the put-back returns, and every pass made another copy. Review, 0.58.95)
-    local copy_key = tostring(proj) .. o.oid .. tostring(evid)
+    -- (and per refused version: the band's event doesn't change when you're refused, so a second refused edit in the session got no copy and
+    -- no word, and was gone. Full review, 0.59.44)
+    local copy_key = tostring(proj) .. o.oid .. tostring(evid) .. "\0" .. tostring(o.hash)
     if o.kind == "item" and why.copy and not why.to and why.text and not mirror.copied[copy_key] and o.ptr and reaper.ValidatePtr2(proj, o.ptr, "MediaItem*") and reaper.IsMediaItemSelected(o.ptr) then
       mirror.copied[copy_key] = true
       local got, ch = reaper.GetItemStateChunk(o.ptr, "", false)
@@ -2821,13 +2855,7 @@ function W.put_back(w, o, rev, evid, why)
     -- stop. James, 0.59.39)
     if o.kind == "env" and why.text and not why.to and not mirror.copied[copy_key] and type(o.state) == "string" and o.state ~= "" then
       mirror.copied[copy_key] = true
-      local band = require("band")
-      local dir = band.home() .. "/kept automation"
-      reaper.RecursiveCreateDirectory(dir, 0)
-      local nm = ((why.name or "") ~= "" and why.name or "a track"):gsub("[^%w%-_ ]", "")
-      local path = dir .. "/" .. nm .. " " .. os.date("%Y-%m-%d %H%M%S") .. ".json"
-      local keep = { oid = o.oid, track = o.track or ("T" .. o.oid:sub(2)), name = why.name, state = o.state, room = room_dir, time = os.date("!%Y-%m-%dT%H:%M:%SZ") }
-      if pcall(band.write_json, path, keep) then why.text = why.text .. ". Your automation is kept: Restore > Kept automation puts it back" end
+      if keep_automation(o.oid, o.track, why.name, o.state, room_dir) then why.text = why.text .. ". Your automation is kept: Restore > Kept automation puts it back" end
     end
     local ok, h = mirror.apply(proj, ev, media, opts.local_mix)
     if ok then remember(proj, o.oid, ev.rev, h, ev.id, mirror.order_of(ev))
@@ -3200,7 +3228,9 @@ function W.one(w, o)
   -- (nothing of ours waits then: a burst had marked it, and the band's chain never landed, as it waited for ours: PC, 0.42.9)
   if o.state == "" and o.kind ~= "track" and o.kind ~= "item" then
     if not rev then mirror.unsent[rk] = nil; return end
-    if h == "" then local ev = event_file(room_dir, evid); if ev and ev.gone then mirror.unsent[rk] = nil; return end end
+    -- (recorded as gone, by its own delete or its track's: an empty part is that, not news. Its track deleted and brought back bare (Restore,
+    -- Undo, Ctrl+Z) sent "no plug-ins, no automation, no sends" to everyone over the real ones. Full review, 0.59.44)
+    if h == "" then mirror.unsent[rk] = nil; return end
   end
   -- plug-ins and automation: only while stopped, once settled (not a whole chain per knob turn, or an envelope per
   -- point drawn)
@@ -3248,6 +3278,10 @@ function W.one(w, o)
       holder, o.kind == "track" and ("track " .. (name ~= "" and name or "(unnamed)")) or ((o.kind == "item" and "that item" or mirror.PART[o.kind]) .. " on " .. (name ~= "" and name or "an unnamed track"))) })
   end
   local last = rev and event_file(room_dir, evid) or nil
+  -- (an item's or part's track by the name it has now, not the one its last change was made under: a claimed Keys renamed Piano let anyone
+  -- delete its older items, and refused its claimant on the rest. A view: the read event isn't changed. Full review, 0.59.44)
+  local now_name = last and o.kind ~= "track" and last.track and by_oid[last.track] and by_oid[last.track].state.name
+  if now_name and now_name ~= last.name then last = setmetatable({ name = now_name }, { __index = last }) end
   if o.kind == "item" and last and type(last.state) == "string" and type(o.state) == "string" and mirror.same_but_labels(o.state, last.state) then
     return remember(proj, o.oid, rev, last.hash or o.hash, evid, kord) -- (the event's hash: fingerprints stay the same as everyone's)
   end
@@ -3381,8 +3415,12 @@ function W.gone(w)
       end
       local o = { kind = last.obj or (g.oid:sub(1, 1) == "T" and "track" or "item"), oid = g.oid, track = last.track, state = last.state }
       local name = last.name or ""
+      if o.kind ~= "track" and o.track and by_oid[o.track] then name = by_oid[o.track].state.name or name end -- (its track's name now, as W.one. 0.59.44)
       local _, th, tev = mirror.known(proj, o.track or "")
       if kept_back[o.track or ""] then -- (on a folder or bus that was refused above: it comes back with it)
+        put_back(o, g.rev, g.evid, { name = name })
+      elseif mirror.PART[o.kind] and w.back_tracks[o.track or ""] then -- (its track's deletion was refused just now: it comes back whole, not
+        -- bare with its plug-ins, automation and sends marked gone. Full review, 0.59.44)
         put_back(o, g.rev, g.evid, { name = name })
       elseif mirror.PART[o.kind] then -- (its track went: the track's own deletion covers it)
         remember(proj, g.oid, (g.rev or 0) + 1, "", g.evid)
@@ -3406,6 +3444,7 @@ function W.gone(w)
       else
         local who = sync.owner_of and sync.owner_of(name, last.pos)
         local to = propose(o, g.rev, who, name, last.pos, name, true)
+        if o.kind == "track" then w.back_tracks[g.oid] = true end
         if o.kind == "item" and not to then -- (one line for all of a track's: a deleted track's items each said so)
           undeleted[name] = (undeleted[name] or 0) + 1
           put_back(o, g.rev, g.evid, { name = name })
@@ -3473,7 +3512,8 @@ function mirror.watch(proj, cfg, song, room, opts)
   mirror.unsettled = false
   local suggest = require("suggest")
   local w = { band = band, sync = sync, proj = proj, cfg = cfg, song = song, room = room, opts = opts, me = me, room_dir = room_dir, media = media,
-    objs = objs, by_oid = by_oid, sent = 0, back = 0, suggest = suggest, kept_back = {}, holds = mirror.holds[tostring(proj)] or {}, credit = {} }
+    objs = objs, by_oid = by_oid, sent = 0, back = 0, suggest = suggest, kept_back = {}, holds = mirror.holds[tostring(proj)] or {}, credit = {},
+    back_tracks = {} }
   w.others_claims = function(oids, names) return W.others_claims(w, oids, names) end
   w.put_back = function(...) return W.put_back(w, ...) end
   w.propose = function(...) return W.propose(w, ...) end
@@ -3664,7 +3704,8 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       and not (last and last.user == cfg.user and last.revived)
     local mine_gone = p.t and last and last.gone and last.user == cfg.user
     if not p.t and (h or "") == "" then -- gone then, gone now
-    elseif p.t and evid == p.t.id then -- already that revision
+    elseif p.t and evid == p.t.id and (h or "") ~= "" then -- already that revision (not a part recorded as gone with its track, which still
+      -- names its last real change: Restore brought a deleted track back bare. Full review, 0.59.44)
     elseif p.t and not opts.exact and mirror.sits_there(proj, p.t) then there = there + 1
     elseif theirs_new then
       kept = kept + 1

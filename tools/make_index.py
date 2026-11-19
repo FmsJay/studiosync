@@ -23,7 +23,15 @@ def url(rel):
 # lib/files.txt: every code file and its length without carriage returns, so a computer running StudioSync from the shared folder takes an
 # update only once all of it has arrived (lib/band.lua band.files_complete; review, 0.58.89)
 code = sorted(ROOT.glob("StudioSync - *.lua")) + sorted((ROOT / "lib").glob("*.lua"))
-lines = [f"version {version}"] + [f"{f.relative_to(ROOT).as_posix()}\t{len(f.read_bytes().replace(b'\r', b''))}" for f in code]
+def fnv(data):  # band.code_hash: 64-bit FNV-1a over the text without carriage returns (full review, 0.59.44: a same-length change counted as arrived)
+    h = 0xcbf29ce484222325
+    for b in data:
+        h = ((h ^ b) * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+    return f"{h:016x}"
+def row(f):
+    data = f.read_bytes().replace(b'\r', b'')
+    return f"{f.relative_to(ROOT).as_posix()}\t{len(data)}\t{fnv(data)}"
+lines = [f"version {version}"] + [row(f) for f in code]
 (ROOT / "lib" / "files.txt").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 if INDEX.exists():

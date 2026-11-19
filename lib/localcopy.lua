@@ -61,14 +61,23 @@ function copy.still_confirmed(places, holders)
   for _, p in ipairs(places) do if p == "Google Drive" then return true end end
   return #holders > 0
 end
-function copy.holders(lists, song, digest, me)
+-- Only a list said again lately (each computer says it again every day while REAPER runs), by someone not taken out: a wiped laptop's or a
+-- removed member's old list confirmed a copy that wasn't there, and the last full one went to the bin. Full review, 0.59.44.
+-- `gone`: { [user] = true } taken out; `age`: seconds since a time stamp (band.age).
+copy.FRESH = 3 * 86400
+function copy.holders(lists, song, digest, me, gone, age)
   local out = {}
   for _, l in ipairs(lists) do
     local e = type(l.songs) == "table" and l.songs[song]
-    if l.user ~= me and type(e) == "table" and e.digest == digest then out[#out + 1] = tostring(l.user) end
+    local fresh = type(l.time) == "string" and (age or band.age)(l.time) < copy.FRESH
+    if l.user ~= me and type(e) == "table" and e.digest == digest and fresh and not (gone and gone[l.user]) then out[#out + 1] = tostring(l.user) end
   end
   table.sort(out)
   return out
+end
+local function gone_set(root) -- (who's been taken out: { [name] = true })
+  local ok, set = pcall(function() return require("removal").gone(root) end)
+  return ok and type(set) == "table" and set or {}
 end
 local function holds_file(root, user) return root .. "/_band/holds/" .. (user:gsub("[^%w%-_ ]", "")) .. ".json" end
 function copy.read_holds(root)
@@ -102,6 +111,7 @@ function copy.publish_holds(root, me)
     local e = mine.songs[song]
     if n > 0 and not (type(e) == "table" and e.digest == d) then mine.songs[song], changed = { digest = d, n = n }, true end
   end
+  if not changed and (type(mine.time) ~= "string" or band.age(mine.time) > 86400) then changed = true end -- (said again daily: copy.holders)
   if changed then
     mine.user, mine.time = me, os.date("!%Y-%m-%dT%H:%M:%SZ")
     reaper.RecursiveCreateDirectory(root .. "/_band/holds", 0)
@@ -187,6 +197,10 @@ function copy.bin_poll(h)
     os.remove(h.tmp .. ".nobin")
     band.log("left " .. tostring(h.label or "some files") .. " where it is: that drive has no Recycle Bin, so deleting would be for good. Delete it by hand if you mean to")
   end
+  if reaper.file_exists(h.tmp .. ".toobig") then
+    os.remove(h.tmp .. ".toobig")
+    band.log("left " .. tostring(h.label or "some files") .. " where it is: it's more than that drive's Recycle Bin can hold (or the bin is set to delete at once), so deleting would be for good. Delete it by hand if you mean to")
+  end
   for _, e in ipairs({ ".done", ".cmd", ".vbs", ".ps1", ".sh" }) do if reaper.file_exists(h.tmp .. e) then os.remove(h.tmp .. e) end end
   h.left = left_now(h.paths) -- shortcut: what hasn't gone by the time limit counts as left, though it may still be on its way
   return h.left
@@ -214,10 +228,20 @@ function copy.bin_start(paths, label)
       '  [DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern int SHQueryRecycleBin(string root, ref Bin info);', "}", "'@" }
     -- (a drive with no Recycle Bin, a USB stick or a network share, deletes for good and asks on a window nobody sees: such paths are left,
     -- and said. Review, 0.58.47)
+    -- (nor what the bin can't take: a drive set to delete at once, or more than the bin's size. Windows asks "delete permanently?" then, and
+    -- with no confirmations that's a yes: the box promised the Recycle Bin and the files were gone. Left and said, as above. Full review, 0.59.44)
     for _, p in ipairs(paths) do
       local wp = q((p:gsub("/", "\\")))
+      lines[#lines + 1] = "$big = $false; try { $dl = ([IO.Path]::GetPathRoot(" .. wp .. ")).Substring(0, 2); " ..
+        "$vol = (Get-CimInstance Win32_Volume -Filter (\"DriveLetter='\" + $dl + \"'\")).DeviceID; $g = [regex]::Match($vol, '\\{[^}]+\\}').Value; " ..
+        "$k = Get-ItemProperty -LiteralPath ('HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\BitBucket\\Volume\\' + $g) -ErrorAction Stop; " ..
+        "if ($k.NukeOnDelete -eq 1) { $big = $true } elseif ($k.MaxCapacity) { " ..
+        "if (Test-Path -LiteralPath " .. wp .. " -PathType Leaf) { $sz = (Get-Item -LiteralPath " .. wp .. ").Length } " ..
+        "else { $sz = (Get-ChildItem -LiteralPath " .. wp .. " -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum } " ..
+        "if ($sz -gt [int64]$k.MaxCapacity * 1MB) { $big = $true } } } catch {}"
       lines[#lines + 1] = "$b = New-Object StudioSyncBin+Bin; $b.size = [Runtime.InteropServices.Marshal]::SizeOf($b); " ..
-        "if ([StudioSyncBin]::SHQueryRecycleBin([IO.Path]::GetPathRoot(" .. wp .. "), [ref]$b) -ne 0) { Set-Content -LiteralPath " .. q((tmp:gsub("/", "\\")) .. ".nobin") .. " 1 } else { " ..
+        "if ($big) { Set-Content -LiteralPath " .. q((tmp:gsub("/", "\\")) .. ".toobig") .. " 1 } " ..
+        "elseif ([StudioSyncBin]::SHQueryRecycleBin([IO.Path]::GetPathRoot(" .. wp .. "), [ref]$b) -ne 0) { Set-Content -LiteralPath " .. q((tmp:gsub("/", "\\")) .. ".nobin") .. " 1 } else { " ..
         "$op = New-Object StudioSyncBin+Op; $op.func = 3; $op.flags = 0x0654; $op.from = " .. wp .. ' + [char]0 + [char]0; [void][StudioSyncBin]::SHFileOperation([ref]$op) }'
     end
     lines[#lines + 1] = "Set-Content -LiteralPath " .. q((tmp:gsub("/", "\\")) .. ".done") .. " 1"
@@ -252,7 +276,7 @@ function copy.tick()
   elseif j.step == "peers" then
     j.words = "Looking for who else holds '" .. song .. "'"
     local digest = copy.digest(j.files)
-    local holders = copy.holders(copy.read_holds(j.root), song, digest, j.user)
+    local holders = copy.holders(copy.read_holds(j.root), song, digest, j.user, gone_set(j.root))
     for _, h in ipairs(holders) do j.places[#j.places + 1] = h end
     j.step = "drive"
   elseif j.step == "drive" then
@@ -305,7 +329,7 @@ function copy.tick()
   elseif j.step == "ignore" then -- first, so the delete can't reach anyone
     -- (who holds it, asked again now you've said yes: two computers each confirmed on the other, both said yes, and the last full copies
     -- went to the bin. Review, 0.58.92)
-    if not copy.still_confirmed(j.places, copy.holders(copy.read_holds(j.root), song, copy.digest(j.files), j.user)) then
+    if not copy.still_confirmed(j.places, copy.holders(copy.read_holds(j.root), song, copy.digest(j.files), j.user, gone_set(j.root))) then
       j.skipped[#j.skipped + 1] = song .. " (the other copy it was confirmed on is being deleted too: this one stays)"
       j.i, j.step = j.i + 1, "scan"
       return

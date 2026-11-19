@@ -1,90 +1,90 @@
-version 0.59.43
-StudioSync - Autostart.lua	17934
-StudioSync - Claim selected tracks.lua	851
-StudioSync - Draw.lua	27321
-StudioSync - Final mix.lua	5796
-StudioSync - Hold my changes.lua	925
-StudioSync - Keep selected tracks local.lua	919
-StudioSync - Live sync.lua	76736
-StudioSync - Local mixing.lua	880
-StudioSync - Measure guest delay.lua	4258
-StudioSync - Open session.lua	9134
-StudioSync - Panel.lua	244377
-StudioSync - Prepare session.lua	6470
-StudioSync - Publish session.lua	5711
-StudioSync - Radial menu.lua	7815
-StudioSync - Redo.lua	956
-StudioSync - Selected tracks play as chosen.lua	1366
-StudioSync - Selected tracks play dry.lua	1664
-StudioSync - Selected tracks play wet.lua	1498
-StudioSync - Settings.lua	608
-StudioSync - Status.lua	3473
-StudioSync - Take control.lua	4288
-StudioSync - Undo.lua	1100
-StudioSync - Update.lua	2302
-lib/access.lua	5919
-lib/alerts.lua	3960
-lib/api.lua	7029
-lib/band.lua	80162
-lib/bgrender.lua	37445
-lib/callapps.lua	6144
-lib/callwin.lua	8369
-lib/chooser.lua	22179
-lib/colours.lua	47699
-lib/debugmode.lua	11924
-lib/drive.lua	29264
-lib/drummap.lua	5670
-lib/export.lua	7528
-lib/extras.lua	27728
-lib/feedback.lua	8732
-lib/fromfolder.lua	7508
-lib/fxfiles.lua	8525
-lib/fxpick.lua	6699
-lib/groups.lua	17626
-lib/guest.lua	7314
-lib/hear.lua	19308
-lib/json.lua	6080
-lib/latency.lua	5320
-lib/leave.lua	9461
-lib/listen.lua	14894
-lib/live.lua	45967
-lib/livemidi.lua	10723
-lib/localcopy.lua	22464
-lib/midiview.lua	4574
-lib/mirror.lua	254396
-lib/mixlayer.lua	1668
-lib/pack.lua	9704
-lib/page_chat.lua	24132
-lib/page_groups.lua	35397
-lib/page_health.lua	26762
-lib/page_hear.lua	18038
-lib/page_play.lua	24827
-lib/page_plugins.lua	19338
-lib/page_restore.lua	31121
-lib/page_rooms.lua	16325
-lib/people.lua	19756
-lib/plugins.lua	11323
-lib/prep.lua	29950
-lib/presence.lua	14212
-lib/prints.lua	57833
-lib/producer.lua	28405
-lib/recall.lua	16262
-lib/removal.lua	20474
-lib/rooms.lua	11950
-lib/services.lua	101098
-lib/sessionfile.lua	6993
-lib/setup.lua	8114
-lib/smooth.lua	1652
-lib/songsync.lua	10190
-lib/sonobus.lua	22842
-lib/stamp.lua	12872
-lib/startup.lua	13764
-lib/status.lua	6506
-lib/suggest.lua	14428
-lib/sync.lua	98226
-lib/theme.lua	8224
-lib/together.lua	4950
-lib/tools.lua	39699
-lib/trim.lua	10927
-lib/trust.lua	16219
-lib/undo.lua	8417
+version 0.59.44
+StudioSync - Autostart.lua	18150	dfaa9975e42c353f
+StudioSync - Claim selected tracks.lua	851	7b9f063bd6e689a2
+StudioSync - Draw.lua	27321	de45560442b3b8ee
+StudioSync - Final mix.lua	5796	777f9a7e8737fcb6
+StudioSync - Hold my changes.lua	925	0d38d565710baac2
+StudioSync - Keep selected tracks local.lua	919	7e14e198d67980ff
+StudioSync - Live sync.lua	77655	516d6aee447aac6f
+StudioSync - Local mixing.lua	880	3935fc47bea24b38
+StudioSync - Measure guest delay.lua	4258	5e58725276d34e9d
+StudioSync - Open session.lua	9134	f52da4e7e7b4e24a
+StudioSync - Panel.lua	244753	223a72303d483f4e
+StudioSync - Prepare session.lua	6470	2cb8f23129d9d3c2
+StudioSync - Publish session.lua	5711	95a9a55a1f735395
+StudioSync - Radial menu.lua	7815	64d3a9c2572f5f57
+StudioSync - Redo.lua	956	8aecdf41d566379f
+StudioSync - Selected tracks play as chosen.lua	1366	acaec09f2a588dce
+StudioSync - Selected tracks play dry.lua	1664	fa2593addcc85adc
+StudioSync - Selected tracks play wet.lua	1498	8435f45623a723b0
+StudioSync - Settings.lua	608	6a8af3f0b93ce835
+StudioSync - Status.lua	3473	fde0a601e03615d0
+StudioSync - Take control.lua	4288	201e5450a1e045b7
+StudioSync - Undo.lua	1100	351f575d8432593e
+StudioSync - Update.lua	2302	d22ef1ef740b1135
+lib/access.lua	5919	d2ac17a1ec21f0ae
+lib/alerts.lua	3960	c9b2975c1f203b75
+lib/api.lua	7029	201744ad346a5c79
+lib/band.lua	83474	2a29c36b97557480
+lib/bgrender.lua	37445	ccd73379a9d07ac2
+lib/callapps.lua	6144	6cb16bb17b30ce39
+lib/callwin.lua	8369	1509131c7b1c2426
+lib/chooser.lua	22179	f67bc08aa2278a64
+lib/colours.lua	47699	dfca63696ba51c9a
+lib/debugmode.lua	14656	9f1e0d5c6a978afe
+lib/drive.lua	29264	82eb964c3e0e0817
+lib/drummap.lua	5670	2ecb27fb5111bd2a
+lib/export.lua	7528	89e59dd8a3baf9f2
+lib/extras.lua	27728	f7621c7fbdd85380
+lib/feedback.lua	8732	f60993f2e0e9b649
+lib/fromfolder.lua	7831	049a73080bf21fe3
+lib/fxfiles.lua	8525	8088474c8eb6aab0
+lib/fxpick.lua	6699	574892e6118e7874
+lib/groups.lua	17756	ed362bbc874226af
+lib/guest.lua	7314	ccbf31a8c19e596d
+lib/hear.lua	19308	c6a514e1d8c22bfe
+lib/json.lua	6080	41d42575cdae65e0
+lib/latency.lua	5320	b91cccaff2120fcb
+lib/leave.lua	10940	16a5376ce8356a86
+lib/listen.lua	14894	2359f684f75fada9
+lib/live.lua	45967	1927125574f9e361
+lib/livemidi.lua	10723	31a501e04a06441a
+lib/localcopy.lua	24951	79653bab9d04732a
+lib/midiview.lua	4574	5d606c07d1928700
+lib/mirror.lua	257966	2e11d4b9d39010ee
+lib/mixlayer.lua	1668	7a53f6a1e0e1cfb4
+lib/pack.lua	9704	e290a29895756d79
+lib/page_chat.lua	24132	4f4bd1a089bdfdd9
+lib/page_groups.lua	35397	58169a10183af260
+lib/page_health.lua	26762	2cb180ed51d32f99
+lib/page_hear.lua	18038	4bd56aa773981d4b
+lib/page_play.lua	24827	b286b4a379570782
+lib/page_plugins.lua	19338	5e4407396b752bf8
+lib/page_restore.lua	31121	ed4089d4d8733832
+lib/page_rooms.lua	16325	d5add36eaa44023d
+lib/people.lua	19756	e676ce037b6ed0d6
+lib/plugins.lua	11323	2faa9f878ab197a9
+lib/prep.lua	29950	bcdf8aaaf96d1b70
+lib/presence.lua	14917	26078103ed0537b1
+lib/prints.lua	57833	a4a8ffd5bb215b85
+lib/producer.lua	28405	d78a83f5816eb619
+lib/recall.lua	16262	80fb49b28ddf2e84
+lib/removal.lua	20980	2ffe15ec7912bfe0
+lib/rooms.lua	11950	72af6a36e4eaaed4
+lib/services.lua	101591	22f77cc0400d7e5a
+lib/sessionfile.lua	6993	d9d0dc9cde448101
+lib/setup.lua	8114	d2d76829900dda1a
+lib/smooth.lua	1652	6d2b7fd4903995dc
+lib/songsync.lua	10431	4437e75e40d1df71
+lib/sonobus.lua	22842	3e1895c5faf1e9d2
+lib/stamp.lua	12872	871e0bdee3382103
+lib/startup.lua	13764	be51d8937e3851ba
+lib/status.lua	6506	2a92a5f869b5f859
+lib/suggest.lua	15352	2c1e3ab13992ea85
+lib/sync.lua	98124	e831ce2e57e41146
+lib/theme.lua	8224	c3d2e15f74d0d441
+lib/together.lua	4950	5d2ac4e6498a400e
+lib/tools.lua	39699	28adb2baef7a7d1a
+lib/trim.lua	10927	a74656d71e0882eb
+lib/trust.lua	16219	2a6d4d993d2dd9b2
+lib/undo.lua	8417	0d36166e5ce4e115

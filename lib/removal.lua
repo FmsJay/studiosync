@@ -193,6 +193,12 @@ function removal.may_auto_admit(root, device, now)
     local v = band.read_json(invites_dir(root) .. "/" .. f)
     if type(v) == "table" and tonumber(v.made) and tonumber(v.ends) and removal.invite_for({ v }, now) then return false end
   end
+  -- (nor while any guest's time is still running: an invitation counts as open for 7 days, but a guest can have two weeks or a month on the
+  -- studio's Tailscale, and from day 8 a second computer of theirs came in as a full member. Those ask in the panel. Full review, 0.59.44)
+  for _, f in ipairs(band.files(marks(root), ".json")) do
+    local m = band.read_json(marks(root) .. "/" .. f)
+    if type(m) == "table" and m.guest and tonumber(m.at) and not removal.due(m, now) then return false end
+  end
   return true
 end
 -- A computer let in again: whatever mark names it is over.

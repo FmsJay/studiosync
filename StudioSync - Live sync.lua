@@ -6,6 +6,7 @@
 local dir = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]")
 package.path = dir .. "/lib/?.lua;" .. package.path
 local band = require("band")
+band.note_start(dir) -- (was all of this copy here as it started? band.started_partial. Full review, 0.59.44)
 if require("fromfolder").handoff(debug.getinfo(1, "S").source) then return end -- (an old copy's button or key: the copy this computer runs from now. 0.59.24)
 local sync = require("sync")
 local live = require("live")
@@ -288,8 +289,10 @@ function P.who(t)
   local driver = who.driver
   -- someone else drives and is here (their status receipt is fresh): then the room's mode decides what we may change
   sync.driver_name, sync.room_mode = driver, who.mode -- (put-back messages say who and why)
-  local dst = (driver and driver ~= cfg.user) and band.read_json(sync.room_dir(cfg, b.song, b.room) .. "/status/" .. (driver:gsub("[^%w%-_ ]", "")) .. ".json") or nil
-  sync.someone_drives = type(dst) == "table" and band.age(dst.time) < 30
+  sync.someone_drives = false -- (from the same read as who's here, with its clock rule: 0.59.44)
+  if driver and driver ~= cfg.user then
+    for _, u in ipairs(sync.present(cfg, b.song, b.room, 30)) do if u == driver then sync.someone_drives = true end end
+  end
   -- Alone = full control: with no bandmate in the room, everything we change goes out, whoever drives or claimed it
   -- (what Solo edit was for, without a separate copy of the song). Once anyone is here, the band's rules are back.
   -- (gone for 90 s before you're alone, back at once: a dialog left open on their machine pauses its status for a
@@ -398,7 +401,15 @@ function P.outbox_inbox(t)
       pcall(require("debugmode").collect, cfg, proj, b, "sync and exit") -- (the studio's debug mode: lib/debugmode.lua)
       mirror_due = true
     end
-    local more = require("mirror").more and "changes" or require("bgrender").waiting() and "prints rendering" or require("prints").waiting() and "prints waiting" or nil
+    local mirror = require("mirror")
+    local more = mirror.more and "changes" or require("bgrender").waiting() and "prints rendering" or require("prints").waiting() and "prints waiting" or nil
+    -- (and what waits its turn: a big recording still copying into the studio's folder, plug-ins or automation settling, a copy that failed.
+    -- Sync and exit said "safe to close up" over a take that was only on this computer. Not what Hold my changes keeps. Full review, 0.59.44)
+    if not more and not hold then
+      local key = tostring(proj)
+      for k in pairs(mirror.unsent) do if k:sub(1, #key) == key then more = "changes waiting their turn (a recording still copying, or plug-ins settling)"; break end end
+      if not more and mirror.unsettled then more = "plug-ins or automation settling" end
+    end
     band.set_ext_json(band.SECTION, "outbox " .. tostring(proj), { at = mirror_at, more = more }, false)
   end
   -- what's drawn in a room shows without anyone asking, unless this person hid them: nobody would see a drawing until they
@@ -1023,7 +1034,8 @@ local function updated()
   local disk = (band.read(dir .. "/lib/band.lua") or ""):match('VERSION = "([^"]+)"')
   local ready = disk and disk ~= band.VERSION and disk == seen_disk and band.update_ok(dir, disk) -- (from a shared folder, once you said yes: Autostart asks)
   seen_disk = disk
-  return ready
+  ready = ready or (disk and band.started_partial(dir)) -- (started on a part-arrived copy, whole now: 0.59.44)
+  return ready and reaper.GetExtState(band.SECTION, "reload failed StudioSync - Live sync.lua") ~= disk
 end
 -- an error anywhere in a tick (a malformed cue from someone's machine, say) is logged, and Live sync carries on
 local said_at, sws_at = -math.huge, -math.huge
@@ -1034,10 +1046,9 @@ tick = function()
     band.log("live sync for '" .. b.song .. "' reloaded for StudioSync " .. tostring(seen_disk))
     reloaded = true
     reaper.DeleteExtState(band.SECTION, "live " .. key, false)
-    for _, f in ipairs(band.files(dir .. "/lib", ".lua")) do package.loaded[f:sub(1, -5)] = nil end
-    band.drop_code_searcher() -- (the check of the old version: it refused the new code you'd said yes to. 0.59.28)
     BANDSYNC_LIVE_PROJ, BANDSYNC_ENDED_AT = proj, ended_at_n
-    return dofile(dir .. "/StudioSync - Live sync.lua")
+    if band.reload_or_say(dir, "StudioSync - Live sync.lua", seen_disk) then return end
+    reloaded, BANDSYNC_LIVE_PROJ, BANDSYNC_ENDED_AT = false, nil, nil -- (it couldn't start: this one carries on. 0.59.44)
   end
   local t0 = reaper.time_precise()
   laps, lap_t = {}, t0

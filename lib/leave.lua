@@ -50,12 +50,15 @@ function leave.settled(st)
 end
 
 function leave.start(proj, cfg, b)
-  leave.job = { proj = proj, cfg = cfg, b = b, step = "save", since = reaper.time_precise(), words = "Saving", open = true }
+  -- (with Hold my changes on, it asks first: it sent what you held on the click, before anything was asked, and Cancel couldn't take it back.
+  -- Full review, 0.59.44)
+  local held = select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) ~= ""
+  leave.job = { proj = proj, cfg = cfg, b = b, step = held and "hold?" or "save", since = reaper.time_precise(), words = "Saving", open = true }
 end
 
 local function save_tab(j)
-  if select(2, reaper.GetProjExtState(j.proj, band.SECTION, "hold")) ~= "" then
-    reaper.SetProjExtState(j.proj, band.SECTION, "hold", "") -- (what you held goes out: you're leaving)
+  if j.send_held and select(2, reaper.GetProjExtState(j.proj, band.SECTION, "hold")) ~= "" then
+    reaper.SetProjExtState(j.proj, band.SECTION, "hold", "") -- (what you held goes out: you said so)
     j.unheld = true
   end
   reaper.Main_SaveProject(j.proj, false)
@@ -76,6 +79,7 @@ function leave.tick()
   if not j or j.finished then return end
   local now = reaper.time_precise()
   if not reaper.ValidatePtr2(0, j.proj, "ReaProject*") then leave.job = nil; return end
+  if j.step == "hold?" then return end -- (the box asks)
   if j.step == "save" then
     save_tab(j)
     j.saved_at, j.step, j.words = now, "send", "Sending your changes to the studio"
@@ -121,12 +125,14 @@ function leave.tick()
     else
       lines[#lines + 1] = "Saved."
       if j.unheld then lines[#lines + 1] = "Hold my changes was on: what you held went out." end
+      if j.kept_held then lines[#lines + 1] = "What you're holding stays on this computer only: it goes out when you switch Hold my changes off."; j.unsafe = true end
       local names = {}
       for _, p in ipairs(j.st and j.st.peers or {}) do names[#names + 1] = p.name end
       if #names > 0 then lines[#lines + 1] = "Everything's with " .. table.concat(names, ", ") .. "."
       elseif j.drove then
         lines[#lines + 1] = j.drive_left and "Nobody else is online. Google Drive has some of it and the rest is still copying: it carries on while this computer's on."
           or "Nobody else is online. Google Drive has it, so they get it from there or from this computer."
+        if j.drive_left then j.unsafe = true end
       else
         lines[#lines + 1] = "Nobody else is online, and this studio has no Google Drive copy here: it reaches them when this computer and theirs are on at the same time."
         j.only_here = true
@@ -150,22 +156,32 @@ function leave.draw(ctx, ImGui)
   ImGui.PopStyleVar(ctx)
   if shown then
     ImGui.PushTextWrapPos(ctx, 0)
-    if not j.finished then
+    if j.step == "hold?" then
+      ImGui.Text(ctx, "Hold my changes is on: what you've changed since hasn't gone to the others.")
+      if ImGui.Button(ctx, "Send what I'm holding") then j.send_held, j.step = true, "save" end
+      ImGui.SameLine(ctx)
+      if ImGui.Button(ctx, "Keep holding") then j.kept_held, j.step = true, "save" end
+      ImGui.SameLine(ctx)
+      if ImGui.Button(ctx, "Cancel") then leave.job = nil; ImGui.CloseCurrentPopup(ctx) end
+    elseif not j.finished then
       ImGui.Text(ctx, j.words .. "...")
       ImGui.TextDisabled(ctx, string.format("%d s", math.floor(reaper.time_precise() - j.since)))
       if reaper.time_precise() - j.since > 60 then
         ImGui.TextDisabled(ctx, "If you go now, whoever's online gets the rest next time you're both on.")
       end
-      if ImGui.Button(ctx, "Stop waiting") then j.finished, j.lines = true, { "Not everything has gone out yet: " .. tostring(j.words) .. "." } end
+      if ImGui.Button(ctx, "Stop waiting") then j.finished, j.unsafe, j.lines = true, true, { "Not everything has gone out yet: " .. tostring(j.words) .. "." } end
       ImGui.SameLine(ctx)
       if ImGui.Button(ctx, "Cancel") then leave.job = nil; ImGui.CloseCurrentPopup(ctx) end
     else
       for _, l in ipairs(j.lines or {}) do ImGui.Text(ctx, l) end
       ImGui.Spacing(ctx)
-      if not j.problem and not j.only_here then ImGui.TextDisabled(ctx, "Safe to close up or log off.") end
+      -- (only when it's all out: it said "safe" after Stop waiting and with Drive still copying. Full review, 0.59.44)
+      if j.unsafe and not j.problem then ImGui.TextDisabled(ctx, "Not safe to shut down yet: leave this computer on, or the others get the rest next time you're both online.")
+      elseif not j.problem and not j.only_here then ImGui.TextDisabled(ctx, "Safe to close up or log off.") end
       if ImGui.Button(ctx, "Close this project") then
         leave.job = nil
         ImGui.CloseCurrentPopup(ctx)
+        reaper.SelectProjectInstance(j.proj) -- (the project it was for, not whichever tab is in front now: the box doesn't stop tab changes)
         reaper.Main_SaveProject(j.proj, false) -- (a change can land while this box is up: REAPER would ask again)
         reaper.Main_OnCommand(40860, 0) -- Close current project tab
       end

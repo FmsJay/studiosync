@@ -136,7 +136,8 @@ local ok, err = pcall(function()
     suggest.answer(room_dir, mine[1], "Mac", "declined")
     suggest.notices(pa, A, room_dir)
     kept = track_named(pa, "Keys (yours, not sent)")
-    check(kept ~= nil and reaper.CountTrackMediaItems(kept) == 1, "declined: James keeps his copy on his own track")
+    -- (his copy, and since 0.59.44 his move of the existing part too: the suggestion's files were its only copy)
+    check(kept ~= nil and reaper.CountTrackMediaItems(kept) == 2, "declined: James keeps his copy and his moved version on his own track")
     do -- (it left the pool it shared with the part it was copied from: mirror.lua, the reaper_midi.dll crash)
       local function pool(it) return select(2, reaper.GetItemStateChunk(it, "", false)):match("POOLEDEVTS (%S+)") end
       local copy, source = kept and reaper.GetTrackMediaItem(kept, 0), reaper.GetTrackMediaItem(keys, 0)
@@ -353,7 +354,7 @@ local ok, err = pcall(function()
     check(can()("Mac", "Keys", 0) and not can()("James", "Keys", 0), "Keys is still Mac's")
     check(track_named(pb, "Keys (James's copy)") ~= nil, "Mac has the copy")
   end
-  check(track_named(pa, "Keys (yours, not sent)") == nil or reaper.CountTrackMediaItems(track_named(pa, "Keys (yours, not sent)")) == 1, "nothing of the copy went aside")
+  check(track_named(pa, "Keys (yours, not sent)") == nil or reaper.CountTrackMediaItems(track_named(pa, "Keys (yours, not sent)")) == 2, "nothing of the copy went aside")
   local credited
   for _, f in ipairs(band.files(room_dir .. "/events", ".json")) do
     local e = band.read_json(room_dir .. "/events/" .. f)
