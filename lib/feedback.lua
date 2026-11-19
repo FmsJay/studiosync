@@ -75,13 +75,8 @@ function feedback.button(ctx, ImGui, small)
   ImGui.SetItemTooltip(ctx, "Report a bug, give feedback or ask for a feature: saved in the studio's folder for whoever looks after StudioSync, and/or as an issue on GitHub.")
 end
 
--- Draw it while open (each frame, from the panel's main window). `proj`: the project in front.
-function feedback.draw(ctx, ImGui, cfg, proj)
-  if not st.open then return end
-  ImGui.SetNextWindowSize(ctx, 520, 440, ImGui.Cond_FirstUseEver)
-  local visible, open = ImGui.Begin(ctx, "StudioSync feedback##fbwin", true, ImGui.WindowFlags_NoCollapse)
-  st.open = open
-  if not visible then return end
+-- What's in its window (feedback.draw).
+local function body(ctx, ImGui, cfg, proj)
   local k = kind_of(st.kind)
   ImGui.SetNextItemWidth(ctx, 200)
   if ImGui.BeginCombo(ctx, "##fbkind", k[2]) then
@@ -118,7 +113,7 @@ function feedback.draw(ctx, ImGui, cfg, proj)
       (dbg and "\nDebug mode is on in this studio, so Send also saves a copy of this project, its log and REAPER's crash reports for the owner and admins." or ""))
   end
   local title, body = feedback.compose(st.kind, st.subject, st.body)
-  ImGui.BeginDisabled(ctx, not title or not (st.folder or st.github))
+  ImGui.BeginDisabled(ctx, not title or not (st.folder or st.github)); st.disabled = true
   if ImGui.Button(ctx, "Send##fbsend") then
     local extra = ""
     if st.log then
@@ -146,10 +141,27 @@ function feedback.draw(ctx, ImGui, cfg, proj)
     band.log(k[2] .. ": " .. table.concat(said, "; "))
     st.subject, st.body, st.open = "", "", false
   end
-  ImGui.EndDisabled(ctx)
+  ImGui.EndDisabled(ctx); st.disabled = false
   if not title then ImGui.SameLine(ctx); ImGui.TextDisabled(ctx, "Write a subject or what happened.") end
   ImGui.SameLine(ctx)
   if ImGui.Button(ctx, "Cancel##fbcancel") then st.open = false end
+end
+-- Draw it while open (each frame, after the panel's main window). `proj`: the project in front.
+-- (its body in a pcall, as lib/callwin.lua's: an error in Send left its window and disabled block open, and the panel died with them. End is
+-- always reached; the error goes to the log file, once per different one. Round 4 review, 0.59.49)
+function feedback.draw(ctx, ImGui, cfg, proj)
+  if not st.open then return end
+  ImGui.SetNextWindowSize(ctx, 520, 440, ImGui.Cond_FirstUseEver)
+  local visible, open = ImGui.Begin(ctx, "StudioSync feedback##fbwin", true, ImGui.WindowFlags_NoCollapse)
+  st.open = open
+  if not visible then return end
+  st.disabled = false
+  local ok, e = xpcall(body, debug.traceback, ctx, ImGui, cfg, proj)
+  if not ok then
+    if st.disabled then pcall(ImGui.EndDisabled, ctx) end
+    local line = tostring(e):match("^[^\n]*")
+    if line ~= st.err_said then st.err_said = line; band.log_error("feedback", e); band.log("feedback couldn't finish: " .. line) end
+  end
   ImGui.End(ctx)
 end
 

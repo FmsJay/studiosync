@@ -42,7 +42,9 @@ else, not only known takes). Receivers check the same rule (deferral as before).
 ## MIDI (wet/dry per person)
 
 The MIDI item is the truth and travels as MIDI. Its owner also renders a print (the wet sound) as a second take
-whenever the notes or the instrument change. Each person picks how MIDI plays on their machine:
+whenever the notes or the instrument change, when someone in the studio lacks a plug-in it plays through or its instrument is a
+sample player whose library the plug-in lists can't see (0.59.49, prints.midi_prints; before, every MIDI part printed). When no
+computer has the whole chain it prints in stages (docs/chained-prints-design.md). Each person picks how MIDI plays on their machine:
 **Dry** (the notes, own instruments), **Wet** (the owner's print) or **Auto** (dry when the instrument is
 installed here, else wet). The active take is local and never mirrored, so nobody's choice changes anyone
 else's. The takes are named for it: "dry" (the notes) and "wet" (the print), each keeping any name it had after a

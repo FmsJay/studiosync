@@ -7,6 +7,7 @@ local lib = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]tests[/\\]reaper[/\\
 package.path = lib .. "?.lua;" .. package.path
 for _, m in ipairs({ "band", "sync", "mirror", "prints", "plugins", "json", "bgrender" }) do package.loaded[m] = nil end
 local band, sync, mirror, prints, bg = require("band"), require("sync"), require("mirror"), require("prints"), require("bgrender")
+prints.midi_prints = function() return true end -- (these check rendering; which MIDI parts print is tests/test_0_59_49_prints.lua's. 0.59.49)
 local root = D .. "/broot_" .. os.time()
 local song, room = "BurstLab", "main"
 local A = { user = "Laptop", root = root }

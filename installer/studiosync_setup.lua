@@ -30,6 +30,19 @@ local function startup_block(dirs)
     "  if not started and last then reaper.ShowConsoleMsg(\"" .. CURRENT .. "\" .. last .. \"\\n\") end\n" ..
     "end\n" .. MARK_Z .. "\n"
 end
+-- Where the block goes, as lib/tools.lua split_startup and place_block (word for word: tests/test_0_59_49_trust_install.lua runs these copies).
+-- (Round 4 review, 0.59.49: a start line with no end line is left alone, and no blank line after the block is eaten)
+local function split_startup(text)
+  local a = text:find(MARK_A, 1, true)
+  if not a then return text, nil end
+  local z = text:find(MARK_Z, a, true)
+  if not z then return nil end
+  return text:sub(1, a - 1), text:sub(z + #MARK_Z)
+end
+local function place_block(before, after, block)
+  if not after then return before .. (before ~= "" and not before:match("\n$") and "\n" or "") .. block end
+  return before .. block .. after:gsub("^\r?\n", "", 1)
+end
 
 do -- first: the installer waits for this before handing the step over again (a REAPER already open sometimes misses the first)
   -- (and a second hand-off that arrives after all runs nothing: two copies would sync ReaPack twice. Review, 0.58.67)
@@ -335,13 +348,13 @@ local function conclude()
     local sf = io.open(startup, "r")
     local cur = sf and sf:read("a") or (not reaper.file_exists(startup) and "" or nil) -- (there but unreadable: left alone, not written over with only ours)
     if sf then sf:close() end
-    if cur and not cur:find(sdir .. "/StudioSync - Autostart.lua", 1, true) and reaper.file_exists(sdir .. "/StudioSync - Autostart.lua") then
+    -- (the new block goes where it was, appended only when there was none: Round 3 review, 0.59.48. A start line with no end line: the file
+    -- is left alone and said, not a second block after it. Round 4 review, 0.59.49)
+    local before, after
+    if cur then before, after = split_startup(cur) end
+    local broken = cur ~= nil and before == nil
+    if before and not cur:find(sdir .. "/StudioSync - Autostart.lua", 1, true) and reaper.file_exists(sdir .. "/StudioSync - Autostart.lua") then
       -- (a block from before the rename, or from another copy, makes way)
-      -- (and the new block goes where it was, appended only when there was none: lib/tools.lua place_block. Round 3 review, 0.59.48)
-      local a = cur:find("-- BandSync autostart", 1, true)
-      local z = a and cur:find("-- /BandSync autostart", a, true)
-      local after
-      if z then cur, after = cur:sub(1, a - 1), cur:sub(z + #"-- /BandSync autostart" + 1):gsub("^\r?\n", "", 1) end
       -- (written beside it, then swapped in: cut off half way, the person's own startup scripts were gone)
       local tmp, old = startup .. ".studiosync.tmp", startup .. ".studiosync.old"
       local wf = io.open(tmp, "w")
@@ -350,7 +363,7 @@ local function conclude()
       local res = reaper.GetResourcePath():gsub("\\", "/")
       local home = (reaper.EnumerateSubdirectories(res .. "/BandSync", 0) or reaper.EnumerateFiles(res .. "/BandSync", 0)) and (res .. "/BandSync") or (res .. "/StudioSync")
       local block = startup_block({ sdir, home .. "/last good" })
-      local wrote = wf and wf:write(after and (cur .. block .. after) or (cur .. (cur ~= "" and not cur:match("\n$") and "\n" or "") .. block))
+      local wrote = wf and wf:write(place_block(before, after, block))
       if wf then wf:close() end
       local placed = wrote and os.rename(tmp, startup) -- (Windows won't rename over a file: the old one steps aside first)
       if wrote and not placed then
@@ -366,7 +379,7 @@ local function conclude()
     local again = io.open(startup, "r")
     local on = again and again:read("a"):find("-- BandSync autostart", 1, true) ~= nil
     if again then again:close() end
-    step("Live sync starts with REAPER", on, startup)
+    step("Live sync starts with REAPER", on and not broken, broken and (startup .. " has StudioSync's start line but no end line (" .. MARK_Z .. "), so it was left alone: take that block out by hand, then run this again") or startup)
   end
   local persona = type(req.persona) == "string" and req.persona:match("^[%w_]+$") and persona_apply(req.persona)
   finish()

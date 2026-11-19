@@ -9,6 +9,7 @@ package.path = lib .. "?.lua;" .. package.path
 for _, m in ipairs({ "band", "sync", "mirror", "prints", "json" }) do package.loaded[m] = nil end
 require("prints").SETTLE = 0 -- (print_bursts covers the wait)
 local band, prints = require("band"), require("prints")
+prints.midi_prints = function() return true end -- (these check rendering; which MIDI parts print is tests/test_0_59_49_prints.lua's. 0.59.49)
 local out, fails = {}, 0
 local function say(s) out[#out + 1] = s end
 local function check(ok, what) if not ok then fails = fails + 1 end; say((ok and "PASS " or "FAIL ") .. what) end

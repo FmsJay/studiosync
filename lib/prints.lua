@@ -1,5 +1,6 @@
 -- MIDI wet/dry (docs/mirror-design.md): a MIDI item's notes are the truth and travel as notes; whoever changes it
--- (and has the instrument) also renders a print, the item's second take, which travels with it as audio. Each
+-- (and has the instrument) also renders a print, the item's second take, which travels with it as audio, when someone in
+-- the studio lacks a plug-in it plays through or its instrument is a sample player (prints.midi_prints, 0.59.49). Each
 -- machine picks which take plays: Notes (dry: your own instruments), Sound (wet: the print) or Auto (notes when the
 -- track's plug-ins all load here, else the print). The playing take is never mirrored (lib/mirror.lua drops it), so
 -- one person's choice never changes anyone else's.
@@ -54,9 +55,21 @@ end
 -- A print's file name: the item, what it was made from, and who rendered it. Two machines rendering the same item
 -- made one name with different bytes, and on Windows Syncthing can't replace a file REAPER has open, so it retried
 -- for good (laptop, 0.35.6).
-local function print_name(oid, h)
+local function who_suffix()
   local who = (reaper.GetExtState(band.SECTION, "user"):gsub("[^%w%-_]", "_"))
-  return "print-" .. (oid ~= "" and oid or "item") .. "-" .. h .. (who ~= "" and ("-" .. who) or "")
+  return who ~= "" and ("-" .. who) or ""
+end
+local function print_name(oid, h) return "print-" .. (oid ~= "" and oid or "item") .. "-" .. h .. who_suffix() end
+-- A chained print's stage k (prints.relay_stage): "stage-<oid>-<print hash>-<k>-<split hash>", then who rendered it. The print's hash
+-- covers the notes or recording and the whole chain, so a stage file is never read for a part that changed since; the split's covers where
+-- the chain was cut, which moves when someone installs a plug-in. Trimmed with the print of the same item and hash (lib/trim.lua). 0.59.49
+local function stage_base(oid, h, k, sh) return "stage-" .. (oid ~= "" and oid or "item") .. "-" .. h .. "-" .. k .. "-" .. sh end
+-- A file made from this (anyone's: "<base>-<who>.flac", or "<base>.flac") in `out`, from the shared listing, or nil.
+local function find_made(out, base)
+  for _, f in ipairs(band.listing(out, ".flac", true)) do -- (the shared listing: the folder was read once per part, every look. 0.59.19)
+    local rest = f:sub(#base + 1)
+    if f:sub(1, #base) == base and (rest == ".flac" or rest:sub(1, 1) == "-") then return out .. "/" .. f end
+  end
 end
 -- What a track's prints go through doesn't change in the middle of a look, but it was worked out again for each of its items (a fifth of
 -- a look at 2,000 items). mirror.watch opens a look (prints.begin_look) and ends it (prints.end_look); 2 s at most, should it never end.
@@ -335,6 +348,77 @@ function prints.lacking(tr, cfg)
   return false
 end
 
+-- Sample players: what they play is a library, kit or sample file the plug-in list can't see (two computers with Kontakt can hold different
+-- libraries), so their parts keep printing whenever whoever changed them has the chain (James, 0.59.49). Matched on plugins.key's form,
+-- at the start of a word ("bfd" isn't "xbfdx").
+prints.SAMPLERS = { "kontakt", "komplete kontrol", "sforzando", "ezdrummer", "ezkeys", "ezbass", "superior drummer", "addictive drums",
+  "addictive keys", "bfd", "spitfire audio", "decent sampler", "decentsampler", "sitala", "reasamplomatic5000", "sampletank", "halion", "battery" }
+function prints.sampler_name(name) -- Pure.
+  local k = require("plugins").key(name)
+  for _, s in ipairs(prints.SAMPLERS) do
+    local a = k:find(s, 1, true)
+    if a and (a == 1 or not k:sub(a - 1, a - 1):match("%w")) then return true end
+  end
+  return false
+end
+local function fx_name(tr, i)
+  local ok, name = reaper.TrackFX_GetNamedConfigParm(tr, i, "fx_name")
+  if not ok or name == "" then name = select(2, reaper.TrackFX_GetFXName(tr, i)) end
+  return name
+end
+-- Has the track a sample player on it? (ReaSamplOmatic5000 only with a sample loaded: the file is what may not be everywhere.)
+function prints.sample_player(tr)
+  for _, i in ipairs(prints.fx_all(tr)) do
+    local name = fx_name(tr, i)
+    if prints.sampler_name(name) and (not require("plugins").key(name):find("reasamplomatic5000", 1, true)
+        or select(2, reaper.TrackFX_GetNamedConfigParm(tr, i, "FILE0")) ~= "") then return true end
+  end
+  return false
+end
+-- Does a MIDI part on `tr` (playing `dest`'s instrument, for a routed one) get a print? Only where a plug-in it plays through is missing
+-- for someone in the studio, as audio parts (James, 0.59.49: "prints only where a plug-in is missing"), or its instrument is a sample
+-- player. Cost: fewer renders and less Syncthing traffic; a part everyone can play from its notes no longer prints. Prints already on
+-- items stay, and Auto plays the notes wherever everything loads, as before.
+function prints.midi_prints(tr, dest, cfg)
+  return prints.lacking(tr, cfg) or (dest and prints.lacking(dest, cfg)) or prints.sample_player(tr) or (dest and prints.sample_player(dest)) or false
+end
+
+-- Whether a published list (plugins.lists) has the plug-in `name`: by plugins.key, in a format that loads on its system (an AU only on a
+-- Mac, as plugins.loads_everywhere). Pure.
+local function list_has(l, name)
+  local plugins = require("plugins")
+  if not l.set then
+    l.set = {}
+    for _, k in ipairs(type(l.names) == "table" and l.names or {}) do l.set[k] = true end
+  end
+  return l.set[plugins.key(name)] == true and plugins.loads_everywhere(name, { [plugins.system(l.os)] = true })
+end
+-- Who lacks each of `names` (plug-in names, in order), by everyone's published list (the data prints.lacking goes by): { {fx, users} },
+-- only those someone lacks. Pure.
+function prints.who_lacks(names, lists)
+  local out = {}
+  if #lists < 2 then return out end -- (one list: nothing to compare yet, as prints.lacking)
+  for _, name in ipairs(names) do
+    local users = {}
+    for _, l in ipairs(lists) do if not list_has(l, name) then users[#users + 1] = l.user end end
+    table.sort(users)
+    if #users > 0 then out[#out + 1] = { fx = (name:gsub("^%w+:%s*", "")), users = users } end
+  end
+  return out
+end
+-- The master's plug-ins someone in the studio lacks (Health, James 0.59.49). The master is never printed (the whole mix rendered again at
+-- every change costs too much), so whoever lacks one hears the mix without it.
+function prints.master_lacks(proj, cfg)
+  if not (cfg and cfg.root) then return {} end
+  local master, names = reaper.GetMasterTrack(proj), {}
+  for _, i in ipairs(prints.fx_all(master)) do
+    if reaper.TrackFX_GetEnabled(master, i) then names[#names + 1] = fx_name(master, i) end -- (a bypassed one plays nowhere)
+  end
+  if #names == 0 then return {} end
+  local ok, lists = pcall(require("plugins").lists, cfg)
+  return prints.who_lacks(names, ok and lists or {})
+end
+
 -- What an audio print is made from: the recording, how the take plays it and its own plug-ins, the item's length,
 -- and the band's plug-in chain on its track (`fx_hash`). Not the item's volume and fades: prints leave those out,
 -- and the item applies them to whichever take plays.
@@ -425,11 +509,9 @@ function prints.render(oid, name, out, tracks, render, secs, quick) -- secs: the
   -- Anyone's print of it will do (the same item and source: "print-<oid>-<hash>-<who>"), ours first: going back to the
   -- laptop's state rendered the PC's own copy of it (PC, 0.40.1).
   if reaper.file_exists(out .. "/" .. name .. ".flac") then return out .. "/" .. name .. ".flac" end
-  local base = name:match("^(print%-.+%-%x%x%x%x%x%x%x%x)%-") or name
-  for _, f in ipairs(band.listing(out, ".flac", true)) do -- (the shared listing: the folder was read once per part, every look. 0.59.19)
-    local rest = f:sub(#base + 1)
-    if f:sub(1, #base) == base and (rest == ".flac" or rest:sub(1, 1) == "-") then return out .. "/" .. f end
-  end
+  -- (a chained print's stage file too, "stage-...": 0.59.49)
+  local found = find_made(out, name:match("^(%a+%-.+%-%x%x%x%x%x%x%x%x)%-") or name)
+  if found then return found end
   local bg = require("bgrender")
   if bg.on() then
     if bg.stuck[name] then return nil end
@@ -492,6 +574,18 @@ local function attach(it, print, dry, path, h)
   reaper.GetSetMediaItemTakeInfo_String(ptk, "P_EXT:" .. prints.KEY, h, true)
   if was then reaper.SetActiveTake(was) end
   return ptk
+end
+-- A print taken off its item (REAPER has no call that deletes a take: its action, on the item alone, as prints.takes_into_new_lanes does).
+-- The tab is in front (mirror's W.prints). Round 4 review, 0.59.49
+local function drop_print(proj, it, print)
+  local picked = {}
+  for s = 0, reaper.CountSelectedMediaItems(proj) - 1 do picked[#picked + 1] = reaper.GetSelectedMediaItem(proj, s) end
+  for _, x in ipairs(picked) do reaper.SetMediaItemSelected(x, false) end
+  reaper.SetActiveTake(print)
+  reaper.SetMediaItemSelected(it, true)
+  reaper.Main_OnCommand(40129, 0) -- Take: Delete active take from items
+  reaper.SetMediaItemSelected(it, false)
+  for _, x in ipairs(picked) do if reaper.ValidatePtr2(proj, x, "MediaItem*") then reaper.SetMediaItemSelected(x, true) end end
 end
 
 -- Melodyne and the other ARA plug-ins on an audio take: their edits live in the project, outside the item, so a
@@ -562,6 +656,220 @@ local function refresh_ara(proj, it, media_dir)
   return true
 end
 
+-- ---- chained prints (docs/chained-prints-design.md, James 0.59.49) ---------------------------------------------------------------
+-- When no computer has every plug-in a part plays through, nobody printed it. Now its chain is cut into runs, each on a computer that has
+-- that run's plug-ins: the first renders the part through its run into a stage file in the shared media folder; the next sees that file
+-- arrive (the listing prints already read), renders it through its own run, and so on; the last stage is the print, attached as ever.
+-- No new messaging, no new render path: stage 1 is a print through only its run's plug-ins (the others bypassed for the render), each later
+-- stage a scratch item playing the stage before through the next run (sync.print_file), both by prints.render (background or in front).
+-- Kept out, as today (each computer plays the part with what it has, and Health says why): audio coming into the chain from another track
+-- (sidechains, sends), knobs linked between plug-ins, FX containers and parallel plug-ins, more than two channels. The master never prints.
+
+-- How many hand-overs the studio allows (band.json "print_hops", the owner's or an admin's, Settings > Studio): 0 (off), 1, 2 (the default:
+-- the two-computer case), 3, or "any". Pure.
+function prints.hops_cap(v)
+  if v == "any" then return math.huge end
+  v = math.tointeger(tonumber(v) or -1)
+  if v and v >= 0 and v <= 3 then return v end
+  return 2
+end
+-- The chain cut into runs, fewest for its order: `holders` per plug-in, in order, the set of users who have it; the first `head` must be one
+-- run (a MIDI part's instrument and the MIDI plug-ins before it: notes don't go through a file). Each run takes plug-ins while someone has
+-- them all. -> { {from, to, who = set} }, or nil and the plug-in it stopped at (nobody has it, or it would split the head). Pure.
+function prints.split(holders, head)
+  local runs, cur = {}, nil
+  for i, h in ipairs(holders) do
+    if not next(h) then return nil, i end
+    local w = {}
+    if cur then for u in pairs(cur.who) do if h[u] then w[u] = true end end end
+    if cur and next(w) then cur.to, cur.who = i, w
+    elseif cur and i <= (head or 0) then return nil, i
+    else cur = { from = i, to = i, who = h }; runs[#runs + 1] = cur end
+  end
+  return runs
+end
+-- Who renders each run: whoever changed the part, when they're here and have it; else whoever here has most of the chain (`counts`), then
+-- the first by name; else (nobody here has it) the same among everyone, and that stage waits for them. The same on every computer, so two
+-- never take one stage. -> { {user, here} }. Pure.
+function prints.assign(runs, author, here, counts)
+  local out = {}
+  local function better(u, b) return not b or (counts[u] or 0) > (counts[b] or 0) or ((counts[u] or 0) == (counts[b] or 0) and u < b) end
+  for k, r in ipairs(runs) do
+    local pick = author and r.who[author] and here[author] and author or nil
+    if not pick then for u in pairs(r.who) do if here[u] and better(u, pick) then pick = u end end end
+    if not pick and author and r.who[author] then pick = author end
+    if not pick then for u in pairs(r.who) do if better(u, pick) then pick = u end end end
+    out[k] = { user = pick, here = here[pick] == true }
+  end
+  return out
+end
+-- Does a chain (its FXCHAIN text, as mirror keeps it) link a knob to another plug-in's (parameter modulation's "PLINK scale fx:offset param",
+-- a param of -1 being none), in a modulation block that's on? Any such link keeps the part out of chained prints: whether the two plug-ins
+-- land in one stage isn't read here (shortcut: conservative; reading which plug-in each block belongs to would allow links within a stage). Pure.
+function prints.linked(chain)
+  local off = false
+  for line in tostring(chain or ""):gmatch("[^\r\n]+") do
+    local l = line:match("^%s*(.-)%s*$")
+    if l:match("^<PROGRAMENV") then off = l:match("^<PROGRAMENV%s+%S+%s+1") ~= nil -- (its modulation switched off: mirror.modulated)
+    elseif not off and l:match("^PLINK%s") then
+      local p = tonumber(l:match("^PLINK%s+%S+%s+%S+%s+(%-?%d+)"))
+      if p and p >= 0 then return true end
+    end
+  end
+  return false
+end
+
+-- What a part's print goes through, ready to cut: { entries = { {tr, i, name} } (enabled plug-ins, the routed source's first), runs,
+-- counts, bounds }, or nil and why it can't be chained. Worked out once a look per track.
+local function relay_plan(tr, dest, midi, cfg, chains)
+  for _, c in ipairs(chains or {}) do
+    if prints.linked(c) then return nil, "a knob on it is linked to another plug-in's (parameter modulation)" end
+  end
+  local entries = {}
+  for _, t in ipairs(dest and { tr, dest } or { tr }) do
+    if reaper.GetMediaTrackInfo_Value(t, "I_NCHAN") > 2 then return nil, "it uses more than two channels" end
+    for r = 0, reaper.GetTrackNumSends(t, -1) - 1 do -- (MIDI-only receives are fine: a sampler fed by several MIDI tracks)
+      if reaper.GetTrackSendInfo_Value(t, -1, r, "B_MUTE") == 0 and reaper.GetTrackSendInfo_Value(t, -1, r, "I_SRCCHAN") ~= -1
+          and reaper.GetTrackSendInfo_Value(t, -1, r, "P_SRCTRACK") ~= tr then
+        return nil, "audio comes into its plug-ins from another track (a sidechain or a send)"
+      end
+    end
+    for i = 0, reaper.TrackFX_GetCount(t) - 1 do
+      if tonumber(select(2, reaper.TrackFX_GetNamedConfigParm(t, i, "container_count"))) then return nil, "it uses an FX container" end
+      if (tonumber(select(2, reaper.TrackFX_GetNamedConfigParm(t, i, "parallel"))) or 0) ~= 0 then return nil, "plug-ins on it run in parallel" end
+      if reaper.TrackFX_GetEnabled(t, i) then entries[#entries + 1] = { tr = t, i = i, name = fx_name(t, i) } end
+    end
+  end
+  if #entries == 0 then return nil end
+  local head = 0
+  if midi then -- (up to the instrument, on the track that plays it; none found: the whole chain is one run)
+    head = #entries
+    for n, e in ipairs(entries) do
+      if e.tr == (dest or tr) and (e.name:match("^%u+%d*i: ") or js_instrument(e.tr, e.i) or reaper.TrackFX_GetInstrument(e.tr) == e.i) then head = n; break end
+    end
+  end
+  local ok, lists = pcall(require("plugins").lists, cfg)
+  if not ok or #lists < 2 then return nil end
+  local holders, counts = {}, {}
+  for n, e in ipairs(entries) do
+    holders[n] = {}
+    for _, l in ipairs(lists) do
+      if list_has(l, e.name) then holders[n][l.user] = true; counts[l.user] = (counts[l.user] or 0) + 1 end
+    end
+  end
+  local runs, bad = prints.split(holders, head)
+  if not runs then
+    if not next(holders[bad]) then return nil, "nobody in the studio has " .. entries[bad].name:gsub("^%w+:%s*", "") end
+    return nil, "its instrument and the MIDI plug-ins before it aren't all on one computer"
+  end
+  local bounds = {}
+  for _, r in ipairs(runs) do bounds[#bounds + 1] = r.from .. "-" .. r.to end
+  return { entries = entries, runs = runs, counts = counts, bounds = table.concat(bounds, ",") }
+end
+
+-- What Health says about chained prints, through ExtState "print relays <project>" (Live sync works them out; the panel shows them):
+-- { {key, text, at} }, each for two minutes after it was last seen. Written when they change, or every half minute.
+local relay_said, relay_sent = {}, { at = -math.huge }
+local function relay_note(proj, key, text)
+  local now = os.time()
+  if key then relay_said[key] = { text = text, at = now } end
+  local list, sig = {}, {}
+  for k, v in pairs(relay_said) do
+    if now - v.at < 120 then list[#list + 1] = { key = k, text = v.text, at = v.at } else relay_said[k] = nil end
+  end
+  table.sort(list, function(a, z) return a.key < z.key end)
+  for _, x in ipairs(list) do sig[#sig + 1] = x.key .. "\0" .. x.text end
+  sig = table.concat(sig, "\1")
+  if sig ~= relay_sent.sig or now - relay_sent.at > 30 then
+    relay_sent.sig, relay_sent.at = sig, now
+    band.set_ext_json(band.SECTION, "print relays " .. tostring(proj), list, false)
+  end
+end
+function prints.relay_notes(proj)
+  local out = {}
+  local list = band.ext_json(band.SECTION, "print relays " .. tostring(proj))
+  for _, x in ipairs(type(list) == "table" and list or {}) do
+    if type(x) == "table" and type(x.text) == "string" and os.time() - (tonumber(x.at) or 0) < 120 then out[#out + 1] = x end
+  end
+  return out
+end
+
+-- Which stage of a chained print this computer renders now, if any: the first whose file isn't in the media folder yet, when it's this
+-- computer's (`relay`: { author, here, me, chains } from mirror's W.prints). -> { k, n, last, name, from, on, only } or nil, and whether
+-- it's waiting on a computer that's here (looked at again at the next pass, not a minute later).
+local relay_cant = {}
+local function relay_stage(proj, tr, dest, midi, cfg, relay, oid, h, media_dir)
+  local where = select(2, reaper.GetTrackName(tr))
+  local cap = prints.hops_cap(require("groups").trusted(cfg.root).print_hops)
+  if cap == 0 then return nil end -- (off: as before, and nothing said)
+  local got = in_look(midi and "Rm" or "Ra", tr, function() -- (MIDI and audio parts on one track cut differently: the instrument's head)
+    local plan, why = relay_plan(tr, dest, midi, cfg, relay.chains)
+    return { plan = plan, why = why }
+  end)
+  local plan = got and got.plan
+  if not plan then
+    if got and got.why then relay_note(proj, "out " .. where, string.format("'%s' doesn't print in plug-in hand-overs: %s. Each computer plays its parts with the plug-ins it has.", where, got.why)) end
+    return nil
+  end
+  local n = #plan.runs
+  if n - 1 > cap then
+    relay_note(proj, "cap " .. where, string.format("'%s' needs %d plug-in hand-overs to print; the studio allows %d (Settings > Studio > Plug-in hand-overs for prints). " ..
+      "Until then each computer plays its parts with the plug-ins it has.", where, n - 1, cap))
+    return nil
+  end
+  local who = prints.assign(plan.runs, relay.author, relay.here or {}, plan.counts)
+  local sh = require("mirror").hash(plan.bounds)
+  local k, found = n, {}
+  for j = 1, n do
+    found[j] = find_made(media_dir, j < n and stage_base(oid, h, j, sh) or ("print-" .. (oid ~= "" and oid or "item") .. "-" .. h))
+    if not found[j] then k = j; break end
+  end
+  local run = plan.runs[k]
+  local names = {}
+  for x = run.from, run.to do names[#names + 1] = (plan.entries[x].name:gsub("^%w+:%s*", "")) end
+  if who[k].user ~= relay.me then
+    if not who[k].here then
+      local step = n == 1 and string.format("only %s's computer has all of %s", tostring(who[k].user), table.concat(names, ", "))
+        or string.format("it prints in %d steps, and step %d (%s) is for %s's computer", n, k, table.concat(names, ", "), tostring(who[k].user))
+      relay_note(proj, "waits " .. where, string.format("A part on '%s' waits to print: %s, which is offline. Until it's back, each computer plays the part " ..
+        "with the plug-ins it has.", where, step))
+    end
+    return nil, who[k].here
+  end
+  for x = run.from, run.to do -- (my list says I have it; it has to load here too)
+    local e = plan.entries[x]
+    if not prints.fx_here(e.tr, e.i, true) then
+      if not relay_cant[names[x - run.from + 1]] then
+        relay_cant[names[x - run.from + 1]] = true
+        band.log(string.format("a part on '%s' waits for this computer to hand on its sound through %s, which doesn't load here", where, names[x - run.from + 1]))
+      end
+      return nil
+    end
+  end
+  return {
+    k = k, n = n, last = k == n, from = k > 1 and found[k - 1] or nil, on = dest or tr,
+    name = k < n and (stage_base(oid, h, k, sh) .. who_suffix()) or print_name(oid, h),
+    only = function() -- (only this stage's plug-ins on for the render) -> what puts the others back
+      local off = {}
+      for x, e in ipairs(plan.entries) do
+        if x < run.from or x > run.to then reaper.TrackFX_SetEnabled(e.tr, e.i, false); off[#off + 1] = e end
+      end
+      return function() for _, e in ipairs(off) do reaper.TrackFX_SetEnabled(e.tr, e.i, true) end end
+    end,
+  }
+end
+-- Once its print is on, an item's stage files go (every version's: an older one's relay can't finish now, and its print would be found
+-- first anyway). They're never named by a change, so nothing waits for them.
+local function clear_stages(dir, oid)
+  local pre = "stage-" .. (oid ~= "" and oid or "item") .. "-"
+  for _, ext in ipairs({ ".flac", ".opus" }) do
+    for _, f in ipairs(band.listing(dir, ext)) do
+      local of = f:match("^stage%-(.+)%-%x%x%x%x%x%x%x%x%-%d+%-%x%x%x%x%x%x%x%x")
+      if f:sub(1, #pre) == pre and of == (oid ~= "" and oid or "item") then os.remove(dir .. "/" .. f) end
+    end
+  end
+end
+
 -- Make or refresh the print of a MIDI item (rendered through its track: this tab in front, transport stopped).
 -- Only when the track's plug-ins all load here (else the print would be silent). Returns true when the item changed.
 -- An audio take with Melodyne (or another ARA plug-in) gets its print the same way (see prints.ARA). A track that
@@ -569,7 +877,9 @@ end
 -- track's chain (`route_hash`) is part of what the print is made from.
 -- An audio item gets one too when its track has a plug-in someone in the band lacks (`cfg`: whose band). Prints
 -- render in the background where that works (prints.render), so this returns true on the pass that picks one up.
-function prints.refresh(proj, it, media_dir, fx_hash, route_hash, cfg)
+-- `relay` (0.59.49): nobody has the whole chain, so it may print in stages (relay_stage); a second result true says a stage waits on a
+-- computer that's here, so the part is looked at again at the next pass.
+function prints.refresh(proj, it, media_dir, fx_hash, route_hash, cfg, relay)
   local midi, print = prints.takes(it)
   local tr = reaper.GetMediaItem_Track(it)
   -- (a pass on a lane nobody hears: printed once it plays. Every pass of a comp was rendered: laptop, 0.42.5)
@@ -578,22 +888,46 @@ function prints.refresh(proj, it, media_dir, fx_hash, route_hash, cfg)
   local audio = not midi and prints.audio_take(it)
   if not midi and not audio then return refresh_ara(proj, it, media_dir) end
   local dest = midi and prints.route(tr)
-  if (reaper.TrackFX_GetCount(tr) == 0 and not dest) or not prints.track_plays(tr, true) then return false end
+  -- (in a relay this computer has only its stage's plug-ins: relay_stage checks those load here)
+  if (reaper.TrackFX_GetCount(tr) == 0 and not dest) or not (relay or prints.track_plays(tr, true)) then return false end
   if audio and (not prints.lacking(tr, cfg) or prints.from_band(it, audio)) then return false end
+  -- (MIDI as audio: only where a plug-in is missing for someone, or a sample player's content can't be seen. James, 0.59.49)
+  local wanted = not midi or prints.midi_prints(tr, dest, cfg)
+  if not (wanted or print) then return false end
   local dry = midi or audio
   local h, old
   if midi then h, old = prints.source(it, midi, (fx_hash or "") .. (dest and ("\0" .. (route_hash or "")) or ""))
   else h = prints.audio_source(it, audio, fx_hash) end
   if print and (take_ext(print, prints.KEY) == h or old and take_ext(print, prints.KEY) == old) then return false end
+  -- (one that no longer prints, with a print of notes it no longer has: the print comes off, and the part goes out without it. Kept, Sound and a
+  -- track set to "wet" went on playing the old notes everywhere. Cost: one notes hash, only for such a part with a print. Round 4 review, 0.59.49)
+  if not wanted then
+    drop_print(proj, it, print)
+    prints.choose(it)
+    reaper.UpdateItemInProject(it)
+    return true
+  end
   local oid = select(2, reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", false))
-  local name = print_name(oid, h)
+  local stage, waiting
+  if relay then
+    stage, waiting = relay_stage(proj, tr, dest, midi, cfg, relay, oid, h, media_dir)
+    if not stage then return false, waiting end
+  end
+  local name = stage and stage.name or print_name(oid, h)
   if prints.silent[name] then return false end -- (came out silent once: not again until what it's made from changes)
   made_dir(media_dir)
   local sync = require("sync")
   local path = prints.render(oid, name, media_dir, dest and { tr, dest } or { tr }, function(_, front) -- (front: rendered here, into this folder first)
-    if dest then return sync.print_routed(proj, it, midi, dest, front or media_dir, name) end
-    return sync.print_item(proj, it, dry, front or media_dir, name, nil, false, true)
-  end, reaper.GetMediaItemInfo_Value(it, "D_LENGTH"), audio and stock_only(tr)) -- (quick: audio through REAPER's own effects, nothing to load)
+    local back = stage and stage.only() -- (a stage: only its plug-ins, put back whatever the render does)
+    local ok, p = pcall(function()
+      if stage and stage.from then return sync.print_file(proj, stage.on, it, stage.from, front or media_dir, name) end
+      if dest then return sync.print_routed(proj, it, midi, dest, front or media_dir, name) end
+      return sync.print_item(proj, it, dry, front or media_dir, name, nil, false, true)
+    end)
+    if back then back() end
+    if not ok then error(p, 0) end
+    return p
+  end, reaper.GetMediaItemInfo_Value(it, "D_LENGTH"), not stage and audio and stock_only(tr)) -- (quick: audio through REAPER's own effects, nothing to load)
   if not path then return false end
   -- a print of notes that came out silent: the instrument loaded but its sounds didn't (a Kontakt library or an EZX that isn't
   -- installed here). Kept, it played silence for everyone who lacked the instrument, and nothing said so (plug-ins review, 0.58.76)
@@ -619,8 +953,13 @@ function prints.refresh(proj, it, media_dir, fx_hash, route_hash, cfg)
     end
   end
   if prints.silent[name] then return false end
+  if stage and not stage.last then -- (a stage in the shared folder: the next computer takes it from there)
+    band.log(string.format("a part on '%s': step %d of %d of its print is rendered here, for the next computer to carry on", select(2, reaper.GetTrackName(tr)), stage.k, stage.n))
+    return false, true
+  end
   if dest then prints.midi_only(tr, dest) end
   attach(it, print, dry, path, h)
+  if stage then clear_stages(media_dir, oid) end
   prints.choose(it)
   reaper.UpdateItemInProject(it)
   return true
@@ -745,6 +1084,27 @@ function prints.options(ctx, ImGui)
     ImGui.TextDisabled(ctx, string.format("Background renders: %d done, %d failed (%s). It keeps trying until %d fail with none done.", st.done or 0, st.failed, st.why or "?", require("bgrender").GIVE_UP))
   end
 end
+-- Settings > Studio: "Plug-in hand-overs for prints" (chained prints, James 0.59.49). `may`: the owner or an admin, who change it.
+prints.HOPS = { { 0, "Off" }, { 1, "1" }, { 2, "2" }, { 3, "3" }, { "any", "No cap" } }
+function prints.hops_ui(ctx, ImGui, cfg, may)
+  ImGui.SeparatorText(ctx, "Plug-in hand-overs for prints")
+  local cap = prints.hops_cap(require("groups").trusted(cfg.root).print_hops)
+  ImGui.TextDisabled(ctx, "When no computer has every plug-in on a track, its parts print in steps: each computer renders the plug-ins it has and " ..
+    "hands the sound on through the shared folder. This many hand-overs at most (each is one more render and a few seconds); a part that needs " ..
+    "more, or Off, isn't printed, and each computer plays it with the plug-ins it has. Health says which.")
+  for i, o in ipairs(prints.HOPS) do
+    if i > 1 then ImGui.SameLine(ctx) end
+    local on = cap == prints.hops_cap(o[1])
+    if may then
+      if ImGui.RadioButton(ctx, o[2] .. "##printhops", on) and not on then
+        require("groups").set_print_hops(cfg.root, o[1] ~= 2 and o[1] or nil)
+        band.log("plug-in hand-overs for prints: " .. o[2] .. " for everyone in the studio")
+      end
+    elseif on then ImGui.Text(ctx, "Now: " .. o[2]) end
+  end
+  if may then ImGui.SetItemTooltip(ctx, "Owner and admins. 2 covers two computers that each lack something the other has.") end
+end
+
 -- What Live sync's background renderer says (ExtState "bg render state"), or nil.
 function prints.bg_state() return band.ext_json(band.SECTION, "bg render state") end
 function prints.bg_retry()

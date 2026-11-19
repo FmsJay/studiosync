@@ -228,7 +228,7 @@ By hand:
 4. **Install ReaImGui** (*Extensions > ReaPack > Browse packages*): the panel, and with it the Live and
    Restore pages, needs it.
 5. Optional extras:
-   - **Tailscale** comes with the installers. Everyone in a studio signs in to its Tailscale network (a guest invitation puts a guest on it with no account; each studio can have its own). *Play along*, *Jam* and the producer's
+   - **Tailscale** comes with the installers. Everyone in a studio signs in to its Tailscale network (a guest invitation puts a guest on it with no account; each studio can have its own). *Time-sync*, *Jam* and the producer's
      NINJAM route reach the NINJAM server (on whichever computer connects first) through it (show the Play/Jam tab in Settings > Advanced),
      and it gets round a router that stops SonoBus (Settings > Health > Can't hear each other?).
    - **The Google Drive copy** (optional, recommended) needs **Google Drive for desktop**, each person signed in
@@ -283,7 +283,7 @@ By hand:
 - **Studios on different Tailscale accounts**: someone in two studios can be signed in to two Tailscale networks, but a
   computer is on one at a time. Each studio remembers its network (from whoever set up a guest invitation, private live
   audio or the listening page there). When this computer is on another one, Settings > Health says so and offers **Switch
-  to ...** if this computer is signed in to it, or says to ask the studio's owner for a guest invitation. Only Play along,
+  to ...** if this computer is signed in to it, or says to ask the studio's owner for a guest invitation. Only Time-sync,
   the listening page and private live audio need the right network: everything else syncs either way. A switch away is
   written to `tailnet-switch.json` in StudioSync's folder (from which account, to which, until when), and Health keeps a
   **Switch back** button until you do; the file goes when you're back. A computer others reach over Tailscale can read it
@@ -599,8 +599,8 @@ and it plays four notes at once, so it's a bass, lead and sequence synth).
 
 **Sync and exit** (top row): with Hold my changes on it first asks whether to send what you're holding or keep holding it; then it saves,
 waits until what you changed has gone out, says who has it and whether it's safe to shut down, then closes the project or quits REAPER.
-On a backup or autosave copy, or a second tab of a project syncing in another, it only says that nothing of it syncs, and closes it
-without saving (REAPER asks about unsaved changes); Quit REAPER saves only each project's own syncing tab. A project you saved
+On a backup or autosave copy, or a second tab of a project syncing in another, it says so before saving or asking anything, and closes it
+without saving (answer No when REAPER asks about unsaved changes); Quit REAPER saves only each project's own syncing tab. A project you saved
 under a new name while Live sync runs (Save As, Save new version) syncs under that name from then on.
 
 **Real time mode**, **Follow** and **Solo** are on Home and need nothing but SonoBus. **Follow** on someone's card: your
@@ -612,7 +612,7 @@ carries sound; the notes and the take arrive through the shared folder and are s
 
 The **Play/Jam** page (Settings > Advanced shows it) has starting together and the NINJAM ways to hear each other:
 
-- **Play along (synced)**, the default: your audio is stamped with its project position; listeners start playback
+- **Time-sync** (play along, synced), the default: your audio is stamped with its project position; listeners start playback
   a bar or two after you and hear you in time with the project, at any distance. What you play also lands on their
   timeline as a placeholder on a "<name> (live)" track, replaced automatically when your real take arrives.
   Uses REAPER's own ReaNINJAM and a NINJAM server that ships with StudioSync (`tools/ninjam-server/README.md`), over Tailscale.
@@ -691,8 +691,8 @@ included. **Just look** leaves it as it is, with **Make this my project** there 
 - Time-selection claims are kept in seconds: inserting time before them doesn't move them (re-claim after).
 - The shared folder trusts its members: an event says who made it, and nothing checks that beyond the folder's
   own sharing. Share it only with your studio. The events folder grows with the session (never pruned yet).
-- Live (Play along): ReaNINJAM reads its settings when it first opens in a REAPER session; after changing mode or
-  server, restart REAPER. Play along needs the sender's channel in Session mode (the panel says when it isn't).
+- Live (Time-sync): ReaNINJAM reads its settings when it first opens in a REAPER session; after changing mode or
+  server, restart REAPER. Time-sync needs the sender's channel in Session mode (the panel says when it isn't).
   Its placeholders appear when the listener disconnects (ReaNINJAM writes its clip log only then).
 - Real time mode: REAPER only sees a newly installed SonoBus after a restart. Setting SonoBus up relies on its saved
   state's layout (checked against SonoBus 1.7.2); if a later SonoBus changes it, StudioSync says so and you join with

@@ -10,6 +10,11 @@ band.note_start(dir) -- (was all of this copy here as it started? band.started_p
 if require("fromfolder").handoff(debug.getinfo(1, "S").source) then return end -- (an old copy's button or key: the copy this computer runs from now. 0.59.24)
 -- (every module loaded now, as approved: one first needed mid-session after its file changed was refused by the code check. James, Round 2 review, 0.59.46)
 if band.preload then band.try("band.preload", band.preload, dir) end
+-- (the modules this chunk needs as it starts, through band.try: one refused by the code check mid-arrival gave REAPER's error box on an
+-- unattended start. Round 4 review, 0.59.49)
+for _, m in ipairs({ "sync", "live", "together", "songsync", "recall", "drive", "livemidi" }) do
+  if not band.try("require " .. m, require, m) then return end
+end
 local sync = require("sync")
 sync.autosave = sync.autosave or {} -- (lib/leave.lua leave.autosave: how much came in since the last auto-save, and whether it may save)
 local live = require("live")
@@ -90,6 +95,13 @@ local host = b.role == "host"
 band.try("songsync.want", require("songsync").want, cfg, b.song) -- (a song syncing in a tab here comes in full: per-song sync)
 band.try("band.stay_online", band.stay_online)
 local s0 = band.read_json(band.session_path(cfg, b.song)) or {}
+-- Is this binding still this session's? REAPER opens another project into the same tab and keeps its pointer, so a different song, room or
+-- studio can be in `proj` now. (Raw roots compared first: same_studio only when they differ, as this runs every tick.) Round 4 review, 0.59.49
+local function same_session(now_b)
+  return now_b ~= nil and now_b.role == b.role and now_b.song == b.song and now_b.room == b.room
+    and (now_b.root == b.root or band.same_studio(now_b.root, b.root))
+end
+local function still_ours() return reaper.ValidatePtr2(0, proj, "ReaProject*") and same_session(band.binding(proj)) end
 -- (no take baseline: the old take sync's send half is gone, and nothing read it. Round 1 review, 0.59.45)
 sync.audio_follow_tempo(proj) -- band audio follows tempo changes piece by piece (REAPER auto-stretch), never drifting
 
@@ -217,21 +229,34 @@ local function mark_room(on)
 end
 reaper.atexit(function()
   if click and reaper.GetToggleCommandStateEx(0, 40364) == 1 then reaper.Main_OnCommand(40364, 0) end -- (stopped mid count-in: the click left on. 0.58.92)
-  if not reloaded then band.try("end_of_session", end_of_session, "Live sync stopped") end -- (logged when it fails: Round 1 review, 0.59.45)
+  -- (only while the tab still holds this session: another project opened into it was saved as this song's "end of session" version, exported
+  -- with its media to the studio's cloud drive, and read for the local-work mark. Otherwise the last look's answer, and nothing saved.
+  -- Round 4 review, 0.59.49)
+  local ok_ours, ours = band.try("still_ours", still_ours)
+  ours = ok_ours and ours
+  if not reloaded and ours then band.try("end_of_session", end_of_session, "Live sync stopped") end -- (logged when it fails: Round 1 review, 0.59.45)
   if not reloaded then
     -- (this tab's room taken off the "local work" mark only when a look ran and a last check, now, finds nothing: a take recorded since the last
     -- look was missed, and Delete my copy then binned the folder holding its only copy. Round 3 review, 0.59.48)
     local own = sync.local_work
-    if own ~= nil and reaper.ValidatePtr2(0, proj, "ReaProject*") then
+    if own ~= nil and ours then
       local ok, now_own = band.try("own_work", own_work)
       own = not ok or now_own
     end
     if own ~= nil then band.try("mark_room", mark_room, own) end
-    -- (and its unsent list goes: only closing the tab took it away, so after Stop the panel's Restore and Undo went on skipping those objects and
-    -- Bring into main waited on them. Round 3 review, 0.59.48)
-    reaper.DeleteExtState(band.SECTION, "unsent " .. tostring(proj), false)
+    -- (and its unsent list keeps only what still differs from its known state: Restore, Undo and the panel's other protections go on covering
+    -- held edits still in the project, and Bring into main stops waiting on the rest. All of it goes when the tab holds something else now.
+    -- James, Round 4 review, 0.59.49)
+    local key = "unsent " .. tostring(proj)
+    local ids = ours and reaper.GetExtState(band.SECTION, key) or ""
+    reaper.DeleteExtState(band.SECTION, key, false)
+    if ids ~= "" then
+      local ok, kept = band.try("still_unsent", live.still_unsent, proj, ids, require("mirror"), sync.room_dir(cfg, b.song, b.room) .. "/media", sync.local_mix)
+      if ok and kept ~= "" then reaper.SetExtState(band.SECTION, key, kept, false) end
+      if not ok then reaper.SetExtState(band.SECTION, key, ids, false) end -- (couldn't tell: all kept, the safe side)
+    end
   end
-  if not reloaded then debug_collect("end of session") end
+  if not reloaded and ours then debug_collect("end of session") end
   -- (this REAPER's lock for the song goes with it: restarted within 20 s, the new REAPER read it as another one syncing the song and waited
   -- two minutes, saying so. Chilio's Mac, 0.59.29)
   if not reloaded then
@@ -252,7 +277,9 @@ local status_info -- (the status as last written: tick_body says "recording" wit
 local paint_at = -math.huge -- when tracks were last coloured for who's working on them
 local format_at = -math.huge -- when the recording format was last checked
 local followed = false -- someone follows this computer: its mix goes in the status (lib/presence.lua)
-sync.loading[tostring(proj)] = true -- (opening it: its first catch-up goes faster, then its peaks. lib/sync.lua)
+-- (opening it: its first catch-up goes faster, then its peaks. lib/sync.lua. Published as "loading <proj>" now, not at the first receive: a panel
+-- save in between was mapped though still behind. Round 4 review, 0.59.49)
+if sync.begin_loading then sync.begin_loading(proj) else sync.loading[tostring(proj)] = true end
 local claims_at = -math.huge -- when our claims on gone tracks were last looked for (sync.drop_gone_claims)
 local last_status, status_json = 0, ""
 local rt_at = 0 -- when Real time mode's sends were last matched to what's armed
@@ -839,6 +866,9 @@ local function follow_file(now)
   file_at = now
   local f = require("rooms").file_of(proj) or ""
   if f == "" or f == our_file then return end
+  -- (never a backup or autosave opened in place: it became the room's file, synced past rooms.is_copy and opened from Projects from then on. Only
+  -- a Save As of this same room gets here: the tick stops on another song, room or studio. Round 4 review, 0.59.49)
+  if live.backup_name(f) then return end
   our_file = f
   band.set_autosync(f, true)
   if b.room == "main" then band.set_project_file(cfg.root, b.song, (f:gsub("\\", "/"))) end
@@ -870,7 +900,9 @@ local function tick_body() -- returns true to keep going
     return band.log("live sync stopped: '" .. b.song .. "'" .. (b.room ~= "main" and (", side room '" .. b.room .. "',") or "") .. " was closed (it starts again by itself when you reopen it)")
   end
   local now_b = band.binding(proj)
-  if not now_b or now_b.role ~= b.role or now_b.song ~= b.song then -- became a solo working copy (or unbound): not ours any more
+  -- became a solo working copy (or unbound), or another room's or studio's file of the song opened into this tab: not ours any more. (Room and
+  -- studio too: it went on syncing the old room into it, and adopted that file as the room's. Round 4 review, 0.59.49)
+  if not same_session(now_b) then
     reaper.DeleteExtState(band.SECTION, "live " .. key, false)
     reaper.DeleteExtState(band.SECTION, "live began " .. key, false) -- (another song opened in this tab: its live audio starts off. 0.59.9)
     return band.log("live sync stopped: this tab is now " .. (now_b and now_b.role == "solo" and "a Solo edit working copy" or "no longer this session"))

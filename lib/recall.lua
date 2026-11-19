@@ -94,8 +94,12 @@ function recall.save(proj, cfg, song, room, label, keep, mapped)
   -- runs there), not any change still waiting: one held by Hold, a part open in the MIDI editor or audio on its way marked every version
   -- saved meanwhile, and "yours before X's work" restored by time brought X's earlier work. Cost: none, cheaper than the count. Round 3
   -- review, 0.59.48)
+  -- (and a tab Live sync doesn't run in receives nothing, so it can be days behind: there, 0.59.47's count. Rare: "before X joined", Back up or
+  -- Take control from such a tab. Cost: that count, only there. Round 4 review, 0.59.49)
   local pk = tostring(proj)
-  if not mapped and (sync.loading[pk] or (reaper.GetExtState(band.SECTION, "loading " .. pk) ~= "" and band.live_here(proj))) then st.behind = true
+  local live = sync.live_in[pk] or band.live_here(proj)
+  if not mapped and (sync.loading[pk] or (live and reaper.GetExtState(band.SECTION, "loading " .. pk) ~= "")
+    or (not live and sync.pending_events(proj, cfg, song, room) > 0)) then st.behind = true
   else
     reaper.RecursiveCreateDirectory(dir .. "/known", 0)
     local ok, err = pcall(band.write_json, dir .. "/known/" .. file, require("mirror").known_map(proj))

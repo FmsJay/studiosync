@@ -419,8 +419,13 @@ function extras.template_text(rpp)
   local lines = {}
   for line in (rpp .. "\n"):gmatch("(.-)\r?\n") do lines[#lines + 1] = line end
   local function block_end(i) -- the line closing the block opened at i
-    local indent = #lines[i]:match("^%s*")
-    for k = i + 1, #lines do if #lines[k]:match("^%s*") == indent and lines[k]:match("^%s*>%s*$") then return k end end
+    -- (by nesting, as REAPER reads a chunk: by indent, a nested block written at the opener's own indent ended the master chain early, and a
+    -- plug-in after it naming a file stayed. Security, Round 4 review, 0.59.49)
+    local depth = 0
+    for k = i, #lines do
+      if lines[k]:match("^%s*<") then depth = depth + 1
+      elseif lines[k]:match("^%s*>%s*$") then depth = depth - 1; if depth == 0 then return k end end
+    end
     return #lines
   end
   local function opens(line, tag) return line:match("^%s*<" .. tag .. "$") or line:match("^%s*<" .. tag .. "%s") end
@@ -483,9 +488,10 @@ function extras.open_template(cfg, name)
   -- (every path a track's chain names is recorded as the band's (mirror.theirs), as a band's chain landing is: never copied out by a send. The
   -- template is anyone's to write, and sharing a song made from it uploaded a file of yours its chain named. Security, Round 3 review,
   -- 0.59.48. Cost: one chunk read a track, at the click)
+  -- (the master's too: its send passes its record now, so a path the strip missed stays home. Security, Round 4 review, 0.59.49)
   local proj, mirror, fxfiles = reaper.EnumProjects(-1), require("mirror"), require("fxfiles")
-  for t = 0, reaper.CountTracks(proj) - 1 do
-    local tr = reaper.GetTrack(proj, t)
+  for t = -1, reaper.CountTracks(proj) - 1 do
+    local tr = t < 0 and reaper.GetMasterTrack(proj) or reaper.GetTrack(proj, t)
     local ok, chunk = reaper.GetTrackStateChunk(tr, "", false)
     if ok then mirror.note_theirs(tr, true, fxfiles.paths(chunk)) end
   end

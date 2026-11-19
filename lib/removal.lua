@@ -365,6 +365,21 @@ local function settle_peers(services, now)
   end
 end
 
+-- The live audio's password changes, once, on this one computer: what they knew of it stops working (0.58.52). And the phone alerts' channel:
+-- they could still read every line sent to it; everyone left is told to subscribe again, groups.tick (0.58.69). -> false when it was skipped
+-- as nothing is verified here yet, to be tried again (the removal was marked done anyway, and the password never changed. Round 4 review, 0.59.49)
+-- shortcut: like the SonoBus secret, the new one can still reach their computer through someone who hasn't stopped syncing with them yet (up to a minute).
+local function rotate(root)
+  local ok, made = pcall(require("groups").new_sonobus_secret, root)
+  if ok and made == false then return false end
+  if require("alerts").channel(root) then
+    local oka, set = pcall(require("alerts").set, root, true, true)
+    if oka and set == false then return false end
+  end
+  return true
+end
+removal.rotate = rotate -- (for tests)
+
 -- Run every so often by Autostart and Live sync (at most every 30 s between them). The marks' work on this computer, once each.
 function removal.tick(now)
   now = now or os.time()
@@ -394,23 +409,26 @@ function removal.tick(now)
         elseif not m.left and not m.guest then told = string.format("%s took you out of %s: nothing syncs with the studio any more, and your copy stays here. Ask to be invited again to come back.", tostring(m.by), g.name) end
       elseif removal.due(m, now) and m.device and (m.device == removal.device_of(g.root, m.user) or m.guest) then -- (only their own computer: a mark can name any; a guest's names it)
         local key = "removal done " .. g.id .. " " .. m.user .. " " .. tostring(m.at)
-        if reaper.GetExtState(band.SECTION, key) == "" then
+        local state = reaper.GetExtState(band.SECTION, key)
+        if state == "rotate" then -- (out and freed: only the password and channel are still to change. Round 4 review, 0.59.49)
+          if rotate(g.root) then
+            reaper.SetExtState(band.SECTION, key, "1", true)
+            band.log(g.name .. "'s live audio password and phone alerts channel changed now that " .. m.user .. " is out")
+          end
+        elseif state == "" then
           local ok, why = services.unshare(g.id, m.device)
           if ok then
             -- (marked done only once their claims are free too: marked first, a free that failed was never tried again, and their tracks
             -- stayed locked for everyone. Review, 0.58.53)
-            local freed, ferr = true, nil
+            local freed, ferr, rotated = true, nil, true
             if m.by == me or (m.left and removal.frees(members(g.root), m.user, me, now - (tonumber(m.at) or now))) then
               freed, ferr = pcall(free, g.root, m.user, me)
-              -- (and the live audio's password changes, once, on this one computer: what they knew of it stops working. 0.58.52)
-              if freed then pcall(require("groups").new_sonobus_secret, g.root) end
-              -- (and the phone alerts' channel: they could still read every line sent to it. Everyone left is told to subscribe again, groups.tick. 0.58.69)
-              -- shortcut: like the SonoBus secret, the new one can still reach their computer through someone who hasn't stopped syncing with them yet (up to a minute).
-              if freed and require("alerts").channel(g.root) then pcall(require("alerts").set, g.root, true) end
+              if freed then rotated = rotate(g.root) end
             end
-            if freed then reaper.SetExtState(band.SECTION, key, "1", true)
+            if freed then reaper.SetExtState(band.SECTION, key, rotated and "1" or "rotate", true)
             else band.log("couldn't free " .. m.user .. "'s claims yet (tried again in a minute): " .. tostring(ferr)) end
-            band.log(m.user .. " is out of " .. g.name .. ": this computer no longer syncs with theirs")
+            band.log(m.user .. " is out of " .. g.name .. ": this computer no longer syncs with theirs" ..
+              (rotated and "" or " (the live audio password and alerts channel change once this computer has checked the studio's settings)"))
           else band.log("couldn't stop syncing with " .. m.user .. ": " .. tostring(why)) end
         end
       end

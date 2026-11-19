@@ -41,8 +41,7 @@ assert(load(startup:gsub("chordbox%(%)", ""):gsub("adaptive%(%)", ""), "=startup
 startup = "mine()\n"
 assert(tools.set_autostart(true, "/rp") and startup:find("^mine%(%)\n%-%- BandSync autostart"), "no block yet: appended")
 assert(tools.set_autostart(false) and not startup:find("BandSync", 1, true) and startup:find("mine()", 1, true), "off: the block goes, the rest stays")
-local inst = read_src("installer/studiosync_setup.lua")
-assert(inst:find("cur .. block .. after", 1, true), "the installer replaces it in place too")
+-- (the installer's own placement is run, not searched for: tests/test_0_59_49_trust_install.lua. Round 4 review, 0.59.49)
 band.read, band.write_atomic = real.read, real.write_atomic
 
 -- M12: moved back to the last-good copy, it moves on to the copy it ran from before once that's at least as new
@@ -89,7 +88,7 @@ reaper.JS_File_Stat = nil
 -- services: Syncthing still starting is said; a missing Syncthing is looked for at most every 5 s
 local services = require("services")
 services.my_device_id = function() return nil end
-assert(services.add_failed("1\ndial tcp 127.0.0.1:8384: connect refused") == services.STILL_STARTING, "no answer yet: still starting, not the raw error")
+assert(services.add_failed("1\ndial tcp 127.0.0.1:8384: connect refused"):find(services.STILL_STARTING, 1, true) == 1, "no answer yet: still starting first (Syncthing's words follow it since 0.59.49)")
 services.my_device_id = function() return "ID" end
 assert(services.add_failed("1\nfolder exists"):find("didn't add the studio's folder: folder exists", 1, true), "an answer: Syncthing's own reason")
 local finds = 0

@@ -7,6 +7,7 @@ package.path = lib .. "?.lua;" .. package.path
 for _, m in ipairs({ "band", "sync", "mirror", "prints", "plugins", "json", "bgrender" }) do package.loaded[m] = nil end
 require("prints").SETTLE = 0
 local band, sync, mirror, prints, bg = require("band"), require("sync"), require("mirror"), require("prints"), require("bgrender")
+prints.midi_prints = function() return true end -- (these check rendering; which MIDI parts print is tests/test_0_59_49_prints.lua's. 0.59.49)
 mirror.FX_SET_GAP = 0 -- (chains land back to back here, faster than any band: 0.59.14)
 local root = D .. "/lroot_" .. os.time()
 local song, room = "LimitLab", "main"

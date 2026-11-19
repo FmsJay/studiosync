@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.59.48", FORMAT = 1, SECTION = "BandSync" }
+local band = { VERSION = "0.59.49", FORMAT = 1, SECTION = "BandSync" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -640,10 +640,7 @@ function band.synced_elsewhere(proj)
     local p = reaper.EnumProjects(k)
     if not p then break end
     local o = p ~= proj and band.binding(p)
-    if o and o.song == b.song and (o.room or "main") == (b.room or "main") and band.same_studio(o.root, b.root) then
-      local beat = tonumber(reaper.GetExtState(band.SECTION, "live " .. tostring(p)))
-      if beat and reaper.time_precise() - beat < 30 then return p end
-    end
+    if o and o.song == b.song and (o.room or "main") == (b.room or "main") and band.same_studio(o.root, b.root) and band.live_here(p, 30) then return p end
   end
 end
 
@@ -929,7 +926,11 @@ end
 function band.reload_failed_key(script, suffix) return "reload failed " .. script .. (suffix and (" " .. tostring(suffix)) or "") end
 -- The caller's side: reloads, or says once per version why it couldn't and goes on with the code it has. Something recording: tried again later.
 function band.reload_or_say(dir, script, version, suffix)
-  local ok, why, busy = band.reload(dir, script, not band.recording_anywhere() and band.update_ok(dir, tostring(version)) and version or nil)
+  local approved = not band.recording_anywhere() and band.update_ok(dir, tostring(version)) and version or nil
+  -- (and noted as "update ok": a band.lua of 0.59.47 or older (a rollback in the folder) doesn't read the approval and asked its own box
+  -- inside the reload; every version's check records the "update ok" one. One write per version. Round 4 review, 0.59.49)
+  if approved and band.from_shared(dir) and reaper.GetExtState(band.SECTION, "update ok") ~= tostring(approved) then reaper.SetExtState(band.SECTION, "update ok", tostring(approved), true) end
+  local ok, why, busy = band.reload(dir, script, approved)
   if ok then return true end
   if busy then return false, "busy" end -- (the caller says nothing and does nothing: it was announced as done every few seconds. Round 2 review, 0.59.46)
   local key = band.reload_failed_key(script, suffix)
@@ -1030,8 +1031,31 @@ end
 function band.folder_updates(dir)
   local root = norm(dir or ""):match("^(.*)/_tools/studiosync$")
   if not root then return false end
-  local j, t = band.read_json(root .. "/_band/band.json"), band.ext_json(band.SECTION, "trusted settings " .. root:lower())
-  return type(j) == "table" and j.updates == "folder" and type(t) == "table" and t.updates == "folder"
+  local j = band.read_json(root .. "/_band/band.json")
+  if not (type(j) == "table" and j.updates == "folder") then return false end
+  local key = "trusted settings " .. root:lower()
+  local t = band.ext_json(band.SECTION, key)
+  -- (none stored: settings.json's kept copy. This check runs as band.lua loads, before Autostart puts lost keys back from there, so after a
+  -- crash a folder-updating studio's changed code got the box. One small read, only on "ask". Round 4 review, 0.59.49)
+  if type(t) ~= "table" and reaper.GetExtState(band.SECTION, key) == "" then
+    local kept = band.read_json(band.home() .. "/settings.json")
+    t = type(kept) == "table" and type(kept[key]) == "string" and band.json_decode(kept[key]) or nil
+  end
+  return type(t) == "table" and t.updates == "folder"
+end
+-- Does the code found (`now`: band.code_files) match the copy's own lib/files.txt, hash for hash, for `version`? -> true or false.
+-- (Round 4 review, 0.59.49)
+function band.list_matches(dir, now, version)
+  local text = band.read(dir .. "/lib/files.txt")
+  if not text or text:match("^version (%S+)") ~= version then return false end
+  local listed = {}
+  for _, f in ipairs(band.files_list(text)) do
+    if not f.hash then return false end
+    listed[f.path] = f.hash
+  end
+  for p, h in pairs(now) do if listed[p] ~= h then return false end end
+  for p in pairs(listed) do if now[p] == nil then return false end end
+  return next(listed) ~= nil
 end
 local function disk_version(dir) return (band.read(dir .. "/lib/band.lua") or ""):match('VERSION = "([^"]+)"') end
 local function code_record(dir, now)
@@ -1063,6 +1087,11 @@ function band.code_guard(dir)
     -- (a studio that updates through its folder: its members are trusted, so what's there is used without asking. 0.59.32)
     had = code_record(dir, now)
     band.log("StudioSync's code in the studio's folder changed (" .. list .. "): used, as the studio updates through its folder")
+  elseif verdict == "ask" and approved and approved == version and had.version == version and band.list_matches(dir, now, version) then
+    -- (the version you said yes to, started while part of it was still arriving, now whole: its files are its own lib/files.txt's. Refused,
+    -- the reload for the rest never happened until REAPER restarted. Round 4 review, 0.59.49)
+    had = code_record(dir, now)
+    band.log("StudioSync " .. tostring(version) .. " has fully arrived in the shared folder (" .. list .. "): remembered as the version you said yes to")
   elseif verdict == "ask" and approved ~= nil then
     band.log("StudioSync " .. tostring(version) .. "'s code in the shared folder isn't the code you said yes to (" .. list .. "): carrying on with the version running. StudioSync asks about it when it next starts")
     error("StudioSync " .. tostring(version) .. " wasn't switched to: its code in the shared folder isn't the code you said yes to (" .. list .. ")", 0)
@@ -1079,6 +1108,9 @@ function band.code_guard(dir)
       error("StudioSync didn't start: its code in the shared folder isn't the code you said yes to (" .. list .. "). Ask your studio about it.", 0)
     end
     had = code_record(dir, now)
+    -- (and that version is "update ok": said yes to on a part-arrived copy, the reload once the rest came had no approval and was refused.
+    -- Round 4 review, 0.59.49)
+    if version then reaper.SetExtState(band.SECTION, "update ok", version, true) end
     band.log("StudioSync's changed code in the shared folder was said yes to (" .. list .. ")")
   end
   -- (each lib module required from now on: only as said yes to. Replaces the one an earlier load of this file put in, over an update's reload.)
@@ -1208,9 +1240,11 @@ end
 
 -- The key that says "start Live sync with REAPER for this project": its path in one spelling (forward slashes, lower
 -- case), as REAPER may be handed it with either slash (Recent projects, the browser, a script).
-function band.live_here(proj) -- Live sync's running for this tab
+-- (`max`: how old the beat may be, 5 s unless said; 30 where a dialog pausing every script mustn't count as stopped. The one heartbeat check:
+-- 17 hand copies had three windows. Round 4 review, 0.59.49)
+function band.live_here(proj, max) -- Live sync's running for this tab
   local beat = tonumber(reaper.GetExtState(band.SECTION, "live " .. tostring(proj)))
-  return beat ~= nil and reaper.time_precise() - beat < 5
+  return beat ~= nil and reaper.time_precise() - beat < (max or 5)
 end
 -- REAPER's "Set media items offline when application is not active" leaves a song's parts OFFLINE and without peaks while the studio sends them in behind
 -- another app (Mac, 0.45.0). Turned off once on this computer, the first time a song syncs; turned on again by hand, it stays on (Health says so).

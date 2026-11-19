@@ -51,6 +51,10 @@ function H.maint_rows()
           fx = (fx:gsub("^%w+i?: ", ""):gsub(" %(.-%)$", "")) }
       end
     end
+    -- the master's plug-ins someone in the studio lacks (the data prints.lacking goes by), and what chained prints say (James, 0.59.49)
+    local okm, ml = pcall(prints.master_lacks, proj, cfg)
+    maint_st.master_lacks = okm and ml or {}
+    maint_st.relays = prints.relay_notes(proj)
   end
   local s = maint_st
   -- (Live sync, read now: a check made while a dialog paused every script, closing a tab, say, kept "Live sync is
@@ -224,6 +228,13 @@ function H.maint_rows()
       "you hear the studio's print where there is one, and nothing where there isn't. Installing %s brings the notes back here.",
       m.track, m.fx, m.dest, m.fx) }
   end
+  for _, m in ipairs(s.master_lacks or {}) do
+    local who = #m.users > 1 and (table.concat(m.users, ", ", 1, #m.users - 1) .. " and " .. m.users[#m.users]) or m.users[1]
+    rows[#rows + 1] = { "master " .. m.fx, false, "yellow", "", string.format("The master has %s, which %s %s, so they hear the mix without it. " ..
+      "The master is never printed (rendering the whole mix again at every change costs too much): a plug-in everyone has sounds the same for all " ..
+      "(Find a plug-in shows only those when the master is selected).", m.fx, who, #m.users > 1 and "lack" or "lacks") }
+  end
+  for _, r in ipairs(s.relays or {}) do rows[#rows + 1] = { "relay " .. tostring(r.key), false, "yellow", "", r.text } end
   do -- (the scripts came by the shared folder, so ReaPack never updated the extension: no amber dot on a Mac. Mac review, 0.59.14)
     local have = reaper.GetExtState(band.SECTION, "menu extension")
     local want = require("tools").EXT_WANT

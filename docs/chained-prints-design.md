@@ -1,6 +1,17 @@
-# Chained prints (design, not built)
+# Chained prints
 
-James, 2026-11-19. Status: design for review; nothing here is implemented yet.
+James, 2026-11-19. Status: built in 0.59.49 (lib/prints.lua "chained prints": `prints.split`, `prints.assign`, `relay_plan`,
+`relay_stage`; `sync.print_file`; the cap is band.json `print_hops`, Settings > Studio). Where the build differs from the design:
+
+- Stage files are `stage-<oid>-<print hash>-<k>-<split hash>-<who>.flac` in the room's media folder, beside prints. The print hash covers
+  the part and the whole chain, so a change anywhere renders every stage again (no reuse of stages 1..k-1 when only stage k's plug-in
+  changed). Once the print is attached its item's stage files are deleted; trimming a print also takes its stages (lib/trim.lua).
+- Who renders a run: whoever changed the part if here and able, else whoever here has most of the chain, then by name; nobody here: the
+  same among everyone, and Health says the relay waits for them.
+- Linked knobs keep a part out whenever any knob on its chain is linked to another plug-in (not only across stages). FX containers,
+  plug-ins running in parallel and tracks of more than two channels are kept out too. MIDI-only receives (a sampler fed by several MIDI
+  tracks) are fine; audio receives are not.
+- A stage waits the 3 s every print waits (`prints.SETTLE`), not `prints.QUIET`.
 
 ## The gap
 

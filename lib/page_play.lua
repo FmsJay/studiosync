@@ -44,7 +44,7 @@ function M.section_live(part) -- part: "mode" or "rest" (docked, side by side), 
     end
     ImGui.TextWrapped(ctx, ({
       synced = "Play to the project; the others hear you in time with it, a bar or two behind you. What you play also shows up on their timeline as an idea until your real take arrives.",
-      listen = "Hear each other right away, with no server to run. Best on wired internet, with collaborators not too far away; otherwise use Play along.",
+      listen = "Hear each other right away, with no server to run. Best on wired internet, with collaborators not too far away; otherwise use Time-sync.",
       jam = "Everyone plays at once and hears the others one cycle late (classic NINJAM).",
     })[live_mode])
     if live_mode == "synced" then -- (the number Play along needs: listeners a whole interval behind)
@@ -86,7 +86,7 @@ function M.section_live(part) -- part: "mode" or "rest" (docked, side by side), 
     return
   end
   ImGui.SeparatorText(ctx, "Server")
-  ImGui.TextDisabled(ctx, "Play along and Jam go through a NINJAM server on one computer, which the others have to be able to reach. The server only lets in addresses from Tailscale, which StudioSync's installer sets up: everyone signs in to the one account.")
+  ImGui.TextDisabled(ctx, "Time-sync and Jam go through a NINJAM server on one computer, which the others have to be able to reach. The server only lets in addresses from Tailscale, which StudioSync's installer sets up: everyone signs in to the one account.")
   ImGui.SetNextItemWidth(ctx, 220)
   local changed, v = ImGui.InputTextWithHint(ctx, "##server", "its address:2049", live_server, ImGui.InputTextFlags_None)
   if changed then live_server = v end
@@ -146,11 +146,11 @@ function M.section_live(part) -- part: "mode" or "rest" (docked, side by side), 
       if not live.toggle_click() then band.msg("Open ReaNINJAM's window first (Show it).") end
     end
     ImGui.SetItemTooltip(ctx, "NINJAM's own metronome ticks the whole time you're connected (at the server's tempo, not the project's).\n" ..
-      "StudioSync turns it off for Play along and Real time; this flips it if it's on anyway.")
+      "StudioSync turns it off for Time-sync and Real time; this flips it if it's on anyway.")
     local cm = live.channel_mode()
     if live_mode == "synced" and cm and cm ~= "session" then
       ImGui.PushTextWrapPos(ctx, 0)
-      ImGui.TextColored(ctx, YELLOW, "It's sending in " .. (cm == "normal" and "Normal" or "Voice Chat") .. " mode, so Play along won't line up: " ..
+      ImGui.TextColored(ctx, YELLOW, "It's sending in " .. (cm == "normal" and "Normal" or "Voice Chat") .. " mode, so Time-sync won't line up: " ..
         "in its window, click the mode button under your channel and pick \"Session mode channel\" (or restart REAPER).")
       ImGui.PopTextWrapPos(ctx)
     end
@@ -166,7 +166,7 @@ function M.section_live(part) -- part: "mode" or "rest" (docked, side by side), 
   end
   ImGui.TextDisabled(ctx, "(?) about changing mode or server")
   ImGui.SetItemTooltip(ctx, "ReaNINJAM reads its mode once per REAPER session: after changing it, restart REAPER. The server follows by itself. " ..
-    "Play along ideas appear when the listener disconnects (ReaNINJAM writes what it heard only then).")
+    "Time-sync ideas appear when the listener disconnects (ReaNINJAM writes what it heard only then).")
 end
 
 -- Connect: ReaNINJAM on the master track, set up for `mode`, the studio's server (this computer runs one if nobody does). -> true, or nil + why.
@@ -313,10 +313,10 @@ function M.section_together()
   end
   ImGui.EndDisabled(ctx)
   ImGui.SetItemTooltip(ctx, rt and "Real time mode is on (Home): everyone follows at the same spot, 0 bars behind. Switch it off there to follow later." or
-    "With Play along: 1-2 bars, so you hear them in time with the project.\nWith Real time: 0, everyone at the same spot.")
+    "With Time-sync: 1-2 bars, so you hear them in time with the project.\nWith Real time: 0, everyone at the same spot.")
   if side ~= "" then
     local n = tonumber(side) or 0
-    local live_mode_note = live.fx(proj, false) and "Play along / Jam is connected." or (live.fx(proj, false, live.SONOBUS) and "Real time is on."
+    local live_mode_note = live.fx(proj, false) and "Time-sync / Jam is connected." or (live.fx(proj, false, live.SONOBUS) and "Real time is on."
       or "To hear each other, connect on Play.")
     ImGui.PushTextWrapPos(ctx, 0)
     ImGui.TextDisabled(ctx, string.format("On: you follow %s behind whoever plays. %s", n == 0 and "right along" or (n .. (n == 1 and " bar" or " bars")), live_mode_note))
@@ -354,7 +354,7 @@ function M.start_together(play_along)
   if play_along then
     ImGui.SetNextItemWidth(ctx, 118)
     local _, l = ImGui.InputInt(ctx, "bars later for listeners", lag_bars); lag_bars = math.max(0, l)
-    ImGui.SetItemTooltip(ctx, "Play along only: the others start this many bars after you\n(one NINJAM interval), so what they hear of you lines up.\nLeave 0 for everything else.")
+    ImGui.SetItemTooltip(ctx, "Time-sync only: the others start this many bars after you\n(one NINJAM interval), so what they hear of you lines up.\nLeave 0 for everything else.")
   end
   local pos = start_from > 0 and rg[start_from].pos or reaper.GetCursorPositionEx(proj)
   local function start(rec)

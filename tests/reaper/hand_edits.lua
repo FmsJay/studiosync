@@ -9,6 +9,7 @@ package.path = lib .. "?.lua;" .. package.path
 for _, m in ipairs({ "band", "sync", "mirror", "prints", "plugins", "json", "midiview" }) do package.loaded[m] = nil end
 require("prints").SETTLE = 0 -- (print_bursts covers the wait)
 local band, sync, mirror, prints, midiview = require("band"), require("sync"), require("mirror"), require("prints"), require("midiview")
+prints.midi_prints = function() return true end -- (these check rendering; which MIDI parts print is tests/test_0_59_49_prints.lua's. 0.59.49)
 local root = D .. "/hroot_" .. os.time()
 local song, room = "HandLab", "main"
 local A, B = { user = "Laptop", root = root }, { user = "James", root = root }

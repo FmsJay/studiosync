@@ -134,10 +134,7 @@ function leave.settled(st)
 end
 
 -- Live sync runs in this tab (its heartbeat is fresh).
-local function live_here(p)
-  local beat = tonumber(reaper.GetExtState(band.SECTION, "live " .. tostring(p)))
-  return beat ~= nil and reaper.time_precise() - beat <= 10
-end
+local function live_here(p) return band.live_here(p, 10) end -- (the one heartbeat check. Round 4 review, 0.59.49)
 -- A backup or autosave: not the song's project file, and no Live sync in it. (Only when Live sync isn't running there, as the panel's sync pill
 -- has it: after REAPER's Save As or "Save new version", the tab Live sync was syncing read as a backup, and Sync and exit skipped holding,
 -- saving and sending. Round 3 review, 0.59.48)
@@ -155,6 +152,8 @@ function leave.quit_saves(p, f, cfg)
   return not leave.is_backup(p, cfg, b)
 end
 
+leave.SECOND_COPY = "This project is open and syncing in another tab: this one is a second copy, and nothing in it syncs. Use Sync and exit there. " ..
+  "Close this one without saving (answer No when REAPER asks): saved, it goes over that tab's file."
 function leave.start(proj, cfg, b)
   -- (with Hold my changes on, it asks first: it sent what you held on the click, before anything was asked, and Cancel couldn't take it back.
   -- Full review, 0.59.44)
@@ -164,6 +163,10 @@ function leave.start(proj, cfg, b)
   -- question. Round 2 review, 0.59.46)
   if leave.is_backup(proj, cfg, b) then
     leave.job.step, leave.job.problem = "done", "This is a backup or autosave, not your project for it: nothing of it syncs. Close it as you like."
+  -- (a second tab of a project syncing in another: found here, before anything's saved or asked. The save step put this tab's older state over
+  -- the file the syncing tab uses, then said it was a second copy, and Hold asked a question that meant nothing here. Round 4 review, 0.59.49)
+  elseif band.synced_elsewhere(proj) then
+    leave.job.step, leave.job.problem = "done", leave.SECOND_COPY
   end
 end
 -- Live sync off in the send step: start it for that tab (as the sync pill does; by name, so it needn't come to the front), then back to sending.
@@ -209,7 +212,7 @@ function leave.tick()
       -- (open and syncing in another tab: this one is a second copy; starting it only said "Starting Live sync..." for 15 s and asked again.
       -- Round 2 review, 0.59.46)
       if band.synced_elsewhere(j.proj) then
-        j.step, j.problem = "done", "This project is open and syncing in another tab: this one is a second copy, and nothing in it syncs. Use Sync and exit there."
+        j.step, j.problem = "done", leave.SECOND_COPY
         return
       end
       if not j.started_at or now - j.started_at > 15 then j.sync_off, j.words = true, "Live sync isn't running in this tab" end
@@ -286,7 +289,9 @@ function leave.draw(ctx, ImGui, dir)
   leave.tick()
   j = leave.job
   if not j then return end
-  if j.open then j.open = nil; ImGui.OpenPopup(ctx, "Sync and exit") end
+  -- (opened again whenever the job is live and it isn't: undrawn for a while (the panel shrunk to its box, a tab that isn't a studio's in
+  -- front), the box went and never came back, so "Safe to shut down" was never seen. Round 4 review, 0.59.49)
+  if j.open or not ImGui.IsPopupOpen(ctx, "Sync and exit") then j.open = nil; ImGui.OpenPopup(ctx, "Sync and exit") end
   -- (as wide as the text size makes the words, so the buttons fit: a fixed 440 clipped Cancel at 130%. Round 1 review, 0.59.45)
   local scale = math.max(0.8, math.min(1.6, tonumber(reaper.GetExtState(band.SECTION, "text size")) or 1))
   ImGui.SetNextWindowSize(ctx, math.floor(440 * scale), 0)

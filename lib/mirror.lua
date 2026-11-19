@@ -1535,10 +1535,10 @@ end
 local function item_base(chunk, media_dir) -- (the chunk's part of an item's state: mirror.item_states reuses it)
   return mirror.memo("i\0" .. media_dir, chunk, function() return mirror.tokenize_media(mirror.normalize_item(chunk), media_dir) end)
 end
-local function item_tail(it, st) -- (and what REAPER keeps out of the chunk, read through the API every time)
-  local tr = reaper.GetMediaItem_Track(it)
+local function item_tail(it) -- (and what REAPER keeps out of the chunk, read through the API every time: "" for most items)
+  local tr, st = reaper.GetMediaItem_Track(it), ""
   if reaper.GetMediaTrackInfo_Value(tr, "I_FREEMODE") == 2 then
-    st = st .. "BANDLANE " .. mirror.clean_lane(reaper.GetMediaItemInfo_Value(it, "I_FIXEDLANE"), reaper.GetMediaTrackInfo_Value(tr, "I_NUMFIXEDLANES")) .. "\n"
+    st = "BANDLANE " .. mirror.clean_lane(reaper.GetMediaItemInfo_Value(it, "I_FIXEDLANE"), reaper.GetMediaTrackInfo_Value(tr, "I_NUMFIXEDLANES")) .. "\n"
   end
   local pick = mirror.picked_take(it)
   if pick then st = st .. "BANDTAKE " .. pick .. "\n" end
@@ -1546,7 +1546,7 @@ local function item_tail(it, st) -- (and what REAPER keeps out of the chunk, rea
 end
 function mirror.item_state(it, media_dir)
   local _, chunk = reaper.GetItemStateChunk(it, "", false)
-  return item_tail(it, item_base(chunk, media_dir))
+  return item_base(chunk, media_dir) .. item_tail(it)
 end
 -- Every listed item's state for a look ({ ptr, tr, guid }: mirror.scan), in order. A track whose whole chunk, items and all, is byte for byte
 -- the last look's holds the same item chunks: their states are the last look's, without asking REAPER for each item's chunk again. On a
@@ -1555,7 +1555,7 @@ end
 -- holding a GUID twice, or with pooled MIDI (a pooled copy's notes can be written in another track's chunk, as a project file writes them
 -- once, so its own track's text needn't change with them). Each look serialized every item twice, a third to a half of a warm look at
 -- 2,000-3,000 MIDI items. Cost: one string compare a track, one plain find on a track whose chunk changed, and last look's track chunks kept in
--- memory (item chunks are the memo's own strings). Round 3 review, 0.59.48
+-- memory (an item's own chunk only while its track changes: Round 4 review, 0.59.49). Round 3 review, 0.59.48
 local look_items, look_proj = {}, {} -- tostring(proj) -> { [track] = { chunk, media, pooled, items = { [item GUID] = { chunk, base } } } }; -> proj
 function mirror.item_states(proj, list, chunks, media_dir, dirty)
   local pk = tostring(proj)
@@ -1582,9 +1582,16 @@ function mirror.item_states(proj, list, chunks, media_dir, dirty)
     if not keep then
       local _, chunk = reaper.GetItemStateChunk(x.ptr, "", false)
       keep = p and p.chunk == chunk and p or { chunk = chunk, base = item_base(chunk, media_dir) }
-    end
+    elseif keep.chunk then keep.chunk = nil end -- (its track's chunk holds it: kept too, a memo hit's chunk was a second copy. Round 4 review, 0.59.49)
     box.items[x.guid] = keep
-    out[i] = item_tail(x.ptr, keep.base)
+    -- (a lane or take line unchanged: last look's whole state, the same string, so item_hash's memo finds it without hashing it all again.
+    -- Cost: one short string compare an item. Round 4 review, 0.59.49)
+    local tail = item_tail(x.ptr)
+    if tail == "" then out[i] = keep.base
+    else
+      if keep.tail ~= tail then keep.tail, keep.st = tail, keep.base .. tail end
+      out[i] = keep.st
+    end
   end
   for _, box in pairs(now) do box.prev = nil end -- (only last look's is kept)
   look_items[pk], look_proj[pk] = now, proj
@@ -2181,11 +2188,23 @@ end
 -- a track part while recording or behind, an item open in the MIDI editor): sync.receive opens no undo block for it. Opened, it closed as an
 -- empty point on the pass a change first waited, and on top of REAPER's list it sent Ctrl+Z StudioSync's way. A miss costs only that point,
 -- as before; one that lands after all gets its point after the pass. Cost: a few lookups per landing change. Round 3 review, 0.59.48
+-- A change to something on a track the band has deleted, and not here: mirror.receive drops it before its unsent check. Cost: one known() read.
+local function on_gone_track(proj, ev)
+  if ev.obj == "track" or not ev.track or ev.track == mirror.MASTER then return false end
+  local trev, th = mirror.known(proj, ev.track)
+  return trev ~= nil and th == "" and not mirror.find(proj, "track", ev.track)
+end
 function mirror.will_wait(proj, ev)
+  -- (not on a track deleted since: receive returns before its unsent check, and a wrong "waits" left an empty point. Round 4 review, 0.59.49)
+  if on_gone_track(proj, ev) then return false end
   if mirror.unsent[tostring(proj) .. ev.oid] or mirror.unsent_elsewhere(proj)[ev.oid] then return true end
   local kind = ev.obj
   if mirror.PART[kind] and not mirror.find(proj, "track", ev.track or ("T" .. ev.oid:sub(2))) then return false end -- (no track: as apply finds)
-  if kind == "fx" then return reaper.GetPlayStateEx(proj) ~= 0 or reaper.EnumProjects(-1) ~= proj end
+  -- (and within FX_SET_GAP of the band's last chain on it, as apply waits. Round 4 review, 0.59.49)
+  if kind == "fx" then
+    return reaper.GetPlayStateEx(proj) ~= 0 or reaper.EnumProjects(-1) ~= proj or
+      reaper.time_precise() - (mirror.fx_set_at[tostring(proj) .. ev.oid] or -math.huge) < mirror.FX_SET_GAP
+  end
   if kind == "env" or kind == "recv" or kind == "misc" then return reaper.GetPlayStateEx(proj) & 4 == 4 or reaper.EnumProjects(-1) ~= proj end
   if kind == "item" and not ev.gone and reaper.MIDIEditor_GetActive then
     local ed = reaper.MIDIEditor_GetActive()
@@ -2292,7 +2311,6 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     local parm_ai = mirror.ai_lines(tr, "parm") -- (the plug-ins' automation items belong to the automation part: kept through this)
     local new = sync.chunk_set_block(chunk, "FXCHAIN", block ~= "" and block or nil)
     if new and new ~= chunk then reaper.SetTrackStateChunk(tr, new, false); mirror.set_ai(proj, tr, parm_ai, "parm"); mirror.fx_set_at[set_key] = reaper.time_precise() end
-    if ev.track ~= mirror.MASTER then note_theirs(tr, true, require("fxfiles").paths(block)) end -- (mirror.theirs: what the band's chain loads)
     -- (ReaInsert and ReaStream reach outside REAPER: the sender's audio interface channels, or a computer on their network. Here they
     -- play or send whatever those settings mean on this machine, so it's said, once per track. Plug-ins review, 0.58.76)
     local outside = block:match('<VST "VSTi?: (ReaInsert)') or block:match('<VST "VSTi?: (ReaStream)')
@@ -2313,6 +2331,11 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     reaper.SetProjExtState(proj, mirror.SEC, "fxk " .. ev.oid, "") -- (and are stored once it has loaded)
     reaper.SetProjExtState(proj, mirror.SEC, "fxp " .. ev.oid, "") -- (its presets likewise: 0.59.17)
     local here = mirror.fxchain(after, skip) or ""
+    -- (mirror.theirs: what the band's chain loads, as sent and as REAPER wrote it back (a path in base64 lines too short to read in the event's
+    -- text shows once REAPER rewrites it), the master's too. Cost: one pattern over the chain read anyway. Security, Round 4 review, 0.59.49)
+    local loads = require("fxfiles").paths(block)
+    for _, p in ipairs(require("fxfiles").paths(here)) do loads[#loads + 1] = p end
+    note_theirs(tr, true, loads)
     local h = mirror.fx_hash(here)
     local key = tostring(proj) .. ev.oid
     -- the band's hash stands, whatever a plug-in that loads here makes of its own saved data: read back, it differs from
@@ -2530,16 +2553,13 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   -- (on a track the band has deleted since: nothing to apply it to, ever. Waiting for it kept "still to come" above
   -- 0 for good: review, 2026-10-31. Before the unsent check below: a flag
   -- left on a part of a deleted track held this back for good. 0.59.14, review)
-  if ev.obj ~= "track" and ev.track and ev.track ~= mirror.MASTER then
-    local trev, th = mirror.known(proj, ev.track)
-    if trev and th == "" and not mirror.find(proj, "track", ev.track) then
-      -- (unless the track comes back later in the same download: its return may still be on its way, so the room is
-      -- looked over once its changes have all landed; sync.receive. Laptop, 0.34.8: a fresh song lost Keys' items)
-      local o = mirror.orphaned[tostring(proj)] or {}
-      o[ev.track] = true
-      mirror.orphaned[tostring(proj)] = o
-      return true
-    end
+  if on_gone_track(proj, ev) then
+    -- (unless the track comes back later in the same download: its return may still be on its way, so the room is
+    -- looked over once its changes have all landed; sync.receive. Laptop, 0.34.8: a fresh song lost Keys' items)
+    local o = mirror.orphaned[tostring(proj)] or {}
+    o[ev.track] = true
+    mirror.orphaned[tostring(proj)] = o
+    return true
   end
   -- a change of ours to it hasn't gone out yet (Hold my changes is on, plug-ins and automation waiting to settle or
   -- for playback to stop, a long edit): theirs waits until ours has gone, then the two are settled like any clash.
@@ -2552,18 +2572,22 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   -- "(yours, not sent)" first, as a refusal keeps one; it went with no copy. Only for held-back items. Round 2 review, 0.59.46)
   -- (once per item and band version, as W.put_back's copy_key: a retry while the band's audio still arrived made a copy every pass. Its mark goes
   -- only once a copy is made; with none (the copy failed) the band's version waits, rather than replace the only one. Round 3 review, 0.59.48)
+  -- (and by the item's state now, its mark kept until the band's version lands: one that waited after the copy (its audio on the way, the part
+  -- open in the MIDI editor) and was edited meanwhile was replaced with no copy of that edit. Cost: one chunk read and hash per such receive,
+  -- held-back items only. Data safety, Round 4 review, 0.59.49)
   local hb = mirror.held_back[tostring(proj)]
-  if hb and hb[ev.oid] and ev.obj == "item" then
+  local held = hb and hb[ev.oid] and ev.obj == "item"
+  if held then
     local it = mirror.find(proj, "item", ev.oid)
-    local key = tostring(proj) .. ev.oid .. "\0held " .. tostring((merging or ev).id)
-    if it and not mirror.copied[key] then
+    local key = it and (tostring(proj) .. ev.oid .. "\0held " .. tostring((merging or ev).id) .. "\0" .. mirror.hash(select(2, reaper.GetItemStateChunk(it, "", false))))
+    if key and not mirror.copied[key] then
       if not mirror.keep_item_copy(proj, it) then return false end
       mirror.copied[key] = true
     end
-    hb[ev.oid] = nil
   end
   if merging then
     local ok, h = mirror.apply(proj, merging, media_dir, local_mix)
+    if ok and held then hb[ev.oid] = nil end
     if ok then
       remember(proj, ev.oid, merging.rev, h, merging.id, mirror.order_of(merging))
       require("sync").landed_media = true
@@ -2600,6 +2624,7 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   if midiview and not (midiview.on() and midiview.recent(ev.time)) then midiview = nil end
   local notes_before = midiview and midiview.notes(mirror.find(proj, "item", ev.oid))
   local ok, h = mirror.apply(proj, ev, media_dir, local_mix)
+  if ok and held then hb[ev.oid] = nil end
   if ok then remember(proj, ev.oid, ev.rev, h, ev.id, order) end
   if ok and ev.obj == "item" then require("sync").landed_media = true end -- (Live sync builds its peaks, if nothing else will)
   if ok and midiview then midiview.show(proj, mirror.find(proj, "item", ev.oid), notes_before) end
@@ -2900,8 +2925,12 @@ function mirror.keep_suggested(proj, c, room_dir)
     -- (only the studio's media paths, as any band version: anyone can write a parts file in the room's folder, and a path it named was put on
     -- a track of yours, then copied out by your next send. Security, Round 3 review, 0.59.48. Cost: one pattern)
     local chunk = mirror.resolve_media(mirror.only_shared((c.state:gsub("BANDLANE %d+\n?", ""):gsub("BANDTAKE %d+\n?", ""))), room_dir .. "/media")
-    reaper.SetItemStateChunk(it, (chunk:gsub("\n%s*POOLEDEVTS[^\n]*", ""):gsub("\n%s*I?GUID[^\n]*", ""):gsub("<SOURCE MIDIPOOL", "<SOURCE MIDI")), false)
+    chunk = chunk:gsub("\n%s*POOLEDEVTS[^\n]*", ""):gsub("\n%s*I?GUID[^\n]*", ""):gsub("<SOURCE MIDIPOOL", "<SOURCE MIDI")
+    reaper.SetItemStateChunk(it, chunk, false)
     reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", true)
+    -- (and what its take plug-ins load recorded as theirs (mirror.theirs), as apply does: moved onto a band track, it went out as new and its
+    -- take FX's file was copied into the studio. Security, Round 4 review, 0.59.49. Cost: one pattern, at that click)
+    note_theirs(it, false, mirror.item_paths(chunk))
     return true
   elseif c.obj == "env" then
     return keep_automation(c.oid, c.track, c.name, c.state, room_dir) ~= nil
@@ -3372,7 +3401,8 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
   ev.note = credit[o.oid] or bus_note(o, name, last) -- (said on every machine as it lands: sync.receive)
   if ev.note and not credit[o.oid] then band.log(ev.note) end
   if o.kind == "fx" then
-    ev.files = require("fxfiles").share(state, media, last and last.state, last and last.files, o.ptr and o.track ~= mirror.MASTER and mirror.theirs(o.ptr, true) or nil) -- (samples, IRs, models it loads)
+    ev.files = require("fxfiles").share(state, media, last and last.state, last and last.files, o.ptr and mirror.theirs(o.ptr, true) or nil) -- (samples, IRs, models it loads)
+    -- (the master's record too: a template's master chain is noted as theirs, lib/extras.lua. Security, Round 4 review, 0.59.49)
     ev.restless = mirror.restless_in(state)
     if ev.restless or mirror.modulated(state) then mirror.fx_knobs[rk] = knobs or mirror.fx_params(o.ptr) end
   elseif o.kind == "item" and state:find("<TAKEFX", 1, true) then
@@ -3778,6 +3808,7 @@ function W.prints(w)
         -- (not an item that differs from the band's and isn't yours to change: its put-back waits (MIDI editor open, a recording on its way),
         -- and a print of the refused notes went out with them past the claim. Cost: one compare an item. Round 1 review, 0.59.45)
         local refused_here = kh ~= o.hash and not allowed(o, name, o.pos)
+        local relay
         if fx and kev and not same_as_parent and not refused_here then
           local tr = reaper.GetMediaItem_Track(o.ptr)
           local author = mine(kev) and me or (event_file(room_dir, kev) or {}).user
@@ -3785,12 +3816,16 @@ function W.prints(w)
           if author and author ~= me and not opts.can(author, name, o.pos) and allowed(o, name, o.pos) then author = me end
           keys_of[tr] = keys_of[tr] or prints.track_keys(tr)
           local function can(u) if u == me then return prints.track_plays(tr, true) end return prints.has(cfg, u, keys_of[tr]) end
-          may = prints.printer(name, author, here, opts.printers or {}, can) == me
+          local printer = prints.printer(name, author, here, opts.printers or {}, can)
+          may = printer == me
+          -- (nobody here has the whole chain: it may print in stages, each on a computer that has its part. lib/prints.lua relay_stage,
+          -- James 0.59.49. The chains' text for linked knobs, which keep a part out)
+          if not printer then relay = { author = author, here = here, me = me, chains = { fx.state, dfx and dfx.state } } end
         end
-        if may then
-          local ok, did = pcall(prints.refresh, proj, o.ptr, media, sounds(fx), sounds(dfx), cfg)
+        if may or relay then
+          local ok, did, waiting = pcall(prints.refresh, proj, o.ptr, media, sounds(fx), sounds(dfx), cfg, relay)
           if ok and did then made = made + 1; mirror.auto[tostring(proj) .. o.oid] = true -- (its next send is StudioSync's, not theirs)
-          elseif ok then note_quiet(o, qkey) end
+          elseif ok and not waiting then note_quiet(o, qkey) end -- (a stage waiting on a computer that's here: looked at again next pass)
         else note_quiet(o, qkey) end
       end
     end

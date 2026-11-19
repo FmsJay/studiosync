@@ -169,6 +169,9 @@ end
 -- At the top of each StudioSync script: run from a copy this computer has moved away from (an old toolbar button or key), it starts the
 -- same script in the copy it runs from now, and stops. `source`: debug.getinfo(1, "S").source. -> true when it handed over.
 function ff.handoff(source)
+  -- (not inside a reload (band.reload sets this, false or a version): the old loop stopped mid-session and its exit steps ran, while the copy
+  -- moved to waits for REAPER's next start as a move intends. Round 4 review, 0.59.49)
+  if _G.STUDIOSYNC_RELOAD_APPROVED ~= nil then return false end
   local run = reaper.GetExtState(band.SECTION, "run from")
   if run == "" then return false end
   local path = tostring(source or ""):gsub("^@", ""):gsub("\\", "/")

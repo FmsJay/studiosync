@@ -591,9 +591,15 @@ end
 -- Why Syncthing's folder add failed, as the Studios page shows it: Syncthing just started and not answering yet says so, not its raw
 -- connection error. One local ask, only on a failed press. (Round 3 review, 0.59.48)
 services.STILL_STARTING = "Syncthing is still starting: press again in a few seconds."
+-- (and Syncthing's own words after it: where it never says which computer this is (a Flatpak REAPER, a Syncthing run as a service), every
+-- failure read "still starting" and the real reason was never shown. Round 4 review, 0.59.49)
 function services.add_failed(r)
-  if not services.my_device_id(true) then return services.STILL_STARTING end
-  return "Syncthing didn't add the studio's folder: " .. (tostring(r):gsub("^%d+\n", ""))
+  local why = tostring(r or ""):gsub("^%d+\n", "")
+  if not services.my_device_id(true) then
+    why = why:gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")
+    return services.STILL_STARTING .. (why ~= "" and (" (Syncthing said: " .. why:sub(1, 200) .. ")") or "")
+  end
+  return "Syncthing didn't add the studio's folder: " .. why
 end
 -- Start a band (docs/bands-design.md): its own shared folder beside this band's (<parent>/StudioSync <Name>), with
 -- _band/band.json saying who it is, and its own Syncthing folder (shared with nobody yet: Invite a bandmate). This
@@ -612,16 +618,26 @@ function services.new_band(cfg, name)
   end
   local here = ((cfg.base or cfg).root or ""):gsub("[/\\]+$", "")
   local root = (here:match("^(.*)[/\\][^/\\]+$") or here) .. "/StudioSync " .. name
-  if band.subdirs(root)[1] then return nil, root .. " is already there: pick another name, or remove that folder." end
+  -- (a press whose add got no answer in time: Syncthing may have added it since, so its folder stayed, and this press takes up the same id.
+  -- Removed, Syncthing could still add a folder for a path that was gone, and the next press made a second one. Round 4 review, 0.59.49)
+  local pend_key = "new studio " .. band.norm(root):lower()
+  local pend = reaper.GetExtState(band.SECTION, pend_key)
+  if pend:sub(1, #services.band_id(name) + 1) == services.band_id(name) .. "-" then id = pend
+  elseif band.subdirs(root)[1] then return nil, root .. " is already there: pick another name, or remove that folder." end
   -- (Syncthing first, then the folder's files: written first, a failed add left a folder that made the next try say it was already there.
   -- Round 2 review, 0.59.46)
   reaper.RecursiveCreateDirectory(root, 0)
   local r = exec(cli(st) .. " config folders add --id " .. id .. " --label " .. label_q("StudioSync " .. name) .. " --path " .. q(root), 15000) or ""
-  if not r:match("^0\n") then
-    -- (empty, so nothing is lost: the next try isn't refused for it. rmdir on Windows, where os.remove deletes files only. Round 3 review, 0.59.48)
-    if WIN then reaper.ExecProcess('cmd.exe /c rmdir "' .. root:gsub("/", "\\") .. '"', 3000) else os.remove(root) end
+  if not r:match("^0\n") and not (id == pend and (exec(cli(st) .. " config folders " .. id .. " label get", 8000) or ""):match("^0\n")) then
+    local code = tonumber(r:match("^(%d+)\n"))
+    if id ~= pend and code and code ~= 259 and code ~= 28 then
+      -- (Syncthing said no: empty, so nothing is lost, and the next try isn't refused for it. rmdir on Windows, where os.remove deletes files
+      -- only. Round 3 review, 0.59.48)
+      if WIN then reaper.ExecProcess('cmd.exe /c rmdir "' .. root:gsub("/", "\\") .. '"', 3000) else os.remove(root) end
+    else reaper.SetExtState(band.SECTION, pend_key, id, true) end
     return nil, services.add_failed(r)
   end
+  if pend ~= "" then reaper.DeleteExtState(band.SECTION, pend_key, true) end
   reaper.RecursiveCreateDirectory(root .. "/_band", 0)
   band.write_json(root .. "/_band/band.json", { name = name, id = id, drive = "StudioSync - " .. name, owner = (cfg.base or cfg).user })
   band.pin_id(root, id)

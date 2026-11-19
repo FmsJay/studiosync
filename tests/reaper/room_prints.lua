@@ -6,6 +6,7 @@ reaper.RecursiveCreateDirectory(D, 0)
 package.path = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]tests[/\\]reaper[/\\]") .. "/lib/?.lua;" .. package.path
 for _, m in ipairs({ "band", "sync", "mirror", "recall", "prints" }) do package.loaded[m] = nil end
 local band, sync, mirror, prints = require("band"), require("sync"), require("mirror"), require("prints")
+prints.midi_prints = function() return true end -- (these check rendering; which MIDI parts print is tests/test_0_59_49_prints.lua's. 0.59.49)
 prints.SETTLE = 0
 local root = D .. "/rproot_" .. os.time()
 local song = "RoomPrints"

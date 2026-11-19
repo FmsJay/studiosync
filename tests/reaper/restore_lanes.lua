@@ -8,6 +8,7 @@ package.path = lib .. "?.lua;" .. package.path
 for _, m in ipairs({ "band", "sync", "mirror", "recall", "prints", "plugins", "json" }) do package.loaded[m] = nil end
 require("prints").SETTLE = 0
 local band, sync, mirror, recall, prints = require("band"), require("sync"), require("mirror"), require("recall"), require("prints")
+prints.midi_prints = function() return true end -- (these check rendering; which MIDI parts print is tests/test_0_59_49_prints.lua's. 0.59.49)
 local root = D .. "/nroot_" .. os.time()
 local song, room = "LaneLab", "main"
 local A, B = { user = "Laptop", root = root }, { user = "James", root = root }

@@ -17,7 +17,8 @@ end
 -- the private live-audio server, the studio's Tailscale network and Sync only through Tailscale. Taken from band.json only when Syncthing says
 -- the owner's or an admin's computer wrote it (lib/trust.lua); one from anyone else leaves the last trusted values standing (ExtState "trusted
 -- settings <root>", kept). Syncthing not saying yet, or a studio from before owners: band.json as it is, as before. Read at most every 5 s.
-local SETTINGS = { "alerts", "alerts_server", "call", "sonobus_server", "tailnet", "tailscale_only", "colours", "debug", "updates" } -- ("updates": lib/fromfolder.lua, 0.59.25)
+local SETTINGS = { "alerts", "alerts_server", "call", "sonobus_server", "tailnet", "tailscale_only", "colours", "debug", "updates", -- ("updates": lib/fromfolder.lua, 0.59.25)
+  "print_hops" } -- ("print_hops": chained prints, lib/prints.lua hops_cap. James, 0.59.49)
 -- (Round 2 review, 0.59.46: Syncthing is asked again only when band.json or this computer's pins changed, or the last answer was "not known",
 -- and the kept settings are written only when they differ: it was a blocking call and a saved-state write every 5 s per script and studio,
 -- and the Debug pill made the panel do it for every studio. -> the settings, and false when they're held back only because nothing is checked
@@ -102,8 +103,9 @@ function groups.sonobus_secret(root)
   return type(j.sonobus) == "string" and j.sonobus ~= "" and j.sonobus or nil
 end
 local save
+-- -> false when it wasn't made (nothing verified here yet: the callers said it was, and a removal never changed it. Round 4 review, 0.59.49)
 function groups.new_sonobus_secret(root)
-  save(root, function(j) j.sonobus = band.secret(24) end, nil, true) -- (no click: groups.tick and lib/removal.lua)
+  return save(root, function(j) j.sonobus = band.secret(24) end, nil, true) ~= false -- (no click: groups.tick and lib/removal.lua)
 end
 
 -- (`quiet`: a save nobody clicked for (removal.tick, groups.tick, set_tailnet). While nothing is verified here it isn't made: it wrote empty
@@ -148,7 +150,8 @@ save = function(root, change, owner_said, quiet)
   end
   seen[root], trusted_at[root] = nil, nil
 end
-function groups.edit(root, change) save(root, change) end -- (lib/alerts.lua's channel)
+-- (`quiet`: as save's, for a change nobody clicked (lib/removal.lua's new alerts channel) -> false when it wasn't made. Round 4 review, 0.59.49)
+function groups.edit(root, change, quiet) return save(root, change, nil, quiet) ~= false end -- (lib/alerts.lua's channel)
 -- Private live audio (research of other tools, 0.58.53: SonoBus's audio isn't encrypted, and its public server introduces everyone). One
 -- member keeps SonoBus's own app open, which has a connection server built in (port 10999); everyone's SonoBus joins through that computer's
 -- Tailscale name, so the band finds each other by Tailscale addresses and the audio goes inside Tailscale's encryption. band.json
@@ -183,6 +186,8 @@ function groups.colours(root) local c = groups.trusted(root).colours; return typ
 function groups.set_colours(root, c) save(root, function(j) j.colours = c end) end
 function groups.set_debug(root, on) save(root, function(j) j.debug = on and true or nil end) end -- (lib/debugmode.lua: owner and admins)
 function groups.set_folder_updates(root, on) save(root, function(j) j.updates = on and "folder" or nil end) end -- (lib/fromfolder.lua: owner and admins)
+-- Plug-in hand-overs a chained print may take (lib/prints.lua hops_cap: 0, 1, 3 or "any"; nil is the default, 2). Owner and admins.
+function groups.set_print_hops(root, v) save(root, function(j) j.print_hops = v end) end
 
 -- The owner makes someone an admin or a member again. -> true, or nil + why.
 function groups.set_admin(root, actor, target, on)
@@ -307,13 +312,14 @@ function groups.closed_ok(root)
   local e = band.read_json(root .. "/_band/closed.json")
   if not (type(e) == "table" and type(e.by) == "string") then return false end
   local k = root .. "\0" .. e.by .. "\0" .. tostring(e.at)
-  if closed_seen[k] == nil then
+  -- (a "no" given while held lasts only while held: Round 4 review, 0.59.49)
+  if require("trust").cached(closed_seen, k, root) == nil then
     local ok = groups.role(root, e.by) == "owner" and require("trust").from_owner_file(root, "_band/closed.json")
     if ok == nil then return false end
-    closed_seen[k] = ok == true
+    require("trust").cache(closed_seen, k, ok == true, root)
     if not ok then band.log(string.format("%s: a closed.json not from the owner's computer was set aside", band.info(root).name)) end
   end
-  return closed_seen[k], e
+  return closed_seen[k] == true, e
 end
 
 -- Run from removal.tick, every 30 s or so: Syncthing lets go of what this computer left, a closed group is over here too, and a group
@@ -334,8 +340,10 @@ function groups.tick(now)
   for _, g in ipairs(band.bands()) do
     -- (the owner's computer gives a studio from before 0.58.52 its SonoBus secret: only the owner, so two computers can't make two)
     if me ~= "" and groups.role(g.root, me) == "owner" and not groups.sonobus_secret(g.root) and not groups.is_old(g.root) then
-      groups.new_sonobus_secret(g.root)
-      band.log(g.name .. "'s live audio has a password of its own now (everyone's SonoBus picks it up the next time Real time mode connects)")
+      -- (said only when made: skipped while nothing is verified, it was said every removal tick. Round 4 review, 0.59.49)
+      if groups.new_sonobus_secret(g.root) then
+        band.log(g.name .. "'s live audio has a password of its own now (everyone's SonoBus picks it up the next time Real time mode connects)")
+      end
     elseif me ~= "" and not backfilled[g.root] and not groups.is_old(g.root) and not reaper.file_exists(g.root .. "/_band/roles.json")
         and groups.role(g.root, me) == "owner" and not require("trust").held(g.root) then
       -- (a studio from before the roles file: the owner's computer writes it once (Round 2 review, 0.59.46). Once per studio and session, and a

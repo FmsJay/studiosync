@@ -114,6 +114,21 @@ function trim.print_refs(text, room, into)
   for name in text:gmatch('{media}/(print%-[^"/]+)%.flac') do into[name] = true end -- (the older form, the event's own room: counted either way. 0.58.93)
   return into
 end
+-- The stage files of chained prints (lib/prints.lua: "stage-<oid>-<hash>-<k>-...") among `files` that belong to a print in `gone`
+-- ({ name = true }, "print-<oid>-<hash>-<who>"): no change names them, so they go with the print they made. 0.59.49. Pure.
+function trim.stage_files(files, gone)
+  local pre = {}
+  for name in pairs(gone) do
+    local k = name:match("^print%-(.+%-%x%x%x%x%x%x%x%x)%-") or name:match("^print%-(.+%-%x%x%x%x%x%x%x%x)$")
+    if k then pre[#pre + 1] = "stage-" .. k .. "-" end
+  end
+  local out = {}
+  for _, f in ipairs(files) do
+    for _, p in ipairs(pre) do if f:sub(1, #p) == p then out[#out + 1] = f; break end end
+  end
+  table.sort(out)
+  return out
+end
 -- Prints only the changes that just went named (a print is a new file for every edit, and none ever left the media folder: review, 0.58.92)
 -- follow them into the archive. One that any change still here names, in any room of the song, stays. -> the files moved
 function trim.prints(cfg, song, room, evs, took, archive)
@@ -148,14 +163,18 @@ function trim.prints(cfg, song, room, evs, took, archive)
   end
   local media = sync.room_dir(cfg, song, room) .. "/media"
   reaper.RecursiveCreateDirectory(archive .. "/media", 0)
+  local files, gone = {}, {}
   for name in pairs(cand) do
     if not still[name] then
-      for _, ext in ipairs({ ".flac", ".opus" }) do
-        local from, to = media .. "/" .. name .. ext, archive .. "/media/" .. name .. ext
-        if reaper.file_exists(from) and (os.rename(from, to) or (pcall(band.copy_atomic, from, to) and reaper.file_exists(to) and os.remove(from))) then
-          moved[#moved + 1] = name .. ext
-        end
-      end
+      gone[name] = true
+      for _, ext in ipairs({ ".flac", ".opus" }) do files[#files + 1] = name .. ext end
+    end
+  end
+  for _, f in ipairs(trim.stage_files(band.files(media), gone)) do files[#files + 1] = f end -- (and the stages they were made in: 0.59.49)
+  for _, f in ipairs(files) do
+    local from, to = media .. "/" .. f, archive .. "/media/" .. f
+    if reaper.file_exists(from) and (os.rename(from, to) or (pcall(band.copy_atomic, from, to) and reaper.file_exists(to) and os.remove(from))) then
+      moved[#moved + 1] = f
     end
   end
   table.sort(moved)

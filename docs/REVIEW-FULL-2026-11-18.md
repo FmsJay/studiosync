@@ -297,3 +297,22 @@ catch-up, and "yours before X" always keeps its map; the code check reads band.j
 loading shared modules, and a reload never opens a box (James). Debug pill replaced by "StudioSync (debugging)" in the
 window title (James). Many lows (see round3_fixes in the session notes). Tests: test_0_59_48_engine/trust/trust_install/ui;
 tests run on Lua 5.4 (lupa.lua54). Held: first heal reading only recent history (could pick an older version).
+
+## 0.59.49 (round 4 fixes; reports by fresh reviewers on 0.59.48)
+
+Stub, filled in at release. Engine so far: a saved version from a tab Live sync doesn't run in counts what's still to come again (0.59.47's
+rule, there only), and Live sync publishes "loading <proj>" as it starts (sync.begin_loading); a template's master chain is recorded as
+theirs on opening and the master's send passes that record, and the template strip ends a block by nesting, not indent; a landed chain's
+theirs record includes REAPER's read-back (master too), and a kept suggestion's take plug-in paths are recorded; no undo block for an
+arrival that changes nothing here (play together, a driver change, a note on a part not here), nor for a chain within 5 s of the last or a
+change on a track the band deleted; a held-back item stays held until the band's version lands, with one copy per state it was in; a
+MIDI part that no longer prints has its stale print taken off; item states keep fewer chunk copies, and lane/take items reuse last
+look's string. Tests: test_0_59_49_engine.
+
+Decisions on record (reviewers: don't raise these again):
+- Non-shared file paths are refused everywhere, restores of your own history included (James, round 3).
+- Pre-owner studios get the "Use it?" box at a fresh start with changed code (James, round 3).
+- Memo cap stays at 4x (James, round 3).
+- Old "1" local-work marks: the main tab may clear them (James, round 4).
+- Live sync Stop keeps the entries still unsent (James, round 4).
+- Click-saves while nothing is verified: unchanged (rare; the laundering trade-off).

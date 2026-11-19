@@ -99,6 +99,18 @@ function tools.place_block(before, after, block)
   if not after then return before .. (before ~= "" and not before:match("\n$") and "\n" or "") .. block end
   return before .. block .. after:gsub("^\r?\n", "", 1)
 end
+-- __startup.lua around StudioSync's block: what's before it, and after its end line (from the line break that ends it: cut one character
+-- later too, a blank line after the block went at each rewrite of a file with LF line endings). -> before, after (nil: no block), or nil when
+-- there's a start line with no end line: left alone (everything after it, the person's own lines too, went). Pure. The installer has the same.
+-- (Round 4 review, 0.59.49)
+function tools.split_startup(text)
+  local a = text:find(MARK_A, 1, true)
+  if not a then return text, nil end
+  local z = text:find(MARK_Z, a, true)
+  if not z then return nil end
+  return text:sub(1, a - 1), text:sub(z + #MARK_Z)
+end
+local broken_said = false
 -- `fallback`: a copy to start instead when `dir` isn't there any more (a studio's folder this computer ran from, left since: lib/fromfolder.lua).
 -- None given: the block's own fallback stays (the panel's toggle wrote the block again without it). The last-good copy always goes second.
 function tools.set_autostart(on, dir, fallback)
@@ -106,19 +118,19 @@ function tools.set_autostart(on, dir, fallback)
   if not text and reaper.file_exists(startup_path()) then return false, "couldn't read " .. startup_path() end -- (written with only ours, the rest was gone)
   text = text or ""
   local good = band.last_good_dir()
+  local before, after = tools.split_startup(text) -- (the file around the block: the new block goes where the old one was)
+  if not before then
+    if not broken_said then broken_said = true; band.log("StudioSync's block in " .. startup_path() .. " has no end line (" .. MARK_Z .. "): the file is left alone. Remove the block by hand, then switch Start with REAPER on again") end
+    return false, "StudioSync's block in " .. startup_path() .. " has no end line: left alone"
+  end
   local a = text:find(MARK_A, 1, true)
-  local before, after = text, nil -- (the file around the block: the new block goes where the old one was)
-  if a then
-    local z = text:find(MARK_Z, a, true)
-    if not fallback then -- (a block's fallback is any copy after its first: a block with one copy has none)
-      local i = 0
-      for p in text:sub(a, z or #text):gmatch("%[%[([^%]]-)/StudioSync %- Autostart%.lua%]%]") do
-        local n = band.norm(p):lower()
-        i = i + 1
-        if i > 1 and not fallback and n ~= band.norm(dir or ""):lower() and n ~= good:lower() then fallback = p end
-      end
+  if a and not fallback then -- (a block's fallback is any copy after its first: a block with one copy has none)
+    local i = 0
+    for p in text:sub(a, (text:find(MARK_Z, a, true))):gmatch("%[%[([^%]]-)/StudioSync %- Autostart%.lua%]%]") do
+      local n = band.norm(p):lower()
+      i = i + 1
+      if i > 1 and not fallback and n ~= band.norm(dir or ""):lower() and n ~= good:lower() then fallback = p end
     end
-    before, after = text:sub(1, a - 1), (z and text:sub(z + #MARK_Z + 1) or "")
   end
   if on then
     local dirs = { dir }
@@ -128,7 +140,7 @@ function tools.set_autostart(on, dir, fallback)
     -- mounted) stopped Autostart, Syncthing's start and the update path with it. Round 3 review, 0.59.48)
     text = tools.place_block(before, after, tools.startup_block(dirs))
   else
-    text = before .. (after or "")
+    text = before .. (after or ""):gsub("^\r?\n", "", 1) -- (the block's own line break: split_startup leaves it on `after`)
   end
   reaper.RecursiveCreateDirectory(reaper.GetResourcePath() .. "/Scripts", 0)
   return pcall(band.write_atomic, startup_path(), text) -- (write_atomic returns nothing: it raises when it can't)

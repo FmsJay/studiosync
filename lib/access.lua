@@ -48,9 +48,9 @@ function access.get(root, device)
   if not (type(v) == "table" and v.device == device and type(v.songs) == "table") then return nil end
   local set = access.read(root, device)
   local key = root .. "\0" .. rel .. "\0" .. tostring(v.at) .. "\0" .. tostring(v.by) .. "\0" .. band.json_encode(v.songs)
-  local ok = verdicts[key]
+  local trust = require("trust")
+  local ok = trust.cached(verdicts, key, root) -- (a "no" given while held lasts only while held: Round 4 review, 0.59.49)
   if ok == nil then
-    local trust = require("trust")
     local okp, pins = pcall(trust.pins, root)
     if okp and not pins and not trust.held(root) then ok = true -- (a studio from before owners: everyone in it may, as for removal marks. 0.58.93)
     else
@@ -59,7 +59,7 @@ function access.get(root, device)
       ok = r
       if ok == nil and v.by == reaper.GetExtState(band.SECTION, "user") then return set, false end -- (this computer's own, not looked at yet)
     end
-    if ok ~= nil then verdicts[key] = ok end
+    if ok ~= nil then trust.cache(verdicts, key, ok, root) end
   end
   if ok == nil then return {}, false end
   if ok == false then return {}, true end
@@ -90,11 +90,12 @@ function access.mine(root)
   if lift and kept then
     local okp, pins = pcall(require("trust").pins, root)
     local vk = root .. "\0all\0" .. tostring(raw.at) .. "\0" .. tostring(raw.by)
-    if okp and pins and verdicts[vk] == nil then
+    local was = okp and pins and require("trust").cached(verdicts, vk, root) -- (Round 4 review, 0.59.49: as access.get)
+    if okp and pins and was == nil then
       local okt, ok = pcall(require("trust").from_manager_file, root, "_band/guest-access/" .. file_name(me))
-      if okt and ok ~= nil then verdicts[vk] = ok end
+      if okt and ok ~= nil then require("trust").cache(verdicts, vk, ok, root) end
       lift = okt and ok == true
-    elseif okp and pins then lift = verdicts[vk] end
+    elseif okp and pins then lift = was end
   end
   -- (and a file that isn't a list for this computer, `{}` or anything else: as it was too. It gave every project and wiped the kept list.
   -- Round 2 review, 0.59.46)

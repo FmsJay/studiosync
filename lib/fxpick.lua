@@ -51,6 +51,13 @@ function fxpick.list(installed, tags_text, everyone)
   return out
 end
 
+-- The switch as it should be for the target: on afresh whenever the master becomes it (the master is never printed, so a plug-in someone
+-- lacks there leaves them a different mix; James, 0.59.49), else as it was. It can still be switched off. Pure.
+function fxpick.only_for(master, was_master, only)
+  if master and not was_master then return true end
+  return only
+end
+
 local state = { filter = "", cat = "All", only = true, at = -math.huge, root = nil, items = {}, cats = {} }
 local function refresh(cfg)
   if reaper.time_precise() - state.at < 30 and state.root == (cfg and cfg.root) then return end
@@ -81,6 +88,10 @@ end
 
 function fxpick.draw(ctx, ImGui, cfg, proj)
   refresh(cfg)
+  -- (the master too, when it's selected: Add never reached it. 0.59.49)
+  local target = proj and reaper.GetSelectedTrack2(proj, 0, true)
+  local master = target ~= nil and target == reaper.GetMasterTrack(proj)
+  state.only, state.on_master = fxpick.only_for(master, state.on_master, state.only), master
   ImGui.SetNextItemWidth(ctx, 160)
   local ch, v = ImGui.InputTextWithHint(ctx, "##fxfind", "Search plug-ins", state.filter)
   if ch then state.filter = v end
@@ -94,7 +105,8 @@ function fxpick.draw(ctx, ImGui, cfg, proj)
   ImGui.SameLine(ctx)
   local cho, only = ImGui.Checkbox(ctx, "Only what everyone has", state.only)
   if cho then state.only = only end
-  ImGui.SetItemTooltip(ctx, "On: only plug-ins every computer in the studio has (and JSFX), so the part sounds the same everywhere.\nOff: all of yours, the ones everyone has marked.")
+  ImGui.SetItemTooltip(ctx, "On: only plug-ins every computer in the studio has (and JSFX), so the part sounds the same everywhere.\nOff: all of yours, the ones everyone has marked." ..
+    (master and "\nThe master is selected: it's never printed, so this comes back on for it." or ""))
   local shown, h = 0, math.max(120, math.min(320, select(2, ImGui.GetContentRegionAvail(ctx)) - 8))
   if ImGui.BeginTable(ctx, "fxpick", 3, ImGui.TableFlags_RowBg | ImGui.TableFlags_ScrollY, 0, h) then
     ImGui.TableSetupColumn(ctx, "Plug-in", ImGui.TableColumnFlags_WidthStretch, 3)
@@ -111,14 +123,14 @@ function fxpick.draw(ctx, ImGui, cfg, proj)
         ImGui.TableNextColumn(ctx)
         ImGui.PushID(ctx, it.key)
         if ImGui.SmallButton(ctx, "Add") then
-          local tr = proj and reaper.GetSelectedTrack(proj, 0)
+          local tr = target
           if not tr then band.msg("Select a track first: Add puts the plug-in on it.")
           else
             local idx = reaper.TrackFX_AddByName(tr, it.name, false, -1)
             if idx >= 0 then reaper.TrackFX_Show(tr, idx, 3); band.log(it.label .. " added to " .. select(2, reaper.GetTrackName(tr))) end
           end
         end
-        ImGui.SetItemTooltip(ctx, "On the selected track, its window open.")
+        ImGui.SetItemTooltip(ctx, "On the selected track (or the master, when it's selected), its window open.")
         ImGui.PopID(ctx)
       end
     end

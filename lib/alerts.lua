@@ -60,9 +60,10 @@ function alerts.set_call(root, url)
   require("groups").edit(root, function(j) j.call = (url ~= "" and alerts.call_ok(url)) and url or nil end)
 end
 
--- The owner's switch: a new random channel, or none.
-function alerts.set(root, on)
-  require("groups").edit(root, function(j) j.alerts = on and ("studiosync-" .. require("band").secret(20)) or nil end)
+-- The owner's switch: a new random channel, or none. (`quiet`: nobody clicked, lib/removal.lua: not made while nothing is verified here,
+-- -> false then. Round 4 review, 0.59.49)
+function alerts.set(root, on, quiet)
+  return require("groups").edit(root, function(j) j.alerts = on and ("studiosync-" .. require("band").secret(20)) or nil end, quiet)
 end
 
 return alerts

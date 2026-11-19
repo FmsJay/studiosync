@@ -717,6 +717,21 @@ function sync.print_item(proj, it, take, out, name, tail, dry, bare) -- (dry: th
   return reaper.file_exists(path) and path or nil
 end
 
+-- A chained print's later stage (lib/prints.lua relay_stage): the stage before's `file`, from where item `it` starts and as long, through
+-- track `tr` (the caller leaves only that stage's plug-ins on), printed as print_item prints. On a scratch item, gone again before anything
+-- else looks (API calls leave no undo point; in the background the copy is saved with it, then it goes). -> the .flac path, or nil. 0.59.49
+function sync.print_file(proj, tr, it, file, out, name)
+  local tmp = reaper.AddMediaItemToTrack(tr)
+  reaper.SetMediaItemInfo_Value(tmp, "D_POSITION", reaper.GetMediaItemInfo_Value(it, "D_POSITION"))
+  reaper.SetMediaItemInfo_Value(tmp, "D_LENGTH", reaper.GetMediaItemInfo_Value(it, "D_LENGTH"))
+  local tk = reaper.AddTakeToMediaItem(tmp)
+  reaper.SetMediaItemTake_Source(tk, reaper.PCM_Source_CreateFromFile(file))
+  local ok, path = pcall(sync.print_item, proj, tmp, tk, out, name, nil, false, true)
+  reaper.DeleteTrackMediaItem(tr, tmp)
+  if not ok then error(path, 0) end
+  return path
+end
+
 -- Print a MIDI item that plays an instrument on another track (lib/prints.lua prints.route): that track rendered as a
 -- stem over the item's time, with only this item feeding it. For the render its other inputs and its own items are
 -- muted, and so are the source track's other items; its fader and pan are left out (they travel as the mix), as in
@@ -957,6 +972,17 @@ function sync.timeline_waits(proj)
   return seen ~= "" and seen ~= timeline_sig(proj)
 end
 -- Apply one event from whoever may make it. False means retry later. `dir`: the room's folder.
+-- The item a note or like is on, here (a part in mirror sync is found by its item id: it has no take id. 0.58.98), or nil.
+function sync.note_item(proj, ev)
+  return (ev.take and band.find_take(proj, ev.take)) or (type(ev.item) == "string" and require("mirror").find(proj, "item", ev.item)) or nil
+end
+-- Whether a change that isn't an object's changes this project: a play or stop together, a driver change and a note on nothing here don't.
+-- (only then an arrival's undo block: opened for every bandmate's event, it closed empty on top of REAPER's list and sent Ctrl+Z StudioSync's
+-- way. Cost: a lookup per note. Round 4 review, 0.59.49)
+function sync.alters(proj, ev)
+  if ev.type == "timeline" or ev.type == "shift" then return true end
+  return (ev.type == "note" or ev.type == "like") and sync.note_item(proj, ev) ~= nil
+end
 function sync.apply(proj, ev, dir, can, me)
   if ev.type == "obj" then return require("mirror").receive(proj, ev, dir .. "/media", sync.local_mix, me) end -- mirror sync
   if ev.type == "timeline" then -- REAPER moves the items for the new map, as it would for a local change
@@ -979,8 +1005,7 @@ function sync.apply(proj, ev, dir, can, me)
     return true
   end
   if ev.type == "note" or ev.type == "like" then
-    -- (a part in mirror sync is found by its item id: it has no take id. 0.58.98)
-    local it2 = (ev.take and band.find_take(proj, ev.take)) or (type(ev.item) == "string" and require("mirror").find(proj, "item", ev.item))
+    local it2 = sync.note_item(proj, ev)
     if it2 then sync.mark_item(it2, ev.pos, (ev.type == "like" and "+1 " or "") .. ev.user .. (ev.text and (": " .. ev.text) or ""), ev.len) end
     return true -- notes without a take live in the panel's Notes list (and History)
   end
@@ -1088,6 +1113,14 @@ sync.loading = {} -- tostring(proj) -> true until its first catch-up is done
 sync.LOAD_BUDGET, sync.BUDGET = 1.0, 0.25
 local peaks_due = {}
 local loading_said = {} -- tostring(proj) -> true: "loading <proj>" is published (sync.receive)
+sync.live_in = {} -- tostring(proj) -> true: Live sync runs for that tab in this script (sync.begin_loading; lib/recall.lua)
+-- Live sync opening a project: its first catch-up starts now, and "loading <proj>" is published at once, not on the first receive, which waits
+-- for the first look (a panel save in those seconds was mapped though still behind). Cost: one non-persisted ExtState. Round 4 review, 0.59.49
+function sync.begin_loading(proj)
+  local pk = tostring(proj)
+  sync.loading[pk], loading_said[pk], sync.live_in[pk] = true, true, true
+  reaper.SetExtState(band.SECTION, "loading " .. pk, "1", false)
+end
 -- A change from a newer StudioSync: a kind this one doesn't know, or a newer file format. Pure.
 sync.KNOWN = { obj = true, timeline = true, start = true, stop = true, note = true, like = true, driver = true, shift = true, solo = true }
 function sync.too_new(ev)
@@ -1282,7 +1315,9 @@ function sync.receive(proj, cfg, song, room, can)
       -- way. One that waited and lands now gets its point after: below. Cost: one table entry per waiting change. Round 2 review, 0.59.46)
       local waited = sync.waited[ev.id]
       local ok, res = pcall(function()
-        local lands = not obj or m.wins(proj, ev.oid, ev.rev or 0, m.order_of(ev)) or m.merge_for(proj, ev, sync.room_dir(cfg, song, room)) ~= nil -- (or it's merged in)
+        local lands
+        if obj then lands = m.wins(proj, ev.oid, ev.rev or 0, m.order_of(ev)) or m.merge_for(proj, ev, sync.room_dir(cfg, song, room)) ~= nil -- (or it's merged in)
+        else lands = sync.alters(proj, ev) end
         if ev.type == "timeline" and sync.timeline_waits(proj) then lands = false end
         -- (nor on its first wait, where that's cheap to know: mirror.will_wait. Round 3 review, 0.59.48)
         if lands and not waited and obj and m.will_wait(proj, ev) then waited = true end

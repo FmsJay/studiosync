@@ -54,12 +54,16 @@ end
 
 -- What every published list has in common: set of keys, who published (lists under 90 days old), and which kinds of
 -- system they're on ({ mac = true, ... }). Pure over `lists` ({ {user, names, os} }).
+-- A published list's `os` (reaper.GetOS()) as "mac", "win", "linux" or "?". Pure.
+function plugins.system(o)
+  o = tostring(o or ""):lower()
+  return (o:find("osx") or o:find("mac")) and "mac" or o:find("win") and "win" or o ~= "" and "linux" or "?"
+end
 function plugins.common(lists)
   local count, members, systems = {}, {}, {}
   for _, l in ipairs(lists) do
     members[#members + 1] = l.user
-    local o = tostring(l.os or ""):lower()
-    systems[(o:find("osx") or o:find("mac")) and "mac" or o:find("win") and "win" or o ~= "" and "linux" or "?"] = true
+    systems[plugins.system(l.os)] = true
     local once = {}
     for _, k in ipairs(l.names or {}) do
       if not once[k] then once[k] = true; count[k] = (count[k] or 0) + 1 end

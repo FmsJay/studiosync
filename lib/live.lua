@@ -65,17 +65,44 @@ function live.driving(mode) return live.DRIVING[mode] or live.DRIVING.open end
 -- Round 3 review, 0.59.48)
 function live.recording_anywhere() return band.recording_anywhere ~= nil and band.recording_anywhere() end
 -- The song's "local work" mark (band.local_work_key) lists the rooms that have work only here, "|" between them; each Live sync tab adds or
--- takes away only its own room. A mark from before 0.59.48 ("1") is left as it is: it keeps the folder, as it did. v: the mark now; on: this
--- room has some. -> the new mark ("" for none), or nil when it stays as it is. Pure. (One mark per song: the main room's tab cleared it over a
--- side room's kept work. Round 3 review, 0.59.48)
+-- takes away only its own room. A mark from before 0.59.48 ("1") counts as the main room's: its tab takes it away when it stops with none (it
+-- never cleared, and Delete my copy kept those folders for good. James, Round 4 review, 0.59.49). v: the mark now; on: this room has some.
+-- -> the new mark ("" for none), or nil when it stays as it is. Pure. (One mark per song: the main room's tab cleared it over a side room's
+-- kept work. Round 3 review, 0.59.48)
 function live.mark_room(v, room, on)
   local me, list, had = tostring(room):gsub("|", "/"), {}, false
   for r in tostring(v or ""):gmatch("[^|]+") do
-    if r == me then had = true else list[#list + 1] = r end
+    if r == me or (r == "1" and me == "main") then had = true else list[#list + 1] = r end
   end
   if had == (on == true) then return nil end
   if on then list[#list + 1] = me end
   return table.concat(list, "|")
+end
+-- At Live sync's Stop: which of the tab's unsent objects (ids: "oid,oid", as in "unsent <proj>") still differ from their known state. An item or
+-- a track that's here with a known hash is compared with it; anything else (plug-ins, automation, one gone here or never sent) is kept, as
+-- nothing says it went. mirror: lib/mirror.lua; its own unsent flags for these are cleared first (they'd answer yes), so call it with
+-- "unsent <proj>" already deleted. -> the ids kept, comma-separated. Cost: one hash per held item or track, at Stop only. (James, Round 4
+-- review, 0.59.49)
+function live.still_unsent(proj, ids, mirror, media, local_mix)
+  local pk, kept = tostring(proj), {}
+  for oid in ids:gmatch("[^,]+") do mirror.unsent[pk .. oid] = nil end
+  for oid in ids:gmatch("[^,]+") do
+    local kind, keep = oid:sub(1, 1), true
+    local _, h = mirror.known(proj, oid)
+    if (kind == "I" or kind == "T") and (h or "") ~= "" and mirror.find(proj, kind == "I" and "item" or "track", oid) then
+      keep = mirror.edited_here(proj, oid, h, nil, media, local_mix)
+    end
+    if keep then kept[#kept + 1] = oid end
+  end
+  return table.concat(kept, ",")
+end
+-- A file name REAPER gives a backup or an autosave: not .rpp, in a Backups folder, "-autosave", or a timestamp tail. Live sync's follow_file
+-- never adopts one. Pure. (Round 4 review, 0.59.49)
+function live.backup_name(f)
+  local low = (tostring(f or ""):gsub("\\", "/"):lower())
+  local stem = low:match("([^/]*)%.rpp$")
+  return not stem or low:find("/backups/", 1, true) ~= nil or stem:find("-autosave", 1, true) ~= nil
+    or stem:find("%d%d%d%d%-%d%d%-%d%d[_ ]%d%d%d%d") ~= nil or stem:find("_%d%d%d%d+$") ~= nil
 end
 -- A script's reload in place to the code on disk (band.reload_or_say), for the panel and Live sync. While anything records it isn't tried and
 -- nothing is said or done: `before` (the hand-over's side effects) runs only when it's tried, `said` is logged only once the new code took over,

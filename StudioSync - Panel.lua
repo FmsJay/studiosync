@@ -9,6 +9,12 @@ band.note_start(dir) -- (was all of this copy here as it started? band.started_p
 if require("fromfolder").handoff(debug.getinfo(1, "S").source) then return end -- (an old copy's button or key: the copy this computer runs from now. 0.59.24)
 -- (every module loaded now, as approved: one first needed mid-session after its file changed was refused by the code check. James, Round 2 review, 0.59.46)
 if band.preload then band.try("band.preload", band.preload, dir) end
+-- (the modules this chunk needs as it starts, through band.try: one refused by the code check mid-arrival gave REAPER's error box. Round 4
+-- review, 0.59.49)
+for _, m in ipairs({ "sync", "recall", "status", "tools", "together", "theme", "page_restore", "plugins", "live", "services", "setup", "page_play",
+    "rooms", "page_rooms", "page_health" }) do
+  if not band.try("require " .. m, require, m) then return end
+end
 band.WHO = "panel" -- (which script a line in the log file came from)
 local sync = require("sync")
 local recall = require("recall")
@@ -176,19 +182,36 @@ local function heading(text, size)
 end
 -- A card: a rounded panel sized to what's in it. Returns true when its content should be drawn (then call card_end).
 -- `h`: a fixed height, for cards laid side by side (a self-sizing one always took a row of its own).
-local open_cards = 0 -- (cards still open when a frame errors: closed before End, or End itself fails and the panel dies)
+-- The panel's child windows open now, innermost last (true: a card, its wrap pos pushed). What an error leaves open is closed, innermost first,
+-- before End: End with a child current asserts, and the panel died (only cards were counted; pages, bars and the nav are children too). Every
+-- BeginChild of the panel's goes through ui.child / ui.child_end. Round 4 review, 0.59.49
+local kids = {}
+function ui.child(...)
+  local open = ImGui.BeginChild(ctx, ...)
+  if open then kids[#kids + 1] = false end
+  return open
+end
+function ui.child_end() ImGui.EndChild(ctx); kids[#kids] = nil end
+function ui.close_kids(to) -- (down to `to` open, 0 by default)
+  for i = #kids, (to or 0) + 1, -1 do
+    if kids[i] then pcall(ImGui.PopTextWrapPos, ctx) end
+    pcall(ImGui.EndChild, ctx)
+    kids[i] = nil
+  end
+end
+function ui.kids_open() return #kids end
 local function card(id, w, h)
   local bare = ui.bare_cards -- (a card in a docked column is a box in a box, and the walls cost it 26 px each way)
   ImGui.PushStyleColor(ctx, ImGui.Col_ChildBg, bare and 0 or CARD)
   ImGui.PushStyleVar(ctx, ImGui.StyleVar_WindowPadding, bare and 0 or 14, bare and 0 or ui.short and 7 or 12)
-  local open = ImGui.BeginChild(ctx, id, w or 0, h or 0, (h and 0 or ImGui.ChildFlags_AutoResizeY) | ImGui.ChildFlags_AlwaysUseWindowPadding,
+  local open = ui.child(id, w or 0, h or 0, (h and 0 or ImGui.ChildFlags_AutoResizeY) | ImGui.ChildFlags_AlwaysUseWindowPadding,
     ImGui.WindowFlags_NoScrollbar)
   ImGui.PopStyleVar(ctx)
   ImGui.PopStyleColor(ctx)
-  if open then ImGui.PushTextWrapPos(ctx, 0); open_cards = open_cards + 1 end
+  if open then ImGui.PushTextWrapPos(ctx, 0); kids[#kids] = true end
   return open
 end
-local function card_end() ImGui.PopTextWrapPos(ctx); ImGui.EndChild(ctx); open_cards = open_cards - 1 end
+local function card_end() ImGui.PopTextWrapPos(ctx); ui.child_end() end
 
 -- Blue to orange, by way of violet: straight across, the middle goes grey. t = 0 to 1.
 function ui.blue_orange(t, alpha)
@@ -371,11 +394,18 @@ local placed_from, placed_how -- where the window was before the Window menu mov
 local banner_docked -- (docked, the panel never covers the arrange view)
 local place_req, win_rect -- a placement for the next frame (ReaImGui units); the window as ReaImGui last drew it
 local WINDOW_MENU = { "Fill this screen", "Left half", "Right half", "Top half", "Bottom half", "Move to the next screen", "Back to before" }
+-- The panel's own window, by either title it carries: with the studio's debug mode on it's "StudioSync (debugging)", and the Window menu and
+-- Dock left/right found nothing. (Under 500 px without the system frame it has no title, so it isn't found: ReaImGui 0.10 hands out no window
+-- handle to ask instead, no Viewport_GetPlatformHandle.) Round 4 review, 0.59.49
+function ui.panel_hwnd()
+  if not reaper.JS_Window_Find then return nil end
+  return reaper.JS_Window_Find("StudioSync", true) or reaper.JS_Window_Find("StudioSync (debugging)", true)
+end
 local function place_window(how)
   if how == "Dock" or how == "Undock" then dock_req = how == "Dock" and -1 or 0; return end -- (asked for from a script)
   local sw, sh = how:match("^size (%d+) (%d+)$") -- (likewise)
   if sw then if win_rect then place_req = { win_rect[1], win_rect[2], tonumber(sw), tonumber(sh) } end; return end
-  local h = reaper.JS_Window_Find and reaper.JS_Window_Find("StudioSync", true)
+  local h = ui.panel_hwnd()
   -- (only a missing extension says so: shrunk to its box, there was no window to find, and it said js_ReaScriptAPI was missing. 0.59.14)
   if not h then
     if not reaper.JS_Window_Find then return band.msg("Placing the window needs js_ReaScriptAPI (ReaPack: 'js_ReaScriptAPI').") end
@@ -435,7 +465,7 @@ local TIPS = {
   ["##label"] = "A name for this version, then Save this version.",
   ["Save this version"] = "Save how the session is now (takes, where they sit, what plays) as a version anyone can go back to.",
   ["Update the folder now"] = "Send your plug-in list and rebuild the FX browser folder 'StudioSync (everyone has)' now.",
-  ["Play along (synced to the project)"] = "Hear each other in time with the project, at any distance (a bar or two late). Needs the studio's NINJAM server.",
+  ["Time-sync (play along, in time with the project)"] = "Hear each other in time with the project, at any distance (a bar or two late). Needs the studio's NINJAM server.",
   ["Real time (SonoBus, lowest delay)"] = "Hear each other right away, peer to peer (best on wired internet, not too far apart).",
   ["Jam (NINJAM intervals)"] = "Classic NINJAM: everyone hears everyone one interval late.",
   ["##server"] = "The host's Tailscale name and NINJAM port, e.g. my-pc.tail1234.ts.net:2049.",
@@ -1191,9 +1221,9 @@ local function section_activity()
   if #newest > 64 then newest = newest:sub(1, 61) .. "..." end -- cut short visibly, not mid-word with nothing after
   -- "###": the label changes with every line, the header (and whether it's open) stays the same one
   if ImGui.CollapsingHeader(ctx, "Activity (" .. newest .. ")###activity") then
-    if ImGui.BeginChild(ctx, "activity", 0, 140, ImGui.ChildFlags_Borders) then
+    if ui.child("activity", 0, 140, ImGui.ChildFlags_Borders) then
       for _, l in ipairs(lines) do ImGui.TextWrapped(ctx, l) end
-      ImGui.EndChild(ctx)
+      ui.child_end()
     end
     if ImGui.SmallButton(ctx, "Clear") then reaper.DeleteExtState(band.SECTION, band.LOG_KEY, false) end
     ImGui.SetItemTooltip(ctx, "Empty this activity list.")
@@ -1275,7 +1305,7 @@ local function section_notes(kind)
   end
   -- (docked, the list takes the column's height, as the versions do; a 90 px box left the rest of a tall column empty)
   -- (the list takes the tab's height)
-  if ImGui.BeginChild(ctx, "notes" .. kind, 0, math.max(70, select(2, ImGui.GetContentRegionAvail(ctx)) - 4), ImGui.ChildFlags_Borders) then
+  if ui.child("notes" .. kind, 0, math.max(70, select(2, ImGui.GetContentRegionAvail(ctx)) - 4), ImGui.ChildFlags_Borders) then
     local shown_n, only = 0, require("page_chat").only()
     for i, e in ipairs(notes) do
       if e.type ~= kind or (only ~= "" and e.user ~= only) then goto next_note end
@@ -1309,14 +1339,14 @@ local function section_notes(kind)
       ImGui.TextDisabled(ctx, kind == "note" and "No notes yet: put the edit cursor where you mean and add one, and everyone sees it at that spot."
         or "No likes yet: select a take you like and press Like selected take. Whoever played it sees it on the take.")
     end
-    ImGui.EndChild(ctx)
+    ui.child_end()
   end
 end
 
 local function section_ideas()
   if reaper.time_precise() - ideas_at > 2 then ideas_at, ideas = reaper.time_precise(), tools.ideas(proj) end
   if next(ideas) == nil then return end
-  ImGui.SeparatorText(ctx, "Live ideas (what you heard in Play along, until the real takes arrive)")
+  ImGui.SeparatorText(ctx, "Live ideas (what you heard in Time-sync, until the real takes arrive)")
   for who_, n in pairs(ideas) do
     ImGui.Text(ctx, string.format("%s: %d", who_, n))
     ImGui.SameLine(ctx)
@@ -1367,7 +1397,7 @@ local function layout(parts, bare) -- { { fn, width } }; bare: what's in them is
     ImGui.PushStyleColor(ctx, ImGui.Col_ChildBg, theme.COLUMN)
     ImGui.PushStyleVar(ctx, ImGui.StyleVar_WindowPadding, 12, ui.short and 6 or 10)
     ImGui.BeginGroup(ctx)
-    local open = ImGui.BeginChild(ctx, "col" .. i, math.floor((part[2] or 340) * scale), h, ImGui.ChildFlags_AlwaysUseWindowPadding)
+    local open = ui.child("col" .. i, math.floor((part[2] or 340) * scale), h, ImGui.ChildFlags_AlwaysUseWindowPadding)
     ImGui.PopStyleVar(ctx)
     ImGui.PopStyleColor(ctx)
     local more = false
@@ -1388,7 +1418,7 @@ local function layout(parts, bare) -- { { fn, width } }; bare: what's in them is
         local solid = theme.COLUMN
         ImGui.DrawList_AddRectFilledMultiColor(ImGui.GetWindowDrawList(ctx), cx, cy + ch - 22, cx + cw, cy + ch, solid & 0xFFFFFF00, solid & 0xFFFFFF00, solid, solid)
       end
-      ImGui.EndChild(ctx)
+      ui.child_end()
     end
     ImGui.EndGroup(ctx)
   end
@@ -1803,13 +1833,13 @@ function ui.feed(apart) -- apart: a line between it and what's above
   if apart then ui.spacer() end
   local h = select(2, ImGui.GetContentRegionAvail(ctx))
   heading("What just happened", 17)
-  if ImGui.BeginChild(ctx, "feed", 0, h - ImGui.GetFrameHeightWithSpacing(ctx) - 4) then
+  if ui.child("feed", 0, h - ImGui.GetFrameHeightWithSpacing(ctx) - 4) then
     ImGui.PushTextWrapPos(ctx, 0)
     local lines = band.activity()
     if #lines == 0 then ImGui.TextDisabled(ctx, "Nothing yet: what you and the others do in this project shows here as it happens.") end
     for _, l in ipairs(lines) do ImGui.TextDisabled(ctx, l) end
     ImGui.PopTextWrapPos(ctx)
-    ImGui.EndChild(ctx)
+    ui.child_end()
   end
 end
 -- Colours (James, 0.59.3: "colors should go under look"): the track colours you see here, and colouring the project.
@@ -2061,7 +2091,8 @@ local function settings_sync()
     for _, m in ipairs({ { "auto", "Auto", "Dry when every plug-in the part plays through loads here, else wet (the studio's print)." },
         { "notes", "Dry (my plug-ins)", "Always the part itself through your own plug-ins: a MIDI part's notes through your instruments, a recording through\n" ..
           "your amp sims and effects, so you can change the sound. A plug-in you don't have plays nothing." },
-        { "sound", "Wet (studio's print)", "Always the studio's print: the part rendered through the track's plug-ins by whoever changed it, exactly what they heard." } }) do
+        { "sound", "Wet (studio's print)", "Always the studio's print: the part rendered through the track's plug-ins by whoever changed it, exactly what they heard.\n" ..
+          "Only parts with a plug-in someone lacks (or a sample player) are printed: the others play themselves." } }) do -- (0.59.49)
       if m[1] ~= "auto" then next_to(m[2]) end -- (longer words now: onto the next line when they don't fit)
       if ImGui.RadioButton(ctx, m[2] .. "##midiplays", prints.mode() == m[1]) then
         reaper.SetExtState(band.SECTION, "midi_plays", m[1], true)
@@ -2318,7 +2349,9 @@ local function studio_updates()
 end
 local function settings_studio()
   ImGui.TextDisabled(ctx, "For everyone in " .. band.info(cfg.root).name .. ". Only the owner and admins change these; everyone can use them.")
-  layout({ { studio_alerts, 360 }, { studio_call, 360 }, { studio_private_audio, 360 }, { studio_tailscale_sync, 360 }, { studio_updates, 360 }, { studio_debug, 360 } }, true)
+  layout({ { studio_alerts, 360 }, { studio_call, 360 }, { studio_private_audio, 360 }, { studio_tailscale_sync, 360 }, { studio_updates, 360 },
+    { function() if card("studio prints") then require("prints").hops_ui(ctx, ImGui, cfg, studio_admin()); card_end() end end, 360 }, -- (chained prints, 0.59.49)
+    { studio_debug, 360 } }, true)
 end
 local function settings_drive()
   if card("drive") then
@@ -2503,7 +2536,7 @@ function ui.settings_advanced()
     end
     local cha, va = switch_row("##showadv", "Show advanced controls", ui.advanced(), "Side rooms, claiming regions and time, Solo and Produce, and the Plugins page.\nOff, each still shows when it's needed: a side room, a missing plug-in, someone you're producing.")
     if cha then reaper.SetExtState(band.SECTION, "show advanced", va and "1" or "0", true); ui.extra_at = -math.huge end
-    local ch0, v0 = switch_row("##showplay", "Show the Play/Jam tab", ui.play_shown(), "Starting together, Play along and Jam. Play along and Jam go through NINJAM, which needs a server the others can reach.\nReal time mode, Follow and Solo don't need any of it.")
+    local ch0, v0 = switch_row("##showplay", "Show the Play/Jam tab", ui.play_shown(), "Starting together, Time-sync and Jam. Time-sync and Jam go through NINJAM, which needs a server the others can reach.\nReal time mode, Follow and Solo don't need any of it.")
     if ch0 then reaper.SetExtState(band.SECTION, "show play", v0 and "1" or "", true) end
     local ch1, v1 = switch_row("##allactions", "Every StudioSync action in REAPER's Actions list", band.all_actions(),
       "For keyboard shortcuts and toolbar buttons: Hold my changes, Claim selected tracks, Local mixing, Take control and the rest.\n" ..
@@ -2568,14 +2601,14 @@ local function page_setup()
   if not ImGui.BeginTabBar(ctx, "setup", ImGui.TabBarFlags_FittingPolicyScroll) then return end -- (scrolls when narrow: squeezed, the names read "Hea... Con...")
   -- (the tabs stay put: only what's under them scrolls)
   local function body(id, fn)
-    if ImGui.BeginChild(ctx, id, 0, 0, 0, wide and ImGui.WindowFlags_HorizontalScrollbar or 0) then
+    if ui.child(id, 0, 0, 0, wide and ImGui.WindowFlags_HorizontalScrollbar or 0) then
       if ImGui.IsWindowAppearing(ctx) then ImGui.SetScrollY(ctx, 0); ui.scrolls[id] = nil end -- (the red row and the newest lines were out of sight, where it had last been left: Mac, 0.57.7)
       ui.smooth_scroll(id) -- (Settings eases too, as the pages and docked columns do: review list, 0.59.37)
       ImGui.PushTextWrapPos(ctx, 0)
       ui.page_body(fn) -- (an error in a Settings tab left its child and tab open, and End killed the panel. Review, 0.59.14)
       ImGui.PopTextWrapPos(ctx)
       ui.smooth_scroll_end(id)
-      ImGui.EndChild(ctx)
+      ui.child_end()
     end
   end
   local go_tab = reaper.GetExtState(band.SECTION, "setup tab")
@@ -2607,9 +2640,9 @@ local function page_setup()
     if ImGui.SmallButton(ctx, "Log files") then reaper.RecursiveCreateDirectory(band.log_dir(), 0); band.open_url(band.log_dir()) end
     ImGui.SetItemTooltip(ctx, "The folder with a log file per day (the last " .. band.LOG_DAYS .. " days): everything here, and every error with where it\n" ..
       "happened, written as it goes, so it's still there after a restart or a crash.")
-    if ImGui.BeginChild(ctx, "console", 0, 0, ImGui.ChildFlags_Borders) then
+    if ui.child("console", 0, 0, ImGui.ChildFlags_Borders) then
       for _, l in ipairs(band.activity()) do ImGui.TextWrapped(ctx, l) end
-      ImGui.EndChild(ctx)
+      ui.child_end()
     end
     ImGui.EndTabItem(ctx)
   end
@@ -2621,7 +2654,7 @@ local PAGES = {
   { "Projects", "This studio's projects, in their folders: open one, share one, file them, or free up space." },
   { "Home", "Who's here and what they're doing, real time mode, following and listening, and who changes what." },
   { "Rooms", "The project's rooms: make a side room to try things, have everyone come and see, and bring work back." },
-  { "Play/Jam", "Start together, Play along and Jam (NINJAM). Settings > Advanced shows or hides this tab." },
+  { "Play/Jam", "Start together, Time-sync and Jam (NINJAM). Settings > Advanced shows or hides this tab." },
   { "Chat", "Messages, to-dos, notes and links for this room, this project or the whole studio." },
   { "Restore", "Every change, and three ways back: the whole project, the selected tracks, or one change." },
   { "Mixes", "Render the mix, export stems, compare two mixes, a credits draft, studio templates, a copy outside the studio, and the listening page." },
@@ -2821,12 +2854,11 @@ function ui.go_settings(tab)
 end
 -- Something stopped syncing, said by Autostart (with the panel closed it brings back the tiny box to say so).
 function ui.page_body(fn)
-  local cards = open_cards
+  local depth = ui.kids_open()
   local ok, e = pcall(fn)
   if ok then return end
   err = tostring(e)
-  for _ = cards + 1, open_cards do ImGui.PopTextWrapPos(ctx); ImGui.EndChild(ctx) end
-  open_cards = cards
+  ui.close_kids(depth)
 end
 function ui.sync_problem()
   local words = reaper.GetExtState(band.SECTION, "sync problem")
@@ -3109,7 +3141,7 @@ function F.bars(t)
   if not (toast_place and toast_place.over) then tools.toast_show(ctx, ImGui, saying, toast_place) end
   local bars_at = ImGui.GetCursorPosY(ctx)
   ImGui.SetNextWindowSizeConstraints(ctx, 0, 0, 100000, (wide or wh < 440) and (ImGui.GetFrameHeightWithSpacing(ctx) * 3 + 2) or wh * 0.25) -- (3 rows: review, 0.59.14)
-  local bars_open = ImGui.BeginChild(ctx, "bars", 0, 0, ImGui.ChildFlags_AutoResizeY)
+  local bars_open = ui.child("bars", 0, 0, ImGui.ChildFlags_AutoResizeY)
   if bars_open then ImGui.Indent(ctx, 16) end
   -- (they read files bandmates write: one malformed file threw inside this child, and End then found it open and the whole panel died. Review, 0.58.92)
   local bars_ok, bars_err = pcall(function()
@@ -3172,7 +3204,7 @@ function F.bars(t)
   end, function(name) return can(cfg.user, name) end, b and function(name) claim({ name }, {}) end)
   tools.print_problem_bar(ctx, ImGui)
   end)
-  if bars_open then ImGui.Unindent(ctx, 16); ImGui.EndChild(ctx) end
+  if bars_open then ImGui.Unindent(ctx, 16); ui.child_end() end
   -- (said once in the console; the rest of the panel goes on: `err` swapped the whole panel for the error page, and refresh cleared it, so it
   -- was said again every 1.5 s. 0.58.93)
   if not bars_ok and bars_said ~= tostring(bars_err) then bars_said = tostring(bars_err); reaper.ShowConsoleMsg("StudioSync panel: " .. bars_said .. "\n") end
@@ -3225,11 +3257,11 @@ function F.page(t)
     ImGui.PushStyleColor(ctx, ImGui.Col_ChildBg, NAV)
     ImGui.PushStyleVar(ctx, ImGui.StyleVar_WindowPadding, 8, 10)
     ImGui.PushStyleVar(ctx, ImGui.StyleVar_SelectableTextAlign, 0, 0.5)
-    if ImGui.BeginChild(ctx, "nav", math.floor(150 * ui.text_scale()), 0, ImGui.ChildFlags_AlwaysUseWindowPadding) then
+    if ui.child("nav", math.floor(150 * ui.text_scale()), 0, ImGui.ChildFlags_AlwaysUseWindowPadding) then
       ImGui.PushFont(ctx, nil, 16)
       for _, p in ipairs(ui.pages()) do nav_item(p, 0, 36) end
       ImGui.PopFont(ctx)
-      ImGui.EndChild(ctx)
+      ui.child_end()
     end
     ImGui.PopStyleVar(ctx, 2)
     ImGui.PopStyleColor(ctx)
@@ -3245,7 +3277,7 @@ function F.page(t)
   end
   local was_wide = wide
   local scroll_key = page -- (the page may change below: its end goes with its start)
-  if ImGui.BeginChild(ctx, "page", 0, 0, ImGui.ChildFlags_AlwaysUseWindowPadding, wide and ImGui.WindowFlags_HorizontalScrollbar or 0) then
+  if ui.child("page", 0, 0, ImGui.ChildFlags_AlwaysUseWindowPadding, wide and ImGui.WindowFlags_HorizontalScrollbar or 0) then
     ui.smooth_scroll(scroll_key)
     ui.cur_page = scroll_key -- (for the columns' own easing: layout)
     ImGui.PushTextWrapPos(ctx, 0) -- text wraps to the page, whatever its width
@@ -3285,7 +3317,7 @@ function F.page(t)
     elseif page == "Settings" then page_setup() end
     ImGui.PopTextWrapPos(ctx)
     ui.smooth_scroll_end(scroll_key)
-    ImGui.EndChild(ctx)
+    ui.child_end()
   end
   if was_wide then ImGui.PopStyleVar(ctx, 2) end
   ImGui.EndDisabled(ctx)
@@ -3365,7 +3397,7 @@ function ui.frame_lobby()
   ImGui.Separator(ctx)
   ImGui.PushStyleVar(ctx, ImGui.StyleVar_WindowPadding, 16, 12)
   local setup_key = "setup " .. tostring(page)
-  if ImGui.BeginChild(ctx, "page", 0, 0, ImGui.ChildFlags_AlwaysUseWindowPadding) then
+  if ui.child("page", 0, 0, ImGui.ChildFlags_AlwaysUseWindowPadding) then
     ui.smooth_scroll(setup_key)
     ImGui.PushTextWrapPos(ctx, 0)
     if page == "Groups" then ui.page_body(function() pg.checklist(ui.env); pg.draw_groups(ui.env) end)
@@ -3373,7 +3405,7 @@ function ui.frame_lobby()
     else page_setup() end
     ImGui.PopTextWrapPos(ctx)
     ui.smooth_scroll_end(setup_key)
-    ImGui.EndChild(ctx)
+    ui.child_end()
   end
   ImGui.PopStyleVar(ctx)
 end
@@ -3602,7 +3634,15 @@ local loop
 -- the theme and font) is closed in this same cycle. Logged once per different error. Round 3 review, 0.59.48)
 local function guarded(fn) return function()
   local ok, e = xpcall(fn, debug.traceback)
-  if ok then ui.fail_since = nil; return end
+  -- (fail_said too, after a minute of good passes: the same error back hours later wasn't logged again. Not at once, so one failing every other
+  -- frame isn't written to the file each time. Round 4 review, 0.59.49)
+  if ok then
+    ui.fail_since = nil
+    if ui.fail_said and reaper.time_precise() - (ui.fail_at or 0) > 60 then ui.fail_said = nil end
+    return
+  end
+  ui.fail_at = reaper.time_precise()
+  ui.close_kids() -- (its child windows first: End with a child current asserts. Round 4 review, 0.59.49)
   if ui.clip then pcall(ImGui.PopClipRect, ctx) end
   if ui.open_win then
     pcall(ImGui.End, ctx)
@@ -3692,7 +3732,8 @@ local function loop_body()
     -- (debug mode on: "StudioSync (debugging)", wider, so from 600 px; the ###StudioSync id stays, so the place and docker are kept. James,
     -- Round 3 review, 0.59.48)
     ui.title_notice = ui.debug_notice()
-    local tw = ui.title_w or 0
+    -- (with the system frame, no gates: none of ours sits in its title, and a narrow one had no title or no "(debugging)". Round 4 review, 0.59.49)
+    local tw = native and math.huge or ui.title_w or 0
     visible, open = ImGui.Begin(ctx, (ui.title_notice and tw >= 600 and "StudioSync (debugging)###StudioSync") or (tw >= 500 and "StudioSync###StudioSync") or "###StudioSync", true, flags)
     ui.title_w = ImGui.GetWindowWidth(ctx)
     ImGui.PopStyleColor(ctx)
@@ -3711,7 +3752,9 @@ local function loop_body()
     if behind == "box" and not win_rect.docked and now_t - (ui.opened_at or 0) > 1.5 then -- (the focus gone from every StudioSync window, after it had it)
       local focused = ImGui.IsWindowFocused(ctx, ImGui.FocusedFlags_AnyWindow)
       if focused then ui.had_focus = true
-      elseif ui.had_focus and not ImGui.IsAnyItemActive(ctx) and ui.should_hide(win_rect) then
+      -- (not while Sync and exit's box is up: shrunk, the box wasn't drawn, its job stopped, and "Safe to shut down" never came. Round 4 review,
+      -- 0.59.49)
+      elseif ui.had_focus and not ImGui.IsAnyItemActive(ctx) and not (package.loaded.leave and package.loaded.leave.job) and ui.should_hide(win_rect) then
         ui.set_minimized(true) -- (kept while another app has the focus: a click on REAPER under it afterwards still shrinks it. Review, 0.58.98)
         if reaper.GetExtState(band.SECTION, "box told") == "" then -- (the first time, where it went: nothing said so. Round 1 review, 0.59.45)
           reaper.SetExtState(band.SECTION, "box told", "1", true)
@@ -3732,7 +3775,7 @@ local function loop_body()
       -- on the first docked frame it isn't yet, and it moved the Mixer's docker instead
       -- (ReaImGui's own word for where it is: on a Mac the window JS_Window_Find hands back isn't always one DockIsChildOfDock
       -- takes, and that threw: Mac, 0.42.27)
-      local me = ImGui.GetWindowDockID(ctx) == ~dock_side.docker and reaper.JS_Window_Find and reaper.JS_Window_Find("StudioSync", true)
+      local me = ImGui.GetWindowDockID(ctx) == ~dock_side.docker and ui.panel_hwnd() -- (either title: Round 4 review, 0.59.49)
       if me then
         pcall(reaper.JS_Window_SetFocus, me)
         -- (no asking whether the focus took: on a Mac it never reads as ours, and this ended with nothing said. move_docker looks afterwards
@@ -3751,13 +3794,11 @@ local function loop_body()
         band.log("the panel didn't settle into its new docker, so it stays where it is")
       end
     end
-    open_cards = 0
     local ok, e = pcall(frame) -- an error in our logic must still reach End
     if not ok then -- (and End must find no card open: 0.33.2's broken lib file failed inside one, and End killed the panel)
       err = tostring(e)
       if frame_said ~= err then frame_said = err; reaper.ShowConsoleMsg("StudioSync panel: " .. err .. "\n") end -- (once: it reopened the console every 1.5 s. Review, 0.59.14)
-      for _ = 1, open_cards do ImGui.PopTextWrapPos(ctx); ImGui.EndChild(ctx) end
-      open_cards = 0
+      ui.close_kids() -- (every child window, not only cards: Round 4 review, 0.59.49)
     end
     -- a focused panel keeps the keys from REAPER, so Ctrl+Z did nothing after a click here. (Cmd on a Mac. Not while typing: a text box has its own undo)
     if ImGui.IsWindowFocused(ctx, ImGui.FocusedFlags_RootAndChildWindows) and not ImGui.IsAnyItemActive(ctx)

@@ -93,15 +93,14 @@ leave.draw({}, ImGui, "D")
 assert(saves == 1 and commands[1] == 40004, "Quit: only the syncing tab is saved, not its second copy")
 band.synced_elsewhere = function() return elsewhere end
 
--- The "local work" mark, per room: each tab adds or takes away only its own room; an old "1" stays
+-- The "local work" mark, per room: each tab adds or takes away only its own room; an old "1" is the main room's (0.59.49: tests/test_0_59_49_ui.lua)
 assert(live.mark_room("", "main", true) == "main", "main has some: marked")
 assert(live.mark_room("main", "main", true) == nil, "already marked: nothing written")
 assert(live.mark_room("main", "side", true) == "main|side", "a side room adds itself")
 assert(live.mark_room("main|side", "main", false) == "side", "the main room's tab takes away only its own room: the side room's work still keeps the folder")
 assert(live.mark_room("side", "side", false) == "", "the last room with work gone: no mark")
 assert(live.mark_room("", "side", false) == nil, "nothing to take away: nothing written")
-assert(live.mark_room("1", "main", false) == nil, "an old mark stays: it may be a side room's")
-assert(live.mark_room("1", "main", true) == "1|main" and live.mark_room("1|main", "main", false) == "1", "an old mark stays beside the rooms")
+assert(live.mark_room("1", "side", false) == nil, "an old mark stays for a side room: it's the main room's")
 
 -- live.recording_anywhere is band's (one copy), and false with an older band.lua that has none
 band.recording_anywhere = function() return true end

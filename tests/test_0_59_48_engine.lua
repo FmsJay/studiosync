@@ -94,7 +94,7 @@ mirror.keep_item_copy = function() copies = copies + 1; note("copy"); return {} 
 mirror.apply = function() note("apply"); return false end -- (the band's audio still arriving: it waits)
 mirror.held_back.P3 = { ["I-H"] = true }
 mirror.receive("P3", { obj = "item", oid = "I-H", rev = 3, id = "Bo-20261119-100000Z-00001-0001", state = "<ITEM\n>\n" }, "R/media", false, "Me")
-assert(calls[1] == "copy" and calls[2] == "apply" and not mirror.held_back.P3["I-H"], "a copy first, then the band's version: " .. table.concat(calls, ","))
+assert(calls[1] == "copy" and calls[2] == "apply" and mirror.held_back.P3["I-H"], "a copy first, then the band's version (held back until it lands: Round 4, 0.59.49): " .. table.concat(calls, ","))
 mirror.held_back.P3["I-H"] = true -- (the next look holds it back again while the band's version waits)
 mirror.receive("P3", { obj = "item", oid = "I-H", rev = 3, id = "Bo-20261119-100000Z-00001-0001", state = "<ITEM\n>\n" }, "R/media", false, "Me")
 assert(copies == 1, "the retry makes no second copy (" .. copies .. ")")
@@ -201,15 +201,16 @@ proxy.capture_tempo, proxy.capture_markers = band.capture_tempo, band.capture_ma
 local cfg = { user = "Me", root = "root" }
 local dir = recall.dir(cfg, "S", "main")
 sync.pending_events = function() return 7 end -- (changes waiting under Hold: not catching up)
+gext[band.SECTION .. "\0live PR"] = tostring(clock) -- (Live sync runs there: only a tab without it counts. Round 4 review, 0.59.49)
 local f1 = recall.save("PR", cfg, "S", "main", "held", true)
 assert(not written[dir .. "/" .. f1].behind and written[dir .. "/known/" .. f1], "waiting changes don't mark it: mapped")
 gext[band.SECTION .. "\0loading PR"] = "1"
-gext[band.SECTION .. "\0live PR"] = tostring(clock)
 local f2 = recall.save("PR", cfg, "S", "main", "panel save", true)
 assert(written[dir .. "/" .. f2].behind == true and not written[dir .. "/known/" .. f2], "Live sync loading it: behind")
 local f3 = recall.save("PR", cfg, "S", "main", "yours before Bo", true, true)
 assert(written[dir .. "/known/" .. f3], "the 'yours before' save keeps its map even so")
 gext[band.SECTION .. "\0live PR"] = nil
+sync.pending_events = function() return 0 end -- (no Live sync there: the count decides. Round 4 review, 0.59.49)
 local f4 = recall.save("PR", cfg, "S", "main", "no live sync", true)
 assert(written[dir .. "/known/" .. f4], "a mark left by a Live sync that stopped counts for nothing")
 -- code10: a map that couldn't be written is said

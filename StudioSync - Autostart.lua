@@ -262,8 +262,7 @@ local function loop_body()
   for i = 0, 512 do
     local p = reaper.EnumProjects(i)
     if not p then break end
-    local beat = p ~= front and tonumber(reaper.GetExtState(band.SECTION, "live " .. tostring(p)))
-    if beat and reaper.time_precise() - beat < 30 then running_behind = running_behind + 1 end
+    if p ~= front and band.live_here(p, 30) then running_behind = running_behind + 1 end -- (band.live_here: Round 4 review, 0.59.49)
   end
   for i = 0, 512 do
     local proj, fn = reaper.EnumProjects(i)
@@ -277,9 +276,8 @@ local function loop_body()
         local ok, was = pcall(require("live").all_off, proj)
         if ok and was then band.log("live audio starts off when a project opens: Real time mode (and Time-sync) and the call are off. Switch them on on Home and in Chat > Call") end
       end
-      local beat = tonumber(reaper.GetExtState(band.SECTION, "live " .. key))
       -- (30 s, not 5: a dialog left open a few seconds pauses every script, and isn't a Live sync that stopped)
-      local alive = beat and reaper.time_precise() - beat < 30 or reaper.time_precise() < held_until
+      local alive = band.live_here(proj, 30) or reaper.time_precise() < held_until
       -- The tab in front first, three tries, then it says so once. Tabs behind it follow, one a look and none of them brought forward: flipping
       -- them to the front never stopped with 38 tabs open and REAPER couldn't be clicked (PC, 2026-10-30), and left alone, their bandmates saw
       -- this person as offline until they switched to the tab (Mac, 0.57.6). One try each, and at most BEHIND of them.

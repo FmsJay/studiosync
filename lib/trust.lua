@@ -144,7 +144,8 @@ trust.user_file = user_file
 function trust.device_ok(root, user, device)
   local j = band.read_json(root .. "/_band/band.json")
   -- (a studio from before owners: anyone in it may take anyone out, so a file naming the wrong computer gains nobody anything)
-  if not trust.pins(root) and not (type(j) == "table" and type(j.owner) == "string") then return true end
+  -- (but not on an invited computer still held: band.json without an owner made any devices file count as its computer's. Round 4 review, 0.59.49)
+  if not trust.pins(root) and not (type(j) == "table" and type(j.owner) == "string") and not trust.held(root) then return true end
   local rel = "_band/devices/" .. user_file(user)
   local k = root .. rel .. tostring(device) .. "\0" .. tostring(band.read(root .. "/" .. rel))
   local c = devs[k]
@@ -214,6 +215,20 @@ function trust.held(root)
   if p then return p.held == true end
   return trust.inviter(root) ~= nil
 end
+-- A verdict cache whose "no", given while held, lasts only while held: kept by the file's content alone, a verdict made against the inviter
+-- alone (an owner's claim, guest list or closed.json) stood after the real pins came, until REAPER restarted. trust.held is read only for a "no".
+-- (Round 4 review, 0.59.49)
+function trust.cached(cache, k, root)
+  local v = cache[k]
+  if v ~= "held" then return v end
+  if trust.held(root) then return false end
+  cache[k] = nil
+  return nil
+end
+function trust.cache(cache, k, ok, root)
+  if ok == false and trust.held(root) then cache[k] = "held" else cache[k] = ok end
+  return ok
+end
 
 -- Which writing of the roles a verdict is for: the roles, and when they were written out (band.json "roles_at", every groups save: 0.58.78).
 -- Keyed by the roles alone, a set-aside set stayed set aside when someone in charge wrote the same ones later, and an invited computer that
@@ -224,8 +239,10 @@ function trust.roles(root, j)
   local owner, admins = trust.roles_of(j)
   local pins = trust.pins(root)
   if not pins then
-    if not owner then return owner, admins end
     local inv = trust.inviter(root)
+    -- (an invited computer with no owner in band.json yet: the inviter alone, as held, not "open" to everyone: a member who kept "owner" out of
+    -- band.json had every name able to manage, let people in and take edits in an admins room. Round 4 review, 0.59.49)
+    if not owner then if inv then return trust.INVITER, {} end return owner, admins end
     if inv then return first_look(root, j, owner, admins, inv) end
     trust.pin(root, owner, admins, j.managers) -- (the first look, joined before 0.58.78 or started here: what's there now is what this computer knows)
     return owner, admins
@@ -324,7 +341,8 @@ end
 local claims = {}
 function trust.claim_ok(root, rel, c)
   local k = root .. rel .. tostring(c.time) .. "\0" .. band.json_encode(c) -- (the claim as read, as for marks above)
-  if claims[k] ~= nil then return claims[k] end
+  local was = trust.cached(claims, k, root)
+  if was ~= nil then return was end
   local pins = trust.pins(root)
   if not pins then if trust.held(root) then return nil end return true end -- (as trust.mark_ok)
   local services = require("services")
@@ -332,7 +350,7 @@ function trust.claim_ok(root, rel, c)
   if not by then return nil end
   local mine = services.my_device_id()
   local ok = by == "" or (mine ~= nil and by == mine:sub(1, 7)) or trust.from_user(pins, by, c.by)
-  claims[k] = ok
+  trust.cache(claims, k, ok, root)
   if not ok then band.log(string.format("%s: a claim said to be given by %s came from another computer (%s), so it was set aside", band.info(root).name, tostring(c.by), services.device_name(by))) end
   return ok
 end
