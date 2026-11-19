@@ -1071,6 +1071,14 @@ static void trace_line(const std::string &line)
   if (path.empty()) return;
   FILE *f = fopen(path.c_str(), "ab"); // (not open_shared: that one opens to read only, or to write from the start)
   if (!f) return;
+  fseek(f, 0, SEEK_END);
+  if (ftell(f) > 5 * 1024 * 1024) { // (rolled at 5 MB, one older copy kept, as the Lua side's streams.trace does: the trace is for testing. rt)
+    fclose(f);
+    remove((path + ".1").c_str());
+    rename(path.c_str(), (path + ".1").c_str());
+    f = fopen(path.c_str(), "ab");
+    if (!f) return;
+  }
   const double t = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
   fprintf(f, "%.3f %s\n", t, line.c_str());
   fclose(f);
