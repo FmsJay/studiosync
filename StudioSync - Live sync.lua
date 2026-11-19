@@ -1163,6 +1163,7 @@ local function tick_body() -- returns true to keep going
   end
   local st = reaper.GetPlayStateEx(proj)
   if st & 4 ~= 0 then
+    if not recording then band.try("rthealth.record_check", require("rthealth").record_check, proj, cfg, b) end -- (low disk here or on a bandmate: a line, never a box. James, rt)
     if not recording and status_info then
       status_info.playing, status_info.recording, status_info.cursor = true, true, nil
       sync.write_status(proj, cfg, b.song, b.room, status_info)
