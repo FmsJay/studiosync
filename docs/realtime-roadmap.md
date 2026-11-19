@@ -94,6 +94,13 @@ Hear a plug-in you don't have, live, through the bandmate's REAPER that does hav
   (~60-100 ms on the desktop <-> laptop path): fine for checking a sound, not for playing tight. Prints stay the record
   and the fallback when the computer with the plug-in is offline.
 - Needs step 4's audio transport (formats, jitter buffer, drift) and the plug-in binary on every system.
+- **Staying in sync (James, 2026-11-19):** every hop reports one FIXED latency = network round trip + the remote
+  processing + a jitter margin (e.g. the worst recent round trip plus a buffer); REAPER's PDC delays everything else by
+  the same amount, so playback is always aligned (play starts that much earlier internally, nothing is heard late).
+  Chains of hops add up and REAPER compensates the total. The reported latency only changes while stopped (a latency
+  change during playback makes REAPER recompute PDC, which can glitch); if the network falls behind the margin the hop
+  plays the print (or the dry signal) for that block instead of drifting. Live monitoring through a remote plug-in can't
+  be compensated: prints and local plug-ins stay the answer there.
 
 ### 5. Video and screen share
 - The extension serves a small page on this computer and opens it in the browser; the browser's own WebRTC does
@@ -512,3 +519,36 @@ Built in the extension (extension/direct.cpp, direct_audio.cpp; protocol, API an
   this room's `.streams/<song>` files that no entry holds and that aren't still arriving. shortcut: a song nobody opens here keeps its
   streamed copies until it's opened.
 - **Health:** a "Takes streaming" row (out/in counts and MB, and any stream that didn't get through whole) under the direct link's rows.
+
+## AI as an optional add-on (James, 2026-11-19)
+The AI features ship as a separate, optional "StudioSync AI" add-on (its own folder/package, installed only by those who want
+it), never inside the core. It runs as a helper program StudioSync calls (Lua renders a region/stem to WAV, the helper
+writes WAV/MIDI/JSON, Lua imports the result as items, MIDI, markers or regions), so GPL-3 covers only StudioSync's code
+and model weights download only after an explicit OK. Every run that uses a local GPU model asks first (James's rule);
+every cloud run asks separately because audio leaves the band's computers. Order (docs/ai-research.md): mix feedback from
+the stats StudioSync already computes (no audio leaves; local LLM on the hub or Claude), stem separation (RoFormer +
+htdemucs_ft; LALAL.AI fallback), sections/tempo map (allin1), session transcription with speakers, audio-to-MIDI (Basic
+Pitch + ADTOF), take search (CLAP) and scored auto-comping, reference mastering (Matchering), chords/key.
+
+## More ideas from the streaming work (James, 2026-11-19: on the roadmap)
+- **Producer "listen while they record":** a producer hears a take on their own monitors as it's being recorded, from the
+  interval stream (no call needed), with their own level.
+- **Punch-in assist:** bandmates see exactly where the recorder punched in and out, live on their timeline (punch range
+  and pre-roll sent as link messages), so "go again from the bridge" is unambiguous.
+- **Late-joiner catch-up:** someone who joins mid-take gets the take so far (the stream from its start), not only from the
+  moment they arrived.
+
+## Studio browser (James, 2026-11-19)
+A "Studio browser" panel in the web UI for browsing the web, playing videos and showing ideas together. A logged-in page
+(a Drive folder, a private video) renders differently per person, so it works in four modes:
+- **Follow me:** one person browses; everyone's panel loads the same URLs and follows scroll (public pages: gear,
+  references, tutorials). Sent as link messages.
+- **Watch together:** YouTube/Vimeo (their embed APIs) or a video file plays in sync for everyone: play, pause and seek go
+  over the link, timed by the shared clock, so everyone sees the same frame ("check out 1:32").
+- **Share a tab:** anything logged in or private is shared as a live screen share of that browser view (the same WebRTC path
+  as video calls), so everyone sees exactly your page.
+- **Studio pinboard:** links, videos and files pinned to the studio or a song; Drive links open in each person's own
+  session; files dropped on it sync like other studio files (Syncthing behind the link); a pin can sit at a bar of the song
+  ("reference for the chorus" at the chorus).
+Video audio plays through each person's system audio by default, with an option to route it into the call.
+
