@@ -931,6 +931,8 @@ local live_handlers = {
   -- (a bandmate's take as they record it: lib/streams.lua. James, rt)
   take = function(d) require("streams").on_take(cfg, b, d) end,
   take_end = function(d) require("streams").on_take_end(d) end,
+  -- (a media file a bandmate just put in the shared folder, coming over the link: lib/streams.lua on_media. James, rt)
+  media = function(d) require("streams").on_media(cfg, b, d) end,
 }
 live_handlers.start, live_handlers.stop = live_handlers.cue, live_handlers.cue
 local function tick_body() -- returns true to keep going
@@ -1182,7 +1184,9 @@ local function tick_body() -- returns true to keep going
     if not ok and midi_view_err ~= tostring(e) then midi_view_err = tostring(e); band.log("live MIDI view: " .. tostring(e)) end
   end
   -- takes streamed as they're recorded (lib/streams.lua): ours go out, bandmates' grow on their tracks
-  band.try("streams.tick", require("streams").tick, proj, cfg, b, st & 4 ~= 0, reaper.EnumProjects(-1) == proj)
+  -- (and media files over the link put in the shared folder: a pass at once, so the items waiting for them land now. James, rt)
+  local _, media_placed = band.try("streams.tick", require("streams").tick, proj, cfg, b, st & 4 ~= 0, reaper.EnumProjects(-1) == proj)
+  if (tonumber(media_placed) or 0) > 0 then last = -math.huge end
   lap("listen, midi view")
   local every = reaper.GetPlayStateEx(proj) & 1 == 1 and 2 -- playing: a pass can stall REAPER ~0.5 s (seen on the laptop)
     or (lagbars or now - stopped_at < 8 or require("bgrender").waiting() or require("prints").waiting()) and 0.5 or 2 -- side by side, just after a recording, or with a print on its way: look often
