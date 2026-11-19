@@ -176,4 +176,29 @@ streams.cloud_due = nil
 clock = clock + streams.CATCHUP_LOOK
 assert(streams.catchup_tick(cfg, b) == 0 and not streams.cloud_due, "asked at most every CLOUD_EVERY")
 streams.cloud_root = nil
+
+-- ---- alone with nothing of the list in the cloud: Syncthing asked less and less often, back at once when anything changes (James, rt) ----
+local everys = {}
+services.need = function(_, every) everys[#everys + 1] = every; return need_text end
+streams.cloud_root, streams.cloud_due = "C", nil
+need_text = band.json_encode({ rest = { { name = "Song/rooms/main/media/nowhere.wav", size = 5 } } })
+local function run(secs) local t_end = clock + secs; while clock < t_end do clock = clock + streams.CATCHUP_LOOK; streams.catchup_tick(cfg, b) end end
+clock = clock + streams.CLOUD_EVERY
+run(1200)
+assert(everys[1] == streams.CATCHUP_EVERY and everys[#everys] == streams.CLOUD_WAIT_MAX, "from every 30 s to every 5 minutes: " .. everys[1] .. " .. " .. everys[#everys])
+for i = 2, #everys do assert(everys[i] >= everys[i - 1], "never sooner while nothing changes") end
+streams.catchup_wake()
+run(streams.CATCHUP_LOOK)
+assert(everys[#everys] == streams.CATCHUP_EVERY, "changes arrived: every 30 s again")
+run(1200)
+need_text = band.json_encode({ rest = { { name = "Song/rooms/main/media/nowhere2.wav", size = 6 } } })
+run(streams.CATCHUP_LOOK * 2)
+assert(everys[#everys] == streams.CATCHUP_EVERY, "a changed list: every 30 s again")
+run(1200)
+here, here_dev = { "desk.ts.net:47281" }, { ["desk.ts.net:47281"] = BO }
+run(streams.CATCHUP_LOOK)
+here, here_dev = {}, {}
+run(streams.CATCHUP_LOOK)
+assert(everys[#everys] == streams.CATCHUP_EVERY, "a peer came and went: every 30 s again")
+streams.cloud_root = nil
 print("ok")

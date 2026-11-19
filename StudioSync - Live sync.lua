@@ -550,6 +550,7 @@ function P.receive(t)
     if require("leave").autosave(sync.autosave, n, dirty, reaper.GetPlayStateEx(proj) == 0) then sync.need_save = true end
     if n > 0 then band.log(string.format("%d change%s from the others (%s)", n, n == 1 and "" or "s", room)); mirror_due = true; pcall(require("api").event, "received", { n = n, song = b.song, room = room }) end
     if n > 0 or sync.redraw then t.redraw, sync.redraw = true, nil end
+    if n > 0 then require("streams").catchup_wake() end -- (changes came: catch-up while alone looks at Syncthing's need list soon again)
   end
   lap("receive")
   t.rooms = rooms

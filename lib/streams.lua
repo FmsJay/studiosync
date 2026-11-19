@@ -941,6 +941,12 @@ streams.asked, streams.served = {}, {} -- key -> { at, tries }; dev\0key -> when
 local look_at, need_text, need_song, need_wants, served_n = -math.huge, nil, nil, {}, 0
 local cloud_asked_at = -math.huge
 streams.CLOUD_EVERY = 60
+-- Alone with a cloud copy, Syncthing's need list was asked for every CATCHUP_EVERY s for as long as you were alone. Now a wait with nothing of
+-- it found in the cloud doubles the next (CATCHUP_EVERY up to CLOUD_WAIT_MAX s); a peer on the link, a changed list, something found or changes
+-- arriving (streams.catchup_wake, from Live sync's receive) start again at CATCHUP_EVERY. (James, rt)
+streams.CLOUD_WAIT_MAX = 300
+local cloud_wait, cloud_quiet_at = nil, nil
+function streams.catchup_wake() cloud_wait, cloud_quiet_at = nil, nil end
 streams.cloud_root, streams.cloud_due = nil, nil -- (Live sync's: the cloud copy's root here; a cloud pass wanted now)
 function streams.catchup_tick(cfg, b)
   local now = reaper.time_precise()
@@ -948,14 +954,18 @@ function streams.catchup_tick(cfg, b)
   look_at = now
   local peers, dev_of = {}, nil
   if direct.live_available() and direct.ensure(cfg) then peers, dev_of = direct.peers(cfg, b.song, b.room) end -- (ensure: false with the direct setting off)
+  if #peers > 0 then streams.catchup_wake() end
   -- (nobody on the link: the cloud copy may have what Syncthing still needs, so Live sync's cloud pass is asked for, at most every CLOUD_EVERY
   -- s; drive.mirror brings what this song's rooms lack. With no cloud copy either, Syncthing isn't even asked. James, rt)
   local to_cloud = #peers == 0 and streams.cloud_root and now - cloud_asked_at >= streams.CLOUD_EVERY
   if #peers == 0 and not to_cloud then return 0 end
   local services = require("services")
   -- (the list is read every look but Syncthing asked only every CATCHUP_EVERY s; read again only when its answer changed)
-  local text = services.need(band.info(cfg.root).id, streams.CATCHUP_EVERY)
-  if text ~= need_text or b.song ~= need_song then need_text, need_song, need_wants = text, b.song, streams.catchup_wants(band.json_decode(text or ""), b.song) end
+  local text = services.need(band.info(cfg.root).id, to_cloud and cloud_wait or streams.CATCHUP_EVERY)
+  if text ~= need_text or b.song ~= need_song then
+    need_text, need_song, need_wants = text, b.song, streams.catchup_wants(band.json_decode(text or ""), b.song)
+    streams.catchup_wake()
+  end
   local rooms = cfg.root .. "/" .. b.song .. "/rooms/"
   local function skip(w) return band.size(rooms .. w.room .. "/media/" .. w.file) ~= nil or #band.subdirs(rooms .. w.room) == 0 end -- (on_media would refuse it)
   if to_cloud then
@@ -967,6 +977,11 @@ function streams.catchup_tick(cfg, b)
         streams.trace("cloud catch-up: " .. w.key .. " is in the cloud copy, nobody on the link: a cloud pass now")
         break
       end
+    end
+    if streams.cloud_due then streams.catchup_wake()
+    else
+      cloud_quiet_at, cloud_wait = cloud_quiet_at or now, cloud_wait or streams.CATCHUP_EVERY
+      if now - cloud_quiet_at >= cloud_wait then cloud_quiet_at, cloud_wait = now, math.min(cloud_wait * 2, streams.CLOUD_WAIT_MAX) end
     end
     return 0
   end
