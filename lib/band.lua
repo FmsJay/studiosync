@@ -1483,8 +1483,9 @@ end
 -- display only: they're never captured as the song's markers, and applying the band's markers keeps them.
 band.CLAIM_MARK = "[claimed: "
 function band.is_claim_mark(name) return (name or ""):sub(1, #band.CLAIM_MARK) == band.CLAIM_MARK end
--- A marker or region only this machine shows: a claim, or a bandmate's ping ("[ping] Bee", lib/presence.lua).
-function band.is_local_mark(name) return band.is_claim_mark(name) or (name or ""):sub(1, 7) == "[ping] " end
+-- A marker or region only this machine shows: a claim, a bandmate's ping ("[ping] Bee", lib/presence.lua), or where a bandmate punches in
+-- while they record ("[punch] Bee ...", lib/streams.lua punch_marks. James, rt).
+function band.is_local_mark(name) return band.is_claim_mark(name) or (name or ""):sub(1, 7) == "[ping] " or (name or ""):sub(1, 8) == "[punch] " end
 
 function band.capture_markers(proj)
   local out, i = {}, 0

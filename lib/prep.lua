@@ -96,8 +96,8 @@ function prep.scan(proj, cfg, b)
   local s = b and band.read_json(band.session_path(cfg, b.song))
   local want_sr = s and s.srate or band.srate(proj)
   local sr_set = reaper.GetSetProjectInfo(proj, "PROJECT_SRATE_USE", 0, false) == 1 and reaper.GetSetProjectInfo(proj, "PROJECT_SRATE", 0, false) == want_sr
-  if fmt ~= band.FLAC or not sr_set then
-    add("format", string.format("Record 24-bit FLAC at %d Hz", want_sr),
+  if not require("streams").format_ok(fmt) or not sr_set then -- (24-bit FLAC, or WAV where this computer chose it: lib/streams.lua record_wav)
+    add("format", string.format("Record 24-bit %s at %d Hz", require("streams").record_wav() and "WAV" or "FLAC", want_sr),
       "Recordings come out half the size with nothing lost, and the project keeps one sample rate whatever interface is plugged in.", 1, want_sr)
   end
 
@@ -476,10 +476,10 @@ function prep.apply(proj, cfg, b, rows, dir)
   end
 
   if on.format then
-    reaper.GetSetProjectInfo_String(proj, "RECORD_FORMAT", band.FLAC, true)
+    reaper.GetSetProjectInfo_String(proj, "RECORD_FORMAT", require("streams").record_want(), true)
     reaper.GetSetProjectInfo(proj, "PROJECT_SRATE", on.format.todo, true)
     reaper.GetSetProjectInfo(proj, "PROJECT_SRATE_USE", 1, true)
-    done[#done + 1] = string.format("Recording 24-bit FLAC at %d Hz", on.format.todo)
+    done[#done + 1] = string.format("Recording 24-bit %s at %d Hz", require("streams").record_wav() and "WAV" or "FLAC", on.format.todo)
   end
   if on.ripple then
     reaper.Main_OnCommand(40309, 0) -- Set ripple editing off
@@ -513,9 +513,11 @@ function prep.keep_format(proj, cfg, b)
   local s = band.read_json(band.session_path(cfg, b.song))
   local want = s and tonumber(s.srate)
   local fixed = {}
-  if select(2, reaper.GetSetProjectInfo_String(proj, "RECORD_FORMAT", "", false)) ~= band.FLAC then
-    reaper.GetSetProjectInfo_String(proj, "RECORD_FORMAT", band.FLAC, true)
-    fixed[#fixed + 1] = "recording format back to 24-bit FLAC"
+  -- (or 24-bit WAV, where this computer chose it so bandmates listening in time hear its takes sooner: lib/streams.lua record_wav. James, rt)
+  local streams = require("streams")
+  if not streams.format_ok(select(2, reaper.GetSetProjectInfo_String(proj, "RECORD_FORMAT", "", false))) then
+    reaper.GetSetProjectInfo_String(proj, "RECORD_FORMAT", streams.record_want(), true)
+    fixed[#fixed + 1] = streams.record_wav() and "recording format back to 24-bit WAV (your choice, Settings > Options > Parts play)" or "recording format back to 24-bit FLAC"
   end
   if want and want > 0 and (reaper.GetSetProjectInfo(proj, "PROJECT_SRATE_USE", 0, false) ~= 1 or reaper.GetSetProjectInfo(proj, "PROJECT_SRATE", 0, false) ~= want) then
     reaper.GetSetProjectInfo(proj, "PROJECT_SRATE", want, true)
