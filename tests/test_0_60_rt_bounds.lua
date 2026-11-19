@@ -31,4 +31,16 @@ assert(sync.refused_since("ev1") == first, "the first time it was refused is kep
 clock = clock + 3700
 local again = sync.refused_since("ev2") -- (any call sweeps, at most every 10 minutes)
 assert(again == clock and sync.refused_since("ev1") == clock, "an hour on, ev1's refusal was forgotten: its minute starts again")
+
+-- ---- the stream trace rolls at TRACE_MAX, one older copy kept ----
+local log = (os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp"):gsub("\\", "/") .. "/studiosync_trace_test.log" -- (os.tmpname is the drive's root on Windows)
+os.remove(log); os.remove(log .. ".1")
+require("direct").trace_path = function() return log end
+streams.TRACE_MAX = 200
+for i = 1, 20 do streams.trace("line " .. i .. " of the test, padded to some length") end
+local function size(p) local f = io.open(p, "rb"); if not f then return nil end local n = f:seek("end"); f:close(); return n end
+assert(size(log) <= 200 + 80 and size(log .. ".1") and size(log .. ".1") > 200, "rolled: " .. tostring(size(log)) .. " and " .. tostring(size(log .. ".1")))
+local f = io.open(log, "rb"); local last = f:read("a"); f:close()
+assert(last:find("line 20 ", 1, true), "the newest line is in the current file")
+os.remove(log); os.remove(log .. ".1")
 print("ok")

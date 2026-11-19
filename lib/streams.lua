@@ -328,10 +328,19 @@ end
 
 -- ---- the recorder's side ---------------------------------------------------------------------------------------------------------------
 -- A line in the stream trace (lib/direct.lua trace_path: ExtState "stream trace" = "1"), beside the extension's own.
+-- (rolled at TRACE_MAX bytes, one older copy kept as .1: left on for testing, it grew without end. The extension writes the same file and
+-- should roll it the same way. James, rt)
+streams.TRACE_MAX = 5 * 1024 * 1024
 function streams.trace(text)
   local p = direct.trace_path()
   if p == "" then return end
   local f = io.open(p, "a")
+  if f and (f:seek("end") or 0) > streams.TRACE_MAX then
+    f:close()
+    os.remove(p .. ".1")
+    os.rename(p, p .. ".1") -- (the extension holding it a moment: the next line tries again)
+    f = io.open(p, "a")
+  end
   if f then f:write(string.format("%.3f lua %s\n", os.time() + reaper.time_precise() % 1, text)); f:close() end
 end
 local rec -- this recording: { t0, wall, dir, tracks, pos, at, found = set, old = set, takes = { { id, rel } }, none, stopped_at, find_until }
