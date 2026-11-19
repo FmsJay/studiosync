@@ -473,6 +473,25 @@ Built in the extension (extension/direct.cpp, direct_audio.cpp; protocol, API an
 - To check in REAPER: that a hidden track with no items and no input keeps processing its FX while stopped and playing ("Run FX when
   stopped" preference); that PDC follows a latency change mid-session; that a plug-in instance can reach the extension's functions.
 
+### Step 4 built, first version (rt-audio branch, 2026-11-19; native and Lua tests only, not run in REAPER yet)
+- **Engine:** AOO v2.0-pre4 (git.iem.at) + Opus v1.6.1 (xiph), vendored in extension/third_party (README.md: sources, licences) and
+  compiled into the extension statically (Windows +708 KB, 1.15 MB; deps 6 s, DLL 7 s on JAMES-MAIN). extension/rtaudio.cpp: one AOO
+  source sends the chosen inputs (Opus, 5 ms CELT frames; AOO's process() only copies into its lock-free queue on the audio thread, the
+  send thread encodes) to one AOO sink per peer (30 ms jitter buffer target, drift-correcting resampler), mixed in the hook's post call
+  into the first hardware output pair at each peer's gain unless muted (heard here, never recorded: the 4b plug-in is the way onto a track).
+  AOO decodes in the sink's process(), on the audio thread, as SonoBus does (tens of µs per 5 ms frame), not on the network thread as
+  planned above. UDP on the link's port (47281), only 100.64.0.0/10; every datagram "SSL1" + AOO message + 16-byte HMAC-SHA256 with a key
+  from the studio secret (its own label, so it can't pass for a link frame). No session nonce yet (replay inside the tailnet only).
+- **ReaScript:** StudioSync_LiveAudioStart(inputs, nch, kbps), Stop, Peers(json `{secret, port, peers}`), Status (JSON: per peer
+  rtt/latency/buffer ms, loss, dropped, underruns, level, gain, mute), PeerSet(peer, gain, mute).
+- **Lua (lib/liveaudio.lua):** studio setting band.json `live_audio` (off by default), this computer's inputs/stereo/kbps, Live sync's tick
+  starts it for direct.peers (the song in front drives it), Health row per bandmate, Chat > Call level/volume/mute per bandmate, the UDP
+  twin of the direct link's firewall rule (direct.setup_firewall, same UAC).
+- **Measured on one computer (tests/rtaudio_test.cpp):** sine heard 43 ms after it was played (30 ms of buffer), level within 0.1 dB at 128
+  kbit/s, wrong secret refused both ways, a secret given while running is taken up.
+- **Not yet:** FLAC/PCM choice, more than two channels heard (a sender's 3-8 go out, the receiver plays the first two), hub mixing,
+  output pair choice, Talk/deafen tie-in with the existing call controls, SonoBus retirement.
+
 ### Fast first, lossless after: what the receiving Lua does
 - The stream says its codec (begin op). Opus-first: the receiver's file is an Ogg Opus file (REAPER reads .opus), placed on the take.
 - When the lossless file arrives (Syncthing's copy in the shared folder, or the link in the background) and its SHA-256 equals the one
