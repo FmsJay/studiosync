@@ -783,3 +783,72 @@ Built:
 - **Colour parity checked (0.59.49.20):** Health's row green on desktop, laptop and Mac ("every computer here shows the project's own colours,
   alike"); the master track's colour set on the desktop showed the same RGB on the laptop and the Mac (the Mac's colour byte order handled),
   and a reset to no colour reached both; rt_prefs (41 checks, the colour group included) green on all 3.
+
+## Efficiency pass (rt-perf branch, 2026-11-19; offline tests only, not run in REAPER yet)
+
+James: keep making StudioSync "better or more efficient". Every feature that landed today adds work to Live sync's tick (a REAPER defer, about
+30 a second per tab) or to the panel's frame. What each does, how often, and whether it's gated on being needed:
+
+| Work | Where | How often | Cost | Gated? |
+|---|---|---|---|---|
+| Heartbeat "live <tab>", owner check, binding | Live sync tick_body | every tick | 8 GetProjExtState, 1 SetExtState | always (it is the heartbeat) |
+| lap() timing marks | Live sync tick | ~12 a tick | was a string.format each; now two numbers | **fixed**: words only for a slow or timed tick |
+| sws colours, open FX chains, peaks | Live sync tick | 1 s | every track's FX open state | 1 s |
+| update check, lock, Save As follow | Live sync tick | 5 s | 512-byte read | 5 s |
+| plug-in lists signature | Live sync tick_body | 120 s | listing + sizes | 120 s |
+| shared prefs | lib/sharedprefs.lua tick | 1 s, tab in front | ExtState JSON, a pref read per key | 1 s |
+| direct.live_tick: file poll, inbox prune, peers, clock, heartbeat, messages | lib/direct.lua | every tick | DirectPoll loop; DirectClock JSON decoded every tick; prune 10 s; peers 2 s; heartbeat 5 s | extension present; **clock decode memoised** |
+| shared_now | lib/direct.lua | each cue, each streamed take, Link's 10 a second | DirectClock decode + an ExtState write each call | **fixed**: decode shared, write on change |
+| Ableton Link | lib/ablink.lua tick | 0.1 s | Blink calls, status ExtState JSON 1 s | Link on, tab in front |
+| Web UI | lib/webui.lua tick | every tick in front; presence 1 s; chat 2 s | sync.authority (claims files read) + JSON encode each second | extension present, tab in front; **not** on a browser being connected (see problems) |
+| Cue watch | Live sync quick_transport | 0.25 s with peers, 2 s alone | JS_File_Stat; a listing when the folder moved; a seen_ev lookup per name | yes |
+| hear, rt_sends, join check, follow_claims, producer | Live sync tick_body | 1 s | small | 1 s |
+| live MIDI send / receive | lib/livemidi.lua | tick in front while recording / 0.5 s | MIDI input history | recording / not recording |
+| streams: send, receive, catch-up, media | lib/streams.lua tick | every tick, inner 0.1 s / 5 s | DirectStreams JSON decoded by receive and media in one tick | recording / book non-empty / peers or cloud; **streams decode memoised** |
+| The pass (poll) | Live sync | 0.5-2 s, never while recording | below | edits, recording, Live set, undo wait |
+| P.who | poll | each pass | session.json read, sync.authority (claims files read), presence, api.publish (JSON) | no |
+| P.look: timeline + mirror.watch | poll | on change, 10 s floor, a fifth of REAPER's time at most | every track and item | yes (change count, look's own time) |
+| outbox ExtState | poll | each pass | JSON encode + write | written each pass (left: one a pass, reader reads content) |
+| P.heal + P.status: mirror.root | poll | **twice** a pass | every object's revision, sorted and hashed | **fixed**: once a pass |
+| P.status: armed, fingerprint, write_status | poll | each pass; write on change or 15 s | write reads its own file back (name clash), colours.look 5 s | write on change |
+| drive pass | poll | 3 min / 30 s after a send / on demand | 0.1 s copy budget | yes |
+| TrackList_AdjustWindows + UpdateArrange | poll | each pass | a full redraw | no (see problems) |
+| Health rows | panel, Health tab | **every frame** | session.json read, switch marker read, every track's 26 group settings x2, direct status decode, ... | **fixed**: once a second; heavy part already 10 s |
+| Health level (sidebar dot) | panel | 2 s | the same build | 2 s |
+| rthealth Syncthing rows | Health | 10 s, curls in the background 20-300 s | REST JSON | yes |
+
+Changed (one commit each; behaviour the same):
+1. **Timings for before/after** (`ExtState "perf stats"`): Live sync publishes "tick stats <tab>" every 10 s while it's on: median, p95 and
+   slowest tick and pass, and the slowest tick's laps. Off, one comparison a tick. `tests/reaper/rt_perf.lua` switches it on and reads it.
+2. **lap()** keeps name and seconds, formatted only when a tick is slow (>0.15 s) or timed: saves ~12 string.formats a tick (~360 a second a tab).
+3. **direct**: the extension's JSON answers (DirectClock, DirectStatus, DirectStreams) decoded once while the raw text is unchanged, and
+   shared_now writes "direct reference" only when it changes. A 3-peer status decodes in ~50 us offline (tests/test_0_60_rt_perf.lua prints
+   it); keep_clock decoded the clock every tick and each shared_now again (Link alone: 10 decodes and 10 ExtState writes a second).
+4. **mirror.root once a pass**: P.heal's answer goes to P.status unless it healed. On a 3,000-object song that's 3,000 EnumProjExtState calls,
+   a sort and a hash saved per pass.
+5. **Health rows once a second** while the Health tab is open (was every frame, ~30 a second): a button (H.maint_at), another tab, song or
+   studio builds them again at once.
+
+Measure in REAPER: run `tests/reaper/rt_perf.lua` once (switches the timings on), leave REAPER as you want it measured for 20 s or more, run
+it again. It prints each Live sync tab's tick and pass median/p95/slowest and the slowest tick's laps, and times mirror.root,
+presence.track_groups and direct.status on the tab in front. For before and after, run it on commit "Live sync: tick and pass timings"
+(ded837f, timings only) and on the branch tip, same project, same state (alone/with others, idle/playing, Health open or not).
+
+Problems found, not fixed (risky or a behaviour change; for James to pick):
+- **Web UI builds every second with nobody looking**: lib/webui.lua starts the server and builds presence (sync.authority reads every claims
+  file) and chat each 1-2 s in the tab in front whenever the extension has the web UI, browser or not. StudioSync_WebUIStatus has `clients`;
+  gating on it would leave a first page load up to a second stale. The docked web view (another branch) would be a permanent client anyway.
+- **sync.authority reads every claims file uncached**, each pass (P.who) and each second (web UI): a listing plus one read per member.
+  A cache by listing and file size/time would do; it decides who may change what, so not touched here.
+- **UpdateArrange + TrackList_AdjustWindows every pass** whether or not anything changed: a full arrange redraw every 0.5-2 s per tab.
+  Calling them only after a look/receive/heal/paint changed something needs every writer known.
+- **Unbounded growth** (all per REAPER session, small entries): Live sync `seen_ev` (every event file name, seeded with the whole folder:
+  20,000 in a big song, never drops trimmed ones) and `fired`; sync `refused_at` (lib/sync.lua, never cleared); streams `asked`,
+  `sent_media`, `placed`, `streamed` (one per media file or take, never pruned); recall `ev_cache` (the Restore page, every event path read;
+  states lazy); mirror `fx_open_at` (per track pointer). None is a leak at today's sizes; a session of days would show them.
+- **The cue watch walks every name** in the events folder each time it lists (a hash lookup per name, 20,000 in a big song) to find the new ones.
+- **Catch-up with a cloud copy and nobody on the link** asks Syncthing's need list (a background curl) every 30 s for as long as you're alone,
+  as `cloud_asked_at` moves only when a wanted file is found in the cloud.
+- **The stream trace** (`stream trace` = 1, testing) appends to <home>/direct/stream_trace.log with no size limit.
+- **presence.lua `last_time`** is keyed by user only, not song/room: one person in two rooms at once (two tabs) would share one "last changed" time.
+- **write_status reads its own file back** on every write (the two-computers-one-name check): only needed every 45 s.
