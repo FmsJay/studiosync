@@ -333,7 +333,7 @@ the panel opens if it was closed.
 panel**. These come from a small extension that ReaPack installs with StudioSync (`extension/`: 64-bit Windows, macOS and Linux;
 the macOS and Linux builds come from `.github/workflows/extension.yml`). They appear after REAPER's next start.
 
-**REAPER's Actions list** keeps only what opens StudioSync, plus Undo, Redo, Live sync and Draw. Turn on **Settings > Advanced > Every
+**REAPER's Actions list** keeps only what opens StudioSync, plus Undo, Redo, Radial menu, Live sync and Draw. Turn on **Settings > Advanced > Every
 StudioSync action in REAPER's Actions list** for the rest. An action a key, a toolbar or a menu already uses always stays.
 
 **Actions to bind to a key or toolbar button** (with that setting on; Actions list, search "StudioSync"): **Hold my changes** (on/off), **Claim selected

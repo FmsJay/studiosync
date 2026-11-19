@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.59.37", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.59.38", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -610,7 +610,8 @@ end
 -- Extensions > StudioSync and View > StudioSync, extension/reaper_menu.cpp), Undo and Redo (Ctrl+Z runs them), and Live sync and Draw (they run
 -- as actions). The rest come back when the panel runs one, when a key, a toolbar or a menu uses one, or all of them with Settings >
 -- "Every StudioSync action in REAPER's Actions list" (ExtState "all actions"). Their command ids come from their paths, so bindings survive.
-band.SHOWN = { Panel = true, Undo = true, Redo = true, ["Live sync"] = true, Draw = true }
+-- (and the radial menu: it's for a key or mouse button, and it wasn't there to give one: James, 0.59.38)
+band.SHOWN = { Panel = true, Undo = true, Redo = true, ["Live sync"] = true, Draw = true, ["Radial menu"] = true }
 function band.all_actions() return reaper.GetExtState(band.SECTION, "all actions") == "1" end
 -- Should this script be in the Actions list? Pure. name: "Hold my changes"; used: a key, toolbar or menu runs it.
 function band.shown_action(name, all, used) return all or used or band.SHOWN[name] == true end
@@ -625,7 +626,11 @@ function band.sync_actions(dir, at_start)
     if not (path:match("^/") or path:match("^%a:")) then path = res .. "/Scripts/" .. path end
     ids[path:lower()] = id
     local ours = path:match("/StudioSync %- [^/]+%.lua$")
-    if at_start and ours and (path:find("/StudioSync tabs/", 1, true) or not reaper.file_exists(path)) then drop[#drop + 1] = path end
+    -- (a copy this computer ran from before, nothing using its action: every entry showed twice, "StudioSync - Panel.lua" and the same again,
+    -- once a computer moved to the studio's folder. One a key, toolbar or menu uses stays: it hands over to the copy run from now. 0.59.38)
+    local other = ours and path:sub(1, -#ours - 1):lower() ~= norm(dir):lower() and not path:find("/StudioSync tabs/", 1, true)
+    local used = kb:find(" _" .. id .. " ", 1, true) ~= nil or menus:find("=_" .. id, 1, true) ~= nil
+    if at_start and ours and (path:find("/StudioSync tabs/", 1, true) or not reaper.file_exists(path) or (other and not used)) then drop[#drop + 1] = path end
   end
   local all, add = band.all_actions(), {}
   for _, f in ipairs(band.files(dir, ".lua")) do
