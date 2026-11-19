@@ -4,7 +4,8 @@
 -- A writes summary.md there at the end. Roles by StudioSync name (CROSS_ROLES below), or set CROSS_ROLE before dofile.
 --
 -- Start: Actions > Show action list > New action > Load ReaScript > this file, then run it (the desktop first: it makes the run).
--- One that isn't started within 3 minutes is left out (its steps skipped) and the rest goes on.
+-- One that isn't started within 3 minutes is left out (its steps skipped) and the rest goes on. B and C join only a run A started after
+-- they did, or one A is still gathering computers for: started before A, they wait for it up to CROSS_JOIN (180 s by default).
 local here = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]")
 local lib = here:gsub("[/\\]tests[/\\]cross$", "") .. "/lib/"
 package.path = lib .. "?.lua;" .. package.path
@@ -140,11 +141,12 @@ local run, here_roles, results, step, phase, t0, p, started, opened, wrote = nil
 local function file(name) return base .. "/" .. run .. "/" .. name .. ".json" end
 local function have(name) return band.read_json(file(name)) end
 local function put(name, t) reaper.RecursiveCreateDirectory(base .. "/" .. run, 0); band.write_json(file(name), t) end
+local looked_at
+local started_run = os.date("!%Y%m%d-%H%M%SZ") -- (when this computer started, in run-name form: B and C join only runs after it, or open ones)
 local function newest_run()
   local best
-  for i = 0, math.huge do
-    local d = reaper.EnumerateSubdirectories(base, i)
-    if not d then break end
+  -- (band.subdirs re-reads the folder: REAPER caches a listing, and B and C now wait for A's run to appear. Cross test, James, rt)
+  for _, d in ipairs(band.subdirs(base)) do
     if d:match("^%d+%-%d+Z$") and (not best or d > best) then best = d end
   end
   return best
@@ -188,12 +190,18 @@ end
 local function tick()
   local t = now()
   if phase == "start" then
+    if role ~= "A" and t - (looked_at or -1) < 1 then return reaper.defer(tick) end -- (waiting for A's run: the folder once a second)
+    looked_at = t
     if role == "A" then run = os.date("!%Y%m%d-%H%M%SZ") else run = newest_run() end
-    if run then
-      -- (B and C take the newest run, made in the last half hour: an old one is someone else's)
+    if run and role ~= "A" then
+      -- (B and C take only a run A started after they did, or one A is still gathering computers for (no roster yet, under JOIN old). The
+      -- newest folder within half an hour was an earlier run's when A hadn't made this one yet: the laptop joined a finished run and sat out
+      -- the new one. Cross test, James, rt)
       local y, mo, d, h, mi, s = run:match("^(%d%d%d%d)(%d%d)(%d%d)%-(%d%d)(%d%d)(%d%d)Z$")
       local age = os.time(os.date("!*t")) - os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(d), hour = tonumber(h), min = tonumber(mi), sec = tonumber(s) })
-      if role ~= "A" and age > 1800 then run = nil end
+      local hello = band.read_json(base .. "/" .. run .. "/A-hello.json")
+      local open = not band.read_json(base .. "/" .. run .. "/A-roster.json") and age <= JOIN
+      if not (hello and (run >= started_run or open)) then run = nil end
     end
     if run then
       p = find_proj()

@@ -2199,6 +2199,13 @@ local function on_gone_track(proj, ev)
   local trev, th = mirror.known(proj, ev.track)
   return trev ~= nil and th == "" and not mirror.find(proj, "track", ev.track)
 end
+-- Is this computer's record of an item a change that only moved it as a tempo change does (mirror.sans_tempo), against what it built on?
+function mirror.only_retimed(proj, io, room_dir)
+  local _, _, kev = mirror.known(proj, io)
+  local e = room_dir and (kev or "") ~= "" and mirror.event_file(room_dir, kev)
+  local b = e and e.base_ev and mirror.event_file(room_dir, e.base_ev)
+  return b and type(e.state) == "string" and type(b.state) == "string" and mirror.sans_tempo(e.state) == mirror.sans_tempo(b.state) or false
+end
 function mirror.will_wait(proj, ev)
   -- (not on a track deleted since: receive returns before its unsent check, and a wrong "waits" left an empty point. Round 4 review, 0.59.49)
   if on_gone_track(proj, ev) then return false end
@@ -2242,10 +2249,13 @@ function mirror.apply(proj, ev, media_dir, local_mix)
       -- (and what Live sync holds unsent for this tab: in the panel or the Undo script mirror.unsent is empty, and a Restore deleted a held
       -- edit with its track. Round 3 review, 0.59.48)
       local elsewhere = mirror.unsent_elsewhere(proj)
+      local room_dir = media_dir and media_dir:gsub("/media$", "")
       for i = reaper.CountTrackMediaItems(p) - 1, 0, -1 do
         local it = reaper.GetTrackMediaItem(p, i)
         local io = itm_oid(it)
-        if io == "" or not mirror.known(proj, io) or mirror.unsent[tostring(proj) .. io] or elsewhere[io] or mirror.just_made_here(proj, io) then
+        -- (not one whose just-sent change was only REAPER re-timing it for a tempo map that landed: nobody's work, and kept, a delete-all
+        -- with a tempo change left "(yours, not sent)" tracks on the computers that had re-timed it. Cross test, James, rt)
+        if io == "" or not mirror.known(proj, io) or mirror.unsent[tostring(proj) .. io] or elsewhere[io] or (mirror.just_made_here(proj, io) and not mirror.only_retimed(proj, io, room_dir)) then
           reaper.MoveMediaItemToTrack(it, mirror.keep_track(proj, tname))
           -- (yours now: not the band's item, and nothing waits on it, or the band's delete of it waited for good. 0.58.93)
           reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", true)
@@ -2464,6 +2474,21 @@ function mirror.too_old_to_merge(a, b)
 end
 mirror.MERGE_DAYS = 30 -- (lib/trim.lua keeps history twice as long)
 
+-- An item's deletion racing an edit (one of a and b is a deletion, the other not): the deletion wins over a version that doesn't build on it (made
+-- before the deletion was seen there), whichever is newer, and loses to one that does (a restore). By rev and clock, an edit made a moment
+-- after a delete-all by a computer that hadn't seen it yet (a tempo map re-timing its parts) outranked the deletion, and which computer kept
+-- what depended on arrival order. -> true when a wins, false when b does, nil when it isn't such a race, "wait" when a version between is still on
+-- its way. Pure but for reading events. (Cross test, James, rt)
+-- shortcut: an edit made before an older deletion that was restored since still merges with the restore; walk each side's ancestry for gones if
+-- restore races ever show up.
+function mirror.gone_race(room_dir, a, b)
+  if not (a and b and a.obj == "item" and b.obj == "item" and a.id ~= b.id and (a.gone == true) ~= (b.gone == true)) then return nil end
+  local g, e = a.gone and a or b, a.gone and b or a
+  local d = mirror.descends(room_dir, e, g.id, g.hlc)
+  if d == nil then return "wait" end
+  return (a == e) == d
+end
+
 -- An item changed apart from the version this computer holds (each started before the other): the two put together, the same on every
 -- computer (mirror.merge_item), so what only one of them changed isn't lost (docs/clashes.md). The merged version, or nil.
 mirror.first_seen = {} -- event id -> when merge_for first couldn't tell (time_precise)
@@ -2552,9 +2577,24 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   mirror.hlc_seen(ev.hlc)
   local order = mirror.order_of(ev)
   -- (before the usual "theirs wins or not": the loser's other changes go in too)
-  local merging, wait = mirror.merge_for(proj, ev, (media_dir:gsub("/media$", "")))
+  local room_dir = media_dir:gsub("/media$", "")
+  local merging, wait = mirror.merge_for(proj, ev, room_dir)
   if wait then return false end
-  if not merging and not mirror.wins(proj, ev.oid, ev.rev or 0, order) then return true end
+  -- (an item's deletion against an edit that didn't see it: the deletion, in any order, rather than rev and clock: mirror.gone_race. Two
+  -- minutes for a version between that's on its way, as merge_for waits. Cross test, James, rt)
+  local race
+  if not merging and ev.obj == "item" then
+    local _, _, kev = mirror.known(proj, ev.oid)
+    if (kev or "") ~= "" then race = mirror.gone_race(room_dir, ev, mirror.event_file(room_dir, kev)) end
+    if race == "wait" then
+      local now = reaper.time_precise()
+      mirror.first_seen[ev.id] = mirror.first_seen[ev.id] or now
+      if now - mirror.first_seen[ev.id] < 120 then return false end
+      race = nil
+    end
+  end
+  if race == false then return true end
+  if race == nil and not merging and not mirror.wins(proj, ev.oid, ev.rev or 0, order) then return true end
   -- (on a track the band has deleted since: nothing to apply it to, ever. Waiting for it kept "still to come" above
   -- 0 for good: review, 2026-10-31. Before the unsent check below: a flag
   -- left on a part of a deleted track held this back for good. 0.59.14, review)
@@ -2564,6 +2604,8 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
     local o = mirror.orphaned[tostring(proj)] or {}
     o[ev.track] = true
     mirror.orphaned[tostring(proj)] = o
+    -- (an item's own deletion is recorded though: it went with its track, and every computer then holds the same deletion, whichever came first)
+    if ev.gone then remember(proj, ev.oid, ev.rev, "", ev.id, order) end
     return true
   end
   -- a change of ours to it hasn't gone out yet (Hold my changes is on, plug-ins and automation waiting to settle or
@@ -4511,6 +4553,21 @@ end
 -- The version of an item every computer ends on: its newest change, merged with the newest of any made apart from it (mirror.merge_item), as each
 -- computer's receive did it. `all`: its changes (room_newest). -> an event, or a merged version.
 function mirror.settled(room_dir, newest, all)
+  -- (an edit a deletion beats, mirror.gone_race, isn't a candidate: heal took the newest edit over the deletion receive had kept. Cross test, James, rt)
+  if newest.obj == "item" and not newest.gone then
+    local gones, alive, top = {}, {}, nil
+    for _, x in ipairs(all or {}) do if x.gone then gones[#gones + 1] = x end end
+    local function newer(x, y) return not y or mirror.newer({ rev = x.rev, time = mirror.order_of(x) }, { rev = y.rev, time = mirror.order_of(y) }) end
+    if #gones > 0 then
+      for _, x in ipairs(all) do
+        local beaten = x.gone
+        for _, g in ipairs(gones) do beaten = beaten or mirror.gone_race(room_dir, g, x) == true end
+        if not beaten then alive[#alive + 1] = x; if newer(x, top) then top = x end end
+      end
+      if not top then for _, g in ipairs(gones) do if newer(g, top) then top = g end end; return top end
+      newest, all = top, alive
+    end
+  end
   if newest.obj ~= "item" or newest.gone or not newest.base_ev then return newest end
   local behind, todo = {}, { newest } -- (what the newest builds on, walked once: two walks per past change froze a long history. Review, 0.58.47)
   while #todo > 0 and #todo < 2000 do

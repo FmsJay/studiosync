@@ -1305,6 +1305,10 @@ function sync.receive(proj, cfg, song, room, can)
   end
   -- (but a change to an item made apart from the newest one isn't older news: the two are merged, mirror.receive, as every computer does)
   local function apart(x, w) -- (true, false, or nil while a change between hasn't arrived: then it isn't counted as done either)
+    -- (an item's deletion that beats the newer edit made without seeing it isn't older news: it lands, mirror.gone_race. Counted done, a
+    -- delete-all raced by tempo re-times never landed where all of them came in one pass. Cross test, James, rt)
+    local race = w and require("mirror").gone_race(sync.room_dir(cfg, song, room), x, w)
+    if race == true then return true elseif race == "wait" then return nil end
     if not (x.obj == "item" and w and not x.gone and not w.gone and x.base_ev and w.base_ev) then return false end
     return require("mirror").apart(sync.room_dir(cfg, song, room), x, w)
   end
