@@ -867,3 +867,8 @@ Problems found, not fixed (risky or a behaviour change; for James to pick):
   the studio's update key: used" and refuses unsigned code. With the Mac cut off from the desktop and laptop in Syncthing, a new signed build
   reached the cloud copy in ~25 s, and the Mac logged "StudioSync 0.59.49.23 came from the Google Drive copy into the studio's folder" 159 s
   after the deploy, then ran it. No conflict copies once Syncthing was resumed; the Mac's folder idle with nothing needed.
+- **Timings (rt_perf.lua, 0.59.49.24, the small Cross Test song, idle):** Live sync tick median 0.7 ms desktop / 1.5 ms laptop / 3.4 ms Mac
+  (p95 1.9 / 14.4 / 6.3 ms); pass median 11 / 13 / 2.6 ms. A big session is the next thing to measure.
+- **LinuxBox joined Smiley Studios** (James, 2026-11-19): extension 1.0.12 installed in the VM's portable REAPER, joined with the owner's
+  join code (services.join_band), let in from the desktop; the signed 0.59.49.24 code arrived first. No Tailscale on the VM yet, so no direct
+  link there (Syncthing over the LAN): installing Tailscale adds a device to James's tailnet, his call.
