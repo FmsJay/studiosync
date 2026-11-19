@@ -23,7 +23,13 @@ reaper = setmetatable({
   time_precise = function() return clock end,
   EnumProjects = function() return nil end,
   GetPlayStateEx = function() return 0 end,
-  ValidatePtr2 = function() return true end,
+  ValidatePtr2 = function(p, x, kind)
+    if kind ~= "MediaTrack*" then return true end
+    if x == P(p).master then return true end
+    for _, tr in ipairs(P(p).tracks) do if tr == x then return true end end
+    return false
+  end,
+  GetMasterTrack = function(p) P(p).master = P(p).master or { name = "MASTER", items = {}, proj = p, guid = "{m" .. tostring(p) .. "}" }; return P(p).master end,
   GetSetMediaItemInfo_String = ext_of,
   GetSetMediaTrackInfo_String = function(tr, k, v, set) if k == "P_NAME" then if set then tr.name = v end; return true, tr.name end; return ext_of(tr, k, v, set) end,
   GetTrackName = function(tr) return true, tr.name end,
@@ -50,7 +56,8 @@ local proxy = setmetatable({}, { __index = band })
 proxy.read_json = function(path) local v = files[path]; if type(v) == "table" then local c = {}; for k, x in pairs(v) do c[k] = x end; return c end end
 proxy.listing = function() return {} end
 proxy.write_json = function(path, v) files[path] = v end
-proxy.log = function() end
+local logged = {}
+proxy.log = function(t) logged[#logged + 1] = t end
 proxy.capture_tempo, proxy.capture_markers = function() return {} end, function() return {} end
 package.loaded.band = proxy
 local mirror = require("mirror")
@@ -138,6 +145,39 @@ check("Mac, which re-timed it", "Mac", true, EC, { GT, GI, EB })
 check("Bo, which re-timed it", "Bo", true, EB, { GT, GI, EC })
 check("Al, which deleted it", "Al", false, nil, { EC, EB })
 
+-- the live run's orders by name (all in the permutations above too): on the Mac, the track's deletion, then Bo's re-time on the deleted track,
+-- then the item's deletion; on the laptop, its re-time merged with the Mac's ("both changes are kept"), then the track and item deletions
+local function run(user, item_ev, order)
+  local p = start(user, true, item_ev)
+  for _, e in ipairs(order) do mirror.receive(p, e, MEDIA, false, user) end
+  return p
+end
+assert(shape(run("Mac", EC, { GT, EB, GI })) == WANT, "Mac: track deleted, Bo's edit, item deleted")
+do
+  local p = start("Bo", true, EB)
+  mirror.receive(p, EC, MEDIA, false, "Bo")
+  local _, _, kev = mirror.known(p, I)
+  assert(kev == mirror.merge_id(EB.id, EC.id) and mirror.just_made_here(p, I) and mirror.only_retimed(p, I, R), "Bo holds the merge, its own, and a re-time only")
+  for _, e in ipairs({ GT, GI }) do mirror.receive(p, e, MEDIA, false, "Bo") end
+  assert(shape(p) == WANT, "Bo: merged re-times, then the deletions: " .. shape(p))
+end
+
+-- the tempo map that came with the delete-all stays: deleting the first track isn't a file opened again, so the timeline's "opened behind the song"
+-- look (which takes session.json's tempo, still the old one while Syncthing brings the new) doesn't run again. Live run 20261119-174839Z: B and
+-- C both had 130 back after A's 120, and step 1 was never seen. A file opened again in the same tab (a new master track) still gets the look.
+do
+  local p = start("Bo", true, V1)
+  local w = { proj = p, objs = {}, sync = sync }
+  sync.timeline_looked[p] = true
+  mirror.W.order(w)
+  table.remove(P(p).tracks, 1) -- (the band's delete-all landed)
+  mirror.W.order(w)
+  assert(sync.timeline_looked[p] == true, "a deleted first track: no second 'behind the song' look")
+  P(p).master = nil -- (the file opened again: a new master track)
+  mirror.W.order(w)
+  assert(sync.timeline_looked[p] == nil, "a file opened again: looked at again")
+end
+
 -- a real edit of yours just sent (not a re-time) still goes to "(yours, not sent)" when the track's deletion didn't see it
 do
   local MINE = ev({ id = "Mac-20261119-172558Z-00002-0001", obj = "item", oid = I, track = T, rev = 5, base = 4, base_ev = V1.id, state = OLD:gsub("NAME \"d\"", "NAME \"take 2\""), user = "Mac", hlc = H0 + 130 })
@@ -155,5 +195,60 @@ do
   sync.receive(p, cfg, "S", "main", function() return true end)
   proxy.listing = function() return {} end
   assert(shape(p) == WANT, "one pass: " .. shape(p))
+end
+
+-- the log: an edit dropped on a deleted track isn't "<who>: changed an item on X" (the Mac's log said Bo's re-times landed; they never did)
+do
+  local p = start("Xa", true, V1)
+  local list = { GT.id .. ".json", EB.id .. ".json" }
+  proxy.listing = function(d) if d == R .. "/events" then return list end; return {} end
+  logged = {}
+  sync.receive(p, cfg, "S", "main", function() return true end)
+  proxy.listing = function() return {} end
+  local text = table.concat(logged, "\n")
+  assert(text:find("Al: deleted a track on Drums", 1, true) and not text:find("Bo: changed", 1, true), "only what landed is logged:\n" .. text)
+end
+
+-- the timeline's "opened behind the song" look against session.json, which Syncthing brings seconds after the direct link brought the map
+do
+  local tempo
+  local real = { capture_tempo = proxy.capture_tempo, session_path = proxy.session_path }
+  proxy.capture_tempo = function() return tempo end
+  proxy.apply_tempo = function(_, t) tempo = t end
+  proxy.apply_markers, proxy.apply_project, proxy.capture_project = function() end, function() end, function() return {} end
+  proxy.session_path = function() return "SESSION" end
+  local real_resnap, real_follow, real_waits = sync.resnap, sync.audio_follow_tempo, sync.timeline_waits
+  sync.resnap, sync.audio_follow_tempo, sync.timeline_waits = function() end, function() end, function() return false end
+  local T130, T120 = { { time = 0, bpm = 130, num = 4, denom = 4, linear = false } }, { { time = 0, bpm = 120, num = 4, denom = 4, linear = false } }
+  local A1, A2 = "2026-11-19T17:30:00ZJames-A1", "2026-11-19T17:49:17ZJames-A2"
+  local function bpm() return tempo[1].bpm end
+  local function opened(p, t, newest, session) -- (a project as it was saved, and the session.json this computer has)
+    tempo = t
+    reaper.SetProjExtState(p, sync.NEWEST, "timeline", newest)
+    reaper.SetProjExtState(p, band.SECTION, "timeline", sync.timeline_sig(p))
+    files.SESSION = session
+    sync.timeline_looked[p] = nil
+    if sync.timeline_live then sync.timeline_live[p] = nil end
+  end
+  -- open with everything current, then A's 120 lands over the link while session.json still says 130 (stamped, or written before rt)
+  for _, stamp in ipairs({ A1, false }) do
+    opened("PT", T130, A1, { tempo = T130, markers = {}, timeline_order = stamp or nil })
+    sync.watch_timeline("PT", cfg, "S", "main", function() return false end)
+    assert(sync.apply("PT", { type = "timeline", tempo = T120, markers = {}, project = {} }, R) and bpm() == 120, "the map landed")
+    reaper.SetProjExtState("PT", sync.NEWEST, "timeline", A2) -- (sync.receive's stamp)
+    sync.timeline_looked.PT = nil -- (as any later first look: the delete-all, before W.order's master-track check)
+    sync.watch_timeline("PT", cfg, "S", "main", function() return false end)
+    assert(bpm() == 120, "the newer map stays, session.json " .. (stamp and "stamped" or "unstamped") .. " and behind")
+  end
+  -- a real reopen of a save from before the last map, session.json already newer: put back as the studio has it
+  opened("PR", T130, A1, { tempo = T120, markers = {}, timeline_order = A2 })
+  sync.watch_timeline("PR", cfg, "S", "main", function() return false end)
+  assert(bpm() == 120 and select(2, reaper.GetProjExtState("PR", sync.NEWEST, "timeline")) == A2, "reopened behind the song: the studio's map")
+  -- a real reopen of a save that has the newest map, session.json still lagging: left as it is
+  opened("PL", T120, A2, { tempo = T130, markers = {}, timeline_order = A1 })
+  sync.watch_timeline("PL", cfg, "S", "main", function() return false end)
+  assert(bpm() == 120, "reopened with a newer map than session.json: kept")
+  proxy.capture_tempo, proxy.session_path = real.capture_tempo, real.session_path
+  sync.resnap, sync.audio_follow_tempo, sync.timeline_waits = real_resnap, real_follow, real_waits
 end
 print("ok")

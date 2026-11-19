@@ -147,12 +147,13 @@ end
 
 
 -- The driver's new timeline goes into session.json too: refreshing, or a bandmate joining later, gets it.
-function sync.session_timeline(cfg, song, tempo, markers)
+-- `stamp`: the timeline event's order (time..id), so a computer opening the song can tell whether it already holds a newer map. James, rt
+function sync.session_timeline(cfg, song, tempo, markers, stamp_order)
   local sp = band.session_path(cfg, song)
   local s = band.read_json(sp)
   if s then
     s.first_timeline = s.first_timeline or { tempo = s.tempo, markers = s.markers } -- history restores before this need it
-    s.tempo, s.markers = tempo, markers
+    s.tempo, s.markers, s.timeline_order = tempo, markers, stamp_order
     band.write_json(sp, s)
   end
 end
@@ -1031,6 +1032,7 @@ function sync.apply(proj, ev, dir, can, me)
     band.apply_project(proj, ev.project) -- (title, notes, group names, timebase, ruler lanes: from 0.31.1; before the markers that sit in them)
     band.apply_markers(proj, ev.markers or {})
     setext(proj, band.SECTION, "timeline", timeline_sig(proj))
+    sync.timeline_live[proj] = true
     sync.resnap(proj)
     return true
   end
@@ -1051,6 +1053,7 @@ end
 -- the first place, see apply_locks). Hold sync doesn't call this at all: the snapshots keep the last
 -- synced state, so releasing the hold sends the net result once.
 sync.timeline_looked = {}
+sync.timeline_live = {} -- project -> a timeline was applied or made here since it was opened (watch_timeline's first look; W.order clears it)
 -- The song's tempo map and markers: the driver's changes go out, anyone else's are put back (mirror sync carries
 -- everything else; the timeline isn't a track or an item).
 function sync.watch_timeline(proj, cfg, song, room, can)
@@ -1062,7 +1065,13 @@ function sync.watch_timeline(proj, cfg, song, room, can)
   if not sync.timeline_looked[proj] then
     sync.timeline_looked[proj] = true
     local s = room == "main" and seen == sig and band.read_json(band.session_path(cfg, song))
+    -- (only a session.json map newer than the newest this project has applied or made (NEWEST), or, unstamped (written before rt), none
+    -- applied or made in this session: it comes through Syncthing, seconds behind a map over the direct link, and the stale one was put
+    -- back over the new. Cross test step 1, James, rt)
+    local held = ext(proj, sync.NEWEST, "timeline")
+    if s and not (s.timeline_order and tostring(s.timeline_order) > held or not s.timeline_order and not sync.timeline_live[proj]) then s = nil end
     if s and type(s.tempo) == "table" and type(s.markers) == "table" and #s.tempo > 0 then
+      if s.timeline_order then setext(proj, sync.NEWEST, "timeline", tostring(s.timeline_order)) end -- (what it holds now: older maps stay superseded)
       local function plain(x) return band.json_encode(band.json_decode(band.json_encode(x))) end
       local tempo_off = plain(s.tempo) ~= plain(band.capture_tempo(proj))
       if tempo_off or plain(s.markers) ~= plain(band.capture_markers(proj)) then
@@ -1086,8 +1095,10 @@ function sync.watch_timeline(proj, cfg, song, room, can)
     if seen ~= "" then
       if can(me, nil, nil) then -- the song's timeline is the driver's
         local tempo, markers = band.capture_tempo(proj), band.capture_markers(proj)
-        sync.post(cfg, song, room, { type = "timeline", tempo = tempo, markers = markers, project = band.capture_project(proj) }, proj) -- (proj: without it no order was set, 0.58.93's fix never applied. Review, 0.58.95)
-        sync.session_timeline(cfg, song, tempo, markers)
+        local tev = { type = "timeline", tempo = tempo, markers = markers, project = band.capture_project(proj) }
+        sync.post(cfg, song, room, tev, proj) -- (proj: without it no order was set, 0.58.93's fix never applied. Review, 0.58.95)
+        sync.timeline_live[proj] = true
+        sync.session_timeline(cfg, song, tempo, markers, order(tev))
         local before = band.json_decode(seen) or {}
         local now, what = band.json_decode(sig) or {}, {} -- (say what changed: it was "tempo map and markers" whatever it was)
         for i, word in ipairs({ "the tempo map", "the markers", "the project settings (notes, title, timebase, lanes, grid, metronome, render format)" }) do
@@ -1401,7 +1412,9 @@ function sync.receive(proj, cfg, song, room, can)
         stamp(proj, ev)
         if type(ev.note) == "string" and ev.user ~= cfg.user and band.age(ev.time) < 3600 then band.log(ev.note) end -- (a copy's credit, a bus: mirror.watch)
         if reaper.time_precise() - t0 > budget then budget_out, sync.backlog = true, true end
-        local theirs = ev.user ~= cfg.user -- (your own changes come back too: they aren't "from the band")
+        -- (nor one mirror.receive dropped (on a deleted track, beaten by a deletion, older than what's here): "James-Laptop: changed an item on
+        -- XT Drums A" was logged for an edit that never landed. Cross test, James, rt)
+        local theirs = ev.user ~= cfg.user and not (obj and require("mirror").dropped) -- (your own changes come back too: they aren't "from the band")
         if theirs then applied = applied + 1 end
         local what = ({ timeline = "changed the tempo map / markers",
           start = (ev.rec and "record" or "play") .. " together at " .. tostring(ev.pos), stop = "stop together",

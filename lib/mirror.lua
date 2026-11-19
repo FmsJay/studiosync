@@ -2593,8 +2593,11 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
       race = nil
     end
   end
+  -- (mirror.dropped: handled but nothing changed here, so sync.receive doesn't log "<who>: changed an item on X" for it. Cross test, James, rt)
+  mirror.dropped = true
   if race == false then return true end
   if race == nil and not merging and not mirror.wins(proj, ev.oid, ev.rev or 0, order) then return true end
+  mirror.dropped = ev.gone ~= true and on_gone_track(proj, ev)
   -- (on a track the band has deleted since: nothing to apply it to, ever. Waiting for it kept "still to come" above
   -- 0 for good: review, 2026-10-31. Before the unsent check below: a flag
   -- left on a part of a deleted track held this back for good. 0.59.14, review)
@@ -2882,6 +2885,7 @@ mirror.fx_load_knobs = mirror.fx_load_knobs or {} -- chain -> its knobs at the s
 mirror.fx_open_at = {}
 mirror.fx_open_text = mirror.fx_open_text or {} -- chain whose data the hash can't see -> its text when a window of it was first seen open
 mirror.cc_seen = {}
+mirror.master_seen = {} -- project -> its master track at the last look (W.order: a file opened again in the same tab has a new one)
 mirror.fx_quiet = mirror.fx_quiet or {}
 local function fx_open_now(tr)
   if reaper.TrackFX_GetChainVisible(tr) ~= -1 then return true end
@@ -3216,8 +3220,14 @@ function W.order(w)
   do -- (a file opened again in the same tab keeps the tab's address, and Live sync runs on through it: its tracks are all new. Then it's a first look.
     -- Deleting the first track reads the same: a first look does no harm)
     local had = mirror.cc_seen[order_key]
-    if had and not reaper.ValidatePtr2(proj, had, "MediaTrack*") then mirror.order_seen[order_key] = nil; sync.timeline_looked[proj] = nil end
+    if had and not reaper.ValidatePtr2(proj, had, "MediaTrack*") then mirror.order_seen[order_key] = nil end
     mirror.cc_seen[order_key] = reaper.GetTrack(proj, 0)
+    -- (the timeline's "opened behind the song" look only for a file opened again, told by its new master track, as sync.settled_for does. On a
+    -- deleted first track it ran too, and the band's delete-all with a tempo change, landed over the link before session.json had come through
+    -- Syncthing, had its new tempo put back to the old one on every other computer. Cross test step 1, James, rt)
+    local mhad, master = mirror.master_seen[order_key], reaper.GetMasterTrack(proj)
+    if mhad and not (mhad == master and reaper.ValidatePtr2(proj, mhad, "MediaTrack*")) then sync.timeline_looked[proj], sync.timeline_live[proj] = nil, nil end
+    mirror.master_seen[order_key] = master
   end
   for _, o in ipairs(objs) do if o.kind == "track" then order[#order + 1] = o.oid end end
   order = table.concat(order, ",")
