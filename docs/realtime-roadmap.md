@@ -733,3 +733,18 @@ Track and item colours already travel as edits, and Colour the project recolours
 Plan: a studio "Colour parity" setting (on by default) that keeps the project's colours identical everywhere (overlays become a badge,
 not a recolour), shares the colour-affecting display settings with the studio preferences, fixes each person's colour studio-wide, and
 checks parity in Health.
+
+## Parallel round 1, merged and checked (0.59.49.19, extension 1.0.12, 2026-11-19)
+Seven agents, each in its own worktree and branch (rt-cloud2, rt-linkspeed, rt-webui, rt-health, rt-streamideas, rt-forks, rt-ablink), merged
+into realtime; offline suite `fails 0`; rt_settings/rt_prefs/rt_takes green on desktop, laptop and Mac; cross test PASS (every change
+0.2-0.6 s; the test now starts its tempo steps from the song's start and drops its own "(yours, not sent)" leftovers).
+- **Link speed (1.0.12):** frames in flight per peer. The 20 MB catch-up that took 23 s: 2.85 s ask to placed (~7.4 MB/s); the desktop
+  measured 9.7 MB/s to the laptop, window 26, 55 ms round trip. Health shows each bandmate's speed and path.
+- **Web UI, first slice:** http://127.0.0.1:47281/ shows the song, who's here and the project chat ("live"); a message sent from the page
+  went into the normal chat store and reached the laptop and the Mac. Phone link over Tailscale with the studio's web token: not tried yet.
+- **Health:** Syncthing per studio (state, needs, each bandmate's completion, errors) and disk space here and on bandmates: read right on all 3.
+- **Cloud copy part 2:** end-of-session projects kept to the newest 10 per person and room; the studio's signed update files through the cloud
+  copy (members bring a strictly newer signed version, dated as the cloud's so an owner's newer version wins a Syncthing conflict); a
+  Health hint where there's no cloud copy. Not exercised in REAPER yet.
+- **Streaming ideas, forks and notes, Ableton Link:** merged, offline-tested; their REAPER checks (punch marks, late joiner, producer level,
+  format hint; fork/compare/adopt, versioned notes, client links; Link with a phone app) are next.
