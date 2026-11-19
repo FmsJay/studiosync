@@ -629,3 +629,15 @@ The Drive copy (lib/drive.lua: each room mirrored to a shared cloud folder, any 
 - **Health:** the cloud copy's state per computer (signed in, the shortcut there, last upload, files waiting), as Syncthing's gets its row.
 - Risks: the cloud services' rate limits (Drive's userRateLimitExceeded, seen 2026-10-28), online-only files, a service's own conflict copies;
   a studio without a cloud folder keeps today's behaviour.
+
+### Built and checked in REAPER (0.59.49.14, 2026-11-19)
+- **Sooner passes:** a cloud pass half a minute after changes go out (drive.pass_due; never closer than 30 s apart, else every 3 minutes).
+  A 5 MB recording added on the desktop was in its Drive folder 39 s later (before: up to 3 minutes).
+- **Cloud catch-up:** with the studio's direct link off and the Mac's Syncthing capped (10 KiB/s, LAN limited too), the Mac's catch-up
+  found the file Syncthing still needed in its own Drive copy ("nobody on the link: a cloud pass now") and its pass brought it: the file was
+  in the Mac's studio folder 63 s after the desktop added it (Google's sync to the Mac took ~12 s of that). Syncthing alone: ~8.5 minutes.
+  No conflict copies, Syncthing idle, its temp download tidied, as for the link's.
+- **Health:** "Google Drive copy: up to date, last pass N minutes ago" (green), still copying (grey), last pass failed / no pass lately
+  (yellow). A computer without a cloud copy shows no row.
+- Next: the hub's other jobs in the cloud copy where no hub is online (snapshots and the studio's update files), and members without a cloud
+  folder told what they'd gain from one (the laptop here has none).
