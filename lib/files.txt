@@ -1,4 +1,4 @@
-version 0.59.41
+version 0.59.42
 StudioSync - Autostart.lua	17735
 StudioSync - Claim selected tracks.lua	851
 StudioSync - Draw.lua	27321
@@ -9,7 +9,7 @@ StudioSync - Live sync.lua	76600
 StudioSync - Local mixing.lua	880
 StudioSync - Measure guest delay.lua	4258
 StudioSync - Open session.lua	9134
-StudioSync - Panel.lua	243546
+StudioSync - Panel.lua	244155
 StudioSync - Prepare session.lua	6470
 StudioSync - Publish session.lua	5711
 StudioSync - Radial menu.lua	7815

@@ -2989,10 +2989,18 @@ function F.top_bar()
     local need_s = need - ImGui.CalcTextSize(ctx, "Sync and exit") + ImGui.CalcTextSize(ctx, "Exit")
     if ww >= 600 and room > need_s + 12 then ImGui.SetCursorPosX(ctx, ImGui.GetCursorPosX(ctx) + room - need_s); ImGui.SetCursorPosY(ctx, y0)
     else
-      fold = bar_min
-      local need_f = ImGui.CalcTextSize(ctx, "Feedback") + 28 + ImGui.CalcTextSize(ctx, "Exit") + 28 + (fold and ui.window_more_width() + 8 or 0)
-      if room > need_f + 12 then ImGui.SetCursorPosX(ctx, ImGui.GetCursorPosX(ctx) + room - need_f); ImGui.SetCursorPosY(ctx, y0)
-      else at_row("Feedback") end
+      -- (folded, they fit beside the crumbs: one row. Else they go to a row of their own, all of them where they fit there: a "..." beside
+      -- Feedback and Exit on a row with room to spare hid what could just be shown. James, 2026-11-18)
+      local need_f = ImGui.CalcTextSize(ctx, "Feedback") + 28 + ImGui.CalcTextSize(ctx, "Exit") + 28 + (bar_min and ui.window_more_width() + 8 or 0)
+      if room > need_f + 12 then
+        fold = bar_min
+        ImGui.SetCursorPosX(ctx, ImGui.GetCursorPosX(ctx) + room - need_f); ImGui.SetCursorPosY(ctx, y0)
+      elseif not bar_min then at_row("Feedback") -- (title bar of its own: only Feedback and Exit here)
+      else
+        fold = bar_min and need_s > ww - 32 - 12
+        ImGui.SetCursorPos(ctx, 16, y0 + fh + 6)
+        y0 = y0 + fh + 6
+      end
     end
     require("feedback").button(ctx, ImGui)
     at_row("Exit")
@@ -3285,8 +3293,10 @@ function ui.frame_lobby()
   local docked = ImGui.IsWindowDocked(ctx)
   local room = ImGui.GetContentRegionAvail(ctx)
   local need = ImGui.CalcTextSize(ctx, "Feedback") + 28 + ((docked or native) and (ImGui.CalcTextSize(ctx, "Window") + ImGui.CalcTextSize(ctx, docked and "Undock" or "Dock") + 64 + 68) or 0)
-  local fold = (docked or native) and room <= need -- (as with a project: "..." on this row, not Window and Dock on a row of their own)
-  if fold then need = ImGui.CalcTextSize(ctx, "Feedback") + 28 + ui.window_more_width() + 8 end
+  -- (as with a project: "..." where it keeps them beside the page tabs, or where even a row of their own is too narrow; else all of them)
+  local need_f = ImGui.CalcTextSize(ctx, "Feedback") + 28 + ui.window_more_width() + 8
+  local fold = (docked or native) and room <= need and (room > need_f or need > ImGui.GetWindowSize(ctx) - 32)
+  if fold then need = need_f end
   if room > need then ImGui.SetCursorPosX(ctx, ImGui.GetCursorPosX(ctx) + room - need); ImGui.SetCursorPosY(ctx, y0)
   else ImGui.SetCursorPos(ctx, 16, y0 + fh + 6); y0 = y0 + fh + 6 end
   local function at_row() ImGui.SameLine(ctx, 0, 8); ImGui.SetCursorPosY(ctx, y0) end
