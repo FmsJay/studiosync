@@ -275,3 +275,11 @@ band-named file; the memo turns over only between looks; heal reads only new his
 unapplied and skipped ones retried after an update; Mac-only test bugs fixed (routed_print pattern, lock_refuse run-from). New checks:
 tools/files_check.py (files.txt vs code) and LuaLS gating in tests/run.py.
 
+
+## 0.59.47 (found deploying 0.59.46)
+
+band.lua loaded fresh from a shared folder with changed code (a version arriving before "update ok") ran its code check before it had
+returned, and the check's require("fromfolder") required band again: band.lua loaded itself round and round to Lua's C-stack limit, then
+asked "Use it?" at the deepest level (the Mac hung behind the box; the laptop asked twice), and the 0.59.32 "studio updates through its
+folder" check never answered. band.lua now registers itself before the check and unregisters on a refusal. tests/test_0_59_47.lua loads
+band.lua for real from a temp shared folder (fails on 0.59.46). Release flow: "update ok" is now set on each computer before the files go out.

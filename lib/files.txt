@@ -1,4 +1,4 @@
-version 0.59.46
+version 0.59.47
 StudioSync - Autostart.lua	22491	ad487aa3fbed749d
 StudioSync - Claim selected tracks.lua	851	7b9f063bd6e689a2
 StudioSync - Draw.lua	27617	72c720e56062ea11
@@ -25,7 +25,7 @@ StudioSync - Update.lua	2302	d22ef1ef740b1135
 lib/access.lua	7452	9e885e14273679ff
 lib/alerts.lua	3960	c9b2975c1f203b75
 lib/api.lua	7029	201744ad346a5c79
-lib/band.lua	97405	e01b353bcc6ec6f7
+lib/band.lua	97800	b9b9b766e780195b
 lib/bgrender.lua	37524	6b8dd213dcbf1812
 lib/callapps.lua	6648	9a148a7f91a7170f
 lib/callwin.lua	8369	1509131c7b1c2426

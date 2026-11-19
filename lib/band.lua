@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.59.46", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.59.47", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -1627,7 +1627,13 @@ end
 -- (run from a shared folder: only the code you said yes to loads from here on. Review, 0.59.14)
 do
   local code_dir = debug.getinfo(1, "S").source:match("^@(.+)[/\\]lib[/\\]band%.lua$")
-  if code_dir and type(reaper) == "table" and reaper.GetExtState and reaper.EnumerateFiles then band.code_guard(code_dir) end
+  if code_dir and type(reaper) == "table" and reaper.GetExtState and reaper.EnumerateFiles then
+    -- (the check's require("fromfolder") requires band: before this file returned, that loaded band.lua again, round and round to Lua's
+    -- C-stack limit, then asked once per level, and the "studio updates through its folder" check never answered. Hung the Mac, 0.59.47)
+    package.loaded.band = band
+    local ok, e = pcall(band.code_guard, code_dir)
+    if not ok then package.loaded.band = nil; error(e, 0) end
+  end
 end
 
 return band
