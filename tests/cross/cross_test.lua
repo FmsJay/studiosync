@@ -275,5 +275,21 @@ local function tick()
   reaper.defer(tick)
 end
 say("cross test as " .. role .. " (" .. cfg.user .. ") in " .. STUDIO)
+do -- (an earlier run's clear deletes the others' test tracks, and each keeps its own as "(yours, not sent)": StudioSync's safety, but those local
+  -- copies then failed every later run's step 1. Each computer drops its own local test leftovers first: test parts only)
+  local p0
+  for i = 0, 50 do
+    local q = reaper.EnumProjects(i)
+    if not q then break end
+    if select(2, reaper.GetProjExtState(q, "BandSync", "song")) == SONG then p0 = q end
+  end
+  if p0 then
+    for k = reaper.CountTracks(p0) - 1, 0, -1 do
+      local tr = reaper.GetTrack(p0, k)
+      local name = select(2, reaper.GetTrackName(tr))
+      if select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local", "", false)) ~= "" and name:find("(yours, not sent)", 1, true) then reaper.DeleteTrack(tr) end
+    end
+  end
+end
 tick()
 return "started as " .. role
