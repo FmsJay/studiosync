@@ -392,14 +392,16 @@ local function folder_time(dir)
   local ok, status, _, _, modified = pcall(reaper.JS_File_Stat, dir)
   return ok and status == 0 and modified and tostring(modified) or nil
 end
--- (a time to the second: trusted only when it's 2 s older than the listing, so a file landing in that same second isn't missed)
-local function settled(mt)
+-- How many seconds ago a JS_File_Stat time was, or nil when it can't be read. (Shared with sync's claims cache: James, rt)
+function band.file_age(mt)
   local y, mo, d, h, mi, s = tostring(mt):match("(%d+)%D(%d+)%D(%d+)%D+(%d+)%D(%d+)%D(%d+)")
   -- (in a pcall: a time os.time can't represent (1601, a zeroed FILETIME) raised inside every events listing. Round 3 review, 0.59.48)
-  if not y then return false end
+  if not y then return nil end
   local ok, t = pcall(os.time, { year = tonumber(y), month = tonumber(mo), day = tonumber(d), hour = tonumber(h), min = tonumber(mi), sec = tonumber(s) })
-  return ok and t ~= nil and os.time() - t >= 2
+  return ok and t and os.time() - t or nil
 end
+-- (a time to the second: trusted only when it's 2 s older than the listing, so a file landing in that same second isn't missed)
+local function settled(mt) return (band.file_age(mt) or -1) >= 2 end
 function band.raw_listing(dir, fresh)
   local now, c = reaper.time_precise(), listed[dir]
   if not fresh and c and now - c.at > band.LISTING_SECS and now - c.at <= band.LISTING_KEEP and c.mt then

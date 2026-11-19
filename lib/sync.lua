@@ -422,6 +422,38 @@ function sync.set_mode(cfg, song, room, mode, user)
   band.write_json(sync.room_dir(cfg, song, room) .. "/mode.json", { mode = mode, by = user, time = os.date("!%Y-%m-%dT%H:%M:%SZ") })
 end
 
+-- Every claims file in `dir` -> { { f, c } } in name order, c as band.read_json gives it (nil when unreadable). Asked each pass and each
+-- second by the web UI, so a file is read again only when its size or modified time moves (js_ReaScriptAPI's JS_File_Stat; without it,
+-- read every time as before). Modified times are to the second, and Syncthing copies a bandmate's: two same-size writes in one second
+-- would look alike, so a file is trusted from cache only once it was read CLAIMS_SETTLE s after its time. The listing is band.listing's
+-- (a fraction of a second, longer while the folder's time stands still). The tables are shared: never change them. (James, rt)
+sync.CLAIMS_SETTLE = 60
+local claims_cache = {} -- dir -> f -> { key, c, settled }
+function sync.claims_files(dir)
+  local stat = reaper and reaper.JS_File_Stat
+  local names = band.listing and band.listing(dir, ".json", true) or band.files(dir, ".json")
+  local was, now_c, out = claims_cache[dir] or {}, {}, {}
+  for _, f in ipairs(names) do
+    local path, c = dir .. "/" .. f, nil
+    if stat then
+      local ok, status, size, _, mt = pcall(stat, path)
+      local key = ok and status == 0 and tostring(size) .. "|" .. tostring(mt) or nil
+      local e = was[f]
+      if key and e and e.key == key and e.settled then c = e.c
+      else
+        c = band.read_json(path)
+        -- (a read that failed, the file busy mid-replace, isn't kept: it would hide that claim until the file changed again)
+        e = key and c and { key = key, c = c, settled = (band.file_age(mt) or -1) >= sync.CLAIMS_SETTLE } or nil
+      end
+      now_c[f] = e
+    else
+      c = band.read_json(path)
+    end
+    out[#out + 1] = { f, c }
+  end
+  claims_cache[dir] = now_c -- (only what's listed now: a removed file's entry goes with it)
+  return out
+end
 function sync.authority(cfg, song, room, s)
   local driver = sync.driver(cfg, song, room, s)
   local mode = sync.mode(cfg, song, room)
@@ -430,8 +462,8 @@ function sync.authority(cfg, song, room, s)
   local dir = sync.room_dir(cfg, song, room) .. "/claims"
   local released = sync.released(cfg, song, room) -- (claims the driver let go of for someone who was away)
   local list, live, from_file = {}, sync.live_claims[song .. "/" .. room] or {}, {}
-  for _, f in ipairs(band.files(dir, ".json")) do
-    local c = band.read_json(dir .. "/" .. f)
+  for _, fc in ipairs(sync.claims_files(dir)) do
+    local f, c = fc[1], fc[2]
     -- (a claims file speaks only for the person it's named for, or it's one an admin gave: claims/<anything>.json saying user "James"
     -- spoke for James. Review, 0.58.53)
     if c and type(c.user) == "string" and not (f:find("^given%-") or (c.user:gsub("[^%w%-_ ]", "")) .. ".json" == f) then c = nil end
