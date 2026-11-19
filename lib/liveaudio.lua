@@ -1,7 +1,8 @@
 -- Live audio over the link (docs/realtime-roadmap.md step 4: StudioSync's own, replacing SonoBus in time). The extension does the work
 -- (extension/rtaudio.cpp: AOO + Opus over Tailscale UDP on the link's port, a jitter buffer per bandmate, mixed into this computer's
 -- first output pair, never recorded); this file decides when it runs and shows it:
---  - the studio's setting (band.json "live_audio", owner and admins: off unless they turn it on), Settings > Studio under the direct link;
+--  - the studio's setting (band.json "live_audio", owner and admins: on unless they turn it off, James: the point of this scope),
+--    Settings > Studio under the direct link;
 --  - this computer's own choice (ExtState, kept): which inputs it sends, mono or stereo, and Opus's rate;
 --  - Live sync's tick starts it with the studio secret (the direct link's key) for the bandmates here (direct.peers), and stops it when the
 --    studio turns it off; the song in front drives it (one engine per computer), and the tab that started it stops it when its Live sync ends;
@@ -165,7 +166,7 @@ function liveaudio.studio_ui(ctx, ImGui, cfg, may)
   local on = liveaudio.enabled(cfg.root)
   ImGui.TextDisabled(ctx, on and "On: while Live sync runs, each computer sends its chosen inputs to the others here over Tailscale (Opus, about " ..
     "40 ms plus the network) and hears theirs out of its first output pair. Never recorded. Chat > Call has each person's volume and mute." or
-    "Off: StudioSync's own live audio isn't used (SonoBus carries Real time mode).")
+    "Off for this studio: StudioSync's own live audio isn't used (SonoBus carries Real time mode). It's on unless turned off here.")
   if may then
     local ch, v = ImGui.Checkbox(ctx, "Live audio##studiolive", on)
     if ch then

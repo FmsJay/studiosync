@@ -196,9 +196,10 @@ function groups.set_folder_updates(root, on) save(root, function(j) j.updates = 
 function groups.set_print_hops(root, v) save(root, function(j) j.print_hops = v end) end
 -- The direct link for the studio (lib/direct.lua): on unless band.json says false, so only "off" is written. Owner and admins. (James, 0.60.0-rt)
 function groups.set_direct(root, on) save(root, function(j) if on then j.direct = nil else j.direct = false end end) end
--- Live audio over the link for the studio (lib/liveaudio.lua): off unless band.json says true. Owner and admins. (James, rt)
-function groups.live_audio(root) return groups.trusted(root).live_audio == true end
-function groups.set_live_audio(root, on) save(root, function(j) j.live_audio = on and true or nil end) end
+-- Live audio over the link for the studio (lib/liveaudio.lua): on unless band.json says false, so only "off" is written, as the direct link.
+-- Owner and admins. (James, 2026-11-19: "realtime audio should probably be the default mode ... shouldn't even need to turn it on". rt)
+function groups.live_audio(root) return groups.trusted(root).live_audio ~= false end
+function groups.set_live_audio(root, on) save(root, function(j) if on then j.live_audio = nil else j.live_audio = false end end) end
 -- Takes become lanes for the studio (lib/prints.lua takes_to_lanes): on unless band.json says false, so only "off" is written. Owner and
 -- admins. (James, rt)
 function groups.takes_to_lanes(root) return groups.trusted(root).takes_to_lanes ~= false end

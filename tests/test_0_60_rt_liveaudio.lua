@@ -25,7 +25,7 @@ local hidden_out -- what the background netsh check last said
 package.loaded.services = { run_hidden = function(name) return name == "direct-fw" and hidden_out or nil end, TMP = "T" }
 local trusted, secret = {}, "s3cret"
 package.loaded.groups = { trusted = function() return trusted end, tailnet = function() return { name = "x", suffix = "tail99.ts.net" } end,
-  sonobus_secret = function() return secret end, live_audio = function() return trusted.live_audio == true end }
+  sonobus_secret = function() return secret end, live_audio = function() return trusted.live_audio ~= false end }
 local direct = require("direct")
 local peers_here = { "bee-laptop.tail99.ts.net:47281", "mac.tail99.ts.net:47281" }
 direct.peers = function() return peers_here, {} end
@@ -85,10 +85,12 @@ end
 local b = { song = "Nostalgia", room = "main" }
 local function tick() clock = clock + 1; la.tick(cfg, b, "P1") end
 
+trusted.live_audio = false
 tick()
-assert(#E.calls == 0 and la.S.why == "off for this studio", "off by default: nothing starts")
+assert(#E.calls == 0 and la.S.why == "off for this studio", "the studio turned it off: nothing starts")
 assert(la.health_row(cfg) == nil, "and Health says nothing")
-trusted.live_audio = true
+trusted.live_audio = nil -- (James: on by default, nothing to turn on)
+assert(la.enabled(cfg.root), "a studio that never set it: on")
 hidden_out = tcp_only
 tick()
 assert(#E.calls == 0 and la.S.why:find("firewall", 1, true), "on, but Windows has only the TCP rule: not started (Windows' own box would come up)")
