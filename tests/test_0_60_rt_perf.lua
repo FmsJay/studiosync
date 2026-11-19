@@ -8,6 +8,7 @@ reaper = setmetatable({
   GetExtState = function(s, k) return gext[s .. "\0" .. k] or "" end,
   SetExtState = function(s, k, v) gext[s .. "\0" .. k] = v end,
   GetExePath = function() return "C:/REAPER" end,
+  GetResourcePath = function() return "C:/res" end,
 }, { __index = function(_, k) if not tostring(k):find("^StudioSync_") then return function() end end end })
 local band = require("band")
 
@@ -22,5 +23,57 @@ assert(s.n == 100 and s.med == 50 and s.p95 == 95 and s.max == 100, string.forma
 assert(xs[1] ~= 0.001 or xs[2] ~= 0.002, "the caller's list isn't sorted in place")
 s = R.summary({ 0.0123 })
 assert(s.n == 1 and s.med == 12.3 and s.p95 == 12.3 and s.max == 12.3, "one tick")
+
+-- ---- the direct link's JSON answers, decoded once while they read the same (lib/direct.lua) ----
+local function peer_json(name, rtt) return string.format('"%s.tail99.ts.net:47281":{"ok":true,"ms":12,"error":"","at":1795100000,"sent":123456,' ..
+  '"rate":4100000,"rate_at":1795100000,"rtt_ms":%d,"window":8}', name, rtt) end
+local status_raw = '{"listening":true,"bind":"0.0.0.0:47281","error":"","received":42,"rejected":0,"last_reject":"","peers":{' ..
+  table.concat({ peer_json("bo-pc", 18), peer_json("chilis-mac", 44), peer_json("james-laptop", 9) }, ",") .. '}}'
+local clock_raw = '{"peers":{"bo-pc.tail99.ts.net:47281":{"offset_ms":3.5,"rtt_ms":18,"samples":16,"error":""}}}'
+reaper.StudioSync_DirectStart = function() return 1 end
+reaper.StudioSync_DirectSend = function() return 1 end
+reaper.StudioSync_DirectStatus = function() return status_raw end
+reaper.StudioSync_DirectMsg = function() return 1 end
+reaper.StudioSync_DirectStream = function() return 1 end
+reaper.StudioSync_DirectClock = function() return clock_raw end
+reaper.StudioSync_DirectPeers = function() end
+reaper.StudioSync_DirectNow = function() return 1795100000 end
+package.loaded.services = { run_hidden = function() return "" end, tailscale_exe = function() return nil end, my_device_id = function() return "MMMMMMMMMMMM" end,
+  is_device_id = function(id) return type(id) == "string" and #id > 10 end }
+package.loaded.groups = { trusted = function() return {} end, tailnet = function() return { name = "x", suffix = "tail99.ts.net" } end, sonobus_secret = function() return "s" end }
+local direct = require("direct")
+local real_decode, decodes = band.json_decode, 0
+band.json_decode = function(s) if s == status_raw or s == clock_raw then decodes = decodes + 1 end; return real_decode(s) end -- (the link's answers only)
+local cfg = { root = "S", user = "James" }
+local s1, s2 = direct.status(cfg), direct.status(cfg)
+assert(decodes == 1, "the same status twice: decoded once (" .. decodes .. ")")
+assert(#s1.peers == 3 and #s2.peers == 3 and s1.peers[1].peer == s2.peers[1].peer and s2.received == 42, "and the same answer")
+status_raw = status_raw:gsub('"rtt_ms":44', '"rtt_ms":45')
+local s3 = direct.status(cfg)
+assert(decodes == 2 and s3.peers[2].rtt_ms == 45, "a changed status: decoded again, and read as it is now")
+-- the clock: keep_clock (each tick) and every shared_now (Link, streams, cues) share one decode, and "direct reference" is written on change
+local writes, real_set = 0, reaper.SetExtState
+reaper.SetExtState = function(sec, k, v, p) if k == "direct reference" then writes = writes + 1 end; return real_set(sec, k, v, p) end
+decodes = 0
+assert(direct.keep_clock(cfg, "Song", "main") == true, "the link keeps the clock")
+for _ = 1, 50 do
+  local now, dev, err, peer = direct.shared_now()
+  assert(now == 1795100000 and dev == "MMMMMMMMMMMM" and err == 0 and peer == nil, "this computer is the reference (nobody else's device known)")
+end
+assert(decodes == 1, "the clock decoded once for keep_clock and 50 shared_now (" .. decodes .. ")")
+assert(writes == 1 and gext["BandSync\0direct reference"] == "\tMMMMMMMMMMMM", "\"direct reference\" written once, not 51 times (" .. writes .. ")")
+clock_raw = clock_raw:gsub('"offset_ms":3.5', '"offset_ms":4.0')
+direct.shared_now()
+assert(decodes == 2 and writes == 1, "a new estimate: decoded again; the same reference: not written again")
+reaper.SetExtState, band.json_decode = real_set, real_decode
+-- timed: decoding this status (3 peers, ~600 bytes) against direct.status reading the decoded one (the rest of direct.status included)
+local N = 2000
+local t0 = os.clock()
+for _ = 1, N do band.json_decode(status_raw) end
+local t_decode = (os.clock() - t0) / N * 1e6
+t0 = os.clock()
+for _ = 1, N do direct.status(cfg) end
+local t_status = (os.clock() - t0) / N * 1e6
+print(string.format("timing: decoding the status %.1f us; direct.status with it decoded once %.1f us", t_decode, t_status))
 
 print("ok rt perf")

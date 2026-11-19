@@ -6,6 +6,19 @@
 -- mandatory: a missing or older one is a red Health row, direct.health_rows. James, 0.60.0-rt)
 local band = require("band")
 local direct = { PORT = 47281, KEEP_SECS = 86400, RULE = "StudioSync direct link", START_EVERY = 10, PRUNE_EVERY = 10 }
+-- The extension's JSON answers (StudioSync_DirectClock, DirectStatus, DirectStreams), decoded once while they read the same: the clock was
+-- decoded every tick by keep_clock and again by every shared_now (Ableton Link's ten looks a second, each streamed take, each cue), the
+-- status and streams by several callers a tick. Shared: never change what comes back. (James, rt: efficiency pass)
+local decoded = {}
+local function decode(name, raw)
+  local c = decoded[name]
+  if c and c.raw == raw then return c.v end
+  local v = band.json_decode(raw) or {}
+  decoded[name] = { raw = raw, v = v }
+  return v
+end
+local function clock_json() return decode("clock", reaper.StudioSync_DirectClock()) end
+local function status_json() return decode("status", reaper.StudioSync_DirectStatus()) end
 
 -- ---- pure ----------------------------------------------------------------------------------------------------------------------------
 -- A plain folder name, as the extension's rule (direct.cpp seg_ok).
@@ -313,7 +326,7 @@ end
 function direct.status(cfg)
   local s = { available = direct.available(), enabled = cfg and direct.enabled(cfg.root) or false, firewall = direct.firewall_ok(), peers = {} }
   if s.available then
-    local j = band.json_decode(reaper.StudioSync_DirectStatus()) or {}
+    local j = status_json()
     for _, k in ipairs({ "listening", "bind", "error", "received", "rejected", "last_reject" }) do s[k] = j[k] end
     local ok_paths, paths = pcall(direct.paths)
     for peer, p in pairs(type(j.peers) == "table" and j.peers or {}) do
@@ -424,7 +437,7 @@ function direct.keep_clock(cfg, song, room)
   -- (the reference, published for the other scripts here (the panel, a test) at every tick: it was only written when Live sync itself asked
   -- the time, so every other script took its own computer as the reference: the laptop's times 365 ms off the desktop's in the first
   -- three-computer run. One non-persisted ExtState, written only when it changes. James, rt)
-  local j = band.json_decode(reaper.StudioSync_DirectClock()) or {}
+  local j = clock_json()
   local peer, dev = direct.clock_reference(require("services").my_device_id(), clock_view.dev_of, j.peers)
   local v = (peer or "") .. "\t" .. tostring(dev or "")
   if v ~= clock_view.published then reaper.SetExtState(band.SECTION, "direct reference", v, false); clock_view.published = v end
@@ -449,12 +462,14 @@ end
 -- James, 0.60.0-rt)
 function direct.shared_now()
   if not direct.live_available() then return nil end
-  local j = band.json_decode(reaper.StudioSync_DirectClock()) or {}
+  local j = clock_json()
   local now, me = reaper.StudioSync_DirectNow(), require("services").my_device_id()
   local peer, dev
   if clock_view.key then
     peer, dev = direct.clock_reference(me, clock_view.dev_of, j.peers)
-    reaper.SetExtState(band.SECTION, "direct reference", (peer or "") .. "\t" .. tostring(dev or ""), false)
+    -- (written when it changes, as keep_clock does: every call rewrote it, ten times a second with Ableton Link on. James, rt: efficiency pass)
+    local v = (peer or "") .. "\t" .. tostring(dev or "")
+    if v ~= clock_view.published then reaper.SetExtState(band.SECTION, "direct reference", v, false); clock_view.published = v end
   else
     local p, d = reaper.GetExtState(band.SECTION, "direct reference"):match("^([^\t]*)\t(.*)$")
     if not p then return nil end -- (Live sync hasn't picked one here: unknown, not "this computer". James, rt)
@@ -505,7 +520,7 @@ function direct.reaches_all(cfg, song, room)
   reach_at, reach_ok = now, false
   if not direct.live_available() then return false end
   local peers = direct.peers(cfg, song, room)
-  local j = band.json_decode(reaper.StudioSync_DirectStatus()) or {}
+  local j = status_json()
   local st = type(j.peers) == "table" and j.peers or {}
   reach_ok = #peers > 0
   for _, p in ipairs(peers) do reach_ok = reach_ok and type(st[p]) == "table" and st[p].ok == true end
@@ -562,7 +577,7 @@ end
 -- The shared clock for Health: ok (an estimate to go by), text.
 function direct.clock_line()
   if not direct.live_available() then return false, "Shared clock: needs StudioSync's extension " .. direct.WANT .. "." end
-  local j = band.json_decode(reaper.StudioSync_DirectClock()) or {}
+  local j = clock_json()
   local _, dev, err, peer = direct.shared_now()
   local each = {}
   for p, e in pairs(type(j.peers) == "table" and j.peers or {}) do
@@ -670,7 +685,7 @@ end
 function direct.streams(cfg)
   local s = { out = {}, inn = {} }
   if not direct.live_available() then return s end
-  local id, j = band.info(cfg.root).id, band.json_decode(reaper.StudioSync_DirectStreams()) or {}
+  local id, j = band.info(cfg.root).id, decode("streams", reaper.StudioSync_DirectStreams())
   for _, o in ipairs(type(j.out) == "table" and j.out or {}) do if o.studio == id then s.out[#s.out + 1] = o end end
   for _, i in ipairs(type(j["in"]) == "table" and j["in"] or {}) do if i.studio == id then s.inn[#s.inn + 1] = i end end
   return s
