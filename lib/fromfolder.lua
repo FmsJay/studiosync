@@ -185,7 +185,7 @@ function ff.update_key_path()
   return home and home ~= "" and (band.norm(home) .. "/.studiosync/update-key") or nil
 end
 local SIGNED_PREFIX = "StudioSync files.txt v1\n" -- (extension/sign.h SIGN_FILES_PREFIX)
-local SHIPPED = { "lib/mac", "lib/ninjam", "lib/listen", "lib/toolbar_icons" } -- (tools/sign_release.py shipped_files)
+local SHIPPED = { "lib/mac", "lib/ninjam", "lib/listen", "lib/toolbar_icons", "lib/webui" } -- (tools/sign_release.py shipped_files)
 local EXTENSIONS = { "reaper_studiosync-x64.dll", "reaper_studiosync.dylib", "reaper_studiosync-x86_64.so", "reaper_studiosync-aarch64.so" }
 local function all_files(dir, rel, out)
   for _, f in ipairs(band.files(dir .. "/" .. rel)) do if f:sub(1, 1) ~= "." then out[#out + 1] = rel .. "/" .. f end end

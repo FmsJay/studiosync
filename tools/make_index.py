@@ -70,6 +70,9 @@ for f in sorted((ROOT / "lib" / "listen").glob("*")):  # the listening page's li
     rel = f"lib/listen/{f.name}"
     plat = {"listen_server.ps1": {"platform": "windows"}}.get(f.name, {})  # (the Perl one for Macs and Linux: harmless on Windows)
     ET.SubElement(ver, "source", file=rel, **plat).text = url(rel)
+for f in sorted((ROOT / "lib" / "webui").glob("*")):  # the web UI's pages, served by the extension (lib/webui.lua, extension/webui.cpp)
+    rel = f"lib/webui/{f.name}"
+    ET.SubElement(ver, "source", file=rel).text = url(rel)
 
 # Extensions > StudioSync and View > StudioSync (extension/reaper_menu.cpp): a package of its own, with a version of its own that goes up
 # only when the extension changes (EXT_VERSION), so StudioSync's updates don't try to replace a file REAPER has loaded. Each platform gets

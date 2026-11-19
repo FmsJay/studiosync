@@ -300,6 +300,50 @@ Like Helgobox's move away from REAPER's own widgets, now that the extension is m
 - Risks: a large rewrite; WebKitGTK availability on Linux (and in Flatpak REAPER); keeping keyboard focus and
   REAPER's shortcuts working with a web view docked.
 
+### First slice built (rt-webui, 2026-11-19: in a browser, no downloads; not run in REAPER yet)
+- **Server:** `extension/webui.cpp/.h`, in the same DLL/dylib/so. Two ways in, one set of pages:
+  - **This computer:** its own listener on `127.0.0.1:47281` (the link's port number; loopback needs no firewall rule). No token, but
+    the Host header must be `127.0.0.1:<port>` or `localhost:<port>` (a site pointing its own name at 127.0.0.1 gets nothing).
+  - **The studio's devices (a phone on Tailscale):** the direct link's listener (Tailscale address, port 47281) hands any connection
+    whose first bytes are `GET ` or `POST` to the web UI (`direct_set_http_handler`; link frames start `SS`), so the one firewall rule
+    James OK'd covers it. Only while the link listens (rule there, Tailscale up). These need the studio's web token: the first 16 bytes
+    of HMAC-SHA256(studio secret, "StudioSync web UI v1") in hex, given once as `?t=`, then an HttpOnly SameSite=Strict cookie (the
+    answer redirects to the same page without it). A re-keyed studio (someone taken out) gets a new token; no secret, no outside access.
+  - Every POST needs `X-StudioSync: 1` and a matching Origin when one is sent (a form on another site can't). Files only from
+    `lib/webui/` (letters, digits, `.-_/`, no dot-led segment, no Windows device names, known types only); nothing is ever run.
+    Answers carry a CSP allowing only the pages' own files, no-referrer and nosniff; pages put bandmates' text in as text, never HTML.
+  - API: `GET /api/state` (snapshot), `GET /api/events` (Server-Sent Events: the snapshot now and on every change; a comment every
+    15 s), `POST /api/action` (a JSON object, queued for Lua, 64 at most). Snapshot: `{ ver, engine, topics = { presence, chat } }`;
+    `engine` is false once Live sync hasn't asked for 5 s (the pages say "Live sync isn't running").
+  - A thread per connection, 16 at most (an open event stream holds one); stopped and waited for at unload and REAPER's exit.
+- **ReaScript (Lua bridge):** `StudioSync_WebUIStart(folder, secret, port)`, `StudioSync_WebUIPublish(topic, json)`,
+  `StudioSync_WebUIPoll()` (the oldest action, consumed), `StudioSync_WebUIStatus()` (`listening, bind, port, error, token, clients,
+  served, refused`).
+- **Lua:** `lib/webui.lua`; Live sync's only change is `band.try("webui.tick", ...)` after `direct.live_tick`. The tab in front publishes
+  `presence` (you first, then who's here from `presence.peers`: playing, recording, armed tracks, real time / time-sync, on the call;
+  driver and mode, and claims from `sync.authority`: tracks, regions, time spans) every second and the project's chat (`page_chat.read`,
+  the "This project" scope, the newest 100) every 2 s, each only when it changed. A chat send from a page goes through
+  `page_chat.post` (file, link message, phone alert, API event: the same store as the panel's). Bandmates' link chat messages are given
+  to the Chat page's store through Live sync's own handlers (a second reader of the link's messages would steal presence and cues).
+- **Pages:** `lib/webui/index.html`, `style.css`, `app.js`: Here (people, claims) and Chat, mobile-first, light/dark from the system
+  with a toggle, no framework or CDN. Shipped by make_index.py and signed with the rest (`lib/webui` in sign_release.py and
+  fromfolder's SHIPPED).
+- **Panel:** Chat page, **Web UI** (opens `http://127.0.0.1:47281/` in the browser) and **Copy phone link**
+  (`http://<this computer's Tailscale name>:47281/?t=<token>`; says why not when the link isn't listening).
+- **Tests:** `tests/webui_test.cpp` (`tests/build_webui_test.cmd`, and in CI beside direct_test): parsing, the path rule, the token,
+  who gets in, then live on loopback and through the link's port (token, cookie, POST header, actions, state, the event stream, the
+  link's own refusal unharmed). `tests/test_0_60_rt_webui.lua`: lib/webui.lua's pure parts and its tick against a stand-in extension.
+- **Limits for now:** one studio at a time (the tab in front's); chat is the project scope only; the phone acts as this computer's
+  user (whoever has the token is in the studio); the driver comes from driver.json only (not the session's host fallback).
+
+### Web UI: what remains (TODO)
+- **Docking:** a dockable REAPER window hosting WebView2 (Windows), WKWebView (macOS), WebKitGTK (Linux) that opens
+  `http://127.0.0.1:<port>/`: the server is already its message channel, so no second bridge. Needs the WebView2 SDK download: James's
+  OK first. Then keyboard focus and REAPER's shortcuts with the view docked.
+- **Pages, then parity:** scopes and to-dos/links in chat, Health, Play together; the ReaImGui panel stays until each page matches.
+- **Shared DAW view, view-only first** (stage 1 above): tracks, items, markers and cursors from the synced model, follow, play/stop.
+- **Video and screen share** (step 5) over WebRTC inside the view; the Studio browser after it.
+
 ### What the web UI makes possible (James: "keep them coming")
 - **Sharing each other's REAPER.** Screen share of the REAPER window inside the docker, with a live pointer ("look
   here") from whoever's watching. Taking control of someone's REAPER only with their explicit yes for that session,

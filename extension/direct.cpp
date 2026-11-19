@@ -793,10 +793,13 @@ std::string take_frame(const char *f, size_t total, long long t1)
   }
 }
 
-// Whatever has arrived on one connection: each whole frame answered. -> false to close it.
+std::atomic<bool (*)(unsigned long long, const char *, size_t)> g_http{ nullptr }; // (the web UI: direct_set_http_handler. James, rt)
+// Whatever has arrived on one connection: each whole frame answered. -> false to close it (c.s is BAD_SOCK when the web UI took it).
 bool take_conn(Conn &c, long long t_recv)
 {
   for (;;) {
+    auto http = g_http.load();
+    if (http && c.buf.size() >= 4 && http((unsigned long long)c.s, c.buf.data(), c.buf.size())) { c.s = BAD_SOCK; return false; }
     if (c.buf.size() < 12) return true;
     const char *f = c.buf.data();
     const char m = f[2];
@@ -852,7 +855,7 @@ void listen_loop(sock_t ls, bool loopback_ok)
           set_nonblock(c.s, true);
         } else keep = false;
       }
-      if (!keep) { close_sock(c.s); conns.erase(conns.begin() + i); }
+      if (!keep) { if (c.s != BAD_SOCK) close_sock(c.s); conns.erase(conns.begin() + i); }
     }
   }
   for (Conn &c : conns) close_sock(c.s);
@@ -1222,6 +1225,8 @@ void json_str(std::string &o, const std::string &s)
   o += '"';
 }
 } // namespace
+
+void direct_set_http_handler(bool (*fn)(unsigned long long, const char *, size_t)) { g_http = fn; }
 
 #ifdef DIRECT_STANDALONE
 void direct_test_bandwidth(int kbps) { g_listen_kbps = kbps; }
