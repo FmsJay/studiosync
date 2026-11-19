@@ -98,6 +98,7 @@ struct RtLink {
   sock_t s = BAD_SOCK;
   std::thread rx, tx;
   std::atomic<bool> run{ false }, live{ false };
+  std::atomic<bool> overflow{ false }; // (the audio thread saw AOO's send queue full: the send thread resets the source, tx_loop)
   std::atomic<int> in_cb{ 0 };
   aoo::sync::event wake;
   AooSource *src = nullptr;
@@ -445,6 +446,12 @@ void tx_loop(RtLink *l)
     l->wake.wait_for(0.005);
     reconfigure(l);
     if (!l->live.load()) continue;
+    // AOO's source (v2.0-pre4, source.cpp process) reblocks REAPER's blocks into Opus frames through its resampler, and when the
+    // send thread falls behind (a stall of ~60 ms on the macOS CI runner) both the resampler and the queue fill. From then on
+    // process() gives up on the full resampler before moving it into the queue, so nothing is ever sent again: that peer goes silent
+    // for good (C never heard after its secret was fixed, A silent on B). Emptying both, as AOO's own reset does, ends that; the
+    // late audio is lost either way. (James, rt)
+    if (l->overflow.exchange(false)) l->src->reset();
     l->src->send(send_fn, l);
     for (int i = 0; i < l->nslots; ++i) if (l->slots[i]->sink) l->slots[i]->sink->send(send_fn, l);
     std::lock_guard<std::mutex> g(l->stats_mx);
@@ -644,7 +651,9 @@ void rt_capture(RtLink *l, const double *const *in, int nin, int len, double sra
         else std::fill(dst, dst + len, 0.f);
       }
       if (pk > l->in_peak.load(std::memory_order_relaxed)) l->in_peak.store(pk, std::memory_order_relaxed);
-      if (l->src->process(l->inptr, len, aoo_getCurrentNtpTime()) == kAooOk) l->wake.set();
+      const AooError e = l->src->process(l->inptr, len, aoo_getCurrentNtpTime());
+      if (e == kAooErrorOverflow) l->overflow.store(true); // (the send thread unsticks AOO's queue: tx_loop)
+      if (e == kAooOk || e == kAooErrorOverflow) l->wake.set();
     } else l->wake.set(); // (a new sample rate or block size: the send thread sets AOO up for it)
     took(l, t0);
   }
