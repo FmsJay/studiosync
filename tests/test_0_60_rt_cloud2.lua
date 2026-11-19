@@ -180,4 +180,9 @@ put(HERE, "0.60.5"); put(THERE, "0.60.4")
 verified = { [THERE] = true }
 assert(pass() == nil and #copied == 0, "an unsigned copy never goes to the cloud")
 os.remove = real_remove
+-- what a member brings in is dated as the cloud's copy (the owner's newer version then wins a Syncthing conflict)
+local ws = drive.date_like_script({ { "C:/cloud/it's.lua", "D:/st/it's.lua" } }, true)
+assert(ws:find("(Get-Item -LiteralPath 'D:/st/it''s.lua').LastWriteTime = (Get-Item -LiteralPath 'C:/cloud/it''s.lua').LastWriteTime", 1, true), ws)
+local ps = drive.date_like_script({ { "/c/it's.lua", "/s/a b.lua" } }, false)
+assert(ps == "touch -r '/c/it'\\''s.lua' '/s/a b.lua' 2>/dev/null\n", ps)
 print("ok")

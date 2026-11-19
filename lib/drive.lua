@@ -549,8 +549,32 @@ end
 -- flow, which checks it all again before any of it runs (band.update_ok, band.code_guard); "update ok" isn't touched, as a keyed studio's
 -- signature decides, not that. Never an older version over a newer one, and not while Syncthing is still bringing _tools here (it may be
 -- bringing the newer one). Members only read the cloud's copy; only the owner writes it (drive.mine's one-writer rule).
--- shortcut: the copies are dated when they're made, so a version the owner signed and never got to the cloud before going offline can lose a
--- Syncthing conflict to the older signed copy a member brought, once they meet; date the copies as the cloud's (an extension call) if it bites.
+-- What a member brings in is dated as the cloud's copy (drive.date_like): dated now, a version the owner signed and never got to the cloud
+-- before going offline lost the Syncthing conflict to the older signed copy once they met (Syncthing keeps the newer-dated side). (James, rt)
+
+-- The script that gives each copy its source's modified time: PowerShell on Windows, `touch -r` elsewhere. pairs: { { from, to } }. Pure.
+function drive.date_like_script(pairs, win)
+  local lines = {}
+  for _, p in ipairs(pairs) do
+    if win then
+      local a, z = p[1]:gsub("'", "''"), p[2]:gsub("'", "''")
+      lines[#lines + 1] = "try { (Get-Item -LiteralPath '" .. z .. "').LastWriteTime = (Get-Item -LiteralPath '" .. a .. "').LastWriteTime } catch {}"
+    else
+      local a, z = p[1]:gsub("'", "'\\''"), p[2]:gsub("'", "'\\''")
+      lines[#lines + 1] = "touch -r '" .. a .. "' '" .. z .. "' 2>/dev/null"
+    end
+  end
+  return table.concat(lines, "\n") .. "\n"
+end
+-- Run it in the background (REAPER never waits). -> true when started.
+function drive.date_like(pairs)
+  if #pairs == 0 then return false end
+  local dir = band.norm(os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp")
+  local path = dir .. "/studiosync-date-like" .. (band.WIN and ".ps1" or ".sh")
+  if not pcall(band.write_atomic, path, drive.date_like_script(pairs, band.WIN)) then return false end
+  local cmd = band.WIN and ('powershell -NoProfile -ExecutionPolicy Bypass -File "' .. path .. '"') or ("/bin/sh '" .. path .. "'")
+  return pcall(require("services").run_hidden, "studiosync-date-like", cmd, 0)
+end
 
 -- A signed copy's files, from its lib/files.txt: each one with a SHA-256 row, then lib/files.txt, and lib/files.txt.sig last (a copy half across
 -- never checks as signed). nil when there are none, or a path could step outside the copy (the list came from a folder others can write). Pure.
@@ -595,12 +619,12 @@ end
 -- The signed copy in `from` over `to`: checked, copied where a file differs (in drive.tools_files' order), code files `to` has that the list
 -- doesn't name taken away (a module the new version dropped: the copy never checks as whole with it), then `to` checked. -> files changed, or
 -- nil and why.
-local function send_tools(from, to, key)
+local function send_tools(from, to, key, dated)
   local ok, why = band.signed_ok(from, key)
   if not ok then return nil, why end
   local files = drive.tools_files(band.read(from .. "/lib/files.txt"))
   if not files then return nil, "its lib/files.txt names a file outside the copy" end
-  local n, keep = 0, {}
+  local n, keep, copied = 0, {}, {}
   for _, rel in ipairs(files) do
     keep[rel] = true
     local a = band.read(from .. "/" .. rel)
@@ -608,9 +632,11 @@ local function send_tools(from, to, key)
     if band.read(to .. "/" .. rel) ~= a then
       reaper.RecursiveCreateDirectory((to .. "/" .. rel):match("^(.*)/"), 0)
       band.copy_atomic(from .. "/" .. rel, to .. "/" .. rel)
+      copied[#copied + 1] = { from .. "/" .. rel, to .. "/" .. rel }
       n = n + 1
     end
   end
+  if dated then drive.date_like(copied) end -- (into the studio folder: dated as the cloud's, so the owner's newer version wins in Syncthing)
   local code = {}
   for _, f in ipairs(band.files(to, ".lua")) do if f:find("^StudioSync %- ") then code[#code + 1] = f end end
   for _, f in ipairs(band.files(to .. "/lib", ".lua")) do code[#code + 1] = "lib/" .. f end
@@ -639,7 +665,7 @@ function drive.tools_pass(cfg, droot, now)
     if not need or need:find("_tools[/\\]+studiosync") then return end
   end
   local cloud = drive.label(drive.service_of(droot))
-  local n, why = send_tools(way == "in" and there or here, way == "in" and here or there, key)
+  local n, why = send_tools(way == "in" and there or here, way == "in" and here or there, key, way == "in")
   local v = way == "in" and t.version or hv
   local said = way .. " " .. tostring(v) .. " " .. tostring(n and "ok" or why)
   if tools_said[said] then return n end
