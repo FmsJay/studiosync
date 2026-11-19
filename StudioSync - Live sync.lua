@@ -557,6 +557,10 @@ function P.heal(t)
   -- something never landed here. Bring it in line with the band's newest version (at most every 5 minutes).
   if s and s.sync == "mirror" and not hold then
     local mine, differs, same = require("mirror").root(proj), false, false
+    -- (kept for the status receipt later in this pass, unless a heal changes it below: mirror.root reads every object's revision, sorts and
+    -- hashes them, thousands on a big song, and it ran twice a pass. Nothing else between here and P.status writes revisions: the look and
+    -- the receive come before. James, rt: efficiency pass)
+    t.mirror_root = mine
     for _, st in ipairs(require("presence").peers(cfg, b.song, b.room)) do
       if st.mirror and st.pending == 0 and st.mirror ~= mine then differs = true end
       if st.mirror and st.pending == 0 and st.mirror == mine then same = true end
@@ -570,7 +574,7 @@ function P.heal(t)
     if differs and sync.pending_events(proj, cfg, b.song, b.room) == 0 then heal_since = heal_since or now else heal_since = nil end
     if now - claims_at > 10 then claims_at = now; pcall(sync.drop_gone_claims, proj, cfg, b.song, b.room) end
     if heal_since and now - heal_since > 60 and now - healed_at > 300 and reaper.EnumProjects(-1) == proj then
-      healed_at, heal_since = now, nil
+      healed_at, heal_since, t.mirror_root = now, nil, nil
       local ok, n = pcall(require("mirror").heal, proj, sync.room_dir(cfg, b.song, b.room), sync.local_mix)
       if not ok then band.log("couldn't bring the project in line with the studio: " .. tostring(n))
       elseif n > 0 then band.log(string.format("caught up on %d change%s that hadn't arrived here", n, n == 1 and "" or "s")); mirror_due = true end
@@ -723,7 +727,7 @@ function P.status(t)
   local info = { driver = driver, role = b.role, song = b.song, hold = hold or nil,
     pending = sync.pending_events(proj, cfg, b.song, b.room), armed = armed, side = side_bars(),
     playing = reaper.GetPlayStateEx(proj) & 1 == 1 or nil, recording = reaper.GetPlayStateEx(proj) & 4 == 4 or nil,
-    front = reaper.EnumProjects(-1) == proj, mirror = s and s.sync == "mirror" and require("mirror").root(proj) or nil,
+    front = reaper.EnumProjects(-1) == proj, mirror = s and s.sync == "mirror" and (t.mirror_root or require("mirror").root(proj)) or nil,
     -- (the view and the cursor only while someone follows you, their one reader (presence.follow): each scroll or click rewrote this file and
     -- Syncthing sent it to everyone. Being followed puts them in at once, as the follower's own status shows it. 0.59.14, review)
     editing = require("presence").editing(proj), view = followed and require("presence").view(proj) or nil, ping = require("presence").my_ping(proj),
