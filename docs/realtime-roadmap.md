@@ -939,3 +939,16 @@ Problems found, not fixed (risky or a behaviour change; for James to pick):
 - **LinuxBox joined Smiley Studios** (James, 2026-11-19): extension 1.0.12 installed in the VM's portable REAPER, joined with the owner's
   join code (services.join_band), let in from the desktop; the signed 0.59.49.24 code arrived first. No Tailscale on the VM yet, so no direct
   link there (Syncthing over the LAN): installing Tailscale adds a device to James's tailnet, his call.
+
+## Round 2 merged and checked (extension 1.0.13, 0.59.49.25, 2026-11-19)
+- **Hop plug-in in REAPER (desktop, CLAP):** REAPER's PDC reads 7200 samples (the reported latency). The extension's loopback at 512
+  samples: returns trail sends by exactly 512 and the late counter stops; at 9000 (over the 7200 budget) the counter climbs and timing holds
+  (dry at the same latency); stop works. The VST3 isn't listed until REAPER rescans its VST paths (the CLAP folder is new, so it was scanned).
+- **CLAP folders:** desktop and laptop add `<drive>\Portable Workstation\DAW\Plugins\CLAP` to clap_path_win64 (set while REAPER was closed by a
+  small helper REAPER starts before quitting); Mac ~/Library/Audio/Plug-Ins/CLAP, LinuxBox ~/.clap. The Hop is on all four (VST3 + CLAP).
+- **Docked web UI (desktop):** StudioSync_WebUIDock(1) opens it (action toggled on, no error); WebView2 runs with its own data folder under
+  REAPER's Data\StudioSync\WebView2 and the page loaded (1 client, 5 requests). Closed again with StudioSync_WebUIDock(0).
+- **LinuxBox:** Tailscale installed (official apt repo) and signed in as linuxbox.tail99132c.ts.net; extension 1.0.13; Cross Test open with
+  its direct link listening and all three peers reached.
+- **Live audio:** in 1.0.13 on Windows and Linux; the Mac build waits for a fix (macOS CI: a peer given the right secret while running is
+  never heard; Windows/Linux hear it 103 ms after). Not tried between computers yet: it needs the UDP rule beside the direct link's TCP one.
