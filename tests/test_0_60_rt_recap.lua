@@ -114,12 +114,30 @@ local tracks = {
   { arm = 1, items = { { pos = 12, takes = { take("my keeper", "C:/rec/Bass-001.flac", "g3") } } } }, -- (typed: left alone)
   { arm = 0, items = { { pos = 15, takes = { take("Keys-001", "C:/rec/Keys-001.flac", "g4") } } } }, -- (not armed: not this recording's)
   { arm = 1, items = { { pos = 5, takes = { take("Old-001", "C:/rec/Old-001.flac", "g5") } } } } } -- (there before: not new)
+-- (smart lanes: track 1 is in fixed lanes, its two new takes in lanes 2 and 3; lane 5 was named by someone already)
+for _, tr in ipairs(tracks) do for _, it in ipairs(tr.items) do it.tr = tr; for _, tk in ipairs(it.takes) do tk.it = it end end end
+tracks[1].freemode, tracks[1].lanenames = 2, { [5] = "my comp" }
+tracks[1].items[1].lane, tracks[1].items[2].lane = 2, 3
 reaper = {
   CountTracks = function() return #tracks end, GetTrack = function(_, i) return tracks[i + 1] end,
-  GetMediaTrackInfo_Value = function(tr, k) assert(k == "I_RECARM"); return tr.arm end,
+  GetMediaTrackInfo_Value = function(tr, k)
+    if k == "I_FREEMODE" then return tr.freemode or 0 end
+    assert(k == "I_RECARM"); return tr.arm
+  end,
+  GetSetMediaTrackInfo_String = function(tr, k, v, set)
+    local lane = tonumber(k:match("^P_LANENAME:(%d+)$"))
+    assert(lane, k)
+    tr.lanenames = tr.lanenames or {}
+    if set then tr.lanenames[lane] = v end
+    return true, tr.lanenames[lane] or ""
+  end,
+  GetMediaItemTake_Item = function(tk) return tk.it end, GetMediaItem_Track = function(it) return it.tr end,
   CountTrackMediaItems = function(tr) return #tr.items end, GetTrackMediaItem = function(tr, j) return tr.items[j + 1] end,
   CountTakes = function(it) return #it.takes end, GetTake = function(it, k) return it.takes[k + 1] end,
-  GetMediaItemInfo_Value = function(it, k) assert(k == "D_POSITION"); return it.pos end,
+  GetMediaItemInfo_Value = function(it, k)
+    if k == "I_FIXEDLANE" then return it.lane or 0 end
+    assert(k == "D_POSITION"); return it.pos
+  end,
   GetMediaItemTake_Source = function(tk) return tk end, GetMediaSourceType = function() return "FLAC" end,
   GetMediaSourceFileName = function(src) return src.file end,
   GetSetMediaItemTakeInfo_String = function(tk, k, v, set)
@@ -135,9 +153,21 @@ assert(recap.name_takes(nil, { user = "James", root = "R" }, had) == 2)
 assert(tracks[1].items[1].takes[1].name == "Verse - James - take 2", "after the take already called take 1: " .. tracks[1].items[1].takes[1].name)
 assert(tracks[1].items[2].takes[2].name == "Chorus - James - take 1", tracks[1].items[2].takes[2].name)
 assert(tracks[2].items[1].takes[1].name == "my keeper" and tracks[3].items[1].takes[1].name == "Keys-001" and tracks[4].items[1].takes[1].name == "Old-001")
+assert(tracks[1].lanenames[2] == "Verse - James - take 2" and tracks[1].lanenames[3] == "Chorus - James - take 1", "smart lanes: each lane as its take")
+assert(tracks[1].lanenames[5] == "my comp" and tracks[2].lanenames == nil, "a named lane, and a track not in fixed lanes: left alone")
 assert(recap.name_takes(nil, { user = "James", root = "R" }, nil) == 0, "no start seen: nothing named")
 tracks[1].items[1].takes[1].name = "Guitar-001"
 studio.smart_take_names = false
 assert(recap.name_takes(nil, { user = "James", root = "R" }, had) == 0 and tracks[1].items[1].takes[1].name == "Guitar-001", "the studio turned it off")
+
+-- smart lanes: a lane is named as its take, or as the pass when one pass put different sections' takes in it (James, rt)
+local ln = recap.lane_names({ { lane = 2, section = "Verse", name = "Verse - James - take 2", pass = "James - take 2" },
+  { lane = 3, section = "Chorus", name = "Chorus - James - take 1", pass = "James - take 1" },
+  { lane = 3, section = "Bridge", name = "Bridge - James - take 1", pass = "James - take 1" },
+  { lane = 4, section = nil, name = "James - take 5", pass = "James - take 5" }, { lane = 4, section = nil, name = "James - take 6", pass = "James - take 6" } })
+assert(ln[2] == "Verse - James - take 2", "one section's take: the lane takes its name")
+assert(ln[3] == "James - take 1", "two sections in one lane: the pass's name, no section")
+assert(ln[4] == "James - take 5", "no sections, two takes: the first take's name")
+assert(next(recap.lane_names({})) == nil and next(recap.lane_names(nil)) == nil, "nothing recorded: no lanes named")
 
 print("ok")

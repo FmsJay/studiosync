@@ -243,13 +243,42 @@ function recap.name_takes(proj, cfg, had)
       end
     end
   end
+  local lanes = {} -- (smart lanes: per track, the takes this pass put in each fixed lane)
   for _, x in ipairs(new) do -- (track order, then each track's items in time order: take 1 is the top track's)
     local section = recap.section_at(markers, x.pos)
-    local name = recap.smart_name(section, cfg.user, recap.next_n(names, section, cfg.user))
+    local n = recap.next_n(names, section, cfg.user)
+    local name = recap.smart_name(section, cfg.user, n)
     reaper.GetSetMediaItemTakeInfo_String(x.tk, "P_NAME", name, true)
     names[#names + 1] = name
+    local it = reaper.GetMediaItemTake_Item(x.tk)
+    local tr = it and reaper.GetMediaItem_Track(it)
+    if tr and reaper.GetMediaTrackInfo_Value(tr, "I_FREEMODE") == 2 then
+      lanes[tr] = lanes[tr] or {}
+      local list = lanes[tr]
+      list[#list + 1] = { lane = math.floor(reaper.GetMediaItemInfo_Value(it, "I_FIXEDLANE")), section = section, name = name, pass = recap.smart_name(nil, cfg.user, n) }
+    end
+  end
+  -- Smart lanes (James, rt): each fixed lane this pass recorded into is named as its take ("Bridge - James - take 3"), or as the pass
+  -- ("James - take 3") when it holds takes of different sections; only a lane nobody named yet. Lane names travel with the track (mirror).
+  for tr, list in pairs(lanes) do
+    for lane, lname in pairs(recap.lane_names(list)) do
+      local key = "P_LANENAME:" .. lane
+      if select(2, reaper.GetSetMediaTrackInfo_String(tr, key, "", false)) == "" then reaper.GetSetMediaTrackInfo_String(tr, key, lname, true) end
+    end
   end
   return #new
+end
+-- What each fixed lane this pass recorded into is called: its take's name when it holds one section's take(s), else the pass's name (the
+-- first take's, without a section). list: { { lane, section, name, pass } } in record order. -> { [lane] = name }. Pure.
+function recap.lane_names(list)
+  local by, out = {}, {}
+  for _, x in ipairs(list or {}) do
+    local l = by[x.lane]
+    if not l then by[x.lane] = { name = x.name, pass = x.pass, section = x.section, mixed = false }
+    elseif l.section ~= x.section then l.mixed = true end
+  end
+  for lane, l in pairs(by) do out[lane] = l.mixed and l.pass or l.name end
+  return out
 end
 
 local function recaps_dir(cfg, song, room) return require("sync").room_dir(cfg, song, room) .. "/recaps" end
@@ -329,9 +358,9 @@ function recap.section(ctx, ImGui, cfg, b, local_time)
 end
 -- Settings > Studio: "Smart take names" (band.json "smart_take_names", on unless false). `may`: owner or admin.
 function recap.names_ui(ctx, ImGui, cfg, may)
-  ImGui.SeparatorText(ctx, "Smart take names")
+  ImGui.SeparatorText(ctx, "Smart take and lane names")
   local on = recap.names_on(cfg.root)
-  ImGui.TextDisabled(ctx, on and "On: a new take is named for the section under its start and who played it, \"Bridge - James - take 3\". A name someone typed is never changed."
+  ImGui.TextDisabled(ctx, on and "On: a new take is named for the section under its start and who played it, \"Bridge - James - take 3\", and so is the lane it lands in (takes to lanes). A name someone typed is never changed."
     or "Off: takes keep the names REAPER gives them.")
   if may then
     local ch, v = ImGui.Checkbox(ctx, "Smart take names##studiotakenames", on)
