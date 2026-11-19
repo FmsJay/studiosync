@@ -958,3 +958,9 @@ Problems found, not fixed (risky or a behaviour change; for James to pick):
   a VM) streamed at first (43 ms to the desktop over the LAN) then kept resetting with hundreds of underruns: a VM audio clock, not a real
   computer's. The Mac (1.0.12) has no live audio yet. Levels were 0 (nothing on input 1), so nothing was heard. Switched off again after.
   Next: an audible check with a mic or instrument on each end, then the hour-long run that's the roadmap's gate.
+- **Live audio's macOS bug fixed (43e9839):** not the secret code: AOO's source jammed for good after a long stall (the macOS CI runner's
+  ~60 ms VM pauses filled the resampler and queue, then process() returned overflow before moving anything). rt_capture flags the
+  overflow and the send thread calls AOO's own reset; audio resumes on the next block (a click possible after a long stall, where before
+  the peer went silent forever). CI green on every platform; 8 runs in a row on the Mac runner. The Mac runs 1.0.13 with live audio now.
+- **Live audio on by default (James, 2026-11-19):** band.json "live_audio" is on unless false, as the direct link. Deployed with the
+  mute/deafen/push-to-talk controls (rt-liveux), so no computer starts sending a live mic without a clear way to mute it.
