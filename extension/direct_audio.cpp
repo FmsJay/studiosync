@@ -129,6 +129,12 @@ void direct_audio_process(const double *const *in, int nin, int len, double srat
 
 #ifndef DIRECT_STANDALONE
 #include "reaper_plugin.h"
+#ifdef min // (SWELL, macOS/Linux: min/max as macros broke std::min and the C++ headers after it. CI, 2026-11-19)
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
 static_assert(sizeof(ReaSample) == sizeof(double), "the hook reads ReaSample as double (REASAMPLE_SIZE 8)");
 static int (*g_reg_hook)(bool isAdd, audio_hook_register_t *reg) = nullptr;
 static void on_audio(bool isPost, int len, double srate, audio_hook_register_t *reg)

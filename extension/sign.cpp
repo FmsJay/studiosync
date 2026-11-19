@@ -493,6 +493,12 @@ std::string sign_with_key(const std::string &path, const std::string &msg)
 // ---- ReaScript: reaper.StudioSync_Verify* etc. (REAPER's main thread only: the answers live in static strings until the next call) ----
 #ifndef SIGN_STANDALONE
 #include "reaper_plugin.h"
+#ifdef min // (SWELL, macOS/Linux: min/max as macros broke std::min and the C++ headers after it. CI, 2026-11-19)
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
 static const char *str(const char *s) { return s ? s : ""; }
 static int api_verify(const char *sig, const char *msg, const char *key)
 {
