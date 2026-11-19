@@ -197,6 +197,15 @@ function recall.warm(cfg, song, room, secs, idle)
   end
   return w.i > #w.files, w.i - 1, #w.files
 end
+-- The changes read so far (recall.warm), in no order: what a versioned note looks through for "that spot changed since" (lib/review.lua,
+-- James, rt). Only what's cached already: nothing is read for it.
+function recall.read_so_far(cfg, song, room)
+  local rdir = sync.room_dir(cfg, song, room)
+  local w, out = warming[rdir], {}
+  if not w then return out end
+  for i = 1, w.i - 1 do out[#out + 1] = recall.ev_cache[rdir .. "/events/" .. w.files[i]] end
+  return out
+end
 -- The notes and likes read so far, newest first.
 function recall.notes(cfg, song, room)
   local w = warming[sync.room_dir(cfg, song, room)]
@@ -274,7 +283,10 @@ function recall.describe(e)
   elseif e.kind == "driver" then return e.from == e.user and ("handed control to " .. tostring(e.driver)) or ("took control from " .. tostring(e.from))
   elseif e.kind == "start" then return string.format("%s together from %.2f s", e.rec and "recorded" or "played", e.pos or 0)
   elseif e.kind == "stop" then return "stopped together"
-  elseif e.kind == "note" then return "note" .. (e.take and (" on " .. whose .. on) or string.format(" at %.2f s", e.pos or 0)) .. ": " .. tostring(e.text)
+  elseif e.kind == "note" then
+    local from = e.client and (" from " .. tostring(e.client) .. " (client)") or "" -- (a client link's comment: lib/review.lua, James, rt)
+    if e.client and not e.pos then return "note" .. from .. " on the whole mix: " .. tostring(e.text) end
+    return "note" .. from .. (e.take and (" on " .. whose .. on) or string.format(" at %.2f s", e.pos or 0)) .. ": " .. tostring(e.text)
   elseif e.kind == "like" then return "liked " .. (whose ~= "" and whose or "a part") .. on -- (a part in mirror sync has no take id: 0.58.98)
   elseif e.kind == "shift" then
     return string.format("%s %.2f s at %.2f s (every track)", (e.len or 0) > 0 and "inserted" or "removed", math.abs(e.len or 0), e.at or 0)

@@ -641,3 +641,41 @@ The Drive copy (lib/drive.lua: each room mirrored to a shared cloud folder, any 
   (yellow). A computer without a cloud copy shows no row.
 - Next: the hub's other jobs in the cloud copy where no hub is online (snapshots and the studio's update files), and members without a cloud
   folder told what they'd gain from one (the laptop here has none).
+
+## Song forks, versioned notes and client links (rt-forks branch, 2026-11-19; offline tests only, not run in REAPER yet)
+- **Forks are side rooms (lib/forks.lua).** A room already is a branch: its own tab and history from where it was made, the song's recordings
+  shared through the room folders (nothing copied), Bring into / Send selected for the way back. A fork is a side room whose room.json also
+  says where it came from (`fork = { from, version, label }`). Rooms page: **Fork song** (as it is now) beside Create side room; Restore: a saved
+  version or a change, **Fork from here** ("Open in side room" with a name: the room made from now, then put back to then). Its square says
+  "fork of main, from 'chorus v2'".
+- **Compare, bring back what you pick:** in a fork, **Compare with main...** opens the Bring-into view with a track-by-track count (changed here,
+  in main since the fork, in both) and a tick box per change; a ticked item on a track main hasn't got brings that track, a ticked new track brings
+  its plug-ins, automation and sends. Untouched, everything is ticked: Bring into as before.
+- **Adopt as main:** from the fork, with main open here and driven by you. Main as it is now is kept first as a fork of its own ("main before
+  <fork>"), then main is made exactly as the fork is (mirror.plan_known with the fork's own map over both rooms' histories, and the fork's tempo
+  map and markers), for everyone, as new changes, so Restore in main can go back. Main stays the room called main: renaming room folders under
+  Syncthing and open tabs on every computer was the risk not taken.
+- **Versioned notes (lib/review.lua):** notes stay the "note" events they were (ticked off in <Song>/chat/resolved). A new note also carries the
+  room's newest saved version (`ver`) and the region it sits in; the Notes tab shows "made on version N" and "that spot changed since" (its item
+  changed later, or on its track an item there or starting up to 30 s before, or the track's plug-ins, or the tempo map). Older notes go by time.
+  Only changes History has read already are looked through (recall.read_so_far), so nothing is read for it.
+- **Client links, built: a folder in the cloud copy.** Mixes page, **Make a client link...**: pick a mix from <Song>/mixes; StudioSync copies it to
+  `<cloud copy>/_Client review/<Song> - <mix>/` with comments.txt (how to comment, in the file) and studio-notes.txt (the band's notes, where
+  each sits and its version). The maker shares that one folder from Drive (anyone with the link, Editor; an expiry or password where the plan
+  offers one) and sends the link. The client plays the mix in the browser and adds lines ("1:32 the vocal is quiet", "bar 17 ...", or a line
+  for the whole mix) to comments.txt: in Drive by downloading, editing and uploading it back (Keep both is fine: every .txt there is read), in
+  OneDrive or Dropbox in the browser. The maker's StudioSync (only theirs: one writer) reads them into Notes each minute while the Mixes page is
+  open, or on Look for comments, as notes from "<name> (client)" on the version the link was made from, and rewrites studio-notes.txt.
+  For an older version: open it in a side room, Render current mix there, then make the link for that mix.
+- **Client links, the other way: a page from the web UI.** When the web UI serves pages, a link page can play the mix in the browser with the notes
+  as markers on its waveform and a comment box that posts straight in (no file to download and upload). review.data(cfg, song, link) is the hook:
+  the mix's path, the client's comments as read, the studio's notes. It needs a way in from outside the tailnet (Tailscale Funnel, or a relay),
+  with the page served alone (never the studio folder) and the link's own expiring token: that's the work left there.
+- **Left out:** a fork's notes don't show its original's older notes; a client's bar is counted on the tab in front's tempo map, and the mix is
+  taken to start at the song's start (as Render current mix renders it).
+- **REAPER test:** Fork song from main (square says "fork of main"); Restore > a saved version > Fork from here (the fork is the song as it was);
+  in the fork move an item, add a track with an item, then Compare with main: counts per track, untick the new item, Bring into: only the rest
+  arrives; tick only the item: its track comes too. Adopt as main (main open, you drive): "main before <fork>" appears and holds the old main,
+  main now matches the fork on another computer too, Restore in main can go back. Notes: add one on an item, save a version, edit that item:
+  the note says "made on version N; that spot changed since". Client link: Render current mix, Make a client link, edit comments.txt in the cloud
+  folder, wait a minute on the Mixes page: the comment shows in Notes as from the client, and studio-notes.txt lists it.

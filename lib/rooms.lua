@@ -34,7 +34,7 @@ function rooms.list(cfg, song)
   local out = {}
   for _, name in ipairs(band.subdirs(band.song_dir(cfg, song) .. "/rooms")) do
     local m = rooms.meta(cfg, song, name) or {}
-    out[#out + 1] = { name = name, parent = m.parent, by = m.by, time = m.time or "", binned = m.binned }
+    out[#out + 1] = { name = name, parent = m.parent, by = m.by, time = m.time or "", binned = m.binned, fork = m.fork, adopted = m.adopted } -- (fork, adopted: lib/forks.lua, James, rt)
   end
   table.sort(out, function(a, z)
     if (a.name == "main") ~= (z.name == "main") then return a.name == "main" end
@@ -137,7 +137,8 @@ function rooms.bad_name(name)
 end
 
 -- Make a side room from the room in tab `proj` (binding b), as it is now, and go there. You drive it. copy_dir: see rooms.open.
-function rooms.create(proj, cfg, b, name, copy_dir)
+-- `extra`: more for its room.json (a fork's origin: lib/forks.lua, James, rt).
+function rooms.create(proj, cfg, b, name, copy_dir, extra)
   name = (name or ""):match("^%s*(.-)%s*$")
   local err = rooms.bad_name(name)
   if err then return nil, err end
@@ -148,8 +149,10 @@ function rooms.create(proj, cfg, b, name, copy_dir)
   for _, sub in ipairs({ "takes", "events", "recall", "_trash" }) do reaper.RecursiveCreateDirectory(dir .. "/" .. sub, 0) end
   local base = require("recall").save(proj, cfg, b.song, name, "made from " .. b.room, true)
   sync.set_driver(cfg, b.song, name, cfg.user)
-  band.write_json(dir .. "/room.json", { parent = b.room, by = cfg.user, time = os.date("!%Y-%m-%dT%H:%M:%SZ"), base = base,
-    tempo = band.capture_tempo(proj), markers = band.capture_markers(proj) }) -- (its history starts here: sync.restore_timeline)
+  local meta = { parent = b.room, by = cfg.user, time = os.date("!%Y-%m-%dT%H:%M:%SZ"), base = base,
+    tempo = band.capture_tempo(proj), markers = band.capture_markers(proj) } -- (its history starts here: sync.restore_timeline)
+  for k, v in pairs(extra or {}) do meta[k] = v end
+  band.write_json(dir .. "/room.json", meta)
   return rooms.open(proj, cfg, b, name, copy_dir)
 end
 

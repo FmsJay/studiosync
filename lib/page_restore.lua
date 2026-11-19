@@ -150,11 +150,10 @@ local function back_button(i, what, single, point)
   ImGui.EndDisabled(ctx)
   ImGui.SetItemTooltip(ctx, before_history and "This version is older than every change kept in History, so it can't be rebuilt from it." or
     driving and ("The whole project, as it was " .. what .. ". It goes to the others as new changes.") or "Only the driver can restore the whole project: ask them, or take control.")
-  next_to("Open in side room")
-  if ImGui.SmallButton(ctx, "Open in side room") then
-    -- a look at that moment that touches nobody's work: a new room, put back to then. Archive it (Rooms) when you've heard it.
-    local name = "Check " .. os.date("%H%M%S")
-    local p, why = require("rooms").create(proj, cfg, b, name)
+  -- a new room put back to that moment, touching nobody's work: a look (archive it on Rooms when heard), or a fork to work on (lib/forks.lua,
+  -- James, rt: "fork from a restore point"). `extra`: the fork's origin for its room.json.
+  local function open_at(name, extra)
+    local p, why = require("rooms").create(proj, cfg, b, name, nil, extra)
     if not p then band.msg(why) else
       local room_can = sync.authority(cfg, b.song, name, view.session)
       local plan = plan_for(i, point)
@@ -165,7 +164,16 @@ local function back_button(i, what, single, point)
       reaper.SetExtState(band.SECTION, "panel page", "Rooms", false)
     end
   end
+  next_to("Open in side room")
+  if ImGui.SmallButton(ctx, "Open in side room") then open_at("Check " .. os.date("%H%M%S")) end
   ImGui.SetItemTooltip(ctx, "Opens the project as it was " .. what .. " in a new side room, to check it's the right one. Nothing changes for anyone else.")
+  next_to("Fork from here")
+  if ImGui.SmallButton(ctx, "Fork from here") then
+    local ok, name = reaper.GetUserInputs("Fork from here", 1, "Name of the fork:,extrawidth=120", "")
+    if ok then open_at(name, { fork = { from = b.room, version = point and point.file, label = point and point.label or ("as it was " .. what) } }) end
+  end
+  ImGui.SetItemTooltip(ctx, "A fork of the song as it was " .. what .. ": a side room of its own to try another arrangement, alone or with others. " ..
+    "It shares the song's recordings (nothing copied); bring back what works from Rooms, or adopt it as the main version.")
 end
 -- Each person's own colour, as drawings and tracks show them.
 local function person_colour(user)
@@ -488,6 +496,7 @@ function R.section_mixes()
   end
   ImGui.SetItemTooltip(ctx, "A separate plain REAPER project in a folder you pick, with every file it uses, that opens anywhere with no StudioSync. Nothing in the studio changes, and nothing you do to the copy goes to anyone.\n\n" ..
     "For an older version: click it below, Open in side room, then save the copy from that room.")
+  require("review").section(ctx, ImGui, cfg, b, proj) -- (a mix for someone outside the studio, and their comments: James, rt)
   ImGui.SeparatorText(ctx, "Compare two mixes (A/B)") -- (lib/extras.lua: same place, same loudness)
   require("extras").ab_draw(ctx, ImGui, cfg, b)
 end
