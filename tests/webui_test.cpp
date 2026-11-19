@@ -192,6 +192,23 @@ int main()
     webui_publish("chat", "{\"msgs\":[{\"text\":\"new\"}]}");
     CHECK(until("\"text\":\"new\""), "and sends a change as it's published");
     printf("     publish -> on the stream: %.2f ms\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    // after the first, only what changed: a big topic isn't sent again with every small one (James, rt)
+    {
+      const size_t at = got.rfind("\"text\":\"new\"");
+      const size_t start = got.rfind("data: ", at), end = got.find("\n\n", at);
+      const std::string ev = got.substr(start, end - start);
+      CHECK(ev.find("\"delta\":true") != std::string::npos && ev.find("\"presence\"") == std::string::npos, "a change sends only its topic, marked delta");
+    }
+    webui_publish("presence", "{\"people\":[{\"user\":\"Chilio\"}]}");
+    CHECK(until("Chilio"), "another topic's change comes too");
+    {
+      const size_t at = got.rfind("Chilio");
+      const size_t start = got.rfind("data: ", at), end = got.find("\n\n", at);
+      CHECK(got.substr(start, end - start).find("\"chat\"") == std::string::npos, "without the unchanged chat");
+    }
+    r = get(web, "/api/state", lh);
+    CHECK(body(r).find("\"chat\"") != std::string::npos && body(r).find("Chilio") != std::string::npos && body(r).find("delta") == std::string::npos,
+          "the state is still everything");
     closesocket(s);
   }
   r = get(link, "/api/status", th, ck);
