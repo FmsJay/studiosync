@@ -748,3 +748,35 @@ into realtime; offline suite `fails 0`; rt_settings/rt_prefs/rt_takes green on d
   Health hint where there's no cloud copy. Not exercised in REAPER yet.
 - **Streaming ideas, forks and notes, Ableton Link:** merged, offline-tested; their REAPER checks (punch marks, late joiner, producer level,
   format hint; fork/compare/adopt, versioned notes, client links; Link with a phone app) are next.
+### Colour parity, built (rt-colours branch, 2026-11-19; offline tests only, not run in REAPER yet)
+Audit: does each colour reach every computer identically?
+
+| What | Before | Now |
+|---|---|---|
+| Track colour | Travels (track state `color`, Windows byte order, SWS auto-colour off while a studio song is in front). A who's-working or what's-new colour could be painted over it here (held in `P_EXT:band_colour`) | Colour parity on: never painted over; any left from before goes back |
+| Item colour | Travels in the item chunk (`COLOR`, either byte order, normalised for hashing) | Same |
+| Take colour | Travels in the item chunk (`TAKECOLOR`) | Same |
+| Marker and region colour | Travel with the timeline, but a reset to the default colour never arrived (SetProjectMarker4's colour 0 means "leave it") | Fixed: a default colour is set through SetRegionOrMarkerInfo_Value |
+| Ruler lane colour | Travelled native: a Mac's red lane showed blue on Windows | Fixed: travels in Windows' order like markers |
+| Master track colour | Not sent (mirror sends the master's plug-ins and envelopes only) | Fixed: travels with the song's settings (`master_colour`) |
+| Folder/child shading | Not project state: the theme (tint parameters such as Reapertips' `tint_folder_label`) and `tinttcp` | Shared as preferences and theme colour settings (below) |
+| Envelope and automation-item colours | No such project state: envelope colours are the theme's (`col_env*`), automation items have no colour | Nothing to carry |
+| Pooled MIDI colour (`POOLCOLOR`) | Kept local, as pool numbers are each computer's own | Same (tinttcp &1024, now shared, colours pooled items the same way) |
+| MIDI note colouring (velocity/channel/pitch/track) | Per take in `CFGEDIT`, which stays local (it also holds the editor's zoom and view); the default for new editors is `[midiedit] colorwhat` in reaper.ini, not a config variable | Not shared: needs `CFGEDIT` split into view and colour parts in mirror. Notes coloured "by track" use the track colour, which does travel |
+| Each person's colour | Picked colours studio-wide, but defaults by name order over members plus whoever this computer also knew of (a guest in a room, someone who drew), so one extra name moved everyone after it on that computer only | Defaults over members first, extras after; a person with no pick has today's default kept in their own `_band/colours/<user>.json` (`auto`), changeable by them |
+
+Built:
+- **Colour parity** (band.json `colour_parity`, on unless false; owner and admins; Settings > Studio > Colour parity, lib/colours.lua `parity_ui`).
+  On: lib/people.lua `paint` never recolours a track (who's working shows in Who's here, "Working in ...", and in claim regions); Settings >
+  Colours says the studio's choice wins. Off: today's behaviour.
+- **Colour display settings** in lib/sharedprefs.lua's list as group "colour", in force only while Colour parity is on: `tinttcp` (track
+  label background, tint track panels, tint item peaks and backgrounds by track/item/take colour, auto-colour new takes and pooled MIDI),
+  `selitem_tintalpha`, `unselitem_tintalpha`, `specpeak_huel`, `specpeak_hueh`. Names from REAPER's config table in reaper.exe and Mespotine's
+  reference. Turning parity on shares this computer's values where none are chosen.
+- **The theme's colour settings**: ThemeLayout_GetParameter/SetParameter exist in REAPER's API (reaper_python.py). Shared only to computers on
+  the same theme, only tint and coloured-name parameters (not panel background colours), set with persist off so reaper-themeconfig.ini is
+  never written; applied and put back by sharedprefs' existing tick as `theme:<cfg>` keys. Theme choice, layout and zoom stay personal.
+- **Health: Colour parity row**: each computer puts what it shows in its status file (`look`: a fingerprint of the project's colours, its
+  theme, colour preferences and theme colour settings, any overlay); the row names what differs ("Mac tints track panels and items
+  differently", "Mac uses another theme"), project colours only after 30 s apart.
+- Tests: tests/test_0_60_rt_colours.lua.

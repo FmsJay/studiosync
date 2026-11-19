@@ -24,14 +24,28 @@ sp.PREFS = {
   { "defsplitxfadelen", "d", "Crossfade length on split and auto-crossfade (seconds)" },
   { "defxfadeshape", "i", "Crossfade shape" },
   { "splitautoxfade", "i", "Splitting items: auto-crossfade on split and its options" },
+  -- Colour: how the same project colours look (James, rt: "everyone should share the same colors for tracks and everything"). They were
+  -- "never shared" as personal look; colour parity moves them to shared, while theme choice, layout and zoom stay each person's own. In force
+  -- only while the studio's Colour parity is on (sp.studio). Names from REAPER 7.79's config table (reaper.exe) and Mespotine's reference:
+  -- tinttcp's bits are the track label background, tinting track panels, tinting item peaks and backgrounds by track/item/take colour, and
+  -- auto-colouring new takes and pooled MIDI items (Preferences > Track Control Panels and > Peaks/Waveforms). `differs`: Health's words.
+  { "tinttcp", "i", "Track colours: tint track panels, labels and items (and colour new takes)", group = "colour", differs = "tints track panels and items differently" },
+  { "selitem_tintalpha", "i", "Tint strength of selected items", group = "colour", differs = "tints selected items more or less strongly" },
+  { "unselitem_tintalpha", "i", "Tint strength of unselected items", group = "colour", differs = "tints unselected items more or less strongly" },
+  { "specpeak_huel", "d", "Spectral peaks: colour at the low end", group = "colour", differs = "draws spectral peaks in other colours" },
+  { "specpeak_hueh", "d", "Spectral peaks: colour at the high end", group = "colour", differs = "draws spectral peaks in other colours" },
 }
 -- Never shared, whatever band.json says: this computer's own (as ReaPersona's PREF_HERE, plus the look). A key on the list above can't match.
+-- ("colou?r" stays: a colour pref only ever comes from the list above, which names none that matches it. James, rt)
 sp.NEVER = { "^audio", "^asio", "^wasapi", "^dsound", "^coreaudio", "^alsa", "^jack", "^pulse", "^ks_", "bsize", "bufsize", "latency", "lat[io][nu]t?$",
   "^midiins", "^midiouts", "^midilat", "path", "dir$", "theme", "colou?r", "zoom", "layout", "font", "uiscale", "^dock", "wnd", "_vis$", "_dock$",
   "workthreads", "renderthreads" }
 local INFO = {}
 for _, x in ipairs(sp.PREFS) do INFO[x[1]] = x end
-function sp.info(k) return INFO[k] end
+function sp.info(k)
+  if tostring(k):sub(1, 6) == "theme:" then return { k, "t", "the theme's " .. k:sub(7), group = "colour", differs = "sets the theme's " .. k:sub(7) .. " differently" } end
+  return INFO[k]
+end
 function sp.never(k)
   local low = tostring(k):lower()
   for _, pat in ipairs(sp.NEVER) do if low:find(pat) then return true end end
@@ -49,11 +63,73 @@ function sp.clean(t)
   end
   return out
 end
-function sp.studio(root) return sp.clean(require("groups").trusted(root).shared_prefs) end
+-- What the owner chose (band.json), colour ones included whether or not Colour parity is on: what Settings > Studio shows and saves.
+function sp.chosen(root) return sp.clean(require("groups").trusted(root).shared_prefs) end
+
+-- ---- the theme's colour settings ------------------------------------------------------------------------------------------------------
+-- A theme's parameters (WALTER define_parameter, ThemeLayout_GetParameter) are that theme's own names, so the studio's are shared only with a
+-- computer on the same theme, and only the ones about how track colours show: tint strengths, coloured names, custom colour strength (not
+-- panel background colours, which are the theme's look). Set with persist off: reaper-themeconfig.ini is never written, so a crash or quit
+-- leaves the theme as it was. (James, rt)
+-- "J:/x/Reapertips Theme.ReaperThemeZip" -> "reapertips theme". Pure.
+function sp.theme_name(path)
+  local n = tostring(path or ""):match("([^/\\]+)$") or ""
+  return (n:gsub("%.[Rr]eaper[Tt]heme[Zz]?[Ii]?[Pp]?$", ""):lower())
+end
+-- Is a theme parameter about how track colours show? `cfg`: its name, `desc`: its description. Pure.
+function sp.theme_colour_param(cfg, desc)
+  local t = (tostring(cfg or "") .. " " .. tostring(desc or "")):lower()
+  return t:find("tint") ~= nil or t:find("custom ?colou?r") ~= nil or t:find("colou?red") ~= nil
+end
+-- band.json's theme_colours made safe (pure): a theme name and colour parameters with whole-number values, or nil.
+function sp.theme_clean(t)
+  if type(t) ~= "table" or type(t.theme) ~= "string" or t.theme == "" or type(t.params) ~= "table" then return nil end
+  local out, n = {}, 0
+  for k, v in pairs(t.params) do
+    local x = math.tointeger(tonumber(v))
+    if type(k) == "string" and k:match("^[%w_]+$") and #k < 64 and sp.theme_colour_param(k, "") and x and math.abs(x) < 1e6 then out[k], n = x, n + 1 end
+  end
+  return n > 0 and { theme = sp.theme_name(t.theme), params = out } or nil
+end
+local tp = { at = -math.huge }
+-- This REAPER's theme colour parameters: cfg -> { idx, value, desc }, and its theme's name. Looked up again every 5 s or when the theme changes.
+function sp.theme_params()
+  local path = reaper.GetLastColorThemeFile and reaper.GetLastColorThemeFile() or ""
+  local t = reaper.time_precise()
+  if tp.path == path and t - tp.at < 5 and t >= tp.at then return tp.map, sp.theme_name(path) end
+  local map = {}
+  if reaper.ThemeLayout_GetParameter then
+    for i = 0, 2000 do
+      local cfg, desc, val = reaper.ThemeLayout_GetParameter(i)
+      if cfg == nil or cfg == "" then break end
+      if sp.theme_colour_param(cfg, desc) and math.tointeger(tonumber(val)) then map[cfg] = { i, math.tointeger(tonumber(val)), desc } end
+    end
+  end
+  tp.at, tp.path, tp.map = t, path, map
+  return map, sp.theme_name(path)
+end
+
+-- What's in force for the studio (pure but for reading band.json and this REAPER's theme): its chosen preferences, the colour ones only
+-- while Colour parity is on, and then the theme's colour settings too where this computer uses the same theme ("theme:<cfg>" keys).
+function sp.studio(root)
+  local groups = require("groups")
+  local out = sp.chosen(root)
+  if not groups.colour_parity(root) then
+    for k in pairs(out) do if INFO[k].group == "colour" then out[k] = nil end end
+  else
+    local tc = sp.theme_clean(groups.trusted(root).theme_colours)
+    if tc then
+      local have, mine = sp.theme_params()
+      if mine == tc.theme then for k, v in pairs(tc.params) do if have[k] then out["theme:" .. k] = v end end end
+    end
+  end
+  return out
+end
 
 -- ---- this REAPER's live values --------------------------------------------------------------------------------------------------------
 local NO1, NO2 = -2147480001, -2147480002 -- (two error values: SWS answers its error value for a name it doesn't know or a size it won't read)
 function sp.read(k)
+  if tostring(k):sub(1, 6) == "theme:" then local p = sp.theme_params()[k:sub(7)]; return p and p[2] end
   local x = INFO[k]
   if not x then return nil end
   local get = x[2] == "d" and reaper.SNM_GetDoubleConfigVar or reaper.SNM_GetIntConfigVar
@@ -63,11 +139,24 @@ function sp.read(k)
   return a
 end
 function sp.write(k, v)
+  if tostring(k):sub(1, 6) == "theme:" then
+    local p, n = sp.theme_params()[k:sub(7)], math.tointeger(tonumber(v))
+    if not (p and n and reaper.ThemeLayout_SetParameter) then return false end
+    local ok = reaper.ThemeLayout_SetParameter(p[1], n, false) -- (persist off: reaper-themeconfig.ini keeps the person's own)
+    p[2] = n
+    if reaper.ThemeLayout_RefreshAll then reaper.ThemeLayout_RefreshAll() end
+    return ok
+  end
   local x = INFO[k]
   if not x or sp.read(k) == nil then return false end -- (only what reads back in its size is ever set)
-  if x[2] == "d" then return reaper.SNM_SetDoubleConfigVar(k, tonumber(v)) end
-  local n = math.tointeger(tonumber(v))
-  return n ~= nil and reaper.SNM_SetIntConfigVar(k, n)
+  local ok
+  if x[2] == "d" then ok = reaper.SNM_SetDoubleConfigVar(k, tonumber(v))
+  else
+    local n = math.tointeger(tonumber(v))
+    ok = n ~= nil and reaper.SNM_SetIntConfigVar(k, n)
+  end
+  if ok and x.group == "colour" then reaper.UpdateArrange(); reaper.TrackList_AdjustWindows(false) end -- (seen at once, not at the next redraw)
+  return ok
 end
 function sp.same(a, b) local x, y = tonumber(a), tonumber(b); return x ~= nil and y ~= nil and math.abs(x - y) < 1e-6 end
 
@@ -109,7 +198,7 @@ function sp.tick(root, now_too)
     if now ~= nil and not yielded[k] then
       if applied[k] ~= nil and not sp.same(now, applied[k]) then
         yielded[k], applied[k], orig[k], changed = true, nil, nil, true
-        band.log("you changed " .. (INFO[k][3]) .. " while the studio's was in: yours stands, and isn't put back")
+        band.log("you changed " .. (sp.info(k)[3]) .. " while the studio's was in: yours stands, and isn't put back")
       else
         if orig[k] == nil then orig[k], changed = now, true end
         if not sp.same(now, v) then sp.write(k, v) end
@@ -137,40 +226,46 @@ end
 function sp.words(k, v) -- "0.01 s", "Shape 2"
   local x, n = INFO[k], tonumber(v)
   if not (x and n) then return "not here" end
-  if x[2] == "d" then return string.format("%g s", n) end
+  if x[2] == "d" then return string.format(x.group == "colour" and "%g" or "%g s", n) end
   if k:find("shape$") then return "Shape " .. (math.floor(n) + 1) end
   return tostring(math.tointeger(n) or n)
 end
-function sp.studio_ui(ctx, ImGui, cfg, may)
-  ImGui.SeparatorText(ctx, "Shared preferences")
-  local set = sp.studio(cfg.root)
-  ImGui.TextDisabled(ctx, "REAPER preferences that shape recording and editing, the same on every computer while a song of this studio is in front; " ..
-    "each computer's own come back after, and when REAPER quits. Never shared: audio device, buffer, latency, paths, theme, layout, zoom, colours.")
-  local groups = require("groups")
+-- The ticks for one group of the list (nil: recording and editing; "colour": Colour parity's card, lib/colours.lua parity_ui).
+function sp.rows_ui(ctx, ImGui, cfg, may, group)
+  local set, groups = sp.chosen(cfg.root), require("groups")
   for _, x in ipairs(sp.PREFS) do
     local k, on = x[1], set[x[1]] ~= nil
-    if may then
-      local ch, v = ImGui.Checkbox(ctx, x[3] .. "##sp" .. k, on)
-      if ch then
-        local mine = sp.mine(k)
-        if v and mine == nil then band.msg("This REAPER (or its SWS) doesn't have that setting, so it can't be the studio's from here.")
-        else
-          set[k] = v and mine or nil
-          groups.set_shared_prefs(cfg.root, set)
-          band.log((v and "the studio shares " or "the studio no longer shares ") .. x[3] .. (v and (": " .. sp.words(k, mine)) or ""))
+    if x.group == group then
+      if may then
+        local ch, v = ImGui.Checkbox(ctx, x[3] .. "##sp" .. k, on)
+        if ch then
+          local mine = sp.mine(k)
+          if v and mine == nil then band.msg("This REAPER (or its SWS) doesn't have that setting, so it can't be the studio's from here.")
+          else
+            set[k] = v and mine or nil
+            groups.set_shared_prefs(cfg.root, set)
+            band.log((v and "the studio shares " or "the studio no longer shares ") .. x[3] .. (v and (": " .. sp.words(k, mine)) or ""))
+          end
         end
-      end
-    elseif on then ImGui.Text(ctx, x[3]) end
-    if on then ImGui.SameLine(ctx); ImGui.TextDisabled(ctx, sp.words(k, set[k])) end
+      elseif on then ImGui.Text(ctx, x[3]) end
+      if on then ImGui.SameLine(ctx); ImGui.TextDisabled(ctx, sp.words(k, set[k])) end
+    end
   end
   if may then
-    if ImGui.SmallButton(ctx, "Use mine as the studio's##spmine") then
-      for k in pairs(set) do local m = sp.mine(k); if m ~= nil then set[k] = m end end
+    if ImGui.SmallButton(ctx, "Use mine as the studio's##spmine" .. (group or "")) then
+      for k in pairs(set) do local m = sp.mine(k); if m ~= nil and INFO[k].group == group then set[k] = m end end
       groups.set_shared_prefs(cfg.root, set)
       band.log("the studio's shared preferences are this computer's own now")
     end
     ImGui.SetItemTooltip(ctx, "Owner and admins. The ticked preferences take this computer's own values (not the studio's that may be in force here).")
   end
+end
+function sp.studio_ui(ctx, ImGui, cfg, may)
+  ImGui.SeparatorText(ctx, "Shared preferences")
+  ImGui.TextDisabled(ctx, "REAPER preferences that shape recording and editing, the same on every computer while a song of this studio is in front; " ..
+    "each computer's own come back after, and when REAPER quits. Never shared: audio device, buffer, latency, paths, theme, layout, zoom. " ..
+    "Colour settings: under Colour parity.")
+  sp.rows_ui(ctx, ImGui, cfg, may, nil)
 end
 
 return sp

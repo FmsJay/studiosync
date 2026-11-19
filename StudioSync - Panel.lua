@@ -2359,6 +2359,7 @@ local function settings_studio()
     { function() if card("studio direct") then require("direct").studio_ui(ctx, ImGui, cfg, studio_admin()); card_end() end end, 360 }, -- (the direct link: James, 0.60.0-rt)
     { function() if card("studio lanes") then require("prints").lanes_ui(ctx, ImGui, cfg, studio_admin()); card_end() end end, 360 }, -- (takes become lanes: James, rt)
     { function() if card("studio prefs") then require("sharedprefs").studio_ui(ctx, ImGui, cfg, studio_admin()); card_end() end end, 360 }, -- (shared preferences: James, rt)
+    { function() if card("studio colours") then require("colours").parity_ui(ctx, ImGui, cfg, studio_admin()); card_end() end end, 360 }, -- (colour parity: James, rt)
     { studio_debug, 360 } }, true)
 end
 local function settings_drive()

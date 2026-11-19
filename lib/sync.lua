@@ -1630,6 +1630,8 @@ function sync.write_status(proj, cfg, song, room, info)
   -- (free MB where takes land, so the others can say "Mac is low on disk": lib/rthealth.lua. James, rt)
   info.free_mb = require("rthealth").free_mb(proj)
   info.reaper = (reaper.GetAppVersion():match("^[%d%.]+")) -- (Setup > Health compares the band's: "7.79/win64" -> "7.79")
+  local okc, look = pcall(require("colours").look, proj) -- (what colours this computer shows, for Health's Colour parity row. James, rt)
+  info.look = okc and look or nil
   band.write_json(dir .. "/" .. (cfg.user:gsub("[^%w%-_ ]", "")) .. ".json", info)
   require("direct").send_live(cfg, "presence", info, song, room) -- (seen at once by those here: lib/presence.lua from_msg. James, 0.60.0-rt)
 end

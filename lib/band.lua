@@ -1516,6 +1516,7 @@ function band.capture_project(proj)
   for l = 0, math.floor(reaper.GetSetProjectInfo(proj, "RULER_LANE_COUNT", 0, false)) - 1 do
     local lane = { name = select(2, reaper.GetSetProjectInfo_String(proj, "RULER_LANE_NAME:" .. l, "", false)) }
     for _, k in ipairs(band.LANE_KEYS) do lane[k] = reaper.GetSetProjectInfo(proj, "RULER_LANE_" .. k .. ":" .. l, 0, false) end
+    lane.COLOR = band.color_out(lane.COLOR) -- (native, like a marker's: a Mac's red lane showed blue on Windows. Colour parity, James, rt)
     p.lanes[#p.lanes + 1] = lane
   end
   if reaper.SNM_GetIntConfigVarEx then -- (no setter in REAPER's API: SWS reaches the project's own config)
@@ -1611,6 +1612,9 @@ function band.capture_settings(proj)
     if v and c.mask then v = v & c.mask end
     s.cfg[c[1]] = v
   end
+  -- (the master's colour: mirror sends only its plug-ins and envelopes, so it stayed each computer's own. Colour parity, James, rt)
+  local master = reaper.GetMasterTrack(proj)
+  if master then s.master_colour = band.color_out(reaper.GetMediaTrackInfo_Value(master, "I_CUSTOMCOLOR")) end
   return s
 end
 function band.apply_settings(proj, s)
@@ -1639,6 +1643,11 @@ function band.apply_settings(proj, s)
   for name, id in pairs(band.FRONT_TOGGLES) do
     local w = math.tointeger(tonumber(s[name]))
     if w and (type(id) == "table" and one_of(id, w) or type(id) ~= "table" and (w == 0 or w == 1)) then front_toggle(proj, id, w) end
+  end
+  local master, mc = reaper.GetMasterTrack(proj), math.tointeger(tonumber(s.master_colour))
+  if master and mc then
+    mc = band.color_in(mc)
+    if reaper.GetMediaTrackInfo_Value(master, "I_CUSTOMCOLOR") ~= mc then reaper.SetMediaTrackInfo_Value(master, "I_CUSTOMCOLOR", mc) end
   end
   for _, c in ipairs(type(s.cfg) == "table" and band.PROJECT_CFG or {}) do
     local want, have = tonumber(s.cfg[c[1]]), band.proj_cfg(proj, c[1], c[2])
@@ -1685,7 +1694,9 @@ function band.apply_project(proj, p)
     for l, lane in ipairs(p.lanes) do
       if type(lane.name) == "string" then reaper.GetSetProjectInfo_String(proj, "RULER_LANE_NAME:" .. (l - 1), lane.name, true) end
       for _, k in ipairs(band.LANE_KEYS) do
-        if tonumber(lane[k]) then reaper.GetSetProjectInfo(proj, "RULER_LANE_" .. k .. ":" .. (l - 1), tonumber(lane[k]), true) end
+        local v = tonumber(lane[k])
+        if v and k == "COLOR" then v = band.color_in(v) end
+        if v then reaper.GetSetProjectInfo(proj, "RULER_LANE_" .. k .. ":" .. (l - 1), v, true) end
       end
     end
   end
@@ -1736,13 +1747,15 @@ function band.apply_markers(proj, list)
   for hi, h in ipairs(have) do if not used[hi] then reaper.DeleteProjectMarker(proj, h.num, h.region) end end
   for wi, m in ipairs(list) do if not match[wi] then reaper.AddProjectMarker2(proj, m.region, m.pos, m["end"], m.name, -1, band.color_in(m.color)) end end
   if not reaper.GetRegionOrMarker then return end
-  -- each one back in its ruler lane (matched by kind, position and name: AddProjectMarker2 gives no handle)
+  -- each one back in its ruler lane (matched by kind, position and name: AddProjectMarker2 gives no handle), and one put back to the default
+  -- colour given it: SetProjectMarker4's colour 0 means "leave it", so a reset never reached the others (colour parity audit, James, rt)
   for i = 0, reaper.GetNumRegionsOrMarkers(proj) - 1 do
     local mk = reaper.GetRegionOrMarker(proj, i, "")
-    local _, rgn, pos, _, name = reaper.EnumProjectMarkers3(proj, i)
+    local _, rgn, pos, _, name, _, color = reaper.EnumProjectMarkers3(proj, i)
     for _, m in ipairs(list) do
-      if m.lane and m.region == rgn and math.abs(m.pos - pos) < 1e-9 and m.name == name then
-        reaper.SetRegionOrMarkerInfo_Value(proj, mk, "I_LANENUMBER", m.lane)
+      if m.region == rgn and math.abs(m.pos - pos) < 1e-9 and m.name == name then
+        if m.lane then reaper.SetRegionOrMarkerInfo_Value(proj, mk, "I_LANENUMBER", m.lane) end
+        if band.color_in(m.color) == 0 and (color or 0) ~= 0 then reaper.SetRegionOrMarkerInfo_Value(proj, mk, "I_CUSTOMCOLOR", 0) end
         break
       end
     end
