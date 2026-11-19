@@ -774,4 +774,166 @@ function colours.run(proj, cfg, may, only_selected)
   band.log(string.format("coloured %d track%s%s", done, done == 1 and "" or "s", left > 0 and string.format(": %d someone else's left as they are", left) or ""))
 end
 
+-- ---- Colour parity (James, rt: "everyone should share the same colours for tracks and everything for consistency and parity") ----------
+-- The studio's Colour parity (band.json, lib/groups.lua colour_parity; on by default): no computer recolours the project for its own view
+-- (lib/people.lua paint), the colour display preferences and the theme's colour settings are the studio's (lib/sharedprefs.lua, group
+-- "colour"), and Health says when a computer still shows something different. Each computer puts what it shows in its status file
+-- (colours.look, lib/sync.lua write_status) so the others can compare.
+colours.PARITY_GRACE = 30 -- (seconds two computers' project colours may differ before Health says so: a change on its way isn't a problem)
+colours.LOOK_EVERY = 5
+function colours.parity(root) local ok, on = pcall(require("groups").colour_parity, root); return not ok or on end
+
+-- One number for a list of colour lines, whatever order they came in (two computers order tracks and items their own way). Pure.
+function colours.fingerprint(lines)
+  local t = {}
+  for i, l in ipairs(lines) do t[i] = l end
+  table.sort(t)
+  return require("mirror").hash(table.concat(t, "\n"))
+end
+-- What this computer shows: the project's colours as one fingerprint (tracks as the band has them, items, takes, markers and regions, the
+-- master; in the travelling byte order, so a Mac and a PC agree), its theme, its colour preferences and theme colour settings, and whether a
+-- who's-working colour is painted over a track here. Looked at every LOOK_EVERY seconds at most (it reads every item).
+local look_at, look_of, look_proj = -math.huge, nil, nil
+function colours.look(proj)
+  local now = reaper.time_precise()
+  if look_of and look_proj == proj and now - look_at < colours.LOOK_EVERY and now >= look_at then return look_of end
+  local mirror, sp = require("mirror"), require("sharedprefs")
+  local lines, overlay = {}, false
+  for i = 0, reaper.CountTracks(proj) - 1 do
+    local tr = reaper.GetTrack(proj, i)
+    if not mirror.local_track(tr) then
+      overlay = overlay or band.track_ext(tr, "band_colour") ~= ""
+      lines[#lines + 1] = "T " .. mirror.track_oid(tr) .. " " .. band.color_out(band.track_colour(tr))
+      for k = 0, reaper.CountTrackMediaItems(tr) - 1 do
+        local it = reaper.GetTrackMediaItem(tr, k)
+        if band.item_ext(it, "band_arriving") == "" then -- (a stand-in for audio still arriving: grey here only)
+          local l = "I " .. mirror.item_oid(it) .. " " .. band.color_out(reaper.GetMediaItemInfo_Value(it, "I_CUSTOMCOLOR"))
+          for t = 0, reaper.CountTakes(it) - 1 do
+            local tk = reaper.GetTake(it, t)
+            l = l .. " " .. (tk and band.color_out(reaper.GetMediaItemTakeInfo_Value(tk, "I_CUSTOMCOLOR")) or "-")
+          end
+          lines[#lines + 1] = l
+        end
+      end
+    end
+  end
+  for _, m in ipairs(band.capture_markers(proj)) do lines[#lines + 1] = string.format("M %s %.6f %s %s", m.region and "r" or "m", m.pos, m.name, m.color) end
+  local master = reaper.GetMasterTrack(proj)
+  if master then lines[#lines + 1] = "MASTER " .. band.color_out(reaper.GetMediaTrackInfo_Value(master, "I_CUSTOMCOLOR")) end
+  local prefs, tv = {}, {}
+  for _, x in ipairs(sp.PREFS) do if x.group == "colour" then prefs[x[1]] = sp.read(x[1]) end end
+  local tparams, theme = sp.theme_params()
+  for k, p in pairs(tparams) do tv[k] = p[2] end
+  look_at, look_proj = now, proj
+  look_of = { fp = colours.fingerprint(lines), theme = theme, prefs = prefs, tparams = tv, overlay = overlay or nil }
+  return look_of
+end
+
+-- What differs between this computer's look (`mine`, colours.look) and the others' (`peers`: status files, each with .user and .look).
+-- -> { { text, fp = true when it's the project's colours themselves, user } }, in name order. Pure.
+function colours.parity_problems(mine, peers, me)
+  local sp, out = require("sharedprefs"), {}
+  if type(mine) ~= "table" then return out end
+  if mine.overlay then out[#out + 1] = { "tracks here show who's working in their colours, over the project's own" } end
+  local list = {}
+  for _, st in ipairs(peers or {}) do
+    if type(st) == "table" and type(st.user) == "string" and st.user ~= me and type(st.look) == "table" then list[#list + 1] = st end
+  end
+  table.sort(list, function(a, z) return a.user < z.user end)
+  for _, st in ipairs(list) do
+    local l, u = st.look, st.user
+    if l.fp ~= nil and mine.fp ~= nil and l.fp ~= mine.fp then out[#out + 1] = { u .. "'s project colours differ from this computer's", fp = true, user = u } end
+    if l.overlay then out[#out + 1] = { u .. " sees who's working painted over the tracks" } end
+    if type(l.theme) == "string" and type(mine.theme) == "string" and l.theme ~= mine.theme then
+      out[#out + 1] = { u .. " uses another theme (" .. l.theme .. "), so the same colours look different there" }
+    elseif type(l.tparams) == "table" and type(mine.tparams) == "table" then
+      for k, v in pairs(l.tparams) do
+        if mine.tparams[k] ~= nil and not sp.same(mine.tparams[k], v) then out[#out + 1] = { u .. " sets the theme's colour settings differently" }; break end
+      end
+    end
+    local said = {}
+    for _, x in ipairs(sp.PREFS) do
+      local a, b = type(mine.prefs) == "table" and mine.prefs[x[1]], type(l.prefs) == "table" and l.prefs[x[1]]
+      if x.group == "colour" and tonumber(a) and tonumber(b) and not sp.same(a, b) and not said[x.differs] then
+        said[x.differs] = true
+        out[#out + 1] = { u .. " " .. x.differs }
+      end
+    end
+  end
+  return out
+end
+
+-- Health's "Colour parity" row ({ id, ok, level, ok words, problem words }), or nil when the studio has it off or no song is in front.
+local fp_since = {} -- user -> when their project colours first differed from ours (cleared once they match)
+function colours.health_row(cfg, b, proj)
+  if not (b and proj and colours.parity(cfg.root)) then return nil end
+  local okp, all = pcall(require("presence").all, cfg, b.song, b.room)
+  local fresh, now = {}, os.date("!*t")
+  for _, st in ipairs(okp and all or {}) do if type(st) == "table" and band.age(st.time, now) < 120 then fresh[#fresh + 1] = st end end
+  local t, said, seen = reaper.time_precise(), {}, {}
+  for _, p in ipairs(colours.parity_problems(colours.look(proj), fresh, cfg.user)) do
+    if p.fp then
+      seen[p.user] = true
+      fp_since[p.user] = fp_since[p.user] or t
+      if t - fp_since[p.user] >= colours.PARITY_GRACE then said[#said + 1] = p[1] end
+    else said[#said + 1] = p[1] end
+  end
+  for u in pairs(fp_since) do if not seen[u] then fp_since[u] = nil end end
+  return { "colour parity", #said == 0, "yellow", "Colour parity: every computer here shows the project's own colours, alike",
+    "Colours aren't the same everywhere: " .. table.concat(said, "; ") .. ". Themes stay each person's own; the colour settings are under Settings > Studio > Colour parity." }
+end
+
+-- Settings > Studio: the switch (owner and admins), the colour preferences it shares, and the theme's colour settings.
+function colours.parity_ui(ctx, ImGui, cfg, may)
+  local groups, sp = require("groups"), require("sharedprefs")
+  ImGui.SeparatorText(ctx, "Colour parity")
+  local on = groups.colour_parity(cfg.root)
+  ImGui.TextDisabled(ctx, on and ("On: every computer shows the project's own colours. Who's working shows in Who's here and in claim regions, never by " ..
+    "recolouring tracks, and the colour settings ticked here are the same everywhere while a song of this studio is in front.") or
+    "Off: each computer may paint who's working over the tracks (Settings > Colours) and keeps its own colour settings.")
+  local function share_mine() -- (this computer's own values, not the studio's that may be in force here)
+    local set = sp.chosen(cfg.root)
+    for _, x in ipairs(sp.PREFS) do if x.group == "colour" and set[x[1]] == nil then set[x[1]] = sp.mine(x[1]) end end
+    groups.set_shared_prefs(cfg.root, set)
+  end
+  if may then
+    local ch, v = ImGui.Checkbox(ctx, "Colour parity##studioparity", on)
+    if ch then
+      groups.set_colour_parity(cfg.root, v)
+      if v then share_mine() end
+      band.log(v and "colour parity is on for the studio: the same colours on every computer" or "colour parity is off for the studio: each computer shows colours its own way")
+    end
+    ImGui.SetItemTooltip(ctx, "Owner and admins. Turning it on also shares this computer's colour settings where none are chosen yet.")
+  end
+  if not on then return end
+  local chosen, any = sp.chosen(cfg.root), false
+  for _, x in ipairs(sp.PREFS) do any = any or (x.group == "colour" and chosen[x[1]] ~= nil) end
+  sp.rows_ui(ctx, ImGui, cfg, may, "colour")
+  if may and not any and ImGui.SmallButton(ctx, "Share this computer's colour settings##parityprefs") then share_mine() end
+  local tc = sp.theme_clean(groups.trusted(cfg.root).theme_colours)
+  local have, mine = sp.theme_params()
+  if tc then
+    local n = 0
+    for _ in pairs(tc.params) do n = n + 1 end
+    ImGui.TextDisabled(ctx, string.format("The theme's colour settings (%d, for %s): %s", n, tc.theme,
+      mine == tc.theme and "in force here." or "not here: this computer uses another theme, which stays its own."))
+  end
+  if may then
+    if ImGui.SmallButton(ctx, "Share my theme's colour settings##paritytheme") then
+      local params = {}
+      for k in pairs(have) do params[k] = sp.mine("theme:" .. k) end
+      if next(params) then
+        groups.set_theme_colours(cfg.root, { theme = mine, params = params })
+        band.log("the studio shares this theme's colour settings with everyone on the same theme (" .. mine .. ")")
+      else band.msg("This theme has no colour settings StudioSync can share (tints, coloured names).") end
+    end
+    ImGui.SetItemTooltip(ctx, "Owner and admins. Tint strengths and coloured track names from your theme's own settings, for those on the same theme.\n" ..
+      "The theme itself, layout and zoom stay each person's own.")
+    if tc then
+      ImGui.SameLine(ctx)
+      if ImGui.SmallButton(ctx, "Stop##paritytheme0") then groups.set_theme_colours(cfg.root, nil); band.log("the studio no longer shares a theme's colour settings") end
+    end
+  end
+end
+
 return colours

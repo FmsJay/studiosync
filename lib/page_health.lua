@@ -247,6 +247,9 @@ function H.maint_rows()
     -- (recording FLAC with "In time" listening chosen: takes arrive in 2-5 s steps; WAV or more bars. lib/streams.lua format_row. James, rt)
     local okf, frow = pcall(require("streams").format_row, proj)
     if okf and frow then rows[#rows + 1] = frow end
+    -- (the same colours on every computer: lib/colours.lua health_row. James, rt)
+    local okc, crow = pcall(require("colours").health_row, cfg, b, proj)
+    if okc and crow then rows[#rows + 1] = crow end
   end
   -- (without them less works, quietly: onboarding review, 0.59.9)
   if not reaper.APIExists("CF_GetSWSVersion") then

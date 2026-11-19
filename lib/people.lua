@@ -10,7 +10,11 @@
 -- A person's colour on a track is only ever shown here: the band's colour waits in the track's P_EXT:band_colour
 -- meanwhile, and mirror, restore points and the rest read and write that one (band.track_colour), so nothing sends,
 -- saves or loses it.
---   _band/colours/<user>.json   { colour = 0xRRGGBB, time }: each person's own file (one writer each)
+--   _band/colours/<user>.json   { colour = 0xRRGGBB, time, auto }: each person's own file (one writer each). A person with no pick has their
+--                               default written there once (auto = true), so it's chosen once and kept in the studio: the same on every
+--                               computer whoever joins later (James, rt: colour parity). They can change it any time.
+-- With the studio's Colour parity on (lib/groups.lua colour_parity, the default) no track is ever recoloured here: who's working shows in
+-- Who's here ("Working in ...", their claims) and in claim regions, and every computer shows the project's own colours.
 local band = require("band")
 local people = {}
 
@@ -39,13 +43,21 @@ end
 
 local function file(root, user) return root .. "/_band/colours/" .. (user:gsub("[^%w%-_ ]", "")) .. ".json" end
 
--- Everyone's colour: picked ones, then a default each for the rest of `known` (name order, so every machine agrees),
--- skipping colours already taken. Pure over `picked` ({ user = rgb }) and `known` (names).
-function people.assign(picked, known)
+-- Everyone's colour: picked ones, then a default each for the rest of `known` (name order, so every machine agrees), then for `later` (names
+-- only some computers know of: someone in a room, who drew), skipping colours already taken. `later` comes after so it never moves a member's
+-- default: a guest one computer knew of shifted everyone after them in name order there (colour parity audit, James, rt). Pure over `picked`
+-- ({ user = rgb }), `known` and `later` (names).
+function people.assign(picked, known, later)
   local out, taken, rest, seen = {}, {}, {}, {}
   for u, c in pairs(picked) do out[u], taken[c] = c, true end
-  for _, u in ipairs(known) do if not out[u] and not seen[u] then seen[u] = true; rest[#rest + 1] = u end end
-  table.sort(rest)
+  local function add(list)
+    local more = {}
+    for _, u in ipairs(list or {}) do if not out[u] and not seen[u] then seen[u] = true; more[#more + 1] = u end end
+    table.sort(more)
+    for _, u in ipairs(more) do rest[#rest + 1] = u end
+  end
+  add(known)
+  add(later)
   local i = 0
   for _, u in ipairs(rest) do
     local c
@@ -75,10 +87,7 @@ function people.colours(root, extra)
     end
     cache[root] = c
   end
-  local known = {}
-  for _, u in ipairs(c.members) do known[#known + 1] = u end
-  for _, u in ipairs(extra or {}) do known[#known + 1] = u end
-  return people.assign(c.picked, known)
+  return people.assign(c.picked, c.members, extra)
 end
 -- Your colour is the same in every studio you're in (James, 0.58.82: "make the colour settings sync across studios"): a pick goes to all of
 -- them, and a studio without one takes the newest you made elsewhere (once a panel run each: a studio joined later catches up).
@@ -97,7 +106,8 @@ function people.newest_pick(roots, user)
   local best
   for _, root in ipairs(roots) do
     local p = band.read_json(file(root, user))
-    if type(p) == "table" and p.user == user and math.tointeger(tonumber(p.colour)) and (not best or tostring(p.time) > tostring(best.time)) then best = p end
+    -- (a kept default isn't a pick: it stays in its studio, where it was free)
+    if type(p) == "table" and p.user == user and not p.auto and math.tointeger(tonumber(p.colour)) and (not best or tostring(p.time) > tostring(best.time)) then best = p end
   end
   return best
 end
@@ -111,6 +121,14 @@ function people.mine(cfg)
       reaper.RecursiveCreateDirectory(cfg.root .. "/_band/colours", 0)
       band.write_json(file(cfg.root, cfg.user), p)
       cache[cfg.root] = nil
+    elseif not p and type(here) ~= "table" and cfg.user == reaper.GetExtState(band.SECTION, "user") then
+      -- no pick anywhere: today's default is kept in the studio, so it can't move when someone joins (colour parity, James, rt)
+      local c = people.colours(cfg.root, { cfg.user })[cfg.user]
+      if c then
+        reaper.RecursiveCreateDirectory(cfg.root .. "/_band/colours", 0)
+        band.write_json(file(cfg.root, cfg.user), { user = cfg.user, colour = c, time = os.date("!%Y-%m-%dT%H:%M:%SZ"), auto = true })
+        cache[cfg.root] = nil
+      end
     end
   end
   return people.colours(cfg.root, { cfg.user })[cfg.user]
@@ -227,7 +245,17 @@ end
 
 -- Show it: each mirrored track in its person's colour, or the band's. `peers`: bandmates' status files. `where`: "<song>/<room>",
 -- for what came while you were away (its "last here", lib/extras.lua).
+-- Colour parity on (the studio's, lib/groups.lua): no overlay anywhere, and any left from before goes back to the band's colour.
+function people.parity(cfg) local ok, on = pcall(require("groups").colour_parity, cfg.root); return not ok or on end
 function people.paint(proj, cfg, peers, claims, where)
+  if people.parity(cfg) then
+    for i = 0, reaper.CountTracks(proj) - 1 do
+      local tr = reaper.GetTrack(proj, i)
+      if band.track_ext(tr, "band_colour") ~= "" then band.show_colour(tr, nil) end
+    end
+    if where then reaper.SetExtState(band.SECTION, "new held " .. where, "", false) end
+    return
+  end
   local base, editing, others = people.mode(), {}, {}
   local mode = base == "people" and "people" or people.shows("working") and "working" or "band"
   for _, st in ipairs(peers or {}) do
@@ -332,6 +360,12 @@ function people.colour_options(ctx, ImGui, cfg)
 end
 function people.track_options(ctx, ImGui)
   ImGui.SeparatorText(ctx, "Track colours you see")
+  local b = band.binding(reaper.EnumProjects(-1))
+  if b and b.root and people.parity(b) then -- (the studio's choice wins over this computer's: James, rt)
+    ImGui.TextDisabled(ctx, "Colour parity is on in this studio: every computer shows the project's own colours. Who's working shows in Who's here " ..
+      "and in claim regions, not on the tracks. (Owner and admins: Settings > Studio > Colour parity.)")
+    return
+  end
   local function next_to(words)
     ImGui.SameLine(ctx)
     if ImGui.GetContentRegionAvail(ctx) < ImGui.CalcTextSize(ctx, words) + 40 then ImGui.NewLine(ctx) end
