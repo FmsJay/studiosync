@@ -298,8 +298,18 @@ local last_driver
 local drawings_at = -math.huge -- (when this last looked whether the room has drawings to show)
 local inbox_at = -math.huge -- (and the song's inbox for dropped audio)
 -- Where a tick's time goes, part by part: the last tick over 0.15 s is kept in "slow tick <proj>" (not saved), to find what holds REAPER up on a big song
+-- (kept as name, seconds pairs and put into words only when a tick is slow or timed: a dozen string.formats a tick, ~30 ticks a second, went
+-- into a line written only past 0.15 s. James, rt)
 local laps, lap_t = {}, 0
-local function lap(name) local t = reaper.time_precise(); laps[#laps + 1] = string.format("%s %.0f", name, (t - lap_t) * 1000); lap_t = t end
+local function lap(name) local t = reaper.time_precise(); laps[#laps + 1] = name; laps[#laps + 1] = t - lap_t; lap_t = t end
+local function laps_text()
+  local parts = {}
+  for i = 1, #laps - 1, 2 do parts[#parts + 1] = string.format("%s %.0f", laps[i], laps[i + 1] * 1000) end
+  return table.concat(parts, ", ")
+end
+-- Tick timings for tests/reaper/rt_perf.lua (James, rt: before and after an efficiency pass, on each computer): collected only while ExtState
+-- "perf stats" is "1" (looked at every 10 s), and published every 10 s as "tick stats <proj>". Off, it costs one comparison a tick.
+local perf = { on = false, at = -math.huge, ticks = {}, passes = {}, worst = 0, worst_laps = "" }
 local last_session -- a session.json caught mid-sync reads as nothing: keep the last good one
 local joined = {} -- machines this Live sync has already let in
 -- Are we in the middle of editing? (the project changed in the last 2 s, or the mouse button is down): the band's
@@ -547,6 +557,10 @@ function P.heal(t)
   -- something never landed here. Bring it in line with the band's newest version (at most every 5 minutes).
   if s and s.sync == "mirror" and not hold then
     local mine, differs, same = require("mirror").root(proj), false, false
+    -- (kept for the status receipt later in this pass, unless a heal changes it below: mirror.root reads every object's revision, sorts and
+    -- hashes them, thousands on a big song, and it ran twice a pass. Nothing else between here and P.status writes revisions: the look and
+    -- the receive come before. James, rt: efficiency pass)
+    t.mirror_root = mine
     for _, st in ipairs(require("presence").peers(cfg, b.song, b.room)) do
       if st.mirror and st.pending == 0 and st.mirror ~= mine then differs = true end
       if st.mirror and st.pending == 0 and st.mirror == mine then same = true end
@@ -560,7 +574,7 @@ function P.heal(t)
     if differs and sync.pending_events(proj, cfg, b.song, b.room) == 0 then heal_since = heal_since or now else heal_since = nil end
     if now - claims_at > 10 then claims_at = now; pcall(sync.drop_gone_claims, proj, cfg, b.song, b.room) end
     if heal_since and now - heal_since > 60 and now - healed_at > 300 and reaper.EnumProjects(-1) == proj then
-      healed_at, heal_since = now, nil
+      healed_at, heal_since, t.mirror_root = now, nil, nil
       local ok, n = pcall(require("mirror").heal, proj, sync.room_dir(cfg, b.song, b.room), sync.local_mix)
       if not ok then band.log("couldn't bring the project in line with the studio: " .. tostring(n))
       elseif n > 0 then band.log(string.format("caught up on %d change%s that hadn't arrived here", n, n == 1 and "" or "s")); mirror_due = true end
@@ -713,7 +727,7 @@ function P.status(t)
   local info = { driver = driver, role = b.role, song = b.song, hold = hold or nil,
     pending = sync.pending_events(proj, cfg, b.song, b.room), armed = armed, side = side_bars(),
     playing = reaper.GetPlayStateEx(proj) & 1 == 1 or nil, recording = reaper.GetPlayStateEx(proj) & 4 == 4 or nil,
-    front = reaper.EnumProjects(-1) == proj, mirror = s and s.sync == "mirror" and require("mirror").root(proj) or nil,
+    front = reaper.EnumProjects(-1) == proj, mirror = s and s.sync == "mirror" and (t.mirror_root or require("mirror").root(proj)) or nil,
     -- (the view and the cursor only while someone follows you, their one reader (presence.follow): each scroll or click rewrote this file and
     -- Syncthing sent it to everyone. Being followed puts them in at once, as the follower's own status shows it. 0.59.14, review)
     editing = require("presence").editing(proj), view = followed and require("presence").view(proj) or nil, ping = require("presence").my_ping(proj),
@@ -965,7 +979,7 @@ local function tick_body() -- returns true to keep going
         "sonobus for listeners", "outbox", "live owner", "ping", "slow tick", "last here", "draw", "live began", "takelanes",
         -- (and these: a new tab at the same address showed a count-in, a producer, a SonoBus trouble or a drift that were the closed tab's. Review, 0.59.14)
         "end session", "produced by", "producer controls", "timing", "produce ctl", "last_at", "stamping", "together_at", "rt group", "rt silent", "rt silent who", "rt trouble", "driver_away", "mirror drift",
-        "ninjam shown", "ninjam off", "ninjam start", "ninjam connect", "ninjam host", "unsent", "last_track" }) do reaper.DeleteExtState(band.SECTION, k .. " " .. key, false) end -- (unsent, last_track: Round 2 review, 0.59.46)
+        "ninjam shown", "ninjam off", "ninjam start", "ninjam connect", "ninjam host", "unsent", "last_track", "tick stats" }) do reaper.DeleteExtState(band.SECTION, k .. " " .. key, false) end -- (unsent, last_track: Round 2 review, 0.59.46)
     return band.log("live sync stopped: '" .. b.song .. "'" .. (b.room ~= "main" and (", side room '" .. b.room .. "',") or "") .. " was closed (it starts again by itself when you reopen it)")
   end
   local now_b = band.binding(proj)
@@ -1250,6 +1264,7 @@ local function tick_body() -- returns true to keep going
     local ok, err = pcall(poll)
     if not ok then band.log("sync error: " .. tostring(err)) end
     pass_took = reaper.time_precise() - polled_at
+    if perf.on then perf.passes[#perf.passes + 1] = pass_took end
     -- more of the band's changes waiting than one pass applies: the next pass in 0.3 s, not 2 s (320 moved items
     -- took 73 s to land at 2 s a pass; laptop, 0.34.4). Each pass still applies at most a quarter second.
     -- (and when a burst of ours is still going out: mirror.watch sends a quarter second of it per pass)
@@ -1278,6 +1293,17 @@ local function updated()
   -- (once whole, a failure on the part-arrived copy doesn't hold the whole version back: its mark goes, once. Round 3 review, 0.59.48)
   if partial and not partial_seen then partial_seen = true; reaper.DeleteExtState(band.SECTION, failed, false) end
   return (ready or partial) and reaper.GetExtState(band.SECTION, failed) ~= disk
+end
+-- The last 10 s of tick timings, while "perf stats" is on: { at, song, room, ticks, passes = { n, med, p95, max } (ms), worst (the slowest
+-- tick's laps) }. (tests/reaper/rt_perf.lua reads it. James, rt)
+local function perf_publish(now)
+  perf.at = now
+  if perf.on and #perf.ticks > 0 then
+    local R = require("rthealth")
+    band.set_ext_json(band.SECTION, "tick stats " .. key, { at = os.time(), song = b.song, room = b.room, ticks = R.summary(perf.ticks),
+      passes = R.summary(perf.passes), worst = perf.worst_laps }, false)
+  end
+  perf.on, perf.ticks, perf.passes, perf.worst, perf.worst_laps = reaper.GetExtState(band.SECTION, "perf stats") == "1", {}, {}, 0, ""
 end
 -- an error anywhere in a tick (a malformed cue from someone's machine, say) is logged, and Live sync carries on
 local said_at, sws_at = -math.huge, -math.huge
@@ -1322,8 +1348,13 @@ tick = function()
   local took = reaper.time_precise() - t0
   if took > 0.15 then
     lap("rest")
-    reaper.SetExtState(band.SECTION, "slow tick " .. key, string.format("%.0f ms at %s: %s", took * 1000, os.date("%H:%M:%S"), table.concat(laps, ", ")), false)
+    reaper.SetExtState(band.SECTION, "slow tick " .. key, string.format("%.0f ms at %s: %s", took * 1000, os.date("%H:%M:%S"), laps_text()), false)
   end
+  if perf.on then
+    perf.ticks[#perf.ticks + 1] = took
+    if took > perf.worst then perf.worst, perf.worst_laps = took, laps_text() end
+  end
+  if t0 - perf.at >= 10 then perf_publish(t0) end
   if go then reaper.defer(tick) end
 end
 

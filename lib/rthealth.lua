@@ -118,6 +118,18 @@ function R.folder_row(name, id, st, errs, devs)
   return { "syncthing " .. id, fine, bad and "yellow" or "grey", text, text }
 end
 
+-- Pure: durations in seconds -> { n, med, p95, max } in ms (nearest rank), or nil when there are none. Live sync's tick timings, for
+-- tests/reaper/rt_perf.lua. (James, rt: an efficiency pass, measured before and after on each computer)
+function R.summary(xs)
+  local s = {}
+  for i, x in ipairs(xs or {}) do s[i] = x end
+  local n = #s
+  if n == 0 then return nil end
+  table.sort(s)
+  local function ms(p) return math.floor(s[math.max(1, math.ceil(p * n))] * 10000 + 0.5) / 10 end
+  return { n = n, med = ms(0.5), p95 = ms(0.95), max = ms(1) }
+end
+
 -- ---- the parts that touch REAPER and Syncthing ----
 local S = { at = -math.huge, rows = {}, still = {} }
 
