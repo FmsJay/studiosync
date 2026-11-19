@@ -98,6 +98,14 @@ reaper.StudioSync_DirectFileTime = nil
 ftime["R/Song/rooms/side/media/n2.wav"], sizes["R/Song/rooms/side/media/n2.wav"] = now, 10
 assert(streams.offer_media(cfg, "Song", "side", "R/Song/rooms/side/media", { state = 'FILE "{media}/n2.wav"' }, nil) == 0, "an extension without file times: Syncthing")
 reaper.StudioSync_DirectFileTime = was
+do -- a take streamed as it was recorded: only which stream it is goes, not its bytes again
+  local mf = { [band.norm("R/Song/rooms/side/media/aa-take.flac"):lower()] = band.norm("C:/Rec/take.flac") }
+  local sd = { [band.norm("C:/Rec/take.flac"):lower()] = { file = "take.flac", rel = "Song/side~James~take.flac" } }
+  local s = streams.streamed_copy("R/Song/rooms/side/media/aa-take.flac", mf, sd, { { rel = "Song/side~James~take.flac" } })
+  assert(s and s.file == "take.flac", "the copy of a streamed take")
+  assert(streams.streamed_copy("R/Song/rooms/side/media/aa-take.flac", mf, sd, {}) == nil, "the stream gone: its bytes go as media")
+  assert(streams.streamed_copy("R/Song/rooms/side/media/other.flac", mf, sd, { { rel = "Song/side~James~take.flac" } }) == nil, "not a copy of one")
+end
 direct.stream_start = function() error("boom") end
 assert(streams.offer_media(cfg, "Song", "side", "R/Song/rooms/side/media", { state = 'FILE "{media}/n2.wav"' }, nil) == 0, "never raises")
 
@@ -157,6 +165,20 @@ assert(streams.media_tick(cfg, b) == 0 and streams.media[e3.rel], "not there yet
 disk[e3.tmp] = 4096
 clock = clock + 1
 assert(streams.media_tick(cfg, b) == 1 and disk[e3.target] == 4096 and disk[e3.tmp] == nil and disk[e3.inbox] == nil, "in place, temp and inbox copy gone")
+-- the shared copy of a take that streamed here as it was recorded: copied from the take's stream copy, which stays for the take's own swap
+cross_disk, copies = false, {}
+d.id, d.file, d.take = "Bo-5", "cc-take.flac", "take.flac"
+assert(streams.on_media(cfg, b, d))
+d.take = nil
+local e4 = streams.media["Song/~media~main~cc-take.flac"]
+assert(e4.keep_inbox and e4.src_rel == "Song/main~Bo~take.flac" and e4.inbox == "H/direct/studio1/.streams/Song/main~Bo~take.flac", "the take's stream copy")
+disk[e4.inbox] = 4096
+instreams[1] = { rel = e4.src_rel, bytes = 4096, total = 4096, done = true, ok = true, at = os.time() }
+clock = clock + 1
+assert(streams.media_tick(cfg, b) == 0 and #copies == 1 and copies[1][1] == e4.inbox and copies[1][2] == e4.tmp, "copied, never moved")
+disk[e4.tmp] = 4096
+clock = clock + 1
+assert(streams.media_tick(cfg, b) == 1 and disk[e4.target] == 4096 and disk[e4.inbox] == 4096, "in place; the take's copy stays")
 -- the prune pass removes leftovers in the song's .streams folder
 band.files = function() return { "~media~main~left.wav", "main~Bo~take.wav" } end
 removed = {}

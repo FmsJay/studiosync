@@ -304,6 +304,7 @@ function streams.send_tick(proj, cfg, b, recording)
     streams.trace("stream_start " .. path .. " for " .. m.track.name .. " -> " .. tostring(rel))
     if rel then
       rec.takes[#rec.takes + 1] = { id = id, rel = rel }
+      streams.streamed[band.norm(path):lower()] = { file = m.file, rel = rel } -- (its shared copy then goes as "this stream": offer_media)
       direct.send_live(cfg, "take", { id = id, user = cfg.user, track = m.track.oid, name = m.track.name, file = m.file, pos = rec.pos, at = rec.at,
         srate = srate(proj), nch = m.track.nch, fmt = m.file:match("%.(%w+)$"):lower() }, b.song, b.room, id)
     end
@@ -518,6 +519,16 @@ end
 -- in the last MEDIA_FRESH seconds (one copied in, rendered or printed now: an older one they have), once per script, and never one this script
 -- put in place from the link. -> how many went. Never raises.
 streams.sent_media, streams.placed = {}, {} -- song/room/file -> true
+streams.streamed = {} -- a take's file streamed as it was recorded (normalized, lower case) -> { file, rel }
+-- The take stream a media file is a byte-for-byte copy of (mirror.share_media's record), while the extension still has that stream: { file, rel },
+-- or nil. Not "finished": the change naming the copy goes out ~0.1 s after the stop, before the stream's last pass; each receiver places its
+-- copy only once it's done, SHA-256 checked and the size announced, else Syncthing brings it. media_from, streamed, outs passed in. Pure.
+function streams.streamed_copy(path, media_from, streamed, outs)
+  local src = media_from[band.norm(path):lower()]
+  local s = src and streamed[src:lower()]
+  if not s then return nil end
+  for _, o in ipairs(outs or {}) do if o.rel == s.rel then return s end end
+end
 local media_seq = 0
 function streams.offer_media(cfg, song, room, media_dir, ev, last)
   local ok, n = pcall(function()
@@ -533,13 +544,15 @@ function streams.offer_media(cfg, song, room, media_dir, ev, last)
       local key, path, name = song .. "/" .. tostring(r) .. "/" .. m.file, rooms .. "/" .. tostring(r) .. "/media/" .. m.file, streams.media_name(r, m.file)
       local t = name and not streams.sent_media[key] and not streams.placed[key] and time_of(path) or -1
       local size = t >= 0 and os.time() - t <= streams.MEDIA_FRESH and band.size(path) or nil
-      local rel = size and size > 0 and direct.stream_start(cfg, path, song, room, streams.MEDIA_INTERVAL_MS, name)
-      if rel then
-        direct.stream_end(cfg, rel) -- (it's complete: begun and ended at once, so the rest, its length and SHA-256 follow straight away)
+      -- (a take already streamed as it was recorded: its bytes are there, checked; only which file they are goes. Takes went twice before. rt)
+      local take = size and size > 0 and next(streams.streamed) and streams.streamed_copy(path, require("mirror").media_from, streams.streamed, direct.streams(cfg).out)
+      local rel = not take and size and size > 0 and direct.stream_start(cfg, path, song, room, streams.MEDIA_INTERVAL_MS, name)
+      if rel then direct.stream_end(cfg, rel) end -- (it's complete: begun and ended at once, so the rest, its length and SHA-256 follow straight away)
+      if rel or take then
         streams.sent_media[key], media_seq, sent = true, media_seq + 1, sent + 1
         local id = string.format("%s-%s-%d%04d", (cfg.user:gsub("[^%w%-_]", "_")), os.date("!%Y%m%d-%H%M%SZ"), media_seq, math.random(0, 9999))
-        direct.send_live(cfg, "media", { id = id, user = cfg.user, room = r, file = m.file, size = size }, song, room, id)
-        streams.trace("media out " .. rel .. " " .. size .. " bytes")
+        direct.send_live(cfg, "media", { id = id, user = cfg.user, room = r, file = m.file, size = size, take = take and take.file or nil }, song, room, id)
+        streams.trace("media out " .. (rel or ("as the streamed take " .. take.rel)) .. " " .. size .. " bytes")
       end
     end
     return sent
@@ -573,6 +586,13 @@ function streams.on_media(cfg, b, d)
   local room_dir = cfg.root .. "/" .. b.song .. "/rooms/" .. e.room
   if #band.subdirs(room_dir) == 0 then return false end -- (a room this computer doesn't have: nothing written where Syncthing wouldn't)
   e.inbox, e.target = direct.stream_path(cfg, e.rel), room_dir .. "/media/" .. e.file
+  if type(d.take) == "string" then -- (the shared copy of a take that streamed here as it was recorded: copied from that stream's copy, which stays
+    -- for the take's own swap. The name is worked out here, as for the take itself)
+    local name = streams.stream_name(e.room, e.user, d.take)
+    local trel = name and direct.stream_rel(b.song, name)
+    if not trel then return false end
+    e.src_rel, e.inbox, e.keep_inbox = trel, direct.stream_path(cfg, trel), true
+  end
   local dir, base = e.target:match("^(.*)/([^/]+)$")
   e.tmp = dir .. "/.syncthing." .. base .. ".direct.tmp" -- (Syncthing ignores ".syncthing.*"; not its own download's name, .syncthing.<name>.tmp)
   streams.media[e.rel] = e
@@ -582,8 +602,8 @@ end
 -- with these same bytes). Else copied in the background to e.tmp first (REAPER doesn't hold still for a big file), finished on a later tick.
 local function place(e)
   reaper.RecursiveCreateDirectory(e.target:match("^(.*)/"), 0)
-  if os.rename(e.inbox, e.target) then return true end
-  if reaper.file_exists(e.target) then os.remove(e.inbox); return true end -- (Syncthing's landed this moment: left as it is)
+  if not e.keep_inbox and os.rename(e.inbox, e.target) then return true end
+  if reaper.file_exists(e.target) then if not e.keep_inbox then os.remove(e.inbox) end; return true end -- (Syncthing's landed this moment)
   band.copy_background(e.inbox, e.tmp)
   e.copying = true
   return false
@@ -591,7 +611,7 @@ end
 local function copied(e) -- -> true once the background copy is in place (or something else got there first)
   if band.size(e.tmp) ~= e.size then return false end
   if reaper.file_exists(e.target) then os.remove(e.tmp) elseif not os.rename(e.tmp, e.target) then return false end -- (held a moment: next tick)
-  os.remove(e.inbox)
+  if not e.keep_inbox then os.remove(e.inbox) end
   return true
 end
 -- Each Live sync tick: announced files put in place once they're here and checked, the inbox's media copies tidied. -> how many were put in
@@ -605,7 +625,7 @@ function streams.media_tick(cfg, b)
   for _, i in ipairs(direct.streams(cfg).inn) do inn[i.rel] = i; by_name[tostring(i.rel):match("[^/]+$") or ""] = i end
   local placed = 0
   for rel, e in pairs(streams.media) do
-    streams.update(e, inn[rel], now)
+    streams.update(e, inn[e.src_rel or rel], now)
     local done
     if e.copying then
       done = copied(e)
@@ -614,7 +634,7 @@ function streams.media_tick(cfg, b)
       local how = streams.place_decision(e, band.size(e.target), e.done and band.size(e.inbox) or nil, now)
       if how == "place" then done = place(e)
       elseif how ~= "wait" then
-        if how == "have" and e.done then os.remove(e.inbox) end -- (still arriving: the prune takes it once it's done)
+        if how == "have" and e.done and not e.keep_inbox then os.remove(e.inbox) end -- (still arriving: the prune takes it once it's done)
         streams.media[rel] = nil
       end
     end

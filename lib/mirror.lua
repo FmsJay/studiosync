@@ -1830,6 +1830,7 @@ end
 -- chunk with paths rewritten to the copies. `sent`: the item's last change as the band has it; a path already in it as written came
 -- from a bandmate (a shared sample library, say) and is left alone: copied, a bandmate could send a path to any file you have and
 -- have your next edit of the item share it (review, 0.58.53)
+mirror.media_from = {} -- a shared copy's path (normalized, lower case) -> the file it was copied from
 function mirror.share_media(chunk, media_dir, it, sent)
   reaper.RecursiveCreateDirectory(media_dir, 0)
   local room = norm_path(media_dir):match("([^/]+)/media/?$") or "main"
@@ -1885,7 +1886,10 @@ function mirror.share_media(chunk, media_dir, it, sent)
       end
     end
     -- (only once the copy is really there: pointing at a copy that was never made left everyone waiting for it)
-    if reaper.file_exists(dst) then return 'FILE "{media:' .. room .. "}/" .. copy .. '"' end
+    if reaper.file_exists(dst) then
+      mirror.media_from[band.norm(dst):lower()] = band.norm(path) -- (a byte-for-byte copy of path: a take already streamed needn't go again. lib/streams.lua offer_media, rt)
+      return 'FILE "{media:' .. room .. "}/" .. copy .. '"'
+    end
     -- (its file isn't here at all (an unplugged drive, a moved folder): sent as it was, it pointed everyone at a path only this computer ever
     -- had, and their copy of the item went silent. Held back with a word, as a failed copy is. Full review, 0.59.44)
     if not mirror.copy_pending and not mirror.copy_failed and not reaper.file_exists(path) then
