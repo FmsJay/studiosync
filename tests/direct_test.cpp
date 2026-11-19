@@ -356,6 +356,66 @@ static void wav_hammer(const std::string &studio, const char *peer, const std::s
   CHECK(looks > 50 && bad == 0, "a WAV's first audio never shows a header claiming nothing or too much (header alone or split, writes held 3 ms apart, a reader in a tight loop)");
 }
 
+// 1.0.12: several stream frames in flight. A finished file streamed and ended at once (a catch-up or a media file) -> seconds until it's
+// done and hash-checked there, and it arrived whole.
+static double stream_file(const std::string &studio, const char *peer, const std::string &inbox, const std::string &src, const std::string &rel, long long size)
+{
+  const double t0 = now_ms();
+  direct_stream(studio.c_str(), rel.c_str(), src.c_str(), peer, 20);
+  direct_stream_end(studio.c_str(), rel.c_str());
+  const std::string done = "\"rel\":\"" + rel + "\",\"size\":" + std::to_string(size) + ",\"ended\":true,\"finished\":true";
+  while (now_ms() - t0 < 60000 && std::string(direct_streams()).find(done) == std::string::npos) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  const double secs = (now_ms() - t0) / 1000;
+  CHECK_QUIET(slurp(inbox + "/.streams/" + rel) == slurp(src));
+  return secs;
+}
+// The same 8 MB over a 57 ms round trip (Tailscale's, desktop <-> laptop off the home network): one frame at a time, as before 1.0.12, then
+// with the window. Then a slow relayed way (2 Mbit/s, 120 ms): the window stays small, nothing drops, and the rate Health shows is the link's.
+static void link_speed(const std::string &studio, const char *peer, const std::string &inbox, const std::string &dir)
+{
+  const std::string src = dir + "/catchup.wav";
+  const long long size = 8LL << 20;
+  {
+    std::string chunk(1 << 20, 'c');
+    FILE *f = fopen(src.c_str(), "wb");
+    for (int i = 0; i < 8; ++i) { chunk[7] = (char)i; fwrite(chunk.data(), 1, chunk.size(), f); }
+    fclose(f);
+  }
+  direct_test_link(57, 1);
+  const double before = stream_file(studio, peer, inbox, src, "Song A/catchup one at a time.wav", size);
+  direct_test_link(57, 0);
+  const double after = stream_file(studio, peer, inbox, src, "Song A/catchup windowed.wav", size);
+  std::string st = direct_status();
+  const size_t at = st.find(std::string("\"") + peer + "\"");
+  const double rate = json_num(st, "rate", at), rtt = json_num(st, "rtt_ms", at), win = json_num(st, "window", at);
+  printf("     8 MB at a 57 ms round trip: one frame at a time %.1f s (%.2f MB/s), windowed %.1f s (%.2f MB/s), %.1fx; status rate %.2f MB/s, rtt %.0f ms, window %.0f\n",
+         before, 8.39 / before, after, 8.39 / after, before / after, rate / 1e6, rtt, win);
+  CHECK(before / after >= 4 && rate > 2e6 && rtt >= 50 && win >= 8, "several frames in flight: 8 MB at a 57 ms round trip at least 4x faster than one at a time; the status says the rate, round trip and window");
+
+  // in between: a 20 Mbit/s way at the same round trip. The window settles near what the link holds in a round trip (2.5 MB/s x 57 ms: 2-3 frames)
+  direct_test_bandwidth(20000);
+  const double mid = stream_file(studio, peer, inbox, src, "Song A/catchup 20 Mbit.wav", size);
+  st = direct_status();
+  const double mrate = json_num(st, "rate", st.find(std::string("\"") + peer + "\"")), mwin = json_num(st, "window", st.find(std::string("\"") + peer + "\""));
+  printf("     8 MB over 20 Mbit/s and 57 ms: %.1f s (%.2f MB/s), window %.0f, status rate %.2f MB/s\n", mid, 8.39 / mid, mwin, mrate / 1e6);
+  CHECK(mrate > 1.8e6 && mwin >= 2 && mwin <= 8, "a 20 Mbit/s way: near its rate, with a window near what it holds in a round trip");
+
+  const std::string relayed = dir + "/relayed.wav";
+  spit(relayed, std::string(1 << 20, 'r'));
+  direct_test_bandwidth(2000);
+  direct_test_link(120, 0);
+  const double slow = stream_file(studio, peer, inbox, relayed, "Song A/relayed.wav", 1 << 20);
+  direct_test_bandwidth(0);
+  direct_test_link(0, 0);
+  st = direct_status();
+  const double srate = json_num(st, "rate", st.find(std::string("\"") + peer + "\"")), swin = json_num(st, "window", st.find(std::string("\"") + peer + "\""));
+  const std::string ss = direct_streams();
+  const size_t sat = ss.find("\"rel\":\"Song A/relayed.wav\"");
+  printf("     1 MB over 2 Mbit/s and 120 ms: %.1f s, window %.0f (each pass starts at 4 at most), status rate %.0f KB/s\n", slow, swin, srate / 1e3);
+  CHECK(sat != std::string::npos && ss.find("\"resends\":0,\"error\":\"\"", sat) < ss.find("}}", sat) && swin <= 3 && srate > 120e3 && srate < 400e3,
+        "a slow relayed way: the window is cut to the link (3 at most), every frame answered in time, the rate is the link's");
+}
+
 static void live_layer_tests(const std::string &studio, const std::string &secret, const std::string &key, int port, const char *peer, const std::string &inbox, const std::string &dir)
 {
   (void)secret;
@@ -416,6 +476,15 @@ static void live_layer_tests(const std::string &studio, const std::string &secre
   CHECK(direct_stream_rel_ok("Song A/James take 03.wav") && direct_stream_rel_ok("S/x.FLAC") && !direct_stream_rel_ok("S/x.json") && !direct_stream_rel_ok("../x.wav") &&
         !direct_stream_rel_ok("S/sub/x.wav") && !direct_stream_rel_ok("S/.x.wav") && !direct_stream_rel_ok("x.wav") && !direct_stream_rel_ok("S/x.wav."),
         "the stream path rule");
+  { // 1.0.12, send anything: the vetted studio files go, nothing that runs ever does
+    bool sends = true, runs = false;
+    for (const char *e : { "mp4", "MOV", "webm", "pdf", "png", "jpg", "jpeg", "txt", "md", "mid", "fxp", "fxb", "vstpreset", "nam", "sfz", "als", "zip" })
+      if (!direct_stream_rel_ok((std::string("Song A/ref chart.") + e).c_str())) { printf("     refused but shouldn't be: .%s\n", e); sends = false; }
+    for (const char *e : { "exe", "dll", "dylib", "so", "lua", "py", "sh", "bat", "cmd", "ps1", "js", "EXE", "rpp", "json" })
+      if (direct_stream_rel_ok((std::string("Song A/tool.") + e).c_str())) { printf("     passed but shouldn't: .%s\n", e); runs = true; }
+    CHECK(sends && !runs && !direct_stream_rel_ok("Song A/x.exe:y.txt") && !direct_stream_rel_ok("Song A/../x.zip"),
+          "send anything: video, pdf, pictures, notes, presets, als and zip go; executables and scripts never");
+  }
 
   // A take recorded while it's streamed: a writer thread appends 24-bit stereo at 4x real time with the recorder's placeholder header;
   // mid-way the received copy must be a playable WAV every time it's looked at; at the end, byte for byte the same
@@ -503,6 +572,7 @@ static void live_layer_tests(const std::string &studio, const std::string &secre
 #endif
   slow_link_take(studio, peer, inbox, dir);
   wav_hammer(studio, peer, inbox, dir);
+  link_speed(studio, peer, inbox, dir);
 }
 
 static void audio_tests(const std::string &dir)

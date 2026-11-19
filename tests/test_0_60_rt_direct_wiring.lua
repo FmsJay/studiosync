@@ -90,7 +90,7 @@ local function ext_108()
   reaper.StudioSync_DirectClock = function() return '{"peers":{}}' end
   reaper.StudioSync_DirectNow = function() return 1795100000 end
   reaper.StudioSync_DirectStream = function() return 1 end
-  gext["BandSync\0menu extension"] = "1.0.8"
+  gext["BandSync\0menu extension"] = "1.0.12"
 end
 ext_108()
 local direct = require("direct")
@@ -263,7 +263,7 @@ package.loaded.direct = direct
 
 -- ---- 5. Health: the extension is mandatory ---------------------------------------------------------------------------------------------
 local rows = direct.health_rows(cfg)
-assert(rows[1][1] == "direct" and rows[2][1] == "direct clock", "1.0.8 here: the link's row and the clock's")
+assert(rows[1][1] == "direct" and rows[2][1] == "direct clock", "1.0.12 here: the link's row and the clock's")
 assert(rows[1].action and rows[1].action[1] == "Set up direct link", "Windows without the firewall rule: the Set up direct link button")
 package.loaded.services.run_hidden = function(name) return name == "direct-fw" and "Rule Name: StudioSync direct link\r\nProgram: C:\\REAPER\\reaper.exe\r\nLocalPort: 47281" or nil end
 rows = direct.health_rows(cfg)
@@ -272,7 +272,7 @@ assert(rows[2][5]:find("Shared clock", 1, true), "the clock's line: " .. rows[2]
 gext["BandSync\0menu extension"] = "1.0.7"
 reaper.StudioSync_DirectMsg = nil
 rows = direct.health_rows(cfg)
-assert(#rows == 1 and rows[1][1] == "menu ext" and rows[1][2] == false and rows[1][3] == "red" and rows[1][5]:find("1.0.7", 1, true) and rows[1][5]:find("1.0.8", 1, true)
+assert(#rows == 1 and rows[1][1] == "menu ext" and rows[1][2] == false and rows[1][3] == "red" and rows[1][5]:find("1.0.7", 1, true) and rows[1][5]:find(direct.WANT, 1, true)
   and rows[1][5]:find("ReaPack", 1, true), "older: a red problem, with the fix: " .. rows[1][5])
 reaper.StudioSync_DirectStart = nil
 gext["BandSync\0menu extension"] = nil

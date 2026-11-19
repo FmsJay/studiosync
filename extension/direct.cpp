@@ -44,6 +44,7 @@ typedef int sock_t;
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
@@ -371,7 +372,10 @@ static bool sha_file(FILE *f, long long len, unsigned char out[32])
   return true;
 }
 
-// Only "<song>/<name>.<audio or MIDI extension>": the song a plain folder name, the name a plain file name.
+// Only "<song>/<name>.<an extension on the list>": the song a plain folder name, the name a plain file name. The list: audio and MIDI, and
+// (1.0.12, "send anything") the other files a studio passes round: video references, PDF charts, pictures, notes, plug-in presets and patches
+// (Neural Amp Modeler, SFZ; impulse responses are WAVs), Ableton sets, zips. Never anything that runs: no exe, dll, dylib, so, lua, py, sh,
+// bat, cmd, ps1, js (they're simply not on it; lib/direct.lua STREAM_EXT says the same. James, rt)
 bool direct_stream_rel_ok(const char *rel)
 {
   if (!rel) return false;
@@ -383,7 +387,8 @@ bool direct_stream_rel_ok(const char *rel)
   if (!seg_ok(name) || dot == std::string::npos) return false;
   std::string ext = name.substr(dot + 1);
   for (char &c : ext) c = (char)tolower((unsigned char)c);
-  static const char *ok[] = { "wav", "w64", "flac", "aif", "aiff", "ogg", "opus", "mp3", "mid" };
+  static const char *ok[] = { "wav", "w64", "flac", "aif", "aiff", "ogg", "opus", "mp3", "mid", "mp4", "mov", "webm", "pdf", "png", "jpg", "jpeg",
+                              "txt", "md", "fxp", "fxb", "vstpreset", "nam", "sfz", "als", "zip" };
   for (const char *e : ok) if (ext == e) return true;
   return false;
 }
@@ -487,6 +492,8 @@ struct Peer {
   sock_t s = BAD_SOCK; bool ok = false; double ms = -1; std::string err; long long at = 0, sent = 0; double retry_after = 0;
   // the clock (1.0.8): the last pings' samples, and the estimate from the lowest round trips among them
   double next_ping = 0; int pings = 0; std::deque<Sample> samples; double offset_ms = 0, rtt_ms = -1, spread_ms = 0; long long clock_at = 0; std::string clock_err;
+  // link speed (1.0.12): stream frames in flight, the rate the last streams were answered at (bytes/s), the quickest frame round trip seen
+  int window = 0; double rate = 0, frame_rtt_ms = -1, quick_ms = -1, quick_at = 0; long long rate_at = 0; // (quick: a small frame's round trip, and when)
 };
 struct OutPeer { long long off = 0; bool begun = false, done = false; int resends = 0; size_t chunk = 0; std::string err; }; // (chunk: 0 = STREAM_CHUNK)
 struct OutStream {
@@ -527,12 +534,19 @@ std::string g_poll_out, g_status_out, g_msg_out, g_clock_out, g_streams_out; // 
 std::atomic<bool> g_tracing{ false };
 std::string g_trace_path; // (lib/direct.lua sets it while ExtState "stream trace" is 1: every stream pass appends a line. James, rt)
 long long g_skew_us = 0; int g_delay_max_ms = 0; double g_ping_s = 1.0; int g_listen_kbps = 0, g_stream_gap_ms = 0; // (the test's knobs; 0, 0, 1 s, 0, 0 otherwise)
+int g_test_rtt_ms = 0, g_test_wmax = 0; // (the test's: answers held to this round trip, the window capped; 0, 0 otherwise)
 
 // (STREAM_CHUNK: each stream frame waits up to 3 s for its answer, so it has to cross in well under that on a slow way too. At 256 KB a
 // Tailscale relay's few hundred kbit/s timed out every frame after REAPER's first 64 KB, each failure skipping the peer 10 s: the laptop's copy
 // sat at 64 KB till stop. 64 KB, halved per peer after a dropped frame, down to 16 KB. James, rt)
 const size_t MSG_KEEP = 512, MSG_KEEP_BYTES = 8 * 1024 * 1024, STREAM_CHUNK = 64 * 1024, STREAM_CHUNK_MIN = 16 * 1024, STREAM_HEAD = 64 * 1024;
 const long long STREAM_MAX = 16LL << 30; // (a take over 16 GB isn't one)
+// (WINDOW_*: stream frames in flight per peer, 1.0.12. Stop-and-wait, one 64 KB frame and then its answer, topped out near 1 MB/s at
+// Tailscale's 57 ms round trip: a 20 MB catch-up took 23 s. Now several go before the first answer is back: grown while the measured rate says
+// the pipe isn't full, cut to what the link carries once it is, so a slow or relayed way keeps 2-3 in flight and each answer still comes within
+// one frame's crossing of the last, well inside the 3 s it may take. Halved after a dropped frame, as the frame size is. James, rt)
+const int WINDOW_MIN = 2, WINDOW_START = 4, WINDOW_MAX = 32;
+const long long RATE_MIN_BYTES = 256 * 1024; // (a pass that moved less says more about the round trip than the rate)
 const int CLOCK_WINDOW = 16, CLOCK_BEST = 3;
 
 double now_s() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -905,16 +919,28 @@ bool recv_all(sock_t s, char *p, size_t n)
 
 // Send one frame to one peer on its kept connection, reconnecting once. -> the answer byte, or -1 and why. `extra`: what follows the answer
 // byte, ok_extra bytes after a 0 (a ping's answer), 8 after a 7 (a stream's gap).
+// (the test: a peer far away on localhost. An answer is taken no sooner than the round trip after its frame went)
+void hold_answer(double sent_at)
+{
+  const double w = g_test_rtt_ms > 0 ? sent_at + g_test_rtt_ms / 1000.0 - now_s() : 0;
+  if (w > 0) sleep_ms((int)(w * 1000 + 0.5));
+}
 int send_frame(Peer &p, const std::string &peer, const std::string &frame, std::string &why, std::string *extra = nullptr, size_t ok_extra = 0)
 {
   for (int attempt = 0; attempt < 2; ++attempt) {
     const bool fresh = p.s == BAD_SOCK;
     if (fresh && (p.s = connect_peer(peer, why)) == BAD_SOCK) return -1;
     char code = 0;
+    const double t0 = now_s();
     if (send_all(p.s, frame.data(), frame.size()) && recv(p.s, &code, 1, 0) == 1) {
       const size_t want = !extra ? 0 : code == 0 ? ok_extra : code == 7 ? 8 : 0;
       if (extra) extra->assign(want, '\0');
-      if (!want || recv_all(p.s, &(*extra)[0], want)) return (unsigned char)code;
+      if (!want || recv_all(p.s, &(*extra)[0], want)) {
+        hold_answer(t0);
+        // (too small to spend time crossing: the path's own round trip. Not a stream's "done": its answer waits on the whole file's hash there)
+        if (frame.size() <= 1024 && (frame[2] != 'S' || frame[12 + rd16(&frame[4]) + rd16(&frame[6])] == 0)) { p.quick_at = now_s(); p.quick_ms = (p.quick_at - t0) * 1000; }
+        return (unsigned char)code;
+      }
     }
     close_sock(p.s);
     p.s = BAD_SOCK;
@@ -1046,6 +1072,92 @@ static void trace_line(const std::string &line)
   fprintf(f, "%.3f %s\n", t, line.c_str());
   fclose(f);
 }
+struct Flight { long long off; size_t n; double at; };
+// The path's own round trip (ms), from frames too small to spend time crossing it: the clock's quickest ping while the clock's kept with that
+// peer, else the last small frame's answer (a stream's begin or done, an event, a message) within a minute; -1 if neither. (A 64 KB frame's own
+// round trip has its crossing in it: on a slow way that's most of it, and the window grew from it. James, rt)
+double path_rtt_ms(const Peer &p)
+{
+  if (p.rtt_ms > 0 && unix_now() - p.clock_at <= 5) return p.rtt_ms;
+  return p.quick_ms > 0 && now_s() - p.quick_at < 60 ? p.quick_ms : -1;
+}
+// A stream's bytes from o.off on, in chunks (op 1), up to the peer's window of frames in flight on its kept connection; the answers come back in
+// order. -> the last answer: 0 or 7 (fine: a gap moves o.off to what the peer has), -1 dropped (why), else a refusal (the peer closes).
+// Also measures, for Health: the rate this pass's answers came at, and its quickest frame round trip. (James, rt)
+int stream_chunks(Peer &p, const std::string &peer, const std::string &key, OutStream &s, OutPeer &o, long long size, std::string &why)
+{
+  const size_t chunk = o.chunk ? o.chunk : STREAM_CHUNK;
+  const int cap = g_test_wmax > 0 ? g_test_wmax : WINDOW_MAX, lo = std::min(WINDOW_MIN, cap);
+  const double path_rtt = path_rtt_ms(p) / 1000;
+  // (each pass starts at no more than WINDOW_START, whatever the last one grew to: a way that's turned slow or relayed since never gets a big
+  // window's worth at once. The last one's still counts when it was cut after a drop)
+  int w = std::max(lo, std::min(std::min(p.window ? p.window : WINDOW_START, WINDOW_START), cap));
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    const bool fresh = p.s == BAD_SOCK;
+    if (fresh && (p.s = connect_peer(peer, why)) == BAD_SOCK) return -1;
+    std::deque<Flight> fl;
+    std::string bytes, d;
+    long long next = o.off, budget = 8LL << 20, acked = 0, round_bytes = 0; // (8 MB a pass to each: a long file started late doesn't hold the others up)
+    int code = 0, gaps = 0, round_n = 0;
+    const double t0 = now_s();
+    double round_t = t0, last_ack = t0, best = -1;
+    bool readable = true;
+    for (;;) {
+      while (readable && (int)fl.size() < w && next < size && budget > 0) {
+        const size_t n = (size_t)std::min<long long>((long long)chunk, size - next);
+        if (read_some(s.path, next, n, bytes, &s.err) <= 0) { if (s.err.empty()) s.err = "the file's newest bytes aren't readable yet"; readable = false; break; } // (next pass)
+        d.assign(1, '\1');
+        put64(d, next);
+        d += bytes;
+        const std::string f = direct_frame(key, s.studio, s.rel, d, "SSS1");
+        if (!send_all(p.s, f.data(), f.size())) { code = -1; break; }
+        fl.push_back({ next, bytes.size(), now_s() });
+        next += (long long)bytes.size();
+        budget -= (long long)bytes.size();
+      }
+      if (code < 0 || fl.empty()) break;
+      char c = 0, len[8];
+      if (recv(p.s, &c, 1, 0) != 1) { code = -1; break; }
+      const Flight f = fl.front();
+      fl.pop_front();
+      hold_answer(f.at);
+      code = (unsigned char)c;
+      if (code == 0) {
+        const double t = now_s();
+        o.off = std::max(o.off, f.off + (long long)f.n);
+        acked += (long long)f.n;
+        round_bytes += (long long)f.n;
+        last_ack = t;
+        best = best < 0 ? t - f.at : std::min(best, t - f.at);
+        if (++round_n >= w) { // a round trip's worth answered: is the pipe full yet?
+          // (frames: what the link carried in one round trip of the path's, else of this pass's quickest frame)
+          const double rtt = path_rtt > 0 ? path_rtt : best, frames = (double)round_bytes / std::max(1e-6, t - round_t) * rtt / (double)chunk;
+          w = frames >= 0.75 * w ? std::min(cap, w * 2) : std::max(lo, std::min(w, (int)std::ceil(frames) + 1));
+          round_n = 0; round_bytes = 0; round_t = t;
+        }
+      } else if (code == 7) { // a gap: the frames behind this one are past the peer's end too, so their answers are gaps as well, read and dropped
+        if (!recv_all(p.s, len, 8)) { code = -1; break; }
+        o.off = std::min(rd64(len), size);
+        for (; !fl.empty() && code == 7; fl.pop_front()) {
+          if (recv(p.s, &c, 1, 0) != 1 || (c == 7 && !recv_all(p.s, len, 8))) code = -1;
+          else if (c != 0 && c != 7) code = (unsigned char)c;
+        }
+        if (code != 7 || ++gaps > 8) break;
+        next = o.off;
+      } else break;
+    }
+    if (acked >= RATE_MIN_BYTES && last_ack > t0) { p.rate = (double)acked / (last_ack - t0); p.rate_at = unix_now(); } // (the last: a path gone relayed shows at once)
+    if (best > 0) p.frame_rtt_ms = best * 1000;
+    p.window = code < 0 ? std::max(lo, w / 2) : w;
+    if (code >= 0) return code;
+    close_sock(p.s);
+    p.s = BAD_SOCK;
+    why = "the connection dropped";
+    if (fresh || acked > 0) return -1; // (a kept connection that had gone stale: one more try on a new one, as send_frame does)
+  }
+  return -1;
+}
+
 void stream_tick(OutStream &s, const std::string &key)
 {
   std::string how;
@@ -1080,14 +1192,8 @@ void stream_tick(OutStream &s, const std::string &key)
       return code;
     };
     if (!o.begun) { if (op(0, 0, std::string(1, (char)s.codec)) == 0) { o.begun = true; o.off = 0; } }
-    long long budget = 8LL << 20; // (8 MB a pass to each: a long file started late doesn't hold the others up)
-    for (int tries = 0; code == 0 || code == 7;) {
-      if (!o.begun || o.off >= size || budget <= 0 || ++tries > 64) break;
-      const size_t n = (size_t)std::min<long long>((long long)(o.chunk ? o.chunk : STREAM_CHUNK), size - o.off);
-      if (read_some(s.path, o.off, n, chunk, &s.err) <= 0) { if (s.err.empty()) s.err = "the file's newest bytes aren't readable yet"; break; } // (next pass)
-      if (op(1, o.off, chunk) == 0) { o.off += (long long)chunk.size(); budget -= (long long)chunk.size(); }
-      else if (code < 0) o.chunk = std::max(STREAM_CHUNK_MIN, (o.chunk ? o.chunk : STREAM_CHUNK) / 2); // (too slow a way for this size)
-    }
+    if (o.begun && (code == 0 || code == 7) && o.off < size && (code = stream_chunks(p, kv.first, key, s, o, size, why)) < 0)
+      o.chunk = std::max(STREAM_CHUNK_MIN, (o.chunk ? o.chunk : STREAM_CHUNK) / 2); // (too slow a way for this size)
     if (o.begun && (code == 0 || code == 7) && s.ended && o.off >= size) {
       if (s.sha_len != size) {
         FILE *f = open_shared(s.path, "rb");
@@ -1226,6 +1332,7 @@ void json_str(std::string &o, const std::string &s)
 #ifdef DIRECT_STANDALONE
 void direct_test_bandwidth(int kbps) { g_listen_kbps = kbps; }
 void direct_test_stream_gap(int ms) { g_stream_gap_ms = ms; }
+void direct_test_link(int rtt_ms, int window_max) { g_test_rtt_ms = rtt_ms; g_test_wmax = window_max; }
 void direct_test_knobs(long long skew_us, int delay_max_ms, int ping_ms)
 {
   g_skew_us = skew_us;
@@ -1457,7 +1564,7 @@ const char *direct_status()
 {
   std::lock_guard<std::mutex> l(g_mx);
   std::string &o = g_status_out;
-  char num[160];
+  char num[320];
   o = "{\"listening\":";
   o += g_listening ? "true" : "false";
   o += ",\"bind\":"; json_str(o, g_bind);
@@ -1472,7 +1579,11 @@ const char *direct_status()
     if (!first) o += ',';
     first = false;
     json_str(o, kv.first);
-    snprintf(num, sizeof(num), ":{\"ok\":%s,\"ms\":%.1f,\"at\":%lld,\"sent\":%lld,\"error\":", kv.second.ok ? "true" : "false", kv.second.ms, kv.second.at, kv.second.sent);
+    // (1.0.12, link speed: rate, bytes/s the last streams were answered at, and when; rtt_ms, the path's round trip (path_rtt_ms),
+    // else the quickest stream frame's; window, frames in flight)
+    const Peer &p = kv.second;
+    snprintf(num, sizeof(num), ":{\"ok\":%s,\"ms\":%.1f,\"at\":%lld,\"sent\":%lld,\"rate\":%.0f,\"rate_at\":%lld,\"rtt_ms\":%.1f,\"window\":%d,\"error\":",
+             p.ok ? "true" : "false", p.ms, p.at, p.sent, p.rate, p.rate_at, path_rtt_ms(p) > 0 ? path_rtt_ms(p) : p.frame_rtt_ms, p.window);
     o += num;
     json_str(o, kv.second.err);
     o += '}';

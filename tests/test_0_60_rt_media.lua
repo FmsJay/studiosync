@@ -32,11 +32,13 @@ assert(#streams.media_new({ vol = 1 }, nil) == 0 and #streams.media_new(nil, nil
 assert(streams.media_name("main", "ab12-Bass.wav") == "~media~main~ab12-Bass.wav", "~media~<room>~<file>")
 assert(direct.stream_rel("Cross Test", streams.media_name("main", "ab12-Bass.wav")) == "Cross Test/~media~main~ab12-Bass.wav", "a name the link takes")
 assert(streams.media_name("Side B", "plugin files/ef56-hall.wav") == "~media~Side B~plugin files~ef56-hall.wav", "a plug-in copy")
-for _, bad in ipairs({ { "main", "../x.wav" }, { "main", "sub/x.wav" }, { "main", "x.rpp" }, { "main", "x.txt" }, { "../main", "x.wav" }, { "a/b", "x.wav" },
+for _, bad in ipairs({ { "main", "../x.wav" }, { "main", "sub/x.wav" }, { "main", "x.rpp" }, { "main", "x.exe" }, { "main", "x.lua" }, { "../main", "x.wav" }, { "a/b", "x.wav" },
     { ".hidden", "x.wav" }, { "main", ".x.wav" }, { "main", "plugin files/../x.wav" }, { "main", string.rep("x", 200) .. ".wav" }, { nil, "x.wav" }, { "main", nil } }) do
   assert(streams.media_name(bad[1], bad[2]) == nil, "refused: " .. tostring(bad[1]) .. " " .. tostring(bad[2]))
 end
 assert(not streams.media_name("main", "x.wav"):find("^main~"), "never a take stream's <room>~ prefix (streams.prunable would take it)")
+assert(streams.media_name("main", "chart.pdf") == "~media~main~chart.pdf" and streams.media_name("main", "ref cut.mp4") and streams.media_name("main", "amp.nam"),
+  "send anything: a PDF chart, a video reference, an amp model go as media too (rt)")
 assert(#streams.prunable({ "~media~main~x.wav" }, {}, {}, "main") == 0, "the take prune leaves media copies alone")
 
 -- ---- the message ----

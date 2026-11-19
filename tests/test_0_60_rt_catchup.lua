@@ -28,7 +28,7 @@ local need = {
   rest = {
     { name = "Song/rooms/side/media/small.flac", size = 100, modifiedBy = "CCCCCCC" },
     { name = "Song/rooms/main/media/gone.wav", size = 50, deleted = true },
-    { name = "Song/rooms/main/media/notes.txt", size = 10 },
+    { name = "Song/rooms/main/media/tool.exe", size = 10 },
     { name = "Song/rooms/main/events/e1.json", size = 10 },
     { name = "Song/rooms/main/media/sub/x.wav", size = 10 },
     { name = "Song/rooms/main/media/empty.wav", size = 0 },
@@ -39,7 +39,7 @@ local need = {
   },
 }
 local wants = streams.catchup_wants(need, "Song")
-assert(#wants == 3, "only this song's audio in a room's media (and plugin files/): " .. #wants)
+assert(#wants == 3, "only this song's files the link takes in a room's media (and plugin files/): " .. #wants)
 assert(wants[1].key == "Song/side/small.flac" and wants[1].room == "side" and wants[1].size == 100 and wants[1].by == "CCCCCCC", "smallest first, who changed it")
 assert(wants[2].file == "plugin files/ir.wav" and wants[2].room == "main" and wants[2].by == nil, "a plug-in's file copy")
 assert(wants[3].file == "big.wav" and wants[3].by == "BBBBBBB", "backslashes read as folders")

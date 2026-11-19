@@ -205,6 +205,35 @@ hash proves the copy. Not a WAV (or no `data` chunk in the first 64 KB): kept as
 | Stream desktop -> laptop, 48 kHz 24-bit stereo written in real time, 100 ms interval, 20 s | appended -> acknowledged by the laptop median 155 ms, p95 233 ms (one way about 30 ms less); stop -> done and hash-checked 378 ms; 0 resends |
 | Audio spike (stand-in audio thread, 256-frame buffers) | 1 s dump exact (48000 frames), no overruns, both sines continuous; callback max 10-255 µs (the high one with the test's own threads busy) |
 
+## 1.0.12: several frames in flight, send anything, link speed per bandmate
+
+- **Window.** A stream's op 1 chunks no longer wait one by one: up to a window of frames per peer go before the first answer is back,
+  the answers read in order (a gap drains the frames behind it, whose answers are gaps too, and goes on from the peer's length). Each pass
+  starts at no more than 4; after every window's worth of answers, frames = rate x the path's round trip / frame size. The window doubles
+  (to 32) while frames >= 0.75 x window (the pipe isn't full) and is cut to ceil(frames) + 1 once it is. The round trip is the clock's quickest
+  ping while the clock's kept, else the last small frame's answer (a stream's begin or done, an event, a message), else the pass's quickest
+  frame: a 64 KB frame's own round trip has its crossing in it, which on a slow way is most of it. A dropped frame halves the window and the
+  frame size as before. Resume, gaps, the hash at done and the 8 MB a pass are unchanged.
+- **Send anything.** The stream name list (`direct_stream_rel_ok`, lib/direct.lua `STREAM_EXT` / `direct.stream_ext`) adds mp4, mov, webm,
+  pdf, png, jpg, jpeg, txt, md, fxp, fxb, vstpreset, nam, sfz, als, zip; names stay plain and path-checked, and nothing that runs (exe, dll,
+  dylib, so, lua, py, sh, bat, cmd, ps1, js) is on it. A room's media goes by the same list (`streams.media_name`), so catch-up and media
+  carry PDFs, video references, presets and zips too.
+- **Link speed.** `StudioSync_DirectStatus` peers add `rate` (bytes/s the last pass moving 256 KB or more was answered at), `rate_at`,
+  `rtt_ms` (the path's round trip, as above) and `window`. Which way Tailscale takes comes from `tailscale status --json` in Lua
+  (`direct.paths`, every 30 s in the background: CurAddr set = direct, PeerRelay = a peer relay, else Relay = a DERP region), merged into
+  `direct.status`; the extension runs no programs. Health's "direct speed" row: "Link speed: Bo: 4.1 MB/s direct, 18 ms; Chilio: 310 KB/s
+  relayed by Tailscale (sea), 142 ms" (yellow while any way is relayed, with "use more bars, or record WAV" for listening in time).
+
+Measured (tests/direct_test.cpp on one computer; answers held to the round trip, the listener read at the rate):
+
+| | one frame at a time (window 1, as before) | windowed |
+|---|---|---|
+| 8 MB, 57 ms round trip | 7.6 s, 1.10 MB/s | 0.7 s start to hash-checked (12.5 MB/s); the pass itself 18 MB/s, window 32 |
+| 8 MB, 20 Mbit/s and 57 ms | | 3.6 s, 2.3 MB/s (status 2.45 MB/s), window 3 |
+| 1 MB, 2 Mbit/s and 120 ms (a slow relay) | | 4.7 s, 249 KB/s, window 2, no drops |
+
+So the 20 MB catch-up that took 23 s over Tailscale should take about 2 s where the path carries it (not yet checked in REAPER).
+
 ## Not done (yet)
 
 IPv6 Tailscale addresses (fd7a:115c:a1e0::/48); a peer's port other than this computer's. The Lua hooks for messages, the clock and
