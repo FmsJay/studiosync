@@ -590,3 +590,20 @@ Video audio plays through each person's system audio by default, with an option 
   the moment it's placed (the Mac then made no temp at all), and a whole-size temp untouched for a minute beside a placed file is removed.
 - Still open: takes go twice (the step-2 stream, then the shared copy as media): announce "media X = stream Y" to skip the second send.
   Offline catch-up (step 3's second half) is next.
+- Takes no longer go twice (0.59.49.12): mirror.share_media remembers what each shared copy was copied from, the recorder what it streamed,
+  and the media message then names the take ("media out as the streamed take"); the laptop and the Mac placed the shared copy from their
+  own stream copy within ~0.2 s of the stream's end, no Syncthing temps left.
+
+## Proposed next (2026-11-19, from the streaming and media work: James to pick)
+- **Recording-format hint:** Health and the In time option say when the record format makes in-time listening late (FLAC arrives in
+  multi-second steps) and offer WAV for the session, or more bars; the step-4 audio hook removes the limit later.
+- **Syncthing in Health:** the folder's state, errors and "still needs N files" for each computer, from the same REST calls the link uses now,
+  so "why hasn't the Mac got it?" has an answer on screen.
+- **Send anything:** drag any file (video reference, PDF chart, plug-in preset, Ableton set) onto a bandmate in the panel: it goes over the
+  link at once (the link's file list widened per type, still name-checked), Syncthing behind it; ties into the studio pinboard.
+- **Link speed per bandmate:** a measured throughput and path (direct, or relayed and how slow) shown before recording together, so "As it
+  comes" vs "In time" vs WAV can be chosen knowing what the link carries.
+- **Disk space guard:** before recording and before placing media, the shared drive's free space checked on every computer; a bandmate
+  running low is told (and the recorder warned) before a take fails to land.
+- **One copy per file across songs:** the same audio used in two songs (a loop, a sample, a reference) stored once by hash in the studio, not
+  once per song: less for Syncthing and the link to carry.
