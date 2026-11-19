@@ -13,7 +13,7 @@ local st = { seen = {}, notes = {} }
 assert(lm.merge(st, { "A-0001.json", "A-0003.json" }, function(f) return files[f] end), "files arriving out of step still count")
 assert(st.notes[1].e == 2.5 and st.notes[2].p == 64 and st.at == 3, "the newest state of each note")
 assert(lm.merge(st, { "A-0001.json", "A-0002.json", "A-0003.json" }, function(f) return files[f] end), "a late file is folded in")
-assert(st.notes[1].e == nil and st.at == 3, "shortcut: a late older file can reopen a note until the next file; at never goes back")
+assert(st.notes[1].e == 2.5 and st.at == 3, "a late older file doesn't reopen a note that ended (James, rt); at never goes back")
 assert(not lm.merge(st, { "A-0001.json", "A-0002.json", "A-0003.json" }, function(f) return files[f] end), "nothing new: no redraw")
 files["B-0001.json"] = { user = "Laptop", since = "B", at = 9, notes = { { i = 1, t = "Bass", s = 9, p = 40, v = 80 } } }
 assert(lm.merge(st, { "B-0001.json" }, function(f) return files[f] end) and st.since == "B" and st.notes[2] == nil, "a new recording starts over")

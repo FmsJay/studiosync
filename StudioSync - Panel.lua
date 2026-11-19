@@ -2102,6 +2102,7 @@ local function settings_sync()
     end
     prints.options(ctx, ImGui) -- rendering in the background
     require("midiview").options(ctx, ImGui)
+    require("streams").options(ctx, ImGui) -- (bandmates' takes as they record: as it comes, in time, or shown only. lib/streams.lua. James, rt)
     local lch, lv = ImGui.Checkbox(ctx, "Live set: pause syncing while playing##liveset", reaper.GetExtState(band.SECTION, "live set") == "on")
     if lch then reaper.SetExtState(band.SECTION, "live set", lv and "on" or "", true) end
     ImGui.SetItemTooltip(ctx, "For playing a set: while REAPER plays, nothing is sent or taken in, so syncing can't make REAPER stutter.\n" ..

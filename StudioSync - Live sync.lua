@@ -12,7 +12,7 @@ if require("fromfolder").handoff(debug.getinfo(1, "S").source) then return end -
 if band.preload then band.try("band.preload", band.preload, dir) end
 -- (the modules this chunk needs as it starts, through band.try: one refused by the code check mid-arrival gave REAPER's error box on an
 -- unattended start. Round 4 review, 0.59.49)
-for _, m in ipairs({ "sync", "live", "together", "songsync", "recall", "drive", "livemidi", "direct" }) do
+for _, m in ipairs({ "sync", "live", "together", "songsync", "recall", "drive", "livemidi", "direct", "streams" }) do
   if not band.try("require " .. m, require, m) then return end
 end
 local sync = require("sync")
@@ -773,11 +773,20 @@ local function follows(name)
   if who_ ~= "" then return who_ == name end
   return reaper.GetExtState(band.SECTION, "follow driver") ~= "" and sync.driver_name == name
 end
+local in_time_with -- (in time with whose take: lib/streams.lua in_time_lag. James, rt)
 local function take_cue(ev)
   -- (on the studio's shared clock when it came with one: fired at this computer's clock + (start_at - shared now). James, 0.60.0-rt)
   if ev and not ev.remote and tonumber(ev.start_at) then
     local sn = direct.shared_now()
     if sn then ev.at = together.local_at(tonumber(ev.start_at), sn, together.now()) end
+  end
+  -- (listening in time, NINJAM style: a bandmate's recording start you follow plays here one interval behind theirs, and their stop as far
+  -- behind, so what they play lands on your grid. lib/streams.lua. James, rt)
+  if ev and not (ev.id and fired[ev.id]) then
+    local streams = require("streams")
+    local lag
+    lag, in_time_with = streams.in_time_lag(ev, cfg.user, streams.mode(), tonumber(ev.pos) and together.bars_after(proj, tonumber(ev.pos), streams.bars()) or 0, in_time_with)
+    if lag then ev.lag = lag end
   end
   if not ev or (ev.id and fired[ev.id]) or (not ev.remote and (ev.at or 0) < cue_at) then return end
   if ev.remote then -- a producer starting or stopping someone's transport (lib/producer.lua): only theirs, with their say-so
@@ -918,6 +927,9 @@ local live_handlers = {
     if not fired[ev.id] and together.now() - ev.at < 30 then take_cue(ev) end
   end,
   midi = function(d) livemidi.from_msg(proj, cfg, b, d, reaper.GetPlayStateEx(proj) & 4 ~= 0) end,
+  -- (a bandmate's take as they record it: lib/streams.lua. James, rt)
+  take = function(d) require("streams").on_take(cfg, b, d) end,
+  take_end = function(d) require("streams").on_take_end(d) end,
 }
 live_handlers.start, live_handlers.stop = live_handlers.cue, live_handlers.cue
 local function tick_body() -- returns true to keep going
@@ -1162,6 +1174,8 @@ local function tick_body() -- returns true to keep going
     local ok, e = pcall(livemidi.receive_tick, proj, cfg, b)
     if not ok and midi_view_err ~= tostring(e) then midi_view_err = tostring(e); band.log("live MIDI view: " .. tostring(e)) end
   end
+  -- takes streamed as they're recorded (lib/streams.lua): ours go out, bandmates' grow on their tracks
+  band.try("streams.tick", require("streams").tick, proj, cfg, b, st & 4 ~= 0, reaper.EnumProjects(-1) == proj)
   lap("listen, midi view")
   local every = reaper.GetPlayStateEx(proj) & 1 == 1 and 2 -- playing: a pass can stall REAPER ~0.5 s (seen on the laptop)
     or (lagbars or now - stopped_at < 8 or require("bgrender").waiting() or require("prints").waiting()) and 0.5 or 2 -- side by side, just after a recording, or with a print on its way: look often

@@ -430,6 +430,21 @@ function direct.dispatch(msgs, song, room, handlers)
   end
   return n
 end
+-- Does the link reach everyone here now (each peer's last send answered)? Live MIDI's 1-second files are only the fallback then (lib/livemidi.lua).
+-- Asked at most once a second. (James, rt)
+local reach_at, reach_ok = -math.huge, false
+function direct.reaches_all(cfg, song, room)
+  local now = reaper.time_precise()
+  if now - reach_at < 1 then return reach_ok end
+  reach_at, reach_ok = now, false
+  if not direct.live_available() then return false end
+  local peers = direct.peers(cfg, song, room)
+  local j = band.json_decode(reaper.StudioSync_DirectStatus()) or {}
+  local st = type(j.peers) == "table" and j.peers or {}
+  reach_ok = #peers > 0
+  for _, p in ipairs(peers) do reach_ok = reach_ok and type(st[p]) == "table" and st[p].ok == true end
+  return reach_ok
+end
 -- Live sync's tick: files that arrived (-> how many: a receive pass then), who to send to, the clock, a heartbeat, and the messages by kind.
 direct.HEARTBEAT = 5
 local beat_at = -math.huge
@@ -498,7 +513,10 @@ function direct.health_rows(cfg)
     end, "Adds a Windows Firewall rule for reaper.exe, TCP " .. direct.port() .. ", from Tailscale's addresses only (100.64.0.0/10). Windows asks once." }
   end
   local cok, ctext = direct.clock_line()
-  return { row, { "direct clock", cok, "grey", ctext, ctext } }
+  local rows = { row, { "direct clock", cok, "grey", ctext, ctext } }
+  local sok, srow = pcall(function() return require("streams").health_row(cfg) end) -- (takes streaming in and out: lib/streams.lua. James, rt)
+  if sok and srow then rows[#rows + 1] = srow end
+  return rows
 end
 
 -- Settings > Studio: the studio's Direct link switch (band.json "direct": owner and admins; on unless it's false).
@@ -544,9 +562,10 @@ function direct.stream_rel(song, path)
 end
 function direct.stream_path(cfg, rel) return direct.inbox(cfg.root) .. "/.streams/" .. rel end
 -- Start streaming a file being written (REAPER recording a take) to the others in the room, every interval_ms (0: 250). -> rel, or nil.
-function direct.stream_start(cfg, path, song, room, interval_ms)
+-- `name`: its name on the link, when not the file's own (lib/streams.lua: <room>~<user>~<file>, so two people's takes never share one. James, rt)
+function direct.stream_start(cfg, path, song, room, interval_ms, name)
   local ok, r = pcall(function()
-    local rel = direct.stream_rel(song, path)
+    local rel = direct.stream_rel(song, name or path)
     if not rel or not direct.live_available() or not direct.ensure(cfg) then return nil end
     local peers = direct.peers(cfg, song, room)
     return #peers > 0 and reaper.StudioSync_DirectStream(band.info(cfg.root).id, rel, path, table.concat(peers, " "), math.floor(interval_ms or 0)) == 1 and rel or nil

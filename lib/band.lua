@@ -1548,7 +1548,10 @@ band.PROJECT_CFG = { -- { SWS project config name, "i" int / "d" double, what it
   { "projfrbase", "i", "frame rate (TIMEMODE)" },
   { "projfrdrop", "i", "drop-frame timecode" },
 }
-band.FRONT_TOGGLES = { snap = 1157, preserve_pitch = 40671 } -- (Options: Toggle snapping; Transport: preserve pitch when changing the playrate)
+band.FRONT_TOGGLES = { snap = 1157, preserve_pitch = 40671, -- (Options: Toggle snapping; Transport: preserve pitch when changing the playrate)
+  -- (and a set of option actions, one on: what a new recording does over items: new takes, tape (trim behind), new lanes. REAPER 7: 42677,
+  -- which was 41329 before 7.0. Per project, measured on the desktop (tests/reaper/rt_settings.lua): it was a studio preference. James, rt)
+  rec_overlap = { 41186, 41330, 42677 } }
 local function round6(x) return math.floor((tonumber(x) or 0) * 1e6 + 0.5) / 1e6 end
 -- A project config value through SWS, in the size it's declared: -> it, or nil when this REAPER/SWS doesn't have it. Asked with two error
 -- values, as SWS answers its error value for a name it doesn't know or a size it won't read (so a set never writes the wrong size).
@@ -1565,22 +1568,30 @@ local function set_cfg(proj, k, kind, v)
   v = math.tointeger(v)
   return v and reaper.SNM_SetIntConfigVarEx and reaper.SNM_SetIntConfigVarEx(proj, k, v)
 end
--- Snap and preserve pitch are REAPER actions, for the tab in front only (no call reads them per project): kept in the project's own state,
--- read while it's in front; one arriving for a tab behind waits there ("1!") and is set once it's in front. -> 0/1, or nil (never in front).
-local function front_toggle(proj, id, want)
+-- Snap, preserve pitch and the recording-over-items choice are REAPER actions, for the tab in front only (no call reads them per project):
+-- kept in the project's own state, read while it's in front; one arriving for a tab behind waits there ("1!") and is set once it's in front.
+-- -> 0/1 (the choice: its action's id), or nil (never in front).
+local function front_toggle(proj, id, want) -- (id: an action, 0/1; or a list of actions, one on: that one's id)
   if not reaper.GetToggleCommandStateEx then return nil end
-  local key = "front " .. id
+  local radio = type(id) == "table"
+  local key = "front " .. (radio and id[1] or id)
   local _, kept = reaper.GetProjExtState(proj, band.SECTION, key)
   local new
   if reaper.EnumProjects(-1) == proj then
-    local w = want or tonumber(kept:match("^(%d)!$"))
-    if w and reaper.GetToggleCommandStateEx(0, id) ~= w then reaper.Main_OnCommand(id, 0) end
-    local st = reaper.GetToggleCommandStateEx(0, id)
-    new = st >= 0 and tostring(st) or nil
+    local w = want or tonumber(kept:match("^(%d+)!$"))
+    if radio then
+      if w and reaper.GetToggleCommandStateEx(0, w) == 0 then reaper.Main_OnCommand(w, 0) end
+      for _, x in ipairs(id) do if reaper.GetToggleCommandStateEx(0, x) == 1 then new = tostring(x) end end
+    else
+      if w and reaper.GetToggleCommandStateEx(0, id) ~= w then reaper.Main_OnCommand(id, 0) end
+      local st = reaper.GetToggleCommandStateEx(0, id)
+      new = st >= 0 and tostring(st) or nil
+    end
   elseif want then new = want .. "!" end
   if new and new ~= kept then reaper.SetProjExtState(proj, band.SECTION, key, new) end
-  return tonumber(((new or kept) or ""):match("^(%d)"))
+  return tonumber(((new or kept) or ""):match("^(%d+)"))
 end
+local function one_of(t, v) for _, x in ipairs(t) do if x == v then return true end end return false end
 function band.capture_settings(proj)
   local gp, gps, s = reaper.GetSetProjectInfo, reaper.GetSetProjectInfo_String, { cfg = {} }
   for _, k in ipairs(band.PROJECT_STR) do
@@ -1626,7 +1637,7 @@ function band.apply_settings(proj, s)
   end
   for name, id in pairs(band.FRONT_TOGGLES) do
     local w = math.tointeger(tonumber(s[name]))
-    if w == 0 or w == 1 then front_toggle(proj, id, w) end
+    if w and (type(id) == "table" and one_of(id, w) or type(id) ~= "table" and (w == 0 or w == 1)) then front_toggle(proj, id, w) end
   end
   for _, c in ipairs(type(s.cfg) == "table" and band.PROJECT_CFG or {}) do
     local want, have = tonumber(s.cfg[c[1]]), band.proj_cfg(proj, c[1], c[2])

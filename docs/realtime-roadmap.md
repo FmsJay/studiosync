@@ -456,3 +456,59 @@ Built in the extension (extension/direct.cpp, direct_audio.cpp; protocol, API an
 - The audio hook: StudioSync_DirectAudioStart on a real interface, peaks, a dump, the callback time with REAPER under load; stop and
   start again; REAPER's audio device restart while running.
 - StudioSync_DirectNow / Clock from Lua (the double return), messages from Lua, all 1.0.8 functions present.
+
+## Decisions and additions (James, 2026-11-19, after the tools research: docs/tools-research.md)
+- **Tailscale Peer Relay:** the desktop relays for the tailnet (one tailnet holds every studio's computers, so one setup covers
+  Smiley Studios and Chilio). Desktop relay on UDP 40041 (`tailscale set --relay-server-port=40041`); the tailnet policy grant
+  and a router port forward of UDP 40041 to james-main make it reachable from outside. It doesn't admit people without
+  Tailscale: that's the Tailscale-free connection option (libdatachannel/libjuice or iroh) still on the list.
+- **Built-in audio on AOO** (BSD, SonoBus's engine: jitter buffer, drift correction, Opus/PCM, groups), wrapped in StudioSync's
+  own layer: the link's signed peer list and key, a FLAC codec through AOO's codec plug-in API, REAPER's audio hook for capture
+  and mixing, hub mixing. Writing our own engine wouldn't pay back; any AOO part can be forked or replaced later.
+- **Remote plug-ins endpoint ("Hop"):** VST3 SDK (MIT) + CLAP (MIT) via DPF (ISC). Not JUCE (AGPL/commercial).
+- **Extension libraries:** yyjson (JSON), zstd with a trained dictionary (events on the link and snapshots), SQLite (history,
+  snapshots, comments index), Opus 1.5 with Deep PLC/DRED and small frames.
+- **Web UI:** webview (MIT) or Saucer (MIT), not CEF; WebView2 accelerator keys forwarded to REAPER; Linux may fall back to the
+  system browser (SWELL windows aren't GTK). Yjs (MIT) for the song sheet, chat, comments and to-dos; Excalidraw (MIT) for
+  drawing (not tldraw: licence key/watermark); wavesurfer.js or own canvas for waveforms.
+- **Features added (James):** cue mix + talkback control (engineer sets a performer's monitor mix; talkback mutes while
+  recording); song forks (branch an arrangement, keep or merge back); versioned, timestamped comments with a resolved state
+  across mix versions; client listen links (expiring/password) to the live mix or the latest bounce; Ableton Link bridge (a
+  local Link session per computer driven by the shared clock); plus master-bus stream to a browser for approvals, published
+  revisions (a song's official mix), one-click reference bounces with timestamped notes.
+- **AI extras (James: on the roadmap, ask before every use):** stem separation, transcription (session notes, lyrics),
+  audio-to-MIDI, mastering/mix feedback, chords/key/tempo/structure; local and cloud options compared in docs/ai-research.md.
+
+## Step 2 wired (2026-11-19, lib/streams.lua; not run in REAPER yet)
+- **Recorder:** Live sync's tab in front lists the record path (`GetProjectPathEx`) every 5 s while stopped with an audio track armed and
+  someone here on the link (the baseline), and every 0.1 s in the first 3 s of a recording. New audio files are matched to the armed audio
+  tracks (`I_RECARM`, an audio `I_RECINPUT`, `I_RECMODE` 0/1/3/5/6, mirrored and with an oid) by the track's name in the file name (longest
+  first), then its number at the start of the name, then in order when as many files as tracks are left; anything else isn't streamed.
+  Each match: `direct.stream_start` (100 ms interval) under the link name `<song>/<room>~<user>~<file>`, then a "take" message `{ id, user,
+  track, name, file, pos, at, srate, nch, fmt }` (`pos`: the edit cursor if recording began from it, else the playhead; `at`: the shared
+  clock when the playhead was at `pos`). 0.5 s after stop: `direct.stream_end` and a "take_end" message.
+  Limits: a file that appeared within 5 s before Record can be taken for the take's; auto-punch starts aren't read (the placeholder sits at
+  the cursor); a second record path, files renamed at stop and a bandmate who joins mid-take aren't followed. All of those still arrive the
+  normal way.
+- **Live MIDI:** each change goes as a link message (`<since>-L<n>`) within 50 ms, `at` every 0.25 s; the 1-second files are written only
+  while the link doesn't reach everyone here (`direct.reaches_all`), plus the last one at stop. A note that ended stays ended when an older
+  file arrives after the link's word.
+- **Receiver:** on "take", an entry; once 4 KB have arrived, an item on the recorder's own track (its plug-ins play it) at `pos`, marked
+  `band_arriving` (mirror.scan skips it, as it skips its own stand-ins: never sent) and `band_stream`. Growing: a fresh
+  `PCM_Source_CreateFromFile` swapped in with `band.set_take_source` (the old one destroyed) and `D_LENGTH` set from the source's length,
+  4 times a second, less often as the take gets long (length / 120 s: REAPER reads the file and builds peaks again each time); a source
+  that reads 0 s (a growing FLAC whose header says "length unknown") gets its length from the shared clock instead. At done: the final
+  source once, then `PCM_Source_BuildPeaks` 0, 1 per tick until 0, then 2. Not touched on a track armed here while this computer records.
+- **Listening (Settings > Options, "Parts play"; per computer):** As it comes (plays at once), In time (NINJAM style: a recording start of
+  someone you follow, side by side or "follow", gets lag = N bars at its position, so your playback runs one interval behind theirs on the
+  shared clock from the same song position; their next stop gets the same lag and stops at their position), Show only (muted). In time
+  limits: only with transport following; one interval in seconds at the take's start (a tempo change later keeps the positions aligned,
+  only the gap in time changes); seeks and loops mid-take are followed only as side by side follows them; a producer's chosen lag wins.
+- **Fast first, lossless after:** the real take is its own item (the mirror event and the shared copy, unchanged). While mirror's grey
+  stand-in waits for its audio, the placeholder stays (and isn't given up on). Once an item over its stretch plays a file named
+  `<hash>-<file>` that exists: "repoint" when the stream finished, checked out and is the same size (the placeholder just goes: the real
+  item already plays the same bytes from the shared folder), "swap" otherwise (it goes too, with a line in the log). The streamed copy and its
+  .reapeaks go then. Given up on 15 minutes after done with no take (or 5 minutes without bytes). Each prune (30 s, and as a song opens):
+  this room's `.streams/<song>` files that no entry holds and that aren't still arriving. shortcut: a song nobody opens here keeps its
+  streamed copies until it's opened.
+- **Health:** a "Takes streaming" row (out/in counts and MB, and any stream that didn't get through whole) under the direct link's rows.

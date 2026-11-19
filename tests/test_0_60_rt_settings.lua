@@ -5,7 +5,7 @@ package.path = "lib/?.lua;" .. package.path
 for _, m in ipairs({ "band", "groups", "prints", "mirror", "sharedprefs", "sync", "trust" }) do package.loaded[m] = nil end
 local gext, pext, clock, front = {}, {}, 1000, nil
 local gcfg = {} -- global prefs: name -> { kind, value }
-local toggles = {} -- action id -> 0/1 (global, or the front project's for snap / preserve pitch)
+local toggles = {} -- action id -> 0/1 (global, or the front project's: snap, preserve pitch, the recording-over-items choice)
 local function px(p) pext[p] = pext[p] or {}; return pext[p] end
 local stub = {
   GetExtState = function(s, k) return gext[s .. "\0" .. k] or "" end,
@@ -16,10 +16,11 @@ local stub = {
   time_precise = function() return clock end,
   GetOS = function() return "Win64" end,
   EnumProjects = function(i) if i == -1 then return front end end,
-  GetToggleCommandStateEx = function(_, id) local t = (front and front.toggles or toggles)[id]; if id == 41186 or id == 41330 or id == 42677 then t = toggles[id] end; return t or -1 end,
-  Main_OnCommand = function(id)
-    if id == 41186 or id == 41330 or id == 42677 then for _, x in ipairs({ 41186, 41330, 42677 }) do toggles[x] = x == id and 1 or 0 end
-    elseif front and front.toggles[id] then front.toggles[id] = 1 - front.toggles[id] end
+  GetToggleCommandStateEx = function(_, id) return (front and front.toggles or toggles)[id] or -1 end,
+  Main_OnCommand = function(id) -- (the recording-over-items choice is per project: measured, tests/reaper/rt_settings.lua)
+    local t = front and front.toggles or toggles
+    if id == 41186 or id == 41330 or id == 42677 then for _, x in ipairs({ 41186, 41330, 42677 }) do t[x] = x == id and 1 or 0 end
+    elseif t[id] then t[id] = 1 - t[id] end
   end,
   SNM_GetIntConfigVar = function(k, err) local c = gcfg[k]; return c and c[1] == "i" and c[2] or err end,
   SNM_GetDoubleConfigVar = function(k, err) local c = gcfg[k]; return c and c[1] == "d" and c[2] or err end,
@@ -129,7 +130,7 @@ assert(rendered == "print-I-1-" .. prints.audio_source(one, one.takes[1], "fx"),
 local function project(o)
   local p = { info = { PROJECT_SRATE = o.sr, PROJECT_SRATE_USE = 1, RENDER_SRATE = 0, RENDER_CHANNELS = o.ch },
     str = { RECORD_FORMAT = o.rec, RENDER_FORMAT = o.fmt, RENDER_FORMAT2 = "", RECORD_PATH = "C:/mine", RENDER_FILE = "C:/renders" },
-    grid = { o.div, 0, 0 }, rate = o.rate, cfg = o.cfg, toggles = { [1157] = o.snap, [40671] = o.pp } }
+    grid = { o.div, 0, 0 }, rate = o.rate, cfg = o.cfg, toggles = { [1157] = o.snap, [40671] = o.pp, [41186] = o.rec_over == 41186 and 1 or 0, [41330] = o.rec_over == 41330 and 1 or 0, [42677] = o.rec_over == 42677 and 1 or 0 } }
   return p
 end
 stub.GetSetProjectInfo = function(p, k, v, set) if set then p.info[k] = v end return p.info[k] or 0 end
@@ -141,17 +142,17 @@ stub.SNM_GetIntConfigVarEx = function(p, k, err) local c = p.cfg[k]; return c an
 stub.SNM_GetDoubleConfigVarEx = function(p, k, err) local c = p.cfg[k]; return c and c[1] == "d" and c[2] or err end
 stub.SNM_SetIntConfigVarEx = function(p, k, v) local c = p.cfg[k]; if c and c[1] == "i" then c[2] = v; return true end return false end
 stub.SNM_SetDoubleConfigVarEx = function(p, k, v) local c = p.cfg[k]; if c and c[1] == "d" then c[2] = v; return true end return false end
-local A = project({ sr = 48000, ch = 2, rec = "ZmxhYw==", fmt = "Y2FsZhgAAAAFAAAA", div = 0.125, rate = 0.8, snap = 1, pp = 1,
+local A = project({ sr = 48000, ch = 2, rec = "ZmxhYw==", fmt = "Y2FsZhgAAAAFAAAA", div = 0.125, rate = 0.8, snap = 1, pp = 1, rec_over = 42677,
   cfg = { autoxfade = { "i", 393 }, projrecmode = { "i", 1 }, projmetroen = { "i", 7 }, projmetropattern = { "i", 169 }, projtimeoffs = { "d", 2.5 },
     projmeasoffs = { "i", -1 }, projfrbase = { "i", 25 }, projfrdrop = { "i", 0 }, playrate = { "d", 0.8 } } }) -- (no projmetrocountin: an older REAPER)
-local B = project({ sr = 44100, ch = 1, rec = "ZXZhdw==", fmt = "ZXZhdw==", div = 0.25, rate = 1, snap = 0, pp = 0,
+local B = project({ sr = 44100, ch = 1, rec = "ZXZhdw==", fmt = "ZXZhdw==", div = 0.25, rate = 1, snap = 0, pp = 0, rec_over = 41186,
   cfg = { autoxfade = { "i", 0 }, projrecmode = { "i", 0 }, projmetroen = { "i", 2 }, projmetropattern = { "i", 1 }, projtimeoffs = { "d", 0 },
     projmeasoffs = { "i", 0 }, projfrbase = { "i", 30 }, projmetrocountin = { "i", 2 }, playrate = { "d", 1 } } }) -- (no projfrdrop: SWS doesn't know it)
 front = A
 local sa = band.capture_settings(A)
 assert(sa.cfg.projmetrocountin == nil and sa.cfg.autoxfade == 393 and sa.cfg.projtimeoffs == 2.5, "read where this REAPER has it, left out where not")
 assert(sa.cfg.projmetroen == 6, "the click's on/off bit stays this computer's: not in what's shared")
-assert(sa.snap == 1 and sa.preserve_pitch == 1, "snap and preserve pitch, read while the tab is in front")
+assert(sa.snap == 1 and sa.preserve_pitch == 1 and sa.rec_overlap == 42677, "snap, preserve pitch and the recording-over-items choice, read while the tab is in front")
 for k in pairs(sa) do assert(not k:find("PATH") and not k:find("FILE"), "never a path: " .. k) end
 local ok = pcall(band.apply_settings, B, sa) -- (B behind: snap and preserve pitch wait for it to come in front)
 assert(ok, "applying never errors on a setting the other side lacks")
@@ -162,10 +163,13 @@ assert(B.str.RECORD_PATH == "C:/mine" and B.str.RENDER_FILE == "C:/renders", "pa
 assert(B.grid[1] == 0.125 and B.cfg.autoxfade[2] == 393 and B.cfg.projrecmode[2] == 1 and B.cfg.projtimeoffs[2] == 2.5 and B.cfg.projfrbase[2] == 25, "grid, crossfades, record mode, start, frame rate")
 assert(B.cfg.projmetroen[2] == 6 and B.cfg.projmetrocountin[2] == 2, "metronome switches with B's own on/off bit (off); a count-in A didn't send stays")
 assert(B.cfg.playrate[2] == 0.8, "a tab behind gets the playrate through SWS")
-assert(B.toggles[1157] == 0, "snap waits for the tab behind to come in front")
+assert(B.toggles[1157] == 0 and B.toggles[41186] == 1 and B.toggles[42677] == 0, "snap and the recording choice wait for the tab behind to come in front")
 front = B
 local sb = band.capture_settings(B)
 assert(B.toggles[1157] == 1 and B.toggles[40671] == 1, "in front: the waiting snap and preserve pitch are set")
+assert(B.toggles[42677] == 1 and B.toggles[41186] == 0 and A.toggles[42677] == 1, "and the recording-over-items choice, on that tab only")
+band.apply_settings(B, { rec_overlap = 40000 }) -- (an action that isn't one of the choices: never run)
+assert(B.toggles[42677] == 1 and B.toggles[40000] == nil, "a recording choice that isn't one of the three is ignored")
 sb.cfg.projmetrocountin, sa.cfg.projfrdrop = nil, nil -- (each side's own extra: the one the other lacks)
 assert(band.json_encode(sa) == band.json_encode(sb), "round trip: B now captures as A did\n" .. band.json_encode(sa) .. "\n" .. band.json_encode(sb))
 -- the playrate on the tab in front goes through REAPER's own call
@@ -190,36 +194,35 @@ local studios = {}
 groups.trusted = function(root) return studios[root] or {} end
 gcfg = { deffadelen = { "d", 0.01 }, deffadeshape = { "i", 1 }, defsplitxfadelen = { "d", 0.01 }, defxfadeshape = { "i", 0 }, splitautoxfade = { "i", 33 },
   audiobufsize = { "i", 512 } }
-toggles = { [41186] = 1, [41330] = 0, [42677] = 0 }
-studios.A = { shared_prefs = { deffadelen = 0.05, rec_overlap = 42677, audiobufsize = 64, defrecpath = 1 } }
+studios.A = { shared_prefs = { deffadelen = 0.05, rec_overlap = 42677, audiobufsize = 64, defrecpath = 1 } } -- (rec_overlap: per project now, not a preference)
 studios.B = { shared_prefs = { deffadelen = 0.1, deffadeshape = 3 } }
-local function live() return gcfg.deffadelen[2], gcfg.deffadeshape[2], toggles[42677] == 1 and 42677 or 41186 end
+local function live() return gcfg.deffadelen[2], gcfg.deffadeshape[2] end
 sp.tick("A", true)
-local f, s, r = live()
-assert(f == 0.05 and r == 42677 and s == 1, "studio A's song in front: its fade length and recording-over choice")
+local f, s = live()
+assert(f == 0.05 and s == 1, "studio A's song in front: its fade length")
 assert(gcfg.audiobufsize[2] == 512, "a buffer size planted in band.json is never applied")
 assert(sp.mine("deffadelen") == 0.01, "this computer's own, saved while the studio's is in")
-assert(reaper.GetExtState(band.SECTION, sp.HELD) == ";deffadelen;rec_overlap;", "the held list says which are the studio's")
+assert(reaper.GetExtState(band.SECTION, sp.HELD) == ";deffadelen;", "the held list says which are the studio's (a recording choice left in band.json isn't one)")
 sp.tick(nil, true)
-f, s, r = live()
-assert(f == 0.01 and r == 41186 and s == 1, "no studio song in front: yours back")
+f, s = live()
+assert(f == 0.01 and s == 1, "no studio song in front: yours back")
 assert(reaper.GetExtState(band.SECTION, sp.HELD) == "", "and nothing held")
 -- a studio switch: what both share keeps your saved value; what only the old one shared comes back
 sp.tick("A", true)
 sp.tick("B", true)
-f, s, r = live()
-assert(f == 0.1 and s == 3 and r == 41186, "studio B in front: its values; A's recording choice is yours again")
+f, s = live()
+assert(f == 0.1 and s == 3, "studio B in front: its values")
 assert(sp.mine("deffadelen") == 0.01, "your own fade length is still the one saved, not A's")
 sp.tick(nil, true) -- (Live sync stopping, REAPER quitting: its atexit)
-f, s, r = live()
-assert(f == 0.01 and s == 1 and r == 41186, "exit: all yours")
+f, s = live()
+assert(f == 0.01 and s == 1, "exit: all yours")
 -- changed by hand while the studio's is in: yours stands, not fought, not put back
 sp.tick("A", true)
 gcfg.deffadelen[2] = 0.2
 sp.tick("A", true)
 assert(gcfg.deffadelen[2] == 0.2, "a change by hand isn't fought")
 sp.tick(nil, true)
-assert(gcfg.deffadelen[2] == 0.2 and toggles[41186] == 1, "nor put back; the rest comes back")
+assert(gcfg.deffadelen[2] == 0.2, "nor put back")
 gcfg.deffadelen[2] = 0.01
 -- once a second at most (Live sync ticks often), at once when asked
 sp.tick("A", true)
@@ -238,8 +241,8 @@ package.loaded.sharedprefs = nil
 reaper.DeleteExtState(band.SECTION, "shared prefs session")
 sp = require("sharedprefs")
 sp.tick(nil, true)
-f, s, r = live()
-assert(f == 0.01 and r == 41186, "next start, no studio song in front: yours back from the saved state")
+f = live()
+assert(f == 0.01, "next start, no studio song in front: yours back from the saved state")
 -- ... unless something changed it since (ReaPersona's restart write): that's yours now
 sp.tick("A", true)
 package.loaded.sharedprefs = nil

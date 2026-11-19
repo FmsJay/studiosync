@@ -7,6 +7,8 @@
 -- as a NEW file, and receivers fold them together. One file rewritten twice a second never synced while it kept
 -- changing (2026-10-28, laptop -> PC: nothing until the recording stopped). Syncthing brings them in batches every
 -- few seconds, so the view grows in steps, a few seconds behind the player.
+-- Over the direct link (James, rt): each change goes as a link message within ~50 ms of being played (<since>-L<n>, never a file), and while
+-- the link reaches everyone here the 1-second files aren't written at all: only the last one at stop, the record. Files are the fallback.
 local band = require("band")
 local sync = require("sync")
 local live = require("live")
@@ -40,7 +42,8 @@ function lm.send_tick(proj, cfg, b, recording)
   if recording and rec == nil then
     local tracks = armed_midi(proj)
     if #tracks == 0 then rec = false; return end -- recording audio only: nothing to show
-    rec = { since = os.date("!%Y%m%d-%H%M%SZ"), notes = {}, dirty = {}, open = {}, tracks = tracks, last_seq = latest_seq(), wrote_at = 0, n = 0 }
+    rec = { since = os.date("!%Y%m%d-%H%M%SZ"), notes = {}, dirty = {}, open = {}, tracks = tracks, last_seq = latest_seq(), wrote_at = 0, n = 0,
+      ldirty = {}, lsent_at = -math.huge, ln = 0 }
     local udir = dir(cfg, b) .. "/" .. safe(cfg.user) -- an earlier recording's files: not needed any more
     for _, f in ipairs(band.files(udir, ".json")) do os.remove(udir .. "/" .. f) end
     os.remove(dir(cfg, b) .. "/" .. safe(cfg.user) .. ".json") -- (0.15.1-0.15.2 kept one file per person)
@@ -69,9 +72,9 @@ function lm.send_tick(proj, cfg, b, recording)
           local key = t.name .. "\0" .. (st & 15) .. ":" .. p
           if kind == 0x90 and v > 0 then
             rec.notes[#rec.notes + 1] = { t = t.name, s = e.pos, p = p, v = v }
-            rec.dirty[#rec.notes], rec.open[key] = true, #rec.notes
+            rec.dirty[#rec.notes], rec.ldirty[#rec.notes], rec.open[key] = true, true, #rec.notes
           elseif rec.open[key] then
-            rec.notes[rec.open[key]].e, rec.dirty[rec.open[key]] = e.pos, true
+            rec.notes[rec.open[key]].e, rec.dirty[rec.open[key]], rec.ldirty[rec.open[key]] = e.pos, true, true
             rec.open[key] = nil
           end
         end
@@ -87,8 +90,29 @@ function lm.send_tick(proj, cfg, b, recording)
     return
   end
   rec.at = reaper.GetPlayPosition2Ex(proj)
-  -- every second, changed or not: a held note or a pause still moves "at", so their view keeps growing
-  if reaper.time_precise() - rec.wrote_at >= 1 then lm.write(cfg, b, rec.at) end
+  local now = reaper.time_precise()
+  -- (over the link: a change within 50 ms, and "at" four times a second so a held note grows. James, rt)
+  if (next(rec.ldirty) and now - rec.lsent_at >= 0.05) or now - rec.lsent_at >= 0.25 then lm.send_link(cfg, b) end
+  -- every second, changed or not: a held note or a pause still moves "at", so their view keeps growing. Only while the link doesn't reach
+  -- everyone here: the files are the fallback (dirty keeps piling up meanwhile, so the next file carries all of it)
+  if now - rec.wrote_at >= 1 and not require("direct").reaches_all(cfg, b.song, b.room) then lm.write(cfg, b, rec.at) end
+end
+local function changed(dirty)
+  local notes = {}
+  for k in pairs(dirty) do
+    local n = rec.notes[k]
+    notes[#notes + 1] = { i = k, t = n.t, s = n.s, e = n.e, p = n.p, v = n.v }
+  end
+  table.sort(notes, function(x, y) return x.i < y.i end)
+  return notes
+end
+-- What changed since the last link message, as one (named like a file, with an L: lm.from_msg folds it in as it does a file's).
+function lm.send_link(cfg, b)
+  rec.ln = rec.ln + 1
+  local name = string.format("%s-L%d.json", rec.since, rec.ln)
+  local c = { user = cfg.user, since = rec.since, time = os.date("!%Y-%m-%dT%H:%M:%SZ"), at = rec.at, notes = changed(rec.ldirty) }
+  require("direct").send_live(cfg, "midi", { f = name, c = c }, b.song, b.room, safe(cfg.user) .. "/" .. name)
+  rec.ldirty, rec.lsent_at = {}, reaper.time_precise()
 end
 
 -- One new file with what changed since the last one (new notes, notes that ended). Never removed while recording:
@@ -99,12 +123,7 @@ function lm.write(cfg, b, at)
   local udir = dir(cfg, b) .. "/" .. safe(cfg.user)
   reaper.RecursiveCreateDirectory(udir, 0)
   rec.n = rec.n + 1
-  local notes = {}
-  for k in pairs(rec.dirty) do
-    local n = rec.notes[k]
-    notes[#notes + 1] = { i = k, t = n.t, s = n.s, e = n.e, p = n.p, v = n.v }
-  end
-  table.sort(notes, function(x, y) return x.i < y.i end)
+  local notes = changed(rec.dirty)
   local name = string.format("%s-%04d.json", rec.since, rec.n)
   local c = { user = cfg.user, since = rec.since, time = os.date("!%Y-%m-%dT%H:%M:%SZ"), at = at, done = rec.done or nil, notes = notes }
   band.write_json(udir .. "/" .. name, c)
@@ -141,7 +160,9 @@ function lm.merge(st, files, read)
       if type(c) == "table" and type(c.since) == "string" and c.since >= (st.since or "") then
         if c.since ~= st.since then st.since, st.notes, st.at, st.done = c.since, {}, nil, nil end
         for _, n in ipairs(type(c.notes) == "table" and c.notes or {}) do
-          if type(n) == "table" and tonumber(n.i) then st.notes[n.i] = n end
+          -- (a note that has ended stays ended: a 1-second file can arrive after the link's newer word on it. James, rt)
+          local had = type(n) == "table" and tonumber(n.i) and st.notes[n.i]
+          if type(n) == "table" and tonumber(n.i) and not (had and had.e and not n.e) then st.notes[n.i] = n end
         end
         st.at = math.max(st.at or 0, tonumber(c.at) or 0)
         st.done, st.time, st.user = st.done or c.done, c.time, c.user
@@ -176,7 +197,7 @@ end
 -- A stream file's worth over the direct link (lib/direct.lua; James, 0.60.0-rt): folded in under the file's own name, so the file itself is
 -- skipped when Syncthing brings it (lm.merge's seen); drawn now, or by receive_tick while recording here. -> true when it was new.
 function lm.from_msg(proj, cfg, b, d, recording)
-  if type(d) ~= "table" or type(d.f) ~= "string" or not d.f:match("^%d%d%d%d%d%d%d%d%-%d%d%d%d%d%dZ%-%d+%.json$") or type(d.c) ~= "table"
+  if type(d) ~= "table" or type(d.f) ~= "string" or not d.f:match("^%d%d%d%d%d%d%d%d%-%d%d%d%d%d%dZ%-L?%d+%.json$") or type(d.c) ~= "table"
     or type(d.c.user) ~= "string" or d.c.user == cfg.user then return false end
   local u = safe(d.c.user)
   streams[u] = streams[u] or { seen = {}, notes = {} }

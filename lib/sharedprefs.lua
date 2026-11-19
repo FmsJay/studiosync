@@ -4,8 +4,7 @@
 -- song of that studio is the tab in front, its own saved first and put back when no song of the studio is in front, at a switch to another
 -- studio (its own values, or that studio's), and when Live sync stops (REAPER quitting too).
 -- Live only: each is set at once through SWS (SNM_SetIntConfigVar / SNM_SetDoubleConfigVar, after reading it back in the same size: a set
--- of the wrong size is what crashed ReaPersona 5.11.1) or, for a choice REAPER keeps as actions, by running the action. None on the list
--- needs a restart; ones that would (audio/MIDI devices, threads) are left off, as everything this computer's own is.
+-- of the wrong size is what crashed ReaPersona 5.11.1). None on the list needs a restart; ones that would (audio/MIDI devices, threads) are left off, as everything this computer's own is.
 -- With ReaPersona (its approach and key names, not its code): ReaPersona never writes a preference into a running REAPER, it queues
 -- them for the next restart (pending/prefs.json), so after a restart a persona's values are simply what's live. StudioSync saves what's live
 -- (yours or the persona's), puts the studio's on top, and puts back only where the value is still the studio's: one changed since (by you,
@@ -16,17 +15,15 @@
 local band = require("band")
 local sp = { STATE = "shared prefs state", HELD = "shared prefs held" }
 
--- { reaper.ini key, kind ("i" int, "d" double, "radio": a set of option actions, the one on), what }. Names checked against REAPER 7.79's
--- own config names (reaper.exe) and ReaPersona's list (Mespotine's reference); the actions against scripts that use them.
+-- { reaper.ini key, kind ("i" int, "d" double), what }. Names checked against REAPER 7.79's own config names (reaper.exe) and ReaPersona's
+-- list (Mespotine's reference). (What a new recording does over items was here; it's per project, so it travels with the song now:
+-- lib/band.lua FRONT_TOGGLES rec_overlap. Measured on the desktop, James, rt)
 sp.PREFS = {
   { "deffadelen", "d", "Default fade length (seconds)" },
   { "deffadeshape", "i", "Default fade shape" },
   { "defsplitxfadelen", "d", "Crossfade length on split and auto-crossfade (seconds)" },
   { "defxfadeshape", "i", "Crossfade shape" },
   { "splitautoxfade", "i", "Splitting items: auto-crossfade on split and its options" },
-  -- (REAPER 7: 42677 is "new recording creates new media items in separate lanes", which was 41329 before 7.0; the other two are takes and tape
-  -- (trim behind). Shown by REAPER's own action names)
-  { "rec_overlap", "radio", "What a new recording does over existing items (new takes, tape, or new lanes)", ids = { 41186, 41330, 42677 } },
 }
 -- Never shared, whatever band.json says: this computer's own (as ReaPersona's PREF_HERE, plus the look). A key on the list above can't match.
 sp.NEVER = { "^audio", "^asio", "^wasapi", "^dsound", "^coreaudio", "^alsa", "^jack", "^pulse", "^ks_", "bsize", "bufsize", "latency", "lat[io][nu]t?$",
@@ -40,15 +37,13 @@ function sp.never(k)
   for _, pat in ipairs(sp.NEVER) do if low:find(pat) then return true end end
   return false
 end
--- A studio set as band.json may have it, made safe (pure): only keys on the list, never one of NEVER, numbers only, a radio's one of its actions.
+-- A studio set as band.json may have it, made safe (pure): only keys on the list, never one of NEVER, numbers only.
 function sp.clean(t)
   local out = {}
   for k, v in pairs(type(t) == "table" and t or {}) do
     local x, n = INFO[k], tonumber(v)
     if x and not sp.never(k) and n and n == n and math.abs(n) < 1e9 then
-      if x[2] == "radio" then
-        for _, id in ipairs(x.ids) do if id == n then out[k] = id end end
-      elseif x[2] == "i" then out[k] = math.tointeger(n)
+      if x[2] == "i" then out[k] = math.tointeger(n)
       else out[k] = n end
     end
   end
@@ -61,11 +56,6 @@ local NO1, NO2 = -2147480001, -2147480002 -- (two error values: SWS answers its 
 function sp.read(k)
   local x = INFO[k]
   if not x then return nil end
-  if x[2] == "radio" then
-    if not reaper.GetToggleCommandStateEx then return nil end
-    for _, id in ipairs(x.ids) do if reaper.GetToggleCommandStateEx(0, id) == 1 then return id end end
-    return nil
-  end
   local get = x[2] == "d" and reaper.SNM_GetDoubleConfigVar or reaper.SNM_GetIntConfigVar
   if not get then return nil end
   local a = get(k, NO1)
@@ -75,11 +65,6 @@ end
 function sp.write(k, v)
   local x = INFO[k]
   if not x or sp.read(k) == nil then return false end -- (only what reads back in its size is ever set)
-  if x[2] == "radio" then
-    local id = math.tointeger(v)
-    if id and reaper.GetToggleCommandStateEx(0, id) == 0 then reaper.Main_OnCommand(id, 0) end
-    return true
-  end
   if x[2] == "d" then return reaper.SNM_SetDoubleConfigVar(k, tonumber(v)) end
   local n = math.tointeger(tonumber(v))
   return n ~= nil and reaper.SNM_SetIntConfigVar(k, n)
@@ -149,18 +134,9 @@ function sp.mine(k)
 end
 
 -- ---- Settings > Studio ------------------------------------------------------------------------------------------------------------------
-local names = {}
-local function action_name(id)
-  if names[id] == nil then
-    local ok, s = pcall(function() return reaper.CF_GetCommandText and reaper.CF_GetCommandText(0, id) or reaper.kbd_getTextFromCmd(id, nil) end)
-    names[id] = ok and type(s) == "string" and s ~= "" and s:gsub("^Options: ", "") or ("action " .. id)
-  end
-  return names[id]
-end
-function sp.words(k, v) -- "0.01 s", "Shape 2", the action's name
+function sp.words(k, v) -- "0.01 s", "Shape 2"
   local x, n = INFO[k], tonumber(v)
   if not (x and n) then return "not here" end
-  if x[2] == "radio" then return action_name(math.tointeger(n) or 0) end
   if x[2] == "d" then return string.format("%g s", n) end
   if k:find("shape$") then return "Shape " .. (math.floor(n) + 1) end
   return tostring(math.tointeger(n) or n)
