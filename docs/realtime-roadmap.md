@@ -862,3 +862,8 @@ Problems found, not fixed (risky or a behaviour change; for James to pick):
 - **The stream trace** (`stream trace` = 1, testing) appends to <home>/direct/stream_trace.log with no size limit.
 - **presence.lua `last_time`** is keyed by user only, not song/room: one person in two rooms at once (two tabs) would share one "last changed" time.
 - **write_status reads its own file back** on every write (the two-computers-one-name check): only needed every 45 s.
+- **Signed updates on, and through the cloud copy (0.59.49.21-23):** Smiley Studios has an update key (made on the owner's desktop with
+  fromfolder.create_update_key; the key file stays in the owner's home folder, ~/.studiosync/update-key); every computer logged "signed with
+  the studio's update key: used" and refuses unsigned code. With the Mac cut off from the desktop and laptop in Syncthing, a new signed build
+  reached the cloud copy in ~25 s, and the Mac logged "StudioSync 0.59.49.23 came from the Google Drive copy into the studio's folder" 159 s
+  after the deploy, then ran it. No conflict copies once Syncthing was resumed; the Mac's folder idle with nothing needed.
