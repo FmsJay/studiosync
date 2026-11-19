@@ -16,6 +16,10 @@ std::string webui_dock_data_dir(const std::string &resource_path);
 // May the view go to `uri`? Only the pages' own origin (the scheme, host and port of `page`); anything else opens in the browser.
 bool webui_dock_same_origin(const std::string &page, const std::string &uri);
 bool webui_dock_external_ok(const std::string &uri); // http(s) only, handed to the browser
+// What a page in the view may use (video calls and screen share, lib/webui/call.js). kind: WebView2's numbers (1 microphone, 2 camera; the
+// Mac's media capture asks as 1). -> 1 allow: the camera and microphone, for the pages' own origin only; -1 deny: anything another origin
+// asks for; 0 the view's own default: anything else the pages' origin asks for.
+int webui_dock_permission(const std::string &page, const std::string &uri, int kind);
 // A message from the page: "key:<vk>:<mods>" (Windows virtual-key code; mods 1 Shift, 2 Ctrl, 4 Alt, 8 Cmd/Win). -> false if it isn't one.
 bool webui_dock_key(const char *msg, int *vk, int *mods);
 

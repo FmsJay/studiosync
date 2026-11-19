@@ -73,6 +73,10 @@ package.loaded.live = { armed = function(tr) return tr == 1 end }
 package.loaded.presence = { peers = function() return { { user = "chilio" } } end }
 package.loaded.sync = { authority = function() return function() end, { driver = "James", tracks = {}, regions = {}, times = {} } end }
 local posted, from_msg = {}, {}
+-- (video calls' own checks are tests/test_0_60_rt_webcall.lua: here a stand-in whose topic never changes, published once per front tab)
+local rtc_pages = {}
+package.loaded.webcall = { dirty = function() return false end, me = function() return {} end, model = function() return { boot = "1" } end,
+  page = function(_, _, a) rtc_pages[#rtc_pages + 1] = a end, link = function() end }
 package.loaded.page_chat = {
   post = function(_, b, text, sc) posted[#posted + 1] = { b.song, text, sc } end,
   read = function() return { msgs = { { user = "chilio", text = "hey", time = "2026-11-19T10:00:00Z" } } } end,
@@ -81,11 +85,12 @@ package.loaded.page_chat = {
 }
 assert(webui.available(), "the extension has it")
 local cfg, b, handlers = { root = "R", user = "James" }, { song = "S", room = "main" }, {}
-actions = { '{"topic":"chat","text":" from my phone "}', '{"topic":"chat","text":""}', '{"topic":"rm","path":"x"}' }
+actions = { '{"topic":"chat","text":" from my phone "}', '{"topic":"chat","text":""}', '{"topic":"rtc","t":"here"}', '{"topic":"rm","path":"x"}' }
 webui.tick("P1", cfg, b, handlers)
 assert(started == 1, "started")
 assert(#posted == 1 and posted[1][1] == "S" and posted[1][2] == "from my phone" and posted[1][3] == "song", "the chat send applied once, cleaned; junk dropped")
-assert(#pub == 2 and pub[1][1] == "presence" and pub[2][1] == "chat", "presence and chat published")
+assert(#pub == 3 and pub[1][1] == "presence" and pub[2][1] == "chat" and pub[3][1] == "rtc", "presence, chat and the calls' topic published")
+assert(#rtc_pages == 1 and rtc_pages[1].t == "here" and type(handlers.rtc) == "function", "a call message goes to lib/webcall.lua, and the link's to it too")
 local pj = band.json_decode(pub[1][2])
 assert(pj.driver == "James" and pj.people[1].user == "James" and pj.people[1].recording and pj.people[1].armed[1] == "Vox" and pj.people[2].user == "chilio", "presence: " .. pub[1][2])
 assert(band.json_decode(pub[2][2]).msgs[1].text == "hey", "chat: " .. pub[2][2])
@@ -94,14 +99,14 @@ handlers.chat({ x = 1 })
 assert(from_msg[1].x == 1, "handed over")
 clock = clock + 5
 webui.tick("P1", cfg, b, handlers)
-assert(#pub == 2 and started == 1, "nothing changed: nothing published, not started again within 10 s")
+assert(#pub == 3 and started == 1, "nothing changed: nothing published, not started again within 10 s")
 front = "P2"
 clock = clock + 5
 webui.tick("P1", cfg, b, handlers)
-assert(#pub == 2, "a tab behind publishes nothing")
+assert(#pub == 3, "a tab behind publishes nothing")
 front = "P1"
 webui.tick("P1", cfg, b, handlers)
-assert(#pub == 4 and started == 2, "back in front: everything again (another tab's was showing)")
+assert(#pub == 6 and started == 2, "back in front: everything again (another tab's was showing)")
 local url, why = webui.phone_link(cfg)
 assert(url == nil and why:find("direct link"), "no phone link while the link isn't listening: " .. tostring(why))
 reaper.StudioSync_DirectStatus = function() return '{"listening":true}' end

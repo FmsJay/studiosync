@@ -115,6 +115,15 @@ int main(int argc, char **argv)
         !webui_dock_external_ok("ms-settings:") && !webui_dock_external_ok("https://a.example/ x") && !webui_dock_external_ok("https://a\n"),
         "nothing else does (no files, schemes or spaces)");
 
+  // what the view's page may use (video calls: camera 2 and microphone 1 for the pages' own origin; anyone else refused)
+  CHECK(webui_dock_permission(page, "http://127.0.0.1:47281/", 2) == 1 && webui_dock_permission(page, "http://127.0.0.1:47281", 1) == 1,
+        "camera and microphone for the pages' own origin (a URL, or the bare origin as macOS gives it)");
+  CHECK(webui_dock_permission(page, "http://127.0.0.1:47281/", 4) == 0 && webui_dock_permission(page, "http://127.0.0.1:47281/", 0) == 0,
+        "anything else the pages ask for: the view's own default");
+  bool refused = true;
+  for (const char *u : away) for (int k = 0; k <= 13; k++) if (webui_dock_permission(page, u, k) != -1) { refused = false; printf("     allowed: %s %d\n", u, k); }
+  CHECK(refused, "every other origin refused, whatever it asks for");
+
   // keys from the page
   int vk = 0, mods = 0;
   CHECK(webui_dock_key("key:32:0", &vk, &mods) && vk == 32 && mods == 0, "Space");

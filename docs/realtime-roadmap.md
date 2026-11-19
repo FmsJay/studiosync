@@ -132,6 +132,84 @@ Hear a plug-in you don't have, live, through the bandmate's REAPER that does hav
   camera and screen share, peer to peer over Tailscale; the link carries the setup between computers. No outside
   service. Can share the REAPER window.
 
+#### First version built (rt-video, 2026-11-19: offline tests only, not run in REAPER, no camera opened)
+- **Where:** the web UI (browser on this computer, or the docked view). `lib/webui/call.js` + `call.css` (a "Video" section and the
+  sharing bar; `index.html` gains two links and two empty elements, `app.js` one line that hands its snapshot on as an `ss-state`
+  event); `lib/webcall.lua` (the relay; `lib/webui.lua` takes the `rtc` action, installs Live sync's `handlers.rtc`, publishes the
+  `rtc` topic).
+- **Signalling, no server:** page -> `POST /api/action {topic:"rtc", t, to, call, kind, sdp}` -> Live sync's tick -> `webcall.page`
+  checks it and `direct.send_live(cfg, "rtc", ...)` to the one peer whose Syncthing device id is `to` (by `direct.peers`' dev_of;
+  calls are per computer, so James's desktop and laptop are separate) -> their Live sync's `handlers.rtc` -> `webcall.link` checks it
+  again (a known kind; call id `[%w-]{8,64}`; SDP starts `v=0` and is at most 12,000 bytes, under the server's 16 KB POST; for this
+  computer; from a computer in the room now, by the same peer list) -> their pages read the `rtc` topic `{ boot, me, open, msgs }`.
+  The server keeps only a topic's latest state, so `msgs` is a numbered queue (the newest 16, 30 s each; pages keep their place by
+  number, starting again when `boot` changes). Kinds: `here` (to everyone: the page is open and can do video), `offer` (`kind` call
+  or screen), `answer`, `bye`, `busy` (declined). The relay adds `error` (that computer isn't reachable, or the link didn't take it)
+  and an `out` copy of what this computer sent (no SDP), so a ring shown in two windows here stops when one answers.
+- **ICE:** no trickle. Each side waits for gathering to finish (3 s at most) and sends one offer / one answer with its candidates
+  inside, so a call is two link messages. `iceServers: []`: host candidates only, which over Tailscale are the 100.x interface.
+- **Presence:** a page that can do video posts `here` every 10 s while Live sync runs; this computer passes it on at most every
+  5 s; a bandmate's page counts as open for 25 s after its last word. The list shows each open one (name and computer) with
+  **Call** and **Share screen**. Only bandmates in the same song and room (the link's messages are per song/room).
+- **Media:** a call sends the camera (640x360 ideal); call audio off by default (a tick box: live audio already carries the music),
+  and the caller always offers to receive audio so a callee with it on is heard. Screen share: `getDisplayMedia` with no audio,
+  15 fps ideal; the browser's own picker offers REAPER's window or the whole screen; the sharer offers, the viewer only receives.
+  Tiles per bandmate, a big view for a screen being watched, and the sharer's own preview.
+- **Screen share safety:** view-only (no input path exists). The pointer: the viewer clicks the picture, the place (0 to 1 each way)
+  goes over the call's own data channel, and the sharer sees a named dot on their preview (only there: see below). While sharing,
+  a red bar under the header always says "You're sharing your screen with ... . Stop"; the browser's own "Stop sharing" ends it too.
+- **NAT / Tailscale (the catch):** Chrome, Edge, WebView2 and Safari give a page that may use neither camera nor microphone only
+  the default route's address, hidden behind an mDNS name; mDNS is multicast and doesn't cross Tailscale, and the default route
+  isn't Tailscale's. So two such pages can't connect unless they share a network. A video call is fine (the camera allows it). For
+  a screen share, both pages ask once for the microphone and let go of it at once (the page says why; nothing is recorded or sent);
+  after that the browser offers every interface's real address, Tailscale's too. If the microphone is refused, it still connects on
+  one network. If host candidates fail anyway (Tailscale down, a firewall on UDP between the two), the call says "Couldn't connect
+  ... over Tailscale" after 20 s: there's no relay. TODO if that bites: a TURN relay inside the extension on the link's port (no
+  outside service), or carry media over the link itself.
+- **Phones:** not in this version. The phone link is `http://<name>:47281`, not a secure page, so browsers keep camera, microphone
+  and screen capture off; the section says so.
+- **Docked view, Windows (WebView2):** `PermissionRequested` allows camera and microphone for the pages' own origin only
+  (`webui_dock_permission`: 1 allow, -1 deny for any other origin, 0 the view's default for other kinds) and denies other origins;
+  `ScreenCaptureStarting` (runtimes with ICoreWebView2_27) cancels screen capture for anything but the pages' origin; WebView2 shows
+  its own screen picker. Allowed states are saved in the view's own profile, so the microphone ask above happens once, silently.
+- **Docked view, macOS (WKWebView):** `WKUIDelegate`'s `requestMediaCapturePermissionForOrigin` (macOS 12+) grants camera and
+  microphone for the pages' origin only. REAPER 7.86's own Info.plist has `NSCameraUsageDescription` and
+  `NSMicrophoneUsageDescription`, and its signature the `device.camera` and `device.audio-input` entitlements (checked on the Mac,
+  2026-11-19), so macOS asks once, for REAPER. Screen capture also needs REAPER allowed under Screen Recording, and WKWebView's
+  `getDisplayMedia` isn't in every macOS: where capture fails or isn't there, the section offers **Open StudioSync in your browser**
+  (a new window, which the view hands to the browser). Remote video and call audio play without a click
+  (`mediaTypesRequiringUserActionForPlayback = none`).
+- **Tests:** `tests/test_0_60_rt_webcall.lua` (what a page and a bandmate's computer may send, routing to the right peer only,
+  `here` rate, errors back to the page, the queue's limits and ageing, a link check of call.js / call.css / index.html / app.js);
+  `tests/test_0_60_rt_webui.lua` (the `rtc` action reaches lib/webcall.lua, the topic is published); `tests/webui_dock_test.cpp`
+  (the permission rule). The headless WebView2 test still loads the pages (call.js opens nothing on load).
+- **Not yet:** the dot on the sharer's real screen (the extension could draw it over REAPER's window: a small topmost layered
+  window); calls of three or more are separate pairs (a mesh: each Call is one bandmate); call audio can't change mid-call; one
+  studio at a time, as the rest of the web UI.
+- **To check in REAPER (two computers on Tailscale, both with Live sync on in the same song/room, the web UI open on each):**
+  1. Each sees the other in Video within ~10 s; closing one page drops it within ~25 s.
+  2. Call from the desktop's browser page: the laptop rings in every web UI window it has open; Answer in one, the other stops.
+     Both see both tiles; no call audio unless ticked on both; hang up from either side ends both.
+  3. Share screen from the docked view on Windows (WebView2's picker: REAPER's window), watch from the other in a browser: the
+     microphone ask happens once, it connects across Tailscale (not just on the LAN: try the laptop off the home network), the red
+     bar shows with Stop, the viewer's clicks show as named dots on the sharer's preview, Stop (and the browser's own Stop sharing)
+     end it on both sides.
+  4. The Mac: camera in the docked view (macOS asks for REAPER once), screen share from the docked view (Screen Recording for
+     REAPER) or, if it isn't there, the "Open StudioSync in your browser" link works.
+  5. The phone link shows the "isn't a secure page" line and nothing breaks.
+  6. Decline -> "didn't take it"; nobody answers for 40 s -> "didn't answer"; a ring cancelled -> "Missed".
+
+#### Remote control: design note for later (James: "take control only with an explicit yes for that session")
+- Never on by default and never remembered: each session starts view-only. The viewer asks ("Ask to control"); the sharer gets a
+  clear prompt naming who, and only an explicit **Allow for this session** turns it on. It ends when either side clicks Stop
+  control, when the share stops, when the call drops, or after a short idle; the next share asks again.
+- While on, the sharing bar says "chilio is controlling your REAPER. Stop" in a different colour, and the sharer's own mouse or
+  keyboard input takes over at once.
+- Input goes over the call's data channel to the page, then to the extension (the docked view's channel), which posts it only to
+  REAPER's own windows (never system-wide input injection, never other apps); scoped to the shared window's area; rate-limited;
+  no system keys (Alt+F4, Cmd+Q) and no file dialogs driven remotely.
+- Lua keeps a log line per grant and stop. A guest (limited access) can never be granted control.
+
 ## Now that the extension is mandatory: what else changes (2026-11-19)
 
 ### Project files: snapshots plus changes
@@ -390,7 +468,7 @@ Like Helgobox's move away from REAPER's own widgets, now that the extension is m
 - **Docking:** built (above); check it in REAPER on Windows and a Mac. WebKitGTK on Linux still to do.
 - **Pages, then parity:** scopes and to-dos/links in chat, Health, Play together; the ReaImGui panel stays until each page matches.
 - **Shared DAW view, view-only first** (stage 1 above): tracks, items, markers and cursors from the synced model, follow, play/stop.
-- **Video and screen share** (step 5) over WebRTC inside the view; the Studio browser after it.
+- **Video and screen share** (step 5): first version built (step 5 above: calls, screen share, pointer); check it in REAPER on two computers. The Studio browser after it.
 
 ### What the web UI makes possible (James: "keep them coming")
 - **Sharing each other's REAPER.** Screen share of the REAPER window inside the docker, with a live pointer ("look
