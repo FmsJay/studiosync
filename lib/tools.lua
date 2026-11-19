@@ -628,7 +628,7 @@ end
 -- in REAPER's toolbar style: grey, lighter grey under the mouse, StudioSync's blue while the panel is open). REAPER builds the toolbar as it
 -- starts, so a change shows after a restart; a main toolbar someone customized isn't built from the default, so it isn't added there.
 tools.TOOLBAR_EXT = "1.0.4"
-tools.EXT_WANT = "1.0.13" -- (1.0.13: Hop loopback, docked web UI; the menu extension this StudioSync goes with: tools/make_index.py EXT_VERSION. Health says when it's older. 1.0.8: the direct link's, lib/direct.lua WANT. James, 0.60.0-rt; 1.0.10: streamed takes cross a slow way; 1.0.11: stream trace, rt; 1.0.12: frames in flight, send anything, link speed, rt)
+tools.EXT_WANT = "1.0.13" -- (1.0.13: Hop loopback, docked web UI, live audio; the menu extension this StudioSync goes with: tools/make_index.py EXT_VERSION. Health says when it's older. 1.0.8: the direct link's, lib/direct.lua WANT. James, 0.60.0-rt; 1.0.10: streamed takes cross a slow way; 1.0.11: stream trace, rt; 1.0.12: frames in flight, send anything, link speed, rt)
 function tools.toolbar_button() return reaper.GetExtState(band.SECTION, "toolbar button") == "1" end
 -- On unless you switched it off, as Helgobox's is (James, 0.58.82): "" is never chosen (StudioSync - Autostart and the panel switch it on then),
 -- "0" off. The menu extension reads "1" only.

@@ -20,6 +20,7 @@ end
 local SETTINGS = { "alerts", "alerts_server", "call", "sonobus_server", "tailnet", "tailscale_only", "colours", "debug", "updates", -- ("updates": lib/fromfolder.lua, 0.59.25)
   "print_hops", -- ("print_hops": chained prints, lib/prints.lua hops_cap. James, 0.59.49)
   "direct", -- ("direct": the direct link, lib/direct.lua enabled; on unless false. James, 0.60.0-rt)
+  "live_audio", -- ("live_audio": live audio over the link, lib/liveaudio.lua; off unless true. James, rt)
   "takes_to_lanes", -- ("takes_to_lanes": the takes-become-lanes pass, lib/prints.lua takes_to_lanes; on unless false. James, rt)
   "shared_prefs", -- ("shared_prefs": the studio's REAPER preferences, lib/sharedprefs.lua; { key = value }. James, rt)
   "colour_parity", "theme_colours", -- (colour parity, on unless false, and the theme's colour settings: lib/colours.lua parity. James, rt)
@@ -195,6 +196,9 @@ function groups.set_folder_updates(root, on) save(root, function(j) j.updates = 
 function groups.set_print_hops(root, v) save(root, function(j) j.print_hops = v end) end
 -- The direct link for the studio (lib/direct.lua): on unless band.json says false, so only "off" is written. Owner and admins. (James, 0.60.0-rt)
 function groups.set_direct(root, on) save(root, function(j) if on then j.direct = nil else j.direct = false end end) end
+-- Live audio over the link for the studio (lib/liveaudio.lua): off unless band.json says true. Owner and admins. (James, rt)
+function groups.live_audio(root) return groups.trusted(root).live_audio == true end
+function groups.set_live_audio(root, on) save(root, function(j) j.live_audio = on and true or nil end) end
 -- Takes become lanes for the studio (lib/prints.lua takes_to_lanes): on unless band.json says false, so only "off" is written. Owner and
 -- admins. (James, rt)
 function groups.takes_to_lanes(root) return groups.trusted(root).takes_to_lanes ~= false end

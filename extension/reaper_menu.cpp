@@ -26,11 +26,12 @@
 #define REAPERAPI_WANT_GetExtState
 #define REAPERAPI_WANT_SetExtState
 #define REAPERAPI_WANT_RefreshToolbar2
-#define EXT_VERSION "1.0.13" // (1.0.13: the Hop plug-in's loopback (hop.cpp), the web UI docked in REAPER (webui_dock.cpp); tools/make_index.py EXT_VERSION: what the panel reads to know this build adds toolbar buttons; 1.0.7: the direct link; 1.0.8: its messages, clock, streams, audio spike; 1.0.9: signed updates, extension/sign.cpp; 1.0.10: streams in 64 KB frames, StudioSync_DirectFileTime, a stream's read errors in DirectStreams; 1.0.11: a growing take's size asked every way, StudioSync_DirectTrace, a WAV copy's header held back until its first whole frame; 1.0.12: stream frames in flight, send anything, link speed per peer)
+#define EXT_VERSION "1.0.13" // (1.0.13: the Hop plug-in's loopback (hop.cpp), the web UI docked in REAPER (webui_dock.cpp), live audio on AOO + Opus (rtaudio.cpp); tools/make_index.py EXT_VERSION: what the panel reads to know this build adds toolbar buttons; 1.0.7: the direct link; 1.0.8: its messages, clock, streams, audio spike; 1.0.9: signed updates, extension/sign.cpp; 1.0.10: streams in 64 KB frames, StudioSync_DirectFileTime, a stream's read errors in DirectStreams; 1.0.11: a growing take's size asked every way, StudioSync_DirectTrace, a WAV copy's header held back until its first whole frame; 1.0.12: stream frames in flight, send anything, link speed per peer)
 #ifndef REAPERSONA
 #include "direct.h" // (the direct link: extension/direct.cpp. James, 0.59.50; before reaper_plugin.h: SWELL's min/max macros broke its C++ headers on Linux)
 #include "webui.h" // (the web UI server: extension/webui.cpp. James, rt)
 #include "webui_dock.h" // (the web UI docked in REAPER: extension/webui_dock.cpp. James, rt)
+#include "rtaudio.h" // (live audio over the link, AOO + Opus: extension/rtaudio.cpp. James, rt)
 #endif
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"
@@ -208,6 +209,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_H
   if (!rec) { // (unloading: the direct link's threads stop)
 #ifndef REAPERSONA
     direct_audio_stop();
+    rtaudio_shutdown();
     webui_dock_shutdown(); // (its window and view, before the server they show)
     webui_shutdown(); // (first: it takes HTTP from the link's listener)
     direct_shutdown();
@@ -232,6 +234,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_H
 #ifndef REAPERSONA
   direct_register(rec); // (reaper.StudioSync_Direct*: lib/direct.lua)
   direct_audio_register(rec); // (reaper.StudioSync_DirectAudio*: the step-4 spike, idle until started)
+  rtaudio_register(rec); // (reaper.StudioSync_LiveAudio*: live audio, lib/liveaudio.lua; idle until started)
   webui_register(rec); // (reaper.StudioSync_WebUI*: lib/webui.lua; idle until Live sync or the panel starts it)
   webui_dock_register(rec); // ("StudioSync: Web UI (docked)" and reaper.StudioSync_WebUIDock)
   { void sign_register(reaper_plugin_info_t *); sign_register(rec); } // (reaper.StudioSync_Verify*, KeyCreate, Sign, FileHash: signed updates, extension/sign.cpp)

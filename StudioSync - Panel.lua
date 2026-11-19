@@ -1489,6 +1489,7 @@ function ui.call_tab()
   else
     ImGui.TextDisabled(ctx, b and "On: talk to everyone with Talk, no other app needed, and set each person's volume." or "Open a studio project to talk.")
   end
+  pcall(require("liveaudio").call_ui, ctx, ImGui, cfg) -- (StudioSync's own live audio: each person's level, volume and mute, when the studio has it on. lib/liveaudio.lua, James, rt)
   ImGui.Spacing(ctx)
   ImGui.SeparatorText(ctx, "3rd party call service")
   local call = require("alerts").call_link(cfg.root)

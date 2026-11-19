@@ -229,6 +229,7 @@ local function mark_room(on)
   if v == "" then reaper.DeleteExtState(band.SECTION, k, true) elseif v then reaper.SetExtState(band.SECTION, k, v, true) end
 end
 reaper.atexit(function()
+  band.try("liveaudio.on_exit", require("liveaudio").on_exit, proj) -- (live audio stops with the Live sync that started it: lib/liveaudio.lua. James, rt)
   if click and reaper.GetToggleCommandStateEx(0, 40364) == 1 then reaper.Main_OnCommand(40364, 0) end -- (stopped mid count-in: the click left on. 0.58.92)
   -- (only while the tab still holds this session: another project opened into it was saved as this song's "end of session" version, exported
   -- with its media to the studio's cloud drive, and read for the local-work mark. Otherwise the last look's answer, and nothing saved.
@@ -1073,6 +1074,7 @@ local function tick_body() -- returns true to keep going
   local dok, arrived = band.try("direct.live_tick", direct.live_tick, cfg, b.song, b.room, live_handlers)
   if dok and (arrived or 0) > 0 then cue_left, quick_at, last, direct_in_at, direct_held = true, -math.huge, -math.huge, reaper.time_precise(), true end
   band.try("ablink.tick", require("ablink").tick, cfg, b, proj) -- (this computer's Ableton Link session, when it's on here. James, rt)
+  band.try("liveaudio.tick", require("liveaudio").tick, cfg, b, proj) -- (live audio over the link, when the studio has it on: lib/liveaudio.lua. James, rt)
   band.try("webui.tick", require("webui").tick, proj, cfg, b, live_handlers) -- (the web UI: who's here, claims and chat for the browser, its chat sends. lib/webui.lua, James, rt)
   local tjson = reaper.GetExtState(band.SECTION, "transport " .. key) -- a start/stop from the panel or the band
   if tjson ~= "" then
