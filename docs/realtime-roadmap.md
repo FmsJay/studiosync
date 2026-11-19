@@ -127,6 +127,56 @@ before anything loads. That replaces "anyone who can write the shared folder can
 with a cryptographic check, and closes most of the security items held "until the full release"
 (docs/REVIEW-2026-11-18.md "Planned"), without making setup harder. Updates can also travel over the link.
 
+**Design (built first, James: early; extension 1.0.9):**
+- **Signatures:** Ed25519, checked natively in the extension (extension/sign.cpp: TweetNaCl's Ed25519 and SHA-512, public domain,
+  tweetnacl.cr.yp.to; plus the RFC 8032 check that S < L). ReaScript: `StudioSync_Verify(sig, message, key)`,
+  `StudioSync_VerifyFiles(dir, key)` (a copy's lib/files.txt and lib/files.txt.sig, then every file it lists by SHA-256),
+  `StudioSync_KeyCreate(path)`, `StudioSync_Sign(keypath, message)`, `StudioSync_FileHash(path)`.
+- **What's signed:** lib/files.txt, which already has the version and every code file's length and FNV hash, gains a SHA-256 row
+  per file (`sha256 <hex> <path>`: older band.lua and tools/files_check.py skip lines they don't know) for the code and the helpers
+  that ship with it (lib/mac, lib/ninjam, lib/listen, lib/toolbar_icons, the extension binaries). FNV isn't cryptographic, so the
+  signature leans on the SHA-256 rows. Text files are hashed with CRLF read as LF (a Windows checkout and a Mac copy agree; Lua reads
+  them the same), files with a NUL byte as they are. lib/files.txt.sig = hex Ed25519 signature over `"StudioSync files.txt v1\n"` +
+  lib/files.txt (CRLF as LF).
+- **Signing:** tools/make_index.py writes lib/files.txt with the SHA-256 rows and signs it when the owner's key is on the computer;
+  tools/sign_release.py [dir] signs any copy (a studio's folder copy). Both in pure Python (RFC 8032's reference code). In REAPER,
+  fromfolder.sign_copy does the same with the extension. The private key (32-byte seed, hex) lives at `$STUDIOSYNC_UPDATE_KEY`, else
+  `~/.studiosync/update-key`: outside every synced folder, never committed; one key per owner, for every studio they own.
+- **The studio's key:** band.json `update_key` (64 hex), owner-written, read through groups.trusted like the other studio settings
+  (needs "update_key" in groups.lua's SETTINGS), and pinned on this computer at first look (ExtState "update key <root>", kept in
+  settings.json across a crash). A different key in band.json later doesn't replace the pin: logged once.
+- **Load check:** run from a studio's folder (<root>/_tools/studiosync) in a studio with an update key, band.code_guard checks the
+  signature first: valid, its files all matching their SHA-256, and the code on disk exactly what lib/files.txt lists -> recorded, no
+  box, without "update ok". Anything else (no .sig, a changed file, another key, no extension 1.0.9) -> refused, a line in the log, no
+  box: the script doesn't start from there, the startup block falls back to the last good copy, and a reload keeps the old code. The
+  same answer decides update_ok (Autostart switches to a signed version without asking and never asks about an unsigned one),
+  save_last_good (only a signed copy becomes the last good copy) and fromfolder.extension_tick (only a signed copy's extension is put
+  into UserPlugins). A studio without a key behaves as before; a ReaPack copy isn't checked. The check reads only files on disk, so it
+  holds however they arrived (Syncthing now, the link later).
+- **Key setup:** `fromfolder.create_update_key(root)` (the owner, once: Settings > Studio): makes the key (or reads it), signs the
+  studio's folder copy first when it's code this computer has said yes to (so nobody is refused the moment the key appears), writes
+  `update_key` to band.json and pins it. `fromfolder.sign_copy(dir)` signs a new version the owner put in the folder.
+- **Closes** (docs/REVIEW-2026-11-18.md "Planned, after the testing phase"): the release checksum check (with the owner's key instead
+  of GitHub, so it works offline; helpers covered); the Syncthing writer check for folder code (superseded: who wrote a file stops
+  mattering); `updates` believed on Syncthing's modifiedBy alone, for code (a member setting `updates` can't get code run in a keyed
+  studio); and from "Not doing": FNV and helpers outside the check, and save_last_good copying an unchecked copy.
+- **Still open:** band.lua, json.lua and the entry script are read from the folder before the check runs, so someone who rewrites
+  band.lua itself skips it at a fresh start (a running copy never reloads into it: update_ok checks with the code already running).
+  The fix is to run a verified local copy: the running code copies a signed version out of the folder and runs that (or the
+  __startup.lua block calls StudioSync_VerifyFiles before it loads anything). Also open: an older signed version put back in the folder
+  is accepted (downgrade); key rotation (each computer keeps its pin); an admin can set the first key (groups.trusted takes managers).
+
+**Built (2026-11-19, not run in REAPER yet):** extension/sign.cpp + sign.h (registered from reaper_menu.cpp; build_windows.cmd and
+.github/workflows/extension.yml build it); lib/band.lua (studio_update_key, pin_update_key, update_key, signed_ok, signed_update_ok,
+approved_code; code_guard, update_ok, save_last_good, kept_keys); lib/fromfolder.lua (update_key_path, sign_copy, create_update_key;
+extension_tick); StudioSync - Autostart.lua (no box for a keyed studio's unsigned version); tools/sign_release.py; tools/make_index.py.
+Tests: tests/sign_test.cpp via tests/build_sign_test.cmd (RFC 8032 TEST 1-3 and SHA(abc), tampered message/R/S, S + L, other key, a
+signed copy checked file by file, CRLF/LF, a lone CR and a binary's CR refused, paths out of the copy refused), tests/sign_cross.py (a
+copy signed in Python passes the extension's check, tampered or unsigned it doesn't), tests/test_0_60_rt_signed.lua (the Lua flow, with
+sign_release.py standing in for the extension). Before publishing a key: every computer in the studio on extension 1.0.9 (one without it
+refuses the keyed folder copy and runs its last good copy), and EXT_VERSION 1.0.9 in reaper_menu.cpp, tools/make_index.py and
+lib/tools.lua EXT_WANT.
+
 ### Things that can go, or shrink, in the new style
 - Presence, heartbeat, status, cue and live-MIDI files: become link messages (the shared folder gets much quieter).
 - The waits for audio "still arriving" and the held-back/retry machinery: shrink as media streams over the link.

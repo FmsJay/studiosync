@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.59.49", FORMAT = 1, SECTION = "BandSync" }
+local band = { VERSION = "0.59.49.1", FORMAT = 1, SECTION = "BandSync" } -- (realtime branch builds: 0.59.49.N, above main's 0.59.49 and below its next release, as compare_versions reads every number. James, rt)
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -783,6 +783,9 @@ end
 -- and the panel never took the fix. Round 1 review, 0.59.45)
 function band.update_ok(dir, version)
   if not band.from_shared(dir) then return true end
+  -- (a studio with an update key: the owner's signature decides, not "update ok" or the folder setting. Signed updates, extension 1.0.9)
+  local ukey = band.update_key(dir)
+  if ukey then return band.signed_update_ok(dir, ukey, version) end
   local said = reaper.GetExtState(band.SECTION, "update ok") == version
   return (said or select(2, pcall(function() return require("fromfolder").trusted_copy(dir) end)) == true) and band.files_complete(dir)
 end
@@ -962,6 +965,9 @@ function band.save_last_good(dir)
   local v = band.version_on_disk(dir)
   if v ~= band.VERSION or (band.from_shared(dir) and not band.files_complete(dir)) then return nil end
   if band.version_on_disk(to) == v and band.read(to .. "/lib/files.txt") == band.read(dir .. "/lib/files.txt") then return false end
+  -- (a studio with an update key: only a copy signed with it, checked now, becomes the copy that runs unchecked as the fallback. Signed updates)
+  local ukey = band.from_shared(dir) and band.update_key(dir)
+  if ukey and not band.signed_ok(dir, ukey, nil, v) then return nil end
   reaper.RecursiveCreateDirectory(to .. "/lib", 0)
   local keep = {}
   for _, rel in ipairs(code_list(dir)) do keep[rel] = true; band.copy_atomic(dir .. "/" .. rel, to .. "/" .. rel) end
@@ -1028,11 +1034,7 @@ end
 -- computer last verified as written from the owner's or an admin's computer (lib/groups.lua trusted keeps them, "trusted settings <root>").
 -- No module of the shared folder is loaded for it: its own fromfolder, groups and trust decided whether changed code, theirs too, was trusted.
 -- James's decision, Round 3 review, 0.59.48.
-function band.folder_updates(dir)
-  local root = norm(dir or ""):match("^(.*)/_tools/studiosync$")
-  if not root then return false end
-  local j = band.read_json(root .. "/_band/band.json")
-  if not (type(j) == "table" and j.updates == "folder") then return false end
+local function trusted_settings(root)
   local key = "trusted settings " .. root:lower()
   local t = band.ext_json(band.SECTION, key)
   -- (none stored: settings.json's kept copy. This check runs as band.lua loads, before Autostart puts lost keys back from there, so after a
@@ -1041,12 +1043,92 @@ function band.folder_updates(dir)
     local kept = band.read_json(band.home() .. "/settings.json")
     t = type(kept) == "table" and type(kept[key]) == "string" and band.json_decode(kept[key]) or nil
   end
-  return type(t) == "table" and t.updates == "folder"
+  return type(t) == "table" and t or nil
+end
+function band.folder_updates(dir)
+  local root = norm(dir or ""):match("^(.*)/_tools/studiosync$")
+  if not root then return false end
+  local j = band.read_json(root .. "/_band/band.json")
+  if not (type(j) == "table" and j.updates == "folder") then return false end
+  local t = trusted_settings(root)
+  return t ~= nil and t.updates == "folder"
+end
+
+-- ---- Signed updates (docs/realtime-roadmap.md "Signed updates", extension 1.0.9) ----
+-- A studio with an update key (band.json "update_key", the owner's Ed25519 public key, believed as a trusted setting and pinned here at first
+-- look) runs its folder copy only when lib/files.txt.sig is that key's signature over lib/files.txt and every file matches its SHA-256 there:
+-- recorded without a box, or refused with a line in the log, never a box. A studio without one goes on as before.
+local function key_ok(k) return type(k) == "string" and #k == 64 and k:match("^%x+$") ~= nil end
+local function pin_name(root) return "update key " .. norm(root):lower() end -- (as band.kept_keys names it, so a crash doesn't lose it)
+local key_said, kept_read = {}, {}
+-- The studio's update key, by its root: the pinned one, else the trusted setting (pinned now). -> 64 hex, or nil.
+function band.studio_update_key(root)
+  if not root then return nil end
+  local pinned = reaper.GetExtState(band.SECTION, pin_name(root)):lower()
+  -- (lost in a crash: settings.json's kept copy, as trusted_settings reads; this runs before Autostart puts it back. Once per script: a studio
+  -- without a key would read settings.json on every update look)
+  if pinned == "" and not kept_read[root] then
+    kept_read[root] = true
+    local kept = band.read_json(band.home() .. "/settings.json")
+    pinned = type(kept) == "table" and type(kept[pin_name(root)]) == "string" and kept[pin_name(root)]:lower() or ""
+    if key_ok(pinned) then reaper.SetExtState(band.SECTION, pin_name(root), pinned, true) end
+  end
+  local t = trusted_settings(norm(root))
+  local said = t and key_ok(t.update_key) and t.update_key:lower() or nil
+  if key_ok(pinned) then
+    if said and said ~= pinned and not key_said[root .. said] then
+      key_said[root .. said] = true
+      band.log("The studio's update key in band.json isn't the one this computer pinned: it keeps the pinned key (folder copies must be signed with it)")
+    end
+    return pinned
+  end
+  if said then band.pin_update_key(root, said) end
+  return said
+end
+function band.pin_update_key(root, key)
+  if not key_ok(key) then return false end
+  reaper.SetExtState(band.SECTION, pin_name(root), key:lower(), true)
+  band.log("The studio's update key is pinned on this computer: its folder copy of StudioSync runs only when signed with it")
+  return true
+end
+-- The update key of the studio whose folder holds this copy (<root>/_tools/studiosync). -> 64 hex, or nil (no key, or not such a copy).
+function band.update_key(dir) return band.studio_update_key(norm(dir or ""):match("^(.*)/_tools/studiosync$")) end
+-- Is the copy in `dir` signed with `key`, whole, and is its code (`now`: band.code_files, worked out when not given) exactly what the signed
+-- lib/files.txt lists, for band.lua's `version`? -> true, or false and why.
+function band.signed_ok(dir, key, now, version)
+  local verify = reaper.StudioSync_VerifyFiles
+  if not verify then return false, "checking signed updates needs StudioSync's extension 1.0.9 or newer (this computer's is older or missing)" end
+  local r = verify(norm(dir), key)
+  local v, text = r:match("^ok (%S+)\n(.*)$")
+  if not v then return false, r end
+  version = version or band.version_on_disk(dir)
+  if v ~= version then return false, "lib/files.txt is signed for " .. v .. " but lib/band.lua is " .. tostring(version) end
+  now = now or band.code_files(dir)
+  -- (the text the extension checked, not a second read: a swap in between can't add a file)
+  if not band.list_matches(dir, now, v, text) then return false, "the code files aren't the ones the signed lib/files.txt lists" end
+  local sha = {}
+  for line in text:gmatch("[^\n]+") do local p = line:match("^sha256 %x+ (.+)$"); if p then sha[p] = true end end
+  for p in pairs(now) do if not sha[p] then return false, p .. " has no signed SHA-256 in lib/files.txt" end end
+  return true
+end
+-- For band.update_ok, asked every few seconds: the signature and SHA-256s checked once per lib/files.txt and .sig (lengths and FNV hashes are
+-- band.files_complete's), and the new band.lua checks everything again as it loads (band.code_guard).
+local signed_memo = {}
+function band.signed_update_ok(dir, key, version)
+  local text = (band.read(dir .. "/lib/files.txt") or "") .. "\0" .. (band.read(dir .. "/lib/files.txt.sig") or "")
+  local m = signed_memo[dir]
+  if not (m and m.text == text and m.key == key) then
+    local verify = reaper.StudioSync_VerifyFiles
+    m = { text = text, key = key, version = verify and verify(norm(dir), key):match("^ok (%S+)\n") }
+    signed_memo[dir] = m
+  end
+  return m.version ~= nil and m.version == version and band.files_complete(dir)
 end
 -- Does the code found (`now`: band.code_files) match the copy's own lib/files.txt, hash for hash, for `version`? -> true or false.
 -- (Round 4 review, 0.59.49)
-function band.list_matches(dir, now, version)
-  local text = band.read(dir .. "/lib/files.txt")
+-- (`text`: lib/files.txt as already read and checked: band.signed_ok)
+function band.list_matches(dir, now, version, text)
+  text = text or band.read(dir .. "/lib/files.txt")
   if not text or text:match("^version (%S+)") ~= version then return false end
   local listed = {}
   for _, f in ipairs(band.files_list(text)) do
@@ -1066,6 +1148,11 @@ local function code_record(dir, now)
   band.write_json(approved_path(), all)
   return all[code_key(dir)]
 end
+-- What this computer has said yes to (or recorded) for the copy in `dir`: { version, files = { path = hash } }, or nil. (fromfolder.sign_copy)
+function band.approved_code(dir)
+  local all = band.read_json(approved_path())
+  return type(all) == "table" and all[code_key(dir)] or nil
+end
 -- Run from a shared folder: the code there checked against what you said yes to, before anything else of it loads; a changed file is asked
 -- about (No stops the script, and isn't asked again until REAPER restarts or the files change again). Every lib module required later
 -- is checked as it loads too: Autostart and Live sync run for hours and require some only when first needed.
@@ -1080,7 +1167,28 @@ function band.code_guard(dir)
   local approved = _G[APPROVED_KEY]
   local verdict, changed = band.code_verdict(had, now, version, approved or reaper.GetExtState(band.SECTION, "update ok"))
   local list = table.concat(changed, ", ", 1, math.min(#changed, 6)) .. (#changed > 6 and (" and " .. (#changed - 6) .. " more") or "")
-  if verdict == "record" then
+  -- (a studio with an update key: the owner's signature decides, with no box either way; refused, the script doesn't start from here, the
+  -- startup block falls back to the last good copy and a reload keeps the old code. Signed updates, extension 1.0.9)
+  local ukey = band.update_key(dir)
+  local signed, why
+  if ukey then
+    signed, why = band.signed_ok(dir, ukey, now, version)
+    if not signed then
+      local said, what = "signed refused " .. key, tostring(version) .. " | " .. tostring(why)
+      if reaper.GetExtState(band.SECTION, said) ~= what then
+        reaper.SetExtState(band.SECTION, said, what, false)
+        band.log("StudioSync " .. tostring(version) .. " in the studio's folder wasn't used: " .. tostring(why) .. ". The studio's owner signs each version " ..
+          "(Settings > Studio, or tools/sign_release.py); this computer carries on with the last copy that started fine")
+      end
+      error("StudioSync " .. tostring(version) .. " in the shared folder isn't signed with the studio's update key: " .. tostring(why), 0)
+    end
+  end
+  if signed then
+    if verdict ~= "same" then
+      had = code_record(dir, now)
+      band.log("StudioSync " .. tostring(version) .. " in the studio's folder is signed with the studio's update key: used")
+    end
+  elseif verdict == "record" then
     had = code_record(dir, now)
     if changed[1] then band.log("StudioSync " .. tostring(version) .. " from the shared folder: its code is remembered as the one you said yes to") end
   elseif verdict == "ask" and band.folder_updates(dir) then
@@ -1158,6 +1266,7 @@ function band.kept_keys()
     -- (and the studio's settings as last verified (lib/groups.lua trusted): lost in a crash, a manager's next save wrote empty ones, and the
     -- code check asked about a folder-updating studio's new code. Round 3 review, 0.59.48)
     keys[#keys + 1] = "trusted settings " .. n
+    keys[#keys + 1] = "update key " .. n -- (the studio's pinned update key: band.studio_update_key. Signed updates)
   end
   return keys
 end

@@ -74,4 +74,13 @@ function together.now()
   return reaper.time_precise() + (offset or (os.time() - reaper.time_precise()))
 end
 
+-- The studio's shared clock over the direct link (lib/direct.lua shared_now): internet time left the laptop 322 ms off the desktop, enough to
+-- wreck Play and Record together. The starter picks start_at = shared now + lead (nil without the link: ev.at's internet time then); each
+-- computer fires at its own clock + (start_at - shared now), here in together.now()'s terms. (James, 0.60.0-rt)
+function together.start_at(lead)
+  local ok, sn = pcall(function() return require("direct").shared_now() end)
+  return ok and sn and sn + (lead or 0) or nil
+end
+function together.local_at(start_at, shared_now, local_now) return local_now + (start_at - shared_now) end -- (pure)
+
 return together

@@ -5,7 +5,7 @@ name: extension
 on:
   workflow_dispatch:
   push:
-    paths: ["extension/reaper_menu.cpp", "extension/direct.cpp", "extension/direct_audio.cpp", "extension/direct.h", "tests/direct_test.cpp", "tools/ninjam-relay/njrelay.c", ".github/workflows/extension.yml"]
+    paths: ["extension/reaper_menu.cpp", "extension/direct.cpp", "extension/direct_audio.cpp", "extension/direct.h", "extension/sign.cpp", "extension/sign.h", "tests/direct_test.cpp", "tests/sign_test.cpp", "tools/ninjam-relay/njrelay.c", ".github/workflows/extension.yml"]
 
 jobs:
   mac:
@@ -20,7 +20,7 @@ jobs:
       - name: Build universal dylibs
         run: |
           for p in studiosync reapersona; do
-            def=""; src="extension/reaper_menu.cpp extension/direct.cpp extension/direct_audio.cpp"; [ "$p" = reapersona ] && def="-DREAPERSONA" && src="extension/reaper_menu.cpp"
+            def=""; src="extension/reaper_menu.cpp extension/direct.cpp extension/direct_audio.cpp extension/sign.cpp"; [ "$p" = reapersona ] && def="-DREAPERSONA" && src="extension/reaper_menu.cpp"
             clang++ -std=c++17 -O2 -dynamiclib -arch arm64 -arch x86_64 -mmacosx-version-min=10.13 -DSWELL_PROVIDED_BY_APP $def \
               -I reaper-sdk/sdk $src reaper-sdk/WDL/swell/swell-modstub.mm -framework Cocoa -o "reaper_$p.dylib"
             codesign -s - "reaper_$p.dylib"
@@ -30,6 +30,10 @@ jobs:
         run: |
           clang++ -std=c++17 -O2 -DDIRECT_STANDALONE tests/direct_test.cpp extension/direct.cpp extension/direct_audio.cpp -o direct_test
           ./direct_test
+      - name: Signed updates' own test (tests/sign_test.cpp)
+        run: |
+          clang++ -std=c++17 -O2 -DSIGN_STANDALONE -DDIRECT_STANDALONE tests/sign_test.cpp extension/sign.cpp extension/direct.cpp extension/direct_audio.cpp -o sign_test
+          ./sign_test
       - name: njrelay for Macs (universal), as the NINJAM README's line
         run: |
           cc -O2 -Wall -arch arm64 -arch x86_64 -mmacosx-version-min=10.13 -o njrelay tools/ninjam-relay/njrelay.c
@@ -58,7 +62,7 @@ jobs:
       - name: Build
         run: |
           for p in studiosync reapersona; do
-            def=""; src="extension/reaper_menu.cpp extension/direct.cpp extension/direct_audio.cpp"; [ "$p" = reapersona ] && def="-DREAPERSONA" && src="extension/reaper_menu.cpp"
+            def=""; src="extension/reaper_menu.cpp extension/direct.cpp extension/direct_audio.cpp extension/sign.cpp"; [ "$p" = reapersona ] && def="-DREAPERSONA" && src="extension/reaper_menu.cpp"
             g++ -std=c++17 -O2 -shared -fPIC -pthread -DSWELL_PROVIDED_BY_APP $def -I reaper-sdk/sdk \
               $src reaper-sdk/WDL/swell/swell-modstub-generic.cpp -o "reaper_$p-${{ matrix.arch }}.so"
             nm -D --defined-only "reaper_$p-${{ matrix.arch }}.so" | grep -E "ReaperPluginEntry|SWELL"
@@ -67,6 +71,10 @@ jobs:
         run: |
           g++ -std=c++17 -O2 -pthread -DDIRECT_STANDALONE tests/direct_test.cpp extension/direct.cpp extension/direct_audio.cpp -o direct_test
           ./direct_test
+      - name: Signed updates' own test (tests/sign_test.cpp)
+        run: |
+          g++ -std=c++17 -O2 -pthread -DSIGN_STANDALONE -DDIRECT_STANDALONE tests/sign_test.cpp extension/sign.cpp extension/direct.cpp extension/direct_audio.cpp -o sign_test
+          ./sign_test
       - uses: actions/upload-artifact@v4
         with: { name: "linux-${{ matrix.arch }}", path: "*.so" }
 

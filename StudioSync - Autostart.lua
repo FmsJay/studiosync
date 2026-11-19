@@ -93,7 +93,10 @@ local function update_check()
     -- (once per version and REAPER session: persisted, the log line below ("asks again when it next starts") wasn't true. Round 3 review, 0.59.48)
     reaper.SetExtState(band.SECTION, "update asked", disk, false)
     local trusted = select(2, pcall(require("fromfolder").trusted_copy, dir)) == true
-    if trusted then -- (the studio updates through its folder: taken without asking. lib/fromfolder.lua, 0.59.32)
+    -- (a studio with an update key: update_ok said no, so this version isn't signed with it. Never asked: said in the log. Signed updates)
+    if band.update_key and band.update_key(dir) then
+      band.log("StudioSync " .. disk .. " arrived in the studio's folder but isn't signed with the studio's update key: not switched to. The studio's owner signs each version")
+    elseif trusted then -- (the studio updates through its folder: taken without asking. lib/fromfolder.lua, 0.59.32)
       reaper.SetExtState(band.SECTION, "update ok", disk, true)
       band.log("StudioSync " .. disk .. " arrived in the studio's folder: switching to it (the studio updates through its folder)")
     elseif reaper.MB("StudioSync " .. disk .. " has arrived in the shared folder (this computer runs StudioSync from there).\n\n" ..

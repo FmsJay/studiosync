@@ -2,7 +2,8 @@
 -- Tailscale too, so it lands in well under a second (through Syncthing alone, 2.6-3.3 s a change). Syncthing still carries every file and
 -- its copy is the record; the direct copy only gets there first, into an inbox outside the shared folder (<home>/direct/<studio id>/...),
 -- which Syncthing never sees. The sockets are the extension's (extension/direct.cpp, 1.0.7: reaper.StudioSync_Direct*). Missing or older
--- extension, Tailscale off, no studio network or secret, the setting off, a computer that can't be reached: silently Syncthing alone.
+-- extension, Tailscale off, no studio network or secret, the setting off, a computer that can't be reached: Syncthing alone. (The extension is
+-- mandatory: a missing or older one is a red Health row, direct.health_rows. James, 0.60.0-rt)
 local band = require("band")
 local direct = { PORT = 47281, KEEP_SECS = 86400, RULE = "StudioSync direct link", START_EVERY = 10, PRUNE_EVERY = 10 }
 
@@ -11,6 +12,7 @@ local direct = { PORT = 47281, KEEP_SECS = 86400, RULE = "StudioSync direct link
 local function seg_ok(s)
   return type(s) == "string" and #s > 0 and #s <= 200 and s:sub(1, 1) ~= "." and not s:find("[%. ]$") and not s:find('[%c/\\:%*%?"<>|\127]')
 end
+direct.plain = seg_ok -- (a song or room name in a message, before it names a path: lib/page_chat.lua. James, 0.60.0-rt)
 -- Is `rel` (relative to the studio's folder) an event file's path: <song>/rooms/<room>/events/<id>.json? Only those go, or are taken.
 function direct.rel_ok(rel)
   if type(rel) ~= "string" or #rel > 512 then return false end
@@ -62,7 +64,7 @@ function direct.firewall_in(out, exe, port)
 end
 
 -- ---- the extension -------------------------------------------------------------------------------------------------------------------
-function direct.available() return reaper.StudioSync_DirectStart ~= nil and reaper.StudioSync_DirectSend ~= nil and reaper.StudioSync_DirectStatus ~= nil end
+function direct.available() return reaper ~= nil and reaper.StudioSync_DirectStart ~= nil and reaper.StudioSync_DirectSend ~= nil and reaper.StudioSync_DirectStatus ~= nil end
 -- The studio's setting (band.json "direct", owner and admins: lib/groups.lua's trusted settings): on unless it's false.
 function direct.enabled(root)
   local ok, t = pcall(function() return require("groups").trusted(root) end)
@@ -138,18 +140,41 @@ local function devices(root)
   dev_cache[root] = { at = reaper.time_precise(), list = list }
   return list
 end
-function direct.peers(cfg, song, room) -- -> the list, and peer -> device id
-  local t = require("groups").tailnet(cfg.root)
-  if not t then return {} end
-  local present = {}
-  for _, st in ipairs(require("presence").peers(cfg, song, room)) do present[st.user] = true end
-  local access, trust = require("access"), require("trust")
-  return direct.peers_from(devices(cfg.root), t.suffix, require("services").my_device_id(), direct.port(), present, function(d)
-    -- (only a file its own computer wrote, as services.pin_tailnet: a rewritten one would point the studio's changes somewhere else. Asked
-    -- only for those here, and Syncthing's answer is kept by lib/trust.lua; not known yet is not yet)
-    local ok, said = pcall(trust.device_ok, cfg.root, d.user, d.device)
-    return ok and said == true and access.shows(access.read(cfg.root, d.device), song) -- (a guest whose list leaves the song out: a narrowing only)
-  end)
+-- (from a cache made on the Live sync tick, never at send time: a computer's first trust.device_ok asks Syncthing, a call that can block for
+-- seconds, and it held up sync.post. Computers not asked before are asked only while the refresh has taken under 50 ms: the rest at the next
+-- one. Other scripts (the panel's Play together, chat) read the list Live sync made last, from ExtState. James, 0.60.0-rt)
+direct.PEERS_EVERY = 2
+local peer_cache, asked_dev = {}, {} -- root\nsong\nroom -> { at, list, dev_of }; root\0user\0device -> true once trust.device_ok answered
+local function peers_ext(cfg, song, room) return "direct peers " .. tostring(band.info(cfg.root).id) .. " " .. tostring(song) .. "/" .. tostring(room) end
+function direct.refresh_peers(cfg, song, room) -- -> the list, and peer -> device id
+  local key, now = cfg.root .. "\n" .. tostring(song) .. "\n" .. tostring(room), reaper.time_precise()
+  local c = peer_cache[key]
+  if c and now - c.at < direct.PEERS_EVERY then return c.list, c.dev_of end
+  local t, list, dev_of = require("groups").tailnet(cfg.root), {}, {}
+  if t then
+    local present = {}
+    for _, st in ipairs(require("presence").peers(cfg, song, room)) do present[st.user] = true end
+    local access, trust = require("access"), require("trust")
+    list, dev_of = direct.peers_from(devices(cfg.root), t.suffix, require("services").my_device_id(), direct.port(), present, function(d)
+      -- (only a file its own computer wrote, as services.pin_tailnet: a rewritten one would point the studio's changes somewhere else. Asked
+      -- only for those here, and Syncthing's answer is kept by lib/trust.lua; not known yet is not yet)
+      local k = cfg.root .. "\0" .. tostring(d.user) .. "\0" .. tostring(d.device)
+      if not asked_dev[k] and reaper.time_precise() - now > 0.05 then return false end -- (the next refresh asks it)
+      local ok, said = pcall(trust.device_ok, cfg.root, d.user, d.device)
+      if ok and said ~= nil then asked_dev[k] = true end
+      return ok and said == true and access.shows(access.read(cfg.root, d.device), song) -- (a guest whose list leaves the song out: a narrowing only)
+    end)
+  end
+  peer_cache[key] = { at = now, list = list, dev_of = dev_of or {} }
+  reaper.SetExtState(band.SECTION, peers_ext(cfg, song, room), table.concat(list, " "), false)
+  return list, dev_of or {}
+end
+function direct.peers(cfg, song, room) -- -> the list, and peer -> device id (this script's cache; else Live sync's list, without ids)
+  local c = peer_cache[cfg.root .. "\n" .. tostring(song) .. "\n" .. tostring(room)]
+  if c then return c.list, c.dev_of end
+  local list = {}
+  for p in reaper.GetExtState(band.SECTION, peers_ext(cfg, song, room)):gmatch("%S+") do list[#list + 1] = p end
+  return list, {}
 end
 
 -- After an event file is written (sync.post): it goes to the others here now. -> true when queued. Never raises.
@@ -176,8 +201,9 @@ function direct.inbox_dir(cfg, dir)
 end
 -- Event files received for a room's events folder (names).
 function direct.inbox_files(cfg, dir)
-  local idir = direct.available() and direct.inbox_dir(cfg, dir)
-  return idir and band.files(idir, ".json") or {}
+  -- (never in receive's way: an inbox that can't be worked out is no inbox. James, 0.60.0-rt)
+  local ok, idir = pcall(function() return direct.available() and direct.inbox_dir(cfg, dir) end)
+  return ok and idir and band.files(idir, ".json") or {}
 end
 -- A listing of the events folder (`names`: band.listing's or band.raw_listing's, shared: never changed) with the names only in the inbox
 -- added; and those -> their paths. With nothing in the inbox, `names` itself and nil, at no cost.
@@ -197,7 +223,7 @@ function direct.listing(cfg, dir, ext) return direct.merge(cfg, dir, band.listin
 -- the inbox of any studio this script started the link for.
 function direct.path(cfg, dir, f)
   local p = dir .. "/" .. f
-  if reaper.file_exists(p) or not direct.available() then return p end
+  if not direct.available() or reaper.file_exists(p) then return p end
   for root in pairs(cfg and { [cfg.root] = true } or direct.started) do
     local idir = direct.inbox_dir({ root = root }, dir)
     local q = idir and idir .. "/" .. f
@@ -261,7 +287,7 @@ function direct.status(cfg)
 end
 function direct.health_line(cfg)
   local s = direct.status(cfg)
-  if not s.available then return nil, "Direct link: needs the StudioSync menus extension 1.0.7 (Extensions > ReaPack > Synchronize packages, then restart REAPER). Changes come through Syncthing meanwhile." end
+  if not s.available or not direct.live_available() then return nil, "Direct link: needs StudioSync's extension " .. direct.WANT .. " (Extensions > ReaPack > Synchronize packages, or StudioSync's installer, then restart REAPER). Changes come through Syncthing meanwhile." end
   if not s.enabled then return nil, "Direct link: turned off for this studio. Changes come through Syncthing." end
   local reached, failed, ms = {}, {}, nil
   for _, p in ipairs(s.peers) do
@@ -322,9 +348,10 @@ local clock_view = { at = -math.huge, dev_of = {}, key = nil } -- the last peers
 function direct.keep_clock(cfg, song, room)
   if not direct.live_available() or not direct.ensure(cfg) then return false end
   local now = reaper.time_precise()
-  local key = cfg.root .. "\n" .. tostring(song) .. "\n" .. tostring(room)
-  if clock_view.key == key and now - clock_view.at < direct.START_EVERY then return true end
   local peers, dev_of = direct.peers(cfg, song, room)
+  -- (and again as soon as who's here changes: the peer list is cached, so asking costs nothing. James, 0.60.0-rt)
+  local key = cfg.root .. "\n" .. tostring(song) .. "\n" .. tostring(room) .. "\n" .. table.concat(peers, " ")
+  if clock_view.key == key and now - clock_view.at < direct.START_EVERY then return true end
   reaper.StudioSync_DirectPeers(band.info(cfg.root).id, table.concat(peers, " "))
   clock_view.at, clock_view.dev_of, clock_view.key = now, dev_of or {}, key
   return true
@@ -341,16 +368,154 @@ function direct.clock_reference(me, dev_of, est)
   end
   return best_peer, best_dev
 end
--- -> seconds since 1970 on the studio's shared clock, the reference's device id, and how far off it can be (ms: half the best round trip);
--- nil when the extension can't (older, not started): callers keep their own clock then.
+-- -> seconds since 1970 on the studio's shared clock, the reference's device id, how far off it can be (ms: half the best round trip), and
+-- the reference's peer (nil: this computer); nil when the extension can't (older, not started): callers keep their own clock then.
+-- (a script that keeps no clock itself, the panel's Play together, goes by the reference Live sync picked, from ExtState: its own pick from no
+-- view at all was this computer, 322 ms off the laptop's. shortcut: one "direct reference" for all studios, fine while one is open at a time.
+-- James, 0.60.0-rt)
 function direct.shared_now()
   if not direct.live_available() then return nil end
   local j = band.json_decode(reaper.StudioSync_DirectClock()) or {}
-  local now = reaper.StudioSync_DirectNow()
-  local peer, dev = direct.clock_reference(require("services").my_device_id(), clock_view.dev_of, j.peers)
-  if not peer then return now, dev, 0 end
+  local now, me = reaper.StudioSync_DirectNow(), require("services").my_device_id()
+  local peer, dev
+  if clock_view.key then
+    peer, dev = direct.clock_reference(me, clock_view.dev_of, j.peers)
+    reaper.SetExtState(band.SECTION, "direct reference", (peer or "") .. "\t" .. tostring(dev or ""), false)
+  else
+    local p, d = reaper.GetExtState(band.SECTION, "direct reference"):match("^([^\t]*)\t(.*)$")
+    local e = p and p ~= "" and type(j.peers) == "table" and j.peers[p]
+    if type(e) == "table" and (tonumber(e.samples) or 0) >= 4 and (e.error or "") == "" then peer, dev = p, d else dev = me end
+  end
+  if not peer then return now, dev, 0, nil end
   local e = j.peers[peer]
-  return now + (tonumber(e.offset_ms) or 0) / 1000, dev, (tonumber(e.rtt_ms) or 0) / 2
+  return now + (tonumber(e.offset_ms) or 0) / 1000, dev, (tonumber(e.rtt_ms) or 0) / 2, peer
+end
+
+-- ---- the live layer's wiring (roadmap step 1; James, 0.60.0-rt) -------------------------------------------------------------------------
+-- Messages are studio-wide on the link: each one says its song and room, and an id when it stands for a file (a cue's event, a chat message,
+-- a live MIDI file), so a receiver takes whichever comes first once. The file is still written and stays the record and the fallback.
+function direct.send_live(cfg, kind, d, song, room, id)
+  return direct.msg(cfg, kind, { song = song, room = room, id = id, d = d }, song, room)
+end
+-- msgs (direct.messages) handed to handlers[kind](d, msg), only this song's and room's (nil: any), each kind and id once. -> how many.
+local seen_ids, seen_n = {}, 0
+function direct.dispatch(msgs, song, room, handlers)
+  local n = 0
+  for _, m in ipairs(msgs or {}) do
+    local w, h = m.data, handlers[m.kind]
+    if h and type(w) == "table" and (song == nil or w.song == song) and (room == nil or w.room == room) then
+      local id = type(w.id) == "string" and (m.kind .. "\0" .. w.id) or nil
+      if not (id and seen_ids[id]) then
+        if id then
+          if seen_n > 5000 then seen_ids, seen_n = {}, 0 end -- shortcut: a whole flush past 5,000 ids; the receivers' own file checks still hold
+          seen_ids[id], seen_n = true, seen_n + 1
+        end
+        local ok, e = pcall(h, w.d, m)
+        if ok then n = n + 1 else band.log("direct link, " .. m.kind .. ": " .. tostring(e)) end
+      end
+    end
+  end
+  return n
+end
+-- Live sync's tick: files that arrived (-> how many: a receive pass then), who to send to, the clock, a heartbeat, and the messages by kind.
+direct.HEARTBEAT = 5
+local beat_at = -math.huge
+function direct.live_tick(cfg, song, room, handlers)
+  local n = direct.tick(cfg)
+  if not direct.available() then return n end
+  direct.refresh_peers(cfg, song, room)
+  if direct.live_available() then
+    direct.keep_clock(cfg, song, room)
+    local now = reaper.time_precise()
+    if now - beat_at >= direct.HEARTBEAT and #direct.peers(cfg, song, room) > 0 then
+      beat_at = now
+      direct.send_live(cfg, "heartbeat", { user = cfg.user, time = os.date("!%Y-%m-%dT%H:%M:%SZ"), room = room }, song, room)
+    end
+    direct.dispatch(direct.messages(cfg), song, room, handlers)
+  end
+  return n
+end
+
+-- ---- the extension is mandatory (James, 2026-11-19) ---------------------------------------------------------------------------------------
+direct.WANT = "1.0.8" -- (the direct link's messages, clock and streams; lib/tools.lua EXT_WANT says the same)
+-- Why the extension can't carry the link here (missing, or older than WANT), or nil. Its version as the panel reads it: ExtState "menu extension".
+function direct.ext_problem()
+  local have = reaper.GetExtState(band.SECTION, "menu extension")
+  local fix = "Fix: Extensions > ReaPack > Synchronize packages (or run StudioSync's installer again), then restart REAPER. StudioSync running from a " ..
+    "studio's folder puts the new one in by itself: restart REAPER."
+  if not direct.available() or have == "" then
+    return "StudioSync's extension isn't loaded here, so the direct link (changes in about 30 ms, the shared clock for Play and Record together, live " ..
+      "presence, claims and chat) is off and everything waits for Syncthing. " .. fix
+  end
+  if band.compare_versions(have, direct.WANT) < 0 or not direct.live_available() then
+    return "StudioSync's extension here is " .. have .. ", older than the " .. direct.WANT .. " this StudioSync needs: no shared clock, live presence, claims or " ..
+      "chat over the direct link. " .. fix
+  end
+end
+-- The shared clock for Health: ok (an estimate to go by), text.
+function direct.clock_line()
+  if not direct.live_available() then return false, "Shared clock: needs StudioSync's extension " .. direct.WANT .. "." end
+  local j = band.json_decode(reaper.StudioSync_DirectClock()) or {}
+  local _, dev, err, peer = direct.shared_now()
+  local each = {}
+  for p, e in pairs(type(j.peers) == "table" and j.peers or {}) do
+    local who = p:match("^([^%.:]+)") or p
+    if type(e) == "table" and (e.error or "") ~= "" then each[#each + 1] = who .. ": " .. tostring(e.error)
+    elseif type(e) == "table" and (tonumber(e.samples) or 0) >= 4 then
+      each[#each + 1] = string.format("%s %+.1f ms (round trip %.0f ms)", who, tonumber(e.offset_ms) or 0, tonumber(e.rtt_ms) or 0)
+    else each[#each + 1] = who .. ": measuring" end
+  end
+  table.sort(each)
+  if not peer then
+    return #each > 0, "Shared clock: this computer is the reference" .. (#each > 0 and ("; " .. table.concat(each, ", ")) or
+      " (nobody here to share it with: Play and Record together go by this computer's clock)")
+  end
+  return true, string.format("Shared clock: the reference is %s (%s), within %.0f ms; %s", peer:match("^([^%.:]+)") or peer, tostring(dev):sub(1, 7), err or 0, table.concat(each, ", "))
+end
+-- Health's rows for the link (lib/page_health.lua): { id, ok, colour, text when ok, text when not, action = { label, fn, tooltip } }.
+function direct.health_rows(cfg)
+  local why = direct.ext_problem()
+  if why then return { { "menu ext", false, "red", "", why } } end
+  local ok, text = direct.health_line(cfg)
+  local row = { "direct", ok == true, ok == nil and "grey" or "yellow", text, text }
+  if band.WIN and ok ~= nil and not direct.firewall_ok() then
+    row.action = { "Set up direct link", function()
+      local done, why2 = direct.setup_firewall()
+      band.log(done and "direct link: Windows asks once (UAC) to let REAPER take the others' changes directly; Health turns green within a minute" or ("direct link: " .. tostring(why2)))
+    end, "Adds a Windows Firewall rule for reaper.exe, TCP " .. direct.port() .. ", from Tailscale's addresses only (100.64.0.0/10). Windows asks once." }
+  end
+  local cok, ctext = direct.clock_line()
+  return { row, { "direct clock", cok, "grey", ctext, ctext } }
+end
+
+-- Settings > Studio: the studio's Direct link switch (band.json "direct": owner and admins; on unless it's false).
+function direct.studio_ui(ctx, ImGui, cfg, may)
+  ImGui.SeparatorText(ctx, "Direct link")
+  local on = direct.enabled(cfg.root)
+  ImGui.TextDisabled(ctx, on and "On: each change, presence, claim, chat message and Play/Record together goes straight to the others here over Tailscale " ..
+    "(about 30 ms), and through Syncthing as well, which stays the record." or "Off: everything goes through Syncthing alone (a few seconds a change).")
+  if may then
+    local ch, v = ImGui.Checkbox(ctx, "Direct link##studiodirect", on)
+    if ch then
+      require("groups").set_direct(cfg.root, v)
+      band.log(v and "the direct link is on for the studio" or "the direct link is off for the studio: changes go through Syncthing alone")
+    end
+    ImGui.SetItemTooltip(ctx, "Owner and admins. Needs StudioSync's extension " .. direct.WANT .. " and Tailscale on each computer (Health says what's missing).")
+  end
+  -- (signed updates: the owner signs each version with a key kept on their computer, and every computer checks it before it runs. James, rt)
+  ImGui.SeparatorText(ctx, "Signed updates")
+  local key = band.studio_update_key and band.studio_update_key(cfg.root)
+  ImGui.TextDisabled(ctx, key and "On: StudioSync runs here only in a version the owner signed. Changed or unsigned code is refused (no question), and the last good copy runs." or
+    "Off: a new version in the studio's folder is used when you've said yes to it (or the studio updates through its folder).")
+  if not key and require("groups").role(cfg.root, reaper.GetExtState(band.SECTION, "user")) == "owner" then
+    if ImGui.Button(ctx, "Turn on signed updates##studiosign") then
+      local ok, res = require("fromfolder").create_update_key(cfg.root)
+      direct.sign_note = ok and "Signed updates are on. Keep the key file safe: it stays on this computer only." or tostring(res)
+      band.log(ok and "signed updates turned on for the studio" or ("signed updates weren't turned on: " .. tostring(res)))
+    end
+    ImGui.SetItemTooltip(ctx, "Owner only. Makes a key on this computer (never in a shared folder), signs the studio's copy and tells everyone's computer to check it.\nEvery computer needs StudioSync's extension 1.0.9 first: one without it keeps running its last good copy.")
+  end
+  if direct.sign_note then ImGui.TextWrapped(ctx, direct.sign_note) end
 end
 
 -- Streams: a take sent while it's recorded. Its name on the link is "<song>/<file name>" (the extension's rule: a plain song folder name,

@@ -236,12 +236,10 @@ function H.maint_rows()
   end
   for _, r in ipairs(s.relays or {}) do rows[#rows + 1] = { "relay " .. tostring(r.key), false, "yellow", "", r.text } end
   do -- (the scripts came by the shared folder, so ReaPack never updated the extension: no amber dot on a Mac. Mac review, 0.59.14)
-    local have = reaper.GetExtState(band.SECTION, "menu extension")
-    local want = require("tools").EXT_WANT
-    if have ~= "" and band.compare_versions(have, want) < 0 then
-      rows[#rows + 1] = { "menu ext", false, "yellow", "", "StudioSync's menu extension here is " .. have .. ", older than this StudioSync's " .. want ..
-        ": restart REAPER. (StudioSync puts the new one in by itself from the copy it runs from; a ReaPack install gets it with Extensions > ReaPack > Synchronize packages.)" }
-    end
+    -- (the extension is mandatory: missing or older than the direct link's is a problem to fix, red; then the link, its Set up button on Windows
+    -- and the shared clock. lib/direct.lua health_rows. James, 0.60.0-rt)
+    local okd, drows = pcall(require("direct").health_rows, cfg)
+    for _, r in ipairs(okd and drows or {}) do rows[#rows + 1] = r end
   end
   -- (without them less works, quietly: onboarding review, 0.59.9)
   if not reaper.APIExists("CF_GetSWSVersion") then

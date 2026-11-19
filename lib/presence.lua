@@ -54,22 +54,53 @@ function presence.clock_gap(age, changed_ago) -- (pure: how far off a clock is, 
   local gap = age - changed_ago
   return math.abs(gap) > presence.SKEW and gap or nil
 end
+-- Statuses that came over the direct link (lib/direct.lua; James, 0.60.0-rt): seen at once, not when Syncthing brings the file, and used while
+-- newer than it. A heartbeat moves a known status's time on. The file stays the record (and what the panel, which polls no messages, reads).
+local live_st = {} -- song/room -> user -> status
+function presence.from_msg(cfg, song, room, st, kind)
+  if type(st) ~= "table" or type(st.user) ~= "string" or st.user == cfg.user or type(st.time) ~= "string" or (st.room ~= nil and st.room ~= room) then return false end
+  local key = song .. "/" .. room
+  live_st[key] = live_st[key] or {}
+  local had = live_st[key][st.user]
+  if kind == "heartbeat" then
+    if not had then for _, s in ipairs(everyone[key] or {}) do if s.user == st.user then had = s end end end
+    if not had or had.time >= st.time then return false end
+    local copy = {}
+    for k, v in pairs(had) do copy[k] = v end
+    copy.time, st = st.time, copy
+  elseif had and had.time > st.time then return false end
+  live_st[key][st.user] = st
+  peers_at[key] = nil -- (read again at the next ask)
+  return true
+end
+-- Pure: the status files' statuses with each person's newer live one in its place (or added). -> a new list.
+function presence.with_live(sts, live)
+  local out, at = {}, {}
+  for _, st in ipairs(sts) do out[#out + 1] = st; at[st.user] = #out end
+  for user, l in pairs(live or {}) do
+    local i = at[user]
+    if not i then out[#out + 1] = l elseif l.time > out[i].time then out[i] = l end
+  end
+  return out
+end
 function presence.peers(cfg, song, room)
   local key = song .. "/" .. room
   if peers_at[key] and reaper.time_precise() - peers_at[key] < 1 then return peers[key] end
   local dir, out, all = require("sync").room_dir(cfg, song, room) .. "/status", {}, {}
   local now = reaper.time_precise()
+  local sts = {}
   for _, f in ipairs(band.files(dir, ".json")) do
     local st = band.read_json(dir .. "/" .. f)
-    if type(st) == "table" and type(st.user) == "string" and st.user ~= cfg.user and type(st.time) == "string" then
-      all[#all + 1] = st
-      local l = last_time[st.user]
-      if not l or l.time ~= st.time then l = { time = st.time, at = l and now or -math.huge }; last_time[st.user] = l end
-      local age = band.age(st.time)
-      local gap = presence.clock_gap(age, now - l.at)
-      if now - l.at <= 10 then presence.skew[st.user] = gap end -- (known only from a fresh change: kept between them)
-      if age < 45 or gap or now - l.at < 45 then out[#out + 1] = st end -- (still writing, whatever their clock says)
-    end
+    if type(st) == "table" and type(st.user) == "string" and st.user ~= cfg.user and type(st.time) == "string" then sts[#sts + 1] = st end
+  end
+  for _, st in ipairs(presence.with_live(sts, live_st[key])) do
+    all[#all + 1] = st
+    local l = last_time[st.user]
+    if not l or l.time ~= st.time then l = { time = st.time, at = l and now or -math.huge }; last_time[st.user] = l end
+    local age = band.age(st.time)
+    local gap = presence.clock_gap(age, now - l.at)
+    if now - l.at <= 10 then presence.skew[st.user] = gap end -- (known only from a fresh change: kept between them)
+    if age < 45 or gap or now - l.at < 45 then out[#out + 1] = st end -- (still writing, whatever their clock says)
   end
   peers_at[key], peers[key], everyone[key] = reaper.time_precise(), out, all
   return out

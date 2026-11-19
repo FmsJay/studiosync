@@ -153,6 +153,12 @@ function ff.extension_tick(dir)
   local name = band.WIN and "reaper_studiosync-x64.dll" or band.MAC and "reaper_studiosync.dylib"
     or (reaper.GetOS():find("arm") or reaper.GetOS():find("aarch64") or arch == "aarch64" or arch == "arm64") and "reaper_studiosync-aarch64.so" or "reaper_studiosync-x86_64.so"
   local from, to = band.norm(dir) .. "/extension/" .. name, band.norm(reaper.GetResourcePath()) .. "/UserPlugins/" .. name
+  -- (from a studio's folder with an update key: only a copy signed with it hands over its extension, checked once. Signed updates)
+  local ukey = band.from_shared(dir) and band.update_key(dir)
+  if ukey then
+    local ok, why = band.signed_ok(dir, ukey)
+    if not ok then ext_done = true; band.log("The menu extension in " .. band.norm(dir) .. " wasn't put in: " .. tostring(why)); return end
+  end
   local new = band.read(from)
   if not new or #new < 10000 then return end
   if band.read(to) == new then ext_done = true; return end -- (already in, waiting for REAPER's restart)
@@ -164,6 +170,95 @@ function ff.extension_tick(dir)
   if not ok then os.rename(old, to); band.log("couldn't put the new menu extension in: " .. tostring(err)); return end
   band.log("StudioSync's menu extension " .. want .. " is in place of " .. have .. ": REAPER loads it when it next starts")
   return true
+end
+
+-- ---- Signed updates (docs/realtime-roadmap.md "Signed updates", extension 1.0.9) ----
+-- The owner's update key: $STUDIOSYNC_UPDATE_KEY, else ~/.studiosync/update-key (tools/sign_release.py reads the same), outside every synced
+-- folder. -> the path, or nil.
+function ff.update_key_path()
+  local p = os.getenv("STUDIOSYNC_UPDATE_KEY")
+  if p and p ~= "" then return band.norm(p) end
+  local home = os.getenv("USERPROFILE") or os.getenv("HOME")
+  return home and home ~= "" and (band.norm(home) .. "/.studiosync/update-key") or nil
+end
+local SIGNED_PREFIX = "StudioSync files.txt v1\n" -- (extension/sign.h SIGN_FILES_PREFIX)
+local SHIPPED = { "lib/mac", "lib/ninjam", "lib/listen", "lib/toolbar_icons" } -- (tools/sign_release.py shipped_files)
+local EXTENSIONS = { "reaper_studiosync-x64.dll", "reaper_studiosync.dylib", "reaper_studiosync-x86_64.so", "reaper_studiosync-aarch64.so" }
+local function all_files(dir, rel, out)
+  for _, f in ipairs(band.files(dir .. "/" .. rel)) do if f:sub(1, 1) ~= "." then out[#out + 1] = rel .. "/" .. f end end
+  for _, d in ipairs(band.subdirs(dir .. "/" .. rel)) do if d:sub(1, 1) ~= "." then all_files(dir, rel .. "/" .. d, out) end end
+end
+local here = band.norm((debug.getinfo(1, "S").source:gsub("^@", ""))):match("^(.*)/lib/[^/]+$") -- (the copy this computer runs)
+-- The copy in `dir` (a studio's folder copy) signed with the owner's key, as tools/sign_release.py does: lib/files.txt written again (version,
+-- each code file's length and FNV hash, a SHA-256 row per file that ships) and lib/files.txt.sig. Only code this computer has said yes to (the
+-- code check's record for that copy) or the code running here: signing whatever is in the folder would bless a member's change. The helpers
+-- (lib/mac, lib/ninjam, ...) are signed as they are. -> true, or false and why.
+function ff.sign_copy(dir, keypath)
+  dir, keypath = band.norm(dir), keypath or ff.update_key_path()
+  if not (reaper.StudioSync_Sign and reaper.StudioSync_FileHash and reaper.StudioSync_KeyCreate) then return false, "signing needs StudioSync's extension 1.0.9 or newer" end
+  if not (keypath and reaper.file_exists(keypath)) then return false, "there's no update key on this computer (" .. tostring(keypath) .. ")" end
+  local version = band.version_on_disk(dir)
+  if not version then return false, dir .. " has no StudioSync in it" end
+  local now = band.code_files(dir)
+  local function same(files)
+    if type(files) ~= "table" then return false end
+    for p, h in pairs(now) do if files[p] ~= h then return false end end
+    for p in pairs(files) do if now[p] == nil then return false end end
+    return true
+  end
+  local had = band.approved_code(dir)
+  if not (same(had and had.files) or (here and here:lower() ~= dir:lower() and same(band.code_files(here)))) then
+    return false, "the code in " .. dir .. " isn't code this computer has said yes to (run StudioSync from it once, or sign it with tools/sign_release.py)"
+  end
+  local rels, rows, shipped = {}, { "version " .. version }, {}
+  for p in pairs(now) do rels[#rels + 1] = p end
+  table.sort(rels)
+  for _, p in ipairs(rels) do
+    local s = band.read(dir .. "/" .. p) or ""
+    if band.code_hash(s) ~= now[p] then return false, p .. " changed while it was being signed: try again" end
+    rows[#rows + 1] = p .. "\t" .. (#s - select(2, s:gsub("\r", ""))) .. "\t" .. now[p]
+    shipped[#shipped + 1] = p
+  end
+  for _, sub in ipairs(SHIPPED) do all_files(dir, sub, shipped) end
+  for _, n in ipairs(EXTENSIONS) do if reaper.file_exists(dir .. "/extension/" .. n) then shipped[#shipped + 1] = "extension/" .. n end end
+  for _, rel in ipairs(shipped) do
+    local h = reaper.StudioSync_FileHash(dir .. "/" .. rel)
+    if #h ~= 64 then return false, "couldn't read " .. rel end
+    rows[#rows + 1] = "sha256 " .. h .. " " .. rel
+  end
+  local text = table.concat(rows, "\n") .. "\n"
+  local sig = reaper.StudioSync_Sign(keypath, SIGNED_PREFIX .. text)
+  if #sig ~= 128 then return false, "couldn't sign with the key at " .. keypath end
+  band.write_atomic(dir .. "/lib/files.txt", text)
+  band.write_atomic(dir .. "/lib/files.txt.sig", sig .. "\n")
+  local check = reaper.StudioSync_VerifyFiles(dir, reaper.StudioSync_KeyCreate(keypath))
+  if not check:match("^ok ") then return false, "signed, but the check of it says: " .. check end
+  band.log("StudioSync " .. version .. " in " .. dir .. " is signed with this computer's update key")
+  return true
+end
+-- Settings > Studio, the owner, once: this computer's update key made (or read, if it's there already), the studio's folder copy signed with it
+-- first when it isn't (so nobody is refused the moment the key appears), then the public key written to band.json ("update_key") and pinned
+-- here. Every computer in the studio needs extension 1.0.9 first: one without it refuses a keyed studio's folder copy. -> true and the public
+-- key, or false and why.
+function ff.create_update_key(root)
+  if not (reaper.StudioSync_KeyCreate and reaper.StudioSync_Sign and reaper.StudioSync_VerifyFiles) then return false, "This needs StudioSync's extension 1.0.9 or newer." end
+  local groups = require("groups")
+  if groups.role(root, reaper.GetExtState(band.SECTION, "user")) ~= "owner" then return false, "Only the studio's owner can set its update key." end
+  local path = ff.update_key_path()
+  if not path then return false, "No home folder to keep the key in: set STUDIOSYNC_UPDATE_KEY to a file path." end
+  if band.from_shared(path) then return false, "The key would be inside a shared folder (" .. path .. "): set STUDIOSYNC_UPDATE_KEY to a file outside it." end
+  reaper.RecursiveCreateDirectory(path:match("^(.*)/[^/]+$") or path, 0)
+  local pub = reaper.StudioSync_KeyCreate(path)
+  if #pub ~= 64 then return false, "Couldn't make or read the update key at " .. path .. "." end
+  local t = ff.target(root)
+  if reaper.file_exists(t .. "/lib/band.lua") and not reaper.StudioSync_VerifyFiles(t, pub):match("^ok ") then
+    local ok, why = ff.sign_copy(t, path)
+    if not ok then return false, "The studio's copy of StudioSync couldn't be signed, so the key wasn't published: " .. why end
+  end
+  if not groups.edit(root, function(j) j.update_key = pub end) then return false, "band.json couldn't be written yet: try again in a minute." end
+  band.pin_update_key(root, pub)
+  band.log("The studio's update key is set (" .. pub:sub(1, 16) .. "...): its folder copy of StudioSync now runs only when signed with the key in " .. path)
+  return true, pub
 end
 
 -- At the top of each StudioSync script: run from a copy this computer has moved away from (an old toolbar button or key), it starts the

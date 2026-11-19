@@ -105,8 +105,11 @@ function lm.write(cfg, b, at)
     notes[#notes + 1] = { i = k, t = n.t, s = n.s, e = n.e, p = n.p, v = n.v }
   end
   table.sort(notes, function(x, y) return x.i < y.i end)
-  band.write_json(string.format("%s/%s-%04d.json", udir, rec.since, rec.n), { user = cfg.user, since = rec.since,
-    time = os.date("!%Y-%m-%dT%H:%M:%SZ"), at = at, done = rec.done or nil, notes = notes })
+  local name = string.format("%s-%04d.json", rec.since, rec.n)
+  local c = { user = cfg.user, since = rec.since, time = os.date("!%Y-%m-%dT%H:%M:%SZ"), at = at, done = rec.done or nil, notes = notes }
+  band.write_json(udir .. "/" .. name, c)
+  -- (and over the direct link, under the file's name, so the others see each note within a tick: lm.from_msg. James, 0.60.0-rt)
+  require("direct").send_live(cfg, "midi", { f = name, c = c }, b.song, b.room, safe(cfg.user) .. "/" .. name)
   rec.wrote_at, rec.dirty = reaper.time_precise(), {}
 end
 
@@ -149,6 +152,16 @@ function lm.merge(st, files, read)
   return changed
 end
 
+local function draw_stream(proj, cfg, st)
+  st.redraw = nil
+  if not (type(st.user) == "string" and st.user ~= cfg.user and band.age(st.time) < 600
+      and not (st.done and band.age(st.time) > 30)) then return end -- (a finished one seen only now, after a reload: its take came long ago)
+  local parts = {}
+  for _, n in pairs(st.notes) do
+    if type(n.t) == "string" then parts[n.t] = parts[n.t] or {}; table.insert(parts[n.t], n) end
+  end
+  lm.draw(proj, { user = st.user, since = st.since, at = st.at, done = st.done, parts = parts })
+end
 -- Draw every bandmate's stream as a muted MIDI placeholder on their "(live)" track. Call every half second or so.
 function lm.receive_tick(proj, cfg, b)
   if reaper.time_precise() - tidied_at > 2 then tidied_at = reaper.time_precise(); tidy(proj) end
@@ -156,16 +169,22 @@ function lm.receive_tick(proj, cfg, b)
     local udir = dir(cfg, b) .. "/" .. u
     streams[u] = streams[u] or { seen = {}, notes = {} }
     local st = streams[u]
-    if lm.merge(st, band.files(udir, ".json"), function(f) return band.read_json(udir .. "/" .. f) end)
-        and type(st.user) == "string" and st.user ~= cfg.user and band.age(st.time) < 600
-        and not (st.done and band.age(st.time) > 30) then -- (a finished one seen only now, after a reload: its take came long ago)
-      local parts = {}
-      for _, n in pairs(st.notes) do
-        if type(n.t) == "string" then parts[n.t] = parts[n.t] or {}; table.insert(parts[n.t], n) end
-      end
-      lm.draw(proj, { user = st.user, since = st.since, at = st.at, done = st.done, parts = parts })
-    end
+    if lm.merge(st, band.files(udir, ".json"), function(f) return band.read_json(udir .. "/" .. f) end) or st.redraw then draw_stream(proj, cfg, st) end
   end
+  for _, st in pairs(streams) do if st.redraw then draw_stream(proj, cfg, st) end end -- (a stream only the direct link has brought so far)
+end
+-- A stream file's worth over the direct link (lib/direct.lua; James, 0.60.0-rt): folded in under the file's own name, so the file itself is
+-- skipped when Syncthing brings it (lm.merge's seen); drawn now, or by receive_tick while recording here. -> true when it was new.
+function lm.from_msg(proj, cfg, b, d, recording)
+  if type(d) ~= "table" or type(d.f) ~= "string" or not d.f:match("^%d%d%d%d%d%d%d%d%-%d%d%d%d%d%dZ%-%d+%.json$") or type(d.c) ~= "table"
+    or type(d.c.user) ~= "string" or d.c.user == cfg.user then return false end
+  local u = safe(d.c.user)
+  streams[u] = streams[u] or { seen = {}, notes = {} }
+  local st = streams[u]
+  if not lm.merge(st, { d.f }, function() return d.c end) then return false end
+  st.redraw = true
+  if not recording then draw_stream(proj, cfg, st) end
+  return true
 end
 
 function lm.draw(proj, s)

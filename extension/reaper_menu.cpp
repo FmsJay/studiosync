@@ -26,7 +26,7 @@
 #define REAPERAPI_WANT_GetExtState
 #define REAPERAPI_WANT_SetExtState
 #define REAPERAPI_WANT_RefreshToolbar2
-#define EXT_VERSION "1.0.8" // (tools/make_index.py EXT_VERSION: what the panel reads to know this build adds toolbar buttons; 1.0.7: the direct link; 1.0.8: its messages, clock, streams, audio spike)
+#define EXT_VERSION "1.0.9" // (tools/make_index.py EXT_VERSION: what the panel reads to know this build adds toolbar buttons; 1.0.7: the direct link; 1.0.8: its messages, clock, streams, audio spike; 1.0.9: signed updates, extension/sign.cpp)
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"
 #ifndef REAPERSONA
@@ -228,6 +228,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_H
 #ifndef REAPERSONA
   direct_register(rec); // (reaper.StudioSync_Direct*: lib/direct.lua)
   direct_audio_register(rec); // (reaper.StudioSync_DirectAudio*: the step-4 spike, idle until started)
+  { void sign_register(reaper_plugin_info_t *); sign_register(rec); } // (reaper.StudioSync_Verify*, KeyCreate, Sign, FileHash: signed updates, extension/sign.cpp)
 #endif
   SetExtState(SECTION, "menu extension", EXT_VERSION, false);
   SetExtState(SECTION, "menu extension toolbar", toolbar_api ? "1" : "0", false); // (REAPER before 7.11 has no way: the panel says so)

@@ -92,7 +92,7 @@ assert(direct.available() == false and direct.ensure(cfg) == false and direct.of
 assert(direct.listing(cfg, edir) == listings[edir], "the shared listing itself, untouched")
 assert(direct.tick(cfg) == 0 and direct.path(cfg, edir, "a.json") == edir .. "/a.json", "nothing ticks, paths are the shared folder's")
 local okh, text = direct.health_line(cfg)
-assert(okh == nil and text:find("1.0.7"), "Health says what's needed")
+assert(okh == nil and text:find("1.0.8"), "Health says what's needed")
 
 -- A stand-in extension
 local calls, polled = {}, { "1\tstudiosync-smiley\t" .. ok_rel, "2\tstudiosync-smiley\t" .. ok_rel }
@@ -100,6 +100,9 @@ reaper.StudioSync_DirectStart = function(id, sec, inbox, port) calls[#calls + 1]
 reaper.StudioSync_DirectStop = function(id) calls[#calls + 1] = { "stop", id } end
 reaper.StudioSync_DirectSend = function(id, rel, path, peers) calls[#calls + 1] = { "send", id, rel, path, peers }; return 1 end
 reaper.StudioSync_DirectPoll = function(after) for _, s in ipairs(polled) do if tonumber(s:match("^%d+")) > after then return s end end; return "" end
+reaper.StudioSync_DirectMsg = function() return 1 end -- (1.0.8: the extension is mandatory, 0.60.0-rt)
+reaper.StudioSync_DirectClock = function() return "{}" end
+reaper.StudioSync_DirectStream = function() return 1 end
 reaper.StudioSync_DirectStatus = function()
   return '{"listening":false,"bind":"","error":"","received":2,"rejected":1,"last_reject":"a bad signature","peers":{"james-laptop.tail99.ts.net:47281":{"ok":true,"ms":31.5,"at":1,"sent":4,"error":""}}}'
 end
@@ -115,11 +118,15 @@ clock = clock + 11
 direct.ensure(cfg)
 assert(calls[2][5] == 47281, "listening once the rule is there")
 calls = {}
+assert(direct.offer(cfg, "J:/St/Smiley/" .. ok_rel) == false and #calls == 0, "nobody to send to before the Live sync tick made the list (never asked at send time)")
+direct.refresh_peers(cfg, "Nostalgia", "main")
 assert(direct.offer(cfg, "J:\\St\\Smiley\\" .. ok_rel:gsub("/", "\\")) == true, "offered")
 assert(calls[1][1] == "send" and calls[1][3] == ok_rel and calls[1][5] == "james-laptop.tail99.ts.net:47281", "to whoever's here only, by its path in the studio")
 calls = {}
 assert(direct.offer(cfg, "J:/St/Smiley/Nostalgia/rooms/main/claims/James.json") == false and #calls == 0, "never anything but an event file")
 here = {}
+clock = clock + 3
+direct.refresh_peers(cfg, "Nostalgia", "main")
 assert(direct.offer(cfg, "J:/St/Smiley/" .. ok_rel) == false and #calls == 0, "nobody here: nothing sent")
 here = { "James-Laptop" }
 secret = nil

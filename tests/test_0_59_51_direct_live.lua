@@ -80,14 +80,19 @@ band.files = function(dir) if dir:find("_band/devices") then return { "James-Lap
 band.read_json = function(path) return devfiles[path:match("[^/]+$")] end
 assert(direct.live_available(), "1.0.8")
 
+direct.refresh_peers(cfg, "S", "main") -- (the Live sync tick's: never at send time, 0.60.0-rt)
 assert(direct.msg(cfg, "chat", { user = "James", text = "hi" }, "S", "main") == true, "a message is queued")
 local m = calls[#calls]
 assert(m[1] == "msg" and m[2] == "studiosync-smiley" and m[3] == "chat" and m[4] == '{"text":"hi","user":"James"}'
   and m[5] == "chilis-macbook-pro.tail99.ts.net:47281 james-laptop.tail99.ts.net:47281", "as JSON, to whoever's here")
 assert(direct.msg(cfg, "chat", string.rep("x", 70000), "S", "main") == false, "over 64 KB: not sent")
 here = {}
+clock = clock + 3
+direct.refresh_peers(cfg, "S", "main")
 assert(direct.msg(cfg, "chat", "x", "S", "main") == false, "nobody here: nothing sent")
 here = { "James-Laptop", "Chilio-Mac" }
+clock = clock + 3
+direct.refresh_peers(cfg, "S", "main")
 
 inbox_msgs = { "1\tstudiosync-smiley\tcue\t{\"bar\":17}", "2\tother-studio\tchat\thi", "3\tstudiosync-smiley\tchat\tplain text" }
 local got = direct.messages(cfg)

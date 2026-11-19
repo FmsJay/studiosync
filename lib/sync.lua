@@ -269,6 +269,23 @@ function sync.set_claims(cfg, song, room, claims, renamed)
   claims.user, claims.time = cfg.user, now
   reaper.RecursiveCreateDirectory(sync.room_dir(cfg, song, room) .. "/claims", 0)
   band.write_json(sync.claims_path(cfg, song, room, cfg.user), claims)
+  require("direct").send_live(cfg, "claim", claims, song, room) -- (in the others' claims at once: sync.live_claim. James, 0.60.0-rt)
+end
+-- Claims that came over the direct link: song/room -> user -> their claims, used by sync.authority while newer than (or as new as) that person's
+-- claims file, which is the record. The same bar as the file: a claims file speaks only for the person it's named for. (James, 0.60.0-rt)
+sync.live_claims = {}
+function sync.live_claim(song, room, c)
+  if type(c) ~= "table" or type(c.user) ~= "string" or type(c.time) ~= "string" or (c.since ~= nil and type(c.since) ~= "table") or c.given then return false end
+  for _, k in ipairs({ "tracks", "regions", "prints", "times" }) do
+    if c[k] ~= nil and type(c[k]) ~= "table" then return false end
+    for _, n in ipairs(c[k] or {}) do if type(n) ~= (k == "times" and "table" or "string") then return false end end
+  end
+  local key = tostring(song) .. "/" .. tostring(room)
+  sync.live_claims[key] = sync.live_claims[key] or {}
+  local had = sync.live_claims[key][c.user]
+  if had and had.time > c.time then return false end
+  sync.live_claims[key][c.user] = c
+  return true
 end
 
 -- Claims the driver released for someone away (rooms/<room>/released.json: { user = time }): a claim made before
@@ -409,6 +426,7 @@ function sync.authority(cfg, song, room, s)
   local printers = {} -- lower track name -> { user, time, name }: who's in charge of printing it (lib/prints.lua)
   local dir = sync.room_dir(cfg, song, room) .. "/claims"
   local released = sync.released(cfg, song, room) -- (claims the driver let go of for someone who was away)
+  local list, live, from_file = {}, sync.live_claims[song .. "/" .. room] or {}, {}
   for _, f in ipairs(band.files(dir, ".json")) do
     local c = band.read_json(dir .. "/" .. f)
     -- (a claims file speaks only for the person it's named for, or it's one an admin gave: claims/<anything>.json saying user "James"
@@ -416,6 +434,16 @@ function sync.authority(cfg, song, room, s)
     if c and type(c.user) == "string" and not (f:find("^given%-") or (c.user:gsub("[^%w%-_ ]", "")) .. ".json" == f) then c = nil end
     -- (and a given one counts only from someone who may give it, as the panel only lets them: anyone could write given-me.json. Review, 0.58.62)
     if c and f:find("^given%-") and not given_ok(cfg, song, room, f, c) then c = nil end -- (and from their computer: 0.58.78)
+    -- (their newer claims, over the direct link, until this file says as much: sync.live_claim. James, 0.60.0-rt)
+    if c and type(c.user) == "string" and not f:find("^given%-") then
+      from_file[c.user] = true
+      local l = live[c.user]
+      if l and type(c.time) == "string" and l.time > c.time then c = l end
+    end
+    list[#list + 1] = c
+  end
+  for user, l in pairs(live) do if not from_file[user] then list[#list + 1] = l end end
+  for _, c in ipairs(list) do
     if c and c.user and c.time then
       local gone = released[c.user]
       for _, t in ipairs(c.times or {}) do
@@ -873,6 +901,10 @@ function sync.post(cfg, song, room, ev, proj)
   local dir = sync.room_dir(cfg, song, room) .. "/events"
   reaper.RecursiveCreateDirectory(dir, 0)
   band.write_json(dir .. "/" .. ev.id .. ".json", ev)
+  -- (to whoever's here over the direct link too, a start or stop also as a message: lib/direct.lua. Syncthing's copy stays the record. James, 0.60.0-rt)
+  local direct = require("direct")
+  direct.offer(cfg, dir .. "/" .. ev.id .. ".json")
+  if ev.type == "start" or ev.type == "stop" then direct.send_live(cfg, "cue", ev, song, room, ev.id) end
   if proj then stamp(proj, ev) end
   if ev.type == "start" or ev.type == "stop" then -- (a cue: Syncthing told to look at it now, not when its watcher gets round to it)
     local id = band.info(cfg.root).id
@@ -1157,11 +1189,13 @@ function sync.receive(proj, cfg, song, room, can)
   -- Review, 0.58.91)
   local t_read, cut = reaper.time_precise(), false
   -- (the unsorted listing, the one pending_events shares: pending is sorted below anyway. Round 1 review, 0.59.45)
-  for _, f in ipairs(band.listing(dir, ".json")) do -- (shared with this poll's other looks at the folder: 0.59.14, review)
+  -- (with what came over the direct link, read from its inbox until Syncthing's copy is here: lib/direct.lua. James, 0.60.0-rt)
+  local names, from = require("direct").listing(cfg, dir)
+  for _, f in ipairs(names) do -- (shared with this poll's other looks at the folder: 0.59.14, review)
     if not settled[f] and ext(proj, sync.APPLIED, f:sub(1, -6)) ~= "" then settled[f] = true end
     if not settled[f] and not cache[f] and reaper.time_precise() - t_read > budget then cut = true; break end
     if not settled[f] then
-      local ev = cache[f] or band.read_json(dir .. "/" .. f)
+      local ev = cache[f] or band.read_json(from and from[f] or dir .. "/" .. f)
       -- a malformed or half-synced file must not stop everything behind it; one still unreadable after 10 minutes
       -- (not a file a cloud drive is still writing) is skipped for good, or it counts as "still to come" for ever
       -- and Who's here never shows the same project again (laptop, block K: a truncated file left pending at 1)
@@ -1428,6 +1462,8 @@ function sync.forget_trimmed(proj, cfg, song)
       if sync.room_had_events[dir] or not there then sync.forgot = 0; return 0 end
     end
     for _, f in ipairs(files) do here[f:sub(1, -6):upper()] = true end
+    -- (and what's only in the direct link's inbox so far: a change applied from there lost its mark, and was applied again. James, 0.60.0-rt)
+    for _, f in ipairs(require("direct").inbox_files(cfg, dir)) do here[f:sub(1, -6):upper()] = true end
   end
   if next(here) == nil then sync.forgot = 0; return 0 end -- (the folder not reachable just now: nothing is taken for gone)
   local gone, i = {}, 0
@@ -1449,7 +1485,7 @@ function sync.pending_events(proj, cfg, song, room)
   local n = 0
   local dir = sync.room_dir(cfg, song, room) .. "/events"
   local settled = sync.settled_for(proj, dir)
-  for _, f in ipairs(band.listing(dir, ".json")) do -- (a count: the shared listing, unsorted. 0.59.14, review)
+  for _, f in ipairs((require("direct").listing(cfg, dir))) do -- (a count: the shared listing, unsorted, and the direct link's inbox. 0.59.14, review; 0.60.0-rt)
     if not settled[f] then -- (looked at first: a name cut for every file of thousands, 2 to 3 times a poll. Round 1 review, 0.59.45)
       local id = f:sub(1, -6)
       if ext(proj, sync.APPLIED, id) ~= "" then settled[f] = true
@@ -1549,6 +1585,7 @@ function sync.write_status(proj, cfg, song, room, info)
   info.user, info.time, info.version, info.room = cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ"), band.VERSION, room
   info.reaper = (reaper.GetAppVersion():match("^[%d%.]+")) -- (Setup > Health compares the band's: "7.79/win64" -> "7.79")
   band.write_json(dir .. "/" .. (cfg.user:gsub("[^%w%-_ ]", "")) .. ".json", info)
+  require("direct").send_live(cfg, "presence", info, song, room) -- (seen at once by those here: lib/presence.lua from_msg. James, 0.60.0-rt)
 end
 
 -- Opening a project: what's new for it comes in before you get it, in one go. Left to Live sync, it comes a quarter of a second at a

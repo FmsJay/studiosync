@@ -51,7 +51,27 @@ function chat.where_label(where, b, sc)
   if where == "Studio" or where == here_song or where:sub(1, #here_song + 3) == here_song .. " / " then return nil end
   return where
 end
+-- Messages over the direct link (lib/direct.lua; James, 0.60.0-rt): shown at once, until their file is here (the file is the record). The panel
+-- polls its own: Live sync is another script. path -> the message.
+local live_msgs = {}
+function chat.from_msg(cfg, d)
+  local direct = require("direct")
+  if type(d) ~= "table" or not (d.sc == "room" or d.sc == "song" or d.sc == "band") or not direct.plain(d.song) or not direct.plain(d.room)
+    or type(d.name) ~= "string" or not d.name:match("^%d%d%d%d%d%d%d%d%-%d%d%d%d%d%d%-[%w_]+%-%d+$") or type(d.v) ~= "table"
+    or type(d.v.text) ~= "string" or type(d.v.user) ~= "string" or d.v.user == cfg.user or type(d.v.time) ~= "string" then return false end
+  local path = chat.dir(cfg, { song = d.song, room = d.room }, d.sc) .. "/msgs/" .. d.name .. ".json"
+  if live_msgs[path] or reaper.file_exists(path) then return false end
+  live_msgs[path] = { text = d.v.text, user = d.v.user, time = d.v.time, room = type(d.v.room) == "string" and d.v.room or nil, title = "" }
+  cache = nil
+  return true
+end
+function chat.take_live(cfg)
+  local direct = require("direct")
+  local ok, msgs = pcall(direct.messages, cfg)
+  if ok then direct.dispatch(msgs, nil, nil, { chat = function(d) chat.from_msg(cfg, d) end }) end
+end
 local function load(cfg, b)
+  chat.take_live(cfg)
   local key = scope .. (b.song or "") .. (b.room or "")
   if cache and key == cache_key and reaper.time_precise() - cache_at < 3 then return cache end
   local t = { msgs = {}, todo = {}, links = {} }
@@ -68,6 +88,20 @@ local function load(cfg, b)
       end
     end
   end
+  for path, v in pairs(live_msgs) do -- (until its file is here)
+    if reaper.file_exists(path) then live_msgs[path] = nil
+    else
+      for _, src in ipairs(chat.sources(cfg, b, scope)) do
+        if path:sub(1, #src[1] + 6) == src[1] .. "/msgs/" and (not src.room or v.room == src.room or (v.room == nil and src.room == "main")) then
+          local m = {}
+          for k, x in pairs(v) do m[k] = x end
+          m.file, m.where = path, src[2]
+          t.msgs[#t.msgs + 1] = m
+          break
+        end
+      end
+    end
+  end
   for kind in pairs(t) do table.sort(t[kind], function(a, x) return (a.time or "") < (x.time or "") end) end
   cache, cache_at, cache_key = t, reaper.time_precise(), key
   return t
@@ -77,8 +111,12 @@ local function add(cfg, b, kind, v, sc)
   local d = chat.dir(cfg, b, sc or scope) .. "/" .. kind
   reaper.RecursiveCreateDirectory(d, 0)
   v.user, v.time, v.room = cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ"), b and b.room or "main" -- (the room it was sent from: This room shows it)
-  band.write_json(d .. "/" .. stamp(cfg) .. ".json", v)
+  local name = stamp(cfg)
+  band.write_json(d .. "/" .. name .. ".json", v)
   cache = nil
+  if kind == "msgs" and b and b.song then -- (to those here at once, over the direct link: chat.from_msg. James, 0.60.0-rt)
+    require("direct").send_live(cfg, "chat", { sc = sc or scope, song = b.song, room = b.room or "main", name = name, v = v }, b.song, b.room or "main", name)
+  end
   if kind == "msgs" and type(v.text) == "string" then
     pcall(require("alerts").send, cfg, "chat", "StudioSync: " .. tostring(b.song), cfg.user .. ": " .. v.text)
     pcall(require("api").event, "chat", { text = v.text, song = b.song, user = cfg.user })

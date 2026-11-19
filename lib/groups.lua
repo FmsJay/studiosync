@@ -18,7 +18,9 @@ end
 -- the owner's or an admin's computer wrote it (lib/trust.lua); one from anyone else leaves the last trusted values standing (ExtState "trusted
 -- settings <root>", kept). Syncthing not saying yet, or a studio from before owners: band.json as it is, as before. Read at most every 5 s.
 local SETTINGS = { "alerts", "alerts_server", "call", "sonobus_server", "tailnet", "tailscale_only", "colours", "debug", "updates", -- ("updates": lib/fromfolder.lua, 0.59.25)
-  "print_hops" } -- ("print_hops": chained prints, lib/prints.lua hops_cap. James, 0.59.49)
+  "print_hops", -- ("print_hops": chained prints, lib/prints.lua hops_cap. James, 0.59.49)
+  "direct", -- ("direct": the direct link, lib/direct.lua enabled; on unless false. James, 0.60.0-rt)
+  "update_key" } -- ("update_key": signed updates, the owner's Ed25519 public key: lib/band.lua studio_update_key. James, rt)
 -- (Round 2 review, 0.59.46: Syncthing is asked again only when band.json or this computer's pins changed, or the last answer was "not known",
 -- and the kept settings are written only when they differ: it was a blocking call and a saved-state write every 5 s per script and studio,
 -- and the Debug pill made the panel do it for every studio. -> the settings, and false when they're held back only because nothing is checked
@@ -188,6 +190,8 @@ function groups.set_debug(root, on) save(root, function(j) j.debug = on and true
 function groups.set_folder_updates(root, on) save(root, function(j) j.updates = on and "folder" or nil end) end -- (lib/fromfolder.lua: owner and admins)
 -- Plug-in hand-overs a chained print may take (lib/prints.lua hops_cap: 0, 1, 3 or "any"; nil is the default, 2). Owner and admins.
 function groups.set_print_hops(root, v) save(root, function(j) j.print_hops = v end) end
+-- The direct link for the studio (lib/direct.lua): on unless band.json says false, so only "off" is written. Owner and admins. (James, 0.60.0-rt)
+function groups.set_direct(root, on) save(root, function(j) if on then j.direct = nil else j.direct = false end end) end
 
 -- The owner makes someone an admin or a member again. -> true, or nil + why.
 function groups.set_admin(root, actor, target, on)

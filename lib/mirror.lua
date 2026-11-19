@@ -2665,7 +2665,8 @@ local function plain_event(room_dir, evid)
   local key = room_dir .. "\0" .. evid
   if plain_cache[key] then return plain_cache[key] end
   local band = require("band")
-  local ev = band.read_json(room_dir .. "/events/" .. evid .. ".json")
+  -- (or the direct link's inbox copy, until Syncthing's is here: lib/direct.lua. James, 0.60.0-rt)
+  local ev = band.read_json(require("direct").path(nil, room_dir .. "/events", evid .. ".json"))
   if not ev then
     room_parent[room_dir] = room_parent[room_dir] or (band.read_json(room_dir .. "/room.json") or {}).parent -- (it may not have synced here yet: not noted as none)
     ev = room_parent[room_dir] and plain_event((room_dir:gsub("[^/]+$", (room_parent[room_dir]:gsub("%%", "%%%%")))), evid) or nil
@@ -3803,7 +3804,8 @@ function W.prints(w)
         local same_as_parent = false
         if room ~= "main" and fx then
           local _, _, fev = mirror.known(proj, fx.oid)
-          same_as_parent = not reaper.file_exists(room_dir .. "/events/" .. tostring(kev) .. ".json") and not reaper.file_exists(room_dir .. "/events/" .. tostring(fev) .. ".json")
+          local direct = require("direct") -- (a change that came over the direct link is this room's too: James, 0.60.0-rt)
+          same_as_parent = not reaper.file_exists(direct.path(nil, room_dir .. "/events", tostring(kev) .. ".json")) and not reaper.file_exists(direct.path(nil, room_dir .. "/events", tostring(fev) .. ".json"))
         end
         -- (not an item that differs from the band's and isn't yours to change: its put-back waits (MIDI editor open, a recording on its way),
         -- and a print of the refused notes went out with them past the claim. Cost: one compare an item. Round 1 review, 0.59.45)
@@ -4418,7 +4420,7 @@ function mirror.end_local_mix(proj, cfg, song, room, adopt)
     local rev, h, evid, order = mirror.known(proj, oid)
     if rev then
       if adopt then
-        local ev = evid ~= "" and band.read_json(rdir .. "/events/" .. evid .. ".json")
+        local ev = evid ~= "" and band.read_json(require("direct").path(cfg, rdir .. "/events", evid .. ".json")) -- (or its inbox copy: James, 0.60.0-rt)
         if type(ev) == "table" and type(ev.state) == "table" then
           if ev.state.vol and ev.state.vol ~= "" then reaper.SetMediaTrackInfo_Value(tr, "D_VOL", tonumber(ev.state.vol)) end
           if ev.state.pan and ev.state.pan ~= "" then reaper.SetMediaTrackInfo_Value(tr, "D_PAN", tonumber(ev.state.pan)) end

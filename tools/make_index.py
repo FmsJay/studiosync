@@ -22,17 +22,12 @@ def url(rel):
 
 # lib/files.txt: every code file and its length without carriage returns, so a computer running StudioSync from the shared folder takes an
 # update only once all of it has arrived (lib/band.lua band.files_complete; review, 0.58.89)
-code = sorted(ROOT.glob("StudioSync - *.lua")) + sorted((ROOT / "lib").glob("*.lua"))
-def fnv(data):  # band.code_hash: 64-bit FNV-1a over the text without carriage returns (full review, 0.59.44: a same-length change counted as arrived)
-    h = 0xcbf29ce484222325
-    for b in data:
-        h = ((h ^ b) * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
-    return f"{h:016x}"
-def row(f):
-    data = f.read_bytes().replace(b'\r', b'')
-    return f"{f.relative_to(ROOT).as_posix()}\t{len(data)}\t{fnv(data)}"
-lines = [f"version {version}"] + [row(f) for f in code]
-(ROOT / "lib" / "files.txt").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+# (each row's hash: 64-bit FNV-1a, full review, 0.59.44. Signed updates: a SHA-256 row for every file that ships, and lib/files.txt.sig signed
+# with the studio owner's key when it's on this computer: tools/sign_release.py, docs/realtime-roadmap.md "Signed updates")
+import sign_release
+_key = sign_release.key_path()
+sign_release.write(ROOT, sign_release.load_seed(_key) if _key.exists() else None)
+print("lib/files.txt: " + (f"signed with {_key}" if _key.exists() else f"unsigned (no update key at {_key})"))
 
 if INDEX.exists():
     index = ET.parse(INDEX).getroot()
@@ -79,7 +74,7 @@ for f in sorted((ROOT / "lib" / "listen").glob("*")):  # the listening page's li
 # Extensions > StudioSync and View > StudioSync (extension/reaper_menu.cpp): a package of its own, with a version of its own that goes up
 # only when the extension changes (EXT_VERSION), so StudioSync's updates don't try to replace a file REAPER has loaded. Each platform gets
 # its build, when there is one (a new platform's build: raise EXT_VERSION).
-EXT_VERSION = "1.0.8"  # (1.0.1: macOS and Linux builds, from .github/workflows/extension.yml; 1.0.2: toolbar button, icon map; 1.0.3: on any main toolbar; 1.0.4: lit while the panel is open, however it opened; 1.0.5: the action is called just StudioSync; 1.0.6: an amber dot while something stopped syncing; 1.0.7: the direct link, extension/direct.cpp; 1.0.8: its small messages, shared clock, streamed takes and the audio spike)
+EXT_VERSION = "1.0.9"  # (1.0.1: macOS and Linux builds, from .github/workflows/extension.yml; 1.0.2: toolbar button, icon map; 1.0.3: on any main toolbar; 1.0.4: lit while the panel is open, however it opened; 1.0.5: the action is called just StudioSync; 1.0.6: an amber dot while something stopped syncing; 1.0.7: the direct link, extension/direct.cpp; 1.0.8: its small messages, shared clock, streamed takes and the audio spike; 1.0.9: signed updates)
 EXT_FILES = {"reaper_studiosync-x64.dll": "win64", "reaper_studiosync.dylib": "darwin",  # (the Mac build is universal: arm64 + x86_64)
              "reaper_studiosync-x86_64.so": "linux64", "reaper_studiosync-aarch64.so": "linux-aarch64"}
 cat = index.find("category")
@@ -91,7 +86,7 @@ if ext is None:
 if not any(v.get("name") == EXT_VERSION for v in ext.findall("version")):
     ev = ET.SubElement(ext, "version", name=EXT_VERSION, author="James",
                        time=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
-    ET.SubElement(ev, "changelog").text = "The direct link: changes, messages (chat, cues, claims, presence, live MIDI) and takes as they record reach the others over Tailscale in well under a second, on a clock shared by the studio."
+    ET.SubElement(ev, "changelog").text = "The direct link: changes, messages (chat, cues, claims, presence, live MIDI) and takes as they record reach the others over Tailscale in well under a second, on a clock shared by the studio; and signed updates: a studio's owner signs each version, and every computer checks it before it runs."
     for name, plat in EXT_FILES.items():
         if (ROOT / "extension" / name).exists():
             ET.SubElement(ev, "source", platform=plat, file=name).text = url(f"extension/{name}")

@@ -268,6 +268,7 @@ end
 local function go(ev) -- post it for the band, and fire it here through our own Live sync
   local b, cfg, proj, view, wide, who = E.b(), E.cfg(), E.proj(), E.view(), E.wide(), E.who()
   ev.at = math.floor(os.time()) + together.LEAD
+  ev.start_at = together.start_at(together.LEAD) -- (the same moment on the studio's shared clock, when the direct link has one. James, 0.60.0-rt)
   sync.post(cfg, b.song, b.room, ev)
   ev.user = cfg.user
   band.set_ext_json(band.SECTION, "transport " .. tostring(proj), ev, false)

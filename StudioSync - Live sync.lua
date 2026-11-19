@@ -12,13 +12,14 @@ if require("fromfolder").handoff(debug.getinfo(1, "S").source) then return end -
 if band.preload then band.try("band.preload", band.preload, dir) end
 -- (the modules this chunk needs as it starts, through band.try: one refused by the code check mid-arrival gave REAPER's error box on an
 -- unattended start. Round 4 review, 0.59.49)
-for _, m in ipairs({ "sync", "live", "together", "songsync", "recall", "drive", "livemidi" }) do
+for _, m in ipairs({ "sync", "live", "together", "songsync", "recall", "drive", "livemidi", "direct" }) do
   if not band.try("require " .. m, require, m) then return end
 end
 local sync = require("sync")
 sync.autosave = sync.autosave or {} -- (lib/leave.lua leave.autosave: how much came in since the last auto-save, and whether it may save)
 local live = require("live")
 local together = require("together")
+local direct = require("direct") -- (the direct link: lib/direct.lua. James, 0.60.0-rt)
 local transport -- a pending start/stop (lib/together.lua)
 local clip_said -- when we last warned about the master clipping
 local due_in = math.huge -- seconds until a pending start/stop fires
@@ -762,6 +763,11 @@ local function follows(name)
   return reaper.GetExtState(band.SECTION, "follow driver") ~= "" and sync.driver_name == name
 end
 local function take_cue(ev)
+  -- (on the studio's shared clock when it came with one: fired at this computer's clock + (start_at - shared now). James, 0.60.0-rt)
+  if ev and not ev.remote and tonumber(ev.start_at) then
+    local sn = direct.shared_now()
+    if sn then ev.at = together.local_at(tonumber(ev.start_at), sn, together.now()) end
+  end
   if not ev or (ev.id and fired[ev.id]) or (not ev.remote and (ev.at or 0) < cue_at) then return end
   if ev.remote then -- a producer starting or stopping someone's transport (lib/producer.lua): only theirs, with their say-so
     if not require("producer").remote_ok(ev, cfg.user, require("producer").lets_for(proj), reaper.GetExtState(band.SECTION, "produced by " .. key), together.now()) then return end
@@ -826,13 +832,15 @@ local function quick_transport()
   if cache then sync.ev_cache[dir] = cache end
   cue_left, listed_at = false, reaper.time_precise()
   -- (read now, as before, but shared: the poll's own looks at the folder within 0.2 s use this read. 0.59.14, review)
-  for _, f in ipairs(band.raw_listing(dir, true)) do
+  -- (with what came over the direct link, from its inbox: lib/direct.lua. James, 0.60.0-rt)
+  local names, from = direct.merge(cfg, dir, band.raw_listing(dir, true))
+  for _, f in ipairs(names) do
     if not seen_ev[f] then
       if f:sub(-5) ~= ".json" or sync.is_mine(f, cfg.user) then seen_ev[f] = true
       elseif reads >= CUE_READS then cue_left = true; break
       else
         reads = reads + 1
-        local ev, big = small_event(dir .. "/" .. f)
+        local ev, big = small_event(from and from[f] or dir .. "/" .. f)
         cue_bad[f] = not (ev or big) and (cue_bad[f] or 0) + 1 or nil
         if ev or big or cue_bad[f] >= CUE_TRIES then seen_ev[f], cue_bad[f] = true, nil else cue_left = true end -- (one caught mid-write is read again next time, not skipped: review, 0.58.92)
         if ev and cache then cache[f] = ev end
@@ -887,6 +895,20 @@ local tick
 local livemidi = require("livemidi")
 local midi_view_at, midi_view_err = 0, nil
 local undo_since, undo_said -- when you undid one of StudioSync's own changes (tick_body waits a while)
+-- What comes over the direct link, by kind (lib/direct.lua live_tick; James, 0.60.0-rt). Each also comes as a file, the record: whichever is
+-- first is taken, once (a cue's file is history once its message is in; live MIDI files by name; presence and claims by their time).
+local live_handlers = {
+  presence = function(st) require("presence").from_msg(cfg, b.song, b.room, st, "presence") end,
+  heartbeat = function(st) require("presence").from_msg(cfg, b.song, b.room, st, "heartbeat") end,
+  claim = function(c) sync.live_claim(b.song, b.room, c) end,
+  cue = function(ev)
+    if type(ev) ~= "table" or type(ev.id) ~= "string" or (ev.type ~= "start" and ev.type ~= "stop") or type(ev.at) ~= "number" or sync.is_mine(ev.id, cfg.user) then return end
+    seen_ev[ev.id .. ".json"] = true
+    if not fired[ev.id] and together.now() - ev.at < 30 then take_cue(ev) end
+  end,
+  midi = function(d) livemidi.from_msg(proj, cfg, b, d, reaper.GetPlayStateEx(proj) & 4 ~= 0) end,
+}
+live_handlers.start, live_handlers.stop = live_handlers.cue, live_handlers.cue
 local function tick_body() -- returns true to keep going
   if sync.tip_at and reaper.time_precise() - sync.tip_at > 6 then sync.tip_at = nil; reaper.TrackCtl_SetToolTip("", 0, 0, true) end
   if not reaper.ValidatePtr2(0, proj, "ReaProject*") then -- project closed: stop, and say so
@@ -955,6 +977,9 @@ local function tick_body() -- returns true to keep going
     end
   end
   together.tick()
+  -- (the direct link: an event file that arrived brings a receive pass and a cue look now, not in up to 2 s; messages go where they belong)
+  local dok, arrived = band.try("direct.live_tick", direct.live_tick, cfg, b.song, b.room, live_handlers)
+  if dok and (arrived or 0) > 0 then cue_left, quick_at, last = true, -math.huge, -math.huge end
   local tjson = reaper.GetExtState(band.SECTION, "transport " .. key) -- a start/stop from the panel or the band
   if tjson ~= "" then
     reaper.DeleteExtState(band.SECTION, "transport " .. key, false)
@@ -1073,6 +1098,7 @@ local function tick_body() -- returns true to keep going
         local ev = playing and { type = "start", pos = pos, countin = 0, rec = ps & 4 == 4 or nil }
           or { type = "stop", pos = side.pos + (tp - side.t), pause = ps & 2 == 2 or nil } -- where the song was when you stopped
         ev.at, ev.lead, ev.follow = together.now(), cfg.user, true
+        ev.start_at = together.start_at(0) -- (the same moment on the shared clock: the others' lag counts from it. James, 0.60.0-rt)
         ev.lag = together.bars_after(proj, pos, lagbars or 0)
         sync.post(cfg, b.song, b.room, ev)
         fired[ev.id], cue_at = true, math.max(cue_at, ev.at)
