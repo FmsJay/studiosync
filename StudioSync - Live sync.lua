@@ -300,6 +300,9 @@ local inbox_at = -math.huge -- (and the song's inbox for dropped audio)
 -- Where a tick's time goes, part by part: the last tick over 0.15 s is kept in "slow tick <proj>" (not saved), to find what holds REAPER up on a big song
 local laps, lap_t = {}, 0
 local function lap(name) local t = reaper.time_precise(); laps[#laps + 1] = string.format("%s %.0f", name, (t - lap_t) * 1000); lap_t = t end
+-- Tick timings for tests/reaper/rt_perf.lua (James, rt: before and after an efficiency pass, on each computer): collected only while ExtState
+-- "perf stats" is "1" (looked at every 10 s), and published every 10 s as "tick stats <proj>". Off, it costs one comparison a tick.
+local perf = { on = false, at = -math.huge, ticks = {}, passes = {}, worst = 0, worst_laps = "" }
 local last_session -- a session.json caught mid-sync reads as nothing: keep the last good one
 local joined = {} -- machines this Live sync has already let in
 -- Are we in the middle of editing? (the project changed in the last 2 s, or the mouse button is down): the band's
@@ -965,7 +968,7 @@ local function tick_body() -- returns true to keep going
         "sonobus for listeners", "outbox", "live owner", "ping", "slow tick", "last here", "draw", "live began", "takelanes",
         -- (and these: a new tab at the same address showed a count-in, a producer, a SonoBus trouble or a drift that were the closed tab's. Review, 0.59.14)
         "end session", "produced by", "producer controls", "timing", "produce ctl", "last_at", "stamping", "together_at", "rt group", "rt silent", "rt silent who", "rt trouble", "driver_away", "mirror drift",
-        "ninjam shown", "ninjam off", "ninjam start", "ninjam connect", "ninjam host", "unsent", "last_track" }) do reaper.DeleteExtState(band.SECTION, k .. " " .. key, false) end -- (unsent, last_track: Round 2 review, 0.59.46)
+        "ninjam shown", "ninjam off", "ninjam start", "ninjam connect", "ninjam host", "unsent", "last_track", "tick stats" }) do reaper.DeleteExtState(band.SECTION, k .. " " .. key, false) end -- (unsent, last_track: Round 2 review, 0.59.46)
     return band.log("live sync stopped: '" .. b.song .. "'" .. (b.room ~= "main" and (", side room '" .. b.room .. "',") or "") .. " was closed (it starts again by itself when you reopen it)")
   end
   local now_b = band.binding(proj)
@@ -1250,6 +1253,7 @@ local function tick_body() -- returns true to keep going
     local ok, err = pcall(poll)
     if not ok then band.log("sync error: " .. tostring(err)) end
     pass_took = reaper.time_precise() - polled_at
+    if perf.on then perf.passes[#perf.passes + 1] = pass_took end
     -- more of the band's changes waiting than one pass applies: the next pass in 0.3 s, not 2 s (320 moved items
     -- took 73 s to land at 2 s a pass; laptop, 0.34.4). Each pass still applies at most a quarter second.
     -- (and when a burst of ours is still going out: mirror.watch sends a quarter second of it per pass)
@@ -1278,6 +1282,17 @@ local function updated()
   -- (once whole, a failure on the part-arrived copy doesn't hold the whole version back: its mark goes, once. Round 3 review, 0.59.48)
   if partial and not partial_seen then partial_seen = true; reaper.DeleteExtState(band.SECTION, failed, false) end
   return (ready or partial) and reaper.GetExtState(band.SECTION, failed) ~= disk
+end
+-- The last 10 s of tick timings, while "perf stats" is on: { at, song, room, ticks, passes = { n, med, p95, max } (ms), worst (the slowest
+-- tick's laps) }. (tests/reaper/rt_perf.lua reads it. James, rt)
+local function perf_publish(now)
+  perf.at = now
+  if perf.on and #perf.ticks > 0 then
+    local R = require("rthealth")
+    band.set_ext_json(band.SECTION, "tick stats " .. key, { at = os.time(), song = b.song, room = b.room, ticks = R.summary(perf.ticks),
+      passes = R.summary(perf.passes), worst = perf.worst_laps }, false)
+  end
+  perf.on, perf.ticks, perf.passes, perf.worst, perf.worst_laps = reaper.GetExtState(band.SECTION, "perf stats") == "1", {}, {}, 0, ""
 end
 -- an error anywhere in a tick (a malformed cue from someone's machine, say) is logged, and Live sync carries on
 local said_at, sws_at = -math.huge, -math.huge
@@ -1324,6 +1339,11 @@ tick = function()
     lap("rest")
     reaper.SetExtState(band.SECTION, "slow tick " .. key, string.format("%.0f ms at %s: %s", took * 1000, os.date("%H:%M:%S"), table.concat(laps, ", ")), false)
   end
+  if perf.on then
+    perf.ticks[#perf.ticks + 1] = took
+    if took > perf.worst then perf.worst, perf.worst_laps = took, table.concat(laps, ", ") end
+  end
+  if t0 - perf.at >= 10 then perf_publish(t0) end
   if go then reaper.defer(tick) end
 end
 
