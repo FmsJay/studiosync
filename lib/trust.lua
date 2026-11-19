@@ -46,7 +46,10 @@ function trust.from_user(pins, by, user)
 end
 -- Is this change of the roles an admin renaming themselves, from their own computer (band.rename)? The owner the same, one admin's name swapped
 -- for the one names.json (`names`: band.names) says they go by now. Pure. (Round 1 review, 0.59.45)
-function trust.self_rename(pins, owner, admins, by, names)
+-- (Round 2 review, 0.59.46: and not onto a name whose devices file names another computer than theirs (`new_device`: that file's device, or nil):
+-- renaming onto a member's name handed that name the admin role. -> ok, and "names" when only names.json didn't say so yet: not kept.)
+local function tag(u) return (tostring(u):gsub("[^%w]", "_")):upper() end -- (band.rename's names.json key)
+function trust.self_rename(pins, owner, admins, by, names, new_device)
   if owner ~= pins.owner then return false end
   local was, now = {}, {}
   for _, a in ipairs(pins.admins) do was[a] = true end
@@ -54,19 +57,29 @@ function trust.self_rename(pins, owner, admins, by, names)
   local old, new, n_old, n_new = nil, nil, 0, 0
   for a in pairs(was) do if not now[a] then old, n_old = a, n_old + 1 end end
   for a in pairs(now) do if not was[a] then new, n_new = a, n_new + 1 end end
-  if n_old ~= 1 or n_new ~= 1 then return false end
-  local tag = (old:gsub("[^%w]", "_")):upper() -- (band.rename's names.json key)
-  return type(names) == "table" and names[tag] == new and trust.from_user(pins, by, old)
+  if n_old ~= 1 or n_new ~= 1 or not trust.from_user(pins, by, old) then return false end
+  if new_device ~= nil then
+    local theirs = false
+    for _, id in ipairs(pins.devices[old] or {}) do theirs = theirs or id:sub(1, 7) == tostring(new_device):sub(1, 7) end
+    if not theirs then return false end
+  end
+  if not (type(names) == "table" and names[tag(old)] == new) then return false, "names" end
+  return true
 end
 -- The pins after accepting roles: everyone already pinned keeps their computers; someone new in charge gets the computers the accepted band.json
 -- lists as theirs (`listed`, its "managers": what the computer that wrote it had pinned, 0.58.78), else the one they've said is theirs. Pure.
-function trust.repin(old, owner, admins, device_of, listed)
+-- (and someone in charge who renamed themselves keeps the computers pinned under the old name (`names`: names.json): they were pinned anew
+-- only if their devices file could be checked at that moment, and never again, which locked an owner out on that computer. Round 2 review, 0.59.46)
+function trust.repin(old, owner, admins, device_of, listed, names)
   local p = { owner = owner, admins = admins, devices = {} }
   for user, ids in pairs(old and old.devices or {}) do p.devices[user] = ids end
   local list = { table.unpack(admins) }
   if owner then list[#list + 1] = owner end
   local is_id = require("services").is_device_id
   for _, u in ipairs(list) do
+    if not p.devices[u] and type(names) == "table" then
+      for was, ids in pairs(old and old.devices or {}) do if was ~= u and names[tag(was)] == u then p.devices[u] = ids end end
+    end
     if not p.devices[u] then
       local ids = {}
       for _, id in ipairs(type(listed) == "table" and type(listed[u]) == "table" and listed[u] or {}) do if is_id(id) then ids[#ids + 1] = id end end
@@ -155,7 +168,7 @@ local function device_of(root)
   end
 end
 function trust.pin(root, owner, admins, listed)
-  local p = trust.repin(trust.pins(root), owner, admins, device_of(root), listed)
+  local p = trust.repin(trust.pins(root), owner, admins, device_of(root), listed, band.read_json(root .. "/_band/names.json"))
   band.set_ext_json(band.SECTION, key(root), p, true)
   return p
 end
@@ -216,17 +229,31 @@ function trust.roles(root, j)
     trust.pin(root, owner, admins, j.managers) -- (the first look, joined before 0.58.78 or started here: what's there now is what this computer knows)
     return owner, admins
   end
+  -- (the roles go by _band/roles.json where there is one: only the owner's computer writes it (groups save), so an admin's band.json save,
+  -- which carries the roles as that computer had them, can't mask the owner's change. band.json keeps the roles for older versions. James's
+  -- decision, Round 2 review, 0.59.46)
+  local rel = "_band/band.json"
+  local r = band.read_json(root .. "/_band/roles.json")
+  if type(r) == "table" and type(r.owner) == "string" then j, rel = r, "_band/roles.json"; owner, admins = trust.roles_of(r) end
   if trust.same(pins, owner, admins) then return owner, admins end
-  local v = trust.version(j, owner, admins)
+  local v = (rel == "_band/band.json" and "" or "roles.json\0") .. trust.version(j, owner, admins) -- (band.json's key as first_look writes it)
   if verdicts[root .. v] == nil then
-    local ok, by = trust.from_manager_file(root, "_band/band.json", pins)
+    local ok, by = trust.from_manager_file(root, rel, pins)
     if ok == nil then return pins.owner, pins.admins end
     -- (who's in charge changes only from the owner's computer, or this one (its panel let only the owner): an admin's computer is a manager's,
     -- and an admin who wrote owner = themselves into band.json was believed everywhere. Allowed: an admin renaming themselves, which writes
     -- the roles too (band.rename). Round 1 review, 0.59.45)
     local mine = require("services").my_device_id()
     if ok and by ~= "" and not (not pins.held and mine and by == mine:sub(1, 7)) and not trust.from_user(pins, by, pins.owner) then
-      ok = trust.self_rename(pins, owner, admins, by, band.names(root))
+      -- (names.json read now, not band.names' 10 s copy; a "no" only for want of it is asked again: Round 2 review, 0.59.46)
+      local why
+      local newd
+      for _, a in ipairs(admins) do
+        local d = not pins.devices[a] and band.read_json(root .. "/_band/devices/" .. user_file(a))
+        if type(d) == "table" and d.device then newd = d.device end
+      end
+      ok, why = trust.self_rename(pins, owner, admins, by, band.read_json(root .. "/_band/names.json"), newd)
+      if why == "names" then return pins.owner, pins.admins end
     end
     verdicts[root .. v] = ok
     if not ok and not said[root .. v] then

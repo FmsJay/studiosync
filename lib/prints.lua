@@ -534,9 +534,17 @@ function prints.ara_source(it, tk)
       reaper.GetMediaItemTakeInfo_Value(tk, "D_PLAYRATE"), reaper.GetMediaItemTakeInfo_Value(tk, "D_PITCH")),
     take_ext(tk, "band_m_ara"), table.concat(fx, ",") }, "|"))
 end
+-- Is the take playing a file a band's version named (mirror.theirs)? Never printed here: who prints is decided from files anyone in the studio
+-- writes, so a bandmate could have your computer render a private recording of yours into the shared folder. Security, Round 2 review,
+-- 0.59.46. Cost: one P_EXT read when a print is about to be made.
+function prints.from_band(it, tk)
+  local src = tk and reaper.GetMediaItemTake_Source(tk)
+  local file = src and reaper.GetMediaSourceFileName(src, "") or ""
+  return file ~= "" and require("mirror").theirs(it)[require("fxfiles").key(file)] == true
+end
 local function refresh_ara(proj, it, media_dir)
   local ara = prints.ara_take(it)
-  if not ara then return false end
+  if not ara or prints.from_band(it, ara) then return false end
   for f = 0, reaper.TakeFX_GetCount(ara) - 1 do if reaper.TakeFX_GetOffline(ara, f) then return false end end
   local _, print = prints.takes(it)
   local h = prints.ara_source(it, ara)
@@ -571,7 +579,7 @@ function prints.refresh(proj, it, media_dir, fx_hash, route_hash, cfg)
   if not midi and not audio then return refresh_ara(proj, it, media_dir) end
   local dest = midi and prints.route(tr)
   if (reaper.TrackFX_GetCount(tr) == 0 and not dest) or not prints.track_plays(tr, true) then return false end
-  if audio and not prints.lacking(tr, cfg) then return false end
+  if audio and (not prints.lacking(tr, cfg) or prints.from_band(it, audio)) then return false end
   local dry = midi or audio
   local h, old
   if midi then h, old = prints.source(it, midi, (fx_hash or "") .. (dest and ("\0" .. (route_hash or "")) or ""))

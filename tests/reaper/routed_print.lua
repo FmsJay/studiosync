@@ -68,7 +68,8 @@ local ok, err = pcall(function()
   check(s_notes >= 0 and reaper.GetTrackSendInfo_Value(notes, 0, s_notes, "I_SRCCHAN") == -1, "Notes' send to Kit carries MIDI only now")
   check(reaper.GetTrackSendInfo_Value(other, 0, 0, "I_SRCCHAN") ~= -1, "Other's send is left as it was (not printed yet)")
   local wfile = reaper.GetMediaSourceFileName(reaper.GetMediaItemTake_Source(wet))
-  check(wfile:find("%-" .. (reaper.GetExtState("BandSync", "user"):gsub("[^%w%-_]", "_")) .. "%.flac$") ~= nil, "the print's file carries who rendered it (" .. (wfile:match("[^/\\]+$") or "") .. ")")
+  local tail = "-" .. (reaper.GetExtState("BandSync", "user"):gsub("[^%w%-_]", "_")) .. ".flac" -- (as text: "Chilio-Mac" in a pattern never matched. Round 2, 0.59.46)
+  check(wfile:sub(-#tail) == tail, "the print's file carries who rendered it (" .. (wfile:match("[^/\\]+$") or "") .. ")")
   -- the same notes again: nothing to do
   check(prints.refresh(p, it, media, "fx", "kit") == false, "an unchanged item isn't printed again")
   -- the instrument changed: printed again

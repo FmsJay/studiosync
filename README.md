@@ -125,11 +125,11 @@ Everything below is the detail.
   instrument), kept as the item's second take: "dry" is the notes, "wet" the print. A MIDI track that plays an
   instrument on another track (a MIDI send to a sampler or drum-kit track) is printed through that track, with
   only that item feeding it. Each person picks how MIDI plays on their machine (Settings > Options): **Auto** (your
-  instruments when every plug-in it plays through loads here, else the print), **Through my plug-ins** or **As printed**. That choice
+  instruments when every plug-in it plays through loads here, else the print), **Dry** (your plug-ins) or **Wet** (the print). That choice
   never changes what anyone else hears. When an instrument on another track doesn't load here, Settings > Health
   names it and says you hear the studio's print.
 - **Audio through a plug-in someone lacks** (an amp sim on a guitar, say) gets a wet take the same way: whoever
-  changes the item renders it through the track's plug-ins, and the same Auto / Through my plug-ins / As printed choice picks which plays.
+  changes the item renders it through the track's plug-ins, and the same Auto / Dry / Wet choice picks which plays.
   Only tracks with a plug-in that isn't on everyone's list get one, and only items with a single take. While a
   track plays a wet take, its plug-ins are switched off on that computer only, so the ones that do load there
   don't apply twice (the studio still has them on).
@@ -597,7 +597,9 @@ and it plays four notes at once, so it's a bass, lead and sequence synth).
 
 **Real time buffer** (Settings > Advanced, this computer's choice): how much sound SonoBus keeps in hand. Steady (150 ms, the default) holds still, so Their time can stay set; Rock steady (250 ms) for a rough connection; Lowest delay wanders. Measured laptop on Wi-Fi to PC, against the PC's grid: 278 ms holding with one 25 ms step at Steady, 486.8 ms and no movement at Rock steady, 162-221 ms wandering at Lowest. It doesn't line up by itself.
 
-**Sync and exit** (top row): saves, waits until what you changed has gone out, says who has it, then closes the project or quits REAPER.
+**Sync and exit** (top row): with Hold my changes on it first asks whether to send what you're holding or keep holding it; then it saves,
+waits until what you changed has gone out, says who has it and whether it's safe to shut down, then closes the project or quits REAPER.
+On a backup or autosave copy it only says that nothing of it syncs.
 
 **Real time mode**, **Follow** and **Solo** are on Home and need nothing but SonoBus. **Follow** on someone's card: your
 playhead goes with theirs (play, pause, stop, jumps; when they record, you play along), your view too, and their mix (faders, pan, solos;

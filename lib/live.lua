@@ -60,6 +60,33 @@ live.DRIVING = {
 }
 function live.driving(mode) return live.DRIVING[mode] or live.DRIVING.open end
 
+-- Is any project recording? Nothing reloads then (band.reload says "busy"), and the scripts behind the take do no full passes. (Round 2 review, 0.59.46)
+function live.recording_anywhere()
+  for i = 0, 512 do
+    local p = reaper.EnumProjects(i)
+    if not p then return false end
+    if reaper.GetPlayStateEx(p) & 4 == 4 then return true end
+  end
+  return false
+end
+-- A script's reload in place to the code on disk (band.reload_or_say), for the panel and Live sync. While anything records it isn't tried and
+-- nothing is said or done: `before` (the hand-over's side effects) runs only when it's tried, `said` is logged only once the new code took over,
+-- `undo` runs when it couldn't start. They logged "reloaded" and did the hand-over every 3-5 s through a take, though nothing reloaded.
+-- -> true when the new code took over, false (and "busy" while recording). (Round 2 review, 0.59.46)
+function live.reload(dir, script, version, suffix, before, said, undo)
+  if live.recording_anywhere() then return false, "busy" end
+  if before then before() end
+  if band.reload_or_say(dir, script, version, suffix) then
+    if said then band.log(said) end
+    return true
+  end
+  if undo then undo() end
+  return false
+end
+-- The status a Live sync writes for the others, as one string to tell when it changed: every field, keys sorted (a hand-made list missed the mix
+-- and who you produce). Pure. (Round 1 review, 0.59.45; extracted to be tested, Round 2)
+function live.status_fingerprint(info) return band.json_encode(info) end
+
 live.FLAGS = { synced = 4, jam = 0 }
 live.FX = "ReaNINJAM"
 live.SONOBUS = "SonoBus"

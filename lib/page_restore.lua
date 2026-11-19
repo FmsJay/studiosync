@@ -86,18 +86,18 @@ end
 -- restore of a saved version).
 local function plan_for(i, point, scope)
   local b, cfg = E.b(), E.cfg()
-  local st = point and point.file and band.read_json(recall.dir(cfg, b.song, b.room) .. "/" .. point.file)
-  if type(st) == "table" and type(st.known) == "table" and next(st.known) then
+  local known = point and point.file and recall.known(cfg, b.song, b.room, point.file) -- (its sidecar: Round 2 review, 0.59.46)
+  if known then
     local by_id, rdir = {}, sync.room_dir(cfg, b.song, b.room)
     for _, e in ipairs(entries) do if e.id then by_id[e.id] = e end end
-    return mirror.plan_known(entries, st.known, function(id) return by_id[id] or mirror.event_file(rdir, id) end, scope)
+    return mirror.plan_known(entries, known, function(id) return by_id[id] or mirror.event_file(rdir, id) end, scope)
   end
   return mirror.plan_restore(entries, i, scope)
 end
 local function back_button(i, what, single, point)
   local b, cfg, proj, view, wide, points, can, who = E.b(), E.cfg(), E.proj(), E.view(), E.wide(), E.points(), E.can(), E.who()
   local e, mirror = entries[i], require("mirror")
-  local opts = { can = can, mode = who and who.mode, local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1" }
+  local opts = { can = can, mode = who and who.mode, driver = who and who.driver, is_claimed = who and who.is_claimed, local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1" }
   if single and e and e.kind == "obj" then
     if ImGui.SmallButton(ctx, "Go to it") then
       local why = R.show_change(proj, e)
@@ -266,7 +266,7 @@ function R.section_recall()
       ImGui.PushID(ctx, i)
       local upto = 0 -- (mirror sessions: the point is a moment in History)
       for k, e in ipairs(entries) do if (e.time or "") <= (p.time or "") then upto = k end end
-      change_row("version " .. i, local_time(p.time), string.format("%s%s%s", p.label, p.keep and " (kept)" or "", (p.takes or 0) > 0 and string.format("  ·  %d takes", p.takes) or ""), upto, "at '" .. p.label .. "'", nil, tostring(p.by), p.keep and GREEN or nil, p)
+      change_row("version " .. i, local_time(p.time), string.format("%s%s%s%s", p.label, p.keep and " (kept)" or "", p.behind and "  ·  saved while still catching up: restores by time" or "", (p.takes or 0) > 0 and string.format("  ·  %d takes", p.takes) or ""), upto, "at '" .. p.label .. "'", nil, tostring(p.by), p.keep and GREEN or nil, p)
       ImGui.PopID(ctx)
     end
     ImGui.EndChild(ctx)

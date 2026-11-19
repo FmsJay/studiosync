@@ -57,8 +57,9 @@ function copy.digest(files)
 end
 -- Who else says they hold exactly this: their names. `lists`: { { user, songs = { [song] = { digest } } } }. Pure.
 -- Still confirmed elsewhere, asked again once you've said yes: Drive had it, or someone still holds exactly this. Pure (review, 0.58.92).
-function copy.still_confirmed(places, holders)
-  for _, p in ipairs(places) do if p == "Google Drive" then return true end end
+-- (`cloud`: the cloud copy's name as it's listed, drive.name: it said Google Drive whatever the service. Round 2 review, 0.59.46)
+function copy.still_confirmed(places, holders, cloud)
+  for _, p in ipairs(places) do if p == "Google Drive" or (cloud and p == cloud) then return true end end
   return #holders > 0
 end
 -- Only a list said again lately (each computer says it again every day while REAPER runs), by someone not taken out: a wiped laptop's or a
@@ -203,7 +204,7 @@ function copy.bin_poll(h)
   end
   if reaper.file_exists(h.tmp .. ".toobig") then
     os.remove(h.tmp .. ".toobig")
-    band.log("left " .. tostring(h.label or "some files") .. " where it is: it's more than that drive's Recycle Bin can hold (or the bin is set to delete at once), so deleting would be for good. Delete it by hand if you mean to")
+    band.log("left " .. tostring(h.label or "some files") .. " where it is: the Recycle Bin is full or too small (or set to delete at once), so deleting would be for good. Empty it, or delete by hand")
   end
   for _, e in ipairs({ ".done", ".cmd", ".vbs", ".ps1", ".sh" }) do if reaper.file_exists(h.tmp .. e) then os.remove(h.tmp .. e) end end
   h.left = left_now(h.paths) -- shortcut: what hasn't gone by the time limit counts as left, though it may still be on its way
@@ -234,7 +235,7 @@ function copy.bin_start(paths, label)
     -- and said. Review, 0.58.47)
     -- (nor what the bin can't take: a drive set to delete at once, or more than the bin's size. Windows asks "delete permanently?" then, and
     -- with no confirmations that's a yes: the box promised the Recycle Bin and the files were gone. Left and said, as above. Full review, 0.59.44)
-    -- (Round 1 review, 0.59.45: sized per drive, the whole job together plus what that bin holds already (path by path, a second big folder
+    -- (Round 1 review, 0.59.45: sized per drive, the whole job together (path by path, a second big folder
     -- pushed the first out for good); one volume lookup per drive; and a lookup that fails counts as too big. No size set for the bin: 5% of the
     -- drive, Windows' default. Before, a missing key or a failed lookup binned it anyway.)
     lines[#lines + 1] = "$sum = @{}; $rt = @{}; $big = @{}"
@@ -250,7 +251,7 @@ function copy.bin_start(paths, label)
       "$v = Get-CimInstance Win32_Volume -Filter (\"DriveLetter='\" + $dl + \"'\"); $g = [regex]::Match([string]$v.DeviceID, '\\{[^}]+\\}').Value; " ..
       "if ($v -and $g) { $k = Get-ItemProperty -LiteralPath ('HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\BitBucket\\Volume\\' + $g) -ErrorAction SilentlyContinue; " ..
       "if (-not ($k -and $k.NukeOnDelete -eq 1)) { $cap = if ($k -and $k.MaxCapacity) { [int64]$k.MaxCapacity * 1MB } else { [int64]([double]$v.Capacity * 0.05) }; " ..
-      "if ($cap -gt 0 -and $sum[$dl] + $b.bytes -le $cap) { $big[$dl] = $false } } } } catch {} }"
+      "if ($cap -gt 0 -and $sum[$dl] -le $cap) { $big[$dl] = $false } } } } catch {} }" -- (only this job against the bin's size: a bin that had filled up over the years refused every delete, and Windows makes room by dropping the oldest. James's decision, Round 2 review, 0.59.46)
     for _, p in ipairs(paths) do
       local wp = q((p:gsub("/", "\\")))
       lines[#lines + 1] = "$b = New-Object StudioSyncBin+Bin; $b.size = [Runtime.InteropServices.Marshal]::SizeOf($b); $r = [IO.Path]::GetPathRoot(" .. wp .. "); " ..
@@ -296,8 +297,9 @@ function copy.tick()
   elseif j.step == "drive" then
     j.droot = j.droot or require("drive").root({ root = j.root }) or false
     if not j.droot or j.drive_bad then j.step = "ask"; return end
+    j.cloud = j.cloud or require("drive").name({ root = j.root })
     local t0 = reaper.time_precise()
-    j.words = string.format("Checking Google Drive for '%s': %d of %d", song, j.at - 1, #j.files)
+    j.words = string.format("Checking %s for '%s': %d of %d", j.cloud, song, j.at - 1, #j.files)
     while j.at <= #j.files and reaper.time_precise() - t0 < 0.01 do
       local rel = j.files[j.at]
       if copy.drive_needs(rel) then
@@ -320,7 +322,7 @@ function copy.tick()
       end
       j.at = j.at + 1
     end
-    if j.at > #j.files and not j.drive_bad then j.places[#j.places + 1] = "Google Drive"; j.step = "ask"
+    if j.at > #j.files and not j.drive_bad then j.places[#j.places + 1] = j.cloud; j.step = "ask"
     elseif j.drive_bad then j.step = "ask" end
   elseif j.step == "ask" then
     -- (this studio's project folder only, where its project file is: band.home()/<song> was another studio's "Demo" with recordings
@@ -342,13 +344,13 @@ function copy.tick()
     end
     j.ask = string.format("Delete this computer's copy of '%s'?\n\nConfirmed on: %s.\n\nIts files (%d) go to the %s%s, nothing changes for anyone else, and it stays on the Projects page: opening it brings it back%s.%s",
       song, table.concat(j.places, ", "), #j.files, WIN and "Recycle Bin" or "Trash", local_dir and (", with its project folder (" .. local_dir .. ")") or "",
-      #j.places == 1 and j.places[1] == "Google Drive" and " from Drive" or " from them",
+      #j.places == 1 and j.places[1] == j.cloud and (" from " .. tostring(j.cloud)) or " from them",
       j.kept_dir and ("\n\nIts project folder (" .. j.kept_dir .. ") stays on this computer: it has work that hasn't gone to the studio, or is only here.") or "")
     j.local_dir = local_dir
   elseif j.step == "ignore" then -- first, so the delete can't reach anyone
     -- (who holds it, asked again now you've said yes: two computers each confirmed on the other, both said yes, and the last full copies
     -- went to the bin. Review, 0.58.92)
-    if not copy.still_confirmed(j.places, copy.holders(copy.read_holds(j.root), song, copy.digest(j.files), j.user, gone_set(j.root))) then
+    if not copy.still_confirmed(j.places, copy.holders(copy.read_holds(j.root), song, copy.digest(j.files), j.user, gone_set(j.root)), j.cloud) then
       j.skipped[#j.skipped + 1] = song .. " (the other copy it was confirmed on is being deleted too: this one stays)"
       j.i, j.step = j.i + 1, "scan"
       return

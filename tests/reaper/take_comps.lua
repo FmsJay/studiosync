@@ -22,7 +22,10 @@ local function wav(path, hz)
   f:write(table.concat(parts)); f:close()
   return path
 end
-local SRC = { wav(dir .. "/takeA.wav", 220), wav(dir .. "/takeB.wav", 330), wav(dir .. "/takeC.wav", 440) }
+-- (in the room's media folder, as a sent take's file is: a band version's FILE outside the studio's media is emptied as it lands since 0.59.46,
+-- James's decision, so these must travel as {media...} tokens. Round 2 review)
+reaper.RecursiveCreateDirectory(dir .. "/media", 0)
+local SRC = { wav(dir .. "/media/takeA.wav", 220), wav(dir .. "/media/takeB.wav", 330), wav(dir .. "/media/takeC.wav", 440) }
 
 -- What plays at time t on a track: "file@position in it", or "-" for nothing (an empty take, or no item).
 local function plays(tr, t)

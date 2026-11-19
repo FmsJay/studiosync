@@ -561,10 +561,6 @@ local function speaks_for_name(proj, tr)
 end
 sync.speaks_for_name = speaks_for_name
 
--- ---- our own takes ------------------------------------------------------------------------------
--- The take-based sync's send half (own takes, sent-audio keys, the baseline marks) is gone: mirror sync sends everything since 0.32. Live sync
--- still calls mark_baseline at its start; it marks nothing now. Round 1 review, 0.59.45
-function sync.mark_baseline() return 0 end
 
 
 -- Render one take as the song prints it and post it as revision `rev` of `id`.
@@ -954,6 +950,12 @@ function sync.claim_tracks(cfg, song, room, names)
   return true
 end
 
+-- Hold my changes on, and this project's tempo map or markers differ from the last ones seen: the band's timeline waits (sync.apply).
+function sync.timeline_waits(proj)
+  if ext(proj, band.SECTION, "hold") == "" then return false end
+  local seen = ext(proj, band.SECTION, "timeline")
+  return seen ~= "" and seen ~= timeline_sig(proj)
+end
 -- Apply one event from whoever may make it. False means retry later. `dir`: the room's folder.
 function sync.apply(proj, ev, dir, can, me)
   if ev.type == "obj" then return require("mirror").receive(proj, ev, dir .. "/media", sync.local_mix, me) end -- mirror sync
@@ -962,10 +964,7 @@ function sync.apply(proj, ev, dir, can, me)
     -- as their change to an object you hold does. Applied, yours was replaced with no word and nothing was left to send on release. Live sync
     -- doesn't look at the timeline while holding, so "seen" is still the band's last. James: theirs waits. Cost: one signature per incoming
     -- timeline while on Hold. Round 1 review, 0.59.45)
-    if ext(proj, band.SECTION, "hold") ~= "" then
-      local seen = ext(proj, band.SECTION, "timeline")
-      if seen ~= "" and seen ~= timeline_sig(proj) then return false end
-    end
+    if sync.timeline_waits(proj) then return false end
     if tempo_sig(ev.tempo) ~= tempo_sig(band.capture_tempo(proj)) then require("mirror").tempo_changed(proj) end
     sync.audio_follow_tempo(proj)
     band.apply_tempo(proj, ev.tempo or {})
@@ -1088,8 +1087,23 @@ function sync.seen_mine(cc, looked_cc, now, looked_at) return cc == looked_cc or
 sync.loading = {} -- tostring(proj) -> true until its first catch-up is done
 sync.LOAD_BUDGET, sync.BUDGET = 1.0, 0.25
 local peaks_due = {}
+-- A change from a newer StudioSync: a kind this one doesn't know, or a newer file format. Pure.
+sync.KNOWN = { obj = true, timeline = true, start = true, stop = true, note = true, like = true, driver = true, shift = true, solo = true }
+function sync.too_new(ev)
+  return not sync.KNOWN[ev.type] or (tonumber(ev.format) or 0) > band.FORMAT
+end
+sync.version_looked = {} -- proj -> true: its skipped changes were looked at for this version
 function sync.receive(proj, cfg, song, room, can)
   local pk = tostring(proj)
+  -- (changes skipped for good (unreadable, failed five times) are tried once more when StudioSync's version changes: a newer version may read
+  -- them. Only in a project with any, so nothing is written otherwise. Round 2 review, 0.59.46)
+  if not sync.version_looked[pk] then
+    sync.version_looked[pk] = true
+    if #sync.skipped(proj) > 0 and ext(proj, band.SECTION, "skipped for") ~= band.VERSION then
+      setext(proj, band.SECTION, "skipped for", band.VERSION)
+      sync.retry_skipped(proj)
+    end
+  end
   if peaks_due[pk] and reaper.EnumProjects(-1) == proj and reaper.GetPlayStateEx(proj) == 0 then -- (an action works on the tab in front)
     peaks_due[pk] = nil
     reaper.Main_OnCommand(40047, 0) -- Peaks: Build any missing peaks
@@ -1212,7 +1226,7 @@ function sync.receive(proj, cfg, song, room, can)
   sync.ev_cache[dir] = kept
   local t0, budget_out = reaper.time_precise(), false -- (and a quarter second of applying per pass, a second while loading: the rest next pass)
   require("mirror").index_for(proj)
-  local applied, done, undo_open = 0, {}, false
+  local applied, done, undo_open, late_point = 0, {}, false, false
   sync.backlog = false
   local rdir = sync.room_dir(cfg, song, room)
   for _, ev in ipairs(pending) do
@@ -1221,6 +1235,11 @@ function sync.receive(proj, cfg, song, room, can)
     if sync.OLD_TYPES[ev.type] then
       setext(proj, sync.APPLIED, ev.id, "1")
       if not sync.old_types_said then sync.old_types_said = true; band.log("skipped changes from " .. tostring(ev.user) .. "'s older StudioSync (before 0.32.0): they should update") end
+    elseif sync.too_new(ev) then
+      -- (a kind of change or a format this version doesn't know: left unapplied for the version that does, not marked done, so it lands once
+      -- this computer updates. Set aside like a change waiting on a claim, so it isn't counted as "still to come". Round 2 review, 0.59.46)
+      sync.deferred[ev.id] = true
+      if not sync.too_new_said then sync.too_new_said = true; band.log(tostring(ev.user) .. " sent a change this StudioSync doesn't know yet: update StudioSync and it lands") end
     elseif obj and not readable(ev) then
       sync.skip(proj, ev, "StudioSync can't read it") -- malformed (a newer or damaged file): skipped, once, without stopping the rest
       band.log("skipped a change from " .. tostring(ev.user) .. " that StudioSync can't read (" .. tostring(ev.id) .. ")")
@@ -1250,11 +1269,19 @@ function sync.receive(proj, cfg, song, room, can)
       -- pass, so the handover's edits and tempo change never applied): log it and move on
       -- (whether it lands, inside the same pcall: wins and merge_for read the event too, and an error there stopped the pass with an undo
       -- block open. 0.59.14, review)
+      -- (no undo block for a change that waited last pass, or a timeline that waits now: the block opened before apply said it waits, and closed
+      -- named whatever happened, an empty undo point every pass while a recording arrived, a part was open in the MIDI editor or Hold kept a
+      -- change. Each changed the project's count (a full look and a 2 s pause followed), and on top of REAPER's list sent Ctrl+Z StudioSync's
+      -- way. One that waited and lands now gets its point after: below. Cost: one table entry per waiting change. Round 2 review, 0.59.46)
+      local waited = sync.waited[ev.id]
       local ok, res = pcall(function()
         local lands = not obj or m.wins(proj, ev.oid, ev.rev or 0, m.order_of(ev)) or m.merge_for(proj, ev, sync.room_dir(cfg, song, room)) ~= nil -- (or it's merged in)
-        if lands and not undo_open then reaper.Undo_BeginBlock2(proj); undo_open = true end
+        if ev.type == "timeline" and sync.timeline_waits(proj) then lands = false end
+        if lands and not waited and not undo_open then reaper.Undo_BeginBlock2(proj); undo_open = true end
         return sync.apply(proj, ev, sync.room_dir(cfg, song, room), can, cfg.user)
       end)
+      if ok and res == false then sync.waited[ev.id] = true
+      elseif ok and res and waited then sync.waited[ev.id], late_point = nil, true end
       if not ok then
         sync.failed[ev.id] = (sync.failed[ev.id] or 0) + 1
         if not obj or sync.failed[ev.id] >= 5 then
@@ -1293,7 +1320,12 @@ function sync.receive(proj, cfg, song, room, can)
     end
     if next(orph) == nil then mirror.orphaned[tostring(proj)] = nil end
   end
-  if undo_open then reaper.Undo_EndBlock2(proj, "StudioSync: changes from the others", -1) end
+  if mirror.heal_due[pk] and not budget_out then -- (an edit landed over a deletion held here: mirror.receive. Round 2 review, 0.59.46)
+    mirror.heal_due[pk] = nil
+    pcall(mirror.heal, proj, rdir, sync.local_mix)
+  end
+  if undo_open then reaper.Undo_EndBlock2(proj, "StudioSync: changes from the others", -1)
+  elseif late_point then reaper.Undo_OnStateChange2(proj, "StudioSync: changes from the others") end -- (a change that waited, landed: its point now)
   if sync.loading[pk] and not budget_out then
     sync.loading[pk] = nil
     peaks_due[pk] = true
@@ -1308,9 +1340,6 @@ end
 
 -- ---- status receipts ----------------------------------------------------------------------------
 
--- What this project holds of the take-based sync: nothing since its takes stopped (band.set_take_state is never called), so always empty. Kept
--- for Live sync's fingerprint and the status receipt, which still read it. Round 1 review, 0.59.45
-function sync.holdings() return {} end
 
 -- Files already applied or set aside, per project and events folder: each pass looked every one of thousands up in the project again
 -- (review, 0.58.53). Only ever grows while the project is open: applied stays applied (sync.forget_trimmed drops only files that are gone).
@@ -1381,6 +1410,7 @@ function sync.pending_events(proj, cfg, song, room)
   return n
 end
 sync.ev_cache = {} -- events dir -> { file -> decoded event }, for the files still waiting (sync.receive)
+sync.waited = {} -- event id -> true: its apply said "later" last pass (no undo block is opened for it again: sync.receive)
 
 -- Events refused for now (authority not synced here yet): retried until 10 minutes old. And the room's driver
 -- changes, read once and then kept up to date from incoming events: { [id] = { time, user } }.

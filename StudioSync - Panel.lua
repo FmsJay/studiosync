@@ -7,6 +7,8 @@ package.path = dir .. "/lib/?.lua;" .. package.path
 local band = require("band")
 band.note_start(dir) -- (was all of this copy here as it started? band.started_partial. Full review, 0.59.44)
 if require("fromfolder").handoff(debug.getinfo(1, "S").source) then return end -- (an old copy's button or key: the copy this computer runs from now. 0.59.24)
+-- (every module loaded now, as approved: one first needed mid-session after its file changed was refused by the code check. James, Round 2 review, 0.59.46)
+if band.preload then band.try("band.preload", band.preload, dir) end
 band.WHO = "panel" -- (which script a line in the log file came from)
 local sync = require("sync")
 local recall = require("recall")
@@ -100,7 +102,18 @@ end
 -- button itself starts it (there was a Start button beside it). `can_start`: off, and this tab may sync. -> clicked.
 -- (InvisibleButton leaves keyboard navigation out unless asked: the switches, pills and icons drawn this way couldn't be reached from the
 -- keyboard. ReaImGui 0.10 has the flag; 0 where it doesn't. Round 1 review, 0.59.45)
-ui.NAV = ImGui.ButtonFlags_EnableNav or 0
+do -- (through pcall: ReaImGui's compatibility layer throws for a name it doesn't have, so `or 0` alone never ran. Round 2 review, 0.59.46)
+  local ok, v = pcall(function() return ImGui.ButtonFlags_EnableNav end)
+  ui.NAV = ok and v or 0
+end
+-- The studio's debug mode is on (lib/debugmode.lua on_any: the studio in front, else any here; it looks every 5 s): -> the notice, or nil. Shown as a
+-- "Debug" pill in the project's bar and, with no project open, the lobby's (the computer's part is collected at quit then too). (Round 2 review, 0.59.46)
+function ui.debug_notice()
+  local dm = require("debugmode")
+  local ok, name, notice = pcall(dm.on_any, cfg)
+  if ok and name then return notice or ("Debug mode is on in " .. tostring(name) .. ".") end
+end
+function ui.debug_pill(notice, h) pill("Debug", YELLOW, DARK, h); ImGui.SetItemTooltip(ctx, notice) end
 function ui.sync_button(label, colour, running, can_start, h)
   local dl = ImGui.GetWindowDrawList(ctx)
   local x, y = ImGui.GetCursorScreenPos(ctx)
@@ -504,9 +517,8 @@ local function refresh()
   can, who = sync.authority(cfg, b.song, b.room, view.session)
   require("people").mine(cfg) -- (your colour, the same in every studio you're in: lib/people.lua)
   local here = false -- the driver is someone else, and they're here
-  local pres = require("presence") -- (who's here by the rule Live sync enforces, with its clock allowance, where there is one. Round 1 review, 0.59.45)
-  if pres.here then for _, u in ipairs(pres.here(cfg, b.song, b.room, 45)) do if u == view.driver then here = true end end
-  else for _, r in ipairs(view.rows) do if r.name == view.driver and r.age < 45 then here = true end end end
+  -- (who's here by the rule Live sync enforces, with its clock allowance. Round 1 review, 0.59.45)
+  for _, u in ipairs(require("presence").here(cfg, b.song, b.room, 45)) do if u == view.driver then here = true end end
   if here and view.driver ~= cfg.user and reaper.GetExtState(band.SECTION, "alone " .. tostring(proj)) == "" then
     local mine = 0
     for _, c in pairs(who.tracks) do if c.user == cfg.user then mine = mine + 1 end end
@@ -594,7 +606,7 @@ local function section_sync()
     -- already on disk (an update, or a bandmate's folder install)? Then only this running panel is old
     -- (read once in 3 s, not every frame while a bandmate runs a newer version: review, 0.58.87)
     if not ui.disk_at or reaper.time_precise() - ui.disk_at > 3 then
-      ui.disk_at, ui.disk_ver = reaper.time_precise(), (band.version_on_disk and band.version_on_disk(dir) or (band.read(dir .. "/lib/band.lua") or ""):match('VERSION = "([^"]+)"'))
+      ui.disk_at, ui.disk_ver = reaper.time_precise(), band.version_on_disk(dir)
     end
     local disk = ui.disk_ver
     if disk == view.newer then
@@ -1716,7 +1728,7 @@ local function home_who()
         offline = "Not seen for over a minute.", ["no receipt"] = "Has sent takes, but never ran Live sync here." })[p.state] or p.state)
       if p.recording then pill_after("recording", RED)
       elseif p.playing and p.state ~= "offline" then pill_after("playing", ACCENT, 0xFFFFFFFF) end
-      if p.driving then pill_after("driving", ACCENT, 0xFFFFFFFF); ImGui.SetItemTooltip(ctx, "They drive: play, stop and the place in the song follow them. Who changes what: Who can edit.") end
+      if p.driving then pill_after("driving", ACCENT, 0xFFFFFFFF); ImGui.SetItemTooltip(ctx, "They drive: whoever follows the driver plays, stops and moves with them. Who changes what: Who can edit.") end -- (Round 2 review, 0.59.46)
       ui.live_icons(p)
       if p.armed and #p.armed > 0 then ImGui.TextDisabled(ctx, "armed: " .. table.concat(p.armed, ", "))
       elseif not wide then ImGui.TextDisabled(ctx, "nothing armed") end -- (docked, the line went to saying nothing)
@@ -1813,7 +1825,7 @@ end
 function ui.driver_rows()
   if view.driver ~= cfg.user then -- (on its own line: beside the switch it moved it about. James, 0.59.3)
     if ImGui.SmallButton(ctx, "Take control") then action("Take control") end
-    ImGui.SetItemTooltip(ctx, tostring(view.driver) .. " is driving. Take control and " .. require("live").driving(who and who.mode or sync.DEFAULT_MODE).take .. " (tell them first).")
+    ImGui.SetItemTooltip(ctx, tostring(view.driver) .. " is driving. Tell them first, then take control: " .. require("live").driving(who and who.mode or sync.DEFAULT_MODE).take .. ".")
   end
   local on = reaper.GetExtState(band.SECTION, "follow driver") ~= ""
   local ch, v = switch_row("##followdriver", "Always follow the driver", on, "Your playhead, view and mix follow the driver: they press play, you play along, hearing what they hear. Only they record.")
@@ -2318,7 +2330,7 @@ function ui.settings_you()
     ImGui.SameLine(ctx)
     if ImGui.SmallButton(ctx, "Change name") then
       local ok, name = reaper.GetUserInputs("StudioSync: your name", 1, "Your name (collaborators see it),extrawidth=120", cfg.user)
-      local why = ok and band.name_problem and band.name_problem(name) -- (a name in another alphabet did nothing, silently. Round 1 review, 0.59.45)
+      local why = ok and band.name_problem(name) -- (a name in another alphabet did nothing, silently. Round 1 review, 0.59.45)
       if why then band.msg(why) end
       name = ok and not why and band.clean(name) or ""
       local mine, taken = require("services").my_device_id(), nil
@@ -2334,7 +2346,13 @@ function ui.settings_you()
         for _, g in ipairs(band.bands()) do
           for _, f in ipairs(band.files(g.root .. "/_band/devices", ".json")) do
             local other = f:sub(1, -6)
-            if tag(other) == tag(name) and other:lower() ~= name:lower() and other:lower() ~= cfg.user:lower() then taken, near = g.name, other end
+            -- (and one differing only by case: on Linux the file lookup above doesn't find "james" for "James", and the two shared one devices, claims and
+            -- colour file on every Windows and Mac computer. Unless it's this computer's own. Round 2 review, 0.59.46)
+            local same = other:lower() == name:lower()
+            if tag(other) == tag(name) and other:lower() ~= cfg.user:lower() and (not same or other ~= name) then
+              local d = same and band.read_json(g.root .. "/_band/devices/" .. f)
+              if not same or (type(d) == "table" and d.device and d.device ~= mine) then taken, near = g.name, other end
+            end
           end
         end
       end
@@ -2900,9 +2918,8 @@ function F.top_bar()
     ImGui.SetItemTooltip(ctx, "Switch Hold my changes off: everything you changed goes to the others.")
   end
   do -- (the studio's debug mode is on: said where everyone sees it, what it collects on hover. James, Round 1 review, 0.59.45. on_any looks every 5 s)
-    local dm = require("debugmode")
-    local okd, name, notice = pcall(dm.on_any or function() end, cfg)
-    if okd and name then at_row("Debug"); pill("Debug", YELLOW, DARK, fh); ImGui.SetItemTooltip(ctx, notice or ("Debug mode is on in " .. tostring(name) .. ".")) end
+    local notice = ui.debug_notice()
+    if notice then at_row("Debug"); ui.debug_pill(notice, fh) end
   end
   do -- two people armed on one track: both record onto it at once (review item 33)
     local mine, both = {}, {}
@@ -2938,7 +2955,7 @@ function F.top_bar()
     local m = (who and who.mode) or sync.DEFAULT_MODE
     local said = ui.MODE_INFO[1][3]
     for _, x in ipairs(ui.MODE_INFO) do if x[1] == m then said = x[3] end end
-    ImGui.SetItemTooltip(ctx, "The driver's play, stop and place in the song go to everyone. Who changes what:\n" .. said)
+    ImGui.SetItemTooltip(ctx, "The driver's play, stop and place in the song go to whoever follows the driver. Who changes what:\n" .. said)
   end
   -- (no buttons for these: Ctrl+Z and Ctrl+Shift+Z do it, and Edit > Undo: Live sync steps in. The radial menu still asks for them here.)
   local function undo_redo(redo) -- (lib/undo.lua: the same as the StudioSync - Undo / Redo actions, but always asks)
@@ -3086,14 +3103,9 @@ function F.bars(t)
   end
   tools.toast_seen = true -- (opening the panel doesn't replay the old newest line)
   local saying = tools.toast_line and reaper.time_precise() - tools.toast_at < 6 and tools.toast_line or nil
-  if toast_place and toast_place.over then
-    -- (from where the bar left off, under the page tabs: at y0 + fh it covered the tabs for 6 s after each message, in the default 560 px window.
-    -- Round 1 review, 0.59.45)
-    local tx, ty = toast_place.x, select(2, ImGui.GetCursorScreenPos(ctx)) + 2
-    toast_place.y = ty
-    if saying then ImGui.DrawList_AddRectFilled(ImGui.GetForegroundDrawList(ctx), tx - 6, ty - 3, tx + toast_place.w + 6, ty + ImGui.GetTextLineHeight(ctx) + 5, theme.BG, 4) end
-  end
-  tools.toast_show(ctx, ImGui, saying, toast_place)
+  -- (narrow, with no room in the top bar, it's drawn below the bars, at the end of this: under the page tabs it lay over the bars' first row, where
+  -- Let them in and Accept sit, which are what a toast announces. Round 2 review, 0.59.46)
+  if not (toast_place and toast_place.over) then tools.toast_show(ctx, ImGui, saying, toast_place) end
   local bars_at = ImGui.GetCursorPosY(ctx)
   ImGui.SetNextWindowSizeConstraints(ctx, 0, 0, 100000, (wide or wh < 440) and (ImGui.GetFrameHeightWithSpacing(ctx) * 3 + 2) or wh * 0.25) -- (3 rows: review, 0.59.14)
   local bars_open = ImGui.BeginChild(ctx, "bars", 0, 0, ImGui.ChildFlags_AutoResizeY)
@@ -3162,6 +3174,12 @@ function F.bars(t)
   if not bars_ok and bars_said ~= tostring(bars_err) then bars_said = tostring(bars_err); reaper.ShowConsoleMsg("StudioSync panel: " .. bars_said .. "\n") end
   local _, bars_h = ImGui.GetItemRectSize(ctx)
   if bars_h < 6 then ImGui.SetCursorPosY(ctx, bars_at) end -- (nothing in them: no gap. An empty child is still 4 px tall, and 8 more of spacing)
+  if toast_place and toast_place.over and saying then
+    local tx, ty = toast_place.x, select(2, ImGui.GetCursorScreenPos(ctx))
+    toast_place.y = ty
+    ImGui.DrawList_AddRectFilled(ImGui.GetForegroundDrawList(ctx), tx - 6, ty - 3, tx + toast_place.w + 6, ty + ImGui.GetTextLineHeight(ctx) + 5, theme.BG, 4)
+    tools.toast_show(ctx, ImGui, saying, toast_place)
+  end
 end
 function F.page(t)
   local wh, compact, fh, nav_item, y0, undo_redo, toast_place = t.wh, t.compact, t.fh, t.nav_item, t.y0, t.undo_redo, t.toast_place
@@ -3294,6 +3312,8 @@ function ui.frame_lobby()
     ImGui.SameLine(ctx, 0, 12)
     ImGui.SetCursorPosY(ctx, y0)
   end
+  local dnotice = ui.debug_notice()
+  if dnotice then ui.debug_pill(dnotice, fh); ImGui.SameLine(ctx, 0, 12); ImGui.SetCursorPosY(ctx, y0) end
   ImGui.PushStyleVar(ctx, ImGui.StyleVar_SelectableTextAlign, 0.5, 0.5)
   for i, p in ipairs(ui.pages()) do
     if p[1] ~= "Groups" and not (none and p[1] == "Projects") then
@@ -3399,7 +3419,7 @@ local seen_disk, disk_at = nil, 0
 local function updated()
   if reaper.time_precise() - disk_at < 3 then return false end
   disk_at = reaper.time_precise()
-  local disk = (band.version_on_disk and band.version_on_disk(dir) or (band.read(dir .. "/lib/band.lua") or ""):match('VERSION = "([^"]+)"'))
+  local disk = band.version_on_disk(dir)
   local ready = disk and disk ~= band.VERSION and disk == seen_disk and band.update_ok(dir, disk) -- (from a shared folder, once you said yes: Autostart asks)
   seen_disk = disk
   ready = ready or (disk and band.started_partial(dir)) -- (started on a part-arrived copy, whole now: 0.59.44)
@@ -3566,19 +3586,36 @@ end
 
 local frame_seen
 local loop
--- (an error stops the panel, as ever, but first goes to the log file with where it happened: REAPER's own box was all there was. 0.58.86)
-local function guarded(fn) return function() local ok, err = xpcall(fn, debug.traceback); if not ok then band.log_error("the panel", err); error(err, 0) end end end
+-- An error in a pass goes to the log file with where it happened, shows in the panel, and the panel carries on half a second later. It rethrew,
+-- and REAPER's error box held every script on an unattended computer for hours (Chilio's Mac). After 30 in a row it stops quietly, saying so.
+-- (James, Round 2 review, 0.59.46)
+local function guarded(fn) return function()
+  local ok, e = xpcall(fn, debug.traceback)
+  if ok then ui.loop_fails = 0; return end
+  band.log_error("the panel", e)
+  err = tostring(e):match("^[^\n]*")
+  ui.loop_fails = (ui.loop_fails or 0) + 1
+  if ui.loop_fails >= 30 then return band.log("the panel stopped: an error kept coming back (the log file has it). Open it again from the toolbar or the Actions list") end
+  local at = reaper.time_precise()
+  local function wait() if reaper.time_precise() - at < 0.5 then return reaper.defer(wait) end; loop() end
+  reaper.defer(wait)
+end end
 local frame_said -- (the last frame error said in the console)
 local min_look_at = -math.huge -- (shrunk to its box: when the project in front last changed under it)
 local function loop_body()
-  if updated() or reload_now then -- reload in place: relaunching itself as an action is ignored (or asks to terminate instances)
-    band.log("the panel reloaded for StudioSync " .. tostring(seen_disk))
-    restarting = true
-    STUDIOSYNC_PANEL_RELOAD = true -- (the next one keeps the box or strip as it is)
-    pcall(require("colours").put_back_all) -- (a look being tried doesn't outlive the panel's Lua)
-    if band.reload_or_say(dir, "StudioSync - Panel.lua", seen_disk) then return end
-    restarting, STUDIOSYNC_PANEL_RELOAD, reload_now = false, nil, false -- (it couldn't start: this one carries on. 0.59.44)
-  end
+  -- reload in place: relaunching itself as an action is ignored (or asks to terminate instances). Nothing while anything records: it waits, and so
+  -- does a Dock or window-frame request (reload_now isn't dropped), with nothing said or put back until it's tried. It said "reloaded" and put a
+  -- tried look back every 3 s through a take. (lib/live.lua live.reload. Round 2 review, 0.59.46)
+  if (reload_now or updated()) and require("live").reload(dir, "StudioSync - Panel.lua", seen_disk, nil, function()
+      restarting = true
+      STUDIOSYNC_PANEL_RELOAD = true -- (the next one keeps the box or strip as it is)
+      -- (a look being tried doesn't outlive the panel's Lua. Only if colours is loaded: the require ran outside the pcall, under the old code
+      -- check, and a changed colours.lua not loaded yet stopped the panel with an error box that held every script on Chilio's Mac for three
+      -- hours. Round 2 review, 0.59.46)
+      if package.loaded.colours then pcall(package.loaded.colours.put_back_all) end
+    end, "the panel reloaded for StudioSync " .. tostring(seen_disk or band.VERSION), function()
+      restarting, STUDIOSYNC_PANEL_RELOAD, reload_now = false, nil, false -- (it couldn't start: this one carries on. 0.59.44)
+    end) then return end
   -- (frames that never end, as for a panel opened while ReaPack's Transaction report is up, pile every frame's drawing up: 7.4 GB in 12 minutes
   -- till Linux killed REAPER. So nothing is drawn while the count stands still; it moves on every pass otherwise. Linux stress test, 0.58.77)
   local fc = ImGui.GetFrameCount(ctx)

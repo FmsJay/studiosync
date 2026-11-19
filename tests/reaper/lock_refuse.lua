@@ -20,7 +20,12 @@ local ok, err = pcall(function()
   local function run_live()
     reaper.set_action_options = nil -- (Live sync's own action options would land on the test runner's)
     reaper.DeleteExtState(band.SECTION, "elsewhere " .. tostring(pa), false)
+    -- ("run from" cleared meanwhile, as tests/reaper/from_folder.lua does: on a computer that runs from a studio's folder, Live sync's first act
+    -- handed over to that copy, which was already running for another tab, so this copy never reached its refusal. Round 2 review, 0.59.46)
+    local run = reaper.GetExtState(band.SECTION, "run from")
+    reaper.DeleteExtState(band.SECTION, "run from", true)
     local got, e = pcall(dofile, repo .. "/StudioSync - Live sync.lua")
+    if run ~= "" then reaper.SetExtState(band.SECTION, "run from", run, true) end
     reaper.set_action_options = opts
     return got, e
   end

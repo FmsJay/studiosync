@@ -128,7 +128,7 @@ function undo.step(proj, cfg, b, redo, opts)
         " changed it after that: their change to it goes back too.") or ""), "StudioSync", 4) ~= 6 then return nil end
   end
   local can, who = sync.authority(cfg, b.song, b.room, band.read_json(band.session_path(cfg, b.song)))
-  local o = { can = can, mode = who and who.mode, local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1" }
+  local o = { can = can, mode = who and who.mode, driver = who and who.driver, is_claimed = who and who.is_claimed, local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1" }
   -- (the whole act, as Restore's rows: it could land on a print swapped in the same second, and nothing you'd hear went back)
   local plan, ids = mirror.plan_undo_moment(all, i)
   -- (every change of the act on each restore event, only when there are several: the next presses redid the same restore. A few bytes an

@@ -48,7 +48,7 @@ assert(not removal.am_guest("/st"), "deleted from the owner's or an admin's comp
 
 -- the guest's ignore block
 local songsync = require("songsync")
-local text = songsync.merge("", { Lantern = true }, nil, nil, nil, { me = "Gus", device = my_id })
+local text = songsync.merge("", { Lantern = true }, nil, nil, nil, { me = "Gus", device = my_id, limited = true })
 local function at(line) local n = 0; for l in (text .. "\n"):gmatch("(.-)\n") do n = n + 1; if l == line then return n end end end
 assert(at("/_tools") and at("/_tools") < at("!/_*"), "a guest without a list doesn't sync the studio's copy of StudioSync")
 assert(at("!/_band/holds/Gus.json") < at("/_band/holds") and at("/_band/holds") < at("!/_*"), "others' holds left out, their own kept")
@@ -56,6 +56,8 @@ assert(at("!/_band/guest-access/GUESTID.json") < at("/_band/guest-access") and a
 local listed = songsync.merge("", nil, nil, { Lantern = true }, nil, { me = "Gus", device = my_id })
 local _, n = listed:gsub("\n/_tools\n", "")
 assert(n == 1, "a guest with a list: one /_tools line")
+assert(not songsync.merge("", { Lantern = true }, nil, nil, nil, { me = "Gus", device = my_id }):find("/_band/holds", 1, true),
+  "an every-project guest keeps the holds lists (Sync and exit goes by them: 0.59.46)")
 assert(not songsync.merge("", { Lantern = true }):find("/_tools", 1, true), "a member's block as before")
 
 -- a guest's computer doesn't move to the studio's copy
@@ -74,6 +76,7 @@ reaper.file_exists = function(p) return not p:find("%.git") end
 local moved = {}
 package.loaded.tools = { set_autostart = function(_, d) moved[#moved + 1] = d; return true end }
 band.sync_actions = function() end
+band.version_on_disk = function() return band.VERSION end -- (the copy it goes back to is as new: 0.59.46 never moves back to an older one)
 my_id = "GUESTID-XXXX"
 ext["run from"], ext["run from before"] = "/st/_tools/studiosync", "/rp"
 ff.tick("/st/_tools/studiosync")

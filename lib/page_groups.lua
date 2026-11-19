@@ -18,7 +18,7 @@ function pg.live_groups()
   for _, g in ipairs(band.bands()) do
     -- (a closed.json counts only from the owner's computer, as groups.tick has it: anyone could write one. Asked only when there is one.
     -- Round 1 review, 0.59.45)
-    local closed = reaper.file_exists(g.root .. "/_band/closed.json") and (not groups.closed_ok or groups.closed_ok(g.root))
+    local closed = reaper.file_exists(g.root .. "/_band/closed.json") and groups.closed_ok(g.root)
     if not groups.is_old(g.root) and not closed then list[#list + 1] = g end
   end
   lg, lg_at = list, reaper.time_precise()
@@ -60,8 +60,9 @@ function pg.start_button(env, label)
     ImGui.SetItemTooltip(ctx, "Make the studio, then on to its projects.") -- (its own: the panel's shared tip was Live sync's. Round 1 review, 0.59.45)
     ImGui.SameLine(ctx)
     if ImGui.Button(ctx, "Cancel") or ImGui.IsKeyPressed(ctx, ImGui.Key_Escape) then ImGui.CloseCurrentPopup(ctx) end
-    local problem = go and band.name_problem and band.name_problem(new_name) -- (another alphabet said only "Give it a name": Round 1 review, 0.59.45)
+    local problem = go and band.name_problem(new_name) -- (another alphabet said only "Give it a name": Round 1 review, 0.59.45)
     if problem then go, why_not = false, problem end
+    if go and pg.starting_syncthing() then go, why_not = false, "Starting Syncthing: press Start again in a few seconds." end
     if go then
       local root, why = require("services").new_band(env.cfg(), new_name)
       if root then
@@ -122,6 +123,7 @@ function pg.join_button(env)
     ImGui.EndDisabled(ctx)
     ImGui.SameLine(ctx)
     if ImGui.Button(ctx, "Cancel") or ImGui.IsKeyPressed(ctx, ImGui.Key_Escape) then ImGui.CloseCurrentPopup(ctx) end
+    if go and pg.starting_syncthing() then go, why_not = false, "Starting Syncthing: press Join again in a few seconds." end
     if go then
       local root, why = services.join_band(env.cfg(), code)
       if root then
@@ -150,21 +152,38 @@ local function beside(ctx, ImGui, label, gap)
   if ImGui.GetContentRegionAvail(ctx) < ImGui.CalcTextSize(ctx, label) + 36 then ImGui.NewLine(ctx) end
 end
 
+-- Syncthing has to run before a studio can be started or joined: started here if it isn't (Start a studio and Paste join code called its command
+-- line with it stopped, and showed its raw error; with no studio there was no card with a Start Syncthing). -> true when it had to be started, so
+-- the press waits a few seconds. (Round 2 review, 0.59.46)
+function pg.starting_syncthing()
+  local ok = require("services").ensure_syncthing()
+  if ok == "started" then pg.st_at = reaper.time_precise(); band.log("started Syncthing: it answers in a few seconds") end
+  return ok == "started"
+end
+-- This computer's Syncthing id; asked again every few seconds for half a minute after Syncthing was started here (it's otherwise asked every 5
+-- minutes, and Invite stayed greyed that long after Start Syncthing).
+function pg.my_id()
+  return require("services").my_device_id(pg.st_at ~= nil and reaper.time_precise() - pg.st_at < 30)
+end
+function pg.start_syncthing_button(ctx, ImGui, id)
+  if ImGui.SmallButton(ctx, "Start Syncthing##" .. id) then
+    local ok, why = require("services").ensure_syncthing()
+    if ok then pg.st_at = reaper.time_precise() end
+    band.log(ok == "started" and "started Syncthing: it answers in a few seconds" or ok and "Syncthing is running: it answers in a few seconds" or ("Syncthing: " .. tostring(why)))
+  end
+  ImGui.SetItemTooltip(ctx, "Starts Syncthing on this computer: it carries the studio's folder between your computers.")
+end
+
 local function invite_button(env, g, id)
   local ctx, ImGui = env.ctx, env.ImGui
-  local services = require("services")
-  local my_id = services.my_device_id()
+  local my_id = pg.my_id()
   ImGui.BeginDisabled(ctx, not my_id)
   if ImGui.SmallButton(ctx, "Invite a collaborator##" .. id) then require("tools").invite(my_id, band.info(g.root), ctx, ImGui) end
   ImGui.EndDisabled(ctx)
   ImGui.SetItemTooltip(ctx, my_id and require("tools").INVITE_TIP or "Waiting for Syncthing: it has to be running. Start Syncthing, beside this, starts it.")
   if not my_id then -- (with no project open there's no Health page, and every message sent people there: Round 1 review, 0.59.45)
     beside(ctx, ImGui, "Start Syncthing")
-    if ImGui.SmallButton(ctx, "Start Syncthing##" .. id) then
-      local ok, why = services.ensure_syncthing()
-      band.log(ok == "started" and "started Syncthing: it answers in a few seconds" or ok and "Syncthing is running: it answers in a few seconds" or ("Syncthing: " .. tostring(why)))
-    end
-    ImGui.SetItemTooltip(ctx, "Starts Syncthing on this computer: it carries the studio's folder between your computers.")
+    pg.start_syncthing_button(ctx, ImGui, id)
   end
   if my_id then -- (how long they stay is picked there; with a Tailscale token they join that too. 0.58.82)
     beside(ctx, ImGui, "Guest")
@@ -274,7 +293,15 @@ function pg.draw_groups(env)
       ImGui.TextDisabled(ctx, "A new studio is for different people, or a project of its own. For another project with the same people, share it in the studio you have.")
     end
   end
-  if #list == 0 then ImGui.TextDisabled(ctx, "You're not in a studio yet. Start one, or paste the join code someone sent you.") end
+  if #list == 0 then
+    ImGui.TextDisabled(ctx, "You're not in a studio yet. Start one, or paste the join code someone sent you.")
+    if not pg.my_id() then -- (no studio, so no card with the button: Round 2 review, 0.59.46)
+      ImGui.AlignTextToFramePadding(ctx)
+      ImGui.TextDisabled(ctx, "Syncthing isn't answering here: both need it running.")
+      ImGui.SameLine(ctx)
+      pg.start_syncthing_button(ctx, ImGui, "first")
+    end
+  end
   -- (a studio's name is StudioSync's: Rename changes it for everyone and leaves its folders as they are. This shows those. James, 0.59.8)
   local show_folders = reaper.GetExtState(band.SECTION, "show folder names") == "1"
   if #list > 0 then

@@ -174,10 +174,9 @@ function trim.run(cfg, song, room, days)
   end
   local cutoff = os.date("!%Y-%m-%dT%H:%M:%SZ", os.time() - days * 86400)
   -- (each major saved version with its map read from its file: the rows recall.list shares carry no map. Read only here, as trim is rare)
-  local points, rdir = {}, recall.dir(cfg, song, room)
+  local points = {}
   for i, p in ipairs(recall.list(cfg, song, room)) do
-    local st = trim.major(p) and band.read_json(rdir .. "/" .. p.file)
-    points[i] = setmetatable({ known = type(st) == "table" and st.known or nil }, { __index = p })
+    points[i] = setmetatable({ known = trim.major(p) and recall.known(cfg, song, room, p.file) or nil }, { __index = p }) -- (its sidecar: Round 2, 0.59.46)
   end
   local gone = trim.plan(evs, points, cutoff)
   if #gone == 0 then return 0 end

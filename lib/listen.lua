@@ -219,8 +219,9 @@ function listen.tick_one(cfg)
     local ok, m = pcall(band.json_decode, line)
     if ok and type(m) == "table" and tonumber(m.time) then last = math.max(last or 0, math.floor(tonumber(m.time))) end
   end
-  reaper.SetExtState(band.SECTION, "listen seen " .. cfg.root, seen, true)
-  if last then reaper.SetExtState(band.SECTION, since_key, tostring(last), true) end
+  -- (written only when they change: a persisted write rewrites REAPER's saved-state file, and this ran every 30-60 s. Round 2 review, 0.59.46)
+  if seen ~= reaper.GetExtState(band.SECTION, "listen seen " .. cfg.root) then reaper.SetExtState(band.SECTION, "listen seen " .. cfg.root, seen, true) end
+  if last and tostring(last) ~= since then reaper.SetExtState(band.SECTION, since_key, tostring(last), true) end
 end
 
 return listen

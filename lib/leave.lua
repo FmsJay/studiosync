@@ -39,15 +39,21 @@ function leave.ask_syncthing(cfg)
   return out
 end
 
--- Of the peers online, who has this project (their holds list, said again within copy.FRESH, names it). names: the peers' names; lists:
--- localcopy.read_holds; age: band.age. -> names. Pure. (Round 1 review, 0.59.45)
-function leave.holders(names, lists, song, fresh, age)
+-- Of the peers online, who has this project: their holds list (said again within copy.FRESH) names it, or they're in this room now (`here`: lower-cased
+-- names from presence.here; a holds list names a newly opened song only when its turn comes, up to minutes later). On a guest's computer
+-- (`guest`), which doesn't get the others' holds lists, every peer online counts, as before 0.59.45. Someone taken out (`gone`) never counts.
+-- names: the peers' names; lists: localcopy.read_holds; age: band.age. -> names. Pure. (Round 1 review, 0.59.45; here and guest, Round 2 review, 0.59.46:
+-- a guest's exit always read "Nobody else who has this project is online")
+function leave.holders(names, lists, song, fresh, age, here, guest, gone)
   local has = {}
   for _, l in ipairs(lists or {}) do
     if type(l.songs) == "table" and l.songs[song] and type(l.time) == "string" and age(l.time) < fresh then has[tostring(l.user):lower()] = true end
   end
+  for n in pairs(here or {}) do has[n] = true end
   local out = {}
-  for _, n in ipairs(names) do if has[tostring(n):lower()] then out[#out + 1] = n end end
+  for _, n in ipairs(names) do
+    if (guest or has[tostring(n):lower()]) and not (gone and gone[n]) then out[#out + 1] = n end
+  end
   return out
 end
 
@@ -97,6 +103,10 @@ end
 -- went out during it (James, Round 1 review, 0.59.45: the save took "close without saving" away from your own unsaved work).
 -- st: { n, clean }, kept by the caller; n: changes applied this pass; dirty: the project had unsaved changes just before they were applied;
 -- stopped: nothing playing. The caller sets st.clean = false when something of yours goes out. -> true to save now. Pure.
+-- Something of yours went out (`sent`) or waits to (`waiting`): no auto-save over this batch. (Round 1 review, 0.59.45; extracted to be tested, Round 2)
+function leave.mine_went_out(st, sent, waiting)
+  if (sent or 0) > 0 or (waiting or 0) > 0 then st.clean = false end
+end
 function leave.autosave(st, n, dirty, stopped)
   if n > 0 then
     if (st.n or 0) == 0 then st.clean = not dirty end
@@ -128,6 +138,12 @@ function leave.start(proj, cfg, b)
   -- Full review, 0.59.44)
   local held = select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) ~= ""
   leave.job = { proj = proj, cfg = cfg, b = b, step = held and "hold?" or "save", since = reaper.time_precise(), words = "Saving", open = true }
+  -- (a backup or autosave never syncs: no saving, sending or Start sync for it. Its Start sync sent an old copy's state to everyone with no
+  -- question. Round 2 review, 0.59.46)
+  local okc, copy = pcall(require("rooms").is_copy, proj, cfg, b)
+  if okc and copy then
+    leave.job.step, leave.job.problem = "done", "This is a backup or autosave, not your project for it: nothing of it syncs. Close it as you like."
+  end
 end
 -- Live sync off in the send step: start it for that tab (as the sync pill does; by name, so it needn't come to the front), then back to sending.
 local function start_sync(j, dir)
@@ -169,6 +185,12 @@ function leave.tick()
     local beat = tonumber(reaper.GetExtState(band.SECTION, "live " .. tostring(j.proj)))
     -- (not the end: the box offers Start sync and waits. It said "Press Start" with no Start to press, behind a modal box. Round 1 review, 0.59.45)
     if not beat or now - beat > 10 then
+      -- (open and syncing in another tab: this one is a second copy; starting it only said "Starting Live sync..." for 15 s and asked again.
+      -- Round 2 review, 0.59.46)
+      if band.synced_elsewhere(j.proj) then
+        j.step, j.problem = "done", "This project is open and syncing in another tab: this one is a second copy, and nothing in it syncs. Use Sync and exit there."
+        return
+      end
       if not j.started_at or now - j.started_at > 15 then j.sync_off, j.words = true, "Live sync isn't running in this tab" end
       return
     end
@@ -194,7 +216,13 @@ function leave.tick()
       local names = {}
       for _, p in ipairs(j.st.peers) do names[#names + 1] = p.name end
       local ok, lists = pcall(require("localcopy").read_holds, j.cfg.root)
-      j.holders = leave.holders(names, ok and lists or {}, j.b.song, require("localcopy").FRESH or (3 * 86400), band.age)
+      local here = {}
+      local okh, in_room = pcall(require("presence").here, j.cfg, j.b.song, j.b.room, 90)
+      for _, u in ipairs(okh and in_room or {}) do here[tostring(u):lower()] = true end
+      local okg, guest = pcall(require("removal").am_guest, j.cfg.root)
+      local okr, gone = pcall(require("removal").gone, j.cfg.root)
+      j.holders = leave.holders(names, ok and lists or {}, j.b.song, require("localcopy").FRESH or (3 * 86400), band.age, here, okg and guest == true,
+        okr and type(gone) == "table" and gone or nil)
     end
     if droot and #j.holders == 0 then
       j.words = "Nobody else who has this project is online: copying to " .. j.drive

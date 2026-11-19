@@ -129,7 +129,7 @@ function fxfiles.safe(f)
   if fxfiles.private(p) then return false end
   -- (nor a hidden file's name (".env", ".bashrc"), nor anywhere in REAPER's own folder (scripts, Startup, reaper-kb.ini's neighbours). Security,
   -- Round 1 review, 0.59.45)
-  if p:match("[^/]+$"):sub(1, 1) == "." then return false end
+  if (p:match("[^/]+$") or ""):sub(1, 1) == "." then return false end -- (a path ending in "/" raised, and the whole chain was skipped. Round 2, 0.59.46)
   local res = reaper and reaper.GetResourcePath and fxfiles.key(reaper.GetResourcePath()):gsub("/+$", "") .. "/"
   if res and res ~= "/" and low:sub(1, #res) == res then return false end
   local ext = p:match("%.([%w]+)$")

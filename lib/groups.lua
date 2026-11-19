@@ -18,15 +18,28 @@ end
 -- the owner's or an admin's computer wrote it (lib/trust.lua); one from anyone else leaves the last trusted values standing (ExtState "trusted
 -- settings <root>", kept). Syncthing not saying yet, or a studio from before owners: band.json as it is, as before. Read at most every 5 s.
 local SETTINGS = { "alerts", "alerts_server", "call", "sonobus_server", "tailnet", "tailscale_only", "colours", "debug", "updates" } -- ("updates": lib/fromfolder.lua, 0.59.25)
-local trusted_at = {}
-local function pinned(root) local ok, p = pcall(require("trust").pins, root); return ok and p ~= nil end
+-- (Round 2 review, 0.59.46: Syncthing is asked again only when band.json or this computer's pins changed, or the last answer was "not known",
+-- and the kept settings are written only when they differ: it was a blocking call and a saved-state write every 5 s per script and studio,
+-- and the Debug pill made the panel do it for every studio. -> the settings, and false when they're held back only because nothing is checked
+-- yet (groups save leaves the file's own values then).)
+local trusted_at, trusted_asked = {}, {}
+local function pins_of(root) local ok, p = pcall(require("trust").pins, root); return ok and p or nil end
+local function pinned(root) return pins_of(root) ~= nil end
 function groups.trusted(root)
   local c, now = trusted_at[root], reaper.time_precise() or 0
-  if c and now - c.at < 5 then return c.j end
+  if c and now - c.at < 5 and now >= c.at then return c.j, c.sure end
   local j = json_of(root)
-  local okt, ok = pcall(require("trust").from_manager_file, root, "_band/band.json")
+  local p = pins_of(root)
+  local sig = band.json_encode(j) .. "\0" .. (p and band.json_encode(p) or "")
+  local a = trusted_asked[root]
+  local okt, ok
+  if a and a.sig == sig and a.ok ~= nil then okt, ok = true, a.ok
+  else
+    okt, ok = pcall(require("trust").from_manager_file, root, "_band/band.json")
+    trusted_asked[root] = { sig = sig, ok = okt and ok or nil }
+  end
   local key = "trusted settings " .. band.norm(root):lower()
-  local out = {}
+  local out, sure = {}, true
   local stored = band.ext_json(band.SECTION, key)
   -- (not known yet, Syncthing slow or held back: the last checked settings, not the file as anyone wrote it. Review, 0.58.98)
   if okt and ok == false then
@@ -37,13 +50,13 @@ function groups.trusted(root)
     -- (an owner named and nothing checked yet here: nothing, until Syncthing says who wrote it. Believed as written, a member could switch a new
     -- joiner to folder code in a studio that never chose it. The inviter writes band.json again at Let in, so the answer comes within seconds.
     -- A studio from before owners: as written, as before. Round 1 review, 0.59.45)
-    out = {}
+    out, sure = {}, false
   else
     for _, k in ipairs(SETTINGS) do out[k] = j[k] end
-    if okt and ok == true then band.set_ext_json(band.SECTION, key, out, true) end
+    if okt and ok == true and band.json_encode(out) ~= band.json_encode(stored or false) then band.set_ext_json(band.SECTION, key, out, true) end
   end
-  trusted_at[root] = { at = now, j = out }
-  return out
+  trusted_at[root] = { at = now, j = out, sure = sure }
+  return out, sure
 end
 
 local seen = {}
@@ -85,14 +98,16 @@ function groups.new_sonobus_secret(root)
   save(root, function(j) j.sonobus = band.secret(24) end)
 end
 
-save = function(root, change)
+save = function(root, change, owner_said)
   trusted_at[root] = nil -- (a setting changed here shows at once)
   local info, j = band.info(root), json_of(root)
   j.name, j.id, j.drive = info.name, info.id, info.drive
   -- (the outward settings as last trusted, not as the file has them: written back from a manager's computer, a call link or alerts server a
   -- member or guest slipped into band.json became trusted, and some saves need no click (removal.tick, groups.tick, set_tailnet). Review, 0.59.14)
-  local t = groups.trusted(root)
-  for _, k in ipairs(SETTINGS) do j[k] = t[k] end
+  -- (nothing checked here yet, with Syncthing not answering: the file's own values, not the empty ones this computer goes by meanwhile,
+  -- which wiped every outward setting for everyone, "updates" too. Round 2 review, 0.59.46)
+  local t, sure = groups.trusted(root)
+  if sure ~= false then for _, k in ipairs(SETTINGS) do j[k] = t[k] end end
   -- (the roles this computer goes by, not a change it set aside: written back as they were, it would reach everyone as this computer's own)
   local trust = require("trust")
   local owner, admins = trust.roles(root, j)
@@ -100,6 +115,8 @@ save = function(root, change)
   -- aren't pinned as this computer's own. lib/trust.lua, Security review, 0.58.78)
   local held = trust.held(root)
   if not held then j.owner, j.admins = owner, #admins > 0 and admins or nil end
+  -- (`owner_said`: set_admin or hand_over, which checked the owner said it; else this computer's person is the owner)
+  local by_owner = not held and owner ~= nil and (owner_said or owner == reaper.GetExtState(band.SECTION, "user"))
   change(j)
   if j.owner and not held then trust.pin(root, trust.roles_of(j)) end -- (this computer's own change: its panel checked who may first)
   -- (and, written out with the roles, the computers this one has pinned as whoever's in charge, and when: a computer new to the studio pins
@@ -108,6 +125,16 @@ save = function(root, change)
   j.roles_at = os.time()
   reaper.RecursiveCreateDirectory(root .. "/_band", 0)
   band.write_json(root .. "/_band/band.json", j)
+  -- (and the roles file the others go by, from the owner's computer only, when its roles changed: an admin's save can't mask the owner's change
+  -- any more (lib/trust.lua roles). James's decision, Round 2 review, 0.59.46)
+  if by_owner and j.owner then
+    local was = band.read_json(root .. "/_band/roles.json")
+    local now_roles = { owner = j.owner, admins = j.admins, managers = j.managers }
+    if not (type(was) == "table" and band.json_encode({ owner = was.owner, admins = was.admins, managers = was.managers }) == band.json_encode(now_roles)) then
+      now_roles.roles_at = j.roles_at
+      band.write_json(root .. "/_band/roles.json", now_roles)
+    end
+  end
   seen[root], trusted_at[root] = nil, nil
 end
 function groups.edit(root, change) save(root, change) end -- (lib/alerts.lua's channel)
@@ -154,7 +181,7 @@ function groups.set_admin(root, actor, target, on)
     for _, a in ipairs(type(j.admins) == "table" and j.admins or {}) do if a ~= target then list[#list + 1] = a end end
     if on then list[#list + 1] = target end
     j.admins = #list > 0 and list or nil
-  end)
+  end, true)
   return true
 end
 -- The owner hands the group to someone. They were an admin or not; the old owner stays on as an admin.
@@ -164,7 +191,7 @@ function groups.hand_over(root, actor, target)
     local list = { actor }
     for _, a in ipairs(type(j.admins) == "table" and j.admins or {}) do if a ~= target and a ~= actor then list[#list + 1] = a end end
     j.owner, j.admins = target, list
-  end)
+  end, true)
   return true
 end
 
@@ -289,7 +316,8 @@ function groups.tick(now)
     for _, l in ipairs(leaving) do
       if now - (tonumber(l.at) or 0) < groups.WAIT or not services.forget_folder(l.id) then still[#still + 1] = l end
     end
-    reaper.SetExtState(band.SECTION, "leaving", #still > 0 and band.json_encode(still) or "", true)
+    local text = #still > 0 and band.json_encode(still) or ""
+    if text ~= reaper.GetExtState(band.SECTION, "leaving") then reaper.SetExtState(band.SECTION, "leaving", text, true) end -- (written only when it changed: Round 2 review, 0.59.46)
   end
   local me = reaper.GetExtState(band.SECTION, "user")
   for _, g in ipairs(band.bands()) do
@@ -297,6 +325,9 @@ function groups.tick(now)
     if me ~= "" and groups.role(g.root, me) == "owner" and not groups.sonobus_secret(g.root) and not groups.is_old(g.root) then
       groups.new_sonobus_secret(g.root)
       band.log(g.name .. "'s live audio has a password of its own now (everyone's SonoBus picks it up the next time Real time mode connects)")
+    elseif me ~= "" and not groups.is_old(g.root) and not reaper.file_exists(g.root .. "/_band/roles.json") and groups.role(g.root, me) == "owner"
+        and not require("trust").held(g.root) then
+      pcall(save, g.root, function() end) -- (a studio from before the roles file: the owner's computer writes it once. Round 2 review, 0.59.46)
     end
     -- (the phone alerts' channel changed: someone was taken out (lib/removal.lua), or it was turned off and on. A phone on the old one hears nothing now)
     local ch, seen_key = require("alerts").channel(g.root), "alerts seen " .. g.id

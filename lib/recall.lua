@@ -70,7 +70,8 @@ function recall.back_up(proj, cfg, b, label)
   local droot = require("drive").root(cfg)
   if droot then
     local ok, file, why = pcall(require("sessionfile").export, proj, cfg, b, droot, sync.room_dir(cfg, b.song, b.room))
-    band.log(ok and file and ("project saved to Google Drive: " .. file:match("[^/]+$")) or ("couldn't save the project to Drive: " .. tostring(ok and why or file)))
+    local where = require("drive").name(cfg) -- (the cloud folder this person uses, not always Google Drive: Round 2 review, 0.59.46)
+    band.log(ok and file and ("project saved to " .. where .. ": " .. file:match("[^/]+$")) or ("couldn't save the project to " .. where .. ": " .. tostring(ok and why or file)))
   end
 end
 
@@ -78,13 +79,22 @@ function recall.save(proj, cfg, song, room, label, keep)
   local st = capture(proj)
   st.label, st.by, st.time, st.keep = label, cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ"), keep or nil
   st.timeline = { tempo = band.capture_tempo(proj), markers = band.capture_markers(proj) } -- positions are in its seconds
-  -- (and the version of every object the project holds, so restoring it is exactly this: by time alone, late or clock-skewed changes came in
-  -- with it. About 60 bytes an object. James: all saved versions. Round 1 review, 0.59.45)
-  st.known = require("mirror").known_map(proj)
   local dir = recall.dir(cfg, song, room)
   reaper.RecursiveCreateDirectory(dir, 0)
   local file = string.format("%s-%s-%s.json", os.date("!%Y%m%d-%H%M%SZ"), (cfg.user:gsub("[^%w%-_]", "_")),
     (label:gsub("[^%w%-_ ]", ""):gsub(" ", "_"):sub(1, 40)))
+  -- (and the version of every object the project holds, so restoring it is exactly this: by time alone, late or clock-skewed changes came in
+  -- with it. James: all saved versions. Round 1 review, 0.59.45. In a file of its own beside it, read only to restore or trim: in the version
+  -- itself, 250 to 460 KB on a big song, every list of versions read it whole. James, Round 2 review, 0.59.46)
+  -- (not when this computer was still catching up: its map named what it held, week-old versions say, and restoring an "end of session" saved
+  -- half a minute into a catch-up put those back for everyone. Marked, it restores by time, as before 0.59.45, and its row says so. James,
+  -- Round 2 review, 0.59.46. Cost: one count, on the shared listing)
+  local behind = sync.pending_events(proj, cfg, song, room)
+  if behind > 0 then st.behind = behind
+  else
+    reaper.RecursiveCreateDirectory(dir .. "/known", 0)
+    pcall(band.write_json, dir .. "/known/" .. file, require("mirror").known_map(proj))
+  end
   band.write_json(dir .. "/" .. file, st)
   return file
 end
@@ -105,12 +115,23 @@ function recall.rows(files, had, read)
       if st then
         local n = 0
         for _ in pairs(st.takes or {}) do n = n + 1 end
-        row = { file = f, label = st.label or f, by = st.by, time = st.time, takes = n, keep = st.keep }
+        row = { file = f, label = st.label or f, by = st.by, time = st.time, takes = n, keep = st.keep, behind = st.behind }
       end
     end
     if row then now[f] = row; out[#out + 1] = row end
   end
   return out, now
+end
+-- A saved version's own map (oid -> event id), or nil: its sidecar file (0.59.46 on), else the map inside the version (0.59.45), else none
+-- (older, or saved while catching up: restored by time).
+function recall.known(cfg, song, room, file)
+  local dir = recall.dir(cfg, song, room)
+  local k = band.read_json(dir .. "/known/" .. file)
+  if type(k) ~= "table" then
+    local st = band.read_json(dir .. "/" .. file)
+    k = type(st) == "table" and not st.behind and st.known or nil
+  end
+  return type(k) == "table" and next(k) ~= nil and k or nil
 end
 function recall.list(cfg, song, room)
   local dir = recall.dir(cfg, song, room)

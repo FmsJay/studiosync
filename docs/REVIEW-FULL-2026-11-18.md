@@ -256,3 +256,22 @@ Suite regressions found and fixed before release: suggestions (new-item suggest 
 restless_fx (print cache key), take_comps (paths record), groups (band.info cache key, empty modifiedBy for the owner's file).
 Mac now runs the full suites too (two Mac-only failures predate this round: routed_print's file name, lock_refuse; for round 2).
 
+## 0.59.46: review round 2 (nine reviewers on 0.59.45, all NOT SOLID with far fewer issues; reports in the session scratchpad round2/*.md)
+
+James's decisions: saved versions keep their per-object map in a sidecar (recall/known/), read only on restore and trim; a version saved
+while catching up is marked and restores by time; roles live in _band/roles.json, written only by the owner's computer; incoming file
+paths that aren't shared media are dropped on arrival, and keep-local tracks stay out of the end-of-session cloud export; the Recycle
+Bin check counts only the job; Autostart starts Syncthing at REAPER start when in a studio; moving back off the folder copy never goes
+to an older version; panel errors are logged and the panel recovers (no REAPER error box), and every module is preloaded at start.
+
+Done: Sync and exit counts people in the room and guests correctly, never syncs a backup copy, and Start Syncthing reaches a new
+member with no studio; reloads announce only after they worked and wait while anything records; the old-form startup block is upgraded
+so the last-good safety net is really installed; last-good saved only when whole and current; trusted settings ask Syncthing only when
+band.json changes (1 ask and 1 write in 10 minutes instead of 121); the events listing and the cue watch relist on folder change or
+every 2 s (exFAT/FAT); no empty undo points while a change waits; undo of a track deleted across seconds; bare returning tracks bring
+their parts every look; deletion-vs-edit races heal; unsent plug-in/automation work protected from Restore and Bring into main; failed
+suggestion applies kept; saved-twice copies fixed (band.save_copy); templates opened through the stripper; prints never render a
+band-named file; the memo turns over only between looks; heal reads only new history; events of an unknown kind or newer format are left
+unapplied and skipped ones retried after an update; Mac-only test bugs fixed (routed_print pattern, lock_refuse run-from). New checks:
+tools/files_check.py (files.txt vs code) and LuaLS gating in tests/run.py.
+

@@ -160,7 +160,7 @@ local function loop()
   -- an update: this one closes, and Live sync starts the new one (an old one kept running with the old bar: PC, 0.43.0)
   if reaper.time_precise() - version_at > 5 then
     version_at = reaper.time_precise()
-    local disk = band.version_on_disk(dir)
+    local disk = band.version_on_disk and band.version_on_disk(dir) or (band.read(dir .. "/lib/band.lua") or ""):match('VERSION = "([^"]+)"') -- (an older band.lua beside this file: Round 2 review, 0.59.46)
     -- (only for a version it may switch to, all of it arrived: Live sync then started it again from a part-arrived copy. Round 1 review, 0.59.45)
     if disk and disk ~= band.VERSION and reaper.GetExtState(band.SECTION, "draw on") == "" and band.update_ok(dir, disk) then return end
   end

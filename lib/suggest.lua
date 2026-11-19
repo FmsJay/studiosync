@@ -154,7 +154,13 @@ function suggest.accept(proj, cfg, room_dir, h, may, local_mix)
     elseif not may(c.name, c.pos) then refused = refused + 1; left[#left + 1] = c.oid
     else
       local ok, res = pcall(mirror.apply, proj, c, media, local_mix)
-      if ok and res then did = did + 1 else band.log("couldn't accept a change on " .. tostring(c.name) .. ": " .. tostring(ok and "it can't land here" or res)) end
+      if ok and res then did = did + 1
+      else
+        -- (in `left` too, so its sender keeps it: dropped, the edit was gone on both sides, a MIDI editor open on the part being enough. Round 2
+        -- review, 0.59.46)
+        refused, left[#left + 1] = refused + 1, c.oid
+        band.log("couldn't accept a change on " .. tostring(c.name) .. ": " .. tostring(ok and "it can't land here" or res))
+      end
     end
   end
   -- tracks, items and automation only (plug-ins never come this way): recording everything, undoing it reloaded every plug-in, and
@@ -253,7 +259,9 @@ function suggest.bar(ctx, ImGui, proj, cfg, room_dir, can, local_mix)
     ImGui.PushID(ctx, h.id)
     if ImGui.SmallButton(ctx, "Accept") then
       local did, stale, refused, left = suggest.accept(proj, cfg, room_dir, h, function(name, pos) return can(cfg.user, name, pos) end, local_mix)
-      if did then
+      -- (not answered "accepted" when nothing landed: it stays to try again or decline. Round 2 review, 0.59.46)
+      if did == 0 then suggest.note = "Nothing of it could land here now (it changed since, isn't yours, or couldn't apply: is the part open in the MIDI editor?). Try again, or Decline."
+      elseif did then
         suggest.note = nil
         suggest.answer(room_dir, h, cfg.user, "accepted", { left = stale + refused, left_oids = left })
         band.log(string.format("you accepted %s's suggestion: %d change(s) go to the others as yours%s", tostring(h.from), did,

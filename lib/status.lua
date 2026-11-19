@@ -31,29 +31,14 @@ function status.newest_event(files)
   return newest
 end
 
--- { rows = { name, age, version, missing, has, mine, state }, total, mine, my_missing, my_age, newer, driver, print }
+-- { rows = { name, age, version, pending, state, ... }, my_age, newer, driver, print }
 function status.gather(cfg, b, proj)
   local view = {}
   local s = band.read_json(band.session_path(cfg, b.song)) or {}
-  local takes, total, mine, newest = {}, 0, 0, band.VERSION
+  local newest = band.VERSION
   local function note_version(v) if v and band.compare_versions(v, newest) > 0 then newest = v end end
-  for _, f in ipairs(band.files(band.takes_dir(cfg, b.song, b.room), ".json")) do
-    local t = band.read_json(band.takes_dir(cfg, b.song, b.room) .. "/" .. f)
-    if t and t.id then
-      takes[t.id:lower()] = { rev = t.rev or 1, user = t.user }
-      note_version(t.bandsync)
-      total = total + 1
-      if t.user == cfg.user then mine = mine + 1 end
-    end
-  end
-  local function count(have, filter)
-    local missing = 0
-    for id, t in pairs(takes) do
-      if (not filter or t.user == filter) and (have[id] or 0) < t.rev then missing = missing + 1 end
-    end
-    return missing
-  end
-  local me = {} -- (the take-based sync's holdings are gone: Round 1 review, 0.59.45)
+  -- (no take counting: the take-based sync is gone, and a room with files from before 0.32 read "N take(s) still arriving" for everyone, for
+  -- good. Round 2 review, 0.59.46)
   -- the newest change anyone posted (event file names carry their UTC stamp), as an ISO time
   local newest_event = status.newest_event(band.listing(sync.room_dir(cfg, b.song, b.room) .. "/events", ".json"))
   view.newest_event = newest_event
@@ -65,27 +50,19 @@ function status.gather(cfg, b, proj)
       seen[st.user] = true
       if st.user ~= cfg.user then note_version(st.version) end
       if st.user == cfg.user then view.my_age, view.my_mirror, view.my_pending = band.age(st.time), st.mirror, st.pending or 0 else
-        local a, missing = band.age(st.time), count(st.takes or {})
+        local a = band.age(st.time)
         -- a receipt older than the newest change can't vouch for it yet
         local behind = (st.pending or 0) > 0 or (st.time or "") < newest_event
-        rows[#rows + 1] = { name = st.user, age = a, version = st.version or "?", missing = missing,
-          has = total - missing, mine = count(st.takes or {}, cfg.user), pending = st.pending or 0, hold = st.hold,
+        rows[#rows + 1] = { name = st.user, age = a, version = st.version or "?", pending = st.pending or 0, hold = st.hold,
           armed = st.armed, side = st.side, playing = st.playing, recording = st.recording, mirror = st.mirror,
           behind = behind, reaper = st.reaper, last_track = st.last_track, last_at = tonumber(st.last_at), lets = st.lets, live = st.live, call = st.call == true or nil, -- (lets: whoever produces them may start and stop their transport)
-          state = a > 60 and "offline" or ((missing == 0 and not behind) and "synced" or "syncing") }
+          state = a > 60 and "offline" or (not behind and "synced" or "syncing") }
       end
     end
   end
-  for _, t in pairs(takes) do -- people who sent takes but never ran a Live sync that wrote a receipt
-    if t.user ~= cfg.user and not seen[t.user] then
-      seen[t.user] = true
-      rows[#rows + 1] = { name = t.user, age = math.huge, version = "?", missing = total, has = 0, mine = mine, state = "no receipt" }
-    end
-  end
   table.sort(rows, function(x, y) return x.name < y.name end)
-  view.rows, view.total, view.mine = rows, total, mine
+  view.rows = rows
   view.newer = band.compare_versions(newest, band.VERSION) > 0 and newest or nil
-  view.my_missing = count(me)
   view.driver = sync.driver(cfg, b.song, b.room, s)
   view.print = s.print or "wet"
   view.session = s
@@ -99,14 +76,12 @@ function status.handover_check(cfg, b, proj)
   local out, offline = {}, {}
   local beat = tonumber(reaper.GetExtState(band.SECTION, "live " .. tostring(proj)))
   if not beat or reaper.time_precise() - beat > 30 then out[#out + 1] = "your Live sync isn't running" end -- a long reprint holds its tick
-  if v.my_missing > 0 then out[#out + 1] = string.format("you: %d take(s) still arriving", v.my_missing) end
   local mine = sync.pending_events(proj, cfg, b.song, b.room)
   if mine > 0 then out[#out + 1] = string.format("you: %d change(s) from the others not applied yet", mine) end
   if select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) ~= "" then out[#out + 1] = "you: Hold sync is on" end
   for _, r in ipairs(v.rows) do
     if r.state == "offline" or r.state == "no receipt" then offline[#offline + 1] = r.name
     elseif r.hold then out[#out + 1] = r.name .. " is holding sync (their changes haven't gone out)"
-    elseif r.missing > 0 then out[#out + 1] = string.format("%s: %d take(s) still arriving", r.name, r.missing)
     elseif r.behind then out[#out + 1] = r.name .. ": still applying the latest changes" end
   end
   return { problems = out, offline = offline }

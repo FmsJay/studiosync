@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.59.45", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.59.46", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -375,9 +375,32 @@ function band.files(dir, ext) return ours(enum(reaper.EnumerateFiles, dir), ext)
 band.LISTING_SECS = 0.2
 -- Every name in the folder, unfiltered and in its own order (shared: never change it). `fresh`: read it now (the cue watch: a start or stop
 -- isn't held back 0.2 s), and everyone else shares that read.
+-- (and past LISTING_SECS, a folder whose modified time hasn't moved keeps its listing for up to LISTING_KEEP s more: the events folder was read
+-- whole two to four times a poll, 20,000 names in a big song. A write here empties the cache as before; a time that lags costs at most those
+-- seconds. Needs js_ReaScriptAPI's JS_File_Stat; without it, as before. Round 2 review, 0.59.46)
+band.LISTING_KEEP = 2 -- (folder times that never move, exFAT and FAT: read again after 2 s anyway)
+local function folder_time(dir)
+  if not reaper.JS_File_Stat then return nil end
+  local ok, status, _, _, modified = pcall(reaper.JS_File_Stat, dir)
+  return ok and status == 0 and modified and tostring(modified) or nil
+end
+-- (a time to the second: trusted only when it's 2 s older than the listing, so a file landing in that same second isn't missed)
+local function settled(mt)
+  local y, mo, d, h, mi, s = tostring(mt):match("(%d+)%D(%d+)%D(%d+)%D+(%d+)%D(%d+)%D(%d+)")
+  local t = y and os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(d), hour = tonumber(h), min = tonumber(mi), sec = tonumber(s) })
+  return t ~= nil and os.time() - t >= 2
+end
 function band.raw_listing(dir, fresh)
   local now, c = reaper.time_precise(), listed[dir]
-  if fresh or not c or now - c.at > band.LISTING_SECS then c = { at = now, raw = enum(reaper.EnumerateFiles, dir, true) }; listed[dir] = c end
+  if not fresh and c and now - c.at > band.LISTING_SECS and now - c.at <= band.LISTING_KEEP and c.mt then
+    local mt = folder_time(dir)
+    if mt and mt == c.mt then return c.raw end
+  end
+  if fresh or not c or now - c.at > band.LISTING_SECS then
+    local mt = folder_time(dir)
+    c = { at = now, mt = mt and settled(mt) and mt or nil, raw = enum(reaper.EnumerateFiles, dir, true) }
+    listed[dir] = c
+  end
   return c.raw
 end
 function band.listing(dir, ext, sorted)
@@ -509,12 +532,16 @@ function band.rename(root, old, new)
     band.write_json(npath, map)
   end
   names_at[root] = nil
-  local j = band.read_json(root .. "/_band/band.json") -- (who runs the group: lib/groups.lua)
-  if type(j) == "table" then -- (only when a role named them: written by anyone renaming, a newly invited computer set the roles aside. Review, 0.58.92)
-    local changed = j.owner == old
-    if changed then j.owner = new end
-    for i, a in ipairs(type(j.admins) == "table" and j.admins or {}) do if a == old then j.admins[i] = new; changed = true end end
-    if changed then band.write_json(root .. "/_band/band.json", j) end
+  -- (who runs the group: lib/groups.lua. And the owner's roles file, which the others go by now: an admin renaming themselves writes it too,
+  -- and lib/trust.lua allows only that change from their computer. Round 2 review, 0.59.46)
+  for _, rel in ipairs({ "/_band/band.json", "/_band/roles.json" }) do
+    local j = band.read_json(root .. rel)
+    if type(j) == "table" then -- (only when a role named them: written by anyone renaming, a newly invited computer set the roles aside. Review, 0.58.92)
+      local changed = j.owner == old
+      if changed then j.owner = new end
+      for i, a in ipairs(type(j.admins) == "table" and j.admins or {}) do if a == old then j.admins[i] = new; changed = true end end
+      if changed then band.write_json(root .. rel, j) end
+    end
   end
   -- (this computer's files under the old name: its devices file and plug-in list are written again under the new one at the next look, and the
   -- old ones stayed, a second member with the old name on every computer: James, 0.58.81. A colour picked moves over.)
@@ -781,7 +808,10 @@ end
 local failed_look, failed_said = {}, {}
 function band.files_complete(dir, force)
   local list_text = band.read(dir .. "/lib/files.txt")
-  if not list_text then return false end
+  if not list_text then
+    if not failed_said[dir .. "\0nolist"] then failed_said[dir .. "\0nolist"] = true; pcall(band.log_file, "StudioSync in " .. dir .. " has no lib/files.txt, so it's never taken as whole") end
+    return false
+  end
   local v = list_text:match("^version (%S+)") or ""
   if complete_seen[dir .. v] then return true end
   local now = reaper.time_precise()
@@ -829,12 +859,17 @@ function band.started_partial(dir) return started_partial[dir] == true and band.
 -- modules this script has loaded are compiled first, with the entry script (all 66 were, 60-100 ms); and nothing reloads while anything records:
 -- -> false, why, "busy" then, which isn't a failure.)
 local SEARCHER_KEY = "BANDSYNC_CODE_SEARCHER" -- (band.code_guard's check of the code, in package.searchers)
-function band.reload(dir, script)
+-- Is any open project recording? (a reload waits for it: callers ask first, so they announce nothing. Round 2 review, 0.59.46)
+function band.recording_anywhere()
   for i = 0, 512 do
     local p = reaper.EnumProjects(i)
-    if not p then break end
-    if reaper.GetPlayStateEx(p) & 4 == 4 then return false, "something is recording", "busy" end
+    if not p then return false end
+    if reaper.GetPlayStateEx(p) & 4 == 4 then return true end
   end
+  return false
+end
+function band.reload(dir, script)
+  if band.recording_anywhere() then return false, "something is recording", "busy" end
   local libs = band.files(dir .. "/lib", ".lua")
   for _, f in ipairs(libs) do
     if package.loaded[f:sub(1, -5)] ~= nil then
@@ -855,6 +890,17 @@ function band.reload(dir, script)
   package.path = path
   return false, tostring(e)
 end
+-- Every lib module of the copy in `dir`, loaded now, at the script's start (James's decision, Round 2 review, 0.59.46): a module first needed
+-- later was refused by the code check once a newer version's file had arrived, and that stopped the panel with an error box on an unattended
+-- Mac for three hours. 60-100 ms per script start. A module that fails to load is left for its first use, as before. -> how many loaded.
+function band.preload(dir)
+  local n = 0
+  for _, f in ipairs(band.files(dir .. "/lib", ".lua")) do
+    local m = f:sub(1, -5)
+    if package.loaded[m] == nil and m:find("^[%w_]+$") and pcall(require, m) then n = n + 1 end
+  end
+  return n
+end
 -- The key that says a version couldn't start in this script: `suffix` for a script that runs more than once (Live sync: its project), so one tab's
 -- failure doesn't hold the others back. (Round 1 review, 0.59.45)
 function band.reload_failed_key(script, suffix) return "reload failed " .. script .. (suffix and (" " .. tostring(suffix)) or "") end
@@ -862,7 +908,7 @@ function band.reload_failed_key(script, suffix) return "reload failed " .. scrip
 function band.reload_or_say(dir, script, version, suffix)
   local ok, why, busy = band.reload(dir, script)
   if ok then return true end
-  if busy then return false end
+  if busy then return false, "busy" end -- (the caller says nothing and does nothing: it was announced as done every few seconds. Round 2 review, 0.59.46)
   local key = band.reload_failed_key(script, suffix)
   if reaper.GetExtState(band.SECTION, key) ~= tostring(version) then
     reaper.SetExtState(band.SECTION, key, tostring(version), false)
@@ -884,11 +930,14 @@ local function code_list(dir)
   return out
 end
 -- -> true when it copied (nothing to do when the kept copy is this one already, or `dir` is it).
+-- -> nil when not now (try again later): the copy on disk isn't the version running, or isn't whole yet (a version arriving at the minute
+-- was kept half old, half new, and never repaired. Round 2 review, 0.59.46)
 function band.save_last_good(dir)
   local to = band.last_good_dir()
   if norm(dir):lower() == to:lower() then return false end
   local v = band.version_on_disk(dir)
-  if not v or (band.version_on_disk(to) == v and band.read(to .. "/lib/files.txt") == band.read(dir .. "/lib/files.txt")) then return false end
+  if v ~= band.VERSION or (band.from_shared(dir) and not band.files_complete(dir)) then return nil end
+  if band.version_on_disk(to) == v and band.read(to .. "/lib/files.txt") == band.read(dir .. "/lib/files.txt") then return false end
   reaper.RecursiveCreateDirectory(to .. "/lib", 0)
   local keep = {}
   for _, rel in ipairs(code_list(dir)) do keep[rel] = true; band.copy_atomic(dir .. "/" .. rel, to .. "/" .. rel) end
@@ -902,6 +951,7 @@ function band.save_copy(proj, path)
   local dirty = reaper.IsProjectDirty(proj) ~= 0
   reaper.Main_SaveProjectEx(proj, path, 0)
   if dirty and reaper.IsProjectDirty(proj) == 0 then reaper.MarkProjectDirty(proj) end
+  return true -- (callers write `band.save_copy and band.save_copy(...) or <old save>`: with nothing returned, the copy was saved twice. Round 2 review, 0.59.46)
 end
 
 -- Live sync marks a song that has work here not sent yet, or only here ("local work <studio id>/<song>" = "1", this REAPER session's ExtState),
@@ -1020,6 +1070,10 @@ function band.kept_keys()
     local n = (r:gsub("\\", "/"):gsub("/+$", ""):lower())
     keys[#keys + 1] = "role pins " .. tostring(band.info(r).id) .. " " .. n
     keys[#keys + 1] = "invited by " .. n
+    -- (the marks this computer has accepted and a guest's own project list: a crash lost them, and a deleted mark or list then counted
+    -- again. Round 2 review, 0.59.46)
+    keys[#keys + 1] = "marks kept " .. n
+    keys[#keys + 1] = "guest list " .. r
   end
   return keys
 end
@@ -1159,7 +1213,9 @@ local function autosync_read()
 end
 function band.set_autosync(path, on)
   local k = band.autosync_key(path)
-  if on then reaper.SetExtState(band.SECTION, k, "1", true) else reaper.DeleteExtState(band.SECTION, k, true) end
+  -- (only when it changes: every Live sync start wrote REAPER's saved state again. Round 2 review, 0.59.46)
+  if on and reaper.GetExtState(band.SECTION, k) ~= "1" then reaper.SetExtState(band.SECTION, k, "1", true)
+  elseif not on and reaper.GetExtState(band.SECTION, k) ~= "" then reaper.DeleteExtState(band.SECTION, k, true) end
   local t = band.read_json(autosync_file())
   if type(t) ~= "table" then t = {} end
   as_at = -math.huge

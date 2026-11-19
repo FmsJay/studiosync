@@ -174,7 +174,8 @@ function services.winget_syncthing(lad)
   return best
 end
 -- (Windows' own Program Files, not always on C: (Round 1 review, 0.59.45))
-local function program_files() return ((os.getenv("ProgramFiles") or "C:/Program Files"):gsub("\\", "/")) end
+-- (ProgramW6432 first: a 32-bit REAPER's ProgramFiles is "Program Files (x86)", and Syncthing and Tailscale weren't found. Round 2 review, 0.59.46)
+local function program_files() return ((os.getenv("ProgramW6432") or os.getenv("ProgramFiles") or "C:/Program Files"):gsub("\\", "/")) end
 function services.syncthing_path()
   local set = reaper.GetExtState(band.SECTION, "syncthing_path")
   local lad = (os.getenv("LOCALAPPDATA") or ""):gsub("\\", "/")
@@ -193,6 +194,9 @@ function services.ensure_syncthing()
   if not path then return nil, "Syncthing isn't running and wasn't found: start it, or run StudioSync's installer again" end
   -- on a Mac with Syncthing.app: the app starts it (its own copy, started beside the app, found the database and
   -- ports taken when the app opened later, or at login)
+  -- (and this computer's ID asked again in about 10 s, not at the next 5-minute look: Invite stayed greyed that long after Start Syncthing.
+  -- Round 2 review, 0.59.46)
+  started["st-system"] = reaper.time_precise() - 290
   if path:find("/Syncthing.app/", 1, true) then
     os.execute("/usr/bin/open -gja Syncthing")
     return "started"
@@ -396,9 +400,10 @@ function services.dismiss_pending(id)
 end
 
 -- This machine's Syncthing device ID, or nil (Syncthing not running, or no answer yet: a background check).
-function services.my_device_id()
+-- (`soon`: asked again within 3 s, not 5 minutes: just after Start Syncthing, lib/page_groups.lua. Round 2 review, 0.59.46)
+function services.my_device_id(soon)
   local st = services.syncthing_path()
-  local data = st and band.json_decode(background("st-system", cli(st) .. " show system", 300) or "")
+  local data = st and band.json_decode(background("st-system", cli(st) .. " show system", soon and 3 or 300) or "")
   local id = type(data) == "table" and data.myID
   return services.is_device_id(id) and id or nil
 end
@@ -582,7 +587,7 @@ function services.new_band(cfg, name)
   name = band.clean(name or "")
   if name == "" then return nil, "Give the studio a name." end
   local st = services.syncthing_path()
-  if not st then return nil, "Syncthing wasn't found" end
+  if not st then return nil, "Syncthing isn't installed here: run StudioSync's installer again (it installs Syncthing), then start the studio again" end
   -- (the end is random: two strangers' groups can have one name, and someone could be in both)
   local id = services.band_id(name) .. string.format("-%04x", (os.time() * 7 + math.floor(reaper.time_precise() * 1000)) % 65536)
   for _, x in ipairs(band.bands()) do
@@ -591,11 +596,17 @@ function services.new_band(cfg, name)
   local here = ((cfg.base or cfg).root or ""):gsub("[/\\]+$", "")
   local root = (here:match("^(.*)[/\\][^/\\]+$") or here) .. "/StudioSync " .. name
   if band.subdirs(root)[1] then return nil, root .. " is already there: pick another name, or remove that folder." end
+  -- (Syncthing first, then the folder's files: written first, a failed add left a folder that made the next try say it was already there.
+  -- Round 2 review, 0.59.46)
+  reaper.RecursiveCreateDirectory(root, 0)
+  local r = exec(cli(st) .. " config folders add --id " .. id .. " --label " .. label_q("StudioSync " .. name) .. " --path " .. q(root), 15000) or ""
+  if not r:match("^0\n") then
+    os.remove(root) -- (empty, so nothing is lost: the next try isn't refused for it)
+    return nil, "Syncthing didn't add the studio's folder: " .. r:gsub("^%d+\n", "")
+  end
   reaper.RecursiveCreateDirectory(root .. "/_band", 0)
   band.write_json(root .. "/_band/band.json", { name = name, id = id, drive = "StudioSync - " .. name, owner = (cfg.base or cfg).user })
   band.pin_id(root, id)
-  local r = exec(cli(st) .. " config folders add --id " .. id .. " --label " .. label_q("StudioSync " .. name) .. " --path " .. q(root), 15000) or ""
-  if not r:match("^0\n") then return nil, "Syncthing didn't add the studio's folder: " .. r:gsub("^%d+\n", "") end
   exec(cli(st) .. " config folders " .. id .. " order set smallestFirst", 8000)
   services.tune_band_folder(id)
   band.use_band(root)

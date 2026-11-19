@@ -96,10 +96,10 @@ function access.mine(root)
       lift = okt and ok == true
     elseif okp and pins then lift = verdicts[vk] end
   end
-  if me and kept and not lift and type(raw) ~= "table" then
-    set = kept
-  elseif me and kept and not lift and raw.all == true then
-    set = kept -- (an "every project" not checked yet, or not from someone in charge: the list as it was)
+  -- (and a file that isn't a list for this computer, `{}` or anything else: as it was too. It gave every project and wiped the kept list.
+  -- Round 2 review, 0.59.46)
+  if me and kept and not lift and not (type(raw) == "table" and raw.device == me and type(raw.songs) == "table") then
+    set = kept -- (no list, not one for this computer, or an "every project" not checked yet or not from someone in charge: the list as it was)
   elseif me then
     local got, checked = access.get(root, me)
     if got == nil then

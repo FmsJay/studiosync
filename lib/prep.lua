@@ -352,7 +352,7 @@ function prep.apply(proj, cfg, b, rows, dir)
     if file == "" then reaper.RecursiveCreateDirectory(band.home() .. "/backups", 0) end
     local base = file ~= "" and file:gsub("%.[Rr][Pp][Pp]$", "") or (band.home() .. "/backups/Untitled")
     backup = base .. " - before StudioSync " .. os.date("%Y%m%d-%H%M%S") .. ".rpp" -- (to the second: two in one minute, the second wrote over the first. 0.58.93)
-    local _ = band.save_copy and band.save_copy(proj, backup) or reaper.Main_SaveProjectEx(proj, backup, 0) -- 0: a copy; this tab keeps its own file
+    band.save_copy(proj, backup) -- a copy; this tab keeps its own file (plainly: see lib/sessionfile.lua. Round 2 review, 0.59.46)
     done[#done + 1] = "Backup copy saved: " .. (file ~= "" and backup:match("[^/\\]+$") or backup)
   end
   reaper.Undo_BeginBlock2(proj)

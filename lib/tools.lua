@@ -48,31 +48,49 @@ local MARK_A, MARK_Z = "-- BandSync autostart", "-- /BandSync autostart"
 local function startup_path() return reaper.GetResourcePath() .. "/Scripts/__startup.lua" end
 -- (compared in one spelling: REAPER gives the panel its folder with backslashes on Windows and lib/fromfolder.lua writes forward slashes, so
 -- the panel missed it and wrote the block again without its fallback. Round 1 review, 0.59.45)
+-- (and with `dir`, only the block as written now (CURRENT is in it): an older one counted as on, so the safety net below was never put on any
+-- computer that had a block. Round 2 review, 0.59.46)
+local CURRENT = "StudioSync didn't start: "
 function tools.autostart_on(dir)
   local text = band.read(startup_path()) or ""
-  return text:find(MARK_A, 1, true) ~= nil and (not dir or band.norm(text):lower():find(band.norm(dir):lower() .. "/studiosync - autostart.lua", 1, true) ~= nil) -- (dir: and it's this copy)
+  return text:find(MARK_A, 1, true) ~= nil and (not dir or (text:find(CURRENT, 1, true) ~= nil
+    and band.norm(text):lower():find(band.norm(dir):lower() .. "/studiosync - autostart.lua", 1, true) ~= nil)) -- (dir: and it's this copy)
+end
+-- A block from before (a bare dofile, the two-path loop, or one without the last word below) written again as it's written now, keeping its
+-- copies in order: Autostart, once per REAPER start. -> true when it rewrote it. Round 2 review, 0.59.46.
+function tools.upgrade_startup()
+  local text = band.read(startup_path()) or ""
+  local a = text:find(MARK_A, 1, true)
+  if not a or text:find(CURRENT, 1, true) then return false end
+  local first = text:sub(a):match("%[%[([^%]]-)/StudioSync %- Autostart%.lua%]%]")
+  if not first then return false end
+  return tools.set_autostart(true, band.norm(first)) == true
 end
 -- The block itself: each copy tried in turn, each in a pcall (a bare dofile of a copy that failed as it loaded stopped there, and with it
 -- whatever came after it in __startup.lua), what a failed one loaded taken back out, and the failure left for Autostart to log ("startup
 -- failed"). `dirs`: the copies' folders, in order. Pure. (Round 1 review, 0.59.45: the copy it runs from, this computer's last-good copy, then
 -- the one it ran from before. installer/studiosync_setup.lua writes the same.)
+-- (and when none of them started, the last failure is said in REAPER's console: nothing said anything, where a bare dofile at least raised
+-- REAPER's error. Round 2 review, 0.59.46)
 function tools.startup_block(dirs)
   local list = {}
   for _, d in ipairs(dirs) do list[#list + 1] = "[[" .. d .. "/StudioSync - Autostart.lua]]" end
   return MARK_A .. "\n" ..
-    "do local was, path, finders = {}, package.path, { table.unpack(package.searchers) }\n" ..
+    "do local was, path, finders, started, last = {}, package.path, { table.unpack(package.searchers) }, false, nil\n" ..
     "  for k in pairs(package.loaded) do was[k] = true end\n" ..
     "  for _, f in ipairs({ " .. table.concat(list, ", ") .. " }) do\n" ..
     "    if reaper.file_exists(f) then\n" ..
     "      local ok, err = pcall(dofile, f)\n" ..
-    "      if ok then break end\n" ..
-    "      reaper.SetExtState(\"BandSync\", \"startup failed\", f .. \": \" .. tostring(err):sub(1, 300), false)\n" ..
+    "      if ok then started = true break end\n" ..
+    "      last = f .. \": \" .. tostring(err):sub(1, 300)\n" ..
+    "      reaper.SetExtState(\"BandSync\", \"startup failed\", last, false)\n" ..
     "      for k in pairs(package.loaded) do if not was[k] then package.loaded[k] = nil end end\n" ..
     "      for i = #package.searchers, 1, -1 do package.searchers[i] = nil end\n" ..
     "      for i, s in ipairs(finders) do package.searchers[i] = s end\n" ..
     "      package.path = path\n" ..
     "    end\n" ..
     "  end\n" ..
+    "  if not started and last then reaper.ShowConsoleMsg(\"" .. CURRENT .. "\" .. last .. \"\\n\") end\n" ..
     "end\n" .. MARK_Z .. "\n"
 end
 -- `fallback`: a copy to start instead when `dir` isn't there any more (a studio's folder this computer ran from, left since: lib/fromfolder.lua).
@@ -231,7 +249,7 @@ function tools.guest_invite_button(ctx, ImGui, my_id, root, label)
   guest_pick.date = v
   local ends = guest_pick.date ~= "" and removal.parse_day(guest_pick.date, now) or (guest_pick.date == "" and now + guest_pick.days * removal.DAY) or nil
   ImGui.SameLine(ctx)
-  if ends then ImGui.TextDisabled(ctx, "until " .. removal.when(ends, now)) else ImGui.TextColored(ctx, require("theme").YELLOW, "not a day to come") end
+  if ends then ImGui.TextDisabled(ctx, "until " .. removal.when(ends, now)) else ImGui.TextColored(ctx, require("theme").YELLOW, "Type a future date as YYYY-MM-DD") end
   -- (which projects they see: all, or only those ticked. lib/access.lua, 0.58.89)
   ImGui.Text(ctx, "They see:")
   if ImGui.RadioButton(ctx, "Every project##gall", guest_pick.all) then guest_pick.all = true end

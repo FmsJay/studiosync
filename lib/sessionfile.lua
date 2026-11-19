@@ -75,6 +75,29 @@ function sessionfile.plain(text, split)
   return table.concat(out, "\n") .. "\n"
 end
 
+-- The paths a band's version put on items and tracks here, as the project's text records them (P_EXT band_theirs, lib/mirror.lua), as a set
+-- of fxfiles.key. Pure.
+function sessionfile.theirs(text)
+  local set, key = {}, require("fxfiles").key
+  for v in text:gmatch("band_theirs%s+\"?([^\"\r\n]*)") do
+    for p in v:gmatch("[^|]+") do set[key(p)] = true end
+  end
+  return set
+end
+-- May the end-of-session export copy this file to the cloud? Only one inside the project's own folder or the studio's (`roots`), and not one a
+-- band's version named (`theirs`): it copied every file any FILE line named, so a path a bandmate planted went to the cloud folder everyone has
+-- at your session's end, with no action of yours. Security, Round 2 review, 0.59.46. Pure.
+function sessionfile.may_copy(full, roots, theirs)
+  local key = require("fxfiles").key
+  local k = key(full)
+  if theirs and theirs[k] then return false end
+  for _, r in ipairs(roots) do
+    local rk = r and key(r):gsub("/+$", "") .. "/"
+    if rk and rk ~= "/" and k:sub(1, #rk) == rk then return true end
+  end
+  return false
+end
+
 -- Write this machine's end-of-session project to Drive. Returns the file written, or nil + why.
 function sessionfile.export(proj, cfg, b, droot, room_dir)
   local path
@@ -87,10 +110,14 @@ function sessionfile.export(proj, cfg, b, droot, room_dir)
   local projdir = path:gsub("\\", "/"):match("^(.*)/")
   -- a copy as it is now, next to it (so relative paths read the same); the open project and its file are untouched
   local tmp = projdir .. "/.bandsync-session-copy.rpp"
-  local _ = band.save_copy and band.save_copy(proj, tmp) or reaper.Main_SaveProjectEx(proj, tmp, 0) -- (keeps the project's unsaved mark: band.save_copy. Round 1 review, 0.59.45)
+  band.save_copy(proj, tmp) -- (keeps the project's unsaved mark. Called plainly: "save_copy and save_copy() or <old save>" saved the copy twice. Round 2 review, 0.59.46)
   local text = band.read(tmp)
   os.remove(tmp)
   if not text then return nil, "couldn't save a copy of the project" end
+  -- (this computer's own tracks stay out, as lib/export.lua leaves them: they went to the shared cloud folder at every session end. James,
+  -- Round 2 review, 0.59.46)
+  text = require("export").no_local_tracks(text)
+  local theirs = sessionfile.theirs(text)
   local sdir = droot .. "/" .. b.song .. "/sessions"
   local user = (cfg.user:gsub("[^%w%-_]", "_"))
   local pending = get_pending(b.song)
@@ -111,7 +138,7 @@ function sessionfile.export(proj, cfg, b, droot, room_dir)
         end
       end
     end
-    if not exists(full) then return nil end
+    if not exists(full) or not sessionfile.may_copy(full, { projdir, cfg.root }, theirs) then return nil end
     local to = sdir .. "/media/" .. user .. "/" .. name
     if exists(to) and settled_size(to) ~= band.size(full) then -- a different file with the same name
       name = os.date("!%Y%m%d-%H%M%SZ") .. "_" .. name

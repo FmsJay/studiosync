@@ -6,6 +6,31 @@
 --   reapack: add the StudioSync repository and start a ReaPack sync (installs + registers actions)
 --   folder:  register every "StudioSync - *.lua" in <sync_root>/_tools/studiosync (re-run after updates)
 local here = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]")
+-- The startup block, exactly as lib/tools.lua startup_block writes it (this step runs on its own, before StudioSync's lib can be loaded;
+-- tests/test_0_59_46_trust.lua checks the two are the same). Round 2 review, 0.59.46
+local MARK_A, MARK_Z, CURRENT = "-- BandSync autostart", "-- /BandSync autostart", "StudioSync didn't start: "
+local function startup_block(dirs)
+  local list = {}
+  for _, d in ipairs(dirs) do list[#list + 1] = "[[" .. d .. "/StudioSync - Autostart.lua]]" end
+  return MARK_A .. "\n" ..
+    "do local was, path, finders, started, last = {}, package.path, { table.unpack(package.searchers) }, false, nil\n" ..
+    "  for k in pairs(package.loaded) do was[k] = true end\n" ..
+    "  for _, f in ipairs({ " .. table.concat(list, ", ") .. " }) do\n" ..
+    "    if reaper.file_exists(f) then\n" ..
+    "      local ok, err = pcall(dofile, f)\n" ..
+    "      if ok then started = true break end\n" ..
+    "      last = f .. \": \" .. tostring(err):sub(1, 300)\n" ..
+    "      reaper.SetExtState(\"BandSync\", \"startup failed\", last, false)\n" ..
+    "      for k in pairs(package.loaded) do if not was[k] then package.loaded[k] = nil end end\n" ..
+    "      for i = #package.searchers, 1, -1 do package.searchers[i] = nil end\n" ..
+    "      for i, s in ipairs(finders) do package.searchers[i] = s end\n" ..
+    "      package.path = path\n" ..
+    "    end\n" ..
+    "  end\n" ..
+    "  if not started and last then reaper.ShowConsoleMsg(\"" .. CURRENT .. "\" .. last .. \"\\n\") end\n" ..
+    "end\n" .. MARK_Z .. "\n"
+end
+
 do -- first: the installer waits for this before handing the step over again (a REAPER already open sometimes misses the first)
   -- (and a second hand-off that arrives after all runs nothing: two copies would sync ReaPack twice. Review, 0.58.67)
   local was = io.open(here .. "/studiosync_setup_started", "r")
@@ -318,25 +343,11 @@ local function conclude()
       -- (written beside it, then swapped in: cut off half way, the person's own startup scripts were gone)
       local tmp, old = startup .. ".studiosync.tmp", startup .. ".studiosync.old"
       local wf = io.open(tmp, "w")
-      -- (the block lib/tools.lua startup_block writes: each copy in a pcall, this one and then this computer's last-good copy, so a copy that fails
-      -- to load doesn't stop what follows in __startup.lua. Round 1 review, 0.59.45)
+      -- (the block lib/tools.lua startup_block writes, by a copy of it at the top of this file: each copy in a pcall, this one and then this
+      -- computer's last-good copy, so a copy that fails to load doesn't stop what follows in __startup.lua. Round 1 review, 0.59.45)
       local res = reaper.GetResourcePath():gsub("\\", "/")
       local home = (reaper.EnumerateSubdirectories(res .. "/BandSync", 0) or reaper.EnumerateFiles(res .. "/BandSync", 0)) and (res .. "/BandSync") or (res .. "/StudioSync")
-      local block = "-- BandSync autostart\n" ..
-        "do local was, path, finders = {}, package.path, { table.unpack(package.searchers) }\n" ..
-        "  for k in pairs(package.loaded) do was[k] = true end\n" ..
-        "  for _, f in ipairs({ [[" .. sdir .. "/StudioSync - Autostart.lua]], [[" .. home .. "/last good/StudioSync - Autostart.lua]] }) do\n" ..
-        "    if reaper.file_exists(f) then\n" ..
-        "      local ok, err = pcall(dofile, f)\n" ..
-        "      if ok then break end\n" ..
-        "      reaper.SetExtState(\"BandSync\", \"startup failed\", f .. \": \" .. tostring(err):sub(1, 300), false)\n" ..
-        "      for k in pairs(package.loaded) do if not was[k] then package.loaded[k] = nil end end\n" ..
-        "      for i = #package.searchers, 1, -1 do package.searchers[i] = nil end\n" ..
-        "      for i, s in ipairs(finders) do package.searchers[i] = s end\n" ..
-        "      package.path = path\n" ..
-        "    end\n" ..
-        "  end\n" ..
-        "end\n-- /BandSync autostart\n"
+      local block = startup_block({ sdir, home .. "/last good" })
       local wrote = wf and wf:write(cur .. (cur ~= "" and not cur:match("\n$") and "\n" or "") .. block)
       if wf then wf:close() end
       local placed = wrote and os.rename(tmp, startup) -- (Windows won't rename over a file: the old one steps aside first)

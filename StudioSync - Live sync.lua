@@ -8,6 +8,8 @@ package.path = dir .. "/lib/?.lua;" .. package.path
 local band = require("band")
 band.note_start(dir) -- (was all of this copy here as it started? band.started_partial. Full review, 0.59.44)
 if require("fromfolder").handoff(debug.getinfo(1, "S").source) then return end -- (an old copy's button or key: the copy this computer runs from now. 0.59.24)
+-- (every module loaded now, as approved: one first needed mid-session after its file changed was refused by the code check. James, Round 2 review, 0.59.46)
+if band.preload then band.try("band.preload", band.preload, dir) end
 local sync = require("sync")
 sync.autosave = sync.autosave or {} -- (lib/leave.lua leave.autosave: how much came in since the last auto-save, and whether it may save)
 local live = require("live")
@@ -196,6 +198,8 @@ local function debug_collect(why) band.try("debugmode.collect", require("debugmo
 reaper.atexit(function()
   if click and reaper.GetToggleCommandStateEx(0, 40364) == 1 then reaper.Main_OnCommand(40364, 0) end -- (stopped mid count-in: the click left on. 0.58.92)
   if not reloaded then band.try("end_of_session", end_of_session, "Live sync stopped") end -- (logged when it fails: Round 1 review, 0.59.45)
+  -- (the main room's tab stopping with nothing only here: the song's "local work" mark goes. Round 2 review, 0.59.46)
+  if not reloaded and b.room == "main" and sync.local_work == false then reaper.DeleteExtState(band.SECTION, band.local_work_key(cfg.root, b.song), true) end
   if not reloaded then debug_collect("end of session") end
   -- (this REAPER's lock for the song goes with it: restarted within 20 s, the new REAPER read it as another one syncing the song and waited
   -- two minutes, saying so. Chilio's Mac, 0.59.29)
@@ -212,7 +216,7 @@ end)
 local drive = require("drive")
 local drive_at, drive_more, drive_said = -math.huge, false, nil
 
-local sizes, last, recording, stopped_at = {}, 0, false, 0
+local last, recording, stopped_at = 0, false, 0
 local status_info -- (the status as last written: tick_body says "recording" with it, as the pass that writes it waits while recording)
 local paint_at = -math.huge -- when tracks were last coloured for who's working on them
 local format_at = -math.huge -- when the recording format was last checked
@@ -224,13 +228,6 @@ local rt_at = 0 -- when Real time mode's sends were last matched to what's armed
 local heal_since, healed_at = nil, -math.huge -- since when a caught-up bandmate's project has differed (mirror.heal)
 local mirror_took = 0 -- how long the last full look took
 local mirror_cc, mirror_at, mirror_due = -1, -math.huge, false -- the project's change count at the last full look, and when
--- A file is ready once it exists, is non-empty, and its size held still across two polls.
-local function ready(path)
-  local n = band.size(path)
-  local ok = n and n > 0 and sizes[path] == n
-  sizes[path] = n
-  return ok
-end
 
 local last_driver
 local drawings_at = -math.huge -- (when this last looked whether the room has drawings to show)
@@ -385,23 +382,30 @@ function P.look(t)
       -- the look started from, so an edit made meanwhile still counts. Round 1 review, 0.59.45)
       if cc == change_count then change_count = reaper.GetProjectStateChangeCount(proj) end
       mirror_cc, mirror_at, mirror_due = reaper.GetProjectStateChangeCount(proj), now, false
-      local n, key = 0, tostring(proj)
-      for k in pairs(require("mirror").unsent) do if k:sub(1, #key) == key then n = n + 1 end end
+      local mirror = require("mirror")
+      local n, key, ids = 0, tostring(proj), {}
+      for k in pairs(mirror.unsent) do if k:sub(1, #key) == key then n = n + 1; ids[n] = k:sub(#key + 1) end end
       if hold then reaper.SetExtState(band.SECTION, "held " .. key, tostring(n), false) end -- (how many are waiting, for the panel's "Holding N changes")
-      if (ok and sent > 0) or n > 0 then sync.autosave.clean = false end -- (something of yours: no auto-save over it, P.receive)
-      -- Delete my copy leaves this project's folder alone while it holds work only this computer has (unsent changes, or your own tracks with
-      -- something on them): lib/localcopy.lua reads this. Written only when it changes. (Round 1 review, 0.59.45)
-      local own = n > 0
+      -- (this tab's unsent objects, for Restore, Undo and Bring into main, which run in the panel or the Undo script: mirror.edited_here couldn't see
+      -- an unsent plug-in chain or automation there, and went over them. Written when the set changes. Round 2 review, 0.59.46)
+      table.sort(ids)
+      local unsent_ids = table.concat(ids, ",")
+      if unsent_ids ~= sync.unsent_said then sync.unsent_said = unsent_ids; reaper.SetExtState(band.SECTION, "unsent " .. key, unsent_ids, false) end
+      require("leave").mine_went_out(sync.autosave, ok and sent or 0, n) -- (something of yours: no auto-save over it, P.receive)
+      -- Delete my copy leaves this project's folder alone while it holds work only this computer has (unsent changes, items held back, or your own
+      -- tracks with something on them): lib/localcopy.lua reads this. Kept between sessions: set the first time there's such work, taken away only
+      -- when the main room's Live sync stops with none (at exit), so a song not opened since a restart is covered too, and a side room's tab
+      -- never clears the main tab's. (Round 1 review, 0.59.45; persisted, Round 2 review, 0.59.46)
+      local own = n > 0 or next(mirror.held_back and mirror.held_back[key] or {}) ~= nil
       for i = 0, reaper.CountTracks(proj) - 1 do
         if own then break end
         local tr = reaper.GetTrack(proj, i)
         local tag = select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local", "", false))
         own = (tag == "kept" or tag == "yours") and reaper.CountTrackMediaItems(tr) > 0
       end
-      if own ~= sync.local_work then
-        sync.local_work = own
-        local lw = band.local_work_key and band.local_work_key(cfg.root, b.song) or ("local work " .. band.norm(cfg.root):lower() .. "/" .. b.song)
-        reaper.SetExtState(band.SECTION, lw, own and "1" or "", false)
+      sync.local_work = own
+      if own and reaper.GetExtState(band.SECTION, band.local_work_key(cfg.root, b.song)) ~= "1" then
+        reaper.SetExtState(band.SECTION, band.local_work_key(cfg.root, b.song), "1", true)
       end
       lap("look")
     end
@@ -421,12 +425,7 @@ function P.outbox_inbox(t)
     local more = mirror.more and "changes" or require("bgrender").waiting() and "prints rendering" or require("prints").waiting() and "prints waiting" or nil
     -- (and what waits its turn: a big recording still copying into the studio's folder, plug-ins or automation settling, a copy that failed.
     -- Sync and exit said "safe to close up" over a take that was only on this computer. Not what Hold my changes keeps. Full review, 0.59.44)
-    if not more and mirror.waiting then more = mirror.waiting(tostring(proj), hold) -- (one rule, held-back copies included: Round 1 review, 0.59.45)
-    elseif not more and not hold then
-      local key = tostring(proj)
-      for k in pairs(mirror.unsent) do if k:sub(1, #key) == key then more = "changes waiting their turn (a recording still copying, or plug-ins settling)"; break end end
-      if not more and mirror.unsettled then more = "plug-ins or automation settling" end
-    end
+    more = more or mirror.waiting(tostring(proj), hold) -- (one rule, held-back copies included: Round 1 review, 0.59.45)
     band.set_ext_json(band.SECTION, "outbox " .. tostring(proj), { at = mirror_at, more = more }, false)
   end
   -- what's drawn in a room shows without anyone asking, unless this person hid them: nobody would see a drawing until they
@@ -666,7 +665,7 @@ function P.status(t)
   if info.listen == "" then info.listen = nil end
   -- (every field, keys sorted: a hand-made list missed the mix, who you produce and how, so followers got those 15 s late; and no holdings,
   -- which only the old take sync filled. Round 1 review, 0.59.45)
-  local fingerprint = band.json_encode(info)
+  local fingerprint = live.status_fingerprint(info)
   if fingerprint ~= status_json or now - last_status > 15 then
     status_json, last_status, status_info = fingerprint, now, info
     sync.write_status(proj, cfg, b.song, b.room, info)
@@ -742,16 +741,19 @@ end
 -- The cue watch's work, kept small (Round 1 review, 0.59.45: a bandmate's burst of 300 files was read and decoded in one tick, 0.1-1.5 s, four
 -- times a second, also while recording):
 --  - the folder is listed again only when its modified time moved, or moved under 2 s ago (it's to the second: two changes in one second read
---    the same), or a file was left unread last time. Without js_ReaScriptAPI, or when the folder can't be read that way, it's listed every time.
+--    the same), or a file was left unread last time, or 2 s have passed since the last listing (exFAT and FAT don't move a folder's time for a
+--    new file: the cue watch went blind there. Round 2 review, 0.59.46). Without js_ReaScriptAPI, or when the folder can't be read that way,
+--    it's listed every time.
+--  - a small file that still doesn't decode after CUE_TRIES reads is left to receive (it made the watch list every tick again, for good).
 --  - a file over 4 KB isn't a cue (they're 250-400 bytes): skipped unread, receive reads it.
 --  - at most CUE_READS files a tick; the rest next tick. What's read goes into receive's own cache (sync.ev_cache), so it isn't read twice.
-local CUE_READS, CUE_BYTES = 20, 4096
-local dir_m, dir_m_at, cue_left = nil, -math.huge, true
+local CUE_READS, CUE_BYTES, CUE_TRIES = 20, 4096, 20
+local dir_m, dir_m_at, cue_left, listed_at, cue_bad = nil, -math.huge, true, -math.huge, {}
 local function folder_moved(dir)
-  if cue_left or not reaper.JS_File_Stat then return true end
+  local now = reaper.time_precise()
+  if cue_left or not reaper.JS_File_Stat or now - listed_at >= 2 then return true end
   local status, _, _, m = reaper.JS_File_Stat(dir)
   if status ~= 0 or not m then return true end
-  local now = reaper.time_precise()
   if m ~= dir_m then dir_m, dir_m_at = m, now end
   return now - dir_m_at < 2
 end
@@ -772,7 +774,7 @@ local function quick_transport()
   local found, reads = nil, 0
   local cache = sync.ev_cache and (sync.ev_cache[dir] or {})
   if cache then sync.ev_cache[dir] = cache end
-  cue_left = false
+  cue_left, listed_at = false, reaper.time_precise()
   -- (read now, as before, but shared: the poll's own looks at the folder within 0.2 s use this read. 0.59.14, review)
   for _, f in ipairs(band.raw_listing(dir, true)) do
     if not seen_ev[f] then
@@ -781,7 +783,8 @@ local function quick_transport()
       else
         reads = reads + 1
         local ev, big = small_event(dir .. "/" .. f)
-        if ev or big then seen_ev[f] = true else cue_left = true end -- (one caught mid-write is read again next time, not skipped: review, 0.58.92)
+        cue_bad[f] = not (ev or big) and (cue_bad[f] or 0) + 1 or nil
+        if ev or big or cue_bad[f] >= CUE_TRIES then seen_ev[f], cue_bad[f] = true, nil else cue_left = true end -- (one caught mid-write is read again next time, not skipped: review, 0.58.92)
         if ev and cache then cache[f] = ev end
         if ev and (ev.type == "start" or ev.type == "stop") and not fired[ev.id] and together.now() - (ev.at or 0) < 30 then found = ev end
       end
@@ -826,7 +829,7 @@ local function tick_body() -- returns true to keep going
         "sonobus for listeners", "outbox", "live owner", "ping", "slow tick", "last here", "draw", "live began", "takelanes",
         -- (and these: a new tab at the same address showed a count-in, a producer, a SonoBus trouble or a drift that were the closed tab's. Review, 0.59.14)
         "end session", "produced by", "producer controls", "timing", "produce ctl", "last_at", "stamping", "together_at", "rt group", "rt silent", "rt silent who", "rt trouble", "driver_away", "mirror drift",
-        "ninjam shown", "ninjam off", "ninjam start", "ninjam connect", "ninjam host" }) do reaper.DeleteExtState(band.SECTION, k .. " " .. key, false) end
+        "ninjam shown", "ninjam off", "ninjam start", "ninjam connect", "ninjam host", "unsent", "last_track" }) do reaper.DeleteExtState(band.SECTION, k .. " " .. key, false) end -- (unsent, last_track: Round 2 review, 0.59.46)
     return band.log("live sync stopped: '" .. b.song .. "'" .. (b.room ~= "main" and (", side room '" .. b.room .. "',") or "") .. " was closed (it starts again by itself when you reopen it)")
   end
   local now_b = band.binding(proj)
@@ -1071,7 +1074,7 @@ local function tick_body() -- returns true to keep going
   -- took full control. Review, 0.58.92-93)
   -- (and while the tab in front records: a big tab behind ran full looks, receives and cloud passes mid-take. REAPER records only in the tab in
   -- front, so that's GetPlayState's. The 15 s status heartbeat carries on. Round 1 review, 0.59.45)
-  local rec_any = recording or reaper.GetPlayState() & 4 == 4
+  local rec_any = recording or live.recording_anywhere()
   if together.heartbeat_due(rec_any or undoing or live_set, status_info ~= nil, now, last_status) then last_status = now; pcall(sync.write_status, proj, cfg, b.song, b.room, status_info) end
   if not rec_any and not undoing and not live_set and now - last > every and not (transport and due_in < 1.5) then
     last = reaper.time_precise()
@@ -1093,30 +1096,31 @@ local seen_disk, disk_at = nil, 0
 local function updated()
   if reaper.time_precise() - disk_at < 5 then return false end
   disk_at = reaper.time_precise()
-  local disk = (band.version_on_disk and band.version_on_disk(dir) or (band.read(dir .. "/lib/band.lua") or ""):match('VERSION = "([^"]+)"')) -- (its first bytes, not 85 KB: Round 1 review, 0.59.45)
+  local disk = band.version_on_disk(dir) -- (its first bytes, not 85 KB: Round 1 review, 0.59.45)
   local ready = disk and disk ~= band.VERSION and disk == seen_disk and band.update_ok(dir, disk) -- (from a shared folder, once you said yes: Autostart asks)
   seen_disk = disk
   ready = ready or (disk and band.started_partial(dir)) -- (started on a part-arrived copy, whole now: 0.59.44)
   -- (this tab's own mark as well as the shared one: one tab failing held every tab back. Round 1 review, 0.59.45)
-  local per_tab = band.reload_failed_key and band.reload_failed_key("StudioSync - Live sync.lua", key) or ("reload failed StudioSync - Live sync.lua " .. key)
-  return ready and reaper.GetExtState(band.SECTION, "reload failed StudioSync - Live sync.lua") ~= disk and reaper.GetExtState(band.SECTION, per_tab) ~= disk
+  return ready and reaper.GetExtState(band.SECTION, band.reload_failed_key("StudioSync - Live sync.lua", key)) ~= disk
 end
 -- an error anywhere in a tick (a malformed cue from someone's machine, say) is logged, and Live sync carries on
 local said_at, sws_at = -math.huge, -math.huge
 tick = function()
   -- (the tab may have just been closed: check before asking about it, or REAPER stops us with an error box)
   -- (and not during a count-in or a start or stop still to come: the reload lost them, leaving the metronome on and "together_at" set. Review, 0.59.14)
-  if reaper.ValidatePtr2(0, proj, "ReaProject*") and reaper.GetPlayStateEx(proj) & 4 == 0 and not click and not transport and updated() then
-    band.log("live sync for '" .. b.song .. "' reloaded for StudioSync " .. tostring(seen_disk))
-    reloaded = true
-    reaper.DeleteExtState(band.SECTION, "live " .. key, false)
-    BANDSYNC_LIVE_PROJ, BANDSYNC_ENDED_AT = proj, ended_at_n
-    if band.reload_or_say(dir, "StudioSync - Live sync.lua", seen_disk, key) then return end
-    reloaded, BANDSYNC_LIVE_PROJ, BANDSYNC_ENDED_AT = false, nil, nil -- (it couldn't start: this one carries on. 0.59.44)
-    -- (and owns its tab again: the failed start had taken the token, so on the next tick this one read "a newer Live sync took over" and stopped.
-    -- Round 1 review, 0.59.45)
-    reaper.SetExtState(band.SECTION, "live owner " .. key, my_token, false)
-  end
+  -- (nothing while anything records: lib/live.lua live.reload says nothing and hands nothing over then; it logged "reloaded" every 5 s through a
+  -- take. Said only once the new code took over. Round 2 review, 0.59.46)
+  if reaper.ValidatePtr2(0, proj, "ReaProject*") and reaper.GetPlayStateEx(proj) & 4 == 0 and not click and not transport and updated()
+    and live.reload(dir, "StudioSync - Live sync.lua", seen_disk, key, function()
+      reloaded = true
+      reaper.DeleteExtState(band.SECTION, "live " .. key, false)
+      BANDSYNC_LIVE_PROJ, BANDSYNC_ENDED_AT = proj, ended_at_n
+    end, "live sync for '" .. b.song .. "' reloaded for StudioSync " .. tostring(seen_disk), function()
+      reloaded, BANDSYNC_LIVE_PROJ, BANDSYNC_ENDED_AT = false, nil, nil -- (it couldn't start: this one carries on. 0.59.44)
+      -- (and owns its tab again: the failed start had taken the token, so on the next tick this one read "a newer Live sync took over" and stopped.
+      -- Round 1 review, 0.59.45)
+      reaper.SetExtState(band.SECTION, "live owner " .. key, my_token, false)
+    end) then return end
   local t0 = reaper.time_precise()
   laps, lap_t = {}, t0
   if reaper.time_precise() - sws_at > 1 then

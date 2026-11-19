@@ -60,11 +60,15 @@ local function before(t)
 end
 
 -- From Autostart: moves this computer to the studio's copy when it should. `dir`: where this copy runs from. -> the copy it moved to, or nil.
-local looked, back_seen = -math.huge, 0
+local looked, back_seen, said_older = -math.huge, 0, nil
 function ff.tick(dir, cfg)
   if reaper.time_precise() - looked < 60 then return end
   looked = reaper.time_precise()
   if dev_copy(dir) then return end
+  -- (not before Syncthing has said which computer this is: a guest is known by a mark naming it, and on the first look a guest with a leftover
+  -- copy in the folder was moved to it, then back. Round 2 review, 0.59.46)
+  local okid, id = pcall(require("services").my_device_id)
+  if not (okid and id) then return end
   local front = reaper.GetExtState(band.SECTION, "sync_root") -- (not band.settings: on a first run it asks for a name)
   cfg = cfg or (front ~= "" and { root = front } or nil)
   local root = ff.wanted(cfg)
@@ -76,6 +80,18 @@ function ff.tick(dir, cfg)
     local from = norm(run):find("/_tools/studiosync$") and run or (norm(dir):find("/_tools/studiosync$") and dir) or nil
     local back = from and before(from)
     if back and norm(run) == norm(back) then back = nil end -- (moved back already, waiting for REAPER's next start)
+    -- (never to an older copy than the one running: it went back to whatever ReaPack copy it had when it moved, however old. Then this computer's
+    -- last good copy, if it's at least as new, else it stays where it is; either way it says to update through ReaPack. James's decision,
+    -- Round 2 review, 0.59.46)
+    local older = back and not ff.at_least(band.version_on_disk(back) or "0", band.VERSION)
+    if older then
+      local lg = band.last_good_dir()
+      local lv = band.version_on_disk(lg)
+      local say = "the copy this computer ran StudioSync from before (" .. back .. ", " .. tostring(band.version_on_disk(back)) .. ") is older than " .. band.VERSION
+      if lv and ff.at_least(lv, band.VERSION) and norm(run) ~= norm(lg) and norm(dir) ~= norm(lg) then back = lg; say = say .. ": it runs from its last good copy instead"
+      else back = nil; say = say .. ": it stays on the studio's copy" end
+      if said_older ~= say then said_older = say; band.log(say .. ". Update StudioSync through ReaPack (Extensions > ReaPack > Synchronize packages)") end
+    end
     back_seen = back and back_seen + 1 or 0
     if back and back_seen >= 2 then
       back_seen = 0
@@ -115,13 +131,14 @@ end
 -- said "older" for good (James's desktop and laptop: 1.0.5 against 1.0.6, 0.59.27). The loaded file is renamed, not overwritten (Windows
 -- holds it; a Mac's loaded dylib mustn't change under it), and the new one goes in beside it: REAPER loads it at its next start.
 -- -> true when it put one in.
-local ext_done = false
+local ext_done, arch_seen = false, nil
 function ff.extension_tick(dir)
   if ext_done then return end
   local have, want = reaper.GetExtState(band.SECTION, "menu extension"), require("tools").EXT_WANT
   if have == "" or band.compare_versions(have, want) >= 0 then return end
-  -- (Linux: REAPER says "Other" on an ARM computer too, so the machine's own word: Round 1 review, 0.59.45)
-  local arch = band.LINUX and ((reaper.ExecProcess("/bin/uname -m", 3000) or ""):match("^0\n(%S+)") or "") or ""
+  -- (Linux: REAPER says "Other" on an ARM computer too, so the machine's own word: Round 1 review, 0.59.45. Asked once: Round 2 review, 0.59.46)
+  arch_seen = arch_seen or (band.LINUX and ((reaper.ExecProcess("/bin/uname -m", 3000) or ""):match("^0\n(%S+)") or "") or "")
+  local arch = arch_seen
   local name = band.WIN and "reaper_studiosync-x64.dll" or band.MAC and "reaper_studiosync.dylib"
     or (reaper.GetOS():find("arm") or reaper.GetOS():find("aarch64") or arch == "aarch64" or arch == "arm64") and "reaper_studiosync-aarch64.so" or "reaper_studiosync-x86_64.so"
   local from, to = band.norm(dir) .. "/extension/" .. name, band.norm(reaper.GetResourcePath()) .. "/UserPlugins/" .. name
@@ -149,6 +166,11 @@ function ff.handoff(source)
   if not dir or norm(dir) == norm(run) or dev_copy(dir) or norm(dir) == norm(band.last_good_dir()) then return false end
   local there = band.norm(run) .. "/" .. file
   if not reaper.file_exists(there) then return false end
+  -- (Live sync through a free launcher: its own action ignores a second start while it runs for another tab, and nothing started. Round 2 review, 0.59.46)
+  if file == "StudioSync - Live sync.lua" then
+    if not band.start_live(band.norm(run)) then band.log("Live sync has no free slot: close some StudioSync tabs (17 at most run at once)") end
+    return true
+  end
   local id = reaper.AddRemoveReaScript(true, 0, there, true)
   if id == 0 then return false end
   reaper.Main_OnCommand(id, 0)

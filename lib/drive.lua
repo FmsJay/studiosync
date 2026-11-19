@@ -68,7 +68,7 @@ function drive.service() return reaper.GetExtState(band.SECTION, "drive service"
 local copy_said = {} -- (a file that failed to copy, said once)
 drive.extra = {} -- top folders of Google's drive other than My Drive (looked in, never made in)
 drive.BIG = 16 * 1024 * 1024 -- bytes: a file this big is copied in the background (drive.mirror)
-local function places(only)
+local function places(only, g_only)
   local out = {}
   local function add(service, path) if path and (only == nil or only == "" or only == service) then out[#out + 1] = path end end
   local win = reaper.GetOS():find("^Win")
@@ -86,8 +86,10 @@ local function places(only)
   -- (and only when Google's is one this computer may use: with another service chosen in Settings each letter was listed anyway. Round 1 review, 0.59.45)
   if win and (only == nil or only == "" or only == "google") then -- (drive letters only on Windows: a Mac looked at 23 that can't exist)
     google("G:", false)
+    -- (`g_only`: G: alone, after a sweep found nothing: the other letters every 5 minutes kept a dead mapped drive freezing REAPER. A change of
+    -- service in Settings sweeps them all again (drive.forget). Round 2 review, 0.59.46)
     for c = ("D"):byte(), ("Z"):byte() do
-      if c ~= ("G"):byte() then google(string.char(c) .. ":", false) end
+      if c ~= ("G"):byte() and not g_only then google(string.char(c) .. ":", false) end
     end
   end
   if home ~= "" then add("google", home .. "/My Drive") end
@@ -168,8 +170,9 @@ function drive.root(cfg)
   end
   if reaper.time_precise() - l.at >= 300 then
     l.at = reaper.time_precise()
-    l.found, l.missing = drive.find(places(drive.service()), band.subdirs,
+    l.found, l.missing = drive.find(places(drive.service(), l.swept), band.subdirs,
       function(p) return reaper.EnumerateSubdirectories(p, 0) ~= nil or reaper.EnumerateFiles(p, 0) ~= nil end, info.drive)
+    l.swept = l.swept or not l.found
     -- the band's Drive was here and isn't now: that Google account signed out, or Drive switched to another one (Mac,
     -- 2026-10-31: a personal and a band account on one machine). Said, not guessed at: drive.away, for the panel.
     local seen = reaper.GetExtState(band.SECTION, key)

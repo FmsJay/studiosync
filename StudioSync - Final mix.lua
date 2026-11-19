@@ -72,12 +72,12 @@ if made then
   if droot then
     reaper.RecursiveCreateDirectory(droot .. "/" .. b.song .. "/mixes", 0)
     local copied, why = pcall(band.copy_atomic, out .. "/" .. made, droot .. "/" .. b.song .. "/mixes/" .. made)
-    band.log(copied and "and copied to Google Drive" or ("couldn't copy the mix to Google Drive, but it's in the shared folder: " .. tostring(why)))
+    band.log(copied and ("and copied to " .. require("drive").name(cfg)) or ("couldn't copy the mix to " .. require("drive").name(cfg) .. ", but it's in the shared folder: " .. tostring(why))) -- (the service chosen, not always Google: Round 2 review, 0.59.46)
     if copied then droot = droot .. "/" .. b.song .. "/mixes" else droot = nil end
   end
   -- (in the chat, so everyone hears there's a new mix, and where to play it on a phone: the Drive app. Research, 0.58.47)
   pcall(function()
-    require("page_chat").post(cfg, b, "New mix: " .. made .. (droot and (". On your phone: the Google Drive app, " .. b.song .. " > mixes.") or
+    require("page_chat").post(cfg, b, "New mix: " .. made .. (droot and (". On your phone: the " .. require("drive").name(cfg) .. " app, " .. b.song .. " > mixes.") or
       ". It's in the shared folder's " .. b.song .. "/mixes."))
   end)
 else band.msg("No mix was made in the studio's mixes folder (the Render window was cancelled, or its folder or name was changed). Your render settings are as they were.") end

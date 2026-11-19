@@ -72,12 +72,16 @@ end
 -- A guest's computer (a list or not: removal.am_guest) doesn't sync the studio's copy of StudioSync, nor other people's holds, guests' lists,
 -- guest invitations and feedback (they name projects a guest with a list isn't to know of); its own holds, list and feedback still go.
 -- `guest`: { me = its StudioSync name, device = its Syncthing ID } or nil. -> lines for the block, first. Pure. James's decision, Round 1 review, 0.59.45.
+-- (`guest.limited`: a guest with a project list. Only theirs leave out others' holds lists, which name projects: an every-project guest needs
+-- them, or Sync and exit could never find anyone who has the project. Round 2 review, 0.59.46)
 function songsync.guest_lines(guest)
   if not (guest and guest.me) then return {} end
   local me = tostring(guest.me)
-  return { "/_tools", "!/_band/holds/" .. me:gsub("[^%w%-_ ]", "") .. ".json", "/_band/holds",
-    "!/_band/guest-access/" .. tostring(guest.device or ""):sub(1, 7):gsub("[^%w]", "") .. ".json", "/_band/guest-access", "/_band/guest-invites",
-    "!/_band/feedback/*-" .. me:gsub("[^%w%-_]", "_") .. ".md", "/_band/feedback" }
+  local out = { "/_tools" }
+  if guest.limited then out[#out + 1] = "!/_band/holds/" .. me:gsub("[^%w%-_ ]", "") .. ".json"; out[#out + 1] = "/_band/holds" end
+  for _, l in ipairs({ "!/_band/guest-access/" .. tostring(guest.device or ""):sub(1, 7):gsub("[^%w]", "") .. ".json", "/_band/guest-access", "/_band/guest-invites",
+    "!/_band/feedback/*-" .. me:gsub("[^%w%-_]", "_") .. ".md", "/_band/feedback" }) do out[#out + 1] = l end
+  return out
 end
 function songsync.merge(text, wanted, gone, allowed, debug, guest)
   local keep, inside = {}, false
@@ -156,7 +160,8 @@ function songsync.apply(cfg)
   local old = band.read(path) or ""
   local okc, allowed = pcall(function() return require("access").mine(cfg.root) end) -- (a guest with a list: theirs only. 0.58.89)
   local okg, guest = pcall(function() return require("removal").am_guest(cfg.root) end)
-  guest = ((okc and allowed) or (okg and guest)) and { me = cfg.user or reaper.GetExtState(band.SECTION, "user"), device = require("services").my_device_id() } or nil
+  guest = ((okc and allowed) or (okg and guest)) and { me = cfg.user or reaper.GetExtState(band.SECTION, "user"), device = require("services").my_device_id(),
+    limited = (okc and allowed) and true or nil } or nil
   local new = songsync.merge(old, not songsync.keep_all() and songsync.wanted(cfg) or nil, songsync.keep_all() and songsync.gone() or nil, okc and allowed or nil,
     songsync.debug_of(cfg), guest)
   if new == old then return false end

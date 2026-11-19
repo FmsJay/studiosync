@@ -447,7 +447,7 @@ function extras.save_template(proj, cfg, name)
   local dir = extras.template_dir(cfg)
   reaper.RecursiveCreateDirectory(dir, 0)
   local tmp = band.home() .. "/template-scratch.rpp"
-  local _ = band.save_copy and band.save_copy(proj, tmp) or reaper.Main_SaveProjectEx(proj, tmp, 0) -- (a copy: the project stays where it is)
+  band.save_copy(proj, tmp) -- (a copy: the project stays where it is. Plainly: see lib/sessionfile.lua. Round 2 review, 0.59.46)
   local text = band.read(tmp)
   os.remove(tmp); os.remove(tmp .. ".bandsync-ids.json")
   if not text then return nil, "Couldn't save a copy of the project." end
@@ -462,11 +462,17 @@ function extras.templates(cfg)
   return t
 end
 -- A new tab started from one, untitled: share it as usual (Share ... with the studio).
+-- (through extras.template_text into a copy of this computer's own, opened from there: the studio's file is anyone's to write, guests' too,
+-- and opened as it was, items naming files on your disk became new items of yours, which sharing the song then copied into the studio.
+-- Security, Round 2 review, 0.59.46. Cost: one read and write of the template, at the click)
 function extras.open_template(cfg, name)
   local path = extras.template_dir(cfg) .. "/" .. name .. ".rpp"
-  if not reaper.file_exists(path) then return false end
+  local text = reaper.file_exists(path) and band.read(path)
+  if not text then return false end
+  local scratch = band.home() .. "/template-open.rpp"
+  if not pcall(band.write_atomic, scratch, extras.template_text(text)) then return false end
   reaper.Main_OnCommand(40859, 0) -- new project tab
-  reaper.Main_openProject("noprompt:template:" .. path) -- (that order: as the installed scripts use it)
+  reaper.Main_openProject("noprompt:template:" .. scratch) -- (that order: as the installed scripts use it)
   return true
 end
 

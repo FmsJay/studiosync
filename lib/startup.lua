@@ -170,11 +170,17 @@ end
 -- REAPER.app, REAPER64.app, "REAPER 7.app". The Mac hand-over and background prints each guessed REAPER.app, so a renamed bundle waited 20 s
 -- per tab at every start and printed with the wrong REAPER, or none. (Round 1 review, 0.59.45) -> the path, or nil when none is there.
 -- exists, subdirs: reaper.file_exists and a folder listing (for tests). Windows and Linux: the program beside GetExePath, as before.
+local exe_found = {} -- (the Mac's answer per folder, kept: background prints listed the whole Applications folder for every print. Round 2 review, 0.59.46)
 function startup.reaper_exe(os_name, exe_dir, exists, subdirs)
-  exists = exists or reaper.file_exists
   local d = tostring(exe_dir or ""):gsub("\\", "/"):gsub("/+$", "")
   if os_name:find("^Win") then return d .. "/reaper.exe" end
   if not (os_name:find("^OSX") or os_name:find("^macOS")) then return d .. "/reaper" end
+  if not exists and exe_found[d] ~= nil then return exe_found[d] or nil end
+  local found = startup.find_exe(d, exists or reaper.file_exists, subdirs)
+  if not exists then exe_found[d] = found or false end
+  return found
+end
+function startup.find_exe(d, exists, subdirs)
   local list = { d .. "/Contents/MacOS/REAPER", d .. "/REAPER.app/Contents/MacOS/REAPER", d .. "/REAPER64.app/Contents/MacOS/REAPER" }
   for _, s in ipairs(subdirs and subdirs(d) or band.subdirs(d)) do
     if s:lower():match("^reaper.*%.app$") then list[#list + 1] = d .. "/" .. s .. "/Contents/MacOS/REAPER" end

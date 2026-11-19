@@ -211,8 +211,8 @@ end
 -- The words for it, for the log and the panel's Debug pill.
 function dm.notice(name)
   return "Debug mode is on in " .. tostring(name) .. ": at the end of each session, with each bug report and after a crash, " ..
-    "this computer saves a report, a copy of the project, its setup, log and REAPER's crash reports into the studio's _debug folder for the " ..
-    "owner and admins (hidden from the others, not locked). The owner or an admin can switch it off in Settings > Studio"
+    "this computer saves a report, a copy of this project as you have it (unsent and local work too), its setup, its log and REAPER's crash " ..
+    "reports into the studio's _debug folder, for the owner and admins. The owner or an admin can switch it off in Settings > Studio" -- (Round 2 review, 0.59.46: what the copy holds)
 end
 -- (Round 1 review, 0.59.45: also from dm.collect and dm.computer_all, before anything is written, so debug mode switched on mid-session is told
 -- before that session's end sends anything; Autostart's start alone told it only at the next start.)
