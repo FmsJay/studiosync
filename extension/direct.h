@@ -35,6 +35,10 @@ int direct_stream(const char *studio, const char *rel, const char *path, const c
 int direct_stream_end(const char *studio, const char *rel);
 const char *direct_streams(); // JSON: { out = [ { studio, rel, size, ended, peers = { [peer] = { sent, done, error } } } ], in = [ ... ] }
 bool direct_stream_rel_ok(const char *rel);
+void direct_trace(const char *path); // every stream pass appends a line to `path` ("" or null: off)
+#ifdef __cplusplus
+long long direct_file_size(const char *path, std::string *how); // the size a stream reads, and how each way of asking said it (the test, the trace)
+#endif
 
 // ---- the audio spike (extension/direct_audio.cpp: does nothing until started) ----------------------------------------------------------
 int direct_audio_start(int first_input, int nch); // capture hardware inputs first..first+nch-1 (nch 1..8) into a lock-free ring
@@ -55,6 +59,7 @@ bool direct_wav_layout(const std::string &head, long long &data_off, int &block_
 #ifdef DIRECT_STANDALONE
 void direct_test_knobs(long long skew_us, int delay_max_ms, int ping_ms); // the listener's clock skewed, its answers delayed 0..max ms
 void direct_test_bandwidth(int kbps); // the listener reads at most this fast (0: as fast as it comes)
+void direct_test_stream_gap(int ms); // a received stream's audio and its header written this far apart (the window a reader could fall into)
 #endif
 
 #ifndef DIRECT_STANDALONE

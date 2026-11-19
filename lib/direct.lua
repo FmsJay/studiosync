@@ -448,9 +448,22 @@ end
 -- Live sync's tick: files that arrived (-> how many: a receive pass then), who to send to, the clock, a heartbeat, and the messages by kind.
 direct.HEARTBEAT = 5
 local beat_at = -math.huge
+-- The stream trace (ExtState "stream trace" = "1", for testing): the extension logs every stream pass to <home>/direct/stream_trace.log, and
+-- lib/streams.lua its own steps there. Handed over only when it changes. (James, rt)
+local trace_set
+function direct.trace_path() return reaper.GetExtState(band.SECTION, "stream trace") == "1" and band.home() .. "/direct/stream_trace.log" or "" end
+local function trace_tick()
+  local p = direct.trace_path()
+  if p ~= trace_set and reaper.StudioSync_DirectTrace then
+    if p ~= "" then reaper.RecursiveCreateDirectory(band.home() .. "/direct", 0) end
+    reaper.StudioSync_DirectTrace(p)
+    trace_set = p
+  end
+end
 function direct.live_tick(cfg, song, room, handlers)
   local n = direct.tick(cfg)
   if not direct.available() then return n end
+  trace_tick()
   direct.refresh_peers(cfg, song, room)
   if direct.live_available() then
     direct.keep_clock(cfg, song, room)

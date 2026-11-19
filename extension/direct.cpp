@@ -265,23 +265,53 @@ static std::string win_err(const char *what)
   snprintf(b, sizeof b, "%s (Windows error %lu%s)", what, (unsigned long)e, e == ERROR_SHARING_VIOLATION ? ": REAPER holds it without letting others read" : e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND ? ": not there" : "");
   return b;
 }
-static long long file_size(const std::string &p, std::string *why = nullptr)
+// (REAPER recording: the laptop's copy sat at 64 KB on a direct LAN path while Git-bash's stat saw the desktop's take grow in 256 KB steps,
+// and the stream's own size stayed small. So the size is asked every way there is and the largest taken: FILE_STANDARD_INFO and
+// GetFileSizeEx on a handle asking only for attributes (no share mode refuses it), GetFileSizeEx on a reading handle (what read_some uses),
+// and the folder entry (what Explorer, Get-Item and stat read; NTFS updates it lazily for a file someone has open). `how` says what each said,
+// for the stream trace. James, rt)
+static long long file_size(const std::string &p, std::string *why = nullptr, std::string *how = nullptr)
 {
-  HANDLE h = CreateFileW(widen(p).c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (h == INVALID_HANDLE_VALUE) { if (why) *why = win_err("can't see the file"); return -1; }
-  LARGE_INTEGER n;
-  const bool ok = GetFileSizeEx(h, &n) != 0;
-  if (!ok && why) *why = win_err("can't read the file's size");
-  CloseHandle(h);
-  return ok ? (long long)n.QuadPart : -1;
+  const std::wstring w = widen(p);
+  long long standard = -1, attr = -1, reading = -1, folder = -1;
+  HANDLE a = CreateFileW(w.c_str(), FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  const std::string a_err = a == INVALID_HANDLE_VALUE ? win_err("can't see the file") : "";
+  if (a != INVALID_HANDLE_VALUE) {
+    FILE_STANDARD_INFO si;
+    if (GetFileInformationByHandleEx(a, FileStandardInfo, &si, sizeof si)) standard = (long long)si.EndOfFile.QuadPart;
+    LARGE_INTEGER n;
+    if (GetFileSizeEx(a, &n)) attr = (long long)n.QuadPart;
+    CloseHandle(a);
+  }
+  HANDLE r = CreateFileW(w.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  const std::string r_err = r == INVALID_HANDLE_VALUE ? win_err("can't open it to read") : "";
+  if (r != INVALID_HANDLE_VALUE) {
+    LARGE_INTEGER n;
+    if (GetFileSizeEx(r, &n)) reading = (long long)n.QuadPart;
+    CloseHandle(r);
+  }
+  WIN32_FIND_DATAW fd;
+  HANDLE f = FindFirstFileW(w.c_str(), &fd);
+  if (f != INVALID_HANDLE_VALUE) { folder = ((long long)fd.nFileSizeHigh << 32) | fd.nFileSizeLow; FindClose(f); }
+  const long long best = std::max(std::max(standard, attr), std::max(reading, folder));
+  if (how) {
+    char b[200];
+    snprintf(b, sizeof b, "standard=%lld attr=%lld read=%lld folder=%lld", standard, attr, reading, folder);
+    *how = b;
+    if (!a_err.empty()) *how += " [" + a_err + "]";
+    if (!r_err.empty()) *how += " [" + r_err + "]";
+  }
+  if (best < 0 && why) *why = !a_err.empty() ? a_err : "can't read the file's size";
+  return best;
 }
 #else
-static long long file_size(const std::string &p, std::string *why = nullptr)
+static long long file_size(const std::string &p, std::string *why = nullptr, std::string *how = nullptr)
 {
   FILE *f = open_shared(p, "rb");
   if (!f) { if (why) *why = std::string("can't open the file (") + strerror(errno) + ")"; return -1; }
   const long long n = size64(f);
   fclose(f);
+  if (how) *how = "seek-end=" + std::to_string(n);
   return n;
 }
 #endif
@@ -304,6 +334,7 @@ double direct_file_time(const char *path)
   return (double)std::max(st.st_mtime, st.st_ctime);
 #endif
 }
+long long direct_file_size(const char *path, std::string *how) { return path ? file_size(path, nullptr, how) : -1; }
 // Up to n bytes at `at`: -> how many were read (fewer near the end, or where a writer hasn't got to yet), -1 if it can't be opened (why).
 static long long read_some(const std::string &p, long long at, size_t n, std::string &out, std::string *why = nullptr)
 {
@@ -465,6 +496,7 @@ struct OutStream {
 struct InStream {
   std::string studio, rel, path; FILE *f = nullptr; // (f: only the listener thread uses it)
   long long len = 0, total = -1, data_off = -1, ds64_off = -1; int block_align = 0, codec = 0; bool rf64 = false, finalizing = false, done = false, ok = false; long long at = 0;
+  std::string held; // (the file's start while it isn't yet a WAV header worth showing: zeros on disk meanwhile. wav_append)
 };
 struct Conn { sock_t s; std::vector<char> buf; double last; };
 
@@ -492,7 +524,9 @@ std::atomic<bool> g_stop_listen{ false }, g_stop_send{ false };
 sock_t g_listen_sock = BAD_SOCK;
 bool g_wsa = false;
 std::string g_poll_out, g_status_out, g_msg_out, g_clock_out, g_streams_out; // (what the last call handed back: REAPER copies it before the next)
-long long g_skew_us = 0; int g_delay_max_ms = 0; double g_ping_s = 1.0; int g_listen_kbps = 0; // (the test's knobs; 0, 0, 1 s, 0 otherwise)
+std::atomic<bool> g_tracing{ false };
+std::string g_trace_path; // (lib/direct.lua sets it while ExtState "stream trace" is 1: every stream pass appends a line. James, rt)
+long long g_skew_us = 0; int g_delay_max_ms = 0; double g_ping_s = 1.0; int g_listen_kbps = 0, g_stream_gap_ms = 0; // (the test's knobs; 0, 0, 1 s, 0, 0 otherwise)
 
 // (STREAM_CHUNK: each stream frame waits up to 3 s for its answer, so it has to cross in well under that on a slow way too. At 256 KB a
 // Tailscale relay's few hundred kbit/s timed out every frame after REAPER's first 64 KB, each failure skipping the peer 10 s: the laptop's copy
@@ -562,32 +596,82 @@ static std::vector<std::pair<long long, std::string>> wav_sizes(const InStream &
   else if (riff <= 0xffffffffLL) { out.push_back({ 4, le(riff, 4) }); out.push_back({ s.data_off - 4, le(data, 4) }); }
   return out;
 }
+// Could these first bytes be a WAV's (RIFF or RF64)? Fewer than 4: could they still become one?
+static bool riffish(const std::string &h)
+{
+  const size_t n = std::min<size_t>(4, h.size());
+  return h.compare(0, n, "RIFF", 0, n) == 0 || h.compare(0, n, "RF64", 0, n) == 0;
+}
 // The layout, while it isn't known yet (data_off -1), from what's here and the chunk arriving: a WAV whose sizes are kept, or not one (-2).
 static void wav_learn(InStream &s, const char *q, size_t qn)
 {
   if (s.data_off != -1) return;
-  std::string head((size_t)std::min<long long>(s.len, (long long)STREAM_HEAD), '\0');
-  if (!head.empty() && (seek64(s.f, 0) != 0 || fread(&head[0], 1, head.size(), s.f) != head.size())) return;
-  head.append(q, std::min(qn, (size_t)STREAM_HEAD - head.size()));
-  if (head.size() < 12 || direct_wav_layout(head, s.data_off, s.block_align, s.rf64, s.ds64_off)) return;
+  std::string head;
+  if (!s.held.empty() || s.len == 0) head = s.held; // (held: the whole file so far, not on disk yet)
+  else {
+    head.assign((size_t)std::min<long long>(s.len, (long long)STREAM_HEAD), '\0');
+    if (seek64(s.f, 0) != 0 || fread(&head[0], 1, head.size(), s.f) != head.size()) return;
+  }
+  head.append(q, std::min(qn, (size_t)STREAM_HEAD - std::min(head.size(), (size_t)STREAM_HEAD)));
+  if (head.size() < 12) { if (!riffish(head)) s.data_off = -2; return; }
+  if (direct_wav_layout(head, s.data_off, s.block_align, s.rf64, s.ds64_off)) return;
   const bool riff = head.compare(0, 4, "RIFF") == 0 || head.compare(0, 4, "RF64") == 0;
   s.data_off = (!riff || head.size() >= STREAM_HEAD) ? -2 : -1; // (not a WAV, or no "data" in its first 64 KB: left as it comes)
 }
-// A chunk appended at s.len: the audio first; then the header part this chunk brings (the first one, usually), already holding the new sizes;
-// then the sizes already on disk, RIFF's before data's. A look at any moment sees a WAV claiming only whole frames that are there (or no
-// header yet). shortcut: a header split over two chunks shows its placeholder sizes for a moment; the recorder writes it in one go.
+// The held start, sizes for `end` bytes put in. Pure.
+static std::string with_sizes(const InStream &s, std::string head, long long end)
+{
+  for (auto &f : wav_sizes(s, end))
+    for (size_t i = 0; i < f.second.size(); ++i) if (f.first + (long long)i < (long long)head.size()) head[(size_t)(f.first + (long long)i)] = f.second[i];
+  return head;
+}
+// A chunk appended at s.len. A look at any moment sees either no WAV yet (zeros where its header goes) or a whole header claiming at least
+// one sample frame and never more than is on disk:
+//  - until the header is complete AND a whole frame of audio is here, the file's start is held back (zeros on disk, s.held in memory). The
+//    copy showed a header claiming no audio (data 0) between the first audio's append and its sizes, when the first chunk was the header
+//    alone, and a placeholder size when the header came in two chunks: aarch64 CI caught the first with 64 KB frames (James, rt);
+//  - then the audio goes first and the header after it, already holding the sizes;
+//  - after that, each chunk's audio first, then the sizes on disk, RIFF's before data's (a look between sees them a chunk behind).
 static bool wav_append(InStream &s, const char *q, size_t qn)
 {
   const bool keep = !s.finalizing && s.codec == 0;
   if (keep) wav_learn(s, q, qn);
+  const long long end = s.len + (long long)qn, pre = s.data_off > 0 ? s.data_off : end; // (pre: where the header ends, once known)
+  const size_t in_pre = (size_t)std::max<long long>(0, std::min(end, pre) - s.len); // (this chunk's bytes that are header)
+  const bool whole = s.data_off > 0 && end >= s.data_off + s.block_align;
+  const bool held_all = (long long)s.held.size() == std::min(s.len, pre); // (held from the start: a copy reopened after a restart isn't)
+  if (keep && held_all && (s.data_off == -1 || (s.data_off > 0 && !whole))) { // hold the header back
+    s.held.append(q, in_pre);
+    const std::string zeros(in_pre, '\0');
+    if (!put_at(s.f, s.len, zeros.data(), in_pre) || !put_at(s.f, s.len + (long long)in_pre, q + in_pre, qn - in_pre)) return false;
+    s.len = end;
+    return true;
+  }
+  if (!s.held.empty()) { // the held header goes in, after the audio, with the sizes
+    const std::string head = with_sizes(s, s.held + std::string(q, in_pre), end);
+    if (!put_at(s.f, s.len + (long long)in_pre, q + in_pre, qn - in_pre)) return false;
+    if (g_stream_gap_ms > 0) sleep_ms(g_stream_gap_ms);
+    if (!put_at(s.f, 0, head.data(), head.size())) return false;
+    s.held.clear();
+    s.len = end;
+    return true;
+  }
   const size_t cut = keep && s.data_off > s.len ? (size_t)std::min<long long>(s.data_off - s.len, (long long)qn) : 0;
   std::string head(q, cut);
-  for (auto &f : wav_sizes(s, s.len + (long long)qn))
+  for (auto &f : wav_sizes(s, end))
     for (size_t i = 0; i < f.second.size(); ++i) if (f.first + (long long)i >= s.len && f.first + (long long)i < s.len + (long long)cut) head[(size_t)(f.first + (long long)i - s.len)] = f.second[i];
-  if (!put_at(s.f, s.len + (long long)cut, q + cut, qn - cut) || !put_at(s.f, s.len, head.data(), cut)) return false;
-  s.len += (long long)qn;
+  if (!put_at(s.f, s.len + (long long)cut, q + cut, qn - cut)) return false;
+  if (g_stream_gap_ms > 0) sleep_ms(g_stream_gap_ms);
+  if (!put_at(s.f, s.len, head.data(), cut)) return false;
+  s.len = end;
   if (keep) for (auto &f : wav_sizes(s, s.len)) put_at(s.f, f.first, f.second.data(), f.second.size());
   return true;
+}
+// What's held back goes to disk as it is (the stream's end: op 3 brings the real header anyway).
+static void flush_held(InStream &s)
+{
+  if (!s.held.empty() && s.f) put_at(s.f, 0, s.held.data(), s.held.size());
+  s.held.clear();
 }
 // One stream frame: op (0 begin, its payload the codec id: 0 = the file's own bytes, 1 = Opus packets later; 1 bytes at an offset, 3 the header rewritten, 2 done), u64 offset, payload. -> the answer: 0 kept; 7 + u64
 // what's here (a gap: send from there); 8 done but the copy doesn't match (begin again); 1, 5, 6 as for files.
@@ -620,7 +704,7 @@ std::string take_stream(const Studio &st, const std::string &studio, const std::
     if (s.f) fclose(s.f);
     make_dirs(s.path.substr(0, s.path.find_last_of('/')));
     s.f = open_stream(s.path, "w+b");
-    s.len = 0; s.total = -1; s.data_off = -1; s.finalizing = s.done = s.ok = false;
+    s.len = 0; s.total = -1; s.data_off = -1; s.finalizing = s.done = s.ok = false; s.held.clear();
   };
   if (op == 0) { fresh(); s.codec = pn > 0 ? (unsigned char)p[0] : 0; if (!s.f) reply = std::string("\6", 1); }
   else {
@@ -639,10 +723,12 @@ std::string take_stream(const Studio &st, const std::string &studio, const std::
         fflush(s.f);
       }
     } else if (op == 3) {
+      flush_held(s);
       if (off + (long long)pn > s.len) reply = gap();
       else if (seek64(s.f, off) != 0 || fwrite(p, 1, pn, s.f) != pn) reply = std::string("\6", 1);
       else { s.finalizing = true; fflush(s.f); }
     } else { // done
+      flush_held(s);
       unsigned char h[32];
       s.total = off;
       if (s.len < off) reply = gap();
@@ -946,9 +1032,31 @@ double do_pings()
 // 64 KB again (op 3: the header the recorder rewrote at the end) and done (op 2) with the length and SHA-256.
 // (trouble reading the file here is this computer's, never the peer's: it isn't skipped for 10 s for it, as a peer that doesn't answer is, and
 // the stream's own `err` says what. A read that comes back short sends what it got. James, rt: a take's tail sat unsent while REAPER wrote it)
+static void trace_line(const std::string &line)
+{
+  std::string path;
+  {
+    std::lock_guard<std::mutex> l(g_mx);
+    path = g_trace_path;
+  }
+  if (path.empty()) return;
+  FILE *f = fopen(path.c_str(), "ab"); // (not open_shared: that one opens to read only, or to write from the start)
+  if (!f) return;
+  const double t = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+  fprintf(f, "%.3f %s\n", t, line.c_str());
+  fclose(f);
+}
 void stream_tick(OutStream &s, const std::string &key)
 {
-  const long long size = file_size(s.path, &s.err);
+  std::string how;
+  const long long size = file_size(s.path, &s.err, &how);
+  struct Trace { OutStream &s; const std::string &how; long long size; ~Trace() { // (each pass, whatever it did)
+    if (!g_tracing) return;
+    std::string l = s.rel + " | " + s.path + " | size " + std::to_string(size) + " (" + how + ")" + (s.ended ? " ended" : "") + (s.err.empty() ? "" : " | err " + s.err);
+    for (auto &kv : s.peers) l += " | " + kv.first + " off " + std::to_string(kv.second.off) + (kv.second.begun ? "" : " not begun") + (kv.second.done ? " done" : "") +
+                                (kv.second.err.empty() ? "" : " (" + kv.second.err + ")");
+    trace_line(l);
+  } } trace{ s, how, size };
   if (size < 0) return;
   s.size = size;
   s.err.clear();
@@ -1117,6 +1225,7 @@ void json_str(std::string &o, const std::string &s)
 
 #ifdef DIRECT_STANDALONE
 void direct_test_bandwidth(int kbps) { g_listen_kbps = kbps; }
+void direct_test_stream_gap(int ms) { g_stream_gap_ms = ms; }
 void direct_test_knobs(long long skew_us, int delay_max_ms, int ping_ms)
 {
   g_skew_us = skew_us;
@@ -1282,6 +1391,12 @@ int direct_stream(const char *studio, const char *rel, const char *path, const c
   return 1;
 }
 
+void direct_trace(const char *path)
+{
+  std::lock_guard<std::mutex> l(g_mx);
+  g_trace_path = path ? path : "";
+  g_tracing = !g_trace_path.empty();
+}
 int direct_stream_end(const char *studio, const char *rel)
 {
   if (!studio || !rel) return 0;
@@ -1413,6 +1528,7 @@ static int api_stream(const char *studio, const char *rel, const char *path, con
 static int api_stream_end(const char *studio, const char *rel) { return direct_stream_end(studio, rel); }
 static const char *api_streams() { return direct_streams(); }
 static double api_file_time(const char *path) { return direct_file_time(path); }
+static void api_trace(const char *path) { direct_trace(path); }
 #define S_(i) (n > (i) ? (const char *)a[i] : nullptr)
 static void *va_msg(void **a, int n) { return (void *)(INT_PTR)api_msg(S_(0), S_(1), S_(2), S_(3)); }
 static void *va_msg_poll(void **a, int n) { return (void *)api_msg_poll(n > 0 ? (int)(INT_PTR)a[0] : 0); }
@@ -1423,6 +1539,7 @@ static void *va_stream(void **a, int n) { return (void *)(INT_PTR)api_stream(S_(
 static void *va_stream_end(void **a, int n) { return (void *)(INT_PTR)api_stream_end(S_(0), S_(1)); }
 static void *va_streams(void **, int) { return (void *)api_streams(); }
 static void *va_file_time(void **a, int n) { static double v; v = api_file_time(S_(0)); return &v; }
+static void *va_trace(void **a, int n) { api_trace(S_(0)); return nullptr; }
 #undef S_
 
 void direct_register(reaper_plugin_info_t *rec)
@@ -1458,6 +1575,8 @@ void direct_register(reaper_plugin_info_t *rec)
       "int\0const char*,const char*\0studio,relpath\0The streamed file is complete: send the rest, then its length and SHA-256." },
     { "StudioSync_DirectStreams", (void *)api_streams, (void *)va_streams,
       "const char*\0\0\0Streams going out and coming in, as JSON (bytes so far, done, hash ok, the received copy's path)." },
+    { "StudioSync_DirectTrace", (void *)api_trace, (void *)va_trace,
+      "void\0const char*\0path\0Every stream pass appends a line to this file (its size, how each way of asking it read, each peer's place and answer); \"\" stops." },
     { "StudioSync_DirectFileTime", (void *)api_file_time, (void *)va_file_time,
       "double\0const char*\0path\0A file's newest time, made or last written, seconds since 1970 (current while it's being written); -1 if it can't be read." },
   };

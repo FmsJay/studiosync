@@ -217,6 +217,13 @@ function streams.options(ctx, ImGui)
 end
 
 -- ---- the recorder's side ---------------------------------------------------------------------------------------------------------------
+-- A line in the stream trace (lib/direct.lua trace_path: ExtState "stream trace" = "1"), beside the extension's own.
+function streams.trace(text)
+  local p = direct.trace_path()
+  if p == "" then return end
+  local f = io.open(p, "a")
+  if f then f:write(string.format("%.3f lua %s\n", os.time() + reaper.time_precise() % 1, text)); f:close() end
+end
 local rec -- this recording: { t0, wall, dir, tracks, pos, at, found = set, old = set, takes = { { id, rel } }, none, stopped_at, find_until }
 local function record_dir(proj) return (reaper.GetProjectPathEx(proj, "")) end
 local function armed_audio(proj)
@@ -245,7 +252,7 @@ function streams.send_tick(proj, cfg, b, recording)
       rec.stopped_at = rec.stopped_at or now
       if now - rec.stopped_at < streams.END_DELAY then return end -- (REAPER writes the real header as it stops: the stream's last pass reads it)
       for _, t in ipairs(rec.takes) do
-        direct.stream_end(cfg, t.rel)
+        streams.trace("stream_end " .. t.rel .. " -> " .. tostring(direct.stream_end(cfg, t.rel)))
         direct.send_live(cfg, "take_end", { id = t.id }, b.song, b.room, t.id)
       end
       band.log(string.format("your take%s went out to the others as you recorded", #rec.takes > 1 and "s" or ""))
@@ -256,7 +263,11 @@ function streams.send_tick(proj, cfg, b, recording)
   if not rec then
     rec = { t0 = now, wall = os.time(), dir = record_dir(proj), found = {}, old = {}, takes = {}, looked = -math.huge, first = true }
     rec.tracks = armed_audio(proj)
-    if #rec.tracks == 0 or #direct.peers(cfg, b.song, b.room) == 0 then rec.none = true; return end
+    if #rec.tracks == 0 or #direct.peers(cfg, b.song, b.room) == 0 then
+      streams.trace(string.format("record start: %d armed audio tracks, %d peers: not streamed", #rec.tracks, #direct.peers(cfg, b.song, b.room)))
+      rec.none = true
+      return
+    end
     local play = reaper.GetPlayPositionEx(proj)
     rec.pos = streams.start_pos(reaper.GetCursorPositionEx(proj), play)
     local sn = direct.shared_now()
@@ -271,9 +282,12 @@ function streams.send_tick(proj, cfg, b, recording)
   local fresh, time_of = {}, reaper.StudioSync_DirectFileTime
   for _, f in ipairs(band.files(rec.dir)) do
     if streams.audio_ext(f) and not rec.found[f] and not rec.old[f] then
-      if streams.made_since(time_of and time_of(rec.dir .. "/" .. f), rec.wall, rec.first) then fresh[#fresh + 1] = f else rec.old[f] = true end
+      local t = time_of and time_of(rec.dir .. "/" .. f)
+      if streams.made_since(t, rec.wall, rec.first) then fresh[#fresh + 1] = f else rec.old[f] = true end
+      if streams.made_since(t, rec.wall, rec.first) then streams.trace(string.format("look: %s/%s time %s (record began %d)", rec.dir, f, tostring(t), rec.wall)) end
     end
   end
+  if rec.first then streams.trace(string.format("first look in %s: %d new of the audio files there", rec.dir, #fresh)) end
   rec.first = false
   if #fresh == 0 then return end
   local left = {}
@@ -283,6 +297,7 @@ function streams.send_tick(proj, cfg, b, recording)
     local id = string.format("%s-%s-%03d%d", (cfg.user:gsub("[^%w%-_]", "_")), os.date("!%Y%m%d-%H%M%SZ"), math.floor(rec.t0 * 1000) % 1000, #rec.takes + 1)
     local path = rec.dir .. "/" .. m.file
     local rel = direct.stream_start(cfg, path, b.song, b.room, streams.INTERVAL_MS, streams.stream_name(b.room, cfg.user, m.file))
+    streams.trace("stream_start " .. path .. " for " .. m.track.name .. " -> " .. tostring(rel))
     if rel then
       rec.takes[#rec.takes + 1] = { id = id, rel = rel }
       direct.send_live(cfg, "take", { id = id, user = cfg.user, track = m.track.oid, name = m.track.name, file = m.file, pos = rec.pos, at = rec.at,
