@@ -298,8 +298,15 @@ local last_driver
 local drawings_at = -math.huge -- (when this last looked whether the room has drawings to show)
 local inbox_at = -math.huge -- (and the song's inbox for dropped audio)
 -- Where a tick's time goes, part by part: the last tick over 0.15 s is kept in "slow tick <proj>" (not saved), to find what holds REAPER up on a big song
+-- (kept as name, seconds pairs and put into words only when a tick is slow or timed: a dozen string.formats a tick, ~30 ticks a second, went
+-- into a line written only past 0.15 s. James, rt)
 local laps, lap_t = {}, 0
-local function lap(name) local t = reaper.time_precise(); laps[#laps + 1] = string.format("%s %.0f", name, (t - lap_t) * 1000); lap_t = t end
+local function lap(name) local t = reaper.time_precise(); laps[#laps + 1] = name; laps[#laps + 1] = t - lap_t; lap_t = t end
+local function laps_text()
+  local parts = {}
+  for i = 1, #laps - 1, 2 do parts[#parts + 1] = string.format("%s %.0f", laps[i], laps[i + 1] * 1000) end
+  return table.concat(parts, ", ")
+end
 -- Tick timings for tests/reaper/rt_perf.lua (James, rt: before and after an efficiency pass, on each computer): collected only while ExtState
 -- "perf stats" is "1" (looked at every 10 s), and published every 10 s as "tick stats <proj>". Off, it costs one comparison a tick.
 local perf = { on = false, at = -math.huge, ticks = {}, passes = {}, worst = 0, worst_laps = "" }
@@ -1337,11 +1344,11 @@ tick = function()
   local took = reaper.time_precise() - t0
   if took > 0.15 then
     lap("rest")
-    reaper.SetExtState(band.SECTION, "slow tick " .. key, string.format("%.0f ms at %s: %s", took * 1000, os.date("%H:%M:%S"), table.concat(laps, ", ")), false)
+    reaper.SetExtState(band.SECTION, "slow tick " .. key, string.format("%.0f ms at %s: %s", took * 1000, os.date("%H:%M:%S"), laps_text()), false)
   end
   if perf.on then
     perf.ticks[#perf.ticks + 1] = took
-    if took > perf.worst then perf.worst, perf.worst_laps = took, table.concat(laps, ", ") end
+    if took > perf.worst then perf.worst, perf.worst_laps = took, laps_text() end
   end
   if t0 - perf.at >= 10 then perf_publish(t0) end
   if go then reaper.defer(tick) end
