@@ -780,3 +780,6 @@ Built:
   theme, colour preferences and theme colour settings, any overlay); the row names what differs ("Mac tints track panels and items
   differently", "Mac uses another theme"), project colours only after 30 s apart.
 - Tests: tests/test_0_60_rt_colours.lua.
+- **Colour parity checked (0.59.49.20):** Health's row green on desktop, laptop and Mac ("every computer here shows the project's own colours,
+  alike"); the master track's colour set on the desktop showed the same RGB on the laptop and the Mac (the Mac's colour byte order handled),
+  and a reset to no colour reached both; rt_prefs (41 checks, the colour group included) green on all 3.
