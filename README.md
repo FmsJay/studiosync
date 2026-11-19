@@ -220,7 +220,7 @@ By hand:
      over a running session (it still runs when REAPER next starts), and Settings > Health keeps a yellow line saying so.
    - **Everyone from the studio's folder** (Settings > Studio > Updates, owner and admins): every computer in the studio moves to
      `<studio>/_tools/studiosync` by itself once all of it has arrived there (and it's that version or newer), so a new version put
-     in the folder reaches everyone, each asked once by the code guard. Someone invited installs as usual and moves once they're
+     in the folder reaches everyone without asking (since 0.59.32: the studio trusts its members). Someone invited installs as usual and moves once they're
      let in: the invitation needs nothing more. An old copy's toolbar button, menu or key hands over to the folder's copy, and a
      copy run from a git checkout (a developer's) stays where it is.
 3. Open **StudioSync - Panel**: the first time, it asks for the shared folder and your name (later: Settings > You).

@@ -2273,7 +2273,7 @@ local function studio_updates()
   local run = reaper.GetExtState(band.SECTION, "run from")
   local here = run ~= "" and band.norm(run):lower() == band.norm(ff.target(cfg.root)):lower()
   ImGui.TextDisabled(ctx, on and ("On: every computer in the studio runs StudioSync from its folder (_tools/studiosync), so a new version put there reaches everyone, " ..
-    "each asked once. New people move there once they're let in. This computer: " .. (here and "runs from it." or "not yet (it moves at its next look, once all of it has arrived; a developer's own copy stays as it is).")) or
+    "without asking (the studio trusts its members). New people move there once they're let in. This computer: " .. (here and "runs from it." or "not yet (it moves at its next look, once all of it has arrived; a developer's own copy stays as it is).")) or
     "Off: each computer updates StudioSync itself (ReaPack). On, everyone runs it from the studio's folder, and a new version put there reaches them all.")
   if studio_admin() then
     local ch, v = ImGui.Checkbox(ctx, "Everyone runs StudioSync from the studio's folder##studioupdates", on)

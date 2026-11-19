@@ -68,7 +68,7 @@ function ff.tick(dir, cfg)
   pcall(band.sync_actions, t)
   reaper.SetExtState(band.SECTION, "update ok", v, true) -- (the studio's own choice: its copy, this version, said yes to here)
   reaper.SetExtState(band.SECTION, "run from", t, true)
-  band.log("StudioSync runs from " .. tostring(band.info(root).name) .. "'s folder from REAPER's next start: updates put there reach this computer (each asked once)")
+  band.log("StudioSync runs from " .. tostring(band.info(root).name) .. "'s folder from REAPER's next start: updates put there reach this computer without asking")
   return t
 end
 
