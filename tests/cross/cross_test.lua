@@ -28,6 +28,13 @@ local base = root .. "/_crosstest"
 local function utc() return os.date("!%Y-%m-%dT%H:%M:%SZ") end
 local function now() return reaper.time_precise() end
 local log = {}
+local arrived = {} -- step -> { t, sh }: when this computer first saw the step's change
+-- (the studio's shared clock from the direct link, else wall time: arrival times between computers then include their clock difference)
+local function shared()
+  local okd, direct = pcall(require, "direct")
+  local v = okd and direct.shared_now and direct.shared_now()
+  return type(v) == "number" and v or nil
+end
 local function say(s) log[#log + 1] = os.date("!%H:%M:%S ") .. s; reaper.ShowConsoleMsg("[cross " .. role .. "] " .. s .. "\n") end
 
 -- the project tab: bound to the test song in this studio. A makes and shares it when it isn't there; B and C open it from the studio.
@@ -223,16 +230,25 @@ local function tick()
     if not mine then
       if not present then put(role .. "-step" .. step, { skipped = true }); say(s[1] .. ": skipped (" .. s[2] .. " isn't here)")
       elseif s[2] == role then
-        if t - t0 >= PAUSE then s[3](p); put(role .. "-step" .. step, { acted = true, ok = true, at = utc() }); say(s[1] .. ": done") end
-      elseif have(s[2] .. "-step" .. step) then -- (counted from when the actor says it acted)
-        results[step] = results[step] or t
-        if s[4](p) then put(role .. "-step" .. step, { ok = true, secs = math.floor(t - results[step] + 0.5) }); say(s[1] .. ": arrived")
-        elseif t - results[step] > WAIT then put(role .. "-step" .. step, { ok = false }); say(s[1] .. ": NOT arrived in " .. WAIT .. " s") end
+        if t - t0 >= PAUSE then s[3](p); put(role .. "-step" .. step, { acted = true, ok = true, at = utc(), shared = shared() }); say(s[1] .. ": done") end
+      else
+        -- (the change can arrive over the direct link before the actor's note does through Syncthing: its arrival is stamped on the studio's
+        -- shared clock when first seen, and timed against the actor's own stamp. Realtime branch, James)
+        if not arrived[step] and s[4](p) then arrived[step] = { t = t, sh = shared() } end
+        local a = have(s[2] .. "-step" .. step)
+        if a then -- (counted from when the actor acted)
+          results[step] = results[step] or t
+          if arrived[step] then
+            local secs = (a.shared and arrived[step].sh) and (arrived[step].sh - a.shared) or (arrived[step].t - results[step])
+            put(role .. "-step" .. step, { ok = true, secs = math.floor(math.max(secs, 0) * 100 + 0.5) / 100, clock = a.shared and arrived[step].sh and "shared" or "note" })
+            say(s[1] .. string.format(": arrived (%.2f s)", secs))
+          elseif t - results[step] > WAIT then put(role .. "-step" .. step, { ok = false }); say(s[1] .. ": NOT arrived in " .. WAIT .. " s") end
+        end
       end
     else -- everyone's in for this step (or the wait ran out): the next one
       local all = true
       for _, r in ipairs(roster and roster.roles or here_roles) do all = all and have(r .. "-step" .. step) ~= nil end
-      if all or t - t0 > WAIT + PAUSE + 30 then step, t0 = step + 1, t; results[step] = nil end
+      if all or t - t0 > WAIT + PAUSE + 30 then step, t0 = step + 1, t; results[step] = nil; arrived[step] = nil end
     end
   elseif phase == "final" then
     if t - t0 > 15 then -- (a moment for the last changes to settle everywhere)
