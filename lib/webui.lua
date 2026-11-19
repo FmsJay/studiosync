@@ -25,6 +25,8 @@ function webui.start(cfg)
   if started.root == cfg.root and now - started.at < webui.START_EVERY then return started.ok end
   -- (no secret, no token: only this computer gets in)
   local secret = select(2, pcall(require("groups").sonobus_secret, cfg.root))
+  -- (noted for the extension's "StudioSync: Web UI (docked)" action, which starts the server itself when it's run before Live sync or the panel)
+  if reaper.GetExtState(band.SECTION, "web ui folder") ~= webui.folder() then reaper.SetExtState(band.SECTION, "web ui folder", webui.folder(), true) end
   started = { root = cfg.root, at = now,
     ok = reaper.StudioSync_WebUIStart(webui.folder(), type(secret) == "string" and secret or "", require("direct").port()) == 1 }
   return started.ok
@@ -47,6 +49,16 @@ function webui.open(cfg)
   end
   band.open_url(webui.local_url(webui.status().port))
   return true
+end
+-- The panel's Web UI button: the docked REAPER window (extension/webui_dock.cpp), or the browser with Shift, with an older extension, or
+-- where the window can't open (Linux for now, no WebView2 runtime: the log says why). -> true when either opened.
+function webui.dock(cfg, browser)
+  if browser or not reaper.StudioSync_WebUIDock then return webui.open(cfg) end
+  if not webui.start(cfg) then return webui.open(cfg) end -- (which logs why)
+  if reaper.StudioSync_WebUIDock(1) >= 0 then return true end
+  local why = reaper.GetExtState(band.SECTION, "web ui dock error")
+  band.log("the docked web UI couldn't open" .. (why ~= "" and ": " .. why or "") .. "; opening it in the browser instead")
+  return webui.open(cfg)
 end
 -- -> the link for a phone or another computer in the studio, or nil and why not.
 function webui.phone_link(cfg)

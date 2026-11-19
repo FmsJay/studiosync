@@ -55,3 +55,24 @@ ul, ol { list-style: none; margin: 0; padding: 0; }
   main { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   #here { border-right: 0; border-bottom: 1px solid var(--line); max-height: 38vh; }
 }
+#dock { padding: 4px 10px; font-size: 13px; }
+/* A REAPER docker (lib/webui is also docked: extension/webui_dock.cpp): narrow. Tighter spacing, smaller type, the people
+   list kept to a third so the chat stays usable. (James, rt) */
+@media (max-width: 320px) {
+  body { font-size: 13px; }
+  header { gap: 6px; padding: 6px 8px; }
+  .title strong { margin-right: 4px; }
+  #where { display: none; }
+  header button { padding: 3px 7px; font-size: 12px; }
+  .conn { padding: 1px 6px; font-size: 11px; }
+  section { padding: 8px; }
+  h2 .dim { display: none; }
+  h3 { margin-top: 10px; }
+  #here { max-height: 33vh; }
+  #people li { padding: 5px 7px; margin-bottom: 4px; border-radius: 8px; }
+  .badge { margin-left: 4px; padding: 0 5px; }
+  #msgs li { max-width: 100%; }
+  #say { gap: 6px; }
+  #say input { padding: 6px 8px; }
+  #say button { padding: 6px 9px; }
+}
