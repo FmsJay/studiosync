@@ -51,7 +51,7 @@ int main()
   check(rt_start(bad, 0, 1, 128, 47394, "192.168.1.5") == 0, "a non-Tailscale address isn't bound");
 
   // the test clock: a block every 256/48000 s, in real time (AOO's drift filter reads the times)
-  const int secs = 7, blocks = secs * SR / LEN, start_blk = 2 * SR / LEN, mute_blk = 5 * SR / LEN, fix_blk = 11 * SR / LEN / 2;
+  const int secs = 10, blocks = secs * SR / LEN, start_blk = 2 * SR / LEN, mute_blk = 5 * SR / LEN, fix_blk = 11 * SR / LEN / 2;
   std::vector<double> ia(LEN), ib(LEN, 0.0), ic(LEN), oa(LEN), ob(LEN), ob2(LEN), oc(LEN), heard;
   heard.reserve((size_t)blocks * LEN);
   const double *ina[1] = { ia.data() }, *inb[1] = { ib.data() }, *inc[1] = { ic.data() };
@@ -96,8 +96,14 @@ int main()
   double after = 0, fixed = 0;
   for (size_t i = (size_t)(mute_blk + 20) * LEN; i < (size_t)fix_blk * LEN; ++i) after = std::max(after, std::fabs(heard[i]));
   check(after < 0.01, "muted on B: silent there");
-  for (size_t i = (size_t)6 * SR; i < heard.size(); ++i) fixed = std::max(fixed, std::fabs(heard[i]));
-  printf("     B hears C at peak %.3f once C has the right secret (sent: 0.800)\n", fixed);
+  // (10 s, not 7: C's fix comes at 5.5 s and the macOS CI runner heard nothing from C in the 1.5 s after it. Now 4.5 s, and how long it took)
+  long long fix_first = -1;
+  for (size_t i = (size_t)fix_blk * LEN; i < heard.size(); ++i) {
+    fixed = std::max(fixed, std::fabs(heard[i]));
+    if (fix_first < 0 && std::fabs(heard[i]) > 0.6) fix_first = (long long)i;
+  }
+  printf("     B hears C at peak %.3f once C has the right secret (sent: 0.800), first %.0f ms after the fix\n", fixed,
+         fix_first < 0 ? -1.0 : (fix_first - (double)fix_blk * LEN) * 1000.0 / SR);
   check(fixed > 0.6, "with the right secret C is heard on B");
   check(field(sb, pa, "streaming") == "true", "B's status: A is streaming");
   check(std::stod("0" + field(sb, pa, "rtt_ms")) >= 0 && field(sb, pa, "rtt_ms") != "-1.0", "B's status: a round trip to A");
