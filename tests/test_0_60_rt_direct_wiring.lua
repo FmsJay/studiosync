@@ -246,13 +246,13 @@ assert(math.abs(together.local_at(start_at, 2000, 7000) - 7005) < 1e-9 and math.
 reaper.StudioSync_DirectClock = function() return '{"peers":{"bee-laptop.tail99.ts.net:47281":{"offset_ms":322.5,"rtt_ms":57,"samples":16,"error":""}}}' end
 package.loaded.direct = nil
 local panel_direct = require("direct")
-assert(panel_direct.shared_now() == 1795100000, "nothing picked yet: this computer's clock")
+assert(panel_direct.shared_now() == nil, "nothing picked yet: unknown (not this computer's clock: the first 3-computer run, every computer its own reference)")
 gext["BandSync\0direct reference"] = "bee-laptop.tail99.ts.net:47281\tBBBBBBBBBBBB"
 local sn, ref, err, peer = panel_direct.shared_now()
 assert(math.abs(sn - 1795100000.3225) < 1e-6 and ref == "BBBBBBBBBBBB" and err == 28.5 and peer == "bee-laptop.tail99.ts.net:47281", "Live sync's reference")
 assert(math.abs(together.start_at(5) - 1795100005.3225) < 1e-6, "start_at = shared now + lead")
 reaper.StudioSync_DirectClock = function() return '{"peers":{"bee-laptop.tail99.ts.net:47281":{"offset_ms":322.5,"rtt_ms":57,"samples":2,"error":""}}}' end
-assert(panel_direct.shared_now() == 1795100000, "its estimate not ready: this computer's clock")
+assert(panel_direct.shared_now() == nil, "its estimate not ready: unknown")
 package.loaded.direct = direct
 local saved_msg = reaper.StudioSync_DirectMsg
 reaper.StudioSync_DirectMsg = nil

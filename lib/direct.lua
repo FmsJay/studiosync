@@ -351,9 +351,17 @@ function direct.keep_clock(cfg, song, room)
   local peers, dev_of = direct.peers(cfg, song, room)
   -- (and again as soon as who's here changes: the peer list is cached, so asking costs nothing. James, 0.60.0-rt)
   local key = cfg.root .. "\n" .. tostring(song) .. "\n" .. tostring(room) .. "\n" .. table.concat(peers, " ")
-  if clock_view.key == key and now - clock_view.at < direct.START_EVERY then return true end
-  reaper.StudioSync_DirectPeers(band.info(cfg.root).id, table.concat(peers, " "))
-  clock_view.at, clock_view.dev_of, clock_view.key = now, dev_of or {}, key
+  if not (clock_view.key == key and now - clock_view.at < direct.START_EVERY) then
+    reaper.StudioSync_DirectPeers(band.info(cfg.root).id, table.concat(peers, " "))
+    clock_view.at, clock_view.dev_of, clock_view.key = now, dev_of or {}, key
+  end
+  -- (the reference, published for the other scripts here (the panel, a test) at every tick: it was only written when Live sync itself asked
+  -- the time, so every other script took its own computer as the reference: the laptop's times 365 ms off the desktop's in the first
+  -- three-computer run. One non-persisted ExtState, written only when it changes. James, rt)
+  local j = band.json_decode(reaper.StudioSync_DirectClock()) or {}
+  local peer, dev = direct.clock_reference(require("services").my_device_id(), clock_view.dev_of, j.peers)
+  local v = (peer or "") .. "\t" .. tostring(dev or "")
+  if v ~= clock_view.published then reaper.SetExtState(band.SECTION, "direct reference", v, false); clock_view.published = v end
   return true
 end
 -- me: this computer's device id; dev_of: peer -> device id; est: StudioSync_DirectClock's peers. -> the reference's peer (nil: this
@@ -383,8 +391,13 @@ function direct.shared_now()
     reaper.SetExtState(band.SECTION, "direct reference", (peer or "") .. "\t" .. tostring(dev or ""), false)
   else
     local p, d = reaper.GetExtState(band.SECTION, "direct reference"):match("^([^\t]*)\t(.*)$")
-    local e = p and p ~= "" and type(j.peers) == "table" and j.peers[p]
-    if type(e) == "table" and (tonumber(e.samples) or 0) >= 4 and (e.error or "") == "" then peer, dev = p, d else dev = me end
+    if not p then return nil end -- (Live sync hasn't picked one here: unknown, not "this computer". James, rt)
+    if p == "" then dev = d -- (Live sync picked this computer)
+    else
+      local e = type(j.peers) == "table" and j.peers[p]
+      if not (type(e) == "table" and (tonumber(e.samples) or 0) >= 4 and (e.error or "") == "") then return nil end -- (its estimate went stale)
+      peer, dev = p, d
+    end
   end
   if not peer then return now, dev, 0, nil end
   local e = j.peers[peer]
