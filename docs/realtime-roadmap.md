@@ -532,6 +532,7 @@ every cloud run asks separately because audio leaves the band's computers. Order
 the stats StudioSync already computes (no audio leaves; local LLM on the hub or Claude), stem separation (RoFormer +
 htdemucs_ft; LALAL.AI fallback), sections/tempo map (allin1), session transcription with speakers, audio-to-MIDI (Basic
 Pitch + ADTOF), take search (CLAP) and scored auto-comping, reference mastering (Matchering), chords/key.
+Started 2026-11-19 in addons/ai/ (README there): rule-based mix feedback is real and needs no Python; the helper (ssai.py, own venv) refuses any job without a matching consent.json token, and the model jobs are interfaces with dry-run examples until the owner OKs real runs.
 
 ## More ideas from the streaming work (James, 2026-11-19: on the roadmap)
 - **Producer "listen while they record":** a producer hears a take on their own monitors as it's being recorded, from the

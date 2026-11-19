@@ -1,0 +1,16 @@
+{
+ "project": "Fixture Song.rpp",
+ "range": "the whole song",
+ "master": {"name": "Master", "lufs_i": -7.2, "rms_db": -8.9, "peak_db": -0.05, "true_peak_db": 0.6, "crest_db": 8.85,
+  "stereo": true, "phase_coherence": 0.81, "stereo_width": 0.19, "low": 0.41, "mid": 0.47, "high": 0.12, "low_mid_tilt_db": 4.2, "dc_offset": 0.0},
+ "tracks": [
+  {"name": "Bass", "lufs_i": -14.1, "rms_db": -15.0, "peak_db": -10.5, "true_peak_db": -10.4, "crest_db": 4.5,
+   "stereo": false, "phase_coherence": 1.0, "stereo_width": 0.0, "low": 0.8, "mid": 0.19, "high": 0.01, "low_mid_tilt_db": 12.3, "dc_offset": 0.0},
+  {"name": "Guitars", "lufs_i": -16.0, "rms_db": -17.2, "peak_db": -6.1, "true_peak_db": -6.0, "crest_db": 11.1,
+   "stereo": true, "phase_coherence": 0.31, "stereo_width": 0.69, "low": 0.1, "mid": 0.6, "high": 0.3, "low_mid_tilt_db": 2.0, "dc_offset": 0.0},
+  {"name": "Keys", "lufs_i": -20.3, "rms_db": -21.0, "peak_db": -9.0, "true_peak_db": -8.9, "crest_db": 12.0,
+   "stereo": true, "phase_coherence": 0.9, "stereo_width": 0.1, "low": 0.2, "mid": 0.5, "high": 0.3, "low_mid_tilt_db": 1.0, "dc_offset": 0.0},
+  {"name": "Vox", "lufs_i": -15.5, "rms_db": -17.0, "peak_db": -0.1, "true_peak_db": -0.1, "crest_db": 16.9,
+   "stereo": false, "phase_coherence": 1.0, "stereo_width": 0.0, "low": 0.05, "mid": 0.6, "high": 0.35, "low_mid_tilt_db": 0.5, "dc_offset": 0.0021}
+ ]
+}

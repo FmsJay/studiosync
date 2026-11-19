@@ -1,0 +1,42 @@
+{
+ "data": {
+  "beats_per_bar": 4,
+  "bpm": 120.0,
+  "downbeats": [
+   0.0,
+   2.0,
+   4.0,
+   6.0,
+   8.0,
+   10.0,
+   12.0,
+   14.0,
+   16.0
+  ],
+  "segments": [
+   {
+    "end": 8.0,
+    "label": "intro",
+    "start": 0.0
+   },
+   {
+    "end": 16.0,
+    "label": "verse",
+    "start": 8.0
+   },
+   {
+    "end": 17.0,
+    "label": "chorus",
+    "start": 16.0
+   }
+  ]
+ },
+ "files": [],
+ "helper_version": "0.1.0",
+ "job": "sections",
+ "message": "",
+ "status": "ok",
+ "timings": {
+  "total_s": 0.01
+ }
+}

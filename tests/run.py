@@ -10,7 +10,7 @@ import lupa.lua54 as lupa  # (REAPER embeds Lua 5.4; plain lupa is 5.5 here. Rou
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 release, luals = "--release" in sys.argv, "--no-luals" not in sys.argv
 fails = 0
-for f in sorted(glob.glob("tests/*.lua")):
+for f in sorted(glob.glob("tests/*.lua")) + sorted(glob.glob("addons/*/tests/*.lua")):  # (and the optional add-ons' own: addons/ai, 2026-11-19)
     L = lupa.LuaRuntime()
     out = []
     L.globals().print = lambda *a: out.append(" ".join(str(x) for x in a))
@@ -24,7 +24,7 @@ for f in sorted(glob.glob("tests/*.lua")):
     except Exception as e:
         fails += 1
         print(f, "FAIL", str(e)[:300])
-steps = [("tools/compile_check.py", True), ("tools/free_names.py", True), ("tests/check_locals.py", True), ("tools/files_check.py", release)]
+steps = [("-m unittest discover -q -s addons/ai/tests", True), ("tools/compile_check.py", True), ("tools/free_names.py", True), ("tests/check_locals.py", True), ("tools/files_check.py", release)]
 if luals:
     steps.append(("tools/luals_check.py Warning --gate", True))
 for step, fatal in steps:

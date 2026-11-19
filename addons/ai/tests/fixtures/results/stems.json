@@ -1,0 +1,35 @@
+{
+ "data": {
+  "stems": [
+   {
+    "file": "vocals.wav",
+    "name": "Vocals"
+   },
+   {
+    "file": "drums.wav",
+    "name": "Drums"
+   },
+   {
+    "file": "bass.wav",
+    "name": "Bass"
+   },
+   {
+    "file": "other.wav",
+    "name": "Other"
+   }
+  ]
+ },
+ "files": [
+  "vocals.wav",
+  "drums.wav",
+  "bass.wav",
+  "other.wav"
+ ],
+ "helper_version": "0.1.0",
+ "job": "stems",
+ "message": "",
+ "status": "ok",
+ "timings": {
+  "total_s": 0.01
+ }
+}

@@ -1,0 +1,20 @@
+{
+ "data": {
+  "stems": [
+   {
+    "file": "master.wav",
+    "name": "Master (matched)"
+   }
+  ]
+ },
+ "files": [
+  "master.wav"
+ ],
+ "helper_version": "0.1.0",
+ "job": "master",
+ "message": "",
+ "status": "ok",
+ "timings": {
+  "total_s": 0.01
+ }
+}

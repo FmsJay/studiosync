@@ -1,0 +1,28 @@
+{
+ "data": {
+  "segments": [
+   {
+    "end": 3.5,
+    "speaker": "Speaker 1",
+    "start": 0.0,
+    "text": "(dry run) Let's take it from the chorus."
+   },
+   {
+    "end": 6.0,
+    "speaker": "Speaker 2",
+    "start": 4.0,
+    "text": "(dry run) Okay, one more."
+   }
+  ]
+ },
+ "files": [
+  "transcript.txt"
+ ],
+ "helper_version": "0.1.0",
+ "job": "transcribe",
+ "message": "",
+ "status": "ok",
+ "timings": {
+  "total_s": 0.01
+ }
+}
