@@ -933,6 +933,8 @@ local live_handlers = {
   take_end = function(d) require("streams").on_take_end(d) end,
   -- (a media file a bandmate just put in the shared folder, coming over the link: lib/streams.lua on_media. James, rt)
   media = function(d) require("streams").on_media(cfg, b, d) end,
+  -- (a bandmate catching up asks for a media file its Syncthing still needs; sent back if it's here: lib/streams.lua on_media_want. James, rt)
+  media_want = function(d) require("streams").on_media_want(cfg, b, d) end,
 }
 live_handlers.start, live_handlers.stop = live_handlers.cue, live_handlers.cue
 local function tick_body() -- returns true to keep going

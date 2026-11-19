@@ -530,6 +530,10 @@ function streams.streamed_copy(path, media_from, streamed, outs)
   for _, o in ipairs(outs or {}) do if o.rel == s.rel then return s end end
 end
 local media_seq = 0
+local function media_id(cfg) -- (a media message's id: who, when, and a count, as the receivers take each id once)
+  media_seq = media_seq + 1
+  return string.format("%s-%s-%d%04d", (cfg.user:gsub("[^%w%-_]", "_")), os.date("!%Y%m%d-%H%M%SZ"), media_seq, math.random(0, 9999))
+end
 function streams.offer_media(cfg, song, room, media_dir, ev, last)
   local ok, n = pcall(function()
     local time_of = reaper.StudioSync_DirectFileTime
@@ -549,8 +553,8 @@ function streams.offer_media(cfg, song, room, media_dir, ev, last)
       local rel = not take and size and size > 0 and direct.stream_start(cfg, path, song, room, streams.MEDIA_INTERVAL_MS, name)
       if rel then direct.stream_end(cfg, rel) end -- (it's complete: begun and ended at once, so the rest, its length and SHA-256 follow straight away)
       if rel or take then
-        streams.sent_media[key], media_seq, sent = true, media_seq + 1, sent + 1
-        local id = string.format("%s-%s-%d%04d", (cfg.user:gsub("[^%w%-_]", "_")), os.date("!%Y%m%d-%H%M%SZ"), media_seq, math.random(0, 9999))
+        streams.sent_media[key], sent = true, sent + 1
+        local id = media_id(cfg)
         direct.send_live(cfg, "media", { id = id, user = cfg.user, room = r, file = m.file, size = size, take = take and take.file or nil }, song, room, id)
         streams.trace("media out " .. (rel or ("as the streamed take " .. take.rel)) .. " " .. size .. " bytes")
       end
@@ -657,10 +661,140 @@ function streams.media_tick(cfg, b)
   return placed
 end
 
+-- ---- catch-up over the link (roadmap step 3, the second half, the light way) -------------------------------------------------------------
+-- A computer that comes online or rejoins often waits minutes for Syncthing to pull the media it missed. Syncthing stays the judge of what's
+-- missing (its own need list, GET /rest/db/need: services.need); the link only fetches those files faster. While a bandmate is here on the
+-- link, this computer reads that list (Syncthing asked in the background at most every CATCHUP_EVERY s) and asks one present peer for each
+-- audio file this song's rooms still need: "media_want" { id, user, dev (this computer's device id), room, file, size }, to that peer alone.
+-- A peer with that very file (the same size) streams it back to the asker alone, as offer_media does, with the usual "media" message, and the
+-- receiver's path above puts it in place (and has Syncthing rescan it). Each file goes once per asker per SERVE_EVERY, SERVE_MAX at a time,
+-- and never a file outside a room's media folder (media_name). Without the link, the studio's direct setting or a peer, nothing here runs and
+-- Syncthing carries everything as today. (James, rt)
+streams.CATCHUP_EVERY, streams.CATCHUP_LOOK, streams.CATCHUP_BATCH, streams.WANT_EVERY = 30, 5, 4, 60
+streams.SERVE_EVERY, streams.SERVE_MAX = 600, 3
+-- Syncthing's need list (its JSON, decoded) -> the media this song still needs that the link takes: { { room, file, size, by, key } }, smallest
+-- first (the most items land soonest). Deleted files, other songs, anything outside a room's media folder: Syncthing's. Pure.
+function streams.catchup_wants(need, song)
+  local out, seen = {}, {}
+  if type(need) ~= "table" then return out end
+  for _, part in ipairs({ "progress", "queued", "rest" }) do -- (by name: a list left out would end ipairs over the lists themselves)
+    for _, f in ipairs(type(need[part]) == "table" and need[part] or {}) do
+      if type(f) == "table" and type(f.name) == "string" and not f.deleted then
+        -- (Windows' Syncthing may name it with backslashes)
+        local s, room, file = f.name:gsub("\\", "/"):match("^([^/]+)/rooms/([^/]+)/media/(.+)$")
+        local size, key = tonumber(f.size), s and (song .. "/" .. room .. "/" .. file)
+        if s == song and streams.media_name(room, file) and size and size > 0 and size == math.floor(size) and not seen[key] then
+          seen[key] = true
+          out[#out + 1] = { room = room, file = file, size = size, by = type(f.modifiedBy) == "string" and f.modifiedBy or nil, key = key }
+        end
+      end
+    end
+  end
+  table.sort(out, function(a, b) if a.size ~= b.size then return a.size < b.size end return a.key < b.key end)
+  return out
+end
+-- The wants to ask for on this look: not skipped (skip(w): here already, or a room this computer doesn't have), not on their way (an entry in
+-- book, the receiver's), each at most every WANT_EVERY s, CATCHUP_BATCH at most. asked: key -> { at, tries }. Pure.
+function streams.catchup_due(wants, asked, skip, book, song, now)
+  local out = {}
+  for _, w in ipairs(wants) do
+    if #out >= streams.CATCHUP_BATCH then break end
+    local a, rel = asked[w.key], direct.stream_rel(song, streams.media_name(w.room, w.file))
+    if not (a and now - a.at < streams.WANT_EVERY) and not (rel and book[rel]) and not skip(w) then out[#out + 1] = w end
+  end
+  return out
+end
+-- Which present peer to ask. Syncthing doesn't say who has a file, only who changed it last (modifiedBy: the first part of a device id): that
+-- computer first, then the others in turn on each retry. -> a peer, or nil. Pure.
+function streams.catchup_peer(peers, dev_of, by, tries)
+  if #peers == 0 then return nil end
+  tries = tries or 0
+  if tries == 0 and type(by) == "string" and by ~= "" then
+    for _, p in ipairs(peers) do local d = dev_of[p]; if type(d) == "string" and d:sub(1, #by) == by then return p end end
+  end
+  local sorted = { table.unpack(peers) }
+  table.sort(sorted)
+  return sorted[tries % #sorted + 1]
+end
+-- A "media_want" checked: { id, user, dev, room, file, size, name, key }, or nil. Never this computer's own, never a name the link won't take. Pure.
+function streams.valid_want(d, song, my_dev)
+  if type(d) ~= "table" or type(d.id) ~= "string" or #d.id > 120 or not d.id:match("^[%w%-_]+$") then return nil end
+  if not require("services").is_device_id(d.dev) or d.dev == my_dev or not direct.plain(d.user) then return nil end
+  local size = tonumber(d.size)
+  if not size or size <= 0 or size ~= math.floor(size) or size > 16 * 2 ^ 30 then return nil end
+  local name = streams.media_name(d.room, d.file)
+  if not (name and direct.stream_rel(song, name)) then return nil end
+  return { id = d.id, user = d.user, dev = d.dev, room = d.room, file = d.file, size = size, name = name, key = song .. "/" .. d.room .. "/" .. d.file }
+end
+-- Does this computer send an asked-for file now? have: its size here (nil: none); served: dev\0key -> when it last went to that asker; live:
+-- media streams still going out. -> true, or false + why. Pure.
+function streams.serve_decision(w, have, served, live, now)
+  if have ~= w.size then return false, "not this version here" end
+  local last = served[w.dev .. "\0" .. w.key]
+  if last and now - last < streams.SERVE_EVERY then return false, "sent to it lately" end
+  if live >= streams.SERVE_MAX then return false, "busy" end
+  return true
+end
+
+-- The asker's side, from Live sync's tick (streams.tick). -> how many it asked for. Never raises (band.try around streams.tick).
+streams.asked, streams.served = {}, {} -- key -> { at, tries }; dev\0key -> when
+local look_at, need_text, need_song, need_wants, served_n = -math.huge, nil, nil, {}, 0
+function streams.catchup_tick(cfg, b)
+  local now = reaper.time_precise()
+  if now - look_at < streams.CATCHUP_LOOK then return 0 end
+  look_at = now
+  if not direct.live_available() or not direct.ensure(cfg) then return 0 end -- (ensure: false with the studio's direct setting off)
+  local peers, dev_of = direct.peers(cfg, b.song, b.room)
+  if #peers == 0 then return 0 end -- (nobody here: Syncthing isn't even asked)
+  local services = require("services")
+  local me = services.my_device_id()
+  if not me then return 0 end
+  -- (the list is read every look but Syncthing asked only every CATCHUP_EVERY s; read again only when its answer changed)
+  local text = services.need(band.info(cfg.root).id, streams.CATCHUP_EVERY)
+  if text ~= need_text or b.song ~= need_song then need_text, need_song, need_wants = text, b.song, streams.catchup_wants(band.json_decode(text or ""), b.song) end
+  local rooms = cfg.root .. "/" .. b.song .. "/rooms/"
+  local due = streams.catchup_due(need_wants, streams.asked, function(w)
+    return band.size(rooms .. w.room .. "/media/" .. w.file) ~= nil or #band.subdirs(rooms .. w.room) == 0 -- (on_media would refuse it)
+  end, streams.media, b.song, now)
+  for _, w in ipairs(due) do
+    local tries = (streams.asked[w.key] or {}).tries or 0
+    local peer = streams.catchup_peer(peers, dev_of or {}, w.by, tries)
+    streams.asked[w.key] = { at = now, tries = tries + 1 }
+    local id = media_id(cfg)
+    direct.send_live(cfg, "media_want", { id = id, user = cfg.user, dev = me, room = w.room, file = w.file, size = w.size }, b.song, b.room, id, { peer })
+    streams.trace("media want " .. w.key .. " (" .. w.size .. " bytes) from " .. tostring(peer))
+  end
+  return #due
+end
+-- The side that has it: a "media_want" (Live sync's live_handlers). -> true when the file went.
+function streams.on_media_want(cfg, b, d)
+  local w = streams.valid_want(d, b.song, require("services").my_device_id())
+  if not w then return false end
+  local peers, dev_of = direct.peers(cfg, b.song, b.room)
+  local to
+  for _, p in ipairs(peers) do if (dev_of or {})[p] == w.dev then to = p end end
+  if not to then return false end -- (only to a computer here the link knows and trusts, as everything else on it)
+  local live = 0
+  for _, o in ipairs(direct.streams(cfg).out) do if not o.finished and tostring(o.rel):find("/~media~", 1, true) then live = live + 1 end end
+  local now, path = reaper.time_precise(), cfg.root .. "/" .. b.song .. "/rooms/" .. w.room .. "/media/" .. w.file
+  local ok, why = streams.serve_decision(w, band.size(path), streams.served, live, now)
+  if not ok then streams.trace("media want " .. w.key .. " from " .. w.user .. ": not sent, " .. why); return false end
+  local rel = direct.stream_start(cfg, path, b.song, b.room, streams.MEDIA_INTERVAL_MS, w.name, { to })
+  if not rel then return false end
+  direct.stream_end(cfg, rel) -- (complete: begun and ended at once, as offer_media)
+  if served_n > 5000 then streams.served, served_n = {}, 0 end -- shortcut: a whole flush past 5,000 sends; the asker's WANT_EVERY still paces it
+  streams.served[w.dev .. "\0" .. w.key], served_n = now, served_n + 1
+  local id = media_id(cfg)
+  direct.send_live(cfg, "media", { id = id, user = cfg.user, room = w.room, file = w.file, size = w.size }, b.song, b.room, id, { to })
+  streams.trace("media out (catch-up for " .. w.user .. ") " .. rel .. " " .. w.size .. " bytes")
+  return true
+end
+
 -- Live sync's call, every tick. -> how many media files were put in place.
 function streams.tick(proj, cfg, b, recording, in_front)
   if in_front then streams.send_tick(proj, cfg, b, recording) end
   streams.receive_tick(proj, cfg, b, recording)
+  streams.catchup_tick(cfg, b)
   return streams.media_tick(cfg, b)
 end
 

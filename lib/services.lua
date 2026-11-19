@@ -374,6 +374,13 @@ function services.rescan(folder, sub)
   local cmd = st_api("/rest/db/scan?folder=" .. folder .. q, "POST")
   if cmd then background(sub and "syncthing-rescan-cue" or "syncthing-rescan", cmd, 0) end
 end
+-- What this computer still needs in a folder: Syncthing's own list (GET /rest/db/need), the judge of what's missing. In the background, asked
+-- again at most every `every` seconds (a long catch-up's list is big, and REAPER mustn't wait on it). -> the last answer's text, nil before the
+-- first. (lib/streams.lua catchup_tick fetches those files over the direct link. James, rt)
+function services.need(folder, every)
+  local cmd = st_api("/rest/db/need?folder=" .. folder)
+  return cmd and background("st-need-" .. (tostring(folder):gsub("[^%w%-]", "_")), cmd, every or 30) or nil
+end
 function services.syncthing_peers_now()
   local cmd, why = st_api("/rest/system/connections")
   if not cmd then return nil, why end

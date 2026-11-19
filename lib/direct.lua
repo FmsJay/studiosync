@@ -314,11 +314,12 @@ function direct.parse_msg(s)
   return tonumber(seq), studio, kind, data
 end
 -- A message to the others in the room now. data: a table (sent as JSON) or text, up to 64 KB. -> true when queued. Never raises.
-function direct.msg(cfg, kind, data, song, room)
+-- to: only these peers (a catch-up's ask and answer go to one computer: lib/streams.lua catchup_tick. James, rt)
+function direct.msg(cfg, kind, data, song, room, to)
   local ok, r = pcall(function()
     if not direct.live_available() or not direct.ensure(cfg) then return false end
     local text = type(data) == "table" and band.json_encode(data) or tostring(data)
-    local peers = direct.peers(cfg, song, room)
+    local peers = to or direct.peers(cfg, song, room)
     return #peers > 0 and #text <= direct.MSG_MAX and reaper.StudioSync_DirectMsg(band.info(cfg.root).id, kind, text, table.concat(peers, " ")) == 1
   end)
   return ok and r or false
@@ -407,8 +408,8 @@ end
 -- ---- the live layer's wiring (roadmap step 1; James, 0.60.0-rt) -------------------------------------------------------------------------
 -- Messages are studio-wide on the link: each one says its song and room, and an id when it stands for a file (a cue's event, a chat message,
 -- a live MIDI file), so a receiver takes whichever comes first once. The file is still written and stays the record and the fallback.
-function direct.send_live(cfg, kind, d, song, room, id)
-  return direct.msg(cfg, kind, { song = song, room = room, id = id, d = d }, song, room)
+function direct.send_live(cfg, kind, d, song, room, id, to)
+  return direct.msg(cfg, kind, { song = song, room = room, id = id, d = d }, song, room, to)
 end
 -- msgs (direct.messages) handed to handlers[kind](d, msg), only this song's and room's (nil: any), each kind and id once. -> how many.
 local seen_ids, seen_n = {}, 0
@@ -576,11 +577,12 @@ end
 function direct.stream_path(cfg, rel) return direct.inbox(cfg.root) .. "/.streams/" .. rel end
 -- Start streaming a file being written (REAPER recording a take) to the others in the room, every interval_ms (0: 250). -> rel, or nil.
 -- `name`: its name on the link, when not the file's own (lib/streams.lua: <room>~<user>~<file>, so two people's takes never share one. James, rt)
-function direct.stream_start(cfg, path, song, room, interval_ms, name)
+-- `to`: only these peers (a catch-up file goes to the computer that asked for it alone. James, rt)
+function direct.stream_start(cfg, path, song, room, interval_ms, name, to)
   local ok, r = pcall(function()
     local rel = direct.stream_rel(song, name or path)
     if not rel or not direct.live_available() or not direct.ensure(cfg) then return nil end
-    local peers = direct.peers(cfg, song, room)
+    local peers = to or direct.peers(cfg, song, room)
     return #peers > 0 and reaper.StudioSync_DirectStream(band.info(cfg.root).id, rel, path, table.concat(peers, " "), math.floor(interval_ms or 0)) == 1 and rel or nil
   end)
   return ok and r or nil
