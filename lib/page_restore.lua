@@ -242,6 +242,7 @@ end
 function R.section_recall()
   check_key()
   local b, cfg, proj, view, wide, points, can, who = E.b(), E.cfg(), E.proj(), E.view(), E.wide(), E.points(), E.can(), E.who()
+  require("recap").section(ctx, ImGui, cfg, b, local_time) -- (the last session in a few bullets: lib/recap.lua. James, rt)
   if not ui.short then ImGui.SeparatorText(ctx, "Saved versions") end -- (short: the box's own words say it, and the list gets the row)
   -- (room for the button and Keep for good beside it: -250 cut it off. James, 0.59.3)
   local reserve = ImGui.CalcTextSize(ctx, "Save this version") + ImGui.CalcTextSize(ctx, "Save permanently") + ImGui.GetFrameHeight(ctx) + 70

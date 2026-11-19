@@ -958,3 +958,21 @@ Problems found, not fixed (risky or a behaviour change; for James to pick):
   a VM) streamed at first (43 ms to the desktop over the LAN) then kept resetting with hundreds of underruns: a VM audio clock, not a real
   computer's. The Mac (1.0.12) has no live audio yet. Levels were 0 (nothing on input 1), so nothing was heard. Switched off again after.
   Next: an audible check with a mic or instrument on each end, then the hour-long run that's the roadmap's gate.
+
+## Session recaps and smart take names (rt-recap branch, 2026-11-19; offline tests only, not run in REAPER yet)
+- **Recap (lib/recap.lua):** at each end of session (20 quiet minutes, Leave, Live sync stopping; right after the end-of-session version),
+  a few bullets from the room's events, no new tracking and no model: who (event authors, this computer, who's here), how long (first to last
+  change), takes (new items whose take has a smart name or REAPER's own: by whom, track, section), tracks added/removed, tempo/marker changes,
+  insert/remove time, handovers, changes per person, notes, likes, saved versions. The window: the trailing run of changes with no gap over
+  20 minutes, after this computer's last recap.
+- **Who writes:** each computer its own view, in files only it writes (the studio's rule, as claims and status): `<room>/recaps/<user>.json`
+  (its last 20) and, with a cloud copy, `<cloud>/<song>/recaps/<YYYY-MM-DD HHMM> <user>.md`. A single writer (the driver) leaves gaps when it
+  leaves first, and one shared file makes Syncthing or cloud conflict copies. Restore page: **Last session** (folded) shows the room's newest
+  recap, "as <user> saw it": whoever left last saw the most. Each computer logs its own one-line summary.
+- **Smart take names:** when a recording stops, each new take on an armed track that still has REAPER's name (empty, the recorded file's,
+  "untitled MIDI item") becomes "<region, else marker> - <player> - take <n>", n per section and player across the song; renamed before the
+  next look, so it goes out with the take's first send. Studio setting, on unless false: band.json `smart_take_names`, Settings > Studio.
+- Tests: tests/test_0_60_rt_recap.lua.
+- **REAPER test:** record over a region: the take reads "Verse - <you> - take 1" here and on a bandmate; again: take 2; type a name, record
+  elsewhere: the typed one stays; Settings > Studio off: REAPER's names. Leave: the log's "last session (...)" line, Restore > Last session,
+  `<room>/recaps/<you>.json`, and the .md in the cloud folder's `<song>/recaps`.
