@@ -79,14 +79,20 @@ end
 -- `before`, `before_files`: the band's last version of this chain and its files. A path already in it was put there by
 -- whoever made that version: never copied from here (a bandmate could name any file of yours in a chain and have your
 -- next edit upload it: security review, 0.58.76, the rule share_media has had since 0.58.53); their own copy travels on.
-function fxfiles.share(chain, media_dir, before, before_files)
+-- `theirs` (optional): the paths a band's chain put on this track here, as a set of fxfiles.key (lib/mirror.lua apply records them on the
+-- track, never sent): never copied either. Decided by path, not by the event's text: with the event deleted after it landed, `before` was nil
+-- and anything went. Security, Round 1 review, 0.59.45
+function fxfiles.key(path) return (tostring(path):gsub("\\", "/"):lower()) end
+function fxfiles.share(chain, media_dir, before, before_files, theirs)
   local band, list, old = require("band"), {}, {}
-  if type(before) == "string" then for _, p in ipairs(fxfiles.paths(before)) do old[p:lower()] = true end end
+  -- (by fxfiles.key, "/" for "\": a plug-in that saves its path with the other slash read as new, and was copied. Round 1 review, 0.59.45)
+  if type(before) == "string" then for _, p in ipairs(fxfiles.paths(before)) do old[fxfiles.key(p)] = true end end
+  for k in pairs(type(theirs) == "table" and theirs or {}) do old[k] = true end
   for _, path in ipairs(fxfiles.paths(chain)) do
-    local size = not old[path:lower()] and not fxfiles.private(path) and reaper.file_exists(path) and band.size(path) or nil
-    if old[path:lower()] then
+    local size = not old[fxfiles.key(path)] and not fxfiles.private(path) and reaper.file_exists(path) and band.size(path) or nil
+    if old[fxfiles.key(path)] then
       for _, f in ipairs(type(before_files) == "table" and before_files or {}) do
-        if fxfiles.safe(f) and f.path:lower() == path:lower() then list[#list + 1] = { path = f.path, copy = f.copy } end
+        if fxfiles.safe(f) and fxfiles.key(f.path) == fxfiles.key(path) then list[#list + 1] = { path = f.path, copy = f.copy } end
       end
     elseif size and size <= fxfiles.MAX then
       local name = path:gsub("\\", "/"):match("[^/]+$")
@@ -121,6 +127,11 @@ function fxfiles.safe(f)
   if p:find("/%.[^/]+/") or low:find("/start menu/", 1, true) or low:find("/startup/", 1, true) then return false end
   if low:match("^%a:/users/[^/]+/[^/]+$") or low:match("^/users/[^/]+/[^/]+$") or low:match("^/home/[^/]+/[^/]+$") then return false end
   if fxfiles.private(p) then return false end
+  -- (nor a hidden file's name (".env", ".bashrc"), nor anywhere in REAPER's own folder (scripts, Startup, reaper-kb.ini's neighbours). Security,
+  -- Round 1 review, 0.59.45)
+  if p:match("[^/]+$"):sub(1, 1) == "." then return false end
+  local res = reaper and reaper.GetResourcePath and fxfiles.key(reaper.GetResourcePath()):gsub("/+$", "") .. "/"
+  if res and res ~= "/" and low:sub(1, #res) == res then return false end
   local ext = p:match("%.([%w]+)$")
   return ext ~= nil and fxfiles.EXT[ext:lower()] == true
 end
@@ -137,7 +148,7 @@ function fxfiles.fetch(list, media_dir, where)
       local can = this_os and reaper.file_exists(src) and dir and (not drive or reaper.EnumerateSubdirectories(drive .. "/", 0) ~= nil or reaper.EnumerateFiles(drive .. "/", 0) ~= nil)
       if can then
         reaper.RecursiveCreateDirectory(dir, 0)
-        pcall(band.copy_atomic, src, f.path)
+        pcall(band.copy_atomic, src, (f.path:gsub("\\", "/"))) -- (copy_atomic wants "/": a Windows path raised, and nothing was put back. Round 1 review, 0.59.45)
       end
       if not reaper.file_exists(f.path) and not fxfiles.said[f.path] then
         fxfiles.said[f.path] = true

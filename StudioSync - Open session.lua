@@ -23,7 +23,7 @@ end
 local function open_song(song, room) -- room: for a new tab (nil when refreshing a bound one)
   require("songsync").want(cfg, song) -- (only its listing may be here yet: from now on it comes in full)
   local s = band.read_json(band.session_path(cfg, song))
-  if not s then return band.msg("Couldn't read session.json for '" .. song .. "' (still syncing?).") end
+  if not s then return band.msg("Couldn't read '" .. song .. "' yet: it may still be arriving. Try again in a minute.") end -- (no file names: Round 1 review, 0.59.45)
   band.check_version(s.bandsync, "'" .. song .. "'")
 
   if not b then
@@ -139,7 +139,8 @@ if b then return open_song(b.song) end
 if #band.songs(cfg) == 0 then -- (the first thing a new bandmate sees: say what has to happen, not just that nothing's here)
   return band.msg("Nothing from the others has arrived in your shared folder yet (" .. cfg.root .. ").\n\n" ..
     "Ask the host to open REAPER: their StudioSync panel shows a \"Let you in\" button for your computer. The studio's " ..
-    "projects appear here once the folder syncs (Settings > Health shows whether it's connected).")
+    "projects appear here once the folder syncs. Syncthing has to be running for that: the studio's card on the panel's Your studios page " ..
+    "says whether you're connected, with a Start Syncthing button when it isn't running.") -- (Health needs a project open: Round 1 review, 0.59.45)
 end
 -- straight into the main room: side rooms are made and visited from the panel's Rooms page
 require("chooser").open(cfg, { title = "Open a studio project", action = "Open" },

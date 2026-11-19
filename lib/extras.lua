@@ -447,7 +447,7 @@ function extras.save_template(proj, cfg, name)
   local dir = extras.template_dir(cfg)
   reaper.RecursiveCreateDirectory(dir, 0)
   local tmp = band.home() .. "/template-scratch.rpp"
-  reaper.Main_SaveProjectEx(proj, tmp, 0) -- (a copy: the project stays where it is)
+  local _ = band.save_copy and band.save_copy(proj, tmp) or reaper.Main_SaveProjectEx(proj, tmp, 0) -- (a copy: the project stays where it is)
   local text = band.read(tmp)
   os.remove(tmp); os.remove(tmp .. ".bandsync-ids.json")
   if not text then return nil, "Couldn't save a copy of the project." end

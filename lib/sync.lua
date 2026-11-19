@@ -5,7 +5,6 @@ local band = require("band")
 local sync = {
   SNAP = "BandSync.snap",       -- id -> "<original-case id>|pos|len|offs|lane" as last seen/applied
   APPLIED = "BandSync.applied", -- event id -> "1"
-  SENTKEYS = "BandSync.sent",   -- source file|offset|length -> id: never send the same audio twice
   REV = "BandSync.rev",         -- id -> revision this project holds
   SNAPQN = "BandSync.snapqn",   -- id -> position in quarter notes as last seen/applied (tells tempo moves from edits)
   TAILS = "BandSync.tail",      -- id -> seconds of tail this project's print of it carries (items are that much longer)
@@ -488,7 +487,10 @@ function sync.authority(cfg, song, room, s)
       if mode == "open" and not claimed(track, pos) then return true end
       return take ~= nil and sync.author(take) == sync.author_of(user) and not claimed(track, pos)
     end,
-    { driver = driver, tracks = tracks, regions = regions, times = times, owner = owner, spans = spans, mode = mode, printers = printers }
+    -- (is_claimed and owner_of: this room's, for callers to pass on. The module's sync.is_claimed / sync.owner_of are the last call's, and one
+    -- for another room in between judged this one by that room's claims. They stay, for callers not passing these yet. Round 1 review, 0.59.45)
+    { driver = driver, tracks = tracks, regions = regions, times = times, owner = owner, spans = spans, mode = mode, printers = printers,
+      is_claimed = claimed, owner_of = owner }
 end
 
 -- Show the time claims as regions named "[claimed: <user>]" (this machine only; see band.CLAIM_MARK). Redrawn
@@ -560,92 +562,9 @@ end
 sync.speaks_for_name = speaks_for_name
 
 -- ---- our own takes ------------------------------------------------------------------------------
-
--- Everything already in a guest's project when sync first runs is baseline (earlier experiments): never
--- auto-sent. A host shares everything instead (Publish marks the project "shared"). Returns count marked.
-function sync.mark_baseline(proj)
-  if ext(proj, band.SECTION, "baseline") ~= "" then return 0 end
-  local n = 0
-  for i = 0, reaper.CountMediaItems(proj) - 1 do
-    local it = reaper.GetMediaItem(proj, i)
-    for k = 0, reaper.CountTakes(it) - 1 do
-      local tk = reaper.GetTake(it, k)
-      if not band.take_id(tk) then band.set_take_ext(tk, "band_base", "1"); n = n + 1 end
-    end
-  end
-  setext(proj, band.SECTION, "baseline", os.date("!%Y-%m-%dT%H:%M:%SZ"))
-  return n
-end
-
-local function content_key(it, tk) -- position included: a pasted copy is the same audio, somewhere else
-  local fn = reaper.GetMediaSourceFileName(reaper.GetMediaItemTake_Source(tk))
-  return string.format("%s|%.4f|%.4f|%.4f", fn:match("[^/\\]+$") or fn, reaper.GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS"),
-    reaper.GetMediaItemInfo_Value(it, "D_LENGTH"), reaper.GetMediaItemInfo_Value(it, "D_POSITION"))
-end
-
--- {item, take} pairs this project recorded itself: not stems, not received, not dry twins.
--- opts.all: every take of each item (else the active one); opts.unsent: skip sent, baseline and
--- already-sent audio; opts.selected: selected items only; opts.min_len: skip shorter items.
-function sync.own_takes(proj, opts)
-  local out = {}
-  local n = opts.items and #opts.items or opts.selected and reaper.CountSelectedMediaItems(proj) or reaper.CountMediaItems(proj)
-  for i = 0, n - 1 do
-    local it = opts.items and opts.items[i + 1] or opts.selected and reaper.GetSelectedMediaItem(proj, i) or reaper.GetMediaItem(proj, i)
-    if band.track_ext(reaper.GetMediaItem_Track(it), "band_stem") == "" and band.item_ext(it, "band_take") == ""
-        and band.item_ext(it, "band_live") == "" then -- live placeholders are someone else's audio, never ours to send
-      local legacy = band.item_ext(it, "band_sent") -- 0.2 marked the item: carry it to the take that was active
-      if legacy ~= "" then
-        local a = reaper.GetActiveTake(it)
-        if a and band.take_ext(a, "band_sent") == "" then band.set_take_ext(a, "band_sent", legacy) end
-        band.set_item_ext(it, "band_sent", "")
-      end
-      local function add(tk)
-        if not tk or band.take_ext(tk, "band_take") ~= "" or band.take_ext(tk, "band_dry") ~= "" or band.take_ext(tk, "band_midi") ~= "" then return end
-        if reaper.GetMediaItemInfo_Value(it, "D_LENGTH") < (opts.min_len or 0) then
-          if band.take_ext(tk, "band_sliver") == "" then
-            band.log(string.format("a %.2f s sliver on %s wasn't sent (shorter than %.1f s)", reaper.GetMediaItemInfo_Value(it, "D_LENGTH"), track_name(it), opts.min_len))
-            band.set_take_ext(tk, "band_sliver", "1")
-          end
-          return
-        end
-        if reaper.TakeIsMIDI(tk) and select(2, reaper.MIDI_CountEvts(tk)) == 0 then -- an empty MIDI recording isn't a take
-          if band.take_ext(tk, "band_empty") == "" then
-            band.log("an empty MIDI take on " .. track_name(it) .. " wasn't sent")
-            band.set_take_ext(tk, "band_empty", "1")
-          end
-          return
-        end
-        -- a pasted/duplicated copy of a bandmate's take plays their file (named after its id): it's their recording,
-        -- never ours to send (2026-10-28: a paste went out as the paster's take)
-        local src = reaper.GetMediaItemTake_Source(tk)
-        local file = (src and reaper.GetMediaSourceFileName(src) or ""):match("[^/\\]+$") or ""
-        local who = file:match("^(.-)%-%d%d%d%d%d%d%d%d%-%d%d%d%d%d%dZ%-%d+")
-        who = who and who:gsub("^takes_", "") -- Solo edit's media copies are named takes_<id>
-        if who and opts.me and sync.author_of(who) ~= sync.author_of(opts.me) then
-          if band.take_ext(tk, "band_copied") == "" then
-            band.log(string.format("a copy of %s's take on %s stays here: someone else's recording isn't sent as yours", who:gsub("_", " "), track_name(it)))
-            band.set_take_ext(tk, "band_copied", "1")
-          end
-          return
-        end
-        if opts.unsent then
-          if band.take_ext(tk, "band_sent") ~= "" or band.take_ext(tk, "band_base") ~= "" then return end
-          -- the same audio at the same place went out before, unless that take has since been deleted
-          -- (delete a paste, paste it back: it must go out again)
-          local before = ext(proj, sync.SENTKEYS, content_key(it, tk))
-          if before ~= "" and band.take_state(proj, before) ~= "deleted" then return end
-        end
-        out[#out + 1] = { it, tk }
-      end
-      if opts.all then
-        for k = 0, reaper.CountTakes(it) - 1 do add(reaper.GetTake(it, k)) end
-      else
-        add(reaper.GetActiveTake(it))
-      end
-    end
-  end
-  return out
-end
+-- The take-based sync's send half (own takes, sent-audio keys, the baseline marks) is gone: mirror sync sends everything since 0.32. Live sync
+-- still calls mark_baseline at its start; it marks nothing now. Round 1 review, 0.59.45
+function sync.mark_baseline() return 0 end
 
 
 -- Render one take as the song prints it and post it as revision `rev` of `id`.
@@ -1013,10 +932,12 @@ end
 -- claimed for anyone by itself since 0.58.82 (James: auto-claims "just make things more troublesome"): only Claim does.
 -- `item`: an item's own oid. Your own recording on a track nobody claimed goes out too, as the take rule in sync.authority
 -- says (it went to "(yours, not sent)" while the panel said "recording still goes out": UX review, 0.58.76).
-function sync.maker_may(oid, user, name, pos, mode, item)
+-- `is_claimed` (optional): the room's (sync.authority's who.is_claimed), else the last authority call's. Round 1 review, 0.59.45
+function sync.maker_may(oid, user, name, pos, mode, item, is_claimed)
   local mirror = require("mirror")
+  is_claimed = is_claimed or sync.is_claimed
   return mode ~= "driver" and mode ~= "admins" and (mirror.is_creator(oid, user) or (item ~= nil and mirror.is_creator(item, user)))
-    and not (sync.is_claimed and sync.is_claimed(name, pos))
+    and not (is_claimed and is_claimed(name, pos))
 end
 
 -- Add tracks to my claims. -> true, or nil and why.
@@ -1037,6 +958,14 @@ end
 function sync.apply(proj, ev, dir, can, me)
   if ev.type == "obj" then return require("mirror").receive(proj, ev, dir .. "/media", sync.local_mix, me) end -- mirror sync
   if ev.type == "timeline" then -- REAPER moves the items for the new map, as it would for a local change
+    -- (Hold my changes on, and your tempo map or markers differ from the last ones seen here: theirs waits, not applied and not marked seen,
+    -- as their change to an object you hold does. Applied, yours was replaced with no word and nothing was left to send on release. Live sync
+    -- doesn't look at the timeline while holding, so "seen" is still the band's last. James: theirs waits. Cost: one signature per incoming
+    -- timeline while on Hold. Round 1 review, 0.59.45)
+    if ext(proj, band.SECTION, "hold") ~= "" then
+      local seen = ext(proj, band.SECTION, "timeline")
+      if seen ~= "" and seen ~= timeline_sig(proj) then return false end
+    end
     if tempo_sig(ev.tempo) ~= tempo_sig(band.capture_tempo(proj)) then require("mirror").tempo_changed(proj) end
     sync.audio_follow_tempo(proj)
     band.apply_tempo(proj, ev.tempo or {})
@@ -1176,7 +1105,8 @@ function sync.receive(proj, cfg, song, room, can)
   -- meanwhile. What's read waits in the cache, and nothing is applied until all of it is: the newest-only rules below need every file.
   -- Review, 0.58.91)
   local t_read, cut = reaper.time_precise(), false
-  for _, f in ipairs(band.listing(dir, ".json", true)) do -- (shared with this poll's other looks at the folder, in the same order: 0.59.14, review)
+  -- (the unsorted listing, the one pending_events shares: pending is sorted below anyway. Round 1 review, 0.59.45)
+  for _, f in ipairs(band.listing(dir, ".json")) do -- (shared with this poll's other looks at the folder: 0.59.14, review)
     if not settled[f] and ext(proj, sync.APPLIED, f:sub(1, -6)) ~= "" then settled[f] = true end
     if not settled[f] and not cache[f] and reaper.time_precise() - t_read > budget then cut = true; break end
     if not settled[f] then
@@ -1378,21 +1308,9 @@ end
 
 -- ---- status receipts ----------------------------------------------------------------------------
 
--- What this project holds: { [lower id] = rev }. Written to rooms/<room>/status/<user>.json so everyone
--- can see who has what (the Status window).
-function sync.holdings(proj)
-  local have, i = {}, 0
-  while true do
-    local ok, key, state = reaper.EnumProjExtState(proj, band.TAKES, i)
-    if not ok then break end
-    i = i + 1
-    if state == "full" or state == "preview" then
-      local id = (ext(proj, sync.SNAP, key):match("^([^|]+)") or key):lower()
-      have[id] = (tonumber(ext(proj, sync.REV, key)) or 1) + (state == "preview" and -0.5 or 0)
-    end
-  end
-  return have
-end
+-- What this project holds of the take-based sync: nothing since its takes stopped (band.set_take_state is never called), so always empty. Kept
+-- for Live sync's fingerprint and the status receipt, which still read it. Round 1 review, 0.59.45
+function sync.holdings() return {} end
 
 -- Files already applied or set aside, per project and events folder: each pass looked every one of thousands up in the project again
 -- (review, 0.58.53). Only ever grows while the project is open: applied stays applied (sync.forget_trimmed drops only files that are gone).
@@ -1452,11 +1370,13 @@ function sync.pending_events(proj, cfg, song, room)
   local dir = sync.room_dir(cfg, song, room) .. "/events"
   local settled = sync.settled_for(proj, dir)
   for _, f in ipairs(band.listing(dir, ".json")) do -- (a count: the shared listing, unsorted. 0.59.14, review)
-    local id = f:sub(1, -6)
-    if not settled[f] and ext(proj, sync.APPLIED, id) ~= "" then settled[f] = true end
-    -- waiting on a claim isn't "behind", and neither is our own change on its way back (the pill read "Receiving 321"
-    -- right after a restore we sent: laptop, 0.34.4)
-    if not settled[f] and not sync.deferred[id] and not sync.is_mine(id, cfg.user) then n = n + 1 end
+    if not settled[f] then -- (looked at first: a name cut for every file of thousands, 2 to 3 times a poll. Round 1 review, 0.59.45)
+      local id = f:sub(1, -6)
+      if ext(proj, sync.APPLIED, id) ~= "" then settled[f] = true
+      -- waiting on a claim isn't "behind", and neither is our own change on its way back (the pill read "Receiving 321"
+      -- right after a restore we sent: laptop, 0.34.4)
+      elseif not sync.deferred[id] and not sync.is_mine(id, cfg.user) then n = n + 1 end
+    end
   end
   return n
 end
@@ -1547,7 +1467,6 @@ function sync.write_status(proj, cfg, song, room, info)
   info.machine = sync.machine()
   info.user, info.time, info.version, info.room = cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ"), band.VERSION, room
   info.reaper = (reaper.GetAppVersion():match("^[%d%.]+")) -- (Setup > Health compares the band's: "7.79/win64" -> "7.79")
-  info.takes = sync.holdings(proj)
   band.write_json(dir .. "/" .. (cfg.user:gsub("[^%w%-_ ]", "")) .. ".json", info)
 end
 
@@ -1569,7 +1488,8 @@ function sync.preload(proj, cfg, song, room)
   reaper.PreventUIRefresh(1)
   local ok, err = pcall(function()
     if reaper.time_precise() - (sync.order_at or 0) > 3 then sync.order_at = reaper.time_precise(); mirror.keep_order(proj, cfg, song, room) end
-    mirror.watch(proj, cfg, song, room, { can = can, mode = who.mode, local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1" })
+    mirror.watch(proj, cfg, song, room, { can = can, mode = who.mode, local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1",
+      is_claimed = who.is_claimed, owner_of = who.owner_of })
     -- (REAPER can't draw while this runs, and a plug-in's load can't be cut short: 206 changes took 54 s on the laptop. So its title
     -- bar says what's happening. Put back after: REAPER only redoes its own title when something changes, and it sat there saying this.)
     was_title = reaper.JS_Window_GetTitle and reaper.JS_Window_GetTitle(reaper.GetMainHwnd())

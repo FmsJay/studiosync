@@ -318,8 +318,26 @@ local function conclude()
       -- (written beside it, then swapped in: cut off half way, the person's own startup scripts were gone)
       local tmp, old = startup .. ".studiosync.tmp", startup .. ".studiosync.old"
       local wf = io.open(tmp, "w")
-      local wrote = wf and wf:write(cur .. (cur ~= "" and not cur:match("\n$") and "\n" or "") .. "-- BandSync autostart\ndofile([[" .. sdir ..
-        "/StudioSync - Autostart.lua]])\n-- /BandSync autostart\n")
+      -- (the block lib/tools.lua startup_block writes: each copy in a pcall, this one and then this computer's last-good copy, so a copy that fails
+      -- to load doesn't stop what follows in __startup.lua. Round 1 review, 0.59.45)
+      local res = reaper.GetResourcePath():gsub("\\", "/")
+      local home = (reaper.EnumerateSubdirectories(res .. "/BandSync", 0) or reaper.EnumerateFiles(res .. "/BandSync", 0)) and (res .. "/BandSync") or (res .. "/StudioSync")
+      local block = "-- BandSync autostart\n" ..
+        "do local was, path, finders = {}, package.path, { table.unpack(package.searchers) }\n" ..
+        "  for k in pairs(package.loaded) do was[k] = true end\n" ..
+        "  for _, f in ipairs({ [[" .. sdir .. "/StudioSync - Autostart.lua]], [[" .. home .. "/last good/StudioSync - Autostart.lua]] }) do\n" ..
+        "    if reaper.file_exists(f) then\n" ..
+        "      local ok, err = pcall(dofile, f)\n" ..
+        "      if ok then break end\n" ..
+        "      reaper.SetExtState(\"BandSync\", \"startup failed\", f .. \": \" .. tostring(err):sub(1, 300), false)\n" ..
+        "      for k in pairs(package.loaded) do if not was[k] then package.loaded[k] = nil end end\n" ..
+        "      for i = #package.searchers, 1, -1 do package.searchers[i] = nil end\n" ..
+        "      for i, s in ipairs(finders) do package.searchers[i] = s end\n" ..
+        "      package.path = path\n" ..
+        "    end\n" ..
+        "  end\n" ..
+        "end\n-- /BandSync autostart\n"
+      local wrote = wf and wf:write(cur .. (cur ~= "" and not cur:match("\n$") and "\n" or "") .. block)
       if wf then wf:close() end
       local placed = wrote and os.rename(tmp, startup) -- (Windows won't rename over a file: the old one steps aside first)
       if wrote and not placed then

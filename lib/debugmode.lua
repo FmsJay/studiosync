@@ -84,7 +84,7 @@ function dm.write(cfg, proj, b, why)
   -- (the project itself, as it is here now, unsaved changes too, as a copy: the project keeps its own name and stays unsaved. Not while
   -- recording. James, 0.59.40: "all projects from other users ... lands on this pc")
   if b and proj and reaper.ValidatePtr2(0, proj, "ReaProject*") and reaper.GetPlayStateEx(proj) & 4 == 0 then
-    pcall(reaper.Main_SaveProjectEx, proj, d .. "/project " .. tostring(b.song):gsub("[^%w%-_ ]", "_") .. ".rpp", 0)
+    pcall(band.save_copy, proj, d .. "/project " .. tostring(b.song):gsub("[^%w%-_ ]", "_") .. ".rpp") -- (its unsaved mark kept: Round 1 review, 0.59.45)
   end
   copy_text(band.log_dir() .. "/studiosync-" .. os.date("%Y-%m-%d") .. ".log", d .. "/log-" .. os.date("%Y-%m-%d") .. ".txt", 4 * 1024 * 1024)
   copy_text(band.home() .. "/errors.log", d .. "/errors.txt", 1024 * 1024)
@@ -132,14 +132,19 @@ function dm.crash_reports(have)
     end
     return out
   elseif band.MAC then
+    -- (only the newest eight read, and those not sent already: every one was read whole first. And by the date in the name: "REAPER-" sorted
+    -- before "REAPER_" whatever the date. Round 1 review, 0.59.45)
     local dir = (os.getenv("HOME") or "") .. "/Library/Logs/DiagnosticReports"
+    local found = {}
     for _, f in ipairs(band.files(dir)) do
-      if f:find("^REAPER") and (f:find("%.ips$") or f:find("%.crash$")) then
-        local t = band.read(dir .. "/" .. f)
-        if t then out[#out + 1] = { name = f:gsub("%.%w+$", ""), text = #t > 200000 and t:sub(1, 200000) or t } end
-      end
+      if f:find("^REAPER") and (f:find("%.ips$") or f:find("%.crash$")) then found[#found + 1] = { name = f:gsub("%.%w+$", ""), f = f, at = f:gsub("^REAPER[^%d]*", "") } end
     end
-    table.sort(out, function(a, x) return a.name < x.name end) -- (named for their date: the newest last)
+    table.sort(found, function(a, x) return a.at < x.at end) -- (named for their date: the newest last)
+    for i = math.max(1, #found - 7), #found do
+      local c = found[i]
+      local t = not (have and have(c.name)) and head(dir .. "/" .. c.f, 200000)
+      out[#out + 1] = { name = c.name, text = t or nil }
+    end
   end
   while #out > 8 do table.remove(out, 1) end
   return out
@@ -196,21 +201,28 @@ function dm.session_end() reaper.DeleteExtState(band.SECTION, "running since", t
 -- This computer's part, for each studio with debug mode on (Autostart: as REAPER quits, and at the start after a crash; a bug report).
 function dm.computer_all(me)
   if not me or me == "" then return end
+  pcall(dm.tell, me) -- (told before anything is collected: Round 1 review, 0.59.45)
   for _, x in ipairs(band.bands()) do
     if dm.on(x.root) then pcall(dm.write_computer, { root = x.root, user = me }) end
   end
 end
 -- Each computer is told once that debug mode is on in a studio (Autostart, at its start): it was said only on the admin's own computer, and
 -- the people whose reports it sends never knew. Told again if it's switched off and on. Full review, 0.59.44.
+-- The words for it, for the log and the panel's Debug pill.
+function dm.notice(name)
+  return "Debug mode is on in " .. tostring(name) .. ": at the end of each session, with each bug report and after a crash, " ..
+    "this computer saves a report, a copy of the project, its setup, log and REAPER's crash reports into the studio's _debug folder for the " ..
+    "owner and admins (hidden from the others, not locked). The owner or an admin can switch it off in Settings > Studio"
+end
+-- (Round 1 review, 0.59.45: also from dm.collect and dm.computer_all, before anything is written, so debug mode switched on mid-session is told
+-- before that session's end sends anything; Autostart's start alone told it only at the next start.)
 function dm.tell(me)
   for _, x in ipairs(band.bands()) do
     local key = "debug told " .. tostring(band.info(x.root).id)
     local on = dm.on(x.root)
     if on and reaper.GetExtState(band.SECTION, key) == "" then
       reaper.SetExtState(band.SECTION, key, "1", true)
-      band.log("Debug mode is on in " .. tostring(band.info(x.root).name) .. ": at the end of each session, with each bug report and after a crash, " ..
-        "this computer saves a report, a copy of the project, its setup, log and REAPER's crash reports into the studio's _debug folder for the " ..
-        "owner and admins (hidden from the others, not locked). The owner or an admin can switch it off in Settings > Studio")
+      band.log(dm.notice(band.info(x.root).name))
     elseif not on and reaper.GetExtState(band.SECTION, key) ~= "" then
       reaper.DeleteExtState(band.SECTION, key, true)
     end
@@ -218,7 +230,19 @@ function dm.tell(me)
 end
 -- A project's part, if its studio has debug mode on (Live sync: its session ending; a bug report). `why`: what it's for.
 function dm.collect(cfg, proj, b, why)
-  if cfg and cfg.root and dm.on(cfg.root) then pcall(dm.write, cfg, proj, b, why) end
+  if cfg and cfg.root and dm.on(cfg.root) then pcall(dm.tell, cfg.user); pcall(dm.write, cfg, proj, b, why) end
+end
+-- For the panel's "Debug" pill: the studio in front (cfg.root) first, else any studio here with debug mode on. -> its name and the notice, or
+-- nil. Looked at every 5 s at most (the panel asks each frame). Round 1 review, 0.59.45.
+local any_at, any_name = -math.huge, nil
+function dm.on_any(cfg)
+  local now = reaper.time_precise()
+  if now - any_at >= 5 or now < any_at then
+    any_at, any_name = now, nil
+    if cfg and cfg.root and cfg.root ~= "" and dm.on(cfg.root) then any_name = band.info(cfg.root).name
+    else for _, x in ipairs(band.bands()) do if dm.on(x.root) then any_name = x.name; break end end end
+  end
+  if any_name then return any_name, dm.notice(any_name) end
 end
 
 return dm

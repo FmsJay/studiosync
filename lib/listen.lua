@@ -160,7 +160,7 @@ function listen.share(cfg, on)
   local want, now_name = require("groups").tailnet(cfg.root), services.tailnet_now()
   if want and not host:find(want.suffix, 1, true) then
     return nil, "This studio uses the Tailscale network " .. want.name .. ", and this computer is on " .. tostring(now_name) ..
-      " right now, so the others couldn't reach the page. Switch Tailscale to " .. want.name .. " first (Settings > Health has a button, or Tailscale's own menu)."
+      " right now, so the others couldn't reach the page. Switch Tailscale to " .. want.name .. " first (Tailscale's own menu, or the Switch button in Settings > Health with a project open)."
   end
   listen.write(cfg)
   start_server(cfg)

@@ -19,6 +19,7 @@ end
 -- settings <root>", kept). Syncthing not saying yet, or a studio from before owners: band.json as it is, as before. Read at most every 5 s.
 local SETTINGS = { "alerts", "alerts_server", "call", "sonobus_server", "tailnet", "tailscale_only", "colours", "debug", "updates" } -- ("updates": lib/fromfolder.lua, 0.59.25)
 local trusted_at = {}
+local function pinned(root) local ok, p = pcall(require("trust").pins, root); return ok and p ~= nil end
 function groups.trusted(root)
   local c, now = trusted_at[root], reaper.time_precise() or 0
   if c and now - c.at < 5 then return c.j end
@@ -32,6 +33,11 @@ function groups.trusted(root)
     out = stored or {}
   elseif not (okt and ok == true) and type(stored) == "table" then
     out = stored
+  elseif not (okt and ok == true) and (type(j.owner) == "string" or pinned(root)) then
+    -- (an owner named and nothing checked yet here: nothing, until Syncthing says who wrote it. Believed as written, a member could switch a new
+    -- joiner to folder code in a studio that never chose it. The inviter writes band.json again at Let in, so the answer comes within seconds.
+    -- A studio from before owners: as written, as before. Round 1 review, 0.59.45)
+    out = {}
   else
     for _, k in ipairs(SETTINGS) do out[k] = j[k] end
     if okt and ok == true then band.set_ext_json(band.SECTION, key, out, true) end
@@ -165,6 +171,8 @@ end
 -- Everyone sees the new name. The ID and the folder names, here and on Drive, stay: changing those would sync it all again.
 function groups.rename(root, name, by)
   if not groups.may_manage(root, by) then return nil, "Only the owner or an admin can do that." end
+  local problem = band.name_problem(name) -- (another alphabet, or a name Windows keeps: Round 1 review, 0.59.45)
+  if problem then return nil, problem end
   name = band.clean(name or "")
   if name == "" then return nil, "Give it a name." end
   for _, x in ipairs(band.bands()) do
@@ -253,6 +261,23 @@ function groups.close(root, me)
   return groups.leave(root, me, true)
 end
 
+-- Does the studio's closed.json count: naming the owner, and written (as Syncthing says) by the pinned owner's computer, or this one while its
+-- person is the owner? -> true and the file's table, or false. The answer is kept per file as read; "not yet" is asked again after 30 s
+-- (lib/trust.lua). The Studios page goes by this too: a closed.json anyone wrote hid the studio there. Round 1 review, 0.59.45.
+local closed_seen = {}
+function groups.closed_ok(root)
+  local e = band.read_json(root .. "/_band/closed.json")
+  if not (type(e) == "table" and type(e.by) == "string") then return false end
+  local k = root .. "\0" .. e.by .. "\0" .. tostring(e.at)
+  if closed_seen[k] == nil then
+    local ok = groups.role(root, e.by) == "owner" and require("trust").from_owner_file(root, "_band/closed.json")
+    if ok == nil then return false end
+    closed_seen[k] = ok == true
+    if not ok then band.log(string.format("%s: a closed.json not from the owner's computer was set aside", band.info(root).name)) end
+  end
+  return closed_seen[k], e
+end
+
 -- Run from removal.tick, every 30 s or so: Syncthing lets go of what this computer left, a closed group is over here too, and a group
 -- nobody's been seen in for a week gets a word (closed or removed while this computer was off: nothing can reach it to say so).
 local said_quiet = {}
@@ -282,9 +307,8 @@ function groups.tick(now)
     if (ch or "") ~= was then reaper.SetExtState(band.SECTION, seen_key, ch or "", true) end
     local key = "group closed " .. g.id
     if reaper.GetExtState(band.SECTION, key) == "" and not groups.is_old(g.root) then
-      local e = band.read_json(g.root .. "/_band/closed.json")
-      -- (the owner's only, as groups.close is: an admin's hand-written file closed the studio for everyone. Full review, 0.59.44)
-      if type(e) == "table" and e.by and groups.role(g.root, e.by) == "owner" and require("trust").mark_ok(g.root, "_band/closed.json", e) then
+      local ok_closed, e = groups.closed_ok(g.root)
+      if ok_closed then
         if groups.leave(g.root, me, true) then -- (not: something's recording. The next look does it)
           reaper.SetExtState(band.SECTION, key, "1", true)
           band.log(string.format("%s closed %s: nothing syncs any more, and your copy stays in %s", tostring(e.by), g.name, g.root))

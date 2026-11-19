@@ -56,16 +56,63 @@ function removal.out(list, device_of, now)
   return out
 end
 
+-- Marks this computer has accepted, kept in its own ExtState ("marks kept <folder>": { [file] = mark }), so one acts when due even after its file
+-- went or was rewritten: a guest who deleted their mark was never unshared, and a member being taken out could undo it within the minute. A kept
+-- mark goes only when Syncthing says the owner's or an admin's computer deleted its file (or anyone did, in a studio from before owners), or when
+-- Let in or Keep ran here. Asked once per vanished file; costs nothing while the files are there. Round 1 review, 0.59.45.
+local function kept_key(root) return "marks kept " .. (tostring(root):gsub("\\", "/"):gsub("/+$", ""):lower()) end
+local function kept(root) local ok, t = pcall(band.ext_json, band.SECTION, kept_key(root)); return ok and type(t) == "table" and t or {} end
+local function set_kept(root, t) pcall(band.set_ext_json, band.SECTION, kept_key(root), t, true) end
+local vanished = {} -- (root .. file -> the answer, or when it was last asked: once a minute at most while there's none)
+local function deleted_ok(root, f)
+  local trust = require("trust")
+  if not trust.pins(root) and not trust.held(root) then return true end
+  local k = root .. "\0" .. f
+  local v = vanished[k]
+  if v == nil or (type(v) == "number" and os.time() - v >= 60) then
+    local ok = trust.deleted_by_manager(root, "_band/removed/" .. f)
+    if ok == nil then vanished[k] = os.time(); return false end
+    vanished[k] = ok
+  end
+  return vanished[k] == true
+end
+-- -> the accepted marks, and { [mark] = its file }.
 local function all_marks(root)
-  local list = {}
-  for _, f in ipairs(band.files(marks(root), ".json")) do
+  local list, files, accepted = {}, {}, {}
+  local listing = band.files(marks(root), ".json")
+  for _, f in ipairs(listing) do
     local m = band.read_json(marks(root) .. "/" .. f)
     -- (leaving is only yours to say: a "left" mark someone else wrote took anyone out, the host too. Review, 0.58.47)
     -- (and from the computer it says: the owner's or an admin's, or the leaver's own. lib/trust.lua, 0.58.69)
-    if type(m) == "table" and m.user and ((m.left and m.by == m.user) or require("groups").may_remove(root, m.by, m.user))
-      and require("trust").mark_ok(root, "_band/removed/" .. f, m) then list[#list + 1] = m end
+    -- (a leaver's own only when the device it names is that person's own, as their devices file says and Syncthing confirms: a made-up device
+    -- sharing the writer's first 7 characters passed. And a left mark is never a guest's. Round 1 review, 0.59.45)
+    if type(m) == "table" and m.left then m.guest = nil end
+    local own_left = type(m) == "table" and m.left and m.by == m.user and m.device ~= nil and removal.device_of(root, m.user) == m.device
+    if type(m) == "table" and m.user and (own_left or (not m.left and require("groups").may_remove(root, m.by, m.user)))
+      and require("trust").mark_ok(root, "_band/removed/" .. f, m) then list[#list + 1] = m; files[m] = f; accepted[f] = m end
   end
-  return list
+  local have, changed = kept(root), false
+  local present = {}
+  for _, f in ipairs(listing) do present[f] = true; vanished[root .. "\0" .. f] = nil end -- (there again: a later deletion is asked about afresh)
+  for f, m in pairs(accepted) do
+    if band.json_encode(have[f] or false) ~= band.json_encode(m) then have[f], changed = m, true end
+  end
+  for f, m in pairs(have) do
+    if not accepted[f] then
+      if not present[f] and deleted_ok(root, f) then have[f], changed = nil, true
+      elseif type(m) == "table" and m.user then list[#list + 1] = m; files[m] = f end -- (gone or rewritten by someone else: as accepted)
+    end
+  end
+  if changed then set_kept(root, have) end
+  return list, files
+end
+-- Forget the kept marks naming a computer or a person here (Let in, Keep).
+local function forget_kept(root, device, user)
+  local have, changed = kept(root), false
+  for f, m in pairs(have) do
+    if type(m) ~= "table" or (device and m.device == device) or (user and m.user == user and not m.guest) then have[f], changed = nil, true end
+  end
+  if changed then set_kept(root, have) end
 end
 function removal.gone(root)
   return removal.out(all_marks(root), function(u) return removal.device_of(root, u) end, os.time())
@@ -83,7 +130,7 @@ function removal.left(root, user, id)
   reaper.RecursiveCreateDirectory(marks(root), 0)
   band.write_json(marks(root) .. "/" .. file_name(user), { user = user, device = id, by = user, at = os.time(), left = true })
 end
-function removal.keep(root, user) band.remove(marks(root) .. "/" .. file_name(user)) end
+function removal.keep(root, user) band.remove(marks(root) .. "/" .. file_name(user)); forget_kept(root, nil, user) end
 -- A guest: the same mark, dated so it falls due when their time is up, by their computer (their StudioSync name isn't known yet when
 -- they're let in). A guest invitation's day was Tailscale's only: their computer kept the shared folder until someone took it out (review, 0.58.52).
 -- How long is picked when inviting them (James, 0.58.82: "invite guest and set for when theirs expires"; it was always a day): the invitation
@@ -127,10 +174,15 @@ function removal.invite_for(list, now)
   return best
 end
 -- When an invitation made at `made` ends now (an early end moves it): rewritten in place. Its file is named by when and who.
+-- (only a note that counts, as removal.invites reads them: rewritten from a manager's computer, a forged note became a trusted one. Round 1 review, 0.59.45)
 function removal.end_invite(root, made, ends)
-  for _, f in ipairs(band.files(invites_dir(root), ".json")) do
-    local v = band.read_json(invites_dir(root) .. "/" .. f)
-    if type(v) == "table" and v.made == made then v.ends = ends; band.write_json(invites_dir(root) .. "/" .. f, v) end
+  for _, v in ipairs(removal.invites(root)) do
+    if v.made == made then
+      for _, f in ipairs(band.files(invites_dir(root), ".json")) do
+        local w = band.read_json(invites_dir(root) .. "/" .. f)
+        if type(w) == "table" and w.made == made and w.by == v.by then w.ends = ends; band.write_json(invites_dir(root) .. "/" .. f, w) end
+      end
+    end
   end
 end
 -- Guests whose time isn't up: { user, device, ends, invite }, soonest first.
@@ -143,15 +195,37 @@ function removal.guests(root, now)
   return out
 end
 -- A guest's time moved: to now (ended: every computer stops syncing with theirs within a minute), or later.
+-- (only a mark that counts, as all_marks reads them: rewritten from a manager's computer, a forged one became trusted. Round 1 review, 0.59.45)
 function removal.guest_ends(root, device, ends)
-  for _, f in ipairs(band.files(marks(root), ".json")) do
-    local m = band.read_json(marks(root) .. "/" .. f)
-    if type(m) == "table" and m.guest and m.device == device then
-      m.at = ends - removal.GRACE
-      band.write_json(marks(root) .. "/" .. f, m)
-      if tonumber(m.invite) then removal.end_invite(root, m.invite, ends) end
+  local list, files = all_marks(root)
+  for _, m in ipairs(list) do
+    if m.guest and m.device == device and files[m] then
+      local w = {}
+      for k, v in pairs(m) do w[k] = v end
+      w.at = ends - removal.GRACE
+      band.write_json(marks(root) .. "/" .. files[m], w)
+      if tonumber(w.invite) then removal.end_invite(root, w.invite, ends) end
     end
   end
+end
+-- Is this computer a guest in the studio: a mark it accepted names its computer as a guest, running or over (an all-projects guest has no list,
+-- and synced and ran the studio's copy of StudioSync: lib/songsync.lua, lib/fromfolder.lua). -> true/false. James's decision, Round 1 review, 0.59.45.
+function removal.am_guest(root)
+  local id = require("services").my_device_id()
+  if not id then return false end
+  for _, m in ipairs(all_marks(root)) do if m.guest and m.device == id then return true end end
+  return false
+end
+-- Every name a guest goes by here, from the guest marks (the name they were let in with) and the devices files of their computers: { [name] = true }.
+-- Delete my copy doesn't count a guest's copy as one that holds a project (lib/localcopy.lua). Round 1 review, 0.59.45.
+function removal.guest_names(root)
+  local out, devs = {}, {}
+  for _, m in ipairs(all_marks(root)) do if m.guest then out[tostring(m.user)] = true; if m.device then devs[m.device] = true end end end
+  for _, f in ipairs(next(devs) and band.files(devices(root), ".json") or {}) do
+    local d = band.read_json(devices(root) .. "/" .. f)
+    if type(d) == "table" and type(d.user) == "string" and devs[d.device] then out[d.user] = true end
+  end
+  return out
 end
 -- "Sat Nov 23" for a time; "today 18:00" / "tomorrow 18:00" when that close. Pure but for the clock's time zone.
 function removal.when(t, now)
@@ -199,6 +273,11 @@ function removal.may_auto_admit(root, device, now)
     local m = band.read_json(marks(root) .. "/" .. f)
     if type(m) == "table" and m.guest and tonumber(m.at) and not removal.due(m, now) then return false end
   end
+  -- (and the marks kept here, whose files may be gone: a guest who deleted theirs no longer blocked it. Round 1 review, 0.59.45)
+  for _, m in pairs(kept(root)) do
+    if type(m) == "table" and m.device == device then return false, tostring(m.user or "someone") end
+    if type(m) == "table" and m.guest and tonumber(m.at) and not removal.due(m, now) then return false end
+  end
   return true
 end
 -- A computer let in again: whatever mark names it is over.
@@ -208,6 +287,7 @@ function removal.let_in(root, device)
     local m = band.read_json(marks(root) .. "/" .. f)
     if type(m) == "table" and m.device == device then band.remove(marks(root) .. "/" .. f) end
   end
+  forget_kept(root, device) -- (and this computer's own memory of them: Round 1 review, 0.59.45)
 end
 
 -- A computer asking this one's Syncthing to connect that's already in the studio: its own devices file is there, written by itself (lib/trust.lua),

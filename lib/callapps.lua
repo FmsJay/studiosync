@@ -4,23 +4,23 @@
 -- the interface, so the usual trouble there is the call's echo cancelling and noise suppression chewing up the music, and the music
 -- going out twice when Real time mode carries it too.
 -- What StudioSync does about it: says so in Health when a call app runs beside REAPER this way (one background process list every
--- 20 s), and gives the ways round it in Settings > Advanced > Calls, the first being to talk through StudioSync itself (Real time mode's
+-- 20 s), and gives the ways round it in Settings > Health > Can't hear each other?, the first being to talk through StudioSync itself (Real time mode's
 -- Talk), which goes through REAPER's own audio, so there's nothing to fight over.
 local band = require("band")
 local callapps = {}
 
--- { name, Windows process, macOS process }
-callapps.APPS = { { "Discord", "discord.exe", "Discord" }, { "Zoom", "zoom.exe", "zoom.us" }, { "Teams", "ms-teams.exe", "MSTeams" },
-  { "Teams", "teams.exe", "Microsoft Teams" }, { "Skype", "skype.exe", "Skype" }, { "Slack", "slack.exe", "Slack" },
+-- { name, Windows process, macOS process, Linux process when it isn't the Mac's } (Linux: Zoom, Teams and Skype went unseen. Round 1 review, 0.59.45)
+callapps.APPS = { { "Discord", "discord.exe", "Discord" }, { "Zoom", "zoom.exe", "zoom.us", "zoom" }, { "Teams", "ms-teams.exe", "MSTeams", "teams-for-linux" },
+  { "Teams", "teams.exe", "Microsoft Teams", "teams" }, { "Skype", "skype.exe", "Skype", "skypeforlinux" }, { "Slack", "slack.exe", "Slack" },
   { "WhatsApp", "whatsapp.exe", "WhatsApp" }, { "FaceTime", nil, "FaceTime" }, { "Google Meet", nil, nil } }
 
 -- The call apps in a process list (`tasklist /FO CSV /NH` on Windows, `ps -axco command` on a Mac or Linux, with a line
--- break before and after). -> names, sorted. Pure.
-function callapps.in_list(text, win)
+-- break before and after). `linux`: Linux's own names. -> names, sorted. Pure.
+function callapps.in_list(text, win, linux)
   local found, seen = {}, {}
   local lower = (text or ""):lower()
   for _, a in ipairs(callapps.APPS) do
-    local exe = win and a[2] or a[3]
+    local exe = win and a[2] or linux and (a[4] or a[3]) or a[3]
     if exe and not seen[a[1]] then
       local hit = win and lower:find('"' .. exe:lower() .. '"', 1, true) or not win and lower:find("\n" .. exe:lower() .. "\n", 1, true)
       if hit then seen[a[1]] = true; found[#found + 1] = a[1] end
@@ -31,9 +31,11 @@ function callapps.in_list(text, win)
 end
 
 -- Does REAPER's audio mode keep the interface to itself? `mode`: GetAudioDeviceInfo("MODE") ("ASIO", "WASAPI", "WaveOut", "CoreAudio",
--- "JACK"...); `exclusive`: WASAPI's exclusive mode is on. Pure.
-function callapps.holds_device(mode, win, exclusive)
+-- "JACK"...); `exclusive`: WASAPI's exclusive mode is on. `linux`: REAPER straight on ALSA holds the card too (JACK and PulseAudio share it:
+-- Round 1 review, 0.59.45). Pure.
+function callapps.holds_device(mode, win, exclusive, linux)
   mode = (mode or ""):upper()
+  if linux then return mode:find("ALSA", 1, true) ~= nil end
   if not win then return false end
   if mode:find("ASIO", 1, true) then return true end
   return mode:find("WASAPI", 1, true) ~= nil and exclusive == true
@@ -43,7 +45,7 @@ end
 function callapps.running()
   local services = require("services")
   local out = services.background("callapps", band.WIN and "tasklist /FO CSV /NH" or "ps -axco command", 20)
-  return callapps.in_list(out and ("\n" .. out .. "\n") or "", band.WIN)
+  return callapps.in_list(out and ("\n" .. out .. "\n") or "", band.WIN, band.LINUX)
 end
 
 function callapps.mode()
@@ -57,20 +59,20 @@ function callapps.health_words()
   local apps = callapps.running()
   if #apps == 0 then return nil end
   local list = table.concat(apps, " and ")
-  if callapps.holds_device(callapps.mode(), band.WIN, wasapi_exclusive()) then
+  if callapps.holds_device(callapps.mode(), band.WIN, wasapi_exclusive(), band.LINUX) then
     return list .. " is running, and REAPER has your audio interface over " .. callapps.mode() .. ", which most drivers give to one app only: " ..
-      "the call may lose its microphone or sound, or take the interface from REAPER. Settings > Advanced > Calls has the ways round it."
+      "the call may lose its microphone or sound, or take the interface from REAPER. " .. require("live").PLACES.calls .. " has the ways round it."
   end
   return list .. " is running beside REAPER: mute its microphone while you play, and turn off its noise suppression and echo cancellation " ..
-    "for music (Settings > Advanced > Calls)."
+    "for music (" .. require("live").PLACES.calls .. ")."
 end
 
--- Settings > Advanced: the ways round it, in the order to try them.
+-- Settings > Health, under Can't hear each other?: the ways round it, in the order to try them.
 function callapps.card(ctx, ImGui, go_real_time)
   ImGui.SeparatorText(ctx, "Calls (Discord, Zoom, Teams...)")
   local apps = callapps.running()
   local mode = callapps.mode()
-  local holds = callapps.holds_device(mode, band.WIN, wasapi_exclusive())
+  local holds = callapps.holds_device(mode, band.WIN, wasapi_exclusive(), band.LINUX)
   ImGui.TextDisabled(ctx, (#apps > 0 and ("Running now: " .. table.concat(apps, ", ") .. ". ") or "No call app running now. ") ..
     "REAPER's audio: " .. (mode ~= "" and mode or "?") .. (holds and " (keeps the interface to itself)" or ""))
   ImGui.TextWrapped(ctx, "1. Talk through StudioSync instead: Real time mode's Talk button sends your voice to the others through REAPER's own audio, " ..

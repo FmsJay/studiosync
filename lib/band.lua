@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.59.44", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
+local band = { VERSION = "0.59.45", FORMAT = 1, SECTION = "BandSync", TAKES = "BandSync.takes" }
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
@@ -58,8 +58,15 @@ band.LINUX = not band.WIN and not band.MAC
 -- Mac's) lose their marks the same way. Review, 0.59.19.
 -- (Latin-1 and Latin Extended-A, letter by letter as macOS's iconv makes each: Þ -> Th, × -> x, Ł -> L)
 local LATIN1 = { [0xC6] = "AE", [0xDE] = "Th", [0xDF] = "ss", [0xE6] = "ae", [0xF7] = "", [0xFE] = "th", [0x132] = "IJ", [0x133] = "ij", [0x152] = "OE", [0x153] = "oe" }
+-- (and the letters of Latin Extended-B and Extended Additional that decompose into a plain letter and marks, as the installers' decompose-and-drop
+-- makes them: a composed "Nguyễn" gave "Nguyn" here and "Nguyen" from the installer, and Romanian ș and ț were dropped. Round 1 review, 0.59.45)
+LATIN1[0x1E2], LATIN1[0x1E3], LATIN1[0x1FC], LATIN1[0x1FD], LATIN1[0x1E9E] = "AE", "ae", "AE", "ae", "SS"
 for c, ch in pairs({ [0xC0] = "AAAAAA", [0xC7] = "CEEEEIIIIDNOOOOOxOUUUUY", [0xE0] = "aaaaaa", [0xE7] = "ceeeeiiiidnooooo", [0xF8] = "ouuuuy", [0xFF] = "y",
-  [0x100] = "AaAaAaCcCcCcCcDdDdEeEeEeEeEeGgGgGgGgHhHhIiIiIiIiIiIiJjKkkLlLlLlLlLlNnNnNnnNnOoOoOoOoRrRrRrSsSsSsSsTtTtTtUuUuUuUuUuUuWwYyYZzZzZzs" }) do
+  [0x100] = "AaAaAaCcCcCcCcDdDdEeEeEeEeEeGgGgGgGgHhHhIiIiIiIiIiIiJjKkkLlLlLlLlLlNnNnNnnNnOoOoOoOoRrRrRrSsSsSsSsTtTtTtUuUuUuUuUuUuWwYyYZzZzZzs",
+  [0x1A0] = "Oo", [0x1AF] = "Uu", [0x1CD] = "AaIiOoUuUuUuUuUu", [0x1DE] = "AaAa", [0x1E6] = "GgKkOoOo", [0x1F0] = "j", [0x1F4] = "Gg", [0x1F8] = "NnAa",
+  [0x1FE] = "Oo", [0x200] = "AaAaEeEeIiIiOoOoRrRrUuUuSsTt", [0x21E] = "Hh", [0x226] = "AaEeOoOoOoOoYy",
+  [0x1E00] = "AaBbBbBbCcDdDdDdDdDdEeEeEeEeEeFfGgHhHhHhHhHhIiIiKkKkKkLlLlLlLlMmMmMmNnNnNnNnOoOoOoOoPpPpRrRrRrRrSsSsSsSsSsTtTtTtTtUuUuUuUuUuVvVvWwWwWwWwWwXxXxYyZzZzZzhtwyas",
+  [0x1EA0] = "AaAaAaAaAaAaAaAaAaAaAaAaEeEeEeEeEeEeEeEeIiIiOoOoOoOoOoOoOoOoOoOoOoOoUuUuUuUuUuUuUuYyYyYyYy" }) do
   for i = 1, #ch do LATIN1[c + i - 1] = LATIN1[c + i - 1] or ch:sub(i, i) end
 end
 function band.clean(s)
@@ -75,6 +82,21 @@ function band.clean(s)
 end
 local function norm(p) return (p:gsub("\\", "/"):gsub("/+$", "")) end
 band.norm = norm
+-- A name Windows keeps for itself (CON, PRN, AUX, NUL, COM1-9, LPT1-9): a song, member or studio called that can't exist as a file or folder
+-- there, so its files never arrived on a Windows computer. -> why, or nil. Pure. (rooms.bad_name's test, for every name. Round 1 review, 0.59.45)
+function band.reserved(name)
+  local l = tostring(name or ""):lower():match("^%s*(.-)%s*$"):gsub("%..*$", "")
+  if l == "con" or l == "prn" or l == "aux" or l == "nul" or l:match("^com%d$") or l:match("^lpt%d$") then
+    return "'" .. tostring(name) .. "' is a name Windows keeps for itself: pick another."
+  end
+end
+-- What's wrong with a name someone typed (`raw`, before band.clean), or nil: one in another alphabet cleaned to nothing, and first run, Change
+-- name, Publish and New studio did nothing, or said only "Give it a name" (the installers' wording). Pure. (Round 1 review, 0.59.45)
+function band.name_problem(raw)
+  local s = band.clean(tostring(raw or ""))
+  if s == "" and tostring(raw or ""):find("%S") then return "Names here are in Latin letters (A to Z), digits, spaces, - and _: type it that way." end
+  return band.reserved(s)
+end
 
 -- ReaImGui's 0.10 interface, or nil after saying what to do: an older ReaImGui threw from inside require, and REAPER's own error box was
 -- all anyone saw (review, 0.58.91).
@@ -265,10 +287,17 @@ local function finish(tmp, path, f, want)
   -- named so Syncthing ignores it, as it does the .tmp)
   local dir, name = path:match("^(.*)/([^/]+)$")
   local old = dir .. "/.syncthing." .. name .. ".old.tmp"
-  os.remove(old)
-  os.rename(path, old)
-  if not os.rename(tmp, path) then os.rename(old, path); error("cannot replace " .. path) end
-  os.remove(old)
+  -- (tried three times: Syncthing or a virus scanner holding the file a moment aborted the tick and left the .tmp. Round 1 review, 0.59.45)
+  for try = 1, 3 do
+    os.remove(old)
+    os.rename(path, old)
+    if os.rename(tmp, path) then os.remove(old); return end
+    os.rename(old, path)
+    local t = os.clock() + 0.02 * try
+    while try < 3 and os.clock() < t do end
+  end
+  os.remove(tmp)
+  error("cannot replace " .. path)
 end
 function band.write_atomic(path, data)
   local dir, name = path:match("^(.*)/([^/]+)$")
@@ -305,7 +334,10 @@ function band.read_json(path)
   return ok and type(v) == "table" and v or nil
 end
 
-function band.write_json(path, t) band.write_atomic(path, json.encode(t, true)) end
+function band.write_json(path, t)
+  band.write_atomic(path, json.encode(t, true))
+  if path:sub(-16) == "/_band/band.json" then band.forget_info() end -- (this script's own change shows at once: band.info's cache)
+end
 function band.json_encode(t) return json.encode(t) end -- keys sorted: equal tables give equal strings
 function band.json_decode(s) local ok, v = pcall(json.decode, s); return ok and v or nil end
 -- A table kept in ExtState as JSON, read (nil when there's none or it isn't JSON) and written. (Review list, 0.59.40: the same two lines in
@@ -430,6 +462,8 @@ function band.settings(force)
     end
     root, user = csv:match("^(.-)|(.*)$")
     root = root:gsub("^~", os.getenv("HOME") or os.getenv("USERPROFILE") or "~")
+    local problem = band.name_problem(user) -- (it said nothing: Round 1 review, 0.59.45)
+    if problem then band.msg(problem); return nil end
     root, user = norm(root), band.clean(user)
     if root == "" or user == "" then return nil end
     local probe = root .. "/.bandsync-write-test" -- the folder must exist and be writable
@@ -484,33 +518,30 @@ function band.rename(root, old, new)
   end
   -- (this computer's files under the old name: its devices file and plug-in list are written again under the new one at the next look, and the
   -- old ones stayed, a second member with the old name on every computer: James, 0.58.81. A colour picked moves over.)
-  local dev = band.read_json(root .. "/_band/devices/" .. file(old)) -- (its names on each Tailscale network go along: services.pin_tailnet)
-  if type(dev) == "table" and not reaper.file_exists(root .. "/_band/devices/" .. file(new)) then
-    dev.user = new
-    band.write_json(root .. "/_band/devices/" .. file(new), dev)
+  -- (each file read, the old one removed, then the new one written: "james" to "James" on a Windows or Mac disk is one file, and writing the new
+  -- name then removing the old deleted every claims file, the colour and the devices file. Round 1 review, 0.59.45)
+  local same = file(old):lower() == file(new):lower()
+  local function move(dir, t)
+    if type(t) ~= "table" then return false end
+    t.user = new
+    if file(old) ~= file(new) then band.remove(dir .. "/" .. file(old)) end
+    band.write_json(dir .. "/" .. file(new), t)
+    return true
   end
-  band.remove(root .. "/_band/devices/" .. file(old))
+  local ddir = root .. "/_band/devices"
+  local dev = band.read_json(ddir .. "/" .. file(old)) -- (its names on each Tailscale network go along: services.pin_tailnet)
+  if not (type(dev) == "table" and (same or not reaper.file_exists(ddir .. "/" .. file(new))) and move(ddir, dev)) then band.remove(ddir .. "/" .. file(old)) end
   band.remove(root .. "/plugins/" .. file(old))
-  local col = band.read_json(root .. "/_band/colours/" .. file(old))
-  if type(col) == "table" then
-    col.user = new
-    band.write_json(root .. "/_band/colours/" .. file(new), col)
-    os.remove(root .. "/_band/colours/" .. file(old))
-  end
+  band.remove(root .. "/plugins/" .. (old:gsub("[^%w%-_]", "_")) .. ".json") -- (the name lib/plugins.lua gives it: a name with a space stayed listed twice)
+  move(root .. "/_band/colours", band.read_json(root .. "/_band/colours/" .. file(old)))
   local n = 0
   for _, song in ipairs(band.subdirs(root)) do
     for _, room in ipairs(band.subdirs(root .. "/" .. song .. "/rooms")) do
       local rdir = root .. "/" .. song .. "/rooms/" .. room
       local d = band.read_json(rdir .. "/driver.json")
       if d and d.driver == old then d.driver = new; band.write_json(rdir .. "/driver.json", d); n = n + 1 end
-      local c = band.read_json(rdir .. "/claims/" .. file(old))
-      if c then
-        c.user = new
-        band.write_json(rdir .. "/claims/" .. file(new), c)
-        os.remove(rdir .. "/claims/" .. file(old))
-        n = n + 1
-      end
-      os.remove(rdir .. "/status/" .. file(old)) -- (Live sync writes the new one)
+      if move(rdir .. "/claims", band.read_json(rdir .. "/claims/" .. file(old))) then n = n + 1 end
+      if not same then os.remove(rdir .. "/status/" .. file(old)) end -- (Live sync writes the new one; on a case-only rename it's the same file)
     end
   end
   band.log(string.format("you're %s now (was %s): who drives and your claims moved over in %d place(s); your tracks stay yours. " ..
@@ -666,10 +697,21 @@ end
 -- role pins at a fresh, empty set. So the id this computer first knew for the folder stands: its own start or join, the invitation the
 -- installer ran (installer/studiosync_setup.lua), else the first band.json it saw (band.bands). Security review, 0.58.78)
 local function id_key(root) return "band id " .. (root:gsub("\\", "/"):gsub("/+$", ""):lower()) end
+local info_seen = {} -- (root -> { at, info }: read and decoded on every call, many times a pass. Round 1 review, 0.59.45)
+function band.forget_info() info_seen = {} end
 function band.pin_id(root, id) -- (no id: forgotten, for a scratch studio)
+  info_seen = {}
   if id then reaper.SetExtState(band.SECTION, id_key(root), id, true) else reaper.DeleteExtState(band.SECTION, id_key(root), true) end
 end
+-- band.info, read again at most every 5 s per folder (and at once after this script writes band.json): a copy, so a caller changing it changes nothing.
 function band.info(root)
+  local now, c = reaper.time_precise and reaper.time_precise() or 0, info_seen[root or ""]
+  if not (c and now - c.at < 5 and now >= c.at) then c = { at = now, info = band.info_now(root) }; info_seen[root or ""] = c end
+  local out = {}
+  for k, v in pairs(c.info) do out[k] = v end
+  return out
+end
+function band.info_now(root)
   local j = (root and (band.read_json(root .. "/_band/band.json") or band.ext_json(band.SECTION, "joining " .. root))) or {}
   -- (only a plain folder id: it goes into Syncthing's command line, and a space in it added arguments of its own. Review, 0.58.53)
   local id = type(j.id) == "string" and j.id:match("^[%w%-_.]+$") and j.id or "bandsync"
@@ -699,9 +741,21 @@ end
 -- May a running script switch to the version now on disk? Installed through ReaPack (or by hand), yes: you asked for it. Run from a shared
 -- folder, only once you've said yes to that version (Autostart asks): any computer in the studio can put new code there, and it ran on
 -- everyone within seconds (review, 0.58.52). (A script started later is held to the code you said yes to too: band.code_guard, 0.59.14. ReaPack is still the safer install.)
+-- (and a studio's own copy where it updates through its folder: only Autostart set "update ok", so with Autostart stopped by an error, Live sync
+-- and the panel never took the fix. Round 1 review, 0.59.45)
 function band.update_ok(dir, version)
   if not band.from_shared(dir) then return true end
-  return reaper.GetExtState(band.SECTION, "update ok") == version and band.files_complete(dir)
+  local said = reaper.GetExtState(band.SECTION, "update ok") == version
+  return (said or select(2, pcall(function() return require("fromfolder").trusted_copy(dir) end)) == true) and band.files_complete(dir)
+end
+-- The version of the copy in `dir`, from the start of its lib/band.lua (the line is near the top: reading all 85 KB every few seconds per script
+-- was most of the look. Round 1 review, 0.59.45). -> it, or nil.
+function band.version_on_disk(dir)
+  local f = io.open(dir .. "/lib/band.lua", "rb")
+  if not f then return nil end
+  local head = f:read(512) or ""
+  f:close()
+  return head:match('VERSION = "([^"]+)"')
 end
 -- Has every file of the version in `dir` arrived whole? The release lists its code files and their lengths (lib/files.txt, counted without
 -- carriage returns so Windows' and a Mac's line endings agree: tools/make_index.py). Syncthing brings files one at a time, small ones first
@@ -720,25 +774,42 @@ function band.files_list(text)
   end
   return out
 end
+-- (Round 1 review, 0.59.45: every caller asks about a copy in a shared folder, and there a copy without the list isn't whole: a hand copy without
+-- it passed, and so did a script started before the list arrived. And a look that failed is remembered by the list's text and the size of the
+-- first file that didn't match, and done again only when either changes or a minute on: a copy that never matched (one file edited in place)
+-- was read and hashed whole every 3 s by every script, and nothing said which file. Said once in the log file now.)
+local failed_look, failed_said = {}, {}
 function band.files_complete(dir, force)
   local list_text = band.read(dir .. "/lib/files.txt")
-  if not list_text then return true end
+  if not list_text then return false end
   local v = list_text:match("^version (%S+)") or ""
   if complete_seen[dir .. v] then return true end
-  if not force and reaper.time_precise() - complete_at < 3 then return false end
-  complete_at = reaper.time_precise()
+  local now = reaper.time_precise()
+  if not force and now - complete_at < 3 then return false end
+  local fl = failed_look[dir]
+  if not force and fl and fl.text == list_text and now - fl.at < 60 and now >= fl.at and band.size(dir .. "/" .. fl.path) == fl.size then return false end
+  complete_at = now
+  local function fail(path, why)
+    failed_look[dir] = { text = list_text, path = path, size = band.size(dir .. "/" .. path), at = now }
+    if not failed_said[dir .. v .. path] then
+      failed_said[dir .. v .. path] = true
+      pcall(band.log_file, "StudioSync " .. v .. " in " .. dir .. " isn't whole yet: " .. path .. " " .. why)
+    end
+    return false
+  end
   local list, texts = band.files_list(list_text), {}
   for _, f in ipairs(list) do
     local s = band.read(dir .. "/" .. f.path)
-    if not s or #s - select(2, s:gsub("\r", "")) ~= f.len then return false end
-    if f.path == "lib/band.lua" and s:match('VERSION = "([^"]+)"') ~= v then return false end
+    if not s or #s - select(2, s:gsub("\r", "")) ~= f.len then return fail(f.path, s and "has another length than lib/files.txt says" or "isn't there") end
+    if f.path == "lib/band.lua" and s:match('VERSION = "([^"]+)"') ~= v then return fail(f.path, "is another version than lib/files.txt") end
     texts[f.path] = s
   end
   local key = "files ok " .. band.norm(dir):lower()
   if reaper.GetExtState(band.SECTION, key) ~= v then
-    for _, f in ipairs(list) do if f.hash and band.code_hash(texts[f.path]) ~= f.hash then return false end end
+    for _, f in ipairs(list) do if f.hash and band.code_hash(texts[f.path]) ~= f.hash then return fail(f.path, "doesn't match its hash in lib/files.txt") end end
     reaper.SetExtState(band.SECTION, key, v, false)
   end
+  failed_look[dir] = nil
   complete_seen[dir .. v] = true
   return true
 end
@@ -753,33 +824,89 @@ function band.started_partial(dir) return started_partial[dir] == true and band.
 -- Reload in place to the code on disk, safely (full review, 0.59.44): every file is compiled first, and if the new code fails as it starts,
 -- the old modules come back and the old loop carries on (one bad version in the folder stopped Autostart, Live sync and the panel on every
 -- computer, with no way back but by hand). Returns only when it couldn't: false, why. `script`: the entry script's file name.
+-- (Round 1 review, 0.59.45: a failed start puts back every lib module as it was, nil for those the old code hadn't loaded yet (they stayed at
+-- the new version, bound to the discarded new instances), and the old code check (dropped, every module not loaded yet was refused); only the
+-- modules this script has loaded are compiled first, with the entry script (all 66 were, 60-100 ms); and nothing reloads while anything records:
+-- -> false, why, "busy" then, which isn't a failure.)
+local SEARCHER_KEY = "BANDSYNC_CODE_SEARCHER" -- (band.code_guard's check of the code, in package.searchers)
 function band.reload(dir, script)
+  for i = 0, 512 do
+    local p = reaper.EnumProjects(i)
+    if not p then break end
+    if reaper.GetPlayStateEx(p) & 4 == 4 then return false, "something is recording", "busy" end
+  end
   local libs = band.files(dir .. "/lib", ".lua")
   for _, f in ipairs(libs) do
-    local fn, err = loadfile(dir .. "/lib/" .. f)
-    if not fn then return false, tostring(err) end
+    if package.loaded[f:sub(1, -5)] ~= nil then
+      local fn, err = loadfile(dir .. "/lib/" .. f)
+      if not fn then return false, tostring(err) end
+    end
   end
   local main, err = loadfile(dir .. "/" .. script)
   if not main then return false, tostring(err) end
-  local saved = {}
-  for _, f in ipairs(libs) do local m = f:sub(1, -5); saved[m] = package.loaded[m]; package.loaded[m] = nil end
+  local saved, path, searcher = {}, package.path, _G[SEARCHER_KEY]
+  for _, f in ipairs(libs) do local m = f:sub(1, -5); saved[m] = package.loaded[m] or false; package.loaded[m] = nil end
   band.drop_code_searcher() -- (the check of the old version: it refused the new code you'd said yes to. 0.59.28)
   local ok, e = pcall(main)
   if ok then return true end
-  for m, v in pairs(saved) do package.loaded[m] = v end
+  for m, v in pairs(saved) do package.loaded[m] = v or nil end
+  band.drop_code_searcher() -- (the failed start's own check, if it got that far)
+  if searcher then _G[SEARCHER_KEY] = searcher; table.insert(package.searchers, 2, searcher) end
+  package.path = path
   return false, tostring(e)
 end
--- The caller's side: reloads, or says once per version why it couldn't and goes on with the code it has.
-function band.reload_or_say(dir, script, version)
-  local ok, why = band.reload(dir, script)
+-- The key that says a version couldn't start in this script: `suffix` for a script that runs more than once (Live sync: its project), so one tab's
+-- failure doesn't hold the others back. (Round 1 review, 0.59.45)
+function band.reload_failed_key(script, suffix) return "reload failed " .. script .. (suffix and (" " .. tostring(suffix)) or "") end
+-- The caller's side: reloads, or says once per version why it couldn't and goes on with the code it has. Something recording: tried again later.
+function band.reload_or_say(dir, script, version, suffix)
+  local ok, why, busy = band.reload(dir, script)
   if ok then return true end
-  local key = "reload failed " .. script
+  if busy then return false end
+  local key = band.reload_failed_key(script, suffix)
   if reaper.GetExtState(band.SECTION, key) ~= tostring(version) then
     reaper.SetExtState(band.SECTION, key, tostring(version), false)
     band.log("StudioSync " .. tostring(version) .. " couldn't start (" .. script .. "): carrying on with " .. band.VERSION .. ". " .. why:sub(1, 300))
   end
   return false
 end
+
+-- The last StudioSync that started fine on this computer, kept in its own StudioSync folder (never the shared one): the startup block in
+-- Scripts/__startup.lua falls back to it when the copy it runs from fails to load (lib/tools.lua set_autostart), so a bad version in a studio's
+-- folder can't stop Autostart and Live sync, and with them Syncthing and the fix arriving. Only the code files (StudioSync - *.lua, lib/*.lua and
+-- lib/files.txt), copied once per version, by Autostart once it has run a while without an error. James's decision, Round 1 review, 0.59.45.
+function band.last_good_dir() return norm(band.home()) .. "/last good" end
+local function code_list(dir)
+  local out = {}
+  for _, f in ipairs(band.files(dir, ".lua")) do if f:find("^StudioSync %- ") then out[#out + 1] = f end end
+  for _, f in ipairs(band.files(dir .. "/lib", ".lua")) do out[#out + 1] = "lib/" .. f end
+  if reaper.file_exists(dir .. "/lib/files.txt") then out[#out + 1] = "lib/files.txt" end
+  return out
+end
+-- -> true when it copied (nothing to do when the kept copy is this one already, or `dir` is it).
+function band.save_last_good(dir)
+  local to = band.last_good_dir()
+  if norm(dir):lower() == to:lower() then return false end
+  local v = band.version_on_disk(dir)
+  if not v or (band.version_on_disk(to) == v and band.read(to .. "/lib/files.txt") == band.read(dir .. "/lib/files.txt")) then return false end
+  reaper.RecursiveCreateDirectory(to .. "/lib", 0)
+  local keep = {}
+  for _, rel in ipairs(code_list(dir)) do keep[rel] = true; band.copy_atomic(dir .. "/" .. rel, to .. "/" .. rel) end
+  for _, rel in ipairs(code_list(to)) do if not keep[rel] then os.remove(to .. "/" .. rel) end end -- (a module the new version dropped)
+  return true
+end
+
+-- A copy of a project saved to `path`, the project keeping its own file and name: REAPER may clear the project's unsaved mark when it saves a copy,
+-- and a project with unsaved changes then closed without asking. So it's marked unsaved again if it was before. (Round 1 review, 0.59.45)
+function band.save_copy(proj, path)
+  local dirty = reaper.IsProjectDirty(proj) ~= 0
+  reaper.Main_SaveProjectEx(proj, path, 0)
+  if dirty and reaper.IsProjectDirty(proj) == 0 then reaper.MarkProjectDirty(proj) end
+end
+
+-- Live sync marks a song that has work here not sent yet, or only here ("local work <studio id>/<song>" = "1", this REAPER session's ExtState),
+-- and Delete my copy then leaves the project folder on this computer and says so (lib/localcopy.lua). Round 1 review, 0.59.45.
+function band.local_work_key(root, song) return "local work " .. band.studio_key(root) .. "/" .. tostring(song) end
 
 -- The code itself, run from a shared folder. band.update_ok held back only a running script's switch to a new VERSION: any script started
 -- later (the next REAPER start, any action) loaded whatever lib/*.lua the shared folder held, and a member or guest could change lib/mirror.lua
@@ -829,7 +956,6 @@ end
 -- Run from a shared folder: the code there checked against what you said yes to, before anything else of it loads; a changed file is asked
 -- about (No stops the script, and isn't asked again until REAPER restarts or the files change again). Every lib module required later
 -- is checked as it loads too: Autostart and Live sync run for hours and require some only when first needed.
-local SEARCHER_KEY = "BANDSYNC_CODE_SEARCHER"
 function band.code_guard(dir)
   if not band.from_shared(dir) then return true end
   local all, key = band.read_json(approved_path()), code_key(dir)
@@ -1016,7 +1142,7 @@ end
 -- Text onto the clipboard, saying so. SWS's when it's there: ReaImGui's left a Mac's clipboard as it was (Health's Copy the line, 0.58.20).
 function band.copy(text, ctx, ImGui)
   if reaper.CF_SetClipboard then reaper.CF_SetClipboard(text) else ImGui.SetClipboardText(ctx, text) end
-  band.log("copied: " .. (#text > 60 and (text:sub(1, 57) .. "...") or text))
+  band.log("copied to the clipboard") -- (not the text: it can be the alerts channel or the SonoBus link, and the log goes into debug reports. Round 1 review, 0.59.45)
 end
 
 function band.autosync_key(path) return "autosync " .. (path or ""):gsub("\\", "/"):lower() end
@@ -1272,7 +1398,7 @@ function band.render(n, s)
   local job = band.render_job -- (lib/bgrender.lua: a copy set up for this render, rendered by a second REAPER)
   if job then
     reaper.GetSetProjectInfo_String(0, "RENDER_FILE", job.dir, true)
-    reaper.Main_SaveProjectEx(0, job.copy, 0) -- (0: a copy; the project keeps its own file)
+    band.save_copy(0, job.copy) -- (a copy; the project keeps its own file, and its unsaved mark)
   else
     -- (a print that clips left the render window open until someone clicked it: Mac, 0.42.2. 4: it closes regardless.)
     local keep = reaper.SNM_GetIntConfigVar and reaper.SNM_GetIntConfigVar("renderclosewhendone", -1)

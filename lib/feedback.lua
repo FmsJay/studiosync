@@ -99,15 +99,24 @@ function feedback.draw(ctx, ImGui, cfg, proj)
     ImGui.DrawList_AddText(ImGui.GetWindowDrawList(ctx), x + 6, y + 4, 0x888888FF, k[4])
   end
   local has_studio = cfg and cfg.root and cfg.root ~= ""
+  -- (each on the next line when it won't fit: three in a row ran off the 520 px window. Round 1 review, 0.59.45)
+  local function beside(label)
+    ImGui.SameLine(ctx, 0, 16)
+    if ImGui.GetContentRegionAvail(ctx) < ImGui.CalcTextSize(ctx, label) + ImGui.GetFrameHeight(ctx) + 12 then ImGui.NewLine(ctx) end
+  end
   _, st.folder = ImGui.Checkbox(ctx, has_studio and "Save in the studio's folder" or "Save on this computer", st.folder)
   ImGui.SetItemTooltip(ctx, has_studio and "Goes to everyone in the studio with the rest of its files (_band/feedback), where it's read after testing." or
     "No studio yet: kept in StudioSync's own folder on this computer. Use GitHub to send it on.")
-  ImGui.SameLine(ctx, 0, 16)
+  beside("Open it on GitHub")
   _, st.github = ImGui.Checkbox(ctx, "Open it on GitHub", st.github)
   ImGui.SetItemTooltip(ctx, "Opens a new issue on GitHub in your browser, filled in, for you to send with your GitHub account (it's free).\nAnyone can read issues there.")
-  ImGui.SameLine(ctx, 0, 16)
+  beside("Add what it was doing")
   _, st.log = ImGui.Checkbox(ctx, "Add what it was doing", st.log)
-  ImGui.SetItemTooltip(ctx, "Adds StudioSync's version, REAPER's, the audio system, the project's name and the last lines of the activity list. No files or audio.")
+  if ImGui.IsItemHovered(ctx) then -- (with debug mode on, Send also saves the project's copy and crash reports, ticked or not: said so. Round 1 review, 0.59.45)
+    local dbg = has_studio and require("debugmode").on(cfg.root)
+    ImGui.SetItemTooltip(ctx, "Adds StudioSync's version, REAPER's, the audio system, the project's name and the last lines of the activity list. No files or audio." ..
+      (dbg and "\nDebug mode is on in this studio, so Send also saves a copy of this project, its log and REAPER's crash reports for the owner and admins." or ""))
+  end
   local title, body = feedback.compose(st.kind, st.subject, st.body)
   ImGui.BeginDisabled(ctx, not title or not (st.folder or st.github))
   if ImGui.Button(ctx, "Send##fbsend") then

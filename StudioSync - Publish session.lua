@@ -33,6 +33,8 @@ local old_for = function(song) return band.read_json(band.session_path(cfg, song
 local ok, name = true, reaper.GetExtState(band.SECTION, "publish as") -- (set by tests/cross/cross_test.lua, which publishes without the name box)
 if name == "" then ok, name = reaper.GetUserInputs("StudioSync: share this project", 1, "Project name,extrawidth=150", suggested) end
 if not ok then return end
+local why = ok and band.name_problem and band.name_problem(name) -- (a name in another alphabet read only "Give the project a name". Round 1 review, 0.59.45)
+if why then return band.msg(why) end
 local song = band.clean(name)
 if song == "" then return band.msg("Give the project a name.") end
 -- (one that differs from an existing song only by case is that song: on Linux "demo" beside "Demo" made a second folder, which Syncthing
@@ -63,7 +65,8 @@ else
   pdir = projfile:match("^(.*)[/\\]")
 end
 if not b.song then
-  reaper.Main_SaveProjectEx(proj, pdir .. "/" .. song .. " (before StudioSync).rpp", 0) -- a copy; History offers it back
+  local before = pdir .. "/" .. song .. " (before StudioSync).rpp"
+  local _ = band.save_copy and band.save_copy(proj, before) or reaper.Main_SaveProjectEx(proj, before, 0) -- a copy; History offers it back
   reaper.SetProjExtState(proj, band.SECTION, "before_bandsync", pdir .. "/" .. song .. " (before StudioSync).rpp")
 end
 band.set_project_file(cfg.root, song, (select(2, reaper.EnumProjects(-1)):gsub("\\", "/")))

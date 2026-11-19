@@ -78,6 +78,9 @@ function recall.save(proj, cfg, song, room, label, keep)
   local st = capture(proj)
   st.label, st.by, st.time, st.keep = label, cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ"), keep or nil
   st.timeline = { tempo = band.capture_tempo(proj), markers = band.capture_markers(proj) } -- positions are in its seconds
+  -- (and the version of every object the project holds, so restoring it is exactly this: by time alone, late or clock-skewed changes came in
+  -- with it. About 60 bytes an object. James: all saved versions. Round 1 review, 0.59.45)
+  st.known = require("mirror").known_map(proj)
   local dir = recall.dir(cfg, song, room)
   reaper.RecursiveCreateDirectory(dir, 0)
   local file = string.format("%s-%s-%s.json", os.date("!%Y%m%d-%H%M%SZ"), (cfg.user:gsub("[^%w%-_]", "_")),

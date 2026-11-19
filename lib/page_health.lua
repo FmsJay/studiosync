@@ -22,6 +22,9 @@ function H.maint_rows()
   if not maint_st or maint_st.for_proj ~= proj or reaper.time_precise() - H.maint_at > 10 then -- (another tab's said "Live sync is off" here: laptop, 0.34.9)
     H.maint_at, maint_st = reaper.time_precise(), setup.check(cfg, b, proj)
     maint_st.for_proj = proj
+    -- (looked up with the rest, every 10 s: the studio runs StudioSync from its folder by choice, and where this person's token goes. Round 1 review, 0.59.45)
+    maint_st.ff_on = select(2, pcall(function() return require("fromfolder").on(cfg.root) end)) == true
+    maint_st.token_at = require("groups").may_manage(cfg.root, cfg.user) and require("live").PLACES.token_admin or require("live").PLACES.token_member
     -- MIDI tracks playing an instrument on another track that doesn't load here (lib/prints.lua prints.route)
     -- files two computers changed at the same moment: Syncthing keeps the one that lost beside it ("x.sync-conflict-..."), and StudioSync
     -- reads only the other, so what was in the loser was gone with nothing said (review, 0.58.52). Where people's shared files are:
@@ -57,7 +60,7 @@ function H.maint_rows()
   local rows = {
     { "audio", s.audio, "red", "Audio device is running", "REAPER's audio device is closed: pick one in Preferences > Audio > Device. Until it runs, some plug-ins (CLAP above all) don't take a knob you turn, so the others get it only once audio is back on." },
     { "folder", s.folder, "red", "Shared folder is syncing", "Syncthing isn't running: nothing reaches the studio or comes in." },
-    { "sync", s.sync, "red", "Live sync is running", "Live sync is off in this tab: press Start at the top." },
+    { "sync", s.sync, "red", "Live sync is running", "Live sync is off in this tab: click " .. require("live").PLACES.sync_off .. "." },
     { "same", (tonumber(reaper.GetExtState(band.SECTION, "mirror drift " .. tostring(proj))) or 0) == 0, "red", "Changes from the others come out the same here",
       "Some changes from the others came out different here than on their machine (the Console names them). Ask the driver to " ..
       "use Restore > Restore whole project to here, or close and reopen this project." },
@@ -80,11 +83,13 @@ function H.maint_rows()
         string.format("%d shared file(s) were changed on two computers at the same moment (the first: %s). Syncthing kept the other version beside it, named sync-conflict: look at both and keep what's right.", #c, first),
         action = c[1] and { "Show it", function() band.open_url((c[1]:match("^(.*)/[^/]+$"))) end, "Opens the folder it's in." } or nil }
     end)(),
-    { "shared code", not band.from_shared(dir), "yellow", "StudioSync is installed on this computer",
+    -- (not while the studio has everyone run it from its folder: the owner chose that, and a yellow dot on every tester taught people to ignore
+    -- the dot. Round 1 review, 0.59.45)
+    { "shared code", not band.from_shared(dir) or s.ff_on, "yellow", band.from_shared(dir) and "StudioSync runs from the studio's folder, as the studio chose" or "StudioSync is installed on this computer",
       "StudioSync runs from the shared folder here, so anyone in the studio can change what runs on this computer. Installing it through ReaPack is safer (the README says how)." },
     -- (a saved token that won't unlock: lib/services.lua token_in. Review, 0.59.14)
     { "tailscale token", #services.token_unreadable() == 0, "yellow", "Your Tailscale access token can be read",
-      "A Tailscale access token saved here can't be unlocked (REAPER moved to another computer or Windows user?), so guests' time isn't kept: enter it again under Settings > Advanced." },
+      "A Tailscale access token saved here can't be unlocked (REAPER moved to another computer or Windows user?), so guests' time isn't kept: enter it again under " .. tostring(s.token_at) .. "." },
     (function()
       local skipped = sync.skipped(proj)
       return { "skipped", #skipped == 0, "yellow", "Every change from the others landed here",
@@ -139,7 +144,7 @@ function H.maint_rows()
   if services.tailscale_up() then
     local stays = services.tailscale_stays()
     rows[#rows + 1] = { "tailscale stays", stays == true, "yellow", "Tailscale stays signed in here", "Tailscale signs this computer out on " .. tostring(stays) .. ": at login.tailscale.com/admin/machines, this computer > ... > Disable key expiry. " ..
-      "So new computers stay signed in by themselves, whoever runs the studio's Tailscale network presses Settings > Advanced > Set up the tags (with its access token) once.",
+      "So new computers stay signed in by themselves, whoever runs the studio's Tailscale network presses Set up the tags (" .. require("live").PLACES.token_admin .. ", with its access token) once.",
       link = { "Open Tailscale's machines", "https://login.tailscale.com/admin/machines" } }
     -- (a studio on another of your Tailscale accounts: a computer is on one at a time, so this one's Play along, listening page and private
     -- live audio can't reach the others until it switches)
@@ -207,7 +212,7 @@ function H.maint_rows()
     local ok, words = pcall(require("callapps").health_words)
     if ok and words then rows[#rows + 1] = { "call app", false, "yellow", "", words } end
   end
-  if view.newer then rows[#rows + 1] = { "update " .. view.newer, false, "yellow", "", "StudioSync " .. view.newer .. " is in use in the studio; you have " .. band.VERSION .. ": press Update below." } end
+  if view.newer then rows[#rows + 1] = { "update " .. view.newer, false, "yellow", "", "StudioSync " .. view.newer .. " is in use in the studio; you have " .. band.VERSION .. ": " .. require("live").PLACES.update .. "." } end
   pcall(require("drive").root, cfg) -- (what it says next is about the group it last looked at: this tab's, then. Mac, 0.51.12)
   local dmiss = reaper.GetExtState(band.SECTION, "drive_root") ~= "off" and require("drive").missing
   if dmiss then
@@ -240,7 +245,7 @@ function H.maint_rows()
     rows[#rows + 1] = { "drive away", false, "yellow", "", require("drive").label(require("drive").service_of(daway)) .. ": the studio's folder (" .. tostring(who) .. ") isn't here now. Is that " ..
       "account signed out, or switched for another? Everything still syncs between you; the cloud copy catches up once it's back." ..
       (require("drive").other and ("\nThere's a folder of that name in " .. require("drive").label(require("drive").service_of(require("drive").other)) ..
-        " too, left alone: to use that one, pick it in Settings > Cloud copy.") or "") }
+        " too, left alone: to use that one, pick it in " .. require("live").PLACES.cloud .. ".") or "") }
   end
   return rows
 end

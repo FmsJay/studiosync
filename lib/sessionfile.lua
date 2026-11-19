@@ -87,7 +87,7 @@ function sessionfile.export(proj, cfg, b, droot, room_dir)
   local projdir = path:gsub("\\", "/"):match("^(.*)/")
   -- a copy as it is now, next to it (so relative paths read the same); the open project and its file are untouched
   local tmp = projdir .. "/.bandsync-session-copy.rpp"
-  reaper.Main_SaveProjectEx(proj, tmp, 0)
+  local _ = band.save_copy and band.save_copy(proj, tmp) or reaper.Main_SaveProjectEx(proj, tmp, 0) -- (keeps the project's unsaved mark: band.save_copy. Round 1 review, 0.59.45)
   local text = band.read(tmp)
   os.remove(tmp)
   if not text then return nil, "couldn't save a copy of the project" end

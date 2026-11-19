@@ -9,7 +9,7 @@ assert(not band.is_conflict_copy("Gtr (band).fxchain"), "a name with brackets is
 
 -- writing a file over an old one, interrupted (0.58.52): the old one is never lost
 do
-  local dir = (os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp"):gsub("\\", "/") .. "/ss_files_" .. os.time()
+  local dir = (os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp"):gsub("\\", "/") .. "/ss_files_" .. os.time() .. "_" .. math.random(100000, 999999) -- (two runs in one second shared a folder; Round 1 review, 0.59.45)
   os.execute((package.config:sub(1, 1) == "\\" and 'mkdir "' .. dir:gsub("/", "\\") .. '"' or "mkdir -p '" .. dir .. "'"))
   local path = dir .. "/session.json"
   band.write_atomic(path, "old")
@@ -43,6 +43,6 @@ do
   assert(band.read(path) == "before", "and the old file is whole")
   assert(not real_open(dir .. "/.syncthing.session.json.tmp", "rb"), "no half-written copy left")
   os.remove(path)
-  os.remove(dir)
+  os.execute((package.config:sub(1, 1) == "\\" and ('rmdir /s /q "' .. dir:gsub("/", "\\") .. '"') or ("rm -rf '" .. dir .. "'"))) -- (os.remove can't take a folder away on Windows: 747 were left)
 end
 print("ok")

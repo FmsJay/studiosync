@@ -98,7 +98,7 @@ function page.realtime(ctx, ImGui, proj, no_radios)
   local chg, gv = ImGui.Checkbox(ctx, "SonoBus Guest", g) -- (James, 0.58.85; was "SonoBus-only singer")
   if chg then guest.set(proj, gv) end
   ImGui.SetItemTooltip(ctx, "Someone joining from the SonoBus app alone, a singer at home, say. They hear your mix,\n" ..
-    "and their singing records on the Real time track when you record. Send them your SonoBus link (Configure SonoBus).")
+    "and their singing records on the Real time track when you record. Send them your SonoBus link (" .. require("live").PLACES.volumes .. " opens SonoBus).") -- (the button's name now: Round 1 review, 0.59.45)
   if g then
     local d = guest.delay(proj)
     -- (what records from them is only as good as what SonoBus sends: uncompressed, it's what they played. Their own file swapped in was

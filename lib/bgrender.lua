@@ -401,9 +401,10 @@ local function exe_path()
   local d = reaper.GetExePath():gsub("\\", "/")
   if WIN then return d .. "/reaper.exe" end
   if band.LINUX then return d .. "/reaper" end -- (lowercase, beside its libSwell.so: Linux VM, 0.58.77)
-  for _, p in ipairs({ d .. "/Contents/MacOS/REAPER", d .. "/REAPER.app/Contents/MacOS/REAPER", d .. "/REAPER64.app/Contents/MacOS/REAPER", d .. "/REAPER" }) do
-    if reaper.file_exists(p) then return p end
-  end
+  -- (one way with the start's hand-over, renamed bundles too: lib/startup.lua startup.reaper_exe. Round 1 review, 0.59.45)
+  local found = require("startup").reaper_exe(reaper.GetOS(), d)
+  if found then return found end
+  if reaper.file_exists(d .. "/REAPER") then return d .. "/REAPER" end
   return d .. "/REAPER.app/Contents/MacOS/REAPER"
 end
 

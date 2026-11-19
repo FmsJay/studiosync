@@ -129,9 +129,13 @@ function undo.step(proj, cfg, b, redo, opts)
   end
   local can, who = sync.authority(cfg, b.song, b.room, band.read_json(band.session_path(cfg, b.song)))
   local o = { can = can, mode = who and who.mode, local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1" }
-  if redo then o.redoes = e.id else o.undoes = e.id end
   -- (the whole act, as Restore's rows: it could land on a print swapped in the same second, and nothing you'd hear went back)
-  local ok, res = pcall(mirror.revert, proj, cfg, b.song, b.room, mirror.plan_undo_moment(all, i), o)
+  local plan, ids = mirror.plan_undo_moment(all, i)
+  -- (every change of the act on each restore event, only when there are several: the next presses redid the same restore. A few bytes an
+  -- event. Round 1 review, 0.59.45)
+  local act = ids and #ids > 1 and ids or nil
+  if redo then o.redoes, o.redoes_all = e.id, act else o.undoes, o.undoes_all = e.id, act end
+  local ok, res = pcall(mirror.revert, proj, cfg, b.song, b.room, plan, o)
   if not ok then return nil, "undo failed: " .. tostring(res) end
   return res
 end

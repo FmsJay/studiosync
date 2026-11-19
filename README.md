@@ -5,8 +5,9 @@
 Record and arrange together in REAPER from different cities, as if you were all working in one project.
 Everyone in a room holds the same project: every track, item, lane, MIDI part, plug-in chain, automation
 envelope and send, kept
-identical by mirror sync. One person drives (their changes go to everyone); collaborators claim the tracks or
-project sections they work on, and Restore can take back any change, any track, or the whole project.
+identical by mirror sync. Anyone changes what nobody else has claimed, and their changes go to everyone (the studio can
+pick stricter rules: a driver, or admins only); collaborators claim the tracks or project sections they work on, one person
+drives (leads play and stop for whoever follows them), and Restore can take back any change, any track, or the whole project.
 
 Plain-Lua ReaScripts (the control panel needs ReaImGui; SWS and js_ReaScriptAPI help, and Health says what's off without them). REAPER 7.18 or newer; 7.86 is tested.
 Machines talk only through a shared folder (Syncthing recommended), with an optional Google Drive copy.
@@ -229,7 +230,7 @@ By hand:
 5. Optional extras:
    - **Tailscale** comes with the installers. Everyone in a studio signs in to its Tailscale network (a guest invitation puts a guest on it with no account; each studio can have its own). *Play along*, *Jam* and the producer's
      NINJAM route reach the NINJAM server (on whichever computer connects first) through it (show the Play/Jam tab in Settings > Advanced),
-     and it gets round a router that stops SonoBus (Settings > Advanced > Can't hear each other?).
+     and it gets round a router that stops SonoBus (Settings > Health > Can't hear each other?).
    - **The Google Drive copy** (optional, recommended) needs **Google Drive for desktop**, each person signed in
      with their **own** Google account (two computers on one account lose files: "Lost and Found"). The host makes a
      `StudioSync - <studio name>` folder in My Drive (the installer names it) and shares it with everyone as Editor; each collaborator adds it to their own Drive
@@ -243,9 +244,10 @@ By hand:
 
 **StudioSync - Panel** puts everything in one window. It opens by itself whenever a StudioSync project opens.
 
-- **Top bar**: `Project: <song>`, the room, **Sync on** (green: Live sync is running; red **Sync off**: press Start),
+- **Top bar**: `Project: <song>`, the room, **Sync on** (green: Live sync is running; red **Sync off  -  click to start**: click it),
   who drives, **Undo** / **Redo** (your own changes, for everyone; each asks first, and says if a collaborator changed the
-  same thing since), **Dock** and, floating, **Full screen** and **Window** (half the screen, the next screen, back).
+  same thing since), **Dock** and **Window** (fill the screen, half of it, the next screen, back; docked, the docker's side or Undock),
+  and a yellow **Debug** while the studio's debug mode is on (hover it for what's collected).
   Under the bar, what StudioSync just did shows for a few seconds.
 - **Open collaborators' MIDI edits as they happen** (Settings > Options, off by default, this computer only): when someone's
   change to a MIDI part reaches you, it opens in the MIDI editor with the notes they changed selected. A MIDI editor
@@ -265,8 +267,8 @@ By hand:
 - **Studio templates**: *Save as studio template* (Mixes tab) keeps a song's tracks, routing, plug-ins, colours and tempo,
   without its recordings and without your own local tracks, in the studio's `_band/templates/`. Everyone in that studio gets
   *New from template* on the Projects page: a new tab to name and share as usual. Each studio has its own.
-- **Studio call**: the owner or an admin pastes a Discord, Zoom or Meet link in Settings > Studio, and everyone gets a **Call** button
-  beside Real time mode. The call runs in its own app, video and all, so it never slows REAPER or the sync. Mute its
+- **Studio call**: the owner or an admin pastes a Discord, Zoom or Meet link in Settings > Studio, and everyone gets a **Video call**
+  button on Home. The call runs in its own app, video and all, so it never slows REAPER or the sync. Mute its
   microphone while playing: Real time mode carries the music.
 - **Listening page** (the Mixes tab): *Share the listening page* serves a web page of every song's mixes from
   your computer over Tailscale, to play on a phone or any browser without REAPER, while your computer is on. Only devices
@@ -375,7 +377,8 @@ plug-ins this machine doesn't have.
 
 Who may change what:
 
-- **Driver**: leads play and record; in *Driver + claims* and *Driver only* their changes reach everyone (in Driver + claims, claimed parts too). *Take control* (next to Who's
+- **Driver**: leads play and record for whoever follows the driver; in *Driver + claims* and *Driver only* their changes reach everyone (in Driver + claims, claimed parts too).
+  In the Anyone modes everyone edits anyway, so a driver who's away only means play and stop follow nobody until someone takes control. *Take control* (next to Who's
   here) makes you the driver; it checks everyone has caught up first, and every handover saves a version.
 - **Who can edit** (Home; the studio's owner or an admin picks): **Claims**, the default (anyone changes anything nobody else
   has claimed, the tempo map, markers and project settings too; what someone claimed only they change, the driver too; a clash
@@ -498,7 +501,7 @@ alone. Computers that already had projects keep every project they had.
 Home's **Real time mode** switch: you hear each other as you play (SonoBus, peer to peer), and play, stop and record
 follow whoever presses them. SonoBus sits on its own **StudioSync Real time** track, fed only by your **armed** tracks:
 everyone already plays the project from their own copy, so only what you're playing live goes out (no doubled backing).
-*Configure SonoBus* opens its own window (volume and mute per collaborator, buffer), which you don't need to play
+*Each person's volume* (Home) opens SonoBus's own window (volume and mute per collaborator, buffer), which you don't need to play
 together.
 
 With Real time mode on:

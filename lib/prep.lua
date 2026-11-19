@@ -330,8 +330,7 @@ local function repoint(proj, from, to)
       local old = tk and reaper.GetMediaItemTake_Source(tk)
       -- a section (reversed, a loop of part of a file) wraps the file: left as it is, it keeps working
       if old and reaper.GetMediaSourceType(old, "") ~= "SECTION" and reaper.GetMediaSourceFileName(old, ""):gsub("\\", "/") == from then
-        band.set_take_source(tk, reaper.PCM_Source_CreateFromFile(to))
-        reaper.PCM_Source_Destroy(old) -- (the take doesn't free it: and it holds the file open)
+        band.set_take_source(tk, reaper.PCM_Source_CreateFromFile(to)) -- (it destroys the old source itself: a second destroy here freed it twice. Round 1 review, 0.59.45)
         n = n + 1
       end
     end
@@ -353,7 +352,7 @@ function prep.apply(proj, cfg, b, rows, dir)
     if file == "" then reaper.RecursiveCreateDirectory(band.home() .. "/backups", 0) end
     local base = file ~= "" and file:gsub("%.[Rr][Pp][Pp]$", "") or (band.home() .. "/backups/Untitled")
     backup = base .. " - before StudioSync " .. os.date("%Y%m%d-%H%M%S") .. ".rpp" -- (to the second: two in one minute, the second wrote over the first. 0.58.93)
-    reaper.Main_SaveProjectEx(proj, backup, 0) -- 0: a copy; this tab keeps its own file
+    local _ = band.save_copy and band.save_copy(proj, backup) or reaper.Main_SaveProjectEx(proj, backup, 0) -- 0: a copy; this tab keeps its own file
     done[#done + 1] = "Backup copy saved: " .. (file ~= "" and backup:match("[^/\\]+$") or backup)
   end
   reaper.Undo_BeginBlock2(proj)

@@ -145,13 +145,13 @@ function suggest.accept(proj, cfg, room_dir, h, may, local_mix)
     if ra ~= rb then return ra < rb end
     return a.oid < b.oid
   end)
-  local did, stale, refused = 0, 0, 0
+  local did, stale, refused, left = 0, 0, 0, {} -- (left: the oids that didn't go in, for the answer: its sender keeps those. Round 1 review, 0.59.45)
   reaper.PreventUIRefresh(1)
   reaper.Undo_BeginBlock2(proj)
   for _, c in ipairs(list) do
     local rev, _, kev = mirror.known(proj, c.oid)
-    if (rev or 0) ~= (c.rev or 0) or (c.ev and kev ~= "" and kev ~= c.ev) then stale = stale + 1 -- (changed since it was suggested: what's there now stands)
-    elseif not may(c.name, c.pos) then refused = refused + 1
+    if (rev or 0) ~= (c.rev or 0) or (c.ev and kev ~= "" and kev ~= c.ev) then stale = stale + 1; left[#left + 1] = c.oid -- (changed since it was suggested: what's there now stands)
+    elseif not may(c.name, c.pos) then refused = refused + 1; left[#left + 1] = c.oid
     else
       local ok, res = pcall(mirror.apply, proj, c, media, local_mix)
       if ok and res then did = did + 1 else band.log("couldn't accept a change on " .. tostring(c.name) .. ": " .. tostring(ok and "it can't land here" or res)) end
@@ -162,7 +162,7 @@ function suggest.accept(proj, cfg, room_dir, h, may, local_mix)
   reaper.Undo_EndBlock2(proj, "Accept " .. tostring(h.from) .. "'s suggestion", 1 | 4 | 32)
   reaper.PreventUIRefresh(-1)
   reaper.UpdateArrange()
-  return did, stale, refused
+  return did, stale, refused, left
 end
 
 -- What Live sync says when a suggestion arrives or is answered, once. And its sender tidies up: the parts are no longer
@@ -183,23 +183,42 @@ function suggest.notices(proj, cfg, room_dir)
       end
       -- (declined or withdrawn: what you did to their parts is kept here before its files go, on '(yours, not sent)' tracks and in Kept
       -- automation: those files were its only copy. Full review, 0.59.44)
-      local kept = 0
-      if a.answer ~= "accepted" then
+      -- (accepted, those that didn't go in (changed since, or not theirs) are kept the same way, as the answer names them: it went with no copy.
+      -- A part whose keeping failed (unreadable, a full disk) keeps its file, and says so: it was removed regardless. Round 1 review, 0.59.45)
+      local kept, failed, left = 0, {}, nil
+      if a.answer == "accepted" and type(a.left_oids) == "table" then
+        left = {}
+        for _, oid in ipairs(a.left_oids) do left[tostring(oid) .. ".json"] = true end
+      end
+      local function wanted(c) -- (what keep_suggested keeps: an item or automation changed, not something new, a deletion or a plug-in chain)
+        return type(c) == "table" and not c.gone and (c.obj == "item" or c.obj == "env") and type(c.state) == "string" and c.state ~= "" and (tonumber(c.rev) or 0) ~= 0
+      end
+      if a.answer ~= "accepted" or left then
         for _, f in ipairs(band.files(parts_of(room_dir, h.id), ".json")) do
-          local ok, did = pcall(mirror.keep_suggested, proj, band.read_json(parts_of(room_dir, h.id) .. "/" .. f), room_dir)
-          if ok and did then kept = kept + 1 end
+          if not left or left[f] then
+            local c = band.read_json(parts_of(room_dir, h.id) .. "/" .. f)
+            local ok, did = pcall(mirror.keep_suggested, proj, c, room_dir)
+            if ok and did then kept = kept + 1
+            elseif not ok or c == nil or wanted(c) then failed[f] = true end
+          end
         end
         if kept > 0 then reaper.UpdateArrange() end
       end
       local still = kept > 0 and " What you did is kept here: items on your '(yours, not sent)' tracks, automation under Restore > Kept automation" or
         " Anything new you added is still on your '(yours, not sent)' tracks"
-      if a.answer == "declined" then
+      if a.answer == "accepted" and kept > 0 then
+        band.log(string.format("of your suggestion to %s, what didn't go in is kept.%s", tostring(h.owner), still))
+      elseif a.answer == "declined" then
         band.log(string.format("%s declined your suggestion (%s).%s", tostring(h.owner), suggest.words(h), still))
       elseif a.answer == "withdrawn" and kept > 0 then
         band.log(string.format("you withdrew your suggestion (%s).%s", suggest.words(h), still))
       end
-      for _, f in ipairs(band.files(parts_of(room_dir, h.id), ".json")) do os.remove(parts_of(room_dir, h.id) .. "/" .. f) end
-      os.remove(parts_of(room_dir, h.id))
+      local n_failed = 0
+      for _, f in ipairs(band.files(parts_of(room_dir, h.id), ".json")) do
+        if failed[f] then n_failed = n_failed + 1 else os.remove(parts_of(room_dir, h.id) .. "/" .. f) end
+      end
+      if n_failed == 0 then os.remove(parts_of(room_dir, h.id))
+      else band.log(string.format("couldn't keep %d of the changes in your suggestion (%s) here: their files stay in %s", n_failed, suggest.words(h), parts_of(room_dir, h.id))) end
       reaper.SetProjExtState(proj, SEC, h.id, "2")
     end
   end
@@ -233,10 +252,10 @@ function suggest.bar(ctx, ImGui, proj, cfg, room_dir, can, local_mix)
   local function answer_row(h)
     ImGui.PushID(ctx, h.id)
     if ImGui.SmallButton(ctx, "Accept") then
-      local did, stale, refused = suggest.accept(proj, cfg, room_dir, h, function(name, pos) return can(cfg.user, name, pos) end, local_mix)
+      local did, stale, refused, left = suggest.accept(proj, cfg, room_dir, h, function(name, pos) return can(cfg.user, name, pos) end, local_mix)
       if did then
         suggest.note = nil
-        suggest.answer(room_dir, h, cfg.user, "accepted", { left = stale + refused })
+        suggest.answer(room_dir, h, cfg.user, "accepted", { left = stale + refused, left_oids = left })
         band.log(string.format("you accepted %s's suggestion: %d change(s) go to the others as yours%s", tostring(h.from), did,
           stale + refused > 0 and string.format("; %d had changed since or aren't yours, and stay as they are", stale + refused) or ""))
       else suggest.note = stale end
@@ -247,7 +266,7 @@ function suggest.bar(ctx, ImGui, proj, cfg, room_dir, can, local_mix)
       suggest.answer(room_dir, h, cfg.user, "declined")
       band.log(string.format("you declined %s's suggestion (%s)", tostring(h.from), suggest.words(h)))
     end
-    ImGui.SetItemTooltip(ctx, "Your tracks stay as they are. " .. tostring(h.from) .. " keeps a copy of anything new on a track of their own.")
+    ImGui.SetItemTooltip(ctx, "Your tracks stay as they are. " .. tostring(h.from) .. "'s changes are kept on their '(yours, not sent)' tracks and under Restore > Kept automation.")
     ImGui.SameLine(ctx)
     ImGui.PushStyleColor(ctx, ImGui.Col_Text, require("theme").YELLOW)
     ImGui.TextWrapped(ctx, string.format("%s's edit touches your parts: %s (%s)", tostring(h.from), suggest.words(h), require("chooser").ago(h.time, now)))
@@ -269,7 +288,7 @@ function suggest.bar(ctx, ImGui, proj, cfg, room_dir, can, local_mix)
   for _, h in ipairs(waiting) do
     ImGui.PushID(ctx, h.id)
     if ImGui.SmallButton(ctx, "Withdraw") then suggest.answer(room_dir, h, cfg.user, "withdrawn") end
-    ImGui.SetItemTooltip(ctx, "Take the suggestion back. Anything new you added stays on your '(yours, not sent)' tracks.")
+    ImGui.SetItemTooltip(ctx, "Take the suggestion back. What you did is kept on your '(yours, not sent)' tracks and under Restore > Kept automation.")
     ImGui.SameLine(ctx)
     ImGui.TextWrapped(ctx, string.format("Waiting on %s: %s", tostring(h.owner), suggest.words(h)))
     if h.grouped then ImGui.TextDisabled(ctx, suggest.FADER_TIP) end

@@ -109,10 +109,11 @@ def free_names(src):
     return found
 
 def repo_globals(files):
-    """Names this repo sets as globals on purpose (NAME = ... at the start of a line, upper case or BANDSYNC_)."""
+    """Names this repo sets as globals on purpose (NAME = ... in the first column, upper case or BANDSYNC_). Only the first column: an indented
+    `SNAP = ...` is a table key or a local's field, and counting those whitelisted 13 keys repo-wide (Round 1 review, 0.59.45)."""
     g = set()
     for f in files:
-        for m in re.finditer(r"^\s*([A-Z][A-Z0-9_]{2,})\s*=[^=]", open(f, encoding="utf-8").read(), re.M): g.add(m.group(1))
+        for m in re.finditer(r"^([A-Z][A-Z0-9_]{2,})\s*=[^=]", open(f, encoding="utf-8").read(), re.M): g.add(m.group(1))
     return g
 
 if __name__ == "__main__":
@@ -122,7 +123,7 @@ if __name__ == "__main__":
     allowed = KNOWN | repo_globals(every)
     bad = 0
     for f in files:
-        names = {n: l for n, l in free_names(open(f, encoding="utf-8").read()).items() if n not in allowed and not n.startswith("BANDSYNC_")}  # (the scripts' own hand-offs)
+        names = {n: l for n, l in free_names(open(f, encoding="utf-8").read()).items() if n not in allowed and not n.startswith(("BANDSYNC_", "STUDIOSYNC_"))}  # (the scripts' own hand-offs across a reload)
         for n, l in sorted(names.items(), key=lambda x: x[1]):
             print(f"{f}:{l}: {n} is used but never defined here")
             bad += 1

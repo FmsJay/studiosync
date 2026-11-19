@@ -8,11 +8,13 @@
 -- (fromfolder.handoff, at the top of each script), so old code never runs beside new. A copy run from a git checkout (a developer's) stays
 -- where it is. Code that changes in the folder is taken without asking (the studio trusts its members: band.code_guard, since 0.59.32).
 -- A guest's computer never moves to it, and a guest with a project list doesn't sync _tools at all (lib/songsync.lua). Full review, 0.59.44.
+-- (Round 1 review, 0.59.45: every guest, with a list or not (a guest mark naming this computer: removal.am_guest), and a computer that's no
+-- longer in a studio that updates through its folder moves back to the copy it ran from before, remembered when it moved: the move was one-way.)
 local band = require("band")
 local ff = {}
 
 local function norm(p) return band.norm(p or ""):lower() end
-local function version_of(dir) return (band.read(dir .. "/lib/band.lua") or ""):match('VERSION = "([^"]+)"') end
+local function version_of(dir) return band.version_on_disk(dir) end
 -- a is b or newer ("0.59.24" >= "0.59.9"). Pure.
 function ff.at_least(a, b)
   local x, y = {}, {}
@@ -40,13 +42,25 @@ function ff.wanted(cfg)
   if cfg and cfg.root then list[1] = cfg.root end
   for _, g in ipairs(band.bands()) do list[#list + 1] = g.root end
   for _, r in ipairs(list) do
-    local guest = select(2, pcall(function() return require("access").mine(r) ~= nil end)) == true -- (a guest with a list: not theirs to run)
+    local guest = select(2, pcall(function() return require("access").mine(r) ~= nil or require("removal").am_guest(r) end)) == true -- (not a guest's to run)
     if ff.on(r) and not guest and reaper.file_exists(r .. "/_band/band.json") then return r end
   end
 end
+-- The copy this computer ran from before it moved to a studio's folder: remembered at the move ("run from before"), else the startup block's
+-- fallback (written at every move since 0.59.24). -> it, or nil.
+local function before(t)
+  local b = reaper.GetExtState(band.SECTION, "run from before")
+  if b == "" then
+    local text = band.read(reaper.GetResourcePath() .. "/Scripts/__startup.lua") or ""
+    for p in text:gmatch("%[%[([^%]]-)/StudioSync %- Autostart%.lua%]%]") do
+      if norm(p) ~= norm(t) and not norm(p):find("/_tools/studiosync$") and norm(p) ~= norm(band.last_good_dir()) then b = p; break end
+    end
+  end
+  return b ~= "" and reaper.file_exists(b .. "/StudioSync - Autostart.lua") and band.norm(b) or nil
+end
 
 -- From Autostart: moves this computer to the studio's copy when it should. `dir`: where this copy runs from. -> the copy it moved to, or nil.
-local looked = -math.huge
+local looked, back_seen = -math.huge, 0
 function ff.tick(dir, cfg)
   if reaper.time_precise() - looked < 60 then return end
   looked = reaper.time_precise()
@@ -57,18 +71,38 @@ function ff.tick(dir, cfg)
   if not root then -- (no studio says so now: a copy this computer moved to that's gone is forgotten, and it runs where it is)
     local run = reaper.GetExtState(band.SECTION, "run from")
     if run ~= "" and not reaper.file_exists(run .. "/StudioSync - Autostart.lua") then reaper.DeleteExtState(band.SECTION, "run from", true) end
+    -- (and from a studio's folder it no longer should run from (updates off, left, or a guest here), back to the copy it ran from before, once
+    -- that's been so for two looks a minute apart: one look in a moment with nothing checked yet mustn't move it. Round 1 review, 0.59.45)
+    local from = norm(run):find("/_tools/studiosync$") and run or (norm(dir):find("/_tools/studiosync$") and dir) or nil
+    local back = from and before(from)
+    if back and norm(run) == norm(back) then back = nil end -- (moved back already, waiting for REAPER's next start)
+    back_seen = back and back_seen + 1 or 0
+    if back and back_seen >= 2 then
+      back_seen = 0
+      local ok, why = require("tools").set_autostart(true, back)
+      if not ok then band.log("couldn't move StudioSync back from the studio's folder: " .. tostring(why)); return end
+      pcall(band.sync_actions, back)
+      reaper.SetExtState(band.SECTION, "run from", back, true) -- (an old button or key of the studio's copy hands over to this one)
+      reaper.DeleteExtState(band.SECTION, "run from before", true)
+      band.log("StudioSync runs from " .. back .. " again from REAPER's next start: this computer no longer runs the studio's copy")
+      return back
+    end
     return
   end
+  back_seen = 0
   local t = ff.target(root)
   if norm(dir) == norm(t) then
     if norm(reaper.GetExtState(band.SECTION, "run from")) ~= norm(t) then reaper.SetExtState(band.SECTION, "run from", t, true) end
     return
   end
+  -- (moved already, waiting for REAPER's next start: the startup block, the actions and two settings were written again every minute. Round 1 review, 0.59.45)
+  if norm(reaper.GetExtState(band.SECTION, "run from")) == norm(t) then return end
   if not reaper.file_exists(t .. "/StudioSync - Autostart.lua") or not band.files_complete(t) then return end
   local v = version_of(t)
   if not v or not ff.at_least(v, band.VERSION) then return end
   local ok, why = require("tools").set_autostart(true, t, band.norm(dir)) -- (this copy, should that folder go)
   if not ok then band.log("couldn't move StudioSync to the studio's folder: " .. tostring(why)); return end
+  if norm(dir) ~= norm(band.last_good_dir()) then reaper.SetExtState(band.SECTION, "run from before", band.norm(dir), true) end -- (for the move back)
   pcall(band.sync_actions, t)
   reaper.SetExtState(band.SECTION, "update ok", v, true) -- (the studio's own choice: its copy, this version, said yes to here)
   reaper.SetExtState(band.SECTION, "run from", t, true)
@@ -86,8 +120,10 @@ function ff.extension_tick(dir)
   if ext_done then return end
   local have, want = reaper.GetExtState(band.SECTION, "menu extension"), require("tools").EXT_WANT
   if have == "" or band.compare_versions(have, want) >= 0 then return end
+  -- (Linux: REAPER says "Other" on an ARM computer too, so the machine's own word: Round 1 review, 0.59.45)
+  local arch = band.LINUX and ((reaper.ExecProcess("/bin/uname -m", 3000) or ""):match("^0\n(%S+)") or "") or ""
   local name = band.WIN and "reaper_studiosync-x64.dll" or band.MAC and "reaper_studiosync.dylib"
-    or (reaper.GetOS():find("arm") or reaper.GetOS():find("aarch64")) and "reaper_studiosync-aarch64.so" or "reaper_studiosync-x86_64.so"
+    or (reaper.GetOS():find("arm") or reaper.GetOS():find("aarch64") or arch == "aarch64" or arch == "arm64") and "reaper_studiosync-aarch64.so" or "reaper_studiosync-x86_64.so"
   local from, to = band.norm(dir) .. "/extension/" .. name, band.norm(reaper.GetResourcePath()) .. "/UserPlugins/" .. name
   local new = band.read(from)
   if not new or #new < 10000 then return end
@@ -109,7 +145,8 @@ function ff.handoff(source)
   if run == "" then return false end
   local path = tostring(source or ""):gsub("^@", ""):gsub("\\", "/")
   local dir, file = path:match("^(.*)/(StudioSync %- [^/]+%.lua)$")
-  if not dir or norm(dir) == norm(run) or dev_copy(dir) then return false end
+  -- (nor the last-good copy: the startup block started it because the copy it runs from failed to load. Round 1 review, 0.59.45)
+  if not dir or norm(dir) == norm(run) or dev_copy(dir) or norm(dir) == norm(band.last_good_dir()) then return false end
   local there = band.norm(run) .. "/" .. file
   if not reaper.file_exists(there) then return false end
   local id = reaper.AddRemoveReaScript(true, 0, there, true)

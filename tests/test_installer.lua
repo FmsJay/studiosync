@@ -9,7 +9,7 @@ assert(mac and mark:find(mac, 1, true), "the Mac installer finds the panel's mar
 assert(read("installer/studiosync_setup.lua"):find(mark, 1, true), "and setup writes the same one")
 
 -- tools.set_autostart against a real file in a scratch folder: the person's own lines stay, an old block is replaced, never two
-local dir = ((os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp"):gsub("\\", "/")) .. "/ss_inst_" .. os.time()
+local dir = ((os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp"):gsub("\\", "/")) .. "/ss_inst_" .. os.time() .. "_" .. math.random(100000, 999999) -- (two runs in one second shared a folder; Round 1 review, 0.59.45)
 os.execute(package.config:sub(1, 1) == "\\" and ('mkdir "' .. (dir .. "/Scripts"):gsub("/", "\\") .. '"') or ("mkdir -p '" .. dir .. "/Scripts'"))
 local startup = dir .. "/Scripts/__startup.lua"
 local function exists(p) local f = io.open(p, "rb"); if f then f:close() end; return f ~= nil end
@@ -113,6 +113,5 @@ assert(win:find("chcp 65001", 1, true) and not win:find("-Encoding ascii", 1, tr
 assert(not win:find("[\128-\255]"), "the Windows installer stays ASCII: Windows PowerShell reads it as ANSI")
 assert(read("installer/install_mac.sh"):find("sw_vers -productVersion", 1, true), "the Mac installer says when macOS is too old")
 assert(read("installer/install_linux.sh"):find("fm.reaper.Reaper", 1, true), "the Linux installer knows a Flatpak REAPER")
-os.remove(dir .. "/Scripts")
-os.remove(dir)
+os.execute((package.config:sub(1, 1) == "\\" and ('rmdir /s /q "' .. dir:gsub("/", "\\") .. '"') or ("rm -rf '" .. dir .. "'"))) -- (the whole scratch folder: os.remove can't take a folder away on Windows)
 print("ok")

@@ -158,12 +158,29 @@ function startup.open_quietly(open)
   return a, b
 end
 
--- The command that hands a project to the REAPER that's running, with no boxes. Pure. exe_dir: reaper.GetExePath().
-function startup.hand_over(os_name, exe_dir, path)
+-- The command that hands a project to the REAPER that's running, with no boxes. Pure. exe_dir: reaper.GetExePath(); exe: the program, when
+-- startup.reaper_exe found it.
+function startup.hand_over(os_name, exe_dir, path, exe)
   local mac = os_name:find("^OSX") or os_name:find("^macOS")
   -- (Linux: the reaper binary sits in the folder GetExePath gives. 0.58.74)
-  local exe = os_name:find("^Win") and (exe_dir .. "\\reaper.exe") or mac and (exe_dir .. "/REAPER.app/Contents/MacOS/REAPER") or (exe_dir .. "/reaper")
+  exe = exe or os_name:find("^Win") and (exe_dir .. "\\reaper.exe") or mac and (exe_dir .. "/REAPER.app/Contents/MacOS/REAPER") or (exe_dir .. "/reaper")
   return string.format('"%s" -nonewinst -ignoreerrors "%s"', exe, path)
+end
+-- The running REAPER's program on a Mac, where GetExePath() is the folder holding the app (or the app itself), whatever the bundle is called:
+-- REAPER.app, REAPER64.app, "REAPER 7.app". The Mac hand-over and background prints each guessed REAPER.app, so a renamed bundle waited 20 s
+-- per tab at every start and printed with the wrong REAPER, or none. (Round 1 review, 0.59.45) -> the path, or nil when none is there.
+-- exists, subdirs: reaper.file_exists and a folder listing (for tests). Windows and Linux: the program beside GetExePath, as before.
+function startup.reaper_exe(os_name, exe_dir, exists, subdirs)
+  exists = exists or reaper.file_exists
+  local d = tostring(exe_dir or ""):gsub("\\", "/"):gsub("/+$", "")
+  if os_name:find("^Win") then return d .. "/reaper.exe" end
+  if not (os_name:find("^OSX") or os_name:find("^macOS")) then return d .. "/reaper" end
+  local list = { d .. "/Contents/MacOS/REAPER", d .. "/REAPER.app/Contents/MacOS/REAPER", d .. "/REAPER64.app/Contents/MacOS/REAPER" }
+  for _, s in ipairs(subdirs and subdirs(d) or band.subdirs(d)) do
+    if s:lower():match("^reaper.*%.app$") then list[#list + 1] = d .. "/" .. s .. "/Contents/MacOS/REAPER" end
+  end
+  for _, p in ipairs(list) do if exists(p) then return p end end
+  return nil
 end
 startup.HAND_OVER_WAIT = 20 -- seconds for a project to arrive; after that it's opened the ordinary way, and its box waits for someone
 
@@ -190,9 +207,13 @@ local function hand_over_tabs(tabs, first, open, finish)
     if not first then reaper.Main_OnCommand(40859, 0) end -- New project tab
     first = false
     if t.band then
-      since = reaper.time_precise()
-      reaper.ExecProcess(startup.hand_over(reaper.GetOS(), reaper.GetExePath(), t.path), -1)
-      return reaper.defer(step)
+      -- (found once; none to hand it to, it opens the ordinary way now rather than after a 20 s wait. Round 1 review, 0.59.45)
+      if startup.exe == nil then startup.exe = startup.reaper_exe(reaper.GetOS(), reaper.GetExePath()) or false end
+      if startup.exe then
+        since = reaper.time_precise()
+        reaper.ExecProcess(startup.hand_over(reaper.GetOS(), reaper.GetExePath(), t.path, not windows() and startup.exe or nil), -1)
+        return reaper.defer(step)
+      end
     end
     reaper.Main_openProject(t.path) -- (a project of your own says what's wrong with it, as it always has)
     return reaper.defer(step)

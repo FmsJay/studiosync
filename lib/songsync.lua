@@ -69,7 +69,17 @@ function songsync.debug_lines(debug)
   if not (debug and debug.hide and debug.me and debug.me ~= "") then return {} end
   return { "!/_debug/" .. debug.me, "/_debug" }
 end
-function songsync.merge(text, wanted, gone, allowed, debug)
+-- A guest's computer (a list or not: removal.am_guest) doesn't sync the studio's copy of StudioSync, nor other people's holds, guests' lists,
+-- guest invitations and feedback (they name projects a guest with a list isn't to know of); its own holds, list and feedback still go.
+-- `guest`: { me = its StudioSync name, device = its Syncthing ID } or nil. -> lines for the block, first. Pure. James's decision, Round 1 review, 0.59.45.
+function songsync.guest_lines(guest)
+  if not (guest and guest.me) then return {} end
+  local me = tostring(guest.me)
+  return { "/_tools", "!/_band/holds/" .. me:gsub("[^%w%-_ ]", "") .. ".json", "/_band/holds",
+    "!/_band/guest-access/" .. tostring(guest.device or ""):sub(1, 7):gsub("[^%w]", "") .. ".json", "/_band/guest-access", "/_band/guest-invites",
+    "!/_band/feedback/*-" .. me:gsub("[^%w%-_]", "_") .. ".md", "/_band/feedback" }
+end
+function songsync.merge(text, wanted, gone, allowed, debug, guest)
   local keep, inside = {}, false
   text = (text or ""):gsub("^\239\187\191", "") -- (a byte-order mark would hide the first line: an editor's, or PowerShell's)
   for line in ((text or "") .. "\n"):gmatch("(.-)\r?\n") do
@@ -79,6 +89,7 @@ function songsync.merge(text, wanted, gone, allowed, debug)
   end
   while #keep > 0 and keep[#keep] == "" do keep[#keep] = nil end
   local dbg = songsync.debug_lines(debug)
+  for _, l in ipairs(songsync.guest_lines(guest)) do if not (allowed and l == "/_tools") then dbg[#dbg + 1] = l end end -- (block_guest has its own)
   if allowed or wanted or (gone and next(gone)) or #dbg > 0 then
     if #keep > 0 then keep[#keep + 1] = "" end
     local block = allowed and songsync.block_guest(allowed) or wanted and songsync.block(wanted) or songsync.block_except(gone or {})
@@ -144,7 +155,10 @@ function songsync.apply(cfg)
   local path = cfg.root .. "/.stignore"
   local old = band.read(path) or ""
   local okc, allowed = pcall(function() return require("access").mine(cfg.root) end) -- (a guest with a list: theirs only. 0.58.89)
-  local new = songsync.merge(old, not songsync.keep_all() and songsync.wanted(cfg) or nil, songsync.keep_all() and songsync.gone() or nil, okc and allowed or nil, songsync.debug_of(cfg))
+  local okg, guest = pcall(function() return require("removal").am_guest(cfg.root) end)
+  guest = ((okc and allowed) or (okg and guest)) and { me = cfg.user or reaper.GetExtState(band.SECTION, "user"), device = require("services").my_device_id() } or nil
+  local new = songsync.merge(old, not songsync.keep_all() and songsync.wanted(cfg) or nil, songsync.keep_all() and songsync.gone() or nil, okc and allowed or nil,
+    songsync.debug_of(cfg), guest)
   if new == old then return false end
   band.write_atomic(path, new)
   pcall(function() require("services").rescan(band.info(cfg.root).id) end)

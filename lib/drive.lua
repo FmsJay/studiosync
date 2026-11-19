@@ -83,7 +83,8 @@ local function places(only)
     add("google", root .. "/My Drive")
     for _, d in ipairs(subs) do if d:sub(1, 1) ~= "." and d ~= "$RECYCLE.BIN" and d ~= "My Drive" then add("google", root .. "/" .. d); drive.extra[root .. "/" .. d] = true end end
   end
-  if win then -- (drive letters only on Windows: a Mac looked at 23 that can't exist)
+  -- (and only when Google's is one this computer may use: with another service chosen in Settings each letter was listed anyway. Round 1 review, 0.59.45)
+  if win and (only == nil or only == "" or only == "google") then -- (drive letters only on Windows: a Mac looked at 23 that can't exist)
     google("G:", false)
     for c = ("D"):byte(), ("Z"):byte() do
       if c ~= ("G"):byte() then google(string.char(c) .. ":", false) end
@@ -152,16 +153,26 @@ function drive.root(cfg)
   local info = band.info(cfg and cfg.root)
   local l = looked[info.drive] or { at = -math.huge }
   looked[info.drive] = l
+  -- (Round 1 review, 0.59.45: the folder it was last in, while it's still there (and its service may be used), with no sweep of D: to Z:; and
+  -- never a sweep while the transport runs: each letter is a listing on REAPER's own thread, and a dead mapped drive froze it every 5 minutes.)
+  local key = "drive_seen" .. (info.id == "bandsync" and "" or (" " .. info.id)) -- (the first band keeps its old key)
+  local function exists(p) return reaper.EnumerateSubdirectories(p, 0) ~= nil or reaper.EnumerateFiles(p, 0) ~= nil end
+  local chosen = drive.service()
+  if reaper.time_precise() - l.at >= 300 then
+    local seen = reaper.GetExtState(band.SECTION, key)
+    if seen ~= "" and (chosen == "" or drive.service_of(seen) == chosen) and exists(seen) then
+      l.at, l.found, l.missing, l.away, l.other = reaper.time_precise(), seen, nil, nil, nil
+    elseif reaper.GetPlayState() ~= 0 then
+      l.at = reaper.time_precise() - 270 -- (looked for again in half a minute)
+    end
+  end
   if reaper.time_precise() - l.at >= 300 then
     l.at = reaper.time_precise()
     l.found, l.missing = drive.find(places(drive.service()), band.subdirs,
       function(p) return reaper.EnumerateSubdirectories(p, 0) ~= nil or reaper.EnumerateFiles(p, 0) ~= nil end, info.drive)
     -- the band's Drive was here and isn't now: that Google account signed out, or Drive switched to another one (Mac,
     -- 2026-10-31: a personal and a band account on one machine). Said, not guessed at: drive.away, for the panel.
-    local key = "drive_seen" .. (info.id == "bandsync" and "" or (" " .. info.id)) -- (the first band keeps its old key)
     local seen = reaper.GetExtState(band.SECTION, key)
-    local function exists(p) return reaper.EnumerateSubdirectories(p, 0) ~= nil or reaper.EnumerateFiles(p, 0) ~= nil end
-    local chosen = drive.service()
     l.found, l.away, l.other = drive.settle(l.found, seen, exists, chosen)
     if l.found then
       if seen ~= l.found then reaper.SetExtState(band.SECTION, key, l.found, true) end

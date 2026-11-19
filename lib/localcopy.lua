@@ -77,7 +77,11 @@ function copy.holders(lists, song, digest, me, gone, age)
 end
 local function gone_set(root) -- (who's been taken out: { [name] = true })
   local ok, set = pcall(function() return require("removal").gone(root) end)
-  return ok and type(set) == "table" and set or {}
+  set = ok and type(set) == "table" and set or {}
+  -- (and guests: a guest's copy can be gone with their time, or be only the projects they were given. Round 1 review, 0.59.45)
+  local okg, guests = pcall(function() return require("removal").guest_names(root) end)
+  for n in pairs(okg and type(guests) == "table" and guests or {}) do set[n] = true end
+  return set
 end
 local function holds_file(root, user) return root .. "/_band/holds/" .. (user:gsub("[^%w%-_ ]", "")) .. ".json" end
 function copy.read_holds(root)
@@ -230,18 +234,28 @@ function copy.bin_start(paths, label)
     -- and said. Review, 0.58.47)
     -- (nor what the bin can't take: a drive set to delete at once, or more than the bin's size. Windows asks "delete permanently?" then, and
     -- with no confirmations that's a yes: the box promised the Recycle Bin and the files were gone. Left and said, as above. Full review, 0.59.44)
+    -- (Round 1 review, 0.59.45: sized per drive, the whole job together plus what that bin holds already (path by path, a second big folder
+    -- pushed the first out for good); one volume lookup per drive; and a lookup that fails counts as too big. No size set for the bin: 5% of the
+    -- drive, Windows' default. Before, a missing key or a failed lookup binned it anyway.)
+    lines[#lines + 1] = "$sum = @{}; $rt = @{}; $big = @{}"
     for _, p in ipairs(paths) do
       local wp = q((p:gsub("/", "\\")))
-      lines[#lines + 1] = "$big = $false; try { $dl = ([IO.Path]::GetPathRoot(" .. wp .. ")).Substring(0, 2); " ..
-        "$vol = (Get-CimInstance Win32_Volume -Filter (\"DriveLetter='\" + $dl + \"'\")).DeviceID; $g = [regex]::Match($vol, '\\{[^}]+\\}').Value; " ..
-        "$k = Get-ItemProperty -LiteralPath ('HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\BitBucket\\Volume\\' + $g) -ErrorAction Stop; " ..
-        "if ($k.NukeOnDelete -eq 1) { $big = $true } elseif ($k.MaxCapacity) { " ..
-        "if (Test-Path -LiteralPath " .. wp .. " -PathType Leaf) { $sz = (Get-Item -LiteralPath " .. wp .. ").Length } " ..
-        "else { $sz = (Get-ChildItem -LiteralPath " .. wp .. " -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum } " ..
-        "if ($sz -gt [int64]$k.MaxCapacity * 1MB) { $big = $true } } } catch {}"
-      lines[#lines + 1] = "$b = New-Object StudioSyncBin+Bin; $b.size = [Runtime.InteropServices.Marshal]::SizeOf($b); " ..
-        "if ($big) { Set-Content -LiteralPath " .. q((tmp:gsub("/", "\\")) .. ".toobig") .. " 1 } " ..
-        "elseif ([StudioSyncBin]::SHQueryRecycleBin([IO.Path]::GetPathRoot(" .. wp .. "), [ref]$b) -ne 0) { Set-Content -LiteralPath " .. q((tmp:gsub("/", "\\")) .. ".nobin") .. " 1 } else { " ..
+      lines[#lines + 1] = "try { $r = [IO.Path]::GetPathRoot(" .. wp .. "); $dl = $r.Substring(0, 2); $rt[$dl] = $r; " ..
+        "if (Test-Path -LiteralPath " .. wp .. " -PathType Leaf) { $sz = (Get-Item -LiteralPath " .. wp .. " -Force).Length } " ..
+        "else { $sz = (Get-ChildItem -LiteralPath " .. wp .. " -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum }; " ..
+        "$sum[$dl] = [int64]$sum[$dl] + [int64]$sz } catch {}"
+    end
+    lines[#lines + 1] = "foreach ($dl in @($sum.Keys)) { $b = New-Object StudioSyncBin+Bin; $b.size = [Runtime.InteropServices.Marshal]::SizeOf($b); " ..
+      "if ([StudioSyncBin]::SHQueryRecycleBin($rt[$dl], [ref]$b) -ne 0) { continue }; $big[$dl] = $true; try { " ..
+      "$v = Get-CimInstance Win32_Volume -Filter (\"DriveLetter='\" + $dl + \"'\"); $g = [regex]::Match([string]$v.DeviceID, '\\{[^}]+\\}').Value; " ..
+      "if ($v -and $g) { $k = Get-ItemProperty -LiteralPath ('HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\BitBucket\\Volume\\' + $g) -ErrorAction SilentlyContinue; " ..
+      "if (-not ($k -and $k.NukeOnDelete -eq 1)) { $cap = if ($k -and $k.MaxCapacity) { [int64]$k.MaxCapacity * 1MB } else { [int64]([double]$v.Capacity * 0.05) }; " ..
+      "if ($cap -gt 0 -and $sum[$dl] + $b.bytes -le $cap) { $big[$dl] = $false } } } } catch {} }"
+    for _, p in ipairs(paths) do
+      local wp = q((p:gsub("/", "\\")))
+      lines[#lines + 1] = "$b = New-Object StudioSyncBin+Bin; $b.size = [Runtime.InteropServices.Marshal]::SizeOf($b); $r = [IO.Path]::GetPathRoot(" .. wp .. "); " ..
+        "if ([StudioSyncBin]::SHQueryRecycleBin($r, [ref]$b) -ne 0) { Set-Content -LiteralPath " .. q((tmp:gsub("/", "\\")) .. ".nobin") .. " 1 } " ..
+        "elseif ($big[$r.Substring(0, 2)]) { Set-Content -LiteralPath " .. q((tmp:gsub("/", "\\")) .. ".toobig") .. " 1 } else { " ..
         "$op = New-Object StudioSyncBin+Op; $op.func = 3; $op.flags = 0x0654; $op.from = " .. wp .. ' + [char]0 + [char]0; [void][StudioSyncBin]::SHFileOperation([ref]$op) }'
     end
     lines[#lines + 1] = "Set-Content -LiteralPath " .. q((tmp:gsub("/", "\\")) .. ".done") .. " 1"
@@ -315,6 +329,10 @@ function copy.tick()
     local home = band.home():gsub("\\", "/")
     local local_dir = pf:match("^(.*)/[^/]+$")
     if not (local_dir and local_dir:sub(1, #home + 1):lower() == (home .. "/"):lower() and local_dir:lower() ~= home:lower()) then local_dir = nil end
+    -- (left where it is while the song has work here not sent yet, or only here: Live sync marks it (band.local_work_key). Its folder went to the
+    -- bin with work nobody else had. Round 1 review, 0.59.45)
+    j.kept_dir = local_dir and reaper.GetExtState(band.SECTION, band.local_work_key(j.root, song)) ~= "" and local_dir or nil
+    if j.kept_dir then local_dir = nil end
     if #j.places == 0 then
       j.skipped[#j.skipped + 1] = song .. " (no other copy confirmed: nobody else has said they hold exactly this" ..
         (j.drive_nojs and ", and Drive can't count without the js_ReaScriptAPI extension (Extensions > ReaPack), which tells how long its files have been there"
@@ -322,9 +340,10 @@ function copy.tick()
       j.i, j.step = j.i + 1, "scan"
       return
     end
-    j.ask = string.format("Delete this computer's copy of '%s'?\n\nConfirmed on: %s.\n\nIts files (%d) go to the %s%s, nothing changes for anyone else, and it stays on the Projects page: opening it brings it back%s.",
+    j.ask = string.format("Delete this computer's copy of '%s'?\n\nConfirmed on: %s.\n\nIts files (%d) go to the %s%s, nothing changes for anyone else, and it stays on the Projects page: opening it brings it back%s.%s",
       song, table.concat(j.places, ", "), #j.files, WIN and "Recycle Bin" or "Trash", local_dir and (", with its project folder (" .. local_dir .. ")") or "",
-      #j.places == 1 and j.places[1] == "Google Drive" and " from Drive" or " from them")
+      #j.places == 1 and j.places[1] == "Google Drive" and " from Drive" or " from them",
+      j.kept_dir and ("\n\nIts project folder (" .. j.kept_dir .. ") stays on this computer: it has work that hasn't gone to the studio, or is only here.") or "")
     j.local_dir = local_dir
   elseif j.step == "ignore" then -- first, so the delete can't reach anyone
     -- (who holds it, asked again now you've said yes: two computers each confirmed on the other, both said yes, and the last full copies
@@ -357,7 +376,7 @@ function copy.tick()
     local list = {}
     for _, p in ipairs(j.paths) do list[#list + 1] = dir .. "/" .. p end
     if j.local_dir and (reaper.EnumerateFiles(j.local_dir, 0) or reaper.EnumerateSubdirectories(j.local_dir, 0)) then list[#list + 1] = j.local_dir end
-    band.forget_project_file(j.root, song)
+    if not j.kept_dir then band.forget_project_file(j.root, song) end -- (kept: opening the song finds its own project, with the work in it)
     j.binning, j.step = copy.bin_start(list, song), "binning"
     j.words = "Moving '" .. song .. "' to the " .. (WIN and "Recycle Bin" or "Trash")
   elseif j.step == "binning" then
@@ -365,7 +384,9 @@ function copy.tick()
     if not left then return end
     j.binning = nil
     j.done[#j.done + 1] = song .. (left > 0 and string.format(" (%d not gone yet: still on its way to the Recycle Bin, or in use. If it stays, restart REAPER and delete again)", left) or "")
-    band.log("deleted this computer's copy of '" .. song .. "': confirmed on " .. table.concat(j.places, ", ") .. ". Open it to bring it back")
+    band.log("deleted this computer's copy of '" .. song .. "': confirmed on " .. table.concat(j.places, ", ") .. ". Open it to bring it back" ..
+      (j.kept_dir and (". Its project folder stays (" .. j.kept_dir .. "): it has work that hasn't gone to the studio") or ""))
+    j.kept_dir = nil
     j.i, j.step = j.i + 1, "scan"
   end
 end

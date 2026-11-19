@@ -313,7 +313,7 @@ function hear.watch_silence(proj, cfg, peers, now)
   end
   silent_since = silent_since or now
   if now - silent_since >= hear.SILENT_AFTER and reaper.GetExtState(band.SECTION, key) == "" then
-    local words = expecting .. " is playing, and no sound's arriving from them. Settings > Advanced > Can't hear each other? says what to try."
+    local words = expecting .. " is playing, and no sound's arriving from them. " .. require("live").PLACES.cant_hear .. " says what to try." -- (it's under Health: Round 1 review, 0.59.45)
     reaper.SetExtState(band.SECTION, key, words, false)
     reaper.SetExtState(band.SECTION, "rt silent who " .. tostring(proj), expecting, false)
     band.log(words)
@@ -329,7 +329,7 @@ function hear.trouble(mine, me, peers)
   end
   for _, st in ipairs(peers) do
     if st.rt and st.rt_silent == me then
-      return st.user .. " is waiting to hear you and nothing's reaching them. Settings > Advanced > Can't hear each other? says what to try."
+      return st.user .. " is waiting to hear you and nothing's reaching them. " .. require("live").PLACES.cant_hear .. " says what to try."
     end
   end
 end

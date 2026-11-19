@@ -81,7 +81,20 @@ end
 function R.show_since(since)
   hf = { who = "", kind = 1, track = "", text = "", since = since }
 end
-local function back_button(i, what, single)
+-- What going back to entries[i] brings: a saved version (`point`, its recall.list row) that holds the project's own map is restored to exactly
+-- that (mirror.plan_known); one saved before 0.59.45, or a moment in History, by time as before. Round 1 review, 0.59.45 (one file read per
+-- restore of a saved version).
+local function plan_for(i, point, scope)
+  local b, cfg = E.b(), E.cfg()
+  local st = point and point.file and band.read_json(recall.dir(cfg, b.song, b.room) .. "/" .. point.file)
+  if type(st) == "table" and type(st.known) == "table" and next(st.known) then
+    local by_id, rdir = {}, sync.room_dir(cfg, b.song, b.room)
+    for _, e in ipairs(entries) do if e.id then by_id[e.id] = e end end
+    return mirror.plan_known(entries, st.known, function(id) return by_id[id] or mirror.event_file(rdir, id) end, scope)
+  end
+  return mirror.plan_restore(entries, i, scope)
+end
+local function back_button(i, what, single, point)
   local b, cfg, proj, view, wide, points, can, who = E.b(), E.cfg(), E.proj(), E.view(), E.wide(), E.points(), E.can(), E.who()
   local e, mirror = entries[i], require("mirror")
   local opts = { can = can, mode = who and who.mode, local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1" }
@@ -119,7 +132,7 @@ local function back_button(i, what, single)
     local scope = mirror.selection_scope(proj)
     if not scope then band.msg("Select the tracks to put back first (click their names in REAPER).")
     elseif reaper.MB("Put the selected tracks (their items and plug-ins) back to how they were " .. what .. "?\n\nEverything else stays as it is now.", "StudioSync", 4) == 6 then
-      band.log(mirror.revert(proj, cfg, b.song, b.room, mirror.plan_restore(entries, i, scope), opts)); hist_at = 0
+      band.log(mirror.revert(proj, cfg, b.song, b.room, plan_for(i, point, scope), opts)); hist_at = 0
     end
   end
   ImGui.EndDisabled(ctx)
@@ -131,7 +144,7 @@ local function back_button(i, what, single)
   if ImGui.SmallButton(ctx, "Restore whole project to here") and reaper.MB("Make the whole project look like it did " .. what .. "?\n\n" ..
       "Everything since then is undone, for everyone. It's a change like any other, so you can come back the same way.", "StudioSync", 4) == 6 then
     sync.restore_timeline(proj, cfg, b.song, b.room, entries, i, view.session)
-    band.log(mirror.revert(proj, cfg, b.song, b.room, mirror.plan_restore(entries, i), opts))
+    band.log(mirror.revert(proj, cfg, b.song, b.room, plan_for(i, point), opts))
     E.refresh_now(); hist_at = 0
   end
   ImGui.EndDisabled(ctx)
@@ -144,7 +157,7 @@ local function back_button(i, what, single)
     local p, why = require("rooms").create(proj, cfg, b, name)
     if not p then band.msg(why) else
       local room_can = sync.authority(cfg, b.song, name, view.session)
-      local plan = mirror.plan_restore(entries, i)
+      local plan = plan_for(i, point)
       sync.restore_timeline(p, cfg, b.song, name, entries, i, view.session, b.room)
       band.log("'" .. name .. "' is the project as it was " .. what .. ": " .. tostring(mirror.revert(p, cfg, b.song, name, plan, { at_once = true, can = room_can, mode = "claims", exact = true })))
       local beat = tonumber(reaper.GetExtState(band.SECTION, "live " .. tostring(p)))
@@ -164,7 +177,7 @@ end
 -- What a change did, at a glance: taken out in red, brought back in green.
 local function change_tint(e) return e.gone and RED or e.restored ~= nil and GREEN or nil end
 -- One change or saved version: its time and words, the whole line a button that opens its options under it. One open at a time.
-local function change_row(key, time, words, i, what, single, who_, tint)
+local function change_row(key, time, words, i, what, single, who_, tint, point)
   local avail = ImGui.GetContentRegionAvail(ctx)
   local at = ImGui.CalcTextSize(ctx, time) + 8
   local _, h = ImGui.CalcTextSize(ctx, (who_ and (who_ .. ": ") or "") .. words, nil, nil, false, avail - at)
@@ -185,7 +198,7 @@ local function change_row(key, time, words, i, what, single, who_, tint)
   if tint then ImGui.PopStyleColor(ctx) end
   if open then
     ImGui.Indent(ctx, at)
-    back_button(i, what, single)
+    back_button(i, what, single, point)
     ImGui.Unindent(ctx, at)
     if hf.show then ImGui.SetScrollHereY(ctx, 1); hf.show = nil end -- (the last row's options opened out of sight, and it looked like nothing happened)
     ImGui.Spacing(ctx)
@@ -238,7 +251,7 @@ function R.section_recall()
   ImGui.SameLine(ctx)
   local _, k = ImGui.Checkbox(ctx, "Save permanently##keepver", keep_it)
   keep_it = k
-  ImGui.SetItemTooltip(ctx, "Never trimmed, and the project goes to Google Drive too if you use it.")
+  ImGui.SetItemTooltip(ctx, "Never trimmed, and the project goes to " .. require("drive").name(cfg) .. " too if you use it.")
   ImGui.TextDisabled(ctx, "Render, stems, credits, templates and A/B: the Mixes tab.")
   local driving = view.driver == cfg.user
   -- (docked, the list takes the column's height instead of a short box inside it)
@@ -253,7 +266,7 @@ function R.section_recall()
       ImGui.PushID(ctx, i)
       local upto = 0 -- (mirror sessions: the point is a moment in History)
       for k, e in ipairs(entries) do if (e.time or "") <= (p.time or "") then upto = k end end
-      change_row("version " .. i, local_time(p.time), string.format("%s%s%s", p.label, p.keep and " (kept)" or "", (p.takes or 0) > 0 and string.format("  ·  %d takes", p.takes) or ""), upto, "at '" .. p.label .. "'", nil, tostring(p.by), p.keep and GREEN or nil)
+      change_row("version " .. i, local_time(p.time), string.format("%s%s%s", p.label, p.keep and " (kept)" or "", (p.takes or 0) > 0 and string.format("  ·  %d takes", p.takes) or ""), upto, "at '" .. p.label .. "'", nil, tostring(p.by), p.keep and GREEN or nil, p)
       ImGui.PopID(ctx)
     end
     ImGui.EndChild(ctx)
@@ -286,14 +299,19 @@ function R.section_kept()
     ImGui.PushID(ctx, "kept" .. i)
     local tr = k.room == room and mirror.find(proj, "track", k.track)
     ImGui.AlignTextToFramePadding(ctx)
-    ImGui.Text(ctx, string.format("%s  ·  %s", tostring(k.name or "a track"), local_time(k.time or "")))
+    ImGui.Text(ctx, string.format("%s  ·  %s%s", tostring(k.name or "a track"), local_time(k.time or ""), k.back and "  ·  put back" or ""))
     next_to("Put mine back")
     ImGui.BeginDisabled(ctx, not tr)
     if ImGui.SmallButton(ctx, "Put mine back") then
       local local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1"
       if mirror.apply(proj, { obj = "env", oid = k.oid, track = k.track, name = k.name, state = k.state }, nil, local_mix) then
-        os.remove(k.path); kept_at = -math.huge
-        band.log("your automation on " .. tostring(k.name) .. " is back: it goes to the others as your change, if it's yours to change now")
+        -- (the file stays, marked: it goes once the automation has gone out as yours (lib/mirror.lua), or with Let it go. Deleted here, a second
+        -- refusal of the same automation kept nothing and it was lost. Round 1 review, 0.59.45)
+        local path = k.path
+        k.path, k.back = nil, true
+        pcall(band.write_json, path, k)
+        k.path, kept_at = path, -math.huge
+        band.log("your automation on " .. tostring(k.name) .. " is back: it goes to the others as your change, if it's yours to change now (the kept copy stays until it has)")
       else band.msg("Not now: bring this project to the front, and stop recording, then try again.") end
     end
     ImGui.EndDisabled(ctx)
@@ -424,7 +442,7 @@ function R.section_mixes()
   ImGui.SeparatorText(ctx, "The mix")
   if ImGui.SmallButton(ctx, "Render current mix") then action("Final mix") end
   ImGui.SetItemTooltip(ctx, "Opens REAPER's Render window set up for the studio: the whole project as your master has it, 24-bit WAV at the project's sample rate,\n" ..
-    "with a safety limiter, into the shared folder's mixes/ (and Google Drive if you use it). Check it and press Render; your own render settings are back after.\n" ..
+    "with a safety limiter, into the shared folder's mixes/ (and " .. require("drive").name(cfg) .. " if you use it). Check it and press Render; your own render settings are back after.\n" ..
     "Everyone's parts are in it, yours too. Only tracks that stay on this computer ('yours, not sent', StudioSync's helpers) are left out. Nothing is added to the project.")
   ImGui.SeparatorText(ctx, "Stems, for whoever mixes")
   if ImGui.SmallButton(ctx, "Export stems") then

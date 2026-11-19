@@ -1,5 +1,6 @@
 -- @description StudioSync: take control of the session (your deletes, moves and lane choices go to everyone)
--- The driver is the one person whose edits to the shared takes propagate (for whatever nobody has claimed).
+-- What driving means depends on the room's Who controls (lib/live.lua live.DRIVING): in Driver + claims the driver's edits to what nobody has
+-- claimed reach everyone; in the Anyone modes everyone edits, and the driver leads play and stop for whoever follows the driver.
 -- Before switching, everyone online must hold every take and have applied every change, so the handover
 -- starts from one agreed state; you can wait for that (up to 2 minutes) or switch anyway.
 -- Live sync must be running for your changes to go out.
@@ -20,6 +21,7 @@ local now = sync.driver(cfg, b.song, b.room, s)
 if now == cfg.user then return band.msg("You're already driving '" .. b.song .. "' (room " .. b.room .. ").") end
 local away = now and now ~= cfg.user
 for _, o in ipairs(sync.present(cfg, b.song, b.room)) do if o == now then away = false end end
+local takes = require("live").driving(sync.mode(cfg, b.song, b.room)).take -- (said by mode: it described Driver + claims in every mode. Round 1 review, 0.59.45)
 
 local function handover()
   -- every handover leaves a recall point, so the band can always go back to how it was before
@@ -40,7 +42,7 @@ local c = status.handover_check(cfg, b, proj)
 if #c.problems == 0 then
   if reaper.MB((now or "Nobody") .. " is driving '" .. b.song .. "' (room " .. b.room .. ")" ..
       (away and ", but isn't here.\n\nTake control so everyone can carry on? " or ".\n\nTake control? Tell them first: ") ..
-      "from now on your deletes, moves and lane choices reach everyone (except on tracks or regions someone owns)." ..
+      "from now on " .. takes .. "." ..
       (away and " They can take it back when they return." or ""), "StudioSync", 4) ~= 6 then return end
   return handover()
 end

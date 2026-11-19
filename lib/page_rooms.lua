@@ -245,6 +245,7 @@ function M.invites()
     if v.room ~= b.room and not dismissed[key] then
       ImGui.PushID(ctx, key)
       if ImGui.SmallButton(ctx, "Go") then dismissed[key] = true; go_room(v.room) end -- (buttons first: long words pushed them off a narrow panel)
+      ImGui.SetItemTooltip(ctx, "Go to the room they're asking you to.") -- (its own, not the panel's shared one: Round 1 review, 0.59.45)
       ImGui.SameLine(ctx)
       if ImGui.SmallButton(ctx, "Not now") then dismissed[key] = true end
       ImGui.SameLine(ctx)

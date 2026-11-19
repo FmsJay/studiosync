@@ -16,18 +16,24 @@ function pg.live_groups()
   if lg and reaper.time_precise() - lg_at < 1 then return lg end
   local list = {}
   for _, g in ipairs(band.bands()) do
-    if not groups.is_old(g.root) and not reaper.file_exists(g.root .. "/_band/closed.json") then list[#list + 1] = g end
+    -- (a closed.json counts only from the owner's computer, as groups.tick has it: anyone could write one. Asked only when there is one.
+    -- Round 1 review, 0.59.45)
+    local closed = reaper.file_exists(g.root .. "/_band/closed.json") and (not groups.closed_ok or groups.closed_ok(g.root))
+    if not groups.is_old(g.root) and not closed then list[#list + 1] = g end
   end
   lg, lg_at = list, reaper.time_precise()
   return list
 end
+
+-- A box's width at the text size (Settings > Look): a fixed 440 clipped its buttons at 130%. (Round 1 review, 0.59.45)
+local function box_w(w) return math.floor(w * math.max(0.8, math.min(1.6, tonumber(reaper.GetExtState(band.SECTION, "text size")) or 1))) end
 
 -- The name, a few words on what it is, and Start. Then on to its Projects page.
 function pg.start_button(env, label)
   local ctx, ImGui = env.ctx, env.ImGui
   if ImGui.Button(ctx, label) then new_name, why_not = "", nil; ImGui.OpenPopup(ctx, "Start a studio") end
   ImGui.SetItemTooltip(ctx, "Its own shared folder, projects and collaborators. You only need another for different people or a project of its own.")
-  ImGui.SetNextWindowSize(ctx, 440, 0)
+  ImGui.SetNextWindowSize(ctx, box_w(440), 0)
   if ImGui.BeginPopupModal(ctx, "Start a studio", nil, ImGui.WindowFlags_NoResize) then
     ImGui.PushTextWrapPos(ctx, 0)
     ImGui.Text(ctx, WHAT_IS)
@@ -47,12 +53,15 @@ function pg.start_button(env, label)
         reaper.SetExtState(band.SECTION, "drive make", on and "" or "off", true)
         if on and reaper.GetExtState(band.SECTION, "drive_root") == "off" then reaper.SetExtState(band.SECTION, "drive_root", "", true) end
       end
-      ImGui.SetItemTooltip(ctx, "Makes the studio's folder in your cloud drive (Settings > Cloud copy picks Google Drive, Dropbox, OneDrive, iCloud Drive or Box).\n" ..
+      ImGui.SetItemTooltip(ctx, "Makes the studio's folder in your cloud drive (" .. require("live").PLACES.cloud .. " picks Google Drive, Dropbox, OneDrive, iCloud Drive or Box).\n" ..
         "What someone does alone then reaches the others whenever they next open the project. You share the folder with them there, able to edit.")
     end
     local go = ImGui.Button(ctx, "Start") or ImGui.IsKeyPressed(ctx, ImGui.Key_Enter) or ImGui.IsKeyPressed(ctx, ImGui.Key_KeypadEnter)
+    ImGui.SetItemTooltip(ctx, "Make the studio, then on to its projects.") -- (its own: the panel's shared tip was Live sync's. Round 1 review, 0.59.45)
     ImGui.SameLine(ctx)
     if ImGui.Button(ctx, "Cancel") or ImGui.IsKeyPressed(ctx, ImGui.Key_Escape) then ImGui.CloseCurrentPopup(ctx) end
+    local problem = go and band.name_problem and band.name_problem(new_name) -- (another alphabet said only "Give it a name": Round 1 review, 0.59.45)
+    if problem then go, why_not = false, problem end
     if go then
       local root, why = require("services").new_band(env.cfg(), new_name)
       if root then
@@ -82,7 +91,7 @@ function pg.join_button(env)
     ImGui.OpenPopup(ctx, "Paste join code")
   end
   ImGui.SetItemTooltip(ctx, "Someone invited you and you already have StudioSync: paste what they sent.")
-  ImGui.SetNextWindowSize(ctx, 440, 0)
+  ImGui.SetNextWindowSize(ctx, box_w(440), 0)
   if ImGui.BeginPopupModal(ctx, "Paste join code", nil, ImGui.WindowFlags_NoResize) then
     ImGui.PushTextWrapPos(ctx, 0)
     ImGui.Text(ctx, "Paste the message they sent you, or just the line starting studiosync-join. Only use one from someone you know: it connects this computer to theirs.")
@@ -120,8 +129,8 @@ function pg.join_button(env)
           ("joined " .. band.info(root).name .. ": ask whoever invited you to let you in. Its projects arrive after that."))
         local on_now = services.tailnet_now()
         if code.key and reaper.MB("This invitation also signs this computer in to their Tailscale network as a guest, for as long as they invited you, so Time-sync and Jam reach them.\n\n" ..
-            (on_now and ("This computer is on " .. on_now .. " now. Tailscale keeps you signed in to it, and moves you to theirs: Settings > Health shows a " ..
-              "Switch button in each studio when it's on another network, and Tailscale's own menu does the same.") or
+            (on_now and ("This computer is on " .. on_now .. " now. Tailscale keeps you signed in to it, and moves you to theirs: Tailscale's own menu switches " ..
+              "between them, and once you have a project open, " .. require("live").PLACES.health .. " shows a Switch button when you're on the other one.") or
               "If you use Tailscale for anything else, switch back from its menu afterwards.") .. "\n\nSign in?", "StudioSync", 4) == 6 then
           band.log(services.tailscale_join(code.key) and "signing in to their Tailscale network as a guest" or "Tailscale isn't installed here: Time-sync and Jam need it, the rest works without")
         end
@@ -148,7 +157,15 @@ local function invite_button(env, g, id)
   ImGui.BeginDisabled(ctx, not my_id)
   if ImGui.SmallButton(ctx, "Invite a collaborator##" .. id) then require("tools").invite(my_id, band.info(g.root), ctx, ImGui) end
   ImGui.EndDisabled(ctx)
-  ImGui.SetItemTooltip(ctx, my_id and require("tools").INVITE_TIP or "Waiting for Syncthing (it has to be running): Settings > Health > Set up everything I can starts it.")
+  ImGui.SetItemTooltip(ctx, my_id and require("tools").INVITE_TIP or "Waiting for Syncthing: it has to be running. Start Syncthing, beside this, starts it.")
+  if not my_id then -- (with no project open there's no Health page, and every message sent people there: Round 1 review, 0.59.45)
+    beside(ctx, ImGui, "Start Syncthing")
+    if ImGui.SmallButton(ctx, "Start Syncthing##" .. id) then
+      local ok, why = services.ensure_syncthing()
+      band.log(ok == "started" and "started Syncthing: it answers in a few seconds" or ok and "Syncthing is running: it answers in a few seconds" or ("Syncthing: " .. tostring(why)))
+    end
+    ImGui.SetItemTooltip(ctx, "Starts Syncthing on this computer: it carries the studio's folder between your computers.")
+  end
   if my_id then -- (how long they stay is picked there; with a Tailscale token they join that too. 0.58.82)
     beside(ctx, ImGui, "Guest")
     require("tools").guest_invite_button(ctx, ImGui, my_id, g.root, "Guest")
@@ -263,7 +280,7 @@ function pg.draw_groups(env)
   if #list > 0 then
     local fch, fv = ImGui.Checkbox(ctx, "Show folder names##showfolders", show_folders)
     if fch then reaper.SetExtState(band.SECTION, "show folder names", fv and "1" or "", true); show_folders = fv end
-    ImGui.SetItemTooltip(ctx, "Each studio's folder on this computer, and on Google Drive, under its name. Renaming a studio changes only the name\n" ..
+    ImGui.SetItemTooltip(ctx, "Each studio's folder on this computer, and in your cloud drive, under its name. Renaming a studio changes only the name\n" ..
       "StudioSync shows, for everyone: its folders keep the name they were made with, so nothing has to move.")
   end
   local base = (cfg.base or cfg).root
@@ -293,7 +310,7 @@ function pg.draw_groups(env)
         ImGui.PushTextWrapPos(ctx, 0)
         ImGui.TextColored(ctx, theme.YELLOW, "Waiting to be let in. Tell whoever invited you that you've joined: they press Let them in, at the top of their panel. Its projects arrive by themselves after that.")
         local on, n = require("services").syncthing_peers_now() -- (said where it stands: a joiner couldn't tell waiting on them from not reaching them)
-        ImGui.TextDisabled(ctx, on == nil and "Syncthing isn't answering here: it has to be running (Settings > Health)."
+        ImGui.TextDisabled(ctx, on == nil and "Syncthing isn't answering here: it has to be running. Start Syncthing, below, starts it."
           or on > 0 and "Connected to their computer: now it's their turn." or (n or 0) > 0 and "Not connected to their computer yet: it has to be on, with Syncthing running. This can take a minute."
           or "Syncthing doesn't know their computer yet: paste the join code again, or run their invitation again.")
         ImGui.PopTextWrapPos(ctx)
@@ -318,7 +335,7 @@ function pg.draw_groups(env)
             if new then band.log("renamed " .. g.name .. " to " .. new .. ": everyone in it sees the new name") else band.msg(tostring(why)) end
           end
         end
-        ImGui.SetItemTooltip(ctx, "Everyone in it sees the new name. Its folder names, here and on Google Drive, stay as they are.")
+        ImGui.SetItemTooltip(ctx, "Everyone in it sees the new name. Its folder names, here and in the cloud drive, stay as they are.")
       end
       beside(ctx, ImGui, role == "owner" and "Close" or "Leave", 18)
       if role == "owner" then ImGui.PushStyleColor(ctx, ImGui.Col_Text, theme.RED) end
@@ -566,13 +583,15 @@ function pg.draw_projects(env)
       ImGui.EndDragDropTarget(ctx)
     end
   end
+  if #rows > 0 then ImGui.TextDisabled(ctx, "Double-click a project to open it.") end -- (said only in a tooltip: Round 1 review, 0.59.45)
   local function row(r, id)
     ImGui.PushID(ctx, r.song) -- (by name, not by place: a menu open on one project mustn't become another's)
     local avail = math.min(ImGui.GetContentRegionAvail(ctx), 900) -- (the time was 1800 px from its name on a wide docker)
     local here = ss.is_here(cfg, r.song)
     local x, y = ImGui.GetCursorScreenPos(ctx)
     local clicked = ImGui.Selectable(ctx, "##p", false, ImGui.SelectableFlags_AllowDoubleClick, avail, ImGui.GetTextLineHeightWithSpacing(ctx))
-    if clicked and ImGui.IsMouseDoubleClicked(ctx, 0) then open_project(env, root, r.song, r.rooms[1]) end
+    -- (and Enter or Space on a row picked from the keyboard: a press with no mouse click is the keyboard's. Round 1 review, 0.59.45)
+    if clicked and (ImGui.IsMouseDoubleClicked(ctx, 0) or not ImGui.IsMouseReleased(ctx, 0)) then open_project(env, root, r.song, r.rooms[1]) end
     local others = {}
     for _, m in ipairs(r.members) do if m ~= r.host then others[#others + 1] = m end end
     if ImGui.IsItemHovered(ctx) then -- (whoever holds a copy counts too, though they've never published: Mac, 0.52.5)

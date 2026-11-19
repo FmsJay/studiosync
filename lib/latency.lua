@@ -85,11 +85,13 @@ function L.tick(proj, cfg, b, peers)
     if not late then return band.log("couldn't time " .. c.name .. " for Their time (no bursts came back): trying again in two minutes") end
     local ms = math.floor(late * 1000 + 0.5)
     local had = L.of(proj, c.name)
-    reaper.SetProjExtState(proj, band.SECTION, "lat " .. c.name, tostring(ms))
+    -- (written only when it changed: a ProjExtState write counts as a project change, which forced a full look and a 2 s receive pause after
+    -- every timing while playing in Real time. Round 1 review, 0.59.45)
+    if had ~= ms then reaper.SetProjExtState(proj, band.SECTION, "lat " .. c.name, tostring(ms)) end
     local d = L.delay(proj)
     if d and their_time(proj) then
       require("hear").set_delay(proj, d)
-      reaper.SetProjExtState(proj, band.SECTION, "their ms", tostring(d))
+      if select(2, reaper.GetProjExtState(proj, band.SECTION, "their ms")) ~= tostring(d) then reaper.SetProjExtState(proj, band.SECTION, "their ms", tostring(d)) end
     end
     if not had or math.abs(had - ms) > 15 then
       band.log(string.format("%s arrives %d ms late here", c.name, ms) .. (their_time(proj) and string.format(": Their time holds your backing back %d ms", d or ms) or ""))

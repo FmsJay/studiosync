@@ -1,6 +1,6 @@
 -- @description StudioSync: sync status window (who's online, and who has which takes, both ways)
--- Every Live sync writes a receipt of the takes (and revisions) its project holds; this window compares
--- them with the room's takes. Green = in sync, yellow = catching up, grey = offline. Esc closes.
+-- Every Live sync writes a receipt of how many of the room's changes it still has to take in; this window shows them. Green = in sync,
+-- yellow = catching up, grey = offline. Esc closes. (Take counts went with the old take sync, which never filled them in: Round 1 review, 0.59.45)
 local dir = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]")
 package.path = dir .. "/lib/?.lua;" .. package.path
 local band = require("band")
@@ -32,17 +32,17 @@ local function draw()
   text(14, 12, string.format("%s  ·  room %s  ·  driver %s  ·  print %s", b.song, b.room, tostring(view.driver), view.print), white)
   gfx.setfont(1, "Arial", 15)
   local running = (view.my_age or math.huge) < 30
-  local me_state = not running and "offline" or (view.my_missing == 0 and "synced" or "syncing")
-  text(14, 40, string.format("You (%s): %d/%d takes here, %s.   Live sync %s.", cfg.user, view.total - view.my_missing,
-    view.total, view.my_missing == 0 and "nothing waiting" or (view.my_missing .. " still arriving"),
-    running and "running" or "NOT running (start StudioSync - Live sync)"), COLORS[me_state])
-  local cols = { 14, 170, 290, 400, 500, 620 }
+  local waiting = view.my_pending or 0
+  local me_state = not running and "offline" or (waiting == 0 and "synced" or "syncing")
+  text(14, 40, string.format("You (%s): %s.   Live sync %s.", cfg.user, waiting == 0 and "nothing waiting" or (waiting .. " change(s) still to take in"),
+    running and "running" or "NOT running (click the red Sync off button at the top of the panel)"), COLORS[me_state])
+  local cols = { 14, 170, 290, 420, 620 }
   local y = 72
   if view.newer then
     text(14, 62, string.format("StudioSync %s is in use here; you have %s. Run 'StudioSync - Update'.", view.newer, band.VERSION), COLORS["syncing"])
     y = 92
   end
-  for i, h in ipairs({ "Collaborator", "State", "Last seen", "Has", "Missing yours", "Version" }) do text(cols[i], y, h, dim) end
+  for i, h in ipairs({ "Collaborator", "State", "Last seen", "Still to take in", "Version" }) do text(cols[i], y, h, dim) end
   y = y + 24
   if #view.rows == 0 then text(14, y, "Nobody else has synced in this room yet.", dim) end
   for _, r in ipairs(view.rows) do
@@ -50,9 +50,9 @@ local function draw()
     text(cols[1], y, r.name, white)
     text(cols[2], y, r.state, c)
     text(cols[3], y, ago(r.age), c)
-    text(cols[4], y, r.has .. "/" .. view.total, c)
-    text(cols[5], y, r.mine == 0 and "none" or tostring(r.mine), r.mine == 0 and COLORS["synced"] or COLORS["syncing"])
-    text(cols[6], y, r.version, r.version == band.VERSION and dim or COLORS["syncing"])
+    local p = tonumber(r.pending) or 0
+    text(cols[4], y, p == 0 and "none" or tostring(p), p == 0 and COLORS["synced"] or COLORS["syncing"])
+    text(cols[5], y, r.version, r.version == band.VERSION and dim or COLORS["syncing"])
     y = y + 22
   end
   gfx.update()
@@ -67,7 +67,7 @@ local function loop()
   if reaper.time_precise() - last > 2 then
     last = reaper.time_precise()
     local ok, err = pcall(gather)
-    if not ok then view.rows, view.total, view.my_missing = {}, 0, 0; band.log("status: " .. tostring(err)) end
+    if not ok then view.rows, view.my_pending = {}, 0; band.log("status: " .. tostring(err)) end
   end
   if view.rows then draw() end
   reaper.defer(loop)

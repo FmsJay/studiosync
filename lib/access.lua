@@ -21,8 +21,11 @@ function access.set(root, device, songs, by)
   band.write_json(dir(root) .. "/" .. file_name(device), { device = device, songs = list, by = by, at = os.time() })
   access.forget()
 end
-function access.clear(root, device)
-  band.remove(dir(root) .. "/" .. file_name(device))
+-- (written as an explicit "every project", not removed: a guest's computer takes a list that vanished as unchanged, so a guest deleting theirs
+-- no longer saw everything. Round 1 review, 0.59.45)
+function access.clear(root, device, by)
+  reaper.RecursiveCreateDirectory(dir(root), 0)
+  band.write_json(dir(root) .. "/" .. file_name(device), { device = device, all = true, by = by or reaper.GetExtState(band.SECTION, "user"), at = os.time() })
   access.forget()
 end
 
@@ -81,7 +84,23 @@ function access.mine(root)
   end
   local set
   local me = require("services").my_device_id()
-  if me then
+  -- (no file at all: as it was. Only an explicit "every project" from someone in charge lifts a list. Round 1 review, 0.59.45)
+  local raw = me and band.read_json(dir(root) .. "/" .. file_name(me))
+  local lift = type(raw) == "table" and raw.all == true and raw.device == me
+  if lift and kept then
+    local okp, pins = pcall(require("trust").pins, root)
+    local vk = root .. "\0all\0" .. tostring(raw.at) .. "\0" .. tostring(raw.by)
+    if okp and pins and verdicts[vk] == nil then
+      local okt, ok = pcall(require("trust").from_manager_file, root, "_band/guest-access/" .. file_name(me))
+      if okt and ok ~= nil then verdicts[vk] = ok end
+      lift = okt and ok == true
+    elseif okp and pins then lift = verdicts[vk] end
+  end
+  if me and kept and not lift and type(raw) ~= "table" then
+    set = kept
+  elseif me and kept and not lift and raw.all == true then
+    set = kept -- (an "every project" not checked yet, or not from someone in charge: the list as it was)
+  elseif me then
     local got, checked = access.get(root, me)
     if got == nil then
       set = nil

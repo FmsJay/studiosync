@@ -1,7 +1,9 @@
 -- Sync and exit: leaving a session with everything out. Saves, waits for Live sync to have sent what's changed (prints too), has Syncthing look and
 -- waits until it's handed over, then says plainly who has it. Only then close the project or quit REAPER. A slice each frame, from the panel.
--- (Syncthing's own numbers count someone ignoring a project as having it: fine here, they don't need it. Someone who's offline gets it when they're back,
--- from whoever's on, or from Google Drive: so when nobody else is on, Drive gets a last copy.)
+-- (Syncthing's own numbers count someone ignoring a project as having it, so only someone whose fresh _band/holds list names the project counts as
+-- having it: a guest without it, or a computer that deleted its copy, read as "Everything's with Bob. Safe" and the cloud copy was skipped. Round 1
+-- review, 0.59.45. Someone who's offline gets it when they're back, from whoever's on, or from the cloud drive: so when nobody who has it is on, the
+-- cloud drive gets a last copy.)
 local band = require("band")
 local leave = {}
 
@@ -37,6 +39,78 @@ function leave.ask_syncthing(cfg)
   return out
 end
 
+-- Of the peers online, who has this project (their holds list, said again within copy.FRESH, names it). names: the peers' names; lists:
+-- localcopy.read_holds; age: band.age. -> names. Pure. (Round 1 review, 0.59.45)
+function leave.holders(names, lists, song, fresh, age)
+  local has = {}
+  for _, l in ipairs(lists or {}) do
+    if type(l.songs) == "table" and l.songs[song] and type(l.time) == "string" and age(l.time) < fresh then has[tostring(l.user):lower()] = true end
+  end
+  local out = {}
+  for _, n in ipairs(names) do if has[tostring(n):lower()] then out[#out + 1] = n end end
+  return out
+end
+
+-- The finished box's words. j: what happened (problem, unheld, kept_held, holders, drove, drive_left, need, stopped: the step Stop waiting
+-- left, sync_off, drive: the cloud drive's name, words). -> lines, and the shut-down line (nil: none). Pure. (Round 1 review, 0.59.45: after
+-- Keep holding it said "Everything's with Bob" and then "Not safe: leave this computer on", which never sends held work; after Stop waiting
+-- mid-send, "leave this computer on" though quitting REAPER stops the sending.)
+leave.NOT_SAFE = "Not safe to shut down yet: leave this computer on, or the others get the rest next time you're both online."
+function leave.finish(j)
+  local drive = j.drive or "the cloud drive"
+  if j.problem then return { j.problem }, j.shut end
+  if j.stopped == "send" then
+    if j.sync_off then
+      return { "Live sync isn't running in this tab, so what you changed since it stopped hasn't gone out." },
+        "Not safe to shut down yet: start sync (" .. require("live").PLACES.sync_off .. ") and let it send."
+    end
+    return { "Not everything has gone out yet: " .. tostring(j.words) .. "." }, "Keep this project open: your changes are still being sent."
+  end
+  if j.stopped then return { "Not everything has gone out yet: " .. tostring(j.words) .. "." }, leave.NOT_SAFE end
+  local lines, unsafe, only_here = { "Saved." }, false, false
+  if j.unheld then lines[#lines + 1] = "Hold my changes was on: what you held went out." end
+  local names = j.holders or {}
+  local all = j.kept_held and "Everything else" or "Everything"
+  if #names > 0 then lines[#lines + 1] = all .. " is with " .. table.concat(names, ", ") .. "."
+  elseif j.drove then
+    lines[#lines + 1] = j.drive_left and ("Nobody else who has this project is online. " .. drive .. " has some of it and the rest is still copying: it carries on while this computer's on.")
+      or ("Nobody else who has this project is online. " .. drive .. " has it, so they get it from there or from this computer.")
+    unsafe = j.drive_left == true
+  else
+    lines[#lines + 1] = "Nobody else who has this project is online, and this studio has no " .. (j.drive and (j.drive .. " copy") or "cloud copy") .. " here: it reaches them when this computer and theirs are on at the same time."
+    only_here = true
+  end
+  if (j.need or 0) > 0 then lines[#lines + 1] = string.format("There's %.1f MB on its way to you.", j.need / 1048576) end
+  local held = "What you're holding is saved in this project and goes out when you switch Hold my changes off."
+  if unsafe then
+    if j.kept_held then lines[#lines + 1] = held end
+    return lines, leave.NOT_SAFE
+  end
+  if only_here then
+    if j.kept_held then lines[#lines + 1] = held end
+    return lines, nil
+  end
+  return lines, j.kept_held and ("Safe to shut down. " .. held) or "Safe to shut down."
+end
+
+-- Auto-save after a lot came in (Live sync): only if the project had nothing unsaved of your own when the batch began, and nothing of yours
+-- went out during it (James, Round 1 review, 0.59.45: the save took "close without saving" away from your own unsaved work).
+-- st: { n, clean }, kept by the caller; n: changes applied this pass; dirty: the project had unsaved changes just before they were applied;
+-- stopped: nothing playing. The caller sets st.clean = false when something of yours goes out. -> true to save now. Pure.
+function leave.autosave(st, n, dirty, stopped)
+  if n > 0 then
+    if (st.n or 0) == 0 then st.clean = not dirty end
+    st.n = (st.n or 0) + n
+    return false
+  end
+  if (st.n or 0) >= 100 and stopped then
+    local save = st.clean == true
+    st.n, st.clean = 0, nil
+    return save
+  end
+  return false
+end
+
 -- Everything out? Pure. -> done, what's still going in words.
 function leave.settled(st)
   if not st then return false, "Waiting for Syncthing to answer" end
@@ -54,6 +128,14 @@ function leave.start(proj, cfg, b)
   -- Full review, 0.59.44)
   local held = select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) ~= ""
   leave.job = { proj = proj, cfg = cfg, b = b, step = held and "hold?" or "save", since = reaper.time_precise(), words = "Saving", open = true }
+end
+-- Live sync off in the send step: start it for that tab (as the sync pill does; by name, so it needn't come to the front), then back to sending.
+local function start_sync(j, dir)
+  reaper.DeleteExtState(band.SECTION, "stop " .. tostring(j.proj), false)
+  reaper.SetExtState(band.SECTION, "live start for", tostring(j.proj), false)
+  band.start_live(dir)
+  reaper.DeleteExtState(band.SECTION, "live start for", false)
+  j.sync_off, j.started_at, j.words = nil, reaper.time_precise(), "Starting Live sync"
 end
 
 local function save_tab(j)
@@ -85,11 +167,12 @@ function leave.tick()
     j.saved_at, j.step, j.words = now, "send", "Sending your changes to the studio"
   elseif j.step == "send" then
     local beat = tonumber(reaper.GetExtState(band.SECTION, "live " .. tostring(j.proj)))
+    -- (not the end: the box offers Start sync and waits. It said "Press Start" with no Start to press, behind a modal box. Round 1 review, 0.59.45)
     if not beat or now - beat > 10 then
-      j.problem = "Live sync isn't running in this tab, so what you changed since it stopped hasn't gone out. Press Start, or stay and sort it out."
-      j.step = "done"
+      if not j.started_at or now - j.started_at > 15 then j.sync_off, j.words = true, "Live sync isn't running in this tab" end
       return
     end
+    j.sync_off = nil
     local ok, box = sent(j, now)
     if ok then
       require("services").rescan(folder_id(j.cfg))
@@ -104,10 +187,18 @@ function leave.tick()
     j.words = words or j.words
     if done then j.step = "drive" end
   elseif j.step == "drive" then
-    local droot = require("drive").root(j.cfg)
-    if droot and #j.st.peers == 0 then
-      j.words = "Nobody else is online: copying to Google Drive"
-      local drive, sync = require("drive"), require("sync")
+    local drive = require("drive")
+    local droot = drive.root(j.cfg)
+    j.drive = j.drive or drive.name(j.cfg)
+    if not j.holders then
+      local names = {}
+      for _, p in ipairs(j.st.peers) do names[#names + 1] = p.name end
+      local ok, lists = pcall(require("localcopy").read_holds, j.cfg.root)
+      j.holders = leave.holders(names, ok and lists or {}, j.b.song, require("localcopy").FRESH or (3 * 86400), band.age)
+    end
+    if droot and #j.holders == 0 then
+      j.words = "Nobody else who has this project is online: copying to " .. j.drive
+      local sync = require("sync")
       local more = false
       for _, room in ipairs(band.subdirs(band.song_dir(j.cfg, j.b.song) .. "/rooms")) do
         local ok, _, m = pcall(drive.mirror, sync.room_dir(j.cfg, j.b.song, room), droot .. "/" .. j.b.song .. "/rooms/" .. room, 0.1, j.cfg.user)
@@ -120,73 +211,78 @@ function leave.tick()
     j.step = "done"
   elseif j.step == "done" then
     j.finished = true
-    local lines = {}
-    if j.problem then lines[#lines + 1] = j.problem
-    else
-      lines[#lines + 1] = "Saved."
-      if j.unheld then lines[#lines + 1] = "Hold my changes was on: what you held went out." end
-      if j.kept_held then lines[#lines + 1] = "What you're holding stays on this computer only: it goes out when you switch Hold my changes off."; j.unsafe = true end
-      local names = {}
-      for _, p in ipairs(j.st and j.st.peers or {}) do names[#names + 1] = p.name end
-      if #names > 0 then lines[#lines + 1] = "Everything's with " .. table.concat(names, ", ") .. "."
-      elseif j.drove then
-        lines[#lines + 1] = j.drive_left and "Nobody else is online. Google Drive has some of it and the rest is still copying: it carries on while this computer's on."
-          or "Nobody else is online. Google Drive has it, so they get it from there or from this computer."
-        if j.drive_left then j.unsafe = true end
-      else
-        lines[#lines + 1] = "Nobody else is online, and this studio has no Google Drive copy here: it reaches them when this computer and theirs are on at the same time."
-        j.only_here = true
-      end
-      if (j.st and j.st.need or 0) > 0 then lines[#lines + 1] = string.format("There's %.1f MB on its way to you.", j.st.need / 1048576) end
-    end
-    j.lines = lines
+    j.need = j.st and j.st.need or 0
+    j.lines, j.shut = leave.finish(j)
   end
 end
 
-function leave.draw(ctx, ImGui)
+-- Buttons in a row that wrap to the next line when the next one won't fit (the panel's next_to): at a larger text size the box's last
+-- buttons ran off its right edge. -> the label pressed, or nil.
+local function buttons(ctx, ImGui, labels)
+  local hit
+  local pad = select(1, ImGui.GetStyleVar(ctx, ImGui.StyleVar_FramePadding)) * 2 + 8
+  for i, l in ipairs(labels) do
+    if i > 1 then
+      ImGui.SameLine(ctx)
+      if ImGui.GetContentRegionAvail(ctx) < ImGui.CalcTextSize(ctx, l) + pad then ImGui.NewLine(ctx) end
+    end
+    if ImGui.Button(ctx, l) then hit = l end
+  end
+  return hit
+end
+
+function leave.draw(ctx, ImGui, dir)
   local j = leave.job
   if not j then return end
   leave.tick()
   j = leave.job
   if not j then return end
   if j.open then j.open = nil; ImGui.OpenPopup(ctx, "Sync and exit") end
-  ImGui.SetNextWindowSize(ctx, 440, 0)
+  -- (as wide as the text size makes the words, so the buttons fit: a fixed 440 clipped Cancel at 130%. Round 1 review, 0.59.45)
+  local scale = math.max(0.8, math.min(1.6, tonumber(reaper.GetExtState(band.SECTION, "text size")) or 1))
+  ImGui.SetNextWindowSize(ctx, math.floor(440 * scale), 0)
   ImGui.PushStyleVar(ctx, ImGui.StyleVar_WindowPadding, 16, 12)
   local shown = ImGui.BeginPopupModal(ctx, "Sync and exit", nil, ImGui.WindowFlags_NoResize)
   ImGui.PopStyleVar(ctx)
   if shown then
     ImGui.PushTextWrapPos(ctx, 0)
+    local esc = ImGui.IsKeyPressed(ctx, ImGui.Key_Escape) -- (Esc: Cancel, or Stay once it's done)
     if j.step == "hold?" then
       ImGui.Text(ctx, "Hold my changes is on: what you've changed since hasn't gone to the others.")
-      if ImGui.Button(ctx, "Send what I'm holding") then j.send_held, j.step = true, "save" end
-      ImGui.SameLine(ctx)
-      if ImGui.Button(ctx, "Keep holding") then j.kept_held, j.step = true, "save" end
-      ImGui.SameLine(ctx)
-      if ImGui.Button(ctx, "Cancel") then leave.job = nil; ImGui.CloseCurrentPopup(ctx) end
+      -- (the timer starts once answered: "If you go now..." and the cloud copy's 10 minutes ran while the question waited. Round 1 review, 0.59.45)
+      local hit = buttons(ctx, ImGui, { "Send what I'm holding", "Keep holding", "Cancel" })
+      if hit == "Send what I'm holding" then j.send_held, j.step, j.since = true, "save", reaper.time_precise()
+      elseif hit == "Keep holding" then j.kept_held, j.step, j.since = true, "save", reaper.time_precise()
+      elseif hit == "Cancel" or esc then leave.job = nil; ImGui.CloseCurrentPopup(ctx) end
     elseif not j.finished then
-      ImGui.Text(ctx, j.words .. "...")
-      ImGui.TextDisabled(ctx, string.format("%d s", math.floor(reaper.time_precise() - j.since)))
-      if reaper.time_precise() - j.since > 60 then
-        ImGui.TextDisabled(ctx, "If you go now, whoever's online gets the rest next time you're both on.")
+      if j.sync_off then
+        ImGui.TextColored(ctx, require("theme").YELLOW, "Live sync isn't running in this tab, so what you changed since it stopped hasn't gone out.")
+        ImGui.TextDisabled(ctx, "Not safe to shut down yet: Start sync sends it.")
+      else
+        ImGui.Text(ctx, j.words .. "...")
+        ImGui.TextDisabled(ctx, string.format("%d s", math.floor(reaper.time_precise() - j.since)))
+        if reaper.time_precise() - j.since > 60 then
+          ImGui.TextDisabled(ctx, j.step == "send" and "Your changes are still going out: keep this project open." or "If you go now, whoever's online gets the rest next time you're both on.")
+        end
       end
-      if ImGui.Button(ctx, "Stop waiting") then j.finished, j.unsafe, j.lines = true, true, { "Not everything has gone out yet: " .. tostring(j.words) .. "." } end
-      ImGui.SameLine(ctx)
-      if ImGui.Button(ctx, "Cancel") then leave.job = nil; ImGui.CloseCurrentPopup(ctx) end
+      local hit = buttons(ctx, ImGui, j.sync_off and dir and { "Start sync", "Stop waiting", "Cancel" } or { "Stop waiting", "Cancel" })
+      if hit == "Start sync" then start_sync(j, dir)
+      elseif hit == "Stop waiting" then
+        j.finished, j.stopped = true, j.step
+        j.lines, j.shut = leave.finish(j)
+      elseif hit == "Cancel" or esc then leave.job = nil; ImGui.CloseCurrentPopup(ctx) end
     else
       for _, l in ipairs(j.lines or {}) do ImGui.Text(ctx, l) end
       ImGui.Spacing(ctx)
-      -- (only when it's all out: it said "safe" after Stop waiting and with Drive still copying. Full review, 0.59.44)
-      if j.unsafe and not j.problem then ImGui.TextDisabled(ctx, "Not safe to shut down yet: leave this computer on, or the others get the rest next time you're both online.")
-      elseif not j.problem and not j.only_here then ImGui.TextDisabled(ctx, "Safe to close up or log off.") end
-      if ImGui.Button(ctx, "Close this project") then
+      if j.shut then ImGui.TextDisabled(ctx, j.shut) end
+      local hit = buttons(ctx, ImGui, { "Close this project", "Quit REAPER", "Stay" })
+      if hit == "Close this project" then
         leave.job = nil
         ImGui.CloseCurrentPopup(ctx)
         reaper.SelectProjectInstance(j.proj) -- (the project it was for, not whichever tab is in front now: the box doesn't stop tab changes)
         reaper.Main_SaveProject(j.proj, false) -- (a change can land while this box is up: REAPER would ask again)
         reaper.Main_OnCommand(40860, 0) -- Close current project tab
-      end
-      ImGui.SameLine(ctx)
-      if ImGui.Button(ctx, "Quit REAPER") then
+      elseif hit == "Quit REAPER" then
         leave.job = nil
         ImGui.CloseCurrentPopup(ctx)
         for i = 0, 512 do -- (every group project: anything else may be someone's to decide, and REAPER asks about those)
@@ -195,9 +291,7 @@ function leave.draw(ctx, ImGui)
           if f ~= "" and band.binding(p) then reaper.Main_SaveProject(p, false) end
         end
         reaper.Main_OnCommand(40004, 0) -- File: Quit REAPER
-      end
-      ImGui.SameLine(ctx)
-      if ImGui.Button(ctx, "Stay") then leave.job = nil; ImGui.CloseCurrentPopup(ctx) end
+      elseif hit == "Stay" or esc then leave.job = nil; ImGui.CloseCurrentPopup(ctx) end
     end
     ImGui.PopTextWrapPos(ctx)
     ImGui.EndPopup(ctx)

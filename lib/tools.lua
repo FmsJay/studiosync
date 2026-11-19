@@ -46,24 +46,60 @@ end
 -- ---- Live sync with REAPER: a block in Scripts/__startup.lua runs StudioSync - Autostart.lua -------------------
 local MARK_A, MARK_Z = "-- BandSync autostart", "-- /BandSync autostart"
 local function startup_path() return reaper.GetResourcePath() .. "/Scripts/__startup.lua" end
+-- (compared in one spelling: REAPER gives the panel its folder with backslashes on Windows and lib/fromfolder.lua writes forward slashes, so
+-- the panel missed it and wrote the block again without its fallback. Round 1 review, 0.59.45)
 function tools.autostart_on(dir)
   local text = band.read(startup_path()) or ""
-  return text:find(MARK_A, 1, true) ~= nil and (not dir or text:find(dir .. "/StudioSync - Autostart.lua", 1, true) ~= nil) -- (dir: and it's this copy)
+  return text:find(MARK_A, 1, true) ~= nil and (not dir or band.norm(text):lower():find(band.norm(dir):lower() .. "/studiosync - autostart.lua", 1, true) ~= nil) -- (dir: and it's this copy)
 end
--- `fallback`: a copy to start instead when `dir` isn't there any more (a studio's folder this computer ran from, left since: lib/fromfolder.lua)
+-- The block itself: each copy tried in turn, each in a pcall (a bare dofile of a copy that failed as it loaded stopped there, and with it
+-- whatever came after it in __startup.lua), what a failed one loaded taken back out, and the failure left for Autostart to log ("startup
+-- failed"). `dirs`: the copies' folders, in order. Pure. (Round 1 review, 0.59.45: the copy it runs from, this computer's last-good copy, then
+-- the one it ran from before. installer/studiosync_setup.lua writes the same.)
+function tools.startup_block(dirs)
+  local list = {}
+  for _, d in ipairs(dirs) do list[#list + 1] = "[[" .. d .. "/StudioSync - Autostart.lua]]" end
+  return MARK_A .. "\n" ..
+    "do local was, path, finders = {}, package.path, { table.unpack(package.searchers) }\n" ..
+    "  for k in pairs(package.loaded) do was[k] = true end\n" ..
+    "  for _, f in ipairs({ " .. table.concat(list, ", ") .. " }) do\n" ..
+    "    if reaper.file_exists(f) then\n" ..
+    "      local ok, err = pcall(dofile, f)\n" ..
+    "      if ok then break end\n" ..
+    "      reaper.SetExtState(\"BandSync\", \"startup failed\", f .. \": \" .. tostring(err):sub(1, 300), false)\n" ..
+    "      for k in pairs(package.loaded) do if not was[k] then package.loaded[k] = nil end end\n" ..
+    "      for i = #package.searchers, 1, -1 do package.searchers[i] = nil end\n" ..
+    "      for i, s in ipairs(finders) do package.searchers[i] = s end\n" ..
+    "      package.path = path\n" ..
+    "    end\n" ..
+    "  end\n" ..
+    "end\n" .. MARK_Z .. "\n"
+end
+-- `fallback`: a copy to start instead when `dir` isn't there any more (a studio's folder this computer ran from, left since: lib/fromfolder.lua).
+-- None given: the block's own fallback stays (the panel's toggle wrote the block again without it). The last-good copy always goes second.
 function tools.set_autostart(on, dir, fallback)
   local text = band.read(startup_path())
   if not text and reaper.file_exists(startup_path()) then return false, "couldn't read " .. startup_path() end -- (written with only ours, the rest was gone)
   text = text or ""
+  local good = band.last_good_dir()
   local a = text:find(MARK_A, 1, true)
   if a then
     local z = text:find(MARK_Z, a, true)
+    if not fallback then -- (a block's fallback is any copy after its first: a block with one copy has none)
+      local i = 0
+      for p in text:sub(a, z or #text):gmatch("%[%[([^%]]-)/StudioSync %- Autostart%.lua%]%]") do
+        local n = band.norm(p):lower()
+        i = i + 1
+        if i > 1 and not fallback and n ~= band.norm(dir or ""):lower() and n ~= good:lower() then fallback = p end
+      end
+    end
     text = text:sub(1, a - 1) .. (z and text:sub(z + #MARK_Z + 1) or "")
   end
   if on then
-    text = text .. (text ~= "" and not text:match("\n$") and "\n" or "") ..
-      MARK_A .. "\n" .. (fallback and ("for _, f in ipairs({ [[" .. dir .. "/StudioSync - Autostart.lua]], [[" .. fallback .. "/StudioSync - Autostart.lua]] }) do " ..
-        "if reaper.file_exists(f) then dofile(f) break end end") or ("dofile([[" .. dir .. "/StudioSync - Autostart.lua]])")) .. "\n" .. MARK_Z .. "\n"
+    local dirs = { dir }
+    if band.norm(dir):lower() ~= good:lower() then dirs[#dirs + 1] = good end
+    if fallback and band.norm(fallback):lower() ~= band.norm(dir):lower() and band.norm(fallback):lower() ~= good:lower() then dirs[#dirs + 1] = fallback end
+    text = text .. (text ~= "" and not text:match("\n$") and "\n" or "") .. tools.startup_block(dirs)
   end
   reaper.RecursiveCreateDirectory(reaper.GetResourcePath() .. "/Scripts", 0)
   return pcall(band.write_atomic, startup_path(), text) -- (write_atomic returns nothing: it raises when it can't)
@@ -380,7 +416,7 @@ function tools.join_requests(ctx, ImGui)
         out = out or require("removal").who_was(x.root, d.id)
         from = from or (out and x.name)
       end
-      ImGui.TextWrapped(ctx, out and string.format("%s was taken out of %s, and their computer is still asking. Leave it unless you've invited them back.", out, from)
+      ImGui.TextWrapped(ctx, out and string.format("%s was taken out of %s, and their computer is still asking. Ignore this unless you've invited them back.", out, from)
         or d.folder and string.format("%s's computer wants to join %s.", tostring(d.name), d.band)
         or string.format("%s's computer is asking to join a studio of yours. It says which once it's let in.", tostring(d.name)))
       ImGui.PopStyleColor(ctx)

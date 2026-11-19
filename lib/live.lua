@@ -13,6 +13,53 @@
 local band = require("band")
 local live = {}
 
+-- Where things are in the panel, for the messages that send people there: written once, so a move can't leave a dozen directions
+-- pointing at the old place. (Round 1 review, 0.59.45)
+live.PLACES = {
+  sync_off = "the red Sync off button at the top of the panel",
+  health = "Settings > Health",
+  setup_all = "Settings > Health > Set up everything I can",
+  cant_hear = "Settings > Health > Can't hear each other?",
+  calls = "Settings > Health > Can't hear each other? (Discord and other call apps)",
+  update = "Settings > Updates > Update StudioSync",
+  cloud = "Settings > Options > Cloud copy",
+  token_admin = "Settings > Studio > Tailscale", -- (the owner and admins; everyone else: token_member)
+  token_member = "Settings > Advanced",
+  volumes = "Each person's volume (Home)",
+  video_call = "a Video call button on Home",
+  console = "Settings > Console",
+  play_tab = "Settings > Advanced > Show the Play/Jam tab",
+}
+-- Who controls: the modes, and what driving means in each, said one way everywhere (the panel, Take control, Live sync's log, README).
+-- (Moved from the panel, whose main chunk is at Lua's 200 locals. The names on disk are older than these: sync.MODES.)
+live.MODE_INFO = {
+  { "open", "Anyone (claims hold)", "Anyone changes anything nobody else has claimed, the tempo map and markers too. What someone has claimed (a track,\n" ..
+    "a region, a stretch of time) only they change, the driver too. If two change one thing at once, whoever changed it more wins,\nand the other person gets a Use mine button to put theirs back." },
+  { "claims", "Driver + claims", "The driver changes anything, claimed or not. Everyone else changes what they've claimed. Other changes are put back." },
+  { "driver", "Driver only", "Only the driver changes what the studio has. Everyone else's changes are put back (record as usual)." },
+  { "everyone", "Anyone (claims ignored)", "Anyone changes anything, claimed or not: claims don't hold. If two change one thing at once, whoever changed it more wins,\n" ..
+    "and the other person gets a Use mine button to put theirs back." },
+  { "admins", "Admins only", "Only the studio's owner and admins change what the studio has, and anyone on what an admin gave them (right-click their name). Other changes are put back." },
+}
+-- What driving means, by mode: take = what taking control does; away = straight after "X is driving but isn't here"; lost = after "you're no
+-- longer driving". In the Anyone and Admins modes the driver only leads play and stop for whoever follows the driver: it was described everywhere as
+-- the old Driver + claims, with a yellow "only claimed tracks can change" that was false by default. (Round 1 review, 0.59.45)
+local LEADS = "play and stop follow you for whoever follows the driver"
+live.DRIVING = {
+  open = { take = LEADS .. " (everyone already changes what nobody has claimed)",
+    away = ": play and stop don't follow anyone until someone takes control. Everyone can still edit.", lost = "you still change what nobody has claimed" },
+  everyone = { take = LEADS .. " (everyone already changes anything)",
+    away = ": play and stop don't follow anyone until someone takes control. Everyone can still edit.", lost = "you still change anything" },
+  claims = { take = "your deletes, moves and lane choices reach everyone, except on what someone has claimed",
+    away = ", so only what's claimed (or made by whoever made it) can change. Take control to carry on (they can take it back when they return).",
+    lost = "what you haven't claimed or made is view-only" },
+  driver = { take = "only your changes reach everyone",
+    away = ", so nothing can change. Take control to carry on (they can take it back when they return).", lost = "your changes are put back now" },
+  admins = { take = LEADS .. " (what changes is still up to the owner and admins)",
+    away = ": play and stop don't follow anyone until someone takes control. The owner and admins can still edit.", lost = "what you may change stays as it was" },
+}
+function live.driving(mode) return live.DRIVING[mode] or live.DRIVING.open end
+
 live.FLAGS = { synced = 4, jam = 0 }
 live.FX = "ReaNINJAM"
 live.SONOBUS = "SonoBus"
@@ -573,8 +620,8 @@ function live.join_check(proj)
   if tries >= live.JOIN_TRIES then
     reaper.SetProjExtState(proj, band.SECTION, "sonobus online", "")
     reaper.SetProjExtState(proj, band.SECTION, "sonobus tries", "")
-    band.log("SonoBus couldn't join your studio's live audio. Press Configure SonoBus (Home), then Connect, and Connect to Group " ..
-      "(the name is filled in). If that fails too: Settings > Advanced > Can't hear each other?")
+    band.log("SonoBus couldn't join your studio's live audio. Press " .. live.PLACES.volumes .. ", then Connect, and Connect to Group " ..
+      "(the name is filled in). If that fails too: " .. live.PLACES.cant_hear)
     return "gave up"
   end
   reaper.SetProjExtState(proj, band.SECTION, "sonobus tries", tostring(tries + 1))

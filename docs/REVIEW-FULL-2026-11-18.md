@@ -220,3 +220,39 @@ Held back, as asked (each would change setup, add calls or traffic, or block the
 - Debug: a manager-only Syncthing folder for `_debug`; log lines tagged by studio.
 Not done yet, smaller: the accepted-but-stale part of suggestions; Delete my copy's local project folder check; moved-root path rewrite.
 
+## 0.59.45: review round 1 (nine reviewers on 0.59.44, all NOT SOLID; reports in the session scratchpad round1/*.md)
+
+James's decisions: Hold keeps the band's tempo/markers waiting while yours differ; every saved version stores the exact per-object state;
+auto-save after 100 incoming changes only when you had no unsaved changes; renaming onto someone else's claimed name is refused; a
+last-good local copy is the safety net (no Syncthing at login); "X is editing" keeps a copy; all guests are kept off the studio's
+StudioSync copy (and computers move back off it); a Debug pill in the top bar.
+
+Done (by area):
+- Engine: two-person merges and heal agree everywhere (fuzz: 0 differences in 4,000 runs); trim keeps every leaf; duplicate ids prefer the
+  recorded item; a re-created track brings its parts; Undo of a track delete with items; prints don't carry refused edits; Hold holds the
+  timeline; held-back items counted by Sync and exit (mirror.waiting); stale unsent flags swept; clocks before restores and deletions;
+  owner step on owner deletes/restores; multi-object undo; rename onto a claim refused; latency writes only on change.
+- Data: kept automation survives Put mine back; revert/heal skip unsent edits and say so; saved versions store the oid->event map;
+  Prepare's double source destroy removed; declined suggestions keep failures; refused copies only after success; Sync and exit counts a
+  peer only if it holds the song; Delete my copy keeps a project folder with local work; band.save_copy keeps the unsaved mark.
+- Security (no setup friction): closed.json only from the owner's computer; marks remembered after deletion; trusted settings fail
+  closed once an owner is named; role changes only from the owner's computer; left marks need the user's own device; guests of any kind
+  ignore _tools and others' holds/lists/invites/feedback; the band's own file paths are never copied back to the studio; dotfiles and
+  REAPER's folder refused for plug-in files; clipboard text not logged; pin_tailnet only for Tailscale-only studios, checked by content.
+- Install/update: last-good copy and a startup block that falls back; reloads restore every module and the code searcher, compile only
+  what's loaded, never while recording; Autostart keeps its update check after an error; the Windows startup block keeps its fallback;
+  the folder move goes back when no studio wants it and doesn't rerun every minute; no files.txt = not whole; files_complete backs off.
+- Performance: tabs behind skip passes while any project records; track-parts memo keyed on the track head (whole chunk when frozen),
+  two-generation memo; cue watch skips big files and relists only on a folder change; room summary measures only new media; print
+  checks cached; backlog drains at full speed; reload compiles less; drive letters not swept every 5 minutes; VERSION read from 512 bytes.
+- Cross-platform: case-only renames don't delete; plug-in files put back on Windows; Mac REAPER found under any bundle name; non-Latin
+  and reserved names refused with a word; Syncthing GUI 0.0.0.0 handled; Linux call apps, terminals, aarch64.
+- UX: Start Syncthing button for a new member with no project; Sync and exit wording, Start sync button, scaled box; driving explained
+  per mode; one table of place names; toast below the tabs; Debug pill; double-click hint and Enter to open; keyboard navigation flag;
+  tooltips no longer collide; Health doesn't warn about the studio's own folder choice; cloud service named as chosen.
+- Code health: take-sync send half gone; authority's claims passed explicitly; status fingerprint covers every field; end_of_session
+  retries a failed save; free_names counts only real globals; tests/run.py; tools/luals_check.py (LuaLS); test temp folders cleaned.
+Suite regressions found and fixed before release: suggestions (new-item suggest refused), mirror_freeze (frozen chunks), trim_history,
+restless_fx (print cache key), take_comps (paths record), groups (band.info cache key, empty modifiedBy for the owner's file).
+Mac now runs the full suites too (two Mac-only failures predate this round: routed_print's file name, lock_refuse; for round 2).
+

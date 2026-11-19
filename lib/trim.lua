@@ -58,13 +58,18 @@ function trim.plan(evs, points, cutoff)
       end
     end
   end
-  local rival = {} -- (the newest of them only: what a settle merges in. Every losing branch kept history growing for good. Review, 0.58.47)
+  -- (every change made apart from the newest that no other change builds on: what a settle merges in, mirror.settled. The newest rival
+  -- alone lost a three-way merge's third change after 60 days, and it couldn't be rebuilt anywhere. Changes something builds on still go,
+  -- so losing branches don't keep history growing. Round 1 review, 0.59.45)
+  local based = {}
+  for _, ev in ipairs(evs) do
+    if type(ev.base_ev) == "string" then for part in ev.base_ev:gmatch("[^()&]+") do based[part] = true end end
+  end
   for _, ev in ipairs(evs) do
     local k = key_of(ev)
     local w = k and newest[k]
-    if w and ev ~= w and ev.base_ev and w.base_ev and not ev.gone and not behind[ev.id] and (not rival[k] or later(ev, rival[k])) then rival[k] = ev end
+    if w and ev ~= w and ev.base_ev and w.base_ev and not ev.gone and not behind[ev.id] and not based[ev.id] then keep[ev.id] = true end
   end
-  for _, ev in pairs(rival) do keep[ev.id] = true end
   -- each kept one's base; a base that is a merge's id ("m(a&b)") is rebuilt from a and b and their bases, so those too. Only through merge
   -- ids: a plain base's own base isn't read (following every base_ev kept the whole history, since each change names the one before)
   local function need(id, depth)
@@ -77,6 +82,13 @@ function trim.plan(evs, points, cutoff)
   local roots = {}
   for id in pairs(keep) do roots[#roots + 1] = id end
   for _, id in ipairs(roots) do need(by_id[id] and by_id[id].base_ev, 0) end
+  -- (and every version a major saved version's own map names (p.known, recall.save): restoring it rebuilds exactly that. After the bases
+  -- above, so a plain one doesn't keep its own base too; a merge keeps its sides and their bases, through need. Round 1 review, 0.59.45)
+  for _, p in ipairs(points) do
+    if trim.major(p) and type(p.known) == "table" then
+      for _, id in pairs(p.known) do need(id, 0) end
+    end
+  end
   for _, p in ipairs(points) do
     if trim.major(p) and p.time then
       local at = {}
@@ -161,7 +173,13 @@ function trim.run(cfg, song, room, days)
     if type(ev) == "table" and type(ev.id) == "string" and ev.id .. ".json" == f then evs[#evs + 1] = ev end
   end
   local cutoff = os.date("!%Y-%m-%dT%H:%M:%SZ", os.time() - days * 86400)
-  local gone = trim.plan(evs, recall.list(cfg, song, room), cutoff)
+  -- (each major saved version with its map read from its file: the rows recall.list shares carry no map. Read only here, as trim is rare)
+  local points, rdir = {}, recall.dir(cfg, song, room)
+  for i, p in ipairs(recall.list(cfg, song, room)) do
+    local st = trim.major(p) and band.read_json(rdir .. "/" .. p.file)
+    points[i] = setmetatable({ known = type(st) == "table" and st.known or nil }, { __index = p })
+  end
+  local gone = trim.plan(evs, points, cutoff)
   if #gone == 0 then return 0 end
   local root = cfg.root:gsub("[/\\]+$", "")
   -- (a shared folder at the top of a drive has no folder above it: the archive went inside it then, to every computer. StudioSync's own

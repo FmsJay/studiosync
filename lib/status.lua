@@ -53,7 +53,7 @@ function status.gather(cfg, b, proj)
     end
     return missing
   end
-  local me = sync.holdings(proj)
+  local me = {} -- (the take-based sync's holdings are gone: Round 1 review, 0.59.45)
   -- the newest change anyone posted (event file names carry their UTC stamp), as an ISO time
   local newest_event = status.newest_event(band.listing(sync.room_dir(cfg, b.song, b.room) .. "/events", ".json"))
   view.newest_event = newest_event

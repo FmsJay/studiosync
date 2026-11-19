@@ -9,6 +9,7 @@ local band = require("band")
 band.note_start(dir) -- (was all of this copy here as it started? band.started_partial. Full review, 0.59.44)
 if require("fromfolder").handoff(debug.getinfo(1, "S").source) then return end -- (an old copy's button or key: the copy this computer runs from now. 0.59.24)
 local sync = require("sync")
+sync.autosave = sync.autosave or {} -- (lib/leave.lua leave.autosave: how much came in since the last auto-save, and whether it may save)
 local live = require("live")
 local together = require("together")
 local transport -- a pending start/stop (lib/together.lua)
@@ -87,7 +88,7 @@ local host = b.role == "host"
 band.try("songsync.want", require("songsync").want, cfg, b.song) -- (a song syncing in a tab here comes in full: per-song sync)
 band.try("band.stay_online", band.stay_online)
 local s0 = band.read_json(band.session_path(cfg, b.song)) or {}
-local baseline = sync.mark_baseline(proj)
+-- (no take baseline: the old take sync's send half is gone, and nothing read it. Round 1 review, 0.59.45)
 sync.audio_follow_tempo(proj) -- band audio follows tempo changes piece by piece (REAPER auto-stretch), never drifting
 
 -- Side by side (panel, Together): press play/stop/record as usual; every machine with it on follows, `lag`
@@ -167,15 +168,16 @@ local quiet = { n = ended_at_n, since = reaper.time_precise(), checked = 0 }
 local function end_of_session(why)
   local n = event_count()
   if n == ended_at_n or not reaper.ValidatePtr2(0, proj, "ReaProject*") then return end
-  ended_at_n = n
   -- (20 quiet minutes isn't the end of anything: it looked like one in the middle of a session, first in the list: laptop, 0.42.5)
   recall.save(proj, cfg, b.song, b.room, why:find("20 minutes", 1, true) and "20 quiet minutes" or "end of session", true)
+  ended_at_n = n -- (only once it's saved: marked first, a failed save was never tried again. Round 1 review, 0.59.45)
   band.log("saved an end-of-session version (" .. why .. "): it's kept for good (Restore > Saved versions)")
   local droot = require("drive").root(cfg) -- and the project itself, for anyone to open from Drive (lib/sessionfile.lua)
   if droot then
     local ok, out, err = pcall(require("sessionfile").export, proj, cfg, b, droot, sync.room_dir(cfg, b.song, b.room))
-    band.log(ok and out and ("end-of-session project saved to Google Drive: " .. out:match("[^/]+$")) or
-      ("couldn't save the end-of-session project to Drive: " .. tostring(ok and err or out)))
+    local dname = require("drive").label(require("drive").service_of(droot)) -- (not always Google Drive: Round 1 review, 0.59.45)
+    band.log(ok and out and ("end-of-session project saved to " .. dname .. ": " .. out:match("[^/]+$")) or
+      ("couldn't save the end-of-session project to " .. dname .. ": " .. tostring(ok and err or out)))
   end
   -- history older than 60 days that nothing needs (lib/trim.lua): the room's driver trims it, at most once a day,
   -- right after this kept version is saved
@@ -189,10 +191,12 @@ local function end_of_session(why)
   end
 end
 local reloaded -- this instance handed over to the updated code (which saves the end of session itself)
+-- The studio's debug mode (lib/debugmode.lua) collects this project, telling the person first; a failure is logged. (Round 1 review, 0.59.45)
+local function debug_collect(why) band.try("debugmode.collect", require("debugmode").collect, cfg, proj, b, why) end
 reaper.atexit(function()
   if click and reaper.GetToggleCommandStateEx(0, 40364) == 1 then reaper.Main_OnCommand(40364, 0) end -- (stopped mid count-in: the click left on. 0.58.92)
-  if not reloaded then pcall(end_of_session, "Live sync stopped") end
-  if not reloaded then pcall(require("debugmode").collect, cfg, proj, b, "end of session") end -- (the studio's debug mode: lib/debugmode.lua)
+  if not reloaded then band.try("end_of_session", end_of_session, "Live sync stopped") end -- (logged when it fails: Round 1 review, 0.59.45)
+  if not reloaded then debug_collect("end of session") end
   -- (this REAPER's lock for the song goes with it: restarted within 20 s, the new REAPER read it as another one syncing the song and waited
   -- two minutes, saying so. Chilio's Mac, 0.59.29)
   if not reloaded then
@@ -278,7 +282,7 @@ function P.syncthing()
       tune_left = 0
       band.log(#set > 0 and ("Syncthing's studio folder tuned for live use: " .. table.concat(set, ", ")) or "Syncthing is answering")
     elseif tune_left == 0 then
-      band.log("Syncthing: " .. tostring(err) .. " (Settings > Health shows whether the shared folder syncs)")
+      band.log("Syncthing: " .. tostring(err) .. " (" .. live.PLACES.health .. " shows whether the shared folder syncs)")
     end
   end
 end
@@ -289,10 +293,6 @@ function P.who(t)
   local driver = who.driver
   -- someone else drives and is here (their status receipt is fresh): then the room's mode decides what we may change
   sync.driver_name, sync.room_mode = driver, who.mode -- (put-back messages say who and why)
-  sync.someone_drives = false -- (from the same read as who's here, with its clock rule: 0.59.44)
-  if driver and driver ~= cfg.user then
-    for _, u in ipairs(sync.present(cfg, b.song, b.room, 30)) do if u == driver then sync.someone_drives = true end end
-  end
   -- Alone = full control: with no bandmate in the room, everything we change goes out, whoever drives or claimed it
   -- (what Solo edit was for, without a separate copy of the song). Once anyone is here, the band's rules are back.
   -- (gone for 90 s before you're alone, back at once: a dialog left open on their machine pauses its status for a
@@ -315,14 +315,14 @@ function P.who(t)
   sync.away_at = driver_away and (sync.away_at or reaper.time_precise()) or nil
   if driver_away and reaper.time_precise() - sync.away_at < 10 then driver_away = sync.driver_away end
   if driver_away ~= sync.driver_away then
-    if driver_away then band.log(tostring(driver) .. " is driving but isn't here: anyone can Take control (StudioSync panel) to carry on") end
+    if driver_away then band.log(tostring(driver) .. " is driving but isn't here" .. live.driving(who.mode).away .. " (Take control: StudioSync panel, Home)") end
     sync.driver_away = driver_away
     reaper.SetExtState(band.SECTION, "driver_away " .. tostring(proj), driver_away and tostring(driver) or "", false)
   end
   if last_driver and driver ~= last_driver then pcall(require("api").event, "driver", { from = last_driver, to = driver, song = b.song }) end -- (the API: lib/api.lua)
   if last_driver and driver ~= last_driver then -- handovers are announced, never silent
     band.log(driver == cfg.user and "you're driving now" or (tostring(driver) .. " is driving now" ..
-      (last_driver == cfg.user and ": you're no longer driving (what you don't own is view-only)" or "")))
+      (last_driver == cfg.user and (": you're no longer driving (" .. live.driving(who.mode).lost .. ")") or ""))) -- (by mode: Round 1 review, 0.59.45)
   end
   last_driver = driver
   -- Hold sync: keep working without sending anything; releasing it sends the net result once
@@ -376,16 +376,32 @@ function P.look(t)
       local held = function(oid) return presence.holder(presence.peers(cfg, b.song, b.room), oid) end -- (edit holds)
       local here = {} -- (bandmates in the song now: one of them may print what its author can't, lib/prints.lua)
       for _, st in ipairs(presence.peers(cfg, b.song, b.room)) do here[st.user] = true end
-      local ok, sent = pcall(require("mirror").watch, proj, cfg, b.song, b.room, { can = my_can, owner_can = can, mode = who.mode, local_mix = sync.local_mix,
+      local ok, sent = pcall(require("mirror").watch, proj, cfg, b.song, b.room, { can = my_can, owner_can = can, mode = who.mode, local_mix = sync.local_mix, is_claimed = who.is_claimed, owner_of = who.owner_of,
         held = held, hold = hold, here = here, printers = who.printers })
       if not ok then band.log("mirror sync: " .. tostring(sent))
       elseif sent > 0 then band.log(sent .. " change(s) went to " .. (b.room == "main" and "the others" or ("the room '" .. b.room .. "'"))); pcall(require("api").event, "sent", { n = sent, song = b.song, room = b.room }) end
       mirror_took = reaper.time_precise() - now
+      -- (the look's own writes aren't you editing: counted as such, receive waited 2 s after each look. Only when editing() had already seen the count
+      -- the look started from, so an edit made meanwhile still counts. Round 1 review, 0.59.45)
+      if cc == change_count then change_count = reaper.GetProjectStateChangeCount(proj) end
       mirror_cc, mirror_at, mirror_due = reaper.GetProjectStateChangeCount(proj), now, false
-      if hold then -- (how many are waiting, for the panel's "Holding N changes")
-        local n, key = 0, tostring(proj)
-        for k in pairs(require("mirror").unsent) do if k:sub(1, #key) == key then n = n + 1 end end
-        reaper.SetExtState(band.SECTION, "held " .. key, tostring(n), false)
+      local n, key = 0, tostring(proj)
+      for k in pairs(require("mirror").unsent) do if k:sub(1, #key) == key then n = n + 1 end end
+      if hold then reaper.SetExtState(band.SECTION, "held " .. key, tostring(n), false) end -- (how many are waiting, for the panel's "Holding N changes")
+      if (ok and sent > 0) or n > 0 then sync.autosave.clean = false end -- (something of yours: no auto-save over it, P.receive)
+      -- Delete my copy leaves this project's folder alone while it holds work only this computer has (unsent changes, or your own tracks with
+      -- something on them): lib/localcopy.lua reads this. Written only when it changes. (Round 1 review, 0.59.45)
+      local own = n > 0
+      for i = 0, reaper.CountTracks(proj) - 1 do
+        if own then break end
+        local tr = reaper.GetTrack(proj, i)
+        local tag = select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local", "", false))
+        own = (tag == "kept" or tag == "yours") and reaper.CountTrackMediaItems(tr) > 0
+      end
+      if own ~= sync.local_work then
+        sync.local_work = own
+        local lw = band.local_work_key and band.local_work_key(cfg.root, b.song) or ("local work " .. band.norm(cfg.root):lower() .. "/" .. b.song)
+        reaper.SetExtState(band.SECTION, lw, own and "1" or "", false)
       end
       lap("look")
     end
@@ -398,14 +414,15 @@ function P.outbox_inbox(t)
     if leaving ~= "" then
       reaper.DeleteExtState(band.SECTION, "end session " .. tostring(proj), false)
       band.try("end_of_session", end_of_session, leaving)
-      pcall(require("debugmode").collect, cfg, proj, b, "sync and exit") -- (the studio's debug mode: lib/debugmode.lua)
+      debug_collect("sync and exit")
       mirror_due = true
     end
     local mirror = require("mirror")
     local more = mirror.more and "changes" or require("bgrender").waiting() and "prints rendering" or require("prints").waiting() and "prints waiting" or nil
     -- (and what waits its turn: a big recording still copying into the studio's folder, plug-ins or automation settling, a copy that failed.
     -- Sync and exit said "safe to close up" over a take that was only on this computer. Not what Hold my changes keeps. Full review, 0.59.44)
-    if not more and not hold then
+    if not more and mirror.waiting then more = mirror.waiting(tostring(proj), hold) -- (one rule, held-back copies included: Round 1 review, 0.59.45)
+    elseif not more and not hold then
       local key = tostring(proj)
       for k in pairs(mirror.unsent) do if k:sub(1, #key) == key then more = "changes waiting their turn (a recording still copying, or plug-ins settling)"; break end end
       if not more and mirror.unsettled then more = "plug-ins or automation settling" end
@@ -446,10 +463,16 @@ function P.receive(t)
     -- (and not before the look has seen your last change: sync.seen_mine)
     -- (not before this tab's first look: with the mouse held on the first pass, the band's changes landed over edits not yet marked
     -- as ours. Review, 0.58.87)
-    if (mirror_at > -math.huge or not (s and s.sync == "mirror")) and sync.seen_mine(reaper.GetProjectStateChangeCount(proj), mirror_cc, now, mirror_at) and not editing() and not redo_pending() then n = sync.receive(proj, cfg, b.song, room, room_can) end
-    -- a lot came in and it's over: saved, so the next open starts from here and doesn't take it all in again with REAPER held up
-    sync.since_save = (sync.since_save or 0) + n
-    if n == 0 and sync.since_save >= 100 and reaper.GetPlayStateEx(proj) == 0 then sync.need_save, sync.since_save = true, 0 end
+    local dirty = false
+    if (mirror_at > -math.huge or not (s and s.sync == "mirror")) and sync.seen_mine(reaper.GetProjectStateChangeCount(proj), mirror_cc, now, mirror_at) and not editing() and not redo_pending() then
+      dirty = reaper.IsProjectDirty(proj) ~= 0
+      n = sync.receive(proj, cfg, b.song, room, room_can)
+      -- (receive's own changes aren't you editing: counted so, a backlog waited 2 s after every quarter second of applying. Round 1 review, 0.59.45)
+      if n > 0 then change_count = reaper.GetProjectStateChangeCount(proj) end
+    end
+    -- a lot came in and it's over: saved, so the next open starts from here and doesn't take it all in again with REAPER held up; only when
+    -- nothing unsaved was yours before it came (James, Round 1 review, 0.59.45: lib/leave.lua leave.autosave)
+    if require("leave").autosave(sync.autosave, n, dirty, reaper.GetPlayStateEx(proj) == 0) then sync.need_save = true end
     if n > 0 then band.log(string.format("%d change%s from the others (%s)", n, n == 1 and "" or "s", room)); mirror_due = true; pcall(require("api").event, "received", { n = n, song = b.song, room = room }) end
   end
   lap("receive")
@@ -548,7 +571,7 @@ function P.save_drive(t)
     band.try("listen.tick", require("listen").tick)
     local n = event_count()
     if n ~= quiet.n then quiet.n, quiet.since = n, now
-    elseif now - quiet.since > 1200 then pcall(end_of_session, "20 minutes with no changes") end
+    elseif now - quiet.since > 1200 then band.try("end_of_session", end_of_session, "20 minutes with no changes") end
   end
   local droot = drive.root(cfg)
   -- every 3 minutes (each pass while a big copy is still going): store-and-forward needs no hurry, and Drive limits
@@ -560,16 +583,17 @@ function P.save_drive(t)
     for _, room in ipairs(rooms) do
       local ok, n, m = pcall(drive.mirror, sync.room_dir(cfg, b.song, room), droot .. "/" .. b.song .. "/rooms/" .. room, 0.1, cfg.user)
       if ok then moved, more = moved + n, more or m
-      elseif drive_said ~= tostring(n) then drive_said = tostring(n); band.log("Google Drive copy: " .. tostring(n)) end
+      elseif drive_said ~= tostring(n) then drive_said = tostring(n); band.log(drive.label(drive.service_of(droot)) .. " copy: " .. tostring(n)) end
     end
     if not more then -- then the other songs here, one a pass: each keeps a copy a bandmate can open from Drive
       local ok, n, m = pcall(drive.upkeep, cfg, droot, require("songsync").here(cfg), b.song, 0.1)
       if ok then moved, more = moved + n, more or m
-      elseif drive_said ~= tostring(n) then drive_said = tostring(n); band.log("Google Drive copy: " .. tostring(n)) end
+      elseif drive_said ~= tostring(n) then drive_said = tostring(n); band.log(drive.label(drive.service_of(droot)) .. " copy: " .. tostring(n)) end
     end
     band.try("sessionfile.catch_up", require("sessionfile").catch_up, b.song, 0.1) -- your recordings the end-of-session projects use
-    if more and not drive_more then band.log("Google Drive: bringing the studio's copy of this room up to date (carries on between passes)") end
-    if moved > 0 and not more then band.log(string.format("Google Drive copy up to date (%d file%s this pass)", moved, moved == 1 and "" or "s")) end
+    -- (the service's own name, not always Google Drive: Round 1 review, 0.59.45. The panel keeps "copy up to date (" out of its toasts)
+    if more and not drive_more then band.log(drive.label(drive.service_of(droot)) .. ": bringing the studio's copy of this room up to date (carries on between passes)") end
+    if moved > 0 and not more then band.log(string.format("%s copy up to date (%d file%s this pass)", drive.label(drive.service_of(droot)), moved, moved == 1 and "" or "s")) end
     drive_more = more
   end
   lap("save, drive")
@@ -618,7 +642,7 @@ function P.status(t)
     -- (the view and the cursor only while someone follows you, their one reader (presence.follow): each scroll or click rewrote this file and
     -- Syncthing sent it to everyone. Being followed puts them in at once, as the follower's own status shows it. 0.59.14, review)
     editing = require("presence").editing(proj), view = followed and require("presence").view(proj) or nil, ping = require("presence").my_ping(proj),
-    last_track = select(2, reaper.GetProjExtState(proj, band.SECTION, "last_track")), last_at = tonumber(reaper.GetExtState(band.SECTION, "last_at " .. tostring(proj))),
+    last_track = reaper.GetExtState(band.SECTION, "last_track " .. tostring(proj)), last_at = tonumber(reaper.GetExtState(band.SECTION, "last_at " .. tostring(proj))),
     follow = reaper.GetExtState(band.SECTION, "follow " .. tostring(proj)), follow_driver = reaper.GetExtState(band.SECTION, "follow driver") ~= "" or nil,
     listen = reaper.GetExtState(band.SECTION, "listen " .. tostring(proj)),
     produce = require("producer").who(proj), produce_via = require("producer").who(proj) and require("producer").via(proj) or nil, stamping = reaper.GetExtState(band.SECTION, "stamping " .. tostring(proj)) ~= "" or nil,
@@ -640,16 +664,16 @@ function P.status(t)
     end
   end
   if info.listen == "" then info.listen = nil end
-  local fingerprint = tostring(info.live) .. tostring(info.call) .. tostring(info.follow) .. tostring(info.follow_driver) .. tostring(info.listen) .. tostring(info.rt) .. tostring(info.rt_silent) .. tostring(info.cursor) .. band.json_encode(sync.holdings(proj)) .. tostring(driver) .. info.pending .. tostring(hold) .. band.json_encode(armed) ..
-    tostring(info.side) .. tostring(info.playing) .. tostring(info.recording) .. tostring(info.front) .. tostring(info.mirror) .. tostring(info.lets) .. tostring(info.produce_ctl) .. tostring(info.measure) ..
-    band.json_encode({ info.editing, info.view or false, info.ping or false }) .. info.last_track .. tostring(info.last_at)
+  -- (every field, keys sorted: a hand-made list missed the mix, who you produce and how, so followers got those 15 s late; and no holdings,
+  -- which only the old take sync filled. Round 1 review, 0.59.45)
+  local fingerprint = band.json_encode(info)
   if fingerprint ~= status_json or now - last_status > 15 then
     status_json, last_status, status_info = fingerprint, now, info
     sync.write_status(proj, cfg, b.song, b.room, info)
   end
 
   lap("status")
-  if s then band.check_version(s.bandsync, "'" .. b.song .. "'", true) end
+  if s then band.check_version(s.bandsync, "'" .. b.song .. "'") end
   reaper.TrackList_AdjustWindows(false)
   reaper.UpdateArrange()
   lap("redraw")
@@ -715,15 +739,50 @@ local function take_cue(ev)
   cue_at, transport = ev.at or cue_at, ev
 end
 
+-- The cue watch's work, kept small (Round 1 review, 0.59.45: a bandmate's burst of 300 files was read and decoded in one tick, 0.1-1.5 s, four
+-- times a second, also while recording):
+--  - the folder is listed again only when its modified time moved, or moved under 2 s ago (it's to the second: two changes in one second read
+--    the same), or a file was left unread last time. Without js_ReaScriptAPI, or when the folder can't be read that way, it's listed every time.
+--  - a file over 4 KB isn't a cue (they're 250-400 bytes): skipped unread, receive reads it.
+--  - at most CUE_READS files a tick; the rest next tick. What's read goes into receive's own cache (sync.ev_cache), so it isn't read twice.
+local CUE_READS, CUE_BYTES = 20, 4096
+local dir_m, dir_m_at, cue_left = nil, -math.huge, true
+local function folder_moved(dir)
+  if cue_left or not reaper.JS_File_Stat then return true end
+  local status, _, _, m = reaper.JS_File_Stat(dir)
+  if status ~= 0 or not m then return true end
+  local now = reaper.time_precise()
+  if m ~= dir_m then dir_m, dir_m_at = m, now end
+  return now - dir_m_at < 2
+end
+local function small_event(path) -- -> the event (nil if unreadable, or caught mid-write), and true when the file is too big to be a cue
+  local fh = io.open(path, "rb")
+  if not fh then return nil end
+  local n = fh:seek("end")
+  if not n or n > CUE_BYTES then fh:close(); return nil, n ~= nil end
+  fh:seek("set")
+  local s = fh:read("a")
+  fh:close()
+  local ev = band.json_decode(s or "")
+  return type(ev) == "table" and ev or nil
+end
 local function quick_transport()
   local dir = sync.room_dir(cfg, b.song, b.room) .. "/events"
-  local found = nil
+  if not folder_moved(dir) then return nil end
+  local found, reads = nil, 0
+  local cache = sync.ev_cache and (sync.ev_cache[dir] or {})
+  if cache then sync.ev_cache[dir] = cache end
+  cue_left = false
   -- (read now, as before, but shared: the poll's own looks at the folder within 0.2 s use this read. 0.59.14, review)
   for _, f in ipairs(band.raw_listing(dir, true)) do
     if not seen_ev[f] then
-      if f:sub(-5) ~= ".json" or sync.is_mine(f, cfg.user) then seen_ev[f] = true else
-        local ev = band.read_json(dir .. "/" .. f)
-        if ev then seen_ev[f] = true end -- (one caught mid-write is read again next time, not skipped: review, 0.58.92)
+      if f:sub(-5) ~= ".json" or sync.is_mine(f, cfg.user) then seen_ev[f] = true
+      elseif reads >= CUE_READS then cue_left = true; break
+      else
+        reads = reads + 1
+        local ev, big = small_event(dir .. "/" .. f)
+        if ev or big then seen_ev[f] = true else cue_left = true end -- (one caught mid-write is read again next time, not skipped: review, 0.58.92)
+        if ev and cache then cache[f] = ev end
         if ev and (ev.type == "start" or ev.type == "stop") and not fired[ev.id] and together.now() - (ev.at or 0) < 30 then found = ev end
       end
     end
@@ -778,7 +837,7 @@ local function tick_body() -- returns true to keep going
   end
   if reaper.GetExtState(band.SECTION, "live owner " .. key) ~= my_token then -- a newer Live sync took this tab over
     reloaded = true -- (it carries on the session: this one ending isn't the session's end, so no kept "end of session" from here)
-    return band.log("Live sync restarted for '" .. b.song .. "' (room " .. b.room .. "): nothing to do")
+    return band.log("a newer Live sync took over '" .. b.song .. "' (room " .. b.room .. "): this one stops") -- (plain words: Round 1 review, 0.59.45)
   end
   reaper.SetExtState(band.SECTION, "live " .. key, tostring(reaper.time_precise()), false)
   keep_lock() -- (this REAPER syncs this song: 0.59.18)
@@ -1010,8 +1069,11 @@ local function tick_body() -- returns true to keep going
   local live_set = reaper.GetPlayStateEx(proj) & 1 == 1 and reaper.GetExtState(band.SECTION, "live set") == "on"
   -- (while poll waits, a take, Live set playing or the undo wait, its 15 s status write waits too: after 45 s the others read you as gone and
   -- took full control. Review, 0.58.92-93)
-  if together.heartbeat_due(recording or undoing or live_set, status_info ~= nil, now, last_status) then last_status = now; pcall(sync.write_status, proj, cfg, b.song, b.room, status_info) end
-  if not recording and not undoing and not live_set and now - last > every and not (transport and due_in < 1.5) then
+  -- (and while the tab in front records: a big tab behind ran full looks, receives and cloud passes mid-take. REAPER records only in the tab in
+  -- front, so that's GetPlayState's. The 15 s status heartbeat carries on. Round 1 review, 0.59.45)
+  local rec_any = recording or reaper.GetPlayState() & 4 == 4
+  if together.heartbeat_due(rec_any or undoing or live_set, status_info ~= nil, now, last_status) then last_status = now; pcall(sync.write_status, proj, cfg, b.song, b.room, status_info) end
+  if not rec_any and not undoing and not live_set and now - last > every and not (transport and due_in < 1.5) then
     last = reaper.time_precise()
     local ok, err = pcall(poll)
     if not ok then band.log("sync error: " .. tostring(err)) end
@@ -1031,11 +1093,13 @@ local seen_disk, disk_at = nil, 0
 local function updated()
   if reaper.time_precise() - disk_at < 5 then return false end
   disk_at = reaper.time_precise()
-  local disk = (band.read(dir .. "/lib/band.lua") or ""):match('VERSION = "([^"]+)"')
+  local disk = (band.version_on_disk and band.version_on_disk(dir) or (band.read(dir .. "/lib/band.lua") or ""):match('VERSION = "([^"]+)"')) -- (its first bytes, not 85 KB: Round 1 review, 0.59.45)
   local ready = disk and disk ~= band.VERSION and disk == seen_disk and band.update_ok(dir, disk) -- (from a shared folder, once you said yes: Autostart asks)
   seen_disk = disk
   ready = ready or (disk and band.started_partial(dir)) -- (started on a part-arrived copy, whole now: 0.59.44)
-  return ready and reaper.GetExtState(band.SECTION, "reload failed StudioSync - Live sync.lua") ~= disk
+  -- (this tab's own mark as well as the shared one: one tab failing held every tab back. Round 1 review, 0.59.45)
+  local per_tab = band.reload_failed_key and band.reload_failed_key("StudioSync - Live sync.lua", key) or ("reload failed StudioSync - Live sync.lua " .. key)
+  return ready and reaper.GetExtState(band.SECTION, "reload failed StudioSync - Live sync.lua") ~= disk and reaper.GetExtState(band.SECTION, per_tab) ~= disk
 end
 -- an error anywhere in a tick (a malformed cue from someone's machine, say) is logged, and Live sync carries on
 local said_at, sws_at = -math.huge, -math.huge
@@ -1047,8 +1111,11 @@ tick = function()
     reloaded = true
     reaper.DeleteExtState(band.SECTION, "live " .. key, false)
     BANDSYNC_LIVE_PROJ, BANDSYNC_ENDED_AT = proj, ended_at_n
-    if band.reload_or_say(dir, "StudioSync - Live sync.lua", seen_disk) then return end
+    if band.reload_or_say(dir, "StudioSync - Live sync.lua", seen_disk, key) then return end
     reloaded, BANDSYNC_LIVE_PROJ, BANDSYNC_ENDED_AT = false, nil, nil -- (it couldn't start: this one carries on. 0.59.44)
+    -- (and owns its tab again: the failed start had taken the token, so on the next tick this one read "a newer Live sync took over" and stopped.
+    -- Round 1 review, 0.59.45)
+    reaper.SetExtState(band.SECTION, "live owner " .. key, my_token, false)
   end
   local t0 = reaper.time_precise()
   laps, lap_t = {}, t0
@@ -1077,6 +1144,5 @@ tick = function()
   if go then reaper.defer(tick) end
 end
 
-band.log(string.format("live sync for '%s' (%s, room %s, driver %s)%s", b.song, b.role, b.room,
-  tostring(sync.driver(cfg, b.song, b.room, s0)), baseline > 0 and (", " .. baseline .. " existing take(s) left as baseline") or ""))
+band.log(string.format("live sync for '%s' (%s, room %s, driver %s)", b.song, b.role, b.room, tostring(sync.driver(cfg, b.song, b.room, s0))))
 tick()

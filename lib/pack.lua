@@ -97,6 +97,13 @@ function pack.script(extras, test)
     "echo", "read -r -p 'Press Return to close this window. ' _ </dev/tty", "rm -f \"$0\"", "" }, "\n")
 end
 
+-- Linux's terminals, most likely first (ptyxis and kgx are Fedora's and GNOME's defaults now), and how each runs a script.
+pack.TERMINALS = { { "ptyxis", "ptyxis -- bash %s" }, { "kgx", "kgx -- bash %s" }, { "gnome-terminal", "gnome-terminal -- bash %s" }, { "konsole", "konsole -e bash %s" },
+  { "xfce4-terminal", "xfce4-terminal -x bash %s" }, { "x-terminal-emulator", "x-terminal-emulator -e bash %s" }, { "xterm", "xterm -e bash %s" } }
+-- The command that opens script `q` (quoted) in the first terminal `have(name)` says is here, or nil. Pure.
+function pack.terminal(have, q)
+  for _, t in ipairs(pack.TERMINALS) do if have(t[1]) then return string.format(t[2], q) end end
+end
 -- Opens it in a window of its own. -> true, or false and why.
 function pack.get(extras)
   local name, text = pack.script(extras)
@@ -112,10 +119,9 @@ function pack.get(extras)
   -- Linux: the first terminal there is
   local q = "'" .. path:gsub("'", "'\\''") .. "'"
   os.execute("chmod +x " .. q)
-  local run = "(command -v gnome-terminal >/dev/null && gnome-terminal -- bash " .. q .. ") || (command -v konsole >/dev/null && konsole -e bash " .. q ..
-    ") || (command -v xfce4-terminal >/dev/null && xfce4-terminal -x bash " .. q .. ") || (command -v x-terminal-emulator >/dev/null && x-terminal-emulator -e bash " .. q ..
-    ") || (command -v xterm >/dev/null && xterm -e bash " .. q .. ")"
-  if os.execute(run .. " >/dev/null 2>&1 &") then return true end
+  -- (picked first, then started: with the trailing "&" the old one-liner always said it worked, terminal or not. Round 1 review, 0.59.45)
+  local run = pack.terminal(function(name) return os.execute("command -v " .. name .. " >/dev/null 2>&1") == true end, q)
+  if run then os.execute(run .. " >/dev/null 2>&1 &"); return true end
   return false, "no terminal found: run " .. path .. " in one"
 end
 

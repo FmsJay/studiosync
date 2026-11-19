@@ -95,7 +95,7 @@ function rooms.open(from, cfg, b, name, copy_dir)
   if src_file == "" and not copy_dir then return nil, "Save this project first." end
   local path = (copy_dir or src_file:gsub("\\", "/"):match("^(.*)/")) .. "/" .. b.song .. " - " .. name:gsub("[^%w%-_ ]", "") .. " (room).rpp"
   local fresh = not reaper.file_exists(path)
-  if fresh then reaper.Main_SaveProjectEx(src, path, 0) end -- a copy; the open project keeps its own file
+  if fresh then band.save_copy(src, path) end -- a copy; the open project keeps its own file (and its unsaved mark: Round 1 review, 0.59.45)
   reaper.Main_OnCommand(40859, 0) -- File: New project tab
   require("startup").open_quietly(function() reaper.Main_openProject("noprompt:" .. path) end)
   p = reaper.EnumProjects(-1)
@@ -129,6 +129,7 @@ end
 -- Why a room name can't be used, or nil. Pure. (Windows can't make folders called CON, NUL, COM1... at all.)
 function rooms.bad_name(name)
   if not name:match("^[%w][%w %-_]*$") or #name > 30 then return "Room names: up to 30 letters, numbers, spaces, - or _." end
+  -- (band.reserved has the same test, for songs, members and studios: kept here too, as tests/test_rooms.lua loads this without band. Round 1 review, 0.59.45)
   local l = name:lower():gsub("%s+$", "")
   if l == "con" or l == "prn" or l == "aux" or l == "nul" or l:match("^com%d$") or l:match("^lpt%d$") then
     return "'" .. name .. "' is a name Windows keeps for itself: pick another."

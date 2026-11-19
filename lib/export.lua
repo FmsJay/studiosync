@@ -96,7 +96,7 @@ function ex.project(proj, name, parent, wav)
   local dest = string.format("%s/%s (%s)", parent, band.clean(name), stamp)
   reaper.RecursiveCreateDirectory(dest .. "/Media", 0)
   local tmp = projdir .. "/.bandsync-export-copy.rpp"
-  reaper.Main_SaveProjectEx(proj, tmp, 0) -- a copy beside it, so relative paths read the same; the open project and its file are untouched
+  local _ = band.save_copy and band.save_copy(proj, tmp) or reaper.Main_SaveProjectEx(proj, tmp, 0) -- a copy beside it, so relative paths read the same; the open project and its file are untouched
   local text = band.read(tmp)
   os.remove(tmp)
   if not text then return nil, "couldn't save a copy of the project" end

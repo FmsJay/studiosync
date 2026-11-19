@@ -173,11 +173,13 @@ function services.winget_syncthing(lad)
   end
   return best
 end
+-- (Windows' own Program Files, not always on C: (Round 1 review, 0.59.45))
+local function program_files() return ((os.getenv("ProgramFiles") or "C:/Program Files"):gsub("\\", "/")) end
 function services.syncthing_path()
   local set = reaper.GetExtState(band.SECTION, "syncthing_path")
   local lad = (os.getenv("LOCALAPPDATA") or ""):gsub("\\", "/")
   return first_existing({ set,
-    lad .. "/Microsoft/WinGet/Links/syncthing.exe", "C:/Program Files/Syncthing/syncthing.exe", lad .. "/Programs/Syncthing/syncthing.exe",
+    lad .. "/Microsoft/WinGet/Links/syncthing.exe", program_files() .. "/Syncthing/syncthing.exe", lad .. "/Programs/Syncthing/syncthing.exe",
     "/Applications/Syncthing.app/Contents/Resources/syncthing/syncthing", -- (the Mac app before a Homebrew copy: the installer's)
     "/opt/homebrew/bin/syncthing", "/usr/local/bin/syncthing", "/usr/bin/syncthing", "/snap/bin/syncthing",
     (os.getenv("HOME") or "~") .. "/.local/bin/syncthing" }) -- (Linux, where the installer puts the release build when the distro has none)
@@ -319,6 +321,8 @@ local function st_api(path, method)
   local gui = xml:match("<gui(.-)</gui>") or ""
   local key, addr = gui:match("<apikey>(.-)</apikey>"), gui:match("<address>(.-)</address>")
   if not key or not addr then return nil, "Syncthing config has no API key" end
+  -- (a GUI listening on every address: curl can't connect to 0.0.0.0 on Windows, and every call failed there. Round 1 review, 0.59.45)
+  addr = addr:gsub("^0%.0%.0%.0:", "127.0.0.1:"):gsub("^%[::%]:", "[::1]:")
   local tls = gui:match('^[^>]*tls="true"') ~= nil
   -- (the key goes in a curl config file in this user's own temp folder, not on the command line, where any program listing processes read
   -- it. Review, 0.58.92)
@@ -404,7 +408,8 @@ end
 function services.parse_modified_by(out)
   out = tostring(out or "")
   local g = out:match('"global"%s*:%s*(%b{})')
-  if g then return g:match('"modifiedBy"%s*:%s*"([%u%d]*)"') or nil end
+  -- (and whether that record is a deletion: lib/trust.lua deleted_by_manager. Round 1 review, 0.59.45)
+  if g then return g:match('"modifiedBy"%s*:%s*"([%u%d]*)"') or nil, g:find('"deleted"%s*:%s*true') ~= nil end
   -- (Syncthing's REST answer for a file or folder it doesn't hold: the same as an empty modifiedBy)
   local low = out:lower() -- (Syncthing 1.27 says "No such object in the index")
   if low:find("no such object", 1, true) or low:find("no such folder", 1, true) or low:find("does not exist", 1, true) then return "" end
@@ -479,7 +484,7 @@ end
 -- you then sees Let them in. -> its folder, or nil + why.
 function services.join_band(cfg, code)
   local st = services.syncthing_path()
-  if not st then return nil, "Syncthing wasn't found: Settings > Health > Set up everything I can installs and starts it" end
+  if not st then return nil, "Syncthing isn't installed here: run StudioSync's installer again (it installs Syncthing), then paste the code again" end
   if code.id == services.my_device_id() then return nil, "That's your own join code: send it to whoever you're inviting." end
   for _, x in ipairs(band.bands()) do
     if x.id == code.band and not require("groups").is_old(x.root) then band.use_band(x.root); return x.root, "already" end
@@ -493,7 +498,7 @@ function services.join_band(cfg, code)
   while band.subdirs(root)[1] and band.info(root).id ~= code.band do n = n + 1; root = parent .. "/StudioSync " .. name .. " " .. n end -- (strangers' studios can share a name)
   reaper.RecursiveCreateDirectory(root, 0)
   local probe = io.open(root .. "/.studiosync-probe", "w") -- (a home folder on a Mac put it in /Users, where nobody can write. Onboarding review, 0.59.9)
-  if not probe then return nil, "Couldn't make the studio's folder at " .. root .. ": pick a shared folder you can write to in Settings > You, and paste the code again." end
+  if not probe then return nil, "Couldn't make the studio's folder at " .. root .. ": run StudioSync's installer again to pick a folder you can write to, then paste the code again." end
   probe:close(); os.remove(root .. "/.studiosync-probe")
   band.set_ext_json(band.SECTION, "joining " .. root, { name = name, id = code.band }, true) -- (who this folder is, until its own _band/band.json arrives)
   band.pin_id(root, code.band) -- (and for good: band.info. Security review, 0.58.78)
@@ -572,6 +577,8 @@ end
 -- _band/band.json saying who it is, and its own Syncthing folder (shared with nobody yet: Invite a bandmate). This
 -- computer then works in it. Returns its folder, or nil + why.
 function services.new_band(cfg, name)
+  local problem = band.name_problem(name) -- (another alphabet, or a name Windows keeps: said, not "Give it a name". Round 1 review, 0.59.45)
+  if problem then return nil, problem end
   name = band.clean(name or "")
   if name == "" then return nil, "Give the studio a name." end
   local st = services.syncthing_path()
@@ -722,7 +729,7 @@ function services.join_asks(me)
 end
 
 local function tailscale_exe()
-  return first_existing({ "C:/Program Files/Tailscale/tailscale.exe", "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+  return first_existing({ program_files() .. "/Tailscale/tailscale.exe", "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
     "/usr/local/bin/tailscale", "/opt/homebrew/bin/tailscale", "/usr/bin/tailscale" })
 end
 function services.tailscale_installed() return tailscale_exe() ~= nil end
@@ -922,7 +929,7 @@ function services.set_tailscale_token(token, net)
 end
 -- -> the HTTP status, the headers, the body; or nil + why
 local function ts_call(token, method, path, body, headers)
-  if not token:match("^tskey%-api%-[%w%-]+$") then return nil, "no Tailscale access token: add one under Settings > Advanced" end
+  if not token:match("^tskey%-api%-[%w%-]+$") then return nil, "no Tailscale access token: add one under " .. require("live").PLACES.token_admin .. " (owner and admins) or " .. require("live").PLACES.token_member .. "" end
   local cfgf, bodyf = TMP .. "/bandsync-ts.cfg", TMP .. "/bandsync-ts-body.txt"
   local lines = { 'header = "Authorization: Bearer ' .. token .. '"' }
   for _, h in ipairs(headers or {}) do lines[#lines + 1] = 'header = "' .. h:gsub('"', '\\"') .. '"' end
@@ -950,7 +957,7 @@ local function ts_api(method, path, body, headers, net)
   net = net or select(2, services.tailnet_now())
   local token = services.tailscale_token(net)
   if token == "" then
-    return nil, net and ("no Tailscale access token for " .. net .. " (this computer's network, or the studio's): add one under Settings > Advanced")
+    return nil, net and ("no Tailscale access token for " .. net .. " (this computer's network, or the studio's): add one under " .. require("live").PLACES.token_admin .. " (owner and admins) or " .. require("live").PLACES.token_member .. "")
       or "Tailscale isn't on here, so StudioSync can't tell which network's token to use"
   end
   return ts_call(token, method, path, body, headers)
@@ -1030,7 +1037,7 @@ function services.copy_guest_invite(my_id, info, ctx, ImGui, root, ends)
   local net = services.studio_net(root)
   if services.tailscale_token(net) == "" then -- (it refused any invitation: one without Tailscale now, and said. Review, 0.58.95)
     band.log("no Tailscale access token for this studio's network" .. (net and (" (" .. net .. ")") or "") ..
-      ", so this invitation leaves Tailscale out: add that network's token under Settings > Advanced to put guests on it")
+      ", so this invitation leaves Tailscale out: add that network's token under " .. require("live").PLACES.token_admin .. " (owner and admins) or " .. require("live").PLACES.token_member .. " to put guests on it")
     require("tools").show_invite(services.invite_text(my_id, info), info, ctx, ImGui, { id = my_id })
     return true
   end
@@ -1058,7 +1065,7 @@ function services.copy_guest_invite(my_id, info, ctx, ImGui, root, ends)
   local token_suffix = services.token_tailnet(net)
   if want_suffix and token_suffix and want_suffix ~= token_suffix then
     band.msg("This computer has no Tailscale access token for this studio's network (" .. want_suffix .. "), only for " .. token_suffix .. ".\n\n" ..
-      "Make a token on the studio's network (login.tailscale.com, signed in to that account) and add it under Settings > Advanced, or invite without Tailscale.")
+      "Make a token on the studio's network (login.tailscale.com, signed in to that account) and add it under " .. require("live").PLACES.token_admin .. " (owner and admins) or " .. require("live").PLACES.token_member .. ", or invite without Tailscale.")
     return
   end
   local key, why = services.tailscale_guest_key(ends, net)
@@ -1173,7 +1180,7 @@ end
 local pinned, patched = {}, {} -- device -> its addresses as Syncthing has them; the change last asked for, and when (read in the background)
 function services.pin_tailnet(me)
   if not (services.syncthing_path() and services.is_device_id(me)) then return end
-  local studios = {}
+  local studios, unsure = {}, {}
   for _, g in ipairs(band.bands()) do
     if not g.waiting and not require("groups").is_old(g.root) then
       local t = require("groups").tailnet(g.root)
@@ -1182,16 +1189,23 @@ function services.pin_tailnet(me)
         local d = band.read_json(g.root .. "/_band/devices/" .. f)
         -- (only a file its own computer wrote: a guest rewriting everyone's names pointed every computer at wrong addresses, and the studio
         -- stopped syncing, the correction too. Asked once per file; one not answered yet is taken as before. Full review, 0.59.44)
-        local user = f:sub(1, -6)
-        local okd, said = pcall(require("trust").device_ok, g.root, user, type(d) == "table" and d.device) -- (by its file's name, which device_ok reads)
-        if type(d) == "table" and services.is_device_id(d.device) and not (okd and said == false) then s.devices[#s.devices + 1] = d end
+        -- (Round 1 review, 0.59.45: asked only in a studio that syncs only through Tailscale, the only one whose names are used (it was a blocking
+        -- call per file in every studio); the user is the one the file names, under its own file name ("Bob!.json" was judged by Bob.json's
+        -- writer); and a computer not answered for yet is left out of this pass altogether, so a wrong address can't go in meanwhile.)
+        if type(d) == "table" and services.is_device_id(d.device) then
+          if not s.only then s.devices[#s.devices + 1] = d
+          elseif type(d.user) == "string" and require("trust").user_file(d.user) == f then
+            local okd, said = pcall(require("trust").device_ok, g.root, d.user, d.device)
+            if okd and said == true then s.devices[#s.devices + 1] = d elseif not (okd and said == false) then unsure[d.device] = true end
+          end
+        end
       end
       studios[#studios + 1] = s
     end
   end
   for id, list in pairs(services.tailnet_addresses(studios, me)) do
     local want = table.concat(list, " ")
-    if pinned[id] ~= want then
+    if pinned[id] ~= want and not unsure[id] then
       local get = st_api("/rest/config/devices/" .. id)
       local have = get and band.json_decode(background("st-addr-" .. id:sub(1, 7), get, 20) or "")
       if type(have) == "table" and type(have.addresses) == "table" then
