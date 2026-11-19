@@ -12,6 +12,7 @@ function M.init(env)
 end
 
 local room_view, room_at, new_room, merge, dismissed = nil, -math.huge, "", nil, {}
+local forking = false -- (the name box makes a fork, not a side room: lib/forks.lua, James, rt)
 function M.live_running(p)
   local b, cfg, proj, view, wide = E.b(), E.cfg(), E.proj(), E.view(), E.wide()
   local beat = tonumber(reaper.GetExtState(band.SECTION, "live " .. tostring(p)))
@@ -44,29 +45,48 @@ end
 local function look_merge(parent)
   local b, cfg, proj, view, wide = E.b(), E.cfg(), E.proj(), E.view(), E.wide()
   local mirror = require("mirror")
-  local bring, clash = mirror.bring_plan(sync.room_dir(cfg, b.song, b.room), sync.room_dir(cfg, b.song, parent), b.room)
+  local pdir = sync.room_dir(cfg, b.song, parent)
+  local bring, clash = mirror.bring_plan(sync.room_dir(cfg, b.song, b.room), pdir, b.room)
   merge = { bring = bring, clash = clash, parent = parent, key = tostring(proj) .. "|" .. b.song .. "|" .. b.room } -- (only for this tab's room: review, 0.59.14)
+  -- (a fork compared with its original, track by track, and only the ticked changes brought: lib/forks.lua, James, rt)
+  local forks = require("forks")
+  local since = room_view and room_view.meta and room_view.meta.time
+  merge.theirs = since and forks.theirs(mirror.room_newest(pdir, since), b.room) or {}
+  merge.tracks = forks.by_track(bring, clash, merge.theirs)
+  merge.pick, merge.has = {}, {}
+  for _, ev in ipairs(bring) do merge.pick[ev.oid] = true end
+  for oid, ev in pairs(mirror.room_newest(pdir)) do if not ev.gone then merge.has[oid] = true end end
 end
 
 local function section_merge()
   local b, cfg, proj, view, wide = E.b(), E.cfg(), E.proj(), E.view(), E.wide()
   if merge.why then ImGui.TextColored(ctx, YELLOW, merge.why); return end
   local parent = merge.parent
+  if #merge.tracks > 0 and ImGui.TreeNodeEx(ctx, "compare", "Compared with '" .. parent .. "', track by track", ImGui.TreeNodeFlags_SpanAvailWidth) then
+    for _, r in ipairs(merge.tracks) do
+      ImGui.BulletText(ctx, string.format("%s: %d changed here, %d in '%s' since, %d in both", r.name, r.fork, r.theirs, parent, r.both))
+    end
+    ImGui.TreePop(ctx)
+  end
   if #merge.bring == 0 and #merge.clash == 0 then ImGui.TextDisabled(ctx, "No new changes here for '" .. parent .. "'. For anything older, or deleted there: select it and use Send selected."); return end
-  ImGui.Text(ctx, string.format("%d change(s) to bring into '%s'", #merge.bring, parent))
+  ImGui.Text(ctx, string.format("%d change(s) to bring into '%s' (untick what stays here)", #merge.bring, parent))
   local describe = require("recall").describe
-  for _, ev in ipairs(merge.bring) do ImGui.BulletText(ctx, describe({ kind = "obj", obj = ev.obj, name = ev.name, rev = ev.rev, gone = ev.gone, pos = ev.pos })) end
+  for i, ev in ipairs(merge.bring) do
+    local _, v = ImGui.Checkbox(ctx, describe({ kind = "obj", obj = ev.obj, name = ev.name, rev = ev.rev, gone = ev.gone, pos = ev.pos }) .. "##bring" .. i, merge.pick[ev.oid] == true)
+    merge.pick[ev.oid] = v or nil
+  end
   if #merge.clash > 0 then
     ImGui.TextColored(ctx, YELLOW, string.format("%d also changed in '%s' since this room was made: '%s' keeps its own", #merge.clash, parent, parent))
     for _, ev in ipairs(merge.clash) do ImGui.BulletText(ctx, describe({ kind = "obj", obj = ev.obj, name = ev.name, rev = 2, pos = ev.pos })) end
   end
   local driver = sync.driver(cfg, b.song, parent, view.session)
   local may = driver == cfg.user
-  ImGui.BeginDisabled(ctx, not may or #merge.bring == 0)
-  if ImGui.Button(ctx, "Bring into " .. parent) and reaper.MB("Bring these changes into '" .. parent .. "'?\n\n" ..
+  local picked = require("forks").pick(merge.bring, merge.pick, merge.has) -- (a ticked item brings its new track along)
+  ImGui.BeginDisabled(ctx, not may or #picked == 0)
+  if ImGui.Button(ctx, "Bring into " .. parent) and reaper.MB(string.format("Bring %d change(s) into '%s'?\n\n", #picked, parent) ..
       "They go to everyone there as new changes, so Restore there can undo them.", "StudioSync", 4) == 6 then
     -- (by that room's claims, as Send selected: it took James's claimed Drums into main: laptop, 0.42.9)
-    local list, refused = require("mirror").allowed_into(cfg, b.song, parent, merge.bring, view.session)
+    local list, refused = require("mirror").allowed_into(cfg, b.song, parent, picked, view.session)
     local ok, res = pcall(require("mirror").post_into, cfg, b.song, b.room, parent, list, rooms.tab(b.song, parent))
     band.log(ok and string.format("brought %d change(s) from '%s' into '%s'%s", res, b.room, parent, refused > 0 and string.format(" (%d not yours to change there, left out)", refused) or "")
       or ("bringing in failed: " .. tostring(res)))
@@ -90,10 +110,14 @@ end
 function M.squares()
   local b, cfg, proj, view, wide = E.b(), E.cfg(), E.proj(), E.view(), E.wide()
   M.refresh()
-  if ImGui.Button(ctx, "Create side room") then new_room = ""; ImGui.OpenPopup(ctx, "New side room") end
+  if ImGui.Button(ctx, "Create side room") then new_room, forking = "", false; ImGui.OpenPopup(ctx, "###newroom") end
   ImGui.SetItemTooltip(ctx, "A copy of this room as it is now, in its own tab. Collaborators can join it from here.")
+  ImGui.SameLine(ctx)
+  if ImGui.Button(ctx, "Fork song") then new_room, forking = "", true; ImGui.OpenPopup(ctx, "###newroom") end
+  ImGui.SetItemTooltip(ctx, "Another arrangement of the song as it is now, in its own tab, alone or with others. It shares the song's recordings (nothing " ..
+    "copied) and notes where it came from: compare it, bring back what you pick, or adopt it as the main version.\n\nFrom an older version: Restore, click it, Fork from here.")
   ImGui.PushStyleVar(ctx, ImGui.StyleVar_WindowPadding, 16, 14)
-  local naming = ImGui.BeginPopupModal(ctx, "New side room", nil, ImGui.WindowFlags_AlwaysAutoResize)
+  local naming = ImGui.BeginPopupModal(ctx, (forking and "Fork this song" or "New side room") .. "###newroom", nil, ImGui.WindowFlags_AlwaysAutoResize)
   ImGui.PopStyleVar(ctx)
   if naming then
     if ImGui.IsWindowAppearing(ctx) then ImGui.SetKeyboardFocusHere(ctx) end
@@ -105,9 +129,10 @@ function M.squares()
     ImGui.SameLine(ctx)
     if ImGui.Button(ctx, "Cancel") or ImGui.IsKeyPressed(ctx, ImGui.Key_Escape) then ImGui.CloseCurrentPopup(ctx) end
     if go then
-      local p, why = rooms.create(proj, cfg, b, new_room)
+      local p, why
+      if forking then p, why = require("forks").create(proj, cfg, b, new_room) else p, why = rooms.create(proj, cfg, b, new_room) end
       if not p then band.msg(why) else
-        band.log("made the side room '" .. new_room .. "' from '" .. b.room .. "' (you drive it)")
+        band.log("made the " .. (forking and "fork" or "side room") .. " '" .. new_room .. "' from '" .. b.room .. "' (you drive it)")
         new_room = ""
         if not M.live_running(p) then band.start_live(dir) end
         reaper.SetExtState(band.SECTION, "panel page", "Rooms", false)
@@ -152,7 +177,7 @@ function M.squares()
       if here then ImGui.TextColored(ctx, GREEN, r.name .. "  (this tab)") else ImGui.Text(ctx, r.name) end
       -- (short: a line for where it came from and a line for everyone in it, or three people ran off the foot of the square)
       local function beside(words) if ui.short then next_to(ImGui.CalcTextSize(ctx, words)) end end
-      local came = r.parent and ("side room of " .. r.parent) or "main room"
+      local came = r.fork and require("forks").origin_words(r) or r.parent and ("side room of " .. r.parent) or "main room"
       beside(came)
       ImGui.TextDisabled(ctx, came)
       local people = room_view.people[r.name] or {}
@@ -227,10 +252,25 @@ function M.actions()
   end
   ImGui.SetItemTooltip(ctx, "The easy way back: the selected items go to '" .. parent .. "' as they are here (new changes there, so Restore there can undo them).")
   next_to("Bring into " .. parent .. "...")
-  if ImGui.Button(ctx, merge and "Look again" or ("Bring into " .. parent .. "...")) then look_merge(parent) end
+  local into = (room_view.meta.fork and "Compare with " or "Bring into ") .. parent .. "..." -- (a fork's look is the comparison too: James, rt)
+  if ImGui.Button(ctx, merge and "Look again" or into) then look_merge(parent) end
   ImGui.SetItemTooltip(ctx, "Compares this room, '" .. parent .. "' and how this room started: everything changed here comes over, " ..
     "except what '" .. parent .. "' changed too since (it keeps its own; use Send selected for those). New recordings come too.")
   if merge then section_merge() end
+  if room_view.meta.fork then -- (lib/forks.lua, James, rt)
+    next_to("Adopt as " .. parent .. "...")
+    if ImGui.Button(ctx, "Adopt as " .. parent .. "...") and reaper.MB("Make '" .. parent .. "' exactly as this fork is, for everyone?\n\n'" .. parent ..
+        "' as it is now is kept first, as a fork of its own (Rooms), and the change goes to everyone there as new changes, so Restore there can go back.",
+        "StudioSync", 4) == 6 then
+      local kept, said = require("forks").adopt(proj, cfg, b, view.session)
+      if not kept then band.msg(said) else
+        band.log("adopted '" .. b.room .. "' as '" .. parent .. "' (the old one kept as the fork '" .. kept .. "'): " .. tostring(said))
+        room_at, merge = -math.huge, nil
+      end
+    end
+    ImGui.SetItemTooltip(ctx, "This fork becomes the main version: '" .. parent .. "' is kept as it is now as a fork, then made exactly as this one. " ..
+      "Needs '" .. parent .. "' open here (its square), driven by you.")
+  end
 end
 
 

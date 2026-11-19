@@ -1284,6 +1284,7 @@ local function section_notes(kind)
     end
     local oid = id and id:match("^item (.+)$")
     local ev = { type = kind, text = text, take = not oid and id or nil, item = oid, pos = pos, len = len, track = it and sync.base_name(select(2, reaper.GetTrackName(reaper.GetMediaItem_Track(it)))) or nil }
+    if kind == "note" then require("review").stamp(proj, ev, recall.list(cfg, b.song, b.room)) end -- (the version it's made on, and its region: James, rt)
     sync.post(cfg, b.song, b.room, ev)
     if it then sync.mark_item(it, pos, (kind == "like" and "+1 " or "") .. cfg.user .. (text and (": " .. text) or ""), len) end -- as everyone else gets it
     notes_at = 0
@@ -1300,6 +1301,8 @@ local function section_notes(kind)
   if reaper.time_precise() - notes_at > 4 then
     -- (only notes: it read every change there is on the first click, 4500 files on Sunset Drive, and froze REAPER: James, 0.42.28)
     notes_at, notes = reaper.time_precise(), recall.notes(cfg, b.song, b.room)
+    -- ("made on version N", and whether that spot changed since, from the changes already read: lib/review.lua, James, rt)
+    ui.note_marks = require("review").marks(notes, recall.list(cfg, b.song, b.room), recall.read_so_far(cfg, b.song, b.room))
     ui.resolved = {} -- (which notes someone has ticked off: <Song>/chat/resolved/<note id>.json. Asked for most in other tools: 0.58.47)
     for _, f in ipairs(band.files(band.song_dir(cfg, b.song) .. "/chat/resolved", ".json")) do ui.resolved[f:sub(1, -6)] = true end
   end
@@ -1330,7 +1333,8 @@ local function section_notes(kind)
       end
       ImGui.SetItemTooltip(ctx, "Put the edit cursor there.")
       ImGui.SameLine(ctx)
-      local words = string.format("%s  %s: %s%s", local_time(e.time):sub(7), e.user, describe(e), e.take and e.pos and (" (bar " .. bar_of(e.pos) .. ")") or "")
+      local words = string.format("%s  %s: %s%s%s%s", local_time(e.time):sub(7), e.user, describe(e), e.take and e.pos and (" (bar " .. bar_of(e.pos) .. ")") or "",
+        e.region and (" in " .. e.region) or "", ui.note_marks and ui.note_marks[e.id] and ("  (" .. ui.note_marks[e.id] .. ")") or "")
       if done then ImGui.TextDisabled(ctx, words) else ImGui.TextWrapped(ctx, words) end
       ImGui.PopID(ctx)
       ::next_note::
