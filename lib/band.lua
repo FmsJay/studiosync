@@ -237,7 +237,7 @@ function band.activity()
   return lines
 end
 
-function band.read(path)
+function band.read_raw(path)
   local f = io.open(path, "rb")
   if not f then
     -- (a power cut between finish's two renames on Windows left only the old copy, under a name Syncthing ignores: its deletion went to
@@ -249,6 +249,26 @@ function band.read(path)
   end
   local s = f:read("a"); f:close()
   return s
+end
+-- A studio file that came over the direct link ahead of Syncthing (lib/signed.lua: checked before it goes in), read in place of the folder's
+-- by this script while the folder's file is still what it was when the link's copy came: once that changes (Syncthing's copy, the record,
+-- or anyone's newer one), the folder's is read again, with its own checks. key -> { bytes (nil: deleted), side, was, dir, name }. (rt-linkfirst)
+band.overlay = {}
+local function okey(p) return (tostring(p):gsub("\\", "/"):lower()) end
+function band.read(path)
+  local s = band.read_raw(path)
+  if next(band.overlay) == nil then return s end
+  local k = okey(path)
+  local o = band.overlay[k]
+  if not o then return s end
+  if s ~= o.was then band.overlay[k] = nil; return s end
+  return o.bytes
+end
+-- The link's copy of `path` while it's still the one read (band.read), or nil.
+function band.overlay_of(path)
+  if next(band.overlay) == nil then return nil end
+  band.read(path)
+  return band.overlay[okey(path)]
 end
 
 -- Shared folder listings (band.listing): dir -> { at, raw, ["<ext>|<sorted>"] = filtered }. Emptied by every write and removal here, so
@@ -265,11 +285,51 @@ local function unlist(path)
 end
 -- Remove a file and a leftover of an interrupted rename beside it (band.read puts that back: a removal mark or a guest list deleted on purpose
 -- came back from it. Review, 0.58.92)
+-- (a studio's manager-only files are signed as they're written, and some go over the direct link at once: lib/signed.lua. rt-linkfirst)
+local function signed_hook(fn, path)
+  local p = tostring(path):gsub("\\", "/")
+  if p:find("/_band/", 1, true) or p:find("/rooms/", 1, true) then
+    local ok, s = pcall(require, "signed")
+    if ok and type(s) == "table" and s[fn] then pcall(s[fn], p) end
+  end
+end
 function band.remove(path)
   unlist(path)
   local dir, name = path:match("^(.*)/([^/]+)$")
   if dir then os.remove(dir .. "/.syncthing." .. name .. ".old.tmp") end
-  return os.remove(path)
+  local ok, e = os.remove(path)
+  if ok then signed_hook("on_remove", path) end
+  return ok, e
+end
+-- Put the link's copy of `path` in (bytes nil: deleted), or take it out (off).
+function band.set_overlay(path, bytes, side, off)
+  local k = okey(path)
+  if off then band.overlay[k] = nil
+  else
+    local dir, name = tostring(path):gsub("\\", "/"):match("^(.*)/([^/]+)$")
+    band.overlay[k] = { bytes = bytes, side = side, was = band.read_raw(path), dir = okey(dir or ""), name = name }
+  end
+  unlist(path)
+end
+-- A folder's names with the link's copies in it: new files added, deleted ones left out. `names` is shared, so a new table when that changes it.
+local function with_overlay(dir, names, ext)
+  if next(band.overlay) == nil then return names end
+  local d = okey(dir):gsub("/+$", "")
+  local add, drop = {}, {}
+  for _, o in pairs(band.overlay) do
+    if o.dir == d and (not ext or o.name:lower():sub(-#ext) == ext) and band.overlay_of(dir .. "/" .. o.name) then
+      if o.bytes == nil then drop[o.name:lower()] = true else add[o.name:lower()] = o.name end
+    end
+  end
+  if not next(add) and not next(drop) then return names end
+  local out = {}
+  for _, f in ipairs(names) do
+    if not drop[f:lower()] then out[#out + 1] = f end
+    add[f:lower()] = nil
+  end
+  for _, f in pairs(add) do out[#out + 1] = f end
+  table.sort(out)
+  return out
 end
 
 function band.size(path)
@@ -345,6 +405,7 @@ end
 function band.write_json(path, t)
   band.write_atomic(path, json.encode(t, true))
   if path:sub(-16) == "/_band/band.json" then band.forget_info() end -- (this script's own change shows at once: band.info's cache)
+  signed_hook("on_write", path)
 end
 function band.json_encode(t) return json.encode(t) end -- keys sorted: equal tables give equal strings
 function band.json_decode(s) local ok, v = pcall(json.decode, s); return ok and v or nil end
@@ -375,7 +436,7 @@ local function ours(names, ext)
   end
   return out
 end
-function band.files(dir, ext) return ours(enum(reaper.EnumerateFiles, dir), ext) end -- (filtered after sorting or before: the same list)
+function band.files(dir, ext) return with_overlay(dir, ours(enum(reaper.EnumerateFiles, dir), ext), ext) end -- (filtered after sorting or before: the same list)
 
 -- The same as band.files, but one listing a folder shares for LISTING_SECS among everyone in this script who asks (0.59.14, review: receive,
 -- pending_events twice, the event count and the cue watch each listed the events folder again). `sorted` false: in the folder's own order,
@@ -423,7 +484,7 @@ function band.listing(dir, ext, sorted)
     c[key] = ours(c.raw, ext)
     if sorted then table.sort(c[key]) end
   end
-  return c[key]
+  return with_overlay(dir, c[key], ext)
 end
 
 function band.subdirs(dir) return enum(reaper.EnumerateSubdirectories, dir) end

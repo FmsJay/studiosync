@@ -42,12 +42,16 @@ function removal.publish(root, user, id, ts, keep)
   n = okn and n or nil
   local hn = type(d) == "table" and d.device == id and type(d.nat) == "table" and d.nat or nil
   local same_nat = (n == nil and hn == nil) or (n ~= nil and hn ~= nil and hn.pub == n.pub and hn.tailnet == n.tailnet and hn.relay == n.relay)
-  if said_device(root, user) == id and not foreign and (not ts or had[ts[1]] == ts[2]) and same_nat then return end -- (what's there, checked or not: one naming another computer is written over)
+  -- (and this computer's signing key, lib/signed.lua: what the others learn its signatures by once they believe this file. rt-linkfirst)
+  local okk, key = pcall(function() return require("signed").key() end)
+  key = okk and key or (type(d) == "table" and d.device == id and d.key) or nil
+  local same_key = type(d) == "table" and d.key == key
+  if said_device(root, user) == id and not foreign and (not ts or had[ts[1]] == ts[2]) and same_nat and same_key then return end -- (what's there, checked or not: one naming another computer is written over)
   local names = {}
   for k, v in pairs(had) do if type(k) == "string" and type(v) == "string" and k == keep then names[k] = v end end
   if ts then names[ts[1]] = ts[2] end
   reaper.RecursiveCreateDirectory(devices(root), 0)
-  local out = { user = user, device = id, ts = next(names) and names or nil, nat = n }
+  local out = { user = user, device = id, ts = next(names) and names or nil, nat = n, key = key }
   -- (fields this version doesn't know, from this computer's own earlier file: another StudioSync version on the same computer, in another
   -- studio, may write the file too; nothing it adds is stripped. rt-nat3)
   if type(d) == "table" and d.device == id then for k, v in pairs(d) do if out[k] == nil and k ~= "ts" and k ~= "nat" then out[k] = v end end end

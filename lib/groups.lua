@@ -165,6 +165,8 @@ save = function(root, change, owner_said, quiet)
 end
 -- (`quiet`: as save's, for a change nobody clicked (lib/removal.lua's new alerts channel) -> false when it wasn't made. Round 4 review, 0.59.49)
 function groups.edit(root, change, quiet) return save(root, change, nil, quiet) ~= false end -- (lib/alerts.lua's channel)
+-- (band.json or roles.json that came over the direct link: read and checked again now, not in up to 5 s. lib/signed.lua, rt-linkfirst)
+function groups.forget_trusted(root) seen[root], trusted_at[root] = nil, nil end
 -- Private live audio (research of other tools, 0.58.53: SonoBus's audio isn't encrypted, and its public server introduces everyone). One
 -- member keeps SonoBus's own app open, which has a connection server built in (port 10999); everyone's SonoBus joins through that computer's
 -- Tailscale name, so the band finds each other by Tailscale addresses and the audio goes inside Tailscale's encryption. band.json

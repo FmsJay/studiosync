@@ -72,6 +72,7 @@ function people.assign(picked, known, later)
 end
 
 local cache = {} -- root -> { at, picked, members }
+function people.forget(root) cache[root] = nil end -- (a colour that came over the direct link: lib/signed.lua, rt-linkfirst)
 -- Everyone's colour in this band (+ `extra` names: people in a room, who drew). 0xRRGGBB each.
 function people.colours(root, extra)
   local c = cache[root]

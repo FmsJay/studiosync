@@ -1040,6 +1040,9 @@ local live_handlers = {
   presence = function(st) require("presence").from_msg(cfg, b.song, b.room, st, "presence") end,
   heartbeat = function(st) require("presence").from_msg(cfg, b.song, b.room, st, "heartbeat") end,
   claim = function(c) sync.live_claim(b.song, b.room, c) end,
+  -- (a signed studio file (grants, a room's mode, band settings, removal marks, guest lists, devices) or a profile or recap, ahead of
+  -- Syncthing's copy: checked, then read at once. lib/signed.lua, rt-linkfirst)
+  signed = function(d) require("signed").on_msg(cfg, d) end,
   -- (Claims mode: a bandmate asks for something you claimed, or answers your ask. lib/claimask.lua, rt-claims)
   claim_ask = function(d) require("claimask").on_ask(cfg, b, d) end,
   claim_answer = function(d) require("claimask").on_answer(cfg, b, d) end,
@@ -1161,6 +1164,7 @@ local function tick_body() -- returns true to keep going
   -- (the direct link: an event file that arrived brings a receive pass and a cue look now, not in up to 2 s; messages go where they belong)
   local dok, arrived = band.try("direct.live_tick", direct.live_tick, cfg, b.song, b.room, live_handlers)
   band.try("controllers.tick", require("controllers").tick, proj, cfg, b) -- (faders and knobs you move go out live: lib/controllers.lua. James, rt)
+  band.try("signed.drain", require("signed").drain, cfg, b.song, b.room) -- (signed studio files written here, to those here now: lib/signed.lua, rt-linkfirst)
   if dok and (arrived or 0) > 0 then
     if not direct_held then direct_first = reaper.time_precise() end
     cue_left, quick_at, last, direct_in_at, direct_held = true, -math.huge, -math.huge, reaper.time_precise(), true

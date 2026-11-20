@@ -123,7 +123,8 @@ function profile.all(root)
       local e = { name = type(p.name) == "string" and profile.clean_name(p.name) or nil }
       if p.pic == "jpg" or p.pic == "png" then
         local path = dir .. "/" .. id(p.user) .. "." .. p.pic
-        local key = path .. "|" .. tostring(p.time)
+        -- (and its size: a profile can come over the direct link before its picture does, lib/signed.lua. rt-linkfirst)
+        local key = path .. "|" .. tostring(p.time) .. "|" .. tostring(band.size(path))
         if pics[key] == nil then pics[key] = profile.pic_url(path) or false end
         e.pic = pics[key] or nil
       end

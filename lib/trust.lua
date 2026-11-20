@@ -27,21 +27,29 @@ function trust.roles_of(j)
 end
 function trust.same(p, owner, admins) return p.owner == owner and table.concat(p.admins, "\n") == table.concat(admins, "\n") end
 
--- May a change from the computer `by` (7 characters of its ID) stand, with these pins? Your own computer's changes do: its panel checked first.
--- Pure. pins = { owner, admins = { names }, devices = { name = { ids } } }.
+-- Is `by` the computer `id`? `by` is Syncthing's modifiedBy (7 characters: all Syncthing says) or, from a good signature (lib/signed.lua), a
+-- whole id, compared whole: a made-up id sharing a manager's first 7 characters is nobody's. Pure. (rt-linkfirst)
+local function is(id, by)
+  if type(id) ~= "string" or type(by) ~= "string" or by == "" then return false end
+  if #by > 7 then return id == by end
+  return id:sub(1, 7) == by
+end
+trust.is = is
+-- May a change from the computer `by` (7 characters of its ID, or the whole ID) stand, with these pins? Your own computer's changes do: its
+-- panel checked first. Pure. pins = { owner, admins = { names }, devices = { name = { ids } } }.
 function trust.from_manager(pins, by, mine)
   if type(by) ~= "string" or by == "" then return false end
-  if mine and by == mine:sub(1, 7) then return true end
+  if mine and is(mine, by) then return true end
   local managers = { [pins.owner or ""] = true }
   for _, a in ipairs(pins.admins) do managers[a] = true end
   for user, ids in pairs(pins.devices or {}) do
-    if managers[user] then for _, id in ipairs(ids) do if id:sub(1, 7) == by then return true end end end
+    if managers[user] then for _, id in ipairs(ids) do if is(id, by) then return true end end end
   end
   return false
 end
 -- Was this change from the computers pinned as `user`'s? Pure. (A claim names who gave it: lib/sync.lua)
 function trust.from_user(pins, by, user)
-  for _, id in ipairs(type(by) == "string" and by ~= "" and user and pins.devices[user] or {}) do if id:sub(1, 7) == by then return true end end
+  for _, id in ipairs(type(by) == "string" and by ~= "" and user and pins.devices[user] or {}) do if is(id, by) then return true end end
   return false
 end
 -- Is this change of the roles an admin renaming themselves, from their own computer (band.rename)? The owner the same, one admin's name swapped
@@ -60,7 +68,7 @@ function trust.self_rename(pins, owner, admins, by, names, new_device)
   if n_old ~= 1 or n_new ~= 1 or not trust.from_user(pins, by, old) then return false end
   if new_device ~= nil then
     local theirs = false
-    for _, id in ipairs(pins.devices[old] or {}) do theirs = theirs or id:sub(1, 7) == tostring(new_device):sub(1, 7) end
+    for _, id in ipairs(pins.devices[old] or {}) do theirs = theirs or id == new_device end -- (whole ids: both are a file's. rt-linkfirst)
     if not theirs then return false end
   end
   if not (type(names) == "table" and names[tag(old)] == new) then return false, "names" end
@@ -122,20 +130,31 @@ function trust.inviter(root)
 end
 
 local verdicts, said, asked, names_wait = {}, {}, {}, {}
--- Which computer changed it, from Syncthing. After no answer, not asked again for 30 s (the panel asks each frame); an answer is cached by the caller.
+-- Which computer changed it: the one whose key signed it as it reads now (lib/signed.lua: a good signature, a key this computer knows as that
+-- computer's, a number not older than one taken), as its whole ID; else Syncthing's modifiedBy, as before (an unsigned file, one an older
+-- StudioSync rewrote, a key not known yet). A copy that came over the direct link has no Syncthing answer: its signature or "not yet".
+-- After no answer from Syncthing, not asked again for 30 s (the panel asks each frame); an answer is cached by the caller.
 local function changed_by(root, rel)
+  local oks, dev, linked = pcall(function() return require("signed").computer(root, rel) end)
+  if oks and dev then return dev end
+  if oks and linked then return nil end
   local k = root .. rel
   if asked[k] and reaper.time_precise() - asked[k] < 30 then return nil end
   local by = require("services").modified_by(band.info(root).id, rel)
   asked[k] = not by and reaper.time_precise() or nil
   return by
 end
+-- A check said yes to a file a signature said who wrote: its sequence number is taken (an older copy is never a signature's word again). -> ok.
+local function took(root, rel, ok, by)
+  if ok == true and type(by) == "string" and #by > 7 then pcall(function() require("signed").taken(root, rel) end) end
+  return ok
+end
 
 -- A devices file says which computer is someone's, and anyone could write one naming any computer: it counts only when Syncthing says the
 -- computer it names wrote it (each computer writes its own: removal.publish). So nobody can have someone else's computer pinned as a person's,
 -- or cut off in that person's place. A computer can still claim any name for itself: identity is a chosen name. Security review, 0.58.78.
 -- Pure: `by` is Syncthing's modifiedBy; "" is a file it doesn't hold (believed, as everywhere here).
-function trust.wrote_itself(device, by) return by == "" or (type(device) == "string" and type(by) == "string" and by ~= "" and device:sub(1, 7) == by) end
+function trust.wrote_itself(device, by) return by == "" or is(device, by) end
 local devs, devs_said = {}, {}
 trust.user_file = user_file
 -- -> true, false, or nil (Syncthing didn't say: ask again later). Asked once per name, computer and the file's text (by the computer alone, a
@@ -152,8 +171,14 @@ function trust.device_ok(root, user, device)
   if c == nil or (c.ok == false and os.time() - c.at > 120) then
     local by = changed_by(root, rel)
     if not by then return c and c.ok end
-    c = { ok = trust.wrote_itself(device, by), at = os.time() }
+    c = { ok = took(root, rel, trust.wrote_itself(device, by), by), at = os.time() }
     devs[k] = c
+    -- (believed as always, Syncthing saying its own computer wrote it: the key it carries is that computer's from now on, lib/signed.lua. Never
+    -- from a signature: a key is only ever learnt this way. rt-linkfirst)
+    if c.ok and #by <= 7 then
+      local d = band.read_json(root .. "/" .. rel)
+      if type(d) == "table" and d.device == device and type(d.key) == "string" then pcall(function() require("signed").note_key(root, device, d.key) end) end
+    end
     if not c.ok and not devs_said[k] then
       devs_said[k] = true
       band.log(string.format("%s: %s names a computer (%s) that didn't write it, so it was set aside", band.info(root).name, rel, tostring(device):sub(1, 7)))
@@ -205,7 +230,7 @@ function trust.from_manager_file(root, rel, pins)
   if not by then return nil end
   if by == "" then return true, by end -- (Syncthing doesn't hold it: a studio synced another way is believed, as before 0.58.69)
   -- (this computer's own writing counts, but not while it's held: it wrote back roles it doesn't go by, groups save. 0.58.78)
-  return trust.from_manager(pins, by, not pins.held and services.my_device_id() or nil), by
+  return took(root, rel, trust.from_manager(pins, by, not pins.held and services.my_device_id() or nil), by), by
 end
 -- Is this an invited computer still waiting for its inviter's writing of the roles (trust.roles' first look)? Then it goes by the inviter alone.
 -- (an invited computer with no pins yet is held whatever band.json says: a member who took "owner" out of it had every new joiner take anyone's
@@ -266,7 +291,7 @@ function trust.roles(root, j)
     -- and an admin who wrote owner = themselves into band.json was believed everywhere. Allowed: an admin renaming themselves, which writes
     -- the roles too (band.rename). Round 1 review, 0.59.45)
     local mine = require("services").my_device_id()
-    if ok and by ~= "" and not (not pins.held and mine and by == mine:sub(1, 7)) and not trust.from_user(pins, by, pins.owner) then
+    if ok and by ~= "" and not (not pins.held and mine and is(mine, by)) and not trust.from_user(pins, by, pins.owner) then
       -- (names.json read now, not band.names' 10 s copy; a "no" only for want of it is asked again: Round 2 review, 0.59.46)
       local why
       local newd
@@ -301,10 +326,10 @@ function trust.mark_ok(root, rel, m)
   local by = changed_by(root, rel)
   if not by then return nil end
   -- ("": Syncthing doesn't hold it, believed as above)
-  local ok = by == "" or trust.from_manager(pins, by, services.my_device_id()) or (m.left == true and type(m.device) == "string" and m.device:sub(1, 7) == by)
+  local ok = by == "" or trust.from_manager(pins, by, services.my_device_id()) or (m.left == true and is(m.device, by))
   -- (a mark written here a moment ago: Syncthing may not have looked at it yet, and still names whoever wrote the file before)
   if not ok and os.time() - (tonumber(m.at) or 0) < 120 then return nil end
-  marks[k] = ok
+  marks[k] = took(root, rel, ok, by)
   if not ok then band.log(string.format("%s: %s came from a computer (%s) that isn't the owner's or an admin's, so it was set aside", band.info(root).name, rel, services.device_name(by))) end
   return ok
 end
@@ -316,6 +341,11 @@ function trust.deleted_by_manager(root, rel)
   local pins = trust.pins(root)
   if not pins then return nil end
   local services = require("services")
+  -- (a signed tombstone from a computer whose key is known here: its word, whole ID; one that came over the link has no Syncthing record.
+  -- lib/signed.lua, rt-linkfirst)
+  local okd, dev, linked = pcall(function() return require("signed").deleted_by(root, rel) end)
+  if okd and dev then return took(root, rel, trust.from_manager(pins, dev, not pins.held and services.my_device_id() or nil), dev) end
+  if okd and linked then return nil end
   local by, gone = services.modified_by(band.info(root).id, rel)
   if by == "" then return true end -- (Syncthing holds no record of it: believed, as everywhere here)
   if not by or not gone then return nil end
@@ -331,8 +361,8 @@ function trust.from_owner_file(root, rel)
   if not by then return nil end
   if by == "" then return true end -- (Syncthing holds no record of it: believed, as everywhere here; a file from another computer always has one)
   local mine = require("services").my_device_id()
-  if mine and by == mine:sub(1, 7) and not pins.held and reaper.GetExtState(band.SECTION, "user") == pins.owner then return true end
-  return trust.from_user(pins, by, pins.owner)
+  if mine and is(mine, by) and not pins.held and reaper.GetExtState(band.SECTION, "user") == pins.owner then return took(root, rel, true, by) end
+  return took(root, rel, trust.from_user(pins, by, pins.owner), by)
 end
 
 -- A claim an admin gave (<song>/rooms/<room>/claims/given-*.json) says who gave it, and anyone could write one saying an admin did: it counts
@@ -349,8 +379,8 @@ function trust.claim_ok(root, rel, c)
   local by = changed_by(root, rel)
   if not by then return nil end
   local mine = services.my_device_id()
-  local ok = by == "" or (mine ~= nil and by == mine:sub(1, 7)) or trust.from_user(pins, by, c.by)
-  trust.cache(claims, k, ok, root)
+  local ok = by == "" or (mine ~= nil and is(mine, by)) or trust.from_user(pins, by, c.by)
+  trust.cache(claims, k, took(root, rel, ok, by), root)
   if not ok then band.log(string.format("%s: a claim said to be given by %s came from another computer (%s), so it was set aside", band.info(root).name, tostring(c.by), services.device_name(by))) end
   return ok
 end
@@ -371,18 +401,40 @@ function trust.own_file_ok(root, rel, user, at)
   local by = changed_by(root, rel)
   if not by then return nil end
   local mine, ok = services.my_device_id(), by == "" -- ("": Syncthing doesn't hold it, believed as everywhere here)
-  if not ok and mine and by == mine:sub(1, 7) then ok = user == reaper.GetExtState(band.SECTION, "user") -- (this computer writes only its person's)
+  if not ok and mine and is(mine, by) then ok = user == reaper.GetExtState(band.SECTION, "user") -- (this computer writes only its person's)
   elseif not ok then
     local d = band.read_json(root .. "/_band/devices/" .. user_file(user))
     local dev = type(d) == "table" and services.is_device_id(d.device) and d.device or nil
     local said = dev and trust.device_ok(root, user, dev)
     if dev and said == nil then return nil end
-    ok = said == true and dev:sub(1, 7) == by
+    ok = said == true and is(dev, by)
   end
   if not ok and os.time() - (tonumber(at) or 0) < 120 then return nil end
-  trust.cache(own, k, ok, root)
+  trust.cache(own, k, took(root, rel, ok, by), root)
   if not ok then band.log(string.format("%s: %s says it's %s's, but another computer (%s) wrote it, so it was set aside", band.info(root).name, rel, tostring(user), services.device_name(by))) end
   return ok
+end
+
+-- A copy that came over the direct link (lib/signed.lua on_msg, already in band.overlay while this asks): does the check its readers make say
+-- yes now? By its kind, the same check as when Syncthing brings it; a room's mode.json, which nothing checks then, must be a manager's here.
+-- -> true, or false/nil (left out). (rt-linkfirst)
+function trust.file_ok(root, rel)
+  local kind = require("signed").kind(rel)
+  local j = band.read_json(root .. "/" .. rel)
+  if kind == "band" or kind == "guests" or kind == "mode" then return (trust.from_manager_file(root, rel)) end
+  if kind == "closed" then return trust.from_owner_file(root, rel) end
+  if kind == "removed" then
+    if band.read(root .. "/" .. rel) == nil then return trust.deleted_by_manager(root, rel) end
+    return type(j) == "table" and trust.mark_ok(root, rel, j) or false
+  end
+  if kind == "devices" then
+    return type(j) == "table" and type(j.user) == "string" and "_band/devices/" .. user_file(j.user) == rel and trust.device_ok(root, j.user, j.device) or false
+  end
+  if kind == "grants" then
+    return type(j) == "table" and type(j.by) == "string" and user_file(j.by) == rel:match("([^/]+)$") and require("groups").may_manage(root, j.by)
+      and trust.claim_ok(root, rel, j) or false
+  end
+  return false
 end
 
 return trust

@@ -160,6 +160,8 @@ local function devices(root)
   dev_cache[root] = { at = reaper.time_precise(), list = list }
   return list
 end
+-- (a devices file that came over the link: read again at the next refresh of the peers, within PEERS_EVERY. lib/signed.lua, rt-linkfirst)
+function direct.forget_devices(root) dev_cache[root] = nil end
 -- (from a cache made on the Live sync tick, never at send time: a computer's first trust.device_ok asks Syncthing, a call that can block for
 -- seconds, and it held up sync.post. Computers not asked before are asked only while the refresh has taken under 50 ms: the rest at the next
 -- one. Other scripts (the panel's Play together, chat) read the list Live sync made last, from ExtState. James, 0.60.0-rt)
@@ -576,12 +578,15 @@ function direct.send_live(cfg, kind, d, song, room, id, to)
   return direct.msg(cfg, kind, { song = song, room = room, id = id, d = d }, song, room, to)
 end
 -- msgs (direct.messages) handed to handlers[kind](d, msg), only this song's and room's (nil: any), each kind and id once. -> how many.
+-- (STUDIO_WIDE kinds whatever room they were sent from: a signed studio file, lib/signed.lua. rt-linkfirst)
+direct.STUDIO_WIDE = { signed = true }
 local seen_ids, seen_n = {}, 0
 function direct.dispatch(msgs, song, room, handlers)
   local n = 0
   for _, m in ipairs(msgs or {}) do
     local w, h = m.data, handlers[m.kind]
-    if h and type(w) == "table" and (song == nil or w.song == song) and (room == nil or w.room == room) then
+    local any = direct.STUDIO_WIDE[m.kind]
+    if h and type(w) == "table" and (any or ((song == nil or w.song == song) and (room == nil or w.room == room))) then
       local id = type(w.id) == "string" and (m.kind .. "\0" .. w.id) or nil
       if not (id and seen_ids[id]) then
         if id then
