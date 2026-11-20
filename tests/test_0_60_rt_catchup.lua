@@ -135,6 +135,13 @@ assert(streams.catchup_tick(cfg, b) == 0, "the studio's direct setting off: noth
 direct.ensure = was_ensure
 clock = clock + streams.CATCHUP_LOOK
 assert(streams.catchup_tick(cfg, b) == 1 and sent[2].d.file == "big.wav", "asked again after WANT_EVERY")
+-- deleted on purpose (a tombstone in the room's deleted/: lib/drive.lua, VM test): never fetched back
+local was_files, was_read = band.files, band.read_json
+band.files = function(dir, ext) if dir == "R/Song/rooms/main/deleted" then return { "Bo-20261120-020000Z-1.json" } end return was_files(dir, ext) end
+band.read_json = function(p) if p == "R/Song/rooms/main/deleted/Bo-20261120-020000Z-1.json" then return { names = { ["big.wav"] = 1 } } end return was_read(p) end
+clock = clock + streams.WANT_EVERY
+assert(streams.catchup_tick(cfg, b) == 0 and #sent == 2, "a tombstoned file isn't asked for")
+band.files, band.read_json = was_files, was_read
 
 -- the side that has it (this computer, asked by Bo's)
 sent = {}
