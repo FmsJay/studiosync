@@ -216,7 +216,7 @@ function prep.scan(proj, cfg, b)
 
   -- StudioSync's own setup
   local live = require("live")
-  if b and b.role ~= "solo" and not live.fx(proj, false, live.SONOBUS) then
+  if b and b.role ~= "solo" and not live.builtin_audio(cfg and cfg.root) and not live.fx(proj, false, live.SONOBUS) then -- (rt-audit §1)
     add("sonobus", "Add SonoBus (it stays off until you turn on Real time mode)", "For Real time: it joins your studio by itself when you switch that on.", 1, true)
   end
   if not require("tools").autostart_on() then

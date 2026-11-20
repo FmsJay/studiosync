@@ -273,6 +273,26 @@ function streams.mode()
   return (m == "in_time" or m == "show") and m or "as_it_comes"
 end
 function streams.bars() return math.max(1, math.min(16, math.floor(tonumber(reaper.GetExtState(band.SECTION, "stream bars")) or 1))) end
+-- Home's "In time (NINJAM style)" (rt-audit §2: the built-in way, instead of ReaNINJAM and a NINJAM server): this computer's In time
+-- listening plus Follow each other at its bars behind. The bars behind from before are kept as Time-sync keeps them ("side before
+-- timesync"), so turning it off, or reopening the project (live.all_off), puts them back.
+local function px(proj, k) return select(2, reaper.GetProjExtState(proj, band.SECTION, k)) end
+function streams.in_time_on(proj)
+  return streams.mode() == "in_time" and px(proj, "side") ~= "" and px(proj, "side before timesync") ~= "" and not require("live").ninjam_master(proj)
+end
+function streams.set_in_time(proj, on)
+  if on then
+    reaper.SetExtState(band.SECTION, "stream listen", "in_time", true)
+    if px(proj, "side before timesync") == "" then reaper.SetProjExtState(proj, band.SECTION, "side before timesync", px(proj, "side") ~= "" and px(proj, "side") or "none") end
+    reaper.SetProjExtState(proj, band.SECTION, "side", tostring(streams.bars()))
+    band.log(string.format("In time on: you follow whoever plays, and their takes reach you %d bar%s behind, in time with the project", streams.bars(), streams.bars() == 1 and "" or "s"))
+  else
+    local was = px(proj, "side before timesync")
+    reaper.SetProjExtState(proj, band.SECTION, "side", was == "none" and "" or was)
+    reaper.SetProjExtState(proj, band.SECTION, "side before timesync", "")
+    band.log("In time off")
+  end
+end
 -- Producer listen (James, rt): bandmates' takes as they come play at this level here (the placeholder's item volume: never sent, mirror skips
 -- the item), so a producer sets them against the mix on their own monitors without touching the track's fader, which is the band's.
 function streams.listen_db() return math.max(-60, math.min(6, tonumber(reaper.GetExtState(band.SECTION, "stream listen db")) or 0)) end

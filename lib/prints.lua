@@ -1124,15 +1124,10 @@ function prints.printing_ui(ctx, ImGui, cfg, b, proj, who)
   if #others > 0 then ImGui.TextDisabled(ctx, "Printed by: " .. table.concat(others, ", ")) end
 end
 
--- Setup > Options: rendering in the background, this machine's choice.
+-- Settings > Options: how background rendering is going here. Whether it's used is this computer's own (bgrender.default_on): the
+-- "Render prints in the background" checkbox is gone, as nobody needed the choice (rt-audit §5).
 function prints.options(ctx, ImGui)
-  local set, default = reaper.GetExtState(band.SECTION, "bg render"), require("bgrender").default_on()
-  local on = set == "on" or (default and set ~= "off")
-  local rv, v = ImGui.Checkbox(ctx, "Render prints in the background##bgrender", on)
-  if rv then reaper.SetExtState(band.SECTION, "bg render", v == default and "" or (v and "on" or "off"), true) end
-  ImGui.SetItemTooltip(ctx, "On: a hidden second REAPER renders each print while you keep working (a few seconds each).\n" ..
-    "Off: REAPER renders them in front, holding up the screen for a moment each time." ..
-    (default and "" or "\nOff by default here: this computer has no way to keep the second REAPER hidden, so it would take the keyboard for a moment each time."))
+  local on = require("bgrender").default_on()
   -- (how it's going, from Live sync: lib/bgrender.lua. Given up, prints render here in front: James, 0.58.86, "it should show")
   local st = on and prints.bg_state()
   if st and st.gave_up then

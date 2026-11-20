@@ -74,13 +74,19 @@ function bg.helpers()
   local d = LIB .. "/mac"
   if require("band").MAC and reaper.file_exists(d .. "/bandsync-hide.dylib") and reaper.file_exists(d .. "/bandsync-launch") then return d end
 end
--- Whether prints go to the background here (ExtState "bg render": "off" or "on" overrides this default).
+-- Whether prints go to the background here: by this computer alone (Windows, or a Mac with the helpers), falling back to rendering in
+-- front by itself (GIVE_UP). The old "Render prints in the background" choice (ExtState "bg render") is gone (rt-audit §5): a saved one is
+-- dropped once, silently. "bg render test" ("on" / "off", never saved) is the in-REAPER tests' own (tests/reaper), to print in front or not.
 function bg.default_on() return WIN or bg.helpers() ~= nil end
+local old_choice_gone
 function bg.on()
-  local set = reaper.GetExtState(band.SECTION, "bg render")
-  if set == "off" or (not bg.default_on() and set ~= "on") then return false end
-  -- (Linux too, when switched on: there it ran nowhere, Setup's tick box did nothing, and the binary is lowercase `reaper`. Off by default
-  -- there, as on a Mac without the helpers: nothing keeps the second REAPER's window out of sight. Linux VM, 0.58.77)
+  if not old_choice_gone then
+    old_choice_gone = true
+    if reaper.GetExtState(band.SECTION, "bg render") ~= "" then reaper.DeleteExtState(band.SECTION, "bg render", true) end
+  end
+  local test = reaper.GetExtState(band.SECTION, "bg render test")
+  if test == "off" or (test ~= "on" and not bg.default_on()) then return false end
+  -- (off on Linux, as on a Mac without the helpers: nothing keeps the second REAPER's window out of sight. Linux VM, 0.58.77)
   local r = reaper.GetExtState(band.SECTION, "bg render retry") -- (the panel's "Try in the background again")
   if r ~= "" and r ~= retry_seen then
     retry_seen = r

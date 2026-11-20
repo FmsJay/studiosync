@@ -67,17 +67,24 @@ function callapps.health_words()
     "for music (" .. require("live").PLACES.calls .. ")."
 end
 
--- Settings > Health, under Can't hear each other?: the ways round it, in the order to try them.
-function callapps.card(ctx, ImGui, go_real_time)
+-- Settings > Health, under Can't hear each other?: the ways round it, in the order to try them. `go_call`: the studio's own live audio runs
+-- here, so Talk is Chat > Call's (rt-audit §3), not SonoBus's Real time mode.
+function callapps.card(ctx, ImGui, go_real_time, go_call)
   ImGui.SeparatorText(ctx, "Calls (Discord, Zoom, Teams...)")
   local apps = callapps.running()
   local mode = callapps.mode()
   local holds = callapps.holds_device(mode, band.WIN, wasapi_exclusive(), band.LINUX)
   ImGui.TextDisabled(ctx, (#apps > 0 and ("Running now: " .. table.concat(apps, ", ") .. ". ") or "No call app running now. ") ..
     "REAPER's audio: " .. (mode ~= "" and mode or "?") .. (holds and " (keeps the interface to itself)" or ""))
+  if go_call then
+    ImGui.TextWrapped(ctx, "1. Talk through StudioSync instead: Chat > Call (the studio's own live audio) sends your voice to the others through " ..
+      "REAPER's own audio, so nothing fights over the interface.")
+    if ImGui.SmallButton(ctx, "Go to Chat > Call") then go_call() end
+  else
   ImGui.TextWrapped(ctx, "1. Talk through StudioSync instead: Real time mode's Talk button sends your voice to the others through REAPER's own audio, " ..
     "so nothing fights over the interface, and it goes quiet by itself while anyone records.")
   if go_real_time and ImGui.SmallButton(ctx, "Go to Real time mode") then go_real_time() end
+  end
   ImGui.TextWrapped(ctx, "2. Keep the call app, on other sound: set its microphone and speaker to your computer's own (or a headset or webcam " ..
     "mic) rather than the interface REAPER uses. Some interfaces' drivers let two apps share them (multi-client ASIO): then the call can use it too.")
   if band.WIN then
@@ -86,7 +93,8 @@ function callapps.card(ctx, ImGui, go_real_time)
     if ImGui.SmallButton(ctx, "Open REAPER's audio settings") then reaper.Main_OnCommand(40099, 0) end
   end
   ImGui.TextWrapped(ctx, (band.WIN and "4." or "3.") .. " In the call app: mute its microphone while you play, and turn off noise suppression, echo " ..
-    "cancellation and automatic gain (they treat music as noise). With Real time mode on too, the music already goes to the others: " ..
+    "cancellation and automatic gain (they treat music as noise). " .. (go_call and "StudioSync's live audio already sends your armed tracks to the others: "
+    or "With Real time mode on too, the music already goes to the others: ") ..
     "two copies echo.")
   ImGui.TextWrapped(ctx, (band.WIN and "5." or "4.") .. " To play REAPER into the call (a listener who isn't in the studio): a virtual cable, " ..
     (band.WIN and "VB-CABLE (vb-audio.com) or Voicemeeter," or "BlackHole (existential.audio)," ) ..

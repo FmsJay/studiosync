@@ -33,8 +33,8 @@ local function fx_sent()
 end
 local file = D .. "/knob_" .. stamp .. ".rpp"
 local front = reaper.EnumProjects(-1)
-local was_bg = reaper.GetExtState(band.SECTION, "bg render")
-reaper.SetExtState(band.SECTION, "bg render", "off", false)
+local was_bg = reaper.GetExtState(band.SECTION, "bg render test")
+reaper.SetExtState(band.SECTION, "bg render test", "off", false)
 local p1, p2
 local ok, err = pcall(function()
   reaper.Main_OnCommand(40859, 0); p1 = reaper.EnumProjects(-1)
@@ -74,7 +74,7 @@ local ok, err = pcall(function()
   check(math.abs(th - reaper.TrackFX_GetParam(reaper.GetTrack(p2, 0), 0, 0)) < 0.01, "the knob stays where it was turned")
 end)
 if not ok then fails = fails + 1; out[#out + 1] = "ERROR " .. tostring(err) end
-reaper.SetExtState(band.SECTION, "bg render", was_bg, false)
+reaper.SetExtState(band.SECTION, "bg render test", was_bg, false)
 for _, p in ipairs({ p2, p1 }) do
   if p then
     reaper.SelectProjectInstance(p)

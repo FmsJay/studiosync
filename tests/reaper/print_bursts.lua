@@ -18,8 +18,8 @@ local function say(s) out[#out + 1] = s end
 local function check(ok, what) if not ok then fails = fails + 1 end; say((ok and "PASS " or "FAIL ") .. what) end
 local yes = function() return true end
 local front = reaper.EnumProjects(-1)
-local was_bg = reaper.GetExtState(band.SECTION, "bg render")
-reaper.SetExtState(band.SECTION, "bg render", "on", false)
+local was_bg = reaper.GetExtState(band.SECTION, "bg render test")
+reaper.SetExtState(band.SECTION, "bg render test", "on", false)
 reaper.Main_OnCommand(40859, 0); local pa = reaper.EnumProjects(-1)
 sync.driver_name = "Laptop"
 local function watch() mirror.watch(pa, A, song, room, { can = yes, mode = "claims", here = { Laptop = true } }) end
@@ -177,7 +177,7 @@ local ok, err = pcall(function()
 end)
 if not ok then fails = fails + 1; say("ERROR " .. tostring(err)) end
 prints.SETTLE = 0
-reaper.SetExtState(band.SECTION, "bg render", was_bg, false)
+reaper.SetExtState(band.SECTION, "bg render test", was_bg, false)
 reaper.SelectProjectInstance(pa)
 reaper.Main_SaveProjectEx(pa, root .. "/burst.rpp", 8)
 reaper.Main_OnCommand(40860, 0)

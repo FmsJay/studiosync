@@ -802,7 +802,8 @@ function P.status(t)
   if (followed or watched) and not info.playing then info.cursor = math.floor(reaper.GetCursorPositionEx(proj) * 1000 + 0.5) / 1000 end -- (followers' cursors go here: lib/presence.lua)
   info.dawview = require("dawview").watching() or nil -- (a page here shows the Song page: bandmates send their view and cursor meanwhile)
   -- (what live audio you're in, for the little icons on your card: Real time mode or Time-sync, and the call. James, 0.59.8)
-  info.live = live.realtime_on(proj) and "rt" or (live.ninjam_master(proj) and select(2, reaper.GetProjExtState(proj, band.SECTION, "live_mode")) ~= "jam" and "ts") or nil
+  info.live = live.realtime_on(proj) and "rt" or (live.ninjam_master(proj) and select(2, reaper.GetProjExtState(proj, band.SECTION, "live_mode")) ~= "jam" and "ts")
+    or (require("streams").in_time_on(proj) and "ts") or nil -- (Home's built-in In time: rt-audit §2)
   info.call = select(2, reaper.GetProjExtState(proj, band.SECTION, "call")) == "1" and (live.sonobus_online(proj)) or nil
   do
     local sm, si = live.fx(proj, false, live.SONOBUS)
@@ -1017,7 +1018,7 @@ end
 if reload_proj ~= proj and reaper.GetExtState(band.SECTION, "live began " .. tostring(proj)) == "" then -- (a reload for an update carries on as it was)
   reaper.SetExtState(band.SECTION, "live began " .. tostring(proj), "1", false)
   local ok, was = pcall(live.all_off, proj)
-  if ok and was then band.log("live audio starts off when a project opens: Real time mode (and Time-sync) and the call are off. Switch them on on Home and in Chat > Call") end
+  if ok and was then band.log("SonoBus and ReaNINJAM start off when a project opens: Real time mode, Time-sync and the SonoBus call are off (the studio's own live audio isn't). Switch them on on Home and in Chat > Call") end
 end
 reaper.SetExtState(band.SECTION, "live began " .. tostring(proj), "1", false)
 local plugins_looked -- (when bandmates' plug-in lists were last looked at: tick_body)

@@ -33,9 +33,9 @@ reaper.RecursiveCreateDirectory(fxdir, 0)
 local fxfile = fxdir .. "/restless.jsfx"
 band.write_atomic(fxfile, "desc:StudioSync test restless\nslider1:0<0,1,0.01>knob\n@init\nc = 1;\n@serialize\nc += 1;\nfile_var(0, c);\n@sample\nspl0 = spl0; spl1 = spl1;\n")
 local front = reaper.EnumProjects(-1)
-local was_bg = reaper.GetExtState(band.SECTION, "bg render")
+local was_bg = reaper.GetExtState(band.SECTION, "bg render test")
 local was_list = reaper.GetExtState("BandSync", "restless plugins")
-reaper.SetExtState(band.SECTION, "bg render", "off", false)
+reaper.SetExtState(band.SECTION, "bg render test", "off", false)
 reaper.DeleteExtState("BandSync", "restless plugins", true)
 mirror.restless, mirror.restless_loaded = {}, nil
 mirror.RESTLESS_FLIPS, mirror.RESTLESS_SECS = 3, 1 -- (quicker than the real thing)
@@ -136,7 +136,7 @@ local ok, err = pcall(function()
   check(math.abs(reaper.TrackFX_GetParam(tr, 0, 0) - 0.7) < 0.01, "and lands back")
 end)
 if not ok then fails = fails + 1; say("ERROR " .. tostring(err)) end
-reaper.SetExtState(band.SECTION, "bg render", was_bg, false)
+reaper.SetExtState(band.SECTION, "bg render test", was_bg, false)
 reaper.SetExtState("BandSync", "restless plugins", was_list, true)
 for _, p in ipairs({ pb, pa }) do
   reaper.SelectProjectInstance(p)

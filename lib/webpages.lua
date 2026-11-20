@@ -39,7 +39,7 @@ function webpages.health_model(rows, gone, ver, ext)
 end
 -- st: { side (ProjExtState "side": "" off, else bars behind), rt (Real time mode on), refusal (why this user may not start or stop, or nil),
 -- cursor (the edit cursor's bar), regions = { { name, bar } }, due (seconds to a start, or nil), last (the last start or stop, in words),
--- ninjam, sonobus, mate (the bandmate this tab follows, "" nobody), paused (following them is paused), seen (what you see of them) }.
+-- ninjam, sonobus, liveaudio (the studio's own live audio runs here), mate (the bandmate this tab follows, "" nobody), paused (following them is paused), seen (what you see of them) }.
 -- -> the Play together topic: from = start-from labels (1: the edit cursor, then each region), as the panel's.
 function webpages.play_model(st)
   local from = { "the edit cursor (bar " .. tostring(st.cursor) .. ")" }
@@ -47,7 +47,7 @@ function webpages.play_model(st)
   local on = type(st.side) == "string" and st.side ~= ""
   return { follow = on, bars = on and tonumber(st.side) or nil, rt = st.rt and true or nil, may = not st.refusal, why = st.refusal, from = from,
     due = st.due and st.due > 0 and math.floor(st.due * 10 + 0.5) / 10 or nil, last = st.last ~= "" and st.last or nil,
-    ninjam = st.ninjam and true or nil, sonobus = st.sonobus and true or nil,
+    ninjam = st.ninjam and true or nil, sonobus = st.sonobus and true or nil, liveaudio = st.liveaudio and true or nil,
     mate = (st.mate or "") ~= "" and st.mate or nil, paused = st.paused and true or nil, seen = (st.seen or "") ~= "" and st.seen or nil }
 end
 -- A number of bars from a page: whole, 0..MAX_BARS; nil when it isn't one.
@@ -80,7 +80,7 @@ local function play_state(proj, cfg, b, who)
   return { side = select(2, reaper.GetProjExtState(proj, band.SECTION, "side")), rt = live.realtime_on(proj),
     refusal = require("dawview").transport_refusal(cfg, b, who), cursor = together.bar_of(reaper.GetCursorPositionEx(proj)), regions = regions,
     due = due and due - together.now() or nil, last = reaper.GetExtState(band.SECTION, "together " .. tostring(proj)),
-    ninjam = live.fx(proj, false) ~= nil, sonobus = live.fx(proj, false, live.SONOBUS) ~= nil,
+    ninjam = live.fx(proj, false) ~= nil, sonobus = live.fx(proj, false, live.SONOBUS) ~= nil, liveaudio = live.builtin_audio(cfg.root),
     mate = reaper.GetExtState(band.SECTION, "follow " .. tostring(proj)), seen = reaper.GetExtState(band.SECTION, "follow seen " .. tostring(proj)),
     paused = reaper.GetExtState(band.SECTION, "follow paused " .. tostring(proj)) ~= "" }
 end

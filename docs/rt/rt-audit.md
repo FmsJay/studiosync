@@ -337,3 +337,72 @@ built-in live audio use it too (`lib/liveaudio.lua:593`). Retiring SonoBus must 
 - Removing SonoBus must not remove band.json's `sonobus` secret. It's the direct link's HMAC key and live audio's key
   (`groups.sonobus_secret`).
 - Shortening edit holds (§6) doesn't touch `sync.authority`, claims or `dawview.may_*`. Holds were never a permission, only a courtesy.
+
+## Done (rt-prune, 2026-11-20)
+
+The five clear wins, as recommended above. Nothing from "Ask James" (6-10) was touched. No SonoBus code was deleted, and band.json's
+`sonobus` secret is untouched.
+
+1. **SonoBus isn't offered while the studio's own live audio runs.** One guard, `live.builtin_audio(root)`: `liveaudio.enabled(root)` and
+   this computer's extension has live audio. Without the extension, built-in audio can't run, so SonoBus stays offered there.
+   - Home: My time and Their time are hidden (`live.offered`). The Real time switch turns on In time, the only way left. A SonoBus way that's
+     still on stays visible so it can be turned off.
+   - Chat > Call: SonoBus's "Join the call", its Pop out, its Talk/mic picker and volumes are hidden unless that call is still on. The
+     studio's own call section is the call.
+   - Health: the "SonoBus isn't set up yet" row isn't built. "Set up everything I can" doesn't add SonoBus, and its tooltip no longer says
+     it does. Prepare's checklist doesn't offer "Add SonoBus".
+   - Settings: the SonoBus "Real time buffer" card and the SonoBus half of "Can't hear each other?" are hidden.
+   - Home's "Each person's volume" goes to Chat > Call's per-person sliders.
+   - **Sending twice:** if SonoBus (Real time mode or its call) is on while built-in live audio runs, Home says "SonoBus is on as well as the
+     studio's own live audio, so everyone hears you twice" with a **Turn SonoBus off** button. It goes to the log once per tab
+     (`live.twice_note`).
+   - With live audio off for the studio, everything shows exactly as before.
+2. **Home recommends the built-in "In time (NINJAM style)"** in place of "Time-sync (recommended)".
+   - In time is `streams.set_in_time`: this computer's In time listening plus Follow each other at `streams.bars()` behind.
+   - The bars behind from before are kept the way Time-sync keeps them ("side before timesync"), so turning it off, or reopening the project
+     (`live.all_off`), puts them back.
+   - Your card and your bandmates' cards show the clock icon for it.
+   - A song whose last way was Time-sync comes back as In time.
+   - ReaNINJAM stays on the Play/Jam tab, shown by Settings > Advanced > "Show the Play/Jam tab (outside NINJAM server)". Its tooltip says
+     what it is and that REAPER needs a restart when ReaNINJAM's mode changes. The `timesync` API verb still drives it.
+   - While ReaNINJAM's Time-sync is on, Home says so.
+3. **Old words fixed:**
+   - Web Play page: "You hear each other through the studio's live audio" (new `liveaudio` field in the play topic).
+   - Project-open log: "SonoBus and ReaNINJAM start off when a project opens ... (the studio's own live audio isn't)".
+   - Call-app help: points at Chat > Call's built-in Talk when live audio runs.
+   - Also: the Video call and studio call tooltips ("StudioSync already carries the music"), Home's "Off:" line, the radial menu's Real time
+     slice, and the panel Play/Jam page's note.
+4. **Takes counted from item events.**
+   - `recap.take_of` / `recap.take_key` / `recap.state_take` are the session recap's own rule, now shared.
+   - "While you were away" (`extras.away_counts`) and the credits (`extras.credits`) use it, counting a lanes split's copies once.
+   - Old `takes/*.json` manifests are still read for old songs.
+5. **"Render prints in the background" checkbox removed.**
+   - `bgrender.on` goes by `bgrender.default_on()`: Windows, or a Mac with the helpers. It still falls back to rendering in front after
+     GIVE_UP.
+   - A saved ExtState "bg render" is deleted once, silently.
+   - The failed / "Try in the background again" line stays in Settings > Options.
+   - The in-REAPER tests (`tests/reaper/*`) switched to their own never-saved key "bg render test".
+
+**Tests:** `tests/test_0_60_rt_prune.lua` covers:
+- the guard;
+- the offered ways with live audio on and off;
+- `setup.all` with and without SonoBus;
+- the twice note;
+- In time on, off and with no previous bars;
+- the play topic;
+- the call-app words both ways;
+- away and credits counts from item events plus an old manifest;
+- the background default and migration.
+
+The panel, Health and Prepare guards are checked from the source. `tests/test_0_60_rt_webpages.lua`'s stand-in `live` gained
+`builtin_audio`. `python tests/run.py --no-luals`: fails 0.
+
+**Not run in REAPER:**
+- Home's single In time radio and the Turn SonoBus off button.
+- In time following a real take.
+- The credits on a real song.
+- The Linux "bg render" override, which is gone: background renders stay off there, as on a Mac without the helpers.
+
+**Left:** the studio switch's off text in `lib/liveaudio.lua:868` ("SonoBus carries Real time mode") is still right when live audio is off,
+and that file is rt-hubfix's, so it was left alone. "Private live audio" (Settings > Studio) and "Invite a SonoBus guest" stay until
+James's SonoBus gate (§9).

@@ -94,7 +94,6 @@ function H.build_rows()
     { "relay", (require("services").peers_relayed or 0) == 0, "yellow", "Connections to the others are direct (fast)",
       string.format("%d connection(s) go through a Syncthing relay, so takes and changes arrive slowly. On each computer, let Syncthing through the firewall " ..
         "(Windows: Windows Security > Firewall > Allow an app; Mac: System Settings > Network > Firewall), then restart Syncthing.", require("services").peers_relayed or 0) },
-    { "sonobus", s.sonobus, "yellow", "SonoBus is ready (Real time mode)", "SonoBus isn't set up yet: Real time mode (Home) adds it." },
     (function()
       local c = s.conflicts or {}
       local first = c[1] and c[1]:match("([^/]+)%.sync%-conflict") or ""
@@ -160,6 +159,9 @@ function H.build_rows()
     end)(),
     { "tailscale", services.tailscale_up(), "yellow", "Tailscale is on", services.tailscale_installed() and "Tailscale is off or not signed in: open it and turn it on. Time-sync, Jam, private live audio, the listening page and a studio that syncs only through Tailscale need it; nothing else does." or "Tailscale isn't installed: run StudioSync's installer again, or get it from tailscale.com/download." },
   }
+  if not require("live").builtin_audio(cfg.root) then -- (SonoBus: only for studios whose own live audio is off. rt-audit §1)
+    rows[#rows + 1] = { "sonobus", s.sonobus, "yellow", "SonoBus is ready (Real time mode)", "SonoBus isn't set up yet: Real time mode (Home) adds it." }
+  end
   if services.tailscale_up() then
     local stays = services.tailscale_stays()
     rows[#rows + 1] = { "tailscale stays", stays == true, "yellow", "Tailscale stays signed in here", "Tailscale signs this computer out on " .. tostring(stays) .. ": at login.tailscale.com/admin/machines, this computer > ... > Disable key expiry. " ..
@@ -404,7 +406,8 @@ function H.maint_health()
       H.maint_at = -math.huge; E.reset_live_server()
       if #notes > 0 then band.log("Set up: " .. table.concat(notes, "; ")) end
     end
-    ImGui.SetItemTooltip(ctx, "Starts Syncthing and Live sync, and adds SonoBus (off). The rest needs you.")
+    ImGui.SetItemTooltip(ctx, require("live").builtin_audio(cfg.root) and "Starts Syncthing and Live sync. The rest needs you."
+      or "Starts Syncthing and Live sync, and adds SonoBus (off). The rest needs you.")
     card_end()
   end
 end

@@ -15,8 +15,8 @@ local out, fails = {}, 0
 local function check(ok, what) if not ok then fails = fails + 1 end; out[#out + 1] = (ok and "PASS " or "FAIL ") .. what end
 local yes = function() return true end
 local front = reaper.EnumProjects(-1)
-local was_bg, was_put = reaper.GetExtState(band.SECTION, "bg render"), reaper.GetExtState(band.SECTION, "put back")
-reaper.SetExtState(band.SECTION, "bg render", "off", false)
+local was_bg, was_put = reaper.GetExtState(band.SECTION, "bg render test"), reaper.GetExtState(band.SECTION, "put back")
+reaper.SetExtState(band.SECTION, "bg render test", "off", false)
 reaper.Main_OnCommand(40859, 0); local pa = reaper.EnumProjects(-1)
 reaper.Main_OnCommand(40859, 0); local pb = reaper.EnumProjects(-1)
 local was_driver = sync.driver_name
@@ -170,7 +170,7 @@ for _, p in ipairs({ pb, pa }) do
   reaper.Main_OnCommand(40860, 0)
 end
 if reaper.ValidatePtr(front, "ReaProject*") then reaper.SelectProjectInstance(front) end
-reaper.SetExtState(band.SECTION, "bg render", was_bg, false)
+reaper.SetExtState(band.SECTION, "bg render test", was_bg, false)
 if was_put ~= "" then reaper.SetExtState(band.SECTION, "put back", was_put, false) else reaper.DeleteExtState(band.SECTION, "put back", false) end
 out[#out + 1] = string.format("merge_items: fails %d of %d", fails, #out)
 return table.concat(out, "\n")

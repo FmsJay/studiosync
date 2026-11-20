@@ -1215,7 +1215,7 @@ function ui.set_call(v)
   live.rt_sends(proj)
   band.log("the call is on: press Talk to speak to everyone")
 end
-local SAME_ROOM_TIP = "Hear each other live, and play, stop and record together (My time and Their time go through SonoBus, Time-sync through NINJAM).\nWhat someone records lands as a take when they stop. Edits sync either way."
+local SAME_ROOM_TIP = "Play, stop and record together. In time is built in; My time and Their time go through SonoBus, for studios whose own live audio is off.\nWhat someone records lands as a take when they stop. Edits sync either way."
 
 local setup_at, st = 0, {}
 -- What StudioSync did lately (sends, what arrived, what was put back and why): it used to pop the console up
@@ -1474,6 +1474,8 @@ function ui.call_tab()
   ImGui.SeparatorText(ctx, "Talk inside StudioSync")
   -- (its own switch: it was Real time mode's, and switching it on turned Time-sync off. James, 0.59.6)
   local on = b and ui.call_on()
+  local sb_call = on or not live.builtin_audio(cfg.root) -- (the studio's own live audio is the call: SonoBus's shows only while it's still on. rt-audit §1)
+  if sb_call then
   ImGui.BeginDisabled(ctx, not b)
   local ch, v = switch_row("##callsw", "Join the call", on, "Talk to everyone with your talk mic (press Talk), whatever Real time mode and Time-sync are doing.\n" ..
     "Without Real time mode it carries only your talk mic, never your playing.")
@@ -1482,6 +1484,7 @@ function ui.call_tab()
   ImGui.SameLine(ctx)
   if ImGui.SmallButton(ctx, "Pop out##callpop") then require("callwin").set_open(true) end -- (James, 0.59.14)
   ImGui.SetItemTooltip(ctx, "The call in a small window of its own: mute and unmute, hold to talk, your mic, volumes, deafen and who's in. It stays while the panel is shrunk.")
+  end
   if on then
     ui.talk_controls(true)
     ImGui.Spacing(ctx)
@@ -1490,7 +1493,7 @@ function ui.call_tab()
     if ImGui.SmallButton(ctx, "Each person's volume and mute") then sonobus_open() end
     ImGui.SetItemTooltip(ctx, "SonoBus's own window: a level and a mute for each person you hear, only for you, and nothing to do with what's recorded.")
     ImGui.TextDisabled(ctx, "Talk is never recorded. It goes quiet only while a track here records from your talk mic; then they hear that take as usual. To record a vocal, arm its track.")
-  else
+  elseif sb_call then
     ImGui.TextDisabled(ctx, b and "On: talk to everyone with Talk, no other app needed, and set each person's volume." or "Open a studio project to talk.")
   end
   pcall(require("liveaudio").call_ui, ctx, ImGui, cfg) -- (StudioSync's own live audio: each person's level, volume and mute, when the studio has it on. lib/liveaudio.lua, James, rt)
@@ -1499,7 +1502,7 @@ function ui.call_tab()
   local call = require("alerts").call_link(cfg.root)
   if call then
     if ImGui.Button(ctx, "Join the studio's call") then band.open_url(call) end
-    ImGui.SetItemTooltip(ctx, "Opens " .. call .. " in its own app or browser, with video if it has it. Mute its microphone while you play: Real time mode carries the music.")
+    ImGui.SetItemTooltip(ctx, "Opens " .. call .. " in its own app or browser, with video if it has it. Mute its microphone while you play: StudioSync already carries the music.")
   else
     ImGui.TextDisabled(ctx, "No call link for the studio yet (Discord, Zoom, Meet...): the owner or an admin sets it in Settings > Studio.")
     if ImGui.SmallButton(ctx, "Set it up##calllink") then ui.go_settings("Studio") end
@@ -1507,29 +1510,38 @@ function ui.call_tab()
 end
 -- Real time mode's three ways (James, 0.59.4: "my time, their time for SonoBus and then time sync for NINJAM, each stating what they do").
 -- One at a time: SonoBus and NINJAM both carry your mix, so with both on everyone hears you twice. The last one picked comes back with the switch.
+-- (In time is the built-in one now, over the direct link: Time-sync's ReaNINJAM and NINJAM server are on the Play/Jam tab, which Settings >
+-- Advanced shows. SonoBus's two are offered only while the studio's own live audio is off. rt-audit §1-2)
 local RT_KINDS = {
-  { "my", "My time", "You hear everyone the moment it arrives, a little late (the network). For playing and talking together." },
-  { "their", "Their time", "Your backing is delayed so the others line up with it. For listening along, not for playing." },
-  { "timesync", "Time-sync (recommended)", "Everyone plays to their own copy of the project and hears the others exactly in time, %s late (one NINJAM interval at this tempo: it follows the project's tempo and the server's interval). For playing along to a take. Talk: Chat > Call." },
+  { "my", "My time", "You hear everyone the moment it arrives, a little late (the network). For playing and talking together.", sonobus = true },
+  { "their", "Their time", "Your backing is delayed so the others line up with it. For listening along, not for playing.", sonobus = true },
+  { "intime", "In time (NINJAM style)", "Recommended. Everyone plays to their own copy of the project: you follow whoever plays, and what they record reaches you %s behind, in time with the project. Built in, no NINJAM server. For playing along to a take. The bars behind: Settings > Options, Parts play. Talk: Chat > Call." },
 }
 function ui.rt_kind()
   if page_play.time_sync_on() then return "timesync" end
   if same_room_on() then return require("page_hear").their_time_on(proj) and "their" or "my" end
+  if b and require("streams").in_time_on(proj) then return "intime" end
   return nil
 end
 local rt_choosing -- (the switch on with no way picked yet: the three show, nothing's on till one is. 0.59.27)
 function ui.set_rt_kind(kind) -- nil: off
   local now = ui.rt_kind()
   if kind == now then return end
+  if now == "intime" then require("streams").set_in_time(proj, false) end -- (one way at a time)
   if kind == "timesync" then
     if not b then return band.msg("Time-sync needs a studio project open.") end
     if same_room_on() then set_same_room(false) end
     page_play.time_sync(true)
+  elseif kind == "intime" then
+    if not b then return band.msg("In time needs a studio project open.") end
+    if same_room_on() then set_same_room(false) end
+    if now == "timesync" and not page_play.time_sync(false) then return end
+    require("streams").set_in_time(proj, true)
   elseif kind then
     if not same_room_on() then set_same_room(true) end
     if same_room_on() then require("page_hear").set_their_time(proj, kind == "their") end -- (not if it didn't come on: review, 0.59.8)
   elseif now == "timesync" then page_play.time_sync(false)
-  else set_same_room(false) end
+  elseif now ~= "intime" then set_same_room(false) end
   -- (kept once it's on: a Time-sync that failed, with no Tailscale, was kept, tried again at every press of the switch, and My time never came
   -- back from Home. Onboarding review, 0.59.9)
   if kind and ui.rt_kind() == kind then
@@ -1544,14 +1556,17 @@ function ui.rt_switch(v)
   -- (the way picked last: this song's, else the last picked anywhere; never picked, none: the three show and you pick. James, 0.59.27)
   local last = select(2, reaper.GetProjExtState(proj, band.SECTION, "rt kind"))
   if last == "" then last = reaper.GetExtState(band.SECTION, "rt kind last") end
-  if last == "" or (last == "timesync" and not b) then
+  if last == "timesync" then last = "intime" end -- (Home's in-time way is built in now: rt-audit §2)
+  local builtin = live.builtin_audio(cfg.root)
+  if builtin then last = "intime" end -- (the studio's own live audio carries the sound: In time is the way left. rt-audit §1)
+  if last == "" or (last == "intime" and not b) then
     rt_choosing = true
-    band.log("Real time mode: pick My time, Their time or Time-sync on Home (none was picked before)") -- (from the radial menu, nothing showed)
+    band.log("Real time mode: pick My time, Their time or In time on Home (none was picked before)") -- (from the radial menu, nothing showed)
     return
   end
   local want = last
   ui.set_rt_kind(want)
-  if want ~= "my" and not ui.rt_kind() then ui.set_rt_kind("my") end
+  if want ~= "my" and not builtin and not ui.rt_kind() then ui.set_rt_kind("my") end
 end
 local function home_play()
   local kind = ui.rt_kind()
@@ -1563,27 +1578,39 @@ local function home_play()
     kind = ui.rt_kind(); on, sb = kind ~= nil, kind == "my" or kind == "their"
   end
   if rt_choosing and not on then ImGui.TextDisabled(ctx, "Pick a way:") end
+  local builtin = live.builtin_audio(cfg.root)
   if on or rt_choosing then
-    local bars = b and page_play.interval_bars() or 1
+    local bars = require("streams").bars()
     ImGui.Indent(ctx, 26)
     -- (side by side, what each does on hover: three paragraphs under each other took half of Home. James, 0.59.24)
-    for i, k in ipairs(RT_KINDS) do
-      -- (NINJAM goes over Tailscale: without it, Time-sync came on and nothing arrived. Onboarding review, 0.59.9)
-      local no_ts = k[1] == "timesync" and b and not require("services").tailscale_up()
+    for i, k in ipairs(live.offered(RT_KINDS, builtin, kind)) do -- (SonoBus's ways: not with the studio's own live audio, unless one is on still. rt-audit §1)
+      -- (the direct link goes over Tailscale: without it, the in-time way came on and nothing arrived. Onboarding review, 0.59.9)
+      local no_ts = k[1] == "intime" and b and not require("services").tailscale_up()
       if i > 1 then require("page_hear").fit(ctx, ImGui, k[2], 26) end -- (beside the last while it fits)
-      ImGui.BeginDisabled(ctx, k[1] == "timesync" and (not b or no_ts) and kind ~= k[1])
+      ImGui.BeginDisabled(ctx, k[1] == "intime" and (not b or no_ts) and kind ~= k[1])
       if ImGui.RadioButton(ctx, k[2] .. "##rtkind", kind == k[1]) and kind ~= k[1] then ui.set_rt_kind(k[1]) end
       ImGui.EndDisabled(ctx)
-      local says = no_ts and "Time-sync needs the studio's private network (Tailscale): ask whoever runs the studio for a guest invitation. Health shows it."
+      local says = no_ts and "In time goes over the direct link, which needs the studio's private network (Tailscale): ask whoever runs the studio for a guest invitation. Health shows it."
         or k[3]:format(string.format("%d bar%s", bars, bars == 1 and "" or "s"))
       ImGui.SetItemTooltip(ctx, says)
     end
+    if kind == "timesync" then ImGui.TextDisabled(ctx, "On: Time-sync through an outside NINJAM server (the Play/Jam tab).") end
     ImGui.Unindent(ctx, 26)
   end
-  if sb or ui.call_on() then -- (only while SonoBus is on: it said "Configure SonoBus" with nothing live. UX review, 0.59.14)
+  local twice = live.twice_note(proj, builtin, sb or ui.call_on())
+  if twice then
+    ImGui.TextColored(ctx, YELLOW, twice)
+    if ImGui.SmallButton(ctx, "Turn SonoBus off##sbtwice") then
+      if sb then ui.set_rt_kind(nil) end
+      if ui.call_on() then ui.set_call(false) end
+    end
+  end
+  if sb or ui.call_on() or builtin then -- (only while SonoBus is on: it said "Configure SonoBus" with nothing live. UX review, 0.59.14)
     require("page_hear").fit(ctx, ImGui, "Each person's volume") -- (beside, or below in a narrow column)
-    if ImGui.SmallButton(ctx, "Each person's volume") then sonobus_open() end
-    ImGui.SetItemTooltip(ctx, "Opens SonoBus's own window: volume and mute for each collaborator, buffer and quality. You don't need it to play together.")
+    local sbw = sb or ui.call_on()
+    if ImGui.SmallButton(ctx, "Each person's volume") then if sbw then sonobus_open() else ui.go_chat("Call") end end
+    ImGui.SetItemTooltip(ctx, sbw and "Opens SonoBus's own window: volume and mute for each collaborator, buffer and quality. You don't need it to play together."
+      or "Chat > Call: each person's level, volume and mute in the studio's live audio, only for you.")
   end
   if sb then -- (the help for it was in Settings > Advanced, with nothing here pointing at it: UX review, 0.58.52)
     require("page_hear").fit(ctx, ImGui, "Can't hear?")
@@ -1595,10 +1622,11 @@ local function home_play()
     require("page_hear").fit(ctx, ImGui, "Video call")
     if ImGui.SmallButton(ctx, "Video call") then band.open_url(call) end -- (was "Call": read as the talk line in Chat > Call. UX review, 0.59.14)
     ImGui.SetItemTooltip(ctx, "Opens the studio's call (" .. call .. ") in its own app or browser, with video if it has it.\n" ..
-      "Mute its microphone while you play: Real time mode already carries the music, and two copies echo.")
+      "Mute its microphone while you play: StudioSync already carries the music, and two copies echo.")
   end
   if not ui.short and not on then -- (a tall docker has the room)
-    ImGui.TextDisabled(ctx, "Off: changes still sync, but you don't hear each other live or follow each other's play and stop.")
+    ImGui.TextDisabled(ctx, builtin and "Off: you still hear each other (the studio's live audio) and changes sync, but you don't follow each other's play and stop."
+      or "Off: changes still sync, but you don't hear each other live or follow each other's play and stop.")
   end
   if sb then require("page_hear").realtime(ctx, ImGui, proj, true) end
   local silent = reaper.GetExtState(band.SECTION, "rt silent " .. tostring(proj))
@@ -1632,7 +1660,7 @@ function ui.live_icons(p)
       end
     end)
   elseif p.live == "ts" then
-    slot("##ts" .. p.user, who .. " in Time-sync (in time with the project, through NINJAM)", ACCENT, function(dl, x, y, c)
+    slot("##ts" .. p.user, who .. " playing in time with the project (In time, or Time-sync through NINJAM)", ACCENT, function(dl, x, y, c)
       local cx, cy, r = x + h / 2, y + h / 2, h * 0.4
       ImGui.DrawList_AddCircle(dl, cx, cy, r, c, 0, 1.6)
       ImGui.DrawList_AddLine(dl, cx, cy, cx, cy - r * 0.7, c, 1.6)
@@ -1708,7 +1736,7 @@ local function home_who()
   local my_kind, my_call = ui.live_now()
   people[1] = { name = cfg.user .. " (you)", user = cfg.user, state = "here", armed = armed, recording = ps & 4 == 4, playing = ps & 1 == 1,
     driving = view.driver == cfg.user, last_track = reaper.GetExtState(band.SECTION, "last_track " .. tostring(proj)), last_at = tonumber(reaper.GetExtState(band.SECTION, "last_at " .. tostring(proj))),
-    live = my_kind == "timesync" and "ts" or my_kind and "rt" or nil, call = my_call }
+    live = (my_kind == "timesync" or my_kind == "intime") and "ts" or my_kind and "rt" or nil, call = my_call }
   -- (away people hidden on request: James, 0.59.3. ExtState "who hide away")
   local hide_away, away = reaper.GetExtState(band.SECTION, "who hide away") ~= "", 0
   for _, r in ipairs(view.rows) do
@@ -2568,7 +2596,7 @@ function ui.settings_advanced()
     end
     local cha, va = switch_row("##showadv", "Show advanced controls", ui.advanced(), "Side rooms, claiming regions and time, Solo and Produce, and the Plugins page.\nOff, each still shows when it's needed: a side room, a missing plug-in, someone you're producing.")
     if cha then reaper.SetExtState(band.SECTION, "show advanced", va and "1" or "0", true); ui.extra_at = -math.huge end
-    local ch0, v0 = switch_row("##showplay", "Show the Play/Jam tab", ui.play_shown(), "Starting together, Time-sync and Jam. Time-sync and Jam go through NINJAM, which needs a server the others can reach.\nReal time mode, Follow and Solo don't need any of it.")
+    local ch0, v0 = switch_row("##showplay", "Show the Play/Jam tab (outside NINJAM server)", ui.play_shown(), "Starting together, plus Time-sync and Jam through ReaNINJAM and an outside NINJAM server the others can reach\n(REAPER needs a restart when ReaNINJAM's mode changes). Home's In time is built in and needs none of it; nor do Follow and Solo.")
     if ch0 then reaper.SetExtState(band.SECTION, "show play", v0 and "1" or "", true) end
     local ch1, v1 = switch_row("##allactions", "Every StudioSync action in REAPER's Actions list", band.all_actions(),
       "For keyboard shortcuts and toolbar buttons: Claim selected tracks, Local mixing, Take control and the rest.\n" ..
@@ -2591,6 +2619,7 @@ function ui.settings_advanced()
   end
 end
 function ui.settings_buffer()
+  if live.builtin_audio(cfg.root) then return end -- (SonoBus's settings: not while the studio's own live audio runs. rt-audit §1)
   if card("rt buffer") then
     heading("Real time buffer", 17)
     ImGui.TextDisabled(ctx, "How much sound SonoBus keeps in hand, on this computer. More holds steadier and arrives later.")
@@ -2623,16 +2652,19 @@ end
 function ui.settings_cant_hear()
   if card("cant hear") then
     heading("Can't hear each other?", 17)
+    local sb_help = not live.builtin_audio(cfg.root) -- (the SonoBus half: not while the studio's own live audio runs. rt-audit §1)
+    if sb_help then
     ImGui.TextDisabled(ctx, "Real time goes straight between your computers: SonoBus's public server only introduces you. StudioSync tells you when SonoBus can't join at all, or when someone's playing and nothing's arriving. Then, in this order:")
     ImGui.BulletText(ctx, require("live").PLACES.volumes .. " shows each person and how their connection is doing. Disconnect and connect again.")
+    end
     ImGui.BulletText(ctx, "Wired internet, rather than Wi-Fi.")
-    ImGui.BulletText(ctx, "Forward a UDP port on your router to this computer. SonoBus's options can fix the port it uses.")
+    if sb_help then ImGui.BulletText(ctx, "Forward a UDP port on your router to this computer. SonoBus's options can fix the port it uses.") end
     ImGui.BulletText(ctx, "A strict router or a work network can stop computers reaching each other directly. A VPN between you gets around that: Tailscale comes with StudioSync. Ask whoever runs the studio to invite you to its Tailscale network, and sign in from that invitation.")
     ImGui.BulletText(ctx, "On a Mac: System Settings > Privacy & Security > Microphone, with REAPER switched on. Without it, Talk and Real time send silence.")
     if ImGui.SmallButton(ctx, "Get Tailscale") then
       if reaper.CF_ShellExecute then reaper.CF_ShellExecute("https://tailscale.com/download") else band.msg("tailscale.com/download") end
     end
-    require("callapps").card(ctx, ImGui, b and function() ui.go_page("Home") end) -- (Discord and the like beside REAPER: lib/callapps.lua)
+    require("callapps").card(ctx, ImGui, b and function() ui.go_page("Home") end, not sb_help and function() ui.go_chat("Call") end) -- (Discord and the like beside REAPER: lib/callapps.lua)
     card_end()
   end
 end
@@ -2694,7 +2726,7 @@ local PAGES = {
   { "Projects", "This studio's projects, in their folders: open one, share one, file them, or free up space." },
   { "Home", "Who's here and what they're doing, real time mode, following and listening, and who changes what." },
   { "Rooms", "The project's rooms: make a side room to try things, have everyone come and see, and bring work back." },
-  { "Play/Jam", "Start together, Time-sync and Jam (NINJAM). Settings > Advanced shows or hides this tab." },
+  { "Play/Jam", "Start together, Time-sync and Jam (an outside NINJAM server). Settings > Advanced shows or hides this tab." },
   { "Chat", "Messages, to-dos, notes and links for this room, this project or the whole studio." },
   { "Restore", "Every change, and three ways back: the whole project, the selected tracks, or one change." },
   { "Mixes", "Render the mix, export stems, compare two mixes, a credits draft, studio templates, a copy outside the studio, and the listening page." },

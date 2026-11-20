@@ -2,6 +2,7 @@
 -- whoever mixes, two mixes compared at matched loudness, a credits draft, a stage for each project, and what happened while you were
 -- away. And a guest's own full-quality recording swapped in for what came over SonoBus, lined up by ear (cross-correlation).
 local band = require("band")
+local recap = require("recap")
 local extras = {}
 
 -- ---------------------------------------------------------------- stems
@@ -171,9 +172,13 @@ function extras.credits(cfg, b)
         local p = person(ev.user)
         p.changes = p.changes + 1
         if ev.obj == "track" and not seen[ev.oid] and not ev.base_ev and (ev.base or 0) == 0 then seen[ev.oid] = true; p.tracks = p.tracks + 1 end
+        -- (takes from the item events, as the session recap counts them: rt-audit §4)
+        local who, tname = recap.take_of(ev, recap.state_take)
+        local key = who and recap.take_key(ev, tname)
+        if key and not seen[key] then seen[key] = true; person(who).takes = person(who).takes + 1 end
       end
     end
-    for _, f in ipairs(band.files(band.takes_dir(cfg, b.song, room), ".json")) do
+    for _, f in ipairs(band.files(band.takes_dir(cfg, b.song, room), ".json")) do -- (an old song's take manifests, v0.x)
       local m = band.read_json(band.takes_dir(cfg, b.song, room) .. "/" .. f)
       if type(m) == "table" and m.user then local p = person(m.user); p.takes = p.takes + 1 end
     end
@@ -218,8 +223,15 @@ end
 function extras.away_counts(events, takes, msgs, since, me)
   local by, order, new_msgs, new_notes = {}, {}, 0, 0
   local function p(u) if not by[u] then by[u] = { changes = 0, takes = 0 }; order[#order + 1] = u end return by[u] end
+  local seen = {}
   for _, ev in ipairs(events) do
-    if ev.type == "obj" and ev.user and ev.user ~= me and not ev.auto and (ev.time or "") > since then p(ev.user).changes = p(ev.user).changes + 1 end
+    if ev.type == "obj" and ev.user and ev.user ~= me and not ev.auto and (ev.time or "") > since then
+      p(ev.user).changes = p(ev.user).changes + 1
+      -- (takes from the item events, as the session recap counts them; `takes`: an old song's manifests, v0.x. rt-audit §4)
+      local who, tname = recap.take_of(ev, recap.state_take)
+      local key = who and recap.take_key(ev, tname)
+      if key and not seen[key] then seen[key] = true; p(who).takes = p(who).takes + 1 end
+    end
     if ev.type == "note" and ev.user ~= me and (ev.time or "") > since then new_notes = new_notes + 1 end
   end
   for _, m in ipairs(takes) do if m.user and m.user ~= me and (m.sent or "") > since then p(m.user).takes = p(m.user).takes + 1 end end

@@ -19,8 +19,8 @@ local function say(s) out[#out + 1] = s end
 local function check(ok, what) if not ok then fails = fails + 1 end; say((ok and "PASS " or "FAIL ") .. what) end
 local yes = function() return true end
 local front = reaper.EnumProjects(-1)
-local was_bg = reaper.GetExtState(band.SECTION, "bg render")
-reaper.SetExtState(band.SECTION, "bg render", "off", false)
+local was_bg = reaper.GetExtState(band.SECTION, "bg render test")
+reaper.SetExtState(band.SECTION, "bg render test", "off", false)
 reaper.Main_OnCommand(40859, 0); local pa = reaper.EnumProjects(-1)
 reaper.Main_OnCommand(40859, 0); local pb = reaper.EnumProjects(-1)
 local function sent(who)
@@ -428,7 +428,7 @@ local ok, err = pcall(function()
   check(did ~= false and has_print(midi[1]), "and is once it plays")
 end)
 if not ok then fails = fails + 1; say("ERROR " .. tostring(err)) end
-reaper.SetExtState(band.SECTION, "bg render", was_bg, false)
+reaper.SetExtState(band.SECTION, "bg render test", was_bg, false)
 for _, p in ipairs({ pb, pa }) do
   reaper.SelectProjectInstance(p)
   reaper.Main_SaveProjectEx(p, root .. "/" .. tostring(p):gsub("%W", "") .. ".rpp", 8)

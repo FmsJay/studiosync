@@ -6,7 +6,7 @@
 --      with another source hash and FROM; where the plug-ins don't load the print plays only for the take it was made from, and a playing
 --      print counts as that take (mirror.picked_take).
 -- A scratch tab and a scratch studio folder (two 2 s test tones; the prints land in its media folder); Syncthing isn't asked (lib/trust.lua
--- stood in for). The ExtState "bg render" and "print problem" are put back. Any OS.
+-- stood in for). The ExtState "bg render test" and "print problem" are put back. Any OS.
 local D = reaper.GetResourcePath() .. "/StudioSync/tests"
 local lib = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]tests[/\\]reaper[/\\]") .. "/lib/"
 package.path = lib .. "?.lua;" .. package.path
@@ -24,8 +24,8 @@ local root = D .. "/rttakes_" .. os.time() .. "/StudioSync TakesLab"
 local media = root .. "/TakesLab/rooms/main/media"
 local cfg = { user = "James", root = root }
 local S = band.SECTION
-local was = { ["bg render"] = reaper.GetExtState(S, "bg render"), ["print problem"] = reaper.GetExtState(S, "print problem") }
-reaper.SetExtState(S, "bg render", "off", false) -- (rendered here and now: the background renderer is audio_prints.lua's)
+local was = { ["bg render test"] = reaper.GetExtState(S, "bg render test"), ["print problem"] = reaper.GetExtState(S, "print problem") }
+reaper.SetExtState(S, "bg render test", "off", false) -- (rendered here and now: the background renderer is audio_prints.lua's)
 local function sine(path, hz) -- 2 s, 44.1 kHz, 16-bit mono, -12 dBFS
   local sr, n = 44100, 88200
   local t = { "RIFF", string.pack("<I4", 36 + n * 2), "WAVE", "fmt ", string.pack("<I4I2I2I4I4I2I2", 16, 1, 1, sr, sr * 2, 2, 16), "data", string.pack("<I4", n * 2) }

@@ -27,8 +27,8 @@ local function sine_wav(path, secs, sr) -- 220 Hz at -12 dBFS, 16-bit mono
 end
 local front = reaper.EnumProjects(-1)
 -- (switched on, as print_bursts does: off by default on Linux and on a Mac without its helpers, where this failed. Linux VM, 0.58.77)
-local was_bg = reaper.GetExtState(band.SECTION, "bg render")
-reaper.SetExtState(band.SECTION, "bg render", "on", false)
+local was_bg = reaper.GetExtState(band.SECTION, "bg render test")
+reaper.SetExtState(band.SECTION, "bg render test", "on", false)
 reaper.Main_OnCommand(40859, 0); local pa = reaper.EnumProjects(-1)
 local ok, err = pcall(function()
   sine_wav(media .. "/take.wav", 2, 44100)
@@ -78,7 +78,7 @@ local ok, err = pcall(function()
   check(wpath ~= "" and math.abs(peak(wpath) - ceiling) < 0.05, string.format("limited there too (%.2f dBFS)", wpath ~= "" and peak(wpath) or -999))
 end)
 if not ok then fails = fails + 1; out[#out + 1] = "ERROR " .. tostring(err) end
-reaper.SetExtState(band.SECTION, "bg render", was_bg, false)
+reaper.SetExtState(band.SECTION, "bg render test", was_bg, false)
 if reaper.ValidatePtr2(0, pa, "ReaProject*") then
   reaper.SelectProjectInstance(pa)
   reaper.Main_SaveProjectEx(pa, root .. "/print_limit.rpp", 8)

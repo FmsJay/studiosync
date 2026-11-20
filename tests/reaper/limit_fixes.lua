@@ -21,8 +21,8 @@ local function sent(who) local n = 0; for _, f in ipairs(band.files(events, ".js
 local yes = function() return true end
 local only_laptop = function(u) return u == "Laptop" end
 local front = reaper.EnumProjects(-1)
-local was_bg, was_put = reaper.GetExtState(band.SECTION, "bg render"), reaper.GetExtState(band.SECTION, "put back")
-reaper.SetExtState(band.SECTION, "bg render", "off", false)
+local was_bg, was_put = reaper.GetExtState(band.SECTION, "bg render test"), reaper.GetExtState(band.SECTION, "put back")
+reaper.SetExtState(band.SECTION, "bg render test", "off", false)
 reaper.Main_OnCommand(40859, 0); local pa = reaper.EnumProjects(-1)
 reaper.Main_OnCommand(40859, 0); local pb = reaper.EnumProjects(-1)
 sync.driver_name = "Laptop"
@@ -378,7 +378,7 @@ local ok, err = pcall(function()
   end
 
   -- a job known to be stuck doesn't render in front
-  reaper.SetExtState(band.SECTION, "bg render", "on", false)
+  reaper.SetExtState(band.SECTION, "bg render test", "on", false)
   local name = "print-X-1-abcdef01-Laptop"
   bg.stuck[name] = true
   local called = false
@@ -387,7 +387,7 @@ local ok, err = pcall(function()
   bg.stuck[name] = nil
 end)
 if not ok then fails = fails + 1; say("ERROR " .. tostring(err)) end
-reaper.SetExtState(band.SECTION, "bg render", was_bg, false)
+reaper.SetExtState(band.SECTION, "bg render test", was_bg, false)
 reaper.SetExtState(band.SECTION, "put back", was_put, false)
 for _, p in ipairs({ pb, pa }) do
   reaper.SelectProjectInstance(p)

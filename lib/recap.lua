@@ -89,6 +89,24 @@ function recap.window(evs, floor)
   if floor and evs[i] and evs[i].time <= floor then i = i + 1 end
   return i
 end
+-- A new item's event that is a recording: a smart take name, or still REAPER's own. -> who played it and the take name, else nil. A lanes
+-- split copies takes already named, so count each once by recap.take_key. The session recap counts takes this way, and so do "While you
+-- were away" and the credits (lib/extras.lua: the take manifests they read haven't been written since v0.x. rt-audit §4). Pure but for take_name.
+function recap.take_of(e, take_name)
+  if (e.kind or e.type) ~= "obj" or e.auto or e.obj ~= "item" or (e.rev or 1) ~= 1 or e.gone or e.restored or not take_name then return nil end
+  local tname, file = take_name(e)
+  local _, p = recap.parse_name(tname)
+  if p or (tname and file and recap.is_default_name(tname, file) and tname ~= "") then return p or e.user, tname end
+  return nil
+end
+function recap.take_key(e, tname) return tostring(tname) .. "\0" .. ((e.name or "") ~= "" and e.name or "an unnamed track") end
+-- An item event's first take name and its file, from its state (the item's text). Pure.
+function recap.state_take(ev)
+  local st = ev.state
+  if type(st) ~= "string" then return nil end
+  local nm = st:match('\nNAME "([^"\n]*)"') or st:match("\nNAME ([^\n]*)")
+  return nm, st:match('FILE "([^"]+)"')
+end
 local function add_once(list, seen, v) if v and v ~= "" and not seen[v] then seen[v] = true; list[#list + 1] = v end end
 local function mmss(p) p = math.max(0, math.floor((p or 0) + 0.5)); return string.format("%d:%02d", p // 60, p % 60) end
 -- The recap of a session's events (time-sorted, the window already cut). `o`: { me, peers = { names }, markers (for a take's section),
@@ -110,16 +128,13 @@ function recap.build(evs, o)
       if e.obj == "track" then
         if e.gone then add_once(r.removed, seen_r, name)
         elseif (e.rev or 1) == 1 and not e.restored then add_once(r.added, seen_a, name) end
-      elseif e.obj == "item" and (e.rev or 1) == 1 and not e.gone and not e.restored and o.take_name then
-        local tname, file = o.take_name(e)
-        local s, p = recap.parse_name(tname)
+      elseif e.obj == "item" then
         -- (a smart name, or REAPER's own: a recording. A lanes split copies takes already named: counted once, by name)
-        if p or (tname and file and recap.is_default_name(tname, file) and tname ~= "") then
-          local key = (tname or "") .. "\0" .. name
-          if not seen_t[key] then
-            seen_t[key] = true
-            r.takes[#r.takes + 1] = { user = p or e.user, track = name, section = s or recap.section_at(o.markers, e.pos or 0), name = tname }
-          end
+        local who, tname = recap.take_of(e, o.take_name)
+        local key = who and recap.take_key(e, tname)
+        if key and not seen_t[key] then
+          seen_t[key] = true
+          r.takes[#r.takes + 1] = { user = who, track = name, section = recap.parse_name(tname) or recap.section_at(o.markers, e.pos or 0), name = tname }
         end
       end
     elseif kind == "timeline" then
@@ -346,12 +361,7 @@ function recap.write(proj, cfg, b)
   for _, st in ipairs(require("presence").peers(cfg, b.song, b.room) or {}) do peers[#peers + 1] = st.user end
   local r = recap.build(sess, { me = cfg.user, peers = peers, markers = B.capture_markers(proj), now = now_iso,
     versions = recall.list(cfg, b.song, b.room),
-    take_name = function(ev)
-      local st = ev.state
-      if type(st) ~= "string" then return nil end
-      local nm = st:match('\nNAME "([^"\n]*)"') or st:match("\nNAME ([^\n]*)")
-      return nm, st:match('FILE "([^"]+)"')
-    end })
+    take_name = recap.state_take })
   r.by, r.song, r.room = cfg.user, b.song, b.room
   table.insert(mine.recaps, 1, r)
   while #mine.recaps > recap.KEEP do table.remove(mine.recaps) end

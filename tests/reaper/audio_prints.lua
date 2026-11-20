@@ -30,8 +30,8 @@ local function sine_wav(path, secs, sr) -- 220 Hz at -12 dBFS, 16-bit mono
 end
 local front = reaper.EnumProjects(-1)
 -- (switched on, as print_bursts does: off by default on Linux and on a Mac without its helpers, where this failed. Linux VM, 0.58.77)
-local was_bg = reaper.GetExtState(band.SECTION, "bg render")
-reaper.SetExtState(band.SECTION, "bg render", "on", false)
+local was_bg = reaper.GetExtState(band.SECTION, "bg render test")
+reaper.SetExtState(band.SECTION, "bg render test", "on", false)
 reaper.Main_OnCommand(40859, 0); local pa = reaper.EnumProjects(-1)
 local sws_id = reaper.NamedCommandLookup("_SWSAUTOCOLOR_ENABLE")
 local sws_was = sws_id > 0 and reaper.GetToggleCommandState(sws_id) or -1
@@ -185,7 +185,7 @@ end)
 if not ok then say("ERROR " .. tostring(err)); fails = fails + 1 end
 if sws_id > 0 and sws_was >= 0 and reaper.GetToggleCommandState(sws_id) ~= sws_was then reaper.Main_OnCommand(sws_id, 0) end
 reaper.DeleteExtState(band.SECTION, "sws colour off", true)
-reaper.SetExtState(band.SECTION, "bg render", was_bg, false)
+reaper.SetExtState(band.SECTION, "bg render test", was_bg, false)
 if reaper.ValidatePtr2(0, pa, "ReaProject*") then
   reaper.SelectProjectInstance(pa)
   reaper.Main_SaveProjectEx(pa, D .. "/audio_prints.rpp", 8)

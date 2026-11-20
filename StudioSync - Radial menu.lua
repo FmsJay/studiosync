@@ -24,7 +24,7 @@ if reaper.set_action_options then reaper.set_action_options(1) end -- the shortc
 
 local live = require("live")
 local driving = require("sync").driver(cfg, b.song, b.room, band.read_json(band.session_path(cfg, b.song))) == cfg.user
-local rt = live.realtime_on(proj) or live.ninjam_master(proj) -- (Real time mode in any of its ways, Time-sync too: 0.59.8)
+local rt = live.realtime_on(proj) or live.ninjam_master(proj) or require("streams").in_time_on(proj) -- (Real time mode in any of its ways, Time-sync too: 0.59.8; In time, built in: rt-audit)
 -- where a ping goes: the timeline under the mouse as the menu opens (SWS), else the edit cursor
 local ping_pos = reaper.BR_PositionAtMouseCursor and reaper.BR_PositionAtMouseCursor(true) or -1
 if ping_pos < 0 then ping_pos = reaper.GetCursorPositionEx(proj) end
@@ -40,9 +40,9 @@ local SLICES = {
   driving and { "You\ndrive", "You're driving: your deletes, moves and lane choices already go to everyone." } or
     { "Take\ncontrol", "Take control: from now on your deletes, moves and lane choices go to everyone. It asks first.",
       function() dofile(dir .. "/StudioSync - Take control.lua") end },
-  { "Real time\n" .. (rt and "on" or "off"), rt and "Turn Real time mode off: SonoBus leaves and you stop " ..
-    "following play and stop. Edits keep syncing." or "Turn Real time mode on: SonoBus joins so you hear " ..
-    "each other right away, and play, stop and record follow whoever presses them.", function() ask("realtime") end },
+  { "Real time\n" .. (rt and "on" or "off"), rt and "Turn Real time mode off: you stop " ..
+    "following play and stop. Edits keep syncing." or "Turn Real time mode on (the way picked last on Home): play, stop and record " ..
+    "follow whoever presses them, and you hear each other.", function() ask("realtime") end },
   { "Chat", "Open the Chat page: messages, to-dos and links for the studio, this project or this room.",
     function() ask("chat") end },
   { "Ping\nhere", string.format("Put a marker at %.2f s on everyone's timeline for %d seconds, with your name: \"look here\".",

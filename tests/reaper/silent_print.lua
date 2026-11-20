@@ -17,8 +17,8 @@ local front = reaper.EnumProjects(-1)
 reaper.Main_OnCommand(40859, 0); local p = reaper.EnumProjects(-1)
 local media = D .. "/silent_media_" .. os.time()
 reaper.RecursiveCreateDirectory(media, 0)
-local was_bg = reaper.GetExtState("BandSync", "bg render")
-reaper.SetExtState("BandSync", "bg render", "off", false)
+local was_bg = reaper.GetExtState("BandSync", "bg render test")
+reaper.SetExtState("BandSync", "bg render test", "off", false)
 local logged = {}
 local log = band.log
 band.log = function(s) logged[#logged + 1] = s; return log(s) end
@@ -62,7 +62,7 @@ local ok, err = pcall(function()
 end)
 if not ok then fails = fails + 1; say("ERROR " .. tostring(err)) end
 band.log = log
-reaper.SetExtState("BandSync", "bg render", was_bg, false)
+reaper.SetExtState("BandSync", "bg render test", was_bg, false)
 reaper.SelectProjectInstance(p)
 reaper.Main_SaveProjectEx(p, media .. "/silent.rpp", 8)
 reaper.Main_OnCommand(40860, 0)

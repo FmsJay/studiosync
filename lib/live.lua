@@ -593,6 +593,29 @@ function live.sonobus_wanted(proj)
   return live.rt_flag(proj) or px("call") == "1" or reaper.GetExtState(band.SECTION, "listen " .. tostring(proj)) ~= ""
     or require("hear").has_listeners(proj) or require("producer").who(proj) ~= nil
 end
+-- The studio's own live audio runs here (on for the studio, and this extension has it): then SonoBus isn't offered anywhere (Real time
+-- mode's My time and Their time, the SonoBus call, Health, Set up everything, Prepare), so nobody sends twice. SonoBus stays for studios
+-- that turned live audio off, and its code until James's SonoBus gate (docs/rt/rt-audit.md §1).
+function live.builtin_audio(root)
+  local la = require("liveaudio")
+  return root ~= nil and la.enabled(root) and la.available()
+end
+-- Real time mode's ways Home offers (the panel's RT_KINDS): SonoBus's (`sonobus = true`) only without the studio's own live audio, or
+-- while one of them is on still, so it can be turned off. Pure.
+function live.offered(kinds, builtin, now)
+  local out = {}
+  for _, k in ipairs(kinds) do if not (k.sonobus and builtin and now ~= k[1]) then out[#out + 1] = k end end
+  return out
+end
+-- SonoBus still on here beside the studio's own live audio (from before, or the call left on): everyone hears you twice. -> what to say,
+-- or nil; it goes to the log once per tab.
+function live.twice_note(proj, builtin, sonobus_on)
+  if not (builtin and sonobus_on) then return nil end
+  local text = "SonoBus is on as well as the studio's own live audio, so everyone hears you twice."
+  local k = "sonobus twice " .. tostring(proj)
+  if reaper.GetExtState(band.SECTION, k) == "" then reaper.SetExtState(band.SECTION, k, "1", false); band.log(text .. " Turn SonoBus off on Home.") end
+  return text
+end
 -- SonoBus carries only the talk mic: the call without Real time mode, or whenever NINJAM has your playing (Time-sync, Jam), so nobody
 -- hears it twice (0.59.8, review: Solo or Produce during Time-sync sent your tracks both ways).
 function live.talk_only(proj)

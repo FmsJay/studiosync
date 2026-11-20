@@ -313,7 +313,7 @@ function M.section_together()
   if side ~= "" then
     local n = tonumber(side) or 0
     local live_mode_note = live.fx(proj, false) and "Time-sync / Jam is connected." or (live.fx(proj, false, live.SONOBUS) and "Real time is on."
-      or "To hear each other, connect on Play.")
+      or live.builtin_audio(cfg.root) and "You hear each other through the studio's live audio." or "To hear each other, connect on Play.")
     ImGui.PushTextWrapPos(ctx, 0)
     ImGui.TextDisabled(ctx, string.format("On: you follow %s behind whoever plays. %s", n == 0 and "right along" or (n .. (n == 1 and " bar" or " bars")), live_mode_note))
     local cm = live.fx(proj, false) and live.channel_mode()

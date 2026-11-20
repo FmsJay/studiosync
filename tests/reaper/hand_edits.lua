@@ -22,8 +22,8 @@ local function check(ok, what) if not ok then fails = fails + 1 end; say((ok and
 local function sent(who) local n = 0; for _, f in ipairs(band.files(events, ".json")) do if f:sub(1, #who + 1) == who .. "-" then n = n + 1 end end; return n end
 local yes = function() return true end
 local front = reaper.EnumProjects(-1)
-local was_bg, was_view = reaper.GetExtState(band.SECTION, "bg render"), reaper.GetExtState(band.SECTION, "show midi edits")
-reaper.SetExtState(band.SECTION, "bg render", "off", false) -- (in front: audio_prints covers the background)
+local was_bg, was_view = reaper.GetExtState(band.SECTION, "bg render test"), reaper.GetExtState(band.SECTION, "show midi edits")
+reaper.SetExtState(band.SECTION, "bg render test", "off", false) -- (in front: audio_prints covers the background)
 reaper.Main_OnCommand(40859, 0); local pa = reaper.EnumProjects(-1)
 reaper.Main_OnCommand(40859, 0); local pb = reaper.EnumProjects(-1)
 -- (a pass sends or applies a quarter second's worth, the rest next pass: on a busy machine two passes left a change behind, so these run until done)
@@ -194,7 +194,7 @@ local ok, err = pcall(function()
   check(sent("James") == n1, "selecting it there sends nothing back")
 end)
 if not ok then fails = fails + 1; say("ERROR " .. tostring(err)) end
-reaper.SetExtState(band.SECTION, "bg render", was_bg, false)
+reaper.SetExtState(band.SECTION, "bg render test", was_bg, false)
 reaper.SetExtState(band.SECTION, "show midi edits", was_view, false)
 for _, p in ipairs({ pb, pa }) do
   reaper.SelectProjectInstance(p)

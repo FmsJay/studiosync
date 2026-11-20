@@ -61,7 +61,7 @@ assert(webpages.bars("3") == 3 and webpages.bars(2.7) == 2 and webpages.bars(-4)
 
 -- ---- actions and the tick, against stand-ins --------------------------------------------------------------------------------------------
 local rt_on, mode, manages = false, "claims", false
-package.loaded.live = { realtime_on = function() return rt_on end, fx = function(_, _, fx) if not fx then return "master", 0 end end, SONOBUS = "SonoBus" }
+package.loaded.live = { realtime_on = function() return rt_on end, builtin_audio = function() return true end, fx = function(_, _, fx) if not fx then return "master", 0 end end, SONOBUS = "SonoBus" }
 package.loaded.sync = { authority = function() return function() end, { mode = mode, driver = "Andie" } end }
 package.loaded.groups = { may_manage = function() return manages end }
 local sent = {}
@@ -143,7 +143,7 @@ webpages.action(P, cfg, b, { topic = "play", want = true })
 projext["P1/side"], ext[band.SECTION .. "/together P1"] = "1", "James: start from bar 3"
 webpages.tick(P, cfg, b, publish, { mode = "driver", driver = "James" }, clock)
 local pj = pubs[#pubs]
-assert(pj[1] == "play" and pj[2].follow and pj[2].bars == 1 and pj[2].may and pj[2].from[2] == "Verse (bar 11)" and pj[2].last:find("bar 3") and pj[2].ninjam, "Play together: " .. band.json_encode(pj[2]))
+assert(pj[1] == "play" and pj[2].follow and pj[2].bars == 1 and pj[2].may and pj[2].from[2] == "Verse (bar 11)" and pj[2].last:find("bar 3") and pj[2].ninjam and pj[2].liveaudio, "Play together: " .. band.json_encode(pj[2]))
 webpages.tick(P, cfg, b, publish, { mode = "driver", driver = "Andie" }, clock + webpages.PLAY_EVERY)
 assert(pubs[#pubs][2].may == false and pubs[#pubs][2].why:find("driver"), "who may, from webui's presence build")
 

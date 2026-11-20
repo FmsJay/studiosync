@@ -21,7 +21,7 @@ local function sent(who) local n = 0; for _, f in ipairs(band.files(events, ".js
 local yes = function() return true end
 local not_james = function(u) return u ~= "James" end -- (Keys is the laptop's claim: James may not change it)
 local front = reaper.EnumProjects(-1)
-reaper.SetExtState(band.SECTION, "bg render", "off", false) -- (in front: audio_prints covers the background)
+reaper.SetExtState(band.SECTION, "bg render test", "off", false) -- (in front: audio_prints covers the background)
 reaper.Main_OnCommand(40859, 0); local pa = reaper.EnumProjects(-1)
 reaper.Main_OnCommand(40859, 0); local pb = reaper.EnumProjects(-1)
 local real_plays = prints.track_plays
@@ -154,7 +154,7 @@ local ok, err = pcall(function()
 end)
 lacks(false)
 if not ok then say("ERROR " .. tostring(err)); fails = fails + 1 end
-reaper.DeleteExtState(band.SECTION, "bg render", false)
+reaper.DeleteExtState(band.SECTION, "bg render test", false)
 for k, p in ipairs({ pa, pb }) do
   if reaper.ValidatePtr2(0, p, "ReaProject*") then
     reaper.SelectProjectInstance(p)

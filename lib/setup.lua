@@ -136,7 +136,7 @@ function setup.all(cfg, b, proj, st, start_sync, play_along)
     local server, why = services.ninjam_for(cfg, setup.live_file(cfg, b), true)
     notes[#notes + 1] = server and ("NINJAM server: " .. server) or why
   end
-  if not st.sonobus then
+  if not st.sonobus and not live.builtin_audio(cfg.root) then -- (the studio's own live audio carries the sound: no SonoBus. rt-audit §1)
     local link, why = setup.sonobus(cfg, b, proj, false)
     notes[#notes + 1] = link and "SonoBus added (off until you switch on Real time mode)" or why
   end
