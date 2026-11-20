@@ -386,6 +386,35 @@ Like Helgobox's move away from REAPER's own widgets, now that the extension is m
   user-data folder, origin rule, key messages; on Windows the view made in a hidden window with a fresh folder and loading the pages
   from the server. `tests/test_0_60_rt_dock.lua`: the panel button's choices and a link check of lib/webui.
 
+### Song page built: shared DAW view stage 1 and song history (rt-dawview, 2026-11-19; offline tests and a stand-in server only, not run in REAPER yet)
+- **Model:** `lib/dawview.lua`, from the tab in front, only while a page has the Song page open (the page says so every 10 s, an action
+  `{topic:"daw", want}`; 30 s grace). Topics: `daw` (tracks: name, colour, folder depth, mute/solo; markers and regions; bar times and time
+  signatures; tempo; grid; whether you may play), `dawc<k>` (items of 4 tracks each: position, length, colour, name, waveform as one character
+  per column, 0-63 of full scale, 10 a second up to 600, from GetMediaItemTake_Peaks at twice that and halved by maximum; MIDI as notes in ms),
+  `dawcur` (play cursor with its rate, your edit cursor and view, bandmates' cursors and views), `dawhist` (History only). The project is read
+  again only when REAPER's change count moves (and every 10 s); only a chunk whose fingerprint moved is encoded and sent; peaks read within
+  6 ms a tick and kept per take; fixed lanes show only the lanes that play; this computer's own tracks, stem prints and hidden tracks left out.
+- **Server:** the event stream sends only the topics that changed after its first snapshot (`"delta":true`; `/api/state` is still everything),
+  so a cursor moving doesn't resend the song. Needs the next extension build; with 1.0.13 every event is still the whole snapshot (works, heavier).
+- **Payload** (test, 40 tracks / 400 items of 20 s, every fifth track MIDI): 173 KB for the whole song (header 2.8 KB, chunks 10.6-18.7 KB,
+  cursors 0.2 KB); moving one item resends 18.7 KB (its chunk).
+- **Cursors and follow:** while someone's Song page is open, bandmates put their view and edit cursor in their status (`dawview` flag, as when
+  followed). Follow: nobody, the play cursor (pages), this REAPER, or a bandmate.
+- **History:** changes from recall.lua's own cache (recall.warm a little each tick, only while History shows; built every 10 s) as dots on
+  their track at their position, coloured by who; notes at their spot; saved versions on a strip of the song's life. Picking a version shows
+  what changed since the one before; **Restore this** hands it to the panel (`band.panel_do "restore <file>"`): the Restore page opens with that
+  version's row open and its usual buttons, which ask as ever. Nothing is restored from the page.
+- **Play/Stop together:** `together.go` (moved out of page_play, the panel uses it too); from the edit cursor with a bar's count-in. Refused in a
+  driver's room for anyone but the driver (admins' room: driver and admins).
+- **Pages:** `lib/webui/daw.js`, `daw.css` (the Song tab is made by daw.js; index.html links the two, app.js dispatches `ss-state`). Canvas,
+  drawn into an offscreen layer when the song or view changes, cursors on top each frame while playing. Drag to pan, pinch or Ctrl/trackpad-pinch
+  wheel to zoom, Shift+wheel sideways, double-tap to fit. Narrow docker and phone layouts.
+- **Tests:** `tests/test_0_60_rt_dawview.lua`; `tests/webui_test.cpp` checks the delta events.
+- **Check in REAPER:** open http://127.0.0.1:47281/ and the docked view, Song tab, on a real song: tracks, colours, folders, waveforms, MIDI,
+  markers/regions and bar numbers match REAPER; the play cursor runs with REAPER's; editing an item updates it within a second; Follow This
+  REAPER tracks the arrange view; a bandmate's cursor shows once they run this build; History dots and versions; Restore this opens the panel's
+  Restore page on that version; Play/Stop together start everyone; the tick cost with the page open and closed (tests/reaper/rt_perf.lua).
+
 ### Web UI: what remains (TODO)
 - **Docking:** built (above); check it in REAPER on Windows and a Mac. WebKitGTK on Linux still to do.
 - **Pages, then parity:** scopes and to-dos/links in chat, Health, Play together; the ReaImGui panel stays until each page matches.
