@@ -202,7 +202,8 @@ end
 -- An action from a page ({ topic = "daw", ... }) -> what it asks for, checked: { want, history, play = "start"|"stop", restore = file }.
 function dawview.parse(a)
   if type(a) ~= "table" then return nil end
-  local out = { want = a.want == true or nil, history = a.history == true or nil }
+  -- (nohistory: the Song page saying it's off; a want without either, the phone's, leaves the history as another page asked)
+  local out = { want = a.want == true or nil, history = a.history == true or nil, nohistory = a.history == false or nil }
   if a.play == "start" or a.play == "stop" then out.play = a.play end
   -- (a saved version's file name, as recall names them: nothing that could point anywhere else)
   if type(a.restore) == "string" and #a.restore <= 200 and a.restore:match("^[%w][%w%-_ %.]*%.json$") and not a.restore:find("%.%.") then out.restore = a.restore end
@@ -361,7 +362,7 @@ function dawview.action(proj, cfg, b, a)
   local now = reaper.time_precise()
   if d.want then S.want_until = now + dawview.WANT_FOR end
   if d.want and d.history then S.hist_until = now + dawview.WANT_FOR end
-  if d.want and not d.history then S.hist_until = -math.huge end
+  if d.want and d.nohistory then S.hist_until = -math.huge end
   if d.play then
     local why = dawview.transport_refusal(cfg, b)
     if why then return "the web page's " .. (d.play == "start" and "Play" or "Stop") .. " together was refused: " .. why .. " in this room" end

@@ -1,0 +1,27 @@
+/* StudioSync on the phone, stage 2 (phonedaw.js): the view switcher, the Project view for touch, the Sheet view (sheet.css's teleprompter
+   look) and the Headphones block. Uses style.css's colours, so light/dark follow it. GPL-3.0-or-later. (James, rt) */
+.views { display: flex; gap: 6px; padding: 6px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.views button { flex: 1; padding: 8px 6px; }
+.views button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.pview { max-width: 900px; width: 100%; margin: 0 auto; }
+#arr:not([hidden]) { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+.arow { display: flex; gap: 8px; align-items: center; margin: 4px 0 8px; }
+.apos { flex: 1; text-align: center; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.awrap { height: min(58vh, 520px); min-height: 220px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+#acv { display: block; touch-action: none; } /* (the view's own drag and pinch, not the page's scroll and zoom) */
+#apanel h3 { margin: 10px 0 4px; }
+#apanel input[type="range"] { width: 100%; }
+#apanel .bad { color: var(--rec); }
+.prow2 { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.takes2 { display: flex; flex-direction: column; gap: 6px; }
+.takes2 button { text-align: left; }
+.takes2 button[aria-pressed="true"] { border-color: var(--accent); }
+.chk { display: flex !important; align-items: center; gap: 8px; color: var(--text) !important; margin: 8px 0 !important; }
+#rec .chk input, #apanel .chk input { width: auto; }
+#rec input[type="range"] { padding: 0; border: 0; background: none; }
+.acoms li { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; margin-bottom: 6px; overflow-wrap: anywhere; }
+.acoms li.at { cursor: pointer; }
+.acoms li.pending { opacity: .6; }
+#acomt { flex: 1; min-width: 0; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+#sht:not([hidden]) { display: flex; flex-direction: column; flex: 1; min-height: 0; padding: 0; max-width: none; }
+#sht [hidden] { display: none !important; }

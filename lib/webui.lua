@@ -140,6 +140,7 @@ end
 webui.ACTIONS = { chat = true, rtc = true, daw = true, health = true, play = true } -- (rtc: a video call or screen share's setup, lib/webcall.lua; daw: the Song page's, lib/dawview.lua; health, play: lib/webpages.lua)
 webui.ACTIONS.phonerec = true -- (the Record page's: a take from a phone, lib/phonerec.lua)
 webui.ACTIONS.sheet = true -- (the Sheet and Beat pages': lib/songsheet.lua)
+webui.ACTIONS.phonedaw = true -- (the phone app's Project view: its tracks' GUIDs and items' takes, picking a take, lib/phonedaw.lua)
 webui.ACTIONS.mixer = true -- (the Mixer page's: lib/webmixer.lua)
 function webui.parse_action(s)
   local a = type(s) == "string" and s ~= "" and band.json_decode(s)
@@ -199,6 +200,10 @@ function webui.tick(proj, cfg, b, handlers)
       local said = require("phonerec").action(proj, cfg, b, a)
       if said then band.log(said) end
     end
+    if topic == "phonedaw" then
+      local said = require("phonedaw").action(proj, cfg, b, a)
+      if said then band.log(said) end
+    end
     if topic == "sheet" then
       local ok, said = pcall(require("songsheet").action, proj, cfg, b, a) -- (a file write: one that fails is said, the other actions still go)
       if said then band.log(ok and said or "the web page's sheet edit couldn't be saved: " .. tostring(said)) end
@@ -253,6 +258,7 @@ function webui.tick(proj, cfg, b, handlers)
   require("dawview").tick(proj, cfg, b, publish, last_who, now)
   -- the Record page: a phone's take, its play readings and state only while one is open (lib/phonerec.lua)
   require("phonerec").tick(proj, cfg, b, publish, now)
+  require("phonedaw").tick(proj, cfg, b, publish, now) -- (and its Project view, while one looks)
   -- the Sheet and Beat pages: only while a page shows one (lib/songsheet.lua)
   require("songsheet").tick(proj, cfg, b, publish, handlers, now)
   -- the Mixer page: only while a page shows it (lib/webmixer.lua)

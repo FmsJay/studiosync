@@ -508,6 +508,23 @@ lib/tools.lua EXT_WANT.
       and offers, SMF parsing, the BWF stamp, phone-placed and MIDI takes, once-only, another project's take waiting).
   - **Stage 2 (browser):** the project's tracks as a simple arrange view (the Project page's drawing, made for touch), several takes per
     track to choose between, volume/mute per track, a few built-in effects for monitoring, comments and the song sheet (lyrics, chords).
+    - **Stage 2 built (rt-phonedaw, 2026-11-20; Lua tests and headless Chromium with fake devices against a stand-in server, not yet on
+      a phone or in REAPER):** the phone app (record.html) has Record, Project and Sheet views (`lib/webui/phonedaw.js`, `phonedaw.css`;
+      `lib/phonedaw.lua`, topic and action `phonedaw`). Project: the Project page's own topics (daw, dawc<k>) drawn for touch (drag, pinch,
+      tap the ruler for the start), this phone's takes not in yet dashed in place. Tap an item to pick which take plays (the active take,
+      checked as a Project page item edit: the room's rule for the track, its maker's while unclaimed, not while a bandmate holds the item;
+      one undo point, the normal sync carries it). Tap a track for its volume and mute in the project (the Mixer page's checked moves, topic
+      `mixer`, so it needs `lib/webmixer.lua`) and this phone's own level and on/off for its takes. Comments go to the project's chat with
+      the place in front ("[1:23.4 Vox] ..."), kept on the phone until they've gone. Sheet: the Sheet page's lyrics and chords, big, the
+      section you're in lit and followed, along to the phone's own mix too, screen kept on. Headphones (Record view): hear yourself with a
+      reverb, the mix's level and a 3-band EQ, Web Audio only (the take stays dry), with the delay the browser reports shown. Offline: each
+      project's view, sheet and comments are kept in IndexedDB (`phonefile.js` store `views`, database version 2) and the service worker
+      keeps the new files (`ss-phone-2`); Listen plays the kept mix and this phone's takes from the cursor. A phone's want for the daw topic
+      no longer turns off a computer's history view (dawview `nohistory`). Not done: comments are chat messages with a place prefix, not
+      their own records; takes are picked as the item's active take only (no lane comping from the phone); band tracks inside the mix
+      can't be levelled on the phone (the mix is one file); hearing yourself is 20-80 ms late on Android (low latency is stage 3). To try
+      on a real phone: touch gestures, the monitor's delay and feedback, Bluetooth, the screen lock on the Sheet view, the database upgrade
+      from stage 1's version 1 with takes in it. Tests: `tests/test_0_60_rt_phonedaw.lua`.
   - **Stage 3 (a native app, later):** what browsers can't do reliably: more than two inputs as separate tracks, low-latency monitoring
     through the phone, background recording, and iPhone MIDI. Same file format and the same way into the project.
 

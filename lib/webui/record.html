@@ -14,8 +14,11 @@
 <link rel="apple-touch-icon" href="phone-icon-192.png">
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="record.css">
+<link rel="stylesheet" href="sheet.css">
+<link rel="stylesheet" href="phonedaw.css">
 <script src="phonefile.js" defer></script>
 <script src="record.js" defer></script>
+<script src="phonedaw.js" defer></script>
 </head>
 <body>
 <header>
@@ -26,6 +29,11 @@
   <span id="conn" class="conn" role="status">connecting</span>
   <a href="./" class="conn">Back</a>
 </header>
+<nav id="views" class="views" aria-label="Views">
+  <button type="button" data-view="rec" aria-pressed="true">Record</button>
+  <button type="button" data-view="arr" aria-pressed="false">Project</button>
+  <button type="button" data-view="sht" aria-pressed="false">Sheet</button>
+</nav>
 <section id="rec" aria-labelledby="rec-h">
   <h2 id="rec-h">A take from a phone</h2>
   <div id="insecure" class="note" hidden>
@@ -94,6 +102,19 @@
     <label for="extra">This phone's extra delay (ms, added to what the browser reports; Bluetooth headphones need a lot)</label>
     <input id="extra" type="number" inputmode="numeric" step="1" value="0">
   </details>
+  <details id="hp" class="small">
+    <summary>Headphones: hear yourself, reverb, EQ</summary>
+    <label class="chk"><input id="monon" type="checkbox"> Hear yourself while recording (wired headphones: a speaker feeds back)</label>
+    <p id="monlat" class="dim small"></p>
+    <label for="monlvl">Your voice</label><input id="monlvl" type="range" min="0" max="1.5" step="0.01" value="0.8">
+    <label for="monrev">Reverb on your voice</label><input id="monrev" type="range" min="0" max="1" step="0.01" value="0.25">
+    <label for="mixlvl">The mix, on this phone</label><input id="mixlvl" type="range" min="0" max="1.5" step="0.01" value="1">
+    <label for="eqlo">EQ: low</label><input id="eqlo" type="range" min="-12" max="12" step="1" value="0">
+    <label for="eqmid">EQ: middle</label><input id="eqmid" type="range" min="-12" max="12" step="1" value="0">
+    <label for="eqhi">EQ: high</label><input id="eqhi" type="range" min="-12" max="12" step="1" value="0">
+    <p class="dim small">Only in your headphones: the take is recorded dry and nothing here goes into the project. The EQ is on everything
+      you hear from this phone.</p>
+  </details>
   <div id="big" class="big" aria-live="polite">
     <div id="pos" class="pos">0:00.0</div>
     <div id="state" class="dim">stopped</div>
@@ -121,13 +142,41 @@
       <li>Android Chrome lets the page pick the interface. On iPhone the input is the one iOS uses: plug the interface in before opening the
         app; iOS may give only one channel.</li>
       <li>MIDI keyboards work where the browser has Web MIDI: Android Chrome, not iPhone.</li>
-      <li>You hear the mix, not yourself: no monitoring through the phone.</li>
+      <li>Hearing yourself through the phone (Headphones) comes late by the delay shown there: often 20-80 ms on Android, more on
+        Bluetooth. Fine for a reverb to sing into, not for tight timing; low-latency monitoring needs a native app.</li>
+      <li>The Project view's own levels are for this phone's playback: the mix (one file) and this phone's takes. The band's tracks inside the
+        mix can't be turned up or down on the phone; changing a track in the project needs the studio computer and the room's say-so.</li>
       <li>Keep the screen on and the app in front while recording: a phone pauses a page in the background.</li>
       <li>Bluetooth headphones add a delay the browser can't see: set it under Timing, or nudge.</li>
       <li>The app belongs to the computer it was installed from: its takes go to that computer, once it has the project open in front.</li>
       <li>A mix is taken to start at the project's start (as Render current mix makes it).</li>
     </ul>
   </details>
+</section>
+<!-- stage 2 (phonedaw.js): the project's tracks for touch, and the song sheet -->
+<section id="arr" class="pview" aria-label="Project" hidden>
+  <div class="arow">
+    <button id="alisten" type="button">Listen</button>
+    <span id="apos" class="apos">0:00.0</span>
+    <button id="afit" type="button">Fit</button>
+  </div>
+  <div id="awrap" class="awrap"><canvas id="acv" role="img" aria-label="The project’s tracks and items, with this phone’s takes in place"></canvas></div>
+  <p id="awhy" class="dim small" role="status"></p>
+  <div id="apanel" class="note" hidden></div>
+  <h2>Comments</h2>
+  <ol id="acoms" class="acoms"></ol>
+  <form id="acomf" class="arow" autocomplete="off">
+    <input id="acomt" maxlength="500" placeholder="A comment at the cursor" aria-label="Comment" enterkeyhint="send">
+    <button type="submit">Send</button>
+  </form>
+</section>
+<section id="sht" class="pview" aria-label="Sheet" hidden>
+  <div class="tptop">
+    <span id="tpwhere" class="tpwhere"></span>
+    <button id="tpsmall" type="button" aria-label="Smaller text">A-</button>
+    <button id="tpbigger" type="button" aria-label="Bigger text">A+</button>
+  </div>
+  <div id="tpbody" class="tpbody"></div>
 </section>
 </body>
 </html>
