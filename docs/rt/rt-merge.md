@@ -95,21 +95,55 @@ second, only the laptop's.
 
 **The rule now.** James asked for both: two people adding different notes to one part both go through (rt-merge), and editing what someone
 claimed asks them (rt-claims). They meet at auto-claims, which every edit makes in Claims mode. So:
-- An edit held back **only by a bandmate's auto-claim** goes out when it merges with that bandmate's own newest change to the same item,
-  automation or track. Different notes, other points, other settings, or something they didn't touch all count as merging.
-- An edit to the same note, point or setting they changed is still asked for, as rt-claims does.
+- An edit held back **only by a bandmate's auto-claim** goes out when it touches no piece that bandmate changed lately in the same item,
+  automation or track. Different notes, other points, other settings, or something they didn't touch all go through.
+- An edit to a note, point or setting they changed is still asked for, as rt-claims does. **That includes setting it back to what it was**
+  (second fix, below), and deleting a note they added.
+- "Lately" is as long as an auto-claim lasts: their changes to it in the last 10 minutes (`sync.AUTO_IDLE`), every one of them, not only the
+  newest. An item they made in that time is all theirs (new notes in it still go through).
 - A lasting claim (one claimed by hand) still asks for every edit.
 - Plug-in chains and the timeline don't merge, so they're still asked for.
 - `claimask.soft(who, name, pos, user)` gives the claimer when the deciding claim is someone else's auto-claim (`claimask.which` now
   carries the claim's `auto`).
-- `mirror.clashes(room_dir, kind, state, from, user)` finds the claimer's newest change from the version held here, back through the
-  versions each started from. It then asks `merge_state` whether both changed one piece.
+- `mirror.pieces(kind, state)` cuts a state where the merges cut it: an item's lines (place, length, offset and rate as one; each note and
+  MIDI event its own), a track's settings (lanes as one), automation's envelopes, points and lines.
+- `mirror.clashes(room_dir, kind, state, from, user)` walks from `from` (the version the editor's computer held) back through the versions
+  each started from, collects the pieces the claimer's recent changes changed, and says whether the edit (`from` → `state`) changes any.
 - Sender: `mirror.watch`'s W.one, through `opts.soft` from Live sync, sends instead of refusing (W.refuse, the ask) when nothing clashes.
-- Receivers: `sync.receive`'s `refused` takes the same rule through `sync.soft` (Live sync's, its own room only). Without it, the change
-  would wait a minute as "refused, maybe a claim on its way" before landing.
+- Receivers: `sync.receive`'s `refused` takes the same rule through `sync.soft` (Live sync's, its own room only), judged from the change's
+  own base as its sender judged it. Without it, the change would wait a minute as "refused, maybe a claim on its way" before landing.
 - The web Project page and the phone still go by rt-claims' ask for an auto-claimed track. They have no state of the edit before it's made.
 - Test: `tests/test_0_60_rt_merge.lua`, "Claims mode". With Keys as James's auto-claim, the laptop's different note goes out and lands on
   the desktop at once. The laptop changing James's own new note is still refused.
+
+**Second fix (REAPER check, 0.59.49.72): putting back what the claimer changed slipped past the ask.** The desktop, holding an auto-claim,
+set an item's volume 0.9 → 0.5; the laptop set it back to 0.9 and it went straight out, silently undoing the desktop's change (0.7 asked
+correctly; the same with an unmute after a mute). `mirror.clashes` used the three-way merge, whose base is the state before the claimer's
+change, so a value equal to that base didn't count as a change. It now compares pieces directly, as above: what the claimer changed from the
+version they started from, against what the editor changed from the version their computer held. Tests: the volume set back, another
+volume, an unmute after a mute, the claimer's earlier change set back, the claimer's new note deleted, an item the claimer just made (all
+refused); a setting the claimer didn't touch, and the same set-back ten minutes later (both sent).
+
+**In practice (REAPER check 7):** in Claims mode, two people moving one item about half a second apart get the **ask**, not "theirs
+stands". The first move lands and auto-claims the track before the second look, so the second move is an edit to the piece the claimer just
+changed. "Theirs stands" with Use mine shows only when both went out before either arrived, or in Open, where there are no claims.
+
+## 3c. Refusal words by mode (`mirror.refusal_words`)
+
+The REAPER check found Driver only saying "Not sent: James is driving and XT Drums A is nobody's: claim it to edit it." Those were Driver +
+claims' words (a mode rt-claims removed); in Driver only a claim doesn't count. W.refuse's words now come from one function, by mode:
+
+| Mode | Whose claim holds there | Words after "Not sent: " |
+|---|---|---|
+| Driver only | anyone's or nobody's (claims don't count) | only the driver (James) edits in this room (Take control, or ask them to set Who controls to Claims) |
+| Claims | someone else's | X is claimed by Bo: ask them to release it (reached only when the ask can't run; otherwise rt-claims' ask words) |
+| Claims, Admins only | someone else's, sent as a suggestion | X is Bo's, so it's sent to them as a suggestion |
+| Admins only | someone else's | X is claimed by Bo: ask them to release it, or an admin to give it to you |
+| Admins only | nobody's | only admins, and whoever an admin lets edit here, change what nobody has claimed in this room |
+| Open | (nothing is refused for whose it is) | it isn't yours to change right now (a fallback only) |
+
+A claim by the driver now reads as a claim ("claimed by James"), not as "James is driving and it's nobody's". "claim it to edit it" is gone
+everywhere: no mode left makes an unclaimed thing yours by claiming it except Admins only, where the claim has to be given.
 
 ## 4. Files
 
@@ -175,7 +209,12 @@ size check, not bigreaper.
 5. **Track:** one renames a track while the other moves its fader. Both stand.
 6. **Envelope:** both show the same track's volume envelope; each adds a point in a different place at the same time. Both points are on
    both computers once the 3 s settle passes.
-7. **Same setting:** both drag one item to different places at once. Both end in one place; one gets the "theirs stands" bar.
+7. **Same setting:** both drag one item to different places at once. Both end in one place. In Open, or when both went out before either
+   arrived, one gets the "theirs stands" bar. In Claims mode with the moves about half a second apart, the second mover gets the ask
+   instead (§3b): the first move auto-claimed the track.
+7b. **Set back (Claims mode):** one changes an item's volume; within ten minutes the other sets it back to the old value. The other gets the
+   ask (no silent undo). Changing a different setting of that item goes straight out.
+7c. **Driver only:** a non-driver's edit is put back with "only the driver (<name>) edits in this room", never "claim it".
 8. **Delete vs edit:** one deletes an item while the other trims it. It's gone on both.
 9. **No hold:** edit an item right after a bandmate did. It isn't put back, there's no "Not sent" bar, and the log says "<name> is editing
    that item too". The "<name> is editing" tint still shows on the item while they work.

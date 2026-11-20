@@ -84,7 +84,7 @@ local function look(c, held)
   as(c)
   c.F.clock = c.F.clock + 1
   local r = rules[c.cfg.user] or {}
-  mirror.watch(c.F.proj, c.cfg, song, room, { can = r.can or yes, is_claimed = r.claimed, mode = "open", quick = true, held = held, soft = r.soft })
+  mirror.watch(c.F.proj, c.cfg, song, room, { can = r.can or yes, is_claimed = r.claimed, mode = r.mode or "open", quick = true, held = held, soft = r.soft })
   local oids = {}
   for _, ev in ipairs(new_events()) do if ev.oid then oids[ev.oid] = ev end end
   return oids
@@ -320,13 +320,15 @@ end
 do
   local a = item_named(keys, "Keys A")
   local K = keys.name
-  tick(); as(A)
+  tick(sync.AUTO_IDLE + 60) -- (the song James shared is older than an auto-claim lasts: only what he changes from here is his work in progress)
+  as(A)
   with_notes(A, a, { "E 0 90 3c 60", "E 240 90 43 60", "E 120 80 43 00", "E 120 80 3c 00", "E 0 90 40 50", "E 480 80 40 00", "E 960 b0 7b 00" })
   tick(); settle(A); tick(); recv(B)
   -- Keys is James's auto-claim now, on both computers
-  local function claimed(name) return name == K end
-  local function can(user, name) return user == "James" or name ~= K end
-  local function soft(name, _, user) if name == K and user ~= "James" then return "James" end end
+  local his = { [K] = true } -- (James's auto-claims, by track name)
+  local function claimed(name) return his[name] == true end
+  local function can(user, name) return user == "James" or not his[name] end
+  local function soft(name, _, user) if his[name] and user ~= "James" then return "James" end end
   rules.James = { can = can, claimed = claimed, soft = soft }
   rules.Bee = { can = can, claimed = claimed, soft = function(name, pos) return soft(name, pos, "Bee") end }
   logged = {}
@@ -350,8 +352,84 @@ do
   settle(B, sent)
   assert(not sent[oid_of(a)] and not events_of(item_on(B, a)):find("43 7f", 1, true), "the desktop's own note, changed: not sent, put back")
   print("rt-merge: Claims mode: the claimer's own note changed by someone else is still theirs to give")
-  -- the claimer's side: a crossing edit that merges lands at once (not held a minute as refused)
+  -- taking the claimer's new note away is a change to their note too
+  tick(); as(B)
+  b = item_on(B, a)
+  with_notes(B, b, { "E 0 90 3c 60", "E 480 80 3c 00", "E 0 90 40 50", "E 480 80 40 00", "E 240 90 45 60", "E 240 80 45 00", "E 480 b0 7b 00" })
+  tick()
+  sent = {}
+  settle(B, sent)
+  assert(not sent[oid_of(a)] and events_of(item_on(B, a)):find("90 43 60", 1, true), "the desktop's new note deleted: not sent, put back")
+
+  -- Putting back exactly what the claimer changed (Cross Test, 0.59.49.72: the desktop, holding an auto-claim, set an item's volume 0.9 -> 0.5;
+  -- the laptop set it back to 0.9 and it went straight out, undoing the desktop's change with no ask; and an unmute after its mute)
+  local it = item_named(bass, "Bass 1")
+  his[bass.name] = true
+  local function desktop(key, v) tick(); as(A); set(A, it, key, v); tick(); settle(A); tick(); recv(B) end
+  local function laptop(key, v) -- -> whether it went out
+    tick(); as(B)
+    set(B, item_on(B, it), key, v)
+    tick()
+    local out = {}
+    settle(B, out)
+    if out[oid_of(it)] then tick(); recv(A); same("the laptop's " .. key .. " on the desktop's auto-claimed item") end
+    return out[oid_of(it)] ~= nil
+  end
+  local function at(c, key) return E.top_value(item_on(c, it).text, key) end
+  local vol0 = at(A, "VOLPAN")
+  desktop("VOLPAN", "0.5 0 1 -1")
+  assert(not laptop("VOLPAN", vol0) and at(B, "VOLPAN") == "0.5 0 1 -1", "the volume set back to what it was before the claimer's change: not sent, put back: " .. tostring(at(B, "VOLPAN")))
+  assert(not laptop("VOLPAN", "0.7 0 1 -1") and at(B, "VOLPAN") == "0.5 0 1 -1", "another volume: not sent either")
+  assert(laptop("FADEIN", "1 0.25 0 1 0 0 0") and at(A, "FADEIN") == "1 0.25 0 1 0 0 0", "a setting the claimer didn't touch goes out")
+  desktop("MUTE", "1 0")
+  assert(not laptop("MUTE", "0 0") and at(B, "MUTE") == "1 0", "an unmute after the claimer's mute: not sent, put back")
+  -- (the volume was the claimer's change before last, and the laptop's own fade came in between: still theirs)
+  assert(not laptop("VOLPAN", vol0) and at(B, "VOLPAN") == "0.5 0 1 -1", "an earlier change of the claimer's, set back: not sent")
+  print("rt-merge: Claims mode: setting back what the claimer changed (volume, mute, a note) is still theirs to give")
+  -- once the claimer's changes are older than an auto-claim lasts, they're nobody's work in progress
+  tick(sync.AUTO_IDLE + 60)
+  assert(laptop("VOLPAN", vol0) and at(A, "VOLPAN") == vol0, "ten minutes on, the same edit goes out")
+  -- an item the claimer just made is all theirs
+  tick(); as(A)
+  it = A.F.add_item(bass, audio(40, 2, "bass-new.flac", "Bass new"))
+  tick(); settle(A); tick(); recv(B)
+  assert(not laptop("VOLPAN", "0.5 0 1 -1"), "an item the claimer made a moment ago, turned down by someone else: not sent")
   rules.James, rules.Bee = nil, nil
+end
+
+-- Why an edit wasn't sent, by the room's mode (Cross Test, 0.59.49.72: Driver only said "James is driving and XT Drums A is nobody's: claim it
+-- to edit it", Driver + claims' words: a claim doesn't count in Driver only)
+do
+  local W = mirror.refusal_words
+  local d = W("driver", "Drums", "Bee", "James", nil, nil)
+  assert(d:find("^only the driver %(James%) edits in this room") and not d:find("claim it") and not d:find("nobody's"), d)
+  d = W("driver", "Drums", "Bee", "James", "Cee", nil)
+  assert(d:find("^only the driver %(James%)") and not d:find("release"), "Driver only: a claim doesn't count, so nobody is asked to release it: " .. d)
+  assert(W("open", "Drums", "Bee", "James", "Cee", nil) == "Drums is claimed by Cee: ask them to release it", "Claims: whose claim")
+  assert(W("open", "Drums", "Bee", "James", "James", nil) == "Drums is claimed by James: ask them to release it", "Claims: the driver's claim is a claim")
+  assert(W("open", "Drums", "Bee", "James", "Cee", true) == "Drums is Cee's, so it's sent to them as a suggestion", "a suggestion")
+  assert(W("admins", "Drums", "Bee", "James", "Cee", nil) == "Drums is claimed by Cee: ask them to release it, or an admin to give it to you", "Admins only: a claim")
+  assert(W("admins", "Drums", "Bee", "James", nil, nil):find("^only admins, and whoever an admin lets edit here"), "Admins only: what nobody claimed")
+  for _, mode in ipairs({ "driver", "open", "admins", "everyone" }) do
+    for _, claimer in ipairs({ false, "Cee" }) do
+      local t = W(mode, "Drums", "Bee", "James", claimer or nil, nil)
+      assert(not t:find("nobody's") and not t:find("claim it to edit"), mode .. ": no Driver + claims words: " .. t)
+    end
+  end
+  -- through a look, in Driver only: the laptop isn't the driver
+  sync.driver_name, sync.room_mode = "James", "driver"
+  rules.Bee = { can = function(user) return user == "James" end, mode = "driver" }
+  logged = {}
+  tick(); as(B)
+  local it = item_on(B, item_named(bass, "Bass 2"))
+  set(B, it, "FADEOUT", "1 0.5 0 1 0 0 0")
+  tick()
+  local out = {}
+  settle(B, out)
+  assert(not out[oid_of(it)], "Driver only: not the driver's edit, not sent")
+  assert(told("^Not sent: only the driver %(James%) edits in this room") and not told("nobody's") and not told("claim it"), "said so:\n" .. table.concat(logged, "\n"))
+  rules.Bee, sync.room_mode = nil, nil
+  print("rt-merge: refusal words by mode: Driver only says only the driver edits, never 'claim it'")
 end
 
 -- pure: the merges themselves
@@ -379,6 +457,20 @@ do
   assert(m2 == "<VOLENV2\nACT 1 -1\nPT 0 1 0\nPT 2 0.5 0\n>\n<PANENV2\nACT 1 -1\nPT 0 0 0\n>\n", m2)
   local m3, c3 = mirror.merge_env(e1, "<VOLENV2\nACT 1 -1\nPT 0 0.2 0\n>\n", "<VOLENV2\nACT 1 -1\nPT 0 0.9 0\n>\n")
   assert(m3:find("PT 0 0.2 0", 1, true) and #c3 == 1, "the same point both changed: the winner's")
+  -- pieces (what mirror.clashes compares): a point, a setting, a note each their own; lanes and an item's timing as one
+  local function n_changed(kind, x, y)
+    local n = 0
+    for _ in pairs(mirror.pieces_changed(mirror.pieces(kind, x), mirror.pieces(kind, y))) do n = n + 1 end
+    return n
+  end
+  assert(n_changed("env", e1, "<VOLENV2\nACT 1 -1\nPT 0 1 0\nPT 2 0.5 0\n>\n") == 1 and n_changed("env", e1, e1) == 0, "one point added: one piece")
+  assert(n_changed("env", e1, "<VOLENV2\nACT 0 -1\nPT 0 0.5 0\n>\n") == 2, "a setting and a point: two pieces")
+  assert(n_changed("track", base, tl) == 1 and n_changed("track", base, { name = "K", vol = 1, lanes = 2.0, plays = "1,0", lanenames = "a,b" }) == 0,
+    "a track's lanes are one piece; 1 and 1.000000 are one number")
+  local i1 = "<ITEM\nPOSITION 4\nLENGTH 2\nMUTE 0 0\nVOLPAN 1 0 1 -1\nSOFFS 0\n" .. b .. "\n>\n"
+  assert(n_changed("item", i1, (i1:gsub("POSITION 4", "POSITION 5"):gsub("SOFFS 0", "SOFFS 1"))) == 1, "an item's place and offset: one piece")
+  assert(n_changed("item", i1, (i1:gsub("E 0 90 3c 60", "E 0 90 3c 70"))) == 1 and n_changed("item", i1, (i1:gsub("E 0 90 3c 60", "e 0 90 3c 60"))) == 0,
+    "one note changed: one piece; selecting it: none")
   print("rt-merge: merge_midi, merge_track and merge_env on their own")
   -- a big part: 4,000 notes, one added on each side, merged in well under a pass
   local ev = { "<SOURCE MIDI", "HASDATA 1 960 QN" }

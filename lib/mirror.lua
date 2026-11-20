@@ -1023,27 +1023,28 @@ end
 -- A track's automation (mirror.track_parts' "env": its envelope blocks and their automation item lines), changed apart from one base, put
 -- together point by point: each envelope by its name (which of that name), each point by its time, each other line by its word. Where both
 -- changed the same point or setting the winner's stands. -> the merged state and the keys both changed. Pure.
-function mirror.merge_env(base, winner, loser)
-  local function units(state)
-    local out, nth, cur = {}, {}, nil
-    for line in (state or ""):gmatch("[^\n]+") do
-      if cur then
-        cur.lines[#cur.lines + 1] = line
-        if line:sub(1, 1) == "<" then cur.depth = cur.depth + 1 elseif line == ">" then cur.depth = cur.depth - 1 end
-        if cur.depth == 0 then cur = nil end
-      elseif line:sub(1, 1) == "<" then
-        local tag = line:match("^<(%S+)") or line
-        nth[tag] = (nth[tag] or 0) + 1
-        cur = { key = "<" .. tag .. "#" .. nth[tag], lines = { line }, depth = 1 }
-        out[#out + 1] = cur
-      else
-        local word = line:match("^(%S+)") or line
-        nth[word] = (nth[word] or 0) + 1
-        out[#out + 1] = { key = word .. "#" .. nth[word], lines = { line }, depth = 0 }
-      end
+local function env_units(state) -- (its envelope blocks and lone lines, each keyed by its name and which of that name it is)
+  local out, nth, cur = {}, {}, nil
+  for line in (state or ""):gmatch("[^\n]+") do
+    if cur then
+      cur.lines[#cur.lines + 1] = line
+      if line:sub(1, 1) == "<" then cur.depth = cur.depth + 1 elseif line == ">" then cur.depth = cur.depth - 1 end
+      if cur.depth == 0 then cur = nil end
+    elseif line:sub(1, 1) == "<" then
+      local tag = line:match("^<(%S+)") or line
+      nth[tag] = (nth[tag] or 0) + 1
+      cur = { key = "<" .. tag .. "#" .. nth[tag], lines = { line }, depth = 1 }
+      out[#out + 1] = cur
+    else
+      local word = line:match("^(%S+)") or line
+      nth[word] = (nth[word] or 0) + 1
+      out[#out + 1] = { key = word .. "#" .. nth[word], lines = { line }, depth = 0 }
     end
-    return out
   end
+  return out
+end
+function mirror.merge_env(base, winner, loser)
+  local units = env_units
   local function flat(u) return table.concat(u.lines, "\n") end
   local function list(us) local t = {}; for _, u in ipairs(us) do t[#t + 1] = { u.key, flat(u) } end; return t end
   local bu, wu, lu = units(base), units(winner), units(loser)
@@ -1132,26 +1133,100 @@ function mirror.merge_state(kind, base, winner, loser, loser_name)
   if not f or type(base) ~= type(winner) or type(winner) ~= type(loser) or type(winner) ~= (kind == "track" and "table" or "string") then return nil end
   return mirror[f](base, winner, loser, loser_name)
 end
--- Does a change (`state`, of `kind`) clash with the newest change `user` (who holds an auto-claim on it, lib/claimask.lua soft) made to it, found
--- from `from` (the version held here) back through the versions each started from: do both change the same piece (a note, a point, a setting)
--- from where theirs started? Built on theirs or made alongside it, the same answer. None of theirs, or not a mergeable change: no clash; its
--- base not here: a clash (asked, as before). Pure but for reading events.
+-- A state as its pieces, key -> text, cut where the merges cut it: an item's lines (its place, length, offset and rate as one piece; a MIDI
+-- take's notes and events each their own), a track's settings (its lanes as one), automation's envelopes, their points and other lines. Pure.
+function mirror.pieces(kind, state)
+  local out = {}
+  if kind == "track" then
+    if type(state) ~= "table" then return nil end
+    local lanes = {}
+    for k, v in pairs(state) do
+      local n = tonumber(v)
+      local s = n and string.format("%.10g", n) or tostring(v)
+      if TRACK_TOGETHER[k] then lanes[#lanes + 1] = k .. "=" .. s else out[k] = s end
+    end
+    table.sort(lanes)
+    if #lanes > 0 then out["\0lanes"] = table.concat(lanes, ";") end
+    return out
+  end
+  if type(state) ~= "string" then return nil end
+  if kind == "item" then
+    local els, order = elements(state)
+    local timing = {}
+    for _, e in ipairs(order) do
+      local text = els[e.key]
+      local midi = e.word == "<SOURCE" and midi_read(text)
+      if TIMING[e.word] then timing[#timing + 1] = e.key .. "=" .. text
+      elseif midi then
+        out[e.key .. "\0"] = midi.first
+        for k, u in pairs(midi.units) do out[e.key .. "\0" .. k] = u.cmp end
+        for _, part in ipairs({ { "head ", midi.head }, { "tail ", midi.tail } }) do
+          for _, kl in ipairs(keyed_lines(part[2])) do out[e.key .. "\0" .. part[1] .. kl[1]] = kl[2] end
+        end
+      else out[e.key] = text end
+    end
+    if #timing > 0 then out["\0timing"] = table.concat(timing, "\n") end
+    return out
+  end
+  if kind == "env" then
+    for _, u in ipairs(env_units(state)) do
+      local body, plain = {}, u.lines[1]:sub(1, 1) == "<" and #u.lines > 2
+      for j = 2, #u.lines - 1 do
+        if u.lines[j]:sub(1, 1) == "<" then plain = false end
+        body[#body + 1] = u.lines[j]
+      end
+      if plain then
+        out[u.key .. "\0"] = u.lines[1]
+        for _, kl in ipairs(keyed_lines(body, true)) do out[u.key .. "\0" .. kl[1]] = kl[2] end
+      else out[u.key] = table.concat(u.lines, "\n") end
+    end
+    return out
+  end
+  return nil
+end
+-- The pieces that differ between two states' pieces (added, taken away or changed), as a set. Pure.
+function mirror.pieces_changed(a, b)
+  local out = {}
+  for k, v in pairs(a) do if b[k] ~= v then out[k] = true end end
+  for k in pairs(b) do if a[k] == nil then out[k] = true end end
+  return out
+end
+-- Does a change (`state`, of `kind`, made from `from`, the version its maker's computer held) touch a piece (a note, a point, a setting) that
+-- `user`, who holds an auto-claim on it (lib/claimask.lua soft), changed lately: in the changes of theirs `from` builds on, back as far as an
+-- auto-claim lasts (sync.AUTO_IDLE)? By what each changed from the version it started from, not by a three-way merge: setting their new value
+-- back to what it was is a change to their piece too (it went out with no ask and undid theirs: Cross Test, 0.59.49.72). Nothing of theirs
+-- lately: no clash. A version on the way not here, or one that can't be read as pieces: a clash (asked, as before). Pure but for reading
+-- events and the clock.
 function mirror.clashes(room_dir, kind, state, from, user)
-  local other, todo, seen = nil, { from }, {}
-  while not other and #todo > 0 and #seen < 64 do
+  local cut = (require("together").now() - require("sync").AUTO_IDLE) * 1000
+  local theirs, any, todo, seen, n = {}, false, { from }, {}, 0
+  while #todo > 0 and n < 64 do
     local x = table.remove(todo, 1)
     if type(x) == "table" and x.id and not seen[x.id] then
-      seen[x.id], seen[#seen + 1] = true, x.id
+      seen[x.id], n = true, n + 1
       local w, l = mirror.split_merge(x.id)
-      if not w and x.user == user then other = x
-      else for _, id in ipairs(w and { w, l } or { x.base_ev }) do todo[#todo + 1] = mirror.event_file(room_dir, id) end end
+      local at = w and math.huge or mirror.order_parts(mirror.order_of(x)) -- (a merged version is as new as its newer side: both are looked at)
+      if at >= cut then -- (what it builds on is older still: no further down than an auto-claim lasts)
+        if not w and x.user == user and not x.gone then
+          if not (mirror.mergeable(x) and x.obj == kind) then return true end
+          local b = x.base_ev and mirror.event_file(room_dir, x.base_ev)
+          if x.base_ev and not b then return true end
+          local bp, xp = b and mirror.mergeable(b) and mirror.pieces(kind, b.state) or {}, mirror.pieces(kind, x.state)
+          if not xp then return true end
+          for k in pairs(mirror.pieces_changed(bp, xp)) do theirs[k], any = true, true end
+        end
+        for _, id in ipairs(w and { w, l } or { x.base_ev }) do
+          local y = mirror.event_file(room_dir, id)
+          if y then todo[#todo + 1] = y elseif not w and x.user == user then return true end
+        end
+      end
     end
   end
-  if not (mirror.mergeable(other) and other.obj == kind and other.base_ev) then return false end
-  local b = mirror.event_file(room_dir, other.base_ev)
-  if not (b and type(b.state) == type(state)) then return true end
-  local m, both = mirror.merge_state(kind, b.state, other.state, state)
-  return m == nil or #(both or {}) > 0
+  if not any then return false end
+  local fp, sp = mirror.mergeable(from) and from.obj == kind and mirror.pieces(kind, from.state), mirror.pieces(kind, state)
+  if not (fp and sp) then return true end
+  for k in pairs(mirror.pieces_changed(fp, sp)) do if theirs[k] then return true end end
+  return false
 end
 -- Undo (or redo) of `e` keeps what others changed since: the version to go back to (`to`), with what the version held now (`now`) changed after
 -- `e`, and `e` didn't, kept (`e` as the base of a three-way merge). Where both changed one thing, going back stands, as before. -> a version
@@ -4325,6 +4400,24 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
   w.sent = w.sent + 1
 end
 -- It may not: put back, or sent to whoever claimed it as a suggestion (unless it isn't a change at all).
+-- Why an edit of `me`'s to `where` wasn't sent, by the room's mode (sync.MODES; `claimer`: whose claim holds there, if any; `to`: it went
+-- to them as a suggestion). Pure.
+--   driver (Driver only): only the driver edits; claims are kept but don't count, so nothing says "claim it" or "ask them to release it"
+--   admins (Admins only): a claim holds against everyone; what nobody claimed is the admins' and whoever an admin let edit
+--   open (Claims): only someone else's claim refuses (asked first when they're here: lib/claimask.lua)
+--   everyone (Open): nothing is refused for whose it is
+function mirror.refusal_words(mode, where, me, driver, claimer, to)
+  if to and claimer then return where .. " is " .. claimer .. "'s, so it's sent to them as a suggestion" end
+  if mode == "driver" then
+    return (driver and driver ~= "" and driver ~= me) and ("only the driver (" .. driver .. ") edits in this room (Take control, or ask them to set Who controls to Claims)")
+      or "only the driver edits in this room"
+  end
+  if claimer and claimer ~= me then
+    return where .. " is claimed by " .. claimer .. (mode == "admins" and ": ask them to release it, or an admin to give it to you" or ": ask them to release it")
+  end
+  if mode == "admins" then return "only admins, and whoever an admin lets edit here, change what nobody has claimed in this room" end
+  return "it isn't yours to change right now"
+end
 function W.refuse(w, o, rk, rev, evid, kord, last, name, ok_before)
   local band, sync, proj, cfg, song, room, opts, me = w.band, w.sync, w.proj, w.cfg, w.song, w.room, w.opts, w.me
   local room_dir, media, objs, by_oid, holds, playing = w.room_dir, w.media, w.objs, w.by_oid, w.holds, w.playing
@@ -4376,12 +4469,11 @@ function W.refuse(w, o, rk, rev, evid, kord, last, name, ok_before)
   -- (someone's claim: what was done to it goes to them to accept. lib/suggest.lua)
   local to = propose(o, rev, who, ok_before and name or (last and last.name or ""), pos, name)
   -- (plain words, whose it is first: "Undone: ... put back (claim it, or take control)" read as your own Undo. UX review, 0.58.47)
+  -- (by the room's mode, as lib/dawedit.lua's item_refusal: "James is driving and X is nobody's: claim it to edit it" was Driver + claims'
+  -- words, said in Driver only, where a claim doesn't count. Cross Test, 0.59.49.72. rt-merge)
+  local how = mirror.refusal_words(opts.mode or sync.room_mode, where, me, sync.driver_name,
+    w.is_claimed and w.is_claimed(ok_before and name or (last and last.name or ""), pos) and who or nil, to)
   local claimed = who and who ~= me and who ~= sync.driver_name
-  local how = to and (where .. " is " .. who .. "'s, so it's sent to them as a suggestion")
-    or claimed and (where .. " is claimed by " .. who .. ": ask them to release it")
-    or sync.room_mode == "admins" and "only admins edit here: an admin can let you"
-    or (who and who ~= me) and (who .. " is driving and " .. where .. " is nobody's: claim it to edit it")
-    or "it isn't yours to change right now: claim it to edit it"
   local claim = not to and not claimed and sync.room_mode == "claims" and (ok_before and name or last.name) or nil -- (the bar's Claim it)
   local differed = last and mirror.first_diff(o.state, last.state)
   put_back(o, rev, evid, { name = ok_before and name or (last.name or ""), to = to and who or nil, claim = claim ~= "" and claim or nil, copy = true,
@@ -4650,8 +4742,11 @@ function W.one(w, o)
     local by_now = not ok_now and opts.soft(name, o.pos)
     local by_before = not ok_before and last and opts.soft(last.name or "", last.pos)
     if (ok_now or by_now) and (ok_before or by_before) then
-      local by = by_now or by_before
-      if not (last and mirror.clashes(room_dir, o.kind, o.state, last, by)) then return W.send(w, o, rk, rev, evid, kord, last, name, knobs) end
+      local clash = false
+      for _, by in ipairs({ by_now or by_before, (by_now and by_before and by_before ~= by_now) and by_before or nil }) do -- (moved from one's to another's: both)
+        clash = clash or (last ~= nil and mirror.clashes(room_dir, o.kind, o.state, last, by))
+      end
+      if not clash then return W.send(w, o, rk, rev, evid, kord, last, name, knobs) end
     end
   end
   return W.refuse(w, o, rk, rev, evid, kord, last, name, ok_before)

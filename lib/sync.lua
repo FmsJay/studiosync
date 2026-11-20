@@ -1429,9 +1429,10 @@ function sync.receive(proj, cfg, song, room, can)
     local m = require("mirror")
     local who = sync.soft and sync.soft.room == room and m.mergeable(ev) and sync.soft.fn(ev.name or "", ev.pos, ev.user)
     if not who then return false end
-    local _, _, kev = m.known(proj, ev.oid)
-    local held = (kev or "") ~= "" and m.event_file(sync.room_dir(cfg, song, room), kev) or nil
-    return not (held and m.clashes(sync.room_dir(cfg, song, room), ev.obj, ev.state, held, who))
+    -- (from the version its maker's computer held, the change's own base, as its sender judged it: not what this computer holds)
+    if not ev.base_ev then return true end -- (new: nothing of the claimer's is in it)
+    local from = m.event_file(sync.room_dir(cfg, song, room), ev.base_ev)
+    return from ~= nil and not m.clashes(sync.room_dir(cfg, song, room), ev.obj, ev.state, from, who)
   end
   local function refused(ev)
     return not (sync.ANYONE[ev.type] or ev.alone or (ev.type == "obj" and (sync.obj_allowed(ev, can, driver_at(ev.time)) or soft_ok(ev)))
