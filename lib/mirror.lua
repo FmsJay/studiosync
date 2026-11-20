@@ -646,14 +646,22 @@ function mirror.memo(prefix, text, make)
   end
   return v
 end
+-- (eight bytes a call, masked once at the end: the low 32 bits of Lua's wrapping 64-bit product depend only on the low 32 bits of what made
+-- it, so the same hash as byte by byte with a mask each step, four times faster. A changed 300 KB text (mirror.root at 4,700 objects, a track
+-- with big plug-in states) took 9 ms to hash, 2 now. tests/test_0_60_rt_bigproj.lua checks it against the plain loop. Bigger projects, rt)
+local byte = string.byte
 local function fnv(s)
-  local h = 2166136261
-  for i = 1, #s do
-    h = h ~ s:byte(i)
-    h = (h * 16777619) & 0xFFFFFFFF
+  local h, n, i = 2166136261, #s, 1
+  while i + 7 <= n do
+    local a, b, c, d, e, f, g, k = byte(s, i, i + 7)
+    h = (h ~ a) * 16777619; h = (h ~ b) * 16777619; h = (h ~ c) * 16777619; h = (h ~ d) * 16777619
+    h = (h ~ e) * 16777619; h = (h ~ f) * 16777619; h = (h ~ g) * 16777619; h = (h ~ k) * 16777619
+    i = i + 8
   end
-  return string.format("%08x", h)
+  for j = i, n do h = (h ~ byte(s, j)) * 16777619 end
+  return string.format("%08x", h & 0xFFFFFFFF)
 end
+mirror.fnv = fnv -- (tests)
 -- (short ones too, in a table of their own: hashed afresh byte by byte in Lua, they were 7% of a look at 2,000 items, and kept in the
 -- memo they'd fill its 50,000 and empty it of the big ones. 0.59.19)
 local short, short_n = {}, 0

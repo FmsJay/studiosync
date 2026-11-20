@@ -29,6 +29,15 @@ local function int(x, hi) x = tonumber(x); return x and x >= 0 and x <= hi and m
 local function oid(x) return type(x) == "string" and #x <= 80 and x:match("^T%-[%w%-_]+$") and x or nil end
 local function short(s) s = tostring(s or ""); return utf8.len(s) and utf8.len(s) > webmixer.NAME_MAX and s:sub(1, utf8.offset(s, webmixer.NAME_MAX + 1) - 1) .. "…" or s end
 webmixer.short = short
+-- The same table, value for value (nil and missing alike). Pure.
+local function same(a, b)
+  if a == b then return true end
+  if type(a) ~= "table" or type(b) ~= "table" then return false end
+  for k, v in pairs(a) do if not same(v, b[k]) then return false end end
+  for k in pairs(b) do if a[k] == nil then return false end end
+  return true
+end
+webmixer.same = same
 -- A peak (linear, 1 = 0 dBFS) -> whole dB, -60 (silence) to +12.
 function webmixer.db(p)
   p = tonumber(p) or 0
@@ -238,8 +247,10 @@ function webmixer.tick(proj, cfg, b, publish, now)
       for k in pairs(WORD) do if theirs[s.o .. "|" .. k] then s.by = s.by or {}; s.by[k] = theirs[s.o .. "|" .. k] end end
     end
     local m = reaper.GetMasterTrack(proj)
-    publish("mix", { song = b.song, me = cfg.user, local_mix = local_mix(proj) or nil, strips = strips,
-      master = { v = r4(reaper.GetMediaTrackInfo_Value(m, "D_VOL")) } })
+    local mix = { song = b.song, me = cfg.user, local_mix = local_mix(proj) or nil, strips = strips, master = { v = r4(reaper.GetMediaTrackInfo_Value(m, "D_VOL")) } }
+    -- (unchanged since the last one sent: not encoded again only to find it the same. At 150 tracks and 520 plug-ins that was 4 ms of JSON
+    -- every 0.25 s with the Mixer open and nothing moving. Bigger projects, rt)
+    if not same(mix, S.mix_sent) then S.mix_sent = mix; publish("mix", mix) end
   end
   if now - (S.at.meters or -math.huge) >= webmixer.METER_EVERY then
     S.at.meters = now

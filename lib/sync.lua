@@ -1330,7 +1330,10 @@ function sync.receive(proj, cfg, song, room, can)
     return 0
   end
   sync.read_cut = nil
-  table.sort(pending, function(a, x) return (a.time .. a.id) < (x.time .. x.id) end)
+  -- (each one's key made once, not twice a comparison: 4,400 events in a catch-up made ~100,000 joined strings a pass. Bigger projects, rt)
+  local sort_key = {}
+  for _, ev in ipairs(pending) do sort_key[ev] = ev.time .. ev.id end
+  table.sort(pending, function(a, x) return sort_key[a] < sort_key[x] end)
   local function driver_at(t) -- who drove when this happened
     local best
     for id, d in pairs(drivers) do -- two handovers in the same second: the later id, so every machine agrees

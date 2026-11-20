@@ -27,6 +27,18 @@ dawview.HIST_EVERY = 10     -- seconds between history builds while History is s
 dawview.HIST_MAX = 2000     -- changes drawn (the newest)
 dawview.NOTE_TEXT = 200     -- characters of a note shown
 dawview.MAX_BARS = 2000
+dawview.SLICE = 0.003       -- seconds of a look a tick: a big song's look (150 tracks, 4,000 items: ~50 ms) goes over several ticks
+
+-- A look spread over ticks (bigger projects, James, rt: 4,000 items read and built in one tick held REAPER up ~50 ms each time the change
+-- count moved, 4 times a second while editing). dawview.tick runs a look in a coroutine and sets `slice_end` while it resumes it; between
+-- tracks, read and build hand the tick back once it's spent. Outside that coroutine (tests, a direct call) nothing pauses. Only between tracks:
+-- no REAPER pointer is held across a pause (each track is asked for afresh by its index), and a look that saw the project change meanwhile is
+-- followed by another, as the change count at its start was kept.
+local slice_end
+local function pause()
+  if slice_end and coroutine.isyieldable() and reaper.time_precise() > slice_end then coroutine.yield(); return true end
+  return false
+end
 
 -- ---- pure ------------------------------------------------------------------------------------------------------------------------------
 local ALPHA = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_" -- (64 levels, one character each, nothing JSON escapes)
@@ -88,6 +100,7 @@ function dawview.build(raw, per)
   per = per or dawview.CHUNK_TRACKS
   local tracks, chunks = {}, {}
   for i, tr in ipairs(raw.tracks or {}) do
+    pause()
     -- (e: how many envelopes it has, so the page offers its automation lanes: stage 3, lib/dawmidi.lua)
     tracks[i] = { n = tr.name, c = tr.rgb, d = tr.depth > 0 and tr.depth or nil, f = tr.folder and 1 or nil, m = tr.mute and 1 or nil, s = tr.solo and 1 or nil,
       e = (tr.envs or 0) > 0 and tr.envs or nil }
@@ -291,6 +304,8 @@ function dawview.read(proj, key, now, budget_end)
   local raw = { key = key, len = reaper.GetProjectLength(proj), tracks = {}, markers = {}, bars = {}, sigs = {}, tempo = {} }
   local places, pending, level = {}, false, 0
   for i = 0, reaper.CountTracks(proj) - 1 do
+    -- (tracks deleted, or the tab closed, while paused: the rest is left for the next look, which the moved change count makes)
+    if pause() and not (reaper.ValidatePtr2(0, proj, "ReaProject*") and i < reaper.CountTracks(proj)) then break end
     local tr = reaper.GetTrack(proj, i)
     local fd = math.floor(reaper.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH"))
     local indent = level
@@ -404,19 +419,31 @@ function dawview.tick(proj, cfg, b, publish, who, now)
   local key = b.song .. "/" .. b.room
   if S.key ~= key then dawview.reset(); S.key = key end
   local cc = reaper.GetProjectStateChangeCount(proj)
-  if S.pending or (now - (S.looked or -math.huge) >= dawview.LOOK_EVERY and (cc ~= S.cc or now - (S.full or -math.huge) >= dawview.FLOOR)) then
+  if not S.look and (S.pending or (now - (S.looked or -math.huge) >= dawview.LOOK_EVERY and (cc ~= S.cc or now - (S.full or -math.huge) >= dawview.FLOOR))) then
     S.looked, S.cc = now, cc
     if not S.pending then S.full = now end
-    local raw, pending, places = dawview.read(proj, key, now, reaper.time_precise() + dawview.PEAK_BUDGET)
-    S.pending, S.places, S.track_names = pending, places, nil
-    local header, chunks = dawview.build(raw)
-    local changed, gone = dawview.diff(S, chunks)
-    -- (chunks before the header: a page that sees the header has its chunks already)
-    for _, k in ipairs(changed) do publish("dawc" .. k, chunks[k + 1].t) end
-    for _, k in ipairs(gone) do publish("dawc" .. k, { key = key, k = k, gone = true }) end
-    header.chunks, header.me = #chunks, cfg.user
-    header.may = who and dawview.may_transport(who.mode, cfg.user, who.driver, require("groups").may_manage(cfg.root, cfg.user)) or nil
-    publish("daw", header)
+    local budget_end = reaper.time_precise() + dawview.PEAK_BUDGET
+    local st = S -- (a reset meanwhile starts a new S: this look's results go nowhere then)
+    st.look = coroutine.create(function()
+      local raw, pending, places = dawview.read(proj, key, now, budget_end)
+      st.pending, st.places, st.track_names = pending, places, nil
+      local header, chunks = dawview.build(raw)
+      local changed, gone = dawview.diff(st, chunks)
+      -- (chunks before the header: a page that sees the header has its chunks already)
+      for _, k in ipairs(changed) do publish("dawc" .. k, chunks[k + 1].t); pause() end
+      for _, k in ipairs(gone) do publish("dawc" .. k, { key = key, k = k, gone = true }) end
+      header.chunks, header.me = #chunks, cfg.user
+      header.may = who and dawview.may_transport(who.mode, cfg.user, who.driver, require("groups").may_manage(cfg.root, cfg.user)) or nil
+      publish("daw", header)
+    end)
+  end
+  if S.look then -- (this tick's share of the look: all of it on a small song)
+    local co = S.look
+    slice_end = reaper.time_precise() + dawview.SLICE
+    local ok, err = coroutine.resume(co)
+    slice_end = nil
+    if not ok or coroutine.status(co) == "dead" then S.look = nil end
+    if not ok then error(debug.traceback(co, tostring(err)), 0) end
   end
   -- the piano roll's item and the open automation lanes, only while a page shows them (lib/dawmidi.lua)
   require("dawmidi").tick(proj, cfg, b, publish, now)
