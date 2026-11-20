@@ -118,6 +118,7 @@ local tracks = {
   { arm = 1, items = { { pos = 12, takes = { take("my keeper", "C:/rec/Bass-001.flac", "g3") } } } }, -- (typed: left alone)
   { arm = 0, items = { { pos = 15, takes = { take("Keys-001", "C:/rec/Keys-001.flac", "g4") } } } }, -- (not armed: not this recording's)
   { arm = 1, items = { { pos = 5, takes = { take("Old-001", "C:/rec/Old-001.flac", "g5") } } } } } -- (there before: not new)
+clk = 100
 -- (smart lanes: track 1 is in fixed lanes, its two new takes in lanes 2 and 3; lane 5 was named by someone already)
 for _, tr in ipairs(tracks) do for _, it in ipairs(tr.items) do it.tr = tr; for _, tk in ipairs(it.takes) do tk.it = it end end end
 tracks[1].freemode, tracks[1].lanenames = 2, { [5] = "my comp", [2] = "2" } -- (lane 2: REAPER's own "2", a name nobody typed)
@@ -136,6 +137,7 @@ reaper = {
     return true, tr.lanenames[lane] or ""
   end,
   GetMediaItemTake_Item = function(tk) return tk.it end, GetMediaItem_Track = function(it) return it.tr end,
+  time_precise = function() return clk end, -- (smart lanes wait a few seconds for takes-to-lanes; recap.lane_tick)
   CountTrackMediaItems = function(tr) return #tr.items end, GetTrackMediaItem = function(tr, j) return tr.items[j + 1] end,
   CountTakes = function(it) return #it.takes end, GetTake = function(it, k) return it.takes[k + 1] end,
   GetMediaItemInfo_Value = function(it, k)
@@ -183,5 +185,14 @@ assert(ln[2] == "Verse - James - take 2", "one section's take: the lane takes it
 assert(ln[3] == "James - take 1", "two sections in one lane: the pass's name, no section")
 assert(ln[4] == "James - take 5", "no sections, two takes: the first take's name")
 assert(next(recap.lane_names({})) == nil and next(recap.lane_names(nil)) == nil, "nothing recorded: no lanes named")
+
+-- takes-to-lanes moves the new take into a lane of its own after the stop (REAPER numbers it): the lane pass names it then (desktop, rt)
+tracks[1].items[1].lane, tracks[1].lanenames[6] = 6, "5"
+clk = clk + 1
+recap.lane_tick(nil)
+assert(tracks[1].lanenames[6] == tracks[1].items[1].takes[1].name, "the lane it settled in: " .. tostring(tracks[1].lanenames[6]))
+clk = clk + recap.LANE_WAIT + 1
+recap.lane_tick(nil)
+assert(recap.pending == nil, "after LANE_WAIT: nothing pending")
 
 print("ok")

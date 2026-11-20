@@ -248,32 +248,54 @@ function recap.name_takes(proj, cfg, had)
       end
     end
   end
-  local lanes = {} -- (smart lanes: per track, the takes this pass put in each fixed lane)
+  local pending = {}
   for _, x in ipairs(new) do -- (track order, then each track's items in time order: take 1 is the top track's)
     local section = recap.section_at(markers, x.pos)
     local n = recap.next_n(names, section, cfg.user)
     local name = recap.smart_name(section, cfg.user, n)
     reaper.GetSetMediaItemTakeInfo_String(x.tk, "P_NAME", name, true)
     names[#names + 1] = name
-    local it = reaper.GetMediaItemTake_Item(x.tk)
-    local tr = it and reaper.GetMediaItem_Track(it)
-    if tr and reaper.GetMediaTrackInfo_Value(tr, "I_FREEMODE") == 2 then
-      lanes[tr] = lanes[tr] or {}
-      local list = lanes[tr]
-      list[#list + 1] = { lane = math.floor(reaper.GetMediaItemInfo_Value(it, "I_FIXEDLANE")), section = section, name = name, pass = recap.smart_name(nil, cfg.user, n) }
+    pending[#pending + 1] = { tk = x.tk, section = section, name = name, pass = recap.smart_name(nil, cfg.user, n) }
+  end
+  -- (the lanes: now, and again over the next seconds, as takes-to-lanes (lib/prints.lua) moves a new take into a lane of its own after the
+  -- stop, which REAPER numbers "3". Desktop, rt)
+  recap.pending = #pending > 0 and { list = pending, till = reaper.time_precise() + recap.LANE_WAIT } or recap.pending
+  recap.lane_tick(proj)
+  return #new
+end
+recap.LANE_WAIT = 15
+-- Smart lanes (James, rt): each fixed lane a new take sits in is named as its take ("Bridge - James - take 3"), or as the pass ("James -
+-- take 3") when it holds takes of different sections; only a lane nobody named (empty, REAPER's own "1", "2"... or prints.lua's "Take 3").
+-- Lane names travel with the track (mirror). Live sync calls this each tick; it's nothing once the takes have settled (LANE_WAIT after a stop).
+local lane_at = -math.huge
+function recap.lane_tick(proj)
+  local p = recap.pending
+  if not p then return end
+  local now = reaper.time_precise()
+  if now > p.till then recap.pending = nil; return end
+  if now - lane_at < 0.25 then return end
+  lane_at = now
+  local lanes = {}
+  for _, x in ipairs(p.list) do
+    -- (a take deleted since: its pointer must never be used, REAPER would crash, not raise. ValidatePtr2 first)
+    if reaper.ValidatePtr2 and not reaper.ValidatePtr2(proj, x.tk, "MediaItem_Take*") then x.gone = true end
+    if not x.gone then
+      local it = reaper.GetMediaItemTake_Item(x.tk)
+      local tr = it and reaper.GetMediaItem_Track(it)
+      if tr and reaper.GetMediaTrackInfo_Value(tr, "I_FREEMODE") == 2 then
+        lanes[tr] = lanes[tr] or {}
+        local list = lanes[tr]
+        list[#list + 1] = { lane = math.floor(reaper.GetMediaItemInfo_Value(it, "I_FIXEDLANE")), section = x.section, name = x.name, pass = x.pass }
+      end
     end
   end
-  -- Smart lanes (James, rt): each fixed lane this pass recorded into is named as its take ("Bridge - James - take 3"), or as the pass
-  -- ("James - take 3") when it holds takes of different sections; only a lane nobody named yet. Lane names travel with the track (mirror).
   for tr, list in pairs(lanes) do
     for lane, lname in pairs(recap.lane_names(list)) do
       local key = "P_LANENAME:" .. lane
-      -- (unnamed: empty, REAPER's own "1", "2"... for a new fixed lane, or prints.lua's "Take 3": all names nobody typed. Desktop, rt)
       local cur = select(2, reaper.GetSetMediaTrackInfo_String(tr, key, "", false))
       if cur == "" or cur:match("^%d+$") or cur:match("^Take %d+$") then reaper.GetSetMediaTrackInfo_String(tr, key, lname, true) end
     end
   end
-  return #new
 end
 -- What each fixed lane this pass recorded into is called: its take's name when it holds one section's take(s), else the pass's name (the
 -- first take's, without a section). list: { { lane, section, name, pass } } in record order. -> { [lane] = name }. Pure.

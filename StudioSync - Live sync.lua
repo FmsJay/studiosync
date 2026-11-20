@@ -1224,6 +1224,7 @@ local function tick_body() -- returns true to keep going
     end
     side.playing, side.pos, side.t = playing, pos, tp
   end
+  band.try("recap.lane_tick", require("recap").lane_tick, proj) -- (smart lanes: a new take's lane named once it settles; nothing otherwise. James, rt)
   local st = reaper.GetPlayStateEx(proj)
   if st & 4 ~= 0 then
     if not recording then band.try("rthealth.record_check", require("rthealth").record_check, proj, cfg, b) end -- (low disk here or on a bandmate: a line, never a box. James, rt)
