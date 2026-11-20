@@ -117,6 +117,9 @@ struct RtLink {
   std::atomic<long long> callbacks{ 0 }, max_ns{ 0 }, sent{ 0 }, received{ 0 }, rejected{ 0 };
   unsigned char txbuf[MAX_DGRAM + 64];
   std::string status_out;
+  std::atomic<rt_extra_fn> extra{ nullptr }; // (Hop's network leg: rt_set_extra)
+  std::atomic<void *> extra_user{ nullptr };
+  std::atomic<int> extra_in{ 0 };
 };
 
 namespace {
@@ -493,6 +496,12 @@ void rx_loop(RtLink *l)
     if (n <= 0 || fl < (socklen_t)sizeof(from)) continue; // (the receive timeout: a look at run)
     l->received.fetch_add(1, std::memory_order_relaxed);
     if (!addr_ok(from, l->loopback)) { reject(l, "not a Tailscale address"); continue; }
+    if (n >= 4 && memcmp(buf.data(), "SSH1", 4) == 0) { // (a hop's audio, extension/hopnet.cpp: same port, its own tag and key)
+      l->extra_in.fetch_add(1);
+      if (rt_extra_fn fn = l->extra.load()) fn(l->extra_user.load(), buf.data(), n, &from, (int)sizeof(from));
+      l->extra_in.fetch_sub(1);
+      continue;
+    }
     if (n < 4 + TAG + 4 || memcmp(buf.data(), MAGIC, 4) != 0) { reject(l, "not StudioSync audio"); continue; }
     const AooByte *msg = buf.data() + 4;
     const AooInt32 size = n - 4 - TAG;
@@ -621,6 +630,23 @@ int rt_peer_set(RtLink *l, const char *peer, double gain, int mute)
   return 0;
 }
 
+void rt_set_extra(RtLink *l, rt_extra_fn fn, void *user)
+{
+  if (!l) return;
+  l->extra.store(nullptr);
+  for (int i = 0; i < 2000 && l->extra_in.load() > 0; ++i) std::this_thread::sleep_for(std::chrono::microseconds(100)); // (one in flight ends)
+  l->extra_user.store(user);
+  l->extra.store(fn);
+}
+int rt_send_raw(RtLink *l, const void *d, int n, const void *addr, int addrlen)
+{
+  if (!l || !d || n <= 0 || n > MAX_DGRAM || !addr || addrlen < (int)sizeof(sockaddr_in)) return -1;
+  const sockaddr_in &to = *(const sockaddr_in *)addr;
+  std::lock_guard<std::mutex> g(l->cfg_mx); // (rt_stop closes the socket under this lock)
+  if (!l->run.load() || l->s == BAD_SOCK || !addr_ok(to, l->loopback)) return -1;
+  return (int)sendto(l->s, (const char *)d, n, 0, (const sockaddr *)&to, sizeof(to));
+}
+
 std::string rt_status(RtLink *l)
 {
   std::lock_guard<std::mutex> g(l->cfg_mx);
@@ -721,6 +747,7 @@ void rt_mix(RtLink *l, double *const *out, int nout, int len, double srate)
 #undef max
 #endif
 static RtLink *g_rt = nullptr; // (made once at load, freed never while REAPER runs: the hook may still hold it for a moment after removal)
+RtLink *rt_global() { return g_rt; }
 static int (*g_reg_hook)(bool isAdd, audio_hook_register_t *reg) = nullptr;
 static bool g_hooked = false;
 static std::string g_status;

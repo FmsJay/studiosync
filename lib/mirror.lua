@@ -3046,7 +3046,7 @@ function mirror.add_local_track(proj, name, tag)
 end
 -- StudioSync's own working tracks stay out of sight (James, 0.59.7: "can see the extra tracks at the bottom"; 0.58.99: no visible track
 -- for anyone's mic unless invisible). Hidden tracks still play, monitor and feed SonoBus. Older projects' are hidden as they're found.
-mirror.HELPERS = { realtime = true, talk = true, talkback = true, click = true }
+mirror.HELPERS = { realtime = true, talk = true, talkback = true, click = true, hop = true } -- (hop: a live hop's hidden track, lib/hops.lua)
 function mirror.hide_helper(tr, tag)
   if not mirror.HELPERS[tag] then return end
   if reaper.GetMediaTrackInfo_Value(tr, "B_SHOWINTCP") ~= 0 or reaper.GetMediaTrackInfo_Value(tr, "B_SHOWINMIXER") ~= 0 then

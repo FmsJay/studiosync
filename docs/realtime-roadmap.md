@@ -126,6 +126,36 @@ Hear a plug-in you don't have, live, through the bandmate's REAPER that does hav
     than the latency can never come back in time.
   - To check in REAPER: the Hop loads as VST3 and CLAP, in-process and bridged ("Run as: separate process"); its latency shows in the
     FX window's PDC and other tracks line up; the loopback is exact and stays in time; a too-long loopback plays dry without moving.
+- **Hop network leg built (rt-hopnet branch, 2026-11-19; native and Lua tests only, not run in REAPER yet):**
+  - Transport (`extension/hopnet.cpp`): raw 32-bit float PCM, stereo, 128 frames a datagram (1060 bytes), on live audio's UDP socket
+    (rtaudio hands it every datagram starting "SSH1": `rt_set_extra`, `rt_send_raw`), HMAC-SHA256 from the studio secret under its own
+    label. Not AOO + Opus: AOO's sink resamples into the receiver's clock and hands out blocks, not numbered frames, and Opus is lossy with
+    a decoder delay, so nothing could come back sample-exact. Float, not 24-bit: a bus can run over 0 dBFS in REAPER. 3.1 Mbit/s each way.
+  - Frame numbers are the clock: each packet carries its first frame's number in the hop's send ring; the remote returns under the same
+    numbers; the sender publishes `ret_w` over unbroken runs, zeroing (and fading back in after) a frame that isn't back when the plug-in's
+    next block needs it, counted as lost. Pings every 200 ms give the round trip and the remote's state.
+  - The remote is the same Hop plug-in at both ends of a hidden local track (band_local "hop"): Hop X (its ret ring is fed), a copy of
+    the song's plug-in, Hop Y (its send ring is the result). Chain PDC set to "ignore" (`chain_pdc_mode` 2), so REAPER adds nothing there;
+    no master send; no anticipative FX. Requester frame f goes into X at f + A (A set so it lands `margin_ms`, 20, ahead of X); a table
+    keeps which f sits in each X frame; Y frame y holds X frame y + delta - pdc - Lx (delta = Xw - Yw, the smallest seen reading Y then X,
+    as X runs first in each block). Clock drift between the computers moves A (a "slip": a click, counted, never a timing change).
+  - Budget at 48 kHz, block 256, L = 7200 (150 ms): network round trip (desktop <-> laptop measured 59-75 ms) + the remote (20 ms margin
+    + two blocks and polls 13 ms + X's 256 = 5 ms + the plug-in's PDC) + our side (a block + 1 ms = 6 ms, a packet's wait each way 5 ms)
+    = about 125 ms + the plug-in's PDC. `StudioSync_HopStatus(id).net.need_ms` is that, measured; Health says to raise the budget when it's
+    over (the Hop's maximum is 8192 = 170 ms).
+  - ReaScript: `StudioSync_HopConnect(hop_id, peer, json)`, `StudioSync_HopServe(json)`, and HopStatus's `net` (rtt, remote, need, slack,
+    sent, returned, lost, late, slips). Lua: `lib/hops.lua` (who has it: prints.has; a Hop as this computer's own FX "for=hop"; asked over
+    the link; the remote's knobs follow the song's; start/stop with Live sync; a Health row per hop each side) and the action
+    `StudioSync - Run plug-in on a bandmate.lua` on the focused FX window. Live audio carries the hops: when the studio has it off, it's
+    started with nobody to send to.
+  - Checked (`tests/hopnet_test.cpp`, two endpoints on localhost through a lossy wire, a fake remote: X -> 100-sample delay x 0.5 -> Y):
+    every frame exact or zero (or fading in), never misaligned: clean 100% exact; jitter 5-13 ms with 2% loss each way 94% exact; remote
+    clock 1% fast or slow 99-100% with 1-2 slips; a wrong secret gets nothing back.
+  - Limits: stereo; both computers at one sample rate (refused otherwise); not on the master; one hop per plug-in instance; a slip clicks.
+  - To check in REAPER (desktop asks, laptop hosts): Live sync on both, live audio's UDP rule on both; run the action on an offline plug-in;
+    the laptop's hidden track appears (Show all tracks), keeps processing while the laptop is stopped and playing ("Run FX when stopped");
+    Health's hop row on both; a tone through a known-latency plug-in comes back aligned with a dry copy on another track (no comb when
+    summed); a knob turned on the desktop is heard after the round trip; lost/late stay near 0 for ten minutes; stop removes both ends.
 
 ### 5. Video and screen share
 - The extension serves a small page on this computer and opens it in the browser; the browser's own WebRTC does

@@ -35,3 +35,12 @@ struct reaper_plugin_info_t;
 void rtaudio_register(reaper_plugin_info_t *rec); // the ReaScript functions StudioSync_LiveAudio* and the audio hook (extension/rtaudio.cpp)
 void rtaudio_shutdown();                          // the hook out and the threads stopped (REAPER unloading the extension)
 #endif
+
+// ---- Hop's network leg (extension/hopnet.cpp) shares this UDP socket (James, rt) ----
+// A datagram from a Tailscale address that starts "SSH1" goes to fn (on the receive thread, outside every lock here), never to AOO; hopnet
+// checks its own tag. fn nullptr: none (and this waits for a call in flight to end). rt_send_raw: one datagram out of the socket, to a
+// Tailscale address (addr: a sockaddr_in); -1 while live audio is stopped. rt_global: REAPER's link (the one StudioSync_LiveAudio* runs).
+typedef void (*rt_extra_fn)(void *user, const unsigned char *d, int n, const void *from, int fromlen);
+void rt_set_extra(RtLink *l, rt_extra_fn fn, void *user);
+int rt_send_raw(RtLink *l, const void *d, int n, const void *addr, int addrlen);
+RtLink *rt_global();
