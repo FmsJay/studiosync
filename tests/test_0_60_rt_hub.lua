@@ -252,7 +252,7 @@ do
   hub.tick("P", cfg, b)
   assert(saved == 1, "not again straight away")
   local row = hub.health_row(cfg, b)
-  assert(row and row[4]:find("this song: you %(shared it%)") and row[4]:find("You're this song's hub", 1, true) and row.action[1] == "Hand it on", "Health: the role and its Hand it on")
+  assert(row and row[4]:find("this project: you %(shared it%)") and row[4]:find("You're this project's hub", 1, true) and row.action[1] == "Hand it on", "Health: the role and its Hand it on")
   -- hand it on: the next tick, the studio hub stands in
   row.action[2]()
   assert(hub.off("R") and hub.status_part(cfg, b).off == true, "handed on, and the status says so")

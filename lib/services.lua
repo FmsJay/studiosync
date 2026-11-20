@@ -809,6 +809,10 @@ function services.tailscale_up()
   if out and out ~= ts_json then ts_json, ts_up = out, services.tailscale_running_in(out) end
   return ts_up
 end
+-- HTTPS certificates on for the tailnet (status's CertDomains names this computer)? `tailscale serve --https` waits for them otherwise
+-- (lib/phonerec.lua sets the phone's secure link up by itself only then). Pure part: services.tailscale_certs_in.
+function services.tailscale_certs_in(json) return (json:match('"CertDomains":%s*(%b[])') or ""):find('"[^"]+"') ~= nil end
+function services.tailscale_certs_on() return services.tailscale_up() and services.tailscale_certs_in(ts_json) end
 -- Will this computer stay signed in? -> true (it's tagged, or its key expiry's off), or the date it signs out on. From `tailscale status --json --peers=false`. Pure.
 -- (What a tailnet's policy says can't be read from a computer: a computer that got its tag is the proof. Trying a tag to find out once logged a Mac out: installer, 2026-10-28.)
 function services.tailscale_stays_in(json)
@@ -1566,7 +1570,7 @@ function services.ninjam_for(cfg, lfile, may_host, force)
   if not force then
     if not may_host then -- (even if the file says it's mine: it may be old news, with the one who pressed taking over right now. See producer.lua, which follows it)
       if server ~= "" then return server end
-      return nil, "nobody's started the NINJAM server for this song yet"
+      return nil, "nobody's started the NINJAM server for this project yet"
     end
     if not mine and server ~= "" and services.answers(server) then return server end
   end
@@ -1582,7 +1586,7 @@ function services.ninjam_for(cfg, lfile, may_host, force)
   if server ~= now or not mine or data.stopping then -- (started again after a stop: it's not stopping now)
     data.server, data.by, data.stopping = now, cfg.user, nil
     band.write_json(lfile, data)
-    band.log("this song's NINJAM server now runs on this computer: " .. now)
+    band.log("this project's NINJAM server now runs on this computer: " .. now)
   end
   return now
 end

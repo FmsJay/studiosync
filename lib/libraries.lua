@@ -276,14 +276,14 @@ function libraries.health_row(cfg)
   local tail = #opaque > 0 and (" Opaque, so their parts print as before: " .. table.concat(opaque, ", ") .. (#look.opaque > 3 and "..." or "") ..
     " (what they play can't be read from their state).") or ""
   if #lacks == 0 then
-    return { "libraries", true, "grey", "Sounds and files: everyone in the studio has what this song's samplers and plug-ins load (" .. #look.refs .. ")." .. tail, "" }
+    return { "libraries", true, "grey", "Sounds and files: everyone in the studio has what this project's samplers and plug-ins load (" .. #look.refs .. ")." .. tail, "" }
   end
   local each = {}
   for k, m in ipairs(lacks) do
     if k <= 4 then each[#each + 1] = string.format("%s (%s: %s)", tostring(m.what), tostring(m.track), table.concat(m.users, ", ")) end
   end
-  return { "libraries", false, "yellow", "", string.format("Sounds and files someone lacks for this song (%d): %s%s. A sampler's part prints for them; " ..
-    "a preset, IR or capture goes to them (Settings > Studio: Presets and small content). Someone whose computer hasn't opened the song yet counts as lacking.%s",
+  return { "libraries", false, "yellow", "", string.format("Sounds and files someone lacks for this project (%d): %s%s. A sampler's part prints for them; " ..
+    "a preset, IR or capture goes to them (Settings > Studio: Presets and small content). Someone whose computer hasn't opened the project yet counts as lacking.%s",
     #lacks, table.concat(each, "; "), #lacks > 4 and "..." or "", tail) }
 end
 

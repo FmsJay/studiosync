@@ -293,7 +293,7 @@ local function loop_body()
       local away = tonumber(reaper.GetExtState(band.SECTION, "elsewhere " .. key))
       if alive then n.n = 0
       elseif away and reaper.time_precise() - away < 120 then
-        if proj == front then problem = problem or "This song is syncing in another REAPER on this computer: work there, or close it there first." end
+        if proj == front then problem = problem or "This project is syncing in another REAPER on this computer: work there, or close it there first." end
       elseif proj == front and n.n < 3 and reaper.time_precise() - n.at > 30 then
         n.at, n.n = reaper.time_precise(), n.n + 1
         band.log("starting Live sync again for " .. fn)

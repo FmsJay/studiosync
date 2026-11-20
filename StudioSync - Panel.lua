@@ -883,7 +883,7 @@ function ui.person_menu(p)
   if groups.may_remove(cfg.root, me, p.user) and not removal.mark(cfg.root, p.user) then
     any = true
     if ImGui.Selectable(ctx, "Remove from the studio...") and reaper.MB("Take " .. p.user .. " out of " .. tostring(view.group) .. "?\n\n" ..
-        "Within a few minutes every computer in the studio stops syncing with theirs. Their claims go free. What they made stays in the songs and on Restore.\n\n" ..
+        "Within a few minutes every computer in the studio stops syncing with theirs. Their claims go free. What they made stays in the projects and on Restore.\n\n" ..
         "They keep the copy they already have: that can't be taken back. If they also have the studio's " .. require("drive").name(cfg) .. " folder, remove them there too.\n\n" ..
         "You have a minute to change your mind, and you can invite them again later.", "StudioSync", 4) == 6 then
       local ok, why = removal.remove(cfg.root, p.user, me)
@@ -959,7 +959,7 @@ function ui.listen_button(p)
   if on then ImGui.PopStyleColor(ctx) end
   ImGui.SetItemTooltip(ctx, on and ("You hear only " .. p.user .. ". Click to hear everyone again.") or
     ("Solo " .. p.user .. ": only them in your ears, through SonoBus (Mute leaves the others on and turns one person off). With Follow off you get their whole mix;\n" ..
-    "with Follow on you get what they're playing or recording, over your own copy of the song, so it's in better quality and you can watch it land."))
+    "with Follow on you get what they're playing or recording, over your own copy of the project, so it's in better quality and you can watch it land."))
 end
 -- Under a person in Who's here (James, 2026-11-02): what they're working in or last worked in, opening to all they've claimed.
 function ui.person_claims(user, last_track, last_at)
@@ -1056,7 +1056,7 @@ local function section_claims()
     local list = ui.selected_regions()
     if #list == 0 then band.msg("Click a named region in the ruler first.") else claim({}, list) end
   end
-  ImGui.SetItemTooltip(ctx, "Click a region in the ruler, then this. What's in that region is yours: only you can change it, whoever's driving. The rest of the song isn't touched.")
+  ImGui.SetItemTooltip(ctx, "Click a region in the ruler, then this. What's in that region is yours: only you can change it, whoever's driving. The rest of the project isn't touched.")
   next_to("Claim time selection")
   if ImGui.Button(ctx, "Claim time selection") then
     local from, to = reaper.GetSet_LoopTimeRange2(proj, false, false, 0, 0, false)
@@ -1508,7 +1508,7 @@ end
 local RT_KINDS = {
   { "my", "My time", "You hear everyone the moment it arrives, a little late (the network). For playing and talking together." },
   { "their", "Their time", "Your backing is delayed so the others line up with it. For listening along, not for playing." },
-  { "timesync", "Time-sync (recommended)", "Everyone plays to their own copy of the song and hears the others exactly in time, %s late (one NINJAM interval at this tempo: it follows the song's tempo and the server's interval). For playing along to a take. Talk: Chat > Call." },
+  { "timesync", "Time-sync (recommended)", "Everyone plays to their own copy of the project and hears the others exactly in time, %s late (one NINJAM interval at this tempo: it follows the project's tempo and the server's interval). For playing along to a take. Talk: Chat > Call." },
 }
 function ui.rt_kind()
   if page_play.time_sync_on() then return "timesync" end
@@ -1630,7 +1630,7 @@ function ui.live_icons(p)
       end
     end)
   elseif p.live == "ts" then
-    slot("##ts" .. p.user, who .. " in Time-sync (in time with the song, through NINJAM)", ACCENT, function(dl, x, y, c)
+    slot("##ts" .. p.user, who .. " in Time-sync (in time with the project, through NINJAM)", ACCENT, function(dl, x, y, c)
       local cx, cy, r = x + h / 2, y + h / 2, h * 0.4
       ImGui.DrawList_AddCircle(dl, cx, cy, r, c, 0, 1.6)
       ImGui.DrawList_AddLine(dl, cx, cy, cx, cy - r * 0.7, c, 1.6)
@@ -2212,7 +2212,7 @@ local function studio_listen()
   if not card("studio listen") then return end
   local listen = require("listen")
   ImGui.SeparatorText(ctx, "Listening page")
-  ImGui.TextDisabled(ctx, "A web page of every song's mixes, to play on a phone or any browser without REAPER. Only devices on your Tailscale network reach it, while this computer is on.")
+  ImGui.TextDisabled(ctx, "A web page of every project's mixes, to play on a phone or any browser without REAPER. Only devices on your Tailscale network reach it, while this computer is on.")
   local sharing = listen.sharing(cfg.root)
   if sharing then
     ImGui.TextWrapped(ctx, "Shared from this computer. Send the others this address:")
@@ -2232,7 +2232,7 @@ local function studio_listen()
       "It stops when REAPER closes; it comes back with REAPER while sharing is on.")
   end
   if not require("alerts").channel(cfg.root) then
-    ImGui.TextDisabled(ctx, "Comments under each mix need phone alerts on (above): they land in the song's chat with the moment they're about.")
+    ImGui.TextDisabled(ctx, "Comments under each mix need phone alerts on (above): they land in the project's chat with the moment they're about.")
   end
   card_end()
 end
@@ -2573,6 +2573,12 @@ function ui.settings_advanced()
       local listed, out = band.sync_actions(dir)
       band.log(string.format("the Actions list has %d StudioSync action(s) now%s", listed, out > 0 and (" (" .. out .. " taken out)") or ""))
     end
+    -- (what used to be a button on the Record page, now on by itself: Fewer things to press, James. lib/phonerec.lua)
+    local phonerec = require("phonerec")
+    local ch2, v2 = switch_row("##phonelink", "Set up the phone's secure link by itself", phonerec.auto_on(),
+      "When a phone opens the Record page, StudioSync asks Tailscale for the https address its microphone needs (tailscale serve, port " ..
+      phonerec.HTTPS_PORT .. "),\nonce a session, only with HTTPS certificates on for the tailnet. Off: the Record page's button does it.")
+    if ch2 then reaper.SetExtState(band.SECTION, phonerec.AUTO_KEY, v2 and "" or "0", true) end
     require("ablink").settings_ui(ctx, ImGui) -- (Ableton Link, only on this computer: lib/ablink.lua. James, rt)
     -- (the Tailscale token and tags: Settings > Studio for its owner and admins, here for anyone else. Review list, 0.59.32)
     if not require("groups").may_manage(cfg.root, cfg.user) then ui.tailscale_token() end
@@ -3028,7 +3034,7 @@ function F.top_bar()
     local m = (who and who.mode) or sync.DEFAULT_MODE
     local said = ui.MODE_INFO[1][3]
     for _, x in ipairs(ui.MODE_INFO) do if x[1] == m then said = x[3] end end
-    ImGui.SetItemTooltip(ctx, "The driver's play, stop and place in the song go to whoever follows the driver. Who changes what:\n" .. said)
+    ImGui.SetItemTooltip(ctx, "The driver's play, stop and place in the project go to whoever follows the driver. Who changes what:\n" .. said)
   end
   -- (no buttons for these: Ctrl+Z and Ctrl+Shift+Z do it, and Edit > Undo: Live sync steps in. The radial menu still asks for them here.)
   local function undo_redo(redo) -- (lib/undo.lua: the same as the StudioSync - Undo / Redo actions, but always asks)

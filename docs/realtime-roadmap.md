@@ -1679,3 +1679,44 @@ Live audio is on in every studio now, so it has to be pleasant and safe (lib/liv
 - **Extension:** StudioSync_LiveAudioSend(peer, on) (rtaudio.cpp rt_send): peer "" sends silence while the stream stays up (the meter still
   reads the input); a peer is left out of the source (AOO deactivates that sink). Native test: unmuted heard again after 46 ms, a peer let
   back in after 43 ms. Without it, Mute me restarts live audio on an input that isn't there; push-to-talk and talkback wait for it.
+
+## Fewer things to press (James)
+James, 2026-11-19: "there shouldn't be quite as many things to press, a lot of things should happen automatically", and "project rather
+than song makes more sense". Offline tests only, not run in REAPER yet.
+
+**Words.** What the panel, its pages, Health rows, tooltips and the log say is "project" now ("this project", "Projects", "Fork project");
+internal names, file names, JSON and ExtState keys keep "song", so versions still sync. Kept as "song", where it means the music: the
+SonoBus guest invitation ("you'll hear the song and me") and its log line, and the stamp JSFX's own comments. One NINJAM tooltip said
+"as each song reaches it" and now says "as each interval reaches it" (what NINJAM relays).
+
+**Now automatic** (each says so in the log; reversible):
+- **The phone's secure link** (`tailscale serve --https=8443`): set up by itself the first time a Record page asks each session, in the
+  background, and only with HTTPS certificates on for the tailnet (status `CertDomains`; without them `tailscale serve` waits). Tailnet-only
+  and still behind the studio's token, as the http link is. Off: Settings > Advanced, "Set up the phone's secure link by itself" (ExtState
+  "phone link auto" "0"); the Record page's button stays for doing it now. lib/phonerec.lua, services.tailscale_certs_on.
+- **Call audio** (web UI video call): ticked unless StudioSync's live audio runs on this computer (the "rtc" model's `live`), since live
+  audio carries the music; once someone ticks or unticks it, theirs stays. lib/webui/call.js, webcall.model.
+- **Listeners one interval behind** (Play/Jam, Time-sync): the bars are set by themselves once per interval length (it was a button); a
+  'bars later' changed by hand stays until the interval changes or Time-sync is picked again. Follow each other is never switched on from
+  here (Time-sync on Home already did all of it). lib/page_play.lua.
+- **Start Syncthing** (Invite row, first studio): started by itself once a session wherever that button shows; the button stays for another
+  try. lib/page_groups.lua.
+- Already automatic, nothing to press: the studio's and each project's **hub** (elected the same on every computer; the preferred-hub and
+  hand-on pickers are optional overrides for the owner/admins), **reopening the audio device** for live audio (lib/liveaudio.lua), Live sync
+  and Syncthing starting with REAPER (Autostart), the plug-ins-everyone-has folder (at Live sync's start and when a bandmate's list changes;
+  "Update the folder now" is only for a plug-in installed mid-session).
+
+**Stays a button, and why:**
+- Firewall rule for the direct link, signed updates, Tailscale token and tags, "Sync only through Tailscale", "Use <network> for this
+  studio": security, James OKs each.
+- Invite a collaborator / SonoBus guest / guest access, Revoke, Keep them (leaving), Release someone's claims, Take control, Debug mode for
+  everyone, Everyone runs StudioSync from the studio's folder: other people's computers or access.
+- Share the listening page, Host it on this computer (SonoBus or NINJAM server), Join the studio's call: they open something to others.
+- Update StudioSync / Update REAPER, Get Tailscale / Get ReaPersona, Set up everything I can (adds SonoBus, hosts NINJAM): installs.
+- Make it now (the cloud folder): it goes into the owner's own cloud account and still has to be shared by hand there.
+- Live sync's Start: Autostart starts it; the button is there after someone stopped it on purpose.
+- Prepare this project, Keep selected tracks local, Hold my changes, claims, Solo, Produce, Follow, Talk, mutes and volumes, Like, Fork,
+  restore and stems: choices about the music only the person can make.
+- Uncompressed from them (a setting in SonoBus's own window), Measure guest delay (the guest claps), Line up their takes and Use a file
+  they recorded (asks which): they need the person.
+- Send a test (phone alerts): makes the phones ring; Dismiss, Copy, Open, Clear: what the person wants to see.

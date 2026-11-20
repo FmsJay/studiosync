@@ -312,12 +312,12 @@ end
 
 colours.ITEM_SCHEMES = {
   { "section", "By section", "Everything in a verse one colour, everything in a chorus another, from the region it starts in: the same colours as regions by section." },
-  { "song", "Chronologically", "Start of the song to the end, from the palette's first colour to its last." },
+  { "song", "Chronologically", "Start of the project to the end, from the palette's first colour to its last." },
   { "person", "By who recorded it", "Each item in the colour of the person who made it." },
   { "lane", "By lane", "Each fixed lane its own colour: comps and alternatives stand apart." },
   { "take", "By takes", "One-take items the palette's first colour, the more takes the further along it: where there's a choice still to make." },
   { "kind", "By kind", "MIDI parts, printed parts and recordings each their own colour (from the palette, or set below): what's audio and what's notes, at a glance." },
-  { "newest", "Newest work", "Where the song's been moving lately: the palette's first colour for what's untouched longest, its last for the latest changed." },
+  { "newest", "Newest work", "Where the project's been moving lately: the palette's first colour for what's untouched longest, its last for the latest changed." },
   { "clear", "As its track", "Takes item colours off, so items follow their track again." },
 }
 -- The colour of each item (false: none). items: { { pos, section (a name, or nil), maker (a colour, or nil), lane, takes, kind } }.
@@ -416,8 +416,8 @@ end
 -- with a different gradient and regions with another"). Tracks: the look itself, as before; items and regions: look.items / look.regions,
 -- each { scheme, palette, from, to }, missing in a look from before (then their old defaults, in the tracks' palette). Pure.
 colours.REGION_SCHEMES = {
-  { "sections", "By section", "Every verse one colour, every chorus another: the common sections keep their own colours in every song, the rest from the palette." },
-  { "song", "Chronologically", "Start of the song to the end, from the palette's first colour to its last." },
+  { "sections", "By section", "Every verse one colour, every chorus another: the common sections keep their own colours in every project, the rest from the palette." },
+  { "song", "Chronologically", "Start of the project to the end, from the palette's first colour to its last." },
 }
 local ROW_DEFAULT = { items = "section", regions = "sections" }
 function colours.part(look, row)
@@ -889,7 +889,7 @@ function colours.parity_ui(ctx, ImGui, cfg, may)
   ImGui.SeparatorText(ctx, "Colour parity")
   local on = groups.colour_parity(cfg.root)
   ImGui.TextDisabled(ctx, on and ("On: every computer shows the project's own colours. Who's working shows in Who's here and in claim regions, never by " ..
-    "recolouring tracks, and the colour settings ticked here are the same everywhere while a song of this studio is in front.") or
+    "recolouring tracks, and the colour settings ticked here are the same everywhere while a project of this studio is in front.") or
     "Off: each computer may paint who's working over the tracks (Settings > Colours) and keeps its own colour settings.")
   local function share_mine() -- (this computer's own values, not the studio's that may be in force here)
     local set = sp.chosen(cfg.root)

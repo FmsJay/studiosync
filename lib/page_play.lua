@@ -40,7 +40,10 @@ function M.section_live(part) -- part: "mode" or "rest" (docked, side by side), 
   if part ~= "rest" then
     ImGui.SeparatorText(ctx, "Mode")
     for _, m in ipairs(LIVE_MODES) do
-      if ImGui.RadioButton(ctx, m[2], live_mode == m[1]) then live_mode = m[1]; reaper.SetProjExtState(proj, band.SECTION, "live_mode", m[1]) end
+      if ImGui.RadioButton(ctx, m[2], live_mode == m[1]) then
+        live_mode = m[1]; reaper.SetProjExtState(proj, band.SECTION, "live_mode", m[1])
+        if m[1] == "synced" and ui.side_auto then ui.side_auto[tostring(proj)] = nil end -- (picked again: listeners put behind again, below)
+      end
     end
     ImGui.TextWrapped(ctx, ({
       synced = "Play to the project; the others hear you in time with it, a bar or two behind you. What you play also shows up on their timeline as an idea until your real take arrives.",
@@ -53,11 +56,20 @@ function M.section_live(part) -- part: "mode" or "rest" (docked, side by side), 
       local _, _, _, num = reaper.TimeMap_GetTimeSigAtTime(proj, reaper.GetCursorPositionEx(proj))
       local one = math.max(1, math.ceil(bpi / math.max(1, num or 4)))
       ImGui.TextDisabled(ctx, string.format("One NINJAM interval is %d beats, so %d bar%s here.", bpi, one, one == 1 and "" or "s"))
-      if ImGui.SmallButton(ctx, "Put listeners one interval behind") then
+      -- (listeners one interval behind by themselves, as M.time_sync does: once per interval length, so a 'bars later' changed by hand below
+      -- stays until the interval changes or Time-sync is picked again. Only the bars: Follow each other is never switched on from here. It
+      -- was a button: Fewer things to press, James)
+      ui.side_auto = ui.side_auto or {} -- (this panel's, per project: kept out of the project, so looking never marks it changed)
+      if ui.side_auto[tostring(proj)] ~= one then
+        ui.side_auto[tostring(proj)] = one
         ui.want_lag = one -- (their boxes are further down)
-        if not same_room_on() then reaper.SetProjExtState(proj, band.SECTION, "side", tostring(one)) end
+        local following = select(2, reaper.GetProjExtState(proj, band.SECTION, "side")) ~= ""
+        if following and not same_room_on() then
+          reaper.SetProjExtState(proj, band.SECTION, "side", tostring(one))
+          band.log(string.format("Time-sync: listeners put %d bar%s behind by themselves (one NINJAM interval), so what they hear lines up", one, one == 1 and "" or "s"))
+        end
       end
-      ImGui.SetItemTooltip(ctx, "So what they hear of you lines up with their copy of the project. Sets Follow each other and Start together's 'bars later' below.")
+      ImGui.SetItemTooltip(ctx, "Listeners are put this far behind by themselves, so what they hear of you lines up with their copy of the project. 'Bars later' below changes it.")
     end
     ImGui.Spacing(ctx)
   end
@@ -262,7 +274,7 @@ function M.time_sync(on) -- -> true when it is as asked
   -- (the call, Chat > Call, is its own: it stays as it is. James, 0.59.6. If it's on, SonoBus carries only the talk mic now, and the live mix
   -- moves after NINJAM again, so their voices never reach NINJAM)
   if live.fx(proj, false, live.SONOBUS) then pcall(require("hear").route, proj, (live.rt_track(proj, false))) end
-  band.log(string.format("Time-sync on: the others hear you in time with the song, %d bar%s behind (one NINJAM interval)", one, one == 1 and "" or "s"))
+  band.log(string.format("Time-sync on: the others hear you in time with the project, %d bar%s behind (one NINJAM interval)", one, one == 1 and "" or "s"))
 end
 
 local function go(ev) together.go(E.proj(), E.cfg(), E.b(), ev) end -- post it for the band, and fire it here through our own Live sync

@@ -113,11 +113,11 @@ function M.squares()
   if ImGui.Button(ctx, "Create side room") then new_room, forking = "", false; ImGui.OpenPopup(ctx, "###newroom") end
   ImGui.SetItemTooltip(ctx, "A copy of this room as it is now, in its own tab. Collaborators can join it from here.")
   ImGui.SameLine(ctx)
-  if ImGui.Button(ctx, "Fork song") then new_room, forking = "", true; ImGui.OpenPopup(ctx, "###newroom") end
-  ImGui.SetItemTooltip(ctx, "Another arrangement of the song as it is now, in its own tab, alone or with others. It shares the song's recordings (nothing " ..
+  if ImGui.Button(ctx, "Fork project") then new_room, forking = "", true; ImGui.OpenPopup(ctx, "###newroom") end
+  ImGui.SetItemTooltip(ctx, "Another arrangement of the project as it is now, in its own tab, alone or with others. It shares the project's recordings (nothing " ..
     "copied) and notes where it came from: compare it, bring back what you pick, or adopt it as the main version.\n\nFrom an older version: Restore, click it, Fork from here.")
   ImGui.PushStyleVar(ctx, ImGui.StyleVar_WindowPadding, 16, 14)
-  local naming = ImGui.BeginPopupModal(ctx, (forking and "Fork this song" or "New side room") .. "###newroom", nil, ImGui.WindowFlags_AlwaysAutoResize)
+  local naming = ImGui.BeginPopupModal(ctx, (forking and "Fork this project" or "New side room") .. "###newroom", nil, ImGui.WindowFlags_AlwaysAutoResize)
   ImGui.PopStyleVar(ctx)
   if naming then
     if ImGui.IsWindowAppearing(ctx) then ImGui.SetKeyboardFocusHere(ctx) end

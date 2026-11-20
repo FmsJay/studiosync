@@ -401,7 +401,7 @@ function recap.names_ui(ctx, ImGui, cfg, may)
       require("groups").set_smart_take_names(cfg.root, v)
       band().log(v and "new takes are named for their section and player again (Settings > Studio)" or "new takes keep REAPER's names from now on (Settings > Studio)")
     end
-    ImGui.SetItemTooltip(ctx, "Owner and admins. Sections come from the song's regions, else its markers.")
+    ImGui.SetItemTooltip(ctx, "Owner and admins. Sections come from the project's regions, else its markers.")
     if on then
       local lch, lv = ImGui.Checkbox(ctx, "Name lanes after their takes##studiolanenames", lanes)
       if lch then

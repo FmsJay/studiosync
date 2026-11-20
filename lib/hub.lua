@@ -172,7 +172,7 @@ function hub.line(v, me)
     or v.why == "studio" and ("the studio hub" .. (v.home and (", " .. v.home .. " is away") or ""))
     or v.why == "ranked" and ("online longest" .. (v.home and (", " .. v.home .. " is away") or "")) or ""
   local song = v.hub and (who(v.hub, me) .. " (" .. why .. ")") or "nobody here, so the cloud copy stands in"
-  local out = "Hub: " .. s .. "; this song: " .. song .. "."
+  local out = "Hub: " .. s .. "; this project: " .. song .. "."
   if v.guest then out = out .. " You're a guest here: guests are never a hub." end
   if type(v.gone) == "table" and #v.gone > 0 then out = out .. " The direct link lost " .. table.concat(v.gone, ", ") .. ": not counted until it reaches them again." end
   if type(v.refused) == "table" and #v.refused > 0 then
@@ -245,7 +245,7 @@ function hub.may_hand(cfg, song, by)
 end
 -- Hands `song`'s hub to `to` for good, in this person's own file (every computer reads the same). -> true, or nil and why.
 function hub.hand_song(cfg, song, to)
-  if not hub.may_hand(cfg, song, cfg.user) then return nil, "only whoever shared the song, its hub, the owner or an admin can hand it on" end
+  if not hub.may_hand(cfg, song, cfg.user) then return nil, "only whoever shared the project, its hub, the owner or an admin can hand it on" end
   local dir = hub_dir(cfg, song)
   local path = dir .. "/" .. require("trust").user_file(cfg.user)
   local j = band.read_json(path) or {}
@@ -254,7 +254,7 @@ function hub.hand_song(cfg, song, to)
   while #list > hub.TRANSFERS_KEPT do table.remove(list, 1) end -- (the oldest go: the chain from the sharer is replayed from what's left)
   reaper.RecursiveCreateDirectory(dir, 0)
   band.write_json(path, { user = cfg.user, transfers = list })
-  band.log(string.format("'%s': its hub is %s's computer from now on (the song's home)", song, to))
+  band.log(string.format("'%s': its hub is %s's computer from now on (the project's home)", song, to))
   return true
 end
 
@@ -378,7 +378,7 @@ function hub.tick(proj, cfg, b)
   local key = cfg.root .. "\n" .. b.song
   local was = view[key]
   if not was or was.hub ~= song or was.studio ~= studio then
-    if song == cfg.user and (not was or was.hub ~= cfg.user) then band.log("you're the hub for '" .. b.song .. "' now: it keeps the song's restore points while you're not playing or recording (Health: Hand it on)")
+    if song == cfg.user and (not was or was.hub ~= cfg.user) then band.log("you're the hub for '" .. b.song .. "' now: it keeps the project's restore points while you're not playing or recording (Health: Hand it on)")
     elseif was and was.hub == cfg.user and song ~= cfg.user then band.log("'" .. b.song .. "': " .. (song and (song .. " is its hub now") or "no hub here now: the cloud copy stands in")) end
   end
   view[key] = v
@@ -431,7 +431,7 @@ function hub.health_row(cfg, b)
   if v.hub == cfg.user then
     local jb = type(v.job) == "table" and v.job or {}
     local last = tonumber(jb.last) and string.format("last %d min ago", math.floor((os.time() - jb.last) / 60)) or "none yet"
-    text = text .. " You're this song's hub: it keeps the song's restore points (" .. last .. ")" ..
+    text = text .. " You're this project's hub: it keeps the project's restore points (" .. last .. ")" ..
       (jb.state == "paused" and ", paused while REAPER plays or records." or jb.state == "waiting" and ", waiting until you've stopped working for a minute." or ".")
   end
   if off then text = text .. " You handed the role on: this computer is nobody's hub." end
@@ -471,7 +471,7 @@ local function pick(ctx, ImGui, id, label, cur, names, none)
 end
 function hub.studio_ui(ctx, ImGui, cfg, may)
   ImGui.SeparatorText(ctx, "Hub")
-  ImGui.TextDisabled(ctx, "One online computer is the studio's hub and each song has one (whoever shared it, unless it's handed on). A song's hub keeps its " ..
+  ImGui.TextDisabled(ctx, "One online computer is the studio's hub and each project has one (whoever shared it, unless it's handed on). A project's hub keeps its " ..
     "restore points while that REAPER isn't playing or recording. Nothing depends on a hub: with none online, everyone still syncs directly and the cloud copy stands in. " ..
     "A hub that drops is replaced within seconds over the direct link (within a minute without it). Guests are never a hub, and a handover counts only from its hander's own computer.")
   local pref = require("groups").trusted(cfg.root).hub
@@ -493,7 +493,7 @@ function hub.studio_ui(ctx, ImGui, cfg, may)
     if hub.may_hand(cfg, front.song, cfg.user) then
       local ch = pick(ctx, ImGui, "'" .. front.song .. "' hub##hubsong", tostring(home or "?"), home, members(cfg.root))
       if ch and ch ~= home then local _, why = hub.hand_song(cfg, front.song, ch); if why then band.log(why) end end
-      ImGui.SetItemTooltip(ctx, "Whoever shared the song, its hub now, the owner or an admin. Hands the song's hub on for good; with that computer offline, the studio hub stands in.")
+      ImGui.SetItemTooltip(ctx, "Whoever shared the project, its hub now, the owner or an admin. Hands the project's hub on for good; with that computer offline, the studio hub stands in.")
     else ImGui.Text(ctx, "'" .. front.song .. "' hub: " .. tostring(home or "?")) end
   end
 end

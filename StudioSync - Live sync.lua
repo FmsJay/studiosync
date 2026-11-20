@@ -524,7 +524,7 @@ function P.outbox_inbox(t)
     inbox_at = now
     local iok, put = pcall(require("extras").inbox, proj, cfg, b)
     if not iok then band.log("inbox: " .. tostring(put))
-    elseif #put > 0 then band.log("from the song's inbox: " .. table.concat(put, ", ") .. " (it goes to everyone like any change)"); mirror_due, t.redraw = true, true end
+    elseif #put > 0 then band.log("from the project's inbox: " .. table.concat(put, ", ") .. " (it goes to everyone like any change)"); mirror_due, t.redraw = true, true end
   end
 
   do -- (a suggestion arrived or was answered: lib/suggest.lua)

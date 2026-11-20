@@ -4485,7 +4485,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
     return string.format("%d change(s) brought back and sent to the others%s%s%s%s", done, refused > 0 and string.format(" (%d not yours to change, left as they are)", refused) or "",
       kept > 0 and string.format(" (kept what collaborators added since: %s)", table.concat(names, ", ")) or "",
       edited > 0 and string.format(" (%d left as they are: you've changed them here since, and that hasn't gone out yet. Let it go out (Hold my changes off), or undo it, then do this again)", edited) or "",
-      waiting > 0 and string.format(". %d couldn't change here yet and weren't sent (plug-ins change only while stopped, and plug-ins, automation and sends only with this song's tab in front; an item may still be arriving, or open in the MIDI editor): do it again then", waiting) or "")
+      waiting > 0 and string.format(". %d couldn't change here yet and weren't sent (plug-ins change only while stopped, and plug-ins, automation and sends only with this project's tab in front; an item may still be arriving, or open in the MIDI editor): do it again then", waiting) or "")
   end
   if #list <= mirror.REVERT_AT_ONCE or opts.at_once then
     reaper.Undo_BeginBlock2(proj)

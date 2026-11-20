@@ -397,7 +397,7 @@ function extras.inbox(proj, cfg, b)
         -- (a file REAPER can't read: copied again every 10 s, a new copy each time, until the disk filled. Review, 0.58.62. Left in the inbox, said once)
         if ok then os.remove(dest) end
         inbox_bad[path] = size -- (not tried again until the file changes, and its size with it)
-        band.log("the song's inbox has " .. f .. ", which " .. (ok and "REAPER can't read as audio" or "couldn't be copied") .. ": left in the inbox")
+        band.log("the project's inbox has " .. f .. ", which " .. (ok and "REAPER can't read as audio" or "couldn't be copied") .. ": left in the inbox")
       end
     end
   end

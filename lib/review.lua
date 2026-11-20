@@ -186,7 +186,7 @@ function review.make(cfg, b, mix)
   local drive = require("drive")
   if not drive.root(cfg) then return nil, "A client link lives in the studio's cloud folder, and this computer has none (Settings > Options)." end
   local src = band.song_dir(cfg, b.song) .. "/mixes/" .. mix
-  if not reaper.file_exists(src) then return nil, "That mix isn't in the song's mixes folder any more." end
+  if not reaper.file_exists(src) then return nil, "That mix isn't in the project's mixes folder any more." end
   local newest = require("recall").list(cfg, b.song, b.room)[1]
   local link = { name = review.link_name(b.song, mix), mix = mix, room = b.room, ver = newest and newest.file, by = cfg.user,
     time = os.date("!%Y-%m-%dT%H:%M:%SZ"), seen = {} }

@@ -1150,10 +1150,10 @@ end
 function prints.lanes_ui(ctx, ImGui, cfg, may)
   ImGui.SeparatorText(ctx, "Takes become lanes")
   local on = require("groups").takes_to_lanes(cfg.root)
-  ImGui.TextDisabled(ctx, on and ("On: keeps everyone's songs alike across REAPER setups. A part recorded with several takes becomes fixed lanes " ..
+  ImGui.TextDisabled(ctx, on and ("On: keeps everyone's projects alike across REAPER setups. A part recorded with several takes becomes fixed lanes " ..
     "(the takes you picked stay the comp), whoever's REAPER recorded it, so every computer plays and edits it the same way.") or
     ("Off: takes stay takes, as each REAPER recorded them; the picked take is still the studio's, and it gets a print where someone lacks a plug-in. " ..
-    "On keeps everyone's songs alike across REAPER setups."))
+    "On keeps everyone's projects alike across REAPER setups."))
   if may then
     local ch, v = ImGui.Checkbox(ctx, "Takes become lanes##studiolanes", on)
     if ch then

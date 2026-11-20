@@ -160,7 +160,7 @@ function content.fetch(list, media_dir)
         pcall(band.copy_atomic, src, dst)
         if reaper.file_exists(dst) then
           content.placed[key(dst)] = true
-          band.log("a bandmate's preset for the song is in your preset list now: " .. tail)
+          band.log("a bandmate's preset for the project is in your preset list now: " .. tail)
         end
       end
     end
@@ -171,7 +171,7 @@ end
 -- Health's rows: the switch, then who lacks what (lib/libraries.lua).
 function content.health_rows(cfg)
   local on = content.on(cfg.root)
-  local rows = { { "content", true, "grey", on and ("Presets and small content: on. Presets, IRs and captures this song's plug-ins load go to bandmates " ..
+  local rows = { { "content", true, "grey", on and ("Presets and small content: on. Presets, IRs and captures this project's plug-ins load go to bandmates " ..
     "who need them (up to " .. math.floor(content.MAX / 1048576) .. " MB each; never programs, nor anything in a paid library's folder).") or
     "Presets and small content: off for the studio. Files plug-ins load stay on each computer; a sampler's part someone lacks the sounds for still prints.", "" } }
   local ok, row = pcall(require("libraries").health_row, cfg)
@@ -182,7 +182,7 @@ end
 function content.studio_ui(ctx, ImGui, cfg, may)
   ImGui.SeparatorText(ctx, "Presets and small content")
   local on = content.on(cfg.root)
-  ImGui.TextDisabled(ctx, on and ("On: a preset, impulse response, amp capture or model a song's plug-in loads goes to the bandmates who lack it, " ..
+  ImGui.TextDisabled(ctx, on and ("On: a preset, impulse response, amp capture or model a project's plug-in loads goes to the bandmates who lack it, " ..
     "into their own preset folder, or where the plug-in looks when that folder can exist on their computer. Small files only; never a program " ..
     "or anything from a paid library.") or "Off: files plug-ins load stay on each computer. A sampler's part someone lacks the sounds for still prints.")
   if may then

@@ -262,7 +262,7 @@ function sp.rows_ui(ctx, ImGui, cfg, may, group)
 end
 function sp.studio_ui(ctx, ImGui, cfg, may)
   ImGui.SeparatorText(ctx, "Shared preferences")
-  ImGui.TextDisabled(ctx, "REAPER preferences that shape recording and editing, the same on every computer while a song of this studio is in front; " ..
+  ImGui.TextDisabled(ctx, "REAPER preferences that shape recording and editing, the same on every computer while a project of this studio is in front; " ..
     "each computer's own come back after, and when REAPER quits. Never shared: audio device, buffer, latency, paths, theme, layout, zoom. " ..
     "Colour settings: under Colour parity.")
   sp.rows_ui(ctx, ImGui, cfg, may, nil)

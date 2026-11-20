@@ -315,7 +315,7 @@ function hops.make(proj, cfg, tr, fx, user, peer, song, room)
   local guid = reaper.TrackFX_GetFXGUID(tr, fx)
   local fxi
   for k, i in ipairs(shared_fx(tr)) do if i == fx then fxi = k - 1 end end
-  if not fxi then return nil, "that's one of this computer's own effects, not the song's" end
+  if not fxi then return nil, "that's one of this computer's own effects, not the project's" end
   local id = hops.free_id(hops.used_ids(proj), 1, 32)
   if not id then return nil, "every hop id is taken" end
   local idx = add_hop(tr, fx + 1, id, hops.LATENCY, 0)
@@ -439,7 +439,7 @@ function hops.offload(proj, cfg, tr, user, peer, song, room)
   reaper.StudioSync_HopConnect(id, peer, hops.connect_json(secret, rec.token))
   S.connected[id], S.ok_at[rec.token] = peer .. "\0" .. rec.token, reaper.time_precise() + hops.START
   ask(cfg, rec, song, room)
-  band.log(string.format("%s's %d effect%s now run on %s's computer (only here: the song's chain is the same for everyone). Bring them back: the same button",
+  band.log(string.format("%s's %d effect%s now run on %s's computer (only here: the project's chain is the same for everyone). Bring them back: the same button",
     name, #chain, #chain == 1 and "" or "s", user))
   return id
 end
@@ -510,7 +510,7 @@ function hops.serve(proj, cfg, d, song, room)
   local src, sis = nil, {}
   for k, e in ipairs(chain) do
     local s, si = find_fx(proj, d.oid, e.fxi, e.fx)
-    if not s then return fail("their copy of the song doesn't have " .. tostring(e.fx) .. " on that track") end
+    if not s then return fail("their copy of the project doesn't have " .. tostring(e.fx) .. " on that track") end
     if not require("prints").fx_here(s, si) then return fail(tostring(e.fx):gsub("^%w+:%s*", "") .. " doesn't load on their computer") end
     src, sis[k] = s, si
   end

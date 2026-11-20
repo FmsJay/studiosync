@@ -31,7 +31,7 @@ input,button{font:inherit;border-radius:6px;border:1px solid #444;background:#11
 button{background:#2e7d4f;border:0;margin-top:6px}.ok{color:#8c8;font-size:14px}.dim{color:#889;font-size:14px}</style></head><body>
 <h1>]] .. esc(studio) .. [[</h1>]] }
   if channel then
-    h[#h + 1] = [[<p class="dim">Your name: <input id="who" placeholder="your name"> Comments go to the song's chat in StudioSync, at the moment you were listening to.</p>]]
+    h[#h + 1] = [[<p class="dim">Your name: <input id="who" placeholder="your name"> Comments go to the project's chat in StudioSync, at the moment you were listening to.</p>]]
   else
     h[#h + 1] = [[<p class="dim">To leave comments here, the studio's owner turns on phone alerts in StudioSync's Settings.</p>]]
   end

@@ -70,6 +70,10 @@ package.loaded.sync = { authority = function()
 end }
 package.loaded.groups = { smart_take_names = function() return true end, may_manage = function() return false end, smart_lane_names = function() return false end }
 package.loaded.services = { my_tailscale_name = function() return "james-main.tail99.ts.net" end, ts_exec = function(args) return "0\n" .. args end }
+local served = {} -- (the secure link set up by itself: Fewer things to press, James)
+package.loaded.services.tailscale_exe = function() return "C:/Program Files/Tailscale/tailscale.exe" end
+package.loaded.services.tailscale_certs_on = function() return true end
+package.loaded.services.run_hidden = function(name, cmd) served[#served + 1] = name .. " " .. cmd end
 package.loaded.direct = { port = function() return 47281 end }
 package.loaded.webui = { status = function() return { token = "abc123" } end }
 local gone = {}
@@ -162,6 +166,10 @@ for i = 0, 300 do -- this computer plays from 8 s
   pr.tick("P", cfg, b, publish, clock)
 end
 local s = pub.phonerec
+assert(#served == 1 and served[1]:find('phone-serve "C:/Program Files/Tailscale/tailscale.exe" serve --bg --https=8443 http://127.0.0.1:47281', 1, true),
+  "a Record page open: the secure link set up by itself, once a session, in the background: " .. tostring(served[1]))
+assert(pr.auto_on()); reaper.SetExtState(band.SECTION, pr.AUTO_KEY, "0"); assert(not pr.auto_on(), "Settings > Advanced turns it off")
+reaper.DeleteExtState(band.SECTION, pr.AUTO_KEY)
 assert(s and s.me == "James" and s.playing and #s.tracks == 2 and s.tracks[1].may and not s.tracks[2].may and s.tracks[2].why == "Bo's"
   and s.secure == "https://james-main.tail99.ts.net:8443/record.html?t=abc123" and math.abs(s.at - link) < 0.6, "the page's state: tracks with who may, the secure link")
 saved.aa11 = "RIFF\0\0\0\0WAVEfmt "

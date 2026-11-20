@@ -648,7 +648,7 @@ function liveaudio.health_row(cfg, b)
   local st = liveaudio.status()
   if not st.running then
     local err = tostring(st.error or "")
-    return { "live audio", err == "", err == "" and "grey" or "yellow", "Live audio: starts while Live sync runs with a studio song in front.", "Live audio: " .. err }
+    return { "live audio", err == "", err == "" and "grey" or "yellow", "Live audio: starts while Live sync runs with a studio project in front.", "Live audio: " .. err }
   end
   local theirs = {}
   if b and b.song then
@@ -824,7 +824,7 @@ function liveaudio.call_ui(ctx, ImGui, cfg)
   local vch, vv = ImGui.SliderDouble(ctx, "##lamaster", math.max(-60, math.min(12, mdb)), -60, 12, mdb <= -60 and "Everyone: off" or "Everyone: %.1f dB")
   if vch then liveaudio.set_volume(cw.vol_of(vv)) end
   ImGui.SetItemTooltip(ctx, "How loud everyone comes in, only for you (each person's own volume is below). Ctrl+click to type a value.")
-  if not st.running then ImGui.TextDisabled(ctx, "Starts while Live sync runs with a studio song in front (Health says what's missing)."); return end
+  if not st.running then ImGui.TextDisabled(ctx, "Starts while Live sync runs with a studio project in front (Health says what's missing)."); return end
   local peers = {}
   for peer in pairs(type(st.peers) == "table" and st.peers or {}) do peers[#peers + 1] = peer end
   table.sort(peers)

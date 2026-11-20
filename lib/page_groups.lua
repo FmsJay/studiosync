@@ -6,7 +6,7 @@ local groups, chooser, theme = require("groups"), require("chooser"), require("t
 local pg = { root = nil } -- pg.root: the group the Projects page shows (nil: where you're working)
 
 local WHAT_IS = "A studio is its own shared folder, with its own projects, collaborators and chat.\n\n" ..
-  "Use one for a band, or for one song with one person: name it what it is. Nobody in your other studios sees it.\n\n" ..
+  "Use one for a band, or for one project with one person: name it what it is. Nobody in your other studios sees it.\n\n" ..
   "Next you'll share a project with it and invite people. You can close it whenever you're done, and everyone keeps their copy."
 local new_name, why_not, join_text = "", nil, ""
 
@@ -41,7 +41,7 @@ function pg.start_button(env, label)
     ImGui.Spacing(ctx)
     if ImGui.IsWindowAppearing(ctx) then ImGui.SetKeyboardFocusHere(ctx) end
     ImGui.SetNextItemWidth(ctx, -1)
-    local _, v = ImGui.InputTextWithHint(ctx, "##newgroup", "its name (a band, a song, whoever it's with)", new_name)
+    local _, v = ImGui.InputTextWithHint(ctx, "##newgroup", "its name (a band, a project, whoever it's with)", new_name)
     new_name = v
     if why_not then ImGui.TextColored(ctx, theme.YELLOW, why_not) end
     do
@@ -170,6 +170,8 @@ function pg.my_id()
   return require("services").my_device_id(pg.st_at ~= nil and reaper.time_precise() - pg.st_at < 30)
 end
 function pg.start_syncthing_button(ctx, ImGui, id)
+  -- (drawn only while Syncthing isn't answering: started by itself once a session, the button kept for another try. Fewer things to press, James)
+  if not pg.auto_st then pg.auto_st = true; pcall(pg.starting_syncthing) end
   if ImGui.SmallButton(ctx, "Start Syncthing##" .. id) then
     local ok, why = require("services").ensure_syncthing()
     if ok then pg.st_at = reaper.time_precise() end
@@ -563,7 +565,7 @@ function pg.draw_projects(env)
   if #templates > 0 then
     ImGui.SameLine(ctx)
     if ImGui.Button(ctx, "New from template") then
-      local items = { "#Start a new song from" }
+      local items = { "#Start a new project from" }
       for _, t in ipairs(templates) do items[#items + 1] = t end
       local pick = band.pick(items)
       if pick then require("extras").open_template({ root = root }, pick) end

@@ -70,8 +70,9 @@ local function push(m, now)
   while #q > webcall.KEEP do table.remove(q, 1) end
   dirty = true
 end
--- -> { boot, me = { user, dev }, open = { { user, dev, host } } (by name), msgs = the newest, oldest first }. now: os.time().
-function webcall.model(me, now)
+-- -> { boot, me = { user, dev }, open = { { user, dev, host } } (by name), msgs = the newest, oldest first, live }. now: os.time().
+-- live: StudioSync's live audio runs here, so a page leaves call audio unticked until someone ticks it (it carries the music already).
+function webcall.model(me, now, live)
   local list, msgs = {}, {}
   for dev, o in pairs(open) do
     if now - o.at < webcall.OPEN_FOR then list[#list + 1] = { user = o.user, dev = dev, host = o.host } else open[dev] = nil end
@@ -80,7 +81,7 @@ function webcall.model(me, now)
   for i = #q, 1, -1 do if now - q[i].time >= webcall.KEEP_FOR then table.remove(q, i) end end
   for _, m in ipairs(q) do msgs[#msgs + 1] = m end
   dirty = false
-  return { boot = webcall.boot, me = me, open = list, msgs = msgs }
+  return { boot = webcall.boot, me = me, open = list, msgs = msgs, live = live and true or nil }
 end
 function webcall.dirty() return dirty end
 function webcall.reset() q, seq, open, dirty = {}, 0, {}, true end -- (tests)

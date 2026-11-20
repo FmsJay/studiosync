@@ -87,6 +87,8 @@ assert(mod.msgs[2].t == "error" and mod.msgs[2].call == CALL and mod.msgs[2].why
 ok_send = false
 assert(webcall.page(cfg, b, { t = "bye", to = AND, call = CALL }, 108) == false, "the link didn't take it")
 assert(webcall.model(webcall.me(cfg), 108).msgs[3].why:find("didn't take"), "told")
+-- call audio: unticked by itself while live audio runs here, ticked otherwise; a hand's choice stays (Fewer things to press, James)
+assert(webcall.model(webcall.me(cfg), 108, true).live == true and webcall.model(webcall.me(cfg), 108).live == nil, "live audio here: said")
 ok_send = true
 assert(webcall.page(cfg, b, { t = "offer", to = CHI, call = CALL, kind = "call" }, 109) == false and #sent == 4, "a bad message: nothing sent")
 
@@ -122,6 +124,7 @@ assert(html:find('<link rel="stylesheet" href="call.css">', 1, true) and html:fi
 assert(html:find('<div id="sharebar" role="status" hidden></div>', 1, true) and html:find('<section id="call" aria-labelledby="call-h" hidden></section>', 1, true),
   "the sharing bar and the call section, hidden until there's something to show")
 assert(js:find("getElementById('call')", 1, true) and js:find("getElementById('sharebar')", 1, true) and js:find("h.id = 'call-h'", 1, true), "call.js fills them")
+assert(js:find("audioBox.checked = !model.live", 1, true) and js:find("audioSet = true", 1, true), "call audio follows live audio until ticked by hand")
 assert(app:find("dispatchEvent(new CustomEvent('ss-state'", 1, true) and js:find("addEventListener('ss-state'", 1, true) and js:find("topics.rtc", 1, true),
   "call.js reads app.js's snapshot, the rtc topic")
 for _, t in ipairs({ "here", "offer", "answer", "bye", "busy" }) do assert(js:find("t: '" .. t .. "'", 1, true), "call.js sends " .. t) end

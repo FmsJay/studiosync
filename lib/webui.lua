@@ -234,7 +234,12 @@ function webui.tick(proj, cfg, b, handlers)
   -- Health and Play together: only while a page shows them (lib/webpages.lua)
   require("webpages").tick(proj, cfg, b, publish, last_who, now)
   -- (video calls: a message in or out shows at once; who's open is looked at again every second, as their "here"s age out)
-  if webcall.dirty() or now - rtc_at >= 1 then rtc_at = now; publish("rtc", webcall.model(webcall.me(cfg), os.time())) end
+  -- (live: call audio starts unticked while StudioSync's live audio runs here, ticked otherwise. James: "fewer things to press")
+  if webcall.dirty() or now - rtc_at >= 1 then
+    rtc_at = now
+    local lok, lst = pcall(require("liveaudio").status)
+    publish("rtc", webcall.model(webcall.me(cfg), os.time(), lok and type(lst) == "table" and lst.running))
+  end
   -- the Song page: only while a page shows it (lib/dawview.lua)
   require("dawview").tick(proj, cfg, b, publish, last_who, now)
   -- the Record page: a phone's take, its play readings and state only while one is open (lib/phonerec.lua)

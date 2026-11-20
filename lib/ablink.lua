@@ -86,8 +86,8 @@ end
 -- (band.capture_tempo); recording: anyone here or in the room. -> true, or false and why (said on Health).
 function ablink.may_tempo(may, tempos, recording)
   if recording then return false, "a tempo change on Link waits: someone is recording" end -- (never mid-take: the studio didn't choose it)
-  if not may then return false, "a tempo change on Link was put back: only the driver changes the song's tempo (Take control first)" end
-  if tempos > 1 then return false, "a tempo change on Link was put back: the song has tempo changes, so REAPER's map leads" end
+  if not may then return false, "a tempo change on Link was put back: only the driver changes the project's tempo (Take control first)" end
+  if tempos > 1 then return false, "a tempo change on Link was put back: the project has tempo changes, so REAPER's map leads" end
   return true
 end
 -- Health's line. st: { apps, bpm, lead (the user this computer follows; nil: it leads), others (users on the bridge), phase, clock, note }.
@@ -156,7 +156,7 @@ function ablink.tick(cfg, b, proj)
       reaper.Undo_EndBlock2(proj, "StudioSync: tempo from Ableton Link", -1)
       if not aok then error(e, 0) end
       r, S.stamp, S.dirty, S.note = l, sn, now, nil
-      band.log(string.format("Ableton Link: tempo %.2f BPM from a Link app here, as the song's tempo (it goes to the studio as any tempo change)", l))
+      band.log(string.format("Ableton Link: tempo %.2f BPM from a Link app here, as the project's tempo (it goes to the studio as any tempo change)", l))
     else
       push_tempo(playing and r or before, now)
       S.note = why
@@ -235,7 +235,7 @@ function ablink.health_row()
   end
   local st = band.json_decode(reaper.GetExtState(band.SECTION, "ablink status"))
   if type(st) ~= "table" or os.time() - (tonumber(st.at) or 0) > 10 then
-    return { "ablink", true, "grey", "Ableton Link: joins while Live sync runs with a studio song in front.", "" }
+    return { "ablink", true, "grey", "Ableton Link: joins while Live sync runs with a studio project in front.", "" }
   end
   local text = ablink.health_text(st)
   return { "ablink", not st.puppet, "yellow", text, text }
@@ -255,7 +255,7 @@ function ablink.settings_ui(ctx, ImGui)
     band.log(v and "Ableton Link: on for this computer (it joins while Live sync runs)" or "Ableton Link: off for this computer")
   end
   ImGui.SetItemTooltip(ctx, "Only on this computer. REAPER's tempo and play/stop go to Link; while REAPER plays, Link's bar is REAPER's.\n" ..
-    "A Link app's tempo change becomes the song's only if you may change the tempo (driver, or Anyone) and nobody is recording; otherwise it's put back.")
+    "A Link app's tempo change becomes the project's only if you may change the tempo (driver, or Anyone) and nobody is recording; otherwise it's put back.")
 end
 
 return ablink

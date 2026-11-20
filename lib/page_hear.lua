@@ -160,7 +160,7 @@ function page.produce_button(ctx, ImGui, proj, cfg, b, name)
   if on then ImGui.PopStyleColor(ctx) end
   -- (in plainer words, and what you choose: James found it confusing, 0.59.32)
   ImGui.SetItemTooltip(ctx, on and ("You're producing " .. name .. ". Click to stop.") or
-    ("Produce " .. name .. ": you hear them as they record, lined up with your copy of the song. Yours plays a moment behind theirs, so what they play lands in time on your grid.\n\n" ..
+    ("Produce " .. name .. ": you hear them as they record, lined up with your copy of the project. Yours plays a moment behind theirs, so what they play lands in time on your grid.\n\n" ..
     "You choose who runs their transport (on Home, under Producing): you (Play, Record, Stop and the loop, from your cursor) or them." ..
     (producer.via(proj) == "stamp" and " You can talk to them between takes." or "") .. " They needn't set anything up."))
 end
@@ -222,13 +222,13 @@ function page.producer(ctx, ImGui, proj, cfg, b, rows)
     ImGui.SetItemTooltip(ctx, "Your first input goes to " .. name .. " right away, while you press this. It reaches them in a moment, even mid-take: \"hold on\" stops them.")
   else
     ImGui.TextDisabled(ctx, "No talkback")
-    ImGui.SetItemTooltip(ctx, "A NINJAM server only plays sound as each song reaches it, so talking between takes needs the SonoBus route.")
+    ImGui.SetItemTooltip(ctx, "A NINJAM server only plays sound as each interval reaches it, so talking between takes needs the SonoBus route.")
   end
   page.fit(ctx, ImGui, "", 110)
   ImGui.SetNextItemWidth(ctx, 110)
   local ch, v = ImGui.DragDouble(ctx, "##producelag", producer.lag(proj), 0.05, producer.MIN_LAG, producer.MAX_LAG, "%.1f s behind")
   if ch then producer.set_lag(proj, v) end
-  ImGui.SetItemTooltip(ctx, "How far behind them your song runs. More gives a bad connection room; less is closer to them. It takes effect on their next start.")
+  ImGui.SetItemTooltip(ctx, "How far behind them your project runs. More gives a bad connection room; less is closer to them. It takes effect on their next start.")
   page.fit(ctx, ImGui, "Stop")
   if ImGui.SmallButton(ctx, "Stop") then producer.stop(proj, cfg, b) end
   ImGui.SetItemTooltip(ctx, "Back to your own transport.")
@@ -246,7 +246,7 @@ function page.producer(ctx, ImGui, proj, cfg, b, rows)
     ImGui.AlignTextToFramePadding(ctx)
     ImGui.TextDisabled(ctx, name .. "'s transport:")
     local armed = #(them.armed or {}) > 0
-    for _, btn in ipairs({ { "Play##rplay", "start", false, "Plays " .. name .. "'s song from your cursor. Yours follows a moment behind, as always." },
+    for _, btn in ipairs({ { "Play##rplay", "start", false, "Plays " .. name .. "'s project from your cursor. Yours follows a moment behind, as always." },
         { "Record##rrec", "start", true, armed and ("Records " .. name .. " from your cursor, on what they have armed (" .. table.concat(them.armed, ", ") .. ").")
           or ("Nothing is armed on " .. name .. "'s side, so this records nothing. Ask them to arm a track.") },
         { "Stop##rstop", "stop", false, "Stops " .. name .. "'s transport." } }) do

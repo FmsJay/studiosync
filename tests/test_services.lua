@@ -19,6 +19,9 @@ assert(services.tailscale_name_in(ts:format("false")) == nil, "names turned off:
 assert(services.tailscale_name_in("") == nil, "not signed in")
 assert(services.tailscale_running_in('{"BackendState": "Running"}'), "on")
 assert(not services.tailscale_running_in('{"BackendState":"Stopped"}') and not services.tailscale_running_in(""), "off, or no answer")
+assert(services.tailscale_certs_in('{"CertDomains": ["pc.tail1234.ts.net"]}'), "HTTPS certificates on")
+assert(not services.tailscale_certs_in('{"CertDomains": null}') and not services.tailscale_certs_in('{"CertDomains": []}') and not services.tailscale_certs_in(""),
+  "off, or no answer: the phone's secure link isn't set up by itself")
 assert(not services.on_tailnet("[fd7a:115c:a1e1::1]:22000") and not services.on_tailnet(""), "other IPv6, nothing")
 -- the invitation: both lines carry the ID as the installers read it (BS_HOST_ID on a Mac, -HostId on Windows)
 local inv_id = "2MOGZMD-MVLUUSO-D6GXQIG-HMDVUBG-AOW6LHR-LMQQT6P-V4V5P73-6ZR5NQZ"

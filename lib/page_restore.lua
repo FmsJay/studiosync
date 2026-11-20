@@ -176,8 +176,8 @@ local function back_button(i, what, single, point)
     local ok, name = reaper.GetUserInputs("Fork from here", 1, "Name of the fork:,extrawidth=120", "")
     if ok then open_at(name, { fork = { from = b.room, version = point and point.file, label = point and point.label or ("as it was " .. what) } }) end
   end
-  ImGui.SetItemTooltip(ctx, "A fork of the song as it was " .. what .. ": a side room of its own to try another arrangement, alone or with others. " ..
-    "It shares the song's recordings (nothing copied); bring back what works from Rooms, or adopt it as the main version.")
+  ImGui.SetItemTooltip(ctx, "A fork of the project as it was " .. what .. ": a side room of its own to try another arrangement, alone or with others. " ..
+    "It shares the project's recordings (nothing copied); bring back what works from Rooms, or adopt it as the main version.")
 end
 -- Each person's own colour, as drawings and tracks show them.
 local function person_colour(user)
@@ -466,7 +466,7 @@ function R.section_mixes()
       pcall(function() require("page_chat").post(cfg, b, string.format("Stems for whoever mixes: %d file(s) in the shared folder's %s", n, out:match("[^/]+/stems/.*$") or out)) end)
     else band.msg(n) end
   end
-  ImGui.SetItemTooltip(ctx, "Opens REAPER's Render window set up for stems: one file per shared track, the whole song, all starting together, 24-bit WAV at the\n" ..
+  ImGui.SetItemTooltip(ctx, "Opens REAPER's Render window set up for stems: one file per shared track, the whole project, all starting together, 24-bit WAV at the\n" ..
     "project's sample rate, no normalizing or dither, into the shared folder's stems/ for everyone. Check it and press Render; your settings are back after.\n" ..
     "Tracks that stay on this computer are left out, silent ones skipped.")
   next_to("Dry stems")
@@ -492,7 +492,7 @@ function R.section_mixes()
       if path then band.log("saved '" .. name .. "' as a template for everyone in the studio: Projects > New from template") else band.msg(why) end
     end
   end
-  ImGui.SetItemTooltip(ctx, "This song's tracks, routing, plug-ins, colours and tempo, without its recordings: everyone in the studio can start a new song from it\n" ..
+  ImGui.SetItemTooltip(ctx, "This project's tracks, routing, plug-ins, colours and tempo, without its recordings: everyone in the studio can start a new project from it\n" ..
     "(Projects page, New from template). Each studio has its own templates.")
   next_to("Save a copy outside the studio")
   if ImGui.SmallButton(ctx, "Save a copy outside the studio") then

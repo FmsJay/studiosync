@@ -21,12 +21,17 @@
 -- computer's name on port 8443 (443 is often someone's already: James's AI hub has it), proxied to 127.0.0.1:47281, where the server asks
 -- for the studio's token as on the link's port (webui_auth: X-Forwarded-*). The Record page offers the setup once (a button running it here)
 -- and the https link. (James, rt)
+-- It sets itself up now (James: "fewer things to press"): the first time a Record page asks here each session, in the background, and
+-- only with HTTPS certificates on for the tailnet (else `tailscale serve` waits for them). Tailnet-only and still behind the studio's
+-- token, as the http link is; Settings > Advanced turns it off (ExtState "phone link auto" "0"), and the page's button stays.
 local band = require("band")
 local phonerec = {}
 phonerec.WANT_FOR = 30       -- seconds a Record page's "I'm open" lasts (it says so every 10 s)
 phonerec.PUBLISH_EVERY = 0.5 -- seconds between the page's state while it's open (the page moves the position on between)
 phonerec.TRACKS_EVERY = 2    -- seconds between rebuilding who may record where (sync.authority reads the claims files' caches)
 phonerec.KEEP = 20 * 60      -- seconds of play readings kept: a longer take can't be placed
+phonerec.AUTO_KEY = "phone link auto" -- ExtState: "0" keeps the secure link to the Record page's button
+function phonerec.auto_on() return reaper.GetExtState(band.SECTION, phonerec.AUTO_KEY) ~= "0" end
 phonerec.JUMP = 0.1          -- seconds the position may be off where it should be before it counts as a jump (a new stretch)
 phonerec.LEAD_ALONE = 2      -- seconds from the press to a start on this computer alone
 phonerec.HTTPS_PORT = 8443   -- `tailscale serve`'s https port for the pages
@@ -99,7 +104,7 @@ function phonerec.place(list, t0, len)
       if not best or count[r.seg] > count[best] then best = r.seg end
     end
   end
-  if not best then return nil, "this computer wasn't playing the song while the phone recorded" end
+  if not best then return nil, "this computer wasn't playing the project while the phone recorded" end
   local cs, from, to, rate = {}, math.huge, -math.huge, 1
   for _, r in ipairs(list) do
     if r.seg == best then cs[#cs + 1] = r.pos - r.t * r.rate; from, to, rate = math.min(from, r.pos), math.max(to, r.pos), r.rate end
@@ -193,7 +198,7 @@ local function say(text) S.said, S.said_at = text, os.time(); return text end
 local function start(proj, cfg, b, d)
   local key = tostring(proj)
   if (tonumber(reaper.GetExtState(band.SECTION, "together_at " .. key)) or 0) > require("together").now() then return say("joining the start that's coming") end
-  if reaper.GetPlayStateEx(proj) & 1 == 1 then return say("recording along: the song is already playing") end
+  if reaper.GetPlayStateEx(proj) & 1 == 1 then return say("recording along: the project is already playing") end
   local together = require("together")
   local pos = reaper.GetCursorPositionEx(proj)
   local ev = { type = "start", pos = pos, countin = together.bars_before(proj, pos, d.bars), click = d.bars > 0 or nil, lag = 0, lead = cfg.user }
@@ -330,9 +335,21 @@ function phonerec.action(proj, cfg, b, a)
   if d.nudge then return nudge(proj, cfg, b, d.nudge) end
 end
 
+-- The secure link set up by itself, once a session (see the top): in the background, so REAPER never waits on Tailscale. -> true when asked.
+function phonerec.auto_link()
+  local services = require("services")
+  local exe = services.tailscale_exe and services.tailscale_exe()
+  if not exe or not (services.tailscale_certs_on and services.tailscale_certs_on()) then return end -- (asked again next tick: certificates may come on)
+  S.auto_tried = true
+  services.run_hidden("phone-serve", '"' .. exe .. '" ' .. phonerec.serve_args(require("direct").port(), phonerec.HTTPS_PORT), 0)
+  band.log(say("setting up the phone's secure link by itself (tailscale serve, port " .. phonerec.HTTPS_PORT .. "; Settings > Advanced turns this off)"))
+  return true
+end
+
 -- Each tick in front while a page looks (lib/webui.lua): the play readings, and the Record page's state while one is open.
 function phonerec.tick(proj, cfg, b, publish, now)
   if now >= S.want_until or not phonerec.available() then return end
+  if not S.auto_tried and now - (S.auto_at or -math.huge) >= 20 and phonerec.auto_on() then S.auto_at = now; phonerec.auto_link() end
   if S.proj ~= proj then S.proj, S.readings = proj, {} end
   local ps = reaper.GetPlayStateEx(proj)
   local t = reaper.StudioSync_DirectNow()

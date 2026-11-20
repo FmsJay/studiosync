@@ -507,7 +507,7 @@ function drive.health_row(st, now, label)
   end
   local text = st.more and (label .. " copy: still copying (" .. tostring(st.moved or 0) .. " files last pass), carries on between passes")
     or (label .. " copy: up to date, last pass " .. when)
-  return { "cloud copy", true, st.more and "grey" or "green", text, text .. ". The studio's backup, and what anyone opening the song brings when nobody else is on." }
+  return { "cloud copy", true, st.more and "grey" or "green", text, text .. ". The studio's backup, and what anyone opening the project brings when nobody else is on." }
 end
 
 -- Every song here in full keeps its copy on Drive, not only the one open (James, 2026-11-01): a song a bandmate
@@ -535,7 +535,7 @@ end
 -- Health's grey row for a computer with no cloud copy of the studio: what one would bring it, and how to add it (`how`: drive.share_hint;
 -- `place`: where another service is picked). The laptop here had none and nothing said what it missed (James, rt). Pure.
 function drive.join_hint(label, how, place)
-  local text = "No " .. label .. " copy of the studio here. One would give this computer a backup of every song, songs that open when nobody " ..
+  local text = "No " .. label .. " copy of the studio here. One would give this computer a backup of every project, projects that open when nobody " ..
     "else is on, and StudioSync updates while the owner is away. Install " .. label .. "'s desktop app and sign in, then: " .. how ..
     " (another service: " .. place .. ")."
   return { "cloud copy hint", false, "grey", text, text }
