@@ -92,7 +92,8 @@ function mirror.fxchain(track_chunk, skip)
     local key = r.s:match("^(%S+)")
     if r.top and key == "BYPASS" then flush(); group = {} end
     if i == #raw then flush() end -- the closing ">"
-    if r.top and key == "FXID" and skip and skip[r.s:match("^FXID (%S+)")] then drop = true end
+    local sk = r.top and key == "FXID" and skip and skip[r.s:match("^FXID (%S+)")]
+    if sk == true then drop = true elseif sk and group then group[1] = sk end -- (a string: the BYPASS line to send for it, lib/hops.lua's held chain)
     if not chain_local(r.parent, key) then
       if group then group[#group + 1] = r.s else out[#out + 1] = r.s end
     end
@@ -1622,10 +1623,12 @@ function mirror.track_head(chunk)
   return cut and (chunk:sub(1, cut) .. ">\n") or chunk
 end
 -- A track's plug-ins, automation, sends and the rest, from its chunk (or its chunk up to its first item). `lfx`: its P_EXT band_local_fx
--- (this machine's plug-in translations, never sent). Pure.
+-- (this machine's plug-in translations, never sent), then its P_EXT band_fx_held. Pure.
 function mirror.track_head_parts(chunk, lfx, oid_at)
   local skip = {} -- this machine's plug-in translations (lib/page_plugins.lua): never sent
   for g in (lfx or ""):gmatch("({[^}]+})for=") do skip[g] = true end
+  -- (a track whose FX run on a bandmate's computer has them bypassed here: each goes out with the BYPASS line the band has. Shared CPU, rt)
+  for g, v in (lfx or ""):gmatch("({[^}]+})held=([^;]*);") do skip[g] = "BYPASS " .. v end
   local fx = mirror.fxchain(chunk, skip) or ""
   local env, recv, misc = mirror.track_parts(chunk, oid_at)
   return { fx = fx, fxh = mirror.fx_hash(fx), env = env, recv = recv, misc = misc, mods = mirror.modulated(mirror.fxchain(chunk) or "") }
@@ -1850,6 +1853,7 @@ function mirror.scan(proj, user, media_dir, local_mix)
       local _, chunk = reaper.GetTrackStateChunk(tr, "", false)
       chunks[tr] = chunk -- (its items' states may be last look's: mirror.item_states)
       local lfx = select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local_fx", "", false))
+        .. select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_fx_held", "", false)) -- (lib/hops.lua: offloaded, held off here)
       -- (keyed on the track's own part, before its first item: an item edit missed the whole track's entry, and its item lines were parsed again
       -- in Lua, 50 to 200 ms on a big MIDI track. Nothing of the track's follows its items: 574 tracks in 60 projects here, and
       -- tests/test_0_59_45_engine.lua asserts the parts come out the same. Round 1 review, 0.59.45)

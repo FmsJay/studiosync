@@ -751,6 +751,7 @@ function P.status(t)
     produce_ctl = require("producer").who(proj) and require("producer").ctl(proj) or nil, measure = require("latency").asking(proj),
     lets = require("producer").lets_for(proj) } -- (whoever produces me may start and stop my transport: their panel shows its buttons)
   do local okh, h = pcall(function() return require("hub").status_part(cfg, b) end); info.hub = okh and h or nil end -- (since, link, handed on, roles held: lib/hub.lua. James, rt)
+  do local okc, c = pcall(require("hops").cpu_now); info.cpu = okc and c or nil end -- (how busy, in tens: who a track's FX can be offloaded to, lib/hops.lua. James, rt)
   if info.follow == "" then info.follow = nil end
   do -- (this computer's live audio: muted, push-to-talk, or why it can't run here, so the others' Health says "Mac: needs extension 1.0.13". James, rt)
     local okla, la = pcall(require("liveaudio").my_la)

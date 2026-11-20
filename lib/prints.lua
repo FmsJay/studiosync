@@ -546,6 +546,9 @@ function prints.render(oid, name, out, tracks, render, secs, quick) -- secs: the
   -- (a chained print's stage file too, "stage-...": 0.59.49)
   local found = find_made(out, name:match("^(%a+%-.+%-%x%x%x%x%x%x%x%x)%-") or name)
   if found then return found end
+  -- (a track whose FX run on a bandmate's computer has them held off here: rendered now, the print would miss them. It waits till they're back:
+  -- lib/hops.lua offload. Shared CPU, rt)
+  for _, t in ipairs(tracks) do if band.track_ext(t, "band_fx_held") ~= "" then return nil end end
   local bg = require("bgrender")
   if bg.on() then
     if bg.stuck[name] then return nil end

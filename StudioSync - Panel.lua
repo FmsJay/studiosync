@@ -1894,6 +1894,18 @@ function ui.track_plays_row()
       auto = "Through the track's plug-ins when every one of them loads here, else the studio's print." })[c[1]] ..
       "\nOnly on this computer. Also as actions, for the track's right-click menu: StudioSync - Selected tracks play dry / wet / as chosen.")
   end
+  -- (Shared CPU: the selected track's effects on the idlest bandmate's computer, or back. lib/hops.lua. James, rt)
+  if sel and b then
+    local hops = require("hops")
+    local off = hops.available() and hops.offload_of(proj, sel)
+    if ImGui.SmallButton(ctx, (off and ("Bring its effects back from " .. tostring(off.user)) or "Offload its effects") .. "##offload") then
+      local said = hops.offload_toggle(proj, cfg, b, sel)
+      if said then band.msg(said) end
+    end
+    ImGui.SetItemTooltip(ctx, "The selected track's effects run on whichever bandmate's computer has the most headroom now (never one recording), " ..
+      "in time with the mix; they're held off here, only here. Back by themselves if that computer records, goes away or falls behind.\n" ..
+      "Also as an action: StudioSync - Offload track FX.")
+  end
   -- (one take a part, the one it plays, unless this is on: Live sync sets REAPER's Show all takes in lanes for each studio project. 0.59.13)
   local both = reaper.GetExtState(band.SECTION, "show both takes") == "1"
   local bch, bv = ImGui.Checkbox(ctx, "Show dry and wet takes##bothtakes", both)

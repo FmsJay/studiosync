@@ -535,6 +535,28 @@ it's the patient, lossless, store-and-forward half.
        snapshots in the extension or a background instance; prints, relaying, live mix at the hub.
 2. **Shared CPU.** The remote plug-in mechanism (4b) also works for plug-ins you DO have: freeze or offload a heavy
    track to whichever computer is idle.
+   - **First version built (2026-11-19; offline tests only, not run in REAPER yet):** `lib/hops.lua` (offload, offload_pick, hold_chain,
+     keep_offload), the action `StudioSync - Offload track FX.lua` and a button under the panel's "Selected tracks play" row (Offload its
+     effects / Bring its effects back from Bo), tests/test_0_60_rt_sharedcpu.lua.
+     - **Picks:** every computer's status now carries `cpu` (0-100 in tens: typeperf on Windows, load average over cores on macOS/Linux, read in
+       the background every 20 s; an audio dropout in the last minute reads 100). Of the bandmates on the direct link: not a guest, not
+       recording, has every plug-in of the chain (the shared plug-in lists), at most 75% busy, the least busy (then by name). A StudioSync
+       without `cpu` can't host a chain and is passed over. Refused: the master, an instrument in the chain (a hop carries audio, not MIDI),
+       this computer's own FX on the track (translations, drum maps, a live hop), a track already hopping.
+     - **Moves:** one Hop at the end of the track's chain (dry when late, never silence) and the song's FX held off here: each one's BYPASS
+       line as the band has it goes into the track's `band_fx_held` first, and mirror sends that line in its place (`track_head_parts`), so
+       the band's chain never changes: it's this computer's choice. The host gets the whole chain (`chain` in the serve request) on its
+       hidden track, Hop X, copies, Hop Y; their knobs and bypass follow the song's, their latencies summed for the extension. A print waits
+       while its track's FX are held (it would miss them). Health: "Guitar's effects run on Bo's computer: round trip, needs, lost, late blocks".
+     - **Comes back** (the chain on again exactly as it was, said in the log and a Health line for 5 min): the host starts recording (its
+       status), stops hosting or goes for 10 s (20 s grace at the start), more than 8 late blocks in 10 s, the band changes the chain's
+       plug-ins (the same plug-ins landing again only puts the Hop and the hold back), Live sync stopping, or the same button.
+     - **Limits:** only the front tab's offloads are watched (as hops are); stereo; a chain with a restless plug-in may resend its unchanged
+       chain once when held; a crash leaves the chain held until Live sync runs again (then it reconnects or comes back).
+     - **To check in REAPER (desktop offloads to laptop):** Live sync on both; laptop idle; select a heavy track on the desktop and Offload
+       its effects: Health on the desktop names the laptop, its FX bypassed only here (the laptop's copy unchanged, nothing sent), the
+       laptop's hidden track (Show all tracks) has the chain; playback in time with a dry copy; the desktop's CPU meter drops; start recording
+       on the laptop: back at once, the chain exactly as before; pull the laptop's network: back within ~10 s; Bring its effects back by hand.
 3. **Follow a bandmate.** See exactly what they see: their view, cursor, selection and open editor, live.
 4. **Listen from anywhere.** A link from the studio to a browser page (phone, client, a bandmate away from REAPER) that
    plays the live session or the latest mix, peer to peer over Tailscale.
