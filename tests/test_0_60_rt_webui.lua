@@ -84,7 +84,7 @@ local posted, from_msg = {}, {}
 -- (video calls' own checks are tests/test_0_60_rt_webcall.lua: here a stand-in whose topic never changes, published once per front tab)
 local rtc_pages = {}
 package.loaded.webcall = { dirty = function() return false end, me = function() return {} end, model = function() return { boot = "1" } end,
-  page = function(_, _, a) rtc_pages[#rtc_pages + 1] = a end, link = function() end }
+  page = function(_, _, a) rtc_pages[#rtc_pages + 1] = a end, link = function() end, view_tick = function() end } -- (view_tick: a share's arrange view, rt-share)
 package.loaded.webhome = { tick = function() end, action = function() end } -- (Home and profiles: tests/test_0_60_rt_home.lua)
 package.loaded.invite = { web_tick = function() end, action = function() end, chat_model = function() end } -- (Ask to join: tests/test_0_60_rt_invite.lua)
 local chat_reads = {}

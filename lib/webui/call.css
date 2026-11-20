@@ -6,6 +6,7 @@
 #call { padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); max-height: 60vh; overflow-y: auto; }
 #call h2 { display: inline-block; margin-right: 12px; }
 .call-opt { font-size: 13px; color: var(--dim); }
+#call > .call-opt { margin-right: 14px; }
 .call-note { font-size: 13px; margin: 6px 0 0; }
 .call-note:empty { display: none; }
 .call-browser { display: inline-block; font-size: 13px; color: var(--accent); margin-top: 4px; }
@@ -25,11 +26,20 @@ button:disabled { opacity: .5; cursor: default; }
 .tile.big video { cursor: crosshair; }
 .tile.mirror video { transform: scaleX(-1); }
 .tile figcaption { position: absolute; left: 6px; bottom: 6px; font-size: 12px; color: #fff; background: rgba(0, 0, 0, .55); padding: 1px 6px; border-radius: 6px; }
-/* the pointer: a dot where the viewer clicked, named, gone after a moment */
-.dot { position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; background: var(--accent); border: 2px solid #fff;
-  box-shadow: 0 0 0 3px rgba(0, 0, 0, .35); pointer-events: none; animation: ss-dot 2.5s ease-out forwards;
-  font-size: 11px; line-height: 14px; color: #fff; text-indent: 22px; white-space: nowrap; text-shadow: 0 0 3px #000; } /* (the name beside it) */
-@keyframes ss-dot { 0% { transform: scale(1.6); opacity: 1; } 70% { opacity: 1; } 100% { transform: scale(1); opacity: 0; } }
+/* a screen share's drawing layer (the pointer, notes) over the picture, its tools under it, and full screen cropped to REAPER's arrange view */
+.tile .board { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+.board-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: 1 1 100%; font-size: 13px; }
+.board-bar button { padding: 2px 9px; font-size: 13px; }
+.board-bar button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.board-sound { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+.board-sound[hidden], .call-level[hidden], .call-opt[hidden] { display: none; }
+.call-vol { width: 90px; }
+.call-level { width: 70px; height: 10px; vertical-align: middle; }
+#call-sound { font-size: 13px; padding: 1px 4px; }
+.tile:fullscreen { max-width: none; border-radius: 0; display: flex; align-items: center; justify-content: center; }
+.tile:fullscreen video { max-height: none; height: 100%; }
+.tile.cropped { overflow: hidden; display: block; }
+.tile:fullscreen figcaption { display: none; }
 @media (max-width: 320px) {
   #sharebar { padding: 6px 8px; font-size: 12px; }
   #call { padding: 8px; }

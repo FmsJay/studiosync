@@ -130,9 +130,9 @@ assert(app:find("dispatchEvent(new CustomEvent('ss-state'", 1, true) and js:find
 for _, t in ipairs({ "here", "offer", "answer", "bye", "busy" }) do assert(js:find("t: '" .. t .. "'", 1, true), "call.js sends " .. t) end
 assert(js:find("topic: 'rtc'", 1, true) and js:find("'X-StudioSync': '1'", 1, true), "as an rtc action, with the server's header")
 assert(js:find("iceServers: []", 1, true), "no STUN or TURN: nothing outside")
-assert(js:find("getDisplayMedia", 1, true) and js:find("audio: false }", 1, true), "screen share without audio")
+assert(js:find("getDisplayMedia", 1, true) and js:find("audio: sys ?", 1, true), "the screen's own audio only when System audio is picked (rt-share)")
 assert(not js:find("innerHTML", 1, true) and not js:find("insertAdjacentHTML", 1, true), "bandmates' names go in as text")
 assert(js:find("You’re sharing your screen", 1, true) and js:find("'Stop', stopSharing", 1, true), "the sharing bar says so, with Stop")
 assert(not js:find("addEventListener('keydown'", 1, true), "no keys taken (app.js passes them to REAPER in the docked view)")
-assert(css:find("#sharebar", 1, true) and css:find(".dot", 1, true), "the bar and the pointer styled")
+assert(css:find("#sharebar", 1, true) and css:find(".board", 1, true), "the bar and the pointer's layer styled")
 print("ok")

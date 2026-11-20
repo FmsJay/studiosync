@@ -25,6 +25,12 @@ int webui_save_upload(const char *id, const char *path);
 // it. -> 1; 0 a bad id or MAX_OFFERS already. lib/phonerec.lua (the latest mix of each song, for the phone app to play along to)
 int webui_offer(const char *id, const char *path);
 void webui_shutdown();
+// A screen share's sound (lib/webui/call.js, "REAPER mix"): this computer's pages stream REAPER's own output as GET /api/mix (loopback only,
+// never the link's port or a proxy): raw 16-bit little-endian stereo frames at the rate in its X-Rate header, from the moment it's asked.
+// The audio hook (extension/rtaudio.cpp) hands each block of the first output pair here BEFORE live audio adds the bandmates it hears, so
+// a share never carries anyone's voice back to them. Audio thread: no lock or allocation; nothing at all unless a page streams it. (rt-share)
+void webui_mix_feed(const double *const *out, int nout, int len, double srate);
+int webui_mix_wanted(); // pages streaming it now: the main thread keeps the audio hook in while this is above 0
 
 // ---- the pure parts (tests/webui_test.cpp) ----------------------------------------------------------------------------------------------
 struct WebReq {

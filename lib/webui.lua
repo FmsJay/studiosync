@@ -276,6 +276,7 @@ function webui.tick(proj, cfg, b, handlers)
     local lok, lst = pcall(require("liveaudio").status)
     publish("rtc", webcall.model(webcall.me(cfg), os.time(), lok and type(lst) == "table" and lst.running))
   end
+  webcall.view_tick(proj, publish, now) -- (sharing a screen: REAPER's arrange view for the watchers' notes, lib/webcall.lua. rt-share)
   -- the Song page: only while a page shows it (lib/dawview.lua)
   require("dawview").tick(proj, cfg, b, publish, last_who, now)
   -- the Record page: a phone's take, its play readings and state only while one is open (lib/phonerec.lua)

@@ -414,6 +414,49 @@ void send_file(sock_t s, const std::string &id)
   fclose(f);
 }
 
+// ---- a screen share's sound: REAPER's mix for this computer's pages (GET /api/mix; webui.h) ------------------------------------------
+// One writer (the audio thread) and a few readers, each with its own place: a reader copies what's new, then checks the writer hasn't come
+// round over it meanwhile (a reader that slow skips ahead). shortcut: 16-bit little-endian (every target StudioSync builds for is), stereo
+// from the first output pair only; a master routed elsewhere needs a pair choice.
+const unsigned long long MIX_N = 1ull << 17; // frames kept: 2.7 s at 48 kHz
+const int MIX_STREAMS = 4;
+short g_mix[MIX_N * 2];
+std::atomic<unsigned long long> g_mix_w{ 0 };
+std::atomic<double> g_mix_sr{ 0 };
+std::atomic<int> g_mix_on{ 0 };
+short mix16(double v) { v *= 32767.0; return (short)(v >= 32767.0 ? 32767 : v <= -32768.0 ? -32768 : v >= 0 ? v + 0.5 : v - 0.5); }
+void mix_stream(sock_t s)
+{
+  if (g_mix_on.fetch_add(1) >= MIX_STREAMS) { g_mix_on.fetch_sub(1); return answer(s, 503, "text/plain", "busy\n"); }
+  struct Off { ~Off() { g_mix_on.fetch_sub(1); } } off;
+  const unsigned long long w0 = g_mix_w.load(std::memory_order_acquire);
+  for (int i = 0; i < 150 && !g_stop && g_mix_w.load(std::memory_order_acquire) == w0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  const double sr = g_mix_sr.load();
+  if (g_mix_w.load(std::memory_order_acquire) == w0 || sr < 8000 || sr > 768000) // (the hook goes in from REAPER's main thread within a moment)
+    return answer(s, 503, "text/plain; charset=utf-8", "REAPER's audio isn't running, or this extension can't hear it.\n");
+  if (!send_all(s, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nX-Rate: " + std::to_string((long long)sr) + "\r\nX-Channels: 2\r\n" + SAFE_HEADERS + "Connection: close\r\n\r\n")) return;
+  unsigned long long pos = g_mix_w.load(std::memory_order_acquire);
+  double fed_at = now_s();
+  std::string out;
+  while (!g_stop) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if (g_mix_sr.load() != sr) return; // (a new rate: the page starts again with it)
+    const unsigned long long w = g_mix_w.load(std::memory_order_acquire);
+    if (w == pos) { if (now_s() - fed_at > 5) return; continue; } // (REAPER's audio stopped: the page says so and asks again)
+    if (w < pos || w - pos > MIX_N / 2) pos = w - std::min(w, (unsigned long long)(sr * 0.05)); // (far behind: from now)
+    fed_at = now_s();
+    out.clear();
+    for (unsigned long long at = pos; at < w;) { // (two pieces where it wraps)
+      const unsigned long long i = at % MIX_N, n = std::min(w - at, MIX_N - i);
+      out.append((const char *)&g_mix[i * 2], (size_t)(n * 4));
+      at += n;
+    }
+    if (g_mix_w.load(std::memory_order_acquire) - pos > MIX_N) { pos = w; continue; } // (written over while copying: dropped)
+    if (!send_all(s, out)) return;
+    pos = w;
+  }
+}
+
 void handle(sock_t s, std::string buf, bool local)
 {
   set_blocking(s, 5000);
@@ -468,6 +511,11 @@ void handle(sock_t s, std::string buf, bool local)
     return answer(s, 200, "application/json", t);
   }
   if (r.path == "/api/file") return send_file(s, webui_param(r.query, "id"));
+  if (r.path == "/api/mix") { // (REAPER's own mix for a screen share: this computer's pages only, never the tailnet or a proxy's)
+    if (!local || !header(r, "x-forwarded-host").empty() || !header(r, "x-forwarded-for").empty() || !header(r, "x-forwarded-proto").empty())
+      return answer(s, 403, "text/plain", "this computer only\n");
+    return mix_stream(s);
+  }
   if (r.path == "/api/state") {
     std::string snap;
     { std::lock_guard<std::mutex> l(g_mx); snap = snapshot_locked(); }
@@ -549,6 +597,17 @@ void stop_listening()
   g_listening = false;
 }
 } // namespace
+
+void webui_mix_feed(const double *const *out, int nout, int len, double srate)
+{
+  if (g_mix_on.load(std::memory_order_relaxed) <= 0 || len <= 0 || nout <= 0 || !out || !out[0]) return;
+  g_mix_sr.store(srate, std::memory_order_relaxed);
+  const double *L = out[0], *R = nout > 1 && out[1] ? out[1] : out[0];
+  unsigned long long w = g_mix_w.load(std::memory_order_relaxed);
+  for (int k = 0; k < len; ++k, ++w) { short *d = &g_mix[(w % MIX_N) * 2]; d[0] = mix16(L[k]); d[1] = mix16(R[k]); }
+  g_mix_w.store(w, std::memory_order_release);
+}
+int webui_mix_wanted() { return g_mix_on.load(); }
 
 // ---- the core's functions --------------------------------------------------------------------------------------------------------------
 int webui_start(const char *folder, const char *secret, int port, const char *bind_ip)

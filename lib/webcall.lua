@@ -62,6 +62,7 @@ local function host_of(peer) return type(peer) == "string" and peer:match("^([^%
 -- ---- what the pages see ---------------------------------------------------------------------------------------------------------------
 -- (one queue for this computer: the studio in front's, as the rest of the web UI. boot: the pages start counting again when it changes)
 local q, seq, open, dirty = {}, 0, {}, true
+local view_until, view_at = -math.huge, -math.huge -- (rt-share: this computer sharing until; its arrange view last published at)
 webcall.boot = tostring(os.time())
 local function push(m, now)
   seq = seq + 1
@@ -84,16 +85,91 @@ function webcall.model(me, now, live)
   return { boot = webcall.boot, me = me, open = list, msgs = msgs, live = live and true or nil }
 end
 function webcall.dirty() return dirty end
-function webcall.reset() q, seq, open, dirty = {}, 0, {}, true end -- (tests)
+function webcall.reset() q, seq, open, dirty, view_until, view_at = {}, 0, {}, true, -math.huge, -math.huge end -- (tests)
 
 -- ---- Live sync's side (lib/webui.lua's tick) ---------------------------------------------------------------------------------------------
 function webcall.me(cfg) return { user = cfg.user, dev = require("services").my_device_id() } end
+-- ---- a screen share's extras (rt-share; lib/webui/call.js) -------------------------------------------------------------------------------
+-- Two of a page's messages stay on this computer: "duck" (watching a bandmate's share with its sound: their live Play is in that mix, so it's
+-- muted here meanwhile, lib/liveaudio.lua ducks) and "view" (this computer is sharing its screen: Live sync publishes REAPER's arrange view
+-- as the "rtview" topic, so the page can keep watchers' notes on the timeline). Both run out unless the page says them again.
+webcall.DUCK_FOR = 25   -- seconds a duck lasts (pages say it every 10 s)
+webcall.VIEW_FOR = 6    -- seconds a "view" lasts (pages say it every 2 s while sharing)
+webcall.VIEW_EVERY = 0.1
+webcall.TRACKS_MAX = 256
+-- -> true when done. clock: reaper.time_precise().
+function webcall.local_msg(a, clock)
+  if a.t == "view" then view_until = clock + webcall.VIEW_FOR; return true end
+  if a.t ~= "duck" or not dev_ok(a.to) then return false end
+  local o = open[a.to] -- (a bandmate whose page is open: their name is what live audio's cue mix goes by)
+  if not o then return false end
+  local la = require("liveaudio")
+  la.ducks = la.ducks or {}
+  la.ducks[o.user] = a.on == true and clock + webcall.DUCK_FOR or nil
+  pcall(la.apply)
+  return true
+end
+function webcall.viewing(clock) return clock < view_until end
+
+-- A window's rect, y downward on every system (macOS counts up from the bottom: flipped, as only differences are used). JS_ReaScriptAPI, else
+-- SWS. -> { x, y, w, h } or nil.
+local function rect_of(hwnd, client)
+  if not hwnd then return nil end
+  local ok, l, t, r, b
+  if client and reaper.JS_Window_GetClientRect then ok, l, t, r, b = reaper.JS_Window_GetClientRect(hwnd)
+  elseif reaper.JS_Window_GetRect then ok, l, t, r, b = reaper.JS_Window_GetRect(hwnd)
+  elseif reaper.BR_Win32_GetWindowRect then ok, l, t, r, b = reaper.BR_Win32_GetWindowRect(hwnd) end
+  if not ok or not (tonumber(l) and tonumber(t) and tonumber(r) and tonumber(b)) then return nil end
+  if reaper.GetOS():find("OSX") or reaper.GetOS():find("mac") then t, b = -t, -b end
+  return { x = math.floor(l), y = math.floor(math.min(t, b)), w = math.floor(r - l), h = math.floor(math.abs(b - t)) }
+end
+local function trackview(main)
+  if reaper.JS_Window_FindChildByID then return reaper.JS_Window_FindChildByID(main, 1000) end -- (REAPER's arrange view, id 1000)
+  if reaper.BR_Win32_FindWindowEx and reaper.BR_Win32_HwndToString then
+    return reaper.BR_Win32_FindWindowEx(reaper.BR_Win32_HwndToString(main), "0", "REAPERTrackListWindow", "", true, false)
+  end
+end
+-- REAPER's arrange view as this computer shows it: { on, t0, t1 (the time it shows), arr (its rect on screen), win (REAPER's main window),
+-- mon (the screen it's on; not on macOS), tracks = { { id, y, h, name } } (each shown track's place from the arrange view's top, scrolled as
+-- shown; id: 8 characters of its GUID) }. No arr without JS_ReaScriptAPI or SWS: watchers then point at the picture, not the timeline.
+function webcall.view_model(proj)
+  local t0, t1 = reaper.GetSet_ArrangeView2(proj, false, 0, 0, 0, 0)
+  local v = { on = true, t0 = math.floor((t0 or 0) * 10000 + 0.5) / 10000, t1 = math.floor((t1 or 0) * 10000 + 0.5) / 10000, tracks = {} }
+  local main = reaper.GetMainHwnd()
+  v.arr, v.win = rect_of(trackview(main), true), rect_of(main, false)
+  if v.arr and reaper.my_getViewport and not (reaper.GetOS():find("OSX") or reaper.GetOS():find("mac")) then
+    local ok, l, t, r, b = pcall(reaper.my_getViewport, 0, 0, 0, 0, v.arr.x, v.arr.y, v.arr.x + v.arr.w, v.arr.y + v.arr.h, false)
+    if ok and tonumber(l) and tonumber(r) and r > l and b > t then v.mon = { x = l, y = t, w = r - l, h = b - t } end
+  end
+  for i = 0, math.min(reaper.CountTracks(proj), webcall.TRACKS_MAX) - 1 do
+    local tr = reaper.GetTrack(proj, i)
+    local h = math.floor(reaper.GetMediaTrackInfo_Value(tr, "I_TCPH") or 0)
+    if h > 0 then
+      local _, name = reaper.GetTrackName(tr)
+      v.tracks[#v.tracks + 1] = { (reaper.GetTrackGUID(tr) or ""):gsub("[{}%-]", ""):sub(1, 8), math.floor(reaper.GetMediaTrackInfo_Value(tr, "I_TCPY") or 0), h,
+        tostring(name or ""):sub(1, 64) }
+    end
+  end
+  return v
+end
+-- Live sync's tick (lib/webui.lua): while this computer shares, its arrange view every VIEW_EVERY s (published only when it changed).
+function webcall.view_tick(proj, publish, clock)
+  if clock >= view_until then
+    if view_at > -math.huge then view_at = -math.huge; publish("rtview", { on = false }) end
+    return
+  end
+  if clock - view_at < webcall.VIEW_EVERY then return end
+  view_at = clock
+  publish("rtview", webcall.view_model(proj))
+end
+
 -- A page's action. -> true when it went over the link. A message to a computer the link can't reach now, or that the link wouldn't take,
 -- comes back to the pages as { t = "error", call, why }; what went out is shown to the other pages here (no SDP) as { out = true, ... }, so
 -- a ring on a second window stops when one answers.
 local here_at = -math.huge
 function webcall.page(cfg, b, a, now)
   now = now or os.time()
+  if type(a) == "table" and (a.t == "duck" or a.t == "view") then return webcall.local_msg(a, reaper.time_precise()) and false end -- (this computer only)
   local m = webcall.from_page(a, webcall.me(cfg))
   if not m then return false end
   local direct = require("direct")

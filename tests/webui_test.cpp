@@ -17,6 +17,8 @@
 #define closesocket close
 #define mkdir_(p) mkdir(p, 0755)
 #endif
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -24,6 +26,7 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <vector>
 #include "../extension/direct.h"
 #include "../extension/webui.h"
 
@@ -273,6 +276,54 @@ int main()
   CHECK(code(get(link, "/api/file?id=ab12", th)) == 403, "and only with the studio's token");
   CHECK(code(get(link, "/api/file?id=cd34", th, ck)) == 404 && code(get(link, "/api/file?id=", th, ck)) == 404, "an id not offered: 404");
   CHECK(webui_offer("ab12", "") == 1 && code(get(link, "/api/file?id=ab12", th, ck)) == 404, "withdrawn: 404");
+  // a screen share's sound (rt-share): REAPER's mix as raw 16-bit stereo, this computer's pages only
+  CHECK(code(get(link, "/api/mix", th, ck)) == 403, "REAPER's mix: never on the link's port, token or not");
+  CHECK(code(get(web, "/api/mix", lh, "X-Forwarded-For: 100.64.0.9\r\n" + ck)) == 403, "nor through a proxy here");
+  CHECK(code(get(web, "/api/mix", lh)) == 503 && webui_mix_wanted() == 0, "no audio coming (REAPER's stopped): 503, and nobody streaming after");
+  {
+    std::atomic<bool> feeding{ true };
+    std::thread feeder([&] { // (the audio hook's part: 10 ms blocks at 48 kHz, a 1 kHz tone at -6 dB, the right channel its negative)
+      std::vector<double> L(480), R(480);
+      long long n = 0;
+      while (feeding) {
+        for (int k = 0; k < 480; ++k, ++n) { L[k] = 0.5 * sin(2 * 3.141592653589793 * 1000.0 * (double)n / 48000.0); R[k] = -L[k]; }
+        const double *out[2] = { L.data(), R.data() };
+        webui_mix_feed(out, 2, 480, 48000.0);
+        sleep_ms(10);
+      }
+    });
+    const int s = dial(web);
+    const std::string q = "GET /api/mix HTTP/1.1\r\nHost: " + lh + "\r\n\r\n";
+    send(s, q.data(), (int)q.size(), 0);
+    std::string got;
+    char b[8192];
+    for (int i = 0; i < 200 && (got.find("\r\n\r\n") == std::string::npos || got.size() - got.find("\r\n\r\n") < 4 + 48000 * 4 / 5); ++i) {
+      const int k = recv(s, b, sizeof b, 0);
+      if (k <= 0) break;
+      got.append(b, (size_t)k);
+    }
+    const size_t he = got.find("\r\n\r\n");
+    CHECK(code(got) == 200 && got.find("X-Rate: 48000\r\n") != std::string::npos && got.find("X-Channels: 2\r\n") != std::string::npos &&
+          got.find("Content-Length") == std::string::npos, "this computer's page: a stream, its rate in X-Rate");
+    CHECK(webui_mix_wanted() == 1, "the hook is wanted while it streams");
+    const std::string pcm = he == std::string::npos ? "" : got.substr(he + 4);
+    bool same = pcm.size() >= 48000 * 4 / 5;
+    short peak = 0, l1 = 0, l2 = 0;
+    const double c2 = 2 * cos(2 * 3.141592653589793 * 1000.0 / 48000.0);
+    for (size_t i = 0; same && i + 4 <= pcm.size(); i += 4) {
+      short l, r2;
+      memcpy(&l, &pcm[i], 2); memcpy(&r2, &pcm[i + 2], 2);
+      same = abs(l + r2) <= 1 && (i < 8 || fabs(l - (c2 * l1 - l2)) <= 3); // (left then right, the right the left's negative; each sample the tone's next)
+      peak = std::max(peak, l);
+      l2 = l1; l1 = l;
+    }
+    CHECK(same && peak > 16000 && peak < 16500, "200 ms of it: the tone at -6 dB, left then right, nothing lost or torn");
+    closesocket(s);
+    for (int i = 0; i < 200 && webui_mix_wanted() != 0; ++i) sleep_ms(10);
+    CHECK(webui_mix_wanted() == 0, "the page gone: nobody streaming, the hook can come out");
+    feeding = false;
+    feeder.join();
+  }
   const std::string st = webui_status();
   CHECK(st.find("\"listening\":true") != std::string::npos && st.find("\"token\":\"" + tok + "\"") != std::string::npos, "status says listening, with the token");
 

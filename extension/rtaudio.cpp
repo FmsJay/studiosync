@@ -1719,6 +1719,7 @@ void rt_mix(RtLink *l, double *const *out, int nout, int len, double srate)
 #ifdef max
 #undef max
 #endif
+#include "webui.h" // (webui_mix_feed: a screen share's sound, REAPER's own mix. rt-share; after the #undefs: it brings in <map>)
 static RtLink *g_rt = nullptr; // (made once at load, freed never while REAPER runs: the hook may still hold it for a moment after removal)
 RtLink *rt_global() { return g_rt; }
 static int (*g_reg_hook)(bool isAdd, audio_hook_register_t *reg) = nullptr;
@@ -1735,10 +1736,21 @@ static void on_audio(bool isPost, int len, double srate, audio_hook_register_t *
     double *out[2] = { nullptr, nullptr };
     const int nout = std::min(reg->output_nch, 2);
     for (int c = 0; c < nout; ++c) out[c] = reg->GetBuffer(true, c);
+    webui_mix_feed(out, nout, len, srate); // (a screen share's REAPER mix: taken before rt_mix adds the bandmates, so nobody hears themselves back)
     rt_mix(g_rt, out, nout, len, srate);
   }
 }
 static audio_hook_register_t g_hook = { on_audio, nullptr, nullptr, 0, 0, nullptr };
+// (REAPER's main thread, ~30 times a second) A page streaming REAPER's mix for a screen share needs the hook whether live audio runs or not:
+// in while one streams, out again once none does and live audio isn't running (api_stop takes it out; this puts it back within a tick).
+static bool g_mix_down = false; // (REAPER going: the hook stays out)
+static void mix_timer()
+{
+  if (!g_reg_hook || !g_rt || g_mix_down) return;
+  const bool want = webui_mix_wanted() > 0;
+  if (want && !g_hooked) g_hooked = g_reg_hook(true, &g_hook) > 0;
+  else if (!want && g_hooked && !g_rt->run.load()) { g_reg_hook(false, &g_hook); g_hooked = false; }
+}
 
 static int api_start(int inputs, int nch, int kbps)
 {
@@ -1775,6 +1787,7 @@ static void *vla_hub(void **a, int n) { return n < 2 ? nullptr : (void *)(INT_PT
 
 void rtaudio_shutdown()
 {
+  g_mix_down = true; // (mix_timer: a page still streaming REAPER's mix doesn't put the hook back)
   api_stop();
   if (g_rt) for (const hop_map &m : g_rt->pnames) hop_shm_unlink(&m); // (the live out mappings' POSIX names, as extension/hop.cpp's)
 }
@@ -1811,5 +1824,6 @@ void rtaudio_register(reaper_plugin_info_t *rec)
     snprintf(key, sizeof(key), "APIvararg_%s", f.name); rec->Register(key, f.va);
   }
   rec->Register("atexit", (void *)rtaudio_shutdown); // (the hook out before REAPER goes)
+  rec->Register("timer", (void *)mix_timer); // (a screen share's REAPER mix: the hook while a page streams it, extension/webui.cpp. rt-share)
 }
 #endif

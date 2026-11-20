@@ -154,6 +154,9 @@ function liveaudio.mic_plan(s, gate, talk, play, folded)
   local asked = s.talking or s.talkback ~= nil
   return on and (talk or (asked and not doubled)), only, play and (not (s.mute or s.deaf) or (doubled and s.talking == true))
 end
+-- Watching a bandmate's screen share with its sound (lib/webcall.lua local_msg, rt-share): their Play is in that mix already, so it's silent
+-- here until the time given (reaper.time_precise()), by bandmate name. Their Talk stays: they can still talk over it.
+liveaudio.ducks = liveaudio.ducks or {}
 -- What a listener's Play volume comes to: their kept Play level (linear, 1 unless set) times the master. Pure.
 function liveaudio.play_gain(want, s) return math.max(0, math.min(4, (type(want) == "table" and tonumber(want.play) or 1) * (s.volume or 1))) end
 -- What this computer sends, for its status file (others' Chat > Call): "talk", "play", "both", "none", or nil while live audio isn't running.
@@ -227,6 +230,7 @@ function liveaudio.apply(st)
       local g, m = liveaudio.hear_plan(mix[name] or mix[peer], s)
       if math.abs((tonumber(p.gain) or 1) - g) > 0.005 or (p.mute == true) ~= m then reaper.StudioSync_LiveAudioPeerSet(peer, g, m and 1 or 0) end
       local pg = liveaudio.play_gain(mix[name] or mix[peer], s)
+      if (liveaudio.ducks[name] or -math.huge) > reaper.time_precise() then pg = 0 end -- (rt-share: their share's sound carries it)
       if can_play and math.abs((tonumber(p.play_gain) or 1) - pg) > 0.005 then reaper.StudioSync_LiveAudioPeerPlay(peer, pg) end
       local f, c = liveaudio.bounds(bufs[name])
       if can_buf and (tonumber(p.floor_ms) ~= f or tonumber(p.ceiling_ms) ~= c) then reaper.StudioSync_LiveAudioPeerBuffer(peer, f, c) end
