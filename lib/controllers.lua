@@ -165,6 +165,18 @@ local function moved(proj, cfg, tr, oid, k, v, key, fx, bf, n, t, clock)
   m.at, m.v, m.due = clock, v, true
 end
 
+-- A fader, pan or mute moved on the web UI's Mixer page (lib/webmixer.lua, which checked who may): a bandmate moving it now keeps it (-> "Bo
+-- has Bass volume", nothing set), else it's set here and goes out as a move of yours would (the rate, the let-go, Hold my changes and Local
+-- mixing as moved() has them). Set from Live sync's tick after controllers.tick, so settle reads it as seen: this is what sends it.
+function controllers.web_move(proj, cfg, tr, k, v)
+  local inf, clock = info_of(tr), now()
+  local key = inf.oid .. "|" .. k
+  local th = S.theirs[key]
+  if th and not th.g and clock - th.at < controllers.HELD then return th.user .. " has " .. th.word end
+  local got = set_value(proj, tr, k, v, nil, nil, key)
+  if not inf.here then moved(proj, cfg, tr, inf.oid, k, got, key, nil, nil, nil, controllers.pass, clock) end
+end
+
 -- Live sync's tick, after the link's messages: what you moved goes out, holds and shown moves are kept up.
 function controllers.tick(proj, cfg, b)
   local clock = now()

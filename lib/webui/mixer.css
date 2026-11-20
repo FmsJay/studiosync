@@ -1,0 +1,62 @@
+/* The Mixer page (mixer.js, lib/webmixer.lua). Uses style.css's colours, so light/dark follow it. Touch first: big knobs, no scrolling
+   while a fader is held (touch-action), strips scroll sideways. GPL-3.0-or-later. (James, rt) */
+.sspage.mixer { max-width: none; }
+.mxnote { font-size: 13px; margin: 2px 0 8px; }
+.mxsaid { color: var(--rec); font-size: 13px; margin: 4px 0; }
+.mxsaid:empty { display: none; }
+.mxstrips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px; align-items: stretch; }
+.mxstrip { flex: none; width: 92px; display: flex; flex-direction: column; gap: 6px; padding: 6px; background: var(--panel); border: 1px solid var(--line);
+  border-top: 4px solid var(--mxc, var(--line)); border-radius: 10px; }
+.mxmaster { margin-left: auto; border-top-color: var(--dim); }
+.mxname { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mxmnote { font-size: 11px; margin: 0; }
+.mxfx { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; max-height: 120px; overflow-y: auto; }
+.mxfxb { width: 100%; font-size: 11px; padding: 3px 4px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--dim); text-decoration: line-through; }
+.mxfxb[aria-pressed="true"] { color: var(--text); text-decoration: none; border-color: var(--play); }
+.mxfxb:disabled { opacity: .5; cursor: default; }
+.mxnone { font-size: 11px; }
+.mxsends { display: flex; flex-direction: column; gap: 4px; }
+.mxsend { display: flex; flex-direction: column; gap: 2px; }
+.mxsendn { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--dim); }
+.mxsendn.muted { text-decoration: line-through; }
+.mxby { font-size: 11px; color: var(--accent); min-height: 1.2em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mxwhy { font-size: 11px; color: var(--dim); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.mxwhy:empty { display: none; }
+.mxpant { font-size: 11px; color: var(--dim); text-align: center; margin-top: -4px; }
+.mxfz { margin-top: auto; display: flex; gap: 6px; justify-content: center; height: clamp(150px, 34vh, 300px); }
+.mxdb { text-align: center; font-size: 12px; font-variant-numeric: tabular-nums; }
+.mxbtns { display: flex; gap: 4px; }
+.mxbtns button { flex: 1; padding: 6px 0; font-weight: 700; }
+.mxm[aria-pressed="true"] { background: var(--rec); border-color: var(--rec); color: #fff; }
+.mxs[aria-pressed="true"] { background: var(--warn, #b7860b); border-color: var(--warn, #b7860b); color: #000; }
+/* a meter: green to 0 dB, red over */
+.mxmeter { position: relative; width: 8px; background: var(--theirs); border-radius: 4px; overflow: hidden; }
+.mxpeak { position: absolute; left: 0; right: 0; bottom: 0; height: 0; background: var(--play); transition: height .1s linear; }
+.mxmeter.hot .mxpeak { background: var(--rec); }
+/* a slider (fader, pan, send, monitor): a track, its fill and a knob big enough for a finger */
+.mxsl { position: relative; touch-action: none; cursor: grab; outline-offset: 2px; user-select: none; -webkit-user-select: none; }
+.mxsl.off { cursor: default; opacity: .55; }
+.mxsl.mxv { width: 34px; height: 100%; }
+.mxsl.mxh { height: 24px; width: 100%; }
+.mxsl::before { content: ""; position: absolute; background: var(--theirs); border-radius: 3px; }
+.mxsl.mxv::before { left: 15px; width: 4px; top: 0; bottom: 0; }
+.mxsl.mxh::before { top: 10px; height: 4px; left: 0; right: 0; }
+.mxfill { position: absolute; background: var(--accent); border-radius: 3px; opacity: .6; }
+.mxv .mxfill { left: 15px; width: 4px; bottom: 0; }
+.mxh .mxfill { top: 10px; height: 4px; left: 0; }
+.mxknob { position: absolute; background: var(--panel); border: 2px solid var(--accent); border-radius: 6px; box-shadow: 0 1px 3px rgb(0 0 0 / .25); }
+.mxv .mxknob { left: 3px; width: 28px; height: 16px; margin-bottom: -8px; }
+.mxh .mxknob { top: 3px; width: 16px; height: 18px; margin-left: -8px; }
+.mxsl.off .mxknob { border-color: var(--dim); }
+/* monitor mix */
+.mxmon { display: flex; flex-direction: column; gap: 6px; max-width: 760px; }
+.mxmrow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 6px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+.mxmname { flex: 0 0 7em; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mxmlv { height: 24px; }
+.mxml { flex: 1 1 140px; display: flex; align-items: center; gap: 6px; font-size: 12px; min-width: 0; }
+.mxmrow > .mxsl { flex: 1 1 140px; width: auto; }
+.mxmrow .mxm { padding: 4px 10px; }
+@media (max-width: 480px) {
+  .mxstrip { width: 80px; }
+  .mxmname { flex-basis: 100%; }
+}

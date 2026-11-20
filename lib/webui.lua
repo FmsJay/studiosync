@@ -140,6 +140,7 @@ end
 webui.ACTIONS = { chat = true, rtc = true, daw = true, health = true, play = true } -- (rtc: a video call or screen share's setup, lib/webcall.lua; daw: the Song page's, lib/dawview.lua; health, play: lib/webpages.lua)
 webui.ACTIONS.phonerec = true -- (the Record page's: a take from a phone, lib/phonerec.lua)
 webui.ACTIONS.sheet = true -- (the Sheet and Beat pages': lib/songsheet.lua)
+webui.ACTIONS.mixer = true -- (the Mixer page's: lib/webmixer.lua)
 function webui.parse_action(s)
   local a = type(s) == "string" and s ~= "" and band.json_decode(s)
   if type(a) ~= "table" or type(a.topic) ~= "string" or not webui.ACTIONS[a.topic] then return nil end
@@ -202,6 +203,10 @@ function webui.tick(proj, cfg, b, handlers)
       local ok, said = pcall(require("songsheet").action, proj, cfg, b, a) -- (a file write: one that fails is said, the other actions still go)
       if said then band.log(ok and said or "the web page's sheet edit couldn't be saved: " .. tostring(said)) end
     end
+    if topic == "mixer" then
+      local said = require("webmixer").action(proj, cfg, b, a)
+      if said then band.log(said) end
+    end
   end
   local now = reaper.time_precise()
   do -- a phone that started the band and went quiet mid-take: its start stopped, looking or not (lib/phonerec.lua)
@@ -250,6 +255,8 @@ function webui.tick(proj, cfg, b, handlers)
   require("phonerec").tick(proj, cfg, b, publish, now)
   -- the Sheet and Beat pages: only while a page shows one (lib/songsheet.lua)
   require("songsheet").tick(proj, cfg, b, publish, handlers, now)
+  -- the Mixer page: only while a page shows it (lib/webmixer.lua)
+  require("webmixer").tick(proj, cfg, b, publish, now)
 end
 
 return webui

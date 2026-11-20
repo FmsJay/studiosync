@@ -1141,6 +1141,30 @@ Like Helgobox's move away from REAPER's own widgets, now that the extension is m
   claimed (refused, snaps back, says who); in Driver only as a guest (refused); a region they claimed (refused); add, move, rename a marker and a
   region as the driver; a phone: tap, long press, drag the selected item; a fixed-lanes track (only the playing lane's items show and move).
 
+### Mixer page built: shared DAW view stage 4 (rt-mixer, 2026-11-20; Lua tests and a stand-in server in a browser only, not run in REAPER yet)
+- **Page:** the web UI's **Mixer** tab (`lib/webui/mixer.js`, `mixer.css`; `lib/webmixer.lua`, ticked from lib/webui.lua): the Song page's tracks
+  (`dawview.shown`) as channel strips: name and colour, plug-ins with their bypass (this computer's own and Shared CPU ones locked), sends with
+  their levels (not to this computer's own tracks), pan, the fader with a meter, Mute and Solo; the master read only (each listener's own level);
+  **Your monitor mix**: Everyone, and each bandmate's Talk and Play volumes, mute and level (lib/liveaudio.lua's cue mix, only what you hear).
+  Touch first: faders drag from where they are (a tap never jumps them), double-tap resets, Shift finer, arrow keys; strips scroll sideways;
+  a locked control says why on its strip and when tapped (phones have no tooltips). Plug-in windows stay in REAPER.
+- **Topics,** only while a page shows the Mixer (`{topic:"mixer", want}` every 10 s, 30 s grace): `mix` (strips, 4 a second, with who's moving
+  what from controllers' holds), `mixm` (each track's and the master's peak in dB from `Track_GetPeakInfo`, 10 a second, from the tracks the
+  last strip build found), `mixmon` (4 a second), `mixr` (the last move's answer; each page takes only its own ids).
+- **Moves:** checked as stage 2 checks a track edit (`sync.authority` with the session, so region claims hold, then `dawedit.item_refusal`); solo, and faders
+  and pan under Local mixing, are yours and not checked. Volume, pan and mute go through `controllers.web_move`: set here as a move of yours, so
+  Shared controllers stream them live to everyone (a bandmate already moving that control keeps it: "Bo has Drums pan right now") and the
+  normal sync records them. Plug-in bypass and send levels go with the normal sync only (Shared controllers don't stream them); a send is
+  checked on the track it goes to (its receive is that track's object). A drag's last move makes one undo point ("StudioSync web page: ...").
+- **Not yet:** send mute and pan, adding or removing sends, plug-in parameters, folders and VCAs on the page, width, record arm and input
+  monitoring; sliders aren't greyed for a send onto a claimed track (the move is refused and snaps back with why).
+- **Tests:** `tests/test_0_60_rt_mixer.lua` (the real `controllers` and `dawedit` over stand-ins).
+- **Check in REAPER:** open the Mixer tab docked and on a phone with a bandmate: meters move with playback; drag a fader and see theirs move
+  live (Health: moves sent / shown) and the change land after; one Ctrl+Z per drag; a track they claimed is locked with why; Local mixing
+  frees faders and pan but not mute; plug-in bypass and a send level reach them with the normal sync; your monitor mix's sliders change only
+  what you hear; a fader moved from the page on a track playing a volume envelope (the envelope wins, as in REAPER); the tick cost with the
+  Mixer open on a big song (strips are read 4 times a second).
+
 ### Web UI: what remains (TODO)
 - **Docking:** built (above); check it in REAPER on Windows, a Mac and Linux (WebKitGTK built 2026-11-19: proved in a SWELL host on
   REAPER 7.86's own libSwell on Ubuntu 24.04, docked, floated, typed into, Undock and key forwarding from the real pages; not yet in REAPER).
