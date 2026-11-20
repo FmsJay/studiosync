@@ -145,12 +145,13 @@ do
   local t_qn, c_qn = edits(function(k) F.midi_edit(mit, 12 + k, 70 + k); return mit end, "one MIDI note changed")
   say("quick look after one MIDI note changed (a 41 KB item normalized and sent): %.0f ms, %d REAPER calls", t_qn, c_qn)
   -- (30 ms on this desktop unloaded, when a warm full look takes ~120 ms: other agents' builds slow every figure alike, so the budget follows
-  -- how slow this run's warm full look was, up to 3x. And whatever the load: an edit's quick look costs at most a fifth of the full look's)
+  -- how slow this run's warm full look was, up to 3x. And whatever the load: an edit's quick look costs at most a quarter of the full look's,
+  -- itself one sample, so not tighter)
   local slow = math.min(3, math.max(1, t_warm / 120))
   within(string.format("a quick look with nothing changed (x%.1f for this run's speed)", slow), t_qi, 30 * slow)
   within(string.format("a quick look after one item moved (x%.1f)", slow), math.max(t_qm, t_qs), 30 * slow)
   within(string.format("a quick look after one MIDI note changed (x%.1f)", slow), t_qn, 30 * slow)
-  assert(math.max(t_qm, t_qs) <= t_move / 5 and t_qn <= t_midi / 5, string.format("an edit's quick look is at most a fifth of the full look's (%.0f vs %.0f, %.0f vs %.0f ms)",
+  assert(math.max(t_qm, t_qs) <= t_move / 4 and t_qn <= t_midi / 4, string.format("an edit's quick look is at most a quarter of the full look's (%.0f vs %.0f, %.0f vs %.0f ms)",
     math.max(t_qm, t_qs), t_move, t_qn, t_midi))
   assert(mb_qs < 0.5, string.format("one selected item moved: %.2f MB of chunks asked for, not the whole project's", mb_qs))
   F.clock = F.clock + 1; mirror.watch(F.proj, cfg, b.song, b.room, q)

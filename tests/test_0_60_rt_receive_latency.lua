@@ -95,6 +95,37 @@ assert(#md == 1 and md[1] >= 1.0 - 1e-9 and md[1] <= 1.0 + 0.15, "never mid-drag
 -- (your edit after the last look: seen_mine still waits for a look to see it, which follows within the pass that's due)
 assert(not sync.seen_mine(9, 8, 10, 9.5, 9.7), "your edit after the last look began: not seen yet")
 
+-- ---- part 1b: the sender's look after an edit, with the cloud copy in some passes ----
+-- (measured on Cross Test with the clocks lined up: the message at +0.21-0.24 s mostly, +0.65 s once. A pass that copies to Google Drive took
+-- ~200 ms, and sync.look_now waits five times the last pass's time: the next edit's look waited up to 1 s. The copy's time is left out now.)
+local function sender(edits, until_t, drive_in_pass, count_drive)
+  local cc, change_count, changed_at = 0, -1, -math.huge
+  local last, polled_at, pass_took, n = 0, -math.huge, 0, 0
+  local e, t, out = 1, 0, {}
+  while t < until_t do
+    while edits[e] and edits[e] <= t do cc = cc + 1; e = e + 1 end
+    if cc ~= change_count then change_count, changed_at = cc, t end
+    if t - last > EVERY or sync.look_now(changed_at, polled_at, pass_took, t, false) then
+      last, polled_at, n = t, t, n + 1
+      if changed_at > (out.looked or -math.huge) and changed_at <= t then out[#out + 1] = t - changed_at; out.looked = t end
+      local regular = not sync.look_now(changed_at, polled_at - 1, 0, t, false) -- (no edit waiting: the 2 s pass, which may copy to the cloud)
+      local drive = regular and n % 2 == 0 and drive_in_pass or 0
+      pass_took = 0.03 + (count_drive and drive or 0)
+      cc = cc + 1
+    end
+    change_count = cc
+    t = t + TICK
+  end
+  return out
+end
+local edits = {}
+for i = 1, 30 do edits[i] = 1 + i * 2.13 end
+local _, s_before = stats(sender(edits, 70, 0.2, true))
+local _, s_after = stats(sender(edits, 70, 0.2, false))
+print(string.format("rt-look send: edit -> its look with a 0.2 s cloud copy in some passes: slowest before %.2f s, after %.2f s", s_before, s_after))
+assert(s_before > 0.5, "the copy's time held the look (" .. s_before .. ")")
+assert(s_after <= sync.SETTLE + 0.1, "now the look goes ~0.1 s after the edit (" .. s_after .. ")")
+
 -- ---- part 2: two computers, one Lua ----
 local G = require("bigproject")
 local opts_m = { tracks = 3, folders = 0, returns = 1, sends = 1, fx = 3, big_every = 0, items = 10, midi = 1, notes = 40, ccs = 10, env_points = 8, regions = 1, markers = 1 }

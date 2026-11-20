@@ -331,6 +331,9 @@ local direct_in_at = -math.huge -- (when an event file last came over the direct
 local direct_held = false -- (one came over the link and no receive has run since: a pass as the quiet window ends, sync.receive_now. James, rt)
 local direct_first -- (when the first of what's held came: arrival -> applied for rt_perf. rt-look)
 local polled_at, pass_took = -math.huge, 0 -- (when the last pass started, and how long it took: sync.look_now. James, rt)
+-- (the cloud copy's part of the last pass: left out of pass_took. It runs on its own schedule, drive.pass_due, never in a pass that looks, and its
+-- ~200 ms held the next edit's look 1 s on the desktop: Cross Test, an envelope point out in 0.21-0.65 s. rt-look)
+local pass_drive = 0
 local redraw_cc -- (the project's change count at the last redraw: P.status. James, rt)
 -- Only your edits count: noted at the start of each tick, and whatever the tick itself changed (looks, receives, heal, prints attaching,
 -- paint) taken in at its end. Nothing else runs in between, so a count that moved meanwhile was StudioSync's. (Noted only in receive, any
@@ -821,7 +824,9 @@ local function poll()
   P.heal(t)
   P.joins(t)
   P.live_clips(t)
+  local d0 = reaper.time_precise()
   P.save_drive(t)
+  pass_drive = reaper.time_precise() - d0
   P.presence(t)
   P.status(t)
 end
@@ -1353,10 +1358,10 @@ local function tick_body() -- returns true to keep going
       or sync.receive_now(direct_held, changed_at, sync.quiet_for(now, direct_in_at), polled_at, pass_took, now, mouse, direct_held and redo_pending()))
       and not (transport and due_in < 1.5) then
     last = reaper.time_precise()
-    polled_at = last
+    polled_at, pass_drive = last, 0
     local ok, err = pcall(poll)
     if not ok then band.log("sync error: " .. tostring(err)) end
-    pass_took = reaper.time_precise() - polled_at
+    pass_took = math.max(0, reaper.time_precise() - polled_at - pass_drive)
     if perf.on then perf.passes[#perf.passes + 1] = pass_took end
     -- more of the band's changes waiting than one pass applies: the next pass in 0.3 s, not 2 s (320 moved items
     -- took 73 s to land at 2 s a pass; laptop, 0.34.4). Each pass still applies at most a quarter second.

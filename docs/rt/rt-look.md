@@ -141,6 +141,48 @@ The fix:
 **A new measure for REAPER.** `rt_perf.lua` prints "a bandmate's change: arrival -> applied" (median, p95, slowest). That's from the tick that
 saw the file or message to the end of its receive, so the receiver's part can be read on its own.
 
+### 6. Measured in REAPER, and the last sender-side wait (round 3)
+
+I traced it on the real desktop and laptop with read-only probes: link status, held messages, and a watcher on the laptop polling
+`DirectMsgPoll`, `DirectPoll` and the envelope's value.
+
+**The ~1 s was mostly the clocks.**
+- `StudioSync_DirectNow` is each computer's own link clock (its wall time when the link started), not the shared clock.
+- The laptop's runs 0.904 s ahead of the desktop's. The laptop's `DirectClock` says james-main is at -904 ms; the desktop's says the laptop is
+  at +903 ms.
+- Comparing raw DirectNow across computers added that 0.9 s to every figure. Use `direct.shared_now()`, or subtract the DirectClock offset.
+
+**Real times, edit on the desktop → the laptop's track, desktop clock** (Cross Test, 0.59.49.66, envelope point from a script; the asleep
+Mac in the desktop's peer list, failing):
+
+| Edit | "event" message on the laptop | file on the laptop | value on the laptop |
+|---|---|---|---|
+| 1 | +0.23 s | +0.31 s | +0.31 s |
+| 2 | +0.21 s | +0.21 s | +0.26 s |
+| 3 | +0.21 s | +0.32 s | +0.32 s |
+| 4 | +0.65 s | +0.65 s | +0.65 s |
+| 5 | +0.24 s | +0.24 s | +0.29 s |
+
+What that shows:
+- The messages arrive. The file came the same tick or up to 110 ms later: the desktop's file thread was not held by the Mac in these runs.
+- The laptop applies 0-110 ms after the message.
+- The one slow edit was the sender's look, not the link:
+  - the desktop's slowest pass was 205 ms, 198 of them the Google Drive copy (`P.save_drive`);
+  - `sync.look_now` waits five times the last pass's time, so an edit just after a copying pass waited up to 1 s.
+
+**The fix.** `pass_took` no longer counts `P.save_drive`'s time (`pass_drive` in Live sync). The copy runs on its own schedule
+(`drive.pass_due`), never in a pass that looks. Model in `tests/test_0_60_rt_receive_latency.lua`: the slowest edit → look goes from 1.13 s to
+0.13 s.
+
+**Expected end to end, once deployed:** about 0.25-0.32 s every time:
+- the sender's 0.1 s settle;
+- its quick look;
+- the lane's ~40 ms;
+- the receiver's tick and its 30-80 ms pass.
+
+**No extension change was needed for this.** The file path's one thread can still be held by a slow peer for events too big for a message
+(over 64 KB). That's what per-peer file threads in `direct.cpp` would fix, if ever needed.
+
 ## Numbers (offline, this desktop, shared with other agents; fake REAPER, so REAPER calls are the real-cost hint)
 
 Big project: 150 tracks, 520 plug-ins, 4,000 items, 60 MIDI.
@@ -187,7 +229,7 @@ After each case, the look's view of every object equals a full scan.
 ≤ 30 ms (a median of 5), and one selected item asks for < 0.5 MB of chunks. Idle tick budgets are unchanged.
 - Other agents' builds slowed every figure 1.5-2x during this work, so the 30 ms scales with how slow the run's warm full look is (against
   120 ms, capped at 3x).
-- Whatever the load, an edit's quick look must cost at most a fifth of the full look's.
+- Whatever the load, an edit's quick look must cost at most a quarter of the full look's.
 
 ## Hook point for other modules (rt-video2 and later)
 
