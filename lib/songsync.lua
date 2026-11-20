@@ -1,7 +1,7 @@
 -- Per-song sync (docs/bands-design.md): every machine gets every song's listing (a few KB: what the song chooser
 -- shows), and a song in full only once it's opened here. Syncthing's ignore file in the shared folder (.stignore,
 -- never synced: each machine its own) holds a block StudioSync writes; anything else in that file is left as it is.
---   !/_*  !/plugins  !/drummaps      the band-wide folders, always (a new band-wide folder must be added here)
+--   !/_*  !/plugins  !/drummaps  !/libraries   the band-wide folders, always (a new band-wide folder must be added here)
 --   !/<Song>                          each song opened on this machine, in full
 --   !/*/session.json ...              every other song's listing
 --   /*/*                              the rest of every other song
@@ -13,7 +13,8 @@ local songsync = {}
 
 local BEGIN, END = "// StudioSync: what this computer downloads (written by StudioSync, up to the line below)", "// StudioSync end"
 local OLD_BEGIN, OLD_END = "// BandSync: what this computer downloads (written by BandSync, up to the line below)", "// BandSync end" -- (from before the rename: replaced the same way)
-songsync.BAND_WIDE = { "/_*", "/plugins", "/drummaps" }
+songsync.BAND_WIDE = { "/_*", "/plugins", "/drummaps", "/libraries" } -- (libraries: who has which sound, lib/libraries.lua; left out, each
+-- computer's report stayed on it and everyone counted everyone else as lacking. Desktop, rt)
 songsync.LISTING = { "/*/session.json", "/*/folder.json", "/*/live.json", "/*/invites", "/*/chat", "/*/inbox", -- (inbox: audio dropped in from any computer, lib/extras.lua)
   "/*/rooms/*/room.json",
   "/*/rooms/*/summary", "/*/rooms/*/status", "/*/rooms/*/chat" }

@@ -7,7 +7,7 @@ local block = songsync.block({ ["Mirror Test"] = true, Lantern = true })
 local text = table.concat(block, "\n")
 -- the band-wide folders, then the opened songs (sorted), then every song's listing, then the rest of every song
 local function at(s) for i, l in ipairs(block) do if l == s then return i end end end
-assert(at("!/_*") and at("!/plugins") and at("!/drummaps"), "band-wide folders always come")
+assert(at("!/_*") and at("!/plugins") and at("!/drummaps") and at("!/libraries"), "band-wide folders always come")
 assert(at("!/Lantern") < at("!/Mirror Test"), "opened songs, in name order")
 assert(at("!/Mirror Test") < at("!/*/session.json") and at("!/*/rooms/*/summary") < at("(?d)/*/*"), "every ! line before the one ignore line")
 assert(block[#block - 1] == "(?d)/*/*", "the rest of every other song is the last rule, deletable when the band deletes the song")
