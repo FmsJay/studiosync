@@ -113,11 +113,17 @@ local function add_hop(tr, pos, id, latency, dry)
     if idx >= 0 then break end
   end
   if idx < 0 then return nil end
-  set_knob(tr, idx, "Hop id", id, 1, 64)
-  if latency then set_knob(tr, idx, "Latency budget", latency, 256, 8192) end
-  set_knob(tr, idx, "Dry when late", dry or 0, 0, 1)
+  local function knobs()
+    set_knob(tr, idx, "Hop id", id, 1, 64)
+    if latency then set_knob(tr, idx, "Latency budget", latency, 256, 8192) end
+    set_knob(tr, idx, "Dry when late", dry or 0, 0, 1)
+  end
+  knobs()
   reaper.TrackFX_SetOffline(tr, idx, true)
   reaper.TrackFX_SetOffline(tr, idx, false)
+  -- (again: a CLAP's new values reach it in its next process call, and the reload above came first, so it woke with its defaults:
+  -- every Hop was id 1 and live audio's Play read nothing. The plug-in takes them in its next stopped block. Desktop, rt)
+  knobs()
   return idx
 end
 hops.add_hop = add_hop -- (live audio's Play reads a Hop on its hidden live out track: lib/liveaudio.lua)
