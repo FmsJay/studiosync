@@ -37,6 +37,9 @@ static int fails = 0;
 #define CHECK_QUIET(c) do { if (!(c)) { printf("FAIL %s (line %d)\n", #c, __LINE__); ++fails; } } while (0)
 // A file's length through a handle that lets everyone else go on writing (fopen's default on Windows does too)
 static long long file_len(const std::string &p) { FILE *f = fopen(p.c_str(), "rb"); if (!f) return -1; fseek(f, 0, SEEK_END); const long long n = ftell(f); fclose(f); return n; }
+// SS_TIMING_STRICT=1 holds the throughput checks to a desktop's figures; 0 to what a loaded runner still meets. Default on, off when CI is
+// set (GitHub's hosted macOS runner: its sleeps run long, and the test's slow ways are made of sleeps).
+static bool timing_strict() { const char *e = getenv("SS_TIMING_STRICT"); return e ? atoi(e) != 0 : !getenv("CI"); }
 static double now_ms() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 static std::string hex(const unsigned char *p, size_t n) { std::string s; char b[3]; for (size_t i = 0; i < n; ++i) { snprintf(b, 3, "%02x", p[i]); s += b; } return s; }
 static std::string slurp(const std::string &p) { std::string s; FILE *f = fopen(p.c_str(), "rb"); if (!f) return "\x01missing"; char b[4096]; size_t n; while ((n = fread(b, 1, sizeof b, f)) > 0) s.append(b, n); fclose(f); return s; }
@@ -408,13 +411,25 @@ static void link_speed(const std::string &studio, const char *peer, const std::s
     for (int i = 0; i < 8; ++i) { chunk[7] = (char)i; fwrite(chunk.data(), 1, chunk.size(), f); }
     fclose(f);
   }
+  { // (this computer's sleeps, which the test's slow ways and far peers are made of)
+    std::vector<double> sl;
+    for (int i = 0; i < 15; ++i) { const double t = now_ms(); std::this_thread::sleep_for(std::chrono::milliseconds(3)); sl.push_back(now_ms() - t); }
+    std::sort(sl.begin(), sl.end());
+    printf("     a 3 ms sleep here: %.1f ms (median of 15), %.1f ms at worst\n", sl[7], sl.back());
+  }
   direct_test_link(57, 1);
   const double before = stream_file(studio, peer, inbox, src, "Song A/catchup one at a time.wav", size);
   direct_test_link(57, 0);
-  const double after = stream_file(studio, peer, inbox, src, "Song A/catchup windowed.wav", size);
-  std::string st = direct_status();
-  const size_t at = st.find(std::string("\"") + peer + "\"");
-  const double rate = json_num(st, "rate", at), rtt = json_num(st, "rtt_ms", at), win = json_num(st, "window", at);
+  // (the quickest of up to 3 tries, with its status: a loaded runner only ever slows a transfer, and the window rightly stays small on a slow
+  // pass. A hosted Mac once took 3.9 s with a window of 3, its frames slower than the round trip; its other runs 1.3-2.0 s with 32)
+  double after = 1e9, rate = 0, rtt = 0, win = 0;
+  for (int k = 0; k < 3 && !(before / after >= 4 && win >= 8); ++k) {
+    const double a = stream_file(studio, peer, inbox, src, k ? "Song A/catchup windowed " + std::to_string(k) + ".wav" : "Song A/catchup windowed.wav", size);
+    const std::string s = direct_status();
+    const size_t at = s.find(std::string("\"") + peer + "\"");
+    if (a < after) { after = a; rate = json_num(s, "rate", at); rtt = json_num(s, "rtt_ms", at); win = json_num(s, "window", at); }
+  }
+  std::string st;
   printf("     8 MB at a 57 ms round trip: one frame at a time %.1f s (%.2f MB/s), windowed %.1f s (%.2f MB/s), %.1fx; status rate %.2f MB/s, rtt %.0f ms, window %.0f\n",
          before, 8.39 / before, after, 8.39 / after, before / after, rate / 1e6, rtt, win);
   CHECK(before / after >= 4 && rate > 2e6 && rtt >= 50 && win >= 8, "several frames in flight: 8 MB at a 57 ms round trip at least 4x faster than one at a time; the status says the rate, round trip and window");
@@ -425,9 +440,12 @@ static void link_speed(const std::string &studio, const char *peer, const std::s
   st = direct_status();
   const double mrate = json_num(st, "rate", st.find(std::string("\"") + peer + "\"")), mwin = json_num(st, "window", st.find(std::string("\"") + peer + "\""));
   printf("     8 MB over 20 Mbit/s and 57 ms: %.1f s (%.2f MB/s), window %.0f, status rate %.2f MB/s\n", mid, 8.39 / mid, mwin, mrate / 1e6);
-  // (0.7 MB/s floor, not 1.8: a shared macOS CI runner measured a 130 ms round trip for the 57 ms knob and got 0.89 MB/s, its fast case too
-  // half of a desktop's. The window range is the real check: it settles at what the way holds, not 32. Real ways: measured in REAPER)
-  CHECK(mrate > 0.7e6 && mwin >= 2 && mwin <= 8, "a 20 Mbit/s way: near its rate, with a window near what it holds in a round trip");
+  // The real checks: the status says the rate the way ran at (within 25% of what crossed), and the window settles at what the way holds, not
+  // 32. The way's speed is the test's own: it sleeps after each read (direct_test_bandwidth), and a hosted Mac's sleeps run long (the figure
+  // above), so there its 20 Mbit/s way ran at 0.58-1.0 MB/s, Linux's at 2.45. Hence 0.4 MB/s in CI, 1.8 with SS_TIMING_STRICT (on locally).
+  const double mreal = 8.39e6 / mid;
+  CHECK(mrate > 0.75 * mreal && mrate < 1.33 * mreal && mrate > (timing_strict() ? 1.8e6 : 0.4e6) && mwin >= 2 && mwin <= 8,
+        "a 20 Mbit/s way: the status says the rate it ran at, near the way's, with a window near what it holds in a round trip");
 
   const std::string relayed = dir + "/relayed.wav";
   spit(relayed, std::string(1 << 20, 'r'));
@@ -539,13 +557,17 @@ static void live_layer_tests(const std::string &studio, const std::string &secre
   const double tc = now_ms();
   std::this_thread::sleep_for(std::chrono::milliseconds(1500));
   std::string ck = direct_clock();
+  // (the claim is an estimate from 10 samples, not how soon they come: a loaded hosted Mac's pings had 8 in 1.5 s once)
+  while (json_num(ck, "samples") < 10 && now_ms() - tc < 6000) { std::this_thread::sleep_for(std::chrono::milliseconds(50)); ck = direct_clock(); }
   printf("     clock, skew 37.5 ms, 0-15 ms random delay each way: %s (%.0f ms)\n", ck.c_str(), now_ms() - tc);
   const double off = json_num(ck, "offset_ms");
-  // (within what the estimate itself says it spreads over, plus 2 ms, never asked for under 3 ms: a shared CI Mac's jitter put it 10 ms off
-  // with a 16.6 ms spread. The no-delay check below stays strict. James, rt)
-  const double spread = json_num(ck, "spread_ms");
-  CHECK(spread >= 0 && fabs(off - 37.5) <= std::max(3.0, spread + 2.0) && json_num(ck, "samples") >= 10,
-        "the clock offset is within its own spread (+2 ms, at least 3 ms) of the skew, through jitter, from 10 samples or more");
+  // (within what the estimate itself can be off by, never asked for under 3 ms: one exchange's offset is off by at most half its round trip
+  // (the delay each way is unknown: NTP's bound), and the median of the best is within their spread of the quickest one's. So the spread
+  // plus half the quickest round trip, that half at least 2 ms. A shared CI Mac's jitter put it 10 ms off with a 16.6 ms spread, and once
+  // 5.9 ms off with a 3.5 ms spread and a 15.2 ms quickest round trip (its sleeps run long). The no-delay check below stays strict. James, rt)
+  const double spread = json_num(ck, "spread_ms"), crtt = json_num(ck, "rtt_ms");
+  CHECK(spread >= 0 && crtt >= 0 && fabs(off - 37.5) <= std::max(3.0, spread + std::max(2.0, crtt / 2)) && json_num(ck, "samples") >= 10,
+        "the clock offset is within its own bound (spread + half the quickest round trip, at least 3 ms) of the skew, through jitter, from 10 samples or more");
   direct_test_knobs(-120000, 0, 20);
   std::this_thread::sleep_for(std::chrono::milliseconds(800)); // (16 new samples: the window's turned over)
   ck = direct_clock();

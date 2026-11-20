@@ -35,33 +35,40 @@ jobs:
       # passed on a real Mac was lost with them. A failing test still fails the run. rt)
       - uses: actions/upload-artifact@v4
         with: { name: mac, path: "*.dylib" }
+      # Every test runs even when one before it failed (if: !cancelled()), so each reports; the job still fails if any did. CI is set here,
+      # so the timing checks hold to what a loaded hosted runner meets; SS_TIMING_STRICT=1 holds them to a desktop's, as they are locally.
       - name: The direct link's own test (tests/direct_test.cpp, on localhost)
+        if: ${{ !cancelled() }}
         run: |
           clang++ -std=c++17 -O2 -DDIRECT_STANDALONE tests/direct_test.cpp extension/direct.cpp extension/direct_audio.cpp -o direct_test
           ./direct_test
       - name: The web UI server's own test (tests/webui_test.cpp, on localhost)
+        if: ${{ !cancelled() }}
         run: |
           clang++ -std=c++17 -O2 -DDIRECT_STANDALONE -DWEBUI_STANDALONE tests/webui_test.cpp extension/webui.cpp extension/direct.cpp extension/direct_audio.cpp -o webui_test
           ./webui_test
       - name: The docked web UI's own test (tests/webui_dock_test.cpp, its pure parts)
+        if: ${{ !cancelled() }}
         run: |
           clang++ -std=c++17 -O2 -pthread -DWEBUI_DOCK_STANDALONE tests/webui_dock_test.cpp extension/webui_dock.cpp -o webui_dock_test
           ./webui_dock_test
       - name: Signed updates' own test (tests/sign_test.cpp)
+        if: ${{ !cancelled() }}
         run: |
           clang++ -std=c++17 -O2 -DSIGN_STANDALONE -DDIRECT_STANDALONE tests/sign_test.cpp extension/sign.cpp extension/direct.cpp extension/direct_audio.cpp -o sign_test
           ./sign_test
       - name: The Hop's network leg's own test (tests/hopnet_test.cpp, a sender and a fake remote on localhost)
+        if: ${{ !cancelled() }}
         run: |
           clang++ -std=c++17 -O2 -DHOPNET_STANDALONE -DDIRECT_STANDALONE tests/hopnet_test.cpp extension/hopnet.cpp extension/direct.cpp extension/direct_audio.cpp -o hopnet_test
           ./hopnet_test
       - name: Live audio's own test (tests/rtaudio_test.cpp, on localhost)
+        if: ${{ !cancelled() }}
         run: |
           clang++ -std=c++17 -O2 -DRTAUDIO_STANDALONE -DDIRECT_STANDALONE -I extension/third_party/aoo -I extension/third_party/aoo/include -I extension/third_party/opus/include \
             tests/rtaudio_test.cpp extension/rtaudio.cpp extension/direct.cpp extension/direct_audio.cpp libssdeps.a -o rtaudio_test
           ./rtaudio_test
-      # (the connection without Tailscale, docs/realtime-roadmap.md "Without Tailscale: design": nat.cpp is in the build above too; run even
-      # when a timing test above failed on the hosted Mac, so it still gets its macOS check)
+      # (the connection without Tailscale, docs/realtime-roadmap.md "Without Tailscale: design": nat.cpp is in the build above too)
       - name: The connection without Tailscale's own test (tests/nat_test.cpp, ICE and sealed datagrams on localhost)
         if: ${{ !cancelled() }}
         run: |
@@ -110,37 +117,45 @@ jobs:
             nm -D --defined-only "reaper_$p-${{ matrix.arch }}.so" | grep -E "ReaperPluginEntry|SWELL"
           done
       - name: The direct link's own test (tests/direct_test.cpp, on localhost)
+        if: ${{ !cancelled() }}
         run: |
           g++ -std=c++17 -O2 -pthread -DDIRECT_STANDALONE tests/direct_test.cpp extension/direct.cpp extension/direct_audio.cpp -o direct_test
           ./direct_test
       - name: The web UI server's own test (tests/webui_test.cpp, on localhost)
+        if: ${{ !cancelled() }}
         run: |
           g++ -std=c++17 -O2 -pthread -DDIRECT_STANDALONE -DWEBUI_STANDALONE tests/webui_test.cpp extension/webui.cpp extension/direct.cpp extension/direct_audio.cpp -o webui_test
           ./webui_test
       - name: The docked web UI's own test (tests/webui_dock_test.cpp, its pure parts)
+        if: ${{ !cancelled() }}
         run: |
           g++ -std=c++17 -O2 -pthread -DWEBUI_DOCK_STANDALONE tests/webui_dock_test.cpp extension/webui_dock.cpp -o webui_dock_test
           ./webui_dock_test
       - name: Signed updates' own test (tests/sign_test.cpp)
+        if: ${{ !cancelled() }}
         run: |
           g++ -std=c++17 -O2 -pthread -DSIGN_STANDALONE -DDIRECT_STANDALONE tests/sign_test.cpp extension/sign.cpp extension/direct.cpp extension/direct_audio.cpp -o sign_test
           ./sign_test
       - name: The Hop's network leg's own test (tests/hopnet_test.cpp, a sender and a fake remote on localhost)
+        if: ${{ !cancelled() }}
         run: |
           g++ -std=c++17 -O2 -pthread -DHOPNET_STANDALONE -DDIRECT_STANDALONE tests/hopnet_test.cpp extension/hopnet.cpp extension/direct.cpp extension/direct_audio.cpp -o hopnet_test
           ./hopnet_test
       - name: Live audio's own test (tests/rtaudio_test.cpp, on localhost)
+        if: ${{ !cancelled() }}
         run: |
           g++ -std=c++17 -O2 -pthread -DRTAUDIO_STANDALONE -DDIRECT_STANDALONE -I extension/third_party/aoo -I extension/third_party/aoo/include -I extension/third_party/opus/include \
             tests/rtaudio_test.cpp extension/rtaudio.cpp extension/direct.cpp extension/direct_audio.cpp libssdeps.a -o rtaudio_test
           ./rtaudio_test
       # (the connection without Tailscale, docs/realtime-roadmap.md "Without Tailscale: design": nat.cpp is in the build above too)
       - name: The connection without Tailscale's own test (tests/nat_test.cpp, ICE and sealed datagrams on localhost)
+        if: ${{ !cancelled() }}
         run: |
           mkdir -p natobj && (cd natobj && cc -O2 -c -DJUICE_STATIC -I ../extension/third_party/libjuice/include/juice ../extension/third_party/libjuice/src/*.c ../extension/third_party/monocypher/monocypher.c)
           g++ -std=c++17 -O2 -pthread -DNAT_STANDALONE -DDIRECT_STANDALONE -DJUICE_STATIC tests/nat_test.cpp extension/nat.cpp extension/direct.cpp extension/direct_audio.cpp natobj/*.o -o nat_test
           ./nat_test
       - name: Live audio over the connection without Tailscale (tests/nat_audio_test.cpp, on localhost)
+        if: ${{ !cancelled() }}
         run: |
           g++ -std=c++17 -O2 -pthread -DRTAUDIO_STANDALONE -DNAT_STANDALONE -DDIRECT_STANDALONE -DJUICE_STATIC -I extension/third_party/aoo -I extension/third_party/aoo/include -I extension/third_party/opus/include \
             tests/nat_audio_test.cpp extension/rtaudio.cpp extension/nat.cpp extension/direct.cpp extension/direct_audio.cpp libssdeps.a -o nat_audio_test

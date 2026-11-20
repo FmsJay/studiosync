@@ -26,6 +26,7 @@ typedef SOCKET sock_t;
 typedef int sock_t;
 #define close_sock close
 #endif
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -43,6 +44,13 @@ typedef int sock_t;
 static int fails = 0;
 #define CHECK(c, ...) do { if (!(c)) { fails++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
+// A stall of the harness itself, not of the hop: an audio thread's turn, or a packet the wire lets go, this much later than it should be.
+// (15 ms: the remote absorbs a late packet within its 20 ms margin_ms less the wire's own jitter; past that a run is a stall scenario,
+// whether or not one was asked for. GitHub's hosted macOS runner stalls threads 15-200 ms now and then, Linux's and Windows' ~1 ms)
+static const double STALL_S = 0.015;
+// SS_TIMING_STRICT=1: a check the harness never got a clean run for (it stalled in every try) fails; 0: it's reported and skipped.
+// Default on, off when CI is set (the hosted runners; .github/workflows/extension.yml).
+static bool strict() { const char *e = getenv("SS_TIMING_STRICT"); return e ? atoi(e) != 0 : !getenv("CI"); }
 static float sig(uint64_t i) { return (float)((i * 7919u) % 100003u) / 100003.f + 0.001f; } // (never 0: silence and signal differ)
 static double now_s() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
@@ -55,6 +63,7 @@ struct Wire {
   double base_ms = 2, jitter_ms = 0, loss = 0;
   double spike_every = 0, spike_ms = 0; // a queue that stalls spike_ms every spike_every s, then lets the stalled packets go at once (a real link's jitter)
   long long dropped = 0;
+  double late_at = 0, late_ms = 0; // (the wire's own lateness: when it last let a packet go STALL_S or more past its due, and the worst)
 };
 struct End {
   sock_t s;
@@ -87,7 +96,10 @@ static void wire_loop(Wire *w, End *from)
       std::lock_guard<std::mutex> g(w->mx);
       const double t = now_s();
       for (size_t i = 0; i < w->q.size();)
-        if (w->q[i].due <= t) { go.push_back(std::move(w->q[i])); w->q[i] = std::move(w->q.back()); w->q.pop_back(); } else ++i;
+        if (w->q[i].due <= t) {
+          if (t - w->q[i].due > STALL_S) { w->late_at = t; w->late_ms = std::max(w->late_ms, (t - w->q[i].due) * 1000); }
+          go.push_back(std::move(w->q[i])); w->q[i] = std::move(w->q.back()); w->q.pop_back();
+        } else ++i;
     }
     for (Pkt &p : go) sendto(from->s, (const char *)p.d.data(), (int)p.d.size(), 0, (const sockaddr *)&p.to, sizeof(p.to));
     std::this_thread::sleep_for(std::chrono::microseconds(500));
@@ -124,13 +136,13 @@ static sock_t udp(sockaddr_in &me)
 }
 
 // ---- one run: a sender hop and a fake remote, for `secs`, then every frame the sender played is checked ----
-// hiccup: when the last stall ended, seconds into the run (0: none), deliberate or not (the macOS runner pauses its VM ~60 ms now and
-// then); after / exact_after: the frames from a second after it on, and how many of them came back exact.
+// hiccup: when the last stall ended, seconds into the run (0: none), deliberate or not (an audio thread's turn or the wire STALL_S late:
+// the macOS runner pauses its VM ~60 ms now and then); after / exact_after: the frames from a second after it on, and how many came back exact.
 struct Result { uint64_t exact = 0, zero = 0, faded = 0, wrong = 0, first_wet = 0, frames = 0, after = 0, exact_after = 0; double hiccup = 0, hiccup_ms = 0; std::string sst, rst; };
 static const uint32_t L = 7200, LX = 256, PDC = 100, B = 256;
 
 // stall: at stall_at seconds, the sender's audio thread (who & 1) and/or the remote's (who & 2) stop for stall_ms and then catch up
-// in a burst, as a VM pause or a disk/scheduler hiccup does. Each audio thread notes any gap over 30 ms between its turns (a stall).
+// in a burst, as a VM pause or a disk/scheduler hiccup does. Each audio thread notes any gap over STALL_S between its turns (a stall).
 static Result run(int id0, double base_ms, double jitter_ms, double loss, double drift, double secs, const char *rsecret = "studio",
                   double stall_at = 0, double stall_ms = 0, int who = 0, double spike_every = 0, double spike_ms = 0, uint64_t jump = 0)
 {
@@ -165,8 +177,8 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
   snprintf(peer, sizeof(peer), "127.0.0.1:%d", ntohs(b.me.sin_port));
   CHECK(hopnet_connect(a.net, hs, peer, json) == 1, "connect starts");
 
-  double t0s = 0, hic[2] = { 0, 0 }, hic_ms[2] = { 0, 0 };
-  auto gap = [&](int k, double &last) { const double t = now_s(); if (t - last > 0.03) { hic[k] = t; hic_ms[k] = std::max(hic_ms[k], (t - last) * 1000); } last = t; };
+  double t0s = 0, hic[2] = { 0, 0 }, hic_ms[2] = { 0, 0 }, hic_jump = 0;
+  auto gap = [&](int k, double &last) { const double t = now_s(); if (t - last > STALL_S) { hic[k] = t; hic_ms[k] = std::max(hic_ms[k], (t - last) * 1000); } last = t; };
   std::vector<float> out0, out1;
   out0.reserve((size_t)(secs * 48000) + 4096); out1.reserve(out0.capacity());
   g_run = true;
@@ -183,7 +195,7 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
       if ((who & 1) && !stalled && now_s() - t0 >= stall_at) { stalled = true; std::this_thread::sleep_for(std::chrono::microseconds((int)(stall_ms * 1000))); }
       // jump: at stall_at the sender processes `jump` frames more at once and stays that far ahead (REAPER at the start of playback)
       const bool jumped = jump && now_s() - t0 >= stall_at;
-      if (jumped && !hic[0]) hic[0] = now_s();
+      if (jumped && !hic_jump) hic_jump = now_s();
       const uint64_t due = (uint64_t)((now_s() - t0) * 48000) + (jumped ? jump : 0);
       while (done + B <= due) {
         for (uint32_t k = 0; k < B; ++k) { i0[k] = sig(done + k); i1[k] = -sig(done + k); }
@@ -238,9 +250,9 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
 
   // every frame: exactly 0.5 x the input L frames before, or 0, or fading in towards it
   res.frames = out0.size();
-  const double hl = std::max(hic[0], hic[1]);
+  const double hl = std::max({ hic[0], hic[1], hic_jump, wa.late_at, wb.late_at });
   res.hiccup = hl > 0 ? hl - t0s : 0;
-  res.hiccup_ms = std::max(hic_ms[0], hic_ms[1]);
+  res.hiccup_ms = std::max({ hic_ms[0], hic_ms[1], wa.late_ms, wb.late_ms });
   for (uint64_t i = L; i < out0.size(); ++i) {
     const float e[2] = { 0.5f * sig(i - L), -0.5f * sig(i - L) }, o[2] = { out0[i], out1[i] };
     int ex = 0, zr = 0, fd = 0;
@@ -279,9 +291,21 @@ static void recovered(const Result &r, double secs)
   printf("  a %.0f ms stall ending %.2f s in; from a second after it: exact %.2f%% of %llu frames\n", r.hiccup_ms, r.hiccup,
          r.after ? 100.0 * r.exact_after / r.after : 0.0, (unsigned long long)r.after);
   if (r.after >= 24000) CHECK(r.exact_after * 1000 >= r.after * 999, "every frame back exact from a second after the stall");
-  else printf("  (too near the end to check the frames after it)\n");
+  else { printf("  (too near the end to check the frames after it)\n"); CHECK(!strict(), "a run that leaves time to check after its last stall (SS_TIMING_STRICT)"); }
   if (r.hiccup <= secs - 2.3) CHECK(num(r.sst, "slack_ms") >= 0 && num(r.sst, "need_ms") < num(r.sst, "budget_ms"), "back inside the budget, slack to spare");
   else printf("  (too near the end to check the budget after it)\n");
+}
+
+// Up to 3 tries of a run until `ok`: a run the harness kept its own timing in (or one whose last stall leaves time to check after it).
+// The decision is on the harness's timing alone, never on the hop's result.
+template <class R, class Ok> static Result tries(R one, Ok ok)
+{
+  Result r = one();
+  for (int t = 1; t < 3 && !ok(r); ++t) {
+    printf("  (the harness stalled %.0f ms, the last %.2f s in: again)\n", r.hiccup_ms, r.hiccup);
+    r = one();
+  }
+  return r;
 }
 
 int main()
@@ -290,7 +314,7 @@ int main()
   timeBeginPeriod(1); // (REAPER runs with 1 ms timers; Windows' default 15.6 ms would bunch the test's blocks)
 #endif
   {
-    Result r = run(1, 2, 0, 0, 0, 3);
+    Result r = tries([] { return run(1, 2, 0, 0, 0, 3); }, [](const Result &x) { return x.hiccup == 0; });
     report("clean", r);
     CHECK(r.first_wet > 0 && r.first_wet < 48000, "the hop comes up within a second");
     CHECK(r.wrong == 0, "nothing misaligned or wrong");
@@ -330,7 +354,7 @@ int main()
   const struct { const char *what; int id, who; double ms; } stalls[] = {
     { "the remote stalls 80 ms", 51, 2, 80 }, { "the sender stalls 80 ms", 61, 1, 80 }, { "both stall 100 ms", 4, 3, 100 } };
   for (const auto &st : stalls) {
-    Result r = run(st.id, 3, 2, 0, 0, 4, "studio", 1.0, st.ms, st.who);
+    Result r = tries([&] { return run(st.id, 3, 2, 0, 0, 4, "studio", 1.0, st.ms, st.who); }, [](const Result &x) { return x.hiccup <= 4 - 2.3; });
     report(st.what, r);
     CHECK(r.hiccup > 0, "the stall seen");
     CHECK(r.wrong == 0, "nothing misaligned through a stall");
@@ -339,20 +363,32 @@ int main()
   // The desktop <-> laptop link (2026-11-19, over the internet): a 90 ms round trip, and now and then a 40 ms stall on the way out, with
   // the 150 ms budget about 12 ms to spare. A late packet at the remote is lost, and only that: it doesn't move the timing (a "slip")
   // when the packets after it are on time again, which made each spike cost the next 150 ms too (all of it later than the budget).
+  // The margin is the point, so it's set on this computer: the same wire without spikes first, and each way shortened by half what its need
+  // is over the budget less 3 ms (the Linux runners' own: need 146-147.6 ms of 150, 2026-11-20; a hosted Mac's round trip and its remote's
+  // guard ran 5-15 ms over, which left the spikes no margin at all and made every packet late, not just theirs).
   {
-    Result r = run(7, 45, 3, 0, 0, 6, "studio", 0, 0, 0, 1.3, 40);
+    auto clean = [](const Result &x) { return x.hiccup == 0; };
+    const Result c = tries([] { return run(8, 45, 3, 0, 0, 3); }, clean);
+    const double budget = num(c.sst, "budget_ms"), need0 = num(c.sst, "need_ms"), over = need0 - (budget - 3);
+    const double base = 45 - std::min(15.0, std::max(0.0, over / 2));
+    printf("the same wire without spikes: need %.1f ms of %.0f, so each way %.1f ms\n", need0, budget, base);
+    CHECK(need0 > 0 && over <= 30, "the link without spikes within 30 ms of the margin (or the runner's too slow for this check)");
+    Result r = tries([&] { return run(7, base, 3, 0, 0, 6, "studio", 0, 0, 0, 1.3, 40); }, clean);
     report("a 90 ms round trip, a 40 ms spike on the way out every 1.3 s", r);
     CHECK(r.wrong == 0, "nothing misaligned through the spikes");
     if (r.hiccup == 0) {
       CHECK(num(r.rst, "slips") == 0, "a spike isn't drift: no slip");
       CHECK(exact_pct(r) > 94, "a spike costs only its own packets");
       CHECK(num(r.sst, "holes") >= 1 && num(r.sst, "holes") <= 10, "about a dropout a spike, counted");
+    } else {
+      printf("  (the harness stalled in every try, %.0f ms the last: the spike checks need a run without one)\n", r.hiccup_ms);
+      CHECK(!strict(), "a spike run without a harness stall (SS_TIMING_STRICT)");
     }
   }
   // REAPER at the start of playback processes the hop's whole latency at once (its delay compensation lining up) and stays that far
   // ahead: a moment of fallback audio, then every frame back exact again well within a second, not after the 3 s it took (REAPER, 2026-11-19).
   {
-    Result r = run(14, 30, 2, 0, 0, 4, "studio", 1.0, 0, 0, 0, 0, L - B);
+    Result r = tries([] { return run(14, 30, 2, 0, 0, 4, "studio", 1.0, 0, 0, 0, 0, L - B); }, [](const Result &x) { return x.hiccup <= 4 - 2.3; });
     report("the sender jumps its latency ahead (playback starts)", r);
     CHECK(r.wrong == 0, "nothing misaligned through the jump");
     recovered(r, 4);
