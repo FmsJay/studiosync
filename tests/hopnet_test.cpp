@@ -64,6 +64,7 @@ struct Wire {
   double spike_every = 0, spike_ms = 0; // a queue that stalls spike_ms every spike_every s, then lets the stalled packets go at once (a real link's jitter)
   long long dropped = 0;
   double late_at = 0, late_ms = 0; // (the wire's own lateness: when it last let a packet go STALL_S or more past its due, and the worst)
+  int late_n = 0;                  // (and how many times, a new one 50 ms after the last)
 };
 struct End {
   sock_t s;
@@ -97,7 +98,7 @@ static void wire_loop(Wire *w, End *from)
       const double t = now_s();
       for (size_t i = 0; i < w->q.size();)
         if (w->q[i].due <= t) {
-          if (t - w->q[i].due > STALL_S) { w->late_at = t; w->late_ms = std::max(w->late_ms, (t - w->q[i].due) * 1000); }
+          if (t - w->q[i].due > STALL_S) { w->late_n += t - w->late_at > 0.05; w->late_at = t; w->late_ms = std::max(w->late_ms, (t - w->q[i].due) * 1000); }
           go.push_back(std::move(w->q[i])); w->q[i] = std::move(w->q.back()); w->q.pop_back();
         } else ++i;
     }
@@ -138,7 +139,7 @@ static sock_t udp(sockaddr_in &me)
 // ---- one run: a sender hop and a fake remote, for `secs`, then every frame the sender played is checked ----
 // hiccup: when the last stall ended, seconds into the run (0: none), deliberate or not (an audio thread's turn or the wire STALL_S late:
 // the macOS runner pauses its VM ~60 ms now and then); after / exact_after: the frames from a second after it on, and how many came back exact.
-struct Result { uint64_t exact = 0, zero = 0, faded = 0, wrong = 0, first_wet = 0, frames = 0, after = 0, exact_after = 0; double hiccup = 0, hiccup_ms = 0; std::string sst, rst; };
+struct Result { uint64_t exact = 0, zero = 0, faded = 0, wrong = 0, first_wet = 0, frames = 0, after = 0, exact_after = 0; double hiccup = 0, hiccup_ms = 0; int stalls = 0; std::string sst, rst; };
 static const uint32_t L = 7200, LX = 256, PDC = 100, B = 256;
 
 // stall: at stall_at seconds, the sender's audio thread (who & 1) and/or the remote's (who & 2) stop for stall_ms and then catch up
@@ -178,7 +179,8 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
   CHECK(hopnet_connect(a.net, hs, peer, json) == 1, "connect starts");
 
   double t0s = 0, hic[2] = { 0, 0 }, hic_ms[2] = { 0, 0 }, hic_jump = 0;
-  auto gap = [&](int k, double &last) { const double t = now_s(); if (t - last > STALL_S) { hic[k] = t; hic_ms[k] = std::max(hic_ms[k], (t - last) * 1000); } last = t; };
+  int hic_n[2] = { 0, 0 };
+  auto gap = [&](int k, double &last) { const double t = now_s(); if (t - last > STALL_S) { hic[k] = t; ++hic_n[k]; hic_ms[k] = std::max(hic_ms[k], (t - last) * 1000); } last = t; };
   std::vector<float> out0, out1;
   out0.reserve((size_t)(secs * 48000) + 4096); out1.reserve(out0.capacity());
   g_run = true;
@@ -253,6 +255,7 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
   const double hl = std::max({ hic[0], hic[1], hic_jump, wa.late_at, wb.late_at });
   res.hiccup = hl > 0 ? hl - t0s : 0;
   res.hiccup_ms = std::max({ hic_ms[0], hic_ms[1], wa.late_ms, wb.late_ms });
+  res.stalls = hic_n[0] + hic_n[1] + wa.late_n + wb.late_n;
   for (uint64_t i = L; i < out0.size(); ++i) {
     const float e[2] = { 0.5f * sig(i - L), -0.5f * sig(i - L) }, o[2] = { out0[i], out1[i] };
     int ex = 0, zr = 0, fd = 0;
@@ -402,12 +405,13 @@ int main()
       r = run(7, base, 3, 0, 0, 6, "studio", 0, 0, 0, 1.3, 40);
     }
     report("a 90 ms round trip, a 40 ms spike on the way out every 1.3 s", r);
-    if (r.hiccup > 0) printf("  (the harness's own worst stall: %.0f ms)\n", r.hiccup_ms);
+    if (r.hiccup > 0) printf("  (the harness's own stalls: %d, the worst %.0f ms)\n", r.stalls, r.hiccup_ms);
     CHECK(r.wrong == 0, "nothing misaligned through the spikes");
     if (fair(r)) {
       CHECK(num(r.rst, "slips") == 0, "a spike isn't drift: no slip");
       CHECK(exact_pct(r) > 94, "a spike costs only its own packets");
-      CHECK(num(r.sst, "holes") >= 1 && num(r.sst, "holes") <= 10, "about a dropout a spike, counted");
+      // (10: two a spike, and as many for each harness stall, one more spike each: a hosted Mac had 16 with stalls up to 38 ms)
+      CHECK(num(r.sst, "holes") >= 1 && num(r.sst, "holes") <= 10 + 2 * r.stalls, "about a dropout a spike (or a harness stall), counted");
     } else {
       printf("  (no try had the margin and no harness stall longer than a spike: the spike checks need one)\n");
       CHECK(!strict(), "a spike run with its margin and no harness stall longer than a spike (SS_TIMING_STRICT)");
