@@ -120,7 +120,7 @@ local tracks = {
   { arm = 1, items = { { pos = 5, takes = { take("Old-001", "C:/rec/Old-001.flac", "g5") } } } } } -- (there before: not new)
 -- (smart lanes: track 1 is in fixed lanes, its two new takes in lanes 2 and 3; lane 5 was named by someone already)
 for _, tr in ipairs(tracks) do for _, it in ipairs(tr.items) do it.tr = tr; for _, tk in ipairs(it.takes) do tk.it = it end end end
-tracks[1].freemode, tracks[1].lanenames = 2, { [5] = "my comp" }
+tracks[1].freemode, tracks[1].lanenames = 2, { [5] = "my comp", [2] = "2" } -- (lane 2: REAPER's own "2", a name nobody typed)
 tracks[1].items[1].lane, tracks[1].items[2].lane = 2, 3
 reaper = {
   CountTracks = function() return #tracks end, GetTrack = function(_, i) return tracks[i + 1] end,
@@ -163,6 +163,16 @@ assert(recap.name_takes(nil, { user = "James", root = "R" }, nil) == 0, "no star
 tracks[1].items[1].takes[1].name = "Guitar-001"
 studio.smart_take_names = false
 assert(recap.name_takes(nil, { user = "James", root = "R" }, had) == 0 and tracks[1].items[1].takes[1].name == "Guitar-001", "the studio turned it off")
+
+-- the stop after a disarm (REAPER's "disarm after recording", a script): the tracks armed at the start count
+for _, tr in ipairs(tracks) do for _, it in ipairs(tr.items) do for _, tk in ipairs(it.takes) do if tk.guid == "g1" then tk.name = "Guitar-001" end end end end
+tracks[1].lanenames[2] = "1"
+local had2 = recap.before_record(nil)
+had2.g1 = nil -- (as if the take on track 1 is the new one)
+tracks[1].arm = 0
+studio.smart_take_names = true
+assert(recap.name_takes(nil, { user = "James", root = "R" }, had2) >= 1 and tracks[1].items[1].takes[1].name:find("James - take", 1, true), "disarmed before the stop: still named, " .. tracks[1].items[1].takes[1].name)
+tracks[1].arm = 1
 
 -- smart lanes: a lane is named as its take, or as the pass when one pass put different sections' takes in it (James, rt)
 local ln = recap.lane_names({ { lane = 2, section = "Verse", name = "Verse - James - take 2", pass = "James - take 2" },

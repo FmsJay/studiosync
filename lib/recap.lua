@@ -212,10 +212,12 @@ local function take_guid(tk) return select(2, reaper.GetSetMediaItemTakeInfo_Str
 function recap.names_on(root) return require("groups").smart_take_names(root) end
 -- As a recording starts: the takes already on the armed tracks, so the stop can tell the new ones.
 function recap.before_record(proj)
-  local had = {}
+  local had = { [".tracks"] = {} } -- (".tracks": the tracks armed now, as the stop may come after a disarm: REAPER's "disarm after recording",
+  -- a quick hand, or a script. Without it the take on a track disarmed before Live sync's next tick kept REAPER's name. Desktop, rt)
   for t = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, t)
     if reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1 then
+      had[".tracks"][tr] = true
       for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
         local it = reaper.GetTrackMediaItem(tr, j)
         for k = 0, reaper.CountTakes(it) - 1 do local tk = reaper.GetTake(it, k); if tk then had[take_guid(tk)] = true end end
@@ -231,7 +233,7 @@ function recap.name_takes(proj, cfg, had)
   local names, new = {}, {}
   for t = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, t)
-    local armed = reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1
+    local armed = (type(had[".tracks"]) == "table" and had[".tracks"][tr]) or reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1
     for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
       local it = reaper.GetTrackMediaItem(tr, j)
       for k = 0, reaper.CountTakes(it) - 1 do
@@ -266,7 +268,9 @@ function recap.name_takes(proj, cfg, had)
   for tr, list in pairs(lanes) do
     for lane, lname in pairs(recap.lane_names(list)) do
       local key = "P_LANENAME:" .. lane
-      if select(2, reaper.GetSetMediaTrackInfo_String(tr, key, "", false)) == "" then reaper.GetSetMediaTrackInfo_String(tr, key, lname, true) end
+      -- (unnamed: empty, REAPER's own "1", "2"... for a new fixed lane, or prints.lua's "Take 3": all names nobody typed. Desktop, rt)
+      local cur = select(2, reaper.GetSetMediaTrackInfo_String(tr, key, "", false))
+      if cur == "" or cur:match("^%d+$") or cur:match("^Take %d+$") then reaper.GetSetMediaTrackInfo_String(tr, key, lname, true) end
     end
   end
   return #new
