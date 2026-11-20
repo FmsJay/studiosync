@@ -58,6 +58,9 @@ void rt_capture(RtLink *l, const double *const *in, int nin, int len, double sra
 // thread with this block's Talk channels, after the inputs were copied in and only while sending (Mute me silences the guest too). rt-browserjoin
 extern void (*rt_talk_add)(float *const *ch, int nch, int len);
 void rt_mix(RtLink *l, double *const *out, int nout, int len, double srate);
+// Jam (extension/direct_audio.cpp, lib/jam.lua): each Play block as it goes out (after Mute me), on the audio thread, with the device's rate.
+// null: nothing. rt-jam
+extern void (*rt_play_tap)(float *const *ch, int nch, int len, int srate);
 
 #ifndef RTAUDIO_STANDALONE
 struct reaper_plugin_info_t;

@@ -60,6 +60,12 @@ const char *direct_audio_status(); // JSON: { running, srate, inputs, first, nch
 int direct_audio_dump(const char *path, double seconds); // a worker thread writes the next `seconds` to a 32-bit float WAV
 // The audio thread's work, without REAPER: `in` has `nin` hardware input channels of `len` samples (entries may be null).
 void direct_audio_process(const double *const *in, int nin, int len, double srate);
+// Jam (extension/direct_audio.cpp, lib/jam.lua): live audio's Play feed to a growing 16-bit stereo WAV while the transport plays.
+int direct_jam_start(const char *path); // a worker writes the file; 0 when already running
+void direct_jam_stop();                 // the rest written, the header's real sizes, the worker joined
+const char *direct_jam_status();        // JSON: { on, state, srate, frames, fed, dropped, rate_changed, segs = [[index, file frame, position], ...] }
+// The audio thread's work (REAPER's: rt_play_tap, with the block's play position read before processing): ch[0..nch-1] of len frames.
+void direct_jam_feed(const float *const *ch, int nch, int len, double srate, double pos, bool playing);
 
 // For the test: the pieces a frame is made of, and the WAV layout the receiver keeps playable.
 void direct_sha256(const unsigned char *msg, size_t len, unsigned char out[32]);

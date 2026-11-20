@@ -43,12 +43,12 @@ std::mutex g_api_mx; // (main-thread API calls only: never the audio thread)
 
 void le16(FILE *f, unsigned v) { fputc(v & 255, f); fputc((v >> 8) & 255, f); }
 void le32(FILE *f, unsigned v) { le16(f, v & 0xffff); le16(f, v >> 16); }
-void wav_header(FILE *f, int nch, int srate, unsigned frames) // 32-bit float (format 3), as REAPER and every DAW reads
+void wav_header(FILE *f, int nch, int srate, unsigned frames, int bits = 32) // 32-bit float (format 3), or 16-bit PCM (Jam's), as every DAW reads
 {
-  const unsigned data = frames * (unsigned)nch * 4;
+  const unsigned bytes = (unsigned)bits / 8, data = frames * (unsigned)nch * bytes;
   fseek(f, 0, SEEK_SET);
   fwrite("RIFF", 1, 4, f); le32(f, 36 + data); fwrite("WAVEfmt ", 1, 8, f); le32(f, 16);
-  le16(f, 3); le16(f, (unsigned)nch); le32(f, (unsigned)srate); le32(f, (unsigned)srate * nch * 4); le16(f, (unsigned)nch * 4); le16(f, 32);
+  le16(f, bits == 32 ? 3 : 1); le16(f, (unsigned)nch); le32(f, (unsigned)srate); le32(f, (unsigned)srate * nch * bytes); le16(f, (unsigned)nch * bytes); le16(f, (unsigned)bits);
   fwrite("data", 1, 4, f); le32(f, data);
 }
 FILE *open_w(const std::string &p)
@@ -127,6 +127,150 @@ void direct_audio_process(const double *const *in, int nin, int len, double srat
   if (ns > g_max_ns.load(std::memory_order_relaxed)) g_max_ns.store(ns, std::memory_order_relaxed);
 }
 
+// ---- Jam (docs/rt/rt-jam.md, lib/jam.lua; James 2026-11-20: classic NINJAM play-along built in) ------------------------------------------
+// While the transport plays, live audio's Play feed (the armed tracks post-FX, after Mute me: rtaudio.cpp play_feed hands it over through
+// rt_play_tap) goes into a ring on the audio thread, and a worker writes it to a growing 16-bit stereo WAV that the direct link streams as it
+// grows (its receiver keeps the copy playable). Each block's play position comes with it: a block that doesn't start where the last one ended
+// (play, a seek, a loop, a dropped block) starts a segment { file frame, position }, so the others can place every interval on its bar. The
+// audio thread allocates nothing, locks nothing and writes no file. Nothing runs until StudioSync_JamStart.
+namespace {
+const size_t JAM_RING = 1 << 18; // frames, stereo (about 5 s at 48 kHz; the worker drains it every 10 ms)
+const int JAM_SEGS = 32;
+const double JAM_JUMP = 0.002; // s
+struct JamSeg { long long n0; double p0; };
+float *g_jring = nullptr;
+std::atomic<bool> g_jon{ false }, g_jstop{ false }, g_jrate_changed{ false };
+std::atomic<int> g_jin_cb{ 0 }, g_jstate{ 0 }; // (state: 0 none, 1 writing, 2 done, 3 failed)
+std::atomic<size_t> g_jw{ 0 }, g_jr{ 0 };
+std::atomic<long long> g_jdropped{ 0 }, g_jfile_frames{ 0 }, g_jsegs{ 0 };
+std::atomic<double> g_jsr{ 0 };
+JamSeg g_jseg[JAM_SEGS];
+bool g_jlast_ok = false; // (the audio thread's, while g_jon)
+double g_jlast_end = 0;
+std::thread g_jthr;
+std::string g_jstatus;
+std::mutex g_jmx; // (main-thread API calls only)
+
+void jam_loop(std::string path)
+{
+  while (g_jsr.load() <= 0 && !g_jstop) std::this_thread::sleep_for(std::chrono::milliseconds(10)); // (its rate comes with the first block)
+  FILE *f = g_jstop ? nullptr : open_w(path);
+  if (!f) { g_jstate = 3; return; }
+  const int sr = (int)g_jsr.load();
+  wav_header(f, 2, sr, 0, 16);
+  fflush(f);
+  static short buf[4096 * 2];
+  long long frames = 0;
+  bool ok = true;
+  for (;;) {
+    const bool last = g_jstop.load(); // (read before draining: whatever came before the stop is written)
+    const size_t r = g_jr.load(std::memory_order_relaxed), w = g_jw.load(std::memory_order_acquire);
+    if (w == r) { if (last) break; std::this_thread::sleep_for(std::chrono::milliseconds(10)); continue; }
+    const size_t n = std::min<size_t>(w - r, 4096);
+    for (size_t k = 0; k < n; ++k) {
+      const float *s = g_jring + ((r + k) & (JAM_RING - 1)) * 2;
+      for (int c = 0; c < 2; ++c) buf[k * 2 + c] = (short)std::lround(std::max(-1.f, std::min(1.f, s[c])) * 32767.f);
+    }
+    g_jr.store(r + n, std::memory_order_release);
+    ok = fwrite(buf, 4, n, f) == n && ok;
+    fflush(f); // (the link reads the file by its size: every 10 ms of it is there to send)
+    frames += (long long)n;
+    g_jfile_frames = frames;
+  }
+  wav_header(f, 2, sr, (unsigned)frames, 16); // (the real sizes at the end: the link sends the header last)
+  ok = fclose(f) == 0 && ok;
+  g_jstate = ok ? 2 : 3;
+}
+} // namespace
+
+void direct_jam_feed(const float *const *ch, int nch, int len, double srate, double pos, bool playing)
+{
+  g_jin_cb.fetch_add(1, std::memory_order_acq_rel);
+  if (g_jon.load(std::memory_order_acquire) && ch && nch > 0 && ch[0] && len > 0 && srate > 0) {
+    const double sr0 = g_jsr.load(std::memory_order_relaxed);
+    if (sr0 == 0) g_jsr.store(srate, std::memory_order_relaxed);
+    if (sr0 != 0 && sr0 != srate) g_jrate_changed.store(true, std::memory_order_relaxed); // (the file's rate is fixed: Lua starts a new run)
+    else if (!playing) g_jlast_ok = false; // (nothing written while stopped)
+    else {
+      const size_t w = g_jw.load(std::memory_order_relaxed), r = g_jr.load(std::memory_order_acquire);
+      if (JAM_RING - (w - r) < (size_t)len) { g_jdropped.fetch_add(len, std::memory_order_relaxed); g_jlast_ok = false; } // (a whole block, so the next starts a segment)
+      else {
+        if (!g_jlast_ok || std::fabs(pos - g_jlast_end) > JAM_JUMP) {
+          const long long c = g_jsegs.load(std::memory_order_relaxed);
+          g_jseg[c % JAM_SEGS] = { (long long)w, pos };
+          g_jsegs.store(c + 1, std::memory_order_release);
+        }
+        g_jlast_ok = true;
+        g_jlast_end = pos + len / srate;
+        const float *L = ch[0], *R = nch > 1 && ch[1] ? ch[1] : ch[0];
+        for (int k = 0; k < len; ++k) {
+          float *d = g_jring + ((w + (size_t)k) & (JAM_RING - 1)) * 2;
+          d[0] = L[k]; d[1] = R[k];
+        }
+        g_jw.store(w + (size_t)len, std::memory_order_release);
+      }
+    }
+  }
+  g_jin_cb.fetch_sub(1, std::memory_order_acq_rel);
+}
+
+static void jam_hook(bool add);
+int direct_jam_start(const char *path)
+{
+  std::lock_guard<std::mutex> l(g_jmx);
+  if (g_jon || !path || !*path) return 0;
+  if (g_jthr.joinable()) g_jthr.join();
+  g_jring = new (std::nothrow) float[JAM_RING * 2];
+  if (!g_jring) return 0;
+  g_jw = 0; g_jr = 0; g_jdropped = 0; g_jfile_frames = 0; g_jsegs = 0; g_jsr = 0; g_jrate_changed = false; g_jstop = false;
+  g_jlast_ok = false;
+  g_jstate = 1;
+  g_jthr = std::thread(jam_loop, std::string(path));
+  g_jon.store(true, std::memory_order_release);
+  jam_hook(true);
+  return 1;
+}
+
+void direct_jam_stop()
+{
+  std::lock_guard<std::mutex> l(g_jmx);
+  if (!g_jon && !g_jthr.joinable()) return;
+  g_jon.store(false, std::memory_order_release);
+  jam_hook(false);
+  for (int i = 0; i < 200 && g_jin_cb.load() > 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1)); // (a block mid-flight finishes)
+  g_jstop = true;
+  if (g_jthr.joinable()) g_jthr.join();
+  delete[] g_jring;
+  g_jring = nullptr;
+}
+
+const char *direct_jam_status()
+{
+  std::lock_guard<std::mutex> l(g_jmx);
+  static const char *states[] = { "none", "writing", "done", "failed" };
+  char b[256];
+  snprintf(b, sizeof(b), "{\"on\":%s,\"state\":\"%s\",\"srate\":%.0f,\"frames\":%lld,\"fed\":%lld,\"dropped\":%lld,\"rate_changed\":%s,\"segs\":[",
+           g_jon ? "true" : "false", states[g_jstate.load() & 3], g_jsr.load(), g_jfile_frames.load(), (long long)g_jw.load(), g_jdropped.load(),
+           g_jrate_changed ? "true" : "false");
+  g_jstatus = b;
+  // (the newest JAM_SEGS - 1, each [index, file frame, position]; one the audio thread may be writing over is left out by reading the count again)
+  const long long c = g_jsegs.load(std::memory_order_acquire);
+  JamSeg got[JAM_SEGS];
+  const long long from = std::max(0LL, c - (JAM_SEGS - 1));
+  for (long long i = from; i < c; ++i) got[i % JAM_SEGS] = g_jseg[i % JAM_SEGS];
+  const long long safe = std::max(from, g_jsegs.load(std::memory_order_acquire) - (JAM_SEGS - 1));
+  for (long long i = safe; i < c; ++i) {
+    snprintf(b, sizeof(b), "%s[%lld,%lld,%.9f]", i > safe ? "," : "", i, got[i % JAM_SEGS].n0, got[i % JAM_SEGS].p0);
+    g_jstatus += b;
+  }
+  g_jstatus += "]}";
+  return g_jstatus.c_str();
+}
+
+#ifdef DIRECT_STANDALONE
+static void jam_hook(bool) {}
+#endif
+
 #ifndef DIRECT_STANDALONE
 #include "reaper_plugin.h"
 #ifdef min // (SWELL, macOS/Linux: min/max as macros broke std::min and the C++ headers after it. CI, 2026-11-19)
@@ -149,6 +293,30 @@ static void on_audio(bool isPost, int len, double srate, audio_hook_register_t *
 }
 static audio_hook_register_t g_hook = { on_audio, nullptr, nullptr, 0, 0, nullptr };
 static bool g_hooked = false;
+// Jam's play position: read in this hook's call before REAPER processes the block (GetPlayPosition2Ex: the block about to be processed), and
+// taken by rt_play_tap after it (rtaudio.cpp's post call, the same block's Play feed). Every hook's pre call comes before the processing.
+#include "rtaudio.h"
+static double (*g_play_pos2)(ReaProject *) = nullptr;
+static int (*g_play_state)(ReaProject *) = nullptr;
+static std::atomic<double> g_jpos{ 0 };
+static std::atomic<bool> g_jplaying{ false };
+static void on_jam_audio(bool isPost, int, double, audio_hook_register_t *)
+{
+  if (isPost || !g_play_pos2 || !g_play_state) return;
+  g_jpos.store(g_play_pos2(nullptr), std::memory_order_relaxed);
+  g_jplaying.store((g_play_state(nullptr) & 1) != 0, std::memory_order_relaxed);
+}
+static audio_hook_register_t g_jhook = { on_jam_audio, nullptr, nullptr, 0, 0, nullptr };
+static bool g_jhooked = false;
+static void jam_hook(bool add)
+{
+  if (add && !g_jhooked && g_reg_hook) g_jhooked = g_reg_hook(true, &g_jhook) > 0;
+  else if (!add && g_jhooked) { g_reg_hook(false, &g_jhook); g_jhooked = false; }
+}
+static void jam_tap(float *const *ch, int nch, int len, int srate)
+{
+  direct_jam_feed(ch, nch, len, srate, g_jpos.load(std::memory_order_relaxed), g_jplaying.load(std::memory_order_relaxed));
+}
 #endif
 
 int direct_audio_start(int first_input, int nch)
@@ -220,11 +388,26 @@ static void *va_a_start(void **a, int n) { return n < 2 ? nullptr : (void *)(INT
 static void *va_a_stop(void **, int) { api_a_stop(); return nullptr; }
 static void *va_a_status(void **, int) { return (void *)api_a_status(); }
 static void *va_a_dump(void **a, int n) { return n < 2 || !a[1] ? nullptr : (void *)(INT_PTR)api_a_dump((const char *)a[0], *(double *)a[1]); } // (a double comes as a pointer)
+static int api_j_start(const char *path) { return direct_jam_start(path); }
+static void api_j_stop() { direct_jam_stop(); }
+static const char *api_j_status() { return direct_jam_status(); }
+static void *va_j_start(void **a, int n) { return n < 1 ? nullptr : (void *)(INT_PTR)api_j_start((const char *)a[0]); }
+static void *va_j_stop(void **, int) { api_j_stop(); return nullptr; }
+static void *va_j_status(void **, int) { return (void *)api_j_status(); }
+static void stop_all() { direct_audio_stop(); direct_jam_stop(); }
 
 void direct_audio_register(reaper_plugin_info_t *rec)
 {
   g_reg_hook = (int (*)(bool, audio_hook_register_t *))rec->GetFunc("Audio_RegHardwareHook");
+  *(void **)&g_play_pos2 = rec->GetFunc("GetPlayPosition2Ex");
+  *(void **)&g_play_state = rec->GetFunc("GetPlayStateEx");
+  rt_play_tap = jam_tap; // (it does nothing until StudioSync_JamStart)
   static const struct { const char *name; void *fn, *va; const char *def; } fns[] = {
+    { "StudioSync_JamStart", (void *)api_j_start, (void *)va_j_start,
+      "int\0const char*\0path\0Jam (lib/jam.lua): while the transport plays, write live audio's Play feed to a growing 16-bit stereo WAV at path, for the direct link to stream. Returns 1 when started." },
+    { "StudioSync_JamStop", (void *)api_j_stop, (void *)va_j_stop, "void\0\0\0Stop Jam's capture: the rest is written and the WAV's header gets its real sizes." },
+    { "StudioSync_JamStatus", (void *)api_j_status, (void *)va_j_status,
+      "const char*\0\0\0Jam's capture as JSON: on, state (none, writing, done, failed), srate, frames (in the file), fed, dropped, rate_changed, segs ([index, file frame, play position] for each stretch played without a jump)." },
     { "StudioSync_DirectAudioStart", (void *)api_a_start, (void *)va_a_start,
       "int\0int,int\0first_input,nch\0StudioSync's audio spike: capture hardware inputs first_input.. (nch 1-8) from the audio thread into a ring. Returns 1 when started." },
     { "StudioSync_DirectAudioStop", (void *)api_a_stop, (void *)va_a_stop, "void\0\0\0Stop the audio spike's capture (the hook comes out)." },
@@ -239,6 +422,6 @@ void direct_audio_register(reaper_plugin_info_t *rec)
     snprintf(key, sizeof(key), "APIdef_%s", f.name); rec->Register(key, (void *)f.def);
     snprintf(key, sizeof(key), "APIvararg_%s", f.name); rec->Register(key, f.va);
   }
-  rec->Register("atexit", (void *)direct_audio_stop); // (the hook out before REAPER goes)
+  rec->Register("atexit", (void *)stop_all); // (the hooks out before REAPER goes)
 }
 #endif

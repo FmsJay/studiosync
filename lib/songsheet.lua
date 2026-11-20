@@ -286,7 +286,7 @@ function songsheet.tick(proj, cfg, b, publish, handlers, now)
   end
   local L = S.line
   publish("beat", { playing = L.playing or nil, rec = ps & 4 == 4 or nil, pos = math.floor(L.pos * 1e4 + 0.5) / 1e4, at = L.at, rate = L.rate,
-    due = S.due and S.due > t and S.due or nil, cin = S.cin })
+    due = S.due and S.due > t and S.due or nil, cin = S.cin, jam = require("jam").beat_info() }) -- (jam: its interval in bars and who's heard. rt-jam)
 end
 
 return songsheet

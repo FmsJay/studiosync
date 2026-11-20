@@ -260,7 +260,6 @@ struct Slot {
   // and its own streams are left out here; dw: the audio thread's weight for its own streams last block (the crossfade)
   std::atomic<bool> in_mix{ true };
   float dw = 1.f;
-  std::atomic<double> rx_at{ -1e9 }; // (the receive thread's: its last datagram with the studio's tag, so it lists this computer. rt-roomlist)
 };
 } // namespace
 
@@ -291,8 +290,6 @@ struct RtLink {
   std::vector<float> inbuf, mixbuf;
   float *inptr[RT_MAX_CH] = {}, *mixptr[2] = {};
   std::atomic<long long> callbacks{ 0 }, max_ns{ 0 }, sent{ 0 }, received{ 0 }, rejected{ 0 }, not_here{ 0 };
-  struct NotHere { sockaddr_in a; double at; long long n; };
-  std::vector<NotHere> nh; // (stats_mx: each studio computer sending here off the list, at most NH_MAX, the oldest replaced. rt-roomlist)
   unsigned char txbuf[MAX_DGRAM + 64];
   std::string status_out;
   std::atomic<rt_extra_fn> extra{ nullptr }; // (Hop's network leg: rt_set_extra)
@@ -1297,21 +1294,11 @@ void reject(RtLink *l, const char *why, const sockaddr_in &from) // (and from wh
 // doesn't list it (Live sync's room here leaves it out for now: its status file old here, another song or room, a list being changed, or its
 // names still resolving at the start). Dropped all the same, but not a refusal: Health read it as "refused 13589 (not one of the studio's
 // computers here)" from the laptop's own address. Counted apart (not_here), with the last sender.
-// Each one is kept apart too (not_here_peers in the status): Live sync adds a studio computer that sends here to its list (lib/liveaudio.lua
-// heard_merge), so a room that's late to list it doesn't make the audio one-way. rt-roomlist
-const size_t NH_MAX = 16;
 void not_here(RtLink *l, const sockaddr_in &from)
 {
   l->not_here.fetch_add(1, std::memory_order_relaxed);
-  const double now = now_s();
   std::lock_guard<std::mutex> g(l->stats_mx);
   l->not_here_from = addr_str(from);
-  RtLink::NotHere *e = nullptr;
-  for (auto &x : l->nh) if (same_addr(x.a, from)) e = &x;
-  if (!e && l->nh.size() < NH_MAX) { l->nh.push_back({ from, now, 0 }); e = &l->nh.back(); }
-  if (!e) { e = &l->nh[0]; for (auto &x : l->nh) if (x.at < e->at) e = &x; *e = { from, now, 0 }; }
-  e->at = now;
-  ++e->n;
 }
 // One datagram from a peer: from the socket (rx_loop) or opened by the connection without Tailscale (rt_nat_rx, libjuice's thread). The
 // AOO calls happen under cfg_mx either way, so the two never run them at once.
@@ -1333,7 +1320,6 @@ void rx_one(RtLink *l, const unsigned char *d, int n, const sockaddr_in &from)
     if (!same_tag(t, d + n - TAG)) { reject(l, "wrong studio secret", from); return; }
     Slot *p = slot_of(l, from);
     if (!p) { not_here(l, from); return; }
-    p->rx_at.store(now_s(), std::memory_order_relaxed);
     handle_ctl(l, *p, d + 4, n - 4 - TAG, now_s());
     return;
   }
@@ -1352,7 +1338,6 @@ void rx_one(RtLink *l, const unsigned char *d, int n, const sockaddr_in &from)
     if (aoo_parsePattern(msg, size, &type, &id, &onset) != kAooOk) { reject(l, "not an AOO message", from); return; }
     Slot *p = slot_of(l, from);
     if (!p) { not_here(l, from); return; }
-    p->rx_at.store(now_s(), std::memory_order_relaxed);
     if (type == kAooMsgTypeSink && id == p->sink_id && p->sink) p->sink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
     else if (type == kAooMsgTypeSink && id == p->psink_id && p->psink) p->psink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
     else if (type == kAooMsgTypeSource && id == SRC_ID && l->src) l->src->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
@@ -1449,7 +1434,7 @@ int rt_start(RtLink *l, int first_input, int nch, int kbps, int port, const char
   l->bind_s = addr_str(me);
   l->first = first_input; l->nch = nch; l->kbps = std::max(16, std::min(512, kbps)); l->port = port;
   l->cfg_sr = 0; l->cfg_len = 0; l->seen_sr = 0; l->seen_len = 0;
-  l->callbacks = 0; l->max_ns = 0; l->sent = 0; l->received = 0; l->rejected = 0; l->last_reject.clear(); l->last_reject_from.clear(); l->not_here = 0; l->not_here_from.clear(); l->nh.clear();
+  l->callbacks = 0; l->max_ns = 0; l->sent = 0; l->received = 0; l->rejected = 0; l->last_reject.clear(); l->last_reject_from.clear(); l->not_here = 0; l->not_here_from.clear();
   l->src = AooSource_new(SRC_ID);
   l->src->setEventHandler(source_event, l, kAooEventModePoll);
   l->src->setPacketSize(1200);
@@ -1616,19 +1601,6 @@ std::string rt_status(RtLink *l)
            l->overflows, l->clk.ppm.load(), l->clk.used.load());
   o.insert(o.size() - 9, b);
   const double now = now_s();
-  { // (not_here_peers: each studio computer sending here off the list in the last minute, seconds ago and datagrams. rt-roomlist)
-    std::string nj = "\"not_here_peers\":{";
-    bool any = false;
-    for (const auto &x : l->nh) {
-      if (now - x.at > 60) continue;
-      if (any) nj += ',';
-      any = true;
-      json_str(nj, addr_str(x.a));
-      snprintf(b, sizeof(b), ":{\"ago\":%.2f,\"n\":%lld}", now - x.at, x.n);
-      nj += b;
-    }
-    o.insert(o.size() - 9, nj + "},"); // (before "peers":{, as Play's)
-  }
   { // (the hub's live mix: as a listener, the hub's peer, state, latency through it against the streams' own, fallbacks; as the hub, its load)
     Slot *h = l->hub_peer.load();
     const int hs = l->hub_state.load();
@@ -1666,8 +1638,6 @@ std::string rt_status(RtLink *l)
     // (fill_ms: Talk's buffer as measured now; jitter: the underruns that grew it; switched: those a hub mix <-> direct switch brought; trims)
     snprintf(b, sizeof(b), ",\"fill_ms\":%.1f,\"jitter\":%lld,\"switched\":%lld,\"trims\":%lld,\"lone\":%lld", p.fill_ms, p.jitter + p.pjitter + p.mjitter, p.switched, p.trims, p.lone);
     o.insert(o.size() - 1, b);
-    snprintf(b, sizeof(b), ",\"heard_ago\":%.2f", std::min(1e6, now - p.rx_at.load(std::memory_order_relaxed))); // (its last tagged datagram: it lists this computer. rt-roomlist)
-    o.insert(o.size() - 1, b);
   }
   o += "}}";
   return o;
@@ -1680,6 +1650,7 @@ static void took(RtLink *l, std::chrono::steady_clock::time_point t0)
   if (ns > l->max_ns.load(std::memory_order_relaxed)) l->max_ns.store(ns, std::memory_order_relaxed);
 }
 void (*rt_talk_add)(float *const *, int, int) = nullptr; // (rtaudio.h: a browser guest into the Talk sent. rt-browserjoin)
+void (*rt_play_tap)(float *const *, int, int, int) = nullptr; // (rtaudio.h: Jam's copy of each Play block. rt-jam)
 void rt_capture(RtLink *l, const double *const *in, int nin, int len, double srate)
 {
   if (!l || len <= 0) return;
@@ -1737,6 +1708,7 @@ static void play_feed(RtLink *l, int len, AooNtpTime t)
   }
   if (pk > l->play_peak.load(std::memory_order_relaxed)) l->play_peak.store(pk, std::memory_order_relaxed);
   if (!l->play_send.load(std::memory_order_relaxed)) { std::fill(L, L + len, 0.f); std::fill(R, R + len, 0.f); } // (muted: silence, the stream kept)
+  if (rt_play_tap) rt_play_tap(l->pptr, 2, len, l->cfg_sr); // (Jam takes the same block, after Mute me: extension/direct_audio.cpp. rt-jam)
   const AooError e = l->psrc->process(l->pptr, len, t);
   if (e == kAooErrorOverflow) l->poverflow.store(true);
   if (e == kAooOk || e == kAooErrorOverflow) l->wake.set();

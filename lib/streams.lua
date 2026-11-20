@@ -218,6 +218,7 @@ end
 -- cue says more); their next stop: the same lag, so you hear the take to its end. Anything else: as the cue says. -> lag (nil: leave it), and
 -- the new state ({ lead, lag } while in time with someone's take).
 function streams.in_time_lag(ev, me, mode, interval, state)
+  if mode == "in_time" and reaper.GetExtState(band.SECTION, "stream jam") == "1" then return nil, nil end -- (Jam: everyone plays at once, nobody runs behind. lib/jam.lua, rt-jam)
   if mode ~= "in_time" or type(ev) ~= "table" or not ev.follow or type(ev.lead) ~= "string" or ev.lead == me or ev.remote then return nil, state end
   if ev.type == "start" and ev.rec then
     local lag = math.max(tonumber(ev.lag) or 0, interval or 0)
@@ -632,6 +633,7 @@ function streams.receive_tick(proj, cfg, b, recording)
     if not i.done then active[tostring(i.rel):match("[^/]+$") or ""] = true end
   end
   local mirror, mode, listen_db = require("mirror"), streams.mode(), streams.listen_db()
+  if mode == "in_time" and reaper.GetExtState(band.SECTION, "stream jam") == "1" then mode = "show" end -- (Jam: a take recorded while jamming is heard through Jam, an interval late; its placeholder stays muted. rt-jam)
   for _, e in pairs(streams.book) do
     streams.update(e, inn[e.rel], now)
     local tr = mirror.find(proj, "track", e.track)

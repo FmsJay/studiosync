@@ -5,7 +5,7 @@ name: extension
 on:
   workflow_dispatch:
   push:
-    paths: ["extension/reaper_menu.cpp", "extension/direct.cpp", "extension/direct_audio.cpp", "extension/direct.h", "extension/sign.cpp", "extension/sign.h", "extension/webui.cpp", "extension/webui.h", "extension/webui_dock.cpp", "extension/webui_dock.h", "extension/webui_dock_mac.mm", "tests/direct_test.cpp", "tests/webui_test.cpp", "tests/webui_dock_test.cpp", "tests/sign_test.cpp", "tools/ninjam-relay/njrelay.c", ".github/workflows/extension.yml", "extension/hop.cpp", "plugin/hop_shm.h", "extension/rtaudio.cpp", "extension/rtaudio.h", "tests/rtaudio_test.cpp", "extension/hopnet.cpp", "extension/hopnet.h", "tests/hopnet_test.cpp", "plugin/hop_core.h", "extension/third_party/**", "extension/nat.cpp", "extension/nat.h", "tests/nat_test.cpp", "tests/nat_audio_test.cpp"]
+    paths: ["extension/reaper_menu.cpp", "extension/direct.cpp", "extension/direct_audio.cpp", "extension/direct.h", "extension/sign.cpp", "extension/sign.h", "extension/webui.cpp", "extension/webui.h", "extension/webui_dock.cpp", "extension/webui_dock.h", "extension/webui_dock_mac.mm", "tests/direct_test.cpp", "tests/jam_test.cpp", "tests/webui_test.cpp", "tests/webui_dock_test.cpp", "tests/sign_test.cpp", "tools/ninjam-relay/njrelay.c", ".github/workflows/extension.yml", "extension/hop.cpp", "plugin/hop_shm.h", "extension/rtaudio.cpp", "extension/rtaudio.h", "tests/rtaudio_test.cpp", "extension/hopnet.cpp", "extension/hopnet.h", "tests/hopnet_test.cpp", "plugin/hop_core.h", "extension/third_party/**", "extension/nat.cpp", "extension/nat.h", "tests/nat_test.cpp", "tests/nat_audio_test.cpp"]
 
 jobs:
   mac:
@@ -42,6 +42,11 @@ jobs:
         run: |
           clang++ -std=c++17 -O2 -DDIRECT_STANDALONE tests/direct_test.cpp extension/direct.cpp extension/direct_audio.cpp -o direct_test
           ./direct_test
+      - name: Jam's capture (tests/jam_test.cpp, extension/direct_audio.cpp; rt-jam)
+        if: ${{ !cancelled() }}
+        run: |
+          clang++ -std=c++17 -O2 -DDIRECT_STANDALONE tests/jam_test.cpp extension/direct.cpp extension/direct_audio.cpp -o jam_test
+          ./jam_test
       - name: The web UI server's own test (tests/webui_test.cpp, on localhost)
         if: ${{ !cancelled() }}
         run: |
@@ -122,6 +127,11 @@ jobs:
         run: |
           g++ -std=c++17 -O2 -pthread -DDIRECT_STANDALONE tests/direct_test.cpp extension/direct.cpp extension/direct_audio.cpp -o direct_test
           ./direct_test
+      - name: Jam's capture (tests/jam_test.cpp, extension/direct_audio.cpp; rt-jam)
+        if: ${{ !cancelled() }}
+        run: |
+          g++ -std=c++17 -O2 -pthread -DDIRECT_STANDALONE tests/jam_test.cpp extension/direct.cpp extension/direct_audio.cpp -o jam_test
+          ./jam_test
       - name: The web UI server's own test (tests/webui_test.cpp, on localhost)
         if: ${{ !cancelled() }}
         run: |

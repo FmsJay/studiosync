@@ -283,6 +283,9 @@ function H.build_rows()
     -- (recording FLAC with "In time" listening chosen: takes arrive in 2-5 s steps; WAV or more bars. lib/streams.lua format_row. James, rt)
     local okf, frow = pcall(require("streams").format_row, proj)
     if okf and frow then rows[#rows + 1] = frow end
+    -- (Jam: what goes out, who's heard and how late, a bandmate on another interval. lib/jam.lua health_rows, rt-jam)
+    local okj, jrows = pcall(require("jam").health_rows, cfg, b, proj)
+    for _, r in ipairs(okj and jrows or {}) do rows[#rows + 1] = r end
     -- (the same colours on every computer: lib/colours.lua health_row. James, rt)
     local okc, crow = pcall(require("colours").health_row, cfg, b, proj)
     if okc and crow then rows[#rows + 1] = crow end
