@@ -1,0 +1,26 @@
+/* The chat's conversations, unread badges, @mentions and files (lib/webui/chat.js; rt-chat2). GPL-3.0-or-later. */
+.cconvs { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+.crow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.clabel { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; min-width: 5.5em; }
+.cchip { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; padding: 3px 9px; border-radius: 14px; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+.cchip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.cchip.cadd { color: var(--dim); border-style: dashed; }
+.cchip.carch { opacity: .6; }
+.cchip.cdrop, #msgs.cdrop, #say.cdrop { outline: 2px dashed var(--accent); outline-offset: 2px; }
+.cbadge { font-size: 11px; line-height: 1.5; padding: 0 6px; border-radius: 9px; background: var(--dim); color: #fff; }
+.cbadge.cat { background: var(--rec); }
+.cadmin { display: flex; gap: 4px; margin-left: auto; }
+.cadmin .tab, .cfbtns .tab { padding: 2px 8px; font-size: 12px; }
+.cgroup { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 6px 0; font-size: 13px; }
+.cgroup[hidden] { display: none; }
+#say .cattach { padding: 0 8px; font-size: 13px; white-space: nowrap; background: var(--panel); border-color: var(--line); color: var(--text); }
+#msgs li.cmention .bubble { box-shadow: inset 3px 0 0 var(--rec); }
+.call li.cmention { box-shadow: inset 3px 0 0 var(--rec); }
+.ckind { font-size: 12px; color: var(--accent); margin-right: 2px; }
+.cfile { display: inline-block; text-align: left; background: var(--theirs); padding: 6px 10px; border-radius: 12px; overflow-wrap: anywhere; }
+#msgs li.mine .cfile { background: var(--mine); color: #fff; }
+#msgs li.mine .cfile .dim { color: inherit; opacity: .8; }
+.cfname { font-weight: 600; }
+.cfstate { font-size: 12px; }
+.cfbtns { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+@media (max-width: 600px) { .clabel { min-width: 0; width: 100%; } .cadmin { margin-left: 0; } }

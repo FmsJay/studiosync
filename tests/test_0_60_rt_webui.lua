@@ -85,13 +85,13 @@ local posted, from_msg = {}, {}
 local rtc_pages = {}
 package.loaded.webcall = { dirty = function() return false end, me = function() return {} end, model = function() return { boot = "1" } end,
   page = function(_, _, a) rtc_pages[#rtc_pages + 1] = a end, link = function() end }
-package.loaded.webhome = { tick = function() end, action = function() end } -- (Home and profiles: tests/test_0_60_rt_home.lua)
 local chat_reads = {}
 package.loaded.page_chat = { -- (its web_action's own checks: tests/test_0_60_rt_webpages.lua)
   web_action = function(_, b, a) posted[#posted + 1] = { b.song, a.text, a.scope } end,
   read = function(_, _, sc) chat_reads[#chat_reads + 1] = sc; return { msgs = { { user = "chilio", text = "hey", time = "2026-11-19T10:00:00Z" } } } end,
   where_label = function() return nil end,
   from_msg = function(_, d) from_msg[#from_msg + 1] = d end,
+  web_tick = function() end, -- (DMs, channels and files: tests/test_0_60_rt_chat2.lua)
 }
 assert(webui.available(), "the extension has it")
 local cfg, b, handlers = { root = "R", user = "James" }, { song = "S", room = "main" }, {}

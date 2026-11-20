@@ -10,7 +10,20 @@ local cache, cache_at, cache_key = nil, -math.huge, ""
 -- Whose things show (the Chat page's Everyone box; the notes and the drawings go by it too). "" for everyone's.
 function chat.only() return reaper.GetExtState(band.SECTION, "show only") end
 
+-- Direct messages and channels (rt-chat2): a scope "dm:<16 hex>" (a 1:1 or small group conversation, its id the hash of its members' names)
+-- or "ch:<12 hex>" (one of the studio's named text channels). -> "dm" or "ch", the id; nil for anything else.
+function chat.conv_of(sc)
+  if type(sc) ~= "string" then return nil end
+  local id = sc:match("^dm:([0-9a-f]+)$")
+  if id and #id == 16 then return "dm", id end
+  id = sc:match("^ch:([0-9a-f]+)$")
+  if id and #id == 12 then return "ch", id end
+end
+
 function chat.dir(cfg, b, sc)
+  local kind, id = chat.conv_of(sc)
+  if kind == "dm" then return cfg.root .. "/_band/dm/" .. id end
+  if kind == "ch" then return cfg.root .. "/_band/channels/" .. id end
   if sc == "band" then return cfg.root .. "/_band/chat" end
   if sc == "room" then return band.song_dir(cfg, b.song) .. "/rooms/" .. (b.room or "main") .. "/chat" end
   return band.song_dir(cfg, b.song) .. "/chat"
@@ -22,6 +35,10 @@ local function stamp(cfg) return os.date("!%Y%m%d-%H%M%S") .. "-" .. (cfg.user:g
 -- every room's. The group: the group's and every project's, every room's. (A project with only its listing here still has its chat.)
 function chat.sources(cfg, b, sc)
   local out = {}
+  if chat.conv_of(sc) then -- (a DM or a channel: its own folder, and a DM only for its members)
+    if chat.scope_ok(cfg, sc) then out[1] = { chat.dir(cfg, b, sc), nil } end
+    return out
+  end
   local function project(song)
     local dir = band.song_dir(cfg, song)
     out[#out + 1] = { dir .. "/chat", song }
@@ -42,7 +59,7 @@ end
 -- Where a message came from, in words, or nil when it's from here (James, 0.59.3): This room says nothing; This project names a room only when it
 -- isn't the one you're in; Studio names a project only when it isn't the one you're in.
 function chat.where_label(where, b, sc)
-  if not where or sc == "room" then return nil end
+  if not where or sc == "room" or chat.conv_of(sc) then return nil end
   local here_song, here_room = b.song or "", b.song and (b.song .. " / " .. (b.room or "main")) or ""
   if sc == "song" then
     if where == here_song or where == here_room or where == (b.room or "main") then return nil end
@@ -56,12 +73,19 @@ end
 local live_msgs = {}
 function chat.from_msg(cfg, d)
   local direct = require("direct")
-  if type(d) ~= "table" or not (d.sc == "room" or d.sc == "song" or d.sc == "band") or not direct.plain(d.song) or not direct.plain(d.room)
+  if type(d) ~= "table" or not (d.sc == "room" or d.sc == "song" or d.sc == "band" or chat.conv_of(d.sc)) or not direct.plain(d.song) or not direct.plain(d.room)
     or type(d.name) ~= "string" or not d.name:match("^%d%d%d%d%d%d%d%d%-%d%d%d%d%d%d%-[%w_]+%-%d+$") or type(d.v) ~= "table"
     or type(d.v.text) ~= "string" or type(d.v.user) ~= "string" or d.v.user == cfg.user or type(d.v.time) ~= "string" then return false end
+  -- (a DM says who's in it, and only a member takes it: its members.json may not have come through Syncthing yet. rt-chat2)
+  local kind, id = chat.conv_of(d.sc)
+  if kind == "dm" then
+    local m = chat.names_ok(d.members)
+    if not (m and chat.dm_id(m) == id and chat.has(m, cfg.user) and chat.has(m, d.v.user)) then return false end
+  end
   local path = chat.dir(cfg, { song = d.song, room = d.room }, d.sc) .. "/msgs/" .. d.name .. ".json"
   if live_msgs[path] or reaper.file_exists(path) then return false end
-  live_msgs[path] = { text = d.v.text, user = d.v.user, time = d.v.time, room = type(d.v.room) == "string" and d.v.room or nil, title = "" }
+  live_msgs[path] = { text = d.v.text, user = d.v.user, time = d.v.time, room = type(d.v.room) == "string" and d.v.room or nil, title = "",
+    attach = require("chatfiles").check(d.v.attach) }
   cache = nil
   return true
 end
@@ -74,7 +98,7 @@ end
 -- messages not yet here as files. Kept 3 s. (The web UI reads it from Live sync, which takes the link's messages itself: lib/webui.lua. James, rt)
 function chat.read(cfg, b, sc)
   sc = sc or scope
-  local key = sc .. (b.song or "") .. (b.room or "")
+  local key = sc .. "\0" .. (b.song or "") .. "\0" .. (b.room or "") .. "\0" .. cfg.root .. "\0" .. tostring(cfg.user) -- (a DM shows only to its members)
   if cache and key == cache_key and reaper.time_precise() - cache_at < 3 then return cache end
   local t = { msgs = {}, todo = {}, links = {} }
   for _, src in ipairs(chat.sources(cfg, b, sc)) do
@@ -105,6 +129,9 @@ function chat.read(cfg, b, sc)
     end
   end
   for kind in pairs(t) do table.sort(t[kind], function(a, x) return (a.time or "") < (x.time or "") end) end
+  for _, m in ipairs(t.msgs) do -- (a file sent in the chat: is it here yet, saved, offered for download. lib/chatfiles.lua; rt-chat2)
+    if m.attach ~= nil then m.attach = require("chatfiles").check(m.attach); m.fstat = m.attach and require("chatfiles").status(cfg, m) end
+  end
   cache, cache_at, cache_key = t, reaper.time_precise(), key
   return t
 end
@@ -113,16 +140,26 @@ local function load(cfg, b)
   return chat.read(cfg, b, scope)
 end
 
-local function add(cfg, b, kind, v, sc)
-  local d = chat.dir(cfg, b, sc or scope) .. "/" .. kind
+local index_v -- (the conversations and their unread counts, chat.index: dropped when something's written here)
+local function add(cfg, b, kind, v, sc, name)
+  sc = sc or scope
+  local d = chat.dir(cfg, b, sc) .. "/" .. kind
   reaper.RecursiveCreateDirectory(d, 0)
   v.user, v.time, v.room = cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ"), b and b.room or "main" -- (the room it was sent from: This room shows it)
-  local name = stamp(cfg)
+  name = name or stamp(cfg)
   band.write_json(d .. "/" .. name .. ".json", v)
-  cache = nil
+  cache, index_v = nil, nil
+  local dm, members = chat.conv_of(sc) == "dm", nil
+  if dm then members = chat.dm_members(cfg, select(2, chat.conv_of(sc))) end
   if kind == "msgs" and b and b.song then -- (to those here at once, over the direct link: chat.from_msg. James, 0.60.0-rt)
-    require("direct").send_live(cfg, "chat", { sc = sc or scope, song = b.song, room = b.room or "main", name = name, v = v }, b.song, b.room or "main", name)
+    -- (a DM goes only to its members' computers, never to everyone in the room. rt-chat2)
+    local to = dm and require("chatfiles").reachable(cfg, b, members or {}) or nil
+    if not to or #to > 0 then
+      require("direct").send_live(cfg, "chat", { sc = sc, song = b.song, room = b.room or "main", name = name, v = v, members = members },
+        b.song, b.room or "main", name, to)
+    end
   end
+  if dm then return end -- (no phone alert, no API event: the studio's alert channel reaches everyone's phone)
   if kind == "msgs" and type(v.text) == "string" then
     pcall(require("alerts").send, cfg, "chat", "StudioSync: " .. tostring(b.song), cfg.user .. ": " .. v.text)
     pcall(require("api").event, "chat", { text = v.text, song = b.song, user = cfg.user })
@@ -144,20 +181,165 @@ end
 
 -- ---- the web UI's Chat (lib/webui.lua hands each action over; James, rt) -----------------------------------------------------------------
 chat.SCOPE_OK = { room = true, song = true, band = true }
+
+-- ---- direct messages and channels (rt-chat2) ----------------------------------------------------------------------------------------------
+-- A DM lives in <studio>/_band/dm/<id>/ (members.json, then msgs/ as any chat), its id the hash of its members' names sorted, so the same
+-- people always reach the same conversation and a members.json whose list doesn't hash to its folder is no DM. A channel lives in
+-- <studio>/_band/channels/<id>/ (channel.json: name, archived; then msgs/, todo/, links/). Both are in the shared folder: see
+-- docs/rt/rt-chat2.md for who can really read them.
+chat.DM_MAX, chat.NAME_MAX, chat.CHANNEL_MAX = 8, 64, 40
+function chat.has(list, x) for _, v in ipairs(type(list) == "table" and list or {}) do if v == x then return true end end return false end
+-- names -> them sorted, each once, or nil when one isn't a name or there are fewer than 2 or more than DM_MAX. Pure.
+function chat.names_ok(names)
+  if type(names) ~= "table" then return nil end
+  local seen, out = {}, {}
+  for _, n in ipairs(names) do
+    if type(n) ~= "string" or n == "" or #n > chat.NAME_MAX or n:find("%c") then return nil end
+    if not seen[n] then seen[n] = true; out[#out + 1] = n end
+  end
+  if #out < 2 or #out > chat.DM_MAX then return nil end
+  table.sort(out)
+  return out
+end
+function chat.dm_id(members) return band.code_hash(table.concat(members, "\n")) end -- (members: names_ok's)
+local dm_cache = {} -- root\0id -> { at, members or false }
+function chat.dm_members(cfg, id)
+  local k, now = cfg.root .. "\0" .. tostring(id), reaper.time_precise()
+  local c = dm_cache[k]
+  if c and now - c.at < 10 then return c.m or nil end
+  local v = band.read_json(cfg.root .. "/_band/dm/" .. tostring(id) .. "/members.json")
+  local m = type(v) == "table" and chat.names_ok(v.members)
+  if m and chat.dm_id(m) ~= id then m = nil end -- (a list rewritten to add someone no longer hashes to its folder)
+  dm_cache[k] = { at = now, m = m or false }
+  return m or nil
+end
+-- The studio's people (from its devices files), not you: who a DM can be with. Kept 30 s.
+local people_c = {}
+function chat.people(cfg)
+  local c = people_c[cfg.root]
+  if c and reaper.time_precise() - c.at < 30 then return c.list end
+  local seen, list = { [cfg.user] = true }, {}
+  for _, f in ipairs(band.files(cfg.root .. "/_band/devices", ".json")) do
+    local d = band.read_json(cfg.root .. "/_band/devices/" .. f)
+    local u = type(d) == "table" and d.user
+    if type(u) == "string" and u ~= "" and #u <= chat.NAME_MAX and not u:find("%c") and not seen[u] then seen[u] = true; list[#list + 1] = u end
+  end
+  table.sort(list)
+  people_c[cfg.root] = { at = reaper.time_precise(), list = list }
+  return list
+end
+-- A DM with these people (you're added): its id, made the first time (members.json, written once). -> id, or nil and why.
+function chat.dm_open(cfg, names)
+  local all = { cfg.user }
+  for _, n in ipairs(type(names) == "table" and names or {}) do
+    if not chat.has(chat.people(cfg), n) and n ~= cfg.user then return nil, tostring(n) .. " isn't in the studio" end
+    all[#all + 1] = n
+  end
+  local m = chat.names_ok(all)
+  if not m then return nil, "a direct message is with 1 to " .. (chat.DM_MAX - 1) .. " others" end
+  local id = chat.dm_id(m)
+  local f = cfg.root .. "/_band/dm/" .. id .. "/members.json"
+  if not reaper.file_exists(f) then
+    reaper.RecursiveCreateDirectory(cfg.root .. "/_band/dm/" .. id, 0)
+    band.write_json(f, { members = m, by = cfg.user, time = os.date("!%Y-%m-%dT%H:%M:%SZ") })
+  end
+  dm_cache[cfg.root .. "\0" .. id], index_v = nil, nil
+  return id
+end
+-- The DMs you're in: { { id, members } }, kept 5 s.
+local dms_c = {}
+function chat.dms(cfg)
+  local c = dms_c[cfg.root]
+  if c and reaper.time_precise() - c.at < 5 then return c.list end
+  local list = {}
+  for _, id in ipairs(band.subdirs(cfg.root .. "/_band/dm")) do
+    local m = id:match("^[0-9a-f]+$") and #id == 16 and chat.dm_members(cfg, id)
+    if m and chat.has(m, cfg.user) then list[#list + 1] = { id = id, members = m } end
+  end
+  dms_c[cfg.root] = { at = reaper.time_precise(), list = list }
+  return list
+end
+-- The studio's channels: { { id, name, archived } } by name, kept 5 s.
+local ch_c = {}
+function chat.channels(cfg)
+  local c = ch_c[cfg.root]
+  if c and reaper.time_precise() - c.at < 5 then return c.list end
+  local list = {}
+  for _, id in ipairs(band.subdirs(cfg.root .. "/_band/channels")) do
+    local v = id:match("^[0-9a-f]+$") and #id == 12 and band.read_json(cfg.root .. "/_band/channels/" .. id .. "/channel.json")
+    if type(v) == "table" and type(v.name) == "string" and v.name ~= "" then
+      list[#list + 1] = { id = id, name = v.name:sub(1, 200), archived = v.archived == true or nil }
+    end
+  end
+  table.sort(list, function(a, z) return a.name:lower() < z.name:lower() end)
+  ch_c[cfg.root] = { at = reaper.time_precise(), list = list }
+  return list
+end
+function chat.channel(cfg, id) for _, c in ipairs(chat.channels(cfg)) do if c.id == id then return c end end end
+-- Owner and admins: c = { new = name } | { id, name } (rename) | { id, archive = true/false }. -> words for the log when refused, or nil.
+function chat.channel_action(cfg, c)
+  if not require("groups").may_manage(cfg.root, cfg.user) then return "only the studio's owner and admins make, rename or archive channels" end
+  local name = c.new or c.name
+  if name ~= nil then
+    name = require("webui").clean_text(name)
+    name = name and name:gsub("^#+%s*", "")
+    if not name or name == "" or #name > chat.CHANNEL_MAX then return "a channel's name is 1 to " .. chat.CHANNEL_MAX .. " characters" end
+  end
+  local id = c.new and band.secret(12) or (type(c.id) == "string" and chat.channel(cfg, c.id) and c.id)
+  if not id then return "no such channel" end
+  local f = cfg.root .. "/_band/channels/" .. id .. "/channel.json"
+  local v = band.read_json(f) or {}
+  if name then v.name = name end
+  if c.archive ~= nil then v.archived = c.archive == true or nil end
+  v.by, v.time = cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ")
+  reaper.RecursiveCreateDirectory(cfg.root .. "/_band/channels/" .. id, 0)
+  band.write_json(f, v)
+  ch_c[cfg.root], index_v = nil, nil
+end
+-- May this computer's user see (and with `write`, write in) the scope? The three of the project's are always theirs; a DM only its members',
+-- a channel while it's there (an archived one is read-only).
+function chat.scope_ok(cfg, sc, write)
+  if chat.SCOPE_OK[sc] then return true end
+  local kind, id = chat.conv_of(sc)
+  if kind == "dm" then return chat.has(chat.dm_members(cfg, id), cfg.user) end
+  if kind == "ch" then local c = chat.channel(cfg, id); return c ~= nil and not (write and c.archived) end
+  return false
+end
+function chat.topic_of(sc) -- the web UI's topic for a DM or a channel ("chat_dm_<id>", "chat_ch_<id>": the server's topic rule)
+  local kind, id = chat.conv_of(sc)
+  return kind and ("chat_" .. kind .. "_" .. id) or nil
+end
+
 -- One of a scope's messages, to-dos or links, named by its file's name (what lib/webui.lua's chat_model gives the pages as its id): only what
 -- that scope's own listing holds can be touched, never a path a page made up.
 function chat.find(cfg, b, sc, kind, id)
-  if type(id) ~= "string" or not id:match("^[%w_%-]+$") or not chat.SCOPE_OK[sc] then return nil end
+  if type(id) ~= "string" or not id:match("^[%w_%-]+$") or not chat.scope_ok(cfg, sc) then return nil end
   for _, v in ipairs(chat.read(cfg, b, sc)[kind] or {}) do
     if type(v.file) == "string" and v.file:match("([^/\\]+)%.json$") == id then return v end
   end
 end
--- a: { scope, and text (a message), todo (a new to-do's text), title + url (a link), done = id + on (ticked or not), delete = { kind, id } }.
+local conv_want, web_dirty = {}, false -- (a DM or channel a page shows -> until when; something changed: the index goes again)
+-- a: { scope, and text (a message), todo (a new to-do's text), title + url (a link), done = id + on (ticked or not), delete = { kind, id },
+-- seen (you've read the scope), want (a DM or channel shown), dm = { names } (open a DM), channel = { new | id, name | archive } (admins),
+-- file = { id (POST /api/upload's), name, size }, save / download = a message's id (into = "project": an audio file to the project's folder) }.
 -- The page acts as this computer's user, as the panel does: anyone ticks a to-do, only the writer deletes. -> words for the log, or nil.
 function chat.web_action(cfg, b, a)
   local clean = require("webui").clean_text
-  local sc = chat.SCOPE_OK[a.scope] and a.scope or "song"
+  if type(a.dm) == "table" then
+    web_dirty = true
+    local id, why = chat.dm_open(cfg, a.dm)
+    if not id then return "the web page's direct message wasn't opened: " .. why end
+  end
+  if type(a.channel) == "table" then web_dirty = true; return chat.channel_action(cfg, a.channel) end
+  local sc = a.scope
+  if chat.conv_of(sc) then
+    -- (never the project's chat instead: a DM sent there would be read by everyone)
+    if not chat.scope_ok(cfg, sc) then return "the web page wrote to a conversation that isn't yours, or isn't there: nothing done" end
+    if a.want == sc then conv_want[sc] = reaper.time_precise() + 30; web_dirty = true end
+  elseif not chat.SCOPE_OK[sc] then sc = "song" end
   local text, todo, url = clean(a.text), clean(a.todo), clean(a.url)
+  if (text or todo or url or type(a.file) == "table") and not chat.scope_ok(cfg, sc, true) then return "that channel is archived: nothing sent" end
+  if a.seen == true then chat.mark_seen(cfg, b, sc) end
   if text then chat.post(cfg, b, text, sc) end
   if todo then chat.add_todo(cfg, b, todo, sc) end
   if url then chat.add_link(cfg, b, clean(a.title) or "", url, sc) end
@@ -170,8 +352,24 @@ function chat.web_action(cfg, b, a)
     local e = kind and chat.find(cfg, b, sc, kind, a.delete.id)
     if e and not chat.remove(cfg, e) then return "the web page asked to delete " .. tostring(e.user) .. "'s " .. kind .. " entry: only its writer may" end
   end
+  local files = require("chatfiles")
+  if type(a.file) == "table" then -- (a file dropped on a person or a conversation)
+    local name = stamp(cfg)
+    local kind, id = chat.conv_of(sc)
+    local att, why = files.send(cfg, b, chat.dir(cfg, b, sc), a.file, name, kind == "dm" and chat.dm_members(cfg, id) or nil)
+    if not att then return "a file from the web page wasn't sent: " .. why end
+    add(cfg, b, "msgs", { text = "sent a file: " .. att.name, attach = att }, sc, name)
+  end
+  local which = type(a.save) == "string" and a.save or type(a.download) == "string" and a.download
+  if which then
+    local m = chat.find(cfg, b, sc, "msgs", which)
+    if not (m and m.attach) then return "the web page asked for a file that isn't in that conversation" end
+    cache, web_dirty = nil, true
+    return files.save(cfg, m, a.download and "download" or (a.into == "project" and "project" or "keep"))
+  end
 end
 
+-- ---- unread, seen, @mentions --------------------------------------------------------------------------------------------------------------
 -- Messages newer than the last time this person looked at the song's chat (for the tab's count).
 local unread_at, unread_n, unread_song = -math.huge, 0, nil
 function chat.unread(cfg, b)
@@ -181,16 +379,99 @@ function chat.unread(cfg, b)
   unread_n = chat.count_unread(cfg, b)
   return unread_n
 end
-local function seen_key(b, sc) return "chat seen " .. sc .. " " .. (sc == "band" and "" or b.song) .. (sc == "room" and (" " .. (b.room or "main")) or "") end
-function chat.count_unread(cfg, b)
-  local n = 0
-  for _, sc in ipairs(SCOPES) do
-    local seen = reaper.GetExtState(band.SECTION, seen_key(b, sc[1])) -- (each scope has its own: reading one doesn't clear the others)
-    for _, f in ipairs(band.files(chat.dir(cfg, b, sc[1]) .. "/msgs", ".json")) do
-      if f:sub(1, 15) > seen and not f:find("-" .. (cfg.user:gsub("[^%w]", "_")) .. "-", 1, true) then n = n + 1 end
+local function seen_key(b, sc)
+  if chat.conv_of(sc) then return "chat seen " .. sc end
+  return "chat seen " .. sc .. " " .. (sc == "band" and "" or b.song) .. (sc == "room" and (" " .. (b.room or "main")) or "")
+end
+-- Does `text` mention `me` ("@Bo", any case, not "@Bobby")? Pure.
+function chat.mentions(text, me)
+  if type(text) ~= "string" or type(me) ~= "string" or me == "" then return false end
+  local t, m, i = text:lower(), "@" .. me:lower(), 1
+  while true do
+    local s, e = t:find(m, i, true)
+    if not s then return false end
+    if not t:sub(e + 1, e + 1):match("[%w_]") then return true end
+    i = e + 1
+  end
+end
+-- A scope's messages (its own folder) newer than you last read it, not yours: how many, and how many of those mention you.
+chat.MENTION_READS = 200
+function chat.unread_in(cfg, b, sc)
+  local seen = reaper.GetExtState(band.SECTION, seen_key(b, sc)) -- (each scope has its own: reading one doesn't clear the others)
+  local dir, mine, n, at = chat.dir(cfg, b, sc) .. "/msgs", "-" .. (cfg.user:gsub("[^%w]", "_")) .. "-", 0, 0
+  for _, f in ipairs(band.files(dir, ".json")) do
+    if f:sub(1, 15) > seen and not f:find(mine, 1, true) then
+      n = n + 1
+      if n <= chat.MENTION_READS then
+        local v = band.read_json(dir .. "/" .. f)
+        if type(v) == "table" and chat.mentions(v.text, cfg.user) then at = at + 1 end
+      end
     end
   end
+  return n, at
+end
+function chat.count_unread(cfg, b)
+  local n = 0
+  for _, sc in ipairs(SCOPES) do n = n + chat.unread_in(cfg, b, sc[1]) end
   return n
+end
+-- You've read a scope: its newest message counts as seen (the panel's Messages tab does the same as it's drawn).
+function chat.mark_seen(cfg, b, sc)
+  if not b then return end
+  local t = chat.read(cfg, b, sc)
+  local last = t.msgs[#t.msgs]
+  local newest = last and type(last.file) == "string" and (last.file:match("([^/\\]+)$") or ""):sub(1, 15) or ""
+  local k = seen_key(b, sc)
+  if reaper.GetExtState(band.SECTION, k) < newest then reaper.SetExtState(band.SECTION, k, newest, true); index_v, unread_at = nil, -math.huge end
+end
+-- Every conversation you can see with its unread count and @mentions: { total, mentions, convs = { { scope, kind ("here", "ch", "dm"),
+-- name, n, at, members, archived } } }. The total leaves archived channels out. Kept 5 s.
+local index_at, index_key = -math.huge, nil
+function chat.index(cfg, b)
+  local key = cfg.root .. "\0" .. tostring(b and b.song) .. "\0" .. tostring(b and b.room)
+  if index_v and key == index_key and reaper.time_precise() - index_at < 5 then return index_v end
+  local convs = {}
+  local function conv(c) c.n, c.at = chat.unread_in(cfg, b, c.scope); convs[#convs + 1] = c end
+  if b and b.song then conv({ scope = "room", kind = "here", name = "This room" }); conv({ scope = "song", kind = "here", name = "This project" }) end
+  conv({ scope = "band", kind = "here", name = "Studio" })
+  for _, c in ipairs(chat.channels(cfg)) do conv({ scope = "ch:" .. c.id, kind = "ch", name = c.name, archived = c.archived }) end
+  for _, d in ipairs(chat.dms(cfg)) do
+    local others = {}
+    for _, m in ipairs(d.members) do if m ~= cfg.user then others[#others + 1] = m end end
+    conv({ scope = "dm:" .. d.id, kind = "dm", name = table.concat(others, ", "), members = d.members })
+  end
+  local total, at = 0, 0
+  for _, c in ipairs(convs) do if not c.archived then total, at = total + c.n, at + c.at end end
+  index_v, index_at, index_key = { total = total, mentions = at, convs = convs }, reaper.time_precise(), key
+  return index_v
+end
+-- For a Home page's badge: { total, mentions, by = { [scope] = { n, at, name, kind } } }. b may be nil (no project open: the Studio, channels
+-- and DMs only).
+function chat.unread_summary(cfg, b)
+  local x, by = chat.index(cfg, b), {}
+  for _, c in ipairs(x.convs) do by[c.scope] = { n = c.n, at = c.at, name = c.name, kind = c.kind } end
+  return { total = x.total, mentions = x.mentions, by = by }
+end
+-- What the web UI's conversation list shows (topic "chat_index").
+function chat.index_model(cfg, b)
+  local x, files = chat.index(cfg, b), require("chatfiles")
+  return { me = cfg.user, admin = require("groups").may_manage(cfg.root, cfg.user) == true, people = chat.people(cfg), total = x.total,
+    mentions = x.mentions, convs = x.convs, file_max = files.MAX, file_ext = files.EXTS, dm_max = chat.DM_MAX }
+end
+-- Live sync's web UI tick (lib/webui.lua): files on their way (always), and while a page looks, the index and each DM or channel a page shows,
+-- every 2 s or at once after an action.
+local web_at = -math.huge
+function chat.web_tick(cfg, b, publish, now, look)
+  local ok, e = pcall(require("chatfiles").tick, cfg, now)
+  if not ok then band.log("chat files: " .. tostring(e)) end
+  if not look or (now - web_at < 2 and not web_dirty) then return end
+  web_at, web_dirty = now, false
+  publish("chat_index", chat.index_model(cfg, b))
+  local webui = require("webui")
+  for sc, til in pairs(conv_want) do
+    if til < now then conv_want[sc] = nil
+    elseif chat.scope_ok(cfg, sc) then publish(chat.topic_of(sc), webui.chat_model(chat.read(cfg, b, sc), nil, nil, sc)) end
+  end
 end
 
 -- "2026-10-30T21:05:00Z" -> "Thu 21:05" (this machine's time)
