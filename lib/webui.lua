@@ -142,6 +142,7 @@ webui.ACTIONS.phonerec = true -- (the Record page's: a take from a phone, lib/ph
 webui.ACTIONS.sheet = true -- (the Sheet and Beat pages': lib/songsheet.lua)
 webui.ACTIONS.phonedaw = true -- (the phone app's Project view: its tracks' GUIDs and items' takes, picking a take, lib/phonedaw.lua)
 webui.ACTIONS.mixer = true -- (the Mixer page's: lib/webmixer.lua)
+webui.ACTIONS.history = true -- (the History page's "I'm looking": lib/webhistory.lua, read only)
 function webui.parse_action(s)
   local a = type(s) == "string" and s ~= "" and band.json_decode(s)
   if type(a) ~= "table" or type(a.topic) ~= "string" or not webui.ACTIONS[a.topic] then return nil end
@@ -212,6 +213,7 @@ function webui.tick(proj, cfg, b, handlers)
       local said = require("webmixer").action(proj, cfg, b, a)
       if said then band.log(said) end
     end
+    if topic == "history" then require("webhistory").action(proj, cfg, b, a) end
   end
   local now = reaper.time_precise()
   do -- a phone that started the band and went quiet mid-take: its start stopped, looking or not (lib/phonerec.lua)
@@ -263,6 +265,8 @@ function webui.tick(proj, cfg, b, handlers)
   require("songsheet").tick(proj, cfg, b, publish, handlers, now)
   -- the Mixer page: only while a page shows it (lib/webmixer.lua)
   require("webmixer").tick(proj, cfg, b, publish, now)
+  -- the History page's time lapse: only while a page shows it (lib/webhistory.lua)
+  require("webhistory").tick(proj, cfg, b, publish, now)
 end
 
 return webui
