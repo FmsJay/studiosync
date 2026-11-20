@@ -471,7 +471,8 @@ void mix_stream(sock_t s)
   if (g_mix_on.fetch_add(1) >= MIX_STREAMS) { g_mix_on.fetch_sub(1); return answer(s, 503, "text/plain", "busy\n"); }
   struct Off { ~Off() { g_mix_on.fetch_sub(1); } } off;
   const unsigned long long w0 = g_mix_w.load(std::memory_order_acquire);
-  for (int i = 0; i < 150 && !g_stop && g_mix_w.load(std::memory_order_acquire) == w0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  // (1.5 s by the clock, not by count: a loaded Mac's 10 ms sleeps run long, and a page waiting longer looks like a dead server)
+  for (const double until = now_s() + 1.5; !g_stop && now_s() < until && g_mix_w.load(std::memory_order_acquire) == w0;) std::this_thread::sleep_for(std::chrono::milliseconds(10));
   const double sr = g_mix_sr.load();
   if (g_mix_w.load(std::memory_order_acquire) == w0 || sr < 8000 || sr > 768000) // (the hook goes in from REAPER's main thread within a moment)
     return answer(s, 503, "text/plain; charset=utf-8", "REAPER's audio isn't running, or this extension can't hear it.\n");
