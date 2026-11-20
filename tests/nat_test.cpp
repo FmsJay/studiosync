@@ -298,7 +298,9 @@ typedef int tsock;
 static void sock_close(unsigned long long s) { close((int)s); }
 #endif
 static std::string slurp_file(const std::string &p) { std::string s; FILE *f = fopen(p.c_str(), "rb"); if (!f) return s; char b[65536]; size_t n; while ((n = fread(b, 1, sizeof b, f)) > 0) s.append(b, n); fclose(f); return s; }
-static int raw_answer(NatHub *a, const std::string &frame) // a frame straight onto a stream to devB -> its answer byte, -1 none
+// upto: send only the frame's first bytes (an oversized one: the answer has to come from its header alone; sending all 70 KB raced the
+// receiver's answer-and-close, whose reset could reach this socket before the answer byte did)
+static int raw_answer(NatHub *a, const std::string &frame, size_t upto = std::string::npos) // a frame straight onto a stream to devB -> its answer byte, -1 none
 {
   std::string why;
   const unsigned long long s = nat_connect(a, "devB", why);
@@ -313,7 +315,8 @@ static int raw_answer(NatHub *a, const std::string &frame) // a frame straight o
   setsockopt((int)s, SOL_SOCKET, SO_RCVTIMEO, &tmo, sizeof tmo);
 #endif
   size_t at = 0;
-  while (at < frame.size()) { const int k = (int)send((tsock)s, frame.data() + at, (int)std::min<size_t>(frame.size() - at, 65536), 0); if (k <= 0) break; at += (size_t)k; }
+  const size_t n = std::min(upto, frame.size());
+  while (at < n) { const int k = (int)send((tsock)s, frame.data() + at, (int)std::min<size_t>(n - at, 65536), 0); if (k <= 0) break; at += (size_t)k; }
   char c = 0;
   const int k = (int)recv((tsock)s, &c, 1, 0);
   sock_close(s);
@@ -374,7 +377,7 @@ static void link_checks(NatHub *a, NatHub *b, const std::string &dir)
   const long long rej = json_num(direct_status(), "rejected");
   CHECK(raw_answer(a, direct_frame(direct_derive_key("another studio"), "studio1", "chat", "hi", "SSM1")) == 3, "a frame signed with another secret, over the link: refused (3)");
   std::string over = direct_frame(direct_derive_key("the studio secret"), "studio1", "chat", std::string(70000, 'x'), "SSM1");
-  CHECK(raw_answer(a, over) == 5, "a message over 64 KB, over the link: refused (5) before it's read whole");
+  CHECK(raw_answer(a, over, 256) == 5, "a message over 64 KB, over the link: refused (5) before it's read whole (only its first 256 bytes sent)");
   CHECK(json_num(direct_status(), "rejected") >= rej + 2, "both counted as refused");
   CHECK(raw_answer(a, std::string("GET / HTTP/1.1\r\nHost: x\r\n\r\n")) == 1, "an HTTP request over the link never reaches the web UI: not StudioSync's (1)");
   // a forged datagram: a copy of a real one with a flipped byte, as if from the network
