@@ -2026,3 +2026,24 @@ SonoBus guest invitation ("you'll hear the song and me") and its log line, and t
 - Uncompressed from them (a setting in SonoBus's own window), Measure guest delay (the guest claps), Line up their takes and Use a file
   they recorded (asks which): they need the person.
 - Send a test (phone alerts): makes the phones ring; Dismiss, Copy, Open, Clear: what the person wants to see.
+
+## Round 3: seven phases, each with its own notes in docs/rt/ (2026-11-20)
+Each agent now writes its notes (what's built, how to use it, what's untested, review-later security) to `docs/rt/<name>.md` instead of
+this file. Deployed as 0.59.49.63-64, extension 1.0.24.
+- **History page** (`docs/rt/rt-timelapse.md`): the project's life as a time lapse with an end-of-game summary. Checked in REAPER: Cross
+  Test replays to its real 3 tracks and 3 items (21 sessions, 652 changes). Song playback designed only.
+- **Studio Home page and profiles** (`docs/rt/rt-home.md`): for you (unread, mentions, to-dos), online now, projects with the last change
+  and Open, new takes/mixes/stems; pictures, display names, colours. Checked in REAPER on the desktop.
+- **Chat 2** (`docs/rt/rt-chat2.md`): DMs, channels, unread and @mentions, the All tab, file drops; voice channels designed. A DM from the
+  desktop page reached the laptop in 12 s; DM files sit in the shared folder everyone has (review later).
+- **MIDI on the phone and in the browser** (`docs/rt/rt-vmidi.md`): on-screen keys, drum pads, Web MIDI, a phone MIDI take, live into a
+  REAPER track, piano roll step input. Not run on a phone or in REAPER yet.
+- **Compatibility with other scripts** (`docs/rt/rt-compat.md`): self-check and Health rows; ReaPersona persona switches and an adaptive
+  grid no longer push settings to the studio; suggested ReaPersona changes. Crash on a bind without a port found in REAPER, fixed (cd18301).
+- **Bigger projects** (`docs/rt/rt-bigproj.md`): generator, offline budgets, four hot spots fixed. In REAPER (desktop, 150 tracks, 520
+  plug-ins, 4,000 items): every track's chunk 44 ms / 7.6 MB, the Project page look 46 ms, colour parity 27 ms. The look after each edit
+  stays the big cost (a redesign).
+- **Connect without Tailscale, stage 2** (`docs/rt/rt-nat2.md`): the direct link's traffic over the NAT links with reliable ordered
+  streams, in extension 1.0.24. Not run between two real computers yet.
+- Also checked in REAPER this round: automation lanes from the web page (and refused on a claimed track); a distributed bounce whose
+  helper drops out mid-render (redone by the others; its temp folder leak fixed, dd7ec37).
