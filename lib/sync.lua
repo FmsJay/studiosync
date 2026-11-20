@@ -1238,6 +1238,14 @@ sync.SETTLE, sync.QUIET, sync.QUIET_DIRECT, sync.DIRECT_FRESH = 0.1, 2, 0.4, 10
 function sync.look_now(changed_at, polled_at, pass_took, now, mouse)
   return not mouse and changed_at > polled_at and now - changed_at >= sync.SETTLE and now - polled_at > pass_took * 5
 end
+-- May the cloud copy's pass run now? Not within DRIVE_QUIET s of your last edit or of a bandmate's change over the link: a pass lists the cloud
+-- drive's folders and holds REAPER meanwhile (0.2-0.3 s on the desktop, ~1 s on the laptop), and an edit or a change landing in one waited
+-- for it. Never held past `every` s since the last pass (drive.EVERY), so a long session still gets its copy. Pure. rt-look
+sync.DRIVE_QUIET = 3
+function sync.drive_quiet(now, changed_at, direct_in_at, drive_at, every)
+  if now - (drive_at or -math.huge) > (every or 180) then return true end
+  return now - (changed_at or -math.huge) >= sync.DRIVE_QUIET and now - (direct_in_at or -math.huge) >= sync.DRIVE_QUIET
+end
 -- How long after your last edit the band's changes wait: 0.4 s while they come over the direct link (arrived in the last 10 s), 2 s on
 -- Syncthing alone as before. (Unsent edits stay protected per object in mirror.receive, a drag by the mouse gate. James, rt)
 function sync.quiet_for(now, direct_at) return now - (direct_at or -math.huge) < sync.DIRECT_FRESH and sync.QUIET_DIRECT or sync.QUIET end

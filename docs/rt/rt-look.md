@@ -183,6 +183,37 @@ What that shows:
 **No extension change was needed for this.** The file path's one thread can still be held by a slow peer for events too big for a message
 (over 64 KB). That's what per-peer file threads in `direct.cpp` would fix, if ever needed.
 
+### 7. The cloud copy no longer runs into a session's edits (round 4)
+
+After cb475dc (0.59.49.67), you measured six edits at 0.33, 0.33, 0.62, 0.28, 0.33 and 0.45 s. I took 20 more with the read-only watcher,
+decomposed on the desktop's clock (laptop offset -908 ms):
+- edit to the desktop's event file: usually 0.12-0.16 s;
+- to the message on the laptop: +0.06-0.10 s;
+- to applied on the laptop: +0.05-0.08 s;
+- total 0.23-0.29 s for 15 of the 20.
+
+The outliers were edits whose own event file was late on the desktop: +0.26-0.27 s three times, and +0.73 s once (0.89 s end to end). In the
+first ten there was also one +0.27 s on the receiving side.
+
+Cause:
+- `P.save_drive`'s cloud pass lists the cloud drive's folders and holds REAPER's main thread meanwhile. The slow-tick records: desktop
+  223-273 ms ("drive 248", "drive 223"); laptop **963 ms**.
+- While a copy catches up, `drive.pass_due` is true every pass, so these stalls recur every 2 s.
+- An edit, or a bandmate's change, landing during one waits until it ends.
+- Round 3 only kept the copy's time out of `pass_took`; the copy itself still ran synchronously.
+
+Fix (Live sync's scheduling only, `lib/drive.lua` untouched):
+- `sync.drive_quiet` lets a cloud pass run only after `sync.DRIVE_QUIET` (3 s) with no edit here (`changed_at`) and no change over the link
+  (`direct_in_at`).
+- It never waits more than `drive.EVERY` (180 s) since the last pass.
+- Model: the slowest wait behind a 1 s pass goes from 0.65 s to 0.
+
+Trade-off: while people edit continuously, the cloud copy (the backup, and what someone opening the song with nobody on brings) runs about
+every 3 minutes instead of 30 s after each change.
+
+Left as it is: the copy still holds REAPER when it does run, 1 s on the laptop. Moving the cloud listing off the main thread (the extension, or
+a background process) is the real fix, if a pause is ever not quiet enough.
+
 ## Numbers (offline, this desktop, shared with other agents; fake REAPER, so REAPER calls are the real-cost hint)
 
 Big project: 150 tracks, 520 plug-ins, 4,000 items, 60 MIDI.
@@ -248,6 +279,8 @@ now.
 - What the 10 s every-chunk read costs on a heavy real session: real plug-ins serialising. Before, that was the cost of every look.
 
 REAPER checks for James:
+00. Round 4: on Cross Test, 10 envelope edits about 10 s apart on the desktop, measured edit to applied on the laptop with the DirectClock
+    offset subtracted. Expect every one in about 0.23-0.32 s, with no outliers from a cloud pass.
 0. Round 2: on Cross Test with everyone in, perf stats on, on the laptop:
    - edit on the desktop, and time edit to applied on the laptop (shared clock, as before). Expect under 0.3 s, against 1.2-1.6 s.
    - run `rt_perf.lua` on the laptop: "arrival -> applied" should be tens of ms.

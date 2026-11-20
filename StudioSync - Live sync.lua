@@ -678,7 +678,11 @@ function P.save_drive(t)
   -- 2026-11-10). Half a minute after your changes went out, or when catch-up wants the cloud copy, sooner (drive.pass_due: the cloud copy
   -- as the studio's backup and its always-on member where there's no hub. James, rt)
   if (sync.posted or 0) ~= drive_posted then drive_posted, drive_soon_at = sync.posted or 0, drive_soon_at or (now + drive.SOON) end
-  if droot and reaper.GetPlayStateEx(proj) == 0 and mirror_at ~= now and drive.pass_due(now, drive_at, drive_more, drive_soon_at, require("streams").cloud_due) then
+  -- (and not while you or a bandmate are editing: a pass lists the cloud drive's folders and holds REAPER for it, 0.2-0.3 s on the desktop and
+  -- ~1 s on the laptop, so an edit or a bandmate's change landing in one waited that long (Cross Test: +0.73 s once). It waits for a pause of
+  -- sync.DRIVE_QUIET, never past drive.EVERY since the last pass. rt-look)
+  local drive_quiet = sync.drive_quiet(now, changed_at, direct_in_at, drive_at, drive.EVERY)
+  if droot and drive_quiet and reaper.GetPlayStateEx(proj) == 0 and mirror_at ~= now and drive.pass_due(now, drive_at, drive_more, drive_soon_at, require("streams").cloud_due) then
     drive_at, drive_soon_at, require("streams").cloud_due = now, nil, nil
     local moved, more, err = 0, false, nil
     for _, room in ipairs(rooms) do

@@ -126,6 +126,35 @@ print(string.format("rt-look send: edit -> its look with a 0.2 s cloud copy in s
 assert(s_before > 0.5, "the copy's time held the look (" .. s_before .. ")")
 assert(s_after <= sync.SETTLE + 0.1, "now the look goes ~0.1 s after the edit (" .. s_after .. ")")
 
+-- ---- part 1c: the cloud copy's pass holds REAPER while it lists the cloud drive ----
+-- (measured: 0.2-0.3 s a pass on the desktop, ~1 s on the laptop, every 2 s while a copy catches up; an edit or a bandmate's change landing in
+-- one waited for it: +0.73 s once on Cross Test. Now it waits for a pause of sync.DRIVE_QUIET, never past drive.EVERY.)
+assert(not sync.drive_quiet(100, 98.5, -math.huge, 90, 180), "you edited 1.5 s ago: the copy waits")
+assert(not sync.drive_quiet(100, 50, 99, 90, 180), "a bandmate's change came 1 s ago: the copy waits")
+assert(sync.drive_quiet(100, 96, 96.5, 90, 180), "3 s quiet: it runs")
+assert(sync.drive_quiet(300, 299.9, 299.9, 100, 180), "never held past drive.EVERY since its last pass")
+local function stalls(gate, events, until_t, stall)
+  local held, busy_until, drive_at, last_ev = {}, -1, -math.huge, -math.huge
+  local e, t = 1, 0
+  while t < until_t do
+    while events[e] and events[e] <= t do
+      held[#held + 1] = math.max(0, busy_until - events[e]) -- (what landed meanwhile waits for the pass to end)
+      last_ev = events[e]; e = e + 1
+    end
+    if t >= busy_until and t - drive_at >= 2 and (not gate or sync.drive_quiet(t, last_ev, last_ev, drive_at, 180)) then
+      drive_at, busy_until = t, t + stall -- (a copy catching up: a pass every 2 s)
+    end
+    t = t + TICK
+  end
+  return held
+end
+local evs = {}
+for i = 1, 60 do evs[i] = 1 + i * 2.71 end -- (edits and arrivals a few seconds apart, as in a session)
+local _, d_before = stats(stalls(false, evs, 170, 1.0))
+local _, d_after = stats(stalls(true, evs, 170, 1.0))
+print(string.format("rt-look drive: what landed during a 1 s cloud pass waited: slowest before %.2f s, after %.2f s", d_before, d_after))
+assert(d_before > 0.5 and d_after == 0, "the copy no longer runs into a session's edits")
+
 -- ---- part 2: two computers, one Lua ----
 local G = require("bigproject")
 local opts_m = { tracks = 3, folders = 0, returns = 1, sends = 1, fx = 3, big_every = 0, items = 10, midi = 1, notes = 40, ccs = 10, env_points = 8, regions = 1, markers = 1 }
