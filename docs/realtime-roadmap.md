@@ -728,7 +728,7 @@ it's the patient, lossless, store-and-forward half.
        audio, the ring full); paused, the listeners fall back to direct streams on their own.
      - **Falling back, no gap longer than the jitter buffer:** a listener switches to the mix only after it has flowed 0.3 s (make before
        break: no gap going in, measured 0 ms), then tells everyone ('M') and they stop sending it their own streams; a sender keeps sending to
-       anyone who hasn't said so, or whose word is over a second old. When the mix pauses (10 ms, more once its buffer has grown for Wi-Fi) the
+       anyone who hasn't said so, or whose word is over a second old. When the mix pauses (10 ms; longer past its packets' widest spacing lately, or a buffer grown for Wi-Fi) the
        listener asks for everyone's streams back at once while the mix's buffer still plays, and hears them once the mix has stopped for its
        buffer + 20 ms. Measured with the hub's REAPER stopped dead: a 16-21 ms gap, under the 30 ms buffer (before asking early: 69 ms). A
        stream turned back on used to rise to full level over ~100 ms (Opus codes each frame's energies against the last, so a decoder joining

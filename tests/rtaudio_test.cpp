@@ -357,7 +357,8 @@ int main()
     check(lv_hub, "hub: through H, each listener still hears each at its own level (H's mix per listener, within 25%)");
     check(field(s_w, nm[2], "direct") == "false" && field(s_w, nm[3], "direct") == "false" && field(s_w, nm[0], "direct") == "true",
           "hub: W sends its stream only to H (X and Y hear it through H)");
-    printf("     hub: W sent %lld datagrams in a second peer to peer (to H, X, Y), %lld through H\n", sent_w[0], sent_w[1]);
+    printf("     hub: W sent %lld datagrams in a second peer to peer (to H, X, Y), %lld through H; by 6 s the mix paused enough to ask for streams back: W %s, X %s, Y %s times\n",
+           sent_w[0], sent_w[1], field(s_w, "hub", "rescues").c_str(), field(s_x, "hub", "rescues").c_str(), field(s_y, "hub", "rescues").c_str());
     check(sent_w[1] > 0 && sent_w[1] * 2 < sent_w[0], "hub: W sends less than half as much through the hub (one stream instead of three)");
     // the extra hop: W's onset heard on X directly (1 s) and through H (5 s)
     auto onset = [&](int b0) { for (int b = b0; b < b0 + at(0.5) && b < (int)amp[2][1].size(); ++b) if (amp[2][1][b] > 0.075) return (b - b0) * 1000.0 * LEN / SR; return -1.0; };

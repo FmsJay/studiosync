@@ -106,7 +106,8 @@ const double GONE_MIN = 40, GONE_PAD = 20; // ms: no mix datagram for its buffer
 // ms: no mix datagram for the mix's buffer less RESCUE_LEAD (at least RESCUE_MIN, two 5 ms packets): everyone's streams are asked back at once
 // while the mix's buffer still plays, so they're nearly buffered by the time it runs dry; the mix back, they're let go again. A buffer grown
 // for Wi-Fi's bursts waits longer, so bursts it absorbs don't turn everyone's streams on and off.
-const double RESCUE_MIN = 10, RESCUE_LEAD = 20;
+// RESCUE_PAD: and never before the mix's widest packet spacing lately + this, so a jittery link (the macOS CI runner) doesn't keep asking.
+const double RESCUE_MIN = 10, RESCUE_LEAD = 20, RESCUE_PAD = 5;
 const double RETRY_S = 3.0;          // s after falling back before the hub's mix is asked for again (a flickering hub doesn't flap the stream)
 
 struct Slot {
@@ -146,7 +147,7 @@ struct Slot {
   double mdown_at = -1e9, mbuf_ms = -1, mlat_ms = 0;
   long long mjitter = 0;
   std::atomic<float> mpeak{ 0.f }, hin_ms{ -1.f }, hload{ -1.f }; // (hin_ms, hload: the hub's 'I': its input latency and load)
-  std::atomic<double> mix_at{ -1e9 }, mix_first{ -1e9 };          // (the receive thread's: the last mix datagram, the first after a gap)
+  std::atomic<double> mix_at{ -1e9 }, mix_first{ -1e9 }, mix_gap{ 0 }; // (the receive thread's: the last mix datagram, the first after a gap, the widest spacing)
   double last_direct_ms = -1;                                      // (stats_mx: its own stream's latency when last heard directly)
   // As the hub: this listener's mix (msrc sends to its msink) and what it last asked for (mix_mx): when, its levels, whom its Talk mustn't reach
   AooSource *msrc = nullptr;
@@ -220,7 +221,7 @@ struct RtLink {
   double retry_at = 0, next_ctl = 0, next_info = 0, left_at = -1e9;
   bool via_said = false;            // (the last 'M' said: my streams come through the hub)
   double intra_until = 0;           // (apply_sends: frames coded without prediction until then)
-  long long fallbacks = 0;
+  long long fallbacks = 0, rescues = 0; // (rescues: everyone's streams asked back while the mix paused)
   std::string asked_sig;            // (the levels last asked for: asked again at once when they change)
   // serving: the audio thread's copy of every peer's block (and this computer's own Talk and Play), per callback, read by the send thread
   std::vector<float> hring, hmix;
@@ -746,7 +747,8 @@ void hub_watch(RtLink *l, double now)
     const bool flowing = quiet < gone;
     if (st == 2 && !flowing) { st = 0; ++l->fallbacks; l->retry_at = now + RETRY_S; } // (the hub dropped, or stopped mixing for me: direct at once)
     else if (st != 2) st = now < l->retry_at ? 0 : flowing && now - h->mix_first.load() >= ENTER_S && h->mstreaming ? 2 : 1;
-    via = st == 2 && quiet < std::max(RESCUE_MIN, h->target_ms - RESCUE_LEAD) / 1000.0;
+    via = st == 2 && quiet < std::max(std::max(RESCUE_MIN, h->target_ms - RESCUE_LEAD), h->mix_gap.load() * 1000 + RESCUE_PAD) / 1000.0;
+    if (st == 2 && !via && l->via_said) ++l->rescues;
   }
   l->hub_state.store(st);
   if (was == 2 && st != 2) l->left_at = now;
@@ -1043,8 +1045,9 @@ void rx_loop(RtLink *l)
       else if (type == kAooMsgTypeSource && id == SRC_ID && l->src) l->src->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
       else if (type == kAooMsgTypeSource && id == PLAY_ID && l->psrc) l->psrc->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
       else if (type == kAooMsgTypeSink && id == p->msink_id && p->msink) { // (my hub's mix for me: when it last came, and since when unbroken)
-        const double now = now_s();
-        if (now - p->mix_at.load() > 0.1) p->mix_first.store(now);
+        const double now = now_s(), since = now - p->mix_at.load();
+        if (since > 0.1) p->mix_first.store(now);
+        else p->mix_gap.store(std::max(since, p->mix_gap.load() * 0.999)); // (the widest spacing lately, ~3 s to fade: how long a pause is only jitter)
         p->mix_at.store(now);
         p->msink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
       } else if (type == kAooMsgTypeSource && id == MIX_ID && p->msrc) p->msrc->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
@@ -1260,8 +1263,8 @@ std::string rt_status(RtLink *l)
     { std::lock_guard<std::mutex> p(l->pend_mx); hp = l->want_hub; }
     std::string hj = "\"hub\":{\"peer\":";
     json_str(hj, hp);
-    snprintf(b, sizeof(b), ",\"state\":\"%s\",\"serve\":%s,\"serving\":%d,\"load\":%.4f,\"max_us\":%.1f,\"skipped\":%lld,\"fallbacks\":%lld,\"latency_ms\":%.1f,\"in_ms\":%.1f,\"direct_ms\":%.1f,\"hub_load\":%.4f,\"level\":%.5f}",
-             hs == 2 ? "hub" : hs == 1 ? "joining" : "direct", l->serve ? "true" : "false", l->hub_serving, l->hub_load, l->hub_max_us, l->hskipped.load(), l->fallbacks,
+    snprintf(b, sizeof(b), ",\"state\":\"%s\",\"serve\":%s,\"serving\":%d,\"load\":%.4f,\"max_us\":%.1f,\"skipped\":%lld,\"fallbacks\":%lld,\"rescues\":%lld,\"latency_ms\":%.1f,\"in_ms\":%.1f,\"direct_ms\":%.1f,\"hub_load\":%.4f,\"level\":%.5f}",
+             hs == 2 ? "hub" : hs == 1 ? "joining" : "direct", l->serve ? "true" : "false", l->hub_serving, l->hub_load, l->hub_max_us, l->hskipped.load(), l->fallbacks, l->rescues,
              through, h ? h->hin_ms.load() : -1.f, nd ? direct / nd : -1.0, h ? h->hload.load() : -1.f, h ? h->mpeak.exchange(0.f) : 0.f);
     hj += b;
     o.insert(o.size() - 9, hj + ","); // (before "peers":{, as Play's)
