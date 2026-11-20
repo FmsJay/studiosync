@@ -331,6 +331,9 @@ void fan_loop()
     }
     const double now = now_s();
     if (kbps != kbps_now) { kbps_now = kbps; opus_encoder_ctl(enc, OPUS_SET_BITRATE(kbps * 1000)); }
+    // what they see: on joining, on a change, and every 10 s (keeps proxies' idle timers from closing a quiet socket)
+    for (auto &x : ls)
+      if (x.info_ver != ver || now - x.info_at > 10) { x.out += audience_ws_frame(1, x.pub ? pub : full); x.info_ver = ver; x.info_at = now; } // (after what's queued, whose first frame may be half sent; a newcomer has nothing queued, so it's told before its first packet)
     // encode what came, once, and give each listener the same packet
     const double sr = g_rsr.load();
     const unsigned long long w = g_rw.load(std::memory_order_acquire);
@@ -352,9 +355,6 @@ void fan_loop()
       }
     }
     if (now - cost_at >= 2) { g_enc_load.store(cost / (now - cost_at)); g_out_kbps.store(sent_bytes * 8 / 1000.0 / (now - sent_at)); cost = 0; cost_at = sent_at = now; sent_bytes = 0; }
-    // what they see: on joining, on a change, and every 10 s (keeps proxies' idle timers from closing a quiet socket)
-    for (auto &x : ls)
-      if (x.info_ver != ver || now - x.info_at > 10) { x.out += audience_ws_frame(1, x.pub ? pub : full); x.info_ver = ver; x.info_at = now; } // (after what's queued: its first frame may be half sent)
     // links revoked or run out, and the counts
     if (now - check_at >= 0.25) {
       check_at = now;

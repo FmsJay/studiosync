@@ -45,7 +45,8 @@ on the tailnet or (off by default) the public internet.
   the chosen kbit/s) and appends the same WebSocket frame to every listener. Sockets are non-blocking and polled: no thread per listener.
 - **Frames:** binary `[u32 sequence][Opus packet]`; text frames are the info JSON (on joining, on a change, and every 10 s to keep proxies'
   idle timers off). The page decodes with **WebCodecs `AudioDecoder`** and schedules AudioBuffers on its own clock.
-- **Slow listeners:** past 32 KB waiting (~2.7 s at 96 kbit/s) their packets are skipped; still past it after 10 s, they're closed. A
+- **Slow listeners:** each socket gets a 32 KB send buffer (Linux's would otherwise grow to megabytes and hide a stalled listener for
+  minutes: CI found it); past 32 KB more waiting here (~2.7 s at 96 kbit/s) their packets are skipped; still past it after 10 s, they're closed. A
   listener sending more than 16 KB in 10 s is closed (a page sends nothing).
 - **Measured (tests/audience_test.cpp, this desktop):** 100 listeners at 96 kbit/s: the encoder **0.7% of one core**, ~99 kbit/s out per
   listener (**~10 Mbit/s up for 100**). The CPU is nothing; **this computer's upload is the limit**: 20 listeners ≈ 2 Mbit/s, the default.
