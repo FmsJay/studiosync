@@ -648,7 +648,25 @@ Like Helgobox's move away from REAPER's own widgets, now that the extension is m
 ### Web UI: what remains (TODO)
 - **Docking:** built (above); check it in REAPER on Windows, a Mac and Linux (WebKitGTK built 2026-11-19: proved in a SWELL host on
   REAPER 7.86's own libSwell on Ubuntu 24.04, docked, floated, typed into, Undock and key forwarding from the real pages; not yet in REAPER).
-- **Pages, then parity:** scopes and to-dos/links in chat, Health, Play together; the ReaImGui panel stays until each page matches.
+- **Pages, then parity:** scopes and to-dos/links in chat, Health, Play together: built (below); the ReaImGui panel stays until each page matches.
+- **Health, Play together and chat parity built** (rt-webpages, 2026-11-19; offline tests and a stand-in server only, not run in REAPER yet):
+  - **Health** (`lib/webpages.lua`, `lib/webui/health.js`): `lib/page_health.lua`'s own rows (its `maint_rows`, set up with what the panel hands
+    it), red first, the yellow ones dismissed in the panel left out and counted; web links open in the browser; the rows' buttons stay on the panel.
+    Topic `health`, built every 2 s and only while a page shows it (`{topic:"health", want}` every 10 s, 30 s grace).
+  - **Play together** (`webpages.lua`, `play.js`): who's here (the `presence` topic), Follow each other with its bars behind (the panel's project
+    setting `side`; left alone while Real time mode is on, `live.realtime_on`), Start together from the edit cursor or a region with count-in, click
+    and bars later for listeners, Play / Record / Stop together, the count-down and the last start. Starts go through `together.start` (the panel's
+    Start together and the Song page's Play use it too, as they do `together.regions` and `together.bar_of`); who may press them is
+    `dawview.transport_refusal` (the Song page's rule, `dawview.may_transport` on `sync.authority`'s mode: a driver's room, the driver; an admins'
+    room, the driver and admins). Topic `play`, every 0.5 s while shown. NINJAM / SonoBus connecting stays on the panel's Play/Jam page.
+  - **Chat** (`lib/webui/chat.js`; app.js no longer draws the chat): This room / This project / Studio, Messages, To-do and Links. Topics `chat`
+    (This project, always), `chat_room` and `chat_band` (only while a page shows that scope). Each entry carries its file's name as an id; actions
+    `{topic:"chat", scope, text | todo | title+url | done+on | delete}` go to `page_chat.web_action`, which finds the entry in that scope's own
+    listing (nothing else is touched) and uses the panel's own `chat.post/add_todo/add_link/set_done/remove` (anyone ticks a to-do, only its
+    writer deletes; the page asks first). Non-web links are shown, never opened. Not yet: the All tab, notes/likes/drawings, the Everyone filter,
+    and marking messages seen (the panel's unread count).
+  - **Tabs:** `lib/webui/tabs.js` adds pages to daw.js's tab bar (`ssTabs.add`), keeps the latest of every topic and sends actions; `pages.css`.
+  - **Tests:** `tests/test_0_60_rt_webpages.lua`; `tests/test_0_60_rt_webui.lua` (chat models and scopes).
 - **Shared DAW view, view-only first** (stage 1 above): tracks, items, markers and cursors from the synced model, follow, play/stop.
 - **Video and screen share** (step 5): first version built (step 5 above: calls, screen share, pointer); check it in REAPER on two computers. The Studio browser after it.
 
