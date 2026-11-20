@@ -53,6 +53,7 @@ struct Wire {
   std::vector<Pkt> q;
   std::mt19937 rng{ 12345 };
   double base_ms = 2, jitter_ms = 0, loss = 0;
+  double spike_every = 0, spike_ms = 0; // a queue that stalls spike_ms every spike_every s, then lets the stalled packets go at once (a real link's jitter)
   long long dropped = 0;
 };
 struct End {
@@ -69,7 +70,8 @@ static int send_fn(void *user, const void *d, int n, const void *addr, int)
   std::uniform_real_distribution<double> u(0, 1);
   if (u(w.rng) < w.loss) { w.dropped++; return n; }
   Pkt p;
-  p.due = now_s() + (w.base_ms + w.jitter_ms * u(w.rng)) / 1000.0;
+  const double t = now_s(), ph = w.spike_every > 0 ? std::fmod(t, w.spike_every) : 1e9;
+  p.due = (ph < w.spike_ms / 1000.0 ? t - ph + w.spike_ms / 1000.0 : t) + (w.base_ms + w.jitter_ms * u(w.rng)) / 1000.0;
   p.d.assign((const unsigned char *)d, (const unsigned char *)d + n);
   p.to = *(const sockaddr_in *)addr;
   w.q.push_back(std::move(p));
@@ -130,12 +132,13 @@ static const uint32_t L = 7200, LX = 256, PDC = 100, B = 256;
 // stall: at stall_at seconds, the sender's audio thread (who & 1) and/or the remote's (who & 2) stop for stall_ms and then catch up
 // in a burst, as a VM pause or a disk/scheduler hiccup does. Each audio thread notes any gap over 30 ms between its turns (a stall).
 static Result run(int id0, double base_ms, double jitter_ms, double loss, double drift, double secs, const char *rsecret = "studio",
-                  double stall_at = 0, double stall_ms = 0, int who = 0)
+                  double stall_at = 0, double stall_ms = 0, int who = 0, double spike_every = 0, double spike_ms = 0)
 {
   Result res;
   const int hs = id0, hx = id0 + 1, hy = id0 + 2;
   Wire wa, wb;
   wa.base_ms = wb.base_ms = base_ms; wa.jitter_ms = wb.jitter_ms = jitter_ms; wa.loss = wb.loss = loss;
+  wa.spike_every = spike_every; wa.spike_ms = spike_ms; // (the way out only: the remote's side of a spike is what's checked)
   wb.rng.seed(999);
   End a{}, b{};
   a.wire = &wa; b.wire = &wb;
@@ -329,6 +332,19 @@ int main()
     CHECK(r.hiccup > 0, "the stall seen");
     CHECK(r.wrong == 0, "nothing misaligned through a stall");
     recovered(r, 4);
+  }
+  // The desktop <-> laptop link (2026-11-19, over the internet): a 90 ms round trip, and now and then a 40 ms stall on the way out, with
+  // the 150 ms budget about 12 ms to spare. A late packet at the remote is lost, and only that: it doesn't move the timing (a "slip")
+  // when the packets after it are on time again, which made each spike cost the next 150 ms too (all of it later than the budget).
+  {
+    Result r = run(7, 45, 3, 0, 0, 6, "studio", 0, 0, 0, 1.3, 40);
+    report("a 90 ms round trip, a 40 ms spike on the way out every 1.3 s", r);
+    CHECK(r.wrong == 0, "nothing misaligned through the spikes");
+    if (r.hiccup == 0) {
+      CHECK(num(r.rst, "slips") == 0, "a spike isn't drift: no slip");
+      CHECK(exact_pct(r) > 94, "a spike costs only its own packets");
+      CHECK(num(r.sst, "holes") >= 1 && num(r.sst, "holes") <= 10, "about a dropout a spike, counted (Live sync's late blocks)");
+    }
   }
   {
     Result r = run(41, 2, 0, 0, 0, 1.5, "not the studio's");

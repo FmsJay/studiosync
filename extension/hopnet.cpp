@@ -58,6 +58,7 @@ const int HDR = 20, TAG = 16, PKT = 128;                    // header: magic, ty
 const int MAXD = HDR + PKT * HOP_CH * 4 + 32 + TAG;
 const uint64_t HALF = HOP_FRAMES / 2;
 const int FADE = 64;                                          // frames faded in after a concealed hole
+const double LATE_HOLD = 0.08, LATE_GAP = 0.04;              // s: packets late at the remote for LATE_HOLD, never LATE_GAP apart, are drift
 enum { F_ALIVE = 1, F_DELTA = 2, F_SRATE = 4 };              // the remote's state, in each pong
 
 double now_s() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -153,7 +154,7 @@ struct Sess {
   double rtt_ms = -1;
   uint32_t r_flags = 0, r_frames = 0, r_srate = 0, r_slips = 0;
   uint64_t r_received = 0, r_dropped = 0;
-  uint64_t sent = 0, returned = 0, lost = 0, late = 0;
+  uint64_t sent = 0, returned = 0, lost = 0, late = 0, holes = 0; // holes: runs of lost frames, each a dropout heard (Live sync's "late blocks")
   int64_t slack_last = 0;
   // ---- serving end
   int xid = 0, yid = 0;
@@ -166,6 +167,7 @@ struct Sess {
   uint64_t xb = 0, yb = 0, last_xw = 0, last_xb = 0, zeroed_to = 0, yr = 0;
   int64_t A = 0, tight_min = INT64_MAX;
   double tight_at = 0; // after a slip: when to look at how far ahead the packets since then landed (tight_min), and tighten back
+  double late_since = 0, late_last = 0; // the first and last late packet of a run of them (0: none): only lateness that lasts is drift
   Win delta, xblk, sslack;
   std::vector<Fm> fmap;
   uint64_t s_received = 0, s_returned = 0, s_dropped = 0, s_slips = 0;
@@ -263,7 +265,7 @@ void send_step(HopNet *h, Sess &s, double now)
     float *f = p->ret + (size_t)(rw & HOP_MASK) * HOP_CH;
     if (s.rcv[rw & HOP_MASK] == rw) {
       if (s.fade > 0) { const float k = (float)(FADE - s.fade + 1) / (FADE + 1); f[0] *= k; f[1] *= k; --s.fade; }
-    } else { f[0] = f[1] = 0.f; ++s.lost; s.fade = FADE; }
+    } else { f[0] = f[1] = 0.f; ++s.lost; s.holes += s.fade != FADE; s.fade = FADE; }
     ++rw;
   }
   if (rw != s.rw) { s.rw = rw; hop_store(&p->ret_w, rw); }
@@ -389,9 +391,20 @@ void serve_rx(HopNet *h, Sess &s, int type, uint32_t nf, uint64_t frame, const u
   const uint64_t xw = hop_load(&X->send_w), Lx = hop_load(&X->latency), g = s_guard(s);
   const int64_t S = frames_of(s.margin_ms, X->srate), x_min = (int64_t)(xw + g) - (int64_t)Lx; // (earliest X frame X hasn't started reading)
   int64_t x = (int64_t)frame + s.A;
-  // First packet, one X has already played past (late: this computer's clock runs faster), or a jump (the sender started again): put it
-  // margin_ms ahead of where X reads. One inside the guard but not yet read is written as it is (it may well be in time).
-  if (!s.anchored || x < (int64_t)xw - (int64_t)Lx + 64 || x + nf > (int64_t)s.zeroed_to) {
+  // A packet X has already played past is late: dropped (the sender counts its frames lost). Only when late ones keep coming (LATE_HOLD,
+  // never LATE_GAP apart; some in time between them is the jitter at the edge) is it this computer's clock running faster, and A moves. A spike on the way here (a queue that stalls, then lets
+  // its packets go at once: the desktop <-> laptop link over the internet, 2026-11-19, 40 ms now and then) made a slip each time, and
+  // everything after it then came that much later for the 0.15 s until it tightened back: past the budget, so a 40 ms spike cost 150 ms.
+  const bool late = s.anchored && x < (int64_t)xw - (int64_t)Lx + 64, jump = !s.anchored || x + nf > (int64_t)s.zeroed_to;
+  if (late && !jump) {
+    if (!s.late_since || now - s.late_last > LATE_GAP) s.late_since = now;
+    s.late_last = now;
+    if (now - s.late_since < LATE_HOLD) { s.s_dropped += nf; return; }
+  }
+  // First packet, a late one that lasted, or a jump (the sender started again): put it margin_ms ahead of where X reads. One inside the
+  // guard but not yet read is written as it is (it may well be in time).
+  if (late || jump) {
+    s.late_since = 0;
     // A packet late after a stall (ours, or the sender's catching up in a burst) moves A by the stall, not by drift: the packets after
     // it land that much further ahead for good. So a slip is looked at again 0.15 s on (the burst over, from 0.05 s): if every packet since
     // landed well ahead of the margin, A tightens back, and a hiccup costs a moment of fallback audio, not the rest of the session.
@@ -624,12 +637,12 @@ std::string hopnet_status(HopNet *h, int hop_id)
       snprintf(b, sizeof(b),
                ",\"token\":%u,\"resolved\":%s,\"serving\":%s,\"active\":%s,\"rtt_ms\":%.1f,\"remote_ms\":%.1f,\"budget_ms\":%.1f,\"need_ms\":%.1f,"
                "\"slack_ms\":%.1f,\"sent\":%llu,\"returned\":%llu,\"lost\":%llu,\"late\":%llu,\"remote_alive\":%s,\"remote_lined_up\":%s,"
-               "\"same_rate\":%s,\"remote_slips\":%u,\"remote_received\":%llu,\"remote_dropped\":%llu}",
+               "\"same_rate\":%s,\"remote_slips\":%u,\"remote_received\":%llu,\"remote_dropped\":%llu,\"holes\":%llu}",
                s.token, s.resolved ? "true" : "false", now - s.last_pong < 2 ? "true" : "false", s.active ? "true" : "false", s.rtt_ms, remote,
                budget, need, sl == INT64_MAX ? -1.0 : sl * 1000.0 / sr, (unsigned long long)s.sent, (unsigned long long)s.returned,
                (unsigned long long)s.lost, (unsigned long long)s.late, (s.r_flags & F_ALIVE) ? "true" : "false",
                (s.r_flags & F_DELTA) ? "true" : "false", (s.r_flags & F_SRATE) || !s.r_flags ? "true" : "false", s.r_slips,
-               (unsigned long long)s.r_received, (unsigned long long)s.r_dropped);
+               (unsigned long long)s.r_received, (unsigned long long)s.r_dropped, (unsigned long long)s.holes);
       return o + b;
     }
     if (s.serve && s.xid == hop_id) {

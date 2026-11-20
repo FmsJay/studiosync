@@ -177,7 +177,7 @@ end
 local id, why = hops.make("P1", cfg, tr, 2, "Bo", list[1].peer, "Song", "main")
 assert(id == 1, "made: " .. tostring(why))
 local hop = tr.fx[4]
-assert(hops.is_hop_name(hop.name) and hop.v[1] == 1 and hop.v[2] == 7200 and hop.v[3] == 0, "a Hop right after the plug-in: id 1, the default budget, silent when late")
+assert(hops.is_hop_name(hop.name) and hop.v[1] == 1 and hop.v[2] == hops.LATENCY and hop.v[3] == 0, "a Hop right after the plug-in: id 1, the plug-in's most budget, silent when late")
 assert(hop.offline_toggles == 2 and hop.offline == false, "taken offline and back, so it starts with its id")
 assert(tr.ext.band_local_fx:find(hop.guid .. "for=hop;", 1, true), "this computer's own FX: never sent to the others")
 local rec = hops.records("P1")["1"]
@@ -225,6 +225,7 @@ local hidden = projs.P2.tracks[2]
 assert(hidden and hidden.ext.band_local == "hop" and hidden.ext.P_NAME == "StudioSync hop for James", "a hidden track of Bo's own")
 assert(#hidden.fx == 3 and hops.is_hop_name(hidden.fx[1].name) and hidden.fx[2].name == bo_amp.name and hops.is_hop_name(hidden.fx[3].name), "Hop X, the copy, Hop Y")
 assert(hidden.fx[1].v[1] == 64 and hidden.fx[3].v[1] == 63 and hidden.fx[1].v[2] == 256 and hidden.fx[3].v[2] == 256, "ids from the top down; 256-sample latency")
+assert(hidden.fx[1].v[3] == 0 and hidden.fx[3].v[3] == 1, "Y plays its input (the hidden track's meter shows the hop), X only what's fed")
 assert(hidden.info.B_MAINSEND == 0 and hidden.info.I_PERFFLAGS & 2 == 2 and hidden.chain.chain_pdc_mode == "2", "no master send, real time, chain PDC ignored")
 local sj = band.json_decode(E.serve[#E.serve])
 assert(sj.x == 64 and sj.y == 63 and sj.pdc == 64 and sj.token == serve_msg.token and sj.secret == "s3cret", "served with the plug-in's latency")

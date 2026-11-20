@@ -229,25 +229,36 @@ hops.tick(cfg, b, "P2")
 assert(hidden.fx[3].v[2] == 0.8 and not hidden.fx[4].off, "the copies follow the song's knobs and bypass")
 hops.on_msg("P2", cfg, { op = "serve", token = 5, oid = "AAA", fx = "x", chain = { { fxi = 0, fx = beq.name }, { fxi = 1, fx = "VST3: Nope" } }, user = "James" }, "Song", "main")
 assert(sent[#sent].d.op == "fail" and sent[#sent].d.why:find("Nope", 1, true) and #projs.P2.tracks == 2, "a chain it hasn't all of: refused, nothing made")
+package.loaded.hops = nil -- (Live sync reloads in place for a new StudioSync: the same Lua, the module loaded again)
+hops = require("hops")
 hops.on_msg("P2", cfg, { op = "stop", token = ask.d.token }, "Song", "main")
-assert(#projs.P2.tracks == 1, "stopped: gone")
+assert(#projs.P2.tracks == 1, "stopped, after a reload too: gone")
+local stray = track("P2", "", "StudioSync hop for James")
+stray.ext.band_local = "hop"
+clock = clock + 1
+hops.S.at = -math.huge
+hops.tick(cfg, b, "P2")
+assert(#projs.P2.tracks == 1, "a hidden hop track nothing here hosts (left by a crash, or an older StudioSync's reload): gone")
 
 -- ---- 6. James's tick: fine, then back by itself --------------------------------------------------------------------------------------
 front = "P1"
 local function tick(dt) clock = clock + (dt or 1); hops.S.at = -math.huge; hops.tick(cfg, b, "P1") end
-local good = { resolved = true, serving = true, remote_alive = true, same_rate = true, rtt_ms = 60, remote_ms = 25, need_ms = 120, budget_ms = 150, slack_ms = 30,
+local good = { resolved = true, serving = true, active = true, remote_alive = true, same_rate = true, rtt_ms = 60, remote_ms = 25, need_ms = 120, budget_ms = 150, slack_ms = 30,
   sent = 48000, lost = 0, late = 0, remote_slips = 0 }
 E.status[rec.id] = { hop = rec.id, late = 0, net = { resolved = true, serving = false } }
 tick(5)
-assert(hops.offload_of("P1", gtr), "not hosted yet, inside the start grace: stays")
-E.status[rec.id] = { hop = rec.id, late = 0, net = good }
+E.status[rec.id].late = 20
+tick(hops.LATE_WINDOW)
+assert(hops.offload_of("P1", gtr), "not hosted yet, inside the start grace: stays (the blocks played dry meanwhile aren't falling behind)")
+E.status[rec.id] = { hop = rec.id, late = 20, net = good }
 tick()
 local rows = hops.health_rows(cfg, "P1")
-assert(rows[1][4]:find("Guitar's effects run on Bo's computer: round trip 60 ms", 1, true) and rows[1][4]:find("0 late blocks", 1, true), "Health: where and how: " .. rows[1][4])
+assert(rows[1][4]:find("Guitar's effects run on Bo's computer: round trip 60 ms", 1, true) and rows[1][4]:find("20 late blocks", 1, true), "Health: where and how: " .. rows[1][4])
 tick(hops.LATE_WINDOW)
-E.status[rec.id].late = 9
+E.status[rec.id].late, good.holes = 24, 5 -- (holes: the network's dropouts, which the plug-in never sees as late)
 tick(hops.LATE_WINDOW)
-assert(not hops.offload_of("P1", gtr), "late blocks rose: back")
+good.holes = nil
+assert(not hops.offload_of("P1", gtr), "late blocks and dropouts rose: back")
 assert(#gtr.fx == 3 and not eq.off and not amp.off and comp.off, "the chain exactly as it was (Comp still bypassed as the song has it)")
 assert(gtr.ext.band_fx_held == "" and gtr.ext.band_local_fx == "", "nothing of the offload left")
 assert(sent[#sent].d.op == "stop" and E.connect[#E.connect].json:find('"stop":true', 1, true), "Bo and the extension told")
