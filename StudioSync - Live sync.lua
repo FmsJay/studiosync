@@ -239,6 +239,8 @@ reaper.atexit(function()
   local ok_ours, ours = band.try("still_ours", still_ours)
   ours = ok_ours and ours
   if not reloaded and ours then band.try("end_of_session", end_of_session, "Live sync stopped") end -- (logged when it fails: Round 1 review, 0.59.45)
+  -- (a clean stop: the unsent changes kept beside the project are for a crash, not a project closed unsaved. Crash-safe sessions, lib/mirror.lua, rt)
+  if not reloaded and ours then band.try("drop_stash", require("mirror").drop_stash, proj) end
   if not reloaded then
     -- (this tab's room taken off the "local work" mark only when a look ran and a last check, now, finds nothing: a take recorded since the last
     -- look was missed, and Delete my copy then binned the folder holding its only copy. Round 3 review, 0.59.48)

@@ -658,7 +658,9 @@ Closing REAPER without saving (or a crash) is safe. Next to each StudioSync proj
 `<project>.bandsync-ids.json`, this machine's record of which track and item is which. When you reopen an older
 save, StudioSync recognises its tracks and items, brings back what changed since as the studio has it, and sends
 nothing new. Leave the file where it is. Without it, a reopened older save would show up for everyone with its
-tracks twice.
+tracks twice. While Live sync runs, `<project>.bandsync-unsent.json` holds your changes that haven't gone out yet
+(plug-ins settling, edits made while playing, Hold my changes): if REAPER crashes, they're put back and sent when the
+song opens again. A clean stop removes it.
 
 A backup or autosave of a shared song, opened by hand, isn't synced: nothing goes in or out of it. The panel asks
 what it's for. **Open as a side room** puts it in a side room of its own, yours to drive. What it holds that nobody has

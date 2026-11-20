@@ -388,6 +388,13 @@ lib/tools.lua EXT_WANT.
 - **Record from a phone:** a singer with only a phone opens the studio's web page and records a take straight into the
   song, in time from the shared clock (browser recording), arriving fast-first-lossless-after.
 - **Crash-safe sessions:** the extension keeps the last unsent changes safe even if REAPER crashes mid-session.
+  **Built in Lua (2026-11-19; offline tests only, tests/test_0_60_rt_crashsafe.lua, not run in REAPER yet):** what's changed and not
+  yet gone out (plug-ins settling or waiting for the stop, Hold my changes, a copy still going) is kept beside the project in
+  `<project>.bandsync-unsent.json`, written only when it changes (2 s apart at most), put back by the first look after a crash and sent
+  once; Live sync's clean stop removes it. A reopened older save catches up instead of pushing: your own newer tempo map, markers and
+  settings land again (they were marked done unapplied), settings that only read differently wait for the first catch-up, session.json
+  carries the settings, and a claim doesn't follow the old file's track name back. Not covered: a held tempo or marker change (Hold my
+  changes) still goes with an unsaved project.
 
 ### New scopes to explore
 - **Without Tailscale:** an optional built-in connection (NAT traversal with a small rendezvous) for bandmates who

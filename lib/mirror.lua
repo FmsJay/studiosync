@@ -1711,6 +1711,100 @@ mirror.said_outside = {} -- proj .. oid -> a landed chain's ReaInsert / ReaStrea
 mirror.orphaned = {} -- proj -> { track oid = true }: changes skipped while that track was gone (sync.receive looks again)
 mirror.heal_due = {} -- proj -> true: an edit landed over a deletion held here (sync.receive heals once at the pass's end)
 
+-- Crash-safe sessions. What's changed here and not gone out yet (mirror.unsent: plug-ins or automation settling or waiting for the stop, Hold my
+-- changes, a big file still copying, a burst's rest; and held-back items) lived only in memory: REAPER killed or crashed, it went with the
+-- unsaved project. So it's kept beside the project too, <project>.bandsync-unsent.json ({ objs = { [oid] = { kind, track, state, hash, pos, known,
+-- gone } } }, `known` the record it was made on), and the first look after the project opens again puts it back on the project, which that look
+-- then sends (or holds) as any change of yours. Written at a look's end when what's in it changed, STASH_SECS apart at most (a knob turned while
+-- playing rewrote the chain every look). Live sync's clean stop takes it away (mirror.drop_stash): REAPER asked about saving then, and a project
+-- closed unsaved is the user's choice. Untitled projects have none. James, rt
+mirror.STASH_SECS = 2
+mirror.restoring = {} -- tostring(proj) -> { [oid] = entry } read back and not put back yet (playing, its tab behind: the next look tries again)
+local stash_sig, stash_at, stash_read = {}, {}, {} -- path -> what was last written, and when; tostring(proj) -> the master track it was read for
+local function stash_path(c) return c and (c.path:gsub("ids%.json$", "unsent.json")) end
+function mirror.stash_unsent(proj, by_oid)
+  local path = stash_path(ids(proj))
+  if not path then return end
+  local key, waiting, oids, out, sig = tostring(proj), mirror.restoring[tostring(proj)] or {}, {}, {}, {}
+  for k in pairs(mirror.unsent) do if k:sub(1, #key) == key then oids[#oids + 1] = k:sub(#key + 1) end end
+  for oid in pairs(mirror.held_back[key] or {}) do oids[#oids + 1] = oid end
+  for oid in pairs(waiting) do
+    oids[#oids + 1] = oid
+    mirror.unsent[key .. oid] = true -- (still to put back: the band's change to it waits, as for any change of yours not sent)
+  end
+  for _, oid in ipairs(oids) do
+    local o, kind = by_oid[oid], mirror.KIND[oid:sub(1, 1)]
+    if out[oid] then
+    elseif waiting[oid] then out[oid] = waiting[oid]
+    elseif o then out[oid] = { kind = o.kind, track = o.track, state = o.state, hash = o.hash, pos = o.pos, known = ext(proj, oid) }
+    elseif kind == "track" or kind == "item" then -- (gone here, its delete held: only what the band has)
+      local _, h = mirror.known(proj, oid)
+      if h and h ~= "" then out[oid] = { kind = kind, gone = true, known = ext(proj, oid) } end
+    end
+    if out[oid] and not sig[oid] then sig[oid] = true; sig[#sig + 1] = oid .. "|" .. tostring(out[oid].hash or "gone") end
+  end
+  table.sort(sig)
+  local s, now = table.concat(sig, "\n"), reaper.time_precise()
+  if s == stash_sig[path] or now - (stash_at[path] or -math.huge) < mirror.STASH_SECS then return end
+  stash_sig[path], stash_at[path] = s, now
+  if s == "" then os.remove(path) else require("band").write_json(path, { objs = out }) end
+end
+-- The file read once per opening (a file opened again in its tab has a new master track, as W.order tells), and each entry put back unless the
+-- project already has it, or holds a newer version than the one it was made on. Tracks first, deletions last. -> how many were put back.
+local RANK = { T = 1, F = 2, E = 2, R = 2, M = 2, I = 3 }
+function mirror.restore_unsent(proj, by_oid, media, local_mix)
+  local key, master = tostring(proj), reaper.GetMasterTrack(proj) or false
+  if stash_read[key] ~= master then
+    stash_read[key] = master
+    local path = stash_path(ids(proj))
+    local d = path and require("band").read_json(path)
+    mirror.restoring[key] = type(d) == "table" and type(d.objs) == "table" and next(d.objs) and d.objs or nil
+  end
+  local list = mirror.restoring[key]
+  if not list then return 0 end
+  local oids = {}
+  for oid, e in pairs(list) do
+    if type(oid) == "string" and RANK[oid:sub(1, 1)] and type(e) == "table" and (e.gone or e.state ~= nil) then oids[#oids + 1] = oid else list[oid] = nil end
+  end
+  local function rank(oid) return list[oid].gone and 7 - RANK[oid:sub(1, 1)] or RANK[oid:sub(1, 1)] end -- (an item's delete before its track's)
+  table.sort(oids, function(a, b) if rank(a) ~= rank(b) then return rank(a) < rank(b) end; return a < b end)
+  local n = 0
+  for _, oid in ipairs(oids) do
+    local e, o = list[oid], by_oid[oid]
+    local krev, kh = mirror.known(proj, oid)
+    local r, h, evid, order = tostring(e.known or ""):match("^(%d+)|([^|]*)|([^|]*)|?(.*)$")
+    r = tonumber(r)
+    if (krev or -1) > (r or -1) then list[oid] = nil -- (the project holds a newer version than the one it was made on: older news)
+    elseif e.gone then
+      list[oid] = nil
+      if o and o.hash == kh then -- (still as the band last had it here)
+        local ok, done = pcall(mirror.apply, proj, { obj = e.kind, oid = oid, gone = true }, media, local_mix)
+        if ok and done then n = n + 1 end
+      end
+    elseif o and o.hash == e.hash then list[oid] = nil -- (saved with it: the look sends it as it is)
+    else
+      local ok, done = pcall(mirror.apply, proj, { obj = e.kind, oid = oid, track = e.track, state = e.state, pos = e.pos }, media, local_mix)
+      if not ok then require("band").log("couldn't put back a change of yours from before REAPER stopped: " .. tostring(done)) end
+      if not ok or done then list[oid] = nil end -- (false: playing, or its tab behind, as the band's changes wait)
+      if ok and done then
+        n = n + 1
+        if r and r ~= krev then remember(proj, oid, r, h, evid, order) end -- (what it was made on: the look builds on that, as it would have)
+        local k = key .. oid
+        mirror.reopened[k] = nil -- (the newest of yours, not an older save to put back)
+        -- (nor a chain's read-back as it loads: apply marks the band's chains so)
+        mirror.fx_readback[k], mirror.fx_loading[k], mirror.fx_load_knobs[k], mirror.fx_quiet[k] = nil, nil, nil, nil
+      end
+    end
+  end
+  if next(list) == nil then mirror.restoring[key] = nil end
+  if n > 0 then require("band").log(string.format("REAPER stopped before %d change(s) of yours went out: they're back in the project and go out now", n)) end
+  return n
+end
+function mirror.drop_stash(proj)
+  local path = stash_path(idc[proj])
+  if path then os.remove(path); stash_sig[path], stash_at[path] = nil, nil end
+end
+
 function mirror.scan(proj, user, media_dir, local_mix)
   mirror.memo_turn() -- (between looks only: see mirror.memo)
   mirror.restless_load()
@@ -4061,6 +4155,8 @@ function mirror.watch(proj, cfg, song, room, opts)
   local room_dir = sync.room_dir(cfg, song, room)
   local media = room_dir .. "/media"
   local objs, by_oid = mirror.scan(proj, cfg.user, media, opts.local_mix)
+  -- (changes of yours REAPER stopped before sending: back in the project first, so this look sends them. Crash-safe sessions, rt)
+  if mirror.restore_unsent(proj, by_oid, media, opts.local_mix) > 0 then objs, by_oid = mirror.scan(proj, cfg.user, media, opts.local_mix) end
   local me = cfg.user
   mirror.unsettled = false
   local suggest = require("suggest")
@@ -4119,6 +4215,7 @@ function mirror.watch(proj, cfg, song, room, opts)
   mirror.index_for(nil)
   if not mirror.more then mirror.sweep_unsent(proj, seen) end
   mirror.save_ids(proj)
+  mirror.stash_unsent(proj, by_oid) -- (what's still not out, kept beside the project: crash-safe sessions, rt)
   if rescheme and not mirror.more then reaper.SetProjExtState(proj, mirror.CSEC, "colours", scheme) end
   mirror.summary(proj, cfg, room_dir, objs, media)
   suggest.flush()

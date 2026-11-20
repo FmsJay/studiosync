@@ -148,12 +148,13 @@ end
 
 -- The driver's new timeline goes into session.json too: refreshing, or a bandmate joining later, gets it.
 -- `stamp`: the timeline event's order (time..id), so a computer opening the song can tell whether it already holds a newer map. James, rt
-function sync.session_timeline(cfg, song, tempo, markers, stamp_order)
+-- `project`: its settings (band.capture_project), for that same look. Crash-safe sessions, rt
+function sync.session_timeline(cfg, song, tempo, markers, stamp_order, project)
   local sp = band.session_path(cfg, song)
   local s = band.read_json(sp)
   if s then
     s.first_timeline = s.first_timeline or { tempo = s.tempo, markers = s.markers } -- history restores before this need it
-    s.tempo, s.markers, s.timeline_order = tempo, markers, stamp_order
+    s.tempo, s.markers, s.timeline_order, s.project = tempo, markers, stamp_order, project
     band.write_json(sp, s)
   end
 end
@@ -375,6 +376,9 @@ function sync.follow_claims(proj, cfg, song, room)
     sync.set_claims(cfg, song, room, { tracks = {}, regions = {}, times = {} })
     return band.log("the driver released your claims while you were away: claim again what you're working on")
   end
+  -- (not while its first catch-up runs: a file reopened from before your rename still has the old name, and the claim went back to it until
+  -- your rename came in again. Crash-safe sessions, James, rt)
+  if sync.loading[tostring(proj)] then return end
   local mirror = require("mirror")
   c.oids, c.since = c.oids or {}, c.since or {}
   local changed = false
@@ -1094,12 +1098,14 @@ function sync.watch_timeline(proj, cfg, song, room, can)
   -- tempo map / markers first: if they changed, REAPER has just moved items for it, and those moves aren't edits
   local sig, seen = timeline_sig(proj), ext(proj, band.SECTION, "timeline")
   if seen ~= sig and seen ~= "" and (band.json_decode(seen) or {})[4] ~= sync.TIMELINE_FORMAT then seen = "" end -- (noted in an older format: a first look)
+  -- (a signature's tempo map and markers alone: a reopened file's project settings often read differently (another REAPER's defaults). Laptop
+  -- restart, James, rt)
+  local function tm(x) local t = band.json_decode(x) or {}; return band.json_encode({ t[1] or {}, t[2] or {} }) end
   -- opened behind the song (closed without its last save, say): nothing of ours waits, and your own marker has no event coming back to you (Mac, 0.57.6)
   if not sync.timeline_looked[proj] then
     sync.timeline_looked[proj] = true
-    -- (tempo and markers only: a reopened file's project settings often differ (another REAPER's defaults), and that skipped this look and
-    -- then posted the stale markers with them, wiping a region the others had. Laptop restart, James, rt)
-    local function tm(x) local t = band.json_decode(x) or {}; return band.json_encode({ t[1] or {}, t[2] or {} }) end
+    -- (tempo and markers only: with the settings, this look was skipped and the stale markers were then posted with them, wiping a region the
+    -- others had. Laptop restart, James, rt)
     local s = room == "main" and seen ~= "" and tm(seen) == tm(sig) and band.read_json(band.session_path(cfg, song))
     -- (only a session.json map newer than the newest this project has applied or made (NEWEST), or, unstamped (written before rt), none
     -- applied or made in this session: it comes through Syncthing, seconds behind a map over the direct link, and the stale one was put
@@ -1110,21 +1116,30 @@ function sync.watch_timeline(proj, cfg, song, room, can)
       if s.timeline_order then setext(proj, sync.NEWEST, "timeline", tostring(s.timeline_order)) end -- (what it holds now: older maps stay superseded)
       local function plain(x) return band.json_encode(band.json_decode(band.json_encode(x))) end
       local tempo_off = plain(s.tempo) ~= plain(band.capture_tempo(proj))
-      if tempo_off or plain(s.markers) ~= plain(band.capture_markers(proj)) then
+      -- (and its settings, where session.json has them: they're in the map's event, which this project now counts as had. Crash-safe sessions, rt)
+      local proj_off = type(s.project) == "table" and plain(s.project) ~= plain(band.capture_project(proj))
+      if tempo_off or proj_off or plain(s.markers) ~= plain(band.capture_markers(proj)) then
         reaper.Undo_BeginBlock2(proj)
         local ok, e = pcall(function() -- (the undo point closed whatever happens: review, 0.58.92)
           if tempo_off then band.apply_tempo(proj, s.tempo); require("mirror").tempo_changed(proj) end
+          if proj_off then band.apply_project(proj, s.project) end
           band.apply_markers(proj, s.markers)
         end)
         reaper.Undo_EndBlock2(proj, "StudioSync: the song's tempo map and markers", -1)
         if not ok then error(e, 0) end
-        sig = timeline_sig(proj)
-        seen = sig
-        setext(proj, band.SECTION, "timeline", sig)
         band.log("this project was behind the song: its tempo map and markers are back as the studio has them")
       end
+      -- (behind, with no tempo or marker change of ours: what it holds now is what the studio has. Settings that still read differently went
+      -- out as a change, newer than the studio's map, and every computer took this file's. Crash-safe sessions, James, rt)
+      sig = timeline_sig(proj)
+      seen = sig
+      setext(proj, band.SECTION, "timeline", sig)
     end
   end
+  -- (only the project settings differ, and this project's first catch-up isn't done: REAPER reads some of them differently as a file opens, and
+  -- the band's newer map, or your own from before a crash, may be about to land. Sent now, this file's settings went out as newer than the
+  -- studio's. Once caught up, what still differs is yours and goes out. Crash-safe sessions, James, rt)
+  if seen ~= sig and seen ~= "" and sync.loading[tostring(proj)] and tm(seen) == tm(sig) then return end
   if seen ~= sig then
     local was = seen ~= "" and band.json_decode(seen)
     if not (type(was) == "table" and tempo_sig(was[1]) == tempo_sig(band.capture_tempo(proj))) then require("mirror").tempo_changed(proj) end
@@ -1134,7 +1149,7 @@ function sync.watch_timeline(proj, cfg, song, room, can)
         local tev = { type = "timeline", tempo = tempo, markers = markers, project = band.capture_project(proj) }
         sync.post(cfg, song, room, tev, proj) -- (proj: without it no order was set, 0.58.93's fix never applied. Review, 0.58.95)
         sync.timeline_live[proj] = true
-        sync.session_timeline(cfg, song, tempo, markers, order(tev))
+        sync.session_timeline(cfg, song, tempo, markers, order(tev), tev.project)
         local before = band.json_decode(seen) or {}
         local now, what = band.json_decode(sig) or {}, {} -- (say what changed: it was "tempo map and markers" whatever it was)
         for i, word in ipairs({ "the tempo map", "the markers", "the project settings (notes, title, timebase, lanes, grid, metronome, render format)" }) do
@@ -1396,7 +1411,9 @@ function sync.receive(proj, cfg, song, room, can)
       band.log("skipped a change from " .. tostring(ev.user) .. " that StudioSync can't read (" .. tostring(ev.id) .. ")")
     elseif (ev.type == "timeline" and ev.user ~= cfg.user and newest_map ~= ev.id) or superseded(proj, ev) or (obj and latest[ev.oid] ~= ev and apart(ev, latest[ev.oid]) == false) then
       setext(proj, sync.APPLIED, ev.id, "1") -- superseded
-    elseif ev.user == cfg.user and not obj then
+    -- (not our own newest map when it's newer than this project's: REAPER killed or restarted without saving reopened a file from before it, and
+    -- marked done unapplied, the file's older tempo, markers and settings stayed, and went out with the next marker. Crash-safe sessions, James, rt)
+    elseif ev.user == cfg.user and not obj and not (ev.type == "timeline" and newest_map == ev.id) then
       setext(proj, sync.APPLIED, ev.id, "1") -- our own: already true here
       stamp(proj, ev) -- and what we change next comes after it, even one stamped while our clock ran ahead
     elseif not obj and refused(ev) and reaper.time_precise() - sync.refused_since(ev.id) <= 60 then
