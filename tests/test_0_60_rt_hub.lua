@@ -163,7 +163,9 @@ do
   assert(select(2, hub.snap_due(T, T - hub.SNAP_EVERY, false)) == "unchanged", "nothing new: not again")
   assert(hub.snap_due(T, T - hub.SNAP_EVERY, nil), "not known here (after a handover): due by time alone")
   assert(select(2, hub.snap_due(T, T - hub.SNAP_EVERY, true, T - 100, 1)) == "budget", "a slow one (1 s) waits 1/BUDGET s before the next")
-  assert(hub.snap_time("20261119-101500Z-Bo-hub_snapshot.json") == band.iso_time("2026-11-19T10:15:00Z"), "a hub snapshot's time from its name")
+  -- (a real os.time, as snap_due compares it with os.time(): one named ten minutes ago, in UTC, is ten minutes old. "-358 min ago", desktop, rt)
+  local ago = os.time() - hub.snap_time(os.date("!%Y%m%d-%H%M%SZ", os.time() - 600) .. "-Bo-hub_snapshot.json")
+  assert(math.abs(ago - 600) <= 2, "a hub snapshot's time from its name, as an os.time: " .. tostring(ago))
   assert(hub.snap_time("20261119-101500Z-Bo-end_of_session.json") == nil, "other saved versions aren't hub snapshots")
 end
 

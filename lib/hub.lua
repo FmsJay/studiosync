@@ -116,7 +116,9 @@ end
 -- A hub snapshot's file name (recall.save: "<YYYYMMDD-HHMMSSZ>-<user>-hub_snapshot.json") -> its os.time, or nil if it isn't one.
 function hub.snap_time(name)
   local y, mo, d, h, mi, s = tostring(name):match("^(%d%d%d%d)(%d%d)(%d%d)%-(%d%d)(%d%d)(%d%d)Z%-.*%-hub_snapshot%.json$")
-  return y and band.iso_time(string.format("%s-%s-%sT%s:%s:%sZ", y, mo, d, h, mi, s)) or nil
+  -- (as an os.time: now less its age. band.iso_time reads a UTC time as local, which put the last snapshot hours ahead here ("last -358 min
+  -- ago") and every next one "recent" for as long. Desktop, rt)
+  return y and os.time() - band.age(string.format("%s-%s-%sT%s:%s:%sZ", y, mo, d, h, mi, s)) or nil
 end
 
 -- Health's words. v: { studio, studio_why, song, hub, why, home }; me: this computer's user. Pure.
