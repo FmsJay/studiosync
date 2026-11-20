@@ -136,6 +136,7 @@ local inn = {}
 local exists = {}
 local peaks_calls = 0
 for k, v in pairs({
+  CountTracks = function() return 1 end, GetTrack = function() return TR end, UpdateArrange = function() end,
   CountTrackMediaItems = function(tr) return #track_items(tr) end,
   GetTrackMediaItem = function(tr, i) return track_items(tr)[i + 1] end,
   GetSetMediaItemInfo_String = function(it, k, v, set)
@@ -247,6 +248,14 @@ exists[real3.takes[1].src.file] = true
 clock = clock + 1.1
 streams.receive_tick(nil, cfg, b, false)
 assert(streams.book[d3.id] == nil and removed[e3.path], "the real take is in: the streamed copy goes")
+
+-- A placeholder left from before a Live sync reload (the book starts empty): the next prune pass takes it off; the band's own items stay
+local orphan = new_item(TR, "H/direct/studio1/.streams/Song/main~Bo~Bass-009.flac", 60, 2)
+orphan.ext.band_stream, orphan.ext.band_arriving = "Bo-20261119-115900Z-0009", "1"
+local n_before = #items
+clock = clock + streams.PRUNE_EVERY + 1
+streams.receive_tick(nil, cfg, b, false)
+assert(#items == n_before - 1 and items[#items] ~= orphan and items[1] == real, "orphaned placeholder gone, the real takes kept")
 
 -- ---- the recorder's side, with a stand-in REAPER ----
 local rec_dir, tracks_here = { "old.flac" }, { { name = "Bass", arm = 1, input = 1024, mode = 0, oid = "T-JAMES-1" }, { name = "Keys", arm = 0, input = 0, mode = 0, oid = "T-JAMES-2" } }

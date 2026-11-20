@@ -630,6 +630,17 @@ function streams.receive_tick(proj, cfg, b, recording)
   end
   if now - pruned_at >= streams.PRUNE_EVERY then
     pruned_at = now
+    -- (a placeholder no entry knows: Live sync reloaded (an update) while it showed, which empties the book, so nothing took it off. Laptop, rt)
+    for t = 0, reaper.CountTracks(proj) - 1 do
+      local tr = reaper.GetTrack(proj, t)
+      if not (recording and reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1) then
+        for j = reaper.CountTrackMediaItems(tr) - 1, 0, -1 do
+          local it = reaper.GetTrackMediaItem(tr, j)
+          local id = band.item_ext(it, "band_stream")
+          if id ~= "" and not streams.book[id] then reaper.DeleteTrackMediaItem(tr, it); reaper.UpdateArrange() end
+        end
+      end
+    end
     local folder = direct.inbox(cfg.root) .. "/.streams/" .. b.song
     for _, f in ipairs(streams.prunable(band.files(folder), streams.book, active, b.room)) do os.remove(folder .. "/" .. f) end
   end
