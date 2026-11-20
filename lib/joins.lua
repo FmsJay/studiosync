@@ -113,6 +113,10 @@ end
 -- once it's used), the token handed back. -> the token's text and fields, or nil (this computer can't make one: the plain join code then).
 function joins.make(root, role, now)
   now = now or os.time()
+  -- (a studio just started has no Tailscale network yet, and every invitation to it was the plain join code: the inviter's, as a guest
+  -- invitation sets it. LinuxBox join test, rt)
+  local groups = require("groups")
+  if not groups.tailnet(root) and groups.may_manage(root, me()) then pcall(groups.set_tailnet, root) end
   local host, dev = joins.can_make(root)
   local key, kp = my_key()
   if not (host and key) then return nil end
@@ -275,6 +279,10 @@ function joins.tick(now)
 end
 -- This computer's own records, once nobody needs them (run out, and a used one's KEEP_USED over).
 function joins.tidy(now)
+  -- (only where there's a key: my_key makes one, and every computer running Autostart got a private key and ~/.studiosync it never used.
+  -- LinuxBox join test, rt)
+  local p = joins.key_path()
+  if not (p and reaper.file_exists(p)) then return end
   local key = my_key()
   for _, x in ipairs(key and band.bands() or {}) do
     for _, f in ipairs(band.files(x.root .. "/_band/joins", ".json")) do
@@ -300,7 +308,11 @@ function joins.admitted(root, id, now)
 end
 -- Revoked: its record goes, so the computer that made it finds none and refuses it. Owner and admins (Settings).
 function joins.revoke(root, id)
-  if tostring(id):match("^%x+$") then band.remove(record_path(root, id)) end
+  if not tostring(id):match("^%x+$") then return end
+  band.remove(record_path(root, id))
+  -- (and out of this computer's open ones: kept there, the public ask channel stayed open up to 2 days for nothing. LinuxBox join test, rt)
+  local open = band.ext_json(band.SECTION, "joins open") or {}
+  if open[id] then open[id] = nil; band.set_ext_json(band.SECTION, "joins open", open, true) end
 end
 -- Open invitations and those used lately, for Settings: { { id, role, by, ends, used } }, read at most every 5 s. (Shown as written: whether
 -- one lets anyone in is decided where it's used, from its record as Syncthing says who wrote it.)

@@ -177,6 +177,8 @@ local t3, k3 = joins.make(ROOT, "member", now)
 joins.revoke(ROOT, k3.id)
 ok, why = joins.on_request(ask(t3, EVE_DEV, "Eve"), now + 10)
 check(not ok and why:find("no such") and not st.devices[EVE_DEV], "a revoked invitation (its record gone) lets nobody in")
+check(not (band.ext_json(band.SECTION, "joins open") or {})[k3.id] and (band.ext_json(band.SECTION, "joins open") or {})[k2.id],
+  "and it's no longer open here (the ask channel isn't kept open for it); the others stay")
 local t4, k4 = joins.make(ROOT, "member", now)
 trusted["_band/joins/" .. k4.id .. ".json"] = false
 ok, why = joins.on_request(ask(t4, EVE_DEV, "Eve"), now + 10)
@@ -222,6 +224,17 @@ fw = true
 manage.James = false
 check(joins.make(ROOT, "member", now) == nil, "a member can't make one")
 manage.James = true
+-- a studio just started has no Tailscale network yet: the inviter's is set, and the invitation is made (LinuxBox join test)
+local G = package.loaded.groups
+local tn, set_calls = G.tailnet, 0
+local net = nil
+G.tailnet = function() return net end
+G.set_tailnet = function() set_calls = set_calls + 1; net = tn(); return true end
+check(joins.make(ROOT, "member", now) and set_calls == 1, "no network yet: the inviter's set, then made")
+check(joins.make(ROOT, "member", now) and set_calls == 1, "one there: left as it is")
+net, G.set_tailnet = nil, function() set_calls = set_calls + 1; return false end
+check(joins.make(ROOT, "member", now) == nil and set_calls == 2, "not set (nothing verified here yet): the plain join code")
+G.tailnet, G.set_tailnet = tn, nil
 
 -- ---- the tick on the computer that made them: the ask channel, an ask from the link -------------------------------------------------------
 local t6, k6 = joins.make(ROOT, "member", now)

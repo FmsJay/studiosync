@@ -185,8 +185,9 @@ function groups.set_tailnet(root)
   if not (name and suffix) then return false end
   local t = groups.tailnet(root)
   if t and t.suffix == suffix then return true end
-  save(root, function(j) j.tailnet = { name = name, suffix = suffix } end, nil, true)
-  return true
+  -- (false when the quiet save wasn't made (nothing verified here yet): it said true, and Health's "Use <net>" logged a move that never
+  -- happened. LinuxBox join test, rt)
+  return save(root, function(j) j.tailnet = { name = name, suffix = suffix } end, nil, true) ~= false
 end
 -- Does the studio sync only through its Tailscale network (band.json "tailscale_only": services.pin_tailnet)? Set by the owner or an admin.
 function groups.tailscale_only(root) return groups.trusted(root).tailscale_only == true and groups.tailnet(root) ~= nil end
