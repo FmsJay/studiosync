@@ -756,6 +756,13 @@ it's the patient, lossless, store-and-forward half.
        computer alike, and aren't offered as the preferred hub or a song's hub in Settings.
      - **Visible:** Health's hub row adds "replaced within seconds (direct link)" or "within a minute", who the link lost, "You're a guest
        here", and a set-aside handover; Settings > Studio > Hub says the same rules.
+     - **Back from a restart, it listens first (2026-11-20, after the four-computer test):** for `hub.LISTEN` (45 s) after its REAPER came
+       online a computer keeps a role it holds but takes none (`listening` in the election), so the others' statuses are read over more than one
+       scan (a file whose stamp is off counts once it's seen changing; Syncthing may still be bringing them) before it claims. Alone, it's the
+       hub after 45 s. tests/test_0_60_rt_hub.lua. In the test itself the desktop (back at 00:39:35, its session.json set aside as written by
+       another computer, so no home) first chose the laptop's mix, lost sight of the laptop's status at ~00:41:30 for 4 min (presence: "waiting
+       for James-Laptop to have the newer extension") and took the role then as ordinary failover; the laptop, seeing both, kept it as the
+       better-ranked holder and had nothing to log. The listening period closes the startup race; a status that stops arriving still fails over.
      - **Still not yet:** the studio hub in another song than yours is still noticed by its status file (the link's peers are per room);
        snapshots in the extension or a background instance; prints, relaying, live mix at the hub.
    - **Third slice: the hub's live mix (rt-hubmix, 2026-11-19; native and Lua tests only, not run in REAPER yet).** Design, then what's built.
@@ -803,6 +810,14 @@ it's the patient, lossless, store-and-forward half.
        the studio hub isn't used for a song whose hub is away (peer to peer instead); the extension wants a release past 1.0.18
        (EXT_WANT not moved), and a Windows build needs `extension\third_party\build\` deleted once for the Opus patch (without it all works,
        with the slower level rise).
+     - **Its load, fixed (2026-11-20, after the four-computer test: the laptop's hub, i7-13700H on Balanced, ASIO at 128 samples, paused
+       itself every 2 min at 25-42% of a core):** the load was the send thread's clock time in the mix, so time it spent preempted (REAPER's own
+       threads at small blocks) counted as mixing. It's now that thread's own CPU time (QueryThreadCycleTime on Windows, in TSC ticks measured
+       against the clock; CLOCK_THREAD_CPUTIME_ID elsewhere; never more than the clock's), and the live audio threads opt out of Windows 11's
+       EcoQoS (on a hybrid laptop: an efficiency core at a low clock while REAPER isn't in front or the screen is off). The block size isn't the
+       cost: 3.8-4.5% of a core at 256, 128 and 64 samples on the desktop (a Ryzen 7700X), Opus's encode 96% of it; with every core busy beside
+       it the clock read 13.4% and the CPU time 10.5-11.5%; EcoQoS forced on the test, 4.4% without the opt-out and 3.9% with it.
+       tests/rtaudio_test.cpp (128 and 64 in the run; `rtaudio_test hubload` adds 256 and the busy case). The budget rules are unchanged.
      - **To check in REAPER:** the checklist in the session's report (four computers: desktop, laptop, Mac, LinuxBox).
 2. **Shared CPU.** The remote plug-in mechanism (4b) also works for plug-ins you DO have: freeze or offload a heavy
    track to whichever computer is idle.

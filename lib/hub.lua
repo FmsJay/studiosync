@@ -15,11 +15,12 @@
 -- never a hub.
 local band = require("band")
 local hub = { SCAN_EVERY = 10, FRESH = 45, HANDBACK = 30, SNAP_EVERY = 1800, IDLE = 60, BUDGET = 0.002, SCAN_MS = 4, TICK_EVERY = 2, LABEL = "hub snapshot",
-  TRANSFERS_KEPT = 50, LINK_GONE = 12, GUESTS_EVERY = 10 }
+  TRANSFERS_KEPT = 50, LINK_GONE = 12, GUESTS_EVERY = 10, LISTEN = 45 }
 
 -- ---- pure ----------------------------------------------------------------------------------------------------------------------------
 -- Candidates: { user, machine, since (os.time it came online), link (its direct link listens), off (handed the role on), studio (holds the
--- studio hub now), songs = { [song] = { holds = true when it holds that song's hub now } } }.
+-- studio hub now), songs = { [song] = { holds = true when it holds that song's hub now } }, listening (just came online: keeps a role it
+-- holds, takes none: hub.tick) }.
 -- The ranking, the same on every computer: the link listening first, then online longest, then machine id, then name.
 function hub.better(a, b)
   if (a.link == true) ~= (b.link == true) then return a.link == true end
@@ -41,15 +42,16 @@ local function settled(c, now, others_hold)
   return not others_hold or (now - math.max(tonumber(c.since) or now, tonumber(c.back) or -math.huge)) >= hub.HANDBACK
 end
 
+local function taking(c) return not c.listening end
 -- -> the studio hub's user (nil: nobody online who'll take it) and why: "preferred", "kept", "ranked", or "nobody".
 function hub.elect_studio(cands, preferred, now)
   local ok = {}
   for _, c in ipairs(cands or {}) do if not c.off then ok[#ok + 1] = c end end
   local holder = best(ok, function(c) return c.studio == true end)
   local p = preferred and find(ok, preferred)
-  if p and settled(p, now, holder and holder ~= p) then return p.user, "preferred" end
+  if p and taking(p) and settled(p, now, holder and holder ~= p) then return p.user, "preferred" end
   if holder then return holder.user, "kept" end
-  local r = best(ok)
+  local r = best(ok, taking)
   if r then return r.user, "ranked" end
   return nil, "nobody"
 end
@@ -61,10 +63,10 @@ function hub.elect_song(cands, song, home, studio, now)
   for _, c in ipairs(cands or {}) do if not c.off and type(c.songs) == "table" and c.songs[song] then here[#here + 1] = c end end
   local holder = best(here, function(c) return c.songs[song].holds == true end)
   local h = home and find(here, home)
-  if h and settled(h, now, holder and holder ~= h) then return h.user, "home" end
+  if h and taking(h) and settled(h, now, holder and holder ~= h) then return h.user, "home" end
   if holder then return holder.user, "kept" end
   if studio and find(here, studio) then return studio, "studio" end
-  local r = best(here)
+  local r = best(here, taking)
   if r then return r.user, "ranked" end
   return nil, "nobody"
 end
@@ -324,6 +326,11 @@ local function with_me(list, cfg, song)
   me.machine = me.machine or require("sync").machine()
   me.since, me.link, me.off, me.studio = hub.since(), link_ok, hub.off(cfg.root), h.studio == true
   me.songs[song] = { holds = h.songs[song] == true }
+  -- Just came online: for LISTEN s it takes no role it doesn't hold, so it has heard the room first: the others' statuses read over more than
+  -- one scan (one whose stamp is off counts only once it's seen changing here: hub.candidates; Syncthing may still be bringing them after
+  -- REAPER or the computer was off) and the direct link's first answers in. Before, a computer back from a restart took a role the moment it
+  -- saw nobody holding it, while the one holding it wasn't in its view yet: both hub at once (James, rt: the desktop and the laptop).
+  me.listening = os.time() - me.since < hub.LISTEN or nil
   return out
 end
 

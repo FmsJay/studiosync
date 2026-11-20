@@ -6,9 +6,11 @@
 // JSON does (StudioSync_LiveAudioPeers). Then C mutes what it sends (Mute me: silence, the stream kept) and unmutes, heard again at once; then
 // C leaves B out of what it sends (talkback to someone else) and lets it back in. Then Wi-Fi's bursts (the adaptive buffer), then Play
 // (the second stream, from a Hop's ring: heard apart from Talk), then the hub's live mix (a hub and three listeners: each listener's own levels
-// through the hub, talkback through it, the extra hop's latency, the streams each listener sends, and the hub dropping: direct again).
+// through the hub, talkback through it, the extra hop's latency, the streams each listener sends, and the hub dropping: direct again), and
+// the hub's load at 128 and 64-sample blocks (its own CPU time).
 // Build and run: tests\build_rtaudio_test.cmd (macOS/Linux: the CI's line in .github/workflows/extension.yml). GPL-3.0-or-later.
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -31,8 +33,70 @@ static std::string field(const std::string &json, const std::string &peer, const
   return json.substr(v, e - v);
 }
 
-int main()
+// The hub's load at a given block size (James, rt: the laptop's hub, ASIO at 128 samples, paused itself at 25-29% of a core where the desktop's
+// 256-sample test measured 5%). A hub and three listeners, each sending a tone; the hub's load read once a second after it settles. busy: as
+// many spinning threads as cores beside it (another program, or REAPER's own FX threads, taking the cores: the send thread gets preempted).
+static double hub_load_at(int len, int port0, bool busy)
 {
+  const int SR = 48000;
+  const double PI = 3.14159265358979;
+  char nm[4][32];
+  RtLink *L[4];
+  for (int i = 0; i < 4; ++i) { snprintf(nm[i], sizeof nm[i], "127.0.0.1:%d", port0 + i); L[i] = rt_new(); }
+  for (int i = 0; i < 4; ++i) {
+    std::string list;
+    for (int j = 0; j < 4; ++j) if (j != i) list += std::string(list.empty() ? "" : ", ") + "\"" + nm[j] + "\"";
+    rt_peers(L[i], (std::string("{\"peers\":[") + list + "],\"port\":" + std::to_string(port0 + i) + ",\"secret\":\"studio\"}").c_str());
+    rt_start(L[i], 0, 1, 128, 0, "127.0.0.1");
+  }
+  std::atomic<bool> spinning{ busy };
+  std::vector<std::thread> spin;
+  if (busy) for (unsigned i = 0; i < std::max(2u, std::thread::hardware_concurrency()); ++i) spin.emplace_back([&] { volatile double x = 1; while (spinning.load()) x = x * 1.0000001 + 1e-9; });
+  const auto at = [&](double s) { return (int)(s * SR / len); };
+  std::vector<double> in(len), out(len), out2(len);
+  double sum = 0, mx = 0;
+  int n = 0;
+  long long k0 = 0;
+  const auto t0 = std::chrono::steady_clock::now();
+  for (int b = 0; b < at(6.0); ++b) {
+    const auto due = t0 + std::chrono::nanoseconds((long long)(1e9 * b * len / SR));
+    while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
+    if (b == at(0.5)) { rt_hub(L[0], "", 1); for (int i = 1; i < 4; ++i) rt_hub(L[i], nm[0], 0); }
+    if (b > at(2.5) && b % at(1.0) == 0) {
+      const double v = atof(field(rt_status(L[0]), "hub", "load").c_str());
+      sum += v; mx = std::max(mx, v); ++n;
+    }
+    for (int i = 0; i < 4; ++i) {
+      for (int k = 0; k < len; ++k) in[k] = 0.2 * sin(2 * PI * 300 * (i + 1) * (double)(k0 + k) / SR);
+      const double *ii[1] = { in.data() };
+      rt_capture(L[i], ii, 1, len, SR);
+      double *oo[2] = { out.data(), out2.data() };
+      rt_mix(L[i], oo, 2, len, SR);
+    }
+    k0 += len;
+  }
+  const std::string s = rt_status(L[0]);
+  spinning.store(false);
+  for (std::thread &t : spin) t.join();
+  printf("     hub load, %d-sample blocks%s: %.1f%% of a core on average, %.1f%% at most (serving %s, skipped %s)\n", len, busy ? ", every core busy beside it" : "",
+         n ? 100 * sum / n : -1.0, 100 * mx, field(s, "hub", "serving").c_str(), field(s, "hub", "skipped").c_str());
+  for (int i = 0; i < 4; ++i) rt_free(L[i]);
+  return mx;
+}
+
+// Desktop (Ryzen 7700X), three listeners: 3.8-4.5% of a core at 256, 128 and 64 (the block size isn't the cost: Opus's encode is, 96% of it).
+// With every core busy beside it the clock read 13.4%, its own CPU time 10.5-11.5% (two threads to a core and a lower clock: real, but not
+// the mix's doing). busy runs only with the "hubload" argument (rtaudio_test hubload: these alone), not on the CI's small runners.
+static void hub_loads(bool busy)
+{
+  const double l128 = hub_load_at(128, 47421, false), l64 = hub_load_at(64, 47431, false);
+  check(l128 > 0 && l128 < 0.25 && l64 > 0 && l64 < 0.25, "hub load: three listeners stay inside the 25% budget at 128 and 64-sample blocks");
+  if (busy) check(hub_load_at(256, 47411, false) > 0 && hub_load_at(128, 47441, true) < 0.25, "hub load: at 256, and at 128 with every core busy beside it, inside the budget");
+}
+
+int main(int argc, char **argv)
+{
+  if (argc > 1 && strcmp(argv[1], "hubload") == 0) { hub_loads(true); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   const int SR = 48000, LEN = 256, PA = 47391, PB = 47392, PC = 47393;
   const double PI = 3.14159265358979;
   RtLink *A = rt_new(), *B = rt_new(), *C = rt_new();
@@ -385,6 +449,7 @@ int main()
     check(field(end_x, "hub", "state") == "\"direct\"" && field(end_x, "hub", "fallbacks") == "1", "hub: X's status: direct, one fallback");
     for (int i = 0; i < 4; ++i) rt_free(L[i]);
   }
+  hub_loads(false); // (the hub's load at REAPER's small blocks, as the laptop's ASIO runs: 128 and 64 samples)
   rt_free(A); rt_free(B); rt_free(C); rt_free(bad);
   printf(fails ? "fails %d\n" : "ok, fails 0\n", fails);
   return fails ? 1 : 0;

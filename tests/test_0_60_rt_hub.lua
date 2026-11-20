@@ -225,6 +225,7 @@ end
 -- ---- the tick: the role worked out from the shared folder, the job paused while playing, waiting until idle ----
 do
   local cfg, b = { root = "R", user = "Bo" }, { song = "Song", room = "main" }
+  reaper.SetExtState(band.SECTION, "hub since", tostring(os.time() - 1000)) -- (online a while: past hub.LISTEN)
   files["R/Song/session.json"] = { host = "Bo" }
   band.songs = function() return { "Song" } end
   band.subdirs = function(d) return d == "R/Song/rooms" and { "main" } or {} end
@@ -315,6 +316,61 @@ do
   assert(hub.home(cfg, "Song") == nil, "a session.json naming a sharer whose computer didn't write it: no home (the studio hub stands in)")
   trust.own_file_ok = function() return nil end
   assert(hub.home(cfg, "Song") == nil and #select(3, hub.home(cfg, "Song")) == 0, "not checked yet: waits, and nothing is called forged")
+  trust.own_file_ok = real
+end
+
+-- ---- back from a restart: it hears the room before it takes a role (James, rt: the desktop, back, was the song's hub at once while the
+-- laptop held it, both hub for minutes). Lap holds the song's hub; Desk's REAPER has just started and Lap's status isn't in its view yet
+-- (its stamp reads old here: it counts once its file is seen changing, the next scan). ----
+do
+  local cfg, b = { root = "R2", user = "Desk" }, { song = "Song", room = "main" }
+  files["R2/Song/session.json"] = { host = "Chilio" } -- (shared by someone not online: no home here)
+  local trust = require("trust")
+  local real = trust.own_file_ok
+  trust.own_file_ok = function() return true end
+  local lap_here, stamp = true, 0
+  band.songs = function() return { "Song" } end
+  band.subdirs = function(d) return d == "R2/Song/rooms" and { "main" } or {} end
+  band.files = function(d) if d == "R2/Song/rooms/main/status" and lap_here then return { "Lap.json" } end return {} end
+  band.age = function() return 1e9 end
+  local function lap_writes()
+    stamp = stamp + 1
+    files["R2/Song/rooms/main/status/Lap.json"] = { user = "Lap", machine = "ml", time = "t" .. stamp, hub = { since = os.time() - 3000, link = true, song = true, studio = true } }
+  end
+  package.loaded.direct = { available = function() return false end }
+  local function tick() now_p = now_p + hub.SCAN_EVERY + 1; hub.tick("P", cfg, b); return band.ext_json(band.SECTION, "hub view studio1 Song") end
+  reaper.SetExtState(band.SECTION, "hub since", tostring(os.time())) -- (this REAPER just started)
+  lap_writes()
+  local v = tick()
+  assert(v.hub == nil and v.studio == nil, "just started, Lap not in view yet: Desk takes no role (it used to be the hub at once, ranked)")
+  lap_writes()
+  v = tick()
+  assert(v.hub == "Lap" and v.why == "kept" and v.studio == "Lap", "Lap's file seen changing: Lap holds both, and keeps them")
+  reaper.SetExtState(band.SECTION, "hub since", tostring(os.time() - hub.LISTEN - 1))
+  lap_writes()
+  v = tick()
+  assert(v.hub == "Lap" and v.studio == "Lap", "listened long enough: Desk still doesn't take what Lap holds")
+  lap_here = false
+  v = tick()
+  assert(v.hub == "Desk" and v.why == "studio" and v.studio == "Desk", "Lap gone, Desk past listening: Desk takes them")
+  -- alone and just started: nobody for LISTEN s, then this computer
+  local cfg3 = { root = "R3", user = "Solo" }
+  reaper.SetExtState(band.SECTION, "hub since", tostring(os.time()))
+  now_p = now_p + hub.SCAN_EVERY + 1
+  hub.tick("P", cfg3, b)
+  assert(band.ext_json(band.SECTION, "hub view studio1 Song").hub == nil, "alone, just started: nobody yet (the cloud copy stands in a moment)")
+  reaper.SetExtState(band.SECTION, "hub since", tostring(os.time() - hub.LISTEN))
+  now_p = now_p + hub.SCAN_EVERY + 1
+  hub.tick("P", cfg3, b)
+  assert(band.ext_json(band.SECTION, "hub view studio1 Song").hub == "Solo", "alone after LISTEN s: this computer")
+  -- the pure election: one listening keeps what it holds, takes nothing else
+  local desk = c("Desk", T - 5, { link = true, listening = true, songs = { Song = {} } })
+  local lap = c("Lap", T - 900, { link = true, songs = { Song = {} } })
+  assert(hub.elect_studio({ desk, lap }, "Desk", T) == "Lap" and hub.elect_song({ desk, lap }, "Song", "Desk", nil, T) == "Lap",
+    "listening: not the preferred hub nor the song's home yet")
+  assert(hub.elect_studio({ desk }, nil, T) == nil and hub.elect_song({ desk }, "Song", "Desk", nil, T) == nil, "listening alone: nobody yet")
+  desk.studio, desk.songs.Song.holds = true, true
+  assert(hub.elect_studio({ desk, lap }, nil, T) == "Desk" and hub.elect_song({ desk, lap }, "Song", nil, nil, T) == "Desk", "listening but holding: keeps it")
   trust.own_file_ok = real
 end
 

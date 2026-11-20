@@ -41,6 +41,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <intrin.h>
 typedef SOCKET sock_t;
 #define BAD_SOCK INVALID_SOCKET
 #define close_sock closesocket
@@ -50,6 +51,7 @@ typedef SOCKET sock_t;
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 typedef int sock_t;
 #define BAD_SOCK (-1)
@@ -234,12 +236,37 @@ struct RtLink {
   std::atomic<bool> hserve{ false };
   std::atomic<long long> hskipped{ 0 };
   double hub_ns = 0, hub_audio_s = 0, hub_load = 0, hub_max_us = 0, hub_win = 0; // (stats_mx: the mixing's share of one core, over ~1 s)
+  double hub_cpu = 0, hub_tick0 = 0; // (stats_mx: the send thread's own CPU time in hub_serve this window, in thread_ticks; ticks_now at its start)
   int hub_serving = 0;
 };
 
 namespace {
 std::once_flag g_aoo_once;
 double now_s() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+// The calling thread's own CPU time, for the hub's load: the clock also counts the time it was preempted (REAPER's FX and audio threads at
+// 128-sample blocks, another program), which isn't the mix's cost (James, rt: the laptop's hub paused itself at 25-29%; its own cost is ~5%).
+// Windows counts it in the TSC's ticks (QueryThreadCycleTime: a constant rate on x64), whose rate ticks_now measures against the clock.
+#if defined(_WIN32) && (defined(_M_X64) || defined(_M_IX86))
+double thread_ticks() { ULONG64 c = 0; return QueryThreadCycleTime(GetCurrentThread(), &c) ? (double)c : -1; }
+double ticks_now() { return (double)__rdtsc(); }
+#elif !defined(_WIN32)
+double thread_ticks() { timespec t; return clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t) == 0 ? t.tv_sec * 1e9 + t.tv_nsec : -1; }
+double ticks_now() { return now_s() * 1e9; }
+#else
+double thread_ticks() { return -1; } // (no thread CPU time here: the clock's)
+double ticks_now() { return now_s() * 1e9; }
+#endif
+// The send and receive threads carry the live audio and the hub's mix. Windows 11 runs a background app's threads as EcoQoS (on a hybrid
+// laptop: an efficiency core at a low clock) when REAPER isn't in front or the screen is off; these opt out, as REAPER's audio thread does
+// through MMCSS. Windows 10 1709 and later (looked up, so older ones just skip it); elsewhere nothing.
+void full_speed()
+{
+#ifdef _WIN32
+  THREAD_POWER_THROTTLING_STATE s = { THREAD_POWER_THROTTLING_CURRENT_VERSION, THREAD_POWER_THROTTLING_EXECUTION_SPEED, 0 };
+  typedef BOOL(WINAPI * SetInfo)(HANDLE, THREAD_INFORMATION_CLASS, LPVOID, DWORD);
+  if (SetInfo f = (SetInfo)(void *)GetProcAddress(GetModuleHandleA("kernel32.dll"), "SetThreadInformation")) f(GetCurrentThread(), ThreadPowerThrottling, &s, sizeof(s));
+#endif
+}
 unsigned fnv(const std::string &s) { unsigned h = 2166136261u; for (unsigned char c : s) { h ^= c; h *= 16777619u; } return h; }
 AooId id_of(const std::string &addr) { const AooId v = (AooId)(fnv(addr) & 0x7fffffff); return v ? v : 1; }
 std::string addr_str(const sockaddr_in &a)
@@ -811,6 +838,7 @@ void hub_watch(RtLink *l, double now)
 void hub_serve(RtLink *l, double now)
 {
   const auto t0 = std::chrono::steady_clock::now();
+  const double c0 = thread_ticks();
   const int ns = l->nslots, len = l->cfg_len;
   int n = 0;
   {
@@ -825,7 +853,7 @@ void hub_serve(RtLink *l, double now)
   if (n > 0 && !l->hserve.load()) { l->hr.store(l->hw.load()); l->hserve.store(true); } // (from now on: nothing older)
   if (n == 0) {
     l->hserve.store(false);
-    if (l->hub_serving) { std::lock_guard<std::mutex> st(l->stats_mx); l->hub_serving = 0; l->hub_load = l->hub_ns = l->hub_audio_s = 0; } // (no stale load once it stops)
+    if (l->hub_serving) { std::lock_guard<std::mutex> st(l->stats_mx); l->hub_serving = 0; l->hub_load = l->hub_ns = l->hub_audio_s = l->hub_cpu = l->hub_tick0 = 0; } // (no stale load once it stops)
     return;
   }
   // each listener's levels, by where each sound is in the ring (k: a peer's slot; ns: this computer's own)
@@ -871,15 +899,21 @@ void hub_serve(RtLink *l, double now)
   l->hr.store(w, std::memory_order_release);
   for (int i = 0; i < ns; ++i) if (l->slots[i]->mserving) l->slots[i]->msrc->send(send_fn, l); // (the encode: most of the cost)
   const double ns_took = (double)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+  const double c1 = thread_ticks();
   std::lock_guard<std::mutex> st(l->stats_mx);
   l->hub_serving = n;
   l->hub_ns += ns_took;
+  l->hub_cpu += c0 >= 0 && c1 >= c0 ? c1 - c0 : -1e300; // (no thread time: the window falls back to the clock)
   l->hub_audio_s += (double)blocks * len / std::max(1, l->cfg_sr);
   if (blocks) l->hub_max_us = std::max(l->hub_max_us, ns_took / 1000.0 / (double)blocks);
   if (now - l->hub_win >= 1.0) { // (its share of one core over the last second or so, and the hub's numbers to each listener: 'I')
-    l->hub_load = l->hub_audio_s > 0 ? l->hub_ns / 1e9 / l->hub_audio_s : 0;
-    l->hub_ns = l->hub_audio_s = 0;
+    const double tk = ticks_now(), per_ns = l->hub_tick0 > 0 ? (tk - l->hub_tick0) / ((now - l->hub_win) * 1e9) : 0; // (thread ticks per ns)
+    const double wall = l->hub_audio_s > 0 ? l->hub_ns / 1e9 / l->hub_audio_s : 0;
+    // its own CPU time; never more than the clock's (a tick rate gone wrong), and the clock's for the first window or without thread time
+    l->hub_load = per_ns > 0 && l->hub_cpu >= 0 && l->hub_audio_s > 0 ? std::min(wall, l->hub_cpu / per_ns / 1e9 / l->hub_audio_s) : wall;
+    l->hub_ns = l->hub_audio_s = l->hub_cpu = 0;
     l->hub_win = now;
+    l->hub_tick0 = tk;
   }
   if (now >= l->next_info) {
     l->next_info = now + MODE_EVERY;
@@ -972,6 +1006,7 @@ void adapt(RtLink *l, Slot &p, double now)
 
 void tx_loop(RtLink *l)
 {
+  full_speed();
   while (l->run.load()) {
     l->wake.wait_for(0.005);
     reconfigure(l);
@@ -1073,6 +1108,7 @@ void rx_one(RtLink *l, const unsigned char *d, int n, const sockaddr_in &from)
 }
 void rx_loop(RtLink *l)
 {
+  full_speed();
   std::vector<unsigned char> buf(AOO_MAX_PACKET_SIZE + 64);
   while (l->run.load()) {
     const double hold = l->hold_until.load() - now_s();
