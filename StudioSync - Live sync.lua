@@ -745,6 +745,10 @@ function P.status(t)
     produce_ctl = require("producer").who(proj) and require("producer").ctl(proj) or nil, measure = require("latency").asking(proj),
     lets = require("producer").lets_for(proj) } -- (whoever produces me may start and stop my transport: their panel shows its buttons)
   if info.follow == "" then info.follow = nil end
+  do -- (this computer's live audio: muted, push-to-talk, or why it can't run here, so the others' Health says "Mac: needs extension 1.0.13". James, rt)
+    local okla, la = pcall(require("liveaudio").my_la)
+    info.la = okla and la or nil
+  end
   if followed then info.mix = require("presence").my_mix(proj) end -- (someone follows you: they hear your mix. lib/presence.lua)
   if followed and not info.playing then info.cursor = math.floor(reaper.GetCursorPositionEx(proj) * 1000 + 0.5) / 1000 end -- (followers' cursors go here: lib/presence.lua)
   -- (what live audio you're in, for the little icons on your card: Real time mode or Time-sync, and the call. James, 0.59.8)

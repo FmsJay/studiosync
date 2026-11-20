@@ -686,7 +686,9 @@ end
 -- as actions). The rest come back when the panel runs one, when a key, a toolbar or a menu uses one, or all of them with Settings >
 -- "Every StudioSync action in REAPER's Actions list" (ExtState "all actions"). Their command ids come from their paths, so bindings survive.
 -- (and the radial menu: it's for a key or mouse button, and it wasn't there to give one: James, 0.59.38)
-band.SHOWN = { Panel = true, Undo = true, Redo = true, ["Live sync"] = true, Draw = true, ["Radial menu"] = true }
+-- (and live audio's four: on in every studio now, they're there to be put on a key or a toolbar button. James, rt)
+band.SHOWN = { Panel = true, Undo = true, Redo = true, ["Live sync"] = true, Draw = true, ["Radial menu"] = true,
+  ["Live audio mute me"] = true, ["Live audio deafen"] = true, ["Live audio hold to talk"] = true, ["Live audio talkback"] = true }
 function band.all_actions() return reaper.GetExtState(band.SECTION, "all actions") == "1" end
 -- Should this script be in the Actions list? Pure. name: "Hold my changes"; used: a key, toolbar or menu runs it.
 function band.shown_action(name, all, used) return all or used or band.SHOWN[name] == true end

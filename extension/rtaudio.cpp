@@ -79,6 +79,8 @@ struct Slot {
   AooSink *sink = nullptr;
   std::atomic<float> gain{ 1.f }, peak{ 0.f };
   std::atomic<bool> mute{ false }, mono{ false };
+  std::atomic<bool> want_send{ true }; // (talkback: does this peer get what this computer sends? rt_send sets it, the send thread acts on it)
+  bool sending = true;                 // (what the send thread last told AOO for this peer)
   // from AOO's events (the send thread writes, rt_status reads; stats_mx)
   bool streaming = false;
   double rtt_ms = -1, buffer_ms = -1, src_lat_ms = 0, sink_lat_ms = 0, loss = 0;
@@ -92,6 +94,7 @@ struct RtLink {
   bool peers_dirty = false;
   int want_port = 0;          // (from the peers JSON: the port rt_start binds when it's given 0)
   std::atomic<float> in_peak{ 0.f }; // what this computer sends, peak since the last status (the panel's "you're heard" meter)
+  std::atomic<bool> send_on{ true };  // (Mute me and push-to-talk: false sends silence, the stream stays up so unmuting is instant. Kept across restarts)
   int first = 0, nch = 2, kbps = 128, port = 0;
   sockaddr_in me{};
   bool loopback = false;
@@ -440,11 +443,25 @@ void reconfigure(RtLink *l)
   l->live.store(l->cfg_sr > 0);
 }
 
+// Talkback (rt_send with a peer): a peer left out stops getting this computer's stream (AOO deactivates that sink; let back in, its jitter buffer
+// refills, a few tens of ms). The send thread's, as every change to the source. (James, rt)
+void apply_sends(RtLink *l)
+{
+  for (int i = 0; i < l->nslots; ++i) {
+    Slot &p = *l->slots[i];
+    const bool want = p.want_send.load();
+    if (!p.added || want == p.sending) continue;
+    AooEndpoint ep = { &p.addr, (AooAddrSize)sizeof(p.addr), p.remote_sink_id };
+    if (l->src->activate(ep, want ? kAooTrue : kAooFalse) == kAooOk) p.sending = want;
+  }
+}
+
 void tx_loop(RtLink *l)
 {
   while (l->run.load()) {
     l->wake.wait_for(0.005);
     reconfigure(l);
+    apply_sends(l);
     if (!l->live.load()) continue;
     // AOO's source (v2.0-pre4, source.cpp process) reblocks REAPER's blocks into Opus frames through its resampler, and when the
     // send thread falls behind (a stall of ~60 ms on the macOS CI runner) both the resampler and the queue fill. From then on
@@ -585,6 +602,15 @@ int rt_peers(RtLink *l, const char *json)
   return (int)peers.size();
 }
 
+int rt_send(RtLink *l, const char *peer, int on)
+{
+  if (!peer || !*peer) { l->send_on.store(on != 0); return 1; }
+  std::lock_guard<std::mutex> g(l->cfg_mx);
+  for (int i = 0; i < l->nslots; ++i)
+    if (l->slots[i]->peer == peer) { l->slots[i]->want_send.store(on != 0); l->wake.set(); return 1; }
+  return 0;
+}
+
 int rt_peer_set(RtLink *l, const char *peer, double gain, int mute)
 {
   std::lock_guard<std::mutex> g(l->cfg_mx);
@@ -643,11 +669,12 @@ void rt_capture(RtLink *l, const double *const *in, int nin, int len, double sra
     l->seen_len.store(len, std::memory_order_relaxed);
     if (l->live.load() && (int)srate == l->cfg_sr && len == l->cfg_len) {
       float pk = 0;
+      const bool on = l->send_on.load(std::memory_order_relaxed); // (muted: silence goes out, but the meter still reads the input, so the panel can say "you're talking while muted")
       for (int c = 0; c < l->nch; ++c) {
         const int i = l->first + c;
         const double *src = i < nin && in ? in[i] : nullptr;
         float *dst = l->inptr[c];
-        if (src) for (int k = 0; k < len; ++k) { dst[k] = (float)src[k]; pk = std::max(pk, std::fabs(dst[k])); }
+        if (src) for (int k = 0; k < len; ++k) { const float v = (float)src[k]; pk = std::max(pk, std::fabs(v)); dst[k] = on ? v : 0.f; }
         else std::fill(dst, dst + len, 0.f);
       }
       if (pk > l->in_peak.load(std::memory_order_relaxed)) l->in_peak.store(pk, std::memory_order_relaxed);
@@ -730,10 +757,12 @@ static void api_stop()
 static int api_peers(const char *json) { return g_rt ? rt_peers(g_rt, json) : -1; }
 static const char *api_status() { g_status = g_rt ? rt_status(g_rt) : "{}"; return g_status.c_str(); }
 static int api_peer_set(const char *peer, double gain, int mute) { return g_rt ? rt_peer_set(g_rt, peer, gain, mute) : 0; }
+static int api_send(const char *peer, int on) { return g_rt ? rt_send(g_rt, peer, on) : 0; }
 static void *vla_start(void **a, int n) { return n < 3 ? nullptr : (void *)(INT_PTR)api_start((int)(INT_PTR)a[0], (int)(INT_PTR)a[1], (int)(INT_PTR)a[2]); }
 static void *vla_stop(void **, int) { api_stop(); return nullptr; }
 static void *vla_peers(void **a, int n) { return n < 1 ? nullptr : (void *)(INT_PTR)api_peers((const char *)a[0]); }
 static void *vla_status(void **, int) { return (void *)api_status(); }
+static void *vla_send(void **a, int n) { return n < 2 ? nullptr : (void *)(INT_PTR)api_send((const char *)a[0], (int)(INT_PTR)a[1]); }
 static void *vla_peer_set(void **a, int n) { return n < 3 || !a[1] ? nullptr : (void *)(INT_PTR)api_peer_set((const char *)a[0], *(double *)a[1], (int)(INT_PTR)a[2]); } // (a double comes as a pointer)
 
 void rtaudio_shutdown() { api_stop(); }
@@ -752,6 +781,8 @@ void rtaudio_register(reaper_plugin_info_t *rec)
       "const char*\0\0\0StudioSync's live audio as JSON: running, bind, error, secret, srate, block, level (what you send, peak since the last ask), callbacks, max_us, sent, received, rejected, last_reject, and per peer: resolved, streaming, rtt_ms, latency_ms, buffer_ms (the jitter buffer), loss (0-1), dropped, underruns, level (peak since the last ask), gain, mute." },
     { "StudioSync_LiveAudioPeerSet", (void *)api_peer_set, (void *)vla_peer_set,
       "int\0const char*,double,int\0peer,gain,mute\0A peer's level (linear, 0-4) and mute in what you hear (the cue mix). Returns 1 when that peer is in the list." },
+    { "StudioSync_LiveAudioSend", (void *)api_send, (void *)vla_send,
+      "int\0const char*,int\0peer,on\0What this computer sends. peer \"\": everything (on 0 sends silence while the stream stays up: Mute me, push-to-talk). A peer in the list: whether that peer gets it (talkback: one bandmate hears you, the others don't). Returns 1 when done (0: that peer isn't in the list)." },
   };
   char key[96];
   for (const auto &f : fns) {

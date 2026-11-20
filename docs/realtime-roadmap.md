@@ -1060,3 +1060,23 @@ Problems found, not fixed (risky or a behaviour change; for James to pick):
 - **REAPER test:** record over a region: the take reads "Verse - <you> - take 1" here and on a bandmate; again: take 2; type a name, record
   elsewhere: the typed one stays; Settings > Studio off: REAPER's names. Leave: the log's "last session (...)" line, Restore > Last session,
   `<room>/recaps/<you>.json`, and the .md in the cloud folder's `<song>/recaps`.
+
+## Live audio, my mic (rt-liveux branch, 2026-11-19; offline and native tests only, not run in REAPER yet)
+Live audio is on in every studio now, so it has to be pleasant and safe (lib/liveaudio.lua "My mic").
+- **Mute me / Deafen:** kept per computer; in the panel's top bar (the mic says Mic live / Muted / Muted (you're talking) / Push to talk /
+  Talking / Deafened / Talkback: Bo), Chat > Call, and as actions (StudioSync - Live audio mute me, deafen; toolbar buttons light while on).
+  Deafen also stops sending, as call apps do.
+- **Push-to-talk and hold to talk:** StudioSync - Live audio hold to talk (js_ReaScriptAPI sees the key let go; 0.25 s tail; a latch from a
+  toolbar button or pad) and Chat > Call's Hold to talk. A held key is a beat in ExtState that runs out in 0.6 s, so a crashed script never
+  leaves the mic open. Held talk opens a muted mic while held.
+- **Talkback:** Talk beside a bandmate in Chat > Call, or StudioSync - Live audio talkback (to the last one chosen): only they hear you.
+  Quiet while this computer records (James's pick above). Without the extension's per-peer send, talkback sends nothing, never to everyone.
+- **Defaults:** hearing others on; sending on, with a first-run note ("Live audio is on", until Got it) and an echo warning (a loopback input
+  such as Stereo Mix, or REAPER monitoring the input sent while it's live) that offers Mute me or "It's headphones".
+- **Cue mix:** a master volume (Everyone) over each bandmate's level; levels kept by bandmate name (the link's peers now say whose computer
+  each is), so a renamed or new computer keeps its person's level. A mix kept by address before still counts.
+- **Health:** "hearing Bo 68 ms (buffer 30 ms, loss 0.0%), muted; Chilio not connected: needs extension 1.0.13": each computer's status file
+  carries `la` (on, muted, deaf, ptt, or why it can't run: ext, tailscale, firewall).
+- **Extension:** StudioSync_LiveAudioSend(peer, on) (rtaudio.cpp rt_send): peer "" sends silence while the stream stays up (the meter still
+  reads the input); a peer is left out of the source (AOO deactivates that sink). Native test: unmuted heard again after 46 ms, a peer let
+  back in after 43 ms. Without it, Mute me restarts live audio on an input that isn't there; push-to-talk and talkback wait for it.

@@ -257,7 +257,7 @@ function H.build_rows()
   do -- (the scripts came by the shared folder, so ReaPack never updated the extension: no amber dot on a Mac. Mac review, 0.59.14)
     -- (the extension is mandatory: missing or older than the direct link's is a problem to fix, red; then the link, its Set up button on Windows
     -- and the shared clock. lib/direct.lua health_rows. James, 0.60.0-rt)
-    local okd, drows = pcall(require("direct").health_rows, cfg)
+    local okd, drows = pcall(require("direct").health_rows, cfg, b)
     for _, r in ipairs(okd and drows or {}) do rows[#rows + 1] = r end
     -- (recording FLAC with "In time" listening chosen: takes arrive in 2-5 s steps; WAV or more bars. lib/streams.lua format_row. James, rt)
     local okf, frow = pcall(require("streams").format_row, proj)
