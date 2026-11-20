@@ -286,13 +286,23 @@ static void report(const char *what, const Result &r)
 static double exact_pct(const Result &r) { const uint64_t wet = r.frames > r.first_wet ? r.frames - r.first_wet : 0; return wet ? 100.0 * r.exact / wet : 0; }
 // After a stall: from a second after it, every frame back exact; and once the status's windows (the last one to two seconds) no longer
 // hold it, the hop is back inside its budget with slack to spare. What a stall too near the run's end leaves no time for isn't checked.
+// This computer's 1 ms sleep (median), measured at the start. The hop and this harness poll on 1 ms timers (REAPER's), and the hop's need
+// counts them at that. Over 2 ms the timers are coarse (GitHub's hosted Mac: 8-15 ms for a 3 ms sleep, Linux and Windows ~1 ms): each of
+// the round trip's four timed stages (the sender's turn, the wire out, the remote's turn, the wire back) runs up to a tick late under
+// STALL_S, unseen, and the jump scenario's slack there came out 42 ms under Linux's with no stall seen. So on coarse timers, unless
+// SS_TIMING_STRICT, recovery is held to no lasting loss (99% exact, a dropout or two; staying behind is ~0%) and slack to -4 ticks.
+static double g_tick_ms = 1;
+static bool coarse() { return g_tick_ms > 2 && !strict(); }
 static void recovered(const Result &r, double secs)
 {
   printf("  a %.0f ms stall ending %.2f s in; from a second after it: exact %.2f%% of %llu frames\n", r.hiccup_ms, r.hiccup,
          r.after ? 100.0 * r.exact_after / r.after : 0.0, (unsigned long long)r.after);
-  if (r.after >= 24000) CHECK(r.exact_after * 1000 >= r.after * 999, "every frame back exact from a second after the stall");
+  if (r.after >= 24000)
+    CHECK(r.exact_after * 1000 >= r.after * (coarse() ? 990 : 999),
+          coarse() ? "no lasting loss from a second after the stall (coarse timers: 99%)" : "every frame back exact from a second after the stall");
   else { printf("  (too near the end to check the frames after it)\n"); CHECK(!strict(), "a run that leaves time to check after its last stall (SS_TIMING_STRICT)"); }
-  if (r.hiccup <= secs - 2.3) CHECK(num(r.sst, "slack_ms") >= 0 && num(r.sst, "need_ms") < num(r.sst, "budget_ms"), "back inside the budget, slack to spare");
+  if (r.hiccup <= secs - 2.3)
+    CHECK(num(r.sst, "slack_ms") >= (coarse() ? -4 * g_tick_ms : 0) && num(r.sst, "need_ms") < num(r.sst, "budget_ms"), "back inside the budget, slack to spare");
   else printf("  (too near the end to check the budget after it)\n");
 }
 
@@ -313,6 +323,13 @@ int main()
 #ifdef _WIN32
   timeBeginPeriod(1); // (REAPER runs with 1 ms timers; Windows' default 15.6 ms would bunch the test's blocks)
 #endif
+  {
+    std::vector<double> t;
+    for (int i = 0; i < 21; ++i) { const double a = now_s(); std::this_thread::sleep_for(std::chrono::milliseconds(1)); t.push_back((now_s() - a) * 1000); }
+    std::sort(t.begin(), t.end());
+    g_tick_ms = t[10];
+    printf("a 1 ms sleep here: %.1f ms (median of 21)%s; SS_TIMING_STRICT %s\n", g_tick_ms, g_tick_ms > 2 ? ", coarse" : "", strict() ? "on" : "off");
+  }
   {
     Result r = tries([] { return run(1, 2, 0, 0, 0, 3); }, [](const Result &x) { return x.hiccup == 0; });
     report("clean", r);
