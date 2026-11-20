@@ -18,7 +18,7 @@ local band = require("band")
 -- trip, and the plug-in's default 150 ms left about 12 ms to spare: most of every spike came back too late. The extra 20 ms is only more of
 -- REAPER's delay compensation. (Desktop -> laptop, rt)
 local hops = { EVERY = 0.5, ASK_EVERY = 3, IDLE = 30, NAME = "StudioSync Hop", TAG = "for=hop;", TRACK_TAG = "hop", MARGIN_MS = 20, REMOTE_LATENCY = 256,
-  LATENCY = 8192, HELD = "band_fx_held", MAX_CHAIN = 32, BUSY = 75, CPU_EVERY = 20, START = 20, AWAY = 10, LATE_WINDOW = 10, LATE_MAX = 8, SAY_BACK = 300 }
+  LATENCY = 8192, HELD = "band_fx_held", MAX_CHAIN = 32, BUSY = 75, CPU_EVERY = 20, START = 20, AWAY = 10, LATE_WINDOW = 10, LATE_MAX = 8, LOST_MAX = 2, SAY_BACK = 300 }
 -- (this script's state; kept across Live sync's reload in place (band.reload: the same Lua, the modules loaded again): a fresh one forgot the
 -- hidden tracks this computer hosts, so a stop never removed them, and the next ask made a second track for the same hop. Laptop, rt)
 local S = rawget(_G, "STUDIOSYNC_HOPS_S") or {}
@@ -55,11 +55,6 @@ function hops.serve_json(secret, token, x, y, pdc, margin_ms)
   return band.json_encode({ secret = secret, token = math.floor(token), x = math.floor(x), y = math.floor(y), pdc = math.floor(pdc or 0), margin_ms = margin_ms or hops.MARGIN_MS })
 end
 local function who(peer) return tostring(peer):match("^([^%.:]+)") or tostring(peer) end
--- A hop's late blocks from StudioSync_HopStatus's JSON: the plug-in's (nothing back at all) and the network's dropouts (`holes`: frames not
--- back in time, played as silence; the plug-in never sees those as late). Pure.
-function hops.late_blocks(st)
-  return type(st) == "table" and (tonumber(st.late) or 0) + (type(st.net) == "table" and tonumber(st.net.holes) or 0) or 0
-end
 -- Health's words for one hop from StudioSync_HopStatus's JSON: ok, text. Pure.
 function hops.health_text(rec, st)
   local net = type(st) == "table" and st.net or nil
@@ -72,13 +67,13 @@ function hops.health_text(rec, st)
   if net.same_rate == false then return false, name .. ": the two computers run different sample rates; set both to the same" end
   if not net.remote_alive then return false, name .. ": the hidden track there isn't running (REAPER's audio stopped there?)" end
   local sent = math.max(1, tonumber(net.sent) or 0)
-  local lost = 100 * ((tonumber(net.lost) or 0) + (tonumber(net.late) or 0)) / sent
+  local lost = 100 * (tonumber(net.lost) or 0) / sent -- (net.late: frames back after they were counted lost, not more of them)
   local over = (tonumber(net.need_ms) or 0) > (tonumber(net.budget_ms) or 0)
   local text = string.format("%s: round trip %.0f ms + %.0f ms there, needs %.0f of its %.0f ms, %.0f ms to spare; lost %.2f%%", name, tonumber(net.rtt_ms) or -1,
     tonumber(net.remote_ms) or -1, tonumber(net.need_ms) or -1, tonumber(net.budget_ms) or -1, tonumber(net.slack_ms) or -1, lost)
   if (tonumber(net.remote_slips) or 0) > 0 then text = text .. string.format(", %d clock slips", net.remote_slips) end
-  local late = hops.late_blocks(st)
-  if late > 0 or rec.offload then text = text .. string.format(", %d late blocks", late) end
+  if (tonumber(st.late) or 0) > 0 or rec.offload then text = text .. string.format(", %d late blocks", tonumber(st.late) or 0) end
+  if (tonumber(net.holes) or 0) > 0 then text = text .. string.format(", %d dropouts", net.holes) end
   if over then text = text .. ". Raise the Hop's Latency budget" end
   return not over and lost < 1, text
 end
@@ -136,12 +131,14 @@ function hops.offload_pick(peer_of, status_of, guests, has)
   return nil, #why > 0 and table.concat(why, "; ") or "no bandmate's computer is connected now (Live sync on there too?)"
 end
 -- Why an offloaded track comes back here, or nil while it's fine. `st`: the hop's HopStatus; `status`: the host's presence status (nil: gone);
--- `ok_ago`: seconds since it was last hosted and running; `late_rise`: late blocks in the last LATE_WINDOW s. Pure.
-function hops.handback_why(rec, st, status, ok_ago, late_rise)
+-- `ok_ago`: seconds since it was last hosted and running; `late_rise`: late blocks in the last LATE_WINDOW s; `lost_pct`: the share of its
+-- audio that didn't come back in time then (the network's dropouts: the plug-in never sees those as late). Pure.
+function hops.handback_why(rec, st, status, ok_ago, late_rise, lost_pct)
   local u = tostring(rec.user)
   if type(status) == "table" and status.recording then return u .. " started recording" end
   if ok_ago > hops.AWAY then return status and (u .. "'s computer stopped hosting it") or (u .. "'s computer went away") end
   if late_rise > hops.LATE_MAX then return string.format("%s's computer fell behind (%d late blocks in %d s)", u, late_rise, hops.LATE_WINDOW) end
+  if (lost_pct or 0) > hops.LOST_MAX then return string.format("the network to %s's computer fell behind (%.1f%% of its audio didn't come back in time in %d s)", u, lost_pct, hops.LATE_WINDOW) end
 end
 
 -- ---- REAPER helpers --------------------------------------------------------------------------------------------------------------------
@@ -589,17 +586,18 @@ local function keep_offload(proj, cfg, key, rec, tr, now)
   local net = type(st.net) == "table" and st.net or {}
   if net.serving and net.remote_alive then S.ok_at[rec.token] = now
   elseif not S.ok_at[rec.token] then S.ok_at[rec.token] = now + hops.START end -- (Live sync just started: time to connect first)
-  local late, l = hops.late_blocks(st), S.late[rec.token]
+  local late, lost, sent, l = tonumber(st.late) or 0, tonumber(net.lost) or 0, tonumber(net.sent) or 0, S.late[rec.token]
   -- (counted only while the audio goes both ways: the blocks before the bandmate's hidden track ran played dry, counted as late, and handed
   -- the offload back at its first look, 10 s in. Desktop -> laptop, rt)
   if not (net.active and net.remote_alive) then l = nil end
   if not l or now - l.at >= hops.LATE_WINDOW then
-    l = { at = now, late = late, rise = l and math.max(0, late - l.late) or 0 }
+    l = { at = now, late = late, lost = lost, sent = sent, rise = l and math.max(0, late - l.late) or 0,
+      lost_pct = l and sent > l.sent and 100 * math.max(0, lost - l.lost) / (sent - l.sent) or 0 }
     S.late[rec.token] = l
   end
   local host
   for _, p in ipairs(require("presence").peers(cfg, rec.song, rec.room) or {}) do if p.user == rec.user then host = p end end
-  local why = hops.handback_why(rec, st, host, now - S.ok_at[rec.token], l.rise)
+  local why = hops.handback_why(rec, st, host, now - S.ok_at[rec.token], l.rise, l.lost_pct)
   if why then hops.hand_back(proj, cfg, rec, why); return false end
   return true
 end

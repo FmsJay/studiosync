@@ -343,7 +343,7 @@ int main()
     if (r.hiccup == 0) {
       CHECK(num(r.rst, "slips") == 0, "a spike isn't drift: no slip");
       CHECK(exact_pct(r) > 94, "a spike costs only its own packets");
-      CHECK(num(r.sst, "holes") >= 1 && num(r.sst, "holes") <= 10, "about a dropout a spike, counted (Live sync's late blocks)");
+      CHECK(num(r.sst, "holes") >= 1 && num(r.sst, "holes") <= 10, "about a dropout a spike, counted");
     }
   }
   {

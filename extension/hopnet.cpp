@@ -154,7 +154,7 @@ struct Sess {
   double rtt_ms = -1;
   uint32_t r_flags = 0, r_frames = 0, r_srate = 0, r_slips = 0;
   uint64_t r_received = 0, r_dropped = 0;
-  uint64_t sent = 0, returned = 0, lost = 0, late = 0, holes = 0; // holes: runs of lost frames, each a dropout heard (Live sync's "late blocks")
+  uint64_t sent = 0, returned = 0, lost = 0, late = 0, holes = 0; // holes: runs of lost frames, each a dropout heard (Health shows them)
   int64_t slack_last = 0;
   // ---- serving end
   int xid = 0, yid = 0;

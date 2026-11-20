@@ -51,6 +51,8 @@ assert(hops0.handback_why(r0, {}, nil, 11, 0) == "Bo's computer went away", "gon
 assert(hops0.handback_why(r0, {}, {}, 11, 0) == "Bo's computer stopped hosting it", "here but not hosting")
 assert(hops0.handback_why(r0, {}, {}, 0, 9):find("fell behind (9 late blocks", 1, true), "late blocks rising")
 assert(hops0.handback_why(r0, {}, {}, 0, 8) == nil, "a few late blocks: stays")
+assert(hops0.handback_why(r0, {}, {}, 0, 0, 1.5) == nil, "a little of the audio lost on the way (a packet now and then): stays")
+assert(hops0.handback_why(r0, {}, {}, 0, 0, 3):find("network to Bo's computer fell behind (3.0%", 1, true), "more lost: back")
 assert(#hops0.chain_of({ fxi = 2, fx = "VST: A" }) == 1 and hops0.chain_of({ fxi = 2, fx = "VST: A" })[1].fxi == 2, "one plug-in: a chain of one")
 assert(#hops0.chain_of({ chain = { { fxi = 0, fx = "A" }, { fxi = 1, fx = "B" } } }) == 2, "a whole chain")
 assert(hops0.chain_of({ chain = {} }) == nil and hops0.chain_of({ chain = { { fxi = "x", fx = "A" } } }) == nil and hops0.chain_of({ fx = "A" }) == nil, "malformed: nil")
@@ -255,10 +257,9 @@ tick()
 local rows = hops.health_rows(cfg, "P1")
 assert(rows[1][4]:find("Guitar's effects run on Bo's computer: round trip 60 ms", 1, true) and rows[1][4]:find("20 late blocks", 1, true), "Health: where and how: " .. rows[1][4])
 tick(hops.LATE_WINDOW)
-E.status[rec.id].late, good.holes = 24, 5 -- (holes: the network's dropouts, which the plug-in never sees as late)
+E.status[rec.id].late = 29
 tick(hops.LATE_WINDOW)
-good.holes = nil
-assert(not hops.offload_of("P1", gtr), "late blocks and dropouts rose: back")
+assert(not hops.offload_of("P1", gtr), "late blocks rose: back")
 assert(#gtr.fx == 3 and not eq.off and not amp.off and comp.off, "the chain exactly as it was (Comp still bypassed as the song has it)")
 assert(gtr.ext.band_fx_held == "" and gtr.ext.band_local_fx == "", "nothing of the offload left")
 assert(sent[#sent].d.op == "stop" and E.connect[#E.connect].json:find('"stop":true', 1, true), "Bo and the extension told")
@@ -280,6 +281,16 @@ statuses[1].recording = true
 tick()
 assert(not hops.offload_of("P1", gtr) and logs[#logs]:find("Bo started recording", 1, true) and not amp.off, "Bo records: back at once")
 statuses[1].recording = nil
+offload()
+local function with(t) local c = {}; for k, v in pairs(good) do c[k] = v end; for k, v in pairs(t) do c[k] = v end; return c end
+E.status[rec.id].net = with({ sent = 48000, lost = 0 })
+tick(hops.LATE_WINDOW)
+E.status[rec.id].net = with({ sent = 528000, lost = 4800, holes = 30 }) -- (1% of 10 s: a packet now and then)
+tick(hops.LATE_WINDOW)
+assert(hops.offload_of("P1", gtr) and hops.health_rows(cfg, "P1")[1][4]:find("30 dropouts", 1, true), "1% lost: stays, Health counts the dropouts")
+E.status[rec.id].net = with({ sent = 1008000, lost = 19200 })
+tick(hops.LATE_WINDOW)
+assert(not hops.offload_of("P1", gtr) and logs[#logs]:find("didn't come back in time", 1, true), "3% lost: back")
 offload()
 E.status[rec.id] = { hop = rec.id, net = { resolved = true, serving = false } }
 table.remove(statuses, 1)
