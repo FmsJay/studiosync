@@ -4614,7 +4614,10 @@ function W.one(w, o)
     -- (or its item, read the way this machine reads one now: 0.40.3 left selected notes and VELLANE out)
     -- (or its chain: a plug-in on it was found restless since)
     -- (the event's item normalized once for both checks below: 3 to 6 ms each on a big MIDI item, every edit. rt-look)
-    local ev_norm = ev and ev.hash ~= o.hash and o.kind == "item" and type(ev.state) == "string" and mirror.normalize_item(ev.state)
+    -- (only on the track the band has it on: an item dragged or moved to another track with nothing else changed read as "the band's version,
+    -- hashed anew", as both checks took the track it's on now, so the move was never sent. REAPER check, rt-edits)
+    local on_its_track = ev and (ev.track == nil or ev.track == o.track)
+    local ev_norm = on_its_track and ev.hash ~= o.hash and o.kind == "item" and type(ev.state) == "string" and mirror.normalize_item(ev.state)
     if ev and (ev.hash == o.hash or ev_norm and mirror.item_hash(o.track, ev_norm) == o.hash
         or o.kind == "fx" and type(ev.state) == "string" and mirror.fx_hash(ev.state) == o.hash
         -- (or the same but for its 14th digit, a tempo map put back: the Mac sent its Keys part as its own change, 0.42.8)
@@ -4623,7 +4626,7 @@ function W.one(w, o)
     end
     -- (an item with takes, the band's version from before which take plays travelled: its own author sends the pick it plays, so
     -- their comp reaches everyone; anyone else keeps theirs till it comes, and isn't sending or putting back a "change". 0.58.85)
-    if ev and o.kind == "item" and mirror.only_pick_new(o.track, o.state, ev.state) and not mine(evid) then
+    if on_its_track and o.kind == "item" and mirror.only_pick_new(o.track, o.state, ev.state) and not mine(evid) then
       remember(proj, o.oid, rev, o.hash, evid, kord); return
     end
   end
@@ -4716,7 +4719,9 @@ function W.one(w, o)
   -- delete its older items, and refused its claimant on the rest. A view: the read event isn't changed. Full review, 0.59.44)
   local now_name = last and o.kind ~= "track" and last.track and by_oid[last.track] and by_oid[last.track].state.name
   if now_name and now_name ~= last.name then last = setmetatable({ name = now_name }, { __index = last }) end
-  if o.kind == "item" and last and type(last.state) == "string" and type(o.state) == "string" and mirror.same_but_labels(o.state, last.state) then
+  -- (on the track the band has it on: moved to another track with nothing else changed, it's a change. REAPER check, rt-edits)
+  if o.kind == "item" and last and (last.track == nil or last.track == o.track) and type(last.state) == "string" and type(o.state) == "string"
+      and mirror.same_but_labels(o.state, last.state) then
     return remember(proj, o.oid, rev, last.hash or o.hash, evid, kord) -- (the event's hash: fingerprints stay the same as everyone's)
   end
   -- (a track renamed to a name someone else has claimed: refused. Claims go by name, so it took their claim over, or lost yours, by whose date
@@ -5832,9 +5837,11 @@ function mirror.edited_here(proj, oid, h, last, media, local_mix)
     local it = mirror.find(proj, "item", oid)
     if not it then return false end
     local st = mirror.item_state(it, media)
-    local now = mirror.item_hash(trk_oid(reaper.GetMediaItem_Track(it)), st)
+    local on = trk_oid(reaper.GetMediaItem_Track(it))
+    local now = mirror.item_hash(on, st)
     if now == h then return false end
-    return not (last and type(last.state) == "string" and (last.hash == now or mirror.same_but_labels(st, last.state)))
+    -- (moved to another track and nothing else: edited here. rt-edits)
+    return not (last and type(last.state) == "string" and (last.hash == now or ((last.track == nil or last.track == on) and mirror.same_but_labels(st, last.state))))
   elseif kind == "T" then
     local tr = mirror.find(proj, "track", oid)
     if not tr then return false end

@@ -335,9 +335,22 @@ local cases = {
     local c = F.track_chunk(drums):gsub("<TRACK [^\n]*", "<TRACK " .. E.guid()):gsub("NAME \"Drums\"", "NAME \"Drums (template)\""):gsub("\nIGUID [^\n]*", "")
     F.set_track_chunk(t, c)
   end },
-  { name = "an item moved to another track", min = 1, edit = function()
+  -- (REAPER check, 0.59.49.72: MoveMediaItemToTrack and nothing else was never sent. The item keeps its GUID, P_EXT and chunk, only its track
+  -- changes; W.one's "is this the band's version, read anew?" checks compared the band's item with the one here on the track it's on NOW, so
+  -- it was taken for unchanged. This case moved and repositioned it before, which hid that.)
+  { name = "an item moved to another track, nothing else changed", min = 1, edit = function()
     local it = item_named(bass, "Bass 0")
+    local was = F.item_chunk(it)
     reaper.MoveMediaItemToTrack(it, gtr)
+    assert(F.item_chunk(it) == was and it.track == gtr, "the move changes only its track, as REAPER's does")
+    local oid = it.ext.band_oid
+    local _, h, evid = mirror.known(F.proj, oid)
+    local last = mirror.event_file(sync.room_dir(A.cfg, song, room), evid)
+    assert(mirror.edited_here(F.proj, oid, h, last, MEDIA, false), "and reads as edited here (Restore and Undo leave an unsent move alone)")
+  end },
+  { name = "an item dragged to another track and along it", min = 1, edit = function()
+    local it = item_named(drums, "Drums 1")
+    reaper.MoveMediaItemToTrack(it, bass)
     set(it, "POSITION", "80")
   end },
   { name = "pooled MIDI copies, then the pool edited", min = 2, edit = function()
@@ -354,6 +367,9 @@ local cases = {
   { name = "items grouped (each computer's own), then moved together", min = 2, edit = function()
     local a, b = item_named(drums, "Drums 0"), item_named(bass, "Bass 2 glued") or item_named(bass, "Bass 2")
     reaper.SetMediaItemInfo_Value(a, "I_GROUPID", 7); reaper.SetMediaItemInfo_Value(b, "I_GROUPID", 7)
+    -- (both selected, as REAPER leaves a dragged group ("selecting one grouped item selects group", its default): the quick look reads both
+    -- tracks at once, so they're one act. A script moving unselected items in the middle of two tracks goes in two looks: rt-look's limit)
+    select_only({ a, b })
     set(a, "POSITION", f(pos(a) + 0.25)); set(b, "POSITION", f(pos(b) + 0.25))
   end },
 }

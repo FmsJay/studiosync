@@ -59,7 +59,8 @@ song.
 | Tempo change under items in time | passes |
 | Tempo change under items in beats (REAPER re-times them) | passes |
 | A track template inserted, made from a shared track (its items carry the studio's ids) | passes: new ids, the original untouched everywhere |
-| An item moved to another track | passes |
+| An item moved to another track, nothing else changed | **failed in REAPER, fixed** (fix F) |
+| An item dragged to another track and along it | passes |
 | Pooled MIDI copies, then the pool edited | passes: each copy arrives as plain MIDI with the same notes |
 | An empty item, and one with notes | passes |
 | Items grouped, then moved together | passes: both moves go out; group ids stay each computer's own (by design, 0.58.91) |
@@ -131,6 +132,32 @@ Test (`tests/test_0_60_rt_edits.lua`, last block):
 - the laptop, held with a format-4 "seen", takes both;
 - a held marker rename of its own still keeps the band's next marker change waiting;
 - with `timeline_waits` as it was, the test fails at "held, the laptop took the renumbering".
+
+**F. An item moved to another track, with nothing else changed, was never sent** (`lib/mirror.lua`, `W.one` and `mirror.edited_here`). Found in
+REAPER on 0.59.49.72 (checklist step 12).
+
+Cause, confirmed in REAPER (the first item on XT Keys C moved to XT Drums A and back inside one script run, so nothing was sent and the project
+ended as it was):
+- `MoveMediaItemToTrack` leaves the item's chunk, GUID and id exactly as they were. Only its track changes, as in the stand-in.
+- The look did see it: the item's hash takes its track in, and it read `af216e0e` against the recorded `2006d785`.
+- `W.one` then asks "is this just the band's version, read anew?" in three places, and all three compared the band's item with the one here
+  on the track it's on *now*, or with no track at all:
+  - the anchor check hashed the event's item with the item's present track;
+  - the "only which take plays is new" check did the same;
+  - the "same but for its dry/wet labels" check (`mirror.same_but_labels`) compares the two texts only. In REAPER it answered `true` for the
+    moved item, so the move was recorded as nothing and never went out.
+- `mirror.edited_here` (what Restore and Undo ask before replacing an item) had the same hole.
+
+Fix: each of those checks now also needs the item to be on the track the band's version names. An event that names no track (an older one)
+is judged as before.
+
+Why the matrix didn't catch it: its case moved the item to another track *and* along it, so the text differed too. The fixture's move
+already behaved as REAPER's does.
+
+Test: two cases replace the one. "An item moved to another track, nothing else changed" asserts the chunk is untouched by the move and that
+`edited_here` says yes, then goes through the whole matrix (sent by a quick and a full look, applied by a move on the laptop, one Ctrl+Z,
+redo, late joiner). "An item dragged to another track and along it" keeps the old case. With the fix taken out, the first fails at "detected
+and sent (0 objects)".
 
 ### Not carried (gaps, not fixed)
 
@@ -222,7 +249,8 @@ and Health showing no mismatch.
     - set a MIDI track to beats timebase and change the first tempo: its items move the same on both, and nothing comes back as
       "(yours, not sent)".
 11. **Track template:** save a shared track as a template and insert it. The laptop gets a new track and the original is untouched.
-12. **Item to another track:** drag an item to another track. On the laptop it moved; it wasn't deleted and re-made as a new item.
+12. **Item to another track:** drag an item straight down to another track (same position), then drag one to another track and along it. On
+    the laptop each moved; it wasn't deleted and re-made as a new item.
 13. **Pooled MIDI:** Ctrl+drag a MIDI item to make a pooled copy, edit a note in it. Both copies change on the laptop, and closing the
     project tab doesn't crash (the copies arrive unpooled).
 14. **Empty items:** insert an empty item (Insert > Empty item), then give one notes (item notes). Both arrive.
@@ -253,6 +281,8 @@ and Health showing no mismatch.
   those.
 - Act grouping: two separate edits made within one look (about 0.1-2 s apart) are now one Undo step. Before, two edits of the same kind on one
   track within one second already were. An act spread over several looks (a plug-in chain that settles 0.3 s after the items) is still two.
+  So is a script's edit to unselected items in the middle of two tracks: the quick look reads one track now and the other within
+  `QUICK_ALL_SECS` (rt-look's hints), so they go as two acts. A dragged group is selected, so it's one.
 
 ## Review-later (security)
 
