@@ -1774,6 +1774,41 @@ Problems found, not fixed (risky or a behaviour change; for James to pick):
   hint. tests/rtaudio_test.cpp holds the receiver's socket 20-60 ms every 40-150 ms for 8 s: no underruns after settling, streaming never
   false, back to 30 ms once quiet. Refusals now name the sender (status last_reject_from, Health "from ip:port").
 
+- **Underruns in silence, buffers ratcheting (2026-11-20, after the four-computer test; native tests only, not run in REAPER yet):** every
+  link underran ~3 times a minute even in silence, buffers climbed toward 150 ms, some sat far above their size (the laptop's for the Mac
+  190 ms against 110), the LinuxBox VM underran constantly, and the Mac asked everyone's streams back 40-77 times a minute with the desktop's
+  mix steady. What was found, and fixed in extension/rtaudio.cpp:
+  - **No drift correction.** AOO's dynamic resampling is off unless asked for (AOO_DYNAMIC_RESAMPLING 0), so the "drift-correcting
+    resampler" above never ran. Measured against each computer's own clock over 32 minutes: the desktop's audio clock -102 ppm (WASAPI
+    through Voicemeeter), the laptop's -50 ppm, the Mac's +6 ppm: 50-110 ppm between them, 3-7 ms a minute that each receiver's buffer
+    drained or filled until it underran or overran; a VM's clock is far worse. Now every source and sink has it on (AOO's DLL measures each
+    audio clock, the sink resamples the sender's rate to its own; it settles in about a minute). Test: T's clock +100 ppm, R's -100: T's
+    delay to R grows 0.200 ms a second uncorrected, 0.000 corrected (and 0.000 for -50/+50).
+  - **Audio a sender dropped was lost from every receiver's buffer for good** (with no drift correction nothing gave it back): AOO's send
+    queue was 25 ms, which at REAPER's 512-sample blocks (desktop, Mac) left ~14 ms for the send thread to wake before it overflowed and the
+    reset threw the queue away (now 100 ms: only a hand-off, no latency while the thread keeps up); every reconfigure paused the audio thread
+    a block, including the hub's budget turning its mixing off and on, a peers list that hadn't changed and a name that still didn't resolve
+    every 5 s (now none of those pause, and a paused block is told to AOO as an xrun, so the stream keeps its time); the hub's mixing put a
+    backlog of blocks into each listener's source at once and overflowed it (now it encodes after every block).
+  - **A buffer left far above its size** (a re-buffer while packets are held up takes them in when they burst in, and AOO plays from there
+    for good) re-buffers at its size while that peer is quiet, once its measured fill stayed over size + 25 ms for two 5 s stretches
+    ("trims"). Test: a re-buffer during a 70 ms stall leaves 107 ms in a 60 ms buffer; not touched while the sender plays; quiet, 61 ms.
+  - **Hub mix <-> direct switches aren't jitter:** an underrun within 1.5 s of this computer switching (its 'M' changing, or joining or
+    leaving the mix) is counted as "switched" and doesn't grow the buffer (the mix's own underruns still do, except around a join or a fall
+    back). Test: the hub's mixing stalls 250 ms; the listener falls back and the mix underruns; its buffers stay at 30 ms.
+  - **The Mac's rescues:** the mix's widest packet spacing, which the rescue waits past, left out gaps over 0.1 s and faded in ~1 s, so a
+    Wi-Fi link that stalls ~0.1 s every second or two asked everyone's streams back every time. It's now the widest gap (up to 1 s) in the last
+    5-10 s. Test: six 110 ms stalls on a listener with a 100 ms buffer: 6 rescues before, 1 now.
+  - **Shrinking:** a size that underran was kept for 120 s after the last underrun, all or nothing, so at ~3 a minute every buffer ratcheted
+    to the ceiling. Now it shrinks only into room its streams never used lately (their measured fill at its lowest over the last 5-10 s, 5 ms
+    kept), and goes back below a size that underran after 45 s without one.
+  - **Status:** top level `pauses`, `paused_blocks`, `overflows`, `clock_ppm` (this audio clock against the computer's own, as the DLL
+    measures it); per peer `fill_ms` (Talk's buffer as measured), `jitter`, `switched`, `trims`; the hub block `mix_gap_ms`.
+  - **Not fixed here:** drift between the computers' own clocks (system time; Windows keeps it loosely) is left for the trims to catch; the
+    hub's `in_ms` averages every source at the hub, the LinuxBox's 150 ms buffer included; the LinuxBox's own clock and stalls (a VM's).
+  - **To check in REAPER:** after a minute, `clock_ppm` on each computer (desktop about -100); underruns and `jitter` over 10 minutes of
+    silence (was ~3 a minute per link); `overflows` and `pauses` staying 0; the Mac's `rescues` (was 40-77 a minute) and `mix_gap_ms`;
+    `trims` and `fill_ms` near `target_ms`; buffers coming down after underruns stop.
 ## Session recaps and smart take names (rt-recap branch, 2026-11-19; offline tests only, not run in REAPER yet)
 - **Recap (lib/recap.lua):** at each end of session (20 quiet minutes, Leave, Live sync stopping; right after the end-of-session version),
   a few bullets from the room's events, no new tracking and no model: who (event authors, this computer, who's here), how long (first to last

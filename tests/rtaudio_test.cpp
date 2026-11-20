@@ -7,13 +7,15 @@
 // C leaves B out of what it sends (talkback to someone else) and lets it back in. Then Wi-Fi's bursts (the adaptive buffer), then Play
 // (the second stream, from a Hop's ring: heard apart from Talk), then the hub's live mix (a hub and three listeners: each listener's own levels
 // through the hub, talkback through it, the extra hop's latency, the streams each listener sends, and the hub dropping: direct again), and
-// the hub's load at 128 and 64-sample blocks (its own CPU time).
+// the hub's load at 128 and 64-sample blocks (its own CPU time). Then the four-computer test's underruns: two clocks 200 and 100 ppm apart
+// (AOO's drift correction), a buffer left far above its size (re-buffered in a quiet moment), a hub mix <-> direct switch (not jitter).
 // Build and run: tests\build_rtaudio_test.cmd (macOS/Linux: the CI's line in .github/workflows/extension.yml). GPL-3.0-or-later.
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -94,8 +96,225 @@ static void hub_loads(bool busy)
   if (busy) check(hub_load_at(256, 47411, false) > 0 && hub_load_at(128, 47441, true) < 0.25, "hub load: at 256, and at 128 with every core busy beside it, inside the budget");
 }
 
+// ---- Drift (the four-computer test, 2026-11-20: every link underran ~3 times a minute in silence; the audio clocks ran -50 to a few hundred
+// ppm against each computer's clock, and AOO's drift correction was off). T sends to R; each has its own audio clock (its blocks come at its
+// own rate against the real clock: ppm_t, ppm_r). T plays a 5 ms burst every 0.5 s; its delay to R's output, in real time from each one's
+// own clock, from 4 s to 16 s: its slope, ms a second. Without the correction the buffer takes up the clocks' difference (200 ppm: 0.2 ms a
+// second, 12 ms a minute: a 30-100 ms buffer drained or filled in minutes, then an underrun or AOO's overrun); with it, flat. The DLL's
+// bandwidth is 0.2 Hz here (the default 0.012 settles in about a minute; a session is longer than that).
+static double drift_slope(bool fix, double ppm_t, double ppm_r, int port0, long long &under)
+{
+  const int SR = 48000, LEN = 256;
+  const double PI = 3.14159265358979;
+  char pt[32], pr[32];
+  snprintf(pt, sizeof pt, "127.0.0.1:%d", port0); snprintf(pr, sizeof pr, "127.0.0.1:%d", port0 + 1);
+  RtLink *T = rt_new(), *R = rt_new();
+  rt_test_drift(T, fix ? 1 : 0, 0.2); rt_test_drift(R, fix ? 1 : 0, 0.2);
+  rt_peers(T, (std::string("{\"peers\":[\"") + pr + "\"],\"port\":" + std::to_string(port0) + ",\"secret\":\"studio\"}").c_str());
+  rt_peers(R, (std::string("{\"peers\":[\"") + pt + "\"],\"port\":" + std::to_string(port0 + 1) + ",\"secret\":\"studio\"}").c_str());
+  rt_start(T, 0, 1, 128, 0, "127.0.0.1"); rt_start(R, 0, 1, 128, 0, "127.0.0.1");
+  std::vector<double> in(LEN, 0.0), silent(LEN, 0.0), o1(LEN), o2(LEN);
+  double *oo[2] = { o1.data(), o2.data() };
+  const double per_t = (double)LEN / (SR * (1 + ppm_t * 1e-6)), per_r = (double)LEN / (SR * (1 + ppm_r * 1e-6));
+  const long long EVERY = SR / 2, BURST = SR / 200;
+  long long bt = 0, br = 0, u0 = -1, quiet_run = 0;
+  std::vector<double> sent, heard; // (real times: each burst's start at T, its onset in R's output)
+  const auto t0 = std::chrono::steady_clock::now();
+  for (;;) {
+    const double dt = bt * per_t, dr = br * per_r, due = std::min(dt, dr);
+    if (due > 16.0) break;
+    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < due) std::this_thread::yield();
+    if (dt <= dr) {
+      for (int k = 0; k < LEN; ++k) {
+        const long long i = bt * LEN + k, m = i % EVERY;
+        in[k] = i >= SR && m < BURST ? 0.5 * sin(2 * PI * 3000 * (double)m / SR) : 0.0;
+        if (i >= SR && m == 0) sent.push_back(i * per_t / LEN);
+      }
+      const double *ii[1] = { in.data() };
+      rt_capture(T, ii, 1, LEN, SR);
+      rt_mix(T, oo, 2, LEN, SR);
+      ++bt;
+    } else {
+      const double *ii[1] = { silent.data() };
+      std::fill(o1.begin(), o1.end(), 0.0);
+      rt_capture(R, ii, 1, LEN, SR);
+      rt_mix(R, oo, 2, LEN, SR);
+      for (int k = 0; k < LEN; ++k) {
+        if (std::fabs(o1[k]) > 0.15 && quiet_run > SR / 10) heard.push_back((br * LEN + k) * per_r / LEN);
+        quiet_run = std::fabs(o1[k]) > 0.1 ? 0 : quiet_run + 1;
+      }
+      ++br;
+      if (dr >= 4.0 && dr - per_r < 4.0) u0 = atoll(field(rt_status(R), pt, "underruns").c_str());
+    }
+  }
+  under = atoll(field(rt_status(R), pt, "underruns").c_str()) - u0;
+  rt_free(T); rt_free(R);
+  // each onset's delay after the burst sent last before it (a burst missed in the output is just left out)
+  double sx = 0, sy = 0, sxx = 0, sxy = 0;
+  int n = 0;
+  for (double h : heard) {
+    double from = -1;
+    for (double t : sent) if (t <= h) from = t;
+    if (from < 4.0 || h - from > 0.4) continue;
+    const double d = (h - from) * 1000;
+    if (getenv("DRIFT_DEBUG")) printf("       %s %.1f s: delay %.2f ms\n", fix ? "on " : "off", from, d);
+    sx += from; sy += d; sxx += from * from; sxy += from * d; ++n;
+  }
+  return n > 10 ? (n * sxy - sx * sy) / (n * sxx - sx * sx) : 1e9;
+}
+static void drift_tests()
+{
+  long long u_off = 0, u_on = 0, u_on2 = 0;
+  const double off = drift_slope(false, 100, -100, 47451, u_off), on = drift_slope(true, 100, -100, 47453, u_on), on2 = drift_slope(true, -50, 50, 47455, u_on2);
+  printf("     drift: T's delay to R moves %+.3f ms/s with T +100 ppm and R -100 ppm uncorrected (underruns %lld), %+.3f ms/s corrected (%lld); T -50, R +50 corrected: %+.3f ms/s (%lld)\n",
+         off, u_off, on, u_on, on2, u_on2);
+  check(off > 0.12 && off < 0.35, "drift: uncorrected, a sender 200 ppm fast fills the receiver's buffer ~0.2 ms a second (what the field's buffers did)");
+  check(std::fabs(on) < 0.06 && std::fabs(on2) < 0.06, "drift: with AOO's dynamic resampling the buffer holds still (+100/-100 and -50/+50 ppm)");
+  check(u_on == 0 && u_on2 == 0, "drift: corrected, no underruns");
+}
+
+// ---- A buffer left far above its size (the four-computer test: the laptop's buffer for the Mac sat at 190 ms against 110, the Mac's for the
+// desktop 195 against 120). A re-buffer that comes while packets are held up (Wi-Fi's stall) takes in the held ones when they burst in, and
+// AOO plays from there for good. D sends to E; at 2 s E's receive thread is held 70 ms and E's buffer for D goes from 30 to 60 ms 43 ms
+// into it (its floor and ceiling 60): E's buffer ends up ~45 ms over its size. D plays a tone until 4 s: no re-buffer while it plays; then,
+// quiet, E re-buffers at its size (a "trim"). E's timings 4x faster here.
+static void trim_test()
+{
+  const int SR = 48000, LEN = 256, PD = 47457, PE = 47458;
+  const double PI = 3.14159265358979;
+  char pd[32], pe[32];
+  snprintf(pd, sizeof pd, "127.0.0.1:%d", PD); snprintf(pe, sizeof pe, "127.0.0.1:%d", PE);
+  RtLink *D = rt_new(), *E = rt_new();
+  rt_peers(D, (std::string("{\"peers\":[\"") + pe + "\"],\"port\":" + std::to_string(PD) + ",\"secret\":\"studio\"}").c_str());
+  rt_peers(E, (std::string("{\"peers\":[\"") + pd + "\"],\"port\":" + std::to_string(PE) + ",\"secret\":\"studio\"}").c_str());
+  rt_start(D, 0, 1, 128, 0, "127.0.0.1"); rt_start(E, 0, 1, 128, 0, "127.0.0.1");
+  rt_test_speed(E, 4);
+  auto at = [&](double s) { return (int)(s * SR / LEN); };
+  std::vector<double> id(LEN), ie(LEN, 0.0), o1(LEN), o2(LEN);
+  const double *ind[1] = { id.data() }, *ine[1] = { ie.data() };
+  double *oo[2] = { o1.data(), o2.data() };
+  double hi = 0, lo_after = 1e9;
+  long long trims_loud = -1, n = 0;
+  const auto t0 = std::chrono::steady_clock::now();
+  for (int b = 0; b < at(8.0); ++b) {
+    const auto due = t0 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
+    while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
+    for (int k = 0; k < LEN; ++k, ++n) id[k] = b < at(4.0) ? 0.5 * sin(2 * PI * 440 * n / SR) : 0.0;
+    if (b == at(2.0)) rt_test_hold(E, 70);
+    if (b == at(2.0) + 8) rt_peer_buffer(E, pd, 60, 60); // (43 ms into the stall: what was held up is taken in after the re-buffer)
+    if (b >= at(3.0) && b < at(4.0) && b % 8 == 0) hi = std::max(hi, atof(field(rt_status(E), pd, "fill_ms").c_str()));
+    if (b == at(4.0)) trims_loud = atoll(field(rt_status(E), pd, "trims").c_str());
+    if (b >= at(6.5) && b % 8 == 0) { const double f = atof(field(rt_status(E), pd, "fill_ms").c_str()); if (f >= 0) lo_after = std::min(lo_after, f); }
+    rt_capture(D, ind, 1, LEN, SR); rt_capture(E, ine, 1, LEN, SR);
+    rt_mix(D, oo, 2, LEN, SR); rt_mix(E, oo, 2, LEN, SR);
+  }
+  const std::string end = rt_status(E);
+  printf("     trim: E's buffer for D (size %s ms) held at up to %.0f ms while D played (trims %lld), %.0f ms at its lowest after D went quiet (trims %s)\n",
+         field(end, pd, "target_ms").c_str(), hi, trims_loud, lo_after < 1e9 ? lo_after : -1.0, field(end, pd, "trims").c_str());
+  check(hi > 60 + 25, "trim: a re-buffer during a stall leaves E's buffer far above its size");
+  check(trims_loud == 0, "trim: not re-buffered while D plays");
+  check(atoll(field(end, pd, "trims").c_str()) >= 1 && lo_after < 60 + 15 && lo_after > 20, "trim: D quiet, E's buffer re-buffers back to its size");
+  rt_free(D); rt_free(E);
+}
+
+// ---- A switch between the hub's mix and direct streams isn't network jitter (the four-computer test: the Mac's buffers grew with its rescues).
+// H mixes for W and X; at 3 s H's mixing stalls 250 ms (its send thread held up): X and W fall back to direct streams and the mix underruns
+// when it comes back, but the buffers stay at 30 ms ("switched", not "jitter"). Then H's mixing turned off and on and the same peers given
+// again: no pause of the audio thread (each was a block not sent or heard).
+static void switch_test()
+{
+  const int SR = 48000, LEN = 256, P0 = 47461;
+  const double PI = 3.14159265358979;
+  char nm[3][32];
+  RtLink *L[3];
+  std::string js[3];
+  for (int i = 0; i < 3; ++i) { snprintf(nm[i], sizeof nm[i], "127.0.0.1:%d", P0 + i); L[i] = rt_new(); }
+  for (int i = 0; i < 3; ++i) {
+    std::string list;
+    for (int j = 0; j < 3; ++j) if (j != i) list += std::string(list.empty() ? "" : ", ") + "\"" + nm[j] + "\"";
+    js[i] = "{\"peers\":[" + list + "],\"port\":" + std::to_string(P0 + i) + ",\"secret\":\"studio\"}";
+    rt_peers(L[i], js[i].c_str());
+    rt_start(L[i], 0, 1, 128, 0, "127.0.0.1");
+  }
+  auto at = [&](double s) { return (int)(s * SR / LEN); };
+  std::vector<double> in(LEN), o1(LEN), o2(LEN);
+  double *oo[2] = { o1.data(), o2.data() };
+  std::string before, after;
+  long long p0 = -1, p1 = -1, n = 0;
+  const auto t0 = std::chrono::steady_clock::now();
+  for (int b = 0; b < at(9.5); ++b) {
+    const auto due = t0 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
+    while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
+    if (b == at(0.5)) { rt_hub(L[0], "", 1); rt_hub(L[1], nm[0], 0); rt_hub(L[2], nm[0], 0); }
+    if (b == at(2.9)) before = rt_status(L[2]);
+    if (b == at(3.0)) rt_test_hold_mix(L[0], 250);
+    if (b == at(7.5)) { after = rt_status(L[2]); p0 = atoll(field(rt_status(L[0]), "", "pauses").c_str()); rt_hub(L[0], "", 0); }
+    if (b == at(8.0)) { rt_hub(L[0], "", 1); rt_peers(L[0], js[0].c_str()); }
+    if (b == at(9.4)) p1 = atoll(field(rt_status(L[0]), "", "pauses").c_str());
+    for (int i = 0; i < 3; ++i) {
+      for (int k = 0; k < LEN; ++k) in[k] = 0.3 * sin(2 * PI * 500 * (i + 1) * (double)(n + k) / SR);
+      const double *ii[1] = { in.data() };
+      rt_capture(L[i], ii, 1, LEN, SR);
+      rt_mix(L[i], oo, 2, LEN, SR);
+    }
+    n += LEN;
+  }
+  printf("     switch: X before the stall: hub %s; after: hub %s, fallbacks %s, rescues %s; X's buffer for H %s ms (switched %s, jitter %s), for W %s ms (switched %s, jitter %s); H's pauses %lld -> %lld\n",
+         field(before, "hub", "state").c_str(), field(after, "hub", "state").c_str(), field(after, "hub", "fallbacks").c_str(), field(after, "hub", "rescues").c_str(),
+         field(after, nm[0], "target_ms").c_str(), field(after, nm[0], "switched").c_str(), field(after, nm[0], "jitter").c_str(),
+         field(after, nm[1], "target_ms").c_str(), field(after, nm[1], "switched").c_str(), field(after, nm[1], "jitter").c_str(), p0, p1);
+  check(field(before, "hub", "state") == "\"hub\"", "switch: X hears through H before the stall");
+  check(atoll(field(after, "hub", "fallbacks").c_str()) + atoll(field(after, "hub", "rescues").c_str()) >= 1, "switch: H's stall sent X to direct streams");
+  check(atoll(field(after, nm[0], "switched").c_str()) + atoll(field(after, nm[1], "switched").c_str()) >= 1, "switch: the underruns it brought were counted as the switch's");
+  check(field(after, nm[0], "target_ms") == "30" && field(after, nm[1], "target_ms") == "30" && field(after, nm[0], "jitter") == "0",
+        "switch: X's buffers didn't grow for it (not network jitter)");
+  check(p0 >= 0 && p1 == p0, "switch: H's mixing off and on, and the same peers again: no pause of the audio thread");
+  for (int i = 0; i < 3; ++i) rt_free(L[i]);
+}
+
+// ---- A listener whose link stalls ~110 ms every second or so (the Mac through the desktop's mix, 2026-11-20: 40 rescues a minute with the hub
+// steady). X's buffer for H is 100 ms (floor and ceiling), so a 110 ms stall comes near its end: the first one asks everyone's streams back,
+// and from then on the widest spacing lately covers them (they were left out of it: every stall was a rescue).
+static void rescue_test()
+{
+  const int SR = 48000, LEN = 256, P0 = 47471;
+  char nm[3][32];
+  RtLink *L[3];
+  for (int i = 0; i < 3; ++i) { snprintf(nm[i], sizeof nm[i], "127.0.0.1:%d", P0 + i); L[i] = rt_new(); }
+  for (int i = 0; i < 3; ++i) {
+    std::string list;
+    for (int j = 0; j < 3; ++j) if (j != i) list += std::string(list.empty() ? "" : ", ") + "\"" + nm[j] + "\"";
+    rt_peers(L[i], ("{\"peers\":[" + list + "],\"port\":" + std::to_string(P0 + i) + ",\"secret\":\"studio\"}").c_str());
+    rt_start(L[i], 0, 1, 128, 0, "127.0.0.1");
+  }
+  auto at = [&](double s) { return (int)(s * SR / LEN); };
+  std::vector<double> in(LEN, 0.0), o1(LEN), o2(LEN);
+  const double *ii[1] = { in.data() };
+  double *oo[2] = { o1.data(), o2.data() };
+  std::string before, after;
+  int holds = 0;
+  const auto t0 = std::chrono::steady_clock::now();
+  for (int b = 0; b < at(9.0); ++b) {
+    const auto due = t0 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
+    while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
+    if (b == at(0.3)) rt_peer_buffer(L[2], nm[0], 100, 100);
+    if (b == at(0.5)) { rt_hub(L[0], "", 1); rt_hub(L[1], nm[0], 0); rt_hub(L[2], nm[0], 0); }
+    if (b == at(2.9)) before = rt_status(L[2]);
+    if (b >= at(3.0) && b < at(8.5) && (b - at(3.0)) % at(1.1) == 0) { rt_test_hold(L[2], 110); ++holds; }
+    if (b == at(8.9)) after = rt_status(L[2]);
+    for (int i = 0; i < 3; ++i) { rt_capture(L[i], ii, 1, LEN, SR); rt_mix(L[i], oo, 2, LEN, SR); }
+  }
+  const long long r0 = atoll(field(before, "hub", "rescues").c_str()), r1 = atoll(field(after, "hub", "rescues").c_str());
+  printf("     rescue: X's link stalled 110 ms %d times: rescues %lld -> %lld, fallbacks %s, widest spacing %s ms, X hears through H: %s\n", holds, r0, r1,
+         field(after, "hub", "fallbacks").c_str(), field(after, "hub", "mix_gap_ms").c_str(), field(after, "hub", "state").c_str());
+  check(field(before, "hub", "state") == "\"hub\"" && field(after, "hub", "state") == "\"hub\"", "rescue: X hears through H throughout");
+  check(r1 - r0 <= 1, "rescue: only the first stall asks everyone's streams back (it was every one)");
+  for (int i = 0; i < 3; ++i) rt_free(L[i]);
+}
+
 int main(int argc, char **argv)
 {
+  if (argc > 1 && strcmp(argv[1], "underruns") == 0) { drift_tests(); trim_test(); switch_test(); rescue_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "hubload") == 0) { hub_loads(true); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   const int SR = 48000, LEN = 256, PA = 47391, PB = 47392, PC = 47393;
   const double PI = 3.14159265358979;
@@ -449,6 +668,10 @@ int main(int argc, char **argv)
     check(field(end_x, "hub", "state") == "\"direct\"" && field(end_x, "hub", "fallbacks") == "1", "hub: X's status: direct, one fallback");
     for (int i = 0; i < 4; ++i) rt_free(L[i]);
   }
+  drift_tests(); // (the four-computer test's underruns: drift, a buffer left high, a hub switch)
+  trim_test();
+  switch_test();
+  rescue_test();
   hub_loads(false); // (the hub's load at REAPER's small blocks, as the laptop's ASIO runs: 128 and 64 samples)
   rt_free(A); rt_free(B); rt_free(C); rt_free(bad);
   printf(fails ? "fails %d\n" : "ok, fails 0\n", fails);
