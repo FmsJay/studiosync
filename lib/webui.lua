@@ -155,6 +155,7 @@ webui.ACTIONS.audience = true -- (listening links, the cap and the public switch
 webui.ACTIONS.tryfx = true -- (the Try tab: a bandmate's plug-in you don't have, its knobs, asks for yours: lib/hoptry.lua, rt-hopvst)
 webui.ACTIONS.claimask = true -- (Claims mode: Release / Keep what someone asks for: lib/claimask.lua, rt-claims)
 webui.ACTIONS.grants = true -- (Admins only: let someone edit in this room, or take it back; owner and admins only. lib/grants.lua, rt-claims)
+webui.ACTIONS.draw = true -- (the drawing layer over the Project and Mixer pages and the phone's Project view: add, remove, clear. lib/webdraw.lua, rt-draw)
 function webui.parse_action(s)
   local a = type(s) == "string" and s ~= "" and band.json_decode(s)
   if type(a) ~= "table" or type(a.topic) ~= "string" or not webui.ACTIONS[a.topic] then return nil end
@@ -191,6 +192,7 @@ function webui.tick(proj, cfg, b, handlers)
   local webcall = require("webcall")
   if type(handlers) == "table" and not handlers.chat then handlers.chat = function(d) chat.from_msg(cfg, d) end end
   if type(handlers) == "table" and not handlers.rtc then handlers.rtc = function(d) webcall.link(cfg, b, d) end end
+  if type(handlers) == "table" and not handlers.draw then handlers.draw = function(d) require("webdraw").from_msg(cfg, d) end end -- (a bandmate's drawing or removal, before its file: rt-draw)
   for _ = 1, 20 do
     local topic, a = webui.parse_action(reaper.StudioSync_WebUIPoll())
     if not topic then break end
@@ -252,6 +254,10 @@ function webui.tick(proj, cfg, b, handlers)
     end
     if topic == "claimask" then
       local said = require("claimask").web_action(cfg, b, a)
+      if said then band.log(said) end
+    end
+    if topic == "draw" then -- (the drawing layer: lib/webdraw.lua, rt-draw)
+      local said = require("webdraw").action(proj, cfg, b, a)
       if said then band.log(said) end
     end
     if topic == "home" or topic == "profile" then
@@ -319,6 +325,7 @@ function webui.tick(proj, cfg, b, handlers)
   require("webmixer").tick(proj, cfg, b, publish, now)
   -- the History page's time lapse: only while a page shows it (lib/webhistory.lua)
   require("webhistory").tick(proj, cfg, b, publish, now)
+  require("webdraw").tick(proj, cfg, b, publish, now) -- (the drawing layer, for the Project, Mixer and History pages and the phone: lib/webdraw.lua, rt-draw)
   -- Home (while a page shows it) and everyone's profile (while any page looks): lib/webhome.lua
   require("webhome").tick(proj, cfg, b, publish, now)
   require("hoptry").web_tick(proj, cfg, b, publish, now) -- (the Try tab, while a page shows it: lib/hoptry.lua, rt-hopvst)

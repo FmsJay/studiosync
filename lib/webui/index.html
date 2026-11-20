@@ -10,6 +10,8 @@
 <link rel="stylesheet" href="call.css">
 <link rel="stylesheet" href="daw.css">
 <script src="app.js" defer></script>
+<!-- anchors on the song for marks drawn over it (screen share's notes, the drawing layer): before call.js and draw.js -->
+<script src="anchor.js" defer></script>
 <script src="call.js" defer></script>
 <!-- video and picture items' frames (lib/video.lua): before daw.js, which draws them -->
 <script src="video.js" defer></script>
@@ -37,6 +39,9 @@
 <!-- the History page's time lapse (lib/webhistory.lua) -->
 <link rel="stylesheet" href="history.css">
 <script src="history.js" defer></script>
+<!-- the drawing layer over the Project and Mixer pages, and on History (lib/webdraw.lua): after daw.js, mixer.js and history.js -->
+<link rel="stylesheet" href="draw.css">
+<script src="draw.js" defer></script>
 <script src="histhear.js" defer></script>
 <!-- the studio's Home and everyone's profile (lib/webhome.lua, lib/profile.lua): after tabs.js, whose topics they read -->
 <link rel="stylesheet" href="home.css">

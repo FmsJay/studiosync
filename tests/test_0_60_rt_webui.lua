@@ -86,6 +86,7 @@ local rtc_pages = {}
 package.loaded.webcall = { dirty = function() return false end, me = function() return {} end, model = function() return { boot = "1" } end,
   page = function(_, _, a) rtc_pages[#rtc_pages + 1] = a end, link = function() end, view_tick = function() end } -- (view_tick: a share's arrange view, rt-share)
 package.loaded.webhome = { tick = function() end, action = function() end } -- (Home and profiles: tests/test_0_60_rt_home.lua)
+package.loaded.webdraw = { tick = function() end, action = function() end, from_msg = function() end } -- (the drawing layer: tests/test_0_60_rt_draw.lua)
 package.loaded.invite = { web_tick = function() end, action = function() end, chat_model = function() end } -- (Ask to join: tests/test_0_60_rt_invite.lua)
 local chat_reads = {}
 package.loaded.page_chat = { -- (its web_action's own checks: tests/test_0_60_rt_webpages.lua)

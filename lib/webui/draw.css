@@ -1,0 +1,14 @@
+/* The drawing layer (draw.js, lib/webdraw.lua; rt-draw): a canvas over the Project page, the Mixer's strips and the phone's Project view,
+   which takes the pointer only while drawing, and its buttons. GPL-3.0-or-later. */
+.drlayer { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 2; }
+.drlayer.on { pointer-events: auto; cursor: crosshair; touch-action: none; }
+.drbar, .drtools, .drsw, .drsz { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.drtools[hidden] { display: none; }
+.drbar button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.drbar .drswatch { width: 20px; height: 20px; min-width: 0; padding: 0; border-radius: 50%; border: 1px solid var(--dim); }
+.drbar .drswatch[aria-pressed="true"] { outline: 2px solid var(--text); outline-offset: 1px; }
+.drsw input[type="color"] { width: 26px; height: 22px; padding: 0; border: 0; background: none; }
+.drshow { display: inline-flex; align-items: center; gap: 3px; font-size: 13px; }
+.drsaid { font-size: 12px; }
+.mxstrips + .drbar, .drbar + .mxstrips { margin-top: 6px; }
+#arr .arow { flex-wrap: wrap; } /* (the phone: its buttons wrap under Listen and Fit) */

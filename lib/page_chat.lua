@@ -535,8 +535,9 @@ function chat.all_rows(cfg, b, notes)
     end
   end
   for _, s in ipairs(drawings(cfg, b)) do
-    local what = s.kind == "text" and ("text: " .. tostring(s.text)) or (s.kind or "pen") .. " drawing"
-    rows[#rows + 1] = { kind = "draw", time = s.time or "", user = s.user, text = what, pos = tonumber(s.points[1][1]), track_oid = s.points[1][2] }
+    local what = (s.kind == "text" and ("text: " .. tostring(s.text)) or (s.kind or "pen") .. " drawing") .. (s.view == "mixer" and " on the Mixer" or "")
+    -- (a Mixer drawing's first number is a place down a strip, not a time: no Go for it. lib/webdraw.lua, rt-draw)
+    rows[#rows + 1] = { kind = "draw", time = s.time or "", user = s.user, text = what, pos = s.view == nil and tonumber(s.points[1][1]) or nil, track_oid = s.view == nil and s.points[1][2] or nil }
   end
   table.sort(rows, function(a, z) return a.time > z.time end)
   return rows

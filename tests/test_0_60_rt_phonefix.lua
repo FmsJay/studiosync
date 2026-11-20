@@ -71,7 +71,7 @@ reaper.StudioSync_WebUIStatus = function() return '{"listening":true,"port":4728
 -- ---- what isn't the Project view's: stand-ins (each module's own tests cover it) --------------------------------------------------------
 local function quiet(t) return setmetatable(t or {}, { __index = function() return function() end end }) end
 for _, m in ipairs({ "page_chat", "webcall", "ai", "livekeys", "webpages", "songsheet", "webmixer", "webhistory", "webhome", "invite", "dawmidi",
-  "video", "follow", "live" }) do package.loaded[m] = quiet() end
+  "video", "follow", "live", "webdraw" }) do package.loaded[m] = quiet() end -- (webdraw: the drawing layer, tests/test_0_60_rt_draw.lua)
 package.loaded.page_chat.read = function() return {} end
 package.loaded.webcall.model = function() return {} end
 package.loaded.follow.words_by_user = function() return {} end

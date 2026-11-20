@@ -5,6 +5,8 @@
 -- time and on a track, so it stays on the right bar and track however anyone scrolls or zooms. Each is a file in
 -- rooms/<room>/drawings/ (synced like chat): { user, time, points, kind, color, size, text }, a file without a kind
 -- being a pen stroke (as before 0.35.3). Run it again to close.
+-- The web UI draws on the same layer (lib/webdraw.lua, rt-draw): its drawings show here, these show there, and both go over the direct link
+-- at once (the file stays the record). Its Mixer drawings (view = "mixer") aren't on the arrange view, so they don't show here.
 local dir = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]")
 package.path = dir .. "/lib/?.lua;" .. package.path
 local band = require("band")
@@ -17,7 +19,7 @@ local ImGui = band.imgui()
 if not ImGui then return end
 local cfg = band.settings()
 if not cfg then return end
-local sync, mirror = require("sync"), require("mirror")
+local sync, mirror, webdraw = require("sync"), require("mirror"), require("webdraw")
 if reaper.set_action_options then reaper.set_action_options(1) end
 local _, _, section, cmd = reaper.get_action_context()
 if cmd > 0 then reaper.SetToggleCommandState(section, cmd, 1); reaper.RefreshToolbar2(section, cmd) end
@@ -52,7 +54,7 @@ local ui_font = make_font()
 local PALETTE = { 0xFF5A5AFF, 0x4CC2FFFF, 0x7BE07BFF, 0xFFC24CFF, 0xC88BFFFF, 0xFF8BD0FF }
 -- the toolbar (James, 2026-11-01: "drawing on the project like it's microsoft paint"): this machine's choices, kept
 local TOOLS = { { "pen", "Pen" }, { "marker", "Highlighter" }, { "line", "Line" }, { "arrow", "Arrow" }, { "box", "Box" },
-  { "text", "Text" }, { "erase", "Eraser" } }
+  { "circle", "Circle" }, { "text", "Text" }, { "erase", "Eraser" } } -- (Circle: the web UI's too, the ellipse in the box dragged. rt-draw)
 local SIZES = { { 2, "S" }, { 4, "M" }, { 8, "L" } }
 local SWATCHES = { 0xFFFFFFFF, 0x202020FF, 0xFFF04DFF, 0xB8FF3DFF, 0x3DFFF2FF, 0xFF3DD8FF } -- (none anyone's own: PALETTE)
 local function pick(key, default) local v = reaper.GetExtState(band.SECTION, "draw " .. key); return v ~= "" and v or default end
@@ -68,17 +70,10 @@ local function load(b) -- every stroke in the room, re-read once a second, and a
   local d = drawings_dir(b)
   if d == cache_dir and reaper.time_precise() - cache_at < 1 then return cache end
   cache_at, cache, cache_dir = reaper.time_precise(), {}, d
-  for _, f in ipairs(band.files(d, ".json")) do
-    local s = band.read_json(d .. "/" .. f)
-    -- (each point a { time, track, height } of numbers and a name: one bad file stopped the drawings for everyone. Review, 0.58.98)
-    local ok = type(s) == "table" and type(s.points) == "table"
-    if ok then
-      for _, p in ipairs(s.points) do
-        if not (type(p) == "table" and type(p[1]) == "number" and (type(p[2]) == "string" or p[2] == false) and type(p[3]) == "number") then ok = false; break end
-      end
-    end
-    if ok then s.file = d .. "/" .. f; cache[#cache + 1] = s end
-  end
+  -- (lib/webdraw.lua reads the folder, checks each file as this did (each point a { time, track, height } of numbers and a name: one bad file
+  -- stopped the drawings for everyone. Review, 0.58.98), and adds what came over the direct link before its file. rt-draw)
+  webdraw.take_live(cfg, b)
+  for _, s in ipairs(webdraw.read(cfg, b)) do if not s.view then cache[#cache + 1] = s end end
   return cache
 end
 -- One colour each: everyone's own (lib/people.lua: picked in Setup > Options, else a default nobody else has), the
@@ -218,6 +213,18 @@ local function loop()
           ImGui.DrawList_AddRect(dl, l, t, r, bt, c, 0, 0, w)
           segs = { { { l, t }, { r, t } }, { { r, t }, { r, bt } }, { { r, bt }, { l, bt } }, { { l, bt }, { l, t } } } -- (its four edges)
         end
+      elseif kind == "circle" then -- (the ellipse inside the box dragged, as the web UI draws it: rt-draw)
+        if a and z then
+          local cx, cy, rx, ry = (a[1] + z[1]) / 2, (a[2] + z[2]) / 2, math.abs(z[1] - a[1]) / 2, math.abs(z[2] - a[2]) / 2
+          local N = 32
+          local arr = reaper.new_array(2 * (N + 1))
+          for i = 0, N do
+            local ang = i / N * 2 * math.pi
+            arr[2 * i + 1], arr[2 * i + 2] = cx + rx * math.cos(ang), cy + ry * math.sin(ang)
+            if i > 0 then segs[#segs + 1] = { { arr[2 * i - 1], arr[2 * i] }, { arr[2 * i + 1], arr[2 * i + 2] } } end
+          end
+          ImGui.DrawList_AddPolyline(dl, arr, c, ImGui.DrawFlags_None, w)
+        end
       elseif kind == "line" or kind == "arrow" then
         if a and z then
           ImGui.DrawList_AddLine(dl, a[1], a[2], z[1], z[2], c, w)
@@ -275,12 +282,9 @@ local function loop()
       local here = inside(L, px, py) and not on_bar
       local _, why = to_song(L, mx, my)
       if on_bar then why = nil end -- (the track under the toolbar isn't where you're drawing)
-      local function save(s) -- a finished drawing goes to the band
+      local function save(s) -- a finished drawing goes to the band: its file, and over the direct link at once (lib/webdraw.lua, rt-draw)
         n_made = n_made + 1
-        local d = drawings_dir(b)
-        reaper.RecursiveCreateDirectory(d, 0)
-        s.user, s.time = cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ")
-        band.write_json(string.format("%s/%s-%s-%d.json", d, (cfg.user:gsub("[^%w%-_]", "_")), os.date("!%Y%m%d-%H%M%S"), n_made), s)
+        webdraw.save(cfg, b, s)
         cache_at = -math.huge
       end
       if tool == "erase" or tool == "text" then -- (one click each, not a drag)
@@ -302,7 +306,7 @@ local function loop()
                 end
               end
             end
-            if best then os.remove(best.file); cache_at = -math.huge end
+            if best then webdraw.remove(cfg, b, { best.id }, cfg.user, false); cache_at = -math.huge end
           end
         end
       elseif (down or clicked) and (here or stroke) then
@@ -423,12 +427,14 @@ local function loop()
         for _, s in ipairs(load(b)) do
           if s.user == cfg.user and (not last or tostring(s.time) .. s.file > tostring(last.time) .. last.file) then last = s end
         end
-        if last then os.remove(last.file); cache_at, stroke = -math.huge, nil end
+        if last then webdraw.remove(cfg, b, { last.id }, cfg.user, false); cache_at, stroke = -math.huge, nil end
       end
       ImGui.SetItemTooltip(ctx, "Take away your last drawing (everyone's copy goes too).")
       ImGui.SameLine(ctx, 0, 24)
       if button("Clear mine") and reaper.MB("Take away every drawing you made in this room, for everyone? This can't be undone.", "StudioSync", 4) == 6 then
-        for _, s in ipairs(load(b)) do if s.user == cfg.user then os.remove(s.file) end end
+        local mine = {}
+        for _, s in ipairs(load(b)) do if s.user == cfg.user then mine[#mine + 1] = s.id end end
+        webdraw.remove(cfg, b, mine, cfg.user, false)
         cache_at, stroke = -math.huge, nil
       end
       ImGui.SetItemTooltip(ctx, "Take away every drawing you made in this room (everyone's copy goes too).")
@@ -446,7 +452,7 @@ local function loop()
       ImGui.AlignTextToFramePadding(ctx)
       ImGui.Text(ctx, why == "local" and "That's one of StudioSync's own tracks: draw on a studio track." or ({ pen = "Drag to draw.",
         marker = "Drag to highlight.", line = "Drag from one end to the other.", arrow = "Drag from the tail to the point.",
-        box = "Drag from corner to corner.", text = "Click where the words go.", erase = "Click one of your drawings to take it away." })[tool] or "")
+        box = "Drag from corner to corner.", circle = "Drag across where it goes.", text = "Click where the words go.", erase = "Click one of your drawings to take it away." })[tool] or "")
       grew()
       bar_ext = { sx - 6, sy - 6, maxx + 8, maxy + 6 }
     else
