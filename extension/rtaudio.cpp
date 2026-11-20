@@ -253,7 +253,7 @@ struct Slot {
 
 struct RtLink {
   std::mutex api_mx, pend_mx, cfg_mx, stats_mx;
-  std::string key, bind_s, err, last_reject, last_reject_from, want_peers, want_secret, have_secret;
+  std::string key, bind_s, err, last_reject, last_reject_from, want_peers, want_secret, have_secret, not_here_from;
   bool peers_dirty = false;
   int want_port = 0;          // (from the peers JSON: the port rt_start binds when it's given 0)
   std::atomic<float> in_peak{ 0.f }; // what this computer sends, peak since the last status (the panel's "you're heard" meter)
@@ -277,7 +277,7 @@ struct RtLink {
   std::atomic<int> seen_len{ 0 };
   std::vector<float> inbuf, mixbuf;
   float *inptr[RT_MAX_CH] = {}, *mixptr[2] = {};
-  std::atomic<long long> callbacks{ 0 }, max_ns{ 0 }, sent{ 0 }, received{ 0 }, rejected{ 0 };
+  std::atomic<long long> callbacks{ 0 }, max_ns{ 0 }, sent{ 0 }, received{ 0 }, rejected{ 0 }, not_here{ 0 };
   unsigned char txbuf[MAX_DGRAM + 64];
   std::string status_out;
   std::atomic<rt_extra_fn> extra{ nullptr }; // (Hop's network leg: rt_set_extra)
@@ -1238,6 +1238,16 @@ void reject(RtLink *l, const char *why, const sockaddr_in &from) // (and from wh
   l->last_reject = why;
   l->last_reject_from = addr_str(from);
 }
+// Signed with the studio's secret but from an address not on this computer's peer list: a studio computer that lists this one while this one
+// doesn't list it (Live sync's room here leaves it out for now: its status file old here, another song or room, a list being changed, or its
+// names still resolving at the start). Dropped all the same, but not a refusal: Health read it as "refused 13589 (not one of the studio's
+// computers here)" from the laptop's own address. Counted apart (not_here), with the last sender.
+void not_here(RtLink *l, const sockaddr_in &from)
+{
+  l->not_here.fetch_add(1, std::memory_order_relaxed);
+  std::lock_guard<std::mutex> g(l->stats_mx);
+  l->not_here_from = addr_str(from);
+}
 // One datagram from a peer: from the socket (rx_loop) or opened by the connection without Tailscale (rt_nat_rx, libjuice's thread). The
 // AOO calls happen under cfg_mx either way, so the two never run them at once.
 void rx_one(RtLink *l, const unsigned char *d, int n, const sockaddr_in &from)
@@ -1257,7 +1267,7 @@ void rx_one(RtLink *l, const unsigned char *d, int n, const sockaddr_in &from)
     tag_of(l->key, d, (size_t)n - TAG, t);
     if (!same_tag(t, d + n - TAG)) { reject(l, "wrong studio secret", from); return; }
     Slot *p = slot_of(l, from);
-    if (!p) { reject(l, "not one of the studio's computers here", from); return; }
+    if (!p) { not_here(l, from); return; }
     handle_ctl(l, *p, d + 4, n - 4 - TAG, now_s());
     return;
   }
@@ -1275,7 +1285,7 @@ void rx_one(RtLink *l, const unsigned char *d, int n, const sockaddr_in &from)
     AooInt32 onset;
     if (aoo_parsePattern(msg, size, &type, &id, &onset) != kAooOk) { reject(l, "not an AOO message", from); return; }
     Slot *p = slot_of(l, from);
-    if (!p) { reject(l, "not one of the studio's computers here", from); return; }
+    if (!p) { not_here(l, from); return; }
     if (type == kAooMsgTypeSink && id == p->sink_id && p->sink) p->sink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
     else if (type == kAooMsgTypeSink && id == p->psink_id && p->psink) p->psink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
     else if (type == kAooMsgTypeSource && id == SRC_ID && l->src) l->src->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
@@ -1372,7 +1382,7 @@ int rt_start(RtLink *l, int first_input, int nch, int kbps, int port, const char
   l->bind_s = addr_str(me);
   l->first = first_input; l->nch = nch; l->kbps = std::max(16, std::min(512, kbps)); l->port = port;
   l->cfg_sr = 0; l->cfg_len = 0; l->seen_sr = 0; l->seen_len = 0;
-  l->callbacks = 0; l->max_ns = 0; l->sent = 0; l->received = 0; l->rejected = 0; l->last_reject.clear(); l->last_reject_from.clear();
+  l->callbacks = 0; l->max_ns = 0; l->sent = 0; l->received = 0; l->rejected = 0; l->last_reject.clear(); l->last_reject_from.clear(); l->not_here = 0; l->not_here_from.clear();
   l->src = AooSource_new(SRC_ID);
   l->src->setEventHandler(source_event, l, kAooEventModePoll);
   l->src->setPacketSize(1200);
@@ -1522,6 +1532,7 @@ std::string rt_status(RtLink *l)
   o += ",\"error\":"; json_str(o, l->err);
   o += ",\"last_reject\":"; json_str(o, l->last_reject);
   o += ",\"last_reject_from\":"; json_str(o, l->last_reject_from);
+  o += ",\"not_here\":" + std::to_string(l->not_here.load()) + ",\"not_here_from\":"; json_str(o, l->not_here_from); // (not_here above)
   snprintf(b, sizeof(b), ",\"secret\":%s,\"srate\":%d,\"block\":%d,\"first\":%d,\"nch\":%d,\"kbps\":%d,\"level\":%.5f,\"callbacks\":%lld,\"max_us\":%.1f,\"sent\":%lld,\"received\":%lld,\"rejected\":%lld,\"peers\":{",
            l->key.empty() ? "false" : "true", l->cfg_sr, l->cfg_len, l->first, l->nch, l->kbps, l->in_peak.exchange(0.f), l->callbacks.load(), l->max_ns.load() / 1000.0,
            l->sent.load(), l->received.load(), l->rejected.load());
@@ -1809,7 +1820,7 @@ void rtaudio_register(reaper_plugin_info_t *rec)
     { "StudioSync_LiveAudioPeers", (void *)api_peers, (void *)vla_peers,
       "int\0const char*\0json\0Who to send to and hear, and the key: {\"secret\":\"<the studio secret>\",\"port\":47281,\"peers\":[\"name:port\",...]} (the direct link's list; Tailscale addresses only). Returns how many peers, or -1 when the JSON isn't that." },
     { "StudioSync_LiveAudioStatus", (void *)api_status, (void *)vla_status,
-      "const char*\0\0\0StudioSync's live audio as JSON: running, bind, error, secret, srate, block, level (what you send, peak since the last ask), callbacks, max_us, pauses, paused_blocks, overflows (reconfigures that held the audio, blocks skipped meanwhile, AOO's send queue full), sent, received, rejected, last_reject, last_reject_from (its sender's ip:port), and per peer: resolved, streaming, rtt_ms, latency_ms, buffer_ms (the jitter buffer), target_ms, floor_ms, ceiling_ms (the adaptive buffer's size and bounds), fill_ms (the buffer as measured), jitter (underruns that grew it), switched (underruns a hub mix/direct switch brought), trims (quiet re-buffers of a buffer far above its size), loss (0-1), dropped, underruns, level (peak since the last ask), gain, mute, play_streaming, play_level, play_gain (their Play stream); and play (the live out hop id, 0: no Play), play_alive, play_send, play_level (what this computer plays out)." },
+      "const char*\0\0\0StudioSync's live audio as JSON: running, bind, error, secret, srate, block, level (what you send, peak since the last ask), callbacks, max_us, pauses, paused_blocks, overflows (reconfigures that held the audio, blocks skipped meanwhile, AOO's send queue full), sent, received, rejected, last_reject, last_reject_from (its sender's ip:port), not_here, not_here_from (datagrams with the studio's secret from a computer not on the peer list here: dropped, not refused), and per peer: resolved, streaming, rtt_ms, latency_ms, buffer_ms (the jitter buffer), target_ms, floor_ms, ceiling_ms (the adaptive buffer's size and bounds), fill_ms (the buffer as measured), jitter (underruns that grew it), switched (underruns a hub mix/direct switch brought), trims (quiet re-buffers of a buffer far above its size), loss (0-1), dropped, underruns, level (peak since the last ask), gain, mute, play_streaming, play_level, play_gain (their Play stream); and play (the live out hop id, 0: no Play), play_alive, play_send, play_level (what this computer plays out)." },
     { "StudioSync_LiveAudioPeerSet", (void *)api_peer_set, (void *)vla_peer_set,
       "int\0const char*,double,int\0peer,gain,mute\0A peer's level (linear, 0-4) and mute in what you hear (the cue mix). Returns 1 when that peer is in the list." },
     { "StudioSync_LiveAudioPeerBuffer", (void *)api_peer_buffer, (void *)vla_peer_buffer,

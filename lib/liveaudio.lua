@@ -749,6 +749,10 @@ function liveaudio.health_text(st, names, theirs, s, src, sending, hubp)
     local from = type(st.last_reject_from) == "string" and st.last_reject_from ~= "" and (" from " .. st.last_reject_from) or ""
     text = text .. string.format("; refused %d (last: %s%s)", st.rejected, tostring(st.last_reject), from)
   end
+  -- (the studio's secret, but not on this computer's list for the room: it hears you, you don't take it in. Not a refusal: rt-small)
+  if (tonumber(st.not_here) or 0) > 0 and type(st.not_here_from) == "string" and st.not_here_from ~= "" then
+    text = text .. "; " .. st.not_here_from .. " sends here but isn't in this room here yet (its status may be old here), so it isn't heard"
+  end
   return ok and #heard + #each > 0, text
 end
 -- Health's row (lib/direct.lua health_rows): nil while the studio has live audio off. b: the tab's song and room, for the bandmates' statuses.

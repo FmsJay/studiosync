@@ -440,6 +440,36 @@ static void clock_tests()
   check(std::fabs(slow + 102) < 5, "clock: a plain slow device, its callbacks late by 0-2 ms and now and then 50 ms, measured within 5 ppm");
 }
 
+// ---- A studio computer this one doesn't list (Health on the desktop: "refused 13589 (last: not one of the studio's computers here from
+// <the laptop's address>)" while the laptop's room left the desktop out): X lists Y and sends; Y has the secret but lists nobody. Y drops X's
+// datagrams as not_here, with X's address, and refuses nothing.
+static void not_here_test()
+{
+  const int SR = 48000, LEN = 256, PX = 47581, PY = 47582;
+  char px[32], py[32];
+  snprintf(px, sizeof px, "127.0.0.1:%d", PX); snprintf(py, sizeof py, "127.0.0.1:%d", PY);
+  RtLink *X = rt_new(), *Y = rt_new();
+  rt_peers(X, (std::string("{\"peers\":[\"") + py + "\"],\"port\":" + std::to_string(PX) + ",\"secret\":\"studio\"}").c_str());
+  rt_peers(Y, (std::string("{\"peers\":[],\"port\":") + std::to_string(PY) + ",\"secret\":\"studio\"}").c_str());
+  rt_start(Y, 0, 1, 64, 0, "127.0.0.1"); rt_start(X, 0, 1, 64, 0, "127.0.0.1");
+  std::vector<double> in(LEN, 0.25), o1(LEN), o2(LEN);
+  const double *ii[1] = { in.data() };
+  double *oo[2] = { o1.data(), o2.data() };
+  const auto t0 = std::chrono::steady_clock::now();
+  for (long long b = 0; b * LEN < SR * 3 / 2; ++b) { // (1.5 s of blocks in real time)
+    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < (double)b * LEN / SR) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    rt_capture(X, ii, 1, LEN, SR); rt_mix(X, oo, 2, LEN, SR);
+    rt_capture(Y, ii, 1, LEN, SR); rt_mix(Y, oo, 2, LEN, SR);
+  }
+  const std::string sy = rt_status(Y);
+  rt_free(X); rt_free(Y);
+  printf("     not here: Y dropped %s of X's datagrams as not on its list (from %s), refused %s (last: %s)\n", field(sy, "", "not_here").c_str(),
+         field(sy, "", "not_here_from").c_str(), field(sy, "", "rejected").c_str(), field(sy, "", "last_reject").c_str());
+  check(atoll(field(sy, "", "not_here").c_str()) > 0 && field(sy, "", "not_here_from") == "\"" + std::string(px) + "\"",
+        "not here: a studio computer Y doesn't list is counted apart, with its address");
+  check(field(sy, "", "rejected") == "0", "not here: and isn't counted as a refusal (Health's alarm)");
+}
+
 int main(int argc, char **argv)
 {
   if (argc > 1 && strcmp(argv[1], "underruns") == 0) { drift_tests(); trim_test(); switch_test(); rescue_test(); spike_tests(); clock_tests(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
@@ -805,6 +835,7 @@ int main(int argc, char **argv)
     check_unless_stalled(field(end_x, "hub", "state") == "\"direct\"" && field(end_x, "hub", "fallbacks") == "1", hub_stall, "hub: X's status: direct, one fallback");
     for (int i = 0; i < 4; ++i) rt_free(L[i]);
   }
+  not_here_test();
   drift_tests(); // (the four-computer test's underruns: drift, a buffer left high, a hub switch)
   trim_test();
   switch_test();

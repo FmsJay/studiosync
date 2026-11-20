@@ -162,6 +162,10 @@ ok, text = la.health_text({ nch = 1, kbps = 128, rejected = 5, last_reject = "no
   ["bee-laptop.tail99.ts.net:47281"] = { resolved = true, streaming = true, latency_ms = 45, buffer_ms = 35, target_ms = 40, floor_ms = 30, loss = 0 } } })
 assert(ok and text:find("mac 120 ms (buffer 85 ms (Wi-Fi?), loss 0.0%)", 1, true) and text:find("bee-laptop 45 ms (buffer 35 ms, loss 0.0%)", 1, true)
   and text:find("a wired network lowers it", 1, true) and text:find("refused 5 (last: not one of the studio's computers here from 100.70.1.2:47281)", 1, true), text)
+-- (1.0.27: a studio computer this one doesn't list is counted apart, not_here, and doesn't make the row a refusal. rt-small)
+ok, text = la.health_text({ nch = 1, kbps = 128, rejected = 0, not_here = 13589, not_here_from = "100.109.45.2:47281", peers = {
+  ["mac.tail99.ts.net:47281"] = { resolved = true, streaming = true, latency_ms = 40, buffer_ms = 35, target_ms = 30, floor_ms = 30, loss = 0 } } })
+assert(ok and not text:find("refused", 1, true) and text:find("100.109.45.2:47281 sends here but isn't in this room here yet", 1, true), text)
 local f0, c0 = la.bounds(nil)
 assert(f0 == 30 and c0 == 150, "a bandmate's buffer bounds: the defaults")
 f0, c0 = la.bounds({ floor = 200, ceiling = 100 })
