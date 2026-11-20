@@ -501,6 +501,18 @@ function liveaudio.tick(cfg, b, proj)
   local avail = liveaudio.available()
   local secret = on and groups.tailnet(cfg.root) and groups.sonobus_secret(cfg.root) or nil
   S.why, S.code = liveaudio.why_not(on, avail, secret, not on or direct.firewall_ok("UDP"))
+  -- (REAPER's audio device closed, as on the Mac after a restart: live audio sent and heard nothing until someone opened it. Opened once a
+  -- session, 5 s in, so a device someone closes on purpose later stays closed. James: "a lot of things should happen automatically", rt)
+  if on and not S.why and not S.reopened and reaper.Audio_IsRunning and reaper.Audio_IsRunning() ~= 1 then
+    S.down_at = S.down_at or now
+    if now - S.down_at >= 5 and reaper.Audio_Init then
+      S.reopened = true
+      reaper.Audio_Init()
+      band.log("REAPER's audio device wasn't running, so live audio and recording couldn't work: opened it again" .. (reaper.Audio_IsRunning() == 1 and "" or " (it didn't start: look at Options > Preferences > Audio > Device)"))
+    end
+  else
+    S.down_at = nil
+  end
   local st = liveaudio.status()
   if S.why then
     if st.running and reaper.GetExtState(band.SECTION, "live audio by") ~= "" then -- (ours, from this tab or another: the studio's choice wins)
