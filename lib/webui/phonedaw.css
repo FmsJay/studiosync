@@ -25,3 +25,13 @@
 #acomt { flex: 1; min-width: 0; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
 #sht:not([hidden]) { display: flex; flex-direction: column; flex: 1; min-height: 0; padding: 0; max-width: none; }
 #sht [hidden] { display: none !important; }
+/* stage 3: the Play view (vkeys.js's keys and pads fill what's left of the screen) */
+#ply:not([hidden]) { display: flex; flex-direction: column; flex: 1; min-height: 0; padding: 4px 12px max(12px, env(safe-area-inset-bottom)); max-width: none; box-sizing: border-box; }
+#ply .arow.wrap { flex-wrap: wrap; margin-bottom: 4px; }
+#ktrack { flex: 1 1 10em; min-width: 0; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+#ply .chk { margin: 0 !important; }
+#ply .chk input { width: auto; }
+#krec { font-size: 14px; padding: 6px 14px; border-radius: 18px; }
+#kstate, #kwhy { margin: 2px 0; min-height: 1.2em; }
+#kwhy { white-space: pre-line; }
+.kbox { flex: 1; min-height: 180px; display: flex; }

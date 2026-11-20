@@ -102,6 +102,7 @@ function phonedaw.reset() S = { want_until = -math.huge } end -- (tests)
 
 -- An action the phone sent. -> words for the log, or nil.
 function phonedaw.action(proj, cfg, b, a)
+  if a.keys ~= nil then return require("livekeys").action(proj, cfg, b, a.keys) end -- (the Play view's notes, live on a track: lib/livekeys.lua)
   local d, why, id = phonedaw.parse(a)
   if d then
     if d.want then S.want_until = reaper.time_precise() + phonedaw.WANT_FOR end

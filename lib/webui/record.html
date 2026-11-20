@@ -16,8 +16,10 @@
 <link rel="stylesheet" href="record.css">
 <link rel="stylesheet" href="sheet.css">
 <link rel="stylesheet" href="phonedaw.css">
+<link rel="stylesheet" href="vkeys.css">
 <script src="phonefile.js" defer></script>
 <script src="record.js" defer></script>
+<script src="vkeys.js" defer></script>
 <script src="phonedaw.js" defer></script>
 </head>
 <body>
@@ -33,6 +35,7 @@
   <button type="button" data-view="rec" aria-pressed="true">Record</button>
   <button type="button" data-view="arr" aria-pressed="false">Project</button>
   <button type="button" data-view="sht" aria-pressed="false">Sheet</button>
+  <button type="button" data-view="ply" aria-pressed="false">Play</button>
 </nav>
 <section id="rec" aria-labelledby="rec-h">
   <h2 id="rec-h">A take from a phone</h2>
@@ -81,7 +84,7 @@
   </div>
   <div id="whatrow" hidden>
     <label for="what">Record</label>
-    <select id="what"><option value="audio">audio</option><option value="midi">a MIDI keyboard (USB)</option></select>
+    <select id="what"><option value="audio">audio</option><option value="midi">MIDI: a keyboard (USB) or the Play view’s keys and pads</option></select>
   </div>
   <div class="audioonly">
     <label for="input">Input</label>
@@ -141,7 +144,7 @@
       <li>Two inputs at most: input 1, input 2, both as stereo, or both mixed. More, as separate tracks, needs a native app.</li>
       <li>Android Chrome lets the page pick the interface. On iPhone the input is the one iOS uses: plug the interface in before opening the
         app; iOS may give only one channel.</li>
-      <li>MIDI keyboards work where the browser has Web MIDI: Android Chrome, not iPhone.</li>
+      <li>MIDI keyboards work where the browser has Web MIDI: Android Chrome, not iPhone. The Play view’s on-screen keys and pads work everywhere.</li>
       <li>Hearing yourself through the phone (Headphones) comes late by the delay shown there: often 20-80 ms on Android, more on
         Bluetooth. Fine for a reverb to sing into, not for tight timing; low-latency monitoring needs a native app.</li>
       <li>The Project view's own levels are for this phone's playback: the mix (one file) and this phone's takes. The band's tracks inside the
@@ -169,6 +172,17 @@
     <input id="acomt" maxlength="500" placeholder="A comment at the cursor" aria-label="Comment" enterkeyhint="send">
     <button type="submit">Send</button>
   </form>
+</section>
+<!-- stage 3 (vkeys.js, phonedaw.js): on-screen keys and drum pads, MIDI controllers, live into REAPER or a take on the phone -->
+<section id="ply" class="pview" aria-label="Play" hidden>
+  <div class="arow wrap">
+    <select id="ktrack" aria-label="Track"></select>
+    <label class="chk"><input id="klive" type="checkbox"> Live into REAPER</label>
+    <button id="krec" type="button" class="recbtn small">Record a MIDI take</button>
+  </div>
+  <p id="kstate" class="dim small" role="status"></p>
+  <div id="kbox" class="kbox"></div>
+  <p id="kwhy" class="dim small" role="status"></p>
 </section>
 <section id="sht" class="pview" aria-label="Sheet" hidden>
   <div class="tptop">

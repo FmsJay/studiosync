@@ -221,6 +221,7 @@ function webui.tick(proj, cfg, b, handlers)
     local said = require("phonerec").watch(proj, cfg, b, now)
     if said then band.log(said) end
   end
+  require("livekeys").tick(proj, cfg, b, publish, now) -- (a page playing a track live lets go when it goes quiet, looking or not: lib/livekeys.lua)
   -- Nobody looking: no presence (sync.authority reads every claims file) and no chat built. A page arriving gets both on this tick, so the
   -- server's older copy shows for one tick at most. (James, rt)
   local look = looking(now)

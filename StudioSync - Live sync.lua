@@ -233,6 +233,7 @@ reaper.atexit(function()
   band.try("liveaudio.on_exit", require("liveaudio").on_exit, proj) -- (live audio stops with the Live sync that started it: lib/liveaudio.lua. James, rt)
   band.try("hops.on_exit", require("hops").on_exit, proj, cfg) -- (live hops stop with it, on both sides: lib/hops.lua. James, rt)
   band.try("bounces.on_exit", require("bounces").on_exit, cfg, b) -- (shares rendered here end and are redone elsewhere: lib/bounces.lua. James, rt)
+  band.try("livekeys.on_exit", require("livekeys").on_exit) -- (a web page playing a track live: notes off, the track put back. lib/livekeys.lua)
   if click and reaper.GetToggleCommandStateEx(0, 40364) == 1 then reaper.Main_OnCommand(40364, 0) end -- (stopped mid count-in: the click left on. 0.58.92)
   -- (only while the tab still holds this session: another project opened into it was saved as this song's "end of session" version, exported
   -- with its media to the studio's cloud drive, and read for the local-work mark. Otherwise the last look's answer, and nothing saved.

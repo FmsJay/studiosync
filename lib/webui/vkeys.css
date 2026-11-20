@@ -1,0 +1,32 @@
+/* StudioSync's on-screen instrument (vkeys.js): keys and drum pads for fingers, a pen or a mouse. style.css's colours, so light and dark
+   follow it. touch-action none: a touch on the instrument plays, it never scrolls, zooms or waits for a double tap. GPL-3.0-or-later. (James, rt) */
+.vk { display: flex; flex-direction: column; gap: 6px; min-height: 0; flex: 1; }
+.vkbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; }
+.vkbar button { padding: 6px 10px; }
+.vkbar button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.vkbar select, .vkbar input[type="number"] { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 6px; width: auto; }
+.vkbar input[type="number"] { width: 4.2em; }
+.vkoct { min-width: 2.2em; text-align: center; font-variant-numeric: tabular-nums; }
+.vkhear { display: flex; align-items: center; gap: 4px; color: var(--dim); }
+.vkhear input { width: auto; }
+.vkinfo { flex: 1 1 10em; }
+.vkplay { position: relative; flex: 1; min-height: 140px; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent; overscroll-behavior: none; overflow: hidden; border-radius: 10px; background: var(--line); outline: none; }
+.vkplay:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.vkw, .vkb, .vkpad { position: absolute; box-sizing: border-box; pointer-events: none; }
+.vkw { background: #fbfbf8; border: 1px solid #bdbdb8; border-top: 0; border-radius: 0 0 6px 6px; }
+.vkb { background: #1d1d20; border: 1px solid #000; border-top: 0; border-radius: 0 0 4px 4px; z-index: 1; }
+.vkw.on { background: color-mix(in srgb, var(--accent) 55%, #fff); }
+.vkb.on { background: var(--accent); }
+.vkkn { position: absolute; bottom: 6px; left: 0; right: 0; text-align: center; font-size: 11px; color: #777; }
+.vkpad { border: 3px solid var(--bg); border-radius: 12px; background: var(--panel); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
+.vkpad.on { background: var(--accent); color: #fff; }
+.vkpad.on .vkpk { color: #fff; }
+.vkpn { font-weight: 600; font-size: 14px; text-align: center; }
+.vkpk { font-size: 11px; }
+.vkplay.editing .vkpad { border-style: dashed; border-color: var(--accent); }
+/* the piano roll's step input (pianoroll.js): the keys under the notes */
+.proll .pkeys { flex: 0 0 auto; height: min(42%, 230px); display: flex; padding: 4px 8px 6px; background: var(--panel); border-top: 1px solid var(--line); }
+.proll .pkeys[hidden] { display: none; }
+.proll .pkeys .vkplay { min-height: 90px; }
+.pbar .pstep[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
