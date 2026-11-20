@@ -4,7 +4,8 @@
 // secret: B refuses every datagram from it and hears nothing of its 1 kHz tone. Then B mutes A (the cue mix) and A goes quiet there; then
 // C is given the right secret (the peers JSON again, while running) and B hears its tone. The secret and ports go in as lib/liveaudio.lua's
 // JSON does (StudioSync_LiveAudioPeers). Then C mutes what it sends (Mute me: silence, the stream kept) and unmutes, heard again at once; then
-// C leaves B out of what it sends (talkback to someone else) and lets it back in.
+// C leaves B out of what it sends (talkback to someone else) and lets it back in. Then Wi-Fi's bursts (the adaptive buffer), then Play
+// (the second stream, from a Hop's ring: heard apart from Talk).
 // Build and run: tests\build_rtaudio_test.cmd (macOS/Linux: the CI's line in .github/workflows/extension.yml). GPL-3.0-or-later.
 #include <algorithm>
 #include <chrono>
@@ -15,6 +16,7 @@
 #include <thread>
 #include <vector>
 #include "../extension/rtaudio.h"
+#include "../plugin/hop_shm.h" // (Play: the test writes a Hop's send ring as the live out track's plug-in does)
 
 static int fails = 0;
 static void check(bool ok, const char *what) { printf("%s %s\n", ok ? "  ok  " : "  FAIL", what); if (!ok) ++fails; }
@@ -205,6 +207,68 @@ int main()
     check(!flapped, "bursts: D stays streaming on E throughout");
     check(after_ms < grown && after_ms >= 30, "bursts over and D quiet: the buffer shrank back (not below the floor)");
     rt_free(D); rt_free(E);
+  }
+
+  // ---- Play, the second stream (James, rt: "hear what a bandmate plays when they arm"). F's Talk is a quiet 440 Hz sine (0.2) on its input;
+  // its Play is a loud 1 kHz one (0.7), written into hop 63's send ring each block before the post call, as the live out track's Hop does.
+  // G hears both, and sets them apart: Talk off (Play heard), then Play off (Talk heard). Then F mutes Play (silence, the stream kept), the
+  // live out track stops (play_alive false), and Play ends.
+  {
+    const int PF = 47397, PG = 47398, HOP = 63;
+    char pf[32], pg[32];
+    snprintf(pf, sizeof pf, "127.0.0.1:%d", PF); snprintf(pg, sizeof pg, "127.0.0.1:%d", PG);
+    RtLink *F = rt_new(), *G = rt_new();
+    rt_peers(F, cfg("studio", PF, std::string("\"") + pg + "\"").c_str());
+    rt_peers(G, cfg("studio", PG, std::string("\"") + pf + "\"").c_str());
+    check(rt_start(F, 0, 1, 128, 0, "127.0.0.1") == 1 && rt_start(G, 0, 1, 128, 0, "127.0.0.1") == 1, "play: F and G start");
+    hop_map hm;
+    hop_shm *ring = hop_shm_open(&hm, hop_reaper_pid(), HOP);
+    check(ring != nullptr, "play: the test's own Hop mapping (the live out track's)");
+    const int total = at(10.0), p_on = at(0.5), talk_off = at(3.0), play_off = at(5.0), pmute = at(7.0), ring_stop = at(8.0), p_end = at(8.6);
+    std::vector<double> iff(LEN), ig(LEN, 0.0), of(LEN), og(LEN), og2(LEN), heard_g;
+    std::vector<float> inter((size_t)LEN * 2);
+    const double *inf[1] = { iff.data() }, *ing[1] = { ig.data() };
+    double *outf[2] = { of.data(), of.data() }, *outg[2] = { og.data(), og2.data() }; // (G's left ear is what's checked)
+    std::string mid_f, mid_g, dead_f;
+    long long n3 = 0;
+    const auto t2 = std::chrono::steady_clock::now();
+    for (int b = 0; b < total; ++b) {
+      const auto due = t2 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
+      while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
+      for (int k = 0; k < LEN; ++k, ++n3) {
+        iff[k] = 0.2 * sin(2 * PI * 440 * n3 / SR);
+        inter[2 * k] = inter[2 * k + 1] = (float)(0.7 * sin(2 * PI * 1000 * n3 / SR));
+      }
+      if (b == p_on) check(rt_play(F, HOP, 1) == 1, "play: F sends hop 63 as Play");
+      if (b == talk_off) check(rt_peer_set(G, pf, 0.0, 0) == 1, "play: G turns F's Talk off");
+      if (b == play_off) check(rt_peer_set(G, pf, 1.0, 0) == 1 && rt_peer_play(G, pf, 0.0) == 1 && rt_peer_play(G, "127.0.0.1:1", 1) == 0, "play: G turns F's Talk back, Play off");
+      if (b == pmute) { rt_peer_play(G, pf, 1.0); check(rt_play(F, HOP, 0) == 1, "play: F mutes Play"); }
+      if (b == at(4.5)) { mid_f = rt_status(F); mid_g = rt_status(G); }
+      if (b == ring_stop + at(0.5)) dead_f = rt_status(F);
+      if (b == p_end) rt_play(F, 0, 0);
+      std::fill(of.begin(), of.end(), 0.0); std::fill(og.begin(), og.end(), 0.0); std::fill(og2.begin(), og2.end(), 0.0);
+      rt_capture(F, inf, 1, LEN, SR); rt_capture(G, ing, 1, LEN, SR);
+      if (ring && b < ring_stop) { // (the Hop's process(): its input into the send ring, then send_w)
+        const uint64_t w = hop_load(&ring->send_w);
+        hop_copy_in(ring->send, w, inter.data(), LEN);
+        hop_store(&ring->send_w, w + LEN);
+      }
+      rt_mix(F, outf, 2, LEN, SR); rt_mix(G, outg, 2, LEN, SR);
+      heard_g.insert(heard_g.end(), og.begin(), og.end());
+    }
+    const std::string end_f = rt_status(F);
+    auto pk = [&](double s0, double s1) { double p = 0; for (size_t i = (size_t)(s0 * SR); i < (size_t)(s1 * SR) && i < heard_g.size(); ++i) p = std::max(p, std::fabs(heard_g[i])); return p; };
+    printf("G (mid): %s\n     play: both %.3f, Talk off %.3f, Play off %.3f, Play muted %.3f (Talk 0.2, Play 0.7)\n", mid_g.c_str(), pk(2, 3), pk(3.5, 4.9), pk(5.5, 6.9), pk(7.5, 7.9));
+    check(pk(2, 3) > 0.7, "play: G hears Talk and Play together");
+    check(pk(3.5, 4.9) > 0.55 && pk(3.5, 4.9) < 0.85, "play: Talk off, G hears Play at its level");
+    check(pk(5.5, 6.9) > 0.12 && pk(5.5, 6.9) < 0.3, "play: Play off, G hears only Talk");
+    check(pk(7.5, 7.9) > 0.12 && pk(7.5, 7.9) < 0.3, "play: F muted Play, G hears only Talk (Play's level back up)");
+    check(field(mid_f, "", "play") == "63" && field(mid_f, "", "play_alive") == "true" && atof(field(mid_f, "", "play_level").c_str()) > 0.6, "play: F's status: hop 63, alive, its level");
+    check(field(mid_g, pf, "play_streaming") == "true" && field(mid_g, pf, "streaming") == "true", "play: G's status: F's Talk and Play both streaming");
+    check(field(dead_f, "", "play_alive") == "false" && field(dead_f, "", "play") == "63", "play: the live out track stopped: play_alive false");
+    check(field(end_f, "", "play") == "0", "play: ended, F's status says no Play");
+    if (ring) { hop_shm_close(&hm); hop_shm_unlink(&hm); }
+    rt_free(F); rt_free(G);
   }
   rt_free(A); rt_free(B); rt_free(C); rt_free(bad);
   printf(fails ? "fails %d\n" : "ok, fails 0\n", fails);

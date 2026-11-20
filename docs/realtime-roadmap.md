@@ -80,7 +80,7 @@ sends each new interval (one bar, or N beats; tempo-aware, from the shared clock
   rises). Different sample rates on the two ends are resampled, and the slow drift between two audio interfaces'
   clocks is absorbed in the jitter buffer (adaptive resampling), or long calls would click every few minutes.
 
-- **Hear what a bandmate plays when they arm (James, 2026-11-19; proposed, not built).** Today live audio sends one fixed
+- **Hear what a bandmate plays when they arm (James, 2026-11-19; built, see below).** Today live audio sends one fixed
   input range per computer (the call mic). An armed track's sound isn't sent: not a guitar on another input, not an amp
   sim's or a synth's output, not a MIDI instrument. Proposal, two sources per computer:
   - **Talk:** the call mic, as now.
@@ -92,6 +92,25 @@ sends each new interval (one bar, or N beats; tempo-aware, from the shared clock
     with its FX), never twice (the echo/doubling guard). A per-computer override: Auto, Talk only, Play only, Both.
   - Listeners get a Talk and a Play volume per bandmate (the personal monitor mix, Decisions 11). Play is heard one
     network trip late: fine for ideas and for watching a take; playing tightly together stays step 2's "in time" mode.
+  - **Built (rt branch, 2026-11-19; native and Lua tests only, not run in REAPER yet).** Two AOO streams per computer: Talk (source 1,
+    as before) and Play (source 2), each listener with a sink per stream per bandmate (Play's ids: the address hash with "/play"), so the
+    Talk and Play volumes are truly apart; Play's buffer size follows Talk's adaptive one. The tap: Lua makes a hidden local track
+    (band_local "liveout", "StudioSync live out": no master send, no anticipative FX, chain PDC "ignore") holding a StudioSync Hop (a free
+    hop id, 64 down), the armed tracks (the song's and "yours", never StudioSync's helpers) send to it post-FX (`I_SENDMODE` 3); the
+    extension opens that Hop's mapping on its send thread and, in the hook's post call, sends the newest block of its send ring (the Hop
+    wrote it in this block's FX pass), silence when nothing came, never a backlog. ReaScript: `StudioSync_LiveAudioPlay(hop_id, send)`
+    (0: no Play stream; send 0: silence, the stream kept) and `StudioSync_LiveAudioPeerPlay(peer, gain)`; Status adds play, play_alive,
+    play_send, play_level and per peer play_streaming, play_level, play_gain. Lua guards both (`liveaudio.can_play`): without them, Talk
+    alone as before. Choice per computer in Chat > Call (Send: Auto, Talk only, Play only, Both; ExtState "live audio source"). Mute me and
+    Deafen silence both; push-to-talk and talkback are Talk's (talkback still quiet while recording, Play goes on); held talk opens Talk even
+    in Play only, or opens Play when the call mic already goes as Play. The echo warning looks only at what Talk sends. Each computer's
+    status carries `lsrc` (talk/play/both/none): Chat > Call shows each bandmate's Talk/Play and has a Talk and a Play slider per bandmate
+    (kept by name in the cue mix, `play`); Health says what this computer sends and who's playing. The live out track goes when Live sync
+    ends or the studio turns live audio off. An older bandmate's extension refuses Play's datagrams while Play is on ("for a stream that
+    isn't theirs"), until EXT_WANT moves past 1.0.15. Tests: tests/rtaudio_test.cpp (Talk 0.2 and Play 0.7 heard apart, Play muted, the
+    live out track stopping: play_alive), tests/test_0_60_rt_liveaudio.lua (the plans, the live out track and its sends on a stand-in).
+  - To check in REAPER (desktop + laptop): the checklist in the session's report; above all that the live out track keeps processing
+    while stopped with an armed, monitored track, and that Play needs input monitoring on (an unmonitored armed track sends its playback).
 - **Record several at once (James, 2026-11-19): guitar and voice, several MIDI instruments.** REAPER records any number
   of armed tracks; StudioSync's parts are per track: smart take names (one number per take, top track first), streamed
   takes and their placeholders (each armed audio track its own stream), the live MIDI view (each recording MIDI track).

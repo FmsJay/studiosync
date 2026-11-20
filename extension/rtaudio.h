@@ -32,6 +32,12 @@ void rt_test_speed(RtLink *l, double x);
 // What this computer sends. peer "" (or null): everything, on 0 = silence while the stream stays up (Mute me, push-to-talk; kept across
 // restarts). A peer in the list: whether it gets this computer's stream (talkback). -> 1 done, 0 when that peer isn't in the list. (James, rt)
 int rt_send(RtLink *l, const char *peer, int on);
+// Play (docs/realtime-roadmap.md step 4, "Hear what a bandmate plays when they arm"): a second stream beside Talk, read from a StudioSync
+// Hop's send ring (hop id 1-64, on the hidden "live out" track the armed tracks send to post-FX). hop_id 0: no Play stream. send 0: silence
+// while the stream stays up (Mute me, Deafen). The mapping is opened on the send thread; rt_status's "play" says when it is. -> 1. (James, rt)
+int rt_play(RtLink *l, int hop_id, int send);
+// A peer's Play level in what you hear (linear, 0..4), apart from their Talk level (rt_peer_set; its mute is the whole bandmate's). -> 1 when in the list.
+int rt_peer_play(RtLink *l, const char *peer, double gain);
 std::string rt_status(RtLink *l); // JSON: the link, and per peer latency, jitter buffer, loss, level (see rtaudio.cpp)
 // The audio thread (REAPER's hook, or the test's clock): capture before REAPER's processing, mix after. No lock, allocation or REAPER call.
 void rt_capture(RtLink *l, const double *const *in, int nin, int len, double srate);

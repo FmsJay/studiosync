@@ -191,4 +191,100 @@ reaper.StudioSync_LiveAudioStart = nil
 row = la.health_row(cfg)
 assert(row[3] == "yellow" and row[5]:find("extension", 1, true), "an extension without live audio: said")
 reaper.StudioSync_LiveAudioStart = saved
+
+-- ---- 5. Talk and Play (James, rt: "hear what a bandmate plays when they arm") ---------------------------------------------------------
+la.set_mine(0, 1, 128) -- (the call mic: input 1)
+-- which sources go: Auto, Talk only, Play only, Both, and the never-twice guard
+local function sp(...) local t, p = la.source_plan(...); return tostring(t) .. "," .. tostring(p) end
+assert(sp("auto", false, false, true) == "true,false", "Auto, nothing armed: Talk")
+assert(sp("auto", true, false, true) == "true,true", "Auto, a track armed: Play, plus Talk")
+assert(sp("auto", true, true, true) == "false,true", "Auto, the call mic is the armed track's input: once, as Play")
+assert(sp("auto", true, false, false) == "true,false", "Auto, armed but Play can't go (no Hop plug-in): Talk as before")
+assert(sp("talk", true, true, true) == "true,false", "Talk only: Talk, whatever's armed")
+assert(sp("play", false, false, true) == "false,true" and sp("play", true, false, false) == "false,false", "Play only: never Talk (nothing when Play can't go)")
+assert(sp("both", false, false, true) == "true,true" and sp("both", true, true, true) == "false,true", "Both, with the same guard")
+-- the mic's state on top: mute and deafen silence both; push-to-talk and talkback are Talk's; held talk opens Talk, or Play when the mic goes as Play
+local function mp(s, talk, play, folded) local t, only, p = la.mic_plan(s, true, talk, play, folded); return tostring(t) .. "," .. tostring(only) .. "," .. tostring(p) end
+assert(mp({}, true, true, false) == "true,nil,true", "nothing held: both go")
+assert(mp({ mute = true }, true, true, false) == "false,nil,false", "Mute me: neither")
+assert(mp({ deaf = true }, true, true, false) == "false,nil,false", "Deafen: neither")
+assert(mp({ ptt = true }, true, true, false) == "false,nil,true", "push-to-talk gates Talk only: arming is the ask for Play")
+assert(mp({ mute = true, talking = true }, true, true, false) == "true,nil,false", "held talk while muted: Talk, not Play")
+assert(mp({ mute = true, talking = true }, false, true, true) == "false,nil,true", "held talk while muted, the mic going as Play: Play, never Talk too")
+assert(mp({ talking = true }, false, true, false) == "true,nil,true", "Play only, held talk: Talk opens for as long as it's held")
+assert(mp({ talkback = "Bee" }, true, true, false) == "true,Bee,true", "talkback: Talk to Bee only, Play to everyone")
+assert(mp({ talkback = "Bee", recording = true }, true, true, false) == "false,Bee,true", "talkback quiet while recording; Play goes on")
+assert(la.play_gain(nil, { volume = 0.5 }) == 0.5 and la.play_gain({ play = 0.25 }, { volume = 2 }) == 0.5, "a Play level times the master")
+assert(la.their_src("both") == "Talk + Play" and la.their_src(nil, { streaming = true, play_streaming = true }) == "Talk + Play"
+  and la.their_src(nil, { streaming = true }) == "Talk" and la.their_src(nil, {}) == nil, "a bandmate's sources: their word, else their streams")
+local st5 = la.sends_text({ mode = "auto", play = true, folded = true, armed = { "Vox" } }, { talk = false, play = true }, { play_alive = true })
+assert(st5 == "sends Play (Vox) [Auto]; the call mic is an armed track's input, so it goes once, as Play", st5)
+st5 = la.sends_text({ mode = "both", play = true, armed = {} }, { talk = true, play = true }, { play_alive = false })
+assert(st5 == "sends Talk + Play (nothing armed: silence): the live out track isn't running [Both]", st5)
+ok, text = la.health_text({ nch = 1, kbps = 128, peers = { ["bee-laptop.tail99.ts.net:47281"] = { resolved = true, streaming = true, play_streaming = true, latency_ms = 41.5, buffer_ms = 35, loss = 0 } } },
+  nil, nil, nil, { mode = "auto", play = true, armed = { "Gtr" } }, { talk = true, play = true })
+assert(text:find("this computer sends Talk + Play (Gtr) [Auto]", 1, true) and text:find("bee-laptop 42 ms (buffer 35 ms, loss 0.0%), playing", 1, true), text)
+-- the cue mix keeps a Play level apart from Talk's
+la.set_peer("bee-laptop.tail99.ts.net:47281", 0.5, false, 0.25)
+la.set_peer("bee-laptop.tail99.ts.net:47281", 0.7, false)
+assert(la.mix()["bee-laptop"].play == 0.25 and la.mix()["bee-laptop"].gain == 0.7, "a new Talk level keeps the Play level")
+
+-- the tick with an extension that has Play, against a stand-in project: the live out track made with its Hop, the armed tracks sent post-FX
+local tracks, nextid = {}, 0
+local function mk(name, armed, input, tag)
+  nextid = nextid + 1
+  local tr = { id = nextid, name = name, ext = { band_local = tag or "" }, v = { I_RECARM = armed and 1 or 0, I_RECINPUT = input or 0, I_PERFFLAGS = 0 }, fx = 0, recv = {}, sends = {} }
+  tracks[#tracks + 1] = tr
+  return tr
+end
+local function idx(tr) for i, t in ipairs(tracks) do if t == tr then return i - 1 end end end
+reaper.CountTracks = function() return #tracks end
+reaper.GetTrack = function(_, i) return tracks[i + 1] end
+reaper.GetSetMediaTrackInfo_String = function(tr, k, v, set) local key = k:gsub("^P_EXT:", ""); if set then tr.ext[key] = v; return true, v end; return true, tr.ext[key] or "" end
+reaper.GetMediaTrackInfo_Value = function(tr, k) return tr.v[k] or 0 end
+reaper.SetMediaTrackInfo_Value = function(tr, k, v) tr.v[k] = v end
+reaper.GetTrackName = function(tr) return true, tr.name end
+reaper.TrackFX_GetCount = function(tr) return tr.fx end
+reaper.DeleteTrack = function(tr) table.remove(tracks, idx(tr) + 1) end
+reaper.GetTrackStateChunk = function(tr) local c = "<TRACK\n"; for _, s in ipairs(tr.recv) do c = c .. "AUXRECV " .. idx(s) .. " 3 1 0 0 0 0 0 0 -1:U 0 -1 ''\n" end; return true, c .. ">" end
+reaper.RemoveTrackSend = function(tr, cat, i) assert(cat == -1); table.remove(tr.recv, i + 1) end
+reaper.CreateTrackSend = function(src, dst) dst.recv[#dst.recv + 1] = src; src.sends[#src.sends + 1] = {}; return #src.sends - 1 end
+reaper.SetTrackSendInfo_Value = function(src, cat, i, k, v) src.sends[i + 1][k] = v end
+local hop_added
+package.loaded.mirror = { add_local_track = function(_, name, tag) return mk(name, false, 0, tag) end }
+package.loaded.hops = { free_id = function() return 64 end, used_ids = function() return {} end,
+  add_hop = function(tr, pos, id) if E.no_hop then return nil end; hop_added = id; tr.fx = 1; return 0 end }
+local plays = {}
+reaper.StudioSync_LiveAudioPlay = function(hop, send) plays[#plays + 1] = hop .. ":" .. send; E.play, E.play_send = hop, send == 1; return 1 end
+reaper.StudioSync_LiveAudioPeerPlay = function(peer, g) E.peers[peer].play_gain = g; return 1 end
+reaper.StudioSync_LiveAudioSend = function(peer, on) if peer == "" then E.send = on end; return 1 end
+local st_was = reaper.StudioSync_LiveAudioStatus
+reaper.StudioSync_LiveAudioStatus = function() local s = band.json_decode(st_was()); s.play, s.play_send = E.play or 0, E.play_send == true; return band.json_encode(s) end
+local gtr, vox = mk("Gtr", false, 1), mk("Vox", false, 0) -- (the call mic is input 1 = 0: Vox's input)
+tick()
+assert(#tracks == 2 and E.send == 1 and la.my_src() == "talk", "nothing armed: Talk, and no live out track made")
+gtr.v.I_RECARM = 1
+tick()
+local out = tracks[3]
+assert(out and out.ext.band_local == "liveout" and out.ext.band_liveout_hop == "64" and hop_added == 64, "a track armed: the hidden live out track with its Hop")
+assert(out.v.B_MAINSEND == 0 and out.v.B_SHOWINTCP == 0 and out.v.I_PERFFLAGS & 2 == 2, "heard by nobody here, out of sight, real time")
+assert(#out.recv == 1 and out.recv[1] == gtr and gtr.sends[1].I_SENDMODE == 3, "the armed track sends to it post-FX")
+assert(plays[#plays] == "64:1" and E.send == 1 and la.my_src() == "both", "Play on (hop 64) beside Talk")
+assert(E.peers["bee-laptop.tail99.ts.net:47281"].play_gain == 0.25, "each bandmate's Play level handed over")
+vox.v.I_RECARM = 1
+tick()
+assert(#out.recv == 2 and E.send == 0 and E.play_send == true and la.my_src() == "play", "the call mic's track armed too: it goes once, as Play")
+assert(la.health_row(cfg)[4]:find("sends Play (Gtr, Vox) [Auto]; the call mic is an armed track's input", 1, true), la.health_row(cfg)[4])
+la.set("mute", true)
+assert(E.send == 0 and E.play_send == false and la.my_src() == "none", "Mute me: Play silent too")
+la.set("mute", false)
+la.set_source_mode("talk")
+tick()
+assert(#out.recv == 0 and E.send == 1 and plays[#plays] == "0:0" and la.my_src() == "talk", "Talk only: the sends gone, no Play stream")
+la.set_source_mode("auto")
+gtr.v.I_RECARM, vox.v.I_RECARM = 0, 0
+tick()
+assert(#out.recv == 0 and la.my_src() == "talk", "disarmed: Talk again")
+la.on_exit("P1")
+assert(#tracks == 2 and plays[#plays] == "0:0", "Live sync ends: the live out track goes, Play off")
 print("ok")

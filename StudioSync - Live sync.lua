@@ -755,6 +755,8 @@ function P.status(t)
   do -- (this computer's live audio: muted, push-to-talk, or why it can't run here, so the others' Health says "Mac: needs extension 1.0.13". James, rt)
     local okla, la = pcall(require("liveaudio").my_la)
     info.la = okla and la or nil
+    local oks, src = pcall(require("liveaudio").my_src) -- (Talk, Play or both: the others' Chat > Call shows it)
+    info.lsrc = oks and src or nil
   end
   if followed then info.mix = require("presence").my_mix(proj) end -- (someone follows you: they hear your mix. lib/presence.lua)
   if (followed or watched) and not info.playing then info.cursor = math.floor(reaper.GetCursorPositionEx(proj) * 1000 + 0.5) / 1000 end -- (followers' cursors go here: lib/presence.lua)

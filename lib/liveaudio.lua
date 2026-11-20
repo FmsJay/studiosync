@@ -19,6 +19,8 @@
 --  - Defaults: hearing others on, sending on (the point of a live studio; muted by default reads as "it's broken"), with a first-run note in
 --    the top bar and an echo warning (a loopback input, or REAPER monitoring the input you send) that offers to mute.
 --  - A master volume for everyone you hear, and the cue mix kept by bandmate name (their computer's address changes).
+-- Talk and Play (below): the call mic, and every armed track post-FX through a hidden live out track, two streams so each listener has a
+-- Talk and a Play volume per bandmate (StudioSync_LiveAudioPlay / PeerPlay, extension after 1.0.15; without them, Talk alone as before).
 -- Mute, push-to-talk and talkback use StudioSync_LiveAudioSend (the extension after 1.0.13). Without it Mute me restarts live audio on a
 -- silent input (a moment's gap in what you hear), and push-to-talk and talkback wait for the newer extension.
 local band = require("band")
@@ -57,9 +59,10 @@ function liveaudio.name_of(peer, names) return (names or liveaudio.names())[peer
 
 -- The cue mix, kept on this computer: bandmate name -> { gain (linear), mute }. (A mix kept by peer address before still counts.)
 function liveaudio.mix() local m = band.ext_json(band.SECTION, "live audio mix"); return type(m) == "table" and m or {} end
-function liveaudio.set_peer(peer, gain, mute)
+function liveaudio.set_peer(peer, gain, mute, play) -- (play: their Play level, linear; nil keeps the one set)
   local m, name = liveaudio.mix(), liveaudio.name_of(peer)
-  m[name] = { gain = math.max(0, math.min(4, tonumber(gain) or 1)), mute = mute == true }
+  local old = m[name] or m[peer] or {}
+  m[name] = { gain = math.max(0, math.min(4, tonumber(gain) or 1)), mute = mute == true, play = tonumber(play or old.play) and math.max(0, math.min(4, tonumber(play or old.play))) or nil }
   m[peer] = nil
   band.set_ext_json(band.SECTION, "live audio mix", m, true)
   liveaudio.apply()
@@ -112,7 +115,88 @@ function liveaudio.hear_plan(want, s)
   local g = (type(want) == "table" and tonumber(want.gain) or 1) * (s.volume or 1)
   return math.max(0, math.min(4, g)), s.deaf == true or (type(want) == "table" and want.mute == true)
 end
-local function plan_key(s, gate) local on, only = liveaudio.send_plan(s, gate); return table.concat({ tostring(on), tostring(only), tostring(s.deaf), tostring(s.volume) }, "|") end
+
+-- ---- Talk and Play (James, rt: "hear what a bandmate plays when they arm"; docs/realtime-roadmap.md step 4) ----------------------------
+-- Two sources per computer: Talk (the call mic, as before) and Play (every armed track's sound after its FX: amp sims, synths, MIDI
+-- instruments; never the master, so the others' audio is never in it). The armed tracks send post-FX to a hidden "live out" track whose
+-- StudioSync Hop the extension reads (step 4b's tap); Play is its own stream, so each listener has a Talk and a Play volume per bandmate.
+-- What goes, per computer (ExtState "live audio source", kept): Auto (nothing armed: Talk; a track armed: Play, plus Talk unless the call mic
+-- is an armed track's input, then it goes once, as Play, never twice), Talk only, Play only, Both (the same never-twice guard).
+-- Mute me and Deafen silence both (they mean "the others don't hear you"); push-to-talk and talkback are Talk's (arming is the ask for Play,
+-- and talkback stays a cue to one bandmate, quiet while recording); held talk opens Talk even in Play only, unless the mic already goes as
+-- Play, where it opens that instead of sending the voice twice.
+liveaudio.MODES = { auto = "Auto", talk = "Talk only", play = "Play only", both = "Both" }
+liveaudio.MODE_ORDER = { "auto", "talk", "play", "both" }
+liveaudio.LIVE_OUT, liveaudio.LIVE_OUT_TAG = "StudioSync live out", "liveout"
+function liveaudio.can_play() return reaper.StudioSync_LiveAudioPlay ~= nil and reaper.StudioSync_LiveAudioPeerPlay ~= nil end
+function liveaudio.source_mode() local m = ext("source"); return liveaudio.MODES[m] and m or "auto" end
+function liveaudio.set_source_mode(m)
+  if not liveaudio.MODES[m] then return end
+  if m == "auto" then reaper.DeleteExtState(band.SECTION, "live audio source", true) else reaper.SetExtState(band.SECTION, "live audio source", m, true) end
+  band.log("live audio sends: " .. liveaudio.MODES[m])
+  S.at = -math.huge -- (Live sync's next tick looks at the tracks again at once)
+end
+-- -> talk, play: which sources this computer sends. armed: a track armed here; folded: the call mic is an armed track's input; can_play:
+-- Play can go (the extension has it, the live out track is there). Pure.
+function liveaudio.source_plan(mode, armed, folded, can_play)
+  if mode == "talk" then return true, false end
+  local play = can_play == true and (mode ~= "auto" or armed == true)
+  if mode == "play" then return false, play end
+  return not (play and folded), play
+end
+-- The plan with the mic's state (me()): -> talk_on, only (talkback's bandmate, Talk only), play_on. Pure.
+function liveaudio.mic_plan(s, gate, talk, play, folded)
+  local on, only = liveaudio.send_plan(s, gate)
+  local doubled = play and folded -- (the call mic already goes, as Play)
+  local asked = s.talking or s.talkback ~= nil
+  return on and (talk or (asked and not doubled)), only, play and (not (s.mute or s.deaf) or (doubled and s.talking == true))
+end
+-- What a listener's Play volume comes to: their kept Play level (linear, 1 unless set) times the master. Pure.
+function liveaudio.play_gain(want, s) return math.max(0, math.min(4, (type(want) == "table" and tonumber(want.play) or 1) * (s.volume or 1))) end
+-- What this computer sends, for its status file (others' Chat > Call): "talk", "play", "both", "none", or nil while live audio isn't running.
+function liveaudio.my_src()
+  local x = S.sending
+  if not x then return nil end
+  return x.talk and x.play and "both" or x.talk and "talk" or x.play and "play" or "none"
+end
+liveaudio.SRC_WORDS = { talk = "Talk", play = "Play", both = "Talk + Play", none = "nothing (muted)" }
+-- A bandmate's sources, for Chat > Call: from their status word (my_src), else from what arrives (Play's stream is up only while they send it). Pure.
+function liveaudio.their_src(code, p)
+  if liveaudio.SRC_WORDS[code] then return liveaudio.SRC_WORDS[code] end
+  if type(p) ~= "table" or not p.streaming then return nil end
+  return p.play_streaming and "Talk + Play" or "Talk"
+end
+-- Each bandmate's status word (my_src, "lsrc" in their status file) by name, looked at once a second for Chat > Call. {} until Live sync's
+-- tick has said which song and room this tab is in.
+function liveaudio.their_srcs(cfg)
+  local now = reaper.time_precise()
+  if S.srcs and now - S.srcs_at < 1 then return S.srcs end
+  S.srcs, S.srcs_at = {}, now
+  local b = S.b
+  if not (cfg and b and b.song) then return S.srcs end
+  local ok, sts = pcall(require("presence").peers, cfg, b.song, b.room or "main")
+  for _, x in ipairs(ok and type(sts) == "table" and sts or {}) do if type(x) == "table" and x.user then S.srcs[x.user] = x.lsrc end end
+  return S.srcs
+end
+-- Health's words for what this computer sends (src: S.src; sending: S.sending; st: the extension's status). Pure.
+function liveaudio.sends_text(src, sending, st)
+  if type(src) ~= "table" then return nil end
+  local parts = {}
+  if sending and sending.talk then parts[#parts + 1] = "Talk" end
+  if sending and sending.play then
+    local armed = #(src.armed or {}) > 0 and (" (" .. table.concat(src.armed, ", ") .. ")") or " (nothing armed: silence)"
+    parts[#parts + 1] = "Play" .. armed .. (type(st) == "table" and st.play_alive == false and ": the live out track isn't running" or "")
+  end
+  local text = "sends " .. (#parts > 0 and table.concat(parts, " + ") or "nothing") .. " [" .. (liveaudio.MODES[src.mode] or "Auto") .. "]"
+  if src.play and src.folded and not (sending and sending.talk) then text = text .. "; the call mic is an armed track's input, so it goes once, as Play" end
+  if src.why then text = text .. "; Play " .. src.why end
+  return text
+end
+local function plan_key(s, gate)
+  local on, only = liveaudio.send_plan(s, gate)
+  local src = S.src or {}
+  return table.concat({ tostring(on), tostring(only), tostring(s.deaf), tostring(s.volume), tostring(s.mute), tostring(s.talking), tostring(src.talk), tostring(src.play), tostring(src.folded), tostring(src.hop) }, "|")
+end
 
 -- Puts this computer's mic and cue mix on the running engine (idempotent: Live sync's tick runs it each time, the panel and actions at once).
 function liveaudio.apply(st)
@@ -120,9 +204,16 @@ function liveaudio.apply(st)
   local s, gate = liveaudio.me(), liveaudio.can_gate()
   S.key = plan_key(s, gate)
   st = st or liveaudio.status()
-  if not st.running then return end
-  local on, only = liveaudio.send_plan(s, gate)
+  if not st.running then S.sending = nil; return end
+  local src, can_play = S.src or { talk = true, play = false }, liveaudio.can_play()
+  local on, only, play_on = liveaudio.mic_plan(s, gate, src.talk, src.play and can_play, src.folded)
   if gate then reaper.StudioSync_LiveAudioSend("", on and 1 or 0) end
+  local hop = src.play and can_play and src.hop or 0
+  if can_play and ((st.play_send == true) ~= (play_on == true) or S.play_asked ~= hop .. tostring(play_on)) then
+    reaper.StudioSync_LiveAudioPlay(hop, play_on and 1 or 0)
+    S.play_asked = hop .. tostring(play_on) -- (the extension opens the hop's mapping on its send thread: asked once, not every tick while it does)
+  end
+  S.sending = { talk = on == true, play = play_on == true and hop > 0 }
   local names, mix, bufs, can_buf = liveaudio.names(), liveaudio.mix(), liveaudio.buffers(), liveaudio.can_buffer()
   for peer, p in pairs(type(st.peers) == "table" and st.peers or {}) do
     if type(p) == "table" then
@@ -130,6 +221,8 @@ function liveaudio.apply(st)
       if gate then reaper.StudioSync_LiveAudioSend(peer, (not only or name == only) and 1 or 0) end
       local g, m = liveaudio.hear_plan(mix[name] or mix[peer], s)
       if math.abs((tonumber(p.gain) or 1) - g) > 0.005 or (p.mute == true) ~= m then reaper.StudioSync_LiveAudioPeerSet(peer, g, m and 1 or 0) end
+      local pg = liveaudio.play_gain(mix[name] or mix[peer], s)
+      if can_play and math.abs((tonumber(p.play_gain) or 1) - pg) > 0.005 then reaper.StudioSync_LiveAudioPeerPlay(peer, pg) end
       local f, c = liveaudio.bounds(bufs[name])
       if can_buf and (tonumber(p.floor_ms) ~= f or tonumber(p.ceiling_ms) ~= c) then reaper.StudioSync_LiveAudioPeerBuffer(peer, f, c) end
     end
@@ -221,6 +314,107 @@ function liveaudio.action_hold(kind)
   reaper.defer(loop)
 end
 
+-- ---- Play's tracks: the armed ones, and the hidden live out track they send to ----------------------------------------------------------
+-- The tracks that feed Play: armed here, and the song's or your own ("yours"), never StudioSync's helpers (Talk's, the click, hops, live out).
+-- -> { track }, names, folded (the call mic first..first+nch-1 is one of their inputs).
+function liveaudio.armed_tracks(proj, first, nch)
+  local feed, names, folded = {}, {}, false
+  for i = 0, reaper.CountTracks(proj) - 1 do
+    local tr = reaper.GetTrack(proj, i)
+    local tag = band.track_ext(tr, "band_local")
+    if (tag == "" or tag == "yours") and reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1 then
+      feed[#feed + 1] = tr
+      names[#names + 1] = select(2, reaper.GetTrackName(tr))
+      folded = folded or liveaudio.input_overlaps(reaper.GetMediaTrackInfo_Value(tr, "I_RECINPUT"), first, nch)
+    end
+  end
+  return feed, names, folded
+end
+-- The live out track: hidden, this computer's own (band_local "liveout", never sent to the others), no master send (heard by nobody here),
+-- real time (no anticipative FX), a StudioSync Hop whose send ring the extension reads, its chain's PDC "ignore" so the Hop's reported latency
+-- delays nothing. add: make it when missing. -> track, hop id; or nil, nil, why.
+function liveaudio.live_out(proj, add)
+  for i = 0, reaper.CountTracks(proj) - 1 do
+    local tr = reaper.GetTrack(proj, i)
+    if band.track_ext(tr, "band_local") == liveaudio.LIVE_OUT_TAG then
+      local id = math.tointeger(tonumber(band.track_ext(tr, "band_liveout_hop")))
+      if id and reaper.TrackFX_GetCount(tr) > 0 then return tr, id end
+      reaper.DeleteTrack(tr) -- (its Hop gone, a copy from another computer's project: made again below)
+      break
+    end
+  end
+  if not add then return nil end
+  if S.out_fail_at and reaper.time_precise() - S.out_fail_at < 300 then return nil, nil, S.out_why end
+  local hops = require("hops")
+  local id = hops.free_id(hops.used_ids(proj), 64, 1)
+  if not id then return nil, nil, "needs a free hop id (all 64 are taken)" end
+  reaper.PreventUIRefresh(1)
+  local tr = require("mirror").add_local_track(proj, liveaudio.LIVE_OUT, liveaudio.LIVE_OUT_TAG)
+  reaper.SetMediaTrackInfo_Value(tr, "B_SHOWINTCP", 0)
+  reaper.SetMediaTrackInfo_Value(tr, "B_SHOWINMIXER", 0)
+  reaper.SetMediaTrackInfo_Value(tr, "B_MAINSEND", 0)
+  reaper.SetMediaTrackInfo_Value(tr, "I_PERFFLAGS", math.floor(reaper.GetMediaTrackInfo_Value(tr, "I_PERFFLAGS")) | 2)
+  local ok = hops.add_hop(tr, 0, id, 256, 0) ~= nil
+  if ok then reaper.TrackFX_SetNamedConfigParm(tr, 0, "chain_pdc_mode", "2"); band.set_track_ext(tr, "band_liveout_hop", tostring(id)) end
+  if not ok then reaper.DeleteTrack(tr) end
+  reaper.TrackList_AdjustWindows(false)
+  reaper.PreventUIRefresh(-1)
+  if not ok then
+    S.out_fail_at, S.out_why = reaper.time_precise(), "needs the StudioSync Hop plug-in here (run StudioSync's installer, then rescan plug-ins)"
+    return nil, nil, S.out_why
+  end
+  return tr, id
+end
+-- The live out track's receives = exactly `feed`, each post-FX (I_SENDMODE 3: what you hear when you monitor it, before its fader). The
+-- receives are read off its chunk's AUXRECV lines, as live.rt_sends does (core REAPER can't hand a send's track to Lua without SWS).
+function liveaudio.play_sends(proj, out, feed)
+  local want = {}
+  for _, tr in ipairs(feed) do want[tr] = true end
+  local _, chunk = reaper.GetTrackStateChunk(out, "", false)
+  local from, fed = {}, {}
+  for idx in chunk:gmatch("\n%s*AUXRECV (%d+)") do from[#from + 1] = tonumber(idx) end
+  for r = #from, 1, -1 do -- (from the end, so the receive numbers stay right while removing)
+    local src = reaper.GetTrack(proj, from[r])
+    if src and want[src] and not fed[src] then fed[src] = true else reaper.RemoveTrackSend(out, -1, r - 1) end
+  end
+  for _, tr in ipairs(feed) do
+    if not fed[tr] then
+      local s = reaper.CreateTrackSend(tr, out)
+      if s >= 0 then reaper.SetTrackSendInfo_Value(tr, 0, s, "I_SENDMODE", 3) end
+    end
+  end
+end
+-- Which sources go now, and the live out track kept in step (Live sync's tick). -> S.src: { mode, talk, play, folded, hop, armed (names), why }.
+function liveaudio.update_sources(proj)
+  local mode = liveaudio.source_mode()
+  local src = { mode = mode, talk = true, play = false, folded = false, hop = 0, armed = {} }
+  if not liveaudio.can_play() then
+    src.why = mode ~= "auto" and mode ~= "talk" and "needs a newer StudioSync extension" or nil
+    S.src = src
+    return src
+  end
+  proj = proj or reaper.EnumProjects(-1)
+  local first, nch = liveaudio.mine()
+  local feed, names, folded = liveaudio.armed_tracks(proj, first, nch)
+  local _, wants = liveaudio.source_plan(mode, #feed > 0, folded, true)
+  local out, hop, why = liveaudio.live_out(proj, wants)
+  local sends = wants and feed or {}
+  local key = tostring(out)
+  for _, tr in ipairs(sends) do key = key .. "|" .. tostring(tr) end
+  if out and key ~= S.feed_key then liveaudio.play_sends(proj, out, sends); S.feed_key = key end -- (only when what's armed changes)
+  src.talk, src.play = liveaudio.source_plan(mode, #feed > 0, folded, hop ~= nil)
+  src.folded, src.hop, src.armed, src.why = folded, hop or 0, names, wants and why or nil
+  S.src = src
+  return src
+end
+-- The live out track goes (Live sync ends, the studio turns live audio off): Play stops first.
+function liveaudio.drop_live_out(proj)
+  if liveaudio.can_play() then reaper.StudioSync_LiveAudioPlay(0, 0) end
+  S.play_asked, S.feed_key = nil, nil
+  local out = liveaudio.live_out(proj or reaper.EnumProjects(-1), false)
+  if out then reaper.DeleteTrack(out) end
+end
+
 -- ---- echo: this computer feeding its own output back --------------------------------------------------------------------------------
 liveaudio.LOOPBACK = { "loopback", "stereo mix", "what u hear", "wave out", "monitor of", "blackhole", "soundflower", "cable output" }
 -- Is REAPER's track input `inp` (I_RECINPUT) one of the inputs sent? Pure.
@@ -258,7 +452,9 @@ function liveaudio.echo(proj)
     if not mon and reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1 and reaper.GetMediaTrackInfo_Value(tr, "I_RECMON") > 0
       and liveaudio.input_overlaps(reaper.GetMediaTrackInfo_Value(tr, "I_RECINPUT"), first, nch) then mon = select(2, reaper.GetTrackName(tr)) end
   end
-  local why = liveaudio.echo_why(names, mon, liveaudio.recent_level(), (liveaudio.send_plan(liveaudio.me(), liveaudio.can_gate())))
+  -- (what Talk sends: with the call mic going as Play instead, monitoring it is the point, not an echo)
+  local talk_on = S.sending and S.sending.talk or (not S.sending and (liveaudio.send_plan(liveaudio.me(), liveaudio.can_gate())))
+  local why = liveaudio.echo_why(names, mon, liveaudio.recent_level(), talk_on)
   local sig = first .. ":" .. (mon or "")
   S.echo = why and ext("echo ok") ~= sig and { why = why, sig = sig } or nil
   return S.echo
@@ -312,9 +508,11 @@ function liveaudio.tick(cfg, b, proj)
       reaper.DeleteExtState(band.SECTION, "live audio by", false)
       band.log("live audio stopped: " .. S.why)
     end
-    S.json = nil
+    if S.src and S.src.hop ~= 0 then liveaudio.drop_live_out(proj) end -- (Play's hidden track goes with it)
+    S.json, S.src, S.sending = nil, nil, nil
     return
   end
+  S.b = b -- (the tab's song and room: Chat > Call reads the bandmates' statuses with it)
   local list, _, users = direct.peers(cfg, b and b.song, b and b.room)
   if type(users) == "table" then -- (who each peer is, for the panel and the actions: the cue mix and talkback go by name)
     local names = band.json_encode(users)
@@ -332,6 +530,8 @@ function liveaudio.tick(cfg, b, proj)
   if not st.running and now - S.fail_at > liveaudio.RETRY then
     if reaper.StudioSync_LiveAudioStart(first, nch, kbps) == 1 then
       reaper.SetExtState(band.SECTION, "live audio by", tostring(proj), false)
+      S.play_asked = nil -- (a new engine: Play asked for again)
+      liveaudio.update_sources(proj)
       liveaudio.apply() -- (at once: a muted computer never sends its first half second)
       if first ~= liveaudio.SILENT then
         band.log(string.format("live audio on: sending input %d%s at %d kbit/s to the others here; theirs comes out of your first output pair", first + 1,
@@ -347,10 +547,12 @@ function liveaudio.tick(cfg, b, proj)
     end
     return
   end
+  liveaudio.update_sources(proj) -- (Talk and Play: what's armed now)
   liveaudio.apply(st) -- (the mic and the cue mix kept here, put back on each bandmate: a new peer, or after a restart, starts at full level)
 end
 -- Live sync ending in this tab: the engine stops if this tab started it.
 function liveaudio.on_exit(proj)
+  if liveaudio.can_play() and S.src and S.src.hop ~= 0 then pcall(liveaudio.drop_live_out, proj) end -- (Play's hidden track goes with this tab's Live sync)
   if not liveaudio.available() or reaper.GetExtState(band.SECTION, "live audio by") ~= tostring(proj) then return end
   reaper.StudioSync_LiveAudioStop()
   reaper.DeleteExtState(band.SECTION, "live audio by", false)
@@ -366,8 +568,8 @@ local function them(code)
   return (t:gsub("%%s", ok and type(tools) == "table" and tools.EXT_WANT or "1.0.13"))
 end
 -- Health's words from the extension's status: ok (everyone heard, loss under 5%), text. names: peer -> bandmate; theirs: bandmate -> the word
--- in their status (my_la); s: this computer's mic (me()). Pure.
-function liveaudio.health_text(st, names, theirs, s)
+-- in their status (my_la); s: this computer's mic (me()); src, sending: Talk and Play here (S.src, S.sending). Pure.
+function liveaudio.health_text(st, names, theirs, s, src, sending)
   names, theirs = names or {}, theirs or {}
   local heard, each, ok, seen, bursty = {}, {}, true, {}, false
   for peer, p in pairs(type(st.peers) == "table" and st.peers or {}) do
@@ -386,7 +588,7 @@ function liveaudio.health_text(st, names, theirs, s)
         local wifi = target and floor and target >= floor + liveaudio.WIFI
         bursty = bursty or wifi
         heard[#heard + 1] = string.format("%s %.0f ms (buffer %.0f ms%s, loss %.1f%%)%s", name, tonumber(p.latency_ms) or -1, tonumber(p.buffer_ms) or -1,
-          wifi and " (Wi-Fi?)" or "", loss, mic and (", " .. mic) or "")
+          wifi and " (Wi-Fi?)" or "", loss, mic and (", " .. mic) or "") .. (p.play_streaming and ", playing" or "")
       end
     end
   end
@@ -404,6 +606,8 @@ function liveaudio.health_text(st, names, theirs, s)
     elseif s.deaf then text = text .. " (deafened: you hear nobody)"
     elseif not on then text = text .. (s.ptt and not s.mute and " (push-to-talk)" or " (muted)") end
   end
+  local sends = liveaudio.sends_text(src, sending, st)
+  if sends then text = text .. "; this computer " .. sends end
   if #heard > 0 then text = text .. "; hearing " .. table.concat(heard, ", ") end
   if bursty then text = text .. " (a buffer that grew means packets come in bursts, as over Wi-Fi: a wired network lowers it)" end
   if #each > 0 then text = text .. "; " .. table.concat(each, ", ") end
@@ -439,7 +643,7 @@ function liveaudio.health_row(cfg, b)
     local ok, sts = pcall(require("presence").peers, cfg, b.song, b.room or "main")
     for _, x in ipairs(ok and type(sts) == "table" and sts or {}) do if type(x) == "table" and x.user then theirs[x.user] = x.la end end
   end
-  local ok, text = liveaudio.health_text(st, liveaudio.names(), theirs, liveaudio.me())
+  local ok, text = liveaudio.health_text(st, liveaudio.names(), theirs, liveaudio.me(), S.src, S.sending)
   return { "live audio", ok, "yellow", text, text }
 end
 
@@ -588,6 +792,19 @@ function liveaudio.call_ui(ctx, ImGui, cfg)
     if ImGui.SmallButton(ctx, "Got it##lafirstok") then reaper.SetExtState(band.SECTION, "live audio first said", "1", true) end
   end
   liveaudio.input_picker(ctx, ImGui, "##lacin", w)
+  if liveaudio.can_play() then -- (Talk and Play: what this computer sends, its own choice)
+    local mode = liveaudio.source_mode()
+    ImGui.SetNextItemWidth(ctx, 130)
+    if ImGui.BeginCombo(ctx, "##lasrc", "Send: " .. liveaudio.MODES[mode]) then
+      for _, m in ipairs(liveaudio.MODE_ORDER) do if ImGui.Selectable(ctx, liveaudio.MODES[m] .. "##lasrc" .. m, m == mode) then liveaudio.set_source_mode(m) end end
+      ImGui.EndCombo(ctx)
+    end
+    ImGui.SetItemTooltip(ctx, "Only on this computer. Talk: your call mic. Play: every armed track as you hear it monitored (amp sims, synths, MIDI " ..
+      "instruments). Auto: Talk until you arm a track, then Play, plus Talk unless your call mic is that track's input (then it goes once, as Play).")
+    ImGui.SameLine(ctx)
+    local sends = liveaudio.sends_text(S.src, S.sending, st)
+    ImGui.TextDisabled(ctx, sends and (sends:gsub(" %[.-%]", "")) or "sends Talk")
+  end
   ImGui.ProgressBar(ctx, math.min(1, liveaudio.recent_level()), -1, 6, "")
   ImGui.SetItemTooltip(ctx, "Your input's level" .. ((liveaudio.send_plan(s, gate)) and ", as it goes out." or ": muted, nothing goes out."))
   local mdb = cw.db_of(s.volume)
@@ -600,18 +817,27 @@ function liveaudio.call_ui(ctx, ImGui, cfg)
   for peer in pairs(type(st.peers) == "table" and st.peers or {}) do peers[#peers + 1] = peer end
   table.sort(peers)
   if #peers == 0 then ImGui.TextDisabled(ctx, "Nobody else here yet.") end
-  local names, mix, tb_to = liveaudio.names(), liveaudio.mix(), ext("talkback to")
+  local names, mix, tb_to, can_play = liveaudio.names(), liveaudio.mix(), ext("talkback to"), liveaudio.can_play()
+  local srcs = can_play and liveaudio.their_srcs(cfg) or {}
   for _, peer in ipairs(peers) do
     local p, name = st.peers[peer], liveaudio.name_of(peer, names)
     local want = mix[name] or mix[peer] or {}
-    ImGui.Text(ctx, name .. (p.streaming and "" or " (not heard yet)"))
-    ImGui.ProgressBar(ctx, math.min(1, tonumber(p.level) or 0), -1, 6, "")
+    local theirs = can_play and liveaudio.their_src(srcs[name], p)
+    ImGui.Text(ctx, name .. (p.streaming and "" or " (not heard yet)") .. (theirs and (": " .. theirs) or ""))
+    ImGui.ProgressBar(ctx, math.min(1, math.max(tonumber(p.level) or 0, tonumber(p.play_level) or 0)), -1, 6, "")
     local gain, mute = tonumber(want.gain) or 1, want.mute == true
     local db = cw.db_of(gain)
     ImGui.SetNextItemWidth(ctx, -130)
-    local ch, v = ImGui.SliderDouble(ctx, "##lavol" .. peer, math.max(-60, math.min(12, db)), -60, 12, db <= -60 and "off" or "%.1f dB")
+    local ch, v = ImGui.SliderDouble(ctx, "##lavol" .. peer, math.max(-60, math.min(12, db)), -60, 12, db <= -60 and (can_play and "Talk: off" or "off") or (can_play and "Talk: %.1f dB" or "%.1f dB"))
     if ch then liveaudio.set_peer(peer, cw.vol_of(v), mute) end
-    ImGui.SetItemTooltip(ctx, "How loud " .. name .. " comes in, only for you, kept for " .. name .. ". Ctrl+click to type a value.")
+    ImGui.SetItemTooltip(ctx, "How loud " .. name .. (can_play and "'s Talk (their call mic)" or "") .. " comes in, only for you, kept for " .. name .. ". Ctrl+click to type a value.")
+    if can_play then -- (the personal monitor mix: their playing apart from their talking, never the song's mix. James, rt)
+      local pdb = cw.db_of(tonumber(want.play) or 1)
+      ImGui.SetNextItemWidth(ctx, -130)
+      local pch, pv = ImGui.SliderDouble(ctx, "##laplay" .. peer, math.max(-60, math.min(12, pdb)), -60, 12, pdb <= -60 and "Play: off" or "Play: %.1f dB")
+      if pch then liveaudio.set_peer(peer, gain, mute, cw.vol_of(pv)) end
+      ImGui.SetItemTooltip(ctx, "How loud " .. name .. "'s Play (their armed tracks, as they monitor them) comes in, only for you, kept for " .. name .. ". Ctrl+click to type a value.")
+    end
     ImGui.SameLine(ctx)
     local mch, m = ImGui.Checkbox(ctx, "Mute##lamute" .. peer, mute)
     if mch then liveaudio.set_peer(peer, gain, m) end

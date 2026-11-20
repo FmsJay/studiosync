@@ -120,6 +120,7 @@ local function add_hop(tr, pos, id, latency, dry)
   reaper.TrackFX_SetOffline(tr, idx, false)
   return idx
 end
+hops.add_hop = add_hop -- (live audio's Play reads a Hop on its hidden live out track: lib/liveaudio.lua)
 -- This computer's own FX on a track (translations, drum maps, Hops) and StudioSync's helpers: not part of the song.
 local function own_fx(tr)
   local set = require("mirror").live_fx(tr)
