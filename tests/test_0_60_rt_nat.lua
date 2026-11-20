@@ -113,7 +113,7 @@ assert(not nat.firewall_in("Rule Name: StudioSync direct link\nProgram: C:\\REAP
 
 -- Health
 local ok, text = nat.peer_text({ state = "up", path = "direct", up_s = 12 }, "Chilio")
-assert(ok and text == "Chilio: direct, through both networks' NATs (up 12s)", text)
+assert(ok and text == "Chilio: direct (through both NATs), up 12s", text)
 ok, text = nat.peer_text({ state = "up", path = "relayed", up_s = 3 }, "Chilio")
 assert(ok and text:find("relayed"), text)
 ok, text = nat.peer_text({ state = "connecting", why = "" }, "Chilio")

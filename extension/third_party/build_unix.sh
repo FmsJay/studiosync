@@ -12,6 +12,8 @@ if [ "$1" = "--one" ]; then # (one file, run by xargs below, several at once)
     opus/*) # (Opus in plain C, float, no SIMD paths: one build runs on every CPU, as on Windows)
       exec ${CC:-cc} -c $SS_FLAGS -DOPUS_BUILD -DUSE_ALLOCA -DHAVE_LRINTF -I"$here/opus/include" -I"$here/opus/celt" -I"$here/opus/silk" \
         -I"$here/opus/silk/float" "$here/$f" -o "$o" ;;
+    libjuice/src/server.c) # (its sends go through extension/nat.cpp's nat_relay_sendto: the relay's caps, rt-nat3)
+      exec ${CC:-cc} -c $SS_FLAGS -DJUICE_STATIC -Dudp_sendto=nat_relay_sendto -I"$here/libjuice/include/juice" "$here/$f" -o "$o" ;;
     libjuice/*|monocypher/*) # (the connection without Tailscale, extension/nat.cpp: plain C, symbols hidden like the rest)
       exec ${CC:-cc} -c $SS_FLAGS -DJUICE_STATIC -I"$here/libjuice/include/juice" "$here/$f" -o "$o" ;;
     *)

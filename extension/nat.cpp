@@ -1,6 +1,8 @@
 // StudioSync's connection without Tailscale (docs/realtime-roadmap.md "Without Tailscale: design"): see nat.h. Stage 1: live audio's
 // datagrams for the bandmates the tailnet doesn't reach, while the studio has band.json "nat" on (lib/nat.lua decides who and when).
 // Stage 2 (docs/rt/rt-nat2.md): the direct link's connections (events, messages, the clock's pings) as reliable streams over the same links.
+// Stage 3 (docs/rt/rt-nat3.md): the studio hub's relay (libjuice's STUN/TURN server, passwords from the studio secret, caps), rendezvous
+// messages over the links that are up, links made again at once when this computer's network changes, "no path" in the status.
 // GPL-3.0-or-later. libjuice (MPL-2.0) and Monocypher (CC0-1.0 / BSD-2-Clause): extension/third_party/README.md.
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -230,6 +232,7 @@ struct NatLink {
   NatLinkConfig c;
   std::string K, why, sdp_path_out, sdp_path_in, last_sealed;
   bool initiator = false, sent = false, got = false, failed = false;
+  long long peer_t = 0; // (the time on the peer's message this session was made from: an older one from another way is old news)
   NatKeys eph{};
   unsigned char offer_e[32] = {}; // (the responder: the offer's ephemeral key, sent back in the answer)
   unsigned char peer_e[32] = {};  // (the peer's ephemeral key this session was made with: a new one in its file means it started again)
@@ -298,10 +301,12 @@ static void on_recv(juice_agent_t *, const char *d, size_t n, void *u)
     if (m[0] == 0) { if (m.size() > 1 && m[1] == 1) l->heard.store(true); return; } // (a hello: { 0, 1 once it has opened one of ours })
     l->heard.store(true);
     if (m[0] == 2) { if (!l->c.on_stream) return; } // (stage 2: a stream's segment)
+    else if (m[0] == 3) { if (!l->c.on_signal) return; } // (stage 3: a piece of a rendezvous message carried over this link)
     else if (m[0] != 1) return;
     else if (!l->c.on_data) { l->inq.push_back(m.substr(1)); return; }
   }
   if (m[0] == 2) l->c.on_stream(l->c.user, m.data() + 1, m.size() - 1);
+  else if (m[0] == 3) l->c.on_signal(l->c.user, m.data() + 1, m.size() - 1);
   else l->c.on_data(l->c.user, m.data() + 1, m.size() - 1); // (outside the lock: the receiver may send from here)
 }
 
@@ -321,11 +326,13 @@ NatLink *nat_link_new(const NatLinkConfig &c)
   jc.concurrency_mode = JUICE_CONCURRENCY_MODE_POLL; // (every link on libjuice's one thread)
   jc.local_port_range_begin = (uint16_t)c.port_lo; jc.local_port_range_end = (uint16_t)(c.port_hi ? c.port_hi : c.port_lo); // (0: any port)
   if (!l->c.stun_host.empty()) { jc.stun_server_host = l->c.stun_host.c_str(); jc.stun_server_port = (uint16_t)l->c.stun_port; }
-  if (!l->c.turn_user.empty() && !l->c.stun_host.empty()) {
-    l->turn.host = l->c.stun_host.c_str(); l->turn.port = (uint16_t)l->c.stun_port;
+  const bool own_turn = !l->c.turn_host.empty(); // (stage 3: the studio hub's relay, apart from the STUN server)
+  if (!l->c.turn_user.empty() && (own_turn || !l->c.stun_host.empty())) {
+    l->turn.host = own_turn ? l->c.turn_host.c_str() : l->c.stun_host.c_str(); l->turn.port = (uint16_t)(own_turn ? l->c.turn_port : l->c.stun_port);
     l->turn.username = l->c.turn_user.c_str(); l->turn.password = l->c.turn_pass.c_str();
     jc.turn_servers = &l->turn; jc.turn_servers_count = 1;
   }
+  if (!l->c.bind.empty()) jc.bind_address = l->c.bind.c_str();
   jc.cb_state_changed = on_state; jc.cb_gathering_done = on_gathered; jc.cb_recv = on_recv; jc.user_ptr = l;
   l->agent = juice_create(&jc);
   if (!l->agent) { delete l; return nullptr; }
@@ -362,18 +369,27 @@ static std::string filtered(const std::string &sdp, int only)
   }
   return out;
 }
+// The peer's rendezvous message: its file, and (stage 3) what another link brought, each tried in turn (a stale one fails its checks).
+static std::vector<std::string> peer_texts(NatLink *l)
+{
+  std::vector<std::string> v;
+  if (l->c.signal_in) { std::string m = l->c.signal_in(l->c.user); if (!m.empty()) v.push_back(std::move(m)); }
+  v.push_back(slurp(l->sdp_path_in));
+  return v;
+}
 int nat_link_tick(NatLink *l)
 {
   if (l->failed) return -1;
-  if (!l->got && now_s() >= l->next_look) { // (the peer's file, 4 times a second until it's read)
+  if (!l->got && now_s() >= l->next_look) { // (the peer's file, 4 times a second until it's read; stage 3: and what other links brought)
     l->next_look = now_s() + 0.25;
-    const std::string text = slurp(l->sdp_path_in);
+    for (const std::string &text : peer_texts(l)) {
     std::string kind, sdp, why;
     unsigned char pe[32], re[32];
-    if (!text.empty()) {
+    if (!l->got && !text.empty()) {
       if (!nat_signal_read(l->K, text, l->c.me, l->c.peer, unix_s(), kind, pe, re, sdp, why)) l->why = "the peer's rendezvous file: " + why;
       else if (kind != (l->initiator ? "answer" : "offer")) l->why = "the peer's file is an " + kind;
       else if (l->initiator && memcmp(re, l->eph.pub, 32) != 0) l->why = "the peer answered an older offer";
+      else if (!l->initiator && !l->c.offer_e.empty() && hex(pe, 32) != l->c.offer_e) {} // (an older offer, as another way still holds it)
       else {
         std::lock_guard<std::mutex> g(l->mx);
         const std::string &a = l->initiator ? l->c.me : l->c.peer, &b = l->initiator ? l->c.peer : l->c.me;
@@ -381,17 +397,19 @@ int nat_link_tick(NatLink *l)
         l->ready.store(true, std::memory_order_release); // (before the peer's candidates: no datagram can arrive before the keys)
         memcpy(l->offer_e, pe, 32); // (the answer carries the offer's key back)
         memcpy(l->peer_e, pe, 32);
+        l->peer_t = atoll(jfield(text, "t").c_str());
         l->got = true;
         juice_set_remote_description(l->agent, sdp.c_str());
         if (!l->initiator) juice_gather_candidates(l->agent);
       }
     }
+    }
   } else if (l->got && now_s() >= l->next_look) { // (made: a new ephemeral key in the peer's file means it started again, and this session is over)
     l->next_look = now_s() + 1;
     std::string kind, sdp, why;
     unsigned char pe[32], re[32];
-    const std::string text = slurp(l->sdp_path_in);
-    if (!text.empty() && nat_signal_read(l->K, text, l->c.me, l->c.peer, unix_s(), kind, pe, re, sdp, why) && memcmp(pe, l->peer_e, 32) != 0 &&
+    for (const std::string &text : peer_texts(l))
+    if (!text.empty() && atoll(jfield(text, "t").c_str()) >= l->peer_t && nat_signal_read(l->K, text, l->c.me, l->c.peer, unix_s(), kind, pe, re, sdp, why) && memcmp(pe, l->peer_e, 32) != 0 &&
         (!l->initiator || memcmp(re, l->eph.pub, 32) == 0 || kind == "offer")) {
       l->failed = true; l->why = "the other computer started again"; return -1;
     }
@@ -402,6 +420,7 @@ int nat_link_tick(NatLink *l)
       const std::string desc = filtered(sdp, l->c.only);
       const std::string msg = nat_signal(l->K, l->initiator ? "offer" : "answer", l->c.me, l->c.peer, l->eph.pub, l->initiator ? nullptr : l->offer_e, unix_s(), desc);
       if (spit_atomic(l->sdp_path_out, msg)) l->sent = true; else l->why = "can't write to the rendezvous folder";
+      if (l->c.signal_out) { l->c.signal_out(l->c.user, msg); l->sent = true; } // (stage 3: over other links too; the folder stays the fallback)
     }
   }
   const int st = l->state.load();
@@ -770,6 +789,9 @@ struct LinkBox { // (owns one NatLink; libjuice's callbacks point at it, so it's
   uint32_t next_id = 1;
   long long refused = 0, resent = 0; // (segments refused: malformed, oversized, an unknown stream, too many; sent again, by finished streams)
   std::mutex tmx; int lossy[3] = { 0, 0, 0 }; unsigned rng = 12345; std::string held; // (the test's: drop, double, hold back)
+  std::string dev; // (stage 3: the peer's device id, for the rendezvous carried over links)
+  struct Frag { unsigned cnt = 0, got = 0; std::vector<std::string> parts; std::vector<bool> have; double at = 0; };
+  std::mutex fmx; std::map<uint32_t, Frag> frags; // (pieces of rendezvous messages arriving over this link)
   ~LinkBox() { nat_link_free(l); } // (the agent first: no callback after it; the streams and their sockets go after this body)
 };
 struct HubPeer {
@@ -780,6 +802,11 @@ struct HubPeer {
   double next_try = 0, up_at = -1, next_offer_look = 0;
   int fails = 0;
   bool was_up = false;
+  bool nopath = false;                 // (stage 3: the last try exchanged rendezvous messages and still found no path)
+  std::string restart_e;               // (the last "my network changed" message acted on)
+  long long answered_t = 0;            // (the time on the offer answered last)
+  double next_restart_look = 0, next_carry = 0;
+  long long created_u = 0;             // (wall clock: a restart message from before this peer was set up is old news)
 };
 } // namespace
 struct NatHub {
@@ -799,6 +826,31 @@ struct NatHub {
   double next_probe = 0;
   std::thread pump; // (stage 2: the streams' sockets and timers)
   int lossy[3] = { 0, 0, 0 }; // (the test's, for each new link)
+  // stage 3 (docs/rt/rt-nat3.md): the relay this computer runs as the studio hub, the hub's relay it uses, network changes, signalling
+  struct RelayWant { bool on = false; int port = NAT_RELAY_PORT, allocs = NAT_RELAY_ALLOCS, allocs_each = NAT_RELAY_ALLOCS_EACH; std::vector<std::string> users; };
+  RelayWant relay;
+  juice_server_t *srv = nullptr;
+  std::string srv_key, relay_err, relay_ext;
+  int relay_port = 0;
+  double relay_retry = 0;
+  std::string turn_host;
+  int turn_port = 0;
+  bool relay_ok = false;               // (the hub's relay answered our STUN: links use it)
+  int only = 0;                        // (the test's: relayed candidates only)
+  std::string bind;                    // (the test's: libjuice's sockets on this address)
+  double timeout = 0;                  // (the test's: a link's time to come up)
+  std::string netid;                   // (this computer's address on its default route: a new one is a new network)
+  std::atomic<bool> test_net{ false };
+  long long restarts = 0;
+  double next_net = 0, next_up_map = 0;
+  std::mutex sigmx;                    // (below: libjuice's thread takes only this one, never mx)
+  std::string sig_me, sig_K;
+  bool carry = true;
+  std::map<std::string, std::string> inbox;               // device -> its newest message to us that another link brought
+  std::map<std::string, std::pair<std::string, double>> outbox; // device -> our newest message to it, when
+  std::map<std::string, std::weak_ptr<LinkBox>> upbox;    // device -> its link, while up
+  std::map<std::string, bool> sig_peers;
+  long long sig_in = 0, sig_carried = 0, sig_forwarded = 0, sig_refused = 0;
 };
 
 static void box_rx(void *u, const char *d, size_t n)
@@ -1006,12 +1058,17 @@ static std::string stun_mapped(nat_sock_t s, const std::string &host, int port)
 }
 // Two STUN servers from one socket: the same mapped port from both is a NAT a hole punch gets through ("easy"); different ports mean it
 // maps per destination ("strict": this computer needs a relay to reach another strict one).
+// Stage 3: and the studio hub's relay, whether its STUN answers (links use it only then: an unreachable TURN server would hold up every
+// link's gathering by ~15 s); a new public address is a network change too.
 static void probe(NatHub *h)
 {
   std::vector<std::pair<std::string, int>> list;
-  { std::lock_guard<std::mutex> g(h->mx); list = h->stun; }
+  std::string th;
+  int tp = 0;
+  { std::lock_guard<std::mutex> g(h->mx); list = h->stun; th = h->turn_host; tp = h->turn_port; }
   std::string kind = "unknown", pub;
-  if (!list.empty()) {
+  bool rok = false;
+  if (!list.empty() || !th.empty()) {
     nat_sock_t s = socket(AF_INET, SOCK_DGRAM, 0);
     if (s != NAT_BAD_SOCK) {
       direct_noinherit(s);
@@ -1021,31 +1078,266 @@ static void probe(NatHub *h)
       timeval tmo = { 0, 200000 };
 #endif
       setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tmo, sizeof tmo);
-      const std::string a = stun_mapped(s, list[0].first, list[0].second), b = list.size() > 1 ? stun_mapped(s, list[1].first, list[1].second) : "";
+      const std::string a = list.empty() ? "" : stun_mapped(s, list[0].first, list[0].second), b = list.size() > 1 ? stun_mapped(s, list[1].first, list[1].second) : "";
+      if (!th.empty()) rok = !stun_mapped(s, th, tp).empty();
       nat_close(s);
       pub = !a.empty() ? a : b;
-      if (a.empty() && b.empty()) kind = "blocked";
+      if (list.empty()) {}
+      else if (a.empty() && b.empty()) kind = "blocked";
       else if (!a.empty() && !b.empty()) kind = a == b ? "easy" : "strict";
     }
   }
   std::lock_guard<std::mutex> g(h->mx);
+  const std::string was = h->pub_addr.substr(0, h->pub_addr.rfind(':')), is = pub.substr(0, pub.rfind(':'));
+  if (!was.empty() && !is.empty() && was != is) h->test_net.store(true); // (the router got a new address: every path through it is gone)
   h->kind = kind;
   h->pub_addr = pub;
+  h->relay_ok = rok;
 }
 
-static std::shared_ptr<LinkBox> make_box(NatHub *h, HubPeer &p) // (h->mx held)
+// ---- stage 3: the relay's caps (libjuice's server sends through nat_relay_sendto: built so for server.c only) --------------------------
+namespace {
+struct Bucket { double tokens = 0, at = -1; };
+struct RelayCaps {
+  std::mutex mx;
+  double rate = NAT_RELAY_RATE, each = NAT_RELAY_RATE_EACH;
+  Bucket all;
+  std::map<std::string, Bucket> per; // (by destination address)
+  long long sent = 0, dropped = 0;
+};
+RelayCaps &relay_caps() { static RelayCaps c; return c; }
+void refill(Bucket &b, double rate, double now)
+{
+  const double burst = std::max(rate / 4, 3000.0); // (a quarter second's worth: smooths audio's bursts, keeps a flood short)
+  b.tokens = b.at < 0 ? burst : std::min(burst, b.tokens + (now - b.at) * rate);
+  b.at = now;
+}
+} // namespace
+void nat_relay_caps(long long rate, long long each)
+{
+  RelayCaps &c = relay_caps();
+  std::lock_guard<std::mutex> g(c.mx);
+  c.rate = rate > 0 ? (double)rate : NAT_RELAY_RATE;
+  c.each = each > 0 ? (double)each : NAT_RELAY_RATE_EACH;
+}
+static bool relay_allow(const void *dst, size_t n)
+{
+  const sockaddr_storage *a = (const sockaddr_storage *)dst; // (libjuice's addr_record_t starts with its sockaddr_storage)
+  std::string key((const char *)&a->ss_family, sizeof a->ss_family);
+  if (a->ss_family == AF_INET) { const sockaddr_in *v = (const sockaddr_in *)a; key.append((const char *)&v->sin_addr, 4); key.append((const char *)&v->sin_port, 2); }
+  else if (a->ss_family == AF_INET6) { const sockaddr_in6 *v = (const sockaddr_in6 *)a; key.append((const char *)&v->sin6_addr, 16); key.append((const char *)&v->sin6_port, 2); }
+  RelayCaps &c = relay_caps();
+  std::lock_guard<std::mutex> g(c.mx);
+  const double now = now_s();
+  if (c.per.size() > 1024) c.per.clear(); // (a flood of addresses: start every bucket full again rather than grow)
+  Bucket &e = c.per[key];
+  refill(c.all, c.rate, now);
+  refill(e, c.each, now);
+  if (c.all.tokens < (double)n || e.tokens < (double)n) { ++c.dropped; return false; }
+  c.all.tokens -= (double)n;
+  e.tokens -= (double)n;
+  c.sent += (long long)n;
+  return true;
+}
+extern "C" int udp_sendto(nat_sock_t sock, const char *data, size_t size, const void *dst); // (libjuice's src/udp.c)
+extern "C" int nat_relay_sendto(nat_sock_t sock, const char *data, size_t size, const void *dst)
+{
+  if (!relay_allow(dst, size)) return (int)size; // (over a cap: dropped, as the network may drop any datagram)
+  return udp_sendto(sock, data, size, dst);
+}
+std::string nat_relay_pass(const std::string &K, const std::string &user)
+{
+  const std::string m = hmac(K, "StudioSync relay v1\n" + user);
+  return hex((const unsigned char *)m.data(), 16);
+}
+// The relay this computer runs (the studio hub, lib/nat.lua): libjuice's STUN/TURN server, a password per studio computer, made again when
+// its configuration, the studio secret or this computer's public address changes (the relayed addresses it hands out carry that address).
+static void relay_tick(NatHub *h, double now)
+{
+  NatHub::RelayWant w;
+  std::string K, pub, key;
+  {
+    std::lock_guard<std::mutex> g(h->mx);
+    w = h->relay;
+    K = h->K;
+    pub = h->pub_addr;
+  }
+  const std::string ext = pub.substr(0, pub.rfind(':'));
+  if (w.on) {
+    key = std::to_string(w.port) + "|" + std::to_string(w.allocs) + "|" + std::to_string(w.allocs_each) + "|" + ext + "|" + hex((const unsigned char *)K.data(), K.size()) + "|";
+    for (const std::string &u : w.users) key += u + ",";
+  }
+  juice_server_t *old = nullptr;
+  {
+    std::lock_guard<std::mutex> g(h->mx);
+    if (key == h->srv_key && (h->srv || key.empty() || now < h->relay_retry)) return;
+    old = h->srv;
+    h->srv = nullptr;
+    h->relay_port = 0;
+  }
+  if (old) juice_server_destroy(old); // (first: the new one binds the same port)
+  juice_server_t *made = nullptr;
+  std::string err;
+  if (w.on) {
+    std::vector<std::string> pw;
+    for (const std::string &u : w.users) pw.push_back(nat_relay_pass(K, u));
+    std::vector<juice_server_credentials_t> cr(w.users.size());
+    for (size_t i = 0; i < cr.size(); ++i) { cr[i].username = w.users[i].c_str(); cr[i].password = pw[i].c_str(); cr[i].allocations_quota = w.allocs_each; }
+    juice_server_config_t sc;
+    memset(&sc, 0, sizeof sc);
+    sc.credentials = cr.data();
+    sc.credentials_count = (int)cr.size();
+    sc.max_allocations = w.allocs;
+    sc.max_peers = 16;
+    sc.port = (uint16_t)w.port;
+    if (w.port > 0) { sc.relay_port_range_begin = (uint16_t)(w.port + 1); sc.relay_port_range_end = (uint16_t)(w.port + NAT_RELAY_PORTS); }
+    sc.external_address = ext.empty() ? nullptr : ext.c_str(); // (none yet: the computer's own addresses, until the STUN probe says)
+    sc.realm = "studiosync";
+    if (cr.empty()) err = "no studio computers to relay for yet";
+    else if (!(made = juice_server_create(&sc))) err = "the relay couldn't start (UDP " + std::to_string(w.port) + " taken?)";
+    for (std::string &p : pw) crypto_wipe(&p[0], p.size());
+  }
+  std::lock_guard<std::mutex> g(h->mx);
+  h->srv = made;
+  h->srv_key = key;
+  h->relay_err = err;
+  h->relay_ext = ext;
+  h->relay_port = made ? juice_server_get_port(made) : 0;
+  h->relay_retry = now + 30;
+}
+
+// ---- stage 3: rendezvous messages over the links that are up (the addressee's own, or a bandmate's who passes it on once) -----------------
+#define NAT_SIG_FRAG 1200 // (a message in pieces: libjuice's SDP is up to 4 KB, hex doubles it)
+#define NAT_SIG_PARTS 8
+static void carry_on(LinkBox *b, unsigned char hop, const std::string &text) // (never under a lock)
+{
+  const size_t cnt = (text.size() + NAT_SIG_FRAG - 1) / NAT_SIG_FRAG;
+  if (cnt == 0 || cnt > NAT_SIG_PARTS) return;
+  uint32_t id = 0;
+  nat_random(&id, sizeof id);
+  for (size_t i = 0; i < cnt; ++i) {
+    std::string m(1, (char)hop);
+    put_be(m, id, 4);
+    m += (char)i;
+    m += (char)cnt;
+    m.append(text, i * NAT_SIG_FRAG, NAT_SIG_FRAG);
+    send_kind(b->l, '\3', m.data(), m.size());
+  }
+}
+static void hub_carry(NatHub *h, const std::string &text)
+{
+  std::vector<std::shared_ptr<LinkBox>> to;
+  {
+    std::lock_guard<std::mutex> g(h->sigmx);
+    if (!h->carry) return;
+    for (auto &kv : h->upbox) if (std::shared_ptr<LinkBox> b = kv.second.lock()) to.push_back(b);
+    if (!to.empty()) ++h->sig_carried;
+  }
+  for (auto &b : to) carry_on(b.get(), 0, text);
+}
+// This side's message to `dev`: its file in the folder (the fallback: Syncthing carries it), and over every link that's up now and again
+// each second while that peer's link isn't (hub_loop).
+static void send_signal(NatHub *h, const std::string &folder, const std::string &me, const std::string &dev, const std::string &msg)
+{
+  spit_atomic(folder + "/" + me + "-" + dev + ".json", msg);
+  { std::lock_guard<std::mutex> g(h->sigmx); h->outbox[dev] = { msg, now_s() }; }
+  hub_carry(h, msg);
+}
+static std::string box_signal_in(void *u)
+{
+  LinkBox *b = (LinkBox *)u;
+  std::lock_guard<std::mutex> g(b->h->sigmx);
+  auto it = b->h->inbox.find(b->dev);
+  return it == b->h->inbox.end() ? std::string() : it->second;
+}
+static void box_signal_out(void *u, const std::string &msg)
+{
+  LinkBox *b = (LinkBox *)u;
+  { std::lock_guard<std::mutex> g(b->h->sigmx); b->h->outbox[b->dev] = { msg, now_s() }; }
+  hub_carry(b->h, msg);
+}
+// A whole message arrived over `via` (libjuice's thread): checked as the folder's are (the studio's signature, the addressee, the age); ours
+// goes to the inbox (from a bandmate we have, newest kept), another's is passed on once over our link to its addressee.
+static void hub_signal_rx(NatHub *h, LinkBox *via, unsigned char hop, const std::string &text)
+{
+  const std::string to = jfield(text, "to"), from = jfield(text, "from");
+  std::string me, K, kind, sdp, why;
+  { std::lock_guard<std::mutex> g(h->sigmx); me = h->sig_me; K = h->sig_K; }
+  unsigned char e[32], re[32];
+  const bool ok = !K.empty() && nat_signal_read(K, text, to, from, unix_s(), kind, e, re, sdp, why);
+  std::shared_ptr<LinkBox> next;
+  {
+    std::lock_guard<std::mutex> g(h->sigmx);
+    if (!ok || (to == me ? !h->sig_peers.count(from) : hop != 0)) { ++h->sig_refused; return; }
+    if (to == me) {
+      std::string &cur = h->inbox[from];
+      if (cur.empty() || atoll(jfield(text, "t").c_str()) >= atoll(jfield(cur, "t").c_str())) cur = text;
+      ++h->sig_in;
+      return;
+    }
+    auto it = h->upbox.find(to);
+    if (it != h->upbox.end()) next = it->second.lock();
+    if (next.get() == via) next.reset();
+    if (next) ++h->sig_forwarded;
+  }
+  if (next) carry_on(next.get(), 1, text);
+}
+static void box_signal(void *u, const char *d, size_t n)
+{
+  LinkBox *b = (LinkBox *)u;
+  if (n < 7) return;
+  const unsigned char hop = (unsigned char)d[0];
+  const uint32_t id = (uint32_t)get_be(d + 1, 4);
+  const unsigned idx = (unsigned char)d[5], cnt = (unsigned char)d[6];
+  if (hop > 1 || cnt == 0 || cnt > NAT_SIG_PARTS || idx >= cnt || n - 7 > NAT_SIG_FRAG) { std::lock_guard<std::mutex> g(b->h->sigmx); ++b->h->sig_refused; return; }
+  std::string whole;
+  {
+    std::lock_guard<std::mutex> g(b->fmx);
+    const double now = now_s();
+    for (auto it = b->frags.begin(); it != b->frags.end();) it = now - it->second.at > 5 ? b->frags.erase(it) : std::next(it);
+    auto it = b->frags.find(id);
+    if (it == b->frags.end()) {
+      if (b->frags.size() >= 4) { // (at most 4 half-arrived at once: the oldest goes)
+        auto old = b->frags.begin();
+        for (auto j = b->frags.begin(); j != b->frags.end(); ++j) if (j->second.at < old->second.at) old = j;
+        b->frags.erase(old);
+      }
+      LinkBox::Frag f;
+      f.cnt = cnt; f.parts.resize(cnt); f.have.assign(cnt, false); f.at = now;
+      it = b->frags.emplace(id, std::move(f)).first;
+    }
+    LinkBox::Frag &f = it->second;
+    if (f.cnt != cnt) return;
+    if (!f.have[idx]) { f.parts[idx].assign(d + 7, n - 7); f.have[idx] = true; ++f.got; }
+    if (f.got < f.cnt) return;
+    for (const std::string &part : f.parts) whole += part;
+    b->frags.erase(it);
+  }
+  hub_signal_rx(b->h, b, hop, whole);
+}
+
+static std::shared_ptr<LinkBox> make_box(NatHub *h, HubPeer &p, const std::string &offer_e = std::string()) // (h->mx held)
 {
   std::shared_ptr<LinkBox> b = std::make_shared<LinkBox>();
   b->h = h;
   b->addr = p.addr;
+  b->dev = p.dev;
   NatLinkConfig c;
   c.folder = h->folder; c.me = h->me; c.peer = p.dev; c.secret = h->secret; c.my_static = h->keys;
   memcpy(c.peer_static, p.pub, 32);
   if (!h->stun.empty()) { c.stun_host = h->stun[0].first; c.stun_port = h->stun[0].second; }
+  if (!h->turn_host.empty() && h->relay_ok && !h->relay.on) { // (stage 3: the studio hub's relay, once its STUN has answered)
+    c.turn_host = h->turn_host; c.turn_port = h->turn_port;
+    c.turn_user = h->me; c.turn_pass = nat_relay_pass(h->K, h->me);
+  }
   if (h->port > 0) { c.port_lo = h->port; c.port_hi = h->port + NAT_PORTS - 1; }
-  c.timeout_s = 60; // (the other side's file comes through Syncthing: a few seconds each way, more when it's busy)
+  c.timeout_s = h->timeout > 0 ? h->timeout : 60; // (the other side's file comes through Syncthing: a few seconds each way, more when it's busy)
+  c.only = h->only;
+  c.bind = h->bind;
+  c.offer_e = offer_e;
   c.on_data = box_rx;
   c.on_stream = box_seg;
+  c.signal_in = box_signal_in; c.signal_out = box_signal_out; c.on_signal = box_signal;
   c.user = b.get();
   b->opener_bit = !(h->me < p.dev);
   memcpy(b->lossy, h->lossy, sizeof b->lossy);
@@ -1053,34 +1345,144 @@ static std::shared_ptr<LinkBox> make_box(NatHub *h, HubPeer &p) // (h->mx held)
   if (!b->l) return nullptr;
   return b;
 }
+// This computer's address on its default route (no datagram is sent: a UDP connect only picks the route). "" without a network.
+static std::string net_id()
+{
+  nat_sock_t s = socket(AF_INET, SOCK_DGRAM, 0);
+  if (s == NAT_BAD_SOCK) return "";
+  direct_noinherit((unsigned long long)s);
+  sockaddr_in a{};
+  a.sin_family = AF_INET;
+  a.sin_port = htons(9);
+  inet_pton(AF_INET, "192.0.2.1", &a.sin_addr); // (TEST-NET-1: reached by the default route, never answered)
+  std::string id;
+  sockaddr_in me{};
+  socklen_t ml = sizeof me;
+  if (connect(s, (const sockaddr *)&a, sizeof a) == 0 && getsockname(s, (sockaddr *)&me, &ml) == 0) {
+    char b[INET_ADDRSTRLEN] = "";
+    inet_ntop(AF_INET, &me.sin_addr, b, sizeof b);
+    id = b;
+  }
+  nat_close(s);
+  return id;
+}
+// This computer's network changed (Wi-Fi to tethering, a new address): every link is made afresh at once, an ICE restart with new keys,
+// rather than waiting ~30 s for each path to be noticed dead. Peers we offer to get a new offer; those that offer to us are told
+// ("restart"), over the folder and any link that's up, and offer again.
+static void restart_all(NatHub *h, double now)
+{
+  std::vector<std::shared_ptr<LinkBox>> old;
+  std::vector<std::string> tell;
+  std::string folder, me, K;
+  {
+    std::lock_guard<std::mutex> g(h->mx);
+    folder = h->folder; me = h->me; K = h->K;
+    h->next_probe = now;
+    h->pub_addr.clear(); // (the probe's new public address isn't a second change)
+    ++h->restarts;
+    for (auto &kv : h->peers) {
+      HubPeer &p = *kv.second;
+      if (p.box) old.push_back(p.box);
+      p.box.reset();
+      p.was_up = false; p.up_at = -1; p.fails = 0; p.next_try = now; p.nopath = false;
+      p.why = "this computer's network changed: connecting again";
+      if (!(me < p.dev)) tell.push_back(p.dev);
+    }
+  }
+  { std::lock_guard<std::mutex> g(h->sigmx); h->upbox.clear(); }
+  old.clear(); // (each agent destroyed here, outside the locks)
+  if (me.empty() || K.empty()) return;
+  for (const std::string &dev : tell) {
+    NatKeys e;
+    if (!nat_keypair(e)) continue;
+    send_signal(h, folder, me, dev, nat_signal(K, "restart", me, dev, e.pub, nullptr, unix_s(), ""));
+    crypto_wipe(e.priv, 32);
+  }
+}
+// The peer's messages to us (another link's, then the folder's), each checked: -> the valid ones as kind, ephemeral key (hex), time.
+struct PeerMsg { std::string kind, e; long long t; };
+static std::vector<PeerMsg> peer_msgs(NatHub *h, const std::string &folder, const std::string &me, const std::string &K, const std::string &dev,
+                                      std::string *bad = nullptr)
+{
+  std::vector<std::string> texts;
+  { std::lock_guard<std::mutex> g(h->sigmx); auto it = h->inbox.find(dev); if (it != h->inbox.end()) texts.push_back(it->second); }
+  texts.push_back(slurp(folder + "/" + dev + "-" + me + ".json"));
+  std::vector<PeerMsg> out;
+  for (const std::string &text : texts) {
+    std::string kind, sdp, why;
+    unsigned char pe[32], re[32];
+    if (text.empty()) continue;
+    if (nat_signal_read(K, text, me, dev, unix_s(), kind, pe, re, sdp, why)) out.push_back({ kind, hex(pe, 32), atoll(jfield(text, "t").c_str()) });
+    else if (bad) *bad = why;
+  }
+  return out;
+}
 static void hub_loop(NatHub *h)
 {
   while (h->run.load()) {
     const double now = now_s();
     if (now >= h->next_probe) { h->next_probe = now + 600; probe(h); }
+    relay_tick(h, now);
+    if (now >= h->next_net || h->test_net.load()) { // (a new network: every link made again, stage 3)
+      h->next_net = now + 2;
+      const std::string id = net_id();
+      bool changed = h->test_net.exchange(false);
+      if (!id.empty()) { changed = changed || (!h->netid.empty() && id != h->netid); h->netid = id; }
+      if (changed) restart_all(h, now);
+    }
     std::vector<std::pair<std::shared_ptr<HubPeer>, std::shared_ptr<LinkBox>>> items;
     std::string folder, me, K;
     {
       std::lock_guard<std::mutex> g(h->mx);
       folder = h->folder; me = h->me; K = h->K;
       for (auto &kv : h->peers) items.emplace_back(kv.second, kv.second->box);
+      std::lock_guard<std::mutex> s(h->sigmx); // (the links up now, for the rendezvous carried over them)
+      h->upbox.clear();
+      for (auto &kv : h->peers) if (kv.second->was_up && kv.second->box) h->upbox[kv.first] = kv.second->box;
     }
     for (auto &it : items) {
       HubPeer &p = *it.first;
       const bool initiator = me < p.dev;
+      if (initiator && now >= p.next_restart_look) { // (their network changed: offer again now)
+        p.next_restart_look = now + 0.5;
+        std::shared_ptr<LinkBox> old; // (the old link is freed at the end of this block, outside the lock)
+        for (const PeerMsg &m : peer_msgs(h, folder, me, K, p.dev)) {
+          std::lock_guard<std::mutex> g(h->mx);
+          if (m.kind != "restart" || m.e == p.restart_e || m.t < p.created_u || h->peers.find(p.dev) == h->peers.end()) continue;
+          p.restart_e = m.e;
+          if (p.box) old = p.box;
+          p.box.reset();
+          it.second.reset();
+          p.was_up = false; p.up_at = -1; p.fails = 0; p.next_try = now; p.nopath = false;
+          p.why = "their network changed: connecting again";
+        }
+      }
+      if (now >= p.next_carry) { // (our last message to a peer whose link isn't up: over the links again, each second, for a minute)
+        p.next_carry = now + 1;
+        std::string msg;
+        {
+          std::lock_guard<std::mutex> g(h->sigmx);
+          auto o = h->outbox.find(p.dev);
+          if (o != h->outbox.end() && !h->upbox.count(p.dev) && now - o->second.second < 60) msg = o->second.first;
+        }
+        if (!msg.empty()) hub_carry(h, msg);
+      }
       if (it.second) {
         const int r = nat_link_tick(it.second->l);
         std::string why;
+        bool nopath = false;
         if (r < 0) {
           why = nat_link_status(it.second->l);
           const size_t w = why.find("why    ");
           why = w == std::string::npos ? "no connection" : why.substr(w + 7);
+          nopath = it.second->l->got && !it.second->l->up.load() && why.find("started again") == std::string::npos;
         }
         std::lock_guard<std::mutex> g(h->mx);
         if (p.box != it.second) continue; // (dropped or replaced by a setup meanwhile)
-        if (r == 1 && !p.was_up) { p.was_up = true; p.up_at = now; p.fails = 0; p.why.clear(); }
+        if (r == 1 && !p.was_up) { p.was_up = true; p.up_at = now; p.fails = 0; p.why.clear(); p.nopath = false; }
         if (r < 0) {
           p.why = why;
+          p.nopath = nopath;
           ++p.fails;
           p.was_up = false;
           p.up_at = -1;
@@ -1096,18 +1498,19 @@ static void hub_loop(NatHub *h)
         if (b) p.box = b; else { p.why = "libjuice wouldn't start (the ports taken?)"; p.next_try = now + 30; }
         continue;
       }
-      if (now < p.next_offer_look) continue; // (the responder: a new offer starts a link)
-      p.next_offer_look = now + 1;
-      const std::string text = slurp(folder + "/" + p.dev + "-" + me + ".json");
-      std::string kind, sdp, why;
-      unsigned char pe[32], re[32];
-      const bool ok = !text.empty() && nat_signal_read(K, text, me, p.dev, unix_s(), kind, pe, re, sdp, why) && kind == "offer";
+      if (now < p.next_offer_look) continue; // (the responder: a new offer starts a link; stage 3: from another link or the folder)
+      p.next_offer_look = now + 0.25;
+      std::string newest, bad;
+      long long newest_t = -1;
+      bool any = false;
+      for (const PeerMsg &m : peer_msgs(h, folder, me, K, p.dev, &bad)) {
+        any = any || m.kind == "offer";
+        if (m.kind == "offer" && m.e != p.answered_e && m.t >= p.answered_t && m.t > newest_t) { newest = m.e; newest_t = m.t; } // (never an older one again)
+      }
       std::lock_guard<std::mutex> g(h->mx);
       if (h->peers.find(p.dev) == h->peers.end()) continue;
-      if (!ok) { if (!text.empty() && !why.empty()) p.why = "their rendezvous file: " + why; continue; }
-      const std::string e = hex(pe, 32);
-      if (e == p.answered_e) continue; // (answered already; a new try of theirs brings a new key)
-      if (std::shared_ptr<LinkBox> b = make_box(h, p)) { p.box = b; p.answered_e = e; p.why.clear(); }
+      if (newest.empty()) { if (!any && !bad.empty()) p.why = "their rendezvous file: " + bad; continue; } // (none new: answered already, or none yet)
+      if (std::shared_ptr<LinkBox> b = make_box(h, p, newest)) { p.box = b; p.answered_e = newest; p.answered_t = newest_t; p.why.clear(); }
     }
     items.clear(); // (a link dropped by a setup is freed here, outside the lock)
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -1221,6 +1624,9 @@ bool nat_test_inject(NatHub *h, const char *dev, const std::string &raw)
   return b != nullptr;
 }
 std::string nat_test_sealed(NatHub *h, const char *dev) { std::shared_ptr<LinkBox> b = test_box(h, dev); return b ? nat_link_last_sealed(b->l) : ""; }
+void nat_test_only(NatHub *h, int only, const char *bind) { std::lock_guard<std::mutex> g(h->mx); h->only = only; h->bind = bind ? bind : ""; }
+void nat_test_netchange(NatHub *h) { h->test_net.store(true); }
+void nat_test_carry(NatHub *h, bool on) { std::lock_guard<std::mutex> g(h->sigmx); h->carry = on; }
 #endif
 
 NatHub *nat_hub_new() { return new NatHub(); }
@@ -1230,8 +1636,16 @@ void nat_hub_stop(NatHub *h)
   if (h->thr.joinable()) h->thr.join();
   if (h->pump.joinable()) h->pump.join();
   std::map<std::string, std::shared_ptr<HubPeer>> gone;
-  { std::lock_guard<std::mutex> g(h->mx); gone.swap(h->peers); h->me.clear(); }
+  juice_server_t *srv = nullptr;
+  {
+    std::lock_guard<std::mutex> g(h->mx);
+    gone.swap(h->peers); h->me.clear();
+    srv = h->srv; h->srv = nullptr; h->srv_key.clear(); h->relay_port = 0; h->relay = NatHub::RelayWant(); h->turn_host.clear(); h->relay_ok = false;
+    std::lock_guard<std::mutex> s(h->sigmx);
+    h->upbox.clear(); h->inbox.clear(); h->outbox.clear(); h->sig_peers.clear(); h->sig_me.clear(); h->sig_K.clear();
+  }
   for (auto &kv : gone) kv.second->box.reset(); // (each link's agent destroyed: no callback after)
+  if (srv) juice_server_destroy(srv);
 }
 void nat_hub_free(NatHub *h)
 {
@@ -1246,7 +1660,8 @@ int nat_hub_setup(NatHub *h, const char *json)
   JV v;
   if (!jparse(json, v) || v.t != 5) { std::lock_guard<std::mutex> g(h->mx); h->err = "the setup isn't JSON"; return -1; }
   const std::string folder = v.str("folder"), me = v.str("me"), secret = v.str("secret"), keypath = v.str("key");
-  const JV *port = v.get("port"), *stun = v.get("stun"), *peers = v.get("peers");
+  const JV *port = v.get("port"), *stun = v.get("stun"), *peers = v.get("peers"), *relay = v.get("relay"), *tmo = v.get("timeout");
+  const std::string turn = v.str("turn");
   const int want_port = port && port->t == 2 ? (int)port->n : NAT_PORT;
   std::string why;
   NatKeys k;
@@ -1272,9 +1687,34 @@ int nat_hub_setup(NatHub *h, const char *json)
       const std::string d = x.str("device"), pub = x.str("pub");
       if (id_ok(d) && d != me && unhex(pub, raw) && raw.size() == 32) want[d] = pub;
     }
+  // stage 3: the relay to run (the studio hub) and the hub's relay to use
+  NatHub::RelayWant rw;
+  long long rate = 0, rate_each = 0;
+  if (relay && relay->t == 5) {
+    const JV *rp = relay->get("port"), *us = relay->get("users"), *ra = relay->get("rate"), *re = relay->get("rate_each"), *al = relay->get("allocs"), *ae = relay->get("allocs_each");
+    rw.on = true;
+    if (rp && rp->t == 2 && rp->n >= 0 && rp->n < 65536 - NAT_RELAY_PORTS) rw.port = (int)rp->n;
+    if (al && al->t == 2 && al->n >= 1 && al->n <= 1000) rw.allocs = (int)al->n;
+    if (ae && ae->t == 2 && ae->n >= 1 && ae->n <= 1000) rw.allocs_each = (int)ae->n;
+    if (ra && ra->t == 2) rate = (long long)ra->n;
+    if (re && re->t == 2) rate_each = (long long)re->n;
+    if (us && us->t == 4)
+      for (const JV &x : us->a) if (x.t == 3 && id_ok(x.s) && rw.users.size() < 256 && std::find(rw.users.begin(), rw.users.end(), x.s) == rw.users.end()) rw.users.push_back(x.s);
+  }
+  if (rw.on) nat_relay_caps(rate, rate_each); // (process-wide: only the relay's own setup sets them)
+  std::string th;
+  int tp = 0;
+  {
+    const size_t c = turn.rfind(':');
+    if (c != std::string::npos && c > 0 && atoi(turn.c_str() + c + 1) > 0 && atoi(turn.c_str() + c + 1) < 65536) { th = turn.substr(0, c); tp = atoi(turn.c_str() + c + 1); }
+  }
   std::vector<std::shared_ptr<HubPeer>> gone; // (their links freed outside the lock: an agent waits for libjuice's thread)
   {
     std::lock_guard<std::mutex> g(h->mx);
+    if (h->turn_host != th || h->turn_port != tp) { h->next_probe = 0; h->relay_ok = false; } // (a new relay: its STUN asked before links use it)
+    h->turn_host = th; h->turn_port = tp;
+    h->relay = rw;
+    h->timeout = tmo && tmo->t == 2 ? tmo->n : 0;
     const bool same = h->folder == folder && h->me == me && h->secret == secret && h->have_key && !memcmp(h->keys.pub, k.pub, 32) &&
                       h->stun == sl && h->port == want_port;
     if (h->stun != sl) h->next_probe = 0;
@@ -1298,8 +1738,14 @@ int nat_hub_setup(NatHub *h, const char *json)
       unhex(kv.second, raw);
       memcpy(p->pub, raw.data(), 32);
       synthetic_of(kv.first, p->addr);
+      p->created_u = unix_s();
       h->peers[kv.first] = p;
     }
+    std::lock_guard<std::mutex> s(h->sigmx);
+    h->sig_me = h->me; h->sig_K = h->K;
+    h->sig_peers.clear();
+    for (const auto &kv : h->peers) h->sig_peers[kv.first] = true;
+    for (auto it = h->inbox.begin(); it != h->inbox.end();) it = h->sig_peers.count(it->first) ? std::next(it) : h->inbox.erase(it);
     for (auto &p : gone) p->box.reset(); // (the loop may hold its own reference for one pass; it's freed after that)
   }
   crypto_wipe(k.priv, 32);
@@ -1328,6 +1774,22 @@ std::string nat_hub_status(NatHub *h)
     o += ",\"nat\":"; jquote(o, h->kind);
     o += ",\"public\":"; jquote(o, h->pub_addr);
     o += ",\"self\":"; jquote(o, h->me.empty() ? "" : self_of(h->me));
+    o += ",\"turn\":"; jquote(o, h->turn_host.empty() ? "" : h->turn_host + ":" + std::to_string(h->turn_port));
+    o += ",\"relay_ok\":"; o += h->relay_ok ? "true" : "false";
+    long long rs = 0, rd = 0;
+    { RelayCaps &c = relay_caps(); std::lock_guard<std::mutex> cg(c.mx); rs = c.sent; rd = c.dropped; }
+    o += ",\"relay\":{\"on\":"; o += h->relay.on ? "true" : "false";
+    o += ",\"running\":"; o += h->srv ? "true" : "false";
+    o += ",\"port\":" + std::to_string(h->relay_port);
+    o += ",\"external\":"; jquote(o, h->relay_ext);
+    o += ",\"error\":"; jquote(o, h->relay_err);
+    o += ",\"bytes\":" + std::to_string(rs) + ",\"over_cap\":" + std::to_string(rd) + "}";
+    o += ",\"restarts\":" + std::to_string(h->restarts);
+    {
+      std::lock_guard<std::mutex> s(h->sigmx);
+      o += ",\"signals\":{\"in\":" + std::to_string(h->sig_in) + ",\"carried\":" + std::to_string(h->sig_carried) + ",\"forwarded\":" + std::to_string(h->sig_forwarded) +
+           ",\"bad\":" + std::to_string(h->sig_refused) + "}";
+    }
     for (auto &kv : h->peers) list.push_back(kv.second);
   }
   o += ",\"peers\":{";
@@ -1364,6 +1826,7 @@ std::string nat_hub_status(NatHub *h)
     o += ",\"local\":"; jquote(o, loc);
     o += ",\"remote\":"; jquote(o, rem);
     o += ",\"why\":"; jquote(o, p.why);
+    o += ",\"nopath\":"; o += p.nopath && !p.was_up ? "true" : "false";
     char b[320];
     snprintf(b, sizeof b, ",\"fails\":%d,\"up_s\":%.0f,\"sent\":%lld,\"opened\":%lld,\"refused\":%lld,\"streams\":%d,\"resent\":%lld,\"stream_refused\":%lld}",
              p.fails, p.was_up ? now - p.up_at : 0.0, sent, opened, refused, streams, resent, srefused);
@@ -1455,9 +1918,9 @@ extern "C" void nat_register(reaper_plugin_info_t *rec)
     { "StudioSync_NatKey", (void *)api_key, (void *)vla_key,
       "const char*\0const char*\0path\0This computer's static key for the connection without Tailscale: the private half kept in the file at path (made when missing, this user only; never in a synced folder). Returns the public half as 64 hex (for this computer's devices file), or an empty string." },
     { "StudioSync_NatSetup", (void *)api_setup, (void *)vla_setup,
-      "int\0const char*\0json\0The connection without Tailscale: {\"folder\":\"<studio>/_band/nat\",\"me\":\"<device id>\",\"secret\":\"<studio secret>\",\"key\":\"<key file>\",\"port\":47282,\"stun\":[\"host:port\",...],\"peers\":[{\"device\":\"<id>\",\"pub\":\"<64 hex>\"},...]}. Keeps a link up to each peer (signed rendezvous files in the folder, ICE, sealed datagrams); live audio reaches them as \"nat:<device id>\". Returns how many peers, or -1 (StudioSync_NatStatus's error)." },
+      "int\0const char*\0json\0The connection without Tailscale: {\"folder\":\"<studio>/_band/nat\",\"me\":\"<device id>\",\"secret\":\"<studio secret>\",\"key\":\"<key file>\",\"port\":47282,\"stun\":[\"host:port\",...],\"peers\":[{\"device\":\"<id>\",\"pub\":\"<64 hex>\"},...],\"turn\":\"<the studio hub's relay ip:port>\",\"relay\":{\"port\":47298,\"users\":[\"<device id>\",...]}}. Keeps a link up to each peer (signed rendezvous files in the folder and over the links that are up, ICE, sealed datagrams); live audio reaches them as \"nat:<device id>\". relay (the studio hub): runs a STUN/TURN relay for those computers, passwords from the studio secret; turn: uses the hub's relay once it answers. Returns how many peers, or -1 (StudioSync_NatStatus's error)." },
     { "StudioSync_NatStatus", (void *)api_status, (void *)vla_status,
-      "const char*\0\0\0The connection without Tailscale as JSON: on, me, error, nat (easy, strict: needs a relay, blocked: no STUN answer, unknown), public (ip:port), self (this computer's synthetic address), peers = { [device] = { state (up, connecting, waiting, waiting for them), path (direct, relayed), local, remote (host, srflx, prflx, relay), why, fails, up_s, sent, opened, refused, streams (the direct link's connections riding it), resent (their segments sent again), stream_refused } }." },
+      "const char*\0\0\0The connection without Tailscale as JSON: on, me, error, nat (easy, strict: needs a relay, blocked: no STUN answer, unknown), public (ip:port), self (this computer's synthetic address), turn, relay_ok (the hub's relay answers), relay { on, running, port, external, error, bytes, over_cap } (this computer's), restarts (network changes), signals { in, carried, forwarded, bad }, peers = { [device] = { state (up, connecting, waiting, waiting for them), path (direct, relayed), local, remote (host, srflx, prflx, relay), why, nopath (met but found no path), fails, up_s, sent, opened, refused, streams (the direct link's connections riding it), resent (their segments sent again), stream_refused } }." },
     { "StudioSync_NatStop", (void *)api_stop, (void *)vla_stop, "void\0\0\0Every link without Tailscale down." },
   };
   char key[96];

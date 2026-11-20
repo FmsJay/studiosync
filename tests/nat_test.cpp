@@ -4,6 +4,8 @@
 //  - ICE through libjuice with libjuice's own STUN/TURN server on this computer as the rendezvous's server and a temporary folder as the
 //    signalling channel: two endpoints connect, exchange sealed datagrams both ways (round trips timed), then again with only relayed
 //    candidates published (what two strict NATs leave), and an impostor and a wrong secret never come up.
+//  - stage 3 (docs/rt/rt-nat3.md): the hub's relay (studio credentials only, its caps), two simulated symmetric NATs meeting only through
+//    it, a network change recovering, the rendezvous over other links and the folder as its fallback.
 // Modes: `nat_test` (all of the above, on this computer), `nat_test server [port] [user] [pass]` (the STUN/TURN server alone, a hub's
 // job), `nat_test peer <folder> <me> <them> <secret> [stunhost:port] [user pass]` (one end, for two computers sharing a folder: real NATs;
 // NAT_NO_TAILSCALE=1 publishes no candidate on a Tailscale address, so ICE can't take the tailnet).
@@ -26,7 +28,9 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <atomic>
 #include <cstring>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -451,6 +455,234 @@ static void hub_checks(int port)
   drop_dir(dir);
 }
 
+// ---- stage 3 (docs/rt/rt-nat3.md): the hub's relay, its caps, network changes, the rendezvous over links -----------------------------------
+static void drop_files(const std::string &d) // (what a stage 3 case leaves in its folder, then the folder)
+{
+  for (const char *x : { "devA", "devB", "devC", "devR" })
+    for (const char *y : { "devA", "devB", "devC", "devR" }) { remove((d + "/" + x + "-" + y + ".json").c_str()); remove((d + "/" + x + "-" + y + ".json.tmp").c_str()); }
+  for (const char *k : { "/a.key", "/b.key", "/c.key", "/r.key" }) remove((d + k).c_str());
+  remove_dir(d);
+}
+// A hub's setup: `peers` as { device, public key }, `extra` more fields (",\"relay\":{...}").
+static std::string hub_json(const std::string &dir, const char *me, const char *key, int stun, const std::vector<std::pair<std::string, std::string>> &peers, const std::string &extra = "")
+{
+  std::string s = "{\"folder\":\"" + dir + "\",\"me\":\"" + me + "\",\"secret\":\"the studio secret\",\"key\":\"" + dir + "/" + key + "\",\"port\":0,\"stun\":[\"127.0.0.1:" +
+                  std::to_string(stun) + "\",\"127.0.0.1:" + std::to_string(stun) + "\"],\"peers\":[";
+  for (size_t i = 0; i < peers.size(); ++i) s += (i ? "," : "") + std::string("{\"device\":\"") + peers[i].first + "\",\"pub\":\"" + peers[i].second + "\"}";
+  s += "]" + extra + "}";
+  for (char &c : s) if (c == '\\') c = '/';
+  return s;
+}
+static std::string peer_part(const std::string &st, const char *dev) // (that peer's object in a hub's status)
+{
+  const size_t a = st.find(std::string("\"") + dev + "\":{\"state\"");
+  if (a == std::string::npos) return "";
+  return st.substr(a, st.find('}', a) - a + 1);
+}
+static bool peer_up(NatHub *h, const char *dev) { return json_field(peer_part(nat_hub_status(h), dev), "state") == "up"; }
+static bool wait_for(double ms, const std::function<bool()> &f, double *took = nullptr)
+{
+  const double t0 = now_ms();
+  bool ok = false;
+  while (!(ok = f()) && now_ms() - t0 < ms) sleep_ms(20);
+  if (took) *took = now_ms() - t0;
+  return ok;
+}
+static long long sub_num(const std::string &st, const char *obj, const char *k) // (a number inside a top-level object of the status)
+{
+  const size_t a = st.find(std::string("\"") + obj + "\":{");
+  return a == std::string::npos ? -1 : json_num(st.substr(a, st.find('}', a) - a), k);
+}
+// A raw libjuice agent asking the relay for an address as `user` -> whether it got one (a "typ relay" candidate). keep: left allocated.
+static void on_gathered_flag(juice_agent_t *, void *u) { ((std::atomic<bool> *)u)->store(true); }
+static bool gathers_relay(int port, const char *user, const std::string &pass, juice_agent_t **keep = nullptr)
+{
+  juice_turn_server_t ts;
+  memset(&ts, 0, sizeof ts);
+  ts.host = "127.0.0.1"; ts.port = (uint16_t)port; ts.username = user; ts.password = pass.c_str();
+  std::atomic<bool> done{ false };
+  juice_config_t jc;
+  memset(&jc, 0, sizeof jc);
+  jc.concurrency_mode = JUICE_CONCURRENCY_MODE_POLL; jc.turn_servers = &ts; jc.turn_servers_count = 1;
+  jc.cb_gathering_done = on_gathered_flag; jc.user_ptr = &done;
+  juice_agent_t *a = juice_create(&jc);
+  if (!a) return false;
+  juice_gather_candidates(a);
+  wait_for(15000, [&] { return done.load(); });
+  char sdp[JUICE_MAX_SDP_STRING_LEN] = "";
+  juice_get_local_description(a, sdp, sizeof sdp);
+  if (keep) *keep = a; else juice_destroy(a);
+  return strstr(sdp, "typ relay") != nullptr;
+}
+// The test's Syncthing: copies each rendezvous file from its writer's folder to its reader's, `delay` ms after it last changed; only the
+// routes given (a pair with no route has no folder between them).
+struct Copier {
+  struct Route { std::string from, to, file; std::atomic<int> *delay; std::string seen, copied; double at = 0; };
+  std::vector<Route> routes;
+  std::atomic<bool> run{ true };
+  std::thread t;
+  void add(const std::string &da, const char *a, const std::string &db, const char *b, std::atomic<int> *delay)
+  {
+    routes.push_back({ da, db, std::string(a) + "-" + b + ".json", delay });
+    routes.push_back({ db, da, std::string(b) + "-" + a + ".json", delay });
+  }
+  void start()
+  {
+    t = std::thread([this] {
+      while (run.load()) {
+        for (Route &r : routes) {
+          const std::string s = slurp_file(r.from + "/" + r.file);
+          if (s != r.seen) { r.seen = s; r.at = now_ms(); }
+          if (!r.seen.empty() && r.seen != r.copied && now_ms() - r.at >= r.delay->load()) {
+            const std::string p = r.to + "/" + r.file, tmp = p + ".tmp";
+            FILE *f = fopen(tmp.c_str(), "wb");
+            if (f) { fwrite(r.seen.data(), 1, r.seen.size(), f); fclose(f); remove(p.c_str()); rename(tmp.c_str(), p.c_str()); r.copied = r.seen; }
+          }
+        }
+        sleep_ms(20);
+      }
+    });
+  }
+  ~Copier() { run.store(false); if (t.joinable()) t.join(); }
+};
+static bool can_bind(const char *ip)
+{
+  const tsock s = socket(AF_INET, SOCK_DGRAM, 0);
+  sockaddr_in a{};
+  a.sin_family = AF_INET;
+  inet_pton(AF_INET, ip, &a.sin_addr);
+  const bool ok = bind(s, (sockaddr *)&a, sizeof a) == 0;
+  sock_close((unsigned long long)s);
+  return ok;
+}
+static void stage3_checks(int stun)
+{
+  const std::string dr = temp_dir(), dir = temp_dir();
+  std::string why;
+  const std::string pa = nat_key_public(dir + "/a.key", why), pb = nat_key_public(dir + "/b.key", why);
+  nat_key_public(dr + "/r.key", why);
+  const std::string K = nat_studio_key("the studio secret");
+  // the studio hub's relay: libjuice's server, a password per studio computer from the studio secret, one relayed address each here
+  NatHub *r = nat_hub_new();
+  CHECK(nat_hub_setup(r, hub_json(dr, "devR", "r.key", stun, {}, ",\"relay\":{\"port\":0,\"users\":[\"devA\",\"devB\",\"devC\"],\"allocs_each\":1}").c_str()) == 0,
+        "relay: a hub with no peers of its own set up to relay");
+  int rport = 0;
+  CHECK(wait_for(10000, [&] { rport = (int)sub_num(nat_hub_status(r), "relay", "port"); return rport > 0 && json_field(nat_hub_status(r), "external") == "127.0.0.1"; }),
+        "relay: running, on the public address its STUN probe found");
+  printf("     relay: %s\n", nat_hub_status(r).c_str());
+  juice_agent_t *held = nullptr;
+  CHECK(gathers_relay(rport, "devC", nat_relay_pass(K, "devC"), &held), "relay: a studio computer's credential (from the studio secret) gets a relayed address");
+  CHECK(!gathers_relay(rport, "devC", nat_relay_pass(K, "devC")), "relay caps: that computer's second address at once is refused (its quota, 1 here)");
+  CHECK(!gathers_relay(rport, "devA", nat_relay_pass(nat_studio_key("another studio"), "devA")), "relay: a credential made from another studio's secret is refused");
+  CHECK(!gathers_relay(rport, "devZ", nat_relay_pass(K, "devZ")), "relay: a computer that isn't the studio's is refused, even with a well-made password");
+  if (held) juice_destroy(held);
+  // two symmetric NATs (each publishes only relayed candidates, and its sockets are on an address of its own, 127.0.0.2 and .3, so nothing
+  // on this one computer but the relay joins them: the relay lets in only its own relayed addresses, 127.0.0.1): no path, then through it
+  NatHub *a = nat_hub_new(), *b = nat_hub_new();
+  double took = 0;
+  if (!can_bind("127.0.0.2") || !can_bind("127.0.0.3")) {
+    printf("SKIP the symmetric NATs and the relay's rate caps: this computer has no 127.0.0.2 / 127.0.0.3 (macOS: sudo ifconfig lo0 alias 127.0.0.2 up)\n");
+    nat_hub_free(a); nat_hub_free(b); nat_hub_free(r);
+    drop_files(dr);
+    a = b = nullptr;
+  } else {
+  nat_test_only(a, 1, "127.0.0.2"); nat_test_only(b, 1, "127.0.0.3");
+  const std::string tmo = ",\"timeout\":5";
+  nat_hub_setup(a, hub_json(dir, "devA", "a.key", stun, { { "devB", pb } }, tmo).c_str());
+  nat_hub_setup(b, hub_json(dir, "devB", "b.key", stun, { { "devA", pa } }, tmo).c_str());
+  CHECK(wait_for(20000, [&] { return json_field(peer_part(nat_hub_status(a), "devB"), "nopath") == "" && peer_part(nat_hub_status(a), "devB").find("\"nopath\":true") != std::string::npos; }) &&
+        !peer_up(a, "devB"), "symmetric NATs, no relay: they never meet, and the status says no path");
+  printf("     A: %s\n", peer_part(nat_hub_status(a), "devB").c_str());
+  const std::string turn = ",\"turn\":\"127.0.0.1:" + std::to_string(rport) + "\"";
+  nat_hub_setup(a, hub_json(dir, "devA", "a.key", stun, { { "devB", pb } }, tmo + turn).c_str());
+  nat_hub_setup(b, hub_json(dir, "devB", "b.key", stun, { { "devA", pa } }, tmo + turn).c_str());
+  const bool relayed = wait_for(40000, [&] { return peer_up(a, "devB") && peer_up(b, "devA"); }, &took);
+  CHECK(relayed && json_field(peer_part(nat_hub_status(a), "devB"), "path") == "relayed" && json_field(peer_part(nat_hub_status(b), "devA"), "path") == "relayed",
+        "symmetric NATs with the hub's relay: they meet, only through it (path relayed)");
+  printf("     relayed in %.0f ms; A: %s\n", took, nat_hub_status(a).c_str());
+  CHECK(json_field(nat_hub_status(a), "relay_ok") == "" && nat_hub_status(a).find("\"relay_ok\":true") != std::string::npos, "the relay's STUN answered before links used it");
+  if (relayed) {
+    Rx rb;
+    nat_set_rx(b, rx_fn, &rb);
+    sockaddr_in sa{};
+    nat_resolve(a, "nat:devB", &sa);
+    const std::string blob(1000, 'z');
+    auto burst = [&](int n, int ms) { { std::lock_guard<std::mutex> g(rb.mx); rb.got.clear(); } for (int i = 0; i < n; ++i) { nat_sendto(a, &sa, blob.data(), (int)blob.size()); sleep_ms(ms); } sleep_ms(400); std::lock_guard<std::mutex> g(rb.mx); return (int)rb.got.size(); };
+    const int clean = burst(100, 5);
+    CHECK(clean >= 95, "through the relay: 100 sealed datagrams, all (or nearly) arrive");
+    // caps: the relay's whole rate cut to 20 KB/s (no restart: the links stay up), then 1 MB sent in ~1 s
+    const long long over0 = sub_num(nat_hub_status(r), "relay", "over_cap");
+    nat_hub_setup(r, hub_json(dr, "devR", "r.key", stun, {}, ",\"relay\":{\"port\":0,\"users\":[\"devA\",\"devB\",\"devC\"],\"allocs_each\":1,\"rate\":20000}").c_str());
+    const long long by0 = sub_num(nat_hub_status(r), "relay", "bytes");
+    const int capped = burst(1000, 1);
+    printf("     relay bytes during the flood: %lld; B: %s\n", sub_num(nat_hub_status(r), "relay", "bytes") - by0, peer_part(nat_hub_status(b), "devA").c_str());
+    printf("     capped at 20 KB/s: %d of 1000 arrived, %lld dropped by the relay\n", capped, sub_num(nat_hub_status(r), "relay", "over_cap") - over0);
+    CHECK(capped < 150 && sub_num(nat_hub_status(r), "relay", "over_cap") > over0, "relay caps: a flood over the relay's rate is cut to it (the rest dropped there)");
+    nat_hub_setup(r, hub_json(dr, "devR", "r.key", stun, {}, ",\"relay\":{\"port\":0,\"users\":[\"devA\",\"devB\",\"devC\"],\"allocs_each\":1,\"rate_each\":20000}").c_str());
+    const int each = burst(1000, 1);
+    CHECK(each < 150, "relay caps: and the rate to any one address");
+    nat_hub_setup(r, hub_json(dr, "devR", "r.key", stun, {}, ",\"relay\":{\"port\":0,\"users\":[\"devA\",\"devB\",\"devC\"],\"allocs_each\":1}").c_str());
+    sleep_ms(500);
+    CHECK(burst(100, 5) >= 95 && peer_up(a, "devB"), "the caps back to normal: the same link carries everything again");
+    nat_set_rx(b, nullptr, nullptr);
+  }
+  nat_hub_free(a); nat_hub_free(b); nat_hub_free(r);
+  drop_files(dr);
+  }
+  // a computer changes network (Wi-Fi to tethering): its links are made again at once, ICE restarted with new keys, both ways
+  a = nat_hub_new(); b = nat_hub_new();
+  nat_hub_setup(a, hub_json(dir, "devA", "a.key", stun, { { "devB", pb } }).c_str());
+  nat_hub_setup(b, hub_json(dir, "devB", "b.key", stun, { { "devA", pa } }).c_str());
+  CHECK(wait_for(20000, [&] { return peer_up(a, "devB") && peer_up(b, "devA"); }), "network change: two computers up first");
+  for (int side = 0; side < 2; ++side) {
+    NatHub *moved = side ? a : b, *other = side ? b : a;
+    const char *mdev = side ? "devB" : "devA", *odev = side ? "devA" : "devB";
+    nat_test_netchange(moved);
+    const bool down = wait_for(3000, [&] { return !peer_up(moved, mdev); });
+    const bool back = wait_for(20000, [&] { return peer_up(moved, mdev) && peer_up(other, odev) && json_num(peer_part(nat_hub_status(other), odev), "up_s") < 5; }, &took);
+    char what[200];
+    snprintf(what, sizeof what, "network change on %s (%s): its links made again at once and both up again, with no restart of REAPER", side ? "A" : "B", side ? "the one that offers" : "the one that answers");
+    CHECK(down && back && json_num(nat_hub_status(moved), "restarts") == 1, what);
+    printf("     up again %.0f ms after the change\n", took);
+  }
+  nat_hub_free(a); nat_hub_free(b);
+  drop_files(dir);
+  // the rendezvous over links: three computers, each with its own folder; the test's Syncthing joins A-C and B-C at once but A-B only after
+  // 4 s, so A and B can meet sooner only through what C's links carry. Then with nothing carried, the folder alone (the fallback).
+  const std::string fa = temp_dir(), fb = temp_dir(), fc = temp_dir();
+  const std::string ka = nat_key_public(fa + "/a.key", why), kb = nat_key_public(fb + "/b.key", why), kc = nat_key_public(fc + "/c.key", why);
+  std::atomic<int> now0{ 0 }, slow{ 4000 };
+  {
+    Copier cp;
+    cp.add(fa, "devA", fc, "devC", &now0); cp.add(fb, "devB", fc, "devC", &now0); cp.add(fa, "devA", fb, "devB", &slow);
+    cp.start();
+    NatHub *x = nat_hub_new(), *y = nat_hub_new(), *z = nat_hub_new();
+    nat_hub_setup(z, hub_json(fc, "devC", "c.key", stun, { { "devA", ka }, { "devB", kb } }).c_str());
+    nat_hub_setup(x, hub_json(fa, "devA", "a.key", stun, { { "devB", kb }, { "devC", kc } }).c_str());
+    nat_hub_setup(y, hub_json(fb, "devB", "b.key", stun, { { "devA", ka }, { "devC", kc } }).c_str());
+    double tc = 0, tab = 0;
+    const double t0 = now_ms();
+    wait_for(15000, [&] { return peer_up(z, "devA") && peer_up(z, "devB"); }, &tc);
+    const bool ab = wait_for(15000, [&] { return peer_up(x, "devB") && peer_up(y, "devA"); });
+    tab = now_ms() - t0;
+    printf("     C's links up after %.0f ms, A-B after %.0f ms (the folder alone: 8 s or more); C: %s\n", tc, tab, nat_hub_status(z).c_str());
+    CHECK(ab && tab < 7500 && sub_num(nat_hub_status(z), "signals", "forwarded") > 0,
+          "rendezvous over links: A and B meet through C's links before their folder could carry an offer and its answer (8 s)");
+    // the fallback: nothing carried; B's network changes, and its "restart", A's new offer and B's answer all go by the folder (2 s each)
+    slow.store(2000);
+    nat_test_carry(x, false); nat_test_carry(y, false); nat_test_carry(z, false);
+    const long long in0 = sub_num(nat_hub_status(x), "signals", "in");
+    nat_test_netchange(y);
+    wait_for(3000, [&] { return !peer_up(y, "devA"); });
+    const bool back = wait_for(30000, [&] { return peer_up(x, "devB") && peer_up(y, "devA") && json_num(peer_part(nat_hub_status(x), "devB"), "up_s") < 10; }, &took);
+    printf("     by the folder alone: up again %.0f ms after the change\n", took);
+    if (!back) printf("     A: %s\n     B: %s\n", nat_hub_status(x).c_str(), nat_hub_status(y).c_str());
+    CHECK(back && took > 3000 && sub_num(nat_hub_status(x), "signals", "in") == in0, "rendezvous fallback: with no link carrying it, the shared folder still brings them together");
+    nat_hub_free(x); nat_hub_free(y); nat_hub_free(z);
+  }
+  drop_files(fa); drop_files(fb); drop_files(fc);
+}
+
 static void ice_checks()
 {
   juice_server_credentials_t cr[1];
@@ -507,6 +739,7 @@ static void ice_checks()
     nat_link_free(a); nat_link_free(x); drop_dir(dir);
   }
   hub_checks(port);
+  stage3_checks(port);
   juice_server_destroy(srv);
 }
 

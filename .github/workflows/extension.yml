@@ -72,8 +72,9 @@ jobs:
       - name: The connection without Tailscale's own test (tests/nat_test.cpp, ICE and sealed datagrams on localhost)
         if: ${{ !cancelled() }}
         run: |
-          mkdir -p natobj && (cd natobj && cc -O2 -c -DJUICE_STATIC -I ../extension/third_party/libjuice/include/juice ../extension/third_party/libjuice/src/*.c ../extension/third_party/monocypher/monocypher.c)
+          mkdir -p natobj && (cd natobj && cc -O2 -c -DJUICE_STATIC -I ../extension/third_party/libjuice/include/juice ../extension/third_party/libjuice/src/*.c ../extension/third_party/monocypher/monocypher.c && cc -O2 -c -DJUICE_STATIC -Dudp_sendto=nat_relay_sendto -I ../extension/third_party/libjuice/include/juice ../extension/third_party/libjuice/src/server.c)
           clang++ -std=c++17 -O2 -DNAT_STANDALONE -DDIRECT_STANDALONE -DJUICE_STATIC tests/nat_test.cpp extension/nat.cpp extension/direct.cpp extension/direct_audio.cpp natobj/*.o -o nat_test
+          sudo ifconfig lo0 alias 127.0.0.2 up && sudo ifconfig lo0 alias 127.0.0.3 up || true # (stage 3's two simulated symmetric NATs, each on its own address)
           ./nat_test
       - name: Live audio over the connection without Tailscale (tests/nat_audio_test.cpp, on localhost)
         if: ${{ !cancelled() }}
@@ -151,7 +152,7 @@ jobs:
       - name: The connection without Tailscale's own test (tests/nat_test.cpp, ICE and sealed datagrams on localhost)
         if: ${{ !cancelled() }}
         run: |
-          mkdir -p natobj && (cd natobj && cc -O2 -c -DJUICE_STATIC -I ../extension/third_party/libjuice/include/juice ../extension/third_party/libjuice/src/*.c ../extension/third_party/monocypher/monocypher.c)
+          mkdir -p natobj && (cd natobj && cc -O2 -c -DJUICE_STATIC -I ../extension/third_party/libjuice/include/juice ../extension/third_party/libjuice/src/*.c ../extension/third_party/monocypher/monocypher.c && cc -O2 -c -DJUICE_STATIC -Dudp_sendto=nat_relay_sendto -I ../extension/third_party/libjuice/include/juice ../extension/third_party/libjuice/src/server.c)
           g++ -std=c++17 -O2 -pthread -DNAT_STANDALONE -DDIRECT_STANDALONE -DJUICE_STATIC tests/nat_test.cpp extension/nat.cpp extension/direct.cpp extension/direct_audio.cpp natobj/*.o -o nat_test
           ./nat_test
       - name: Live audio over the connection without Tailscale (tests/nat_audio_test.cpp, on localhost)

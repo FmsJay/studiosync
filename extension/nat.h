@@ -6,6 +6,9 @@
 //    it and vouches for who wrote it); STUN from a public list or the studio's own server.
 //  - Every datagram is sealed with XChaCha20-Poly1305 (Monocypher, CC0/BSD-2) under keys from a handshake that needs all three of: the
 //    studio secret, each computer's own static X25519 key (its public half in its devices file), and fresh ephemeral keys (forward secrecy).
+// Stage 3 (docs/rt/rt-nat3.md): the studio hub runs libjuice's STUN/TURN server as the studio's relay for pairs no hole punch joins (credentials
+// from the studio key, rate and allocation caps; still sealed end to end), rendezvous messages also ride the links that are up (sub-second,
+// the folder the fallback), links are made again at once when this computer's network changes (an ICE restart with new keys).
 // shortcut: the handshake (nat_derive) is our own Noise-KK-style construction, not yet reviewed from outside; James deferred security reviews
 // until every feature is in (2026-11-19). Review it (or swap in Noise-C) before the setting is on by default.
 // GPL-3.0-or-later.
@@ -21,6 +24,14 @@
 #define NAT_PORT 47282     // the first of NAT_PORTS UDP ports libjuice binds (one per bandmate); the firewall rule covers the range
 #define NAT_PORTS 16
 #define NAT_AUDIO_PORT 47281 // the port in every synthetic address (198.18.0.0/15 + a hash of the device id): what live audio's AOO names
+// Stage 3 (docs/rt/rt-nat3.md): the studio hub's own STUN/TURN (libjuice's server) on UDP NAT_RELAY_PORT, relayed addresses on the
+// NAT_RELAY_PORTS after it (its router forwards all of them; StudioSync never touches a router or firewall itself).
+#define NAT_RELAY_PORT 47298
+#define NAT_RELAY_PORTS 16
+#define NAT_RELAY_RATE (1024 * 1024)      // bytes a second the relay sends in all (a live-audio stream is ~32 KB/s): beyond it, dropped
+#define NAT_RELAY_RATE_EACH (256 * 1024)  // bytes a second to any one address
+#define NAT_RELAY_ALLOCS 64               // relayed addresses at once in all
+#define NAT_RELAY_ALLOCS_EACH NAT_PORTS   // per computer (one per link)
 
 struct NatKeys { unsigned char pub[32], priv[32]; };
 bool nat_random(void *p, size_t n); // the system's CSPRNG
@@ -47,13 +58,21 @@ struct NatLinkConfig {
   NatKeys my_static;                          // this computer's
   unsigned char peer_static[32];              // the peer's public key (its devices file, in the design)
   std::string stun_host; int stun_port = 0;   // "" : host candidates only
-  std::string turn_user, turn_pass;           // set: also TURN on the same server
+  std::string turn_user, turn_pass;           // set: also TURN (on turn_host, else the STUN server)
+  std::string turn_host; int turn_port = 0;   // (stage 3: the studio hub's relay)
   int only = 0;                               // the test: 1 publish relayed candidates only (two strict NATs), 2 none on Tailscale
+  std::string offer_e;                        // (stage 3, the responder) answer only the offer with this ephemeral key (hex; "": any)
+  std::string bind;                           // the address libjuice binds ("": all; the test gives each simulated NAT its own)
   int port_lo = 0, port_hi = 0;               // libjuice's local port range (0: any)
   double timeout_s = 30;                      // no path by then: failed
   void (*on_data)(void *user, const char *d, size_t n) = nullptr; // each opened datagram (juice's thread); null: queued for nat_link_recv
   void *user = nullptr;
   void (*on_stream)(void *user, const char *d, size_t n) = nullptr; // (stage 2) each opened stream segment (juice's thread); null: dropped
+  // (stage 3) the rendezvous over other links: the peer's message as another way brought it ("" none), this side's message handed on too,
+  // and each opened signal fragment (juice's thread)
+  std::string (*signal_in)(void *user) = nullptr;
+  void (*signal_out)(void *user, const std::string &msg) = nullptr;
+  void (*on_signal)(void *user, const char *d, size_t n) = nullptr;
 };
 struct NatLink;
 NatLink *nat_link_new(const NatLinkConfig &c);
@@ -75,9 +94,19 @@ void nat_hub_free(NatHub *h);
 // {"folder":"<studio>/_band/nat","me":"<device id>","secret":"<studio secret>","key":"<private key file>","port":47282,
 //  "stun":["host:port",...],"peers":[{"device":"<id>","pub":"<64 hex>"},...]}: links to those peers kept up (the lower device id offers,
 // retried with a growing pause), the others dropped. -> how many peers, or -1 (bad JSON, no key: nat_hub_status's error says why).
+// Stage 3 adds "turn":"host:port" (the studio hub's relay: used once its STUN answers) and, on the hub, "relay":{"port":47298,
+// "users":["<device id>",...],"rate":bytes/s,"rate_each":bytes/s,"allocs":n,"allocs_each":n} (libjuice's STUN/TURN server; each
+// user's password from the studio secret: nat_relay_pass).
 int nat_hub_setup(NatHub *h, const char *json);
 void nat_hub_stop(NatHub *h);           // every link down, nothing configured
-std::string nat_hub_status(NatHub *h);  // JSON: on, me, error, nat ("easy", "strict", "blocked", "unknown"), public, peers = { [device] = { state, path, local, remote, why, fails, up_s, sent, opened, refused } }
+// JSON: on, me, error, nat ("easy", "strict", "blocked", "unknown"), public, turn, relay_ok, restarts, signals { in, carried, forwarded, bad },
+// relay { on, running, port, external, error, bytes, over_cap }, peers = { [device] = { state, path, local, remote, why, nopath, fails, up_s, sent, opened, refused, ... } }
+std::string nat_hub_status(NatHub *h);
+// The relay's password for a computer (its device id is the user name): only those with the studio secret can make it.
+std::string nat_relay_pass(const std::string &studio_key, const std::string &user);
+// The relay's caps (process-wide: one relay per REAPER). libjuice's server sends every datagram through nat_relay_sendto (built with
+// -Dudp_sendto=nat_relay_sendto for server.c only: third_party/build_*), which drops what's over them.
+void nat_relay_caps(long long rate, long long rate_each);
 // This computer's static key: the private half in `path` (made when missing, readable by this user only, never in a synced folder), -> the
 // public half as 64 hex, or "" and why.
 std::string nat_key_public(const std::string &path, std::string &why);
@@ -142,6 +171,11 @@ bool nat_seg_decode(const char *p, size_t n, unsigned char &flags, uint32_t &id,
 void nat_test_lossy(NatHub *h, int drop, int dup, int reorder);
 bool nat_test_inject(NatHub *h, const char *dev, const std::string &raw); // as if `raw` arrived on that link from the network
 std::string nat_test_sealed(NatHub *h, const char *dev); // the last datagram that link sent, as it went out
+// (stage 3) new links publish relayed candidates only (1) and bind `bind` (127.0.0.x: each its own, so on one computer nothing but the
+// relay joins them): two symmetric NATs
+void nat_test_only(NatHub *h, int only, const char *bind = nullptr);
+void nat_test_netchange(NatHub *h);           // as if this computer's network changed (Wi-Fi to tethering)
+void nat_test_carry(NatHub *h, bool on);      // rendezvous messages over other links (on by default)
 #endif
 #ifndef NAT_STANDALONE
 struct reaper_plugin_info_t;

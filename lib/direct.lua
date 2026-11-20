@@ -352,7 +352,8 @@ function direct.nat_way(nst, peer)
 end
 -- How a peer is reached, in words for Health. Pure.
 function direct.way_text(path)
-  return path == "nat direct" and "without Tailscale, through both NATs" or path == "nat relayed" and "without Tailscale, relayed"
+  local okn, n = pcall(require, "nat") -- (stage 3: whose relay: the studio hub's. rt-nat3)
+  return path == "nat direct" and "without Tailscale, through both NATs" or path == "nat relayed" and ("without Tailscale, relayed by " .. tostring(okn and type(n) == "table" and n.S.relay_name or "the studio hub"))
     or path == "direct" and "Tailscale, direct" or path == "relay" and "Tailscale's relay" or path == "peer relay" and "a Tailscale peer relay" or "Tailscale"
 end
 -- A peer's short name: a Tailscale name's first part; for "nat:<device>", whose computer it is (lib/nat.lua knows), else the id's start.
