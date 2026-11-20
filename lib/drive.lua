@@ -309,17 +309,15 @@ end
 drive.mine = mine
 
 -- Google's conflict copies ("x (1).json") of a file that's there under its own name, same size: only clutter.
+-- (Every cloud read and write in this file goes through `C`, lib/drivebg.lua: on REAPER's thread as before, or planned for its background worker.)
+local function C() return require("drivebg").C end
 local function tidy(dir)
-  local i, gone = 0, {}
-  reaper.EnumerateFiles(dir, -1)
-  while true do
-    local f = reaper.EnumerateFiles(dir, i)
-    if not f then break end
+  local gone = {}
+  for _, f in ipairs(C().raw(dir)) do
     local orig = f:gsub(" %(%d+%)(%.[^.]+)$", "%1")
-    if orig ~= f and band.size(dir .. "/" .. orig) == band.size(dir .. "/" .. f) then gone[#gone + 1] = f end
-    i = i + 1
+    if orig ~= f and C().size(dir .. "/" .. orig) == C().size(dir .. "/" .. f) then gone[#gone + 1] = f end
   end
-  for _, f in ipairs(gone) do os.remove(dir .. "/" .. f) end
+  for _, f in ipairs(gone) do C().remove(dir .. "/" .. f, dir .. "/" .. f:gsub(" %(%d+%)(%.[^.]+)$", "%1")) end -- (only while the original's there)
   return #gone
 end
 
@@ -448,20 +446,47 @@ local function media_deletes(here, there, A, inA, inB, user, owners, deadline)
       -- (moved by the computer whose recording it is, or by any when nobody's known: two moving one at once leaves a "(1)" copy in _trash at worst)
       if inB[f] and (owners[f] == nil or owners[f] == user) then
         local from, to = there .. "/media/" .. f, there .. "/_trash/media/" .. f
-        reaper.RecursiveCreateDirectory(there .. "/_trash/media", 0)
-        if os.rename(from, to) or (band.size(to) == band.size(from) and os.remove(from)) then moved = moved + 1 end
+        if C().planned then -- (the worker's move does both: renamed, or the source dropped once the trash has it at its size)
+          if C().rename(from, to) then moved = moved + 1 end
+        else
+          reaper.RecursiveCreateDirectory(there .. "/_trash/media", 0)
+          if os.rename(from, to) or (band.size(to) == band.size(from) and os.remove(from)) then moved = moved + 1 end
+        end
       end
     end
   end
   return skip, moved
 end
 
+-- What a planned pass for one room reads in the cloud copy (lib/drivebg.lua), asked for together: its folders, each person's plug-in chain
+-- folder once the fx folder is listed, and the take manifests once takes/ and _trash/ are.
+drive.ROOM_SUBS = { "trimmed", "events", "recall", "recall/known", "midi", "deleted", "media", "takes", "_trash", "fx" }
+local function want_room(here, there)
+  local J = require("drivebg")
+  for _, sub in ipairs(drive.ROOM_SUBS) do J.want(there .. "/" .. sub) end
+  local users, fx = {}, J.peek(there .. "/fx")
+  for _, u in ipairs(fx and fx.dirs or {}) do users[u] = true end
+  for _, u in ipairs(band.subdirs(here .. "/fx")) do users[u] = true end
+  for u in pairs(users) do J.want(there .. "/fx/" .. u) end
+  for _, sub in ipairs({ "takes", "_trash" }) do
+    local l = J.peek(there .. "/" .. sub)
+    for _, f in ipairs(l and l.names or {}) do if f:match("%.json$") and drive.parse(f) then J.want_file(there .. "/" .. sub .. "/" .. f) end end
+  end
+end
+
 -- One pass for one room. Copying stops once `budget` seconds have gone (big FLACs on a slow link): the next pass
 -- carries on. Returns files copied or moved, and whether work is left.
 function drive.mirror(here, there, budget, user, wait)
   local t0, n = reaper.time_precise(), 0
-  local function out_of_time() return reaper.time_precise() - t0 > (budget or 1.5) end
-  local function copy(a, z)
+  local c = C()
+  -- (planned for the background worker: also once a job holds as much as one should, lib/drivebg.lua)
+  local function out_of_time() return reaper.time_precise() - t0 > (budget or 1.5) or c.full() end
+  local function copy(a, z, media)
+    if c.planned then -- (the worker checks the size before and after, and a cloud JSON file for being whole; a local one is read here first)
+      if a:match("%.json$") and not c.cloud(a) and band.read_json(a) == nil then return end
+      if c.copy(a, z, a:match("%.json$") ~= nil, media and "landed" or "count") then n = n + 1 end
+      return
+    end
     reaper.RecursiveCreateDirectory(z:match("^(.*)/"), 0)
     -- (a file still being written, on Drive or here: a change that doesn't read yet, or a size that moved while it copied. Left for a later
     -- pass, so half a file never takes the whole one's place: it isn't copied again once it's there. 0.59.10)
@@ -478,6 +503,7 @@ function drive.mirror(here, there, budget, user, wait)
     if band.size(a) ~= size or band.size(z) ~= size then os.remove(z); return end
     n = n + 1
   end
+  if c.planned then want_room(here, there) end -- (everything below reads, asked for in one job, not a job a folder)
   -- written once: whatever's missing goes across
   local events = read_events(here .. "/events", t0 + (budget or 1.5))
   if not events then return 0, true end -- (who owns which recording isn't known yet: nothing's copied on half a list)
@@ -495,8 +521,9 @@ function drive.mirror(here, there, budget, user, wait)
     -- for nothing. Dropped whenever this pass writes or tidies there. Review list, 0.59.37)
     local td = there .. "/" .. sub
     local lc = drive.listed[td]
+    if c.planned then lc = nil end -- (planned: the worker's listings are kept 30 s already)
     local fresh = not (lc and reaper.time_precise() - lc.at < 30)
-    if fresh then lc = { at = reaper.time_precise(), files = band.files(td) }; drive.listed[td] = lc end
+    if fresh then lc = { at = reaper.time_precise(), files = c.files(td) }; if not c.planned then drive.listed[td] = lc end end
     for _, f in ipairs(lc.files) do if not arriving(f) then B[#B + 1] = f end end
     local n_before = n
     local inA, inB = {}, {}
@@ -513,7 +540,7 @@ function drive.mirror(here, there, budget, user, wait)
     if sub == "events" then -- trimmed: not brought back from Drive, and gone from it once whoever made them sees that
       for f in pairs(trimmed(here .. "/trimmed")) do -- ("trimmed" goes first: a list may have just come from Drive)
         inA[f], inB[f] = true, true
-        if mine(f, user) and reaper.file_exists(there .. "/events/" .. f) then os.remove(there .. "/events/" .. f); drive.listed[td] = nil end
+        if mine(f, user) and c.exists(there .. "/events/" .. f) then c.remove(there .. "/events/" .. f); drive.listed[td] = nil end
       end
     end
     for _, f in ipairs(A) do
@@ -529,8 +556,9 @@ function drive.mirror(here, there, budget, user, wait)
       if not inA[f] and not skip[f] then
         if out_of_time() then return n, true end
         local k = n
-        copy(there .. "/" .. sub .. "/" .. f, here .. "/" .. sub .. "/" .. f)
-        if sub == "media" and n > k then drive.landed[#drive.landed + 1] = here .. "/media/" .. f; got[#got + 1] = f end
+        copy(there .. "/" .. sub .. "/" .. f, here .. "/" .. sub .. "/" .. f, sub == "media")
+        -- (planned: told once the worker has it in place, lib/drivebg.lua; and not in what's here until it is, so a copy that fails is never a delete)
+        if sub == "media" and n > k and not c.planned then drive.landed[#drive.landed + 1] = here .. "/media/" .. f; got[#got + 1] = f end
       end
     end
     if sub == "media" and #A > 0 then -- (what's here now, for the next pass to tell a delete by. An empty folder keeps the last: media_deletes)
@@ -541,12 +569,12 @@ function drive.mirror(here, there, budget, user, wait)
   -- plug-in chains: rewritten by their owner, so a differing copy is only refreshed where it's missing (Syncthing
   -- and the owner's own pass keep the rest current)
   local users = {}
-  for _, side in ipairs({ here, there }) do for _, u in ipairs(band.subdirs(side .. "/fx")) do users[u] = true end end
+  for _, side in ipairs({ here, there }) do for _, u in ipairs(c.subdirs(side .. "/fx")) do users[u] = true end end
   for u in pairs(users) do
     for _, pair in ipairs(mine(u .. "-", user) and { { here, there }, { there, here } } or { { there, here } }) do
       local a, z = pair[1] .. "/fx/" .. u, pair[2] .. "/fx/" .. u
-      for _, f in ipairs(band.files(a)) do
-        if not arriving(f) and not reaper.file_exists(z .. "/" .. f) then if out_of_time() then return n, true end; copy(a .. "/" .. f, z .. "/" .. f) end
+      for _, f in ipairs(c.files(a)) do
+        if not arriving(f) and not c.exists(z .. "/" .. f) then if out_of_time() then return n, true end; copy(a .. "/" .. f, z .. "/" .. f) end
       end
     end
   end
@@ -557,14 +585,14 @@ function drive.mirror(here, there, budget, user, wait)
   local cur_rev, newest, mrev = {}, {}, {} -- per take: newest manifest's revision and path; per manifest path: its revision
   for _, side in ipairs({ here, there }) do
     for _, sub in ipairs({ "takes", "_trash" }) do
-      for _, f in ipairs(band.files(side .. "/" .. sub)) do
+      for _, f in ipairs(c.files(side .. "/" .. sub)) do
         local id, _, manifest = drive.parse(f)
         if id and not f:match("^[.~]") then -- (Syncthing's .syncthing.*.tmp while a file is arriving)
           where[f] = where[f] or {}
           where[f][side .. "/" .. sub] = true
           if manifest then
             local path = side .. "/" .. sub .. "/" .. f
-            local m = band.read_json(path)
+            local m = c.read_json(path)
             mrev[path] = m and tonumber(m.rev) or 1
             if mrev[path] > (cur_rev[id:lower()] or 0) then cur_rev[id:lower()], newest[f] = mrev[path], path end
           end
@@ -587,8 +615,8 @@ function drive.mirror(here, there, budget, user, wait)
       if not at[want] or stale then
         if out_of_time() then return n, true end
         if at[other] and not manifest then -- on this side already: a move
-          reaper.RecursiveCreateDirectory(want, 0)
-          if os.rename(other .. "/" .. f, want .. "/" .. f) then at[other], n = nil, n + 1 end
+          c.mkdir(want)
+          if c.rename(other .. "/" .. f, want .. "/" .. f) then at[other], n = nil, n + 1 end
         else
           local src = manifest and newest[f] or (function() for k in pairs(at) do return k .. "/" .. f end end)()
           copy(src, want .. "/" .. f)
@@ -598,7 +626,7 @@ function drive.mirror(here, there, budget, user, wait)
         if dest == "_trash" and side == here then into_trash_index(want, f) end -- (Drive's copy has none: one file both would write)
       end
       if at[other] and at[want] then -- the right place has it, so this copy in the wrong one is only a leftover
-        if os.remove(other .. "/" .. f) then at[other] = nil end
+        if c.remove(other .. "/" .. f, want .. "/" .. f) then at[other] = nil end -- (planned: only once the right place has it)
       end
       ::next_side::
     end
@@ -646,12 +674,15 @@ function drive.upkeep(cfg, droot, songs, skip, budget)
   local list = {}
   for _, s in ipairs(songs) do if s ~= skip then list[#list + 1] = s end end
   if #list == 0 then return 0, false end
-  if not turn.more or not list[turn.i] then turn.i = turn.i % #list + 1 end
+  if not turn.need and (not turn.more or not list[turn.i]) then turn.i = turn.i % #list + 1 end
+  turn.need = nil
   local song, t0, n, more = list[turn.i], reaper.time_precise(), 0, false
   for _, room in ipairs(band.subdirs(band.song_dir(cfg, song) .. "/rooms")) do
     local left = (budget or 1) - (reaper.time_precise() - t0)
     if left <= 0 then more = true; break end
     local okm, k, m = pcall(drive.mirror, band.song_dir(cfg, song) .. "/rooms/" .. room, droot .. "/" .. song .. "/rooms/" .. room, left, cfg.user)
+    -- (planned, and waiting for the worker's listing: the same song again once it's read, lib/drivebg.lua)
+    if not okm and require("drivebg").is_need(k) then turn.need = true; error(k, 0) end
     if not okm then turn.more = false; return n, false, song end -- (on to the next song next time: it stayed on this one. Review, 0.59.14)
     n, more = n + k, more or m
   end
@@ -733,12 +764,17 @@ end
 local tools_memo, tools_said = {}, {}
 -- { version, sig } of the copy in `dir` when it checks as signed with `key`, else nil: checked once per lib/files.txt and .sig (a whole copy's
 -- SHA-256s each pass would be most of it). Only for choosing the way: what's copied is checked again first.
+-- (planned, lib/drivebg.lua: a cloud copy is checked in a local folder the worker copies it into, `stage`, never read in the cloud folder here)
 local function signed_copy(dir, key)
-  local text, sig = band.read(dir .. "/lib/files.txt"), band.read(dir .. "/lib/files.txt.sig")
+  local c = C()
+  local text, sig = c.read(dir .. "/lib/files.txt"), c.read(dir .. "/lib/files.txt.sig")
+  c.check()
   if not (text and sig) then return nil end
   local m = tools_memo[dir]
   if not (m and m.text == text and m.sig == sig and m.key == key) then
-    m = { text = text, sig = sig, key = key, ok = band.signed_ok(dir, key) == true }
+    local at = dir
+    if c.cloud(dir) then at = c.stage(dir, drive.tools_files(text) or {}, sig) end
+    m = { text = text, sig = sig, key = key, ok = band.signed_ok(at, key) == true, stage = at ~= dir and at or nil }
     tools_memo[dir] = m
   end
   return m.ok and { version = text:match("^version (%S+)"), sig = sig } or nil
@@ -746,7 +782,36 @@ end
 -- The signed copy in `from` over `to`: checked, copied where a file differs (in drive.tools_files' order), code files `to` has that the list
 -- doesn't name taken away (a module the new version dropped: the copy never checks as whole with it), then `to` checked. -> files changed, or
 -- nil and why.
+-- Planned (lib/drivebg.lua): checked in local folders only (`from` itself, or the cloud's copy as the worker staged it), each differing file a
+-- copy step (from the staged copy that was checked, into the studio folder), and `to` checked again by the next look, not here.
+local function send_tools_planned(from, to, key, dated)
+  local c = C()
+  local src = c.cloud(from) and (tools_memo[from] or {}).stage or from
+  local ok, why = band.signed_ok(src, key)
+  if not ok then return nil, why end
+  local files = drive.tools_files(band.read(src .. "/lib/files.txt"))
+  if not files then return nil, "its lib/files.txt names a file outside the copy" end
+  local cmp = c.cloud(to) and (tools_memo[to] or {}).stage or to -- (what `to` has now: the cloud's staged copy, if it has a signed one)
+  local code = {} -- (listed first: a job that copies and then waits for a listing would copy it all again)
+  for _, f in ipairs(c.files(to, ".lua")) do if f:find("^StudioSync %- ") then code[#code + 1] = f end end
+  for _, f in ipairs(c.files(to .. "/lib", ".lua")) do code[#code + 1] = "lib/" .. f end
+  c.check()
+  local n, keep, copied = 0, {}, {}
+  for _, rel in ipairs(files) do
+    keep[rel] = true
+    local a = band.read(src .. "/" .. rel)
+    if not a then return nil, "couldn't read " .. rel end
+    if (c.cloud(to) and cmp == to) or band.read(cmp .. "/" .. rel) ~= a then
+      if c.copy(src .. "/" .. rel, to .. "/" .. rel, false, false) then n = n + 1; copied[#copied + 1] = { from .. "/" .. rel, to .. "/" .. rel } end
+    end
+  end
+  if dated and #copied > 0 then require("drivebg").after(function() drive.date_like(copied) end) end
+  for _, rel in ipairs(code) do if not keep[rel] and c.remove(to .. "/" .. rel, nil, false) then n = n + 1 end end
+  tools_memo[to] = nil
+  return n
+end
 local function send_tools(from, to, key, dated)
+  if C().planned then return send_tools_planned(from, to, key, dated) end
   local ok, why = band.signed_ok(from, key)
   if not ok then return nil, why end
   local files = drive.tools_files(band.read(from .. "/lib/files.txt"))
@@ -805,6 +870,70 @@ function drive.tools_pass(cfg, droot, now)
       or ("StudioSync " .. tostring(v) .. " is in the " .. cloud .. " copy, for anyone in the studio who isn't on when you are"))
   end
   return n
+end
+
+-- ---- the pass through the background worker (rt-drivebg: lib/drivebg.lua) ----
+-- One pass is a round of units (each of the open song's rooms, then the other songs, the update files, the storage sweep), planned on REAPER's
+-- thread within `budget` seconds a tick from the worker's listings, and done by the worker a job at a time. A unit that waits for a listing,
+-- or has work left, is planned again once the job is back. -> files moved so far this pass, whether it carries on, an error; or nil when
+-- nothing finished this tick (a job still out). `rooms`: { {here, there} } of the open song.
+local round
+drive.MAX_JOBS = 500 -- (a pass that never settles ends there: the next starts on the usual schedule)
+function drive.bg_busy() return round ~= nil end
+function drive.bg_on() return require("drivebg").on() end
+function drive.bg_step(cfg, droot, song, rooms, budget)
+  local J = require("drivebg")
+  local r = J.poll()
+  if J.busy() then return nil end
+  local function done()
+    local x = round
+    round = nil
+    return x.moved, false, x.err
+  end
+  if r then
+    for _, path in ipairs(r.landed) do drive.landed[#drive.landed + 1] = path end
+    if round then round.moved, round.err = round.moved + r.moved, r.err or round.err end
+    if r.err and round then return done() end -- (the worker failed: what it did is listed again by the next pass)
+  end
+  if not round or round.song ~= song or round.root ~= droot then
+    round = { song = song, root = droot, moved = 0, jobs = 0, units = {} }
+    for _, p in ipairs(rooms) do round.units[#round.units + 1] = { "room", p[1], p[2] } end
+    for _, k in ipairs({ "upkeep", "tools", "cm" }) do round.units[#round.units + 1] = { k } end
+  end
+  if not J.ready() then return r and round.moved, r and true, r and r.err end
+  local t0, rooms_left = reaper.time_precise(), false
+  local function left() return budget - (reaper.time_precise() - t0) end
+  local units = {
+    room = function(u) return drive.mirror(u[2], u[3], left(), cfg.user) end,
+    upkeep = function() return drive.upkeep(cfg, droot, require("songsync").here(cfg), song, left()) end,
+    tools = function() return drive.tools_pass(cfg, droot, reaper.time_precise()) end,
+    cm = function() return require("cloudmodes").tick(cfg, droot, reaper.time_precise(), left()) end,
+  }
+  J.begin(droot)
+  pcall(function()
+    for _, u in ipairs(round.units) do
+      if left() <= 0 or J.full() then break end
+      if not u.done and not (u[1] == "upkeep" and rooms_left) then
+        local saved = drive.tools_at
+        local ok, a, b = J.unit(units[u[1]], u)
+        if not ok and J.is_need(a) then
+          if u[1] == "tools" then drive.tools_at = saved end -- (asked again once the cloud's two files are read)
+        elseif not ok then
+          u.done, round.err = true, tostring(a)
+          band.log(drive.label(drive.service_of(droot)) .. " copy: " .. tostring(a))
+        elseif u[1] == "tools" then u.done = true
+        elseif u[1] == "cm" then u.done = not require("cloudmodes").sweeping() -- (a sweep goes on tick by tick, a room or two at a time)
+        else u.done = not b end
+        if u[1] == "room" and not u.done then rooms_left = true end
+      end
+    end
+  end)
+  local sent = J.submit()
+  if sent then round.jobs = round.jobs + 1 end
+  local all = true
+  for _, u in ipairs(round.units) do if not u.done then all = false end end
+  if (all and not sent) or round.jobs > drive.MAX_JOBS then return done() end
+  return r and round.moved, r and true, r and r.err
 end
 
 return drive

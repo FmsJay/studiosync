@@ -1,0 +1,35 @@
+# The cloud copy's background worker (lib/drivebg.lua, docs/rt/rt-drivebg.md): its /bin/sh script on macOS (BSD stat) and Linux (GNU stat),
+# through tests/test_0_60_rt_drivebg.lua in Lua 5.4 (lupa, as tests/run.py runs it). The Windows PowerShell worker is run by tests/run.py on
+# JAMES-MAIN.
+name: drivebg
+on:
+  workflow_dispatch:
+  push:
+    paths: ["lib/drivebg.lua", "lib/drive.lua", "lib/cloudmodes.lua", "tests/test_0_60_rt_drivebg.lua", ".github/workflows/drivebg.yml"]
+
+jobs:
+  sh:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: The worker's plan/result protocol, a slow drive, stuck / killed / never-started workers
+        run: |
+          pip install lupa
+          python - <<'EOF'
+          import sys
+          import lupa.lua54 as lupa
+          L = lupa.LuaRuntime()
+          out = []
+          def say(*a):
+              out.append(" ".join(str(x) for x in a))
+              print(out[-1], flush=True)
+          L.globals().print = say
+          L.execute(open("tests/test_0_60_rt_drivebg.lua", encoding="utf-8").read())
+          sys.exit(0 if out and out[-1].startswith("ok") else 1)
+          EOF

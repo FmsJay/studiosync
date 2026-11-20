@@ -174,14 +174,16 @@ end
 
 -- ---- reading: changes and saved versions are written once, so each file is read once ----
 local recs, pts = {}, {} -- path -> record (or false)
+-- (every cloud read and write here goes through `C`, lib/drivebg.lua: on REAPER's thread as before, or from the background worker's listings)
+local function C() return require("drivebg").C end
 local function read_events(dir, room, deadline, twin, twin_has)
   local out = {}
-  for _, f in ipairs(band.files(dir, ".json")) do
+  for _, f in ipairs(C().files(dir, ".json")) do
     local p = (twin_has and twin_has[f]) and (twin .. "/" .. f) or (dir .. "/" .. f) -- (the studio folder's copy of a cloud file: the same file)
     local r = recs[p]
     if r == nil then
       if deadline and reaper.time_precise() > deadline then return nil end
-      r = cm.rec(band.read_json(p), room)
+      r = cm.rec(C().read_json(p), room)
       if r and r.id .. ".json" ~= f then r = false end
       if r then recs[p] = r end -- (one not readable yet may still be arriving: read again next time)
     end
@@ -192,15 +194,15 @@ end
 local function read_points(dirs)
   local out, seen = {}, {}
   for _, dir in ipairs(dirs) do
-    for _, f in ipairs(band.files(dir, ".json")) do
+    for _, f in ipairs(C().files(dir, ".json")) do
       if not seen[f] then
         seen[f] = true
         local p = dir .. "/" .. f
         if pts[p] == nil then
-          local j = band.read_json(p)
+          local j = C().read_json(p)
           pts[p] = type(j) == "table" and type(j.time) == "string" and { time = j.time, keep = j.keep, label = j.label, file = f } or false
           if pts[p] then
-            local k = band.read_json(dir .. "/known/" .. f) -- (its map, as recall.known reads it: the sidecar, else the one inside)
+            local k = C().read_json(dir .. "/known/" .. f) -- (its map, as recall.known reads it: the sidecar, else the one inside)
             if type(k) ~= "table" then k = not j.behind and j.known or nil end
             pts[p].known = type(k) == "table" and k or nil
           end
@@ -212,7 +214,7 @@ local function read_points(dirs)
   return out
 end
 local function set_of(list) local s = {}; for _, f in ipairs(list) do s[f] = true end; return s end
-local function rooms_of(dir) return band.subdirs(dir) end
+local function rooms_of(dir) return C().subdirs(dir) end
 local function split(here) return here:gsub("\\", "/"):match("^(.*)/([^/]+)/rooms/([^/]+)$") end
 
 -- ---- what a pass sends up ----
@@ -253,6 +255,10 @@ local function size_of(local_path, cloud_path)
   local s = sizes[cloud_path]
   if s then return s end
   s = local_path and band.size(local_path) -- (the studio folder's copy: the same file, and opening a cloud drive's file may download it)
+  if not s and C().planned then -- (the worker's listing has its size)
+    s = C().size(cloud_path)
+    if not s then return 0 end
+  end
   if not s and reaper.JS_File_Stat then
     local okj, st, sz = pcall(reaper.JS_File_Stat, cloud_path)
     if okj and st == 0 then s = math.floor(tonumber(sz) or 0) end
@@ -290,7 +296,8 @@ local function may_remove(mine, path, is_owner, now)
   return now - unwanted_since[path] >= cm.OTHERS_WAIT
 end
 local function remove(sum, path, bytes)
-  if os.remove(path) then
+  if C().planned and not C().cloud(path) then return end -- (planned: only ever a file in the cloud folder)
+  if C().remove(path, nil, false) then
     sum.removed[1], sum.removed[2] = sum.removed[1] + 1, sum.removed[2] + bytes
     sizes[path], unwanted_since[path] = nil, nil
     require("drive").listed[path:match("^(.*)/")] = nil
@@ -315,6 +322,7 @@ local function room_pass(sw, cfg, droot, song, room, deadline)
       for _, list in ipairs({ l, c }) do for _, e in ipairs(list) do if not byid[e.id] then byid[e.id] = true; all[#all + 1] = e end end end
       sg.all[r], sg.cloud[r] = all, c
     end
+    C().check() -- (planned: every room's cloud changes read before any is judged by them)
     sw.songs[song] = sg
   end
   local here, there = lrooms .. "/" .. room, crooms .. "/" .. room
@@ -333,12 +341,15 @@ local function room_pass(sw, cfg, droot, song, room, deadline)
   local fxu = set_of(rooms_of(here .. "/fx"))
   for _, u in ipairs(rooms_of(there .. "/fx")) do fxu[u] = true end
   for u in pairs(fxu) do subs[#subs + 1] = "fx/" .. u end
+  local listed = {} -- (planned: every folder listed and the saved versions read before anything is counted, so a sum never counts a room twice)
+  for _, sub in ipairs(subs) do listed[sub] = C().files(there .. "/" .. sub) end
+  C().check()
   for _, sub in ipairs(subs) do
-    local L, C = set_of(band.files(here .. "/" .. sub)), band.files(there .. "/" .. sub)
+    local L, CL = set_of(band.files(here .. "/" .. sub)), listed[sub]
     local all = {}
     for f in pairs(L) do all[f] = true end
-    for _, f in ipairs(C) do all[f] = true end
-    local inC = set_of(C)
+    for _, f in ipairs(CL) do all[f] = true end
+    local inC = set_of(CL)
     local kind = cm.KIND[sub] or cm.KIND[sub:match("^[^/]+")] or "settings"
     for f in pairs(all) do
       if not drive.arriving(f) then
@@ -365,11 +376,14 @@ local function sessions_pass(sw, droot, song, user)
   local sdir = droot .. "/" .. song .. "/sessions"
   local cutoff = cm.cutoff(now, s.days)
   local used = {} -- "user/file" -> best tier, newest age
-  for _, f in ipairs(band.files(sdir, ".rpp")) do
+  local rpps, media = C().files(sdir, ".rpp"), {} -- (planned: all read, then checked, before anything is counted)
+  for _, f in ipairs(rpps) do rpp_text[sdir .. "/" .. f] = rpp_text[sdir .. "/" .. f] or C().read(sdir .. "/" .. f) or nil end
+  for _, u in ipairs(C().subdirs(sdir .. "/media")) do media[#media + 1] = { u, C().files(sdir .. "/media/" .. u) } end
+  C().check()
+  for _, f in ipairs(rpps) do
     local age = cm.stamp_time(f)
     local tier = (age ~= "" and age >= cutoff) and "recent" or "other"
     local p = sdir .. "/" .. f
-    rpp_text[p] = rpp_text[p] or band.read(p) or nil
     require("sessionfile").map_files(rpp_text[p] or "", function(path)
       local k = path:match("^media/(.+)$")
       if k then
@@ -383,8 +397,9 @@ local function sessions_pass(sw, droot, song, user)
       rpp_text[p] = nil
     end
   end
-  for _, u in ipairs(band.subdirs(sdir .. "/media")) do
-    for _, f in ipairs(band.files(sdir .. "/media/" .. u)) do
+  for _, um in ipairs(media) do
+    local u = um[1]
+    for _, f in ipairs(um[2]) do
       local p, k = sdir .. "/media/" .. u .. "/" .. f, u .. "/" .. f
       local tier, age = TIER_NAME[(used[k] or { 3 })[1]], (used[k] or { 3, "" })[2]
       local bytes = size_of(nil, p)
@@ -402,7 +417,7 @@ function cm.tick(cfg, droot, now, budget)
     if now - swept_at < cm.EVERY then return end
     local s = cm.settings_for(cfg.root)
     local list, songs = {}, {}
-    for _, d in ipairs(band.subdirs(droot)) do if d:sub(1, 1) ~= "_" and reaper.EnumerateSubdirectories(droot .. "/" .. d .. "/rooms", 0) then songs[d] = true end end
+    for _, d in ipairs(C().subdirs(droot)) do if d:sub(1, 1) ~= "_" and C().subdirs(droot .. "/" .. d .. "/rooms")[1] then songs[d] = true end end
     local okh, here = pcall(function() return require("songsync").here(cfg) end)
     for _, d in ipairs(okh and type(here) == "table" and here or {}) do songs[d] = true end
     local names = {}
@@ -417,6 +432,7 @@ function cm.tick(cfg, droot, now, budget)
       for _, r in ipairs(rl) do list[#list + 1] = { song, r } end
       list[#list + 1] = { song } -- (then its end-of-session projects)
     end
+    C().check() -- (planned: the cloud copy's songs and rooms all listed first)
     local okr, role = pcall(function() return require("groups").role(cfg.root, cfg.user) end)
     sw = { s = s, list = list, i = 1, songs = {}, sum = new_sum(s), is_owner = okr and role == "owner" }
   end
@@ -444,6 +460,7 @@ function cm.tick(cfg, droot, now, budget)
   end
   return sum
 end
+function cm.sweeping() return sw ~= nil end -- (drive.bg_step keeps a pass going while a sweep is)
 function cm.mb(b)
   b = tonumber(b) or 0
   if b >= 1024 ^ 3 then return string.format("%.1f GB", b / 1024 ^ 3) end

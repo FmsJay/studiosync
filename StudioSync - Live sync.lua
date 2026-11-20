@@ -682,7 +682,30 @@ function P.save_drive(t)
   -- ~1 s on the laptop, so an edit or a bandmate's change landing in one waited that long (Cross Test: +0.73 s once). It waits for a pause of
   -- sync.DRIVE_QUIET, never past drive.EVERY since the last pass. rt-look)
   local drive_quiet = sync.drive_quiet(now, changed_at, direct_in_at, drive_at, drive.EVERY)
-  if droot and drive_quiet and reaper.GetPlayStateEx(proj) == 0 and mirror_at ~= now and drive.pass_due(now, drive_at, drive_more, drive_soon_at, require("streams").cloud_due) then
+  local drive_due = droot and drive_quiet and reaper.GetPlayStateEx(proj) == 0 and mirror_at ~= now and drive.pass_due(now, drive_at, drive_more, drive_soon_at, require("streams").cloud_due)
+  -- (rt-drivebg: the cloud drive's listing, comparing and copying go to a background worker, lib/drivebg.lua; this thread plans from its
+  -- listings, under 10 ms a tick, and reads its results, so a pass that has started carries on tick by tick until it's done. Where the worker
+  -- fails three times running, or ExtState "drive bg" is "off", the pass below runs here as before)
+  local drive_busy = drive.bg_busy()
+  if droot and drive.bg_on() and reaper.GetPlayStateEx(proj) == 0 and (drive_due or drive_busy) then
+    if not drive_busy then drive_at, drive_soon_at, require("streams").cloud_due = now, nil, nil end
+    local at = {}
+    for _, room in ipairs(rooms) do at[#at + 1] = { sync.room_dir(cfg, b.song, room), droot .. "/" .. b.song .. "/rooms/" .. room } end
+    local moved, more, err = drive.bg_step(cfg, droot, b.song, at, 0.008)
+    if moved then
+      for _, path in ipairs(drive.landed) do
+        local s = require("streams")
+        s.placed_at[#s.placed_at + 1] = { target = path, size = band.size(path) or -1, at = now }
+        band.try("services.rescan", function() require("services").rescan(band.info(cfg.root).id, path:sub(#cfg.root + 2)) end)
+      end
+      drive.landed = {}
+      reaper.SetExtState(band.SECTION, "drive status", band.json_encode({ at = os.time(), moved = moved, more = more or nil, err = err }), false)
+      if not more then band.try("sessionfile.catch_up", require("sessionfile").catch_up, b.song, 0.1) end
+      if more and not drive_more then band.log(drive.label(drive.service_of(droot)) .. ": bringing the studio's copy of this room up to date (carries on between passes)") end
+      if moved > 0 and not more then band.log(string.format("%s copy up to date (%d file%s this pass)", drive.label(drive.service_of(droot)), moved, moved == 1 and "" or "s")) end
+      drive_more = more
+    end
+  elseif drive_due then
     drive_at, drive_soon_at, require("streams").cloud_due = now, nil, nil
     local moved, more, err = 0, false, nil
     for _, room in ipairs(rooms) do
