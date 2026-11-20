@@ -58,9 +58,12 @@ function recap.is_default_name(name, file)
   local base = tostring(file or ""):gsub("\\", "/"):match("([^/]+)$")
   if not base then return false end
   local stem = base:gsub("%.[^.]+$", "")
-  -- (or the band's shared copy of that file, "<hash>-<name with plain characters>": mirror.share_media)
+  -- (or the band's shared copy of that file, "<hash>-<name with plain characters>": mirror.share_media. REAPER's take name keeps the
+  -- recorded file's extension, "03-XT Rec A-261119_1730.flac", while the copy is "4a2761dd-03-XT_Rec_A-261119_1730.flac": compared without
+  -- the extension on both sides, or a take whose source was already swapped to the shared copy at stop kept REAPER's name. Desktop, rt)
   local safe = name:gsub("[^%w%-_.]", "_")
-  return name == base or name == stem or stem:sub(-#safe - 1) == "-" .. safe
+  local safe_stem = (name:gsub("%.[^.]+$", "")):gsub("[^%w%-_.]", "_")
+  return name == base or name == stem or stem:sub(-#safe - 1) == "-" .. safe or (safe_stem ~= "" and stem:sub(-#safe_stem - 1) == "-" .. safe_stem)
 end
 -- The time an event file's name carries (sync.post's id: <user>-YYYYMMDD-HHMMSSZ-<seq>-<rand>.json), as an ISO string, or nil.
 function recap.name_time(f)

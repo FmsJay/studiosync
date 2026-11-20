@@ -35,6 +35,10 @@ assert(recap.next_n(names, nil, "James") == 6, "no section counts on its own")
 -- ---- 2. REAPER's names, never a typed one -----------------------------------------------------------------------------------------------
 assert(recap.is_default_name("Guitar-001", "C:\\Songs\\Rec\\Guitar-001.flac"), "the recorded file's name")
 assert(recap.is_default_name("Guitar-001.flac", "/x/Guitar-001.flac"), "with its extension")
+-- (the desktop's real case: REAPER's name with the extension, the source already the band's shared copy)
+assert(recap.is_default_name("03-XT Rec A-261119_1730.flac", "J:/S/Cross Test/rooms/main/media/4a2761dd-03-XT_Rec_A-261119_1730.flac"),
+  "the shared copy of the recorded file, the take name with its extension")
+assert(not recap.is_default_name("Verse keeper", "J:/S/media/4a2761dd-03-XT_Rec_A-261119_1730.flac"), "a typed name stays typed")
 assert(recap.is_default_name("", "/x/a.wav") and recap.is_default_name("untitled MIDI item", ""), "empty, or a MIDI recording's")
 assert(recap.is_default_name("Lead vox 01", "{media:main}/9f3a2b-Lead_vox_01.flac"), "the band's shared copy of the file")
 assert(not recap.is_default_name("the keeper", "/x/Guitar-001.flac"), "typed: left alone")
