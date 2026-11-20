@@ -227,6 +227,10 @@ function H.build_rows()
         "made a group with the same number and the tracks now move together: give one a free number in the Track grouping matrix (View menu).", c.group, table.concat(c.makers, " and ")) }
     end
   end
+  do -- Hold on: nothing of yours goes out. Never invisible, so a dismissal lasts the day (the laptop's stayed on all night. rt-edits)
+    local words = sync.hold_words(proj)
+    if words then rows[#rows + 1] = { "hold " .. os.date("!%Y-%m-%d"), false, "yellow", "", words } end
+  end
   do -- a call app beside REAPER (lib/callapps.lua)
     local ok, words = pcall(require("callapps").health_words)
     if ok and words then rows[#rows + 1] = { "call app", false, "yellow", "", words } end

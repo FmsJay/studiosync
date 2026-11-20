@@ -120,7 +120,7 @@ end
 -- tempo change still lands on its beat.
 -- (the 4th part is the format: a signature noted in another format is a first look, never a change to send or put back. 3: the project's
 -- settings, rt, so the first look after the update isn't taken for an edit of them. James, rt)
-sync.TIMELINE_FORMAT = 5 -- (4: the recording-over-items choice joined the shared project settings: the first look after updating is not taken for an edit. James, rt; 5: the video settings, rt-video2)
+sync.TIMELINE_FORMAT = 6 -- (4: the recording-over-items choice joined the shared project settings: the first look after updating is not taken for an edit. James, rt; 5: the video settings, rt-video2; 6: markers' numbers and the region render matrix, rt-edits)
 local function timeline_sig(proj) return band.json_encode({ band.capture_tempo(proj), band.capture_markers(proj), band.capture_project(proj), sync.TIMELINE_FORMAT }) end
 -- The tempo map alone, said one way (round-tripped through JSON), to tell a tempo change from a marker or notes one: only a tempo change
 -- moves parts by itself (mirror.tempo_changed). A marker set the window going too, and for 15 s a nudge, a fade or automation drawn
@@ -1041,6 +1041,19 @@ function sync.claim_tracks(cfg, song, room, names)
   return true
 end
 
+-- Hold sync's ProjExtState "hold": "1" is yours (Hold my changes). "try" or "try1" holds while a colour look is tried here (lib/colours.lua),
+-- "1" on the end when Hold was already yours: a try lives in the panel's Lua, so only yours outlives a restart. (The laptop's stayed held all
+-- night: a try's hold was put back as Hold after REAPER restarted mid-try. rt-edits)
+function sync.hold_mine(v) v = v or ""; if v:sub(1, 3) == "try" then return v == "try1" end; return v ~= "" end
+-- -> what to tell the person while anything holds their changes here, or nil (Health, status: Hold on must never be invisible. rt-edits)
+function sync.hold_words(proj)
+  local v = ext(proj, band.SECTION, "hold")
+  if v == "" then return nil end
+  if v:sub(1, 3) == "try" then
+    return "You're trying a colour look here: nothing you change goes to the others until you keep it for everyone or put it back (Colours)."
+  end
+  return "Hold my changes is on: nothing you change goes to the others until you switch it off (Send now beside the sync button, or Settings > Advanced)."
+end
 -- Hold my changes on, and this project's tempo map or markers differ from the last ones seen: the band's timeline waits (sync.apply).
 function sync.timeline_waits(proj)
   if ext(proj, band.SECTION, "hold") == "" then return false end
@@ -1431,6 +1444,30 @@ function sync.receive(proj, cfg, song, room, can)
       local cur = latest[ev.oid]
       if not cur or mirror_newer(ev, cur) then latest[ev.oid] = ev end
     end
+  end
+  -- (a track's newest change lands after the track it sits under when that one lands in this pass too: a late joiner made a track whose
+  -- newest change came before the newest of the track above it, found nothing to sit under, put it first, and kept it there (an Undo's or
+  -- Redo's track carries no hash, so nothing read it as out of place). A loop of them stays in time order. rt-edits)
+  do
+    local at, out, placed, wait = {}, {}, {}, {}
+    for i, ev in ipairs(pending) do at[ev] = i end
+    local function place(ev)
+      if placed[ev] then return end
+      out[#out + 1], placed[ev] = ev, true
+      local l = wait[ev]
+      wait[ev] = nil
+      for _, x in ipairs(l or {}) do place(x) end
+    end
+    for _, ev in ipairs(pending) do
+      local above = ev.type == "obj" and ev.obj == "track" and not ev.gone and latest[ev.oid] == ev and type(ev.state) == "table"
+        and type(ev.state.after) == "string" and latest[ev.state.after]
+      if above and above.obj == "track" and not above.gone and not placed[above] and at[above] > at[ev] then
+        wait[above] = wait[above] or {}
+        table.insert(wait[above], ev)
+      else place(ev) end
+    end
+    for _, ev in ipairs(pending) do place(ev) end
+    pending = out
   end
   sync.ev_cache[dir] = kept
   local t0, budget_out = reaper.time_precise(), false -- (and a quarter second of applying per pass, a second while loading: the rest next pass)

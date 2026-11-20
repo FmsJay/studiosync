@@ -472,7 +472,8 @@ end
 local tries = {} -- proj -> { proj, held_before, tracks = { ptr -> colour }, items = { ptr -> colour }, marks = { {num, region, colour} } }
 local trying
 local function snapshot(proj)
-  local t = { proj = proj, held_before = select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")), tracks = {}, items = {}, marks = {} }
+  local t = { proj = proj, held_before = require("sync").hold_mine(select(2, reaper.GetProjExtState(proj, band.SECTION, "hold"))) and "1" or "",
+    tracks = {}, items = {}, marks = {} }
   for i = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, i)
     t.tracks[tr] = band.track_colour(tr) -- (the band's colour: a "who's working" paint over it isn't it. Review, 0.58.98)
@@ -484,17 +485,23 @@ local function snapshot(proj)
   end
   return t
 end
+-- (a try's hold is "try" or "try1", never Hold my changes' "1", and the ExtState saying it's live goes with REAPER: a restart mid-try, or a save
+-- made during one, came back as Hold on, and the laptop's edits stayed held all night. mirror.restore_unsent puts it back. rt-edits)
+local function try_key(proj) return "colour try " .. tostring(proj) end
 local function try_first(proj, fn)
   if not tries[proj] then
     tries[proj] = snapshot(proj)
-    reaper.SetProjExtState(proj, band.SECTION, "hold", "1") -- (nothing goes out while it's tried)
+    reaper.SetExtState(band.SECTION, try_key(proj), "1", false)
+    reaper.SetProjExtState(proj, band.SECTION, "hold", "try" .. tries[proj].held_before) -- (nothing goes out while it's tried)
   end
   fn()
 end
+colours.try_first = try_first -- (tests)
 function colours.trying(proj) return tries[proj] ~= nil end
 function colours.keep(proj)
   trying = tries[proj]
   if not trying then return end
+  reaper.DeleteExtState(band.SECTION, try_key(proj), false)
   if reaper.ValidatePtr2(0, proj, "ReaProject*") then reaper.SetProjExtState(proj, band.SECTION, "hold", trying.held_before or "") end
   band.log((trying.held_before or "") ~= "" and "kept the new look (Hold sync was already on: it goes out when you release it)" or "kept the new look: it goes to everyone now")
   tries[proj] = nil
@@ -503,6 +510,7 @@ function colours.put_back(proj)
   trying = tries[proj]
   if not trying then return end
   tries[proj] = nil
+  reaper.DeleteExtState(band.SECTION, try_key(proj), false)
   if not reaper.ValidatePtr2(0, proj, "ReaProject*") then return end
   reaper.Undo_BeginBlock2(proj)
   for tr, c in pairs(trying.tracks) do if reaper.ValidatePtr2(proj, tr, "MediaTrack*") then band.set_track_colour(tr, c) end end

@@ -85,8 +85,22 @@ function together.local_at(start_at, shared_now, local_now) return local_now + (
 
 -- A start or stop for the band: posted for everyone, and fired here through this tab's own Live sync. The panel's Play/Record/Stop together
 -- and the web UI's Song page (lib/dawview.lua) both send theirs this way. (James, rt)
+-- The loop a start carries: { start, end } while repeat is on over a loop range, else false (rt-edits: Play together started everyone, but
+-- each REAPER looped by its own repeat and loop range, so a loop rehearsal came apart at the first loop end).
+function together.loop_of(proj)
+  local ls, le = reaper.GetSet_LoopTimeRange2(proj, false, true, 0, 0, false)
+  return reaper.GetSetRepeatEx(proj, -1) == 1 and le > ls and { ls, le } or false
+end
+-- A start's loop put in place here: its range with repeat on, or repeat off; nil (an older StudioSync's start) leaves yours.
+function together.apply_loop(proj, loop)
+  if type(loop) == "table" and tonumber(loop[1]) and tonumber(loop[2]) and tonumber(loop[2]) > tonumber(loop[1]) then
+    reaper.GetSet_LoopTimeRange2(proj, true, true, tonumber(loop[1]), tonumber(loop[2]), false)
+    reaper.GetSetRepeatEx(proj, 1)
+  elseif loop == false then reaper.GetSetRepeatEx(proj, 0) end
+end
 function together.go(proj, cfg, b, ev)
   local band = require("band")
+  if ev.type == "start" and ev.loop == nil then ev.loop = together.loop_of(proj) end
   ev.at = math.floor(os.time()) + together.LEAD
   ev.start_at = together.start_at(together.LEAD) -- (the same moment on the studio's shared clock, when the direct link has one. James, 0.60.0-rt)
   require("sync").post(cfg, b.song, b.room, ev)

@@ -1497,12 +1497,25 @@ end
 function band.capture_markers(proj)
   local out, i = {}, 0
   while true do
-    local n, rgn, pos, rend, name, _, color = reaper.EnumProjectMarkers3(proj, i)
+    local n, rgn, pos, rend, name, num, color = reaper.EnumProjectMarkers3(proj, i)
     if n == 0 then break end
     if not band.is_local_mark(name) then
       local m = reaper.GetRegionOrMarker and reaper.GetRegionOrMarker(proj, i, "")
       local lane = m and reaper.GetRegionOrMarkerInfo_Value(proj, m, "I_LANENUMBER") or -1
-      out[#out + 1] = { region = rgn, pos = pos, ["end"] = rend, name = name, color = band.color_out(color), lane = lane >= 0 and math.floor(lane) or nil }
+      -- (its number, and a region's row in the render matrix (which tracks render it, by their ids; "MASTER" for the master mix): renumbering
+      -- and the matrix stayed each computer's own. Only listed when it has any. rt-edits)
+      local render
+      if rgn and reaper.EnumRegionRenderMatrix then
+        for k = 0, 1023 do
+          local tr = reaper.EnumRegionRenderMatrix(proj, num, k)
+          if not tr then break end
+          local id = tr == reaper.GetMasterTrack(proj) and "MASTER" or select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_oid", "", false))
+          if id ~= "" then render = render or {}; render[#render + 1] = id end
+        end
+        if render then table.sort(render) end
+      end
+      out[#out + 1] = { region = rgn, pos = pos, ["end"] = rend, name = name, color = band.color_out(color), lane = lane >= 0 and math.floor(lane) or nil,
+        num = math.tointeger(num) or num, render = render }
     end
     i = i + 1
   end
@@ -1757,6 +1770,39 @@ function band.apply_markers(proj, list)
   end
   for hi, h in ipairs(have) do if not used[hi] then reaper.DeleteProjectMarker(proj, h.num, h.region) end end
   for wi, m in ipairs(list) do if not match[wi] then reaper.AddProjectMarker2(proj, m.region, m.pos, m["end"], m.name, -1, band.color_in(m.color)) end end
+  -- (each one's number as the sender has it, and each region's row of the render matrix: from a StudioSync that sends numbers (`num`); an
+  -- older one's list leaves both as they are here. rt-edits)
+  local by_oid
+  for i = 0, reaper.CountProjectMarkers(proj) - 1 do
+    local _, rgn, pos, rend, name, num, color = reaper.EnumProjectMarkers3(proj, i)
+    for _, m in ipairs(list) do
+      local want = math.tointeger(tonumber(m.num))
+      if want and m.region == rgn and math.abs(m.pos - pos) < 1e-9 and m.name == name then
+        if want ~= num then reaper.SetProjectMarkerByIndex2(proj, i, rgn, pos, rend, want, name, color or 0, 0); num = want end
+        if rgn and reaper.SetRegionRenderMatrix then
+          if not by_oid then
+            by_oid = { MASTER = reaper.GetMasterTrack(proj) }
+            for t = 0, reaper.CountTracks(proj) - 1 do
+              local tr = reaper.GetTrack(proj, t)
+              local id = select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_oid", "", false))
+              if id ~= "" then by_oid[id] = tr end
+            end
+          end
+          local wanted, have_now = {}, {}
+          for _, id in ipairs(type(m.render) == "table" and m.render or {}) do if by_oid[id] then wanted[by_oid[id]] = true end end
+          for k = 0, 1023 do local tr = reaper.EnumRegionRenderMatrix(proj, num, k); if not tr then break end; have_now[#have_now + 1] = tr end
+          for _, tr in ipairs(have_now) do
+            if wanted[tr] then wanted[tr] = nil
+            elseif tr == by_oid.MASTER or select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_oid", "", false)) ~= "" then -- (a track of your own stays)
+              reaper.SetRegionRenderMatrix(proj, num, tr, -1)
+            end
+          end
+          for tr in pairs(wanted) do reaper.SetRegionRenderMatrix(proj, num, tr, 1) end
+        end
+        break
+      end
+    end
+  end
   if not reaper.GetRegionOrMarker then return end
   -- each one back in its ruler lane (matched by kind, position and name: AddProjectMarker2 gives no handle), and one put back to the default
   -- colour given it: SetProjectMarker4's colour 0 means "leave it", so a reset never reached the others (colour parity audit, James, rt)

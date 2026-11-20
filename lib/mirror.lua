@@ -1027,13 +1027,22 @@ end
 function mirror.same_moment(entries, i)
   local e, out = entries[i], { i }
   if not (e and e.kind == "obj" and e.oid) then return out end
+  local had = { [i] = true }
   for _, step in ipairs({ -1, 1 }) do
     local j = i + step
     while entries[j] and entries[j].time == e.time do
       local p = entries[j]
       if p.kind == "obj" and p.oid ~= e.oid and p.user == e.user and p.obj == e.obj and p.name == e.name
-        and (not p.restored) == (not e.restored) and mirror.entry_lane(entries, j) == mirror.entry_lane(entries, i) then out[#out + 1] = j end
+        and (not p.restored) == (not e.restored) and mirror.entry_lane(entries, j) == mirror.entry_lane(entries, i) then out[#out + 1] = j; had[j] = true end
       j = j + step
+    end
+  end
+  -- (and the rest of its act, the look that sent it (mirror.watch's `act`): other tracks and kinds too, in any second. Deletions on different
+  -- lanes stay apart, as above. rt-edits)
+  if e.act then
+    for j, p in ipairs(entries) do
+      if not had[j] and p.act == e.act and p.kind == "obj" and p.oid ~= e.oid and p.user == e.user and (not p.restored) == (not e.restored)
+        and not (e.gone and p.gone and mirror.entry_lane(entries, j) ~= mirror.entry_lane(entries, i)) then out[#out + 1] = j; had[j] = true end
     end
   end
   return out
@@ -1775,7 +1784,8 @@ function mirror.stash_unsent(proj, by_oid)
   end
   table.sort(sig)
   -- (and Hold my changes itself: it lives in the unsaved project, so a held change came back and went out. Laptop kill test, rt)
-  local held = select(2, reaper.GetProjExtState(proj, require("band").SECTION, "hold")) ~= ""
+  -- (yours only: a colour look's try holds too, and came back after a restart as Hold on all night. rt-edits)
+  local held = require("sync").hold_mine(select(2, reaper.GetProjExtState(proj, require("band").SECTION, "hold")))
   if held and #sig > 0 then sig[#sig + 1] = "hold" end
   -- (and when it's off: Hold lives in the project, so a save made while it was on came back after a crash with it on, and new work sat
   -- unsent. A small file says "off" until the clean stop takes it away. Laptop, rt)
@@ -1796,13 +1806,25 @@ function mirror.restore_unsent(proj, by_oid, media, local_mix)
     local d = path and require("band").read_json(path)
     mirror.restoring[key] = type(d) == "table" and type(d.objs) == "table" and next(d.objs) and d.objs or nil
     local B = require("band")
-    local now_held = select(2, reaper.GetProjExtState(proj, B.SECTION, "hold")) ~= ""
+    local hv = select(2, reaper.GetProjExtState(proj, B.SECTION, "hold"))
+    -- (a colour look was being tried when REAPER stopped, or the project was saved mid-try: the try ended with the panel's Lua, so its hold goes
+    -- back to what Hold was before it. Live sync started again while the panel still tries one (its ExtState lasts until REAPER quits) leaves
+    -- it. The laptop stayed held all night. rt-edits)
+    if hv:sub(1, 3) == "try" and reaper.GetExtState(B.SECTION, "colour try " .. key) == "" then
+      hv = hv == "try1" and "1" or ""
+      reaper.SetProjExtState(proj, B.SECTION, "hold", hv)
+      B.log("a colour look was being tried when REAPER stopped: " .. (hv ~= "" and "Hold my changes stays on, as you had it before the try"
+        or "nothing is held now, and the project's colours go out as they are"))
+    end
+    local now_held = require("sync").hold_mine(hv)
     if mirror.restoring[key] and d.hold == true and not now_held then -- (held when REAPER stopped: still held, before the look that would send it)
       reaper.SetProjExtState(proj, B.SECTION, "hold", "1")
       B.log("Hold my changes is on again, as it was when REAPER stopped: your held changes stay here until you let them go")
     elseif type(d) == "table" and d.hold == false and now_held then -- (off when REAPER stopped: an older save's Hold doesn't come back)
       reaper.SetProjExtState(proj, B.SECTION, "hold", "")
       B.log("Hold my changes is off, as it was when REAPER stopped (the saved project still had it on)")
+    elseif now_held then -- (said once each opening: Hold on is never silent. rt-edits)
+      B.log("Hold my changes is on in this project: nothing you change goes to the others until you switch it off")
     end
   end
   local list = mirror.restoring[key]
@@ -1919,6 +1941,7 @@ end
 -- chunk is read at least each QUICK_ALL_SECS, and a full look (mirror.scan, every object through W.one, as before) runs each QUICK_FULL_SECS
 -- and logs anything the quick one would have missed. mirror.watch with opts.quick only (Live sync's looks); everything else looks in full.
 mirror.QUICK_ALL_SECS, mirror.QUICK_FULL_SECS = 10, 60
+mirror.more_act = mirror.more_act or {} -- tostring(proj) -> the act a burst's first pass sent under, while more of it waits (mirror.watch)
 mirror.looks = mirror.looks or {} -- tostring(proj) -> what the last look saw (tracks by GUID, objects' hashes, which were clean)
 mirror.remembered = mirror.remembered or {} -- tostring(proj) -> { oid = true }: records written since the last look (remember)
 mirror.touched = mirror.touched or {} -- tostring(proj) -> { [track] = true }: written by StudioSync without a record, read at the next look
@@ -3902,7 +3925,7 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
   mirror.hlc_seen(last and last.hlc) -- (the clock past what this builds on: after a restart it could fall behind, and every walk stopped short)
   local ev = { type = "obj", obj = o.kind, oid = o.oid, rev = same_edit and rev or mirror.next_rev(rev, owned), base = rev or 0, state = state, track = o.track,
     base_ev = evid ~= "" and evid or nil, -- (the version this one started from: a merge finds the base there, mirror.merge_item)
-    name = name, pos = o.pos, hash = o.hash, hv = mirror.HV } -- (hash: what it is here; every receiver checks it came out the same)
+    name = name, pos = o.pos, hash = o.hash, hv = mirror.HV, act = w.act } -- (hash: what it is here; every receiver checks it came out the same)
   if o.kind == "track" and opts.local_mix then ev.state, ev.local_mix = mirror.band_faders(state, last and not last.gone and last.state), true end
   if o.kind == "track" and o.ptr and (tonumber(o.state.lanes) or 0) > 1 then
     -- (the first comp area: REAPER's new lane holds only that piece, and the rest of the part goes silent, with no word: Mac, 0.42.10)
@@ -4469,7 +4492,7 @@ function W.gone(w)
         -- (the clock past what it deletes, and an owner's step, as W.send does: a restart behind the version's clock read as made apart, and
         -- a non-owner's later edit brought an owner's deletion back. Round 1 review, 0.59.45)
         mirror.hlc_seen(last.hlc)
-        local ev = { type = "obj", obj = o.kind, oid = g.oid, rev = mirror.next_rev(g.rev, mirror.owned(opts, me, name, last.pos, w.is_claimed)), base = g.rev or 0, base_ev = (g.evid or "") ~= "" and g.evid or nil, gone = true, track = o.track, name = name, pos = last.pos }
+        local ev = { type = "obj", obj = o.kind, oid = g.oid, rev = mirror.next_rev(g.rev, mirror.owned(opts, me, name, last.pos, w.is_claimed)), base = g.rev or 0, base_ev = (g.evid or "") ~= "" and g.evid or nil, gone = true, track = o.track, name = name, pos = last.pos, act = w.act }
         local id = sync.post(cfg, song, room, ev)
         remember(proj, g.oid, ev.rev, "", id, mirror.order_of(ev)) -- (with its order: a racing edit is settled alike everywhere)
         mirror.unsent[tostring(proj) .. g.oid] = nil
@@ -4810,6 +4833,10 @@ function mirror.watch(proj, cfg, song, room, opts)
   -- Live sync runs straight after: writing all 320 at once held REAPER up for 4.7 s (laptop, 0.34.5). What waits is
   -- marked unsent, so the band's changes to it wait too. `mirror.more`: there's more to send.
   local t_send = reaper.time_precise()
+  -- (one look, one act: every change it sends carries the same `act`, so one Undo takes back all of it, whatever tracks and kinds it touched (a
+  -- region copied with its items on several tracks and their envelope points was three presses). A burst spread over passes keeps the first
+  -- pass's act. rt-edits)
+  w.act = mirror.more_act[pk] or string.format("%s-%s-%d", sync.id_user(me), os.date("!%Y%m%d%H%M%S"), math.floor(now * 1000) % 1000000)
   mirror.more = false
   -- (whether track colours count here, per project: see below. "band2": 0.38 looks once more, as 0.36/0.37 kept each
   -- machine's own colour where it should have taken the band's: Bass I differed PC/laptop for good, 2026-11-01)
@@ -4826,6 +4853,7 @@ function mirror.watch(proj, cfg, song, room, opts)
   W.gone(w)
   mirror.index_for(nil)
   if not mirror.more then mirror.sweep_unsent(proj, seen) end
+  mirror.more_act[pk] = mirror.more and w.act or nil
   mirror.save_ids(proj)
   mirror.stash_unsent(proj, by_oid) -- (what's still not out, kept beside the project: crash-safe sessions, rt)
   if rescheme and not mirror.more then reaper.SetProjExtState(proj, mirror.CSEC, "colours", scheme) end

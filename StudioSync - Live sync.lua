@@ -890,6 +890,7 @@ local function take_cue(ev)
     transport = ev
     return
   elseif ev.follow and not side_bars() and not follows(ev.lead) then return end
+  if ev.type == "start" and not ev.follow then together.apply_loop(proj, ev.loop) end -- (Play together: the leader's loop and repeat. rt-edits)
   cue_at, transport = ev.at or cue_at, ev
 end
 
