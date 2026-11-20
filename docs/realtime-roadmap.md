@@ -1809,6 +1809,28 @@ Problems found, not fixed (risky or a behaviour change; for James to pick):
   - **To check in REAPER:** after a minute, `clock_ppm` on each computer (desktop about -100); underruns and `jitter` over 10 minutes of
     silence (was ~3 a minute per link); `overflows` and `pauses` staying 0; the Mac's `rescues` (was 40-77 a minute) and `mix_gap_ms`;
     `trims` and `fill_ms` near `target_ms`; buffers coming down after underruns stop.
+  - **In REAPER with 1.0.21 (four computers, the desktop's hub serving 3, 10 minutes of silence):** the Mac's rescues 1 -> 14 (was ~70 a
+    minute), the desktop's links ~1.3 underruns a minute each (was ~2.3), overflows 0, no new pauses. Still: the laptop rescued 3 times a
+    minute with its buffer for the desktop's mix back at 30 ms after 15 mix underruns (spikes on the internet path ~40 s apart, and every
+    45 s it went back down), each rescue restarting the direct streams it then stopped again (the "switched" underruns: 20-72 per peer);
+    `clock_ppm` jumped (desktop -2347, then +499); `fill_ms` read -1 on every listener. So (2026-11-20, second pass):
+    - the time before a size that underran is tried again doubles (45 s up to 8 min) each time the size it went back to underruns again,
+      and is 45 s again after 15 minutes without one. Test: 60 ms stalls every 3 s at 20x timings: every stall underran before (back to 30
+      ms each time), 1 of the last 4 now (held at 60);
+    - the mix's widest gap is kept over 30-60 s (5-10 s let spikes ~20 s apart each be wider than the widest);
+    - the audio clock is measured by StudioSync, not AOO's DLL (`clock_step`): the DLL took each callback's time as it came, so a callback
+      held up pulled it (the desktop's read -2347 then +499 ppm where its clock counted over 32 minutes is -102; on the macOS CI runner,
+      whose process stalls 15-250 ms, the corrected drift test swung to -2.2 and -1.3 ms a second). A callback is never early, so the
+      earliest of each 2 s stretch is the device's own timing; the rate is the median slope between the last 16 of those, and AOO gets
+      evenly spaced times at that rate (kAooPreciseTimestamp). `clock_ppm` is that estimate (0 for the first 6 s). The drift test now
+      also runs one case with the test itself frozen 30-250 ms four times (flat: +0.004 ms a second), its slope the median between
+      onsets (a re-buffer is a step, not a trend); trim and flap checks are passed over in CI when the test process itself stalled over
+      15 ms (SS_TIMING_STRICT, as hopnet_test and direct_test);
+    - `fill_ms` is the measured buffer of what's heard from that peer: Talk, else Play, else its hub mix.
+    - The LinuxBox VM's clock reads ~+5000 ppm (0.5%): within what AOO's resampler corrects (any ratio; both ends need 1.0.21+), but its
+      overflows (8 -> 13: its send thread held up 100 ms) and stalls are the VM's own; its numbers not changing between readings wasn't
+      looked at (no probe reaches it). Latency doesn't move until buffers shrink, which needs underruns to stop (and a peer that goes quiet:
+      the Mac's mic noise may keep it from ever being quiet, so its 140 ms buffer on the desktop, fill 181, is neither shrunk nor trimmed).
 ## Session recaps and smart take names (rt-recap branch, 2026-11-19; offline tests only, not run in REAPER yet)
 - **Recap (lib/recap.lua):** at each end of session (20 quiet minutes, Leave, Live sync stopping; right after the end-of-session version),
   a few bullets from the room's events, no new tracking and no model: who (event authors, this computer, who's here), how long (first to last

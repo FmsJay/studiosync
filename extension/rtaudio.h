@@ -31,9 +31,9 @@ int rt_peer_buffer(RtLink *l, const char *peer, double floor_ms, double ceil_ms)
 void rt_test_hold(RtLink *l, double ms);
 void rt_test_speed(RtLink *l, double x);
 // tests only: the hub's mixing stalls for ms (its ring fills, as when its send thread is held up); and, before rt_start, AOO's drift
-// correction off (resample 0) or its DLL's bandwidth (Hz, > 0: faster to settle than the default 0.012).
+// correction off (resample 0).
 void rt_test_hold_mix(RtLink *l, double ms);
-void rt_test_drift(RtLink *l, int resample, double dll_bw);
+void rt_test_drift(RtLink *l, int resample);
 // What this computer sends. peer "" (or null): everything, on 0 = silence while the stream stays up (Mute me, push-to-talk; kept across
 // restarts). A peer in the list: whether it gets this computer's stream (talkback). -> 1 done, 0 when that peer isn't in the list. (James, rt)
 int rt_send(RtLink *l, const char *peer, int on);
