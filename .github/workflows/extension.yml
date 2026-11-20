@@ -75,7 +75,6 @@ jobs:
           mkdir -p natobj && (cd natobj && cc -O2 -c -DJUICE_STATIC -I ../extension/third_party/libjuice/include/juice ../extension/third_party/libjuice/src/*.c ../extension/third_party/monocypher/monocypher.c && cc -O2 -c -DJUICE_STATIC -Dudp_sendto=nat_relay_sendto -I ../extension/third_party/libjuice/include/juice ../extension/third_party/libjuice/src/server.c)
           clang++ -std=c++17 -O2 -DNAT_STANDALONE -DDIRECT_STANDALONE -DJUICE_STATIC tests/nat_test.cpp extension/nat.cpp extension/direct.cpp extension/direct_audio.cpp natobj/*.o -o nat_test
           sudo ifconfig lo0 alias 127.0.0.2 netmask 255.255.255.255 up && sudo ifconfig lo0 alias 127.0.0.3 netmask 255.255.255.255 up || true # (stage 3's two simulated symmetric NATs, each on its own address)
-          ifconfig lo0; route -n get 127.0.0.2 || true # DIAG
           NAT_RELAY_LOG=1 ./nat_test
       - name: Live audio over the connection without Tailscale (tests/nat_audio_test.cpp, on localhost)
         if: ${{ !cancelled() }}

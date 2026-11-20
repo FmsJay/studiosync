@@ -174,7 +174,9 @@ bool nat_test_inject(NatHub *h, const char *dev, const std::string &raw); // as 
 std::string nat_test_sealed(NatHub *h, const char *dev); // the last datagram that link sent, as it went out
 std::string nat_test_link(NatHub *h, const char *dev);   // that link's state and local description (a failing test says what it had)
 // (stage 3) new links publish relayed candidates only (1) and bind `bind` (127.0.0.x: each its own, so on one computer nothing but the
-// relay joins them): two symmetric NATs
+// relay joins them): two symmetric NATs. A hub's relay binds `bind` too: a socket on any address answers a 127.0.0.x alias from that
+// alias on macOS (BSD picks the alias's own host route), not from the 127.0.0.1 asked, and libjuice drops relayed data from an address
+// that isn't its TURN server's
 void nat_test_only(NatHub *h, int only, const char *bind = nullptr);
 void nat_test_netchange(NatHub *h);           // as if this computer's network changed (Wi-Fi to tethering)
 void nat_test_carry(NatHub *h, bool on);      // rendezvous messages over other links (on by default)

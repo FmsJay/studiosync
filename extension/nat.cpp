@@ -1159,12 +1159,13 @@ std::string nat_relay_pass(const std::string &K, const std::string &user)
 static void relay_tick(NatHub *h, double now)
 {
   NatHub::RelayWant w;
-  std::string K, pub, key;
+  std::string K, pub, key, bind;
   {
     std::lock_guard<std::mutex> g(h->mx);
     w = h->relay;
     K = h->K;
     pub = h->pub_addr;
+    bind = h->bind;
   }
   const std::string ext = pub.substr(0, pub.rfind(':'));
   if (w.on) {
@@ -1197,6 +1198,7 @@ static void relay_tick(NatHub *h, double now)
     if (w.port > 0) { sc.relay_port_range_begin = (uint16_t)(w.port + 1); sc.relay_port_range_end = (uint16_t)(w.port + NAT_RELAY_PORTS); }
     sc.external_address = ext.empty() ? nullptr : ext.c_str(); // (none yet: the computer's own addresses, until the STUN probe says)
     sc.realm = "studiosync";
+    if (!bind.empty()) sc.bind_address = bind.c_str(); // (the test's: replies leave from the address asked, as from a real hub's own)
     if (cr.empty()) err = "no studio computers to relay for yet";
     else if (!(made = juice_server_create(&sc))) err = "the relay couldn't start (UDP " + std::to_string(w.port) + " taken?)";
     for (std::string &p : pw) crypto_wipe(&p[0], p.size());

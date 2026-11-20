@@ -565,6 +565,7 @@ static void stage3_checks(int stun)
   const std::string K = nat_studio_key("the studio secret");
   // the studio hub's relay: libjuice's server, a password per studio computer from the studio secret, one relayed address each here
   NatHub *r = nat_hub_new();
+  nat_test_only(r, 0, "127.0.0.1"); // (its sockets on 127.0.0.1: macOS answers the 127.0.0.2/.3 links below from the alias otherwise)
   CHECK(nat_hub_setup(r, hub_json(dr, "devR", "r.key", stun, {}, ",\"relay\":{\"port\":0,\"users\":[\"devA\",\"devB\",\"devC\"],\"allocs_each\":3}").c_str()) == 0,
         "relay: a hub with no peers of its own set up to relay");
   int rport = 0;
@@ -575,7 +576,8 @@ static void stage3_checks(int stun)
   if (jlog) juice_set_log_level(JUICE_LOG_LEVEL_DEBUG);
   juice_agent_t *held[3] = {};
   CHECK(gathers_relay(rport, "devC", nat_relay_pass(K, "devC"), &held[0]), "relay: a studio computer's credential (from the studio secret) gets a relayed address");
-  { const bool g1 = gathers_relay(rport, "devC", nat_relay_pass(K, "devC"), &held[1]), g2 = gathers_relay(rport, "devC", nat_relay_pass(K, "devC"), &held[2]); printf("     DIAG second %d third %d\n", g1, g2); }
+  CHECK(gathers_relay(rport, "devC", nat_relay_pass(K, "devC"), &held[1]) && gathers_relay(rport, "devC", nat_relay_pass(K, "devC"), &held[2]),
+        "relay: its second and third address at once too");
   CHECK(!gathers_relay(rport, "devC", nat_relay_pass(K, "devC")), "relay caps: that computer's fourth address at once is refused (its quota, 3 here)");
   CHECK(!gathers_relay(rport, "devA", nat_relay_pass(nat_studio_key("another studio"), "devA")), "relay: a credential made from another studio's secret is refused");
   CHECK(!gathers_relay(rport, "devZ", nat_relay_pass(K, "devZ")), "relay: a computer that isn't the studio's is refused, even with a well-made password");
@@ -599,7 +601,6 @@ static void stage3_checks(int stun)
         !peer_up(a, "devB"), "symmetric NATs, no relay: they never meet, and the status says no path");
   printf("     A: %s\n", peer_part(nat_hub_status(a), "devB").c_str());
   const std::string turn = ",\"turn\":\"127.0.0.1:" + std::to_string(rport) + "\"";
-  if (jlog) juice_set_log_level(JUICE_LOG_LEVEL_DEBUG);
   nat_hub_setup(a, hub_json(dir, "devA", "a.key", stun, { { "devB", pb } }, ",\"timeout\":20" + turn).c_str());
   nat_hub_setup(b, hub_json(dir, "devB", "b.key", stun, { { "devA", pa } }, ",\"timeout\":20" + turn).c_str());
   const bool relayed = wait_for(60000, [&] { return peer_up(a, "devB") && peer_up(b, "devA"); }, &took);
@@ -611,7 +612,6 @@ static void stage3_checks(int stun)
     wait_for(15000, [&] { return has_link(a, "devB") && has_link(b, "devA"); });
     printf("     A's link: %s\n     B's link: %s\n", nat_test_link(a, "devB").c_str(), nat_test_link(b, "devA").c_str());
   }
-  if (jlog) juice_set_log_level(JUICE_LOG_LEVEL_NONE);
   CHECK(json_field(nat_hub_status(a), "relay_ok") == "" && nat_hub_status(a).find("\"relay_ok\":true") != std::string::npos, "the relay's STUN answered before links used it");
   if (relayed) {
     Rx rb;
