@@ -36,6 +36,7 @@ for i = 0, 512 do
     say(string.format("%s / %s (tab %d, %d s ago):", tostring(st.song), tostring(st.room), i + 1, os.time() - (tonumber(st.at) or 0)))
     say(line("tick", st.ticks))
     say(line("pass", st.passes))
+    if st.recv then say(line("a bandmate's change: arrival -> applied", st.recv)) end -- (rt-look)
     if (st.worst or "") ~= "" then say("  slowest tick's laps (ms): " .. st.worst) end
   end
 end

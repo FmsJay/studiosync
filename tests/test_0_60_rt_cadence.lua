@@ -70,7 +70,11 @@ assert(not busy, "but never more than 10 s in a row")
 -- what came over the link while you edited: a pass as the 0.4 s window ends, once, not at the next 2 s pass
 assert(not sync.receive_now(true, 10, 0.4, 10.2, 0.02, 10.3, false), "still inside the window")
 assert(sync.receive_now(true, 10, 0.4, 10.2, 0.02, 10.4, false), "the window's over: a pass now")
-assert(not sync.receive_now(true, 10, 0.4, 10.41, 0.02, 10.5, false), "once: that pass ran after the window (redo or a look still holding it: the 2 s passes go on)")
+assert(not sync.receive_now(true, 10, 0.4, 10.41, 0.02, 10.5, false), "not straight after a pass that ran after the window")
+assert(sync.receive_now(true, 10, 0.4, 10.41, 0.02, 10.52, false), "but again RETRY s on while it's still held (a look that hadn't run, the mouse let go), not at the next 2 s pass (rt-look)")
+assert(not sync.receive_now(true, 10, 0.4, 10.41, 0.02, 10.52, false, true), "not while a redo waits: that holds the band's changes on purpose")
+assert(sync.seen_mine(7, 5, 100, 99, 98.5) and not sync.seen_mine(7, 5, 100, 99, 99.5) and sync.seen_mine(5, 5, 100, 99, 99.5),
+  "your last edit before the last look began: seen, whatever StudioSync's own writes did to the count since; after it: not seen (rt-look)")
 assert(not sync.receive_now(false, 10, 0.4, 10.2, 0.02, 10.4, false), "nothing waiting: no pass")
 assert(not sync.receive_now(true, 10, 0.4, 10.2, 0.02, 10.4, true), "not mid-drag")
 assert(not sync.receive_now(true, 10, 0.4, 10.2, 1.0, 10.4, false), "a big song's pass still gets its fifth")

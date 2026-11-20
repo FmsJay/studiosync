@@ -95,6 +95,52 @@ After a pause, `dawview.read` checked that the tracks were still there only on t
 left, it read track 50 as nil and threw. `tests/test_0_60_rt_bigproj.lua` failed intermittently on it. Now it checks every track after a
 pause.
 
+### 5. A bandmate's change applied on arrival (round 2)
+
+Deployed and measured in REAPER on Cross Test (0.59.49.65): edit to the sender's event file took 0.11-0.14 s, against 4.2 s before. End to
+end, desktop to laptop, still took 1.2-1.6 s. Two causes found; both are fixed, and both are pinned by `tests/test_0_60_rt_receive_latency.lua`.
+
+**On the sending side (most likely the 1.2-1.6 s; read from the code, not yet measured).**
+- Event files go over the link through `StudioSync_DirectSend`. That's one sending thread for every file: `do_job` sends to each peer in turn
+  and waits for each answer.
+- The same thread also does the shared clock's pings and the streams.
+- So a bandmate later in the list waits for every earlier one. A slow or relayed computer costs its round trip; one that's asleep or off costs
+  a connect timeout of up to 1.5 s, and after a failure that peer is skipped for only 10 s.
+- Messages go a different way: each bandmate has a lane with a thread of its own, sent the moment they're queued. That's what the "tens of
+  ms" was measured on.
+
+The fix:
+- `sync.post` also sends each object change as an `event` message, up to `direct.MSG_MAX` (64 KB). A big plug-in chain or MIDI item goes as
+  the file only.
+- On the receiver, Live sync's `event` handler calls `sync.take_event`. That writes the event into the link's inbox, as the extension writes a
+  file that arrives, and starts a pass at once.
+- `sync.take_event` takes only an object change for this song and room, named as its file is (no path, no leading dot), and not one already in
+  the folder or the inbox.
+- The extension has already checked that the message came from the studio, and its size.
+- The file still goes as the record; arriving after, it's already applied.
+
+**On the receiving side (a stall of up to 2 s, found and fixed; not the steady second on Cross Test).**
+- Before receiving, `P.receive` waits for `sync.seen_mine`: a look must have seen your last edit. It went by the project's change count, and
+  StudioSync's own writes between passes move that count. They're taken in, so they don't count as you editing.
+- The look that would catch up waits `mirror_took * 5`, and `sync.receive_now` fired only once, as a quiet window after your own edit ended.
+- So an arrival could wait for the next 2 s pass. In the model at a 0.3 s look: the slowest 2.03 s, 1.01 s on average.
+
+The fix:
+- `sync.seen_mine` also takes "the last look began after your last edit" (Live sync's `changed_at`).
+- `sync.receive_now` tries a held change again every `sync.RETRY` (0.1 s, and a big song's fifth), except while a redo wait holds the band's
+  changes on purpose.
+- Model: all applied in the tick that saw them. A real two-computer receive of one envelope point that came as a message: about 1 ms of Lua.
+
+**Unchanged protections.**
+- The quiet window after your own edit: 0.4 s on the link, then it lands promptly.
+- The mouse gate: nothing lands mid-drag; it goes just after the drop.
+- Unsent edits per object (`mirror.receive`).
+- `seen_mine` for an edit made after the last look.
+- The 30 s redo wait.
+
+**A new measure for REAPER.** `rt_perf.lua` prints "a bandmate's change: arrival -> applied" (median, p95, slowest). That's from the tick that
+saw the file or message to the end of its receive, so the receiver's part can be read on its own.
+
 ## Numbers (offline, this desktop, shared with other agents; fake REAPER, so REAPER calls are the real-cost hint)
 
 Big project: 150 tracks, 520 plug-ins, 4,000 items, 60 MIDI.
@@ -160,6 +206,11 @@ now.
 - What the 10 s every-chunk read costs on a heavy real session: real plug-ins serialising. Before, that was the cost of every look.
 
 REAPER checks for James:
+0. Round 2: on Cross Test with everyone in, perf stats on, on the laptop:
+   - edit on the desktop, and time edit to applied on the laptop (shared clock, as before). Expect under 0.3 s, against 1.2-1.6 s.
+   - run `rt_perf.lua` on the laptop: "arrival -> applied" should be tens of ms.
+   - if it isn't fast with a Mac asleep or away: put that Mac first in the peer list and try again. Before, the file waited for it; now the
+     message doesn't.
 1. On Cross Test, set an envelope point from a script (undo block) and time edit → event file. Expect < 0.3 s, against 4.2 s before. Also
    drag a point with the mouse, then turn a knob from a control surface: it should go about 0.3 s after it stops.
 2. On the big project (`tests/reaper/big_project.lua`), with timings on, move one selected item, then edit one MIDI note in the piano roll,

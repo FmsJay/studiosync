@@ -945,6 +945,10 @@ function sync.post(cfg, song, room, ev, proj)
   local direct = require("direct")
   direct.offer(cfg, dir .. "/" .. ev.id .. ".json")
   if ev.type == "start" or ev.type == "stop" then direct.send_live(cfg, "cue", ev, song, room, ev.id) end
+  -- (an object change also as a message: a file waits its turn on the link's one sending thread, behind every computer's copy, the clock's
+  -- pings and the streams, so a slow or asleep computer first in line held the others' up to 1.5 s; each bandmate's messages go at once on a
+  -- lane of their own. Up to direct.MSG_MAX (a big chain or MIDI item goes as the file only); the file is still the record. rt-look)
+  if ev.type == "obj" then direct.send_live(cfg, "event", ev, song, room, ev.id) end
   if proj then stamp(proj, ev) end
   if ev.type == "start" or ev.type == "stop" then -- (a cue: Syncthing told to look at it now, not when its watcher gets round to it)
     local id = band.info(cfg.root).id
@@ -1199,10 +1203,32 @@ function sync.watch_timeline(proj, cfg, song, room, can)
   end
 end
 
+-- A bandmate's object change that came as a message on the direct link (sync.post sends one beside its file): written into the link's inbox,
+-- as the extension writes an event file that arrives, so sync.receive takes it the same way and once. Only an object change for this song and
+-- room, named as its file would be (no path in it), not one already here; the extension checked it came from the studio and its size.
+-- -> true when it's new (Live sync then receives at once). rt-look
+function sync.take_event(cfg, song, room, ev)
+  if type(ev) ~= "table" or ev.type ~= "obj" or type(ev.id) ~= "string" or #ev.id > 200 or not ev.id:match("^[%w%-_%.%(%)&]+$")
+      or ev.id:find("..", 1, true) or ev.id:sub(1, 1) == "." or sync.is_mine(ev.id, cfg.user) then return false end
+  local direct = require("direct")
+  local dir = sync.room_dir(cfg, song, room) .. "/events"
+  local idir = direct.inbox_dir(cfg, dir)
+  local name = ev.id .. ".json"
+  if not idir or reaper.file_exists(dir .. "/" .. name) or reaper.file_exists(idir .. "/" .. name) then return false end
+  reaper.RecursiveCreateDirectory(idir, 0)
+  band.write_json(idir .. "/" .. name, ev)
+  return true
+end
+
 -- May the band's changes come in now? Only once a look (mirror.watch) has seen this computer's last change: that look marks it as yours and
 -- unsent, so theirs waits for it. Before it, a bandmate's change to the same item landed over yours with no trace (review, 0.58.47). 30 s at
 -- most. cc: the project's change count now; looked_cc, looked_at: the count just after the last look, and when it ran.
-function sync.seen_mine(cc, looked_cc, now, looked_at) return cc == looked_cc or now - looked_at > 30 end
+-- changed_at (Live sync's): when your last edit was noted. A look that began after it has seen it, whatever the count says since: StudioSync's
+-- own writes between passes (taken in, not you editing) moved the count, and a change over the direct link waited for the next 2 s pass, about
+-- a second on average (rt-look: desktop -> laptop took 1.2-1.6 s).
+function sync.seen_mine(cc, looked_cc, now, looked_at, changed_at)
+  return cc == looked_cc or (changed_at ~= nil and changed_at < looked_at) or now - looked_at > 30
+end
 
 -- Real-time cadence (pure; Live sync's tick). A look goes 0.1 s after your last edit settles, not at the next 2 s pass (desktop -> laptop
 -- took 1.6-2.3 s with a 30 ms link. James, rt). SETTLE: a drag's drop or a burst of edits is one look. Never mid-drag, and the pass
@@ -1216,9 +1242,11 @@ end
 -- Syncthing alone as before. (Unsent edits stay protected per object in mirror.receive, a drag by the mouse gate. James, rt)
 function sync.quiet_for(now, direct_at) return now - (direct_at or -math.huge) < sync.DIRECT_FRESH and sync.QUIET_DIRECT or sync.QUIET end
 -- A pass the moment the quiet window ends, for what came over the link and waited for your edit: else it waited for the next 2 s pass.
--- Once: the last pass ran inside the window (that's why it waited), and the window is over now. held: something arrived and isn't in yet.
-function sync.receive_now(held, changed_at, quiet, polled_at, pass_took, now, mouse)
-  return held and not mouse and polled_at < changed_at + quiet and now >= changed_at + quiet and now - polled_at > pass_took * 5
+-- held: something arrived and isn't in yet. Again every RETRY s (and a big song's fifth) while it's held for any reason that passes: the mouse
+-- let go, a look that hadn't run. Not while `blocked`: a redo waiting (the band's changes wait 30 s on purpose). rt-look
+sync.RETRY = 0.1
+function sync.receive_now(held, changed_at, quiet, polled_at, pass_took, now, mouse, blocked)
+  return held and not mouse and not blocked and now >= changed_at + quiet and now - polled_at > math.max(pass_took * 5, sync.RETRY)
 end
 -- Are you editing? Your last edit within `quiet` s, or the mouse held; never more than 10 s in a row, so a long edit can't hold the band's
 -- changes up for good. -> busy, held_since (kept by the caller).

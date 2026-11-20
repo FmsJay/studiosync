@@ -319,7 +319,7 @@ local function laps_text()
 end
 -- Tick timings for tests/reaper/rt_perf.lua (James, rt: before and after an efficiency pass, on each computer): collected only while ExtState
 -- "perf stats" is "1" (looked at every 10 s), and published every 10 s as "tick stats <proj>". Off, it costs one comparison a tick.
-local perf = { on = false, at = -math.huge, ticks = {}, passes = {}, worst = 0, worst_laps = "" }
+local perf = { on = false, at = -math.huge, ticks = {}, passes = {}, worst = 0, worst_laps = "", recv = {} }
 local last_session -- a session.json caught mid-sync reads as nothing: keep the last good one
 local joined = {} -- machines this Live sync has already let in
 -- Are we in the middle of editing? (the project changed in the last 2 s, or the mouse button is down): the band's
@@ -329,6 +329,7 @@ local function mouse_down() return reaper.JS_Mouse_GetState ~= nil and reaper.JS
 local change_count, changed_at, held_since = -1, -math.huge, nil
 local direct_in_at = -math.huge -- (when an event file last came over the direct link: the quiet window is 0.4 s then. James, rt)
 local direct_held = false -- (one came over the link and no receive has run since: a pass as the quiet window ends, sync.receive_now. James, rt)
+local direct_first -- (when the first of what's held came: arrival -> applied for rt_perf. rt-look)
 local polled_at, pass_took = -math.huge, 0 -- (when the last pass started, and how long it took: sync.look_now. James, rt)
 local redraw_cc -- (the project's change count at the last redraw: P.status. James, rt)
 -- Only your edits count: noted at the start of each tick, and whatever the tick itself changed (looks, receives, heal, prints attaching,
@@ -550,9 +551,11 @@ function P.receive(t)
     -- (not before this tab's first look: with the mouse held on the first pass, the band's changes landed over edits not yet marked
     -- as ours. Review, 0.58.87)
     local dirty = false
-    if (mirror_at > -math.huge or not (s and s.sync == "mirror")) and sync.seen_mine(reaper.GetProjectStateChangeCount(proj), mirror_cc, now, mirror_at) and not editing() and not redo_pending() then
+    if (mirror_at > -math.huge or not (s and s.sync == "mirror")) and sync.seen_mine(reaper.GetProjectStateChangeCount(proj), mirror_cc, now, mirror_at, changed_at) and not editing() and not redo_pending() then
       dirty = reaper.IsProjectDirty(proj) ~= 0
       n = sync.receive(proj, cfg, b.song, room, room_can)
+      -- (arrival -> applied, for rt_perf: ms from the tick that saw the file to the end of its receive. rt-look)
+      if n > 0 and direct_held and direct_first and perf.on then perf.recv[#perf.recv + 1] = reaper.time_precise() - direct_first end
       direct_held = false
       -- (receive's own changes aren't you editing: the tick takes them in at its end, took_in. Round 1 review, 0.59.45; James, rt)
     end
@@ -1027,6 +1030,13 @@ local live_handlers = {
   ctl = function(d) require("controllers").on_msg(proj, cfg, b, d) end,
   -- (stems and mixes split across the idle computers: a share to render, or how one is going. lib/bounces.lua. James, rt)
   bounce = function(d) require("bounces").on_msg(proj, cfg, b, d) end,
+  -- (a bandmate's change as a message, ahead of its file: into the link's inbox as the file would land, and taken in now. sync.take_event, rt-look)
+  event = function(ev)
+    if sync.take_event(cfg, b.song, b.room, ev) then
+      if not direct_held then direct_first = reaper.time_precise() end
+      last, direct_in_at, direct_held = -math.huge, reaper.time_precise(), true
+    end
+  end,
 }
 live_handlers.start, live_handlers.stop = live_handlers.cue, live_handlers.cue
 local function tick_body() -- returns true to keep going
@@ -1108,7 +1118,10 @@ local function tick_body() -- returns true to keep going
   -- (the direct link: an event file that arrived brings a receive pass and a cue look now, not in up to 2 s; messages go where they belong)
   local dok, arrived = band.try("direct.live_tick", direct.live_tick, cfg, b.song, b.room, live_handlers)
   band.try("controllers.tick", require("controllers").tick, proj, cfg, b) -- (faders and knobs you move go out live: lib/controllers.lua. James, rt)
-  if dok and (arrived or 0) > 0 then cue_left, quick_at, last, direct_in_at, direct_held = true, -math.huge, -math.huge, reaper.time_precise(), true end
+  if dok and (arrived or 0) > 0 then
+    if not direct_held then direct_first = reaper.time_precise() end
+    cue_left, quick_at, last, direct_in_at, direct_held = true, -math.huge, -math.huge, reaper.time_precise(), true
+  end
   band.try("ablink.tick", require("ablink").tick, cfg, b, proj) -- (this computer's Ableton Link session, when it's on here. James, rt)
   band.try("liveaudio.tick", require("liveaudio").tick, cfg, b, proj) -- (live audio over the link, when the studio has it on: lib/liveaudio.lua. James, rt)
   band.try("hops.tick", require("hops").tick, cfg, b, proj) -- (live hops, both sides: lib/hops.lua. James, rt)
@@ -1337,7 +1350,7 @@ local function tick_body() -- returns true to keep going
   -- link meanwhile. sync.look_now, sync.receive_now. James, rt)
   local mouse = mouse_down()
   if not rec_any and not undoing and not live_set and (now - last > every or sync.look_now(changed_at, polled_at, pass_took, now, mouse)
-      or sync.receive_now(direct_held, changed_at, sync.quiet_for(now, direct_in_at), polled_at, pass_took, now, mouse))
+      or sync.receive_now(direct_held, changed_at, sync.quiet_for(now, direct_in_at), polled_at, pass_took, now, mouse, direct_held and redo_pending()))
       and not (transport and due_in < 1.5) then
     last = reaper.time_precise()
     polled_at = last
@@ -1384,9 +1397,9 @@ local function perf_publish(now)
   if perf.on and #perf.ticks > 0 then
     local R = require("rthealth")
     band.set_ext_json(band.SECTION, "tick stats " .. key, { at = os.time(), song = b.song, room = b.room, ticks = R.summary(perf.ticks),
-      passes = R.summary(perf.passes), worst = perf.worst_laps }, false)
+      passes = R.summary(perf.passes), worst = perf.worst_laps, recv = #perf.recv > 0 and R.summary(perf.recv) or nil }, false)
   end
-  perf.on, perf.ticks, perf.passes, perf.worst, perf.worst_laps = reaper.GetExtState(band.SECTION, "perf stats") == "1", {}, {}, 0, ""
+  perf.on, perf.ticks, perf.passes, perf.worst, perf.worst_laps, perf.recv = reaper.GetExtState(band.SECTION, "perf stats") == "1", {}, {}, 0, "", {}
 end
 -- an error anywhere in a tick (a malformed cue from someone's machine, say) is logged, and Live sync carries on
 local said_at, sws_at = -math.huge, -math.huge
