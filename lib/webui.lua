@@ -142,6 +142,7 @@ webui.ACTIONS = { chat = true, rtc = true, daw = true, health = true, play = tru
 webui.ACTIONS.phonerec = true -- (the Record page's: a take from a phone, lib/phonerec.lua)
 webui.ACTIONS.sheet = true -- (the Sheet and Beat pages': lib/songsheet.lua)
 webui.ACTIONS.phonedaw = true -- (the phone app's Project view: its tracks' GUIDs and items' takes, picking a take, lib/phonedaw.lua)
+webui.ACTIONS.home, webui.ACTIONS.profile = true, true -- (the Home page's, and your own display name, colour and picture: lib/webhome.lua, lib/profile.lua)
 webui.ACTIONS.mixer = true -- (the Mixer page's: lib/webmixer.lua)
 webui.ACTIONS.history = true -- (the History page's "I'm looking": lib/webhistory.lua, read only)
 function webui.parse_action(s)
@@ -215,6 +216,10 @@ function webui.tick(proj, cfg, b, handlers)
       if said then band.log(said) end
     end
     if topic == "history" then require("webhistory").action(proj, cfg, b, a) end
+    if topic == "home" or topic == "profile" then
+      local said = require("webhome").action(proj, cfg, b, a)
+      if said then band.log(said) end
+    end
   end
   local now = reaper.time_precise()
   do -- a phone that started the band and went quiet mid-take: its start stopped, looking or not (lib/phonerec.lua)
@@ -270,6 +275,8 @@ function webui.tick(proj, cfg, b, handlers)
   require("webmixer").tick(proj, cfg, b, publish, now)
   -- the History page's time lapse: only while a page shows it (lib/webhistory.lua)
   require("webhistory").tick(proj, cfg, b, publish, now)
+  -- Home (while a page shows it) and everyone's profile (while any page looks): lib/webhome.lua
+  require("webhome").tick(proj, cfg, b, publish, now)
 end
 
 return webui
