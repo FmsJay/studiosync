@@ -572,8 +572,6 @@ static void stage3_checks(int stun)
   CHECK(wait_for(10000, [&] { rport = (int)sub_num(nat_hub_status(r), "relay", "port"); return rport > 0 && json_field(nat_hub_status(r), "external") == "127.0.0.1"; }),
         "relay: running, on the public address its STUN probe found");
   printf("     relay: %s\n", nat_hub_status(r).c_str());
-  const bool jlog = getenv("NAT_RELAY_LOG") != nullptr; // (diagnostic, macOS CI)
-  if (jlog) juice_set_log_level(JUICE_LOG_LEVEL_DEBUG);
   juice_agent_t *held[3] = {};
   CHECK(gathers_relay(rport, "devC", nat_relay_pass(K, "devC"), &held[0]), "relay: a studio computer's credential (from the studio secret) gets a relayed address");
   CHECK(gathers_relay(rport, "devC", nat_relay_pass(K, "devC"), &held[1]) && gathers_relay(rport, "devC", nat_relay_pass(K, "devC"), &held[2]),
@@ -582,7 +580,6 @@ static void stage3_checks(int stun)
   CHECK(!gathers_relay(rport, "devA", nat_relay_pass(nat_studio_key("another studio"), "devA")), "relay: a credential made from another studio's secret is refused");
   CHECK(!gathers_relay(rport, "devZ", nat_relay_pass(K, "devZ")), "relay: a computer that isn't the studio's is refused, even with a well-made password");
   for (juice_agent_t *x : held) if (x) juice_destroy(x);
-  if (jlog) juice_set_log_level(JUICE_LOG_LEVEL_NONE);
   // two symmetric NATs (each publishes only relayed candidates, and its sockets are on an address of its own, 127.0.0.2 and .3, so nothing
   // on this one computer but the relay joins them: the relay lets in only its own relayed addresses, 127.0.0.1): no path, then through it
   NatHub *a = nat_hub_new(), *b = nat_hub_new();
@@ -619,23 +616,36 @@ static void stage3_checks(int stun)
     sockaddr_in sa{};
     nat_resolve(a, "nat:devB", &sa);
     const std::string blob(1000, 'z');
-    auto burst = [&](int n, int ms) { { std::lock_guard<std::mutex> g(rb.mx); rb.got.clear(); } for (int i = 0; i < n; ++i) { nat_sendto(a, &sa, blob.data(), (int)blob.size()); sleep_ms(ms); } sleep_ms(400); std::lock_guard<std::mutex> g(rb.mx); return (int)rb.got.size(); };
-    const int clean = burst(100, 5);
+    double flood_s = 0; // (how long the last burst took to send: a hosted Mac's sleeps run long, and a cap is a rate)
+    auto burst = [&](int n, int ms, int per) {
+      { std::lock_guard<std::mutex> g(rb.mx); rb.got.clear(); }
+      const double t0 = now_ms();
+      for (int i = 0; i < n; ++i) { nat_sendto(a, &sa, blob.data(), (int)blob.size()); if ((i + 1) % per == 0) sleep_ms(ms); }
+      flood_s = (now_ms() - t0) / 1000;
+      sleep_ms(400);
+      std::lock_guard<std::mutex> g(rb.mx);
+      return (int)rb.got.size();
+    };
+    // at most what a 20 KB/s cap lets through in that time (its quarter-second burst, at least 3000 bytes, and 1000+ bytes a datagram),
+    // with room for timing; and well under half of the 1000: the cap cut it
+    auto within_cap = [&](int got) { return got <= (int)((20000 * flood_s + 5000) / 1000 * 1.25) + 5 && got < 500; };
+    const int clean = burst(100, 5, 1);
     CHECK(clean >= 95, "through the relay: 100 sealed datagrams, all (or nearly) arrive");
-    // caps: the relay's whole rate cut to 20 KB/s (no restart: the links stay up), then 1 MB sent in ~1 s
+    // caps: the relay's whole rate cut to 20 KB/s (no restart: the links stay up), then 1 MB sent in ~1 s (10 every 10 ms)
     const long long over0 = sub_num(nat_hub_status(r), "relay", "over_cap");
     nat_hub_setup(r, hub_json(dr, "devR", "r.key", stun, {}, ",\"relay\":{\"port\":0,\"users\":[\"devA\",\"devB\",\"devC\"],\"allocs_each\":3,\"rate\":20000}").c_str());
     const long long by0 = sub_num(nat_hub_status(r), "relay", "bytes");
-    const int capped = burst(1000, 1);
+    const int capped = burst(1000, 10, 10);
     printf("     relay bytes during the flood: %lld; B: %s\n", sub_num(nat_hub_status(r), "relay", "bytes") - by0, peer_part(nat_hub_status(b), "devA").c_str());
-    printf("     capped at 20 KB/s: %d of 1000 arrived, %lld dropped by the relay\n", capped, sub_num(nat_hub_status(r), "relay", "over_cap") - over0);
-    CHECK(capped < 150 && sub_num(nat_hub_status(r), "relay", "over_cap") > over0, "relay caps: a flood over the relay's rate is cut to it (the rest dropped there)");
+    printf("     capped at 20 KB/s: %d of 1000 arrived (sent in %.2f s), %lld dropped by the relay\n", capped, flood_s, sub_num(nat_hub_status(r), "relay", "over_cap") - over0);
+    CHECK(within_cap(capped) && sub_num(nat_hub_status(r), "relay", "over_cap") > over0, "relay caps: a flood over the relay's rate is cut to it (the rest dropped there)");
     nat_hub_setup(r, hub_json(dr, "devR", "r.key", stun, {}, ",\"relay\":{\"port\":0,\"users\":[\"devA\",\"devB\",\"devC\"],\"allocs_each\":3,\"rate_each\":20000}").c_str());
-    const int each = burst(1000, 1);
-    CHECK(each < 150, "relay caps: and the rate to any one address");
+    const int each = burst(1000, 10, 10);
+    printf("     capped at 20 KB/s to each address: %d of 1000 arrived (sent in %.2f s)\n", each, flood_s);
+    CHECK(within_cap(each), "relay caps: and the rate to any one address");
     nat_hub_setup(r, hub_json(dr, "devR", "r.key", stun, {}, ",\"relay\":{\"port\":0,\"users\":[\"devA\",\"devB\",\"devC\"],\"allocs_each\":3}").c_str());
     sleep_ms(500);
-    CHECK(burst(100, 5) >= 95 && peer_up(a, "devB"), "the caps back to normal: the same link carries everything again");
+    CHECK(burst(100, 5, 1) >= 95 && peer_up(a, "devB"), "the caps back to normal: the same link carries everything again");
     nat_set_rx(b, nullptr, nullptr);
   }
   nat_hub_free(a); nat_hub_free(b); nat_hub_free(r);
