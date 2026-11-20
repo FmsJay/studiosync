@@ -102,6 +102,36 @@ song.
   - Live sync applies it for a band start (`together.apply_loop`), but not for a follow cue, which already re-cues on every jump;
   - a start from an older StudioSync (no `loop`) leaves yours alone.
 
+**E. A held computer never took the band's timeline after the update** (`lib/sync.lua`, `sync.timeline_waits`). Found in REAPER on
+0.59.49.69.
+
+What the REAPER check showed (read-only probes, plus test edits on Cross Test's region 1, put back afterwards):
+- **On the desktop, both edits go out within a second:**
+  - unticking XT Rec A in the render matrix wrote event `James-20261120-182753Z-00005` about 1 s later;
+  - renumbering region 1 from 1 to 5 wrote `James-20261120-182822Z-00006` about 1 s later;
+  - neither needs the change count to move (it did move: 9 -> 10), because `sync.watch_timeline` runs every pass.
+- **The laptop never applied them.** Its Cross Test has `hold = "1"`: the colour try's Hold from before fix 2. The laptop's log says "Hold my
+  changes is on in this project" at 12:16:48.
+  - While held, Live sync doesn't look at the timeline, so the laptop's "seen" timeline was still written in format 4.
+  - `timeline_waits` compares that with a format-6 signature. The new `num` and `render` fields read as a timeline change of the laptop's
+    own, so every map and marker from the band waited for good.
+  - This would happen to anyone holding across the update.
+
+Fix:
+- when "seen" is in another format (or has none: Open/Publish session write one without), only what both formats hold counts as yours: the
+  tempo map and each marker's kind, place, end, name and colour;
+- a real held marker edit still holds the band's timeline back.
+
+One more limit: a timeline edit made in the moments after updating, before Live sync's first look in the new version, is taken in as that
+first look and not sent. That was already so for every format bump.
+
+Test (`tests/test_0_60_rt_edits.lua`, last block):
+- a render-matrix tick and a renumbering are written straight into the stand-in, with no change count;
+- they go out in the next Live sync pass (quick look, then the timeline's look);
+- the laptop, held with a format-4 "seen", takes both;
+- a held marker rename of its own still keeps the band's next marker change waiting;
+- with `timeline_waits` as it was, the test fails at "held, the laptop took the renumbering".
+
 ### Not carried (gaps, not fixed)
 
 - **"Transport: Play (skip time selection)"** and REAPER 7's region playlists ("skip hidden regions") are playback, not project state.

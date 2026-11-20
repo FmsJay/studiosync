@@ -1058,7 +1058,23 @@ end
 function sync.timeline_waits(proj)
   if ext(proj, band.SECTION, "hold") == "" then return false end
   local seen = ext(proj, band.SECTION, "timeline")
-  return seen ~= "" and seen ~= timeline_sig(proj)
+  if seen == "" then return false end
+  local sig = timeline_sig(proj)
+  if seen == sig then return false end
+  -- (seen by an older StudioSync (another TIMELINE_FORMAT, or none): Live sync doesn't look at the timeline while Hold is on, so it stays in that
+  -- format, and the new fields alone read as a change of yours, and the band's every map and marker waited for good. Then only what both
+  -- formats hold counts: the tempo map and each marker's kind, place, name and colour. The laptop's Cross Test, held, never got the render
+  -- matrix or a renumbering. rt-edits)
+  local s, n = band.json_decode(seen), band.json_decode(sig)
+  if type(s) == "table" and type(n) == "table" and s[4] ~= n[4] then
+    local function plain(t)
+      local m = {}
+      for _, x in ipairs(type(t[2]) == "table" and t[2] or {}) do m[#m + 1] = { x.region, x.pos, x["end"], x.name, x.color } end
+      return band.json_encode({ t[1] or {}, m })
+    end
+    return plain(s) ~= plain(n)
+  end
+  return true
 end
 -- Apply one event from whoever may make it. False means retry later. `dir`: the room's folder.
 -- The item a note or like is on, here (a part in mirror sync is found by its item id: it has no take id. 0.58.98), or nil.
