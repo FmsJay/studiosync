@@ -181,6 +181,8 @@ function prints.fx_here(tr, i, offline_ok)
   -- print should have (laptop and PC, 0.42.2)
   -- (sforzando's CLAP: loaded, no ident and no knobs of its own, read as missing, so its parts never printed and Auto played the print.
   -- A missing CLAP shows offline. Plug-in test, 0.59.17)
+  -- (REAPER's own Video processor: in every REAPER, and it plays no sound anyway. rt-video2)
+  if require("video").builtin_fx(select(2, reaper.TrackFX_GetNamedConfigParm(tr, i, "fx_name")), kind) then return true end
   if kind ~= "JS" then return (ident or "") ~= "" or reaper.TrackFX_GetNumParams(tr, i) > 3 or (tostring(kind):find("CLAP") ~= nil and installed_here(tr, i)) end
   ident = (ident or ""):gsub("\\", "/")
   return ident == "" or reaper.file_exists(reaper.GetResourcePath() .. "/Effects/" .. ident) or reaper.file_exists(ident)
@@ -371,7 +373,9 @@ function prints.lacking(tr, cfg)
   for _, i in ipairs(prints.fx_all(tr)) do
     local ok, name = reaper.TrackFX_GetNamedConfigParm(tr, i, "fx_name")
     if not ok or name == "" then name = select(2, reaper.TrackFX_GetFXName(tr, i)) end
-    if not common.set[plugins.key(name)] or not plugins.loads_everywhere(name, common.systems) then return true end
+    -- (the Video processor is on nobody's list but in every REAPER: a track with one printed its parts for nothing. rt-video2)
+    local builtin = require("video").builtin_fx(name, select(2, reaper.TrackFX_GetNamedConfigParm(tr, i, "fx_type")))
+    if not builtin and (not common.set[plugins.key(name)] or not plugins.loads_everywhere(name, common.systems)) then return true end
   end
   return false
 end
@@ -425,6 +429,7 @@ local function list_has(l, name)
     l.set = {}
     for _, k in ipairs(type(l.names) == "table" and l.names or {}) do l.set[k] = true end
   end
+  if require("video").builtin_fx(name) then return true end -- (in every REAPER, on nobody's list. rt-video2)
   return l.set[plugins.key(name)] == true and plugins.loads_everywhere(name, { [plugins.system(l.os)] = true })
 end
 -- Who lacks each of `names` (plug-in names, in order), by everyone's published list (the data prints.lacking goes by): { {fx, users} },
@@ -1054,7 +1059,8 @@ function prints.has(cfg, user, keys)
   end
   local set = lists.by[user]
   if not set then return false end
-  for _, k in ipairs(keys) do if not set[k] then return false end end
+  local video = require("video")
+  for _, k in ipairs(keys) do if not set[k] and not video.builtin_fx(k) then return false end end -- (the Video processor: everyone's. rt-video2)
   return true
 end
 -- Who prints this item: a user name, or nil (nobody can). `author`: who changed it last; `here`: { user = true }

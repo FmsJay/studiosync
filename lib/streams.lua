@@ -235,7 +235,8 @@ local function take_name(rel)
   if n:sub(1, 7) == "~media~" then return "media " .. (n:match("([^~]+)$") or n) end -- (a media file: lib/streams.lua media_name)
   return (n:gsub("^[^~]*~", ""):gsub("~", "'s ", 1))
 end
-function streams.health_text(s)
+-- sizes: rel -> the announced size of a media file coming in (a big video says how far it's got. rt-video2)
+function streams.health_text(s, sizes)
   local parts, bad = {}, 0
   for _, o in ipairs(s.out or {}) do
     local each = {}
@@ -251,7 +252,10 @@ function streams.health_text(s)
     end
   end
   for _, i in ipairs(s.inn or {}) do
-    if not i.done then parts[#parts + 1] = string.format("in %s: %s so far", take_name(i.rel), mb(i.bytes))
+    local of = sizes and tonumber(sizes[i.rel])
+    if not i.done and of and of > 0 then
+      parts[#parts + 1] = string.format("in %s: %s of %s (%d%%)", take_name(i.rel), mb(i.bytes), mb(of), math.floor(100 * math.min(1, (tonumber(i.bytes) or 0) / of)))
+    elseif not i.done then parts[#parts + 1] = string.format("in %s: %s so far", take_name(i.rel), mb(i.bytes))
     elseif i.ok ~= true then bad = bad + 1 end
   end
   if #parts + bad == 0 then return nil end
@@ -1097,7 +1101,9 @@ end
 
 -- Health's row (lib/direct.lua health_rows): nil when nothing streams.
 function streams.health_row(cfg)
-  local text = streams.health_text(direct.streams(cfg))
+  local sizes = {}
+  for rel, e in pairs(streams.media) do sizes[e.src_rel or rel] = e.size end
+  local text = streams.health_text(direct.streams(cfg), sizes)
   return text and { "direct streams", true, "grey", text, text } or nil
 end
 

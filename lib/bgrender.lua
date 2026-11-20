@@ -191,11 +191,15 @@ local COPY = { "^reaper%-vstplugins.*%.ini$", "^reaper%-vstshells.*%.ini$", "^re
 -- This REAPER's reaper.ini for the render profile: no MIDI devices in or out, no control surfaces (the web interface's
 -- port too), no splash, no recent or last project, the audio device closed while it's in the background. Pure.
 function bg.profile_ini(text)
-  local out = {}
+  local out, section = {}, ""
   for raw in (text or ""):gmatch("[^\r\n]+") do
     local line = raw
     local k = line:match("^([%w_]+)=")
-    if k and (k:match("^midiins") or k:match("^midiouts")) and line:match("=%-?%d+$") then line = k .. "=0"
+    section = line:match("^%[(.-)%]$") or section
+    -- (the video window shut: open in this REAPER, the hidden one would open it too for a project with video, a window and frames nobody
+    -- sees. rt-video2)
+    if section:lower() == "reaper_video" and (k == "visible" or k == "fullscreen") then line = k .. "=0"
+    elseif k and (k:match("^midiins") or k:match("^midiouts")) and line:match("=%-?%d+$") then line = k .. "=0"
     elseif k == "csurf_cnt" then line = "csurf_cnt=0"
     elseif k and k:match("^csurf_%d+$") then line = nil
     elseif k == "splash" or k == "splash2" then line = k .. "=0"

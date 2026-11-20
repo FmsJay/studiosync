@@ -584,7 +584,7 @@ static void live_layer_tests(const std::string &studio, const std::string &secre
         "the stream path rule");
   { // 1.0.12, send anything: the vetted studio files go, nothing that runs ever does
     bool sends = true, runs = false;
-    for (const char *e : { "mp4", "MOV", "webm", "pdf", "png", "jpg", "jpeg", "txt", "md", "mid", "fxp", "fxb", "vstpreset", "nam", "sfz", "als", "zip" })
+    for (const char *e : { "mp4", "MOV", "webm", "m4a", "m4v", "mkv", "avi", "gif", "pdf", "png", "jpg", "jpeg", "txt", "md", "mid", "fxp", "fxb", "vstpreset", "nam", "sfz", "als", "zip" })
       if (!direct_stream_rel_ok((std::string("Song A/ref chart.") + e).c_str())) { printf("     refused but shouldn't be: .%s\n", e); sends = false; }
     for (const char *e : { "exe", "dll", "dylib", "so", "lua", "py", "sh", "bat", "cmd", "ps1", "js", "EXE", "rpp", "json" })
       if (direct_stream_rel_ok((std::string("Song A/tool.") + e).c_str())) { printf("     passed but shouldn't: .%s\n", e); runs = true; }

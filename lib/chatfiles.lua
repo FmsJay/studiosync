@@ -15,7 +15,7 @@ local cf = { MAX = 150 * 1024 * 1024, LINK_SONG = "_chat", KEEP = 7 * 86400, SEN
 -- (MAX under the web server's 160 MB upload: extension/webui.cpp MAX_UPLOAD)
 -- The kinds that may go: the direct link's own list (lib/direct.lua STREAM_EXT, extension/direct.cpp direct_stream_rel_ok; the test checks
 -- they agree). Never anything that runs.
-cf.EXTS = { "wav", "w64", "flac", "aif", "aiff", "ogg", "opus", "mp3", "mid", "mp4", "mov", "webm", "pdf", "png", "jpg", "jpeg", "txt", "md",
+cf.EXTS = { "wav", "w64", "flac", "aif", "aiff", "ogg", "opus", "mp3", "mid", "mp4", "mov", "webm", "m4a", "m4v", "mkv", "avi", "gif", "pdf", "png", "jpg", "jpeg", "txt", "md",
   "fxp", "fxb", "vstpreset", "nam", "sfz", "als", "zip" }
 local OK = {}
 for _, e in ipairs(cf.EXTS) do OK[e] = true end

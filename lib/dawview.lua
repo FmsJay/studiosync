@@ -91,10 +91,12 @@ end
 local function item_out(it)
   local o = { p = r3(it.pos), l = r3(it.len), c = it.rgb, m = it.mute and 1 or nil, n = it.name ~= "" and it.name or nil }
   if it.midi then o.x = 1; o.nt = it.notes else o.k = it.peaks end
+  o.v = it.vid -- (a video or picture item: which file, where in it, how fast; the page draws its frames. lib/video.lua, rt-video2)
   return o
 end
 local function item_sig(it)
-  return table.concat({ r3(it.pos), r3(it.len), it.rgb or "", it.mute and 1 or 0, it.name or "", it.midi and ("x" .. (it.nh or #(it.notes or {}))) or (it.peaks or "") }, "|")
+  return table.concat({ r3(it.pos), r3(it.len), it.rgb or "", it.mute and 1 or 0, it.name or "", it.midi and ("x" .. (it.nh or #(it.notes or {}))) or (it.peaks or ""),
+    it.vid and (it.vid.id .. "@" .. it.vid.o .. "x" .. it.vid.r) or "" }, "|")
 end
 function dawview.build(raw, per)
   per = per or dawview.CHUNK_TRACKS
@@ -332,6 +334,7 @@ function dawview.read(proj, key, now, budget_end)
             local more
             o.peaks, more = take_peaks(take, pos, len, now, budget_end)
             pending = pending or more
+            o.vid = require("video").take(take, now)
           end
         end
         t.items[#t.items + 1] = o
@@ -418,6 +421,7 @@ function dawview.tick(proj, cfg, b, publish, who, now)
   if de and de.reply then publish("dawedit", de.reply) end
   local key = b.song .. "/" .. b.room
   if S.key ~= key then dawview.reset(); S.key = key end
+  require("video").root = cfg.root -- (which files the page may have frames of: the studio's shared folder only. rt-video2)
   local cc = reaper.GetProjectStateChangeCount(proj)
   if not S.look and (S.pending or (now - (S.looked or -math.huge) >= dawview.LOOK_EVERY and (cc ~= S.cc or now - (S.full or -math.huge) >= dawview.FLOOR))) then
     S.looked, S.cc = now, cc

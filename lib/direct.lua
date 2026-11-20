@@ -730,8 +730,9 @@ end
 -- The list (extension 1.0.12, "send anything"): audio and MIDI, and the other files a studio passes round: video references, PDF charts,
 -- pictures, notes, plug-in presets and patches, Ableton sets, zips. Never anything that runs (exe, dll, dylib, so, lua, py, sh, bat, cmd, ps1,
 -- js): they're simply not on it. The same as extension/direct.cpp direct_stream_rel_ok. (James, rt)
+-- (extension 1.0.25: the other files REAPER plays as video, m4a (audio REAPER plays through its video decoder), m4v, mkv, avi, gif. rt-video2)
 local STREAM_EXT = { wav = true, w64 = true, flac = true, aif = true, aiff = true, ogg = true, opus = true, mp3 = true, mid = true,
-  mp4 = true, mov = true, webm = true, pdf = true, png = true, jpg = true, jpeg = true, txt = true, md = true,
+  mp4 = true, mov = true, webm = true, m4a = true, m4v = true, mkv = true, avi = true, gif = true, pdf = true, png = true, jpg = true, jpeg = true, txt = true, md = true,
   fxp = true, fxb = true, vstpreset = true, nam = true, sfz = true, als = true, zip = true }
 function direct.stream_ext(name) local e = tostring(name or ""):match("%.(%w+)$"); return e ~= nil and STREAM_EXT[e:lower()] == true end
 local function plain(s) return type(s) == "string" and #s > 0 and #s <= 200 and s:sub(1, 1) ~= "." and not s:find("[%. ]$") and not s:find('[%c/\\:%*%?"<>|\127]') end

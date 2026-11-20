@@ -388,8 +388,9 @@ bool direct_stream_rel_ok(const char *rel)
   if (!seg_ok(name) || dot == std::string::npos) return false;
   std::string ext = name.substr(dot + 1);
   for (char &c : ext) c = (char)tolower((unsigned char)c);
-  static const char *ok[] = { "wav", "w64", "flac", "aif", "aiff", "ogg", "opus", "mp3", "mid", "mp4", "mov", "webm", "pdf", "png", "jpg", "jpeg",
-                              "txt", "md", "fxp", "fxb", "vstpreset", "nam", "sfz", "als", "zip" };
+  // (1.0.25: what else REAPER plays as video, and m4a, audio it plays through its video decoder. rt-video2)
+  static const char *ok[] = { "wav", "w64", "flac", "aif", "aiff", "ogg", "opus", "mp3", "mid", "mp4", "mov", "webm", "m4a", "m4v", "mkv", "avi", "gif",
+                              "pdf", "png", "jpg", "jpeg", "txt", "md", "fxp", "fxb", "vstpreset", "nam", "sfz", "als", "zip" };
   for (const char *e : ok) if (ext == e) return true;
   return false;
 }

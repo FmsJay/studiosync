@@ -1556,6 +1556,10 @@ band.PROJECT_CFG = { -- { SWS project config name, "i" int / "d" double, what it
   { "projmeasoffs", "i", "project start measure (PROJOFFS)" },
   { "projfrbase", "i", "frame rate (TIMEMODE)" },
   { "projfrdrop", "i", "drop-frame timecode" },
+  -- (Project settings > Video: the size videos render at and how they fit; config names from reaper.exe beside "VIDEO_CONFIG %d %d %d". rt-video2)
+  { "projvidw", "i", "video width (VIDEO_CONFIG's first number)" },
+  { "projvidh", "i", "video height (VIDEO_CONFIG's second)" },
+  { "projvidflags", "i", "video fit, aspect and colourspace options (VIDEO_CONFIG's third)" },
 }
 band.FRONT_TOGGLES = { snap = 1157, preserve_pitch = 40671, -- (Options: Toggle snapping; Transport: preserve pitch when changing the playrate)
   -- (and a set of option actions, one on: what a new recording does over items: new takes, tape (trim behind), new lanes. REAPER 7: 42677,

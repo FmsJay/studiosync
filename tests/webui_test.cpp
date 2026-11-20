@@ -273,6 +273,26 @@ int main()
         "an offer: hex ids only");
   r = get(link, "/api/file?id=ab12", th, ck);
   CHECK(code(r) == 200 && body(r) == mix && r.find("Content-Length: 200000") != std::string::npos, "an offered file, byte for byte");
+  CHECK(r.find("Accept-Ranges: bytes") != std::string::npos && r.find("Content-Type: application/octet-stream") != std::string::npos, "says it takes ranges; a WAV as bytes");
+  // (rt-video2: the Project page's <video> asks for byte ranges as it seeks)
+  r = get(link, "/api/file?id=ab12", th, ck + "Range: bytes=1000-1999\r\n");
+  CHECK(code(r) == 206 && body(r) == mix.substr(1000, 1000) && r.find("Content-Range: bytes 1000-1999/200000") != std::string::npos &&
+        r.find("Content-Length: 1000") != std::string::npos, "a range: 206, just those bytes");
+  r = get(link, "/api/file?id=ab12", th, ck + "Range: bytes=199990-\r\n");
+  CHECK(code(r) == 206 && body(r) == mix.substr(199990), "from a byte to the end");
+  r = get(link, "/api/file?id=ab12", th, ck + "Range: bytes=-100\r\n");
+  CHECK(code(r) == 206 && body(r) == mix.substr(199900), "the last bytes");
+  r = get(link, "/api/file?id=ab12", th, ck + "Range: bytes=199000-500000\r\n");
+  CHECK(code(r) == 206 && body(r) == mix.substr(199000) && r.find("Content-Range: bytes 199000-199999/200000") != std::string::npos, "past the end: cut to it");
+  r = get(link, "/api/file?id=ab12", th, ck + "Range: bytes=200000-\r\n");
+  CHECK(code(r) == 416 && r.find("Content-Range: bytes */200000") != std::string::npos && body(r).empty(), "starting past the end: 416");
+  CHECK(code(get(link, "/api/file?id=ab12", th, ck + "Range: bytes=0-1,5-9\r\n")) == 200 && code(get(link, "/api/file?id=ab12", th, ck + "Range: items=1-2\r\n")) == 200 &&
+        code(get(link, "/api/file?id=ab12", th, ck + "Range: bytes=x-\r\n")) == 200, "several ranges or a malformed one: the whole file");
+  CHECK(code(get(link, "/api/file?id=ab12", th, "Range: bytes=0-9\r\n")) == 403, "a range still needs the token");
+  spit(dir + "/clip.MP4", mix.substr(0, 5000));
+  CHECK(webui_offer("cd56", (dir + "/clip.MP4").c_str()) == 1 && get(link, "/api/file?id=cd56", th, ck).find("Content-Type: video/mp4") != std::string::npos,
+        "a video typed as one, so a <video> plays it");
+  webui_offer("cd56", "");
   CHECK(code(get(link, "/api/file?id=ab12", th)) == 403, "and only with the studio's token");
   CHECK(code(get(link, "/api/file?id=cd34", th, ck)) == 404 && code(get(link, "/api/file?id=", th, ck)) == 404, "an id not offered: 404");
   CHECK(webui_offer("ab12", "") == 1 && code(get(link, "/api/file?id=ab12", th, ck)) == 404, "withdrawn: 404");

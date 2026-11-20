@@ -120,7 +120,7 @@ end
 -- tempo change still lands on its beat.
 -- (the 4th part is the format: a signature noted in another format is a first look, never a change to send or put back. 3: the project's
 -- settings, rt, so the first look after the update isn't taken for an edit of them. James, rt)
-sync.TIMELINE_FORMAT = 4 -- (4: the recording-over-items choice joined the shared project settings: the first look after updating is not taken for an edit. James, rt)
+sync.TIMELINE_FORMAT = 5 -- (4: the recording-over-items choice joined the shared project settings: the first look after updating is not taken for an edit. James, rt; 5: the video settings, rt-video2)
 local function timeline_sig(proj) return band.json_encode({ band.capture_tempo(proj), band.capture_markers(proj), band.capture_project(proj), sync.TIMELINE_FORMAT }) end
 -- The tempo map alone, said one way (round-tripped through JSON), to tell a tempo change from a marker or notes one: only a tempo change
 -- moves parts by itself (mirror.tempo_changed). A marker set the window going too, and for 15 s a nudge, a fade or automation drawn

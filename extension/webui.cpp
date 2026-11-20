@@ -288,7 +288,7 @@ bool send_all(sock_t s, const std::string &d)
 const char *reason(int code)
 {
   switch (code) {
-  case 200: return "OK"; case 202: return "Accepted"; case 303: return "See Other"; case 400: return "Bad Request"; case 403: return "Forbidden";
+  case 200: return "OK"; case 202: return "Accepted"; case 206: return "Partial Content"; case 416: return "Range Not Satisfiable"; case 303: return "See Other"; case 400: return "Bad Request"; case 403: return "Forbidden";
   case 404: return "Not Found"; case 405: return "Method Not Allowed"; case 413: return "Payload Too Large"; case 503: return "Service Unavailable";
   default: return "Error";
   }
@@ -393,8 +393,36 @@ void upload(sock_t s, const WebReq &r, std::string body)
   answer(s, 200, "application/json", std::string("{\"ok\":true,\"id\":\"") + id + "\"}");
 }
 
-// A file Lua offered, streamed as it's read (a mix can be 100 MB: never held in memory whole).
-void send_file(sock_t s, const std::string &id)
+// An offered file's type, by its name: video and pictures typed so a <video> or <img> takes them (the Project page's thumbnails); anything
+// else as bytes. Never a type a browser would run (no HTML, SVG or script). (rt-video2)
+const char *offer_type(const std::string &path)
+{
+  const size_t dot = path.rfind('.');
+  const std::string ext = dot == std::string::npos ? "" : lower(path.substr(dot + 1));
+  static const struct { const char *ext, *type; } types[] = { { "mp4", "video/mp4" }, { "m4v", "video/mp4" }, { "mov", "video/quicktime" },
+    { "webm", "video/webm" }, { "mkv", "video/x-matroska" }, { "png", "image/png" }, { "jpg", "image/jpeg" }, { "jpeg", "image/jpeg" }, { "gif", "image/gif" } };
+  for (const auto &t : types) if (ext == t.ext) return t.type;
+  return "application/octet-stream";
+}
+// "bytes=a-b", "bytes=a-" or "bytes=-n" (one range only) against a file of n bytes -> the first and last byte; false when there's no range to
+// honour (absent, several, or malformed: the whole file); `bad` when it's past the end (416).
+bool byte_range(const std::string &h, long long n, long long &a, long long &z, bool &bad)
+{
+  bad = false;
+  if (h.compare(0, 6, "bytes=") != 0 || h.find(',') != std::string::npos) return false;
+  const std::string v = h.substr(6);
+  const size_t dash = v.find('-');
+  if (dash == std::string::npos || v.find_first_not_of("0123456789-") != std::string::npos || v.size() > 40) return false;
+  const std::string l = v.substr(0, dash), r = v.substr(dash + 1);
+  if (r.find('-') != std::string::npos || (l.empty() && r.empty())) return false;
+  if (l.empty()) { const long long k = atoll(r.c_str()); if (k <= 0) { bad = true; return false; } a = std::max(0LL, n - k); z = n - 1; }
+  else { a = atoll(l.c_str()); z = r.empty() ? n - 1 : std::min(atoll(r.c_str()), n - 1); }
+  if (a >= n || z < a) { bad = true; return false; }
+  return true;
+}
+// A file Lua offered, streamed as it's read (a mix can be 100 MB: never held in memory whole). A byte range is answered (206): a <video>
+// seeks by asking for one, and Safari plays nothing from a server that can't. (rt-video2)
+void send_file(sock_t s, const std::string &id, const std::string &range = "")
 {
   std::string path;
   { std::lock_guard<std::mutex> l(g_mx); auto it = g_offers.find(id); if (it != g_offers.end()) path = it->second; }
@@ -406,11 +434,24 @@ void send_file(sock_t s, const std::string &id)
   fseeko(f, 0, SEEK_END); const long long n = (long long)ftello(f); fseeko(f, 0, SEEK_SET);
 #endif
   if (n < 0) { fclose(f); return answer(s, 404, "text/plain", "not found\n"); }
+  long long a = 0, z = n - 1;
+  bool bad = false;
+  const bool part = byte_range(range, n, a, z, bad);
+  if (bad) { fclose(f); return answer(s, 416, "text/plain", "", "Content-Range: bytes */" + std::to_string(n) + "\r\n"); }
+#ifdef _WIN32
+  if (part) _fseeki64(f, a, SEEK_SET);
+#else
+  if (part) fseeko(f, (off_t)a, SEEK_SET);
+#endif
   set_blocking(s, 30000); // (a phone on a slow connection)
-  bool ok = send_all(s, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: " + std::to_string(n) + "\r\n" + SAFE_HEADERS + "Connection: close\r\n\r\n");
+  bool ok = send_all(s, std::string(part ? "HTTP/1.1 206 Partial Content\r\n" : "HTTP/1.1 200 OK\r\n") + "Content-Type: " + offer_type(path) +
+                            "\r\nContent-Length: " + std::to_string(z - a + 1) + "\r\nAccept-Ranges: bytes\r\n" +
+                            (part ? "Content-Range: bytes " + std::to_string(a) + "-" + std::to_string(z) + "/" + std::to_string(n) + "\r\n" : "") +
+                            SAFE_HEADERS + "Connection: close\r\n\r\n");
   std::string b(65536, '\0');
+  long long left = z - a + 1;
   size_t k;
-  while (ok && (k = fread(&b[0], 1, b.size(), f)) > 0) ok = send_all(s, b.substr(0, k));
+  while (ok && left > 0 && (k = fread(&b[0], 1, (size_t)std::min<long long>(left, (long long)b.size()), f)) > 0) { ok = send_all(s, b.substr(0, k)); left -= (long long)k; }
   fclose(f);
 }
 
@@ -510,7 +551,7 @@ void handle(sock_t s, std::string buf, bool local)
     snprintf(t, sizeof(t), "{\"now\":%.6f}", direct_now());
     return answer(s, 200, "application/json", t);
   }
-  if (r.path == "/api/file") return send_file(s, webui_param(r.query, "id"));
+  if (r.path == "/api/file") return send_file(s, webui_param(r.query, "id"), header(r, "range"));
   if (r.path == "/api/mix") { // (REAPER's own mix for a screen share: this computer's pages only, never the tailnet or a proxy's)
     if (!local || !header(r, "x-forwarded-host").empty() || !header(r, "x-forwarded-for").empty() || !header(r, "x-forwarded-proto").empty())
       return answer(s, 403, "text/plain", "this computer only\n");
