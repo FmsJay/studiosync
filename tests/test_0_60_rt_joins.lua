@@ -247,31 +247,6 @@ joins.tick(now + 50)
 check(started[joins.CHANNEL] and started[joins.CHANNEL].secret == joins.CHANNEL_SECRET and started[joins.CHANNEL].port == 47281, "open invitations: the ask channel listens")
 check(st.folders[ID][K_DEV] and not st.devices[N_DEV], "an ask on the channel is let in; the same words under another studio's name aren't read as one")
 
--- ---- a refused ask is said: one line, rate-limited, nothing secret in it (VM test: revoked and forged asks were refused silently) ----------
-local later, nlog = now + 10 * 86400, #logs -- (after every ask above, the run-out one included)
-ok = joins.on_request(ask(t3, EVE_DEV, "Eve"), later) -- (t3: revoked above)
-check(not ok and #logs == nlog + 1 and logs[#logs]:find("refused: no such invitation", 1, true) and logs[#logs]:find("EVEEVEE", 1, true)
-  and logs[#logs]:find("Eve", 1, true), "a revoked ask: one line, who asked and why: " .. tostring(logs[#logs]))
-check(not logs[#logs]:find(k3.sig, 1, true) and not logs[#logs]:find(k3.id, 1, true) and not logs[#logs]:find(joins.PREFIX, 1, true)
-  and not logs[#logs]:find(my_key, 1, true), "no token, signature, invitation id or key in it")
-ok = joins.on_request(ask(forged, EVE_DEV, "Eve"), later + 5)
-check(not ok and #logs == nlog + 1, "another refusal within REFUSED_GAP: not said (forged asks can come from any device id)")
-ok = joins.on_request(ask(t3, EVE_DEV, "Eve"), later + 30)
-check(not ok and #logs == nlog + 1, "the same ask again (the joiner resends every 10 s): not said again")
-ok = joins.on_request(ask(forged, EVE_DEV, "Eve"), later + 50)
-check(not ok and #logs == nlog + 2 and logs[#logs]:find("signature", 1, true) and not logs[#logs]:find(forged.sig, 1, true), "a forged one, later: said")
-ok = joins.on_request({ token = "studiosync-invite:garbage", device = N_DEV, name = "Nat" }, later + 70)
-check(not ok and #logs == nlog + 3 and logs[#logs]:find("not an invitation", 1, true), "garbage: said")
-ok = joins.on_request(ask(t3, EVE_DEV, "Eve"), later + 30 + joins.REFUSED_EVERY)
-check(not ok and #logs == nlog + 4, "the same ask after REFUSED_EVERY: said again")
--- none open here any more (all revoked) while the channel still hears: said too
-band.set_ext_json(band.SECTION, "joins open", {}, true)
-polls[#polls + 1] = { 3, joins.CHANNEL, "join", band.json_encode(ask(t6, N_DEV, "Nat")) }
-clock = clock + 5
-joins.tick(later + 2000)
-check(#logs == nlog + 5 and logs[#logs]:find("no invitation is open", 1, true) and logs[#logs]:find("NEWNEWN", 1, true) and not st.devices[N_DEV],
-  "an ask with nothing open: refused and said: " .. tostring(logs[#logs]))
-
 -- ---- the joiner -------------------------------------------------------------------------------------------------------------------------
 -- (another computer: its own device and name; the studio not here yet)
 services.my_device_id = function() return BO_DEV end

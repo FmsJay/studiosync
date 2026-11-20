@@ -563,22 +563,15 @@ and their devices file goes. The signalling file is HMAC'd with its own label (`
 direction, the counter as the nonce, the 12-byte header authenticated), 16-byte tag: 28 bytes added. A 64-packet replay window (as
 WireGuard's) takes reordering and refuses replays. New ephemeral keys on every connection. Paths without Tailscale have ~1472 bytes of UDP
 payload, so today's 1200-byte packets plus 28 fit, through TURN's 4-byte ChannelData too. Over Tailscale nothing changes (no second layer).
-Before it's on by default: an outside review of the handshake against Noise KK + psk, or Noise-C (MIT) instead of our 40 lines.
-**Security review deferred (James, 2026-11-19: "save any security reviews for after all functionality and features are in").** Stage 1 is
-built with the handshake as designed and tested (tests/nat_test.cpp), marked `shortcut:` in extension/nat.h and lib/nat.lua; the review
-comes once every stage below is in, before `nat` can be on by default.
+Before shipping: an outside review of the handshake against Noise KK + psk, or Noise-C (MIT) instead of our 40 lines.
 
 **Running the link, live audio and hops over it (an address abstraction).**
-- **More UDP ports:** UDP 47282-47297, one per Tailscale-free bandmate, all on libjuice's one thread (its poll mode; not 47281: rtaudio
-  binds that on the Tailscale address, and a wildcard bind beside it behaves differently on each system). Not libjuice's mux mode (one port
-  for all): it can't use TURN, which stage 3 needs.
-- **A peer is a "way":** lib/direct.lua's peer strings stay `name:port` for Tailscale; a bandmate whose pair needs it becomes
-  `nat:<device id>` (only while band.json `nat` is on). Which pairs: both devices files carry `nat = { pub, tailnet }` (tailnet: on the
-  studio's Tailscale network now), and a pair goes this way when the studio has no tailnet, one of the two has no name on it, or one says
-  it's off it now; both computers read the same two files, so they agree. The native side keeps one NatLink per such peer.
-- **Live audio and hops (UDP already):** each such bandmate gets a synthetic `sockaddr_in`: an address in 198.18.0.0/15 (benchmarking, never
-  routed) from a hash of its device id, port 47281, the same on every computer (live audio's sink ids and the hub's level lists name
-  computers by address, so both sides have to call each the same). AOO keys its sinks and sources on addresses, so it doesn't notice; rtaudio's `send_fn`
+- **One more UDP port:** libjuice's mux mode on UDP 47282 for every Tailscale-free peer (not 47281: rtaudio binds that on the Tailscale
+  address, and a wildcard bind beside it behaves differently on each system).
+- **A peer is a "way":** lib/direct.lua's peer strings stay `name:port` for Tailscale; a devices entry with no Tailscale name on the studio's
+  network but a `nat.pub` becomes `nat:<device id>` (only while band.json `nat` is on). The native side keeps one NatLink per such peer.
+- **Live audio and hops (UDP already):** each NatLink gets a synthetic `sockaddr_in` (an address from 192.0.2.0/24, TEST-NET, that never
+  routes, with the link's index as the port). AOO keys its sinks and sources on addresses, so it doesn't notice; rtaudio's `send_fn`
   sends to a synthetic address through `nat_link_send` instead of `sendto`, and what a NatLink opens enters `rx_loop`'s path with that
   address as `from`. `addr_ok` becomes "a Tailscale address, or a synthetic one whose link is up" (the link's identity is the check). The
   SSL1/SSH1 tags stay as they are (a second, harmless check). hopnet.cpp rides on rtaudio's socket, so it follows for free.
@@ -602,19 +595,18 @@ comes once every stage below is in, before `nat` can be on by default.
 
 **Staged plan.**
 0. **Spike (done, below).**
-1. **Live audio first (built: "Stage 1 built" below)** behind band.json `nat` (off by default, owner and admins): libjuice + Monocypher in the extension's build
+1. **Live audio first** behind band.json `nat` (off by default, owner and admins): libjuice + Monocypher in the extension's build
    (third_party build scripts), static keys in devices files, signalling over the shared folder, public STUN, synthetic addresses in
    rtaudio, the UDP 47282 rule, Health's row. Gate: an hour of live audio desktop <-> laptop with Tailscale off on one side.
 2. **The direct link over it:** KCP + the loopback shim; events, messages, clock and streams unchanged above it.
 3. **The hub as STUN/TURN** (the server inside the extension, credentials from the studio key), signalling over existing links for
    sub-second set-up, the strict-NAT check.
-4. **Before it's on by default (after every feature is in: James deferred security reviews till then):** the handshake reviewed (or
-   Noise-C), the signal parser and `nat_open` fuzzed (libjuice ships a fuzzer for its own STUN parser), ICE restarts when a computer
-   changes network (Wi-Fi to tethering).
+4. **Before it's on by default:** the handshake reviewed (or Noise-C), the signal parser and `nat_open` fuzzed (libjuice ships a fuzzer
+   for its own STUN parser), ICE restarts when a computer changes network (Wi-Fi to tethering).
 
 ### The spike (extension/nat.cpp, nat.h, tests/nat_test.cpp, tests/build_nat_test.cmd)
 - `nat.cpp` is the transport above: keys, the handshake (`nat_derive`), sealing (`nat_seal`/`nat_open`), the signed rendezvous message,
-  and `NatLink` (one libjuice agent, the folder, hellos). In the spike it was kept out of the shipped build; stage 1 (below) put it in.
+  and `NatLink` (one libjuice agent, the folder, hellos). It won't compile without `-DSTUDIOSYNC_NAT`; the shipped build doesn't list it.
   CI builds and runs `nat_test` as a test step of its own on macOS and Linux, after the shipped builds.
 - `nat_test` (no arguments) on JAMES-MAIN, all passing: the crypto (both sides agree; a flipped byte, a changed counter, a replay, another
   studio's secret and an impostor without the computer's key are refused; an all-zero public key is refused; the signed message's
@@ -630,52 +622,9 @@ comes once every stage below is in, before `nat` can be on by default.
 - **Not tested:** symmetric NAT or carrier-grade NAT on either side (both NATs here punched cleanly), TURN across the internet (only on
   localhost), networks that block UDP, IPv6-only, long sessions, a computer changing network mid-session, Syncthing as the actual carrier
   of the signalling files, macOS and Linux other than CI's localhost run, and anything inside REAPER.
-- **To ship (stage 1):** built, below.
-
-### Stage 1 built (rt-nat, 2026-11-20: native and Lua tests only, not run in REAPER yet; the extension's version not raised)
-- **Extension.** `extension/nat.cpp` is in the shipped build (Windows `build_windows.cmd`: libjuice and Monocypher once into
-  `third_party/build/studiosync_nat-x64.lib`; Mac and Linux: `third_party/build_unix.sh` puts them in the same archive as AOO, symbols
-  hidden). A NatHub keeps one link per bandmate: the lower device id offers, the other answers each new offer; a failed or dropped link is
-  tried again after 5, 10, 20 ... up to 120 s; a new ephemeral key in the other side's file means it started again, and the link is made
-  afresh. A STUN probe every 10 minutes (two servers from one socket) says easy, strict or blocked. ReaScript: `StudioSync_NatKey(path)`
-  (the public half, making the key file when it's missing), `StudioSync_NatSetup(json)`, `StudioSync_NatStatus()`, `StudioSync_NatStop()`.
-- **Live audio** (`extension/rtaudio.cpp`, a small change): a peer `nat:<device id>` resolves to its synthetic address through function
-  pointers nat.cpp hands it (`RtNat`, so `rtaudio_test` needs nothing new); every send to a synthetic address goes through nat.cpp, and what
-  nat.cpp opens enters the same receive path (`rx_one`, under the same lock as the socket's). With no Tailscale address and NAT active, live
-  audio binds loopback and hears only those bandmates. The hop's datagrams (`rt_send_raw`) follow the same way, untested.
-- **Lua** (`lib/nat.lua`; hooks in lib/liveaudio.lua tick, lib/removal.lua publish, lib/direct.lua Health and Settings, lib/groups.lua
-  `nat`/`nat_stun`): the key file `~/.studiosync/nat-key` (or `$STUDIOSYNC_NAT_KEY`), the devices-file entry, the pair rule, the setup for the
-  bandmates in the room whose own computer wrote their file (`trust.device_ok`) and whose project list has the song, live audio's peer list
-  with their Tailscale names swapped for `nat:<device>`, a studio with `nat` on needing no tailnet for live audio, and a computer off the
-  tailnet needing no Tailscale firewall rule. Settings > Studio: "Connect without Tailscale" (owner and admins).
-- **Health:** one row naming each such bandmate: "direct, through both networks' NATs (up 12s)", "relayed", "connecting", "waiting for
-  their computer to offer", "trying again shortly (why)"; a strict-NAT row and a blocked-UDP row from the probe; on Windows, while the rule
-  is missing and someone is reached this way, a row with "Set up connection without Tailscale" (a UAC prompt for one rule: reaper.exe, UDP
-  47282-47297, any address). Nothing is added to a firewall without that press.
-- **Tests:** `tests/nat_test.cpp` (the spike's checks plus two hubs: keys in files, the synthetic address the same on both sides, live
-  audio's datagrams both ways through `nat_sendto`, one side starting again and both up again in ~6.5 s, a peer dropped from the list);
-  `tests/nat_audio_test.cpp` (two live audio links whose only peer is `nat:<device>`: A's sine heard on B 43 ms after it was played, at peak
-  0.502 for 0.500 sent, nothing refused); `tests/test_0_60_rt_nat.lua` (the pair rule, STUN list, setup, merge, the entry, the rule's words,
-  Health's rows). All in CI except the Lua one, which `tests/run.py` runs.
-- **Known limits of stage 1:** no relay yet (two strict NATs can't meet: Health says so; stage 3); the hub's live mix names bandmates by
-  address, so a listener reaching the hub one way and a bandmate another way gets that bandmate at full level in the hub's mix (its own
-  level for them is ignored) until both use the same way; the direct link (events, chat, clock) still needs Tailscale (stage 2); the
-  rendezvous goes through Syncthing, so a link takes a Syncthing round trip or two to come up (seconds, more when Syncthing is busy).
-- **To test in REAPER** (desktop + laptop; James decides before any firewall rule or Tailscale change on a real computer):
-  1. Install the extension built from this commit on both (the release raises EXT_VERSION); Health shows no "nat" rows while the studio's
-     setting is off.
-  2. Settings > Studio on the desktop (owner): turn on "Connect without Tailscale". Within ~30 s each computer's `_band/devices/<you>.json`
-     has `nat = { pub, tailnet: true }`; nothing else changes while both are on Tailscale (live audio still by Tailscale names).
-  3. On the laptop, take it off the studio's tailnet (`tailscale down`, or off the network that has it; James's call). Syncthing has to
-     reach it another way (its own discovery and relays: not a studio set to sync only through Tailscale), as the signalling rides on it. Its devices file
-     says `tailnet: false` within ~30 s; both computers then show "Without Tailscale: <name>: connecting", and within a Syncthing round trip
-     or two "direct, through both networks' NATs". `_band/nat/` holds one file each way.
-  4. Both in the same song and room with Live sync on: live audio heard both ways, Chat > Call shows the other by name. Health's live audio
-     row shows the latency (expect about Tailscale direct's: 88 ms round trip desktop <-> laptop in the spike).
-  5. Restart REAPER on one side: Health goes "trying again shortly" or "connecting", then "direct" again within about a minute, with no
-     action. Turn the studio setting off: the rows go, the links stop, and the laptop isn't heard until Tailscale is back.
-  6. Windows, only if James OKs it: press "Set up connection without Tailscale" in Health, accept UAC, and check the row goes. Then the
-     hour-long gate: an hour of live audio with Tailscale off on the laptop, no glitch Health can see.
+- **To ship (stage 1):** add libjuice and Monocypher to `extension/third_party/build_windows.cmd` / `build_unix.sh` (static, symbols
+  hidden as AOO's), the keypair and devices-file field, the signalling files in lib/direct.lua, the synthetic addresses in rtaudio.cpp, the
+  firewall rule and Health's row: roughly a week of work and a review, then the hour-long gate above.
 
 ## Fast first, lossless after (James)
 Everything audio can arrive twice: a fast, light version over the link now, and the lossless file after, by the

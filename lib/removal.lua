@@ -36,18 +36,12 @@ function removal.publish(root, user, id, ts, keep)
   local foreign = false
   for k in pairs(had) do foreign = foreign or k ~= keep end
   if ts and ts[1] ~= keep then ts = nil end
-  -- (the connection without Tailscale, lib/nat.lua: this computer's public key and whether it's on the studio's tailnet now; nil while the
-  -- studio has it off. James, rt)
-  local okn, n = pcall(function() return require("nat").entry(root, ts ~= nil) end)
-  n = okn and n or nil
-  local hn = type(d) == "table" and d.device == id and type(d.nat) == "table" and d.nat or nil
-  local same_nat = (n == nil and hn == nil) or (n ~= nil and hn ~= nil and hn.pub == n.pub and hn.tailnet == n.tailnet)
-  if said_device(root, user) == id and not foreign and (not ts or had[ts[1]] == ts[2]) and same_nat then return end -- (what's there, checked or not: one naming another computer is written over)
+  if said_device(root, user) == id and not foreign and (not ts or had[ts[1]] == ts[2]) then return end -- (what's there, checked or not: one naming another computer is written over)
   local names = {}
   for k, v in pairs(had) do if type(k) == "string" and type(v) == "string" and k == keep then names[k] = v end end
   if ts then names[ts[1]] = ts[2] end
   reaper.RecursiveCreateDirectory(devices(root), 0)
-  band.write_json(path, { user = user, device = id, ts = next(names) and names or nil, nat = n })
+  band.write_json(path, { user = user, device = id, ts = next(names) and names or nil })
 end
 
 -- Whether the minute is up. Pure.

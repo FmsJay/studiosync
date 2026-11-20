@@ -1028,11 +1028,7 @@ function streams.catchup_tick(cfg, b)
     streams.catchup_wake()
   end
   local rooms = cfg.root .. "/" .. b.song .. "/rooms/"
-  -- (on_media would refuse it; or it was deleted on purpose, a tombstone in the room's deleted/: not fetched back. lib/drive.lua, VM test, rt)
-  local function skip(w)
-    return band.size(rooms .. w.room .. "/media/" .. w.file) ~= nil or #band.subdirs(rooms .. w.room) == 0
-      or require("drive").tombstones(rooms .. w.room .. "/deleted")[w.file] ~= nil
-  end
+  local function skip(w) return band.size(rooms .. w.room .. "/media/" .. w.file) ~= nil or #band.subdirs(rooms .. w.room) == 0 end -- (on_media would refuse it)
   if to_cloud then
     local cloud_rooms = streams.cloud_root .. "/" .. b.song .. "/rooms/"
     for k, w in ipairs(need_wants) do

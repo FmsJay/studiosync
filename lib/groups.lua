@@ -28,7 +28,6 @@ local SETTINGS = { "alerts", "alerts_server", "call", "sonobus_server", "tailnet
   "shared_prefs", -- ("shared_prefs": the studio's REAPER preferences, lib/sharedprefs.lua; { key = value }. James, rt)
   "colour_parity", "theme_colours", -- (colour parity, on unless false, and the theme's colour settings: lib/colours.lua parity. James, rt)
   "hub", -- ("hub": the preferred studio hub, a member's name: lib/hub.lua elect_studio. James, rt)
-  "nat", "nat_stun", -- (the connection without Tailscale, lib/nat.lua: on only when true; the studio's STUN list "host:port ...". James, rt)
   "update_key" } -- ("update_key": signed updates, the owner's Ed25519 public key: lib/band.lua studio_update_key. James, rt)
 -- (Round 2 review, 0.59.46: Syncthing is asked again only when band.json or this computer's pins changed, or the last answer was "not known",
 -- and the kept settings are written only when they differ: it was a blocking call and a saved-state write every 5 s per script and studio,
@@ -207,8 +206,6 @@ function groups.set_hub(root, user) save(root, function(j) j.hub = type(user) ==
 -- Owner and admins. (James, 2026-11-19: "realtime audio should probably be the default mode ... shouldn't even need to turn it on". rt)
 function groups.live_audio(root) return groups.trusted(root).live_audio ~= false end
 function groups.set_live_audio(root, on) save(root, function(j) if on then j.live_audio = nil else j.live_audio = false end end) end
--- The connection without Tailscale (lib/nat.lua): off unless band.json says true. Owner and admins. (James, rt: stage 1, live audio)
-function groups.set_nat(root, on) save(root, function(j) j.nat = on and true or nil end) end
 -- The hub's live mix (lib/liveaudio.lua hub_plan): from how many people in a room (them too) the song's hub mixes everyone's live audio into one
 -- stream each; nil: liveaudio.HUB_FROM, 0: never (peer to peer always). Owner and admins. (James, rt)
 function groups.live_hub(root) local v = tonumber(groups.trusted(root).live_hub); return v and math.floor(v) or nil end

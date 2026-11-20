@@ -54,11 +54,10 @@ Linux: `build_unix.sh` here (cc/c++, symbols hidden so another plug-in's own AOO
 **Updating.** Fetch the new tag from the same place, copy the same folders over, check `sources.txt` against upstream's lists,
 update the table above, delete `build/`, rebuild and run `tests/build_rtaudio_test.cmd`.
 
-## libjuice and Monocypher (the connection without Tailscale: extension/nat.cpp, tests/nat_test.cpp, tests/nat_audio_test.cpp)
+## libjuice and Monocypher (the Tailscale-free connection spike: extension/nat.cpp, tests/nat_test.cpp)
 
-**In the shipped extension since stage 1 (2026-11-20).** `build_windows.cmd` here builds them once into `build/studiosync_nat-x64.lib`
-(linked by `extension/build_windows.cmd`); `build_unix.sh` puts them in the same archive as AOO and Opus, symbols hidden. A release that
-ships the extension ships `libjuice/LICENSE` and `monocypher/LICENCE.md` beside it, as AOO's and Opus's licences.
+**Not in the shipped extension.** Only `tests/build_nat_test.cmd` and CI's separate "Tailscale-free connection spike" test step compile
+these (with `-DSTUDIOSYNC_NAT`); `extension/build_windows.cmd`, `build_windows.cmd`/`build_unix.sh` here and CI's shipped builds don't.
 Design: docs/realtime-roadmap.md "Without Tailscale: design". Each file is byte for byte upstream's at the commit below (nothing patched),
 no nested `.git`. Downloaded with `git clone --depth 1 --branch <tag>` from the official repositories only (2026-11-19).
 

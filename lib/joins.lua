@@ -159,33 +159,11 @@ function joins.welcome(root, tok, r, now)
   reaper.StudioSync_DirectStart("join-" .. tok.id, tok.sig, inbox(), -1)
   return reaper.StudioSync_DirectMsg("join-" .. tok.id, "welcome", data, r.reply .. ":" .. require("direct").port()) == 1
 end
--- A refused ask, said in the log: once per reason and asking computer every REFUSED_EVERY s (the joiner asks again every RESEND s), and never
--- closer than REFUSED_GAP s apart (a forged ask can name any device id). Only the asker's short device id and name: never the token, its
--- signature or a key. A revoked or forged ask was refused with nothing said (VM test, rt). -> true when said.
-joins.REFUSED_EVERY, joins.REFUSED_GAP = 600, 10
-local refused_at, refused_n, refused_last = {}, 0, -math.huge
-function joins.say_refused(r, why, now)
-  local dev = type(r) == "table" and type(r.device) == "string" and r.device:sub(1, 7) or "unknown"
-  local k = tostring(why) .. "\0" .. dev
-  if now - (refused_at[k] or -math.huge) < joins.REFUSED_EVERY or now - refused_last < joins.REFUSED_GAP then return false end
-  if refused_n > 500 then refused_at, refused_n = {}, 0 end -- shortcut: forgotten wholesale past 500; REFUSED_GAP still paces the log
-  refused_at[k], refused_n, refused_last = now, refused_n + 1, now
-  local name = type(r) == "table" and type(r.name) == "string" and r.name or "someone"
-  band.log(string.format("an invitation ask from %s (computer %s) was refused: %s", name, dev, tostring(why)))
-  return true
-end
-local ask
 -- A "join" ask, checked and, when it holds, the joiner let in: its device added, the folder shared (tools.let_in: the roles written out again
--- from here, a guest's mark, a restore point), the record rewritten naming it, the welcome sent. -> true (and "again"), or false + why (said
--- in the log: joins.say_refused).
+-- from here, a guest's mark, a restore point), the record rewritten naming it, the welcome sent. -> true (and "again"), or false + why.
 function joins.on_request(d, now)
   now = now or os.time()
   local r = joins.valid_request(d)
-  local ok, why = ask(r, now)
-  if not ok then joins.say_refused(r, why, now) end
-  return ok, why
-end
-function ask(r, now)
   local tok = r and joins.parse(r.token)
   if not tok then return false, "not an invitation" end
   local root
@@ -201,11 +179,11 @@ function ask(r, now)
   local used = reaper.GetExtState(band.SECTION, "join used " .. tok.id)
   local ok, why = joins.check(tok, rec, now, my_key(), used ~= "" and used or nil, r.device,
     function(sig, msg, key) return reaper.StudioSync_Verify(sig, msg, key) == 1 end)
-  if not ok then return false, why end
+  if not ok then band.log("an invitation to " .. band.info(root).name .. " was refused: " .. why); return false, why end
   if why ~= "again" then
     -- (taken out after the invitation was made: not back in with it)
     local out = require("removal").out_since(root, r.device, rec.made)
-    if out then return false, "taken out since the invitation was made" end
+    if out then band.log("an invitation to " .. band.info(root).name .. " was refused: " .. out .. " was taken out since it was made"); return false, "taken out since" end
     require("services").add_device(r.device, r.name) -- (known here already: it says so, and the sharing below still goes)
     local lok, lwhy = require("tools").let_in({ id = r.device, name = r.name, folder = tok.studio, band = band.info(root).name, root = root }, me(),
       tok.role == "guest" and tok.ends or nil)
@@ -282,8 +260,6 @@ function joins.tick(now)
     if not seq then break end
     last_seq = seq
     if studio == joins.CHANNEL and kind == "join" and next(open) then band.try("joins.on_request", joins.on_request, band.json_decode(data or ""), now)
-    elseif studio == joins.CHANNEL and kind == "join" then -- (none open here: revoked, run out or used, while the channel was still up)
-      joins.say_refused(joins.valid_request(band.json_decode(data or "")), "no invitation is open on this computer (revoked, run out or used)", now)
     elseif kind == "welcome" and studio:match("^join%-%x+$") then band.try("joins.on_welcome", joins.on_welcome, studio:sub(6), band.json_decode(data or "")) end
   end
   local changed = false

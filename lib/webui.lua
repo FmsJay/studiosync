@@ -204,10 +204,6 @@ function webui.tick(proj, cfg, b, handlers)
     end
   end
   local now = reaper.time_precise()
-  do -- a phone that started the band and went quiet mid-take: its start stopped, looking or not (lib/phonerec.lua)
-    local said = require("phonerec").watch(proj, cfg, b, now)
-    if said then band.log(said) end
-  end
   -- Nobody looking: no presence (sync.authority reads every claims file) and no chat built. A page arriving gets both on this tick, so the
   -- server's older copy shows for one tick at most. (James, rt)
   local look = looking(now)

@@ -49,10 +49,6 @@ phonerec.KINDS = { wav = "wav", webm = "webm", ogg = "ogg", mp4 = "m4a", mid = "
 phonerec.MIX_EVERY = 30      -- seconds between looking for each song's newest mix while a Record page is open
 phonerec.DONE_KEEP = 20      -- how the last takes went, for the pages (by the phone's id for each)
 phonerec.POS_MAX = 24 * 3600 -- seconds: a stamped position past this is nonsense
--- A page recording along to this computer says it's alive every 2 s (record.js); the start it made is stopped once it's this many seconds
--- quiet (the page closed, the phone slept or lost the network), so the band isn't left playing. Only for a page that says so (an older page
--- never does: its start stays, as before). VM test, rt.
-phonerec.GONE_AFTER = 8
 
 -- ---- pure -------------------------------------------------------------------------------------------------------------------------------
 -- The pages' secure address, through `tailscale serve`: this computer's MagicDNS name. nil from a bad name or token (as webui.phone_url).
@@ -232,7 +228,7 @@ end
 local function guid_ok(g) return type(g) == "string" and g:match("^{[%x%-]+}$") and #g <= 40 end
 function phonerec.parse(a)
   if type(a) ~= "table" then return nil end
-  local out = { want = a.want == true or nil, stop = a.stop == true or nil, setup = a.setup == true or nil, alive = a.alive == true or nil }
+  local out = { want = a.want == true or nil, stop = a.stop == true or nil, setup = a.setup == true or nil }
   if type(a.start) == "table" and guid_ok(a.start.track) then
     out.start = { track = a.start.track, bars = math.max(0, math.min(4, math.floor(tonumber(a.start.bars) or 1))) }
   end
@@ -305,7 +301,7 @@ local function start(proj, cfg, b, d)
   local pos = reaper.GetCursorPositionEx(proj)
   local ev = { type = "start", pos = pos, countin = together.bars_before(proj, pos, d.bars), click = d.bars > 0 or nil, lag = 0, lead = cfg.user }
   local _, who = authority(cfg, b)
-  S.cue, S.started, S.take_cue, S.alive = pos, reaper.time_precise(), pos, nil -- (take_cue outlives Stop: the take arrives after it)
+  S.cue, S.started, S.take_cue = pos, true, pos -- (take_cue outlives Stop: the take arrives after it)
   if require("dawview").may_transport(who.mode, cfg.user, who.driver, require("groups").may_manage(cfg.root, cfg.user)) then
     together.go(proj, cfg, b, ev)
     return say("a phone's take: Play together from bar " .. reaper.format_timestr_pos(pos, "", 2))
@@ -455,21 +451,11 @@ local function nudge(proj, cfg, b, ms)
   return say(string.format("%s nudged %+d ms (%+d ms in all)", l.name, ms, l.nudged))
 end
 
--- Stopping the start the phone made (and only that): Stop together, or this computer's own stop where it started here alone.
-local function stop_mine(proj, cfg, b)
-  S.started, S.cue, S.alive = nil, nil, nil
-  local _, who = authority(cfg, b)
-  if require("dawview").may_transport(who.mode, cfg.user, who.driver, require("groups").may_manage(cfg.root, cfg.user)) then
-    require("together").go(proj, cfg, b, { type = "stop" })
-  else reaper.OnStopButtonEx(proj) end
-end
-
 -- An action a page sent. -> words for the log, or nil.
 function phonerec.action(proj, cfg, b, a)
   local d = phonerec.parse(a)
   if not d then return end
   if d.want then S.want_until = reaper.time_precise() + phonerec.WANT_FOR end
-  if d.alive then S.heard_at = reaper.time_precise() end -- (the recording page's "still here": phonerec.watch)
   if not phonerec.available() and (d.start or d.take or d.nudge) then return say("this computer's StudioSync extension is older: update it to record from a phone") end
   if d.setup then
     local out = require("services").ts_exec(phonerec.serve_args(require("direct").port(), phonerec.HTTPS_PORT), 10000)
@@ -480,15 +466,14 @@ function phonerec.action(proj, cfg, b, a)
     return say("tailscale serve didn't set it up: " .. (msg ~= "" and msg or
       "no answer in 10 s (Tailscale not installed here, or HTTPS certificates off for the tailnet: login.tailscale.com/admin/dns)"))
   end
-  if d.start then
-    local said = start(proj, cfg, b, d.start)
-    if d.alive and S.started then S.alive = true end -- (a page that says it's alive while it records: watched)
-    return said
-  end
-  if d.alive and S.started then S.alive = true end
+  if d.start then return start(proj, cfg, b, d.start) end
   if d.stop then
     if not S.started then return end -- (only a start the phone made: someone else's stays theirs)
-    stop_mine(proj, cfg, b)
+    S.started, S.cue = nil, nil
+    local _, who = authority(cfg, b)
+    if require("dawview").may_transport(who.mode, cfg.user, who.driver, require("groups").may_manage(cfg.root, cfg.user)) then
+      require("together").go(proj, cfg, b, { type = "stop" })
+    else reaper.OnStopButtonEx(proj) end
     return say("the phone stopped its take")
   end
   if d.take then return put_take(proj, cfg, b, d.take) end
@@ -528,20 +513,6 @@ function phonerec.auto_link()
   services.run_hidden("phone-serve", '"' .. exe .. '" ' .. phonerec.serve_args(require("direct").port(), phonerec.HTTPS_PORT), 0)
   band.log(say("setting up the phone's secure link by itself (tailscale serve, port " .. phonerec.HTTPS_PORT .. "; Settings > Advanced turns this off)"))
   return true
-end
-
--- Each tick in front, whether or not a page still looks (lib/webui.lua: a closed page is one that doesn't): the start a phone made, stopped
--- when its page has gone quiet for GONE_AFTER s mid-take. A start someone made in REAPER is never the phone's (S.started is only its own),
--- and once nothing plays or is due here the phone's start is over: forgotten, so a later start by someone else isn't taken for it. -> words.
-function phonerec.watch(proj, cfg, b, now)
-  if not S.started then return end
-  local together = require("together")
-  local due = (tonumber(reaper.GetExtState(band.SECTION, "together_at " .. tostring(proj))) or 0) > together.now()
-  if now - S.started > together.LEAD + 3 and reaper.GetPlayStateEx(proj) & 1 == 0 and not due then S.started, S.cue, S.alive = nil, nil, nil; return end
-  if not S.alive or now - (S.heard_at or now) < phonerec.GONE_AFTER then return end
-  local quiet = math.floor(now - S.heard_at)
-  stop_mine(proj, cfg, b)
-  return say(string.format("the phone recording along went quiet for %d s (its page closed, or it lost the network): the start it made is stopped", quiet))
 end
 
 -- Each tick in front while a page looks (lib/webui.lua): the play readings, and the Record page's state while one is open.

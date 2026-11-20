@@ -584,10 +584,8 @@ function liveaudio.tick(cfg, b, proj)
   local direct, groups = require("direct"), require("groups")
   local on = cfg ~= nil and liveaudio.enabled(cfg.root)
   local avail = liveaudio.available()
-  -- (the connection without Tailscale, lib/nat.lua: a studio with it on needs no tailnet, and a computer off the tailnet no Tailscale rule)
-  local nat = require("nat")
-  local secret = on and (groups.tailnet(cfg.root) or nat.enabled(cfg.root)) and groups.sonobus_secret(cfg.root) or nil
-  S.why, S.code = liveaudio.why_not(on, avail, secret, not on or direct.firewall_ok("UDP") or nat.off_tailnet(cfg.root))
+  local secret = on and groups.tailnet(cfg.root) and groups.sonobus_secret(cfg.root) or nil
+  S.why, S.code = liveaudio.why_not(on, avail, secret, not on or direct.firewall_ok("UDP"))
   -- (REAPER's audio device closed, as on the Mac after a restart: live audio sent and heard nothing until someone opened it. Opened once a
   -- session, 5 s in, so a device someone closes on purpose later stays closed. James: "a lot of things should happen automatically", rt)
   if on and not S.why and not S.reopened and reaper.Audio_IsRunning and reaper.Audio_IsRunning() ~= 1 then
@@ -608,14 +606,11 @@ function liveaudio.tick(cfg, b, proj)
       band.log("live audio stopped: " .. S.why)
     end
     if S.src and S.src.hop ~= 0 then liveaudio.drop_live_out(proj) end -- (Play's hidden track goes with it)
-    pcall(nat.peers, nil) -- (and the links without Tailscale: nothing carries them yet but live audio)
     S.json, S.src, S.sending, S.hub, S.hub_asked = nil, nil, nil, nil, nil
     return
   end
   S.b = b -- (the tab's song and room: Chat > Call reads the bandmates' statuses with it)
-  local list, dev_of, users = direct.peers(cfg, b and b.song, b and b.room)
-  local nok, nlist, nusers, ndevs = pcall(nat.peers, cfg, b) -- (bandmates the tailnet doesn't reach: "nat:<device>" in place of their Tailscale name)
-  if nok and type(nlist) == "table" and #nlist > 0 then list, users = nat.merge(list, dev_of, users, nlist, nusers, ndevs) end
+  local list, _, users = direct.peers(cfg, b and b.song, b and b.room)
   if type(users) == "table" then -- (who each peer is, for the panel and the actions: the cue mix and talkback go by name)
     local names = band.json_encode(users)
     if names ~= S.names then reaper.SetExtState(band.SECTION, "live audio names", names, false); S.names = names end
@@ -659,7 +654,6 @@ function liveaudio.on_exit(proj)
   if not liveaudio.available() or reaper.GetExtState(band.SECTION, "live audio by") ~= tostring(proj) then return end
   reaper.StudioSync_LiveAudioStop()
   reaper.DeleteExtState(band.SECTION, "live audio by", false)
-  pcall(require("nat").peers, nil) -- (the links without Tailscale go with it)
 end
 
 -- Why a bandmate isn't heard, from the word in their status (my_la). %s: the extension StudioSync wants.
