@@ -255,6 +255,17 @@ int main()
   CHECK(webui_save_upload(id.c_str(), saved.c_str()) == 0, "and let go once saved");
   for (int i = 0; i < 3; ++i) ask(link, up + "5\r\n\r\nhello");
   CHECK(std::string(webui_status()).find("listening") != std::string::npos, "three more: the oldest let go, the server fine");
+  // a file Lua offers (the phone app's mix to play along to): only by its id, streamed whole
+  std::string mix(200000, '\0');
+  for (size_t i = 0; i < mix.size(); ++i) mix[i] = (char)(i * 13);
+  spit(dir + "/mix.wav", mix);
+  CHECK(webui_offer("ab12", (dir + "/mix.wav").c_str()) == 1 && webui_offer("AB12", "x") == 0 && webui_offer("../x", "x") == 0 && webui_offer("", "x") == 0,
+        "an offer: hex ids only");
+  r = get(link, "/api/file?id=ab12", th, ck);
+  CHECK(code(r) == 200 && body(r) == mix && r.find("Content-Length: 200000") != std::string::npos, "an offered file, byte for byte");
+  CHECK(code(get(link, "/api/file?id=ab12", th)) == 403, "and only with the studio's token");
+  CHECK(code(get(link, "/api/file?id=cd34", th, ck)) == 404 && code(get(link, "/api/file?id=", th, ck)) == 404, "an id not offered: 404");
+  CHECK(webui_offer("ab12", "") == 1 && code(get(link, "/api/file?id=ab12", th, ck)) == 404, "withdrawn: 404");
   const std::string st = webui_status();
   CHECK(st.find("\"listening\":true") != std::string::npos && st.find("\"token\":\"" + tok + "\"") != std::string::npos, "status says listening, with the token");
 

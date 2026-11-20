@@ -24,6 +24,14 @@
 -- It sets itself up now (James: "fewer things to press"): the first time a Record page asks here each session, in the background, and
 -- only with HTTPS certificates on for the tailnet (else `tailscale serve` waits for them). Tailnet-only and still behind the studio's
 -- token, as the http link is; Settings > Advanced turns it off (ExtState "phone link auto" "0"), and the page's button stays.
+--
+-- The phone app (docs/realtime-roadmap.md "StudioSync on the phone", stage 1): the same page installed on the phone (phone.webmanifest,
+-- phone-sw.js) opens without a studio computer and records there, playing the song's latest mix itself (each song's newest file in
+-- <Song>/mixes, offered for download by id: StudioSync_WebUIOffer, GET /api/file). Such a take knows its own place, the mix's position
+-- under its first sample (`pos`, and stamped in the WAV's BWF time reference, which REAPER reads), so here it only needs its song in front
+-- and the same room rules; a MIDI take (a Standard MIDI File from a USB keyboard, Web MIDI) becomes an ordinary MIDI item the same way.
+-- Each take carries the phone's id for it (`cid`): put in once, and the page hears how it went (`done`) before it lets go of its copy.
+-- (James, rt)
 local band = require("band")
 local phonerec = {}
 phonerec.WANT_FOR = 30       -- seconds a Record page's "I'm open" lasts (it says so every 10 s)
@@ -37,7 +45,10 @@ phonerec.LEAD_ALONE = 2      -- seconds from the press to a start on this comput
 phonerec.HTTPS_PORT = 8443   -- `tailscale serve`'s https port for the pages
 phonerec.NUDGE_MAX = 500     -- ms one nudge may move a take
 phonerec.NAME_MAX = 32       -- characters of a singer's name
-phonerec.KINDS = { wav = "wav", webm = "webm", ogg = "ogg", mp4 = "m4a" } -- what a page may upload -> the file's extension
+phonerec.KINDS = { wav = "wav", webm = "webm", ogg = "ogg", mp4 = "m4a", mid = "mid" } -- what a page may upload -> the file's extension
+phonerec.MIX_EVERY = 30      -- seconds between looking for each song's newest mix while a Record page is open
+phonerec.DONE_KEEP = 20      -- how the last takes went, for the pages (by the phone's id for each)
+phonerec.POS_MAX = 24 * 3600 -- seconds: a stamped position past this is nonsense
 
 -- ---- pure -------------------------------------------------------------------------------------------------------------------------------
 -- The pages' secure address, through `tailscale serve`: this computer's MagicDNS name. nil from a bad name or token (as webui.phone_url).
@@ -68,7 +79,79 @@ function phonerec.magic_ok(kind, head)
   if kind == "webm" then return head:sub(1, 4) == "\26\69\223\163" end
   if kind == "ogg" then return head:sub(1, 4) == "OggS" end
   if kind == "mp4" then return head:sub(5, 8) == "ftyp" end
+  if kind == "mid" then return head:sub(1, 4) == "MThd" end
   return false
+end
+
+-- A song's mix's id for the pages: 16 hex characters from the song, file and size, so a new render is a new id (the phone fetches it
+-- again). Pure.
+function phonerec.mix_id(song, file, size)
+  local s, a, b = tostring(song) .. "/" .. tostring(file) .. "/" .. tostring(size), 2166136261, 5381
+  for i = 1, #s do
+    local c = s:byte(i)
+    a = ((a ~ c) * 16777619) & 0xffffffff
+    b = (b * 33 + c) & 0xffffffff
+  end
+  return string.format("%08x%08x", a, b)
+end
+-- A phone's MIDI take: a Standard MIDI File as the page writes it (format 0, one track, ticks per beat; tempo meta events followed) ->
+-- { { t = seconds from its start, msg = the event's bytes } }, channel messages only, or nil and why. Pure.
+function phonerec.smf_events(s)
+  if type(s) ~= "string" or #s < 22 or s:sub(1, 4) ~= "MThd" then return nil, "not a MIDI file" end
+  local hlen, fmt, ntr, div = string.unpack(">I4I2I2I2", s, 5)
+  if fmt ~= 0 or ntr ~= 1 or div == 0 or div >= 0x8000 then return nil, "not a phone's MIDI take (one track, ticks per beat)" end
+  local at = 9 + hlen
+  if s:sub(at, at + 3) ~= "MTrk" then return nil, "a MIDI file without its track" end
+  local i, z = at + 8, math.min(#s, at + 7 + string.unpack(">I4", s, at + 4))
+  local tempo, sec, out, status = 500000, 0, {}, nil
+  local function vlq()
+    local v = 0
+    for _ = 1, 4 do
+      local c = s:byte(i)
+      if not c or i > z then return nil end
+      i = i + 1
+      v = v * 128 + (c & 127)
+      if c < 128 then return v end
+    end
+  end
+  while i <= z do
+    local d = vlq()
+    if not d then break end
+    sec = sec + d * tempo / 1e6 / div
+    local c = s:byte(i)
+    if c == 0xFF then
+      local kind = s:byte(i + 1)
+      i = i + 2
+      local n = vlq()
+      if not n or kind == 0x2F then break end
+      if kind == 0x51 and n == 3 then tempo = string.unpack(">I3", s, i) end
+      i = i + n
+    elseif c == 0xF0 or c == 0xF7 then
+      i = i + 1
+      local n = vlq()
+      if not n then break end
+      i = i + n
+    else
+      if c >= 0x80 then status, i = c, i + 1 end
+      if not status or status >= 0xF0 then return nil, "a MIDI file the phone didn't write" end
+      local n = (status >= 0xC0 and status < 0xE0) and 1 or 2
+      if i + n - 1 > z then break end
+      out[#out + 1] = { t = sec, msg = string.char(status) .. s:sub(i, i + n - 1) }
+      i = i + n
+    end
+  end
+  return out
+end
+-- A take's WAV, its BWF time reference (the bext chunk right after the RIFF header, as the phone writes it) set to the sample its audio
+-- starts at in the song, so REAPER's "move to source preferred position" puts it back where it was placed. -> true when stamped.
+function phonerec.stamp(path, srate, at)
+  local f = io.open(path, "r+b")
+  if not f then return false end
+  local head = f:read(16) or ""
+  local ok = head:sub(1, 4) == "RIFF" and head:sub(9, 12) == "WAVE" and head:sub(13, 16) == "bext" and (tonumber(srate) or 0) > 0
+  if ok then f:seek("set", 358); f:write(string.pack("<I8", math.max(0, math.floor(at * srate + 0.5)))) end -- (12 + 8 + 338: TimeReference)
+  f:close()
+  return ok
 end
 
 -- Play readings. list: { { t (link clock), pos, rate, seg } }, the oldest first; a reading that doesn't follow on from the last one (stopped
@@ -136,7 +219,9 @@ function phonerec.take_name(markers, pos, singer, names, smart)
   return recap.smart_name(section, singer, recap.next_n(names, section, singer))
 end
 -- An action from a page ({ topic = "phonerec", ... }) -> what it asks, checked: { want, start = { track, bars }, stop, setup, nudge = ms,
--- take = { id, track, t0, len, kind, name, err } }.
+-- take = { id, track, t0 | pos, len, kind, name, err, cid, song, tname, title, when } }. t0: the link-clock moment of its first sample (this
+-- computer played the song); pos: the song position under it (the phone played the mix itself). tname: the track's name, if its GUID is
+-- gone; title: the singer's own name for the take; when: when it was recorded (the phone's clock).
 local function guid_ok(g) return type(g) == "string" and g:match("^{[%x%-]+}$") and #g <= 40 end
 function phonerec.parse(a)
   if type(a) ~= "table" then return nil end
@@ -148,11 +233,17 @@ function phonerec.parse(a)
   if n and n == n and math.abs(n) <= phonerec.NUDGE_MAX and n ~= 0 then out.nudge = n end
   local t = a.take
   if type(t) == "table" and type(t.id) == "string" and t.id:match("^%x+$") and #t.id <= 32 and guid_ok(t.track) and phonerec.KINDS[t.kind] then
-    local t0, len = tonumber(t.t0), tonumber(t.len)
-    if t0 and t0 == t0 and t0 > 0 and len and len > 0 and len < phonerec.KEEP then
+    local t0, pos, len = tonumber(t.t0), tonumber(t.pos), tonumber(t.len)
+    t0 = t0 and t0 == t0 and t0 > 0 and t0 < math.huge and t0 or nil
+    pos = pos and pos == pos and math.abs(pos) < phonerec.POS_MAX and pos or nil
+    if (t0 or pos) and len and len > 0 and len < phonerec.KEEP then
       local err = tonumber(t.err)
-      out.take = { id = t.id, track = t.track, t0 = t0, len = len, kind = t.kind, name = phonerec.clean_name(t.name),
-        err = err and err == err and math.max(0, math.min(9999, math.floor(err + 0.5))) or nil }
+      local str = function(v, max) return type(v) == "string" and #v <= max and utf8.len(v) and not v:find("%c") and v or nil end
+      out.take = { id = t.id, track = t.track, t0 = not pos and t0 or nil, pos = pos, len = len, kind = t.kind, name = phonerec.clean_name(t.name),
+        err = err and err == err and math.max(0, math.min(9999, math.floor(err + 0.5))) or nil,
+        cid = type(t.cid) == "string" and t.cid:match("^%x+$") and #t.cid <= 32 and t.cid or nil,
+        song = str(t.song, 200), tname = str(t.tname, 200), title = phonerec.clean_name(t.title),
+        when = type(t.when) == "string" and t.when:match("^%d%d%d%d%-%d%d%-%d%dT%d%d:%d%d[%d:%.Z%+%-]*$") and t.when:sub(1, 30) or nil }
     end
   end
   return out
@@ -160,8 +251,8 @@ end
 
 -- ---- REAPER -----------------------------------------------------------------------------------------------------------------------------
 function phonerec.available() return reaper.StudioSync_WebUISaveUpload ~= nil and reaper.StudioSync_DirectNow ~= nil end
-local S = { want_until = -math.huge, readings = {} }
-function phonerec.reset() S = { want_until = -math.huge, readings = {} } end -- (tests)
+local S = { want_until = -math.huge, readings = {}, done = {}, done_order = {}, offered = {} }
+function phonerec.reset() S = { want_until = -math.huge, readings = {}, done = {}, done_order = {}, offered = {} } end -- (tests)
 
 local function track_of(proj, guid)
   for i = 0, reaper.CountTracks(proj) - 1 do
@@ -237,11 +328,33 @@ local function head_of(path)
 end
 
 -- A take uploaded: saved beside the project's recordings, checked, placed and named. -> words for the log.
+local function track_named(proj, name)
+  for i = 0, name and reaper.CountTracks(proj) - 1 or -1 do
+    local tr = reaper.GetTrack(proj, i)
+    if select(2, reaper.GetTrackName(tr)) == name then return tr end
+  end
+end
+local put_take_in
 local function put_take(proj, cfg, b, t)
-  local tr = track_of(proj, t.track)
+  local d = t.cid and S.done[t.cid]
+  if d and d.ok then return say(d.said .. " (already in)") end
+  local said, ok = put_take_in(proj, cfg, b, t)
+  if t.cid then
+    if not S.done[t.cid] then S.done_order[#S.done_order + 1] = t.cid end
+    S.done[t.cid] = { ok = ok or nil, said = said }
+    while #S.done_order > phonerec.DONE_KEEP do S.done[table.remove(S.done_order, 1)] = nil end
+  end
+  return said
+end
+-- (-> words, and true when it went in)
+function put_take_in(proj, cfg, b, t)
+  if t.song and t.song ~= b.song then return say("the phone's take for " .. t.song .. " waits: open that project in front here") end
+  local tr = track_of(proj, t.track) or track_named(proj, t.tname)
   if not tr then return say("the phone's take wasn't put in: its track is gone") end
   local name = select(2, reaper.GetTrackName(tr))
-  local p, why = phonerec.place(S.readings, t.t0, t.len)
+  local p, why
+  if t.pos then p = { at = t.pos, from = -math.huge, to = math.huge, rate = 1 } -- (the phone played the mix: it knows its own place)
+  else p, why = phonerec.place(S.readings, t.t0, t.len) end
   if not p then return say("the phone's take wasn't put in: " .. why) end
   local can, who = authority(cfg, b)
   local ok, whose = may(can, who, cfg, name, math.max(0, p.from, p.at))
@@ -256,29 +369,53 @@ local function put_take(proj, cfg, b, t)
   if n == 0 then return say("the phone's take wasn't put in: its upload isn't here any more (send it again)") end
   if n < 0 then return say("the phone's take couldn't be saved in " .. dir .. " (full, or not writable): press Put in again") end
   if not phonerec.magic_ok(t.kind, head_of(file)) then os.remove(file); return say("the phone's upload wasn't a " .. t.kind .. " file: not put in") end
-  local src = reaper.PCM_Source_CreateFromFile(file)
-  local srclen = src and reaper.GetMediaSourceLength(src) or 0
-  local plan = srclen > 0 and phonerec.item_plan(p, srclen)
+  local src, plan, evs, srate
+  if t.kind == "mid" then
+    evs = phonerec.smf_events(band.read(file))
+    plan = evs and phonerec.item_plan(p, t.len)
+  else
+    src = reaper.PCM_Source_CreateFromFile(file)
+    local srclen = src and reaper.GetMediaSourceLength(src) or 0
+    plan = srclen > 0 and phonerec.item_plan(p, srclen)
+    srate = src and reaper.GetMediaSourceSampleRate(src)
+  end
   if not plan then
     if src then reaper.PCM_Source_Destroy(src) end
     return say("the phone's take is saved (" .. file .. ") but REAPER couldn't read it, or it missed what this computer played")
   end
   reaper.Undo_BeginBlock2(proj)
-  local it = reaper.AddMediaItemToTrack(tr)
-  local tk = reaper.AddTakeToMediaItem(it)
-  reaper.SetMediaItemTake_Source(tk, src)
-  reaper.SetMediaItemInfo_Value(it, "D_POSITION", plan.pos)
-  reaper.SetMediaItemInfo_Value(it, "D_LENGTH", plan.len)
-  reaper.SetMediaItemTakeInfo_Value(tk, "D_STARTOFFS", plan.offs)
+  local it, tk
+  if evs then -- (an ordinary MIDI item, its events at their song times: right whatever the project's tempo)
+    it = reaper.CreateNewMIDIItemInProj(tr, plan.pos, plan.pos + plan.len)
+    tk = reaper.GetActiveTake(it)
+    for _, e in ipairs(evs) do
+      local at = p.at + e.t * p.rate
+      if at >= plan.pos and at <= plan.pos + plan.len then reaper.MIDI_InsertEvt(tk, false, false, reaper.MIDI_GetPPQPosFromProjTime(tk, at), e.msg) end
+    end
+    reaper.MIDI_Sort(tk)
+  else
+    it = reaper.AddMediaItemToTrack(tr)
+    tk = reaper.AddTakeToMediaItem(it)
+    reaper.SetMediaItemTake_Source(tk, src)
+    reaper.SetMediaItemInfo_Value(it, "D_POSITION", plan.pos)
+    reaper.SetMediaItemInfo_Value(it, "D_LENGTH", plan.len)
+    reaper.SetMediaItemTakeInfo_Value(tk, "D_STARTOFFS", plan.offs)
+    phonerec.stamp(file, srate, plan.pos - plan.offs)
+  end
   local recap = require("recap")
-  local tname = phonerec.take_name(band.capture_markers(proj), plan.pos, singer, take_names(proj), recap.names_on(cfg.root))
+  local tname = t.title and (t.title .. " - " .. singer) or phonerec.take_name(band.capture_markers(proj), plan.pos, singer, take_names(proj), recap.names_on(cfg.root))
   reaper.GetSetMediaItemTakeInfo_String(tk, "P_NAME", tname, true)
   reaper.UpdateArrange()
   reaper.Undo_EndBlock2(proj, "StudioSync: a take from a phone", -1)
-  S.last = { item = select(2, reaper.GetSetMediaItemInfo_String(it, "GUID", "", false)), track = t.track, name = tname, nudged = 0 }
-  return say(string.format("%s: on %s at bar %s%s%s", tname, name, reaper.format_timestr_pos(plan.pos, "", 2),
+  local bar = reaper.format_timestr_pos(plan.pos, "", 2)
+  -- (the take's note beside its file: which project, where, whose; REAPER ignores it, a person or another tool can read it)
+  band.write_atomic((file:gsub("%.%w+$", ".json")), band.json_encode({ project = b.song, track = name, by = singer, take = tname, bar = bar,
+    position = plan.pos - plan.offs, recorded = t.when, file = file:match("[^/\\]+$"), from = "StudioSync phone" }))
+  S.last = { item = select(2, reaper.GetSetMediaItemInfo_String(it, "GUID", "", false)), track = t.track, name = tname, nudged = 0,
+    file = not evs and file or nil, srate = srate }
+  return say(string.format("%s: on %s at bar %s%s%s", tname, name, bar,
     t.err and string.format(", in time to about %d ms (nudge it if it sounds off)", t.err) or "",
-    t.kind ~= "wav" and " (compressed: the phone couldn't record lossless)" or ""))
+    t.kind ~= "wav" and t.kind ~= "mid" and " (compressed: the phone couldn't record lossless)" or "")), true
 end
 
 local function nudge(proj, cfg, b, ms)
@@ -296,6 +433,7 @@ local function nudge(proj, cfg, b, ms)
   local ok, whose = may(can, who, cfg, select(2, reaper.GetTrackName(tr)), pos)
   if not ok then return say("not nudged: the track is " .. whose) end
   pos, offs, len = phonerec.nudge(pos, offs, len, ms)
+  if l.file then phonerec.stamp(l.file, l.srate, pos - offs) end
   reaper.Undo_BeginBlock2(proj)
   reaper.SetMediaItemInfo_Value(it, "D_POSITION", pos)
   reaper.SetMediaItemInfo_Value(it, "D_LENGTH", len)
@@ -335,6 +473,30 @@ function phonerec.action(proj, cfg, b, a)
   if d.nudge then return nudge(proj, cfg, b, d.nudge) end
 end
 
+-- Each song's newest mix (<Song>/mixes; renders are named by date, as lib/listen.lua lists them), offered for the pages to download, the
+-- older offers withdrawn. -> { { song, id, file, bytes } }
+-- shortcut: the phone takes a mix to start at the song's start (as Render current mix does); a render of a time selection lands its
+-- takes early by the selection's start, nudge it until mixes say where they start.
+local function mixes(cfg)
+  local out, offered, audio = {}, {}, require("listen").AUDIO
+  for _, song in ipairs(band.songs(cfg)) do
+    local dir, best = band.song_dir(cfg, song) .. "/mixes", nil
+    for _, f in ipairs(band.files(dir)) do
+      if audio[(f:match("%.([^.]+)$") or ""):lower()] and not f:find("^%.") and (not best or f > best) then best = f end
+    end
+    local fh = best and io.open(dir .. "/" .. best, "rb")
+    if fh then
+      local size = fh:seek("end")
+      fh:close()
+      local id = phonerec.mix_id(song, best, size)
+      if reaper.StudioSync_WebUIOffer(id, dir .. "/" .. best) == 1 then offered[id] = true; out[#out + 1] = { song = song, id = id, file = best, bytes = size } end
+    end
+  end
+  for id in pairs(S.offered) do if not offered[id] then reaper.StudioSync_WebUIOffer(id, "") end end
+  S.offered = offered
+  return out
+end
+
 -- The secure link set up by itself, once a session (see the top): in the background, so REAPER never waits on Tailscale. -> true when asked.
 function phonerec.auto_link()
   local services = require("services")
@@ -359,6 +521,7 @@ function phonerec.tick(proj, cfg, b, publish, now)
   if now - (S.pub_at or -math.huge) < phonerec.PUBLISH_EVERY then return end
   S.pub_at = now
   if now - (S.tracks_at or -math.huge) >= phonerec.TRACKS_EVERY then S.tracks_at, S.tracks = now, tracks_model(proj, cfg, b) end
+  if reaper.StudioSync_WebUIOffer and now - (S.mixes_at or -math.huge) >= phonerec.MIX_EVERY then S.mixes_at, S.mixes = now, mixes(cfg) end
   local key = tostring(proj)
   local due = tonumber(reaper.GetExtState(band.SECTION, "together_at " .. key))
   local together = require("together")
@@ -367,7 +530,7 @@ function phonerec.tick(proj, cfg, b, publish, now)
   publish("phonerec", { me = cfg.user, song = b.song, tracks = S.tracks, playing = ps & 1 == 1 or nil, rec = ps & 4 == 4 or nil,
     pos = math.floor(pos * 1000 + 0.5) / 1000, at = t, bar = reaper.format_timestr_pos(pos, "", 2),
     due = due and due > together.now() and t + (due - together.now()) or nil, cue = S.cue, secure = secure, port = phonerec.HTTPS_PORT,
-    said = S.said, said_at = S.said_at, last = S.last and S.last.name or nil })
+    said = S.said, said_at = S.said_at, last = S.last and S.last.name or nil, mixes = S.mixes, done = next(S.done) and S.done or nil })
 end
 
 return phonerec

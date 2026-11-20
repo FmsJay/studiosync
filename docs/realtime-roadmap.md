@@ -486,6 +486,26 @@ lib/tools.lua EXT_WANT.
     the latest mix of each project to play along to; takes saved as WAV with its position stamped in (REAPER reads it) plus which project,
     bar and track; an interface's input 1, 2 or both (Android Chrome picks the device, iPhone uses the system's input); MIDI from a USB
     keyboard on Android Chrome; nudge, retake, name, and a simple take list per project.
+    - **Built (rt, 2026-11-19; tried in desktop Chromium against a stand-in server, not yet on a phone or in REAPER):** the Record page
+      installs (`lib/webui/phone.webmanifest`, `phone-sw.js` keeping the page's files: the computer's copy when it answers within 3 s, else
+      the kept one; a 403 still opens the kept page) and plays along to either the computer (as before) or the project's mix on the phone.
+      Mixes: each song's newest file in `<Song>/mixes` (Render current mix's), offered by id (`StudioSync_WebUIOffer` and GET `/api/file`
+      in extension/webui.cpp, streamed from disk, only paths Lua named; `tests/webui_test.cpp`); the project open on the computer is kept
+      on the phone by itself, others with a button. Along to the phone's mix, the take knows its place: the mix's position under its first
+      sample, less the input and output latency the browser reports and a saved "extra delay" (Bluetooth). Every take is kept in IndexedDB
+      (`phonefile.js`) with its note (project, track, who, name, position) and goes by itself when the computer answers with that project
+      in front, under the same room rules; the computer says per take (the phone's id, `done`) whether it went in, puts each in once, and
+      only then does the phone let go of the audio. WAVs carry a BWF time reference (bext; the computer stamps the final place after
+      placing, and again after a nudge) and land beside the project's recordings with a `.json` note; MIDI takes (Web MIDI, channel
+      messages) go as a Standard MIDI File and become an ordinary MIDI item, events at their song times whatever the tempo. Input device
+      (Android) and input 1, 2, both as stereo or mixed, processing off; nudge, name, retake and delete per take in a list per project.
+      Browser limits, said on the page: two inputs at most; iPhone uses iOS's input (maybe one channel) and has no Web MIDI; no
+      monitoring through the phone; screen on and the app in front while recording; the app belongs to the computer it was installed from
+      (another studio computer is another origin with its own storage); a mix is taken to start at the project's start (a time-selection
+      render lands takes early). iPhone's home-screen app has its own cookies, so on iPhone the page drops the manifest and puts the
+      studio's token in its address before Add to Home Screen (to check on a real iPhone). Needs the extension with
+      `StudioSync_WebUIOffer` for mixes; takes and MIDI work with the current one. Tests: `tests/test_0_60_rt_phonerec.lua` (mix ids
+      and offers, SMF parsing, the BWF stamp, phone-placed and MIDI takes, once-only, another project's take waiting).
   - **Stage 2 (browser):** the project's tracks as a simple arrange view (the Project page's drawing, made for touch), several takes per
     track to choose between, volume/mute per track, a few built-in effects for monitoring, comments and the song sheet (lyrics, chords).
   - **Stage 3 (a native app, later):** what browsers can't do reliably: more than two inputs as separate tracks, low-latency monitoring

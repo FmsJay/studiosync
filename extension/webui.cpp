@@ -1,7 +1,8 @@
 // StudioSync's web UI server (extension/webui.h has the why). One thread accepts on 127.0.0.1; the direct link's listener hands over HTTP
 // connections that reach it on the Tailscale address; each connection gets a short-lived thread of its own (at most MAX_CLIENTS: an open
 // event stream holds one). One request per connection, then closed, except the event stream. Nothing here touches REAPER's API: the
-// ReaScript functions at the end only copy under a lock. Only files under the pages' folder are ever read; nothing is ever run.
+// ReaScript functions at the end only copy under a lock. Only files under the pages' folder, and the files Lua offers by name
+// (StudioSync_WebUIOffer: the latest mix of each song, lib/phonerec.lua), are ever read; nothing is ever run.
 // GPL-3.0-or-later.
 #ifdef _WIN32
 #define NOMINMAX
@@ -210,6 +211,9 @@ const size_t MAX_HEAD = 16 * 1024, MAX_BODY = 16 * 1024, MAX_FILE = 4 * 1024 * 1
 const size_t MAX_UPLOAD = 160u * 1024 * 1024, MAX_UPLOADS = 2;
 std::map<std::string, std::string> g_uploads; // id -> the bytes
 std::deque<std::string> g_upload_order;
+// Files a page may download (GET /api/file?id=): Lua names each, the server never picks a path (the phone app's mix to play along to)
+const size_t MAX_OFFERS = 64;
+std::map<std::string, std::string> g_offers; // id -> the path
 
 double now_s() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 bool topic_ok(const char *t)
@@ -384,6 +388,27 @@ void upload(sock_t s, const WebReq &r, std::string body)
   answer(s, 200, "application/json", std::string("{\"ok\":true,\"id\":\"") + id + "\"}");
 }
 
+// A file Lua offered, streamed as it's read (a mix can be 100 MB: never held in memory whole).
+void send_file(sock_t s, const std::string &id)
+{
+  std::string path;
+  { std::lock_guard<std::mutex> l(g_mx); auto it = g_offers.find(id); if (it != g_offers.end()) path = it->second; }
+  FILE *f = path.empty() ? nullptr : open_read(path);
+  if (!f) return answer(s, 404, "text/plain", "not found\n");
+#ifdef _WIN32
+  _fseeki64(f, 0, SEEK_END); const long long n = _ftelli64(f); _fseeki64(f, 0, SEEK_SET);
+#else
+  fseeko(f, 0, SEEK_END); const long long n = (long long)ftello(f); fseeko(f, 0, SEEK_SET);
+#endif
+  if (n < 0) { fclose(f); return answer(s, 404, "text/plain", "not found\n"); }
+  set_blocking(s, 30000); // (a phone on a slow connection)
+  bool ok = send_all(s, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: " + std::to_string(n) + "\r\n" + SAFE_HEADERS + "Connection: close\r\n\r\n");
+  std::string b(65536, '\0');
+  size_t k;
+  while (ok && (k = fread(&b[0], 1, b.size(), f)) > 0) ok = send_all(s, b.substr(0, k));
+  fclose(f);
+}
+
 void handle(sock_t s, std::string buf, bool local)
 {
   set_blocking(s, 5000);
@@ -437,6 +462,7 @@ void handle(sock_t s, std::string buf, bool local)
     snprintf(t, sizeof(t), "{\"now\":%.6f}", direct_now());
     return answer(s, 200, "application/json", t);
   }
+  if (r.path == "/api/file") return send_file(s, webui_param(r.query, "id"));
   if (r.path == "/api/state") {
     std::string snap;
     { std::lock_guard<std::mutex> l(g_mx); snap = snapshot_locked(); }
@@ -623,6 +649,17 @@ int webui_save_upload(const char *id, const char *path)
   return data.size() > 0x7fffffff ? 0x7fffffff : (int)data.size();
 }
 
+int webui_offer(const char *id, const char *path)
+{
+  const std::string i = id ? id : "";
+  if (i.empty() || i.size() > 32 || i.find_first_not_of("0123456789abcdef") != std::string::npos) return 0;
+  std::lock_guard<std::mutex> l(g_mx);
+  if (!path || !*path) { g_offers.erase(i); return 1; }
+  if (g_offers.size() >= MAX_OFFERS && !g_offers.count(i)) return 0;
+  g_offers[i] = path;
+  return 1;
+}
+
 void webui_shutdown()
 {
   direct_set_http_handler(nullptr);
@@ -645,6 +682,7 @@ void webui_shutdown()
     g_actions.clear();
     g_uploads.clear();
     g_upload_order.clear();
+    g_offers.clear();
   }
 #ifdef _WIN32
   if (g_wsa) { WSACleanup(); g_wsa = false; }
@@ -659,8 +697,10 @@ static void api_publish(const char *topic, const char *json) { webui_publish(top
 static const char *api_poll() { return webui_poll(); }
 static const char *api_status() { return webui_status(); }
 static int api_save_upload(const char *id, const char *path) { return webui_save_upload(id, path); }
+static int api_offer(const char *id, const char *path) { return webui_offer(id, path); }
 #define S_(i) (n > (i) ? (const char *)a[i] : nullptr)
 static void *va_save_upload(void **a, int n) { return (void *)(INT_PTR)api_save_upload(S_(0), S_(1)); }
+static void *va_offer(void **a, int n) { return (void *)(INT_PTR)api_offer(S_(0), S_(1)); }
 static void *va_start_(void **a, int n) { return (void *)(INT_PTR)api_start(S_(0), S_(1), n > 2 ? (int)(INT_PTR)a[2] : 0); }
 static void *va_publish(void **a, int n) { api_publish(S_(0), S_(1)); return nullptr; }
 static void *va_poll(void **, int) { return (void *)api_poll(); }
@@ -684,6 +724,10 @@ void webui_register(reaper_plugin_info_t *rec)
       "int\0const char*,const char*\0id,path\0"
       "A take a page uploaded (POST /api/upload's id), written to `path` and let go. Returns its bytes; 0 no such upload; -1 couldn't write "
       "(it's kept for another try)." },
+    { "StudioSync_WebUIOffer", (void *)api_offer, (void *)va_offer,
+      "int\0const char*,const char*\0id,path\0"
+      "Lets the pages download the file at `path` as GET /api/file?id=<id> (id: up to 32 lower-case hex characters; 64 files at most). "
+      "An empty path withdraws it. Returns 1, or 0 for a bad id or too many." },
   };
   char key[96];
   for (const auto &f : fns) {

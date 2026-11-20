@@ -16,3 +16,14 @@ header a.conn { text-decoration: none; }
 .recbtn { background: var(--rec); border-color: var(--rec); color: #fff; font-size: 18px; padding: 12px 32px; border-radius: 28px; }
 #stop { font-size: 18px; padding: 12px 32px; border-radius: 28px; }
 button:disabled { opacity: .5; cursor: default; }
+/* the phone app: the take list, the limits */
+#takes li { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-bottom: 6px; }
+#takes li.in { opacity: .7; }
+#takes li.refused { border-color: var(--rec); }
+#takes input { margin-bottom: 4px; }
+#takes .row { justify-content: flex-start; margin: 4px 0 0; }
+#takes .row button { padding: 4px 10px; }
+#rec details { margin: 10px 0; }
+#rec summary { cursor: pointer; }
+.limits { list-style: disc; padding-left: 18px; }
+.limits li { margin: 4px 0; }

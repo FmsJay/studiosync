@@ -5,9 +5,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#161618">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="StudioSync">
 <title>StudioSync: Record</title>
+<link rel="manifest" href="phone.webmanifest">
+<link rel="apple-touch-icon" href="phone-icon-192.png">
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="record.css">
+<script src="phonefile.js" defer></script>
 <script src="record.js" defer></script>
 </head>
 <body>
@@ -33,15 +40,60 @@
     <button id="setup" type="button">Set up the secure link</button>
   </div>
   <div id="older" class="note bad" hidden>The computer's StudioSync extension is older: update it to record from a phone.</div>
+  <div id="installrow" class="note" hidden>
+    <p class="small">Put this on your home screen and it opens without the studio computer: takes wait on the phone and go in when the computer's back.</p>
+    <button id="install" type="button" hidden>Install the app</button>
+    <p id="ioshint" class="dim small" hidden>On iPhone: Share, then Add to Home Screen. Open it once while the studio computer is on.</p>
+  </div>
+  <label for="song">Project</label>
+  <select id="song"></select>
   <label for="track">Track</label>
   <select id="track"></select>
   <p id="trackwhy" class="dim small"></p>
   <label for="singer">Your name (for the take's name)</label>
   <input id="singer" maxlength="32" autocomplete="name" enterkeyhint="done">
-  <label for="bars">Count-in</label>
-  <select id="bars">
-    <option value="0">none</option><option value="1" selected>1 bar</option><option value="2">2 bars</option>
+  <label for="along">Play along to</label>
+  <select id="along">
+    <option value="computer">the computer playing the project</option>
+    <option value="phone">the mix, on this phone (headphones)</option>
   </select>
+  <div id="mixrow" class="note phoneonly" hidden>
+    <p id="mixinfo" class="small"></p>
+    <button id="getmix" type="button" hidden>Keep it on this phone</button>
+  </div>
+  <div class="phoneonly" hidden>
+    <label for="from">Start from (m:ss in the project)</label>
+    <input id="from" inputmode="decimal" autocomplete="off" enterkeyhint="done">
+  </div>
+  <div class="componly">
+    <label for="bars">Count-in</label>
+    <select id="bars">
+      <option value="0">none</option><option value="1" selected>1 bar</option><option value="2">2 bars</option>
+    </select>
+  </div>
+  <div id="whatrow" hidden>
+    <label for="what">Record</label>
+    <select id="what"><option value="audio">audio</option><option value="midi">a MIDI keyboard (USB)</option></select>
+  </div>
+  <div class="audioonly">
+    <label for="input">Input</label>
+    <select id="input"><option value="">the phone's own choice</option></select>
+    <label for="chans">Channels</label>
+    <select id="chans">
+      <option value="0">input 1</option><option value="1">input 2</option>
+      <option value="stereo">inputs 1 and 2, as stereo</option><option value="sum">inputs 1 and 2, mixed to mono</option>
+    </select>
+    <p id="inputwhy" class="dim small"></p>
+  </div>
+  <div class="midionly" hidden>
+    <label for="midiin">Keyboard</label>
+    <select id="midiin"><option value="">every MIDI keyboard plugged in</option></select>
+  </div>
+  <details class="phoneonly small" hidden>
+    <summary>Timing</summary>
+    <label for="extra">This phone's extra delay (ms, added to what the browser reports; Bluetooth headphones need a lot)</label>
+    <input id="extra" type="number" inputmode="numeric" step="1" value="0">
+  </details>
   <div id="big" class="big" aria-live="polite">
     <div id="pos" class="pos">0:00.0</div>
     <div id="state" class="dim">stopped</div>
@@ -49,16 +101,33 @@
   <div class="row">
     <button id="go" type="button" class="recbtn">Record</button>
     <button id="stop" type="button" hidden>Stop</button>
-    <button id="again" type="button" hidden>Send again</button>
   </div>
   <p id="msg" class="small" role="status"></p>
   <div id="nudge" class="row" hidden>
-    <span class="dim small">Sounds early or late? Move it:</span>
+    <span class="dim small">The take just put in sounds early or late? Move it:</span>
     <button type="button" data-ms="-20">-20 ms</button><button type="button" data-ms="-5">-5</button>
     <button type="button" data-ms="5">+5</button><button type="button" data-ms="20">+20 ms</button>
   </div>
-  <p class="dim small">Listen to the computer playing the project (its speakers, or headphones from it) and sing along. The take goes in where
-    the song was when this phone heard it: the timing is measured, not perfect, hence the nudge. Nothing is sent until you press Stop.</p>
+  <h2 id="takes-h">Takes</h2>
+  <ul id="takes" aria-labelledby="takes-h"></ul>
+  <p id="notakes" class="dim small">No takes of this project on this phone.</p>
+  <p class="dim small">With the computer: listen to it playing the project (its speakers, or headphones from it) and sing along; the take goes
+    in where the song was when this phone heard it. With the mix on this phone: wear wired headphones; the take knows its own place in the
+    song. Either way the timing is measured, not perfect, hence the nudge. Every take is kept on this phone until the computer has put it in.</p>
+  <details class="dim small">
+    <summary>What a browser can and can't do here</summary>
+    <ul class="limits">
+      <li>Two inputs at most: input 1, input 2, both as stereo, or both mixed. More, as separate tracks, needs a native app.</li>
+      <li>Android Chrome lets the page pick the interface. On iPhone the input is the one iOS uses: plug the interface in before opening the
+        app; iOS may give only one channel.</li>
+      <li>MIDI keyboards work where the browser has Web MIDI: Android Chrome, not iPhone.</li>
+      <li>You hear the mix, not yourself: no monitoring through the phone.</li>
+      <li>Keep the screen on and the app in front while recording: a phone pauses a page in the background.</li>
+      <li>Bluetooth headphones add a delay the browser can't see: set it under Timing, or nudge.</li>
+      <li>The app belongs to the computer it was installed from: its takes go to that computer, once it has the project open in front.</li>
+      <li>A mix is taken to start at the project's start (as Render current mix makes it).</li>
+    </ul>
+  </details>
 </section>
 </body>
 </html>

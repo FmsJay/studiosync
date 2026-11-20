@@ -64,6 +64,16 @@ reaper = setmetatable({
 
 local band = require("band")
 band.session_path = function() return TMP .. "/no-such-session.json" end
+-- (the phone app's mixes: one song, two renders and a note in its mixes folder; the newest is offered)
+local MIXDIR = TMP .. "/ss_phonerec_song/mixes"
+if package.config:sub(1, 1) == "\\" then os.execute('mkdir "' .. MIXDIR:gsub("/", "\\") .. '" 2>nul') else os.execute("mkdir -p '" .. MIXDIR .. "'") end
+do local f = assert(io.open(MIXDIR .. "/2026-11-19 mix.wav", "wb")); f:write(("x"):rep(1234)); f:close() end
+band.songs = function() return { "Song" } end
+band.song_dir = function(_, song) return TMP .. "/ss_phonerec_" .. song:lower() end
+local mix_files = { "2026-11-18 mix.wav", "2026-11-19 mix.wav", "notes.txt" }
+reaper.EnumerateFiles = function(dir, i) if dir == MIXDIR then return mix_files[i + 1] end end
+local offers = {}
+reaper.StudioSync_WebUIOffer = function(id, path) offers[id] = path ~= "" and path or nil; return 1 end
 local owner = { Gtr = "Bo" }
 package.loaded.sync = { authority = function()
   return function(user, track) return owner[track] == nil or owner[track] == user end, { mode = "claims", driver = "James", owner_of = function(t) return owner[t] end }
@@ -172,6 +182,8 @@ assert(pr.auto_on()); reaper.SetExtState(band.SECTION, pr.AUTO_KEY, "0"); assert
 reaper.DeleteExtState(band.SECTION, pr.AUTO_KEY)
 assert(s and s.me == "James" and s.playing and #s.tracks == 2 and s.tracks[1].may and not s.tracks[2].may and s.tracks[2].why == "Bo's"
   and s.secure == "https://james-main.tail99.ts.net:8443/record.html?t=abc123" and math.abs(s.at - link) < 0.6, "the page's state: tracks with who may, the secure link")
+assert(s.mixes and #s.mixes == 1 and s.mixes[1].song == "Song" and s.mixes[1].file == "2026-11-19 mix.wav" and s.mixes[1].bytes == 1234
+  and offers[s.mixes[1].id] == MIXDIR .. "/2026-11-19 mix.wav", "each song's newest mix, offered by its id")
 saved.aa11 = "RIFF\0\0\0\0WAVEfmt "
 local said = pr.action("P", cfg, b, { take = { id = "aa11", track = "{AAAA-1}", t0 = 1.7e9 - 1, len = 5, kind = "wav", name = "Bo", err = 15 } })
 local it = tracks[1].items[1]
@@ -192,6 +204,91 @@ local f = io.open(written, "rb"); assert(f == nil, "and its file removed"); if f
 said = pr.action("P", cfg, b, { nudge = 20 })
 assert(math.abs(it.takes[1].info.D_STARTOFFS - 0.98) < 0.002 and said:find("%+20 ms"), "nudged later: " .. said)
 assert(pr.action("P", cfg, b, { nudge = -5 }):find("%+15 ms in all"), "and back a little")
+
+-- The phone app: a mix's id, a MIDI take's file, the WAV's BWF stamp, and what a phone-placed take may say
+local id1 = pr.mix_id("Song", "a.wav", 10)
+assert(#id1 == 16 and id1:match("^%x+$") and id1 == pr.mix_id("Song", "a.wav", 10) and pr.mix_id("Song", "a.wav", 11) ~= id1, "a mix's id: the same render, the same id; a new one, new")
+local function vlq(n) local o = string.char(n & 127); n = n >> 7; while n > 0 do o = string.char(128 | (n & 127)) .. o; n = n >> 7 end; return o end
+local function smf(events, div, tempo) -- { { delta ticks, bytes } }, as record.js writes one
+  local tr = vlq(0) .. "\255\81\3" .. string.pack(">I3", tempo or 500000)
+  for _, e in ipairs(events) do tr = tr .. vlq(e[1]) .. e[2] end
+  tr = tr .. vlq(0) .. "\255\47\0"
+  return "MThd" .. string.pack(">I4I2I2I2", 6, 0, 1, div or 960) .. "MTrk" .. string.pack(">I4", #tr) .. tr
+end
+local mid = smf({ { 0, "\144\60\100" }, { 1920, "\128\60\0" }, { 0, "\144\64\90" }, { 960, "\64\0" }, { 0, "\176\64\127" }, { 200, "\192\5" } })
+local ev = pr.smf_events(mid)
+assert(ev and #ev == 6 and ev[1].t == 0 and ev[1].msg == "\144\60\100" and math.abs(ev[2].t - 1) < 1e-9 and ev[4].msg == "\144\64\0" and math.abs(ev[4].t - 1.5) < 1e-9
+  and ev[5].msg == "\176\64\127" and ev[6].msg == "\192\5", "a MIDI take's events in seconds (running status kept)")
+assert(math.abs(pr.smf_events(smf({ { 960, "\144\60\100" } }, 480, 1000000))[1].t - 2) < 1e-9, "its tempo and division followed")
+assert(pr.smf_events("MThd") == nil and pr.smf_events(("x"):rep(30)) == nil and pr.smf_events(mid:sub(1, 8) .. string.pack(">I2", 1) .. mid:sub(11)) == nil,
+  "not a phone's MIDI file: nothing")
+assert(#pr.smf_events(mid:sub(1, 40)) < 6, "a cut one: what's there")
+local function bwf_wav(path) -- (the layout record.js writes: RIFF, bext, fmt, data)
+  local f = assert(io.open(path, "wb"))
+  f:write("RIFF", string.pack("<I4", 4 + 610 + 24 + 12), "WAVE", "bext", string.pack("<I4", 602), ("\0"):rep(602),
+    "fmt ", string.pack("<I4I2I2I4I4I2I2", 16, 3, 1, 48000, 192000, 4, 32), "data", string.pack("<I4", 4), "\0\0\0\0")
+  f:close()
+end
+local function slurp(p) local f = assert(io.open(p, "rb")); local x = f:read("a"); f:close(); return x end
+local wpath = TMP .. "/ss_phonerec_stamp.wav"
+bwf_wav(wpath)
+assert(pr.stamp(wpath, 48000, 2.5) and string.unpack("<I8", slurp(wpath), 359) == 120000 and #slurp(wpath) == 12 + 610 + 24 + 12, "the BWF time reference: the take's first sample, nothing else moved")
+assert(pr.stamp(wpath, 48000, -1) and string.unpack("<I8", slurp(wpath), 359) == 0, "never before the start")
+do local f = assert(io.open(wpath, "wb")); f:write("RIFF\0\0\0\0WAVEfmt "); f:close() end
+assert(not pr.stamp(wpath, 48000, 1) and slurp(wpath) == "RIFF\0\0\0\0WAVEfmt ", "a WAV without the phone's bext: left alone")
+os.remove(wpath)
+d = pr.parse({ take = { id = "aa", track = "{A}", pos = 12.5, t0 = link, len = 3, kind = "mid", cid = "c0ffee", song = "Song", tname = "Vox", title = " Late night ",
+  when = "2026-11-19T21:04:05.123Z" } })
+assert(d.take.pos == 12.5 and d.take.t0 == nil and d.take.kind == "mid" and d.take.cid == "c0ffee" and d.take.song == "Song" and d.take.tname == "Vox"
+  and d.take.title == "Late night" and d.take.when == "2026-11-19T21:04:05.123Z", "a take the phone placed itself, checked")
+assert(pr.parse({ take = { id = "aa", track = "{A}", pos = 1 / 0, len = 3, kind = "wav" } }).take == nil, "no place at all: refused")
+d = pr.parse({ take = { id = "aa", track = "{A}", pos = -2, len = 3, kind = "wav", cid = "xyz", song = "a\nb", when = "yesterday" } })
+assert(d.take and d.take.pos == -2 and d.take.cid == nil and d.take.song == nil and d.take.when == nil, "bad extras dropped")
+
+-- A take the phone placed (it played the mix): in at its own place, stamped, noted, once; the page hears how each went
+reaper.GetMediaSourceSampleRate = function() return 48000 end
+bwf_wav(wpath)
+saved.ee55 = slurp(wpath)
+os.remove(wpath)
+said = pr.action("P", cfg, b, { take = { id = "ee55", track = "{AAAA-1}", pos = 12, len = 4, kind = "wav", name = "Bo", cid = "c1", song = "Song", title = "Late" } })
+local it2 = tracks[1].items[2]
+assert(it2 and it2.info.D_POSITION == 12 and it2.takes[1].info.D_STARTOFFS == 0 and it2.info.D_LENGTH == 30 and it2.takes[1].name == "Late - Bo",
+  "placed where the phone says, named as the singer named it: " .. tostring(said))
+assert(string.unpack("<I8", slurp(written), 359) == 12 * 48000, "its WAV stamped where it went")
+local note = band.read((written:gsub("%.wav$", ".json")))
+assert(note and note:find('"project":"Song"') and note:find('"by":"Bo"') and note:find('"take":"Late %- Bo"') and note:find('"track":"Vox"'), "its note beside it: " .. tostring(note))
+os.remove((written:gsub("%.wav$", ".json"))); os.remove(written)
+assert(pr.action("P", cfg, b, { take = { id = "ee55", track = "{AAAA-1}", pos = 12, len = 4, kind = "wav", cid = "c1" } }):find("already in") and #tracks[1].items == 2,
+  "sent twice (the phone didn't hear back): in once")
+saved.ff66 = "RIFF\0\0\0\0WAVE"
+assert(pr.action("P", cfg, b, { take = { id = "ff66", track = "{AAAA-1}", pos = 1, len = 4, kind = "wav", cid = "c2", song = "Other" } }):find("open that project in front")
+  and saved.ff66 and #tracks[1].items == 2, "another project's take waits (its upload kept)")
+saved.ab77 = slurp((function() bwf_wav(wpath); return wpath end)())
+said = pr.action("P", cfg, b, { take = { id = "ab77", track = "{FFFF-9}", tname = "Vox", pos = -1, len = 4, kind = "wav", cid = "c3" } })
+local it3 = tracks[1].items[3]
+assert(it3 and it3.info.D_POSITION == 0 and it3.takes[1].info.D_STARTOFFS == 1 and it3.info.D_LENGTH == 29, "its track found by name; started before the song: from the start: " .. said)
+os.remove((written:gsub("%.wav$", ".json"))); os.remove(written); os.remove(wpath)
+reaper.CreateNewMIDIItemInProj = function(tr, a, z)
+  local mi = reaper.AddMediaItemToTrack(tr)
+  mi.info.D_POSITION, mi.info.D_LENGTH = a, z - a
+  reaper.AddTakeToMediaItem(mi).evts = {}
+  return mi
+end
+reaper.MIDI_GetPPQPosFromProjTime = function(_, t) return t * 1920 end
+reaper.MIDI_InsertEvt = function(tk, _, _, ppq, msg) tk.evts[#tk.evts + 1] = { ppq = ppq, msg = msg }; return true end
+reaper.MIDI_Sort = function(tk) tk.sorted = true end
+saved.cd88 = mid
+said = pr.action("P", cfg, b, { take = { id = "cd88", track = "{AAAA-1}", pos = 4, len = 1.2, kind = "mid", name = "Bo", cid = "c4" } })
+local mi = tracks[1].items[4]
+assert(mi and mi.info.D_POSITION == 4 and math.abs(mi.info.D_LENGTH - 1.2) < 1e-9 and #mi.takes[1].evts == 3 and mi.takes[1].evts[1].ppq == 4 * 1920
+  and mi.takes[1].evts[2].ppq == 5 * 1920 and mi.takes[1].evts[2].msg == "\128\60\0" and mi.takes[1].sorted and said:find("on Vox"),
+  "a MIDI take: a MIDI item, its events at their song times, those past its end left out: " .. said)
+assert(written:find("%.mid$"), "its file kept beside the project's recordings")
+os.remove((written:gsub("%.mid$", ".json"))); os.remove(written)
+clock = clock + 1
+pr.tick("P", cfg, b, publish, clock)
+local dn = pub.phonerec.done
+assert(dn and dn.c1.ok and dn.c3.ok and dn.c4.ok and not dn.c2.ok and dn.c2.said:find("Other"), "the page hears how each take went")
 
 -- Starting and stopping: James drives, so it's Play together; the phone's stop stops only a start it made
 reaper.GetPlayStateEx = function() return 0 end
