@@ -2639,7 +2639,8 @@ local function page_setup()
     if cfg and require("groups").may_manage(cfg.root, cfg.user) and card("tailscale token") then heading("Tailscale", 17); ui.tailscale_token(); card_end() end
   end); ImGui.EndTabItem(ctx) end
   if tab("Extras") then body("s pack", ui.settings_pack); ImGui.EndTabItem(ctx) end -- (the plug-in pack and its extras: lib/pack.lua, 0.59.22; named Extras, 0.59.27)
-  if tab("Advanced") then body("s advanced", function() layout({ { ui.settings_advanced, 360 }, { ui.settings_buffer, 420 } }, true) end); ImGui.EndTabItem(ctx) end
+  if tab("Advanced") then body("s advanced", function() layout({ { ui.settings_advanced, 360 }, { ui.settings_buffer, 420 },
+    { function() if card("latency") then require("calibrate").ui(ctx, ImGui); card_end() end end, 420 } }, true) end); ImGui.EndTabItem(ctx) end -- (Measure my latency: lib/calibrate.lua. James, rt)
   if tab("Console") then
     -- StudioSync's own log, newest first (REAPER's console only shows it while open)
     if ImGui.SmallButton(ctx, "Clear") then reaper.DeleteExtState(band.SECTION, band.LOG_KEY, false) end

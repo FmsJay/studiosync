@@ -558,6 +558,20 @@ it's the patient, lossless, store-and-forward half.
 Latency calibration (8) is mostly automatic: REAPER already compensates recording for the driver's reported latency on
 each computer, and StudioSync compensates the network part continuously from the shared clock. The loopback test is an
 optional precision step for drivers that misreport by a few ms.
+- **Built (rt-calibrate, 2026-11-19; offline tests only, not run in REAPER yet):** `lib/calibrate.lua`, tests/test_0_60_rt_calibrate.lua.
+  - **Measure my latency** (Settings > Advanced > Recording latency; Health's line opens it): with an output looped to an input (a cable,
+    or a mic held to a speaker) a scratch project tab (no sync runs on it) plays three 512-sample noise bursts through the master's outputs
+    and records them on the chosen input, unmonitored, with the metronome, pre-roll and auto-punch off for the run; then the tab, its
+    tracks and every file it made go, and those are put back. Each burst is found by normalised cross-correlation (gain, polarity, clipping
+    and noise don't move it; three must agree within 4 samples and clear a 0.2 score, or it says why). How late they land, REAPER's own
+    compensation included, is the driver's misreport; shown in samples and ms beside the driver's reported in/out latency and the round trip.
+  - **The fix is REAPER's own:** Correct it sets Preferences > Audio > Recording, Input manual offset (`adjrecmanlatin`, via SWS) to the
+    offset then plus the lateness (verified on a ToneX, reaper skill F-0039); Put back restores what it was before the first correction.
+    Nothing changes without the button; StudioSync's placement isn't needed as REAPER has the setting.
+  - **Per computer** (ExtState): when, the result, the driver's numbers, the device/rate/buffer; Health says when it was last measured, the
+    correction in use, and "measure again" once the device, rate or buffer differ.
+  - **Not yet:** a take's streamed placeholder (lib/streams.lua) is the raw file, uncompensated (the real take replaces it); the output
+    manual offset isn't read; whether REAPER takes an SWS-set offset without reopening the audio device is to be checked.
 
 ## A new interface: web UI in a REAPER docker and in the browser (James)
 Like Helgobox's move away from REAPER's own widgets, now that the extension is mandatory:

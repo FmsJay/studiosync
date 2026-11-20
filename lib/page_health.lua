@@ -235,6 +235,10 @@ function H.build_rows()
     local okb, brow = pcall(require("hub").health_row, cfg, b)
     if okb and brow then rows[#rows + 1] = brow end
   end
+  do -- recording latency: when it was last measured here and the correction in use, Measure when never or on another device (lib/calibrate.lua. James, rt)
+    local okc, crow = pcall(require("calibrate").health_row)
+    if okc and crow then rows[#rows + 1] = crow end
+  end
   do -- Syncthing's view of each studio folder, and free disk here and on the others (lib/rthealth.lua. James, rt)
     local okh, hrows = pcall(require("rthealth").rows, cfg, b, proj)
     for _, r in ipairs(okh and hrows or {}) do rows[#rows + 1] = r end
