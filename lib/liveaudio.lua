@@ -223,14 +223,17 @@ function liveaudio.apply(st)
   end
   S.sending = { talk = on == true, play = play_on == true and hop > 0 }
   local names, mix, bufs, can_buf = liveaudio.names(), liveaudio.mix(), liveaudio.buffers(), liveaudio.can_buffer()
+  local solo = require("livex").solo_in(st.peers, names, ext("solo") ~= "" and ext("solo") or nil) -- (Solo: only them, while they're here. rt-sonox)
   for peer, p in pairs(type(st.peers) == "table" and st.peers or {}) do
     if type(p) == "table" then
       local name = names[peer] or who(peer)
       if gate then reaper.StudioSync_LiveAudioSend(peer, (not only or name == only) and 1 or 0) end
       local g, m = liveaudio.hear_plan(mix[name] or mix[peer], s)
+      if solo and name ~= solo then m = true end
       if math.abs((tonumber(p.gain) or 1) - g) > 0.005 or (p.mute == true) ~= m then reaper.StudioSync_LiveAudioPeerSet(peer, g, m and 1 or 0) end
       local pg = liveaudio.play_gain(mix[name] or mix[peer], s)
       if (liveaudio.ducks[name] or -math.huge) > reaper.time_precise() then pg = 0 end -- (rt-share: their share's sound carries it)
+      if name == ext("duck play") then pg = 0 end -- (producing them: their take streams on your grid instead. lib/producer.lua, rt-sonox)
       if can_play and math.abs((tonumber(p.play_gain) or 1) - pg) > 0.005 then reaper.StudioSync_LiveAudioPeerPlay(peer, pg) end
       local f, c = liveaudio.bounds(bufs[name])
       if can_buf and (tonumber(p.floor_ms) ~= f or tonumber(p.ceiling_ms) ~= c) then reaper.StudioSync_LiveAudioPeerBuffer(peer, f, c) end
@@ -565,9 +568,13 @@ function liveaudio.hub_tick(cfg, b, list, users, st)
   S.hub_mem = S.hub_mem or {}
   local ok_b, why_b = liveaudio.hub_budget(st.hub, liveaudio.me().recording, S.hub_mem, reaper.time_precise())
   local hub = okv and type(v) == "table" and v.hub or nil
+  -- (while shared CPU runs in the room, the best-connected computer mixes instead of the song's hub: lib/livex.lua, rt-sonox)
+  local okx, xhub, pick, wait = pcall(require("livex").mix_host, cfg, b, hub, users, st, S)
+  if okx then hub = xhub end
   local peer, serve, why = liveaudio.hub_plan({ n = #(list or {}) + 1, from = liveaudio.hub_from(cfg.root), hub = hub, me = cfg.user, users = users,
     caps = S.caps, can = true, budget = ok_b, budget_why = why_b })
-  S.hub = { peer = peer, serve = serve, why = why, user = hub }
+  if okx and wait and not hub and why then why = wait end
+  S.hub = { peer = peer, serve = serve, why = why, user = hub, pick = okx and (peer ~= "" or serve) and pick or nil }
   local key = peer .. "|" .. tostring(serve)
   if key == S.hub_asked then return end
   reaper.StudioSync_LiveAudioHub(peer, serve and 1 or 0)
@@ -712,6 +719,7 @@ function liveaudio.tick(cfg, b, proj)
   liveaudio.update_sources(proj) -- (Talk and Play: what's armed now)
   liveaudio.apply(st) -- (the mic and the cue mix kept here, put back on each bandmate: a new peer, or after a restart, starts at full level)
   if b and b.song then liveaudio.hub_tick(cfg, b, list, users, st) end -- (who mixes: the song's hub from the studio's threshold)
+  if proj then pcall(require("livex").their_tick, proj, st) end -- (Their time's delay follows the measurement: rt-sonox)
 end
 -- Live sync ending in this tab: the engine stops if this tab started it.
 function liveaudio.on_exit(proj)
@@ -756,6 +764,7 @@ function liveaudio.hub_text(h, names, hubp)
   local fb = tonumber(h.fallbacks) or 0
   if fb > 0 then out = out .. string.format("; back to everyone's own streams %d time%s when the hub's mix stopped", fb, fb == 1 and "" or "s") end
   if type(hubp) == "table" and hubp.why then out = out .. "; the hub's mix: " .. hubp.why end
+  if type(hubp) == "table" and hubp.pick then out = out .. "; " .. hubp.pick end -- (who mixes while shared CPU runs, and why: rt-sonox)
   return out ~= "" and out or nil
 end
 -- Health's words from the extension's status: ok (everyone heard, loss under 5%), text. names: peer -> bandmate; theirs: bandmate -> the word

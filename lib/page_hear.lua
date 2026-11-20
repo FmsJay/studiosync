@@ -204,6 +204,18 @@ function page.producer(ctx, ImGui, proj, cfg, b, rows)
   -- (first in the row, under a line either route has: it moved from under the pointer otherwise, onto the lag drag. Mac, 0.58.10)
   if producer.via(proj) == "ninjam" then page.ninjam_line(ctx, ImGui) end
   local via = producer.via(proj)
+  if via == "live" then -- (the studio's own live audio: no route to pick, talkback built in. rt-sonox)
+    ImGui.TextDisabled(ctx, "Through the studio's live audio")
+    ImGui.SetItemTooltip(ctx, "Their takes stream onto your grid as they record (Settings > Options, Parts play: not Show only), their live playing is quiet here meanwhile, and between takes you hear them live. Nothing to set up on their side.")
+    local la = require("liveaudio")
+    local held, to = la.held(reaper.GetExtState(band.SECTION, "live audio talkback"), reaper.time_precise())
+    local talking = held and to == name
+    page.fit(ctx, ImGui, "Talking")
+    if talking then ImGui.PushStyleColor(ctx, ImGui.Col_Button, theme.RED) end
+    if ImGui.SmallButton(ctx, talking and "Talking##prodtb" or "Talk##prodtb") then la.hold("talkback", not talking and "latch" or nil, name) end
+    if talking then ImGui.PopStyleColor(ctx) end
+    ImGui.SetItemTooltip(ctx, "Talkback: your talk mic to " .. name .. " only, until you press it again. It reaches them at once, even mid-take; nothing of it is recorded here.")
+  else
   if ImGui.SmallButton(ctx, via == "stamp" and "Through SonoBus" or "Through a NINJAM server") then
     producer.talk(proj, false)
     local name = producer.who(proj)
@@ -224,6 +236,7 @@ function page.producer(ctx, ImGui, proj, cfg, b, rows)
     ImGui.TextDisabled(ctx, "No talkback")
     ImGui.SetItemTooltip(ctx, "A NINJAM server only plays sound as each interval reaches it, so talking between takes needs the SonoBus route.")
   end
+  end -- (via live)
   page.fit(ctx, ImGui, "", 110)
   ImGui.SetNextItemWidth(ctx, 110)
   local ch, v = ImGui.DragDouble(ctx, "##producelag", producer.lag(proj), 0.05, producer.MIN_LAG, producer.MAX_LAG, "%.1f s behind")

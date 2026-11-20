@@ -3,11 +3,14 @@
 -- Two ways to carry the sound, both by song position:
 --   stamp: SonoBus with position bursts (lib/stamp.lua). No server. The default.
 --   ninjam: ReaNINJAM's session mode on a mic-only feed. Needs a NINJAM server both can reach, over Tailscale.
+--   live: the studio's own live audio (rt-sonox), whenever it runs here (the other two would send you twice): their takes stream onto your
+--     grid as they record (lib/streams.lua, by the shared clock), their live Play is quiet here meanwhile, and Talk stays live both ways
+--     (Talk beside them is built-in talkback). Nothing to start on their side.
 -- Producing someone is this computer's own business; their computer sees it in your status file and sends what's needed (producer.answer).
 local band = require("band")
 local producer = {}
 
-producer.LAG = { stamp = 1.5, ninjam = 4 } -- seconds behind, to start with
+producer.LAG = { stamp = 1.5, ninjam = 4, live = 5 } -- seconds behind, to start with (live: a FLAC take reaches the link in 2-5 s steps, lib/streams.lua)
 producer.MIN_LAG, producer.MAX_LAG = 0.5, 30
 
 local function ext(proj, k) return select(2, reaper.GetProjExtState(proj, band.SECTION, k)) end
@@ -16,7 +19,12 @@ function producer.who(proj)
   local n = reaper.GetExtState(band.SECTION, key(proj))
   return n ~= "" and n or nil
 end
-function producer.via(proj) return ext(proj, "produce via") == "ninjam" and "ninjam" or "stamp" end
+function producer.via(proj)
+  local bnd = band.binding(proj)
+  if bnd and bnd.root and require("live").builtin_audio(bnd.root) then return "live" end -- (rt-sonox)
+  return ext(proj, "produce via") == "ninjam" and "ninjam" or "stamp"
+end
+producer.DUCK = "live audio duck play" -- (ExtState: whose Play is quiet in what you hear, while their take streams here: lib/liveaudio.lua apply)
 function producer.set_via(proj, via) reaper.SetProjExtState(proj, band.SECTION, "produce via", via) end
 function producer.lag(proj) return tonumber(ext(proj, "produce lag")) or producer.LAG[producer.via(proj)] end
 function producer.set_lag(proj, s)
@@ -230,7 +238,7 @@ function producer.start(proj, cfg, b, name)
   if via == "ninjam" then
     local ok, why = ninjam_on(proj, cfg, b, false)
     if not ok then return nil, why end
-  else
+  elseif via ~= "live" then
     local link, why = require("setup").sonobus(cfg, b, proj, true)
     if not link then return nil, why end
     if not require("stamp").read(proj, true, pair_of(proj, name)) then return nil, "Couldn't put StudioSync's stamp reader on the Real time track." end
@@ -244,6 +252,7 @@ end
 function producer.stop(proj, cfg, b)
   local name = producer.who(proj)
   reaper.DeleteExtState(band.SECTION, key(proj), false)
+  reaper.DeleteExtState(band.SECTION, producer.DUCK, false)
   if reaper.GetExtState(band.SECTION, "follow " .. tostring(proj)) == name then reaper.DeleteExtState(band.SECTION, "follow " .. tostring(proj), false) end
   require("stamp").read(proj, false)
   ninjam_off(proj)
@@ -282,12 +291,13 @@ function producer.tick(proj, cfg, b, peers)
   local stamp = require("stamp")
   -- someone's producing me: stamps go out for as long as they do
   local tab, by, ctl, asked = tostring(proj), {}, {}, {}
-  local through_ninjam = false
+  local through_ninjam, stamps = false, false
   for _, st in ipairs(peers) do
     if st.produce == cfg.user then
       by[#by + 1] = st.user
       if st.produce_ctl == "producer" then ctl[#ctl + 1] = st.user end
       through_ninjam = through_ninjam or st.produce_via == "ninjam"
+      stamps = stamps or (st.produce_via ~= "ninjam" and st.produce_via ~= "live") -- (the live route needs nothing from here: rt-sonox)
     end
     if st.measure == cfg.user then asked[#asked + 1] = st.user end -- (timing you for their Their time: lib/latency.lua)
   end
@@ -366,7 +376,7 @@ function producer.tick(proj, cfg, b, peers)
       if ok then band.log(now .. " hears you through the NINJAM server")
       elseif ninjam_said[tab] ~= why then ninjam_said[tab] = why; band.log(now .. " wants to hear you, but: " .. tostring(why)) end
     end
-  elseif now ~= "" or (#asked > 0 and require("live").realtime_on(proj)) then -- (bursts for whoever times you, too: lib/latency.lua)
+  elseif (now ~= "" and stamps) or (#asked > 0 and require("live").realtime_on(proj)) then -- (bursts for whoever times you, too: lib/latency.lua)
     if ninjam_up[tab] then ninjam_off(proj); ninjam_up[tab] = nil end
     local live, m, i = require("live"), nil, nil
     m, i = live.fx(proj, false, live.SONOBUS)
@@ -408,6 +418,9 @@ function producer.tick(proj, cfg, b, peers)
   stamp.read(proj, producer.via(proj) == "stamp", pair_of(proj, name))
   local them
   for _, st in ipairs(peers) do if st.user == name then them = st end end
+  -- (the live route: their take reaches you on your grid as it streams, so their live Play, ahead of it, is quiet here while they record)
+  local duck = producer.via(proj) == "live" and them and them.recording and name or ""
+  if reaper.GetExtState(band.SECTION, producer.DUCK) ~= duck then reaper.SetExtState(band.SECTION, producer.DUCK, duck, false) end
   -- what's being sung over goes quiet here while they're recording, and comes back when the take's here
   producer.quiet_tracks(proj, them and them.recording and type(them.armed) == "table" and them.armed or {})
 end
@@ -433,6 +446,10 @@ function producer.lines(proj, name, them, st, playing, cursor)
     elseif st.active then out[#out + 1] = { name .. " is playing: starting", "wait" }
     elseif playing and st.written > st.at then out[#out + 1] = { string.format("They stopped: %.0f s to go", st.written - st.at), "wait" }
     else out[#out + 1] = { "Talkback open", "ok" } end
+  end
+  if via == "live" then
+    out[#out + 1] = them.recording and { "Hearing their take as it streams, on your grid (their live playing is quiet here meanwhile)", "ok" }
+      or { "Between takes: you hear them live, and Talk", "ok" }
   end
   if them.mirror and them.my_mirror and them.mirror ~= them.my_mirror then out[#out + 1] = { "Your copy differs from theirs just now", "wait" } end
   return out

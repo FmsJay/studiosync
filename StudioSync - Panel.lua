@@ -947,6 +947,16 @@ end
 -- (following them) what they play, on top of your own copy of the song. lib/hear.lua.
 function ui.listen_button(p)
   local hear = require("hear")
+  if require("live").builtin_audio(cfg.root) and reaper.GetExtState(band.SECTION, "listen " .. tostring(proj)) == "" then -- (the studio's own live audio: its cue mix. rt-sonox)
+    local livex = require("livex")
+    local lon = livex.solo() == p.user
+    if lon then ImGui.PushStyleColor(ctx, ImGui.Col_Button, ACCENT) end
+    if ImGui.SmallButton(ctx, (lon and "Soloed" or "Solo") .. "##listen" .. p.user) then livex.set_solo(not lon and p.user or nil) end
+    if lon then ImGui.PopStyleColor(ctx) end
+    ImGui.SetItemTooltip(ctx, lon and ("You hear only " .. p.user .. " in the studio's live audio. Click to hear everyone again.") or
+      ("Solo " .. p.user .. ": only them in your ears (their talk and what they play), only for you; the others still hear everyone. Chat > Call has each person's volume and mute."))
+    return
+  end
   local key = "listen " .. tostring(proj)
   local on = reaper.GetExtState(band.SECTION, key) == p.user
   if on then ImGui.PushStyleColor(ctx, ImGui.Col_Button, ACCENT) end
@@ -1512,11 +1522,13 @@ end
 local RT_KINDS = {
   { "my", "My time", "You hear everyone the moment it arrives, a little late (the network). For playing and talking together.", sonobus = true },
   { "their", "Their time", "Your backing is delayed so the others line up with it. For listening along, not for playing.", sonobus = true },
+  { "their", "Their time", require("livex").THEIR_TIP, builtin = true }, -- (on the studio's own live audio: lib/livex.lua, rt-sonox)
   { "intime", "In time (NINJAM style)", "Recommended. Everyone plays to their own copy of the project: you follow whoever plays, and what they record reaches you %s behind, in time with the project. Built in, no NINJAM server. For playing along to a take. The bars behind: Settings > Options, Parts play. Talk: Chat > Call." },
 }
 function ui.rt_kind()
   if page_play.time_sync_on() then return "timesync" end
   if same_room_on() then return require("page_hear").their_time_on(proj) and "their" or "my" end
+  if b and require("livex").their_on(proj) then return "their" end -- (built in: rt-sonox)
   if b and require("streams").in_time_on(proj) then return "intime" end
   return nil
 end
@@ -1525,7 +1537,13 @@ function ui.set_rt_kind(kind) -- nil: off
   local now = ui.rt_kind()
   if kind == now then return end
   if now == "intime" then require("streams").set_in_time(proj, false) end -- (one way at a time)
-  if kind == "timesync" then
+  if now == "their" and require("livex").their_on(proj) then require("livex").set_their(proj, false); now = "their_live" end
+  if kind == "their" and live.builtin_audio(cfg.root) and not same_room_on() then -- (Their time on the studio's own live audio: rt-sonox)
+    if not b then return band.msg("Their time needs a studio project open.") end
+    if now == "timesync" and not page_play.time_sync(false) then return end
+    local ok, why = require("livex").set_their(proj, true)
+    if not ok then band.msg(tostring(why)) end
+  elseif kind == "timesync" then
     if not b then return band.msg("Time-sync needs a studio project open.") end
     if same_room_on() then set_same_room(false) end
     page_play.time_sync(true)
@@ -1538,7 +1556,7 @@ function ui.set_rt_kind(kind) -- nil: off
     if not same_room_on() then set_same_room(true) end
     if same_room_on() then require("page_hear").set_their_time(proj, kind == "their") end -- (not if it didn't come on: review, 0.59.8)
   elseif now == "timesync" then page_play.time_sync(false)
-  elseif now ~= "intime" then set_same_room(false) end
+  elseif now ~= "intime" and now ~= "their_live" then set_same_room(false) end
   -- (kept once it's on: a Time-sync that failed, with no Tailscale, was kept, tried again at every press of the switch, and My time never came
   -- back from Home. Onboarding review, 0.59.9)
   if kind and ui.rt_kind() == kind then
@@ -1555,7 +1573,7 @@ function ui.rt_switch(v)
   if last == "" then last = reaper.GetExtState(band.SECTION, "rt kind last") end
   if last == "timesync" then last = "intime" end -- (Home's in-time way is built in now: rt-audit §2)
   local builtin = live.builtin_audio(cfg.root)
-  if builtin then last = "intime" end -- (the studio's own live audio carries the sound: In time is the way left. rt-audit §1)
+  if builtin and last ~= "their" then last = "intime" end -- (the studio's own live audio carries the sound: In time, or its Their time. rt-audit §1, rt-sonox)
   if last == "" or (last == "intime" and not b) then
     rt_choosing = true
     band.log("Real time mode: pick My time, Their time or In time on Home (none was picked before)") -- (from the radial menu, nothing showed)
@@ -1567,12 +1585,13 @@ function ui.rt_switch(v)
 end
 local function home_play()
   local kind = ui.rt_kind()
-  local on, sb = kind ~= nil, kind == "my" or kind == "their"
+  local livex = require("livex")
+  local on, sb = kind ~= nil, (kind == "my" or kind == "their") and not livex.their_on(proj) -- (built-in Their time isn't SonoBus: rt-sonox)
   local ch, v = switch_row("##rt", "Real time mode", on or rt_choosing == true, SAME_ROOM_TIP)
   if ch then
     if not v then rt_choosing = nil end
     ui.rt_switch(v)
-    kind = ui.rt_kind(); on, sb = kind ~= nil, kind == "my" or kind == "their"
+    kind = ui.rt_kind(); on, sb = kind ~= nil, (kind == "my" or kind == "their") and not livex.their_on(proj)
   end
   if rt_choosing and not on then ImGui.TextDisabled(ctx, "Pick a way:") end
   local builtin = live.builtin_audio(cfg.root)
@@ -1580,7 +1599,7 @@ local function home_play()
     local bars = require("streams").bars()
     ImGui.Indent(ctx, 26)
     -- (side by side, what each does on hover: three paragraphs under each other took half of Home. James, 0.59.24)
-    for i, k in ipairs(live.offered(RT_KINDS, builtin, kind)) do -- (SonoBus's ways: not with the studio's own live audio, unless one is on still. rt-audit §1)
+    for i, k in ipairs(livex.offered(RT_KINDS, builtin, kind)) do -- (SonoBus's ways: not with the studio's own live audio, unless one is on still; its own Their time then. rt-audit §1, rt-sonox)
       -- (the direct link goes over Tailscale: without it, the in-time way came on and nothing arrived. Onboarding review, 0.59.9)
       local no_ts = k[1] == "intime" and b and not require("services").tailscale_up()
       if i > 1 then require("page_hear").fit(ctx, ImGui, k[2], 26) end -- (beside the last while it fits)
@@ -1592,6 +1611,7 @@ local function home_play()
       ImGui.SetItemTooltip(ctx, says)
     end
     if kind == "timesync" then ImGui.TextDisabled(ctx, "On: Time-sync through an outside NINJAM server (the Play/Jam tab).") end
+    if kind == "their" and livex.their_on(proj) then livex.their_ui(ctx, ImGui, proj) end
     ImGui.Unindent(ctx, 26)
   end
   local twice = live.twice_note(proj, builtin, sb or ui.call_on())
@@ -1701,7 +1721,8 @@ local function home_who()
   end
   -- (someone with only the SonoBus app: it was under Real time mode as "Invite someone without REAPER", which read as the one that installs
   -- REAPER. Here with the others, named for who it's for. James, 0.59.24)
-  if b then -- (a line of its own: beside the others it wrapped at some widths and not others. James, 0.59.27)
+  if b and my_id and live.builtin_audio(cfg.root) then require("livex").guest_button(ctx, ImGui, cfg, my_id) -- (the studio's own live audio: rt-sonox)
+  elseif b then -- (a line of its own: beside the others it wrapped at some widths and not others. James, 0.59.27)
   if ImGui.SmallButton(ctx, "Invite a SonoBus guest") then
     local link, why = setup.sonobus(cfg, b, proj, true)
     if not link then band.msg(why) else

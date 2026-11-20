@@ -792,6 +792,7 @@ function P.status(t)
     lets = require("producer").lets_for(proj) } -- (whoever produces me may start and stop my transport: their panel shows its buttons)
   do local okh, h = pcall(function() return require("hub").status_part(cfg, b) end); info.hub = okh and h or nil end -- (since, link, handed on, roles held: lib/hub.lua. James, rt)
   do local okc, c = pcall(require("hops").cpu_now); info.cpu = okc and c or nil end -- (how busy, in tens: who a track's FX can be offloaded to, lib/hops.lua. James, rt)
+  do local okx, x = pcall(require("livex").status_part, proj); if okx and x then info.net, info.lrtt, info.scpu, info.lmix = x.net, x.lrtt, x.scpu, x.lmix end end -- (who mixes while shared CPU runs: lib/livex.lua, rt-sonox)
   do local okn, n = pcall(require("bounces").can_help); info.bnc = okn and n or nil end -- (renders bandmates' stems in the background: lib/bounces.lua. James, rt)
   if info.follow == "" then info.follow = nil end
   do -- (this computer's live audio: muted, push-to-talk, or why it can't run here, so the others' Health says "Mac: needs extension 1.0.13". James, rt)

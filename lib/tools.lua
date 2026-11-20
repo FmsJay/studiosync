@@ -249,11 +249,18 @@ end
 -- Inviting a guest (James, 0.58.82): how long they stay is picked here, a choice or a date typed in, and the invitation leaves a note in the studio
 -- (removal.add_invite) so whoever lets them in gives them that long. With a Tailscale token their computer also joins the Tailscale network till then.
 local guest_pick = { days = 7, date = "", all = true, songs = {} }
+-- Opens the same window for a guest without Tailscale (lib/livex.lua guest_button, rt-sonox): no Tailscale key in their invitation, whatever
+-- token this computer has; they're reached through the connection without Tailscale. Call it where the Invite a guest button is drawn.
+function tools.open_guest_invite(ctx, ImGui, root, no_ts)
+  if guest_pick.root ~= root then guest_pick.songs = {} end
+  guest_pick.root, guest_pick.name, guest_pick.no_ts = root, tostring(band.info(root).name), no_ts or nil
+  ImGui.OpenPopup(ctx, "Invite a guest###guestinvite" .. root)
+end
 function tools.guest_invite_button(ctx, ImGui, my_id, root, label)
   local services, removal = require("services"), require("removal")
   if ImGui.SmallButton(ctx, (label or "Invite a guest") .. "##guestinv" .. root) then
     if guest_pick.root ~= root then guest_pick.songs = {} end -- (ticks from another studio's list went into this one's invitation. Review, 0.58.96)
-    guest_pick.root, guest_pick.name = root, tostring(band.info(root).name); ImGui.OpenPopup(ctx, "Invite a guest###guestinvite" .. root)
+    guest_pick.root, guest_pick.name, guest_pick.no_ts = root, tostring(band.info(root).name), nil; ImGui.OpenPopup(ctx, "Invite a guest###guestinvite" .. root)
   end
   if ImGui.IsItemHovered(ctx) then ImGui.SetTooltip(ctx, services.GUEST_TIP .. (services.has_token_for(services.studio_net(root)) and services.GUEST_TS_TIP or "")) end
   -- (a window of its own you can resize, the words wrapped: a fixed popup cut its text off. James, 0.58.98)
@@ -263,6 +270,7 @@ function tools.guest_invite_button(ctx, ImGui, my_id, root, label)
   local now = os.time()
   ImGui.PushTextWrapPos(ctx, 0)
   ImGui.Text(ctx, "Invite a guest to " .. tostring(guest_pick.name or "the studio") .. ": they're let in until the day you pick, then every computer stops syncing with theirs (their copy stays with them).")
+  if guest_pick.no_ts then ImGui.TextDisabled(ctx, "Without Tailscale: nothing joins their computer to your Tailscale network; they hear and are heard through StudioSync's connection without Tailscale.") end
   ImGui.PopTextWrapPos(ctx)
   ImGui.Separator(ctx)
   ImGui.Text(ctx, "Their access ends:")
@@ -309,7 +317,7 @@ function tools.guest_invite_button(ctx, ImGui, my_id, root, label)
     if not guest_pick.all then songs = {}; for s in pairs(guest_pick.songs) do songs[#songs + 1] = s end; table.sort(songs) end
     local made = removal.add_invite(root, ends, me, now, songs)
     local ok = true
-    if services.has_token_for(services.studio_net(root)) then ok = services.copy_guest_invite(my_id, info, ctx, ImGui, root, ends)
+    if not guest_pick.no_ts and services.has_token_for(services.studio_net(root)) then ok = services.copy_guest_invite(my_id, info, ctx, ImGui, root, ends)
     else tools.show_invite(services.invite_text(my_id, info), info, ctx, ImGui, { id = my_id, guest = true }) end
     if ok then band.log("a guest invitation to " .. tostring(info.name) .. " is on your clipboard: when they've run it, Let them in gives them until " .. removal.when(ends, now))
     else removal.end_invite(root, made, now) end

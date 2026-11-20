@@ -48,7 +48,7 @@ assert(ids(live.offered(KINDS, false, nil)) == "my,their,intime", "live audio of
 assert(ids(live.offered(KINDS, true, "their")) == "their,intime", "Their time still on: shown, so it can be turned off")
 local panel = src("StudioSync - Panel.lua")
 assert(panel:find('{ "my", "My time", [^\n]*sonobus = true }') and panel:find('{ "their", "Their time", [^\n]*sonobus = true }'), "the panel marks SonoBus's ways")
-assert(panel:find("ipairs(live.offered(RT_KINDS, builtin, kind))", 1, true), "Home lists the offered ways")
+assert(panel:find("ipairs(livex.offered(RT_KINDS, builtin, kind))", 1, true), "Home lists the offered ways (rt-sonox: livex.offered adds the built-in Their time)")
 assert(not panel:find('"Time-sync (recommended)"', 1, true) and panel:find('"In time (NINJAM style)", "Recommended.', 1, true), "Home recommends the built-in In time")
 assert(panel:find("Show the Play/Jam tab (outside NINJAM server)", 1, true), "the outside path stays under Settings, labelled")
 -- Chat > Call: SonoBus's Join the call (and its Pop out, its mic and volumes, all under it) only without live audio or while it's on
