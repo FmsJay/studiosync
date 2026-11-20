@@ -1,7 +1,7 @@
--- Claims mode (lib/claimask.lua, rt-claims): three modes and the two removed ones read as the nearest; what you edit becomes yours (a track,
+-- Claims mode (lib/claimask.lua, rt-claims): four modes (Open is claims off), Driver + claims reads as Driver only; what you edit becomes yours (a track,
 -- or a stretch of time across tracks), lapsing after AUTO_IDLE or when you leave; an edit to someone else's claim asks them: Release (the
 -- claim moves, the held edit may go), Keep and no answer (put back), and someone away or out of reach (put back, saying so); the panel's
--- answer path; mirror.watch's W.refuse holding or putting back by what the ask says. Two computers in one Lua: James and Chilio, the
+-- answer path; mirror.watch's W.refuse holding or putting back by what the ask says; Admins only's grants (lib/grants.lua). Two computers in one Lua: James and Chilio, the
 -- direct link a queue delivered by hand, the shared folder a table. (James, 2026-11-20)
 package.path = "lib/?.lua;" .. package.path
 local ext, clock, T = {}, 1000, 1800000000
@@ -23,6 +23,10 @@ local function list(dir) local out = {}; for p in pairs(files) do local f = p:ma
 band.files, band.listing = list, function(dir) return list(dir) end
 local alerts = {}
 package.loaded.alerts = { send = function(_, kind, title, msg) alerts[#alerts + 1] = { kind = kind, title = title, msg = msg }; return true end }
+local admins = { James = true } -- (the studio's owner and admins, as groups.may_manage says)
+package.loaded.groups = { may_manage = function(_, u) return admins[u] == true end }
+local trusted = true -- (Syncthing says the file's own `by` wrote it: trust.claim_ok)
+package.loaded.trust = { claim_ok = function() return trusted end }
 local link_ok, wire = true, {}
 package.loaded.direct = { send_live = function(cfg, kind, d) if not link_ok then return false end; wire[#wire + 1] = { kind = kind, d = d, from = cfg.user }; return true end }
 local sync = require("sync")
@@ -49,16 +53,17 @@ local function claims_of(u) return files[R .. "/claims/" .. u .. ".json"] or {} 
 local function has(l, n) for _, x in ipairs(l or {}) do if x == n then return true end end return false end
 local function sent(name, pos, len) claimask.on_sent({ kind = "item", state = "<ITEM\nPOSITION " .. pos .. "\nLENGTH " .. len .. "\n>\n" }, name, { pos = pos }) end
 
--- ---- three modes; the removed two read as the nearest, said once each --------------------------------------------------------------------
-assert(#require("live").MODE_INFO == 3 and require("live").MODE_INFO[1][2] == "Claims", "three modes, Claims first")
+-- ---- four modes; Driver + claims reads as Driver only, said once ------------------------------------------------------------------------
+local MI = require("live").MODE_INFO
+assert(#MI == 4 and MI[1][2] == "Claims" and MI[2][1] == "everyone" and MI[2][2] == "Open", "four modes: Claims first, then Open (claims off)")
 for _, m in ipairs(require("live").MODE_INFO) do assert(sync.MODES[m[1]], "a mode on disk: " .. m[1]) end
 files[R .. "/mode.json"] = { mode = "claims" }
 assert(sync.mode(J, "S", "main") == "driver" and logged[#logged]:find("Driver %+ claims") and logged[#logged]:find("Driver only"), "Driver + claims -> Driver only, said")
 local n = #logged
-files[R .. "/mode.json"] = { mode = "everyone" }
-assert(sync.mode(J, "S", "main") == "open" and #logged == n + 1 and logged[#logged]:find("Anyone %(claims ignored%)"), "Anyone (claims ignored) -> Claims, said")
 sync.mode(J, "S", "main"); sync.mode(J, "S", "main")
-assert(#logged == n + 1, "once a session")
+assert(#logged == n, "once a session")
+files[R .. "/mode.json"] = { mode = "everyone" }
+assert(sync.mode(J, "S", "main") == "everyone" and #logged == n, "Open (\"everyone\" on disk) is a mode of its own, nothing said")
 files[R .. "/mode.json"] = { mode = "open" }
 
 -- ---- auto-claims ----------------------------------------------------------------------------------------------------------------------------
@@ -205,6 +210,57 @@ assert(#claimask.model(B).incoming == 1, "the same thing asked again: one ask")
 claimask._reset()
 wire = {}
 
+-- ---- Open: claims off, no auto-claims, no asks ------------------------------------------------------------------------------------------
+files[R .. "/mode.json"] = { mode = "everyone" }
+deliver()
+assert(has(claims_of("Chilio").tracks, "Drums") and can("James", "Drums", 1) and can("Andie", "Drums", 1) and can("Andie", nil, nil), "Open: anyone changes anything, claimed or not")
+assert(claimask.hold(J, B, who(), "Drums", 1) == nil and claimask.askable(J, B, who(), "Drums", 1) == nil and #wire == 0, "nothing asked")
+sent("Strings", 60, 1)
+assert(claimask.flush(J, B, who(), false) == 0 and not has(claims_of("James").tracks, "Strings"), "nothing claimed by itself")
+files[R .. "/mode.json"] = { mode = "open" }
+assert(not can("James", "Drums", 1), "back in Claims, Chilio's claim holds again")
+
+-- ---- Admins only: an admin lets a guest or a member edit in this room (lib/grants.lua) -------------------------------------------------
+local grants = require("grants")
+files[R .. "/mode.json"] = { mode = "admins" }
+local G = { root = "R", user = "Guest Kim" }
+assert(not can("Guest Kim", "Keys", 1) and not can("Chilio", "Keys", 1) and can("James", "Keys", 1), "Admins only: only admins edit what nobody claimed")
+local said, why = grants.set(C, "S", "main", "Guest Kim", true)
+assert(not said and why:find("owner or an admin") and files[R .. "/grants/Chilio.json"] == nil, "a member can't grant")
+said = grants.set(J, "S", "main", "Guest Kim", true)
+assert(said and said:find("let Guest Kim edit in 'main'") and logged[#logged] == said, "an admin grants, logged")
+assert(can("Guest Kim", "Keys", 1) and can("Guest Kim", nil, nil) and who().granted["Guest Kim"].by == "James", "the guest edits as an admin would, the timeline too")
+assert(not can("Guest Kim", "Drums", 1), "but not what someone claimed (as for an admin)")
+assert(not grants.set(J, "S", "main", "James", true), "an admin needs no grant")
+files["R/S/rooms/side/mode.json"] = { mode = "admins" }
+local other = sync.authority(J, "S", "side", session)
+assert(not other("Guest Kim", "Keys", 1), "the grant doesn't reach another room")
+grants.set(J, "S", "main", "Chilio", true)
+assert(can("Chilio", "Keys", 1) and grants.health_words(J, B):find("Chilio, Guest Kim edit here too"), "a member too; Health says who")
+-- a file that doesn't count: named for someone else, from someone no longer an admin, or not written by its `by`'s computer
+files[R .. "/grants/Andie.json"] = { by = "Andie", users = { Andie = { on = true, at = "2099-01-01T00:00:00Z" } } }
+assert(not can("Andie", "Keys", 1), "Andie (not an admin) granting herself: doesn't count")
+files[R .. "/grants/Mallory.json"] = { by = "James", users = { Andie = { on = true, at = "2099-01-01T00:00:00Z" } } }
+assert(not can("Andie", "Keys", 1), "a file named for someone else than its by: doesn't count")
+trusted = false
+assert(not can("Guest Kim", "Keys", 1), "not written by the admin's own computer: doesn't count")
+trusted = true
+-- revoke: the newest word wins, across admins' files
+admins.Chilio = true
+assert(grants.set(C, "S", "main", "Guest Kim", false):find("took back Guest Kim's editing"), "another admin revokes, logged")
+assert(not can("Guest Kim", "Keys", 1) and can("Chilio", "Keys", 1), "revoked; the other grant stays")
+T = T + 1
+assert(grants.web_action(J, B, { user = "Guest Kim", on = true }):find("the web page: James let Guest Kim edit"), "the web page's Let edit")
+assert(can("Guest Kim", "Keys", 1), "granted again")
+assert(grants.web_action(C, B, { user = "x\ny", on = true }):find("not a name"), "names are plain")
+admins.Chilio = nil
+files[R .. "/mode.json"] = { mode = "driver" }
+assert(not can("Guest Kim", "Keys", 1) and grants.health_words(J, B) == nil, "a grant counts only in Admins only")
+files[R .. "/mode.json"] = { mode = "open" }
+local wm = require("webui").presence_model("S", "main", { user = "James" }, {}, (function() files[R .. "/mode.json"] = { mode = "admins" }; return who() end)())
+assert(wm.mode == "admins" and table.concat(wm.granted, ",") == "Chilio,Guest Kim", "Who's here on the web lists who may edit here")
+files[R .. "/mode.json"] = { mode = "open" }
+
 -- ---- mirror.watch's W.refuse holds or puts back by what the ask says ------------------------------------------------------------------
 local backs, asked_with = {}, nil
 local function refuse(answer)
@@ -232,4 +288,5 @@ for _, want in ipairs({ 'claim_ask = function(d) require("claimask").on_ask(cfg,
 end
 src = io.open("lib/webui/app.js", "rb"); local js = src:read("a"); src:close()
 assert(js:find("topic: 'claimask', id: q.id, answer", 1, true) and js:find("asks(p.asks || {})", 1, true), "the web page shows asks and answers them")
+assert(js:find("topic: 'grants', user: x.user, on: !granted", 1, true) and require("webui").ACTIONS.grants, "the web page's Let edit / Revoke reach grants.web_action")
 print("ok")

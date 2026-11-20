@@ -36,17 +36,22 @@ live.MODE_INFO = {
   { "open", "Claims", "Anyone changes anything nobody else has claimed, the tempo map and markers too. What you edit becomes your claim while\n" ..
     "you work on it (it lets go after 10 minutes without an edit, when you leave, or with Release). Editing what someone else has claimed\n" ..
     "asks them: Release gives it to you and your edit goes to everyone; Keep, or no answer in 30 s, puts it back." },
+  { "everyone", "Open", "Claims off: anyone changes anything. If two change one thing at once, whoever changed it more wins,\n" ..
+    "and the other person gets a Use mine button to put theirs back." },
   { "driver", "Driver only", "Only the driver changes what the studio has. Everyone else's changes are put back (record as usual)." },
-  { "admins", "Admins only", "Only the studio's owner and admins change what the studio has, and anyone on what an admin gave them (right-click their name). Other changes are put back." },
+  { "admins", "Admins only", "Only the studio's owner and admins change what the studio has, whoever an admin lets edit in this room (a guest or a member:\n" ..
+    "Let someone edit here, below), and anyone on what an admin gave them (right-click their name). Other changes are put back." },
 }
 -- What driving means, by mode: take = what taking control does; away = straight after "X is driving but isn't here"; lost = after "you're no
--- longer driving". In Claims and Admins only the driver only leads play and stop for whoever follows the driver: it was described everywhere as
--- the old Driver + claims, with a yellow "only claimed tracks can change" that was false by default. (Round 1 review, 0.59.45; three modes since
--- rt, sync.MODES)
+-- longer driving". In Claims, Open and Admins only the driver only leads play and stop for whoever follows the driver: it was described everywhere
+-- as the old Driver + claims, with a yellow "only claimed tracks can change" that was false by default. (Round 1 review, 0.59.45; four modes
+-- since rt, sync.MODES)
 local LEADS = "play and stop follow you for whoever follows the driver"
 live.DRIVING = {
   open = { take = LEADS .. " (everyone already changes what nobody has claimed)",
     away = ": play and stop don't follow anyone until someone takes control. Everyone can still edit.", lost = "you still change what nobody has claimed" },
+  everyone = { take = LEADS .. " (everyone already changes anything)",
+    away = ": play and stop don't follow anyone until someone takes control. Everyone can still edit.", lost = "you still change anything" },
   driver = { take = "only your changes reach everyone",
     away = ", so nothing can change. Take control to carry on (they can take it back when they return).", lost = "your changes are put back now" },
   admins = { take = LEADS .. " (what changes is still up to the owner and admins)",

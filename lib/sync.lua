@@ -419,18 +419,21 @@ end
 -- Who owns a take: its track's claimant, else the newest claim on a stretch of time it starts in (a time selection),
 -- else the claimant of the named region it starts in, else the driver. A take's author may change it (move, trim,
 -- mute) wherever nobody has claimed it that way.
--- How a room shares editing, set by the studio's owner or an admin (rooms/<room>/mode.json). Three since rt (James, 2026-11-20: "yes three
--- modes"; docs/rt/rt-audit.md §7). The names on disk are older than the panel's:
+-- How a room shares editing, set by the studio's owner or an admin (rooms/<room>/mode.json). Four since rt (James, 2026-11-20: "keep open for
+-- disabling all claims and completely open editing. Admins only makes sense too"; docs/rt/rt-audit.md §7). The names on disk are older
+-- than the panel's:
 --   "open"      Claims, the default: anyone changes anything nobody else has claimed (the newest change wins), the tempo map and markers too.
 --               What you edit becomes your claim while you work on it, and an edit to someone else's asks them for it (lib/claimask.lua)
+--   "everyone"  Open: claims off, anyone changes anything (claims are kept but don't hold; no auto-claims, no asks)
 --   "driver"    Driver only: only the driver changes what the band has (claims are kept, but don't count while it's on)
---   "admins"    only the group's owner and admins, and everyone on what's been claimed for them (lib/groups.lua; an admin can give a claim)
+--   "admins"    only the group's owner and admins, whoever an admin let edit in this room (lib/grants.lua), and everyone on what's been
+--               claimed for them (lib/groups.lua; an admin can give a claim)
 -- Changes someone may not make are put back where the band has them, never kept on their machine only.
 -- A room saved on a mode since removed reads as the nearest one left (OLD_MODES), said once a session in the log; mode.json isn't rewritten
 -- (only the owner or an admin writes it: their next pick does).
-sync.MODES = { driver = true, open = true, admins = true }
-sync.OLD_MODES = { claims = "driver", everyone = "open" } -- (Driver + claims -> Driver only; Anyone, claims ignored -> Claims)
-sync.OLD_NAMES = { claims = "Driver + claims", everyone = "Anyone (claims ignored)" }
+sync.MODES = { driver = true, open = true, everyone = true, admins = true }
+sync.OLD_MODES = { claims = "driver" } -- (Driver + claims -> Driver only)
+sync.OLD_NAMES = { claims = "Driver + claims" }
 sync.DEFAULT_MODE = "open"
 sync.AUTO_IDLE = 600 -- seconds without an edit before an auto-claim stops counting (lib/claimask.lua)
 local mode_said = {}
@@ -443,7 +446,7 @@ function sync.mode(cfg, song, room)
     if not mode_said[k] and band.log then
       mode_said[k] = true
       band.log("'" .. tostring(room) .. "' was set to " .. sync.OLD_NAMES[m] .. ", which StudioSync no longer has: it works as " ..
-        (now == "driver" and "Driver only" or "Claims") .. " now (the owner or an admin can pick another under Who controls)")
+        "Driver only now (the owner or an admin can pick another under Who controls)")
     end
     return now
   end
@@ -572,13 +575,15 @@ function sync.authority(cfg, song, room, s)
       if pos >= sp.from and pos < sp.to and regions[sp.name] then return true end
     end
   end
+  local granted = mode == "admins" and require("grants").list(cfg, song, room) or {} -- (Admins only: who an admin let edit in this room)
   sync.owner_of = owner -- for messages ("... is James's to change")
   sync.is_claimed = claimed -- (sync.maker_may)
   return function(user, track, pos, take, drv) -- drv: the driver to judge by (an event's own time), else today's
       if mode == "driver" then return user == (drv or driver) end
+      if mode == "everyone" then return true end -- (Open: claims off)
       if mode == "admins" then
         if claimed(track, pos) then return owner(track, pos, drv) == user end
-        return require("groups").may_manage(cfg.root, user)
+        return require("groups").may_manage(cfg.root, user) or granted[user] ~= nil -- (or let edit here by an admin: lib/grants.lua)
       end
       if owner(track, pos, drv) == user then return true end
       -- open: anything nobody claimed, by anyone, the song's tempo map, markers and settings too (James, 2026-10-31:
@@ -589,7 +594,7 @@ function sync.authority(cfg, song, room, s)
     -- (is_claimed and owner_of: this room's, for callers to pass on. The module's sync.is_claimed / sync.owner_of are the last call's, and one
     -- for another room in between judged this one by that room's claims. They stay, for callers not passing these yet. Round 1 review, 0.59.45)
     { driver = driver, tracks = tracks, regions = regions, times = times, owner = owner, spans = spans, mode = mode, printers = printers,
-      is_claimed = claimed, owner_of = owner }
+      is_claimed = claimed, owner_of = owner, granted = granted }
 end
 
 -- Show the time claims as regions named "[claimed: <user>]" (this machine only; see band.CLAIM_MARK). Redrawn

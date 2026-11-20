@@ -63,20 +63,19 @@ assert(can("James", "Guitar", 12) and not can("Laptop", "Guitar", 12), "driver o
 assert(not can("Laptop", "Pad", 0, "Laptop-20261028-032939Z-1"), "driver only: not even your own take")
 claims["mode.json"] = { mode = "nonsense" }
 assert(select(2, sync.authority({ root = "root" }, "Saltmarsh", "main", s)).mode == "open", "an unknown mode reads as the default")
--- the two modes rt removed (James, 2026-11-20: three modes) read as the nearest left, said once a session each in the log
+-- Open ("everyone" on disk): claims off. Driver + claims, removed in rt, reads as Driver only, said once a session in the log (James, 2026-11-20)
 local said = {}
 package.loaded.band.log = function(t) said[#said + 1] = t end
 claims["mode.json"] = { mode = "everyone" }
 can, who = sync.authority({ root = "root" }, "Saltmarsh", "main", s)
-assert(who.mode == "open" and not can("Sam", "Guitar", 12) and can("Sam", nil, nil), "Anyone (claims ignored) works as Claims: claims hold now")
-assert(#said == 1 and said[1]:find("Anyone %(claims ignored%)") and said[1]:find("works as Claims"), "and says so: " .. tostring(said[1]))
-sync.authority({ root = "root" }, "Saltmarsh", "main", s)
-assert(#said == 1, "once")
+assert(who.mode == "everyone" and can("James", "Guitar", 12) and can("Sam", "Guitar", 12) and can("Sam", nil, nil) and #said == 0, "Open: claims don't hold, nothing said")
 claims["mode.json"] = { mode = "claims" }
 can, who = sync.authority({ root = "root" }, "Saltmarsh", "main", s)
 assert(who.mode == "driver" and can("James", "Guitar", 12) and not can("Laptop", "Guitar", 12) and not can("Sam", "Keys", 0), "Driver + claims works as Driver only")
-assert(#said == 2 and said[2]:find("Driver %+ claims") and said[2]:find("Driver only"), "and says so")
-assert(not sync.MODES.claims and not sync.MODES.everyone and sync.MODES.open and sync.MODES.driver and sync.MODES.admins, "three modes")
+assert(#said == 1 and said[1]:find("Driver %+ claims") and said[1]:find("Driver only"), "and says so")
+sync.authority({ root = "root" }, "Saltmarsh", "main", s)
+assert(#said == 1, "once")
+assert(not sync.MODES.claims and sync.MODES.everyone and sync.MODES.open and sync.MODES.driver and sync.MODES.admins, "four modes")
 package.loaded.band.log = nil
 -- the driver released Laptop's claims while Laptop was away: those don't count; a claim made after still does
 claims["mode.json"] = { mode = "open" }

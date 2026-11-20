@@ -87,7 +87,7 @@ function dawedit.item_refusal(can, who, user, name, track_oid, item_oid, pos)
   if who.mode == "driver" then return "only the driver (" .. tostring(who.driver) .. ") changes things in this room" end
   local owner = who.is_claimed and who.is_claimed(name, pos) and who.owner_of and who.owner_of(name, pos)
   if owner and owner ~= user then return tostring(owner) .. " has claimed " .. (name ~= "" and name or "that track") .. " there" end
-  if who.mode == "admins" then return "only admins change what nobody has claimed in this room" end
+  if who.mode == "admins" then return "only admins, and whoever an admin lets edit here, change what nobody has claimed in this room" end
   return "it's the driver's (" .. tostring(who.driver) .. ") until someone claims it: claim the track first"
 end
 -- Why this computer's user may not change the markers and regions (names: the regions' old and new names), or nil. sync.watch_timeline's

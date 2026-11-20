@@ -232,6 +232,10 @@ function H.build_rows()
   if band.colour_try(proj) then -- (a colour look tried here: its colours stay on this computer until it's kept. Hold my changes is gone: rt-nohold)
     rows[#rows + 1] = { "colour try " .. os.date("!%Y-%m-%d"), false, "yellow", "", "You're trying a colour look here: its colours stay on this computer until you keep it for everyone or put it back (Colours). Everything else still goes out." }
   end
+  do -- Admins only: who an admin let edit in this room (lib/grants.lua, rt-claims)
+    local okg, gwords = pcall(require("grants").health_words, cfg, b)
+    if okg and gwords then rows[#rows + 1] = { "grants", true, "yellow", gwords, "" } end
+  end
   do -- a call app beside REAPER (lib/callapps.lua)
     local ok, words = pcall(require("callapps").health_words)
     if ok and words then rows[#rows + 1] = { "call app", false, "yellow", "", words } end

@@ -105,8 +105,10 @@ function webui.presence_model(song, room, me, peers, who)
     if a.kind ~= z.kind then return a.kind < z.kind end
     return (a.name or tostring(a.from)) < (z.name or tostring(z.from))
   end)
+  -- (Admins only: who an admin let edit in this room, lib/grants.lua. rt-claims)
+  local granted = type(who) == "table" and who.mode == "admins" and type(who.granted) == "table" and require("grants").names(who.granted) or {}
   return { song = song, room = room, driver = type(who) == "table" and who.driver or nil, mode = type(who) == "table" and who.mode or nil,
-    people = people, claims = claims }
+    people = people, claims = claims, granted = granted }
 end
 -- t: page_chat.read's { msgs, todo, links }, each oldest first; where_of(where) -> a label or nil; scope: "song" (This project, its topic
 -- "chat"), "room" or "band" (Studio). -> { scope, msgs, todo, links }: the newest `max` of each, oldest first. Each has its file's name as its
@@ -151,6 +153,7 @@ webui.ACTIONS.invite = true -- (Ask to join, Join / Decline, a studiosync:// lin
 webui.ACTIONS.guestweb = true -- (browser guests: the host's make/kick/level, and a guest's own, wrapped by the extension: lib/guestweb.lua)
 webui.ACTIONS.tryfx = true -- (the Try tab: a bandmate's plug-in you don't have, its knobs, asks for yours: lib/hoptry.lua, rt-hopvst)
 webui.ACTIONS.claimask = true -- (Claims mode: Release / Keep what someone asks for: lib/claimask.lua, rt-claims)
+webui.ACTIONS.grants = true -- (Admins only: let someone edit in this room, or take it back; owner and admins only. lib/grants.lua, rt-claims)
 function webui.parse_action(s)
   local a = type(s) == "string" and s ~= "" and band.json_decode(s)
   if type(a) ~= "table" or type(a.topic) ~= "string" or not webui.ACTIONS[a.topic] then return nil end
@@ -238,6 +241,10 @@ function webui.tick(proj, cfg, b, handlers)
       local said = require("hoptry").web_action(proj, cfg, b, a)
       if said then band.log(said) end
     end
+    if topic == "grants" then
+      local said = require("grants").web_action(cfg, b, a)
+      if said then band.log(said) end
+    end
     if topic == "claimask" then
       local said = require("claimask").web_action(cfg, b, a)
       if said then band.log(said) end
@@ -274,6 +281,8 @@ function webui.tick(proj, cfg, b, handlers)
     last_who = who
     local pm = webui.presence_model(b.song, b.room, me, require("presence").peers(cfg, b.song, b.room), who)
     pm.asks = require("claimask").model(b) -- (Claims mode: asks waiting on you, and yours on others. lib/claimask.lua, rt-claims)
+    local okg, mg = pcall(require("groups").may_manage, cfg.root, cfg.user)
+    pm.may_grant = okg and mg or nil -- (Admins only: this page may let people edit here)
     publish("presence", pm)
   end
   if now - chat_at >= webui.CHAT_EVERY then

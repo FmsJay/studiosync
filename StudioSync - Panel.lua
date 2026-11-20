@@ -674,6 +674,10 @@ local function section_driver(beside) -- beside: drawn on the box's row (a short
   ImGui.EndDisabled(ctx)
   ImGui.SetItemTooltip(ctx, cur[3] .. (may_set and "" or "\nThe studio's owner or an admin picks this."))
   if not may_set then ImGui.SameLine(ctx); ImGui.TextDisabled(ctx, "the owner or an admin picks") end
+  if mode == "admins" then -- (who an admin let edit in this room: Revoke, and Let someone edit here for whoever's here. lib/grants.lua, rt-claims)
+    local gok, gerr = pcall(require("grants").panel, ctx, ImGui, cfg, b, require("presence").here(cfg, b.song, b.room, 45), may_set)
+    if not gok then band.log("grants: " .. tostring(gerr)) end
+  end
   if beside then beside() end
   if driving or reaper.GetExtState(band.SECTION, "alone " .. tostring(proj)) == "" then -- (alone, "James is driving" sat right above "you have full control": Mac, 0.57.6)
     local yours = ({ driver = "You're driving: only you change things." })[mode] or "You're driving."
@@ -1879,7 +1883,7 @@ function ui.settings_colours()
     require("people").track_options(ctx, ImGui) -- whose colours tracks show here
     if b and can then require("colours").draw(ctx, ImGui, proj, cfg, function(name, tr) -- (a track you made is yours, as mirror.watch has it: Mac, 0.57.6)
       return can(cfg.user, name) or sync.maker_may(require("mirror").track_oid(tr), cfg.user, name, nil, who and who.mode)
-    end, view.driver == cfg.user or (who and who.mode == "open"))
+    end, view.driver == cfg.user or (who and (who.mode == "open" or who.mode == "everyone")))
     elseif not b then ImGui.TextDisabled(ctx, "Colouring a project: open a studio project.") end
     card_end()
   end

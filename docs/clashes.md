@@ -13,6 +13,7 @@ both were apart (offline, or Syncthing hadn't caught up), or both changed it wit
    machine at once, with the reason, so most would-be clashes never reach the band. In *Claims*, everything
    unclaimed is open, the tempo map and markers too, and what you edit becomes your claim while you work on it; an edit
    to someone else's claim waits on your machine while they're asked (Release sends it, Keep puts it back: lib/claimask.lua).
+   In *Open*, everything is open, claimed or not, and nobody is an owner: clashes are merged (rule 3) or go to whoever changed it more.
 2. **The owner wins** (James, 2026-11-04). A change by whoever has claimed it, or by the driver on what's unclaimed, takes a version number far past anything made meanwhile (`mirror.next_rev`), so it stands however often someone else changed it, and every computer agrees without being told who owned what.
 3. **Items are merged, not picked** (0.58.43). Two changes to one item made apart are put together: each line of the item (its
    place, length, fades, volume, each take's settings and notes) comes from whichever side changed it, so one person moving a clip while
