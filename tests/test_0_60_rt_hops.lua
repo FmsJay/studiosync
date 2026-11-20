@@ -162,6 +162,18 @@ local tr = track("P1", "aaa", { plugin("VST3: ReaEQ (Cockos)"), mine, amp })
 tr.ext.band_local_fx = mine.guid .. "for=" .. amp.guid .. ";" -- (a translation of this computer's own: not counted as the song's)
 local list = hops.candidates(cfg, amp.name, "Song", "main")
 assert(#list == 1 and list[1].user == "Bo" and list[1].peer == "bo-pc.tail99.ts.net:47281", "only Bo has it here")
+-- outside Live sync (the panel, an action) direct.peers gives the list only: the bandmates are still found, by their Tailscale names (desktop, rt)
+do
+  local real_peers, real_read = package.loaded.direct.peers, band.read_json
+  package.loaded.direct.peers = function() return { "bo-pc.tail99.ts.net:47281", "mac.tail99.ts.net:47281" }, {} end
+  band.read_json = function(p)
+    if p:find("bo.json", 1, true) then return { user = "Bo", device = "DEVBO", ts = { ["tail99.ts.net"] = "bo-pc.tail99.ts.net" } } end
+    if p:find("mac.json", 1, true) then return { user = "Mac", device = "DEVMAC", ts = { ["tail99.ts.net"] = "MAC.tail99.ts.net" } } end
+  end
+  local by = hops.peers_by_user(cfg, "Song", "main")
+  assert(by.Bo == "bo-pc.tail99.ts.net:47281" and by.Mac == "mac.tail99.ts.net:47281", "found by name (any case) without the device map")
+  package.loaded.direct.peers, band.read_json = real_peers, real_read
+end
 local id, why = hops.make("P1", cfg, tr, 2, "Bo", list[1].peer, "Song", "main")
 assert(id == 1, "made: " .. tostring(why))
 local hop = tr.fx[4]

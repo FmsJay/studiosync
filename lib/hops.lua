@@ -226,14 +226,19 @@ end
 -- Who's here: user -> "name:port" (the direct link's peers, by the devices they wrote).
 function hops.peers_by_user(cfg, song, room)
   local list, dev_of = require("direct").peers(cfg, song, room)
-  local user_of = {}
+  local user_of, user_of_name = {}, {}
   for _, f in ipairs(band.files(cfg.root .. "/_band/devices", ".json")) do
     local d = band.read_json(cfg.root .. "/_band/devices/" .. f)
-    if type(d) == "table" and type(d.user) == "string" and type(d.device) == "string" then user_of[d.device] = d.user end
+    if type(d) == "table" and type(d.user) == "string" and type(d.device) == "string" then
+      user_of[d.device] = d.user
+      for _, n in pairs(type(d.ts) == "table" and d.ts or {}) do if type(n) == "string" then user_of_name[n:lower()] = d.user end end
+    end
   end
   local out = {}
   for _, p in ipairs(list or {}) do
-    local u = user_of[(dev_of or {})[p] or ""]
+    -- (or by its Tailscale name: outside Live sync (the panel, the actions) direct.peers has only the list, so Offload and Run plug-in on a
+    -- bandmate found nobody. Desktop, rt)
+    local u = user_of[(dev_of or {})[p] or ""] or user_of_name[(tostring(p):match("^(.-):%d+$") or tostring(p)):lower()]
     if u and u ~= cfg.user then out[u] = p end
   end
   return out
