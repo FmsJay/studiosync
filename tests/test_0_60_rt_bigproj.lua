@@ -108,6 +108,54 @@ local t_colour, c_colour = ms(function() require("colours").LOOK_EVERY = 0; retu
 say("colour parity's look (every 5 s, in the pass): %.1f ms, %d REAPER calls", t_colour, c_colour)
 within("colour parity's look", t_colour, 60)
 
+-- ---- quick looks (rt-look, docs/rt/rt-look.md): Live sync's looks build on the last one; an edit costs what it touched ----
+do
+  local q = { can = yes, mode = "open", quick = true }
+  F.clock = F.clock + 70 -- (past every chain's loading minute: until then each look reads them all)
+  mirror.watch(F.proj, cfg, b.song, b.room, q); F.clock = F.clock + 1; mirror.watch(F.proj, cfg, b.song, b.room, q)
+  -- (the fake makes the changed chunks before the clock starts: that's REAPER's work, not StudioSync's Lua)
+  local function made(it) F.track_chunk(it.track); F.raw.GetItemStateChunk(it) end
+  -- one edit, then the look that sends it, five times: the median (os.clock steps a millisecond on Windows, and other programs' bursts land
+  -- in single looks), the REAPER calls and MB of chunks of the last, and each sent exactly one change
+  local function edits(edit, what)
+    local times, c, mb = {}, 0, 0
+    for k = 1, 5 do
+      F.clock = F.clock + 1; mirror.watch(F.proj, cfg, b.song, b.room, q) -- (the last one's send looked at again: its track is read once more)
+      F.clock = F.clock + 1
+      local it = edit(k)
+      if it then made(it) end
+      local t, calls, mbs, sent = ms(function() return mirror.watch(F.proj, cfg, b.song, b.room, q) end)
+      assert(sent == (it and 1 or 0), what .. ": " .. tostring(sent) .. " change(s) out")
+      times[k], c, mb = t, calls, mbs
+    end
+    table.sort(times)
+    return times[3], c, mb
+  end
+  local t_qi, c_qi, mb_qi = edits(function() end, "a quick look, nothing changed")
+  say("quick look, nothing changed (hints find nothing, so every chunk is read): %.0f ms, %d REAPER calls, %.1f MB of chunks", t_qi, c_qi, mb_qi)
+  local mv = m.tracks[21].items[6]
+  local t_qm, c_qm = edits(function(k) F.move(mv, k % 2 == 1 and 0.5 or -0.5); return mv end, "one item moved")
+  say("quick look after one item moved (not selected: every chunk read, one track worked out): %.0f ms, %d REAPER calls", t_qm, c_qm)
+  -- the same with the item selected, as a drag leaves it: only its track's chunk is asked for
+  rawset(reaper, "CountSelectedMediaItems", function() return 1 end)
+  rawset(reaper, "GetSelectedMediaItem", function() return mv end)
+  local t_qs, c_qs, mb_qs = edits(function(k) F.move(mv, k % 2 == 1 and 0.25 or -0.25); return mv end, "one selected item moved")
+  say("quick look after one selected item moved: %.0f ms, %d REAPER calls, %.2f MB of chunks", t_qs, c_qs, mb_qs)
+  rawset(reaper, "CountSelectedMediaItems", function() return 0 end)
+  local t_qn, c_qn = edits(function(k) F.midi_edit(mit, 12 + k, 70 + k); return mit end, "one MIDI note changed")
+  say("quick look after one MIDI note changed (a 41 KB item normalized and sent): %.0f ms, %d REAPER calls", t_qn, c_qn)
+  -- (30 ms on this desktop unloaded, when a warm full look takes ~120 ms: other agents' builds slow every figure alike, so the budget follows
+  -- how slow this run's warm full look was, up to 3x. And whatever the load: an edit's quick look costs at most a fifth of the full look's)
+  local slow = math.min(3, math.max(1, t_warm / 120))
+  within(string.format("a quick look with nothing changed (x%.1f for this run's speed)", slow), t_qi, 30 * slow)
+  within(string.format("a quick look after one item moved (x%.1f)", slow), math.max(t_qm, t_qs), 30 * slow)
+  within(string.format("a quick look after one MIDI note changed (x%.1f)", slow), t_qn, 30 * slow)
+  assert(math.max(t_qm, t_qs) <= t_move / 5 and t_qn <= t_midi / 5, string.format("an edit's quick look is at most a fifth of the full look's (%.0f vs %.0f, %.0f vs %.0f ms)",
+    math.max(t_qm, t_qs), t_move, t_qn, t_midi))
+  assert(mb_qs < 0.5, string.format("one selected item moved: %.2f MB of chunks asked for, not the whole project's", mb_qs))
+  F.clock = F.clock + 1; mirror.watch(F.proj, cfg, b.song, b.room, q)
+end
+
 -- ---- every tick, with the live link up, a page on the Project page and one on the Mixer, and an edit every 8 ticks ----
 local direct = require("direct")
 direct.live_available = function() return true end

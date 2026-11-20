@@ -650,10 +650,20 @@ function prints.ara_take(it)
   end
 end
 local ara_open = {} -- take GUID -> its plug-in window was open at the last look
-function prints.watch_ara(proj)
-  for i = 0, reaper.CountMediaItems(proj) - 1 do
-    local tk = prints.ara_take(reaper.GetMediaItem(proj, i))
+-- `only` (a quick look, lib/mirror.lua): a set of tracks, the only ones whose items are looked at. -> the tracks holding an ARA take.
+function prints.watch_ara(proj, only)
+  local items, found = {}, {}
+  if only then
+    for tr in pairs(only) do
+      if reaper.ValidatePtr2(proj, tr, "MediaTrack*") then
+        for j = 0, reaper.CountTrackMediaItems(tr) - 1 do items[#items + 1] = reaper.GetTrackMediaItem(tr, j) end
+      end
+    end
+  else for i = 0, reaper.CountMediaItems(proj) - 1 do items[#items + 1] = reaper.GetMediaItem(proj, i) end end
+  for _, it in ipairs(items) do
+    local tk = prints.ara_take(it)
     if tk then
+      found[reaper.GetMediaItem_Track(it)] = true
       local open = false
       for f = 0, reaper.TakeFX_GetCount(tk) - 1 do open = open or reaper.TakeFX_GetOpen(tk, f) end
       local g = select(2, reaper.GetSetMediaItemTakeInfo_String(tk, "GUID", "", false))
@@ -663,6 +673,7 @@ function prints.watch_ara(proj)
       ara_open[g] = open
     end
   end
+  return found
 end
 function prints.ara_source(it, tk)
   local fx = {}
@@ -1263,7 +1274,8 @@ end
 
 prints.LANES_UNDO = "StudioSync: takes became lanes"
 -- `root`: the studio, whose setting (band.json "takes_to_lanes", on unless false) says whether this runs at all; nil (the tests) runs it.
-function prints.takes_to_lanes(proj, mine, root)
+-- `only` (a quick look, lib/mirror.lua): a set of tracks, the only ones looked at; nil, all.
+function prints.takes_to_lanes(proj, mine, root, only)
   if root and not require("groups").takes_to_lanes(root) then return 0 end -- (a studio setting now, the owner's. James, rt)
   local done = 0
   -- (Ctrl+Z on it: the next pass split them again. Undone, the track keeps its takes from then on, until none has two. Review, 0.58.91)
@@ -1278,6 +1290,7 @@ function prints.takes_to_lanes(proj, mine, root)
   end
   for i = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, i)
+    if only and not only[tr] then goto next_track end
     local want, blocked = false, require("mirror").local_track(tr)
     local keep = band.track_ext(tr, "band_keep_takes") ~= ""
     local any = false
@@ -1351,7 +1364,9 @@ function prints.takes_to_lanes(proj, mine, root)
       if not lanes_ok then error(lanes_err, 0) end
       band.log("the takes on " .. select(2, reaper.GetTrackName(tr)) .. " became lanes (the takes you picked stay the comp)")
       done = done + 1
+      require("mirror").touch(proj, tr) -- (read afresh at the next quick look)
     end
+    ::next_track::
   end
   return done
 end

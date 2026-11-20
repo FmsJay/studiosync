@@ -305,9 +305,12 @@ function dawview.read(proj, key, now, budget_end)
   for _, c in pairs(note_cache) do c.seen = nil end
   local raw = { key = key, len = reaper.GetProjectLength(proj), tracks = {}, markers = {}, bars = {}, sigs = {}, tempo = {} }
   local places, pending, level = {}, false, 0
+  local paused = false
   for i = 0, reaper.CountTracks(proj) - 1 do
-    -- (tracks deleted, or the tab closed, while paused: the rest is left for the next look, which the moved change count makes)
-    if pause() and not (reaper.ValidatePtr2(0, proj, "ReaProject*") and i < reaper.CountTracks(proj)) then break end
+    -- (tracks deleted, or the tab closed, while paused: the rest is left for the next look, which the moved change count makes. Every track
+    -- after a pause, not only the one it paused at: resumed at track 40 with 50 left, track 50 was read as nil. rt-look)
+    paused = pause() or paused
+    if paused and not (reaper.ValidatePtr2(0, proj, "ReaProject*") and i < reaper.CountTracks(proj)) then break end
     local tr = reaper.GetTrack(proj, i)
     local fd = math.floor(reaper.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH"))
     local indent = level

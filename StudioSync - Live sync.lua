@@ -471,7 +471,7 @@ function P.look(t)
       for _, st in ipairs(presence.peers(cfg, b.song, b.room)) do here[st.user] = true end
       t.redraw = true -- (a look can put back a refused edit, copy it to a track of yours or delete an item, with no undo point: always redrawn)
       local ok, sent = pcall(require("mirror").watch, proj, cfg, b.song, b.room, { can = my_can, owner_can = can, mode = who.mode, local_mix = sync.local_mix, is_claimed = who.is_claimed, owner_of = who.owner_of,
-        held = held, hold = hold, here = here, printers = who.printers })
+        held = held, hold = hold, here = here, printers = who.printers, quick = true }) -- (quick: builds on the last look, lib/mirror.lua rt-look)
       if not ok then band.log("mirror sync: " .. tostring(sent))
       elseif sent > 0 then band.log(sent .. " change(s) went to " .. (b.room == "main" and "the others" or ("the room '" .. b.room .. "'"))); pcall(require("api").event, "sent", { n = sent, song = b.song, room = b.room }) end
       mirror_took = reaper.time_precise() - now
@@ -1350,6 +1350,9 @@ local function tick_body() -- returns true to keep going
     -- (and when a burst of ours is still going out: mirror.watch sends a quarter second of it per pass)
     if require("mirror").more then mirror_due = true end
     if sync.backlog or require("mirror").more then last = reaper.time_precise() - every + 0.3 end
+    -- (a plug-in chain or automation settling: the next pass the moment it's due, not 2 s on. lib/mirror.lua settle_due, rt-look)
+    local settle_due = require("mirror").settle_due
+    if settle_due then mirror_due = true; last = math.min(last, settle_due - every) end
   end
   return true
 end

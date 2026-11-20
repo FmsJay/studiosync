@@ -33,10 +33,16 @@ mirror.chain_local = chain_local
 -- A take envelope's lines that are this computer's view of it: shown or not, its lane's height, armed (review, 0.58.91: they went out as edits).
 local TAKE_ENV_VIEW = { EGUID = true, VIS = true, LANEHEIGHT = true, ARM = true }
 -- Normalized item chunk: what the band shares about this item, byte-identical on every machine that holds it.
+local byte = string.byte
 function mirror.normalize_item(chunk)
   local out, in_ext, fx = {}, false, {} -- (fx: the blocks open inside a take's <TAKEFX chain, empty outside it)
   local tenv = false -- (inside a take's envelope)
   for line in chunk:gmatch("[^\r\n]+") do
+    -- (a MIDI event, "E <ticks> ...", unindented: kept as it is, as the lines below would keep it. Nearly every line of a big MIDI item, and
+    -- each went through a trim and four patterns: half a big MIDI item's look after one note changed. rt-look)
+    local b1, b2 = byte(line, 1, 2)
+    if b1 == 69 and b2 == 32 and not in_ext and byte(line, -1) > 32 then out[#out + 1] = line; goto next_line end
+    do
     local s = line:match("^%s*(.-)%s*$")
     local key = s:match("^(%S+)")
     if #fx == 0 and not tenv and key and key:match("^<%u+ENV%d*$") then tenv = true elseif tenv and s == ">" then tenv = false end
@@ -62,6 +68,8 @@ function mirror.normalize_item(chunk)
     elseif not (key and LOCAL_SET[key]) then
       out[#out + 1] = s
     end
+    end
+    ::next_line::
   end
   -- an <EXT> block left empty by the filter is dropped
   return (table.concat(out, "\n"):gsub("<EXTI?\n>\n?", "")) .. "\n"
@@ -1253,7 +1261,10 @@ function mirror.track_line(t, local_mix, colour)
   -- Automation mode, only when it's Read (power-user review, 0.58.62): left off at the default, so no track's hash changed and nothing was sent
   -- again. Read or Trim/Read is how the song plays; Touch, Latch and Write are what one person is doing, so they travel as Read.
   if (tonumber(t.automode) or 0) >= 1 then f[#f + 1] = "am1" end
-  for i, v in ipairs(f) do f[i] = tostring(v):gsub("|", "/") end
+  for i, v in ipairs(f) do
+    local s = tostring(v)
+    f[i] = s:find("|", 1, true) and s:gsub("|", "/") or s -- (the same text; the gsub only when there's a "|": 150 tracks' 30 fields a look)
+  end
   return table.concat(f, "|")
 end
 
@@ -1400,6 +1411,10 @@ local function remember(proj, oid, rev, h, evid, order)
   setext(proj, oid, v)
   local c = ids(proj)
   if c and c.rec[oid] ~= v then c.rec[oid], c.dirty = v, true end
+  local pk = tostring(proj) -- (the next quick look reads this object's track afresh and puts it through W.one: rt-look)
+  local r = mirror.remembered[pk]
+  if not r then r = {}; mirror.remembered[pk] = r end
+  r[oid] = true
 end
 mirror.remember = remember
 
@@ -1571,7 +1586,8 @@ end
 -- 2,000-3,000 MIDI items. Cost: one string compare a track, one plain find on a track whose chunk changed, and last look's track chunks kept in
 -- memory (an item's own chunk only while its track changes: Round 4 review, 0.59.49). Round 3 review, 0.59.48
 local look_items, look_proj = {}, {} -- tostring(proj) -> { [track] = { chunk, media, pooled, items = { [item GUID] = { chunk, base } } } }; -> proj
-function mirror.item_states(proj, list, chunks, media_dir, dirty)
+-- (`partial`: `list` holds only some tracks' items, a quick look's changed tracks: the others' boxes are kept as they were. rt-look)
+function mirror.item_states(proj, list, chunks, media_dir, dirty, partial)
   local pk = tostring(proj)
   local was, now, out = look_items[pk] or {}, {}, {}
   for _, x in ipairs(list) do
@@ -1608,6 +1624,7 @@ function mirror.item_states(proj, list, chunks, media_dir, dirty)
     end
   end
   for _, box in pairs(now) do box.prev = nil end -- (only last look's is kept)
+  if partial then for tr, box in pairs(was) do if now[tr] == nil then now[tr] = box end end end
   look_items[pk], look_proj[pk] = now, proj
   for k, p in pairs(look_proj) do -- (a closed tab's go: the panel looks at several)
     if k ~= pk and not reaper.ValidatePtr(p, "ReaProject*") then look_items[k], look_proj[k] = nil, nil end
@@ -1648,9 +1665,11 @@ end
 -- it: the source would then look new and be put back); the others become new objects. Returns the oid per entry.
 mirror.CSEC = "BandSync.colours" -- "colours" = "own" (SWS auto-colours tracks here) or "band": as of the last look
 mirror.GSEC = "BandSync.mirrorg" -- oid -> REAPER GUID of the object holding it here (this machine's own)
-local function settle_ids(proj, list, kind, user, set_oid)
+-- (`also_held`: oids items outside `list` hold, a quick look's unchanged tracks: no GUID gets one of those back. rt-look)
+local function settle_ids(proj, list, kind, user, set_oid, also_held)
   local keeper, matched, c, held = {}, {}, ids(proj), {}
   -- no oid, but this machine gave its GUID one before (the project wasn't saved since): it gets that oid back
+  for oid in pairs(also_held or {}) do held[oid] = true end
   for _, x in ipairs(list) do if x.oid ~= "" then held[x.oid] = true end end
   for _, x in ipairs(list) do
     local was = x.oid == "" and c and c.guid[x.guid]
@@ -1839,10 +1858,8 @@ function mirror.drop_stash(proj)
   if path then os.remove(path); stash_sig[path], stash_at[path] = nil, nil end
 end
 
-function mirror.scan(proj, user, media_dir, local_mix)
-  mirror.memo_turn() -- (between looks only: see mirror.memo)
-  mirror.restless_load()
-  local objs, by_oid, tracks, chunks = {}, {}, {}, {}
+-- The mirrored tracks, their oids settled, and where each sits (what the receives' track numbers mean). mirror.scan and mirror.quick_scan.
+local function scan_tracks(proj, user)
   local tl = {}
   for i = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, i)
@@ -1856,7 +1873,160 @@ function mirror.scan(proj, user, media_dir, local_mix)
   local function oid_at(i) return at[i] end
   local sig = {} -- (where each mirrored track sits: what the receives' track numbers mean, part of the memo's key)
   for i = 0, reaper.CountTracks(proj) - 1 do sig[#sig + 1] = at[i] or "-" end
-  local at_sig = table.concat(sig, ",")
+  return tl, oid_at, table.concat(sig, ",")
+end
+local function track_lfx(tr)
+  return select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local_fx", "", false))
+    .. select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_fx_held", "", false)) -- (lib/hops.lua: offloaded, held off here)
+end
+-- (keyed on the track's own part, before its first item: an item edit missed the whole track's entry, and its item lines were parsed again
+-- in Lua, 50 to 200 ms on a big MIDI track. Nothing of the track's follows its items: 574 tracks in 60 projects here, and
+-- tests/test_0_59_45_engine.lua asserts the parts come out the same. Round 1 review, 0.59.45)
+local function head_parts(chunk, lfx, at_sig, oid_at)
+  local head = mirror.track_head(chunk)
+  return mirror.memo("t\0" .. at_sig .. "\0" .. restless_sig() .. "\0" .. lfx, head, function() return mirror.track_head_parts(head, lfx, oid_at) end)
+end
+-- A track's plug-ins, automation, sends and the rest as objects (its automation items read through the API every look, as always).
+local function add_parts(objs, by_oid, tr, oid, parts)
+  mirror.mod_params[tr] = parts.mods -- (every plug-in, in REAPER's order: what mirror.fx_params counts by)
+  local fo = { kind = "fx", oid = "F" .. oid:sub(2), ptr = tr, track = oid, state = parts.fx, hash = parts.fxh }
+  objs[#objs + 1], by_oid[fo.oid] = fo, fo
+  local env, recv = parts.env .. mirror.ai_lines(tr), parts.recv .. mirror.ai_lines(tr, "recv")
+  for _, p in ipairs({ { "E", "env", env }, { "R", "recv", recv }, { "M", "misc", parts.misc } }) do
+    local po = { kind = p[2], oid = p[1] .. oid:sub(2), ptr = tr, track = oid, state = p[3], hash = mirror.hash(p[3]) }
+    objs[#objs + 1], by_oid[po.oid] = po, po
+  end
+end
+local function add_master(proj, objs, by_oid, oid_at)
+  local master = reaper.GetMasterTrack(proj)
+  local _, mch = reaper.GetTrackStateChunk(master, "", false)
+  local mfx = mirror.fxchain(mch, mirror.live_fx(master)) or ""
+  mirror.mod_params[master] = mirror.modulated(mirror.fxchain(mch) or "")
+  if mfx:match("^<FXCHAIN[^\n]*\n>%s*$") then mfx = "" end -- (only this computer's live mix on it: Real time mode read as "changed the plug-ins on the master")
+  local menv = mirror.track_parts(mch, oid_at) .. mirror.ai_lines(master) .. mirror.master_fxen_line(proj, master)
+  for _, p in ipairs({ { "F-MASTER", "fx", mfx }, { "E-MASTER", "env", menv } }) do
+    local po = { kind = p[2], oid = p[1], ptr = master, track = mirror.MASTER, state = p[3], hash = p[2] == "fx" and mirror.fx_hash(p[3]) or mirror.hash(p[3]) }
+    objs[#objs + 1], by_oid[po.oid] = po, po
+  end
+  by_oid[mirror.MASTER] = { kind = "master", state = { name = "Master" } } -- (who may change it: as a track called Master)
+end
+-- ---- Quick looks (rt-look: docs/rt/rt-look.md) ----
+-- A look asked REAPER for every track's chunk and worked every object out again, ~150-300 ms of Lua and 144,000 calls at 150 tracks and 4,000
+-- items, after every edit. A quick look reads each track's cheap fingerprint (track_fp) and asks for the chunks of the tracks that may have
+-- changed only (track_fp moved, a selected item or track, the MIDI editor's, the selected envelope's, an FX window open in the last minute,
+-- something StudioSync wrote or wants to look at again); a track whose chunk is byte for byte the last one keeps its parts and items. When
+-- none of those changed anything, every chunk is read (an edit the hints can't see: a script's, a knob turned with no window open). Every
+-- chunk is read at least each QUICK_ALL_SECS, and a full look (mirror.scan, every object through W.one, as before) runs each QUICK_FULL_SECS
+-- and logs anything the quick one would have missed. mirror.watch with opts.quick only (Live sync's looks); everything else looks in full.
+mirror.QUICK_ALL_SECS, mirror.QUICK_FULL_SECS = 10, 60
+mirror.looks = mirror.looks or {} -- tostring(proj) -> what the last look saw (tracks by GUID, objects' hashes, which were clean)
+mirror.remembered = mirror.remembered or {} -- tostring(proj) -> { oid = true }: records written since the last look (remember)
+mirror.touched = mirror.touched or {} -- tostring(proj) -> { [track] = true }: written by StudioSync without a record, read at the next look
+mirror.look_stats = mirror.look_stats or { quick = 0, full = 0, all_chunks = 0, missed = 0 }
+-- Another module wrote to a track or item outside a record (a print, video stand-ins: rt-video2): its chunk is read at the next quick look.
+function mirror.touch(proj, tr)
+  if not tr then return end
+  local pk = tostring(proj)
+  mirror.touched[pk] = mirror.touched[pk] or {}
+  mirror.touched[pk][tr] = true
+end
+-- What a track's chunk would show changed, read through the API: its settings line, plug-in translations, how many items and where the first
+-- and last sit (a move, a trim at either end, ripple and insert-space moving everything after), plug-ins and which are on, envelopes and their
+-- points, receives and their levels. Not complete (a knob, a point dragged, a fade): the hints and the read of every chunk catch those.
+local function track_fp(tr, th, lfx)
+  local n, nfx, nenv, nrecv = reaper.CountTrackMediaItems(tr), reaper.TrackFX_GetCount(tr), reaper.CountTrackEnvelopes(tr), reaper.GetTrackNumSends(tr, -1)
+  local f = { th, lfx, n, nfx, reaper.TrackFX_GetRecCount(tr), nenv, nrecv, reaper.GetTrackNumSends(tr, 0), reaper.GetTrackNumSends(tr, 1) }
+  if n > 0 then
+    local a, z = reaper.GetTrackMediaItem(tr, 0), reaper.GetTrackMediaItem(tr, n - 1)
+    f[#f + 1] = reaper.GetMediaItemInfo_Value(a, "D_POSITION")
+    f[#f + 1] = reaper.GetMediaItemInfo_Value(z, "D_POSITION")
+    f[#f + 1] = reaper.GetMediaItemInfo_Value(z, "D_LENGTH")
+  end
+  for i = 0, nfx - 1 do f[#f + 1] = reaper.TrackFX_GetEnabled(tr, i) and "e" or "b" end
+  for e = 0, nenv - 1 do f[#f + 1] = reaper.CountEnvelopePoints(reaper.GetTrackEnvelope(tr, e)) end
+  for r = 0, nrecv - 1 do
+    f[#f + 1] = reaper.GetTrackSendInfo_Value(tr, -1, r, "D_VOL")
+    f[#f + 1] = reaper.GetTrackSendInfo_Value(tr, -1, r, "D_PAN")
+    f[#f + 1] = reaper.GetTrackSendInfo_Value(tr, -1, r, "B_MUTE")
+  end
+  return table.concat(f, " ")
+end
+mirror.track_fp = track_fp -- (tests)
+local function tempo_fp(proj)
+  local f = {}
+  for i = 0, reaper.CountTempoTimeSigMarkers(proj) - 1 do
+    local _, t, m, b, bpm, num, den, lin = reaper.GetTempoTimeSigMarker(proj, i)
+    f[#f + 1] = string.format("%.10g %.10g %.10g %.10g %s %s %s", t or 0, m or 0, b or 0, bpm or 0, tostring(num), tostring(den), tostring(lin))
+  end
+  return table.concat(f, ";")
+end
+-- Tracks an edit was most likely on: selected items' and tracks, the last touched, the MIDI editor's take's, the selected envelope's, and any
+-- with an FX window open in the last minute (mirror.note_open_fx, keyed by tostring). A set of track pointers and their tostring.
+local function hinted(proj)
+  local set = {}
+  local function add(tr) if tr then set[tr] = true end end
+  for i = 0, reaper.CountSelectedMediaItems(proj) - 1 do
+    local it = reaper.GetSelectedMediaItem(proj, i)
+    if it then add(reaper.GetMediaItem_Track(it)) end
+  end
+  for i = 0, reaper.CountSelectedTracks(proj) - 1 do add(reaper.GetSelectedTrack(proj, i)) end
+  if reaper.GetLastTouchedTrack then add(reaper.GetLastTouchedTrack()) end
+  local ed = reaper.MIDIEditor_GetActive and reaper.MIDIEditor_GetActive()
+  local tk = ed and reaper.MIDIEditor_GetTake(ed)
+  if tk then add(reaper.GetMediaItemTake_Track(tk)) end
+  local env = reaper.GetSelectedEnvelope and reaper.GetSelectedEnvelope(proj)
+  if env then
+    local tr = reaper.Envelope_GetParentTrack(env)
+    if not tr then
+      local take = reaper.Envelope_GetParentTake(env)
+      tr = take and reaper.GetMediaItemTake_Track(take)
+    end
+    add(tr)
+  end
+  local now = reaper.time_precise()
+  for k, at in pairs(mirror.fx_open_at) do if now - at < 60 then set[k] = true end end
+  return set
+end
+-- What a quick look needs to be the same as the last look's to build on it: anything that changes how every object reads.
+local function look_ctx(proj, user, media_dir, local_mix, at_sig)
+  return table.concat({ media_dir, tostring(local_mix), tostring(user), restless_sig(), tostring(mirror.own_colours()), at_sig,
+    tostring(reaper.GetMasterTrack(proj)) }, "\1")
+end
+-- (an unchanged track's item, its pointer looked up only if something asks: by its place, checked by its GUID)
+local lazy = setmetatable({}, { __mode = "k" })
+local LAZY = { __index = function(o, k)
+  local l = k == "ptr" and lazy[o]
+  if not l then return nil end
+  local tr, j, g = l[1], l[2], l[3]
+  local function guid(x) return x and select(2, reaper.GetSetMediaItemInfo_String(x, "GUID", "", false)) end
+  local it = reaper.ValidatePtr2(0, tr, "MediaTrack*") and reaper.GetTrackMediaItem(tr, j)
+  if guid(it) ~= g then
+    it = nil
+    for i = 0, reaper.ValidatePtr2(0, tr, "MediaTrack*") and reaper.CountTrackMediaItems(tr) - 1 or -1 do
+      local x = reaper.GetTrackMediaItem(tr, i)
+      if guid(x) == g then it = x; break end
+    end
+  end
+  if it then rawset(o, "ptr", it) end
+  return it
+end }
+local function item_obj(p, tr, toid)
+  local o = setmetatable({ kind = "item", oid = p.oid, track = toid, state = p.state, hash = p.hash, pos = p.pos }, LAZY)
+  lazy[o] = { tr, p.j, p.guid }
+  return o
+end
+-- A new look record. `L`: the last one, for what carries over.
+local function new_look(L, ctx, now)
+  return { ctx = ctx, tracks = {}, where = {}, all_at = L and L.all_at or now, full_at = L and L.full_at or now, tempo = L and L.tempo, attn = {}, clean = {},
+    raw = {}, guid_of = {} }
+end
+
+function mirror.scan(proj, user, media_dir, local_mix, rec)
+  mirror.memo_turn() -- (between looks only: see mirror.memo)
+  mirror.restless_load()
+  local objs, by_oid, tracks, chunks = {}, {}, {}, {}
+  local tl, oid_at, at_sig = scan_tracks(proj, user)
+  local tg = {} -- track -> its record (rec)
   for _, x in ipairs(tl) do
     local tr, oid = x.ptr, x.oid
     do
@@ -1865,45 +2035,27 @@ function mirror.scan(proj, user, media_dir, local_mix)
       objs[#objs + 1], by_oid[oid], tracks[tr] = o, o, oid
       local _, chunk = reaper.GetTrackStateChunk(tr, "", false)
       chunks[tr] = chunk -- (its items' states may be last look's: mirror.item_states)
-      local lfx = select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_local_fx", "", false))
-        .. select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_fx_held", "", false)) -- (lib/hops.lua: offloaded, held off here)
-      -- (keyed on the track's own part, before its first item: an item edit missed the whole track's entry, and its item lines were parsed again
-      -- in Lua, 50 to 200 ms on a big MIDI track. Nothing of the track's follows its items: 574 tracks in 60 projects here, and
-      -- tests/test_0_59_45_engine.lua asserts the parts come out the same. Round 1 review, 0.59.45)
-      local head = mirror.track_head(chunk)
-      local parts = mirror.memo("t\0" .. at_sig .. "\0" .. restless_sig() .. "\0" .. lfx, head, function() return mirror.track_head_parts(head, lfx, oid_at) end)
-      mirror.mod_params[tr] = parts.mods -- (every plug-in, in REAPER's order: what mirror.fx_params counts by)
-      local fx = parts.fx
-      local fo = { kind = "fx", oid = "F" .. oid:sub(2), ptr = tr, track = oid, state = fx, hash = parts.fxh }
-      objs[#objs + 1], by_oid[fo.oid] = fo, fo
-      local env, recv, misc = parts.env, parts.recv, parts.misc
-      env, recv = env .. mirror.ai_lines(tr), recv .. mirror.ai_lines(tr, "recv")
-      for _, p in ipairs({ { "E", "env", env }, { "R", "recv", recv }, { "M", "misc", misc } }) do
-        local po = { kind = p[2], oid = p[1] .. oid:sub(2), ptr = tr, track = oid, state = p[3], hash = mirror.hash(p[3]) }
-        objs[#objs + 1], by_oid[po.oid] = po, po
+      local lfx = track_lfx(tr)
+      local parts = head_parts(chunk, lfx, at_sig, oid_at)
+      add_parts(objs, by_oid, tr, oid, parts)
+      if rec then
+        local e = { ptr = tr, oid = oid, chunk = chunk, lfx = lfx, parts = parts, pooled = chunk:find("POOLEDEVTS", 1, true) ~= nil, fp = track_fp(tr, o.hash, lfx), items = {},
+          lanes = t.freemode == 2 }
+        rec.tracks[x.guid], tg[tr], rec.guid_of[tr] = e, e, x.guid
+        for _, p in ipairs({ "T", table.unpack(mirror.PARTS) }) do rec.where[p .. oid:sub(2)] = x.guid end
       end
     end
   end
-  do -- the master (see mirror.MASTER)
-    local master = reaper.GetMasterTrack(proj)
-    local _, mch = reaper.GetTrackStateChunk(master, "", false)
-    local mfx = mirror.fxchain(mch, mirror.live_fx(master)) or ""
-    mirror.mod_params[master] = mirror.modulated(mirror.fxchain(mch) or "")
-    if mfx:match("^<FXCHAIN[^\n]*\n>%s*$") then mfx = "" end -- (only this computer's live mix on it: Real time mode read as "changed the plug-ins on the master")
-    local menv = mirror.track_parts(mch, oid_at) .. mirror.ai_lines(master) .. mirror.master_fxen_line(proj, master)
-    for _, p in ipairs({ { "F-MASTER", "fx", mfx }, { "E-MASTER", "env", menv } }) do
-      local po = { kind = p[2], oid = p[1], ptr = master, track = mirror.MASTER, state = p[3], hash = p[2] == "fx" and mirror.fx_hash(p[3]) or mirror.hash(p[3]) }
-      objs[#objs + 1], by_oid[po.oid] = po, po
-    end
-    by_oid[mirror.MASTER] = { kind = "master", state = { name = "Master" } } -- (who may change it: as a track called Master)
-  end
-  local il = {}
+  add_master(proj, objs, by_oid, oid_at)
+  local il, jn = {}, {}
   for i = 0, reaper.CountMediaItems(proj) - 1 do
     local it = reaper.GetMediaItem(proj, i)
     local itr = reaper.GetMediaItem_Track(it)
     local toid = tracks[itr]
+    local j = jn[itr] or 0 -- (its place on its track: rec's lazy pointer starts looking there)
+    jn[itr] = j + 1
     if toid and select(2, reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_arriving", "", false)) == "" then -- (a stand-in: never sent)
-      il[#il + 1] = { ptr = it, tr = itr, toid = toid, oid = itm_oid(it), guid = select(2, reaper.GetSetMediaItemInfo_String(it, "GUID", "", false)) }
+      il[#il + 1] = { ptr = it, tr = itr, toid = toid, oid = itm_oid(it), guid = select(2, reaper.GetSetMediaItemInfo_String(it, "GUID", "", false)), j = j }
     end
   end
   local dirty = {} -- (tracks an item's id was set on just now, after their chunks were read: mirror.item_states)
@@ -1914,8 +2066,186 @@ function mirror.scan(proj, user, media_dir, local_mix)
     local o = { kind = "item", oid = x.oid, ptr = x.ptr, track = x.toid, state = norm, hash = mirror.item_hash(x.toid, norm),
       pos = reaper.GetMediaItemInfo_Value(x.ptr, "D_POSITION") }
     objs[#objs + 1], by_oid[x.oid] = o, o
+    local e = rec and tg[x.tr]
+    if e then
+      e.items[#e.items + 1] = { oid = x.oid, guid = x.guid, state = norm, hash = o.hash, pos = o.pos, j = x.j }
+      rec.where[x.oid] = rec.guid_of[x.tr]
+    end
   end
+  if rec then rec.ctx, rec.tempo = look_ctx(proj, user, media_dir, local_mix, at_sig), tempo_fp(proj) end
   return objs, by_oid
+end
+
+-- The same objects mirror.scan finds, in the same order, building on the last look `L` (see "Quick looks" above). -> objs, by_oid, and what
+-- the look found ({ L = the new look record, fresh = oids worked out anew this time (tracks, the master's, a changed track's parts and items:
+-- their records are read again before they're left out of W.one), all = every chunk was read }), or nil when the
+-- last look can't be built on (tracks added, removed or moved, the restless list, colours, Local mixing, another media folder or master).
+-- `remembered`: oids recorded since the last look.
+function mirror.quick_scan(proj, user, media_dir, local_mix, L, remembered, now)
+  mirror.memo_turn()
+  mirror.restless_load()
+  local tl, oid_at, at_sig = scan_tracks(proj, user)
+  local ctx = look_ctx(proj, user, media_dir, local_mix, at_sig)
+  if not L or ctx ~= L.ctx then return nil end
+  local N = new_look(L, ctx, now)
+  local tfp = tempo_fp(proj)
+  -- (every chunk: due, ripple editing on all tracks (it moves everyone's items after an edit), or the tempo map changed (items and points move))
+  local wide = now - L.all_at >= mirror.QUICK_ALL_SECS or reaper.GetToggleCommandStateEx(0, 41991) == 1 or tfp ~= L.tempo
+  N.tempo = tfp
+  local want, want_g = hinted(proj), {}
+  local pk = tostring(proj)
+  for tr in pairs(mirror.touched[pk] or {}) do want[tr] = true end
+  mirror.touched[pk] = nil
+  for g in pairs(L.attn) do want_g[g] = true end
+  for oid in pairs(remembered or {}) do
+    local g = L.where[oid]
+    if g then want_g[g] = true
+    elseif not oid:find("MASTER", 1, true) and oid:sub(1, 1) ~= "I" then wide = true end -- (a new item changes its track's count)
+  end
+  local found = false
+  local recs = {}
+  for k, x in ipairs(tl) do
+    local tr, oid = x.ptr, x.oid
+    local t = mirror.track_state(proj, tr, local_mix)
+    local o = { kind = "track", oid = oid, ptr = tr, state = t, hash = mirror.track_hash(t, local_mix) }
+    local lfx = track_lfx(tr)
+    local fp = track_fp(tr, o.hash, lfx)
+    local e = L.tracks[x.guid]
+    -- (fixed lanes: an item's lane is read through the API, REAPER keeps it out of the item's chunk, so a lane track's items are always worked
+    -- out again, and once more as it leaves lanes)
+    local lanes = t.freemode == 2
+    local r = { x = x, o = o, lfx = lfx, fp = fp, e = e, lanes = lanes }
+    -- (need: read for a reason of its own, so its objects are checked even if its chunk is the same; fresh: read)
+    r.need = not e or e.ptr ~= tr or e.oid ~= oid or e.pooled or lanes or e.lanes or want[tr] or want[tostring(tr)] or want_g[x.guid]
+    r.fresh = wide or r.need or e.fp ~= fp
+    if L.raw[oid] ~= o.hash then found = true end
+    recs[k] = r
+  end
+  local function read(r)
+    if r.read then return end
+    r.read = true
+    local tr, oid, e = r.x.ptr, r.x.oid, r.e
+    local _, chunk = reaper.GetTrackStateChunk(tr, "", false)
+    r.chunk = chunk
+    -- (byte for byte the last look's: its parts and items stand. Not pooled MIDI: a pooled copy's notes can change in another track's chunk)
+    if e and e.ptr == tr and e.oid == oid and not e.pooled and not r.lanes and not e.lanes and e.lfx == r.lfx and e.chunk == chunk then return end
+    r.changed = true
+    r.parts = head_parts(chunk, r.lfx, at_sig, oid_at)
+    r.pooled = chunk:find("POOLEDEVTS", 1, true) ~= nil
+    r.il = {}
+    for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
+      local it = reaper.GetTrackMediaItem(tr, j)
+      if select(2, reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_arriving", "", false)) == "" then -- (a stand-in: never sent)
+        r.il[#r.il + 1] = { ptr = it, tr = tr, toid = oid, oid = itm_oid(it), guid = select(2, reaper.GetSetMediaItemInfo_String(it, "GUID", "", false)), j = j }
+      end
+    end
+    r.states = mirror.item_states(proj, r.il, { [tr] = chunk }, media_dir, {}, true)
+    -- (did it change anything the band would see? A selection or a lane's height changes the chunk, not the objects)
+    local p = e and e.parts
+    if not p or p.fxh ~= r.parts.fxh or p.env ~= r.parts.env or p.recv ~= r.parts.recv or p.misc ~= r.parts.misc or #e.items ~= #r.il then found = true
+    else
+      for i, x in ipairs(r.il) do
+        local q = e.items[i]
+        if q.guid ~= x.guid or q.oid ~= x.oid or q.state ~= r.states[i] then found = true; break end
+      end
+    end
+  end
+  for _, r in ipairs(recs) do if r.fresh then read(r) end end
+  local mobjs, mby = {}, {}
+  add_master(proj, mobjs, mby, oid_at)
+  for _, o in ipairs(mobjs) do if L.raw[o.oid] ~= o.hash then found = true end end
+  -- nothing the hints pointed at changed: an edit they can't see, so every chunk is read
+  local all = wide
+  if not found and not all then
+    all = true
+    for _, r in ipairs(recs) do read(r) end
+  end
+  if all then N.all_at = now end
+  -- items: ids settled as mirror.scan does, over the changed tracks' items and any unchanged one sharing an id with them (a copy and its source)
+  local new_oids, blank = {}, false
+  for _, r in ipairs(recs) do
+    if r.changed then for _, x in ipairs(r.il) do if x.oid ~= "" then new_oids[x.oid] = true else blank = true end end end
+  end
+  local list, also = {}, nil
+  for _, r in ipairs(recs) do
+    if r.changed then for _, x in ipairs(r.il) do list[#list + 1] = x end
+    elseif r.e then
+      for _, q in ipairs(r.e.items) do
+        if new_oids[q.oid] then
+          local ptr = item_obj(q, r.x.ptr, r.x.oid).ptr
+          if ptr then list[#list + 1] = { ptr = ptr, tr = r.x.ptr, toid = r.x.oid, oid = q.oid, guid = q.guid, j = q.j, rec = r } end
+        elseif blank then also = also or {}; also[q.oid] = true end
+      end
+    end
+  end
+  local dirty = {}
+  if #list > 0 then
+    settle_ids(proj, list, "I", user, function(it, oid) reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", oid, true); dirty[reaper.GetMediaItem_Track(it)] = true end, also)
+  end
+  for _, x in ipairs(list) do -- (an unchanged track's item lost its id to its copy: that track is read again, with its new id)
+    if x.rec and dirty[x.tr] and not x.rec.changed then x.rec.read = false; read(x.rec); x.rec.e = nil end
+  end
+  for _, r in ipairs(recs) do
+    if r.changed and dirty[r.x.ptr] then
+      r.states = mirror.item_states(proj, r.il, { [r.x.ptr] = r.chunk }, media_dir, { [r.x.ptr] = true }, true)
+    end
+  end
+  -- the objects, in mirror.scan's order: each track and its parts, the master's, then every item
+  local objs, by_oid, fresh, check, gone = {}, {}, {}, {}, {}
+  for _, r in ipairs(recs) do
+    local tr, oid, g = r.x.ptr, r.x.oid, r.x.guid
+    objs[#objs + 1], by_oid[oid] = r.o, r.o
+    fresh[oid] = true
+    check[#check + 1] = r.o
+    local e = r.e
+    local ne
+    if r.changed then
+      ne = { ptr = tr, oid = oid, chunk = r.chunk, lfx = r.lfx, parts = r.parts, pooled = r.pooled, fp = r.fp, items = {}, lanes = r.lanes }
+    else
+      ne = e.fp == r.fp and e or { ptr = e.ptr, oid = e.oid, chunk = e.chunk, lfx = e.lfx, parts = e.parts, pooled = e.pooled, fp = r.fp, items = e.items }
+    end
+    add_parts(objs, by_oid, tr, oid, ne.parts)
+    if r.changed or r.need then for k = #objs - 3, #objs do check[#check + 1] = objs[k] end end
+    N.tracks[g], N.guid_of[tr] = ne, g
+    for _, p in ipairs({ "T", table.unpack(mirror.PARTS) }) do
+      N.where[p .. oid:sub(2)] = g
+      if r.changed then fresh[p .. oid:sub(2)] = true end
+    end
+  end
+  for _, o in ipairs(mobjs) do objs[#objs + 1] = o; fresh[o.oid] = true; check[#check + 1] = o end
+  for k, v in pairs(mby) do by_oid[k] = v end
+  for _, r in ipairs(recs) do
+    local tr, toid, g = r.x.ptr, r.x.oid, r.x.guid
+    local ne = N.tracks[g]
+    if r.changed then
+      for i, x in ipairs(r.il) do
+        local norm = r.states[i]
+        local o = { kind = "item", oid = x.oid, ptr = x.ptr, track = toid, state = norm, hash = mirror.item_hash(toid, norm),
+          pos = reaper.GetMediaItemInfo_Value(x.ptr, "D_POSITION") }
+        objs[#objs + 1], by_oid[x.oid] = o, o
+        ne.items[#ne.items + 1] = { oid = x.oid, guid = x.guid, state = norm, hash = o.hash, pos = o.pos, j = x.j }
+        N.where[x.oid], fresh[x.oid] = g, true
+        check[#check + 1] = o
+      end
+      local now_here = {} -- (what was on it at the last look and isn't now: W.gone's candidates)
+      for _, x in ipairs(r.il) do now_here[x.oid] = true end
+      for _, q in ipairs(r.e and r.e.items or {}) do if not now_here[q.oid] then gone[#gone + 1] = q.oid end end
+    else
+      for _, q in ipairs(ne.items) do
+        -- (the same object as last look, its fields as read: W.one may have re-anchored its hash, and its pointer is looked up again)
+        local o = q.obj
+        if o then o.hash, o.state, o.ptr = q.hash, q.state, nil
+        else o = item_obj(q, tr, toid); q.obj = o end
+        objs[#objs + 1], by_oid[q.oid] = o, o
+        N.where[q.oid] = g
+        if r.need then check[#check + 1] = o end
+      end
+    end
+  end
+  -- (check: the objects that may need W.one: a changed track's, and those of a track read for a reason of its own (hinted, busy at the last
+  -- look, recorded since). Any other track's are unchanged and were left with nothing to do, or it would have been read for that. gone: items
+  -- on a changed track that aren't there now)
+  return objs, by_oid, { L = N, fresh = fresh, all = all, check = check, gone = gone }
 end
 
 -- Paths a band's version put on an item or a track here (as REAPER reads them back), in a P_EXT that never travels: never copied out of this
@@ -3690,6 +4020,13 @@ function W.refuse(w, o, rk, rev, evid, kord, last, name, ok_before)
       differed and (" (what differed: " .. differed .. ")") or "") })
 end
 -- One object of the pass: sent, put back, or nothing to do.
+-- Plug-in chains and automation go once they've held still SETTLE_SECS (was 3 s), or at once after an undo point (W.one). settle_due: the
+-- soonest one waiting is due then, and Live sync passes at that moment, not at the next 2 s pass. look_cc: each project's change count at the
+-- end of its last look. rt-look
+mirror.SETTLE_SECS = 0.3
+mirror.look_cc = mirror.look_cc or {}
+mirror.settle_due = nil
+local function settle_at(t) if not mirror.settle_due or t < mirror.settle_due then mirror.settle_due = t end end
 function W.one(w, o)
   local band, sync, proj, cfg, song, room, opts, me = w.band, w.sync, w.proj, w.cfg, w.song, w.room, w.opts, w.me
   local room_dir, media, objs, by_oid, holds, playing = w.room_dir, w.media, w.objs, w.by_oid, w.holds, w.playing
@@ -3802,6 +4139,7 @@ function W.one(w, o)
     -- it was is the band's. Round 1 review, 0.59.45)
     mirror.reopened[rk], mirror.unsent[rk], mirror.auto[rk] = nil, nil, nil
     held_back_clear(proj, o.oid)
+    w.clean[o.oid] = true -- (nothing to do again until it or its record changes: a quick look leaves it out. rt-look)
     return
   end
   -- (put-backs count too: each rewrites an item or chain, and hundreds refused at once held REAPER up as sends did. 0.59.14, review)
@@ -3813,11 +4151,12 @@ function W.one(w, o)
     local ev = event_file(room_dir, evid)
     -- (or its item, read the way this machine reads one now: 0.40.3 left selected notes and VELLANE out)
     -- (or its chain: a plug-in on it was found restless since)
-    if ev and (ev.hash == o.hash or o.kind == "item" and type(ev.state) == "string"
-        and mirror.item_hash(o.track, mirror.normalize_item(ev.state)) == o.hash
+    -- (the event's item normalized once for both checks below: 3 to 6 ms each on a big MIDI item, every edit. rt-look)
+    local ev_norm = ev and ev.hash ~= o.hash and o.kind == "item" and type(ev.state) == "string" and mirror.normalize_item(ev.state)
+    if ev and (ev.hash == o.hash or ev_norm and mirror.item_hash(o.track, ev_norm) == o.hash
         or o.kind == "fx" and type(ev.state) == "string" and mirror.fx_hash(ev.state) == o.hash
         -- (or the same but for its 14th digit, a tempo map put back: the Mac sent its Keys part as its own change, 0.42.8)
-        or o.kind == "item" and type(ev.state) == "string" and mirror.rounded(mirror.normalize_item(ev.state)) == mirror.rounded(o.state)) then
+        or ev_norm and mirror.rounded(ev_norm) == mirror.rounded(o.state)) then
       remember(proj, o.oid, rev, o.hash, evid, kord); return
     end
     -- (an item with takes, the band's version from before which take plays travelled: its own author sends the pick it plays, so
@@ -3840,7 +4179,7 @@ function W.one(w, o)
   -- their way, and "none" went out as this machine's change, taking the Neve from everyone: Mac, 0.42.6)
   -- (nothing of ours waits then: a burst had marked it, and the band's chain never landed, as it waited for ours: PC, 0.42.9)
   if o.state == "" and o.kind ~= "track" and o.kind ~= "item" then
-    if not rev then mirror.unsent[rk] = nil; return end
+    if not rev then mirror.unsent[rk] = nil; w.clean[o.oid] = true; return end
     -- (recorded as gone, by its own delete or its track's: an empty part is that, not news. Its track deleted and brought back bare (Restore,
     -- Undo, Ctrl+Z) sent "no plug-ins, no automation, no sends" to everyone over the real ones. Full review, 0.59.44)
     if h == "" then
@@ -3852,7 +4191,7 @@ function W.one(w, o)
       if ev and not ev.gone and type(ev.state) == "string" and ev.state ~= "" then
         local ok, applied, hash = pcall(mirror.apply, proj, ev, media, opts.local_mix)
         if ok and applied then remember(proj, o.oid, ev.rev, hash or "", ev.id, mirror.order_of(ev)) end
-      end
+      else w.clean[o.oid] = true end -- (nothing to bring: done until it changes. A bring that didn't land is tried every look)
       return
     end
   end
@@ -3890,9 +4229,12 @@ function W.one(w, o)
         end
       end
       mirror.fx_seen[key] = n
-      return
-    end
-    if reaper.time_precise() - f.since < 3 then return end
+      -- (an undo point since the last look: the edit is finished (a drop, a script's undo block, a typed value), so it goes now. A drag isn't
+      -- looked at until the drop, and a knob turned from a control surface makes no undo point, so that settles. Not on a project's first look,
+      -- while its plug-ins load. An envelope point set from a script took 4.2 s to go: 3 s of settling, then the next 2 s pass. rt-look)
+      local last_cc = mirror.look_cc[tostring(proj)]
+      if not (n.text and n.flips == 0 and last_cc and cc ~= last_cc) then settle_at(now + mirror.SETTLE_SECS); return end
+    elseif reaper.time_precise() - f.since < mirror.SETTLE_SECS then settle_at(f.since + mirror.SETTLE_SECS); return end
   end
   if opts.hold then mirror.unsent[rk], mirror.auto[rk] = true, nil; return end -- (Hold my changes: it stays here until switched off. A print's flag goes: see above)
   local name = perm_name(o, by_oid)
@@ -3941,16 +4283,16 @@ function W.prints(w)
   if reaper.EnumProjects(-1) == proj and not playing and not mirror.more and not opts.hold then -- (prints wait until a burst has gone, and Hold is off)
     local prints, made = require("prints"), 0
     prints.begin_look() -- (each track's routing and plug-ins worked out once for all its items, not once each: 0.59.19)
-    prints.watch_ara(proj) -- (a Melodyne window closed: that take gets a new print below)
+    w.ara = prints.watch_ara(proj, w.ara_tracks) -- (a Melodyne window closed: that take gets a new print below)
     pcall(prints.release_held, proj) -- (FX held off for a part that's gone)
     pcall(require("libraries").tick, proj, cfg) -- (which of the song's sounds and small files this computer has, once a minute: lib/libraries.lua. rt)
     -- takes become lanes, by whoever owns them (their newest change, or not sent yet). Once caught up: an old file reopened
     -- split its old comps and sent them before the band's newer versions had landed (laptop, 0.42.9)
-    if require("sync").pending_events(proj, cfg, song, room) == 0 then
+    if mirror.has_takes(w.print_tracks) and w.pending() == 0 then
       prints.takes_to_lanes(proj, function(it)
         local _, _, k = mirror.known(proj, itm_oid(it))
         return not k or k == "" or mine(k)
-      end, cfg.root) -- (only while the studio's setting is on: Settings > Studio. James, rt)
+      end, cfg.root, w.print_tracks) -- (only while the studio's setting is on: Settings > Studio. James, rt)
     end
     local here = { [me] = true } -- (bandmates in the song now: who may print in place of whoever changed an item)
     for u in pairs(opts.here or {}) do here[u] = true end
@@ -3973,19 +4315,28 @@ function W.prints(w)
     -- (the alert bar's Try again forgets "nothing to print": a silent print waited up to a minute for it. Round 2 review, 0.59.46)
     local retry = reaper.GetExtState(band.SECTION, "prints retry")
     if retry ~= mirror.print_retry_seen then mirror.print_retry_seen, mirror.print_quiet = retry, {} end
+    -- (quiet_min: the oldest "nothing to print" an item has, quiet_missing: one has none or wasn't looked at; a quick look goes by them to look
+    -- at only the changed items until one comes due. rt-look)
+    local quiet_min, quiet_missing = math.huge, false
     local function note_quiet(o, key) -- (not while any print waits its turn or renders: one picked up later reads as nothing to do until then)
-      if not (prints.waiting() or require("bgrender").waiting()) then mirror.print_quiet[tostring(proj) .. o.oid] = { key = key, at = now } end
+      if not (prints.waiting() or require("bgrender").waiting()) then mirror.print_quiet[tostring(proj) .. o.oid] = { key = key, at = now }
+      else quiet_missing = true end
     end
+    -- (a quick look: only an item that changed, whose track or its plug-ins did, a restless chain's, or one not found quiet in the last minute.
+    -- Anything that changes every item's answer (who's here, any chain or routing, the last look not getting here) looks at them all. rt-look)
+    local want = mirror.print_want(w, who_here, now)
+    w.prints_who = who_here
     for _, o in ipairs(objs) do
       local kh, kev, fx, dfx, qkey
-      if made < 2 and o.kind == "item" and reaper.ValidatePtr2(proj, o.ptr, "MediaItem*") then
+      if made < 2 and o.kind == "item" and (not want or want(o)) and reaper.ValidatePtr2(proj, o.ptr, "MediaItem*") then
         kh, kev = select(2, mirror.known(proj, o.oid))
         fx = by_oid["F" .. o.track:sub(2)]
         local dest = prints.route(reaper.GetMediaItem_Track(o.ptr)) -- (an instrument on another track: its chain is part of the print)
         dfx = dest and by_oid["F" .. mirror.track_oid(dest):sub(2)]
         qkey = tostring(o.hash) .. "\0" .. tostring(kev) .. "\0" .. tostring(sounds(fx)) .. "\0" .. tostring(sounds(dfx)) .. "\0" .. who_here
         local q = mirror.print_quiet[tostring(proj) .. o.oid]
-        if q and q.key == qkey and now - q.at < 60 then qkey = nil end
+        if q and q.key == qkey and now - q.at < 60 then qkey, quiet_min = nil, math.min(quiet_min, q.at) end -- (else it's noted again now, below)
+      elseif made >= 2 and o.kind == "item" then quiet_missing = true -- (not looked at this time: all of them next time)
       end
       if qkey then
         -- who refreshes a print (prints.printer): the track's printer if they're here and can, else whoever changed
@@ -4022,13 +4373,16 @@ function W.prints(w)
         if may or relay then
           local ok, did, waiting = pcall(prints.refresh, proj, o.ptr, media, sounds(fx), sounds(dfx), cfg, relay)
           if ok and did then made = made + 1; mirror.auto[tostring(proj) .. o.oid] = true -- (its next send is StudioSync's, not theirs)
-          elseif ok and not waiting then note_quiet(o, qkey) end -- (a stage waiting on a computer that's here: looked at again next pass)
+          elseif ok and not waiting then note_quiet(o, qkey) else quiet_missing = true end -- (a stage waiting on a computer that's here: looked at again next pass)
         else note_quiet(o, qkey) end
       end
     end
     -- (a print just went on: out on the very next pass. It waited for the 10-second look: 9 s on a print that was
     -- already there, 18 s on a rendered one: PC, 0.41.1)
     if made > 0 then mirror.more = true end
+    local L = w.look
+    if want and L then quiet_min, quiet_missing = math.min(quiet_min, L.quiet_min or -math.huge), quiet_missing or L.prints_missing end
+    w.quiet_min, w.prints_missing = quiet_min, quiet_missing
     prints.end_look()
   end
 end
@@ -4040,14 +4394,20 @@ function W.gone(w)
   local undeleted = {}
   -- gone here: deleted (sent, if allowed) or put back
   local i, gone = 0, {}
+  -- (a quick look: only what was here at the last look, was left gone then, or was recorded since, not every record. rt-look)
+  local cand, ci = w.gone_oids, 0
+  w.gone_seen = {}
   while true do
-    local ok, oid = reaper.EnumProjExtState(proj, mirror.SEC, i)
+    local ok, oid
+    if cand then ci = ci + 1; oid = cand[ci]; ok = oid ~= nil
+    else ok, oid = reaper.EnumProjExtState(proj, mirror.SEC, i) end
     if not ok then break end
     i = i + 1
     local rev, h, evid = mirror.known(proj, oid)
     -- (object records only, "rev|hash|event|order": the section also keeps "fxk <oid>" and "master fxen held", which read as gone and were
     -- overwritten with "0|||" every pass: knob checks failed after the first minute and the band's master FX switch went back on. Review, 0.58.92)
     if not seen[oid] and rev and h ~= "" then
+      w.gone_seen[#w.gone_seen + 1] = oid
       local is_it, stray
       if not opts.hold and oid:sub(1, 1) == "I" then is_it, stray = mirror.local_copy_is_it(proj, oid) end
       if opts.hold then mirror.unsent[tostring(proj) .. oid] = true -- (held: the delete goes out when Hold is switched off)
@@ -4164,7 +4524,7 @@ function W.remember_holds(w)
     mirror.holds[tostring(proj)] = now
     -- A bandmate's track with its master send off and no send here plays silent: hardware outputs never travel. Said once, once caught up
     -- (its sends may still be on their way before). 0.59.14
-    if #silent > 0 and sync.pending_events(proj, cfg, song, room) == 0 then
+    if #silent > 0 and w.pending() == 0 then
       for _, o in ipairs(silent) do
         local _, _, evid = mirror.known(proj, o.oid)
         local ev = evid and evid ~= "" and not mine(evid) and event_file(room_dir, evid)
@@ -4181,13 +4541,192 @@ end
 mirror.previewing = mirror.previewing or {}
 -- Every object of a look through W.one. (A function of its own, so the hold-back of one that threw is tested. Round 3 review, 0.59.48)
 function W.each(w)
+  local dirty = w.dirty -- (a quick look: only what may have changed, or still has something to do. rt-look)
   for _, o in ipairs(w.objs) do
     w.seen[o.oid] = true
-    if not mirror.previewing[tostring(w.proj) .. o.oid] then
+    if (not dirty or dirty[o.oid]) and not mirror.previewing[tostring(w.proj) .. o.oid] then
       local ok, err = pcall(W.one, w, o)
       if not ok then held_back_set(w.proj, o.oid); w.say_once("err" .. o.oid, "mirror sync skipped " .. o.oid .. ": " .. tostring(err)) end -- (a send that threw: counted. Round 1 review, 0.59.45)
     end
   end
+end
+-- ---- the quick look's side of mirror.watch (rt-look) ----
+-- The undo and redo names: an undo or redo puts back any set of changes, the records in the project among them, so the next look is a full one.
+-- -> both as one string, and whether there's something to redo.
+local function undo_names(proj)
+  local u = reaper.Undo_CanUndo2 and reaper.Undo_CanUndo2(proj) or ""
+  local r = reaper.Undo_CanRedo2 and reaper.Undo_CanRedo2(proj) or ""
+  return tostring(u) .. "\0" .. tostring(r), r ~= ""
+end
+-- A full look's check on the quick one: what a quick look would have read at this moment (oid -> hash), or nil when it couldn't have run.
+local function look_quick_view(proj, user, media, local_mix, L, remembered, now)
+  if not L then return nil end
+  local qobjs = mirror.quick_scan(proj, user, media, local_mix, L, remembered, now)
+  if not qobjs then return nil end
+  local q = {}
+  for _, o in ipairs(qobjs) do q[o.oid] = o.hash end
+  return q
+end
+mirror.MISSED_SAY_SECS = 60
+local missed_said = -math.huge
+-- Anything the full look read differently from what the quick one would have: logged (the quick look's hints missed an edit; it goes out now).
+local function look_missed(qraw, objs, by_oid)
+  local missed, here = {}, {}
+  for _, o in ipairs(objs) do
+    here[o.oid] = true
+    if qraw[o.oid] ~= o.hash then missed[#missed + 1] = o end
+  end
+  for oid in pairs(qraw) do if not here[oid] then missed[#missed + 1] = { oid = oid, kind = "deleted" } end end
+  if #missed == 0 then return end
+  mirror.look_stats.missed = mirror.look_stats.missed + #missed
+  local now = reaper.time_precise()
+  if now - missed_said < mirror.MISSED_SAY_SECS then return end
+  missed_said = now
+  local what = {}
+  for i = 1, math.min(5, #missed) do
+    local o = missed[i]
+    local t = o.kind == "track" and o or by_oid[o.track or ""]
+    what[#what + 1] = string.format("%s %s%s", o.kind or "?", o.oid, t and t.state and t.state.name and (" on " .. t.state.name) or "")
+  end
+  require("band").log(string.format("mirror: the full look found %d change(s) the quick looks hadn't (%s%s); they go out now as usual",
+    #missed, table.concat(what, ", "), #missed > 5 and ", ..." or ""))
+end
+-- A chain W.one has nothing more to do for while it reads the same: loaded, its knobs agreed (an empty one has none), first knobs and presets
+-- noted, no window open with its text noted, and not restless or modulated (W.one reads their knobs every look).
+local function fx_settled(proj, rk, o)
+  return (mirror.fxk_ok[rk] or o.state == "") and loaded(proj, rk) and mirror.fx_quiet[rk] ~= nil and mirror.fx_quiet_presets[rk] ~= nil
+    and not mirror.fx_open_text[rk] and not mirror.knobs_count(o.state)
+end
+-- Which objects go through W.one in a quick look (w.dirty), and which changed since the last look (w.changed). An object is left out only when
+-- it reads the same as at the last look, W.one left it with nothing to do then (w.clean), its record is as it was then (read for objects worked
+-- out afresh this look; an unchanged track's are only recorded through remember, which reads that track afresh), and nothing waits on it: no
+-- unsent, print, reopened or held-back flag, not moved, not a colour scheme change, and for a chain: loaded, its knobs agreed, not restless or
+-- modulated (W.one reads their knobs every look), no window open with its text noted.
+-- This project's objects with an unsent, print, reopened or held-back flag: { oid = true } (the flag tables hold a few keys, the project many objects)
+local function flagged(pk)
+  local out, n = {}, #pk
+  for _, t in ipairs({ mirror.unsent, mirror.auto, mirror.reopened }) do
+    for k in pairs(t) do if k:sub(1, n) == pk then out[k:sub(n + 1)] = true end end
+  end
+  for oid in pairs(mirror.held_back[pk] or {}) do out[oid] = true end
+  return out
+end
+local function look_dirty(w, L, info, raw, remembered)
+  local proj, pk = w.proj, tostring(w.proj)
+  local flags, dirty, changed, Lraw, Lclean, fresh, moved = flagged(pk), {}, {}, L.raw, L.clean, info.fresh, w.moved_set
+  local retrack = w.rescheme
+  for _, o in ipairs(info.check) do
+    local oid = o.oid
+    local skip = Lraw[oid] == raw[oid]
+    if not skip then changed[oid] = true
+    else
+      skip = Lclean[oid] ~= nil and not remembered[oid] and not flags[oid] and not moved[oid] and not (retrack and o.kind == "track")
+      if skip and o.kind == "fx" then skip = fx_settled(proj, pk .. oid, o) end
+      if skip and fresh[oid] then skip = ext(proj, oid) == Lclean[oid] end
+    end
+    if not skip then dirty[oid] = true end
+  end
+  w.dirty, w.changed, w.look = dirty, changed, L
+  -- the prints' walks over tracks: only tracks with something changed or looked at, and those holding an ARA take last time
+  local tracks, ara = {}, {}
+  for oid in pairs(dirty) do
+    local o = w.by_oid[oid]
+    local t = o and (o.kind == "track" and o or w.by_oid[o.track or ""])
+    if t and t.ptr and t.kind == "track" then tracks[t.ptr] = true; ara[t.ptr] = true end
+  end
+  for _, o in ipairs(w.objs) do
+    if o.kind == "track" and (L.ara or {})[info.L.guid_of[o.ptr] or ""] then ara[o.ptr] = true end
+  end
+  w.print_tracks, w.ara_tracks = tracks, ara
+end
+-- Could takes become lanes on any of these tracks (nil: all of them): one of their items has more than one take. A quick look asks before
+-- counting the band's changes waiting (a listing of every change of the room), which takes_to_lanes waits on.
+function mirror.has_takes(tracks)
+  if not tracks then return true end
+  for tr in pairs(tracks) do
+    for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
+      if reaper.CountTakes(reaper.GetTrackMediaItem(tr, j)) > 1 then return true end
+    end
+  end
+  return false
+end
+-- W.prints' items in a quick look: nil (all of them) when who's here, any chain or routing changed, or the last look didn't get to them; else
+-- -> a function saying whether an item needs looking at (changed or looked at, its track changed, a restless chain's, or not found quiet in
+-- the last minute: what W.prints would have computed anew anyway).
+function mirror.print_want(w, who_here, now)
+  local L, dirty, changed = w.look, w.dirty, w.changed
+  if not (dirty and L and L.prints_who == who_here) then return nil end
+  for oid in pairs(changed) do local k = oid:sub(1, 1); if k == "F" or k == "R" then return nil end end
+  -- (an item not found quiet, or one whose minute is up: all of them, as before)
+  if L.prints_missing ~= false or now - (L.quiet_min or -math.huge) >= 60 then return nil end
+  local by_oid, restless = w.by_oid, {}
+  return function(o)
+    if dirty[o.oid] or changed[o.track] then return true end
+    local r = restless[o.track]
+    if r == nil then
+      local f = by_oid["F" .. tostring(o.track):sub(2)]
+      r = f and mirror.knobs_count(f.state) or false
+      restless[o.track] = r
+    end
+    return r
+  end
+end
+-- W.gone's candidates in a quick look: what was here at the last look and isn't now, what was left gone then (a deletion that couldn't go yet,
+-- held, an item on a track of your own), and anything recorded since.
+local function look_gone_oids(w, L, remembered, info)
+  local out, have, seen = {}, {}, w.seen
+  local function add(oid) if not have[oid] and not seen[oid] then have[oid] = true; out[#out + 1] = oid end end
+  for _, oid in ipairs(info.gone) do add(oid) end
+  for oid in pairs(L.lingering or {}) do add(oid) end
+  for oid in pairs(remembered) do add(oid) end
+  table.sort(out)
+  return out
+end
+-- The look done: what it saw, for the next quick look to build on. `N`: the scan's record; `full`: this was a full look.
+local function look_commit(w, N, raw, L, now, full, undo, redo, all)
+  if not N then return end
+  local proj, pk = w.proj, tostring(w.proj)
+  local flags, dirty, where, attn = flagged(pk), w.dirty, N.where, N.attn
+  N.raw = raw
+  -- (a quick look carries the last look's clean records over and changes only what went through W.one; a full one starts afresh)
+  if dirty then N.clean = L.clean end
+  local clean = N.clean
+  local list = w.objs
+  if dirty then -- (a quick look: what went through W.one, and anything flagged; the rest keep what they had)
+    list = {}
+    for oid in pairs(dirty) do list[#list + 1] = w.by_oid[oid] end
+    for oid in pairs(flags) do if not dirty[oid] and w.by_oid[oid] then list[#list + 1] = w.by_oid[oid] end end
+  end
+  for _, o in ipairs(list) do
+    local oid = o.oid
+    -- (anything W.one will look at next time is read afresh first: W.one never works on a state carried over from an earlier look. One left out
+    -- of W.one this time passed the same checks in look_dirty, so only a flag set since makes it busy)
+    local busy = flags[oid]
+    if not dirty or dirty[oid] then
+      local c = w.clean[oid] and ext(proj, oid) or nil
+      clean[oid] = c
+      busy = busy or not c or o.kind == "fx" and not fx_settled(proj, pk .. oid, o)
+    end
+    if busy and where[oid] then attn[where[oid]] = true end
+  end
+  N.seen = w.seen
+  N.lingering = {}
+  for _, oid in ipairs(w.gone_seen or {}) do
+    local rev, h = mirror.known(proj, oid)
+    if rev and h ~= "" and not w.seen[oid] then N.lingering[oid] = true end
+  end
+  N.prints_who, N.quiet_min, N.prints_missing = w.prints_who, w.quiet_min, w.prints_missing
+  if w.ara then
+    N.ara = {}
+    for tr in pairs(w.ara) do if N.guid_of[tr] then N.ara[N.guid_of[tr]] = true end end
+  else N.ara = L and L.ara end
+  N.undo, N.redo = undo, redo
+  if full then N.full_at, N.all_at = now, now end
+  local s = mirror.look_stats
+  if full then s.full = s.full + 1 else s.quick = s.quick + 1 end
+  if full or all then s.all_chunks = s.all_chunks + 1 end
+  mirror.looks[tostring(proj)] = N
+  reaper.SetExtState(require("band").SECTION, "look stats", string.format("quick %d, full %d, every chunk read %d, missed %d", s.quick, s.full, s.all_chunks, s.missed), false)
 end
 -- One pass: what changed here goes out if this person may change it, else the band's version is put back.
 -- opts: local_mix, can (sync.authority's), mode (room mode). Returns sent, put back.
@@ -4197,15 +4736,38 @@ function mirror.watch(proj, cfg, song, room, opts)
   mirror.hold_colours()
   local room_dir = sync.room_dir(cfg, song, room)
   local media = room_dir .. "/media"
-  local objs, by_oid = mirror.scan(proj, cfg.user, media, opts.local_mix)
+  -- (a quick look when it can build on the last one: opts.quick (Live sync's looks), not an undo or redo, and a full one each QUICK_FULL_SECS,
+  -- which also says if the quick one would have missed anything. See "Quick looks" by mirror.quick_scan. rt-look)
+  local pk, now = tostring(proj), reaper.time_precise()
+  mirror.settle_due = nil
+  local L = mirror.looks[pk]
+  local remembered = mirror.remembered[pk] or {}
+  mirror.remembered[pk] = {}
+  local undo, redo = undo_names(proj)
+  local due = not (opts.quick and L) or now - L.full_at >= mirror.QUICK_FULL_SECS or (undo ~= L.undo and (redo or L.redo))
+  local objs, by_oid, info, rec
+  if not due then objs, by_oid, info = mirror.quick_scan(proj, cfg.user, media, opts.local_mix, L, remembered, now) end
+  if not info then
+    local qraw = due and opts.quick and look_quick_view(proj, cfg.user, media, opts.local_mix, L, remembered, now)
+    rec = new_look(L, nil, now)
+    objs, by_oid = mirror.scan(proj, cfg.user, media, opts.local_mix, rec)
+    if qraw then look_missed(qraw, objs, by_oid) end
+  end
   -- (changes of yours REAPER stopped before sending: back in the project first, so this look sends them. Crash-safe sessions, rt)
-  if mirror.restore_unsent(proj, by_oid, media, opts.local_mix) > 0 then objs, by_oid = mirror.scan(proj, cfg.user, media, opts.local_mix) end
+  if mirror.restore_unsent(proj, by_oid, media, opts.local_mix) > 0 then
+    info, rec = nil, new_look(L, nil, now)
+    objs, by_oid = mirror.scan(proj, cfg.user, media, opts.local_mix, rec)
+  end
   local me = cfg.user
   mirror.unsettled = false
   local suggest = require("suggest")
   local w = { band = band, sync = sync, proj = proj, cfg = cfg, song = song, room = room, opts = opts, me = me, room_dir = room_dir, media = media,
     objs = objs, by_oid = by_oid, sent = 0, back = 0, suggest = suggest, kept_back = {}, holds = mirror.holds[tostring(proj)] or {}, credit = {},
-    back_tracks = {} }
+    back_tracks = {}, clean = {} }
+  w.pending = function() -- (how many of the band's changes wait here: once a look)
+    if w.n_pending == nil then w.n_pending = sync.pending_events(proj, cfg, song, room) end
+    return w.n_pending
+  end
   -- (whose claims these are: opts' (sync.authority's who, Live sync passes them), else the last authority call's. One for another room in
   -- between judged this room by that room's claims. Round 1 review, 0.59.45)
   w.is_claimed, w.owner_of = opts.is_claimed or sync.is_claimed, opts.owner_of or sync.owner_of
@@ -4214,10 +4776,15 @@ function mirror.watch(proj, cfg, song, room, opts)
   w.propose = function(...) return W.propose(w, ...) end
   w.bus_note = function(...) return W.bus_note(w, ...) end
   if W.keep_held(w) then return 0, 0 end
-  if next(w.kept_back) then w.objs, w.by_oid = mirror.scan(proj, me, media, opts.local_mix) end
+  if next(w.kept_back) then
+    info, rec = nil, new_look(L, nil, now)
+    w.objs, w.by_oid = mirror.scan(proj, me, media, opts.local_mix, rec)
+  end
   objs, by_oid = w.objs, w.by_oid
   W.credit(w)
   W.order(w)
+  local raw = {} -- (each object's hash as read, before W.one re-anchors any: what the next look compares with)
+  for _, o in ipairs(objs) do raw[o.oid] = o.hash end
   local first_here = w.first_here
   local playing = reaper.GetPlayStateEx(proj) & 1 == 1
   local function mine(id) return sync.is_mine(id, me) end -- (event ids start with their author's name, then the date: "James" isn't "James-Laptop". 0.58.82)
@@ -4252,8 +4819,10 @@ function mirror.watch(proj, cfg, song, room, opts)
   local sws_ran = reaper.time_precise() - (tonumber(reaper.GetExtState(require("band").SECTION, "sws colours ran")) or -math.huge) < 5
   local rescheme = first_here or sws_ran or select(2, reaper.GetProjExtState(proj, mirror.CSEC, "colours")) ~= scheme
   w.seen, w.t_send, w.scheme, w.rescheme = seen, t_send, scheme, rescheme
+  if info then look_dirty(w, L, info, raw, remembered) end
   W.each(w)
   W.prints(w)
+  if info then w.gone_oids = look_gone_oids(w, L, remembered, info) end
   W.gone(w)
   mirror.index_for(nil)
   if not mirror.more then mirror.sweep_unsent(proj, seen) end
@@ -4263,6 +4832,8 @@ function mirror.watch(proj, cfg, song, room, opts)
   mirror.summary(proj, cfg, room_dir, objs, media)
   suggest.flush()
   W.remember_holds(w)
+  look_commit(w, info and info.L or rec, raw, L, now, info == nil, undo, redo, info and info.all)
+  mirror.look_cc[pk] = reaper.GetProjectStateChangeCount(proj) -- (after this look's own writes)
   return w.sent, w.back
 end
 
@@ -4340,6 +4911,9 @@ end
 -- as a project opens, so one whose piece is printed and whose pass isn't went from "dry - x" to "x" and out as a change, from just opening
 -- (Mac, 0.45.0). Pure.
 function mirror.same_but_labels(x, y)
+  if x == y then return true end
+  local function labelled(s) return s:find('NAME "dry - ', 1, true) or s:find('NAME "wet - ', 1, true) end
+  if not labelled(x) and not labelled(y) then return false end -- (no label on either: as plain as they are. rt-look: two copies of a big MIDI item each edit)
   local function plain(s) return (s:gsub('NAME "dry %- ', 'NAME "'):gsub('NAME "wet %- ', 'NAME "')) end
   return plain(x) == plain(y)
 end
