@@ -391,6 +391,7 @@ function E.new(path)
     CountTrackMediaItems = function(t) return #t.items end,
     GetTrackMediaItem = function(t, i) return t.items[i + 1] end,
     GetMediaItem_Track = function(it) return it.track end,
+    GetItemProjectContext = function() return proj end,
     AddMediaItemToTrack = function(t) local it = new_item(t); t.items[#t.items + 1] = it; changed(); return it end,
     DeleteTrackMediaItem = function(t, it) for i, x in ipairs(t.items) do if x == it then table.remove(t.items, i); changed(); return true end end; return false end,
     MoveMediaItemToTrack = function(it, t)
@@ -405,6 +406,7 @@ function E.new(path)
       if k == "B_UISEL" then return tonumber(top_value(it.text, "SEL")) or 0 end
       if k == "I_CURTAKE" then return cur_take(it) end
       if k == "I_FIXEDLANE" then return it.lane or 0 end
+      if k == "I_CUSTOMCOLOR" then return tonumber((top_value(it.text, "COLOR") or "0"):match("^(%S+)")) or 0 end
       if k == "IP_ITEMNUMBER" then for i, x in ipairs(it.track.items) do if x == it then return i - 1 end end end
       return 0
     end,
@@ -415,6 +417,10 @@ function E.new(path)
       elseif k == "I_GROUPID" then it.text = set_top(it.text, "GROUP", v ~= 0 and tostring(math.floor(v)) or nil)
       elseif k == "B_UISEL" then it.text = set_top(it.text, "SEL", tostring(math.floor(v)))
       elseif k == "I_FIXEDLANE" then it.lane = math.floor(v)
+      elseif k == "I_CUSTOMCOLOR" then -- (as REAPER writes it: "COLOR n R" after MUTE, no line for 0. rt-nohold)
+        local n = math.floor(v)
+        if n ~= 0 and not top_value(it.text, "COLOR") and it.text:find("\n%s*MUTE ") then it.text = it.text:gsub("(\n%s*MUTE [^\n]*)", "%1\nCOLOR " .. n .. " R", 1)
+        else it.text = set_top(it.text, "COLOR", n ~= 0 and (n .. " R") or nil) end
       elseif k == "I_CURTAKE" then
         local spans, L = takes_of(it.text)
         for i, s in ipairs(spans) do
@@ -471,6 +477,7 @@ function E.new(path)
       if not m then return 0 end
       return i + 1, m.region, m.pos, m.rend, m.name, m.num, m.color
     end,
+    GetNumRegionsOrMarkers = function() return 0 end, -- (no ruler lanes here: band.apply_markers' lane step ended in an error, after the markers. rt-nohold)
     EnumProjectMarkers2 = function(_, i) local m = markers[i + 1]; if not m then return 0 end; return i + 1, m.region, m.pos, m.rend, m.name, m.num end,
     EnumProjectMarkers = function(i) local m = markers[i + 1]; if not m then return 0 end; return i + 1, m.region, m.pos, m.rend, m.name, m.num end,
     AddProjectMarker2 = function(_, region, pos, rend, name, want, color) local m = F.add_marker(region, pos, rend, name, (want and want >= 0) and want or nil, color); return m.num end,

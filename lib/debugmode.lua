@@ -57,7 +57,7 @@ function dm.report(cfg, proj, b)
     local file = ""
     for i = 0, 512 do local p, f = reaper.EnumProjects(i); if not p then break end; if p == proj then file = f end end -- (this one's, not the tab in front: 0.59.44)
     r.project = { song = b.song, room = b.room, role = b.role, file = file, tracks = reaper.CountTracks(proj),
-      items = reaper.CountMediaItems(proj), hold = ext("hold") ~= "" or nil, local_mix = ext("local_mix") == "1" or nil, alone_last = ext("alone_last"),
+      items = reaper.CountMediaItems(proj), local_mix = ext("local_mix") == "1" or nil, alone_last = ext("alone_last"),
       timeline = ext("timeline"), skipped = sync.skipped(proj), outbox = band.ext_json(band.SECTION, "outbox " .. tostring(proj)),
       put_back = band.ext_json(band.SECTION, "put back"), drift = reaper.GetExtState(band.SECTION, "mirror drift " .. tostring(proj)) }
     local ok, n = pcall(sync.pending_events, proj, cfg, b.song, b.room)

@@ -466,14 +466,18 @@ function colours.auto(proj, cfg, may)
   if done > 0 then reaper.TrackList_AdjustWindows(false); band.log(string.format("coloured %d new track%s in the %s look", done, done == 1 and "" or "s", from == "studio" and "studio's" or "project's")) end
 end
 
--- ---- trying a look here first (0.58.98, James: "an easy way to test/audition a look before applying it to everyone"): sending is held
--- (Hold sync, lib/sync.lua) while it's tried, and what was there is kept, so Put back puts exactly that back, and Keep lets it go to everyone.
--- (one per project tab: a second tab's try replaced the first's, which was left held with no Put back. Review, 0.58.98)
-local tries = {} -- proj -> { proj, held_before, tracks = { ptr -> colour }, items = { ptr -> colour }, marks = { {num, region, colour} } }
+-- ---- trying a look here first (0.58.98, James: "an easy way to test/audition a look before applying it to everyone"). What was there is kept, so
+-- Put back puts exactly that back, and Keep lets it go to everyone. While it's tried, only the colours it changed stay here: each thing still
+-- showing its tried colour reads with the colour from before it wherever the band's copy is read (band.colour_try: mirror's tracks and items,
+-- the timeline's markers), so the try sends nothing, and every other edit, to those things too, goes out as ever. (It held all sending once,
+-- through Hold sync: a try left over after a restart held a laptop's edits all night. Hold is gone: rt-nohold.)
+-- The try is this REAPER's (ExtState: "colour try <proj>" a stamp, "colour try data <proj>" what it changed), with a copy in the project
+-- (ProjExtState "colour try") only so that an opening after REAPER stopped mid-try puts the look back (colours.put_back_stale): nothing went.
+-- (one per project tab: a second tab's try replaced the first's, which was left with no Put back. Review, 0.58.98)
+local tries = {} -- proj -> { proj, tracks = { ptr -> colour }, items = { ptr -> colour }, marks = { {num, region, colour} }, pub = what it changed }
 local trying
 local function snapshot(proj)
-  local t = { proj = proj, held_before = require("sync").hold_mine(select(2, reaper.GetProjExtState(proj, band.SECTION, "hold"))) and "1" or "",
-    tracks = {}, items = {}, marks = {} }
+  local t = { proj = proj, tracks = {}, items = {}, marks = {} }
   for i = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, i)
     t.tracks[tr] = band.track_colour(tr) -- (the band's colour: a "who's working" paint over it isn't it. Review, 0.58.98)
@@ -485,53 +489,120 @@ local function snapshot(proj)
   end
   return t
 end
--- (a try's hold is "try" or "try1", never Hold my changes' "1", and the ExtState saying it's live goes with REAPER: a restart mid-try, or a save
--- made during one, came back as Hold on, and the laptop's edits stayed held all night. mirror.restore_unsent puts it back. rt-edits)
-local function try_key(proj) return "colour try " .. tostring(proj) end
-local function try_first(proj, fn)
-  if not tries[proj] then
-    tries[proj] = snapshot(proj)
-    reaper.SetExtState(band.SECTION, try_key(proj), "1", false)
-    reaper.SetProjExtState(proj, band.SECTION, "hold", "try" .. tries[proj].held_before) -- (nothing goes out while it's tried)
+-- An item's COLOR line as its chunk has it ("" for none), and native colour `v` written as REAPER writes it here (`like`: a line from this
+-- computer; a Mac writes "B", in its own byte order: mirror.portable).
+local function colour_line(it) return ((select(2, reaper.GetItemStateChunk(it, "", false)):match("\n%s*(COLOR [^\r\n]*)") or ""):gsub("%s+$", "")) end
+local function line_of(v, like)
+  v = math.floor(tonumber(v) or 0)
+  if v == 0 then return "" end
+  local os_name = reaper.GetOS and reaper.GetOS() or ""
+  return "COLOR " .. v .. " " .. (like:match(" (%a)$") or ((os_name:find("OSX") or os_name:find("mac")) and "B" or "R"))
+end
+-- What the try has changed, by GUID (and marker number), as band.colour_try reads it; told to this REAPER and saved with the project.
+local stamps = 0
+local function publish(proj, t)
+  local pub = { tracks = {}, items = {}, marks = {} }
+  for tr, c in pairs(t.tracks) do
+    if reaper.ValidatePtr2(proj, tr, "MediaTrack*") then
+      local now = band.track_colour(tr)
+      if now ~= c then pub.tracks[reaper.GetTrackGUID(tr)] = { c, now } end
+    end
   end
+  for it, c in pairs(t.items) do
+    if reaper.ValidatePtr2(proj, it, "MediaItem*") and reaper.GetMediaItemInfo_Value(it, "I_CUSTOMCOLOR") ~= c then
+      local now = colour_line(it)
+      pub.items[select(2, reaper.GetSetMediaItemInfo_String(it, "GUID", "", false))] = { line_of(c, now), now, c }
+    end
+  end
+  local was = {}
+  for _, m in ipairs(t.marks) do was[band.mark_key(m.region, m.num)] = m.colour end
+  for i = 0, reaper.CountProjectMarkers(proj) - 1 do
+    local _, region, _, _, _, num, colour = reaper.EnumProjectMarkers3(proj, i)
+    local k = band.mark_key(region, num)
+    if was[k] and was[k] ~= colour then pub.marks[k] = { was[k], colour } end
+  end
+  t.pub = pub
+  local s = band.json_encode(pub)
+  stamps = stamps + 1
+  reaper.SetExtState(band.SECTION, "colour try data " .. tostring(proj), s, false)
+  reaper.SetExtState(band.SECTION, "colour try " .. tostring(proj), string.format("%.6f/%d", reaper.time_precise(), stamps), false)
+  reaper.SetProjExtState(proj, band.SECTION, "colour try", s)
+end
+local function forget(proj)
+  reaper.DeleteExtState(band.SECTION, "colour try " .. tostring(proj), false)
+  reaper.DeleteExtState(band.SECTION, "colour try data " .. tostring(proj), false)
+  if reaper.ValidatePtr2(0, proj, "ReaProject*") then reaper.SetProjExtState(proj, band.SECTION, "colour try", "") end
+end
+-- Each thing the try changed and that still shows its tried colour gets its colour from before back (a bandmate's change that landed on one
+-- meanwhile stays, and so does a colour you set by hand: those went out). -> how many.
+local function put_back_from(proj, pub)
+  local n = 0
+  if next(pub.tracks or {}) then
+    for i = 0, reaper.CountTracks(proj) - 1 do
+      local tr = reaper.GetTrack(proj, i)
+      local c = pub.tracks[reaper.GetTrackGUID(tr)]
+      if c and band.track_colour(tr) == c[2] then band.set_track_colour(tr, c[1]); n = n + 1 end
+    end
+  end
+  if next(pub.items or {}) then
+    for i = 0, reaper.CountMediaItems(proj) - 1 do
+      local it = reaper.GetMediaItem(proj, i)
+      local c = pub.items[select(2, reaper.GetSetMediaItemInfo_String(it, "GUID", "", false))]
+      if c and colour_line(it) == c[2] then reaper.SetMediaItemInfo_Value(it, "I_CUSTOMCOLOR", tonumber(c[3]) or 0); n = n + 1 end
+    end
+  end
+  -- (each marker's colour only, found by its number: one added or removed meanwhile moved the indices, and old positions and names went
+  -- onto the wrong markers. Review, 0.58.98)
+  if next(pub.marks or {}) then
+    for i = 0, reaper.CountProjectMarkers(proj) - 1 do
+      local _, region, pos, rend, name, num, colour = reaper.EnumProjectMarkers3(proj, i)
+      local c = pub.marks[band.mark_key(region, num)]
+      if c and colour == c[2] then reaper.SetProjectMarkerByIndex2(proj, i, region, pos, rend, num, name, c[1], 0); n = n + 1 end
+    end
+  end
+  return n
+end
+local function try_first(proj, fn)
+  if not tries[proj] then tries[proj] = snapshot(proj) end
   fn()
+  publish(proj, tries[proj]) -- (in the same call as the change: Live sync's next look already reads it)
 end
 colours.try_first = try_first -- (tests)
 function colours.trying(proj) return tries[proj] ~= nil end
 function colours.keep(proj)
   trying = tries[proj]
   if not trying then return end
-  reaper.DeleteExtState(band.SECTION, try_key(proj), false)
-  if reaper.ValidatePtr2(0, proj, "ReaProject*") then reaper.SetProjExtState(proj, band.SECTION, "hold", trying.held_before or "") end
-  band.log((trying.held_before or "") ~= "" and "kept the new look (Hold sync was already on: it goes out when you release it)" or "kept the new look: it goes to everyone now")
   tries[proj] = nil
+  forget(proj) -- (the next look sends the colours it changed: Live sync looks at once when the stamp goes)
+  band.log("kept the new look: it goes to everyone now")
 end
 function colours.put_back(proj)
   trying = tries[proj]
   if not trying then return end
   tries[proj] = nil
-  reaper.DeleteExtState(band.SECTION, try_key(proj), false)
-  if not reaper.ValidatePtr2(0, proj, "ReaProject*") then return end
+  if not reaper.ValidatePtr2(0, proj, "ReaProject*") then return forget(proj) end
   reaper.Undo_BeginBlock2(proj)
-  for tr, c in pairs(trying.tracks) do if reaper.ValidatePtr2(proj, tr, "MediaTrack*") then band.set_track_colour(tr, c) end end
-  for it, c in pairs(trying.items) do if reaper.ValidatePtr2(proj, it, "MediaItem*") then reaper.SetMediaItemInfo_Value(it, "I_CUSTOMCOLOR", c) end end
-  -- (each marker's colour only, found by its number: one added or removed meanwhile moved the indices, and old positions and names went
-  -- onto the wrong markers. Review, 0.58.98)
-  local was = {}
-  for _, m in ipairs(trying.marks) do was[(m.region and "r" or "m") .. m.num] = m.colour end
-  for i = 0, reaper.CountProjectMarkers(proj) - 1 do
-    local _, region, pos, rend, name, num, colour = reaper.EnumProjectMarkers3(proj, i)
-    local c = was[(region and "r" or "m") .. num]
-    if c and c ~= colour then reaper.SetProjectMarkerByIndex2(proj, i, region, pos, rend, num, name, c, 0) end
-  end
+  put_back_from(proj, trying.pub or {})
   reaper.Undo_EndBlock2(proj, "Colours put back", -1)
-  reaper.SetProjExtState(proj, band.SECTION, "hold", trying.held_before or "")
+  forget(proj) -- (after: back as they were, there's nothing to send)
   reaper.TrackList_AdjustWindows(false); reaper.UpdateArrange(); reaper.UpdateTimeline()
   band.log("the look you tried is put back: nothing went to the others")
 end
--- Before the panel reloads or closes: a look being tried is put back (the trial lived in the panel's Lua, and Hold stayed on with no
--- Put back after a reload. Review, 0.58.98)
+-- Before the panel reloads or closes: a look being tried is put back (the trial lives in the panel's Lua. Review, 0.58.98)
 function colours.put_back_all() for p in pairs(tries) do colours.put_back(p) end end
+-- A project opening with a try saved in it and none live in this REAPER (REAPER stopped mid-try, after a save or an autosave): the look is
+-- put back, nothing sent (mirror.on_open, before its first look). A try still live (Live sync restarted while the panel tries one) stays.
+function colours.put_back_stale(proj)
+  local s = select(2, reaper.GetProjExtState(proj, band.SECTION, "colour try"))
+  if s == "" or reaper.GetExtState(band.SECTION, "colour try " .. tostring(proj)) ~= "" then return end
+  local pub = band.json_decode(s)
+  reaper.SetProjExtState(proj, band.SECTION, "colour try", "")
+  if type(pub) ~= "table" then return end
+  reaper.Undo_BeginBlock2(proj)
+  local n = put_back_from(proj, pub)
+  reaper.Undo_EndBlock2(proj, "Colours put back", -1)
+  band.log(string.format("a colour look was being tried when REAPER stopped: it's put back (%d thing%s), nothing went to the others", n, n == 1 and "" or "s"))
+end
 
 -- A small bar of the palette, words at each end: which end is which (James, 0.59.4: "the descriptions adapted for most recent vs oldest").
 local function legend(ctx, ImGui, stops, left, right)
@@ -634,7 +705,7 @@ function colours.draw(ctx, ImGui, proj, cfg, may, timeline_ok)
   if colours.trying(proj) then
     ImGui.PushStyleColor(ctx, ImGui.Col_ChildBg, 0x2E4D7FFF)
     if ImGui.BeginChild(ctx, "##colourtry", 0, 0, ImGui.ChildFlags_AutoResizeY | ImGui.ChildFlags_AlwaysUseWindowPadding) then
-      ImGui.TextWrapped(ctx, "Trying a look on this computer only: nothing has gone to the others yet (sending is held).")
+      ImGui.TextWrapped(ctx, "Trying a look on this computer only: its colours haven't gone to the others yet. Everything else you change still goes out.")
       if ImGui.Button(ctx, "Keep it for everyone##colourkeep") then colours.keep(proj) end
       ImGui.SameLine(ctx)
       if ImGui.Button(ctx, "Put it back##colourback") then colours.put_back(proj) end
@@ -761,7 +832,7 @@ function colours.draw(ctx, ImGui, proj, cfg, may, timeline_ok)
   ImGui.Spacing(ctx)
   local ch, v = ImGui.Checkbox(ctx, "Try it on this computer first##colourtryfirst", first)
   if ch then reaper.SetExtState(band.SECTION, "colour try", v and "" or "off", true) end
-  ImGui.SetItemTooltip(ctx, "On: a colour button changes this computer only, with sending held, until you press Keep it for everyone (or Put it back).\n" ..
+  ImGui.SetItemTooltip(ctx, "On: a colour button changes this computer only (its colours stay here; your other changes still go out), until you press Keep it for everyone (or Put it back).\n" ..
     "Off: it goes to everyone straight away (" .. require("undo").key_name() .. " still takes it back).")
   if require("groups").may_manage(cfg.root, cfg.user) then
     if ImGui.SmallButton(ctx, "Make this the studio's look") then

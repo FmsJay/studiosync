@@ -43,13 +43,11 @@ leave.start("P0", cfg, b)
 leave.tick()
 assert(leave.job.finished and leave.job.lines[1]:find("backup or autosave", 1, true) and saves == 0, "a backup copy: nothing saved or sent, and it says why")
 copy = false
-ext["proj hold"] = "1"
+ext["proj hold"] = "1" -- (a project saved with Hold my changes on: nothing is asked now, rt-nohold)
 leave.start("P0", cfg, b)
-leave.tick(); leave.tick()
-assert(leave.job.step == "hold?" and saves == 0, "Hold my changes on: nothing is saved or sent until the question is answered")
-leave.job.kept_held, leave.job.step = true, "save"
+assert(leave.job.step == "save", "Hold my changes is gone: no question first")
 leave.tick()
-assert(saves == 1 and ext["proj hold"] == "1", "Keep holding: saved, and Hold my changes stays on")
+assert(saves == 1, "saved")
 clock = clock + 5
 leave.tick() -- no Live sync heartbeat for the tab
 assert(leave.job.sync_off and not leave.job.finished, "Live sync off: it waits with Start sync, it doesn't end")

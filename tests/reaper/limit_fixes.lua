@@ -26,7 +26,7 @@ reaper.SetExtState(band.SECTION, "bg render", "off", false)
 reaper.Main_OnCommand(40859, 0); local pa = reaper.EnumProjects(-1)
 reaper.Main_OnCommand(40859, 0); local pb = reaper.EnumProjects(-1)
 sync.driver_name = "Laptop"
-local function watch(p, cfg, can, hold) reaper.SelectProjectInstance(p); return (mirror.watch(p, cfg, song, room, { can = can or yes, mode = "claims", here = { Laptop = true }, hold = hold })) end
+local function watch(p, cfg, can) reaper.SelectProjectInstance(p); return (mirror.watch(p, cfg, song, room, { can = can or yes, mode = "claims", here = { Laptop = true } })) end
 local function recv(p, cfg) reaper.SelectProjectInstance(p); for _ = 1, 3 do sync.receive(p, cfg, song, room, yes) end end
 local function hold(s) local w = reaper.time_precise(); while reaper.time_precise() - w < s do end end
 local function put_back_n() return (band.json_decode(reaper.GetExtState(band.SECTION, "put back")) or {}).n or 0 end
@@ -318,19 +318,16 @@ local ok, err = pcall(function()
     check(changed and math.abs(reaper.TimeMap2_GetDividedBpmAtTime(pa, 0) - 77) > 1, "the tempo goes back with the whole song")
   end
 
-  -- Hold my changes renders nothing
+  -- a note changed goes out and prints (Hold my changes, which kept it back, is gone: rt-nohold)
   reaper.SelectProjectInstance(pa)
   local _, p0 = prints.takes(it)
   local k0 = p0 and select(2, reaper.GetSetMediaItemTakeInfo_String(p0, "P_EXT:" .. prints.KEY, "", false)) or ""
   local _, _, m, a, b2, c, _, v = reaper.MIDI_GetNote(tk, 0)
   reaper.MIDI_SetNote(tk, 0, false, m, a, b2, c, 70, v, false)
   local n1 = sent("Laptop")
-  for _ = 1, 4 do watch(pa, A, yes, true); hold(0.1) end
-  local _, p1 = prints.takes(it)
-  check((p1 and select(2, reaper.GetSetMediaItemTakeInfo_String(p1, "P_EXT:" .. prints.KEY, "", false)) or "") == k0 and sent("Laptop") == n1, "Hold: nothing goes out and nothing renders")
   for _ = 1, 4 do watch(pa, A); hold(0.1) end
   local _, p2 = prints.takes(it)
-  check((p2 and select(2, reaper.GetSetMediaItemTakeInfo_String(p2, "P_EXT:" .. prints.KEY, "", false)) or "") ~= k0 and sent("Laptop") > n1, "released: it goes out and prints")
+  check((p2 and select(2, reaper.GetSetMediaItemTakeInfo_String(p2, "P_EXT:" .. prints.KEY, "", false)) or "") ~= k0 and sent("Laptop") > n1, "it goes out and prints")
 
   -- a plug-in that isn't installed isn't "here", though REAPER says it isn't offline
   do

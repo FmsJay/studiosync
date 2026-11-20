@@ -34,14 +34,7 @@ assert(not leave.job.problem and leave.job.step == "save", "Live sync runs in it
 leave.tick()
 assert(saves == 1, "saved")
 
--- The hold question blocks the save, even with Live sync running and nothing waiting to go out (lib/leave.lua's "hold?" step)
-saves = 0
-ext["proj hold"] = "1"
-leave.start("P0", cfg, b)
-band.set_ext_json(band.SECTION, "outbox P0", { at = clock + 1 })
-for _ = 1, 5 do clock = clock + 3; ext["live P0"] = tostring(clock); leave.tick() end
-assert(leave.job.step == "hold?" and saves == 0 and ext["proj hold"] == "1", "Hold my changes on: nothing saved or sent until the question is answered")
-ext["proj hold"] = nil
+-- (the hold question that blocked the save: Hold my changes is gone, rt-nohold)
 
 -- The finished box: a backup or a second tab offers no Quit and saves nothing on Close; otherwise Close saves and Quit is there
 local offered, press = {}, nil

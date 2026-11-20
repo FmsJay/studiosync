@@ -339,7 +339,7 @@ the macOS and Linux builds come from `.github/workflows/extension.yml`). They ap
 **REAPER's Actions list** keeps only what opens StudioSync, plus Undo, Redo, Radial menu, Live sync and Draw. Turn on **Settings > Advanced > Every
 StudioSync action in REAPER's Actions list** for the rest. An action a key, a toolbar or a menu already uses always stays.
 
-**Actions to bind to a key or toolbar button** (with that setting on; Actions list, search "StudioSync"): **Hold my changes** (on/off), **Claim selected
+**Actions to bind to a key or toolbar button** (with that setting on; Actions list, search "StudioSync"): **Claim selected
 tracks**, **Local mixing** (on/off; off asks whose mix to keep), **Keep selected tracks local** (new tracks of your own that never go out:
 a reference mix, a guide; again with only those selected, it shares them), plus Take control, Undo, Redo and Radial menu. Like the radial
 menu, the panel does each one.
@@ -398,8 +398,8 @@ Who may change what:
   One holding someone's claimed part can't be deleted: it comes back, and says why.
 - **A copy of someone's claimed track** goes out as yours, as "Keys (James's copy)", and says whose it was. The original isn't touched.
 - **What you see is what the studio has**: anything you change that isn't yours to change is put back at once,
-  with the reason. Recording on a track you may change always goes out. **Hold my changes** keeps your changes
-  here until you switch it off; then they go out together.
+  with the reason. Recording on a track you may change always goes out. To try something without the others getting
+  it, make a side room (Rooms) and test there; Bring into main brings back what you keep.
 
 Restore (its own page):
 
@@ -597,7 +597,7 @@ and it plays four notes at once, so it's a bass, lead and sequence synth).
 
 **Real time buffer** (Settings > Advanced, this computer's choice): how much sound SonoBus keeps in hand. Steady (150 ms, the default) holds still, so Their time can stay set; Rock steady (250 ms) for a rough connection; Lowest delay wanders. Measured laptop on Wi-Fi to PC, against the PC's grid: 278 ms holding with one 25 ms step at Steady, 486.8 ms and no movement at Rock steady, 162-221 ms wandering at Lowest. It doesn't line up by itself.
 
-**Sync and exit** (top row): with Hold my changes on it first asks whether to send what you're holding or keep holding it; then it saves,
+**Sync and exit** (top row): it saves,
 waits until what you changed has gone out, says who has it and whether it's safe to shut down, then closes the project or quits REAPER.
 On a backup or autosave copy, or a second tab of a project syncing in another, it says so before saving or asking anything, and closes it
 without saving (answer No when REAPER asks about unsaved changes); Quit REAPER saves only each project's own syncing tab. A project you saved
@@ -635,9 +635,9 @@ own? Enter `<address>:2049` and click *Save for the studio*.
 
 ## For your own scripts: the API
 
-Toolbars, controllers and your own scripts can read who drives, who's here, who claimed what and whether Hold or Local mixing is on,
+Toolbars, controllers and your own scripts can read who drives, who's here, who claimed what and whether Local mixing is on,
 follow what happens (handovers, people coming and going, changes sent and received, chat, takes, mixes), and ask StudioSync to take
-control, hold, claim, keep tracks local, switch Local mixing or post to chat, each exactly as the panel's control does. It's all in
+control, claim, keep tracks local, switch Local mixing or post to chat, each exactly as the panel's control does. It's all in
 REAPER's ExtState (section `StudioSync API`), so Lua, EEL and Python can use it; Lua scripts get a small helper. Fields, events,
 verbs and examples (a toolbar light, an event loop): [docs/API.md](docs/API.md).
 
@@ -659,7 +659,7 @@ Closing REAPER without saving (or a crash) is safe. Next to each StudioSync proj
 save, StudioSync recognises its tracks and items, brings back what changed since as the studio has it, and sends
 nothing new. Leave the file where it is. Without it, a reopened older save would show up for everyone with its
 tracks twice. While Live sync runs, `<project>.bandsync-unsent.json` holds your changes that haven't gone out yet
-(plug-ins settling, edits made while playing, Hold my changes): if REAPER crashes, they're put back and sent when the
+(plug-ins settling, edits made while playing): if REAPER crashes, they're put back and sent when the
 song opens again. A clean stop removes it.
 
 A backup or autosave of a shared song, opened by hand, isn't synced: nothing goes in or out of it. The panel asks

@@ -11,7 +11,7 @@ assert(s.driver == "Bee" and s.driving == false and s.mode == "claims", "who dri
 assert(table.concat(s.here, ",") == "Bee,Sam", "who's here, sorted")
 assert(s.claims[1].user == "James" and table.concat(s.claims[1].tracks, ",") == "Gtr,Keys" and s.claims[2].user == "Sam" and s.claims[2].tracks[1] == "Bass", "claims by person, by their track names")
 assert(band.json_encode(api.state_of({})):find('"claims":[]', 1, true), "none: still a list")
-assert(s.hold == true and s.local_mix == false and s.held == 3, "hold, local mixing, and how many changes are held")
+assert(s.hold == false and s.local_mix == false and s.held == 0, "local mixing; hold and held stay in the state, always off and 0 (Hold my changes was removed: rt-nohold)")
 assert(band.json_decode(band.json_encode(s)).claims[1].tracks[2] == "Keys", "and it travels as JSON")
 assert(api.state_of({ me = "A", driver = "A" }).driving and api.state_of({}).mode == "open", "driving yourself; the default (Claims) when no mode is known")
 -- events: numbered, oldest dropped past the limit

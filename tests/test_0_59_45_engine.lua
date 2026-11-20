@@ -154,12 +154,12 @@ assert(p5["I-B"] and p5["I-B"].id == "Me-i2", "and its items on its other lanes"
 -- C3, C2: what waits to go out (Sync and exit), and stale flags swept
 mirror.more = false
 mirror.held_back.P1 = { ["I-1"] = true }
-assert(mirror.waiting("P1", true), "an item held back (a failed copy, missing audio) counts, Hold or not")
+assert(mirror.waiting("P1"), "an item held back (a failed copy, missing audio) counts")
 mirror.held_back.P1 = nil
 mirror.unsent["P1I-2"] = true
-assert(mirror.waiting("P1", false) and not mirror.waiting("P1", true), "an unsent change counts, but not what Hold keeps")
+assert(mirror.waiting("P1"), "an unsent change counts (Hold my changes, which kept them out of it, is gone: rt-nohold)")
 mirror.unsent["P1I-2"] = nil
-assert(mirror.waiting("P1", false) == nil, "nothing waiting: nil")
+assert(mirror.waiting("P1") == nil, "nothing waiting: nil")
 mirror.unsent["P1I-9"] = true -- (flagged before it ever went out, then deleted)
 mirror.unsent["P1I-8"] = true -- (known to the band: a held delete)
 mirror.unsent["P1I-7"] = true -- (still here)
@@ -201,7 +201,7 @@ package.loaded.band.files = nil
 assert(mirror.owned({ mode = "claims", can = function() return true end }, "Me", "Keys", nil, function(n) return n == "Keys" end), "a claimant's change is owned")
 assert(not mirror.owned({ mode = "everyone", can = function() return true end }, "Me", "Keys", nil, function() return true end), "not in Everyone")
 
--- S7: Hold my changes on and the local timeline changed since the last one seen: the band's timeline waits (not applied, not seen)
+-- S7 (Hold my changes is gone, rt-nohold): the band's timeline lands whatever this project's own timeline was
 local applied = 0
 band.capture_tempo = function() return { { time = 0, bpm = 140 } } end -- (here: changed on Hold)
 band.capture_markers = function() return {} end
@@ -211,11 +211,8 @@ band.apply_project, band.apply_markers = function() end, function() end
 sync.audio_follow_tempo, sync.resnap = function() end, function() end
 local PT = "PT"
 reaper.SetProjExtState(PT, band.SECTION, "timeline", band.json_encode({ { { time = 0, bpm = 120 } }, {}, {}, 2 })) -- (the band's last, seen)
-reaper.SetProjExtState(PT, band.SECTION, "hold", "1")
 local tl = { type = "timeline", tempo = { { time = 0, bpm = 100 } }, markers = {} }
-assert(sync.apply(PT, tl, "R", function() return true end, "Me") == false and applied == 0, "theirs waits while you hold a timeline of your own")
-reaper.SetProjExtState(PT, band.SECTION, "hold", "")
-assert(sync.apply(PT, tl, "R", function() return true end, "Me") == true and applied == 1, "and lands once Hold is off")
+assert(sync.apply(PT, tl, "R", function() return true end, "Me") == true and applied == 1, "it lands")
 
 -- X2, X12, CP2: a path a band's chain put on this track is never copied out; nor a hidden file's name or REAPER's own folder written to
 local fxfiles = require("fxfiles")

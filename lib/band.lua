@@ -690,7 +690,7 @@ end
 band.SHOWN = { Panel = true, Undo = true, Redo = true, ["Live sync"] = true, Draw = true, ["Radial menu"] = true,
   ["Live audio mute me"] = true, ["Live audio deafen"] = true, ["Live audio hold to talk"] = true, ["Live audio talkback"] = true }
 function band.all_actions() return reaper.GetExtState(band.SECTION, "all actions") == "1" end
--- Should this script be in the Actions list? Pure. name: "Hold my changes"; used: a key, toolbar or menu runs it.
+-- Should this script be in the Actions list? Pure. name: "Claim selected tracks"; used: a key, toolbar or menu runs it.
 function band.shown_action(name, all, used) return all or used or band.SHOWN[name] == true end
 -- Registers what should be listed and takes the rest out. at_start: REAPER is just starting, so nothing of ours runs yet, and Live sync's
 -- copies for more tabs (band.start_live: registered again as each starts) go too, as do actions whose script is gone. -> listed, taken out.
@@ -1496,9 +1496,11 @@ end
 
 function band.capture_markers(proj)
   local out, i = {}, 0
+  local try = band.colour_try(proj) -- (a colour look tried here: its colours aren't the band's yet, lib/colours.lua. rt-nohold)
   while true do
     local n, rgn, pos, rend, name, num, color = reaper.EnumProjectMarkers3(proj, i)
     if n == 0 then break end
+    if try and try.marks then color = band.untried(color, try.marks[band.mark_key(rgn, num)]) end
     if not band.is_local_mark(name) then
       local m = reaper.GetRegionOrMarker and reaper.GetRegionOrMarker(proj, i, "")
       local lane = m and reaper.GetRegionOrMarkerInfo_Value(proj, m, "I_LANENUMBER") or -1
@@ -1861,6 +1863,29 @@ end
 -- ---- items, tracks, P_EXT tags --------------------------------------------------------------
 
 function band.track_ext(tr, key) return select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:" .. key, "", false)) end
+
+-- A colour look being tried in `proj` (lib/colours.lua), or nil: { tracks = { [GUID] = { was, now } }, items = { [GUID] = { was line, now
+-- line } }, marks = { ["r5"] = { was, now } } }, native colours and an item chunk's COLOR line ("" for none). While a thing still shows `now`,
+-- what's sent or compared reads `was` (mirror.track_state, mirror's item states, band.capture_markers): the try sends nothing and holds back
+-- nothing else. This REAPER's only (ExtState): "colour try <proj>" is a stamp, "colour try data <proj>" the table, read again when the stamp
+-- changes. (Hold sync did this once and held every edit with it: removed, rt-nohold)
+local try_seen = {} -- tostring(proj) -> { stamp, table }
+function band.colour_try(proj)
+  local k = tostring(proj)
+  local stamp = reaper.GetExtState(band.SECTION, "colour try " .. k)
+  if stamp == "" then try_seen[k] = nil; return nil end
+  local seen = try_seen[k]
+  if not seen or seen[1] ~= stamp then
+    local t = band.json_decode(reaper.GetExtState(band.SECTION, "colour try data " .. k))
+    seen = { stamp, type(t) == "table" and t or nil }
+    try_seen[k] = seen
+  end
+  return seen[2]
+end
+-- A marker's or region's key in a try: "r5", "m2". Pure.
+function band.mark_key(region, num) return (region and "r" or "m") .. tostring(math.tointeger(num) or num) end
+-- A native colour as the band should read it while a look is tried: `was` while the thing still shows the tried colour. Pure.
+function band.untried(colour, c) if c and colour == c[2] then return c[1] end; return colour end
 
 -- A track's colour as the band has it (REAPER's native I_CUSTOMCOLOR): a person's colour may be showing in its place
 -- here (lib/people.lua), with the band's waiting in P_EXT:band_colour. Everything that sends, saves or restores a

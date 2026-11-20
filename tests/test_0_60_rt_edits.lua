@@ -473,11 +473,10 @@ for _, mode in ipairs({ "quick", "full" }) do
   print("rt-edits: " .. #cases .. " edits through a " .. mode .. " look, undone and redone: the same on the laptop and on a late joiner")
 end
 
--- ---- REAPER check, 0.59.49.69: a render-matrix tick and a renumbering on the desktop, the laptop held ----
--- In REAPER the desktop sent both within a second, but the laptop's Cross Test had Hold on (the colour try's, from before the fix). Live sync
--- doesn't look at the timeline while held, so its "seen" stayed in TIMELINE_FORMAT 4; the new fields read as a change of its own, and every map
--- and marker from the band waited for good (sync.timeline_waits). Here: both edits made with no change count moved, through Live sync's pass
--- (quick look, then the timeline's look); then the laptop, held with an older-format "seen", takes them; a real held marker edit still waits.
+-- ---- REAPER check, 0.59.49.69: a render-matrix tick and a renumbering on the desktop ----
+-- In REAPER the desktop sent both within a second; the laptop's Cross Test had Hold on, its "seen" timeline in TIMELINE_FORMAT 4, and every map
+-- and marker from the band waited. Hold my changes is gone (rt-nohold): here both edits are made with no change count moved, go through Live
+-- sync's pass (quick look, then the timeline's look), and the laptop, its "seen" written by the older StudioSync, takes them.
 do
   local function region1(c) for _, m in ipairs(c.F.markers) do if m.region then return m end end end
   tick()
@@ -498,10 +497,9 @@ do
   tev = nil
   for _, ev in ipairs(sent) do if ev.type == "timeline" then tev = ev end end
   assert(tev and (function() for _, m in ipairs(tev.markers) do if m.region and m.num == 7 then return true end end end)(), "the renumbering went out too")
-  -- the laptop, held, its "seen" written by the older StudioSync
+  -- the laptop, its "seen" written by the older StudioSync
   as(B)
   local SEC = band.SECTION
-  reaper.SetProjExtState(B.F.proj, SEC, "hold", "1")
   local seen = band.json_decode(select(2, reaper.GetProjExtState(B.F.proj, SEC, "timeline")))
   for _, m in ipairs(seen[2]) do m.num, m.render = nil, nil end
   seen[4] = 4
@@ -509,23 +507,9 @@ do
   tick()
   B.F.clock = B.F.clock + 1
   sync.receive(B.F.proj, B.cfg, song, room, yes)
-  assert(numbers_of(B) == numbers_of(A), "held, the laptop took the renumbering: " .. numbers_of(A) .. " vs " .. numbers_of(B))
+  assert(numbers_of(B) == numbers_of(A), "the laptop took the renumbering: " .. numbers_of(A) .. " vs " .. numbers_of(B))
   assert(matrix_of(B) == matrix_of(A), "and the render matrix: " .. matrix_of(A) .. " vs " .. matrix_of(B))
-  -- a held edit of its own to the markers still holds the band's back
-  region1(B).name = "Verse (held)"
-  B.F.changed()
-  tick()
-  as(A)
-  A.F.add_marker(false, 30, 30, "Outro")
-  look(A, true)
-  as(B)
-  B.F.clock = B.F.clock + 1
-  sync.receive(B.F.proj, B.cfg, song, room, yes)
-  local outro = false
-  for _, m in ipairs(B.F.markers) do if m.name == "Outro" then outro = true end end
-  assert(not outro and region1(B).name == "Verse (held)", "a held marker edit of yours still holds the band's timeline back")
-  reaper.SetProjExtState(B.F.proj, SEC, "hold", "")
-  print("rt-edits: the render matrix and a renumbering go in Live sync's next pass, and land on a held laptop with an older-format timeline")
+  print("rt-edits: the render matrix and a renumbering go in Live sync's next pass, and land on a laptop with an older-format timeline")
 end
 -- ---- the transport: Play together carries the leader's loop and repeat (each REAPER looped by its own before: a loop rehearsal came apart at
 -- the first loop end). "Play (skip time selection)" and region playlists aren't carried: docs/rt/rt-edits.md ----

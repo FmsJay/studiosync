@@ -1,7 +1,7 @@
 -- Shared controllers (lib/controllers.lua; roadmap More big ideas 5): what a ctl message may carry, holds, a plug-in's place in the band's chain;
 -- then two stand-in REAPERs, James's and Bo's, with a message pump between them: a fader move streams and shows, at most every RATE s; nothing
 -- echoes back (a shown move, the band's own change); let go; the band's change confirms it, or the value before it comes back; two on one
--- control (the first holds it, the other's goes back, said once); a move that isn't theirs refused; Hold my changes, Local mixing and
+-- control (the first holds it, the other's goes back, said once); a move that isn't theirs refused; Local mixing and
 -- automation writing; a plug-in knob, with a translation of James's own in his chain; the setting off; and mirror.watch leaving a shown
 -- track alone. (James, rt)
 package.path = "lib/?.lua;" .. package.path
@@ -14,7 +14,7 @@ local function world(user)
   w.mirror = { track_oid = function(tr) return tr.oid end, local_track = function(tr) return tr.here == true end,
     find = function(_, _, oid) for _, tr in ipairs(w.tracks) do if tr.oid == oid then return tr end end end,
     known = function(_, oid) return w.rev[oid] or 1 end, unsent = w.unsent, previewing = w.previewing }
-  w.pass = { can = function() return true end, my_can = function() return true end, who = { mode = "open" }, hold = false }
+  w.pass = { can = function() return true end, my_can = function() return true end, who = { mode = "open" } }
   return w
 end
 local A, B = world("James"), world("Bo")
@@ -190,7 +190,7 @@ B.rev[BASS] = 3
 clock = clock + CB.CONFIRM + 1
 tick(A); tick(B)
 
--- ---- 5. permissions, Hold my changes, Local mixing, automation ---------------------------------------------------------------------------
+-- ---- 5. permissions, Local mixing, automation ---------------------------------------------------------------------------
 B.pass.can = function(user, name) return not (user == "James" and name == "Keys") end -- (Keys is Bo's: claimed)
 A.tracks[2].vol = 0.3
 clock = clock + 0.06
@@ -205,12 +205,6 @@ tick(A)
 assert(sent(A) == 0, "a move that isn't yours never goes")
 A.out = {}
 A.pass.my_can, B.pass.can = function() return true end, function() return true end
-A.pass.hold = true
-A.tracks[1].vol = 0.4
-clock = clock + 0.06
-tick(A)
-assert(sent(A) == 0, "Hold my changes: nothing goes")
-A.pass.hold = false
 A.projext.local_mix = "1"
 A.tracks[1].vol, A.tracks[1].mute = 0.45, 1
 clock = clock + 0.06

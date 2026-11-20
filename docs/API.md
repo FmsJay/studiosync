@@ -1,7 +1,7 @@
 # StudioSync API (for your own scripts)
 
 Your scripts, toolbars and controllers can read what's happening in the session and ask StudioSync to do things. Use it for a
-toolbar light that turns red when someone else drives, a Stream Deck page with Take control / Hold / Claim, a ReaLearn
+toolbar light that turns red when someone else drives, a Stream Deck page with Take control / Claim, a ReaLearn
 mapping, a script that renders whenever a take lands, or a bot that posts to chat.
 
 Everything goes through REAPER's ExtState, section **`StudioSync API`** (never saved), so Lua, EEL and Python scripts can all
@@ -23,7 +23,7 @@ API version 1, StudioSync 0.58.64 and later. Fields and verbs are only ever adde
 | `alone` | nobody else is here (you have full control) |
 | `here` | the others in the project now, sorted |
 | `claims` | `[ { "user": "James", "tracks": ["Gtr", "Keys"] }, { "user": "Sam", "tracks": ["Bass"] } ]`: each person's claimed tracks (always a list, `[]` when nobody has claimed anything) |
-| `hold`, `held` | Hold my changes is on, and how many changes it's holding |
+| `hold`, `held` | always `false` and `0`: Hold my changes was removed (2026-11-20; test in a side room instead). Kept, as fields never go |
 | `local_mix` | Control your own mix is on |
 
 `GetExtState("StudioSync API", "beat")` is the `reaper.time_precise()` of Live sync's last look. If it's more than 10 seconds old
@@ -43,7 +43,7 @@ you saw and look for higher ones.
 | `chat` | `text`, `user`, `song` | you posted a message |
 | `take` | `song`, `room` | you recorded something |
 | `mix` | `file`, `song` | a mix was rendered (its file) |
-| `hold` | `on`, `song` | Hold my changes was switched |
+| `hold` | `on`, `song` | never sent now: Hold my changes was removed |
 
 Every event also has `seq` and `time` (UTC, `2026-11-15T17:30:00Z`).
 
@@ -55,7 +55,7 @@ asks, and opens if it was closed (from the Lua helper; a bare ExtState request w
 | verb | does |
 |---|---|
 | `takecontrol` | Take control |
-| `hold` | Hold my changes on/off |
+| `hold` | nothing but a log line: Hold my changes was removed (test in a side room instead) |
 | `claim` | claim the selected tracks |
 | `localmix` | Local mixing on/off (off asks whose mix to keep) |
 | `keeplocal` | keep the selected (new) tracks on this computer, or share them again |
@@ -117,5 +117,5 @@ loop()
 import json
 st = RPR_GetExtState("StudioSync API", "state")
 state = json.loads(st) if st else None
-RPR_SetExtState("StudioSync API", "request", "hold", False)
+RPR_SetExtState("StudioSync API", "request", "takecontrol", False)
 ```

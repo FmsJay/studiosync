@@ -57,10 +57,9 @@ function leave.holders(names, lists, song, fresh, age, here, guest, gone)
   return out
 end
 
--- The finished box's words. j: what happened (problem, unheld, kept_held, holders, drove, drive_left, need, stopped: the step Stop waiting
--- left, sync_off, drive: the cloud drive's name, words). -> lines, and the shut-down line (nil: none). Pure. (Round 1 review, 0.59.45: after
--- Keep holding it said "Everything's with Bob" and then "Not safe: leave this computer on", which never sends held work; after Stop waiting
--- mid-send, "leave this computer on" though quitting REAPER stops the sending.)
+-- The finished box's words. j: what happened (problem, holders, drove, drive_left, need, stopped: the step Stop waiting left, sync_off,
+-- drive: the cloud drive's name, words). -> lines, and the shut-down line (nil: none). Pure. (Round 1 review, 0.59.45: after Stop waiting
+-- mid-send, "leave this computer on" though quitting REAPER stops the sending. Hold my changes' answers went with it: rt-nohold)
 leave.NOT_SAFE = "Not safe to shut down yet: leave this computer on, or the others get the rest next time you're both online."
 function leave.finish(j)
   local drive = j.drive or "the cloud drive"
@@ -74,10 +73,8 @@ function leave.finish(j)
   end
   if j.stopped then return { "Not everything has gone out yet: " .. tostring(j.words) .. "." }, leave.NOT_SAFE end
   local lines, unsafe, only_here = { "Saved." }, false, false
-  if j.unheld then lines[#lines + 1] = "Hold my changes was on: what you held went out." end
   local names = j.holders or {}
-  local all = j.kept_held and "Everything else" or "Everything"
-  if #names > 0 then lines[#lines + 1] = all .. " is with " .. table.concat(names, ", ") .. "."
+  if #names > 0 then lines[#lines + 1] = "Everything is with " .. table.concat(names, ", ") .. "."
   elseif j.drove then
     lines[#lines + 1] = j.drive_left and ("Nobody else who has this project is online. " .. drive .. " has some of it and the rest is still copying: it carries on while this computer's on.")
       or ("Nobody else who has this project is online. " .. drive .. " has it, so they get it from there or from this computer.")
@@ -87,16 +84,9 @@ function leave.finish(j)
     only_here = true
   end
   if (j.need or 0) > 0 then lines[#lines + 1] = string.format("There's %.1f MB on its way to you.", j.need / 1048576) end
-  local held = "What you're holding is saved in this project and goes out when you switch Hold my changes off."
-  if unsafe then
-    if j.kept_held then lines[#lines + 1] = held end
-    return lines, leave.NOT_SAFE
-  end
-  if only_here then
-    if j.kept_held then lines[#lines + 1] = held end
-    return lines, nil
-  end
-  return lines, j.kept_held and ("Safe to shut down. " .. held) or "Safe to shut down."
+  if unsafe then return lines, leave.NOT_SAFE end
+  if only_here then return lines, nil end
+  return lines, "Safe to shut down."
 end
 
 -- Auto-save after a lot came in (Live sync): only if the project had nothing unsaved of your own when the batch began, and nothing of yours
@@ -155,16 +145,13 @@ end
 leave.SECOND_COPY = "This project is open and syncing in another tab: this one is a second copy, and nothing in it syncs. Use Sync and exit there. " ..
   "Close this one without saving (answer No when REAPER asks): saved, it goes over that tab's file."
 function leave.start(proj, cfg, b)
-  -- (with Hold my changes on, it asks first: it sent what you held on the click, before anything was asked, and Cancel couldn't take it back.
-  -- Full review, 0.59.44)
-  local held = select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) ~= ""
-  leave.job = { proj = proj, cfg = cfg, b = b, step = held and "hold?" or "save", since = reaper.time_precise(), words = "Saving", open = true }
+  leave.job = { proj = proj, cfg = cfg, b = b, step = "save", since = reaper.time_precise(), words = "Saving", open = true }
   -- (a backup or autosave never syncs: no saving, sending or Start sync for it. Its Start sync sent an old copy's state to everyone with no
   -- question. Round 2 review, 0.59.46)
   if leave.is_backup(proj, cfg, b) then
     leave.job.step, leave.job.problem = "done", "This is a backup or autosave, not your project for it: nothing of it syncs. Close it as you like."
   -- (a second tab of a project syncing in another: found here, before anything's saved or asked. The save step put this tab's older state over
-  -- the file the syncing tab uses, then said it was a second copy, and Hold asked a question that meant nothing here. Round 4 review, 0.59.49)
+  -- the file the syncing tab uses, then said it was a second copy. Round 4 review, 0.59.49)
   elseif band.synced_elsewhere(proj) then
     leave.job.step, leave.job.problem = "done", leave.SECOND_COPY
   end
@@ -179,10 +166,6 @@ local function start_sync(j, dir)
 end
 
 local function save_tab(j)
-  if j.send_held and select(2, reaper.GetProjExtState(j.proj, band.SECTION, "hold")) ~= "" then
-    reaper.SetProjExtState(j.proj, band.SECTION, "hold", "") -- (what you held goes out: you said so)
-    j.unheld = true
-  end
   reaper.Main_SaveProject(j.proj, false)
   -- a restore point for this session (Live sync's own, as when it goes quiet for 20 minutes)
   reaper.SetExtState(band.SECTION, "end session " .. tostring(j.proj), "Sync and exit", false)
@@ -301,14 +284,7 @@ function leave.draw(ctx, ImGui, dir)
   if shown then
     ImGui.PushTextWrapPos(ctx, 0)
     local esc = ImGui.IsKeyPressed(ctx, ImGui.Key_Escape) -- (Esc: Cancel, or Stay once it's done)
-    if j.step == "hold?" then
-      ImGui.Text(ctx, "Hold my changes is on: what you've changed since hasn't gone to the others.")
-      -- (the timer starts once answered: "If you go now..." and the cloud copy's 10 minutes ran while the question waited. Round 1 review, 0.59.45)
-      local hit = buttons(ctx, ImGui, { "Send what I'm holding", "Keep holding", "Cancel" })
-      if hit == "Send what I'm holding" then j.send_held, j.step, j.since = true, "save", reaper.time_precise()
-      elseif hit == "Keep holding" then j.kept_held, j.step, j.since = true, "save", reaper.time_precise()
-      elseif hit == "Cancel" or esc then leave.job = nil; ImGui.CloseCurrentPopup(ctx) end
-    elseif not j.finished then
+    if not j.finished then
       if j.sync_off then
         ImGui.TextColored(ctx, require("theme").YELLOW, "Live sync isn't running in this tab, so what you changed since it stopped hasn't gone out.")
         ImGui.TextDisabled(ctx, "Not safe to shut down yet: Start sync sends it.")

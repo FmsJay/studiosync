@@ -52,20 +52,20 @@ for _, f in ipairs({ "C:/S/Demo.rpp", "C:/S/Demo v2.rpp", "C:/S/Demo-02.rpp", "D
   assert(not live.backup_name(f), "a Save As: " .. f)
 end
 
--- Sync and exit on a second tab of a project syncing in another: found before anything's saved or asked, even with Hold on
+-- Sync and exit on a second tab of a project syncing in another: found before anything's saved
 package.loaded.rooms = { is_copy = function() return false end }
 local elsewhere = "P0"
 band.synced_elsewhere = function() return elsewhere end
 local cfg, b = { root = "R", user = "Me" }, { song = "Song", room = "main" }
 ext["proj hold"] = "1"
 leave.start("P2", cfg, b)
-assert(leave.job.step == "done" and leave.job.problem == leave.SECOND_COPY, "a second tab: done at once, with the second-copy problem (no Hold question)")
+assert(leave.job.step == "done" and leave.job.problem == leave.SECOND_COPY, "a second tab: done at once, with the second-copy problem")
 assert(leave.job.problem:find("answer No when REAPER asks", 1, true), "it says to close it without saving")
 leave.tick(); leave.tick()
 assert(saves == 0 and leave.job.finished, "nothing saved over the syncing tab's file")
 elsewhere = nil
 leave.start("P2", cfg, b)
-assert(leave.job.step == "hold?" and not leave.job.problem, "not a second tab: Hold asks as before")
+assert(leave.job.step == "save" and not leave.job.problem, "not a second tab: it saves as before (Hold my changes is gone: rt-nohold)")
 ext["proj hold"] = nil
 
 -- The box opens again whenever the job is live and it isn't open (shrunk to the box, it went and never came back)

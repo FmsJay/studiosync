@@ -1041,41 +1041,6 @@ function sync.claim_tracks(cfg, song, room, names)
   return true
 end
 
--- Hold sync's ProjExtState "hold": "1" is yours (Hold my changes). "try" or "try1" holds while a colour look is tried here (lib/colours.lua),
--- "1" on the end when Hold was already yours: a try lives in the panel's Lua, so only yours outlives a restart. (The laptop's stayed held all
--- night: a try's hold was put back as Hold after REAPER restarted mid-try. rt-edits)
-function sync.hold_mine(v) v = v or ""; if v:sub(1, 3) == "try" then return v == "try1" end; return v ~= "" end
--- -> what to tell the person while anything holds their changes here, or nil (Health, status: Hold on must never be invisible. rt-edits)
-function sync.hold_words(proj)
-  local v = ext(proj, band.SECTION, "hold")
-  if v == "" then return nil end
-  if v:sub(1, 3) == "try" then
-    return "You're trying a colour look here: nothing you change goes to the others until you keep it for everyone or put it back (Colours)."
-  end
-  return "Hold my changes is on: nothing you change goes to the others until you switch it off (Send now beside the sync button, or Settings > Advanced)."
-end
--- Hold my changes on, and this project's tempo map or markers differ from the last ones seen: the band's timeline waits (sync.apply).
-function sync.timeline_waits(proj)
-  if ext(proj, band.SECTION, "hold") == "" then return false end
-  local seen = ext(proj, band.SECTION, "timeline")
-  if seen == "" then return false end
-  local sig = timeline_sig(proj)
-  if seen == sig then return false end
-  -- (seen by an older StudioSync (another TIMELINE_FORMAT, or none): Live sync doesn't look at the timeline while Hold is on, so it stays in that
-  -- format, and the new fields alone read as a change of yours, and the band's every map and marker waited for good. Then only what both
-  -- formats hold counts: the tempo map and each marker's kind, place, name and colour. The laptop's Cross Test, held, never got the render
-  -- matrix or a renumbering. rt-edits)
-  local s, n = band.json_decode(seen), band.json_decode(sig)
-  if type(s) == "table" and type(n) == "table" and s[4] ~= n[4] then
-    local function plain(t)
-      local m = {}
-      for _, x in ipairs(type(t[2]) == "table" and t[2] or {}) do m[#m + 1] = { x.region, x.pos, x["end"], x.name, x.color } end
-      return band.json_encode({ t[1] or {}, m })
-    end
-    return plain(s) ~= plain(n)
-  end
-  return true
-end
 -- Apply one event from whoever may make it. False means retry later. `dir`: the room's folder.
 -- The item a note or like is on, here (a part in mirror sync is found by its item id: it has no take id. 0.58.98), or nil.
 function sync.note_item(proj, ev)
@@ -1091,11 +1056,6 @@ end
 function sync.apply(proj, ev, dir, can, me)
   if ev.type == "obj" then return require("mirror").receive(proj, ev, dir .. "/media", sync.local_mix, me) end -- mirror sync
   if ev.type == "timeline" then -- REAPER moves the items for the new map, as it would for a local change
-    -- (Hold my changes on, and your tempo map or markers differ from the last ones seen here: theirs waits, not applied and not marked seen,
-    -- as their change to an object you hold does. Applied, yours was replaced with no word and nothing was left to send on release. Live sync
-    -- doesn't look at the timeline while holding, so "seen" is still the band's last. James: theirs waits. Cost: one signature per incoming
-    -- timeline while on Hold. Round 1 review, 0.59.45)
-    if sync.timeline_waits(proj) then return false end
     if tempo_sig(ev.tempo) ~= tempo_sig(band.capture_tempo(proj)) then require("mirror").tempo_changed(proj) end
     sync.audio_follow_tempo(proj)
     band.apply_tempo(proj, ev.tempo or {})
@@ -1120,8 +1080,7 @@ end
 
 -- Compare the project with its snapshots and post what changed, for whatever `can` says this person may
 -- change (track owner, region owner or driver). Changes they may not make stay local (and are locked in
--- the first place, see apply_locks). Hold sync doesn't call this at all: the snapshots keep the last
--- synced state, so releasing the hold sends the net result once.
+-- the first place, see apply_locks).
 sync.timeline_looked = {}
 sync.timeline_live = {} -- project -> a timeline was applied or made here since it was opened (watch_timeline's first look; W.order clears it)
 -- The song's tempo map and markers: the driver's changes go out, anyone else's are put back (mirror sync carries
@@ -1533,16 +1492,14 @@ function sync.receive(proj, cfg, song, room, can)
       -- pass, so the handover's edits and tempo change never applied): log it and move on
       -- (whether it lands, inside the same pcall: wins and merge_for read the event too, and an error there stopped the pass with an undo
       -- block open. 0.59.14, review)
-      -- (no undo block for a change that waited last pass, or a timeline that waits now: the block opened before apply said it waits, and closed
-      -- named whatever happened, an empty undo point every pass while a recording arrived, a part was open in the MIDI editor or Hold kept a
-      -- change. Each changed the project's count (a full look and a 2 s pause followed), and on top of REAPER's list sent Ctrl+Z StudioSync's
+      -- (no undo block for a change that waited last pass: the block opened before apply said it waits, and closed named whatever happened, an
+      -- empty undo point every pass while a recording arrived or a part was open in the MIDI editor. Each changed the project's count (a full look and a 2 s pause followed), and on top of REAPER's list sent Ctrl+Z StudioSync's
       -- way. One that waited and lands now gets its point after: below. Cost: one table entry per waiting change. Round 2 review, 0.59.46)
       local waited = sync.waited[ev.id]
       local ok, res = pcall(function()
         local lands
         if obj then lands = m.wins(proj, ev.oid, ev.rev or 0, m.order_of(ev)) or m.merge_for(proj, ev, sync.room_dir(cfg, song, room)) ~= nil -- (or it's merged in)
         else lands = sync.alters(proj, ev) end
-        if ev.type == "timeline" and sync.timeline_waits(proj) then lands = false end
         -- (nor on its first wait, where that's cheap to know: mirror.will_wait. Round 3 review, 0.59.48)
         if lands and not waited and obj and m.will_wait(proj, ev) then waited = true end
         if lands and not waited and not undo_open then reaper.Undo_BeginBlock2(proj); undo_open = true end
@@ -1808,7 +1765,6 @@ end
 -- as Live sync would have it. A tab you click on that's behind still catches up as it goes: it's already yours to use by then.
 sync.PRELOAD_SECS = 20
 function sync.preload(proj, cfg, song, room)
-  if select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) ~= "" then return 0 end
   -- (this person's own mix, if they keep one: preload runs in Autostart's or Open session's own Lua, where it was never set, and the
   -- studio's faders and pan landed over theirs as the project opened. Review, 0.58.87)
   sync.local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1"

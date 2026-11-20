@@ -4,7 +4,7 @@
 --   sending   the tab in front reads every mirrored track's volume, pan and mute each tick, and the plug-in knob REAPER says was last touched (and
 --             any touched in the last WATCH s); a change from the last reading is yours, as Live sync's tick takes in what StudioSync itself
 --             wrote (controllers.settle, like its took_in). Only what you may change goes (sync.authority's rule and the maker's, as mirror.watch
---             judges), never with Hold my changes on, nor your faders and pan with Local mixing on (they don't go out). At most one move a
+--             judges), never your faders and pan with Local mixing on (they don't go out). At most one move a
 --             control every RATE s, the last value always; LET_GO s after it last moved, "let go".
 --   showing   a move is shown only if the sender may change that track here too, the track isn't writing automation here (Touch, Latch or
 --             Write: nothing a stream sets ever lands in an envelope), you have no unsent change of it, and not your faders or pan with Local
@@ -155,7 +155,7 @@ local function moved(proj, cfg, tr, oid, k, v, key, fx, bf, n, t, clock)
     return
   end
   local name = tname(tr)
-  if not (t and not t.hold and may(t, cfg.user, oid, name, true)) then return end -- (mirror.watch puts it back or holds it)
+  if not (t and may(t, cfg.user, oid, name, true)) then return end -- (mirror.watch puts it back or holds it)
   if k ~= "m" and k ~= "x" and local_mix(proj) then return end -- (Local mixing: your faders and pan don't go out)
   local m = S.mine[key]
   if not m then
@@ -166,8 +166,8 @@ local function moved(proj, cfg, tr, oid, k, v, key, fx, bf, n, t, clock)
 end
 
 -- A fader, pan or mute moved on the web UI's Mixer page (lib/webmixer.lua, which checked who may): a bandmate moving it now keeps it (-> "Bo
--- has Bass volume", nothing set), else it's set here and goes out as a move of yours would (the rate, the let-go, Hold my changes and Local
--- mixing as moved() has them). Set from Live sync's tick after controllers.tick, so settle reads it as seen: this is what sends it.
+-- has Bass volume", nothing set), else it's set here and goes out as a move of yours would (the rate, the let-go and Local mixing as
+-- moved() has them). Set from Live sync's tick after controllers.tick, so settle reads it as seen: this is what sends it.
 function controllers.web_move(proj, cfg, tr, k, v)
   local inf, clock = info_of(tr), now()
   local key = inf.oid .. "|" .. k

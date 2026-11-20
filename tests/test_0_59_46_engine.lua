@@ -130,14 +130,9 @@ local sync = require("sync")
 sync.driver_name = nil
 assert(mirror.owned({ mode = "claims", driver = "Me", can = function() return false end }, "Me", "Keys", nil, function() return false end), "the driver, from opts")
 
--- B: a timeline waiting on Hold is known before the undo block (sync.timeline_waits)
+-- (B, a timeline waiting on Hold: Hold my changes is gone, rt-nohold. What's below reads this timeline)
 band.capture_tempo = function() return { { time = 0, bpm = 140 } } end
 band.capture_markers, band.capture_project = function() return {} end, function() return {} end
-reaper.SetProjExtState("PT", band.SECTION, "timeline", band.json_encode({ { { time = 0, bpm = 120 } }, {}, {}, 2 }))
-reaper.SetProjExtState("PT", band.SECTION, "hold", "1")
-assert(sync.timeline_waits("PT"), "Hold on and a timeline of your own: theirs waits")
-reaper.SetProjExtState("PT", band.SECTION, "hold", "")
-assert(not sync.timeline_waits("PT"), "Hold off: it doesn't")
 
 -- install C: a change of a kind or format this version doesn't know is left for the version that does
 assert(not sync.too_new({ type = "obj", format = 1 }) and not sync.too_new({ type = "driver" }), "known kinds land")

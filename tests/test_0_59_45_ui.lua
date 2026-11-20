@@ -8,11 +8,7 @@ local leave, live = require("leave"), require("live")
 local function has(lines, words) for _, l in ipairs(lines) do if l:find(words, 1, true) then return true end end end
 
 -- Sync and exit's last words (leave.finish)
-local lines, shut = leave.finish({ kept_held = true, holders = { "Bob" } })
-assert(has(lines, "Everything else is with Bob."), "Keep holding: everything else is with them, not everything")
-assert(shut == "Safe to shut down. What you're holding is saved in this project and goes out when you switch Hold my changes off.",
-  "Keep holding alone is safe: leaving the computer on never sends held work. Got: " .. tostring(shut))
-lines, shut = leave.finish({ holders = { "Bob", "Cal" } })
+local lines, shut = leave.finish({ holders = { "Bob", "Cal" } })
 assert(has(lines, "Everything is with Bob, Cal.") and shut == "Safe to shut down.", "all out: safe, in those words")
 lines, shut = leave.finish({ stopped = "send", words = "Sending your changes" })
 assert(shut == "Keep this project open: your changes are still being sent.", "Stop waiting mid-send: quitting REAPER stops the sending")
@@ -21,8 +17,8 @@ assert(has(lines, "Live sync isn't running") and shut:find("^Not safe to shut do
 assert(not shut:find("press Start", 1, true), "no Start button to press: the pill")
 lines, shut = leave.finish({ stopped = "syncthing", words = "Sending 2.0 MB to Bob" })
 assert(shut == leave.NOT_SAFE, "Stop waiting while Syncthing hands over: leave the computer on")
-lines, shut = leave.finish({ drove = true, drive_left = true, kept_held = true, drive = "Dropbox" })
-assert(shut == leave.NOT_SAFE and has(lines, "Dropbox has some of it") and has(lines, "What you're holding is saved"), "cloud copy still going: not safe, held work said")
+lines, shut = leave.finish({ drove = true, drive_left = true, drive = "Dropbox" })
+assert(shut == leave.NOT_SAFE and has(lines, "Dropbox has some of it"), "cloud copy still going: not safe")
 lines, shut = leave.finish({ drove = true, drive = "Dropbox" })
 assert(shut == "Safe to shut down." and has(lines, "Dropbox has it"), "the service's own name, not Google Drive")
 lines, shut = leave.finish({})

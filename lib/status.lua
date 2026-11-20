@@ -59,7 +59,7 @@ function status.gather(cfg, b, proj)
         local a = band.age(st.time)
         -- a receipt older than the newest change can't vouch for it yet
         local behind = (st.pending or 0) > 0 or (st.said or st.time or "") < newest_event -- (said: a heartbeat's time vouches for nothing)
-        rows[#rows + 1] = { name = st.user, age = a, version = st.version or "?", pending = st.pending or 0, hold = st.hold,
+        rows[#rows + 1] = { name = st.user, age = a, version = st.version or "?", pending = st.pending or 0,
           armed = st.armed, side = st.side, playing = st.playing, recording = st.recording, mirror = st.mirror,
           behind = behind, reaper = st.reaper, last_track = st.last_track, last_at = tonumber(st.last_at), lets = st.lets, live = st.live, call = st.call == true or nil, -- (lets: whoever produces them may start and stop their transport)
           state = a > 60 and "offline" or (not behind and "synced" or "syncing") }
@@ -84,11 +84,9 @@ function status.handover_check(cfg, b, proj)
   if not beat or reaper.time_precise() - beat > 30 then out[#out + 1] = "your Live sync isn't running" end -- a long reprint holds its tick
   local mine = sync.pending_events(proj, cfg, b.song, b.room)
   if mine > 0 then out[#out + 1] = string.format("you: %d change(s) from the others not applied yet", mine) end
-  local hv = select(2, reaper.GetProjExtState(proj, band.SECTION, "hold"))
-  if hv ~= "" then out[#out + 1] = hv:sub(1, 3) == "try" and "you: trying a colour look (nothing goes out until you keep it or put it back)" or "you: Hold sync is on" end
+  if band.colour_try(proj) then out[#out + 1] = "you: trying a colour look (its colours go out when you keep it, or go when you put it back)" end
   for _, r in ipairs(v.rows) do
     if r.state == "offline" then offline[#offline + 1] = r.name
-    elseif r.hold then out[#out + 1] = r.name .. " is holding sync (their changes haven't gone out)"
     elseif r.behind then out[#out + 1] = r.name .. ": still applying the latest changes" end
   end
   return { problems = out, offline = offline }

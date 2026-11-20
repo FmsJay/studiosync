@@ -217,8 +217,8 @@ do
   proxy.apply_tempo = function(_, t) tempo = t end
   proxy.apply_markers, proxy.apply_project, proxy.capture_project = function() end, function() end, function() return {} end
   proxy.session_path = function() return "SESSION" end
-  local real_resnap, real_follow, real_waits = sync.resnap, sync.audio_follow_tempo, sync.timeline_waits
-  sync.resnap, sync.audio_follow_tempo, sync.timeline_waits = function() end, function() end, function() return false end
+  local real_resnap, real_follow = sync.resnap, sync.audio_follow_tempo
+  sync.resnap, sync.audio_follow_tempo = function() end, function() end
   local T130, T120 = { { time = 0, bpm = 130, num = 4, denom = 4, linear = false } }, { { time = 0, bpm = 120, num = 4, denom = 4, linear = false } }
   local A1, A2 = "2026-11-19T17:30:00ZJames-A1", "2026-11-19T17:49:17ZJames-A2"
   local function bpm() return tempo[1].bpm end
@@ -258,6 +258,6 @@ do
   assert(bpm() == 120 and posted == 0, "reopened behind, its settings changed: the studio's map, nothing sent (posted " .. posted .. ")")
   sync.post, proxy.capture_project = real_post, function() return {} end
   proxy.capture_tempo, proxy.session_path = real.capture_tempo, real.session_path
-  sync.resnap, sync.audio_follow_tempo, sync.timeline_waits = real_resnap, real_follow, real_waits
+  sync.resnap, sync.audio_follow_tempo = real_resnap, real_follow
 end
 print("ok")

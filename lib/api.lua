@@ -13,13 +13,16 @@ if here and not package.path:find(here .. "/?.lua", 1, true) then package.path =
 local band = require("band")
 local api = { VERSION = 1, SECTION = "StudioSync API", KEEP = 50 }
 -- driver: someone else drives now (from, to). people: who's here changed (joined, left). sent / received: changes went out / came in (n).
--- chat: a message from you (text). take: you recorded something. mix: a mix was rendered (file). hold: Hold my changes (on).
+-- chat: a message from you (text). take: you recorded something. mix: a mix was rendered (file). hold: never sent now (Hold my changes was
+-- removed, 2026-11-20: kept in the list, as fields and verbs never go. rt-nohold)
 api.KINDS = { "driver", "people", "sent", "received", "chat", "take", "mix", "hold" }
--- What a request may ask: each is what its control on the panel does. "chat <text>" posts to the project's chat as you.
+-- What a request may ask: each is what its control on the panel does. "chat <text>" posts to the project's chat as you. "hold" only says
+-- Hold my changes was removed (rt-nohold).
 api.VERBS = { "undo", "redo", "realtime", "chat", "history", "hold", "claim", "localmix", "keeplocal", "takecontrol", "timesync" }
 
 -- The state as it's published, from what Live sync knows. Pure. t = { song, room, me, driver, mode, alone, others = { names },
--- tracks = who.tracks (lower name -> { user, name }), hold, local_mix, held }. -> the table that goes out as JSON.
+-- tracks = who.tracks (lower name -> { user, name }), local_mix }. -> the table that goes out as JSON. (hold and held stay, always false and 0:
+-- Hold my changes was removed. rt-nohold)
 function api.state_of(t)
   -- claims: a list of { user, tracks }, by user, each user's tracks sorted. (A list, not an object keyed by name: an empty Lua table goes out as
   -- [], so a script got a list with no claims and an object with some. Review, 0.58.67)
@@ -34,8 +37,8 @@ function api.state_of(t)
   for _, n in ipairs(t.others or {}) do here_now[#here_now + 1] = n end
   table.sort(here_now)
   return { api = api.VERSION, version = band.VERSION, song = t.song, room = t.room, me = t.me, driver = t.driver, driving = t.driver == t.me,
-    mode = t.mode or require("sync").DEFAULT_MODE, alone = t.alone == true, here = here_now, claims = claims, hold = t.hold == true, local_mix = t.local_mix == true,
-    held = tonumber(t.held) or 0 }
+    mode = t.mode or require("sync").DEFAULT_MODE, alone = t.alone == true, here = here_now, claims = claims, hold = false, local_mix = t.local_mix == true,
+    held = 0 }
 end
 
 -- An event onto the list: numbered, stamped, the oldest dropped past `keep`. Pure. -> the list, the new seq.

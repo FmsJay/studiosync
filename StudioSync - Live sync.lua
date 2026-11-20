@@ -420,9 +420,7 @@ function P.who(t)
       (last_driver == cfg.user and (": you're no longer driving (" .. live.driving(who.mode).lost .. ")") or ""))) -- (by mode: Round 1 review, 0.59.45)
   end
   last_driver = driver
-  -- Hold sync: keep working without sending anything; releasing it sends the net result once
-  local hold = select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) ~= ""
-  sync.timeline_mine = my_can(cfg.user, nil, nil) and not hold -- (may a Link app's tempo become the song's: lib/ablink.lua. James, rt)
+  sync.timeline_mine = my_can(cfg.user, nil, nil) -- (may a Link app's tempo become the song's: lib/ablink.lua. James, rt)
   -- the API (lib/api.lua): the state for other scripts, and what changed since the last look
   pcall(function()
     local api = require("api")
@@ -434,30 +432,28 @@ function P.who(t)
       for o in pairs(now_here) do if not was[o] then joined[#joined + 1] = o end end
       for o in pairs(was) do if not now_here[o] then left[#left + 1] = o end end
       if #joined + #left > 0 then api.event("people", { joined = joined, left = left, song = b.song }) end
-      if hold ~= sync.api_hold then api.event("hold", { on = hold, song = b.song }) end
     end
-    sync.api_seen, sync.api_hold = now_here, hold
+    sync.api_seen = now_here
     api.publish(proj, { song = b.song, room = b.room, me = cfg.user, driver = driver, mode = who.mode, alone = alone, others = others, tracks = who.tracks,
-      hold = hold, local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1", held = reaper.GetExtState(band.SECTION, "held " .. tostring(proj)) })
+      local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1" })
   end)
-  t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold = s, can, who, driver, others, alone, my_can, hold
+  t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can = s, can, who, driver, others, alone, my_can
   require("controllers").pass = t -- (who may move which fader live, sent or shown: lib/controllers.lua. James, rt)
 end
 function P.look(t)
-  local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
+  local s, can, who, driver, others, alone, my_can, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.now, t.rooms
   -- mirror sync (docs/mirror-design.md): the whole project travels object by object. What changed here goes out
   -- before the band's changes come in, so an edit still unsent is never overwritten unseen
   sync.local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1"
   if not (s and s.sync == "mirror") then -- made with the older take sync: left alone until it's published again
     if not sync.old_said then sync.old_said = true; band.log("'" .. b.song .. "' was made with an older StudioSync: publish it again (StudioSync - Publish session) to sync it") end
   else
-    if not hold then
-      local tok, terr = pcall(sync.watch_timeline, proj, cfg, b.song, b.room, my_can) -- (before the items: a tempo change moves them)
-      if not tok then band.log("tempo/markers: " .. tostring(terr)) end
-    end
+    local tok, terr = pcall(sync.watch_timeline, proj, cfg, b.song, b.room, my_can) -- (before the items: a tempo change moves them)
+    if not tok then band.log("tempo/markers: " .. tostring(terr)) end
     lap("timeline")
-    -- (with Hold my changes on, the look still runs, sending nothing: it marks what you changed, so the band's
-    -- changes to those wait for yours instead of replacing them; mirror.unsent)
+    -- (a colour look tried in the panel was started, changed, kept or put back: a full look now, not in up to 10 s. lib/colours.lua, rt-nohold)
+    local try_stamp = reaper.GetExtState(band.SECTION, "colour try " .. tostring(proj))
+    if try_stamp ~= sync.try_stamp then sync.try_stamp, mirror_due = try_stamp, true end
     -- a full look reads every track and item: only when REAPER says the project changed, or the band's changes just
     -- came in, and at least every 10 s anyway (anything REAPER doesn't count as a change still gets seen)
     local cc = reaper.GetProjectStateChangeCount(proj)
@@ -475,7 +471,7 @@ function P.look(t)
       for _, st in ipairs(presence.peers(cfg, b.song, b.room)) do here[st.user] = true end
       t.redraw = true -- (a look can put back a refused edit, copy it to a track of yours or delete an item, with no undo point: always redrawn)
       local ok, sent = pcall(require("mirror").watch, proj, cfg, b.song, b.room, { can = my_can, owner_can = can, mode = who.mode, local_mix = sync.local_mix, is_claimed = who.is_claimed, owner_of = who.owner_of,
-        held = held, hold = hold, here = here, printers = who.printers, quick = true }) -- (quick: builds on the last look, lib/mirror.lua rt-look)
+        held = held, here = here, printers = who.printers, quick = true }) -- (quick: builds on the last look, lib/mirror.lua rt-look)
       if not ok then band.log("mirror sync: " .. tostring(sent))
       elseif sent > 0 then band.log(sent .. " change(s) went to " .. (b.room == "main" and "the others" or ("the room '" .. b.room .. "'"))); pcall(require("api").event, "sent", { n = sent, song = b.song, room = b.room }) end
       mirror_took = reaper.time_precise() - now
@@ -484,7 +480,6 @@ function P.look(t)
       local mirror = require("mirror")
       local n, key, ids = 0, tostring(proj), {}
       for k in pairs(mirror.unsent) do if k:sub(1, #key) == key then n = n + 1; ids[n] = k:sub(#key + 1) end end
-      if hold then reaper.SetExtState(band.SECTION, "held " .. key, tostring(n), false) end -- (how many are waiting, for the panel's "Holding N changes")
       -- (this tab's unsent objects, for Restore, Undo and Bring into main, which run in the panel or the Undo script: mirror.edited_here couldn't see
       -- an unsent plug-in chain or automation there, and went over them. Written when the set changes. Round 2 review, 0.59.46)
       table.sort(ids)
@@ -503,7 +498,7 @@ function P.look(t)
   end
 end
 function P.outbox_inbox(t)
-  local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
+  local s, can, who, driver, others, alone, my_can, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.now, t.rooms
   do -- Sync and exit (lib/leave.lua): what's still waiting to go out, and a kept version of the session when it asks
     local leaving = reaper.GetExtState(band.SECTION, "end session " .. tostring(proj))
     if leaving ~= "" then
@@ -515,8 +510,8 @@ function P.outbox_inbox(t)
     local mirror = require("mirror")
     local more = mirror.more and "changes" or require("bgrender").waiting() and "prints rendering" or require("prints").waiting() and "prints waiting" or nil
     -- (and what waits its turn: a big recording still copying into the studio's folder, plug-ins or automation settling, a copy that failed.
-    -- Sync and exit said "safe to close up" over a take that was only on this computer. Not what Hold my changes keeps. Full review, 0.59.44)
-    more = more or mirror.waiting(tostring(proj), hold) -- (one rule, held-back copies included: Round 1 review, 0.59.45)
+    -- Sync and exit said "safe to close up" over a take that was only on this computer. Full review, 0.59.44)
+    more = more or mirror.waiting(tostring(proj)) -- (one rule, held-back copies included: Round 1 review, 0.59.45)
     band.set_ext_json(band.SECTION, "outbox " .. tostring(proj), { at = mirror_at, more = more }, false)
   end
   -- what's drawn in a room shows without anyone asking, unless this person hid them: nobody would see a drawing until they
@@ -526,7 +521,7 @@ function P.outbox_inbox(t)
     if band.files(sync.room_dir(cfg, b.song, b.room) .. "/drawings", ".json")[1] then band.start_draw(dir) end
   end
   -- audio dropped into <Song>/inbox from anywhere goes into the song, on one computer only: the driver's, or yours when you're alone (lib/extras.lua)
-  if now - inbox_at > 10 and not hold and b.room == "main" and (driver == cfg.user or alone) and s and s.sync == "mirror" then
+  if now - inbox_at > 10 and b.room == "main" and (driver == cfg.user or alone) and s and s.sync == "mirror" then
     inbox_at = now
     local iok, put = pcall(require("extras").inbox, proj, cfg, b)
     if not iok then band.log("inbox: " .. tostring(put))
@@ -539,7 +534,7 @@ function P.outbox_inbox(t)
   end
 end
 function P.receive(t)
-  local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
+  local s, can, who, driver, others, alone, my_can, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.now, t.rooms
   -- the host's project gathers the rooms bandmates record into (StudioSync before side rooms), never a side room:
   -- that's its own tab, brought in when someone chooses to (lib/rooms.lua)
   local rooms = { b.room }
@@ -573,10 +568,10 @@ function P.receive(t)
   t.rooms = rooms
 end
 function P.heal(t)
-  local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
+  local s, can, who, driver, others, alone, my_can, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.now, t.rooms
   -- a bandmate who has every change has had a different project from ours for a minute, and we're caught up too:
   -- something never landed here. Bring it in line with the band's newest version (at most every 5 minutes).
-  if s and s.sync == "mirror" and not hold then
+  if s and s.sync == "mirror" then
     local mine, differs, same = require("mirror").root(proj), false, false
     -- (kept for the status receipt later in this pass, unless a heal changes it below: mirror.root reads every object's revision, sorts and
     -- hashes them, thousands on a big song, and it ran twice a pass. Nothing else between here and P.status writes revisions: the look and
@@ -605,7 +600,7 @@ function P.heal(t)
   lap("in line")
 end
 function P.joins(t)
-  local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
+  local s, can, who, driver, others, alone, my_can, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.now, t.rooms
   -- new band machines: on the host of a computer in one band, a machine asking over the band's Tailscale (only band
   -- machines are on it) is let in at once; with several bands, never on its own. The rest ask in the panel (tools.join_requests).
   -- (and only while this computer is on the studio's own Tailscale network: switched to another one, or behind an internet provider's own
@@ -634,7 +629,7 @@ function P.joins(t)
   end
 end
 function P.live_clips(t)
-  local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
+  local s, can, who, driver, others, alone, my_can, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.now, t.rooms
   -- live (ReaNINJAM synced mode): received clips land as placeholders until the real takes replace them
   local live_dir = select(2, reaper.GetProjExtState(proj, band.SECTION, "live_dir"))
   if live_dir == "" and reaper.GetProjectName(proj) ~= "" then live_dir = reaper.GetProjectPathEx(proj):gsub("\\", "/") .. "/bandsync_live" end -- set up by hand: the usual place
@@ -650,7 +645,7 @@ function P.live_clips(t)
   lap("joins, live clips")
 end
 function P.save_drive(t)
-  local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
+  local s, can, who, driver, others, alone, my_can, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.now, t.rooms
   if sync.need_save then -- a delete went out: the project is saved, so a crash can't bring the take back here
     sync.need_save = nil
     for i = 0, 512 do
@@ -737,7 +732,7 @@ function P.save_drive(t)
   lap("save, drive")
 end
 function P.presence(t)
-  local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
+  local s, can, who, driver, others, alone, my_can, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.now, t.rooms
   if sync.draw_claims(proj, who.times) then t.redraw = true end -- who claimed which stretch of time, as regions (this machine only)
   do -- bandmates' pings show here; following someone keeps the view on theirs (lib/presence.lua)
     local presence = require("presence")
@@ -759,8 +754,8 @@ function P.presence(t)
       local ok, said = pcall(require("prep").keep_format, proj, cfg, b)
       if ok and said then band.log(said .. " (the studio records the same way on every computer)") end
       -- a new project in the studio's (or its own) look, on the driver's computer only: the rest receive the colours (lib/colours.lua, 0.58.98)
-      -- (the driver's, or yours working alone; not while sending is held: a look may be being tried in the panel. Review, 0.58.98)
-      if (driver == cfg.user or alone) and not hold then
+      -- (the driver's, or yours working alone; not while a look is being tried in the panel. Review, 0.58.98; band.colour_try, rt-nohold)
+      if (driver == cfg.user or alone) and not band.colour_try(proj) then
         pcall(require("colours").auto, proj, cfg, function(name, tr) return my_can(cfg.user, name) or sync.maker_may(require("mirror").track_oid(tr), cfg.user, name, nil, who.mode) end)
       end
     end
@@ -770,15 +765,15 @@ function P.presence(t)
 end
 function P.write_status(info, link_only) sync.write_status(proj, cfg, b.song, b.room, info, link_only) end
 function P.status(t)
-  local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
+  local s, can, who, driver, others, alone, my_can, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.now, t.rooms
   -- status receipt for the Status window: written when it changes, else every 15 s as a heartbeat
-  -- pending + hold let "Take control" wait until everyone has caught up before switching
+  -- pending lets "Take control" wait until everyone has caught up before switching
   local armed = {}
   for i = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, i)
     if require("live").armed(tr) then armed[#armed + 1] = select(2, reaper.GetTrackName(tr)) end
   end
-  local info = { driver = driver, role = b.role, song = b.song, hold = hold or nil,
+  local info = { driver = driver, role = b.role, song = b.song,
     pending = sync.pending_events(proj, cfg, b.song, b.room), armed = armed, side = side_bars(),
     playing = reaper.GetPlayStateEx(proj) & 1 == 1 or nil, recording = reaper.GetPlayStateEx(proj) & 4 == 4 or nil,
     front = reaper.EnumProjects(-1) == proj, mirror = s and s.sync == "mirror" and (t.mirror_root or require("mirror").root(proj)) or nil,
@@ -1077,7 +1072,7 @@ local function tick_body() -- returns true to keep going
   if not reaper.ValidatePtr2(0, proj, "ReaProject*") then -- project closed: stop, and say so
     reaper.DeleteExtState(band.SECTION, "live " .. key, false)
     -- (the tab's own settings go too: a new tab can get the same address, and took its follow, produce or listen. Review, 0.58.96)
-    for _, k in ipairs({ "follow", "listen", "listen had", "listeners", "send whole mix", "alone", "held", "produce", "transport", "together",
+    for _, k in ipairs({ "follow", "listen", "listen had", "listeners", "send whole mix", "alone", "produce", "transport", "together",
         "sonobus for listeners", "outbox", "live owner", "ping", "slow tick", "last here", "draw", "live began", "takelanes",
         -- (and these: a new tab at the same address showed a count-in, a producer, a SonoBus trouble or a drift that were the closed tab's. Review, 0.59.14)
         "end session", "produced by", "producer controls", "timing", "produce ctl", "last_at", "stamping", "together_at", "rt group", "rt silent", "rt silent who", "rt trouble", "driver_away", "mirror drift",

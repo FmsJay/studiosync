@@ -1,6 +1,6 @@
 -- @description StudioSync: control panel (sync, bandmates, who drives, who owns what, recall points)
--- One dockable window for everything StudioSync does in the project in front: start/stop Live sync, hold
--- it while you try things, see who has what, take control, claim tracks and regions, and save/restore
+-- One dockable window for everything StudioSync does in the project in front: start/stop Live sync,
+-- see who has what, take control, claim tracks and regions, and save/restore
 -- recall points. Needs ReaImGui (ReaPack: "ReaImGui: ReaScript binding for Dear ImGui").
 local dir = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]")
 package.path = dir .. "/lib/?.lua;" .. package.path
@@ -2488,7 +2488,7 @@ function ui.persona_row()
   end
 end
 
--- What most people never need: Hold my changes causes more clashes than it saves, and prints happen by themselves.
+-- What most people never need: prints happen by themselves. (Hold my changes was here: removed, 2026-11-20, for testing in a side room. rt-nohold)
 -- Tailscale's API: guests until a day you pick, and the policy lines (lib/services.lua). Whoever runs the Tailscale network makes the token.
 function ui.tailscale_token()
   local services = require("services")
@@ -2557,9 +2557,10 @@ function ui.settings_advanced()
       if ImGui.SmallButton(ctx, "Keep selected tracks local") then ui.keep_local() end -- (moved off Home: confusing beside claims. James, 0.59.3)
       ImGui.SetItemTooltip(ctx, "New tracks of your own that never go to the others: a reference mix, a guide, a scratch idea. Only tracks that haven't gone out yet\n" ..
         "(a shared one would vanish for everyone). Pressed again with only such tracks selected, it shares them.")
-      local hold = select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) ~= ""
-      local ch, v = switch_row("##hold", "Hold my changes", hold, "Try things: your changes go out once, when you switch this off. Anything someone else changes on the same parts meanwhile clashes with yours.")
-      if ch then reaper.SetProjExtState(proj, band.SECTION, "hold", v and "1" or "") end
+      -- (Hold my changes was here. James, 2026-11-20: "Someone can go into a different room to test, especially now that changes come so fast now."
+      -- rt-nohold)
+      if ImGui.SmallButton(ctx, "Try things in a side room") then reaper.SetExtState(band.SECTION, "panel page", "Rooms", false) end
+      ImGui.SetItemTooltip(ctx, "To try something without the others getting it, make a side room and test there: Bring into main brings back what you keep.")
       require("prints").printing_ui(ctx, ImGui, cfg, b, proj, who)
       if ui.short then next_to("Prepare this project") end
       if ImGui.Button(ctx, "Prepare this project") then action("Prepare session") end
@@ -2570,7 +2571,7 @@ function ui.settings_advanced()
     local ch0, v0 = switch_row("##showplay", "Show the Play/Jam tab", ui.play_shown(), "Starting together, Time-sync and Jam. Time-sync and Jam go through NINJAM, which needs a server the others can reach.\nReal time mode, Follow and Solo don't need any of it.")
     if ch0 then reaper.SetExtState(band.SECTION, "show play", v0 and "1" or "", true) end
     local ch1, v1 = switch_row("##allactions", "Every StudioSync action in REAPER's Actions list", band.all_actions(),
-      "For keyboard shortcuts and toolbar buttons: Hold my changes, Claim selected tracks, Local mixing, Take control and the rest.\n" ..
+      "For keyboard shortcuts and toolbar buttons: Claim selected tracks, Local mixing, Take control and the rest.\n" ..
       "Off, the Actions list keeps what opens StudioSync (and Undo/Redo); one a key or a toolbar already uses stays either way.")
     if ch1 then
       reaper.SetExtState(band.SECTION, "all actions", v1 and "1" or "", true)
@@ -2992,15 +2993,6 @@ function F.top_bar()
     band.start_live(dir)
   end
   ImGui.SetItemTooltip(ctx, can_start and "Live sync is off in this tab: nothing goes out or comes in. Click to start it." or tip)
-  if select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) ~= "" then -- (Hold my changes was invisible once on: review)
-    local n = tonumber(reaper.GetExtState(band.SECTION, "held " .. key)) or 0
-    local held = n > 0 and string.format("Holding %d change%s", n, n == 1 and "" or "s") or "Holding your changes"
-    at_row(held); pill(held, YELLOW, DARK, fh)
-    ImGui.SetItemTooltip(ctx, "Hold my changes is on: what you change stays here until you send it.")
-    at_row("Send now")
-    if ImGui.SmallButton(ctx, "Send now##hold") then reaper.SetProjExtState(proj, band.SECTION, "hold", "") end
-    ImGui.SetItemTooltip(ctx, "Switch Hold my changes off: everything you changed goes to the others.")
-  end
   do -- two people armed on one track: both record onto it at once (review item 33)
     local mine, both = {}, {}
     for i = 0, reaper.CountTracks(proj) - 1 do
@@ -3283,10 +3275,8 @@ function F.page(t)
     elseif want:match("^history") then page = "Restore"
     elseif want:match("^restore ") then page = "Restore"; restore.open_version(want:sub(9)) -- (the web UI's Song history: that version's row opened, its buttons ask as ever)
     -- (the bindable actions, power-user review 0.58.62: each does what its control on the panel does)
-    elseif want == "hold" then
-      local on = select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) == ""
-      reaper.SetProjExtState(proj, band.SECTION, "hold", on and "1" or "")
-      band.log(on and "Hold my changes is on: what you change stays here until you switch it off" or "Hold my changes is off: what you changed goes to the others")
+    elseif want == "hold" then -- (the API's old verb, or a key bound to the old action: rt-nohold)
+      band.log("Hold my changes was removed: to try something without the others getting it, test in a side room (Rooms)")
     elseif want == "localmix" then ui.set_local_mix(select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) ~= "1")
     elseif want == "claim" and who and who.mode == "admins" and not require("groups").may_manage(cfg.root, cfg.user) then
       band.msg("Admins only here: an admin can give you tracks to work on.") -- (as the panel hides its button: Review, 0.58.67)

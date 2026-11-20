@@ -109,7 +109,7 @@ function rooms.open(from, cfg, b, name, copy_dir)
     -- a host gathers the rooms of older StudioSync into its project: a side room's tab never does
     nb.room, nb.role = name, nb.role == "host" and "guest" or nb.role
     band.bind(p, nb)
-    for _, k in ipairs({ "alone_last", "side", "hold" }) do reaper.SetProjExtState(p, band.SECTION, k, "") end
+    for _, k in ipairs({ "alone_last", "side" }) do reaper.SetProjExtState(p, band.SECTION, k, "") end
     live_offline(p)
     reaper.Main_SaveProject(p, false)
   end
