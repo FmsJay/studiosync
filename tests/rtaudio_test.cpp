@@ -120,7 +120,7 @@ static double drift_slope(bool fix, double ppm_t, double ppm_r, int port0, long 
   char pt[32], pr[32];
   snprintf(pt, sizeof pt, "127.0.0.1:%d", port0); snprintf(pr, sizeof pr, "127.0.0.1:%d", port0 + 1);
   RtLink *T = rt_new(), *R = rt_new();
-  rt_test_drift(T, fix ? 1 : 0); rt_test_drift(R, fix ? 1 : 0);
+  rt_test_drift(T, fix ? 2 : 0); rt_test_drift(R, fix ? 2 : 0); // (2: no 2-minute hold, clock_tests checks that)
   rt_peers(T, (std::string("{\"peers\":[\"") + pr + "\"],\"port\":" + std::to_string(port0) + ",\"secret\":\"studio\"}").c_str());
   rt_peers(R, (std::string("{\"peers\":[\"") + pt + "\"],\"port\":" + std::to_string(port0 + 1) + ",\"secret\":\"studio\"}").c_str());
   rt_start(T, 0, 1, 128, 0, "127.0.0.1"); rt_start(R, 0, 1, 128, 0, "127.0.0.1");
@@ -405,7 +405,8 @@ static void spike_tests()
 // WASAPI through Voicemeeter calls REAPER back on a 10 ms timer (480 samples a tick: the 512-sample block runs 15 ticks in 16) on the system's
 // clock, and about once a minute drops a whole tick (the earliest callback's offset flat for a minute, then 10 ms later): a staircase that the
 // median of 2-30 s slopes read as flat (+10) or, with a step inside, -1300. The estimator over 10 minutes of such callbacks (each 0-2 ms late,
-// some 50 ms), from rt_test_clock: a tick dropped every 80 s is -125 ppm; and a plain device 102 ppm slow with the same lateness.
+// some 50 ms), from rt_test_clock: a tick dropped every 80 s is -125 ppm; and a plain device 102 ppm slow with the same lateness. The
+// correction holds at 0 for the first 2 minutes of history and ramps in to all of the estimate at 10 (the desktop read -375 at 3 minutes).
 static void clock_tests()
 {
   unsigned rng = 4242;
@@ -417,8 +418,14 @@ static void clock_tests()
     if (j % 8000 != 7999) acc += 480;
     for (; acc >= 512; acc -= 512) t.push_back(j * 0.010 + late());
   }
-  const double stair = rt_test_clock(t.data(), (int)t.size(), 512, 48000);
-  const double stair2 = rt_test_clock(t.data(), (int)t.size() / 5, 512, 48000); // (2 minutes in)
+  double u10 = 1, u2 = 1, u5 = 0;
+  const double stair = rt_test_clock(t.data(), (int)t.size(), 512, 48000, &u10);
+  const double stair2 = rt_test_clock(t.data(), (int)t.size() / 5, 512, 48000, &u2); // (2 minutes in)
+  const double stair5 = rt_test_clock(t.data(), (int)t.size() / 2, 512, 48000, &u5); // (5 minutes in)
+  printf("     clock: the correction uses %.0f ppm at 2 minutes, %.0f of %.0f at 5, %.0f of %.0f at 10\n", u2, u5, stair5, u10, stair);
+  check(u2 == 0, "clock: no drift correction while the estimate has under 2 minutes of history (it reads hundreds of ppm off then)");
+  check(u5 < -10 && u5 > stair5 * 0.6, "clock: the correction ramps in between 2 and 10 minutes (part of the estimate at 5)");
+  check(std::fabs(u10 - stair) < 0.5, "clock: all of the estimate used once its 10 minutes of history are full");
   t.clear();
   for (long long k = 0; k < 56250; ++k) t.push_back(k * 512 / (48000 * (1 - 102e-6)) + late());
   const double slow = rt_test_clock(t.data(), (int)t.size(), 512, 48000);

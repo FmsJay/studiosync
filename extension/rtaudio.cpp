@@ -104,20 +104,22 @@ struct Low {
 // to 3 averaged at each end), not a median of short slopes: WASAPI through Voicemeeter (the desktop) calls back on the system's clock and
 // drops a whole 10 ms buffer every minute or so, a staircase that is flat between steps (the median read ~+10 ppm, or -1300 with a step
 // inside its 30 s) and -102 ppm over minutes (counted: 20.5 ms in 172 s). AOO gets evenly spaced times at that rate (kAooPreciseTimestamp:
-// no DLL), from base. Until 3 minima, the nominal rate.
-const double CLK_SPAN = 2;
+// no DLL), from base. Until 3 minima, the nominal rate. The estimate takes ~10 minutes to settle (the desktop: -375 ppm at 3 minutes, -78
+// at 13, -102 counted), so the rate used holds at the nominal until CLK_HOLD s of minima, then ramps in linearly up to the full window.
+const double CLK_SPAN = 2, CLK_HOLD = 120;
 const int CLK_N = 300;
 struct Clock {
   AooNtpTime base = 0;
   int len = 0, hn = 0;
   double sr = 0, nom = 0, per = 0, fed = 0, bmin = 1e300, bstart = 0, hx[CLK_N] = {}, hy[CLK_N] = {};
   long long k = 0;
-  std::atomic<double> ppm{ 0 }; // (for the status)
+  bool hold = true; // (false: the whole estimate from the first 3 minima, rt_test_drift 2: the drift test's 16 s)
+  std::atomic<double> ppm{ 0 }, used{ 0 }; // (for the status: the estimate, and the share of it the correction uses)
 };
 AooNtpTime clock_step(Clock &c, int len, double sr, AooNtpTime now) // (now: this callback's time; rt_test_clock gives its own)
 {
   if (len != c.len || sr != c.sr || c.base == 0) {
-    c.len = len; c.sr = sr; c.nom = c.per = len / sr; c.base = now; c.fed = 0; c.k = 0; c.bmin = 1e300; c.bstart = 0; c.hn = 0; c.ppm.store(0);
+    c.len = len; c.sr = sr; c.nom = c.per = len / sr; c.base = now; c.fed = 0; c.k = 0; c.bmin = 1e300; c.bstart = 0; c.hn = 0; c.ppm.store(0); c.used.store(0);
     return now;
   }
   const double x = (double)++c.k * c.nom;
@@ -131,8 +133,10 @@ AooNtpTime clock_step(Clock &c, int len, double sr, AooNtpTime now) // (now: thi
       double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
       for (int i = 0; i < m; ++i) { x0 += c.hx[i]; y0 += c.hy[i]; x1 += c.hx[c.hn - 1 - i]; y1 += c.hy[c.hn - 1 - i]; }
       const double v = std::max(-0.02, std::min(0.02, (y1 - y0) / (x1 - x0))); // (real seconds per nominal second, less 1; a VM's 0.5% is inside)
-      c.per = c.nom * (1 + v);
+      const double w = !c.hold ? 1 : std::max(0.0, std::min(1.0, (c.hx[c.hn - 1] - c.hx[0] - CLK_HOLD) / (CLK_SPAN * (CLK_N - 1) - CLK_HOLD)));
+      c.per = c.nom * (1 + v * w);
       c.ppm.store((1 / (1 + v) - 1) * 1e6);
+      c.used.store((1 / (1 + v * w) - 1) * 1e6);
     }
   }
   c.fed += c.per;
@@ -1481,11 +1485,12 @@ int rt_hub(RtLink *l, const char *peer, int serve)
 void rt_test_hold(RtLink *l, double ms) { l->hold_until.store(now_s() + ms / 1000.0); }
 void rt_test_speed(RtLink *l, double x) { std::lock_guard<std::mutex> st(l->stats_mx); l->speed = x > 0 ? x : 1; }
 void rt_test_hold_mix(RtLink *l, double ms) { l->hold_mix.store(now_s() + ms / 1000.0); }
-void rt_test_drift(RtLink *l, int resample) { l->resample = resample != 0; } // (before rt_start)
-double rt_test_clock(const double *t, int n, int len, double srate)
+void rt_test_drift(RtLink *l, int resample) { l->resample = resample != 0; l->clk.hold = resample != 2; } // (before rt_start)
+double rt_test_clock(const double *t, int n, int len, double srate, double *used)
 {
   std::unique_ptr<Clock> c(new Clock());
   for (int i = 0; i < n; ++i) clock_step(*c, len, srate, aoo_ntpTimeFromSeconds(1e6 + t[i]));
+  if (used) *used = c->used.load();
   return c->ppm.load();
 }
 
@@ -1527,9 +1532,10 @@ std::string rt_status(RtLink *l)
            l->play_send.load() ? "true" : "false", l->play_peak.exchange(0.f));
   o.insert(o.size() - 9, b); // (before "peers":{)
   // (pauses: reconfigures that held the audio thread; paused_blocks: the blocks it skipped meanwhile, made up as xruns; overflows: AOO's send queue full)
-  // (clock_ppm: this computer's audio clock against its own clock, as clock_step measures it for the drift correction; 0 for its first 6 s)
-  const double ppm = l->clk.ppm.load();
-  snprintf(b, sizeof(b), "\"pauses\":%lld,\"paused_blocks\":%lld,\"overflows\":%lld,\"clock_ppm\":%.1f,", l->pauses, l->skipped.load(), l->overflows, ppm);
+  // (clock_ppm: this computer's audio clock against its own clock, as clock_step measures it for the drift correction; 0 for its first 6 s.
+  // clock_used_ppm: what the correction uses of it: 0 for the first ~2 minutes, all of it from ~10)
+  snprintf(b, sizeof(b), "\"pauses\":%lld,\"paused_blocks\":%lld,\"overflows\":%lld,\"clock_ppm\":%.1f,\"clock_used_ppm\":%.1f,", l->pauses, l->skipped.load(),
+           l->overflows, l->clk.ppm.load(), l->clk.used.load());
   o.insert(o.size() - 9, b);
   const double now = now_s();
   { // (the hub's live mix: as a listener, the hub's peer, state, latency through it against the streams' own, fallbacks; as the hub, its load)
