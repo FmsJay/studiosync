@@ -132,7 +132,7 @@ static const uint32_t L = 7200, LX = 256, PDC = 100, B = 256;
 // stall: at stall_at seconds, the sender's audio thread (who & 1) and/or the remote's (who & 2) stop for stall_ms and then catch up
 // in a burst, as a VM pause or a disk/scheduler hiccup does. Each audio thread notes any gap over 30 ms between its turns (a stall).
 static Result run(int id0, double base_ms, double jitter_ms, double loss, double drift, double secs, const char *rsecret = "studio",
-                  double stall_at = 0, double stall_ms = 0, int who = 0, double spike_every = 0, double spike_ms = 0)
+                  double stall_at = 0, double stall_ms = 0, int who = 0, double spike_every = 0, double spike_ms = 0, uint64_t jump = 0)
 {
   Result res;
   const int hs = id0, hx = id0 + 1, hy = id0 + 2;
@@ -181,7 +181,10 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
     while (now_s() - t0 < secs) {
       gap(0, last);
       if ((who & 1) && !stalled && now_s() - t0 >= stall_at) { stalled = true; std::this_thread::sleep_for(std::chrono::microseconds((int)(stall_ms * 1000))); }
-      const uint64_t due = (uint64_t)((now_s() - t0) * 48000);
+      // jump: at stall_at the sender processes `jump` frames more at once and stays that far ahead (REAPER at the start of playback)
+      const bool jumped = jump && now_s() - t0 >= stall_at;
+      if (jumped && !hic[0]) hic[0] = now_s();
+      const uint64_t due = (uint64_t)((now_s() - t0) * 48000) + (jumped ? jump : 0);
       while (done + B <= due) {
         for (uint32_t k = 0; k < B; ++k) { i0[k] = sig(done + k); i1[k] = -sig(done + k); }
         const float *in[2] = { i0.data(), i1.data() };
@@ -345,6 +348,14 @@ int main()
       CHECK(exact_pct(r) > 94, "a spike costs only its own packets");
       CHECK(num(r.sst, "holes") >= 1 && num(r.sst, "holes") <= 10, "about a dropout a spike, counted");
     }
+  }
+  // REAPER at the start of playback processes the hop's whole latency at once (its delay compensation lining up) and stays that far
+  // ahead: a moment of fallback audio, then every frame back exact again well within a second, not after the 3 s it took (REAPER, 2026-11-19).
+  {
+    Result r = run(14, 30, 2, 0, 0, 4, "studio", 1.0, 0, 0, 0, 0, L - B);
+    report("the sender jumps its latency ahead (playback starts)", r);
+    CHECK(r.wrong == 0, "nothing misaligned through the jump");
+    recovered(r, 4);
   }
   {
     Result r = run(41, 2, 0, 0, 0, 1.5, "not the studio's");

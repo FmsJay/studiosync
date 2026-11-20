@@ -417,6 +417,12 @@ void serve_rx(HopNet *h, Sess &s, int type, uint32_t nf, uint64_t frame, const u
     if (x + nf > (int64_t)s.zeroed_to) { s.s_dropped += nf; return; } // (X's ring isn't cleared that far yet: the step does it next)
   }
   s.sslack.add(x - x_min);
+  // A packet landing well past the margin: the sender may have jumped ahead. REAPER does at the start of playback, processing the hop's
+  // whole latency at once to line up its delay compensation (8192 frames in REAPER, 2026-11-19), and every packet after it then landed that
+  // much ahead and came back that much late: 3 s of silence until the once-a-second tighten (two windows) saw it. So look 50 ms on: if
+  // every packet since then landed past it too, tighten then (ordinary jitter leaves some at the margin, and nothing moves).
+  const double xs = X->srate > 0 ? X->srate : 48000;
+  if (!s.tight_at && x - x_min > S + std::max<int64_t>(S / 2, frames_of(10, xs))) { s.tight_at = now + 0.05; s.tight_min = INT64_MAX; }
   if (s.tight_at && now >= s.tight_at - 0.1) s.tight_min = std::min<int64_t>(s.tight_min, x - x_min);
   for (uint32_t k = 0; k < nf; ++k) {
     const uint64_t xi = (uint64_t)x + k;
