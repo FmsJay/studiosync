@@ -1,0 +1,21 @@
+/* The Try tab (tryfx.js, lib/hoptry.lua). Uses style.css's and pages.css's colours, so light/dark follow them. GPL-3.0-or-later. (rt-hopvst) */
+.tfnote { font-size: 13px; margin: 4px 0 8px; }
+.tfsearch, .tffilter { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; width: 100%; box-sizing: border-box; }
+.tffilter { margin: 6px 0; font-size: 13px; }
+.tflist { list-style: none; margin: 0 0 8px; padding: 0; }
+.tfitem { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 6px 10px; margin-bottom: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+.tfitem > span:first-child { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.tfitem.ask { border-color: var(--warn); }
+.tfname { font-weight: 600; }
+.tftry { padding: 8px 10px; margin-bottom: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+.tfhead { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.tfhead > .dim { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.tfstate { font-size: 13px; margin: 6px 0; overflow-wrap: anywhere; }
+.tfstate.ok { color: var(--dim); }
+.tfstate.warn { color: var(--warn); }
+.tfknobs { max-height: 50vh; overflow-y: auto; }
+.tfknob { display: grid; grid-template-columns: minmax(0, 1fr) minmax(80px, 2fr) minmax(0, 7em); align-items: center; gap: 8px; padding: 2px 0; font-size: 13px; }
+.tfknob[hidden] { display: none; }
+.tfkname, .tfkval { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tfkval { color: var(--dim); text-align: right; }
+.tfknob input[type="range"] { width: 100%; accent-color: var(--accent); }

@@ -18,6 +18,12 @@
    with hop_store only over a contiguous run (a lost packet is concealed or zeroed first, so ret_w never skips a hole). The frame number is
    the only clock the hop needs: the remote side processes in order and returns the numbers it was given.
 
+   MIDI (rt-hopvst: an instrument you don't have): the plug-in puts the MIDI it gets into send_midi under the frame number it came at and
+   publishes send_mw before send_w, so every event below send_w is there once send_w is; the network leg sends them with the audio, and at
+   the remote end writes them into Hop X's ret_midi under X's frame numbers (publishing ret_mw after). X plays each event with the ret[]
+   frame of the same number, so the instrument after X is driven exactly where the audio would be, and comes back under the same numbers.
+   dry_lost: what a frame the network lost plays (the network leg fills it in from send[]): the plug-in's "Dry when late".
+
    Lock-free: one writer per field; plain 64-bit counters read and written through hop_load / hop_store (acquire / release).
    Trust: anything in the mapping can be scribbled on by another process of the same user, so every index is masked before use.
    GPL-3.0-or-later. */
@@ -45,12 +51,17 @@
 #endif
 
 #define HOP_SHM_MAGIC 0x31504F48u /* "HOP1" */
-#define HOP_SHM_VERSION 1u
+#define HOP_SHM_VERSION 2u        /* 2: dry_lost and the MIDI rings (rt-hopvst); a v1 plug-in and a v2 extension don't pair: they ship together */
 #define HOP_CH 2                  /* stereo: a mono track reaches a plug-in as two channels in REAPER */
 #define HOP_FRAMES (1u << 17)     /* about 2.7 s at 48 kHz: far more than the largest latency (8192) plus a block */
 #define HOP_MASK (HOP_FRAMES - 1u)
+#define HOP_MIDI 4096u            /* MIDI events in each MIDI ring (a power of two) */
+#define HOP_LAT_MAX 32768u        /* the most latency a Hop reports: 680 ms at 48 kHz, for long links (rt-hopvst; was 8192) */
 
 enum { HOP_EXT_NONE = 0, HOP_EXT_LOOPBACK = 1, HOP_EXT_NETWORK = 2 };
+
+/* One MIDI event: a short message (status, data 1, data 2 in msg's low bytes; len 1-3) at an absolute frame number. */
+typedef struct hop_midi { uint64_t frame; uint32_t msg, len; } hop_midi;
 
 typedef struct hop_shm {
   uint32_t magic, version, channels, frames; /* set once by whoever made the mapping; magic last, so a half-made one reads as not ready */
@@ -61,9 +72,14 @@ typedef struct hop_shm {
   uint64_t late;                             /* plug-in: blocks where the return wasn't there in time */
   uint64_t blocks;                           /* plug-in: blocks processed (it's alive while this moves) */
   uint32_t ext_mode, ext_delay;              /* extension: HOP_EXT_*, and the loopback's delay in frames */
-  uint64_t reserved[8];                      /* (room for the network leg: its round trip, losses) */
+  uint64_t dry_lost;                         /* plug-in: 1 when a frame the network lost plays the dry input ("Dry when late"), 0 silence */
+  uint64_t send_mw;                          /* plug-in: MIDI events written into send_midi so far */
+  uint64_t ret_mw;                           /* extension: MIDI events written into ret_midi so far */
+  uint64_t reserved[5];
   float send[HOP_FRAMES * HOP_CH];
   float ret[HOP_FRAMES * HOP_CH];
+  hop_midi send_midi[HOP_MIDI];              /* plug-in: the MIDI it was given, at send frame numbers, in order; event k at [k % HOP_MIDI] */
+  hop_midi ret_midi[HOP_MIDI];               /* extension: MIDI for the plug-in to play, at ret frame numbers (with ret[] of that frame) */
 } hop_shm;
 
 static inline uint64_t hop_load(const uint64_t *p)

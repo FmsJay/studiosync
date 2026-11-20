@@ -15,6 +15,8 @@
 #define DISTRHO_PLUGIN_NUM_INPUTS 2
 #define DISTRHO_PLUGIN_NUM_OUTPUTS 2
 #define DISTRHO_PLUGIN_WANT_LATENCY 1
+#define DISTRHO_PLUGIN_WANT_MIDI_INPUT 1  // (the MIDI for an instrument on a bandmate's computer goes with the audio: rt-hopvst)
+#define DISTRHO_PLUGIN_WANT_MIDI_OUTPUT 1 // (and comes out of the hidden track's first Hop there, for that instrument)
 #define DISTRHO_PLUGIN_WANT_TIMEPOS 1 // (latency and hop id changes wait for the transport to stop: a PDC change mid-play can glitch)
 
 #define DISTRHO_PLUGIN_VST3_CATEGORIES "Fx|Network|Stereo"

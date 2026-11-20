@@ -25,7 +25,7 @@ local projs, nguid = { P1 = { tracks = {}, ext = {} }, P2 = { tracks = {}, ext =
 local function guid() nguid = nguid + 1; return string.format("{%08d-0000-0000-0000-000000000000}", nguid) end
 local function hop_fx()
   return { name = "CLAP: StudioSync Hop (StudioSync)", guid = guid(), pnames = { "Hop id", "Latency budget", "Dry when late", "Late blocks" },
-    lo = { 1, 256, 0, 0 }, hi = { 64, 8192, 1, 1e7 }, v = { 1, 7200, 1, 0 }, pdc = 7200 }
+    lo = { 1, 256, 0, 0 }, hi = { 64, 32768, 1, 1e7 }, v = { 1, 7200, 1, 0 }, pdc = 7200 }
 end
 local function plugin(name, pdc)
   return { name = name, guid = guid(), pnames = { "Gain", "Drive", "Tone" }, lo = { 0, 0, 0 }, hi = { 1, 1, 1 }, v = { 0.5, 0.25, 0.75 }, pdc = pdc or 0 }
@@ -149,7 +149,7 @@ ok, text = hops.health_text(rec0, { late = 0, net = good })
 assert(ok and text:find("Hop 3 (Neural Amp on Bo's computer)", 1, true) and text:find("needs 80 of its 150 ms", 1, true), "Health: in budget: " .. text)
 good.need_ms = 160
 ok, text = hops.health_text(rec0, { net = good })
-assert(not ok and text:find("Raise the Hop's Latency budget", 1, true), "Health: over budget")
+assert(not ok and text:find("bigger budget the next time playback stops", 1, true), "Health: over budget (a long link's bigger budget comes when stopped: rt-hopvst)")
 good.need_ms, good.same_rate = 80, false
 assert(not hops.health_text(rec0, { net = good }), "Health: two sample rates")
 
@@ -177,7 +177,7 @@ end
 local id, why = hops.make("P1", cfg, tr, 2, "Bo", list[1].peer, "Song", "main")
 assert(id == 1, "made: " .. tostring(why))
 local hop = tr.fx[4]
-assert(hops.is_hop_name(hop.name) and hop.v[1] == 1 and hop.v[2] == hops.LATENCY and hop.v[3] == 0, "a Hop right after the plug-in: id 1, the plug-in's most budget, silent when late")
+assert(hops.is_hop_name(hop.name) and hop.v[1] == 1 and hop.v[2] == hops.LATENCY and hop.v[3] == 1, "a Hop right after the plug-in: id 1, the default budget, dry when late (a lost frame too: rt-hopvst)")
 assert(hop.offline_toggles == 2 and hop.offline == false, "taken offline and back, so it starts with its id")
 assert(tr.ext.band_local_fx:find(hop.guid .. "for=hop;", 1, true), "this computer's own FX: never sent to the others")
 local rec = hops.records("P1")["1"]

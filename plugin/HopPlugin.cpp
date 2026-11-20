@@ -1,6 +1,8 @@
 // StudioSync Hop (docs/realtime-roadmap.md 4b): put it where the plug-ins you don't have would go. It hands its input to the StudioSync
 // extension through the hop's shared memory (plugin/hop_shm.h), plays what comes back, and tells REAPER a fixed latency so REAPER's delay
 // compensation keeps everything else in time with the returned audio. The timing itself is in plugin/hop_core.h. GPL-3.0-or-later.
+// MIDI in and out (rt-hopvst): the MIDI it gets goes along with the audio (an instrument on a bandmate's computer), and at the hidden track's
+// first Hop the MIDI that came over the network comes out, for that instrument. It doesn't pass its own MIDI input on.
 #include "DistrhoPlugin.hpp"
 #include "hop_core.h"
 
@@ -22,7 +24,7 @@ protected:
   const char *getMaker() const override { return "StudioSync"; }
   const char *getHomePage() const override { return "https://github.com/FmsJay/studiosync"; }
   const char *getLicense() const override { return "GPL-3.0-or-later"; }
-  uint32_t getVersion() const override { return d_version(0, 1, 0); }
+  uint32_t getVersion() const override { return d_version(0, 2, 0); }
 
   void initParameter(uint32_t index, Parameter &p) override
   {
@@ -35,7 +37,7 @@ protected:
     case P_LATENCY: // (the studio's hop budget: round trip + remote processing + a jitter margin; default about 150 ms at 48 kHz)
       p.hints = kParameterIsInteger;
       p.name = "Latency budget"; p.symbol = "latency"; p.unit = "samples"; // (not "Latency": DPF's VST3 adds its own read-only one)
-      p.ranges.min = 256; p.ranges.max = 8192; p.ranges.def = 7200;
+      p.ranges.min = 256; p.ranges.max = HOP_LAT_MAX; p.ranges.def = 7200; // (up to 680 ms at 48 kHz: long links, rt-hopvst)
       break;
     case P_DRY:
       p.hints = kParameterIsAutomatable | kParameterIsBoolean; // (on: a late block plays the input at the same latency; off: silence)
@@ -70,7 +72,7 @@ protected:
   {
     switch (index) {
     case P_HOP: want_hop = v < 1.f ? 1 : v > 64.f ? 64 : (int)(v + 0.5f); break;
-    case P_LATENCY: want_latency = v < 256.f ? 256u : v > 8192.f ? 8192u : (uint32_t)(v + 0.5f); break; // (the host may send anything)
+    case P_LATENCY: want_latency = v < 256.f ? 256u : v > (float)HOP_LAT_MAX ? HOP_LAT_MAX : (uint32_t)(v + 0.5f); break; // (the host may send anything)
     case P_DRY: core.dry_when_late = v > 0.5f ? 1.f : 0.f; break;
     case P_BYPASS: core.bypass = v > 0.5f; break;
     }
@@ -82,11 +84,24 @@ protected:
     core.reset();
   }
 
-  void run(const float **inputs, float **outputs, uint32_t frames) override
+  void run(const float **inputs, float **outputs, uint32_t frames, const MidiEvent *midi, uint32_t nmidi) override
   {
     if ((want_hop != hop || want_latency != core.latency) && !getTimePosition().playing)
       apply(); // shortcut: opening a mapping is a system call on the audio thread; it only happens while stopped, after a change
-    core.process(inputs, outputs, frames);
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < nmidi && n < MIDI_IN; i++) { // shortcut: past MIDI_IN events in one block the rest are dropped; raise it if a dense controller ever fills it
+      if (midi[i].size < 1 || midi[i].size > 3) continue; // (short messages only)
+      HopMidiEv &e = inbuf[n++];
+      e.frame = midi[i].frame; e.size = midi[i].size;
+      memcpy(e.data, midi[i].data, 4);
+    }
+    core.process(inputs, outputs, frames, inbuf, n);
+    for (uint32_t i = 0; i < core.nmout; i++) {
+      MidiEvent me;
+      me.frame = core.mout[i].frame; me.size = core.mout[i].size; me.dataExt = nullptr;
+      memcpy(me.data, core.mout[i].data, 4);
+      if (!writeMidiEvent(me)) break;
+    }
   }
 
 private:
@@ -103,6 +118,8 @@ private:
     core.attach(map.p);
   }
 
+  static const uint32_t MIDI_IN = 512;
+  HopMidiEv inbuf[MIDI_IN];
   HopCore core;
   hop_map map = {};
   unsigned long pid = 0;

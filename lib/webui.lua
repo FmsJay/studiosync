@@ -148,6 +148,7 @@ webui.ACTIONS.mixer = true -- (the Mixer page's: lib/webmixer.lua)
 webui.ACTIONS.history = true -- (the History page's "I'm looking": lib/webhistory.lua, read only)
 webui.ACTIONS.ai = true -- (the AI page's asks, yes/no and cancel: lib/ai.lua; whether a page on this computer sent it, StudioSync_WebUIPollHere)
 webui.ACTIONS.invite = true -- (Ask to join, Join / Decline, a studiosync:// link from join.html: lib/invite.lua)
+webui.ACTIONS.tryfx = true -- (the Try tab: a bandmate's plug-in you don't have, its knobs, asks for yours: lib/hoptry.lua, rt-hopvst)
 function webui.parse_action(s)
   local a = type(s) == "string" and s ~= "" and band.json_decode(s)
   if type(a) ~= "table" or type(a.topic) ~= "string" or not webui.ACTIONS[a.topic] then return nil end
@@ -227,6 +228,10 @@ function webui.tick(proj, cfg, b, handlers)
       local said = require("invite").action(proj, cfg, b, a)
       if said then band.log(said) end
     end
+    if topic == "tryfx" then
+      local said = require("hoptry").web_action(proj, cfg, b, a)
+      if said then band.log(said) end
+    end
     if topic == "home" or topic == "profile" then
       local said = require("webhome").action(proj, cfg, b, a)
       if said then band.log(said) end
@@ -290,6 +295,7 @@ function webui.tick(proj, cfg, b, handlers)
   require("webhistory").tick(proj, cfg, b, publish, now)
   -- Home (while a page shows it) and everyone's profile (while any page looks): lib/webhome.lua
   require("webhome").tick(proj, cfg, b, publish, now)
+  require("hoptry").web_tick(proj, cfg, b, publish, now) -- (the Try tab, while a page shows it: lib/hoptry.lua, rt-hopvst)
   require("invite").web_tick(proj, cfg, b, publish, now) -- (join requests for you, the studio's people, the last ask's answer: lib/invite.lua)
 end
 

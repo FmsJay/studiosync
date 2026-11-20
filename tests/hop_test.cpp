@@ -143,9 +143,9 @@ int main()
   // 7. A host block bigger than the core's chunk (4096), the largest latency: still wet and aligned. (A block longer than the latency
   //    can never be in time: the return only starts after the block, so the budget has to cover the host block too.)
   {
-    const uint32_t BIG = 6000, LMAX = 8192;
+    const uint32_t BIG = 6000, LMAX = HOP_LAT_MAX; // (the long links' budget, rt-hopvst: 32768)
     hop_map m; Run r; r.core.latency = LMAX; r.core.shm = fresh(&m, 914); r.core.reset();
-    for (int k = 0; k < 8; k++) { r.block(BIG); sim_return(m.p, 0); }
+    for (int k = 0; k < 10; k++) { r.block(BIG); sim_return(m.p, 0); }
     expect(r, LMAX, BIG, 0, 1.f, true, "big blocks");
     CHECK(r.core.late_blocks == 0, "big blocks: nothing late");
     hop_shm_unlink(&m); hop_shm_close(&m);
@@ -179,6 +179,60 @@ int main()
     CHECK(r.core.late_blocks > late_on_time, "loopback too slow: late blocks counted");
     CHECK(hop_loopback(ID, -1) == 1, "loopback stops");
     hop_stop_all();
+    hop_shm_unlink(&m); hop_shm_close(&m);
+  }
+  // 10. "Dry when late" goes into the mapping (the network leg fills a lost frame with the input when it's on, rt-hopvst).
+  {
+    hop_map m; Run r; r.core.latency = L; r.core.shm = fresh(&m, 916); r.core.reset();
+    r.block(B);
+    CHECK(hop_load(&m.p->dry_lost) == 1, "dry when late on: dry_lost 1");
+    r.core.dry_when_late = 0.f; r.block(B);
+    CHECK(hop_load(&m.p->dry_lost) == 0, "dry when late off: dry_lost 0");
+    hop_shm_unlink(&m); hop_shm_close(&m);
+  }
+  // 11. MIDI in: each event goes into send_midi at its absolute send frame (the mapping's own numbers), counted by send_mw; bad sizes and
+  //     offsets past the block are left out.
+  {
+    hop_map m; Run r; r.core.latency = L; r.core.shm = fresh(&m, 917);
+    hop_store(&m.p->send_w, 5000); hop_store(&m.p->send_mw, 7); g_r = 5000;
+    r.core.reset();
+    r.block(B);
+    HopMidiEv ev[4] = { { 3, 3, { 0x90, 60, 100, 0 } }, { 3, 4, { 0xF0, 1, 2, 3 } }, { 200, 2, { 0xC0, 5, 0, 0 } }, { 999, 3, { 0x80, 60, 0, 0 } } };
+    std::vector<float> a(B), o0(B), o1(B);
+    const float *in[2] = { a.data(), a.data() };
+    float *out[2] = { o0.data(), o1.data() };
+    r.core.process(in, out, B, ev, 4);
+    CHECK(hop_load(&m.p->send_mw) == 9, "two events in (send_mw %llu)", (unsigned long long)hop_load(&m.p->send_mw));
+    const hop_midi e0 = m.p->send_midi[7], e1 = m.p->send_midi[8];
+    CHECK(e0.frame == 5000 + B + 3 && e0.msg == (0x90u | 60u << 8 | 100u << 16) && e0.len == 3, "the note at its frame (%llu)", (unsigned long long)e0.frame);
+    CHECK(e1.frame == 5000 + B + 200 && e1.msg == 0xC0u + (5u << 8) && e1.len == 2, "the program change at its frame");
+    CHECK(hop_load(&m.p->send_w) == 5000 + 2 * B, "send_w after the events");
+    hop_shm_unlink(&m); hop_shm_close(&m);
+  }
+  // 12. MIDI out: an event at mapping frame f comes out at local frame f - off + L, in its block at the right offset; one already due comes
+  //     out at the block's start; one from before this instance attached never does.
+  {
+    hop_map m; Run r; r.core.latency = L; r.core.shm = fresh(&m, 918);
+    hop_store(&m.p->send_w, 1000); g_r = 1000;
+    r.core.reset(); // (off = 1000: local frame 0 is mapping frame 1000)
+    hop_midi *rm = m.p->ret_midi;
+    rm[0] = { 900, 0x90u | 1u << 8 | 1u << 16, 3 };   // (before our time: never)
+    rm[1] = { 1000 + 10, 0x90u | 2u << 8 | 9u << 16, 3 }; // (plays at local 10 + L)
+    rm[2] = { 1000 + 600, 0x80u | 2u << 8, 3 };          // (plays at local 600 + L)
+    hop_store(&m.p->ret_mw, 3);
+    std::vector<std::pair<uint64_t, uint32_t>> got;
+    for (int k = 0; k < 12; k++) {
+      uint64_t t0 = r.fed;
+      r.block(B);
+      for (uint32_t e = 0; e < r.core.nmout; e++) got.push_back({ t0 + r.core.mout[e].frame, (uint32_t)r.core.mout[e].data[1] });
+      if (k == 9) { rm[3] = { 1000 + 5, 0xB0u | 7u << 8 | 3u << 16, 3 }; hop_store(&m.p->ret_mw, 4); } // (late: due long ago)
+    }
+    CHECK(got.size() == 3, "three events out (%zu)", got.size());
+    if (got.size() == 3) {
+      CHECK(got[0].first == 10 + L && got[0].second == 2, "the first at local 10 + L (%llu)", (unsigned long long)got[0].first);
+      CHECK(got[1].first == 600 + L, "the second at local 600 + L (%llu)", (unsigned long long)got[1].first);
+      CHECK(got[2].first == 10ull * B && got[2].second == 7, "the late one at its block's start (%llu)", (unsigned long long)got[2].first);
+    }
     hop_shm_unlink(&m); hop_shm_close(&m);
   }
   printf(fails ? "hop_test: %d failed\n" : "hop_test: ok\n", fails);

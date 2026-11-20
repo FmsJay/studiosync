@@ -10,7 +10,12 @@
 //
 // Frame numbers are the clock. The sender tags each packet with the absolute frame number of its first frame (the hop's send ring index);
 // the remote returns the processed audio under the same numbers; the sender writes it into the ret ring at those numbers. A frame that
-// isn't back in time is zeroed (the next ones fade in) and counted, so ret_w never skips a hole.
+// isn't back in time is filled in (the next ones fade in) and counted, so ret_w never skips a hole: with the dry input from the send ring
+// when the plug-in says so (its "Dry when late", dry_lost in the mapping), else silence (rt-hopvst: a lost frame was always silence).
+//
+// MIDI (rt-hopvst, an instrument you don't have): the plug-in's MIDI events (send_midi, numbered by send_mw) go in their own packets once
+// their frame has been published, each sent twice at least (in the next packet's window too, or again 20 ms on); the remote takes each
+// number once, puts it at X frame f + A in X's ret_midi, and X plays it with that frame's audio. A note-off lost twice can hang a note.
 //
 // The remote: a hidden track in the bandmate's REAPER holds Hop X (hop id x), the plug-ins, then Hop Y (hop id y): the same plug-in
 // binary at both ends, no new one (step 4b findings). X plays what we write into its ret ring (its input is silence), Y's send ring is
@@ -53,11 +58,13 @@
 
 namespace {
 const char MAGIC[4] = { 'S', 'S', 'H', '1' };
-enum { T_AUDIO = 1, T_RET = 2, T_PING = 3, T_PONG = 4 };
+enum { T_AUDIO = 1, T_RET = 2, T_PING = 3, T_PONG = 4, T_MIDI = 5 };
 const int HDR = 20, TAG = 16, PKT = 128;                    // header: magic, type, version, frames u16, token u32, frame u64
 const int MAXD = HDR + PKT * HOP_CH * 4 + 32 + TAG;
 const uint64_t HALF = HOP_FRAMES / 2;
 const int FADE = 64;                                          // frames faded in after a concealed hole
+const int MPKT = 32, MEV = 16;                                // MIDI: events a packet, bytes an event (frame u64, msg u32, len u32)
+const uint64_t MM = HOP_MIDI - 1;
 const double LATE_HOLD = 0.08, LATE_GAP = 0.04;              // s: packets late at the remote for LATE_HOLD, never LATE_GAP apart, are drift
 enum { F_ALIVE = 1, F_DELTA = 2, F_SRATE = 4 };              // the remote's state, in each pong
 
@@ -155,6 +162,9 @@ struct Sess {
   uint32_t r_flags = 0, r_frames = 0, r_srate = 0, r_slips = 0;
   uint64_t r_received = 0, r_dropped = 0;
   uint64_t sent = 0, returned = 0, lost = 0, late = 0, holes = 0; // holes: runs of lost frames, each a dropout heard (Health shows them)
+  uint64_t mr = 0, mbase = 0, msent = 0;  // MIDI: send_midi read so far, the first this session sent, events sent
+  bool mset = false, mresend = false;
+  double mresend_at = 0;
   int64_t slack_last = 0;
   // ---- serving end
   int xid = 0, yid = 0;
@@ -171,6 +181,7 @@ struct Sess {
   Win delta, xblk, sslack;
   std::vector<Fm> fmap;
   uint64_t s_received = 0, s_returned = 0, s_dropped = 0, s_slips = 0;
+  uint64_t mseen[256] = {}, mtop = 0, s_midi = 0; // MIDI numbers taken (+1, by number & 255), the highest, events put in X's ret_midi
 };
 } // namespace
 
@@ -226,6 +237,8 @@ void block_seen(Win &win, uint64_t &last_w, uint64_t &last_b, hop_shm *p)
 int64_t biggest(const Win &w) { const int64_t m = w.min(); return m == INT64_MAX ? 0 : -m; } // (blocks are kept negated: min() is the biggest)
 uint64_t guard_of(Sess &s) { return (uint64_t)std::max<int64_t>(biggest(s.blk), 128) + 48; } // (a block, and our 1 ms)
 
+void midi_send(HopNet *h, Sess &s, hop_shm *p, uint64_t w, double now);
+
 void send_step(HopNet *h, Sess &s, double now)
 {
   hop_shm *p = s.m.p;
@@ -243,7 +256,8 @@ void send_step(HopNet *h, Sess &s, double now)
   if (!s.active) { // From here on: frames from w on go out. Anything before w never will, so it's zeroed and published at once.
     uint64_t rw = hop_load(&p->ret_w);
     if (rw > w || w - rw > HALF) rw = w - std::min<uint64_t>(w, HALF);
-    for (uint64_t i = rw; i < w; ++i) { size_t q = (size_t)(i & HOP_MASK) * HOP_CH; p->ret[q] = p->ret[q + 1] = 0.f; }
+    const float dk = hop_load(&p->dry_lost) ? 1.f : 0.f;
+    for (uint64_t i = rw; i < w; ++i) { size_t q = (size_t)(i & HOP_MASK) * HOP_CH; p->ret[q] = p->send[q] * dk; p->ret[q + 1] = p->send[q + 1] * dk; }
     s.r = s.rw = w;
     hop_store(&p->ret_w, w);
     s.active = true;
@@ -257,18 +271,61 @@ void send_step(HopNet *h, Sess &s, double now)
     s.r += n;
     s.sent += n;
   }
-  // Publish what came back, in order; a frame the plug-in will need in its next block that isn't back is zeroed (lost).
+  midi_send(h, s, p, w, now);
+  // Publish what came back, in order; a frame the plug-in will need in its next block that isn't back is filled in (lost): the dry input
+  // when the plug-in says so, else silence; the frames after it fade from that back to the return.
   const uint64_t L = hop_load(&p->latency), g = guard_of(s);
   const uint64_t dl = w + g > L ? w + g - L : 0;
+  const float dk = hop_load(&p->dry_lost) ? 1.f : 0.f;
   uint64_t rw = s.rw;
   while (rw < s.r && (s.rcv[rw & HOP_MASK] == rw || rw < dl)) {
     float *f = p->ret + (size_t)(rw & HOP_MASK) * HOP_CH;
+    const float *d = p->send + (size_t)(rw & HOP_MASK) * HOP_CH;
     if (s.rcv[rw & HOP_MASK] == rw) {
-      if (s.fade > 0) { const float k = (float)(FADE - s.fade + 1) / (FADE + 1); f[0] *= k; f[1] *= k; --s.fade; }
-    } else { f[0] = f[1] = 0.f; ++s.lost; s.holes += s.fade != FADE; s.fade = FADE; }
+      if (s.fade > 0) {
+        const float k = (float)(FADE - s.fade + 1) / (FADE + 1);
+        f[0] = f[0] * k + d[0] * dk * (1 - k); f[1] = f[1] * k + d[1] * dk * (1 - k);
+        --s.fade;
+      }
+    } else { f[0] = d[0] * dk; f[1] = d[1] * dk; ++s.lost; s.holes += s.fade != FADE; s.fade = FADE; }
     ++rw;
   }
   if (rw != s.rw) { s.rw = rw; hop_store(&p->ret_w, rw); }
+}
+
+// The plug-in's MIDI events [lo, hi) of send_midi, MPKT a packet, under their own numbers (the header's frame).
+void midi_out(HopNet *h, Sess &s, hop_shm *p, uint64_t lo, uint64_t hi)
+{
+  unsigned char pl[MPKT * MEV];
+  while (lo < hi) {
+    const uint32_t n = (uint32_t)std::min<uint64_t>(MPKT, hi - lo);
+    for (uint32_t k = 0; k < n; ++k) {
+      const hop_midi m = p->send_midi[(lo + k) & MM];
+      put64(pl + k * MEV, m.frame); put32(pl + k * MEV + 8, m.msg); put32(pl + k * MEV + 12, m.len);
+    }
+    out(h, s, T_MIDI, n, lo, pl, (int)(n * MEV), s.addr);
+    s.msent += n;
+    lo += n;
+  }
+}
+// Events whose frames have gone out: new ones with up to MPKT - 1 before them (sent already: a lost packet's events come again in the
+// next one), and the last window once more 20 ms on (a lone note-off in a lost packet).
+void midi_send(HopNet *h, Sess &s, hop_shm *p, uint64_t w, double now)
+{
+  const uint64_t mw = hop_load(&p->send_mw);
+  if (!s.mset || s.mr > mw || mw - s.mr > HOP_MIDI) { s.mr = s.mbase = mw; s.mset = true; } // (from now: the plug-in started again, or we fell a ring behind)
+  const uint64_t base = std::max(s.mbase, mw > HOP_MIDI ? mw - HOP_MIDI : 0);
+  uint64_t hi = s.mr;
+  while (hi < mw && p->send_midi[hi & MM].frame < w) ++hi;
+  if (hi > s.mr) {
+    const uint64_t back = std::min<uint64_t>(s.mr - base, hi - s.mr < (uint64_t)MPKT ? MPKT - (hi - s.mr) : 0);
+    midi_out(h, s, p, s.mr - back, hi);
+    s.mr = hi;
+    s.mresend = true; s.mresend_at = now + 0.02;
+  } else if (s.mresend && now >= s.mresend_at) {
+    s.mresend = false;
+    midi_out(h, s, p, hi - std::min<uint64_t>(hi - base, MPKT), hi);
+  }
 }
 
 void send_rx(HopNet *h, Sess &s, int type, uint32_t nf, uint64_t frame, const unsigned char *pl, int plen)
@@ -365,6 +422,29 @@ void serve_step(HopNet *h, Sess &s, double now)
   s.yr = yw;
 }
 
+// MIDI events numbered seq0.. into X's ret_midi at X frame f + A, each number once (the sender repeats them); none before the audio has
+// anchored A (nothing to line them up with yet). One X has already played past plays at once there (X plays a late one at its block's start).
+void serve_midi(Sess &s, uint32_t nf, uint64_t seq0, const unsigned char *pl, int plen)
+{
+  hop_shm *X = s.mx.p;
+  if (!s.anchored || nf == 0 || nf > (uint32_t)MPKT || plen < (int)(nf * MEV)) return;
+  uint64_t mw = hop_load(&X->ret_mw);
+  for (uint32_t k = 0; k < nf; ++k) {
+    const uint64_t seq = seq0 + k;
+    if (s.mseen[seq & 255] == seq + 1 || seq + 256 <= s.mtop) continue; // (had it, or too old to tell)
+    s.mseen[seq & 255] = seq + 1;
+    s.mtop = std::max(s.mtop, seq);
+    const int64_t x = (int64_t)get64(pl + k * MEV) + s.A;
+    const uint32_t len = get32(pl + k * MEV + 12);
+    if (x < 0 || len < 1 || len > 3) continue;
+    hop_midi &m = X->ret_midi[mw & MM];
+    m.frame = (uint64_t)x; m.msg = get32(pl + k * MEV + 8) & 0xFFFFFFu; m.len = len;
+    ++mw;
+    ++s.s_midi;
+  }
+  hop_store(&X->ret_mw, mw);
+}
+
 void serve_rx(HopNet *h, Sess &s, int type, uint32_t nf, uint64_t frame, const unsigned char *pl, int plen, const sockaddr_in &from)
 {
   const double now = now_s();
@@ -386,6 +466,7 @@ void serve_rx(HopNet *h, Sess &s, int type, uint32_t nf, uint64_t frame, const u
     out(h, s, T_PONG, 0, frame, o, 32, s.from);
     return;
   }
+  if (type == T_MIDI) { serve_midi(s, nf, frame, pl, plen); return; }
   if (type != T_AUDIO || nf == 0 || nf > PKT || plen < (int)(nf * HOP_CH * sizeof(float))) return;
   if ((s_flags(s, now) & (F_ALIVE | F_DELTA | F_SRATE)) != (F_ALIVE | F_DELTA | F_SRATE)) { s.s_dropped += nf; return; }
   const uint64_t xw = hop_load(&X->send_w), Lx = hop_load(&X->latency), g = s_guard(s);
@@ -616,7 +697,7 @@ void hopnet_rx(void *hv, const unsigned char *d, int n, const void *fromv, int f
   const uint32_t token = get32(d + 8);
   const uint64_t frame = get64(d + 12);
   std::lock_guard<std::mutex> g(h->mx);
-  Sess *s = find_token(h, token, type == T_AUDIO || type == T_PING);
+  Sess *s = find_token(h, token, type == T_AUDIO || type == T_PING || type == T_MIDI);
   if (!s || s->key.empty() || !tag_ok(s->key, d, n)) return; // (not a hop of ours, or not tagged with this studio's secret)
   if (s->serve) serve_rx(h, *s, type, nf, frame, d + HDR, n - HDR - TAG, from);
   else if (s->resolved && same_addr(from, s->addr)) send_rx(h, *s, type, nf, frame, d + HDR, n - HDR - TAG);
@@ -643,12 +724,13 @@ std::string hopnet_status(HopNet *h, int hop_id)
       snprintf(b, sizeof(b),
                ",\"token\":%u,\"resolved\":%s,\"serving\":%s,\"active\":%s,\"rtt_ms\":%.1f,\"remote_ms\":%.1f,\"budget_ms\":%.1f,\"need_ms\":%.1f,"
                "\"slack_ms\":%.1f,\"sent\":%llu,\"returned\":%llu,\"lost\":%llu,\"late\":%llu,\"remote_alive\":%s,\"remote_lined_up\":%s,"
-               "\"same_rate\":%s,\"remote_slips\":%u,\"remote_received\":%llu,\"remote_dropped\":%llu,\"holes\":%llu}",
+               "\"same_rate\":%s,\"remote_slips\":%u,\"remote_received\":%llu,\"remote_dropped\":%llu,\"holes\":%llu,\"midi_sent\":%llu,\"dry_lost\":%s}",
                s.token, s.resolved ? "true" : "false", now - s.last_pong < 2 ? "true" : "false", s.active ? "true" : "false", s.rtt_ms, remote,
                budget, need, sl == INT64_MAX ? -1.0 : sl * 1000.0 / sr, (unsigned long long)s.sent, (unsigned long long)s.returned,
                (unsigned long long)s.lost, (unsigned long long)s.late, (s.r_flags & F_ALIVE) ? "true" : "false",
                (s.r_flags & F_DELTA) ? "true" : "false", (s.r_flags & F_SRATE) || !s.r_flags ? "true" : "false", s.r_slips,
-               (unsigned long long)s.r_received, (unsigned long long)s.r_dropped, (unsigned long long)s.holes);
+               (unsigned long long)s.r_received, (unsigned long long)s.r_dropped, (unsigned long long)s.holes, (unsigned long long)s.msent,
+               hop_shm_ok(p) && hop_load(&p->dry_lost) ? "true" : "false");
       return o + b;
     }
     if (s.serve && s.xid == hop_id) {
@@ -657,10 +739,11 @@ std::string hopnet_status(HopNet *h, int hop_id)
       const double remote = ((double)frames_of(s.margin_ms, sr) + 2.0 * s_guard(s) + (hop_shm_ok(X) ? hop_load(&X->latency) : 0) + s.pdc) * 1000.0 / sr;
       snprintf(b, sizeof(b),
                "{\"role\":\"serve\",\"token\":%u,\"x\":%d,\"y\":%d,\"alive\":%s,\"lined_up\":%s,\"same_rate\":%s,\"heard\":%s,\"idle_s\":%.1f,"
-               "\"remote_ms\":%.1f,\"pdc\":%u,\"margin_ms\":%.1f,\"received\":%llu,\"returned\":%llu,\"dropped\":%llu,\"slips\":%llu}",
+               "\"remote_ms\":%.1f,\"pdc\":%u,\"margin_ms\":%.1f,\"received\":%llu,\"returned\":%llu,\"dropped\":%llu,\"slips\":%llu,\"midi\":%llu}",
                s.token, s.xid, s.yid, s_alive(s, now) ? "true" : "false", s_delta_ok(s) ? "true" : "false", s.srate_ok ? "true" : "false",
                s.have_peer ? "true" : "false", s.have_peer ? now - s.last_rx : now - s.started, remote, s.pdc, s.margin_ms,
-               (unsigned long long)s.s_received, (unsigned long long)s.s_returned, (unsigned long long)s.s_dropped, (unsigned long long)s.s_slips);
+               (unsigned long long)s.s_received, (unsigned long long)s.s_returned, (unsigned long long)s.s_dropped, (unsigned long long)s.s_slips,
+               (unsigned long long)s.s_midi);
       return b;
     }
   }

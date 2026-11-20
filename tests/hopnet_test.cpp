@@ -139,13 +139,20 @@ static sock_t udp(sockaddr_in &me)
 // ---- one run: a sender hop and a fake remote, for `secs`, then every frame the sender played is checked ----
 // hiccup: when the last stall ended, seconds into the run (0: none), deliberate or not (an audio thread's turn or the wire STALL_S late:
 // the macOS runner pauses its VM ~60 ms now and then); after / exact_after: the frames from a second after it on, and how many came back exact.
-struct Result { uint64_t exact = 0, zero = 0, faded = 0, wrong = 0, first_wet = 0, frames = 0, after = 0, exact_after = 0; double hiccup = 0, hiccup_ms = 0; int stalls = 0; std::string sst, rst; };
+// dry: frames that played the sender's own input (a lost frame with "Dry when late" on, rt-hopvst); events / ev_exact: MIDI notes sent, and
+// how many came back as the fake instrument's click exactly on their frame (those after the hop came up).
+struct Result { uint64_t exact = 0, zero = 0, faded = 0, wrong = 0, dry = 0, first_wet = 0, frames = 0, after = 0, exact_after = 0, events = 0, ev_exact = 0; double hiccup = 0, hiccup_ms = 0; int stalls = 0; std::string sst, rst; };
 static const uint32_t L = 7200, LX = 256, PDC = 100, B = 256;
 
 // stall: at stall_at seconds, the sender's audio thread (who & 1) and/or the remote's (who & 2) stop for stall_ms and then catch up
 // in a burst, as a VM pause or a disk/scheduler hiccup does. Each audio thread notes any gap over STALL_S between its turns (a stall).
+// lat: the sender's latency budget (a long link's bigger one); dry: "Dry when late" on at the sender, so a lost frame plays its input;
+// midi: a note every 100 ms goes with the audio, and the fake remote plug-in is an instrument that adds a click (+0.25 before its x0.5) on
+// the frame each one comes out of Hop X, so a note back exactly at its frame + lat is the MIDI lined up to the sample (rt-hopvst).
+static const float CLICK = 0.25f;
 static Result run(int id0, double base_ms, double jitter_ms, double loss, double drift, double secs, const char *rsecret = "studio",
-                  double stall_at = 0, double stall_ms = 0, int who = 0, double spike_every = 0, double spike_ms = 0, uint64_t jump = 0)
+                  double stall_at = 0, double stall_ms = 0, int who = 0, double spike_every = 0, double spike_ms = 0, uint64_t jump = 0,
+                  uint32_t lat = L, bool dry = false, bool midi = false)
 {
   Result res;
   const int hs = id0, hx = id0 + 1, hy = id0 + 2;
@@ -167,7 +174,8 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
   if (!S || !X || !Y) return res;
   S->srate = X->srate = Y->srate = 48000;
   HopCore cs, cx, cy;
-  cs.latency = L; cs.dry_when_late = 0; cs.reset(); cs.attach(S);
+  cs.latency = lat; cs.dry_when_late = dry ? 1.f : 0.f; cs.reset(); cs.attach(S);
+  std::vector<uint64_t> evs; // (the sender's frames the notes went in at)
   cx.latency = LX; cx.dry_when_late = 0; cx.reset(); cx.attach(X);
   cy.latency = LX; cy.dry_when_late = 0; cy.reset(); cy.attach(Y);
 
@@ -203,7 +211,15 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
         for (uint32_t k = 0; k < B; ++k) { i0[k] = sig(done + k); i1[k] = -sig(done + k); }
         const float *in[2] = { i0.data(), i1.data() };
         float *o[2] = { o0.data(), o1.data() };
-        cs.process(in, o, B);
+        HopMidiEv me[1];
+        uint32_t nme = 0;
+        const uint64_t next = (evs.size() + 1) * 4800 + (evs.size() * 37) % B; // (a note every 100 ms, anywhere in a block)
+        if (midi && next >= done && next < done + B) {
+          me[0].frame = (uint32_t)(next - done); me[0].size = 3; me[0].data[0] = 0x90; me[0].data[1] = 60; me[0].data[2] = 100; me[0].data[3] = 0;
+          nme = 1;
+          evs.push_back(next);
+        }
+        cs.process(in, o, B, me, nme);
         out0.insert(out0.end(), o0.begin(), o0.end());
         out1.insert(out1.end(), o1.begin(), o1.end());
         done += B;
@@ -227,6 +243,7 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
         const float *zin[2] = { z.data(), z.data() };
         float *xo[2] = { x0.data(), x1.data() };
         cx.process(zin, xo, B);
+        for (uint32_t e = 0; e < cx.nmout; ++e) { x0[cx.mout[e].frame] += CLICK; x1[cx.mout[e].frame] -= CLICK; } // (the instrument: a click on each note)
         for (uint32_t k = 0; k < B; ++k) {
           y0[k] = d0[dp] * 0.5f; y1[k] = d1[dp] * 0.5f;
           d0[dp] = x0[k]; d1[dp] = x1[k];
@@ -250,27 +267,36 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
   hop_shm_close(&ms); hop_shm_close(&mx); hop_shm_close(&my);
   hop_shm_unlink(&ms); hop_shm_unlink(&mx); hop_shm_unlink(&my);
 
-  // every frame: exactly 0.5 x the input L frames before, or 0, or fading in towards it
+  // every frame: exactly 0.5 x the input lat frames before (with the click where a note went in), or 0 (or the input itself, with dry), or
+  // fading from that towards the return
   res.frames = out0.size();
+  std::vector<char> click(out0.size(), 0);
+  for (uint64_t e : evs) if (e + lat < out0.size()) click[(size_t)(e + lat)] = 1;
   const double hl = std::max({ hic[0], hic[1], hic_jump, wa.late_at, wb.late_at });
   res.hiccup = hl > 0 ? hl - t0s : 0;
   res.hiccup_ms = std::max({ hic_ms[0], hic_ms[1], wa.late_ms, wb.late_ms });
   res.stalls = hic_n[0] + hic_n[1] + wa.late_n + wb.late_n;
-  for (uint64_t i = L; i < out0.size(); ++i) {
-    const float e[2] = { 0.5f * sig(i - L), -0.5f * sig(i - L) }, o[2] = { out0[i], out1[i] };
-    int ex = 0, zr = 0, fd = 0;
+  for (uint64_t i = lat; i < out0.size(); ++i) {
+    const float c0 = click[(size_t)i] ? 0.5f * CLICK : 0.f;
+    const float e[2] = { 0.5f * sig(i - lat) + c0, -0.5f * sig(i - lat) - c0 }, d[2] = { sig(i - lat), -sig(i - lat) }, o[2] = { out0[i], out1[i] };
+    int ex = 0, zr = 0, fd = 0, dr = 0;
     for (int c = 0; c < 2; ++c) {
+      const float lo = dry ? std::min(std::fabs(e[c]), std::fabs(d[c])) : 0.f, hi = dry ? std::max(std::fabs(e[c]), std::fabs(d[c])) : std::fabs(e[c]);
       if (o[c] == e[c]) ex++;
-      else if (o[c] == 0.f) zr++;
-      else if (std::fabs(o[c]) < std::fabs(e[c]) && (o[c] > 0) == (e[c] > 0)) fd++;
+      else if (dry && o[c] == d[c]) dr++;
+      else if (!dry && o[c] == 0.f) zr++;
+      else if (std::fabs(o[c]) >= lo * 0.999f && std::fabs(o[c]) <= hi * 1.001f && (o[c] > 0) == (e[c] > 0)) fd++; // (a fade: between the two)
     }
     const bool aft = res.hiccup > 0 && i >= (uint64_t)((res.hiccup + 1) * 48000);
     res.after += aft;
     if (ex == 2) { res.exact++; res.exact_after += aft; if (!res.first_wet) res.first_wet = i; }
     else if (zr == 2) res.zero++;
-    else if (ex + zr + fd == 2) res.faded++;
+    else if (dr == 2) res.dry++;
+    else if (ex + zr + fd + dr == 2) res.faded++;
     else res.wrong++;
   }
+  for (uint64_t e : evs)
+    if (res.first_wet && e + lat >= res.first_wet && e + lat < out0.size()) { res.events++; res.ev_exact += out0[(size_t)(e + lat)] == 0.5f * sig(e) + 0.5f * CLICK; }
   return res;
 }
 
@@ -282,9 +308,9 @@ static double num(const std::string &j, const char *key)
 static void report(const char *what, const Result &r)
 {
   const uint64_t wet = r.frames > r.first_wet ? r.frames - r.first_wet : 0;
-  printf("%s: %llu frames, first wet at %.0f ms, after it exact %.2f%% zero %llu faded %llu wrong %llu\n  send %s\n  serve %s\n", what,
-         (unsigned long long)r.frames, r.first_wet / 48.0, wet ? 100.0 * r.exact / wet : 0.0, (unsigned long long)r.zero,
-         (unsigned long long)r.faded, (unsigned long long)r.wrong, r.sst.c_str(), r.rst.c_str());
+  printf("%s: %llu frames, first wet at %.0f ms, after it exact %.2f%% zero %llu dry %llu faded %llu wrong %llu, notes %llu/%llu exact\n  send %s\n  serve %s\n", what,
+         (unsigned long long)r.frames, r.first_wet / 48.0, wet ? 100.0 * r.exact / wet : 0.0, (unsigned long long)r.zero, (unsigned long long)r.dry,
+         (unsigned long long)r.faded, (unsigned long long)r.wrong, (unsigned long long)r.ev_exact, (unsigned long long)r.events, r.sst.c_str(), r.rst.c_str());
 }
 static double exact_pct(const Result &r) { const uint64_t wet = r.frames > r.first_wet ? r.frames - r.first_wet : 0; return wet ? 100.0 * r.exact / wet : 0; }
 // After a stall: from a second after it, every frame back exact; and once the status's windows (the last one to two seconds) no longer
@@ -441,6 +467,42 @@ int main()
     report("the sender jumps its latency ahead (playback starts)", r);
     CHECK(r.wrong == 0, "nothing misaligned through the jump");
     recovered(r, 4);
+  }
+  // rt-hopvst: "Dry when late" on, 2% loss each way: a lost frame plays the input itself (dry), never silence, and fades back to the return.
+  {
+    Result r = tries([] { return run(17, 5, 3, 0.02, 0, 3, "studio", 0, 0, 0, 0, 0, 0, L, true); }, [](const Result &x) { return x.hiccup == 0; });
+    report("2% loss each way, dry when late", r);
+    CHECK(r.wrong == 0, "nothing misaligned or wrong with dry fills");
+    CHECK(r.zero == 0, "no silent frame: every lost one plays dry (%llu silent)", (unsigned long long)r.zero);
+    CHECK(r.dry > 0 && num(r.sst, "lost") > 0, "the lost frames played dry, and were counted");
+    CHECK(r.sst.find("\"dry_lost\":true") != std::string::npos, "the status says lost frames play dry");
+    if (!(r.hiccup > 0 && !strict())) CHECK(exact_pct(r) > 85, "most frames back exact");
+  }
+  // rt-hopvst: a long link (300 ms round trip) inside a bigger budget (24000 = 500 ms; the plug-in's most is now HOP_LAT_MAX, 680 ms).
+  {
+    Result r = tries([] { return run(24, 150, 2, 0, 0, 4, "studio", 0, 0, 0, 0, 0, 0, 24000); }, [](const Result &x) { return x.hiccup == 0; });
+    report("a 300 ms round trip, a 500 ms budget", r);
+    CHECK(r.wrong == 0, "nothing misaligned on a long link");
+    CHECK(r.first_wet > 0 && r.first_wet < 3 * 48000, "the hop comes up on a long link");
+    CHECK(num(r.sst, "budget_ms") > 490 && num(r.sst, "need_ms") > 290 && num(r.sst, "need_ms") < num(r.sst, "budget_ms"), "a long link's need inside the bigger budget");
+    if (r.hiccup > 0 && !strict()) printf("  (the harness stalled: exactness passed over, SS_TIMING_STRICT off)\n");
+    else CHECK(exact_pct(r) > (coarse() ? 99 : 99.9), "every frame back exact on a long link");
+  }
+  // rt-hopvst: MIDI with the audio (an instrument you don't have): a note every 100 ms comes out of the remote's Hop X on the very frame
+  // whose audio it went in with, so the instrument's sound is back exactly at the note's frame + the latency. Lossless first, then 2% loss
+  // each way (each note goes at least twice, so most still land).
+  {
+    Result r = tries([] { return run(27, 3, 2, 0, 0, 3, "studio", 0, 0, 0, 0, 0, 0, L, false, true); }, [](const Result &x) { return x.hiccup == 0; });
+    report("MIDI notes with the audio", r);
+    CHECK(r.wrong == 0, "nothing misaligned with MIDI");
+    CHECK(r.events >= 10, "notes went (%llu)", (unsigned long long)r.events);
+    CHECK(num(r.rst, "midi") >= (double)r.events, "the remote took every note once (%.0f of %llu)", num(r.rst, "midi"), (unsigned long long)r.events);
+    if (r.hiccup > 0 && !strict()) printf("  (the harness stalled: note exactness passed over, SS_TIMING_STRICT off)\n");
+    else CHECK(r.ev_exact * 100 >= r.events * (coarse() ? 90 : 99), "every note's click back on its exact frame (%llu of %llu)", (unsigned long long)r.ev_exact, (unsigned long long)r.events);
+    Result q = tries([] { return run(34, 5, 3, 0.02, 0, 3, "studio", 0, 0, 0, 0, 0, 0, L, false, true); }, [](const Result &x) { return x.hiccup == 0; });
+    report("MIDI notes, 2% loss each way", q);
+    CHECK(q.wrong == 0, "nothing misaligned with MIDI under loss");
+    if (!(q.hiccup > 0 && !strict())) CHECK(q.ev_exact * 100 >= q.events * 85, "most notes land under loss (%llu of %llu)", (unsigned long long)q.ev_exact, (unsigned long long)q.events);
   }
   {
     Result r = run(41, 2, 0, 0, 0, 1.5, "not the studio's");

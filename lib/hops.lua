@@ -13,6 +13,9 @@
 -- holds the song's FX off here (each one's BYPASS line as the band has it kept in the track's band_fx_held, which mirror sends in its place,
 -- so it's this computer's choice, never the song's); the bandmate hosts the whole chain. It comes back by itself (the chain on again, exactly
 -- as it was) when they start recording, go away or fall behind, and with Live sync. Not on the master. (James, rt)
+-- Try a plug-in you don't have (rt-hopvst, lib/hoptry.lua): a bandmate's plug-in from their published list, loaded fresh on their hidden track
+-- once they say yes (their computer, their licence), with your audio or MIDI through it and its knobs from your side. A lost frame plays dry
+-- now, and a link that needs more than a hop's budget gets a bigger one when stopped (up to LAT_MAX), both with the Hop plug-in 0.2.0.
 local band = require("band")
 -- LATENCY: a hop's budget, the plug-in's most (170 ms at 48 kHz). The desktop <-> laptop link over the internet measured an 80-125 ms round
 -- trip, and the plug-in's default 150 ms left about 12 ms to spare: most of every spike came back too late. The extra 20 ms is only more of
@@ -22,11 +25,12 @@ local band = require("band")
 -- LOST_MAX: % of a hop's audio not back in time over LATE_WINDOW s that hands an offload back: that link loses 0.3-0.7% (a packet now and
 -- then) and a 150-200 ms stall every minute or so (2.1% of a window), which isn't falling behind; before the spike fix it lost 8-13%.
 local hops = { EVERY = 0.5, ASK_EVERY = 3, IDLE = 30, NAME = "StudioSync Hop", TAG = "for=hop;", TRACK_TAG = "hop", MARGIN_MS = 30, REMOTE_LATENCY = 256,
-  LATENCY = 8192, HELD = "band_fx_held", MAX_CHAIN = 32, BUSY = 75, CPU_EVERY = 20, START = 20, AWAY = 10, LATE_WINDOW = 10, LATE_MAX = 8, LOST_MAX = 5, SETTLE = 3, SAY_BACK = 300 }
+  LATENCY = 8192, LAT_MAX = 32768, OLD_MAX = 8192, SPARE_MS = 20, HELD = "band_fx_held", MAX_CHAIN = 32, BUSY = 75, CPU_EVERY = 20, START = 20, AWAY = 10, LATE_WINDOW = 10, LATE_MAX = 8, LOST_MAX = 5, SETTLE = 3, SAY_BACK = 300 }
 -- (this script's state; kept across Live sync's reload in place (band.reload: the same Lua, the modules loaded again): a fresh one forgot the
 -- hidden tracks this computer hosts, so a stop never removed them, and the next ask made a second track for the same hop. Laptop, rt)
 local S = rawget(_G, "STUDIOSYNC_HOPS_S") or {}
-for k, v in pairs({ at = -math.huge, connected = {}, asked = {}, serving = {}, why = {}, ok_at = {}, late = {}, up = {}, tp = {}, back = {} }) do if S[k] == nil then S[k] = v end end
+for k, v in pairs({ at = -math.huge, connected = {}, asked = {}, serving = {}, why = {}, ok_at = {}, late = {}, up = {}, tp = {}, back = {},
+  pending = {}, allow = {}, refused = {}, params = {}, sent = {}, act = {} }) do if S[k] == nil then S[k] = v end end -- (pending .. sent: lib/hoptry.lua's)
 _G.STUDIOSYNC_HOPS_S = S
 hops.S = S
 local SEC = "StudioSync hops" -- ProjExtState: this project's hops (requester side), hop id -> record
@@ -78,8 +82,20 @@ function hops.health_text(rec, st)
   if (tonumber(net.remote_slips) or 0) > 0 then text = text .. string.format(", %d clock slips", net.remote_slips) end
   if (tonumber(st.late) or 0) > 0 or rec.offload then text = text .. string.format(", %d late blocks", tonumber(st.late) or 0) end
   if (tonumber(net.holes) or 0) > 0 then text = text .. string.format(", %d dropouts", net.holes) end
-  if over then text = text .. ". Raise the Hop's Latency budget" end
+  if over then
+    text = text .. ((tonumber(net.budget_ms) or 0) * hops.LAT_MAX / math.max(1, tonumber(rec.latency) or hops.LATENCY) <= (tonumber(net.need_ms) or 0)
+      and ". This link needs more than the most a Hop can wait" or ". StudioSync gives it a bigger budget the next time playback stops")
+  end
   return not over and lost < 1, text
+end
+-- A long link (rt-hopvst): when a hop needs more than its budget less SPARE_MS, the budget that covers it with SPARE_MS to spare, in steps of
+-- 1024 frames, up to LAT_MAX; nil while it fits (or the numbers aren't there yet). `cur`: its latency now, in frames. Pure.
+function hops.budget_for(cur, need_ms, budget_ms)
+  cur, need_ms, budget_ms = tonumber(cur), tonumber(need_ms), tonumber(budget_ms)
+  if not (cur and need_ms and budget_ms and need_ms > 0 and budget_ms > 0) or need_ms + hops.SPARE_MS <= budget_ms then return nil end
+  local per_ms = cur / budget_ms -- (frames a ms: the budget is the latency at the plug-in's own rate)
+  local want = math.min(hops.LAT_MAX, math.ceil((need_ms + hops.SPARE_MS) * per_ms / 1024) * 1024)
+  return want > cur and want or nil
 end
 -- The song's plug-ins a hop stands for, from a request: { {fxi, fx} }, an offload's whole chain or the one plug-in; nil when it isn't one. Pure.
 function hops.chain_of(d)
@@ -159,12 +175,17 @@ local function param_by_name(tr, fx, want)
     if select(2, reaper.TrackFX_GetParamName(tr, fx, p, "")) == want then return p end
   end
 end
--- A Hop's knob to `v` in its own range lo..hi: REAPER hands a CLAP's real range, a VST3's 0..1.
-local function set_knob(tr, fx, name, v, lo, hi)
+-- A Hop's knob to `v` in its own range lo..hi: REAPER hands a CLAP's real range, a VST3's 0..1. old_hi: an older Hop's top (its Latency budget
+-- ended at 8192 before 0.2.0): what a VST3 took is read back, and set again on that range when it isn't v.
+local function set_knob(tr, fx, name, v, lo, hi, old_hi)
   local p = param_by_name(tr, fx, name)
   if not p then return false end
   local _, mn, mx = reaper.TrackFX_GetParam(tr, fx, p)
-  if (mx or 1) - (mn or 0) > 1.5 then reaper.TrackFX_SetParam(tr, fx, p, v) else reaper.TrackFX_SetParamNormalized(tr, fx, p, (v - lo) / (hi - lo)) end
+  if (mx or 1) - (mn or 0) > 1.5 then reaper.TrackFX_SetParam(tr, fx, p, v) else
+    reaper.TrackFX_SetParamNormalized(tr, fx, p, (v - lo) / (hi - lo))
+    local got = old_hi and tonumber((select(2, reaper.TrackFX_GetFormattedParamValue(tr, fx, p, "")) or ""):match("%d+"))
+    if got and math.abs(got - v) > 1 then reaper.TrackFX_SetParamNormalized(tr, fx, p, math.min(1, (v - lo) / (old_hi - lo))) end
+  end
   return true
 end
 local function hop_id_of(tr, fx)
@@ -197,7 +218,7 @@ local function add_hop(tr, pos, id, latency, dry)
   if idx < 0 then return nil end
   local function knobs()
     set_knob(tr, idx, "Hop id", id, 1, 64)
-    if latency then set_knob(tr, idx, "Latency budget", latency, 256, 8192) end
+    if latency then set_knob(tr, idx, "Latency budget", latency, 256, hops.LAT_MAX, hops.OLD_MAX) end
     set_knob(tr, idx, "Dry when late", dry or 0, 0, 1)
   end
   knobs()
@@ -209,6 +230,7 @@ local function add_hop(tr, pos, id, latency, dry)
   return idx
 end
 hops.add_hop = add_hop -- (live audio's Play reads a Hop on its hidden live out track: lib/liveaudio.lua)
+hops.set_knob = set_knob
 -- A track with a Hop runs its FX in real time ("no anticipative FX", I_PERFFLAGS 2; not sent to the others): rendered ahead, the Hop's blocks
 -- came in bursts, and a play start's whole-latency burst made 30 late blocks instead of 12. -> the flags it had, to put back.
 local function real_time(tr)
@@ -235,6 +257,8 @@ local function track_by_oid(proj, oid)
     if mirror.track_oid(tr) == tostring(oid):upper() then return tr end
   end
 end
+hops.track_by_oid = track_by_oid
+hops.fx_name, hops.guid_at = fx_name, guid_at
 -- The song's plug-in a hop stands for, on this computer's copy: track, its index; or nil.
 local function find_fx(proj, oid, fxi, name)
   local tr = oid and track_by_oid(proj, oid)
@@ -278,6 +302,7 @@ local function secret_of(cfg)
   local groups = require("groups")
   return groups.tailnet(cfg.root) and groups.sonobus_secret(cfg.root) or nil
 end
+hops.secret_of = secret_of
 -- The hops travel on live audio's UDP socket: when live audio isn't running here (the studio has it off), it's started with nobody to send
 -- to (nothing of this computer's inputs goes anywhere) just to carry the hops. Live audio's own tick takes it over when the studio turns it on.
 function hops.ensure_link(cfg, secret)
@@ -301,8 +326,8 @@ local function status(id) local st = band.json_decode(reaper.StudioSync_HopStatu
 -- ---- the computer whose track has the Hop ---------------------------------------------------------------------------------------------
 local function ask(cfg, rec, song, room)
   S.asked[rec.token] = reaper.time_precise()
-  return require("direct").send_live(cfg, "hop", { op = "serve", token = rec.token, oid = rec.oid, fxi = rec.fxi, fx = rec.fx, chain = rec.chain, user = cfg.user },
-    song, room, nil, { rec.peer })
+  return require("direct").send_live(cfg, "hop", { op = "serve", token = rec.token, oid = rec.oid, fxi = rec.fxi, fx = rec.fx, chain = rec.chain, user = cfg.user,
+    try = rec.try or nil }, song, room, nil, { rec.peer })
 end
 -- "Run this plug-in on <user>'s computer": a Hop right after FX `fx` on `tr`, and the bandmate asked to host it. -> hop id, or nil and why.
 function hops.make(proj, cfg, tr, fx, user, peer, song, room)
@@ -318,7 +343,7 @@ function hops.make(proj, cfg, tr, fx, user, peer, song, room)
   if not fxi then return nil, "that's one of this computer's own effects, not the project's" end
   local id = hops.free_id(hops.used_ids(proj), 1, 32)
   if not id then return nil, "every hop id is taken" end
-  local idx = add_hop(tr, fx + 1, id, hops.LATENCY, 0)
+  local idx = add_hop(tr, fx + 1, id, hops.LATENCY, 1) -- (a lost frame plays dry, not silence: the Hop 0.2.0's, rt-hopvst)
   if not idx then return nil, "the StudioSync Hop plug-in isn't installed here (run StudioSync's installer, then rescan plug-ins)" end
   band.set_track_ext(tr, "band_local_fx", band.track_ext(tr, "band_local_fx") .. reaper.TrackFX_GetFXGUID(tr, idx) .. hops.TAG)
   local rec = { id = id, token = math.random(1, 2147483647), user = user, peer = peer, oid = oid, fxi = fxi, fx = fx_name(tr, fx), of = guid,
@@ -353,10 +378,40 @@ function hops.stop(proj, cfg, id)
   for _, r in pairs(recs) do others = others or r.oid == rec.oid end
   if tr and rec.perf and not others then reaper.SetMediaTrackInfo_Value(tr, "I_PERFFLAGS", math.floor(rec.perf)) end -- (as it was, with its last hop)
   recs[tostring(id)], S.connected[id], S.asked[rec.token], S.why[rec.token] = nil, nil, nil, nil
-  S.ok_at[rec.token], S.late[rec.token], S.up[rec.token], S.tp[rec.token] = nil, nil, nil, nil
+  S.ok_at[rec.token], S.late[rec.token], S.up[rec.token], S.tp[rec.token], S.params[rec.token], S.act[rec.token] = nil, nil, nil, nil, nil, nil
   save(proj, recs)
   return true
 end
+-- "Try <key> on <user>'s computer" (rt-hopvst, lib/hoptry.lua): a plug-in from their published list (plugins.key's name) that nothing in the
+-- song has: a Hop at the end of `tr`'s chain (MIDI from the track reaches it there, for an instrument; a lost frame plays dry), and they're asked
+-- to load it on a hidden track of theirs; they have to say yes first. -> hop id, or nil and why.
+function hops.try(proj, cfg, tr, user, peer, key, song, room)
+  if not hops.available() then return nil, "needs StudioSync's extension with live hops" end
+  local secret = secret_of(cfg)
+  if not secret then return nil, "needs the studio on Tailscale with its secret (Settings > Studio)" end
+  if type(key) ~= "string" or key == "" or #key > 200 then return nil, "no plug-in named" end
+  if tr == reaper.GetMasterTrack(proj) then return nil, "not on the master: pick a track" end
+  local oid = require("mirror").track_oid(tr)
+  if oid == "" then return nil, "this track isn't shared yet" end
+  for _, r in pairs(hops.records(proj)) do if r.try and r.oid == oid and r.fx == key then return nil, "already trying it on this track" end end
+  local id = hops.free_id(hops.used_ids(proj), 1, 32)
+  if not id then return nil, "every hop id is taken" end
+  local idx = add_hop(tr, reaper.TrackFX_GetCount(tr), id, hops.LATENCY, 1)
+  if not idx then return nil, "the StudioSync Hop plug-in isn't installed here (run StudioSync's installer, then rescan plug-ins)" end
+  band.set_track_ext(tr, "band_local_fx", band.track_ext(tr, "band_local_fx") .. reaper.TrackFX_GetFXGUID(tr, idx) .. hops.TAG)
+  local rec = { id = id, token = math.random(1, 2147483647), user = user, peer = peer, oid = oid, fxi = 0, fx = key, try = true,
+    track = select(2, reaper.GetTrackName(tr)), hop = reaper.TrackFX_GetFXGUID(tr, idx), song = song, room = room, perf = real_time(tr) }
+  local recs = hops.records(proj)
+  recs[tostring(id)] = rec
+  save(proj, recs)
+  hops.ensure_link(cfg, secret)
+  reaper.StudioSync_HopConnect(id, peer, hops.connect_json(secret, rec.token))
+  S.connected[id] = peer .. "\0" .. rec.token
+  ask(cfg, rec, song, room)
+  band.log(string.format("hop %d: asked %s to let you try %s on their computer (it plays here once they say yes)", id, user, key))
+  return id
+end
+
 -- The hop standing for FX `fx` on `tr`, if any: its record.
 function hops.of_fx(proj, tr, fx)
   local g = reaper.TrackFX_GetFXGUID(tr, fx)
@@ -476,8 +531,9 @@ local function drop_served(proj, token)
     local tr = reaper.GetTrack(proj, t)
     if reaper.GetTrackGUID(tr) == sv.track then reaper.DeleteTrack(tr); break end
   end
-  S.serving[token] = nil
+  S.serving[token], S.sent[token] = nil, nil
 end
+hops.drop_served = drop_served
 local function served_track(proj, sv)
   for t = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, t)
@@ -507,8 +563,14 @@ function hops.serve(proj, cfg, d, song, room)
   if sv and served_track(proj, sv) then sv.asked = reaper.time_precise(); hops.ensure_link(cfg, secret); return true end
   local chain = hops.chain_of(d)
   if not chain then return fail("their StudioSync didn't understand the request") end
-  local src, sis = nil, {}
-  for k, e in ipairs(chain) do
+  local src, sis, try = nil, {}, nil
+  if d.try then -- (a plug-in of theirs nothing in the song has: only with their yes, loaded fresh by name. lib/hoptry.lua, rt-hopvst)
+    local name, why, inst = require("hoptry").host_check(cfg, d, token, song, room)
+    if not name then return why ~= nil and fail(why) end -- (no why: refused, and told so already)
+    try = { name = name, instrument = inst }
+    sis[1] = -1
+  end
+  for k, e in ipairs(try and {} or chain) do
     local s, si = find_fx(proj, d.oid, e.fxi, e.fx)
     if not s then return fail("their copy of the project doesn't have " .. tostring(e.fx) .. " on that track") end
     if not require("prints").fx_here(s, si) then return fail(tostring(e.fx):gsub("^%w+:%s*", "") .. " doesn't load on their computer") end
@@ -524,28 +586,33 @@ function hops.serve(proj, cfg, d, song, room)
   reaper.SetMediaTrackInfo_Value(tr, "B_MAINSEND", 0) -- (heard by nobody here: it only feeds the hop)
   reaper.SetMediaTrackInfo_Value(tr, "I_PERFFLAGS", math.floor(reaper.GetMediaTrackInfo_Value(tr, "I_PERFFLAGS")) | 2) -- (no anticipative FX: real time)
   local ok = add_hop(tr, 0, x, hops.REMOTE_LATENCY, 0) ~= nil
-  if ok then
+  if ok and try then ok = reaper.TrackFX_AddByName(tr, try.name, false, -1001) == 1 -- (never its window: only the owner opens that, here)
+  elseif ok then
     for k, si in ipairs(sis) do reaper.TrackFX_CopyToTrack(src, si, tr, k, false) end
-    ok = reaper.TrackFX_GetCount(tr) == #sis + 1
   end
+  ok = ok and reaper.TrackFX_GetCount(tr) == #sis + 1
   -- (Y plays its input: nobody hears this track (no master send), but its meter shows the hop's audio; with silence it read 0.000 while the
   -- hop worked. Laptop, rt)
   ok = ok and add_hop(tr, #sis + 1, y, hops.REMOTE_LATENCY, 1) ~= nil
   if ok then reaper.TrackFX_SetNamedConfigParm(tr, 0, "chain_pdc_mode", "2") end -- (PDC "ignore": REAPER adds no delay of its own in this chain)
   reaper.PreventUIRefresh(-1)
-  if not ok then reaper.DeleteTrack(tr); return fail("the StudioSync Hop plug-in isn't installed on their computer") end
+  if not ok then reaper.DeleteTrack(tr); return fail(try and (try.name .. " didn't load on their computer") or "the StudioSync Hop plug-in isn't installed on their computer") end
   local pdc = chain_pdc(tr, #sis)
-  sv = { track = reaper.GetTrackGUID(tr), x = x, y = y, pdc = pdc, user = d.user, oid = d.oid, chain = chain, fx = d.fx, asked = reaper.time_precise(), knobs = {} }
+  sv = { track = reaper.GetTrackGUID(tr), x = x, y = y, pdc = pdc, user = d.user, oid = d.oid, chain = chain, fx = d.fx, asked = reaper.time_precise(), knobs = {},
+    try = try and true or nil, name = try and try.name or nil, instrument = try and try.instrument or nil, song = song, room = room }
   S.serving[token], S.why[token] = sv, nil
   hops.ensure_link(cfg, secret)
   reaper.StudioSync_HopServe(hops.serve_json(secret, token, x, y, pdc))
   band.log(string.format("hosting a hop for %s: %s on a hidden track here", tostring(d.user), tostring(d.fx):gsub("^%w+:%s*", "")))
   return true
 end
--- The hidden copies follow the song's plug-ins: their knobs and bypass as they change, their latency.
+-- The hidden copies follow the song's plug-ins: their knobs and bypass as they change, their latency. A tried plug-in has no song copy: its
+-- knobs go to whoever tries it instead (lib/hoptry.lua), and theirs come back as "set".
 local function follow(proj, cfg, token, sv)
   local tr = served_track(proj, sv)
-  for k, e in ipairs(sv.chain) do
+  if sv.try and not tr then drop_served(proj, token); return end
+  if sv.try then require("hoptry").host_params(cfg, token, sv, tr) end
+  for k, e in ipairs(sv.try and {} or sv.chain) do
     local src, si = find_fx(proj, sv.oid, e.fxi, e.fx)
     if not (tr and src) then drop_served(proj, token); return end
     local kn = sv.knobs[k] or {}
@@ -570,10 +637,16 @@ function hops.on_msg(proj, cfg, d, song, room)
   if type(d) ~= "table" then return end
   local token = math.tointeger(tonumber(d.token))
   if d.op == "serve" then hops.serve(proj, cfg, d, song, room)
-  elseif d.op == "stop" and token then drop_served(proj, token)
+  elseif d.op == "stop" and token then drop_served(proj, token); require("hoptry").gone(token)
+  elseif (d.op == "params" or d.op == "set") and token then require("hoptry").on_msg(proj, cfg, d, token)
   elseif d.op == "fail" and token then
     for _, rec in pairs(hops.records(proj)) do
-      if rec.token == token then S.why[token] = tostring(d.why or "?"); band.log("hop " .. rec.id .. ": " .. S.why[token]) end
+      if rec.token == token and rec.try and d.denied then -- (the owner said no, or stopped it: the try ends here too, and says why)
+        hops.stop(proj, cfg, rec.id)
+        local text = string.format("Trying %s on %s's computer ended: %s", tostring(rec.fx), tostring(rec.user), tostring(d.why or "they stopped it"))
+        S.back[#S.back + 1] = { text = text, at = reaper.time_precise() }
+        band.log(text)
+      elseif rec.token == token then S.why[token] = tostring(d.why or "?"); band.log("hop " .. rec.id .. ": " .. S.why[token]) end
     end
   end
 end
@@ -627,6 +700,7 @@ function hops.tick(cfg, b, proj)
   local now = reaper.time_precise()
   if now - S.at < hops.EVERY then return end
   S.at = now
+  require("hoptry").print_tick(now) -- (a print of a tried plug-in ends on time: lib/hoptry.lua)
   if not (cfg and hops.available()) or (proj and reaper.EnumProjects(-1) ~= proj) then return end
   local secret = secret_of(cfg)
   if not secret then return end
@@ -634,13 +708,13 @@ function hops.tick(cfg, b, proj)
   for key, rec in pairs(recs) do
     local id = math.floor(rec.id)
     local tr = track_by_oid(proj, rec.oid)
-    local src = tr and (rec.offload or find_fx(proj, rec.oid, rec.fxi, rec.fx))
+    local src = tr and (rec.offload or rec.try or find_fx(proj, rec.oid, rec.fxi, rec.fx))
     if not src then -- (the plug-in it stood for is gone from the song: so is the hop)
       hops.stop(proj, cfg, id)
     elseif not rec.offload or keep_offload(proj, cfg, key, rec, tr, now) then
       if not rec.offload and not guid_at(tr, rec.hop) then -- (the band's chain replaced this track's, own FX and all: the Hop goes back in)
-        local _, i = find_fx(proj, rec.oid, rec.fxi, rec.fx)
-        local idx = add_hop(tr, i + 1, id, hops.LATENCY, 0)
+        local i = rec.try and reaper.TrackFX_GetCount(tr) - 1 or select(2, find_fx(proj, rec.oid, rec.fxi, rec.fx)) -- (a try's at the end)
+        local idx = add_hop(tr, i + 1, id, math.floor(tonumber(rec.latency) or hops.LATENCY), 1)
         if idx then
           rec.hop = reaper.TrackFX_GetFXGUID(tr, idx)
           band.set_track_ext(tr, "band_local_fx", band.track_ext(tr, "band_local_fx") .. rec.hop .. hops.TAG)
@@ -651,6 +725,8 @@ function hops.tick(cfg, b, proj)
       end
       if not linked then linked = hops.ensure_link(cfg, secret) end
       local st = status(id)
+      if type(st.net) == "table" and st.net.serving then S.why[rec.token] = nil end -- (hosted now: an earlier "waiting for a yes" is past)
+      hops.long_link(proj, key, rec, tr, st, now)
       local want = rec.peer .. "\0" .. rec.token
       if S.connected[id] ~= want or type(st.net) ~= "table" then
         reaper.StudioSync_HopConnect(id, rec.peer, hops.connect_json(secret, rec.token))
@@ -673,8 +749,27 @@ function hops.tick(cfg, b, proj)
     else follow(proj, cfg, token, sv) end
   end
 end
+-- A hop whose link needs more than its budget gets a bigger one (hops.budget_for), only while REAPER is stopped (a latency change mid-play
+-- makes REAPER recompute its delay compensation, which can glitch) and once the hop has run settled; kept in its record (rt-hopvst).
+function hops.long_link(proj, key, rec, tr, st, now)
+  local net = type(st) == "table" and st.net
+  if type(net) ~= "table" or not net.active then S.act[rec.token] = nil; return end
+  S.act[rec.token] = S.act[rec.token] or now
+  if now - S.act[rec.token] < hops.SETTLE or (tonumber(reaper.GetPlayStateEx(proj)) or 0) ~= 0 then return end
+  local cur = math.floor(tonumber(rec.latency) or hops.LATENCY)
+  local want = hops.budget_for(cur, net.need_ms, net.budget_ms)
+  local i = want and guid_at(tr, rec.hop)
+  if not i then return end
+  set_knob(tr, i, "Latency budget", want, 256, hops.LAT_MAX, hops.OLD_MAX)
+  rec.latency = want
+  local recs = hops.records(proj)
+  if recs[key] then recs[key].latency = want; save(proj, recs) end
+  band.log(string.format("hop %d: the link to %s needs %.0f ms, so its budget is now %.0f ms (REAPER plays the rest of the mix that much later)",
+    math.floor(rec.id), tostring(rec.user), tonumber(net.need_ms) or 0, (tonumber(net.budget_ms) or 0) * want / math.max(1, cur)))
+end
+
 -- Live sync ending: hops stop on both sides (the records stay in the project: they start again with Live sync). An offload comes back here
--- for good: with nobody hosting it, its track would play dry.
+-- for good: with nobody hosting it, its track would play dry. A tried plug-in's yes was for this session: asked again next time.
 function hops.on_exit(proj, cfg)
   if not hops.available() then return end
   for _, rec in pairs(hops.records(proj)) do
@@ -686,6 +781,7 @@ function hops.on_exit(proj, cfg)
   end
   S.connected = {}
   for token in pairs(S.serving) do drop_served(proj, token) end
+  S.allow, S.pending, S.refused = {}, {}, {}
 end
 
 -- Health: a row per hop, on either side.
@@ -701,14 +797,18 @@ function hops.health_rows(cfg, proj)
     local ok, text = hops.health_text(rec, status(rec.id))
     rows[#rows + 1] = { "hop " .. k, ok, "yellow", text, text }
   end
-  for _, sv in pairs(S.serving) do
+  for token, sv in pairs(S.serving) do
     local net = status(sv.x).net
     local good = type(net) == "table" and net.alive and net.lined_up and net.heard
-    local text = string.format("Hosting a hop for %s (%s): %s", tostring(sv.user), tostring(sv.fx):gsub("^%w+:%s*", ""),
+    local text = string.format(sv.try and "%s is trying your %s here: %s" or "Hosting a hop for %s (%s): %s", tostring(sv.user), tostring(sv.fx):gsub("^%w+:%s*", ""),
       type(net) ~= "table" and "starting" or not net.alive and "its hidden track isn't running" or not net.heard and "waiting for their audio"
       or string.format("%.0f ms here, %d clock slips", tonumber(net.remote_ms) or 0, tonumber(net.slips) or 0))
-    rows[#rows + 1] = { "hop host " .. tostring(sv.x), good == true, "yellow", text, text }
+    -- (a tried plug-in is the owner's to stop, at any time: lib/hoptry.lua)
+    rows[#rows + 1] = { "hop host " .. tostring(sv.x), good == true, "yellow", text, text,
+      action = sv.try and { "Stop", function() require("hoptry").end_use(proj, cfg, token) end, "Their try ends now; they'd have to ask you again." } or nil }
   end
+  local okt, trows = pcall(function() return require("hoptry").health_rows(proj, cfg) end) -- (asks to try your plug-ins: Allow, lib/hoptry.lua)
+  if okt then for _, r in ipairs(trows or {}) do rows[#rows + 1] = r end end
   for k, x in ipairs(S.back) do -- (an offload that came back, for a while: never silently)
     if reaper.time_precise() - x.at < hops.SAY_BACK then rows[#rows + 1] = { "offload back " .. k, false, "yellow", x.text, x.text } end
   end
