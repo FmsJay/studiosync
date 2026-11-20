@@ -22,7 +22,7 @@ local hops = { EVERY = 0.5, ASK_EVERY = 3, IDLE = 30, NAME = "StudioSync Hop", T
 -- (this script's state; kept across Live sync's reload in place (band.reload: the same Lua, the modules loaded again): a fresh one forgot the
 -- hidden tracks this computer hosts, so a stop never removed them, and the next ask made a second track for the same hop. Laptop, rt)
 local S = rawget(_G, "STUDIOSYNC_HOPS_S") or {}
-for k, v in pairs({ at = -math.huge, connected = {}, asked = {}, serving = {}, why = {}, ok_at = {}, late = {}, up = {}, back = {} }) do if S[k] == nil then S[k] = v end end
+for k, v in pairs({ at = -math.huge, connected = {}, asked = {}, serving = {}, why = {}, ok_at = {}, late = {}, up = {}, tp = {}, back = {} }) do if S[k] == nil then S[k] = v end end
 _G.STUDIOSYNC_HOPS_S = S
 hops.S = S
 local SEC = "StudioSync hops" -- ProjExtState: this project's hops (requester side), hop id -> record
@@ -338,7 +338,7 @@ function hops.stop(proj, cfg, id)
   end
   if rec.offload and tr then hops.release_chain(tr, rec.held or {}) end -- (its own chain on again, as it was)
   recs[tostring(id)], S.connected[id], S.asked[rec.token], S.why[rec.token] = nil, nil, nil, nil
-  S.ok_at[rec.token], S.late[rec.token], S.up[rec.token] = nil, nil, nil
+  S.ok_at[rec.token], S.late[rec.token], S.up[rec.token], S.tp[rec.token] = nil, nil, nil, nil
   save(proj, recs)
   return true
 end
@@ -589,13 +589,19 @@ local function keep_offload(proj, cfg, key, rec, tr, now)
   local late, lost, sent, l = tonumber(st.late) or 0, tonumber(net.lost) or 0, tonumber(net.sent) or 0, S.late[rec.token]
   -- (counted only once the audio has gone both ways for SETTLE s: the blocks before then (the bandmate's hidden track starting, 9-13 of them
   -- every time in REAPER, none after) handed every offload back at its first look, 10 s in. Desktop -> laptop, rt)
-  if not (net.active and net.remote_alive) then S.up[rec.token] = nil elseif not S.up[rec.token] then S.up[rec.token] = now end
-  if not S.up[rec.token] or now - S.up[rec.token] < hops.SETTLE then l = nil end
-  if not l or now - l.at >= hops.LATE_WINDOW then
+  -- (and again after a play start, a stop or a seek: REAPER processes the hop's whole latency at once then, to line up its delay compensation,
+  -- and those blocks can't be back in time: 12-33 of them at every play in REAPER, none after. Desktop -> laptop, rt)
+  local ps, pos, tp = tonumber(reaper.GetPlayStateEx(proj)) or 0, tonumber(reaper.GetPlayPositionEx(proj)) or 0, S.tp[rec.token]
+  local moved = tp and (tp.ps ~= ps or (ps & 1 == 1 and math.abs(pos - tp.pos - (now - tp.at) * (tonumber(reaper.Master_GetPlayRate(proj)) or 1)) > 0.5))
+  S.tp[rec.token] = { ps = ps, pos = pos, at = now }
+  if not (net.active and net.remote_alive) then S.up[rec.token] = nil elseif not S.up[rec.token] or moved then S.up[rec.token] = now end
+  if not S.up[rec.token] or now - S.up[rec.token] < hops.SETTLE then l = nil -- (the first window starts once settled, not before)
+  elseif not l or now - l.at >= hops.LATE_WINDOW then
     l = { at = now, late = late, lost = lost, sent = sent, rise = l and math.max(0, late - l.late) or 0,
       lost_pct = l and sent > l.sent and 100 * math.max(0, lost - l.lost) / (sent - l.sent) or 0 }
-    S.late[rec.token] = l
   end
+  S.late[rec.token] = l
+  l = l or { rise = 0, lost_pct = 0 }
   local host
   for _, p in ipairs(require("presence").peers(cfg, rec.song, rec.room) or {}) do if p.user == rec.user then host = p end end
   local why = hops.handback_why(rec, st, host, now - S.ok_at[rec.token], l.rise, l.lost_pct)

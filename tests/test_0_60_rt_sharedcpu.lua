@@ -7,8 +7,11 @@
 -- FX refused; Health's rows; the status's cpu.
 package.path = "lib/?.lua;" .. package.path
 local clock, front = 1000, "P1"
-local xrun = 0
+local xrun, playing, playpos = 0, 0, 0
 reaper = setmetatable({
+  GetPlayStateEx = function() return playing end,
+  GetPlayPositionEx = function() return playpos end,
+  Master_GetPlayRate = function() return 1 end,
   time_precise = function() return clock end,
   GetOS = function() return "Win64" end,
   GetExtState = function() return "" end,
@@ -259,9 +262,22 @@ tick(hops.SETTLE)
 local rows = hops.health_rows(cfg, "P1")
 assert(rows[1][4]:find("Guitar's effects run on Bo's computer: round trip 60 ms", 1, true) and rows[1][4]:find("32 late blocks", 1, true), "Health: where and how: " .. rows[1][4])
 tick(hops.LATE_WINDOW)
-E.status[rec.id].late = 41
+playing, E.status[rec.id].late = 1, 61 -- (playback starts: REAPER processes the hop's latency at once, 20 blocks late by design)
+tick()
+playpos = 1
+tick()
+assert(hops.offload_of("P1", gtr), "a play start's late blocks: stays")
+playpos, E.status[rec.id].late = 30, 81 -- (a seek)
+tick()
+assert(hops.offload_of("P1", gtr), "a seek's: stays")
+playpos = 30 + hops.SETTLE -- (playing on from there)
+tick(hops.SETTLE)
+playpos = playpos + hops.LATE_WINDOW
 tick(hops.LATE_WINDOW)
-assert(not hops.offload_of("P1", gtr), "late blocks rose: back")
+playpos, E.status[rec.id].late = playpos + hops.LATE_WINDOW, 90
+tick(hops.LATE_WINDOW)
+assert(not hops.offload_of("P1", gtr), "late blocks rose while playing: back")
+playing, playpos = 0, 0
 assert(#gtr.fx == 3 and not eq.off and not amp.off and comp.off, "the chain exactly as it was (Comp still bypassed as the song has it)")
 assert(gtr.ext.band_fx_held == "" and gtr.ext.band_local_fx == "", "nothing of the offload left")
 assert(sent[#sent].d.op == "stop" and E.connect[#E.connect].json:find('"stop":true', 1, true), "Bo and the extension told")
