@@ -128,10 +128,66 @@ int main()
   check(atoll(field(sb, "", "rejected").c_str()) > 0 && field(sb, "", "last_reject") == "\"wrong studio secret\"", "B refused C's datagrams: wrong studio secret");
   check(field(sb, pc, "streaming") == "true", "and B's status has C streaming now");
   check(atoll(field(sc, "", "rejected").c_str()) > 0, "and C refuses B's (the secret works both ways)");
+  check(field(sb, "", "last_reject_from") == "\"" + std::string(pc) + "\"", "and B's status says which address it refused (C's)");
   check(atoll(field(sa, "", "sent").c_str()) > 500, "A sent its packets");
   rt_stop(A); rt_stop(B); rt_stop(C);
   check(field(rt_status(B), "", "running") == "false", "stopped");
   check(rt_start(B, 0, 2, 64, 0, "127.0.0.1") == 1, "and starts again on the same port");
+  rt_stop(B);
+
+  // ---- Wi-Fi's bursts (James, rt): the MacBook's stream flapped on every receiver against the fixed 30 ms buffer (underruns ~2/s). D sends a
+  // sine to E, and E's receive thread reads nothing for 20-60 ms at a time, every 40-150 ms, from 1 s to 9 s: the packets wait in the socket
+  // and come all at once, as over Wi-Fi. E's adaptive buffer grows on the first underruns and then holds: after settling (4.5 s) no more
+  // underruns, and "streaming" stays true. Then the bursts stop, D goes quiet at 10 s, and the buffer shrinks back (its timings 20x faster
+  // here: the first shrink after 0.75 s steady, then one every 0.5 s).
+  {
+    const int PD = 47395, PE = 47396;
+    char pd[32], pe[32];
+    snprintf(pd, sizeof pd, "127.0.0.1:%d", PD); snprintf(pe, sizeof pe, "127.0.0.1:%d", PE);
+    RtLink *D = rt_new(), *E = rt_new();
+    rt_peers(D, cfg("studio", PD, std::string("\"") + pe + "\"").c_str());
+    rt_peers(E, cfg("studio", PE, std::string("\"") + pd + "\"").c_str());
+    check(rt_start(D, 0, 1, 128, 0, "127.0.0.1") == 1 && rt_start(E, 0, 1, 128, 0, "127.0.0.1") == 1, "bursts: D and E start");
+    rt_test_speed(E, 20);
+    const int total = at(14.0), b_on = at(1.0), b_off = at(9.0), settled = at(4.5), quiet = at(10.0);
+    std::vector<double> id(LEN), ie(LEN, 0.0), od(LEN), oe(LEN);
+    const double *ind[1] = { id.data() }, *ine[1] = { ie.data() };
+    double *outd[2] = { od.data(), od.data() }, *oute[2] = { oe.data(), oe.data() };
+    unsigned rng = 12345;
+    auto rnd = [&](double lo, double hi) { rng = rng * 1103515245u + 12345u; return lo + (hi - lo) * ((rng >> 8) & 0xffff) / 65535.0; };
+    double next_hold = 0, grown = 0;
+    long long u_settled = -1, u_off = -1, n2 = 0;
+    bool flapped = false, set_ok = false;
+    const auto t1 = std::chrono::steady_clock::now();
+    for (int b = 0; b < total; ++b) {
+      const auto due = t1 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
+      while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
+      const double now = (double)b * LEN / SR;
+      for (int k = 0; k < LEN; ++k, ++n2) id[k] = b >= at(0.5) && b < quiet ? 0.5 * sin(2 * PI * 440 * n2 / SR) : 0.0;
+      if (b >= b_on && b < b_off && now >= next_hold) { const double h = rnd(20, 60); rt_test_hold(E, h); next_hold = now + h / 1000 + rnd(0.04, 0.15); }
+      if (b == at(0.8)) set_ok = rt_peer_buffer(E, pd, 30, 150) == 1 && rt_peer_buffer(E, "127.0.0.1:1", 30, 150) == 0;
+      if (b >= settled && b <= b_off && b % at(0.25) == 0) {
+        const std::string s = rt_status(E);
+        if (u_settled < 0) u_settled = atoll(field(s, pd, "underruns").c_str());
+        if (field(s, pd, "streaming") != "true") flapped = true;
+        grown = std::max(grown, atof(field(s, pd, "target_ms").c_str()));
+        if (b + at(0.25) > b_off) u_off = atoll(field(s, pd, "underruns").c_str());
+      }
+      std::fill(od.begin(), od.end(), 0.0); std::fill(oe.begin(), oe.end(), 0.0);
+      rt_capture(D, ind, 1, LEN, SR); rt_capture(E, ine, 1, LEN, SR);
+      rt_mix(D, outd, 2, LEN, SR); rt_mix(E, oute, 2, LEN, SR);
+    }
+    const std::string se = rt_status(E);
+    const double after_ms = atof(field(se, pd, "target_ms").c_str());
+    printf("E: %s\n     bursts: buffer grew to %.0f ms; underruns %lld at 4.5 s, %lld at 9 s; after the bursts and quiet: %.0f ms (floor %s)\n", se.c_str(), grown,
+           u_settled, u_off, after_ms, field(se, pd, "floor_ms").c_str());
+    check(set_ok, "bursts: a peer's floor and ceiling are set (a peer not in the list: 0)");
+    check(grown > 30, "bursts: E's buffer for D grew past 30 ms");
+    check(u_settled >= 0 && u_off == u_settled, "bursts: after settling, no more underruns");
+    check(!flapped, "bursts: D stays streaming on E throughout");
+    check(after_ms < grown && after_ms >= 30, "bursts over and D quiet: the buffer shrank back (not below the floor)");
+    rt_free(D); rt_free(E);
+  }
   rt_free(A); rt_free(B); rt_free(C); rt_free(bad);
   printf(fails ? "fails %d\n" : "ok, fails 0\n", fails);
   return fails ? 1 : 0;

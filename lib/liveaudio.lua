@@ -22,7 +22,8 @@
 -- Mute, push-to-talk and talkback use StudioSync_LiveAudioSend (the extension after 1.0.13). Without it Mute me restarts live audio on a
 -- silent input (a moment's gap in what you hear), and push-to-talk and talkback wait for the newer extension.
 local band = require("band")
-local liveaudio = { KBPS = 128, EVERY = 0.5, RETRY = 10, HELD = 0.6, TAIL = 0.25, SILENT = 1023, ECHO_LEVEL = 0.05 }
+local liveaudio = { KBPS = 128, EVERY = 0.5, RETRY = 10, HELD = 0.6, TAIL = 0.25, SILENT = 1023, ECHO_LEVEL = 0.05,
+  FLOOR = 30, CEILING = 150, WIFI = 30 } -- (each bandmate's jitter buffer, ms: the extension's defaults; WIFI: this far above the floor, Health says why)
 local S = { at = -math.huge, json = nil, fail_at = -math.huge } -- (this script's state: the JSON last handed over, the last start that failed)
 liveaudio.S = S
 
@@ -61,6 +62,22 @@ function liveaudio.set_peer(peer, gain, mute)
   m[name] = { gain = math.max(0, math.min(4, tonumber(gain) or 1)), mute = mute == true }
   m[peer] = nil
   band.set_ext_json(band.SECTION, "live audio mix", m, true)
+  liveaudio.apply()
+end
+-- Each bandmate's jitter buffer bounds (advanced, kept on this computer by name): { floor, ceiling } in ms. The extension's buffer starts at
+-- the floor, grows when their packets come in bursts (Wi-Fi) up to the ceiling, and shrinks back after a steady spell. (James, rt)
+function liveaudio.can_buffer() return reaper.StudioSync_LiveAudioPeerBuffer ~= nil end
+function liveaudio.buffers() local m = band.ext_json(band.SECTION, "live audio buffer"); return type(m) == "table" and m or {} end
+-- -> floor, ceiling for a bandmate (the defaults when not set), kept within what the extension takes. Pure.
+function liveaudio.bounds(b)
+  local f = math.max(10, math.min(300, math.floor(tonumber(type(b) == "table" and b.floor) or liveaudio.FLOOR)))
+  return f, math.max(f, math.min(500, math.floor(tonumber(type(b) == "table" and b.ceiling) or liveaudio.CEILING)))
+end
+function liveaudio.set_buffer(peer, floor, ceiling)
+  local m, name = liveaudio.buffers(), liveaudio.name_of(peer)
+  local f, c = liveaudio.bounds({ floor = floor, ceiling = ceiling })
+  m[name] = (f ~= liveaudio.FLOOR or c ~= liveaudio.CEILING) and { floor = f, ceiling = c } or nil
+  band.set_ext_json(band.SECTION, "live audio buffer", m, true)
   liveaudio.apply()
 end
 
@@ -106,13 +123,15 @@ function liveaudio.apply(st)
   if not st.running then return end
   local on, only = liveaudio.send_plan(s, gate)
   if gate then reaper.StudioSync_LiveAudioSend("", on and 1 or 0) end
-  local names, mix = liveaudio.names(), liveaudio.mix()
+  local names, mix, bufs, can_buf = liveaudio.names(), liveaudio.mix(), liveaudio.buffers(), liveaudio.can_buffer()
   for peer, p in pairs(type(st.peers) == "table" and st.peers or {}) do
     if type(p) == "table" then
       local name = names[peer] or who(peer)
       if gate then reaper.StudioSync_LiveAudioSend(peer, (not only or name == only) and 1 or 0) end
       local g, m = liveaudio.hear_plan(mix[name] or mix[peer], s)
       if math.abs((tonumber(p.gain) or 1) - g) > 0.005 or (p.mute == true) ~= m then reaper.StudioSync_LiveAudioPeerSet(peer, g, m and 1 or 0) end
+      local f, c = liveaudio.bounds(bufs[name])
+      if can_buf and (tonumber(p.floor_ms) ~= f or tonumber(p.ceiling_ms) ~= c) then reaper.StudioSync_LiveAudioPeerBuffer(peer, f, c) end
     end
   end
 end
@@ -350,7 +369,7 @@ end
 -- in their status (my_la); s: this computer's mic (me()). Pure.
 function liveaudio.health_text(st, names, theirs, s)
   names, theirs = names or {}, theirs or {}
-  local heard, each, ok, seen = {}, {}, true, {}
+  local heard, each, ok, seen, bursty = {}, {}, true, {}, false
   for peer, p in pairs(type(st.peers) == "table" and st.peers or {}) do
     if type(p) == "table" then
       local name = names[peer] or who(peer)
@@ -362,8 +381,12 @@ function liveaudio.health_text(st, names, theirs, s)
         local loss = (tonumber(p.loss) or 0) * 100
         if loss >= 5 then ok = false end
         local mic = liveaudio.THEIR_MIC[theirs[name]]
-        heard[#heard + 1] = string.format("%s %.0f ms (buffer %.0f ms, loss %.1f%%)%s", name, tonumber(p.latency_ms) or -1, tonumber(p.buffer_ms) or -1, loss,
-          mic and (", " .. mic) or "")
+        -- (the buffer grown well past its floor: their packets come in bursts, Wi-Fi's way. It shrinks back on its own once they stop. James, rt)
+        local target, floor = tonumber(p.target_ms), tonumber(p.floor_ms)
+        local wifi = target and floor and target >= floor + liveaudio.WIFI
+        bursty = bursty or wifi
+        heard[#heard + 1] = string.format("%s %.0f ms (buffer %.0f ms%s, loss %.1f%%)%s", name, tonumber(p.latency_ms) or -1, tonumber(p.buffer_ms) or -1,
+          wifi and " (Wi-Fi?)" or "", loss, mic and (", " .. mic) or "")
       end
     end
   end
@@ -382,9 +405,13 @@ function liveaudio.health_text(st, names, theirs, s)
     elseif not on then text = text .. (s.ptt and not s.mute and " (push-to-talk)" or " (muted)") end
   end
   if #heard > 0 then text = text .. "; hearing " .. table.concat(heard, ", ") end
+  if bursty then text = text .. " (a buffer that grew means packets come in bursts, as over Wi-Fi: a wired network lowers it)" end
   if #each > 0 then text = text .. "; " .. table.concat(each, ", ") end
   if #heard + #each == 0 then text = text .. "; nobody else here yet" end
-  if (tonumber(st.rejected) or 0) > 0 then text = text .. string.format("; refused %d (last: %s)", st.rejected, tostring(st.last_reject)) end
+  if (tonumber(st.rejected) or 0) > 0 then
+    local from = type(st.last_reject_from) == "string" and st.last_reject_from ~= "" and (" from " .. st.last_reject_from) or ""
+    text = text .. string.format("; refused %d (last: %s%s)", st.rejected, tostring(st.last_reject), from)
+  end
   return ok and #heard + #each > 0, text
 end
 -- Health's row (lib/direct.lua health_rows): nil while the studio has live audio off. b: the tab's song and room, for the bandmates' statuses.
@@ -595,6 +622,25 @@ function liveaudio.call_ui(ctx, ImGui, cfg)
     ImGui.EndDisabled(ctx)
     ImGui.SetItemTooltip(ctx, "Talkback: hold to talk to " .. name .. " only; the others don't hear it." ..
       (tb_to == name and (" The StudioSync - Live audio talkback key goes to " .. name .. ".") or (" Holding it also points the StudioSync - Live audio talkback key at " .. name .. ".")))
+  end
+  -- (advanced: each bandmate's jitter buffer bounds. The defaults suit everyone; a lower floor for a wired bandmate, a higher one for a
+  -- network that never settles. James, rt)
+  if #peers > 0 and liveaudio.can_buffer() and ImGui.TreeNode(ctx, "Jitter buffer (advanced)##labuf") then
+    local bufs = liveaudio.buffers()
+    for _, peer in ipairs(peers) do
+      local p, name = st.peers[peer], liveaudio.name_of(peer, names)
+      local f, c = liveaudio.bounds(bufs[name])
+      ImGui.Text(ctx, string.format("%s: %.0f ms now", name, tonumber(p.target_ms) or f))
+      ImGui.SetNextItemWidth(ctx, 140)
+      local fch, nf = ImGui.SliderInt(ctx, "floor##labf" .. peer, f, 10, 150, "%d ms")
+      ImGui.SameLine(ctx)
+      ImGui.SetNextItemWidth(ctx, 140)
+      local cch, nc = ImGui.SliderInt(ctx, "ceiling##labc" .. peer, c, 30, 500, "%d ms")
+      if fch or cch then liveaudio.set_buffer(peer, nf, math.max(nf, nc)) end
+      ImGui.SetItemTooltip(ctx, "Only for you. " .. name .. "'s buffer starts at the floor, grows when their packets come in bursts (Wi-Fi) up to the " ..
+        "ceiling, and shrinks back after a steady spell, in a quiet moment. A lower floor is less delay; too low and you hear dropouts.")
+    end
+    ImGui.TreePop(ctx)
   end
 end
 

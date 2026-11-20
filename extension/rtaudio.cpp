@@ -69,7 +69,16 @@ const AooId SRC_ID = 1;
 const char MAGIC[4] = { 'S', 'S', 'L', '1' };
 const int TAG = 16, MAX_DGRAM = 1400; // (Tailscale's MTU is 1280: AOO's packets are kept to 1200 below, plus our 20 bytes)
 const int OPUS_FRAME = 240;           // samples at 48 kHz: 5 ms frames (2.5 ms doubles the packets for little gain over Tailscale)
-const double SINK_LATENCY = 0.03;     // the jitter buffer's target, seconds (AOO's default is 50 ms; over Tailscale 30 ms held. James, rt)
+// The adaptive jitter buffer, per peer (adapt below). ms: a peer's own floor and ceiling come from rt_peer_buffer, these are the defaults
+// (30 ms held between the Windows computers over Tailscale; 150 ms is past what a band can play along to anyway). (James, rt)
+const double BUF_FLOOR = 30, BUF_CEIL = 150, BUF_GROW = 20, BUF_SHRINK = 10;
+// seconds: no underrun this long before the first shrink, then this long between shrinks; a size that underran is not tried again until
+// this long without one (the network may have got better)
+const double BUF_STEADY = 15, BUF_STEP = 10, BUF_FORGET = 120;
+const float BUF_QUIET = 0.003f;      // a shrink waits for the peer to be quiet (peak under -50 dBFS) for BUF_QUIET_S: its re-buffer is a gap
+const double BUF_QUIET_S = 0.3;
+const double STREAM_GRACE = 2.0;     // s: "streaming" stays true through a re-buffer, so the panel and Health don't flap with every underrun
+const double PAUSE_S = 1.0;          // an underrun after the stream was down longer than this is a pause (talkback, a stalled sender), not jitter
 
 struct Slot {
   std::string peer, addr_s, err;
@@ -84,13 +93,19 @@ struct Slot {
   // from AOO's events (the send thread writes, rt_status reads; stats_mx)
   bool streaming = false;
   double rtt_ms = -1, buffer_ms = -1, src_lat_ms = 0, sink_lat_ms = 0, loss = 0;
-  long long dropped = 0, underruns = 0;
+  long long dropped = 0, underruns = 0, jitter = 0; // (jitter: the underruns that came from late packets, not from a pause)
+  double down_at = -1e9;                            // (when the stream last stopped being active)
+  // the adaptive jitter buffer (the send thread's, stats_mx; rt_peer_buffer sets the floor and ceiling)
+  double floor_ms = BUF_FLOOR, ceil_ms = BUF_CEIL, target_ms = BUF_FLOOR, fail_ms = 0, last_under = 0, last_change = 0, quiet_since = -1;
+  long long jitter_seen = 0;
+  std::atomic<float> loud{ 0.f }; // (the audio thread's peak since the send thread last looked: is this peer quiet now?)
+  bool was_quiet = true;          // (the audio thread's: its last block was silence, so sound coming back fades in)
 };
 } // namespace
 
 struct RtLink {
   std::mutex api_mx, pend_mx, cfg_mx, stats_mx;
-  std::string key, bind_s, err, last_reject, want_peers, want_secret, have_secret;
+  std::string key, bind_s, err, last_reject, last_reject_from, want_peers, want_secret, have_secret;
   bool peers_dirty = false;
   int want_port = 0;          // (from the peers JSON: the port rt_start binds when it's given 0)
   std::atomic<float> in_peak{ 0.f }; // what this computer sends, peak since the last status (the panel's "you're heard" meter)
@@ -120,6 +135,8 @@ struct RtLink {
   std::atomic<rt_extra_fn> extra{ nullptr }; // (Hop's network leg: rt_set_extra)
   std::atomic<void *> extra_user{ nullptr };
   std::atomic<int> extra_in{ 0 };
+  std::atomic<double> hold_until{ 0 }; // (tests/rtaudio_test.cpp: rt_test_hold, Wi-Fi's bursts)
+  double speed = 1;                    // (rt_test_speed: the adaptive buffer's timings this many times faster)
 };
 
 namespace {
@@ -318,10 +335,18 @@ void AOO_CALL sink_event(void *user, const AooEvent *e, AooThreadLevel)
     p->buffer_ms = e->streamLatency.bufferLatency * 1000;
     break;
   case kAooEventFormatChange: p->mono.store(e->formatChange.format->numChannels == 1); break;
-  case kAooEventStreamState: p->streaming = e->streamState.state == kAooStreamStateActive; break;
-  case kAooEventStreamStop: case kAooEventSourceRemove: p->streaming = false; break;
+  case kAooEventStreamState: {
+    const bool on = e->streamState.state == kAooStreamStateActive;
+    if (p->streaming && !on) p->down_at = now_s();
+    p->streaming = on;
+    break;
+  }
+  case kAooEventStreamStop: case kAooEventSourceRemove: p->streaming = false; p->down_at = -1e9; break;
   case kAooEventBlockDrop: p->dropped += e->blockDrop.count; break;
-  case kAooEventBufferUnderrun: p->underruns += 1; break;
+  case kAooEventBufferUnderrun: // (AOO says so once packets come again after it ran dry; a long gap was a pause, which a bigger buffer doesn't help)
+    p->underruns += 1;
+    if (now_s() - p->down_at < PAUSE_S) p->jitter += 1;
+    break;
   default: break;
   }
 }
@@ -358,7 +383,7 @@ std::unique_ptr<Slot> make_slot(RtLink *l, const std::string &peer)
   p->sink = AooSink_new(p->sink_id);
   if (!p->sink) { p->resolved = false; p->err = "no AOO sink"; return p; }
   p->sink->setEventHandler(sink_event, p.get(), kAooEventModePoll);
-  p->sink->setLatency(SINK_LATENCY);
+  p->sink->setLatency(BUF_FLOOR / 1000.0);
   p->sink->setPacketSize(1200);
   setup_sink(l, *p);
   return p;
@@ -459,6 +484,37 @@ void apply_sends(RtLink *l)
   }
 }
 
+// The adaptive jitter buffer (James, rt). Wi-Fi delivers in bursts (the MacBook: nothing for 20-60 ms, then all of it at once), and a fixed
+// 30 ms buffer underran there twice a second, the stream flapping on every receiver. AOO's own latency setting does the work
+// (AooSink::setLatency, kAooCtlSetLatency: the sink re-buffers its stream at the new size), so:
+//  - it grows (+20 ms, up to the ceiling) on an underrun: that is already a gap while AOO buffers again, so re-buffering a little longer
+//    there costs nothing more than the gap that was coming anyway;
+//  - it shrinks (-10 ms) after BUF_STEADY s with no underrun, then every BUF_STEP s, but never down to a size that underran in the last
+//    BUF_FORGET s (the smallest size that held), and only while that peer is quiet: a re-buffer is a short gap, so it lands in silence
+//    between songs or phrases, never in a held note. shortcut: a peer that never goes quiet keeps its bigger buffer; fine for a band.
+// rt_mix fades sound back in after any gap, so neither change clicks. The send thread's, under stats_mx.
+void adapt(RtLink *l, Slot &p, double now)
+{
+  if (!p.sink) return;
+  const double sp = l->speed;
+  if (p.loud.exchange(0.f) >= BUF_QUIET) p.quiet_since = -1;
+  else if (p.quiet_since < 0) p.quiet_since = now;
+  double want = p.target_ms;
+  if (p.jitter != p.jitter_seen) {
+    p.jitter_seen = p.jitter;
+    p.last_under = now;
+    p.fail_ms = std::max(p.fail_ms, p.target_ms);
+    want = p.target_ms + BUF_GROW;
+  } else if (p.fail_ms > 0 && now - p.last_under > BUF_FORGET / sp) p.fail_ms = 0;
+  else if (now - p.last_under > BUF_STEADY / sp && now - p.last_change > BUF_STEP / sp && p.quiet_since >= 0 && now - p.quiet_since > BUF_QUIET_S)
+    want = std::max(p.target_ms - BUF_SHRINK, p.fail_ms + BUF_SHRINK);
+  want = std::max(p.floor_ms, std::min(p.ceil_ms, want));
+  if (want == p.target_ms) return;
+  p.target_ms = want;
+  p.last_change = now;
+  p.sink->setLatency(want / 1000.0);
+}
+
 void tx_loop(RtLink *l)
 {
   while (l->run.load()) {
@@ -477,49 +533,54 @@ void tx_loop(RtLink *l)
     std::lock_guard<std::mutex> g(l->stats_mx);
     l->src->pollEvents();
     for (int i = 0; i < l->nslots; ++i) if (l->slots[i]->sink) l->slots[i]->sink->pollEvents();
+    const double now = now_s();
+    for (int i = 0; i < l->nslots; ++i) adapt(l, *l->slots[i], now);
   }
 }
 
-void reject(RtLink *l, const char *why)
+void reject(RtLink *l, const char *why, const sockaddr_in &from) // (and from where: the status names the sender, so a refusal can be traced)
 {
   l->rejected.fetch_add(1, std::memory_order_relaxed);
   std::lock_guard<std::mutex> g(l->stats_mx);
   l->last_reject = why;
+  l->last_reject_from = addr_str(from);
 }
 void rx_loop(RtLink *l)
 {
   std::vector<unsigned char> buf(AOO_MAX_PACKET_SIZE + 64);
   while (l->run.load()) {
+    const double hold = l->hold_until.load() - now_s();
+    if (hold > 0) { std::this_thread::sleep_for(std::chrono::duration<double>(std::min(hold, 0.1))); continue; } // (the socket keeps what comes meanwhile)
     sockaddr_in from{};
     socklen_t fl = sizeof(from);
     const int n = (int)recvfrom(l->s, (char *)buf.data(), (int)buf.size(), 0, (sockaddr *)&from, &fl);
     if (n <= 0 || fl < (socklen_t)sizeof(from)) continue; // (the receive timeout: a look at run)
     l->received.fetch_add(1, std::memory_order_relaxed);
-    if (!addr_ok(from, l->loopback)) { reject(l, "not a Tailscale address"); continue; }
+    if (!addr_ok(from, l->loopback)) { reject(l, "not a Tailscale address", from); continue; }
     if (n >= 4 && memcmp(buf.data(), "SSH1", 4) == 0) { // (a hop's audio, extension/hopnet.cpp: same port, its own tag and key)
       l->extra_in.fetch_add(1);
       if (rt_extra_fn fn = l->extra.load()) fn(l->extra_user.load(), buf.data(), n, &from, (int)sizeof(from));
       l->extra_in.fetch_sub(1);
       continue;
     }
-    if (n < 4 + TAG + 4 || memcmp(buf.data(), MAGIC, 4) != 0) { reject(l, "not StudioSync audio"); continue; }
+    if (n < 4 + TAG + 4 || memcmp(buf.data(), MAGIC, 4) != 0) { reject(l, "not StudioSync audio", from); continue; }
     const AooByte *msg = buf.data() + 4;
     const AooInt32 size = n - 4 - TAG;
     {
       std::lock_guard<std::mutex> g(l->cfg_mx);
-      if (l->key.empty()) { reject(l, "no studio secret here yet"); continue; }
+      if (l->key.empty()) { reject(l, "no studio secret here yet", from); continue; }
       unsigned char t[32];
       tag_of(l->key, buf.data(), (size_t)n - TAG, t);
-      if (!same_tag(t, buf.data() + n - TAG)) { reject(l, "wrong studio secret"); continue; }
+      if (!same_tag(t, buf.data() + n - TAG)) { reject(l, "wrong studio secret", from); continue; }
       AooMsgType type;
       AooId id;
       AooInt32 onset;
-      if (aoo_parsePattern(msg, size, &type, &id, &onset) != kAooOk) { reject(l, "not an AOO message"); continue; }
+      if (aoo_parsePattern(msg, size, &type, &id, &onset) != kAooOk) { reject(l, "not an AOO message", from); continue; }
       Slot *p = slot_of(l, from);
-      if (!p) { reject(l, "not one of the studio's computers here"); continue; }
+      if (!p) { reject(l, "not one of the studio's computers here", from); continue; }
       if (type == kAooMsgTypeSink && id == p->sink_id && p->sink) p->sink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
       else if (type == kAooMsgTypeSource && id == SRC_ID && l->src) l->src->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
-      else { reject(l, "for a stream that isn't theirs"); continue; }
+      else { reject(l, "for a stream that isn't theirs", from); continue; }
     }
     l->wake.set(); // (replies and resend requests go out now)
   }
@@ -566,7 +627,7 @@ int rt_start(RtLink *l, int first_input, int nch, int kbps, int port, const char
   l->bind_s = addr_str(me);
   l->first = first_input; l->nch = nch; l->kbps = std::max(16, std::min(512, kbps)); l->port = port;
   l->cfg_sr = 0; l->cfg_len = 0; l->seen_sr = 0; l->seen_len = 0;
-  l->callbacks = 0; l->max_ns = 0; l->sent = 0; l->received = 0; l->rejected = 0; l->last_reject.clear();
+  l->callbacks = 0; l->max_ns = 0; l->sent = 0; l->received = 0; l->rejected = 0; l->last_reject.clear(); l->last_reject_from.clear();
   l->src = AooSource_new(SRC_ID);
   l->src->setEventHandler(source_event, l, kAooEventModePoll);
   l->src->setPacketSize(1200);
@@ -630,6 +691,19 @@ int rt_peer_set(RtLink *l, const char *peer, double gain, int mute)
   return 0;
 }
 
+int rt_peer_buffer(RtLink *l, const char *peer, double floor_ms, double ceil_ms)
+{
+  const double f = floor_ms > 0 ? std::max(10.0, std::min(300.0, floor_ms)) : BUF_FLOOR;
+  const double c = ceil_ms > 0 ? std::max(f, std::min(500.0, ceil_ms)) : std::max(f, BUF_CEIL);
+  std::lock_guard<std::mutex> g(l->cfg_mx);
+  std::lock_guard<std::mutex> st(l->stats_mx); // (the send thread's adapt reads them under this; it moves the buffer inside the new bounds)
+  for (int i = 0; i < l->nslots; ++i)
+    if (peer && l->slots[i]->peer == peer) { l->slots[i]->floor_ms = f; l->slots[i]->ceil_ms = c; return 1; }
+  return 0;
+}
+void rt_test_hold(RtLink *l, double ms) { l->hold_until.store(now_s() + ms / 1000.0); }
+void rt_test_speed(RtLink *l, double x) { std::lock_guard<std::mutex> st(l->stats_mx); l->speed = x > 0 ? x : 1; }
+
 void rt_set_extra(RtLink *l, rt_extra_fn fn, void *user)
 {
   if (!l) return;
@@ -657,10 +731,12 @@ std::string rt_status(RtLink *l)
   o += ",\"bind\":"; json_str(o, l->run.load() ? l->bind_s : "");
   o += ",\"error\":"; json_str(o, l->err);
   o += ",\"last_reject\":"; json_str(o, l->last_reject);
+  o += ",\"last_reject_from\":"; json_str(o, l->last_reject_from);
   snprintf(b, sizeof(b), ",\"secret\":%s,\"srate\":%d,\"block\":%d,\"first\":%d,\"nch\":%d,\"kbps\":%d,\"level\":%.5f,\"callbacks\":%lld,\"max_us\":%.1f,\"sent\":%lld,\"received\":%lld,\"rejected\":%lld,\"peers\":{",
            l->key.empty() ? "false" : "true", l->cfg_sr, l->cfg_len, l->first, l->nch, l->kbps, l->in_peak.exchange(0.f), l->callbacks.load(), l->max_ns.load() / 1000.0,
            l->sent.load(), l->received.load(), l->rejected.load());
   o += b;
+  const double now = now_s();
   for (int i = 0; i < l->nslots; ++i) {
     Slot &p = *l->slots[i];
     if (i) o += ',';
@@ -669,9 +745,10 @@ std::string rt_status(RtLink *l)
     o += ",\"error\":"; json_str(o, p.err);
     // latency: one way, mouth to ear less the audio interfaces' own buffers = half the round trip + the jitter buffer + both ends' codec/reblocking
     const double lat = p.rtt_ms >= 0 && p.buffer_ms >= 0 ? p.rtt_ms / 2 + p.buffer_ms + p.src_lat_ms + p.sink_lat_ms : -1;
-    snprintf(b, sizeof(b), ",\"resolved\":%s,\"streaming\":%s,\"rtt_ms\":%.1f,\"latency_ms\":%.1f,\"buffer_ms\":%.1f,\"loss\":%.4f,\"dropped\":%lld,\"underruns\":%lld,\"level\":%.5f,\"gain\":%.3f,\"mute\":%s}",
-             p.resolved ? "true" : "false", p.streaming ? "true" : "false", p.rtt_ms, lat, p.buffer_ms, p.loss, p.dropped, p.underruns,
-             p.peak.exchange(0.f), p.gain.load(), p.mute.load() ? "true" : "false"); // (level: the peak since the last ask, before the cue mix's level)
+    const bool streaming = p.streaming || now - p.down_at < STREAM_GRACE; // (through a re-buffer: AOO is buffering again, not gone)
+    snprintf(b, sizeof(b), ",\"resolved\":%s,\"streaming\":%s,\"rtt_ms\":%.1f,\"latency_ms\":%.1f,\"buffer_ms\":%.1f,\"target_ms\":%.0f,\"floor_ms\":%.0f,\"ceiling_ms\":%.0f,\"loss\":%.4f,\"dropped\":%lld,\"underruns\":%lld,\"level\":%.5f,\"gain\":%.3f,\"mute\":%s}",
+             p.resolved ? "true" : "false", streaming ? "true" : "false", p.rtt_ms, lat, p.buffer_ms, p.target_ms, p.floor_ms, p.ceil_ms, p.loss, p.dropped,
+             p.underruns, p.peak.exchange(0.f), p.gain.load(), p.mute.load() ? "true" : "false"); // (level: the peak since the last ask, before the cue mix's level)
     o += b;
   }
   o += "}}";
@@ -727,6 +804,10 @@ void rt_mix(RtLink *l, double *const *out, int nout, int len, double srate)
       float pk = 0;
       for (int k = 0; k < len; ++k) pk = std::max(pk, std::max(std::fabs(L[k]), std::fabs(R[k])));
       if (pk > p.peak.load(std::memory_order_relaxed)) p.peak.store(pk, std::memory_order_relaxed);
+      if (pk > p.loud.load(std::memory_order_relaxed)) p.loud.store(pk, std::memory_order_relaxed);
+      const bool quiet = pk < 1e-4f; // (AOO's silence in a gap or a re-buffer: under -80 dBFS)
+      if (p.was_quiet && !quiet) for (int k = 0; k < len; ++k) { const float g = (float)k / (float)len; L[k] *= g; R[k] *= g; } // (back after a gap: faded in over one block, no click)
+      p.was_quiet = quiet;
       if (p.mute.load(std::memory_order_relaxed) || !out) continue;
       const double gn = p.gain.load(std::memory_order_relaxed);
       if (nout > 0 && out[0]) for (int k = 0; k < len; ++k) out[0][k] += gn * L[k];
@@ -785,6 +866,8 @@ static int api_peers(const char *json) { return g_rt ? rt_peers(g_rt, json) : -1
 static const char *api_status() { g_status = g_rt ? rt_status(g_rt) : "{}"; return g_status.c_str(); }
 static int api_peer_set(const char *peer, double gain, int mute) { return g_rt ? rt_peer_set(g_rt, peer, gain, mute) : 0; }
 static int api_send(const char *peer, int on) { return g_rt ? rt_send(g_rt, peer, on) : 0; }
+static int api_peer_buffer(const char *peer, double floor_ms, double ceil_ms) { return g_rt ? rt_peer_buffer(g_rt, peer, floor_ms, ceil_ms) : 0; }
+static void *vla_peer_buffer(void **a, int n) { return n < 3 || !a[1] || !a[2] ? nullptr : (void *)(INT_PTR)api_peer_buffer((const char *)a[0], *(double *)a[1], *(double *)a[2]); }
 static void *vla_start(void **a, int n) { return n < 3 ? nullptr : (void *)(INT_PTR)api_start((int)(INT_PTR)a[0], (int)(INT_PTR)a[1], (int)(INT_PTR)a[2]); }
 static void *vla_stop(void **, int) { api_stop(); return nullptr; }
 static void *vla_peers(void **a, int n) { return n < 1 ? nullptr : (void *)(INT_PTR)api_peers((const char *)a[0]); }
@@ -805,9 +888,11 @@ void rtaudio_register(reaper_plugin_info_t *rec)
     { "StudioSync_LiveAudioPeers", (void *)api_peers, (void *)vla_peers,
       "int\0const char*\0json\0Who to send to and hear, and the key: {\"secret\":\"<the studio secret>\",\"port\":47281,\"peers\":[\"name:port\",...]} (the direct link's list; Tailscale addresses only). Returns how many peers, or -1 when the JSON isn't that." },
     { "StudioSync_LiveAudioStatus", (void *)api_status, (void *)vla_status,
-      "const char*\0\0\0StudioSync's live audio as JSON: running, bind, error, secret, srate, block, level (what you send, peak since the last ask), callbacks, max_us, sent, received, rejected, last_reject, and per peer: resolved, streaming, rtt_ms, latency_ms, buffer_ms (the jitter buffer), loss (0-1), dropped, underruns, level (peak since the last ask), gain, mute." },
+      "const char*\0\0\0StudioSync's live audio as JSON: running, bind, error, secret, srate, block, level (what you send, peak since the last ask), callbacks, max_us, sent, received, rejected, last_reject, last_reject_from (its sender's ip:port), and per peer: resolved, streaming, rtt_ms, latency_ms, buffer_ms (the jitter buffer), target_ms, floor_ms, ceiling_ms (the adaptive buffer's size and bounds), loss (0-1), dropped, underruns, level (peak since the last ask), gain, mute." },
     { "StudioSync_LiveAudioPeerSet", (void *)api_peer_set, (void *)vla_peer_set,
       "int\0const char*,double,int\0peer,gain,mute\0A peer's level (linear, 0-4) and mute in what you hear (the cue mix). Returns 1 when that peer is in the list." },
+    { "StudioSync_LiveAudioPeerBuffer", (void *)api_peer_buffer, (void *)vla_peer_buffer,
+      "int\0const char*,double,double\0peer,floor_ms,ceiling_ms\0A peer's jitter buffer bounds: it starts at the floor, grows on underruns (Wi-Fi's bursts) up to the ceiling, and shrinks back after a steady spell. 0 for either: the default (30, 150 ms). Returns 1 when that peer is in the list." },
     { "StudioSync_LiveAudioSend", (void *)api_send, (void *)vla_send,
       "int\0const char*,int\0peer,on\0What this computer sends. peer \"\": everything (on 0 sends silence while the stream stays up: Mute me, push-to-talk). A peer in the list: whether that peer gets it (talkback: one bandmate hears you, the others don't). Returns 1 when done (0: that peer isn't in the list)." },
   };

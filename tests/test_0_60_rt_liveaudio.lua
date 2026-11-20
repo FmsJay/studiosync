@@ -156,6 +156,28 @@ ok, text = la.health_text({ nch = 2, kbps = 192, rejected = 3, last_reject = "wr
   ["old.tail99.ts.net:47281"] = { resolved = false, error = "not a Tailscale address" } } })
 assert(not ok and text:find("2 inputs at 192", 1, true) and text:find("loss 8.0%", 1, true) and text:find("mac: not heard yet", 1, true)
   and text:find("old: can't reach (not a Tailscale address)", 1, true) and text:find("refused 3 (last: wrong studio secret)", 1, true), text)
+-- (the adaptive buffer, James, rt: grown well past its floor, Health says Wi-Fi?; a refusal says from where)
+ok, text = la.health_text({ nch = 1, kbps = 128, rejected = 5, last_reject = "not one of the studio's computers here", last_reject_from = "100.70.1.2:47281", peers = {
+  ["mac.tail99.ts.net:47281"] = { resolved = true, streaming = true, latency_ms = 120, buffer_ms = 85, target_ms = 90, floor_ms = 30, loss = 0 },
+  ["bee-laptop.tail99.ts.net:47281"] = { resolved = true, streaming = true, latency_ms = 45, buffer_ms = 35, target_ms = 40, floor_ms = 30, loss = 0 } } })
+assert(ok and text:find("mac 120 ms (buffer 85 ms (Wi-Fi?), loss 0.0%)", 1, true) and text:find("bee-laptop 45 ms (buffer 35 ms, loss 0.0%)", 1, true)
+  and text:find("a wired network lowers it", 1, true) and text:find("refused 5 (last: not one of the studio's computers here from 100.70.1.2:47281)", 1, true), text)
+local f0, c0 = la.bounds(nil)
+assert(f0 == 30 and c0 == 150, "a bandmate's buffer bounds: the defaults")
+f0, c0 = la.bounds({ floor = 200, ceiling = 100 })
+assert(f0 == 200 and c0 == 200, "a ceiling never under the floor")
+assert(select(1, la.bounds({ floor = 1 })) == 10, "a floor kept to what the extension takes")
+local bufcalls = {}
+reaper.StudioSync_LiveAudioPeerBuffer = function(peer, fl, ce) bufcalls[#bufcalls + 1] = peer .. " " .. fl .. " " .. ce; E.peers[peer].floor_ms, E.peers[peer].ceiling_ms = fl, ce; return 1 end
+la.apply()
+assert(#bufcalls == 1 and bufcalls[1] == "bee-laptop.tail99.ts.net:47281 30 150", "an extension that adapts: the defaults handed over once: " .. table.concat(bufcalls, ","))
+la.apply()
+assert(#bufcalls == 1, "and not again while they hold")
+la.set_buffer("bee-laptop.tail99.ts.net:47281", 20, 90)
+assert(bufcalls[2] == "bee-laptop.tail99.ts.net:47281 20 90" and la.buffers()["bee-laptop"].floor == 20, "a bandmate's own bounds, kept by name")
+la.set_buffer("bee-laptop.tail99.ts.net:47281", 30, 150)
+assert(la.buffers()["bee-laptop"] == nil, "back to the defaults: nothing kept")
+reaper.StudioSync_LiveAudioPeerBuffer = nil
 ok, text = la.health_text({ nch = 1, kbps = 128, peers = {} })
 assert(not ok and text:find("nobody else here yet", 1, true), "alone: said, not green")
 row = la.health_row(cfg)

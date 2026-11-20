@@ -22,6 +22,13 @@ void rt_stop(RtLink *l);
 int rt_peers(RtLink *l, const char *json);
 // A peer's level in the cue mix (gain: linear, 0..4) and mute. -> 1 when that peer is in the list.
 int rt_peer_set(RtLink *l, const char *peer, double gain, int mute);
+// A peer's adaptive jitter buffer bounds, ms: it starts at the floor, grows on underruns up to the ceiling, shrinks back after a steady spell
+// (rtaudio.cpp adapt). 0 or less: the default (30, 150). -> 1 when that peer is in the list. (James, rt)
+int rt_peer_buffer(RtLink *l, const char *peer, double floor_ms, double ceil_ms);
+// tests/rtaudio_test.cpp only: the receive thread reads nothing for ms (what arrives waits in the socket and comes at once after: Wi-Fi's
+// bursts), and the adaptive buffer's timings x times faster.
+void rt_test_hold(RtLink *l, double ms);
+void rt_test_speed(RtLink *l, double x);
 // What this computer sends. peer "" (or null): everything, on 0 = silence while the stream stays up (Mute me, push-to-talk; kept across
 // restarts). A peer in the list: whether it gets this computer's stream (talkback). -> 1 done, 0 when that peer isn't in the list. (James, rt)
 int rt_send(RtLink *l, const char *peer, int on);

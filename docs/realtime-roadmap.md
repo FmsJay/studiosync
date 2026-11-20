@@ -1101,6 +1101,15 @@ Problems found, not fixed (risky or a behaviour change; for James to pick):
   the peer went silent forever). CI green on every platform; 8 runs in a row on the Mac runner. The Mac runs 1.0.13 with live audio now.
 - **Live audio on by default (James, 2026-11-19):** band.json "live_audio" is on unless false, as the direct link. Deployed with the
   mute/deafen/push-to-talk controls (rt-liveux), so no computer starts sending a live mic without a clear way to mute it.
+- **Adaptive jitter buffer (2026-11-19):** the MacBook's stream flapped on every receiver (underruns ~2/s, buffer 35-100 ms) while its
+  sender was steady: Wi-Fi's bursty delivery against the fixed 30 ms buffer. Now each peer's buffer starts at 30 ms, grows +20 ms on an
+  underrun up to 150 (AooSink::setLatency at runtime, inside the gap the underrun already made), and shrinks -10 ms after 15 s with no
+  underrun, every 10 s, only while that peer is quiet (a re-buffer is a short gap) and not below a size that underran in the last 2 minutes.
+  Sound fades in over one block after any gap; "streaming" stays true for 2 s through a re-buffer; an underrun after a pause over 1 s
+  (talkback, a stalled sender) doesn't grow it. Status per peer: target_ms, floor_ms, ceiling_ms; StudioSync_LiveAudioPeerBuffer sets a
+  peer's bounds (Chat > Call > Jitter buffer, kept by name). Health: "Chilio 120 ms (buffer 85 ms (Wi-Fi?) ...)" with the wired-network
+  hint. tests/rtaudio_test.cpp holds the receiver's socket 20-60 ms every 40-150 ms for 8 s: no underruns after settling, streaming never
+  false, back to 30 ms once quiet. Refusals now name the sender (status last_reject_from, Health "from ip:port").
 
 ## Session recaps and smart take names (rt-recap branch, 2026-11-19; offline tests only, not run in REAPER yet)
 - **Recap (lib/recap.lua):** at each end of session (20 quiet minutes, Leave, Live sync stopping; right after the end-of-session version),
