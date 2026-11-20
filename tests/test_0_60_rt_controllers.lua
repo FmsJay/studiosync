@@ -58,6 +58,7 @@ package.loaded.mirror = setmetatable({}, { __index = function(_, k) return cur.m
 package.loaded.groups = { trusted = function() if cur.off then return { shared_controllers = false } end return {} end }
 package.loaded.sync = { maker_may = function() return false end }
 package.loaded.direct = { live_available = function() return true end, peers = function() return { "peer" } end, shared_now = function() return clock end,
+  behind = function() return cur.behind == true end,
   send_live = function(_, kind, d, song, room) cur.out[#cur.out + 1] = { kind = kind, d = band.json_decode(band.json_encode(d)), song = song, room = room } end }
 -- (one controllers per computer: its state is the module's)
 package.loaded.controllers = nil
@@ -260,6 +261,40 @@ B.rev["F-JAMES-1-1"] = 2
 clock = clock + 0.06
 tick(B)
 assert(not B.previewing["PF-JAMES-1-1"] and B.tracks[1].fx[1].p[3] == 0.8, "confirmed by the chain's change")
+
+-- ---- 6b. order and latest wins: an older move never lands after a newer one; nothing goes while the link is behind ---------------------------
+A.tracks[1].vol = 0.31
+clock = clock + 0.06
+tick(A)
+local older = A.out[1].d
+A.out = {}
+A.tracks[1].vol = 0.32
+clock = clock + 0.06
+tick(A)
+assert(older.m[1].q == 1 and A.out[1].d.m[1].q == 2, "each move of a hold numbered")
+A.out = { A.out[1], { kind = "ctl", d = older } } -- (the newer first: the older comes in after it)
+tick(B)
+assert(B.tracks[1].vol == 0.32, "the older move, come in after the newer one, is dropped")
+A.behind = true -- (the link's window full on a peer)
+A.tracks[1].vol = 0.33
+clock = clock + 0.06
+tick(A)
+A.tracks[1].vol = 0.34
+clock = clock + 0.06
+tick(A)
+assert(sent(A) == 0, "the link behind: nothing goes")
+A.behind = false
+clock = clock + 0.06
+tick(A)
+assert(sent(A) == 1 and A.out[1].d.m[1].v == 0.34 and A.out[1].d.m[1].q == 3, "caught up: only the latest value goes")
+tick(B)
+assert(B.tracks[1].vol == 0.34, "and shows")
+clock = clock + CA.LET_GO + 0.01
+tick(A); tick(B)
+B.rev[BASS] = 4
+clock = clock + 0.06
+tick(B)
+assert(not B.previewing["P" .. BASS], "confirmed")
 
 -- ---- 7. off for the studio -----------------------------------------------------------------------------------------------------------------
 A.off, B.off = true, true

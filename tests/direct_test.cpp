@@ -445,6 +445,56 @@ static void link_speed(const std::string &studio, const char *peer, const std::s
         "a slow relayed way: the window is cut to the link (3 at most), every frame answered in time, the rate is the link's");
 }
 
+// A fader's moves to 3 peers far away (three names for this listener, each answer held to an 80 ms round trip): 60 messages 15 ms apart.
+// Before each peer's own pipelined lane, every message waited for each peer's answer in turn (3 x 80 ms a message against one per 15 ms): the
+// last arrived seconds late. Now each arrives within a few ms, in order per peer. Then a 400 ms round trip: the window fills, the status says
+// "busy" (shared controllers hold their moves), and everything still arrives in order. (James, rt)
+static void message_burst(const std::string &studio, int port)
+{
+  char peers[200];
+  snprintf(peers, sizeof peers, "127.0.0.1:%d localhost:%d 127.0.0.1:0%d", port, port, port);
+  for (int rtt : { 80, 400 }) {
+    direct_test_link(rtt, 0);
+    int mseq = 0;
+    for (const char *m; *(m = direct_msg_poll(mseq));) mseq = atoi(m);
+    const int N = 60;
+    std::vector<double> sent_at(N, 0), worst(N, 0);
+    std::vector<int> got, copies(N, 0);
+    bool busy = false;
+    const double t0 = now_ms();
+    for (int next = 0; (int)got.size() < 3 * N && now_ms() - t0 < 15000;) {
+      if (next < N && now_ms() - t0 >= next * 15.0) {
+        char d[64]; snprintf(d, sizeof d, "{\"i\":%d}", next);
+        CHECK_QUIET(direct_msg(studio.c_str(), "ctl", d, peers) == 1);
+        sent_at[next++] = now_ms();
+      }
+      busy = busy || strstr(direct_status(), "\"busy\":true") != nullptr;
+      for (const char *m; *(m = direct_msg_poll(mseq));) {
+        mseq = atoi(m);
+        const char *i = strstr(m, "{\"i\":");
+        const int k = i ? atoi(i + 5) : -1;
+        if (k < 0 || k >= N) continue;
+        got.push_back(k); ++copies[k];
+        worst[k] = std::max(worst[k], now_ms() - sent_at[k]);
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    // (in order per peer: then each message's first copy comes after the one before's first, and its third after the one before's third)
+    std::vector<int> first, third, seen(N, 0);
+    for (int k : got) { if (++seen[k] == 1) first.push_back(k); if (seen[k] == 3) third.push_back(k); }
+    const bool all = (int)got.size() == 3 * N && std::all_of(copies.begin(), copies.end(), [](int c) { return c == 3; });
+    const bool ordered = std::is_sorted(first.begin(), first.end()) && std::is_sorted(third.begin(), third.end());
+    const double late = *std::max_element(worst.begin(), worst.end());
+    printf("     60 messages 15 ms apart to 3 peers at a %d ms round trip: %d of 180 arrived, the latest %.1f ms after it was sent%s\n", rtt, (int)got.size(), late,
+           busy ? ", busy seen" : "");
+    if (!all) printf("     %s\n", direct_status());
+    // (250 ms: a shared CI runner's scheduling, never a queue's seconds)
+    if (rtt == 80) CHECK(all && ordered && late < 250, "a fader's burst to 3 far peers: all arrive, in order, none more than 250 ms after it was sent (no queue)");
+    else CHECK(all && ordered && busy && strstr(direct_status(), "\"busy\":true") == nullptr, "a full window: busy while it's full, then not; all still arrive in order");
+  }
+  direct_test_link(0, 0);
+}
+
 static void live_layer_tests(const std::string &studio, const std::string &secret, const std::string &key, int port, const char *peer, const std::string &inbox, const std::string &dir)
 {
   (void)secret;
@@ -475,6 +525,7 @@ static void live_layer_tests(const std::string &studio, const std::string &secre
   }
   CHECK(mlat.size() == 200, "200 messages all arrived");
   stats("message send -> polled (localhost)", mlat);
+  message_burst(studio, port);
   for (int i = 0; i < 600; ++i) direct_msg(studio.c_str(), "presence", "{}", peer);
   for (double t0 = now_ms(); now_ms() - t0 < 3000 && json_num(direct_status(), "queued") > 0;) std::this_thread::sleep_for(std::chrono::milliseconds(5));
   std::this_thread::sleep_for(std::chrono::milliseconds(50));

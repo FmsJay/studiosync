@@ -50,6 +50,7 @@ typedef int sock_t;
 #include <cstring>
 #include <deque>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <random>
 #include <thread>
@@ -495,7 +496,15 @@ namespace {
 struct Studio { std::string key, inbox; };
 struct Got { int seq; std::string studio, rel; };
 struct Msg { int seq; std::string studio, kind, data; };
-struct Job { char kind = 'D'; std::string studio, rel, data; std::vector<std::string> peers; }; // kind 'D' an event file, 'M' a message
+struct Job { std::string studio, rel, data; std::vector<std::string> peers; }; // an event file (messages go by their peer's Lane)
+// (a peer's messages: their own thread and connection, frames pipelined. They were jobs on the one send thread, each waiting for every peer's
+// answer in turn behind pings, files and streams: 3 peers at 0.5 + 84 + 100 ms took ~190 ms a message, a fader's 13 a second queued up to 44
+// deep and a 3 s ramp showed over 9 s on the laptop. Now a message goes as soon as it's queued, up to MSG_WINDOW unanswered; `busy` while a
+// peer's window is full, so shared controllers hold their latest values instead of queueing old ones. James, rt)
+struct Lane {
+  std::thread thr; std::deque<std::pair<std::string, std::string>> q; std::condition_variable cv; bool stop = false, busy = false; // q: studio, frame
+  bool ok = false; double ms = -1; long long at = 0, sent = 0; std::string err; // (Health's: the last answer's, or the failure's)
+};
 struct Sample { double offset_us, rtt_us; };
 struct Peer {
   sock_t s = BAD_SOCK; bool ok = false; double ms = -1; std::string err; long long at = 0, sent = 0; double retry_after = 0;
@@ -528,6 +537,7 @@ int g_port = 0;
 bool g_listening = false, g_kick = false;
 double g_next_due = 0;
 std::deque<Job> g_jobs;
+std::map<std::string, std::unique_ptr<Lane>> g_lanes; // peer -> its messages (a Lane lives until direct_shutdown: its thread holds it)
 std::map<std::string, Peer> g_peers;
 std::map<std::string, std::string> g_clock; // peer -> the studio whose key its pings are signed with
 std::map<std::string, OutStream> g_out;     // "<studio>\t<rel>" -> a file being streamed
@@ -535,7 +545,10 @@ std::map<std::string, InStream> g_in;       // "<studio>\t<rel>" -> a file arriv
 std::condition_variable g_cv;
 std::thread g_listen_thr, g_send_thr;
 // (a thread still joinable when the DLL's statics go would end the process: if REAPER exits without unloading or atexit, they're let go)
-struct ExitGuard { ~ExitGuard() { if (g_listen_thr.joinable()) g_listen_thr.detach(); if (g_send_thr.joinable()) g_send_thr.detach(); } } g_exit_guard;
+struct ExitGuard { ~ExitGuard() {
+  if (g_listen_thr.joinable()) g_listen_thr.detach(); if (g_send_thr.joinable()) g_send_thr.detach();
+  for (auto &kv : g_lanes) if (kv.second->thr.joinable()) { kv.second->thr.detach(); kv.second.release(); } // (released: a detached thread may still use it)
+} } g_exit_guard;
 std::atomic<bool> g_stop_listen{ false }, g_stop_send{ false };
 sock_t g_listen_sock = BAD_SOCK;
 bool g_wsa = false;
@@ -555,6 +568,9 @@ const long long STREAM_MAX = 16LL << 30; // (a take over 16 GB isn't one)
 // the pipe isn't full, cut to what the link carries once it is, so a slow or relayed way keeps 2-3 in flight and each answer still comes within
 // one frame's crossing of the last, well inside the 3 s it may take. Halved after a dropped frame, as the frame size is. James, rt)
 const int WINDOW_MIN = 2, WINDOW_START = 4, WINDOW_MAX = 32;
+// (MSG_WINDOW: a peer's messages unanswered at most: 160 a second at a 100 ms round trip, 50 over a 300 ms relay, past Live sync's ~30 ticks
+// with a message each. LANE_MAX: queued for one peer (its window full), else dropped; LANES_MAX: peers)
+const int MSG_WINDOW = 16; const size_t LANE_MAX = 1000, LANES_MAX = 32;
 const long long RATE_MIN_BYTES = 256 * 1024; // (a pass that moved less says more about the round trip than the rate)
 const int CLOCK_WINDOW = 16, CLOCK_BEST = 3;
 
@@ -987,7 +1003,7 @@ void do_job(const Job &job)
     if (it == g_studios.end()) return; // (stopped meanwhile)
     key = it->second.key;
   }
-  const std::string frame = direct_frame(key, job.studio, job.rel, job.data, job.kind == 'M' ? "SSM1" : "SSD1");
+  const std::string frame = direct_frame(key, job.studio, job.rel, job.data, "SSD1");
   for (const std::string &peer : job.peers) {
     Peer p;
     {
@@ -1004,6 +1020,63 @@ void do_job(const Job &job)
     std::lock_guard<std::mutex> l(g_mx);
     g_peers[peer] = p;
   }
+}
+
+// One peer's messages (Lane): each frame written as soon as it's queued, in order on one connection of the lane's own; the answers read as they
+// come, and waited for only while MSG_WINDOW are unanswered. A failed connection: what's queued for the next 10 s is dropped (it'd be stale; the
+// files still go), as is what was in flight on a dropped one. Quiet for 60 s: closed before the listener's 2 minutes make it stale.
+void lane_loop(const std::string peer, Lane *ln)
+{
+  sock_t s = BAD_SOCK;
+  std::deque<double> fl; // (when each unanswered frame went)
+  double retry_after = 0, last = 0;
+  auto note = [&](int code, double ms, const std::string &why) {
+    std::lock_guard<std::mutex> l(g_mx);
+    ln->ok = code == 0; ln->at = unix_now();
+    if (code == 0) { ln->ms = ms; ln->err.clear(); ++ln->sent; } else ln->err = answer_text(code, why);
+  };
+  auto drop = [&](int code, const std::string &why) { if (s != BAD_SOCK) close_sock(s); s = BAD_SOCK; fl.clear(); note(code, -1, why); };
+  auto answer = [&]() -> bool { // the next answer: false when the connection's gone (a refusal closes it there too)
+    char c = 0;
+    if (recv(s, &c, 1, 0) != 1) { drop(-1, "the connection dropped"); return false; }
+    const double t = fl.front();
+    fl.pop_front();
+    hold_answer(t);
+    if (c != 0) { drop((unsigned char)c, ""); return false; }
+    note(0, (now_s() - t) * 1000, "");
+    return true;
+  };
+  for (;;) {
+    std::string frame;
+    {
+      std::unique_lock<std::mutex> l(g_mx);
+      if (ln->q.empty() && !ln->stop) ln->cv.wait_for(l, std::chrono::milliseconds(fl.empty() ? 1000 : 20));
+      if (ln->stop) break;
+      if (!ln->q.empty()) { frame = std::move(ln->q.front().second); ln->q.pop_front(); }
+    }
+    // (the answers here already; the test's far peer: not before its round trip)
+    while (s != BAD_SOCK && !fl.empty() && now_s() >= fl.front() + g_test_rtt_ms / 1000.0) { pollfd pf = { s, POLLIN, 0 }; if (poll_socks(&pf, 1, 0) != 1 || !answer()) break; }
+    if (frame.empty()) {
+      if (s != BAD_SOCK && fl.empty() && now_s() - last > 60) { close_sock(s); s = BAD_SOCK; }
+      continue;
+    }
+    if (now_s() < retry_after) continue;
+    if (s != BAD_SOCK && (int)fl.size() >= MSG_WINDOW) {
+      { std::lock_guard<std::mutex> l(g_mx); ln->busy = true; }
+      while (s != BAD_SOCK && (int)fl.size() >= MSG_WINDOW && answer()) {}
+      std::lock_guard<std::mutex> l(g_mx);
+      ln->busy = false;
+    }
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      const bool fresh = s == BAD_SOCK;
+      std::string why;
+      if (fresh && (s = connect_peer(peer, why)) == BAD_SOCK) { retry_after = now_s() + 10; note(-1, -1, why); break; }
+      if (send_all(s, frame.data(), frame.size())) { fl.push_back(now_s()); last = now_s(); break; }
+      drop(-1, "the connection dropped"); // (a kept one gone stale: once more on a new one, as send_frame does)
+      if (fresh) { retry_after = now_s() + 10; break; }
+    }
+  }
+  if (s != BAD_SOCK) close_sock(s);
 }
 
 // The clock: each peer kept, pinged (fast at first, then every g_ping_s). NTP's estimate per ping: offset = ((t1 - t0) + (t2 - t3)) / 2,
@@ -1403,6 +1476,7 @@ void direct_stop(const char *studio)
   g_studios.erase(studio);
   for (auto it = g_clock.begin(); it != g_clock.end();) it = it->second == studio ? g_clock.erase(it) : std::next(it);
   for (auto it = g_out.begin(); it != g_out.end();) it = it->second.studio == studio ? g_out.erase(it) : std::next(it);
+  for (auto &kv : g_lanes) { auto &q = kv.second->q; q.erase(std::remove_if(q.begin(), q.end(), [&](const std::pair<std::string, std::string> &m) { return m.first == studio; }), q.end()); }
 }
 
 int direct_send(const char *studio, const char *rel, const char *path, const char *peers)
@@ -1423,18 +1497,28 @@ int direct_send(const char *studio, const char *rel, const char *path, const cha
 int direct_msg(const char *studio, const char *kind, const char *data, const char *peers)
 {
   if (!studio || !kind || !data || !kind_ok(kind) || strlen(data) > DIRECT_MAX_MSG) return 0;
-  Job job;
-  job.kind = 'M';
-  job.studio = studio;
-  job.rel = kind;
-  job.data = data;
-  job.peers = parse_peers(peers);
-  if (job.peers.empty()) return 0;
+  const std::vector<std::string> list = parse_peers(peers);
+  if (list.empty()) return 0;
   std::lock_guard<std::mutex> l(g_mx);
-  if (!g_send_thr.joinable() || !g_studios.count(studio) || g_jobs.size() >= 1000) return 0;
-  g_jobs.push_back(std::move(job));
-  g_cv.notify_one();
-  return 1;
+  auto st = g_studios.find(studio);
+  if (!g_send_thr.joinable() || st == g_studios.end()) return 0;
+  const std::string frame = direct_frame(st->second.key, studio, kind, data, "SSM1");
+  int queued = 0;
+  for (const std::string &peer : list) {
+    auto it = g_lanes.find(peer);
+    if (it == g_lanes.end()) {
+      if (g_lanes.size() >= LANES_MAX) continue;
+      it = g_lanes.emplace(peer, std::unique_ptr<Lane>(new Lane)).first;
+      it->second->thr = std::thread(lane_loop, peer, it->second.get());
+      g_peers[peer]; // (Health lists it from now on)
+    }
+    Lane &ln = *it->second;
+    if (ln.q.size() >= LANE_MAX) continue;
+    ln.q.emplace_back(studio, frame);
+    ln.cv.notify_one();
+    ++queued;
+  }
+  return queued > 0 ? 1 : 0;
 }
 
 const char *direct_poll(int after)
@@ -1593,8 +1677,10 @@ const char *direct_status()
   o = "{\"listening\":";
   o += g_listening ? "true" : "false";
   o += ",\"bind\":"; json_str(o, g_bind);
+  size_t queued = g_jobs.size();
+  for (const auto &kv : g_lanes) queued += kv.second->q.size();
   snprintf(num, sizeof(num), ",\"port\":%d,\"received\":%lld,\"rejected\":%lld,\"queued\":%d,\"messages\":%lld", g_port, g_received, g_rejected,
-           (int)g_jobs.size(), g_msgs_received);
+           (int)queued, g_msgs_received);
   o += num;
   o += ",\"error\":"; json_str(o, g_listen_err);
   o += ",\"last_reject\":"; json_str(o, g_last_reject);
@@ -1606,11 +1692,15 @@ const char *direct_status()
     json_str(o, kv.first);
     // (1.0.12, link speed: rate, bytes/s the last streams were answered at, and when; rtt_ms, the path's round trip (path_rtt_ms),
     // else the quickest stream frame's; window, frames in flight)
-    const Peer &p = kv.second;
-    snprintf(num, sizeof(num), ":{\"ok\":%s,\"ms\":%.1f,\"at\":%lld,\"sent\":%lld,\"rate\":%.0f,\"rate_at\":%lld,\"rtt_ms\":%.1f,\"window\":%d,\"error\":",
-             p.ok ? "true" : "false", p.ms, p.at, p.sent, p.rate, p.rate_at, path_rtt_ms(p) > 0 ? path_rtt_ms(p) : p.frame_rtt_ms, p.window);
+    // (busy: its messages' window is full, the link behind on it; ok, ms and error the newer of its lane's last answer and the send thread's)
+    Peer p = kv.second;
+    auto ln = g_lanes.find(kv.first);
+    const bool busy = ln != g_lanes.end() && ln->second->busy;
+    if (ln != g_lanes.end()) { const Lane &m = *ln->second; p.sent += m.sent; if (m.at >= p.at) { p.ok = m.ok; p.ms = m.ms; p.at = m.at; p.err = m.err; } }
+    snprintf(num, sizeof(num), ":{\"ok\":%s,\"ms\":%.1f,\"at\":%lld,\"sent\":%lld,\"rate\":%.0f,\"rate_at\":%lld,\"rtt_ms\":%.1f,\"window\":%d,\"busy\":%s,\"error\":",
+             p.ok ? "true" : "false", p.ms, p.at, p.sent, p.rate, p.rate_at, path_rtt_ms(p) > 0 ? path_rtt_ms(p) : p.frame_rtt_ms, p.window, busy ? "true" : "false");
     o += num;
-    json_str(o, kv.second.err);
+    json_str(o, p.err);
     o += '}';
   }
   o += "}}";
@@ -1627,6 +1717,13 @@ void direct_shutdown()
   }
   g_cv.notify_all();
   if (g_send_thr.joinable()) g_send_thr.join();
+  std::map<std::string, std::unique_ptr<Lane>> lanes;
+  {
+    std::lock_guard<std::mutex> l(g_mx);
+    lanes.swap(g_lanes);
+    for (auto &kv : lanes) { kv.second->stop = true; kv.second->cv.notify_one(); }
+  }
+  for (auto &kv : lanes) kv.second->thr.join(); // (a lane blocked on an answer: its 3 s timeout at most)
   std::lock_guard<std::mutex> l(g_mx);
   g_stop_send = false;
   g_studios.clear();

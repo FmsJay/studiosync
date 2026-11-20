@@ -407,6 +407,12 @@ function direct.msg(cfg, kind, data, song, room, to)
   end)
   return ok and r or false
 end
+-- Is the link behind on a peer (its window of unanswered messages full, extension 1.0.20's "busy")? Shared controllers send nothing then, their
+-- latest values kept for when it's caught up. An older extension: never. (James, rt)
+function direct.behind()
+  local ok, st = pcall(function() return reaper.StudioSync_DirectStatus() end)
+  return ok and type(st) == "string" and st:find('"busy":true', 1, true) ~= nil
+end
 -- The messages for this studio that arrived since this script last asked: { { seq, kind, data (a table when it was JSON), text } }.
 -- Every script keeps its own place, as direct.tick does for files; the extension keeps the last 512.
 local msg_seq = 0

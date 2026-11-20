@@ -29,7 +29,8 @@ controllers.pass = nil     -- (Live sync's last pass: can, my_can, who, hold; se
 -- ---- pure ------------------------------------------------------------------------------------------------------------------------------
 local LIMITS = { v = { 0, 16 }, p = { -1, 1 }, m = { 0, 1 }, x = { 0, 1 } } -- (volume up to +24 dB)
 local function int_in(x, hi) return math.type(x) == "integer" and x >= 0 and x <= hi end
--- A ctl message from the link (a trust boundary: anyone in the studio can send one): { user, m = { { o, k, v, s, f?, n?, g?, a? } } }.
+-- A ctl message from the link (a trust boundary: anyone in the studio can send one): { user, m = { { o, k, v, s, f?, n?, g?, a?, q? } } }
+-- (q: the move's number in its hold, 1, 2, ...: an older one never lands after a newer).
 -- -> a clean copy, or nil.
 function controllers.clean(d, me)
   if type(d) ~= "table" or type(d.user) ~= "string" or #d.user == 0 or #d.user > 64 or d.user == me or type(d.m) ~= "table" then return nil end
@@ -40,7 +41,8 @@ function controllers.clean(d, me)
     local v, s = lim and tonumber(m.v), lim and tonumber(m.s)
     if not (v and s and v == v and v >= lim[1] and v <= lim[2] and type(m.o) == "string" and m.o:match("^T%-[%w%-_]+$") and #m.o <= 80) then return nil end
     if m.k == "x" and not (int_in(m.f, 1023) and int_in(m.n, 65535)) then return nil end
-    out[i] = { o = m.o, k = m.k, v = v, s = s, f = m.k == "x" and m.f or nil, n = m.k == "x" and m.n or nil, g = m.g == 1, a = m.a == 1 }
+    out[i] = { o = m.o, k = m.k, v = v, s = s, f = m.k == "x" and m.f or nil, n = m.k == "x" and m.n or nil, g = m.g == 1, a = m.a == 1,
+      q = int_in(m.q, math.maxinteger) and m.q or nil }
   end
   return #out > 0 and { user = d.user, m = out } or nil
 end
@@ -95,8 +97,8 @@ local PARM = { v = "D_VOL", p = "D_PAN", m = "B_MUTE" }
 -- ---- state (one Live sync tab per script) ----------------------------------------------------------------------------------------------
 -- info: track -> { oid, here (one of this computer's own) }; seen: track -> { v, p, m } as last read or written; knobs: key -> { tr, fx, bf, n, v,
 -- at }; mine: key -> { s, at, sent, due, v, tr, word } (moving here); theirs: key -> { user, s, at, g, v, word }; shown: object -> { keys, rev0,
--- rev, at }; was: key -> { tr, fx, n, k, v (before), set (last shown) }.
-local S = { info = {}, seen = {}, knobs = {}, mine = {}, theirs = {}, shown = {}, was = {}, by_oid = {}, info_at = -math.huge, touched = nil,
+-- rev, at }; was: key -> { tr, fx, n, k, v (before), set (last shown) }; last: key -> { user, s, q } (the newest move come in).
+local S = { info = {}, seen = {}, knobs = {}, mine = {}, theirs = {}, shown = {}, was = {}, by_oid = {}, last = {}, info_at = -math.huge, touched = nil,
   said = {}, n_sent = 0, n_shown = 0, n_refused = 0, pub = nil, pub_at = -math.huge, looked = false }
 controllers.state = S -- (tests)
 
@@ -220,15 +222,18 @@ function controllers.tick(proj, cfg, b)
       if v ~= kn.v then kn.v, kn.at = v, clock; moved(proj, cfg, kn.tr, kn.oid, "x", v, key, kn.fx, kn.bf, kn.n, t, clock) end
     end
   end
-  -- what goes: each moving control's latest value, at most every RATE s; let go after LET_GO s still
+  -- what goes: each moving control's latest value, at most every RATE s; let go after LET_GO s still. Nothing while the link is behind on a
+  -- peer (its window of unanswered messages full): the latest values stay due and go once it's caught up, never a queue of old ones
   local out = {}
+  local behind = next(S.mine) ~= nil and require("direct").behind()
   for key, m in pairs(S.mine) do
-    if #out >= controllers.MAX then break end
+    if behind or #out >= controllers.MAX then break end
     local go = m.due and clock - m.sent >= controllers.RATE
     local gone = not m.due and clock - m.at >= controllers.LET_GO
     if go or gone then
       local tr_ok = reaper.ValidatePtr2(proj, m.tr, "MediaTrack*")
-      out[#out + 1] = { o = m.o, k = m.k, v = m.v, s = m.s, f = m.f, n = m.n, g = gone and 1 or nil,
+      m.q = (m.q or 0) + 1
+      out[#out + 1] = { o = m.o, k = m.k, v = m.v, s = m.s, q = m.q, f = m.f, n = m.n, g = gone and 1 or nil,
         a = tr_ok and writing(m.tr) and reaper.GetPlayStateEx(proj) & 1 == 1 and 1 or nil }
       m.sent, m.due = clock, false
       if gone then S.mine[key] = nil end
@@ -261,8 +266,12 @@ function controllers.on_msg(proj, cfg, b, d)
   local mirror, clock = require("mirror"), now()
   for _, m in ipairs(c.m) do
     local key, obj = controllers.key(m), controllers.object(m)
-    local tr = S.by_oid[m.o]
-    if not (tr and reaper.ValidatePtr2(proj, tr, "MediaTrack*")) then tr = mirror.find(proj, "track", m.o); S.by_oid[m.o] = tr end
+    -- (an older move of this hold than one already come in: never applied after it)
+    local last = S.last[key]
+    local stale = m.q and last and last.user == c.user and last.s == m.s and m.q <= last.q
+    if m.q and not stale then S.last[key] = { user = c.user, s = m.s, q = m.q } end
+    local tr = not stale and S.by_oid[m.o] or nil -- (stale: no track, so nothing below shows it)
+    if not stale and not (tr and reaper.ValidatePtr2(proj, tr, "MediaTrack*")) then tr = mirror.find(proj, "track", m.o); S.by_oid[m.o] = tr end
     local inf = tr and info_of(tr)
     local name = tr and tname(tr)
     local fx = tr and m.k == "x" and controllers.here_fx(guids(tr), band.track_ext(tr, "band_local_fx"), m.f)
