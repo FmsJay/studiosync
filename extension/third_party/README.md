@@ -51,3 +51,28 @@ Linux: `build_unix.sh` here (cc/c++, symbols hidden so another plug-in's own AOO
 
 **Updating.** Fetch the new tag from the same place, copy the same folders over, check `sources.txt` against upstream's lists,
 update the table above, delete `build/`, rebuild and run `tests/build_rtaudio_test.cmd`.
+
+## libjuice and Monocypher (the Tailscale-free connection spike: extension/nat.cpp, tests/nat_test.cpp)
+
+**Not in the shipped extension.** Only `tests/build_nat_test.cmd` and CI's separate "Tailscale-free connection spike" test step compile
+these (with `-DSTUDIOSYNC_NAT`); `extension/build_windows.cmd`, `build_windows.cmd`/`build_unix.sh` here and CI's shipped builds don't.
+Design: docs/realtime-roadmap.md "Without Tailscale: design". Each file is byte for byte upstream's at the commit below (nothing patched),
+no nested `.git`. Downloaded with `git clone --depth 1 --branch <tag>` from the official repositories only (2026-11-19).
+
+| Folder | What | From | Version | Licence |
+|---|---|---|---|---|
+| `libjuice/` | ICE (RFC 8445) with STUN/TURN client, and a STUN/TURN server; C, no dependencies | https://github.com/paullouisageneau/libjuice (Paul-Louis Ageneau, the canonical repository) | tag `v1.7.4`, commit `b89c792e3612faf2f12cf35bcc56857313a06be3` (2026-09-27) | MPL-2.0, `libjuice/LICENSE` |
+| `monocypher/` | X25519 and XChaCha20-Poly1305 (`crypto_x25519`, `crypto_aead_lock`/`unlock`), one C file | https://github.com/LoupVaillant/Monocypher (Loup Vaillant, the canonical repository) | tag `4.0.3`, commit `ab2b16dd619ad5f6979a4fbe69cfa324a6fcc35f` (2026-06-15) | CC0-1.0 or BSD-2-Clause (either), `monocypher/LICENCE.md` |
+
+**GPL compatibility.** MPL-2.0 is a file-level copyleft that names the GPL as a "Secondary License" (section 3.3): MPL files may be part
+of a larger GPL-3.0-or-later work unless a file carries Exhibit B's "Incompatible With Secondary Licenses" notice, and none of libjuice's
+does (checked: the phrase is only in `LICENSE`'s own text). What MPL asks: these files stay under MPL-2.0 (changes to them too, and
+then published), their source stays available (it's here), and the notices go with binaries (a release that ships this ships
+`libjuice/LICENSE` beside the extension). Monocypher's CC0/BSD-2 is permissive (BSD-2's notice goes with binaries).
+
+**Kept.** libjuice: `LICENSE`, `README.md`, `include/juice/juice.h`, `src/*.c` and `src/*.h` (all of upstream's `LIBJUICE_SOURCES`;
+no `test/`, `fuzzer/`, CMake files). Built with `-DJUICE_STATIC` and `-I libjuice/include/juice`; Windows links `ws2_32` and `bcrypt`.
+Monocypher: `LICENCE.md`, `README.md`, `monocypher.c`, `monocypher.h` (no `optional/`: SHA-512/Ed25519 aren't used).
+
+**Updating.** Fetch the new tag from the same place, copy the same files over, check upstream's `LIBJUICE_SOURCES` in
+`CMakeLists.txt` against `src/`, update the table above and run `tests/build_nat_test.cmd`.

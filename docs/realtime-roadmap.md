@@ -475,7 +475,7 @@ lib/tools.lua EXT_WANT.
 
 ### New scopes to explore
 - **Without Tailscale:** an optional built-in connection (NAT traversal with a small rendezvous) for bandmates who
-  won't install Tailscale.
+  won't install Tailscale. Designed and spiked (rt-nat, 2026-11-19): "Without Tailscale: design" below.
 - **Beyond REAPER users:** through the web UI and browser recording, people without REAPER can listen, comment and
   record parts into a song.
 - **Live to an audience:** stream the band's live mix to listeners on a web page.
@@ -490,6 +490,121 @@ lib/tools.lua EXT_WANT.
     track to choose between, volume/mute per track, a few built-in effects for monitoring, comments and the song sheet (lyrics, chords).
   - **Stage 3 (a native app, later):** what browsers can't do reliably: more than two inputs as separate tracks, low-latency monitoring
     through the phone, background recording, and iPhone MIDI. Same file format and the same way into the project.
+
+## Without Tailscale: design (rt-nat, 2026-11-19; a spike in its own test, not in the shipped extension)
+Today every computer-to-computer path assumes Tailscale: the link listens and connects only on 100.64.0.0/10 (direct.cpp `tailscale_ip`,
+`addr_ok`, `connect_peer`), live audio and hops take UDP 47281 only from there (rtaudio.cpp `addr_ok`/`resolve`, hopnet.cpp through it),
+lib/direct.lua finds peers by each devices file's Tailscale name on the studio's network (`groups.tailnet`), and the firewall rule admits
+100.64.0.0/10 only. Tailscale gives three things: addresses that reach through NATs, who's allowed (the tailnet), and encryption
+(WireGuard). The option below replaces all three for a bandmate without Tailscale, and changes nothing for the computers that have it.
+
+**Library: libjuice (ICE) + Monocypher (crypto), with our own small handshake.**
+| Option | Verdict |
+|---|---|
+| **libjuice 1.7.4** (MPL-2.0, C, no dependencies) | **Chosen.** ICE (RFC 8445) with STUN and TURN, a STUN/TURN *server* in the same library (the hub can run the studio's own), a mux mode that puts every peer on one UDP port, builds with MSVC/clang/gcc as plain C. 0.5 MB of source. |
+| **Monocypher 4.0.3** (CC0-1.0 or BSD-2-Clause) | **Chosen** for X25519 and XChaCha20-Poly1305: one audited C file. SHA-256/HMAC stay ours (direct.cpp). |
+| libdatachannel (MPL-2.0) | Adds DTLS + SCTP, so OpenSSL/mbedTLS + usrsctp come with it, and DTLS's certificate fingerprints still have to be bound to the studio by us. The link already has its own frames, answers and windows. Only worth it if a browser has to join peers directly (WebRTC data channels from the web UI). |
+| iroh (MIT/Apache-2.0, Rust) | The best all-in-one (QUIC streams and datagrams, hole punching, relays, Ed25519 node ids), but a Rust toolchain in three CI builds and the Windows build on JAMES-MAIN, a tokio runtime inside REAPER's process (libtailscale's Go-runtime worry again), a C shim to write, and n0's public relays unless we host iroh-relay. The fallback if stage 2's reliable stream turns out too much. |
+| quinn + our own | iroh without the parts we'd need. No. |
+| libtailscale / tsnet | Still a tailnet login: not "without Tailscale". |
+
+Licences (extension/third_party/README.md has the details): MPL-2.0 is file-level copyleft and names the GPL as a "Secondary License"
+(section 3.3), so its files can be part of GPL-3.0-or-later StudioSync; no libjuice file carries the "Incompatible With Secondary Licenses"
+notice (checked). libjuice's files stay MPL, unmodified, with their source and licence shipped. Monocypher is CC0/BSD-2.
+
+**How peers find each other (the rendezvous).**
+- **Signalling over the shared folder.** Each computer writes one small signed file per peer, `_band/nat/<from>-<to>.json` in the design
+  (the spike: `<folder>/<from>-<to>.ssn`): kind (offer from the lower device id, answer from the other), ICE credentials and candidates,
+  a fresh ephemeral key, the time; an answer carries the offer's ephemeral key back. Syncthing carries it (Syncthing doesn't need
+  Tailscale: it has its own discovery and relays) and its modifiedBy says which computer wrote it. Cost: one Syncthing hop (~2-3 s) per
+  connection set-up, never per message. Where some link already exists (the hub, a computer on both), the files can go as an `SSM1`
+  message `nat` too, for sub-second set-up; the cloud copy could carry them for a studio whose Syncthing is slow (the signature holds there).
+- **STUN (learning one's public address):** the studio hub runs libjuice's STUN/TURN server inside the extension when the owner opens a
+  port on its router (as James's desktop already has UDP 40041 forwarded for the Tailscale Peer Relay); else a public list
+  (stun.cloudflare.com:3478, stun.l.google.com:19302): free, and the operator sees each computer's public IP address and nothing else (no
+  names, no content). A studio setting replaces the list.
+- **TURN (a relay, for pairs no hole punch can join: symmetric NAT or blocked UDP at both ends):** the hub's own TURN, credentials made
+  from the studio key with an expiry (libjuice's `juice_server_add_credentials` takes a lifetime). Everything through it is already sealed
+  end to end: the relay sees sizes and timing only. No hosted relay by default: a hosted TURN charges per GB (one live-audio stream is
+  ~60-115 MB an hour), so it's a studio setting (any standard TURN server). No path at all: Health says so, Syncthing carries everything.
+- **Who runs it:** nobody new. No StudioSync server, no cost, nothing of the band's content reaches a third party.
+
+**Authentication: never weaker than today.** Today a computer needs the studio secret (every frame's HMAC) *and* to be signed into the
+studio's tailnet (its WireGuard key). The replacement needs the studio secret *and* that computer's own static X25519 key: the private half
+never leaves the computer (a file in `band.home()`, readable by the user only), the public half goes in its `_band/devices/<user>.json` as
+`nat = { pub }`, taken only from a file its own computer wrote (`trust.device_ok`, the same check the Tailscale names pass today). The
+handshake is Noise KK's three Diffie-Hellmans (ee, es, se) mixed with the studio key as a pre-shared key: a stranger with the secret but not
+the computer's key gets nowhere (tested: an impostor's datagrams are all refused), and fresh ephemeral keys give forward secrecy (a secret
+or static key stolen later doesn't open what was recorded before). Someone taken out loses both: the secret is made again (lib/removal.lua)
+and their devices file goes. The signalling file is HMAC'd with its own label (`StudioSync nat v1`), addressed to this computer, at most
+120 s old; the link counts as up only once a datagram from the peer has opened (key confirmation), and each side says hello until both have.
+
+**Encryption (what replaces WireGuard).** Every datagram: `"SSN1"`, a 64-bit counter, the payload sealed with XChaCha20-Poly1305 (a key per
+direction, the counter as the nonce, the 12-byte header authenticated), 16-byte tag: 28 bytes added. A 64-packet replay window (as
+WireGuard's) takes reordering and refuses replays. New ephemeral keys on every connection. Paths without Tailscale have ~1472 bytes of UDP
+payload, so today's 1200-byte packets plus 28 fit, through TURN's 4-byte ChannelData too. Over Tailscale nothing changes (no second layer).
+Before shipping: an outside review of the handshake against Noise KK + psk, or Noise-C (MIT) instead of our 40 lines.
+
+**Running the link, live audio and hops over it (an address abstraction).**
+- **One more UDP port:** libjuice's mux mode on UDP 47282 for every Tailscale-free peer (not 47281: rtaudio binds that on the Tailscale
+  address, and a wildcard bind beside it behaves differently on each system).
+- **A peer is a "way":** lib/direct.lua's peer strings stay `name:port` for Tailscale; a devices entry with no Tailscale name on the studio's
+  network but a `nat.pub` becomes `nat:<device id>` (only while band.json `nat` is on). The native side keeps one NatLink per such peer.
+- **Live audio and hops (UDP already):** each NatLink gets a synthetic `sockaddr_in` (an address from 192.0.2.0/24, TEST-NET, that never
+  routes, with the link's index as the port). AOO keys its sinks and sources on addresses, so it doesn't notice; rtaudio's `send_fn`
+  sends to a synthetic address through `nat_link_send` instead of `sendto`, and what a NatLink opens enters `rx_loop`'s path with that
+  address as `from`. `addr_ok` becomes "a Tailscale address, or a synthetic one whose link is up" (the link's identity is the check). The
+  SSL1/SSH1 tags stay as they are (a second, harmless check). hopnet.cpp rides on rtaudio's socket, so it follows for free.
+- **The direct link (TCP: event files, messages, clock pings, streams with windows):** needs an ordered, reliable stream over datagrams:
+  KCP (MIT, one C file) on the NatLink, and a loopback shim so direct.cpp's frames, answers and windows run unchanged: the sender
+  connects to `127.0.0.1:<the shim's port for that peer>`, the receiving side's shim connects to the link's listener on 127.0.0.1 (a listener
+  there only while `nat` is on; the HMAC stays the bar, as it is on loopback in the tests).
+- **The web UI on phones** (`tailscale serve`, the Tailscale listener) stays Tailscale-only; so does a studio set to sync only through
+  Tailscale (`tailscale_only`: the owner chose the tailnet).
+
+**What breaks or changes.**
+- **Firewall:** today TCP+UDP 47281 from 100.64.0.0/10 only. The new path needs UDP 47282 from any address (hole punching makes most
+  traffic replies to our own sends, which Windows lets through, but a peer's first checks can arrive before ours and be dropped: the rule
+  makes it reliable). Safety rests on the sealing: anything that doesn't open is dropped before it's parsed. A second rule in the same
+  UAC prompt; macOS asks as today. A hub that runs STUN/TURN also needs its router's port forward.
+- **Health:** a row per Tailscale-free peer: "direct (through both NATs)", "relayed by <hub>", or "no path", from
+  `juice_get_selected_candidates` (host / srflx / prflx / relay); "public address found / not" (STUN); and a strict-NAT warning (two STUN
+  servers giving different mapped ports: this computer needs a relay). The existing rejection reasons gain "not an opened link".
+- **Privacy:** the signalling files hold each computer's LAN and public IP addresses, readable by the studio's members (today they see
+  Tailscale names and 100.x addresses); the STUN operator sees the public address.
+
+**Staged plan.**
+0. **Spike (done, below).**
+1. **Live audio first** behind band.json `nat` (off by default, owner and admins): libjuice + Monocypher in the extension's build
+   (third_party build scripts), static keys in devices files, signalling over the shared folder, public STUN, synthetic addresses in
+   rtaudio, the UDP 47282 rule, Health's row. Gate: an hour of live audio desktop <-> laptop with Tailscale off on one side.
+2. **The direct link over it:** KCP + the loopback shim; events, messages, clock and streams unchanged above it.
+3. **The hub as STUN/TURN** (the server inside the extension, credentials from the studio key), signalling over existing links for
+   sub-second set-up, the strict-NAT check.
+4. **Before it's on by default:** the handshake reviewed (or Noise-C), the signal parser and `nat_open` fuzzed (libjuice ships a fuzzer
+   for its own STUN parser), ICE restarts when a computer changes network (Wi-Fi to tethering).
+
+### The spike (extension/nat.cpp, nat.h, tests/nat_test.cpp, tests/build_nat_test.cmd)
+- `nat.cpp` is the transport above: keys, the handshake (`nat_derive`), sealing (`nat_seal`/`nat_open`), the signed rendezvous message,
+  and `NatLink` (one libjuice agent, the folder, hellos). It won't compile without `-DSTUDIOSYNC_NAT`; the shipped build doesn't list it.
+  CI builds and runs `nat_test` as a test step of its own on macOS and Linux, after the shipped builds.
+- `nat_test` (no arguments) on JAMES-MAIN, all passing: the crypto (both sides agree; a flipped byte, a changed counter, a replay, another
+  studio's secret and an impostor without the computer's key are refused; an all-zero public key is refused; the signed message's
+  signature, addressee and age), then libjuice's own STUN/TURN server on 127.0.0.1 as the rendezvous server and a temporary folder as the
+  signalling channel: both ends up in ~0.5 s (any path) and ~0.15 s (only relayed candidates published, so the path goes through TURN),
+  200/200 sealed datagrams each way, a captured datagram played again refused, an impostor never up, another studio's offer refused.
+- **Two computers on different networks, real NATs (desktop at home, the laptop elsewhere: different public addresses):**
+  `nat_test peer` on each, no Tailscale candidates published (`NAT_NO_TAILSCALE=1`), Google's public STUN, the folder copied both ways by
+  scp every ~0.5 s (a stand-in for Syncthing). Up after 6.6-10.8 s (the copying and the two sides' start times), the chosen pair
+  server-reflexive <-> server-reflexive (a hole punched through both NATs), 197 of 199 sealed pings answered, round trip median 87.6 ms
+  (p95 97.7). The same run with Tailscale's candidates allowed chose the tailnet: median 88.6 ms; `tailscale ping`: 88 ms direct. So the
+  punched path costs nothing over Tailscale direct.
+- **Not tested:** symmetric NAT or carrier-grade NAT on either side (both NATs here punched cleanly), TURN across the internet (only on
+  localhost), networks that block UDP, IPv6-only, long sessions, a computer changing network mid-session, Syncthing as the actual carrier
+  of the signalling files, macOS and Linux other than CI's localhost run, and anything inside REAPER.
+- **To ship (stage 1):** add libjuice and Monocypher to `extension/third_party/build_windows.cmd` / `build_unix.sh` (static, symbols
+  hidden as AOO's), the keypair and devices-file field, the signalling files in lib/direct.lua, the synthetic addresses in rtaudio.cpp, the
+  firewall rule and Health's row: roughly a week of work and a review, then the hour-long gate above.
 
 ## Fast first, lossless after (James)
 Everything audio can arrive twice: a fast, light version over the link now, and the lossless file after, by the
