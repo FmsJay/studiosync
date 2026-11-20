@@ -80,6 +80,24 @@ sends each new interval (one bar, or N beats; tempo-aware, from the shared clock
   rises). Different sample rates on the two ends are resampled, and the slow drift between two audio interfaces'
   clocks is absorbed in the jitter buffer (adaptive resampling), or long calls would click every few minutes.
 
+- **Hear what a bandmate plays when they arm (James, 2026-11-19; proposed, not built).** Today live audio sends one fixed
+  input range per computer (the call mic). An armed track's sound isn't sent: not a guitar on another input, not an amp
+  sim's or a synth's output, not a MIDI instrument. Proposal, two sources per computer:
+  - **Talk:** the call mic, as now.
+  - **Play:** every armed track's sound after its FX, as you hear it when you monitor it (amp sims, synths, MIDI
+    instruments included). Armed tracks send post-FX to a hidden "live out" track read by the extension, the tap 4b
+    already uses ("feeding and reading a hidden track"). Never the master, so the others' audio isn't in it (no loop).
+  - **Which is sent (automatic, per computer):** nothing armed -> Talk. A track armed -> Play, sharing ideas before
+    and while recording. Plus Talk, unless the call mic is an armed track's input: then it goes once, as Play (the voice
+    with its FX), never twice (the echo/doubling guard). A per-computer override: Auto, Talk only, Play only, Both.
+  - Listeners get a Talk and a Play volume per bandmate (the personal monitor mix, Decisions 11). Play is heard one
+    network trip late: fine for ideas and for watching a take; playing tightly together stays step 2's "in time" mode.
+- **Record several at once (James, 2026-11-19): guitar and voice, several MIDI instruments.** REAPER records any number
+  of armed tracks; StudioSync's parts are per track: smart take names (one number per take, top track first), streamed
+  takes and their placeholders (each armed audio track its own stream), the live MIDI view (each recording MIDI track).
+  To check in REAPER: two audio tracks at once (names, placeholders and the real takes on the others) and two MIDI
+  tracks at once (both live views). With Play above, several armed tracks mix into the one Play stream.
+
 ### 4b. Remote plug-ins in real time ("live hops")
 Hear a plug-in you don't have, live, through the bandmate's REAPER that does have it, instead of waiting for a print.
 - A small StudioSync audio plug-in (VST3/CLAP, part of the extension package) sits in your chain where the missing

@@ -248,6 +248,15 @@ do
   opened("PL", T120, A2, { tempo = T130, markers = {}, timeline_order = A1 })
   sync.watch_timeline("PL", cfg, "S", "main", function() return false end)
   assert(bpm() == 120, "reopened with a newer map than session.json: kept")
+  -- a reopen whose project settings differ from the ones last seen (another REAPER's defaults): still put back, not sent as an edit
+  local posted = 0
+  local real_post = sync.post
+  sync.post = function() posted = posted + 1 end
+  opened("PS", T130, A1, { tempo = T120, markers = {}, timeline_order = A2 })
+  proxy.capture_project = function() return { grid = 0.25 } end
+  sync.watch_timeline("PS", cfg, "S", "main", function() return true end)
+  assert(bpm() == 120 and posted == 0, "reopened behind, its settings changed: the studio's map, nothing sent (posted " .. posted .. ")")
+  sync.post, proxy.capture_project = real_post, function() return {} end
   proxy.capture_tempo, proxy.session_path = real.capture_tempo, real.session_path
   sync.resnap, sync.audio_follow_tempo, sync.timeline_waits = real_resnap, real_follow, real_waits
 end

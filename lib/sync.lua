@@ -1097,7 +1097,10 @@ function sync.watch_timeline(proj, cfg, song, room, can)
   -- opened behind the song (closed without its last save, say): nothing of ours waits, and your own marker has no event coming back to you (Mac, 0.57.6)
   if not sync.timeline_looked[proj] then
     sync.timeline_looked[proj] = true
-    local s = room == "main" and seen == sig and band.read_json(band.session_path(cfg, song))
+    -- (tempo and markers only: a reopened file's project settings often differ (another REAPER's defaults), and that skipped this look and
+    -- then posted the stale markers with them, wiping a region the others had. Laptop restart, James, rt)
+    local function tm(x) local t = band.json_decode(x) or {}; return band.json_encode({ t[1] or {}, t[2] or {} }) end
+    local s = room == "main" and seen ~= "" and tm(seen) == tm(sig) and band.read_json(band.session_path(cfg, song))
     -- (only a session.json map newer than the newest this project has applied or made (NEWEST), or, unstamped (written before rt), none
     -- applied or made in this session: it comes through Syncthing, seconds behind a map over the direct link, and the stale one was put
     -- back over the new. Cross test step 1, James, rt)
