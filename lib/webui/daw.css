@@ -46,6 +46,20 @@
 .dmenu[hidden] { display: none; }
 .dmenu button { text-align: left; padding: 8px 10px; font-size: 14px; border: 0; background: none; color: var(--text); border-radius: 6px; }
 .dmenu button:hover, .dmenu button:focus-visible { background: var(--me); }
+/* stage 3: the piano roll (pianoroll.js), over the arrange view */
+.proll { position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; background: var(--bg); }
+.proll[hidden] { display: none; }
+.pbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 8px; background: var(--panel); border-bottom: 1px solid var(--line); font-size: 13px; }
+.pbar .pname { flex: 1 1 8em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.pbar label { display: flex; align-items: center; gap: 4px; color: var(--dim); }
+.pbar select, .pbar input { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 2px 4px; }
+.pbar input { width: 4.2em; }
+.pbar button { padding: 3px 9px; font-size: 13px; }
+.pbar button:disabled, .pbar input:disabled { opacity: .45; cursor: default; }
+.pwrap { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.pcv { display: block; touch-action: none; }
+.pcv:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.pmsg { padding: 2px 8px; font-size: 12px; min-height: 1.5em; }
 @media (max-width: 640px) {
   .dvers { grid-template-columns: 1fr; }
   .dtime { min-width: 0; }
@@ -62,4 +76,7 @@
   .dedit { gap: 4px; padding: 3px 6px; }
   .dedit button { padding: 2px 6px; font-size: 12px; }
   .dedit .esel { display: none; }
+  .pbar { gap: 4px; padding: 3px 6px; }
+  .pbar label { font-size: 0; } /* (the controls say it) */
+  .pbar select, .pbar input, .pbar button { font-size: 12px; }
 }

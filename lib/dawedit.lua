@@ -101,7 +101,9 @@ function dawedit.timeline_refusal(can, who, user, names)
 end
 
 -- ---- applying it to REAPER ----------------------------------------------------------------------------------------------------------------
+-- (the helpers below are stage 3's too: lib/dawmidi.lua's note and envelope point edits find and check what they name the same way)
 local function snap(proj, t) return math.max(0, reaper.SnapToGrid(proj, math.max(0, t))) end
+dawedit.snap = snap
 local function shown_tracks(proj)
   local dawview, out = require("dawview"), {}
   for i = 0, reaper.CountTracks(proj) - 1 do
@@ -137,13 +139,25 @@ local function in_undo(proj, label, fn)
   reaper.UpdateArrange()
   if not ok then return tostring(err) end
 end
+dawedit.shown_tracks, dawedit.find_item, dawedit.track_name, dawedit.in_undo = shown_tracks, find_item, track_name, in_undo
+-- The room's rule now (sync.authority, with the session's regions: region claims hold). -> can, who.
+function dawedit.authority(cfg, b) return require("sync").authority(cfg, b.song, b.room, band.read_json(band.session_path(cfg, b.song))) end
+-- Why this computer's user may not change item `it` on track `tr` where it is (`pos`) right now, or nil; and the rule, to ask again for
+-- where it goes (t, at -> why). Not while a bandmate is editing it (presence's holds), then mirror.watch's rule.
+function dawedit.item_why(cfg, b, can, who, it, tr, pos)
+  local mirror, presence = require("mirror"), require("presence")
+  local user, ioid = cfg.user, mirror.item_oid(it)
+  local function refusal(t, at) return dawedit.item_refusal(can, who, user, track_name(t), mirror.track_oid(t), ioid ~= "" and ioid or nil, at) end
+  local holder = ioid ~= "" and presence.holder(presence.peers(cfg, b.song, b.room), ioid)
+  if holder and holder ~= user then return tostring(holder) .. " is editing that item right now: try again in a few seconds", refusal end
+  return refusal(tr, pos), refusal
+end
 
 local LABEL = { move = "move item", trim_start = "trim item start", trim_end = "trim item end", split = "split item", mute = "mute item",
   colour = "item colour", add_marker = "add marker", move_marker = "move marker", rename_marker = "rename marker" }
 -- -> nil when done, or why not.
 local function apply(proj, cfg, b, e)
-  local sync, mirror, presence = require("sync"), require("mirror"), require("presence")
-  local can, who = sync.authority(cfg, b.song, b.room, band.read_json(band.session_path(cfg, b.song))) -- (the session's regions: region claims hold)
+  local can, who = dawedit.authority(cfg, b)
   local user = cfg.user
   if OPS[e.op] == "marker" then
     if e.op == "add_marker" then
@@ -167,12 +181,8 @@ local function apply(proj, cfg, b, e)
   end
   local it, tr, pos, len, tracks = find_item(proj, e)
   if not it then return "that item changed meanwhile" end
-  local name, toid, ioid = track_name(tr), mirror.track_oid(tr), mirror.item_oid(it)
-  local holder = ioid ~= "" and presence.holder(presence.peers(cfg, b.song, b.room), ioid)
-  if holder and holder ~= user then return tostring(holder) .. " is editing that item right now: try again in a few seconds" end
   -- (allowed where it is, and where it goes: moving an item off a claimed track, or onto one, mustn't slip past the claim)
-  local function refusal(t, at) return dawedit.item_refusal(can, who, user, track_name(t), mirror.track_oid(t), ioid ~= "" and ioid or nil, at) end
-  local why = dawedit.item_refusal(can, who, user, name, toid, ioid ~= "" and ioid or nil, pos)
+  local why, refusal = dawedit.item_why(cfg, b, can, who, it, tr, pos)
   if why then return why end
   if e.op == "move" then
     local to, dest = snap(proj, e.to), e.tolane and tracks[e.tolane + 1] or tr

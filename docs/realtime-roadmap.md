@@ -1211,6 +1211,38 @@ Like Helgobox's move away from REAPER's own widgets, now that the extension is m
   what you hear; a fader moved from the page on a track playing a volume envelope (the envelope wins, as in REAPER); the tick cost with the
   Mixer open on a big song (strips are read 4 times a second).
 
+### Project page stage 3 built: piano roll and automation lanes (rt-dawmidi, 2026-11-20; offline tests and a stand-in server in Chromium only, not run in REAPER yet)
+- **Piano roll** (`lib/webui/pianoroll.js`): double-click (double-tap) a MIDI item, its long-press menu or the edit row's Piano roll button opens
+  its notes over the arrange view: keyboard, bar/beat/grid lines, the item's span, a velocity lane, the edit and play cursors. Double-click an
+  empty spot adds a note (the last length and velocity used, else a grid step at 100); drag a note to move it (time and pitch), its right edge to
+  resize it; drag a velocity bar; Delete removes the selected note, arrows move it (Shift: an octave), Esc closes; a Velocity box and Delete
+  button; right-click / long press for a menu. Snaps to a grid picked there (the project's by default, 1/4 to 1/32, 1/8 T, Off), counted from
+  each bar's start as REAPER's MIDI editor does; Live sync snaps again in the take's own ticks. Phones: tap a note to select it, then drag it
+  (anything else pans), pinch zooms, double tap adds, long press for the menu.
+- **Automation lanes** (`lib/webui/autolanes.js`): a track with envelopes shows an "A" by its name; a tap on the name opens its envelopes as
+  lanes under it (up to 8 tracks at once): the line (square points held), its points, the selected point's value in REAPER's own words. Drag a
+  point (time snaps as REAPER's SnapToGrid does, only with snapping on), double-click to add one, Delete or the menu removes it. Phones: tap a
+  point, then drag it; long press for the menu.
+- **Path:** `{topic:"daw", look:{item | env}}` says what's open (every 10 s; 30 s grace); `{topic:"daw", note:{...}}` and `{auto:{...}}` are
+  the edits. `lib/dawview.lua` hands them to `lib/dawmidi.lua`, which publishes `dawmidi` (the open item's notes, found as stage 2 names items
+  and then followed by the item itself) and `dawenv` (the open tracks' envelopes, points normalised across each envelope's raw range, volume's
+  through ScaleToEnvelopeMode, an FX parameter's through TrackFX_GetParamEx), only while open and only when REAPER's change count moves. Each
+  edit is applied in one undo point ("StudioSync web page: move note" ...) and the normal sync sends it on; the answer is stage 2's `dawedit`.
+  Notes are named by index, start tick and pitch, points by index and time, envelopes by index and name: stale ones are refused.
+- **Permissions reused, as REAPER's:** notes are an edit to their item, so `dawedit.item_why` (mirror.watch's `allowed` where the item is, and
+  not while a bandmate holds it). Envelope points are an edit to the track's automation object (mirror's `E-`), so the track's rule with no
+  spot (`sync.authority` / `sync.maker_may`, as mirror.watch checks parts) and not while a bandmate holds that `E-` object.
+- **Not yet:** automation items (only the envelope's own points), point shapes and tension (new points are linear, mute square; other shapes
+  are drawn straight), adding or arming envelopes, multi-select and box-select, copy/paste, quantise, CC lanes, note channel and mute edits,
+  notes in loop repeats (only the source's first pass), a pooled MIDI item's other copies are left to mirror.watch, open lanes follow a
+  track's place (a track inserted above shifts them), more than 4000 notes or 2000 points per envelope (the first ones show).
+- **Tests:** `tests/test_0_60_rt_dawmidi.lua` (parsing, notes and points on a stand-in REAPER, the real `sync.authority` over a stand-in shared
+  folder: claims, holds, Driver only; what's published and when; the pages' links).
+- **Check in REAPER:** open a MIDI item's piano roll and add, move, resize, delete a note and change a velocity; each is one Ctrl+Z and lands
+  on a bandmate's side; with REAPER's grid at 1/8 and a 7/8 bar; a looped item and one with a start offset; a claimed track as someone else
+  (refused, snaps back, says who). Automation: volume (fader-scaled and not), pan, width, mute, an FX parameter and a send envelope; values
+  match REAPER's readout; snapping on and off; a bandmate editing that track's automation (refused). A phone: tap, drag, long press.
+
 ### Web UI: what remains (TODO)
 - **Docking:** built (above); check it in REAPER on Windows, a Mac and Linux (WebKitGTK built 2026-11-19: proved in a SWELL host on
   REAPER 7.86's own libSwell on Ubuntu 24.04, docked, floated, typed into, Undock and key forwarding from the real pages; not yet in REAPER).

@@ -7,7 +7,8 @@
 -- Built only while a page has the Song page open (it says so every few seconds, an action "want"); the project is looked at again only when
 -- REAPER's change count moves (and every FLOOR s), peaks are read within a small time budget a tick and kept, history comes from recall.lua's
 -- own cache. Everything is read-only, apart from Play/Stop together (only for whoever may), a version handed to the panel's own Restore page,
--- which asks as it always does, and stage 2's item and marker edits (lib/dawedit.lua, checked as this computer's own edits are). (James, rt)
+-- which asks as it always does, and stage 2's item and marker edits (lib/dawedit.lua, checked as this computer's own edits are). Stage 3's
+-- piano roll and automation lanes (lib/dawmidi.lua) come through here too: their own topics, dawmidi and dawenv, and edits. (James, rt)
 local band = require("band")
 local dawview = {}
 dawview.CHUNK_TRACKS = 4    -- tracks per item chunk: an edit resends its chunk only
@@ -87,7 +88,9 @@ function dawview.build(raw, per)
   per = per or dawview.CHUNK_TRACKS
   local tracks, chunks = {}, {}
   for i, tr in ipairs(raw.tracks or {}) do
-    tracks[i] = { n = tr.name, c = tr.rgb, d = tr.depth > 0 and tr.depth or nil, f = tr.folder and 1 or nil, m = tr.mute and 1 or nil, s = tr.solo and 1 or nil }
+    -- (e: how many envelopes it has, so the page offers its automation lanes: stage 3, lib/dawmidi.lua)
+    tracks[i] = { n = tr.name, c = tr.rgb, d = tr.depth > 0 and tr.depth or nil, f = tr.folder and 1 or nil, m = tr.mute and 1 or nil, s = tr.solo and 1 or nil,
+      e = (tr.envs or 0) > 0 and tr.envs or nil }
     local k = (i - 1) // per + 1
     local ch = chunks[k]
     if not ch then ch = { sig = {}, t = { key = raw.key, k = k - 1, from = i - 1, tr = {} } }; chunks[k] = ch end
@@ -295,7 +298,7 @@ function dawview.read(proj, key, now, budget_end)
     if dawview.shown(tr) then
       local name = select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false))
       local t = { name = name, rgb = native_rgb(band.track_colour(tr)), depth = indent, folder = fd == 1, mute = reaper.GetMediaTrackInfo_Value(tr, "B_MUTE") ~= 0,
-        solo = reaper.GetMediaTrackInfo_Value(tr, "I_SOLO") ~= 0, items = {} }
+        solo = reaper.GetMediaTrackInfo_Value(tr, "I_SOLO") ~= 0, items = {}, envs = tonumber(reaper.CountTrackEnvelopes(tr)) or 0 }
       raw.tracks[#raw.tracks + 1] = t
       local place = #raw.tracks - 1
       local oid = mirror.track_oid(tr)
@@ -350,13 +353,18 @@ local S = { want_until = -math.huge, hist_until = -math.huge }
 -- A page is looking at the Song page (lib/webui.lua puts it in this computer's status, so bandmates send their cursor and view meanwhile).
 function dawview.watching(now) return (now or reaper.time_precise()) < S.want_until end
 -- Everything goes again (the tab in front changed: another tab's topics may be on the server).
-function dawview.reset() S = { want_until = S.want_until, hist_until = S.hist_until } end
+function dawview.reset()
+  S = { want_until = S.want_until, hist_until = S.hist_until }
+  if package.loaded.dawmidi then package.loaded.dawmidi.reset() end
+end
 local function scripts_dir() return (debug.getinfo(1, "S").source:match("^@?(.*)[/\\]lib[/\\][^/\\]+$")) end
 
 -- An action a page sent. -> words for the log, or nil.
 function dawview.action(proj, cfg, b, a)
   -- (stage 2: an item or marker edit, checked and applied by lib/dawedit.lua; its answer goes back as the dawedit topic, below)
   if type(a) == "table" and type(a.edit) == "table" then return require("dawedit").action(proj, cfg, b, a.edit) end
+  -- (stage 3: what the piano roll and the automation lanes show, and their note and envelope point edits: lib/dawmidi.lua)
+  if type(a) == "table" and (type(a.look) == "table" or a.note ~= nil or a.auto ~= nil) then return require("dawmidi").action(proj, cfg, b, a) end
   local d = dawview.parse(a)
   if not d then return end
   local now = reaper.time_precise()
@@ -410,6 +418,8 @@ function dawview.tick(proj, cfg, b, publish, who, now)
     header.may = who and dawview.may_transport(who.mode, cfg.user, who.driver, require("groups").may_manage(cfg.root, cfg.user)) or nil
     publish("daw", header)
   end
+  -- the piano roll's item and the open automation lanes, only while a page shows them (lib/dawmidi.lua)
+  require("dawmidi").tick(proj, cfg, b, publish, now)
   -- cursors: on a change; while playing, every CUR_EVERY s (the page moves it on between) or at a jump
   local ps = reaper.GetPlayStateEx(proj)
   local playing = ps & 1 == 1
