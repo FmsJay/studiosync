@@ -187,7 +187,7 @@ do
   mirror.unsent = {}
   clock = clock + mirror.STASH_SECS
   mirror.stash_unsent("A2", now)
-  assert(files[PATH] == nil, "nothing waits: the file is gone")
+  assert(files[PATH] == nil or (next(files[PATH].objs) == nil and files[PATH].hold == false), "nothing waits: only \"Hold is off\" is kept")
 
   -- what the reopened project already has, or holds newer than what it was made on, isn't put back
   files[PATH] = { objs = { ["F-ME-1-1"] = { kind = "fx", track = "T-ME-1-1", state = FX2, hash = "h2", known = "3|h1|e|t" },
@@ -219,6 +219,17 @@ do
   local n6 = mirror.restore_unsent("A6", { ["I-ME-1-6"] = { kind = "item", state = "<ITEM\nS\n>\n", hash = "hs" } }, "M", false)
   assert(n6 == 0 and #applied == 0, "already there: nothing to put back")
   assert(mirror.known("A6", "I-ME-1-6") == 5, "built on rev 5, as it was made: " .. tostring(mirror.known("A6", "I-ME-1-6")))
+  -- Hold off when REAPER stopped, the reopened save made while it was on: it stays off, so new work goes out (laptop, rt)
+  open, fns.A7, fns.A8 = { "A7" }, "C:\\s\\Song.RPP", "C:\\s\\Song.RPP"
+  files[PATH] = nil
+  reaper.SetProjExtState("A7", SECTION, "hold", "")
+  clock = clock + mirror.STASH_SECS
+  mirror.stash_unsent("A7", {})
+  assert(files[PATH] and files[PATH].hold == false and next(files[PATH].objs) == nil, "nothing unsent, Hold off: the file says so")
+  open = { "A8" }
+  reaper.SetProjExtState("A8", SECTION, "hold", "1") -- (the older save had it on)
+  mirror.restore_unsent("A8", {}, "M", false)
+  assert(select(2, reaper.GetProjExtState("A8", SECTION, "hold")) == "", "Hold off again, as it was when REAPER stopped")
   -- Live sync's clean stop takes the file away: REAPER asked about saving
   files[PATH] = { objs = {} }
   mirror.drop_stash("A3")

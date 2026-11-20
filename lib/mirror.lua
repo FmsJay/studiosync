@@ -1750,10 +1750,13 @@ function mirror.stash_unsent(proj, by_oid)
   -- (and Hold my changes itself: it lives in the unsaved project, so a held change came back and went out. Laptop kill test, rt)
   local held = select(2, reaper.GetProjExtState(proj, require("band").SECTION, "hold")) ~= ""
   if held and #sig > 0 then sig[#sig + 1] = "hold" end
+  -- (and when it's off: Hold lives in the project, so a save made while it was on came back after a crash with it on, and new work sat
+  -- unsent. A small file says "off" until the clean stop takes it away. Laptop, rt)
+  if not held then sig[#sig + 1] = "hold off" end
   local s, now = table.concat(sig, "\n"), reaper.time_precise()
   if s == stash_sig[path] or now - (stash_at[path] or -math.huge) < mirror.STASH_SECS then return end
   stash_sig[path], stash_at[path] = s, now
-  if s == "" then os.remove(path) else require("band").write_json(path, { objs = out, hold = held or nil }) end
+  if s == "" then os.remove(path) else require("band").write_json(path, { objs = out, hold = held }) end
 end
 -- The file read once per opening (a file opened again in its tab has a new master track, as W.order tells), and each entry put back unless the
 -- project already has it, or holds a newer version than the one it was made on. Tracks first, deletions last. -> how many were put back.
@@ -1765,12 +1768,14 @@ function mirror.restore_unsent(proj, by_oid, media, local_mix)
     local path = stash_path(ids(proj))
     local d = path and require("band").read_json(path)
     mirror.restoring[key] = type(d) == "table" and type(d.objs) == "table" and next(d.objs) and d.objs or nil
-    if mirror.restoring[key] and d.hold then -- (held when REAPER stopped: still held, before the look that would send it)
-      local B = require("band")
-      if select(2, reaper.GetProjExtState(proj, B.SECTION, "hold")) == "" then
-        reaper.SetProjExtState(proj, B.SECTION, "hold", "1")
-        B.log("Hold my changes is on again, as it was when REAPER stopped: your held changes stay here until you let them go")
-      end
+    local B = require("band")
+    local now_held = select(2, reaper.GetProjExtState(proj, B.SECTION, "hold")) ~= ""
+    if mirror.restoring[key] and d.hold == true and not now_held then -- (held when REAPER stopped: still held, before the look that would send it)
+      reaper.SetProjExtState(proj, B.SECTION, "hold", "1")
+      B.log("Hold my changes is on again, as it was when REAPER stopped: your held changes stay here until you let them go")
+    elseif type(d) == "table" and d.hold == false and now_held then -- (off when REAPER stopped: an older save's Hold doesn't come back)
+      reaper.SetProjExtState(proj, B.SECTION, "hold", "")
+      B.log("Hold my changes is off, as it was when REAPER stopped (the saved project still had it on)")
     end
   end
   local list = mirror.restoring[key]
