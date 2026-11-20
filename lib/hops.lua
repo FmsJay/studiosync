@@ -17,8 +17,10 @@ local band = require("band")
 -- LATENCY: a hop's budget, the plug-in's most (170 ms at 48 kHz). The desktop <-> laptop link over the internet measured an 80-125 ms round
 -- trip, and the plug-in's default 150 ms left about 12 ms to spare: most of every spike came back too late. The extra 20 ms is only more of
 -- REAPER's delay compensation. (Desktop -> laptop, rt)
+-- LOST_MAX: % of a hop's audio not back in time over LATE_WINDOW s that hands an offload back: that link loses 0.3-0.7% (a packet now and
+-- then) and a 150-200 ms stall every minute or so (2.1% of a window), which isn't falling behind; before the spike fix it lost 8-13%.
 local hops = { EVERY = 0.5, ASK_EVERY = 3, IDLE = 30, NAME = "StudioSync Hop", TAG = "for=hop;", TRACK_TAG = "hop", MARGIN_MS = 20, REMOTE_LATENCY = 256,
-  LATENCY = 8192, HELD = "band_fx_held", MAX_CHAIN = 32, BUSY = 75, CPU_EVERY = 20, START = 20, AWAY = 10, LATE_WINDOW = 10, LATE_MAX = 8, LOST_MAX = 2, SETTLE = 3, SAY_BACK = 300 }
+  LATENCY = 8192, HELD = "band_fx_held", MAX_CHAIN = 32, BUSY = 75, CPU_EVERY = 20, START = 20, AWAY = 10, LATE_WINDOW = 10, LATE_MAX = 8, LOST_MAX = 5, SETTLE = 3, SAY_BACK = 300 }
 -- (this script's state; kept across Live sync's reload in place (band.reload: the same Lua, the modules loaded again): a fresh one forgot the
 -- hidden tracks this computer hosts, so a stop never removed them, and the next ask made a second track for the same hop. Laptop, rt)
 local S = rawget(_G, "STUDIOSYNC_HOPS_S") or {}
