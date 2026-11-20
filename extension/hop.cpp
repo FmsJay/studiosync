@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdio>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 #include "../plugin/hop_shm.h"
@@ -93,10 +94,14 @@ int hop_loopback(int id, int delay)
   return 1;
 }
 
-// The hop's state as JSON (for tests and Health): what the plug-in reports and how far each side is.
+// The network leg's side of a hop, as a JSON object or "" (extension/hopnet.cpp sets it when it registers; null in hop_test).
+std::string (*hop_net_status)(int hop_id) = nullptr;
+
+// The hop's state as JSON (for tests and Health): what the plug-in reports and how far each side is, and the network's ("net").
 const char *hop_status(int id)
 {
   static char out[384];
+  static std::string full;
   std::lock_guard<std::mutex> lk(g_mx);
   Hop *h = find(id);
   hop_map tmp = {};
@@ -113,7 +118,11 @@ const char *hop_status(int id)
              (unsigned long long)hop_load(&s->ret_w), (unsigned long long)hop_load(&s->late), (unsigned long long)hop_load(&s->blocks),
              s->ext_mode, s->ext_delay);
   if (tmp.p) hop_shm_close(&tmp);
-  return out;
+  const std::string net = hop_net_status ? hop_net_status(id) : std::string();
+  if (net.empty() || out[0] != '{') return out;
+  full.assign(out, strlen(out) - 1); // (the closing brace comes off, "net" goes in)
+  full += ",\"net\":" + net + "}";
+  return full.c_str();
 }
 
 void hop_stop_all()
@@ -150,5 +159,7 @@ extern "C" void hop_register(reaper_plugin_info_t *rec) // (C linkage: reaper_me
     snprintf(key, sizeof(key), "APIvararg_%s", f.name); rec->Register(key, f.va);
   }
   rec->Register("atexit", (void *)hop_stop_all); // (the thread out and the names gone before REAPER goes)
+  void hopnet_register(reaper_plugin_info_t *);
+  hopnet_register(rec); // (reaper.StudioSync_HopConnect, HopServe: the network leg, extension/hopnet.cpp)
 }
 #endif
