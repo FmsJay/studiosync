@@ -117,9 +117,9 @@ function dawview.diff(state, chunks)
 end
 
 -- The cursors: me = { user, playing, rec, pos, cursor, view = { a, z }, rate }; peers: presence's statuses (cursor and view only while someone
--- watches them, below); colours: user -> 0xRRGGBB. -> the dawcur topic's table.
+-- watches them, below); colours: user -> 0xRRGGBB; editing: user -> what they're editing right now (lib/follow.lua). -> the dawcur topic's table.
 local function hexof(rgb) return rgb and dawview.hex(rgb >> 16, rgb >> 8, rgb) or nil end
-function dawview.cursor_model(key, me, peers, colours)
+function dawview.cursor_model(key, me, peers, colours, editing)
   colours = colours or {}
   local view = type(me.view) == "table" and { r3(me.view[1]), r3(me.view[2]) } or nil
   local out = { key = key, play = { on = me.playing and 1 or nil, rec = me.rec and 1 or nil, pos = r3(me.pos), rate = me.rate ~= 1 and me.rate or nil },
@@ -129,7 +129,7 @@ function dawview.cursor_model(key, me, peers, colours)
     if type(st) == "table" and type(st.user) == "string" and st.user ~= me.user then
       local v = type(st.view) == "table" and tonumber(st.view[1]) and tonumber(st.view[2]) and { r3(st.view[1]), r3(st.view[2]) } or nil
       list[#list + 1] = { user = st.user, cur = tonumber(st.cursor) and r3(st.cursor) or nil, view = v, on = st.playing and 1 or nil,
-        rec = st.recording and 1 or nil, last = tonumber(st.last_at) and r3(st.last_at) or nil, col = hexof(colours[st.user]) }
+        rec = st.recording and 1 or nil, last = tonumber(st.last_at) and r3(st.last_at) or nil, col = hexof(colours[st.user]), ed = editing and editing[st.user] or nil }
     end
   end
   table.sort(list, function(a, z) return a.user:lower() < z.user:lower() end)
@@ -416,7 +416,7 @@ function dawview.tick(proj, cfg, b, publish, who, now)
     S.cur = { playing = playing, rec = ps & 4 == 4, pos = pos, at = now, rate = rate, cursor = cur, a = a, z = z }
     S.peers_at = now
     publish("dawcur", dawview.cursor_model(key, { user = cfg.user, playing = playing, rec = ps & 4 == 4, pos = pos, cursor = cur, view = { a, z }, rate = rate },
-      peers, colours))
+      peers, colours, require("follow").words_by_user()))
   end
   -- history, while it's showing: recall's reading a little each tick (its cache, shared with the panel's Restore page), built every HIST_EVERY s
   if now < S.hist_until then

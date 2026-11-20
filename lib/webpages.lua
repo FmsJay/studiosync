@@ -39,14 +39,16 @@ function webpages.health_model(rows, gone, ver, ext)
 end
 -- st: { side (ProjExtState "side": "" off, else bars behind), rt (Real time mode on), refusal (why this user may not start or stop, or nil),
 -- cursor (the edit cursor's bar), regions = { { name, bar } }, due (seconds to a start, or nil), last (the last start or stop, in words),
--- ninjam, sonobus }. -> the Play together topic: from = start-from labels (1: the edit cursor, then each region), as the panel's.
+-- ninjam, sonobus, mate (the bandmate this tab follows, "" nobody), paused (following them is paused), seen (what you see of them) }.
+-- -> the Play together topic: from = start-from labels (1: the edit cursor, then each region), as the panel's.
 function webpages.play_model(st)
   local from = { "the edit cursor (bar " .. tostring(st.cursor) .. ")" }
   for _, r in ipairs(st.regions or {}) do from[#from + 1] = tostring(r.name) .. " (bar " .. tostring(r.bar) .. ")" end
   local on = type(st.side) == "string" and st.side ~= ""
   return { follow = on, bars = on and tonumber(st.side) or nil, rt = st.rt and true or nil, may = not st.refusal, why = st.refusal, from = from,
     due = st.due and st.due > 0 and math.floor(st.due * 10 + 0.5) / 10 or nil, last = st.last ~= "" and st.last or nil,
-    ninjam = st.ninjam and true or nil, sonobus = st.sonobus and true or nil }
+    ninjam = st.ninjam and true or nil, sonobus = st.sonobus and true or nil,
+    mate = (st.mate or "") ~= "" and st.mate or nil, paused = st.paused and true or nil, seen = (st.seen or "") ~= "" and st.seen or nil }
 end
 -- A number of bars from a page: whole, 0..MAX_BARS; nil when it isn't one.
 function webpages.bars(v)
@@ -78,16 +80,31 @@ local function play_state(proj, cfg, b, who)
   return { side = select(2, reaper.GetProjExtState(proj, band.SECTION, "side")), rt = live.realtime_on(proj),
     refusal = require("dawview").transport_refusal(cfg, b, who), cursor = together.bar_of(reaper.GetCursorPositionEx(proj)), regions = regions,
     due = due and due - together.now() or nil, last = reaper.GetExtState(band.SECTION, "together " .. tostring(proj)),
-    ninjam = live.fx(proj, false) ~= nil, sonobus = live.fx(proj, false, live.SONOBUS) ~= nil }
+    ninjam = live.fx(proj, false) ~= nil, sonobus = live.fx(proj, false, live.SONOBUS) ~= nil,
+    mate = reaper.GetExtState(band.SECTION, "follow " .. tostring(proj)), seen = reaper.GetExtState(band.SECTION, "follow seen " .. tostring(proj)),
+    paused = reaper.GetExtState(band.SECTION, "follow paused " .. tostring(proj)) ~= "" }
 end
 
 -- ---- what the pages send ---------------------------------------------------------------------------------------------------------------
 -- a: { topic = "health", want } or { topic = "play", want, follow (on/off), bars (behind), go = "play" | "record" | "stop", from (0: the edit
--- cursor, n: the nth region), countin, click, lag (bars later for listeners: Time-sync) }. -> words for the log, or nil.
+-- cursor, n: the nth region), countin, click, lag (bars later for listeners: Time-sync), mate (follow this bandmate, "" nobody), resume }.
+-- -> words for the log, or nil.
 function webpages.action(proj, cfg, b, a)
   local now = reaper.time_precise()
   if a.want then S.want[a.topic], S.at[a.topic] = now + webpages.WANT_FOR, -math.huge end
   if a.topic ~= "play" then return end
+  if type(a.mate) == "string" then -- (Follow a bandmate, as the panel's Follow on their card: only someone this room has. lib/follow.lua)
+    local key = "follow " .. tostring(proj)
+    S.at.play = -math.huge
+    if a.mate == "" then reaper.DeleteExtState(band.SECTION, key, false); return "stopped following, from the web page" end
+    local known = false
+    for _, st in ipairs(require("presence").all(cfg, b.song, b.room) or {}) do known = known or st.user == a.mate end
+    if not known or a.mate == cfg.user then return "the web page's Follow was left as it is: nobody called that is in this room" end
+    reaper.SetExtState(band.SECTION, key, a.mate, false)
+    reaper.SetExtState(band.SECTION, "follow driver", "", true)
+    return "following " .. a.mate .. ", from the web page"
+  end
+  if a.resume then S.at.play = -math.huge; reaper.DeleteExtState(band.SECTION, "follow paused " .. tostring(proj), false); return end
   if a.follow ~= nil or a.bars ~= nil then
     -- (Real time mode is following at 0 bars: changed here, it would quietly switch Real time off. As the panel's, greyed out then)
     if require("live").realtime_on(proj) then return "the web page's Follow each other was left as it is: Real time mode is on (Home)" end

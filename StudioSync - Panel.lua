@@ -963,6 +963,11 @@ function ui.listen_button(p)
 end
 -- Under a person in Who's here (James, 2026-11-02): what they're working in or last worked in, opening to all they've claimed.
 function ui.person_claims(user, last_track, last_at)
+  do -- (what they're editing right now, and what you see of them while you follow them: Live sync publishes both. lib/follow.lua, James, rt)
+    local ed, seen = require("follow").panel_lines(proj, user)
+    if ed then ImGui.TextColored(ctx, YELLOW, user .. " is editing " .. ed) end
+    if seen then ImGui.TextDisabled(ctx, seen) end
+  end
   local list = ui.claims_of(user)
   local there
   if (last_track or "") ~= "" then -- (a track that's gone isn't where anyone's working: Mac, 0.50.4)
@@ -2725,7 +2730,8 @@ local function nav_dot(p)
 end
 -- The Dock button: left-click picks a side; right-click arms drag-to-dock (green) so moving the window around never
 -- docks it by accident (unarmed, dragging docks only with Shift held). On the session's top bar and the start screen.
--- Follow a bandmate's view (lib/presence.lua): Live sync moves this arrange view to theirs, a few seconds behind.
+-- Follow a bandmate's view (lib/follow.lua over the direct link, a few times a second; lib/presence.lua's status file without it): Live sync
+-- moves this arrange view, the cursors and the selection to theirs.
 tools.follow_button = function(name)
   local key = "follow " .. tostring(proj)
   local on = reaper.GetExtState(band.SECTION, key) == name
@@ -2737,7 +2743,14 @@ tools.follow_button = function(name)
     end
   end
   if on then ImGui.PopStyleColor(ctx) end
-  ImGui.SetItemTooltip(ctx, on and ("You follow " .. name .. ": their play, pause, stop and record, their view, and their mix. Click to stop: your own mix comes back.")
+  -- (a scroll or zoom of yours pauses following their view, cursors and selection: Live sync says so here. lib/follow.lua, James, rt)
+  if on and reaper.GetExtState(band.SECTION, "follow paused " .. tostring(proj)) == name then
+    ImGui.SameLine(ctx, 0, 4)
+    if ImGui.SmallButton(ctx, "Resume##followresume" .. name) then reaper.DeleteExtState(band.SECTION, "follow paused " .. tostring(proj), false) end
+    ImGui.SetItemTooltip(ctx, "You scrolled or zoomed, so your view stopped following " .. name .. "'s. Resume: it goes back to theirs.")
+    return
+  end
+  ImGui.SetItemTooltip(ctx, on and ("You follow " .. name .. ": their play, pause, stop and record, their view, cursors and selection, and their mix. Click to stop: your own mix and selection come back.")
     or ("Follow " .. name .. ": your playhead goes with theirs (play, pause, stop, jumps; when they record you play along), your view goes where theirs is,\n" ..
       "and you hear their mix (faders, pan, what they've soloed; mutes are everyone's already). Your own mix comes back when you stop."))
 end

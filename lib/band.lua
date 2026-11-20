@@ -1488,8 +1488,11 @@ end
 band.CLAIM_MARK = "[claimed: "
 function band.is_claim_mark(name) return (name or ""):sub(1, #band.CLAIM_MARK) == band.CLAIM_MARK end
 -- A marker or region only this machine shows: a claim, a bandmate's ping ("[ping] Bee", lib/presence.lua), or where a bandmate punches in
--- while they record ("[punch] Bee ...", lib/streams.lua punch_marks. James, rt).
-function band.is_local_mark(name) return band.is_claim_mark(name) or (name or ""):sub(1, 7) == "[ping] " or (name or ""):sub(1, 8) == "[punch] " end
+-- while they record ("[punch] Bee ...", lib/streams.lua punch_marks. James, rt), or what a bandmate is editing now ("[editing: Bee]", lib/follow.lua).
+function band.is_local_mark(name)
+  name = name or ""
+  return band.is_claim_mark(name) or name:sub(1, 7) == "[ping] " or name:sub(1, 8) == "[punch] " or name:sub(1, 10) == "[editing: "
+end
 
 function band.capture_markers(proj)
   local out, i = {}, 0

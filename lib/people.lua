@@ -266,6 +266,7 @@ function people.paint(proj, cfg, peers, claims, where)
       for _, o in ipairs(type(st.editing) == "table" and st.editing or {}) do editing[o] = st.user end
     end
   end
+  for o, u in pairs(require("follow").live_editing()) do editing[o] = editing[o] or u end -- (what someone is editing right now, shown only: lib/follow.lua)
   local colours = mode ~= "band" and people.colours(cfg.root, others) or {}
   local mirror = require("mirror")
   local new

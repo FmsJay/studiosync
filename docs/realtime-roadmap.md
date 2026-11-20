@@ -558,6 +558,23 @@ it's the patient, lossless, store-and-forward half.
        laptop's hidden track (Show all tracks) has the chain; playback in time with a dry copy; the desktop's CPU meter drops; start recording
        on the laptop: back at once, the chain exactly as before; pull the laptop's network: back within ~10 s; Bring its effects back by hand.
 3. **Follow a bandmate.** See exactly what they see: their view, cursor, selection and open editor, live.
+   - **Built (rt-follow, 2026-11-19; offline tests only, not run in REAPER yet):** `lib/follow.lua`, tests/test_0_60_rt_follow.lua.
+     - **What goes:** while someone follows you (their status says `follow`, as before), Live sync's tick sends a `view` link message at most
+       5 times a second, and at least once a second while it applies: the arrange view, edit cursor, play cursor while playing, the selected
+       tracks' and items' oids (16 each), and words for the follower ("Bass selected; 'Riff' on Bass; editing the MIDI of 'Riff' on Bass").
+       Nobody following: nothing is built or sent.
+     - **What the follower does:** the tab in front takes their view (start/end), their edit cursor (their play cursor while they play and
+       you don't), and their selection (tracks scrolled into view, action 40913); your own selection comes back when you stop following.
+       Which editor they have open shows as words under the Following button's card ("Bo: ... editing the MIDI of 'Riff' on Bass"), not
+       opened here. A scroll or zoom of yours (the view more than 1% off where following left it) pauses it: **Resume** beside Following,
+       and on the web Play page. Play/stop and mix following stay as they were (`follow` ExtState).
+     - **Web Play page:** "Follow a bandmate" (Nobody or anyone here), Resume while paused, and the same words (`play` topic: mate, paused,
+       seen; actions `mate`, `resume`, only for someone this room has).
+     - **Fallback:** a bandmate the link doesn't reach (older extension, no Tailscale) is followed from their status file as before
+       (presence.follow, a few seconds behind); it steps aside while link views are fresh (3 s) or following is paused.
+     - **Not yet:** the vertical scroll itself (REAPER has no API for it without js_ReaScriptAPI's window calls: their selected tracks are
+       scrolled into view instead); a scroll of yours while playing (REAPER's own scrolling moves the view then, so only a stopped one
+       pauses); opening their editor here.
 4. **Listen from anywhere.** A link from the studio to a browser page (phone, client, a bandmate away from REAPER) that
    plays the live session or the latest mix, peer to peer over Tailscale.
 5. **Shared controllers.** One person's control surface or MIDI controller moving faders and knobs in everyone's
@@ -571,6 +588,22 @@ it's the patient, lossless, store-and-forward half.
    recorded against a bandmate's stream land exactly on the grid.
 9. **"Bo is editing this" before you touch it.** Live claims shown on the track/item as soon as someone starts
    editing, so clashes mostly don't happen.
+   - **Built (rt-follow, 2026-11-19; offline tests only, not run in REAPER yet):** `lib/follow.lua`, tests/test_0_60_rt_follow.lua.
+     - **What counts as editing** (looked at every 0.1 s, only with someone here): the item in the MIDI editor, the track or take whose
+       plug-in window has focus (an editor left open counts for 2 minutes after it opened or you last changed something), else what's
+       selected (items first, then tracks) while a change is in progress: the project changed in the last 2 s (your changes only: Live
+       sync's own are taken in at the end of each tick) or the mouse held 0.3 s (a drag, before the drop changes anything).
+     - **What goes:** an `editing` link message at once when that changes ({ user, o = oids, w = words }), again each second while it lasts,
+       and an empty one when you move on; the others drop it after 3 s without word.
+     - **What shows:** a `[editing: Bo]` region over each item, in Bo's colour (this computer's only: band.is_local_mark, so it never
+       reaches the band's markers or an event file); the track tinted like an edit hold (people.paint's `editing` map, only with Colour
+       parity off, repainted at once rather than at the next pass); "Bo is editing 'Riff' on Bass" on Bo's card in the panel's Who's here;
+       the same line under the web Project page's view (dawcur's people `ed`, within a second).
+     - **The claims model, not a new one:** it rides the edit holds' oid -> user map that people.paint already shows, and the link's
+       message path that claims and presence use; it never enters sync.authority or presence.holder, so it blocks nobody. Claims and edit
+       holds do what they did.
+     - **Not yet:** a track-only edit (plug-in window, selected tracks) has no timeline mark with Colour parity on (the panel and web line
+       say it); an envelope or automation item being edited counts as its track only through selection.
 10. **Timeline comments.** Notes pinned to a bar or region, live, like comments in a shared document.
 11. **Personal monitor mixes.** Each person sets their own mix of everyone's live audio (more click, less guitar)
     without touching the song's mix.

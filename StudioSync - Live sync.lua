@@ -707,12 +707,14 @@ function P.presence(t)
     if presence.pings(proj, peers) then t.redraw = true end
     local follow = reaper.GetExtState(band.SECTION, "follow " .. tostring(proj))
     if follow == "" and reaper.GetExtState(band.SECTION, "follow driver") ~= "" and driver ~= cfg.user then follow = driver or "" end
-    if follow ~= "" then presence.follow(proj, peers, follow); t.redraw = true end -- (their view and cursor: always redrawn while following)
+    -- (their view and cursor: always redrawn while following; over the link, a few times a second, lib/follow.lua does it, this the fallback)
+    if follow ~= "" and not require("follow").handles(proj, follow) then presence.follow(proj, peers, follow); t.redraw = true end
     if presence.follow_mix(proj, peers, follow, { cfg = cfg, song = b.song, room = b.room }) then t.redraw = true end -- (and their mix, till you stop: 0.58.82)
     followed = presence.followed(peers, cfg.user, driver)
     watched = false
     for _, st in ipairs(peers) do watched = watched or st.dawview == true end
     -- tracks in the colour of who's working on them, if this machine wants that (lib/people.lua; shown here only)
+    require("follow").claims_seen = who.tracks -- (a live edit repaints between passes with these: lib/follow.lua)
     if now - paint_at > 1 then paint_at = now; if require("people").paint(proj, cfg, peers, who.tracks, b.song .. "/" .. b.room) then t.redraw = true end end
     if now - format_at > 10 and reaper.GetPlayStateEx(proj) == 0 then -- (stopped: not mid-take, nor while playing. Review, 0.58.87) -- (everyone records 24-bit FLAC at the project's rate: lib/prep.lua; never mid-recording)
       format_at = now
@@ -1012,6 +1014,9 @@ local live_handlers = {
   ablink = function(d) require("ablink").on_msg(cfg, b, proj, d) end,
   -- (live hops: a bandmate asks this computer to host a plug-in they don't have, or stops; lib/hops.lua. James, rt)
   hop = function(d) require("hops").on_msg(proj, cfg, d, b.song, b.room) end,
+  -- (what a bandmate you follow sees, and what someone is editing right now: lib/follow.lua. James, rt)
+  view = function(d) require("follow").on_view(cfg, d) end,
+  editing = function(d) require("follow").on_editing(cfg, d) end,
 }
 live_handlers.start, live_handlers.stop = live_handlers.cue, live_handlers.cue
 local function tick_body() -- returns true to keep going
@@ -1097,6 +1102,7 @@ local function tick_body() -- returns true to keep going
   band.try("hops.tick", require("hops").tick, cfg, b, proj) -- (live hops, both sides: lib/hops.lua. James, rt)
   band.try("webui.tick", require("webui").tick, proj, cfg, b, live_handlers) -- (the web UI: who's here, claims and chat for the browser, its chat sends. lib/webui.lua, James, rt)
   band.try("hub.tick", require("hub").tick, proj, cfg, b) -- (who's the studio's hub and this song's; the song hub's restore points while idle. lib/hub.lua, James, rt)
+  band.try("follow.tick", require("follow").tick, proj, cfg, b, changed_at) -- (following a bandmate live, and who's editing what now: lib/follow.lua. James, rt)
   local tjson = reaper.GetExtState(band.SECTION, "transport " .. key) -- a start/stop from the panel or the band
   if tjson ~= "" then
     reaper.DeleteExtState(band.SECTION, "transport " .. key, false)
