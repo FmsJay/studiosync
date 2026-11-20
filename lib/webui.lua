@@ -108,16 +108,26 @@ function webui.presence_model(song, room, me, peers, who)
   return { song = song, room = room, driver = type(who) == "table" and who.driver or nil, mode = type(who) == "table" and who.mode or nil,
     people = people, claims = claims }
 end
--- msgs: page_chat's, oldest first; where_of(where) -> a label or nil. -> { scope, msgs = the newest `max`, oldest first }
-function webui.chat_model(msgs, where_of, max)
-  local out, first = {}, math.max(1, #(msgs or {}) - (max or webui.CHAT_MAX) + 1)
-  for i = first, #(msgs or {}) do
-    local m = msgs[i]
-    if type(m) == "table" and type(m.text) == "string" then
-      out[#out + 1] = { user = tostring(m.user or "?"), text = m.text, time = type(m.time) == "string" and m.time or nil, where = where_of and where_of(m.where) or nil }
+-- t: page_chat.read's { msgs, todo, links }, each oldest first; where_of(where) -> a label or nil; scope: "song" (This project, its topic
+-- "chat"), "room" or "band" (Studio). -> { scope, msgs, todo, links }: the newest `max` of each, oldest first. Each has its file's name as its
+-- id, which a page sends back to tick a to-do or delete its own (page_chat.web_action finds it in the scope's own listing).
+webui.CHAT_TOPICS = { song = "chat", room = "chat_room", band = "chat_band" } -- (This project's always goes; the others while a page shows them)
+function webui.chat_model(t, where_of, max, scope)
+  local out = { scope = scope or "song", msgs = {}, todo = {}, links = {} }
+  for kind, list in pairs(out) do
+    local from = type(list) == "table" and type(t) == "table" and type(t[kind]) == "table" and t[kind] or {}
+    for i = math.max(1, #from - (max or webui.CHAT_MAX) + 1), #from do
+      local m = from[i]
+      if type(m) == "table" and (kind == "links" and type(m.url) == "string" or kind ~= "links" and type(m.text) == "string") then
+        local e = { id = type(m.file) == "string" and m.file:match("([^/\\]+)%.json$") or nil, user = tostring(m.user or "?"),
+          time = type(m.time) == "string" and m.time or nil, where = where_of and where_of(m.where) or nil }
+        if kind == "links" then e.url, e.title = m.url, type(m.title) == "string" and m.title ~= "" and m.title or nil else e.text = m.text end
+        if kind == "todo" then e.done, e.by = m.done == true or nil, m.done and type(m.done_by) == "string" and m.done_by or nil end
+        list[#list + 1] = e
+      end
     end
   end
-  return { scope = "song", msgs = out }
+  return out
 end
 -- A message from a page: control characters become spaces, ends trimmed; nil when empty or over TEXT_MAX bytes.
 function webui.clean_text(t)
@@ -127,7 +137,7 @@ function webui.clean_text(t)
   return t
 end
 -- An action's JSON (StudioSync_WebUIPoll) -> its topic and the table, or nil. Only the topics the pages may send.
-webui.ACTIONS = { chat = true, rtc = true, daw = true } -- (rtc: a video call or screen share's setup, lib/webcall.lua; daw: the Song page's, lib/dawview.lua)
+webui.ACTIONS = { chat = true, rtc = true, daw = true, health = true, play = true } -- (rtc: a video call or screen share's setup, lib/webcall.lua; daw: the Song page's, lib/dawview.lua; health, play: lib/webpages.lua)
 webui.ACTIONS.phonerec = true -- (the Record page's: a take from a phone, lib/phonerec.lua)
 function webui.parse_action(s)
   local a = type(s) == "string" and s ~= "" and band.json_decode(s)
@@ -138,6 +148,7 @@ end
 -- ---- Live sync's tick -------------------------------------------------------------------------------------------------------------------
 local published, pres_at, chat_at, rtc_at, was_front, was_looking = {}, -math.huge, -math.huge, -math.huge, false, false
 local last_who -- (sync.authority's answer from the last presence build: the Song page's Play button asks it)
+local chat_want = {} -- (a chat scope other than This project -> until when a page shows it)
 -- Is a page open? An open event stream is a client; a page polling /api/state (no EventSource) shows as the served count moving. The
 -- status is a short string and only two numbers are wanted, so no JSON decode each tick. (The first read counts as a request: the grace
 -- covers a page already open when Live sync starts.) (James, rt)
@@ -167,8 +178,16 @@ function webui.tick(proj, cfg, b, handlers)
   for _ = 1, 20 do
     local topic, a = webui.parse_action(reaper.StudioSync_WebUIPoll())
     if not topic then break end
-    local text = topic == "chat" and webui.clean_text(a.text)
-    if text then chat.post(cfg, b, text, "song"); chat_at = -math.huge end
+    if topic == "chat" then -- (a message, to-do or link, a tick or a delete: page_chat's own; a scope shown: built while it's asked for)
+      if webui.CHAT_TOPICS[a.want] then chat_want[a.want] = reaper.time_precise() + webui.LOOK_GRACE end
+      local said = chat.web_action(cfg, b, a)
+      if said then band.log(said) end
+      chat_at = -math.huge
+    end
+    if topic == "health" or topic == "play" then
+      local said = require("webpages").action(proj, cfg, b, a)
+      if said then band.log(said) end
+    end
     if topic == "rtc" then webcall.page(cfg, b, a) end
     if topic == "daw" then
       local said = require("dawview").action(proj, cfg, b, a)
@@ -201,9 +220,14 @@ function webui.tick(proj, cfg, b, handlers)
   end
   if now - chat_at >= webui.CHAT_EVERY then
     chat_at = now
-    local t = chat.read(cfg, b, "song")
-    publish("chat", webui.chat_model(t.msgs, function(w) return chat.where_label(w, b, "song") end))
+    for sc, topic in pairs(webui.CHAT_TOPICS) do
+      if sc == "song" or (chat_want[sc] or -math.huge) > now then
+        publish(topic, webui.chat_model(chat.read(cfg, b, sc), function(w) return chat.where_label(w, b, sc) end, nil, sc))
+      end
+    end
   end
+  -- Health and Play together: only while a page shows them (lib/webpages.lua)
+  require("webpages").tick(proj, cfg, b, publish, last_who, now)
   -- (video calls: a message in or out shows at once; who's open is looked at again every second, as their "here"s age out)
   if webcall.dirty() or now - rtc_at >= 1 then rtc_at = now; publish("rtc", webcall.model(webcall.me(cfg), os.time())) end
   -- the Song page: only while a page shows it (lib/dawview.lua)
