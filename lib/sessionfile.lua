@@ -100,6 +100,8 @@ end
 
 -- Write this machine's end-of-session project to Drive. Returns the file written, or nil + why.
 function sessionfile.export(proj, cfg, b, droot, room_dir)
+  -- (history the cloud copy doesn't keep in Essentials: lib/cloudmodes.lua. James, rt)
+  if require("cloudmodes").settings_for(cfg.root).mode == "essentials" then return nil, "the studio's cloud copy keeps essentials only (Settings > Options > Cloud copy)" end
   local path
   for i = 0, 512 do
     local p, f = reaper.EnumProjects(i)

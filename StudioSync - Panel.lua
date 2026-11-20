@@ -744,6 +744,8 @@ local function section_drive()
       drive_at = -math.huge
     end
   end
+  -- (what the studio's cloud copy keeps: Essentials, Standard or Everything, and a size limit. Owner and admins: lib/cloudmodes.lua. James, rt)
+  if drive_root then band.try("cloudmodes.studio_ui", require("cloudmodes").studio_ui, ctx, ImGui, cfg, require("groups").may_manage(cfg.root, cfg.user)) end
 end
 -- Two computers' fingerprints differ for 10-15 s after any edit (each publishes its own every few seconds, and the
 -- print follows the notes), and red then read as a failed sync (James, 2026-11-01). Red once they've stayed apart 30 s.

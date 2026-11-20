@@ -483,6 +483,9 @@ function drive.mirror(here, there, budget, user, wait)
   if not events then return 0, true end -- (who owns which recording isn't known yet: nothing's copied on half a list)
   local owners = drive.media_owners(events, here:match("([^/]+)$"))
   longer = drive.longer_names(events, user)
+  -- (the studio's storage mode: what the cloud copy leaves out isn't sent up; nil in Everything with no limit, as before. lib/cloudmodes.lua, rt)
+  local keep_up = require("cloudmodes").filter(here, t0 + (budget or 1.5))
+  if keep_up == false then return 0, true end
   -- (recall/known: a saved version's map, beside it since 0.59.46: one brought back from the cloud restored by time. Round 3 review, 0.59.48)
   -- (deleted: tombstones, before media so a pass has the cloud's before it copies any recording)
   for _, sub in ipairs({ "trimmed", "events", "recall", "recall/known", "midi", "deleted", "media" }) do -- (media: recordings and prints the items use)
@@ -514,7 +517,7 @@ function drive.mirror(here, there, budget, user, wait)
       end
     end
     for _, f in ipairs(A) do
-      if not inB[f] and not skip[f] and (sub == "media" and owners[f] == user or due(here .. "/" .. sub .. "/" .. f, f, user, wait)) then
+      if not inB[f] and not skip[f] and (sub == "media" and owners[f] == user or due(here .. "/" .. sub .. "/" .. f, f, user, wait)) and (not keep_up or keep_up(sub, f)) then
         if out_of_time() then return n, true end
         copy(here .. "/" .. sub .. "/" .. f, there .. "/" .. sub .. "/" .. f)
       end
@@ -579,6 +582,7 @@ function drive.mirror(here, there, budget, user, wait)
       -- on Drive, someone else's take is theirs to file: their machine moves it at once, ours only if it's still
       -- undone 5 minutes on (2026-10-28: both machines moving a just-deleted take at once, Drive refused one with
       -- "Can't add file ... you don't have permission to add files to 'takes'" and kept a "(1)" copy)
+      if work and side == there and keep_up and not keep_up(dest, f) then goto next_side end -- (left out by the storage mode)
       if work and side == there and not due("place:" .. f, f, user, wait) then goto next_side end
       if not at[want] or stale then
         if out_of_time() then return n, true end

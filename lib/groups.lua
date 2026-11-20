@@ -29,6 +29,7 @@ local SETTINGS = { "alerts", "alerts_server", "call", "sonobus_server", "tailnet
   "colour_parity", "theme_colours", -- (colour parity, on unless false, and the theme's colour settings: lib/colours.lua parity. James, rt)
   "hub", -- ("hub": the preferred studio hub, a member's name: lib/hub.lua elect_studio. James, rt)
   "nat", "nat_stun", -- (the connection without Tailscale, lib/nat.lua: on only when true; the studio's STUN list "host:port ...". James, rt)
+  "cloud_storage", -- ("cloud_storage": what the cloud copy keeps, { mode, days, limit_mb }: lib/cloudmodes.lua. James, rt)
   "update_key" } -- ("update_key": signed updates, the owner's Ed25519 public key: lib/band.lua studio_update_key. James, rt)
 -- (Round 2 review, 0.59.46: Syncthing is asked again only when band.json or this computer's pins changed, or the last answer was "not known",
 -- and the kept settings are written only when they differ: it was a blocking call and a saved-state write every 5 s per script and studio,
