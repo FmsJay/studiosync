@@ -523,7 +523,7 @@ struct InStream {
   long long len = 0, total = -1, data_off = -1, ds64_off = -1; int block_align = 0, codec = 0; bool rf64 = false, finalizing = false, done = false, ok = false; long long at = 0;
   std::string held; // (the file's start while it isn't yet a WAV header worth showing: zeros on disk meanwhile. wav_append)
 };
-struct Conn { sock_t s; std::vector<char> buf; double last; };
+struct Conn { sock_t s; std::vector<char> buf; double last; bool nat = false; }; // (nat: one a bandmate opened over the connection without Tailscale)
 
 std::mutex g_mx; // guards everything below but the sockets and stream files, which only their own thread touches
 std::map<std::string, Studio> g_studios;
@@ -544,12 +544,19 @@ std::map<std::string, OutStream> g_out;     // "<studio>\t<rel>" -> a file being
 std::map<std::string, InStream> g_in;       // "<studio>\t<rel>" -> a file arriving
 std::condition_variable g_cv;
 std::thread g_listen_thr, g_send_thr;
+// (stage 2 of the connection without Tailscale: connections bandmates open over it, served by a thread of their own whatever the Tailscale
+// listener is doing; and the way to reach a "nat:<device>" peer, extension/nat.cpp's nat_connect)
+std::thread g_nat_thr;
+std::mutex g_nat_mx; // (starting and stopping g_nat_thr)
+std::deque<sock_t> g_adopt;
+std::atomic<unsigned long long (*)(void *, const char *, std::string &)> g_nat_connect{ nullptr };
+std::atomic<void *> g_nat_user{ nullptr };
 // (a thread still joinable when the DLL's statics go would end the process: if REAPER exits without unloading or atexit, they're let go)
 struct ExitGuard { ~ExitGuard() {
-  if (g_listen_thr.joinable()) g_listen_thr.detach(); if (g_send_thr.joinable()) g_send_thr.detach();
+  if (g_listen_thr.joinable()) g_listen_thr.detach(); if (g_send_thr.joinable()) g_send_thr.detach(); if (g_nat_thr.joinable()) g_nat_thr.detach();
   for (auto &kv : g_lanes) if (kv.second->thr.joinable()) { kv.second->thr.detach(); kv.second.release(); } // (released: a detached thread may still use it)
 } } g_exit_guard;
-std::atomic<bool> g_stop_listen{ false }, g_stop_send{ false };
+std::atomic<bool> g_stop_listen{ false }, g_stop_send{ false }, g_stop_nat{ false };
 sock_t g_listen_sock = BAD_SOCK;
 bool g_wsa = false;
 std::string g_poll_out, g_status_out, g_msg_out, g_clock_out, g_streams_out; // (what the last call handed back: REAPER copies it before the next)
@@ -837,7 +844,7 @@ std::atomic<bool (*)(unsigned long long, const char *, size_t)> g_http{ nullptr 
 bool take_conn(Conn &c, long long t_recv)
 {
   for (;;) {
-    auto http = g_http.load();
+    auto http = c.nat ? nullptr : g_http.load(); // (the web UI stays Tailscale-only: never over the connection without it)
     if (http && c.buf.size() >= 4 && http((unsigned long long)c.s, c.buf.data(), c.buf.size())) { c.s = BAD_SOCK; return false; }
     if (c.buf.size() < 12) return true;
     const char *f = c.buf.data();
@@ -857,17 +864,30 @@ bool take_conn(Conn &c, long long t_recv)
   }
 }
 
-void listen_loop(sock_t ls, bool loopback_ok)
+// The listener (ls: its socket) or, with ls BAD_SOCK and nat, the connections bandmates open over the connection without Tailscale (direct_adopt).
+void listen_loop(sock_t ls, bool loopback_ok, std::atomic<bool> *stop, bool nat)
 {
   std::vector<Conn> conns;
   std::vector<char> chunk(65536);
-  while (!g_stop_listen) {
-    std::vector<pollfd> fds(1 + conns.size());
-    fds[0].fd = ls; fds[0].events = POLLIN; fds[0].revents = 0;
-    for (size_t i = 0; i < conns.size(); ++i) { fds[i + 1].fd = conns[i].s; fds[i + 1].events = POLLIN; fds[i + 1].revents = 0; }
-    const int n = poll_socks(fds.data(), (unsigned)fds.size(), 200); // (200 ms: how soon a stop is seen)
+  while (!*stop) {
+    if (nat) {
+      std::lock_guard<std::mutex> l(g_mx);
+      for (; !g_adopt.empty(); g_adopt.pop_front()) {
+        const sock_t s = g_adopt.front();
+        if (conns.size() >= 32) { ++g_rejected; g_last_reject = "too many connections"; close_sock(s); continue; }
+        set_nonblock(s, true); no_sigpipe(s);
+        conns.push_back({ s, {}, now_s(), true });
+      }
+    }
+    const size_t base = ls == BAD_SOCK ? 0 : 1;
+    std::vector<pollfd> fds(base + conns.size());
+    if (base) { fds[0].fd = ls; fds[0].events = POLLIN; fds[0].revents = 0; }
+    for (size_t i = 0; i < conns.size(); ++i) { fds[i + base].fd = conns[i].s; fds[i + base].events = POLLIN; fds[i + base].revents = 0; }
+    int n = 0; // (200 ms: how soon a stop is seen; 10 ms for adopted ones: how soon a new one is)
+    if (fds.empty()) sleep_ms(10); else n = poll_socks(fds.data(), (unsigned)fds.size(), nat ? 10 : 200);
     const double t = now_s();
-    if (n > 0 && (fds[0].revents & POLLIN)) {
+    const size_t polled = conns.size();
+    if (base && n > 0 && (fds[0].revents & POLLIN)) {
       sockaddr_in from = {};
       socklen_t len = sizeof(from);
       sock_t s = accept(ls, (sockaddr *)&from, &len);
@@ -880,10 +900,10 @@ void listen_loop(sock_t ls, bool loopback_ok)
     }
     // (only those polled: one accepted just now has no poll entry yet, and read past the list's end it was closed at once. Laptop over
     // Tailscale, 0.59.50; on one computer it happened to work)
-    for (size_t i = fds.size() - 1; i-- > 0;) {
+    for (size_t i = polled; i-- > 0;) {
       Conn &c = conns[i];
       bool keep = t - c.last < 120; // (a quiet connection goes after 2 minutes: the sender makes a new one)
-      if (n > 0 && (fds[i + 1].revents & (POLLIN | POLLHUP | POLLERR))) {
+      if (n > 0 && (fds[i + base].revents & (POLLIN | POLLHUP | POLLERR))) {
         const int k = (int)recv(c.s, chunk.data(), (int)chunk.size(), 0);
         const long long t_recv = clock_us(); // (a ping's t1: as soon as its bytes are here)
         if (k > 0) {
@@ -904,6 +924,17 @@ void listen_loop(sock_t ls, bool loopback_ok)
 // A connection to `peer` ("host:port"), only to an address on Tailscale (or this computer). -> BAD_SOCK and why.
 sock_t connect_peer(const std::string &peer, std::string &why)
 {
+  if (peer.compare(0, 4, "nat:") == 0) { // (a bandmate reached without Tailscale: a loopback socket whose bytes ride that link, extension/nat.cpp)
+    auto fn = g_nat_connect.load();
+    if (!fn) { why = "this extension has no connection without Tailscale"; return BAD_SOCK; }
+    const unsigned long long r = fn(g_nat_user.load(), peer.c_str() + 4, why);
+    if (r == ~0ULL) return BAD_SOCK;
+    const sock_t s = (sock_t)r;
+    set_nonblock(s, false);
+    set_timeouts(s, 3000);
+    no_sigpipe(s);
+    return s;
+  }
   const size_t colon = peer.rfind(':');
   if (colon == std::string::npos || colon == 0) { why = "not host:port"; return BAD_SOCK; }
   const std::string host = peer.substr(0, colon), port = peer.substr(colon + 1);
@@ -1397,7 +1428,7 @@ bool start_listening(const std::string &ip, int port, std::string &why)
   }
   g_listen_sock = s;
   const bool loopback = ip.compare(0, 4, "127.") == 0;
-  g_listen_thr = std::thread(listen_loop, s, loopback);
+  g_listen_thr = std::thread(listen_loop, s, loopback, &g_stop_listen, false);
   return true;
 }
 
@@ -1426,6 +1457,18 @@ void json_str(std::string &o, const std::string &s)
 } // namespace
 
 void direct_set_http_handler(bool (*fn)(unsigned long long, const char *, size_t)) { g_http = fn; }
+void direct_set_nat(unsigned long long (*connect)(void *, const char *, std::string &), void *user) { g_nat_user = user; g_nat_connect = connect; }
+void direct_adopt(unsigned long long sock)
+{
+  sock_t s = (sock_t)sock;
+  {
+    std::lock_guard<std::mutex> l(g_mx);
+    if (g_adopt.size() < 64 && !g_stop_nat) { g_adopt.push_back(s); s = BAD_SOCK; }
+  }
+  if (s != BAD_SOCK) { close_sock(s); return; } // (shutting down, or 64 waiting: the other side's stream sees it close)
+  std::lock_guard<std::mutex> l(g_nat_mx);
+  if (!g_nat_thr.joinable()) g_nat_thr = std::thread(listen_loop, BAD_SOCK, false, &g_stop_nat, true);
+}
 
 #ifdef DIRECT_STANDALONE
 void direct_test_bandwidth(int kbps) { g_listen_kbps = kbps; }
@@ -1710,6 +1753,15 @@ const char *direct_status()
 void direct_shutdown()
 {
   stop_listening();
+  {
+    std::lock_guard<std::mutex> n(g_nat_mx);
+    g_stop_nat = true;
+    if (g_nat_thr.joinable()) g_nat_thr.join(); // (it closes the connections it has)
+    std::lock_guard<std::mutex> l(g_mx);
+    for (sock_t s : g_adopt) close_sock(s);
+    g_adopt.clear();
+    g_stop_nat = false;
+  }
   {
     std::lock_guard<std::mutex> l(g_mx);
     g_stop_send = true;

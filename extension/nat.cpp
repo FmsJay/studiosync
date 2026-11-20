@@ -1,5 +1,6 @@
 // StudioSync's connection without Tailscale (docs/realtime-roadmap.md "Without Tailscale: design"): see nat.h. Stage 1: live audio's
 // datagrams for the bandmates the tailnet doesn't reach, while the studio has band.json "nat" on (lib/nat.lua decides who and when).
+// Stage 2 (docs/rt/rt-nat2.md): the direct link's connections (events, messages, the clock's pings) as reliable streams over the same links.
 // GPL-3.0-or-later. libjuice (MPL-2.0) and Monocypher (CC0-1.0 / BSD-2-Clause): extension/third_party/README.md.
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -15,8 +16,11 @@ typedef SOCKET nat_sock_t;
 #define nat_close closesocket
 #else
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -24,7 +28,9 @@ typedef int nat_sock_t;
 #define NAT_BAD_SOCK (-1)
 #define nat_close close
 #endif
+#include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdlib>
 #include <atomic>
 #include <chrono>
@@ -289,11 +295,14 @@ static void on_recv(juice_agent_t *, const char *d, size_t n, void *u)
     if (!nat_open(l->sess, d, n, m) || m.empty()) { ++l->rx_bad; return; }
     ++l->rx_ok;
     l->up.store(true); // (key confirmation: only the peer could have sealed this)
-    if (m[0] != 1) { if (m.size() > 1 && m[1] == 1) l->heard.store(true); return; } // (a hello: { 0, 1 once it has opened one of ours })
+    if (m[0] == 0) { if (m.size() > 1 && m[1] == 1) l->heard.store(true); return; } // (a hello: { 0, 1 once it has opened one of ours })
     l->heard.store(true);
-    if (!l->c.on_data) { l->inq.push_back(m.substr(1)); return; }
+    if (m[0] == 2) { if (!l->c.on_stream) return; } // (stage 2: a stream's segment)
+    else if (m[0] != 1) return;
+    else if (!l->c.on_data) { l->inq.push_back(m.substr(1)); return; }
   }
-  l->c.on_data(l->c.user, m.data() + 1, m.size() - 1); // (outside the lock: the receiver may send from here)
+  if (m[0] == 2) l->c.on_stream(l->c.user, m.data() + 1, m.size() - 1);
+  else l->c.on_data(l->c.user, m.data() + 1, m.size() - 1); // (outside the lock: the receiver may send from here)
 }
 
 NatLink *nat_link_new(const NatLinkConfig &c)
@@ -412,15 +421,17 @@ int nat_link_tick(NatLink *l)
   if (!l->up.load() && now_s() - l->t0 > limit) { l->failed = true; if (l->why.empty()) l->why = "no connection in " + std::to_string((int)limit) + " s"; return -1; }
   return l->up.load() ? 1 : 0;
 }
-bool nat_link_send(NatLink *l, const void *p, size_t n)
+// kind 1: live audio's datagram; 2: a stream's segment (stage 2). Never called holding a lock libjuice's thread could wait on.
+static bool send_kind(NatLink *l, char kind, const void *p, size_t n)
 {
   if (!l->up.load() || n > 1400) return false;
-  std::string m(1, '\1');
+  std::string m(1, kind);
   m.append((const char *)p, n);
   std::string d;
   { std::lock_guard<std::mutex> g(l->mx); d = nat_seal(l->sess, m.data(), m.size()); ++l->tx; l->last_sealed = d; }
   return juice_send(l->agent, d.data(), d.size()) == 0;
 }
+bool nat_link_send(NatLink *l, const void *p, size_t n) { return send_kind(l, '\1', p, n); }
 bool nat_link_recv(NatLink *l, std::string &out)
 {
   std::lock_guard<std::mutex> g(l->mx);
@@ -628,13 +639,138 @@ bool nat_is_synthetic(const void *p)
 }
 static bool same_sa(const sockaddr_in &a, const sockaddr_in &b) { return a.sin_addr.s_addr == b.sin_addr.s_addr && a.sin_port == b.sin_port; }
 
+// ---- stage 2: reliable, ordered streams over a link (NatRel; the hub's mux and pump below) -------------------------------------------
+static void put_be(std::string &s, uint64_t v, int n) { for (int i = n - 1; i >= 0; --i) s += (char)((v >> (8 * i)) & 255); }
+static uint64_t get_be(const char *p, int n) { uint64_t v = 0; for (int i = 0; i < n; ++i) v = (v << 8) | (unsigned char)p[i]; return v; }
+std::string nat_seg_encode(unsigned char flags, uint32_t id, uint64_t off, uint64_t ack, uint32_t wnd, const std::string &data)
+{
+  std::string s(1, (char)flags);
+  put_be(s, id, 4); put_be(s, off, 8); put_be(s, ack, 8); put_be(s, wnd, 4);
+  return s + data;
+}
+bool nat_seg_decode(const char *p, size_t n, unsigned char &flags, uint32_t &id, uint64_t &off, uint64_t &ack, uint32_t &wnd, const char *&data, size_t &dn)
+{
+  if (n < NAT_SEG_HDR || n > NAT_SEG_HDR + NAT_SEG) return false; // (a segment bigger than any we send is refused whole)
+  flags = (unsigned char)p[0];
+  if (flags & ~(NAT_F_OPEN | NAT_F_FIN | NAT_F_RST)) return false;
+  id = (uint32_t)get_be(p + 1, 4); off = get_be(p + 5, 8); ack = get_be(p + 13, 8); wnd = (uint32_t)get_be(p + 21, 4);
+  data = p + NAT_SEG_HDR; dn = n - NAT_SEG_HDR;
+  return off < (1ULL << 62) && ack < (1ULL << 62);
+}
+size_t NatRel::write(const char *p, size_t n)
+{
+  if (closing || dead) return 0;
+  n = std::min(n, room());
+  sbuf.append(p, n);
+  return n;
+}
+void NatRel::close() { if (!closing) { closing = true; fin_off = una + sbuf.size(); } }
+void NatRel::took(size_t n)
+{
+  rbuf.erase(0, std::min(n, rbuf.size()));
+  if (wnd() >= adv + NAT_RCV_WND / 4) need_ack = true; // (the window opened up: say so, or a sender at zero would wait for its timer)
+}
+void NatRel::input(unsigned char flags, uint64_t off, uint64_t ack, uint32_t w, const char *d, size_t n, double now)
+{
+  heard = true;
+  if (flags & NAT_F_RST) { dead = true; return; }
+  // what they've had of ours (cumulative; never past what was sent)
+  const uint64_t top = nxt + (fin_sent ? 1 : 0);
+  if (ack > top) ack = top;
+  if (ack > una || (fin_sent && !fin_acked && ack > fin_off)) {
+    const uint64_t upto = std::min(ack, nxt);
+    sbuf.erase(0, (size_t)std::min<uint64_t>(upto - una, sbuf.size()));
+    una = upto;
+    if (fin_sent && ack > fin_off) fin_acked = true;
+    int segs = 0;
+    while (!fl.empty() && fl.front().off + fl.front().n + (fl.front().fin ? 1 : 0) <= ack) {
+      const Fl &f = fl.front();
+      if (f.tries == 1) { const double s = now - f.at; srtt = srtt < 0 ? s : 0.875 * srtt + 0.125 * s; } // (Karn: never from a resent one)
+      fl.pop_front();
+      ++segs;
+    }
+    if (!fl.empty() && !fl.front().fin && fl.front().off < una) { // (an ack inside a segment: never ours, but never a bad index either)
+      Fl &f = fl.front();
+      const uint64_t cut = std::min<uint64_t>(una - f.off, f.n);
+      f.off += cut; f.n -= (uint32_t)cut;
+    }
+    if (srtt >= 0) rto = std::max(0.12, std::min(3.0, 2 * srtt + 0.05));
+    cwnd = std::min(128.0, cwnd + (cwnd < 32 ? segs : (double)segs / cwnd));
+    dup = 0;
+  } else if (n == 0 && !(flags & NAT_F_FIN) && ack == una && !fl.empty() && ++dup == 3) {
+    fl.front().at = -1e9; // (three acks for the same byte: what's missing goes again now, not at its timer)
+  }
+  peer_wnd = w;
+  if (n == 0 && !(flags & NAT_F_FIN)) return;
+  need_ack = true; // (every segment with something in it is answered, a repeat too: its ack may have been the one lost)
+  if ((flags & NAT_F_FIN) && !rfin) { rfin = true; rfin_off = off + n; }
+  if (n > 0) {
+    const uint64_t end = off + n;
+    if (rfin && end > rfin_off) ++dropped; // (past their own end)
+    else if (end <= rcv) {} // (had it)
+    else if (end > rcv + wnd()) ++dropped; // (past the window: sent again once there's room)
+    else if (off <= rcv) {
+      rbuf.append(d + (rcv - off), (size_t)(end - rcv));
+      rcv = end;
+      while (!ooo.empty() && ooo.begin()->first <= rcv) {
+        const uint64_t o = ooo.begin()->first, e = o + ooo.begin()->second.size();
+        if (e > rcv) { rbuf.append(ooo.begin()->second, (size_t)(rcv - o), std::string::npos); rcv = e; }
+        ooo.erase(ooo.begin());
+      }
+    } else ooo.emplace(off, std::string(d, n)); // (a repeat of one held already: kept as it was)
+  }
+  if (rfin && !rclosed && rcv == rfin_off) rclosed = true;
+}
+void NatRel::pump(double now, std::vector<NatSeg> &out)
+{
+  if (dead) return;
+  bool lost = false;
+  for (Fl &f : fl) { // what timed out goes again, each on its own timer, doubling
+    if (now - f.at < std::min(3.0, rto * (double)(1 << std::min(f.tries - 1, 5)))) continue;
+    if (f.tries >= NAT_TRIES) { dead = true; return; }
+    if (f.at > -1e8) lost = true; // (a fast resend isn't a timeout)
+    ++f.tries; f.at = now; ++resent;
+    out.push_back({ (unsigned char)(f.fin ? NAT_F_FIN : 0), f.off, f.fin ? std::string() : sbuf.substr((size_t)(f.off - una), f.n) });
+  }
+  if (lost) cwnd = std::max(2.0, cwnd / 2);
+  const uint64_t limit = std::min<uint64_t>((uint64_t)(cwnd * NAT_SEG), peer_wnd);
+  while (nxt < una + sbuf.size()) {
+    const uint32_t n = (uint32_t)std::min<uint64_t>(NAT_SEG, una + sbuf.size() - nxt);
+    if (!fl.empty() && nxt - una + n > limit) break; // (one at a time while the window is shut: it probes it)
+    out.push_back({ 0, nxt, sbuf.substr((size_t)(nxt - una), n) });
+    fl.push_back({ nxt, n, now, 1, false });
+    nxt += n;
+  }
+  if (closing && !fin_sent && nxt == fin_off) {
+    fin_sent = true;
+    out.push_back({ NAT_F_FIN, fin_off, std::string() });
+    fl.push_back({ fin_off, 0, now, 1, true });
+  }
+  if (need_ack && out.empty()) out.push_back({ 0, nxt, std::string() }); // (a bare ack)
+  need_ack = false;
+  adv = wnd();
+}
+
 // ---- the hub ----------------------------------------------------------------------------------------------------------------------------
 namespace {
+struct NatStream { // (one of direct.cpp's connections: its loopback socket's other end, and the stream's state)
+  NatRel r;
+  nat_sock_t s = NAT_BAD_SOCK;
+  bool shut = false; // (the peer's FIN told direct.cpp's end; reads from here on only wait for its close, discarded)
+  ~NatStream() { if (s != NAT_BAD_SOCK) nat_close(s); }
+};
 struct LinkBox { // (owns one NatLink; libjuice's callbacks point at it, so it's freed only after juice_destroy)
   NatHub *h = nullptr;
   sockaddr_in addr{};
   NatLink *l = nullptr;
-  ~LinkBox() { nat_link_free(l); }
+  bool opener_bit = false; // (this side's streams have the top bit of their id set: the higher device id's)
+  std::mutex smx;          // (the streams; never held while calling into libjuice)
+  std::map<uint32_t, std::unique_ptr<NatStream>> streams;
+  std::map<uint32_t, double> closed; // (finished ones, a while: a late segment for one gets an ack, never a new stream)
+  uint32_t next_id = 1;
+  long long refused = 0, resent = 0; // (segments refused: malformed, oversized, an unknown stream, too many; sent again, by finished streams)
+  std::mutex tmx; int lossy[3] = { 0, 0, 0 }; unsigned rng = 12345; std::string held; // (the test's: drop, double, hold back)
+  ~LinkBox() { nat_link_free(l); } // (the agent first: no callback after it; the streams and their sockets go after this body)
 };
 struct HubPeer {
   std::string dev, pub_hex, why, answered_e;
@@ -661,6 +797,8 @@ struct NatHub {
   std::atomic<int> rx_in{ 0 };
   std::string kind = "unknown", pub_addr; // (the STUN probe: easy, strict, blocked, unknown)
   double next_probe = 0;
+  std::thread pump; // (stage 2: the streams' sockets and timers)
+  int lossy[3] = { 0, 0, 0 }; // (the test's, for each new link)
 };
 
 static void box_rx(void *u, const char *d, size_t n)
@@ -670,6 +808,162 @@ static void box_rx(void *u, const char *d, size_t n)
   h->rx_in.fetch_add(1);
   if (nat_rx_fn fn = h->rx.load()) fn(h->rx_user.load(), (const unsigned char *)d, (int)n, &b->addr);
   h->rx_in.fetch_sub(1);
+}
+
+// ---- stage 2: the streams' mux (in each LinkBox) and the pump (one thread per hub) -------------------------------------------------------
+#ifdef MSG_NOSIGNAL
+#define NAT_SEND_FLAGS MSG_NOSIGNAL // (Linux: direct.cpp's end gone mid-send would raise SIGPIPE and end REAPER)
+#else
+#define NAT_SEND_FLAGS 0
+#endif
+static bool would_block()
+{
+#ifdef _WIN32
+  return WSAGetLastError() == WSAEWOULDBLOCK;
+#else
+  return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+#endif
+}
+static void set_nb(nat_sock_t s)
+{
+#ifdef _WIN32
+  u_long v = 1;
+  ioctlsocket(s, FIONBIO, &v);
+#else
+  fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK);
+#endif
+}
+// A connected pair of loopback TCP sockets: `mine` (this side's, non-blocking) and `theirs` (direct.cpp's). The listener lives only for
+// this, and the end accepted must be the one just connected (anything else that got in first is closed).
+static bool loop_pair(nat_sock_t &mine, nat_sock_t &theirs)
+{
+  mine = theirs = NAT_BAD_SOCK;
+  nat_sock_t ls = socket(AF_INET, SOCK_STREAM, 0);
+  if (ls == NAT_BAD_SOCK) return false;
+  direct_noinherit((unsigned long long)ls);
+  sockaddr_in a{};
+  a.sin_family = AF_INET;
+  a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  socklen_t al = sizeof a;
+  bool ok = bind(ls, (sockaddr *)&a, sizeof a) == 0 && listen(ls, 4) == 0 && getsockname(ls, (sockaddr *)&a, &al) == 0;
+  nat_sock_t c = ok ? socket(AF_INET, SOCK_STREAM, 0) : NAT_BAD_SOCK;
+  if (c != NAT_BAD_SOCK) direct_noinherit((unsigned long long)c);
+  sockaddr_in me{};
+  socklen_t ml = sizeof me;
+  ok = ok && c != NAT_BAD_SOCK && connect(c, (sockaddr *)&a, sizeof a) == 0 && getsockname(c, (sockaddr *)&me, &ml) == 0;
+  nat_sock_t s = NAT_BAD_SOCK;
+  for (int i = 0; ok && i < 4 && s == NAT_BAD_SOCK; ++i) {
+    sockaddr_in from{};
+    socklen_t fl = sizeof from;
+    s = accept(ls, (sockaddr *)&from, &fl);
+    if (s == NAT_BAD_SOCK) break;
+    direct_noinherit((unsigned long long)s);
+    if (from.sin_port != me.sin_port || from.sin_addr.s_addr != me.sin_addr.s_addr) { nat_close(s); s = NAT_BAD_SOCK; }
+  }
+  nat_close(ls);
+  if (s == NAT_BAD_SOCK) { if (c != NAT_BAD_SOCK) nat_close(c); return false; }
+  int one = 1; // (small frames straight through: Nagle and delayed acks on loopback cost 40-200 ms a message)
+  setsockopt(c, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof one);
+  setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof one);
+#ifdef SO_NOSIGPIPE
+  setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+  setsockopt(c, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+  set_nb(s);
+  mine = s; theirs = c;
+  return true;
+}
+static void drop_local(NatStream &st) // (direct.cpp's end is gone: what's left for it is nobody's, and this side sends its FIN)
+{
+  if (st.s != NAT_BAD_SOCK) nat_close(st.s);
+  st.s = NAT_BAD_SOCK;
+  st.r.took(st.r.rbuf.size());
+  st.r.close();
+}
+// What has arrived in order goes to direct.cpp's end (non-blocking: what it can't take yet waits in rbuf, inside the window); after the
+// peer's FIN, its end is told (shutdown) and this side reads on only to see it close.
+static void deliver(NatStream &st)
+{
+  while (st.s != NAT_BAD_SOCK && !st.r.rbuf.empty()) {
+    const int k = (int)send(st.s, st.r.rbuf.data(), (int)std::min<size_t>(st.r.rbuf.size(), 65536), NAT_SEND_FLAGS);
+    if (k > 0) { st.r.took((size_t)k); continue; }
+    if (!would_block()) drop_local(st);
+    break;
+  }
+  if (st.s != NAT_BAD_SOCK && st.r.rclosed && st.r.rbuf.empty() && !st.shut) {
+#ifdef _WIN32
+    shutdown(st.s, SD_SEND);
+#else
+    shutdown(st.s, SHUT_WR);
+#endif
+    st.shut = true;
+  }
+}
+static void emit(uint32_t id, NatStream &st, bool mine, std::vector<NatSeg> &segs, std::vector<std::string> &wire)
+{
+  for (const NatSeg &g : segs)
+    wire.push_back(nat_seg_encode((unsigned char)(g.flags | (mine && !st.r.heard ? NAT_F_OPEN : 0)), id, g.off, st.r.ack_no(), st.r.wnd(), g.data));
+  segs.clear();
+}
+static unsigned next_rng(unsigned &r) { r = r * 1103515245u + 12345u; return (r >> 8) % 1000; }
+static void box_send(LinkBox *b, std::vector<std::string> &wire) // (never under smx: libjuice's thread may be waiting for it)
+{
+  if (b->lossy[0] | b->lossy[1] | b->lossy[2]) { // (the test: dropped, doubled, held back behind the next one)
+    std::vector<std::string> out;
+    {
+      std::lock_guard<std::mutex> g(b->tmx);
+      for (std::string &s : wire) {
+        if ((int)next_rng(b->rng) < b->lossy[0]) continue;
+        if (b->held.empty() && (int)next_rng(b->rng) < b->lossy[2]) { b->held = s; continue; }
+        out.push_back(s);
+        if (!b->held.empty()) { out.push_back(b->held); b->held.clear(); }
+        if ((int)next_rng(b->rng) < b->lossy[1]) out.push_back(s);
+      }
+    }
+    wire.swap(out);
+  }
+  for (const std::string &s : wire) send_kind(b->l, '\2', s.data(), s.size());
+  wire.clear();
+}
+static bool mine_id(const LinkBox *b, uint32_t id) { return ((id >> 31) != 0) == b->opener_bit; }
+// One opened segment (libjuice's thread): to its stream, or a new stream the other side opened (handed to direct.cpp's server), or answered
+// with a reset (an unknown stream) or a bare ack (one finished here, so its sender can finish too).
+static void box_seg(void *u, const char *d, size_t n)
+{
+  LinkBox *b = (LinkBox *)u;
+  unsigned char f; uint32_t id, w; uint64_t off, ack; const char *data; size_t dn;
+  if (!nat_seg_decode(d, n, f, id, off, ack, w, data, dn)) { std::lock_guard<std::mutex> g(b->smx); ++b->refused; return; }
+  std::vector<std::string> wire;
+  nat_sock_t adopt = NAT_BAD_SOCK;
+  const double now = now_s();
+  {
+    std::lock_guard<std::mutex> g(b->smx);
+    auto it = b->streams.find(id);
+    if (it == b->streams.end()) {
+      if (f & NAT_F_RST) return;
+      nat_sock_t mine = NAT_BAD_SOCK, theirs = NAT_BAD_SOCK;
+      if (b->closed.count(id)) { wire.push_back(nat_seg_encode(0, id, 0, off + dn + ((f & NAT_F_FIN) ? 1 : 0), NAT_RCV_WND, std::string())); }
+      else if (mine_id(b, id) || !(f & NAT_F_OPEN) || b->streams.size() >= NAT_STREAMS || !loop_pair(mine, theirs)) {
+        ++b->refused;
+        wire.push_back(nat_seg_encode(NAT_F_RST, id, 0, 0, 0, std::string()));
+      } else {
+        std::unique_ptr<NatStream> st(new NatStream());
+        st->s = mine;
+        it = b->streams.emplace(id, std::move(st)).first;
+        adopt = theirs;
+      }
+    }
+    if (it != b->streams.end()) {
+      NatStream &st = *it->second;
+      st.r.input(f, off, ack, w, data, dn, now);
+      deliver(st);
+      std::vector<NatSeg> segs;
+      st.r.pump(now, segs);
+      emit(id, st, mine_id(b, id), segs, wire);
+    }
+  }
+  if (adopt != NAT_BAD_SOCK) direct_adopt((unsigned long long)adopt);
+  box_send(b, wire);
 }
 
 // One STUN binding request (RFC 5389) from `s` to host:port -> the mapped address as "ip:port", or "".
@@ -751,7 +1045,10 @@ static std::shared_ptr<LinkBox> make_box(NatHub *h, HubPeer &p) // (h->mx held)
   if (h->port > 0) { c.port_lo = h->port; c.port_hi = h->port + NAT_PORTS - 1; }
   c.timeout_s = 60; // (the other side's file comes through Syncthing: a few seconds each way, more when it's busy)
   c.on_data = box_rx;
+  c.on_stream = box_seg;
   c.user = b.get();
+  b->opener_bit = !(h->me < p.dev);
+  memcpy(b->lossy, h->lossy, sizeof b->lossy);
   b->l = nat_link_new(c);
   if (!b->l) return nullptr;
   return b;
@@ -817,11 +1114,121 @@ static void hub_loop(NatHub *h)
   }
 }
 
+// The streams' other half: what direct.cpp writes is read (only while the stream has room: beyond that its socket waits, TCP's own
+// back-pressure) and sent; what's arrived is handed over; timers run (every 10 ms at most); finished and dead streams go.
+static void pump_loop(NatHub *h)
+{
+  std::vector<char> buf(65536);
+  while (h->run.load()) {
+    std::vector<std::shared_ptr<LinkBox>> boxes;
+    {
+      std::lock_guard<std::mutex> g(h->mx);
+      for (auto &kv : h->peers) if (kv.second->box) boxes.push_back(kv.second->box);
+    }
+    std::vector<pollfd> fds;
+    std::vector<std::pair<LinkBox *, uint32_t>> who;
+    for (auto &b : boxes) {
+      std::lock_guard<std::mutex> g(b->smx);
+      for (auto &kv : b->streams) {
+        NatStream &st = *kv.second;
+        if (st.s == NAT_BAD_SOCK || (!st.shut && st.r.room() == 0)) continue;
+        pollfd p;
+        p.fd = st.s; p.events = POLLIN; p.revents = 0;
+        fds.push_back(p);
+        who.emplace_back(b.get(), kv.first);
+      }
+    }
+#ifdef _WIN32
+    if (!fds.empty()) WSAPoll(fds.data(), (ULONG)fds.size(), 10); else std::this_thread::sleep_for(std::chrono::milliseconds(10));
+#else
+    if (!fds.empty()) poll(fds.data(), (nfds_t)fds.size(), 10); else std::this_thread::sleep_for(std::chrono::milliseconds(10));
+#endif
+    const double now = now_s();
+    for (auto &b : boxes) {
+      std::vector<std::string> wire;
+      {
+        std::lock_guard<std::mutex> g(b->smx);
+        for (size_t i = 0; i < fds.size(); ++i) {
+          if (who[i].first != b.get() || !(fds[i].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+          auto it = b->streams.find(who[i].second);
+          if (it == b->streams.end() || it->second->s != fds[i].fd) continue;
+          NatStream &st = *it->second;
+          const size_t want = st.shut ? buf.size() : std::min(buf.size(), st.r.room());
+          const int k = (int)recv(st.s, buf.data(), (int)want, 0);
+          if (k > 0) { if (!st.shut) st.r.write(buf.data(), (size_t)k); }
+          else if (k == 0 || !would_block()) drop_local(st);
+        }
+        for (auto it = b->streams.begin(); it != b->streams.end();) {
+          NatStream &st = *it->second;
+          deliver(st);
+          std::vector<NatSeg> segs;
+          st.r.pump(now, segs);
+          emit(it->first, st, mine_id(b.get(), it->first), segs, wire);
+          if (st.r.dead || st.r.done()) {
+            if (st.r.dead) wire.push_back(nat_seg_encode(NAT_F_RST, it->first, 0, 0, 0, std::string()));
+            b->closed[it->first] = now;
+            b->resent += st.r.resent;
+            it = b->streams.erase(it); // (its socket closes: direct.cpp sees the connection go)
+          } else ++it;
+        }
+        for (auto it = b->closed.begin(); it != b->closed.end();) it = now - it->second > 120 ? b->closed.erase(it) : std::next(it);
+      }
+      box_send(b.get(), wire);
+    }
+  }
+}
+unsigned long long nat_connect(NatHub *h, const char *dev, std::string &why)
+{
+  const unsigned long long bad = ~0ULL;
+  if (!h || !dev) { why = "no connection without Tailscale here"; return bad; }
+  std::shared_ptr<LinkBox> b;
+  {
+    std::lock_guard<std::mutex> g(h->mx);
+    auto it = h->peers.find(dev);
+    if (it == h->peers.end()) why = "not a bandmate this computer reaches without Tailscale";
+    else if (!it->second->was_up || !it->second->box) why = "the connection without Tailscale to it isn't up" + (it->second->why.empty() ? std::string() : " (" + it->second->why + ")");
+    else b = it->second->box;
+  }
+  if (!b) return bad;
+  nat_sock_t mine, theirs;
+  if (!loop_pair(mine, theirs)) { why = "no loopback socket for it"; return bad; }
+  std::lock_guard<std::mutex> g(b->smx);
+  if (b->streams.size() >= NAT_STREAMS) { nat_close(mine); nat_close(theirs); why = "too many connections to it at once"; return bad; }
+  const uint32_t id = (b->next_id++ & 0x7fffffffu) | (b->opener_bit ? 0x80000000u : 0u);
+  std::unique_ptr<NatStream> st(new NatStream());
+  st->s = mine;
+  b->streams[id] = std::move(st);
+  return (unsigned long long)theirs;
+}
+#ifdef NAT_STANDALONE
+static std::shared_ptr<LinkBox> test_box(NatHub *h, const char *dev)
+{
+  std::lock_guard<std::mutex> g(h->mx);
+  auto it = h->peers.find(dev);
+  return it == h->peers.end() ? nullptr : it->second->box;
+}
+void nat_test_lossy(NatHub *h, int drop, int dup, int reorder)
+{
+  std::lock_guard<std::mutex> g(h->mx);
+  h->lossy[0] = drop; h->lossy[1] = dup; h->lossy[2] = reorder;
+  for (auto &kv : h->peers)
+    if (kv.second->box) { std::lock_guard<std::mutex> t(kv.second->box->tmx); memcpy(kv.second->box->lossy, h->lossy, sizeof h->lossy); }
+}
+bool nat_test_inject(NatHub *h, const char *dev, const std::string &raw)
+{
+  std::shared_ptr<LinkBox> b = test_box(h, dev);
+  if (b) nat_link_inject(b->l, raw);
+  return b != nullptr;
+}
+std::string nat_test_sealed(NatHub *h, const char *dev) { std::shared_ptr<LinkBox> b = test_box(h, dev); return b ? nat_link_last_sealed(b->l) : ""; }
+#endif
+
 NatHub *nat_hub_new() { return new NatHub(); }
 void nat_hub_stop(NatHub *h)
 {
   h->run.store(false);
   if (h->thr.joinable()) h->thr.join();
+  if (h->pump.joinable()) h->pump.join();
   std::map<std::string, std::shared_ptr<HubPeer>> gone;
   { std::lock_guard<std::mutex> g(h->mx); gone.swap(h->peers); h->me.clear(); }
   for (auto &kv : gone) kv.second->box.reset(); // (each link's agent destroyed: no callback after)
@@ -899,8 +1306,10 @@ int nat_hub_setup(NatHub *h, const char *json)
   gone.clear();
   if (!h->run.load()) {
     if (h->thr.joinable()) h->thr.join();
+    if (h->pump.joinable()) h->pump.join();
     h->run.store(true);
     h->thr = std::thread(hub_loop, h);
+    h->pump = std::thread(pump_loop, h);
   }
   std::lock_guard<std::mutex> g(h->mx);
   return (int)h->peers.size();
@@ -929,8 +1338,16 @@ std::string nat_hub_status(NatHub *h)
     std::string me;
     { std::lock_guard<std::mutex> g(h->mx); box = pp->box; me = h->me; }
     std::string loc, rem, link;
-    long long sent = 0, opened = 0, refused = 0;
+    long long sent = 0, opened = 0, refused = 0, resent = 0, srefused = 0;
+    int streams = 0;
     if (box) {
+      {
+        std::lock_guard<std::mutex> g(box->smx);
+        streams = (int)box->streams.size();
+        resent = box->resent;
+        srefused = box->refused;
+        for (auto &kv : box->streams) resent += kv.second->r.resent;
+      }
       nat_link_path(box->l, loc, rem);
       link = nat_link_status(box->l);
       const size_t at = link.find("sent ");
@@ -947,8 +1364,9 @@ std::string nat_hub_status(NatHub *h)
     o += ",\"local\":"; jquote(o, loc);
     o += ",\"remote\":"; jquote(o, rem);
     o += ",\"why\":"; jquote(o, p.why);
-    char b[200];
-    snprintf(b, sizeof b, ",\"fails\":%d,\"up_s\":%.0f,\"sent\":%lld,\"opened\":%lld,\"refused\":%lld}", p.fails, p.was_up ? now - p.up_at : 0.0, sent, opened, refused);
+    char b[320];
+    snprintf(b, sizeof b, ",\"fails\":%d,\"up_s\":%.0f,\"sent\":%lld,\"opened\":%lld,\"refused\":%lld,\"streams\":%d,\"resent\":%lld,\"stream_refused\":%lld}",
+             p.fails, p.was_up ? now - p.up_at : 0.0, sent, opened, refused, streams, resent, srefused);
     o += b;
   }
   o += "}}";
@@ -1019,6 +1437,7 @@ static int w_send(void *h, const void *a, const void *d, int n) { return nat_sen
 static std::string w_self(void *h) { return nat_self((NatHub *)h); }
 static bool w_active(void *h) { return nat_active((NatHub *)h); }
 static void to_live_audio(void *u, const unsigned char *d, int n, const void *from) { rt_nat_rx((RtLink *)u, d, n, from); }
+static unsigned long long w_connect(void *h, const char *dev, std::string &why) { return nat_connect((NatHub *)h, dev, why); } // (the direct link's "nat:<device>" peers)
 static std::string g_key_out, g_status_out;
 static const char *api_key(const char *path) { std::string why; g_key_out = nat_key_public(path ? path : "", why); return g_key_out.c_str(); }
 static int api_setup(const char *json) { return nat_hub_setup(nat_global(), json); }
@@ -1038,7 +1457,7 @@ extern "C" void nat_register(reaper_plugin_info_t *rec)
     { "StudioSync_NatSetup", (void *)api_setup, (void *)vla_setup,
       "int\0const char*\0json\0The connection without Tailscale: {\"folder\":\"<studio>/_band/nat\",\"me\":\"<device id>\",\"secret\":\"<studio secret>\",\"key\":\"<key file>\",\"port\":47282,\"stun\":[\"host:port\",...],\"peers\":[{\"device\":\"<id>\",\"pub\":\"<64 hex>\"},...]}. Keeps a link up to each peer (signed rendezvous files in the folder, ICE, sealed datagrams); live audio reaches them as \"nat:<device id>\". Returns how many peers, or -1 (StudioSync_NatStatus's error)." },
     { "StudioSync_NatStatus", (void *)api_status, (void *)vla_status,
-      "const char*\0\0\0The connection without Tailscale as JSON: on, me, error, nat (easy, strict: needs a relay, blocked: no STUN answer, unknown), public (ip:port), self (this computer's synthetic address), peers = { [device] = { state (up, connecting, waiting, waiting for them), path (direct, relayed), local, remote (host, srflx, prflx, relay), why, fails, up_s, sent, opened, refused } }." },
+      "const char*\0\0\0The connection without Tailscale as JSON: on, me, error, nat (easy, strict: needs a relay, blocked: no STUN answer, unknown), public (ip:port), self (this computer's synthetic address), peers = { [device] = { state (up, connecting, waiting, waiting for them), path (direct, relayed), local, remote (host, srflx, prflx, relay), why, fails, up_s, sent, opened, refused, streams (the direct link's connections riding it), resent (their segments sent again), stream_refused } }." },
     { "StudioSync_NatStop", (void *)api_stop, (void *)vla_stop, "void\0\0\0Every link without Tailscale down." },
   };
   char key[96];
@@ -1050,5 +1469,6 @@ extern "C" void nat_register(reaper_plugin_info_t *rec)
   rec->Register("atexit", (void *)nat_shutdown);
   static RtNat ops = { nat_global(), w_resolve, w_up, w_send, w_self, w_active };
   if (RtLink *rt = rt_global()) { rt_set_nat(rt, &ops); nat_set_rx(nat_global(), to_live_audio, rt); } // (rtaudio_register ran first: reaper_menu.cpp)
+  direct_set_nat(w_connect, nat_global()); // (stage 2: the direct link's frames, answers and windows ride the links too)
 }
 #endif

@@ -24,6 +24,12 @@ void direct_set_http_handler(bool (*fn)(unsigned long long sock, const char *buf
 // Called on every socket the extension makes or accepts: a child process REAPER starts mustn't inherit it (one that outlived REAPER kept
 // the ports bound, and the next REAPER's live audio couldn't start).
 void direct_noinherit(unsigned long long sock);
+// The connection without Tailscale, stage 2 (extension/nat.cpp, docs/rt/rt-nat2.md): a peer "nat:<device id>" is reached through
+// connect(user, device, why), a loopback socket whose bytes ride the link to that bandmate (~0: not up, and why). null: no such peers.
+void direct_set_nat(unsigned long long (*connect)(void *user, const char *dev, std::string &why), void *user);
+// A connection a bandmate opened over that link (the local end of its loopback pair): served as the listener's connections are, frames
+// checked the same way, never handed to the web UI. Runs without a Tailscale listener too.
+void direct_adopt(unsigned long long sock);
 
 // ---- 1.0.8: the live layer --------------------------------------------------------------------------------------------------------------
 // Small messages: kind a short lower-case word ([a-z][a-z0-9_-]{0,31}: presence, heartbeat, claim, chat, cue, transport, midi, json...),

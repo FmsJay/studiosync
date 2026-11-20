@@ -12,7 +12,10 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <deque>
+#include <map>
 #include <string>
+#include <vector>
 
 #define NAT_SIGNAL_AGE 300 // s: a rendezvous file older than this is ignored (Syncthing can take a while; a replay gains nothing without the keys)
 #define NAT_PORT 47282     // the first of NAT_PORTS UDP ports libjuice binds (one per bandmate); the firewall rule covers the range
@@ -50,6 +53,7 @@ struct NatLinkConfig {
   double timeout_s = 30;                      // no path by then: failed
   void (*on_data)(void *user, const char *d, size_t n) = nullptr; // each opened datagram (juice's thread); null: queued for nat_link_recv
   void *user = nullptr;
+  void (*on_stream)(void *user, const char *d, size_t n) = nullptr; // (stage 2) each opened stream segment (juice's thread); null: dropped
 };
 struct NatLink;
 NatLink *nat_link_new(const NatLinkConfig &c);
@@ -89,6 +93,56 @@ void nat_set_rx(NatHub *h, nat_rx_fn fn, void *user); // every opened datagram (
 std::string nat_self(NatHub *h);  // "198.18.x.y:47281": this computer as the others name it ("" before nat_hub_setup)
 bool nat_active(NatHub *h);       // set up, with at least one peer
 NatHub *nat_global();             // REAPER's (the one StudioSync_Nat* drives and live audio uses)
+
+// ---- stage 2: the direct link over a link (docs/rt/rt-nat2.md) -------------------------------------------------------------------------
+// direct.cpp's connections (frames, answers, windows, Lanes: all unchanged) ride a link as streams: each one a loopback TCP socket pair, one
+// end direct.cpp's, the other this side's pump, which carries its bytes over sealed datagrams reliably and in order (NatRel below). A stream
+// opened by the other computer is handed to direct.cpp's server (direct_adopt), never to the web UI.
+// -> a socket for direct.cpp to send frames on to that bandmate (its answers come back on it), or ~0 and why (no link up: Syncthing then).
+unsigned long long nat_connect(NatHub *h, const char *dev, std::string &why);
+#define NAT_SEG 1200          // data bytes in one segment (+ 25 header + 1 kind + 28 sealing: well inside a path's ~1472)
+#define NAT_SEG_HDR 25        // flags u8, stream u32, offset u64, ack u64, window u32 (big-endian)
+#define NAT_SBUF (256 * 1024) // bytes a stream holds to send (direct.cpp's socket waits beyond it: TCP's own back-pressure)
+#define NAT_RCV_WND (256 * 1024) // bytes a stream takes ahead of what's delivered; a segment past it is dropped (sent again later)
+#define NAT_STREAMS 16        // streams per bandmate at once
+#define NAT_TRIES 10          // a segment sent this many times unanswered: the stream is dead (~20 s with the back-off)
+enum { NAT_F_OPEN = 1, NAT_F_FIN = 2, NAT_F_RST = 4 };
+// One stream's reliable, ordered bytes over datagrams: cumulative acks, a retransmit timer per segment (doubling to 3 s), a fast resend on
+// three repeated acks, a congestion window (halved on a loss), the receiver's window, a FIN each way. Pure: time is passed in, segments out.
+struct NatSeg { unsigned char flags; uint64_t off; std::string data; };
+struct NatRel {
+  std::string sbuf;               // bytes from `una` on: sent and unanswered, then not sent yet
+  uint64_t una = 0, nxt = 0;      // the first unanswered byte, the next new one
+  struct Fl { uint64_t off; uint32_t n; double at; int tries; bool fin; };
+  std::deque<Fl> fl;              // in flight, oldest first
+  bool closing = false, fin_sent = false, fin_acked = false, need_ack = false, dead = false, heard = false;
+  uint64_t fin_off = 0, peer_wnd = NAT_RCV_WND, adv = NAT_RCV_WND;
+  double cwnd = 16, srtt = -1, rto = 0.3;
+  int dup = 0;
+  long long resent = 0, dropped = 0; // (segments sent again; segments refused here: past the window, past the FIN)
+  uint64_t rcv = 0;               // the next byte expected
+  std::map<uint64_t, std::string> ooo; // arrived ahead of `rcv`
+  std::string rbuf;               // in order, not yet taken by the reader
+  bool rfin = false, rclosed = false;
+  uint64_t rfin_off = 0;
+  size_t room() const { return sbuf.size() >= NAT_SBUF ? 0 : NAT_SBUF - sbuf.size(); }
+  size_t write(const char *p, size_t n); // -> bytes taken (room() at most); none after close()
+  void close();                          // nothing more to send: a FIN after what's queued
+  void took(size_t n);                   // the reader took n bytes from rbuf's front
+  void input(unsigned char flags, uint64_t off, uint64_t ack, uint32_t wnd, const char *d, size_t n, double now);
+  void pump(double now, std::vector<NatSeg> &out); // what to send now: new data, what timed out, an ack
+  uint64_t ack_no() const { return rcv + (rclosed ? 1 : 0); }
+  uint32_t wnd() const { return rbuf.size() >= NAT_RCV_WND ? 0 : (uint32_t)(NAT_RCV_WND - rbuf.size()); }
+  bool done() const { return closing && fin_acked && rclosed && rbuf.empty(); }
+};
+std::string nat_seg_encode(unsigned char flags, uint32_t id, uint64_t off, uint64_t ack, uint32_t wnd, const std::string &data);
+bool nat_seg_decode(const char *p, size_t n, unsigned char &flags, uint32_t &id, uint64_t &off, uint64_t &ack, uint32_t &wnd, const char *&data, size_t &dn);
+#ifdef NAT_STANDALONE
+// The test: what a link sends of the streams' segments is dropped, doubled or held back behind the next one, at these rates (per mille).
+void nat_test_lossy(NatHub *h, int drop, int dup, int reorder);
+bool nat_test_inject(NatHub *h, const char *dev, const std::string &raw); // as if `raw` arrived on that link from the network
+std::string nat_test_sealed(NatHub *h, const char *dev); // the last datagram that link sent, as it went out
+#endif
 #ifndef NAT_STANDALONE
 struct reaper_plugin_info_t;
 extern "C" void nat_register(reaper_plugin_info_t *rec); // StudioSync_NatKey, NatSetup, NatStatus, NatStop (C linkage: reaper_menu.cpp declares it inside its extern "C" entry point)

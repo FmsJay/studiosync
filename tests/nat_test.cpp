@@ -32,6 +32,7 @@
 #include <thread>
 #include <vector>
 #include "../extension/nat.h"
+#include "../extension/direct.h"
 #include "../extension/third_party/libjuice/include/juice/juice.h"
 
 static int fails = 0;
@@ -51,14 +52,18 @@ static std::string temp_dir()
   make_dir(d.c_str());
   return d;
 }
-static void drop_dir(const std::string &d) // (the rendezvous files a case leaves, then the folder)
+static void remove_dir(const std::string &d)
 {
-  for (const char *f : { "/devA-devB.json", "/devB-devA.json", "/devA-devB.json.tmp", "/devB-devA.json.tmp", "/a.key", "/b.key", "/x.key" }) remove((d + f).c_str());
 #ifdef _WIN32
   _rmdir(d.c_str());
 #else
   rmdir(d.c_str());
 #endif
+}
+static void drop_dir(const std::string &d) // (the rendezvous files a case leaves, then the folder)
+{
+  for (const char *f : { "/devA-devB.json", "/devB-devA.json", "/devA-devB.json.tmp", "/devB-devA.json.tmp", "/a.key", "/b.key", "/x.key" }) remove((d + f).c_str());
+  remove_dir(d);
 }
 static void stats(const char *what, std::vector<double> v)
 {
@@ -195,6 +200,202 @@ static bool hub_wait(NatHub *a, NatHub *b, const char *pa, const char *pb, doubl
   sockaddr_in x{}, y{};
   return nat_resolve(a, pa, &x) && nat_resolve(b, pb, &y) && nat_up(a, &x) && nat_up(b, &y);
 }
+// ---- stage 2: reliable streams (NatRel alone, through a simulated lossy path; then the direct link over two hubs) --------------------------
+static unsigned rnd(unsigned &r) { r = r * 1103515245u + 12345u; return (r >> 8) % 1000; }
+struct Hop { double at; std::string seg; };
+// a -> b `ab` bytes and b -> a `ba` bytes, each segment dropped / doubled per mille, every one delayed 20-50 ms (so they reorder); the reader
+// on b takes nothing until `stall` s (the window shuts, then opens). -> both sides got everything in order and finished.
+static bool rel_run(const char *what, int drop, int dup, size_t ab, size_t ba, double stall = 0, bool show = true)
+{
+  NatRel a, b;
+  unsigned r = 7;
+  std::string want_ab(ab, '\0'), want_ba(ba, '\0'), got_ab, got_ba;
+  for (char &c : want_ab) c = (char)rnd(r);
+  for (char &c : want_ba) c = (char)rnd(r);
+  std::vector<Hop> to_a, to_b;
+  size_t wa = 0, wb = 0;
+  double t = 0;
+  long long segs = 0;
+  for (; t < 120 && !(a.done() && b.done()); t += 0.001) {
+    wa += a.write(want_ab.data() + wa, want_ab.size() - wa); if (wa == want_ab.size()) a.close();
+    wb += b.write(want_ba.data() + wb, want_ba.size() - wb); if (wb == want_ba.size()) b.close();
+    for (int side = 0; side < 2; ++side) {
+      NatRel &s = side ? b : a;
+      std::vector<NatSeg> out;
+      s.pump(t, out);
+      for (const NatSeg &g : out) {
+        ++segs;
+        const std::string w = nat_seg_encode(g.flags, 1, g.off, s.ack_no(), s.wnd(), g.data);
+        if ((int)rnd(r) < drop) continue;
+        for (int k = (int)rnd(r) < dup ? 2 : 1; k-- > 0;) (side ? to_a : to_b).push_back({ t + 0.020 + rnd(r) * 0.00003, w });
+      }
+    }
+    for (int side = 0; side < 2; ++side) {
+      std::vector<Hop> &q = side ? to_a : to_b;
+      NatRel &s = side ? a : b;
+      for (size_t i = 0; i < q.size();) {
+        if (q[i].at > t) { ++i; continue; }
+        unsigned char f; uint32_t id, w; uint64_t off, ack; const char *d; size_t dn;
+        if (nat_seg_decode(q[i].seg.data(), q[i].seg.size(), f, id, off, ack, w, d, dn)) s.input(f, off, ack, w, d, dn, t);
+        q.erase(q.begin() + (long)i);
+      }
+    }
+    if (t >= stall) { got_ab += b.rbuf; b.took(b.rbuf.size()); }
+    got_ba += a.rbuf; a.took(a.rbuf.size());
+  }
+  const bool ok = got_ab == want_ab && got_ba == want_ba && a.done() && b.done() && !a.dead && !b.dead;
+  if (show) printf("     %s: %.2f s simulated, %lld segments, %lld + %lld sent again, %lld + %lld refused\n", what, t, segs, a.resent, b.resent, a.dropped, b.dropped);
+  return ok;
+}
+static void rel_checks()
+{
+  CHECK(rel_run("clean", 0, 0, 300000, 5000), "stream: 300 KB one way, 5 KB back, in order, both FINs answered");
+  CHECK(rel_run("10% lost", 100, 0, 300000, 5000), "stream: 10% of segments lost each way: all of it still arrives, in order");
+  CHECK(rel_run("30% lost", 300, 0, 100000, 1000), "stream: 30% lost: still all of it");
+  CHECK(rel_run("doubled", 0, 300, 200000, 2000), "stream: 30% of segments doubled: each byte once");
+  CHECK(rel_run("all three", 150, 150, 200000, 20000), "stream: lost, doubled and reordered together");
+  CHECK(rel_run("reader stalls 2 s", 50, 0, 2 * NAT_RCV_WND, 100, 2.0), "stream: a reader that takes nothing for 2 s: the window shuts, then opens, nothing lost");
+  { // nothing gets through: dead after its tries, not forever
+    NatRel a;
+    a.write("hello", 5);
+    std::vector<NatSeg> out;
+    double t = 0;
+    for (; t < 60 && !a.dead; t += 0.01) { out.clear(); a.pump(t, out); }
+    CHECK(a.dead && t > 5 && t < 40, "stream: no answer at all: given up after its tries (direct.cpp sees the connection drop)");
+  }
+  { // what a segment may not be
+    unsigned char f; uint32_t id, w; uint64_t off, ack; const char *d; size_t dn;
+    const std::string big = nat_seg_encode(0, 1, 0, 0, 0, std::string(NAT_SEG + 1, 'x')), odd = nat_seg_encode(0x40, 1, 0, 0, 0, "x"), ok = nat_seg_encode(NAT_F_OPEN, 9, 5, 6, 7, "abc");
+    CHECK(!nat_seg_decode(big.data(), big.size(), f, id, off, ack, w, d, dn), "segment: one bigger than any sent (1201 bytes of data) is refused whole");
+    CHECK(!nat_seg_decode(odd.data(), odd.size(), f, id, off, ack, w, d, dn) && !nat_seg_decode(ok.data(), 10, f, id, off, ack, w, d, dn), "segment: unknown flags or a short header: refused");
+    CHECK(nat_seg_decode(ok.data(), ok.size(), f, id, off, ack, w, d, dn) && f == NAT_F_OPEN && id == 9 && off == 5 && ack == 6 && w == 7 && dn == 3, "segment: a good one reads back");
+    NatRel b;
+    const std::string beyond(100, 'x');
+    b.input(0, NAT_RCV_WND, 0, NAT_RCV_WND, beyond.data(), beyond.size(), 0);
+    CHECK(b.dropped == 1 && b.rbuf.empty() && b.ooo.empty(), "stream: bytes past the receive window are refused (the size cap), not held");
+    NatRel c;
+    c.write("abc", 3);
+    std::vector<NatSeg> out;
+    c.pump(0, out);
+    c.input(0, 0, 1000000, NAT_RCV_WND, nullptr, 0, 0.01);
+    CHECK(c.una == 3 && c.sbuf.empty(), "stream: an ack past what was sent counts only what was sent");
+    c.input(NAT_F_RST, 0, 0, 0, nullptr, 0, 0.02);
+    CHECK(c.dead, "stream: a reset ends it");
+  }
+}
+
+// The direct link over the hubs' link (direct.cpp is one per process: here it sends to "nat:devB" through hub A, and hub B hands what
+// arrives back to the same direct.cpp's server, as two computers' would).
+#ifdef _WIN32
+typedef SOCKET tsock;
+static void sock_close(unsigned long long s) { closesocket((SOCKET)s); }
+#else
+typedef int tsock;
+static void sock_close(unsigned long long s) { close((int)s); }
+#endif
+static std::string slurp_file(const std::string &p) { std::string s; FILE *f = fopen(p.c_str(), "rb"); if (!f) return s; char b[65536]; size_t n; while ((n = fread(b, 1, sizeof b, f)) > 0) s.append(b, n); fclose(f); return s; }
+static int raw_answer(NatHub *a, const std::string &frame) // a frame straight onto a stream to devB -> its answer byte, -1 none
+{
+  std::string why;
+  const unsigned long long s = nat_connect(a, "devB", why);
+  if (s == ~0ULL) return -1;
+#ifdef _WIN32
+  DWORD tmo = 5000;
+  setsockopt((SOCKET)s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tmo, sizeof tmo);
+  u_long nb = 0;
+  ioctlsocket((SOCKET)s, FIONBIO, &nb);
+#else
+  timeval tmo = { 5, 0 };
+  setsockopt((int)s, SOL_SOCKET, SO_RCVTIMEO, &tmo, sizeof tmo);
+#endif
+  size_t at = 0;
+  while (at < frame.size()) { const int k = (int)send((tsock)s, frame.data() + at, (int)std::min<size_t>(frame.size() - at, 65536), 0); if (k <= 0) break; at += (size_t)k; }
+  char c = 0;
+  const int k = (int)recv((tsock)s, &c, 1, 0);
+  sock_close(s);
+  return k == 1 ? (unsigned char)c : -1;
+}
+static long long json_num(const std::string &j, const char *k) { const std::string key = std::string("\"") + k + "\":"; const size_t a = j.find(key); return a == std::string::npos ? -1 : atoll(j.c_str() + a + key.size()); }
+static int msgs_after(int &seq, std::vector<std::string> &got)
+{
+  int n = 0;
+  for (;;) {
+    const std::string m = direct_msg_poll(seq);
+    if (m.empty()) return n;
+    seq = atoi(m.c_str());
+    got.push_back(m.substr(m.rfind('\t') + 1));
+    ++n;
+  }
+}
+static void link_checks(NatHub *a, NatHub *b, const std::string &dir)
+{
+  direct_set_nat([](void *h, const char *dev, std::string &why) { return nat_connect((NatHub *)h, dev, why); }, a);
+  const std::string inbox = dir + "/inbox";
+  direct_start("studio1", "the studio secret", inbox.c_str(), -1, ""); // (send only: no Tailscale listener; what arrives comes over the link)
+  nat_test_lossy(a, 100, 50, 100); nat_test_lossy(b, 100, 50, 100); // (10% lost, 5% doubled, 10% held back behind the next, each way)
+  int seq = 0;
+  std::vector<std::string> got;
+  msgs_after(seq, got);
+  got.clear();
+  const double t0 = now_ms();
+  for (int i = 0; i < 300; ++i) { char m[32]; snprintf(m, sizeof m, "move %d", i); direct_msg("studio1", "ctl", m, "nat:devB"); if (i % 20 == 19) sleep_ms(5); }
+  while (got.size() < 300 && now_ms() - t0 < 30000) { msgs_after(seq, got); sleep_ms(5); }
+  bool order = got.size() == 300;
+  for (size_t i = 0; order && i < got.size(); ++i) order = got[i] == "move " + std::to_string(i);
+  printf("     300 messages through 10%% loss, 5%% doubling, 10%% reordering: %d arrived in %.0f ms\n", (int)got.size(), now_ms() - t0);
+  CHECK(order, "direct link over the link: 300 messages (a controller's moves) arrive once each, in order, through loss, doubling and reordering");
+  // an event file, and one of 1 MB
+  const std::string rel = "song/rooms/main/events/u-20261120-120000Z-abc.json", rel2 = "song/rooms/main/events/u-20261120-120001Z-big.json";
+  std::string body = "{\"kind\":\"edit\"}", big(1 << 20, 'e');
+  for (size_t i = 0; i < big.size(); i += 97) big[i] = (char)('a' + i % 26);
+  const std::string src = dir + "/ev.json", src2 = dir + "/big.json";
+  { FILE *f = fopen(src.c_str(), "wb"); fwrite(body.data(), 1, body.size(), f); fclose(f); f = fopen(src2.c_str(), "wb"); fwrite(big.data(), 1, big.size(), f); fclose(f); }
+  direct_send("studio1", rel.c_str(), src.c_str(), "nat:devB");
+  direct_send("studio1", rel2.c_str(), src2.c_str(), "nat:devB");
+  std::string in1, in2;
+  const double t1 = now_ms();
+  while ((in1 != body || in2 != big) && now_ms() - t1 < 60000) { in1 = slurp_file(inbox + "/" + rel); in2 = slurp_file(inbox + "/" + rel2); sleep_ms(20); }
+  printf("     the 1 MB event file in %.0f ms\n", now_ms() - t1);
+  CHECK(in1 == body && in2 == big, "direct link over the link: an event file and a 1 MB one land in the inbox whole");
+  // the clock
+  direct_peers("studio1", "nat:devB");
+  const double t2 = now_ms();
+  while (json_num(direct_clock(), "samples") < 4 && now_ms() - t2 < 20000) sleep_ms(50);
+  printf("     clock: %s\n", direct_clock());
+  CHECK(json_num(direct_clock(), "samples") >= 4, "direct link over the link: the clock's pings answered (signed), an estimate made");
+  const std::string st = direct_status();
+  CHECK(st.find("\"nat:devB\":{\"ok\":true") != std::string::npos, "direct link's status: the peer nat:devB answered");
+  nat_test_lossy(a, 0, 0, 0); nat_test_lossy(b, 0, 0, 0);
+  // refusals: a forged frame and an oversized one, straight onto a stream
+  const long long rej = json_num(direct_status(), "rejected");
+  CHECK(raw_answer(a, direct_frame(direct_derive_key("another studio"), "studio1", "chat", "hi", "SSM1")) == 3, "a frame signed with another secret, over the link: refused (3)");
+  std::string over = direct_frame(direct_derive_key("the studio secret"), "studio1", "chat", std::string(70000, 'x'), "SSM1");
+  CHECK(raw_answer(a, over) == 5, "a message over 64 KB, over the link: refused (5) before it's read whole");
+  CHECK(json_num(direct_status(), "rejected") >= rej + 2, "both counted as refused");
+  CHECK(raw_answer(a, std::string("GET / HTTP/1.1\r\nHost: x\r\n\r\n")) == 1, "an HTTP request over the link never reaches the web UI: not StudioSync's (1)");
+  // a forged datagram: a copy of a real one with a flipped byte, as if from the network
+  std::string raw = nat_test_sealed(a, "devB");
+  const long long refused0 = json_num(nat_hub_status(b), "refused");
+  if (raw.size() > 20) raw[20] ^= 1;
+  nat_test_inject(b, "devA", raw);
+  CHECK(json_num(nat_hub_status(b), "refused") == refused0 + 1, "a datagram with a flipped byte is refused by the link, before any stream sees it");
+  remove(src.c_str()); remove(src2.c_str());
+  remove((inbox + "/" + rel).c_str()); remove((inbox + "/" + rel2).c_str());
+  for (const char *d : { "/song/rooms/main/events", "/song/rooms/main", "/song/rooms", "/song", "" }) remove_dir(inbox + d);
+}
+static void link_after_restart(NatHub *a)
+{
+  (void)a;
+  int seq = 0;
+  std::vector<std::string> got;
+  msgs_after(seq, got);
+  got.clear();
+  const double t0 = now_ms();
+  while (got.empty() && now_ms() - t0 < 30000) { direct_msg("studio1", "ctl", "after", "nat:devB"); sleep_ms(250); msgs_after(seq, got); }
+  printf("     messages through again %.0f ms after the link came back\n", now_ms() - t0);
+  CHECK(!got.empty() && got[0] == "after", "direct link over the link: after the peer starts again, messages go through again (its lane reconnects)");
+}
+
 static void hub_checks(int port)
 {
   const std::string dir = temp_dir();
@@ -232,6 +433,7 @@ static void hub_checks(int port)
   }
   { std::lock_guard<std::mutex> g(ra.mx); CHECK(ra.got.size() >= 49, "and B -> A"); }
   CHECK(nat_sendto(a, &sa, std::string(1500, 'x').data(), 1500) == -1, "a datagram over 1400 bytes isn't sent");
+  link_checks(a, b, dir); // (stage 2: the direct link over these links)
   // B starts again (REAPER restarted): a new link, its offer answered afresh
   nat_hub_stop(b);
   CHECK(!nat_up(b, &sb), "hub: stopped, nothing up");
@@ -240,6 +442,8 @@ static void hub_checks(int port)
   const bool again = hub_wait(a, b, "nat:devB", "nat:devA", 45000, took);
   CHECK(again, "hub: after B starts again both are up again (A notices, offers anew)");
   printf("     again in %.0f ms\n", took);
+  if (again) link_after_restart(a);
+  direct_shutdown();
   // A drops B from its list: the link goes
   nat_hub_setup(a, setup_json(dir, "devA", "a.key", "devC", pb, port, "the studio secret").c_str());
   CHECK(!nat_up(a, &sa) && !nat_resolve(a, "nat:devB", &sa), "hub: a peer taken off the list is dropped");
@@ -376,6 +580,7 @@ int main(int argc, char **argv)
   if (argc > 1 && !strcmp(argv[1], "server")) return run_server(argc, argv);
   if (argc > 1 && !strcmp(argv[1], "peer")) return run_peer(argc, argv);
   crypto_checks();
+  rel_checks();
   ice_checks();
   printf(fails ? "FAILED %d\n" : "all ok\n", fails);
   return fails ? 1 : 0;

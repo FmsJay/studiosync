@@ -133,7 +133,9 @@ function direct.ensure(cfg)
   if s and now - s.at < direct.START_EVERY then return s.ok end
   local id = band.info(root).id
   local groups = require("groups")
-  local secret = direct.enabled(root) and groups.tailnet(root) and groups.sonobus_secret(root)
+  -- (a studio with "Connect without Tailscale" on needs no tailnet: its bandmates come as "nat:<device>" peers, lib/nat.lua. rt-nat2)
+  local okn, natv = pcall(function() return require("nat").enabled(root) end)
+  local secret = direct.enabled(root) and (groups.tailnet(root) or (okn and natv)) and groups.sonobus_secret(root)
   if not secret then
     if s and s.ok then reaper.StudioSync_DirectStop(id) end
     started[root] = { at = now, ok = false }
@@ -182,6 +184,13 @@ function direct.refresh_peers(cfg, song, room) -- -> the list, peer -> device id
       if ok and said ~= nil then asked_dev[k] = true end
       return ok and said == true and access.shows(access.read(cfg.root, d.device), song) -- (a guest whose list leaves the song out: a narrowing only)
     end)
+  end
+  -- (stage 2 of the connection without Tailscale: a bandmate whose link without it is up goes as "nat:<device>", the extension carrying
+  -- the frames over that link; while it isn't up, its Tailscale entry stays, if any. lib/nat.lua checks who, as for live audio. rt-nat2)
+  local nat = require("nat")
+  if direct.enabled(cfg.root) and nat.available() and nat.enabled(cfg.root) then
+    local nok, nlist, nusers = pcall(nat.peers, cfg, { song = song, room = room }, "direct")
+    if nok and type(nlist) == "table" and #nlist > 0 then list, dev_of, users = nat.direct_merge(list, dev_of or {}, users or {}, nlist, nusers, nat.status()) end
   end
   peer_cache[key] = { at = now, list = list, dev_of = dev_of or {}, users = users or {} }
   reaper.SetExtState(band.SECTION, peers_ext(cfg, song, room), table.concat(list, " "), false)
@@ -316,6 +325,11 @@ function direct.paths()
 end
 -- Whose computer a peer ("name:port") is: the person's name from the studio's devices files, else the computer's first name. Pure.
 function direct.who_of(devs, peer)
+  local dev = tostring(peer):match("^nat:(.+)$") -- (a bandmate reached without Tailscale: its device id. rt-nat2)
+  if dev then
+    for _, d in ipairs(devs or {}) do if type(d) == "table" and d.device == dev and type(d.user) == "string" then return d.user end end
+    return dev:sub(1, 7)
+  end
   local host = tostring(peer):match("^(.-):%d+$") or tostring(peer)
   for _, d in ipairs(devs or {}) do
     for _, name in pairs(type(d) == "table" and type(d.ts) == "table" and d.ts or {}) do
@@ -327,15 +341,37 @@ end
 
 -- For Health: { available, enabled, firewall, listening, bind, error, received, rejected, last_reject, peers = { { peer, ok, ms, error, at,
 -- sent, rate (bytes/s the last streams went at; 0: none yet), rate_at, rtt_ms (the way's round trip), window, path ("direct", "relay",
--- "peer relay", or nil: not known), region (a relay's) } } }, and a line to show: ok (true, false, or nil: off, nothing to say), text.
+-- "peer relay", "nat direct", "nat relayed" (a "nat:<device>" peer: the connection without Tailscale, rt-nat2), or nil: not known), region
+-- (a relay's) } } }, and a line to show: ok (true, false, or nil: off, nothing to say), text.
+-- A "nat:<device>" peer's way, from StudioSync_NatStatus (lib/nat.lua). Pure.
+function direct.nat_way(nst, peer)
+  local dev = tostring(peer):match("^nat:(.+)$")
+  local p = dev and type(nst) == "table" and type(nst.peers) == "table" and nst.peers[dev]
+  if not dev then return nil end
+  return { path = type(p) == "table" and p.path == "relayed" and "nat relayed" or "nat direct" }
+end
+-- How a peer is reached, in words for Health. Pure.
+function direct.way_text(path)
+  return path == "nat direct" and "without Tailscale, through both NATs" or path == "nat relayed" and "without Tailscale, relayed"
+    or path == "direct" and "Tailscale, direct" or path == "relay" and "Tailscale's relay" or path == "peer relay" and "a Tailscale peer relay" or "Tailscale"
+end
+-- A peer's short name: a Tailscale name's first part; for "nat:<device>", whose computer it is (lib/nat.lua knows), else the id's start.
+function direct.peer_name(peer, users)
+  local dev = tostring(peer):match("^nat:(.+)$")
+  if not dev then return tostring(peer):match("^([^%.:]+)") or tostring(peer) end
+  local ok, nat = pcall(require, "nat")
+  return (users or {})[peer] or (ok and type(nat) == "table" and nat.S.users[peer]) or dev:sub(1, 7)
+end
 function direct.status(cfg)
   local s = { available = direct.available(), enabled = cfg and direct.enabled(cfg.root) or false, firewall = direct.firewall_ok(), peers = {} }
   if s.available then
     local j = status_json()
     for _, k in ipairs({ "listening", "bind", "error", "received", "rejected", "last_reject" }) do s[k] = j[k] end
     local ok_paths, paths = pcall(direct.paths)
+    local nst
     for peer, p in pairs(type(j.peers) == "table" and j.peers or {}) do
       local way = ok_paths and paths[(tostring(peer):match("^(.-):%d+$") or ""):lower()] or {}
+      if tostring(peer):sub(1, 4) == "nat:" then nst = nst or require("nat").status(); way = direct.nat_way(nst, peer) end
       s.peers[#s.peers + 1] = { peer = peer, ok = p.ok == true, ms = tonumber(p.ms), error = p.error, at = tonumber(p.at), sent = tonumber(p.sent),
         rate = tonumber(p.rate) or 0, rate_at = tonumber(p.rate_at), rtt_ms = tonumber(p.rtt_ms), window = tonumber(p.window), path = way.path, region = way.region }
     end
@@ -347,17 +383,20 @@ function direct.health_line(cfg)
   local s = direct.status(cfg)
   if not s.available or not direct.live_available() then return nil, "Direct link: needs StudioSync's extension " .. direct.WANT .. " (Extensions > ReaPack > Synchronize packages, or StudioSync's installer, then restart REAPER). Changes come through Syncthing meanwhile." end
   if not s.enabled then return nil, "Direct link: turned off for this studio. Changes come through Syncthing." end
-  local reached, failed, ms = {}, {}, nil
+  local reached, failed, ms, nat_ok = {}, {}, nil, false
   for _, p in ipairs(s.peers) do
-    local who = p.peer:match("^([^%.:]+)")
-    if p.ok then reached[#reached + 1] = who; ms = ms and math.min(ms, p.ms or ms) or p.ms
-    else failed[#failed + 1] = who .. " (" .. tostring(p.error) .. ")" end
+    -- (one reached without Tailscale says so, and how; the others are Tailscale's, their way in the link speed row. rt-nat2)
+    local isnat = tostring(p.path):sub(1, 4) == "nat "
+    local who = direct.peer_name(p.peer) .. (isnat and (" (" .. direct.way_text(p.path) .. ")") or "")
+    if p.ok then reached[#reached + 1] = who; ms = ms and math.min(ms, p.ms or ms) or p.ms; nat_ok = nat_ok or isnat
+    else failed[#failed + 1] = direct.peer_name(p.peer) .. " (" .. tostring(p.error) .. ")" end
   end
-  local text = "Direct link: " .. (s.listening and ("listening on " .. tostring(s.bind)) or ("sending only" .. (not s.firewall and ": press Set up direct link so the others' changes reach you directly too" or (s.error and s.error ~= "" and (": " .. s.error) or ""))))
+  -- (no Tailscale listener but bandmates reached without it: what they send comes over those links, so that's no warning. rt-nat2)
+  local text = "Direct link: " .. (s.listening and ("listening on " .. tostring(s.bind)) or nat_ok and "over the connection without Tailscale" or ("sending only" .. (not s.firewall and ": press Set up direct link so the others' changes reach you directly too" or (s.error and s.error ~= "" and (": " .. s.error) or ""))))
   if #reached > 0 then text = text .. "; reaches " .. table.concat(reached, ", ") .. string.format(" (%.0f ms)", ms or 0) end
   if #failed > 0 then text = text .. "; can't reach " .. table.concat(failed, ", ") .. " (Syncthing carries theirs)" end
   if (tonumber(s.rejected) or 0) > 0 then text = text .. string.format("; refused %d (last: %s)", s.rejected, tostring(s.last_reject)) end
-  return s.listening and #failed == 0, text
+  return (s.listening or nat_ok) and #failed == 0, text
 end
 
 -- Link speed per bandmate (extension 1.0.12), so people know before recording together what the link carries to each: "Bo: 4.1 MB/s
@@ -367,8 +406,9 @@ function direct.speed_line_of(peers, who)
   local each, relayed = {}, false
   for _, p in ipairs(peers or {}) do
     if p.ok then
-      local way = p.path == "relay" and ("relayed by Tailscale" .. (p.region and (" (" .. p.region .. ")") or "")) or p.path == "peer relay" and "through a peer relay" or p.path
-      relayed = relayed or p.path == "relay" or p.path == "peer relay"
+      local way = p.path == "relay" and ("relayed by Tailscale" .. (p.region and (" (" .. p.region .. ")") or "")) or p.path == "peer relay" and "through a peer relay"
+        or (p.path == "nat direct" or p.path == "nat relayed") and direct.way_text(p.path) or p.path
+      relayed = relayed or p.path == "relay" or p.path == "peer relay" or p.path == "nat relayed"
       local what = ((p.rate or 0) > 0 and per_sec(p.rate) or "") .. ((p.rate or 0) > 0 and way and " " or "") .. (way or "")
       local rtt = (p.rtt_ms or 0) > 0 and p.rtt_ms or p.ms
       local ms = rtt and rtt >= 0 and string.format("%.0f ms", rtt) or nil
@@ -606,7 +646,7 @@ function direct.clock_line()
   local _, dev, err, peer = direct.shared_now()
   local each = {}
   for p, e in pairs(type(j.peers) == "table" and j.peers or {}) do
-    local who = p:match("^([^%.:]+)") or p
+    local who = direct.peer_name(p)
     if type(e) == "table" and (e.error or "") ~= "" then each[#each + 1] = who .. ": " .. tostring(e.error)
     elseif type(e) == "table" and (tonumber(e.samples) or 0) >= 4 then
       each[#each + 1] = string.format("%s %+.1f ms (round trip %.0f ms)", who, tonumber(e.offset_ms) or 0, tonumber(e.rtt_ms) or 0)
@@ -617,7 +657,7 @@ function direct.clock_line()
     return #each > 0, "Shared clock: this computer is the reference" .. (#each > 0 and ("; " .. table.concat(each, ", ")) or
       " (nobody here to share it with: Play and Record together go by this computer's clock)")
   end
-  return true, string.format("Shared clock: the reference is %s (%s), within %.0f ms; %s", peer:match("^([^%.:]+)") or peer, tostring(dev):sub(1, 7), err or 0, table.concat(each, ", "))
+  return true, string.format("Shared clock: the reference is %s (%s), within %.0f ms; %s", direct.peer_name(peer), tostring(dev):sub(1, 7), err or 0, table.concat(each, ", "))
 end
 -- Health's rows for the link (lib/page_health.lua): { id, ok, colour, text when ok, text when not, action = { label, fn, tooltip } }.
 function direct.health_rows(cfg, b)

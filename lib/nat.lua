@@ -80,6 +80,27 @@ function nat.merge(list, dev_of, users, nlist, nusers, ndevs)
   return out, u
 end
 
+-- Stage 2: the direct link's peers (lib/direct.lua refresh_peers). Its Tailscale list with each bandmate whose link without Tailscale is up
+-- now (st: StudioSync_NatStatus's) swapped for "nat:<device>"; one whose link isn't up keeps its Tailscale entry, if it has one: today's
+-- path (Tailscale where it reaches, else Syncthing). -> the list (sorted), peer -> device id, peer -> user. Pure.
+function nat.direct_merge(list, dev_of, users, nlist, nusers, st)
+  local up = {}
+  for dev, p in pairs(type(st) == "table" and type(st.peers) == "table" and st.peers or {}) do
+    if type(p) == "table" and p.state == "up" then up[dev] = true end
+  end
+  local ul, uu, ud = {}, {}, {}
+  for _, p in ipairs(nlist or {}) do
+    local d = tostring(p):sub(5)
+    if up[d] then ul[#ul + 1] = p; uu[p] = (nusers or {})[p]; ud[d] = true end
+  end
+  local out, u = nat.merge(list, dev_of, users, ul, uu, ud)
+  local dv = {}
+  for k, v in pairs(dev_of or {}) do dv[k] = v end
+  for _, p in ipairs(ul) do dv[p] = p:sub(5) end
+  table.sort(out)
+  return out, dv, u
+end
+
 -- The studio's devices files (each person's, written by their own computer: trust.user_file names it), every DEVICES_EVERY s.
 local dev_cache = {}
 local function devices(root)
@@ -100,12 +121,17 @@ local function stop()
   if S.set and reaper.StudioSync_NatStop then reaper.StudioSync_NatStop() end
   S.set, S.json, S.peers, S.users, S.devs = false, nil, {}, {}, {}
 end
--- Live sync's tick (through lib/liveaudio.lua): the extension set up for the bandmates in the room who need this way. -> the "nat:<device>"
--- peers, peer -> user, and the set of their devices (for nat.merge). Nothing while the studio has it off.
-function nat.peers(cfg, b)
+-- Live sync's tick (through lib/liveaudio.lua, and stage 2 lib/direct.lua's refresh_peers with by "direct"): the extension set up for the
+-- bandmates in the room who need this way. -> the "nat:<device>" peers, peer -> user, and the set of their devices (for nat.merge). Nothing
+-- while the studio has it off. (stage 2: live audio off asks it to stop, cfg nil, every tick; while the direct link has asked in the last
+-- few seconds, that's ignored: the links carry its changes, chat and clock too. James, rt)
+nat.HOLD = 6
+function nat.peers(cfg, b, by)
   local root = cfg and cfg.root
-  if not (root and nat.available() and nat.enabled(root)) then stop(); return {}, {}, {} end
   local now = reaper.time_precise()
+  if by == "direct" then S.direct_at = now
+  elseif not root and now - (S.direct_at or -math.huge) < nat.HOLD then return S.peers, S.users, S.devs end
+  if not (root and nat.available() and nat.enabled(root)) then stop(); return {}, {}, {} end
   if now - S.at < nat.EVERY then return S.peers, S.users, S.devs end
   S.at = now
   local services, groups, trust, access = require("services"), require("groups"), require("trust"), require("access")
@@ -253,13 +279,13 @@ end
 -- Settings > Studio: the switch (owner and admins).
 function nat.studio_ui(ctx, ImGui, cfg, may)
   local on = nat.enabled(cfg.root)
-  ImGui.TextDisabled(ctx, on and "Connect without Tailscale: on. Live audio reaches bandmates who aren't on the studio's Tailscale through StudioSync's own connection (Tailscale stays the way for everyone it reaches)."
-    or "Connect without Tailscale: off. Live audio reaches bandmates on the studio's Tailscale only.")
+  ImGui.TextDisabled(ctx, on and "Connect without Tailscale: on. Live audio, changes, chat, claims and the shared clock reach bandmates who aren't on the studio's Tailscale through StudioSync's own connection (Tailscale stays the way for everyone it reaches)."
+    or "Connect without Tailscale: off. The direct link and live audio reach bandmates on the studio's Tailscale only.")
   if may then
     local ch, v = ImGui.Checkbox(ctx, "Connect without Tailscale##studionat", on)
     if ch then
       require("groups").set_nat(cfg.root, v)
-      band.log(v and "connect without Tailscale is on for the studio: live audio reaches bandmates without Tailscale too" or "connect without Tailscale is off for the studio")
+      band.log(v and "connect without Tailscale is on for the studio: changes, chat, the clock and live audio reach bandmates without Tailscale too" or "connect without Tailscale is off for the studio")
     end
     ImGui.SetItemTooltip(ctx, "Owner and admins. For bandmates who won't install Tailscale: their computer and the others find a path through both home networks (a public STUN server tells each its own address; nothing of the music goes through it). Needs StudioSync's extension with it on each computer.")
   end
