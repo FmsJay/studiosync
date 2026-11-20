@@ -204,6 +204,7 @@ local function loop_body()
   end
   band.try("band.sws_colours", band.sws_colours) -- (SWS auto-colouring off while a band song is in front, back on otherwise)
   band.try("removal.tick", require("removal").tick) -- (someone taken out of a group, and which computer is whose: lib/removal.lua)
+  band.try("joins.tick", require("joins").tick) -- (signed invitations over the link, with or without the panel open: lib/joins.lua, James, rt)
   band.try("fromfolder.tick", require("fromfolder").tick, dir) -- (a studio that updates through its folder: lib/fromfolder.lua, 0.59.24)
   band.try("fromfolder.extension_tick", require("fromfolder").extension_tick, dir) -- (the menu extension from the copy it runs from: 0.59.27)
   band.try("listen.tick", require("listen").tick) -- (the listening page, where this computer shares it)

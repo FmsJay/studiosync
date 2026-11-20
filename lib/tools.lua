@@ -194,7 +194,14 @@ end
 local shown_invite
 -- `parts` ({ id, key }): an invitation to a studio, which can be put for someone new, someone with StudioSync, or either (James, 0.58.98:
 -- "have the share let you choose if the person you're inviting has it or not"). Without it (SonoBus's), the text as it is.
+-- (and, where the link can hear it, a signed invitation instead of the plain join code: pasted, it lets them in by itself, with no Let them in.
+-- `parts.guest` or a Tailscale guest key: for a guest. lib/joins.lua, James, rt)
 function tools.show_invite(text, info, ctx, ImGui, parts)
+  if parts and parts.token == nil then
+    local ok, token = pcall(require("joins").make_for, info, (parts.guest or parts.key) and "guest" or "member")
+    parts.token = ok and token or false
+    if parts.token then text = require("services").invite_text(parts.id, info, parts.key, nil, parts.token) end
+  end
   band.copy(text, ctx, ImGui)
   shown_invite = { text = text, info = info, parts = parts, who = "both", name = tostring(info and info.name or "the studio"), open = true }
 end
@@ -216,7 +223,7 @@ function tools.invite_popup(ctx, ImGui)
         if select(1, ImGui.GetItemRectMax(ctx)) + need < select(1, ImGui.GetWindowPos(ctx)) + ImGui.GetWindowWidth(ctx) - 16 then ImGui.SameLine(ctx) end
         if ImGui.RadioButton(ctx, w[2] .. "##who" .. w[1], j.who == w[1]) and j.who ~= w[1] then
           j.who = w[1]
-          j.text = require("services").invite_text(j.parts.id, j.info, j.parts.key, w[1] ~= "both" and w[1] or nil)
+          j.text = require("services").invite_text(j.parts.id, j.info, j.parts.key, w[1] ~= "both" and w[1] or nil, j.parts.token or nil)
           band.copy(j.text, ctx, ImGui)
         end
       end
@@ -229,7 +236,8 @@ function tools.invite_popup(ctx, ImGui)
     ImGui.InputTextMultiline(ctx, "##invitation", j.text, -1, math.max(ImGui.GetTextLineHeight(ctx) * 4, select(2, ImGui.GetContentRegionAvail(ctx)) - foot),
       ImGui.InputTextFlags_ReadOnly)
     ImGui.PushTextWrapPos(ctx, 0)
-    ImGui.TextDisabled(ctx, "When they've run it, their request shows at the top of this panel: press Let them in.")
+    ImGui.TextDisabled(ctx, j.parts and j.parts.token and "Its invitation line, pasted in their StudioSync within 2 days, lets them in by itself (once). From the install lines, their request shows at the top of this panel: press Let them in."
+      or "When they've run it, their request shows at the top of this panel: press Let them in.")
     ImGui.PopTextWrapPos(ctx)
     if ImGui.Button(ctx, "Copy again") then band.copy(j.text, ctx, ImGui); band.log("the invitation is on your clipboard again") end
     ImGui.SameLine(ctx)
@@ -302,7 +310,7 @@ function tools.guest_invite_button(ctx, ImGui, my_id, root, label)
     local made = removal.add_invite(root, ends, me, now, songs)
     local ok = true
     if services.has_token_for(services.studio_net(root)) then ok = services.copy_guest_invite(my_id, info, ctx, ImGui, root, ends)
-    else tools.show_invite(services.invite_text(my_id, info), info, ctx, ImGui, { id = my_id }) end
+    else tools.show_invite(services.invite_text(my_id, info), info, ctx, ImGui, { id = my_id, guest = true }) end
     if ok then band.log("a guest invitation to " .. tostring(info.name) .. " is on your clipboard: when they've run it, Let them in gives them until " .. removal.when(ends, now))
     else removal.end_invite(root, made, now) end
     ImGui.CloseCurrentPopup(ctx)
@@ -412,12 +420,16 @@ local function let_in(d, me, ends)
     ok, why = services.add_device(d.id, d.name)
     if ok then let_device[d.id] = ends and "guest" or true end -- (the invitation's time is found once their studio is known)
   end
-  if ok then let_at[d.id .. (d.folder or "")] = reaper.time_precise() end
+  -- (and its computer's own ask, which Syncthing's list may show a little longer: an invitation lets it in with no press. lib/joins.lua)
+  if ok then let_at[d.id .. (d.folder or "")], let_at[d.id] = reaper.time_precise(), reaper.time_precise() end
   band.log(ok and (d.folder and ("let '" .. tostring(d.name) .. "' into " .. d.band .. ": the projects reach them now") or ("let '" .. tostring(d.name) .. "' connect: the studio they were invited to follows in a moment"))
     or ("couldn't add '" .. tostring(d.name) .. "': " .. tostring(why)))
+  return ok, why
 end
+tools.let_in = let_in -- (lib/joins.lua: someone with a signed invitation is let in the same way, with no press)
 local invites_at, invites_of = {}, {} -- (a studio's guest invitations, read every 2 s)
 function tools.join_requests(ctx, ImGui)
+  band.try("joins.tick", require("joins").tick) -- (invitations: an ask over the link let in, a joiner's ask sent again. At most once a second)
   local me = reaper.GetExtState(band.SECTION, "user")
   if reaper.time_precise() - asked_at > 2 then asked_at, asking = reaper.time_precise(), require("services").join_asks(me) end
   if not asking[1] then return end

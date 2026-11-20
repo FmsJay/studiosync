@@ -102,7 +102,7 @@ function pg.join_button(env)
     if code then
       if ImGui.BeginChild(ctx, "##joinshown", -1, ImGui.GetTextLineHeight(ctx) * 4 + 8, ImGui.ChildFlags_FrameStyle) then
         ImGui.PushTextWrapPos(ctx, 0)
-        ImGui.TextDisabled(ctx, services.join_code(code.id, { id = code.band, name = code.name }))
+        ImGui.TextDisabled(ctx, code.invite and require("joins").encode(code.invite) or services.join_code(code.id, { id = code.band, name = code.name }))
         ImGui.PopTextWrapPos(ctx)
         ImGui.EndChild(ctx)
       end
@@ -127,7 +127,11 @@ function pg.join_button(env)
     if go then
       local root, why = services.join_band(env.cfg(), code)
       if root then
-        band.log(why == "already" and ("you're already in " .. band.info(root).name) or
+        -- (a signed invitation: their computer is asked over the link, and lets this one in by itself. lib/joins.lua, James, rt)
+        local asking = code.invite and not reaper.file_exists(root .. "/_band/band.json")
+        if asking then require("joins").request(root, code.invite) end
+        band.log(asking and ("joined " .. band.info(root).name .. ": the invitation asks their computer to let you in, over Tailscale. Its projects arrive after that.")
+          or why == "already" and ("you're already in " .. band.info(root).name) or
           ("joined " .. band.info(root).name .. ": ask whoever invited you to let you in. Its projects arrive after that."))
         local on_now = services.tailnet_now()
         if code.key and reaper.MB("This invitation also signs this computer in to their Tailscale network as a guest, for as long as they invited you, so Time-sync and Jam reach them.\n\n" ..
@@ -335,7 +339,10 @@ function pg.draw_groups(env)
       local p = people_in(g.root)
       if g.waiting then
         ImGui.PushTextWrapPos(ctx, 0)
-        ImGui.TextColored(ctx, theme.YELLOW, "Waiting to be let in. Tell whoever invited you that you've joined: they press Let them in, at the top of their panel. Its projects arrive by themselves after that.")
+        local js = require("joins").state(g.root) -- (a signed invitation: asked over the link, or let in already. lib/joins.lua, James, rt)
+        ImGui.TextColored(ctx, js == "in" and theme.GREEN or theme.YELLOW, js == "in" and "Let in by the invitation: the studio's files are arriving through Syncthing."
+          or js == "asking" and "Asking their computer to let you in by the invitation, over Tailscale: it takes seconds once both are on. If it doesn't, tell whoever invited you: they press Let them in."
+          or "Waiting to be let in. Tell whoever invited you that you've joined: they press Let them in, at the top of their panel. Its projects arrive by themselves after that.")
         local on, n = require("services").syncthing_peers_now() -- (said where it stands: a joiner couldn't tell waiting on them from not reaching them)
         ImGui.TextDisabled(ctx, on == nil and "Syncthing isn't answering here: it has to be running. Start Syncthing, below, starts it."
           or on > 0 and "Connected to their computer: now it's their turn." or (n or 0) > 0 and "Not connected to their computer yet: it has to be on, with Syncthing running. This can take a minute."

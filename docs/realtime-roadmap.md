@@ -581,6 +581,57 @@ it's the patient, lossless, store-and-forward half.
    session (through the live layer and claims).
 6. **Joining without Syncthing's device approval step.** The link can carry the invite and the first copy of the song,
    so a new member is in within seconds.
+   - **Design (rt, 2026-11-19).** Today: the joiner pastes a join code (services.join_band: the studio's folder added, paired with the
+     inviter as introducer), the inviter's panel shows "Let them in", and only that press adds the device and shares the folder; the others
+     meet the joiner later from its own devices file (removal.known). The press is the gate, because a join code is just a device id anyone can
+     send. To drop the press, the code has to carry the owner's or an admin's consent, unforgeably:
+     - **The token** (`studiosync-invite:<studio>:<id>:<role>:<ends>:<host>:<device>:<sig>:<name>`): what it grants (studio folder id, member or
+       guest, an end 2 days on, an id of 128 random bits) and where to ask (the maker's Tailscale name and Syncthing device id), signed with
+       Ed25519 (extension 1.0.9's StudioSync_Sign) by the making computer's own invitation key, `~/.studiosync/invite-key` beside the update key
+       and as private (its own key: admins invite too, and the update key only signs code). The signature is over every field
+       (`"StudioSync invite v1\n"` + the fields, one a line), so a holder can't turn a member's into a guest's, move its end or point it elsewhere.
+     - **The record** `_band/joins/<id>.json`: { id, studio, role, made, ends, by, dev, key = the maker's public key }, never the signature (the
+       bearer part). Believed only from an owner's or admin's computer as Syncthing says (trust.from_manager_file), as guest invitations are.
+       Used: rewritten naming the computer let in ({ device, name, at }). Revoked: deleted (Settings > Studio > Direct link > Invitations).
+     - **Who checks:** only the computer that made it (its key in the record): one place holds "used", so one use is one use, with no race
+       between computers. It also has to be someone who lets people in at the moment of use (made as an admin and demoted since: refused).
+     - **The ask:** the joiner's StudioSync joins as today (the folder, the pairing with the maker as introducer), then sends `join`
+       { token, device, name, reply = its Tailscale name } over the link to `<host>:47281` on a channel of its own (`studiosync-join`, under a
+       public key: the joiner has none of the studio's secrets yet, and the signed token is what lets it in), every 10 s until it's in. The
+       maker listens on that channel only while it has open invitations. It checks: a record there, from a manager, made under its own key; the
+       fields matching it; the signature; not run out (and an end at most 7 days after `made`); not used by another computer; nobody taken out
+       since it was made (a removal mark naming the device). Then it lets the computer in exactly as Let them in does (tools.let_in: the device
+       added and the folder shared, the roles written out again from here so the joiner's first look believes them, a guest's mark and project
+       list, a restore point "before X joined"), marks it used (ExtState and record), and logs it. The same computer asking again gets only the
+       welcome; any other is refused, and Syncthing's config is never touched for a refused ask.
+     - **The others in the studio:** the joiner meets them through the maker as introducer (as today); when it asks their Syncthing, they add
+       it without a click if a used record from a manager names it (removal.admitted beside removal.known, in removal.tick's settle_peers,
+       within a week of use and never past a removal mark). That reaches them before the joiner's own devices file does.
+     - **The welcome (the link's half of "the first copy"):** keyed with the token's signature (only the joiner and the maker know it), to the
+       joiner's Tailscale name on the studio's network: the studio's name, who's in charge and the projects it will see (a guest's list
+       respected), never the studio's secrets (they arrive in Syncthing's band.json, which the trust checks cover). The joiner's Studios page
+       says "Let in by the invitation" at once instead of "Waiting to be let in".
+     - **Safe by default, no new steps:** invitations run out (2 days), let one computer in, are revocable; a device without a valid one is never
+       added by this; a studio's other rules stay (removal marks, guests' time and project lists, trust's held first look). Nothing is asked of
+       anyone: Invite a collaborator puts the token where the join code was, Paste join code takes it, and where the link can't hear an ask
+       (no extension, Tailscale off or another network, the direct setting off, no firewall rule on Windows) the message has today's join code
+       and Let them in, unchanged. The installer lines stay as they are (they pair, and Let them in follows).
+   - **Built (rt, 2026-11-19; offline tests only, not run in REAPER or on real Syncthing yet):** `lib/joins.lua` (token, check, make, the
+     ask and welcome, tick, admitted, revoke, Settings rows); `lib/services.lua` (invite_text's `token`, parse_join takes one); `lib/tools.lua`
+     (show_invite makes one, let_in shared and says whether it worked, join_requests runs joins.tick); `lib/page_groups.lua` (Paste join code
+     sends the ask; the waiting card says asking / let in); `lib/removal.lua` (admitted, out_since; settle_peers); `lib/direct.lua` (the
+     Invitations rows in Settings > Studio > Direct link); `StudioSync - Autostart.lua` (joins.tick every 2 s). No extension change.
+     Tests: `tests/test_0_60_rt_joins.lua` (the token and every field under the signature; the check: another key, run out, too long, used, the
+     same computer again; the whole ask against a stand-in Syncthing command line: device added and folder shared only for a valid one, nothing
+     on a replay, a revoked, run-out or forged one, a record a member wrote, someone no longer in charge or taken out since, and a failed share
+     left unused; the welcome's key and contents; the joiner's ask, resend, welcome and run-out; admitted).
+   - **Not yet:** opening a song before Syncthing has its files. A copy written into the shared folder from the link would carry this computer's
+     modifiedBy (band.json's and session.json's are trust-checked), so the first copy stays Syncthing's; the songs' files come smallest first as
+     soon as the device is shared. The fix is the snapshot work ("Project files: snapshots plus changes"): a song's snapshot over the link into
+     the inbox, opened from there. Also: a Windows joiner without the firewall rule doesn't hear the welcome (it's let in all the same, and the
+     Studios page follows band.json's arrival); the installer lines don't carry the token yet (a new computer still needs Let them in); the
+     public ask channel lets anyone on the tailnet put asks in the extension's shared 512-message list while invitations are open (they're
+     refused, but crowd it).
 7. **Everyone records their own part in full quality during a jam.** While playing live together (heard as Opus or
    intervals), each computer records its own input locally, and the lossless takes replace the live ones afterwards,
    lined up by the shared clock (the "double-ender" way podcasts are made). The jam becomes a real multitrack session.

@@ -656,6 +656,7 @@ function direct.studio_ui(ctx, ImGui, cfg, may)
     ImGui.SetItemTooltip(ctx, "Owner and admins. Needs StudioSync's extension " .. direct.WANT .. " and Tailscale on each computer (Health says what's missing).")
   end
   require("liveaudio").studio_ui(ctx, ImGui, cfg, may) -- (live audio over the link, off unless the studio turns it on: lib/liveaudio.lua. James, rt)
+  require("joins").studio_ui(ctx, ImGui, cfg, may) -- (signed invitations the link lets in by itself, and revoking them: lib/joins.lua. James, rt)
   -- (signed updates: the owner signs each version with a key kept on their computer, and every computer checks it before it runs. James, rt)
   ImGui.SeparatorText(ctx, "Signed updates")
   local key = band.studio_update_key and band.studio_update_key(cfg.root)

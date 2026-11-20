@@ -458,8 +458,10 @@ end
 -- `key` (services.tailscale_guest_key): a guest's, whose installer signs Tailscale in to this network until their time is up with it.
 -- `who`: "new" (they've no StudioSync yet: the install lines only), "has" (they have it: the join code only), nil (not sure: both). James,
 -- 0.58.98: whoever invites says which, in the Invitation window.
-function services.invite_text(id, info, key, who)
+-- `token` (lib/joins.lua joins.make): a signed invitation in place of the join code, which lets them in by itself when pasted. James, rt
+function services.invite_text(id, info, key, who, token)
   info = info or { id = "bandsync", name = "the studio" }
+  local code = token or services.join_code(id, info)
   -- (the name as band.clean keeps it, everywhere in the message: band.json's own allowed $(...) and ", and people paste the whole message into
   -- PowerShell or Terminal, where the first line ran it. Review, 0.59.14)
   local name = band.clean(tostring(info.name))
@@ -468,8 +470,9 @@ function services.invite_text(id, info, key, who)
   local guest_note = key and "That works once, within 2 days: it puts your computer on my Tailscale network as a guest, for as long as I invited you (no account needed). If you use Tailscale for anything else, switch back from its menu afterwards.\n\n" or ""
   if who == "has" then
     return "Join " .. name .. " on StudioSync. In StudioSync's panel, click the studio name at the top, press Paste join code, and paste this whole message " ..
-      "(or just the line below). Then tell me: I let you in from my panel.\n\n" .. (key and (guest_note .. "Tailscale key: " .. key .. "\n\n") or "") ..
-      services.join_code(id, info)
+      (token and "(or just the line below). It lets you in by itself within seconds, once, within 2 days; if it doesn't, tell me and I let you in from my panel.\n\n"
+        or "(or just the line below). Then tell me: I let you in from my panel.\n\n") .. (key and (guest_note .. "Tailscale key: " .. key .. "\n\n") or "") ..
+      code
   end
   -- (the installer of this very release, by its tag: from main, whatever was pushed there last ran on the newcomer's computer, and a line sent
   -- weeks ago ran something nobody had looked at. Every release has its tag. Security review, 0.58.78)
@@ -490,8 +493,8 @@ function services.invite_text(id, info, key, who)
     " BS_BAND_NAME=" .. q1(name) .. (key and (" BS_TS_KEY=" .. key) or "") .. " bash\n\n" ..
     "Answer its questions, and when it finishes, tell me: I let you in from my StudioSync panel." .. -- (no ' or brackets in its words: pasted whole into PowerShell, a ' kept the rest from running and (REAPER included) ran REAPER. 0.59.10)
     (key and ("\n\n" .. guest_note:gsub("\n\n$", "")) or "") ..
-    (who == "new" and "" or ("\n\nAlready have StudioSync? In its panel, click the studio name at the top, press Paste join code, and paste this message (or just this line):\n" ..
-      services.join_code(id, info)))
+    (who == "new" and "" or ("\n\nAlready have StudioSync? In its panel, click the studio name at the top, press Paste join code, and paste this message (or just this line)" ..
+      (token and ": it lets you in by itself.\n" or ":\n") .. code))
 end
 
 -- The line that gets someone with StudioSync into a studio, in an invitation.
@@ -499,6 +502,9 @@ function services.join_code(id, info) return "studiosync-join:" .. id .. ":" .. 
 -- What was pasted: the code, on its own or in the whole message, or an invitation from before there were codes (the installer's own lines). -> { id, band, name }, or nil. Pure.
 function services.parse_join(text)
   text = tostring(text or "")
+  -- (a signed invitation first: the same pairing with the computer that made it, and `invite` so the join asks it over the link. lib/joins.lua)
+  local inv = require("joins").parse(text)
+  if inv then return { id = inv.device, band = inv.studio, name = inv.name, key = text:match("tskey%-auth%-[%w%-]+"), invite = inv } end
   local id, folder, name = text:match("studiosync%-join:([%u%d%-]+):([%w%-]+):([^\r\n]*)")
   if not id then id, folder, name = text:match("%-HostId%s+([%u%d%-]+)%s+%-BandId%s+([%w%-]+)%s+%-BandName%s+'([^'\r\n]*)'") end
   if not id then id, folder, name = text:match("BS_HOST_ID=([%u%d%-]+)%s+BS_BAND_ID=([%w%-]+)%s+BS_BAND_NAME='([^'\r\n]*)'") end
@@ -1096,7 +1102,7 @@ function services.copy_guest_invite(my_id, info, ctx, ImGui, root, ends)
   if services.tailscale_token(net) == "" then -- (it refused any invitation: one without Tailscale now, and said. Review, 0.58.95)
     band.log("no Tailscale access token for this studio's network" .. (net and (" (" .. net .. ")") or "") ..
       ", so this invitation leaves Tailscale out: add that network's token under " .. require("live").PLACES.token_admin .. " (owner and admins) or " .. require("live").PLACES.token_member .. " to put guests on it")
-    require("tools").show_invite(services.invite_text(my_id, info), info, ctx, ImGui, { id = my_id })
+    require("tools").show_invite(services.invite_text(my_id, info), info, ctx, ImGui, { id = my_id, guest = true }) -- (guest: a signed invitation lets them in as one. lib/joins.lua)
     return true
   end
   -- (a guest reaches the whole tailnet unless the policy limits them: checked first, as Set up the tags reads it, and said plainly. Security review, 0.58.78)

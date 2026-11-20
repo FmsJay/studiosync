@@ -304,6 +304,23 @@ function removal.known(root, id, now)
   end
 end
 
+-- A computer let in with a signed invitation (lib/joins.lua): met without a click as known() is, from the invitation's record, which the
+-- computer that let it in rewrote naming it (that reaches the others before the joiner's own devices file does). Never one a mark has taken
+-- out. -> their name, or nil. (James, rt)
+function removal.admitted(root, id, now)
+  for _, m in ipairs(all_marks(root)) do
+    if m.device == id and not (m.guest and not removal.due(m, now or os.time())) then return nil end
+  end
+  local ok, who = pcall(require("joins").admitted, root, id, now)
+  return ok and who or nil
+end
+-- Taken out at or after `since` (an invitation made before that doesn't bring them back: lib/joins.lua). -> who, or nil.
+function removal.out_since(root, id, since)
+  for _, m in ipairs(all_marks(root)) do
+    if m.device == id and not m.guest and not m.left and (tonumber(m.at) or 0) >= (tonumber(since) or 0) then return tostring(m.user or "someone") end
+  end
+end
+
 -- Who frees a leaver's claims: one computer, not all of them at once (each wrote itself into the driver's seat, and their copies of
 -- the claims crossed: review, 0.58.47). The first name among those whose computers have said which they are, but them; after an hour,
 -- anyone, in case that one is away. Pure over its arguments.
@@ -353,7 +370,7 @@ local function settle_peers(services, now)
   for _, d in ipairs(services.pending_devices()) do
     local due = met[d.id] == nil or (met[d.id] ~= true and now - met[d.id] > 120) -- (a failed add tried again in two minutes, not never. 0.58.93)
     for _, g in ipairs(due and band.bands() or {}) do
-      local who = not g.waiting and not require("groups").is_old(g.root) and removal.known(g.root, d.id, now)
+      local who = not g.waiting and not require("groups").is_old(g.root) and (removal.known(g.root, d.id, now) or removal.admitted(g.root, d.id, now))
       if who and due then
         due = false
         local ok, why = services.add_device(d.id, who, g.id)
