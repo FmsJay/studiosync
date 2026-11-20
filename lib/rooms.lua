@@ -57,11 +57,14 @@ end
 -- tab in front of them), you from your own tabs.
 function rooms.people(cfg, song, room)
   local out = {}
-  local dir = sync.room_dir(cfg, song, room) .. "/status"
+  local dir, sts = sync.room_dir(cfg, song, room) .. "/status", {}
   for _, f in ipairs(band.files(dir, ".json")) do
     local st = band.read_json(dir .. "/" .. f)
-    if type(st) == "table" and type(st.user) == "string" and st.user ~= cfg.user and type(st.time) == "string"
-        and band.age(st.time) < 45 then
+    if type(st) == "table" and type(st.user) == "string" then sts[#sts + 1] = st end
+  end
+  local presence = require("presence") -- (and the direct link's newer ones: lib/presence.lua. James, rt)
+  for _, st in ipairs(presence.with_live(sts, presence.live(cfg, song, room))) do
+    if st.user ~= cfg.user and type(st.time) == "string" and band.age(st.time) < 45 then
       out[#out + 1] = { user = st.user, here = st.front ~= false } -- (receipts before 0.16 don't say)
     end
   end

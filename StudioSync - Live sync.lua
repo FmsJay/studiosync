@@ -286,7 +286,9 @@ local drive_posted, drive_soon_at = 0, nil -- (changes seen going out; when the 
 
 local last, recording, stopped_at = 0, false, 0
 local rec_had -- (the takes on the armed tracks as this recording began: smart take names, lib/recap.lua)
-local status_info -- (the status as last written: tick_body says "recording" with it, as the pass that writes it waits while recording)
+-- (the status as last sent, over the link or in the file: info, fp, at; and as last written to the file: file_fp, file_at, file_hub. tick_body
+-- says "recording" with info, as the pass that writes it waits while recording. lib/presence.lua put_status, James, rt)
+local status_s = { fp = "", at = 0 }
 local paint_at = -math.huge -- when tracks were last coloured for who's working on them
 local format_at = -math.huge -- when the recording format was last checked
 local followed = false -- someone follows this computer: its mix goes in the status (lib/presence.lua)
@@ -295,7 +297,6 @@ local watched = false -- someone has the web UI's Song page open: the view and c
 -- save in between was mapped though still behind. Round 4 review, 0.59.49)
 if sync.begin_loading then sync.begin_loading(proj) else sync.loading[tostring(proj)] = true end
 local claims_at = -math.huge -- when our claims on gone tracks were last looked for (sync.drop_gone_claims)
-local last_status, status_json = 0, ""
 local rt_at = 0 -- when Real time mode's sends were last matched to what's armed
 local heal_since, healed_at = nil, -math.huge -- since when a caught-up bandmate's project has differed (mirror.heal)
 local mirror_took = 0 -- how long the last full look took
@@ -730,6 +731,7 @@ function P.presence(t)
 
   lap("claims, presence")
 end
+function P.write_status(info, link_only) sync.write_status(proj, cfg, b.song, b.room, info, link_only) end
 function P.status(t)
   local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
   -- status receipt for the Status window: written when it changes, else every 15 s as a heartbeat
@@ -779,11 +781,8 @@ function P.status(t)
   if info.listen == "" then info.listen = nil end
   -- (every field, keys sorted: a hand-made list missed the mix, who you produce and how, so followers got those 15 s late; and no holdings,
   -- which only the old take sync filled. Round 1 review, 0.59.45)
-  local fingerprint = live.status_fingerprint(info)
-  if fingerprint ~= status_json or now - last_status > 15 then
-    status_json, last_status, status_info = fingerprint, now, info
-    sync.write_status(proj, cfg, b.song, b.room, info)
-  end
+  -- (over the link alone while it reaches everyone here, the file every 30 s then: lib/presence.lua put_status. James, rt)
+  require("presence").put_status(cfg, b.song, b.room, status_s, info, live.status_fingerprint(info), now, P.write_status)
 
   lap("status")
   if s then band.check_version(s.bandsync, "'" .. b.song .. "'") end
@@ -1246,10 +1245,11 @@ local function tick_body() -- returns true to keep going
       local ok, had = band.try("recap.before_record", require("recap").before_record, proj)
       rec_had = ok and had or nil
     end
-    if not recording and status_info then
-      status_info.playing, status_info.recording, status_info.cursor = true, true, nil
-      sync.write_status(proj, cfg, b.song, b.room, status_info)
-      status_json = nil -- (and the first pass after it says it's over)
+    if not recording and status_s.info then
+      local si = status_s.info
+      si.playing, si.recording, si.cursor = true, true, nil
+      require("presence").put_status(cfg, b.song, b.room, status_s, si, live.status_fingerprint(si), reaper.time_precise(), P.write_status)
+      status_s.fp = nil -- (and the first pass after it says it's over)
     end
     recording = true
   elseif recording then
@@ -1314,7 +1314,10 @@ local function tick_body() -- returns true to keep going
   -- (and while the tab in front records: a big tab behind ran full looks, receives and cloud passes mid-take. REAPER records only in the tab in
   -- front, so that's GetPlayState's. The 15 s status heartbeat carries on. Round 1 review, 0.59.45)
   local rec_any = recording or live.recording_anywhere()
-  if together.heartbeat_due(rec_any or undoing or live_set, status_info ~= nil, now, last_status) then last_status = now; pcall(sync.write_status, proj, cfg, b.song, b.room, status_info) end
+  if together.heartbeat_due(rec_any or undoing or live_set, status_s.info ~= nil, now, status_s.at) then
+    local okw, what = pcall(require("presence").put_status, cfg, b.song, b.room, status_s, status_s.info, status_s.fp, now, P.write_status)
+    if not (okw and what) then status_s.at = now end -- (not again for 15 s, whatever happened to the write)
+  end
   -- (or 0.1 s after an edit of yours settles: it goes out now, not at the next 2 s pass; and as the quiet window ends, for what came over the
   -- link meanwhile. sync.look_now, sync.receive_now. James, rt)
   local mouse = mouse_down()

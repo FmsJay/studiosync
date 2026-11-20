@@ -400,6 +400,22 @@ lib/tools.lua EXT_WANT.
 - **Other StudioSync-imposed restrictions** are reviewed at the end of the branch and dropped where the link makes them
   unnecessary: edit holds and "X is editing that", held-back items, waits for audio still arriving, the 2 s quiet gate.
 - Presence, heartbeat, status, cue and live-MIDI files: become link messages (the shared folder gets much quieter).
+  - **Built (rt, 2026-11-19; offline tests and a stand-in only, not run in REAPER yet):** while the link reaches everyone in the room
+    (`presence.link_carries`: each one here by presence answered the link's last send or ping; nobody else here counts too), a status change
+    goes over the link alone (`sync.write_status(..., link_only)`), the whole status again every 15 s and at once when someone new is reached,
+    and the status file is written every 30 s (`presence.FILE_QUIET`, `presence.put_status` / `status_due`, from Live sync's pass and its
+    heartbeat while a pass waits). 30 s, not a minute: every file reader's window is 45 s (presence, `hub.FRESH`, `rooms.people`, older
+    StudioSyncs), and other songs' hub elections get no messages, so a minute read as gone for 15 s of each one. A change to the hub part still
+    writes at once. Anyone here the link doesn't reach (no Tailscale name, not trusted yet, a ping unanswered), or no link: today's pace, every
+    change and every 15 s, from the first pass it's so (a dropped link writes the file at once). Readers take the link first: presence (as
+    before), and now the scripts that take no messages (panel, Status, Take control, Offload track FX) through Live sync's copy in ExtState
+    "presence live <studio> <song>/<room>" (`presence.live`): Health, shared CPU's `cpu`, the panel's rooms (`rooms.people`) and Status's
+    catch-up (`status.gather`; a heartbeat's time vouches for nothing there: `said`). The web UI's presence topic and hub's link watch were
+    already the link's. Live MIDI's 1 s files (already link-first) now count everyone here, not only the link's list (`direct.reaches_all`).
+    **Stand-in (tests/test_0_60_rt_quiet_folder.lua, 10 min: idle, editing, playing, recording):** status file writes 27.4 a minute before,
+    2.0 after (idle 6 -> 2, editing 60 -> 2, playing 6 -> 2, recording 4 -> 2); presence messages unchanged (27.4 a minute); longest between
+    files 31 s. Not changed: cue files (one per Play/Stop together, the record of the start; already sent over the link too), claims, and
+    Syncthing's pacing (1 s watcher delay, 2 s timeout: what the link doesn't reach still needs it fast).
 - The waits for audio "still arriving" and the held-back/retry machinery: shrink as media streams over the link.
 - Polling every ~2 s: replaced by change callbacks plus link arrivals.
 - NINJAM integration and the relay tool: replaced by interval streaming (at James's gate).

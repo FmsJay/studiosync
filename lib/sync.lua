@@ -1125,9 +1125,9 @@ function sync.watch_timeline(proj, cfg, song, room, can)
           if proj_off then band.apply_project(proj, s.project) end
           band.apply_markers(proj, s.markers)
         end)
-        reaper.Undo_EndBlock2(proj, "StudioSync: the song's tempo map and markers", -1)
+        reaper.Undo_EndBlock2(proj, "StudioSync: the project's tempo map and markers", -1)
         if not ok then error(e, 0) end
-        band.log("this project was behind the song: its tempo map and markers are back as the studio has them")
+        band.log("this project was behind the studio's copy: its tempo map and markers are back as the studio has them")
       end
       -- (behind, with no tempo or marker change of ours: what it holds now is what the studio has. Settings that still read differently went
       -- out as a change, newer than the studio's map, and every computer took this file's. Crash-safe sessions, James, rt)
@@ -1680,12 +1680,13 @@ end
 -- write, each change and every 15 s. The other computer writes as often, so a clash still shows within a minute or two. James, rt)
 sync.CLASH_EVERY = 45
 local clash_at = {} -- status path -> when it was last read back
-function sync.write_status(proj, cfg, song, room, info)
+-- link_only: the presence message alone, no file (while the link reaches everyone here: lib/presence.lua put_status. James, rt)
+function sync.write_status(proj, cfg, song, room, info, link_only)
   local dir = sync.room_dir(cfg, song, room) .. "/status"
-  reaper.RecursiveCreateDirectory(dir, 0)
+  if not link_only then reaper.RecursiveCreateDirectory(dir, 0) end
   local path = dir .. "/" .. (cfg.user:gsub("[^%w%-_ ]", "")) .. ".json"
   local now = reaper.time_precise()
-  if not sync.name_clash_said and now - (clash_at[path] or -math.huge) >= sync.CLASH_EVERY then
+  if not link_only and not sync.name_clash_said and now - (clash_at[path] or -math.huge) >= sync.CLASH_EVERY then
     clash_at[path] = now
     local was = band.read_json(path)
     if type(was) == "table" and was.machine and was.machine ~= sync.machine() and type(was.time) == "string" and band.age(was.time) < 45 then
@@ -1701,7 +1702,7 @@ function sync.write_status(proj, cfg, song, room, info)
   info.reaper = (reaper.GetAppVersion():match("^[%d%.]+")) -- (Setup > Health compares the band's: "7.79/win64" -> "7.79")
   local okc, look = pcall(require("colours").look, proj) -- (what colours this computer shows, for Health's Colour parity row. James, rt)
   info.look = okc and look or nil
-  band.write_json(dir .. "/" .. (cfg.user:gsub("[^%w%-_ ]", "")) .. ".json", info)
+  if not link_only then band.write_json(path, info) end
   require("direct").send_live(cfg, "presence", info, song, room) -- (seen at once by those here: lib/presence.lua from_msg. James, 0.60.0-rt)
 end
 

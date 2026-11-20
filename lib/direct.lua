@@ -524,11 +524,10 @@ function direct.reaches_all(cfg, song, room)
   if now - reach_at < 1 then return reach_ok end
   reach_at, reach_ok = now, false
   if not direct.live_available() then return false end
-  local peers = direct.peers(cfg, song, room)
-  local j = status_json()
-  local st = type(j.peers) == "table" and j.peers or {}
-  reach_ok = #peers > 0
-  for _, p in ipairs(peers) do reach_ok = reach_ok and type(st[p]) == "table" and st[p].ok == true end
+  -- (everyone here by presence, each reached: one here whose computer isn't in the link's list (no Tailscale name, not trusted yet) went
+  -- uncounted, and got no live MIDI files. lib/presence.lua link_carries, which a room nobody else is in passes. James, rt)
+  local ok, all = pcall(require("presence").link_carries, cfg, song, room)
+  reach_ok = ok and all == true and #direct.peers(cfg, song, room) > 0
   return reach_ok
 end
 -- Each bandmate here as the link sees them now: user -> { ok (its last send or ping answered), at (os.time of that answer or failure) }; one

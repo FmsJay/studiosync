@@ -44,15 +44,21 @@ function status.gather(cfg, b, proj)
   view.newest_event = newest_event
   local rows, seen = {}, require("removal").gone(cfg.root) -- (someone taken out of the group isn't listed)
   seen[cfg.user] = nil
-  for _, f in ipairs(band.files(sync.room_dir(cfg, b.song, b.room) .. "/status", ".json")) do
-    local st = band.read_json(sync.room_dir(cfg, b.song, b.room) .. "/status/" .. f)
-    if st and st.user and not seen[st.user] then
+  -- (each one's newer status over the direct link in its file's place: written every 30 s while the link reaches everyone. lib/presence.lua, James, rt)
+  local dir, sts = sync.room_dir(cfg, b.song, b.room) .. "/status", {}
+  for _, f in ipairs(band.files(dir, ".json")) do
+    local st = band.read_json(dir .. "/" .. f)
+    if type(st) == "table" and type(st.user) == "string" then sts[#sts + 1] = st end
+  end
+  local presence = require("presence")
+  for _, st in ipairs(presence.with_live(sts, presence.live(cfg, b.song, b.room))) do
+    if not seen[st.user] then
       seen[st.user] = true
       if st.user ~= cfg.user then note_version(st.version) end
       if st.user == cfg.user then view.my_age, view.my_mirror, view.my_pending = band.age(st.time), st.mirror, st.pending or 0 else
         local a = band.age(st.time)
         -- a receipt older than the newest change can't vouch for it yet
-        local behind = (st.pending or 0) > 0 or (st.time or "") < newest_event
+        local behind = (st.pending or 0) > 0 or (st.said or st.time or "") < newest_event -- (said: a heartbeat's time vouches for nothing)
         rows[#rows + 1] = { name = st.user, age = a, version = st.version or "?", pending = st.pending or 0, hold = st.hold,
           armed = st.armed, side = st.side, playing = st.playing, recording = st.recording, mirror = st.mirror,
           behind = behind, reaper = st.reaper, last_track = st.last_track, last_at = tonumber(st.last_at), lets = st.lets, live = st.live, call = st.call == true or nil, -- (lets: whoever produces them may start and stop their transport)

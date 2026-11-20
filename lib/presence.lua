@@ -57,9 +57,15 @@ end
 -- Statuses that came over the direct link (lib/direct.lua; James, 0.60.0-rt): seen at once, not when Syncthing brings the file, and used while
 -- newer than it. A heartbeat moves a known status's time on. The file stays the record (and what the panel, which polls no messages, reads).
 local live_st = {} -- song/room -> user -> status
+-- (the scripts that take no messages, the panel, Status, Take control, Offload track FX, read Live sync's: it puts what it has in ExtState
+-- "presence live <studio id> <song>/<room>" after each one taken, so their Health, CPU and catch-up rows are the link's too, not a file up to
+-- FILE_QUIET s old. James, rt)
+local fed, unpublished = false, {} -- fed: this script takes the link's messages (Live sync); unpublished: song/room -> true until put in ExtState
+local function live_ext(cfg, key) return "presence live " .. tostring(band.info(cfg.root).id) .. " " .. key end
 function presence.from_msg(cfg, song, room, st, kind)
   if type(st) ~= "table" or type(st.user) ~= "string" or st.user == cfg.user or type(st.time) ~= "string" or (st.room ~= nil and st.room ~= room) then return false end
   local key = song .. "/" .. room
+  fed = true
   live_st[key] = live_st[key] or {}
   local had = live_st[key][st.user]
   if kind == "heartbeat" then
@@ -67,11 +73,19 @@ function presence.from_msg(cfg, song, room, st, kind)
     if not had or had.time >= st.time then return false end
     local copy = {}
     for k, v in pairs(had) do copy[k] = v end
-    copy.time, st = st.time, copy
+    -- (said: when what it says was true, which a heartbeat doesn't move: lib/status.lua's "still applying the latest changes" goes by it)
+    copy.time, copy.said, st = st.time, had.said or had.time, copy
   elseif had and had.time > st.time then return false end
   live_st[key][st.user] = st
-  peers_at[key] = nil -- (read again at the next ask)
+  peers_at[key], unpublished[key] = nil, true -- (read again at the next ask)
   return true
+end
+-- The live statuses for a room: user -> status. This script's own when it takes messages, else Live sync's from ExtState (nil: none).
+function presence.live(cfg, song, room)
+  local key = song .. "/" .. room
+  if fed then return live_st[key] end
+  local t = band.ext_json(band.SECTION, live_ext(cfg, key))
+  return type(t) == "table" and t or nil
 end
 -- Pure: the status files' statuses with each person's newer live one in its place (or added). -> a new list.
 function presence.with_live(sts, live)
@@ -79,7 +93,9 @@ function presence.with_live(sts, live)
   for _, st in ipairs(sts) do out[#out + 1] = st; at[st.user] = #out end
   for user, l in pairs(live or {}) do
     local i = at[user]
-    if not i then out[#out + 1] = l elseif l.time > out[i].time then out[i] = l end
+    if type(l) == "table" and type(l.time) == "string" then
+      if not i then out[#out + 1] = l elseif type(out[i].time) ~= "string" or l.time > out[i].time then out[i] = l end
+    end
   end
   return out
 end
@@ -93,7 +109,8 @@ function presence.peers(cfg, song, room)
     local st = band.read_json(dir .. "/" .. f)
     if type(st) == "table" and type(st.user) == "string" and st.user ~= cfg.user and type(st.time) == "string" then sts[#sts + 1] = st end
   end
-  for _, st in ipairs(presence.with_live(sts, live_st[key])) do
+  if unpublished[key] then unpublished[key] = nil; band.set_ext_json(band.SECTION, live_ext(cfg, key), live_st[key] or {}, false) end
+  for _, st in ipairs(presence.with_live(sts, presence.live(cfg, song, room))) do
     all[#all + 1] = st
     local l = last_time[st.user]
     if not l or l.time ~= st.time then l = { time = st.time, at = l and now or -math.huge }; last_time[st.user] = l end
@@ -123,6 +140,49 @@ end
 function presence.all(cfg, song, room)
   presence.peers(cfg, song, room)
   return everyone[song .. "/" .. room]
+end
+
+-- ---- a quieter shared folder (docs/realtime-roadmap.md "Things that can go, or shrink"; James, rt) -----------------------------------------
+-- While the direct link reaches everyone here, a status change goes over the link alone (sync.write_status's presence message, everyone's
+-- within a tick), the whole status again at least every HEARTBEAT s and at once when someone new is reached, and the file is written every
+-- FILE_QUIET s: the record, and what's read where no message comes (another song's hub election, an older StudioSync, someone not reached
+-- yet). FILE_QUIET stays under every file reader's 45 s window (presence.peers, hub.FRESH, rooms.people), so nobody reads this computer as gone
+-- between writes; the hub part (lib/hub.lua status_part) still writes at once, as other songs elect from the files alone. Anyone here the
+-- link doesn't reach, or no link: today's pace, every change and every HEARTBEAT s, from the first pass it's so.
+presence.FILE_QUIET, presence.HEARTBEAT = 30, 15
+-- Does the link reach everyone here (each one's last send or ping answered; nobody here counts too)? -> true and those reached ("\n"-joined,
+-- sorted), or false. One here whose computer isn't in the link's list (no Tailscale name, not trusted yet) isn't reached.
+function presence.link_carries(cfg, song, room)
+  local direct = require("direct")
+  if not (direct.available() and direct.live_available() and direct.ensure(cfg)) then return false, "" end
+  local reach, users = direct.reach(cfg, song, room), {}
+  for _, st in ipairs(presence.peers(cfg, song, room)) do
+    if not (reach[st.user] and reach[st.user].ok) then return false, "" end
+    users[#users + 1] = st.user
+  end
+  table.sort(users)
+  return true, table.concat(users, "\n")
+end
+-- What a status write should be now: "file" (the file, and the link), "link" (the link alone) or nil. Pure.
+-- s: the writer's memory (fp, at: the last send either way; file_fp, file_at, file_hub: the last file; reach: those reached then); fp: the
+-- status now (live.status_fingerprint); hub: its hub part, encoded; quiet, reach: link_carries'.
+function presence.status_due(s, fp, hub, quiet, reach, now)
+  if not quiet then return (fp ~= s.file_fp or now - (s.file_at or -math.huge) > presence.HEARTBEAT) and "file" or nil end
+  if now - (s.file_at or -math.huge) >= presence.FILE_QUIET or hub ~= s.file_hub then return "file" end
+  if fp ~= s.fp or reach ~= s.reach or now - (s.at or -math.huge) > presence.HEARTBEAT then return "link" end
+end
+-- One status write, from Live sync's pass and its heartbeat while a pass waits: write(info, link_only) is sync.write_status's. s (kept between
+-- calls) remembers the last send in info too. -> "file", "link" or nil (nothing due).
+function presence.put_status(cfg, song, room, s, info, fp, now, write)
+  local ok, quiet, reach = pcall(presence.link_carries, cfg, song, room) -- (any trouble asking: today's pace)
+  if not ok then quiet, reach = false, "" end
+  local hub = band.json_encode(info.hub or false)
+  local what = presence.status_due(s, fp, hub, quiet, reach, now)
+  if not what then return nil end
+  write(info, what == "link")
+  s.fp, s.at, s.reach, s.info = fp, now, reach, info
+  if what == "file" then s.file_fp, s.file_at, s.file_hub = fp, now, hub end
+  return what
 end
 -- Who else is editing this object right now (nil when nobody is). Pure apart from the peers list.
 -- Track groups that tie together tracks made by different people (review, 0.58.89): a group number travels as it is, so two people who
