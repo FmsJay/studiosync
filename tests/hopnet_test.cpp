@@ -140,8 +140,9 @@ static sock_t udp(sockaddr_in &me)
 // hiccup: when the last stall ended, seconds into the run (0: none), deliberate or not (an audio thread's turn or the wire STALL_S late:
 // the macOS runner pauses its VM ~60 ms now and then); after / exact_after: the frames from a second after it on, and how many came back exact.
 // dry: frames that played the sender's own input (a lost frame with "Dry when late" on, rt-hopvst); events / ev_exact: MIDI notes sent, and
-// how many came back as the fake instrument's click exactly on their frame (those after the hop came up).
-struct Result { uint64_t exact = 0, zero = 0, faded = 0, wrong = 0, dry = 0, first_wet = 0, frames = 0, after = 0, exact_after = 0, events = 0, ev_exact = 0; double hiccup = 0, hiccup_ms = 0; int stalls = 0; std::string sst, rst; };
+// how many came back as the fake instrument's click exactly on their frame (those after the hop came up); ev_holed: notes whose frame's
+// audio itself didn't come back (silence, or fading in after a hole), so no click could be heard there whatever the MIDI did.
+struct Result { uint64_t exact = 0, zero = 0, faded = 0, wrong = 0, dry = 0, first_wet = 0, frames = 0, after = 0, exact_after = 0, events = 0, ev_exact = 0, ev_holed = 0; double hiccup = 0, hiccup_ms = 0; int stalls = 0; std::string sst, rst; };
 static const uint32_t L = 7200, LX = 256, PDC = 100, B = 256;
 
 // stall: at stall_at seconds, the sender's audio thread (who & 1) and/or the remote's (who & 2) stop for stall_ms and then catch up
@@ -296,7 +297,12 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
     else res.wrong++;
   }
   for (uint64_t e : evs)
-    if (res.first_wet && e + lat >= res.first_wet && e + lat < out0.size()) { res.events++; res.ev_exact += out0[(size_t)(e + lat)] == 0.5f * sig(e) + 0.5f * CLICK; }
+    if (res.first_wet && e + lat >= res.first_wet && e + lat < out0.size()) {
+      const float o = out0[(size_t)(e + lat)];
+      res.events++;
+      res.ev_exact += o == 0.5f * sig(e) + 0.5f * CLICK;
+      res.ev_holed += o != 0.5f * sig(e) + 0.5f * CLICK && o != 0.5f * sig(e); // (its audio back without the click: the MIDI's miss, not a hole)
+    }
   return res;
 }
 
@@ -308,9 +314,9 @@ static double num(const std::string &j, const char *key)
 static void report(const char *what, const Result &r)
 {
   const uint64_t wet = r.frames > r.first_wet ? r.frames - r.first_wet : 0;
-  printf("%s: %llu frames, first wet at %.0f ms, after it exact %.2f%% zero %llu dry %llu faded %llu wrong %llu, notes %llu/%llu exact\n  send %s\n  serve %s\n", what,
+  printf("%s: %llu frames, first wet at %.0f ms, after it exact %.2f%% zero %llu dry %llu faded %llu wrong %llu, notes %llu/%llu exact (%llu in audio holes)\n  send %s\n  serve %s\n", what,
          (unsigned long long)r.frames, r.first_wet / 48.0, wet ? 100.0 * r.exact / wet : 0.0, (unsigned long long)r.zero, (unsigned long long)r.dry,
-         (unsigned long long)r.faded, (unsigned long long)r.wrong, (unsigned long long)r.ev_exact, (unsigned long long)r.events, r.sst.c_str(), r.rst.c_str());
+         (unsigned long long)r.faded, (unsigned long long)r.wrong, (unsigned long long)r.ev_exact, (unsigned long long)r.events, (unsigned long long)r.ev_holed, r.sst.c_str(), r.rst.c_str());
 }
 static double exact_pct(const Result &r) { const uint64_t wet = r.frames > r.first_wet ? r.frames - r.first_wet : 0; return wet ? 100.0 * r.exact / wet : 0; }
 // After a stall: from a second after it, every frame back exact; and once the status's windows (the last one to two seconds) no longer
@@ -502,7 +508,15 @@ int main()
     Result q = tries([] { return run(34, 5, 3, 0.02, 0, 3, "studio", 0, 0, 0, 0, 0, 0, L, false, true); }, [](const Result &x) { return x.hiccup == 0; });
     report("MIDI notes, 2% loss each way", q);
     CHECK(q.wrong == 0, "nothing misaligned with MIDI under loss");
-    if (!(q.hiccup > 0 && !strict())) CHECK(q.ev_exact * 100 >= q.events * 85, "most notes land under loss (%llu of %llu)", (unsigned long long)q.ev_exact, (unsigned long long)q.events);
+    // (rt-ci3: the click rides in the audio, so a note whose frame fell in an audio hole is lost with the audio, not the MIDI: ~5.5% of
+    // frames here, so 24 notes miss 0-4 by chance. A deterministic wire gives fine timers the same 2 misses every run, while coarse ones
+    // packetize differently each run and drew 4, under the old 85%. Every note whose audio came back must carry its click)
+    if (!(q.hiccup > 0 && !strict())) {
+      CHECK(q.ev_exact + q.ev_holed == q.events, "every note whose audio came back lands on its exact frame under loss (%llu exact, %llu in audio holes, of %llu)",
+            (unsigned long long)q.ev_exact, (unsigned long long)q.ev_holed, (unsigned long long)q.events);
+      CHECK(q.ev_exact * 100 >= q.events * 70, "most notes land under loss (%llu of %llu)", (unsigned long long)q.ev_exact, (unsigned long long)q.events);
+    }
+    CHECK(num(q.rst, "midi") >= (double)q.events, "the remote took every note under loss (%.0f of %llu)", num(q.rst, "midi"), (unsigned long long)q.events);
   }
   {
     Result r = run(41, 2, 0, 0, 0, 1.5, "not the studio's");
