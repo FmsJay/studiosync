@@ -635,6 +635,8 @@ function direct.health_rows(cfg, b)
   if aok and arow then rows[#rows + 1] = arow end
   local lok, lrow = pcall(function() return require("liveaudio").health_row(cfg, b) end) -- (live audio per bandmate, when the studio has it on: lib/liveaudio.lua; b: whose statuses say why one isn't heard. James, rt)
   if lok and lrow then rows[#rows + 1] = lrow end
+  local nok, nrows = pcall(function() return require("nat").health_rows(cfg) end) -- (the connection without Tailscale, when the studio has it on: lib/nat.lua. James, rt)
+  if nok then for _, r in ipairs(nrows or {}) do rows[#rows + 1] = r end end
   local hok, hrows = pcall(function() return require("hops").health_rows(cfg) end) -- (a row per live hop, either side: lib/hops.lua. James, rt)
   if hok then for _, r in ipairs(hrows or {}) do rows[#rows + 1] = r end end
   local kok, krow = pcall(function() return require("controllers").health_row(cfg) end) -- (shared controllers: who's moving what live. lib/controllers.lua. James, rt)
@@ -658,6 +660,7 @@ function direct.studio_ui(ctx, ImGui, cfg, may)
   end
   require("controllers").studio_ui(ctx, ImGui, cfg, may) -- (faders and knobs moving live for everyone, on unless turned off: lib/controllers.lua. James, rt)
   require("liveaudio").studio_ui(ctx, ImGui, cfg, may) -- (live audio over the link, off unless the studio turns it on: lib/liveaudio.lua. James, rt)
+  require("nat").studio_ui(ctx, ImGui, cfg, may) -- (live audio to bandmates without Tailscale, off unless the studio turns it on: lib/nat.lua. James, rt)
   require("joins").studio_ui(ctx, ImGui, cfg, may) -- (signed invitations the link lets in by itself, and revoking them: lib/joins.lua. James, rt)
   -- (signed updates: the owner signs each version with a key kept on their computer, and every computer checks it before it runs. James, rt)
   ImGui.SeparatorText(ctx, "Signed updates")
