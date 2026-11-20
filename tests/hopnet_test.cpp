@@ -299,7 +299,7 @@ static void recovered(const Result &r, double secs)
          r.after ? 100.0 * r.exact_after / r.after : 0.0, (unsigned long long)r.after);
   if (r.after >= 24000)
     CHECK(r.exact_after * 1000 >= r.after * (coarse() ? 990 : 999),
-          coarse() ? "no lasting loss from a second after the stall (coarse timers: 99%)" : "every frame back exact from a second after the stall");
+          coarse() ? "no lasting loss from a second after the stall (coarse timers: 99 percent)" : "every frame back exact from a second after the stall");
   else { printf("  (too near the end to check the frames after it)\n"); CHECK(!strict(), "a run that leaves time to check after its last stall (SS_TIMING_STRICT)"); }
   if (r.hiccup <= secs - 2.3)
     CHECK(num(r.sst, "slack_ms") >= (coarse() ? -4 * g_tick_ms : 0) && num(r.sst, "need_ms") < num(r.sst, "budget_ms"), "back inside the budget, slack to spare");
