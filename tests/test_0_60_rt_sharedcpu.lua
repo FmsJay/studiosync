@@ -254,10 +254,12 @@ tick(hops.LATE_WINDOW)
 assert(hops.offload_of("P1", gtr), "not hosted yet, inside the start grace: stays (the blocks played dry meanwhile aren't falling behind)")
 E.status[rec.id] = { hop = rec.id, late = 20, net = good }
 tick()
+E.status[rec.id].late = 32 -- (the first blocks once it runs: still settling)
+tick(hops.SETTLE)
 local rows = hops.health_rows(cfg, "P1")
-assert(rows[1][4]:find("Guitar's effects run on Bo's computer: round trip 60 ms", 1, true) and rows[1][4]:find("20 late blocks", 1, true), "Health: where and how: " .. rows[1][4])
+assert(rows[1][4]:find("Guitar's effects run on Bo's computer: round trip 60 ms", 1, true) and rows[1][4]:find("32 late blocks", 1, true), "Health: where and how: " .. rows[1][4])
 tick(hops.LATE_WINDOW)
-E.status[rec.id].late = 29
+E.status[rec.id].late = 41
 tick(hops.LATE_WINDOW)
 assert(not hops.offload_of("P1", gtr), "late blocks rose: back")
 assert(#gtr.fx == 3 and not eq.off and not amp.off and comp.off, "the chain exactly as it was (Comp still bypassed as the song has it)")

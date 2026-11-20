@@ -18,11 +18,11 @@ local band = require("band")
 -- trip, and the plug-in's default 150 ms left about 12 ms to spare: most of every spike came back too late. The extra 20 ms is only more of
 -- REAPER's delay compensation. (Desktop -> laptop, rt)
 local hops = { EVERY = 0.5, ASK_EVERY = 3, IDLE = 30, NAME = "StudioSync Hop", TAG = "for=hop;", TRACK_TAG = "hop", MARGIN_MS = 20, REMOTE_LATENCY = 256,
-  LATENCY = 8192, HELD = "band_fx_held", MAX_CHAIN = 32, BUSY = 75, CPU_EVERY = 20, START = 20, AWAY = 10, LATE_WINDOW = 10, LATE_MAX = 8, LOST_MAX = 2, SAY_BACK = 300 }
+  LATENCY = 8192, HELD = "band_fx_held", MAX_CHAIN = 32, BUSY = 75, CPU_EVERY = 20, START = 20, AWAY = 10, LATE_WINDOW = 10, LATE_MAX = 8, LOST_MAX = 2, SETTLE = 3, SAY_BACK = 300 }
 -- (this script's state; kept across Live sync's reload in place (band.reload: the same Lua, the modules loaded again): a fresh one forgot the
 -- hidden tracks this computer hosts, so a stop never removed them, and the next ask made a second track for the same hop. Laptop, rt)
 local S = rawget(_G, "STUDIOSYNC_HOPS_S") or {}
-for k, v in pairs({ at = -math.huge, connected = {}, asked = {}, serving = {}, why = {}, ok_at = {}, late = {}, back = {} }) do if S[k] == nil then S[k] = v end end
+for k, v in pairs({ at = -math.huge, connected = {}, asked = {}, serving = {}, why = {}, ok_at = {}, late = {}, up = {}, back = {} }) do if S[k] == nil then S[k] = v end end
 _G.STUDIOSYNC_HOPS_S = S
 hops.S = S
 local SEC = "StudioSync hops" -- ProjExtState: this project's hops (requester side), hop id -> record
@@ -338,7 +338,7 @@ function hops.stop(proj, cfg, id)
   end
   if rec.offload and tr then hops.release_chain(tr, rec.held or {}) end -- (its own chain on again, as it was)
   recs[tostring(id)], S.connected[id], S.asked[rec.token], S.why[rec.token] = nil, nil, nil, nil
-  S.ok_at[rec.token], S.late[rec.token] = nil, nil
+  S.ok_at[rec.token], S.late[rec.token], S.up[rec.token] = nil, nil, nil
   save(proj, recs)
   return true
 end
@@ -587,9 +587,10 @@ local function keep_offload(proj, cfg, key, rec, tr, now)
   if net.serving and net.remote_alive then S.ok_at[rec.token] = now
   elseif not S.ok_at[rec.token] then S.ok_at[rec.token] = now + hops.START end -- (Live sync just started: time to connect first)
   local late, lost, sent, l = tonumber(st.late) or 0, tonumber(net.lost) or 0, tonumber(net.sent) or 0, S.late[rec.token]
-  -- (counted only while the audio goes both ways: the blocks before the bandmate's hidden track ran played dry, counted as late, and handed
-  -- the offload back at its first look, 10 s in. Desktop -> laptop, rt)
-  if not (net.active and net.remote_alive) then l = nil end
+  -- (counted only once the audio has gone both ways for SETTLE s: the blocks before then (the bandmate's hidden track starting, 9-13 of them
+  -- every time in REAPER, none after) handed every offload back at its first look, 10 s in. Desktop -> laptop, rt)
+  if not (net.active and net.remote_alive) then S.up[rec.token] = nil elseif not S.up[rec.token] then S.up[rec.token] = now end
+  if not S.up[rec.token] or now - S.up[rec.token] < hops.SETTLE then l = nil end
   if not l or now - l.at >= hops.LATE_WINDOW then
     l = { at = now, late = late, lost = lost, sent = sent, rise = l and math.max(0, late - l.late) or 0,
       lost_pct = l and sent > l.sent and 100 * math.max(0, lost - l.lost) / (sent - l.sent) or 0 }
