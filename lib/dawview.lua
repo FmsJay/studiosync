@@ -347,7 +347,7 @@ function dawview.action(proj, cfg, b, a)
     local sync = require("sync")
     local _, who = sync.authority(cfg, b.song, b.room)
     local may = dawview.may_transport(who.mode, cfg.user, who.driver, require("groups").may_manage(cfg.root, cfg.user))
-    if not may then return "the web page's " .. (d.play == "start" and "Play" or "Stop") .. " together was refused: only the driver starts and stops in this room" end
+    if not may then return "the web page's " .. (d.play == "start" and "Play" or "Stop") .. " together was refused: " .. (who.mode == "admins" and "only the driver and admins start and stop" or "only the driver starts and stops") .. " in this room" end
     local together = require("together")
     if d.play == "start" then
       local pos = reaper.GetCursorPositionEx(proj)
