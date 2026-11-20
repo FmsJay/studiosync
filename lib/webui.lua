@@ -52,7 +52,7 @@ function webui.open(cfg)
   return true
 end
 -- The panel's Web UI button: the docked REAPER window (extension/webui_dock.cpp), or the browser with Shift, with an older extension, or
--- where the window can't open (Linux for now, no WebView2 runtime: the log says why). -> true when either opened.
+-- where the window can't open (no WebKitGTK on Linux, no WebView2 runtime: the log says why). -> true when either opened.
 function webui.dock(cfg, browser)
   if browser or not reaper.StudioSync_WebUIDock then return webui.open(cfg) end
   if not webui.start(cfg) then return webui.open(cfg) end -- (which logs why)

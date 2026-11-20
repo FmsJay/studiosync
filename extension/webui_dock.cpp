@@ -1,7 +1,8 @@
 // StudioSync's web UI in a REAPER window that docks: see webui_dock.h. The window is REAPER's usual docker citizen: DockWindowAddEx with
 // its own ident (REAPER remembers which docker and where), a toggle action ticked while it's open, the page's Dock / Undock button to move
 // it in or out of the docker (the window is made again: a docked window and a floating one are different kinds), the floating size and
-// place kept in ExtState, and closed at unload and REAPER's exit. macOS's view is in webui_dock_mac.mm; the rest of this file is shared.
+// place kept in ExtState, and closed at unload and REAPER's exit. macOS's view is in webui_dock_mac.mm, Linux's (WebKitGTK) below; the rest
+// of this file is shared.
 //
 // Keys (the roadmap's stated risk). WebView2 draws in its own process, so keys typed into it never reach REAPER's message loop and REAPER's
 // shortcuts would stop while the view has focus. The page passes them on: app.js sends each keydown it doesn't use over the view's own
@@ -10,7 +11,8 @@
 // which runs whatever the key is bound to there. WebView2's browser shortcuts (Ctrl+F, F5, Ctrl+P, zoom) are off, so those reach the page
 // and go on to REAPER too. A keydown on the window itself (its frame focused) goes to REAPER's main shortcuts through the accelerator hook.
 // On macOS the view is in REAPER's own process, so the hook gives the view its keys first (else Space in the chat box would press Play) and
-// the page passes on the rest in the same way. Linux has no view yet: the action opens the browser. GPL-3.0-or-later. (James, rt)
+// the page passes on the rest in the same way. Linux: SWELL hands the view the window's keys while it has focus, the page the rest, as on
+// Windows. GPL-3.0-or-later. (James, rt)
 #ifdef _WIN32
 #include <windows.h>
 #include <shellapi.h>
@@ -28,10 +30,6 @@ extern char **environ;
 #include <cstring>
 #include <string>
 #include "webui_dock.h"
-
-#if defined(_WIN32) || defined(__APPLE__)
-#define DOCK_VIEW 1
-#endif
 
 // ---- the pure parts ------------------------------------------------------------------------------------------------------------------
 int webui_dock_port(const char *s)
@@ -273,10 +271,171 @@ void dock_view_destroy()
 }
 void dock_open_external(const char *url) { ShellExecuteW(nullptr, L"open", wide(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL); }
 
-// ---- Linux: no view yet ---------------------------------------------------------------------------------------------------------------
+// ---- the view: WebKitGTK (Linux) ------------------------------------------------------------------------------------------------------
+// SWELL draws REAPER's windows itself on GDK, so a GTK widget can't simply be a child of one. But it has what Linux plug-in windows use:
+// SWELL_ExtendedAPI("LOAD_GTK") starts GTK 3 inside REAPER (SWELL keeps its event handler and passes GTK's own windows their events), and
+// SWELL_CreateXBridgeWindow makes a child that is a real X window, kept at the child's place (moved with its docker, re-parented when the
+// docker floats). A GtkPlug (GTK's window for living inside another program's X window) goes in that, the WebKitWebView in the plug. Keys:
+// while the bridge has SWELL's focus (a click in the view gives it), SWELL sends the window's keys on to the plug, and the page passes on what
+// it doesn't use as on the other systems. WebKitGTK is looked up at run time, so the extension loads where it isn't installed; there the
+// action says so and offers the browser, as with no WebView2. Checked on Ubuntu 24.04 with REAPER 7.86's libSwell (2026-11-19). (James, rt)
 #elif !defined(__APPLE__)
-// TODO (James, rt): WebKitGTK, where it's installed (not in every distro's REAPER, nor in Flatpak's; SWELL's windows aren't GTK ones, so
-// it needs its own top-level window): until then the action opens the browser.
+#ifdef SWELL_PROVIDED_BY_APP
+#include <dlfcn.h>
+#include "reaper_plugin.h" // (SWELL)
+
+// GTK's, GLib's and WebKitGTK's C functions used here (no headers: the build machine needn't have them). WebKitGTK 4.1 or 4.0 (GTK 3).
+#define WK_FUNCS(X) \
+  X(void *, gtk_plug_new, (unsigned long)) \
+  X(void, gtk_container_add, (void *, void *)) \
+  X(void, gtk_widget_show_all, (void *)) \
+  X(void, gtk_widget_destroy, (void *)) \
+  X(unsigned long, g_signal_connect_data, (void *, const char *, void *, void *, void *, int)) \
+  X(void, g_object_set, (void *, const char *, ...)) \
+  X(void *, g_object_new, (unsigned long, const char *, ...)) \
+  X(void, g_object_unref, (void *)) \
+  X(void, g_free, (void *)) \
+  X(int, g_type_check_instance_is_a, (void *, unsigned long)) \
+  X(unsigned long, webkit_web_view_get_type, ()) \
+  X(void *, webkit_web_view_get_settings, (void *)) \
+  X(void, webkit_web_view_load_uri, (void *, const char *)) \
+  X(const char *, webkit_web_view_get_uri, (void *)) \
+  X(void *, webkit_web_context_new_with_website_data_manager, (void *)) \
+  X(void *, webkit_website_data_manager_new, (const char *, ...)) \
+  X(void *, webkit_user_content_manager_new, ()) \
+  X(int, webkit_user_content_manager_register_script_message_handler, (void *, const char *)) \
+  X(void *, webkit_javascript_result_get_js_value, (void *)) \
+  X(int, jsc_value_is_string, (void *)) \
+  X(char *, jsc_value_to_string, (void *)) \
+  X(void *, webkit_navigation_policy_decision_get_navigation_action, (void *)) \
+  X(void *, webkit_navigation_action_get_request, (void *)) \
+  X(int, webkit_navigation_action_get_navigation_type, (void *)) \
+  X(const char *, webkit_uri_request_get_uri, (void *)) \
+  X(void, webkit_policy_decision_ignore, (void *)) \
+  X(unsigned long, webkit_user_media_permission_request_get_type, ()) \
+  X(int, webkit_user_media_permission_is_for_audio_device, (void *)) \
+  X(int, webkit_user_media_permission_is_for_video_device, (void *)) \
+  X(void, webkit_permission_request_allow, (void *)) \
+  X(void, webkit_permission_request_deny, (void *))
+#define WK_FIELD(r, n, a) r (*n) a;
+static struct { WK_FUNCS(WK_FIELD) } wk;
+static void *g_plug, *g_view, *g_ctx;
+static HWND g_vhwnd, g_bridge;
+static dock_msg_fn g_fn;
+static std::string g_page;
+
+// GTK started and WebKitGTK found, once. -> "" or why not.
+static const char *wk_load()
+{
+  static std::string why = "-";
+  if (why != "-") return why.c_str();
+  if (!SWELL_ExtendedAPI("LOAD_GTK", nullptr)) return (why = "REAPER couldn't start GTK here, which the docked view needs.").c_str();
+  // (4.1 uses libsoup 3 and 4.0 libsoup 2, and a process with both aborts: if another plug-in brought one in, the WebKitGTK that matches it)
+  void *lib = nullptr;
+  if (!dlopen("libsoup-2.4.so.1", RTLD_NOW | RTLD_NOLOAD)) lib = dlopen("libwebkit2gtk-4.1.so.0", RTLD_NOW | RTLD_LOCAL);
+  if (!lib && !dlopen("libsoup-3.0.so.0", RTLD_NOW | RTLD_NOLOAD)) lib = dlopen("libwebkit2gtk-4.0.so.37", RTLD_NOW | RTLD_LOCAL);
+  if (!lib) return (why = "WebKitGTK isn't installed here (libwebkit2gtk-4.1-0 on Ubuntu and Debian, webkit2gtk4.1 on Fedora).").c_str();
+#define WK_LOAD(r, n, a) if (!(*(void **)&wk.n = dlsym(lib, #n))) return (why = "This WebKitGTK is too old (it has no " #n ").").c_str();
+  WK_FUNCS(WK_LOAD)
+  return (why = "").c_str();
+}
+
+static std::string view_uri() { const char *u = g_view ? wk.webkit_web_view_get_uri(g_view) : nullptr; return u ? u : ""; }
+
+// What the page posts (window.webkit.messageHandlers.studiosync, as on macOS): text, while the view shows the pages' own origin.
+static void wk_message(void *, void *res, void *)
+{
+  void *v = wk.webkit_javascript_result_get_js_value(res);
+  if (!g_fn || !v || !wk.jsc_value_is_string(v) || !webui_dock_same_origin(g_page, view_uri())) return;
+  char *s = wk.jsc_value_to_string(v);
+  if (s) g_fn(s);
+  wk.g_free(s);
+}
+// Only the pages' own origin in the view; a clicked link (or a new window) anywhere else opens in the browser, the rest goes nowhere.
+static int wk_policy(void *, void *d, int type, void *)
+{
+  if (type != 0 && type != 1) return 0; // (a response: WebKit's own way)
+  void *a = wk.webkit_navigation_policy_decision_get_navigation_action(d);
+  const char *u = a ? wk.webkit_uri_request_get_uri(wk.webkit_navigation_action_get_request(a)) : nullptr;
+  const std::string uri = u ? u : "";
+  if (type == 0 && webui_dock_same_origin(g_page, uri)) return 0;
+  const bool open = webui_dock_external_ok(uri) && (type == 1 || wk.webkit_navigation_action_get_navigation_type(a) == 0 /* a link clicked */);
+  wk.webkit_policy_decision_ignore(d);
+  if (open) dock_open_external(uri.c_str());
+  return 1;
+}
+// The camera and microphone (video calls, lib/webui/call.js): for the pages' own origin only (webui_dock_permission). Screen capture keeps
+// WebKit's own answer (no), so the page offers the browser for that.
+static int wk_permission(void *, void *req, void *)
+{
+  if (!wk.g_type_check_instance_is_a(req, wk.webkit_user_media_permission_request_get_type())) return 0;
+  const int kind = wk.webkit_user_media_permission_is_for_audio_device(req) ? 1 : wk.webkit_user_media_permission_is_for_video_device(req) ? 2 : 0;
+  const int r = webui_dock_permission(g_page, view_uri(), kind);
+  if (r > 0) wk.webkit_permission_request_allow(req);
+  else if (r < 0) wk.webkit_permission_request_deny(req);
+  return r != 0;
+}
+static int wk_click(void *, void *, void *) { if (g_bridge) SetFocus(g_bridge); return 0; } // (SWELL then sends the window's keys to the view)
+
+bool dock_view_create(void *hwnd, const char *url, const char *data_dir, dock_msg_fn on_message, std::string &err)
+{
+  dock_view_destroy();
+  const char *why = wk_load();
+  if (*why) { err = why; return false; }
+  RECT r;
+  GetClientRect((HWND)hwnd, &r);
+  void *xid = nullptr;
+  g_bridge = SWELL_CreateXBridgeWindow((HWND)hwnd, &xid, &r);
+  if (!g_bridge || !xid) {
+    if (g_bridge) DestroyWindow(g_bridge);
+    g_bridge = nullptr;
+    err = "REAPER couldn't make an X11 window for the view here.";
+    return false;
+  }
+  if (!g_ctx) { // (one for REAPER's run, its cookies and storage in REAPER's resource folder, never another program's)
+    const std::string d = data_dir ? data_dir : "";
+    g_ctx = wk.webkit_web_context_new_with_website_data_manager(wk.webkit_website_data_manager_new("base-data-directory", d.c_str(),
+      "base-cache-directory", (d + "/Cache").c_str(), nullptr));
+  }
+  void *ucm = wk.webkit_user_content_manager_new();
+  wk.webkit_user_content_manager_register_script_message_handler(ucm, "studiosync");
+  wk.g_signal_connect_data(ucm, "script-message-received::studiosync", (void *)wk_message, nullptr, nullptr, 0);
+  g_view = wk.g_object_new(wk.webkit_web_view_get_type(), "web-context", g_ctx, "user-content-manager", ucm, nullptr);
+  wk.g_object_unref(ucm); // (the view keeps it)
+  wk.g_object_set(wk.webkit_web_view_get_settings(g_view), "enable-media-stream", 1, "enable-webrtc", 1, nullptr);
+  wk.g_signal_connect_data(g_view, "decide-policy", (void *)wk_policy, nullptr, nullptr, 0);
+  wk.g_signal_connect_data(g_view, "permission-request", (void *)wk_permission, nullptr, nullptr, 0);
+  wk.g_signal_connect_data(g_view, "button-press-event", (void *)wk_click, nullptr, nullptr, 0);
+  g_plug = wk.gtk_plug_new((unsigned long)(UINT_PTR)xid);
+  wk.gtk_container_add(g_plug, g_view);
+  wk.gtk_widget_show_all(g_plug);
+  g_vhwnd = (HWND)hwnd;
+  g_fn = on_message;
+  g_page = url ? url : "";
+  dock_view_resize();
+  wk.webkit_web_view_load_uri(g_view, g_page.c_str());
+  return true;
+}
+
+void dock_view_resize()
+{
+  if (!g_bridge || !g_vhwnd) return;
+  RECT r;
+  GetClientRect(g_vhwnd, &r);
+  SetWindowPos(g_bridge, nullptr, 0, 0, r.right, r.bottom, SWP_NOZORDER | SWP_NOACTIVATE);
+  SetTimer(g_bridge, 1010, 1, nullptr); // (SWELL's bridge then sizes the plug to itself, once it's there)
+}
+void dock_view_show(bool visible) { if (g_bridge) ShowWindow(g_bridge, visible ? SW_SHOW : SW_HIDE); }
+void dock_view_destroy()
+{
+  g_fn = nullptr;
+  if (g_plug) wk.gtk_widget_destroy(g_plug); // (the view with it; before the bridge, whose X window it's in)
+  if (g_bridge) DestroyWindow(g_bridge);
+  g_plug = g_view = nullptr;
+  g_bridge = g_vhwnd = nullptr;
+}
+#endif // (SWELL_PROVIDED_BY_APP; without it, tests/webui_dock_test.cpp's pure parts)
+
 void dock_open_external(const char *url)
 {
   pid_t pid;
@@ -348,7 +507,6 @@ static void offer_browser(const std::string &why)
   if (R.ShowMessageBox(q.c_str(), TITLE, 4 /* yes, no */) == 6 /* yes */) dock_open_external(url.c_str());
 }
 
-#ifdef DOCK_VIEW
 static int show(int mode);
 
 static void save_rect()
@@ -472,12 +630,10 @@ static int translate(MSG *msg, accelerator_register_t *)
 #endif
 }
 static accelerator_register_t g_keys = { translate, true, nullptr };
-#endif
 
 // mode 1 open (or bring forward), 0 close, -1 toggle. -> 1 open, 0 closed, -1 can't here (g_err says why; the browser instead).
 static int show(int mode)
 {
-#ifdef DOCK_VIEW
   if (mode < 0) mode = g_hwnd && IsWindowVisible(g_hwnd) ? 0 : 1; // (open but behind another docker tab: brought forward, as SWS's do)
   if (mode == 0) { close_window(); return 0; }
   if (g_hwnd) {
@@ -486,15 +642,9 @@ static int show(int mode)
     return 1;
   }
   g_docked = docked_pref();
-#else
-  if (mode == 0) return 0;
-#endif
   const int port = server_port();
   g_url = port ? webui_dock_url(port, g_docked) : std::string();
   if (!port) return failed("StudioSync's web UI isn't running yet: open the StudioSync panel once (or start Live sync), then try again.");
-#ifndef DOCK_VIEW
-  return failed("The docked web UI isn't on Linux yet: it opens in the browser."); // (TODO: WebKitGTK, above)
-#else
   g_hwnd = make_window();
   if (!g_hwnd) return failed("REAPER couldn't make the window.");
   std::string err;
@@ -510,23 +660,15 @@ static int show(int mode)
     R.DockWindowActivate(g_hwnd);
   } else place_floating();
   return 1;
-#endif
 }
 
 static bool on_command(int command, int)
 {
   if (!command || command != g_cmd) return false;
-  if (show(-1) < 0) {
-#ifndef DOCK_VIEW
-    if (!g_url.empty()) { dock_open_external(g_url.substr(0, g_url.find('?')).c_str()); return true; } // (Linux: straight to the browser)
-#endif
-    offer_browser(g_err);
-  }
+  if (show(-1) < 0) offer_browser(g_err);
   return true;
 }
-#ifdef DOCK_VIEW
 static int on_toggle(int command) { return command == g_cmd ? (g_hwnd && IsWindowVisible(g_hwnd) ? 1 : 0) : -1; }
-#endif
 
 // View > the item, just after StudioSync's own (reaper_menu.cpp adds it first), so they sit together. Only in the default menu, as there.
 static void on_menu(const char *id, HMENU menu, int flag)
@@ -576,23 +718,16 @@ void webui_dock_register(reaper_plugin_info_t *rec)
   rec->Register("gaccel", &g_gaccel);
   rec->Register("hookcommand", (void *)on_command);
   rec->Register("hookcustommenu", (void *)on_menu);
-#ifdef DOCK_VIEW
   rec->Register("toggleaction", (void *)on_toggle);
   rec->Register("accelerator", &g_keys);
   rec->Register("atexit", (void *)webui_dock_shutdown); // (REAPER quitting: the window and its view go while REAPER is all there)
-#endif
   rec->Register("API_StudioSync_WebUIDock", (void *)api_dock);
   rec->Register("APIdef_StudioSync_WebUIDock", (void *)"int\0int\0mode\0"
     "StudioSync's web UI in a REAPER window that docks: mode 1 opens it (or brings it forward), 0 closes it, -1 toggles. Returns 1 open, "
-    "0 closed, -1 when it can't here (no view on Linux yet, no WebView2 runtime, the web UI not started; ExtState BandSync "
+    "0 closed, -1 when it can't here (no WebKitGTK on Linux, no WebView2 runtime, the web UI not started; ExtState BandSync "
     "\"web ui dock error\" says why): open the browser instead.");
   rec->Register("APIvararg_StudioSync_WebUIDock", (void *)va_dock);
 }
 
-void webui_dock_shutdown()
-{
-#ifdef DOCK_VIEW
-  close_window();
-#endif
-}
+void webui_dock_shutdown() { close_window(); }
 #endif

@@ -565,8 +565,12 @@ Like Helgobox's move away from REAPER's own widgets, now that the extension is m
 - **Windows:** WebView2 SDK 1.0.4314.35 from nuget.org (BSD-style, `extension/third_party/README.md`), the static loader (no extra DLL),
   user-data folder `<resource path>/Data/StudioSync/WebView2`. No runtime: says so and offers the browser. Browser shortcuts, the
   status bar and zoom off.
-- **macOS:** WKWebView in the SWELL window (WebKit's own data store; a separate one needs macOS 14). **Linux:** the action opens the
-  browser (TODO: WebKitGTK where it's there; SWELL windows aren't GTK).
+- **macOS:** WKWebView in the SWELL window (WebKit's own data store; a separate one needs macOS 14). **Linux:** WebKitGTK 4.1 (or 4.0),
+  loaded at run time, embedded the way REAPER hosts Linux plug-in windows: `SWELL_ExtendedAPI("LOAD_GTK")` starts GTK in REAPER
+  (SWELL passes GTK's windows their events), `SWELL_CreateXBridgeWindow` gives a real X window at the docker's place (moved and
+  re-parented with it), a GtkPlug in that holds the view. A click in the view gives the bridge SWELL's focus, and SWELL sends the window's
+  keys to it; elsewhere REAPER keeps its keys. Not installed (or Flatpak): says so and offers the browser, as with no WebView2. No WebRTC in
+  Ubuntu's WebKitGTK (2.52), so video calls there offer the browser (call.js already does).
 - **Keys:** the view has REAPER's keys while focused, so `app.js` posts each one it doesn't use (`key:<vk>:<mods>`; outside a field all
   but Tab and Enter on a button; in a field only non-editing Ctrl/Cmd/Alt combinations and F-keys; Esc leaves the field) and the
   extension runs it through the main section (`kbd_translateAccelerator`). macOS: the accelerator hook gives the view its keys first.
@@ -608,7 +612,8 @@ Like Helgobox's move away from REAPER's own widgets, now that the extension is m
   Restore page on that version; Play/Stop together start everyone; the tick cost with the page open and closed (tests/reaper/rt_perf.lua).
 
 ### Web UI: what remains (TODO)
-- **Docking:** built (above); check it in REAPER on Windows and a Mac. WebKitGTK on Linux still to do.
+- **Docking:** built (above); check it in REAPER on Windows, a Mac and Linux (WebKitGTK built 2026-11-19: proved in a SWELL host on
+  REAPER 7.86's own libSwell on Ubuntu 24.04, docked, floated, typed into, Undock and key forwarding from the real pages; not yet in REAPER).
 - **Pages, then parity:** scopes and to-dos/links in chat, Health, Play together; the ReaImGui panel stays until each page matches.
 - **Shared DAW view, view-only first** (stage 1 above): tracks, items, markers and cursors from the synced model, follow, play/stop.
 - **Video and screen share** (step 5): first version built (step 5 above: calls, screen share, pointer); check it in REAPER on two computers. The Studio browser after it.
@@ -808,8 +813,8 @@ Built in the extension (extension/direct.cpp, direct_audio.cpp; protocol, API an
 - **Remote plug-ins endpoint ("Hop"):** VST3 SDK (MIT) + CLAP (MIT) via DPF (ISC). Not JUCE (AGPL/commercial).
 - **Extension libraries:** yyjson (JSON), zstd with a trained dictionary (events on the link and snapshots), SQLite (history,
   snapshots, comments index), Opus 1.5 with Deep PLC/DRED and small frames.
-- **Web UI:** webview (MIT) or Saucer (MIT), not CEF; WebView2 accelerator keys forwarded to REAPER; Linux may fall back to the
-  system browser (SWELL windows aren't GTK). Yjs (MIT) for the song sheet, chat, comments and to-dos; Excalidraw (MIT) for
+- **Web UI:** webview (MIT) or Saucer (MIT), not CEF; WebView2 accelerator keys forwarded to REAPER; Linux embeds WebKitGTK
+  through SWELL's X bridge (as plug-in windows), the browser where it isn't installed. Yjs (MIT) for the song sheet, chat, comments and to-dos; Excalidraw (MIT) for
   drawing (not tldraw: licence key/watermark); wavesurfer.js or own canvas for waveforms.
 - **Features added (James):** cue mix + talkback control (engineer sets a performer's monitor mix; talkback mutes while
   recording); song forks (branch an arrangement, keep or merge back); versioned, timestamped comments with a resolved state

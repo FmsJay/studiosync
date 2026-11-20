@@ -1,6 +1,7 @@
 // StudioSync's web UI in a REAPER window that docks (docs/realtime-roadmap.md "A new interface: web UI"): the pages the web UI server
 // already serves (extension/webui.cpp) at http://127.0.0.1:<port>/, in WebView2 on Windows (the static loader: no extra DLL to ship) and
-// WKWebView on macOS (extension/webui_dock_mac.mm). Linux has no view yet (TODO: WebKitGTK where it's there): the action opens the browser.
+// WKWebView on macOS (extension/webui_dock_mac.mm) and WebKitGTK on Linux (loaded at run time; where it isn't installed the action offers
+// the browser, as with no WebView2).
 // The server is the view's only channel to the engine, so nothing here talks to Lua; the view's own channel (window.chrome.webview,
 // webkit.messageHandlers.studiosync) carries only what the window itself does: keys for REAPER and Dock/Undock. GPL-3.0-or-later. (James, rt)
 #pragma once
@@ -23,7 +24,7 @@ int webui_dock_permission(const std::string &page, const std::string &uri, int k
 // A message from the page: "key:<vk>:<mods>" (Windows virtual-key code; mods 1 Shift, 2 Ctrl, 4 Alt, 8 Cmd/Win). -> false if it isn't one.
 bool webui_dock_key(const char *msg, int *vk, int *mods);
 
-// ---- the view (one at a time), Windows and macOS --------------------------------------------------------------------------------------
+// ---- the view (one at a time): Windows, macOS, Linux (with SWELL) ---------------------------------------------------------------------
 // on_message gets what the page posts, from its own origin only, on the UI thread, inside the view's event: so it must only post work on.
 // A view that fails after creating starts says so as "error:<why>".
 typedef void (*dock_msg_fn)(const char *msg);
