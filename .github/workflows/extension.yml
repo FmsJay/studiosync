@@ -60,8 +60,10 @@ jobs:
           clang++ -std=c++17 -O2 -DRTAUDIO_STANDALONE -DDIRECT_STANDALONE -I extension/third_party/aoo -I extension/third_party/aoo/include -I extension/third_party/opus/include \
             tests/rtaudio_test.cpp extension/rtaudio.cpp extension/direct.cpp extension/direct_audio.cpp libssdeps.a -o rtaudio_test
           ./rtaudio_test
-      # (the Tailscale-free connection spike, docs/realtime-roadmap.md "Without Tailscale: design": a test of its own, not in the shipped build)
+      # (the Tailscale-free connection spike, docs/realtime-roadmap.md "Without Tailscale: design": a test of its own, not in the shipped build;
+      # run even when a timing test above failed on the hosted Mac, so the spike still gets its macOS check)
       - name: The Tailscale-free connection spike's own test (tests/nat_test.cpp, ICE and sealed datagrams on localhost)
+        if: ${{ !cancelled() }}
         run: |
           mkdir -p natobj && (cd natobj && cc -O2 -c -DJUICE_STATIC -I ../extension/third_party/libjuice/include/juice ../extension/third_party/libjuice/src/*.c ../extension/third_party/monocypher/monocypher.c)
           clang++ -std=c++17 -O2 -DSTUDIOSYNC_NAT -DDIRECT_STANDALONE -DJUICE_STATIC tests/nat_test.cpp extension/nat.cpp extension/direct.cpp extension/direct_audio.cpp natobj/*.o -o nat_test
