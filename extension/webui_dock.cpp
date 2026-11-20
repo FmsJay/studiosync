@@ -278,7 +278,7 @@ void dock_open_external(const char *url) { ShellExecuteW(nullptr, L"open", wide(
 // docker floats). A GtkPlug (GTK's window for living inside another program's X window) goes in that, the WebKitWebView in the plug. Keys:
 // while the bridge has SWELL's focus (a click in the view gives it), SWELL sends the window's keys on to the plug, and the page passes on what
 // it doesn't use as on the other systems. WebKitGTK is looked up at run time, so the extension loads where it isn't installed; there the
-// action says so and offers the browser, as with no WebView2. Checked on Ubuntu 24.04 with REAPER 7.86's libSwell (2026-11-19). (James, rt)
+// action says so and offers the browser, as with no WebView2. Checked in REAPER 7.86 on Ubuntu 24.04 (2026-11-20). (James, rt)
 #elif !defined(__APPLE__)
 #ifdef SWELL_PROVIDED_BY_APP
 #include <dlfcn.h>
@@ -402,7 +402,10 @@ bool dock_view_create(void *hwnd, const char *url, const char *data_dir, dock_ms
   wk.g_signal_connect_data(ucm, "script-message-received::studiosync", (void *)wk_message, nullptr, nullptr, 0);
   g_view = wk.g_object_new(wk.webkit_web_view_get_type(), "web-context", g_ctx, "user-content-manager", ucm, nullptr);
   wk.g_object_unref(ucm); // (the view keeps it)
-  wk.g_object_set(wk.webkit_web_view_get_settings(g_view), "enable-media-stream", 1, "enable-webrtc", 1, nullptr);
+  // (hardware-acceleration-policy 2, never: in the plug, WebKit's GPU compositing drew only its first blank 200x200 frame in REAPER on
+  // Ubuntu 24.04 with xfwm4 compositing, page loaded but never shown; its own drawing works there and anywhere. 2026-11-20)
+  wk.g_object_set(wk.webkit_web_view_get_settings(g_view), "enable-media-stream", 1, "enable-webrtc", 1, "hardware-acceleration-policy", 2,
+    nullptr);
   wk.g_signal_connect_data(g_view, "decide-policy", (void *)wk_policy, nullptr, nullptr, 0);
   wk.g_signal_connect_data(g_view, "permission-request", (void *)wk_permission, nullptr, nullptr, 0);
   wk.g_signal_connect_data(g_view, "button-press-event", (void *)wk_click, nullptr, nullptr, 0);
