@@ -11,10 +11,13 @@
 #ifdef _WIN32
 #define NOMINMAX
 #include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <direct.h>
 #define make_dir(p) _mkdir(p)
 #else
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #define make_dir(p) mkdir(p, 0700)
@@ -24,6 +27,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -49,7 +53,7 @@ static std::string temp_dir()
 }
 static void drop_dir(const std::string &d) // (the rendezvous files a case leaves, then the folder)
 {
-  for (const char *f : { "/devA-devB.ssn", "/devB-devA.ssn", "/devA-devB.ssn.tmp", "/devB-devA.ssn.tmp" }) remove((d + f).c_str());
+  for (const char *f : { "/devA-devB.json", "/devB-devA.json", "/devA-devB.json.tmp", "/devB-devA.json.tmp", "/a.key", "/b.key", "/x.key" }) remove((d + f).c_str());
 #ifdef _WIN32
   _rmdir(d.c_str());
 #else
@@ -150,6 +154,99 @@ static void exchange(NatLink *a, NatLink *b, int n)
   stats("sealed round trip (ICE, both ends here)", rtt);
   CHECK(good_ab >= n * 98 / 100 && good_ba >= n * 98 / 100, "datagrams both ways, sealed and opened (98%+: it's UDP)");
 }
+// ---- the hub, as REAPER runs it: two computers' hubs, keys in files, synthetic addresses, live audio's send and receive -----------------
+struct Rx { std::mutex mx; std::vector<std::string> got; std::string from; };
+static void rx_fn(void *user, const unsigned char *d, int n, const void *from)
+{
+  Rx *r = (Rx *)user;
+  const sockaddr_in &a = *(const sockaddr_in *)from;
+  char b[32];
+  const unsigned char *p = (const unsigned char *)&a.sin_addr;
+  snprintf(b, sizeof b, "%u.%u.%u.%u:%u", p[0], p[1], p[2], p[3], ntohs(a.sin_port));
+  std::lock_guard<std::mutex> g(r->mx);
+  r->got.emplace_back((const char *)d, (size_t)n);
+  r->from = b;
+}
+static std::string json_field(const std::string &j, const char *k) // (a string value, for the checks)
+{
+  const std::string key = std::string("\"") + k + "\":\"";
+  const size_t a = j.find(key);
+  if (a == std::string::npos) return "";
+  const size_t e = j.find('"', a + key.size());
+  return j.substr(a + key.size(), e - a - key.size());
+}
+static std::string setup_json(const std::string &dir, const char *me, const char *key, const char *peer, const std::string &pub, int port, const char *secret)
+{
+  char b[1400];
+  snprintf(b, sizeof b, "{\"folder\":\"%s\",\"me\":\"%s\",\"secret\":\"%s\",\"key\":\"%s/%s\",\"port\":0,\"stun\":[\"127.0.0.1:%d\",\"127.0.0.1:%d\"],"
+           "\"peers\":[{\"device\":\"%s\",\"pub\":\"%s\"}]}", dir.c_str(), me, secret, dir.c_str(), key, port, port, peer, pub.c_str());
+  std::string s = b;
+  for (char &c : s) if (c == '\\') c = '/';
+  return s;
+}
+static bool hub_wait(NatHub *a, NatHub *b, const char *pa, const char *pb, double ms, double &took)
+{
+  const double t0 = now_ms();
+  while (now_ms() - t0 < ms) {
+    if (nat_hub_status(a).find("\"state\":\"up\"") != std::string::npos && nat_hub_status(b).find("\"state\":\"up\"") != std::string::npos) break;
+    sleep_ms(20);
+  }
+  took = now_ms() - t0;
+  sockaddr_in x{}, y{};
+  return nat_resolve(a, pa, &x) && nat_resolve(b, pb, &y) && nat_up(a, &x) && nat_up(b, &y);
+}
+static void hub_checks(int port)
+{
+  const std::string dir = temp_dir();
+  std::string why;
+  const std::string pa = nat_key_public(dir + "/a.key", why), pb = nat_key_public(dir + "/b.key", why);
+  CHECK(pa.size() == 64 && pb.size() == 64 && pa != pb, "keys: each computer's made in its own file, the public half as 64 hex");
+  CHECK(nat_key_public(dir + "/a.key", why) == pa, "keys: read back the same from the file");
+  NatKeys k;
+  CHECK(!nat_key_load(dir + "/missing.key", k, false, why), "keys: none made when asked not to");
+  NatHub *a = nat_hub_new(), *b = nat_hub_new();
+  CHECK(nat_hub_setup(a, "not json") == -1 && nat_hub_status(a).find("isn't JSON") != std::string::npos, "hub: a bad setup is refused and says why");
+  CHECK(nat_hub_setup(a, setup_json(dir, "devA", "a.key", "devB", pb, port, "the studio secret").c_str()) == 1 &&
+        nat_hub_setup(b, setup_json(dir, "devB", "b.key", "devA", pa, port, "the studio secret").c_str()) == 1, "hub: both set up with one peer each");
+  sockaddr_in sa{}, sb{};
+  CHECK(nat_resolve(a, "nat:devB", &sa) && nat_is_synthetic(&sa) && !nat_resolve(a, "nat:devC", &sb) && !nat_resolve(a, "devB:47281", &sb),
+        "hub: nat:devB has a synthetic address (198.18.0.0/15); an unknown device and a Tailscale name don't");
+  CHECK(nat_self(b) == [&] { char t[32]; const unsigned char *p = (const unsigned char *)&sa.sin_addr; snprintf(t, sizeof t, "%u.%u.%u.%u:%u", p[0], p[1], p[2], p[3], ntohs(sa.sin_port)); return std::string(t); }(),
+        "hub: devB's synthetic address is the same on both computers (live audio's sink ids depend on it)");
+  Rx ra, rb;
+  nat_set_rx(a, rx_fn, &ra);
+  nat_set_rx(b, rx_fn, &rb);
+  double took = 0;
+  CHECK(hub_wait(a, b, "nat:devB", "nat:devA", 20000, took), "hub: both links up through the rendezvous folder");
+  printf("     up in %.0f ms\n     A: %s\n", took, nat_hub_status(a).c_str());
+  const std::string sta = nat_hub_status(a);
+  CHECK(json_field(sta, "path") == "direct" && json_field(sta, "nat") == "easy", "status: the path is direct, and the STUN probe found an easy NAT (one mapping for both servers)");
+  nat_resolve(b, "nat:devA", &sb);
+  int sent = 0;
+  for (int i = 0; i < 50; ++i) { char m[32]; snprintf(m, sizeof m, "SSL1 audio %d", i); sent += nat_sendto(a, &sa, m, (int)strlen(m)) > 0; nat_sendto(b, &sb, m, (int)strlen(m)); sleep_ms(2); }
+  sleep_ms(300);
+  {
+    std::lock_guard<std::mutex> g(rb.mx);
+    CHECK(sent == 50 && rb.got.size() >= 49 && rb.got[0] == "SSL1 audio 0", "live audio's datagrams A -> B through nat_sendto, opened and handed to B's receiver");
+    CHECK(rb.from == nat_self(a), "B's receiver sees them from A's synthetic address");
+  }
+  { std::lock_guard<std::mutex> g(ra.mx); CHECK(ra.got.size() >= 49, "and B -> A"); }
+  CHECK(nat_sendto(a, &sa, std::string(1500, 'x').data(), 1500) == -1, "a datagram over 1400 bytes isn't sent");
+  // B starts again (REAPER restarted): a new link, its offer answered afresh
+  nat_hub_stop(b);
+  CHECK(!nat_up(b, &sb), "hub: stopped, nothing up");
+  nat_set_rx(b, rx_fn, &rb);
+  CHECK(nat_hub_setup(b, setup_json(dir, "devB", "b.key", "devA", pa, port, "the studio secret").c_str()) == 1, "hub: B set up again");
+  const bool again = hub_wait(a, b, "nat:devB", "nat:devA", 45000, took);
+  CHECK(again, "hub: after B starts again both are up again (A notices, offers anew)");
+  printf("     again in %.0f ms\n", took);
+  // A drops B from its list: the link goes
+  nat_hub_setup(a, setup_json(dir, "devA", "a.key", "devC", pb, port, "the studio secret").c_str());
+  CHECK(!nat_up(a, &sa) && !nat_resolve(a, "nat:devB", &sa), "hub: a peer taken off the list is dropped");
+  nat_hub_free(a); nat_hub_free(b);
+  drop_dir(dir);
+}
+
 static void ice_checks()
 {
   juice_server_credentials_t cr[1];
@@ -205,6 +302,7 @@ static void ice_checks()
     CHECK(nat_link_tick(x) != 1 && st.find("signature") != std::string::npos, "another studio's secret: the offer is refused at the rendezvous");
     nat_link_free(a); nat_link_free(x); drop_dir(dir);
   }
+  hub_checks(port);
   juice_server_destroy(srv);
 }
 

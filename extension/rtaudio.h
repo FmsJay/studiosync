@@ -63,3 +63,19 @@ typedef void (*rt_extra_fn)(void *user, const unsigned char *d, int n, const voi
 void rt_set_extra(RtLink *l, rt_extra_fn fn, void *user);
 int rt_send_raw(RtLink *l, const void *d, int n, const void *addr, int addrlen);
 RtLink *rt_global();
+
+// ---- the connection without Tailscale (extension/nat.cpp, docs/realtime-roadmap.md "Without Tailscale: design") ----
+// A peer "nat:<device id>" in the peers JSON is reached through nat.cpp: its synthetic address (198.18.0.0/15, the same on every computer)
+// stands for it wherever AOO and the hub's mix name it; datagrams to it go through `send`, and nat.cpp hands what it opens to rt_nat_rx.
+// With no Tailscale address here and nat active, rt_start binds loopback and hears only those peers. (Function pointers, so the tests that
+// build rtaudio.cpp alone need nothing from nat.cpp.)
+struct RtNat {
+  void *h;
+  bool (*resolve)(void *h, const char *peer, void *sockaddr_in_out);
+  bool (*up)(void *h, const void *sockaddr_in_p);
+  int (*send)(void *h, const void *sockaddr_in_p, const void *d, int n);
+  std::string (*self)(void *h); // this computer's synthetic "ip:port", as the others name it
+  bool (*active)(void *h);
+};
+void rt_set_nat(RtLink *l, const RtNat *nat); // null: none
+void rt_nat_rx(RtLink *l, const unsigned char *d, int n, const void *from_sockaddr_in);

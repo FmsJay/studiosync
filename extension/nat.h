@@ -1,15 +1,23 @@
-// StudioSync's Tailscale-free connection, the spike (docs/realtime-roadmap.md "Without Tailscale: design"). Not in the shipped extension:
-// only tests/nat_test.cpp builds it (with -DSTUDIOSYNC_NAT, libjuice and Monocypher from extension/third_party).
+// StudioSync's connection without Tailscale (docs/realtime-roadmap.md "Without Tailscale: design"). Stage 1: live audio's datagrams for the
+// bandmates the tailnet doesn't reach, while the studio has band.json "nat" on (lib/nat.lua decides who; extension/rtaudio.cpp sends to them
+// through the synthetic addresses below, so AOO's code doesn't change).
 //  - ICE (libjuice, MPL-2.0) finds a UDP path between two computers behind NATs: host, server-reflexive (STUN) or relayed (TURN).
-//  - The rendezvous is a folder: each side writes one signed file for the other (the studio's shared folder in the design, so Syncthing
-//    carries it and vouches for who wrote it); STUN/TURN is libjuice's own server, which a studio's hub can run.
+//  - The rendezvous is a folder: each side writes one signed file for the other (<studio>/_band/nat/<from>-<to>.json, so Syncthing carries
+//    it and vouches for who wrote it); STUN from a public list or the studio's own server.
 //  - Every datagram is sealed with XChaCha20-Poly1305 (Monocypher, CC0/BSD-2) under keys from a handshake that needs all three of: the
 //    studio secret, each computer's own static X25519 key (its public half in its devices file), and fresh ephemeral keys (forward secrecy).
+// shortcut: the handshake (nat_derive) is our own Noise-KK-style construction, not yet reviewed from outside; James deferred security reviews
+// until every feature is in (2026-11-19). Review it (or swap in Noise-C) before the setting is on by default.
 // GPL-3.0-or-later.
 #pragma once
 #include <cstddef>
 #include <cstdint>
 #include <string>
+
+#define NAT_SIGNAL_AGE 300 // s: a rendezvous file older than this is ignored (Syncthing can take a while; a replay gains nothing without the keys)
+#define NAT_PORT 47282     // the first of NAT_PORTS UDP ports libjuice binds (one per bandmate); the firewall rule covers the range
+#define NAT_PORTS 16
+#define NAT_AUDIO_PORT 47281 // the port in every synthetic address (198.18.0.0/15 + a hash of the device id): what live audio's AOO names
 
 struct NatKeys { unsigned char pub[32], priv[32]; };
 bool nat_random(void *p, size_t n); // the system's CSPRNG
@@ -38,6 +46,10 @@ struct NatLinkConfig {
   std::string stun_host; int stun_port = 0;   // "" : host candidates only
   std::string turn_user, turn_pass;           // set: also TURN on the same server
   int only = 0;                               // the test: 1 publish relayed candidates only (two strict NATs), 2 none on Tailscale
+  int port_lo = 0, port_hi = 0;               // libjuice's local port range (0: any)
+  double timeout_s = 30;                      // no path by then: failed
+  void (*on_data)(void *user, const char *d, size_t n) = nullptr; // each opened datagram (juice's thread); null: queued for nat_link_recv
+  void *user = nullptr;
 };
 struct NatLink;
 NatLink *nat_link_new(const NatLinkConfig &c);
@@ -50,3 +62,34 @@ bool nat_link_recv(NatLink *l, std::string &out);           // the next opened d
 void nat_link_inject(NatLink *l, const std::string &raw);   // the test: as if `raw` arrived from the network
 std::string nat_link_last_sealed(NatLink *l);               // the test: the last datagram as it went out
 std::string nat_link_status(NatLink *l);                    // state, the selected pair, counts, why
+void nat_link_path(NatLink *l, std::string &local, std::string &remote); // the chosen pair's kinds: host, srflx, prflx, relay ("": none yet)
+
+// ---- the studio's links (one hub per computer in REAPER: nat_global; tests make their own) ------------------------------------------------
+struct NatHub;
+NatHub *nat_hub_new();
+void nat_hub_free(NatHub *h);
+// {"folder":"<studio>/_band/nat","me":"<device id>","secret":"<studio secret>","key":"<private key file>","port":47282,
+//  "stun":["host:port",...],"peers":[{"device":"<id>","pub":"<64 hex>"},...]}: links to those peers kept up (the lower device id offers,
+// retried with a growing pause), the others dropped. -> how many peers, or -1 (bad JSON, no key: nat_hub_status's error says why).
+int nat_hub_setup(NatHub *h, const char *json);
+void nat_hub_stop(NatHub *h);           // every link down, nothing configured
+std::string nat_hub_status(NatHub *h);  // JSON: on, me, error, nat ("easy", "strict", "blocked", "unknown"), public, peers = { [device] = { state, path, local, remote, why, fails, up_s, sent, opened, refused } }
+// This computer's static key: the private half in `path` (made when missing, readable by this user only, never in a synced folder), -> the
+// public half as 64 hex, or "" and why.
+std::string nat_key_public(const std::string &path, std::string &why);
+bool nat_key_load(const std::string &path, NatKeys &k, bool create, std::string &why);
+
+// ---- live audio's side (extension/rtaudio.cpp): a bandmate reached this way has a synthetic IPv4 address, the same on every computer ------
+bool nat_is_synthetic(const void *sockaddr_in_p);                       // 198.18.0.0/15
+bool nat_resolve(NatHub *h, const char *peer, void *sockaddr_in_out);   // "nat:<device id>" (configured) -> its address
+bool nat_up(NatHub *h, const void *sockaddr_in_p);                      // that bandmate's link is up
+int nat_sendto(NatHub *h, const void *sockaddr_in_p, const void *d, int n); // -> n sent, -1 not (no link up, too big)
+typedef void (*nat_rx_fn)(void *user, const unsigned char *d, int n, const void *from_sockaddr_in);
+void nat_set_rx(NatHub *h, nat_rx_fn fn, void *user); // every opened datagram (libjuice's thread); null waits for a call in flight to end
+std::string nat_self(NatHub *h);  // "198.18.x.y:47281": this computer as the others name it ("" before nat_hub_setup)
+bool nat_active(NatHub *h);       // set up, with at least one peer
+NatHub *nat_global();             // REAPER's (the one StudioSync_Nat* drives and live audio uses)
+#ifndef NAT_STANDALONE
+struct reaper_plugin_info_t;
+extern "C" void nat_register(reaper_plugin_info_t *rec); // StudioSync_NatKey, NatSetup, NatStatus, NatStop (C linkage: reaper_menu.cpp declares it inside its extern "C" entry point)
+#endif

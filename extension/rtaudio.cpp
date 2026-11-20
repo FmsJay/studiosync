@@ -194,6 +194,8 @@ struct RtLink {
   std::atomic<rt_extra_fn> extra{ nullptr }; // (Hop's network leg: rt_set_extra)
   std::atomic<void *> extra_user{ nullptr };
   std::atomic<int> extra_in{ 0 };
+  std::atomic<const RtNat *> nat{ nullptr }; // (the connection without Tailscale, extension/nat.cpp: rt_set_nat)
+  bool nat_only = false;                     // (started with no Tailscale address: the socket on loopback, every peer through nat.cpp)
   std::atomic<double> hold_until{ 0 }; // (tests/rtaudio_test.cpp: rt_test_hold, Wi-Fi's bursts)
   double speed = 1;                    // (rt_test_speed: the adaptive buffer's timings this many times faster)
   // Play (rt_play): the live out Hop's send ring is read on the audio thread into its own AOO source. want_phop/play_send: rt_play's
@@ -252,6 +254,21 @@ bool addr_ok(const sockaddr_in &a, bool loopback)
 {
   const unsigned char *p = (const unsigned char *)&a.sin_addr;
   return (p[0] == 100 && p[1] >= 64 && p[1] <= 127) || (loopback && p[0] == 127);
+}
+// The connection without Tailscale (extension/nat.cpp): a bandmate it reaches has a synthetic address (198.18.0.0/15, the same on every
+// computer), which stands for it here exactly as a Tailscale address does; datagrams to it go through nat.cpp (sealed there, after our tag),
+// and what nat.cpp opens comes in through rt_nat_rx as if from that address. Nothing else changes: AOO, the hub's mix and the tags don't know.
+bool synthetic(const sockaddr_in &a) { const unsigned char *p = (const unsigned char *)&a.sin_addr; return p[0] == 198 && (p[1] == 18 || p[1] == 19); }
+bool peer_ok(RtLink *l, const sockaddr_in &a)
+{
+  if (!synthetic(a)) return addr_ok(a, l->loopback);
+  const RtNat *n = l->nat.load();
+  return n && n->up(n->h, &a);
+}
+int send_to(RtLink *l, const void *d, int len, const sockaddr_in &to)
+{
+  if (synthetic(to)) { const RtNat *n = l->nat.load(); return n ? n->send(n->h, &to, d, len) : -1; }
+  return (int)sendto(l->s, (const char *)d, len, 0, (const sockaddr *)&to, sizeof(to));
 }
 // This computer's Tailscale address, as direct.cpp tailscale_ip: where a UDP socket "connected" to 100.100.100.100 would send from.
 std::string tailscale_ip()
@@ -398,13 +415,13 @@ AooInt32 AOO_CALL send_fn(void *user, const AooByte *data, AooInt32 size, const 
   RtLink *l = (RtLink *)user;
   if (l->key.empty() || size <= 0 || size + 4 + TAG > MAX_DGRAM || addrlen < (AooAddrSize)sizeof(sockaddr_in)) return -1; // (no secret yet: nothing goes out)
   const sockaddr_in &to = *(const sockaddr_in *)address;
-  if (!addr_ok(to, l->loopback)) return -1;
+  if (!peer_ok(l, to)) return -1;
   memcpy(l->txbuf, MAGIC, 4);
   memcpy(l->txbuf + 4, data, (size_t)size);
   unsigned char t[32];
   tag_of(l->key, l->txbuf, 4 + (size_t)size, t);
   memcpy(l->txbuf + 4 + size, t, TAG);
-  const int n = (int)sendto(l->s, (const char *)l->txbuf, 4 + size + TAG, 0, (const sockaddr *)&to, sizeof(to));
+  const int n = send_to(l, l->txbuf, 4 + size + TAG, to);
   if (n > 0) l->sent.fetch_add(1, std::memory_order_relaxed);
   return n;
 }
@@ -512,18 +529,22 @@ std::unique_ptr<Slot> make_slot(RtLink *l, const std::string &peer)
 {
   std::unique_ptr<Slot> p(new Slot());
   p->peer = peer;
-  p->resolved = resolve(peer, l->loopback, p->addr, p->err);
+  const RtNat *nat = l->nat.load();
+  const bool via_nat = peer.compare(0, 4, "nat:") == 0;
+  if (via_nat) { p->resolved = nat && nat->resolve(nat->h, peer.c_str(), &p->addr); if (!p->resolved) p->err = "not set up for the connection without Tailscale yet"; }
+  else p->resolved = resolve(peer, l->loopback, p->addr, p->err);
   if (!p->resolved) return p;
+  const std::string me_s = via_nat ? nat->self(nat->h) : l->bind_s; // (what that peer calls this computer: its sinks for me are named from it)
   p->addr_s = addr_str(p->addr);
   p->sink_id = id_of(p->addr_s);
-  p->remote_sink_id = id_of(l->bind_s);
+  p->remote_sink_id = id_of(me_s);
   p->sink = AooSink_new(p->sink_id);
   if (!p->sink) { p->resolved = false; p->err = "no AOO sink"; return p; }
   p->sink->setEventHandler(sink_event, p.get(), kAooEventModePoll);
   p->sink->setLatency(BUF_FLOOR / 1000.0);
   p->sink->setPacketSize(1200);
   p->psink_id = id_of(p->addr_s + "/play");
-  p->premote_id = id_of(l->bind_s + "/play");
+  p->premote_id = id_of(me_s + "/play");
   p->psink = AooSink_new(p->psink_id);
   if (p->psink) {
     p->psink->setEventHandler(play_sink_event, p.get(), kAooEventModePoll);
@@ -531,7 +552,7 @@ std::unique_ptr<Slot> make_slot(RtLink *l, const std::string &peer)
     p->psink->setPacketSize(1200);
   }
   p->msink_id = id_of(p->addr_s + "/mix"); // (the hub's live mix: heard from this peer only while it's my hub; made for every peer, it costs nothing idle)
-  p->mremote_id = id_of(l->bind_s + "/mix");
+  p->mremote_id = id_of(me_s + "/mix");
   p->msink = AooSink_new(p->msink_id);
   if (p->msink) {
     p->msink->setEventHandler(mix_sink_event, p.get(), kAooEventModePoll);
@@ -718,7 +739,7 @@ void send_ctl(RtLink *l, const Slot &p, char kind, const unsigned char *d, int n
   unsigned char t[32];
   tag_of(l->key, l->txbuf, 5 + (size_t)n, t);
   memcpy(l->txbuf + 5 + n, t, TAG);
-  if (sendto(l->s, (const char *)l->txbuf, 5 + n + TAG, 0, (const sockaddr *)&p.addr, sizeof(p.addr)) > 0) l->sent.fetch_add(1, std::memory_order_relaxed);
+  if (send_to(l, l->txbuf, 5 + n + TAG, p.addr) > 0) l->sent.fetch_add(1, std::memory_order_relaxed);
 }
 void put_addr(std::vector<unsigned char> &o, const sockaddr_in &a) // (4 bytes of address, 2 of port, both as they are on the wire)
 {
@@ -996,6 +1017,59 @@ void reject(RtLink *l, const char *why, const sockaddr_in &from) // (and from wh
   l->last_reject = why;
   l->last_reject_from = addr_str(from);
 }
+// One datagram from a peer: from the socket (rx_loop) or opened by the connection without Tailscale (rt_nat_rx, libjuice's thread). The
+// AOO calls happen under cfg_mx either way, so the two never run them at once.
+void rx_one(RtLink *l, const unsigned char *d, int n, const sockaddr_in &from)
+{
+  l->received.fetch_add(1, std::memory_order_relaxed);
+  if (!peer_ok(l, from)) { reject(l, synthetic(from) ? "not reached without Tailscale now" : "not a Tailscale address", from); return; }
+  if (n >= 4 && memcmp(d, "SSH1", 4) == 0) { // (a hop's audio, extension/hopnet.cpp: same port, its own tag and key)
+    l->extra_in.fetch_add(1);
+    if (rt_extra_fn fn = l->extra.load()) fn(l->extra_user.load(), d, n, &from, (int)sizeof(from));
+    l->extra_in.fetch_sub(1);
+    return;
+  }
+  if (n >= 5 + TAG && memcmp(d, CTL, 4) == 0) { // (the hub's live mix: a control datagram, tagged as the rest)
+    std::lock_guard<std::mutex> g(l->cfg_mx);
+    if (l->key.empty()) { reject(l, "no studio secret here yet", from); return; }
+    unsigned char t[32];
+    tag_of(l->key, d, (size_t)n - TAG, t);
+    if (!same_tag(t, d + n - TAG)) { reject(l, "wrong studio secret", from); return; }
+    Slot *p = slot_of(l, from);
+    if (!p) { reject(l, "not one of the studio's computers here", from); return; }
+    handle_ctl(l, *p, d + 4, n - 4 - TAG, now_s());
+    return;
+  }
+  if (n < 4 + TAG + 4 || memcmp(d, MAGIC, 4) != 0) { reject(l, "not StudioSync audio", from); return; }
+  const AooByte *msg = d + 4;
+  const AooInt32 size = n - 4 - TAG;
+  {
+    std::lock_guard<std::mutex> g(l->cfg_mx);
+    if (l->key.empty()) { reject(l, "no studio secret here yet", from); return; }
+    unsigned char t[32];
+    tag_of(l->key, d, (size_t)n - TAG, t);
+    if (!same_tag(t, d + n - TAG)) { reject(l, "wrong studio secret", from); return; }
+    AooMsgType type;
+    AooId id;
+    AooInt32 onset;
+    if (aoo_parsePattern(msg, size, &type, &id, &onset) != kAooOk) { reject(l, "not an AOO message", from); return; }
+    Slot *p = slot_of(l, from);
+    if (!p) { reject(l, "not one of the studio's computers here", from); return; }
+    if (type == kAooMsgTypeSink && id == p->sink_id && p->sink) p->sink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
+    else if (type == kAooMsgTypeSink && id == p->psink_id && p->psink) p->psink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
+    else if (type == kAooMsgTypeSource && id == SRC_ID && l->src) l->src->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
+    else if (type == kAooMsgTypeSource && id == PLAY_ID && l->psrc) l->psrc->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
+    else if (type == kAooMsgTypeSink && id == p->msink_id && p->msink) { // (my hub's mix for me: when it last came, and since when unbroken)
+      const double now = now_s(), since = now - p->mix_at.load();
+      if (since > 0.1) p->mix_first.store(now);
+      else p->mix_gap.store(std::max(since, p->mix_gap.load() * 0.999)); // (the widest spacing lately, ~3 s to fade: how long a pause is only jitter)
+      p->mix_at.store(now);
+      p->msink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
+    } else if (type == kAooMsgTypeSource && id == MIX_ID && p->msrc) p->msrc->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
+    else { reject(l, "for a stream that isn't theirs", from); return; }
+  }
+  l->wake.set(); // (replies and resend requests go out now)
+}
 void rx_loop(RtLink *l)
 {
   std::vector<unsigned char> buf(AOO_MAX_PACKET_SIZE + 64);
@@ -1006,59 +1080,20 @@ void rx_loop(RtLink *l)
     socklen_t fl = sizeof(from);
     const int n = (int)recvfrom(l->s, (char *)buf.data(), (int)buf.size(), 0, (sockaddr *)&from, &fl);
     if (n <= 0 || fl < (socklen_t)sizeof(from)) continue; // (the receive timeout: a look at run)
-    l->received.fetch_add(1, std::memory_order_relaxed);
-    if (!addr_ok(from, l->loopback)) { reject(l, "not a Tailscale address", from); continue; }
-    if (n >= 4 && memcmp(buf.data(), "SSH1", 4) == 0) { // (a hop's audio, extension/hopnet.cpp: same port, its own tag and key)
-      l->extra_in.fetch_add(1);
-      if (rt_extra_fn fn = l->extra.load()) fn(l->extra_user.load(), buf.data(), n, &from, (int)sizeof(from));
-      l->extra_in.fetch_sub(1);
-      continue;
-    }
-    if (n >= 5 + TAG && memcmp(buf.data(), CTL, 4) == 0) { // (the hub's live mix: a control datagram, tagged as the rest)
-      std::lock_guard<std::mutex> g(l->cfg_mx);
-      if (l->key.empty()) { reject(l, "no studio secret here yet", from); continue; }
-      unsigned char t[32];
-      tag_of(l->key, buf.data(), (size_t)n - TAG, t);
-      if (!same_tag(t, buf.data() + n - TAG)) { reject(l, "wrong studio secret", from); continue; }
-      Slot *p = slot_of(l, from);
-      if (!p) { reject(l, "not one of the studio's computers here", from); continue; }
-      handle_ctl(l, *p, buf.data() + 4, n - 4 - TAG, now_s());
-      continue;
-    }
-    if (n < 4 + TAG + 4 || memcmp(buf.data(), MAGIC, 4) != 0) { reject(l, "not StudioSync audio", from); continue; }
-    const AooByte *msg = buf.data() + 4;
-    const AooInt32 size = n - 4 - TAG;
-    {
-      std::lock_guard<std::mutex> g(l->cfg_mx);
-      if (l->key.empty()) { reject(l, "no studio secret here yet", from); continue; }
-      unsigned char t[32];
-      tag_of(l->key, buf.data(), (size_t)n - TAG, t);
-      if (!same_tag(t, buf.data() + n - TAG)) { reject(l, "wrong studio secret", from); continue; }
-      AooMsgType type;
-      AooId id;
-      AooInt32 onset;
-      if (aoo_parsePattern(msg, size, &type, &id, &onset) != kAooOk) { reject(l, "not an AOO message", from); continue; }
-      Slot *p = slot_of(l, from);
-      if (!p) { reject(l, "not one of the studio's computers here", from); continue; }
-      if (type == kAooMsgTypeSink && id == p->sink_id && p->sink) p->sink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
-      else if (type == kAooMsgTypeSink && id == p->psink_id && p->psink) p->psink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
-      else if (type == kAooMsgTypeSource && id == SRC_ID && l->src) l->src->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
-      else if (type == kAooMsgTypeSource && id == PLAY_ID && l->psrc) l->psrc->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
-      else if (type == kAooMsgTypeSink && id == p->msink_id && p->msink) { // (my hub's mix for me: when it last came, and since when unbroken)
-        const double now = now_s(), since = now - p->mix_at.load();
-        if (since > 0.1) p->mix_first.store(now);
-        else p->mix_gap.store(std::max(since, p->mix_gap.load() * 0.999)); // (the widest spacing lately, ~3 s to fade: how long a pause is only jitter)
-        p->mix_at.store(now);
-        p->msink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
-      } else if (type == kAooMsgTypeSource && id == MIX_ID && p->msrc) p->msrc->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
-      else { reject(l, "for a stream that isn't theirs", from); continue; }
-    }
-    l->wake.set(); // (replies and resend requests go out now)
+    rx_one(l, buf.data(), n, from);
   }
 }
 } // namespace
 
 RtLink *rt_new() { return new RtLink(); }
+void rt_set_nat(RtLink *l, const RtNat *nat) { if (l) l->nat.store(nat); }
+void rt_nat_rx(RtLink *l, const unsigned char *d, int n, const void *from)
+{
+  if (!l || !l->run.load() || n <= 0) return;
+  const sockaddr_in &a = *(const sockaddr_in *)from;
+  if (!synthetic(a)) return; // (only what nat.cpp opened, named by its synthetic address)
+  rx_one(l, d, n, a);
+}
 void rt_free(RtLink *l)
 {
   if (!l) return;
@@ -1079,14 +1114,17 @@ int rt_start(RtLink *l, int first_input, int nch, int kbps, int port, const char
   static bool wsa = false;
   if (!wsa) { WSADATA w; wsa = WSAStartup(MAKEWORD(2, 2), &w) == 0; }
 #endif
-  const std::string ip = bind_ip && *bind_ip ? std::string(bind_ip) : tailscale_ip();
+  std::string ip = bind_ip && *bind_ip ? std::string(bind_ip) : tailscale_ip();
+  const RtNat *nat = l->nat.load();
+  l->nat_only = ip.empty() && nat && nat->active(nat->h); // (no Tailscale here, but bandmates reached without it: they're all that's heard)
+  if (l->nat_only) ip = "127.0.0.1";
   if (ip.empty()) { l->err = "Tailscale isn't up here (no 100.64.0.0/10 address)"; return 0; }
   sockaddr_in me{};
   me.sin_family = AF_INET;
   me.sin_port = htons((unsigned short)port);
   if (inet_pton(AF_INET, ip.c_str(), &me.sin_addr) != 1) { l->err = "bad address"; return 0; }
-  l->loopback = ip.compare(0, 4, "127.") == 0;
-  if (!addr_ok(me, l->loopback)) { l->err = "not a Tailscale address"; return 0; }
+  l->loopback = ip.compare(0, 4, "127.") == 0 && !l->nat_only; // (nat_only: nothing local is taken as a peer)
+  if (!l->nat_only && !addr_ok(me, l->loopback)) { l->err = "not a Tailscale address"; return 0; }
   sock_t s = socket(AF_INET, SOCK_DGRAM, 0);
   if (s == BAD_SOCK) { l->err = "no socket"; return 0; }
   if (bind(s, (const sockaddr *)&me, sizeof(me)) != 0) { close_sock(s); l->err = "UDP " + std::to_string(port) + " is taken on " + ip; return 0; }
@@ -1227,8 +1265,8 @@ int rt_send_raw(RtLink *l, const void *d, int n, const void *addr, int addrlen)
   if (!l || !d || n <= 0 || n > MAX_DGRAM || !addr || addrlen < (int)sizeof(sockaddr_in)) return -1;
   const sockaddr_in &to = *(const sockaddr_in *)addr;
   std::lock_guard<std::mutex> g(l->cfg_mx); // (rt_stop closes the socket under this lock)
-  if (!l->run.load() || l->s == BAD_SOCK || !addr_ok(to, l->loopback)) return -1;
-  return (int)sendto(l->s, (const char *)d, n, 0, (const sockaddr *)&to, sizeof(to));
+  if (!l->run.load() || l->s == BAD_SOCK || !peer_ok(l, to)) return -1;
+  return send_to(l, d, n, to);
 }
 
 std::string rt_status(RtLink *l)
