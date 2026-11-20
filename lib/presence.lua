@@ -7,7 +7,7 @@
 --   Ping: the radial menu's "Ping here" puts a marker at a spot on everyone's timeline for a while.
 local band = require("band")
 local presence = {}
-presence.HOLD = 15       -- seconds a changed object stays held by whoever changed it
+presence.HOLD = 3        -- seconds a changed object counts as being edited by whoever changed it: said, never put back (rt-merge, docs/rt/rt-merge.md)
 presence.PING_SHOWN = 30 -- seconds a ping's marker stays
 presence.MARK = "[ping] " -- a ping's marker name starts so (never part of the band's markers: band.is_local_mark)
 
@@ -152,13 +152,17 @@ end
 presence.FILE_QUIET, presence.HEARTBEAT = 30, 15
 -- Does the link reach everyone here (each one's last send or ping answered; nobody here counts too)? -> true and those reached ("\n"-joined,
 -- sorted), or false. One here whose computer isn't in the link's list (no Tailscale name, not trusted yet) isn't reached.
+-- "Here" for this: a status written in the last READERS s, not presence.peers' 45 s. Someone whose status went old here (Syncthing behind, a
+-- dialog holding their Live sync) isn't on this computer's list, so gets none of its link messages and reads only the file: written every
+-- FILE_QUIET s, it looked older than 45 s to them whenever Syncthing took over 15 s, and they dropped this computer in turn. rt-roomlist
+presence.READERS = 120
 function presence.link_carries(cfg, song, room)
   local direct = require("direct")
   if not (direct.available() and direct.live_available() and direct.ensure(cfg)) then return false, "" end
   local reach, users = direct.reach(cfg, song, room), {}
-  for _, st in ipairs(presence.peers(cfg, song, room)) do
-    if not (reach[st.user] and reach[st.user].ok) then return false, "" end
-    users[#users + 1] = st.user
+  for _, user in ipairs(presence.here(cfg, song, room, presence.READERS)) do
+    if not (reach[user] and reach[user].ok) then return false, "" end
+    users[#users + 1] = user
   end
   table.sort(users)
   return true, table.concat(users, "\n")

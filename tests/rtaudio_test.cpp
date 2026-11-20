@@ -462,7 +462,23 @@ static void not_here_test()
     rt_capture(Y, ii, 1, LEN, SR); rt_mix(Y, oo, 2, LEN, SR);
   }
   const std::string sy = rt_status(Y);
+  // (rt-roomlist: each sender off the list apart, how long ago; and once Y lists X, how long ago X's last datagram came: Live sync keeps X while
+  // it sends, lib/liveaudio.lua heard_merge)
+  const size_t nhp = sy.find("\"not_here_peers\":{\"" + std::string(px) + "\":{\"ago\":");
+  const double nh_ago = nhp == std::string::npos ? -1 : atof(sy.c_str() + sy.find("\"ago\":", nhp) + 6);
+  rt_peers(Y, (std::string("{\"peers\":[\"") + px + "\"],\"port\":" + std::to_string(PY) + ",\"secret\":\"studio\"}").c_str());
+  const auto t1 = std::chrono::steady_clock::now();
+  for (long long b = 0; b * LEN < SR; ++b) { // (1 s more, Y listing X now)
+    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count() < (double)b * LEN / SR) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    rt_capture(X, ii, 1, LEN, SR); rt_mix(X, oo, 2, LEN, SR);
+    rt_capture(Y, ii, 1, LEN, SR); rt_mix(Y, oo, 2, LEN, SR);
+  }
+  const std::string sy2 = rt_status(Y);
   rt_free(X); rt_free(Y);
+  const std::string heard = field(sy2, px, "heard_ago");
+  printf("     not here: X in Y's not_here_peers %.2f s ago; once listed, X heard %s s ago\n", nh_ago, heard.c_str());
+  check(nh_ago >= 0 && nh_ago < 0.5, "not here: each sender off the list is in not_here_peers, heard just now");
+  check(!heard.empty() && atof(heard.c_str()) < 0.5, "not here: once listed, its heard_ago says it still sends (Live sync keeps a peer it hears)");
   printf("     not here: Y dropped %s of X's datagrams as not on its list (from %s), refused %s (last: %s)\n", field(sy, "", "not_here").c_str(),
          field(sy, "", "not_here_from").c_str(), field(sy, "", "rejected").c_str(), field(sy, "", "last_reject").c_str());
   check(atoll(field(sy, "", "not_here").c_str()) > 0 && field(sy, "", "not_here_from") == "\"" + std::string(px) + "\"",
@@ -557,6 +573,7 @@ static void start_order_test()
 int main(int argc, char **argv)
 {
   if (argc > 1 && strcmp(argv[1], "underruns") == 0) { drift_tests(); trim_test(); switch_test(); rescue_test(); spike_tests(); clock_tests(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
+  if (argc > 1 && strcmp(argv[1], "nothere") == 0) { not_here_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "startorder") == 0) { start_order_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "hubload") == 0) { hub_loads(true); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   const int SR = 48000, LEN = 256, PA = 47391, PB = 47392, PC = 47393;

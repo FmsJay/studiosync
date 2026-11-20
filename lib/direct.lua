@@ -320,8 +320,40 @@ function direct.paths()
   local services = require("services")
   local exe = services.tailscale_exe and services.tailscale_exe()
   local out = exe and services.run_hidden("ts-peers", '"' .. exe .. '" status --json', 30)
-  if out and out ~= paths_seen.text and out:find("}%s*$") then paths_seen.text, paths_seen.map = out, direct.paths_in(out) end -- (a half-written answer: the last whole one)
+  if out and out ~= paths_seen.text and out:find("}%s*$") then paths_seen.text, paths_seen.map, paths_seen.ips = out, direct.paths_in(out), direct.ips_in(out) end -- (a half-written answer: the last whole one)
   return paths_seen.map
+end
+-- Each computer's Tailscale address -> its name (lower case, no last dot), from the same answer. Pure. (rt-roomlist: whose live audio comes
+-- here while this room doesn't list it: lib/liveaudio.lua peer_of_addr)
+function direct.ips_in(json)
+  local out, j = {}, band.json_decode(tostring(json or ""))
+  for _, p in pairs(type(j) == "table" and type(j.Peer) == "table" and j.Peer or {}) do
+    local name = type(p) == "table" and type(p.DNSName) == "string" and p.DNSName:gsub("%.$", ""):lower()
+    for _, ip in ipairs(name and name ~= "" and type(p.TailscaleIPs) == "table" and p.TailscaleIPs or {}) do
+      if type(ip) == "string" then out[ip] = name end
+    end
+  end
+  return out
+end
+function direct.ip_names() direct.paths(); return paths_seen.ips or {} end
+-- A studio computer by its Tailscale name ("name:port", any case), here or not: its own computer wrote its devices file (trust.device_ok, as
+-- refresh_peers asks) and a guest's list has the song. -> its peer as the list writes it, and its user; nil when it isn't one (or Syncthing
+-- hasn't said yet). (rt-roomlist: live audio heard from a computer this room doesn't list yet)
+function direct.studio_peer(cfg, song, peer)
+  local t = require("groups").tailnet(cfg.root)
+  local host = tostring(peer):match("^(.-):%d+$")
+  if not (t and host) then return nil end
+  local mine = {}
+  for _, d in ipairs(devices(cfg.root)) do
+    local name = type(d.ts) == "table" and d.ts[t.suffix]
+    if type(name) == "string" and name:lower() == host:lower() then mine[#mine + 1] = d end
+  end
+  local trust, access = require("trust"), require("access")
+  local list, _, users = direct.peers_from(mine, t.suffix, require("services").my_device_id(), direct.port(), nil, function(d)
+    local ok, said = pcall(trust.device_ok, cfg.root, d.user, d.device)
+    return ok and said == true and access.shows(access.read(cfg.root, d.device), song)
+  end)
+  if list[1] then return list[1], users[list[1]] end
 end
 -- Whose computer a peer ("name:port") is: the person's name from the studio's devices files, else the computer's first name. Pure.
 function direct.who_of(devs, peer)

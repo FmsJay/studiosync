@@ -579,6 +579,45 @@ function liveaudio.hub_tick(cfg, b, list, users, st)
     or ("live audio: peer to peer" .. (why and (" (the hub's mix: " .. why .. ")") or "")))
 end
 
+-- ---- a studio computer that sends here before this room lists it (rt-roomlist) ---------------------------------------------------------
+-- Its live audio comes (tagged with the studio's secret) because its room lists this computer; this room lists it later (its status read
+-- late here: Syncthing behind, its Live sync held by a dialog, the quiet status file) or not at all, and meanwhile the audio was one-way
+-- (rt-small's not_here; the Mac's mix without the desktop, rt-hubfix). So such a computer is on the list here while it keeps sending (heard
+-- within HEARD_S: it stops once its room drops this one), whether this room lists it yet or not. Never one that isn't a studio computer
+-- trusted here: direct.studio_peer, as the room's own list.
+liveaudio.HEARD_S = 15
+-- Pure. list: the room's peers here; st: the extension's status (not_here_peers: address -> { ago }; peers[peer].heard_ago); peer_of(addr) ->
+-- the peer ("name:port") and its user when it's a studio computer trusted here, else nil; kept: peer -> { at, user } (kept between calls,
+-- changed here); now. -> the list with the heard ones added (new, sorted), and peer -> user for those.
+function liveaudio.heard_merge(list, st, peer_of, kept, now)
+  local listed, out, users = {}, {}, {}
+  for _, p in ipairs(list or {}) do listed[p] = true; out[#out + 1] = p end
+  for addr, e in pairs(type(st.not_here_peers) == "table" and st.not_here_peers or {}) do
+    local ago = type(e) == "table" and tonumber(e.ago)
+    if ago and ago < liveaudio.HEARD_S then
+      local peer, user = peer_of(addr)
+      if peer and not listed[peer] then kept[peer] = { at = math.max(now - ago, kept[peer] and kept[peer].at or -math.huge), user = user } end
+    end
+  end
+  for peer, k in pairs(kept) do
+    local p = type(st.peers) == "table" and st.peers[peer]
+    local ago = type(p) == "table" and tonumber(p.heard_ago)
+    if ago then k.at = math.max(k.at, now - ago) end
+    if listed[peer] or now - k.at > liveaudio.HEARD_S then kept[peer] = nil else out[#out + 1] = peer; users[peer] = k.user end
+  end
+  table.sort(out)
+  return out, users
+end
+-- A not_here address ("100.x.y.z:port") -> the studio computer's peer and user, or nil: its Tailscale name from `tailscale status`, then the
+-- studio's devices files (direct.studio_peer). The connection without Tailscale's synthetic addresses aren't looked up (lib/nat.lua lists those).
+function liveaudio.peer_of_addr(cfg, song, addr)
+  local direct = require("direct")
+  local ip, port = tostring(addr):match("^(%d+%.%d+%.%d+%.%d+):(%d+)$")
+  local name = ip and tonumber(port) == direct.port() and direct.ip_names()[ip]
+  if not name then return nil end
+  return direct.studio_peer(cfg, song, name .. ":" .. port)
+end
+
 -- Live sync's tick (the song in front drives it: one engine per computer). Never raises (band.try around it).
 function liveaudio.tick(cfg, b, proj)
   local now = reaper.time_precise()
@@ -620,6 +659,23 @@ function liveaudio.tick(cfg, b, proj)
   local list, dev_of, users = direct.peers(cfg, b and b.song, b and b.room)
   local nok, nlist, nusers, ndevs = pcall(nat.peers, cfg, b) -- (bandmates the tailnet doesn't reach: "nat:<device>" in place of their Tailscale name)
   if nok and type(nlist) == "table" and #nlist > 0 then list, users = nat.merge(list, dev_of, users, nlist, nusers, ndevs) end
+  if b and b.song then -- (and those whose live audio comes here though this room doesn't list them yet: rt-roomlist)
+    S.heard = S.heard or {}
+    local hl, hu = liveaudio.heard_merge(list, st, function(addr) return liveaudio.peer_of_addr(cfg, b.song, addr) end, S.heard, now)
+    if #hl > #list then
+      local u = {}
+      for k, v in pairs(users or {}) do u[k] = v end
+      for k, v in pairs(hu) do
+        u[k] = v
+        S.heard_said = S.heard_said or {}
+        if not S.heard_said[k] then
+          S.heard_said[k] = true
+          band.log("live audio: " .. tostring(v) .. "'s computer sends here before this room lists it (its status is late here), so it's heard and hears you meanwhile")
+        end
+      end
+      list, users = hl, u
+    end
+  end
   if type(users) == "table" then -- (who each peer is, for the panel and the actions: the cue mix and talkback go by name)
     local names = band.json_encode(users)
     if names ~= S.names then reaper.SetExtState(band.SECTION, "live audio names", names, false); S.names = names end
@@ -755,7 +811,9 @@ function liveaudio.health_text(st, names, theirs, s, src, sending, hubp)
     text = text .. string.format("; refused %d (last: %s%s)", st.rejected, tostring(st.last_reject), from)
   end
   -- (the studio's secret, but not on this computer's list for the room: it hears you, you don't take it in. Not a refusal: rt-small)
-  if (tonumber(st.not_here) or 0) > 0 and type(st.not_here_from) == "string" and st.not_here_from ~= "" then
+  local nh_now = type(st.not_here_peers) ~= "table" -- (an extension from before not_here_peers: the count alone, as before. rt-roomlist)
+  for _, e in pairs(type(st.not_here_peers) == "table" and st.not_here_peers or {}) do nh_now = nh_now or (type(e) == "table" and (tonumber(e.ago) or math.huge) < 5) end
+  if nh_now and (tonumber(st.not_here) or 0) > 0 and type(st.not_here_from) == "string" and st.not_here_from ~= "" then
     text = text .. "; " .. st.not_here_from .. " sends here but isn't in this room here yet (its status may be old here), so it isn't heard"
   end
   return ok and #heard + #each > 0, text
