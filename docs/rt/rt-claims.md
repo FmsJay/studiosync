@@ -86,6 +86,33 @@ docs/clashes.md.
   claim of a bandmate who is here. The edit is made, so `mirror.watch` holds it and asks. The reply carries `ask = "Chilio"`, and daw.js
   says "Asked Chilio for it…". The Mixer page, the phone's take picker and live keys still refuse as before (`dawedit.item_refusal`).
 
+## A track's rename and the claim on it (REAPER check, 0.59.49.73)
+
+**What went wrong.** The desktop held an auto-claim on XT Drums A. The laptop renamed it XT Drums A2: nobody was asked, the laptop
+auto-claimed the new name, and the desktop's claim stayed on the old one. Claims are by track name. Since rt-merge, an edit to a bandmate's
+auto-claimed track goes out when it doesn't touch the setting they changed (`opts.soft`), and the name was just another setting.
+
+**The fix.**
+- **A rename is never one of those.** In `W.one`, a track whose name differs from the band's last version skips the soft path, so it's
+  judged against the claim on the **old** name like any edit to a lasting claim. Claims: held and asked for (Keep puts the name back).
+  Driver only and Admins only: refused as before. Open: free.
+- **A legitimate rename takes the claim along.** The claimer's own rename, or the asker's once released, goes through `W.send`'s
+  `sync.claim_renamed`. `sync.set_claims` now carries the claim's date, its auto-claim mark and its track id (`oids`) to the new name.
+- **`oids` no longer keeps stale names.** `set_claims` keeps an id only for a name that's still claimed. A stale id could send a later
+  claim on that name after a different track (`sync.follow_claims` reads a name's id and follows that track).
+- **`sync.follow_claims`** (your claim following its track when someone else renamed it: Open mode, or an older StudioSync) now goes
+  through `set_claims` on a rename. Before, it wrote the file directly: an auto-claim turned lasting, and the others kept the old name
+  until Syncthing brought the file.
+
+**Not done.** Only the sender judges the rename. A receiver still accepts a rename event by its new name (`sync.obj_allowed`), so a
+computer on a StudioSync before this fix can still rename a claimed track for everyone. Its claimer's Live sync then moves the claim to
+the new name (`follow_claims`); if the renamer's old version also auto-claimed the new name, theirs is the newer claim and wins, as for
+any contested claim. Once every computer is updated this can't happen. Judging on receive needs the change's
+base version and risks refusing a released rename that arrives before the claim does, so it's left for the security pass.
+
+**Also from that check:** the web page's grant was in the log twice (`grants.set`, then webui). `grants.web_action` now returns words
+only for a refusal.
+
 ## Files
 
 - New: `lib/claimask.lua`, `lib/grants.lua` and `tests/test_0_60_rt_claims.lua`, which also covers Open, the `everyone` read, grants,

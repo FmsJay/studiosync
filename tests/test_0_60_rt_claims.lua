@@ -250,7 +250,9 @@ admins.Chilio = true
 assert(grants.set(C, "S", "main", "Guest Kim", false):find("took back Guest Kim's editing"), "another admin revokes, logged")
 assert(not can("Guest Kim", "Keys", 1) and can("Chilio", "Keys", 1), "revoked; the other grant stays")
 T = T + 1
-assert(grants.web_action(J, B, { user = "Guest Kim", on = true }):find("the web page: James let Guest Kim edit"), "the web page's Let edit")
+local n_log = #logged
+assert(grants.web_action(J, B, { user = "Guest Kim", on = true }) == nil and #logged == n_log + 1 and logged[#logged]:find("James let Guest Kim edit"),
+  "the web page's Let edit: in the log once (grants.set's line; webui logs only what web_action returns)")
 assert(can("Guest Kim", "Keys", 1), "granted again")
 assert(grants.web_action(C, B, { user = "x\ny", on = true }):find("not a name"), "names are plain")
 admins.Chilio = nil
@@ -289,4 +291,171 @@ end
 src = io.open("lib/webui/app.js", "rb"); local js = src:read("a"); src:close()
 assert(js:find("topic: 'claimask', id: q.id, answer", 1, true) and js:find("asks(p.asks || {})", 1, true), "the web page shows asks and answers them")
 assert(js:find("topic: 'grants', user: x.user, on: !granted", 1, true) and require("webui").ACTIONS.grants, "the web page's Let edit / Revoke reach grants.web_action")
+
+-- ---- a track's rename and the claim on it, through whole looks (REAPER check, 0.59.49.73) ----------------------------------------------
+-- The desktop held an auto-claim on XT Drums A; the laptop renamed it XT Drums A2, nobody was asked, the laptop auto-claimed the new name
+-- and the desktop's claim stayed on the old one. Two computers in the chunk-faithful stand-in REAPER (tests/fixtures/editreaper.lua), each
+-- look wired as Live sync wires it: the real sync.authority, claimask's soft, hold, on_sent and flush, sync.receive and sync.follow_claims.
+do
+  package.path = "tests/fixtures/?.lua;" .. package.path
+  local E = require("editreaper")
+  local real_date = os.date
+  os.date = function(fmt, t) return real_date(fmt, t or T) end -- (one clock for the events and the claims)
+  band.read_json = function(path) local v = files[path]; if type(v) == "table" then return band.json_decode(band.json_encode(v)) end end
+  band.write_json = function(path, v) files[path] = band.json_decode(band.json_encode(v)); return true end
+  package.loaded.direct = nil -- (the real one from here, its messages onto the same wire: a look lists the link's inbox too)
+  require("direct").send_live = function(cfg, kind, d) wire[#wire + 1] = { kind = kind, d = d, from = cfg.user }; return true end
+  require("prints").choose = function() end
+  package.loaded.groups.takes_to_lanes = function() return false end
+  claimask._reset()
+  sync.live_claims, wire, logged = {}, {}, {}
+  local SONG, sess = "Ren", { host = "James", markers = {} }
+  local b = { song = SONG, room = "main" }
+  local RD = "R/Ren/rooms/main"
+  local function computer(user, path)
+    local c = { F = E.new(path), cfg = { user = user, root = "R" } }
+    c.F.reaper.MB = function() return 6 end
+    c.F.reaper.GetMousePosition = function() return 0, 0 end
+    c.F.reaper.file_exists = function(p) return not p:find("%.json$") or files[p] ~= nil end -- (a claims file that isn't there isn't "busy")
+    return c
+  end
+  local A, L = computer("James", "C:/A/Ren.rpp"), computer("Bee", "C:/B/Ren.rpp")
+  local by_user = { James = A, Bee = L }
+  here = { James = true, Bee = true }
+  local function as(c) reaper = c.F.reaper end
+  local function link() -- the direct link: claims to everyone, an ask and its answer to whoever it's for
+    while #wire > 0 do
+      local m = table.remove(wire, 1)
+      if m.kind == "claim" then sync.live_claim(SONG, "main", m.d)
+      elseif m.kind == "claim_ask" then as(by_user[m.d.to]); claimask.on_ask(by_user[m.d.to].cfg, b, m.d)
+      elseif m.kind == "claim_answer" then as(by_user[m.d.to]); claimask.on_answer(by_user[m.d.to].cfg, b, m.d) end
+    end
+  end
+  local seen = {}
+  local function new_events()
+    local out = {}
+    for p, v in pairs(files) do
+      if not seen[p] then
+        seen[p] = true
+        if p:find("/events/", 1, true) and type(v) == "table" and v.oid then out[v.oid] = v end
+      end
+    end
+    return out
+  end
+  local function look(c)
+    as(c)
+    c.F.clock = c.F.clock + 1
+    local may, w = sync.authority(c.cfg, SONG, "main", sess)
+    sync.driver_name, sync.room_mode = w.driver, w.mode
+    mirror.watch(c.F.proj, c.cfg, SONG, "main", { can = may, owner_can = may, mode = w.mode, is_claimed = w.is_claimed, owner_of = w.owner_of, quick = true,
+      soft = function(name, pos) return claimask.soft(w, name, pos, c.cfg.user) end,
+      ask = function(name, pos) return claimask.hold(c.cfg, b, w, name, pos) end, sent = claimask.on_sent })
+    claimask.flush(c.cfg, b, w, false)
+    link()
+    as(c)
+    return new_events()
+  end
+  local function settle(c)
+    for _ = 1, 20 do
+      if next(look(c)) == nil and not mirror.more and not mirror.unsettled then return end
+      mirror.unsettled = nil
+    end
+    error("never settled")
+  end
+  local function recv(c)
+    as(c)
+    for _ = 1, 20 do
+      c.F.clock = c.F.clock + 1
+      local may, w = sync.authority(c.cfg, SONG, "main", sess)
+      sync.soft = { room = "main", fn = function(name, pos, user) return claimask.soft(w, name, pos, user) end }
+      local got = sync.receive(c.F.proj, c.cfg, SONG, "main", may)
+      if (tonumber(got) or 0) == 0 and not sync.backlog and not sync.read_cut then break end
+    end
+    sync.follow_claims(c.F.proj, c.cfg, SONG, "main") -- (Live sync's, every few seconds: your claim goes with its track's new name)
+    link()
+    settle(c)
+  end
+  local function mine(c) return files[RD .. "/claims/" .. c.cfg.user .. ".json"] or {} end
+  local function auth() return select(2, sync.authority(A.cfg, SONG, "main", sess)) end
+  local function told(pattern) for _, l in ipairs(logged) do if l:find(pattern) then return l end end end
+  local function name_of(c, t) as(c); return select(2, reaper.GetTrackName(t)) end
+  local function rename(c, t, to) as(c); reaper.GetSetMediaTrackInfo_String(t, "P_NAME", to, true) end
+
+  -- the song, shared; then long enough that sharing it is nobody's work in progress
+  local drums = A.F.add_track("Drums")
+  A.F.add_track("Bass")
+  settle(A); A.F.clock = A.F.clock + 70; settle(A)
+  recv(L); L.F.clock = L.F.clock + 70; settle(L)
+  T = T + sync.AUTO_IDLE + 120
+  local oid = drums.ext.band_oid
+  as(L)
+  local ldrums = mirror.find(L.F.proj, "track", oid)
+  assert(oid and ldrums and name_of(L, ldrums) == "Drums" and not auth().tracks.drums, "the song is on both, and nothing is claimed any more")
+  -- the desktop turns Drums down: its auto-claim
+  as(A); reaper.SetMediaTrackInfo_Value(drums, "D_VOL", 0.5)
+  T = T + 2; settle(A); T = T + 2; recv(L)
+  assert(auth().tracks.drums.user == "James" and auth().tracks.drums.auto, "Drums is James's auto-claim")
+  -- 1. the laptop renames it: held and asked for, not sent, nothing claimed for the renamer
+  logged = {}
+  rename(L, ldrums, "Drums 2")
+  T = T + 2
+  local out = look(L)
+  assert(not out[oid], "a rename of a bandmate's auto-claimed track: not sent\n" .. table.concat(logged, "\n"))
+  assert(told("^asked James to release Drums") and name_of(L, ldrums) == "Drums 2", "James is asked for Drums (the claim on its old name), the rename held here")
+  local q = claimask.model(b).incoming[1]
+  assert(q and q.from == "Bee" and q.what == "Drums", "James sees Bee wants to edit Drums")
+  assert(not auth().tracks["drums 2"] and #(mine(L).tracks or {}) == 0, "the new name isn't claimed for the renamer")
+  -- Keep: the name goes back
+  as(A); claimask.answer(A.cfg, b, q.id, false); link()
+  out = look(L)
+  assert(not out[oid] and name_of(L, ldrums) == "Drums" and told("James kept Drums"), "kept: the track is Drums again here, nothing sent")
+  assert(auth().tracks.drums.user == "James" and name_of(A, drums) == "Drums", "James's claim and track as they were")
+  settle(L)
+  -- Release: the rename goes to everyone, and the claim goes to the renamer under the new name
+  L.F.clock = L.F.clock + claimask.COOLDOWN + 1
+  rename(L, ldrums, "Drums 2")
+  T = T + 2
+  look(L)
+  q = claimask.model(b).incoming[1]
+  assert(q and q.what == "Drums", "asked again")
+  as(A); claimask.answer(A.cfg, b, q.id, true); link()
+  out = look(L)
+  assert(out[oid] and out[oid].state.name == "Drums 2", "released: the rename goes out")
+  settle(L)
+  local c = mine(L)
+  assert(#c.tracks == 1 and c.tracks[1] == "Drums 2" and c.auto["tracks:drums 2"] and not c.auto["tracks:drums"], "the claim is Bee's, under the new name, still an auto-claim")
+  assert(not has(mine(A).tracks, "Drums") and not has(mine(A).tracks, "Drums 2"), "and out of James's file")
+  T = T + 2; recv(A)
+  assert(name_of(A, drums) == "Drums 2" and auth().tracks["drums 2"].user == "Bee" and not auth().tracks.drums, "everyone has the new name, claimed by Bee; the old name is nobody's")
+  -- 2. the claimer renames their own: the claim, its date, its auto mark and its track id follow, and no id is left under the old name
+  as(L); sync.follow_claims(L.F.proj, L.cfg, SONG, "main")
+  c = mine(L)
+  local since = c.since["tracks:drums 2"]
+  assert(c.oids["drums 2"] == oid and since, "the claim knows its track")
+  rename(L, ldrums, "Kit")
+  T = T + 2
+  out = look(L)
+  assert(out[oid] and out[oid].state.name == "Kit", "the claimer's own rename goes out, nobody asked")
+  settle(L)
+  c = mine(L)
+  assert(#c.tracks == 1 and c.tracks[1] == "Kit" and c.since["tracks:kit"] == since and c.auto["tracks:kit"], "the claim follows, dated as it was")
+  assert(c.oids.kit == oid and c.oids["drums 2"] == nil and c.since["tracks:drums 2"] == nil, "no id or date left under the old name")
+  T = T + 2; recv(A)
+  assert(auth().tracks.kit.user == "Bee" and not auth().tracks["drums 2"], "on the desktop too")
+  -- 3. Open: anyone renames it, nobody is asked, nothing is claimed; the claim (kept, not holding) goes with its track
+  files[RD .. "/mode.json"] = { mode = "everyone" }
+  logged = {}
+  rename(A, drums, "Perc")
+  T = T + 2
+  out = look(A)
+  assert(out[oid] and out[oid].state.name == "Perc" and #claimask.model(b).incoming == 0 and not told("asked"), "Open: the rename goes straight out")
+  settle(A)
+  assert(not has(mine(A).tracks, "Perc") and not has(mine(A).tracks, "Kit"), "and claims nothing")
+  T = T + 2; recv(L)
+  c = mine(L)
+  assert(name_of(L, ldrums) == "Perc" and c.tracks[1] == "Perc" and c.oids.perc == oid and c.oids.kit == nil and c.auto["tracks:perc"], "Bee's claim went with the track (sync.follow_claims), its mark and id too")
+  as(A)
+  assert(sync.live_claims["Ren/main"].Bee.tracks[1] == "Perc", "and over the link at once")
+  os.date = real_date
+end
 print("ok")

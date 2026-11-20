@@ -4743,7 +4743,11 @@ function W.one(w, o)
   -- (held back only by a bandmate's auto-claim, Claims mode: an item, automation or track settings that merge with their change go out, and
   -- only an edit to the same note, point or setting asks them. Asked, two people adding notes to one part waited 30 s and were put back:
   -- Cross Test, 0.59.49.70. rt-merge)
-  if opts.soft and mirror.MERGES[o.kind] and type(o.state) == (o.kind == "track" and "table" or "string") then
+  -- (not a track's rename: a claim holds a track by its name, so a new name takes it out of the claim. Renamed on a bandmate's auto-claim, it
+  -- went out as a setting they hadn't touched, their claim stayed on the old name and the renamer auto-claimed the new one. REAPER check,
+  -- 0.59.49.73: asked for, as any edit to a lasting claim. rt-claims)
+  local renamed = o.kind == "track" and last ~= nil and not last.gone and type(last.name) == "string" and last.name:lower() ~= name:lower()
+  if opts.soft and not renamed and mirror.MERGES[o.kind] and type(o.state) == (o.kind == "track" and "table" or "string") then
     local by_now = not ok_now and opts.soft(name, o.pos)
     local by_before = not ok_before and last and opts.soft(last.name or "", last.pos)
     if (ok_now or by_now) and (ok_before or by_before) then

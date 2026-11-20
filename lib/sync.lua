@@ -280,6 +280,16 @@ function sync.set_claims(cfg, song, room, claims, renamed)
     end
     claims.auto = next(keep) and keep or nil
   end
+  -- (each claimed track's id, under the name it has now: one let go or renamed away leaves no id behind. A stale one sent a later claim on that
+  -- name after another track: sync.follow_claims. REAPER check, 0.59.49.73, rt-claims)
+  if type(claims.oids) == "table" then
+    local keep = {}
+    for _, name in ipairs(claims.tracks or {}) do
+      local was = renamed and renamed[name:lower()]
+      keep[name:lower()] = (was and claims.oids[was:lower()]) or claims.oids[name:lower()] or nil
+    end
+    claims.oids = keep
+  end
   claims.user, claims.time = cfg.user, now
   reaper.RecursiveCreateDirectory(sync.room_dir(cfg, song, room) .. "/claims", 0)
   band.write_json(sync.claims_path(cfg, song, room, cfg.user), claims)
@@ -392,7 +402,7 @@ function sync.follow_claims(proj, cfg, song, room)
   if sync.loading[tostring(proj)] then return end
   local mirror = require("mirror")
   c.oids, c.since = c.oids or {}, c.since or {}
-  local changed = false
+  local changed, renamed = false, {}
   for i, name in ipairs(c.tracks or {}) do
     local k = name:lower()
     local oid = c.oids[k]
@@ -409,10 +419,13 @@ function sync.follow_claims(proj, cfg, song, room)
       c.tracks[i] = now
       c.oids[now:lower()], c.oids[k] = oid, nil
       c.since["tracks:" .. now:lower()], c.since["tracks:" .. k] = c.since["tracks:" .. k], nil
-      changed = true
+      changed, renamed[now:lower()] = true, name
     end
   end
-  if changed then band.write_json(sync.claims_path(cfg, song, room, cfg.user), c) end
+  -- (a rename: through set_claims, so its date, its auto-claim mark and its id go to the new name and everyone has it at once over the link.
+  -- Written straight to the file, an auto-claim turned lasting and the others kept the old name until Syncthing brought the file. rt-claims)
+  if next(renamed) then sync.set_claims(cfg, song, room, c, renamed)
+  elseif changed then band.write_json(sync.claims_path(cfg, song, room, cfg.user), c) end
 end
 
 -- Returns can(user, track, pos, take) -> bool, plus { driver, tracks, regions, times, owner(track, pos) } for display.

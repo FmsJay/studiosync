@@ -62,11 +62,12 @@ function grants.set(cfg, song, room, user, on)
   return said
 end
 
--- The web page's Grant / Revoke (topic "grants": { user, on }).
+-- The web page's Grant / Revoke (topic "grants": { user, on }). -> words for the log only when it didn't go through: grants.set has logged
+-- the grant itself (it was in the log twice: REAPER check, 0.59.49.73).
 function grants.web_action(cfg, b, a)
   if type(a) ~= "table" then return nil end
   local said, why = grants.set(cfg, b.song, b.room, a.user, a.on == true)
-  return said and ("the web page: " .. said) or ("the web page's grant: " .. tostring(why))
+  if not said then return "the web page's grant: " .. tostring(why) end
 end
 
 -- A Health line while the room is Admins only and someone has a grant, or nil.
