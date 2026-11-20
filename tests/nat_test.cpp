@@ -631,6 +631,7 @@ static void stage3_checks(int stun)
   drop_files(dr);
   }
   // a computer changes network (Wi-Fi to tethering): its links are made again at once, ICE restarted with new keys, both ways
+  for (const char *f : { "/devA-devB.json", "/devB-devA.json" }) remove((dir + f).c_str()); // (the case above's rendezvous files: a clean start)
   a = nat_hub_new(); b = nat_hub_new();
   nat_hub_setup(a, hub_json(dir, "devA", "a.key", stun, { { "devB", pb } }).c_str());
   nat_hub_setup(b, hub_json(dir, "devB", "b.key", stun, { { "devA", pa } }).c_str());

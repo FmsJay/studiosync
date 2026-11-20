@@ -62,6 +62,7 @@ struct NatLinkConfig {
   std::string turn_host; int turn_port = 0;   // (stage 3: the studio hub's relay)
   int only = 0;                               // the test: 1 publish relayed candidates only (two strict NATs), 2 none on Tailscale
   std::string offer_e;                        // (stage 3, the responder) answer only the offer with this ephemeral key (hex; "": any)
+  long long offer_t = 0;                      //   and its time: a newer offer before the answer ends this link (the hub answers that one)
   std::string bind;                           // the address libjuice binds ("": all; the test gives each simulated NAT its own)
   int port_lo = 0, port_hi = 0;               // libjuice's local port range (0: any)
   double timeout_s = 30;                      // no path by then: failed

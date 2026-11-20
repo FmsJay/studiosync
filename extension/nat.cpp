@@ -389,7 +389,11 @@ int nat_link_tick(NatLink *l)
       if (!nat_signal_read(l->K, text, l->c.me, l->c.peer, unix_s(), kind, pe, re, sdp, why)) l->why = "the peer's rendezvous file: " + why;
       else if (kind != (l->initiator ? "answer" : "offer")) l->why = "the peer's file is an " + kind;
       else if (l->initiator && memcmp(re, l->eph.pub, 32) != 0) l->why = "the peer answered an older offer";
-      else if (!l->initiator && !l->c.offer_e.empty() && hex(pe, 32) != l->c.offer_e) {} // (an older offer, as another way still holds it)
+      else if (!l->initiator && !l->c.offer_e.empty() && hex(pe, 32) != l->c.offer_e) {
+        // (another offer: an older one another way still holds is ignored; a newer one means ours was replaced before we answered it: give
+        // way at once so the hub answers the newest, or a slow answer always lands one offer behind. Seen on macOS CI)
+        if (atoll(jfield(text, "t").c_str()) > l->c.offer_t) { l->failed = true; l->why = "a newer offer came before this one was answered"; return -1; }
+      }
       else {
         std::lock_guard<std::mutex> g(l->mx);
         const std::string &a = l->initiator ? l->c.me : l->c.peer, &b = l->initiator ? l->c.peer : l->c.me;
@@ -1316,7 +1320,7 @@ static void box_signal(void *u, const char *d, size_t n)
   hub_signal_rx(b->h, b, hop, whole);
 }
 
-static std::shared_ptr<LinkBox> make_box(NatHub *h, HubPeer &p, const std::string &offer_e = std::string()) // (h->mx held)
+static std::shared_ptr<LinkBox> make_box(NatHub *h, HubPeer &p, const std::string &offer_e = std::string(), long long offer_t = 0) // (h->mx held)
 {
   std::shared_ptr<LinkBox> b = std::make_shared<LinkBox>();
   b->h = h;
@@ -1335,6 +1339,7 @@ static std::shared_ptr<LinkBox> make_box(NatHub *h, HubPeer &p, const std::strin
   c.only = h->only;
   c.bind = h->bind;
   c.offer_e = offer_e;
+  c.offer_t = offer_t;
   c.on_data = box_rx;
   c.on_stream = box_seg;
   c.signal_in = box_signal_in; c.signal_out = box_signal_out; c.on_signal = box_signal;
@@ -1510,7 +1515,7 @@ static void hub_loop(NatHub *h)
       std::lock_guard<std::mutex> g(h->mx);
       if (h->peers.find(p.dev) == h->peers.end()) continue;
       if (newest.empty()) { if (!any && !bad.empty()) p.why = "their rendezvous file: " + bad; continue; } // (none new: answered already, or none yet)
-      if (std::shared_ptr<LinkBox> b = make_box(h, p, newest)) { p.box = b; p.answered_e = newest; p.answered_t = newest_t; p.why.clear(); }
+      if (std::shared_ptr<LinkBox> b = make_box(h, p, newest, newest_t)) { p.box = b; p.answered_e = newest; p.answered_t = newest_t; p.why.clear(); }
     }
     items.clear(); // (a link dropped by a setup is freed here, outside the lock)
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
