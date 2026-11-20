@@ -124,7 +124,7 @@ histhear.lit = lit
 -- The saved copy's text rebuilt to a moment. plan: mirror.plan_restore's (oid -> that moment's version, or false: it didn't exist then; an
 -- object not in it stays as it is). o: { media = the room's media folder, now = oid -> the version id held here (an object already at that
 -- version is left as it is, its state never read), exists(path), guid() -> a new "{...}" }.
--- -> the text, and { tracks = guid -> a track's settings then (prep sets them), items = oid -> { lane, pick }, missing = media not here,
+-- -> the text, and { tracks = track oid -> a track's settings then (prep sets them), items = oid -> { lane, pick, track }, missing = media not here,
 -- len = the song's length in seconds, skipped = parts that couldn't go in (a receive from a track not there), n = objects changed }. Pure.
 function histhear.rebuild(text, plan, o)
   o = o or {}
@@ -170,11 +170,13 @@ function histhear.rebuild(text, plan, o)
         local st = type(ev.state) == "table" and ev.state or {}
         if not r then
           r = { guid = (o.guid and o.guid() or "{00000000-0000-0000-0000-000000000000}"):upper(), oid = oid, after = tostring(st.after or "") }
-          r.kids = { { tag = "NAME", lines = { "NAME \"\"" } }, block("<EXT", { { tag = "band_oid", lines = { "band_oid " .. oid } } }) }
+          -- (TRACKID: without it REAPER gives the track a new GUID as it loads, whatever its first line says. Desktop, 0.59.49.73)
+          r.kids = { { tag = "NAME", lines = { "NAME \"\"" } }, { tag = "TRACKID", lines = { "TRACKID " .. r.guid } },
+            block("<EXT", { { tag = "band_oid", lines = { "band_oid " .. oid } } }) }
           by_oid[oid] = r
           new[#new + 1] = r
         end
-        info.tracks[r.guid] = st
+        info.tracks[oid] = st
         info.n = info.n + 1
       end
     end
@@ -266,7 +268,7 @@ function histhear.rebuild(text, plan, o)
         if r then
           local lines, lane, pick, needs = item_lines(ev.state, media)
           r.kids[#r.kids + 1] = { tag = "ITEM", lines = lines, block = true }
-          if lane or pick then info.items[oid] = { lane = lane and lane < mirror.BAD_LANE and lane or nil, pick = pick, track = r.guid } end
+          if lane or pick then info.items[oid] = { lane = lane and lane < mirror.BAD_LANE and lane or nil, pick = pick, track = r.oid } end
           for _, p in ipairs(needs) do if o.exists and not o.exists(p) then info.missing[#info.missing + 1] = p end end
         elseif ev then info.skipped = info.skipped + 1 end
         info.n = info.n + 1
@@ -314,24 +316,26 @@ end
 -- The job's prep.lua: what the background REAPER sets through its API once the copy has loaded, before its first render: the render itself
 -- (master mix, whole project, Opus with a FLAC beside it for the pass script's size check), each restored track's settings (mirror's own
 -- list of them), each item's lane and picked take (counted among its takes that aren't prints, as mirror.pick_take does). Values only ever
--- go in as literals (lit). Pure.
+-- go in as literals (lit). Tracks and items are found by the band's own id (P_EXT band_oid), which a project keeps through a load: a GUID
+-- isn't (a <TRACK {GUID}> with no TRACKID line loads under a new one, so nothing keyed by GUID matched: no names, every lane playing, a
+-- preview clipping at 0 dB. Desktop, 0.59.49.73). Which lanes play is set last, once the items are on their lanes. Pure.
 function histhear.prep(info)
   local mirror = require("mirror")
   local tracks = {}
   local in_use = {} -- (a track never has fewer lanes than its items sit on: mirror.set_track_state's rule)
   for _, x in pairs(info.items or {}) do if x.lane and x.track then in_use[x.track] = math.max(in_use[x.track] or 0, x.lane + 1) end end
-  for guid, t in pairs(info.tracks or {}) do
+  for toid, t in pairs(info.tracks or {}) do
     local num = {}
     local function put(k, v) v = tonumber(v); if v then num[#num + 1] = { k, v } end end
     local lanes = tonumber(t.lanes)
-    put("I_FREEMODE", (in_use[guid] or 0) > 1 and 2 or t.freemode)
-    if lanes or in_use[guid] then put("I_NUMFIXEDLANES", math.max(lanes or 0, in_use[guid] or 0)) end
+    put("I_FREEMODE", (in_use[toid] or 0) > 1 and 2 or t.freemode)
+    if lanes or in_use[toid] then put("I_NUMFIXEDLANES", math.max(lanes or 0, in_use[toid] or 0)) end
     put("B_MUTE", t.mute); put("B_PHASE", t.phase); put("I_FOLDERDEPTH", t.depth); put("D_VOL", t.vol); put("D_PAN", t.pan)
     for _, list in ipairs({ mirror.TRACK_MORE, mirror.TRACK_MIX }) do for _, kp in ipairs(list) do put(kp[2], t[kp[1]]) end end
     local plays = {}
     for v in (tostring(t.plays or "") .. ","):gmatch("([^,]*),") do plays[#plays + 1] = tonumber(v) or false end
     if t.plays == nil or t.plays == "" then plays = {} end
-    tracks[guid] = { name = tostring(t.name or ""), num = num, plays = plays }
+    tracks[toid] = { name = tostring(t.name or ""), num = num, plays = plays }
   end
   local items = {}
   for oid, x in pairs(info.items or {}) do items[oid] = { lane = x.lane, pick = x.pick } end
@@ -345,13 +349,13 @@ function histhear.prep(info)
     "for _, kv in ipairs(R) do",
     "  if type(kv[2]) == 'string' then reaper.GetSetProjectInfo_String(proj, kv[1], kv[2], true) else reaper.GetSetProjectInfo(proj, kv[1], kv[2], true) end",
     "end",
+    "local function settings(tr) return T[(select(2, reaper.GetSetMediaTrackInfo_String(tr, 'P_EXT:band_oid', '', false)) or ''):upper()] end",
     "for i = 0, reaper.CountTracks(proj) - 1 do",
     "  local tr = reaper.GetTrack(proj, i)",
-    "  local t = T[reaper.GetTrackGUID(tr):upper()]",
+    "  local t = settings(tr)",
     "  if t then",
     "    reaper.GetSetMediaTrackInfo_String(tr, 'P_NAME', t.name, true)",
     "    for _, kv in ipairs(t.num) do reaper.SetMediaTrackInfo_Value(tr, kv[1], kv[2]) end",
-    "    for l, v in ipairs(t.plays) do if v then reaper.SetMediaTrackInfo_Value(tr, 'C_LANEPLAYS:' .. (l - 1), v) end end",
     "  end",
     "end",
     "for i = 0, reaper.CountMediaItems(proj) - 1 do",
@@ -370,6 +374,11 @@ function histhear.prep(info)
     "    end",
     "  end",
     "end",
+    "for i = 0, reaper.CountTracks(proj) - 1 do",
+    "  local tr = reaper.GetTrack(proj, i)",
+    "  local t = settings(tr)",
+    "  if t then for l, v in ipairs(t.plays) do if v then reaper.SetMediaTrackInfo_Value(tr, 'C_LANEPLAYS:' .. (l - 1), v) end end end",
+    "end",
     "reaper.UpdateTimeline()",
     "" }, "\n")
 end
@@ -383,6 +392,24 @@ function histhear.upto(entries, t)
     if x and x <= t then n = i elseif x and x > t then break end
   end
   return n
+end
+-- A plan as the song really stood then. mirror.plan_restore gives each object its own newest version at the point, but deleting a track
+-- sends no change for what was on it: an item whose version then sits on a track that was gone then went with that track, so it wasn't
+-- there (false, not that version), and that track's parts go with it (left out). Likewise what sits on a track that's neither here
+-- (here(oid) -> bool) nor coming back can't land, and is left out. Without this the words said "brings back 2 tracks and 14 items" where
+-- the preview, and a restore, had 2 (12 on tracks deleted before the point: Cross Test, desktop, 0.59.49.73). The preview, the words and
+-- the restore all go by this one plan. Pure.
+function histhear.settle(plan, here)
+  local mirror, out = require("mirror"), {}
+  for oid, ev in pairs(plan) do
+    local item = mirror.KIND[oid:sub(1, 1)] == "item"
+    local trk = ev and oid:sub(1, 1) ~= "T" and (ev.track or (not item and ("T" .. oid:sub(2)))) or nil -- (a part's track is in its own id)
+    if trk and trk ~= mirror.MASTER and plan[trk] == false then
+      if item then out[oid] = false end
+    elseif trk and trk ~= mirror.MASTER and plan[trk] == nil and here and not here(trk) then -- (left out)
+    else out[oid] = ev end
+  end
+  return out
 end
 -- History's "these tracks" scope (as mirror.selection_scope, from track oids): the tracks, their parts and everything on them, then or now.
 function histhear.scope(oids)
@@ -440,6 +467,7 @@ local S = { slots = {}, last_start = -math.huge, offered = {} }
 histhear.S = S -- (tests)
 local function bg() return require("bgrender") end
 local function cache_dir(cfg, b) return (bg().TMP:gsub("/bandsync%-render$", "")) .. "/bandsync-hear/" .. require("mirror").fnv(tostring(cfg.root) .. "|" .. b.song .. "|" .. b.room) end
+histhear.SWEEP_EVERY, histhear.SWEEP_FOR, histhear.SWEEP_WAIT = 2, 60, 30
 local function tidy(dir)
   if not dir then return end
   local function empty(d)
@@ -450,6 +478,31 @@ local function tidy(dir)
   end
   for _, sub in ipairs(band.subdirs(dir)) do empty(dir .. "/" .. sub) end
   empty(dir)
+end
+-- A job folder done with (rendered, failed, cancelled, replaced): emptied now and again every SWEEP_EVERY s for SWEEP_FOR s. Its REAPER
+-- is ended by a script that takes a moment, and meanwhile it saves its job.rpp again, finishes a pass, and its launcher writes done.txt
+-- when it has gone: one tidy left those behind for hours (desktop, 0.59.49.73). A job cancelled before its process id was written is ended
+-- once it is (its folder kept till then: the id is in it), or it rendered on to its end, unseen. Each start has a folder of its own, so a
+-- job being ended never writes into the next one's.
+S.trash = {}
+-- (once its launcher says it has gone, nothing is ended: its process id may be something else's by now)
+local function end_it(dir) return reaper.file_exists(dir .. "/done.txt") or bg().end_job(dir) == true end
+local function drop(dir)
+  if not dir then return end
+  local t = S.trash[dir] or { at = reaper.time_precise() }
+  S.trash[dir] = t
+  t.ended = t.ended or end_it(dir)
+  if t.ended or (band.read(dir .. "/pid.txt") or ""):match("^failed") then tidy(dir) end
+end
+local function sweep(now)
+  if now - (S.swept or -math.huge) < histhear.SWEEP_EVERY then return end
+  S.swept = now
+  for dir, t in pairs(S.trash) do
+    t.ended = t.ended or end_it(dir)
+    -- (no process id yet: its folder waits for it, unless it never started or has gone by itself)
+    if t.ended or now - t.at > histhear.SWEEP_WAIT or (band.read(dir .. "/pid.txt") or ""):match("^failed") then tidy(dir) end
+    if now - t.at > histhear.SWEEP_FOR then S.trash[dir] = nil end
+  end
 end
 -- the previews kept, newest last (index.json beside them); the oldest past KEEP go
 local function keep(dir, id)
@@ -470,7 +523,7 @@ local function offer(slot, id, path)
 end
 local function cancel(why)
   for _, s in pairs(S.slots) do
-    if s.job then bg().end_job(s.job.dir); tidy(s.job.dir); s.job = nil end
+    if s.job then drop(s.job.dir); s.job = nil end
     if s.state == "queued" or s.state == "rendering" then s.state, s.why = "cancelled", why end
   end
 end
@@ -513,7 +566,7 @@ function histhear.action(proj, cfg, b, a)
     end
     local s = S.slots[slot]
     if s and s.key == key and (s.state == "queued" or s.state == "rendering" or s.state == "ready") then return nil end
-    if slot == "then" and s and s.job then bg().end_job(s.job.dir); tidy(s.job.dir) end -- (one render at a time: a new point replaces the one going)
+    if slot == "then" and s and s.job then drop(s.job.dir) end -- (one render at a time: a new point replaces the one going)
     local id = histhear.file_id(cfg.root .. "|" .. b.song .. "|" .. b.room .. "|" .. key)
     local path = cache_dir(cfg, b) .. "/" .. id .. ".opus"
     s = { t = t, key = key, upto = upto, id = id, path = path, state = "queued", asked = reaper.time_precise() }
@@ -524,11 +577,12 @@ function histhear.action(proj, cfg, b, a)
   if type(a.restore) == "table" then return histhear.restore(proj, cfg, b, a.restore) end
 end
 
+-- Is this object in the project now? (mirror's own record of it: a hash, "" once it's gone here)
+function histhear.here(proj, oid) local _, h = require("mirror").known(proj, oid); return (h or "") ~= "" end
 -- One job: the copy saved, rebuilt, its prep and the hidden REAPER started. -> nil, or why not.
 local function start(proj, cfg, b, slot, s)
   local mirror, sync = require("mirror"), require("sync")
-  local dir = bg().TMP .. "/hear-" .. s.id:sub(1, 16)
-  tidy(dir)
+  local dir = string.format("%s/hear-%s-%06x", bg().TMP, s.id:sub(1, 12), math.floor(reaper.time_precise() * 1000) % 0x1000000) -- (one a start)
   reaper.RecursiveCreateDirectory(dir, 0)
   local copy = dir .. "/copy.rpp"
   band.save_copy(proj, copy) -- (a copy: the open project isn't renamed, and its "changed" mark is kept)
@@ -536,7 +590,7 @@ local function start(proj, cfg, b, slot, s)
   os.remove(copy)
   if not text then tidy(dir); return "the project's copy couldn't be saved" end
   local plan = {}
-  if slot == "then" then plan = mirror.plan_restore(entries_of(cfg, b), s.upto) end
+  if slot == "then" then plan = histhear.settle(mirror.plan_restore(entries_of(cfg, b), s.upto), function(oid) return histhear.here(proj, oid) end) end
   local now = {}
   for oid in pairs(plan) do local _, _, ev = mirror.known(proj, oid); now[oid] = ev end
   local out, info = histhear.rebuild(text, plan, { media = sync.room_dir(cfg, b.song, b.room) .. "/media", now = now, exists = reaper.file_exists,
@@ -554,13 +608,12 @@ end
 local function poll(s)
   local d = s.job.dir
   if reaper.file_exists(d .. "/passes.txt") then
-    bg().end_job(d) -- (done: a question stopping it from quitting mustn't keep it on, unseen)
     for _, f in ipairs(band.files(d)) do if f:lower():match("%.opus$") then return "done", d .. "/" .. f end end
     return "failed", "the background REAPER rendered nothing"
   end
   if (band.read(d .. "/pid.txt") or ""):match("^failed") then return "failed", "the background REAPER didn't start" end
   if reaper.file_exists(d .. "/done.txt") then return "failed", "the background REAPER quit without rendering (a plug-in may have stopped it)" end
-  if reaper.time_precise() - s.job.started > s.job.limit then bg().end_job(d); return "failed", "it took too long (a plug-in may be waiting on a window nobody can see)" end
+  if reaper.time_precise() - s.job.started > s.job.limit then return "failed", "it took too long (a plug-in may be waiting on a window nobody can see)" end
   local pass = 0
   for _, sub in ipairs(band.subdirs(d)) do local n = tonumber(sub:match("^pass(%d+)$")); if n and n > pass then pass = n end end
   s.pass = pass
@@ -570,6 +623,7 @@ end
 function histhear.tick(proj, cfg, b, publish, now)
   histhear.room(b)
   local looking = require("webhistory").looking(now)
+  sweep(now)
   if not looking and not next(S.slots) and not S.ask then return end -- (nothing asked, nobody on History: nothing read, nothing sent)
   local busy
   for _, slot in ipairs({ "then", "now" }) do
@@ -580,10 +634,10 @@ function histhear.tick(proj, cfg, b, publish, now)
         local dir = cache_dir(cfg, b)
         reaper.RecursiveCreateDirectory(dir, 0)
         local ok = os.rename(x, s.path) or (pcall(band.copy_atomic, x, s.path) and reaper.file_exists(s.path))
-        tidy(s.job.dir)
+        drop(s.job.dir) -- (and its REAPER ended: a question stopping it from quitting mustn't keep it on, unseen)
         s.job = nil
         if ok then keep(dir, s.id); s.state, s.file = "ready", offer(slot, s.id, s.path) else s.state, s.why = "failed", "the preview couldn't be kept" end
-      elseif st == "failed" then tidy(s.job.dir); s.job, s.state, s.why = nil, "failed", x
+      elseif st == "failed" then drop(s.job.dir); s.job, s.state, s.why = nil, "failed", x
       else busy = true end
     end
   end
@@ -643,7 +697,7 @@ function histhear.restore(proj, cfg, b, r)
     local entries = entries_of(cfg, b)
     local upto = histhear.upto(entries, p.t)
     if upto < 1 then S.said = "That point is before anything kept in History."; return nil end
-    local plan = mirror.plan_restore(entries, upto, p.tracks and histhear.scope(p.tracks) or nil)
+    local plan = histhear.settle(mirror.plan_restore(entries, upto, p.tracks and histhear.scope(p.tracks) or nil), function(oid) return histhear.here(proj, oid) end)
     local act = string.format("%s-%s-r%d", sync.id_user and sync.id_user(cfg.user) or cfg.user, os.date("!%Y%m%d%H%M%S"), math.floor(reaper.time_precise() * 1000) % 1000000)
     local opts = { can = can, mode = who and who.mode, driver = who and who.driver, is_claimed = who and who.is_claimed, at_once = true, act = act,
       local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1" }
@@ -658,7 +712,7 @@ function histhear.restore(proj, cfg, b, r)
   local entries = entries_of(cfg, b)
   local upto = histhear.upto(entries, t)
   if upto < 1 then S.said = "That point is before anything kept in History, so it can't be rebuilt from it."; return nil end
-  local plan = mirror.plan_restore(entries, upto, tracks and histhear.scope(tracks) or nil)
+  local plan = histhear.settle(mirror.plan_restore(entries, upto, tracks and histhear.scope(tracks) or nil), function(oid) return histhear.here(proj, oid) end)
   local names = {}
   for _, e in ipairs(entries) do if e.kind == "obj" and e.obj == "track" and e.oid and (e.name or "") ~= "" then names[e.oid:upper()] = e.name end end
   for _, x in ipairs(S.tracks or {}) do names[x[1]] = x[2] end

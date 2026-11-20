@@ -1,4 +1,4 @@
-# Song history playback: hear it as it was, A/B, restore (rt-history, 2026-11-20; Lua tests and a stand-in server in Chromium only, not run in REAPER yet)
+# Song history playback: hear it as it was, A/B, restore (rt-history, 2026-11-20; first REAPER check on the desktop found three faults, fixed here and not yet run in REAPER again)
 
 Roadmap item 12: "Scrub through how the song evolved, change by change, and restore any point." The History page's time lapse
 (docs/rt/rt-timelapse.md) is the scrubber; this adds a **Hear it as it was** panel under it.
@@ -51,6 +51,29 @@ On the web UI's **History** tab, move the time lapse to a point (scrubber, strip
 - **Page**: `lib/webui/histhear.js` (new, loaded after history.js), styles appended to `history.css`. `history.js` exposes
   `window.ssHistory.point()` and fires `ss-hist-point`; its note now says "Watching changes nothing; Restore below asks first."
 
+## Fixed after the first REAPER check (rt-check2, desktop, 0.59.49.73)
+Listen's mechanics, the untouched open project, the cache, Cancel and Compare passed there. Three faults:
+- **F2, a restored track got none of its settings** (no name, the parent send on, all 10 lanes playing: a 64.6 s preview clipping at
+  0 dB). `rebuild` wrote a track brought back as `<TRACK {GUID}` with no `TRACKID` line; REAPER 7.86 gives such a track a new GUID as it
+  loads, and prep.lua looked tracks up by GUID. Now prep finds tracks by the band's own id (`P_EXT:band_oid`, which the load keeps: the
+  job REAPER saved back still had it, and items, found that way, did get their lanes), the restored track also carries its `TRACKID`
+  line, and which lanes play is set last, after the items are on their lanes.
+- **The words and the preview disagreed** ("Brings back 2 tracks and 14 items" against 2 items in the copy). The preview was right.
+  `mirror.plan_restore` gives every object its own newest version at the point, but deleting a track sends no change for its items, so
+  12 items whose last version sat on tracks deleted before the point were planned "back". They can't land (their track is gone then; in a
+  real restore `mirror.revert` counts them as "couldn't change here yet"). **`histhear.settle`** (pure) now makes one plan for all three:
+  an item whose version then sits on a track gone then is gone then (false), that track's parts are left out, and so is anything on a
+  track that's neither here nor coming back. Checked offline against the real room's 1,018 events with the repo's code: at that point
+  mirror's plan has 14 items back, settled 2, the rebuilt copy 2 tracks and 2 items, the words "Brings back 2 tracks and 2 items"; at
+  t=1795117855, 24 against 12 and 12 in the copy. The panel's own Restore page still uses mirror's plan as it is (its message then says
+  some "couldn't change here yet"): not changed here, it's `lib/page_restore.lua`'s.
+- **Job folders left behind** (`done.txt`, sometimes `job.rpp`, a cancelled job's preview files). The hidden REAPER is ended by a script
+  that takes a moment; meanwhile it saves its job.rpp again or finishes a pass, and its launcher writes `done.txt` after it has gone,
+  all after the one tidy. A job folder done with is now emptied again every 2 s for a minute. A job cancelled before its `pid.txt` was
+  written couldn't be ended at all (it rendered on to its end, hidden): its folder is kept until the id is there, then it's ended.
+  Once `done.txt` says its REAPER has gone nothing is ended (the id may be another process's by then). Each start has a folder of its own
+  (`hear-<id>-<time>`), so a job being ended never writes into the next one's (a `done.txt` there read as "quit without rendering").
+
 ## Tests
 `tests/test_0_60_rt_histhear.lua` (in `python tests/run.py`):
 1. **The copy matches the known state at the point** (a stand-in history in the real event formats and a stand-in project in REAPER's
@@ -58,7 +81,9 @@ On the web UI's **History** tab, move the time lapse to a point (scrubber, strip
    media path here, deleted items back (on a deleted track too), made-since items out, plug-ins then, automation gone since back, sends
    then with the gone source's send and envelope dropped, unchanged objects' states never read, blocks balanced, BANDSYNC state out, other
    extensions' state kept; "now" (empty plan) renumbers sends past a dropped local track; the master's chain then.
-2. **prep.lua** run against a stand-in REAPER: render settings, the restored track's settings and lanes, an item's lane and take past a
+2. **prep.lua** run against the job **loaded as REAPER loads it** (a track's GUID is its `TRACKID` line's, a fresh one without it; P_EXT
+   kept), as written and with its TRACKID lines taken out (the job 0.59.49.73 wrote): the restored track gets its name, settings and lanes
+   under whatever GUID, lanes that play set after the items' lanes. Also: render settings, the restored track's settings and lanes, an item's lane and take past a
    print, untouched tracks and items not touched; a hostile track name stays a string.
 3. **Render lifecycle with a stand-in bgrender and disk**: start (copy saved with options 0, rebuilt job, prep, 2 passes, limit by length),
    progress, one at a time, done -> kept and offered (32 hex), job folder tidied and its REAPER ended, then the A/B's now, cached second
@@ -70,11 +95,14 @@ On the web UI's **History** tab, move the time lapse to a point (scrubber, strip
    driver: whole song refused, chosen tracks asked. **One undoable act**: restore events with one `act` across seconds and kinds are one
    row (`mirror.same_moment`), and `mirror.plan_undo_moment` takes all of it back to before; revert carries `act` in all three events.
 5. The page's wiring.
+6. **Settled plan**: a track deleted before the point with an item and plug-ins that never got a change of their own: mirror's plan names
+   them, the settled one doesn't, and the words and the rebuilt copy hold the same 1 track and 1 item.
+7. **Job folders**: files written after the tidy (job.rpp saved again, done.txt, a cancelled job's pass) are swept; nothing is ended
+   twice, nor once done.txt is there; a job cancelled before its process id is ended when the id appears; a folder per start; forgotten
+   after a minute.
 
-`test_0_60_rt_history.lua` stubs histhear (its stand-in REAPER's file listing never ends). `python tests/run.py --no-luals`: my tests and
-history/bgrender/bounces pass; at the time of writing the run had 3 fails that aren't mine: `test_0_60_rt_webui` and `test_0_60_rt_phonefix`
-from another agent's uncommitted `webdraw` tick in `lib/webui.lua` (`sync.room_dir` nil in their stand-in), and `test_0_60_rt_bigproj`'s
-strict timing (a different mirror look over budget each run while six agents share the machine).
+`test_0_60_rt_history.lua` stubs histhear (its stand-in REAPER's file listing never ends). `python tests/run.py --no-luals` ends
+`fails 0` (after the fixes above; the first commit's run had 3 fails from another agent's uncommitted work and a strict timing test).
 
 **Stand-in server in Chromium** (Python + lupa running the real `webhistory.build`; `hhear` driven as histhear would; previews are sine
 WAVs served as octet-stream, as the extension serves .opus): Listen -> rendering, pass 1/2, 2/2 -> ready and playing; Compare with now; A/B
@@ -83,6 +111,10 @@ were exactly `hear{t}`, `hear{now}`, `restore{t}`, `restore{id,yes}`; Cancel; ph
 console errors.
 
 ## Check in REAPER
+0. **After this fix is deployed, first**: History action `{"hear":{"t":1795117855}}` on Cross Test. The job's saved-back `job.rpp` should
+   show the three tracks named (XT Rec A, XT Keys C, XT Drums A), XT Rec A with `MAINSEND 0` and only lane 10 playing, and the preview
+   shouldn't clip. Restore's words at the 2-track point should say 2 items. `%TEMP%\bandsync-render\hear-*` should be gone a minute after
+   each render or cancel.
 1. Web UI, History tab on a song with a few sessions: scrub back to an earlier session, **Listen to this point**. Health/Task Manager: a
    hidden `reaper.exe` appears and goes; `%TEMP%\bandsync-render\hear-*\` has `job.rpp`, `prep.lua`, then `preview.opus`. It plays in the
    page, and sounds like the song then (a track added later is absent, a take moved later is where it was, a plug-in swapped later is the

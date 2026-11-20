@@ -48,7 +48,7 @@ ev("10:00:20", { obj = "track", oid = "T-A-2", rev = 1, name = "Bass", state = t
 ev("10:00:30", { obj = "fx", oid = "F-A-2", rev = 1, track = "T-A-2", state = FX1 })
 ev("10:00:40", { obj = "item", oid = "I-A-2", rev = 1, track = "T-A-1", state = item("I-A-2", 4, "snare.wav") })
 ev("10:00:50", { obj = "track", oid = "T-A-4", rev = 1, name = "Vox", state = track("Vox", "T-A-2", { freemode = 2, lanes = 2, plays = "1,0", vol = "0.700000" }) })
-ev("10:01:00", { obj = "item", oid = "I-A-4", rev = 1, track = "T-A-4", state = item("I-A-4", 8, "vox.wav", "TAKE\nNAME y\n<SOURCE WAVE\nFILE \"{media}/vox2.wav\"\n>\n") .. "BANDLANE 1\nBANDTAKE 1\n" })
+ev("10:01:00", { obj = "item", oid = "I-A-4", rev = 1, track = "T-A-4", state = item("I-A-4", 8, "vox.wav", "TAKE\nNAME wet\n<EXT\nband_m_print 1\n>\n<SOURCE WAVE\nFILE \"{media}/voxp.wav\"\n>\nTAKE\nNAME y\n<SOURCE WAVE\nFILE \"{media}/vox2.wav\"\n>\n") .. "BANDLANE 1\nBANDTAKE 1\n" })
 ev("10:01:10", { obj = "item", oid = "I-A-3", rev = 1, track = "T-A-2", state = item("I-A-3", 2, "bass.wav") })
 ev("10:01:20", { obj = "env", oid = "E-A-2", rev = 1, track = "T-A-2", state = ENV })
 ev("10:01:30", { obj = "recv", oid = "R-A-2", rev = 1, track = "T-A-2", state = "AUXRECV T-A-1 0 0.8 0 0 0 0 0 0 -1:U 0 -1 ''\n" })
@@ -192,7 +192,7 @@ local upto = hh.upto(entries, POINT)
 assert(upto == 10 and hh.upto(entries, POINT - 1) == 9 and hh.upto(entries, 0) == 0 and hh.upto(entries, POINT + 1e6) == #entries, "the point: the last change at or before it")
 local plan = mirror.plan_restore(entries, upto)
 assert(plan["T-A-3"] == false and plan["I-A-6"] == false and plan["I-A-5"] == false and plan["T-A-4"].id == "e6", "the plan: what came since goes, what went comes back")
-local exists = { ["J:/S/rooms/main/media/vox.wav"] = true, ["J:/S/rooms/main/media/vox2.wav"] = true, ["J:/S/rooms/main/media/snare.wav"] = true }
+local exists = { ["J:/S/rooms/main/media/vox.wav"] = true, ["J:/S/rooms/main/media/voxp.wav"] = true, ["J:/S/rooms/main/media/vox2.wav"] = true, ["J:/S/rooms/main/media/snare.wav"] = true }
 local out, info = hh.rebuild(NOW_RPP, plan, { media = "J:/S/rooms/main/media", now = held, exists = function(p) return exists[p] end,
   guid = function() return "{new-vox}" end })
 local tracks, items, L = read_back(out)
@@ -218,10 +218,35 @@ assert(out:find("<MASTERFXLIST", 1, true) and L[#L] == ">" and L[1]:find("^<REAP
 local depth = 0
 for _, s in ipairs(L) do if s:sub(1, 1) == "<" then depth = depth + 1 elseif s == ">" then depth = depth - 1 end; assert(depth >= 0, "balanced") end
 assert(depth == 0, "every block closed")
-assert(info.tracks["{NEW-VOX}"] and info.tracks["{NEW-VOX}"].vol == "0.700000" and not info.tracks["{G-DRUMS}"], "the prep sets the settings of tracks that changed")
-assert(info.items["I-A-4"].lane == 1 and info.items["I-A-4"].pick == 1 and info.items["I-A-4"].track == "{NEW-VOX}", "its lane and picked take for the prep")
+assert(info.tracks["T-A-4"] and info.tracks["T-A-4"].vol == "0.700000" and not info.tracks["T-A-1"], "the prep sets the settings of tracks that changed, by the band's id")
+assert(info.items["I-A-4"].lane == 1 and info.items["I-A-4"].pick == 1 and info.items["I-A-4"].track == "T-A-4", "its lane and picked take for the prep")
+assert(table.concat(tracks[3].lines, "\n"):find("\nTRACKID {NEW-VOX}\n", 1, true), "the track back says its GUID in a TRACKID line (REAPER makes a new one without it)")
 assert(#info.missing == 1 and info.missing[1]:find("bass.wav", 1, true), "media not on this computer said (it plays silent)")
 assert(info.len == 10 and info.locals == 1, "the song's length then (Vox's item ends at 10); one local track left out")
+
+-- what sat on a track deleted before the point went with it (a track's deletion sends nothing for its items): not brought back, not counted
+do
+  local es, k = {}, 0
+  local function e(time, x) k = k + 1; x.time, x.id, x.kind, x.user = "2026-11-12T" .. time .. "Z", "s" .. k, "obj", "Bo"; es[#es + 1] = x end
+  e("09:00:00", { obj = "track", oid = "T-B-1", rev = 1, name = "Old take 1", state = track("Old take 1", "") })
+  e("09:00:10", { obj = "item", oid = "I-B-1", rev = 1, track = "T-B-1", state = item("I-B-1", 0, "a.wav") })
+  e("09:00:20", { obj = "fx", oid = "F-B-1", rev = 1, track = "T-B-1", state = FX1 })
+  e("09:01:00", { obj = "track", oid = "T-B-1", rev = 2, gone = true, name = "Old take 1" }) -- (its item and plug-ins: no change of their own)
+  e("09:02:00", { obj = "track", oid = "T-B-2", rev = 1, name = "Take 2", state = track("Take 2", "") })
+  e("09:02:10", { obj = "item", oid = "I-B-2", rev = 1, track = "T-B-2", state = item("I-B-2", 0, "b.wav") })
+  e("09:03:00", { obj = "item", oid = "I-B-9", rev = 1, track = "T-GONE-9", state = item("I-B-9", 0, "c.wav") }) -- (on a track History has nothing of, not here)
+  local raw = mirror.plan_restore(es, #es)
+  assert(raw["T-B-1"] == false and raw["I-B-1"] and raw["F-B-1"], "mirror's plan still names the deleted track's item and plug-ins")
+  local pl = hh.settle(raw, function(oid) return false end)
+  assert(pl["T-B-1"] == false and pl["I-B-1"] == false and pl["F-B-1"] == nil, "settled: the item went with its track, its plug-ins are left out")
+  assert(pl["T-B-2"] and pl["I-B-2"] and pl["I-B-9"] == nil, "what was there stays in; an item on a track neither here nor coming back is left out")
+  assert(hh.settle(raw)["I-B-9"], "(with nothing known of what's here, it's kept)")
+  local words, cnt = hh.describe(pl, function() return "", nil end, function(oid) return oid == "T-B-2" and "Take 2" or nil end)
+  assert(cnt == 2 and words:find("Brings back 1 track and 1 item.", 1, true), "the words count what the preview holds: " .. words)
+  local txt = hh.rebuild('<REAPER_PROJECT 0.1 "7.86/win64" 1\n>\n', pl, { media = "J:/S/rooms/main/media", guid = function() return "{take-2}" end })
+  local tr, its = read_back(txt)
+  assert(#tr == 1 and tr[1].oid == "T-B-2" and its["I-B-2"] and not its["I-B-1"] and not its["I-B-9"], "and the preview holds exactly that")
+end
 
 -- the same moment for "now" (an empty plan): only this computer's tracks out, sends renumbered
 local out2 = hh.rebuild(NOW_RPP, {}, {})
@@ -238,35 +263,77 @@ assert(out3:find('<MASTERFXLIST\n%s*BYPASS 0 0 0\n%s*<JS "loudness"') or out3:fi
 -- ---- 2. the prep in the background REAPER ----------------------------------------------------------------------------------------------
 local prep = hh.prep(info)
 assert(load(prep), "prep compiles")
-local set = { proj = {}, tr = {}, it = {} }
-local R = { tracks = { { guid = "{G-DRUMS}", v = {} }, { guid = "{NEW-VOX}", v = {} } },
-  items = { { oid = "I-A-4", takes = { { print = true }, {}, {} }, v = {} }, { oid = "I-A-1", takes = { {} }, v = {} } } }
-local fake = {
-  GetSetProjectInfo_String = function(_, k, v) set.proj[k] = v end, GetSetProjectInfo = function(_, k, v) set.proj[k] = v end,
-  CountTracks = function() return #R.tracks end, GetTrack = function(_, i) return R.tracks[i + 1] end,
-  GetTrackGUID = function(t) return t.guid:lower() end,
-  GetSetMediaTrackInfo_String = function(t, k, v) t.v[k] = v end, SetMediaTrackInfo_Value = function(t, k, v) t.v[k] = v end,
-  CountMediaItems = function() return #R.items end, GetMediaItem = function(_, i) return R.items[i + 1] end,
-  GetSetMediaItemInfo_String = function(it) return true, it.oid end, SetMediaItemInfo_Value = function(it, k, v) it.v[k] = v end,
-  CountTakes = function(it) return #it.takes end, GetTake = function(it, k) return it.takes[k + 1] end,
-  GetSetMediaItemTakeInfo_String = function(tk) return true, tk.print and "1" or "" end, UpdateTimeline = function() set.timeline = true end,
-}
+assert(not prep:find("GetTrackGUID", 1, true), "tracks are found by the band's id, never by GUID")
+-- The job as REAPER loads it (7.86, measured on the desktop, 0.59.49.73): a track's GUID is its TRACKID line's, and one without that line
+-- gets a new GUID whatever its "<TRACK {...}" says; P_EXT (its <EXT> block, an item's <EXT>/<EXTI>) is kept.
+local made = 0
+local function load_as_reaper(text)
+  local tr, its = read_back(text)
+  local P = { tracks = {}, items = {}, log = {} }
+  for _, t in ipairs(tr) do
+    local id, depth = nil, 0
+    for _, l in ipairs(t.lines) do
+      if depth == 1 then id = id or l:match("^TRACKID (%b{})") end
+      if l:sub(1, 1) == "<" then depth = depth + 1 elseif l == ">" then depth = depth - 1 end
+    end
+    if not id then made = made + 1; id = "{REAPER-MADE-" .. made .. "}" end
+    P.tracks[#P.tracks + 1] = { guid = id, oid = t.oid or "", v = {} }
+  end
+  for oid, it in pairs(its) do
+    local takes = { {} }
+    for _, l in ipairs(it.lines) do
+      if l == "TAKE" or l:find("^TAKE ") then takes[#takes + 1] = {} end
+      if l:find("^band_m_print") then takes[#takes].print = true end
+    end
+    P.items[#P.items + 1] = { oid = oid, takes = takes, v = {} }
+  end
+  table.sort(P.items, function(x, y) return x.oid < y.oid end)
+  return P
+end
 local was = reaper
-reaper = fake
-load(prep)(set.proj)
-reaper = was
-assert(set.proj.RENDER_FORMAT == band.OPUS and set.proj.RENDER_FORMAT2 == band.FLAC and set.proj.RENDER_SETTINGS == 0 and set.proj.RENDER_BOUNDSFLAG == 1 and set.proj.RENDER_PATTERN == "preview", "the render: the master mix of the whole song, Opus with a FLAC beside it")
-local vox = R.tracks[2].v
-assert(vox.P_NAME == "Vox" and vox.D_VOL == 0.7 and vox.D_PAN == -0.25 and vox.I_FREEMODE == 2 and vox.I_NUMFIXEDLANES == 2 and vox["C_LANEPLAYS:0"] == 1 and vox["C_LANEPLAYS:1"] == 0, "the track back gets its settings and lanes")
-assert(next(R.tracks[1].v) == nil, "a track that didn't change isn't touched")
-assert(R.items[1].v.I_FIXEDLANE == 1 and R.items[1].v.I_CURTAKE == 2, "its lane, and its picked take counted past the print")
-assert(next(R.items[2].v) == nil and set.timeline, "an item with nothing to set isn't touched")
+local function run_prep(P)
+  local set = {}
+  reaper = {
+    GetSetProjectInfo_String = function(_, k, v) set[k] = v end, GetSetProjectInfo = function(_, k, v) set[k] = v end,
+    CountTracks = function() return #P.tracks end, GetTrack = function(_, i) return P.tracks[i + 1] end,
+    GetTrackGUID = function(t) return t.guid end,
+    GetSetMediaTrackInfo_String = function(t, k, v, write) if write then t.v[k] = v; return true, v end return true, k == "P_EXT:band_oid" and t.oid or "" end,
+    SetMediaTrackInfo_Value = function(t, k, v) t.v[k] = v; P.log[#P.log + 1] = k end,
+    CountMediaItems = function() return #P.items end, GetMediaItem = function(_, i) return P.items[i + 1] end,
+    GetSetMediaItemInfo_String = function(it) return true, it.oid end, SetMediaItemInfo_Value = function(it, k, v) it.v[k] = v; P.log[#P.log + 1] = k end,
+    CountTakes = function(it) return #it.takes end, GetTake = function(it, k) return it.takes[k + 1] end,
+    GetSetMediaItemTakeInfo_String = function(tk) return true, tk.print and "1" or "" end, UpdateTimeline = function() set.timeline = true end,
+  }
+  local ok, err = pcall(load(prep), {})
+  reaper = was
+  assert(ok, err)
+  return set
+end
+for _, how in ipairs({ "as written", "its TRACKID lines taken out (the job as 0.59.49.73 wrote it)" }) do
+  local P = load_as_reaper(how == "as written" and out or (out:gsub("TRACKID [^\n]*\n", "")))
+  local set = run_prep(P)
+  assert(set.RENDER_FORMAT == band.OPUS and set.RENDER_FORMAT2 == band.FLAC and set.RENDER_SETTINGS == 0 and set.RENDER_BOUNDSFLAG == 1 and set.RENDER_PATTERN == "preview", "the render: the master mix of the whole song, Opus with a FLAC beside it")
+  local vox = P.tracks[3]
+  assert(vox.oid == "T-A-4" and (vox.guid == "{NEW-VOX}") == (how == "as written"), how .. ": the restored track loads under " .. vox.guid)
+  vox = vox.v
+  assert(vox.P_NAME == "Vox" and vox.D_VOL == 0.7 and vox.D_PAN == -0.25 and vox.I_FREEMODE == 2 and vox.I_NUMFIXEDLANES == 2 and vox["C_LANEPLAYS:0"] == 1 and vox["C_LANEPLAYS:1"] == 0,
+    how .. ": the track back gets its name, settings and which lanes play, whatever GUID it loaded under")
+  assert(next(P.tracks[1].v) == nil and next(P.tracks[2].v) == nil, "tracks that didn't change aren't touched")
+  local by = {}
+  for _, it in ipairs(P.items) do by[it.oid] = it end
+  assert(by["I-A-4"].v.I_FIXEDLANE == 1 and by["I-A-4"].v.I_CURTAKE == 2, "its lane, and its picked take counted past the print")
+  assert(next(by["I-A-1"].v) == nil and set.timeline, "an item with nothing to set isn't touched")
+  local lane_at, plays_at
+  for i, k in ipairs(P.log) do if k == "I_FIXEDLANE" then lane_at = i end; if k:find("^C_LANEPLAYS") then plays_at = plays_at or i end end
+  assert(lane_at and plays_at and plays_at > lane_at, "which lanes play is set once the items are on their lanes")
+end
 -- values go in as literals, never as code
-local evil = hh.prep({ tracks = { ["{X}"] = { name = 'a"]] os.exit() --\n' } }, items = {} })
+local evil = hh.prep({ tracks = { ["T-X"] = { name = 'a"]] os.exit() --\n' } }, items = {} })
 assert(load(evil), "a strange name still compiles")
 local seen
-reaper = setmetatable({ CountTracks = function() return 1 end, GetTrack = function() return {} end, GetTrackGUID = function() return "{X}" end,
-  GetSetMediaTrackInfo_String = function(_, _, v) seen = v end, CountMediaItems = function() return 0 end }, { __index = function() return function() end end })
+reaper = setmetatable({ CountTracks = function() return 1 end, GetTrack = function() return {} end,
+  GetSetMediaTrackInfo_String = function(_, _, v, write) if write then seen = v end return true, "t-x" end, CountMediaItems = function() return 0 end },
+  { __index = function() return function() end end })
 load(evil)({})
 reaper = was
 assert(seen == 'a"]] os.exit() --\n', "the name arrives as the name")
@@ -278,7 +345,8 @@ assert(bgsrc:find('loadfile(dir .. "/prep.lua")', 1, true) and bgsrc:find("if no
 local TMP = "C:/T/bandsync-render"
 local launched, ended = {}, {}
 package.loaded.bgrender = { TMP = TMP, time_limit = function(secs) return 180 + secs * 4 end,
-  launch_job = function(dir, limit) launched[#launched + 1] = { dir = dir, limit = limit } end, end_job = function(dir) ended[#ended + 1] = dir end }
+  launch_job = function(dir, limit) launched[#launched + 1] = { dir = dir, limit = limit }; if not NO_PID then vfs[dir .. "/pid.txt"] = "4321" end end,
+  end_job = function(dir) if not tonumber((vfs[dir .. "/pid.txt"] or ""):match("^%d+")) then return false end ended[#ended + 1] = dir; return true end }
 package.loaded.recall = { entries = function() return entries end }
 package.loaded.dawview = { shown = function() return true end }
 package.loaded.sync = { room_dir = function() return "J:/S/rooms/main" end, authority = function() return function() return true end, { driver = "James", mode = "claims" } end,
@@ -343,8 +411,14 @@ assert(th.state == "ready" and th.file and #th.file == 32 and th.file:match("^%x
 local cache = offers[th.file]
 assert(cache and vfs[cache] == "OPUS-THEN" and cache:find("/bandsync%-hear/") and not cache:find("bandsync-render", 1, true), "kept in this computer's own preview folder (not bgrender's, which it tidies)")
 assert(not vfs[job .. "/job.rpp"] and not vfs[job .. "/preview.flac"] and ended[#ended] == job, "its job folder tidied, its REAPER told to end")
-tick(3)
+-- (that REAPER takes a moment to go: it saves its job.rpp again, and its launcher writes done.txt after it. Swept, not left for hours)
+vfs[job .. "/job.rpp"], vfs[job .. "/job.rpp-bak"], vfs[job .. "/done.txt"] = "saved again", "bak", "1"
+local n_ended = #ended
+tick(); tick()
+assert(#children(job, false) == 0 and #ended == n_ended, "what its REAPER wrote as it went is swept too, and nothing is ended twice")
+tick(1)
 assert(#launched == 2 and got.hhear.now.state == "rendering", "then the A/B's now")
+assert(launched[2].dir ~= launched[1].dir, "a folder of its own for each start")
 local job2 = launched[2].dir
 assert(#read_back(vfs[job2 .. "/job.rpp"]) == 3 and read_back(vfs[job2 .. "/job.rpp"])[3].oid == "T-A-3", "now: the project as it is")
 vfs[job2 .. "/preview.opus"], vfs[job2 .. "/passes.txt"] = "OPUS-NOW", "2\n"
@@ -370,6 +444,22 @@ local job3 = launched[#launched].dir
 wh.action(proj, cfg, b, { topic = "history", cancel = true })
 tick()
 assert(got.hhear["then"].state == "cancelled" and ended[#ended] == job3 and not vfs[job3 .. "/job.rpp"], "Cancel: its REAPER ended, its folder tidied")
+vfs[job3 .. "/pass1/preview.opus"], vfs[job3 .. "/preview.flac"] = "late", "late" -- (a pass it was in the middle of)
+tick(2)
+assert(#children(job3, false) == 0 and #children(job3, true) == 0, "a cancelled job's files written after the tidy are swept")
+-- cancelled before its process id was written: ended as soon as it is, never left rendering unseen
+NO_PID = true
+wh.action(proj, cfg, b, { topic = "history", hear = { t = wh.epoch("2026-11-10T10:00:42Z") } })
+tick(5)
+NO_PID = nil
+local job3b = launched[#launched].dir
+n_ended = #ended
+wh.action(proj, cfg, b, { topic = "history", cancel = true })
+tick()
+assert(#ended == n_ended and vfs[job3b .. "/job.rpp"], "no process id yet: its folder waits")
+vfs[job3b .. "/pid.txt"] = "777"
+tick(2)
+assert(ended[#ended] == job3b and not vfs[job3b .. "/job.rpp"] and not vfs[job3b .. "/pid.txt"], "its id written: ended, and its folder goes")
 -- a new point while one renders replaces it
 wh.action(proj, cfg, b, { topic = "history", hear = { t = wh.epoch("2026-11-10T10:00:15Z") } })
 tick(5)
@@ -388,6 +478,7 @@ local job6 = launched[#launched].dir
 vfs[job6 .. "/done.txt"] = "1"
 tick()
 assert(got.hhear["then"].state == "failed" and got.hhear["then"].why:find("quit without", 1, true), "it quit without a print")
+assert(ended[#ended] ~= job6 and not vfs[job6 .. "/done.txt"], "a REAPER that has gone by itself isn't ended (its id may be something else's by now); its folder goes")
 wh.action(proj, cfg, b, { topic = "history", hear = { t = wh.epoch("2026-11-10T10:00:55Z") } })
 tick(5)
 local job7 = launched[#launched].dir
@@ -402,6 +493,8 @@ assert(#launched == before and got.hhear["then"].state == "queued" and got.hhear
 PLAY = 0
 tick(5)
 assert(#launched == before + 1, "and starts once it stops")
+tick(70); tick(3)
+assert(next(hh.S.trash) == nil, "folders done with are forgotten after a minute of sweeping")
 -- kept: KEEP newest
 local idx = band.read_json(cache:match("^(.*)/") .. "/index.json")
 assert(type(idx) == "table" and #idx == 2, "the kept previews listed")
