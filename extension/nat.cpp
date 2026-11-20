@@ -1633,6 +1633,14 @@ bool nat_test_inject(NatHub *h, const char *dev, const std::string &raw)
   return b != nullptr;
 }
 std::string nat_test_sealed(NatHub *h, const char *dev) { std::shared_ptr<LinkBox> b = test_box(h, dev); return b ? nat_link_last_sealed(b->l) : ""; }
+std::string nat_test_link(NatHub *h, const char *dev)
+{
+  std::shared_ptr<LinkBox> b = test_box(h, dev);
+  if (!b) return "(no link now)";
+  char sdp[JUICE_MAX_SDP_STRING_LEN] = "";
+  juice_get_local_description(b->l->agent, sdp, sizeof sdp);
+  return nat_link_status(b->l) + "\n  got " + std::to_string((int)b->l->got) + ", gathered " + std::to_string((int)b->l->gathered.load()) + "\n" + sdp;
+}
 void nat_test_only(NatHub *h, int only, const char *bind) { std::lock_guard<std::mutex> g(h->mx); h->only = only; h->bind = bind ? bind : ""; }
 void nat_test_netchange(NatHub *h) { h->test_net.store(true); }
 void nat_test_carry(NatHub *h, bool on) { std::lock_guard<std::mutex> g(h->sigmx); h->carry = on; }

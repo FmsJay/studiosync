@@ -52,6 +52,16 @@ The desktop never put its NAT key in `_band/devices/James.json`: it also runs ma
 a field it doesn't know, in this computer's own earlier file, is kept. An older version that rewrites the file (main does only when its
 Tailscale name changes) drops `nat`; the next pass, within 30 s, puts it back. Test: `tests/test_0_60_rt_nat3_publish.lua`.
 
+## Fixes from the macOS CI runs
+- **A responder gives way to a newer offer** (ea2adac). With a slow answer (TURN gathering), the responder's link waited out its timeout on
+  an offer the initiator had already replaced, so every answer landed one offer behind ("the peer answered an older offer"). A newer offer
+  now ends that link at once and the hub answers the newest (`offer_t`).
+- **Relayed addresses only when a link may need one** (80ca4a5). libjuice never gives a TURN allocation back when an agent is destroyed: it
+  lives its full 10 minutes on the relay, so every link made again (a retry, a restart, a network change) held one more of the computer's
+  quota, and a slow first try locked the test's pair out. Links now ask the hub's relay for an address only when this computer's NAT is
+  strict or blocked, or the last try to that peer found no path (an easy-NAT computer still meets a strict one through the strict side's
+  relayed address). Quotas: 32 per computer, 128 in all.
+
 ## Files
 - `extension/nat.cpp`, `extension/nat.h`: the relay (`relay_tick`, `nat_relay_pass`, `nat_relay_caps`, `nat_relay_sendto`), the hub's
   relay use (`turn`, `relay_ok` from `probe`), signalling (`carry_on`, `hub_carry`, `send_signal`, `box_signal`, `hub_signal_rx`, the inbox

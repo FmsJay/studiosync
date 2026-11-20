@@ -172,6 +172,7 @@ bool nat_seg_decode(const char *p, size_t n, unsigned char &flags, uint32_t &id,
 void nat_test_lossy(NatHub *h, int drop, int dup, int reorder);
 bool nat_test_inject(NatHub *h, const char *dev, const std::string &raw); // as if `raw` arrived on that link from the network
 std::string nat_test_sealed(NatHub *h, const char *dev); // the last datagram that link sent, as it went out
+std::string nat_test_link(NatHub *h, const char *dev);   // that link's state and local description (a failing test says what it had)
 // (stage 3) new links publish relayed candidates only (1) and bind `bind` (127.0.0.x: each its own, so on one computer nothing but the
 // relay joins them): two symmetric NATs
 void nat_test_only(NatHub *h, int only, const char *bind = nullptr);

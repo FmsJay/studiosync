@@ -545,6 +545,7 @@ struct Copier {
   }
   ~Copier() { run.store(false); if (t.joinable()) t.join(); }
 };
+static bool has_link(NatHub *h, const char *dev) { return nat_test_link(h, dev).find("(no link now)") == std::string::npos; }
 static bool can_bind(const char *ip)
 {
   const tsock s = socket(AF_INET, SOCK_DGRAM, 0);
@@ -601,7 +602,11 @@ static void stage3_checks(int stun)
   CHECK(relayed && json_field(peer_part(nat_hub_status(a), "devB"), "path") == "relayed" && json_field(peer_part(nat_hub_status(b), "devA"), "path") == "relayed",
         "symmetric NATs with the hub's relay: they meet, only through it (path relayed)");
   printf("     relayed in %.0f ms; A: %s\n", took, nat_hub_status(a).c_str());
-  if (!relayed) printf("     B: %s\n", nat_hub_status(b).c_str());
+  if (!relayed) {
+    printf("     B: %s\n", nat_hub_status(b).c_str());
+    wait_for(15000, [&] { return has_link(a, "devB") && has_link(b, "devA"); });
+    printf("     A's link: %s\n     B's link: %s\n", nat_test_link(a, "devB").c_str(), nat_test_link(b, "devA").c_str());
+  }
   CHECK(json_field(nat_hub_status(a), "relay_ok") == "" && nat_hub_status(a).find("\"relay_ok\":true") != std::string::npos, "the relay's STUN answered before links used it");
   if (relayed) {
     Rx rb;
