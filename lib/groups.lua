@@ -23,6 +23,7 @@ local SETTINGS = { "alerts", "alerts_server", "call", "sonobus_server", "tailnet
   "live_audio", -- ("live_audio": live audio over the link, lib/liveaudio.lua; off unless true. James, rt)
   "takes_to_lanes", -- ("takes_to_lanes": the takes-become-lanes pass, lib/prints.lua takes_to_lanes; on unless false. James, rt)
   "smart_take_names", -- ("smart_take_names": new takes named for their section and player, lib/recap.lua; on unless false. James, rt)
+  "smart_lane_names", -- ("smart_lane_names": the lanes they land in named the same; off unless true, as a take goes in the first open lane. James, rt)
   "shared_prefs", -- ("shared_prefs": the studio's REAPER preferences, lib/sharedprefs.lua; { key = value }. James, rt)
   "colour_parity", "theme_colours", -- (colour parity, on unless false, and the theme's colour settings: lib/colours.lua parity. James, rt)
   "update_key" } -- ("update_key": signed updates, the owner's Ed25519 public key: lib/band.lua studio_update_key. James, rt)
@@ -208,6 +209,8 @@ function groups.set_takes_to_lanes(root, on) save(root, function(j) if on then j
 -- Smart take names for the studio (lib/recap.lua name_takes): on unless band.json says false, so only "off" is written. Owner and admins. (James, rt)
 function groups.smart_take_names(root) return groups.trusted(root).smart_take_names ~= false end
 function groups.set_smart_take_names(root, on) save(root, function(j) if on then j.smart_take_names = nil else j.smart_take_names = false end end) end
+function groups.smart_lane_names(root) return groups.trusted(root).smart_lane_names == true end
+function groups.set_smart_lane_names(root, on) save(root, function(j) j.smart_lane_names = on and true or nil end) end
 -- The studio's shared REAPER preferences (lib/sharedprefs.lua): { key = value }, only keys on its list (sharedprefs.clean). Owner and admins.
 function groups.set_shared_prefs(root, t)
   t = require("sharedprefs").clean(t)

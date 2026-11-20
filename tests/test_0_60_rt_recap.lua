@@ -2,7 +2,8 @@
 -- told from typed ones, the session's window in the events, the recap's bullets, log line and Markdown; then name_takes on a fake project.
 package.path = "lib/?.lua;" .. package.path
 local studio = { smart_take_names = nil }
-package.loaded.groups = { smart_take_names = function() return studio.smart_take_names ~= false end }
+package.loaded.groups = { smart_take_names = function() return studio.smart_take_names ~= false end,
+  smart_lane_names = function() return studio.smart_lane_names == true end }
 local markers = {}
 package.loaded.band = { capture_markers = function() return markers end, log = function() end }
 local recap = require("recap")
@@ -153,6 +154,7 @@ reaper = {
   end,
 }
 markers = song
+studio.smart_lane_names = true -- (the lanes checks below; off is checked at the end)
 local had = { g0 = true, g5 = true } -- (what recap.before_record would have found: the take already in the item, and the old part)
 assert(recap.before_record(nil).g5 and recap.before_record(nil).g1 and not recap.before_record(nil).g4, "before_record: armed tracks' takes")
 assert(recap.name_takes(nil, { user = "James", root = "R" }, had) == 2)
@@ -194,5 +196,13 @@ assert(tracks[1].lanenames[6] == tracks[1].items[1].takes[1].name, "the lane it 
 clk = clk + recap.LANE_WAIT + 1
 recap.lane_tick(nil)
 assert(recap.pending == nil, "after LANE_WAIT: nothing pending")
+
+-- lane names are the studio's choice, off unless it turns them on (James, rt: a recording takes the first open lane)
+studio.smart_lane_names = nil
+tracks[1].items[1].takes[1].name, tracks[1].lanenames[6] = "Guitar-001", "5"
+local had3 = recap.before_record(nil)
+had3.g1 = nil
+assert(recap.name_takes(nil, { user = "James", root = "R" }, had3) >= 1 and tracks[1].items[1].takes[1].name:find("James - take", 1, true), "lanes off: the take still named")
+assert(recap.pending == nil and tracks[1].lanenames[6] == "5", "lanes off: nothing pending, the lane left as it is")
 
 print("ok")

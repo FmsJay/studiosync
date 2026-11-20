@@ -210,6 +210,8 @@ local function take_guid(tk) return select(2, reaper.GetSetMediaItemTakeInfo_Str
 
 -- Studio setting (band.json "smart_take_names", on unless false: lib/groups.lua).
 function recap.names_on(root) return require("groups").smart_take_names(root) end
+-- Lanes too (band.json "smart_lane_names", off unless true: a recording takes the first open lane, so a lane's name may not stay its take's).
+function recap.lanes_on(root) return require("groups").smart_lane_names(root) end
 -- As a recording starts: the takes already on the armed tracks, so the stop can tell the new ones.
 function recap.before_record(proj)
   local had = { [".tracks"] = {} } -- (".tracks": the tracks armed now, as the stop may come after a disarm: REAPER's "disarm after recording",
@@ -259,7 +261,7 @@ function recap.name_takes(proj, cfg, had)
   end
   -- (the lanes: now, and again over the next seconds, as takes-to-lanes (lib/prints.lua) moves a new take into a lane of its own after the
   -- stop, which REAPER numbers "3". Desktop, rt)
-  recap.pending = #pending > 0 and { list = pending, till = reaper.time_precise() + recap.LANE_WAIT } or recap.pending
+  recap.pending = #pending > 0 and recap.lanes_on(cfg.root) and { list = pending, till = reaper.time_precise() + recap.LANE_WAIT } or recap.pending
   recap.lane_tick(proj)
   return #new
 end
@@ -387,10 +389,10 @@ function recap.section(ctx, ImGui, cfg, b, local_time)
 end
 -- Settings > Studio: "Smart take names" (band.json "smart_take_names", on unless false). `may`: owner or admin.
 function recap.names_ui(ctx, ImGui, cfg, may)
-  ImGui.SeparatorText(ctx, "Smart take and lane names")
-  local on = recap.names_on(cfg.root)
-  ImGui.TextDisabled(ctx, on and "On: a new take is named for the section under its start and who played it, \"Bridge - James - take 3\", and so is the lane it lands in (takes to lanes). A name someone typed is never changed."
-    or "Off: takes keep the names REAPER gives them.")
+  ImGui.SeparatorText(ctx, "Smart take names")
+  local on, lanes = recap.names_on(cfg.root), recap.lanes_on(cfg.root)
+  ImGui.TextDisabled(ctx, (on and "On: a new take is named for the section under its start and who played it, \"Bridge - James - take 3\". A name someone typed is never changed."
+    or "Off: takes keep the names REAPER gives them.") .. (on and lanes and " The lane it lands in is named the same." or ""))
   if may then
     local ch, v = ImGui.Checkbox(ctx, "Smart take names##studiotakenames", on)
     if ch then
@@ -398,6 +400,14 @@ function recap.names_ui(ctx, ImGui, cfg, may)
       band().log(v and "new takes are named for their section and player again (Settings > Studio)" or "new takes keep REAPER's names from now on (Settings > Studio)")
     end
     ImGui.SetItemTooltip(ctx, "Owner and admins. Sections come from the song's regions, else its markers.")
+    if on then
+      local lch, lv = ImGui.Checkbox(ctx, "Name lanes after their takes##studiolanenames", lanes)
+      if lch then
+        require("groups").set_smart_lane_names(cfg.root, lv)
+        band().log(lv and "new takes' lanes are named after them (Settings > Studio)" or "lanes keep their own names (Settings > Studio)")
+      end
+      ImGui.SetItemTooltip(ctx, "Off by default: a recording goes in the first open lane, so a lane holds different takes over time. Only a lane nobody named is changed.")
+    end
   end
 end
 
