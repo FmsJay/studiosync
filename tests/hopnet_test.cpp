@@ -122,10 +122,15 @@ static sock_t udp(sockaddr_in &me)
 }
 
 // ---- one run: a sender hop and a fake remote, for `secs`, then every frame the sender played is checked ----
-struct Result { uint64_t exact = 0, zero = 0, faded = 0, wrong = 0, first_wet = 0, frames = 0; std::string sst, rst; };
+// hiccup: when the last stall ended, seconds into the run (0: none), deliberate or not (the macOS runner pauses its VM ~60 ms now and
+// then); after / exact_after: the frames from a second after it on, and how many of them came back exact.
+struct Result { uint64_t exact = 0, zero = 0, faded = 0, wrong = 0, first_wet = 0, frames = 0, after = 0, exact_after = 0; double hiccup = 0, hiccup_ms = 0; std::string sst, rst; };
 static const uint32_t L = 7200, LX = 256, PDC = 100, B = 256;
 
-static Result run(int id0, double base_ms, double jitter_ms, double loss, double drift, double secs, const char *rsecret = "studio")
+// stall: at stall_at seconds, the sender's audio thread (who & 1) and/or the remote's (who & 2) stop for stall_ms and then catch up
+// in a burst, as a VM pause or a disk/scheduler hiccup does. Each audio thread notes any gap over 30 ms between its turns (a stall).
+static Result run(int id0, double base_ms, double jitter_ms, double loss, double drift, double secs, const char *rsecret = "studio",
+                  double stall_at = 0, double stall_ms = 0, int who = 0)
 {
   Result res;
   const int hs = id0, hx = id0 + 1, hy = id0 + 2;
@@ -157,6 +162,8 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
   snprintf(peer, sizeof(peer), "127.0.0.1:%d", ntohs(b.me.sin_port));
   CHECK(hopnet_connect(a.net, hs, peer, json) == 1, "connect starts");
 
+  double t0s = 0, hic[2] = { 0, 0 }, hic_ms[2] = { 0, 0 };
+  auto gap = [&](int k, double &last) { const double t = now_s(); if (t - last > 0.03) { hic[k] = t; hic_ms[k] = std::max(hic_ms[k], (t - last) * 1000); } last = t; };
   std::vector<float> out0, out1;
   out0.reserve((size_t)(secs * 48000) + 4096); out1.reserve(out0.capacity());
   g_run = true;
@@ -164,9 +171,13 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
   // the sender's audio clock: its signal in, every output kept
   std::thread ts([&] {
     std::vector<float> i0(B), i1(B), o0(B), o1(B);
-    const double t0 = now_s();
+    const double t0 = t0s = now_s();
+    double last = t0;
     uint64_t done = 0;
+    bool stalled = false;
     while (now_s() - t0 < secs) {
+      gap(0, last);
+      if ((who & 1) && !stalled && now_s() - t0 >= stall_at) { stalled = true; std::this_thread::sleep_for(std::chrono::microseconds((int)(stall_ms * 1000))); }
       const uint64_t due = (uint64_t)((now_s() - t0) * 48000);
       while (done + B <= due) {
         for (uint32_t k = 0; k < B; ++k) { i0[k] = sig(done + k); i1[k] = -sig(done + k); }
@@ -185,8 +196,12 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
     std::vector<float> z(B, 0.f), x0(B), x1(B), y0(B), y1(B), o0(B), o1(B), d0(PDC, 0.f), d1(PDC, 0.f);
     size_t dp = 0;
     const double t0 = now_s();
+    double last = t0;
     uint64_t done = 0;
+    bool stalled = false;
     while (now_s() - t0 < secs) {
+      gap(1, last);
+      if ((who & 2) && !stalled && now_s() - t0 >= stall_at) { stalled = true; std::this_thread::sleep_for(std::chrono::microseconds((int)(stall_ms * 1000))); }
       const uint64_t due = (uint64_t)((now_s() - t0) * 48000 * (1 + drift));
       while (done + B <= due) {
         const float *zin[2] = { z.data(), z.data() };
@@ -217,6 +232,9 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
 
   // every frame: exactly 0.5 x the input L frames before, or 0, or fading in towards it
   res.frames = out0.size();
+  const double hl = std::max(hic[0], hic[1]);
+  res.hiccup = hl > 0 ? hl - t0s : 0;
+  res.hiccup_ms = std::max(hic_ms[0], hic_ms[1]);
   for (uint64_t i = L; i < out0.size(); ++i) {
     const float e[2] = { 0.5f * sig(i - L), -0.5f * sig(i - L) }, o[2] = { out0[i], out1[i] };
     int ex = 0, zr = 0, fd = 0;
@@ -225,7 +243,9 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
       else if (o[c] == 0.f) zr++;
       else if (std::fabs(o[c]) < std::fabs(e[c]) && (o[c] > 0) == (e[c] > 0)) fd++;
     }
-    if (ex == 2) { res.exact++; if (!res.first_wet) res.first_wet = i; }
+    const bool aft = res.hiccup > 0 && i >= (uint64_t)((res.hiccup + 1) * 48000);
+    res.after += aft;
+    if (ex == 2) { res.exact++; res.exact_after += aft; if (!res.first_wet) res.first_wet = i; }
     else if (zr == 2) res.zero++;
     else if (ex + zr + fd == 2) res.faded++;
     else res.wrong++;
@@ -246,6 +266,17 @@ static void report(const char *what, const Result &r)
          (unsigned long long)r.faded, (unsigned long long)r.wrong, r.sst.c_str(), r.rst.c_str());
 }
 static double exact_pct(const Result &r) { const uint64_t wet = r.frames > r.first_wet ? r.frames - r.first_wet : 0; return wet ? 100.0 * r.exact / wet : 0; }
+// After a stall: from a second after it, every frame back exact; and once the status's windows (the last one to two seconds) no longer
+// hold it, the hop is back inside its budget with slack to spare. What a stall too near the run's end leaves no time for isn't checked.
+static void recovered(const Result &r, double secs)
+{
+  printf("  a %.0f ms stall ending %.2f s in; from a second after it: exact %.2f%% of %llu frames\n", r.hiccup_ms, r.hiccup,
+         r.after ? 100.0 * r.exact_after / r.after : 0.0, (unsigned long long)r.after);
+  if (r.after >= 24000) CHECK(r.exact_after * 1000 >= r.after * 999, "every frame back exact from a second after the stall");
+  else printf("  (too near the end to check the frames after it)\n");
+  if (r.hiccup <= secs - 2.3) CHECK(num(r.sst, "slack_ms") >= 0 && num(r.sst, "need_ms") < num(r.sst, "budget_ms"), "back inside the budget, slack to spare");
+  else printf("  (too near the end to check the budget after it)\n");
+}
 
 int main()
 {
@@ -257,10 +288,14 @@ int main()
     report("clean", r);
     CHECK(r.first_wet > 0 && r.first_wet < 48000, "the hop comes up within a second");
     CHECK(r.wrong == 0, "nothing misaligned or wrong");
-    CHECK(exact_pct(r) > 99.9, "every frame back, sample-exact, once up");
-    CHECK(num(r.sst, "lost") == 0 && num(r.sst, "late") == 0, "nothing lost or late");
-    CHECK(num(r.sst, "rtt_ms") >= 0 && num(r.sst, "remote_ms") > 0 && num(r.sst, "need_ms") < num(r.sst, "budget_ms"), "round trip measured, inside the budget");
-    CHECK(num(r.rst, "slips") == 0, "no slip with the clocks together");
+    CHECK(num(r.sst, "rtt_ms") >= 0 && num(r.sst, "remote_ms") > 0, "round trip measured");
+    if (r.hiccup > 0) recovered(r, 3); // (the runner paused: a moment of fallback audio and a slip or two are fair, staying behind isn't)
+    else {
+      CHECK(exact_pct(r) > 99.9, "every frame back, sample-exact, once up");
+      CHECK(num(r.sst, "lost") == 0 && num(r.sst, "late") == 0, "nothing lost or late");
+      CHECK(num(r.sst, "need_ms") < num(r.sst, "budget_ms"), "inside the budget");
+      CHECK(num(r.rst, "slips") == 0, "no slip with the clocks together");
+    }
   }
   {
     Result r = run(11, 5, 8, 0.02, 0, 3);
@@ -282,6 +317,18 @@ int main()
     CHECK(r.wrong == 0, "nothing misaligned when the remote's clock runs slow");
     CHECK(num(r.rst, "slips") >= 1, "it slipped back to its margin");
     CHECK(exact_pct(r) > 85, "most frames back exact");
+  }
+  // A hiccup (James, rt): the macOS runner pauses its VM for about 60 ms now and then, and a real computer can stall on a disk or the
+  // scheduler. It may cost a moment of fallback audio, never the rest of the session: within a second of it every frame is back exact,
+  // with slack to spare, and nothing ever comes back misaligned.
+  const struct { const char *what; int id, who; double ms; } stalls[] = {
+    { "the remote stalls 80 ms", 51, 2, 80 }, { "the sender stalls 80 ms", 61, 1, 80 }, { "both stall 100 ms", 4, 3, 100 } };
+  for (const auto &st : stalls) {
+    Result r = run(st.id, 3, 2, 0, 0, 4, "studio", 1.0, st.ms, st.who);
+    report(st.what, r);
+    CHECK(r.hiccup > 0, "the stall seen");
+    CHECK(r.wrong == 0, "nothing misaligned through a stall");
+    recovered(r, 4);
   }
   {
     Result r = run(41, 2, 0, 0, 0, 1.5, "not the studio's");

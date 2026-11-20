@@ -146,7 +146,7 @@ struct Sess {
   sockaddr_in addr{};
   bool resolved = false, active = false;
   double next_resolve = 0, next_ping = 0, last_pong = -1e9;
-  uint64_t r = 0, rw = 0, last_w = 0;
+  uint64_t r = 0, rw = 0, last_w = 0, last_b = 0;
   int fade = 0;
   std::vector<uint64_t> rcv; // rcv[f & mask] == f: frame f came back
   Win blk, slack;             // block size seen (as -frames, so min() is the biggest); slack of each return, frames
@@ -163,8 +163,9 @@ struct Sess {
   bool have_peer = false, anchored = false, yr_set = false, srate_ok = true;
   sockaddr_in from{};
   double last_rx = -1e9, x_alive = -1e9, y_alive = -1e9, started = 0;
-  uint64_t xb = 0, yb = 0, last_xw = 0, zeroed_to = 0, yr = 0;
-  int64_t A = 0;
+  uint64_t xb = 0, yb = 0, last_xw = 0, last_xb = 0, zeroed_to = 0, yr = 0;
+  int64_t A = 0, tight_min = INT64_MAX;
+  double tight_at = 0; // after a slip: when to look at how far ahead the packets since then landed (tight_min), and tighten back
   Win delta, xblk, sslack;
   std::vector<Fm> fmap;
   uint64_t s_received = 0, s_returned = 0, s_dropped = 0, s_slips = 0;
@@ -206,6 +207,19 @@ void out(HopNet *h, Sess &s, int type, uint32_t frames, uint64_t frame, const vo
 
 int64_t frames_of(double ms, double srate) { return (int64_t)(ms * (srate > 0 ? srate : 48000) / 1000.0); }
 
+// The host's block size, from how far send_w moved over how many blocks it took (James, rt). Not the biggest jump between two polls:
+// after a stall (the macOS runner pauses its VM for ~60 ms; a disk or the scheduler can do it on a real computer) the plug-in catches
+// up in a burst of blocks, and taken as one huge block that burst ate the budget for the next two windows: the sender zeroed returns
+// that were still in time, and the remote anchored a stall's length further ahead. blocks is read on both sides of send_w: when it
+// didn't change, send_w is at most the block in progress ahead of it, so a reading is off by one block at most.
+void block_seen(Win &win, uint64_t &last_w, uint64_t &last_b, hop_shm *p)
+{
+  const uint64_t b = hop_load(&p->blocks), w = hop_load(&p->send_w);
+  if (hop_load(&p->blocks) != b || b == last_b) return;
+  if (last_b && b > last_b && w > last_w) win.add(-(int64_t)std::min<uint64_t>((w - last_w + (b - last_b) - 1) / (b - last_b), 8192));
+  last_w = w; last_b = b;
+}
+
 // ---- the sending end (the computer whose track has the Hop) ---------------------------------------------------------------------------
 int64_t biggest(const Win &w) { const int64_t m = w.min(); return m == INT64_MAX ? 0 : -m; } // (blocks are kept negated: min() is the biggest)
 uint64_t guard_of(Sess &s) { return (uint64_t)std::max<int64_t>(biggest(s.blk), 128) + 48; } // (a block, and our 1 ms)
@@ -214,9 +228,8 @@ void send_step(HopNet *h, Sess &s, double now)
 {
   hop_shm *p = s.m.p;
   if (!hop_shm_ok(p) || !s.resolved) return;
+  block_seen(s.blk, s.last_w, s.last_b, p);
   const uint64_t w = hop_load(&p->send_w);
-  if (w > s.last_w && s.last_w) s.blk.add(-(int64_t)std::min<uint64_t>(w - s.last_w, 8192));
-  s.last_w = w;
   if (now >= s.next_ping) { // (the round trip, and the remote's state back in the pong)
     s.next_ping = now + 0.2;
     unsigned char pl[8];
@@ -294,6 +307,18 @@ int64_t s_delta(Sess &s) { return s.delta.pn >= 50 ? s.delta.min() : s.delta.cur
 bool s_alive(Sess &s, double now) { return now - s.x_alive < 0.5 && now - s.y_alive < 0.5; }
 uint32_t s_flags(Sess &s, double now) { return (s_alive(s, now) ? F_ALIVE : 0) | (s_delta_ok(s) ? F_DELTA : 0) | (s.srate_ok ? F_SRATE : 0); }
 
+// Packets landing further ahead of X than margin_ms plus a tolerance (half the margin, at least 10 ms, so jitter isn't taken for drift)
+// are brought back to margin_ms: A moves back, the frames that skips are lost (counted at the sender), none is ever mislabelled (fmap).
+void tighten(Sess &s, int64_t low)
+{
+  const double xs = s.mx.p && hop_shm_ok(s.mx.p) && s.mx.p->srate > 0 ? s.mx.p->srate : 48000;
+  const int64_t S = frames_of(s.margin_ms, xs), tol = std::max<int64_t>(S / 2, frames_of(10, xs));
+  if (!s.anchored || low == INT64_MAX || low <= S + tol) return;
+  s.A -= low - S;
+  ++s.s_slips;
+  s.sslack = Win();
+}
+
 void serve_step(HopNet *h, Sess &s, double now)
 {
   hop_shm *X = s.mx.p, *Y = s.my.p;
@@ -304,8 +329,8 @@ void serve_step(HopNet *h, Sess &s, double now)
   if (yb != s.yb) { s.yb = yb; s.y_alive = now; }
   if (!s_alive(s, now)) { s.delta = Win(); s.yr_set = false; return; } // (the hidden track isn't running: nothing lines up until it does)
   s.delta.add((int64_t)(xw - yw));
-  if (xw > s.last_xw && s.last_xw) s.xblk.add(-(int64_t)std::min<uint64_t>(xw - s.last_xw, 8192));
-  s.last_xw = xw;
+  block_seen(s.xblk, s.last_xw, s.last_xb, X);
+  if (s.tight_at && now >= s.tight_at) { tighten(s, s.tight_min); s.tight_at = 0; }
   // X's ret ring: half a ring ahead of where X plays is zeroed (last lap's audio gone) and published; we write anywhere in it.
   const uint64_t hi = xw + HALF;
   if (s.zeroed_to < xw) s.zeroed_to = xw;
@@ -367,13 +392,19 @@ void serve_rx(HopNet *h, Sess &s, int type, uint32_t nf, uint64_t frame, const u
   // First packet, one X has already played past (late: this computer's clock runs faster), or a jump (the sender started again): put it
   // margin_ms ahead of where X reads. One inside the guard but not yet read is written as it is (it may well be in time).
   if (!s.anchored || x < (int64_t)xw - (int64_t)Lx + 64 || x + nf > (int64_t)s.zeroed_to) {
-    if (s.anchored) ++s.s_slips;
+    // A packet late after a stall (ours, or the sender's catching up in a burst) moves A by the stall, not by drift: the packets after
+    // it land that much further ahead for good. So a slip is looked at again 0.15 s on (the burst over, from 0.05 s): if every packet since
+    // landed well ahead of the margin, A tightens back, and a hiccup costs a moment of fallback audio, not the rest of the session.
+    // (A clock that runs fast keeps landing at the margin after its slip, so it isn't tightened.) (James, rt)
+    if (s.anchored) { ++s.s_slips; s.tight_at = now + 0.15; s.tight_min = INT64_MAX; }
+    s.sslack = Win(); // (what landed under the old A says nothing about the new one)
     s.A = x_min + S - (int64_t)frame;
     s.anchored = true;
     x = (int64_t)frame + s.A;
     if (x + nf > (int64_t)s.zeroed_to) { s.s_dropped += nf; return; } // (X's ring isn't cleared that far yet: the step does it next)
   }
   s.sslack.add(x - x_min);
+  if (s.tight_at && now >= s.tight_at - 0.1) s.tight_min = std::min<int64_t>(s.tight_min, x - x_min);
   for (uint32_t k = 0; k < nf; ++k) {
     const uint64_t xi = (uint64_t)x + k;
     memcpy(X->ret + (size_t)(xi & HOP_MASK) * HOP_CH, pl + (size_t)k * HOP_CH * sizeof(float), HOP_CH * sizeof(float));
@@ -394,10 +425,8 @@ void roll(Sess &s, double now)
   if (now - s.win_at < 1) return;
   s.win_at = now;
   if (s.serve) {
-    const double xs = s.mx.p && hop_shm_ok(s.mx.p) && s.mx.p->srate > 0 ? s.mx.p->srate : 48000;
-    // (two windows, and half the margin over it, so a burst of early packets on a jittery link doesn't count as drift)
-    const int64_t S = frames_of(s.margin_ms, xs), tol = std::max<int64_t>(S / 2, frames_of(10, xs)), low = s.sslack.min();
-    if (s.anchored && s.sslack.n > 0 && s.sslack.pn > 0 && low > S + tol) { s.A -= low - S; ++s.s_slips; s.sslack = Win(); }
+    // (two windows, so a burst of early packets on a jittery link doesn't count as drift)
+    if (s.sslack.n > 0 && s.sslack.pn > 0) tighten(s, s.sslack.min());
     s.sslack.roll();
     if (s.delta.n >= 50) s.delta.roll(); // (a hidden track that stopped keeps its last good window until it runs again)
     s.xblk.roll();
