@@ -28,7 +28,7 @@
 local band = require("band")
 local liveaudio = { KBPS = 128, EVERY = 0.5, RETRY = 10, HELD = 0.6, TAIL = 0.25, SILENT = 1023, ECHO_LEVEL = 0.05,
   FLOOR = 30, CEILING = 150, WIFI = 30, -- (each bandmate's jitter buffer, ms: the extension's defaults; WIFI: this far above the floor, Health says why)
-  HUB_FROM = 4, HUB_BUDGET = 0.25, HUB_REC_BUDGET = 0.10, HUB_COOL = 120 } -- (the hub's live mix, below: from 4 people; its share of a core, recording; s paused)
+  HUB_FROM = 4, HUB_BUDGET = 0.25, HUB_REC_BUDGET = 0.10, HUB_COOL = 120, HUB_KEEP = 60 } -- (the hub's live mix, below: from 4 people; its share of a core, recording; s paused)
 local S = { at = -math.huge, json = nil, fail_at = -math.huge } -- (this script's state: the JSON last handed over, the last start that failed)
 liveaudio.S = S
 
@@ -508,27 +508,39 @@ end
 -- Play to it alone and hears one stream, built at the hub from that listener's own Talk/Play volumes (the cue mix travels with the request).
 -- The extension does it (extension/rtaudio.cpp: the mixing on the hub's send thread, never REAPER's audio thread past a copy), and falls back to
 -- everyone's own streams by itself within about a jitter buffer when the hub's mix stops (the hub dropping, handing on, pausing); Lua only
--- says who mixes. Everyone here needs the newer extension ("lhub" in their status) before it's used, so an older one never sees its datagrams.
+-- says who mixes. Nobody waits for anyone's extension (rt-hubfix: "waiting for Chilio-Mac to have the newer StudioSync extension" came and went
+-- with the Mac's status file, and the whole room's audio switched with it): a computer whose extension is older than the hub's jobs need
+-- (lib/hub.lua EXT) isn't elected hub and doesn't ask for a mix; it keeps its own streams with everyone, which the extension handles per peer.
 function liveaudio.can_hub() return reaper.StudioSync_LiveAudioHub ~= nil end
 function liveaudio.my_lhub() return liveaudio.can_hub() or nil end -- (for this computer's status file: "lhub")
+-- This computer's extension takes part in the hub's mix: it has it, and it's new enough (the extension says its version in "menu extension").
+function liveaudio.hub_fit()
+  if not liveaudio.can_hub() then return false end
+  local ok, fit = pcall(function() return require("hub").fit(reaper.GetExtState(band.SECTION, "menu extension")) end)
+  return ok and fit == true
+end
+-- The room's size for the threshold, held: big enough once, it counts as big enough until it has been smaller for HUB_KEEP s (someone's
+-- status coming late took them off the list for a moment, and everyone's audio switched to their own streams and back). mem: kept. Pure.
+function liveaudio.hub_n(mem, n, from, now)
+  if n >= from then mem.big_at = now; return n end
+  return mem.big_at and now - mem.big_at < liveaudio.HUB_KEEP and from or n
+end
 function liveaudio.hub_from(root)
   local ok, v = pcall(function() return require("groups").live_hub(root) end)
   return ok and tonumber(v) or liveaudio.HUB_FROM
 end
 -- -> peer (the hub's "name:port", "" for peer to peer), serve (this computer mixes), why (Health's words when the room is big enough but it
--- isn't used, else nil). o: n (people here, me too), from (the threshold), hub (this song's hub), me, users (peer -> name: those here), caps
--- (name -> their extension mixes), can (mine does), budget (false: this computer's mixing is paused, budget_why says why). Pure.
+-- isn't used, else nil). o: n (people here, me too), from (the threshold), hub (this song's hub), me, users (peer -> name: those here), can
+-- (this computer's extension takes part: hub_fit), hub_fit (false: the hub's own extension is too old to mix, lib/hub.lua's view), budget
+-- (false: this computer's mixing is paused, budget_why says why). Pure.
 function liveaudio.hub_plan(o)
   local from = tonumber(o.from) or liveaudio.HUB_FROM
   if from <= 0 or (tonumber(o.n) or 1) < from then return "", false, nil end
   if not o.can then return "", false, "needs a newer StudioSync extension here" end
   if not o.hub then return "", false, "this song has no hub here" end
-  local names, peer = {}, nil
-  for p, name in pairs(o.users or {}) do names[#names + 1] = name; if name == o.hub then peer = p end end
-  table.sort(names)
-  for _, name in ipairs(names) do
-    if not (o.caps or {})[name] then return "", false, "waiting for " .. name .. " to have the newer StudioSync extension" end
-  end
+  if o.hub ~= o.me and o.hub_fit == false then return "", false, o.hub .. "'s StudioSync extension is too old to mix it (REAPER there needs a restart after the update)" end
+  local peer
+  for p, name in pairs(o.users or {}) do if name == o.hub then peer = p end end
   if o.hub == o.me then return "", o.budget ~= false, o.budget == false and o.budget_why or nil end
   if not peer then return "", false, o.hub .. " (this song's hub) isn't on the direct link here" end
   return peer, false, nil
@@ -571,8 +583,10 @@ function liveaudio.hub_tick(cfg, b, list, users, st)
   -- (while shared CPU runs in the room, the best-connected computer mixes instead of the song's hub: lib/livex.lua, rt-sonox)
   local okx, xhub, pick, wait = pcall(require("livex").mix_host, cfg, b, hub, users, st, S)
   if okx then hub = xhub end
-  local peer, serve, why = liveaudio.hub_plan({ n = #(list or {}) + 1, from = liveaudio.hub_from(cfg.root), hub = hub, me = cfg.user, users = users,
-    caps = S.caps, can = true, budget = ok_b, budget_why = why_b })
+  local from = liveaudio.hub_from(cfg.root)
+  local unfit = okv and type(v) == "table" and hub == v.hub and v.hub_fit == false -- (the song's hub itself: lib/livex.lua picks only one that can)
+  local peer, serve, why = liveaudio.hub_plan({ n = liveaudio.hub_n(S.hub_mem, #(list or {}) + 1, from, reaper.time_precise()), from = from, hub = hub,
+    me = cfg.user, users = users, can = liveaudio.hub_fit(), hub_fit = not unfit, budget = ok_b, budget_why = why_b })
   if okx and wait and not hub and why then why = wait end
   S.hub = { peer = peer, serve = serve, why = why, user = hub, pick = okx and (peer ~= "" or serve) and pick or nil }
   local key = peer .. "|" .. tostring(serve)

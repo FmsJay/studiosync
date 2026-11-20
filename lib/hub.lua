@@ -15,7 +15,15 @@
 -- never a hub.
 local band = require("band")
 local hub = { SCAN_EVERY = 10, FRESH = 45, HANDBACK = 30, SNAP_EVERY = 1800, IDLE = 60, BUDGET = 0.002, SCAN_MS = 4, TICK_EVERY = 2, LABEL = "hub snapshot",
-  TRANSFERS_KEPT = 50, LINK_GONE = 12, GUESTS_EVERY = 10, LISTEN = 45 }
+  TRANSFERS_KEPT = 50, LINK_GONE = 12, GUESTS_EVERY = 10, LISTEN = 45,
+  -- (rt-hubfix, 2026-11-20: the song's hub flipped between the desktop and the Mac 24 times in a day. They can't reach each other directly, so
+  -- each read the other's status only as a file through Syncthing, and whenever it came over FRESH s late one took the role and gave it back.)
+  -- VOUCH: a status up to this old still counts while a computer here says its direct link reaches that one (its status's hub.sees: a third
+  -- computer that reaches both). HOLD: whoever holds a role keeps counting this long with nobody vouching (the takeover's hysteresis; the
+  -- link's own LINK_GONE still drops one it had reached within seconds). EXT: the extension the hub's jobs need (the live mix says whom it
+  -- has from 1.0.28: an older one as the hub left listeners deaf to anyone it couldn't hear); an older one isn't elected while a computer
+  -- with it is here.
+  VOUCH = 150, HOLD = 90, EXT = "1.0.28" }
 
 -- ---- pure ----------------------------------------------------------------------------------------------------------------------------
 -- Candidates: { user, machine, since (os.time it came online), link (its direct link listens), off (handed the role on), studio (holds the
@@ -43,10 +51,22 @@ local function settled(c, now, others_hold)
 end
 
 local function taking(c) return not c.listening end
+-- Is an extension new enough for the hub's jobs? Pure.
+function hub.fit(ext) return type(ext) == "string" and ext ~= "" and band.compare_versions(ext, hub.EXT) >= 0 end
+-- A candidate's: one whose status doesn't say (an older StudioSync there, until its update arrives) counts as before, so an update that
+-- reaches the computers one by one doesn't hand the roles to whoever got it first. A computer with no extension says "0".
+function hub.fits(ext) return ext == nil or hub.fit(ext) end
+-- Those whose extension is (or isn't said: hub.fits); all of them when nobody's is (the restore points need none, so the role still goes to someone).
+local function fit_only(list)
+  local out = {}
+  for _, c in ipairs(list) do if hub.fits(c.ext) then out[#out + 1] = c end end
+  return #out > 0 and out or list
+end
 -- -> the studio hub's user (nil: nobody online who'll take it) and why: "preferred", "kept", "ranked", or "nobody".
 function hub.elect_studio(cands, preferred, now)
   local ok = {}
   for _, c in ipairs(cands or {}) do if not c.off then ok[#ok + 1] = c end end
+  ok = fit_only(ok)
   local holder = best(ok, function(c) return c.studio == true end)
   local p = preferred and find(ok, preferred)
   if p and taking(p) and settled(p, now, holder and holder ~= p) then return p.user, "preferred" end
@@ -61,6 +81,7 @@ end
 function hub.elect_song(cands, song, home, studio, now)
   local here = {}
   for _, c in ipairs(cands or {}) do if not c.off and type(c.songs) == "table" and c.songs[song] then here[#here + 1] = c end end
+  here = fit_only(here)
   local holder = best(here, function(c) return c.songs[song].holds == true end)
   local h = home and find(here, home)
   if h and taking(h) and settled(h, now, holder and holder ~= h) then return h.user, "home" end
@@ -91,24 +112,76 @@ end
 
 -- Statuses -> candidates. sts: { { song, st (a status file's table), seen (os.time it last changed here) } }; me: this computer's user; fresh:
 -- seen or written within FRESH s (a bandmate's clock that's off still reads as here while its file keeps changing, as lib/presence.lua).
--- Each person's newest status gives their since/link/off/studio; every song they're fresh in goes in songs.
+-- Each person's newest status gives their since/link/off/studio, ext (their extension) and sees (those their direct link reaches); every
+-- song they're fresh in goes in songs. Someone with no fresh status but one under VOUCH s old is kept as `late` (its age, s), in that
+-- newest status's song only: hub.vouched decides whether they still count.
+local function person(c, st)
+  local h = type(st.hub) == "table" and st.hub or {}
+  c.time, c.machine, c.since, c.link, c.off, c.studio = st.time, st.machine, tonumber(h.since), h.link == true, h.off == true, h.studio == true
+  c.ext, c.sees = type(h.ext) == "string" and h.ext or nil, {}
+  for _, u in ipairs(type(h.sees) == "table" and h.sees or {}) do if type(u) == "string" then c.sees[u] = true end end
+end
 function hub.candidates(sts, now, age_of)
-  local by, out = {}, {}
+  local by, out, late = {}, {}, {}
   for _, s in ipairs(sts or {}) do
     local st = s.st
-    if type(st) == "table" and type(st.user) == "string" and type(st.time) == "string" and type(s.song) == "string"
-      and (age_of(st.time) < hub.FRESH or now - (tonumber(s.seen) or -math.huge) < hub.FRESH) then
-      local h = type(st.hub) == "table" and st.hub or {}
-      local c = by[st.user]
-      if not c then c = { user = st.user, songs = {} }; by[st.user] = c; out[#out + 1] = c end
-      if not c.time or st.time > c.time then
-        c.time, c.machine, c.since, c.link, c.off, c.studio = st.time, st.machine, tonumber(h.since), h.link == true, h.off == true, h.studio == true
+    if type(st) == "table" and type(st.user) == "string" and type(st.time) == "string" and type(s.song) == "string" then
+      local age = age_of(st.time)
+      if age < hub.FRESH or now - (tonumber(s.seen) or -math.huge) < hub.FRESH then
+        local c = by[st.user]
+        if not c then c = { user = st.user, songs = {} }; by[st.user] = c; out[#out + 1] = c end
+        if not c.time or st.time > c.time then person(c, st) end
+        c.songs[s.song] = c.songs[s.song] or {}
+        if type(st.hub) == "table" and st.hub.song == true then c.songs[s.song].holds = true end
+      elseif age < hub.VOUCH and (not late[st.user] or st.time > late[st.user].st.time) then
+        late[st.user] = { st = st, song = s.song, age = age }
       end
-      c.songs[s.song] = c.songs[s.song] or {}
-      if h.song == true then c.songs[s.song].holds = true end
+    end
+  end
+  for user, l in pairs(late) do
+    if not by[user] then
+      local c = { user = user, late = l.age, songs = { [l.song] = { holds = type(l.st.hub) == "table" and l.st.hub.song == true or nil } } }
+      person(c, l.st)
+      out[#out + 1] = c
     end
   end
   table.sort(out, function(a, b) return a.user < b.user end)
+  return out
+end
+-- The open room's statuses as presence has them (the link's messages too: seconds old, where a file through Syncthing is up to FILE_QUIET s
+-- old plus its trip) over the scan's candidates: each one fresh there is fresh here, in this song, with its newer word. -> a new list. Pure.
+function hub.with_room(list, sts, song)
+  local out, at = {}, {}
+  for _, c in ipairs(list or {}) do out[#out + 1] = c; at[c.user] = #out end
+  for _, st in ipairs(sts or {}) do
+    if type(st) == "table" and type(st.user) == "string" and type(st.time) == "string" then
+      local old = at[st.user] and out[at[st.user]]
+      local c = { user = st.user, songs = {} }
+      if old and not old.late then for k, v in pairs(old.songs) do c.songs[k] = v end end
+      if old and old.time and old.time > st.time then for _, k in ipairs({ "time", "machine", "since", "link", "off", "studio", "ext", "sees" }) do c[k] = old[k] end
+      else person(c, st) end
+      c.songs[song] = { holds = type(st.hub) == "table" and st.hub.song == true or nil }
+      if old then out[at[st.user]] = c else out[#out + 1] = c; at[st.user] = #out end
+    end
+  end
+  table.sort(out, function(a, b) return a.user < b.user end)
+  return out
+end
+-- The candidates that count: a late one only while a computer that isn't late says its link reaches it (sees), or, holding a role, for
+-- HOLD s. So two computers that can't reach each other still agree while a third reaches both, and a status that comes late through
+-- Syncthing doesn't move a role there and back. -> a new list. Pure.
+function hub.vouched(list)
+  local out = {}
+  for _, c in ipairs(list or {}) do
+    local keep = not c.late
+    if not keep then
+      for _, v in ipairs(list) do keep = keep or (v ~= c and not v.late and type(v.sees) == "table" and v.sees[c.user] == true) end
+      local holds = c.studio == true
+      for _, sg in pairs(type(c.songs) == "table" and c.songs or {}) do holds = holds or (type(sg) == "table" and sg.holds == true) end
+      keep = keep or (holds and c.late < hub.HOLD)
+    end
+    if keep then out[#out + 1] = c end
+  end
   return out
 end
 
@@ -180,7 +253,10 @@ function hub.line(v, me)
   if type(v.refused) == "table" and #v.refused > 0 then
     out = out .. " A handover in " .. table.concat(v.refused, ", ") .. "'s name came from another computer, so it doesn't count."
   end
-  return out .. (v.fast and " A hub that drops is replaced within seconds (direct link)." or " A hub that drops is replaced within a minute (the direct link makes it seconds).")
+  if type(v.old) == "table" and #v.old > 0 then
+    out = out .. " Not a hub until REAPER restarts there with StudioSync's extension " .. hub.EXT .. " or newer: " .. table.concat(v.old, ", ") .. "."
+  end
+  return out .. (v.fast and " A hub that drops is replaced within seconds (direct link)." or " A hub that drops is replaced within a minute or two (the direct link makes it seconds).")
 end
 
 -- ---- this computer ---------------------------------------------------------------------------------------------------------------------
@@ -263,9 +339,16 @@ end
 -- What goes in this computer's status (Live sync's P.status): when it came online, its link, handed on, and the roles it holds now.
 local held = {} -- root -> { studio = bool, songs = { [song] = bool } }: this script's last election
 local link_ok = false
+local sees_now = {} -- root\nsong -> those this computer's direct link reaches in that song's room now (sorted names): hub.tick
+-- This computer's extension as REAPER loaded it ("menu extension": the extension says its version there), or nil.
+local function my_ext() local v = reaper.GetExtState(band.SECTION, "menu extension"); return type(v) == "string" and v ~= "" and v or nil end
+-- (ext: so a computer whose extension is too old for the hub's jobs isn't elected; sees: so the others count someone whose status comes late
+-- to them while this computer's link reaches it. rt-hubfix)
 function hub.status_part(cfg, b)
   local h = held[cfg.root] or { songs = {} }
-  return { since = hub.since(), link = link_ok or nil, off = hub.off(cfg.root) or nil, studio = h.studio or nil, song = b and h.songs[b.song] or nil }
+  local sees = b and sees_now[cfg.root .. "\n" .. tostring(b.song)]
+  return { since = hub.since(), link = link_ok or nil, off = hub.off(cfg.root) or nil, studio = h.studio or nil, song = b and h.songs[b.song] or nil,
+    ext = my_ext() or "0", sees = sees and #sees > 0 and sees or nil }
 end
 
 -- The studio's statuses, read a few songs at a time (SCAN_MS a tick), every SCAN_EVERY s; shared through ExtState with the other Live sync tabs,
@@ -312,7 +395,7 @@ local function scan(cfg)
   return list
 end
 -- This computer as it is now (fresher than its own status file): since, link, off, and in this song.
-local function with_me(list, cfg, song)
+local function with_me(list, cfg, song, sees)
   local out, me = {}, nil
   for _, c in ipairs(list or {}) do
     if c.user == cfg.user then
@@ -325,6 +408,8 @@ local function with_me(list, cfg, song)
   local h = held[cfg.root] or { songs = {} }
   me.machine = me.machine or require("sync").machine()
   me.since, me.link, me.off, me.studio = hub.since(), link_ok, hub.off(cfg.root), h.studio == true
+  me.ext, me.sees = my_ext() or "0", {}
+  for _, u in ipairs(sees or {}) do me.sees[u] = true end
   me.songs[song] = { holds = h.songs[song] == true }
   -- Just came online: for LISTEN s it takes no role it doesn't hold, so it has heard the room first: the others' statuses read over more than
   -- one scan (one whose stamp is off counts only once it's seen changing here: hub.candidates; Syncthing may still be bringing them after
@@ -357,7 +442,6 @@ function hub.tick(proj, cfg, b)
   ticked[tk] = reaper.time_precise()
   local list = scan(cfg)
   if not list then return end
-  list = with_me(list, cfg, b.song)
   local now = os.time()
   -- (the link's view of those here: a hub that drops is out within LINK_GONE s, not when its status goes stale)
   local okr, reach = pcall(function()
@@ -367,6 +451,14 @@ function hub.tick(proj, cfg, b)
   reach = okr and reach or {}
   link_mem[cfg.root] = link_mem[cfg.root] or {}
   local gone, back = hub.link_watch(link_mem[cfg.root], reach, now)
+  -- (those the link reaches now, by its memory: one failed ping doesn't take a name out, so the status isn't written again for it)
+  local sees = {}
+  for user in pairs(reach) do local m = link_mem[cfg.root][user]; if m and m.reached and not m.gone then sees[#sees + 1] = user end end
+  table.sort(sees)
+  sees_now[tk] = sees
+  -- (the room's statuses as the link brought them, this computer as it is now, then who still counts: rt-hubfix)
+  local okp, sts = pcall(function() return require("presence").peers(cfg, b.song, b.room) end)
+  list = hub.vouched(with_me(hub.with_room(list, okp and type(sts) == "table" and sts or {}, b.song), cfg, b.song, sees))
   local lost, fast = {}, false
   for _, c in ipairs(list) do if gone[c.user] then lost[#lost + 1] = c.user end end
   for _, r in pairs(reach) do if r.ok then fast = true end end
@@ -380,8 +472,17 @@ function hub.tick(proj, cfg, b)
   local h = held[cfg.root] or { songs = {} }
   h.studio, h.songs[b.song] = studio == cfg.user, song == cfg.user
   held[cfg.root] = h
+  -- (hub_fit: false when even this song's hub has an extension too old to mix, lib/liveaudio.lua hub_plan; old: those here passed over for it)
+  local old, any_fit, hub_fit = {}, false, nil
+  for _, c in ipairs(list) do
+    if type(c.songs) == "table" and c.songs[b.song] and not c.off then
+      if hub.fits(c.ext) then any_fit = true else old[#old + 1] = c.user end
+      if c.user == song then hub_fit = hub.fits(c.ext) end
+    end
+  end
   local v = { studio = studio, studio_why = swhy, song = b.song, hub = song, why = why, home = home, moved = moved, fast = fast or nil,
-    gone = #lost > 0 and lost or nil, guest = gs[cfg.user] or nil, refused = refused and #refused > 0 and refused or nil }
+    gone = #lost > 0 and lost or nil, guest = gs[cfg.user] or nil, refused = refused and #refused > 0 and refused or nil,
+    hub_fit = hub_fit, old = any_fit and #old > 0 and old or nil }
   local key = cfg.root .. "\n" .. b.song
   local was = view[key]
   if not was or was.hub ~= song or was.studio ~= studio then
@@ -485,7 +586,7 @@ function hub.studio_ui(ctx, ImGui, cfg, may)
   ImGui.SeparatorText(ctx, "Hub")
   ImGui.TextDisabled(ctx, "One online computer is the studio's hub and each project has one (whoever shared it, unless it's handed on). A project's hub keeps its " ..
     "restore points while that REAPER isn't playing or recording. Nothing depends on a hub: with none online, everyone still syncs directly and the cloud copy stands in. " ..
-    "A hub that drops is replaced within seconds over the direct link (within a minute without it). Guests are never a hub, and a handover counts only from its hander's own computer.")
+    "A hub that drops is replaced within seconds over the direct link (within a minute or two without it). Guests are never a hub, and a handover counts only from its hander's own computer.")
   local pref = require("groups").trusted(cfg.root).hub
   pref = type(pref) == "string" and pref or nil
   if may then

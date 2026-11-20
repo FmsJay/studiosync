@@ -25,7 +25,7 @@ local trusted = {}
 package.loaded.groups = { trusted = function() return trusted end, tailnet = function() return { name = "x", suffix = "tail99.ts.net" } end,
   sonobus_secret = function() return "s3cret" end, live_audio = function() return true end, live_hub = function() return tonumber(trusted.live_hub) end }
 local view = nil
-package.loaded.hub = { view = function() return view end }
+package.loaded.hub = { view = function() return view end, fit = function(e) return e == "1.0.28" end } -- (fit: lib/hub.lua's, the extension the hub's jobs need)
 local statuses = {}
 package.loaded.presence = { peers = function() return statuses end }
 local direct = require("direct")
@@ -51,8 +51,19 @@ p, s, w = plan({ n = 4, hub = "James", me = "James", users = four, caps = all, c
 assert(p == "" and s == true and w == nil, "this computer is the song's hub: it mixes")
 p, s, w = plan({ n = 4, hub = "James", me = "James", users = four, caps = all, can = true, budget = false, budget_why = "paused while you record" })
 assert(p == "" and s == false and w == "paused while you record", "its budget paused it: peer to peer, and Health says why")
+-- (rt-hubfix: nobody waits for a bandmate's extension. It was: "waiting for Lin to have the newer StudioSync extension", and the room's audio
+-- switched whenever Lin's status file came late. An older one keeps its own streams; only the hub's own must be new enough.)
 p, s, w = plan({ n = 4, hub = "Bee", me = "James", users = four, caps = { Bee = true, Chilio = true }, can = true })
-assert(p == "" and w:find("Lin", 1, true) and w:find("newer", 1, true), "someone's extension is older: not used (it would refuse the datagrams): " .. w)
+assert(p == BEE and w == nil, "someone's extension is older (or their status is late): the others still go through the hub")
+p, s, w = plan({ n = 4, hub = "Bee", me = "James", users = four, can = true, hub_fit = false })
+assert(p == "" and not s and w:find("Bee's StudioSync extension is too old", 1, true), "the hub's own extension is too old to mix: peer to peer, and why: " .. tostring(w))
+p, s, w = plan({ n = 4, hub = "James", me = "James", users = four, can = true, hub_fit = false })
+assert(p == "" and s == true, "(this computer as the hub goes by its own `can`)")
+-- the room's size is held: big enough once, it stays so until it has been smaller for HUB_KEEP s
+local nm = {}
+assert(la.hub_n(nm, 3, 4, 0) == 3 and la.hub_n(nm, 4, 4, 10) == 4, "three, then four")
+assert(la.hub_n(nm, 3, 4, 20) == 4 and la.hub_n(nm, 3, 4, 10 + la.HUB_KEEP - 1) == 4, "someone's status late for a moment: still counted as four")
+assert(la.hub_n(nm, 3, 4, 10 + la.HUB_KEEP + 1) == 3, "gone for good: three")
 p, s, w = plan({ n = 4, hub = "Bee", me = "James", users = four, caps = all, can = false })
 assert(p == "" and w:find("extension here", 1, true), "this extension can't: said")
 p, s, w = plan({ n = 4, hub = nil, me = "James", users = four, caps = all, can = true })
@@ -126,11 +137,14 @@ peers_here, users_here = { BEE, MAC, LIN }, { [BEE] = "Bee", [MAC] = "Chilio", [
 statuses[#statuses + 1] = { user = "Lin" } -- (an older extension: no lhub)
 clock = clock + 1 -- (their statuses are read once a second)
 tick()
-assert(#E.calls == 1 and la.S.hub.why:find("Lin", 1, true), "four, but Lin's extension is older: still peer to peer, and why")
-statuses[3].lhub = true
-clock = clock + 1
+assert(#E.calls == 1 and la.S.hub.why:find("extension here", 1, true), "four, but this computer's extension is older than the hub's mix needs: its own streams, and why")
+ext["BandSync/menu extension"] = "1.0.28"
+view = { hub = "Bee", hub_fit = false }
 tick()
-assert(E.calls[2] == BEE .. " 0" and logs[#logs]:find("Bee's computer mixes it", 1, true), "everyone's is newer: through Bee's mix: " .. tostring(E.calls[2]))
+assert(#E.calls == 1 and la.S.hub.why:find("Bee's StudioSync extension is too old", 1, true), "the hub's own extension is too old: peer to peer, and why")
+view = { hub = "Bee", hub_fit = true }
+tick()
+assert(E.calls[2] == BEE .. " 0" and logs[#logs]:find("Bee's computer mixes it", 1, true), "Lin's older extension makes nobody wait: through Bee's mix: " .. tostring(E.calls[2]))
 view = { hub = "James" }
 tick()
 assert(E.calls[3] == " 1" and logs[#logs]:find("you mix it", 1, true), "the hub moves here: this computer mixes")

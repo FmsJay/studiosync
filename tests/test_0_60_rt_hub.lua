@@ -226,6 +226,7 @@ end
 do
   local cfg, b = { root = "R", user = "Bo" }, { song = "Song", room = "main" }
   reaper.SetExtState(band.SECTION, "hub since", tostring(os.time() - 1000)) -- (online a while: past hub.LISTEN)
+  reaper.SetExtState(band.SECTION, "menu extension", hub.EXT) -- (this computer's extension, new enough for the hub's jobs: rt-hubfix)
   files["R/Song/session.json"] = { host = "Bo" }
   band.songs = function() return { "Song" } end
   band.subdirs = function(d) return d == "R/Song/rooms" and { "main" } or {} end

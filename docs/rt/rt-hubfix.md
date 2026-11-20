@@ -64,3 +64,91 @@ serving 2, the laptop through it) and the Mac still missing from rooms now and t
 - Review-later (security): 'H' is tagged with the studio secret like every control datagram and only read from a listed peer that is this
   computer's hub; its addresses only narrow whom a listener tells to stop sending (a forged or wrong 'H' can at most make peers send directly,
   which costs bandwidth, not audio or access). Size-checked (at most RT_MAX_PEERS addresses, exact length).
+
+# Part 2: the song's hub flapping between the desktop and the Mac
+
+2026-11-20, later the same day (extension 1.0.28 released). Lua only: no C++ change.
+
+## What was seen
+
+The desktop's log: "you're the hub for 'Cross Test' now" 24 times, "'Cross Test': Chilio-Mac is its hub now" within the same minute after
+some, and live audio flipping between "peer to peer (the hub's mix: waiting for Chilio-Mac to have the newer StudioSync extension)" and
+"Chilio-Mac's computer mixes it" / "you mix it". The Mac is on extension 1.0.23 and the desktop can't reach it over the direct link at all;
+the laptop reaches both.
+
+## Why (read-only probes: the status files on the desktop's disk, `rthf_view.lua` on both REAPERs)
+
+- The election read status *files* only, with a 45 s window. A computer whose link reaches everyone writes its file every 30 s; one whose
+  link doesn't, every 15 s. Measured on the desktop while things were calm: the laptop's file reached 44 s old, the Mac's 27 s. Any extra
+  Syncthing delay (the Mac's file comes through the laptop) put one over 45 s.
+- While the flapping went on the song had no home (session.json last written by another computer than its sharer, so the sharer is set aside),
+  and the Mac, online longest, held the song's hub. Each time its file came late the desktop saw no holder and took the role at once (it is
+  the studio's hub); when the file came, two held it, the better-ranked (online longest: the Mac) won everywhere, and the desktop gave it
+  back. No hysteresis either way. At 14:25 session.json was the desktop's again, the desktop became the song's home, and it stopped.
+- "waiting for Chilio-Mac to have the newer StudioSync extension" was the same late status seen by live audio: the plan asked every
+  bandmate's status for `lhub`, and one whose status was missing for a moment read as "older extension", so the whole room switched to its
+  own streams and back. The Mac's status says `lhub` true: nothing was actually being waited for.
+- Nothing told anyone the Mac's extension is 1.0.23: a hub on 1.0.23 doesn't say whom its mix has ('H'), so with it as hub a listener is
+  deaf to whoever the hub can't hear (here: the desktop), as before 1.0.28.
+
+## The fix
+
+lib/hub.lua:
+- **A third computer vouches (`hub.sees`, `VOUCH` 150 s).** Each status's hub part lists those its direct link reaches now (by the link
+  watch's memory, so one failed ping doesn't rewrite the status). A candidate whose own status is 45-150 s old still counts while a computer
+  that isn't late lists it. The desktop and the Mac agree through the laptop.
+- **The room's statuses come from presence, not only the files** (`hub.with_room`): what the link brought (seconds old) counts before the
+  file does, so the laptop's own word isn't 44 s old when it vouches.
+- **A holder's grace (`HOLD` 90 s).** Whoever holds a role keeps counting until its status is 90 s old even with nobody vouching, so two
+  computers alone with late files don't trade the role. The link's own watch still drops a hub it had reached within 12 s; one only the files
+  show is replaced after 90 s (was 45).
+- **An extension too old for the hub's jobs isn't elected (`hub.EXT` "1.0.28", status `hub.ext`)** while a computer with a new enough one is
+  here, for the studio's hub and a song's, the owner's pick and the song's home included; such a computer gives the role up itself. When
+  nobody's is new enough the role still goes to someone (the restore points need no extension) and the view says `hub_fit` false. A status
+  that doesn't say (an older StudioSync, until its update arrives) counts as before, so an update reaching the computers one by one doesn't
+  hand the roles to whoever got it first; a computer with no extension says "0". Health's hub row names those passed over.
+
+lib/liveaudio.lua, lib/livex.lua:
+- **Nobody waits for anyone's extension.** `hub_plan` no longer asks every bandmate's status; only the hub's own extension must be new
+  enough (`hub_fit` from the view), and this computer's (`liveaudio.hub_fit`: an older one keeps its own streams with everyone, which the
+  extension handles per peer since 1.0.28). lib/livex.lua's mix-host pick (rt-sonox) uses the same test for `can`.
+- **The room's size is held (`HUB_KEEP` 60 s, `liveaudio.hub_n`).** Big enough for the hub's mix once, it stays so until it has been smaller
+  for a minute: a status late for a moment took someone off the list and switched everyone's audio.
+
+## Tests
+
+`tests/test_0_60_rt_hubfix_elect.lua`: a small world where each computer elects from the statuses as they reach it (a file's trip 8 s for
+two minutes, then 60 s for two minutes, over 20 minutes).
+- Desk and Mac can't reach each other, Lap reaches both, the Mac holds the hub: with the old rules the desktop's view moves 8+ times; now
+  nobody's moves and all three agree throughout. The Mac really gone: replaced once.
+- Desk and Mac alone: the same flapping before, none now; the holder gone for good: taken over once after HOLD.
+- The Mac's extension 1.0.23: all three say Desk within one tick, one move each, none after. The Mac on an older StudioSync too (no `ext`):
+  left as it was, steadily. Nobody's new enough: the ranking as before; the owner's pick with an old one isn't the studio hub.
+- Live sync's tick end to end: a holder's file 100 s old kept while Lap's link reaches it, replaced when nobody does; the room's link
+  statuses over the files; `status_part`'s `ext` and `sees`; an old extension passed over, Health's words; this computer giving the role up.
+
+`tests/test_0_60_rt_hubmix.lua` (changed: an older bandmate doesn't block the mix, the hub's own extension too old, the room's size held);
+`tests/test_0_60_rt_hub.lua` (one line: the stand-in computer says its extension).
+
+## To check in REAPER
+
+1. After the update is on all four (Lua only; the Mac takes it from the studio's folder), `rthf_view.lua` on the desktop and the laptop:
+   the same `hub` in both views, and each status file's hub part with `ext` (the Mac's "1.0.23") and `sees`.
+2. Health's hub row on any computer: "Not a hub until REAPER restarts there with StudioSync's extension 1.0.28 or newer: Chilio-Mac."
+3. The desktop's log over an hour: no new "you're the hub for 'Cross Test' now" / "is its hub now" pairs, and no "waiting for ... to have
+   the newer StudioSync extension" at all.
+4. Live audio on the desktop and laptop: the mix's host doesn't change while nobody joins or leaves; the Mac heard by its own streams
+   (`via_hub=false`) where the hub doesn't hear it.
+
+## Not done / limits (part 2)
+
+- Until the Mac's StudioSync has this change, its status doesn't say its extension, so the others still count it as able (as before).
+- The song's home still comes and goes with who last wrote session.json (the Syncthing writer check sets the sharer aside when anyone else
+  publishes the timeline). With the holder's grace that no longer flaps, but the home should come from something only the sharer writes.
+  Left for James: it's the trust design.
+- The desktop's own status file is rewritten every 2 s (it can't reach the Mac, so it never goes quiet, and something in its status changes
+  every tick). It works, but it's Syncthing traffic worth a look.
+- A hub is still chosen without asking whether everyone can reach it: with `sees` in every status that ranking is now possible (prefer the
+  computer most others reach). Not built.
+- Review-later (security): `ext` and `sees` are a member's own word in its own status. A false `sees` keeps a computer that left counted
+  for up to 150 s; a false `ext` makes its writer eligible (as everyone was before) or not. Neither grants anything a member hadn't.
