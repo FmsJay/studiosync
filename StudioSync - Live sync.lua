@@ -763,6 +763,8 @@ function P.status(t)
     info.la = okla and la or nil
     local oks, src = pcall(require("liveaudio").my_src) -- (Talk, Play or both: the others' Chat > Call shows it)
     info.lsrc = oks and src or nil
+    local okh2, lh = pcall(require("liveaudio").my_lhub) -- (this extension mixes at a hub: the hub's live mix waits until everyone's does)
+    info.lhub = okh2 and lh or nil
   end
   if followed then info.mix = require("presence").my_mix(proj) end -- (someone follows you: they hear your mix. lib/presence.lua)
   if (followed or watched) and not info.playing then info.cursor = math.floor(reaper.GetCursorPositionEx(proj) * 1000 + 0.5) / 1000 end -- (followers' cursors go here: lib/presence.lua)

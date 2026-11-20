@@ -25,7 +25,9 @@ that each add a library merge cleanly.
 
 Compiled straight into `reaper_studiosync` (static: no extra DLL, dylib or .so) for live audio, `extension/rtaudio.cpp`
 (docs/realtime-roadmap.md step 4). Only the files the build needs are kept; each is byte-for-byte the upstream file at the commit
-below (nothing patched). No nested `.git`.
+below, except one patch: `aoo/aoo/src/codec/opus.cpp` passes `OPUS_SET_PREDICTION_DISABLED` to the encoder (marked "StudioSync's one
+patch"), so a stream turned back on decodes at full level at once (the hub's live mix falling back to direct streams). No nested `.git`.
+A `build\studiosync_deps-x64.lib` made before that patch still links and works, without it: delete `build\` once to rebuild it.
 
 | Folder | What | From | Version | Licence |
 |---|---|---|---|---|

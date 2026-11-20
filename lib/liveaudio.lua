@@ -23,9 +23,12 @@
 -- Talk and a Play volume per bandmate (StudioSync_LiveAudioPlay / PeerPlay, extension after 1.0.15; without them, Talk alone as before).
 -- Mute, push-to-talk and talkback use StudioSync_LiveAudioSend (the extension after 1.0.13). Without it Mute me restarts live audio on a
 -- silent input (a moment's gap in what you hear), and push-to-talk and talkback wait for the newer extension.
+-- The hub's live mix (below, hub_plan): from HUB_FROM people in a room (a studio setting), the song's hub mixes everyone's live audio, one
+-- stream each way per person instead of one to and from everyone (StudioSync_LiveAudioHub, extension after 1.0.18).
 local band = require("band")
 local liveaudio = { KBPS = 128, EVERY = 0.5, RETRY = 10, HELD = 0.6, TAIL = 0.25, SILENT = 1023, ECHO_LEVEL = 0.05,
-  FLOOR = 30, CEILING = 150, WIFI = 30 } -- (each bandmate's jitter buffer, ms: the extension's defaults; WIFI: this far above the floor, Health says why)
+  FLOOR = 30, CEILING = 150, WIFI = 30, -- (each bandmate's jitter buffer, ms: the extension's defaults; WIFI: this far above the floor, Health says why)
+  HUB_FROM = 4, HUB_BUDGET = 0.25, HUB_REC_BUDGET = 0.10, HUB_COOL = 120 } -- (the hub's live mix, below: from 4 people; its share of a core, recording; s paused)
 local S = { at = -math.huge, json = nil, fail_at = -math.huge } -- (this script's state: the JSON last handed over, the last start that failed)
 liveaudio.S = S
 
@@ -171,11 +174,13 @@ end
 function liveaudio.their_srcs(cfg)
   local now = reaper.time_precise()
   if S.srcs and now - S.srcs_at < 1 then return S.srcs end
-  S.srcs, S.srcs_at = {}, now
+  S.srcs, S.srcs_at, S.caps = {}, now, {}
   local b = S.b
   if not (cfg and b and b.song) then return S.srcs end
   local ok, sts = pcall(require("presence").peers, cfg, b.song, b.room or "main")
-  for _, x in ipairs(ok and type(sts) == "table" and sts or {}) do if type(x) == "table" and x.user then S.srcs[x.user] = x.lsrc end end
+  for _, x in ipairs(ok and type(sts) == "table" and sts or {}) do
+    if type(x) == "table" and x.user then S.srcs[x.user], S.caps[x.user] = x.lsrc, x.lhub == true end -- (lhub: their extension mixes at a hub, hub_plan)
+  end
   return S.srcs
 end
 -- Health's words for what this computer sends (src: S.src; sending: S.sending; st: the extension's status). Pure.
@@ -490,6 +495,86 @@ function liveaudio.my_la()
   return s.deaf and "deaf" or s.mute and "muted" or s.ptt and "ptt" or "on"
 end
 
+-- ---- The hub's live mix (docs/realtime-roadmap.md "More big ideas" 1; James, rt) --------------------------------------------------------
+-- Peer to peer, each of N people sends N-1 streams and hears N-1. From the studio's threshold (band.json "live_hub", HUB_FROM people unless the
+-- owner or an admin set it; 0 never) the song's hub (lib/hub.lua: whoever shared the song, it's in the room) mixes: each sends its Talk and
+-- Play to it alone and hears one stream, built at the hub from that listener's own Talk/Play volumes (the cue mix travels with the request).
+-- The extension does it (extension/rtaudio.cpp: the mixing on the hub's send thread, never REAPER's audio thread past a copy), and falls back to
+-- everyone's own streams by itself within about a jitter buffer when the hub's mix stops (the hub dropping, handing on, pausing); Lua only
+-- says who mixes. Everyone here needs the newer extension ("lhub" in their status) before it's used, so an older one never sees its datagrams.
+function liveaudio.can_hub() return reaper.StudioSync_LiveAudioHub ~= nil end
+function liveaudio.my_lhub() return liveaudio.can_hub() or nil end -- (for this computer's status file: "lhub")
+function liveaudio.hub_from(root)
+  local ok, v = pcall(function() return require("groups").live_hub(root) end)
+  return ok and tonumber(v) or liveaudio.HUB_FROM
+end
+-- -> peer (the hub's "name:port", "" for peer to peer), serve (this computer mixes), why (Health's words when the room is big enough but it
+-- isn't used, else nil). o: n (people here, me too), from (the threshold), hub (this song's hub), me, users (peer -> name: those here), caps
+-- (name -> their extension mixes), can (mine does), budget (false: this computer's mixing is paused, budget_why says why). Pure.
+function liveaudio.hub_plan(o)
+  local from = tonumber(o.from) or liveaudio.HUB_FROM
+  if from <= 0 or (tonumber(o.n) or 1) < from then return "", false, nil end
+  if not o.can then return "", false, "needs a newer StudioSync extension here" end
+  if not o.hub then return "", false, "this song has no hub here" end
+  local names, peer = {}, nil
+  for p, name in pairs(o.users or {}) do names[#names + 1] = name; if name == o.hub then peer = p end end
+  table.sort(names)
+  for _, name in ipairs(names) do
+    if not (o.caps or {})[name] then return "", false, "waiting for " .. name .. " to have the newer StudioSync extension" end
+  end
+  if o.hub == o.me then return "", o.budget ~= false, o.budget == false and o.budget_why or nil end
+  if not peer then return "", false, o.hub .. " (this song's hub) isn't on the direct link here" end
+  return peer, false, nil
+end
+-- The hub is someone's working REAPER, so its mixing keeps to a budget: -> ok, why. h: the extension's status "hub"; recording: this REAPER
+-- records; mem: kept between calls. Past HUB_REC_BUDGET of a core while it records: paused until the take ends; past HUB_BUDGET, or blocks
+-- skipped (the mixing fell behind REAPER): paused HUB_COOL s. Paused, everyone goes back to their own streams (the extension does). Pure.
+function liveaudio.hub_budget(h, recording, mem, now)
+  h = type(h) == "table" and h or {}
+  local load, skipped, serving = tonumber(h.load) or 0, tonumber(h.skipped) or 0, (tonumber(h.serving) or 0) > 0
+  local fell = mem.skipped ~= nil and skipped > mem.skipped
+  mem.skipped = skipped
+  if mem.rec then
+    if recording then return false, mem.why end
+    mem.rec = nil
+  end
+  if mem.till and now < mem.till then return false, mem.why end
+  mem.till = nil
+  if serving and recording and load > liveaudio.HUB_REC_BUDGET then
+    mem.rec, mem.why = true, string.format("paused while you record: mixing took %d%% of a core (%d%% allowed while recording)", math.floor(load * 100 + 0.5),
+      math.floor(liveaudio.HUB_REC_BUDGET * 100 + 0.5))
+    return false, mem.why
+  end
+  if serving and (load > liveaudio.HUB_BUDGET or fell) then
+    mem.till = now + liveaudio.HUB_COOL
+    mem.why = fell and "paused for a while: the mixing fell behind REAPER (blocks skipped)" or
+      string.format("paused for a while: mixing took %d%% of a core (%d%% allowed)", math.floor(load * 100 + 0.5), math.floor(liveaudio.HUB_BUDGET * 100 + 0.5))
+    return false, mem.why
+  end
+  return true, nil
+end
+-- Live sync's tick, after the engine is running: who mixes, handed to the extension when it changes.
+function liveaudio.hub_tick(cfg, b, list, users, st)
+  if not liveaudio.can_hub() then S.hub = nil; return end
+  liveaudio.their_srcs(cfg) -- (their status words once a second: S.caps)
+  local okv, v = pcall(function() return require("hub").view(cfg, b.song) end)
+  S.hub_mem = S.hub_mem or {}
+  local ok_b, why_b = liveaudio.hub_budget(st.hub, liveaudio.me().recording, S.hub_mem, reaper.time_precise())
+  local hub = okv and type(v) == "table" and v.hub or nil
+  local peer, serve, why = liveaudio.hub_plan({ n = #(list or {}) + 1, from = liveaudio.hub_from(cfg.root), hub = hub, me = cfg.user, users = users,
+    caps = S.caps, can = true, budget = ok_b, budget_why = why_b })
+  S.hub = { peer = peer, serve = serve, why = why, user = hub }
+  local key = peer .. "|" .. tostring(serve)
+  if key == S.hub_asked then return end
+  reaper.StudioSync_LiveAudioHub(peer, serve and 1 or 0)
+  local first = S.hub_asked == nil
+  S.hub_asked = key
+  if first and peer == "" and not serve then return end -- (a new engine in a small room: nothing to say)
+  band.log(serve and "live audio: you mix it for the others here (each sends you one stream and hears one from you; Health shows the load)"
+    or peer ~= "" and ("live audio: " .. tostring(hub) .. "'s computer mixes it for the room (you send one stream and hear one)")
+    or ("live audio: peer to peer" .. (why and (" (the hub's mix: " .. why .. ")") or "")))
+end
+
 -- Live sync's tick (the song in front drives it: one engine per computer). Never raises (band.try around it).
 function liveaudio.tick(cfg, b, proj)
   local now = reaper.time_precise()
@@ -521,7 +606,7 @@ function liveaudio.tick(cfg, b, proj)
       band.log("live audio stopped: " .. S.why)
     end
     if S.src and S.src.hop ~= 0 then liveaudio.drop_live_out(proj) end -- (Play's hidden track goes with it)
-    S.json, S.src, S.sending = nil, nil, nil
+    S.json, S.src, S.sending, S.hub, S.hub_asked = nil, nil, nil, nil, nil
     return
   end
   S.b = b -- (the tab's song and room: Chat > Call reads the bandmates' statuses with it)
@@ -542,7 +627,7 @@ function liveaudio.tick(cfg, b, proj)
   if not st.running and now - S.fail_at > liveaudio.RETRY then
     if reaper.StudioSync_LiveAudioStart(first, nch, kbps) == 1 then
       reaper.SetExtState(band.SECTION, "live audio by", tostring(proj), false)
-      S.play_asked = nil -- (a new engine: Play asked for again)
+      S.play_asked, S.hub_asked = nil, nil -- (a new engine: Play and the hub's mix asked for again)
       liveaudio.update_sources(proj)
       liveaudio.apply() -- (at once: a muted computer never sends its first half second)
       if first ~= liveaudio.SILENT then
@@ -561,6 +646,7 @@ function liveaudio.tick(cfg, b, proj)
   end
   liveaudio.update_sources(proj) -- (Talk and Play: what's armed now)
   liveaudio.apply(st) -- (the mic and the cue mix kept here, put back on each bandmate: a new peer, or after a restart, starts at full level)
+  if b and b.song then liveaudio.hub_tick(cfg, b, list, users, st) end -- (who mixes: the song's hub from the studio's threshold)
 end
 -- Live sync ending in this tab: the engine stops if this tab started it.
 function liveaudio.on_exit(proj)
@@ -579,9 +665,31 @@ local function them(code)
   local ok, tools = pcall(require, "tools")
   return (t:gsub("%%s", ok and type(tools) == "table" and tools.EXT_WANT or "1.0.13"))
 end
+-- Health's words for the hub's mix, or nil: through whose mix you hear and what its hop adds (the extension measures both ways: through the
+-- hub now, and each stream's own before), or how many you mix for and its share of a core; fallbacks; why it isn't used. h: the extension's
+-- status "hub"; names: peer -> bandmate; hubp: S.hub. Pure.
+function liveaudio.hub_text(h, names, hubp)
+  h = type(h) == "table" and h or {}
+  local out = ""
+  local hname = h.peer and h.peer ~= "" and ((names or {})[h.peer] or who(h.peer)) or nil
+  local serving = tonumber(h.serving) or 0
+  if h.serve and serving > 0 then
+    out = string.format(" (you mix it for %d here: one stream each way per person; %d%% of a core)", serving, math.floor((tonumber(h.load) or 0) * 100 + 0.5))
+  elseif h.serve then out = " (you mix it for the others here once they ask)"
+  elseif h.state == "hub" and hname then
+    local lat, dir = tonumber(h.latency_ms) or -1, tonumber(h.direct_ms) or -1
+    out = " through " .. hname .. "'s mix" .. (lat >= 0 and string.format(", %.0f ms", lat) or "") ..
+      (lat >= 0 and dir >= 0 and string.format(" (%.0f ms directly: +%.0f ms for the hub's hop)", dir, math.max(0, lat - dir)) or "")
+  elseif h.state == "joining" and hname then out = "; joining " .. hname .. "'s mix"
+  end
+  local fb = tonumber(h.fallbacks) or 0
+  if fb > 0 then out = out .. string.format("; back to everyone's own streams %d time%s when the hub's mix stopped", fb, fb == 1 and "" or "s") end
+  if type(hubp) == "table" and hubp.why then out = out .. "; the hub's mix: " .. hubp.why end
+  return out ~= "" and out or nil
+end
 -- Health's words from the extension's status: ok (everyone heard, loss under 5%), text. names: peer -> bandmate; theirs: bandmate -> the word
--- in their status (my_la); s: this computer's mic (me()); src, sending: Talk and Play here (S.src, S.sending). Pure.
-function liveaudio.health_text(st, names, theirs, s, src, sending)
+-- in their status (my_la); s: this computer's mic (me()); src, sending: Talk and Play here (S.src, S.sending); hubp: the hub's mix (S.hub). Pure.
+function liveaudio.health_text(st, names, theirs, s, src, sending, hubp)
   names, theirs = names or {}, theirs or {}
   local heard, each, ok, seen, bursty = {}, {}, true, {}, false
   for peer, p in pairs(type(st.peers) == "table" and st.peers or {}) do
@@ -590,6 +698,7 @@ function liveaudio.health_text(st, names, theirs, s, src, sending)
       seen[name] = true
       local why = them(theirs[name])
       if not p.resolved then each[#each + 1] = name .. ": can't reach (" .. tostring(p.error) .. ")"; ok = false
+      elseif p.via_hub then heard[#heard + 1] = name -- (in the hub's mix: its latency is the hub's, below)
       elseif not p.streaming then each[#each + 1] = name .. (why and (" not connected: " .. why) or ": not heard yet"); ok = false
       else
         local loss = (tonumber(p.loss) or 0) * 100
@@ -621,6 +730,8 @@ function liveaudio.health_text(st, names, theirs, s, src, sending)
   local sends = liveaudio.sends_text(src, sending, st)
   if sends then text = text .. "; this computer " .. sends end
   if #heard > 0 then text = text .. "; hearing " .. table.concat(heard, ", ") end
+  local hub = liveaudio.hub_text(st.hub, names, hubp)
+  if hub then text = text .. hub end
   if bursty then text = text .. " (a buffer that grew means packets come in bursts, as over Wi-Fi: a wired network lowers it)" end
   if #each > 0 then text = text .. "; " .. table.concat(each, ", ") end
   if #heard + #each == 0 then text = text .. "; nobody else here yet" end
@@ -655,7 +766,7 @@ function liveaudio.health_row(cfg, b)
     local ok, sts = pcall(require("presence").peers, cfg, b.song, b.room or "main")
     for _, x in ipairs(ok and type(sts) == "table" and sts or {}) do if type(x) == "table" and x.user then theirs[x.user] = x.la end end
   end
-  local ok, text = liveaudio.health_text(st, liveaudio.names(), theirs, liveaudio.me(), S.src, S.sending)
+  local ok, text = liveaudio.health_text(st, liveaudio.names(), theirs, liveaudio.me(), S.src, S.sending, S.hub)
   return { "live audio", ok, "yellow", text, text }
 end
 
@@ -745,6 +856,23 @@ function liveaudio.studio_ui(ctx, ImGui, cfg, may)
     ImGui.SetItemTooltip(ctx, "Owner and admins. Each computer needs StudioSync's extension with live audio, Tailscale, and on Windows the firewall rule (Health).")
   end
   if not on then return end
+  local from = liveaudio.hub_from(cfg.root)
+  local word = function(n) return n <= 0 and "never (peer to peer)" or ("from " .. n .. " people" .. (n == liveaudio.HUB_FROM and " (default)" or "")) end
+  if may then
+    ImGui.SetNextItemWidth(ctx, 200)
+    if ImGui.BeginCombo(ctx, "The song's hub mixes it##livehub", word(from)) then
+      for _, n in ipairs({ 3, 4, 5, 6, 8, 0 }) do
+        if ImGui.Selectable(ctx, word(n), n == from) then
+          require("groups").set_live_hub(cfg.root, n ~= liveaudio.HUB_FROM and n or nil)
+          band.log("live audio: the song's hub mixes it " .. word(n))
+        end
+      end
+      ImGui.EndCombo(ctx)
+    end
+    ImGui.SetItemTooltip(ctx, "Owner and admins. In a room this big, the song's hub (whoever shared it) mixes everyone's live audio: each computer sends " ..
+      "one stream and hears one, at its own volumes, instead of one to and from everyone. It adds the hub's hop (Health shows how much), pauses while " ..
+      "the hub records if it costs too much, and falls back to everyone's own streams within a jitter buffer when the hub drops.")
+  else ImGui.TextDisabled(ctx, "The song's hub mixes it " .. word(from) .. ".") end
   local _, nch, kbps = liveaudio.mine()
   liveaudio.input_picker(ctx, ImGui, "This computer sends##liveaudioin", 220)
   local sch, stereo = ImGui.Checkbox(ctx, "Stereo pair##liveaudiost", nch >= 2)

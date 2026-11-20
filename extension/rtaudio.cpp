@@ -14,6 +14,15 @@
 // sink id is a hash of its "ip:port", so a sender knows which id its stream goes to on the other side without asking.
 // Auth: every datagram is "SSL1" + the AOO message + 16 bytes of HMAC-SHA256 with a key made from the studio secret (as the direct
 // link's frames, direct.cpp), so only studio computers are heard; AOO's own passwords live in its server/client part, not built here.
+// The hub's live mix (rt_hub; docs/realtime-roadmap.md "More big ideas" 1): one computer (the song's hub, lib/liveaudio.lua hub_plan picks it)
+// mixes for the others, so each sends its streams to one place and hears one stream. At the hub, rt_mix copies every peer's block as it
+// decodes it anyway (before its own levels) into a ring (hring), and the send thread builds each listener's mix from that listener's own
+// Talk/Play levels, adds the hub's own Talk and Play, and encodes it through that listener's own AOO source (MIX_ID): no more than a copy on
+// the audio thread. A listener asks for its mix every MODE_EVERY s ("SSX1" control datagrams, tagged as the rest: 'R' its levels, 'M' to everyone
+// whether it hears through a hub, 'I' the hub's latency and load back), switches to the mix once it has flowed ENTER_S, and every sender then
+// stops sending it their own streams. When the mix pauses (RESCUE_MIN), the listener asks for everyone's streams back ('M') while the mix's
+// buffer still plays, and when it stops for its buffer's length, hears them instead: tests/rtaudio_test.cpp measures a 16-21 ms gap, under
+// the 30 ms jitter buffer (with INTRA_S, the streams turned back on are at full level from their first packet).
 // GPL-3.0-or-later. AOO (BSD-3-Clause) and Opus (BSD-3-Clause): extension/third_party/README.md.
 
 // AOO's compile-time settings: they must match extension/third_party/build_windows.cmd and build_unix.sh (AOO's headers read them too).
@@ -85,6 +94,20 @@ const float BUF_QUIET = 0.003f;      // a shrink waits for the peer to be quiet 
 const double BUF_QUIET_S = 0.3;
 const double STREAM_GRACE = 2.0;     // s: "streaming" stays true through a re-buffer, so the panel and Health don't flap with every underrun
 const double PAUSE_S = 1.0;          // an underrun after the stream was down longer than this is a pause (talkback, a stalled sender), not jitter
+// The hub's live mix (rt_hub). MIX_ID: each listener's mix is its own source at the hub (one per listener, told apart by address); the
+// listener's sink for it: the hub's address hash with "/mix". CTL: the control datagrams (mode, the mix's levels, the hub's numbers back).
+const AooId MIX_ID = 3;
+const char CTL[4] = { 'S', 'S', 'X', '1' };
+const int HUB_RING = 32;             // blocks the audio thread may be ahead of the hub's mixing (~170 ms at 256): past that blocks are skipped (overloaded)
+const double MODE_EVERY = 0.25;      // s: a listener's mode and its mix's levels are said again this often (and at once when they change)
+const double MODE_FRESH = 1.0;       // s: a listener's mode older than this counts as "hears everyone directly"; its mix stops when its asking does
+const double ENTER_S = 0.3;          // s: the mix flowing this long before a listener hears it instead of everyone's own streams
+const double GONE_MIN = 40, GONE_PAD = 20; // ms: no mix datagram for its buffer + GONE_PAD (at least GONE_MIN): the hub is gone, everyone's streams at once
+// ms: no mix datagram for the mix's buffer less RESCUE_LEAD (at least RESCUE_MIN, two 5 ms packets): everyone's streams are asked back at once
+// while the mix's buffer still plays, so they're nearly buffered by the time it runs dry; the mix back, they're let go again. A buffer grown
+// for Wi-Fi's bursts waits longer, so bursts it absorbs don't turn everyone's streams on and off.
+const double RESCUE_MIN = 10, RESCUE_LEAD = 20;
+const double RETRY_S = 3.0;          // s after falling back before the hub's mix is asked for again (a flickering hub doesn't flap the stream)
 
 struct Slot {
   std::string peer, addr_s, err;
@@ -115,6 +138,26 @@ struct Slot {
   bool pstreaming = false; // (stats_mx, as streaming)
   double pdown_at = -1e9;
   long long pjitter = 0;
+  bool psending = true;    // (what the send thread last told the Play source for this peer)
+  // The hub's live mix. As a listener, when this peer is my hub: its mix for me comes to msink (its buffer follows Talk's adaptive one)
+  AooId msink_id = 0, mremote_id = 0; // (my sink for its mix; this peer's sink for my mix when I'm the hub)
+  AooSink *msink = nullptr;
+  bool mwas_quiet = true, mstreaming = false; // (mstreaming: stats_mx)
+  double mdown_at = -1e9, mbuf_ms = -1, mlat_ms = 0;
+  long long mjitter = 0;
+  std::atomic<float> mpeak{ 0.f }, hin_ms{ -1.f }, hload{ -1.f }; // (hin_ms, hload: the hub's 'I': its input latency and load)
+  std::atomic<double> mix_at{ -1e9 }, mix_first{ -1e9 };          // (the receive thread's: the last mix datagram, the first after a gap)
+  double last_direct_ms = -1;                                      // (stats_mx: its own stream's latency when last heard directly)
+  // As the hub: this listener's mix (msrc sends to its msink) and what it last asked for (mix_mx): when, its levels, whom its Talk mustn't reach
+  AooSource *msrc = nullptr;
+  bool madded = false, mserving = false;
+  double asked_at = -1e9;
+  struct Level { sockaddr_in a; float talk, play; };
+  std::vector<Level> levels;
+  std::vector<sockaddr_in> deny;
+  // Every computer: how this peer hears (its 'M'): through a hub, so my streams don't go to it directly
+  std::atomic<double> mode_at{ -1e9 };
+  std::atomic<bool> via_hub{ false };
 };
 } // namespace
 
@@ -165,6 +208,30 @@ struct RtLink {
   float *pptr[2] = {};
   std::atomic<float> play_peak{ 0.f };
   std::atomic<long long> play_ok_cb{ -1000000 }; // (the callback count when a full block last came from the ring: is the live out track running?)
+  // The hub's live mix (rt_hub). want_hub, want_serve: rt_hub's (pend_mx). The send thread's: serve, hub_name; hub_peer and hub_state the
+  // audio thread reads (whose mix it decodes; 2: heard instead of everyone's own streams). mixw: the audio thread's last weight, for the crossfade.
+  std::mutex mix_mx;
+  std::string want_hub, hub_name;
+  int want_serve = 0;
+  bool serve = false;
+  std::atomic<Slot *> hub_peer{ nullptr };
+  std::atomic<int> hub_state{ 0 };   // 0 everyone's own streams, 1 asking for the mix, 2 hearing the mix
+  float mixw = 0;
+  double retry_at = 0, next_ctl = 0, next_info = 0, left_at = -1e9;
+  bool via_said = false;            // (the last 'M' said: my streams come through the hub)
+  double intra_until = 0;           // (apply_sends: frames coded without prediction until then)
+  long long fallbacks = 0;
+  std::string asked_sig;            // (the levels last asked for: asked again at once when they change)
+  // serving: the audio thread's copy of every peer's block (and this computer's own Talk and Play), per callback, read by the send thread
+  std::vector<float> hring, hmix;
+  std::vector<AooNtpTime> htime;
+  size_t hstride = 0;
+  float *hmixptr[2] = {};
+  std::atomic<uint64_t> hw{ 0 }, hr{ 0 };
+  std::atomic<bool> hserve{ false };
+  std::atomic<long long> hskipped{ 0 };
+  double hub_ns = 0, hub_audio_s = 0, hub_load = 0, hub_max_us = 0, hub_win = 0; // (stats_mx: the mixing's share of one core, over ~1 s)
+  int hub_serving = 0;
 };
 
 namespace {
@@ -395,6 +462,26 @@ void AOO_CALL play_sink_event(void *user, const AooEvent *e, AooThreadLevel) // 
   default: break;
   }
 }
+void AOO_CALL mix_sink_event(void *user, const AooEvent *e, AooThreadLevel) // (my hub's mix for me: its latency, state and underruns)
+{
+  Slot *p = (Slot *)user;
+  switch (e->type) {
+  case kAooEventStreamLatency:
+    p->mbuf_ms = e->streamLatency.bufferLatency * 1000;
+    p->mlat_ms = (e->streamLatency.sourceLatency + e->streamLatency.sinkLatency) * 1000;
+    break;
+  case kAooEventStreamState: {
+    const bool on = e->streamState.state == kAooStreamStateActive;
+    if (p->mstreaming && !on) p->mdown_at = now_s();
+    p->mstreaming = on;
+    break;
+  }
+  case kAooEventStreamStop: case kAooEventSourceRemove: p->mstreaming = false; p->mdown_at = -1e9; break;
+  case kAooEventBlockDrop: p->dropped += e->blockDrop.count; break;
+  case kAooEventBufferUnderrun: if (now_s() - p->mdown_at < PAUSE_S) p->mjitter += 1; break;
+  default: break;
+  }
+}
 void AOO_CALL source_event(void *user, const AooEvent *e, AooThreadLevel)
 {
   RtLink *l = (RtLink *)user;
@@ -411,11 +498,14 @@ void pause_audio(RtLink *l)
   l->live.store(false);
   for (int i = 0; i < 2000 && l->in_cb.load() > 0; ++i) std::this_thread::sleep_for(std::chrono::microseconds(100)); // (a callback mid-flight finishes)
 }
+void setup_source(RtLink *l, AooSource *src, int nch, bool start);
 void setup_sink(RtLink *l, Slot &p)
 {
   if (!p.sink || l->cfg_sr <= 0) return;
   p.sink->setup(2, l->cfg_sr, l->cfg_len, kAooFixedBlockSize);
   if (p.psink) p.psink->setup(2, l->cfg_sr, l->cfg_len, kAooFixedBlockSize);
+  if (p.msink) p.msink->setup(2, l->cfg_sr, l->cfg_len, kAooFixedBlockSize);
+  if (p.msrc) setup_source(l, p.msrc, 2, p.mserving);
 }
 std::unique_ptr<Slot> make_slot(RtLink *l, const std::string &peer)
 {
@@ -439,6 +529,16 @@ std::unique_ptr<Slot> make_slot(RtLink *l, const std::string &peer)
     p->psink->setLatency(BUF_FLOOR / 1000.0);
     p->psink->setPacketSize(1200);
   }
+  p->msink_id = id_of(p->addr_s + "/mix"); // (the hub's live mix: heard from this peer only while it's my hub; made for every peer, it costs nothing idle)
+  p->mremote_id = id_of(l->bind_s + "/mix");
+  p->msink = AooSink_new(p->msink_id);
+  if (p->msink) {
+    p->msink->setEventHandler(mix_sink_event, p.get(), kAooEventModePoll);
+    p->msink->setLatency(BUF_FLOOR / 1000.0);
+    p->msink->setPacketSize(1200);
+  }
+  p->msrc = AooSource_new(MIX_ID); // (its stream starts only while I mix for this peer: hub_serve)
+  if (p->msrc) p->msrc->setPacketSize(1200);
   setup_sink(l, *p);
   return p;
 }
@@ -448,7 +548,10 @@ void drop_slot(RtLink *l, Slot &p)
   if (p.resolved && l->psrc) { AooEndpoint ep = { &p.addr, (AooAddrSize)sizeof(p.addr), p.premote_id }; l->psrc->removeSink(ep); }
   if (p.sink) AooSink_free(p.sink);
   if (p.psink) AooSink_free(p.psink);
-  p.sink = p.psink = nullptr;
+  if (p.msink) AooSink_free(p.msink);
+  if (p.msrc) AooSource_free(p.msrc);
+  p.sink = p.psink = p.msink = nullptr;
+  p.msrc = nullptr;
 }
 void setup_source(RtLink *l, AooSource *src, int nch, bool start)
 {
@@ -470,6 +573,7 @@ void reconfigure(RtLink *l)
   bool peers = false;
   std::string list, secret;
   int phop = 0;
+  bool serve = false;
   {
     std::lock_guard<std::mutex> g(l->pend_mx);
     peers = l->peers_dirty;
@@ -477,8 +581,10 @@ void reconfigure(RtLink *l)
     list = l->want_peers;
     secret = l->want_secret;
     phop = l->want_phop;
+    serve = l->want_serve != 0;
   }
   const bool play = phop != l->phop; // (another live out Hop, or none: its mapping opened here, never on the audio thread)
+  const bool serving = serve != l->serve; // (mixing for others on or off: the ring the audio thread writes is sized here, while it's paused)
   if (secret != l->have_secret) { // (a new studio secret: the receive thread checks tags under cfg_mx, the send thread is this one)
     std::lock_guard<std::mutex> g(l->cfg_mx);
     l->have_secret = secret;
@@ -488,7 +594,7 @@ void reconfigure(RtLink *l)
     for (int i = 0; i < l->nslots; ++i) peers = peers || !l->slots[i]->resolved;
     l->next_resolve = now_s() + 5;
   }
-  if (!audio && !peers && !play) return;
+  if (!audio && !peers && !play && !serving) return;
   // new peers are resolved before the pause (a name lookup can take a while; audio keeps going meanwhile)
   std::vector<std::unique_ptr<Slot>> next;
   if (peers) {
@@ -542,22 +648,269 @@ void reconfigure(RtLink *l)
       AooEndpoint ep = { &p.addr, (AooAddrSize)sizeof(p.addr), p.remote_sink_id }, pep = { &p.addr, (AooAddrSize)sizeof(p.addr), p.premote_id };
       if (!p.added) p.added = l->src->addSink(ep, kAooTrue) == kAooOk;
       if (!p.padded) p.padded = l->psrc->addSink(pep, kAooTrue) == kAooOk; // (nothing goes to it while Play has no stream: AooSource::send)
+      AooEndpoint mep = { &p.addr, (AooAddrSize)sizeof(p.addr), p.mremote_id };
+      if (!p.madded && p.msrc) p.madded = p.msrc->addSink(mep, kAooTrue) == kAooOk;
     }
+    Slot *h = l->hub_peer.load(); // (my hub left the list: back to everyone's own streams; hub_watch finds it again by name)
+    bool kept = false;
+    for (int i = 0; i < l->nslots; ++i) kept = kept || l->slots[i].get() == h;
+    if (!kept) { l->hub_peer.store(nullptr); l->hub_state.store(0); }
+  }
+  if (serving || audio || peers) { // (the ring: one block per callback of every peer's Talk and Play, L and R, then this computer's own)
+    l->serve = serve;
+    l->hstride = (size_t)(l->nslots + 1) * 4 * (size_t)std::max(l->cfg_len, 1);
+    l->hring.assign(serve && l->cfg_len > 0 ? HUB_RING * l->hstride : 0, 0.f);
+    l->htime.assign(HUB_RING, 0);
+    l->hmix.assign((size_t)2 * std::max(l->cfg_len, 1), 0.f);
+    l->hmixptr[0] = &l->hmix[0];
+    l->hmixptr[1] = &l->hmix[(size_t)std::max(l->cfg_len, 1)];
+    l->hw.store(0); l->hr.store(0);
+    bool any = false; // (the listeners' mixes go on through a new peer list: a bandmate joining doesn't send everyone back to direct streams)
+    for (int i = 0; i < l->nslots; ++i) any = any || l->slots[i]->mserving;
+    l->hserve.store(serve && any && !l->hring.empty());
   }
   l->live.store(l->cfg_sr > 0);
 }
 
 // Talkback (rt_send with a peer): a peer left out stops getting this computer's stream (AOO deactivates that sink; let back in, its jitter buffer
 // refills, a few tens of ms). The send thread's, as every change to the source. (James, rt)
+// The hub's live mix: a peer that hears through a hub (its 'M', fresh) gets neither stream from here directly (the hub has them, this one's
+// too when it's the hub); stale or saying otherwise, it gets them again at once.
+bool hears_direct(const Slot &p, double now) { return !(p.via_hub.load() && now - p.mode_at.load() < MODE_FRESH); }
+// A stream turned back on for a peer starts a new decoder there, and Opus (CELT) codes each frame's band energies against the last one's, so a
+// decoder joining mid-stream rose to full level over ~100 ms (measured: 3% of the level 5 ms in, 64% at 45 ms). For INTRA_S after, every frame
+// is coded on its own (OPUS_SET_PREDICTION_DISABLED; the others' decoders take those too, a few more bits for a moment). The send thread's.
+const double INTRA_S = 0.1;
+void intra(RtLink *l, AooSource *src, bool on)
+{
+  opus_int32 v = on ? 1 : 0;
+  src->codecControl(kAooCodecOpus, OPUS_SET_PREDICTION_DISABLED_REQUEST, 0, &v, sizeof(v)); // (an AOO built before its one patch: refused, no harm)
+}
 void apply_sends(RtLink *l)
 {
+  const double now = now_s();
   for (int i = 0; i < l->nslots; ++i) {
     Slot &p = *l->slots[i];
-    const bool want = p.want_send.load();
-    if (!p.added || want == p.sending) continue;
-    AooEndpoint ep = { &p.addr, (AooAddrSize)sizeof(p.addr), p.remote_sink_id };
-    if (l->src->activate(ep, want ? kAooTrue : kAooFalse) == kAooOk) p.sending = want;
+    const bool direct = hears_direct(p, now), want = p.want_send.load() && direct;
+    if (p.added && want != p.sending) {
+      AooEndpoint ep = { &p.addr, (AooAddrSize)sizeof(p.addr), p.remote_sink_id };
+      if (l->src->activate(ep, want ? kAooTrue : kAooFalse) == kAooOk) p.sending = want;
+      if (want) { intra(l, l->src, true); l->intra_until = now + INTRA_S; }
+    }
+    if (p.padded && direct != p.psending) { // (talkback is Talk's: Play follows only the hub)
+      AooEndpoint ep = { &p.addr, (AooAddrSize)sizeof(p.addr), p.premote_id };
+      if (l->psrc->activate(ep, direct ? kAooTrue : kAooFalse) == kAooOk) p.psending = direct;
+      if (direct) { intra(l, l->psrc, true); l->intra_until = now + INTRA_S; }
+    }
   }
+  if (l->intra_until > 0 && now > l->intra_until) { intra(l, l->src, false); intra(l, l->psrc, false); l->intra_until = 0; }
+}
+
+// ---- the hub's live mix (rt_hub; the send thread's) -------------------------------------------------------------------------------------
+// A control datagram: "SSX1" + kind + payload + the tag, to one peer (the send thread only: txbuf is its).
+void send_ctl(RtLink *l, const Slot &p, char kind, const unsigned char *d, int n)
+{
+  if (l->key.empty() || !p.resolved || n < 0 || 5 + n + TAG > MAX_DGRAM) return;
+  memcpy(l->txbuf, CTL, 4);
+  l->txbuf[4] = (unsigned char)kind;
+  if (n) memcpy(l->txbuf + 5, d, (size_t)n);
+  unsigned char t[32];
+  tag_of(l->key, l->txbuf, 5 + (size_t)n, t);
+  memcpy(l->txbuf + 5 + n, t, TAG);
+  if (sendto(l->s, (const char *)l->txbuf, 5 + n + TAG, 0, (const sockaddr *)&p.addr, sizeof(p.addr)) > 0) l->sent.fetch_add(1, std::memory_order_relaxed);
+}
+void put_addr(std::vector<unsigned char> &o, const sockaddr_in &a) // (4 bytes of address, 2 of port, both as they are on the wire)
+{
+  const unsigned char *b = (const unsigned char *)&a.sin_addr.s_addr, *q = (const unsigned char *)&a.sin_port;
+  o.insert(o.end(), b, b + 4);
+  o.insert(o.end(), q, q + 2);
+}
+void put_f32(std::vector<unsigned char> &o, float v) { unsigned char b[4]; memcpy(b, &v, 4); o.insert(o.end(), b, b + 4); }
+
+// A listener: asks its hub for its mix ('R': every bandmate's Talk and Play level here, mute as 0, and whom its Talk mustn't reach: talkback),
+// switches to it once it has flowed ENTER_S, and back to everyone's own streams the moment it stops coming (no mix datagram for its buffer
+// + GONE_PAD), telling everyone ('M') either way. A computer that serves never hears through another (every hub hears everyone directly).
+void hub_watch(RtLink *l, double now)
+{
+  std::string name;
+  { std::lock_guard<std::mutex> g(l->pend_mx); name = l->want_hub; }
+  Slot *h = nullptr;
+  if (!l->serve) for (int i = 0; i < l->nslots && !name.empty(); ++i) if (l->slots[i]->resolved && l->slots[i]->peer == name) h = l->slots[i].get();
+  const int was = l->hub_state.load();
+  int st = was;
+  bool via = false; // (what everyone is told: true, my streams come through the hub; false, send them to me)
+  if (h != l->hub_peer.load()) { l->hub_peer.store(h); st = 0; l->retry_at = 0; }
+  if (!h) st = 0;
+  else {
+    const double gone = std::max(GONE_MIN, h->target_ms + GONE_PAD) / 1000.0, quiet = now - h->mix_at.load();
+    const bool flowing = quiet < gone;
+    if (st == 2 && !flowing) { st = 0; ++l->fallbacks; l->retry_at = now + RETRY_S; } // (the hub dropped, or stopped mixing for me: direct at once)
+    else if (st != 2) st = now < l->retry_at ? 0 : flowing && now - h->mix_first.load() >= ENTER_S && h->mstreaming ? 2 : 1;
+    via = st == 2 && quiet < std::max(RESCUE_MIN, h->target_ms - RESCUE_LEAD) / 1000.0;
+  }
+  l->hub_state.store(st);
+  if (was == 2 && st != 2) l->left_at = now;
+  const bool told = via != l->via_said; // (the senders hear of it at once)
+  l->via_said = via;
+  if (!h && now - l->left_at > MODE_FRESH && !told) return; // (peer to peer, and said so: nothing to say)
+  if (now < l->next_ctl && !told) {
+    if (!h || st == 0) return;
+    std::string sig; // (the levels changed: asked again at once, so a mute or Deafen is heard in one trip)
+    for (int i = 0; i < l->nslots; ++i) { char b[48]; snprintf(b, sizeof b, "%.3f,%.3f,%d;", l->slots[i]->gain.load(), l->slots[i]->pgain.load(), (l->slots[i]->mute.load() ? 1 : 0) | (l->slots[i]->want_send.load() ? 0 : 2)); sig += b; }
+    if (sig == l->asked_sig) return;
+  }
+  l->next_ctl = now + MODE_EVERY;
+  const unsigned char m = via ? 1 : 0;
+  for (int i = 0; i < l->nslots; ++i) send_ctl(l, *l->slots[i], 'M', &m, 1);
+  if (!h || st == 0) return;
+  std::vector<unsigned char> r;
+  std::string sig;
+  r.push_back((unsigned char)l->nslots);
+  for (int i = 0; i < l->nslots; ++i) {
+    const Slot &p = *l->slots[i];
+    const bool m = p.mute.load();
+    put_addr(r, p.addr);
+    put_f32(r, m ? 0.f : p.gain.load());
+    put_f32(r, m ? 0.f : p.pgain.load());
+    char b[48]; snprintf(b, sizeof b, "%.3f,%.3f,%d;", p.gain.load(), p.pgain.load(), (m ? 1 : 0) | (p.want_send.load() ? 0 : 2)); sig += b;
+  }
+  const size_t nd = r.size();
+  r.push_back(0);
+  for (int i = 0; i < l->nslots; ++i) if (!l->slots[i]->want_send.load()) { put_addr(r, l->slots[i]->addr); ++r[nd]; }
+  l->asked_sig = sig;
+  send_ctl(l, *h, 'R', r.data(), (int)r.size());
+}
+
+// The hub: a listener that asked within MODE_FRESH gets its mix: from the ring (every peer's block as decoded here), at that listener's
+// levels, never its own sound, its talkback kept (a sender's Talk left out of the mixes of those it leaves out), and this computer's own
+// Talk and Play; encoded through its own source. Its cost is measured (rt_status "hub": load, a share of one core).
+void hub_serve(RtLink *l, double now)
+{
+  const auto t0 = std::chrono::steady_clock::now();
+  const int ns = l->nslots, len = l->cfg_len;
+  int n = 0;
+  {
+    std::lock_guard<std::mutex> g(l->mix_mx);
+    for (int i = 0; i < ns; ++i) {
+      Slot &p = *l->slots[i];
+      const bool want = l->serve && !l->hring.empty() && p.msrc && p.madded && now - p.asked_at < MODE_FRESH;
+      if (want != p.mserving) { if (want) p.msrc->startStream(0, nullptr); else p.msrc->stopStream(0); p.mserving = want; }
+      n += want ? 1 : 0;
+    }
+  }
+  if (n > 0 && !l->hserve.load()) { l->hr.store(l->hw.load()); l->hserve.store(true); } // (from now on: nothing older)
+  if (n == 0) {
+    l->hserve.store(false);
+    if (l->hub_serving) { std::lock_guard<std::mutex> st(l->stats_mx); l->hub_serving = 0; l->hub_load = l->hub_ns = l->hub_audio_s = 0; } // (no stale load once it stops)
+    return;
+  }
+  // each listener's levels, by where each sound is in the ring (k: a peer's slot; ns: this computer's own)
+  std::vector<float> gt((size_t)ns * (ns + 1), 0.f), gp((size_t)ns * (ns + 1), 0.f);
+  {
+    std::lock_guard<std::mutex> g(l->mix_mx);
+    for (int li = 0; li < ns; ++li) {
+      Slot &L = *l->slots[li];
+      if (!L.mserving) continue;
+      for (int k = 0; k <= ns; ++k) {
+        if (k == li) continue; // (never your own sound back)
+        const sockaddr_in &a = k < ns ? l->slots[k]->addr : l->me;
+        float t = 1, pl = 1; // (a bandmate the listener didn't list yet: full level, as peer to peer starts)
+        for (const Slot::Level &v : L.levels) if (same_addr(v.a, a)) { t = v.talk; pl = v.play; break; }
+        bool denied = k == ns ? !L.want_send.load() : false; // (talkback: this computer's own Talk, or a sender's, left out of this listener's mix)
+        if (k < ns) for (const sockaddr_in &d : l->slots[k]->deny) denied = denied || same_addr(d, L.addr);
+        gt[(size_t)li * (ns + 1) + k] = denied ? 0.f : t;
+        gp[(size_t)li * (ns + 1) + k] = pl;
+      }
+    }
+  }
+  const uint64_t w = l->hw.load(std::memory_order_acquire);
+  uint64_t r = l->hr.load();
+  const uint64_t blocks = w - r;
+  for (; r < w; ++r) {
+    const float *rec = &l->hring[(size_t)(r % HUB_RING) * l->hstride];
+    const AooNtpTime t = l->htime[(size_t)(r % HUB_RING)];
+    for (int li = 0; li < ns; ++li) {
+      Slot &L = *l->slots[li];
+      if (!L.mserving) continue;
+      float *mL = l->hmixptr[0], *mR = l->hmixptr[1];
+      std::fill(mL, mL + len, 0.f);
+      std::fill(mR, mR + len, 0.f);
+      for (int k = 0; k <= ns; ++k) {
+        const float a = gt[(size_t)li * (ns + 1) + k], b = gp[(size_t)li * (ns + 1) + k];
+        const float *s = rec + (size_t)k * 4 * len;
+        if (a > 0) for (int j = 0; j < len; ++j) { mL[j] += a * s[j]; mR[j] += a * s[len + j]; }
+        if (b > 0) for (int j = 0; j < len; ++j) { mL[j] += b * s[2 * len + j]; mR[j] += b * s[3 * len + j]; }
+      }
+      if (L.msrc->process(l->hmixptr, len, t) == kAooErrorOverflow) L.msrc->reset(); // (behind: as Talk's source, tx_loop)
+    }
+  }
+  l->hr.store(w, std::memory_order_release);
+  for (int i = 0; i < ns; ++i) if (l->slots[i]->mserving) l->slots[i]->msrc->send(send_fn, l); // (the encode: most of the cost)
+  const double ns_took = (double)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+  std::lock_guard<std::mutex> st(l->stats_mx);
+  l->hub_serving = n;
+  l->hub_ns += ns_took;
+  l->hub_audio_s += (double)blocks * len / std::max(1, l->cfg_sr);
+  if (blocks) l->hub_max_us = std::max(l->hub_max_us, ns_took / 1000.0 / (double)blocks);
+  if (now - l->hub_win >= 1.0) { // (its share of one core over the last second or so, and the hub's numbers to each listener: 'I')
+    l->hub_load = l->hub_audio_s > 0 ? l->hub_ns / 1e9 / l->hub_audio_s : 0;
+    l->hub_ns = l->hub_audio_s = 0;
+    l->hub_win = now;
+  }
+  if (now >= l->next_info) {
+    l->next_info = now + MODE_EVERY;
+    double in = 0;
+    int m = 0;
+    for (int i = 0; i < ns; ++i) {
+      const Slot &p = *l->slots[i];
+      if (p.streaming && p.rtt_ms >= 0 && p.buffer_ms >= 0) { in += p.rtt_ms / 2 + p.buffer_ms + p.src_lat_ms + p.sink_lat_ms; ++m; }
+    }
+    std::vector<unsigned char> d;
+    put_f32(d, m ? (float)(in / m) : -1.f);
+    put_f32(d, (float)l->hub_load);
+    for (int i = 0; i < ns; ++i) if (l->slots[i]->mserving) send_ctl(l, *l->slots[i], 'I', d.data(), (int)d.size());
+  }
+}
+
+// A control datagram from a peer (the receive thread, cfg_mx held, its tag checked): 'M' how it hears, 'R' its mix (to me as its hub),
+// 'I' its numbers as my hub. Anything malformed is dropped.
+void handle_ctl(RtLink *l, Slot &p, const unsigned char *d, int n, double now)
+{
+  if (n < 1) return;
+  const char kind = (char)d[0];
+  ++d; --n;
+  if (kind == 'M' && n == 1) { p.via_hub.store(d[0] == 1); p.mode_at.store(now); l->wake.set(); return; }
+  if (kind == 'I' && n == 8) { float a, b; memcpy(&a, d, 4); memcpy(&b, d + 4, 4); if (std::isfinite(a) && std::isfinite(b)) { p.hin_ms.store(a); p.hload.store(b); } return; }
+  if (kind != 'R' || n < 2 || d[0] > RT_MAX_PEERS) return;
+  const int nl = d[0];
+  if (n < 1 + nl * 14 + 1) return;
+  const int nd = d[1 + nl * 14];
+  if (nd > RT_MAX_PEERS || n != 1 + nl * 14 + 1 + nd * 6) return;
+  std::vector<Slot::Level> lv;
+  for (int i = 0; i < nl; ++i) {
+    const unsigned char *e = d + 1 + i * 14;
+    Slot::Level v{};
+    v.a.sin_family = AF_INET;
+    memcpy(&v.a.sin_addr.s_addr, e, 4);
+    memcpy(&v.a.sin_port, e + 4, 2);
+    memcpy(&v.talk, e + 6, 4);
+    memcpy(&v.play, e + 10, 4);
+    v.talk = std::isfinite(v.talk) ? std::max(0.f, std::min(4.f, v.talk)) : 1.f;
+    v.play = std::isfinite(v.play) ? std::max(0.f, std::min(4.f, v.play)) : 1.f;
+    lv.push_back(v);
+  }
+  std::vector<sockaddr_in> dn;
+  for (int i = 0; i < nd; ++i) {
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    memcpy(&a.sin_addr.s_addr, d + 1 + nl * 14 + 1 + i * 6, 4);
+    memcpy(&a.sin_port, d + 1 + nl * 14 + 1 + i * 6 + 4, 2);
+    dn.push_back(a);
+  }
+  std::lock_guard<std::mutex> g(l->mix_mx);
+  p.levels.swap(lv);
+  p.deny.swap(dn);
+  p.asked_at = now;
 }
 
 // The adaptive jitter buffer (James, rt). Wi-Fi delivers in bursts (the MacBook: nothing for 20-60 ms, then all of it at once), and a fixed
@@ -576,8 +929,8 @@ void adapt(RtLink *l, Slot &p, double now)
   if (p.loud.exchange(0.f) >= BUF_QUIET) p.quiet_since = -1;
   else if (p.quiet_since < 0) p.quiet_since = now;
   double want = p.target_ms;
-  if (p.jitter + p.pjitter != p.jitter_seen) { // (Talk's or Play's: one buffer size for both, they come over the same network)
-    p.jitter_seen = p.jitter + p.pjitter;
+  if (p.jitter + p.pjitter + p.mjitter != p.jitter_seen) { // (Talk's, Play's or its mix's: one buffer size for all, they come over the same network)
+    p.jitter_seen = p.jitter + p.pjitter + p.mjitter;
     p.last_under = now;
     p.fail_ms = std::max(p.fail_ms, p.target_ms);
     want = p.target_ms + BUF_GROW;
@@ -590,6 +943,7 @@ void adapt(RtLink *l, Slot &p, double now)
   p.last_change = now;
   p.sink->setLatency(want / 1000.0);
   if (p.psink) p.psink->setLatency(want / 1000.0);
+  if (p.msink) p.msink->setLatency(want / 1000.0);
 }
 
 void tx_loop(RtLink *l)
@@ -606,20 +960,30 @@ void tx_loop(RtLink *l)
     // late audio is lost either way. (James, rt)
     if (l->overflow.exchange(false)) l->src->reset();
     if (l->poverflow.exchange(false)) l->psrc->reset();
+    const double tnow = now_s();
+    hub_watch(l, tnow); // (the hub's live mix: as a listener, then as the hub)
+    hub_serve(l, tnow);
     l->src->send(send_fn, l);
     l->psrc->send(send_fn, l);
     for (int i = 0; i < l->nslots; ++i) {
       if (l->slots[i]->sink) l->slots[i]->sink->send(send_fn, l);
       if (l->slots[i]->psink) l->slots[i]->psink->send(send_fn, l);
+      if (l->slots[i]->msink) l->slots[i]->msink->send(send_fn, l);
     }
     std::lock_guard<std::mutex> g(l->stats_mx);
     l->src->pollEvents();
     for (int i = 0; i < l->nslots; ++i) {
       if (l->slots[i]->sink) l->slots[i]->sink->pollEvents();
       if (l->slots[i]->psink) l->slots[i]->psink->pollEvents();
+      if (l->slots[i]->msink) l->slots[i]->msink->pollEvents();
     }
     const double now = now_s();
-    for (int i = 0; i < l->nslots; ++i) adapt(l, *l->slots[i], now);
+    for (int i = 0; i < l->nslots; ++i) {
+      Slot &p = *l->slots[i];
+      adapt(l, p, now);
+      const double lat = p.rtt_ms >= 0 && p.buffer_ms >= 0 ? p.rtt_ms / 2 + p.buffer_ms + p.src_lat_ms + p.sink_lat_ms : -1;
+      if (p.streaming && lat >= 0 && l->hub_state.load() != 2) p.last_direct_ms = lat; // (what the hub's hop adds is measured against this)
+    }
   }
 }
 
@@ -648,6 +1012,17 @@ void rx_loop(RtLink *l)
       l->extra_in.fetch_sub(1);
       continue;
     }
+    if (n >= 5 + TAG && memcmp(buf.data(), CTL, 4) == 0) { // (the hub's live mix: a control datagram, tagged as the rest)
+      std::lock_guard<std::mutex> g(l->cfg_mx);
+      if (l->key.empty()) { reject(l, "no studio secret here yet", from); continue; }
+      unsigned char t[32];
+      tag_of(l->key, buf.data(), (size_t)n - TAG, t);
+      if (!same_tag(t, buf.data() + n - TAG)) { reject(l, "wrong studio secret", from); continue; }
+      Slot *p = slot_of(l, from);
+      if (!p) { reject(l, "not one of the studio's computers here", from); continue; }
+      handle_ctl(l, *p, buf.data() + 4, n - 4 - TAG, now_s());
+      continue;
+    }
     if (n < 4 + TAG + 4 || memcmp(buf.data(), MAGIC, 4) != 0) { reject(l, "not StudioSync audio", from); continue; }
     const AooByte *msg = buf.data() + 4;
     const AooInt32 size = n - 4 - TAG;
@@ -667,6 +1042,12 @@ void rx_loop(RtLink *l)
       else if (type == kAooMsgTypeSink && id == p->psink_id && p->psink) p->psink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
       else if (type == kAooMsgTypeSource && id == SRC_ID && l->src) l->src->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
       else if (type == kAooMsgTypeSource && id == PLAY_ID && l->psrc) l->psrc->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
+      else if (type == kAooMsgTypeSink && id == p->msink_id && p->msink) { // (my hub's mix for me: when it last came, and since when unbroken)
+        const double now = now_s();
+        if (now - p->mix_at.load() > 0.1) p->mix_first.store(now);
+        p->mix_at.store(now);
+        p->msink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
+      } else if (type == kAooMsgTypeSource && id == MIX_ID && p->msrc) p->msrc->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
       else { reject(l, "for a stream that isn't theirs", from); continue; }
     }
     l->wake.set(); // (replies and resend requests go out now)
@@ -746,6 +1127,8 @@ void rt_stop(RtLink *l)
   std::lock_guard<std::mutex> c(l->cfg_mx);
   for (int i = 0; i < l->nslots; ++i) { drop_slot(l, *l->slots[i]); l->slots[i].reset(); }
   l->nslots = 0;
+  l->hub_peer.store(nullptr); l->hub_state.store(0); l->mixw = 0; // (rt_hub's choice is kept: the ring is made again when it starts)
+  l->hserve.store(false); l->serve = false; l->hub_serving = 0; l->hring.clear();
   if (l->src) AooSource_free(l->src);
   if (l->psrc) AooSource_free(l->psrc);
   l->src = l->psrc = nullptr;
@@ -817,6 +1200,14 @@ int rt_peer_buffer(RtLink *l, const char *peer, double floor_ms, double ceil_ms)
     if (peer && l->slots[i]->peer == peer) { l->slots[i]->floor_ms = f; l->slots[i]->ceil_ms = c; return 1; }
   return 0;
 }
+int rt_hub(RtLink *l, const char *peer, int serve)
+{
+  std::lock_guard<std::mutex> g(l->pend_mx);
+  l->want_hub = peer ? peer : "";
+  l->want_serve = serve ? 1 : 0;
+  l->wake.set();
+  return 1;
+}
 void rt_test_hold(RtLink *l, double ms) { l->hold_until.store(now_s() + ms / 1000.0); }
 void rt_test_speed(RtLink *l, double x) { std::lock_guard<std::mutex> st(l->stats_mx); l->speed = x > 0 ? x : 1; }
 
@@ -858,6 +1249,24 @@ std::string rt_status(RtLink *l)
            l->play_send.load() ? "true" : "false", l->play_peak.exchange(0.f));
   o.insert(o.size() - 9, b); // (before "peers":{)
   const double now = now_s();
+  { // (the hub's live mix: as a listener, the hub's peer, state, latency through it against the streams' own, fallbacks; as the hub, its load)
+    Slot *h = l->hub_peer.load();
+    const int hs = l->hub_state.load();
+    double direct = 0, through = -1;
+    int nd = 0;
+    for (int i = 0; i < l->nslots; ++i) if (l->slots[i].get() != h && l->slots[i]->last_direct_ms >= 0) { direct += l->slots[i]->last_direct_ms; ++nd; }
+    if (h && h->rtt_ms >= 0 && h->mbuf_ms >= 0 && h->hin_ms.load() >= 0) through = h->hin_ms.load() + h->rtt_ms / 2 + h->mbuf_ms + h->mlat_ms;
+    std::string hp;
+    { std::lock_guard<std::mutex> p(l->pend_mx); hp = l->want_hub; }
+    std::string hj = "\"hub\":{\"peer\":";
+    json_str(hj, hp);
+    snprintf(b, sizeof(b), ",\"state\":\"%s\",\"serve\":%s,\"serving\":%d,\"load\":%.4f,\"max_us\":%.1f,\"skipped\":%lld,\"fallbacks\":%lld,\"latency_ms\":%.1f,\"in_ms\":%.1f,\"direct_ms\":%.1f,\"hub_load\":%.4f,\"level\":%.5f}",
+             hs == 2 ? "hub" : hs == 1 ? "joining" : "direct", l->serve ? "true" : "false", l->hub_serving, l->hub_load, l->hub_max_us, l->hskipped.load(), l->fallbacks,
+             through, h ? h->hin_ms.load() : -1.f, nd ? direct / nd : -1.0, h ? h->hload.load() : -1.f, h ? h->mpeak.exchange(0.f) : 0.f);
+    hj += b;
+    o.insert(o.size() - 9, hj + ","); // (before "peers":{, as Play's)
+    l->hub_max_us = 0;
+  }
   for (int i = 0; i < l->nslots; ++i) {
     Slot &p = *l->slots[i];
     if (i) o += ',';
@@ -871,8 +1280,8 @@ std::string rt_status(RtLink *l)
              p.resolved ? "true" : "false", streaming ? "true" : "false", p.rtt_ms, lat, p.buffer_ms, p.target_ms, p.floor_ms, p.ceil_ms, p.loss, p.dropped,
              p.underruns, p.peak.exchange(0.f), p.gain.load(), p.mute.load() ? "true" : "false"); // (level: the peak since the last ask, before the cue mix's level)
     o += b;
-    snprintf(b, sizeof(b), ",\"play_streaming\":%s,\"play_level\":%.5f,\"play_gain\":%.3f", p.pstreaming || now - p.pdown_at < STREAM_GRACE ? "true" : "false",
-             p.ppeak.exchange(0.f), p.pgain.load());
+    snprintf(b, sizeof(b), ",\"play_streaming\":%s,\"play_level\":%.5f,\"play_gain\":%.3f,\"via_hub\":%s,\"direct\":%s", p.pstreaming || now - p.pdown_at < STREAM_GRACE ? "true" : "false",
+             p.ppeak.exchange(0.f), p.pgain.load(), l->hub_state.load() == 2 ? "true" : "false", hears_direct(p, now) ? "true" : "false"); // (via_hub: heard in the hub's mix; direct: my streams go to it)
     o.insert(o.size() - 1, b); // (inside the peer's object)
   }
   o += "}}";
@@ -947,9 +1356,23 @@ void rt_mix(RtLink *l, double *const *out, int nout, int len, double srate)
     const auto t0 = std::chrono::steady_clock::now();
     const AooNtpTime t = aoo_getCurrentNtpTime();
     if (l->pstream.load() && l->pshm) play_feed(l, len, t);
-    // one stream of a peer, heard: Talk at its level, Play at its own (the personal monitor mix); the peer's mute is both
-    auto hear = [&](Slot &p, AooSink *sink, std::atomic<bool> &mono, std::atomic<float> &peak, bool &was_quiet, float gain) {
-      if (!sink || sink->process(l->mixptr, len, t, nullptr, nullptr) != kAooOk) return;
+    // The hub's live mix. Serving: this block's record in the ring (every peer's Talk and Play as decoded, then this computer's own), a copy
+    // for the send thread to mix; the ring full (the send thread behind): skipped, and counted. Listening through a hub: its mix instead of
+    // everyone's own streams, crossfaded over one block when that changes (w0 -> w1).
+    float *rec = nullptr;
+    uint64_t hw = 0;
+    if (l->hserve.load(std::memory_order_acquire) && !l->hring.empty()) {
+      hw = l->hw.load(std::memory_order_relaxed);
+      if (hw - l->hr.load(std::memory_order_acquire) < (uint64_t)HUB_RING) rec = &l->hring[(size_t)(hw % HUB_RING) * l->hstride];
+      else l->hskipped.fetch_add(1, std::memory_order_relaxed);
+    }
+    Slot *hp = l->hub_peer.load(std::memory_order_acquire);
+    const float w0 = l->mixw, w1 = hp && l->hub_state.load(std::memory_order_relaxed) == 2 ? 1.f : 0.f;
+    l->mixw = w1;
+    // one stream of a peer, heard: Talk at its level, Play at its own (the personal monitor mix; gain 0: the peer muted, both); r0 -> r1: its
+    // weight over this block; to: the ring's copy (L, then R), before any level
+    auto hear = [&](Slot &p, AooSink *sink, std::atomic<bool> &mono, std::atomic<float> &peak, bool &was_quiet, float gain, float r0, float r1, float *to) {
+      if (!sink || sink->process(l->mixptr, len, t, nullptr, nullptr) != kAooOk) { if (to) std::fill(to, to + 2 * len, 0.f); return; }
       float *L = l->mixptr[0], *R = l->mixptr[1];
       if (mono.load(std::memory_order_relaxed)) std::copy(L, L + len, R); // (a mono sender: both ears)
       float pk = 0;
@@ -959,15 +1382,31 @@ void rt_mix(RtLink *l, double *const *out, int nout, int len, double srate)
       const bool quiet = pk < 1e-4f; // (AOO's silence in a gap or a re-buffer: under -80 dBFS)
       if (was_quiet && !quiet) for (int k = 0; k < len; ++k) { const float g = (float)k / (float)len; L[k] *= g; R[k] *= g; } // (back after a gap: faded in over one block, no click)
       was_quiet = quiet;
-      if (p.mute.load(std::memory_order_relaxed) || !out) return;
-      const double gn = gain;
-      if (nout > 0 && out[0]) for (int k = 0; k < len; ++k) out[0][k] += gn * L[k];
-      if (nout > 1 && out[1]) for (int k = 0; k < len; ++k) out[1][k] += gn * R[k];
+      if (to) { std::copy(L, L + len, to); std::copy(R, R + len, to + len); }
+      if (gain <= 0 || (r0 <= 0 && r1 <= 0) || !out) return;
+      const double gn = gain, dr = (double)(r1 - r0) / len;
+      if (nout > 0 && out[0]) for (int k = 0; k < len; ++k) out[0][k] += gn * (r0 + dr * k) * L[k];
+      if (nout > 1 && out[1]) for (int k = 0; k < len; ++k) out[1][k] += gn * (r0 + dr * k) * R[k];
     };
     for (int i = 0; i < l->nslots; ++i) {
       Slot &p = *l->slots[i];
-      hear(p, p.sink, p.mono, p.peak, p.was_quiet, p.gain.load(std::memory_order_relaxed));
-      hear(p, p.psink, p.pmono, p.ppeak, p.pwas_quiet, p.pgain.load(std::memory_order_relaxed));
+      const bool m = p.mute.load(std::memory_order_relaxed);
+      float *to = rec ? rec + (size_t)i * 4 * len : nullptr;
+      hear(p, p.sink, p.mono, p.peak, p.was_quiet, m ? 0.f : p.gain.load(std::memory_order_relaxed), 1 - w0, 1 - w1, to);
+      hear(p, p.psink, p.pmono, p.ppeak, p.pwas_quiet, m ? 0.f : p.pgain.load(std::memory_order_relaxed), 1 - w0, 1 - w1, to ? to + 2 * len : nullptr);
+    }
+    if (hp) { // (my hub's mix, already at my levels: decoded while asked for, so it's ready the moment it's heard)
+      std::atomic<bool> stereo{ false };
+      hear(*hp, hp->msink, stereo, hp->mpeak, hp->mwas_quiet, 1.f, w0, w1, nullptr);
+    }
+    if (rec) { // (this computer's own Talk, the first two inputs sent (mono: both ears), and its Play, as they went out)
+      float *own = rec + (size_t)l->nslots * 4 * len;
+      std::copy(l->inptr[0], l->inptr[0] + len, own);
+      std::copy(l->inptr[l->nch > 1 ? 1 : 0], l->inptr[l->nch > 1 ? 1 : 0] + len, own + len);
+      if (l->pstream.load() && l->pshm) { std::copy(l->pptr[0], l->pptr[0] + len, own + 2 * len); std::copy(l->pptr[1], l->pptr[1] + len, own + 3 * len); }
+      else std::fill(own + 2 * len, own + 4 * len, 0.f);
+      l->htime[(size_t)(hw % HUB_RING)] = t;
+      l->hw.store(hw + 1, std::memory_order_release);
     }
     took(l, t0);
   }
@@ -1034,6 +1473,8 @@ static int api_play(int hop_id, int send) { return g_rt ? rt_play(g_rt, hop_id, 
 static int api_peer_play(const char *peer, double gain) { return g_rt ? rt_peer_play(g_rt, peer, gain) : 0; }
 static void *vla_play(void **a, int n) { return n < 2 ? nullptr : (void *)(INT_PTR)api_play((int)(INT_PTR)a[0], (int)(INT_PTR)a[1]); }
 static void *vla_peer_play(void **a, int n) { return n < 2 || !a[1] ? nullptr : (void *)(INT_PTR)api_peer_play((const char *)a[0], *(double *)a[1]); }
+static int api_hub(const char *peer, int serve) { return g_rt ? rt_hub(g_rt, peer, serve) : 0; }
+static void *vla_hub(void **a, int n) { return n < 2 ? nullptr : (void *)(INT_PTR)api_hub((const char *)a[0], (int)(INT_PTR)a[1]); }
 
 void rtaudio_shutdown()
 {
@@ -1063,6 +1504,8 @@ void rtaudio_register(reaper_plugin_info_t *rec)
       "int\0int,int\0hop_id,send\0Play, live audio's second stream: what the StudioSync Hop with this id (1-64, on the hidden live out track the armed tracks send to post-FX) is fed, sent beside Talk so each listener sets the two apart. hop_id 0: no Play stream. send 0: silence while the stream stays up (Mute me, Deafen). StudioSync_LiveAudioStatus's play, play_alive, play_level say how it goes. Returns 1." },
     { "StudioSync_LiveAudioPeerPlay", (void *)api_peer_play, (void *)vla_peer_play,
       "int\0const char*,double\0peer,gain\0A peer's Play level (linear, 0-4) in what you hear, apart from their Talk level (StudioSync_LiveAudioPeerSet, whose mute is the whole bandmate's). Returns 1 when that peer is in the list." },
+    { "StudioSync_LiveAudioHub", (void *)api_hub, (void *)vla_hub,
+      "int\0const char*,int\0peer,serve\0The hub's live mix: peer (in the list) mixes for this computer, which then sends its streams to it alone and hears the one stream it mixes at this computer's own levels, back to everyone's own streams at once when that mix stops; \"\": peer to peer. serve 1: this computer mixes for every listener that asks. StudioSync_LiveAudioStatus's hub (peer, state direct/joining/hub, serve, serving, load, max_us, skipped, fallbacks, latency_ms, in_ms, direct_ms, hub_load) and per peer via_hub, direct say how it goes. Returns 1." },
   };
   char key[96];
   for (const auto &f : fns) {

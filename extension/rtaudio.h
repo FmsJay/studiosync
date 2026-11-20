@@ -2,7 +2,8 @@
 // as Opus through an AOO source (extension/third_party/aoo, BSD) to the studio's other computers over Tailscale UDP, and mixes every
 // peer's stream, through an AOO sink with its jitter buffer, into REAPER's first output pair (the audio hook's post call: heard here,
 // not recorded). Every datagram carries a tag made with the studio secret, so only studio computers are heard. Nothing runs until
-// started. The core has no REAPER in it, so tests/rtaudio_test.cpp runs two or three of these on localhost. GPL-3.0-or-later.
+// started. The core has no REAPER in it, so tests/rtaudio_test.cpp runs two or three of these on localhost (and a hub with three listeners).
+// GPL-3.0-or-later.
 #pragma once
 #include <string>
 
@@ -38,6 +39,11 @@ int rt_send(RtLink *l, const char *peer, int on);
 int rt_play(RtLink *l, int hop_id, int send);
 // A peer's Play level in what you hear (linear, 0..4), apart from their Talk level (rt_peer_set; its mute is the whole bandmate's). -> 1 when in the list.
 int rt_peer_play(RtLink *l, const char *peer, double gain);
+// The hub's live mix (docs/realtime-roadmap.md "More big ideas" 1): peer, a bandmate in the list, is the computer that mixes for this one: this
+// computer sends Talk and Play to it alone and hears the one stream it mixes (from this computer's own Talk/Play levels per bandmate, sent to
+// it), switching back to everyone's own streams within about a jitter buffer when that mix stops coming. "" (or null): peer to peer. serve 1:
+// this computer mixes for every listener that asks (its own Talk and Play in it), on the send thread. -> 1. (James, rt)
+int rt_hub(RtLink *l, const char *peer, int serve);
 std::string rt_status(RtLink *l); // JSON: the link, and per peer latency, jitter buffer, loss, level (see rtaudio.cpp)
 // The audio thread (REAPER's hook, or the test's clock): capture before REAPER's processing, mix after. No lock, allocation or REAPER call.
 void rt_capture(RtLink *l, const double *const *in, int nin, int len, double srate);

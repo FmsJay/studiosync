@@ -420,6 +420,11 @@ function hub.job_tick(proj, cfg, b, mine)
   return { state = "kept", last = j.last, dur = j.dur }
 end
 
+-- What Live sync last published for this song (hub.tick): { studio, hub, why, ... }, or nil. lib/liveaudio.lua mixes the live audio at v.hub.
+function hub.view(cfg, song)
+  local v = band.ext_json(band.SECTION, "hub view " .. id_of(cfg.root) .. " " .. tostring(song))
+  return type(v) == "table" and v or nil
+end
 -- Health's row (lib/page_health.lua), from what Live sync published for this song. Its button hands the role on, or takes it up again.
 function hub.health_row(cfg, b)
   if not (b and b.song) then return nil end

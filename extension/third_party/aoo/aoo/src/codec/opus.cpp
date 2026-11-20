@@ -277,6 +277,19 @@ AooError AOO_CALL Encoder_control(
         }
         break;
     }
+    // StudioSync's one patch (extension/third_party/README.md): frames coded without prediction for a moment, so a sink whose stream
+    // was just turned back on decodes at full level from its first packet (the hub's live mix falling back, extension/rtaudio.cpp).
+    case OPUS_SET_PREDICTION_DISABLED_REQUEST:
+    {
+        CHECKARG(opus_int32);
+        auto disabled = as<opus_int32>(ptr);
+        auto err = opus_multistream_encoder_ctl(
+                    e->state_, OPUS_SET_PREDICTION_DISABLED(disabled));
+        if (err != OPUS_OK){
+            return kAooErrorBadArgument;
+        }
+        break;
+    }
     default:
         LOG_WARNING("Opus: unsupported codec ctl " << ctl);
         return kAooErrorNotImplemented;

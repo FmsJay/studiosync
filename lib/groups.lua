@@ -21,6 +21,7 @@ local SETTINGS = { "alerts", "alerts_server", "call", "sonobus_server", "tailnet
   "print_hops", -- ("print_hops": chained prints, lib/prints.lua hops_cap. James, 0.59.49)
   "direct", -- ("direct": the direct link, lib/direct.lua enabled; on unless false. James, 0.60.0-rt)
   "live_audio", -- ("live_audio": live audio over the link, lib/liveaudio.lua; off unless true. James, rt)
+  "live_hub", -- ("live_hub": from how many people in a room the song's hub mixes the live audio, lib/liveaudio.lua hub_plan; 0 never. James, rt)
   "takes_to_lanes", -- ("takes_to_lanes": the takes-become-lanes pass, lib/prints.lua takes_to_lanes; on unless false. James, rt)
   "smart_take_names", -- ("smart_take_names": new takes named for their section and player, lib/recap.lua; on unless false. James, rt)
   "smart_lane_names", -- ("smart_lane_names": the lanes they land in named the same; off unless true, as a take goes in the first open lane. James, rt)
@@ -204,6 +205,10 @@ function groups.set_hub(root, user) save(root, function(j) j.hub = type(user) ==
 -- Owner and admins. (James, 2026-11-19: "realtime audio should probably be the default mode ... shouldn't even need to turn it on". rt)
 function groups.live_audio(root) return groups.trusted(root).live_audio ~= false end
 function groups.set_live_audio(root, on) save(root, function(j) if on then j.live_audio = nil else j.live_audio = false end end) end
+-- The hub's live mix (lib/liveaudio.lua hub_plan): from how many people in a room (them too) the song's hub mixes everyone's live audio into one
+-- stream each; nil: liveaudio.HUB_FROM, 0: never (peer to peer always). Owner and admins. (James, rt)
+function groups.live_hub(root) local v = tonumber(groups.trusted(root).live_hub); return v and math.floor(v) or nil end
+function groups.set_live_hub(root, n) save(root, function(j) j.live_hub = tonumber(n) and math.floor(n) or nil end) end
 -- Takes become lanes for the studio (lib/prints.lua takes_to_lanes): on unless band.json says false, so only "off" is written. Owner and
 -- admins. (James, rt)
 function groups.takes_to_lanes(root) return groups.trusted(root).takes_to_lanes ~= false end

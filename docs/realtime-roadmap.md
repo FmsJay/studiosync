@@ -707,6 +707,52 @@ it's the patient, lossless, store-and-forward half.
        here", and a set-aside handover; Settings > Studio > Hub says the same rules.
      - **Still not yet:** the studio hub in another song than yours is still noticed by its status file (the link's peers are per room);
        snapshots in the extension or a background instance; prints, relaying, live mix at the hub.
+   - **Third slice: the hub's live mix (rt-hubmix, 2026-11-19; native and Lua tests only, not run in REAPER yet).** Design, then what's built.
+     - **Which hub mixes:** the song's hub (it's in the room: the sharer, or whoever it was handed to; `hub.view`). Peer to peer stays the
+       default and the fallback: the hub mixes only from a studio threshold, band.json `live_hub` (Settings > Studio > Live audio, owner and
+       admins: from 3, 4 (default), 5, 6 or 8 people, or never). Why 4: peer to peer, each of N people sends and hears N-1 streams (5 people at
+       128 kbit/s: 512 up and 512 down each, twice that with Play), and the hub's hop costs about one jitter buffer and a trip; at 3 a listener
+       saves one stream for that, at 4 it goes from 3 up and 3 down to 1 and 1. No song hub here (the cloud copy stands in), a hub the link
+       doesn't reach, or anyone here on an older extension (their status lacks `lhub`, and an older extension refuses the new datagrams): peer
+       to peer, and Health says why.
+     - **Personal volumes: the cue mix built at the hub, one per listener, not submixes.** Each listener's own Talk and Play volume per
+       bandmate (mute as 0, Deafen all 0, its master volume in each) goes to the hub with its request; the hub mixes each listener's stream
+       from those, never with that listener's own sound, with its own Talk and Play in it. Submixes can't keep per-bandmate volumes without
+       one per bandmate, which is peer to peer again. The cost is one Opus encode per listener plus a few multiply-adds per sample: measured on
+       the send thread at 3.8-5% of one core for three listeners (tests/rtaudio_test.cpp, desktop), so a band of eight is still well inside the budget.
+       Talkback holds: a sender's Talk is left out of the mixes of those it leaves out (its request lists them), and the hub's own talkback too.
+     - **The hub is someone's working REAPER:** on its audio thread only a copy (each peer's block, which it decodes anyway for its own
+       listening, and its own Talk and Play, into a ring: `hring`); the mixing and encoding are on the extension's send thread (AOO's sinks in,
+       an AOO source per listener out: `MIX_ID`), timed as a share of a core. Lua (`liveaudio.hub_budget`) pauses it past 25% of a core
+       (for 2 min), past 10% while that REAPER records (until the take ends), and when blocks are skipped (the send thread fell behind the
+       audio, the ring full); paused, the listeners fall back to direct streams on their own.
+     - **Falling back, no gap longer than the jitter buffer:** a listener switches to the mix only after it has flowed 0.3 s (make before
+       break: no gap going in, measured 0 ms), then tells everyone ('M') and they stop sending it their own streams; a sender keeps sending to
+       anyone who hasn't said so, or whose word is over a second old. When the mix pauses (10 ms, more once its buffer has grown for Wi-Fi) the
+       listener asks for everyone's streams back at once while the mix's buffer still plays, and hears them once the mix has stopped for its
+       buffer + 20 ms. Measured with the hub's REAPER stopped dead: a 16-21 ms gap, under the 30 ms buffer (before asking early: 69 ms). A
+       stream turned back on used to rise to full level over ~100 ms (Opus codes each frame's energies against the last, so a decoder joining
+       mid-stream starts low): the sender now codes 100 ms without prediction (`OPUS_SET_PREDICTION_DISABLED`, AOO's one patch:
+       extension/third_party/README.md), so it's at full level from its first packet; that also helps talkback's let-back-in. After a fallback
+       the mix is asked for again after 3 s; a hub that's gone for good is re-elected by the second slice's link watch (~15 s).
+     - **Latency, measured and shown:** through the hub = the hub's input latency (its 'I' datagram: half the round trip + buffer + codec,
+       averaged over its sources) + half the round trip to it + the mix's buffer + codec, against each stream's own when last heard directly.
+       Health: "hearing Bee, Chilio, Lin through Bee's mix, 76 ms (38 ms directly: +38 ms for the hub's hop)"; on the hub: "you mix it for 3
+       here: one stream each way per person; 5% of a core"; fallbacks and why it isn't used. Native test, localhost: W's onset on X 43 ms
+       directly, 91 ms through the hub (+48 ms).
+     - **Built:** extension/rtaudio.cpp (`rt_hub`, `StudioSync_LiveAudioHub(peer, serve)`; "SSX1" control datagrams tagged as the rest: 'M'
+       how a listener hears, 'R' its levels and talkback, 'I' the hub's latency and load; status `hub` {peer, state direct/joining/hub,
+       serve, serving, load, max_us, skipped, fallbacks, latency_ms, in_ms, direct_ms, hub_load} and per peer `via_hub`, `direct`; Play
+       follows the hub too); lib/liveaudio.lua (`hub_plan`, `hub_budget`, `hub_tick`, `hub_text`, the threshold in Settings), lib/groups.lua
+       `live_hub`, lib/hub.lua `hub.view`, Live sync's status `lhub`. Tests: tests/rtaudio_test.cpp (a hub and three listeners: each listener's
+       levels peer to peer and through the hub within 25%, W sending 612 datagrams a second peer to peer and 220-247 through the hub, talkback
+       through it, the hop's latency, the hub dropping: 16-21 ms and each other's streams at full level), tests/test_0_60_rt_hubmix.lua.
+     - **Not yet / limits:** through the hub, Chat > Call's per-bandmate meters read nothing (the mix has one level); each listener's mix goes
+       at the hub's own Opus rate (128 kbit/s stereo unless the hub sends more); a sender's channels 3-8 aren't heard (as peer to peer);
+       the studio hub isn't used for a song whose hub is away (peer to peer instead); the extension wants a release past 1.0.18
+       (EXT_WANT not moved), and a Windows build needs `extension\third_party\build\` deleted once for the Opus patch (without it all works,
+       with the slower level rise).
+     - **To check in REAPER:** the checklist in the session's report (four computers: desktop, laptop, Mac, LinuxBox).
 2. **Shared CPU.** The remote plug-in mechanism (4b) also works for plug-ins you DO have: freeze or offload a heavy
    track to whichever computer is idle.
    - **First version built (2026-11-19; offline tests only, not run in REAPER yet):** `lib/hops.lua` (offload, offload_pick, hold_chain,
