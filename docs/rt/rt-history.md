@@ -65,8 +65,10 @@ Listen's mechanics, the untouched open project, the cache, Cancel and Compare pa
   an item whose version then sits on a track gone then is gone then (false), that track's parts are left out, and so is anything on a
   track that's neither here nor coming back. Checked offline against the real room's 1,018 events with the repo's code: at that point
   mirror's plan has 14 items back, settled 2, the rebuilt copy 2 tracks and 2 items, the words "Brings back 2 tracks and 2 items"; at
-  t=1795117855, 24 against 12 and 12 in the copy. The panel's own Restore page still uses mirror's plan as it is (its message then says
-  some "couldn't change here yet"): not changed here, it's `lib/page_restore.lua`'s.
+  t=1795117855, 24 against 12 and 12 in the copy. **The panel's Restore page now uses the same settled plan**
+  for a moment in History (`lib/page_restore.lua` `plan_for`, a three-line change: Restore selected tracks, Restore whole project, Open
+  in side room and Fork from here; a side room's plan isn't judged by what's in this project). Before, `mirror.revert` there said those
+  items "couldn't change here yet" on every restore, for good. A saved version that holds its own map (`mirror.plan_known`) is as before.
 - **Job folders left behind** (`done.txt`, sometimes `job.rpp`, a cancelled job's preview files). The hidden REAPER is ended by a script
   that takes a moment; meanwhile it saves its job.rpp again or finishes a pass, and its launcher writes `done.txt` after it has gone,
   all after the one tidy. A job folder done with is now emptied again every 2 s for a minute. A job cancelled before its `pid.txt` was
@@ -100,6 +102,9 @@ Listen's mechanics, the untouched open project, the cache, Cancel and Compare pa
 7. **Job folders**: files written after the tidy (job.rpp saved again, done.txt, a cancelled job's pass) are swept; nothing is ended
    twice, nor once done.txt is there; a job cancelled before its process id is ended when the id appears; a folder per start; forgotten
    after a minute.
+8. **The panel's path** (`tests/test_0_60_rt_histhear_panel.lua`): `page_restore`'s plan for the same case is the web restore's, plan for
+   plan; the real `mirror.revert` says "couldn't change here yet" for mirror's plan and nothing of the kind for the settled one; the
+   selected-tracks scope still applies; an item on a track that's here stays planned; the saved-version path is untouched.
 
 `test_0_60_rt_history.lua` stubs histhear (its stand-in REAPER's file listing never ends). `python tests/run.py --no-luals` ends
 `fails 0` (after the fixes above; the first commit's run had 3 fails from another agent's uncommitted work and a strict timing test).

@@ -88,7 +88,11 @@ function R.open_version(file) want_version = file end
 -- What going back to entries[i] brings: a saved version (`point`, its recall.list row) that holds the project's own map is restored to exactly
 -- that (mirror.plan_known); one saved before 0.59.45, or a moment in History, by time as before. Round 1 review, 0.59.45 (one file read per
 -- restore of a saved version).
-local function plan_for(i, point, scope)
+-- A moment in History goes by the settled plan, as the web page's restore and its preview do (lib/histhear.lua settle): what sat on a track
+-- deleted before that moment went with it, though mirror's plan still names it (deleting a track sends nothing for its items), so every
+-- restore to there said some changes "couldn't change here yet", for good (Cross Test: 12 of 14 items. rt-history). `anywhere`: for another
+-- project (a side room made to look at that moment), so nothing is judged by what's in this one.
+local function plan_for(i, point, scope, anywhere)
   local b, cfg = E.b(), E.cfg()
   local known = point and point.file and recall.known(cfg, b.song, b.room, point.file) -- (its sidecar: Round 2 review, 0.59.46)
   if known then
@@ -96,8 +100,10 @@ local function plan_for(i, point, scope)
     for _, e in ipairs(entries) do if e.id then by_id[e.id] = e end end
     return mirror.plan_known(entries, known, function(id) return by_id[id] or mirror.event_file(rdir, id) end, scope)
   end
-  return mirror.plan_restore(entries, i, scope)
+  local histhear, proj = require("histhear"), E.proj()
+  return histhear.settle(mirror.plan_restore(entries, i, scope), not anywhere and function(oid) return histhear.here(proj, oid) end or nil)
 end
+R.test = { plan_for = plan_for, entries = function(list) entries = list end } -- (tests/test_0_60_rt_histhear_panel.lua)
 local function back_button(i, what, single, point)
   local b, cfg, proj, view, wide, points, can, who = E.b(), E.cfg(), E.proj(), E.view(), E.wide(), E.points(), E.can(), E.who()
   local e, mirror = entries[i], require("mirror")
@@ -160,7 +166,7 @@ local function back_button(i, what, single, point)
     local p, why = require("rooms").create(proj, cfg, b, name, nil, extra)
     if not p then band.msg(why) else
       local room_can = sync.authority(cfg, b.song, name, view.session)
-      local plan = plan_for(i, point)
+      local plan = plan_for(i, point, nil, true)
       sync.restore_timeline(p, cfg, b.song, name, entries, i, view.session, b.room)
       band.log("'" .. name .. "' is the project as it was " .. what .. ": " .. tostring(mirror.revert(p, cfg, b.song, name, plan, { at_once = true, can = room_can, mode = "claims", exact = true })))
       local beat = tonumber(reaper.GetExtState(band.SECTION, "live " .. tostring(p)))
