@@ -783,7 +783,10 @@ end
 -- at `since`. Pure.
 function live.replaces(id, user, since, heard, take_len)
   local who, stamp = (id or ""):match("^(.-)%-(%d+%-%d+Z)")
-  if not who or who:lower():gsub("_", " ") ~= (user or ""):lower():gsub("_", " ") then return false end
+  -- (letters and digits only: ids carry the name as sync.id_user writes it, "JAMES_LAPTOP" for "James-Laptop", and the dash never matched,
+  -- so a live MIDI part of hers stayed "take on its way" by its take. Laptop UR22 MIDI test, rt)
+  local function key(s) return (tostring(s or ""):lower():gsub("[^%w]", "")) end
+  if not who or key(who) ~= key(user) then return false end
   local t, h = secs(stamp), secs(heard)
   if t and h then return h <= t + 5 and h >= t - (take_len or 0) - 30 end
   return since ~= "" and stamp >= since

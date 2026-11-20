@@ -58,6 +58,7 @@ assert(live.oid_take_id("T-JAMES-1") == nil and live.oid_take_id(nil) == nil and
 assert(live.replaces(live.oid_take_id("I-JAMES-20261120024310-32070"), "James", "20261120-024254Z", "", 4), "sent after the part began: replaces it")
 assert(not live.replaces(live.oid_take_id("I-JAMES-20261120024210-1"), "James", "20261120-024254Z", "", 4), "made before it began: doesn't")
 assert(not live.replaces(live.oid_take_id("I-BO-20261120024310-2"), "James", "20261120-024254Z", "", 4), "someone else's: doesn't")
+assert(live.replaces(live.oid_take_id("I-JAMES_LAPTOP-20261120042838-29087"), "James-Laptop", "20261120-042807Z", "", 4), "a name with a dash, as ids write it (JAMES_LAPTOP)")
 assert(live.part_track("midi:20261120-024254Z:XT Midi K") == "XT Midi K" and live.part_track("midi:x:Synth (4)") == "Synth", "a MIDI part's track")
 assert(live.part_track("{GUID}") == nil and live.part_track(nil) == nil, "a NINJAM clip: any track")
 print("ok")
