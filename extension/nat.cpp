@@ -720,6 +720,7 @@ static void probe(NatHub *h)
   if (!list.empty()) {
     nat_sock_t s = socket(AF_INET, SOCK_DGRAM, 0);
     if (s != NAT_BAD_SOCK) {
+      direct_noinherit(s);
 #ifdef _WIN32
       DWORD tmo = 200;
 #else

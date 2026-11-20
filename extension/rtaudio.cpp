@@ -275,6 +275,7 @@ std::string tailscale_ip()
 {
   sock_t s = socket(AF_INET, SOCK_DGRAM, 0);
   if (s == BAD_SOCK) return "";
+  direct_noinherit(s);
   sockaddr_in to{}, me{};
   to.sin_family = AF_INET;
   to.sin_port = htons(53);
@@ -1127,6 +1128,7 @@ int rt_start(RtLink *l, int first_input, int nch, int kbps, int port, const char
   if (!l->nat_only && !addr_ok(me, l->loopback)) { l->err = "not a Tailscale address"; return 0; }
   sock_t s = socket(AF_INET, SOCK_DGRAM, 0);
   if (s == BAD_SOCK) { l->err = "no socket"; return 0; }
+  direct_noinherit(s);
   if (bind(s, (const sockaddr *)&me, sizeof(me)) != 0) { close_sock(s); l->err = "UDP " + std::to_string(port) + " is taken on " + ip; return 0; }
 #ifdef _WIN32
   DWORD tmo = 100;

@@ -527,6 +527,7 @@ void accept_loop(sock_t ls)
     socklen_t len = sizeof(from);
     sock_t s = accept(ls, (sockaddr *)&from, &len);
     if (s == BAD_SOCK) continue;
+    direct_noinherit(s);
     const unsigned char *a = (const unsigned char *)&from.sin_addr;
     if (from.sin_family != AF_INET || a[0] != 127) { close_sock(s); continue; } // (bound to loopback: never otherwise, but checked)
     spawn(s, "", 0, true);
@@ -564,6 +565,7 @@ int webui_start(const char *folder, const char *secret, int port, const char *bi
   sock_t s = socket(AF_INET, SOCK_STREAM, 0);
   bool ok = s != BAD_SOCK;
   if (ok) {
+    direct_noinherit(s);
 #ifndef _WIN32
     int one = 1;
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));

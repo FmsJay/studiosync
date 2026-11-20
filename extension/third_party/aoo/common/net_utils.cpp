@@ -645,6 +645,15 @@ int get_int_option(socket_type socket, int level, int option, int& value) {
     return getsockopt(socket, level, option, (char *)&value, &len);
 }
 
+// StudioSync's patch: not inherited by child processes (a program REAPER started kept its ports bound after REAPER quit)
+void no_inherit(socket_type sock) {
+#ifdef _WIN32
+    SetHandleInformation((HANDLE)sock, HANDLE_FLAG_INHERIT, 0);
+#else
+    fcntl(sock, F_SETFD, FD_CLOEXEC);
+#endif
+}
+
 std::pair<socket_type, ip_address> create_from_port(int protocol, port_type port) {
 #if AOO_USE_IPV6
     // prefer IPv6 (dual stack), but fall back to IPv4 if disabled
@@ -669,6 +678,7 @@ std::pair<socket_type, ip_address> create_from_port(int protocol, port_type port
     if (sock == invalid_socket) {
         throw socket_error(socket::get_last_error());
     }
+    no_inherit(sock);
     return std::pair(sock, bindaddr);
 }
 
@@ -690,6 +700,7 @@ socket_type create_from_family(int protocol, ip_address::ip_type family, bool du
         sock = ::socket(AF_INET, protocol, 0);
     }
     if (sock != invalid_socket) {
+        no_inherit(sock);
         return sock;
     } else {
         throw socket_error(socket::get_last_error());
@@ -1115,6 +1126,7 @@ std::pair<tcp_socket, ip_address> tcp_socket::accept() {
     addr.reserve();
     auto sock = ::accept(socket_, addr.address_ptr(), addr.length_ptr());
     if (sock != invalid_socket) {
+        no_inherit(sock);
 #if 1
         // disable Nagle's algorithm
         enable_nodelay(sock);

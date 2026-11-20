@@ -21,6 +21,9 @@ bool direct_path_ok(const char *rel);
 // The web UI (extension/webui.cpp) on the link's own port: a connection whose first bytes are an HTTP request goes to `fn` (the socket, what
 // was read so far), which keeps it when it returns true. One firewall rule covers both. null: none (the link alone, as in its own test).
 void direct_set_http_handler(bool (*fn)(unsigned long long sock, const char *buf, size_t n));
+// Called on every socket the extension makes or accepts: a child process REAPER starts mustn't inherit it (one that outlived REAPER kept
+// the ports bound, and the next REAPER's live audio couldn't start).
+void direct_noinherit(unsigned long long sock);
 
 // ---- 1.0.8: the live layer --------------------------------------------------------------------------------------------------------------
 // Small messages: kind a short lower-case word ([a-z][a-z0-9_-]{0,31}: presence, heartbeat, claim, chat, cue, transport, midi, json...),

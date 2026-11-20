@@ -429,6 +429,14 @@ static void set_nonblock(sock_t s, bool on)
   fcntl(s, F_SETFL, on ? (fl | O_NONBLOCK) : (fl & ~O_NONBLOCK));
 #endif
 }
+void direct_noinherit(unsigned long long s)
+{
+#ifdef _WIN32
+  SetHandleInformation((HANDLE)(uintptr_t)s, HANDLE_FLAG_INHERIT, 0);
+#else
+  fcntl((int)s, F_SETFD, FD_CLOEXEC);
+#endif
+}
 static void set_timeouts(sock_t s, int ms)
 {
 #ifdef _WIN32
@@ -465,6 +473,7 @@ static std::string tailscale_ip(std::string &why)
 {
   sock_t s = socket(AF_INET, SOCK_DGRAM, 0);
   if (s == BAD_SOCK) { why = "no socket"; return ""; }
+  direct_noinherit(s);
   sockaddr_in to = {};
   to.sin_family = AF_INET;
   to.sin_port = htons(53);
@@ -847,6 +856,7 @@ void listen_loop(sock_t ls, bool loopback_ok)
       socklen_t len = sizeof(from);
       sock_t s = accept(ls, (sockaddr *)&from, &len);
       if (s != BAD_SOCK) {
+        direct_noinherit(s);
         if (from.sin_family != AF_INET || !addr_ok(from, loopback_ok)) { reject("a connection from outside Tailscale"); close_sock(s); }
         else if (conns.size() >= 32) { reject("too many connections"); close_sock(s); }
         else { set_nonblock(s, true); no_sigpipe(s); no_delay(s); conns.push_back({ s, {}, t }); }
@@ -893,6 +903,7 @@ sock_t connect_peer(const std::string &peer, std::string &why)
   if (!found) { why = "its address isn't on Tailscale"; return BAD_SOCK; }
   sock_t s = socket(AF_INET, SOCK_STREAM, 0);
   if (s == BAD_SOCK) { why = "no socket"; return BAD_SOCK; }
+  direct_noinherit(s);
   set_nonblock(s, true);
   connect(s, (sockaddr *)&to, sizeof(to));
   pollfd pf = { s, POLLOUT, 0 };
@@ -1295,6 +1306,7 @@ bool start_listening(const std::string &ip, int port, std::string &why)
 {
   sock_t s = socket(AF_INET, SOCK_STREAM, 0);
   if (s == BAD_SOCK) { why = "no socket"; return false; }
+  direct_noinherit(s);
 #ifndef _WIN32
   int one = 1;
   setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)); // (straight back after a REAPER restart; Windows binds past TIME_WAIT as it is)

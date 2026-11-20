@@ -25,9 +25,12 @@ that each add a library merge cleanly.
 
 Compiled straight into `reaper_studiosync` (static: no extra DLL, dylib or .so) for live audio, `extension/rtaudio.cpp`
 (docs/realtime-roadmap.md step 4). Only the files the build needs are kept; each is byte-for-byte the upstream file at the commit
-below, except one patch: `aoo/aoo/src/codec/opus.cpp` passes `OPUS_SET_PREDICTION_DISABLED` to the encoder (marked "StudioSync's one
-patch"), so a stream turned back on decodes at full level at once (the hub's live mix falling back to direct streams). No nested `.git`.
-A `build\studiosync_deps-x64.lib` made before that patch still links and works, without it: delete `build\` once to rebuild it.
+below, except two patches: `aoo/aoo/src/codec/opus.cpp` passes `OPUS_SET_PREDICTION_DISABLED` to the encoder (marked "StudioSync's one
+patch"), so a stream turned back on decodes at full level at once (the hub's live mix falling back to direct streams); and
+`aoo/common/net_utils.cpp` makes each socket it creates or accepts non-inheritable (`no_inherit`, marked "StudioSync's patch"), so a
+program REAPER starts can't keep REAPER's ports bound after it quits (2026-11-20; unused while AOO is built with `AOO_NET=0`, kept for
+safety). No nested `.git`. A `build\studiosync_deps-x64.lib` made before a patch still links and works, without it: delete `build\` once
+to rebuild it.
 
 | Folder | What | From | Version | Licence |
 |---|---|---|---|---|
@@ -59,8 +62,13 @@ update the table above, delete `build/`, rebuild and run `tests/build_rtaudio_te
 **In the shipped extension since stage 1 (2026-11-20).** `build_windows.cmd` here builds them once into `build/studiosync_nat-x64.lib`
 (linked by `extension/build_windows.cmd`); `build_unix.sh` puts them in the same archive as AOO and Opus, symbols hidden. A release that
 ships the extension ships `libjuice/LICENSE` and `monocypher/LICENCE.md` beside it, as AOO's and Opus's licences.
-Design: docs/realtime-roadmap.md "Without Tailscale: design". Each file is byte for byte upstream's at the commit below (nothing patched),
-no nested `.git`. Downloaded with `git clone --depth 1 --branch <tag>` from the official repositories only (2026-11-19).
+Design: docs/realtime-roadmap.md "Without Tailscale: design". Each file is byte for byte upstream's at the commit below except one patch,
+no nested `.git`. **Patch (2026-11-20):** sockets aren't inherited by child processes, so a program REAPER starts (ExecProcess) can't keep
+REAPER's ports bound after REAPER quits: `libjuice/src/socket.h` adds `socket_noinherit` (Windows `SetHandleInformation`, POSIX
+`FD_CLOEXEC`), called right after each `socket()` in `src/udp.c` (twice) and `src/tcp.c`, and on the interrupt pipe in `src/conn_poll.c`;
+marked "StudioSync's patch" in `socket.h`. MPL-2.0 covers the patched files too (they're published here). A
+`build\studiosync_nat-x64.lib` made before it links without it: delete `build\` once to rebuild it.
+Downloaded with `git clone --depth 1 --branch <tag>` from the official repositories only (2026-11-19).
 
 | Folder | What | From | Version | Licence |
 |---|---|---|---|---|

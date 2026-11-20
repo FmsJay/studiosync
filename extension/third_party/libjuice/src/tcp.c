@@ -22,6 +22,7 @@ socket_t tcp_create_socket(const addr_record_t *dst) {
 		JLOG_WARN("TCP socket creation failed, errno=%d", sockerrno);
 		return INVALID_SOCKET;
 	}
+	socket_noinherit(sock);
 
 	ctl_t nbio = 1;
 	if (ioctlsocket(sock, FIONBIO, &nbio)) {

@@ -109,6 +109,13 @@ typedef int sockopt_t;
 
 #endif // _WIN32
 
+// StudioSync's patch: not inherited by child processes (a program REAPER started kept its ports bound after REAPER quit)
+#ifdef _WIN32
+#define socket_noinherit(sock) SetHandleInformation((HANDLE)(sock), HANDLE_FLAG_INHERIT, 0)
+#else
+#define socket_noinherit(sock) fcntl((sock), F_SETFD, FD_CLOEXEC)
+#endif
+
 #ifndef IN6_IS_ADDR_LOOPBACK
 #define IN6_IS_ADDR_LOOPBACK(a)                                                                    \
 	(((const uint32_t *)(a))[0] == 0 && ((const uint32_t *)(a))[1] == 0 &&                         \

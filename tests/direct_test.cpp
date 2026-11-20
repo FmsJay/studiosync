@@ -11,6 +11,7 @@
 #include <windows.h>
 #else
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -57,6 +58,32 @@ static int raw(int port, const std::string &frame)
   const int k = recv(s, &c, 1, 0);
   closesocket(s);
   return k == 1 ? (unsigned char)c : -1;
+}
+// Every socket this process holds on `port` (bound to it, or connected to it) -> how many; `inheritable`: how many of them a child process
+// would inherit (one REAPER started outlived it and kept its ports bound).
+static int sockets_on(int port, int &inheritable)
+{
+  int n = 0;
+  inheritable = 0;
+#ifdef _WIN32
+  for (SOCKET s = 4; s < 65536; s += 4) { // (socket handles are multiples of 4; a non-socket fails getsockname)
+#else
+  for (int s = 0; s < 4096; ++s) {
+#endif
+    sockaddr_in a = {}, b = {};
+    socklen_t la = sizeof a, lb = sizeof b;
+    const bool on = (getsockname(s, (sockaddr *)&a, &la) == 0 && a.sin_family == AF_INET && ntohs(a.sin_port) == port) ||
+                    (getpeername(s, (sockaddr *)&b, &lb) == 0 && b.sin_family == AF_INET && ntohs(b.sin_port) == port);
+    if (!on) continue;
+    ++n;
+#ifdef _WIN32
+    DWORD f = 0;
+    if (!GetHandleInformation((HANDLE)s, &f) || (f & HANDLE_FLAG_INHERIT)) ++inheritable;
+#else
+    if (!(fcntl(s, F_GETFD) & FD_CLOEXEC)) ++inheritable;
+#endif
+  }
+  return n;
 }
 static std::string wait_poll(int after, double ms)
 {
@@ -428,6 +455,10 @@ static void live_layer_tests(const std::string &studio, const std::string &secre
   for (double t0 = now_ms(); m.empty() && now_ms() - t0 < 3000;) { m = direct_msg_poll(mseq); std::this_thread::yield(); }
   CHECK(m.find("\tstudiosync-test\tchat\t{\"user\":\"James\",\"text\":\"hi\ttab\"}") != std::string::npos, "it arrives: seq, studio, kind, data (tabs kept)");
   if (!m.empty()) mseq = atoi(m.c_str());
+  int inh = 0;
+  const int held = sockets_on(port, inh);
+  CHECK(held >= 3 && inh == 0, "the listener, the connection it accepted and the sender's kept one aren't inherited by a child process");
+  if (held < 3 || inh) printf("     %d sockets on the port, %d inheritable\n", held, inh);
   CHECK(direct_msg(studio.c_str(), "Chat!", "x", peer) == 0 && direct_msg(studio.c_str(), "chat", std::string(DIRECT_MAX_MSG + 1, 'x').c_str(), peer) == 0,
         "a kind that isn't a word, or over 64 KB, isn't queued");
   CHECK(raw(port, direct_frame(key, studio, "chat", std::string(DIRECT_MAX_MSG + 1, 'x'), "SSM1")) == 5, "an oversized message is refused from its header (5)");
