@@ -589,6 +589,11 @@ function P.heal(t)
       if st.mirror and st.pending == 0 and st.mirror ~= mine then differs = true end
       if st.mirror and st.pending == 0 and st.mirror == mine then same = true end
     end
+    -- (and for Health's "come out the same here" row: who has every change yet holds another project, or track order. It went by the
+    -- drift count alone, and stayed green while the laptop and LinuxBox held other items than the desktop. F5, rt-undo: mirror.apart_note)
+    t.order_code = require("mirror").order_code(proj)
+    pcall(require("mirror").apart_note, proj, mine, t.order_code, function() return sync.pending_events(proj, cfg, b.song, b.room) end,
+      require("presence").peers(cfg, b.song, b.room), reaper.time_precise())
     -- the same project as everyone again: an old "came out different" is history, not news (it kept Health red after
     -- the Mac matched: 0.34.4)
     if same and not differs and reaper.GetExtState(band.SECTION, "mirror drift " .. tostring(proj)) ~= "" then
@@ -785,6 +790,7 @@ function P.status(t)
     pending = sync.pending_events(proj, cfg, b.song, b.room), armed = armed, side = side_bars(),
     playing = reaper.GetPlayStateEx(proj) & 1 == 1 or nil, recording = reaper.GetPlayStateEx(proj) & 4 == 4 or nil,
     front = reaper.EnumProjects(-1) == proj, mirror = s and s.sync == "mirror" and (t.mirror_root or require("mirror").root(proj)) or nil,
+    order = s and s.sync == "mirror" and t.order_code or nil, -- (the track order as a code, for the others' Health: mirror.apart_note. rt-undo)
     -- (the view and the cursor only while someone follows you, their one reader (presence.follow): each scroll or click rewrote this file and
     -- Syncthing sent it to everyone. Being followed puts them in at once, as the follower's own status shows it. 0.59.14, review)
     editing = require("presence").editing(proj), view = (followed or watched) and require("presence").view(proj) or nil, ping = require("presence").my_ping(proj),
@@ -1095,7 +1101,7 @@ local function tick_body() -- returns true to keep going
     for _, k in ipairs({ "follow", "listen", "listen had", "listeners", "send whole mix", "alone", "produce", "transport", "together",
         "sonobus for listeners", "outbox", "live owner", "ping", "slow tick", "last here", "draw", "live began", "takelanes",
         -- (and these: a new tab at the same address showed a count-in, a producer, a SonoBus trouble or a drift that were the closed tab's. Review, 0.59.14)
-        "end session", "produced by", "producer controls", "timing", "produce ctl", "last_at", "stamping", "together_at", "rt group", "rt silent", "rt silent who", "rt trouble", "driver_away", "mirror drift",
+        "end session", "produced by", "producer controls", "timing", "produce ctl", "last_at", "stamping", "together_at", "rt group", "rt silent", "rt silent who", "rt trouble", "driver_away", "mirror drift", "apart",
         "ninjam shown", "ninjam off", "ninjam start", "ninjam connect", "ninjam host", "unsent", "last_track", "tick stats" }) do reaper.DeleteExtState(band.SECTION, k .. " " .. key, false) end -- (unsent, last_track: Round 2 review, 0.59.46)
     return band.log("live sync stopped: '" .. b.song .. "'" .. (b.room ~= "main" and (", side room '" .. b.room .. "',") or "") .. " was closed (it starts again by itself when you reopen it)")
   end

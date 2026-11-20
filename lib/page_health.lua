@@ -80,9 +80,21 @@ function H.build_rows()
     { "audio", s.audio, "red", "Audio device is running", "REAPER's audio device is closed: pick one in Preferences > Audio > Device. Until it runs, some plug-ins (CLAP above all) don't take a knob you turn, so the others get it only once audio is back on." },
     { "folder", s.folder, "red", "Shared folder is syncing", "Syncthing isn't running: nothing reaches the studio or comes in." },
     { "sync", s.sync, "red", "Live sync is running", "Live sync is off in this tab: click " .. require("live").PLACES.sync_off .. "." },
-    { "same", (tonumber(reaper.GetExtState(band.SECTION, "mirror drift " .. tostring(proj))) or 0) == 0, "red", "Changes from the others come out the same here",
-      "Some changes from the others came out different here than on their machine (the Console names them). Ask the driver to " ..
-      "use Restore > Restore whole project to here, or close and reopen this project." },
+    (function()
+      local drift = (tonumber(reaper.GetExtState(band.SECTION, "mirror drift " .. tostring(proj))) or 0) > 0
+      -- (and nobody who has every change holds another project, or track order, than this one: Live sync's note, while it runs. The drift
+      -- count alone stayed at 0 while the laptop and LinuxBox held other items than the desktop. F5, rt-undo: mirror.apart_note)
+      local who, secs, what
+      if s.sync and not drift then who, secs, what = require("mirror").apart_for(proj, reaper.time_precise()) end
+      return { "same", not drift and not who, "red", "Changes from the others come out the same here",
+        who and (what == "order" and string.format("The tracks are in another order here than on %s's computer. Close and reopen this project on the computer that's wrong: " ..
+            "it opens in the studio's order.", who)
+          or string.format("This project isn't the same as %s's, though every change has arrived on both (%d s now). StudioSync looks for what never landed " ..
+            "after a minute and brings it in line, at most every 5 minutes. If this stays, ask the driver to use Restore > Restore whole project to here, " ..
+            "or close and reopen this project.", who, secs))
+        or "Some changes from the others came out different here than on their machine (the Console names them). Ask the driver to " ..
+          "use Restore > Restore whole project to here, or close and reopen this project." }
+    end)(),
     -- (red only when a bandmate is online and we can't reach them: working alone showed red, with "Something needs
     -- fixing" on the tab, though nothing did: review, 2026-10-31)
     { "connected", s.connected, (function()

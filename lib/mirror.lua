@@ -3180,7 +3180,8 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     end
     mirror.set_track_state(proj, tr, ev.state, local_mix)
     -- moved in the band's project: here too (REAPER reorders only in the tab in front; a tab behind keeps its order)
-    if mirror.track_state(proj, tr, local_mix).after ~= ev.state.after and reaper.EnumProjects(-1) == proj then
+    -- (mirror.STAY: mirror.heal's mark on a version whose place is the one already held here. A key no event file can carry)
+    if not ev[mirror.STAY] and mirror.track_state(proj, tr, local_mix).after ~= ev.state.after and reaper.EnumProjects(-1) == proj then
       local above = ev.state.after ~= "" and mirror.find(proj, "track", ev.state.after)
       if above or ev.state.after == "" then
         local sel = {}
@@ -5724,6 +5725,50 @@ function mirror.root(proj)
   table.sort(t)
   return mirror.hash(table.concat(t, "\n"))
 end
+-- The mirrored tracks' order as one code, beside `mirror` in the status: the code above doesn't hold it (a track's place isn't part of its
+-- version), so two computers with the same code could show their tracks in another order with nothing said. rt-undo
+function mirror.order_code(proj) return mirror.hash(table.concat(mirrored_order(proj), ",")) end
+-- Who has every change, as this computer has, yet holds another project or another track order. Live sync notes it each pass (non-persisted
+-- ExtState "apart <proj>": since|key|what|names), and Health's "come out the same here" row is red once the same difference has stood for
+-- APART_SECS (the codes differ for some seconds after any edit: each computer says its own every few seconds). The row went by the "mirror
+-- drift" count alone, a change that hashed differently here than on its sender's computer the moment it landed, and stayed green through F5:
+-- every change hashed the same as it landed, and again when heal put the older one back. rt-undo
+-- mine, order: mirror.root's and mirror.order_code's here; pending: the band's changes not applied here yet; peers: the others' statuses
+-- ({ user, mirror, order, pending }; no order from an older StudioSync: not compared); now: reaper.time_precise().
+mirror.APART_SECS = 30
+function mirror.apart_note(proj, mine, order, pending, peers, now)
+  local band = require("band")
+  local names, key, what = {}, { tostring(mine), tostring(order) }, nil
+  for _, st in ipairs(peers) do
+    local caught_up = st.mirror and st.pending == 0
+    local p = caught_up and st.mirror ~= mine
+    local o = caught_up and not p and st.order ~= nil and order ~= nil and st.order ~= order
+    if p or o then
+      names[#names + 1] = tostring(st.user)
+      key[#key + 1] = tostring(st.user) .. "=" .. tostring(st.mirror) .. "/" .. tostring(st.order)
+      what = (p or what == "project") and "project" or "order"
+    end
+  end
+  -- (pending: a number, or a function asked only when someone's apart: counting walks the folder's listing)
+  if #names > 0 and (type(pending) == "function" and pending() or pending or 0) ~= 0 then names = {} end
+  local k = "apart " .. tostring(proj)
+  local had = reaper.GetExtState(band.SECTION, k)
+  if #names == 0 then
+    if had ~= "" then reaper.DeleteExtState(band.SECTION, k, false) end
+    return
+  end
+  key = mirror.hash(table.concat(key, " "))
+  local since, was = had:match("^([^|]*)|([^|]*)|")
+  local v = (was == key and since or string.format("%.3f", now)) .. "|" .. key .. "|" .. what .. "|" .. table.concat(names, ", ")
+  if v ~= had then reaper.SetExtState(band.SECTION, k, v, false) end
+end
+-- -> who, for how many seconds, and what differs ("project" or "order"); nil while nobody's apart or it hasn't stood APART_SECS.
+function mirror.apart_for(proj, now)
+  local since, what, names = reaper.GetExtState(require("band").SECTION, "apart " .. tostring(proj)):match("^([^|]*)|[^|]*|([^|]*)|(.*)$")
+  since = tonumber(since)
+  if not since or now - since < mirror.APART_SECS then return nil end
+  return names, now - since, what
+end
 
 
 -- ---- side rooms ------------------------------------------------------------------------------------------
@@ -5736,18 +5781,20 @@ end
 local light_events = {} -- room dir -> { file -> the event, state on demand }
 local lazy_state = { __index = function(ev, k)
   if k ~= "state" then return nil end
-  local full = require("band").read_json(rawget(ev, "path_"))
+  -- (where its file is now: one that came over the direct link is in the link's inbox until Syncthing's copy is here. F5, rt-undo)
+  local dir, f = rawget(ev, "path_"):match("^(.*)/([^/]+)$")
+  local full = require("band").read_json(require("direct").path(nil, dir, f))
   local st = type(full) == "table" and full.state or nil
   rawset(ev, "state", st) -- (kept once asked for: apply reads it many times)
   return st
 end }
-local function light_event(room_dir, f)
+local function light_event(room_dir, f, inbox) -- (inbox: it's in the direct link's inbox, not the folder yet)
   local box = light_events[room_dir]
   if not box then box = {}; light_events[room_dir] = box end
   local ev = box[f]
   if ev == nil then
     local path = room_dir .. "/events/" .. f
-    ev = require("band").read_json(path)
+    ev = require("band").read_json(inbox and require("direct").path(nil, room_dir .. "/events", f) or path)
     if type(ev) ~= "table" then return nil end -- (half-synced: read again next time)
     if ev.state ~= nil then ev.state, ev.path_ = nil, path; setmetatable(ev, lazy_state) end
     box[f] = ev
@@ -5758,8 +5805,21 @@ mirror.light_event = light_event
 function mirror.room_newest(room_dir, since)
   local band, too_new = require("band"), require("sync").too_new
   local out, all = {}, {}
-  for _, f in ipairs(band.files(room_dir .. "/events", ".json")) do
-    local ev = light_event(room_dir, f)
+  -- (and what came over the direct link, in its inbox until Syncthing's copy is here, as sync.receive reads it: with the folder alone, a
+  -- change received and applied seconds ago wasn't among the room's changes, the newest left was the version before it, and heal put that
+  -- back over it. A native undo of a cut does exactly that on every receiver: an item landing over a deletion ends the pass with a heal.
+  -- F5, rt-undo. Cost: one listing of the inbox per call)
+  local names, inbox = band.files(room_dir .. "/events", ".json"), {}
+  local inbox_names = require("direct").inbox_names -- (a test's stand-in link may have none)
+  local extra = inbox_names and inbox_names(room_dir .. "/events") or {}
+  if #extra > 0 then
+    local have, list = {}, {}
+    for i, f in ipairs(names) do have[f], list[i] = true, f end
+    for _, f in ipairs(extra) do if not have[f] then have[f], inbox[f] = true, true; list[#list + 1] = f end end
+    names = list
+  end
+  for _, f in ipairs(names) do
+    local ev = light_event(room_dir, f, inbox[f])
     -- (not a change too new for this version: receive leaves it for the version that knows it, and heal applied it anyway and recorded it held,
     -- so once updated it never landed properly. Round 3 review, 0.59.48. Cost: one comparison an event)
     if type(ev) == "table" and ev.type == "obj" and ev.oid and (not since or (ev.time or "") > since) and not too_new(ev) then
@@ -5882,15 +5942,26 @@ end
 -- particular machine, so two machines can't pull each other back and forth. Objects whose newest change this machine
 -- already holds are left as they are (what came out different there isn't fixed by applying it again). Returns how
 -- many were brought in line.
+mirror.STAY = {} -- (see mirror.apply: a track version put in place without moving the track)
 function mirror.heal(proj, room_dir, local_mix)
   local n = 0
   local newest, all = mirror.room_newest(room_dir)
   for oid, ev in pairs(newest) do
     ev = mirror.settled(room_dir, ev, all[oid]) -- (a merge of two changes made apart: what every computer holds)
-    local _, kh, kev = mirror.known(proj, oid)
+    local krev, kh, kev, kord = mirror.known(proj, oid)
     -- (and a part recorded gone here whose newest change isn't a deletion, its track here: a track that came back bare. Round 1 review, 0.59.45)
     local bare = kev == ev.id and kh == "" and not ev.gone and mirror.PART[ev.obj] and ev.track and mirror.find(proj, "track", ev.track)
-    if mirror.unsent[tostring(proj) .. oid] then -- a change of yours not sent yet (held, settling): it goes out, or is put back, by mirror.watch. Sync engine review, 0.58.76
+    -- (never back to an older version: what this computer holds is newer than the newest read, and wasn't among what was read, so nothing
+    -- here weighed it: it came over the direct link and its copies aren't readable now, or its file is half-synced. It's judged once it reads.
+    -- One that was read and still isn't the settled one is a race the settled one won, a deletion over an edit: that lands. F5, rt-undo)
+    local ahead = krev and (kev or "") ~= "" and kev ~= ev.id and mirror.newer({ rev = krev, time = kord }, { rev = ev.rev, time = mirror.order_of(ev) })
+    if ahead then
+      local ids = {}
+      for _, x in ipairs(all[oid]) do ids[x.id] = true end
+      local function read(id) local w, l = mirror.split_merge(id); if w then return read(w) and read(l) end; return ids[id] == true end
+      ahead = not read(kev)
+    end
+    if mirror.unsent[tostring(proj) .. oid] or ahead then -- a change of yours not sent yet (held, settling): it goes out, or is put back, by mirror.watch. Sync engine review, 0.58.76
     elseif (kev ~= ev.id or bare) and not mirror.edited_here(proj, oid, kh, kev and kev ~= "" and event_file(room_dir, kev) or nil, room_dir .. "/media", local_mix) then
       -- (not over an edit of yours a look hasn't sent yet: the next look sends it, or puts it back. Round 1 review, 0.59.45) -- (exactly: merge ids are the same everywhere, and "held inside a merge" hid two different ones for good. Review, 0.58.47)
       local order = mirror.order_of(ev)
@@ -5903,7 +5974,15 @@ function mirror.heal(proj, room_dir, local_mix)
           end
         end
       else
-        local ok, applied, h = pcall(mirror.apply, proj, ev, room_dir .. "/media", local_mix)
+        -- (a track stays where it is unless its place is what this version changes, against the one held here: a track's newest change
+        -- keeps the "sits under" of the day it was made, and one that only sits elsewhere since isn't sent again. The settled version of
+        -- XT Rec A was a merge of its newest change with the same change as three computers had each sent it a day before, another id and
+        -- the same content, and each computer's heal, whenever it ran, moved the track back under the track it once sat under. F5, rt-undo)
+        local held, put = ev.obj == "track" and (kev or "") ~= "" and event_file(room_dir, kev), ev
+        if held and type(held.state) == "table" and type(ev.state) == "table" and held.state.after == ev.state.after then
+          put = setmetatable({ [mirror.STAY] = true }, { __index = ev })
+        end
+        local ok, applied, h = pcall(mirror.apply, proj, put, room_dir .. "/media", local_mix)
         if ok and applied then -- (a part waiting for its tab to be in front, or a track not here yet: next time)
           remember(proj, oid, ev.rev, h or "", ev.id, order)
           n = n + 1

@@ -260,6 +260,18 @@ function direct.path(cfg, dir, f)
   end
   return p
 end
+-- The event files in the inbox for a room's events folder, with no cfg, as direct.path: for mirror.room_newest, which has only the folder
+-- (heal read the folder alone, and put the version before a change that had come over the link back over it. F5, rt-undo). -> names;
+-- some may be in the folder too. Never raises.
+function direct.inbox_names(dir)
+  local out = {}
+  if not direct.available() then return out end
+  for root in pairs(direct.started) do
+    local ok, idir = pcall(direct.inbox_dir, { root = root }, dir)
+    if ok and idir then for _, f in ipairs(band.files(idir, ".json")) do out[#out + 1] = f end end
+  end
+  return out
+end
 
 -- The inbox tidied: a file whose Syncthing copy has arrived goes, and any older than KEEP_SECS (a song not downloaded here, a change
 -- trimmed away). -> how many went.
