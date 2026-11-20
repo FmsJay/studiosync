@@ -150,6 +150,13 @@ for i = 0, 50 do pr.add_reading(early, 50 + i * 0.03, i * 0.03, 1, true) end
 plan = pr.item_plan(pr.place(early, 49, 3), 3)
 assert(plan.pos == 0 and math.abs(plan.offs - 1) < 0.002, "never before the song's start")
 assert(pr.item_plan({ at = 0, from = 5, to = 6 }, 2) == nil, "a take that missed the stretch: no item")
+-- The phone's own start had a count-in: the song played from 8 s, the cue (where Record was asked from) at 9.8 s. The item starts at the cue,
+-- the count-in bar kept in the source; it started at 8 and covered the bar before (LinuxBox phone test). A cue outside the stretch: as played.
+p = pr.place(L, 198.5, 14, 9.8)
+plan = pr.item_plan(p, 14)
+assert(math.abs(p.at - 6.5) < 0.002 and math.abs(plan.pos - 9.8) < 1e-9 and math.abs(plan.offs - 3.3) < 0.002 and math.abs(plan.len - 10.2) < 0.002,
+  "a count-in: the item from the cue, the audio where it was: " .. tostring(plan.pos))
+assert(pr.place(L, 198.5, 14, 30).from == 8 and pr.place(L, 198.5, 14, 2).from == 8, "a cue outside what played: the stretch as played")
 
 -- The nudge
 local np, no, nl = pr.nudge(8, 1.5, 12, 20)
@@ -204,6 +211,12 @@ local f = io.open(written, "rb"); assert(f == nil, "and its file removed"); if f
 said = pr.action("P", cfg, b, { nudge = 20 })
 assert(math.abs(it.takes[1].info.D_STARTOFFS - 0.98) < 0.002 and said:find("%+20 ms"), "nudged later: " .. said)
 assert(pr.action("P", cfg, b, { nudge = -5 }):find("%+15 ms in all"), "and back a little")
+-- The page shows a word only when said_at changes: two words in the same second each get their own (the take's word was lost behind
+-- "the phone stopped its take": LinuxBox phone test)
+pr.action("P", cfg, b, { nudge = 5 }); clock = clock + 1; pr.tick("P", cfg, b, publish, clock)
+local said_at1 = pub.phonerec.said_at
+pr.action("P", cfg, b, { nudge = -5 }); clock = clock + 1; pr.tick("P", cfg, b, publish, clock)
+assert(said_at1 and pub.phonerec.said_at ~= said_at1 and pub.phonerec.said:find("%+15 ms in all"), "each word its own said_at: " .. tostring(said_at1))
 
 -- The phone app: a mix's id, a MIDI take's file, the WAV's BWF stamp, and what a phone-placed take may say
 local id1 = pr.mix_id("Song", "a.wav", 10)

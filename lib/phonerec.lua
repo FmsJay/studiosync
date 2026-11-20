@@ -179,7 +179,9 @@ end
 -- Where a take goes. t0: the link-clock moment of its first sample; len: its seconds. The stretch this computer played that covers most of it;
 -- the song's position at t0 from that stretch's readings (the median of pos - t * rate: one late tick moves nothing). -> { at = song position
 -- of the first sample, from, to = the stretch's ends (the item's), rate }, or nil and why. Pure.
-function phonerec.place(list, t0, len)
+-- cue: where the phone's own start was (Play together's count-in runs before it): inside the stretch, the item starts there, as REAPER's own
+-- take does after a count-in; the count-in bar stays in the source. It started at the count-in and covered the bar before. LinuxBox phone test, rt
+function phonerec.place(list, t0, len, cue)
   local count, best = {}, nil
   for _, r in ipairs(list) do
     if r.t >= t0 and r.t <= t0 + len then
@@ -194,6 +196,7 @@ function phonerec.place(list, t0, len)
   end
   table.sort(cs)
   local c = #cs % 2 == 1 and cs[(#cs + 1) // 2] or (cs[#cs // 2] + cs[#cs // 2 + 1]) / 2
+  if tonumber(cue) and cue > from and cue < to then from = cue end
   return { at = c + t0 * rate, from = from, to = to, rate = rate }
 end
 -- The item for a placed take: { pos, offs (the take's start offset), len }, inside both the take and the stretch, never before the song's
@@ -282,19 +285,23 @@ local function tracks_model(proj, cfg, b)
   end
   return out, who
 end
-local function say(text) S.said, S.said_at = text, os.time(); return text end
+-- (said_at: new for every word, not the second: the page shows a word only when said_at changes, and "the phone stopped its take", the
+-- take's own word and a nudge's land in the same second, so the singer never saw where the take went. In ms, so a reload stays ahead.
+-- LinuxBox phone test, rt)
+local function say(text) S.said, S.said_at = text, math.max((S.said_at or 0) + 1, os.time() * 1000); return text end
 
 -- Starting the song for a phone's take: a start already coming is joined; already playing, it records along; else Play together (or this
 -- computer alone when the room's rules keep this user from starting the band) from the edit cursor with `bars` of count-in and the click.
 local function start(proj, cfg, b, d)
   local key = tostring(proj)
+  S.take_cue = nil -- (someone else's start, or already playing: the stretch as played)
   if (tonumber(reaper.GetExtState(band.SECTION, "together_at " .. key)) or 0) > require("together").now() then return say("joining the start that's coming") end
   if reaper.GetPlayStateEx(proj) & 1 == 1 then return say("recording along: the project is already playing") end
   local together = require("together")
   local pos = reaper.GetCursorPositionEx(proj)
   local ev = { type = "start", pos = pos, countin = together.bars_before(proj, pos, d.bars), click = d.bars > 0 or nil, lag = 0, lead = cfg.user }
   local _, who = authority(cfg, b)
-  S.cue, S.started = pos, true
+  S.cue, S.started, S.take_cue = pos, true, pos -- (take_cue outlives Stop: the take arrives after it)
   if require("dawview").may_transport(who.mode, cfg.user, who.driver, require("groups").may_manage(cfg.root, cfg.user)) then
     together.go(proj, cfg, b, ev)
     return say("a phone's take: Play together from bar " .. reaper.format_timestr_pos(pos, "", 2))
@@ -354,7 +361,7 @@ function put_take_in(proj, cfg, b, t)
   local name = select(2, reaper.GetTrackName(tr))
   local p, why
   if t.pos then p = { at = t.pos, from = -math.huge, to = math.huge, rate = 1 } -- (the phone played the mix: it knows its own place)
-  else p, why = phonerec.place(S.readings, t.t0, t.len) end
+  else p, why = phonerec.place(S.readings, t.t0, t.len, S.take_cue) end
   if not p then return say("the phone's take wasn't put in: " .. why) end
   local can, who = authority(cfg, b)
   local ok, whose = may(can, who, cfg, name, math.max(0, p.from, p.at))
