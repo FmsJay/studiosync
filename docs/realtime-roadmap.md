@@ -150,7 +150,9 @@ Hear a plug-in you don't have, live, through the bandmate's REAPER that does hav
     started with nobody to send to.
   - Checked (`tests/hopnet_test.cpp`, two endpoints on localhost through a lossy wire, a fake remote: X -> 100-sample delay x 0.5 -> Y):
     every frame exact or zero (or fading in), never misaligned: clean 100% exact; jitter 5-13 ms with 2% loss each way 94% exact; remote
-    clock 1% fast or slow 99-100% with 1-2 slips; a wrong secret gets nothing back.
+    clock 1% fast or slow 99-100% with 1-2 slips; a wrong secret gets nothing back. A stall (the remote's audio thread 80 ms, the
+    sender's 80 ms, both 100 ms) costs about the stall's length of audio, then 99.9% exact again within a second: the block size is
+    measured per block (a catch-up burst isn't one huge block), and a slip's anchor tightens back 0.15 s later (5bc9172).
   - Limits: stereo; both computers at one sample rate (refused otherwise); not on the master; one hop per plug-in instance; a slip clicks.
   - To check in REAPER (desktop asks, laptop hosts): Live sync on both, live audio's UDP rule on both; run the action on an offline plug-in;
     the laptop's hidden track appears (Show all tracks), keeps processing while the laptop is stopped and playing ("Run FX when stopped");
