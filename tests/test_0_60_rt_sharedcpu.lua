@@ -206,6 +206,7 @@ assert(#gtr.fx == 4 and hop.name:find("StudioSync Hop", 1, true) and hop.v[3] ==
 assert(eq.off and amp.off and comp.off, "the song's FX held off here")
 assert(gtr.ext.band_fx_held == eq.guid .. "held=0 0 0;" .. amp.guid .. "held=0 0 0;" .. comp.guid .. "held=1 0 0;", "with the band's lines kept: " .. tostring(gtr.ext.band_fx_held))
 assert(gtr.ext.band_local_fx == hop.guid .. "for=hop;", "the Hop is this computer's own")
+assert(gtr.info.I_PERFFLAGS == 2, "its FX in real time (no anticipative FX) while it hops")
 local ask = sent[#sent]
 assert(ask.d.op == "serve" and ask.to[1] == "bo:1" and #ask.d.chain == 3 and ask.d.chain[2].fx == amp.name and ask.d.chain[3].fxi == 2, "Bo asked for the whole chain")
 assert(logs[#logs]:find("Guitar's 3 effects now run on Bo's computer", 1, true), "said")
@@ -279,7 +280,7 @@ tick(hops.LATE_WINDOW)
 assert(not hops.offload_of("P1", gtr), "late blocks rose while playing: back")
 playing, playpos = 0, 0
 assert(#gtr.fx == 3 and not eq.off and not amp.off and comp.off, "the chain exactly as it was (Comp still bypassed as the song has it)")
-assert(gtr.ext.band_fx_held == "" and gtr.ext.band_local_fx == "", "nothing of the offload left")
+assert(gtr.ext.band_fx_held == "" and gtr.ext.band_local_fx == "" and gtr.info.I_PERFFLAGS == 0, "nothing of the offload left")
 assert(sent[#sent].d.op == "stop" and E.connect[#E.connect].json:find('"stop":true', 1, true), "Bo and the extension told")
 rows = hops.health_rows(cfg, "P1")
 assert(rows[#rows][4]:find("Guitar's effects are back on this computer: Bo's computer fell behind", 1, true) and logs[#logs]:find("fell behind", 1, true), "never silent")

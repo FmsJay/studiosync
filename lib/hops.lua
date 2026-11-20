@@ -17,9 +17,11 @@ local band = require("band")
 -- LATENCY: a hop's budget, the plug-in's most (170 ms at 48 kHz). The desktop <-> laptop link over the internet measured an 80-125 ms round
 -- trip, and the plug-in's default 150 ms left about 12 ms to spare: most of every spike came back too late. The extra 20 ms is only more of
 -- REAPER's delay compensation. (Desktop -> laptop, rt)
+-- MARGIN_MS: how far ahead of the hidden track's Hop X its audio is put, for the jitter on the way there; the rest of the budget is the
+-- jitter on the way back. At 20 ms, four times as much was lost on the way there (dropped late at the remote) as came back late.
 -- LOST_MAX: % of a hop's audio not back in time over LATE_WINDOW s that hands an offload back: that link loses 0.3-0.7% (a packet now and
 -- then) and a 150-200 ms stall every minute or so (2.1% of a window), which isn't falling behind; before the spike fix it lost 8-13%.
-local hops = { EVERY = 0.5, ASK_EVERY = 3, IDLE = 30, NAME = "StudioSync Hop", TAG = "for=hop;", TRACK_TAG = "hop", MARGIN_MS = 20, REMOTE_LATENCY = 256,
+local hops = { EVERY = 0.5, ASK_EVERY = 3, IDLE = 30, NAME = "StudioSync Hop", TAG = "for=hop;", TRACK_TAG = "hop", MARGIN_MS = 30, REMOTE_LATENCY = 256,
   LATENCY = 8192, HELD = "band_fx_held", MAX_CHAIN = 32, BUSY = 75, CPU_EVERY = 20, START = 20, AWAY = 10, LATE_WINDOW = 10, LATE_MAX = 8, LOST_MAX = 5, SETTLE = 3, SAY_BACK = 300 }
 -- (this script's state; kept across Live sync's reload in place (band.reload: the same Lua, the modules loaded again): a fresh one forgot the
 -- hidden tracks this computer hosts, so a stop never removed them, and the next ask made a second track for the same hop. Laptop, rt)
@@ -207,6 +209,13 @@ local function add_hop(tr, pos, id, latency, dry)
   return idx
 end
 hops.add_hop = add_hop -- (live audio's Play reads a Hop on its hidden live out track: lib/liveaudio.lua)
+-- A track with a Hop runs its FX in real time ("no anticipative FX", I_PERFFLAGS 2; not sent to the others): rendered ahead, the Hop's blocks
+-- came in bursts, and a play start's whole-latency burst made 30 late blocks instead of 12. -> the flags it had, to put back.
+local function real_time(tr)
+  local f = math.floor(reaper.GetMediaTrackInfo_Value(tr, "I_PERFFLAGS"))
+  reaper.SetMediaTrackInfo_Value(tr, "I_PERFFLAGS", f | 2)
+  return f
+end
 -- This computer's own FX on a track (translations, drum maps, Hops) and StudioSync's helpers: not part of the song.
 local function own_fx(tr)
   local set = require("mirror").live_fx(tr)
@@ -313,7 +322,7 @@ function hops.make(proj, cfg, tr, fx, user, peer, song, room)
   if not idx then return nil, "the StudioSync Hop plug-in isn't installed here (run StudioSync's installer, then rescan plug-ins)" end
   band.set_track_ext(tr, "band_local_fx", band.track_ext(tr, "band_local_fx") .. reaper.TrackFX_GetFXGUID(tr, idx) .. hops.TAG)
   local rec = { id = id, token = math.random(1, 2147483647), user = user, peer = peer, oid = oid, fxi = fxi, fx = fx_name(tr, fx), of = guid,
-    hop = reaper.TrackFX_GetFXGUID(tr, idx), song = song, room = room }
+    hop = reaper.TrackFX_GetFXGUID(tr, idx), song = song, room = room, perf = real_time(tr) }
   local recs = hops.records(proj)
   recs[tostring(id)] = rec
   save(proj, recs)
@@ -339,6 +348,10 @@ function hops.stop(proj, cfg, id)
     band.set_track_ext(tr, "band_local_fx", (band.track_ext(tr, "band_local_fx"):gsub(rec.hop:gsub("%p", "%%%0") .. hops.TAG:gsub("%p", "%%%0"), "")))
   end
   if rec.offload and tr then hops.release_chain(tr, rec.held or {}) end -- (its own chain on again, as it was)
+  recs[tostring(id)] = nil
+  local others = false
+  for _, r in pairs(recs) do others = others or r.oid == rec.oid end
+  if tr and rec.perf and not others then reaper.SetMediaTrackInfo_Value(tr, "I_PERFFLAGS", math.floor(rec.perf)) end -- (as it was, with its last hop)
   recs[tostring(id)], S.connected[id], S.asked[rec.token], S.why[rec.token] = nil, nil, nil, nil
   S.ok_at[rec.token], S.late[rec.token], S.up[rec.token], S.tp[rec.token] = nil, nil, nil, nil
   save(proj, recs)
@@ -418,7 +431,7 @@ function hops.offload(proj, cfg, tr, user, peer, song, room)
   band.set_track_ext(tr, "band_local_fx", band.track_ext(tr, "band_local_fx") .. reaper.TrackFX_GetFXGUID(tr, idx) .. hops.TAG)
   local name = select(2, reaper.GetTrackName(tr))
   local rec = { id = id, token = math.random(1, 2147483647), user = user, peer = peer, oid = oid, fxi = 0, fx = name .. "'s effects", chain = chain,
-    offload = true, track = name, held = hops.hold_chain(tr), hop = reaper.TrackFX_GetFXGUID(tr, idx), song = song, room = room }
+    offload = true, track = name, held = hops.hold_chain(tr), hop = reaper.TrackFX_GetFXGUID(tr, idx), song = song, room = room, perf = real_time(tr) }
   local recs = hops.records(proj)
   recs[tostring(id)] = rec
   save(proj, recs)
