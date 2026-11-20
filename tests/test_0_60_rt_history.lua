@@ -112,7 +112,7 @@ assert(#evs > 5000, "a long history: " .. #evs)
 for i = #evs, 2, -1 do local j = rand(i); evs[i], evs[j] = evs[j], evs[i] end
 
 local c0 = os.clock()
-local h = wh.build(evs, function(e) return info[e] end, { places = { [tracks[1]] = 0 }, colours = { James = 0xd9822b }, frames = 360,
+local h = wh.build(evs, function(e) return info[e] or (e.obj == "track" and {} or nil) end, { places = { [tracks[1]] = 0 }, colours = { James = 0xd9822b }, frames = 360,
   versions = { { file = "a.json", label = "end of session", by = "Bo", time = iso(t - 100) } } })
 local secs = os.clock() - c0
 local js = band.json_encode(h)
@@ -179,6 +179,64 @@ assert(hs.frames[3].i[1][6] == 3 and hs.frames[3].i[1][5] == 1, "notes edited in
 assert(hs.frames[4].g[1] == 0, "then deleted")
 assert(hs.frames[1].ta[1] == 0 and hs.tracks[1][1] == "Drums", "the track appears (its oid's case doesn't matter)")
 assert(#wh.build({}, nil).frames == 0, "nothing yet")
+
+-- ---- a slice of a real room's formats (Cross Test, 2026-11-18 to 20): deletions, late edits, re-made tracks, fixed lanes ------------------
+-- Event files as mirror sync writes them (a track's state is a table, an item's the chunk text with BANDLANE), read through wh.detail as the
+-- tick reads them. What went wrong first: a bandmate's item edit stamped after its track's deletion brought the track back (28 tracks, 3 real).
+local real, rtext = {}, {}
+local function rev(o)
+  local e = { type = "obj", obj = o.obj, oid = o.oid, rev = o.rev, base = o.rev - 1, name = o.name, user = o.user, time = o.time, hlc = o.hlc,
+    track = o.track, pos = o.pos, gone = o.gone, id = o.user .. "-" .. o.time:gsub("[-:]", "") .. "-" .. #real }
+  local full = { type = "obj", obj = o.obj, oid = o.oid, rev = o.rev, state = o.state, gone = o.gone }
+  rtext[e] = band.json_encode(full)
+  e.kind = e.type
+  real[#real + 1] = e
+end
+local function istate(len, lane) return "<ITEM\nPOSITION 0\nLENGTH " .. len .. "\nNAME \"x\"\nTAKE\nNAME \"x\"\n<SOURCE WAVE\nFILE \"m.wav\"\n>\n>\n" .. (lane and ("BANDLANE " .. lane .. "\n") or "") end
+local DR1, KC1, DR2, REC = "T-JAMES-20261118011057-15252", "T-CHILIO_MAC-20261118014513-12777", "T-JAMES-20261119215726-10590", "T-JAMES-20261120003033-10538"
+rev({ obj = "track", oid = DR1, rev = 1, name = "XT Drums A", user = "James", time = "2026-11-18T01:10:57Z", hlc = 1795137057000, state = { name = "XT Drums A", freemode = 0 } })
+rev({ obj = "item", oid = "I-JAMES-1", rev = 1, track = DR1, name = "XT Drums A", pos = 0, user = "James", time = "2026-11-18T01:10:57Z", hlc = 1795137057001, state = istate(3.6923) })
+rev({ obj = "track", oid = KC1, rev = 1, name = "XT Keys C", user = "Chilio-Mac", time = "2026-11-18T01:45:13Z", hlc = 1795139113000, state = { name = "XT Keys C" } })
+rev({ obj = "item", oid = "I-CHILIO-1", rev = 1, track = KC1, name = "XT Keys C", pos = 4, user = "Chilio-Mac", time = "2026-11-18T01:45:14Z", hlc = 1795139114000, state = istate(2) })
+-- the drums track deleted with its item; Chilio's edit to that item, stamped a second later, can't bring either back
+rev({ obj = "track", oid = DR1, rev = 2, gone = true, name = "XT Drums A", user = "James", time = "2026-11-19T17:25:58Z", hlc = 1795195558000 })
+rev({ obj = "item", oid = "I-JAMES-1", rev = 2, gone = true, track = DR1, name = "XT Drums A", pos = 0, user = "James", time = "2026-11-19T17:25:58Z", hlc = 1795195558001 })
+rev({ obj = "item", oid = "I-JAMES-1", rev = 5, track = DR1, name = "XT Drums A", pos = 1, user = "Chilio-Mac", time = "2026-11-19T17:25:59Z", hlc = 1795195559000, state = istate(3.6923) })
+rev({ obj = "recv", oid = "R" .. DR1:sub(2), rev = 3, track = DR1, name = "XT Drums A", user = "Chilio-Mac", time = "2026-11-19T17:26:00Z", hlc = 1795195560000, state = "x" })
+-- the keys item deleted (rev 3); a late rev 2 from the Mac, stamped after it, lost: the item stays deleted
+rev({ obj = "item", oid = "I-CHILIO-1", rev = 3, gone = true, track = KC1, name = "XT Keys C", pos = 4, user = "James", time = "2026-11-19T17:30:00Z", hlc = 1795195800000 })
+rev({ obj = "item", oid = "I-CHILIO-1", rev = 2, track = KC1, name = "XT Keys C", pos = 6, user = "Chilio-Mac", time = "2026-11-19T17:31:00Z", hlc = 1795195700000, state = istate(2) })
+-- drums made again: a new oid, a new lane with the same name
+rev({ obj = "track", oid = DR2, rev = 1, name = "XT Drums A", user = "James", time = "2026-11-19T21:57:26Z", hlc = 1795211846000, state = { name = "XT Drums A" } })
+rev({ obj = "item", oid = "I-JAMES-2", rev = 1, track = DR2, name = "XT Drums A", pos = 2, user = "James", time = "2026-11-19T21:57:27Z", hlc = 1795211847000, state = istate(3.6923) })
+-- a fixed-lanes track: two takes in lanes 0 and 1, then lane 1 picked to play (the track's plays move)
+rev({ obj = "track", oid = REC, rev = 1, name = "XT Rec A", user = "James", time = "2026-11-20T00:30:33Z", hlc = 1795221033000, state = { name = "XT Rec A", freemode = 2, lanes = 2, plays = "1,0" } })
+rev({ obj = "item", oid = "I-JAMES-3", rev = 1, track = REC, name = "XT Rec A", pos = 3.6923, user = "James", time = "2026-11-20T00:30:54Z", hlc = 1795221054000, state = istate(5.46, 0) })
+rev({ obj = "item", oid = "I-JAMES-4", rev = 1, track = REC, name = "XT Rec A", pos = 3.6923, user = "James", time = "2026-11-20T00:34:08Z", hlc = 1795221248000, state = istate(19.06, 1) })
+rev({ obj = "track", oid = REC, rev = 2, name = "XT Rec A", user = "James", time = "2026-11-20T02:48:21Z", hlc = 1795229301000, state = { name = "XT Rec A", freemode = 2, lanes = 2, plays = "0,1" } })
+for i = #real, 2, -1 do local j = rand(i); real[i], real[j] = real[j], real[i] end
+local rh = wh.build(real, function(e) return wh.detail(rtext[e], e, band.json_decode) end)
+-- replayed as history.js does, an item hidden when its lane doesn't play
+local tl, il, pl = {}, {}, {}
+for _, f in ipairs(rh.frames) do
+  for _, x in ipairs(f.ta or {}) do tl[x] = true end
+  for _, x in ipairs(f.tg or {}) do tl[x] = nil end
+  for _, x in ipairs(f.g or {}) do il[x] = nil end
+  for _, x in ipairs(f.i or {}) do il[x[1]] = x end
+  for _, x in ipairs(f.p or {}) do pl[x[1]] = x[2] ~= "" and x[2] or nil end
+end
+local names, shown = {}, {}
+for x in pairs(tl) do names[#names + 1] = rh.tracks[x + 1][1] end
+table.sort(names)
+assert(table.concat(names, ",") == "XT Drums A,XT Keys C,XT Rec A", "today's tracks only: " .. table.concat(names, ","))
+for _, x in pairs(il) do
+  local bits = {}
+  for c in (pl[x[2]] or ""):gmatch("%d+") do bits[#bits + 1] = c end
+  if tl[x[2]] and not (pl[x[2]] and x[7] >= 0 and bits[x[7] + 1] == "0") then shown[#shown + 1] = rh.tracks[x[2] + 1][1] .. "@" .. x[3] .. "+" .. x[4] end
+end
+table.sort(shown)
+assert(table.concat(shown, ",") == "XT Drums A@2.0+3.692,XT Rec A@3.692+19.06", "today's items only, the playing lane's: " .. table.concat(shown, ","))
+assert(rh.lengths.have == rh.lengths.need, "tracks and items read")
 
 -- ---- the tick: only while a page looks; lengths read a few at a time; read-only --------------------------------------------------------
 local files = {}

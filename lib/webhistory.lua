@@ -37,10 +37,13 @@ function webhistory.epoch(iso)
   local days = era * 146097 + yoe * 365 + yoe // 4 - yoe // 100 + doy - 719468
   return days * 86400 + tonumber(H) * 3600 + tonumber(M) * 60 + tonumber(S)
 end
--- An item event's file text -> { len, midi, take }. `decode`: the event decoded (only asked for a new item's, the one that can be a take).
+-- An event's file text -> an item's { len, lane, midi, take }, or a track's { plays }. `decode`: the event decoded (only asked for a new item's, the one that can be a take).
 function webhistory.detail(text, ev, decode)
   text = type(text) == "string" and text or ""
-  local out = { len = tonumber(text:match("\\nLENGTH ([%d%.eE%+%-]+)")), midi = text:find("<SOURCE MIDI", 1, true) ~= nil or nil }
+  if ev.obj == "track" then -- (a track: which of its fixed lanes play; nil when it has none, everything on it plays)
+    return { plays = text:match('"freemode":%s*2[,}]') and text:match('"plays":%s*"([%d,]*)"') or nil }
+  end
+  local out = { lane = tonumber(text:match("BANDLANE (%d+)")), len = tonumber(text:match("\\nLENGTH ([%d%.eE%+%-]+)")), midi = text:find("<SOURCE MIDI", 1, true) ~= nil or nil }
   if (ev.rev or 1) == 1 and not ev.restored and not ev.gone then
     local full = decode and decode(text)
     local st = type(full) == "table" and type(full.state) == "string" and full.state or nil
@@ -134,7 +137,8 @@ function webhistory.build(evs, info, o)
       for i, id in ipairs(ids) do out[i] = row and row(id, map[id]) or id end
       return out
     end
-    f.i = flat(F.i, function(_, it) return { it.iid, it.tid, r3(it.pos), r3(it.len), it.u, it.k } end)
+    f.i = flat(F.i, function(_, it) return { it.iid, it.tid, r3(it.pos), r3(it.len), it.u, it.k, it.lane or -1 } end)
+    f.p = flat(F.p, function(id, x) return { id, x } end)
     f.g, f.ta, f.tg = flat(F.g), flat(F.ta), flat(F.tg)
     f.m = flat(F.m, function(id, x) return { id, x[1], x[2] } end)
     f.r = F.r
@@ -142,7 +146,7 @@ function webhistory.build(evs, info, o)
     F = nil
   end
   local function frame(t)
-    if not F then F = { t = t, s = #sessions - 1, n = 0, i = {}, g = {}, ta = {}, tg = {}, m = {} } end
+    if not F then F = { t = t, s = #sessions - 1, n = 0, i = {}, g = {}, ta = {}, tg = {}, m = {}, p = {} } end
     F.s = math.max(0, #sessions - 1) -- (the session of its last change)
     return F
   end
@@ -160,10 +164,11 @@ function webhistory.build(evs, info, o)
     end
     return tr
   end
-  local function item_set(key, tr, pos, len, ui, k, t)
+  local function item_set(key, tr, pos, len, ui, k, t, lane)
     local it = items[key]
     if not it then nitems = nitems + 1; it = { iid = nitems - 1 }; items[key] = it end
     it.tid, it.pos, it.len, it.u, it.k, it.alive = tr.id, pos, len, ui, k, true
+    if lane ~= false then it.lane = lane end -- (false: not read yet, the last known lane stays)
     local f = frame(t)
     f.g[it.iid] = nil
     f.i[it.iid] = it
@@ -185,6 +190,18 @@ function webhistory.build(evs, info, o)
     if f.ta[tr.id] then f.ta[tr.id] = nil else f.tg[tr.id] = true end
   end
   local stats = { need = 0, have = 0 }
+  -- Which revision of an object stands: mirror sync's own order (mirror.newer: higher rev, then its clock, then the user), not the order
+  -- the files' times give. A bandmate's edit stamped after a deletion it lost to (or late, or clock-skewed) didn't bring anything back.
+  local won = {}
+  local function wins(e)
+    local oid = upper(e.oid)
+    if not oid or (e.kind or e.type) ~= "obj" then return true end
+    local rev, ms, user = tonumber(e.rev) or 0, tonumber(e.hlc) or keys[e][2] * 1000, tostring(e.user)
+    local w = won[oid]
+    if w and (w[1] > rev or (w[1] == rev and (w[2] > ms or (w[2] == ms and w[3] >= user)))) then return false end
+    won[oid] = { rev, ms, user }
+    return true
+  end
 
   for _, e in ipairs(list) do
     local w, t = what(e), keys[e][2]
@@ -204,10 +221,10 @@ function webhistory.build(evs, info, o)
       local k
       if w == "item" then
         local key = "I" .. (upper(e.oid) or tostring(e.id))
-        if e.gone then item_gone(key, t); k = EDIT
+        local tkey = upper(e.track) or ("N" .. tostring(e.name or ""):lower())
+        local had, won = tix[tkey], wins(e)
+        if e.gone then if won then item_gone(key, t) end; k = EDIT
         else
-          local tkey = upper(e.track) or ("N" .. tostring(e.name or ""):lower())
-          local tr = track(tkey, e.name, t)
           stats.need = stats.need + 1
           local d = info and info(e)
           if d then stats.have = stats.have + 1 end
@@ -215,9 +232,12 @@ function webhistory.build(evs, info, o)
           local len = d and d.len or (prev and prev.len) or 0
           local pos = tonumber(e.pos) or (prev and prev.pos) or 0
           if d and d.take then k = TAKE
-          elseif d and d.midi and (not prev or not prev.alive or (math.abs(prev.pos - pos) < 1e-4 and math.abs(prev.len - len) < 1e-4 and prev.tid == tr.id)) then k = MIDI
+          elseif d and d.midi and (not prev or not prev.alive or (math.abs(prev.pos - pos) < 1e-4 and math.abs(prev.len - len) < 1e-4 and had and prev.tid == had.id)) then k = MIDI
           else k = EDIT end
-          item_set(key, tr, pos, len, ui, k, t)
+          -- (an edit that lost to a newer revision, or onto a track already deleted, changes nothing: it went with its track, as in REAPER)
+          local lane = false -- (not read yet)
+          if d then lane = d.lane end
+          if won and not (had and not had.alive) then item_set(key, track(tkey, e.name, t), pos, len, ui, k, t, lane) end
         end
       elseif w == "litem" then
         local key = "L" .. tostring(e.take or e.id)
@@ -230,19 +250,22 @@ function webhistory.build(evs, info, o)
         end
       elseif w == "track" or w == "ltrack" then
         local key = w == "track" and (upper(e.oid) or "?") or ("N" .. tostring(e.track or ""):lower())
-        if e.gone then track_gone(key, t); k = EDIT
+        local had = tix[key] and tix[key].alive
+        if not wins(e) then k = (e.gone or not had) and EDIT or MIX
+        elseif e.gone then track_gone(key, t); k = EDIT
         else
-          local had = tix[key] and tix[key].alive
           local tr = track(key, w == "track" and e.name or e.track, t)
+          local d = w == "track" and info and info(e)
+          if w == "track" then stats.need = stats.need + 1; if d then stats.have = stats.have + 1 end end
+          if d and (d.plays or "") ~= (tr.plays or "") then tr.plays = d.plays; f.p[tr.id] = d.plays or "" end -- (a lane switch: what shows changes)
           if not had and w == "track" and (e.rev or 1) == 1 and not e.restored then local cw = credit(ui, nil, t); cw[6] = cw[6] + 1 end
           k = had and MIX or EDIT
           if had then f.m[tr.id] = { ui, k } end
         end
       elseif w == "part" then
         local tkey = upper(e.track) or (upper(e.oid) and ("T" .. upper(e.oid):sub(2))) or "?"
-        local tr = track(tkey, e.name, t)
         k = MIX
-        f.m[tr.id] = { ui, k }
+        if wins(e) and not (tix[tkey] and not tix[tkey].alive) then f.m[track(tkey, e.name, t).id] = { ui, k } end
       elseif w == "time" then
         k = TIME
         if (e.kind or e.type) == "timeline" and type(e.markers) == "table" then
@@ -337,7 +360,7 @@ function webhistory.tick(proj, cfg, b, publish, now)
   S.queue, S.qi = {}, 1
   local names, list = {}, {}
   for _, e in ipairs(evs) do
-    if e.kind == "obj" and e.obj == "item" and not e.gone and not info[e] then S.queue[#S.queue + 1] = e end
+    if e.kind == "obj" and (e.obj == "item" or e.obj == "track") and not e.gone and not info[e] then S.queue[#S.queue + 1] = e end
     if type(e.user) == "string" and not names[e.user] then names[e.user] = true; list[#list + 1] = e.user end
   end
   local h = webhistory.build(evs, webhistory.info, { places = places_now(proj), colours = require("people").colours(cfg.root, list),

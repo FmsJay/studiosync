@@ -36,6 +36,13 @@ like the maps and other data you can see progress at the end of a game of Civ."
   recall prunes). Only a new item's file is decoded, to tell a take: a take is a new item whose take is named as a recording (REAPER's own
   recorded-file name, or a smart take name: `lib/recap.lua`'s rule, reused). A MIDI item's change that doesn't move or trim it counts as
   a MIDI edit. Until a length is read the item shows its last known length (the page says lengths are still being read).
+- **Which revision stands (fixed after the first REAPER check, Cross Test: 28 tracks shown, 3 real):** events are applied in mirror
+  sync's own order per object (`mirror.newer`: higher rev, then its clock `hlc`, then the user), not by their file times. An edit that
+  lost to a newer revision changes nothing, and an item edit or a track part (sends, plug-ins) stamped after its track's deletion doesn't
+  bring the track back (in REAPER it went with its track). Fixed lanes: a track event's state says which lanes play (`freemode` 2,
+  `plays`), an item's which lane it's in (`BANDLANE`); items in lanes that don't play are hidden, as REAPER and the Song page show them,
+  and lane switches travel as `p` in a frame. "Tracks now" / "items now" count only live, playing objects. Track events are read for
+  their lanes as item events are for their lengths.
 - **Kinds:** take (new recorded item); edit (items added, moved, trimmed, split, deleted; tracks added or removed; pre-mirror take
   edits); mix move (track settings, plug-ins, automation, sends, groups); MIDI (MIDI items made or their notes edited); tempo and markers
   (timeline and insert/remove time). Handovers, Play/Stop together, likes and `auto` events are left out; notes are counted per person
@@ -64,7 +71,7 @@ instruments. Design:
 ## Not yet
 - Takes recorded before mirror sync (the old take manifests in `takes/`) aren't read: only events. Pre-mirror item edits are drawn
   keyed by take id.
-- Items hidden by fixed lanes, lane switches and comping aren't drawn differently; take switches inside an item count as edits.
+- Comp areas inside a lane aren't shown; take switches inside an item count as edits. Hidden tracks (TCP off) still show.
 - Markers (not regions), tempo changes and item colours aren't drawn; items are coloured by who / what touched them last.
 - A track moved to another place shows in today's order all the way through.
 - Over 180 sessions (half the frames), frames run across sessions.
@@ -73,7 +80,9 @@ instruments. Design:
 ## Tests
 - `tests/test_0_60_rt_history.lua`: exact UTC times; an item's length, MIDI-ness and take-ness from its event file's text (a changed
   item never decoded); a generated, shuffled history of 5,785 events by four people over 16 sessions replayed into at most 360 frames that
-  end exactly at the final arrangement (tracks, items, positions, lengths, regions); the summary (takes per person, every change credited,
+  end exactly at the final arrangement (tracks, items, positions, lengths, regions); a fixture in the real room's formats (Cross Test:
+  a track deleted while a bandmate's later-stamped item edit and send change arrive, an item deleted at rev 3 with a late rev 2 after it, a
+  track re-made under a new oid, a fixed-lanes track switching lanes) that must end at exactly today's tracks and playing items; the summary (takes per person, every change credited,
   days add up, notes); size under 400 KB and build time; a short history (a frame per change, sessions, MIDI edits in place, deletes);
   the tick (nothing while nobody looks, lengths read a few a tick and each once, rebuilt once they're in, nothing rebuilt when nothing's
   new, stops when the page says so); the page's wiring, and that the page only ever sends `want` and the module calls nothing that
@@ -86,7 +95,7 @@ instruments. Design:
 1. Open the web UI (http://127.0.0.1:47281/) on a real song with a long history: History tab. It says it's reading, then fills in; item
    lengths fill in within half a minute or so (watch the line under the title).
 2. Press Play: tracks appear in the order they were made, takes land on the right tracks at the right places, moves and trims follow;
-   regions match the song's. The last frame should look like the song's arrangement now (fixed-lane songs: see "Not yet").
+   regions match the song's. The last frame should look like the song's arrangement now: Cross Test should end at 3 tracks and 3 items.
 3. Colour by person matches the Song page's colours; By kind: a session of recording is mostly blue, a mix session aqua.
 4. Summary: takes per person look right against who recorded what; busiest days match your memory of the sessions.
 5. Tick cost with History open on the biggest song (tests/reaper/rt_perf.lua): the build every 10 s while events arrive.
