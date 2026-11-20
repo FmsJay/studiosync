@@ -149,7 +149,7 @@ assert(E.running, "started once the port is free")
 
 -- ---- 4. Health's words -------------------------------------------------------------------------------------------------------------------
 local ok, text = la.health_text({ nch = 1, kbps = 128, peers = { ["bee-laptop.tail99.ts.net:47281"] = { resolved = true, streaming = true, latency_ms = 41.5, buffer_ms = 35, loss = 0.002 } } })
-assert(ok and text == "Live audio: sending 1 input at 128 kbit/s; bee-laptop 42 ms (buffer 35 ms, loss 0.2%)", text)
+assert(ok and text == "Live audio: sending 1 input at 128 kbit/s; hearing bee-laptop 42 ms (buffer 35 ms, loss 0.2%)", text)
 ok, text = la.health_text({ nch = 2, kbps = 192, rejected = 3, last_reject = "wrong studio secret", peers = {
   ["bee-laptop.tail99.ts.net:47281"] = { resolved = true, streaming = true, latency_ms = 60, buffer_ms = 50, loss = 0.08 },
   ["mac.tail99.ts.net:47281"] = { resolved = true, streaming = false },

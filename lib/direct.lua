@@ -44,17 +44,17 @@ end
 -- suffix: the studio's Tailscale network ("tail1234.ts.net"); me: this computer's Syncthing id; present: set of users here now (nil: anyone);
 -- ok(d): may this one have it (its own computer wrote its file, a guest's list has the song). Names only, never 100.x addresses.
 function direct.peers_from(devices, suffix, me, port, present, ok)
-  local out, seen = {}, {}
+  local out, seen, users = {}, {}, {}
   for _, d in ipairs(devices or {}) do
     local name = type(d) == "table" and type(d.ts) == "table" and d.ts[suffix]
     if type(name) == "string" and name:match("^[%w%-%.]+$") and name:sub(-#suffix - 1) == "." .. suffix and d.device ~= me
       and (not present or present[d.user]) and (not ok or ok(d)) then
       local peer = name .. ":" .. math.floor(port)
-      if not seen[peer] then seen[peer] = d.device or true; out[#out + 1] = peer end
+      if not seen[peer] then seen[peer] = d.device or true; users[peer] = d.user; out[#out + 1] = peer end
     end
   end
   table.sort(out)
-  return out, seen -- (seen: peer -> its computer's device id, for the clock's reference)
+  return out, seen, users -- (seen: peer -> its computer's device id, for the clock's reference; users: peer -> whose it is, live audio's names)
 end
 -- When an event was made, from its id (<user>-YYYYMMDD-HHMMSSZ-...): seconds since 1970, UTC; nil if the name isn't one.
 function direct.id_time(name)
@@ -164,16 +164,16 @@ end
 direct.PEERS_EVERY = 2
 local peer_cache, asked_dev = {}, {} -- root\nsong\nroom -> { at, list, dev_of }; root\0user\0device -> true once trust.device_ok answered
 local function peers_ext(cfg, song, room) return "direct peers " .. tostring(band.info(cfg.root).id) .. " " .. tostring(song) .. "/" .. tostring(room) end
-function direct.refresh_peers(cfg, song, room) -- -> the list, and peer -> device id
+function direct.refresh_peers(cfg, song, room) -- -> the list, peer -> device id, and peer -> user
   local key, now = cfg.root .. "\n" .. tostring(song) .. "\n" .. tostring(room), reaper.time_precise()
   local c = peer_cache[key]
-  if c and now - c.at < direct.PEERS_EVERY then return c.list, c.dev_of end
-  local t, list, dev_of = require("groups").tailnet(cfg.root), {}, {}
+  if c and now - c.at < direct.PEERS_EVERY then return c.list, c.dev_of, c.users end
+  local t, list, dev_of, users = require("groups").tailnet(cfg.root), {}, {}, {}
   if t then
     local present = {}
     for _, st in ipairs(require("presence").peers(cfg, song, room)) do present[st.user] = true end
     local access, trust = require("access"), require("trust")
-    list, dev_of = direct.peers_from(devices(cfg.root), t.suffix, require("services").my_device_id(), direct.port(), present, function(d)
+    list, dev_of, users = direct.peers_from(devices(cfg.root), t.suffix, require("services").my_device_id(), direct.port(), present, function(d)
       -- (only a file its own computer wrote, as services.pin_tailnet: a rewritten one would point the studio's changes somewhere else. Asked
       -- only for those here, and Syncthing's answer is kept by lib/trust.lua; not known yet is not yet)
       local k = cfg.root .. "\0" .. tostring(d.user) .. "\0" .. tostring(d.device)
@@ -183,13 +183,13 @@ function direct.refresh_peers(cfg, song, room) -- -> the list, and peer -> devic
       return ok and said == true and access.shows(access.read(cfg.root, d.device), song) -- (a guest whose list leaves the song out: a narrowing only)
     end)
   end
-  peer_cache[key] = { at = now, list = list, dev_of = dev_of or {} }
+  peer_cache[key] = { at = now, list = list, dev_of = dev_of or {}, users = users or {} }
   reaper.SetExtState(band.SECTION, peers_ext(cfg, song, room), table.concat(list, " "), false)
-  return list, dev_of or {}
+  return list, dev_of or {}, users or {}
 end
-function direct.peers(cfg, song, room) -- -> the list, and peer -> device id (this script's cache; else Live sync's list, without ids)
+function direct.peers(cfg, song, room) -- -> the list, peer -> device id, peer -> user (this script's cache; else Live sync's list, without either)
   local c = peer_cache[cfg.root .. "\n" .. tostring(song) .. "\n" .. tostring(room)]
-  if c then return c.list, c.dev_of end
+  if c then return c.list, c.dev_of, c.users end
   local list = {}
   for p in reaper.GetExtState(band.SECTION, peers_ext(cfg, song, room)):gmatch("%S+") do list[#list + 1] = p end
   return list, {}
@@ -600,7 +600,7 @@ function direct.clock_line()
   return true, string.format("Shared clock: the reference is %s (%s), within %.0f ms; %s", peer:match("^([^%.:]+)") or peer, tostring(dev):sub(1, 7), err or 0, table.concat(each, ", "))
 end
 -- Health's rows for the link (lib/page_health.lua): { id, ok, colour, text when ok, text when not, action = { label, fn, tooltip } }.
-function direct.health_rows(cfg)
+function direct.health_rows(cfg, b)
   local why = direct.ext_problem()
   if why then return { { "menu ext", false, "red", "", why } } end
   local ok, text = direct.health_line(cfg)
@@ -619,7 +619,7 @@ function direct.health_rows(cfg)
   if sok and srow then rows[#rows + 1] = srow end
   local aok, arow = pcall(function() return require("ablink").health_row() end) -- (Ableton Link, when it's on here: lib/ablink.lua. James, rt)
   if aok and arow then rows[#rows + 1] = arow end
-  local lok, lrow = pcall(function() return require("liveaudio").health_row(cfg) end) -- (live audio per bandmate, when the studio has it on: lib/liveaudio.lua. James, rt)
+  local lok, lrow = pcall(function() return require("liveaudio").health_row(cfg, b) end) -- (live audio per bandmate, when the studio has it on: lib/liveaudio.lua; b: whose statuses say why one isn't heard. James, rt)
   if lok and lrow then rows[#rows + 1] = lrow end
   return rows
 end
