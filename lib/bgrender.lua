@@ -460,7 +460,15 @@ local function finished(j)
 end
 local function drop(key)
   local j = jobs[key]
-  for _, f in ipairs(band.files(j.dir)) do os.remove(j.dir .. "/" .. f) end
+  -- (the whole folder, its pass folders and REAPER's job .rpp-bak too: band.files skipped those, so every job left its folder behind. 2026-11-20)
+  local function empty(dir)
+    local names = {}
+    for i = 0, 199 do local f = reaper.EnumerateFiles(dir, i); if not f then break end; names[#names + 1] = f end
+    for _, f in ipairs(names) do os.remove(dir .. "/" .. f) end
+    os.remove(dir)
+  end
+  for _, sub in ipairs(band.subdirs(j.dir)) do empty(j.dir .. "/" .. sub) end
+  empty(j.dir)
   jobs[key] = nil
 end
 -- Still going: something new in its folder lately (a pass begun, its file growing), within the limit for its length. -> true / false
