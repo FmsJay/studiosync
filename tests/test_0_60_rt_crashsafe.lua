@@ -197,6 +197,19 @@ do
   applied = {}
   local n3 = mirror.restore_unsent("A3", { ["F-ME-1-1"] = { kind = "fx", state = FX2, hash = "h2" } }, "M", false)
   assert(n3 == 0 and #applied == 0 and mirror.restoring.A3 == nil, "saved with it, or older news: left as it is (" .. n3 .. ")")
+  -- Hold my changes on when REAPER stopped: kept in the file, and on again before anything could go (laptop kill test, rt)
+  local SECTION = require("band").SECTION
+  open, fns.A4, fns.A5 = { "A4" }, "C:\\s\\Song.RPP", "C:\\s\\Song.RPP"
+  reaper.SetProjExtState("A4", SECTION, "hold", "1")
+  mirror.unsent["A4I-ME-1-5"] = true
+  clock = clock + mirror.STASH_SECS
+  mirror.stash_unsent("A4", { ["I-ME-1-5"] = { kind = "item", oid = "I-ME-1-5", track = "T-ME-1-1", state = "<ITEM\nH\n>\n", hash = "hh", pos = 1 } })
+  assert(files[PATH] and files[PATH].hold == true, "the file says it was held")
+  mirror.unsent = {}
+  open = { "A5" }
+  assert(select(2, reaper.GetProjExtState("A5", SECTION, "hold")) == "", "the reopened save: Hold off")
+  mirror.restore_unsent("A5", {}, "M", false)
+  assert(select(2, reaper.GetProjExtState("A5", SECTION, "hold")) == "1", "Hold on again before the look sends")
   -- Live sync's clean stop takes the file away: REAPER asked about saving
   files[PATH] = { objs = {} }
   mirror.drop_stash("A3")

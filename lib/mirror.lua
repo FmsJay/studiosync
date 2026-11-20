@@ -1744,10 +1744,13 @@ function mirror.stash_unsent(proj, by_oid)
     if out[oid] and not sig[oid] then sig[oid] = true; sig[#sig + 1] = oid .. "|" .. tostring(out[oid].hash or "gone") end
   end
   table.sort(sig)
+  -- (and Hold my changes itself: it lives in the unsaved project, so a held change came back and went out. Laptop kill test, rt)
+  local held = select(2, reaper.GetProjExtState(proj, require("band").SECTION, "hold")) ~= ""
+  if held and #sig > 0 then sig[#sig + 1] = "hold" end
   local s, now = table.concat(sig, "\n"), reaper.time_precise()
   if s == stash_sig[path] or now - (stash_at[path] or -math.huge) < mirror.STASH_SECS then return end
   stash_sig[path], stash_at[path] = s, now
-  if s == "" then os.remove(path) else require("band").write_json(path, { objs = out }) end
+  if s == "" then os.remove(path) else require("band").write_json(path, { objs = out, hold = held or nil }) end
 end
 -- The file read once per opening (a file opened again in its tab has a new master track, as W.order tells), and each entry put back unless the
 -- project already has it, or holds a newer version than the one it was made on. Tracks first, deletions last. -> how many were put back.
@@ -1759,6 +1762,13 @@ function mirror.restore_unsent(proj, by_oid, media, local_mix)
     local path = stash_path(ids(proj))
     local d = path and require("band").read_json(path)
     mirror.restoring[key] = type(d) == "table" and type(d.objs) == "table" and next(d.objs) and d.objs or nil
+    if mirror.restoring[key] and d.hold then -- (held when REAPER stopped: still held, before the look that would send it)
+      local B = require("band")
+      if select(2, reaper.GetProjExtState(proj, B.SECTION, "hold")) == "" then
+        reaper.SetProjExtState(proj, B.SECTION, "hold", "1")
+        B.log("Hold my changes is on again, as it was when REAPER stopped: your held changes stay here until you let them go")
+      end
+    end
   end
   local list = mirror.restoring[key]
   if not list then return 0 end
