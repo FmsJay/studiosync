@@ -1022,9 +1022,35 @@ Like Helgobox's move away from REAPER's own widgets, now that the extension is m
   live for everyone, kept as an annotation layer on the song (shown in history, removable).
 - **Song sheet.** Lyrics, chords and the arrangement (sections, who plays what), shared and editable live, with a
   teleprompter mode that follows the play cursor while recording.
+  - **Built (rt, 2026-11-19; Lua tests and a stand-in server in a browser only, not run in REAPER yet):** the web UI's **Sheet** tab
+    (lib/webui/sheet.js, lib/songsheet.lua). A section per region of the project, in order (two Choruses are `r:Chorus:1`, `r:Chorus:2`),
+    plus sections added by hand (a name and the bar they start at, for a project with no regions); each has lyrics with ChordPro chords
+    inline (`[Am]Here comes the [F]sun`, drawn chord-over-word) and a "who plays what" line. Stored as files in the project's shared
+    folder, `<project>/sheet/<user>.json`, one per person and written only by them (so Syncthing never sees two writers, as the chat), each
+    section stamped with the studio's shared clock; an edit also goes over the direct link and shows on the others' pages at once, until
+    their copy of the file arrives. **Merge:** per section, the latest stamp wins (last-writer-wins on the section, never the whole
+    sheet): a section is a few lines one person usually has in hand, so two people rarely type in the same one at once, and when they
+    do, nothing is lost: the losing version stays in its writer's file and shows under the section ("Bee's version, 21:03, replaced by
+    a later edit") with Use this version, and a newer edit arriving while you type is offered (Use theirs), never put over your words.
+    Each section shows who edited it last and when. A region renamed or removed keeps its words as a section of its own until someone
+    deletes it. Saved 1.5 s after typing stops or on leaving the box; a save Live sync didn't take is kept and tried again.
+    **Teleprompter:** the sheet big (22-40 px), the section the play position is in lit and the rest dimmed, scrolled on through it
+    while playing (your own scroll holds it 4 s), bar.beat, the section and the count-in on top, Full screen, the screen kept awake
+    where the browser allows (a secure page: the https link).
 - **Song to-dos.** A small task list per song ("retrack bridge vocal"), tied to tracks and bars, ticked off by anyone.
 - **Synced visuals.** Big count-in, bar/beat and section display for everyone, from the shared clock, so nobody
   misses an entry when recording together.
+  - **Built (rt, 2026-11-19; Lua tests and a stand-in server in a browser only, not run in REAPER yet):** the web UI's **Beat** tab
+    (lib/webui/visuals.js, beat.js, lib/songsheet.lua): "Starting together" counting down the seconds to a start, then the count-in's
+    beats (4 3 2 1, red when it's a recording), then bar.beat as big as the screen allows with a dot a beat, the section you're in (the
+    sheet's, else the regions) and the next one ("Next: Chorus in 2 bars"); Full screen. Live sync publishes the play position as a line on
+    its link clock (StudioSync_DirectNow), fitted to the median of the stretch's last 15 readings and sent again only when it moves 3 ms
+    off, plus every beat's time from REAPER's own tempo map (ramps and time signatures as REAPER plays them), sent when the project
+    changes; the page measures its clock against the computer's (GET /api/time, the quickest of 8 round trips, again every 10 s) and works
+    out bar and beat each frame. So a page shows its computer's REAPER within half a round trip to it (under a millisecond on the same
+    computer, a few on Tailscale) plus a frame, and every computer started together on the shared clock, so every page shows the same beat.
+    The count-in's end, length and moment come from Live sync's start (a new "together_from" ExtState beside "together_at"). Both pages are
+    cheap: the topics are built only while a page shows one (it says so every 10 s), and nothing is drawn while a page is hidden.
 - **Shared DAW view (James).** An arrange view drawn in the web UI from the synced project model (tracks, items with
   waveforms from REAPER's peak data, MIDI notes, automation, markers), the same for everyone whatever their theme or
   layout: everyone's cursor and selection live, "follow" a bandmate's scroll/zoom, live claims, comments and drawings

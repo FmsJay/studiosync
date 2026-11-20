@@ -1143,6 +1143,8 @@ local function tick_body() -- returns true to keep going
     local fire = transport.type == "stop" and ((transport.at or 0) + (theirs and (transport.lag or 0) or 0)) or together.plan(transport, cfg.user, nil)
     if transport.type == "stop" and transport.follow and theirs and transport.pos then fire = fire + 2 end -- the position decides; time is a backstop
     if transport.type == "start" and tnow < fire then reaper.SetExtState(band.SECTION, "together_at " .. key, tostring(fire), false) end
+    -- (where its count-in ends, how long it is and when it fires: the web UI's Beat page counts it down. lib/songsheet.lua, James, rt)
+    if transport.type == "start" then reaper.SetExtState(band.SECTION, "together_from " .. key, string.format("%.6f %.6f %.6f", transport.pos or 0, transport.countin or 0, fire), false) end
     due_in = fire - tnow -- the regular poll can take 100-200 ms: it waits while a start/stop is close
     -- (never into the middle of your own take: a recording you started yourself isn't cut by someone else's start or stop, and a record cue
     -- doesn't take you away from another tab that's playing or recording. Review, 0.58.91)

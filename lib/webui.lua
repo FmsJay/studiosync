@@ -139,6 +139,7 @@ end
 -- An action's JSON (StudioSync_WebUIPoll) -> its topic and the table, or nil. Only the topics the pages may send.
 webui.ACTIONS = { chat = true, rtc = true, daw = true, health = true, play = true } -- (rtc: a video call or screen share's setup, lib/webcall.lua; daw: the Song page's, lib/dawview.lua; health, play: lib/webpages.lua)
 webui.ACTIONS.phonerec = true -- (the Record page's: a take from a phone, lib/phonerec.lua)
+webui.ACTIONS.sheet = true -- (the Sheet and Beat pages': lib/songsheet.lua)
 function webui.parse_action(s)
   local a = type(s) == "string" and s ~= "" and band.json_decode(s)
   if type(a) ~= "table" or type(a.topic) ~= "string" or not webui.ACTIONS[a.topic] then return nil end
@@ -197,6 +198,10 @@ function webui.tick(proj, cfg, b, handlers)
       local said = require("phonerec").action(proj, cfg, b, a)
       if said then band.log(said) end
     end
+    if topic == "sheet" then
+      local ok, said = pcall(require("songsheet").action, proj, cfg, b, a) -- (a file write: one that fails is said, the other actions still go)
+      if said then band.log(ok and said or "the web page's sheet edit couldn't be saved: " .. tostring(said)) end
+    end
   end
   local now = reaper.time_precise()
   -- Nobody looking: no presence (sync.authority reads every claims file) and no chat built. A page arriving gets both on this tick, so the
@@ -234,6 +239,8 @@ function webui.tick(proj, cfg, b, handlers)
   require("dawview").tick(proj, cfg, b, publish, last_who, now)
   -- the Record page: a phone's take, its play readings and state only while one is open (lib/phonerec.lua)
   require("phonerec").tick(proj, cfg, b, publish, now)
+  -- the Sheet and Beat pages: only while a page shows one (lib/songsheet.lua)
+  require("songsheet").tick(proj, cfg, b, publish, handlers, now)
 end
 
 return webui
