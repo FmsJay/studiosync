@@ -1,7 +1,7 @@
 -- The Play/Jam page (moved out of StudioSync - Panel.lua, 0.58.51: the panel was at Lua's 200 locals): starting together, Play along and
 -- Jam over NINJAM, and the server. The panel hands over what it shares (M.init); what changes as you work is asked for at every call.
 local band = require("band")
-local sync, live, services, setup, together = require("sync"), require("live"), require("services"), require("setup"), require("together")
+local live, services, setup, together = require("live"), require("services"), require("setup"), require("together")
 local theme = require("theme")
 local GREEN, YELLOW, RED, ACCENT = theme.GREEN, theme.YELLOW, theme.RED, theme.ACCENT
 local M = {}
@@ -265,14 +265,7 @@ function M.time_sync(on) -- -> true when it is as asked
   band.log(string.format("Time-sync on: the others hear you in time with the song, %d bar%s behind (one NINJAM interval)", one, one == 1 and "" or "s"))
 end
 
-local function go(ev) -- post it for the band, and fire it here through our own Live sync
-  local b, cfg, proj, view, wide, who = E.b(), E.cfg(), E.proj(), E.view(), E.wide(), E.who()
-  ev.at = math.floor(os.time()) + together.LEAD
-  ev.start_at = together.start_at(together.LEAD) -- (the same moment on the studio's shared clock, when the direct link has one. James, 0.60.0-rt)
-  sync.post(cfg, b.song, b.room, ev)
-  ev.user = cfg.user
-  band.set_ext_json(band.SECTION, "transport " .. tostring(proj), ev, false)
-end
+local function go(ev) together.go(E.proj(), E.cfg(), E.b(), ev) end -- post it for the band, and fire it here through our own Live sync
 local start_from, click_on, side_bars_edit = 0, true, 2 -- start_from: 0 = edit cursor, n = the nth region
 local function regions()
   local b, cfg, proj, view, wide, who = E.b(), E.cfg(), E.proj(), E.view(), E.wide(), E.who()

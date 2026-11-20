@@ -81,6 +81,10 @@ end
 function R.show_since(since)
   hf = { who = "", kind = 1, track = "", text = "", since = since }
 end
+-- A saved version to open, by its file: the web UI's Song history hands one over with "Restore this" (lib/dawview.lua). Its row opens with
+-- its usual buttons, which ask as they always do: nothing is restored from the web page itself. (James, rt)
+local want_version
+function R.open_version(file) want_version = file end
 -- What going back to entries[i] brings: a saved version (`point`, its recall.list row) that holds the project's own map is restored to exactly
 -- that (mirror.plan_known); one saved before 0.59.45, or a moment in History, by time as before. Round 1 review, 0.59.45 (one file read per
 -- restore of a saved version).
@@ -272,6 +276,7 @@ function R.section_recall()
       ImGui.SetItemTooltip(ctx, "Opens the copy saved when this project was first published, in a new tab (it isn't shared).")
     end
     for i, p in ipairs(points) do
+      if want_version and p.file == want_version then hf.open, hf.show, want_version = "version " .. i, true, nil end
       ImGui.PushID(ctx, i)
       local upto = 0 -- (mirror sessions: the point is a moment in History)
       for k, e in ipairs(entries) do if (e.time or "") <= (p.time or "") then upto = k end end

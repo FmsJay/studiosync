@@ -185,6 +185,7 @@ namespace {
 std::mutex g_mx; // guards everything below
 std::condition_variable g_cv; // (a topic changed, a client went, or stopping)
 std::map<std::string, std::string> g_topics;
+std::map<std::string, long long> g_topic_ver; // (the g_ver each topic last changed at: the stream sends only what changed. James, rt)
 long long g_ver = 0, g_served = 0, g_refused = 0;
 std::deque<std::string> g_actions;
 std::string g_folder, g_token, g_bind, g_err, g_poll_out, g_status_out;
@@ -218,11 +219,15 @@ void json_str(std::string &o, const std::string &s)
   o += '"';
 }
 // (under g_mx) What every page shows: the topics as Live sync last published them, and whether Live sync is still asking (5 s).
-std::string snapshot_locked()
+// since >= 0: only the topics changed after that version, marked "delta" (the event stream after its first: a big song's arrange view isn't
+// sent again each time someone's cursor moves; a page keeps the topics it has. James, rt)
+std::string snapshot_locked(long long since = -1)
 {
-  std::string o = "{\"ver\":" + std::to_string(g_ver) + ",\"engine\":" + (now_s() - g_engine_at < 5 ? "true" : "false") + ",\"topics\":{";
+  std::string o = "{\"ver\":" + std::to_string(g_ver) + ",\"engine\":" + (now_s() - g_engine_at < 5 ? "true" : "false") +
+                  (since >= 0 ? ",\"delta\":true" : "") + ",\"topics\":{";
   bool first = true;
   for (const auto &kv : g_topics) {
+    if (since >= 0 && g_topic_ver[kv.first] <= since) continue;
     if (!first) o += ',';
     first = false;
     json_str(o, kv.first);
@@ -310,8 +315,8 @@ bool read_page(const std::string &folder, const std::string &rel, std::string &o
   return out.size() <= MAX_FILE;
 }
 
-// The event stream: everything now, then again whenever a topic changes or Live sync starts or stops asking; a comment every 15 s keeps
-// phones' and proxies' idle timers from closing it.
+// The event stream: everything now, then the topics that changed whenever one does (or just "engine" when Live sync starts or stops asking);
+// a comment every 15 s keeps phones' and proxies' idle timers from closing it.
 void events(sock_t s)
 {
   if (!send_all(s, std::string("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n") + SAFE_HEADERS + "Connection: keep-alive\r\n\r\nretry: 2000\n\n")) return;
@@ -326,8 +331,8 @@ void events(sock_t s)
       if (g_stop) return;
       const bool engine = now_s() - g_engine_at < 5;
       if (g_ver != sent_ver || engine != sent_engine) {
+        data = snapshot_locked(sent_ver); // (-1 the first time: everything)
         sent_ver = g_ver; sent_engine = engine;
-        data = snapshot_locked();
       }
     }
     if (!data.empty()) {
@@ -516,7 +521,7 @@ void webui_publish(const char *topic, const char *json)
   std::string &t = g_topics[topic];
   if (t == json) return;
   t = json;
-  ++g_ver;
+  g_topic_ver[topic] = ++g_ver;
   g_cv.notify_all();
 }
 
@@ -563,6 +568,7 @@ void webui_shutdown()
     g_cv.wait_for(l, std::chrono::seconds(3), [] { return g_clients == 0; }); // (their code is in this library: gone before it unloads)
     g_stop = false;
     g_topics.clear();
+    g_topic_ver.clear();
     g_actions.clear();
   }
 #ifdef _WIN32

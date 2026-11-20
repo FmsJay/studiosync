@@ -127,7 +127,7 @@ function webui.clean_text(t)
   return t
 end
 -- An action's JSON (StudioSync_WebUIPoll) -> its topic and the table, or nil. Only the topics the pages may send.
-webui.ACTIONS = { chat = true, rtc = true } -- (rtc: a video call or screen share's setup, lib/webcall.lua)
+webui.ACTIONS = { chat = true, rtc = true, daw = true } -- (rtc: a video call or screen share's setup, lib/webcall.lua; daw: the Song page's, lib/dawview.lua)
 function webui.parse_action(s)
   local a = type(s) == "string" and s ~= "" and band.json_decode(s)
   if type(a) ~= "table" or type(a.topic) ~= "string" or not webui.ACTIONS[a.topic] then return nil end
@@ -136,6 +136,7 @@ end
 
 -- ---- Live sync's tick -------------------------------------------------------------------------------------------------------------------
 local published, pres_at, chat_at, rtc_at, was_front, was_looking = {}, -math.huge, -math.huge, -math.huge, false, false
+local last_who -- (sync.authority's answer from the last presence build: the Song page's Play button asks it)
 -- Is a page open? An open event stream is a client; a page polling /api/state (no EventSource) shows as the served count moving. The
 -- status is a short string and only two numbers are wanted, so no JSON decode each tick. (The first read counts as a request: the grace
 -- covers a page already open when Live sync starts.) (James, rt)
@@ -156,7 +157,7 @@ function webui.tick(proj, cfg, b, handlers)
   if not webui.available() or not (b and b.song) then return end
   -- (one tab at a time: the one in front. Coming back to the front, everything goes again: another tab's may be showing)
   local front = reaper.EnumProjects(-1) == proj
-  if front ~= was_front then was_front, published, pres_at, chat_at = front, {}, -math.huge, -math.huge end
+  if front ~= was_front then was_front, published, pres_at, chat_at = front, {}, -math.huge, -math.huge; require("dawview").reset() end
   if not front or not webui.start(cfg) then return end
   local chat = require("page_chat")
   local webcall = require("webcall")
@@ -168,6 +169,10 @@ function webui.tick(proj, cfg, b, handlers)
     local text = topic == "chat" and webui.clean_text(a.text)
     if text then chat.post(cfg, b, text, "song"); chat_at = -math.huge end
     if topic == "rtc" then webcall.page(cfg, b, a) end
+    if topic == "daw" then
+      local said = require("dawview").action(proj, cfg, b, a)
+      if said then band.log(said) end
+    end
   end
   local now = reaper.time_precise()
   -- Nobody looking: no presence (sync.authority reads every claims file) and no chat built. A page arriving gets both on this tick, so the
@@ -186,6 +191,7 @@ function webui.tick(proj, cfg, b, handlers)
     end
     local sync = require("sync")
     local _, who = sync.authority(cfg, b.song, b.room)
+    last_who = who
     publish("presence", webui.presence_model(b.song, b.room, me, require("presence").peers(cfg, b.song, b.room), who))
   end
   if now - chat_at >= webui.CHAT_EVERY then
@@ -195,6 +201,8 @@ function webui.tick(proj, cfg, b, handlers)
   end
   -- (video calls: a message in or out shows at once; who's open is looked at again every second, as their "here"s age out)
   if webcall.dirty() or now - rtc_at >= 1 then rtc_at = now; publish("rtc", webcall.model(webcall.me(cfg), os.time())) end
+  -- the Song page: only while a page shows it (lib/dawview.lua)
+  require("dawview").tick(proj, cfg, b, publish, last_who, now)
 end
 
 return webui

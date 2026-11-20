@@ -83,4 +83,15 @@ function together.start_at(lead)
 end
 function together.local_at(start_at, shared_now, local_now) return local_now + (start_at - shared_now) end -- (pure)
 
+-- A start or stop for the band: posted for everyone, and fired here through this tab's own Live sync. The panel's Play/Record/Stop together
+-- and the web UI's Song page (lib/dawview.lua) both send theirs this way. (James, rt)
+function together.go(proj, cfg, b, ev)
+  local band = require("band")
+  ev.at = math.floor(os.time()) + together.LEAD
+  ev.start_at = together.start_at(together.LEAD) -- (the same moment on the studio's shared clock, when the direct link has one. James, 0.60.0-rt)
+  require("sync").post(cfg, b.song, b.room, ev)
+  ev.user = cfg.user
+  band.set_ext_json(band.SECTION, "transport " .. tostring(proj), ev, false)
+end
+
 return together
