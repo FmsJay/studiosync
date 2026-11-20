@@ -78,7 +78,7 @@ jobs:
           clang++ -std=c++17 -O2 -DRTAUDIO_STANDALONE -DDIRECT_STANDALONE -I extension/third_party/aoo -I extension/third_party/aoo/include -I extension/third_party/opus/include \
             tests/rtaudio_test.cpp extension/rtaudio.cpp extension/direct.cpp extension/direct_audio.cpp libssdeps.a -o rtaudio_test
           ./rtaudio_test
-      - name: Live to an audience's own test (tests/audience_test.cpp: the public port's allow-list, Opus fan-out, caps; rt-audience)
+      - name: Live to an audience's own test (tests/audience_test.cpp, the public port's allow-list, Opus fan-out, caps; rt-audience)
         if: ${{ !cancelled() }}
         run: |
           clang++ -std=c++17 -O2 -DAUDIENCE_STANDALONE -DDIRECT_STANDALONE -DWEBUI_STANDALONE -I extension/third_party/opus/include \
@@ -174,7 +174,7 @@ jobs:
           g++ -std=c++17 -O2 -pthread -DRTAUDIO_STANDALONE -DDIRECT_STANDALONE -I extension/third_party/aoo -I extension/third_party/aoo/include -I extension/third_party/opus/include \
             tests/rtaudio_test.cpp extension/rtaudio.cpp extension/direct.cpp extension/direct_audio.cpp libssdeps.a -o rtaudio_test
           ./rtaudio_test
-      - name: Live to an audience's own test (tests/audience_test.cpp: the public port's allow-list, Opus fan-out, caps; rt-audience)
+      - name: Live to an audience's own test (tests/audience_test.cpp, the public port's allow-list, Opus fan-out, caps; rt-audience)
         if: ${{ !cancelled() }}
         run: |
           g++ -std=c++17 -O2 -pthread -DAUDIENCE_STANDALONE -DDIRECT_STANDALONE -DWEBUI_STANDALONE -I extension/third_party/opus/include \
