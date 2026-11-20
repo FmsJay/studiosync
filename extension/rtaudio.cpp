@@ -98,13 +98,15 @@ struct Low {
   double low() const { return prev < 0 ? -1 : cur < 0 ? prev : std::min(prev, cur); } // (-1 until a whole stretch was measured)
 };
 // This computer's audio clock (rt_capture: the audio thread's), for AOO's drift correction. AOO's DLL read each callback's time as it came,
-// so a callback held up (the macOS CI runner's 15-250 ms stalls; WASAPI through Voicemeeter) pulled its estimate: the desktop's read -2347
-// then +499 ppm where its clock counted over 32 minutes is -102, and the test's corrected drift swung to -2.2 ms a second on the Mac runner.
+// so a callback held up (the macOS CI runner's 15-250 ms stalls) pulled its estimate: the test's corrected drift swung to -2.2 ms a second.
 // Here lateness can't count: a callback is never early, so the earliest of each CLK_SPAN s (its time against k blocks at the nominal rate)
-// is the device's own timing; the clock's rate is the median slope between those minima (Theil-Sen, the last CLK_N of them), and AOO is
-// handed evenly spaced times at that rate (kAooPreciseTimestamp: no DLL), from base. Until 3 minima, the nominal rate.
+// is the device's own timing. The rate is the slope between the oldest and newest of those minima kept (CLK_N of them: 10 minutes; up
+// to 3 averaged at each end), not a median of short slopes: WASAPI through Voicemeeter (the desktop) calls back on the system's clock and
+// drops a whole 10 ms buffer every minute or so, a staircase that is flat between steps (the median read ~+10 ppm, or -1300 with a step
+// inside its 30 s) and -102 ppm over minutes (counted: 20.5 ms in 172 s). AOO gets evenly spaced times at that rate (kAooPreciseTimestamp:
+// no DLL), from base. Until 3 minima, the nominal rate.
 const double CLK_SPAN = 2;
-const int CLK_N = 16;
+const int CLK_N = 300;
 struct Clock {
   AooNtpTime base = 0;
   int len = 0, hn = 0;
@@ -112,9 +114,8 @@ struct Clock {
   long long k = 0;
   std::atomic<double> ppm{ 0 }; // (for the status)
 };
-AooNtpTime clock_step(Clock &c, int len, double sr)
+AooNtpTime clock_step(Clock &c, int len, double sr, AooNtpTime now) // (now: this callback's time; rt_test_clock gives its own)
 {
-  const AooNtpTime now = aoo_getCurrentNtpTime();
   if (len != c.len || sr != c.sr || c.base == 0) {
     c.len = len; c.sr = sr; c.nom = c.per = len / sr; c.base = now; c.fed = 0; c.k = 0; c.bmin = 1e300; c.bstart = 0; c.hn = 0; c.ppm.store(0);
     return now;
@@ -125,12 +126,11 @@ AooNtpTime clock_step(Clock &c, int len, double sr)
     if (c.hn == CLK_N) { std::copy(c.hx + 1, c.hx + CLK_N, c.hx); std::copy(c.hy + 1, c.hy + CLK_N, c.hy); --c.hn; }
     c.hx[c.hn] = x; c.hy[c.hn] = c.bmin; ++c.hn;
     c.bstart = x; c.bmin = 1e300;
-    double sl[CLK_N * (CLK_N - 1) / 2];
-    int m = 0;
-    for (int i = 0; i < c.hn; ++i) for (int j = i + 1; j < c.hn; ++j) if (c.hx[j] - c.hx[i] > 1.5 * CLK_SPAN) sl[m++] = (c.hy[j] - c.hy[i]) / (c.hx[j] - c.hx[i]);
-    if (c.hn >= 3 && m > 0) {
-      std::nth_element(sl, sl + m / 2, sl + m);
-      const double v = std::max(-0.02, std::min(0.02, sl[m / 2])); // (real seconds per nominal second, less 1; a VM's 0.5% is well inside)
+    if (c.hn >= 3) {
+      const int m = std::min(3, c.hn / 3);
+      double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+      for (int i = 0; i < m; ++i) { x0 += c.hx[i]; y0 += c.hy[i]; x1 += c.hx[c.hn - 1 - i]; y1 += c.hy[c.hn - 1 - i]; }
+      const double v = std::max(-0.02, std::min(0.02, (y1 - y0) / (x1 - x0))); // (real seconds per nominal second, less 1; a VM's 0.5% is inside)
       c.per = c.nom * (1 + v);
       c.ppm.store((1 / (1 + v) - 1) * 1e6);
     }
@@ -140,7 +140,7 @@ AooNtpTime clock_step(Clock &c, int len, double sr)
 }
 // The adaptive jitter buffer, per peer (adapt below). ms: a peer's own floor and ceiling come from rt_peer_buffer, these are the defaults
 // (30 ms held between the Windows computers over Tailscale; 150 ms is past what a band can play along to anyway). (James, rt)
-const double BUF_FLOOR = 30, BUF_CEIL = 150, BUF_GROW = 20, BUF_SHRINK = 10;
+const double BUF_FLOOR = 30, BUF_CEIL = 150, BUF_GROW = 10, BUF_SHRINK = 10; // (GROW was 20: 6 underruns took the desktop's buffer for the laptop 45 -> 110)
 // seconds: no underrun this long before the first shrink, then this long between shrinks (BUF_RETRY: when a size that underran is tried again)
 const double BUF_STEADY = 15, BUF_STEP = 10;
 const float BUF_QUIET = 0.003f;      // a shrink waits for the peer to be quiet (peak under -50 dBFS) for BUF_QUIET_S: its re-buffer is a gap
@@ -161,10 +161,12 @@ const double SRC_BUFFER = 0.1;
 // above its size when packets stall and then burst in) re-buffers at its size while that peer is quiet. BUF_MARGIN: a shrink needs this much
 // of the buffer unused at its lowest lately, after the shrink (so it never eats into what jitter used).
 const double TRIM_OVER = 25, BUF_MARGIN = 5;
-// s: a size that underran isn't gone back below until this long without an underrun (was 120, all or nothing). It doubles, up to
-// BUF_RETRY_MAX, each time a size it went back to underran again within it (the laptop's mix over the internet: spikes ~40 s apart, so a
-// 45 s retry flapped 30 -> 50 -> 30), and is back to BUF_RETRY after BUF_CALM without an underrun.
-const double BUF_RETRY = 45, BUF_RETRY_MAX = 480, BUF_CALM = 900;
+// s: the goal is the least latency, so the odd 20 ms of audio lost to a lone spike beats 60 ms more delay for minutes (1.0.22 held grown
+// sizes up to 8 minutes: latency through the hub 234 -> 286 ms). An underrun with none other in the last BUF_LONE s (and not right after
+// going back below a size that underran) is a lone spike: the buffer grows a step but comes back down after BUF_STEADY as if it hadn't.
+// Underruns closer together are the network's steady jitter: the size that underran is held BUF_RETRY s, doubling up to BUF_RETRY_MAX each
+// time going back below it underran again, back to BUF_RETRY after BUF_CALM without an underrun.
+const double BUF_LONE = 30, BUF_RETRY = 45, BUF_RETRY_MAX = 180, BUF_CALM = 600;
 const double SWITCH_S = 1.5;         // s: an underrun this soon after the hub's mix and direct streams switched is the switch's, not the network's
 const double OPUS_MS = 1000.0 * 240 / 48000; // (one Opus frame, ms: the jitter buffer counts in these)
 // The hub's live mix (rt_hub). MIX_ID: each listener's mix is its own source at the hub (one per listener, told apart by address); the
@@ -201,7 +203,9 @@ struct Slot {
   double down_at = -1e9;                            // (when the stream last stopped being active)
   // the adaptive jitter buffer (the send thread's, stats_mx; rt_peer_buffer sets the floor and ceiling)
   double floor_ms = BUF_FLOOR, ceil_ms = BUF_CEIL, target_ms = BUF_FLOOR, fail_ms = 0, last_under = 0, last_change = 0, quiet_since = -1;
-  double retry_s = BUF_RETRY, last_retry = -1e9; // (how long a size that underran is held; when the buffer last went back below one)
+  double retry_s = BUF_RETRY, last_retry = -1e9, hold_until = -1e9; // (how long a size that underran is held, and until when; when the
+                                                                    // buffer last went back below one)
+  long long lone = 0;                                                // (underruns taken as lone spikes: not held)
   long long jitter_seen = 0;
   long long switched = 0, trims = 0; // (underruns that came from a hub mix <-> direct switch; quiet re-buffers of a buffer far above its size)
   double switch_at = -1e9, mswitch_at = -1e9; // (when this computer last switched between the hub's mix and direct streams; when it last
@@ -1108,10 +1112,10 @@ void handle_ctl(RtLink *l, Slot &p, const unsigned char *d, int n, double now)
 // The adaptive jitter buffer (James, rt). Wi-Fi delivers in bursts (the MacBook: nothing for 20-60 ms, then all of it at once), and a fixed
 // 30 ms buffer underran there twice a second, the stream flapping on every receiver. AOO's own latency setting does the work
 // (AooSink::setLatency, kAooCtlSetLatency: the sink re-buffers its stream at the new size), so:
-//  - it grows (+20 ms, up to the ceiling) on an underrun: that is already a gap while AOO buffers again, so re-buffering a little longer
+//  - it grows (+10 ms, up to the ceiling) on an underrun: that is already a gap while AOO buffers again, so re-buffering a little longer
 //    there costs nothing more than the gap that was coming anyway;
 //  - it shrinks (-10 ms) after BUF_STEADY s with no underrun, then every BUF_STEP s, only into room its streams never used lately (their
-//    measured fill at its lowest, BUF_MARGIN kept: fill_of), not back below a size that underran in the last BUF_RETRY s, and only while
+//    measured fill at its lowest, BUF_MARGIN kept: fill_of), not back below a size held after close underruns (BUF_LONE), and only while
 //    that peer is quiet: a re-buffer is a short gap, so it lands in silence between songs or phrases, never in a held note. (It was: never
 //    below the largest size that underran until 120 s passed with none, so at ~3 underruns a minute every buffer ratcheted to the ceiling.)
 //    shortcut: a peer that never goes quiet keeps its bigger buffer; fine for a band.
@@ -1153,8 +1157,13 @@ void adapt(RtLink *l, Slot &p, double now)
   double want = p.target_ms;
   if (p.jitter + p.pjitter + p.mjitter != p.jitter_seen) { // (Talk's, Play's or its mix's: one buffer size for all, they come over the same network)
     p.jitter_seen = p.jitter + p.pjitter + p.mjitter;
-    if (now - p.last_retry < p.retry_s / sp) p.retry_s = std::min(p.retry_s * 2, BUF_RETRY_MAX); // (it went back too soon)
-    p.fail_ms = now - p.last_under > p.retry_s / sp ? p.target_ms : std::max(p.fail_ms, p.target_ms);
+    const bool back = now - p.last_retry < p.retry_s / sp; // (it went back below a held size too soon)
+    if (now - p.last_under > BUF_LONE / sp && !back) ++p.lone; // (a lone spike: grown a step, not held)
+    else {
+      if (back) p.retry_s = std::min(p.retry_s * 2, BUF_RETRY_MAX);
+      p.fail_ms = now < p.hold_until ? std::max(p.fail_ms, p.target_ms) : p.target_ms;
+      p.hold_until = now + p.retry_s / sp;
+    }
     p.last_under = now;
     want = p.target_ms + BUF_GROW;
   } else if (now - p.last_under > BUF_STEADY / sp && now - p.last_change > BUF_STEP / sp && quiet) {
@@ -1162,8 +1171,8 @@ void adapt(RtLink *l, Slot &p, double now)
     double room = 1e9;
     for (const Stream &x : st) if (x.on) { const double lo = x.lw->low(); if (lo < 0) known = false; else room = std::min(room, lo); }
     if (known && room >= BUF_SHRINK + BUF_MARGIN)
-      want = std::max(p.target_ms - BUF_SHRINK, now - p.last_under > p.retry_s / sp ? p.floor_ms : p.fail_ms + BUF_SHRINK);
-    if (want < p.fail_ms + BUF_SHRINK) p.last_retry = now; // (below a size that underran: watched for the next underrun)
+      want = std::max(p.target_ms - BUF_SHRINK, now < p.hold_until ? p.fail_ms + BUF_SHRINK : p.floor_ms);
+    if (p.fail_ms > 0 && want < p.fail_ms + BUF_SHRINK && want < p.target_ms) p.last_retry = now; // (below a held size: watched)
     if (now - p.last_under > BUF_CALM / sp) p.retry_s = BUF_RETRY;
   }
   want = std::max(p.floor_ms, std::min(p.ceil_ms, want));
@@ -1473,6 +1482,12 @@ void rt_test_hold(RtLink *l, double ms) { l->hold_until.store(now_s() + ms / 100
 void rt_test_speed(RtLink *l, double x) { std::lock_guard<std::mutex> st(l->stats_mx); l->speed = x > 0 ? x : 1; }
 void rt_test_hold_mix(RtLink *l, double ms) { l->hold_mix.store(now_s() + ms / 1000.0); }
 void rt_test_drift(RtLink *l, int resample) { l->resample = resample != 0; } // (before rt_start)
+double rt_test_clock(const double *t, int n, int len, double srate)
+{
+  std::unique_ptr<Clock> c(new Clock());
+  for (int i = 0; i < n; ++i) clock_step(*c, len, srate, aoo_ntpTimeFromSeconds(1e6 + t[i]));
+  return c->ppm.load();
+}
 
 void rt_set_extra(RtLink *l, rt_extra_fn fn, void *user)
 {
@@ -1552,7 +1567,7 @@ std::string rt_status(RtLink *l)
              p.ppeak.exchange(0.f), p.pgain.load(), l->hub_state.load() == 2 ? "true" : "false", hears_direct(p, now) ? "true" : "false"); // (via_hub: heard in the hub's mix; direct: my streams go to it)
     o.insert(o.size() - 1, b); // (inside the peer's object)
     // (fill_ms: Talk's buffer as measured now; jitter: the underruns that grew it; switched: those a hub mix <-> direct switch brought; trims)
-    snprintf(b, sizeof(b), ",\"fill_ms\":%.1f,\"jitter\":%lld,\"switched\":%lld,\"trims\":%lld", p.fill_ms, p.jitter + p.pjitter + p.mjitter, p.switched, p.trims);
+    snprintf(b, sizeof(b), ",\"fill_ms\":%.1f,\"jitter\":%lld,\"switched\":%lld,\"trims\":%lld,\"lone\":%lld", p.fill_ms, p.jitter + p.pjitter + p.mjitter, p.switched, p.trims, p.lone);
     o.insert(o.size() - 1, b);
   }
   o += "}}";
@@ -1574,7 +1589,7 @@ void rt_capture(RtLink *l, const double *const *in, int nin, int len, double sra
     l->callbacks.fetch_add(1, std::memory_order_relaxed);
     l->seen_sr.store(srate, std::memory_order_relaxed);
     l->seen_len.store(len, std::memory_order_relaxed);
-    l->tfed = clock_step(l->clk, len, srate); // (every block, paused or not: the device's clock runs on)
+    l->tfed = clock_step(l->clk, len, srate, aoo_getCurrentNtpTime()); // (every block, paused or not: the device's clock runs on)
     l->clk_cb = l->callbacks.load(std::memory_order_relaxed);
     if (l->live.load() && (int)srate == l->cfg_sr && len == l->cfg_len) {
       if (const int k = l->skip_in.exchange(0)) l->src->reportXRun(k); // (blocks a reconfigure paused: the stream keeps its time)

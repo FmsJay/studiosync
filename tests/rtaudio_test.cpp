@@ -339,53 +339,94 @@ static void rescue_test()
   for (int i = 0; i < 3; ++i) rt_free(L[i]);
 }
 
-// ---- A buffer that keeps going back to a size that underran (1.0.21 in REAPER: the laptop's buffer for the desktop's mix over the internet
-// sat at 30 ms with 15 underruns in 10 minutes: spikes ~40 s apart, and each time 45 s passed it went back down). D sends silence to E; E's
-// receive thread stalls 60 ms every 3 s (a minute, at E's timings 20x faster here). It grows to hold them; the time before it tries a size
-// that underran again doubles each time that size underruns again, so after the first few the stalls are held.
-static void flap_test()
+// ---- Latency against underruns over a realistic spike pattern (1.0.22 in REAPER: 6 underruns took the desktop's buffer for the laptop from
+// 45 to 110 ms and it stayed, latency 97 -> 161 ms). D sends silence to E with E's receive thread held 3-12 ms every 50-150 ms (an internet
+// path's ordinary jitter) and 60 ms at each spike, at E's timings 20x faster (gap_s: the spikes' spacing in those timings). Returns E's
+// buffer for D averaged over the run (ms) and counts the underruns (all, and those in the run's second half). Lone spikes (40 s apart) should
+// each cost their one underrun and leave the buffer near its floor; spikes 8 s apart are the network's steady jitter and get held.
+static double spike_run(double gap_s, int spikes, int port0, long long &under, long long &late_under, double &stalled)
 {
-  const int SR = 48000, LEN = 256, PD = 47481, PE = 47482;
+  const int SR = 48000, LEN = 256;
   char pd[32], pe[32];
-  snprintf(pd, sizeof pd, "127.0.0.1:%d", PD); snprintf(pe, sizeof pe, "127.0.0.1:%d", PE);
+  snprintf(pd, sizeof pd, "127.0.0.1:%d", port0); snprintf(pe, sizeof pe, "127.0.0.1:%d", port0 + 1);
   RtLink *D = rt_new(), *E = rt_new();
-  rt_peers(D, (std::string("{\"peers\":[\"") + pe + "\"],\"port\":" + std::to_string(PD) + ",\"secret\":\"studio\"}").c_str());
-  rt_peers(E, (std::string("{\"peers\":[\"") + pd + "\"],\"port\":" + std::to_string(PE) + ",\"secret\":\"studio\"}").c_str());
+  rt_peers(D, (std::string("{\"peers\":[\"") + pe + "\"],\"port\":" + std::to_string(port0) + ",\"secret\":\"studio\"}").c_str());
+  rt_peers(E, (std::string("{\"peers\":[\"") + pd + "\"],\"port\":" + std::to_string(port0 + 1) + ",\"secret\":\"studio\"}").c_str());
   rt_start(D, 0, 1, 128, 0, "127.0.0.1"); rt_start(E, 0, 1, 128, 0, "127.0.0.1");
   rt_test_speed(E, 20);
   auto at = [&](double s) { return (int)(s * SR / LEN); };
+  const double gap = gap_s / 20, first = 1.0, end = first + spikes * gap;
   std::vector<double> in(LEN, 0.0), o1(LEN), o2(LEN);
   const double *ii[1] = { in.data() };
   double *oo[2] = { o1.data(), o2.data() };
-  long long u_mid = -1, stalls = 0;
-  double stalled = 0;
-  std::string targets;
+  unsigned rng = 777;
+  auto rnd = [&](double lo, double hi) { rng = rng * 1103515245u + 12345u; return lo + (hi - lo) * ((rng >> 8) & 0xffff) / 65535.0; };
+  double sum = 0, next_jit = 0.5, next_spike = first;
+  long long n = 0, u0 = -1, u_half = -1;
+  stalled = 0;
   const auto t0 = std::chrono::steady_clock::now();
-  for (int b = 0; b < at(19.5); ++b) {
+  for (int b = 0; b < at(end); ++b) {
     const auto due = t0 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
     while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
-    if (b > at(9.5)) stalled = std::max(stalled, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - due).count());
-    if (b >= at(1.0) && (b - at(1.0)) % at(3.0) == 0) {
+    stalled = std::max(stalled, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - due).count());
+    const double now = (double)b * LEN / SR;
+    if (now >= next_spike) { rt_test_hold(E, 60); next_spike += gap; next_jit = now + 0.1; }
+    else if (now >= next_jit) { rt_test_hold(E, rnd(3, 12)); next_jit = now + rnd(0.05, 0.15); }
+    if (b >= at(first) && b % 4 == 0) {
       const std::string s = rt_status(E);
-      targets += field(s, pd, "target_ms") + " ";
-      if (b >= at(9.5) && u_mid < 0) u_mid = atoll(field(s, pd, "underruns").c_str());
-      rt_test_hold(E, 60);
-      ++stalls;
+      if (u0 < 0) u0 = atoll(field(s, pd, "underruns").c_str());
+      if (u_half < 0 && now >= (first + end) / 2) u_half = atoll(field(s, pd, "underruns").c_str());
+      sum += atof(field(s, pd, "target_ms").c_str()); ++n;
     }
     rt_capture(D, ii, 1, LEN, SR); rt_capture(E, ii, 1, LEN, SR);
     rt_mix(D, oo, 2, LEN, SR); rt_mix(E, oo, 2, LEN, SR);
   }
-  const std::string end = rt_status(E);
-  const long long u_end = atoll(field(end, pd, "underruns").c_str());
-  printf("     flap: %lld stalls of 60 ms, 3 s apart: E's buffer for D before each %s-> %s ms; underruns %lld, %lld of them in the last 4 stalls\n",
-         stalls, targets.c_str(), field(end, pd, "target_ms").c_str(), u_end, u_mid >= 0 ? u_end - u_mid : -1);
-  check_unless_stalled(u_mid >= 0 && u_end - u_mid <= 1, stalled, "flap: once a size has underrun twice on its retry, the stalls are held (it doesn't keep going back down)");
+  const long long u_end = atoll(field(rt_status(E), pd, "underruns").c_str());
+  under = u_end - u0; late_under = u_end - u_half;
   rt_free(D); rt_free(E);
+  return n ? sum / n : -1;
+}
+static void spike_tests()
+{
+  long long u40 = 0, l40 = 0, u8 = 0, l8 = 0;
+  double s40 = 0, s8 = 0;
+  const double b40 = spike_run(40, 8, 47481, u40, l40, s40), b8 = spike_run(8, 20, 47483, u8, l8, s8);
+  printf("     spikes: 60 ms spikes 40 s apart (8): E's buffer %.1f ms on average, %lld underruns (a lone spike's ~30 ms of audio each); 8 s apart"
+         " (20): %.1f ms on average, %lld underruns, %lld in the second half\n", b40, u40, b8, u8, l8);
+  check_unless_stalled(b40 < 40 && u40 <= 8, s40, "spikes: lone spikes cost their own underrun, not a bigger buffer for minutes (under 40 ms on average)");
+  check_unless_stalled(l8 <= 2 && b8 > 50, s8, "spikes: spikes close together are held (the buffer grows for them and stays)");
+}
+
+// ---- The desktop's audio clock (1.0.22: clock_ppm -1321 and -1498 where it counts -102 over minutes). Probed read-only on the desktop:
+// WASAPI through Voicemeeter calls REAPER back on a 10 ms timer (480 samples a tick: the 512-sample block runs 15 ticks in 16) on the system's
+// clock, and about once a minute drops a whole tick (the earliest callback's offset flat for a minute, then 10 ms later): a staircase that the
+// median of 2-30 s slopes read as flat (+10) or, with a step inside, -1300. The estimator over 10 minutes of such callbacks (each 0-2 ms late,
+// some 50 ms), from rt_test_clock: a tick dropped every 80 s is -125 ppm; and a plain device 102 ppm slow with the same lateness.
+static void clock_tests()
+{
+  unsigned rng = 4242;
+  auto rnd = [&](double lo, double hi) { rng = rng * 1103515245u + 12345u; return lo + (hi - lo) * ((rng >> 8) & 0xffff) / 65535.0; };
+  auto late = [&]() { return rnd(0, 1) < 0.002 ? 0.05 : rnd(0, 0.002); };
+  std::vector<double> t;
+  int acc = 0;
+  for (long long j = 0; j < 60000; ++j) { // (10 minutes of 10 ms ticks, one dropped every 80 s)
+    if (j % 8000 != 7999) acc += 480;
+    for (; acc >= 512; acc -= 512) t.push_back(j * 0.010 + late());
+  }
+  const double stair = rt_test_clock(t.data(), (int)t.size(), 512, 48000);
+  const double stair2 = rt_test_clock(t.data(), (int)t.size() / 5, 512, 48000); // (2 minutes in)
+  t.clear();
+  for (long long k = 0; k < 56250; ++k) t.push_back(k * 512 / (48000 * (1 - 102e-6)) + late());
+  const double slow = rt_test_clock(t.data(), (int)t.size(), 512, 48000);
+  printf("     clock: Voicemeeter's staircase (a 10 ms tick dropped every 80 s: -125 ppm) reads %.0f ppm after 10 minutes, %.0f after 2; a device"
+         " 102 ppm slow reads %.0f\n", stair, stair2, slow);
+  check(std::fabs(stair + 125) < 15 && std::fabs(stair2 + 125) < 60, "clock: a staircase of dropped buffers is measured over minutes (not as its flat parts)");
+  check(std::fabs(slow + 102) < 5, "clock: a plain slow device, its callbacks late by 0-2 ms and now and then 50 ms, measured within 5 ppm");
 }
 
 int main(int argc, char **argv)
 {
-  if (argc > 1 && strcmp(argv[1], "underruns") == 0) { drift_tests(); trim_test(); switch_test(); rescue_test(); flap_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
+  if (argc > 1 && strcmp(argv[1], "underruns") == 0) { drift_tests(); trim_test(); switch_test(); rescue_test(); spike_tests(); clock_tests(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "hubload") == 0) { hub_loads(true); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   const int SR = 48000, LEN = 256, PA = 47391, PB = 47392, PC = 47393;
   const double PI = 3.14159265358979;
@@ -663,10 +704,12 @@ int main(int argc, char **argv)
     std::string s_h, s_w, s_x, s_y;
     std::thread stopper;
     long long n4 = 0;
+    double hub_stall = 0; // (the test's own longest stall: the timing checks below are passed over in CI past 15 ms, check_unless_stalled)
     const auto t3 = std::chrono::steady_clock::now();
     for (int b = 0; b < total; ++b) {
       const auto due = t3 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
       while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
+      hub_stall = std::max(hub_stall, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - due).count());
       for (int k = 0; k < LEN; ++k, ++n4)
         for (int i = 0; i < 4; ++i) {
           const bool on = i != 1 || (b >= w_on && b < w_off) || b >= w_on2;
@@ -709,15 +752,15 @@ int main(int argc, char **argv)
       printf("\n");
     }
     check(lv_direct, "hub: peer to peer, each listener hears each at its own level (within 25%)");
-    check(field(s_x, "hub", "state") == "\"hub\"" && field(s_w, "hub", "state") == "\"hub\"" && field(s_y, "hub", "state") == "\"hub\"",
-          "hub: W, X and Y hear through H by 6 s");
-    check(field(s_h, "hub", "serving") == "3" && field(s_h, "hub", "serve") == "true", "hub: H mixes for the three");
+    check_unless_stalled(field(s_x, "hub", "state") == "\"hub\"" && field(s_w, "hub", "state") == "\"hub\"" && field(s_y, "hub", "state") == "\"hub\"",
+          hub_stall, "hub: W, X and Y hear through H by 6 s");
+    check_unless_stalled(field(s_h, "hub", "serving") == "3" && field(s_h, "hub", "serve") == "true", hub_stall, "hub: H mixes for the three");
     check(lv_hub, "hub: through H, each listener still hears each at its own level (H's mix per listener, within 25%)");
-    check(field(s_w, nm[2], "direct") == "false" && field(s_w, nm[3], "direct") == "false" && field(s_w, nm[0], "direct") == "true",
-          "hub: W sends its stream only to H (X and Y hear it through H)");
+    check_unless_stalled(field(s_w, nm[2], "direct") == "false" && field(s_w, nm[3], "direct") == "false" && field(s_w, nm[0], "direct") == "true",
+          hub_stall, "hub: W sends its stream only to H (X and Y hear it through H)");
     printf("     hub: W sent %lld datagrams in a second peer to peer (to H, X, Y), %lld through H; by 6 s the mix paused enough to ask for streams back: W %s, X %s, Y %s times\n",
            sent_w[0], sent_w[1], field(s_w, "hub", "rescues").c_str(), field(s_x, "hub", "rescues").c_str(), field(s_y, "hub", "rescues").c_str());
-    check(sent_w[1] > 0 && sent_w[1] * 2 < sent_w[0], "hub: W sends less than half as much through the hub (one stream instead of three)");
+    check_unless_stalled(sent_w[1] > 0 && sent_w[1] * 2 < sent_w[0], hub_stall, "hub: W sends less than half as much through the hub (one stream instead of three)");
     // the extra hop: W's onset heard on X directly (1 s) and through H (5 s)
     auto onset = [&](int b0) { for (int b = b0; b < b0 + at(0.5) && b < (int)amp[2][1].size(); ++b) if (amp[2][1][b] > 0.075) return (b - b0) * 1000.0 * LEN / SR; return -1.0; };
     const double on_d = onset(w_on), on_h = onset(w_on2);
@@ -726,7 +769,7 @@ int main(int argc, char **argv)
     check(on_d >= 0 && on_h > on_d && on_h < on_d + 120, "hub: the hop through H adds a little latency (under 120 ms)");
     check(atof(field(s_x, "hub", "latency_ms").c_str()) > atof(field(s_x, "hub", "direct_ms").c_str()) && atof(field(s_x, "hub", "direct_ms").c_str()) > 0,
           "hub: X's status measures both (through H, and directly before)");
-    check(atof(field(s_h, "hub", "load").c_str()) > 0 && atof(field(s_h, "hub", "load").c_str()) < 0.5, "hub: H's mixing measured, well under half a core");
+    check_unless_stalled(atof(field(s_h, "hub", "load").c_str()) > 0 && atof(field(s_h, "hub", "load").c_str()) < 0.5, hub_stall, "hub: H's mixing measured, well under half a core");
     // talkback through the hub: Y leaves X out, so X's mix has no Y, W's still has
     const double tb_x = avg(2, 3, 6.9, 7.3), tb_w = avg(1, 3, 6.9, 7.3), back_x = avg(2, 3, 7.8, 8.3);
     printf("     hub: Y left X out: X hears Y at %.3f, W at %.3f; let back in: X at %.3f\n", tb_x, tb_w, back_x);
@@ -736,18 +779,19 @@ int main(int argc, char **argv)
     const double g_in = gap(2, 3, 2.4, 4.5, 0.25), g_drop = gap(2, 3, 8.4, 9.6, 0.25), g_drop_w = gap(1, 3, 8.4, 9.6, 0.25);
     printf("     hub: X's longest gap in Y: %.0f ms switching to H, %.0f ms when H dropped (W's: %.0f ms); X's buffer for H %s ms, fallbacks %s\n", g_in, g_drop, g_drop_w,
            field(end_x, nm[0], "target_ms").c_str(), field(end_x, "hub", "fallbacks").c_str());
-    check(g_in < 30, "hub: no gap switching to the hub (its mix flows before it's heard)");
+    check_unless_stalled(g_in < 30, hub_stall, "hub: no gap switching to the hub (its mix flows before it's heard)");
     // (measured here: 16-21 ms, under the 30 ms buffer: the streams were asked back while the mix's buffer played. 60: the macOS CI runner's stalls)
-    check(g_drop < 60 && g_drop_w < 60, "hub: H dropping leaves a gap of about a jitter buffer at most, then each other's streams at full level");
+    check_unless_stalled(g_drop < 60 && g_drop_w < 60, hub_stall, "hub: H dropping leaves a gap of about a jitter buffer at most, then each other's streams at full level");
     check(about(avg(2, 3, 9.8, 10.4), 0.5) && about(avg(2, 1, 9.8, 10.4), 0.15) && avg(2, 0, 9.8, 10.4) < 0.05, "hub: after the drop X hears Y and W directly at its own levels (and no H)");
-    check(field(end_x, "hub", "state") == "\"direct\"" && field(end_x, "hub", "fallbacks") == "1", "hub: X's status: direct, one fallback");
+    check_unless_stalled(field(end_x, "hub", "state") == "\"direct\"" && field(end_x, "hub", "fallbacks") == "1", hub_stall, "hub: X's status: direct, one fallback");
     for (int i = 0; i < 4; ++i) rt_free(L[i]);
   }
   drift_tests(); // (the four-computer test's underruns: drift, a buffer left high, a hub switch)
   trim_test();
   switch_test();
   rescue_test();
-  flap_test();
+  spike_tests();
+  clock_tests();
   hub_loads(false); // (the hub's load at REAPER's small blocks, as the laptop's ASIO runs: 128 and 64 samples)
   rt_free(A); rt_free(B); rt_free(C); rt_free(bad);
   printf(fails ? "fails %d\n" : "ok, fails 0\n", fails);

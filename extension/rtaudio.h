@@ -34,6 +34,8 @@ void rt_test_speed(RtLink *l, double x);
 // correction off (resample 0).
 void rt_test_hold_mix(RtLink *l, double ms);
 void rt_test_drift(RtLink *l, int resample);
+// tests only: the audio clock's estimate (ppm, as clock_ppm) after callbacks at these times (s) with this block size and rate.
+double rt_test_clock(const double *t, int n, int len, double srate);
 // What this computer sends. peer "" (or null): everything, on 0 = silence while the stream stays up (Mute me, push-to-talk; kept across
 // restarts). A peer in the list: whether it gets this computer's stream (talkback). -> 1 done, 0 when that peer isn't in the list. (James, rt)
 int rt_send(RtLink *l, const char *peer, int on);

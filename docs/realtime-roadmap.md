@@ -1831,6 +1831,21 @@ Problems found, not fixed (risky or a behaviour change; for James to pick):
       overflows (8 -> 13: its send thread held up 100 ms) and stalls are the VM's own; its numbers not changing between readings wasn't
       looked at (no probe reaches it). Latency doesn't move until buffers shrink, which needs underruns to stop (and a peer that goes quiet:
       the Mac's mic noise may keep it from ever being quiet, so its 140 ms buffer on the desktop, fill 181, is neither shrunk nor trimmed).
+  - **In REAPER with 1.0.22 (10 minutes of silence):** rescues and underruns far down (laptop rescues +9, was +30; LinuxBox's clock
+    66 ppm, no overflows), but buffers grew and stayed (desktop's for the laptop 45 -> 110 ms after 6 underruns, latency 97 -> 161 ms;
+    through the hub 234 -> 286), and the desktop's `clock_ppm` read -1321 and -1498. So (2026-11-20, third pass):
+    - **The desktop's clock, probed:** WASAPI through Voicemeeter calls REAPER back on a 10 ms timer on the system's clock (480 samples a
+      tick, the 512-sample block 15 ticks in 16), and about once a minute drops a whole tick: the earliest callback's offset stays flat for
+      a minute, then jumps 10 ms (20.5 ms in 172 s: -119 ppm, the count's -102). The median of 2-30 s slopes read the flat parts (~+10) or,
+      with a step inside its 30 s, -1300. Now the rate is the slope between the oldest and newest per-2 s minima over 10 minutes (3 averaged
+      at each end). Test (`rt_test_clock`, synthetic callbacks): a tick dropped every 80 s reads -118 ppm after 10 minutes (-125 true), -90
+      after 2; the median read -3. A plain device 102 ppm slow with 0-2 ms (and some 50 ms) lateness: -102.
+    - **Latency first:** the buffer grows 10 ms an underrun (was 20); an underrun with none other in the last 30 s is a lone spike and isn't
+      held (it comes back down after 15 s); underruns closer together hold the size 45 s, doubling to 3 minutes (was 8) when going back
+      below it underruns again; per peer `lone` counts the lone ones. Test, 60 ms spikes on top of 3-12 ms jitter at 20x timings: 40 s
+      apart, the buffer averages 33.7 ms with 8 underruns for 8 spikes (1.0.22's policy: 52.5 ms and 5); 8 s apart, held: 56.1 ms, 2
+      underruns in the second half. (The round trip doesn't enter: the buffer sizes for jitter only; latency is it plus half the trip.)
+    - The hub test's 8 timing checks are passed over in CI when the test process itself stalled over 15 ms (SS_TIMING_STRICT keeps them).
 ## Session recaps and smart take names (rt-recap branch, 2026-11-19; offline tests only, not run in REAPER yet)
 - **Recap (lib/recap.lua):** at each end of session (20 quiet minutes, Leave, Live sync stopping; right after the end-of-session version),
   a few bullets from the room's events, no new tracking and no model: who (event authors, this computer, who's here), how long (first to last
