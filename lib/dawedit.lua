@@ -1,7 +1,7 @@
 -- The shared DAW view, stage 2 (docs/realtime-roadmap.md "Shared DAW view"): item and marker edits from the web UI's Project page
 -- (lib/webui/daw.js, through lib/dawview.lua's action). Each edit is checked as this computer's own edits are before they go out:
 --   items: mirror.watch's rule (its `allowed`): the room's (sync.authority) for the track's name and the spot, or the track's or item's maker
---     while nobody has claimed it; where it is now and where it goes; and not while a bandmate is editing it (presence's holds)
+--     while nobody has claimed it; where it is now and where it goes (a bandmate editing it too isn't a refusal: both merge, rt-merge)
 --   markers and regions: sync.watch_timeline's: the song's timeline is the driver's (Claims: anyone's), and a region someone claimed is theirs
 --   In Claims, an item on what a bandmate here has claimed isn't refused: it's made, and mirror.watch holds it and asks them for it, as for an
 --   edit made in REAPER (lib/claimask.lua); the answer says who was asked (`ask`). rt-claims
@@ -146,9 +146,9 @@ dawedit.shown_tracks, dawedit.find_item, dawedit.track_name, dawedit.in_undo = s
 -- The room's rule now (sync.authority, with the session's regions: region claims hold). -> can, who.
 function dawedit.authority(cfg, b) return require("sync").authority(cfg, b.song, b.room, band.read_json(band.session_path(cfg, b.song))) end
 -- Why this computer's user may not change item `it` on track `tr` where it is (`pos`) right now, or nil; and the rule, to ask again for
--- where it goes (t, at -> why). Not while a bandmate is editing it (presence's holds), then mirror.watch's rule.
+-- where it goes (t, at -> why). mirror.watch's rule. (A bandmate editing it too isn't a refusal: both changes merge. rt-merge)
 function dawedit.item_why(cfg, b, can, who, it, tr, pos)
-  local mirror, presence = require("mirror"), require("presence")
+  local mirror = require("mirror")
   local user, ioid = cfg.user, mirror.item_oid(it)
   local function refusal(t, at)
     local why = dawedit.item_refusal(can, who, user, track_name(t), mirror.track_oid(t), ioid ~= "" and ioid or nil, at)
@@ -157,8 +157,6 @@ function dawedit.item_why(cfg, b, can, who, it, tr, pos)
     if owner then dawedit.asking = owner; return nil end
     return why
   end
-  local holder = ioid ~= "" and presence.holder(presence.peers(cfg, b.song, b.room), ioid)
-  if holder and holder ~= user then return tostring(holder) .. " is editing that item right now: try again in a few seconds", refusal end
   return refusal(tr, pos), refusal
 end
 

@@ -138,8 +138,8 @@ assert(r.why:find("changed meanwhile"), "the phone's view is stale: refused")
 r = select(2, pick("Chilio", 7))
 assert(r.why:find("isn't there"), "a take that isn't there")
 peers = { { user = "James", editing = { "I-JAMES-1" } } }
-r = select(2, pick("Chilio", 2))
-assert(r.why:find("James is editing that item"), "a bandmate's hold: refused")
+r = select(2, pick("Chilio", 1))
+assert(r.ok and vox.active == vox.takes[2], "a bandmate editing it too: not refused, no hold (rt-merge): " .. tostring(r.why))
 peers = {}
 room("driver")
 r = select(2, pick("Chilio", 0))

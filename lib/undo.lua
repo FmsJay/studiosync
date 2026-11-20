@@ -125,12 +125,22 @@ function undo.step(proj, cfg, b, redo, opts)
   local others = mirror.later_by_others(all, i)
   if opts.ask or #others > 0 then
     if reaper.MB(what:sub(1, 1):upper() .. what:sub(2) .. "?\n\nIt goes to everyone." .. (#others > 0 and ("\n\n" .. table.concat(others, ", ") ..
-        " changed it after that: their change to it goes back too.") or ""), "StudioSync", 4) ~= 6 then return nil end
+        " changed it after that: what they changed stays, unless it's what you changed.") or ""), "StudioSync", 4) ~= 6 then return nil end
   end
   local can, who = sync.authority(cfg, b.song, b.room, band.read_json(band.session_path(cfg, b.song)))
   local o = { can = can, mode = who and who.mode, driver = who and who.driver, is_claimed = who and who.is_claimed, local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1" }
   -- (the whole act, as Restore's rows: it could land on a print swapped in the same second, and nothing you'd hear went back)
   local plan, ids = mirror.plan_undo_moment(all, i)
+  -- (only your change goes back: what a bandmate changed since in the same item, track or automation, and you didn't, stays. rt-merge)
+  if plan then
+    local room_dir, mine, newest = sync.room_dir(cfg, b.song, b.room), {}, {}
+    for _, id in ipairs(ids or {}) do mine[id] = true end
+    for _, x in ipairs(all) do if mine[x.id] and x.oid and plan[x.oid] then newest[x.oid] = x end end
+    for oid, x in pairs(newest) do
+      local _, _, kev = mirror.known(proj, oid)
+      plan[oid] = mirror.undo_keeping(x, plan[oid], (kev or "") ~= "" and mirror.event_file(room_dir, kev) or nil)
+    end
+  end
   -- (every change of the act on each restore event, only when there are several: the next presses redid the same restore. A few bytes an
   -- event. Round 1 review, 0.59.45)
   local act = ids and #ids > 1 and ids or nil

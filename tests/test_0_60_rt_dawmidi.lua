@@ -191,7 +191,7 @@ r = select(2, note("James", { op = "add", item = { lane = 0, idx = 0, p = 5, l =
 assert(r.why:find("item changed meanwhile"), "an item that isn't where the page saw it")
 peers = { { user = "Chilio", editing = { "I-JAMES-1" } } }
 r = select(2, note("James", { op = "vel", item = KEYS, n = 0, s = 1920, k = 67, v = 50 }))
-assert(r.why:find("Chilio is editing that item"), "a bandmate's hold: refused")
+assert(r.ok and not r.why, "a bandmate editing it too: not refused, the two merge note by note (rt-merge): " .. tostring(r.why))
 peers = {}
 room("driver")
 assert(select(2, note("Chilio", { op = "vel", item = KEYS, n = 0, s = 1920, k = 67, v = 50 })).why:find("only the driver"), "Driver only")
@@ -220,7 +220,7 @@ assert(r.why:find("Chilio has claimed Bass") and #fake.tracks[3].envs[1].pts == 
 assert(select(2, auto("Chilio", { op = "add", lane = 1, e = 0, name = "Volume", t = 1, v = 0.5 })).ok, "the claimant's")
 peers = { { user = "Chilio", editing = { "E-JAMES-1" } } }
 r = select(2, auto("James", { op = "add", lane = 0, e = 1, name = "Pan", t = 5, v = 0.5 }))
-assert(r.why:find("Chilio is editing the automation") and #pan.pts == 1, "a bandmate's hold on the track's automation (mirror's E- object): refused")
+assert(r.ok and #pan.pts == 2, "a bandmate editing the track's automation too: not refused, the two merge point by point (rt-merge): " .. tostring(r.why))
 peers = {}
 room("claims") -- (Driver + claims, removed in rt: works as Driver only)
 assert(select(2, auto("Andie", { op = "add", lane = 0, e = 1, name = "Pan", t = 1, v = 0.5 })).why:find("only the driver"), "Driver + claims reads as Driver only")

@@ -811,8 +811,16 @@ function mirror.merge_item(base, winner, loser, loser_name)
     elseif wv == lv or lv == bv then out[e.key] = wv
     elseif wv == bv then out[e.key] = lv
     else
-      out[e.key] = wv; both[#both + 1] = e.key
-      if e.word == "<SOURCE" then keep_take[e.section] = true end
+      -- (both changed one take's MIDI: note by note, so two people adding notes keep both. rt-merge)
+      local notes, clash = nil, false
+      if e.word == "<SOURCE" then notes, clash = mirror.merge_midi(bv, wv, lv) end
+      if notes then
+        out[e.key] = notes
+        if clash then both[#both + 1] = e.key .. "\0notes" end -- (a note both changed: the winner's. Not a take of theirs, below)
+      else
+        out[e.key] = wv; both[#both + 1] = e.key
+        if e.word == "<SOURCE" then keep_take[e.section] = true end
+      end
     end
   end
   local lines, section, after = { "<ITEM" }, 0, {}
@@ -838,6 +846,306 @@ function mirror.merge_item(base, winner, loser, loser_name)
   end
   lines[#lines + 1] = ">"
   return table.concat(lines, "\n") .. "\n" .. (#after > 0 and (table.concat(after, "\n") .. "\n") or ""), both
+end
+
+-- rt-merge (docs/rt/rt-merge.md): three-way merges finer than an item's lines, so two people editing one thing at once both keep their work.
+-- Which side stands for one key, by what base, winner and loser hold there (nil: nothing): "w" or "l", and whether both changed it. Pure.
+function mirror.side3(b, w, l)
+  if w == l or l == b then return "w", false end
+  if w == b then return "l", false end
+  return "w", true
+end
+-- Keyed lines (`list`: { key, text } in order) of three versions put together: each key from whichever side changed it (added, changed or
+-- taken away). -> the winner's order with what only the loser has after it, the texts that stand, and the keys both changed. Pure.
+local function merge_keyed(bl, wl, ll)
+  local b, w, l, out, both, seen = {}, {}, {}, {}, {}, {}
+  for _, e in ipairs(bl) do b[e[1]] = e[2] end
+  for _, e in ipairs(wl) do w[e[1]] = e[2] end
+  for _, e in ipairs(ll) do l[e[1]] = e[2] end
+  for _, list in ipairs({ wl, ll, bl }) do
+    for _, e in ipairs(list) do
+      local k = e[1]
+      if not seen[k] then
+        seen[k] = true
+        local s, clash = mirror.side3(b[k], w[k], l[k])
+        local v = l[k]
+        if s == "w" then v = w[k] end -- (not "and/or": the winner's nil, taken away, would read as the loser's)
+        if v then out[#out + 1] = { k, v } end
+        if clash then both[#both + 1] = k end
+      end
+    end
+  end
+  return out, both
+end
+-- Keys for lines: the first word, and which of that word it is ("PT 4.5": a point, by its time, when `pt`).
+local function keyed_lines(lines, pt)
+  local nth, out = {}, {}
+  for _, t in ipairs(lines) do
+    local word = t:match("^(%S+)") or t
+    if pt and word == "PT" then word = "PT " .. string.format("%.10g", tonumber(t:match("^PT%s+(%S+)")) or 0) end
+    nth[word] = (nth[word] or 0) + 1
+    out[#out + 1] = { word .. "#" .. nth[word], t }
+  end
+  return out
+end
+
+-- A MIDI take's source block (<SOURCE MIDI or MIDIPOOL) as notes and events. -> { head, tail (lines or blocks before and after the events),
+-- units (key -> { cmp, evs }), order, ppq }, or nil when it isn't one or has something between its events it doesn't know. Pure.
+-- A note is a note-on with the next note-off of its channel and pitch, keyed by channel, pitch and start; any other event by its tick, status and
+-- first byte (a SysEx or text event <X ...> by its tick and data); the end-of-source event (the last, a CC 123) is one unit, END.
+-- Selection (lower-case e) doesn't count as a change: it's each person's own.
+local function midi_read(block)
+  if type(block) ~= "string" then return nil end
+  local lines = {}
+  for l in block:gmatch("[^\n]+") do lines[#lines + 1] = l end
+  local kind = lines[1] and lines[1]:match("^<SOURCE (%S+)$")
+  if not (kind == "MIDI" or kind == "MIDIPOOL") or lines[#lines] ~= ">" then return nil end
+  local head, tail, evs, tick, i = {}, {}, {}, 0, 2
+  local function other(text) if #evs > 0 then tail[#tail + 1] = text else head[#head + 1] = text end end
+  while i < #lines do
+    local l = lines[i]
+    local flag, d, rest = l:match("^([Ee]m?)%s+(%d+)%s*(.*)$")
+    local xflag, xd, xrest = l:match("^<([Xx]m?)%s+(%d+)%s*(.*)$")
+    if flag then
+      if #tail > 0 then return nil end
+      tick = tick + tonumber(d)
+      evs[#evs + 1] = { tick = tick, flag = flag, bytes = rest }
+    elseif xflag then
+      if #tail > 0 then return nil end
+      tick = tick + tonumber(xd)
+      local body = {}
+      i = i + 1
+      while i < #lines and lines[i] ~= ">" do body[#body + 1] = lines[i]; i = i + 1 end
+      if i >= #lines then return nil end
+      evs[#evs + 1] = { tick = tick, flag = "<" .. xflag, bytes = xrest, body = table.concat(body, "\n") }
+    elseif l:sub(1, 1) == "<" then -- (another block, before or after the events: kept whole)
+      local b, depth = { l }, 1
+      while depth > 0 do
+        i = i + 1
+        if i >= #lines then return nil end
+        b[#b + 1] = lines[i]
+        if lines[i]:sub(1, 1) == "<" then depth = depth + 1 elseif lines[i] == ">" then depth = depth - 1 end
+      end
+      other(table.concat(b, "\n"))
+    else other(l) end
+    i = i + 1
+  end
+  local units, order, open, nth = {}, {}, {}, {}
+  local function add(key, cmp, list)
+    nth[key] = (nth[key] or 0) + 1
+    key = key .. "#" .. nth[key]
+    units[key] = { cmp = cmp, evs = list }
+    order[#order + 1] = key
+  end
+  local function plain(ev) return ev.tick .. " " .. ev.flag:upper() .. " " .. ev.bytes .. (ev.body and ("\n" .. ev.body) or "") end
+  local function hex(ev) local s, a, b = ev.bytes:match("^(%x%x)%s+(%x%x)%s+(%x%x)") ; if s then return tonumber(s, 16), tonumber(a, 16), tonumber(b, 16) end end
+  for k, ev in ipairs(evs) do
+    local s, a, v = nil, nil, nil
+    if not ev.body then s, a, v = hex(ev) end
+    local ch = s and (s & 0x0F)
+    if s and s >= 0x90 and s <= 0x9F and v > 0 then
+      local id = ch .. " " .. a
+      open[id] = open[id] or {}
+      table.insert(open[id], ev)
+      ev.on = true
+    elseif s and ((s >= 0x80 and s <= 0x8F) or (s >= 0x90 and s <= 0x9F and v == 0)) and open[ch .. " " .. a] and #open[ch .. " " .. a] > 0 then
+      local on = table.remove(open[ch .. " " .. a], 1)
+      on.off, ev.paired = ev, true
+    elseif k == #evs and s and s >= 0xB0 and s <= 0xBF and a == 0x7B then ev.ending = true end
+  end
+  for _, ev in ipairs(evs) do
+    if ev.ending then add("END", plain(ev), { ev })
+    elseif ev.on and ev.off then
+      local s, a = hex(ev)
+      add(string.format("N %d %d %d", s & 0x0F, a, ev.tick), plain(ev) .. "|" .. plain(ev.off), { ev, ev.off })
+    elseif not ev.paired then
+      local s, a = hex(ev)
+      add(ev.body and ("X " .. ev.tick .. " " .. ev.body) or string.format("E %d %s %s", ev.tick, s or ev.bytes, a or ""), plain(ev), { ev })
+    end
+  end
+  return { first = lines[1], head = head, tail = tail, units = units, order = order }
+end
+-- Two versions of a MIDI take's notes, changed apart from one base, put together note by note (docs/rt/rt-merge.md): each note or event from
+-- whichever side changed it, added or taken away; where both changed the same note, the winner's stands. A note moved is one taken away and one
+-- added, so two people moving one note differently keep both copies. -> the merged block and whether a note clashed, or nil when any of the
+-- three can't be read as notes (the take-copy rule stands) or they differ in ticks per quarter note. Pure.
+function mirror.merge_midi(base, winner, loser)
+  local b, w, l = midi_read(base), midi_read(winner), midi_read(loser)
+  if not (b and w and l) then return nil end
+  local function ppq(x) for _, t in ipairs(x.head) do local q = t:match("^HASDATA%s+%S+%s+(%S+)") if q then return q end end end
+  if ppq(b) ~= ppq(w) or ppq(w) ~= ppq(l) then return nil end
+  local clash, chosen = false, {}
+  local seen = {}
+  for _, x in ipairs({ w, l, b }) do
+    for _, k in ipairs(x.order) do
+      if not seen[k] then
+        seen[k] = true
+        local bu, wu, lu = b.units[k], w.units[k], l.units[k]
+        local s, c = mirror.side3(bu and bu.cmp, wu and wu.cmp, lu and lu.cmp)
+        clash = clash or c
+        local u = lu
+        if s == "w" then u = wu end
+        if u then for _, ev in ipairs(u.evs) do chosen[#chosen + 1] = ev end end
+      end
+    end
+  end
+  -- the end never before a note the other side put later
+  local top = 0
+  for _, ev in ipairs(chosen) do if not ev.ending then top = math.max(top, ev.tick) end end
+  for i, ev in ipairs(chosen) do
+    if ev.ending and ev.tick < top then chosen[i] = { tick = top, flag = ev.flag, bytes = ev.bytes, ending = true } end
+  end
+  -- in time order; at one tick note-offs first, then other events, then note-ons, the end last (then by text: the same everywhere)
+  local function class(ev) return ev.ending and 3 or ev.on and 2 or ev.paired and 0 or 1 end
+  local function text(ev) return ev.flag .. " " .. ev.bytes .. (ev.body or "") end
+  table.sort(chosen, function(x, y)
+    if x.tick ~= y.tick then return x.tick < y.tick end
+    if class(x) ~= class(y) then return class(x) < class(y) end
+    return text(x) < text(y)
+  end)
+  local lines, last = { w.first }, 0
+  local hb, hw, hl = keyed_lines(b.head), keyed_lines(w.head), keyed_lines(l.head)
+  for _, e in ipairs((merge_keyed(hb, hw, hl))) do lines[#lines + 1] = e[2] end
+  for _, ev in ipairs(chosen) do
+    local d = ev.tick - last
+    last = ev.tick
+    if ev.body then
+      lines[#lines + 1] = ev.flag .. " " .. d .. (ev.bytes ~= "" and (" " .. ev.bytes) or "")
+      lines[#lines + 1] = ev.body
+      lines[#lines + 1] = ">"
+    else lines[#lines + 1] = ev.flag .. " " .. d .. " " .. ev.bytes end
+  end
+  for _, e in ipairs((merge_keyed(keyed_lines(b.tail), keyed_lines(w.tail), keyed_lines(l.tail)))) do lines[#lines + 1] = e[2] end
+  lines[#lines + 1] = ">"
+  return table.concat(lines, "\n"), clash
+end
+
+-- A track's automation (mirror.track_parts' "env": its envelope blocks and their automation item lines), changed apart from one base, put
+-- together point by point: each envelope by its name (which of that name), each point by its time, each other line by its word. Where both
+-- changed the same point or setting the winner's stands. -> the merged state and the keys both changed. Pure.
+function mirror.merge_env(base, winner, loser)
+  local function units(state)
+    local out, nth, cur = {}, {}, nil
+    for line in (state or ""):gmatch("[^\n]+") do
+      if cur then
+        cur.lines[#cur.lines + 1] = line
+        if line:sub(1, 1) == "<" then cur.depth = cur.depth + 1 elseif line == ">" then cur.depth = cur.depth - 1 end
+        if cur.depth == 0 then cur = nil end
+      elseif line:sub(1, 1) == "<" then
+        local tag = line:match("^<(%S+)") or line
+        nth[tag] = (nth[tag] or 0) + 1
+        cur = { key = "<" .. tag .. "#" .. nth[tag], lines = { line }, depth = 1 }
+        out[#out + 1] = cur
+      else
+        local word = line:match("^(%S+)") or line
+        nth[word] = (nth[word] or 0) + 1
+        out[#out + 1] = { key = word .. "#" .. nth[word], lines = { line }, depth = 0 }
+      end
+    end
+    return out
+  end
+  local function flat(u) return table.concat(u.lines, "\n") end
+  local function list(us) local t = {}; for _, u in ipairs(us) do t[#t + 1] = { u.key, flat(u) } end; return t end
+  local bu, wu, lu = units(base), units(winner), units(loser)
+  local merged, both = merge_keyed(list(bu), list(wu), list(lu))
+  local function by(us) local t = {}; for _, u in ipairs(us) do t[u.key] = u end; return t end
+  local B, W, L = by(bu), by(wu), by(lu)
+  local out = {}
+  for i, e in ipairs(merged) do
+    local k = e[1]
+    local b, w, l = B[k], W[k], L[k]
+    -- (an envelope both changed: point by point, when it's one level of lines inside)
+    local inner = b and w and l and #w.lines > 2 and flat(w) ~= flat(l) and flat(w) ~= flat(b) and flat(l) ~= flat(b)
+    local function body(u)
+      local t = {}
+      for j = 2, #u.lines - 1 do
+        if u.lines[j]:sub(1, 1) == "<" then return nil end
+        t[#t + 1] = u.lines[j]
+      end
+      return t
+    end
+    local bb, wb, lb = inner and body(b), inner and body(w), inner and body(l)
+    if bb and wb and lb then
+      local m, c = merge_keyed(keyed_lines(bb, true), keyed_lines(wb, true), keyed_lines(lb, true))
+      for j = #both, 1, -1 do if both[j] == k then table.remove(both, j) end end
+      for _, x in ipairs(c) do both[#both + 1] = k .. " " .. x end
+      local pts, rest = {}, {}
+      for _, x in ipairs(m) do if x[1]:sub(1, 3) == "PT " then pts[#pts + 1] = x else rest[#rest + 1] = x[2] end end
+      table.sort(pts, function(p, q)
+        local tp, tq = tonumber(p[1]:match("^PT (%S+)#")), tonumber(q[1]:match("^PT (%S+)#"))
+        if tp ~= tq then return tp < tq end
+        return tonumber(p[1]:match("#(%d+)$")) < tonumber(q[1]:match("#(%d+)$"))
+      end)
+      local t = { w.lines[1] }
+      for _, x in ipairs(rest) do t[#t + 1] = x end
+      for _, x in ipairs(pts) do t[#t + 1] = x[2] end
+      t[#t + 1] = ">"
+      out[i] = table.concat(t, "\n")
+    else out[i] = e[2] end
+  end
+  return #out > 0 and (table.concat(out, "\n") .. "\n") or "", both
+end
+
+-- A track's settings (mirror.track_state), changed apart from one base, put together setting by setting: one renames it while another turns it
+-- up, and both stand. Lanes (how many, which play, their names, the mode) go together. Numbers compare as numbers (0 and 0.0 are one). -> the
+-- merged state and the settings both changed. Pure.
+local TRACK_TOGETHER = { freemode = "lanes", lanes = "lanes", plays = "lanes", lanenames = "lanes" }
+function mirror.merge_track(base, winner, loser)
+  local function norm(v) if v == nil then return nil end; local n = tonumber(v); return n and string.format("%.10g", n) or tostring(v) end
+  local keys, out, both = {}, {}, {}
+  for _, t in ipairs({ base, winner, loser }) do for k in pairs(t) do keys[k] = true end end
+  local together = {} -- group -> both changed some part of it
+  for k in pairs(keys) do
+    local g = TRACK_TOGETHER[k]
+    if g then
+      local cw, cl = norm(winner[k]) ~= norm(base[k]), norm(loser[k]) ~= norm(base[k])
+      together[g] = together[g] or { w = false, l = false }
+      together[g].w, together[g].l = together[g].w or cw, together[g].l or cl
+    end
+  end
+  for k in pairs(keys) do
+    local g = TRACK_TOGETHER[k]
+    if g and together[g].w and together[g].l then
+      out[k] = winner[k]
+      if norm(winner[k]) ~= norm(loser[k]) then both[#both + 1] = k end
+    elseif g and together[g].l then out[k] = loser[k]
+    elseif g then out[k] = winner[k]
+    else
+      local s, c = mirror.side3(norm(base[k]), norm(winner[k]), norm(loser[k]))
+      out[k] = loser[k]
+      if s == "w" then out[k] = winner[k] end
+      if c then both[#both + 1] = k end
+    end
+  end
+  table.sort(both)
+  return out, both
+end
+
+-- What merges, and how: items line by line (notes by note), automation by point, tracks by setting. Plug-in chains don't: one person's chain
+-- stands (docs/rt/rt-merge.md). -> the merged state and the keys both changed, or nil.
+mirror.MERGES = { item = "merge_item", env = "merge_env", track = "merge_track" }
+function mirror.mergeable(x)
+  return type(x) == "table" and not x.gone and mirror.MERGES[x.obj] ~= nil and type(x.state) == (x.obj == "track" and "table" or "string")
+end
+function mirror.merge_state(kind, base, winner, loser, loser_name)
+  local f = mirror.MERGES[kind]
+  if not f or type(base) ~= type(winner) or type(winner) ~= type(loser) or type(winner) ~= (kind == "track" and "table" or "string") then return nil end
+  return mirror[f](base, winner, loser, loser_name)
+end
+-- Undo (or redo) of `e` keeps what others changed since: the version to go back to (`to`), with what the version held now (`now`) changed after
+-- `e`, and `e` didn't, kept (`e` as the base of a three-way merge). Where both changed one thing, going back stands, as before. -> a version
+-- like `to` (same id) or `to` itself. Pure.
+function mirror.undo_keeping(e, to, now)
+  if not (mirror.mergeable(to) and mirror.mergeable(now) and mirror.mergeable(e) and now.id ~= e.id and to.obj == now.obj) then return to end
+  local m, both = mirror.merge_state(to.obj, e.state, to.state, now.state, now.user)
+  if m == nil then return to end
+  for _, k in ipairs(both or {}) do -- (not a take of theirs added by going back: plain going back, as before)
+    if tostring(k):find("<SOURCE", 1, true) and not tostring(k):find("\0notes", 1, true) then return to end
+  end
+  local v = {}
+  for k, x in pairs(to) do v[k] = x end
+  v.state = m
+  return v
 end
 
 -- Going back (History). `entries` are History's (recall.entries: mirror events have kind "obj"). A plan maps
@@ -2986,11 +3294,12 @@ end
 -- computer (mirror.merge_item), so what only one of them changed isn't lost (docs/clashes.md). The merged version, or nil.
 mirror.first_seen = {} -- event id -> when merge_for first couldn't tell (time_precise)
 function mirror.merge_for(proj, ev, room_dir)
-  if not (ev.obj == "item" and not ev.gone and type(ev.state) == "string" and ev.base_ev and ev.id) then return nil end
+  -- (items, and since rt-merge a track's settings and its automation too: mirror.MERGES)
+  if not (mirror.mergeable(ev) and ev.base_ev and ev.id) then return nil end
   local krev, _, kev, kord = mirror.known(proj, ev.oid)
   if not krev or kev == "" or kev == ev.id then return nil end
   local k = mirror.event_file(room_dir, kev)
-  if not (k and not k.gone and type(k.state) == "string" and k.base_ev) then return nil end
+  if not (mirror.mergeable(k) and k.obj == ev.obj and k.base_ev) then return nil end
   if mirror.too_old_to_merge(k, ev) then return nil end
   local apart = mirror.apart(room_dir, k, ev)
   if apart == nil then -- (a change in between isn't here yet, most likely still on its way: this one waits for it, two minutes at most)
@@ -3133,16 +3442,20 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
     if ok and held then hb[ev.oid] = nil end
     if ok then
       remember(proj, ev.oid, merging.rev, h, merging.id, mirror.order_of(merging))
-      require("sync").landed_media = true
-      lanes_back(proj, merging, media_dir, local_mix)
+      if ev.obj == "item" then
+        require("sync").landed_media = true
+        lanes_back(proj, merging, media_dir, local_mix)
+      end
       local lost, on = merging.loser, (ev.name or "") ~= "" and ev.name or "an unnamed track"
+      -- (what was merged, in words: an item, a track's settings, its automation. rt-merge)
+      local what = ev.obj == "track" and ("track " .. on) or ev.obj == "env" and ("the automation on " .. on) or ("an item on " .. on)
       local takes = false
-      for _, key in ipairs(merging.clashed or {}) do takes = takes or key:find("<SOURCE", 1, true) ~= nil end
+      for _, key in ipairs(merging.clashed or {}) do takes = takes or (key:find("<SOURCE", 1, true) ~= nil and not key:find("\0notes", 1, true)) end
       if lost and me and lost.user == me and #(merging.clashed or {}) > 0 then -- (only what you both changed is theirs; Use mine brings all of yours back)
-        require("sync").put_back(string.format("%s changed the same thing as you on an item on %s: %s, and the rest of your change is in", tostring(merging.user), on,
+        require("sync").put_back(string.format("%s changed the same thing as you on %s: %s, and the rest of your change is in", tostring(merging.user), what,
           takes and "their take plays, and yours is kept as another take on it" or "theirs stands where you both changed it"), { oid = ev.oid, ev = lost.id, name = ev.name })
       elseif me and (merging.user == me or (lost and lost.user == me)) then
-        require("band").log(string.format("%s changed the same item on %s as you, at the same time: both changes are kept", tostring(merging.user == me and lost and lost.user or merging.user), on))
+        require("band").log(string.format("%s changed %s as you did, at the same time: both changes are kept", tostring(merging.user == me and lost and lost.user or merging.user), what))
       end
     end
     return ok
@@ -3307,7 +3620,7 @@ local function event_file(room_dir, evid, depth)
   depth = (depth or 0) + 1
   if depth > 12 then return nil end
   local w, l = event_file(room_dir, w_id, depth), event_file(room_dir, l_id, depth)
-  if not (w and l and type(w.state) == "string" and type(l.state) == "string") then return nil end
+  if not (mirror.mergeable(w) and mirror.mergeable(l) and w.obj == l.obj) then return nil end
   local base_id = common_base(room_dir, w, l)
   if not base_id then -- (no shared past here: the older of their two bases, as before 0.58.47)
     local older = w
@@ -3315,10 +3628,11 @@ local function event_file(room_dir, evid, depth)
     base_id = older.base_ev
   end
   local b = base_id and event_file(room_dir, base_id, depth)
-  if not (b and type(b.state) == "string") then return nil end
+  if not (b and type(b.state) == type(w.state)) then return nil end
   local v = {}
   for k, x in pairs(w) do v[k] = x end
-  v.state, v.clashed = mirror.merge_item(b.state, w.state, l.state, l.user)
+  v.state, v.clashed = mirror.merge_state(w.obj, b.state, w.state, l.state, l.user)
+  if v.state == nil then return nil end
   v.id, v.rev, v.hash, v.base, v.base_ev, v.loser = evid, math.max(w.rev or 0, l.rev or 0), nil, b.rev or 0, base_id, l
   -- (the later of the two clocks: with the winner's, a walk from a later change stopped here before reaching the loser. Review, 0.58.47)
   if tonumber(w.hlc) or tonumber(l.hlc) then v.hlc = math.max(tonumber(w.hlc) or 0, tonumber(l.hlc) or 0) end
@@ -3765,7 +4079,7 @@ function W.put_back(w, o, rev, evid, why)
     -- no word, and was gone. Full review, 0.59.44)
     local copy_key = tostring(proj) .. o.oid .. tostring(evid) .. "\0" .. tostring(o.hash)
     -- (the copied flag only once the copy is made: set before, a copy that failed was never tried again and the edit went. Round 1 review, 0.59.45)
-    if o.kind == "item" and why.copy and not why.to and why.text and not mirror.copied[copy_key] and o.ptr and reaper.ValidatePtr2(proj, o.ptr, "MediaItem*") and (why.held or reaper.IsMediaItemSelected(o.ptr)) then -- (an edit hold: whatever's selected, as a held edit released later isn't. Round 2, 0.59.46)
+    if o.kind == "item" and why.copy and not why.to and why.text and not mirror.copied[copy_key] and o.ptr and reaper.ValidatePtr2(proj, o.ptr, "MediaItem*") and reaper.IsMediaItemSelected(o.ptr) then
       local got, ch = reaper.GetItemStateChunk(o.ptr, "", false)
       if got then
         local on = select(2, reaper.GetTrackName(reaper.GetMediaItem_Track(o.ptr)))
@@ -4272,13 +4586,17 @@ function W.one(w, o)
     elseif reaper.time_precise() - f.since < mirror.SETTLE_SECS then settle_at(f.since + mirror.SETTLE_SECS); return end
   end
   local name = perm_name(o, by_oid)
+  -- someone else is working on it right now (lib/presence.lua): said, never put back. Both changes go out and are merged everywhere (items by
+  -- line and note, tracks by setting, automation by point: mirror.MERGES); where both changed the same thing the later stands, and the other
+  -- gets "Use mine". The 15 s hold put your edit back, which outlasted the conflict once changes came in 0.25 s. (James, 2026-11-20: rt-merge)
   local holder = rev and opts.held and opts.held(o.oid)
-  if holder then -- someone else is working on it right now (lib/presence.lua): theirs, for a few seconds
-    mirror.auto[rk] = nil
-    -- (copy: your edit is kept as a refusal keeps one; put back with none, a held edit released onto an item a bandmate touched in the last
-    -- 15 s was gone. James: keep the rule, keep a copy. Round 1 review, 0.59.45)
-    return put_back(o, rev, evid, { name = name, copy = true, held = true, text = string.format("Not sent: %s is editing %s right now. Try again in a few seconds",
-      holder, o.kind == "track" and ("track " .. (name ~= "" and name or "(unnamed)")) or ((o.kind == "item" and "that item" or mirror.PART[o.kind]) .. " on " .. (name ~= "" and name or "an unnamed track"))) })
+  if holder then
+    local k, now = "editing " .. tostring(proj) .. o.oid .. "\0" .. tostring(holder), reaper.time_precise()
+    if not mirror.said[k] or now - mirror.said[k] > 30 then
+      mirror.said[k] = now
+      band.log(string.format("%s is editing %s too: both changes go in, and where you both change the same thing the later one stands", holder,
+        o.kind == "track" and ("track " .. (name ~= "" and name or "(unnamed)")) or ((o.kind == "item" and "that item" or mirror.PART[o.kind]) .. " on " .. (name ~= "" and name or "an unnamed track"))))
+    end
   end
   local last = rev and event_file(room_dir, evid) or nil
   -- (an item's or part's track by the name it has now, not the one its last change was made under: a claimed Keys renamed Piano let anyone
@@ -5337,7 +5655,7 @@ function mirror.settled(room_dir, newest, all)
       newest, all = top, alive
     end
   end
-  if newest.obj ~= "item" or newest.gone or not newest.base_ev then return newest end
+  if not mirror.mergeable(newest) or not newest.base_ev then return newest end
   local behind, todo = {}, { newest } -- (what the newest builds on, walked once: two walks per past change froze a long history. Review, 0.58.47)
   while #todo > 0 and #todo < 2000 do
     for _, id in ipairs(parents(table.remove(todo))) do
@@ -5347,7 +5665,7 @@ function mirror.settled(room_dir, newest, all)
   local cand = { newest }
   for _, x in ipairs(all or {}) do
     -- (not one over a month older than the newest, as merge_for doesn't merge those: heal merged what receive had refused. Round 2, 0.59.46)
-    if x ~= newest and not behind[x.id] and not x.gone and x.base_ev and not mirror.too_old_to_merge(x, newest) and type(x.state) == "string"
+    if x ~= newest and not behind[x.id] and not x.gone and x.base_ev and not mirror.too_old_to_merge(x, newest) and type(x.state) == type(newest.state)
         and mirror.apart(room_dir, x, newest) then cand[#cand + 1] = x end
   end
   if #cand < 2 then return newest end

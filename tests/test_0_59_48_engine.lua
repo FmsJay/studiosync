@@ -103,7 +103,7 @@ mirror.held_back.P3["I-H"], calls = true, {}
 assert(mirror.receive("P3", { obj = "item", oid = "I-H", rev = 4, id = "Bo-20261119-100100Z-00002-0001", state = "<ITEM\n>\n" }, "R/media", false, "Me") == false
   and mirror.held_back.P3["I-H"] and #calls == 0, "no copy: the band's version waits and the item stays held back")
 
--- Round 2's held edit's copy whatever is selected (W.put_back, why.held)
+-- A refused edit is copied only when it's selected (Round 2's "held edit copied whatever is selected" went with the holds: rt-merge)
 mirror.find, mirror.apply = real.find, function() return true, "" end
 files["RW/events/Bo-7.json"] = { id = "Bo-7", type = "obj", obj = "item", oid = "I-E", rev = 2, state = "<ITEM\n>\n", user = "Bo" }
 local made = 0
@@ -111,9 +111,9 @@ reaper.AddMediaItemToTrack = function() made = made + 1; return { name = "copy" 
 local w = { band = band, sync = sync, proj = "PW", cfg = { user = "Me" }, song = "S", room = "main", opts = { can = function() return true end, mode = "open" },
   me = "Me", room_dir = "RW", media = "RW/media", objs = {}, by_oid = {}, holds = {}, say_once = function() end, credit = {}, sent = 0, back = 0,
   kept_back = {}, bus_note = function() end, seen = {} }
-local why = { copy = true, text = "Bo is editing it", held = true, name = "Keys" }
+local why = { copy = true, text = "Bo has claimed Keys", held = true, name = "Keys" }
 pcall(mirror.W.put_back, w, { kind = "item", oid = "I-E", ptr = { name = "edited" }, hash = "h1", track = "T-E" }, 2, "Bo-7", why)
-assert(made == 1, "the held edit is copied though it isn't selected (" .. made .. ")")
+assert(made == 0, "not selected: no copy, whatever an old caller's `held` says (" .. made .. ")")
 
 -- Round 2's hold-back of a send that threw
 local real_one = mirror.W.one

@@ -1435,7 +1435,8 @@ function sync.receive(proj, cfg, song, room, can)
     -- delete-all raced by tempo re-times never landed where all of them came in one pass. Cross test, James, rt)
     local race = w and require("mirror").gone_race(sync.room_dir(cfg, song, room), x, w)
     if race == true then return true elseif race == "wait" then return nil end
-    if not (x.obj == "item" and w and not x.gone and not w.gone and x.base_ev and w.base_ev) then return false end
+    -- (items, tracks' settings and automation: what mirror merges. rt-merge)
+    if not (require("mirror").mergeable(x) and require("mirror").mergeable(w) and x.obj == w.obj and x.base_ev and w.base_ev) then return false end
     return require("mirror").apart(sync.room_dir(cfg, song, room), x, w)
   end
   -- An object change StudioSync can read. (Checked before the newest of each object is picked: a malformed or newer-format one, picked as the

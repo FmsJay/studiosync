@@ -232,11 +232,9 @@ local function auto_apply(proj, cfg, b, e)
   local tr = dawedit.shown_tracks(proj)[e.lane + 1]
   local env = tr and reaper.GetTrackEnvelope(tr, e.e)
   if not env or env_name(env) ~= e.name then return "that envelope changed meanwhile" end
-  -- (the track's automation travels as the track's own, so the track's rule, with no spot: mirror.watch's for its "E-" and plug-in objects;
-  -- and not while a bandmate holds that "E-" object, as mirror.watch puts back "X is editing the automation on ...")
+  -- (the track's automation travels as the track's own, so the track's rule, with no spot: mirror.watch's for its "E-" and plug-in objects.
+  -- A bandmate editing it too isn't a refusal: the two merge point by point. rt-merge)
   local toid = mirror.track_oid(tr)
-  local holder = toid ~= "" and require("presence").holder(require("presence").peers(cfg, b.song, b.room), "E" .. toid:sub(2))
-  if holder and holder ~= cfg.user then return tostring(holder) .. " is editing the automation on that track right now: try again in a few seconds" end
   local can, who = dawedit.authority(cfg, b)
   local why = dawedit.item_refusal(can, who, cfg.user, dawedit.track_name(tr), toid, nil, nil)
   if why then return why end

@@ -182,11 +182,11 @@ assert(r.why:find("only the driver %(James%)"), "Driver only: even the maker is 
 room("admins")
 assert(select(2, act("Andie", { op = "mute", lane = 2, idx = 0, p = 34, l = 4, on = false })).why:find("admins"), "admins' room: not an admin")
 assert(select(2, act("Admin", { op = "mute", lane = 2, idx = 0, p = 34, l = 4, on = false })).ok and it(2, 0).mute == 0, "an admin may")
--- someone editing it right now (presence's holds)
+-- someone editing it right now: shown (lib/follow.lua), never refused; both changes merge (rt-merge)
 room("open")
 peers = { { user = "Chilio", editing = { "I-JAMES-1" } } }
 r = select(2, act("James", { op = "mute", lane = 0, idx = 0, p = 0, l = 4, on = true }))
-assert(r.why:find("Chilio is editing that item"), "a bandmate's hold: refused")
+assert(r.ok and not r.why, "a bandmate editing it too: not refused (" .. tostring(r.why) .. ")")
 peers = {}
 -- trims: the content stays put; not before the source's start unless it loops
 song()

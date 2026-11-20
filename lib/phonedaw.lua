@@ -88,9 +88,7 @@ local function apply(proj, cfg, b, d)
     or math.abs(reaper.GetMediaItemInfo_Value(it, "D_LENGTH") - t.l) > phonedaw.TOL then return "that item changed meanwhile" end
   local tk = t.k < reaper.CountTakes(it) and reaper.GetTake(it, t.k)
   if not tk then return "that take isn't there any more" end
-  local ioid = mirror.item_oid(it)
-  local holder = ioid ~= "" and require("presence").holder(require("presence").peers(cfg, b.song, b.room), ioid)
-  if holder and holder ~= cfg.user then return tostring(holder) .. " is editing that item right now: try again in a few seconds" end
+  local ioid = mirror.item_oid(it) -- (a bandmate editing it too isn't a refusal: both changes merge. rt-merge)
   local why = dawedit.item_refusal(can, who, cfg.user, track_name(tr), mirror.track_oid(tr), ioid ~= "" and ioid or nil, t.p)
   if why then return why end
   return in_undo(proj, "pick take", function() reaper.SetActiveTake(tk) end)
