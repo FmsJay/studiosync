@@ -52,4 +52,12 @@ assert(select(2, live.sonobus_group({ group = "old", password = "kept" }, "bands
 assert(live.sonobus_link("StudioSync My Song", "ab&c") ==
   "http://go.sonobus.net/sblaunch?s=aoo.sonobus.net&g=StudioSync%20My%20Song&p=ab%26c", live.sonobus_link("StudioSync My Song", "ab&c"))
 assert(live.sonobus_link("G", "p", "pc.tail1.ts.net:10999"):find("s=pc.tail1.ts.net%3A10999&", 1, true), "the studio's own server, when it has one")
+-- mirror sync items carry an oid, not a take id: live MIDI parts go with them, each with its own track's take (desktop + laptop, rt)
+assert(live.oid_take_id("I-JAMES-20261120024310-32070") == "JAMES-20261120-024310Z", tostring(live.oid_take_id("I-JAMES-20261120024310-32070")))
+assert(live.oid_take_id("T-JAMES-1") == nil and live.oid_take_id(nil) == nil and live.oid_take_id("") == nil, "only an item's oid")
+assert(live.replaces(live.oid_take_id("I-JAMES-20261120024310-32070"), "James", "20261120-024254Z", "", 4), "sent after the part began: replaces it")
+assert(not live.replaces(live.oid_take_id("I-JAMES-20261120024210-1"), "James", "20261120-024254Z", "", 4), "made before it began: doesn't")
+assert(not live.replaces(live.oid_take_id("I-BO-20261120024310-2"), "James", "20261120-024254Z", "", 4), "someone else's: doesn't")
+assert(live.part_track("midi:20261120-024254Z:XT Midi K") == "XT Midi K" and live.part_track("midi:x:Synth (4)") == "Synth", "a MIDI part's track")
+assert(live.part_track("{GUID}") == nil and live.part_track(nil) == nil, "a NINJAM clip: any track")
 print("ok")

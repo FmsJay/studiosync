@@ -852,15 +852,28 @@ end
 
 -- Remove placeholders that a real take now covers: the same person's take, overlapping in song position, that was
 -- being recorded when the clip was heard (live.replaces).
+-- A mirror sync item's oid ("I-JAMES-20261120024310-32070": who made it, and when, UTC) as a take id live.replaces reads
+-- ("JAMES-20261120-024310Z"), or nil. Pure.
+function live.oid_take_id(oid)
+  local who, d = tostring(oid or ""):match("^I%-(.+)%-(%d%d%d%d%d%d%d%d%d%d%d%d%d%d)%-%d+$")
+  return who and (who .. "-" .. d:sub(1, 8) .. "-" .. d:sub(9) .. "Z") or nil
+end
+-- The track a live MIDI part shows ("midi:<since>:<track>", a second track of the same name "<track> (<n>)", lib/livemidi.lua), or nil. Pure.
+function live.part_track(band_live)
+  local name = tostring(band_live or ""):match("^midi:[^:]*:(.+)$")
+  return name and (name:gsub(" %(%d+%)$", "")) or nil
+end
 function live.retire(proj)
   local takes = {}
   for i = 0, reaper.CountMediaItems(proj) - 1 do
     local it = reaper.GetMediaItem(proj, i)
     local tk = reaper.GetActiveTake(it)
-    local id = tk and band.take_id(tk)
+    -- (or a mirror sync item's oid: those carry no take id, so live MIDI parts never went: "XT Midi K (recorded, take on its way)" stayed
+    -- beside its real take. Desktop + laptop, rt)
+    local id = tk and (band.take_id(tk) or live.oid_take_id(band.item_ext(it, "band_oid")))
     if id then
       local p, l = reaper.GetMediaItemInfo_Value(it, "D_POSITION"), reaper.GetMediaItemInfo_Value(it, "D_LENGTH")
-      takes[#takes + 1] = { id, p, p + l, l }
+      takes[#takes + 1] = { id, p, p + l, l, select(2, reaper.GetTrackName(reaper.GetMediaItem_Track(it))) }
     end
   end
   local n = 0
@@ -872,8 +885,9 @@ function live.retire(proj)
       local since, heard = band.item_ext(it, "band_live_since"), band.item_ext(it, "band_live_heard")
       local p = reaper.GetMediaItemInfo_Value(it, "D_POSITION")
       local e = p + reaper.GetMediaItemInfo_Value(it, "D_LENGTH")
+      local part = live.part_track(band.item_ext(it, "band_live")) -- (a MIDI part goes only with its own track's take, not a bandmate's other track)
       for _, t in ipairs(takes) do
-        if t[2] < e and t[3] > p and live.replaces(t[1], user, since, heard, t[4]) then
+        if t[2] < e and t[3] > p and (not part or t[5] == part) and live.replaces(t[1], user, since, heard, t[4]) then
           reaper.DeleteTrackMediaItem(tr, it)
           n = n + 1
           break

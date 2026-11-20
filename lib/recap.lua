@@ -55,6 +55,9 @@ end
 function recap.is_default_name(name, file)
   name = tostring(name or "")
   if name == "" or name:match("^untitled MIDI item") then return true end
+  -- (a MIDI take kept in the project has no file; REAPER names it as the recorded-file pattern plus "-MIDI": "05-XT Midi K-MIDI" kept that
+  -- name while the audio takes beside it were named. Desktop, rt)
+  if tostring(file or "") == "" and name:match("%-MIDI$") then return true end
   local base = tostring(file or ""):gsub("\\", "/"):match("([^/]+)$")
   if not base then return false end
   local stem = base:gsub("%.[^.]+$", "")
