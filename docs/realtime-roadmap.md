@@ -451,6 +451,16 @@ lib/tools.lua EXT_WANT.
   record parts into a song.
 - **Live to an audience:** stream the band's live mix to listeners on a web page.
 - **Lessons and producing for clients:** a teacher or producer sharing their REAPER, drawing and talking over it.
+- **StudioSync on the phone: a small DAW that's part of the band's project (James, 2026-11-19; proposed).** Not a REAPER replacement: a
+  companion that records into the real project, so everything it makes lands in REAPER as ordinary takes. Built on the phone Record page.
+  - **Stage 1 (browser, installable app):** works offline once opened (records to the phone, sends when a studio computer is back); keeps
+    the latest mix of each project to play along to; takes saved as WAV with its position stamped in (REAPER reads it) plus which project,
+    bar and track; an interface's input 1, 2 or both (Android Chrome picks the device, iPhone uses the system's input); MIDI from a USB
+    keyboard on Android Chrome; nudge, retake, name, and a simple take list per project.
+  - **Stage 2 (browser):** the project's tracks as a simple arrange view (the Project page's drawing, made for touch), several takes per
+    track to choose between, volume/mute per track, a few built-in effects for monitoring, comments and the song sheet (lyrics, chords).
+  - **Stage 3 (a native app, later):** what browsers can't do reliably: more than two inputs as separate tracks, low-latency monitoring
+    through the phone, background recording, and iPhone MIDI. Same file format and the same way into the project.
 
 ## Fast first, lossless after (James)
 Everything audio can arrive twice: a fast, light version over the link now, and the lossless file after, by the
