@@ -266,6 +266,7 @@ end
 -- ---- each tick (Autostart every 2 s, the panel's frame: at most once a second) ------------------------------------------------------------
 local last_seq, tick_at, channel_on, tidy_at = 0, -math.huge, false, -math.huge
 function joins.tick(now)
+  band.try("invite.tick", require("invite").tick, now) -- (a studiosync:// link clicked, an invite link's answer awaited: lib/invite.lua, rt-invite)
   if not (reaper.StudioSync_DirectMsgPoll and reaper.StudioSync_DirectStart) then return end
   local t = reaper.time_precise()
   if t - tick_at < 1 and t >= tick_at then return end
@@ -284,6 +285,8 @@ function joins.tick(now)
     if studio == joins.CHANNEL and kind == "join" and next(open) then band.try("joins.on_request", joins.on_request, band.json_decode(data or ""), now)
     elseif studio == joins.CHANNEL and kind == "join" then -- (none open here: revoked, run out or used, while the channel was still up)
       joins.say_refused(joins.valid_request(band.json_decode(data or "")), "no invitation is open on this computer (revoked, run out or used)", now)
+    elseif studio == joins.CHANNEL and kind == "redeem" then band.try("invite.on_redeem", require("invite").on_redeem, band.json_decode(data or ""), now) -- (an invite link's code: lib/invite.lua)
+    elseif kind == "token" and studio:match("^joinlink%-%x+$") then band.try("invite.on_token", require("invite").on_token, studio:sub(10), band.json_decode(data or ""), now)
     elseif kind == "welcome" and studio:match("^join%-%x+$") then band.try("joins.on_welcome", joins.on_welcome, studio:sub(6), band.json_decode(data or "")) end
   end
   local changed = false
@@ -381,6 +384,7 @@ function joins.studio_ui(ctx, ImGui, cfg, may)
       end
     end
   end
+  require("invite").studio_ui(ctx, ImGui, cfg, may) -- (invite links and this computer's studiosync:// handler: lib/invite.lua, rt-invite)
 end
 
 return joins

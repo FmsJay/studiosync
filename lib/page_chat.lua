@@ -85,7 +85,7 @@ function chat.from_msg(cfg, d)
   local path = chat.dir(cfg, { song = d.song, room = d.room }, d.sc) .. "/msgs/" .. d.name .. ".json"
   if live_msgs[path] or reaper.file_exists(path) then return false end
   live_msgs[path] = { text = d.v.text, user = d.v.user, time = d.v.time, room = type(d.v.room) == "string" and d.v.room or nil, title = "",
-    attach = require("chatfiles").check(d.v.attach) }
+    attach = require("chatfiles").check(d.v.attach), join = require("invite").join_ok(d.v.join) } -- (join: a join request, lib/invite.lua)
   cache = nil
   return true
 end
@@ -168,7 +168,12 @@ end
 
 -- Something said for the band from elsewhere (a mix rendered, say): a message in this project's chat.
 -- sc: another scope ("room", "band"); the project's by default. (The web UI's messages come this way: lib/webui.lua)
-function chat.post(cfg, b, text, sc) add(cfg, b, "msgs", { text = text }, sc or "song") end
+-- extra: more fields for the message (a join request's `join`, its answer's `join_answer`: lib/invite.lua).
+function chat.post(cfg, b, text, sc, extra)
+  local v = { text = text }
+  for k, x in pairs(type(extra) == "table" and extra or {}) do if k ~= "text" and k ~= "user" and k ~= "time" then v[k] = x end end
+  add(cfg, b, "msgs", v, sc or "song")
+end
 -- To-dos and links, ticking one off and deleting your own: the panel's tabs and the web UI's Chat (chat.web_action) both go through these.
 function chat.add_todo(cfg, b, text, sc) add(cfg, b, "todo", { text = text, done = false }, sc) end
 function chat.add_link(cfg, b, title, url, sc) add(cfg, b, "links", { title = title, url = url }, sc) end

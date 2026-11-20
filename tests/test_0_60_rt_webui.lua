@@ -86,6 +86,7 @@ local rtc_pages = {}
 package.loaded.webcall = { dirty = function() return false end, me = function() return {} end, model = function() return { boot = "1" } end,
   page = function(_, _, a) rtc_pages[#rtc_pages + 1] = a end, link = function() end }
 package.loaded.webhome = { tick = function() end, action = function() end } -- (Home and profiles: tests/test_0_60_rt_home.lua)
+package.loaded.invite = { web_tick = function() end, action = function() end, chat_model = function() end } -- (Ask to join: tests/test_0_60_rt_invite.lua)
 local chat_reads = {}
 package.loaded.page_chat = { -- (its web_action's own checks: tests/test_0_60_rt_webpages.lua)
   web_action = function(_, b, a) posted[#posted + 1] = { b.song, a.text, a.scope } end,

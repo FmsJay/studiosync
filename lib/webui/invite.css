@@ -1,0 +1,18 @@
+/* Ask to join and join requests (invite.js, lib/invite.lua). GPL-3.0-or-later. */
+.ibtn { font-size: 12px; padding: 2px 8px; }
+.ibtn.igo { font-weight: 600; border-color: var(--accent); }
+.hchip .iask { margin-left: 4px; }
+.hptop .iaskp, .hptop .ilink { margin-left: 4px; }
+.ijoinbox { display: flex; gap: 6px; align-items: center; margin-top: 4px; flex-wrap: wrap; }
+.ijoinbar { margin: 0 0 10px; padding: 8px 12px; border-radius: 12px; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
+.ijoinrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 2px 0; }
+.ijointext { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.iwarn { color: var(--rec, #c0392b); }
+.ilinkbox, .ipickbox { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; font-size: 12px; }
+.ipickbox { flex-direction: row; flex-wrap: wrap; align-items: center; }
+.ilinkrow { display: flex; flex-direction: column; gap: 2px; }
+.ilinkrow input { width: 100%; box-sizing: border-box; font: 12px/1.3 ui-monospace, monospace; }
+main.joinpage { display: block; max-width: 560px; width: 100%; box-sizing: border-box; margin: 0 auto; padding: 24px 16px; overflow: auto; }
+.joinpage h1 { color: var(--accent); font-size: 20px; }
+.joinpage .jwhat { font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }

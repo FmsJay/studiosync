@@ -124,6 +124,7 @@ function webui.chat_model(t, where_of, max, scope)
         if kind == "links" then e.url, e.title = m.url, type(m.title) == "string" and m.title ~= "" and m.title or nil else e.text = m.text end
         if kind == "todo" then e.done, e.by = m.done == true or nil, m.done and type(m.done_by) == "string" and m.done_by or nil end
         if kind == "msgs" and m.attach ~= nil then e.file = require("chatfiles").model(m.attach, m.fstat) end -- (a file sent in the chat: lib/chatfiles.lua)
+        if kind == "msgs" and m.join ~= nil then e.join = require("invite").chat_model(m) end -- (a join request: Join / Decline, lib/invite.lua)
         list[#list + 1] = e
       end
     end
@@ -145,6 +146,7 @@ webui.ACTIONS.phonedaw = true -- (the phone app's Project view: its tracks' GUID
 webui.ACTIONS.home, webui.ACTIONS.profile = true, true -- (the Home page's, and your own display name, colour and picture: lib/webhome.lua, lib/profile.lua)
 webui.ACTIONS.mixer = true -- (the Mixer page's: lib/webmixer.lua)
 webui.ACTIONS.history = true -- (the History page's "I'm looking": lib/webhistory.lua, read only)
+webui.ACTIONS.invite = true -- (Ask to join, Join / Decline, a studiosync:// link from join.html: lib/invite.lua)
 function webui.parse_action(s)
   local a = type(s) == "string" and s ~= "" and band.json_decode(s)
   if type(a) ~= "table" or type(a.topic) ~= "string" or not webui.ACTIONS[a.topic] then return nil end
@@ -216,6 +218,10 @@ function webui.tick(proj, cfg, b, handlers)
       if said then band.log(said) end
     end
     if topic == "history" then require("webhistory").action(proj, cfg, b, a) end
+    if topic == "invite" then
+      local said = require("invite").action(proj, cfg, b, a)
+      if said then band.log(said) end
+    end
     if topic == "home" or topic == "profile" then
       local said = require("webhome").action(proj, cfg, b, a)
       if said then band.log(said) end
@@ -277,6 +283,7 @@ function webui.tick(proj, cfg, b, handlers)
   require("webhistory").tick(proj, cfg, b, publish, now)
   -- Home (while a page shows it) and everyone's profile (while any page looks): lib/webhome.lua
   require("webhome").tick(proj, cfg, b, publish, now)
+  require("invite").web_tick(proj, cfg, b, publish, now) -- (join requests for you, the studio's people, the last ask's answer: lib/invite.lua)
 end
 
 return webui

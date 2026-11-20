@@ -1,0 +1,23 @@
+<!doctype html>
+<!-- A StudioSync join link without the studiosync:// handler (lib/invite.lua): this computer's own web UI page. Nothing happens until you
+     press a button: the link goes to Live sync, which checks it as it checks a clicked one. GPL-3.0-or-later. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>StudioSync link</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="invite.css">
+<script src="join.js" defer></script>
+</head>
+<body>
+<main class="joinpage">
+  <h1>StudioSync</h1>
+  <p class="jwhat" id="what">Reading the link…</p>
+  <p><button type="button" id="go" disabled>Open in REAPER</button></p>
+  <p><a id="app" hidden>Open with the StudioSync link handler instead</a></p>
+  <p class="dim" id="note" role="status"></p>
+</main>
+</body>
+</html>

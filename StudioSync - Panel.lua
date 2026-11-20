@@ -1980,6 +1980,7 @@ local function home_ideas()
 end
 local function page_home()
   ui.away()
+  band.try("invite.panel_ui", require("invite").panel_ui, ctx, ImGui, cfg) -- (join requests for you: Join / Decline. lib/invite.lua, rt-invite)
   if ui.short then -- (Real time had to be scrolled to, under the people: design review)
     -- (hearing or producing someone, Real time's column has rows and rows of controls: it takes the width from the others, so they all fit without scrolling)
     local busy = same_room_on() or require("producer").who(proj)
@@ -3587,6 +3588,8 @@ local function pill_window()
     local words = "StudioSync  ·  " .. (problem ~= "" and problem or live_on and (ui.status and ui.status.label or "Sync on") or "Sync off") .. (view and view.driver and ("  ·  " .. (view.driver == cfg.user and "you drive" or (view.driver .. " drives"))) or "") ..
       (unread > 0 and string.format("  ·  %d new message%s", unread, unread == 1 and "" or "s") or "")
     local waiting = unread
+    local okj, jn = pcall(require("invite").count, cfg) -- (join requests for you: lib/invite.lua, rt-invite)
+    if okj and jn > 0 then words = words .. string.format("  ·  %d join request%s", jn, jn == 1 and "" or "s"); waiting = waiting + jn end
     local pb = band.ext_json(band.SECTION, "put back")
     if pb and pb.text then
       words = words .. string.format("  ·  %d edit%s not sent", pb.n or 1, (pb.n or 1) == 1 and "" or "s")
