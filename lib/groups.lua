@@ -26,6 +26,7 @@ local SETTINGS = { "alerts", "alerts_server", "call", "sonobus_server", "tailnet
   "smart_lane_names", -- ("smart_lane_names": the lanes they land in named the same; off unless true, as a take goes in the first open lane. James, rt)
   "shared_prefs", -- ("shared_prefs": the studio's REAPER preferences, lib/sharedprefs.lua; { key = value }. James, rt)
   "colour_parity", "theme_colours", -- (colour parity, on unless false, and the theme's colour settings: lib/colours.lua parity. James, rt)
+  "hub", -- ("hub": the preferred studio hub, a member's name: lib/hub.lua elect_studio. James, rt)
   "update_key" } -- ("update_key": signed updates, the owner's Ed25519 public key: lib/band.lua studio_update_key. James, rt)
 -- (Round 2 review, 0.59.46: Syncthing is asked again only when band.json or this computer's pins changed, or the last answer was "not known",
 -- and the kept settings are written only when they differ: it was a blocking call and a saved-state write every 5 s per script and studio,
@@ -198,6 +199,7 @@ function groups.set_folder_updates(root, on) save(root, function(j) j.updates = 
 function groups.set_print_hops(root, v) save(root, function(j) j.print_hops = v end) end
 -- The direct link for the studio (lib/direct.lua): on unless band.json says false, so only "off" is written. Owner and admins. (James, 0.60.0-rt)
 function groups.set_direct(root, on) save(root, function(j) if on then j.direct = nil else j.direct = false end end) end
+function groups.set_hub(root, user) save(root, function(j) j.hub = type(user) == "string" and user ~= "" and user or nil end) end -- (lib/hub.lua: owner and admins)
 -- Live audio over the link for the studio (lib/liveaudio.lua): on unless band.json says false, so only "off" is written, as the direct link.
 -- Owner and admins. (James, 2026-11-19: "realtime audio should probably be the default mode ... shouldn't even need to turn it on". rt)
 function groups.live_audio(root) return groups.trusted(root).live_audio ~= false end

@@ -432,6 +432,39 @@ it's the patient, lossless, store-and-forward half.
    - Nothing depends on it: peer to peer stays the baseline. With no hub (or mid-handover) everyone still talks
      directly and Syncthing still carries everything; the hub only makes things lighter and faster.
    - What it holds is never the only copy: it's a relay and a cache, so losing it loses nothing.
+   - **Per song as well as per studio (James, 2026-11-19).** Each song can have its own hub: by default the computer of
+     whoever shared the song with the studio (its "home", James), transferable from there to another member; the studio hub (and then the
+     ranking, then the cloud copy) is the fallback when the song's hub is offline. Jobs split the same way: a song's
+     snapshots, prints and live mix go to its hub, studio-wide jobs (update files, relaying) to the studio hub.
+   - **The hub is someone's working REAPER (James).** Most of the time a person is recording and mixing in the hub's
+     REAPER, so hub duties must never get in their way: they run off the audio thread and outside REAPER's main loop
+     where they can (the extension), heavy ones (prints, bounces) only while that REAPER is idle or in a hidden background
+     instance, with a CPU budget, and paused while it records. Health shows "you're this song's hub" and what it's doing;
+     the person can hand the role on.
+   - **First slice built (rt-hub, 2026-11-19; offline tests only, not run in REAPER yet):** `lib/hub.lua`, tests/test_0_60_rt_hub.lua.
+     - **Election, pure:** inputs are what every computer already sees: the status files of every song (all songs' statuses are in
+       every computer's listing; fresh = stamped or changed here within 45 s), each now carrying `hub = { since, link, off, studio, song }`
+       (online since, direct link listening, handed on, roles held now); band.json `hub` (the owner's/admins' preferred studio hub, a trusted
+       setting); `<song>/hub.json` (handovers) with session.json's `host` (who shared it).
+       Studio hub: the preferred one when online (back to it once it's been on 30 s, at once if nobody holds it), else whoever holds it now,
+       else the ranking (link listening, then online longest, then machine id, then name). Song hub: its home (the sharer, or whoever it was
+       handed to: each handover counts only from the sharer, the home at the time, or the owner/an admin), same 30 s hand-back, else whoever
+       holds it, else the studio hub if it has the song open, else the ranking among those in the song, else nobody (the cloud copy stands
+       in: it already carries restore points both ways). Holding beats ranking, so a better-ranked newcomer or a flickering preferred
+       computer never flaps the role; two holders at once settle on the better-ranked one everywhere. Handed on (Health) = no hub role here.
+     - **Visible:** Health row "Hub: X (why); this song: Y (why)", "You're this song's hub: it keeps the song's restore points (last N min
+       ago)", Hand it on / Be a hub again. Settings > Studio > Hub: preferred studio hub (owner/admins, `groups.set_hub`) and the open
+       song's hub (its sharer, its hub now, the owner or an admin hand it on for good in hub.json).
+     - **First job: the song's restore points** ("hub snapshot", `recall.save`, not kept for good; trim treats them as minor so they don't
+       hold history back). Chosen over relaying: Syncthing already stores and forwards through whichever computer is online, and the
+       cloud copy covers nobody online; restore points had no owner (everyone saved end-of-session ones, nobody mid-session). At most one
+       per room every 30 min, only when there are changes, the half hour counted from the room's newest hub snapshot whoever made it (so a
+       new hub after failover doesn't double up), and only while that REAPER is stopped (any tab), untouched for a minute and not catching
+       up, and never closer than 500x the last one's duration (0.2% CPU budget). Statuses are read a few songs per tick (4 ms) every 10 s,
+       one scan shared by every Live sync tab. The capture itself is still on the main loop: that's why it waits for idle.
+     - **Not yet:** failover in seconds (a hub that vanishes is noticed when its status goes stale, up to ~45 s; the link's heartbeats could
+       cut that), the handover file's `by` checked against Syncthing's modifiedBy (now against the roles only: it moves where restore points
+       are kept, never data), snapshots taken in the extension or a background instance, the hub's other jobs (prints, relaying, live mix).
 2. **Shared CPU.** The remote plug-in mechanism (4b) also works for plug-ins you DO have: freeze or offload a heavy
    track to whichever computer is idle.
 3. **Follow a bandmate.** See exactly what they see: their view, cursor, selection and open editor, live.

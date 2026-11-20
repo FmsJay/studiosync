@@ -231,6 +231,10 @@ function H.build_rows()
     local ok, words = pcall(require("callapps").health_words)
     if ok and words then rows[#rows + 1] = { "call app", false, "yellow", "", words } end
   end
+  do -- the studio's hub and this song's, and "you're this song's hub" with its Hand it on (lib/hub.lua. James, rt)
+    local okb, brow = pcall(require("hub").health_row, cfg, b)
+    if okb and brow then rows[#rows + 1] = brow end
+  end
   do -- Syncthing's view of each studio folder, and free disk here and on the others (lib/rthealth.lua. James, rt)
     local okh, hrows = pcall(require("rthealth").rows, cfg, b, proj)
     for _, r in ipairs(okh and hrows or {}) do rows[#rows + 1] = r end

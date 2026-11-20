@@ -750,6 +750,7 @@ function P.status(t)
     produce = require("producer").who(proj), produce_via = require("producer").who(proj) and require("producer").via(proj) or nil, stamping = reaper.GetExtState(band.SECTION, "stamping " .. tostring(proj)) ~= "" or nil,
     produce_ctl = require("producer").who(proj) and require("producer").ctl(proj) or nil, measure = require("latency").asking(proj),
     lets = require("producer").lets_for(proj) } -- (whoever produces me may start and stop my transport: their panel shows its buttons)
+  do local okh, h = pcall(function() return require("hub").status_part(cfg, b) end); info.hub = okh and h or nil end -- (since, link, handed on, roles held: lib/hub.lua. James, rt)
   if info.follow == "" then info.follow = nil end
   do -- (this computer's live audio: muted, push-to-talk, or why it can't run here, so the others' Health says "Mac: needs extension 1.0.13". James, rt)
     local okla, la = pcall(require("liveaudio").my_la)
@@ -1092,6 +1093,7 @@ local function tick_body() -- returns true to keep going
   band.try("liveaudio.tick", require("liveaudio").tick, cfg, b, proj) -- (live audio over the link, when the studio has it on: lib/liveaudio.lua. James, rt)
   band.try("hops.tick", require("hops").tick, cfg, b, proj) -- (live hops, both sides: lib/hops.lua. James, rt)
   band.try("webui.tick", require("webui").tick, proj, cfg, b, live_handlers) -- (the web UI: who's here, claims and chat for the browser, its chat sends. lib/webui.lua, James, rt)
+  band.try("hub.tick", require("hub").tick, proj, cfg, b) -- (who's the studio's hub and this song's; the song hub's restore points while idle. lib/hub.lua, James, rt)
   local tjson = reaper.GetExtState(band.SECTION, "transport " .. key) -- a start/stop from the panel or the band
   if tjson ~= "" then
     reaper.DeleteExtState(band.SECTION, "transport " .. key, false)

@@ -30,8 +30,9 @@ local function later(a, b) -- the same order every machine uses (lib/mirror.lua 
   if mirror.newer(x, y) ~= mirror.newer(y, x) then return mirror.newer(x, y) end
   return (a.id or "") > (b.id or "")
 end
--- A point is major unless it's the snapshot taken before a handover.
-function trim.major(p) return p.keep or not tostring(p.label or ""):match("^before .+ took over") end
+-- A point is major unless it's the snapshot taken before a handover, or a song hub's rolling one (lib/hub.lua: every half hour of work, so
+-- as majors they'd keep nearly every change; the kept end-of-session points stay major. James, rt).
+function trim.major(p) return p.keep or not (tostring(p.label or ""):match("^before .+ took over") or p.label == "hub snapshot") end
 
 -- The ids to take away. evs: { { id, type, oid, rev, time } }; points: { { time, keep, label } }; cutoff: ISO time
 -- (only older changes go). Pure.
