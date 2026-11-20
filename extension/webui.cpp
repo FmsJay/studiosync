@@ -284,6 +284,12 @@ std::string webui_ws_accept(const std::string &key)
   return o;
 }
 
+// Live to an audience (extension/audience.cpp sets these when it's linked in; webui.h). rt-audience
+bool (*webui_listen_http)(unsigned long long, const WebReq &, bool) = nullptr;
+void (*webui_listen_feed)(const double *, const double *, int, double) = nullptr;
+int (*webui_listen_count)() = nullptr;
+void (*webui_listen_stop)() = nullptr;
+
 // ---- state -----------------------------------------------------------------------------------------------------------------------------
 namespace {
 std::mutex g_mx; // guards everything below
@@ -773,6 +779,7 @@ void guest_live(sock_t s, const WebReq &r, const std::string &gid)
   }
 }
 
+thread_local bool t_kept = false; // (a listener's socket handed to audience.cpp: client() leaves it open. rt-audience)
 void handle(sock_t s, std::string buf, bool local)
 {
   set_blocking(s, 5000);
@@ -785,6 +792,7 @@ void handle(sock_t s, std::string buf, bool local)
   }
   WebReq r;
   if (end == std::string::npos || !webui_parse_head(buf.substr(0, end + 4), r)) return answer(s, 400, "text/plain", "bad request\n");
+  if (webui_listen_http && r.path.compare(0, 8, "/listen/") == 0) { t_kept = webui_listen_http((unsigned long long)s, r, false); return; } // (the listening page: its own allow-list and links, never the studio's token. rt-audience)
   std::string token, folder;
   int port;
   { std::lock_guard<std::mutex> l(g_mx); token = g_token; folder = g_folder; port = g_port; }
@@ -870,13 +878,16 @@ void handle(sock_t s, std::string buf, bool local)
 
 void client(sock_t s, std::string buf, bool local)
 {
+  t_kept = false;
   handle(s, std::move(buf), local);
+  if (!t_kept) {
 #ifdef _WIN32
-  shutdown(s, SD_SEND);
+    shutdown(s, SD_SEND);
 #else
-  shutdown(s, SHUT_WR);
+    shutdown(s, SHUT_WR);
 #endif
-  close_sock(s);
+    close_sock(s);
+  }
   std::lock_guard<std::mutex> l(g_mx);
   --g_clients;
   g_active.erase(s);
@@ -949,7 +960,7 @@ void webui_mix_feed(const double *const *out, int nout, int len, double srate)
   for (int k = 0; k < len; ++k, ++w) { short *d = &g_mix[(w % MIX_N) * 2]; d[0] = mix16(L[k]); d[1] = mix16(R[k]); }
   g_mix_w.store(w, std::memory_order_release);
 }
-int webui_mix_wanted() { return g_mix_on.load() + g_guests_live.load(); }
+int webui_mix_wanted() { return g_mix_on.load() + g_guests_live.load() + (webui_listen_count ? webui_listen_count() : 0); }
 
 // ---- browser guests (webui.h) ------------------------------------------------------------------------------------------------------------
 static bool hex_ok(const char *s, size_t lo, size_t hi)
@@ -984,6 +995,7 @@ int webui_guest_gain(const char *gid, double gain)
 }
 void webui_guest_audio(double *const *out, int nout, int len, double srate)
 {
+  if (webui_listen_feed && len > 0 && nout > 0 && out && out[0]) webui_listen_feed(out[0], nout > 1 && out[1] ? out[1] : out[0], len, srate); // (listeners: the session mix, before any guest is added. rt-audience)
   if (g_guests_live.load(std::memory_order_relaxed) <= 0 || len <= 0 || nout <= 0 || !out || !out[0]) { g_talk_n = 0; return; }
   g_gmix_sr.store(srate, std::memory_order_relaxed);
   unsigned long long w = g_gmix_w.load(std::memory_order_relaxed);
@@ -1171,6 +1183,7 @@ void webui_shutdown()
 {
   direct_set_http_handler(nullptr);
   stop_listening();
+  if (webui_listen_stop) webui_listen_stop(); // (its listeners and public port: rt-audience)
   {
     std::unique_lock<std::mutex> l(g_mx);
     g_stop = true;
@@ -1201,6 +1214,7 @@ void webui_shutdown()
 // ---- ReaScript: reaper.StudioSync_WebUI* -----------------------------------------------------------------------------------------------
 #ifndef WEBUI_STANDALONE
 #include "reaper_plugin.h"
+void audience_register(reaper_plugin_info_t *rec); // (extension/audience.cpp)
 static int api_start(const char *folder, const char *secret, int port) { return webui_start(folder, secret, port, ""); }
 static void api_publish(const char *topic, const char *json) { webui_publish(topic, json); }
 static const char *api_poll() { return webui_poll(); }
@@ -1262,6 +1276,7 @@ void webui_register(reaper_plugin_info_t *rec)
     snprintf(key, sizeof(key), "APIdef_%s", f.name); rec->Register(key, (void *)f.def);
     snprintf(key, sizeof(key), "APIvararg_%s", f.name); rec->Register(key, f.va);
   }
+  audience_register(rec); // (reaper.StudioSync_Audience*: lib/audience.lua. rt-audience)
   rec->Register("atexit", (void *)webui_shutdown); // (REAPER quitting: client threads end while everything's still there)
 }
 #endif

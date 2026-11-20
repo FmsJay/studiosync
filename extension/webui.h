@@ -79,6 +79,14 @@ int webui_guest_auth(const WebReq &r, std::map<std::string, WebGuest> &guests, d
 bool webui_guest_path(const std::string &method, const std::string &path);
 std::string webui_ws_accept(const std::string &key); // RFC 6455's Sec-WebSocket-Accept for a Sec-WebSocket-Key
 
+// Live to an audience (extension/audience.cpp sets these when it's linked in; nullptr otherwise, as in tests/webui_test.cpp): a /listen/
+// request handed over before any token check (true: it kept the socket), the session mix for its encoder (in webui_guest_audio, before
+// any guest is added), its listeners (webui_mix_wanted counts them: the hook stays in), and its end (webui_shutdown). rt-audience
+extern bool (*webui_listen_http)(unsigned long long sock, const WebReq &r, bool pub);
+extern void (*webui_listen_feed)(const double *L, const double *R, int len, double srate);
+extern int (*webui_listen_count)();
+extern void (*webui_listen_stop)();
+
 #ifndef WEBUI_STANDALONE
 struct reaper_plugin_info_t;
 void webui_register(reaper_plugin_info_t *rec); // reaper.StudioSync_WebUI*

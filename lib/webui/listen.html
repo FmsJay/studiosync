@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Listening</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="listen.css">
+<script src="listen.js" defer></script>
+</head>
+<body>
+<main>
+  <p class="kicker">Listening to</p>
+  <h1 id="song">…</h1>
+  <p id="state" class="state"><span id="dot" class="dot"></span><span id="stateText">Connecting…</span></p>
+  <p id="who" class="who" hidden></p>
+  <section id="liveBox" class="box">
+    <button id="go" type="button" class="big">Listen live</button>
+    <label class="vol">Volume <input id="vol" type="range" min="0" max="1.5" step="0.01" value="1" aria-label="Volume"></label>
+    <p id="note" class="note"></p>
+  </section>
+  <section id="mixBox" class="box" hidden>
+    <h2>Latest mix</h2>
+    <p class="note">Nobody's playing right now. Here's the song's latest mix.</p>
+    <audio id="mix" controls preload="none"></audio>
+  </section>
+  <p class="foot">Played from the band's own computer. Nothing you do here is sent back.</p>
+</main>
+</body>
+</html>

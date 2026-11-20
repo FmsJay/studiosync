@@ -151,6 +151,7 @@ webui.ACTIONS.history = true -- (the History page's "I'm looking": lib/webhistor
 webui.ACTIONS.ai = true -- (the AI page's asks, yes/no and cancel: lib/ai.lua; whether a page on this computer sent it, StudioSync_WebUIPollHere)
 webui.ACTIONS.invite = true -- (Ask to join, Join / Decline, a studiosync:// link from join.html: lib/invite.lua)
 webui.ACTIONS.guestweb = true -- (browser guests: the host's make/kick/level, and a guest's own, wrapped by the extension: lib/guestweb.lua)
+webui.ACTIONS.audience = true -- (listening links, the cap and the public switch: lib/audience.lua, rt-audience)
 webui.ACTIONS.tryfx = true -- (the Try tab: a bandmate's plug-in you don't have, its knobs, asks for yours: lib/hoptry.lua, rt-hopvst)
 webui.ACTIONS.claimask = true -- (Claims mode: Release / Keep what someone asks for: lib/claimask.lua, rt-claims)
 webui.ACTIONS.grants = true -- (Admins only: let someone edit in this room, or take it back; owner and admins only. lib/grants.lua, rt-claims)
@@ -231,6 +232,10 @@ function webui.tick(proj, cfg, b, handlers)
     end
     if topic == "guestweb" then
       local said = require("guestweb").action(proj, cfg, b, a)
+      if said then band.log(said) end
+    end
+    if topic == "audience" then
+      local said = require("audience").action(proj, cfg, b, a)
       if said then band.log(said) end
     end
     if topic == "invite" then
@@ -319,6 +324,7 @@ function webui.tick(proj, cfg, b, handlers)
   require("hoptry").web_tick(proj, cfg, b, publish, now) -- (the Try tab, while a page shows it: lib/hoptry.lua, rt-hopvst)
   require("invite").web_tick(proj, cfg, b, publish, now) -- (join requests for you, the studio's people, the last ask's answer: lib/invite.lua)
   require("guestweb").tick(proj, cfg, b, publish, now) -- (browser guests: run out, their topics, play readings for their takes: lib/guestweb.lua)
+  require("audience").tick(proj, cfg, b, publish, now) -- (listeners: links, what they're told, the public switch: lib/audience.lua, rt-audience)
 end
 
 return webui
