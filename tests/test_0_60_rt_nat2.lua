@@ -109,4 +109,19 @@ local ok, text = direct.health_line(cfg)
 assert(ok == true and text:find("over the connection without Tailscale") and text:find("Chilio %(without Tailscale, through both NATs%)"), text)
 local sok, stext = direct.speed_line_of(s.peers, function(p) return direct.peer_name(p) end)
 assert(sok == true and stext:find("Chilio: without Tailscale, through both NATs, 40 ms"), tostring(stext))
+
+-- one hub per computer: another Live sync tab (another song) that set it up just now keeps it from the direct link here; live audio's
+-- engine (the song in front) takes it
+clock = clock + 10
+ext[band.SECTION .. "/nat setup by"] = "another-tab\t" .. clock
+local n0, s0 = #setups, stops
+local np = nat.peers(cfg, { song = "Song", room = "main" }, "direct")
+assert(#np == 0 and #setups == n0 and stops == s0, "another tab holds the hub: the direct link here sets nothing up and stops nothing")
+clock = clock + 3
+np = nat.peers(cfg, { song = "Song", room = "main" })
+assert(#np == 1 and #setups == n0 + 1 and ext[band.SECTION .. "/nat setup by"]:find("^" .. nat.ME), "live audio's engine (the song in front) takes it")
+clock = clock + 3
+ext[band.SECTION .. "/nat setup by"] = "another-tab\t" .. (clock - nat.HOLD - 1)
+np = nat.peers(cfg, { song = "Song", room = "main" }, "direct")
+assert(#np == 1, "a claim gone stale: the direct link here takes it")
 print("ok")

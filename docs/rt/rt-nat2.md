@@ -58,7 +58,10 @@ up to 1200 data bytes (+25 header +1 kind +28 sealing, well inside a path's ~147
 **Lua (`lib/nat.lua`, `lib/direct.lua`):** `direct.ensure` starts the link for a studio with the setting on even without a tailnet;
 `direct.refresh_peers` asks `nat.peers(cfg, {song, room}, "direct")` and merges with `nat.direct_merge` (only "up" links; `dev_of` gets the
 device so the clock's reference pick works, `users` the person). `nat.peers(nil)` (live audio off, every tick) is ignored for `nat.HOLD` (6 s)
-after the direct link last asked, so the two don't stop and start the links in turn. Health: `direct.nat_way`, `direct.way_text`,
+after the direct link last asked, so the two don't stop and start the links in turn. One hub per computer but a Live sync script per tab:
+`nat.claim` (ExtState "nat setup by", refreshed every 2 s) lets the tab that set it up keep it for `nat.HOLD`; another tab's direct link
+in another song sets nothing up and stops nothing meanwhile (it uses Tailscale/Syncthing for its peers), while live audio's engine (the song
+in front, stage 1's rule) always takes it. Health: `direct.nat_way`, `direct.way_text`,
 `direct.peer_name`.
 
 ## Files

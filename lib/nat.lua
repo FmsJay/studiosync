@@ -126,6 +126,15 @@ end
 -- while the studio has it off. (stage 2: live audio off asks it to stop, cfg nil, every tick; while the direct link has asked in the last
 -- few seconds, that's ignored: the links carry its changes, chat and clock too. James, rt)
 nat.HOLD = 6
+nat.ME = tostring(math.random(1, 1 << 30)) .. tostring(S):sub(-6) -- (this script's own, for the claim)
+-- May this script set up the computer's hub now? ExtState "nat setup by" = "<script>\t<time>". strong: yes regardless. Takes it when yes.
+function nat.claim(now, strong)
+  local who, at = reaper.GetExtState(band.SECTION, "nat setup by"):match("^(.-)\t(.+)$")
+  at = tonumber(at)
+  if not (strong or not who or who == nat.ME or not at or now - at > nat.HOLD) then return false end
+  reaper.SetExtState(band.SECTION, "nat setup by", nat.ME .. "\t" .. now, false)
+  return true
+end
 function nat.peers(cfg, b, by)
   local root = cfg and cfg.root
   local now = reaper.time_precise()
@@ -163,6 +172,12 @@ function nat.peers(cfg, b, by)
   table.sort(want, function(x, y) return x.device < y.device end)
   table.sort(peers)
   local json = nat.setup_json(root .. "/_band/nat", me, secret, key, nat.PORT, nat.stun(root), want)
+  -- (one hub per computer: another Live sync tab, in another song, that set it up in the last few seconds keeps it, unless this call is live
+  -- audio's (the song in front: stage 1's rule). A tab that doesn't hold it sets nothing up and stops nothing. rt-nat2)
+  if not nat.claim(now, by ~= "direct") then
+    S.set, S.json, S.peers, S.users, S.devs = false, nil, {}, {}, {}
+    return {}, {}, {}
+  end
   if #want == 0 then
     stop()
   elseif json ~= S.json then
