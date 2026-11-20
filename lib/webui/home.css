@@ -1,0 +1,123 @@
+/* The studio's Home page (home.js) and everyone's avatars and "Your profile" (profile.js). Uses style.css's colours, so light/dark follow
+   it. GPL-3.0-or-later. (James, rt) */
+
+/* the Home view: Home's cards and Who's here in one scrolling column, the chat beside it */
+main.has-home { grid-template-columns: minmax(300px, 1.25fr) minmax(280px, 1fr); }
+.hcol { min-height: 0; overflow-y: auto; border-right: 1px solid var(--line); }
+.hcol #here { border-right: 0; overflow: visible; max-height: none; padding-top: 4px; }
+#home { padding-bottom: 4px; }
+
+/* avatars: a picture, or initials on the person's colour */
+.av { --avc: var(--accent); display: inline-flex; align-items: center; justify-content: center; flex: none; width: 24px; height: 24px;
+  border-radius: 50%; overflow: hidden; background: var(--avc); color: #fff; font-size: 10px; font-weight: 700; letter-spacing: .02em;
+  box-shadow: 0 0 0 2px var(--panel), 0 0 0 3.5px var(--avc); vertical-align: middle; user-select: none; }
+.av img { width: 100%; height: 100%; object-fit: cover; display: block; }
+#people li[data-av-user] > .av { margin-right: 8px; }
+
+/* the head: you, the greeting, notifications */
+.hhead { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.hme { padding: 0; border: 0; background: transparent; border-radius: 50%; line-height: 0; }
+.hme .av { width: 40px; height: 40px; font-size: 16px; }
+.hgreet { flex: 1; min-width: 0; }
+.hhello { font-size: 18px; text-transform: none; letter-spacing: 0; color: var(--text); margin: 0; font-weight: 650; }
+.hsub { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hnotify { font-size: 12px; padding: 4px 9px; }
+
+/* on air */
+.hair { border-radius: 10px; padding: 7px 12px 7px 28px; margin-bottom: 10px; font-weight: 600; position: relative; color: #fff; }
+.hair::before { content: ""; position: absolute; left: 11px; top: 50%; width: 9px; height: 9px; margin-top: -4.5px; border-radius: 50%; background: #fff; }
+.hair.rec { background: var(--rec); }
+.hair.rec::before { animation: hpulse 1.2s ease-in-out infinite; }
+.hair.play { background: var(--play); }
+@keyframes hpulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .hair.rec::before { animation: none; } }
+
+/* cards */
+.hcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.hcards[hidden], .hcard[hidden] { display: none; }
+.hcard { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; min-width: 0; }
+.hcard.hprojects, .hcard.hfor, .hcard.honline { grid-column: 1 / -1; }
+.hcard h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+.hcard h4 { font-size: 12px; color: var(--dim); margin: 8px 0 4px; font-weight: 600; }
+.hempty { margin: 2px 0; font-size: 13px; }
+.hlist li { padding: 6px 0; border-top: 1px solid var(--line); min-width: 0; }
+.hlist li:first-child { border-top: 0; }
+.hlist li.new { box-shadow: inset 3px 0 0 var(--accent); padding-left: 8px; }
+.hline { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
+.hmtext { overflow-wrap: anywhere; min-width: 0; }
+.hlist li > .hmtext { margin-top: 2px; white-space: pre-wrap; }
+.hwho { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; min-width: 0; }
+.hwho .av { width: 20px; height: 20px; font-size: 9px; }
+.hwhen { font-size: 12px; margin-left: auto; white-space: nowrap; }
+.hwhere, .hmeta { font-size: 12px; }
+.htodo { color: var(--accent); }
+.hby { display: block; font-size: 12px; font-weight: normal; margin-top: 2px; }
+.hunread { display: block; width: 100%; text-align: left; background: color-mix(in srgb, var(--accent) 14%, var(--panel)); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); font-weight: 600; }
+
+/* online */
+.hchips { display: flex; flex-wrap: wrap; gap: 6px; }
+.hchip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px 3px 4px; border-radius: 16px; background: var(--theirs); max-width: 100%; }
+.hchip.me { background: var(--me); }
+.hchip.away { opacity: .6; }
+.hchip.rec { box-shadow: 0 0 0 2px var(--rec); }
+.hchip.play { box-shadow: 0 0 0 2px var(--play); }
+.hchip .hwhere { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* projects */
+.hproj { padding: 8px 0; border-top: 1px solid var(--line); }
+.hproj:first-child { border-top: 0; }
+.hproj.current .hpname { color: var(--accent); }
+.hptop { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; }
+.hpname { font-weight: 650; overflow-wrap: anywhere; }
+.hstage { font-size: 11px; padding: 1px 7px; border-radius: 8px; background: var(--theirs); color: var(--dim); }
+.hstage.s-idea { color: #8a6fd1; } .hstage.s-writing { color: #3b8fd6; } .hstage.s-tracking { color: var(--rec); }
+.hstage.s-mixing { color: var(--warn, #b7860b); } .hstage.s-done { color: var(--play); }
+.hfaces { display: inline-flex; margin-left: auto; }
+.hface { margin-left: -4px; line-height: 0; }
+.hface .av { width: 22px; height: 22px; font-size: 9px; }
+.hface.rec .av { box-shadow: 0 0 0 2px var(--panel), 0 0 0 3.5px var(--rec); }
+.hopen { font-size: 13px; padding: 3px 10px; }
+.hfaces:empty + .hopen { margin-left: auto; }
+.hopen:not(.hcur) { background: var(--accent); border-color: var(--accent); color: #fff; }
+.hopen:disabled { opacity: .6; cursor: default; }
+.hplast { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin-top: 4px; font-size: 13px; }
+.hwhat { color: var(--dim); overflow-wrap: anywhere; min-width: 0; }
+.hkind { font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--theirs); color: var(--dim); }
+.hkind.mix { color: var(--accent); }
+.hrecap { margin-top: 4px; font-size: 13px; }
+.hrecap li.sub { padding-left: 14px; color: var(--dim); }
+
+/* the Home tab's count */
+.hbadge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 6px; border-radius: 9px; background: var(--rec); color: #fff;
+  font-size: 11px; line-height: 18px; text-align: center; vertical-align: 1px; }
+
+/* Your profile */
+.pfdlg { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--text); padding: 16px 18px; width: min(420px, calc(100vw - 32px)); }
+.pfdlg::backdrop { background: rgba(0, 0, 0, .45); }
+.pfform h2 { margin: 0 0 12px; }
+.pfrow1 { display: flex; gap: 14px; align-items: center; margin-bottom: 12px; }
+.pfprev .av { width: 72px; height: 72px; font-size: 28px; }
+.pfpick { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pfbtn { font-size: 14px; color: var(--text); background: var(--theirs); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+.pfbtn:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pfnote { font-size: 12px; margin: 2px 0 0; flex-basis: 100%; }
+.pffield2 { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 8px 0; }
+.pfname { flex: 1; min-width: 0; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; }
+.pfcol { width: 44px; height: 30px; padding: 0 2px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.pfsaid { min-height: 1.4em; font-size: 13px; margin: 8px 0 0; color: var(--dim); }
+.pfsaid.bad { color: var(--rec); }
+.pfacts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.pfsave { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+@media (max-width: 640px) {
+  main.has-home { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1.5fr) minmax(0, 1fr); }
+  .hcol { border-right: 0; border-bottom: 1px solid var(--line); }
+  .hcards { grid-template-columns: 1fr; }
+}
+@media (max-width: 320px) {
+  .hhead { gap: 8px; }
+  .hme .av { width: 30px; height: 30px; font-size: 12px; }
+  .hhello { font-size: 15px; }
+  .hcard { padding: 8px; }
+  .hnotify { display: none; }
+}
