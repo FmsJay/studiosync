@@ -161,7 +161,7 @@ int main()
   CHECK(code(get(link, "/", th)) == 403, "the link's port, no token: refused");
   r = get(link, "/?t=" + tok, th);
   CHECK(code(r) == 303 && r.find("Location: /\r\n") != std::string::npos && r.find("Set-Cookie: ss_webui=" + tok + ";") != std::string::npos &&
-        r.find("HttpOnly") != std::string::npos && r.find("SameSite=Strict") != std::string::npos, "the token: a cookie, and the address without it");
+        r.find("HttpOnly") != std::string::npos && r.find("SameSite=Lax") != std::string::npos, "the token: a cookie, and the address without it");
   const std::string ck = "Cookie: ss_webui=" + tok + "\r\n";
   r = get(link, "/", th, ck);
   CHECK(code(r) == 200 && body(r).find("<title>t</title>") != std::string::npos, "the cookie: the page, on the link's port");

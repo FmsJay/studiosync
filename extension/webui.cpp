@@ -406,8 +406,9 @@ void handle(sock_t s, std::string buf, bool local)
                                                              : "This needs the studio's link: StudioSync's Chat page, Copy phone link, on the computer in the studio.\n");
   }
   { std::lock_guard<std::mutex> l(g_mx); ++g_served; }
-  if (set_cookie) // (the token goes into a cookie and out of the address bar)
-    return answer(s, 303, "text/plain", "", "Location: " + r.path + "\r\nSet-Cookie: ss_webui=" + token + "; Path=/; Max-Age=2592000; HttpOnly; SameSite=Strict\r\n");
+  if (set_cookie) // (the token goes into a cookie and out of the address bar. Lax, not Strict: a Strict cookie isn't sent on the redirect of a
+    // link followed from elsewhere (a chat app on a phone), so the page got 403. Every action still needs X-StudioSync. Desktop, rt)
+    return answer(s, 303, "text/plain", "", "Location: " + r.path + "\r\nSet-Cookie: ss_webui=" + token + "; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax\r\n");
   if (r.method == "POST" && r.path == "/api/upload") return upload(s, r, buf.substr(end + 4));
   if (r.method == "POST") {
     if (r.path != "/api/action") return answer(s, 404, "text/plain", "not found\n");
