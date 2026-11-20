@@ -6,8 +6,8 @@
 --   dawhist  the song's life (History): every change as a dot on its track, saved versions, notes
 -- Built only while a page has the Song page open (it says so every few seconds, an action "want"); the project is looked at again only when
 -- REAPER's change count moves (and every FLOOR s), peaks are read within a small time budget a tick and kept, history comes from recall.lua's
--- own cache. Everything is read-only, apart from two actions: Play/Stop together (only for whoever may) and a version handed to the panel's
--- own Restore page, which asks as it always does. (James, rt)
+-- own cache. Everything is read-only, apart from Play/Stop together (only for whoever may), a version handed to the panel's own Restore page,
+-- which asks as it always does, and stage 2's item and marker edits (lib/dawedit.lua, checked as this computer's own edits are). (James, rt)
 local band = require("band")
 local dawview = {}
 dawview.CHUNK_TRACKS = 4    -- tracks per item chunk: an edit resends its chunk only
@@ -98,9 +98,10 @@ function dawview.build(raw, per)
   end
   for _, ch in ipairs(chunks) do ch.sig = (raw.key or "") .. "#" .. table.concat(ch.sig, ";") end
   local markers = {}
-  for i, m in ipairs(raw.markers or {}) do markers[i] = { p = r3(m.pos), e = m.region and r3(m.rend) or nil, n = m.name ~= "" and m.name or nil, c = m.rgb } end
+  -- (i: REAPER's own number for it, which an edit from the page names it by: lib/dawedit.lua)
+  for i, m in ipairs(raw.markers or {}) do markers[i] = { p = r3(m.pos), e = m.region and r3(m.rend) or nil, n = m.name ~= "" and m.name or nil, c = m.rgb, i = m.num } end
   local header = { key = raw.key, len = r3(raw.len), tracks = tracks, markers = markers, bars = raw.bars or {}, sigs = raw.sigs or {},
-    tempo = raw.tempo or {}, grid = raw.grid, per = per }
+    tempo = raw.tempo or {}, grid = raw.grid, per = per, snap = raw.snap and 1 or nil }
   return header, chunks
 end
 -- Which chunks to publish: the ones whose fingerprint moved since `state.sigs`, and the topics of chunks no longer there (published once as
@@ -216,6 +217,21 @@ local function native_rgb(c)
   return dawview.hex(r, g, b)
 end
 dawview.native_rgb = native_rgb
+-- What the page shows (dawview.read, and lib/dawedit.lua finding what an edit points at): the studio's tracks as everyone has them (not this
+-- computer's own ones, stem prints or tracks hidden in the arrange view), and on a track with fixed lanes only the lanes that play (as REAPER's
+-- collapsed view; the other takes are comps-in-waiting).
+function dawview.shown(tr)
+  return not require("mirror").local_track(tr) and band.track_ext(tr, "band_stem") == "" and reaper.GetMediaTrackInfo_Value(tr, "B_SHOWINTCP") ~= 0
+end
+function dawview.items_of(tr)
+  local out, lanes = {}, reaper.GetMediaTrackInfo_Value(tr, "I_FREEMODE") == 2
+  for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
+    local it = reaper.GetTrackMediaItem(tr, j)
+    local lane = lanes and math.floor(reaper.GetMediaItemInfo_Value(it, "I_FIXEDLANE")) or nil
+    if not lane or reaper.GetMediaTrackInfo_Value(tr, "C_LANEPLAYS:" .. lane) ~= 0 then out[#out + 1] = it end
+  end
+  return out
+end
 local peak_cache, note_cache = {}, {} -- take pointer -> { sig, s / notes, at }
 local function take_peaks(take, pos, len, now, budget_end)
   local key = tostring(take)
@@ -275,8 +291,7 @@ function dawview.read(proj, key, now, budget_end)
     local fd = math.floor(reaper.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH"))
     local indent = level
     level = math.max(0, level + fd)
-    -- (the studio's tracks as everyone has them: not this computer's own ones, stem prints or tracks hidden in the arrange view)
-    if not mirror.local_track(tr) and band.track_ext(tr, "band_stem") == "" and reaper.GetMediaTrackInfo_Value(tr, "B_SHOWINTCP") ~= 0 then
+    if dawview.shown(tr) then
       local name = select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false))
       local t = { name = name, rgb = native_rgb(band.track_colour(tr)), depth = indent, folder = fd == 1, mute = reaper.GetMediaTrackInfo_Value(tr, "B_MUTE") ~= 0,
         solo = reaper.GetMediaTrackInfo_Value(tr, "I_SOLO") ~= 0, items = {} }
@@ -285,28 +300,22 @@ function dawview.read(proj, key, now, budget_end)
       local oid = mirror.track_oid(tr)
       if oid ~= "" then places[oid] = place end
       if name ~= "" and not places[name:lower()] then places[name:lower()] = place end
-      -- (fixed lanes: only the lanes that play, as REAPER's collapsed view; the other takes are comps-in-waiting)
-      local lanes = reaper.GetMediaTrackInfo_Value(tr, "I_FREEMODE") == 2
-      for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
-        local it = reaper.GetTrackMediaItem(tr, j)
-        local lane = lanes and math.floor(reaper.GetMediaItemInfo_Value(it, "I_FIXEDLANE")) or nil
-        if not lane or reaper.GetMediaTrackInfo_Value(tr, "C_LANEPLAYS:" .. lane) ~= 0 then
-          local pos, len = reaper.GetMediaItemInfo_Value(it, "D_POSITION"), reaper.GetMediaItemInfo_Value(it, "D_LENGTH")
-          local take = reaper.GetActiveTake(it)
-          local o = { pos = pos, len = len, mute = reaper.GetMediaItemInfo_Value(it, "B_MUTE") ~= 0, name = "",
-            rgb = native_rgb(reaper.GetMediaItemInfo_Value(it, "I_CUSTOMCOLOR")) }
-          if take then
-            o.name = reaper.GetTakeName(take):sub(1, dawview.NAME_MAX)
-            o.rgb = native_rgb(reaper.GetMediaItemTakeInfo_Value(take, "I_CUSTOMCOLOR")) or o.rgb
-            if reaper.TakeIsMIDI(take) then o.midi = true; o.notes, o.nh = take_notes(take, pos, len)
-            elseif len > 0 then
-              local more
-              o.peaks, more = take_peaks(take, pos, len, now, budget_end)
-              pending = pending or more
-            end
+      for _, it in ipairs(dawview.items_of(tr)) do
+        local pos, len = reaper.GetMediaItemInfo_Value(it, "D_POSITION"), reaper.GetMediaItemInfo_Value(it, "D_LENGTH")
+        local take = reaper.GetActiveTake(it)
+        local o = { pos = pos, len = len, mute = reaper.GetMediaItemInfo_Value(it, "B_MUTE") ~= 0, name = "",
+          rgb = native_rgb(reaper.GetMediaItemInfo_Value(it, "I_CUSTOMCOLOR")) }
+        if take then
+          o.name = reaper.GetTakeName(take):sub(1, dawview.NAME_MAX)
+          o.rgb = native_rgb(reaper.GetMediaItemTakeInfo_Value(take, "I_CUSTOMCOLOR")) or o.rgb
+          if reaper.TakeIsMIDI(take) then o.midi = true; o.notes, o.nh = take_notes(take, pos, len)
+          elseif len > 0 then
+            local more
+            o.peaks, more = take_peaks(take, pos, len, now, budget_end)
+            pending = pending or more
           end
-          t.items[#t.items + 1] = o
         end
+        t.items[#t.items + 1] = o
       end
     end
   end
@@ -314,9 +323,9 @@ function dawview.read(proj, key, now, budget_end)
   for k, c in pairs(note_cache) do if not c.seen then note_cache[k] = nil end end
   local i = 0
   while true do
-    local n, rgn, pos, rend, name, _, color = reaper.EnumProjectMarkers3(proj, i)
+    local n, rgn, pos, rend, name, num, color = reaper.EnumProjectMarkers3(proj, i)
     if n == 0 then break end
-    if not band.is_local_mark(name) then raw.markers[#raw.markers + 1] = { pos = pos, rend = rend, name = name, rgb = native_rgb(color), region = rgn } end
+    if not band.is_local_mark(name) then raw.markers[#raw.markers + 1] = { pos = pos, rend = rend, name = name, rgb = native_rgb(color), region = rgn, num = num } end
     i = i + 1
   end
   local last_num, last_den
@@ -331,6 +340,7 @@ function dawview.read(proj, key, now, budget_end)
     if #raw.tempo < 200 then raw.tempo[#raw.tempo + 1] = { r3(tm.time), math.floor(tm.bpm * 100 + 0.5) / 100 } end
   end
   raw.grid = select(2, reaper.GetSetProjectGrid(proj, false))
+  raw.snap = reaper.GetToggleCommandStateEx(0, band.FRONT_TOGGLES.snap) == 1 -- (the page snaps a drag as REAPER would; dawedit snaps it again)
   return raw, pending, places
 end
 
@@ -344,6 +354,8 @@ local function scripts_dir() return (debug.getinfo(1, "S").source:match("^@?(.*)
 
 -- An action a page sent. -> words for the log, or nil.
 function dawview.action(proj, cfg, b, a)
+  -- (stage 2: an item or marker edit, checked and applied by lib/dawedit.lua; its answer goes back as the dawedit topic, below)
+  if type(a) == "table" and type(a.edit) == "table" then return require("dawedit").action(proj, cfg, b, a.edit) end
   local d = dawview.parse(a)
   if not d then return end
   local now = reaper.time_precise()
@@ -378,6 +390,8 @@ end
 -- answer from webui's presence build (nil until it has one).
 function dawview.tick(proj, cfg, b, publish, who, now)
   if now >= S.want_until then return end
+  local de = package.loaded.dawedit -- (the last edit's answer: the page that sent it snaps back on a refusal, with the reason)
+  if de and de.reply then publish("dawedit", de.reply) end
   local key = b.song .. "/" .. b.room
   if S.key ~= key then dawview.reset(); S.key = key end
   local cc = reaper.GetProjectStateChangeCount(proj)

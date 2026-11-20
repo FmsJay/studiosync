@@ -35,6 +35,17 @@
 .dtip { position: absolute; max-width: 220px; padding: 6px 8px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; pointer-events: none;
   background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 2px 8px rgba(0, 0, 0, .2); }
 .dmsg { padding: 4px 12px; font-size: 12px; min-height: 1.6em; }
+/* stage 2: the edit row and the long-press / right-click menu */
+.dedit { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 12px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.dedit button { padding: 3px 9px; font-size: 13px; }
+.dedit button:disabled, .dedit input:disabled { opacity: .45; cursor: default; }
+.dedit .esel { flex: 1 1 8em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dedit .ecol { width: 34px; height: 26px; padding: 0 2px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.dmenu { position: absolute; z-index: 2; display: flex; flex-direction: column; min-width: 150px; padding: 4px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 14px rgba(0, 0, 0, .25); }
+.dmenu[hidden] { display: none; }
+.dmenu button { text-align: left; padding: 8px 10px; font-size: 14px; border: 0; background: none; color: var(--text); border-radius: 6px; }
+.dmenu button:hover, .dmenu button:focus-visible { background: var(--me); }
 @media (max-width: 640px) {
   .dvers { grid-template-columns: 1fr; }
   .dtime { min-width: 0; }
@@ -48,4 +59,7 @@
   .dfollow select { font-size: 12px; max-width: 7em; }
   .dtime { font-size: 11px; }
   .dhist { padding: 4px 6px; }
+  .dedit { gap: 4px; padding: 3px 6px; }
+  .dedit button { padding: 2px 6px; font-size: 12px; }
+  .dedit .esel { display: none; }
 }

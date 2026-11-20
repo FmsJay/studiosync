@@ -734,6 +734,31 @@ Like Helgobox's move away from REAPER's own widgets, now that the extension is m
   REAPER tracks the arrange view; a bandmate's cursor shows once they run this build; History dots and versions; Restore this opens the panel's
   Restore page on that version; Play/Stop together start everyone; the tick cost with the page open and closed (tests/reaper/rt_perf.lua).
 
+### Project page edits built: shared DAW view stage 2 (rt-dawedit, 2026-11-19; offline tests and a stand-in server only, not run in REAPER yet)
+- **Edits:** select an item (click, or tap on a phone), drag it to move it (to another track too), drag an edge to trim it; Split at the edit
+  cursor (the play cursor while playing, as REAPER's S), Mute/Unmute, a colour or No colour; + Marker at the cursor, + Region over the selected
+  item (else a bar from the cursor), drag a marker or a whole region to move it, Rename. Drags snap to the project's grid while REAPER's snapping
+  is on (the header's `snap`); Live sync snaps again with REAPER's own SnapToGrid, so REAPER has the last word. Phones: a drag moves only what's
+  already selected (anything else pans), a long press opens a small menu (Split, Mute, Colour, No colour, Region over it; Rename on a marker;
+  Marker/Region here on an empty spot); right-click opens it with a mouse.
+- **Path:** `{topic:"daw", edit:{id, op, ...}}` -> `dawview.action` -> `lib/dawedit.lua`, which finds the item as the page drew it (the track's
+  place and the item's among the shown ones: `dawview.shown`/`items_of`, the reader's own filter) and only while it's still where the page saw it,
+  checks it, then applies it through the API in one undo point ("StudioSync web page: move item" and so on). The normal sync sends it from there:
+  no second sync path. Markers are named by REAPER's number (the header's markers now carry `i`). The answer goes back as the `dawedit` topic
+  (`{id, ok | why}`); the page draws the item where it's going until its chunk comes back, and snaps back with the reason on a refusal.
+- **Permissions reused:** items, mirror.watch's own `allowed`: `sync.authority`'s rule for the track's name and the spot (track claims, time
+  claims, region claims from the session's regions, the driver, Driver only / admins / Anyone) or `sync.maker_may` (the track's or item's maker
+  while nobody claimed it), checked where the item is and where it goes (onto or off a claimed track), and not while a bandmate holds it
+  (`presence.holder`, "is editing that item right now"). Markers and regions: `sync.watch_timeline`'s (the timeline is the driver's; admins in an
+  admins' room; anyone in Anyone), and a region someone else claimed can't be moved or renamed, nor a region renamed onto a claimed name. This
+  computer's own marks (pings, claims, punches) can't be touched or made.
+- **Not yet:** deleting items or markers, resizing a region's edges, fades, keyboard shortcuts, multi-select, Shift to drag without snapping.
+- **Tests:** `tests/test_0_60_rt_dawedit.lua` (the real `sync.authority` over a stand-in shared folder, each edit on a stand-in REAPER).
+- **Check in REAPER:** on a real song with a bandmate: move, trim (both edges, a looped and an unlooped take), split, mute, colour an item and see
+  it land on their side within a second or two; one Ctrl+Z undoes each web edit; drag with snapping on and off; move onto a track a bandmate
+  claimed (refused, snaps back, says who); in Driver only as a guest (refused); a region they claimed (refused); add, move, rename a marker and a
+  region as the driver; a phone: tap, long press, drag the selected item; a fixed-lanes track (only the playing lane's items show and move).
+
 ### Web UI: what remains (TODO)
 - **Docking:** built (above); check it in REAPER on Windows, a Mac and Linux (WebKitGTK built 2026-11-19: proved in a SWELL host on
   REAPER 7.86's own libSwell on Ubuntu 24.04, docked, floated, typed into, Undock and key forwarding from the real pages; not yet in REAPER).
