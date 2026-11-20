@@ -107,7 +107,7 @@ function compat.startup_risks(before)
     n = n + 1
     local s = line:gsub("\r$", ""):match("^%s*(.-)%s*$")
     if s ~= "" and not s:find("^%-%-") and not s:find("pcall", 1, true)
-        and (s:find("dofile%s*[%(\"'%[]") or s:find("^require%s*[%(\"']") or s:find("[=%s]require%s*[%(\"']") or s:find("^return%f[%W]")) then
+        and (s:find("dofile%s*[%(\"'%[]") or s:find("^require%s*[%(\"']") or s:find("[=%s]require%s*[%(\"']") or line:find("^return%f[%W]")) then
       out[#out + 1] = { n, s }
     end
   end
@@ -310,22 +310,42 @@ local function mtime(path)
   return ok == 0 and m or nil
 end
 
+-- Change detection on a scratch track state, nothing in the project touched: an edit changes the hash, the same state hashes the same.
+-- colour: true, so it doesn't ask SWS (whether SWS colours tracks here is no part of this). m: lib/mirror.lua. -> true when it works.
+function compat.scratch_detect(m)
+  return pcall(function()
+    local h1, h2 = m.track_hash({ name = "StudioSync scratch", vol = 1, pan = 0 }, false, true), m.track_hash({ name = "StudioSync scratch", vol = 0.5, pan = 0 }, false, true)
+    assert(h1 ~= h2 and h1 == m.track_hash({ name = "StudioSync scratch", vol = 1, pan = 0 }, false, true))
+  end) == true
+end
+-- The port in direct.status's `bind` ("100.x.y.z:47281"), or `fallback` (the extension gives the address alone). Pure.
+function compat.bind_port(bind, fallback) return tostring(bind or ""):match(":(%d+)$") or tostring(fallback or compat.PORT_FIRST) end
+
 -- The self-check's items, each { id, ok, level ("red", "yellow", "grey"), text, act = "move" | "check" }, and the scripts that clash
 -- ({ name, path, kinds = { why, fix } }), published as ExtState "compat check" for Health. full: every script in the Actions list too.
+-- Each part runs on its own (guard): one that raises (an odd value from REAPER or an extension) is a grey item and a line in the log file,
+-- never the whole check failing, and grey isn't counted as needing a look. (0.59.49.63 on the desktop: direct.status's bind had no port)
 local function run_check(proj, cfg, b, dir, full)
   local items, clash = {}, {}
-  local function item(id, ok, level, text, act) items[#items + 1] = { id = id, ok = ok and true or nil, level = level, text = text, act = act } end
+  local function item(id, ok, level, text, act) items[#items + 1] = { id = id, ok = ok and true or nil, level = level, text = tostring(text or ""), act = act } end
+  local function guard(id, fn)
+    local ok, err = pcall(fn)
+    if not ok then
+      band.log_error("compat check " .. id, err)
+      item(id, false, "grey", "The " .. id .. " check couldn't run here: " .. (tostring(err):match("^[^\n]*") or ""))
+    end
+  end
   local tools = require("tools")
-  -- Live sync's loop: what's spent elsewhere between its looks
-  local med = compat.median(stats.gaps)
-  if med then
+  local text = band.read(startup_path()) or ""
+  guard("loop", function() -- Live sync's loop: what's spent elsewhere between its looks
+    local med = compat.median(stats.gaps)
+    if not med then return end
     item("loop", med < compat.SLOW_MS, "yellow", med < compat.SLOW_MS and string.format("Live sync gets its turn about every %d ms", math.floor(med + 0.5)) or
       string.format("Something holds REAPER: Live sync waits about %d ms between its looks (it should be under %d). A script with a long loop, a busy plug-in window or a " ..
         "slow screen redraw does that; changes then go out and come in late. Stop other scripts that run in the background one at a time to find it.", math.floor(med + 0.5), compat.SLOW_MS))
-  end
-  -- its start with REAPER: there, put back when something rewrote the file without it, and nothing above it that can stop the file
-  local text = band.read(startup_path()) or ""
-  if not tools.autostart_on() then
+  end)
+  guard("startup", function() -- its start with REAPER: there, put back when something rewrote the file without it
+    if tools.autostart_on() then return item("startup", true, "red", "StudioSync starts with REAPER (Scripts/__startup.lua)") end
     local when = mtime(startup_path())
     pcall(tools.set_autostart, true, dir) -- (always on, as the panel has it: "StudioSync projects start Live sync with REAPER")
     local ok = tools.autostart_on()
@@ -333,120 +353,119 @@ local function run_check(proj, cfg, b, dir, full)
         (when and (" (last written " .. tostring(when) .. ")") or "") .. ". If a script keeps removing it, it's in the list below.")
       or "StudioSync isn't in Scripts/__startup.lua and couldn't be put back: Live sync won't start with REAPER. Check the file can be written.")
     if ok then band.log("StudioSync's start was missing from Scripts/__startup.lua (something rewrote it): put back"); text = band.read(startup_path()) or "" end
-  else
-    item("startup", true, "red", "StudioSync starts with REAPER (Scripts/__startup.lua)")
-  end
-  local before = tools.split_startup(text)
-  local risks = before and compat.startup_risks(before) or {}
-  if #risks > 0 then
+  end)
+  guard("startup order", function() -- nothing above it that can stop the file
+    local before = tools.split_startup(text)
+    local risks = before and compat.startup_risks(before) or {}
+    if #risks == 0 then return end
     item("startup order", false, "yellow", string.format("Line %d of Scripts/__startup.lua (%s) comes before StudioSync's start and can stop the file there: if it fails, StudioSync " ..
-      "never starts with REAPER. Move StudioSync's start to the top.", risks[1][1], risks[1][2]:sub(1, 60)), "move")
-  end
-  -- Autostart's loop (it beats every 2 s: StudioSync - Autostart.lua)
-  local beat = tonumber(reaper.GetExtState(band.SECTION, "autostart beat"))
-  if tools.autostart_on() and stats.born and now() - stats.born > 60 then
+      "never starts with REAPER. Move StudioSync's start to the top.", risks[1][1], tostring(risks[1][2]):sub(1, 60)), "move")
+  end)
+  guard("autostart", function() -- Autostart's loop (it beats every 2 s: StudioSync - Autostart.lua)
+    local beat = tonumber(reaper.GetExtState(band.SECTION, "autostart beat"))
+    if not (tools.autostart_on() and stats.born and now() - stats.born > 60) then return end
     local up = beat ~= nil and now() - beat < 20
     item("autostart", up, "yellow", up and "StudioSync's Autostart is running" or "StudioSync's Autostart isn't running in this REAPER, so updates, and Live sync starting again by " ..
       "itself after a restart, wait until REAPER restarts. Restart REAPER; if it stops again, the Console says why.")
-  end
-  -- the extension: the one wanted (the red "menu ext" row says what's wrong; here only that it's alone)
-  local okd, direct = pcall(require, "direct")
-  local ext_ok = okd and direct.ext_problem() == nil
-  item("extension", ext_ok, "grey", ext_ok and ("StudioSync's extension " .. reaper.GetExtState(band.SECTION, "menu extension") .. " is loaded") or "StudioSync's extension isn't the one wanted (its row says what to do)")
-  local dupes = compat.dll_dupes(listing(reaper.GetResourcePath() .. "/UserPlugins"))
-  for _, d in ipairs(dupes) do
-    item("dll " .. d.family, false, d.family == "reaper_studiosync" and "red" or "yellow", string.format("Two copies of the same extension are in REAPER's UserPlugins folder (%s): REAPER " ..
-      "loads only one of them, perhaps the older. With REAPER closed, delete the one you don't want.", table.concat(d.files, ", ")))
-  end
-  -- the port: StudioSync's own listener
-  if okd and direct.available() then
-    local s = direct.status(cfg)
-    if s.listening then item("port", true, "yellow", "Port " .. tostring(s.bind):match(":(%d+)$") .. " is StudioSync's (" .. tostring(s.bind) .. ")")
-    elseif tostring(s.error or ""):find("can't listen", 1, true) then
-      local port = tonumber(tostring(s.error):match(":(%d+)")) or direct.port()
-      local who
-      if band.WIN then
-        local pid = compat.port_owner(reaper.ExecProcess("netstat -ano -p TCP", 4000) or "", port, true)
-        who = pid and (compat.task_name(reaper.ExecProcess(string.format('tasklist /FI "PID eq %d" /FO CSV /NH', pid), 4000)) or ("process " .. pid))
-      else
-        who = compat.port_owner(reaper.ExecProcess(string.format("/bin/sh -c \"lsof -nP -iTCP:%d -sTCP:LISTEN\"", port), 4000) or "", port, false)
-      end
-      item("port", false, "yellow", string.format("Port %d is taken by %s, so the others' changes can't reach this computer directly (Syncthing still carries them). %s",
-        port, who or "another program", (who or ""):lower():find("reaper") and "Another REAPER has it: close the second REAPER." or "Close that program, or give the studio another port (ExtState \"direct port\")."))
-    end
-  end
-  -- ExtState: what StudioSync writes reads back
-  local probe = string.format("%d.%d", os.time(), math.random(1, 1e6))
-  reaper.SetExtState(band.SECTION, "compat probe", probe, false)
-  local back = reaper.GetExtState(band.SECTION, "compat probe")
-  reaper.DeleteExtState(band.SECTION, "compat probe", false)
-  item("extstate", back == probe, "red", back == probe and "StudioSync's settings read back as written" or "StudioSync's settings don't read back as written (ExtState): something else changes them. The list below says which script writes them.")
-  -- change detection, on a scratch track state (nothing in the project is touched)
-  local okm, mirror = pcall(require, "mirror")
-  local seen_ok = okm and pcall(function()
-    local a = { name = "StudioSync scratch", vol = 1, pan = 0 }
-    local h1, h2 = mirror.track_hash(a, false), mirror.track_hash({ name = "StudioSync scratch", vol = 0.5, pan = 0 }, false)
-    assert(h1 ~= h2 and h1 == mirror.track_hash({ name = "StudioSync scratch", vol = 1, pan = 0 }, false))
   end)
-  item("detect", seen_ok, "red", seen_ok and "Change detection sees a scratch edit" or "Change detection didn't see a scratch edit: StudioSync's files may be half updated. Update StudioSync again.")
-  -- ReaImGui for the panel
-  if reaper.ImGui_GetVersion then
+  local okd, direct = pcall(require, "direct")
+  guard("extension", function() -- the one wanted (the red "menu ext" row says what's wrong; here only that it's alone)
+    local ext_ok = okd and direct.ext_problem() == nil
+    item("extension", ext_ok, "grey", ext_ok and ("StudioSync's extension " .. tostring(reaper.GetExtState(band.SECTION, "menu extension")) .. " is loaded") or "StudioSync's extension isn't the one wanted (its row says what to do)")
+    for _, d in ipairs(compat.dll_dupes(listing(reaper.GetResourcePath() .. "/UserPlugins"))) do
+      item("dll " .. d.family, false, d.family == "reaper_studiosync" and "red" or "yellow", string.format("Two copies of the same extension are in REAPER's UserPlugins folder (%s): REAPER " ..
+        "loads only one of them, perhaps the older. With REAPER closed, delete the one you don't want.", table.concat(d.files, ", ")))
+    end
+  end)
+  guard("port", function() -- StudioSync's own listener
+    if not (okd and direct.available()) then return end
+    local s = direct.status(cfg)
+    if s.listening then return item("port", true, "yellow", "Port " .. compat.bind_port(s.bind, direct.port()) .. " is StudioSync's (" .. tostring(s.bind) .. ")") end
+    if not tostring(s.error or ""):find("can't listen", 1, true) then return end
+    local port = tonumber(tostring(s.error):match(":(%d+)")) or tonumber(direct.port()) or compat.PORT_FIRST
+    local who
+    if band.WIN then
+      local pid = compat.port_owner(reaper.ExecProcess("netstat -ano -p TCP", 4000) or "", port, true)
+      who = pid and (compat.task_name(reaper.ExecProcess(string.format('tasklist /FI "PID eq %d" /FO CSV /NH', pid), 4000)) or ("process " .. pid))
+    else
+      who = compat.port_owner(reaper.ExecProcess(string.format("/bin/sh -c \"lsof -nP -iTCP:%d -sTCP:LISTEN\"", port), 4000) or "", port, false)
+    end
+    item("port", false, "yellow", string.format("Port %d is taken by %s, so the others' changes can't reach this computer directly (Syncthing still carries them). %s",
+      port, tostring(who or "another program"), tostring(who or ""):lower():find("reaper") and "Another REAPER has it: close the second REAPER." or "Close that program, or give the studio another port (ExtState \"direct port\")."))
+  end)
+  guard("extstate", function() -- what StudioSync writes reads back
+    local probe = string.format("%d.%d", os.time(), math.random(1, 1e6))
+    reaper.SetExtState(band.SECTION, "compat probe", probe, false)
+    local back = reaper.GetExtState(band.SECTION, "compat probe")
+    reaper.DeleteExtState(band.SECTION, "compat probe", false)
+    item("extstate", back == probe, "red", back == probe and "StudioSync's settings read back as written" or "StudioSync's settings don't read back as written (ExtState): something else changes them. The list below says which script writes them.")
+  end)
+  guard("detect", function()
+    local seen_ok = compat.scratch_detect(require("mirror"))
+    item("detect", seen_ok, "red", seen_ok and "Change detection sees a scratch edit" or "Change detection didn't see a scratch edit: StudioSync's files may be half updated. Update StudioSync again.")
+  end)
+  guard("imgui", function() -- ReaImGui for the panel
+    if not reaper.ImGui_GetVersion then return end
     local _, _, rv = reaper.ImGui_GetVersion()
-    local new = rv and band.compare_versions(tostring(rv), "0.10") >= 0
-    if not new then item("imgui", false, "yellow", "ReaImGui " .. tostring(rv) .. " is older than the 0.10 StudioSync's panel needs: Extensions > ReaPack > Synchronize packages.") end
-  end
-  -- REAPER's "open projects on startup", held while the studio's tabs are planned to reopen (lib/startup.lua)
-  local okk, was = pcall(require("startup").keep_open_mode)
-  if okk and was then
+    if rv and band.compare_versions(tostring(rv), "0.10") < 0 then item("imgui", false, "yellow", "ReaImGui " .. tostring(rv) .. " is older than the 0.10 StudioSync's panel needs: Extensions > ReaPack > Synchronize packages.") end
+  end)
+  guard("openmode", function() -- REAPER's "open projects on startup", held while the studio's tabs are planned to reopen (lib/startup.lua)
+    local was = require("startup").keep_open_mode()
+    if not was then return end
     item("openmode", true, "yellow", "Something set REAPER's 'Open projects on startup' to " .. tostring(was) .. " while StudioSync holds it: StudioSync keeps your choice for after, and opens the studio's songs itself without REAPER's boxes")
     band.log("REAPER's 'Open projects on startup' was changed by something else while StudioSync held it: set again (your choice is kept for when no studio song is open)")
-  end
-  -- REAPER asking what to do with new files as recording stops (a ReaPersona persona can turn it on): its box pauses every script
-  if reaper.SNM_GetIntConfigVar and math.floor(tonumber(reaper.SNM_GetIntConfigVar("promptendrec", 0)) or 0) & 1 == 1 then
-    item("promptendrec", false, "yellow", "REAPER asks what to do with the new files each time recording stops, and while that box is up StudioSync waits: your take reaches " ..
-      "the others only once you answer. Turn it off in Preferences > Recording (prompt to save/delete/rename new files), or in your ReaPersona persona's preferences.")
-  end
-  -- SWS: a project startup action on a studio song runs on every open, and what it changes goes to the studio
-  if proj and reaper.NF_GetProjectStartupAction and reaper.EnumProjects(-1) == proj then
+  end)
+  guard("promptendrec", function() -- REAPER asking what to do with new files as recording stops (a ReaPersona persona can turn it on): its box pauses every script
+    if reaper.SNM_GetIntConfigVar and math.floor(tonumber(reaper.SNM_GetIntConfigVar("promptendrec", 0)) or 0) & 1 == 1 then
+      item("promptendrec", false, "yellow", "REAPER asks what to do with the new files each time recording stops, and while that box is up StudioSync waits: your take reaches " ..
+        "the others only once you answer. Turn it off in Preferences > Recording (prompt to save/delete/rename new files), or in your ReaPersona persona's preferences.")
+    end
+  end)
+  guard("sws project action", function() -- a project startup action on a studio song runs on every open, and what it changes goes to the studio
+    if not (proj and reaper.NF_GetProjectStartupAction and reaper.EnumProjects(-1) == proj) then return end
     local okp, desc, id = reaper.NF_GetProjectStartupAction("", "")
-    if okp and (id or "") ~= "" then
+    if okp and tostring(id or "") ~= "" then
       item("sws project action", false, "yellow", "This song has an SWS project startup action (" .. tostring(desc) .. "): it runs each time the song opens here, and whatever it " ..
         "changes goes out to the studio as your change. If it edits the song, clear it: Extensions > SWS > Startup actions.")
     end
-  end
-  -- ReaBlink's own Puppet or Master mode, without StudioSync's Link bridge (which says so itself when it's on)
-  if reaper.APIExists("Blink_GetPuppet") and reaper.GetExtState(band.SECTION, "ablink") ~= "1" and (reaper.Blink_GetPuppet() or (reaper.Blink_GetMaster and reaper.Blink_GetMaster())) then
-    item("reablink", false, "yellow", "ReaBlink's Puppet or Master mode is on: it changes the tempo and play rate itself, outside the studio's rules. Turn it off in ReaBlink; " ..
-      "StudioSync's own Link (Settings > Advanced) keeps Link apps with the studio.")
-  end
+  end)
+  guard("reablink", function() -- ReaBlink's own Puppet or Master mode, without StudioSync's Link bridge (which says so itself when it's on)
+    if not (reaper.APIExists("Blink_GetPuppet") and reaper.GetExtState(band.SECTION, "ablink") ~= "1") then return end
+    if reaper.Blink_GetPuppet() == true or (reaper.Blink_GetMaster and reaper.Blink_GetMaster() == true) then
+      item("reablink", false, "yellow", "ReaBlink's Puppet or Master mode is on: it changes the tempo and play rate itself, outside the studio's rules. Turn it off in ReaBlink; " ..
+        "StudioSync's own Link (Settings > Advanced) keeps Link apps with the studio.")
+    end
+  end)
   if reaper.GetExtState("ReaPersona", "follow projects") == "1" then
     item("reapersona", true, "grey", "ReaPersona switches persona with the project tab: a persona never changes a studio song's own settings (snap, auto-crossfade, grid), StudioSync puts the studio's back")
   end
-  -- the scripts: those that start with REAPER, and on demand every script in the Actions list
-  local kb = band.read(reaper.GetResourcePath() .. "/reaper-kb.ini") or ""
-  local ids = {}
-  if reaper.NF_GetGlobalStartupAction then
-    local okg, _, gid = reaper.NF_GetGlobalStartupAction("", "")
-    if okg and (gid or "") ~= "" then ids[1] = gid end
-  end
-  local list = compat.autostarted(text, kb, ids)
-  local auto_n = #list
-  if full then
-    local seen = {}
-    for _, x in ipairs(list) do seen[x.path:lower()] = true end
-    for _, x in pairs(compat.kb_paths(kb)) do
-      if x.section == "0" and not ours(x.path) and not seen[x.path:lower()] and x.path:lower():find("%.lua$") then seen[x.path:lower()] = true; list[#list + 1] = x end
+  local list = {}
+  guard("scripts", function() -- those that start with REAPER, and on demand every script in the Actions list
+    local kb = band.read(reaper.GetResourcePath() .. "/reaper-kb.ini") or ""
+    local ids = {}
+    if reaper.NF_GetGlobalStartupAction then
+      local okg, _, gid = reaper.NF_GetGlobalStartupAction("", "")
+      if okg and tostring(gid or "") ~= "" then ids[1] = gid end
     end
-  end
-  for i, x in ipairs(list) do
-    local kinds = compat.scan_text(read_file(whole(x.path)), i <= auto_n)
-    if next(kinds) then
-      if kinds.grid and i <= auto_n then latch_grid(x.name) end
-      clash[#clash + 1] = { name = x.name, path = x.path, start = i <= auto_n or nil, kinds = kinds }
-      if #clash >= 20 then break end
+    list = compat.autostarted(text, kb, ids)
+    local auto_n = #list
+    if full then
+      local seen = {}
+      for _, x in ipairs(list) do seen[x.path:lower()] = true end
+      for _, x in pairs(compat.kb_paths(kb)) do
+        if x.section == "0" and not ours(x.path) and not seen[x.path:lower()] and x.path:lower():find("%.lua$") then seen[x.path:lower()] = true; list[#list + 1] = x end
+      end
     end
-    if i % compat.FILES_PER_PASS == 0 then coroutine.yield() end
-  end
+    for i, x in ipairs(list) do
+      local kinds = compat.scan_text(read_file(whole(x.path)), i <= auto_n)
+      if next(kinds) then
+        if kinds.grid and i <= auto_n then latch_grid(tostring(x.name)) end
+        clash[#clash + 1] = { name = tostring(x.name), path = x.path, start = i <= auto_n or nil, kinds = kinds }
+        if #clash >= 20 then break end
+      end
+      if i % compat.FILES_PER_PASS == 0 then coroutine.yield() end -- (Lua 5.4 yields across the pcall)
+    end
+  end)
   local res = { at = os.time(), full = full or nil, scanned = #list, items = items, clash = clash }
   reaper.SetExtState(band.SECTION, "compat check", enc(res), false)
   return res

@@ -75,6 +75,12 @@ assert(compat.port_owner(ls, 47281, false) == "REAPER" and compat.port_owner(ls,
 local guard = "-- BandSync render guard (x)\nif os.getenv(\"BANDSYNC_RENDER\") then return end\n-- /BandSync render guard\n"
 local risky = compat.startup_risks(guard .. "-- dofile('commented.lua')\nlocal ok = pcall(dofile, x)\ndofile(\"C:/gone/drive.lua\")\nlocal m = require(\"thing\")\nreturn\n")
 assert(#risky == 3 and risky[1][1] == 6 and risky[1][2] == 'dofile("C:/gone/drive.lua")' and risky[2][1] == 7 and risky[3][1] == 8, "a bare dofile, a require, a top-level return; not a pcall, a comment or the guard")
+-- (the desktop's own file, 0.59.49.63: the agent bridge's block returns inside its functions, which was read as stopping the file)
+local bridge = "do\n  local function read_lock()\n    local f = io.open(lockfile, \"r\")\n    if not f then return nil end\n    return { started = started, busy = busy }\n  end\n" ..
+  "  local function lock_is_stale(lock, now)\n    return age >= 60\n  end\n  local ok, err = pcall(dofile, bridge_file)\nend\n"
+assert(#compat.startup_risks(guard .. bridge) == 0, "a return inside a function never stops the file")
+assert(compat.bind_port("100.106.240.32:47290", 47281) == "47290" and compat.bind_port("100.106.240.32", 47281) == "47281" and compat.bind_port(nil) == "47281", "the bind's port, else the link's")
+assert(compat.scratch_detect(require("mirror")), "change detection, StudioSync's real hashing, sees the scratch edit (and asks nothing of SWS)")
 local block = tools.startup_block({ "C:/S/StudioSync" }):gsub("\n$", "")
 local text = guard .. "-- mine\ndofile(\"x.lua\")\n" .. block .. "\n-- after\nreaper.y()\n"
 local moved = compat.block_first(text, tools.split_startup)
@@ -206,7 +212,6 @@ write(T .. "/reaper-kb.ini", 'SCR 4 0 RSeee "Custom: bad.lua" bad.lua\nSCR 4 0 R
 files[T .. "/UserPlugins"] = { "reaper_studiosync-x64.dll", "reaper_studiosync-x64 (2).dll" }
 package.loaded.direct = { ext_problem = function() return nil end, available = function() return true end, port = function() return 47281 end,
   status = function() return { listening = false, error = "can't listen on 100.64.1.2:47281 (another REAPER, or something else, has the port)" } end }
-package.loaded.mirror = { track_hash = function(t) return tostring(t.name) .. "|" .. tostring(t.vol) end }
 reaper.ExecProcess = function(cmd) if cmd:find("netstat", 1, true) then return ns end return '0\n"reaper.exe","4242"\n' end
 reaper.SNM_GetIntConfigVar = function() return 1 end
 reaper.BR_Win32_WritePrivateProfileString = function() return true end
@@ -227,6 +232,23 @@ assert(gext["BandSync\0compat check"] and gext["BandSync\0compat probe"] == nil,
 co = coroutine.create(function() return compat.run_check("P1", { root = T }, nil, T .. "/StudioSync", true) end)
 okc, res = coroutine.resume(co)
 assert(okc and #res.clash == 2 and res.clash[2].name == "handy.lua" and not res.clash[2].start and res.full, "a script run by hand writing it too")
+-- the desktop's extension (0.59.49.63) gives its bind as the address alone: the port is the link's, and the check goes on
+package.loaded.direct.status = function() return { listening = true, bind = "100.106.240.32" } end
+co = coroutine.create(function() return compat.run_check("P1", { root = T }, nil, T .. "/StudioSync", false) end)
+okc, res = coroutine.resume(co)
+it = {}
+for _, x in ipairs(res.items) do it[x.id] = x end
+assert(okc and it.port and it.port.ok and it.port.text == "Port 47281 is StudioSync's (100.106.240.32)", okc and tostring(it.port and it.port.text) or tostring(res))
+-- one check that raises is a grey item and a log line; the rest still run, and grey isn't "needs a look"
+package.loaded.direct.status = function() error("an odd answer from the extension") end
+co = coroutine.create(function() return compat.run_check("P1", { root = T }, nil, T .. "/StudioSync", false) end)
+okc, res = coroutine.resume(co)
+it = {}
+for _, x in ipairs(res.items) do it[x.id] = x end
+assert(okc and it.port and it.port.level == "grey" and it.port.text:find("odd answer") and it.extstate.ok and it.detect.ok and #res.clash == 1, "the port check failed alone")
+local summary
+for _, r in ipairs(compat.rows_from(res, nil, nil, os.time(), {})) do if r[1] == "compat" then summary = r end end
+assert(summary and not summary[5]:find("odd answer") and not (function() for _, r in ipairs(compat.rows_from(res, nil, nil, os.time(), {})) do if r[1] == "compat port" then return true end end end)(), "no row of its own for a check that couldn't run")
 -- Move StudioSync's start to the top
 local before_len = #read(T .. "/Scripts/__startup.lua")
 assert(compat.move_block_first() == true, "moved")

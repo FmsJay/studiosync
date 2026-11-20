@@ -84,6 +84,24 @@ It runs 15 s after the tab in front starts Live sync, then every 10 minutes, and
 - The window-set load (`wset`) with StudioSync's panel docked.
 - The web button in a browser. The page change is three lines, using the existing `ssTabs.act`.
 
+### First run on the desktop (0.59.49.63)
+- The whole check failed with "attempt to concatenate a nil value": the desktop's extension gives `direct.status().bind` as the address alone
+  ("100.106.240.32"). The port now comes from `direct.port()` when the bind has none (`compat.bind_port`).
+- Every part of the check now runs on its own (`guard`). A part that raises becomes a grey item ("The port check couldn't run here: ...")
+  and a line in the log file. Grey gets no row and doesn't count as needing a look.
+- The "1 of StudioSync's own checks need a look" was the failed check's own placeholder item. Checked offline against the desktop's real
+  `__startup.lua`, UserPlugins, reaper-kb.ini and reaper.ini, the fixed check would still have raised a false alarm:
+  "Line 35 of Scripts/__startup.lua (return { started = started, busy = busy }) comes before StudioSync's start...". That line is a return
+  inside a function in the agent bridge's block. Fixed: only a `return` at the very start of a line counts as top-level.
+- Also on a real rig: the scratch change-detection test asked SWS whether it colours tracks (`mirror.own_colours`). It now passes
+  `colour = true`, so the test depends only on StudioSync's own hashing (`compat.scratch_detect`). ReaBlink's Puppet/Master now counts only
+  when it answers exactly true.
+- What the desktop should show after the fix:
+  - the green summary row;
+  - "Adaptive grid menu.lua starts with REAPER and changes the project grid..." in green;
+  - the green grid row.
+  The `loop`, `autostart` and `reablink` items can only be judged in REAPER.
+
 ## 6. Shortcuts and limits
 - `startup.keep_open_mode` writes the person's new choice into the plan, but Autostart keeps its own copy (`kept_was`) in its Lua state. The next tab change can write the old value back. Upgrade path: keep it only in the plan file.
 - Grid-local latching from a scanned startup script is static: a script that only writes the grid on a click still makes the grid local. That's harmless (the grid is then simply per computer), and James can reverse it by removing the `latch_grid` call in run_check.
