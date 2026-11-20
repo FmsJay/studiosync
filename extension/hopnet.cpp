@@ -380,6 +380,11 @@ void serve_rx(HopNet *h, Sess &s, int type, uint32_t nf, uint64_t frame, const u
     s.fmap[(size_t)(xi & HOP_MASK)] = Fm{ xi + 1, frame + k };
   }
   s.s_received += nf;
+  // X publishes send_w before it reads its ret ring, so any frame X's newest block may have read before we wrote it is behind
+  // send_w - Lx now: those played as silence there, so they aren't returned as if they'd played (the sender counts them lost).
+  const uint64_t xw2 = hop_load(&X->send_w);
+  for (uint32_t k = 0; k < nf; ++k)
+    if ((uint64_t)x + k + Lx < xw2) { s.fmap[(size_t)(((uint64_t)x + k) & HOP_MASK)] = Fm{ 0, 0 }; ++s.s_dropped; }
 }
 
 // Once a second: the windows roll, and a remote whose clock runs slower than the sender's (packets ever earlier) is brought back to
@@ -617,6 +622,12 @@ std::string hopnet_status(HopNet *h, int hop_id)
 // ---- REAPER ----------------------------------------------------------------------------------------------------------------------------
 #ifndef HOPNET_STANDALONE
 #include "reaper_plugin.h"
+#ifdef min // (SWELL on macOS/Linux defines min/max as macros)
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
 #include "rtaudio.h"
 int hop_loopback(int id, int delay);               // extension/hop.cpp
 extern std::string (*hop_net_status)(int hop_id); // extension/hop.cpp: StudioSync_HopStatus adds ours as "net"
