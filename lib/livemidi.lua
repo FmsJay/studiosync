@@ -18,13 +18,19 @@ local function dir(cfg, b) return sync.room_dir(cfg, b.song, b.room) .. "/live_m
 local function safe(user) return (user:gsub("[^%w%-_ ]", "")) end
 
 -- Which armed tracks take this MIDI event (device and channel as their record input says). Pure but for reaper reads.
+-- Several at once (James, rt): only tracks that record MIDI (not record: none, nor output to a file: their sound streams as audio), and
+-- each its own part: a second track of the same name is "<name> (<its number>)", or two "Synth" tracks' notes were one part and a note
+-- held on both never ended.
 local function armed_midi(proj)
-  local out = {}
+  local out, seen = {}, {}
   for t = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, t)
     local input = reaper.GetMediaTrackInfo_Value(tr, "I_RECINPUT")
-    if reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1 and input >= 0 and input & 4096 ~= 0 then
-      out[#out + 1] = { name = sync.base_name(select(2, reaper.GetTrackName(tr))), dev = (input >> 5) & 63, chan = input & 31 }
+    if require("streams").records_midi(reaper.GetMediaTrackInfo_Value(tr, "I_RECARM"), input, reaper.GetMediaTrackInfo_Value(tr, "I_RECMODE")) then
+      local name = sync.base_name(select(2, reaper.GetTrackName(tr)))
+      if seen[name] then name = name .. " (" .. (t + 1) .. ")" end
+      seen[name] = true
+      out[#out + 1] = { tr = tr, name = name, dev = (input >> 5) & 63, chan = input & 31 }
     end
   end
   return out
@@ -77,6 +83,18 @@ function lm.send_tick(proj, cfg, b, recording)
             rec.notes[rec.open[key]].e, rec.dirty[rec.open[key]], rec.ldirty[rec.open[key]] = e.pos, true, true
             rec.open[key] = nil
           end
+        end
+      end
+    end
+  end
+  if recording then -- (a track disarmed mid-take stops recording there: its held notes end now, nothing more goes to it. Several at once, James, rt)
+    for k = #rec.tracks, 1, -1 do
+      local t = rec.tracks[k]
+      if t.tr and reaper.GetMediaTrackInfo_Value(t.tr, "I_RECARM") ~= 1 then
+        table.remove(rec.tracks, k)
+        local pre, at = t.name .. "\0", reaper.GetPlayPosition2Ex(proj)
+        for key, idx in pairs(rec.open) do
+          if key:sub(1, #pre) == pre then rec.notes[idx].e, rec.dirty[idx], rec.ldirty[idx], rec.open[key] = at, true, true, nil end
         end
       end
     end

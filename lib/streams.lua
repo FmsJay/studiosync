@@ -28,10 +28,20 @@ local streams = { INTERVAL_MS = 100, FIND_SECS = 3, FILE_TOL = 3, END_DELAY = 0.
 -- ---- pure ------------------------------------------------------------------------------------------------------------------------------
 local AUDIO = { wav = true, w64 = true, flac = true, aif = true, aiff = true, ogg = true, opus = true, mp3 = true }
 function streams.audio_ext(name) local e = tostring(name or ""):match("%.(%w+)$"); return e ~= nil and AUDIO[e:lower()] == true end
--- Does an armed track record an audio file? (I_RECINPUT: >= 0 and not MIDI (4096); I_RECMODE: input, or output to a file: 0, 1, 3, 5, 6)
-local FILE_MODES = { [0] = true, [1] = true, [3] = true, [5] = true, [6] = true }
+-- Does an armed track record an audio file? I_RECMODE output (stereo 1/3, mono 5/6, multichannel 10/11): always, whatever its input (a
+-- synth on a MIDI input recording its sound); input (0, or forced mono/stereo/multichannel 12-14): an audio I_RECINPUT (>= 0, not MIDI 4096).
+-- (output to a file from a MIDI input, and modes 10-14, weren't counted: such a take wasn't streamed and its file left the others' "as many
+-- files as tracks" uncounted. James, rt)
+streams.OUT_MODES = { [1] = true, [3] = true, [5] = true, [6] = true, [10] = true, [11] = true }
+local IN_MODES = { [0] = true, [12] = true, [13] = true, [14] = true }
 function streams.records_audio(arm, input, mode)
-  return arm == 1 and input >= 0 and input & 4096 == 0 and FILE_MODES[math.floor(mode)] == true
+  mode = math.floor(mode)
+  return arm == 1 and (streams.OUT_MODES[mode] == true or (IN_MODES[mode] == true and input >= 0 and input & 4096 == 0))
+end
+-- Does an armed track record MIDI? A MIDI input in any mode but none (2) and output to a file. Pure.
+function streams.records_midi(arm, input, mode)
+  mode = math.floor(mode)
+  return arm == 1 and input >= 0 and input & 4096 ~= 0 and mode ~= 2 and not streams.OUT_MODES[mode]
 end
 -- Is a file in the record folder one REAPER began for this recording? Its newest time (made or written, StudioSync_DirectFileTime: through
 -- a handle, so current while REAPER writes it) at or after the recording began (`wall`, os.time's whole seconds), less FILE_TOL. Without
@@ -41,28 +51,45 @@ function streams.made_since(t, wall, first)
   return not first
 end
 local function alnum(s) return (tostring(s or ""):lower():gsub("[^%w]", "")) end
--- tracks: { { name, num, ... } } (armed audio tracks, in track order); files: new file names. -> { { track, file } }, by the track's name in
--- the file's (longest names first, so "Gtr" doesn't take "Gtr 2"'s), then its number at the start ("02-..."), then in order when as many
--- files as tracks are left. Anything else isn't matched (not streamed: it comes the normal way).
+local function lead_num(f) local lead = f:match("^0*(%d+)%D"); return lead and tonumber(lead) end
+-- tracks: { { name, num, ... } } (every armed audio track, in track order); files: new file names. -> { { track, file } }: by the track's
+-- name in the file's (longest names first, so "Gtr" doesn't take "Gtr 2"'s; of several with its name, the one starting with its number,
+-- "02-Gtr-...", so two tracks of one name each get theirs; else the top track the first), then its number at the start ("02-..."), then
+-- in order when as many files as tracks are left. Anything else isn't matched (not streamed: it
+-- comes the normal way). Several at once (James, rt): the extension isn't part of the name (a track called "Wav" took every .wav file), a
+-- name of digits only isn't looked for (a track "26" took "03-Vox-261119_1730.flac" by its date), and ties keep track order (table.sort
+-- isn't stable: two tracks of one name could swap files).
 function streams.match(tracks, files)
   local pairs_, used, done = {}, {}, {}
-  local by_len = {}
-  for i, t in ipairs(tracks) do by_len[#by_len + 1] = i end
-  table.sort(by_len, function(a, b) return #alnum(tracks[a].name) > #alnum(tracks[b].name) end)
+  local by_len, stems, names = {}, {}, {}
+  for fi, f in ipairs(files) do stems[fi] = alnum((f:gsub("%.%w+$", ""))) end
+  for i, t in ipairs(tracks) do
+    by_len[#by_len + 1] = i
+    local n = alnum(t.name)
+    names[i] = #n >= 2 and n:find("%a") and n or nil
+  end
+  table.sort(by_len, function(a, b)
+    local la, lb = #(names[a] or ""), #(names[b] or "")
+    if la ~= lb then return la > lb end
+    return a < b
+  end)
   local function take(ti, fi) pairs_[#pairs_ + 1] = { track = tracks[ti], file = files[fi] }; used[fi], done[ti] = true, true end
   for _, ti in ipairs(by_len) do
-    local n = alnum(tracks[ti].name)
-    if #n >= 2 then
+    local n, first = names[ti], nil
+    if n then
       for fi, f in ipairs(files) do
-        if not used[fi] and alnum(f):find(n, 1, true) then take(ti, fi); break end
+        if not used[fi] and stems[fi]:find(n, 1, true) then
+          if lead_num(f) == tracks[ti].num then first = fi; break end
+          first = first or fi
+        end
       end
+      if first then take(ti, first) end
     end
   end
   for ti, t in ipairs(tracks) do
     if not done[ti] and t.num then
       for fi, f in ipairs(files) do
-        local lead = f:match("^0*(%d+)%D")
-        if not used[fi] and lead and tonumber(lead) == t.num then take(ti, fi); break end
+        if not used[fi] and lead_num(f) == t.num then take(ti, fi); break end
       end
     end
   end
@@ -345,15 +372,25 @@ function streams.trace(text)
 end
 local rec -- this recording: { t0, wall, dir, tracks, pos, at, found = set, old = set, takes = { { id, rel } }, none, stopped_at, find_until }
 local function record_dir(proj) return (reaper.GetProjectPathEx(proj, "")) end
+-- The channels a take records: the mode's (mono/stereo output or forced input, multichannel: the track's count), else the input's. Pure.
+function streams.rec_nch(input, mode, nchan)
+  mode = math.floor(mode)
+  if mode == 5 or mode == 6 or mode == 12 then return 1 end
+  if mode == 1 or mode == 3 or mode == 13 then return 2 end
+  if mode == 10 or mode == 11 or mode == 14 or (mode == 0 and input & 2048 ~= 0) then return math.max(1, math.floor(nchan or 2)) end
+  return input & 1024 ~= 0 and 2 or 1
+end
+-- Every armed track recording audio, in track order. One that can't stream (this computer's own, or not the band's yet: no oid) is listed
+-- too, as `skip`: its file is matched to it and left alone, or "Gtr" took a local "Gtr 2"'s file (several at once, James, rt).
 local function armed_audio(proj)
   local mirror, out = require("mirror"), {}
   for i = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, i)
-    if streams.records_audio(reaper.GetMediaTrackInfo_Value(tr, "I_RECARM"), reaper.GetMediaTrackInfo_Value(tr, "I_RECINPUT"),
-        reaper.GetMediaTrackInfo_Value(tr, "I_RECMODE")) and not mirror.local_track(tr) and mirror.track_oid(tr) ~= "" then
-      local input = reaper.GetMediaTrackInfo_Value(tr, "I_RECINPUT")
-      out[#out + 1] = { tr = tr, oid = mirror.track_oid(tr), name = select(2, reaper.GetTrackName(tr)), num = i + 1,
-        nch = input & 1024 ~= 0 and 2 or (input & 2048 ~= 0 and 0 or 1) }
+    local input, mode = reaper.GetMediaTrackInfo_Value(tr, "I_RECINPUT"), reaper.GetMediaTrackInfo_Value(tr, "I_RECMODE")
+    if streams.records_audio(reaper.GetMediaTrackInfo_Value(tr, "I_RECARM"), input, mode) then
+      local oid = mirror.track_oid(tr)
+      out[#out + 1] = { tr = tr, oid = oid, name = select(2, reaper.GetTrackName(tr)), num = i + 1, skip = mirror.local_track(tr) or oid == "" or nil,
+        nch = streams.rec_nch(input, mode, reaper.GetMediaTrackInfo_Value(tr, "I_NCHAN")) }
     end
   end
   return out
@@ -410,8 +447,10 @@ function streams.send_tick(proj, cfg, b, recording)
     local sn = direct.shared_now()
     rec.at = sn and sn - (play - rec.pos) or nil -- (in a count-in, a moment still to come)
     rec.cap = 30 + math.max(0, rec.pos - play) -- (looked for at most this long: longer when a punch-in is still ahead)
-    if #rec.tracks == 0 then
-      streams.trace("record start: no armed audio tracks: not streamed")
+    local any = false
+    for _, t in ipairs(rec.tracks) do any = any or not t.skip end
+    if not any then
+      streams.trace("record start: no armed audio tracks of the band's: not streamed")
       rec.none = true
     end
   end
@@ -456,6 +495,7 @@ function streams.send_tick(proj, cfg, b, recording)
   for _, t in ipairs(rec.tracks) do if not t.taken then left[#left + 1] = t end end
   for _, m in ipairs(streams.match(left, fresh)) do
     m.track.taken, rec.found[m.file] = true, true
+    if m.track.skip then streams.trace("look: " .. m.file .. " is " .. m.track.name .. "'s, a track that isn't the band's: not streamed"); goto next_match end
     local id = string.format("%s-%s-%03d%d", (cfg.user:gsub("[^%w%-_]", "_")), os.date("!%Y%m%d-%H%M%SZ"), math.floor(rec.t0 * 1000) % 1000, #rec.takes + 1)
     local path, name, peers = rec.dir .. "/" .. m.file, streams.stream_name(b.room, cfg.user, m.file), direct.peers(cfg, b.song, b.room)
     local rel = direct.stream_start(cfg, path, b.song, b.room, streams.INTERVAL_MS, name, peers)
@@ -469,6 +509,7 @@ function streams.send_tick(proj, cfg, b, recording)
       streams.streamed[band.norm(path):lower()] = { file = m.file, rel = rel, at = reaper.time_precise() } -- (its shared copy then goes as "this stream": offer_media)
       direct.send_live(cfg, "take", msg, b.song, b.room, id, peers)
     end
+    ::next_match::
   end
 end
 

@@ -156,7 +156,8 @@ reaper = {
 markers = song
 studio.smart_lane_names = true -- (the lanes checks below; off is checked at the end)
 local had = { g0 = true, g5 = true } -- (what recap.before_record would have found: the take already in the item, and the old part)
-assert(recap.before_record(nil).g5 and recap.before_record(nil).g1 and not recap.before_record(nil).g4, "before_record: armed tracks' takes")
+assert(recap.before_record(nil).g5 and recap.before_record(nil).g1 and recap.before_record(nil).g4, "before_record: every track's takes (one armed mid-take keeps its old ones' names)")
+assert(recap.before_record(nil)[".tracks"][tracks[1]] and not recap.before_record(nil)[".tracks"][tracks[3]], "and which tracks were armed")
 assert(recap.name_takes(nil, { user = "James", root = "R" }, had) == 2)
 assert(tracks[1].items[1].takes[1].name == "Verse - James - take 2", "after the take already called take 1: " .. tracks[1].items[1].takes[1].name)
 assert(tracks[1].items[2].takes[2].name == "Chorus - James - take 1", tracks[1].items[2].takes[2].name)

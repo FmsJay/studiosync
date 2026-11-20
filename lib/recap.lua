@@ -212,18 +212,17 @@ local function take_guid(tk) return select(2, reaper.GetSetMediaItemTakeInfo_Str
 function recap.names_on(root) return require("groups").smart_take_names(root) end
 -- Lanes too (band.json "smart_lane_names", off unless true: a recording takes the first open lane, so a lane's name may not stay its take's).
 function recap.lanes_on(root) return require("groups").smart_lane_names(root) end
--- As a recording starts: the takes already on the armed tracks, so the stop can tell the new ones.
+-- As a recording starts: the takes already there, so the stop can tell the new ones. Every track's, not only the armed ones': a track armed
+-- mid-take (several at once, James, rt) is armed at the stop, and its old takes with REAPER's names were named as this recording's.
 function recap.before_record(proj)
   local had = { [".tracks"] = {} } -- (".tracks": the tracks armed now, as the stop may come after a disarm: REAPER's "disarm after recording",
   -- a quick hand, or a script. Without it the take on a track disarmed before Live sync's next tick kept REAPER's name. Desktop, rt)
   for t = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, t)
-    if reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1 then
-      had[".tracks"][tr] = true
-      for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
-        local it = reaper.GetTrackMediaItem(tr, j)
-        for k = 0, reaper.CountTakes(it) - 1 do local tk = reaper.GetTake(it, k); if tk then had[take_guid(tk)] = true end end
-      end
+    if reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1 then had[".tracks"][tr] = true end
+    for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
+      local it = reaper.GetTrackMediaItem(tr, j)
+      for k = 0, reaper.CountTakes(it) - 1 do local tk = reaper.GetTake(it, k); if tk then had[take_guid(tk)] = true end end
     end
   end
   return had

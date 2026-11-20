@@ -10,12 +10,13 @@ R.STUCK_SECS = 600 -- a connected bandmate whose completion hasn't moved in 10 m
 R.PEER_FRESH = 600 -- a bandmate's free space older than this is from a session long gone: not worth a row
 R.MB_PER_MIN = 48000 * 3 * 2 * 60 / 1048576 -- 24-bit stereo at 48 kHz, one track: ~16.5 MB a minute
 
--- Pure: what fits in `mb`, in words ("about 48 minutes of 24-bit stereo at 48 kHz").
-function R.fits_words(mb)
-  local mins = math.floor(mb / R.MB_PER_MIN)
+-- Pure: what fits in `mb`, in words ("about 48 minutes of 24-bit stereo at 48 kHz"), with `n` tracks recording at once (nil: one).
+function R.fits_words(mb, n)
+  n = math.max(1, math.floor(tonumber(n) or 1))
+  local mins = math.floor(mb / (R.MB_PER_MIN * n))
   local t = mins < 1 and "less than a minute" or mins < 120 and ("about " .. mins .. (mins == 1 and " minute" or " minutes"))
     or ("about " .. math.floor(mins / 60) .. " hours")
-  return t .. " of 24-bit stereo at 48 kHz"
+  return t .. " of 24-bit stereo at 48 kHz" .. (n > 1 and (", " .. n .. " tracks at once") or "")
 end
 -- Pure: "800 MB", "4.2 GB".
 function R.size_words(mb)
@@ -145,10 +146,16 @@ function R.free_mb(proj)
 end
 
 -- Record start (Live sync): a line, never a box, when this computer or a bandmate here is low.
+-- (several tracks at once fill it that many times as fast: counted, and the warning comes that much sooner. James, rt)
 function R.record_check(proj, cfg, b)
   S.free_at = nil -- (asked fresh: a take is about to need it)
-  local mb = R.free_mb(proj)
-  if mb and mb < R.LOW_MB then band.log("recording with " .. R.size_words(mb) .. " free on this computer: " .. R.fits_words(mb) .. " fits") end
+  local mb, n, rec = R.free_mb(proj), 0, require("streams").records_audio
+  for i = 0, (reaper.CountTracks(proj) or 0) - 1 do
+    local tr = reaper.GetTrack(proj, i)
+    if rec(reaper.GetMediaTrackInfo_Value(tr, "I_RECARM"), reaper.GetMediaTrackInfo_Value(tr, "I_RECINPUT"), reaper.GetMediaTrackInfo_Value(tr, "I_RECMODE")) then n = n + 1 end
+  end
+  n = math.max(1, n)
+  if mb and mb < R.LOW_MB * n then band.log("recording with " .. R.size_words(mb) .. " free on this computer: " .. R.fits_words(mb, n) .. " fits") end
   local ok, all = pcall(require("presence").all, cfg, b.song, b.room)
   for _, r in ipairs(R.peer_disk_rows(ok and all or {}, cfg.user, os.date("!*t"))) do band.log(r.short .. ": your take may not land there") end
 end

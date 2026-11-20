@@ -97,6 +97,16 @@ sends each new interval (one bar, or N beats; tempo-aware, from the shared clock
   takes and their placeholders (each armed audio track its own stream), the live MIDI view (each recording MIDI track).
   To check in REAPER: two audio tracks at once (names, placeholders and the real takes on the others) and two MIDI
   tracks at once (both live views). With Play above, several armed tracks mix into the one Play stream.
+  - **Audited and fixed (2026-11-19, tests/test_0_60_rt_multitrack.lua; offline, not run in REAPER yet).** Two audio tracks at once
+    were seen right in REAPER. Fixed for several at once: which file is whose (an armed track that isn't the band's, its own or one with
+    no oid yet, now claims its file instead of "Gtr" taking a local "Gtr 2"'s; one name on two tracks: the file starting with each
+    track's number; the extension and digits-only names left out of the name match; ties keep track order); a track recording its
+    output (a synth on a MIDI input, record: output stereo/mono/multichannel) streams as audio and gets no live MIDI view, nor does
+    record: none; a multichannel take says its channel count; live MIDI keeps one part per track (a second "Synth" is "Synth (4)", a
+    note held on both ends on both) and a track disarmed mid-take ends its held notes there; smart take names leave a track armed
+    mid-take's old takes alone; the low-disk line counts the armed audio tracks. Limits: one name on two tracks with no number in the
+    files: the top track gets the first file (by name), which may not be REAPER's order; several MIDI parts show as overlapping items
+    on the recorder's one "(live)" track.
 
 ### 4b. Remote plug-ins in real time ("live hops")
 Hear a plug-in you don't have, live, through the bandmate's REAPER that does have it, instead of waiting for a print.
