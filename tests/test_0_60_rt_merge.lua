@@ -79,10 +79,12 @@ local function new_events()
   end
   return out
 end
+local rules = {} -- user -> { can, claimed, soft }: Claims mode with a bandmate's auto-claim (the last section); nothing: anyone may
 local function look(c, held)
   as(c)
   c.F.clock = c.F.clock + 1
-  mirror.watch(c.F.proj, c.cfg, song, room, { can = yes, mode = "open", quick = true, held = held })
+  local r = rules[c.cfg.user] or {}
+  mirror.watch(c.F.proj, c.cfg, song, room, { can = r.can or yes, is_claimed = r.claimed, mode = "open", quick = true, held = held, soft = r.soft })
   local oids = {}
   for _, ev in ipairs(new_events()) do if ev.oid then oids[ev.oid] = ev end end
   return oids
@@ -101,7 +103,9 @@ local function recv(c)
   as(c)
   for _ = 1, 20 do
     c.F.clock = c.F.clock + 1
-    local got = sync.receive(c.F.proj, c.cfg, song, room, yes)
+    local r = rules[c.cfg.user] or {}
+    sync.soft = r.soft and { room = room, fn = r.soft } or nil
+    local got = sync.receive(c.F.proj, c.cfg, song, room, r.can or yes)
     if (tonumber(got) or 0) == 0 and not sync.backlog and not sync.read_cut then break end
   end
   for _ = 1, 3 do
@@ -309,6 +313,45 @@ do
   tick(); recv(B)
   same("the edit made while Bee was on it")
   print("rt-merge: an edit to what a bandmate is editing goes out, with a word, never put back")
+end
+
+-- Claims mode: the desktop's edit auto-claimed the track (Cross Test, 0.59.49.70: the laptop's note, a different one, was asked for, waited
+-- 30 s and was put back). Now an edit that merges with the claimer's change goes out and lands at once; the same note is still asked for.
+do
+  local a = item_named(keys, "Keys A")
+  local K = keys.name
+  tick(); as(A)
+  with_notes(A, a, { "E 0 90 3c 60", "E 240 90 43 60", "E 120 80 43 00", "E 120 80 3c 00", "E 0 90 40 50", "E 480 80 40 00", "E 960 b0 7b 00" })
+  tick(); settle(A); tick(); recv(B)
+  -- Keys is James's auto-claim now, on both computers
+  local function claimed(name) return name == K end
+  local function can(user, name) return user == "James" or name ~= K end
+  local function soft(name, _, user) if name == K and user ~= "James" then return "James" end end
+  rules.James = { can = can, claimed = claimed, soft = soft }
+  rules.Bee = { can = can, claimed = claimed, soft = function(name, pos) return soft(name, pos, "Bee") end }
+  logged = {}
+  tick(); as(B)
+  local b = item_on(B, a)
+  with_notes(B, b, { "E 0 90 3c 60", "E 240 90 43 60", "E 120 80 43 00", "E 120 80 3c 00", "E 0 90 40 50", "E 480 80 40 00", "E 240 90 45 60", "E 240 80 45 00", "E 480 b0 7b 00" })
+  tick()
+  local sent = {}
+  settle(B, sent)
+  assert(sent[oid_of(a)], "the laptop's different note went out though Keys is James's auto-claim:\n" .. table.concat(logged, "\n"))
+  tick(); recv(A)
+  same("a note added on a bandmate's auto-claimed track")
+  assert(events_of(a):find("90 45 60", 1, true) and events_of(a):find("90 43 60", 1, true), "both notes on the desktop: " .. events_of(a))
+  print("rt-merge: Claims mode: a different note on a bandmate's auto-claimed part goes out and lands at once")
+  -- the same note: still theirs to give (refused here: no ask in this test, so put back)
+  tick(); as(B)
+  b = item_on(B, a)
+  with_notes(B, b, { "E 0 90 3c 60", "E 240 90 43 7f", "E 120 80 43 00", "E 120 80 3c 00", "E 0 90 40 50", "E 480 80 40 00", "E 240 90 45 60", "E 240 80 45 00", "E 480 b0 7b 00" })
+  tick()
+  sent = {}
+  settle(B, sent)
+  assert(not sent[oid_of(a)] and not events_of(item_on(B, a)):find("43 7f", 1, true), "the desktop's own note, changed: not sent, put back")
+  print("rt-merge: Claims mode: the claimer's own note changed by someone else is still theirs to give")
+  -- the claimer's side: a crossing edit that merges lands at once (not held a minute as refused)
+  rules.James, rules.Bee = nil, nil
 end
 
 -- pure: the merges themselves

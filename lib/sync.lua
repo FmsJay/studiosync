@@ -1423,8 +1423,18 @@ function sync.receive(proj, cfg, song, room, can)
       break
     end
   end
+  -- (held back only by someone else's auto-claim, Claims mode: a change that merges with the claimer's own to it lands at once, as its sender
+  -- sent it; one to the same note, point or setting is refused as before. sync.soft: Live sync's, for its own room. rt-merge)
+  local function soft_ok(ev)
+    local m = require("mirror")
+    local who = sync.soft and sync.soft.room == room and m.mergeable(ev) and sync.soft.fn(ev.name or "", ev.pos, ev.user)
+    if not who then return false end
+    local _, _, kev = m.known(proj, ev.oid)
+    local held = (kev or "") ~= "" and m.event_file(sync.room_dir(cfg, song, room), kev) or nil
+    return not (held and m.clashes(sync.room_dir(cfg, song, room), ev.obj, ev.state, held, who))
+  end
   local function refused(ev)
-    return not (sync.ANYONE[ev.type] or ev.alone or (ev.type == "obj" and sync.obj_allowed(ev, can, driver_at(ev.time)))
+    return not (sync.ANYONE[ev.type] or ev.alone or (ev.type == "obj" and (sync.obj_allowed(ev, can, driver_at(ev.time)) or soft_ok(ev)))
       or (ev.type ~= "obj" and can(ev.user, ev.was or ev.track, ev.pos, ev.take, driver_at(ev.time))))
   end
   -- Catching up (joining late, back from a week away): only the newest revision of each object is applied; the

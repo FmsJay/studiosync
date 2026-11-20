@@ -390,6 +390,8 @@ function P.who(t)
   local driver = who.driver
   -- someone else drives and is here (their status receipt is fresh): then the room's mode decides what we may change
   sync.driver_name, sync.room_mode = driver, who.mode -- (put-back messages say who and why)
+  -- (a bandmate's auto-claim holds only edits that clash with their own change: sync.receive, lib/claimask.lua soft. rt-merge)
+  sync.soft = { room = b.room, fn = function(name, pos, user) return require("claimask").soft(who, name, pos, user) end }
   -- Alone = full control: with no bandmate in the room, everything we change goes out, whoever drives or claimed it
   -- (what Solo edit was for, without a separate copy of the song). Once anyone is here, the band's rules are back.
   -- (gone for 90 s before you're alone, back at once: a dialog left open on their machine pauses its status for a
@@ -474,7 +476,8 @@ function P.look(t)
       t.redraw = true -- (a look can put back a refused edit, copy it to a track of yours or delete an item, with no undo point: always redrawn)
       local ok, sent = pcall(require("mirror").watch, proj, cfg, b.song, b.room, { can = my_can, owner_can = can, mode = who.mode, local_mix = sync.local_mix, is_claimed = who.is_claimed, owner_of = who.owner_of,
         held = held, here = here, printers = who.printers, quick = true, -- (quick: builds on the last look, lib/mirror.lua rt-look)
-        ask = function(name, pos) return require("claimask").hold(cfg, b, who, name, pos) end, sent = require("claimask").on_sent }) -- (Claims mode: lib/claimask.lua, rt-claims)
+        ask = function(name, pos) return require("claimask").hold(cfg, b, who, name, pos) end, sent = require("claimask").on_sent, -- (Claims mode: lib/claimask.lua, rt-claims)
+        soft = function(name, pos) return require("claimask").soft(who, name, pos, cfg.user) end }) -- (an auto-claim asks only for a clash: rt-merge)
       band.try("claimask.flush", require("claimask").flush, cfg, b, who, alone) -- (what went that nobody claimed is yours now)
       if not ok then band.log("mirror sync: " .. tostring(sent))
       elseif sent > 0 then band.log(sent .. " change(s) went to " .. (b.room == "main" and "the others" or ("the room '" .. b.room .. "'"))); pcall(require("api").event, "sent", { n = sent, song = b.song, room = b.room }) end

@@ -1132,6 +1132,27 @@ function mirror.merge_state(kind, base, winner, loser, loser_name)
   if not f or type(base) ~= type(winner) or type(winner) ~= type(loser) or type(winner) ~= (kind == "track" and "table" or "string") then return nil end
   return mirror[f](base, winner, loser, loser_name)
 end
+-- Does a change (`state`, of `kind`) clash with the newest change `user` (who holds an auto-claim on it, lib/claimask.lua soft) made to it, found
+-- from `from` (the version held here) back through the versions each started from: do both change the same piece (a note, a point, a setting)
+-- from where theirs started? Built on theirs or made alongside it, the same answer. None of theirs, or not a mergeable change: no clash; its
+-- base not here: a clash (asked, as before). Pure but for reading events.
+function mirror.clashes(room_dir, kind, state, from, user)
+  local other, todo, seen = nil, { from }, {}
+  while not other and #todo > 0 and #seen < 64 do
+    local x = table.remove(todo, 1)
+    if type(x) == "table" and x.id and not seen[x.id] then
+      seen[x.id], seen[#seen + 1] = true, x.id
+      local w, l = mirror.split_merge(x.id)
+      if not w and x.user == user then other = x
+      else for _, id in ipairs(w and { w, l } or { x.base_ev }) do todo[#todo + 1] = mirror.event_file(room_dir, id) end end
+    end
+  end
+  if not (mirror.mergeable(other) and other.obj == kind and other.base_ev) then return false end
+  local b = mirror.event_file(room_dir, other.base_ev)
+  if not (b and type(b.state) == type(state)) then return true end
+  local m, both = mirror.merge_state(kind, b.state, other.state, state)
+  return m == nil or #(both or {}) > 0
+end
 -- Undo (or redo) of `e` keeps what others changed since: the version to go back to (`to`), with what the version held now (`now`) changed after
 -- `e`, and `e` didn't, kept (`e` as the base of a three-way merge). Where both changed one thing, going back stands, as before. -> a version
 -- like `to` (same id) or `to` itself. Pure.
@@ -4622,6 +4643,17 @@ function W.one(w, o)
   local ok_now = auto or allowed(o, name, o.pos) or (o.kind == "track" and last ~= nil and allowed(o, last.name or "", last.pos))
   local ok_before = auto or not last or last.gone or allowed(o, last.name or "", last.pos)
   if ok_now and ok_before then return W.send(w, o, rk, rev, evid, kord, last, name, knobs) end
+  -- (held back only by a bandmate's auto-claim, Claims mode: an item, automation or track settings that merge with their change go out, and
+  -- only an edit to the same note, point or setting asks them. Asked, two people adding notes to one part waited 30 s and were put back:
+  -- Cross Test, 0.59.49.70. rt-merge)
+  if opts.soft and mirror.MERGES[o.kind] and type(o.state) == (o.kind == "track" and "table" or "string") then
+    local by_now = not ok_now and opts.soft(name, o.pos)
+    local by_before = not ok_before and last and opts.soft(last.name or "", last.pos)
+    if (ok_now or by_now) and (ok_before or by_before) then
+      local by = by_now or by_before
+      if not (last and mirror.clashes(room_dir, o.kind, o.state, last, by)) then return W.send(w, o, rk, rev, evid, kord, last, name, knobs) end
+    end
+  end
   return W.refuse(w, o, rk, rev, evid, kord, last, name, ok_before)
 end
 function W.prints(w)

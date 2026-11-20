@@ -81,6 +81,36 @@ changed").
 - `lib/sync.lua` receive: a bandmate's change made apart from a newer one is no longer marked "older news" for tracks and automation either
   (`apart`, now `mirror.mergeable`). Before this, the older of two crossing automation changes was dropped on the computer that had the newer.
 
+## 3b. Claims mode: a bandmate's auto-claim asks only for a clash (fix after the first REAPER check)
+
+**What failed** (Cross Test, 0.59.49.70, "XT Keys C"'s first MIDI item, p48 only): in the same wall-clock second the desktop added p84 and
+the laptop p86. Both computers ended with p48 and p86. The desktop's log shows what happened:
+1. 13:16:56: the laptop's change landed first. Its look sent it, and rt-claims' Claims mode made XT Keys C the laptop's **auto-claim**.
+2. 13:16:57: the desktop's look saw its own note, built on the laptop's version (so there was nothing to merge), and asked the laptop to
+   release XT Keys C (rt-claims' ask).
+3. 13:17:27: nobody answered in 30 s, so the desktop's edit was put back.
+
+The merge code never ran, and the chunk REAPER wrote parses fine (`merge_midi` reads it). The studio folder has no desktop event for that
+second, only the laptop's.
+
+**The rule now.** James asked for both: two people adding different notes to one part both go through (rt-merge), and editing what someone
+claimed asks them (rt-claims). They meet at auto-claims, which every edit makes in Claims mode. So:
+- An edit held back **only by a bandmate's auto-claim** goes out when it merges with that bandmate's own newest change to the same item,
+  automation or track. Different notes, other points, other settings, or something they didn't touch all count as merging.
+- An edit to the same note, point or setting they changed is still asked for, as rt-claims does.
+- A lasting claim (one claimed by hand) still asks for every edit.
+- Plug-in chains and the timeline don't merge, so they're still asked for.
+- `claimask.soft(who, name, pos, user)` gives the claimer when the deciding claim is someone else's auto-claim (`claimask.which` now
+  carries the claim's `auto`).
+- `mirror.clashes(room_dir, kind, state, from, user)` finds the claimer's newest change from the version held here, back through the
+  versions each started from. It then asks `merge_state` whether both changed one piece.
+- Sender: `mirror.watch`'s W.one, through `opts.soft` from Live sync, sends instead of refusing (W.refuse, the ask) when nothing clashes.
+- Receivers: `sync.receive`'s `refused` takes the same rule through `sync.soft` (Live sync's, its own room only). Without it, the change
+  would wait a minute as "refused, maybe a claim on its way" before landing.
+- The web Project page and the phone still go by rt-claims' ask for an auto-claimed track. They have no state of the edit before it's made.
+- Test: `tests/test_0_60_rt_merge.lua`, "Claims mode". With Keys as James's auto-claim, the laptop's different note goes out and lands on
+  the desktop at once. The laptop changing James's own new note is still refused.
+
 ## 4. Files
 
 - `lib/mirror.lua`: `mirror.side3`, `merge_midi`, `merge_env`, `merge_track`, `MERGES`, `mergeable`, `merge_state`, `undo_keeping`.
@@ -122,11 +152,8 @@ size check, not bigreaper.
 - A take's MIDI that `midi_read` can't read (an unknown nested block between events) falls back to the take-copy rule.
 - **Track deletion against a track edit**: newest wins, as before. `gone_race` is still items only.
 - **Plug-in chains** don't merge (one chain stands, the other told with Use mine). Per-plug-in merging (by FXID) is possible later.
-- **rt-claims' auto-claims** (Claims mode: what you edit becomes your claim while you work on it, and an edit to someone else's asks them)
-  sit in front of this. In Claims mode, a bandmate's edit to what you're working on becomes an ask, not a merge. The merge still decides
-  every crossing that both were allowed to make: Driver only, Admins only, claims not yet arrived, one person on two computers, anything
-  nobody claimed.
-- Not run in REAPER. The MIDI chunk format with selection (e), mute (Em) and SysEx (<X>) events is handled from REAPER's documented format
+- **rt-claims' auto-claims**: since §3b an auto-claim asks only for a clash. A lasting claim still asks for everything.
+- The first REAPER check failed (§3b); the fix is only proven offline so far. The MIDI chunk format with selection (e), mute (Em) and SysEx (<X>) events is handled from REAPER's documented format
   and this repo's notes, not from a live capture of each.
 
 ## 7. Review-later (security)
@@ -136,7 +163,7 @@ size check, not bigreaper.
   id (`merged`), and the depth of nested merges is capped at 12 as before.
 - A merged version's state was never signed by anyone. It's rebuilt from two signed events and their base, as merged items were since 0.58.
 
-## 8. REAPER checks for the real computers (desktop + laptop, same room, Claims mode off, or both in Driver/Admin mode, or on tracks nobody claimed)
+## 8. REAPER checks for the real computers (desktop + laptop, same room; Claims mode is fine, as long as nobody claimed the track by hand)
 
 1. **Two notes at once:** both open one MIDI item in the MIDI editor. Each adds a different note within a second of the other. Both
    computers show both notes, no "<name>'s version" take, and the log says "...as you did, at the same time: both changes are kept".

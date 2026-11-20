@@ -38,14 +38,22 @@ local function base(name) return require("sync").base_name(name) end
 function claimask.which(who, name, pos)
   local t = base(name)
   local c = t and t ~= "" and who.tracks and who.tracks[t:lower()]
-  if c then return { kind = "tracks", name = c.name or t, user = c.user } end
+  if c then return { kind = "tracks", name = c.name or t, user = c.user, auto = c.auto } end
   for _, x in ipairs(pos and who.times or {}) do
-    if pos >= x.from and pos < x.to then return { kind = "times", from = x.from, to = x.to, user = x.user } end
+    if pos >= x.from and pos < x.to then return { kind = "times", from = x.from, to = x.to, user = x.user, auto = x.auto } end
   end
   for _, sp in ipairs(pos and who.spans or {}) do
     local r = pos >= sp.from and pos < sp.to and who.regions and who.regions[sp.name]
     if r then return { kind = "regions", name = r.name or sp.name, user = r.user } end
   end
+end
+-- Someone else's auto-claim decides `name` at `pos` (not `user`'s, not a lasting one): its claimer, else nil. Such a claim asks only for an edit
+-- that clashes with the claimer's own change to the same thing; one that merges with it goes through (James, 2026-11-20: "2 people can edit a
+-- midi item at the same time, adding different notes". mirror.watch's opts.soft, sync.receive's sync.soft. rt-merge)
+function claimask.soft(who, name, pos, user)
+  if type(who) ~= "table" or who.mode ~= "open" or not (who.is_claimed and who.is_claimed(name, pos)) then return nil end
+  local th = claimask.which(who, name, pos)
+  return th and th.auto and th.user ~= user and th.user or nil
 end
 function claimask.key(th)
   if th.kind == "times" then return string.format("times:%.3f-%.3f", th.from, th.to) end
