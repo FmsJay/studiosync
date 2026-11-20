@@ -571,13 +571,16 @@ static void stage3_checks(int stun)
   CHECK(wait_for(10000, [&] { rport = (int)sub_num(nat_hub_status(r), "relay", "port"); return rport > 0 && json_field(nat_hub_status(r), "external") == "127.0.0.1"; }),
         "relay: running, on the public address its STUN probe found");
   printf("     relay: %s\n", nat_hub_status(r).c_str());
+  const bool jlog = getenv("NAT_RELAY_LOG") != nullptr; // (diagnostic, macOS CI)
+  if (jlog) juice_set_log_level(JUICE_LOG_LEVEL_DEBUG);
   juice_agent_t *held[3] = {};
   CHECK(gathers_relay(rport, "devC", nat_relay_pass(K, "devC"), &held[0]), "relay: a studio computer's credential (from the studio secret) gets a relayed address");
-  gathers_relay(rport, "devC", nat_relay_pass(K, "devC"), &held[1]); gathers_relay(rport, "devC", nat_relay_pass(K, "devC"), &held[2]);
+  { const bool g1 = gathers_relay(rport, "devC", nat_relay_pass(K, "devC"), &held[1]), g2 = gathers_relay(rport, "devC", nat_relay_pass(K, "devC"), &held[2]); printf("     DIAG second %d third %d\n", g1, g2); }
   CHECK(!gathers_relay(rport, "devC", nat_relay_pass(K, "devC")), "relay caps: that computer's fourth address at once is refused (its quota, 3 here)");
   CHECK(!gathers_relay(rport, "devA", nat_relay_pass(nat_studio_key("another studio"), "devA")), "relay: a credential made from another studio's secret is refused");
   CHECK(!gathers_relay(rport, "devZ", nat_relay_pass(K, "devZ")), "relay: a computer that isn't the studio's is refused, even with a well-made password");
   for (juice_agent_t *x : held) if (x) juice_destroy(x);
+  if (jlog) juice_set_log_level(JUICE_LOG_LEVEL_NONE);
   // two symmetric NATs (each publishes only relayed candidates, and its sockets are on an address of its own, 127.0.0.2 and .3, so nothing
   // on this one computer but the relay joins them: the relay lets in only its own relayed addresses, 127.0.0.1): no path, then through it
   NatHub *a = nat_hub_new(), *b = nat_hub_new();
@@ -596,6 +599,7 @@ static void stage3_checks(int stun)
         !peer_up(a, "devB"), "symmetric NATs, no relay: they never meet, and the status says no path");
   printf("     A: %s\n", peer_part(nat_hub_status(a), "devB").c_str());
   const std::string turn = ",\"turn\":\"127.0.0.1:" + std::to_string(rport) + "\"";
+  if (jlog) juice_set_log_level(JUICE_LOG_LEVEL_DEBUG);
   nat_hub_setup(a, hub_json(dir, "devA", "a.key", stun, { { "devB", pb } }, ",\"timeout\":20" + turn).c_str());
   nat_hub_setup(b, hub_json(dir, "devB", "b.key", stun, { { "devA", pa } }, ",\"timeout\":20" + turn).c_str());
   const bool relayed = wait_for(60000, [&] { return peer_up(a, "devB") && peer_up(b, "devA"); }, &took);
@@ -607,6 +611,7 @@ static void stage3_checks(int stun)
     wait_for(15000, [&] { return has_link(a, "devB") && has_link(b, "devA"); });
     printf("     A's link: %s\n     B's link: %s\n", nat_test_link(a, "devB").c_str(), nat_test_link(b, "devA").c_str());
   }
+  if (jlog) juice_set_log_level(JUICE_LOG_LEVEL_NONE);
   CHECK(json_field(nat_hub_status(a), "relay_ok") == "" && nat_hub_status(a).find("\"relay_ok\":true") != std::string::npos, "the relay's STUN answered before links used it");
   if (relayed) {
     Rx rb;
