@@ -232,6 +232,7 @@ end
 reaper.atexit(function()
   band.try("liveaudio.on_exit", require("liveaudio").on_exit, proj) -- (live audio stops with the Live sync that started it: lib/liveaudio.lua. James, rt)
   band.try("hops.on_exit", require("hops").on_exit, proj, cfg) -- (live hops stop with it, on both sides: lib/hops.lua. James, rt)
+  band.try("bounces.on_exit", require("bounces").on_exit, cfg, b) -- (shares rendered here end and are redone elsewhere: lib/bounces.lua. James, rt)
   if click and reaper.GetToggleCommandStateEx(0, 40364) == 1 then reaper.Main_OnCommand(40364, 0) end -- (stopped mid count-in: the click left on. 0.58.92)
   -- (only while the tab still holds this session: another project opened into it was saved as this song's "end of session" version, exported
   -- with its media to the studio's cloud drive, and read for the local-work mark. Otherwise the last look's answer, and nothing saved.
@@ -757,6 +758,7 @@ function P.status(t)
     lets = require("producer").lets_for(proj) } -- (whoever produces me may start and stop my transport: their panel shows its buttons)
   do local okh, h = pcall(function() return require("hub").status_part(cfg, b) end); info.hub = okh and h or nil end -- (since, link, handed on, roles held: lib/hub.lua. James, rt)
   do local okc, c = pcall(require("hops").cpu_now); info.cpu = okc and c or nil end -- (how busy, in tens: who a track's FX can be offloaded to, lib/hops.lua. James, rt)
+  do local okn, n = pcall(require("bounces").can_help); info.bnc = okn and n or nil end -- (renders bandmates' stems in the background: lib/bounces.lua. James, rt)
   if info.follow == "" then info.follow = nil end
   do -- (this computer's live audio: muted, push-to-talk, or why it can't run here, so the others' Health says "Mac: needs extension 1.0.13". James, rt)
     local okla, la = pcall(require("liveaudio").my_la)
@@ -1021,6 +1023,8 @@ local live_handlers = {
   editing = function(d) require("follow").on_editing(cfg, d) end,
   -- (a bandmate's fader, pan, mute or plug-in knob as they move it: lib/controllers.lua. James, rt)
   ctl = function(d) require("controllers").on_msg(proj, cfg, b, d) end,
+  -- (stems and mixes split across the idle computers: a share to render, or how one is going. lib/bounces.lua. James, rt)
+  bounce = function(d) require("bounces").on_msg(proj, cfg, b, d) end,
 }
 live_handlers.start, live_handlers.stop = live_handlers.cue, live_handlers.cue
 local function tick_body() -- returns true to keep going
@@ -1108,6 +1112,7 @@ local function tick_body() -- returns true to keep going
   band.try("hops.tick", require("hops").tick, cfg, b, proj) -- (live hops, both sides: lib/hops.lua. James, rt)
   band.try("webui.tick", require("webui").tick, proj, cfg, b, live_handlers) -- (the web UI: who's here, claims and chat for the browser, its chat sends. lib/webui.lua, James, rt)
   band.try("hub.tick", require("hub").tick, proj, cfg, b) -- (who's the studio's hub and this song's; the song hub's restore points while idle. lib/hub.lua, James, rt)
+  band.try("bounces.tick", require("bounces").tick, proj, cfg, b) -- (distributed stems and the hub's mix, both sides: lib/bounces.lua. James, rt)
   band.try("follow.tick", require("follow").tick, proj, cfg, b, changed_at) -- (following a bandmate live, and who's editing what now: lib/follow.lua. James, rt)
   local tjson = reaper.GetExtState(band.SECTION, "transport " .. key) -- a start/stop from the panel or the band
   if tjson ~= "" then

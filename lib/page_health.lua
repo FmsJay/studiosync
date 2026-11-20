@@ -235,6 +235,10 @@ function H.build_rows()
     local okb, brow = pcall(require("hub").health_row, cfg, b)
     if okb and brow then rows[#rows + 1] = brow end
   end
+  do -- stems or a mix split across the idle computers, each one's progress, and the shares rendered here for bandmates (lib/bounces.lua. James, rt)
+    local okn, nrow = pcall(require("bounces").health_row, cfg)
+    if okn and nrow then rows[#rows + 1] = nrow end
+  end
   do -- recording latency: the interface in use's kept offset and whether REAPER has it, Measure when never measured (lib/calibrate.lua. James, rt)
     local okc, crow = pcall(require("calibrate").health_row)
     if okc and crow then rows[#rows + 1] = crow end

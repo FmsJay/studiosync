@@ -35,6 +35,15 @@ function extras.set_render(proj, t)
 end
 -- REAPER's Render window, as set up: it's modal, so this returns once it's closed (rendered or cancelled).
 function extras.render_window() reaper.Main_OnCommand(40015, 0) end -- File: Render project to disk...
+-- Is the rendered file at `path` silent? (lib/bounces.lua's shares too)
+function extras.silent(path)
+  local src = reaper.PCM_Source_CreateFromFile(path)
+  -- (silent, REAPER answers "no change", 1.0, to both: to its peak at 0 dB, and to its loudness at -23 LUFS. A sound gives 1.0 to both
+  -- only if it sits exactly at both, which doesn't happen. Measured, 0.58.52)
+  local silent = src and reaper.CalculateNormalization(src, 2, 0, 0, 0) == 1 and reaper.CalculateNormalization(src, 0, -23, 0, 0) == 1
+  if src then reaper.PCM_Source_Destroy(src) end
+  return silent == true
+end
 function extras.stems(proj, cfg, b, dry)
   if reaper.GetPlayStateEx(proj) & 4 == 4 then return nil, "Stop recording first." end
   local mirror = require("mirror")
@@ -80,12 +89,7 @@ function extras.stems(proj, cfg, b, dry)
   -- render just made, in its own new folder)
   local made = 0
   for _, f in ipairs(band.files(out)) do
-    local src = reaper.PCM_Source_CreateFromFile(out .. "/" .. f)
-    -- (silent, REAPER answers "no change", 1.0, to both: to its peak at 0 dB, and to its loudness at -23 LUFS. A sound gives 1.0 to both
-    -- only if it sits exactly at both, which doesn't happen. Measured, 0.58.52)
-    local silent = src and reaper.CalculateNormalization(src, 2, 0, 0, 0) == 1 and reaper.CalculateNormalization(src, 0, -23, 0, 0) == 1
-    if src then reaper.PCM_Source_Destroy(src) end
-    if silent then os.remove(out .. "/" .. f) else made = made + 1 end
+    if extras.silent(out .. "/" .. f) then os.remove(out .. "/" .. f) else made = made + 1 end
   end
   if made == 0 then -- (its own empty folder, not left in the shared folder: os.remove can't take a folder on Windows, so it stayed. Review, 0.58.62)
     if reaper.GetOS():match("^Win") then os.execute('rmdir "' .. out:gsub("/", "\\") .. '" 2>nul') else os.remove(out) end

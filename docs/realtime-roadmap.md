@@ -447,6 +447,35 @@ lib/tools.lua EXT_WANT.
     IR or capture reaches a bandmate's plug-in only where the same path can exist there; REAPER's own presets/*.ini
     aren't sent (the chain carries the sound); drum maps already travel (shared drummaps/, note names in the track).
 - **Distributed bounces:** stems and mixdowns split across the computers that are idle.
+  - **Built (rt, 2026-11-20; offline tests and a stand-in only, not run in REAPER yet):** `lib/bounces.lua`, the Mixes page's "On the idle
+    computers" row (Render stems: each track / each folder, Render mix on the hub, Time selection only), a Health row, the status's `bnc`,
+    link message `bounce`; tests/test_0_60_rt_bounces.lua. One copy of the project is saved set up for the render (Export stems' 24-bit WAV at
+    the project's rate, the same bounds on every computer, your local tracks muted as Final mix does). Stems go heaviest first to whoever
+    finishes soonest (shared CPU's `cpu`, plus a start cost for another computer): you, and bandmates on the link who aren't guests or
+    recording, are under hops.BUSY, run the background renderer (`bnc`), and have every plug-in the stem hears (its folder's tracks and
+    whatever sends into them: prints.has) and every sound and file those plug-ins load (the ids in libraries/<user>.json). An opaque sampler's
+    stem stays here; same-named stems stay in one share (REAPER names them apart only within one render). The copy goes over the link, each
+    computer renders its share in the hidden background REAPER (bgrender `launch_job`, the prints' pass script; a FLAC beside each WAV so the
+    passes still catch a sampler that's still loading), puts the files in its own <Song>/stems/<date> <user>/ (Syncthing: the durable path)
+    and sends them back over the link. A share is redone elsewhere, else here: it failed, its computer started recording or had a dropout
+    while playing, 30 s without news (5 min once sent), or Live sync stopped there. When nobody's left, it stops and says so. A mix goes to
+    the song's hub (here when that's you or the hub can't).
+    - **Same samples as rendering the copy here:** every share renders the same copy with the same settings; only SEL and where the studio
+      folder is differ (the stand-in compares each file with the whole copy rendered at once). Not the same when a helper's plug-in or
+      sample version differs (names and paths are compared, not versions), a plug-in isn't deterministic (random seeds, free-running LFOs:
+      Serum's prints differed by 3%), another CPU (x64 against Apple Silicon) or REAPER version takes another path, or a media file of the
+      same name differs there (only that it's there is checked). WAV headers may differ (bytes, not samples). Against Export stems in front:
+      a local track sending into a shared one is muted here, as in Final mix.
+    - **Not done:** no web UI button and no Cancel (Live sync stopping ends it); one bounce at a time here and one share per helper; each
+      copy loads every track's plug-ins (prints switch the unheard ones offline; routing makes that a guess here); a helper's time limit uses
+      the default rate, not its learned one; a computer without the background renderer (Linux by default) renders its own share in front;
+      stems arriving after a stop stay in the link's inbox. For the security review later: a bandmate's copy limits media to the studio
+      folder, but a sampler's state may name any file on the helper (prints have the same exposure).
+    - **To check in REAPER (desktop, laptop, Mac, LinuxBox):** a selected-tracks stem render (RENDER_SETTINGS 3, SEL from the .rpp) from the
+      hidden REAPER makes files (bgrender's old note: RENDER_STEMS 2 from the command line said "Nothing to render!"); stems from the desktop
+      split across laptop and Mac (LinuxBox: "can't render in the background" unless turned on), Health's progress on each; every stem nulls
+      against Export stems (polarity flipped, summed); the laptop's network pulled mid-render: redone within ~30 s; recording started on the
+      Mac mid-render: ended at once and redone; Render mix on the hub; silent stems dropped and no FLACs left in stems/.
 - **Record from a phone:** a singer with only a phone opens the studio's web page and records a take straight into the
   song, in time from the shared clock (browser recording), arriving fast-first-lossless-after.
   - **Built (rt, 2026-11-19; not run in REAPER or on a phone yet):** the web UI's Record page (`lib/webui/record.html`, `record.js`,

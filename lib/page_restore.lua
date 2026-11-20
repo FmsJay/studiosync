@@ -476,6 +476,25 @@ function R.section_mixes()
   end
   ImGui.SetItemTooltip(ctx, "The same, without each track's effects (instruments still play), only tracks with parts on them (not buses or folders): what a mixer\n" ..
     "usually asks for. Your effects are back as they were after.")
+  -- (split across the computers in the room that are idle, each in a hidden background REAPER: lib/bounces.lua. James, rt)
+  ImGui.SeparatorText(ctx, "On the idle computers")
+  local bounces = require("bounces")
+  local tip = "Each in a hidden background REAPER, never in anyone's working session, never while they record: shared out by how heavy each\n" ..
+    "stem is to bandmates here who have its plug-ins and sounds, and this computer. Back over the link, and through the shared folder.\n" ..
+    "A computer that drops or fails has its share redone elsewhere or here. 24-bit WAV at the project's rate, into the shared folder's stems/."
+  if ImGui.SmallButton(ctx, "Render stems: each track") then bounces.ask(proj, "track", R.bounce_sel) end
+  ImGui.SetItemTooltip(ctx, "One file per shared track (a folder's has its tracks in it).\n" .. tip)
+  next_to("each folder")
+  if ImGui.SmallButton(ctx, "each folder") then bounces.ask(proj, "folder", R.bounce_sel) end
+  ImGui.SetItemTooltip(ctx, "One file per top-level track or folder, with everything in it.\n" .. tip)
+  next_to("Render mix on the hub")
+  if ImGui.SmallButton(ctx, "Render mix on the hub") then bounces.ask(proj, "mix", R.bounce_sel) end
+  ImGui.SetItemTooltip(ctx, "The master mix as Render current mix makes it (safety limiter, your local tracks left out), rendered by this project's hub\n" ..
+    "in the background (here when it's you, or it can't now), into the shared folder's mixes/.")
+  local _, s = ImGui.Checkbox(ctx, "Time selection only##bounce", R.bounce_sel == true)
+  R.bounce_sel = s
+  local line = bounces.panel_line(cfg)
+  if line then ImGui.TextWrapped(ctx, line) end
   ImGui.SeparatorText(ctx, "Finishing up")
   if ImGui.SmallButton(ctx, "Credits draft") then
     local path = require("extras").credits(cfg, b)

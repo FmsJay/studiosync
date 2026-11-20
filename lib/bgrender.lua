@@ -603,4 +603,13 @@ end
 -- Prints done in the background this session, and jobs that failed (tests, Health).
 function bg.counts() return done, failed, cancelled end
 
+-- A copy set up elsewhere (lib/bounces.lua: a share of stems or a mix), `dir`/job.rpp, rendered by the same hidden REAPER as a print and
+-- tracked by its caller (passes.txt, pid.txt, done.txt). limit: seconds before its launcher ends it.
+bg.TMP = TMP
+function bg.launch_job(dir, limit)
+  pcall(require("tools").render_guard) -- (as bg.start: the person's startup scripts don't run in it)
+  launch(exe_path(), dir .. "/job.rpp", limit)
+end
+function bg.end_job(dir) return end_job({ dir = dir }) end
+
 return bg
