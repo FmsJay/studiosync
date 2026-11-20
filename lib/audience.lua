@@ -97,6 +97,13 @@ function audience.who(me, me_on, la, name_of)
   for _, n in ipairs(peers) do out[#out + 1] = n end
   return out
 end
+-- How long a link works, in words: minutes under an hour (a 15-minute link said "0 hours"), else hours. Pure.
+function audience.span(secs)
+  secs = math.floor(tonumber(secs) or 0)
+  if secs < 3600 then local m = math.max(1, (secs + 30) // 60); return m .. (m == 1 and " minute" or " minutes") end
+  if secs % 3600 == 0 then return secs // 3600 .. (secs == 3600 and " hour" or " hours") end
+  return string.format("%.1f hours", secs / 3600)
+end
 -- Tailscale's arguments for the public port. Pure.
 function audience.funnel_args(on)
   if on then return "funnel --bg --yes --https=" .. audience.FUNNEL_PORT .. " http://127.0.0.1:" .. audience.PUBLIC_PORT end
@@ -153,7 +160,7 @@ function audience.make(cfg, d, now)
     local phonerec = require("phonerec")
     if phonerec.auto_on() then pcall(phonerec.auto_link) end -- (the secure link set up, as the phone app and guest links do)
   end
-  return url, string.format("a %s listening link for %d hours", d.public and "PUBLIC" or "tailnet", secs // 3600)
+  return url, string.format("a %s listening link for %s", d.public and "PUBLIC" or "tailnet", audience.span(secs))
 end
 -- A link revoked: its listeners are closed at once. -> words.
 function audience.revoke(id, why)

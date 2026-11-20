@@ -1,9 +1,41 @@
 # Live to an audience: listening links (rt-audience, 2026-11-20)
 
 Roadmap: "Live to an audience: stream the band's live mix to listeners on a web page" and "Listen from anywhere. A link from the studio to
-a browser page (phone, client, a bandmate away from REAPER) that plays the live session or the latest mix." **Tested offline only** (native
-test, Lua test, headless Chrome against a stand-in built from the real server); **not run in REAPER, on a phone or between computers yet.
-The extension's version was not raised. Public listening was never turned on anywhere.**
+a browser page (phone, client, a bandmate away from REAPER) that plays the live session or the latest mix." Tested offline (native test, Lua
+test, headless Chrome against a stand-in built from the real server). **On the real desktop (0.59.49.73, extension 1.0.29): the page, links,
+live state, latest mix, revoke and cap pass, but no sound arrived; the cause and fix are below and need extension 1.0.30 to confirm.
+Public listening was never turned on anywhere.**
+
+## Found on the real desktop: the audio hook never had any channels (fixed, to confirm with 1.0.30)
+- **Seen (rt-check2, REAPER 7.86, WASAPI, Voicemeeter, 2 in / 2 out):** listeners connected and were told the song, but got 0 Opus packets;
+  `/api/mix` (rt-share) answered 503; live audio's `callbacks` rose as it should.
+- **Cause:** every audio hook in the extension took its channel count from `audio_hook_register_t`'s `input_nch` / `output_nch`. **REAPER
+  leaves both at 0.** (The SDK header says "they will be set by host"; they aren't. LICEcap's own hook, by REAPER's author, never reads
+  them: it calls `GetBuffer(true, 0)` / `(true, 1)` and checks for null. Another extension's notes measured `input_nch` 0 on 7.83.) With 0
+  channels: the post call's `nout` was 0, so `webui_mix_feed` and `webui_guest_audio` (and through it the listeners' feed) returned at once.
+- **It was wider than listening.** The same zero meant, in REAPER, ever since each was built:
+  - **live audio captured nothing and mixed nobody in** (`rt_capture` got 0 inputs: silence was sent, `level` 0; `rt_mix` had no output to
+    add bandmates to). The roadmap's own note from the first run between computers reads "Levels were 0 (nothing on input 1), so nothing
+    was heard": it was this. The offline tests pass channel counts in directly, so none could see it;
+  - **the screen share's REAPER mix, browser guests' sound (both ways)** never ran;
+  - **the full-quality copy while jamming** (`on_keep_audio`, rt-double) and the audio spike's capture (`extension/direct_audio.cpp`) got
+    0 inputs.
+- **Fix:** `extension/audiohook.h`, `hook_buffers`: the channels a call has are the ones `GetBuffer` hands out, from 0 up to the first it
+  doesn't have (a count REAPER did set still limits how many are asked for). Used by `on_audio` in `extension/rtaudio.cpp` (inputs up to
+  64, the first output pair) and the two capturing hooks in `extension/direct_audio.cpp`.
+- **Read back after installing 1.0.30:** `StudioSync_LiveAudioStatus` now ends with
+  `"hook":{"pre","post","in_nch","out_nch","ins","outs"}`: `pre`/`post` the hook's calls before and after REAPER's processing, `in_nch` /
+  `out_nch` what REAPER put in the struct, `ins`/`outs` the buffers it handed over. **Expected on the desktop: `in_nch` 0, `out_nch` 0,
+  `ins` 2, `outs` 2, `pre` and `post` both rising ~94/s.** Then: `/api/mix` streams (200), `StudioSync_AudienceStatus.packets` rises ~50/s
+  with a listener, a listener hears REAPER. If `outs` is 0 with `post` rising, REAPER hands no output buffers in the post call and this
+  needs another look; if `post` doesn't rise, the post call isn't made.
+- **Mind, once it works:** live audio really sends this computer's inputs and plays bandmates into the first output pair for the first
+  time. The desktop's input is a Voicemeeter bus: whatever is on it goes to the bandmates (and to listeners through their mix). Check
+  levels and echo before a session with others; Mute me and Deafen work as before.
+- **Also fixed from that check:** a 15-minute link said "for 0 hours" (`audience.span`); 22 listeners joining at the same instant got only
+  14 in, because each join held one of the web UI's 16 request threads for a moment: up to 64 more threads now answer `/listen/` only
+  (`LISTEN_EXTRA`; anything else on them gets 503 as before), the public port's request threads went from 8 to 64, and both listen queues
+  to 128. Tested: 40 joining at once on each way in all get in.
 
 ## What already existed (and what each covers)
 - **The listening page** (`lib/listen.lua`, Settings' "Share the listening page"): every song's bounced mixes in a browser, over
@@ -91,6 +123,10 @@ script and style don't (they carry nothing).
     Mac and Linux builds, its test on both, the paths.
   - `lib/webui.lua`: `ACTIONS.audience`, its dispatch, `audience.tick` at the end of the tick. `lib/webui/index.html`: `audiencehost.js`
     after guesthost.js (it uses guest.css's box styles).
+  - After the desktop's check: `extension/audiohook.h` (new, `hook_buffers`). `extension/rtaudio.cpp`: `on_audio` asks for its buffers
+    through it instead of reading `input_nch`/`output_nch`, counts what it's handed, and `StudioSync_LiveAudioStatus` gains `hook` (the
+    REAPER part only: nothing in the live audio core changed). `extension/direct_audio.cpp`: `on_audio` and `on_keep_audio` the same way
+    (two lines each). `extension/webui.cpp`: `LISTEN_EXTRA` threads for `/listen/` (`t_extra`, `spawn`, `client`), the listen queue 128.
 - ReaScript: `StudioSync_AudienceStart(folder, cap, kbps, public_port)`, `StudioSync_AudienceLink(id, code, seconds, public)`,
   `StudioSync_AudienceInfo(full_json, public_json, mix_path)`, `StudioSync_AudienceStatus()`.
 - Topic `audience` (host pages): may, owner, song, live, who, mix, links [id, url, ends, pub, by, n], listeners, public_listeners, cap,

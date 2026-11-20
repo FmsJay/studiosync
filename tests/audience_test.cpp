@@ -35,6 +35,7 @@ typedef int tsock;
 #include <vector>
 #include "opus.h"
 #include "../extension/audience.h"
+#include "../extension/audiohook.h"
 
 static int fails = 0;
 #define CHECK(c, what) do { if (c) printf("ok   %s\n", what); else { printf("FAIL %s\n", what); ++fails; } } while (0)
@@ -143,8 +144,35 @@ static double freq(const std::vector<float> &pcm, int c, double sr)
   return n > 1 ? (n - 1) * sr / (last - first) : 0;
 }
 
+// REAPER's audio hook struct as the extension meets it: the channel counts left at 0, the buffers there all the same (extension/audiohook.h).
+static double g_fake[4][8];
+static int g_fake_have = 0, g_fake_asked = 0;
+struct FakeReg {
+  int input_nch, output_nch;
+  double *(*GetBuffer)(bool isOutput, int idx);
+};
+static double *fake_get(bool, int idx) { ++g_fake_asked; return idx >= 0 && idx < g_fake_have ? g_fake[idx] : nullptr; }
+
 static void pure_tests()
 {
+  {
+    FakeReg reg = { 0, 0, fake_get };
+    double *out[2] = { nullptr, nullptr };
+    const double *in[64] = { nullptr };
+    g_fake_have = 2;
+    CHECK(hook_buffers(&reg, true, out, 2) == 2 && out[0] == g_fake[0] && out[1] == g_fake[1], "the hook's outputs with output_nch left at 0 (REAPER 7): both buffers all the same");
+    g_fake_asked = 0;
+    CHECK(hook_buffers(&reg, false, in, 64) == 2 && in[0] == g_fake[0] && in[2] == nullptr && g_fake_asked == 3, "its inputs with input_nch 0: up to the first it doesn't have, asked no further");
+    g_fake_have = 1;
+    out[0] = out[1] = nullptr;
+    CHECK(hook_buffers(&reg, true, out, 2) == 1 && out[0] && !out[1], "a mono device: one");
+    g_fake_have = 0;
+    CHECK(hook_buffers(&reg, true, out, 2) == 0 && !out[0], "no outputs: none");
+    g_fake_have = 4;
+    reg.input_nch = 3;
+    g_fake_asked = 0;
+    CHECK(hook_buffers(&reg, false, in, 64) == 3 && g_fake_asked == 3, "a count REAPER did set is the most asked for");
+  }
   CHECK(audience_route("GET", "/listen/") == AUD_PAGE && audience_route("GET", "/listen/listen.js") == AUD_JS && audience_route("GET", "/listen/listen.css") == AUD_CSS &&
         audience_route("GET", "/listen/live") == AUD_LIVE && audience_route("GET", "/listen/mix") == AUD_MIX, "the listener paths");
   const char *no[] = { "/", "/index.html", "/listen", "/listen/x", "/listen/../index.html", "/listen/listen.html", "/api/state", "/api/events", "/api/mix",
@@ -391,6 +419,30 @@ int main()
   drain = false;
   drainer.join();
   for (tsock s : hundred) closesocket(s);
+
+  // a crowd joining at the same instant: every socket connected first, each held by a request thread, then all ask at once (the web UI has
+  // 16 threads of its own, the public port had 8: 22 at once on the real desktop got 14 in)
+  sleep_ms(600);
+  for (int way = 0; way < 2; ++way) {
+    std::vector<tsock> crowd;
+    for (int i = 0; i < 40; ++i) crowd.push_back(dial(way ? pubp : web));
+    sleep_ms(300);
+    const std::string req = "GET /listen/live?l=" + (way ? pc : tc) + " HTTP/1.1\r\nHost: pc.tail.ts.net\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                            "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n";
+    for (tsock s : crowd) if (s != (tsock)-1) send(s, req.data(), (int)req.size(), 0);
+    int in = 0;
+    for (tsock s : crowd) {
+      std::string h;
+      char c;
+      while (s != (tsock)-1 && h.find("\r\n\r\n") == std::string::npos && recv(s, &c, 1, 0) == 1) h += c;
+      in += code(h) == 101;
+    }
+    printf("     %s: %d of 40 in\n", way ? "public" : "tailnet", in);
+    CHECK(in == 40, way ? "public: 40 joining at the same instant all get in" : "tailnet: 40 joining at the same instant all get in (past the web UI's 16 threads)");
+    for (tsock s : crowd) if (s != (tsock)-1) closesocket(s);
+    sleep_ms(600);
+  }
+  CHECK(code(ask(web, "GET /listen/?l=" + tc + " HTTP/1.1\r\nHost: x\r\n\r\n")) == 200, "and the page still answers after");
 
   // rate limits: wrong codes lock that way in for a minute, the other way unaffected; a flood of requests is refused past the burst
   audience_start(pages.c_str(), 30, 96, pubp);

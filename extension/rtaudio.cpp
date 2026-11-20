@@ -1825,22 +1825,31 @@ void rt_mix(RtLink *l, double *const *out, int nout, int len, double srate)
 #undef max
 #endif
 #include "webui.h" // (webui_mix_feed: a screen share's sound, REAPER's own mix. rt-share; after the #undefs: it brings in <map>)
+#include "audiohook.h" // (hook_buffers: the channels a hook call has; REAPER leaves input_nch/output_nch at 0. rt-audience)
 static RtLink *g_rt = nullptr; // (made once at load, freed never while REAPER runs: the hook may still hold it for a moment after removal)
 RtLink *rt_global() { return g_rt; }
 static int (*g_reg_hook)(bool isAdd, audio_hook_register_t *reg) = nullptr;
 static bool g_hooked = false;
 static std::string g_status;
+// What the hook was handed, for StudioSync_LiveAudioStatus's "hook": calls before and after REAPER's processing, the channel counts REAPER
+// put in the struct (0 on REAPER 7.86: extension/audiohook.h) and the buffers GetBuffer gave. (rt-audience, after the desktop's check)
+static std::atomic<long long> g_hook_pre{ 0 }, g_hook_post{ 0 };
+static std::atomic<int> g_hook_in_set{ 0 }, g_hook_out_set{ 0 }, g_hook_ins{ 0 }, g_hook_outs{ 0 };
 static void on_audio(bool isPost, int len, double srate, audio_hook_register_t *reg)
 {
   if (!isPost) { // (before REAPER's processing: the hardware inputs as they came in)
     const double *in[64] = { nullptr };
-    const int nin = std::min(reg->input_nch, 64);
-    for (int c = 0; c < nin; ++c) in[c] = reg->GetBuffer(false, c);
+    g_hook_in_set.store(reg->input_nch, std::memory_order_relaxed);
+    const int nin = hook_buffers(reg, false, in, 64); // (not reg->input_nch: REAPER leaves it 0, and nothing was ever captured)
+    g_hook_ins.store(nin, std::memory_order_relaxed);
+    g_hook_pre.fetch_add(1, std::memory_order_relaxed);
     rt_capture(g_rt, in, nin, len, srate);
   } else { // (after: added to what REAPER is about to play out of the first output pair)
     double *out[2] = { nullptr, nullptr };
-    const int nout = std::min(reg->output_nch, 2);
-    for (int c = 0; c < nout; ++c) out[c] = reg->GetBuffer(true, c);
+    g_hook_out_set.store(reg->output_nch, std::memory_order_relaxed);
+    const int nout = hook_buffers(reg, true, out, 2); // (not reg->output_nch: 0, so nobody was mixed in and no feed below ever ran)
+    g_hook_outs.store(nout, std::memory_order_relaxed);
+    g_hook_post.fetch_add(1, std::memory_order_relaxed);
     webui_mix_feed(out, nout, len, srate); // (a screen share's REAPER mix: taken before rt_mix adds the bandmates, so nobody hears themselves back)
     rt_mix(g_rt, out, nout, len, srate);
     webui_guest_audio(out, nout, len, srate); // (browser guests: the session mix for them, bandmates in, then each guest added. rt-browserjoin)
@@ -1873,7 +1882,15 @@ static void api_stop()
   if (g_rt) rt_stop(g_rt);
 }
 static int api_peers(const char *json) { return g_rt ? rt_peers(g_rt, json) : -1; }
-static const char *api_status() { g_status = g_rt ? rt_status(g_rt) : "{}"; return g_status.c_str(); }
+static const char *api_status()
+{
+  g_status = g_rt ? rt_status(g_rt) : "{}";
+  char b[200]; // (what the audio hook is handed, added as the last field: rt-audience)
+  snprintf(b, sizeof(b), "%s\"hook\":{\"pre\":%lld,\"post\":%lld,\"in_nch\":%d,\"out_nch\":%d,\"ins\":%d,\"outs\":%d}}", g_status.size() > 2 ? "," : "", g_hook_pre.load(), g_hook_post.load(), g_hook_in_set.load(), g_hook_out_set.load(),
+           g_hook_ins.load(), g_hook_outs.load());
+  if (!g_status.empty() && g_status.back() == '}') { g_status.pop_back(); g_status += b; }
+  return g_status.c_str();
+}
 static int api_peer_set(const char *peer, double gain, int mute) { return g_rt ? rt_peer_set(g_rt, peer, gain, mute) : 0; }
 static int api_send(const char *peer, int on) { return g_rt ? rt_send(g_rt, peer, on) : 0; }
 static int api_peer_buffer(const char *peer, double floor_ms, double ceil_ms) { return g_rt ? rt_peer_buffer(g_rt, peer, floor_ms, ceil_ms) : 0; }
@@ -1910,7 +1927,7 @@ void rtaudio_register(reaper_plugin_info_t *rec)
     { "StudioSync_LiveAudioPeers", (void *)api_peers, (void *)vla_peers,
       "int\0const char*\0json\0Who to send to and hear, and the key: {\"secret\":\"<the studio secret>\",\"port\":47281,\"peers\":[\"name:port\",...]} (the direct link's list; Tailscale addresses only). Returns how many peers, or -1 when the JSON isn't that." },
     { "StudioSync_LiveAudioStatus", (void *)api_status, (void *)vla_status,
-      "const char*\0\0\0StudioSync's live audio as JSON: running, bind, error, secret, srate, block, level (what you send, peak since the last ask), callbacks, max_us, pauses, paused_blocks, overflows (reconfigures that held the audio, blocks skipped meanwhile, AOO's send queue full), sent, received, rejected, last_reject, last_reject_from (its sender's ip:port), not_here, not_here_from (datagrams with the studio's secret from a computer not on the peer list here: dropped, not refused), and per peer: resolved, streaming, rtt_ms, latency_ms, buffer_ms (the jitter buffer), target_ms, floor_ms, ceiling_ms (the adaptive buffer's size and bounds), fill_ms (the buffer as measured), jitter (underruns that grew it), switched (underruns a hub mix/direct switch brought), trims (quiet re-buffers of a buffer far above its size), loss (0-1), dropped, underruns, level (peak since the last ask), gain, mute, play_streaming, play_level, play_gain (their Play stream); and play (the live out hop id, 0: no Play), play_alive, play_send, play_level (what this computer plays out)." },
+      "const char*\0\0\0StudioSync's live audio as JSON: running, bind, error, secret, srate, block, level (what you send, peak since the last ask), callbacks, max_us, pauses, paused_blocks, overflows (reconfigures that held the audio, blocks skipped meanwhile, AOO's send queue full), sent, received, rejected, last_reject, last_reject_from (its sender's ip:port), not_here, not_here_from (datagrams with the studio's secret from a computer not on the peer list here: dropped, not refused), and per peer: resolved, streaming, rtt_ms, latency_ms, buffer_ms (the jitter buffer), target_ms, floor_ms, ceiling_ms (the adaptive buffer's size and bounds), fill_ms (the buffer as measured), jitter (underruns that grew it), switched (underruns a hub mix/direct switch brought), trims (quiet re-buffers of a buffer far above its size), loss (0-1), dropped, underruns, level (peak since the last ask), gain, mute, play_streaming, play_level, play_gain (their Play stream); and play (the live out hop id, 0: no Play), play_alive, play_send, play_level (what this computer plays out); and hook: pre, post (the audio hook's calls before and after REAPER's processing), in_nch, out_nch (the channel counts REAPER put in the hook's struct: 0 on REAPER 7), ins, outs (the hardware buffers it handed over: what is captured and mixed into)." },
     { "StudioSync_LiveAudioPeerSet", (void *)api_peer_set, (void *)vla_peer_set,
       "int\0const char*,double,int\0peer,gain,mute\0A peer's level (linear, 0-4) and mute in what you hear (the cue mix). Returns 1 when that peer is in the list." },
     { "StudioSync_LiveAudioPeerBuffer", (void *)api_peer_buffer, (void *)vla_peer_buffer,

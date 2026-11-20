@@ -69,6 +69,8 @@ assert(au.playing(0, la), "a bandmate heard making sound is playing")
 local who = au.who("James", false, la, function(p) return ({ ["chilio-mac:47281"] = "Chilio" })[p] or p end)
 assert(#who == 1 and who[1] == "Chilio", "who's playing: the ones heard making sound, by name")
 assert(au.who("James", true, {}, tostring)[1] == "James", "and this computer's user while it plays")
+assert(au.span(900) == "15 minutes" and au.span(60) == "1 minute" and au.span(3600) == "1 hour" and au.span(7200) == "2 hours" and au.span(5400) == "1.5 hours" and
+  au.span(7 * 24 * 3600) == "168 hours", "how long a link works, in words (a 15-minute link said 0 hours)")
 assert(au.funnel_args(true) == "funnel --bg --yes --https=10000 http://127.0.0.1:47320" and au.funnel_args(false) == "funnel --https=10000 off", "Funnel's arguments")
 
 -- ---- links ----
@@ -123,6 +125,11 @@ au.action("P", cfg, b, { make = { hours = 1 } })
 local L2 = links_set[#links_set]
 said = au.action("P", cfg, b, { revoke = L2.id })
 assert(said:find("revoked by James") and links_set[#links_set].id == L2.id and links_set[#links_set].code == "" and #(band.ext_json(band.SECTION, au.KEY) or {}) == 0, "revoked: at once")
+-- a 15-minute link says so
+toff = toff + 10
+said = au.action("P", cfg, b, { make = { hours = 0.25 } })
+assert(said:find("for 15 minutes") and links_set[#links_set].secs == 900, "a 15-minute link: " .. tostring(said))
+au.action("P", cfg, b, { revoke = links_set[#links_set].id })
 -- cap and rate
 said = au.action("P", cfg, b, { cap = 50, kbps = 128 })
 assert(said:find("50 listeners, 128") and starts[#starts].cap == 50 and starts[#starts].kbps == 128, "the cap and rate, kept and given to the extension")

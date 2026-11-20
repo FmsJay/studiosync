@@ -309,6 +309,7 @@ sock_t g_lsock = BAD_SOCK;
 std::thread g_lthr;
 struct ExitGuard { ~ExitGuard() { if (g_lthr.joinable()) g_lthr.detach(); } } g_exit_guard; // (as direct.cpp's: REAPER exiting without unload)
 const int MAX_CLIENTS = 16;
+const int LISTEN_EXTRA = 64; // (threads past MAX_CLIENTS that answer only /listen/, each for the moment a listener takes to join: 22 joining at once met the 16. rt-audience)
 const size_t MAX_HEAD = 16 * 1024, MAX_BODY = 16 * 1024, MAX_FILE = 4 * 1024 * 1024, MAX_ACTIONS = 64, MAX_TOPIC = 1024 * 1024;
 // A phone's take (lib/phonerec.lua): the recording, held until Lua saves it where the song wants it. 160 MB is 14 minutes of 48 kHz mono
 // 32-bit float; two at most, the oldest let go (a page whose take is never placed can't fill memory).
@@ -780,6 +781,7 @@ void guest_live(sock_t s, const WebReq &r, const std::string &gid)
 }
 
 thread_local bool t_kept = false; // (a listener's socket handed to audience.cpp: client() leaves it open. rt-audience)
+thread_local bool t_extra = false; // (this thread is past MAX_CLIENTS: the listening page only)
 void handle(sock_t s, std::string buf, bool local)
 {
   set_blocking(s, 5000);
@@ -793,6 +795,7 @@ void handle(sock_t s, std::string buf, bool local)
   WebReq r;
   if (end == std::string::npos || !webui_parse_head(buf.substr(0, end + 4), r)) return answer(s, 400, "text/plain", "bad request\n");
   if (webui_listen_http && r.path.compare(0, 8, "/listen/") == 0) { t_kept = webui_listen_http((unsigned long long)s, r, false); return; } // (the listening page: its own allow-list and links, never the studio's token. rt-audience)
+  if (t_extra) return answer(s, 503, "text/plain", "busy\n"); // (the web UI itself is full)
   std::string token, folder;
   int port;
   { std::lock_guard<std::mutex> l(g_mx); token = g_token; folder = g_folder; port = g_port; }
@@ -876,9 +879,10 @@ void handle(sock_t s, std::string buf, bool local)
   answer(s, 200, ctype.c_str(), page);
 }
 
-void client(sock_t s, std::string buf, bool local)
+void client(sock_t s, std::string buf, bool local, bool extra)
 {
   t_kept = false;
+  t_extra = extra;
   handle(s, std::move(buf), local);
   if (!t_kept) {
 #ifdef _WIN32
@@ -897,10 +901,10 @@ void spawn(sock_t s, const char *buf, size_t n, bool local)
 {
   {
     std::lock_guard<std::mutex> l(g_mx);
-    if (g_clients < MAX_CLIENTS && !g_stop) {
+    if (g_clients < MAX_CLIENTS + (webui_listen_http ? LISTEN_EXTRA : 0) && !g_stop) {
       ++g_clients;
       g_active.insert(s);
-      std::thread(client, s, std::string(buf, n), local).detach();
+      std::thread(client, s, std::string(buf, n), local, g_clients > MAX_CLIENTS).detach();
       return;
     }
     ++g_refused;
@@ -1071,7 +1075,7 @@ int webui_start(const char *folder, const char *secret, int port, const char *bi
     a.sin_family = AF_INET;
     a.sin_port = htons((unsigned short)port);
     inet_pton(AF_INET, ip.c_str(), &a.sin_addr);
-    ok = bind(s, (sockaddr *)&a, sizeof(a)) == 0 && listen(s, 16) == 0;
+    ok = bind(s, (sockaddr *)&a, sizeof(a)) == 0 && listen(s, 128) == 0; // (16 until a crowd of listeners joined at once. rt-audience)
     if (!ok) { close_sock(s); why = "can't listen on " + ip + ":" + std::to_string(port) + " (another REAPER, or something else, has it)"; }
   } else why = "no socket";
   if (ok) { g_lsock = s; g_lthr = std::thread(accept_loop, s); }

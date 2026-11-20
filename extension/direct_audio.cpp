@@ -471,14 +471,14 @@ static bool keep_hook(bool) { return true; }
 #undef max
 #endif
 static_assert(sizeof(ReaSample) == sizeof(double), "the hook reads ReaSample as double (REASAMPLE_SIZE 8)");
+#include "audiohook.h" // (hook_buffers: the channels a hook call has; REAPER leaves input_nch at 0, so these hooks captured nothing. rt-audience)
 static int (*g_reg_hook)(bool isAdd, audio_hook_register_t *reg) = nullptr;
 static void on_audio(bool isPost, int len, double srate, audio_hook_register_t *reg)
 {
   if (isPost) return; // (before REAPER's processing: the hardware inputs as they came in)
   g_in_cb.fetch_add(1, std::memory_order_acq_rel);
   const double *chans[64] = { nullptr };
-  const int nin = std::min(reg->input_nch, 64);
-  for (int c = 0; c < g_nch; ++c) if (g_first + c < nin) chans[g_first + c] = reg->GetBuffer(false, g_first + c);
+  const int nin = hook_buffers(reg, false, chans, 64); // (not reg->input_nch: REAPER leaves it 0. rt-audience)
   direct_audio_process(chans, nin, len, srate);
   g_in_cb.fetch_sub(1, std::memory_order_acq_rel);
 }
@@ -514,8 +514,7 @@ static void on_keep_audio(bool isPost, int len, double srate, audio_hook_registe
 {
   if (isPost || !g_kon.load(std::memory_order_acquire)) return;
   const double *in[64] = { nullptr };
-  const int nin = std::min(reg->input_nch, 64);
-  for (int c = 0; c < nin; ++c) in[c] = reg->GetBuffer(false, c);
+  const int nin = hook_buffers(reg, false, in, 64); // (not reg->input_nch: REAPER leaves it 0. rt-audience)
   direct_keep_feed(in, nin, len, srate, direct_now(), g_play_pos2 ? g_play_pos2(nullptr) : 0, g_play_state && (g_play_state(nullptr) & 1) != 0);
 }
 static audio_hook_register_t g_khook = { on_keep_audio, nullptr, nullptr, 0, 0, nullptr };

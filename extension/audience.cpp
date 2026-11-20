@@ -107,7 +107,7 @@ std::string audience_ws_frame(int op, const std::string &d)
 
 // ---- state -----------------------------------------------------------------------------------------------------------------------------
 namespace {
-const int MAX_LINKS = 8, CAP_MAX = 100, PUB_WORKERS = 8;
+const int MAX_LINKS = 8, CAP_MAX = 100, PUB_WORKERS = 64; // (PUB_WORKERS: request threads on the public port, each short; 8 until a crowd joining at once met them)
 const double RATE = 20, BURST = 200;        // requests a second (and a burst) per way in: a page load is 4 (page, script, style, socket), a reconnect 1
 const double BAD_RATE = 20.0 / 60, BAD_BURST = 20, LOCK_S = 60; // wrong codes: past 20 a minute, that way in answers nothing for a minute
 const size_t OUT_MAX = 32 * 1024;           // bytes waiting for one listener (~2.7 s at 96 kbps): past it their packets are skipped...
@@ -491,7 +491,7 @@ std::string pub_open(int port)
   a.sin_family = AF_INET;
   a.sin_port = htons((unsigned short)port);
   inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
-  if (bind(s, (sockaddr *)&a, sizeof(a)) != 0 || listen(s, 32) != 0) { close_sock(s); return "can't listen on 127.0.0.1:" + std::to_string(port); }
+  if (bind(s, (sockaddr *)&a, sizeof(a)) != 0 || listen(s, 128) != 0) { close_sock(s); return "can't listen on 127.0.0.1:" + std::to_string(port); }
   g_pub_sock = s;
   g_pub_run = true;
   g_pub_thr = std::thread(pub_loop, s);
