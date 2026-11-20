@@ -210,6 +210,15 @@ do
   assert(select(2, reaper.GetProjExtState("A5", SECTION, "hold")) == "", "the reopened save: Hold off")
   mirror.restore_unsent("A5", {}, "M", false)
   assert(select(2, reaper.GetProjExtState("A5", SECTION, "hold")) == "1", "Hold on again before the look sends")
+  -- the reopened file already holds the change, on an older record: kept, and built on the record it was made on, so the band's version
+  -- that came after it isn't news here (laptop kill test, rt)
+  files[PATH] = { objs = { ["I-ME-1-6"] = { kind = "item", track = "T-ME-1-1", state = "<ITEM\nS\n>\n", hash = "hs", known = "5|hb|Bo-20261119-171000Z-00001-0001|t5" } } }
+  open, fns.A6 = { "A6" }, "C:\\s\\Song.RPP"
+  reaper.SetProjExtState("A6", mirror.SEC, "I-ME-1-6", "3|ha|Bo-20261119-170500Z-00001-0001|t3")
+  applied = {}
+  local n6 = mirror.restore_unsent("A6", { ["I-ME-1-6"] = { kind = "item", state = "<ITEM\nS\n>\n", hash = "hs" } }, "M", false)
+  assert(n6 == 0 and #applied == 0, "already there: nothing to put back")
+  assert(mirror.known("A6", "I-ME-1-6") == 5, "built on rev 5, as it was made: " .. tostring(mirror.known("A6", "I-ME-1-6")))
   -- Live sync's clean stop takes the file away: REAPER asked about saving
   files[PATH] = { objs = {} }
   mirror.drop_stash("A3")

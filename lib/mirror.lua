@@ -1791,7 +1791,11 @@ function mirror.restore_unsent(proj, by_oid, media, local_mix)
         local ok, done = pcall(mirror.apply, proj, { obj = e.kind, oid = oid, gone = true }, media, local_mix)
         if ok and done then n = n + 1 end
       end
-    elseif o and o.hash == e.hash then list[oid] = nil -- (saved with it: the look sends it as it is)
+    elseif o and o.hash == e.hash then -- (saved with it: the look sends it as it is)
+      list[oid] = nil
+      -- (built on what it was made on, too: the file can hold the change on an older record, and then the band's newer one landed over it as
+      -- news, a held edit gone. Laptop kill test, rt)
+      if r and r ~= krev then remember(proj, oid, r, h, evid, order) end
     else
       local ok, done = pcall(mirror.apply, proj, { obj = e.kind, oid = oid, track = e.track, state = e.state, pos = e.pos }, media, local_mix)
       if not ok then require("band").log("couldn't put back a change of yours from before REAPER stopped: " .. tostring(done)) end
