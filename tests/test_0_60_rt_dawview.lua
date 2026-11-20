@@ -160,6 +160,8 @@ local function setup_fake(f)
   reaper.GetMediaSourceFileName = function(src) return "file-" .. tostring(src.item.name) end
   reaper.new_array = function(n) local a = { n = n, d = {} }; a.table = function() local t = {}; for i = 1, n do t[i] = a.d[i] or 0 end; return t end; return a end
   reaper.GetMediaItemTake_Peaks = function(tk, rate, start, nch, n, extra, buf)
+    -- (as REAPER 7.86 does inside a coroutine: no answer and a buffer of junk. The look's own coroutine has the tick make it: rt-phonefix)
+    if select(2, coroutine.running()) == false then for i = 1, n * 2 do buf.d[i] = 9e281 end return end
     peaks_asked = peaks_asked + 1
     clock = clock + (fake.peak_cost or 0)
     if tk.item.unbuilt then return 0 end
@@ -260,8 +262,11 @@ assert(#pubs == 0, "nobody has the Song page open: nothing built")
 assert(not dawview.watching(clock), "not watching")
 dawview.action("P1", cfg, b, { topic = "daw", want = true })
 assert(dawview.watching(clock), "a page said it's looking")
+fake.tracks[1].items[1].len = 8 -- (its peaks read again, inside the tick's look)
 dawview.tick("P1", cfg, b, publish, who, clock)
 assert(table.concat(pubs, ",") == "dawc0,daw,dawcur", "chunks before the header, then the cursors: " .. table.concat(pubs, ","))
+local k8 = band.json_decode(published.dawc0).tr[1][1].k
+assert(type(k8) == "string" and #k8 == dawview.peak_count(8) and not k8:find("_", 1, true), "peaks read in the look are REAPER's, not a coroutine's junk: " .. tostring(k8))
 local hd = band.json_decode(published.daw)
 assert(hd.chunks == 1 and hd.may == true and hd.me == "James" and #hd.tracks == 3 and hd.key == "S/main", "the header: " .. published.daw)
 local cj = band.json_decode(published.dawcur)

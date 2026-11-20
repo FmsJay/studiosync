@@ -39,6 +39,14 @@ local function pause()
   if slice_end and coroutine.isyieldable() and reaper.time_precise() > slice_end then coroutine.yield(); return true end
   return false
 end
+-- A REAPER call that doesn't work inside a coroutine, made by the tick outside it: REAPER 7.86's GetMediaItemTake_Peaks called in one gives
+-- back nothing and fills its buffer with junk (measured in REAPER; the look failed at every audio item, so the daw topic never went out and
+-- the phone's Project view waited for it for ever. rt-phonefix). The tick sees OUTSIDE, makes the call and resumes the look with its answers.
+local OUTSIDE = {}
+local function outside(fn, ...)
+  if slice_end and coroutine.isyieldable() then return coroutine.yield(OUTSIDE, fn, ...) end
+  return fn(...)
+end
 
 -- ---- pure ------------------------------------------------------------------------------------------------------------------------------
 local ALPHA = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_" -- (64 levels, one character each, nothing JSON escapes)
@@ -263,8 +271,8 @@ local function take_peaks(take, pos, len, now, budget_end)
   local n = dawview.peak_count(len)
   local want = n * 2 -- (twice the columns, each column the louder of two: REAPER's own reduction is a sample, not a maximum)
   local buf = reaper.new_array(want * 2)
-  local rv = reaper.GetMediaItemTake_Peaks(take, want / len, pos, 1, want, 0, buf)
-  local got = math.floor(rv) & 0xFFFFF
+  local rv = outside(reaper.GetMediaItemTake_Peaks, take, want / len, pos, 1, want, 0, buf)
+  local got = math.floor(tonumber(rv) or 0) & 0xFFFFF -- (no answer: no peaks this time, asked again after PEAK_RETRY s, never the whole look lost)
   local s
   if got > 0 then
     local t = buf.table()
@@ -447,7 +455,13 @@ function dawview.tick(proj, cfg, b, publish, who, now)
   if S.look then -- (this tick's share of the look: all of it on a small song)
     local co = S.look
     slice_end = reaper.time_precise() + dawview.SLICE
-    local ok, err = coroutine.resume(co)
+    local r = table.pack(coroutine.resume(co))
+    while r[1] and r[2] == OUTSIDE do -- (a call the look can't make itself: made here, its answers handed back)
+      local c = table.pack(pcall(r[3], table.unpack(r, 4, r.n)))
+      if not c[1] then r = { false, c[2] }; break end
+      r = table.pack(coroutine.resume(co, table.unpack(c, 2, c.n)))
+    end
+    local ok, err = r[1], r[2]
     slice_end = nil
     if not ok or coroutine.status(co) == "dead" then S.look = nil end
     if not ok then error(debug.traceback(co, tostring(err)), 0) end
