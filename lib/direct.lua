@@ -531,6 +531,21 @@ function direct.reaches_all(cfg, song, room)
   for _, p in ipairs(peers) do reach_ok = reach_ok and type(st[p]) == "table" and st[p].ok == true end
   return reach_ok
 end
+-- Each bandmate here as the link sees them now: user -> { ok (its last send or ping answered), at (os.time of that answer or failure) }; one
+-- the link hasn't tried yet isn't in it. The link pings each one every second, so lib/hub.lua notices a hub that drops within seconds, not
+-- when its status file goes stale. {} without the link. (James, rt)
+function direct.reach(cfg, song, room)
+  local out = {}
+  if not direct.live_available() then return out end
+  local peers, _, users = direct.peers(cfg, song, room)
+  local st = status_json().peers
+  st = type(st) == "table" and st or {}
+  for _, p in ipairs(peers) do
+    local u, s = users and users[p], st[p]
+    if type(u) == "string" and type(s) == "table" and not (out[u] and out[u].ok) then out[u] = { ok = s.ok == true, at = tonumber(s.at) or 0 } end
+  end
+  return out
+end
 -- Live sync's tick: files that arrived (-> how many: a receive pass then), who to send to, the clock, a heartbeat, and the messages by kind.
 direct.HEARTBEAT = 5
 local beat_at = -math.huge

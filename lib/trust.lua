@@ -355,4 +355,34 @@ function trust.claim_ok(root, rel, c)
   return ok
 end
 
+-- A file a person writes for themselves alone (a song's session.json, which names who shared it; <song>/hub/<person>.json, their handovers of
+-- the song's hub: lib/hub.lua) counts only when Syncthing says that person's own computer wrote it: the one their devices file names (and wrote
+-- itself: trust.device_ok), or this one when it's this person's. No new step for anyone: every computer already writes its own devices file.
+-- at: when the file says it was written (os.time): a "no" within 2 minutes of it is asked again (Syncthing may not have scanned it yet, as
+-- trust.mark_ok). -> true, false, or nil (not known yet: ask again later). (James, rt)
+local own = {}
+function trust.own_file_ok(root, rel, user, at)
+  local k = root .. rel .. "\0" .. tostring(user) .. "\0" .. tostring(band.read(root .. "/" .. rel)) -- (the file as read, as for claims)
+  local was = trust.cached(own, k, root)
+  if was ~= nil then return was end
+  local pins = trust.pins(root)
+  if not pins then if trust.held(root) then return nil end return true end -- (as trust.mark_ok)
+  local services = require("services")
+  local by = changed_by(root, rel)
+  if not by then return nil end
+  local mine, ok = services.my_device_id(), by == "" -- ("": Syncthing doesn't hold it, believed as everywhere here)
+  if not ok and mine and by == mine:sub(1, 7) then ok = user == reaper.GetExtState(band.SECTION, "user") -- (this computer writes only its person's)
+  elseif not ok then
+    local d = band.read_json(root .. "/_band/devices/" .. user_file(user))
+    local dev = type(d) == "table" and services.is_device_id(d.device) and d.device or nil
+    local said = dev and trust.device_ok(root, user, dev)
+    if dev and said == nil then return nil end
+    ok = said == true and dev:sub(1, 7) == by
+  end
+  if not ok and os.time() - (tonumber(at) or 0) < 120 then return nil end
+  trust.cache(own, k, ok, root)
+  if not ok then band.log(string.format("%s: %s says it's %s's, but another computer (%s) wrote it, so it was set aside", band.info(root).name, rel, tostring(user), services.device_name(by))) end
+  return ok
+end
+
 return trust

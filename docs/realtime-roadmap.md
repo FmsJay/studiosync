@@ -513,6 +513,26 @@ it's the patient, lossless, store-and-forward half.
      - **Not yet:** failover in seconds (a hub that vanishes is noticed when its status goes stale, up to ~45 s; the link's heartbeats could
        cut that), the handover file's `by` checked against Syncthing's modifiedBy (now against the roles only: it moves where restore points
        are kept, never data), snapshots taken in the extension or a background instance, the hub's other jobs (prints, relaying, live mix).
+   - **Second slice built (rt-hub 2, 2026-11-19; offline tests only, not run in REAPER yet):** `lib/hub.lua`, `direct.reach`,
+     `trust.own_file_ok`; tests/test_0_60_rt_hub.lua, tests/test_0_60_rt_hub_trust.lua.
+     - **Failover in seconds:** the direct link pings each computer here every second; `direct.reach` gives each person's last answer, and
+       `hub.link_watch` counts out one the link has reached before that hasn't answered for 12 s (one failed ping plus the extension's 10 s
+       wait before it retries, so a single dropped ping never moves the role). Counted out, it's not a candidate though its status file is
+       still fresh, so the next computer takes over at the next tick (~15 s, was up to ~45 s + a 10 s scan). One the link never reached, or
+       a computer in another song (the link only covers this room), is left to the status files as before. Found again, its hand-back counts
+       from then (`back`), not from when its REAPER started, so a computer flickering on the link doesn't flap the role.
+     - **Handovers can't be forged:** each person's handovers are their own file, `<song>/hub/<person>.json` (replacing the one hub.json,
+       which said who handed it on in its own words), and count only when Syncthing's modifiedBy says that person's own computer wrote it:
+       the one their devices file names, itself checked as written by that computer (`trust.device_ok`). session.json's `host` (the chain's
+       start) is checked the same way. No new step for anyone: every computer already writes its own devices file. Not checked yet waits;
+       set aside is said once in the log, in Health and under Settings > Studio > Hub. A handover made with the first slice's hub.json is
+       no longer read: hand it on again.
+     - **Guests aren't hubs:** `removal.guest_names` (the guest marks someone in charge wrote) are dropped from the candidates on every
+       computer alike, and aren't offered as the preferred hub or a song's hub in Settings.
+     - **Visible:** Health's hub row adds "replaced within seconds (direct link)" or "within a minute", who the link lost, "You're a guest
+       here", and a set-aside handover; Settings > Studio > Hub says the same rules.
+     - **Still not yet:** the studio hub in another song than yours is still noticed by its status file (the link's peers are per room);
+       snapshots in the extension or a background instance; prints, relaying, live mix at the hub.
 2. **Shared CPU.** The remote plug-in mechanism (4b) also works for plug-ins you DO have: freeze or offload a heavy
    track to whichever computer is idle.
 3. **Follow a bandmate.** See exactly what they see: their view, cursor, selection and open editor, live.

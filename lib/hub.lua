@@ -10,9 +10,12 @@
 -- The hub is someone's working REAPER: its one job here (a song's restore points, "hub snapshot") runs only while that REAPER is stopped and
 -- untouched for IDLE s, never while anything records or plays, at most every SNAP_EVERY s and within a CPU budget; the person can hand the role
 -- on (Health), and the next computer takes it.
+-- Second slice (James, rt): a hub that drops is noticed by the direct link within seconds (hub.link_watch), its status file's age the fallback;
+-- a handover counts only from its hander's own computer (each person's own file, checked with Syncthing: trust.own_file_ok); guests are
+-- never a hub.
 local band = require("band")
 local hub = { SCAN_EVERY = 10, FRESH = 45, HANDBACK = 30, SNAP_EVERY = 1800, IDLE = 60, BUDGET = 0.002, SCAN_MS = 4, TICK_EVERY = 2, LABEL = "hub snapshot",
-  TRANSFERS_KEPT = 50 }
+  TRANSFERS_KEPT = 50, LINK_GONE = 12, GUESTS_EVERY = 10 }
 
 -- ---- pure ----------------------------------------------------------------------------------------------------------------------------
 -- Candidates: { user, machine, since (os.time it came online), link (its direct link listens), off (handed the role on), studio (holds the
@@ -33,8 +36,10 @@ local function best(list, keep)
 end
 local function find(list, user) for _, c in ipairs(list) do if c.user == user then return c end end end
 -- A computer that comes back takes its role back once it's been on HANDBACK s, or at once when nobody else holds it (no flapping on a computer
--- that drops in and out).
-local function settled(c, now, others_hold) return not others_hold or (now - (tonumber(c.since) or now)) >= hub.HANDBACK end
+-- that drops in and out). back: when the direct link reached it again after losing it (hub.link_watch): counted from then, not from its since.
+local function settled(c, now, others_hold)
+  return not others_hold or (now - math.max(tonumber(c.since) or now, tonumber(c.back) or -math.huge)) >= hub.HANDBACK
+end
 
 -- -> the studio hub's user (nil: nobody online who'll take it) and why: "preferred", "kept", "ranked", or "nobody".
 function hub.elect_studio(cands, preferred, now)
@@ -105,6 +110,41 @@ function hub.candidates(sts, now, age_of)
   return out
 end
 
+-- Failover in seconds. reach: direct.reach's user -> { ok, at } for those here; mem: this computer's memory of each, kept between ticks. One
+-- the link has reached and that hasn't answered for LINK_GONE s is gone, though its status file stays fresh for 45 s; one it never reached is
+-- left to the status files. LINK_GONE spans a failed ping and the extension's 10 s wait before it tries that computer again, so one dropped
+-- ping doesn't move the role. -> gone (a set), back (user -> os.time the link reached them again after losing them, for HANDBACK s). Pure.
+function hub.link_watch(mem, reach, now)
+  reach = reach or {}
+  for user, r in pairs(reach) do
+    local m = mem[user] or {}
+    mem[user] = m
+    if r.ok and now - (tonumber(r.at) or 0) < hub.LINK_GONE then
+      if m.gone or m.out then m.back = now end
+      m.reached, m.fail, m.gone, m.out = true, nil, nil, nil
+    elseif m.reached then
+      m.fail = m.fail or now
+      if now - m.fail >= hub.LINK_GONE then m.gone = true end
+    end
+  end
+  local gone, back = {}, {}
+  for user, m in pairs(mem) do
+    -- (out of the link's list: their status went stale, or this computer is in another song now. The status files decide then; back once in it)
+    if not reach[user] and m.reached then m.out, m.fail, m.gone = true, nil, nil end
+    if m.gone then gone[user] = true end
+    if m.back and now - m.back < hub.HANDBACK then back[user] = m.back end
+  end
+  return gone, back
+end
+-- The candidates without those the link lost and without guests (guests are never a hub: James, rt), each with its `back`. -> a new list. Pure.
+function hub.drop(list, gone, guests, back)
+  local out = {}
+  for _, c in ipairs(list or {}) do
+    if not ((gone or {})[c.user] or (guests or {})[c.user]) then c.back = (back or {})[c.user]; out[#out + 1] = c end
+  end
+  return out
+end
+
 -- Is a hub snapshot due? last: os.time of the room's newest one (nil: none); changed: anything new since this computer's last look (nil: not
 -- known here, as after a handover: due by time alone); dur: the last one's seconds. -> true, or false and why ("recent", "budget", "unchanged").
 function hub.snap_due(now, last, changed, last_end, dur)
@@ -121,7 +161,8 @@ function hub.snap_time(name)
   return y and os.time() - band.age(string.format("%s-%s-%sT%s:%s:%sZ", y, mo, d, h, mi, s)) or nil
 end
 
--- Health's words. v: { studio, studio_why, song, hub, why, home }; me: this computer's user. Pure.
+-- Health's words. v: { studio, studio_why, song, hub, why, home, fast (the link watches those here), gone (names the link lost), guest (this
+-- computer is a guest's), refused (names whose handover file came from another computer) }; me: this computer's user. Pure.
 local WHY_STUDIO = { preferred = "the owner's pick", kept = "holding it", ranked = "online longest" }
 local function who(u, me) return u == me and "you" or u end
 function hub.line(v, me)
@@ -131,7 +172,13 @@ function hub.line(v, me)
     or v.why == "studio" and ("the studio hub" .. (v.home and (", " .. v.home .. " is away") or ""))
     or v.why == "ranked" and ("online longest" .. (v.home and (", " .. v.home .. " is away") or "")) or ""
   local song = v.hub and (who(v.hub, me) .. " (" .. why .. ")") or "nobody here, so the cloud copy stands in"
-  return "Hub: " .. s .. "; this song: " .. song .. "."
+  local out = "Hub: " .. s .. "; this song: " .. song .. "."
+  if v.guest then out = out .. " You're a guest here: guests are never a hub." end
+  if type(v.gone) == "table" and #v.gone > 0 then out = out .. " The direct link lost " .. table.concat(v.gone, ", ") .. ": not counted until it reaches them again." end
+  if type(v.refused) == "table" and #v.refused > 0 then
+    out = out .. " A handover in " .. table.concat(v.refused, ", ") .. "'s name came from another computer, so it doesn't count."
+  end
+  return out .. (v.fast and " A hub that drops is replaced within seconds (direct link)." or " A hub that drops is replaced within a minute (the direct link makes it seconds).")
 end
 
 -- ---- this computer ---------------------------------------------------------------------------------------------------------------------
@@ -149,34 +196,64 @@ function hub.set_off(root, on)
   band.log(on and "you handed the hub role on: the next computer takes it within a few seconds (Health: Be a hub again)" or "this computer can be a hub again")
 end
 
--- The song's hub.json: { transfers = { { to, by, at } } }, read with session.json's host (who shared it).
-local function song_file(cfg, song) return band.song_dir(cfg, song) .. "/hub.json" end
+-- A song's handovers: <song>/hub/<person>.json = { user, transfers = { { to, at } } }, each person's own file, so each counts only when
+-- Syncthing says that person's own computer wrote it (trust.own_file_ok), and so does session.json's host (who shared it). The first slice's
+-- one hub.json said who handed it on in its own words: any member could write "the owner handed it to me". (James, rt)
+local function hub_dir(cfg, song) return band.song_dir(cfg, song) .. "/hub" end
 local function may_fn(root)
   local groups = require("groups")
   return function(u) local r = groups.role(root, u); return r == "owner" or r == "admin" or r == "open" end
 end
-function hub.home(cfg, song)
+-- -> who shared the song (nil: not known, or not checked yet), every handover that counts { to, by, at }, and the names whose file came from
+-- another computer (set aside; one not checked yet just waits).
+function hub.transfers(cfg, song)
+  local trust, refused, list = require("trust"), {}, {}
   local s = band.read_json(band.session_path(cfg, song)) or {}
-  local j = band.read_json(song_file(cfg, song)) or {}
-  -- shortcut: `by` is what the file says, checked against the roles, not Syncthing's modifiedBy (trust.claim_ok's way); it only moves where a
-  -- song's restore points are kept, never data. Check modifiedBy once a hub job carries more than that.
-  return hub.home_of(type(s.host) == "string" and s.host or nil, j.transfers, may_fn(cfg.root))
+  local sharer = type(s.host) == "string" and s.host or nil
+  if sharer then
+    local ok = trust.own_file_ok(cfg.root, song .. "/session.json", sharer, type(s.published) == "string" and os.time() - band.age(s.published) or nil)
+    if ok == false then refused[#refused + 1] = sharer end
+    if ok ~= true then sharer = nil end
+  end
+  local dir = hub_dir(cfg, song)
+  for _, f in ipairs(band.files(dir, ".json")) do
+    local j = band.read_json(dir .. "/" .. f)
+    if type(j) == "table" and type(j.user) == "string" and trust.user_file(j.user) == f and type(j.transfers) == "table" then
+      local newest = 0
+      for _, t in ipairs(j.transfers) do if type(t) == "table" then newest = math.max(newest, tonumber(t.at) or 0) end end
+      local ok = trust.own_file_ok(cfg.root, song .. "/hub/" .. f, j.user, newest)
+      if ok == false then refused[#refused + 1] = j.user end
+      if ok == true then
+        for _, t in ipairs(j.transfers) do if type(t) == "table" then list[#list + 1] = { to = t.to, by = j.user, at = t.at } end end
+      end
+    end
+  end
+  table.sort(refused)
+  return sharer, list, refused
+end
+-- -> the song's home, whether it was handed on, and the names set aside (hub.transfers).
+function hub.home(cfg, song)
+  local sharer, list, refused = hub.transfers(cfg, song)
+  local home, moved = hub.home_of(sharer, list, may_fn(cfg.root))
+  return home, moved, refused
 end
 -- May `by` hand `song`'s hub on? Its sharer, its home now, or the owner or an admin.
 function hub.may_hand(cfg, song, by)
-  local s = band.read_json(band.session_path(cfg, song)) or {}
-  return by == s.host or by == hub.home(cfg, song) or may_fn(cfg.root)(by)
+  local sharer, list = hub.transfers(cfg, song)
+  local may = may_fn(cfg.root)
+  return (sharer ~= nil and by == sharer) or by == hub.home_of(sharer, list, may) or may(by)
 end
--- Hands `song`'s hub to `to` for good (every computer reads the same hub.json). -> true, or nil and why.
+-- Hands `song`'s hub to `to` for good, in this person's own file (every computer reads the same). -> true, or nil and why.
 function hub.hand_song(cfg, song, to)
   if not hub.may_hand(cfg, song, cfg.user) then return nil, "only whoever shared the song, its hub, the owner or an admin can hand it on" end
-  local path = song_file(cfg, song)
+  local dir = hub_dir(cfg, song)
+  local path = dir .. "/" .. require("trust").user_file(cfg.user)
   local j = band.read_json(path) or {}
   local list = type(j.transfers) == "table" and j.transfers or {}
-  list[#list + 1] = { to = to, by = cfg.user, at = os.time() }
+  list[#list + 1] = { to = to, at = os.time() }
   while #list > hub.TRANSFERS_KEPT do table.remove(list, 1) end -- (the oldest go: the chain from the sharer is replayed from what's left)
-  j.transfers = list
-  band.write_json(path, j)
+  reaper.RecursiveCreateDirectory(dir, 0)
+  band.write_json(path, { user = cfg.user, transfers = list })
   band.log(string.format("'%s': its hub is %s's computer from now on (the song's home)", song, to))
   return true
 end
@@ -255,6 +332,17 @@ local view = {} -- root\nsong -> the last published view (said once when it chan
 local job = {} -- root\nsong\nroom -> { count (events when last snapshotted here), last_end, dur, state }
 local idle = { cc = nil, since = 0 }
 local ticked = {} -- root\nsong -> reaper.time_precise of the last whole tick
+local link_mem = {} -- root -> hub.link_watch's memory
+-- The studio's guests' names (removal.guest_names: the marks someone in charge wrote), read every GUESTS_EVERY s.
+local guests_c = {} -- root -> { at, set }
+local function guests(root)
+  local c = guests_c[root]
+  if c and reaper.time_precise() - c.at < hub.GUESTS_EVERY then return c.set end
+  local ok, set = pcall(function() return require("removal").guest_names(root) end)
+  c = { at = reaper.time_precise(), set = ok and type(set) == "table" and set or (c and c.set) or {} }
+  guests_c[root] = c
+  return c.set
+end
 function hub.tick(proj, cfg, b)
   if not (b and b.song and b.room) then return end
   local tk = cfg.root .. "\n" .. b.song
@@ -264,15 +352,29 @@ function hub.tick(proj, cfg, b)
   if not list then return end
   list = with_me(list, cfg, b.song)
   local now = os.time()
+  -- (the link's view of those here: a hub that drops is out within LINK_GONE s, not when its status goes stale)
+  local okr, reach = pcall(function()
+    local direct = require("direct")
+    return direct.available() and direct.live_available() and direct.reach(cfg, b.song, b.room) or {}
+  end)
+  reach = okr and reach or {}
+  link_mem[cfg.root] = link_mem[cfg.root] or {}
+  local gone, back = hub.link_watch(link_mem[cfg.root], reach, now)
+  local lost, fast = {}, false
+  for _, c in ipairs(list) do if gone[c.user] then lost[#lost + 1] = c.user end end
+  for _, r in pairs(reach) do if r.ok then fast = true end end
+  local gs = guests(cfg.root)
+  list = hub.drop(list, gone, gs, back)
   local groups = require("groups")
   local pref = groups.trusted(cfg.root).hub
   local studio, swhy = hub.elect_studio(list, type(pref) == "string" and pref or nil, now)
-  local home, moved = hub.home(cfg, b.song)
+  local home, moved, refused = hub.home(cfg, b.song)
   local song, why = hub.elect_song(list, b.song, home, studio, now)
   local h = held[cfg.root] or { songs = {} }
   h.studio, h.songs[b.song] = studio == cfg.user, song == cfg.user
   held[cfg.root] = h
-  local v = { studio = studio, studio_why = swhy, song = b.song, hub = song, why = why, home = home, moved = moved }
+  local v = { studio = studio, studio_why = swhy, song = b.song, hub = song, why = why, home = home, moved = moved, fast = fast or nil,
+    gone = #lost > 0 and lost or nil, guest = gs[cfg.user] or nil, refused = refused and #refused > 0 and refused or nil }
   local key = cfg.root .. "\n" .. b.song
   local was = view[key]
   if not was or was.hub ~= song or was.studio ~= studio then
@@ -349,9 +451,10 @@ local members_c = { at = -math.huge }
 local function members(root)
   if reaper.time_precise() - members_c.at < 30 and members_c.root == root then return members_c.list end
   local list, seen = {}, {}
+  local gs = guests(root) -- (guests are never a hub, so they're not offered)
   for _, f in ipairs(band.files(root .. "/_band/devices", ".json")) do
     local d = band.read_json(root .. "/_band/devices/" .. f)
-    if type(d) == "table" and type(d.user) == "string" and not seen[d.user] then seen[d.user] = true; list[#list + 1] = d.user end
+    if type(d) == "table" and type(d.user) == "string" and not seen[d.user] and not gs[d.user] then seen[d.user] = true; list[#list + 1] = d.user end
   end
   table.sort(list)
   members_c = { at = reaper.time_precise(), root = root, list = list }
@@ -369,7 +472,8 @@ end
 function hub.studio_ui(ctx, ImGui, cfg, may)
   ImGui.SeparatorText(ctx, "Hub")
   ImGui.TextDisabled(ctx, "One online computer is the studio's hub and each song has one (whoever shared it, unless it's handed on). A song's hub keeps its " ..
-    "restore points while that REAPER isn't playing or recording. Nothing depends on a hub: with none online, everyone still syncs directly and the cloud copy stands in.")
+    "restore points while that REAPER isn't playing or recording. Nothing depends on a hub: with none online, everyone still syncs directly and the cloud copy stands in. " ..
+    "A hub that drops is replaced within seconds over the direct link (within a minute without it). Guests are never a hub, and a handover counts only from its hander's own computer.")
   local pref = require("groups").trusted(cfg.root).hub
   pref = type(pref) == "string" and pref or nil
   if may then
@@ -382,7 +486,10 @@ function hub.studio_ui(ctx, ImGui, cfg, may)
   else ImGui.Text(ctx, "Preferred studio hub: " .. (pref or "none (the computer online longest)")) end
   local front = band.binding(reaper.EnumProjects(-1))
   if front and front.song and band.same_studio(front.root, cfg.root) then
-    local home = hub.home(cfg, front.song)
+    local home, _, refused = hub.home(cfg, front.song)
+    if refused and #refused > 0 then
+      ImGui.TextColored(ctx, require("theme").YELLOW,"A handover in " .. table.concat(refused, ", ") .. "'s name came from another computer, so it doesn't count.")
+    end
     if hub.may_hand(cfg, front.song, cfg.user) then
       local ch = pick(ctx, ImGui, "'" .. front.song .. "' hub##hubsong", tostring(home or "?"), home, members(cfg.root))
       if ch and ch ~= home then local _, why = hub.hand_song(cfg, front.song, ch); if why then band.log(why) end end

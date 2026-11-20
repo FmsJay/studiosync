@@ -78,6 +78,52 @@ do
   end
 end
 
+-- ---- failover in seconds: the direct link's view (second slice) ----
+do
+  local mem = {}
+  local live = function(at) return { ok = true, at = at } end
+  local gone = hub.link_watch(mem, { Lap = live(T), Desk = live(T) }, T)
+  assert(not next(gone), "both answering: nobody gone")
+  -- the hub (Lap) stops answering: not at once (one dropped ping, then the extension waits 10 s before trying again) ...
+  gone = hub.link_watch(mem, { Lap = { ok = false, at = T + 1 }, Desk = live(T + 2) }, T + 2)
+  assert(not gone.Lap, "one failed ping: not gone yet")
+  gone = hub.link_watch(mem, { Lap = { ok = false, at = T + 1 }, Desk = live(T + 10) }, T + 10)
+  assert(not gone.Lap, "8 s: not yet")
+  -- ... a blip: it answers at the retry, and was never gone
+  gone = hub.link_watch(mem, { Lap = live(T + 11), Desk = live(T + 11) }, T + 12)
+  assert(not gone.Lap and not mem.Lap.back, "it answered again within LINK_GONE: never counted out, no hand-back wait")
+  -- ... really gone: within LINK_GONE s of the first failure, well before its status file goes stale (45 s)
+  hub.link_watch(mem, { Lap = { ok = false, at = T + 20 }, Desk = live(T + 20) }, T + 20)
+  gone = hub.link_watch(mem, { Lap = { ok = false, at = T + 30 }, Desk = live(T + 32) }, T + 20 + hub.LINK_GONE)
+  assert(gone.Lap and not gone.Desk, "no answer for LINK_GONE s: gone")
+  -- the election without it: the next computer at once, though Lap's (fresh) status still says it holds the role
+  local lap, desk = c("Lap", T - 900, { link = true, studio = true }), c("Desk", T - 500, { link = true })
+  local u = hub.elect_studio(hub.drop({ lap, desk }, gone), nil, T + 32)
+  assert(u == "Desk", "the holder the link lost: the next one takes over")
+  -- an answer that stopped coming (ok, but old) counts as failing too
+  local m2 = {}
+  hub.link_watch(m2, { Bo = live(T) }, T)
+  hub.link_watch(m2, { Bo = live(T) }, T + hub.LINK_GONE)
+  assert(hub.link_watch(m2, { Bo = live(T) }, T + 2 * hub.LINK_GONE).Bo, "nothing answered for 2 x LINK_GONE: gone")
+  -- one the link never reached (no extension there, no firewall rule): left to its status file
+  local m3 = {}
+  assert(not next((hub.link_watch(m3, { Mac = { ok = false, at = T } }, T))) and not next((hub.link_watch(m3, { Mac = { ok = false, at = T } }, T + 100))), "never reached: never counted out by the link")
+  -- back: the preferred computer the link lost and found again waits HANDBACK s from then (not from its since), so it doesn't flap the role
+  local _, back = hub.link_watch(mem, { Lap = live(T + 40), Desk = live(T + 40) }, T + 40)
+  assert(back.Lap == T + 40, "found again: back from now")
+  local lap_back, desk_h = c("Lap", T - 900, { link = true }), c("Desk", T - 500, { link = true, studio = true })
+  assert(hub.elect_studio(hub.drop({ lap_back, desk_h }, {}, nil, back), "Lap", T + 40) == "Desk", "the preferred one back on the link: the holder keeps it a moment")
+  _, back = hub.link_watch(mem, { Lap = live(T + 40 + hub.HANDBACK), Desk = live(T + 40 + hub.HANDBACK) }, T + 40 + hub.HANDBACK)
+  assert(hub.elect_studio(hub.drop({ lap_back, desk_h }, {}, nil, back), "Lap", T + 40 + hub.HANDBACK) == "Lap", "and takes it back HANDBACK s later")
+  -- a computer that left the link's list (its status stale, or this computer moved to another song) isn't counted out by it
+  gone = hub.link_watch(mem, { Desk = live(T + 80) }, T + 80)
+  assert(not gone.Lap and mem.Lap.out, "out of the link's list: the status files decide")
+  -- guests are never a hub, preferred or not
+  local g = c("Gus", T - 9000, { link = true })
+  assert(hub.elect_studio(hub.drop({ g, desk }, {}, { Gus = true }), "Gus", T) == "Desk", "a guest isn't a candidate, even preferred")
+  assert(hub.elect_song(hub.drop({ c("Gus", T - 9000, { songs = { S = {} } }) }, {}, { Gus = true }), "S", "Gus", nil, T) == nil, "a guest's song: nobody (the cloud copy stands in)")
+end
+
 -- ---- a song's home: whoever shared it, and its handovers ----
 do
   local may = function(u) return u == "Owner" or u == "Adm" end
@@ -185,7 +231,8 @@ do
   band.files = function(d) if d == "R/Song/rooms/main/status" then return { "Desk.json" } end return {} end
   files["R/Song/rooms/main/status/Desk.json"] = { user = "Desk", machine = "md", time = os.date("!%Y-%m-%dT%H:%M:%SZ"), hub = { since = os.time() - 5000, link = true } }
   package.loaded.direct = { available = function() return false end }
-  package.loaded.sync = { machine = function() return "mbo" end, loading = {}, room_dir = function(_, s, r) return "R/" .. s .. "/rooms/" .. r end }
+  package.loaded.removal = { guest_names = function() return {} end }
+  package.loaded.sync ={ machine = function() return "mbo" end, loading = {}, room_dir = function(_, s, r) return "R/" .. s .. "/rooms/" .. r end }
   local saved = 0
   package.loaded.recall = { dir = function() return "R/Song/rooms/main/recall" end, save = function() saved = saved + 1 end }
   play = 1
@@ -214,6 +261,28 @@ do
   v = band.ext_json(band.SECTION, "hub view studio1 Song")
   assert(v.hub == "Desk" and v.why == "studio" and v.job.state == "off", "the studio hub (Desk, in this song too) stands in; Bo's job stops")
   assert(hub.health_row(cfg, b).action[1] == "Be a hub again" and hub.line(v, "Bo"):find("Desk (the studio hub, Bo is away)", 1, true), "Health says so, and offers it back")
+  assert(hub.line(v, "Bo"):find("within a minute", 1, true), "no link: Health says a dropped hub is noticed within a minute")
+  -- the link reaches Desk: Health says failover takes seconds
+  package.loaded.direct = { available = function() return true end, live_available = function() return true end, firewall_ok = function() return true end,
+    reach =function() return { Desk = { ok = true, at = os.time() } } end }
+  now_p = now_p + 3
+  hub.tick("P", cfg, b)
+  v = band.ext_json(band.SECTION, "hub view studio1 Song")
+  assert(v.fast and v.hub == "Desk" and hub.line(v, "Bo"):find("within seconds (direct link)", 1, true), "the link watches Desk: within seconds")
+  -- a guest's computer: never a hub, and Health says why (removal.guest_names, re-read every GUESTS_EVERY s)
+  package.loaded.removal = { guest_names = function() return { Desk = true } end }
+  now_p = now_p + hub.GUESTS_EVERY + 1
+  hub.tick("P", cfg, b)
+  v = band.ext_json(band.SECTION, "hub view studio1 Song")
+  assert(v.hub == nil and v.studio == nil, "Desk is a guest: not a hub (and Bo handed it on): nobody")
+  package.loaded.removal = { guest_names = function() return { Bo = true } end }
+  now_p = now_p + hub.GUESTS_EVERY + 1
+  hub.tick("P", cfg, b)
+  v = band.ext_json(band.SECTION, "hub view studio1 Song")
+  assert(v.guest and hub.line(v, "Bo"):find("You're a guest here", 1, true), "this computer a guest's: Health says guests are never a hub")
+  package.loaded.removal = { guest_names = function() return {} end }
+  package.loaded.direct = { available = function() return false end }
+  now_p = now_p + hub.GUESTS_EVERY + 1
   -- Desk goes offline too (its status goes stale): nobody here, so the cloud copy stands in
   band.age = function() return 1e9 end -- (its file, unchanged since first read here, now old by its stamp)
   now_p = now_p + hub.SCAN_EVERY + 1
@@ -222,11 +291,31 @@ do
   assert(v.hub == nil and v.studio == nil and hub.line(v, "Bo"):find("cloud copy", 1, true), "nobody online who'll take it: the cloud copy stands in")
   hub.health_row(cfg, b).action[2]()
   assert(not hub.off("R"), "a hub again")
-  -- a handover written to hub.json moves the song's home, for every computer reading it
+  -- a handover written to the hander's own file (<song>/hub/<person>.json) moves the song's home, for every computer reading it
+  band.files = function(d)
+    local out = {}
+    for p in pairs(files) do local f = p:match("^" .. d:gsub("%p", "%%%0") .. "/([^/]+%.json)$"); if f then out[#out + 1] = f end end
+    table.sort(out)
+    return out
+  end
   assert(not hub.hand_song({ root = "R", user = "Chilio" }, "Song", "Desk"), "a member can't hand someone else's song on")
   assert(hub.hand_song(cfg, "Song", "Desk") and hub.home(cfg, "Song") == "Desk", "the sharer hands it to Desk")
   assert(hub.hand_song({ root = "R", user = "Desk" }, "Song", "Mac") and hub.home(cfg, "Song") == "Mac", "the hub now hands it on")
   assert(hub.hand_song({ root = "R", user = "Owner" }, "Song", "Bo") and hub.home(cfg, "Song") == "Bo", "the owner hands it back")
+  assert(files["R/Song/hub/Owner.json"].user == "Owner" and #files["R/Song/hub/Desk.json"].transfers == 1, "each person's handovers in their own file")
+  -- forged: a file written by another computer than its person's (trust.own_file_ok says no) is set aside, and Health says so
+  local trust = require("trust")
+  local real = trust.own_file_ok
+  trust.own_file_ok = function(_, rel) if rel == "Song/hub/Owner.json" then return false end return true end
+  local h, _, refused = hub.home(cfg, "Song")
+  assert(h == "Mac" and refused[1] == "Owner", "the owner's handover, written by someone else's computer, doesn't count: " .. tostring(h))
+  assert(hub.line({ studio = "Desk", studio_why = "ranked", hub = "Mac", why = "home", refused = refused }, "Bo"):find("in Owner's name came from another computer", 1, true), "Health says so")
+  trust.own_file_ok = function(_, rel) if rel == "Song/session.json" then return false end return true end
+  files["R/Song/hub/Bo.json"], files["R/Song/hub/Desk.json"], files["R/Song/hub/Owner.json"] = nil, nil, nil
+  assert(hub.home(cfg, "Song") == nil, "a session.json naming a sharer whose computer didn't write it: no home (the studio hub stands in)")
+  trust.own_file_ok = function() return nil end
+  assert(hub.home(cfg, "Song") == nil and #select(3, hub.home(cfg, "Song")) == 0, "not checked yet: waits, and nothing is called forged")
+  trust.own_file_ok = real
 end
 
 print("ok hub")
