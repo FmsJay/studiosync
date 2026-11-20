@@ -3557,7 +3557,9 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
   ev.note = credit[o.oid] or bus_note(o, name, last) -- (said on every machine as it lands: sync.receive)
   if ev.note and not credit[o.oid] then band.log(ev.note) end
   if o.kind == "fx" then
-    ev.files = require("fxfiles").share(state, media, last and last.state, last and last.files, o.ptr and mirror.theirs(o.ptr, true) or nil) -- (samples, IRs, models it loads)
+    -- (samples, IRs, models it loads; and the presets REAPER shows on it from your own preset folder, looked through, never in the event:
+    -- lib/content.lua. rt)
+    ev.files = require("fxfiles").share(state .. require("content").preset_text(o.ptr, media), media, last and last.state, last and last.files, o.ptr and mirror.theirs(o.ptr, true) or nil)
     -- (the master's record too: a template's master chain is noted as theirs, lib/extras.lua. Security, Round 4 review, 0.59.49)
     ev.restless = mirror.restless_in(state)
     if ev.restless or mirror.modulated(state) then mirror.fx_knobs[rk] = knobs or mirror.fx_params(o.ptr) end
@@ -3905,6 +3907,7 @@ function W.prints(w)
     prints.begin_look() -- (each track's routing and plug-ins worked out once for all its items, not once each: 0.59.19)
     prints.watch_ara(proj) -- (a Melodyne window closed: that take gets a new print below)
     pcall(prints.release_held, proj) -- (FX held off for a part that's gone)
+    pcall(require("libraries").tick, proj, cfg) -- (which of the song's sounds and small files this computer has, once a minute: lib/libraries.lua. rt)
     -- takes become lanes, by whoever owns them (their newest change, or not sent yet). Once caught up: an old file reopened
     -- split its old comps and sent them before the band's newer versions had landed (laptop, 0.42.9)
     if require("sync").pending_events(proj, cfg, song, room) == 0 then

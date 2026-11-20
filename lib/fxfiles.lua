@@ -8,7 +8,8 @@ local fxfiles = {}
 
 -- what a plug-in loads by itself, by extension (samples, impulse responses, amp and capture models, instruments)
 fxfiles.EXT = { wav = true, flac = true, aif = true, aiff = true, mp3 = true, ogg = true, nam = true, aidax = true, json = true,
-  sfz = true, sf2 = true, ir = true }
+  sfz = true, sf2 = true, ir = true,
+  dspreset = true, vstpreset = true, aupreset = true, fxp = true, fxb = true } -- (Decent Sampler's instruments, presets: lib/content.lua, rt)
 fxfiles.MAX = 200 * 1024 * 1024 -- (bigger than this is a library, not a file to pass around)
 
 local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -88,8 +89,12 @@ function fxfiles.share(chain, media_dir, before, before_files, theirs)
   -- (by fxfiles.key, "/" for "\": a plug-in that saves its path with the other slash read as new, and was copied. Round 1 review, 0.59.45)
   if type(before) == "string" then for _, p in ipairs(fxfiles.paths(before)) do old[fxfiles.key(p)] = true end end
   for k in pairs(type(theirs) == "table" and theirs or {}) do old[k] = true end
+  local content = require("content")
   for _, path in ipairs(fxfiles.paths(chain)) do
-    local size = not old[fxfiles.key(path)] and not fxfiles.private(path) and reaper.file_exists(path) and band.size(path) or nil
+    -- (a preset in your own preset folder goes though a Mac's or Linux's is under Library or a hidden folder; then lib/content.lua's rules:
+    -- kinds, size cap, never a paid library's folder, the studio's switch. rt)
+    local size = not old[fxfiles.key(path)] and (not fxfiles.private(path) or content.preset_tail(path)) and reaper.file_exists(path) and band.size(path) or nil
+    if size and not content.may_send(path, size, media_dir) then size = nil end
     if old[fxfiles.key(path)] then
       for _, f in ipairs(type(before_files) == "table" and before_files or {}) do
         if fxfiles.safe(f) and fxfiles.key(f.path) == fxfiles.key(path) then list[#list + 1] = { path = f.path, copy = f.copy } end
@@ -138,8 +143,10 @@ end
 function fxfiles.fetch(list, media_dir, where)
   if type(list) ~= "table" then return end
   local band = require("band")
+  -- (presets go to this computer's own preset folder, where REAPER's list finds them, never to the bandmate's home folder here: lib/content.lua. rt)
+  local presets = require("content").fetch(list, media_dir)
   for _, f in ipairs(list) do
-    if fxfiles.safe(f) and not reaper.file_exists(f.path) then
+    if fxfiles.safe(f) and not presets[f.path] and not reaper.file_exists(f.path) then
       local src = media_dir .. "/" .. f.copy
       local dir = f.path:gsub("\\", "/"):match("^(.*)/[^/]+$")
       local drive = f.path:match("^(%a:)[\\/]")

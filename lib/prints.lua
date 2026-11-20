@@ -407,8 +407,14 @@ end
 -- for someone in the studio, as audio parts (James, 0.59.49: "prints only where a plug-in is missing"), or its instrument is a sample
 -- player. Cost: fewer renders and less Syncthing traffic; a part everyone can play from its notes no longer prints. Prints already on
 -- items stay, and Auto plays the notes wherever everything loads, as before.
+-- (a sampler whose state names its files prints only when someone in the studio lacks one; an opaque one as before: lib/libraries.lua. rt)
+function prints.sounds_lacking(tr, cfg)
+  local ok, r = pcall(require("libraries").lacks, tr, cfg)
+  if ok and r ~= nil then return r end
+  return prints.sample_player(tr)
+end
 function prints.midi_prints(tr, dest, cfg)
-  return prints.lacking(tr, cfg) or (dest and prints.lacking(dest, cfg)) or prints.sample_player(tr) or (dest and prints.sample_player(dest)) or false
+  return prints.lacking(tr, cfg) or (dest and prints.lacking(dest, cfg)) or prints.sounds_lacking(tr, cfg) or (dest and prints.sounds_lacking(dest, cfg)) or false
 end
 
 -- Whether a published list (plugins.lists) has the plug-in `name`: by plugins.key, in a format that loads on its system (an AU only on a

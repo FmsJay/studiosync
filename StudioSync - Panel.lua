@@ -2363,6 +2363,7 @@ local function settings_studio()
     { function() if card("studio take names") then require("recap").names_ui(ctx, ImGui, cfg, studio_admin()); card_end() end end, 360 }, -- (smart take names: James, rt)
     { function() if card("studio prefs") then require("sharedprefs").studio_ui(ctx, ImGui, cfg, studio_admin()); card_end() end end, 360 }, -- (shared preferences: James, rt)
     { function() if card("studio colours") then require("colours").parity_ui(ctx, ImGui, cfg, studio_admin()); card_end() end end, 360 }, -- (colour parity: James, rt)
+    { function() if card("studio content") then require("content").studio_ui(ctx, ImGui, cfg, studio_admin()); card_end() end end, 360 }, -- (presets and small content: lib/content.lua, rt)
     { studio_debug, 360 } }, true)
 end
 local function settings_drive()

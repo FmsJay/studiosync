@@ -382,8 +382,22 @@ lib/tools.lua EXT_WANT.
 ### New features the extension makes possible
 - **Who has which library:** fingerprints of sample libraries and kits (not just plug-in names), so prints happen
   exactly when someone lacks the sounds (replaces the sample-player name list).
+  - *Built (lib/libraries.lua):* each computer publishes `libraries/<user>.json`, hashed ids of the sounds the songs
+    use that it has (never a path or a drive listing). A sampler's MIDI part prints only when someone lacks one, for
+    the samplers whose state says what they play: ReaSamplOmatic5000 (FILE0...), and any listed sampler whose state names
+    audio files, SoundFonts, an .sfz (its samples followed) or a Decent Sampler .dspreset. Opaque, so still printed by the
+    name list as before: Kontakt/Komplete Kontrol, EZdrummer/EZkeys/EZbass, Superior Drummer, Addictive Drums/Keys, BFD,
+    Spitfire, SampleTank, HALion, Battery, JSFX file sliders (an index, not a name), and any state naming no file or a
+    vendor format. Nothing is guessed. Health lists who lacks which sound or file for the song in front.
 - **Presets and small content:** your own presets, IRs, amp captures and drum maps sent to bandmates who need them for a
   song (never plug-in binaries or paid libraries).
+  - *Built (lib/content.lua, on top of lib/fxfiles.lua's carrying):* rules for what leaves a computer (a list of kinds,
+    64 MB cap, never programs/plug-ins/scripts, nothing in a sample vendor's, sample store's or Program Files folder),
+    the studio switch (Settings > Studio, owner and admins, on by default) and a Health line. VST3 presets REAPER shows
+    (TrackFX_GetPreset's .vstpreset path, from your own preset folder) go too and land in the bandmate's own VST3 preset
+    folder (AU presets Mac to Mac), where REAPER's list finds them. Limits: a plug-in's state is never rewritten, so an
+    IR or capture reaches a bandmate's plug-in only where the same path can exist there; REAPER's own presets/*.ini
+    aren't sent (the chain carries the sound); drum maps already travel (shared drummaps/, note names in the track).
 - **Distributed bounces:** stems and mixdowns split across the computers that are idle.
 - **Record from a phone:** a singer with only a phone opens the studio's web page and records a take straight into the
   song, in time from the shared clock (browser recording), arriving fast-first-lossless-after.

@@ -269,6 +269,9 @@ function H.build_rows()
     -- (the same colours on every computer: lib/colours.lua health_row. James, rt)
     local okc, crow = pcall(require("colours").health_row, cfg, b, proj)
     if okc and crow then rows[#rows + 1] = crow end
+    -- (presets and small content, and who lacks which of the song's sounds and files: lib/content.lua, lib/libraries.lua. rt)
+    local okl, lrows = pcall(require("content").health_rows, cfg)
+    for _, r in ipairs(okl and lrows or {}) do rows[#rows + 1] = r end
   end
   -- (without them less works, quietly: onboarding review, 0.59.9)
   if not reaper.APIExists("CF_GetSWSVersion") then
