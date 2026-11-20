@@ -550,7 +550,7 @@ void rx_loop(RtLink *l)
   std::vector<unsigned char> buf(AOO_MAX_PACKET_SIZE + 64);
   while (l->run.load()) {
     const double hold = l->hold_until.load() - now_s();
-    if (hold > 0) { std::this_thread::sleep_for(std::chrono::duration<double>(std::min(hold, 0.1))); continue; } // (the socket keeps what comes meanwhile)
+    if (hold > 0) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); continue; } // (the socket keeps what comes meanwhile; short sleeps: a VM's long ones overshoot)
     sockaddr_in from{};
     socklen_t fl = sizeof(from);
     const int n = (int)recvfrom(l->s, (char *)buf.data(), (int)buf.size(), 0, (sockaddr *)&from, &fl);

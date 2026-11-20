@@ -138,8 +138,8 @@ int main()
   // ---- Wi-Fi's bursts (James, rt): the MacBook's stream flapped on every receiver against the fixed 30 ms buffer (underruns ~2/s). D sends a
   // sine to E, and E's receive thread reads nothing for 20-60 ms at a time, every 40-150 ms, from 1 s to 9 s: the packets wait in the socket
   // and come all at once, as over Wi-Fi. E's adaptive buffer grows on the first underruns and then holds: after settling (4.5 s) no more
-  // underruns, and "streaming" stays true. Then the bursts stop, D goes quiet at 10 s, and the buffer shrinks back (its timings 20x faster
-  // here: the first shrink after 0.75 s steady, then one every 0.5 s).
+  // underruns, and "streaming" stays true. Then the bursts stop, D goes quiet at 9.5 s, and the buffer shrinks back (its timings 20x faster
+  // here: the first shrink after 0.75 s steady, then one every 0.5 s; a size that underran is retried after 6 s).
   {
     const int PD = 47395, PE = 47396;
     char pd[32], pe[32];
@@ -149,7 +149,7 @@ int main()
     rt_peers(E, cfg("studio", PE, std::string("\"") + pd + "\"").c_str());
     check(rt_start(D, 0, 1, 128, 0, "127.0.0.1") == 1 && rt_start(E, 0, 1, 128, 0, "127.0.0.1") == 1, "bursts: D and E start");
     rt_test_speed(E, 20);
-    const int total = at(14.0), b_on = at(1.0), b_off = at(9.0), settled = at(4.5), quiet = at(10.0);
+    const int total = at(16.0), b_on = at(1.0), b_off = at(9.0), settled = at(4.5), quiet = at(9.5);
     std::vector<double> id(LEN), ie(LEN, 0.0), od(LEN), oe(LEN);
     const double *ind[1] = { id.data() }, *ine[1] = { ie.data() };
     double *outd[2] = { od.data(), od.data() }, *oute[2] = { oe.data(), oe.data() };
@@ -158,11 +158,29 @@ int main()
     double next_hold = 0, grown = 0;
     long long u_settled = -1, u_off = -1, n2 = 0;
     bool flapped = false, set_ok = false;
+    // (what this machine does to a 20 ms sleep: the hold is one, and the macOS CI runner is a VM with long stalls)
+    double sleep_max = 0;
+    for (int i = 0; i < 5; ++i) {
+      const auto s0 = std::chrono::steady_clock::now();
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      sleep_max = std::max(sleep_max, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count());
+    }
+    printf("     bursts: a 20 ms sleep here takes up to %.1f ms\n", sleep_max);
+    double late_max = 0; // (the test clock's own lateness since the last look: a stall of this process, not the network)
+    long long u_last = 0;
+    std::string t_last;
     const auto t1 = std::chrono::steady_clock::now();
     for (int b = 0; b < total; ++b) {
       const auto due = t1 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
       while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
+      late_max = std::max(late_max, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - due).count());
       const double now = (double)b * LEN / SR;
+      if (b % at(0.25) == 0) { // (a line whenever E's buffer for D changes or underruns: the timeline the checks below read)
+        const std::string s = rt_status(E), t = field(s, pd, "target_ms");
+        const long long u = atoll(field(s, pd, "underruns").c_str());
+        if (u != u_last || t != t_last) printf("       %5.2f s: underruns %lld, target %s ms, test clock late up to %.1f ms\n", now, u, t.c_str(), late_max);
+        u_last = u; t_last = t; late_max = 0;
+      }
       for (int k = 0; k < LEN; ++k, ++n2) id[k] = b >= at(0.5) && b < quiet ? 0.5 * sin(2 * PI * 440 * n2 / SR) : 0.0;
       if (b >= b_on && b < b_off && now >= next_hold) { const double h = rnd(20, 60); rt_test_hold(E, h); next_hold = now + h / 1000 + rnd(0.04, 0.15); }
       if (b == at(0.8)) set_ok = rt_peer_buffer(E, pd, 30, 150) == 1 && rt_peer_buffer(E, "127.0.0.1:1", 30, 150) == 0;
