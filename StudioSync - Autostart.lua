@@ -154,6 +154,7 @@ local function loop_body()
   -- each replaced one saved a kept "end of session" in the middle of a session. Mac, 0.58.45. So a look after a gap waits half a minute)
   if reaper.time_precise() - at > 10 then held_until = reaper.time_precise() + 30 end
   at = reaper.time_precise()
+  reaper.SetExtState(band.SECTION, "autostart beat", tostring(at), false) -- (Health says when Autostart stopped: lib/compat.lua. James, rt)
   -- the hidden REAPER that renders prints (lib/bgrender.lua) opens a copy from bandsync-render: nothing to do there
   for i = 0, 64 do
     local p, fn = reaper.EnumProjects(i)

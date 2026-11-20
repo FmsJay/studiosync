@@ -1608,7 +1608,7 @@ function band.capture_settings(proj)
     if ok then s[k] = v end
   end
   for _, k in ipairs(band.PROJECT_NUM) do s[k] = round6(gp(proj, k, 0, false)) end
-  if reaper.GetSetProjectGrid then
+  if reaper.GetSetProjectGrid and not require("compat").grid_local() then -- (not while a script changes it as you zoom: lib/compat.lua)
     local _, div, swing, amt = reaper.GetSetProjectGrid(proj, false)
     if div then s.grid = { round6(div), math.floor(tonumber(swing) or 0), round6(amt) } end
   end
@@ -1634,7 +1634,7 @@ function band.apply_settings(proj, s)
     local v = tonumber(s[k])
     if v and v >= 0 and math.abs(gp(proj, k, 0, false) - v) > 1e-6 then gp(proj, k, v, true) end
   end
-  if type(s.grid) == "table" and tonumber(s.grid[1]) and reaper.GetSetProjectGrid then
+  if type(s.grid) == "table" and tonumber(s.grid[1]) and reaper.GetSetProjectGrid and not require("compat").grid_local() then
     local _, div, swing, amt = reaper.GetSetProjectGrid(proj, false)
     local w = { tonumber(s.grid[1]), math.tointeger(tonumber(s.grid[2])) or 0, tonumber(s.grid[3]) or 0 }
     if w[1] > 0 and (round6(div) ~= round6(w[1]) or math.floor(tonumber(swing) or 0) ~= w[2] or round6(amt) ~= round6(w[3])) then

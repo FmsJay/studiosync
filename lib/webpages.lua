@@ -92,6 +92,11 @@ end
 function webpages.action(proj, cfg, b, a)
   local now = reaper.time_precise()
   if a.want then S.want[a.topic], S.at[a.topic] = now + webpages.WANT_FOR, -math.huge end
+  if a.topic == "health" and a.compat == true then -- (the page's Check other scripts now: a look only, at most every 10 s, by Live sync. lib/compat.lua)
+    reaper.SetExtState(band.SECTION, "compat check now", "1", false)
+    S.at.health = -math.huge
+    return "checking other scripts and extensions, from the web page"
+  end
   if a.topic ~= "play" then return end
   if type(a.mate) == "string" then -- (Follow a bandmate, as the panel's Follow on their card: only someone this room has. lib/follow.lua)
     local key = "follow " .. tostring(proj)

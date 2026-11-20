@@ -3596,6 +3596,7 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
     if #files > 0 then ev.files = files end
   end
   local id = sync.post(cfg, song, room, ev)
+  pcall(require("compat").sent, proj, o.oid, name, o.kind, o.ptr, ev.auto) -- (changed again right after a bandmate's change, or by itself: lib/compat.lua)
   require("streams").offer_media(cfg, song, room, media, ev, last) -- (the media it newly names, to whoever's here over the direct link too. James, rt)
   if o.kind == "fx" and o.ptr then mirror.fx_quiet[rk], mirror.fx_quiet_presets[rk] = mirror.fx_params(o.ptr), mirror.fx_presets(o.ptr); knobs_agreed(proj, o, rk) end -- (what it's changed from, next time)
   remember(proj, o.oid, ev.rev, o.hash, id, mirror.order_of(ev))

@@ -1426,6 +1426,7 @@ tick = function()
   if open and reaper.ValidatePtr2(0, proj, "ReaProject*") then took_in() end -- (what this tick changed was StudioSync's, not you editing)
   if open and reaper.ValidatePtr2(0, proj, "ReaProject*") then band.try("controllers.settle", require("controllers").settle, proj) end -- (and not a fader move of yours)
   local took = reaper.time_precise() - t0
+  if open and reaper.ValidatePtr2(0, proj, "ReaProject*") then band.try("compat.tick", require("compat").tick, proj, cfg, b, t0, took) end -- (other scripts and extensions: lib/compat.lua. James, rt)
   if took > 0.15 then
     lap("rest")
     reaper.SetExtState(band.SECTION, "slow tick " .. key, string.format("%.0f ms at %s: %s", took * 1000, os.date("%H:%M:%S"), laps_text()), false)

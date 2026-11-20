@@ -82,6 +82,20 @@ function startup.on_quit()
   set_open_mode(startup.no_open(was))
 end
 
+-- A plan kept, and REAPER's "open projects on startup" changed by something else meanwhile (a settings tool, a persona, a hand in
+-- Preferences): REAPER would open the songs itself at its next start, with its boxes up. Their choice is kept in the plan for after, and the
+-- setting held again. -> the value it found, or nil when all was as it should be. (lib/compat.lua's check. James, rt)
+function startup.keep_open_mode()
+  local plan = usable() and band.read_json(FILE)
+  if type(plan) ~= "table" then return nil end
+  local now = reaper.SNM_GetIntConfigVar("loadlastproj", -1)
+  if now < 0 or now % 8 == 2 then return nil end
+  plan.loadlastproj = now
+  band.write_json(FILE, plan)
+  set_open_mode(startup.no_open(now))
+  return now
+end
+
 local HELPER = [==[
 param([string]$BandTab, [string]$Done, [string]$Said)
 Add-Type -Name W -Namespace StudioSync -MemberDefinition @"

@@ -247,6 +247,10 @@ function H.build_rows()
     local okh, hrows = pcall(require("rthealth").rows, cfg, b, proj)
     for _, r in ipairs(okh and hrows or {}) do rows[#rows + 1] = r end
   end
+  do -- other scripts and extensions: StudioSync's own hooks, scripts known to clash, what changed what it wrote (lib/compat.lua. James, rt)
+    local okx, xrows = pcall(require("compat").rows, cfg, b, proj)
+    for _, r in ipairs(okx and xrows or {}) do rows[#rows + 1] = r end
+  end
   if view.newer then rows[#rows + 1] = { "update " .. view.newer, false, "yellow", "", "StudioSync " .. view.newer .. " is in use in the studio; you have " .. band.VERSION .. ": " .. require("live").PLACES.update .. "." } end
   pcall(require("drive").root, cfg) -- (what it says next is about the group it last looked at: this tab's, then. Mac, 0.51.12)
   local dmiss = reaper.GetExtState(band.SECTION, "drive_root") ~= "off" and require("drive").missing
@@ -361,6 +365,10 @@ function H.maint_health()
           if ImGui.SmallButton(ctx, r.action[1]) then r.action[2](); H.maint_at = 0 end
           ImGui.SetItemTooltip(ctx, r.action[3])
           ImGui.SameLine(ctx)
+        end
+        if ok and r.ok_action then -- (a green row's own button: lib/compat.lua's Check again)
+          if ImGui.SmallButton(ctx, r.ok_action[1]) then r.ok_action[2](); H.maint_at = 0 end
+          ImGui.SetItemTooltip(ctx, r.ok_action[3])
         end
         if not ok and r[1] == "keys" then
           if ImGui.SmallButton(ctx, "Set " .. require("undo").key_name()) then require("undo").bind_keys(dir); H.maint_at = 0 end

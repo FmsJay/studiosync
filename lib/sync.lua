@@ -1144,7 +1144,11 @@ function sync.watch_timeline(proj, cfg, song, room, can)
     local was = seen ~= "" and band.json_decode(seen)
     if not (type(was) == "table" and tempo_sig(was[1]) == tempo_sig(band.capture_tempo(proj))) then require("mirror").tempo_changed(proj) end
     if seen ~= "" then
-      if can(me, nil, nil) then -- the song's timeline is the driver's
+      -- (another script's doing: the grid turning this computer's own is no change; a ReaPersona persona switch is put back. lib/compat.lua, James, rt)
+      local okv, veto = pcall(require("compat").timeline_veto, proj, seen, sig)
+      veto = okv and veto or nil
+      if veto == "quiet" then -- (nothing to send or put back: "seen" takes it below)
+      elseif can(me, nil, nil) and not veto then -- the song's timeline is the driver's
         local tempo, markers = band.capture_tempo(proj), band.capture_markers(proj)
         local tev = { type = "timeline", tempo = tempo, markers = markers, project = band.capture_project(proj) }
         sync.post(cfg, song, room, tev, proj) -- (proj: without it no order was set, 0.58.93's fix never applied. Review, 0.58.95)
@@ -1184,7 +1188,7 @@ function sync.watch_timeline(proj, cfg, song, room, can)
           reaper.Undo_EndBlock2(proj, "StudioSync: put the studio's tempo map and markers back", -1)
           if not ok then error(e, 0) end
           sig = timeline_sig(proj)
-          sync.put_back("Not sent: only the driver changes the tempo, markers and project settings. Take control, or ask them to set Who controls to Anyone")
+          sync.put_back(veto or "Not sent: only the driver changes the tempo, markers and project settings. Take control, or ask them to set Who controls to Anyone")
         else
           band.log("tempo or markers changed here, but only the driver's changes go to the others (Take control first)")
         end
@@ -1469,6 +1473,7 @@ function sync.receive(proj, cfg, song, room, can)
         -- XT Drums A" was logged for an edit that never landed. Cross test, James, rt)
         local theirs = ev.user ~= cfg.user and not (obj and require("mirror").dropped) -- (your own changes come back too: they aren't "from the band")
         if theirs then applied = applied + 1 end
+        if theirs and (obj or ev.type == "timeline") then pcall(require("compat").landed, proj, obj and ev.oid or "timeline") end -- (a change here to it soon after: lib/compat.lua)
         local what = ({ timeline = "changed the tempo map / markers",
           start = (ev.rec and "record" or "play") .. " together at " .. tostring(ev.pos), stop = "stop together",
           note = "note: " .. tostring(ev.text), like = "liked " .. tostring(ev.take or (ev.track and ("a part on " .. ev.track)) or "a part"),
