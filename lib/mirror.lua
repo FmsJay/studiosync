@@ -1811,7 +1811,11 @@ function mirror.restore_unsent(proj, by_oid, media, local_mix)
     end
   end
   if next(list) == nil then mirror.restoring[key] = nil end
-  if n > 0 then require("band").log(string.format("REAPER stopped before %d change(s) of yours went out: they're back in the project and go out now", n)) end
+  if n > 0 then
+    local held = select(2, reaper.GetProjExtState(proj, require("band").SECTION, "hold")) ~= ""
+    require("band").log(string.format("REAPER stopped before %d change(s) of yours went out: they're back in the project %s", n,
+      held and "and stay held until you let them go (Hold my changes)" or "and go out now"))
+  end
   return n
 end
 function mirror.drop_stash(proj)
