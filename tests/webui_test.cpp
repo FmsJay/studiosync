@@ -18,6 +18,7 @@
 #define mkdir_(p) mkdir(p, 0755)
 #endif
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -110,6 +111,18 @@ static void pure_tests()
         "the cookie: in");
   CHECK(webui_auth(req(("GET / HTTP/1.1\r\nHost: pc.ts.net:47281\r\nCookie: ss_webui=" + tok + "\r\n\r\n").c_str()), false, "", P, sc) == 403,
         "a studio with no secret: nobody from outside");
+  // `tailscale serve` on this computer (the https address a phone's microphone needs): loopback, but from the tailnet, so the token's rules
+  const char *fw = "Host: pc.ts.net:8443\r\nX-Forwarded-Host: pc.ts.net:8443\r\nX-Forwarded-Proto: https\r\nX-Forwarded-For: 100.64.0.9\r\n";
+  CHECK(webui_auth(req((std::string("GET / HTTP/1.1\r\n") + fw + "\r\n").c_str()), true, tok, P, sc) == 403 &&
+        webui_auth(req("GET / HTTP/1.1\r\nHost: 127.0.0.1:47281\r\nX-Forwarded-For: 100.64.0.9\r\n\r\n"), true, tok, P, sc) == 403,
+        "through the proxy without a token: no (even naming 127.0.0.1)");
+  CHECK(webui_auth(req(("GET /record.html?t=" + tok + " HTTP/1.1\r\n" + fw + "\r\n").c_str()), true, tok, P, sc) == 0 && sc,
+        "through the proxy with the token: in");
+  CHECK(webui_auth(req(("POST /api/upload HTTP/1.1\r\n" + std::string(fw) + "X-StudioSync: 1\r\nOrigin: https://pc.ts.net:8443\r\nCookie: ss_webui=" + tok + "\r\n\r\n").c_str()), true, tok, P, sc) == 0 &&
+        webui_auth(req(("POST /api/upload HTTP/1.1\r\nHost: 127.0.0.1:47281\r\nX-Forwarded-Host: pc.ts.net:8443\r\nX-StudioSync: 1\r\nOrigin: https://pc.ts.net:8443\r\nCookie: ss_webui=" + tok + "\r\n\r\n").c_str()), true, tok, P, sc) == 0,
+        "its https:// Origin: yes (Host kept, or rewritten with X-Forwarded-Host)");
+  CHECK(webui_auth(req(("POST /api/upload HTTP/1.1\r\n" + std::string(fw) + "X-StudioSync: 1\r\nOrigin: https://evil.example\r\nCookie: ss_webui=" + tok + "\r\n\r\n").c_str()), true, tok, P, sc) == 403,
+        "another site's https:// Origin: no");
 }
 
 int main()
@@ -213,6 +226,35 @@ int main()
   }
   r = get(link, "/api/status", th, ck);
   CHECK(code(r) == 404, "an unknown API path: 404");
+
+  // a phone's take (lib/phonerec.lua): the link's clock, then the recording up and saved where Lua says
+  r = get(link, "/api/time", th, ck);
+  CHECK(code(r) == 200 && fabs(atof(body(r).c_str() + 7) - direct_now()) < 1.0, "/api/time: the link's clock");
+  std::string take(300000, '\0');
+  for (size_t i = 0; i < take.size(); ++i) take[i] = (char)(i * 7);
+  const std::string up = "POST /api/upload HTTP/1.1\r\nHost: " + th + "\r\n" + ck + "X-StudioSync: 1\r\nContent-Length: ";
+  CHECK(code(ask(link, up.substr(0, up.find("X-StudioSync")) + "Content-Length: 3\r\n\r\nabc")) == 403, "an upload without X-StudioSync: refused");
+  CHECK(code(ask(link, up + "999999999\r\n\r\nx")) == 413, "an upload over the limit: 413");
+  r = ask(link, up + std::to_string(take.size()) + "\r\n\r\n" + take);
+  const size_t idat = body(r).find("\"id\":\"");
+  const std::string id = idat == std::string::npos ? "" : body(r).substr(idat + 6, 16);
+  CHECK(code(r) == 200 && id.size() == 16, "an upload: kept, with an id");
+  const std::string saved = dir + "/take.wav";
+  CHECK(webui_save_upload("nope", saved.c_str()) == 0, "an unknown id: nothing");
+  CHECK(webui_save_upload(id.c_str(), (dir + "/no/such/folder/t.wav").c_str()) == -1, "a path that can't be written: -1");
+  CHECK(webui_save_upload(id.c_str(), saved.c_str()) == (int)take.size(), "and kept for another try: saved");
+  {
+    FILE *f = fopen(saved.c_str(), "rb");
+    std::string back;
+    char b[65536];
+    size_t k;
+    while (f && (k = fread(b, 1, sizeof b, f)) > 0) back.append(b, k);
+    if (f) fclose(f);
+    CHECK(back == take, "byte for byte");
+  }
+  CHECK(webui_save_upload(id.c_str(), saved.c_str()) == 0, "and let go once saved");
+  for (int i = 0; i < 3; ++i) ask(link, up + "5\r\n\r\nhello");
+  CHECK(std::string(webui_status()).find("listening") != std::string::npos, "three more: the oldest let go, the server fine");
   const std::string st = webui_status();
   CHECK(st.find("\"listening\":true") != std::string::npos && st.find("\"token\":\"" + tok + "\"") != std::string::npos, "status says listening, with the token");
 

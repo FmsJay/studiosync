@@ -1,0 +1,63 @@
+<!doctype html>
+<!-- StudioSync's Record page (lib/phonerec.lua, record.js): a take from this phone, straight into the song, in time. GPL-3.0-or-later. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>StudioSync: Record</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="record.css">
+<script src="record.js" defer></script>
+</head>
+<body>
+<header>
+  <div class="title">
+    <strong>Record</strong>
+    <span id="where" class="dim"></span>
+  </div>
+  <span id="conn" class="conn" role="status">connecting</span>
+  <a href="./" class="conn">Back</a>
+</header>
+<section id="rec" aria-labelledby="rec-h">
+  <h2 id="rec-h">A take from a phone</h2>
+  <div id="insecure" class="note" hidden>
+    <p>The browser lets a page use the microphone only on a secure (https) page, and this address isn't one.</p>
+    <p id="securelink" hidden><a id="securea" href="#">Open the secure Record page</a></p>
+  </div>
+  <div id="phone" class="note" hidden>
+    <p class="small">On a phone with Tailscale: <a id="phonea" href="#">the secure Record page</a> <button id="copy" type="button">Copy link</button></p>
+    <p class="dim small">That https address needs <code>tailscale serve</code> set up once on the computer in the studio (its own port, 8443: anything
+      already served stays as it is), and HTTPS certificates on for the tailnet.</p>
+    <button id="setup" type="button">Set up the secure link</button>
+  </div>
+  <div id="older" class="note bad" hidden>The computer's StudioSync extension is older: update it to record from a phone.</div>
+  <label for="track">Track</label>
+  <select id="track"></select>
+  <p id="trackwhy" class="dim small"></p>
+  <label for="singer">Your name (for the take's name)</label>
+  <input id="singer" maxlength="32" autocomplete="name" enterkeyhint="done">
+  <label for="bars">Count-in</label>
+  <select id="bars">
+    <option value="0">none</option><option value="1" selected>1 bar</option><option value="2">2 bars</option>
+  </select>
+  <div id="big" class="big" aria-live="polite">
+    <div id="pos" class="pos">0:00.0</div>
+    <div id="state" class="dim">stopped</div>
+  </div>
+  <div class="row">
+    <button id="go" type="button" class="recbtn">Record</button>
+    <button id="stop" type="button" hidden>Stop</button>
+    <button id="again" type="button" hidden>Send again</button>
+  </div>
+  <p id="msg" class="small" role="status"></p>
+  <div id="nudge" class="row" hidden>
+    <span class="dim small">Sounds early or late? Move it:</span>
+    <button type="button" data-ms="-20">-20 ms</button><button type="button" data-ms="-5">-5</button>
+    <button type="button" data-ms="5">+5</button><button type="button" data-ms="20">+20 ms</button>
+  </div>
+  <p class="dim small">Listen to the computer playing the song (its speakers, or headphones from it) and sing along. The take goes in where
+    the song was when this phone heard it: the timing is measured, not perfect, hence the nudge. Nothing is sent until you press Stop.</p>
+</section>
+</body>
+</html>

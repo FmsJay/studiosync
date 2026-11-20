@@ -63,6 +63,13 @@ function dawview.may_transport(mode, user, driver, may_manage)
   if mode == "admins" then return user == driver or may_manage == true end
   return true
 end
+-- That rule for this computer's user in the room now (who: sync.authority's second answer; read here when nil). -> nil when they may, or why
+-- not in words. The Song page's Play/Stop and the Play page's Play/Record/Stop together (lib/webpages.lua) both ask it.
+function dawview.transport_refusal(cfg, b, who)
+  who = who or select(2, require("sync").authority(cfg, b.song, b.room))
+  if dawview.may_transport(who.mode, cfg.user, who.driver, require("groups").may_manage(cfg.root, cfg.user)) then return nil end
+  return who.mode == "admins" and "only the driver and admins start and stop" or "only the driver starts and stops"
+end
 
 -- raw (the reader's, below): { key, len, tracks = { { name, rgb, depth, folder, mute, solo, items = { { pos, len, rgb, mute, name, midi,
 -- peaks, notes, nh } } } }, markers = { { pos, rend, name, rgb, region } }, bars, sigs, tempo, grid }
@@ -344,15 +351,12 @@ function dawview.action(proj, cfg, b, a)
   if d.want and d.history then S.hist_until = now + dawview.WANT_FOR end
   if d.want and not d.history then S.hist_until = -math.huge end
   if d.play then
-    local sync = require("sync")
-    local _, who = sync.authority(cfg, b.song, b.room)
-    local may = dawview.may_transport(who.mode, cfg.user, who.driver, require("groups").may_manage(cfg.root, cfg.user))
-    if not may then return "the web page's " .. (d.play == "start" and "Play" or "Stop") .. " together was refused: " .. (who.mode == "admins" and "only the driver and admins start and stop" or "only the driver starts and stops") .. " in this room" end
+    local why = dawview.transport_refusal(cfg, b)
+    if why then return "the web page's " .. (d.play == "start" and "Play" or "Stop") .. " together was refused: " .. why .. " in this room" end
     local together = require("together")
     if d.play == "start" then
-      local pos = reaper.GetCursorPositionEx(proj)
       -- (as the panel's Play together with its defaults: from the edit cursor, a bar's count-in with the click)
-      together.go(proj, cfg, b, { type = "start", pos = pos, countin = together.bars_before(proj, pos, 1), click = true, lag = 0, lead = cfg.user })
+      together.start(proj, cfg, b, reaper.GetCursorPositionEx(proj), false, 1, true, 0)
       return "Play together, from the web page"
     end
     together.go(proj, cfg, b, { type = "stop" })

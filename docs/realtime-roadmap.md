@@ -401,6 +401,21 @@ lib/tools.lua EXT_WANT.
 - **Distributed bounces:** stems and mixdowns split across the computers that are idle.
 - **Record from a phone:** a singer with only a phone opens the studio's web page and records a take straight into the
   song, in time from the shared clock (browser recording), arriving fast-first-lossless-after.
+  - **Built (rt, 2026-11-19; not run in REAPER or on a phone yet):** the web UI's Record page (`lib/webui/record.html`, `record.js`,
+    `record.css`, `recworklet.js`; a Record link in the header) and `lib/phonerec.lua` (wired into `lib/webui.lua`: action and tick).
+    Pick a track this computer's user may record on (sync.authority, as the panel), Record: the phone captures through an AudioWorklet
+    (32-bit float mono WAV, lossless; MediaRecorder's compressed file where there's none, and it says so) while this computer plays the
+    song (Play together with a bar's count-in, this computer alone where the room's rules say so, or a start already coming is joined);
+    at Stop the take goes up (POST `/api/upload`, `StudioSync_WebUISaveUpload` writes it beside the project's recordings) and in, as a
+    real item, named "<section> - <singer> - take N" (recap's naming), and out to the band through mirror like any new item.
+    Timing: the page's clock against the link clock (GET `/api/time`, quickest of 8 round trips), its first sample's moment from the audio
+    context's timestamps less the reported input latency; here, the play position read beside the link clock every tick while the page is
+    open, the median over the stretch. Expect 10-30 ms at home (the page says its estimate); a nudge (+/-5, 20 ms) moves it after.
+    Secure page for the microphone: `tailscale serve --bg --https=8443 http://127.0.0.1:47281` (a button on the page runs it; 8443 so
+    port 443's hub stays), and the server asks proxied loopback requests (X-Forwarded-*) for the token and takes their https Origin.
+    Not yet: the fast copy first (one lossless upload, at Stop), the phone hearing the song itself (the singer listens to this computer),
+    a band Record together started from the phone (it starts Play together: Record would stop on REAPER's warning where nothing's armed).
+    Tests: `tests/test_0_60_rt_phonerec.lua`, `tests/webui_test.cpp` (proxy, clock, upload).
 - **Crash-safe sessions:** the extension keeps the last unsent changes safe even if REAPER crashes mid-session.
   **Built in Lua (2026-11-19; offline tests only, tests/test_0_60_rt_crashsafe.lua, not run in REAPER yet):** what's changed and not
   yet gone out (plug-ins settling or waiting for the stop, Hold my changes, a copy still going) is kept beside the project in

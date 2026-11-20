@@ -40,6 +40,7 @@ typedef int sock_t;
 #include <cstring>
 #include <deque>
 #include <mutex>
+#include <random>
 #include <set>
 #include <thread>
 #include "direct.h"
@@ -162,9 +163,14 @@ int webui_auth(const WebReq &r, bool local, const std::string &token, int port, 
 {
   set_cookie = false;
   const std::string host = header(r, "host"), origin = header(r, "origin");
+  // (a proxy on this computer: `tailscale serve` giving the pages an https:// address, which a phone's browser wants before a page may use
+  // the microphone (lib/phonerec.lua). What it hands over came from the tailnet, so it needs the token as the link's port does)
+  const std::string fwd_host = header(r, "x-forwarded-host");
+  const bool proxied = !fwd_host.empty() || !header(r, "x-forwarded-for").empty() || !header(r, "x-forwarded-proto").empty();
   if (r.method == "POST" && header(r, "x-studiosync") != "1") return 403;
-  if (!origin.empty() && origin != "http://" + host) return 403; // (a page from anywhere else, asking with the visitor's cookie)
-  if (local) {
+  if (!origin.empty() && origin != "http://" + host && origin != "https://" + host && !(proxied && origin == "https://" + fwd_host))
+    return 403; // (a page from anywhere else, asking with the visitor's cookie)
+  if (local && !proxied) {
     char a[48], b[48];
     snprintf(a, sizeof(a), "127.0.0.1:%d", port);
     snprintf(b, sizeof(b), "localhost:%d", port);
@@ -199,6 +205,11 @@ std::thread g_lthr;
 struct ExitGuard { ~ExitGuard() { if (g_lthr.joinable()) g_lthr.detach(); } } g_exit_guard; // (as direct.cpp's: REAPER exiting without unload)
 const int MAX_CLIENTS = 16;
 const size_t MAX_HEAD = 16 * 1024, MAX_BODY = 16 * 1024, MAX_FILE = 4 * 1024 * 1024, MAX_ACTIONS = 64, MAX_TOPIC = 1024 * 1024;
+// A phone's take (lib/phonerec.lua): the recording, held until Lua saves it where the song wants it. 160 MB is 14 minutes of 48 kHz mono
+// 32-bit float; two at most, the oldest let go (a page whose take is never placed can't fill memory).
+const size_t MAX_UPLOAD = 160u * 1024 * 1024, MAX_UPLOADS = 2;
+std::map<std::string, std::string> g_uploads; // id -> the bytes
+std::deque<std::string> g_upload_order;
 
 double now_s() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 bool topic_ok(const char *t)
@@ -346,6 +357,33 @@ void events(sock_t s)
   }
 }
 
+// A phone's take, its raw bytes (Content-Length, no more than MAX_UPLOAD): kept under a new id for StudioSync_WebUISaveUpload. -> { ok, id }
+void upload(sock_t s, const WebReq &r, std::string body)
+{
+  const std::string cl = header(r, "content-length");
+  const long long n = cl.empty() || cl.size() > 12 || cl.find_first_not_of("0123456789") != std::string::npos ? -1 : atoll(cl.c_str());
+  if (n <= 0 || (size_t)n > MAX_UPLOAD) return answer(s, 413, "application/json", "{\"ok\":false,\"why\":\"too big\"}");
+  set_blocking(s, 30000); // (a phone on a slow connection: 30 s without a byte is a phone that's gone)
+  body.reserve((size_t)n);
+  std::string chunk(65536, '\0');
+  while (body.size() < (size_t)n) {
+    const int k = (int)recv(s, &chunk[0], (int)chunk.size(), 0);
+    if (k <= 0) return;
+    body.append(chunk.data(), (size_t)k);
+  }
+  body.resize((size_t)n);
+  static std::random_device rd;
+  char id[24];
+  snprintf(id, sizeof(id), "%08x%08x", (unsigned)rd(), (unsigned)rd());
+  {
+    std::lock_guard<std::mutex> l(g_mx);
+    while (g_upload_order.size() >= MAX_UPLOADS) { g_uploads.erase(g_upload_order.front()); g_upload_order.pop_front(); }
+    g_uploads[id] = std::move(body);
+    g_upload_order.push_back(id);
+  }
+  answer(s, 200, "application/json", std::string("{\"ok\":true,\"id\":\"") + id + "\"}");
+}
+
 void handle(sock_t s, std::string buf, bool local)
 {
   set_blocking(s, 5000);
@@ -370,6 +408,7 @@ void handle(sock_t s, std::string buf, bool local)
   { std::lock_guard<std::mutex> l(g_mx); ++g_served; }
   if (set_cookie) // (the token goes into a cookie and out of the address bar)
     return answer(s, 303, "text/plain", "", "Location: " + r.path + "\r\nSet-Cookie: ss_webui=" + token + "; Path=/; Max-Age=2592000; HttpOnly; SameSite=Strict\r\n");
+  if (r.method == "POST" && r.path == "/api/upload") return upload(s, r, buf.substr(end + 4));
   if (r.method == "POST") {
     if (r.path != "/api/action") return answer(s, 404, "text/plain", "not found\n");
     const std::string cl = header(r, "content-length");
@@ -392,6 +431,11 @@ void handle(sock_t s, std::string buf, bool local)
   }
   if (r.method != "GET") return answer(s, 405, "text/plain", "GET or POST\n");
   if (r.path == "/api/events") return events(s);
+  if (r.path == "/api/time") { // (the link's clock, StudioSync_DirectNow's: a phone's page measures its offset against it, NTP's way. lib/phonerec.lua)
+    char t[64];
+    snprintf(t, sizeof(t), "{\"now\":%.6f}", direct_now());
+    return answer(s, 200, "application/json", t);
+  }
   if (r.path == "/api/state") {
     std::string snap;
     { std::lock_guard<std::mutex> l(g_mx); snap = snapshot_locked(); }
@@ -550,6 +594,34 @@ const char *webui_status()
   return g_status_out.c_str();
 }
 
+int webui_save_upload(const char *id, const char *path)
+{
+  if (!id || !path || !*path) return 0;
+  std::string data;
+  {
+    std::lock_guard<std::mutex> l(g_mx);
+    auto it = g_uploads.find(id);
+    if (it == g_uploads.end()) return 0;
+    data.swap(it->second);
+  }
+#ifdef _WIN32
+  const int n = MultiByteToWideChar(CP_UTF8, 0, path, -1, nullptr, 0);
+  std::wstring w(n > 0 ? n : 1, L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, path, -1, &w[0], n);
+  FILE *f = _wfopen(w.c_str(), L"wb");
+#else
+  FILE *f = fopen(path, "wb");
+#endif
+  bool ok = f && fwrite(data.data(), 1, data.size(), f) == data.size();
+  if (f && fclose(f) != 0) ok = false;
+  std::lock_guard<std::mutex> l(g_mx);
+  auto it = g_uploads.find(id);
+  if (!ok) { if (it != g_uploads.end()) it->second.swap(data); return -1; } // (kept for another try: the take isn't lost to a full disk)
+  if (it != g_uploads.end()) g_uploads.erase(it);
+  g_upload_order.erase(std::remove(g_upload_order.begin(), g_upload_order.end(), std::string(id)), g_upload_order.end());
+  return data.size() > 0x7fffffff ? 0x7fffffff : (int)data.size();
+}
+
 void webui_shutdown()
 {
   direct_set_http_handler(nullptr);
@@ -570,6 +642,8 @@ void webui_shutdown()
     g_topics.clear();
     g_topic_ver.clear();
     g_actions.clear();
+    g_uploads.clear();
+    g_upload_order.clear();
   }
 #ifdef _WIN32
   if (g_wsa) { WSACleanup(); g_wsa = false; }
@@ -583,7 +657,9 @@ static int api_start(const char *folder, const char *secret, int port) { return 
 static void api_publish(const char *topic, const char *json) { webui_publish(topic, json); }
 static const char *api_poll() { return webui_poll(); }
 static const char *api_status() { return webui_status(); }
+static int api_save_upload(const char *id, const char *path) { return webui_save_upload(id, path); }
 #define S_(i) (n > (i) ? (const char *)a[i] : nullptr)
+static void *va_save_upload(void **a, int n) { return (void *)(INT_PTR)api_save_upload(S_(0), S_(1)); }
 static void *va_start_(void **a, int n) { return (void *)(INT_PTR)api_start(S_(0), S_(1), n > 2 ? (int)(INT_PTR)a[2] : 0); }
 static void *va_publish(void **a, int n) { api_publish(S_(0), S_(1)); return nullptr; }
 static void *va_poll(void **, int) { return (void *)api_poll(); }
@@ -603,6 +679,10 @@ void webui_register(reaper_plugin_info_t *rec)
       "const char*\0\0\0The oldest action the web UI's pages sent (a JSON object), or \"\". Each is handed out once." },
     { "StudioSync_WebUIStatus", (void *)api_status, (void *)va_status,
       "const char*\0\0\0The web UI server's state, as JSON: listening, bind, port, error, token, clients, served, refused." },
+    { "StudioSync_WebUISaveUpload", (void *)api_save_upload, (void *)va_save_upload,
+      "int\0const char*,const char*\0id,path\0"
+      "A take a page uploaded (POST /api/upload's id), written to `path` and let go. Returns its bytes; 0 no such upload; -1 couldn't write "
+      "(it's kept for another try)." },
   };
   char key[96];
   for (const auto &f : fns) {

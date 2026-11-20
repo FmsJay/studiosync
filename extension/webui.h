@@ -17,6 +17,9 @@ int webui_start(const char *folder, const char *secret, int port, const char *bi
 void webui_publish(const char *topic, const char *json); // the latest state of a topic ([a-z][a-z0-9_-]{0,31}), JSON text
 const char *webui_poll();   // the oldest action a page sent (its JSON body), or "" (consuming: one engine takes each)
 const char *webui_status(); // JSON: { listening, bind, port, error, token, clients, served, refused }
+// A phone's take that a page sent as POST /api/upload (its answer's id), written to path and let go. -> bytes; 0 no such upload; -1 couldn't
+// write it (kept for another try). lib/phonerec.lua
+int webui_save_upload(const char *id, const char *path);
 void webui_shutdown();
 
 // ---- the pure parts (tests/webui_test.cpp) ----------------------------------------------------------------------------------------------
@@ -34,7 +37,8 @@ std::string webui_param(const std::string &query, const std::string &name);  // 
 std::string webui_cookie(const std::string &header, const std::string &name); // a cookie's value from a Cookie header ("" when absent)
 // May this request in? local: it came in on the loopback listener. 0 yes; 403 no. set_cookie: it carried the token as ?t= (the answer
 // sets the cookie and sends the browser to the same page without it). Local ones must name this computer as Host (a web page elsewhere
-// that points its own name at 127.0.0.1 gets no further); every POST must carry X-StudioSync (a form on another site can't add it).
+// that points its own name at 127.0.0.1 gets no further); every POST must carry X-StudioSync (a form on another site can't add it). A
+// local one a proxy handed over (X-Forwarded-*: `tailscale serve`, the pages' https address) needs the token, and may come from https://.
 int webui_auth(const WebReq &r, bool local, const std::string &token, int port, bool &set_cookie);
 
 #ifndef WEBUI_STANDALONE

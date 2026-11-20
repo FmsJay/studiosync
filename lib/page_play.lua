@@ -267,17 +267,7 @@ end
 
 local function go(ev) together.go(E.proj(), E.cfg(), E.b(), ev) end -- post it for the band, and fire it here through our own Live sync
 local start_from, click_on, side_bars_edit = 0, true, 2 -- start_from: 0 = edit cursor, n = the nth region
-local function regions()
-  local b, cfg, proj, view, wide, who = E.b(), E.cfg(), E.proj(), E.view(), E.wide(), E.who()
-  local out, i = {}, 0
-  while true do
-    local ok, isrgn, p, e, name = reaper.EnumProjectMarkers3(proj, i)
-    if ok == 0 then break end
-    if isrgn then out[#out + 1] = { name = name ~= "" and name or ("region " .. (#out + 1)), pos = p } end
-    i = i + 1
-  end
-  return out
-end
+local function regions() return together.regions(E.proj()) end
 function M.section_together()
   local b, cfg, proj, view, wide, who = E.b(), E.cfg(), E.proj(), E.view(), E.wide(), E.who()
   together.tick()
@@ -351,10 +341,7 @@ function M.start_together(play_along)
     ImGui.SetItemTooltip(ctx, "Time-sync only: the others start this many bars after you\n(one NINJAM interval), so what they hear of you lines up.\nLeave 0 for everything else.")
   end
   local pos = start_from > 0 and rg[start_from].pos or reaper.GetCursorPositionEx(proj)
-  local function start(rec)
-    go({ type = "start", rec = rec or nil, pos = pos, countin = together.bars_before(proj, pos, countin), click = click_on or nil,
-      lag = together.bars_after(proj, pos, play_along and lag_bars or 0), lead = cfg.user })
-  end
+  local function start(rec) together.start(proj, cfg, b, pos, rec, countin, click_on, play_along and lag_bars or 0) end
   if ImGui.Button(ctx, "Play together") then start(false) end
   next_to("Record together")
   if ImGui.Button(ctx, "Record together") then start(true) end

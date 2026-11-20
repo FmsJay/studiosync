@@ -592,10 +592,7 @@ local function bar_span(from, to)
   local a, z = bar_num(from + 1e-6), bar_num(to - 1e-6)
   return a == z and ("bar " .. a) or ("bars " .. a .. "-" .. z)
 end
-local function bar_of(pos) -- "5", or "5 beat 3" off the bar line
-  local bar, beat = reaper.format_timestr_pos(pos, "", 2):match("^(%d+)%.(%d+)")
-  return beat == "1" and bar or (bar .. " beat " .. beat)
-end
+local bar_of = together.bar_of -- "5", or "5 beat 3" off the bar line (lib/together.lua: the web UI's Play page says it the same way)
 
 -- What a track is called for ownership: a "(MIDI)" copy track and a "(studio)" mirror belong to their part.
 local function part_name(tr)

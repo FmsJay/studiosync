@@ -244,7 +244,8 @@ package.loaded.presence = { peers = function() return { { user = "Chilio", curso
 package.loaded.people = { colours = function() return { James = 0xFF0000, Chilio = 0x00FF00 } end }
 package.loaded.groups = { may_manage = function() return false end }
 local started_ev
-package.loaded.together = { go = function(_, _, _, ev) started_ev = ev end, bars_before = function() return 2 end }
+local together = require("together") -- (its own start builds the event: only sending it and the tempo map stood in)
+together.go, together.bars_before = function(_, _, _, ev) started_ev = ev end, function() return 2 end
 local who_mode = "driver"
 package.loaded.sync = { authority = function() return function() end, { mode = who_mode, driver = "James" } end }
 local panel = {}

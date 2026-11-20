@@ -132,6 +132,45 @@ end
 -- Something said for the band from elsewhere (a mix rendered, say): a message in this project's chat.
 -- sc: another scope ("room", "band"); the project's by default. (The web UI's messages come this way: lib/webui.lua)
 function chat.post(cfg, b, text, sc) add(cfg, b, "msgs", { text = text }, sc or "song") end
+-- To-dos and links, ticking one off and deleting your own: the panel's tabs and the web UI's Chat (chat.web_action) both go through these.
+function chat.add_todo(cfg, b, text, sc) add(cfg, b, "todo", { text = text, done = false }, sc) end
+function chat.add_link(cfg, b, title, url, sc) add(cfg, b, "links", { title = title, url = url }, sc) end
+function chat.set_done(cfg, d, v) d.done, d.done_by = v, cfg.user; local f = d.file; d.file = nil; band.write_json(f, d); cache = nil end
+function chat.remove(cfg, e) -- -> true when it was yours and is gone (for everyone)
+  if e.user ~= cfg.user then return false end
+  os.remove(e.file); cache = nil
+  return true
+end
+
+-- ---- the web UI's Chat (lib/webui.lua hands each action over; James, rt) -----------------------------------------------------------------
+chat.SCOPE_OK = { room = true, song = true, band = true }
+-- One of a scope's messages, to-dos or links, named by its file's name (what lib/webui.lua's chat_model gives the pages as its id): only what
+-- that scope's own listing holds can be touched, never a path a page made up.
+function chat.find(cfg, b, sc, kind, id)
+  if type(id) ~= "string" or not id:match("^[%w_%-]+$") or not chat.SCOPE_OK[sc] then return nil end
+  for _, v in ipairs(chat.read(cfg, b, sc)[kind] or {}) do
+    if type(v.file) == "string" and v.file:match("([^/\\]+)%.json$") == id then return v end
+  end
+end
+-- a: { scope, and text (a message), todo (a new to-do's text), title + url (a link), done = id + on (ticked or not), delete = { kind, id } }.
+-- The page acts as this computer's user, as the panel does: anyone ticks a to-do, only the writer deletes. -> words for the log, or nil.
+function chat.web_action(cfg, b, a)
+  local clean = require("webui").clean_text
+  local sc = chat.SCOPE_OK[a.scope] and a.scope or "song"
+  local text, todo, url = clean(a.text), clean(a.todo), clean(a.url)
+  if text then chat.post(cfg, b, text, sc) end
+  if todo then chat.add_todo(cfg, b, todo, sc) end
+  if url then chat.add_link(cfg, b, clean(a.title) or "", url, sc) end
+  if a.done ~= nil then
+    local d = chat.find(cfg, b, sc, "todo", a.done)
+    if d then chat.set_done(cfg, d, a.on == true) end
+  end
+  if type(a.delete) == "table" then
+    local kind = ({ msgs = "msgs", todo = "todo", links = "links" })[a.delete.kind]
+    local e = kind and chat.find(cfg, b, sc, kind, a.delete.id)
+    if e and not chat.remove(cfg, e) then return "the web page asked to delete " .. tostring(e.user) .. "'s " .. kind .. " entry: only its writer may" end
+  end
+end
 
 -- Messages newer than the last time this person looked at the song's chat (for the tab's count).
 local unread_at, unread_n, unread_song = -math.huge, 0, nil
@@ -167,7 +206,7 @@ local function delete_mine(ctx, ImGui, cfg, e)
   if e.user ~= cfg.user then return end
   ImGui.SameLine(ctx)
   if ImGui.GetContentRegionAvail(ctx) < 30 then ImGui.NewLine(ctx) end -- (after a long row it ran off the panel: Mac, 0.51.13)
-  if ImGui.SmallButton(ctx, "x") and reaper.MB("Delete this for everyone?", "StudioSync", 4) == 6 then os.remove(e.file); cache = nil end
+  if ImGui.SmallButton(ctx, "x") and reaper.MB("Delete this for everyone?", "StudioSync", 4) == 6 then chat.remove(cfg, e) end
   ImGui.SetItemTooltip(ctx, "Delete yours (for everyone).")
 end
 
@@ -432,7 +471,7 @@ function chat.draw(ctx, ImGui, cfg, b, tabs)
         if shown(d) then
           ImGui.PushID(ctx, d.file)
           local ch, v = ImGui.Checkbox(ctx, tostring(d.text), d.done == true)
-          if ch then d.done, d.done_by = v, cfg.user; local f = d.file; d.file = nil; band.write_json(f, d); cache = nil end
+          if ch then chat.set_done(cfg, d, v) end
           if d.done and d.done_by then ImGui.SameLine(ctx); ImGui.TextDisabled(ctx, "(" .. d.done_by .. ")") end
           delete_mine(ctx, ImGui, cfg, d)
           ImGui.PopID(ctx)
@@ -442,7 +481,7 @@ function chat.draw(ctx, ImGui, cfg, b, tabs)
       local enter
       enter, todo_text = chat.input(ctx, ImGui, "##todo", "add a to-do", todo_text)
       ImGui.SameLine(ctx)
-      if (ImGui.Button(ctx, "Add") or enter) and todo_text:match("%S") then add(cfg, b, "todo", { text = todo_text, done = false }); todo_text = "" end
+      if (ImGui.Button(ctx, "Add") or enter) and todo_text:match("%S") then chat.add_todo(cfg, b, todo_text); todo_text = "" end
       ImGui.EndTabItem(ctx)
     end
     if ImGui.BeginTabItem(ctx, "Links") then
@@ -473,7 +512,7 @@ function chat.draw(ctx, ImGui, cfg, b, tabs)
       ImGui.SetNextItemWidth(ctx, -60)
       link_url = select(2, ImGui.InputTextWithHint(ctx, "##lu", "link or file path", link_url))
       ImGui.SameLine(ctx)
-      if ImGui.Button(ctx, "Add##l") and link_url:match("%S") then add(cfg, b, "links", { title = link_title, url = link_url }); link_title, link_url = "", "" end
+      if ImGui.Button(ctx, "Add##l") and link_url:match("%S") then chat.add_link(cfg, b, link_title, link_url); link_title, link_url = "", "" end
       ImGui.EndTabItem(ctx)
     end
     for _, tab in ipairs(tabs or {}) do

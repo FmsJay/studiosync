@@ -93,5 +93,27 @@ function together.go(proj, cfg, b, ev)
   ev.user = cfg.user
   band.set_ext_json(band.SECTION, "transport " .. tostring(proj), ev, false)
 end
+-- Play or Record together from `pos`, after `countin` bars, with listeners `lag` bars later (Time-sync only, else 0). The panel's Start together,
+-- the web UI's Play page and its Song page's Play (lib/webpages.lua, lib/dawview.lua) all start this way. (James, rt)
+function together.start(proj, cfg, b, pos, rec, countin, click, lag)
+  together.go(proj, cfg, b, { type = "start", rec = rec or nil, pos = pos, countin = together.bars_before(proj, pos, countin), click = click or nil,
+    lag = together.bars_after(proj, pos, lag or 0), lead = cfg.user })
+end
+-- The project's regions, in order, for "start from": { { name, pos } } (an unnamed one is "region <n>").
+function together.regions(proj)
+  local out, i = {}, 0
+  while true do
+    local ok, isrgn, p, _, name = reaper.EnumProjectMarkers3(proj, i)
+    if ok == 0 then break end
+    if isrgn then out[#out + 1] = { name = name ~= "" and name or ("region " .. (#out + 1)), pos = p } end
+    i = i + 1
+  end
+  return out
+end
+-- "5", or "5 beat 3" off the bar line (the panel's and the web UI's start-from labels).
+function together.bar_of(pos)
+  local bar, beat = reaper.format_timestr_pos(pos, "", 2):match("^(%d+)%.(%d+)")
+  return beat == "1" and bar or (bar .. " beat " .. beat)
+end
 
 return together
