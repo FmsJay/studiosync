@@ -33,6 +33,26 @@ static void check_unless_stalled(bool ok, double stall_ms, const char *what)
   if (!ok && stall_ms > 15 && !timing_strict()) { printf("  (passed over: the test itself stalled %.0f ms) %s\n", stall_ms, what); return; }
   check(ok, what);
 }
+// This computer's 1 ms sleep (median of 21). rt_test_hold's holds end on the receive thread's 1 ms sleeps, so on coarse timers (over 2 ms:
+// GitHub's hosted Mac's run 5-13 ms, Linux's and Windows' ~1 ms) each hold runs up to a tick long, a different length each time, and the
+// test's own loop sees none of it. The checks that count what a hold of one exact length costs allow for that there, with SS_TIMING_STRICT
+// off only (rt-ci3; tests/hopnet_test.cpp's coarse()).
+static double tick_ms()
+{
+  static double t = -1;
+  if (t < 0) {
+    std::vector<double> v;
+    for (int i = 0; i < 21; ++i) {
+      const auto a = std::chrono::steady_clock::now();
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      v.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a).count());
+    }
+    std::sort(v.begin(), v.end());
+    t = v[10];
+  }
+  return t;
+}
+static bool coarse() { return tick_ms() > 2 && !timing_strict(); }
 static std::string field(const std::string &json, const std::string &peer, const char *key) // (a peer's value, or a top-level one with peer "")
 {
   size_t at = 0;
@@ -343,8 +363,16 @@ static void rescue_test()
   const long long r0 = atoll(field(before, "hub", "rescues").c_str()), r1 = atoll(field(after, "hub", "rescues").c_str());
   printf("     rescue: X's link stalled 110 ms %d times: rescues %lld -> %lld, fallbacks %s, widest spacing %s ms, X hears through H: %s\n", holds, r0, r1,
          field(after, "hub", "fallbacks").c_str(), field(after, "hub", "mix_gap_ms").c_str(), field(after, "hub", "state").c_str());
-  check_unless_stalled(field(before, "hub", "state") == "\"hub\"" && field(after, "hub", "state") == "\"hub\"", stalled, "rescue: X hears through H throughout");
-  check_unless_stalled(r1 - r0 <= 1, stalled, "rescue: only the first stall asks everyone's streams back (it was every one)");
+  // (coarse timers: a hold that ran to 120 ms or more is past the mix's 100 ms buffer + GONE_PAD: the hub rightly counts as gone and X goes
+  // direct. The hosted Mac's widest was 119.2 ms; with the hold's sleep made 13 ms here, 4 of 6 runs went over. A longer stall than this test
+  // means, so it's passed over as the test's own)
+  const double widest = atof(field(after, "hub", "mix_gap_ms").c_str());
+  check_unless_stalled(field(before, "hub", "state") == "\"hub\"" && field(after, "hub", "state") == "\"hub\"", std::max(stalled, coarse() && widest >= 120 ? widest : 0.0),
+                       "rescue: X hears through H throughout");
+  // (coarse timers: a hold over 5 ms (RESCUE_PAD) longer than every one before it is a new widest spacing, and one more rescue: 2 of 6 on the
+  // hosted Mac in three runs, and here with only the hold's sleep made 7 or 13 ms. Held to half of them; every one was the fault)
+  if (coarse()) printf("     rescue: coarse timers (a 1 ms sleep here: %.1f ms): up to %d of the %d stalls may ask\n", tick_ms(), holds / 2, holds);
+  check_unless_stalled(r1 - r0 <= (coarse() ? holds / 2 : 1), stalled, "rescue: only the first stall asks everyone's streams back (it was every one)");
   for (int i = 0; i < 3; ++i) rt_free(L[i]);
 }
 
@@ -403,7 +431,10 @@ static void spike_tests()
   printf("     spikes: 60 ms spikes 40 s apart (8): E's buffer %.1f ms on average, %lld underruns (a lone spike's ~30 ms of audio each); 8 s apart"
          " (20): %.1f ms on average, %lld underruns, %lld in the second half\n", b40, u40, b8, u8, l8);
   check_unless_stalled(b40 < 40 && u40 <= 8, s40, "spikes: lone spikes cost their own underrun, not a bigger buffer for minutes (under 40 ms on average)");
-  check_unless_stalled(l8 <= 3 && b8 > 50, s8, "spikes: spikes close together are held (the buffer grows for them and stays: 3 of the last 10 at most)");
+  // (coarse timers: a 60 ms spike runs up to a tick longer, and each 10 ms more is one more step for the buffer to grow, an underrun each: 4 in
+  // the second half on the hosted Mac in three runs, and here with only the hold's sleep made 7 or 13 ms (2 with 1 ms). Held to half of the 10)
+  if (coarse()) printf("     spikes: coarse timers (a 1 ms sleep here: %.1f ms): up to 5 of the last 10 may underrun\n", tick_ms());
+  check_unless_stalled(l8 <= (coarse() ? 5 : 3) && b8 > 50, s8, "spikes: spikes close together are held (the buffer grows for them and stays: 3 of the last 10 at most)");
 }
 
 // ---- The desktop's audio clock (1.0.22: clock_ppm -1321 and -1498 where it counts -102 over minutes). Probed read-only on the desktop:
@@ -563,7 +594,8 @@ static void start_order_test()
          avg(2, 1, 11.5, 12.8), avg(2, 0, 11.5, 12.8), field(d_end, "hub", "serving").c_str(), g_ad, g_da);
   bool all = true;
   for (int li = 0; li < 3; ++li) for (int s = 0; s < 3; ++s) if (li != s && !about(avg(li, s, 11.5, 12.8), AMP[s])) all = false;
-  check(all, "start order: after the owner's pick takes the hub back, everyone hears everyone at full level");
+  // (rt-ci3: a 419 ms stall of the test inside the last 1.3 s took ~27% off every level and sent everyone back to direct: CI run 44819565221)
+  check_unless_stalled(all, stalled, "start order: after the owner's pick takes the hub back, everyone hears everyone at full level");
   check_unless_stalled(field(d_end, "hub", "serving") == "2" && field(a_end, "hub", "state") == "\"hub\"" && field(m_end, "hub", "state") == "\"hub\"", stalled,
         "start order: D mixes for A and M, both hear through it");
   check_unless_stalled(g_ad < 60 && g_da < 60, stalled, "start order: A and D never lose each other for longer than a jitter buffer, through the handover too");
@@ -902,7 +934,9 @@ int main(int argc, char **argv)
       }
       printf("\n");
     }
-    check(lv_direct, "hub: peer to peer, each listener hears each at its own level (within 25%)");
+    printf("     hub: the test's own longest stall %.0f ms\n", hub_stall);
+    // (rt-ci3: a stall inside the 0.6 s the direct levels are read in takes the same share off all nine: 63-66% each in CI run 44820984871)
+    check_unless_stalled(lv_direct, hub_stall, "hub: peer to peer, each listener hears each at its own level (within 25%)");
     check_unless_stalled(field(s_x, "hub", "state") == "\"hub\"" && field(s_w, "hub", "state") == "\"hub\"" && field(s_y, "hub", "state") == "\"hub\"",
           hub_stall, "hub: W, X and Y hear through H by 6 s");
     check_unless_stalled(field(s_h, "hub", "serving") == "3" && field(s_h, "hub", "serve") == "true", hub_stall, "hub: H mixes for the three");
@@ -917,7 +951,8 @@ int main(int argc, char **argv)
     const double on_d = onset(w_on), on_h = onset(w_on2);
     printf("     hub: W's onset on X: %.0f ms directly, %.0f ms through H (+%.0f ms: the hub's hop); X's status says %s ms through H, %s ms directly; H's load %s of a core, %s us a block at most\n",
            on_d, on_h, on_h - on_d, field(s_x, "hub", "latency_ms").c_str(), field(s_x, "hub", "direct_ms").c_str(), field(s_h, "hub", "load").c_str(), field(s_h, "hub", "max_us").c_str());
-    check(on_d >= 0 && on_h > on_d && on_h < on_d + 120, "hub: the hop through H adds a little latency (under 120 ms)");
+    // (rt-ci3: a 381 ms stall of the test sent W and X back to direct streams before W's second onset: 43 ms both ways, +0. CI run 44825802025)
+    check_unless_stalled(on_d >= 0 && on_h > on_d && on_h < on_d + 120, hub_stall, "hub: the hop through H adds a little latency (under 120 ms)");
     check(atof(field(s_x, "hub", "latency_ms").c_str()) > atof(field(s_x, "hub", "direct_ms").c_str()) && atof(field(s_x, "hub", "direct_ms").c_str()) > 0,
           "hub: X's status measures both (through H, and directly before)");
     check_unless_stalled(atof(field(s_h, "hub", "load").c_str()) > 0 && atof(field(s_h, "hub", "load").c_str()) < 0.5, hub_stall, "hub: H's mixing measured, well under half a core");
