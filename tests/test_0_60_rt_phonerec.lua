@@ -191,7 +191,7 @@ assert(it and math.abs(it.info.D_POSITION - 8) < 0.002 and math.abs(it.takes[1].
   "the take placed: at the song's start here, its pre-roll inside, to where the song stopped (the file's own 30 s, not the page's word): " .. tostring(said))
 assert(it.takes[1].name == "Chorus - Bo - take 1" and said:find("Chorus %- Bo %- take 1: on Vox at bar 5") and said:find("about 15 ms"), "named and said: " .. said)
 assert(written and written:find("Song phone Bo ") and written:find("%.wav$"), "saved beside the project's recordings")
-os.remove(written)
+os.remove(written); os.remove((written:gsub("%.wav$", ".json")))
 assert(pr.action("P", cfg, b, { take = { id = "aa11", track = "{AAAA-1}", t0 = 1.7e9, len = 5, kind = "wav" } }):find("isn't here any more"), "an upload used once")
 saved.bb22 = "RIFF\0\0\0\0WAVE"
 assert(pr.action("P", cfg, b, { take = { id = "bb22", track = "{BBBB-2}", t0 = 1.7e9, len = 5, kind = "wav" } }):find("Gtr is Bo's") and #tracks[2].items == 0,
@@ -289,6 +289,8 @@ clock = clock + 1
 pr.tick("P", cfg, b, publish, clock)
 local dn = pub.phonerec.done
 assert(dn and dn.c1.ok and dn.c3.ok and dn.c4.ok and not dn.c2.ok and dn.c2.said:find("Other"), "the page hears how each take went")
+os.remove(MIXDIR .. "/2026-11-19 mix.wav") -- (the mix fixture, and its folders: Windows' remove() leaves folders)
+if package.config:sub(1, 1) == "\\" then os.execute('rmdir /s /q "' .. (TMP .. "/ss_phonerec_song"):gsub("/", "\\") .. '" 2>nul') else os.execute("rm -rf '" .. TMP .. "/ss_phonerec_song'") end
 
 -- Starting and stopping: James drives, so it's Play together; the phone's stop stops only a start it made
 reaper.GetPlayStateEx = function() return 0 end
