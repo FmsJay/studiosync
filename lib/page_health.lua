@@ -235,7 +235,7 @@ function H.build_rows()
     local okb, brow = pcall(require("hub").health_row, cfg, b)
     if okb and brow then rows[#rows + 1] = brow end
   end
-  do -- recording latency: when it was last measured here and the correction in use, Measure when never or on another device (lib/calibrate.lua. James, rt)
+  do -- recording latency: the interface in use's kept offset and whether REAPER has it, Measure when never measured (lib/calibrate.lua. James, rt)
     local okc, crow = pcall(require("calibrate").health_row)
     if okc and crow then rows[#rows + 1] = crow end
   end

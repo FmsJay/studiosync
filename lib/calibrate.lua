@@ -7,13 +7,19 @@
 -- clipping don't move it), and how late they land is the driver's misreport, REAPER's own compensation included. The tab, its tracks and
 -- every file it made go afterwards; the metronome, pre-roll and record mode are put back.
 -- The fix goes where REAPER keeps it: Preferences > Audio > Recording, Input manual offset (reaper.ini `adjrecmanlatin`; "added to the
--- automatic offset, can be negative"). Verified on a ToneX: 203 samples late fixed by +203 (reaper skill F-0039). Set through SWS, only when
--- the person presses Correct it, and Put back sets what it was. Kept per computer (ExtState): the device, rate and buffer it was measured
--- with, so Health says when it's worth measuring again.
+-- automatic offset, can be negative"). Verified on a ToneX: 203 samples late fixed by +203 (reaper skill F-0039); a UR22mkII on the same
+-- laptop needs -8. REAPER keeps one offset for every interface, so a measurement is kept per interface, per computer (ExtState "latency
+-- offsets"), and cal.tick sets REAPER's to the one for the interface in use: at each start (Autostart, Live sync) and when the device
+-- changes. REAPER doesn't save an offset set through SWS to reaper.ini on quit (it still held 203 after clean quits), and that no longer
+-- matters: it's set again at every start. An interface never measured is left alone, and a value typed in Preferences after measuring
+-- becomes that interface's (never fought). (James, rt)
+-- Keyed by the input device and sample rate, not the buffer: the offset is in samples and converters' filters change with the rate, but
+-- people move the buffer all the time (low to track, high to mix) and a driver's misreport is mostly fixed; Health says when the buffer
+-- differs from the measured one. (James, rt)
 -- Not covered: a take's streamed placeholder (lib/streams.lua) is the raw file at the take's start, uncompensated; the real take replaces it.
 local band = require("band")
 local cal = { BURST = 512, AT = { 0.5, 1.0, 1.5 }, LEN = 2.0, EARLY = 0.05, LATE = 0.25, MIN_SCORE = 0.2, MAX_SPREAD = 4, AMP = 0.5,
-  KEY = "latency check", KEY_FIX = "latency fix", KEY_IN = "latency input", PREF = "adjrecmanlatin" }
+  KEY = "latency check", KEY_OFFS = "latency offsets", KEY_IN = "latency input", PREF = "adjrecmanlatin", EVERY = 1 }
 
 -- ---- pure ------------------------------------------------------------------------------------------------------------------------------
 -- The burst: BURST samples of +-1 from a fixed generator (white, so its correlation with itself is one sharp peak). Pure.
@@ -88,6 +94,21 @@ local function ago(t)
   local s = os.time() - (tonumber(t) or os.time())
   return s < 3600 and string.format("%d min ago", s // 60) or s < 86400 and string.format("%d h ago", s // 3600) or string.format("%d days ago", s // 86400)
 end
+local function day(t) return os.date("%b ", tonumber(t) or os.time()) .. tonumber(os.date("%d", tonumber(t) or os.time())) end -- "Nov 19"
+-- An interface's key: the input device REAPER names (GetAudioDeviceInfo IDENT_IN) and the rate; nil when there's no device. Pure.
+function cal.key(ident, sr)
+  ident, sr = (tostring(ident or ""):gsub("^%s+", ""):gsub("%s+$", "")), math.floor(tonumber(sr) or 0)
+  if ident == "" or sr <= 0 then return nil end
+  return ident .. "|" .. sr
+end
+-- What to do with REAPER's input offset `off` (nil: unreadable). `want`, this interface's kept offset (nil: never measured); `changed`, the
+-- interface changed since the last look (or it's the first, at a start); `seen`, REAPER's value at the last look.
+-- -> "set", n / "adopt", n (typed in Preferences since: it becomes the interface's) / nil (leave it). Pure.
+function cal.choose(want, changed, off, seen)
+  if not want or not off or off == want then return nil end -- (never measured: REAPER's value stays, whatever it is)
+  if not changed and off ~= seen then return "adopt", off end
+  return "set", want -- (a start, another interface, or the kept value changed elsewhere: a new measurement, another script's adoption)
+end
 
 -- ---- this computer ---------------------------------------------------------------------------------------------------------------------
 local function dev_info(k) return select(2, reaper.GetAudioDeviceInfo(k)) end
@@ -100,23 +121,49 @@ function cal.offset()
   return v ~= -999999 and v or nil
 end
 function cal.last() local r = band.ext_json(band.SECTION, cal.KEY); return type(r) == "table" and r or nil end
-function cal.fix() local f = band.ext_json(band.SECTION, cal.KEY_FIX); return type(f) == "table" and f or nil end
--- Set REAPER's input offset to `to`, remembering what it was the first time (so Put back goes all the way back). -> true, or nil, why.
-function cal.apply(to)
-  if not reaper.SNM_SetIntConfigVar then return nil, "needs SWS (sws-extension.org): or type it in Preferences > Audio > Recording, Input manual offset" end
-  local from, f = cal.offset() or 0, cal.fix()
-  if not reaper.SNM_SetIntConfigVar(cal.PREF, math.floor(to)) then return nil, "REAPER didn't take it" end
-  reaper.SetExtState(band.SECTION, cal.KEY_FIX, band.json_encode({ from = f and f.from or from, to = math.floor(to), at = os.time() }), true)
-  band.log(string.format("recording latency: REAPER's input offset %d -> %d samples (Settings > Advanced > Recording latency)", from, math.floor(to)))
-  return true
+-- The interface in use: key, name, rate, buffer; nil when REAPER's device isn't running.
+function cal.here()
+  if reaper.Audio_IsRunning() ~= 1 then return nil end
+  local id, sr = dev_info("IDENT_IN") or "", math.floor(tonumber(dev_info("SRATE")) or 0)
+  return cal.key(id, sr), id, sr, math.floor(tonumber(dev_info("BSIZE")) or 0)
 end
-function cal.put_back()
-  local f = cal.fix()
-  if not f then return true end
-  if not (reaper.SNM_SetIntConfigVar and reaper.SNM_SetIntConfigVar(cal.PREF, math.floor(tonumber(f.from) or 0))) then return nil, "needs SWS" end
-  reaper.DeleteExtState(band.SECTION, cal.KEY_FIX, true)
-  band.log(string.format("recording latency: REAPER's input offset put back to %d samples", math.floor(tonumber(f.from) or 0)))
-  return true
+-- The kept offsets: key -> { off, name, sr, buf (measured at), at (measured), typed (set in Preferences since), late, from (REAPER's before) }
+function cal.offsets() local t = band.ext_json(band.SECTION, cal.KEY_OFFS); return type(t) == "table" and t or {} end
+local function save(t) reaper.SetExtState(band.SECTION, cal.KEY_OFFS, band.json_encode(t), true) end
+local look = { at = -math.huge } -- the last look: { key, seen (REAPER's value then), failed (the key REAPER refused) }; per script (each has its own)
+-- REAPER's input offset to the interface's kept one, cheaply (two device reads and a config read, once a second at most; `now` skips the wait).
+function cal.tick(now)
+  if not now and reaper.time_precise() - look.at < cal.EVERY then return end
+  look.at = reaper.time_precise()
+  local key = cal.here()
+  if not key then return end
+  local all, off = cal.offsets(), cal.offset()
+  local e = all[key]
+  local act, n = cal.choose(e and tonumber(e.off), key ~= look.key, off, look.seen)
+  look.key = key
+  if act == "adopt" then
+    e.off, e.typed = n, os.time()
+    save(all)
+    band.log(string.format("recording latency: you set REAPER's input offset to %d samples in Preferences: kept for %s at %d Hz", n, e.name or key, tonumber(e.sr) or 0))
+  elseif act == "set" and reaper.SNM_SetIntConfigVar then -- (no SWS: Health and Settings say the number to type)
+    if reaper.SNM_SetIntConfigVar(cal.PREF, math.floor(n)) then
+      band.log(string.format("recording latency: REAPER's input offset %d -> %d samples for %s at %d Hz (measured %s)", off, n, e.name or key, tonumber(e.sr) or 0, day(e.at)))
+      off, look.failed = n, nil
+    elseif look.failed ~= key then look.failed = key; band.log("recording latency: REAPER didn't take an input offset of " .. n .. " samples") end
+  end
+  look.seen = off
+end
+-- Forget an interface's offset; when it's the one in use and REAPER still has it, REAPER's goes back to what it was before the first measurement.
+function cal.forget(key)
+  local all = cal.offsets()
+  local e = all[key]
+  if not e then return end
+  all[key] = nil
+  save(all)
+  local back = tonumber(e.from)
+  back = back and key == cal.here() and cal.offset() == tonumber(e.off) and reaper.SNM_SetIntConfigVar and reaper.SNM_SetIntConfigVar(cal.PREF, math.floor(back)) and back
+  band.log(string.format("recording latency: forgot %s at %d Hz (%d samples)%s", e.name or key, tonumber(e.sr) or 0, tonumber(e.off) or 0,
+    back and (", REAPER's input offset back to " .. back) or ""))
 end
 
 -- ---- the measurement (a scratch tab, a few seconds) ------------------------------------------------------------------------------------
@@ -184,6 +231,15 @@ local function finish(r)
   reaper.SetExtState(band.SECTION, cal.KEY, band.json_encode(rec), true)
   said = nil
   band.log("recording latency measured: recordings land " .. cal.words(res.late, r.sr) .. string.format(" (driver reports %d in + %d out samples)", din or 0, dout or 0))
+  -- the offset that lands it on time becomes this interface's, and is set now (as at a start: the next look counts it as new. James, rt)
+  local key, name, sr, buf = cal.here()
+  if not (key and rec.off) then said = "Measured, but REAPER's device or input offset couldn't be read: nothing kept."; return end
+  local all = cal.offsets()
+  local old = all[key]
+  all[key] = { off = rec.off + res.late, name = name, sr = sr, buf = buf, at = rec.at, late = res.late, from = old and old.from or rec.off }
+  save(all)
+  look.key = nil
+  cal.tick(true)
 end
 local function wait()
   local r = run
@@ -236,19 +292,26 @@ function cal.running() return run ~= nil end
 
 -- ---- Health and Settings ---------------------------------------------------------------------------------------------------------------
 local function go_measure() reaper.SetExtState(band.SECTION, "setup tab", "Advanced", false) end
--- Health's line: when it was last measured and the correction in use; grey (it's optional), with Measure when never or on another device.
+local function type_it(n) return string.format("type %d in Preferences > Audio > Recording, Input manual offset (with SWS, sws-extension.org, StudioSync sets it itself)", n) end
+-- Health's line for the interface in use: its kept offset and whether REAPER has it; grey (it's optional), Measure when never measured or
+-- measured at another buffer, yellow when kept but not in REAPER.
 function cal.health_row()
-  local r, off, f = cal.last(), cal.offset(), cal.fix()
+  local key, name, _, buf = cal.here()
+  local e, off = key and cal.offsets()[key], cal.offset()
   local act = { "Measure my latency", go_measure, "Settings > Advanced > Recording latency: a loopback check, under a minute." }
-  if not r then
-    return { "latency", false, "grey", "", "Recording latency hasn't been checked here. REAPER lines recordings up by what your audio interface reports; " ..
-      "a loopback check shows whether it's off by a few ms.", action = act }
+  if not e then
+    return { "latency", false, "grey", "", "Recording latency hasn't been checked on " .. (key and name or "this audio device") .. ". REAPER lines recordings up by " ..
+      "what your audio interface reports; a loopback check shows whether it's off by a few ms." .. (off and off ~= 0 and string.format(" REAPER's input offset stays %d samples.", off) or ""), action = act }
   end
-  local text = "Recording latency checked " .. ago(r.at) .. ": recordings landed " .. cal.words(tonumber(r.late) or 0, tonumber(r.sr) or 48000) .. "."
-  if f and off == tonumber(f.to) then text = text .. string.format(" Corrected: REAPER's input offset is %d samples (was %d).", off, tonumber(f.from) or 0)
-  elseif off and off ~= 0 then text = text .. string.format(" REAPER's input offset: %d samples.", off) end
-  local moved = r.device ~= device()
-  if moved then text = text .. " Your audio device, rate or buffer changed since: worth measuring again." end
+  local want = tonumber(e.off) or 0
+  local text = string.format("Recording latency: %s %d samples (%s %s)", e.name or name, want, e.typed and "set in Preferences" or "measured", day(e.typed or e.at))
+  if off ~= want then
+    text = text .. string.format(", not applied: REAPER's input offset is %s. %s.", tostring(off or "unreadable"), reaper.SNM_SetIntConfigVar and "StudioSync sets it within a second while Live sync or its autostart runs" or ("To fix it, " .. type_it(want)))
+    return { "latency", false, "yellow", text, text, action = act }
+  end
+  text = text .. ", applied. StudioSync sets it at each start and when you switch interface (REAPER doesn't keep it across restarts by itself)."
+  local moved = tonumber(e.buf) and tonumber(e.buf) ~= buf
+  if moved then text = text .. string.format(" Measured at a %d-sample buffer, now %d: worth measuring again.", tonumber(e.buf), buf) end
   local row = { "latency", not moved, "grey", text, text }
   if moved then act[1] = "Measure again"; row.action = act end
   return row
@@ -259,7 +322,9 @@ function cal.ui(ctx, ImGui)
   ImGui.SeparatorText(ctx, "Recording latency")
   ImGui.TextDisabled(ctx, "REAPER lines up what you record by the latency your audio interface reports, and StudioSync covers the internet. Some drivers " ..
     "misreport by a few ms: this checks yours, so what you record against a bandmate lands on the grid. Loop an output to an input with a cable (or hold " ..
-    "a mic to a speaker); three short bursts play through the master's outputs.")
+    "a mic to a speaker); three short bursts play through the master's outputs. What it finds is kept for that interface and set in REAPER whenever you use it.")
+  local key, name = cal.here()
+  ImGui.Text(ctx, key and ("This interface: " .. name) or "REAPER's audio device isn't running.")
   local ch = math.floor(tonumber(reaper.GetExtState(band.SECTION, cal.KEY_IN)) or 1)
   ImGui.SetNextItemWidth(ctx, 110)
   local chg, v = ImGui.InputInt(ctx, "input it comes back on##latin", ch)
@@ -276,23 +341,27 @@ function cal.ui(ctx, ImGui)
     if ImGui.Button(ctx, "Cancel##latno") then confirm = false end
   elseif ImGui.Button(ctx, "Measure my latency##latm") then confirm = true end
   if said then ImGui.TextWrapped(ctx, said) end
-  local r, off, f = cal.last(), cal.offset(), cal.fix()
+  local r, off = cal.last(), cal.offset()
   if r and not run then
     local sr, late = tonumber(r.sr) or 48000, tonumber(r.late) or 0
     local drv = (tonumber(r.din) or 0) + (tonumber(r.dout) or 0)
-    ImGui.TextWrapped(ctx, string.format("Checked %s: recordings landed %s. Your driver reports %d samples (%d in + %d out); with REAPER's input offset of %d " ..
+    ImGui.TextWrapped(ctx, string.format("Last check, %s: recordings landed %s. Your driver reports %d samples (%d in + %d out); with REAPER's input offset of %d " ..
       "then, the round trip measured %d samples (%.2f ms).", ago(r.at), cal.words(late, sr), drv, tonumber(r.din) or 0, tonumber(r.dout) or 0, tonumber(r.off) or 0,
       drv + (tonumber(r.off) or 0) + late, (drv + (tonumber(r.off) or 0) + late) / sr * 1000))
-    local to = (tonumber(r.off) or 0) + late
-    if late ~= 0 and off and off ~= to then
-      if ImGui.Button(ctx, string.format("Correct it: input offset %d -> %d##latfix", off, to)) then local ok, why = cal.apply(to); said = not ok and why or "Corrected. Measure again to check it lands on time." end
-      ImGui.SetItemTooltip(ctx, "Sets REAPER's own Input manual offset (Preferences > Audio > Recording), which it adds to what the driver reports. Only on this computer;\n" ..
-        "Put back sets it as it was." .. (math.abs(late) / sr < 0.001 and "\nUnder a millisecond: it's fine as it is, too." or ""))
-    end
   end
-  if f and off == tonumber(f.to) then
-    if ImGui.Button(ctx, string.format("Put back (%d)##latback", tonumber(f.from) or 0)) then local ok, why = cal.put_back(); said = not ok and why or nil end
-    ImGui.SetItemTooltip(ctx, "Sets REAPER's input offset back to what it was before StudioSync corrected it.")
+  -- every interface measured on this computer, with Forget; REAPER's Input manual offset (Preferences > Audio > Recording) is set to the one in use
+  local all, keys = cal.offsets(), {}
+  for k in pairs(all) do keys[#keys + 1] = k end
+  table.sort(keys)
+  for i, k in ipairs(keys) do
+    local e = all[k]
+    ImGui.Text(ctx, string.format("%s, %d Hz: %d samples (%s %s%s)%s", e.name or k, tonumber(e.sr) or 0, tonumber(e.off) or 0, e.typed and "set in Preferences" or "measured",
+      day(e.typed or e.at), tonumber(e.buf) and (", buffer " .. e.buf) or "", k == key and ", in use" or ""))
+    ImGui.SameLine(ctx)
+    if ImGui.SmallButton(ctx, "Forget##latf" .. i) then cal.forget(k) end
+    ImGui.SetItemTooltip(ctx, "StudioSync stops setting REAPER's input offset for this interface." .. (k == key and tonumber(e.from) and
+      string.format("\nIt's the one in use: REAPER's goes back to %d, what it was before the first measurement.", tonumber(e.from)) or ""))
+    if k == key and off ~= tonumber(e.off) and not reaper.SNM_SetIntConfigVar then ImGui.TextWrapped(ctx, "SWS isn't installed, so StudioSync can't set it: " .. type_it(tonumber(e.off) or 0) .. ".") end
   end
 end
 

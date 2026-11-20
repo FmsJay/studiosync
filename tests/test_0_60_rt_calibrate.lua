@@ -1,7 +1,8 @@
 -- Latency calibration per person (lib/calibrate.lua; docs/realtime-roadmap.md "More big ideas" 8): finding the burst by cross-correlation in
 -- synthetic recordings (silence, gain, a polarity flip, clipping, noise, a speaker's smear, nothing there), three bursts into one offset (late,
 -- early, disagreeing, one missing), the played file read back, and with REAPER stubbed: a whole check in a scratch tab (what it plays, records,
--- stops, closes and puts back), Correct it / Put back through REAPER's input offset, and Health's line. (James, rt)
+-- stops, closes and puts back), the offset kept per interface and set in REAPER's input offset at a start and on a device change (never for
+-- one never measured, a value typed in Preferences adopted, no SWS, Forget), and Health's line. (James, rt)
 package.path = "lib/?.lua;" .. package.path
 local ext, cfgvars, calls, toggles, play = {}, { adjrecmanlatin = 0 }, {}, { [40364] = 1, [41819] = 0, [40076] = 1, [40253] = 0 }, 0
 local deferred, front, tabs, now_p, dev = nil, "SONG", {}, 100, { IDENT_IN = "ToneX", SRATE = "8000", BSIZE = "128" }
@@ -203,39 +204,126 @@ do
   assert(front == "SONG", "back to the song's tab, not whichever REAPER fronted")
   local r = cal.last()
   assert(r and r.late == 25 and r.sr == SR and r.din == 64 and r.dout == 96 and r.off == 0 and r.device == "ToneX|8000|128", "kept: 25 late, the driver's numbers, the device")
-  assert(cfgvars.adjrecmanlatin == 0, "measuring never changes REAPER's offset")
+  local e = cal.offsets()["ToneX|8000"]
+  assert(e and e.off == 25 and e.from == 0 and e.buf == 128 and e.name == "ToneX" and e.sr == SR, "kept for the ToneX at its rate: 0 + 25 late, with what REAPER had and the buffer")
+  assert(cfgvars.adjrecmanlatin == 25, "and set in REAPER now")
 end
 
--- ---- Correct it and Put back ----
+-- ---- pure: an interface's key, and what to do with REAPER's offset ----
 do
-  assert(cal.apply(25) == true and cfgvars.adjrecmanlatin == 25, "Correct it: REAPER's input offset +25")
-  assert(cal.fix().from == 0 and cal.fix().to == 25, "what it was, kept")
-  assert(cal.apply(27) == true and cal.fix().from == 0, "corrected again after another check: Put back still goes to the first value")
-  assert(cal.put_back() == true and cfgvars.adjrecmanlatin == 0 and cal.fix() == nil, "Put back: as it was")
+  assert(cal.key("UR22mkII", "48000") == "UR22mkII|48000" and cal.key(" UR22mkII  ", 48000.0) == "UR22mkII|48000", "the input device and the rate (trimmed, whole)")
+  assert(cal.key("", 48000) == nil and cal.key("UR22mkII", "") == nil and cal.key(nil, 0) == nil, "no device or no rate: no key, nothing touched")
+  assert(cal.choose(nil, true, 203, nil) == nil and cal.choose(nil, false, 5, 203) == nil, "never measured: REAPER's value left, at a start or changed by hand")
+  local act, n = cal.choose(-8, true, 203, nil)
+  assert(act == "set" and n == -8, "a start: reaper.ini still says 203 (SWS's -8 isn't saved on quit), so -8 again")
+  assert(cal.choose(-8, true, -8, nil) == nil and cal.choose(-8, false, -8, -8) == nil, "already there: nothing")
+  act, n = cal.choose(-8, false, 0, -8)
+  assert(act == "adopt" and n == 0, "typed 0 in Preferences since the last look: it becomes the interface's, not fought")
+  act, n = cal.choose(-8, true, 0, -8)
+  assert(act == "set" and n == -8, "switched to this interface: its own value")
+  act, n = cal.choose(-8, false, 203, 203)
+  assert(act == "set" and n == -8, "REAPER unchanged but the kept value changed elsewhere (measured in the panel): set")
+  assert(cal.choose(-8, false, nil, nil) == nil, "REAPER's value unreadable: left")
+end
+
+-- ---- applied per interface, REAPER stubbed (a fresh module is a fresh start) ----
+local logs = {}
+band.log = function(s) logs[#logs + 1] = s end
+local function fresh() package.loaded.calibrate = nil; return require("calibrate") end
+local NOV19 = os.time({ year = 2026, month = 11, day = 19, hour = 12 })
+local function keep(t) ext["BandSync/latency offsets"] = band.json_encode(t) end
+local function ur22(off) return { ["UR22mkII|8000"] = { off = off, name = "UR22mkII", sr = SR, buf = 128, at = NOV19, late = -211, from = 203 } } end
+do
+  keep(ur22(-8))
+  dev.IDENT_IN, dev.BSIZE, cfgvars.adjrecmanlatin = "UR22mkII", "128", 203
+  cal = fresh()
+  logs = {}
+  cal.tick()
+  assert(cfgvars.adjrecmanlatin == -8 and #logs == 1 and logs[1]:match("203 %-> %-8 samples for UR22mkII"), "at a start: the UR22mkII's -8 set, one log line")
+  cfgvars.adjrecmanlatin = 0
+  cal.tick()
+  assert(cfgvars.adjrecmanlatin == 0 and #logs == 1, "looked at once a second at most")
+  now_p = now_p + 2
+  cal.tick()
+  assert(cfgvars.adjrecmanlatin == 0 and cal.offsets()["UR22mkII|8000"].off == 0 and cal.offsets()["UR22mkII|8000"].typed and logs[2]:match("in Preferences"),
+    "typed 0 in Preferences: adopted as the UR22mkII's, REAPER left at 0")
+  dev.IDENT_IN, cfgvars.adjrecmanlatin = "ToneX", 0
+  ext["BandSync/latency offsets"] = band.json_encode(ur22(0))
+  now_p = now_p + 2
+  cal.tick()
+  cfgvars.adjrecmanlatin = 100
+  now_p = now_p + 2
+  cal.tick()
+  assert(cfgvars.adjrecmanlatin == 100 and cal.offsets()["UR22mkII|8000"].off == 0 and not cal.offsets()["ToneX|8000"] and #logs == 2,
+    "the ToneX was never measured: REAPER's value left, changed by hand or not, and nothing adopted")
+  dev.IDENT_IN = "UR22mkII"
+  now_p = now_p + 2
+  cal.tick()
+  assert(cfgvars.adjrecmanlatin == 0 and #logs == 3, "back on the UR22mkII: its value again")
+  reaper.Audio_IsRunning = function() return 0 end
+  cfgvars.adjrecmanlatin = 55
+  now_p = now_p + 2
+  cal.tick()
+  assert(cfgvars.adjrecmanlatin == 55 and cal.offsets()["UR22mkII|8000"].off == 0, "no audio device running: nothing touched or adopted")
+  reaper.Audio_IsRunning = function() return 1 end
+  -- two scripts at once (Autostart and a Live sync each have their own look): one acts, one log line
+  keep(ur22(-8))
+  cfgvars.adjrecmanlatin = 203
+  local a = fresh()
+  local b = fresh()
+  logs = {}
+  a.tick(); b.tick()
+  assert(cfgvars.adjrecmanlatin == -8 and #logs == 1, "two scripts at a start: set once")
+  cfgvars.adjrecmanlatin = 4
+  now_p = now_p + 2
+  a.tick(); b.tick()
+  assert(cal.offsets()["UR22mkII|8000"].off == 4 and #logs == 2 and cfgvars.adjrecmanlatin == 4, "typed 4: adopted once, the other script doesn't fight it")
+end
+
+-- ---- no SWS, and Forget ----
+do
+  keep(ur22(-8))
+  cfgvars.adjrecmanlatin = 203
   local set = reaper.SNM_SetIntConfigVar
   reaper.SNM_SetIntConfigVar = false -- (nil would fall to the stub's catch-all)
-  local ok, why = cal.apply(25)
-  assert(not ok and why:match("SWS") and cfgvars.adjrecmanlatin == 0, "no SWS: says where to type it, changes nothing")
+  cal = fresh()
+  logs = {}
+  cal.tick()
+  now_p = now_p + 2
+  cal.tick()
+  assert(cfgvars.adjrecmanlatin == 203 and cal.offsets()["UR22mkII|8000"].off == -8 and #logs == 0, "no SWS: nothing set, REAPER's 203 not adopted, nothing logged")
+  local row = cal.health_row()
+  assert(row[2] == false and row[3] == "yellow" and row[4]:match("not applied") and row[4]:match("type %-8 in Preferences > Audio > Recording"), "Health: the number to type")
   reaper.SNM_SetIntConfigVar = set
+  cfgvars.adjrecmanlatin = -8
+  cal.forget("UR22mkII|8000")
+  assert(cfgvars.adjrecmanlatin == 203 and next(cal.offsets()) == nil, "Forget the one in use: REAPER's goes back to what it was before the first measurement")
+  keep(ur22(-8))
+  dev.IDENT_IN, cfgvars.adjrecmanlatin = "ToneX", 30
+  cal.forget("UR22mkII|8000")
+  assert(cfgvars.adjrecmanlatin == 30 and next(cal.offsets()) == nil, "Forget one not in use: REAPER's left")
 end
 
 -- ---- Health ----
 do
-  local saved = ext["BandSync/latency check"]
-  ext["BandSync/latency check"] = nil
+  ext["BandSync/latency offsets"] = nil
+  dev.IDENT_IN = "UR22mkII"
   local row = cal.health_row()
-  assert(row[1] == "latency" and row[2] == false and row[3] == "grey" and row.action and row.action[1] == "Measure my latency", "never checked: grey, with Measure")
+  assert(row[1] == "latency" and row[2] == false and row[3] == "grey" and row.action and row.action[1] == "Measure my latency" and row[5]:match("checked on UR22mkII"),
+    "never measured here: grey, with Measure")
   row.action[2]()
   assert(ext["BandSync/setup tab"] == "Advanced", "Measure opens Settings > Advanced")
-  ext["BandSync/latency check"] = saved
+  keep(ur22(-8))
+  cfgvars.adjrecmanlatin = -8
   row = cal.health_row()
-  assert(row[2] == true and row[4]:match("min ago") and row[4]:match("ms %(25 samples%) late") and not row.action, "checked: when, and what it found")
-  cal.apply(25)
+  assert(row[2] == true and row[3] == "grey" and row[4]:find("Recording latency: UR22mkII -8 samples (measured Nov 19), applied", 1, true) and
+    row[4]:match("each start") and not row.action, "measured and in REAPER: applied, set again at each start")
+  cfgvars.adjrecmanlatin = 203
   row = cal.health_row()
-  assert(row[4]:match("Corrected: REAPER's input offset is 25 samples %(was 0%)"), "the correction in use")
-  dev.BSIZE = "256"
+  assert(row[2] == false and row[3] == "yellow" and row[4]:match("not applied: REAPER's input offset is 203"), "kept but not in REAPER yet: yellow")
+  cfgvars.adjrecmanlatin, dev.BSIZE = -8, "256"
   row = cal.health_row()
-  assert(row[2] == false and row.action[1] == "Measure again" and row[4]:match("changed since"), "another buffer size: worth measuring again")
+  assert(row[2] == false and row.action[1] == "Measure again" and row[4]:match("128%-sample buffer, now 256"), "another buffer size: still applied, worth measuring again")
 end
 
 print("ok calibrate")

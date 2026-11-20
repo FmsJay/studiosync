@@ -704,6 +704,18 @@ optional precision step for drivers that misreport by a few ms.
     correction in use, and "measure again" once the device, rate or buffer differ.
   - **Not yet:** a take's streamed placeholder (lib/streams.lua) is the raw file, uncompensated (the real take replaces it); the output
     manual offset isn't read; whether REAPER takes an SWS-set offset without reopening the audio device is to be checked.
+- **Built (rt-calibrate per interface, 2026-11-19; offline tests only, not run in REAPER yet):** found in REAPER on the laptop that the ToneX
+  needed +203 samples and the UR22mkII -8 (4.4 ms early with 203, on time with -8: REAPER takes an SWS-set offset live), that REAPER keeps
+  one offset for every interface, and that it doesn't save an SWS-set offset to reaper.ini on quit. So (replacing Correct it / Put back):
+  - A measurement's offset (REAPER's then + the lateness) is kept per interface, per computer (ExtState `latency offsets`), keyed by
+    `IDENT_IN` + sample rate (the offset is in samples and converters change with the rate; the buffer moves too often and most misreports
+    are fixed, so it's noted, not keyed: Health says "worth measuring again" at another buffer), and set in REAPER right away.
+  - `cal.tick` (Autostart's 2 s loop and every Live sync tick, once a second at most) sets REAPER's input offset to the kept one at each
+    start and when the device changes, one log line when it does; never for an interface never measured; a value typed in Preferences
+    after measuring is adopted as that interface's (never fought). Re-applied at each start, so REAPER not saving it doesn't matter.
+  - Health: "Recording latency: UR22mkII -8 samples (measured Nov 19), applied"; yellow with the number to type when kept but not in
+    REAPER (no SWS). Settings > Advanced lists the measured interfaces with Forget (the one in use goes back to REAPER's value before
+    the first measurement); Measure is for the one in use. Tests: keying, choosing, adoption, never-measured, two scripts at once, no SWS.
 
 ## A new interface: web UI in a REAPER docker and in the browser (James)
 Like Helgobox's move away from REAPER's own widgets, now that the extension is mandatory:

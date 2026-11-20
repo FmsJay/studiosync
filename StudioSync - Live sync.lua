@@ -1082,6 +1082,7 @@ local function tick_body() -- returns true to keep going
     if front == proj then band.try("shared prefs", require("sharedprefs").tick, cfg.root)
     elseif not (front and band.binding(front)) then band.try("shared prefs", require("sharedprefs").tick, nil) end
   end
+  band.try("calibrate.tick", require("calibrate").tick) -- (REAPER's input offset for the interface in use, measured per interface: lib/calibrate.lua. James, rt)
   if cmd > 0 then reaper.SetExtState(band.SECTION, "live cmd " .. cmd, tostring(reaper.time_precise()), false) end -- (band.start_live)
   -- the band's takes add up on your master: say so when it clips (at most every 30 s)
   if reaper.EnumProjects(-1) == proj and reaper.GetPlayState() & 1 == 1 then
