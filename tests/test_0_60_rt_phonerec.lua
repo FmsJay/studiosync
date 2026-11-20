@@ -316,6 +316,51 @@ said = pr.action("P", cfg, b, { start = { track = "{AAAA-1}", bars = 1 } })
 assert(#gone == 2 and ext[band.SECTION .. "/transport P"]:find('"type":"start"') and said:find("here only"), "not the driver: played here only")
 ext[band.SECTION .. "/together_at P"] = tostring(os.time() + 3)
 assert(pr.action("P", cfg, b, { start = { track = "{AAAA-1}", bars = 1 } }):find("joining"), "a start already coming: joined")
+
+-- A page that dies mid-take (VM test: Play together ran on for the whole band): the start it made is stopped once it's GONE_AFTER s quiet
+package.loaded.together.LEAD = 5
+ext[band.SECTION .. "/together_at P"] = nil
+local playing, stops = 0, 0
+reaper.GetPlayStateEx = function() return playing end
+reaper.OnStopButtonEx = function() stops = stops + 1; playing = 0 end
+cfg.user = "James"
+local n0 = #gone
+assert(pr.action("P", cfg, b, { start = { track = "{AAAA-1}", bars = 1 }, alive = true }):find("Play together") and #gone == n0 + 1, "a page that pings starts the band")
+playing = 1
+for _ = 1, 4 do clock = clock + 2; pr.action("P", cfg, b, { alive = true }); assert(pr.watch("P", cfg, b, clock) == nil, "pinging every 2 s: left playing") end
+clock = clock + pr.GONE_AFTER - 1
+assert(pr.watch("P", cfg, b, clock) == nil and #gone == n0 + 1, "quiet a moment (a slow request): still playing")
+clock = clock + 2
+said = pr.watch("P", cfg, b, clock)
+assert(said and said:find("went quiet for 9 s", 1, true) and #gone == n0 + 2 and gone[#gone].type == "stop", "quiet GONE_AFTER s: Stop together, said: " .. tostring(said))
+assert(pr.watch("P", cfg, b, clock + 30) == nil and #gone == n0 + 2, "stopped once")
+assert(pr.action("P", cfg, b, { stop = true }) == nil and #gone == n0 + 2, "the page's late Stop: nothing left of its to stop")
+-- an older page (no pings): its start stays, as before, and its own Stop still works
+playing = 0
+pr.action("P", cfg, b, { start = { track = "{AAAA-1}", bars = 1 } })
+playing = 1
+clock = clock + 60
+assert(pr.watch("P", cfg, b, clock) == nil and #gone == n0 + 3, "a page that never said it pings isn't watched")
+assert(pr.action("P", cfg, b, { stop = true }) and #gone == n0 + 4 and gone[#gone].type == "stop", "its Stop stops its start")
+-- the phone's start, stopped by someone in REAPER and started again by them: never the phone's to stop
+playing = 0
+pr.action("P", cfg, b, { start = { track = "{AAAA-1}", bars = 1 }, alive = true })
+clock = clock + 2
+assert(pr.watch("P", cfg, b, clock) == nil, "the start's lead-in (nothing playing yet): kept")
+clock = clock + pr.GONE_AFTER -- (the page also went quiet: but nothing plays, the take is over)
+pr.watch("P", cfg, b, clock)
+assert(#gone == n0 + 5, "nothing playing or due after the lead-in: the phone's start is over, nothing stopped")
+playing = 1 -- (someone's own Play together in REAPER)
+clock = clock + 30
+assert(pr.watch("P", cfg, b, clock) == nil and #gone == n0 + 5 and pr.action("P", cfg, b, { stop = true }) == nil, "theirs is never stopped by the phone")
+-- not the driver: the phone's start was this computer's alone, so its own stop
+cfg.user = "Bo"
+playing = 0
+pr.action("P", cfg, b, { start = { track = "{AAAA-1}", bars = 1 }, alive = true })
+playing = 1
+clock = clock + pr.GONE_AFTER + 1
+assert(pr.watch("P", cfg, b, clock) and stops == 1 and #gone == n0 + 5, "played here only: stopped here only")
+ext[band.SECTION .. "/together_at P"] = tostring(os.time() + 3)
 assert(pr.action("P", cfg, b, { setup = true }):find("set up"), "the secure link's setup")
 reaper.StudioSync_WebUISaveUpload = nil
 setmetatable(reaper, nil) -- (no stand-in for what isn't there)

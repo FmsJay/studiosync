@@ -5,6 +5,7 @@
 -- Nothing is lost on either side (a file is only removed from one place once it's in the right one). Events, restore points and MIDI are written once, so copying what's
 -- missing both ways is enough. A take's files move between takes/ and _trash/ (a delete, an undone delete, a new
 -- revision), so where each one belongs is worked out from the room's events and manifests, and both sides end up so.
+-- A recording deleted on purpose isn't "missing": its tombstone (<room>/deleted, media_deletes below) keeps it from coming back.
 local band = require("band")
 local drive = {}
 drive.listed = {} -- Drive folder -> { at, files }: its listing, kept a little while (drive.mirror)
@@ -261,7 +262,7 @@ local function read_events(dir, deadline)
     if e == nil and deadline and reaper.time_precise() > deadline then return nil end
     if not e then
       local ev = band.read_json(p)
-      e = ev and { type = ev.type, take = ev.take, time = ev.time, id = ev.id, user = ev.user } or false
+      e = ev and { type = ev.type, take = ev.take, time = ev.time, id = ev.id, user = ev.user, oid = ev.oid, gone = ev.gone == true or nil } or false
       if e and type(ev.state) == "string" then -- (an item's chunk: the recordings it plays)
         e.media = {}
         for room, rel in ev.state:gmatch('FILE "{media:([^}]+)}/([^"]+)"') do e.media[#e.media + 1] = { room, rel } end
@@ -344,6 +345,117 @@ local function into_trash_index(dir, f)
   if not idx[f] then idx[f] = os.date("!%Y-%m-%d"); band.write_json(dir .. "/index.json", idx) end
 end
 
+-- ---- deleted recordings (VM test, rt: four unused WAVs deleted from a room's media came back from the cloud copy, which copies whatever's ----
+-- missing on either side, on two computers). A file someone deletes from a room's media (by hand, or Syncthing carrying someone's delete) is
+-- told from one this computer never had by what it saw there last pass (its own memory, outside the shared folder: band.home()). Gone since,
+-- and no longer played by the song as it stands (drive.media_in_use, in any of its rooms), it's written down as deleted: a tombstone, a file
+-- written once in the room's deleted/ folder (<user>-<time>-<n>.json { names = { [file] = os.time() } }) that Syncthing and the cloud copy
+-- carry as they carry events. A tombstoned file is copied neither way, catch-up doesn't fetch it (lib/streams.lua), and the cloud's copy is
+-- moved into the cloud copy's _trash/media (kept there, and in the service's own trash after that). Nothing here removes a file on this
+-- computer: Syncthing carries deletes between computers.
+-- Still played (the song uses it, in this room or another, whoever deleted it): not a delete to keep, so it comes back from the cloud copy as
+-- before, and that's said. A tombstone stops counting while the song plays that file again (the same audio added back has the same name).
+
+-- The files of room `room` the song plays as it stands: the newest change to each object (by time, then id) in each room, unless that change
+-- removed it, and the {media:<room>} files it names. `rooms`: { [room] = its events }. Pure.
+function drive.media_in_use(rooms, room)
+  local out = {}
+  for _, events in pairs(rooms) do
+    local last = {}
+    for _, ev in ipairs(events) do
+      if ev.oid then
+        local key = (ev.time or "") .. (ev.id or "")
+        if not last[ev.oid] or key > last[ev.oid].key then last[ev.oid] = { key = key, ev = ev } end
+      end
+    end
+    for _, l in pairs(last) do
+      if not l.ev.gone then for _, m in ipairs(l.ev.media or {}) do if m[1] == room then out[m[2]] = true end end end
+    end
+  end
+  return out
+end
+-- A room's tombstones (its deleted/ folder): file -> when it was deleted (the latest). Each tombstone is written once, so read once.
+local seen_tombs = {}
+function drive.tombstones(dir)
+  local out = {}
+  for _, f in ipairs(band.files(dir, ".json")) do
+    local p = dir .. "/" .. f
+    if seen_tombs[p] == nil then -- (one not readable yet may still be arriving: read again next time)
+      local t = band.read_json(p)
+      seen_tombs[p] = type(t) == "table" and type(t.names) == "table" and t.names or nil
+    end
+    for name, at in pairs(seen_tombs[p] or {}) do
+      if type(name) == "string" then out[name] = math.max(out[name] or 0, tonumber(at) or 0) end
+    end
+  end
+  return out
+end
+-- What this computer saw in each room's media last pass: { [room folder, lower case] = { names } }, in band.home() (never synced).
+local media_seen
+local function seen_path() return band.home() .. "/cloud-media-seen.json" end
+local function get_seen(key)
+  media_seen = media_seen or band.read_json(seen_path()) or {}
+  return type(media_seen[key]) == "table" and media_seen[key] or nil
+end
+local function set_seen(key, names)
+  table.sort(names)
+  local old = get_seen(key)
+  if old and table.concat(old, "\0") == table.concat(names, "\0") then return end
+  media_seen[key] = names
+  pcall(band.write_json, seen_path(), media_seen)
+end
+local said_kept, tomb_seq = {}, 0
+-- One pass's deletes for a room's media. A: this side's files; inA, inB: here and in the cloud copy (a trim's archived prints count as both);
+-- owners: drive.media_owners. -> the files to leave alone (copied neither way) and how many moved into the cloud's _trash/media; or nil while
+-- the song's changes are still being read (the next pass carries on).
+local function media_deletes(here, there, A, inA, inB, user, owners, deadline)
+  local key = here:gsub("\\", "/"):lower()
+  local seen, tomb = get_seen(key), drive.tombstones(here .. "/deleted")
+  local newly, cand = {}, false
+  -- (nothing at all here while this computer saw files: the folder isn't there just now, or is being rebuilt. Not a delete)
+  if seen and #A > 0 then for _, f in ipairs(seen) do if not inA[f] and not tomb[f] then newly[#newly + 1] = f end end end
+  cand = #newly > 0
+  for f in pairs(tomb) do if inA[f] or inB[f] then cand = true; break end end
+  if not cand then return {}, 0 end
+  local rooms_dir, room = here:match("^(.*)/([^/]+)$")
+  local rooms = {}
+  for _, r in ipairs(band.subdirs(rooms_dir)) do
+    rooms[r] = read_events(rooms_dir .. "/" .. r .. "/events", deadline)
+    if not rooms[r] then return nil end
+  end
+  local used = drive.media_in_use(rooms, room)
+  local new, n_new = {}, 0
+  for _, f in ipairs(newly) do
+    if used[f] then
+      if not said_kept[key .. "\0" .. f] then
+        said_kept[key .. "\0" .. f] = true
+        band.log(f .. " was deleted from " .. room .. "'s recordings here, but the project still plays it: not taken as deleted (the cloud copy brings it back)")
+      end
+    else new[f], tomb[f], n_new = os.time(), os.time(), n_new + 1 end
+  end
+  if n_new > 0 then
+    tomb_seq = tomb_seq + 1
+    local who = (user or ""):gsub("[^%w%-_]", "_")
+    reaper.RecursiveCreateDirectory(here .. "/deleted", 0)
+    band.write_json(string.format("%s/deleted/%s-%s-%d.json", here, who ~= "" and who or "someone", os.date("!%Y%m%d-%H%M%SZ"), tomb_seq), { names = new, by = user })
+    band.log(string.format("%d recording%s deleted from %s's media here (%s%s): the cloud copy won't bring %s back", n_new, n_new == 1 and "" or "s", room,
+      next(new), n_new > 1 and ", ..." or "", n_new == 1 and "it" or "them"))
+  end
+  local skip, moved = {}, 0
+  for f in pairs(tomb) do
+    if not used[f] then
+      skip[f] = true
+      -- (moved by the computer whose recording it is, or by any when nobody's known: two moving one at once leaves a "(1)" copy in _trash at worst)
+      if inB[f] and (owners[f] == nil or owners[f] == user) then
+        local from, to = there .. "/media/" .. f, there .. "/_trash/media/" .. f
+        reaper.RecursiveCreateDirectory(there .. "/_trash/media", 0)
+        if os.rename(from, to) or (band.size(to) == band.size(from) and os.remove(from)) then moved = moved + 1 end
+      end
+    end
+  end
+  return skip, moved
+end
+
 -- One pass for one room. Copying stops once `budget` seconds have gone (big FLACs on a slow link): the next pass
 -- carries on. Returns files copied or moved, and whether work is left.
 function drive.mirror(here, there, budget, user, wait)
@@ -372,7 +484,8 @@ function drive.mirror(here, there, budget, user, wait)
   local owners = drive.media_owners(events, here:match("([^/]+)$"))
   longer = drive.longer_names(events, user)
   -- (recall/known: a saved version's map, beside it since 0.59.46: one brought back from the cloud restored by time. Round 3 review, 0.59.48)
-  for _, sub in ipairs({ "trimmed", "events", "recall", "recall/known", "midi", "media" }) do -- (media: recordings and prints the items use)
+  -- (deleted: tombstones, before media so a pass has the cloud's before it copies any recording)
+  for _, sub in ipairs({ "trimmed", "events", "recall", "recall/known", "midi", "deleted", "media" }) do -- (media: recordings and prints the items use)
     local A, B = {}, {}
     for _, f in ipairs(band.files(here .. "/" .. sub)) do if not arriving(f) then A[#A + 1] = f end end
     -- (the Drive side's listing, kept 30 s: listing a cloud drive's folders is the slow part, and in a quiet room every pass listed all five
@@ -386,8 +499,13 @@ function drive.mirror(here, there, budget, user, wait)
     local inA, inB = {}, {}
     for _, f in ipairs(A) do inA[f] = true end
     for _, f in ipairs(B) do inB[f] = true end
+    local skip = {} -- (deleted recordings: copied neither way)
     if sub == "media" then -- (prints a trim archived: left where each side has them, not brought back from Drive)
       for f in pairs(select(2, trimmed(here .. "/trimmed"))) do inA[f], inB[f] = true, true end
+      local moved
+      skip, moved = media_deletes(here, there, A, inA, inB, user, owners, t0 + (budget or 1.5))
+      if not skip then return n, true end
+      if moved > 0 then n, drive.listed[td] = n + moved, nil end
     end
     if sub == "events" then -- trimmed: not brought back from Drive, and gone from it once whoever made them sees that
       for f in pairs(trimmed(here .. "/trimmed")) do -- ("trimmed" goes first: a list may have just come from Drive)
@@ -396,20 +514,25 @@ function drive.mirror(here, there, budget, user, wait)
       end
     end
     for _, f in ipairs(A) do
-      if not inB[f] and (sub == "media" and owners[f] == user or due(here .. "/" .. sub .. "/" .. f, f, user, wait)) then
+      if not inB[f] and not skip[f] and (sub == "media" and owners[f] == user or due(here .. "/" .. sub .. "/" .. f, f, user, wait)) then
         if out_of_time() then return n, true end
         copy(here .. "/" .. sub .. "/" .. f, there .. "/" .. sub .. "/" .. f)
       end
     end
     if n ~= n_before then drive.listed[td] = nil end
     if fresh and tidy(td) > 0 then drive.listed[td] = nil end -- (Drive's "name (1).ext" copies: looked for with the listing, not every pass)
+    local got = {}
     for _, f in ipairs(B) do
-      if not inA[f] then
+      if not inA[f] and not skip[f] then
         if out_of_time() then return n, true end
         local k = n
         copy(there .. "/" .. sub .. "/" .. f, here .. "/" .. sub .. "/" .. f)
-        if sub == "media" and n > k then drive.landed[#drive.landed + 1] = here .. "/media/" .. f end
+        if sub == "media" and n > k then drive.landed[#drive.landed + 1] = here .. "/media/" .. f; got[#got + 1] = f end
       end
+    end
+    if sub == "media" and #A > 0 then -- (what's here now, for the next pass to tell a delete by. An empty folder keeps the last: media_deletes)
+      for _, f in ipairs(A) do got[#got + 1] = f end
+      set_seen(here:gsub("\\", "/"):lower(), got)
     end
   end
   -- plug-in chains: rewritten by their owner, so a differing copy is only refreshed where it's missing (Syncthing
