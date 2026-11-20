@@ -373,16 +373,20 @@ int main()
     const double base = 45 - std::min(15.0, std::max(0.0, over / 2));
     printf("the same wire without spikes: need %.1f ms of %.0f, so each way %.1f ms\n", need0, budget, base);
     CHECK(need0 > 0 && over <= 30, "the link without spikes within 30 ms of the margin (or the runner's too slow for this check)");
-    Result r = tries([&] { return run(7, base, 3, 0, 0, 6, "studio", 0, 0, 0, 1.3, 40); }, clean);
+    // (a harness stall shorter than the spikes is one more spike, which the checks' room covers: Linux has ~99% exact and 4-6 holes. The
+    // hosted Mac stalls 18-41 ms several times a run, so no run of it was ever free of them)
+    auto spiky = [](const Result &x) { return x.hiccup_ms < 40; };
+    Result r = tries([&] { return run(7, base, 3, 0, 0, 6, "studio", 0, 0, 0, 1.3, 40); }, spiky);
     report("a 90 ms round trip, a 40 ms spike on the way out every 1.3 s", r);
+    if (r.hiccup > 0) printf("  (the harness's own worst stall: %.0f ms)\n", r.hiccup_ms);
     CHECK(r.wrong == 0, "nothing misaligned through the spikes");
-    if (r.hiccup == 0) {
+    if (spiky(r)) {
       CHECK(num(r.rst, "slips") == 0, "a spike isn't drift: no slip");
       CHECK(exact_pct(r) > 94, "a spike costs only its own packets");
       CHECK(num(r.sst, "holes") >= 1 && num(r.sst, "holes") <= 10, "about a dropout a spike, counted");
     } else {
-      printf("  (the harness stalled in every try, %.0f ms the last: the spike checks need a run without one)\n", r.hiccup_ms);
-      CHECK(!strict(), "a spike run without a harness stall (SS_TIMING_STRICT)");
+      printf("  (the harness stalled longer than a spike in every try, %.0f ms the last: the spike checks need a run without one)\n", r.hiccup_ms);
+      CHECK(!strict(), "a spike run without a harness stall longer than a spike (SS_TIMING_STRICT)");
     }
   }
   // REAPER at the start of playback processes the hop's whole latency at once (its delay compensation lining up) and stays that far
