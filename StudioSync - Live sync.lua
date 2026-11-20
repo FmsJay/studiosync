@@ -230,6 +230,7 @@ local function mark_room(on)
 end
 reaper.atexit(function()
   band.try("liveaudio.on_exit", require("liveaudio").on_exit, proj) -- (live audio stops with the Live sync that started it: lib/liveaudio.lua. James, rt)
+  band.try("hops.on_exit", require("hops").on_exit, proj, cfg) -- (live hops stop with it, on both sides: lib/hops.lua. James, rt)
   if click and reaper.GetToggleCommandStateEx(0, 40364) == 1 then reaper.Main_OnCommand(40364, 0) end -- (stopped mid count-in: the click left on. 0.58.92)
   -- (only while the tab still holds this session: another project opened into it was saved as this song's "end of session" version, exported
   -- with its media to the studio's cloud drive, and read for the local-work mark. Otherwise the last look's answer, and nothing saved.
@@ -993,6 +994,8 @@ local live_handlers = {
   media_want = function(d) require("streams").on_media_want(cfg, b, d) end,
   -- (a bandmate's Ableton Link state: their Link apps and ours line up on the bar. lib/ablink.lua. James, rt)
   ablink = function(d) require("ablink").on_msg(cfg, b, proj, d) end,
+  -- (live hops: a bandmate asks this computer to host a plug-in they don't have, or stops; lib/hops.lua. James, rt)
+  hop = function(d) require("hops").on_msg(proj, cfg, d, b.song, b.room) end,
 }
 live_handlers.start, live_handlers.stop = live_handlers.cue, live_handlers.cue
 local function tick_body() -- returns true to keep going
@@ -1075,6 +1078,7 @@ local function tick_body() -- returns true to keep going
   if dok and (arrived or 0) > 0 then cue_left, quick_at, last, direct_in_at, direct_held = true, -math.huge, -math.huge, reaper.time_precise(), true end
   band.try("ablink.tick", require("ablink").tick, cfg, b, proj) -- (this computer's Ableton Link session, when it's on here. James, rt)
   band.try("liveaudio.tick", require("liveaudio").tick, cfg, b, proj) -- (live audio over the link, when the studio has it on: lib/liveaudio.lua. James, rt)
+  band.try("hops.tick", require("hops").tick, cfg, b, proj) -- (live hops, both sides: lib/hops.lua. James, rt)
   band.try("webui.tick", require("webui").tick, proj, cfg, b, live_handlers) -- (the web UI: who's here, claims and chat for the browser, its chat sends. lib/webui.lua, James, rt)
   local tjson = reaper.GetExtState(band.SECTION, "transport " .. key) -- a start/stop from the panel or the band
   if tjson ~= "" then

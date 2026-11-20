@@ -621,6 +621,8 @@ function direct.health_rows(cfg)
   if aok and arow then rows[#rows + 1] = arow end
   local lok, lrow = pcall(function() return require("liveaudio").health_row(cfg) end) -- (live audio per bandmate, when the studio has it on: lib/liveaudio.lua. James, rt)
   if lok and lrow then rows[#rows + 1] = lrow end
+  local hok, hrows = pcall(function() return require("hops").health_rows(cfg) end) -- (a row per live hop, either side: lib/hops.lua. James, rt)
+  if hok then for _, r in ipairs(hrows or {}) do rows[#rows + 1] = r end end
   return rows
 end
 
