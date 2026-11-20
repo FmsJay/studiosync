@@ -311,9 +311,11 @@ end
 local S = { want_until = -math.huge }
 local info = setmetatable({}, { __mode = "k" }) -- event (recall's cached table) -> webhistory.detail's; kept as long as recall keeps it
 function webhistory.info(ev) return info[ev] end
--- An action a page sent ({ topic = "history", want }): only ever "I'm looking" or "not any more". Nothing on this page changes the song.
-function webhistory.action(_, _, _, a)
+-- An action a page sent ({ topic = "history", want }): "I'm looking" or "not any more". Hearing a point, A/B and Restore (the History page's
+-- hear-it-as-it-was panel, lib/webui/histhear.js) are lib/histhear.lua's. The time lapse itself changes nothing.
+function webhistory.action(proj, cfg, b, a)
   if type(a) ~= "table" then return end
+  if a.hear ~= nil or a.cancel ~= nil or a.restore ~= nil then return require("histhear").action(proj, cfg, b, a) end
   local now = reaper.time_precise()
   if a.want == true then S.want_until = now + webhistory.WANT_FOR elseif a.want == false then S.want_until = -math.huge end
 end
@@ -334,6 +336,7 @@ end
 
 -- Each tick in front, while a page looks. publish(topic, table) sends only what changed.
 function webhistory.tick(proj, cfg, b, publish, now)
+  require("histhear").tick(proj, cfg, b, publish, now) -- (a preview rendering goes on, and comes in, whatever page is shown)
   if now >= S.want_until then return end
   local key = b.song .. "/" .. b.room
   if S.key ~= key then S = { want_until = S.want_until, key = key, at = -math.huge, queue = {}, qi = 1 } end

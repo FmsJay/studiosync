@@ -261,7 +261,7 @@ local function clear(dir, into)
   os.remove(dir)
 end
 local started = reaper.time_precise()
-local proj, dir, pass, last, at
+local proj, dir, pass, last, at, prepped
 local function step()
   if not dir then
     local p, path = reaper.EnumProjects(-1)
@@ -270,6 +270,12 @@ local function step()
     return reaper.defer(step)
   end
   if at and reaper.time_precise() < at then return reaper.defer(step) end
+  -- (a job's own set-up first, when it brings one: lib/histhear.lua's song as it was sets lanes, takes, track settings and the render. rt-history)
+  if not prepped then
+    prepped = true
+    local f = loadfile(dir .. "/prep.lua")
+    if f then pcall(f, proj); at = reaper.time_precise() + 1; return reaper.defer(step) end
+  end
   -- (selected items to render and none selected: REAPER's "Nothing to render!" box, where nobody sees it, until the job counted as stuck
   -- (3 minutes) and blamed a plug-in. Said at once instead: the print renders in front. Review, 0.59.19)
   local items = math.floor(reaper.GetSetProjectInfo(proj, "RENDER_SETTINGS", 0, false)) & 32 ~= 0 or reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 0, false) == 4

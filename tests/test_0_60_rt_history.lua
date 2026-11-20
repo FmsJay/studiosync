@@ -256,6 +256,7 @@ package.loaded.recall = {
 package.loaded.people = { colours = function() return {} end }
 package.loaded.dawview = { shown = function() return true end }
 package.loaded.mirror = { track_oid = function() return "T-A-1" end }
+package.loaded.histhear = { tick = function() end, action = function() end } -- (hearing a point and Restore: tests/test_0_60_rt_histhear.lua)
 reaper.CountTracks = function() return 1 end
 reaper.GetTrack = function() return {} end
 reaper.GetTrackName = function() return true, "Drums" end

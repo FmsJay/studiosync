@@ -5404,7 +5404,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       if ok then
         mirror.hlc_seen(last and last.hlc)
         local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id,
-          undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all }
+          undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, act = opts.act }
         local id = sync.post(cfg, song, room, ev)
         remember(proj, p.oid, ev.rev, nh, id, mirror.order_of(ev))
         done = done + 1
@@ -5417,7 +5417,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       if ok then
         mirror.hlc_seen(last and last.hlc)
         local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id,
-          undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, revived = (last and last.gone and last.user ~= cfg.user) or nil }
+          undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, revived = (last and last.gone and last.user ~= cfg.user) or nil, act = opts.act } -- (act: a History page restore is one act, rt-history)
         local id = sync.post(cfg, song, room, ev)
         remember(proj, p.oid, ev.rev, nh, id, mirror.order_of(ev))
         done = done + 1
@@ -5429,7 +5429,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       -- again as a change of its own. 0.59.14, review)
       if not mirror.apply(proj, { obj = kind, oid = p.oid, gone = true, track = last and last.track }, media, opts.local_mix) then waiting = waiting + 1; return end
       mirror.hlc_seen(last and last.hlc)
-      local gev = { type = "obj", obj = kind, oid = p.oid, rev = mirror.next_rev(rev, owned(last and last.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, gone = true, undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all,
+      local gev = { type = "obj", obj = kind, oid = p.oid, rev = mirror.next_rev(rev, owned(last and last.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, gone = true, undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, act = opts.act,
         name = last and last.name, track = last and last.track, pos = last and last.pos } -- (named: read later, it said "an unnamed track")
       local id = sync.post(cfg, song, room, gev)
       remember(proj, p.oid, gev.rev, "", id, mirror.order_of(gev))
