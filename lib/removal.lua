@@ -47,7 +47,34 @@ function removal.publish(root, user, id, ts, keep)
   for k, v in pairs(had) do if type(k) == "string" and type(v) == "string" and k == keep then names[k] = v end end
   if ts then names[ts[1]] = ts[2] end
   reaper.RecursiveCreateDirectory(devices(root), 0)
-  band.write_json(path, { user = user, device = id, ts = next(names) and names or nil, nat = n })
+  local out = { user = user, device = id, ts = next(names) and names or nil, nat = n }
+  -- (fields this version doesn't know, from this computer's own earlier file: another StudioSync version on the same computer, in another
+  -- studio, may write the file too; nothing it adds is stripped. rt-nat3)
+  if type(d) == "table" and d.device == id then for k, v in pairs(d) do if out[k] == nil and k ~= "ts" and k ~= "nat" then out[k] = v end end end
+  band.write_json(path, out)
+end
+-- This computer's entry in every studio's devices file, at most every 30 s, on a gate of its own (rt-nat3). It used to run inside
+-- removal.tick behind "removal look", which an older StudioSync shares: a person in two studios on two versions (main's in one, this one in
+-- the other) had the older code take that slot every time, and its publish has no `nat`, so this computer's key never reached its devices
+-- file and nobody paired with it. Each version keeps its own slot now; the file still has one writer, this computer.
+removal.PUBLISH_KEY = "devices publish rt"
+function removal.publish_all(now)
+  now = now or os.time()
+  if now - (tonumber(reaper.GetExtState(band.SECTION, removal.PUBLISH_KEY)) or 0) < 30 then return end
+  reaper.SetExtState(band.SECTION, removal.PUBLISH_KEY, tostring(now), false)
+  local services = require("services")
+  local me, id = reaper.GetExtState(band.SECTION, "user"), services.my_device_id()
+  if not id or me == "" then return end
+  local ts -- (this computer's name on the Tailscale network it's on now: { suffix, name })
+  do
+    local ok, _, suffix = pcall(services.tailnet_now)
+    local name = ok and suffix and services.my_tailscale_name()
+    if name and name:sub(-#suffix - 1) == "." .. suffix then ts = { suffix, name } end
+  end
+  for _, g in ipairs(band.bands()) do
+    local okn, net = pcall(function() return require("groups").tailnet(g.root) end)
+    pcall(removal.publish, g.root, me, id, ts, okn and net and net.suffix or nil)
+  end
 end
 
 -- Whether the minute is up. Pure.
@@ -406,6 +433,7 @@ removal.rotate = rotate -- (for tests)
 -- Run every so often by Autostart and Live sync (at most every 30 s between them). The marks' work on this computer, once each.
 function removal.tick(now)
   now = now or os.time()
+  removal.publish_all(now) -- (its own gate: see there)
   if now - (tonumber(reaper.GetExtState(band.SECTION, "removal look")) or 0) < 30 then return end
   reaper.SetExtState(band.SECTION, "removal look", tostring(now), false)
   local services = require("services")
@@ -414,17 +442,7 @@ function removal.tick(now)
   pcall(services.pin_tailnet, services.my_device_id()) -- (studios that sync only through their Tailscale network: from the names published below)
   local me, id = reaper.GetExtState(band.SECTION, "user"), services.my_device_id()
   local told = ""
-  local ts -- (this computer's name on the Tailscale network it's on now: { suffix, name })
-  do
-    local ok, _, suffix = pcall(services.tailnet_now)
-    local name = ok and suffix and services.my_tailscale_name()
-    if name and name:sub(-#suffix - 1) == "." .. suffix then ts = { suffix, name } end
-  end
   for _, g in ipairs(band.bands()) do
-    if id and me ~= "" then
-      local okn, net = pcall(function() return require("groups").tailnet(g.root) end)
-      removal.publish(g.root, me, id, ts, okn and net and net.suffix or nil)
-    end
     if me ~= "" and not require("groups").is_old(g.root) then pcall(require("localcopy").publish_holds, g.root, me) end
     for _, m in ipairs(all_marks(g.root)) do
       if m.user == me or (id and m.device == id) then

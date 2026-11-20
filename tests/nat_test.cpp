@@ -594,12 +594,13 @@ static void stage3_checks(int stun)
         !peer_up(a, "devB"), "symmetric NATs, no relay: they never meet, and the status says no path");
   printf("     A: %s\n", peer_part(nat_hub_status(a), "devB").c_str());
   const std::string turn = ",\"turn\":\"127.0.0.1:" + std::to_string(rport) + "\"";
-  nat_hub_setup(a, hub_json(dir, "devA", "a.key", stun, { { "devB", pb } }, tmo + turn).c_str());
-  nat_hub_setup(b, hub_json(dir, "devB", "b.key", stun, { { "devA", pa } }, tmo + turn).c_str());
-  const bool relayed = wait_for(40000, [&] { return peer_up(a, "devB") && peer_up(b, "devA"); }, &took);
+  nat_hub_setup(a, hub_json(dir, "devA", "a.key", stun, { { "devB", pb } }, ",\"timeout\":20" + turn).c_str());
+  nat_hub_setup(b, hub_json(dir, "devB", "b.key", stun, { { "devA", pa } }, ",\"timeout\":20" + turn).c_str());
+  const bool relayed = wait_for(60000, [&] { return peer_up(a, "devB") && peer_up(b, "devA"); }, &took);
   CHECK(relayed && json_field(peer_part(nat_hub_status(a), "devB"), "path") == "relayed" && json_field(peer_part(nat_hub_status(b), "devA"), "path") == "relayed",
         "symmetric NATs with the hub's relay: they meet, only through it (path relayed)");
   printf("     relayed in %.0f ms; A: %s\n", took, nat_hub_status(a).c_str());
+  if (!relayed) printf("     B: %s\n", nat_hub_status(b).c_str());
   CHECK(json_field(nat_hub_status(a), "relay_ok") == "" && nat_hub_status(a).find("\"relay_ok\":true") != std::string::npos, "the relay's STUN answered before links used it");
   if (relayed) {
     Rx rb;

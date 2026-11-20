@@ -44,6 +44,14 @@ The extension's version isn't raised.
   up in the router (StudioSync never changes a router or firewall)." On the others, when the hub's relay doesn't answer: "its router may not
   forward UDP 47298-47314 to it yet". The direct link's row says "without Tailscale, relayed by <hub>".
 
+## Fix: the NAT entry's publish on a gate of its own (found in the stage 2 test between real computers)
+The desktop never put its NAT key in `_band/devices/James.json`: it also runs main's StudioSync for another studio, both versions'
+`removal.tick` share one 30 s gate (ExtState "removal look"), main's took the slot every time, and its publish writes no `nat`. Now
+`removal.publish_all` (lib/removal.lua) publishes this computer's devices entry in every studio at most every 30 s on its own gate
+("devices publish rt"), called first thing in `removal.tick` whoever holds the shared slot. The file still has one writer (this computer);
+a field it doesn't know, in this computer's own earlier file, is kept. An older version that rewrites the file (main does only when its
+Tailscale name changes) drops `nat`; the next pass, within 30 s, puts it back. Test: `tests/test_0_60_rt_nat3_publish.lua`.
+
 ## Files
 - `extension/nat.cpp`, `extension/nat.h`: the relay (`relay_tick`, `nat_relay_pass`, `nat_relay_caps`, `nat_relay_sendto`), the hub's
   relay use (`turn`, `relay_ok` from `probe`), signalling (`carry_on`, `hub_carry`, `send_signal`, `box_signal`, `hub_signal_rx`, the inbox
