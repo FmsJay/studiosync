@@ -637,6 +637,8 @@ function direct.health_rows(cfg, b)
   if lok and lrow then rows[#rows + 1] = lrow end
   local hok, hrows = pcall(function() return require("hops").health_rows(cfg) end) -- (a row per live hop, either side: lib/hops.lua. James, rt)
   if hok then for _, r in ipairs(hrows or {}) do rows[#rows + 1] = r end end
+  local kok, krow = pcall(function() return require("controllers").health_row(cfg) end) -- (shared controllers: who's moving what live. lib/controllers.lua. James, rt)
+  if kok and krow then rows[#rows + 1] = krow end
   return rows
 end
 
@@ -654,6 +656,7 @@ function direct.studio_ui(ctx, ImGui, cfg, may)
     end
     ImGui.SetItemTooltip(ctx, "Owner and admins. Needs StudioSync's extension " .. direct.WANT .. " and Tailscale on each computer (Health says what's missing).")
   end
+  require("controllers").studio_ui(ctx, ImGui, cfg, may) -- (faders and knobs moving live for everyone, on unless turned off: lib/controllers.lua. James, rt)
   require("liveaudio").studio_ui(ctx, ImGui, cfg, may) -- (live audio over the link, off unless the studio turns it on: lib/liveaudio.lua. James, rt)
   require("joins").studio_ui(ctx, ImGui, cfg, may) -- (signed invitations the link lets in by itself, and revoking them: lib/joins.lua. James, rt)
   -- (signed updates: the owner signs each version with a key kept on their computer, and every computer checks it before it runs. James, rt)

@@ -435,6 +435,7 @@ function P.who(t)
       hold = hold, local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1", held = reaper.GetExtState(band.SECTION, "held " .. tostring(proj)) })
   end)
   t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold = s, can, who, driver, others, alone, my_can, hold
+  require("controllers").pass = t -- (who may move which fader live, sent or shown: lib/controllers.lua. James, rt)
 end
 function P.look(t)
   local s, can, who, driver, others, alone, my_can, hold, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.hold, t.now, t.rooms
@@ -1016,6 +1017,8 @@ local live_handlers = {
   -- (what a bandmate you follow sees, and what someone is editing right now: lib/follow.lua. James, rt)
   view = function(d) require("follow").on_view(cfg, d) end,
   editing = function(d) require("follow").on_editing(cfg, d) end,
+  -- (a bandmate's fader, pan, mute or plug-in knob as they move it: lib/controllers.lua. James, rt)
+  ctl = function(d) require("controllers").on_msg(proj, cfg, b, d) end,
 }
 live_handlers.start, live_handlers.stop = live_handlers.cue, live_handlers.cue
 local function tick_body() -- returns true to keep going
@@ -1096,6 +1099,7 @@ local function tick_body() -- returns true to keep going
   together.tick()
   -- (the direct link: an event file that arrived brings a receive pass and a cue look now, not in up to 2 s; messages go where they belong)
   local dok, arrived = band.try("direct.live_tick", direct.live_tick, cfg, b.song, b.room, live_handlers)
+  band.try("controllers.tick", require("controllers").tick, proj, cfg, b) -- (faders and knobs you move go out live: lib/controllers.lua. James, rt)
   if dok and (arrived or 0) > 0 then cue_left, quick_at, last, direct_in_at, direct_held = true, -math.huge, -math.huge, reaper.time_precise(), true end
   band.try("ablink.tick", require("ablink").tick, cfg, b, proj) -- (this computer's Ableton Link session, when it's on here. James, rt)
   band.try("liveaudio.tick", require("liveaudio").tick, cfg, b, proj) -- (live audio over the link, when the studio has it on: lib/liveaudio.lua. James, rt)
@@ -1412,6 +1416,7 @@ tick = function()
     go = true
   end
   if open and reaper.ValidatePtr2(0, proj, "ReaProject*") then took_in() end -- (what this tick changed was StudioSync's, not you editing)
+  if open and reaper.ValidatePtr2(0, proj, "ReaProject*") then band.try("controllers.settle", require("controllers").settle, proj) end -- (and not a fader move of yours)
   local took = reaper.time_precise() - t0
   if took > 0.15 then
     lap("rest")

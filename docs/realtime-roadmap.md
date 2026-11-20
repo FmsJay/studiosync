@@ -736,6 +736,36 @@ it's the patient, lossless, store-and-forward half.
    plays the live session or the latest mix, peer to peer over Tailscale.
 5. **Shared controllers.** One person's control surface or MIDI controller moving faders and knobs in everyone's
    session (through the live layer and claims).
+   - **Built (rt-controllers, 2026-11-19; offline tests only, not run in REAPER yet):** `lib/controllers.lua`, tests/test_0_60_rt_controllers.lua.
+     - **What goes:** the tab in front reads every mirrored track's volume, pan and mute each Live sync tick, and the plug-in knob REAPER says
+       was last touched (`GetTouchedOrFocusedFX`, and any touched in the last 3 s), so the mouse, a control surface, a MIDI-learned controller
+       and OSC all count. A change since the last reading is yours: at the tick's end what StudioSync itself wrote (a receive pass, a put-back)
+       is read again (`controllers.settle`, beside Live sync's took_in), so the band's changes never go back out. A `ctl` link message carries
+       each moving control's latest value at most 20 times a second, and "let go" 0.5 s after it last moved. Plug-ins go by their place in
+       the band's chain (this computer's translations, drum maps and live hops don't count), only track FX outside containers.
+     - **Only what you may change:** sync.authority's rule and the maker's, as mirror.watch judges a change; nothing with Hold my changes on,
+       nor faders and pan under Local mixing (mute still goes, as it does in the mirror). Each receiver judges the sender again and refuses
+       (counted in Health, said once) what isn't theirs; not shown either on a track writing automation here (Touch, Latch, Write: nothing
+       streamed lands in an envelope; the sender's own automation arrives as the mirror's change, and their moves are labelled "writing
+       automation"), over an unsent change of yours, or your own faders and pan under Local mixing.
+     - **A preview the mirror confirms:** while a move is shown and until the band's change for that track (or its plug-ins) lands (its
+       revision moves past the last move shown), mirror.watch leaves the object alone (`mirror.previewing`): neither sent as yours nor put
+       back. Nothing from the band within 20 s (a control surface's change may wait for the 10 s look): the value before it comes back.
+     - **Holds:** whoever started moving a control first holds it until they let go (1.5 s without a move if the let-go is lost); a move of
+       yours on it meanwhile goes back to theirs, said once ("Bo has Bass pan"). Two starting together: the earlier start on the shared clock,
+       then the name, the same everywhere. Health: "Shared controllers: Bo moving Bass volume; N moves sent, N shown".
+     - **Settings > Studio > Direct link:** Shared controllers (owner and admins, band.json `shared_controllers`, on unless false). Off: nothing
+       is read or sent, and moves that arrive aren't shown.
+     - **Not streamed:** solo (each person's own), the master (its fader is each listener's level), width, sends, take FX, plug-ins in a
+       container, a knob an envelope plays (while playing) or a modulator moves. Cost with nothing moving: six reads a track a tick (the look and
+       the settle) in the tab in front, one last-touched read, nothing sent; nothing at all with nobody here or in a tab behind.
+     - **To check in REAPER (desktop + laptop):** Live sync on both, the same song; drag a fader on the desktop: the laptop's moves along
+       within ~50-100 ms, and the normal sync's change lands after the drop (Health: moves sent / shown). On the laptop, map a MIDI CC to a
+       track's volume and an FX knob (MIDI learn) and drive it from the UR22mkII's looped MIDI out (a CC sweep from a ReaControlMIDI or a
+       script): the desktop follows both. Both grab one fader: the first holds it, the other's springs back with "X has ..." in the log.
+       Claim a track on the laptop: the desktop's moves on it don't go (and nothing changes on the laptop). Touch automation on the laptop's
+       track while the desktop moves it: the laptop's envelope stays untouched. Check D_VOL doesn't move with a playing volume envelope (if it
+       does, playback would stream: then read only while stopped or with no envelope). Settings > Studio: turn it off, moves stop at once.
 6. **Joining without Syncthing's device approval step.** The link can carry the invite and the first copy of the song,
    so a new member is in within seconds.
    - **Design (rt, 2026-11-19).** Today: the joiner pastes a join code (services.join_band: the studio's folder added, paired with the

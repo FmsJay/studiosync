@@ -4168,12 +4168,16 @@ function W.remember_holds(w)
   end
 end
 
+-- proj .. oid -> a bandmate's fader or knob shown here live, their change for it not landed yet: neither sent as yours nor put back (lib/controllers.lua)
+mirror.previewing = mirror.previewing or {}
 -- Every object of a look through W.one. (A function of its own, so the hold-back of one that threw is tested. Round 3 review, 0.59.48)
 function W.each(w)
   for _, o in ipairs(w.objs) do
     w.seen[o.oid] = true
-    local ok, err = pcall(W.one, w, o)
-    if not ok then held_back_set(w.proj, o.oid); w.say_once("err" .. o.oid, "mirror sync skipped " .. o.oid .. ": " .. tostring(err)) end -- (a send that threw: counted. Round 1 review, 0.59.45)
+    if not mirror.previewing[tostring(w.proj) .. o.oid] then
+      local ok, err = pcall(W.one, w, o)
+      if not ok then held_back_set(w.proj, o.oid); w.say_once("err" .. o.oid, "mirror sync skipped " .. o.oid .. ": " .. tostring(err)) end -- (a send that threw: counted. Round 1 review, 0.59.45)
+    end
   end
 end
 -- One pass: what changed here goes out if this person may change it, else the band's version is put back.
