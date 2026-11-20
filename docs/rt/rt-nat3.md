@@ -15,7 +15,7 @@ The extension's version isn't raised.
   - **Credentials from the studio key:** user name = the computer's device id, password = HMAC-SHA256(nat studio key, "StudioSync relay v1\n"
     + id), 32 hex. The hub knows every studio computer with a key (the devices files) and accepts only those; a new studio secret (someone
     removed) makes new passwords and restarts the relay.
-  - **Caps:** at most 16 relayed addresses per computer (one per link) and 64 in all (libjuice's quotas); 1 MB/s sent in all and 256 KB/s to
+  - **Caps:** at most 32 relayed addresses per computer and 128 in all (libjuice's quotas; links ask for one only when they may need it); 1 MB/s sent in all and 256 KB/s to
     any one address (a live-audio stream is ~32 KB/s): beyond that datagrams are dropped at the relay. The rate caps are ours: libjuice's
     server.c is built with `-Dudp_sendto=nat_relay_sendto` (that file only, no source change), so every datagram it sends passes a token bucket
     in nat.cpp first.

@@ -564,18 +564,19 @@ static void stage3_checks(int stun)
   const std::string K = nat_studio_key("the studio secret");
   // the studio hub's relay: libjuice's server, a password per studio computer from the studio secret, one relayed address each here
   NatHub *r = nat_hub_new();
-  CHECK(nat_hub_setup(r, hub_json(dr, "devR", "r.key", stun, {}, ",\"relay\":{\"port\":0,\"users\":[\"devA\",\"devB\",\"devC\"],\"allocs_each\":1}").c_str()) == 0,
+  CHECK(nat_hub_setup(r, hub_json(dr, "devR", "r.key", stun, {}, ",\"relay\":{\"port\":0,\"users\":[\"devA\",\"devB\",\"devC\"],\"allocs_each\":3}").c_str()) == 0,
         "relay: a hub with no peers of its own set up to relay");
   int rport = 0;
   CHECK(wait_for(10000, [&] { rport = (int)sub_num(nat_hub_status(r), "relay", "port"); return rport > 0 && json_field(nat_hub_status(r), "external") == "127.0.0.1"; }),
         "relay: running, on the public address its STUN probe found");
   printf("     relay: %s\n", nat_hub_status(r).c_str());
-  juice_agent_t *held = nullptr;
-  CHECK(gathers_relay(rport, "devC", nat_relay_pass(K, "devC"), &held), "relay: a studio computer's credential (from the studio secret) gets a relayed address");
-  CHECK(!gathers_relay(rport, "devC", nat_relay_pass(K, "devC")), "relay caps: that computer's second address at once is refused (its quota, 1 here)");
+  juice_agent_t *held[3] = {};
+  CHECK(gathers_relay(rport, "devC", nat_relay_pass(K, "devC"), &held[0]), "relay: a studio computer's credential (from the studio secret) gets a relayed address");
+  gathers_relay(rport, "devC", nat_relay_pass(K, "devC"), &held[1]); gathers_relay(rport, "devC", nat_relay_pass(K, "devC"), &held[2]);
+  CHECK(!gathers_relay(rport, "devC", nat_relay_pass(K, "devC")), "relay caps: that computer's fourth address at once is refused (its quota, 3 here)");
   CHECK(!gathers_relay(rport, "devA", nat_relay_pass(nat_studio_key("another studio"), "devA")), "relay: a credential made from another studio's secret is refused");
   CHECK(!gathers_relay(rport, "devZ", nat_relay_pass(K, "devZ")), "relay: a computer that isn't the studio's is refused, even with a well-made password");
-  if (held) juice_destroy(held);
+  for (juice_agent_t *x : held) if (x) juice_destroy(x);
   // two symmetric NATs (each publishes only relayed candidates, and its sockets are on an address of its own, 127.0.0.2 and .3, so nothing
   // on this one computer but the relay joins them: the relay lets in only its own relayed addresses, 127.0.0.1): no path, then through it
   NatHub *a = nat_hub_new(), *b = nat_hub_new();
@@ -613,16 +614,16 @@ static void stage3_checks(int stun)
     CHECK(clean >= 95, "through the relay: 100 sealed datagrams, all (or nearly) arrive");
     // caps: the relay's whole rate cut to 20 KB/s (no restart: the links stay up), then 1 MB sent in ~1 s
     const long long over0 = sub_num(nat_hub_status(r), "relay", "over_cap");
-    nat_hub_setup(r, hub_json(dr, "devR", "r.key", stun, {}, ",\"relay\":{\"port\":0,\"users\":[\"devA\",\"devB\",\"devC\"],\"allocs_each\":1,\"rate\":20000}").c_str());
+    nat_hub_setup(r, hub_json(dr, "devR", "r.key", stun, {}, ",\"relay\":{\"port\":0,\"users\":[\"devA\",\"devB\",\"devC\"],\"allocs_each\":3,\"rate\":20000}").c_str());
     const long long by0 = sub_num(nat_hub_status(r), "relay", "bytes");
     const int capped = burst(1000, 1);
     printf("     relay bytes during the flood: %lld; B: %s\n", sub_num(nat_hub_status(r), "relay", "bytes") - by0, peer_part(nat_hub_status(b), "devA").c_str());
     printf("     capped at 20 KB/s: %d of 1000 arrived, %lld dropped by the relay\n", capped, sub_num(nat_hub_status(r), "relay", "over_cap") - over0);
     CHECK(capped < 150 && sub_num(nat_hub_status(r), "relay", "over_cap") > over0, "relay caps: a flood over the relay's rate is cut to it (the rest dropped there)");
-    nat_hub_setup(r, hub_json(dr, "devR", "r.key", stun, {}, ",\"relay\":{\"port\":0,\"users\":[\"devA\",\"devB\",\"devC\"],\"allocs_each\":1,\"rate_each\":20000}").c_str());
+    nat_hub_setup(r, hub_json(dr, "devR", "r.key", stun, {}, ",\"relay\":{\"port\":0,\"users\":[\"devA\",\"devB\",\"devC\"],\"allocs_each\":3,\"rate_each\":20000}").c_str());
     const int each = burst(1000, 1);
     CHECK(each < 150, "relay caps: and the rate to any one address");
-    nat_hub_setup(r, hub_json(dr, "devR", "r.key", stun, {}, ",\"relay\":{\"port\":0,\"users\":[\"devA\",\"devB\",\"devC\"],\"allocs_each\":1}").c_str());
+    nat_hub_setup(r, hub_json(dr, "devR", "r.key", stun, {}, ",\"relay\":{\"port\":0,\"users\":[\"devA\",\"devB\",\"devC\"],\"allocs_each\":3}").c_str());
     sleep_ms(500);
     CHECK(burst(100, 5) >= 95 && peer_up(a, "devB"), "the caps back to normal: the same link carries everything again");
     nat_set_rx(b, nullptr, nullptr);

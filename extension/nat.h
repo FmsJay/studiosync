@@ -30,8 +30,8 @@
 #define NAT_RELAY_PORTS 16
 #define NAT_RELAY_RATE (1024 * 1024)      // bytes a second the relay sends in all (a live-audio stream is ~32 KB/s): beyond it, dropped
 #define NAT_RELAY_RATE_EACH (256 * 1024)  // bytes a second to any one address
-#define NAT_RELAY_ALLOCS 64               // relayed addresses at once in all
-#define NAT_RELAY_ALLOCS_EACH NAT_PORTS   // per computer (one per link)
+#define NAT_RELAY_ALLOCS 128              // relayed addresses at once in all
+#define NAT_RELAY_ALLOCS_EACH 32          // per computer (a link's lasts 10 min after the link goes: libjuice never frees one early)
 
 struct NatKeys { unsigned char pub[32], priv[32]; };
 bool nat_random(void *p, size_t n); // the system's CSPRNG

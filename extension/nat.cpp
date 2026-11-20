@@ -1330,7 +1330,11 @@ static std::shared_ptr<LinkBox> make_box(NatHub *h, HubPeer &p, const std::strin
   c.folder = h->folder; c.me = h->me; c.peer = p.dev; c.secret = h->secret; c.my_static = h->keys;
   memcpy(c.peer_static, p.pub, 32);
   if (!h->stun.empty()) { c.stun_host = h->stun[0].first; c.stun_port = h->stun[0].second; }
-  if (!h->turn_host.empty() && h->relay_ok && !h->relay.on) { // (stage 3: the studio hub's relay, once its STUN has answered)
+  // (stage 3: the studio hub's relay, once its STUN has answered, and only for a link that may need it: this computer's NAT is strict or
+  // blocked, or the last try to this peer found no path. libjuice never gives an allocation back when a link goes; it lasts its 10 min,
+  // so every link made again would hold one more of this computer's quota)
+  const bool may_need = h->kind == "strict" || h->kind == "blocked" || p.nopath || h->only == 1;
+  if (!h->turn_host.empty() && h->relay_ok && !h->relay.on && may_need) {
     c.turn_host = h->turn_host; c.turn_port = h->turn_port;
     c.turn_user = h->me; c.turn_pass = nat_relay_pass(h->K, h->me);
   }
