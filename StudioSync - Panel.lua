@@ -3242,6 +3242,7 @@ function F.page(t)
       ui.rt_switch(not ui.rt_kind())
     elseif want == "chat" then page = "Chat"
     elseif want:match("^history") then page = "Restore"
+    elseif want:match("^restore ") then page = "Restore"; restore.open_version(want:sub(9)) -- (the web UI's Song history: that version's row opened, its buttons ask as ever)
     -- (the bindable actions, power-user review 0.58.62: each does what its control on the panel does)
     elseif want == "hold" then
       local on = select(2, reaper.GetProjExtState(proj, band.SECTION, "hold")) == ""

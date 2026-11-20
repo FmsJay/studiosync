@@ -285,6 +285,7 @@ local status_info -- (the status as last written: tick_body says "recording" wit
 local paint_at = -math.huge -- when tracks were last coloured for who's working on them
 local format_at = -math.huge -- when the recording format was last checked
 local followed = false -- someone follows this computer: its mix goes in the status (lib/presence.lua)
+local watched = false -- someone has the web UI's Song page open: the view and cursor go in the status for it to draw (lib/dawview.lua, James, rt)
 -- (opening it: its first catch-up goes faster, then its peaks. lib/sync.lua. Published as "loading <proj>" now, not at the first receive: a panel
 -- save in between was mapped though still behind. Round 4 review, 0.59.49)
 if sync.begin_loading then sync.begin_loading(proj) else sync.loading[tostring(proj)] = true end
@@ -704,6 +705,8 @@ function P.presence(t)
     if follow ~= "" then presence.follow(proj, peers, follow); t.redraw = true end -- (their view and cursor: always redrawn while following)
     if presence.follow_mix(proj, peers, follow, { cfg = cfg, song = b.song, room = b.room }) then t.redraw = true end -- (and their mix, till you stop: 0.58.82)
     followed = presence.followed(peers, cfg.user, driver)
+    watched = false
+    for _, st in ipairs(peers) do watched = watched or st.dawview == true end
     -- tracks in the colour of who's working on them, if this machine wants that (lib/people.lua; shown here only)
     if now - paint_at > 1 then paint_at = now; if require("people").paint(proj, cfg, peers, who.tracks, b.song .. "/" .. b.room) then t.redraw = true end end
     if now - format_at > 10 and reaper.GetPlayStateEx(proj) == 0 then -- (stopped: not mid-take, nor while playing. Review, 0.58.87) -- (everyone records 24-bit FLAC at the project's rate: lib/prep.lua; never mid-recording)
@@ -735,7 +738,7 @@ function P.status(t)
     front = reaper.EnumProjects(-1) == proj, mirror = s and s.sync == "mirror" and (t.mirror_root or require("mirror").root(proj)) or nil,
     -- (the view and the cursor only while someone follows you, their one reader (presence.follow): each scroll or click rewrote this file and
     -- Syncthing sent it to everyone. Being followed puts them in at once, as the follower's own status shows it. 0.59.14, review)
-    editing = require("presence").editing(proj), view = followed and require("presence").view(proj) or nil, ping = require("presence").my_ping(proj),
+    editing = require("presence").editing(proj), view = (followed or watched) and require("presence").view(proj) or nil, ping = require("presence").my_ping(proj),
     last_track = reaper.GetExtState(band.SECTION, "last_track " .. tostring(proj)), last_at = tonumber(reaper.GetExtState(band.SECTION, "last_at " .. tostring(proj))),
     follow = reaper.GetExtState(band.SECTION, "follow " .. tostring(proj)), follow_driver = reaper.GetExtState(band.SECTION, "follow driver") ~= "" or nil,
     listen = reaper.GetExtState(band.SECTION, "listen " .. tostring(proj)),
@@ -744,7 +747,8 @@ function P.status(t)
     lets = require("producer").lets_for(proj) } -- (whoever produces me may start and stop my transport: their panel shows its buttons)
   if info.follow == "" then info.follow = nil end
   if followed then info.mix = require("presence").my_mix(proj) end -- (someone follows you: they hear your mix. lib/presence.lua)
-  if followed and not info.playing then info.cursor = math.floor(reaper.GetCursorPositionEx(proj) * 1000 + 0.5) / 1000 end -- (followers' cursors go here: lib/presence.lua)
+  if (followed or watched) and not info.playing then info.cursor = math.floor(reaper.GetCursorPositionEx(proj) * 1000 + 0.5) / 1000 end -- (followers' cursors go here: lib/presence.lua)
+  info.dawview = require("dawview").watching() or nil -- (a page here shows the Song page: bandmates send their view and cursor meanwhile)
   -- (what live audio you're in, for the little icons on your card: Real time mode or Time-sync, and the call. James, 0.59.8)
   info.live = live.realtime_on(proj) and "rt" or (live.ninjam_master(proj) and select(2, reaper.GetProjExtState(proj, band.SECTION, "live_mode")) ~= "jam" and "ts") or nil
   info.call = select(2, reaper.GetProjExtState(proj, band.SECTION, "call")) == "1" and (live.sonobus_online(proj)) or nil
