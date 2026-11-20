@@ -31,6 +31,10 @@ jobs:
             codesign -s - "reaper_$p.dylib"
             lipo -info "reaper_$p.dylib"
           done
+      # (kept before the tests: the hosted Mac runner's timing tests fail now and then (stalls of 100 ms+), and the build of a run whose code
+      # passed on a real Mac was lost with them. A failing test still fails the run. rt)
+      - uses: actions/upload-artifact@v4
+        with: { name: mac, path: "*.dylib" }
       - name: The direct link's own test (tests/direct_test.cpp, on localhost)
         run: |
           clang++ -std=c++17 -O2 -DDIRECT_STANDALONE tests/direct_test.cpp extension/direct.cpp extension/direct_audio.cpp -o direct_test
@@ -61,8 +65,6 @@ jobs:
           cc -O2 -Wall -arch arm64 -arch x86_64 -mmacosx-version-min=10.13 -o njrelay tools/ninjam-relay/njrelay.c
           codesign -s - njrelay
           lipo -info njrelay
-      - uses: actions/upload-artifact@v4
-        with: { name: mac, path: "*.dylib" }
       - uses: actions/upload-artifact@v4
         with: { name: mac-njrelay, path: "njrelay" }
 
