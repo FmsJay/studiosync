@@ -30,7 +30,8 @@ local SETTINGS = { "alerts", "alerts_server", "call", "sonobus_server", "tailnet
   "hub", -- ("hub": the preferred studio hub, a member's name: lib/hub.lua elect_studio. James, rt)
   "nat", "nat_stun", -- (the connection without Tailscale, lib/nat.lua: on only when true; the studio's STUN list "host:port ...". James, rt)
   "cloud_storage", -- ("cloud_storage": what the cloud copy keeps, { mode, days, limit_mb }: lib/cloudmodes.lua. James, rt)
-  "update_key" } -- ("update_key": signed updates, the owner's Ed25519 public key: lib/band.lua studio_update_key. James, rt)
+  "update_key", -- ("update_key": signed updates, the owner's Ed25519 public key: lib/band.lua studio_update_key. James, rt)
+  "ai" } -- ("ai": AI tools from the web UI, lib/ai.lua; off unless true. James, rt)
 -- (Round 2 review, 0.59.46: Syncthing is asked again only when band.json or this computer's pins changed, or the last answer was "not known",
 -- and the kept settings are written only when they differ: it was a blocking call and a saved-state write every 5 s per script and studio,
 -- and the Debug pill made the panel do it for every studio. -> the settings, and false when they're held back only because nothing is checked
@@ -221,6 +222,9 @@ function groups.set_takes_to_lanes(root, on) save(root, function(j) if on then j
 -- Smart take names for the studio (lib/recap.lua name_takes): on unless band.json says false, so only "off" is written. Owner and admins. (James, rt)
 function groups.smart_take_names(root) return groups.trusted(root).smart_take_names ~= false end
 function groups.set_smart_take_names(root, on) save(root, function(j) if on then j.smart_take_names = nil else j.smart_take_names = false end end) end
+-- AI tools for the studio (lib/ai.lua): off unless band.json says true; every run still asks first. Owner and admins. (James, rt)
+function groups.ai(root) return groups.trusted(root).ai == true end
+function groups.set_ai(root, on) save(root, function(j) j.ai = on and true or nil end) end
 function groups.smart_lane_names(root) return groups.trusted(root).smart_lane_names == true end
 function groups.set_smart_lane_names(root, on) save(root, function(j) j.smart_lane_names = on and true or nil end) end
 -- The studio's shared REAPER preferences (lib/sharedprefs.lua): { key = value }, only keys on its list (sharedprefs.clean). Owner and admins.

@@ -146,6 +146,7 @@ webui.ACTIONS.phonedaw = true -- (the phone app's Project view: its tracks' GUID
 webui.ACTIONS.home, webui.ACTIONS.profile = true, true -- (the Home page's, and your own display name, colour and picture: lib/webhome.lua, lib/profile.lua)
 webui.ACTIONS.mixer = true -- (the Mixer page's: lib/webmixer.lua)
 webui.ACTIONS.history = true -- (the History page's "I'm looking": lib/webhistory.lua, read only)
+webui.ACTIONS.ai = true -- (the AI page's asks, yes/no and cancel: lib/ai.lua; whether a page on this computer sent it, StudioSync_WebUIPollHere)
 webui.ACTIONS.invite = true -- (Ask to join, Join / Decline, a studiosync:// link from join.html: lib/invite.lua)
 function webui.parse_action(s)
   local a = type(s) == "string" and s ~= "" and band.json_decode(s)
@@ -218,6 +219,10 @@ function webui.tick(proj, cfg, b, handlers)
       if said then band.log(said) end
     end
     if topic == "history" then require("webhistory").action(proj, cfg, b, a) end
+    if topic == "ai" then
+      local said = require("ai").action(proj, cfg, b, a, reaper.StudioSync_WebUIPollHere ~= nil and reaper.StudioSync_WebUIPollHere() == 1)
+      if said then band.log(said) end
+    end
     if topic == "invite" then
       local said = require("invite").action(proj, cfg, b, a)
       if said then band.log(said) end
@@ -239,6 +244,7 @@ function webui.tick(proj, cfg, b, handlers)
   if look and not was_looking then pres_at, chat_at = -math.huge, -math.huge end
   was_looking = look
   chat.web_tick(cfg, b, publish, now, look) -- (DMs, channels, unread counts and files on their way: lib/page_chat.lua, lib/chatfiles.lua)
+  require("ai").tick(proj, cfg, b, publish, now) -- (AI runs: the panel's yes, asks running out, jobs finishing, looking or not: lib/ai.lua)
   if not look then return end
   if now - pres_at >= webui.PRESENCE_EVERY then
     pres_at = now

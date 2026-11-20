@@ -171,7 +171,14 @@ int main()
   CHECK(code(ask(link, post + "\r\n" + act)) == 403, "a POST without X-StudioSync: refused");
   CHECK(std::string(webui_poll()).empty(), "and nothing queued");
   CHECK(code(ask(link, post + "X-StudioSync: 1\r\n\r\n" + act)) == 202, "with it: accepted");
-  CHECK(std::string(webui_poll()) == act && std::string(webui_poll()).empty(), "the engine gets the action once");
+  CHECK(std::string(webui_poll()) == act && webui_poll_here() == 0, "the engine gets the action, marked not from this computer (lib/ai.lua)");
+  CHECK(std::string(webui_poll()).empty() && webui_poll_here() == 0, "once");
+  {
+    const std::string lp = "POST /api/action HTTP/1.1\r\nHost: " + lh + "\r\nX-StudioSync: 1\r\nContent-Length: " + std::to_string(act.size()) + "\r\n";
+    CHECK(code(ask(web, lp + "\r\n" + act)) == 202 && std::string(webui_poll()) == act && webui_poll_here() == 1, "this computer's own page: marked here");
+    CHECK(code(ask(web, lp + "X-Forwarded-For: 100.64.0.9\r\n" + ck + "\r\n" + act)) == 202 && std::string(webui_poll()) == act && webui_poll_here() == 0,
+          "through a proxy here (tailscale serve): not here");
+  }
   CHECK(code(ask(web, "POST /api/action HTTP/1.1\r\nHost: " + lh + "\r\nX-StudioSync: 1\r\nContent-Length: 3\r\n\r\nabc")) == 400, "an action that isn't an object: 400");
   CHECK(code(ask(web, "POST /api/action HTTP/1.1\r\nHost: " + lh + "\r\nX-StudioSync: 1\r\nContent-Length: 99999\r\n\r\n{")) == 413, "too big: 413");
   // the link itself is unharmed: something that is neither HTTP nor a frame still gets the link's "not StudioSync's"

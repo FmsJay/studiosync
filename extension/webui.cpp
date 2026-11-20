@@ -160,14 +160,18 @@ static bool same_text(const std::string &a, const std::string &b) // (constant t
 }
 static std::string header(const WebReq &r, const char *name) { auto it = r.headers.find(name); return it == r.headers.end() ? "" : it->second; }
 
+// (a proxy on this computer: `tailscale serve` giving the pages an https:// address, which a phone's browser wants before a page may use
+// the microphone (lib/phonerec.lua). What it hands over came from the tailnet, so it needs the token as the link's port does)
+static bool proxied_req(const WebReq &r)
+{
+  return !header(r, "x-forwarded-host").empty() || !header(r, "x-forwarded-for").empty() || !header(r, "x-forwarded-proto").empty();
+}
 int webui_auth(const WebReq &r, bool local, const std::string &token, int port, bool &set_cookie)
 {
   set_cookie = false;
   const std::string host = header(r, "host"), origin = header(r, "origin");
-  // (a proxy on this computer: `tailscale serve` giving the pages an https:// address, which a phone's browser wants before a page may use
-  // the microphone (lib/phonerec.lua). What it hands over came from the tailnet, so it needs the token as the link's port does)
   const std::string fwd_host = header(r, "x-forwarded-host");
-  const bool proxied = !fwd_host.empty() || !header(r, "x-forwarded-for").empty() || !header(r, "x-forwarded-proto").empty();
+  const bool proxied = proxied_req(r);
   if (r.method == "POST" && header(r, "x-studiosync") != "1") return 403;
   if (!origin.empty() && origin != "http://" + host && origin != "https://" + host && !(proxied && origin == "https://" + fwd_host))
     return 403; // (a page from anywhere else, asking with the visitor's cookie)
@@ -194,8 +198,9 @@ std::condition_variable g_cv; // (a topic changed, a client went, or stopping)
 std::map<std::string, std::string> g_topics;
 std::map<std::string, long long> g_topic_ver; // (the g_ver each topic last changed at: the stream sends only what changed. James, rt)
 long long g_ver = 0, g_served = 0, g_refused = 0;
-std::deque<std::string> g_actions;
+std::deque<std::pair<std::string, bool>> g_actions; // (each with whether a page on this computer sent it: webui_poll_here)
 std::string g_folder, g_token, g_bind, g_err, g_poll_out, g_status_out;
+bool g_poll_here = false;
 int g_port = 0, g_clients = 0;
 bool g_listening = false, g_wsa = false;
 double g_engine_at = -1e9;
@@ -451,7 +456,7 @@ void handle(sock_t s, std::string buf, bool local)
     {
       std::lock_guard<std::mutex> l(g_mx);
       if (g_actions.size() >= MAX_ACTIONS) return answer(s, 503, "application/json", "{\"ok\":false,\"why\":\"busy\"}");
-      g_actions.push_back(body);
+      g_actions.emplace_back(body, local && !proxied_req(r)); // (this computer's own page: not the link's port, not `tailscale serve`)
     }
     return answer(s, 202, "application/json", "{\"ok\":true}");
   }
@@ -605,9 +610,11 @@ const char *webui_poll()
   g_engine_at = now_s();
   if (!was) g_cv.notify_all(); // (the pages say at once that Live sync is back)
   g_poll_out.clear();
-  if (!g_actions.empty()) { g_poll_out = g_actions.front(); g_actions.pop_front(); }
+  g_poll_here = false;
+  if (!g_actions.empty()) { g_poll_out = g_actions.front().first; g_poll_here = g_actions.front().second; g_actions.pop_front(); }
   return g_poll_out.c_str();
 }
+int webui_poll_here() { std::lock_guard<std::mutex> l(g_mx); return g_poll_here ? 1 : 0; }
 
 const char *webui_status()
 {
@@ -698,6 +705,7 @@ static int api_start(const char *folder, const char *secret, int port) { return 
 static void api_publish(const char *topic, const char *json) { webui_publish(topic, json); }
 static const char *api_poll() { return webui_poll(); }
 static const char *api_status() { return webui_status(); }
+static int api_poll_here() { return webui_poll_here(); }
 static int api_save_upload(const char *id, const char *path) { return webui_save_upload(id, path); }
 static int api_offer(const char *id, const char *path) { return webui_offer(id, path); }
 #define S_(i) (n > (i) ? (const char *)a[i] : nullptr)
@@ -707,6 +715,7 @@ static void *va_start_(void **a, int n) { return (void *)(INT_PTR)api_start(S_(0
 static void *va_publish(void **a, int n) { api_publish(S_(0), S_(1)); return nullptr; }
 static void *va_poll(void **, int) { return (void *)api_poll(); }
 static void *va_status(void **, int) { return (void *)api_status(); }
+static void *va_poll_here(void **, int) { return (void *)(INT_PTR)api_poll_here(); }
 #undef S_
 
 void webui_register(reaper_plugin_info_t *rec)
@@ -720,6 +729,9 @@ void webui_register(reaper_plugin_info_t *rec)
       "void\0const char*,const char*\0topic,json\0The latest state of a topic (presence, chat...) for the web UI's pages, as JSON." },
     { "StudioSync_WebUIPoll", (void *)api_poll, (void *)va_poll,
       "const char*\0\0\0The oldest action the web UI's pages sent (a JSON object), or \"\". Each is handed out once." },
+    { "StudioSync_WebUIPollHere", (void *)api_poll_here, (void *)va_poll_here,
+      "int\0\0\0Whether the action StudioSync_WebUIPoll handed out last came from a page on this computer (1), not a phone or another "
+      "device on the studio's link or through `tailscale serve` (0). lib/ai.lua: a yes for an AI run." },
     { "StudioSync_WebUIStatus", (void *)api_status, (void *)va_status,
       "const char*\0\0\0The web UI server's state, as JSON: listening, bind, port, error, token, clients, served, refused." },
     { "StudioSync_WebUISaveUpload", (void *)api_save_upload, (void *)va_save_upload,

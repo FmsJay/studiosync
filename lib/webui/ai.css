@@ -1,0 +1,9 @@
+/* The AI page (ai.js). Uses style.css's and pages.css's colours and rows. GPL-3.0-or-later. (James, rt) */
+.aiasks li, .aifeats li, .aijobs li { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; }
+.aiask { border-width: 2px; }
+.aiask.here { border-color: color-mix(in srgb, var(--play) 55%, var(--line)); }
+.aiask.away { border-color: color-mix(in srgb, var(--rec) 55%, var(--line)); }
+.aisends { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 14em; overflow-y: auto; background: var(--theirs); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
+.aifeats select { max-width: 100%; min-width: 0; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+.aijob.failed { border-color: color-mix(in srgb, var(--rec) 45%, var(--line)); }
+#ai-h + .pnote { font-weight: 600; }

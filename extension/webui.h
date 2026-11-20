@@ -16,6 +16,7 @@
 int webui_start(const char *folder, const char *secret, int port, const char *bind_ip);
 void webui_publish(const char *topic, const char *json); // the latest state of a topic ([a-z][a-z0-9_-]{0,31}), JSON text
 const char *webui_poll();   // the oldest action a page sent (its JSON body), or "" (consuming: one engine takes each)
+int webui_poll_here();      // 1 when the action webui_poll handed out last came from a page on this computer (loopback, not proxied)
 const char *webui_status(); // JSON: { listening, bind, port, error, token, clients, served, refused }
 // A phone's take that a page sent as POST /api/upload (its answer's id), written to path and let go. -> bytes; 0 no such upload; -1 couldn't
 // write it (kept for another try). lib/phonerec.lua
