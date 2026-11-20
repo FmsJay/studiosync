@@ -470,9 +470,94 @@ static void not_here_test()
   check(field(sy, "", "rejected") == "0", "not here: and isn't counted as a refusal (Health's alarm)");
 }
 
+// ---- The four-computer test's start order (2026-11-20, extension 1.0.27): the laptop's REAPER and Live sync start first, the desktop's a
+// minute later; the Mac is everyone's hub, but its peer list leaves the desktop out (its room read the desktop's status late: not_here). The
+// laptop heard the Mac's mix and told everyone so, so the desktop stopped sending to it, and the Mac's mix had no desktop: the laptop heard
+// nothing of it while the desktop heard the laptop (one-way), and the desktop sat "joining" the Mac's mix for minutes. Here M (the Mac) lists
+// A (the laptop) only; A starts with M as its hub, D (the desktop) 1.2 s later. A must hear D directly (M's 'H' says its mix hasn't D), D
+// must stop joining within JOIN_S and say so; then the owner's pick takes the hub back (M's list catches up, D mixes, A and M take D as their
+// hub) and everyone hears everyone, A never losing D for longer than a jitter buffer. Tones on their own DFT bins, as the hub test's.
+static void start_order_test()
+{
+  const int SR = 48000, LEN = 256, P[3] = { 47591, 47592, 47593 }; // M, A, D
+  const double PI = 3.14159265358979, AMP[3] = { 0.2, 0.3, 0.4 };
+  const int BIN[3] = { 2, 4, 6 };
+  char nm[3][32];
+  RtLink *L[3];
+  for (int i = 0; i < 3; ++i) { snprintf(nm[i], sizeof nm[i], "127.0.0.1:%d", P[i]); L[i] = rt_new(); }
+  auto js = [&](int i, std::vector<int> others) {
+    std::string list;
+    for (int j : others) list += std::string(list.empty() ? "" : ", ") + "\"" + nm[j] + "\"";
+    return "{\"peers\":[" + list + "],\"port\":" + std::to_string(P[i]) + ",\"secret\":\"studio\"}";
+  };
+  rt_peers(L[0], js(0, { 1 }).c_str()); // (the Mac's room without the desktop)
+  rt_peers(L[1], js(1, { 0, 2 }).c_str());
+  rt_peers(L[2], js(2, { 0, 1 }).c_str());
+  rt_start(L[0], 0, 1, 128, 0, "127.0.0.1");
+  rt_start(L[1], 0, 1, 128, 0, "127.0.0.1");
+  auto at = [&](double s) { return (int)(s * SR / LEN); };
+  auto level_of = [&](const std::vector<double> &x, int bin) {
+    double re = 0, im = 0;
+    for (int k = 0; k < LEN; ++k) { re += x[k] * cos(2 * PI * bin * k / LEN); im -= x[k] * sin(2 * PI * bin * k / LEN); }
+    return 2 * sqrt(re * re + im * im) / LEN;
+  };
+  std::vector<double> in[3], out[3], out2[3], amp[3][3]; // amp[listener][source]: each block's level of that source's tone (left)
+  for (int i = 0; i < 3; ++i) { in[i].assign(LEN, 0.0); out[i].assign(LEN, 0.0); out2[i].assign(LEN, 0.0); }
+  std::string a_mid, d_mid, d_late, m_end, a_end, d_end;
+  long long n = 0;
+  double stalled = 0;
+  const int total = at(13.0), d_on = at(1.5), back = at(8.0);
+  const auto t0 = std::chrono::steady_clock::now();
+  for (int b = 0; b < total; ++b) {
+    const auto due = t0 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
+    while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
+    stalled = std::max(stalled, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - due).count());
+    for (int k = 0; k < LEN; ++k, ++n) for (int i = 0; i < 3; ++i) in[i][k] = AMP[i] * sin(2 * PI * BIN[i] * (double)n / LEN);
+    if (b == at(0.3)) { rt_hub(L[0], "", 1); rt_hub(L[1], nm[0], 0); }
+    if (b == d_on) { rt_start(L[2], 0, 1, 128, 0, "127.0.0.1"); rt_hub(L[2], nm[0], 0); }
+    if (b == at(4.0)) { a_mid = rt_status(L[1]); d_mid = rt_status(L[2]); }
+    if (b == at(7.8)) d_late = rt_status(L[2]);
+    if (b == back) { // (the owner's pick takes the hub back)
+      rt_peers(L[0], js(0, { 1, 2 }).c_str());
+      rt_hub(L[2], "", 1);
+      rt_hub(L[0], nm[2], 0);
+      rt_hub(L[1], nm[2], 0);
+    }
+    if (b == at(12.8)) { m_end = rt_status(L[0]); a_end = rt_status(L[1]); d_end = rt_status(L[2]); }
+    for (int i = 0; i < 3; ++i) { std::fill(out[i].begin(), out[i].end(), 0.0); std::fill(out2[i].begin(), out2[i].end(), 0.0); }
+    for (int i = 0; i < 3; ++i) { const double *ii[1] = { in[i].data() }; rt_capture(L[i], ii, 1, LEN, SR); }
+    for (int i = 0; i < 3; ++i) { double *oo[2] = { out[i].data(), out2[i].data() }; rt_mix(L[i], oo, 2, LEN, SR); }
+    for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) amp[i][j].push_back(level_of(out[i], BIN[j]));
+  }
+  auto avg = [&](int li, int src, double s0, double s1) { double s = 0; int c = 0; for (int b = at(s0); b < at(s1); ++b) { s += amp[li][src][b]; ++c; } return c ? s / c : 0.0; };
+  auto about = [](double v, double want) { return v > want * 0.75 && v < want * 1.25; };
+  auto gap = [&](int li, int src, double s0, double s1) { int run = 0, best = 0; for (int b = at(s0); b < at(s1); ++b) { run = amp[li][src][b] < AMP[src] / 2 ? run + 1 : 0; best = std::max(best, run); } return best * 1000.0 * LEN / SR; };
+  const double ad = avg(1, 2, 3.0, 4.0), da = avg(2, 1, 3.0, 4.0), am = avg(1, 0, 3.0, 4.0);
+  printf("     start order: by 4 s A hears D at %.3f (want %.2f), M at %.3f (through M's mix: %s, D via_hub %s); D hears A at %.3f; D's hub %s at 4 s, %s at 7.8 s (join_fails %s)\n",
+         ad, AMP[2], am, field(a_mid, "hub", "state").c_str(), field(a_mid, nm[2], "via_hub").c_str(), da, field(d_mid, "hub", "state").c_str(),
+         field(d_late, "hub", "state").c_str(), field(d_late, "hub", "join_fails").c_str());
+  check_unless_stalled(field(a_mid, "hub", "state") == "\"hub\"" && about(am, AMP[0]), stalled, "start order: A hears through M's mix");
+  check(about(ad, AMP[2]) && about(da, AMP[1]), "start order: A and D hear each other though M's mix hasn't D (never one-way)");
+  check(field(a_mid, nm[2], "via_hub") == "false" && field(d_mid, nm[1], "direct") == "true", "start order: A says D is heard directly, and D keeps sending to A");
+  check_unless_stalled(field(d_late, "hub", "state") == "\"direct\"" && atoll(field(d_late, "hub", "join_fails").c_str()) >= 1, stalled,
+        "start order: D stops joining a mix that never comes within seconds, and says so (join_fails)");
+  const double g_ad = gap(1, 2, 2.5, 12.8), g_da = gap(2, 1, 2.5, 12.8);
+  printf("     start order: after D takes the hub back: A hears M %.3f, D %.3f (%s); M hears A %.3f, D %.3f (%s); D hears A %.3f, M %.3f (serving %s); A's longest gap in D %.0f ms, D's in A %.0f ms\n",
+         avg(1, 0, 11.5, 12.8), avg(1, 2, 11.5, 12.8), field(a_end, "hub", "state").c_str(), avg(0, 1, 11.5, 12.8), avg(0, 2, 11.5, 12.8), field(m_end, "hub", "state").c_str(),
+         avg(2, 1, 11.5, 12.8), avg(2, 0, 11.5, 12.8), field(d_end, "hub", "serving").c_str(), g_ad, g_da);
+  bool all = true;
+  for (int li = 0; li < 3; ++li) for (int s = 0; s < 3; ++s) if (li != s && !about(avg(li, s, 11.5, 12.8), AMP[s])) all = false;
+  check(all, "start order: after the owner's pick takes the hub back, everyone hears everyone at full level");
+  check_unless_stalled(field(d_end, "hub", "serving") == "2" && field(a_end, "hub", "state") == "\"hub\"" && field(m_end, "hub", "state") == "\"hub\"", stalled,
+        "start order: D mixes for A and M, both hear through it");
+  check_unless_stalled(g_ad < 60 && g_da < 60, stalled, "start order: A and D never lose each other for longer than a jitter buffer, through the handover too");
+  for (int i = 0; i < 3; ++i) rt_free(L[i]);
+}
+
 int main(int argc, char **argv)
 {
   if (argc > 1 && strcmp(argv[1], "underruns") == 0) { drift_tests(); trim_test(); switch_test(); rescue_test(); spike_tests(); clock_tests(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
+  if (argc > 1 && strcmp(argv[1], "startorder") == 0) { start_order_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "hubload") == 0) { hub_loads(true); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   const int SR = 48000, LEN = 256, PA = 47391, PB = 47392, PC = 47393;
   const double PI = 3.14159265358979;
@@ -836,6 +921,7 @@ int main(int argc, char **argv)
     for (int i = 0; i < 4; ++i) rt_free(L[i]);
   }
   not_here_test();
+  start_order_test(); // (the four-computer test's start order: a hub whose list leaves a computer out)
   drift_tests(); // (the four-computer test's underruns: drift, a buffer left high, a hub switch)
   trim_test();
   switch_test();

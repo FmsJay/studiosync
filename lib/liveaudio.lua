@@ -692,6 +692,11 @@ function liveaudio.hub_text(h, names, hubp)
       (lat >= 0 and dir >= 0 and string.format(" (%.0f ms directly: +%.0f ms for the hub's hop)", dir, math.max(0, lat - dir)) or "")
   elseif h.state == "joining" and hname then out = "; joining " .. hname .. "'s mix"
   end
+  -- (asked and no mix came in 5 s: that hub doesn't list this computer yet or isn't mixing; everyone's own streams meanwhile. rt-hubfix)
+  local jf = tonumber(h.join_fails) or 0
+  if jf > 0 and hname and h.state == "direct" and not h.serve then
+    out = out .. string.format("; %s's mix didn't come when asked (%d time%s), so you hear everyone's own streams; asked again every 10 s", hname, jf, jf == 1 and "" or "s")
+  end
   local fb = tonumber(h.fallbacks) or 0
   if fb > 0 then out = out .. string.format("; back to everyone's own streams %d time%s when the hub's mix stopped", fb, fb == 1 and "" or "s") end
   if type(hubp) == "table" and hubp.why then out = out .. "; the hub's mix: " .. hubp.why end

@@ -19,8 +19,8 @@
 // decodes it anyway (before its own levels) into a ring (hring), and the send thread builds each listener's mix from that listener's own
 // Talk/Play levels, adds the hub's own Talk and Play, and encodes it through that listener's own AOO source (MIX_ID): no more than a copy on
 // the audio thread. A listener asks for its mix every MODE_EVERY s ("SSX1" control datagrams, tagged as the rest: 'R' its levels, 'M' to everyone
-// whether it hears through a hub, 'I' the hub's latency and load back), switches to the mix once it has flowed ENTER_S, and every sender then
-// stops sending it their own streams. When the mix pauses (RESCUE_MIN), the listener asks for everyone's streams back ('M') while the mix's
+// whether it hears through a hub, 'I' the hub's latency and load back, 'H' whom the hub's mix has), switches to the mix once it has flowed
+// ENTER_S, and every sender in that mix then stops sending it their own streams (one the hub doesn't hear keeps sending: hub_watch). When the mix pauses (RESCUE_MIN), the listener asks for everyone's streams back ('M') while the mix's
 // buffer still plays, and when it stops for its buffer's length, hears them instead: tests/rtaudio_test.cpp measures a 16-21 ms gap, under
 // the 30 ms jitter buffer (with INTRA_S, the streams turned back on are at full level from their first packet).
 // GPL-3.0-or-later. AOO (BSD-3-Clause) and Opus (BSD-3-Clause): extension/third_party/README.md.
@@ -177,7 +177,8 @@ const double OPUS_MS = 1000.0 * 240 / 48000; // (one Opus frame, ms: the jitter 
 // listener's sink for it: the hub's address hash with "/mix". CTL: the control datagrams (mode, the mix's levels, the hub's numbers back).
 const AooId MIX_ID = 3;
 const char CTL[4] = { 'S', 'S', 'X', '1' };
-const int HUB_RING = 32;             // blocks the audio thread may be ahead of the hub's mixing (~170 ms at 256): past that blocks are skipped (overloaded)
+static_assert(RT_MAX_PEERS <= 32, "a bit per peer: mix_said");
+const int HUB_RING = 32;            // blocks the audio thread may be ahead of the hub's mixing (~170 ms at 256): past that blocks are skipped (overloaded)
 const double MODE_EVERY = 0.25;      // s: a listener's mode and its mix's levels are said again this often (and at once when they change)
 const double MODE_FRESH = 1.0;       // s: a listener's mode older than this counts as "hears everyone directly"; its mix stops when its asking does
 const double ENTER_S = 0.3;          // s: the mix flowing this long before a listener hears it instead of everyone's own streams
@@ -189,6 +190,10 @@ const double GONE_MIN = 40, GONE_PAD = 20; // ms: no mix datagram for its buffer
 const double RESCUE_MIN = 10, RESCUE_LEAD = 20, RESCUE_PAD = 5;
 const double GAP_SPAN = 30;          // s: the mix's widest packet spacing is kept over this stretch and the last (5 s: spikes ~20 s apart each a rescue)
 const double RETRY_S = 3.0;          // s after falling back before the hub's mix is asked for again (a flickering hub doesn't flap the stream)
+// s: a listener asking for a mix that doesn't come in JOIN_S (the hub doesn't list it, or isn't mixing: the computers' views of who's hub
+// differ for a while) stops asking for JOIN_RETRY_S. Asking costs nothing (everyone's streams are heard meanwhile); it's said in the status
+// (join_fails) instead of "joining" for minutes (James, rt: the desktop joined the Mac's mix for 4 minutes, 2026-11-20).
+const double JOIN_S = 5.0, JOIN_RETRY_S = 10.0;
 
 struct Slot {
   std::string peer, addr_s, err;
@@ -248,6 +253,13 @@ struct Slot {
   // Every computer: how this peer hears (its 'M'): through a hub, so my streams don't go to it directly
   std::atomic<double> mode_at{ -1e9 };
   std::atomic<bool> via_hub{ false };
+  // As my hub: whom its mix has (its 'H': the peers it hears now; mix_mx). heard_ever false: an older hub that doesn't say, so everyone.
+  std::vector<sockaddr_in> heard;
+  bool heard_ever = false;
+  // As a listener: this peer is in my hub's mix (the send thread sets it, the audio thread reads it), so it's told not to send to me directly
+  // and its own streams are left out here; dw: the audio thread's weight for its own streams last block (the crossfade)
+  std::atomic<bool> in_mix{ true };
+  float dw = 1.f;
 };
 } // namespace
 
@@ -320,6 +332,9 @@ struct RtLink {
   float mixw = 0;
   double retry_at = 0, next_ctl = 0, next_info = 0, left_at = -1e9;
   bool via_said = false;            // (the last 'M' said: my streams come through the hub)
+  unsigned mix_said = 0;            // (and to which peers: those in the hub's mix, a bit per slot)
+  double join_at = 0;               // (when this computer last started asking for a mix: JOIN_S)
+  long long join_fails = 0;         // (asks that no mix answered in JOIN_S)
   double intra_until = 0;           // (apply_sends: frames coded without prediction until then)
   long long fallbacks = 0, rescues = 0; // (rescues: everyone's streams asked back while the mix paused)
   std::string asked_sig;            // (the levels last asked for: asked again at once when they change)
@@ -930,14 +945,34 @@ void hub_watch(RtLink *l, double now)
     const double gone = std::max(GONE_MIN, h->target_ms + GONE_PAD) / 1000.0, quiet = now - h->mix_at.load();
     const bool flowing = quiet < gone;
     if (st == 2 && !flowing) { st = 0; ++l->fallbacks; l->retry_at = now + RETRY_S; } // (the hub dropped, or stopped mixing for me: direct at once)
-    else if (st != 2) st = now < l->retry_at ? 0 : flowing && now - h->mix_first.load() >= ENTER_S && h->mstreaming ? 2 : 1;
+    else if (st != 2) {
+      int ns = now < l->retry_at ? 0 : flowing && now - h->mix_first.load() >= ENTER_S && h->mstreaming ? 2 : 1;
+      if (ns == 1 && st != 1) l->join_at = now;
+      if (ns == 1 && now - l->join_at > JOIN_S) { ns = 0; ++l->join_fails; l->retry_at = now + JOIN_RETRY_S; } // (no mix answered: asked again later)
+      st = ns;
+    }
     via = st == 2 && quiet < std::max(std::max(RESCUE_MIN, h->target_ms - RESCUE_LEAD), h->mix_gap.load() * 1000 + RESCUE_PAD) / 1000.0;
     if (st == 2 && !via && l->via_said) ++l->rescues;
   }
+  // Who's in the hub's mix (its 'H'): only they're told my streams come through it, and only their own streams are left out here. One the hub
+  // doesn't hear (its peer list leaves them out: the four-computer test, the Mac's list without the desktop) keeps sending to me directly, so
+  // through a hub nobody goes unheard (the laptop heard nothing of the desktop: the desktop stopped sending to it, the Mac's mix hadn't it).
+  unsigned mixm = 0;
+  if (h) {
+    std::lock_guard<std::mutex> g(l->mix_mx);
+    for (int i = 0; i < l->nslots; ++i) {
+      Slot &p = *l->slots[i];
+      bool in = &p == h || !h->heard_ever; // (the hub itself; an older hub that doesn't say: everyone, as before)
+      for (size_t k = 0; !in && k < h->heard.size(); ++k) in = same_addr(h->heard[k], p.addr);
+      p.in_mix.store(in);
+      if (in) mixm |= 1u << i;
+    }
+  }
   l->hub_state.store(st);
   if (was == 2 && st != 2) l->left_at = now;
-  const bool told = via != l->via_said; // (the senders hear of it at once)
+  const bool told = via != l->via_said || (via && mixm != l->mix_said); // (the senders hear of it at once)
   l->via_said = via;
+  l->mix_said = mixm;
   for (int i = 0; i < l->nslots && (told || st != was); ++i) { // (the underruns this brings aren't jitter: under())
     l->slots[i]->switch_at = now;
     if (st != was) l->slots[i]->mswitch_at = now;
@@ -950,8 +985,7 @@ void hub_watch(RtLink *l, double now)
     if (sig == l->asked_sig) return;
   }
   l->next_ctl = now + MODE_EVERY;
-  const unsigned char m = via ? 1 : 0;
-  for (int i = 0; i < l->nslots; ++i) send_ctl(l, *l->slots[i], 'M', &m, 1);
+  for (int i = 0; i < l->nslots; ++i) { const unsigned char m = via && (mixm >> i & 1u) ? 1 : 0; send_ctl(l, *l->slots[i], 'M', &m, 1); }
   if (!h || st == 0) return;
   std::vector<unsigned char> r;
   std::string sig;
@@ -1068,7 +1102,9 @@ void hub_serve(RtLink *l, double now)
     std::vector<unsigned char> d;
     put_f32(d, m ? (float)(in / m) : -1.f);
     put_f32(d, (float)l->hub_load);
-    for (int i = 0; i < ns; ++i) if (l->slots[i]->mserving) send_ctl(l, *l->slots[i], 'I', d.data(), (int)d.size());
+    std::vector<unsigned char> hd(1, 0); // ('H': whom the mix has, the peers whose Talk or Play comes in here now, so each listener tells only them)
+    for (int i = 0; i < ns; ++i) if (l->slots[i]->streaming || l->slots[i]->pstreaming) { put_addr(hd, l->slots[i]->addr); ++hd[0]; }
+    for (int i = 0; i < ns; ++i) if (l->slots[i]->mserving) { send_ctl(l, *l->slots[i], 'I', d.data(), (int)d.size()); send_ctl(l, *l->slots[i], 'H', hd.data(), (int)hd.size()); }
   }
 }
 
@@ -1081,6 +1117,22 @@ void handle_ctl(RtLink *l, Slot &p, const unsigned char *d, int n, double now)
   ++d; --n;
   if (kind == 'M' && n == 1) { p.via_hub.store(d[0] == 1); p.mode_at.store(now); l->wake.set(); return; }
   if (kind == 'I' && n == 8) { float a, b; memcpy(&a, d, 4); memcpy(&b, d + 4, 4); if (std::isfinite(a) && std::isfinite(b)) { p.hin_ms.store(a); p.hload.store(b); } return; }
+  if (kind == 'H') { // (whom its mix has, as my hub: a count, then each address and port)
+    if (n < 1 || d[0] > RT_MAX_PEERS || n != 1 + d[0] * 6) return;
+    std::vector<sockaddr_in> hv;
+    for (int i = 0; i < d[0]; ++i) {
+      sockaddr_in a{};
+      a.sin_family = AF_INET;
+      memcpy(&a.sin_addr.s_addr, d + 1 + i * 6, 4);
+      memcpy(&a.sin_port, d + 1 + i * 6 + 4, 2);
+      hv.push_back(a);
+    }
+    std::lock_guard<std::mutex> g(l->mix_mx);
+    p.heard.swap(hv);
+    p.heard_ever = true;
+    l->wake.set();
+    return;
+  }
   if (kind != 'R' || n < 2 || d[0] > RT_MAX_PEERS) return;
   const int nl = d[0];
   if (n < 1 + nl * 14 + 1) return;
@@ -1560,8 +1612,8 @@ std::string rt_status(RtLink *l)
     { std::lock_guard<std::mutex> p(l->pend_mx); hp = l->want_hub; }
     std::string hj = "\"hub\":{\"peer\":";
     json_str(hj, hp);
-    snprintf(b, sizeof(b), ",\"state\":\"%s\",\"serve\":%s,\"serving\":%d,\"load\":%.4f,\"max_us\":%.1f,\"skipped\":%lld,\"fallbacks\":%lld,\"rescues\":%lld,\"latency_ms\":%.1f,\"in_ms\":%.1f,\"direct_ms\":%.1f,\"hub_load\":%.4f,\"mix_gap_ms\":%.1f,\"level\":%.5f}",
-             hs == 2 ? "hub" : hs == 1 ? "joining" : "direct", l->serve ? "true" : "false", l->hub_serving, l->hub_load, l->hub_max_us, l->hskipped.load(), l->fallbacks, l->rescues,
+    snprintf(b, sizeof(b), ",\"state\":\"%s\",\"serve\":%s,\"serving\":%d,\"load\":%.4f,\"max_us\":%.1f,\"skipped\":%lld,\"fallbacks\":%lld,\"rescues\":%lld,\"join_fails\":%lld,\"latency_ms\":%.1f,\"in_ms\":%.1f,\"direct_ms\":%.1f,\"hub_load\":%.4f,\"mix_gap_ms\":%.1f,\"level\":%.5f}",
+             hs == 2 ? "hub" : hs == 1 ? "joining" : "direct", l->serve ? "true" : "false", l->hub_serving, l->hub_load, l->hub_max_us, l->hskipped.load(), l->fallbacks, l->rescues, l->join_fails,
              through, h ? h->hin_ms.load() : -1.f, nd ? direct / nd : -1.0, h ? h->hload.load() : -1.f, h ? h->mix_gap.load() * 1000 : -1.0, h ? h->mpeak.exchange(0.f) : 0.f);
     hj += b;
     o.insert(o.size() - 9, hj + ","); // (before "peers":{, as Play's)
@@ -1581,7 +1633,7 @@ std::string rt_status(RtLink *l)
              p.underruns, p.peak.exchange(0.f), p.gain.load(), p.mute.load() ? "true" : "false"); // (level: the peak since the last ask, before the cue mix's level)
     o += b;
     snprintf(b, sizeof(b), ",\"play_streaming\":%s,\"play_level\":%.5f,\"play_gain\":%.3f,\"via_hub\":%s,\"direct\":%s", p.pstreaming || now - p.pdown_at < STREAM_GRACE ? "true" : "false",
-             p.ppeak.exchange(0.f), p.pgain.load(), l->hub_state.load() == 2 ? "true" : "false", hears_direct(p, now) ? "true" : "false"); // (via_hub: heard in the hub's mix; direct: my streams go to it)
+             p.ppeak.exchange(0.f), p.pgain.load(), l->hub_state.load() == 2 && p.in_mix.load() ? "true" : "false", hears_direct(p, now) ? "true" : "false"); // (via_hub: heard in the hub's mix; direct: my streams go to it)
     o.insert(o.size() - 1, b); // (inside the peer's object)
     // (fill_ms: Talk's buffer as measured now; jitter: the underruns that grew it; switched: those a hub mix <-> direct switch brought; trims)
     snprintf(b, sizeof(b), ",\"fill_ms\":%.1f,\"jitter\":%lld,\"switched\":%lld,\"trims\":%lld,\"lone\":%lld", p.fill_ms, p.jitter + p.pjitter + p.mjitter, p.switched, p.trims, p.lone);
@@ -1708,8 +1760,10 @@ void rt_mix(RtLink *l, double *const *out, int nout, int len, double srate)
       Slot &p = *l->slots[i];
       const bool m = p.mute.load(std::memory_order_relaxed);
       float *to = rec ? rec + (size_t)i * 4 * len : nullptr;
-      hear(p, p.sink, p.mono, p.peak, p.was_quiet, m ? 0.f : p.gain.load(std::memory_order_relaxed), 1 - w0, 1 - w1, to);
-      hear(p, p.psink, p.pmono, p.ppeak, p.pwas_quiet, m ? 0.f : p.pgain.load(std::memory_order_relaxed), 1 - w0, 1 - w1, to ? to + 2 * len : nullptr);
+      const float d0 = p.dw, d1 = p.in_mix.load(std::memory_order_relaxed) ? 1 - w1 : 1.f; // (one the hub's mix hasn't: its own streams, always)
+      p.dw = d1;
+      hear(p, p.sink, p.mono, p.peak, p.was_quiet, m ? 0.f : p.gain.load(std::memory_order_relaxed), d0, d1, to);
+      hear(p, p.psink, p.pmono, p.ppeak, p.pwas_quiet, m ? 0.f : p.pgain.load(std::memory_order_relaxed), d0, d1, to ? to + 2 * len : nullptr);
     }
     if (hp) { // (my hub's mix, already at my levels: decoded while asked for, so it's ready the moment it's heard)
       std::atomic<bool> stereo{ false };
@@ -1836,7 +1890,7 @@ void rtaudio_register(reaper_plugin_info_t *rec)
     { "StudioSync_LiveAudioPeerPlay", (void *)api_peer_play, (void *)vla_peer_play,
       "int\0const char*,double\0peer,gain\0A peer's Play level (linear, 0-4) in what you hear, apart from their Talk level (StudioSync_LiveAudioPeerSet, whose mute is the whole bandmate's). Returns 1 when that peer is in the list." },
     { "StudioSync_LiveAudioHub", (void *)api_hub, (void *)vla_hub,
-      "int\0const char*,int\0peer,serve\0The hub's live mix: peer (in the list) mixes for this computer, which then sends its streams to it alone and hears the one stream it mixes at this computer's own levels, back to everyone's own streams at once when that mix stops; \"\": peer to peer. serve 1: this computer mixes for every listener that asks. StudioSync_LiveAudioStatus's hub (peer, state direct/joining/hub, serve, serving, load, max_us, skipped, fallbacks, latency_ms, in_ms, direct_ms, hub_load) and per peer via_hub, direct say how it goes. Returns 1." },
+      "int\0const char*,int\0peer,serve\0The hub's live mix: peer (in the list) mixes for this computer, which then sends its streams to it alone and hears the one stream it mixes at this computer's own levels, back to everyone's own streams at once when that mix stops; \"\": peer to peer. serve 1: this computer mixes for every listener that asks. StudioSync_LiveAudioStatus's hub (peer, state direct/joining/hub, serve, serving, load, max_us, skipped, fallbacks, join_fails (asks no mix answered in 5 s: asked again 10 s later), latency_ms, in_ms, direct_ms, hub_load) and per peer via_hub (heard in the hub's mix; one the hub doesn't hear is heard directly), direct say how it goes. Returns 1." },
   };
   char key[96];
   for (const auto &f : fns) {
