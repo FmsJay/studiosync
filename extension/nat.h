@@ -112,6 +112,10 @@ void nat_relay_caps(long long rate, long long rate_each);
 // public half as 64 hex, or "" and why.
 std::string nat_key_public(const std::string &path, std::string &why);
 bool nat_key_load(const std::string &path, NatKeys &k, bool create, std::string &why);
+// Sealed to one computer's static key (its public half, 64 hex): "SSS1" + hex, or "" (a bad key). nat_unseal opens it with the private
+// half in key_path (never made here): true and the text, or false (not for this key, changed, or no key). rt-joinlink.
+std::string nat_seal_to(const std::string &pub_hex, const std::string &msg);
+bool nat_unseal(const std::string &key_path, const std::string &sealed, std::string &out);
 
 // ---- live audio's side (extension/rtaudio.cpp): a bandmate reached this way has a synthetic IPv4 address, the same on every computer ------
 bool nat_is_synthetic(const void *sockaddr_in_p);                       // 198.18.0.0/15

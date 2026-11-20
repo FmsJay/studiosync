@@ -118,6 +118,22 @@ static void crypto_checks()
   std::string tampered = sig;
   tampered[tampered.find("sdp ") + 10] ^= 1;
   CHECK(!nat_signal_read(K, tampered, "devB", "devA", t, kind, pe, re, sdp, why), "rendezvous: a changed candidate: refused");
+  // sealed to one computer's static key (a joiner's: the studio's secret in the join welcome, lib/joinboot.lua, rt-joinlink)
+  const std::string kd = temp_dir(), kj = kd + "/joiner-key", ko = kd + "/other-key";
+  const std::string pj = nat_key_public(kj, why), po = nat_key_public(ko, why);
+  const std::string secret_text = "{\"sonobus\":\"the studio secret\"}";
+  const std::string s1 = nat_seal_to(pj, secret_text), s2 = nat_seal_to(pj, secret_text);
+  std::string opened;
+  CHECK(pj.size() == 64 && s1.compare(0, 4, "SSS1") == 0 && s1.find("studio secret") == std::string::npos && s1 != s2, "seal to a key: unreadable, and fresh each time");
+  CHECK(nat_unseal(kj, s1, opened) && opened == secret_text, "seal: the joiner's own key opens it");
+  CHECK(!nat_unseal(ko, s1, opened) && opened.empty(), "seal: another computer's key doesn't");
+  std::string flip = s1;
+  flip[flip.size() - 3] = flip[flip.size() - 3] == '0' ? '1' : '0';
+  CHECK(!nat_unseal(kj, flip, opened), "seal: one changed byte is refused");
+  CHECK(!nat_unseal(kd + "/no-key", s1, opened), "seal: no key file (none is made to open with)");
+  CHECK(nat_seal_to("00", secret_text).empty() && nat_seal_to(std::string(64, '0'), secret_text).empty(), "seal: not a key, or a degenerate one: nothing");
+  CHECK(nat_unseal(kj, nat_seal_to(pj, ""), opened) && opened.empty() && po != pj, "seal: an empty text round-trips");
+  remove_dir(kd);
 }
 
 // ---- ICE -------------------------------------------------------------------------------------------------------------------------------

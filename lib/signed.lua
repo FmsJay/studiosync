@@ -88,6 +88,24 @@ function signed.note_key(root, device, pub)
   local t = load("keys", root)
   if t[device] ~= id then t[device] = id; save("keys", root, t) end
 end
+-- For a computer an invitation lets in (lib/joinboot.lua, rt-joinlink): the keys this one has noted, and its own. { [device] = key id }.
+function signed.known_keys(root)
+  local t = {}
+  for dev, k in pairs(load("keys", root)) do t[dev] = k end
+  local mine, dev = signed.my_id(), require("services").my_device_id()
+  if mine and dev then t[dev] = mine end
+  return t
+end
+-- The keys in the sealed welcome from the computer that let this one in (the one whose writing of the roles an invited computer believes
+-- first, lib/trust.lua): each taken only where no key is noted for that computer yet, never replacing one. -> how many were taken.
+function signed.seed_keys(root, keys)
+  local t, n = load("keys", root), 0
+  for dev, id in pairs(type(keys) == "table" and keys or {}) do
+    if n < 500 and require("services").is_device_id(dev) and sw.key_of(id) and t[dev] == nil then t[dev], n = id, n + 1 end
+  end
+  if n > 0 then save("keys", root, t) end
+  return n
+end
 local function short(sig) return tostring(sig):sub(1, 16) end
 -- Would (seq, sig) be news for `rel`, not a rollback? Pure but for the kept numbers.
 local function fresh_ok(root, rel, seq, sig)
@@ -112,6 +130,9 @@ function signed.current(root, rel)
   local bytes = band.read(path)
   local o = band.overlay_of(path)
   if o then return o.bytes, o.side, true end
+  -- (not in the folder: a copy a join's welcome brought, band.boot_copy, which Syncthing knows nothing of either: its signature or not yet.
+  -- lib/joinboot.lua, rt-joinlink)
+  if bytes ~= nil and band.read_raw(path) == nil and band.boot_copy(path) == bytes then return bytes, band.read(path .. ".sig"), true end
   return bytes, band.read(path .. ".sig"), false
 end
 -- Which computer signed `rel` as it reads now: its Syncthing id (whole), when the signature is good, its key is a known computer's and its

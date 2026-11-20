@@ -257,12 +257,28 @@ band.overlay = {}
 local function okey(p) return (tostring(p):gsub("\\", "/"):lower()) end
 function band.read(path)
   local s = band.read_raw(path)
-  if next(band.overlay) == nil then return s end
-  local k = okey(path)
-  local o = band.overlay[k]
-  if not o then return s end
-  if s ~= o.was then band.overlay[k] = nil; return s end
-  return o.bytes
+  if next(band.overlay) ~= nil then
+    local k = okey(path)
+    local o = band.overlay[k]
+    if o and s == o.was then return o.bytes end
+    if o then band.overlay[k] = nil end
+  end
+  if s == nil then return band.boot_copy(path) end -- (a studio just joined by invitation: its welcome's copy, lib/joinboot.lua)
+  return s
+end
+-- A studio joined by invitation: the files its welcome brought over the direct link, read where the folder has none yet (lib/joinboot.lua,
+-- rt-joinlink). Nothing is written into the folder for them: Syncthing's file is the record as soon as it's there.
+local boot_text, boot_mod
+function band.boot_copy(path)
+  local t = reaper.GetExtState(band.SECTION, "join boots")
+  if t == "" then return nil end
+  if t ~= boot_text then local ok, m = pcall(require, "joinboot"); boot_text, boot_mod = t, ok and type(m) == "table" and m or nil end
+  return boot_mod and boot_mod.read(path) or nil
+end
+function band.boot_songs(root)
+  if reaper.GetExtState(band.SECTION, "join boots") == "" then return {} end
+  band.boot_copy(root) -- (lib/joinboot.lua loaded)
+  return boot_mod and boot_mod.songs(root) or {}
 end
 -- The link's copy of `path` while it's still the one read (band.read), or nil.
 function band.overlay_of(path)
@@ -1366,6 +1382,7 @@ function band.bands()
     local real = false
     -- (_band doesn't count: this computer writes its own device file there within 30 s of joining. Review, 0.58.67)
     for _, d in ipairs(r ~= "" and band.subdirs(r) or {}) do if d:sub(1, 1) ~= "." and (d ~= "_band" or reaper.file_exists(r .. "/_band/band.json")) then real = true end end
+    real = real or (r ~= "" and band.boot_copy(r .. "/_band/band.json") ~= nil) -- (its welcome's copy: lib/joinboot.lua, rt-joinlink)
     if r ~= "" and not seen[r] and (real or band.subdirs(r)[1] or reaper.EnumerateFiles(r, 0)) then
       seen[r] = true
       local i = band.info(r)
@@ -1507,6 +1524,10 @@ function band.songs(cfg)
   if not oka then allowed = nil end
   for _, d in ipairs(band.subdirs(cfg.root)) do
     local s = (not allowed or allowed[d]) and reaper.file_exists(band.session_path(cfg, d)) and band.read_json(band.session_path(cfg, d))
+    if s then out[#out + 1], when[d] = d, s.published or "" end
+  end
+  for _, d in ipairs(band.boot_songs(cfg.root)) do -- (a song its welcome brought before its folder is here: lib/joinboot.lua, rt-joinlink)
+    local s = not when[d] and (not allowed or allowed[d]) and band.read_json(band.session_path(cfg, d))
     if s then out[#out + 1], when[d] = d, s.published or "" end
   end
   table.sort(out, function(x, y) if when[x] ~= when[y] then return when[x] > when[y] end return x < y end)

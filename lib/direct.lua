@@ -268,8 +268,11 @@ function direct.prune(cfg)
   for _, song in ipairs(band.subdirs(base)) do
     for _, room in ipairs(band.subdirs(base .. "/" .. song .. "/rooms")) do
       local rel = song .. "/rooms/" .. room .. "/events"
+      -- (a join's first copy of the room, as old as the song: kept a day from when it came. lib/joinboot.lua, rt-joinlink)
+      local boot = tonumber(band.read_raw(base .. "/" .. song .. "/rooms/" .. room .. "/.boot") or "")
       for _, f in ipairs(band.files(base .. "/" .. rel)) do
         local made = direct.id_time(f)
+        if made and boot then made = math.max(made, boot) end
         -- (.json only: a .part file may be one the extension is writing this moment)
         if f:match("%.json$") and (reaper.file_exists(cfg.root .. "/" .. rel .. "/" .. f) or (made and now - made > direct.KEEP_SECS)) then
           if os.remove(base .. "/" .. rel .. "/" .. f) then n = n + 1 end

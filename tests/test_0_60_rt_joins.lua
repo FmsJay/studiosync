@@ -167,7 +167,8 @@ ok, why = joins.on_request(ask(text, BO_DEV, "Bo", "bo-laptop.tail1234.ts.net"),
 check(ok and why == "again" and #lets == 1 and #sent == nsent + 1, "later: the welcome again (a lost one), still no second let-in")
 check(st.calls - ncalls == 0, "and Syncthing's config isn't touched for a refused or repeated ask")
 ok = joins.on_request(ask(text, BO_DEV, "Bo", "bo.example.com"), now + 60)
-check(ok and #sent == nsent + 1, "a reply outside the studio's Tailscale network gets no welcome")
+-- (rt-joinlink: an ask again goes back only to the Tailscale name the computer let in asked with, bound at first use)
+check(ok and #sent == nsent + 2 and sent[#sent].peers == "bo-laptop.tail1234.ts.net:47281", "an ask again naming another reply: the welcome goes only where the first ask said")
 
 -- run out, revoked, a record no manager wrote, no longer in charge, taken out since, another key's token
 local t2, k2 = joins.make(ROOT, "member", now)

@@ -639,6 +639,59 @@ std::string nat_key_public(const std::string &path, std::string &why)
   return hex(k.pub, 32);
 }
 
+// ---- sealed to one computer's static key (a joiner's, from its ask: lib/joinboot.lua sends the studio's secret this way, rt-joinlink) ------
+// "SSS1" + hex(ephemeral public 32 | nonce 24 | tag 16 | ciphertext): X25519 with a fresh ephemeral key, the key HMAC-SHA256(shared,
+// "StudioSync seal v1" | ephemeral | recipient), XChaCha20-Poly1305 with "SSS1" as associated data. Only the recipient's private half opens it.
+static std::string seal_key(const unsigned char shared[32], const unsigned char e[32], const unsigned char r[32])
+{
+  std::string m = "StudioSync seal v1";
+  m.append((const char *)e, 32); m.append((const char *)r, 32);
+  return hmac(std::string((const char *)shared, 32), m);
+}
+std::string nat_seal_to(const std::string &pub_hex, const std::string &msg)
+{
+  std::string r;
+  if (!unhex(pub_hex, r) || r.size() != 32) return "";
+  NatKeys e;
+  unsigned char shared[32], nonce[24], mac[16], z = 0;
+  if (!nat_keypair(e) || !nat_random(nonce, 24)) return "";
+  crypto_x25519(shared, e.priv, (const unsigned char *)r.data());
+  crypto_wipe(e.priv, 32);
+  for (unsigned char c : shared) z |= c;
+  if (!z) return ""; // (a low-order public key)
+  std::string k = seal_key(shared, e.pub, (const unsigned char *)r.data());
+  crypto_wipe(shared, 32);
+  std::string ct(msg.size() + 1, '\0'); // (+1: never a null buffer for an empty message)
+  crypto_aead_lock((unsigned char *)&ct[0], mac, (const unsigned char *)k.data(), nonce, (const unsigned char *)"SSS1", 4, (const unsigned char *)msg.data(), msg.size());
+  crypto_wipe(&k[0], k.size());
+  std::string raw((const char *)e.pub, 32);
+  raw.append((const char *)nonce, 24); raw.append((const char *)mac, 16); raw.append(ct.data(), msg.size());
+  return "SSS1" + hex((const unsigned char *)raw.data(), raw.size());
+}
+bool nat_unseal(const std::string &key_path, const std::string &sealed, std::string &out)
+{
+  std::string raw, why;
+  out.clear();
+  if (sealed.size() < 4 + 2 * 72 || sealed.compare(0, 4, "SSS1") != 0 || !unhex(sealed.substr(4), raw) || raw.size() < 72) return false;
+  NatKeys k;
+  if (!nat_key_load(key_path, k, false, why)) return false;
+  const unsigned char *e = (const unsigned char *)raw.data();
+  unsigned char shared[32], z = 0;
+  crypto_x25519(shared, k.priv, e);
+  crypto_wipe(k.priv, 32);
+  for (unsigned char c : shared) z |= c;
+  if (!z) return false;
+  std::string key = seal_key(shared, e, k.pub);
+  crypto_wipe(shared, 32);
+  std::string pt(raw.size() - 72 + 1, '\0');
+  const int bad = crypto_aead_unlock((unsigned char *)&pt[0], e + 56, (const unsigned char *)key.data(), e + 32, (const unsigned char *)"SSS1", 4, e + 72, raw.size() - 72);
+  crypto_wipe(&key[0], key.size());
+  if (bad) { crypto_wipe(&pt[0], pt.size()); return false; }
+  out.assign(pt.data(), raw.size() - 72);
+  crypto_wipe(&pt[0], pt.size());
+  return true;
+}
+
 // ---- synthetic addresses ----------------------------------------------------------------------------------------------------------------
 static void synthetic_of(const std::string &dev, sockaddr_in &a)
 {
@@ -1926,6 +1979,15 @@ static int api_setup(const char *json) { return nat_hub_setup(nat_global(), json
 static const char *api_status() { g_status_out = nat_hub_status(nat_global()); return g_status_out.c_str(); }
 static void api_stop() { nat_hub_stop(nat_global()); }
 static void *vla_key(void **a, int n) { return n < 1 ? nullptr : (void *)api_key((const char *)a[0]); }
+static std::string g_seal_out, g_unseal_out;
+static const char *api_seal(const char *pub, const char *msg) { g_seal_out = nat_seal_to(pub ? pub : "", msg ? msg : ""); return g_seal_out.c_str(); }
+static const char *api_unseal(const char *path, const char *sealed)
+{
+  if (!nat_unseal(path ? path : "", sealed ? sealed : "", g_unseal_out) || g_unseal_out.find('\0') != std::string::npos) g_unseal_out.clear();
+  return g_unseal_out.c_str();
+}
+static void *vla_seal(void **a, int n) { return n < 2 ? nullptr : (void *)api_seal((const char *)a[0], (const char *)a[1]); }
+static void *vla_unseal(void **a, int n) { return n < 2 ? nullptr : (void *)api_unseal((const char *)a[0], (const char *)a[1]); }
 static void *vla_setup(void **a, int n) { return n < 1 ? nullptr : (void *)(INT_PTR)api_setup((const char *)a[0]); }
 static void *vla_status(void **, int) { return (void *)api_status(); }
 static void *vla_stop(void **, int) { api_stop(); return nullptr; }
@@ -1936,6 +1998,10 @@ extern "C" void nat_register(reaper_plugin_info_t *rec)
   static const struct { const char *name; void *fn, *va; const char *def; } fns[] = {
     { "StudioSync_NatKey", (void *)api_key, (void *)vla_key,
       "const char*\0const char*\0path\0This computer's static key for the connection without Tailscale: the private half kept in the file at path (made when missing, this user only; never in a synced folder). Returns the public half as 64 hex (for this computer's devices file), or an empty string." },
+    { "StudioSync_Seal", (void *)api_seal, (void *)vla_seal,
+      "const char*\0const char*,const char*\0pub,text\0text sealed to one computer's static key (pub: its public half, 64 hex, as StudioSync_NatKey returns it): X25519 with a fresh key and XChaCha20-Poly1305. Returns \"SSS1\" and hex, or an empty string (not a key). Only that computer's StudioSync_Unseal opens it." },
+    { "StudioSync_Unseal", (void *)api_unseal, (void *)vla_unseal,
+      "const char*\0const char*,const char*\0path,sealed\0Opens text StudioSync_Seal sealed to this computer's static key, its private half in the file at path (never made here). Returns the text, or an empty string (sealed to another key, changed, or no key)." },
     { "StudioSync_NatSetup", (void *)api_setup, (void *)vla_setup,
       "int\0const char*\0json\0The connection without Tailscale: {\"folder\":\"<studio>/_band/nat\",\"me\":\"<device id>\",\"secret\":\"<studio secret>\",\"key\":\"<key file>\",\"port\":47282,\"stun\":[\"host:port\",...],\"peers\":[{\"device\":\"<id>\",\"pub\":\"<64 hex>\"},...],\"turn\":\"<the studio hub's relay ip:port>\",\"relay\":{\"port\":47298,\"users\":[\"<device id>\",...]}}. Keeps a link up to each peer (signed rendezvous files in the folder and over the links that are up, ICE, sealed datagrams); live audio reaches them as \"nat:<device id>\". relay (the studio hub): runs a STUN/TURN relay for those computers, passwords from the studio secret; turn: uses the hub's relay once it answers. Returns how many peers, or -1 (StudioSync_NatStatus's error)." },
     { "StudioSync_NatStatus", (void *)api_status, (void *)vla_status,

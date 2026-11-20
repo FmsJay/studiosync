@@ -66,7 +66,11 @@ function joins.valid_request(d)
   if not require("services").is_device_id(d.device) then return nil end
   local name = band.clean(tostring(d.name or "")):sub(1, 60)
   local reply = type(d.reply) == "string" and #d.reply <= 253 and d.reply:match("^[%w%-]+%.[%w%.%-]+$") and d.reply:lower() or nil
-  return { token = d.token, device = d.device, name = name ~= "" and name or "a collaborator", reply = reply }
+  -- (key: the joiner's static key, what the first copy of the studio is sealed to; nonce: this ask's, which the sealed welcome answers.
+  -- lib/joinboot.lua, rt-joinlink)
+  local key = type(d.key) == "string" and #d.key == 64 and d.key:match("^%x+$") and d.key:lower() or nil
+  local nonce = type(d.nonce) == "string" and #d.nonce >= 16 and #d.nonce <= 64 and d.nonce:match("^%x+$") and d.nonce or nil
+  return { token = d.token, device = d.device, name = name ~= "" and name or "a collaborator", reply = reply, key = key, nonce = nonce }
 end
 
 -- ---- this computer's key and what it can make -------------------------------------------------------------------------------------------
@@ -202,6 +206,14 @@ function ask(r, now)
   local ok, why = joins.check(tok, rec, now, my_key(), used ~= "" and used or nil, r.device,
     function(sig, msg, key) return reaper.StudioSync_Verify(sig, msg, key) == 1 end)
   if not ok then return false, why end
+  -- (the key and Tailscale name the computer let in asked with, bound at first use: an ask naming its device again with another key is a
+  -- replay, and the welcome, with the studio's secret sealed in it, goes only where the first ask said. rt-joinlink)
+  local bound = band.ext_json(band.SECTION, "join bound " .. tok.id)
+  if why == "again" then
+    if type(bound) == "table" and bound.key and r.key ~= bound.key then return false, "a replayed ask: not the key the computer let in asked with" end
+    if require("removal").out_since(root, r.device, rec.made) then return false, "taken out since the invitation was made" end
+    if type(bound) == "table" and type(bound.reply) == "string" then r.reply = bound.reply end
+  end
   if why ~= "again" then
     -- (taken out after the invitation was made: not back in with it)
     local out = require("removal").out_since(root, r.device, rec.made)
@@ -211,40 +223,54 @@ function ask(r, now)
       tok.role == "guest" and tok.ends or nil)
     if not lok then return false, tostring(lwhy) end -- (not marked used: their next ask, 10 s on, tries again)
     reaper.SetExtState(band.SECTION, "join used " .. tok.id, r.device, true)
+    band.set_ext_json(band.SECTION, "join bound " .. tok.id, { key = r.key, reply = r.reply }, true)
     rec.used = { device = r.device, name = r.name, at = now }
     band.write_json(record_path(root, tok.id), rec)
     band.log(string.format("%s's computer (%s) came in with an invitation: no Let them in needed", r.name, r.device:sub(1, 7)))
   end
-  joins.welcome(root, tok, r, now)
+  -- (the first copy of the studio and its song over the link, sealed to the joiner's key; without sealing or a key, today's welcome. rt-joinlink)
+  local okb, booted = pcall(require("joinboot").send, root, tok, r, rec, now)
+  if not okb then band.log("couldn't send the studio's first copy over the link: " .. tostring(booted)) end
+  if not (okb and booted) then joins.welcome(root, tok, r, now) end
   return true, why
 end
 
 -- ---- the joiner -------------------------------------------------------------------------------------------------------------------------
 -- The ask, to the computer the token names. -> true when queued.
-function joins.send(tok)
+function joins.send(tok, nonce)
   local services, direct = require("services"), require("direct")
   local dev = services.my_device_id()
   if not (dev and reaper.StudioSync_DirectStart and reaper.StudioSync_DirectMsg) then return false end
   reaper.StudioSync_DirectStart(joins.CHANNEL, joins.CHANNEL_SECRET, inbox(), -1)
   -- (listening for the welcome where it can: on Windows only with the firewall rule; without it the welcome is missed and Syncthing says so)
-  reaper.StudioSync_DirectStart("join-" .. tok.id, tok.sig, inbox(), direct.firewall_ok() and direct.port() or -1)
+  -- (into the studio's link inbox: the song's changes that follow the welcome land where Live sync reads the link's. lib/joinboot.lua, rt-joinlink)
+  reaper.StudioSync_DirectStart("join-" .. tok.id, tok.sig, band.home() .. "/direct/" .. tok.studio, direct.firewall_ok() and direct.port() or -1)
   local reply = services.my_tailscale_name()
-  local data = band.json_encode({ token = joins.encode(tok), device = dev, name = me(), reply = reply and reply:gsub("%.$", "") or nil })
+  -- (what the welcome is sealed to: this computer's static key, only where it can open one and the ask has its nonce)
+  local okk, key = pcall(function() return nonce and reaper.StudioSync_Unseal and require("nat").public_key() or nil end)
+  local data = band.json_encode({ token = joins.encode(tok), device = dev, name = me(), reply = reply and reply:gsub("%.$", "") or nil,
+    key = okk and key or nil, nonce = nonce })
   return reaper.StudioSync_DirectMsg(joins.CHANNEL, "join", data, tok.host .. ":" .. direct.port()) == 1
 end
 -- Joined `root` (services.join_band) with an invitation: asked now, and again every RESEND s from joins.tick until it's in. -> true when asked.
 -- (the token is kept in this computer's own settings until then: it's this computer's to use)
 function joins.request(root, tok)
   local pending = band.ext_json(band.SECTION, "joins pending") or {}
-  pending[root] = { token = joins.encode(tok) }
+  pending[root] = { token = joins.encode(tok), nonce = band.secret(32) }
   band.set_ext_json(band.SECTION, "joins pending", pending, true)
   sent_at[root] = reaper.time_precise()
-  return joins.send(tok)
+  return joins.send(tok, pending[root].nonce)
 end
 function joins.on_welcome(id, d)
   local pending = band.ext_json(band.SECTION, "joins pending") or {}
   for root, p in pairs(pending) do
     local tok = type(p) == "table" and joins.parse(p.token)
+    -- (sealed to this computer's key: the studio's first copy with it, checked as the answer to this computer's own ask. lib/joinboot.lua)
+    if tok and tok.id == id and type(d) == "table" and d.sealed ~= nil then
+      local w, why = require("joinboot").take(root, tok, p, d.sealed)
+      if not w then band.log("a welcome to " .. tok.name .. " was refused: " .. tostring(why)); return false end
+      d = w
+    end
     if tok and tok.id == id and type(d) == "table" and d.studio == tok.studio and d.id == id then
       pending[root] = nil
       band.set_ext_json(band.SECTION, "joins pending", pending, true)
@@ -298,10 +324,11 @@ function joins.tick(now)
       if tok and waiting then band.log("the invitation to " .. tok.name .. " ran out before it reached their computer: ask them to let you in from their panel") end
     elseif t - (sent_at[root] or -math.huge) >= joins.RESEND then
       sent_at[root] = t
-      joins.send(tok)
+      joins.send(tok, p.nonce)
     end
   end
   if changed then band.set_ext_json(band.SECTION, "joins pending", pending, true) end
+  require("joinboot").tick(now) -- (the first copy over the link: the rest of it sent, or put in place here. rt-joinlink)
   if t - tidy_at > 3600 then tidy_at = t; band.try("joins.tidy", joins.tidy, now) end
 end
 -- This computer's own records, once nobody needs them (run out, and a used one's KEEP_USED over).
