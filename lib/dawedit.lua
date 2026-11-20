@@ -2,7 +2,9 @@
 -- (lib/webui/daw.js, through lib/dawview.lua's action). Each edit is checked as this computer's own edits are before they go out:
 --   items: mirror.watch's rule (its `allowed`): the room's (sync.authority) for the track's name and the spot, or the track's or item's maker
 --     while nobody has claimed it; where it is now and where it goes; and not while a bandmate is editing it (presence's holds)
---   markers and regions: sync.watch_timeline's: the song's timeline is the driver's (Anyone: anyone's), and a region someone claimed is theirs
+--   markers and regions: sync.watch_timeline's: the song's timeline is the driver's (Claims: anyone's), and a region someone claimed is theirs
+--   In Claims, an item on what a bandmate here has claimed isn't refused: it's made, and mirror.watch holds it and asks them for it, as for an
+--   edit made in REAPER (lib/claimask.lua); the answer says who was asked (`ask`). rt-claims
 -- then applied to this REAPER through the API in one undo point. The normal sync sends it from there, so there's no second sync path and a
 -- refusal changes nothing. The answer goes back as the dawedit topic ({ id, ok | why }), and the page that sent it snaps back on a refusal.
 -- Items are named as the page drew them (the track's place and the item's among the shown ones, lib/dawview.lua's shown/items_of) and
@@ -14,6 +16,7 @@ dawedit.NAME_MAX = 100 -- characters of a marker's or region's name
 dawedit.MIN_LEN = 0.01 -- seconds: the shortest an item trims to
 dawedit.TOL = 0.002    -- seconds: still where the page drew it (positions go to the page rounded to ms)
 dawedit.reply = nil    -- the last edit's answer, published by dawview.tick
+dawedit.asking = nil   -- whom the edit being made asks for what they claimed (lib/claimask.lua), else nil
 
 -- ---- pure ------------------------------------------------------------------------------------------------------------------------------
 local OPS = { move = "item", trim_start = "item", trim_end = "item", split = "item", mute = "item", colour = "item",
@@ -88,11 +91,11 @@ function dawedit.item_refusal(can, who, user, name, track_oid, item_oid, pos)
   return "it's the driver's (" .. tostring(who.driver) .. ") until someone claims it: claim the track first"
 end
 -- Why this computer's user may not change the markers and regions (names: the regions' old and new names), or nil. sync.watch_timeline's
--- rule (the timeline is the driver's, or anyone's in Anyone), and a region claimed by someone else stays theirs.
+-- rule (the timeline is the driver's, or anyone's in Claims), and a region claimed by someone else stays theirs.
 function dawedit.timeline_refusal(can, who, user, names)
   if not can(user, nil, nil) then
     return who.mode == "admins" and "only the driver and admins change markers and regions in this room"
-      or "only the driver changes markers and regions (Take control, or ask them to set Who controls to Anyone)"
+      or "only the driver changes markers and regions (Take control, or ask them to set Who controls to Claims)"
   end
   for _, n in ipairs(names or {}) do
     local c = n ~= "" and type(who.regions) == "table" and who.regions[n:lower()]
@@ -147,7 +150,13 @@ function dawedit.authority(cfg, b) return require("sync").authority(cfg, b.song,
 function dawedit.item_why(cfg, b, can, who, it, tr, pos)
   local mirror, presence = require("mirror"), require("presence")
   local user, ioid = cfg.user, mirror.item_oid(it)
-  local function refusal(t, at) return dawedit.item_refusal(can, who, user, track_name(t), mirror.track_oid(t), ioid ~= "" and ioid or nil, at) end
+  local function refusal(t, at)
+    local why = dawedit.item_refusal(can, who, user, track_name(t), mirror.track_oid(t), ioid ~= "" and ioid or nil, at)
+    -- (Claims: theirs to give, not a refusal. Made here, mirror.watch holds it and asks them. lib/claimask.lua, rt-claims)
+    local owner = why and require("claimask").askable(cfg, b, who, track_name(t), at)
+    if owner then dawedit.asking = owner; return nil end
+    return why
+  end
   local holder = ioid ~= "" and presence.holder(presence.peers(cfg, b.song, b.room), ioid)
   if holder and holder ~= user then return tostring(holder) .. " is editing that item right now: try again in a few seconds", refusal end
   return refusal(tr, pos), refusal
@@ -242,9 +251,12 @@ end
 -- An edit a page sent (dawview.action). Sets dawedit.reply for the page. -> words for the log.
 function dawedit.action(proj, cfg, b, raw)
   local e, why, id = dawedit.parse(raw)
+  dawedit.asking = nil
   if e then id = e.id; why = apply(proj, cfg, b, e) end
-  dawedit.reply = { id = id, ok = not why or nil, why = why }
+  local ask = not why and dawedit.asking or nil
+  dawedit.reply = { id = id, ok = not why or nil, why = why, ask = ask }
   if why then return "the web page's edit wasn't made: " .. why end
+  if ask then return "the web page: " .. (LABEL[e.op] or e.op) .. ", held here while " .. ask .. " is asked for it" end
   return "the web page: " .. (LABEL[e.op] or e.op)
 end
 

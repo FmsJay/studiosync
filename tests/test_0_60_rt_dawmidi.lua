@@ -222,8 +222,8 @@ peers = { { user = "Chilio", editing = { "E-JAMES-1" } } }
 r = select(2, auto("James", { op = "add", lane = 0, e = 1, name = "Pan", t = 5, v = 0.5 }))
 assert(r.why:find("Chilio is editing the automation") and #pan.pts == 1, "a bandmate's hold on the track's automation (mirror's E- object): refused")
 peers = {}
-room("claims")
-assert(select(2, auto("Andie", { op = "add", lane = 0, e = 1, name = "Pan", t = 1, v = 0.5 })).why:find("driver's"), "Driver + claims: what nobody claimed is the driver's")
+room("claims") -- (Driver + claims, removed in rt: works as Driver only)
+assert(select(2, auto("Andie", { op = "add", lane = 0, e = 1, name = "Pan", t = 1, v = 0.5 })).why:find("only the driver"), "Driver + claims reads as Driver only")
 
 -- ---- what the page is sent: only while it looks, only the open item and the open tracks ----------------------------------------------
 song(); room("open")

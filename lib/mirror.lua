@@ -3964,6 +3964,7 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
     if #files > 0 then ev.files = files end
   end
   local id = sync.post(cfg, song, room, ev)
+  if opts.sent then pcall(opts.sent, o, name, ev) end -- (Claims: what you edit becomes yours. lib/claimask.lua, rt-claims)
   pcall(require("compat").sent, proj, o.oid, name, o.kind, o.ptr, ev.auto) -- (changed again right after a bandmate's change, or by itself: lib/compat.lua)
   require("streams").offer_media(cfg, song, room, media, ev, last) -- (the media it newly names, to whoever's here over the direct link too. James, rt)
   if o.kind == "fx" and o.ptr then mirror.fx_quiet[rk], mirror.fx_quiet_presets[rk] = mirror.fx_params(o.ptr), mirror.fx_presets(o.ptr); knobs_agreed(proj, o, rk) end -- (what it's changed from, next time)
@@ -4033,6 +4034,10 @@ function W.refuse(w, o, rk, rev, evid, kord, last, name, ok_before)
   local pos = o.pos -- (a plug-in chain has none, and one that's never gone out has no last change: laptop, 0.42.3)
   if not ok_before and last then pos = last.pos end
   local who = owner_of and owner_of(ok_before and name or (last.name or ""), pos)
+  -- (Claims: someone else's claim is asked for, the edit held here meanwhile, or put back with why. lib/claimask.lua, rt-claims)
+  local asked = opts.ask and opts.ask(ok_before and name or (last and last.name or ""), pos)
+  if asked == true then mirror.unsent[rk] = true; return end
+  if type(asked) == "string" then return put_back(o, rev, evid, { name = ok_before and name or (last and last.name or ""), copy = true, text = asked }) end
   -- (someone's claim: what was done to it goes to them to accept. lib/suggest.lua)
   local to = propose(o, rev, who, ok_before and name or (last and last.name or ""), pos, name)
   -- (plain words, whose it is first: "Undone: ... put back (claim it, or take control)" read as your own Undo. UX review, 0.58.47)
@@ -4757,7 +4762,8 @@ local function look_commit(w, N, raw, L, now, full, undo, redo, all)
   reaper.SetExtState(require("band").SECTION, "look stats", string.format("quick %d, full %d, every chunk read %d, missed %d", s.quick, s.full, s.all_chunks, s.missed), false)
 end
 -- One pass: what changed here goes out if this person may change it, else the band's version is put back.
--- opts: local_mix, can (sync.authority's), mode (room mode). Returns sent, put back.
+-- opts: local_mix, can (sync.authority's), mode (room mode); ask(name, pos), sent(o, name, ev): Claims mode's asks and auto-claims (lib/claimask.lua).
+-- Returns sent, put back.
 function mirror.watch(proj, cfg, song, room, opts)
   local band, sync = require("band"), require("sync")
   if reaper.JS_Mouse_GetState and reaper.JS_Mouse_GetState(1) & 1 == 1 then return 0, 0 end -- mid-drag: wait for the drop

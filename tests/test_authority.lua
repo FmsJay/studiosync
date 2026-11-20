@@ -1,5 +1,5 @@
 -- sync.authority: owner by claim > region > driver; a take's author may change it where nobody has claimed (lupa or Lua 5.4)
-as_if = { mode = "claims" }
+as_if = { mode = "open" }
 local claims = { ["claims/Laptop.json"] = { user = "Laptop", time = "2026-10-28T03:28:00Z", tracks = { "Guitar" } } }
 local function with(list) -- swap in another set of claim files
   claims = list
@@ -11,7 +11,7 @@ package.loaded.band = {
   files = function(dir) return dir:match("claims$") and { "Laptop.json" } or {} end,
   read_json = function(path)
     for k, v in pairs(claims) do if path:sub(-#k) == k then return v end end
-    if path:match("mode%.json$") then return as_if end -- (Driver + claims below, until the default is tested)
+    if path:match("mode%.json$") then return as_if end -- (Claims below, until the default is tested)
   end,
   song_dir = function(_, song) return "root/" .. song end,
 }
@@ -19,12 +19,10 @@ package.path = "lib/?.lua;" .. package.path
 local sync = require("sync")
 local s = { host = "James", markers = { { region = true, name = "Verse", pos = 10, ["end"] = 30 } } }
 local can, who = sync.authority({ root = "root" }, "Saltmarsh", "main", s)
-assert(can("James", "Keys", 0), "the driver owns what nobody claimed")
-assert(not can("Laptop", "Keys", 0), "a guest doesn't own the driver's tracks")
+assert(can("James", "Keys", 0) and can("Laptop", "Keys", 0) and who.owner("Keys", 0) == "James", "what nobody claimed: anyone's, owned by the driver")
 assert(can("Laptop", "Guitar", 12) and who.owner("Guitar", 12) == "Laptop", "a track claim beats the driver as its owner")
-assert(can("James", "Guitar", 12), "and in Driver + claims the driver may change it anyway (James, 0.58.82)")
+assert(not can("James", "Guitar", 12), "and holds against the driver too (Claims)")
 assert(can("Laptop", "Pad", 0, "Laptop-20261028-032939Z-1"), "the author may change their own take on an unclaimed track")
-assert(not can("Laptop", "Keys", 0, "James-20261028-032515Z-2"), "but not someone else's")
 assert(not can("Sam", "Guitar", 12, "Sam-20261028-040000Z-1"), "a claim beats authorship")
 -- time selections: newer than a region claim, older than any track claim
 with({
@@ -65,17 +63,26 @@ assert(can("James", "Guitar", 12) and not can("Laptop", "Guitar", 12), "driver o
 assert(not can("Laptop", "Pad", 0, "Laptop-20261028-032939Z-1"), "driver only: not even your own take")
 claims["mode.json"] = { mode = "nonsense" }
 assert(select(2, sync.authority({ root = "root" }, "Saltmarsh", "main", s)).mode == "open", "an unknown mode reads as the default")
+-- the two modes rt removed (James, 2026-11-20: three modes) read as the nearest left, said once a session each in the log
+local said = {}
+package.loaded.band.log = function(t) said[#said + 1] = t end
 claims["mode.json"] = { mode = "everyone" }
 can, who = sync.authority({ root = "root" }, "Saltmarsh", "main", s)
-assert(can("James", "Guitar", 12) and can("Sam", "Guitar", 12) and can("Sam", nil, nil), "everyone: claims don't hold")
+assert(who.mode == "open" and not can("Sam", "Guitar", 12) and can("Sam", nil, nil), "Anyone (claims ignored) works as Claims: claims hold now")
+assert(#said == 1 and said[1]:find("Anyone %(claims ignored%)") and said[1]:find("works as Claims"), "and says so: " .. tostring(said[1]))
+sync.authority({ root = "root" }, "Saltmarsh", "main", s)
+assert(#said == 1, "once")
 claims["mode.json"] = { mode = "claims" }
 can, who = sync.authority({ root = "root" }, "Saltmarsh", "main", s)
-assert(can("James", "Guitar", 12) and not can("Sam", "Guitar", 12) and not can("Sam", "Keys", 0), "driver + claims: the driver over a claim, others only on theirs")
+assert(who.mode == "driver" and can("James", "Guitar", 12) and not can("Laptop", "Guitar", 12) and not can("Sam", "Keys", 0), "Driver + claims works as Driver only")
+assert(#said == 2 and said[2]:find("Driver %+ claims") and said[2]:find("Driver only"), "and says so")
+assert(not sync.MODES.claims and not sync.MODES.everyone and sync.MODES.open and sync.MODES.driver and sync.MODES.admins, "three modes")
+package.loaded.band.log = nil
 -- the driver released Laptop's claims while Laptop was away: those don't count; a claim made after still does
-claims["mode.json"] = { mode = "claims" }
+claims["mode.json"] = { mode = "open" }
 claims["released.json"] = { Laptop = "2026-10-29T00:00:00Z" }
 can, who = sync.authority({ root = "root" }, "Saltmarsh", "main", s)
-assert(can("James", "Guitar", 12) and not can("Laptop", "Guitar", 12) and who.owner("Guitar", 12) == "James", "a released claim follows the driver again")
+assert(can("James", "Guitar", 12) and can("Sam", "Guitar", 12) and not who.is_claimed("Guitar", 12) and who.owner("Guitar", 12) == "James", "a released claim is free again")
 claims["claims/Laptop.json"] = { user = "Laptop", time = "2026-10-30T09:00:00Z", tracks = { "Guitar" }, since = { ["tracks:guitar"] = "2026-10-30T09:00:00Z" } }
 can, who = sync.authority({ root = "root" }, "Saltmarsh", "main", s)
 assert(can("Laptop", "Guitar", 12) and who.owner("Guitar", 12) == "Laptop", "claimed again after the release: theirs")

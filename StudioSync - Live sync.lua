@@ -244,6 +244,7 @@ reaper.atexit(function()
   if not reloaded and ours then band.try("end_of_session", end_of_session, "Live sync stopped") end -- (logged when it fails: Round 1 review, 0.59.45)
   -- (a clean stop: the unsent changes kept beside the project are for a crash, not a project closed unsaved. Crash-safe sessions, lib/mirror.lua, rt)
   if not reloaded and ours then band.try("drop_stash", require("mirror").drop_stash, proj) end
+  if not reloaded then band.try("claimask.leave", require("claimask").leave, cfg, b) end -- (leaving the room: your auto-claims let go. lib/claimask.lua, rt-claims)
   if not reloaded then
     -- (this tab's room taken off the "local work" mark only when a look ran and a last check, now, finds nothing: a take recorded since the last
     -- look was missed, and Delete my copy then binned the folder holding its only copy. Round 3 review, 0.59.48)
@@ -472,7 +473,9 @@ function P.look(t)
       for _, st in ipairs(presence.peers(cfg, b.song, b.room)) do here[st.user] = true end
       t.redraw = true -- (a look can put back a refused edit, copy it to a track of yours or delete an item, with no undo point: always redrawn)
       local ok, sent = pcall(require("mirror").watch, proj, cfg, b.song, b.room, { can = my_can, owner_can = can, mode = who.mode, local_mix = sync.local_mix, is_claimed = who.is_claimed, owner_of = who.owner_of,
-        held = held, here = here, printers = who.printers, quick = true }) -- (quick: builds on the last look, lib/mirror.lua rt-look)
+        held = held, here = here, printers = who.printers, quick = true, -- (quick: builds on the last look, lib/mirror.lua rt-look)
+        ask = function(name, pos) return require("claimask").hold(cfg, b, who, name, pos) end, sent = require("claimask").on_sent }) -- (Claims mode: lib/claimask.lua, rt-claims)
+      band.try("claimask.flush", require("claimask").flush, cfg, b, who, alone) -- (what went that nobody claimed is yours now)
       if not ok then band.log("mirror sync: " .. tostring(sent))
       elseif sent > 0 then band.log(sent .. " change(s) went to " .. (b.room == "main" and "the others" or ("the room '" .. b.room .. "'"))); pcall(require("api").event, "sent", { n = sent, song = b.song, room = b.room }) end
       mirror_took = reaper.time_precise() - now
@@ -1033,6 +1036,9 @@ local live_handlers = {
   presence = function(st) require("presence").from_msg(cfg, b.song, b.room, st, "presence") end,
   heartbeat = function(st) require("presence").from_msg(cfg, b.song, b.room, st, "heartbeat") end,
   claim = function(c) sync.live_claim(b.song, b.room, c) end,
+  -- (Claims mode: a bandmate asks for something you claimed, or answers your ask. lib/claimask.lua, rt-claims)
+  claim_ask = function(d) require("claimask").on_ask(cfg, b, d) end,
+  claim_answer = function(d) require("claimask").on_answer(cfg, b, d) end,
   cue = function(ev)
     if type(ev) ~= "table" or type(ev.id) ~= "string" or (ev.type ~= "start" and ev.type ~= "stop") or type(ev.at) ~= "number" or sync.is_mine(ev.id, cfg.user) then return end
     seen_ev[ev.id .. ".json"] = true
@@ -1158,6 +1164,7 @@ local function tick_body() -- returns true to keep going
   band.try("ablink.tick", require("ablink").tick, cfg, b, proj) -- (this computer's Ableton Link session, when it's on here. James, rt)
   band.try("liveaudio.tick", require("liveaudio").tick, cfg, b, proj) -- (live audio over the link, when the studio has it on: lib/liveaudio.lua. James, rt)
   band.try("hops.tick", require("hops").tick, cfg, b, proj) -- (live hops, both sides: lib/hops.lua. James, rt)
+  band.try("claimask.tick", require("claimask").tick, proj, cfg, b) -- (asks: the panel's answers, ones run out; auto-claims gone idle. lib/claimask.lua, rt-claims)
   band.try("webui.tick", require("webui").tick, proj, cfg, b, live_handlers) -- (the web UI: who's here, claims and chat for the browser, its chat sends. lib/webui.lua, James, rt)
   band.try("hub.tick", require("hub").tick, proj, cfg, b) -- (who's the studio's hub and this song's; the song hub's restore points while idle. lib/hub.lua, James, rt)
   band.try("bounces.tick", require("bounces").tick, proj, cfg, b) -- (distributed stems and the hub's mix, both sides: lib/bounces.lua. James, rt)

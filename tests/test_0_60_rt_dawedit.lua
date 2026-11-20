@@ -148,6 +148,20 @@ assert(r.why:find("changed meanwhile"), "the page's view is stale (it's at 5.5 n
 song()
 r = select(2, act("James", { op = "move", lane = 0, idx = 0, p = 0, l = 4, to = 0, tolane = 1 }))
 assert(r.why and r.why:find("Chilio") and #fake.tracks[3].items == 2, "onto Chilio's claimed Bass: refused")
+-- Claims, Chilio here: an edit to their claim isn't refused. It's made, and mirror.watch holds it and asks them (lib/claimask.lua, rt-claims)
+local claimask = require("claimask")
+claimask.present = function(_, _, u) return u == "Chilio" end
+song()
+said, r = act("James", { id = "a3", op = "mute", lane = 1, idx = 0, p = 4, l = 2, on = true })
+assert(r.id == "a3" and r.ok and r.ask == "Chilio" and it(1, 0).mute == 1 and said:find("Chilio is asked"), "Chilio's claimed Bass, Chilio here: made, and asked for: " .. tostring(r.why))
+r = select(2, act("James", { op = "move", lane = 0, idx = 0, p = 0, l = 4, to = 0, tolane = 1 }))
+assert(r.ok and r.ask == "Chilio" and #fake.tracks[3].items == 3, "onto their Bass too")
+claimask.present = function() return false end
+song()
+r = select(2, act("James", { op = "mute", lane = 1, idx = 0, p = 4, l = 2, on = true }))
+assert(r.why and r.why:find("Chilio has claimed Bass") and not r.ask and (it(1, 0).mute or 0) == 0, "Chilio away: refused as before")
+r = select(2, act("James", { op = "mute", lane = 0, idx = 0, p = 0, l = 4, on = true }))
+assert(r.ok and not r.ask, "what nobody claimed: no ask")
 r = select(2, act("James", { op = "move", lane = 0, idx = 0, p = 0, l = 4, to = 0.5, tolane = 2 }))
 assert(r.ok and #fake.tracks[1].items == 0 and fake.tracks[4].items[2].pos == 0.5, "onto an unclaimed track: moved there (the shown lanes skip this computer's own track)")
 -- a region claim: what starts in Verse is Chilio's; the maker of a track may change it while nobody claimed it
@@ -157,12 +171,10 @@ r = select(2, act("James", { op = "move", lane = 1, idx = 1, p = 12, l = 4, to =
 assert(r.why and r.why:find("Chilio has claimed"), "an item in Chilio's Verse region: refused for the driver: " .. tostring(r.why))
 r = select(2, act("Andie", { op = "mute", lane = 0, idx = 0, p = 0, l = 4, on = true }))
 assert(r.ok and it(0, 0).mute == 1, "open: anyone changes what nobody claimed")
--- Driver + claims: what nobody claimed is the driver's, apart from a track's maker
+-- a room saved as Driver + claims (removed in rt) works as Driver only: even a track's maker is refused
 room("claims", { Chilio = { regions = { "Verse" } } })
 r = select(2, act("Andie", { op = "mute", lane = 2, idx = 0, p = 34, l = 4, on = true }))
-assert(r.ok and it(2, 0).mute == 1, "Andie's own unclaimed Pad: the maker may (mirror's rule)")
-r = select(2, act("Andie", { op = "mute", lane = 0, idx = 0, p = 0, l = 4, on = false }))
-assert(r.why and r.why:find("driver's") and it(0, 0).mute == 1, "the driver's track: not Andie's: " .. tostring(r.why))
+assert(r.why and r.why:find("only the driver %(James%)") and (it(2, 0).mute or 0) == 0, "Driver + claims reads as Driver only: " .. tostring(r.why))
 -- Driver only, and admins
 room("driver")
 r = select(2, act("Andie", { op = "mute", lane = 2, idx = 0, p = 34, l = 4, on = false }))
@@ -209,9 +221,9 @@ r = select(2, act("Chilio", { op = "colour", lane = 1, idx = 0, p = 4, l = 2, c 
 assert(r.ok and it(1, 0).takes[1].color == 0 and it(1, 0).color == 0, "none: both cleared")
 
 -- ---- markers and regions ----------------------------------------------------------------------------------------------------------------
-song(); room("claims", { Chilio = { regions = { "Verse" } } })
+song(); room("driver", { Chilio = { regions = { "Verse" } } })
 r = select(2, act("Andie", { op = "add_marker", at = 3.1, name = "Bridge" }))
-assert(r.why:find("only the driver changes markers") and #added == 0, "the timeline is the driver's (Driver + claims)")
+assert(r.why:find("only the driver changes markers") and #added == 0, "the timeline is the driver's (Driver only)")
 r = select(2, act("James", { op = "add_marker", at = 3.1, name = "Bridge" }))
 assert(r.ok and added[1].pos == 3 and added[1].name == "Bridge" and not added[1].rgn, "the driver adds a marker, snapped")
 r = select(2, act("James", { op = "add_marker", at = 44, region = true, to = 52, name = "" }))
@@ -263,4 +275,5 @@ for _, want in ipairs({ "act({ edit: Object.assign({ id }, o) })", "t.dawedit", 
   assert(js:find(want, 1, true), "the Project page has " .. want)
 end
 assert(css:find(".dmenu", 1, true) and css:find(".dedit", 1, true), "the edit row and the menu are styled")
+assert(js:find("if (r.ask) say(", 1, true), "the Project page says whom the edit asked (rt-claims)")
 print("ok")

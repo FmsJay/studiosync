@@ -19,7 +19,7 @@ API version 1, StudioSync 0.58.64 and later. Fields and verbs are only ever adde
 | `song`, `room` | the project and the room you're in |
 | `me` | your name in the studio |
 | `driver`, `driving` | who drives, and whether that's you |
-| `mode` | who can edit: `open` (Claims, the default), `claims` (Driver + claims), `driver` (Driver only), `everyone` (Everyone) or `admins` |
+| `mode` | who can edit: `open` (Claims, the default), `driver` (Driver only) or `admins` (Admins only). A room saved as the removed `claims` reads as `driver`, `everyone` as `open` |
 | `alone` | nobody else is here (you have full control) |
 | `here` | the others in the project now, sorted |
 | `claims` | `[ { "user": "James", "tracks": ["Gtr", "Keys"] }, { "user": "Sam", "tracks": ["Bass"] } ]`: each person's claimed tracks (always a list, `[]` when nobody has claimed anything) |

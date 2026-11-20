@@ -1,6 +1,6 @@
 -- @description StudioSync: take control of the session (your deletes, moves and lane choices go to everyone)
--- What driving means depends on the room's Who controls (lib/live.lua live.DRIVING): in Driver + claims the driver's edits to what nobody has
--- claimed reach everyone; in the Anyone modes everyone edits, and the driver leads play and stop for whoever follows the driver.
+-- What driving means depends on the room's Who controls (lib/live.lua live.DRIVING): in Driver only only the driver's edits reach everyone;
+-- in Claims everyone edits, and the driver leads play and stop for whoever follows the driver.
 -- Before switching, everyone online must hold every take and have applied every change, so the handover
 -- starts from one agreed state; you can wait for that (up to 2 minutes) or switch anyway.
 -- Live sync must be running for your changes to go out.

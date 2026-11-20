@@ -93,11 +93,11 @@ function webui.presence_model(song, room, me, peers, who)
   if type(who) == "table" then
     for kind, list in pairs({ track = who.tracks, region = who.regions }) do
       for _, c in pairs(type(list) == "table" and list or {}) do
-        if type(c) == "table" and type(c.user) == "string" then claims[#claims + 1] = { user = c.user, kind = kind, name = tostring(c.name or "") } end
+        if type(c) == "table" and type(c.user) == "string" then claims[#claims + 1] = { user = c.user, kind = kind, name = tostring(c.name or ""), auto = c.auto } end
       end
     end
     for _, t in ipairs(type(who.times) == "table" and who.times or {}) do
-      if type(t.user) == "string" and tonumber(t.from) and tonumber(t.to) then claims[#claims + 1] = { user = t.user, kind = "time", from = t.from, to = t.to } end
+      if type(t.user) == "string" and tonumber(t.from) and tonumber(t.to) then claims[#claims + 1] = { user = t.user, kind = "time", from = t.from, to = t.to, auto = t.auto } end
     end
   end
   table.sort(claims, function(a, z)
@@ -150,6 +150,7 @@ webui.ACTIONS.ai = true -- (the AI page's asks, yes/no and cancel: lib/ai.lua; w
 webui.ACTIONS.invite = true -- (Ask to join, Join / Decline, a studiosync:// link from join.html: lib/invite.lua)
 webui.ACTIONS.guestweb = true -- (browser guests: the host's make/kick/level, and a guest's own, wrapped by the extension: lib/guestweb.lua)
 webui.ACTIONS.tryfx = true -- (the Try tab: a bandmate's plug-in you don't have, its knobs, asks for yours: lib/hoptry.lua, rt-hopvst)
+webui.ACTIONS.claimask = true -- (Claims mode: Release / Keep what someone asks for: lib/claimask.lua, rt-claims)
 function webui.parse_action(s)
   local a = type(s) == "string" and s ~= "" and band.json_decode(s)
   if type(a) ~= "table" or type(a.topic) ~= "string" or not webui.ACTIONS[a.topic] then return nil end
@@ -237,6 +238,10 @@ function webui.tick(proj, cfg, b, handlers)
       local said = require("hoptry").web_action(proj, cfg, b, a)
       if said then band.log(said) end
     end
+    if topic == "claimask" then
+      local said = require("claimask").web_action(cfg, b, a)
+      if said then band.log(said) end
+    end
     if topic == "home" or topic == "profile" then
       local said = require("webhome").action(proj, cfg, b, a)
       if said then band.log(said) end
@@ -267,7 +272,9 @@ function webui.tick(proj, cfg, b, handlers)
     local sync = require("sync")
     local _, who = sync.authority(cfg, b.song, b.room)
     last_who = who
-    publish("presence", webui.presence_model(b.song, b.room, me, require("presence").peers(cfg, b.song, b.room), who))
+    local pm = webui.presence_model(b.song, b.room, me, require("presence").peers(cfg, b.song, b.room), who)
+    pm.asks = require("claimask").model(b) -- (Claims mode: asks waiting on you, and yours on others. lib/claimask.lua, rt-claims)
+    publish("presence", pm)
   end
   if now - chat_at >= webui.CHAT_EVERY then
     chat_at = now

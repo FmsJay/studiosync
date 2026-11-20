@@ -560,16 +560,6 @@ local function refresh()
     if who.mode == "driver" then banner_text = "View only: " .. view.driver .. " is driving. Your changes are put back; what you record stays on this computer."
     elseif who.mode == "admins" and not require("groups").may_manage(cfg.root, cfg.user) then
       banner_text = mine > 0 and "Admins only: you can change what you've been given." or "View only: admins only here. Your changes are put back; what you record stays on this computer."
-    elseif who.mode == "claims" then
-      -- (tracks you made and nobody has claimed are yours to change too, so "view only" wasn't true: sync.maker_may)
-      local made = false
-      for i = 0, reaper.CountTracks(proj) - 1 do
-        local tr = reaper.GetTrack(proj, i)
-        local name = sync.base_name(select(2, reaper.GetTrackName(tr)))
-        made = made or (not who.tracks[name:lower()] and require("mirror").is_creator(require("mirror").track_oid(tr), cfg.user))
-      end
-      banner_text = (mine > 0 or made) and (view.driver .. " is driving: you can change what you've claimed or made.")
-        or ("View only: " .. view.driver .. " is driving. Claim a track (StudioSync, Home) to edit it.")
     end
   end
   points = recall.list(cfg, b.song, b.room)
@@ -609,6 +599,9 @@ local function claim(tracks, regions)
   end
   for _, n in ipairs(tracks) do add(c.tracks, n) end
   for _, n in ipairs(regions) do add(c.regions, n) end
+  -- (claimed by hand: lasting, even if it was one of your auto-claims. lib/claimask.lua, rt-claims)
+  for _, n in ipairs(tracks) do if c.auto then c.auto["tracks:" .. n:lower()] = nil end end
+  for _, n in ipairs(regions) do if c.auto then c.auto["regions:" .. n:lower()] = nil end end
   sync.set_claims(cfg, b.song, b.room, c)
 end
 
@@ -683,7 +676,7 @@ local function section_driver(beside) -- beside: drawn on the box's row (a short
   if not may_set then ImGui.SameLine(ctx); ImGui.TextDisabled(ctx, "the owner or an admin picks") end
   if beside then beside() end
   if driving or reaper.GetExtState(band.SECTION, "alone " .. tostring(proj)) == "" then -- (alone, "James is driving" sat right above "you have full control": Mac, 0.57.6)
-    local yours = ({ claims = "You're driving: you change anything, claimed or not.", driver = "You're driving: only you change things." })[mode] or "You're driving."
+    local yours = ({ driver = "You're driving: only you change things." })[mode] or "You're driving."
     ImGui.Text(ctx, driving and yours or (tostring(view.driver) .. " is driving."))
   end
   local away = reaper.GetExtState(band.SECTION, "driver_away " .. tostring(proj))
@@ -1886,7 +1879,7 @@ function ui.settings_colours()
     require("people").track_options(ctx, ImGui) -- whose colours tracks show here
     if b and can then require("colours").draw(ctx, ImGui, proj, cfg, function(name, tr) -- (a track you made is yours, as mirror.watch has it: Mac, 0.57.6)
       return can(cfg.user, name) or sync.maker_may(require("mirror").track_oid(tr), cfg.user, name, nil, who and who.mode)
-    end, view.driver == cfg.user or (who and (who.mode == "open" or who.mode == "everyone")))
+    end, view.driver == cfg.user or (who and who.mode == "open"))
     elseif not b then ImGui.TextDisabled(ctx, "Colouring a project: open a studio project.") end
     card_end()
   end
@@ -3226,6 +3219,7 @@ function F.bars(t)
   tools.invite_popup(ctx, ImGui)
   page_rooms.invites()
   tools.join_requests(ctx, ImGui) -- (someone asking to join the band folder)
+  if b then require("claimask").bar(ctx, ImGui, proj) end -- (Claims mode: someone asks for what you claimed, Release / Keep; your own asks waiting. lib/claimask.lua, rt-claims)
   if b and can then -- (an edit touching a claim, before the rest: lib/suggest.lua)
     require("suggest").bar(ctx, ImGui, proj, cfg, sync.room_dir(cfg, b.song, b.room), can, select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1")
   end

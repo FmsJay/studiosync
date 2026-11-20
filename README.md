@@ -87,7 +87,7 @@ Everything below is the detail.
       recall/   recall points (every handover, or saved by hand)
       status/   <person>.json           who's here, what they're doing (the panel's Who's here)
       chat/     messages, to-dos, links for the room (the project's and the studio's sit beside it)
-      driver.json, mode.json            who drives; Claims / Driver + claims / Driver only / Everyone / Admins only
+      driver.json, mode.json            who drives; Claims / Driver only / Admins only
 ```
 
 - **Publish** (host) makes the project a studio session. The project must be prepared first (a checklist); an
@@ -377,14 +377,20 @@ plug-ins this machine doesn't have.
 
 Who may change what:
 
-- **Driver**: leads play and record for whoever follows the driver; in *Driver + claims* and *Driver only* their changes reach everyone (in Driver + claims, claimed parts too).
-  In the Anyone modes everyone edits anyway, so a driver who's away only means play and stop follow nobody until someone takes control. *Take control* (next to Who's
+- **Driver**: leads play and record for whoever follows the driver; in *Driver only* only their changes reach everyone.
+  In Claims everyone edits anyway, so a driver who's away only means play and stop follow nobody until someone takes control. *Take control* (next to Who's
   here) makes you the driver; it checks everyone has caught up first, and every handover saves a version.
 - **Who can edit** (Home; the studio's owner or an admin picks): **Claims**, the default (anyone changes anything nobody else
   has claimed, the tempo map, markers and project settings too; what someone claimed only they change, the driver too; a clash
-  goes to whoever owns it, else whoever changed it more: docs/clashes.md), **Driver + claims** (the driver changes anything,
-  claimed or not; everyone else what they've claimed), **Driver only**, **Everyone** (anything, claimed or not: claims don't
-  hold) or **Admins only**. Nothing is ever claimed for you by itself: a track you made stays yours to change until someone claims it.
+  goes to whoever owns it, else whoever changed it more: docs/clashes.md), **Driver only** or **Admins only**. A room set to one
+  of the two modes since removed works as the nearest one: Driver + claims as Driver only, Anyone (claims ignored) as Claims.
+- **In Claims, what you edit becomes yours** while you work on it, with a bandmate here: the track, or the stretch of time when one
+  edit reached items on three tracks or more. It shows in the claims lists like any claim ("while editing" on the web page), and lets
+  go after 10 minutes without an edit to it, when you leave the room, or with Release. Claiming it yourself makes it lasting.
+- **Editing what someone else claimed asks them** (Claims): your edit waits on your computer, and they get "you want to edit it:
+  *Release* / *Keep*" at the top of the panel, on the web page and as a phone alert. Release: the claim moves to you and your edit
+  goes to everyone. Keep, or no answer in 30 s: it's put back (an item's copy is kept on your "(yours, not sent)" track). Someone
+  who isn't here can't be asked: their claim stands, and the driver or an admin can release it.
 - **Claims**: *Claim selected tracks*, *Claim region at cursor* or *Claim time selection* (shown to everyone as a
   `[claimed: you]` region). A track claim beats a time claim, which beats a region claim, which beats the driver.
 - **Suggestions**: an edit that reaches someone's claim (a section copied or moved across the project, say) goes out for
@@ -393,7 +399,7 @@ Who may change what:
   so the claim never moves, and their undo key takes it back. Anything new stays on your own "(yours, not sent)" track until
   then. A part they've changed since is left as it is. Plug-in changes aren't suggested: a plug-in can change its own
   data, which would ask its owner about nothing.
-- **Tempo**: the driver's, or anyone's in *Claims* and *Everyone*. The parts it moves aren't anyone's edit, whoever claimed them.
+- **Tempo**: the driver's, or anyone's in *Claims*. The parts it moves aren't anyone's edit, whoever claimed them.
 - **Buses, folders, VCA faders and the master**: a change to one still goes through under the usual rules, and says whose claimed parts it affects.
   One holding someone's claimed part can't be deleted: it comes back, and says why.
 - **A copy of someone's claimed track** goes out as yours, as "Keys (James's copy)", and says whose it was. The original isn't touched.
@@ -630,7 +636,7 @@ own? Enter `<address>:2049` and click *Save for the studio*.
 
 - **Deleting your local copy** (right-click a project or a folder on the Projects page): to free the space, once it's confirmed elsewhere: Google Drive holds every file, or another computer of the studio has said it holds exactly these files (each one says so itself, every minute or so while REAPER is open). The project goes on this computer's ignore list first, so nobody else's copy is touched, and its files go to the Recycle Bin or Trash. It stays on the page, and opening it brings it back. A closed studio's copy goes the same way, from the Studios page.
 - **A copy outside the studio** (Restore > Save a copy outside the studio): a plain REAPER project in a folder you pick, with every file it uses, as recorded or as WAVs. It opens anywhere with no StudioSync and nothing you do to it goes to anyone. Letting someone in saves a kept version of what's open first.
-- **Who can edit** (Home, owner and admins only): Claims, Driver + claims, Driver only, Everyone, or Admins only (the owner and admins, and whoever an admin gave tracks to: right-click their name).
+- **Who can edit** (Home, owner and admins only): Claims, Driver only, or Admins only (the owner and admins, and whoever an admin gave tracks to: right-click their name).
 - **Chat**: This room shows only this room's; This project also shows all its rooms'; Studio shows everything, each message saying where it's from.
 
 ## For your own scripts: the API

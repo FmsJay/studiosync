@@ -270,6 +270,16 @@ function sync.set_claims(cfg, song, room, claims, renamed)
     end
   end
   claims.since = since
+  if type(claims.auto) == "table" then -- (auto-claims: only what's still claimed keeps its mark. lib/claimask.lua)
+    local keep = {}
+    for _, k in ipairs({ "tracks", "regions" }) do
+      for _, name in ipairs(claims[k] or {}) do
+        local key, was = k .. ":" .. name:lower(), k ~= "regions" and renamed and renamed[name:lower()]
+        keep[key] = claims.auto[key] or (was and claims.auto[k .. ":" .. was:lower()]) or nil
+      end
+    end
+    claims.auto = next(keep) and keep or nil
+  end
   claims.user, claims.time = cfg.user, now
   reaper.RecursiveCreateDirectory(sync.room_dir(cfg, song, room) .. "/claims", 0)
   band.write_json(sync.claims_path(cfg, song, room, cfg.user), claims)
@@ -279,7 +289,8 @@ end
 -- claims file, which is the record. The same bar as the file: a claims file speaks only for the person it's named for. (James, 0.60.0-rt)
 sync.live_claims = {}
 function sync.live_claim(song, room, c)
-  if type(c) ~= "table" or type(c.user) ~= "string" or type(c.time) ~= "string" or (c.since ~= nil and type(c.since) ~= "table") or c.given then return false end
+  if type(c) ~= "table" or type(c.user) ~= "string" or type(c.time) ~= "string" or (c.since ~= nil and type(c.since) ~= "table") or c.given
+      or (c.auto ~= nil and type(c.auto) ~= "table") then return false end
   for _, k in ipairs({ "tracks", "regions", "prints", "times" }) do
     if c[k] ~= nil and type(c[k]) ~= "table" then return false end
     for _, n in ipairs(c[k] or {}) do if type(n) ~= (k == "times" and "table" or "string") then return false end end
@@ -408,19 +419,35 @@ end
 -- Who owns a take: its track's claimant, else the newest claim on a stretch of time it starts in (a time selection),
 -- else the claimant of the named region it starts in, else the driver. A take's author may change it (move, trim,
 -- mute) wherever nobody has claimed it that way.
--- How a room shares editing, set by the studio's owner or an admin (rooms/<room>/mode.json). The names on disk are older than the
--- panel's (James, 0.58.82: "Claims" for everyone-but-claims, the driver over claims in "Driver + claims", and "Everyone" with no claims):
---   "open"      Claims, the default: anyone changes anything nobody else has claimed (the newest change wins), the tempo map and markers too
---   "claims"    Driver + claims: the driver changes anything, claimed or not; everyone else what they've claimed
+-- How a room shares editing, set by the studio's owner or an admin (rooms/<room>/mode.json). Three since rt (James, 2026-11-20: "yes three
+-- modes"; docs/rt/rt-audit.md §7). The names on disk are older than the panel's:
+--   "open"      Claims, the default: anyone changes anything nobody else has claimed (the newest change wins), the tempo map and markers too.
+--               What you edit becomes your claim while you work on it, and an edit to someone else's asks them for it (lib/claimask.lua)
 --   "driver"    Driver only: only the driver changes what the band has (claims are kept, but don't count while it's on)
---   "everyone"  Everyone: anyone changes anything; claims are kept but don't hold
 --   "admins"    only the group's owner and admins, and everyone on what's been claimed for them (lib/groups.lua; an admin can give a claim)
 -- Changes someone may not make are put back where the band has them, never kept on their machine only.
-sync.MODES = { driver = true, claims = true, open = true, everyone = true, admins = true }
+-- A room saved on a mode since removed reads as the nearest one left (OLD_MODES), said once a session in the log; mode.json isn't rewritten
+-- (only the owner or an admin writes it: their next pick does).
+sync.MODES = { driver = true, open = true, admins = true }
+sync.OLD_MODES = { claims = "driver", everyone = "open" } -- (Driver + claims -> Driver only; Anyone, claims ignored -> Claims)
+sync.OLD_NAMES = { claims = "Driver + claims", everyone = "Anyone (claims ignored)" }
 sync.DEFAULT_MODE = "open"
+sync.AUTO_IDLE = 600 -- seconds without an edit before an auto-claim stops counting (lib/claimask.lua)
+local mode_said = {}
 function sync.mode(cfg, song, room)
   local m = band.read_json(sync.room_dir(cfg, song, room) .. "/mode.json")
-  return type(m) == "table" and sync.MODES[m.mode] and m.mode or sync.DEFAULT_MODE
+  m = type(m) == "table" and m.mode
+  local now = sync.OLD_MODES[m]
+  if now then
+    local k = tostring(song) .. "/" .. tostring(room) .. "/" .. m
+    if not mode_said[k] and band.log then
+      mode_said[k] = true
+      band.log("'" .. tostring(room) .. "' was set to " .. sync.OLD_NAMES[m] .. ", which StudioSync no longer has: it works as " ..
+        (now == "driver" and "Driver only" or "Claims") .. " now (the owner or an admin can pick another under Who controls)")
+    end
+    return now
+  end
+  return sync.MODES[m] and m or sync.DEFAULT_MODE
 end
 function sync.set_mode(cfg, song, room, mode, user)
   band.write_json(sync.room_dir(cfg, song, room) .. "/mode.json", { mode = mode, by = user, time = os.date("!%Y-%m-%dT%H:%M:%SZ") })
@@ -482,13 +509,17 @@ function sync.authority(cfg, song, room, s)
     list[#list + 1] = c
   end
   for user, l in pairs(live) do if not from_file[user] then list[#list + 1] = l end end
+  -- (an auto-claim counts while its last edit is under AUTO_IDLE old: on every computer alike, whether or not its owner's Live sync has
+  -- dropped it yet. lib/claimask.lua, James, rt)
+  local idle_cut = os.date("!%Y-%m-%dT%H:%M:%SZ", os.time() - sync.AUTO_IDLE)
   for _, c in ipairs(list) do
     if c and c.user and c.time then
       local gone = released[c.user]
+      local auto = type(c.auto) == "table" and c.auto or {}
       for _, t in ipairs(c.times or {}) do
         local at = t.at or c.time
-        if tonumber(t.from) and tonumber(t.to) and t.to > t.from and not (gone and at <= gone) then
-          times[#times + 1] = { user = c.user, time = at, from = t.from, to = t.to }
+        if tonumber(t.from) and tonumber(t.to) and t.to > t.from and not (gone and at <= gone) and not (t.auto ~= nil and not (type(t.auto) == "string" and t.auto >= idle_cut)) then
+          times[#times + 1] = { user = c.user, time = at, from = t.from, to = t.to, auto = t.auto ~= nil or nil }
         end
       end
       for _, name in ipairs(c.prints or {}) do -- (newest wins, as for tracks)
@@ -500,9 +531,12 @@ function sync.authority(cfg, song, room, s)
       for _, list in ipairs({ { c.tracks, tracks }, { c.regions, regions } }) do
         for _, name in ipairs(list[1] or {}) do
           local k = name:lower()
-          local t = (c.since or {})[(list[2] == tracks and "tracks:" or "regions:") .. k] or c.time
+          local kk = (list[2] == tracks and "tracks:" or "regions:") .. k
+          local t = (c.since or {})[kk] or c.time
           local o = list[2][k] -- newest wins; the same second goes to the later name, so every machine agrees
-          if not (gone and t <= gone) and (not o or o.time < t or (o.time == t and o.user < c.user)) then list[2][k] = { user = c.user, time = t, name = name } end
+          local a = auto[kk]
+          if not (gone and t <= gone) and not (a ~= nil and not (type(a) == "string" and a >= idle_cut))
+              and (not o or o.time < t or (o.time == t and o.user < c.user)) then list[2][k] = { user = c.user, time = t, name = name, auto = a ~= nil or nil } end
         end
       end
     end
@@ -542,8 +576,6 @@ function sync.authority(cfg, song, room, s)
   sync.is_claimed = claimed -- (sync.maker_may)
   return function(user, track, pos, take, drv) -- drv: the driver to judge by (an event's own time), else today's
       if mode == "driver" then return user == (drv or driver) end
-      if mode == "everyone" then return true end
-      if mode == "claims" and user == (drv or driver) then return true end -- (the driver over claims: James, 0.58.82)
       if mode == "admins" then
         if claimed(track, pos) then return owner(track, pos, drv) == user end
         return require("groups").may_manage(cfg.root, user)
@@ -1016,7 +1048,8 @@ end
 
 -- A track's maker may change it and what's on it while nobody has claimed it, unless the room is Driver only. Before
 -- 0.40.3 the maker beat a bandmate's claim too, and nothing showed it (James, 2026-11-01: "it gets confusing"). Nothing is
--- claimed for anyone by itself since 0.58.82 (James: auto-claims "just make things more troublesome"): only Claim does.
+-- claimed for anyone by itself from 0.58.82 (James: auto-claims "just make things more troublesome") until rt, when Claims mode brought them back
+-- as claims that let go when you stop editing, with an ask instead of a refusal (James, 2026-11-20; lib/claimask.lua).
 -- `item`: an item's own oid. Your own recording on a track nobody claimed goes out too, as the take rule in sync.authority
 -- says (it went to "(yours, not sent)" while the panel said "recording still goes out": UX review, 0.58.76).
 -- `is_claimed` (optional): the room's (sync.authority's who.is_claimed), else the last authority call's. Round 1 review, 0.59.45
@@ -1180,7 +1213,7 @@ function sync.watch_timeline(proj, cfg, song, room, can)
           reaper.Undo_EndBlock2(proj, "StudioSync: put the studio's tempo map and markers back", -1)
           if not ok then error(e, 0) end
           sig = timeline_sig(proj)
-          sync.put_back(veto or "Not sent: only the driver changes the tempo, markers and project settings. Take control, or ask them to set Who controls to Anyone")
+          sync.put_back(veto or "Not sent: only the driver changes the tempo, markers and project settings. Take control, or ask them to set Who controls to Claims")
         else
           band.log("tempo or markers changed here, but only the driver's changes go to the others (Take control first)")
         end
