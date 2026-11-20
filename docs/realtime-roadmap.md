@@ -205,6 +205,19 @@ Hear a plug-in you don't have, live, through the bandmate's REAPER that does hav
     the laptop's hidden track appears (Show all tracks), keeps processing while the laptop is stopped and playing ("Run FX when stopped");
     Health's hop row on both; a tone through a known-latency plug-in comes back aligned with a dry copy on another track (no comb when
     summed); a knob turned on the desktop is heard after the round trip; lost/late stay near 0 for ten minutes; stop removes both ends.
+  - **Run in REAPER (2026-11-19, desktop asks, laptop hosts, extension 1.0.17 + hopnet fixes, 0.59.49.52):** the laptop is remote over the
+    internet: 80-125 ms round trip (Tailscale direct). Fixed on the way: the remote slipped on every late packet, so each 40 ms spike cost the
+    next 150 ms too (8-13% lost; late packets are now dropped, only lateness that lasts 80 ms slips); REAPER starts playback by processing the
+    Hop's whole latency at once (8192 frames) and every return after it came back late for 3 s (the remote now tightens 50 ms after packets land
+    past its margin); Live sync's reload in place forgot the hidden tracks a computer hosts (state kept, orphans removed); hops use the plug-in's
+    most budget (8192 = 170 ms; 150 ms left 12 ms to spare on this link), the remote margin is 30 ms, the Hop's track runs without anticipative
+    FX, and Hop Y plays its input so the hidden track's meter shows the hop. Measured: stopped 0.34% lost, 0 slips; playing 50 s 0.7% lost
+    (27 dropouts, single lost packets), 12 late blocks at each play start (the latency pre-roll), none after; a null test (a 97 Hz saw through
+    an offloaded Volume 0 dB against an inverted dry copy) sums to 0.0000 against 0.26-0.50, stopped and playing; stop removes both ends
+    (laptop's track gone within 6 s). Both actions' paths (Offload, Run plug-in on a bandmate) behave the same.
+  - Still: a lost frame plays as silence, not dry (the Hop's "Dry when late" only covers a return that never came: marking lost frames in the
+    ring needs a plug-in build); the play start's pre-roll costs about half a second of the hop's audio; 170 ms is the plug-in's most, so a
+    link with a round trip over ~120 ms needs a bigger maximum (plug-in build); two hops at once on this link lost more (one went back at 2.7%).
 
 ### 5. Video and screen share
 - The extension serves a small page on this computer and opens it in the browser; the browser's own WebRTC does
@@ -567,6 +580,9 @@ it's the patient, lossless, store-and-forward half.
        its effects: Health on the desktop names the laptop, its FX bypassed only here (the laptop's copy unchanged, nothing sent), the
        laptop's hidden track (Show all tracks) has the chain; playback in time with a dry copy; the desktop's CPU meter drops; start recording
        on the laptop: back at once, the chain exactly as before; pull the laptop's network: back within ~10 s; Bring its effects back by hand.
+     - **Run in REAPER (2026-11-19, 0.59.49.52):** XT Rec A (Tone Generator) offloaded desktop -> laptop, stopped and playing; it comes back
+       on late blocks counted once the hop has run 3 s (and 3 s after a play start, stop or seek: the latency pre-roll), or more than 5% of its
+       audio not back in time in 10 s (that link: 0.3-0.7% steadily, a 150-200 ms stall now and then). Bring back: the chain exactly as it was.
 3. **Follow a bandmate.** See exactly what they see: their view, cursor, selection and open editor, live.
    - **Built (rt-follow, 2026-11-19; offline tests only, not run in REAPER yet):** `lib/follow.lua`, tests/test_0_60_rt_follow.lua.
      - **What goes:** while someone follows you (their status says `follow`, as before), Live sync's tick sends a `view` link message at most
