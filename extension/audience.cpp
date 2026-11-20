@@ -551,6 +551,8 @@ bool audience_http(unsigned long long sv, const WebReq &r, bool pub)
   int one = 1;
   setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof(one)); // (20 ms packets: no Nagle wait)
   set_nonblocking(s);
+  int sb = 32 * 1024; // (a small send buffer: a listener that stops taking is seen within seconds, not after megabytes sit in the system's buffer, as Linux's grows to)
+  setsockopt(s, SOL_SOCKET, SO_SNDBUF, (const char *)&sb, sizeof(sb));
   std::lock_guard<std::mutex> l(g_mx);
   if (!g_run) { g_n.fetch_sub(1); return false; }
   Lis x;

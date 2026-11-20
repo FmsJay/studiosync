@@ -104,6 +104,14 @@ static int ws_read(tsock s, std::string &d)
   return h[0] & 15;
 }
 
+// Reads until the server closes the socket (a close frame, or the connection gone), for `secs` at most: whatever was still queued comes first.
+static bool until_closed(tsock s, double secs)
+{
+  std::string d;
+  for (const double t0 = now_s(); now_s() - t0 < secs;) { const int op = ws_read(s, d); if (op == 8 || op < 0) return true; }
+  return false;
+}
+
 // The stand-in audio thread: REAPER's output, 440 Hz left and 660 Hz right at 0.5, in 128-frame blocks at `sr`, through the web UI's hook.
 static std::atomic<bool> g_play{ false };
 static std::atomic<double> g_sr{ 44100 };
@@ -318,9 +326,7 @@ int main()
   // revoke the tailnet link: its listeners closed, the public ones stay
   CHECK(audience_link("aaaaaaaaaaaaaaaa", "", 0, 0) == 1, "revoke the tailnet link");
   int closed = 0;
-  for (tsock s : many) {
-    for (int i = 0; i < 2000; ++i) { op = ws_read(s, d); if (op == 8 || op < 0) { ++closed; break; } }
-  }
+  for (tsock s : many) closed += until_closed(s, 10);
   CHECK(closed == (int)many.size(), "its listeners are closed (1008)");
   for (tsock s : many) closesocket(s);
   closesocket(tl);
@@ -353,9 +359,7 @@ int main()
 
   // the public port closed: its listeners go, it answers nothing
   CHECK(audience_start(pages.c_str(), 30, 96, 0) == 1, "the public port turned off");
-  ended = false;
-  for (int i = 0; i < 2000; ++i) { op = ws_read(pl, d); if (op == 8 || op < 0) { ended = true; break; } }
-  CHECK(ended, "its listeners closed");
+  CHECK(until_closed(pl, 15), "its listeners closed");
   CHECK(ask(pubp, "GET /listen/listen.js HTTP/1.1\r\nHost: x\r\n\r\n").empty(), "nothing listens there now");
   closesocket(pl);
   closesocket(one_more);
