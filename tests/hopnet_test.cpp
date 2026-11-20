@@ -365,28 +365,35 @@ int main()
   // when the packets after it are on time again, which made each spike cost the next 150 ms too (all of it later than the budget).
   // The margin is the point, so it's set on this computer: the same wire without spikes first, and each way shortened by half what its need
   // is over the budget less 3 ms (the Linux runners' own: need 146-147.6 ms of 150, 2026-11-20; a hosted Mac's round trip and its remote's
-  // guard ran 5-15 ms over, which left the spikes no margin at all and made every packet late, not just theirs).
+  // guard ran 5-15 ms over, which left the spikes no margin at all and made every packet late, not just theirs). A loaded runner's need
+  // moves +-10 ms from run to run, so each try is shortened again by its own excess, and a run is checked only with the margin it's about
+  // (its own need within the budget) and no harness stall longer than a spike: a shorter one is one more spike, which the checks' room
+  // covers (Linux: ~99% exact, 4-6 holes). The hosted Mac stalls 18-41 ms several times a run, so no run of it is ever free of them.
   {
     auto clean = [](const Result &x) { return x.hiccup == 0; };
     const Result c = tries([] { return run(8, 45, 3, 0, 0, 3); }, clean);
-    const double budget = num(c.sst, "budget_ms"), need0 = num(c.sst, "need_ms"), over = need0 - (budget - 3);
-    const double base = 45 - std::min(15.0, std::max(0.0, over / 2));
+    const double budget = num(c.sst, "budget_ms"), need0 = num(c.sst, "need_ms");
+    auto over = [&](const Result &x) { return num(x.sst, "need_ms") - (budget - 3); };
+    double base = 45 - std::min(15.0, std::max(0.0, over(c) / 2));
     printf("the same wire without spikes: need %.1f ms of %.0f, so each way %.1f ms\n", need0, budget, base);
-    CHECK(need0 > 0 && over <= 30, "the link without spikes within 30 ms of the margin (or the runner's too slow for this check)");
-    // (a harness stall shorter than the spikes is one more spike, which the checks' room covers: Linux has ~99% exact and 4-6 holes. The
-    // hosted Mac stalls 18-41 ms several times a run, so no run of it was ever free of them)
-    auto spiky = [](const Result &x) { return x.hiccup_ms < 40; };
-    Result r = tries([&] { return run(7, base, 3, 0, 0, 6, "studio", 0, 0, 0, 1.3, 40); }, spiky);
+    CHECK(need0 > 0 && over(c) <= 30, "the link without spikes within 30 ms of the margin (or the runner's too slow for this check)");
+    auto fair = [&](const Result &x) { return x.hiccup_ms < 40 && over(x) <= 3; };
+    Result r = run(7, base, 3, 0, 0, 6, "studio", 0, 0, 0, 1.3, 40);
+    for (int t = 1; t < 3 && !fair(r); ++t) {
+      base = std::max(25.0, base - std::max(0.0, over(r) / 2));
+      printf("  (need %.1f ms, the harness's worst stall %.0f ms: again, each way %.1f ms)\n", num(r.sst, "need_ms"), r.hiccup_ms, base);
+      r = run(7, base, 3, 0, 0, 6, "studio", 0, 0, 0, 1.3, 40);
+    }
     report("a 90 ms round trip, a 40 ms spike on the way out every 1.3 s", r);
     if (r.hiccup > 0) printf("  (the harness's own worst stall: %.0f ms)\n", r.hiccup_ms);
     CHECK(r.wrong == 0, "nothing misaligned through the spikes");
-    if (spiky(r)) {
+    if (fair(r)) {
       CHECK(num(r.rst, "slips") == 0, "a spike isn't drift: no slip");
       CHECK(exact_pct(r) > 94, "a spike costs only its own packets");
       CHECK(num(r.sst, "holes") >= 1 && num(r.sst, "holes") <= 10, "about a dropout a spike, counted");
     } else {
-      printf("  (the harness stalled longer than a spike in every try, %.0f ms the last: the spike checks need a run without one)\n", r.hiccup_ms);
-      CHECK(!strict(), "a spike run without a harness stall longer than a spike (SS_TIMING_STRICT)");
+      printf("  (no try had the margin and no harness stall longer than a spike: the spike checks need one)\n");
+      CHECK(!strict(), "a spike run with its margin and no harness stall longer than a spike (SS_TIMING_STRICT)");
     }
   }
   // REAPER at the start of playback processes the hop's whole latency at once (its delay compensation lining up) and stays that far
