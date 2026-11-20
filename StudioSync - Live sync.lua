@@ -235,6 +235,7 @@ reaper.atexit(function()
   band.try("bounces.on_exit", require("bounces").on_exit, cfg, b) -- (shares rendered here end and are redone elsewhere: lib/bounces.lua. James, rt)
   band.try("livekeys.on_exit", require("livekeys").on_exit) -- (a web page playing a track live: notes off, the track put back. lib/livekeys.lua)
   band.try("jam.on_exit", require("jam").on_exit, proj, cfg, b) -- (Jam's capture ends, its tracks go: lib/jam.lua. rt-jam)
+  band.try("double.on_exit", require("double").on_exit, proj, cfg, b) -- (a full-quality copy running: it lands now. lib/double.lua, rt-double)
   if click and reaper.GetToggleCommandStateEx(0, 40364) == 1 then reaper.Main_OnCommand(40364, 0) end -- (stopped mid count-in: the click left on. 0.58.92)
   -- (only while the tab still holds this session: another project opened into it was saved as this song's "end of session" version, exported
   -- with its media to the studio's cloud drive, and read for the local-work mark. Otherwise the last look's answer, and nothing saved.
@@ -1058,6 +1059,7 @@ local live_handlers = {
   -- (a bandmate jamming: where each stretch of their stream sits in the song, and its end. lib/jam.lua, rt-jam)
   jam = function(d) require("jam").on_msg(cfg, b, d) end,
   jam_end = function(d) require("jam").on_end(d) end,
+  double = function(d) require("double").on_msg(cfg, b, d) end, -- (a bandmate's full-quality copy: the jam's anchor, what they added. lib/double.lua, rt-double)
   -- (where a bandmate punches in and their pre-roll, shown on this timeline till their recording ends: lib/streams.lua on_punch. James, rt)
   punch = function(d) require("streams").on_punch(proj, cfg, b, d) end,
   punch_end = function(d) require("streams").on_punch_end(proj, d) end,
@@ -1364,6 +1366,7 @@ local function tick_body() -- returns true to keep going
   local _, media_placed = band.try("streams.tick", require("streams").tick, proj, cfg, b, st & 4 ~= 0, reaper.EnumProjects(-1) == proj)
   if (tonumber(media_placed) or 0) > 0 then last = -math.huge end
   band.try("jam.tick", require("jam").tick, proj, cfg, b, reaper.EnumProjects(-1) == proj) -- (Jam: ours out while playing, bandmates' an interval late. lib/jam.lua, rt-jam)
+  band.try("double.tick", require("double").tick, proj, cfg, b, reaper.EnumProjects(-1) == proj) -- (each part kept in full quality, landed at the jam's stop. lib/double.lua, rt-double)
   lap("listen, midi view")
   local every = reaper.GetPlayStateEx(proj) & 1 == 1 and 2 -- playing: a pass can stall REAPER ~0.5 s (seen on the laptop)
     or (lagbars or now - stopped_at < 8 or require("bgrender").waiting() or require("prints").waiting()) and 0.5 or 2 -- side by side, just after a recording, or with a print on its way: look often

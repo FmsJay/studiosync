@@ -16,6 +16,7 @@
 #include <new>
 #include <string>
 #include <thread>
+#include <vector>
 #include "direct.h"
 #ifdef _WIN32
 #include <windows.h>
@@ -267,8 +268,198 @@ const char *direct_jam_status()
   return g_jstatus.c_str();
 }
 
+// ---- The full-quality copy (docs/rt/rt-double.md, lib/double.lua; roadmap "More big ideas" 7: the double-ender) --------------------------
+// While people jam or play live, each computer records its own armed tracks' hardware inputs, raw (before REAPER's FX, as REAPER records an
+// input), into 32-bit float WAVs on its own disk, one per track (mono or stereo). Each block comes with this computer's link clock
+// (direct_now) and REAPER's play position and state, read in the same pre-processing hook call: a block that doesn't follow on (the first, a
+// play or stop, a seek or loop while playing, a dropped block) starts a segment { file frame, clock, playing, position }, by which
+// lib/double.lua places each stretch once the jam stops. The audio thread allocates nothing, locks nothing and writes no file. The worker
+// rewrites each header every second, so a computer that dies mid-jam leaves files readable up to then. Nothing runs until StudioSync_KeepStart.
+namespace {
+const size_t KEEP_RING = 1 << 18; // frames (about 5 s at 48 kHz; the worker drains it every 10 ms)
+const int KEEP_MAX_CH = 32, KEEP_MAX_FILES = 16, KEEP_SEGS = 64;
+const double KEEP_JUMP = 0.02; // s: a seek or a loop, not the play position's own jitter
+const unsigned long long KEEP_MAX_BYTES = 0xFFFFFFFFull - 64; // (a WAV's sizes are 32-bit: Lua starts a new file long before)
+struct KeepSeg { long long n0; double t0; int playing; double p0; };
+struct KeepFile { std::string path; int nch; };
+float *g_kring = nullptr;
+std::vector<KeepFile> g_kfiles; // (set before the hook goes in, read only while it runs)
+int g_kch[KEEP_MAX_CH], g_knch = 0; // ring channel -> hardware input, every file's in order
+std::atomic<bool> g_kon{ false }, g_kstop{ false }, g_krate_changed{ false };
+std::atomic<int> g_kin_cb{ 0 }, g_kstate{ 0 }; // (state: 0 none, 1 writing, 2 done, 3 failed)
+std::atomic<size_t> g_kw{ 0 }, g_kr{ 0 };
+std::atomic<long long> g_kdropped{ 0 }, g_kfile_frames{ 0 }, g_ksegs{ 0 };
+std::atomic<double> g_ksr{ 0 };
+KeepSeg g_kseg[KEEP_SEGS];
+bool g_klast_ok = false; // (the audio thread's, while g_kon)
+int g_klast_playing = -1;
+double g_klast_end = 0;
+std::thread g_kthr;
+std::string g_kstatus;
+std::mutex g_kmx; // (main-thread API calls only)
+
+void keep_loop()
+{
+  while (g_ksr.load() <= 0 && !g_kstop) std::this_thread::sleep_for(std::chrono::milliseconds(10)); // (its rate comes with the first block)
+  if (g_ksr.load() <= 0) { g_kstate = 2; return; } // (stopped before any audio: no files)
+  const int sr = (int)g_ksr.load();
+  std::vector<FILE *> fs;
+  for (const auto &k : g_kfiles) {
+    FILE *f = open_w(k.path);
+    if (!f) { for (FILE *x : fs) fclose(x); g_kstate = 3; return; }
+    wav_header(f, k.nch, sr, 0);
+    fs.push_back(f);
+  }
+  std::vector<float> buf(4096 * 2);
+  long long frames = 0;
+  bool ok = true;
+  auto hdr_at = std::chrono::steady_clock::now();
+  long long hdr_frames = 0;
+  for (;;) {
+    const auto now = std::chrono::steady_clock::now();
+    if (frames != hdr_frames && now - hdr_at >= std::chrono::seconds(1)) { // (readable up to here if this computer dies: the sizes so far)
+      for (size_t fi = 0; fi < fs.size(); ++fi) { wav_header(fs[fi], g_kfiles[fi].nch, sr, (unsigned)frames); fseek(fs[fi], 0, SEEK_END); fflush(fs[fi]); }
+      hdr_at = now;
+      hdr_frames = frames;
+    }
+    const bool last = g_kstop.load(); // (read before draining: whatever came before the stop is written)
+    const size_t r = g_kr.load(std::memory_order_relaxed), w = g_kw.load(std::memory_order_acquire);
+    if (w == r) { if (last) break; std::this_thread::sleep_for(std::chrono::milliseconds(10)); continue; }
+    const size_t take = std::min<size_t>(w - r, 4096);
+    size_t n = take;
+    if ((unsigned long long)(frames + (long long)n) * 8ull > KEEP_MAX_BYTES) { g_kdropped += (long long)n; n = 0; } // (full: the rest is dropped)
+    int base = 0;
+    for (size_t fi = 0; fi < fs.size() && n > 0; ++fi) {
+      const int nc = g_kfiles[fi].nch;
+      for (size_t k = 0; k < n; ++k)
+        for (int c = 0; c < nc; ++c) buf[k * (size_t)nc + (size_t)c] = g_kring[((r + k) & (KEEP_RING - 1)) * (size_t)g_knch + (size_t)(base + c)];
+      ok = fwrite(buf.data(), sizeof(float) * (size_t)nc, n, fs[fi]) == n && ok;
+      base += nc;
+    }
+    g_kr.store(r + take, std::memory_order_release);
+    frames += (long long)n;
+    g_kfile_frames = frames;
+  }
+  for (size_t fi = 0; fi < fs.size(); ++fi) { wav_header(fs[fi], g_kfiles[fi].nch, sr, (unsigned)frames); ok = fclose(fs[fi]) == 0 && ok; }
+  g_kstate = ok ? 2 : 3;
+}
+} // namespace
+
+void direct_keep_feed(const double *const *in, int nin, int len, double srate, double now, double pos, bool playing)
+{
+  g_kin_cb.fetch_add(1, std::memory_order_acq_rel);
+  if (g_kon.load(std::memory_order_acquire) && in && len > 0 && srate > 0) {
+    const double sr0 = g_ksr.load(std::memory_order_relaxed);
+    if (sr0 == 0) g_ksr.store(srate, std::memory_order_relaxed);
+    if (sr0 != 0 && sr0 != srate) g_krate_changed.store(true, std::memory_order_relaxed); // (the files' rate is fixed: Lua starts new ones)
+    else {
+      const size_t w = g_kw.load(std::memory_order_relaxed), r = g_kr.load(std::memory_order_acquire);
+      if (KEEP_RING - (w - r) < (size_t)len) { g_kdropped.fetch_add(len, std::memory_order_relaxed); g_klast_ok = false; } // (a whole block: the next starts a segment)
+      else {
+        const int pl = playing ? 1 : 0;
+        if (!g_klast_ok || pl != g_klast_playing || (pl && std::fabs(pos - g_klast_end) > KEEP_JUMP)) {
+          const long long c = g_ksegs.load(std::memory_order_relaxed);
+          g_kseg[c % KEEP_SEGS] = { (long long)w, now, pl, pos };
+          g_ksegs.store(c + 1, std::memory_order_release);
+        }
+        g_klast_ok = true;
+        g_klast_playing = pl;
+        g_klast_end = pos + len / srate;
+        for (int k = 0; k < len; ++k) {
+          float *d = g_kring + ((w + (size_t)k) & (KEEP_RING - 1)) * (size_t)g_knch;
+          for (int c = 0; c < g_knch; ++c) { const int i = g_kch[c]; d[c] = i < nin && in[i] ? (float)in[i][k] : 0.f; }
+        }
+        g_kw.store(w + (size_t)len, std::memory_order_release);
+      }
+    }
+  }
+  g_kin_cb.fetch_sub(1, std::memory_order_acq_rel);
+}
+
+static bool keep_hook(bool add);
+int direct_keep_start(const char *spec)
+{
+  std::lock_guard<std::mutex> l(g_kmx);
+  if (g_kon || !spec || !*spec) return 0;
+  std::vector<KeepFile> files;
+  int chans[KEEP_MAX_CH], nch = 0;
+  for (const char *p = spec; *p;) { // ("ch[,ch2]\tpath" lines)
+    const char *eol = strchr(p, '\n');
+    const std::string line(p, eol ? (size_t)(eol - p) : strlen(p));
+    p = eol ? eol + 1 : p + line.size();
+    if (line.empty()) continue;
+    const size_t tab = line.find('\t');
+    int a = -1, b = -1, used = 0;
+    if (tab == std::string::npos || tab + 1 >= line.size() || files.size() >= (size_t)KEEP_MAX_FILES) return 0;
+    const int got = sscanf(line.c_str(), "%d,%d%n", &a, &b, &used) == 2 ? 2 : (sscanf(line.c_str(), "%d%n", &a, &used) == 1 ? 1 : 0);
+    if (got == 0 || (size_t)used != tab || a < 0 || a > 1023 || (got == 2 && (b < 0 || b > 1023)) || nch + got > KEEP_MAX_CH) return 0;
+    chans[nch++] = a;
+    if (got == 2) chans[nch++] = b;
+    files.push_back({ line.substr(tab + 1), got });
+  }
+  if (files.empty()) return 0;
+  if (g_kthr.joinable()) g_kthr.join();
+  g_kring = new (std::nothrow) float[KEEP_RING * (size_t)nch];
+  if (!g_kring) return 0;
+  g_kfiles = files;
+  std::copy(chans, chans + nch, g_kch);
+  g_knch = nch;
+  g_kw = 0; g_kr = 0; g_kdropped = 0; g_kfile_frames = 0; g_ksegs = 0; g_ksr = 0; g_krate_changed = false; g_kstop = false;
+  g_klast_ok = false; g_klast_playing = -1;
+  g_kstate = 1;
+  g_kthr = std::thread(keep_loop);
+  g_kon.store(true, std::memory_order_release);
+  if (!keep_hook(true)) { // (no audio hook: nothing would ever come)
+    g_kon.store(false, std::memory_order_release);
+    g_kstop = true;
+    g_kthr.join();
+    delete[] g_kring;
+    g_kring = nullptr;
+    return 0;
+  }
+  return 1;
+}
+
+void direct_keep_stop()
+{
+  std::lock_guard<std::mutex> l(g_kmx);
+  if (!g_kon && !g_kthr.joinable()) return;
+  g_kon.store(false, std::memory_order_release);
+  keep_hook(false);
+  for (int i = 0; i < 200 && g_kin_cb.load() > 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1)); // (a block mid-flight finishes)
+  g_kstop = true;
+  if (g_kthr.joinable()) g_kthr.join();
+  delete[] g_kring;
+  g_kring = nullptr;
+}
+
+const char *direct_keep_status()
+{
+  std::lock_guard<std::mutex> l(g_kmx);
+  static const char *states[] = { "none", "writing", "done", "failed" };
+  char b[256];
+  snprintf(b, sizeof(b), "{\"on\":%s,\"state\":\"%s\",\"srate\":%.0f,\"frames\":%lld,\"files\":%d,\"dropped\":%lld,\"rate_changed\":%s,\"segs\":[",
+           g_kon ? "true" : "false", states[g_kstate.load() & 3], g_ksr.load(), g_kfile_frames.load(), (int)g_kfiles.size(), g_kdropped.load(),
+           g_krate_changed ? "true" : "false");
+  g_kstatus = b;
+  // (the newest KEEP_SEGS - 1, each [index, file frame, clock, playing, position]; one the audio thread may be writing over is left out)
+  const long long c = g_ksegs.load(std::memory_order_acquire);
+  KeepSeg got[KEEP_SEGS];
+  const long long from = std::max(0LL, c - (KEEP_SEGS - 1));
+  for (long long i = from; i < c; ++i) got[i % KEEP_SEGS] = g_kseg[i % KEEP_SEGS];
+  const long long safe = std::max(from, g_ksegs.load(std::memory_order_acquire) - (KEEP_SEGS - 1));
+  for (long long i = safe; i < c; ++i) {
+    const KeepSeg &s = got[i % KEEP_SEGS];
+    snprintf(b, sizeof(b), "%s[%lld,%lld,%.6f,%d,%.9f]", i > safe ? "," : "", i, s.n0, s.t0, s.playing, s.p0);
+    g_kstatus += b;
+  }
+  g_kstatus += "]}";
+  return g_kstatus.c_str();
+}
+
 #ifdef DIRECT_STANDALONE
 static void jam_hook(bool) {}
+static bool keep_hook(bool) { return true; }
 #endif
 
 #ifndef DIRECT_STANDALONE
@@ -316,6 +507,24 @@ static void jam_hook(bool add)
 static void jam_tap(float *const *ch, int nch, int len, int srate)
 {
   direct_jam_feed(ch, nch, len, srate, g_jpos.load(std::memory_order_relaxed), g_jplaying.load(std::memory_order_relaxed));
+}
+// The full-quality copy's hook (lib/double.lua): before REAPER's processing, the hardware inputs with this block's play position and state
+// and the link clock, in one call. In only while StudioSync_KeepStart runs.
+static void on_keep_audio(bool isPost, int len, double srate, audio_hook_register_t *reg)
+{
+  if (isPost || !g_kon.load(std::memory_order_acquire)) return;
+  const double *in[64] = { nullptr };
+  const int nin = std::min(reg->input_nch, 64);
+  for (int c = 0; c < nin; ++c) in[c] = reg->GetBuffer(false, c);
+  direct_keep_feed(in, nin, len, srate, direct_now(), g_play_pos2 ? g_play_pos2(nullptr) : 0, g_play_state && (g_play_state(nullptr) & 1) != 0);
+}
+static audio_hook_register_t g_khook = { on_keep_audio, nullptr, nullptr, 0, 0, nullptr };
+static bool g_khooked = false;
+static bool keep_hook(bool add)
+{
+  if (add && !g_khooked && g_reg_hook) g_khooked = g_reg_hook(true, &g_khook) > 0;
+  else if (!add && g_khooked) { g_reg_hook(false, &g_khook); g_khooked = false; }
+  return g_khooked;
 }
 #endif
 
@@ -394,7 +603,13 @@ static const char *api_j_status() { return direct_jam_status(); }
 static void *va_j_start(void **a, int n) { return n < 1 ? nullptr : (void *)(INT_PTR)api_j_start((const char *)a[0]); }
 static void *va_j_stop(void **, int) { api_j_stop(); return nullptr; }
 static void *va_j_status(void **, int) { return (void *)api_j_status(); }
-static void stop_all() { direct_audio_stop(); direct_jam_stop(); }
+static int api_k_start(const char *spec) { return direct_keep_start(spec); }
+static void api_k_stop() { direct_keep_stop(); }
+static const char *api_k_status() { return direct_keep_status(); }
+static void *va_k_start(void **a, int n) { return n < 1 ? nullptr : (void *)(INT_PTR)api_k_start((const char *)a[0]); }
+static void *va_k_stop(void **, int) { api_k_stop(); return nullptr; }
+static void *va_k_status(void **, int) { return (void *)api_k_status(); }
+static void stop_all() { direct_audio_stop(); direct_jam_stop(); direct_keep_stop(); }
 
 void direct_audio_register(reaper_plugin_info_t *rec)
 {
@@ -403,6 +618,11 @@ void direct_audio_register(reaper_plugin_info_t *rec)
   *(void **)&g_play_state = rec->GetFunc("GetPlayStateEx");
   rt_play_tap = jam_tap; // (it does nothing until StudioSync_JamStart)
   static const struct { const char *name; void *fn, *va; const char *def; } fns[] = {
+    { "StudioSync_KeepStart", (void *)api_k_start, (void *)va_k_start,
+      "int\0const char*\0spec\0The full-quality copy (lib/double.lua): record armed tracks' hardware inputs, raw, to 32-bit float WAVs, one per line of spec (\"ch[,ch2]<tab>path\", 0-based inputs). Returns 1 when started." },
+    { "StudioSync_KeepStop", (void *)api_k_stop, (void *)va_k_stop, "void\0\0\0Stop the full-quality copy: the rest is written and each WAV's header gets its real sizes." },
+    { "StudioSync_KeepStatus", (void *)api_k_status, (void *)va_k_status,
+      "const char*\0\0\0The full-quality copy as JSON: on, state (none, writing, done, failed), srate, frames, files, dropped, rate_changed, segs ([index, file frame, link clock, playing, play position] for each stretch)." },
     { "StudioSync_JamStart", (void *)api_j_start, (void *)va_j_start,
       "int\0const char*\0path\0Jam (lib/jam.lua): while the transport plays, write live audio's Play feed to a growing 16-bit stereo WAV at path, for the direct link to stream. Returns 1 when started." },
     { "StudioSync_JamStop", (void *)api_j_stop, (void *)va_j_stop, "void\0\0\0Stop Jam's capture: the rest is written and the WAV's header gets its real sizes." },

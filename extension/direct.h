@@ -66,6 +66,14 @@ void direct_jam_stop();                 // the rest written, the header's real s
 const char *direct_jam_status();        // JSON: { on, state, srate, frames, fed, dropped, rate_changed, segs = [[index, file frame, position], ...] }
 // The audio thread's work (REAPER's: rt_play_tap, with the block's play position read before processing): ch[0..nch-1] of len frames.
 void direct_jam_feed(const float *const *ch, int nch, int len, double srate, double pos, bool playing);
+// The full-quality copy (extension/direct_audio.cpp, lib/double.lua, docs/rt/rt-double.md): armed tracks' raw hardware inputs to 32-bit float
+// WAVs, one per track. spec: a line per file, "ch[,ch2]\tpath" (0-based hardware inputs; at most 16 files, 32 channels).
+int direct_keep_start(const char *spec); // 1 when started; 0 when already running or the spec is bad
+void direct_keep_stop();                 // the rest written, the headers' real sizes, the worker joined
+const char *direct_keep_status();        // JSON: { on, state, srate, frames, dropped, rate_changed, segs = [[index, file frame, clock, playing, position], ...] }
+// The audio thread's work (REAPER's: the keep hook's pre call): `in` as direct_audio_process; now: direct_now() at this call; pos, playing:
+// REAPER's play position and state for this block.
+void direct_keep_feed(const double *const *in, int nin, int len, double srate, double now, double pos, bool playing);
 
 // For the test: the pieces a frame is made of, and the WAV layout the receiver keeps playable.
 void direct_sha256(const unsigned char *msg, size_t len, unsigned char out[32]);

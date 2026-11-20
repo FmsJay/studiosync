@@ -2172,6 +2172,7 @@ local function settings_sync()
     require("midiview").options(ctx, ImGui)
     require("streams").options(ctx, ImGui) -- (bandmates' takes as they record: as it comes, in time, or shown only. lib/streams.lua. James, rt)
     require("jam").options(ctx, ImGui) -- (Jam: everyone plays at once, each hears the others an interval late. lib/jam.lua, rt-jam)
+    require("double").options(ctx, ImGui) -- (each part kept in full quality while jamming or playing live. lib/double.lua, rt-double)
     local lch, lv = ImGui.Checkbox(ctx, "Live set: pause syncing while playing##liveset", reaper.GetExtState(band.SECTION, "live set") == "on")
     if lch then reaper.SetExtState(band.SECTION, "live set", lv and "on" or "", true) end
     ImGui.SetItemTooltip(ctx, "For playing a set: while REAPER plays, nothing is sent or taken in, so syncing can't make REAPER stutter.\n" ..
@@ -3074,6 +3075,7 @@ function F.top_bar()
   -- (live audio is on for everyone now: whether you're heard stays in view, with Mute me, Deafen, an echo warning and the first-run note.
   -- lib/liveaudio.lua bar_ui. James, rt)
   pcall(require("liveaudio").bar_ui, ctx, ImGui, cfg, at_row, proj)
+  pcall(require("double").bar_ui, ctx, ImGui, at_row) -- ("Recording your part in full quality", then "3 parts added, lined up". lib/double.lua, rt-double)
   at_row(drives)
   ImGui.SetCursorPosY(ctx, y0 + (fh - ImGui.GetTextLineHeight(ctx)) / 2) -- (not AlignTextToFramePadding: it carries along the row, and the page tabs sat low: design review)
   ImGui.TextDisabled(ctx, drives)
