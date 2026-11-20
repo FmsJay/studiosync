@@ -54,6 +54,9 @@ int rt_hub(RtLink *l, const char *peer, int serve);
 std::string rt_status(RtLink *l); // JSON: the link, and per peer latency, jitter buffer, loss, level (see rtaudio.cpp)
 // The audio thread (REAPER's hook, or the test's clock): capture before REAPER's processing, mix after. No lock, allocation or REAPER call.
 void rt_capture(RtLink *l, const double *const *in, int nin, int len, double srate);
+// A browser guest heard here, added to the Talk sent (extension/webui.cpp webui_guest_talk; null: nothing). Called in rt_capture on the audio
+// thread with this block's Talk channels, after the inputs were copied in and only while sending (Mute me silences the guest too). rt-browserjoin
+extern void (*rt_talk_add)(float *const *ch, int nch, int len);
 void rt_mix(RtLink *l, double *const *out, int nout, int len, double srate);
 
 #ifndef RTAUDIO_STANDALONE

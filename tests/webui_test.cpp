@@ -128,6 +128,248 @@ static void pure_tests()
         "another site's https:// Origin: no");
 }
 
+// ---- browser guests (rt-browserjoin) ---------------------------------------------------------------------------------------------------
+static void guest_pure_tests()
+{
+  CHECK(webui_ws_accept("dGhlIHNhbXBsZSBub25jZQ==") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "RFC 6455's example handshake answer");
+  CHECK(webui_guest_path("GET", "/guest.html") && webui_guest_path("GET", "/api/guest/live") && webui_guest_path("POST", "/api/guest/action") &&
+        webui_guest_path("POST", "/api/guest/upload") && webui_guest_path("GET", "/style.css"), "a guest's own paths");
+  CHECK(!webui_guest_path("GET", "/") && !webui_guest_path("GET", "/api/state") && !webui_guest_path("GET", "/api/events") &&
+        !webui_guest_path("GET", "/api/file") && !webui_guest_path("GET", "/api/mix") && !webui_guest_path("GET", "/api/time") &&
+        !webui_guest_path("POST", "/api/action") && !webui_guest_path("POST", "/api/upload") && !webui_guest_path("GET", "/record.html") &&
+        !webui_guest_path("POST", "/guest.html") && !webui_guest_path("GET", "/api/guest/action"), "and nothing else: no topics, files, mix or the host's API");
+  std::map<std::string, WebGuest> gs;
+  WebGuest g;
+  g.code = "0123456789abcdef01234567"; g.code_until = 100; g.until = 1000;
+  gs["aaaaaaaaaaaaaaaa"] = g;
+  const std::string fresh(32, 'f');
+  auto req = [](const std::string &head) { WebReq r; webui_parse_head(head, r); return r; };
+  std::string gid;
+  CHECK(webui_guest_auth(req("GET /guest.html?g=0123456789abcdef01234567 HTTP/1.1\r\nHost: pc:47281\r\nOrigin: http://evil.example\r\n\r\n"), gs, 10, fresh, gid) == 403,
+        "a code asked for from another site: refused");
+  CHECK(webui_guest_auth(req("GET /guest.html?g=0123456789abcdef01234568 HTTP/1.1\r\nHost: pc:47281\r\n\r\n"), gs, 10, fresh, gid) == 403, "a wrong code: refused");
+  CHECK(webui_guest_auth(req("GET /guest.js?g=0123456789abcdef01234567 HTTP/1.1\r\nHost: pc:47281\r\n\r\n"), gs, 10, fresh, gid) == 403, "a code only redeems on guest.html");
+  CHECK(webui_guest_auth(req("GET /guest.html?g=0123456789abcdef01234567 HTTP/1.1\r\nHost: pc:47281\r\n\r\n"), gs, 200, fresh, gid) == 403, "a code past its time: refused");
+  CHECK(webui_guest_auth(req("GET /guest.html?g=0123456789abcdef01234567 HTTP/1.1\r\nHost: pc:47281\r\n\r\n"), gs, 10, fresh, gid) == 303 &&
+        gid == "aaaaaaaaaaaaaaaa" && gs[gid].session == fresh && gs[gid].code.empty(), "the right code in time: redeemed, a session");
+  CHECK(webui_guest_auth(req("GET /guest.html?g=0123456789abcdef01234567 HTTP/1.1\r\nHost: pc:47281\r\n\r\n"), gs, 11, std::string(32, 'e'), gid) == 403 &&
+        gs["aaaaaaaaaaaaaaaa"].session == fresh, "used once: a second browser gets nothing, the first keeps its session");
+  const std::string ck = "Cookie: ss_guest=" + fresh + "\r\n";
+  CHECK(webui_guest_auth(req("GET /api/guest/events HTTP/1.1\r\nHost: pc:47281\r\n" + ck + "\r\n"), gs, 500, "", gid) == 0 && gid == "aaaaaaaaaaaaaaaa",
+        "the cookie opens the guest's own API");
+  CHECK(webui_guest_auth(req("GET /api/state HTTP/1.1\r\nHost: pc:47281\r\n" + ck + "\r\n"), gs, 500, "", gid) == 403, "but never the studio's state");
+  CHECK(webui_guest_auth(req("POST /api/guest/action HTTP/1.1\r\nHost: pc:47281\r\n" + ck + "\r\n"), gs, 500, "", gid) == 403, "a POST without X-StudioSync: refused");
+  CHECK(webui_guest_auth(req("GET /api/guest/live HTTP/1.1\r\nHost: 127.0.0.1:47281\r\nX-Forwarded-Host: pc.ts.net:8443\r\nOrigin: https://pc.ts.net:8443\r\n" + ck + "\r\n"),
+                         gs, 500, "", gid) == 0, "through tailscale serve (https, its forwarded host): in");
+  CHECK(webui_guest_auth(req("GET /api/guest/events HTTP/1.1\r\nHost: pc:47281\r\n" + ck + "\r\n"), gs, 1000, "", gid) == 403, "the session past its end: refused");
+  CHECK(webui_guest_auth(req("GET /api/guest/events HTTP/1.1\r\nHost: pc:47281\r\nCookie: ss_guest=\r\n\r\n"), gs, 500, "", gid) == 403, "an empty cookie: refused");
+  CHECK(webui_guest_set("aaaaaaaaaaaaaaaa", "0123456789abcdef01234567", 60, 600) == 1 && webui_guest_set("AAAAAAAAAAAAAAAA", "0123456789abcdef01234567", 60, 600) == 0 &&
+        webui_guest_set("aaaaaaaaaaaaaaaa", "short", 60, 600) == 0 && webui_guest_set("aaaaaaaaaaaaaaaa", "0123456789abcdef01234567", 0, 600) == 0 &&
+        webui_guest_set("aaaa", "0123456789abcdef01234567", 60, 600) == 0, "StudioSync_WebUIGuest: hex ids and codes, times given");
+  webui_guest_set("aaaaaaaaaaaaaaaa", "", 0, 0);
+}
+// A browser guest's WebSocket: the handshake, then frames (masked, as a browser sends them).
+static int ws_open(int port, const std::string &host, const std::string &cookie, std::string &resp)
+{
+  const int s = dial(port);
+  if (s < 0) return -1;
+  const std::string q = "GET /api/guest/live HTTP/1.1\r\nHost: " + host + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
+                        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" + cookie + "\r\n";
+  send(s, q.data(), (int)q.size(), 0);
+  resp.clear();
+  char c;
+  while (resp.find("\r\n\r\n") == std::string::npos && recv(s, &c, 1, 0) == 1) resp += c;
+  return s;
+}
+static void ws_put(int s, int op, const std::string &d, bool masked = true)
+{
+  std::string f(1, (char)(0x80 | op));
+  const unsigned char m[4] = { 0x12, 0x34, 0x56, 0x78 };
+  if (d.size() < 126) f += (char)((masked ? 0x80 : 0) | d.size());
+  else { f += (char)((masked ? 0x80 : 0) | 126); f += (char)(d.size() >> 8); f += (char)(d.size() & 255); }
+  if (masked) f.append((const char *)m, 4);
+  for (size_t i = 0; i < d.size(); ++i) f += masked ? (char)(d[i] ^ m[i & 3]) : d[i];
+  send(s, f.data(), (int)f.size(), 0);
+}
+// The next frame from the server: its opcode (-1 when the socket ended) and payload.
+static int ws_get(int s, std::string &d)
+{
+  unsigned char h[2];
+  auto all = [&](char *p, size_t n) { for (size_t at = 0; at < n;) { const int k = recv(s, p + at, (int)(n - at), 0); if (k <= 0) return false; at += (size_t)k; } return true; };
+  if (!all((char *)h, 2)) return -1;
+  unsigned long long n = h[1] & 127;
+  if (n == 126) { unsigned char e[2]; if (!all((char *)e, 2)) return -1; n = (unsigned long long)e[0] << 8 | e[1]; }
+  else if (n == 127) { unsigned char e[8]; if (!all((char *)e, 8)) return -1; n = 0; for (int i = 0; i < 8; ++i) n = n << 8 | e[i]; }
+  d.assign((size_t)n, '\0');
+  if (n && !all(&d[0], (size_t)n)) return -1;
+  return h[0] & 15;
+}
+static void guest_live_tests(int link, const std::string &th, const std::string &ck_host)
+{
+  const std::string gid = "0123456789abcdef", gcode = "c0de0123456789abcdef0123";
+  CHECK(webui_guest_set(gid.c_str(), gcode.c_str(), 60, 3600) == 1, "a guest link made");
+  std::string r = get(link, "/guest.html?g=" + gcode, th);
+  const size_t at = r.find("ss_guest=");
+  const std::string session = at == std::string::npos ? "" : r.substr(at + 9, 32);
+  CHECK(code(r) == 303 && r.find("Location: /guest.html\r\n") != std::string::npos && session.size() == 32 && r.find("HttpOnly") != std::string::npos &&
+        r.find("SameSite=Lax") != std::string::npos, "the link on the studio's address: a session cookie, the address without the code");
+  CHECK(code(get(link, "/guest.html?g=" + gcode, th)) == 403, "the same link again from another browser: refused (single use)");
+  const std::string ck = "Cookie: ss_guest=" + session + "\r\n";
+  CHECK(code(get(link, "/guest.html", th, ck)) == 200 && code(get(link, "/style.css", th, ck)) == 200, "the guest's page and its shared files");
+  CHECK(code(get(link, "/", th, ck)) == 403 && code(get(link, "/api/state", th, ck)) == 403 && code(get(link, "/api/events", th, ck)) == 403 &&
+        code(get(link, "/api/time", th, ck)) == 403 && code(get(link, "/app.js", th, ck)) == 403, "nothing of the studio's: its pages, state, every topic");
+  CHECK(code(get(link, "/api/guest/events", th, ck_host)) == 403, "the studio's token doesn't open a guest's API");
+  CHECK(std::string(webui_status()).find("\"" + gid + "\":{\"redeemed\":true,\"on\":true") != std::string::npos, "status: the guest redeemed");
+  // their event stream: their topic only
+  webui_publish(("guest-" + gid).c_str(), "{\"name\":\"Bo\"}");
+  webui_publish("presence", "{\"secret\":\"band stuff\"}");
+  webui_publish("guest-ffffffffffffffff", "{\"name\":\"someone else\"}");
+  {
+    const int s = dial(link);
+    const std::string q = "GET /api/guest/events HTTP/1.1\r\nHost: " + th + "\r\n" + ck + "\r\n";
+    send(s, q.data(), (int)q.size(), 0);
+    std::string got;
+    char b[4096];
+    auto until = [&](const char *what) {
+      for (int i = 0; i < 30 && got.find(what) == std::string::npos; ++i) { const int k = recv(s, b, sizeof b, 0); if (k <= 0) break; got.append(b, (size_t)k); }
+      return got.find(what) != std::string::npos;
+    };
+    CHECK(until("\"name\":\"Bo\"") && got.find("band stuff") == std::string::npos && got.find("someone else") == std::string::npos, "the stream: their own topic, nothing else");
+    webui_publish("chat", "{\"msgs\":[\"private\"]}");
+    webui_publish(("guest-" + gid).c_str(), "{\"name\":\"Bo\",\"said\":\"next\"}");
+    CHECK(until("\"said\":\"next\"") && got.find("private") == std::string::npos, "a change to theirs comes; another topic's never does");
+    webui_guest_set(gid.c_str(), "", 0, 0);
+    int k = 1;
+    for (int i = 0; i < 30 && k > 0; ++i) k = recv(s, b, sizeof b, 0);
+    CHECK(k <= 0, "ended (kicked): the stream closes");
+    closesocket(s);
+    CHECK(code(get(link, "/guest.html", th, ck)) == 403 && code(get(link, "/api/guest/events", th, ck)) == 403, "and the cookie opens nothing any more");
+  }
+  // again, for actions, uploads and live audio
+  webui_guest_set(gid.c_str(), gcode.c_str(), 60, 3600);
+  r = get(link, "/guest.html?g=" + gcode, th);
+  const std::string s2 = r.find("ss_guest=") == std::string::npos ? "" : r.substr(r.find("ss_guest=") + 9, 32);
+  const std::string ck2 = "Cookie: ss_guest=" + s2 + "\r\n";
+  auto act = [&](const std::string &bd, const std::string &path) {
+    return code(ask(link, "POST " + path + " HTTP/1.1\r\nHost: " + th + "\r\n" + ck2 + "X-StudioSync: 1\r\nContent-Length: " + std::to_string(bd.size()) + "\r\n\r\n" + bd));
+  };
+  const std::string ga = "/api/guest/action";
+  while (*webui_poll()) {}
+  CHECK(act("{\"topic\":\"chat\",\"text\":\"hi\"}", ga) == 202 &&
+        std::string(webui_poll()) == "{\"topic\":\"guestweb\",\"gid\":\"" + gid + "\",\"a\":{\"topic\":\"chat\",\"text\":\"hi\"}}" && webui_poll_here() == 0,
+        "a guest's action reaches Lua wrapped as theirs (any topic inside is only data)");
+  CHECK(act("{\"x\":1},\"gid\":\"ffffffffffffffff\",\"y\":{\"z\":2}", ga) == 400 && act("{\"x\":\"}\"}", ga) == 202 && act("{\"x\":\"\\\"}\"}", ga) == 202 &&
+        act("{\"x\":1} ", ga) == 400 && act("[1]", ga) == 400, "one object only: closing early to add a gid of its own is refused (strings and escapes understood)");
+  while (*webui_poll()) {}
+  CHECK(act("{\"topic\":\"chat\",\"text\":\"hi\"}", "/api/action") == 403, "the host's action path: refused for a guest");
+  int ok = 0, busy = 0;
+  for (int i = 0; i < 12; ++i) { const int c = act("{\"n\":" + std::to_string(i) + "}", ga); ok += c == 202; busy += c == 503; }
+  CHECK(ok == 8 && busy == 4, "eight of a guest's actions wait at most (a flood can't fill the host's queue)");
+  while (*webui_poll()) {}
+  std::string take(5000, 'x');
+  r = ask(link, "POST /api/guest/upload HTTP/1.1\r\nHost: " + th + "\r\n" + ck2 + "X-StudioSync: 1\r\nContent-Length: " + std::to_string(take.size()) + "\r\n\r\n" + take);
+  const size_t ia = body(r).find("\"id\":\"");
+  const std::string up = ia == std::string::npos ? "" : body(r).substr(ia + 6, 32);
+  CHECK(code(r) == 200 && up.size() == 32 && up.compare(0, 16, gid) == 0, "a guest's upload: an id starting with their gid");
+  r = ask(link, "POST /api/guest/upload HTTP/1.1\r\nHost: " + th + "\r\n" + ck2 + "X-StudioSync: 1\r\nContent-Length: 3\r\n\r\nabc");
+  CHECK(code(r) == 200 && webui_save_upload(up.c_str(), "unused") == 0, "their next one lets their earlier one go");
+  CHECK(code(ask(link, "POST /api/upload HTTP/1.1\r\nHost: " + th + "\r\n" + ck2 + "X-StudioSync: 1\r\nContent-Length: 3\r\n\r\nabc")) == 403, "the phones' upload path: refused for a guest");
+
+  // live: the session mix down (stamped), the guest's sound up, into what this computer hears and sends, never back to them
+  std::string resp;
+  CHECK(webui_mix_wanted() == 0, "nobody live: the hook isn't wanted");
+  int ws = ws_open(link, th, ck_host, resp);
+  CHECK(code(resp) == 403, "the socket with the studio's token, not a guest's: refused");
+  closesocket(ws);
+  ws = ws_open(link, th, ck2, resp);
+  CHECK(code(resp) == 101 && resp.find("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=") != std::string::npos, "the guest's socket: 101, the right accept");
+  for (int i = 0; i < 100 && webui_mix_wanted() == 0; ++i) sleep_ms(5);
+  CHECK(webui_mix_wanted() == 1, "a guest live: the hook is wanted");
+  std::string r2;
+  const int ws2 = ws_open(link, th, ck2, r2);
+  CHECK(code(r2) == 409, "a second window for the same guest: refused");
+  closesocket(ws2);
+  // the guest sends 300 ms of a 0.25 constant (16-bit), in 10 ms frames
+  std::string up10(480 * 2, '\0');
+  for (int i = 0; i < 480; ++i) { const short v = 8192; memcpy(&up10[(size_t)i * 2], &v, 2); }
+  for (int i = 0; i < 30; ++i) ws_put(ws, 2, up10);
+  sleep_ms(100);
+  // the audio thread: 40 blocks of 240 frames of a -6 dB tone in REAPER's output
+  std::vector<double> L(240), R(240);
+  double heard = 0, talk_seen = 0;
+  long long n = 0;
+  const double t_before = direct_now();
+  for (int b = 0; b < 40; ++b) {
+    for (int k = 0; k < 240; ++k, ++n) { L[k] = 0.5 * sin(2 * 3.141592653589793 * 1000.0 * (double)n / 48000.0); R[k] = L[k]; }
+    double *out[2] = { L.data(), R.data() };
+    webui_guest_audio(out, 2, 240, 48000.0);
+    std::vector<float> t0(240, 0.f), t1(240, 0.f);
+    float *talk[2] = { t0.data(), t1.data() };
+    webui_guest_talk(talk, 2, 240);
+    sleep_ms(5); // (as the audio thread: 240 frames every 5 ms, so the stamps are the real clock)
+    for (int k = 0; k < 240; ++k) {
+      const double base = 0.5 * sin(2 * 3.141592653589793 * 1000.0 * (double)(n - 240 + k) / 48000.0);
+      heard = std::max(heard, fabs(L[k] - base));
+      talk_seen = std::max(talk_seen, (double)t0[k]);
+    }
+  }
+  CHECK(fabs(heard - 0.25) < 0.001, "the guest is heard here at their level (0.25 on top of REAPER's output)");
+  CHECK(fabs(talk_seen - 0.25) < 0.001, "and goes on in the Talk sent to the bandmates");
+  // the session mix the guest got: stamped frames of the tone, without themselves
+  std::string d;
+  bool tone = false, stamped = false;
+  for (int i = 0; i < 40 && !tone; ++i) {
+    const int op = ws_get(ws, d);
+    if (op != 2 || d.size() < 16 + 4) continue;
+    unsigned rate; double t;
+    memcpy(&rate, &d[4], 4); memcpy(&t, &d[8], 8);
+    stamped = d.compare(0, 4, std::string("SG1\0", 4)) == 0 && rate == 48000 && t >= t_before - 0.01 && t <= direct_now() + 0.01;
+    short peak = 0;
+    for (size_t k = 16; k + 4 <= d.size(); k += 4) { short l; memcpy(&l, &d[k], 2); peak = std::max(peak, l); }
+    tone = peak > 16000 && peak < 16500; // (-6 dB: the tone alone, the guest's 0.25 not in it)
+  }
+  CHECK(stamped, "down: [SG1][rate 48000][the link clock of its first sample] then 16-bit stereo");
+  CHECK(tone, "the session mix as it was before the guest went in (nobody hears themselves back)");
+  CHECK(std::string(webui_status()).find("\"live\":true") != std::string::npos, "status: live, with their level");
+  webui_guest_gain(gid.c_str(), 0.0);
+  sleep_ms(150);
+  for (int i = 0; i < 30; ++i) ws_put(ws, 2, up10);
+  sleep_ms(100);
+  heard = 0;
+  for (int b = 0; b < 20; ++b) {
+    std::fill(L.begin(), L.end(), 0.0); std::fill(R.begin(), R.end(), 0.0);
+    double *out[2] = { L.data(), R.data() };
+    webui_guest_audio(out, 2, 240, 48000.0);
+    for (int k = 0; k < 240; ++k) heard = std::max(heard, fabs(L[k]));
+  }
+  CHECK(heard == 0, "the host's level for them at 0: silent here");
+  ws_put(ws, 9, "hi");
+  int op = 0;
+  for (int i = 0; i < 400 && op != 10 && op >= 0; ++i) op = ws_get(ws, d);
+  CHECK(op == 10 && d == "hi", "a ping gets its pong");
+  ws_put(ws, 2, up10, false);
+  for (int i = 0; i < 400 && op >= 0; ++i) op = ws_get(ws, d);
+  CHECK(op < 0, "an unmasked frame (not a browser): the socket closes");
+  closesocket(ws);
+  for (int i = 0; i < 100 && webui_mix_wanted() != 0; ++i) sleep_ms(10);
+  CHECK(webui_mix_wanted() == 0, "gone: the hook isn't wanted for them any more");
+  ws = ws_open(link, th, ck2, resp);
+  CHECK(code(resp) == 101, "back live");
+  std::string big(60000, '\0');
+  op = 0;
+  for (int i = 0; i < 20; ++i) ws_put(ws, 2, big);
+  for (int i = 0; i < 400 && op >= 0; ++i) op = ws_get(ws, d);
+  CHECK(op < 0, "far more sound than real time (a flood): the socket closes");
+  closesocket(ws);
+  ws = ws_open(link, th, ck2, resp);
+  webui_guest_set(gid.c_str(), "", 0, 0);
+  op = 0;
+  for (int i = 0; i < 400 && op >= 0 && op != 8; ++i) op = ws_get(ws, d);
+  CHECK(op == 8 || op < 0, "kicked while live: the socket closes");
+  closesocket(ws);
+  CHECK(std::string(webui_status()).find(gid) == std::string::npos, "and the guest is gone from the status");
+}
+
 int main()
 {
 #ifdef _WIN32
@@ -137,11 +379,14 @@ int main()
   const char *tmp = "/tmp";
 #endif
   pure_tests();
+  guest_pure_tests();
 
   const std::string dir = std::string(tmp ? tmp : ".") + "/ss_webui_test", pages = dir + "/pages", inbox = dir + "/inbox";
   mkdir_(dir.c_str()); mkdir_(pages.c_str()); mkdir_(inbox.c_str());
   spit(pages + "/index.html", "<!doctype html><title>t</title>");
   spit(pages + "/app.js", "console.log(1)");
+  spit(pages + "/guest.html", "<!doctype html><title>guest</title>"); // (rt-browserjoin)
+  spit(pages + "/style.css", "body{}");
   spit(dir + "/secret.txt", "not for the web");
   const char *studio = "studiosync-webtest", *secret = "web-test-secret-0123456789";
   const int link = 47391, web = 47392;
@@ -344,6 +589,7 @@ int main()
     feeding = false;
     feeder.join();
   }
+  guest_live_tests(link, th, ck); // (browser guests: rt-browserjoin)
   const std::string st = webui_status();
   CHECK(st.find("\"listening\":true") != std::string::npos && st.find("\"token\":\"" + tok + "\"") != std::string::npos, "status says listening, with the token");
 

@@ -148,6 +148,7 @@ webui.ACTIONS.mixer = true -- (the Mixer page's: lib/webmixer.lua)
 webui.ACTIONS.history = true -- (the History page's "I'm looking": lib/webhistory.lua, read only)
 webui.ACTIONS.ai = true -- (the AI page's asks, yes/no and cancel: lib/ai.lua; whether a page on this computer sent it, StudioSync_WebUIPollHere)
 webui.ACTIONS.invite = true -- (Ask to join, Join / Decline, a studiosync:// link from join.html: lib/invite.lua)
+webui.ACTIONS.guestweb = true -- (browser guests: the host's make/kick/level, and a guest's own, wrapped by the extension: lib/guestweb.lua)
 webui.ACTIONS.tryfx = true -- (the Try tab: a bandmate's plug-in you don't have, its knobs, asks for yours: lib/hoptry.lua, rt-hopvst)
 function webui.parse_action(s)
   local a = type(s) == "string" and s ~= "" and band.json_decode(s)
@@ -224,6 +225,10 @@ function webui.tick(proj, cfg, b, handlers)
       local said = require("ai").action(proj, cfg, b, a, reaper.StudioSync_WebUIPollHere ~= nil and reaper.StudioSync_WebUIPollHere() == 1)
       if said then band.log(said) end
     end
+    if topic == "guestweb" then
+      local said = require("guestweb").action(proj, cfg, b, a)
+      if said then band.log(said) end
+    end
     if topic == "invite" then
       local said = require("invite").action(proj, cfg, b, a)
       if said then band.log(said) end
@@ -297,6 +302,7 @@ function webui.tick(proj, cfg, b, handlers)
   require("webhome").tick(proj, cfg, b, publish, now)
   require("hoptry").web_tick(proj, cfg, b, publish, now) -- (the Try tab, while a page shows it: lib/hoptry.lua, rt-hopvst)
   require("invite").web_tick(proj, cfg, b, publish, now) -- (join requests for you, the studio's people, the last ask's answer: lib/invite.lua)
+  require("guestweb").tick(proj, cfg, b, publish, now) -- (browser guests: run out, their topics, play readings for their takes: lib/guestweb.lua)
 end
 
 return webui

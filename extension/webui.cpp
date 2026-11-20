@@ -35,8 +35,10 @@ typedef int sock_t;
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -191,6 +193,97 @@ int webui_auth(const WebReq &r, bool local, const std::string &token, int port, 
   return same_text(webui_cookie(header(r, "cookie"), "ss_webui"), token) ? 0 : 403;
 }
 
+// ---- browser guests: who gets in (webui.h; lib/guestweb.lua) ------------------------------------------------------------------------------
+// Only these: the guest's page and the shared files it loads, and its own API under /api/guest/ (event stream, live socket, upload, action).
+// Never /api/state or /api/events (every topic), /api/action, /api/upload, /api/file, /api/mix, /api/time or any other page.
+bool webui_guest_path(const std::string &method, const std::string &path)
+{
+  if (method == "POST") return path == "/api/guest/action" || path == "/api/guest/upload";
+  static const char *files[] = { "/guest.html", "/guest.js", "/guest.css", "/guestworklet.js", "/style.css", "/phonefile.js", "/api/guest/events", "/api/guest/live" };
+  for (const char *f : files) if (path == f) return method == "GET";
+  return false;
+}
+int webui_guest_auth(const WebReq &r, std::map<std::string, WebGuest> &guests, double now, const std::string &fresh, std::string &gid)
+{
+  gid.clear();
+  const std::string host = header(r, "host"), origin = header(r, "origin"), fwd_host = header(r, "x-forwarded-host");
+  if (r.method == "POST" && header(r, "x-studiosync") != "1") return 403;
+  if (!origin.empty() && origin != "http://" + host && origin != "https://" + host && !(proxied_req(r) && origin == "https://" + fwd_host)) return 403;
+  if (!webui_guest_path(r.method, r.path)) return 403;
+  const std::string ck = webui_cookie(header(r, "cookie"), "ss_guest");
+  for (auto &g : guests)
+    if (!g.second.session.empty() && now < g.second.until && same_text(ck, g.second.session)) { gid = g.first; return 0; }
+  const std::string code = webui_param(r.query, "g");
+  if (code.empty() || r.method != "GET" || r.path != "/guest.html" || fresh.size() < 32) return 403;
+  for (auto &g : guests) {
+    WebGuest &w = g.second;
+    if (w.code.empty() || now >= w.code_until || now >= w.until || !same_text(code, w.code)) continue;
+    w.code.clear(); // (single use: the first browser gets it)
+    w.session = fresh;
+    gid = g.first;
+    return 303;
+  }
+  return 403;
+}
+
+// One JSON object and nothing after it: the first '{' closes at the last byte (strings and escapes skipped). A guest's action is wrapped as
+// {"topic":"guestweb","gid":...,"a":<it>}, so `{"x":1},"gid":"another guest's"` (closing early and adding keys of its own) must not pass.
+static bool json_one_object(const std::string &s)
+{
+  if (s.empty() || s[0] != '{') return false;
+  int depth = 0;
+  bool str = false;
+  for (size_t i = 0; i < s.size(); ++i) {
+    const char c = s[i];
+    if (str) { if (c == '\\') ++i; else if (c == '"') str = false; continue; }
+    if (c == '"') str = true;
+    else if (c == '{' || c == '[') ++depth;
+    else if (c == '}' || c == ']') { if (--depth == 0) return i + 1 == s.size(); if (depth < 0) return false; }
+  }
+  return false;
+}
+
+// RFC 6455's handshake: base64(SHA-1(key + its GUID)). SHA-1 only here, where the protocol fixes it (no secret rests on it).
+static void sha1(const std::string &m, unsigned char out[20])
+{
+  uint32_t h[5] = { 0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0 };
+  std::string d = m;
+  d += (char)0x80;
+  while (d.size() % 64 != 56) d += '\0';
+  const unsigned long long bits = (unsigned long long)m.size() * 8;
+  for (int i = 7; i >= 0; --i) d += (char)((bits >> (i * 8)) & 0xff);
+  auto rol = [](uint32_t x, int n) { return (x << n) | (x >> (32 - n)); };
+  for (size_t at = 0; at < d.size(); at += 64) {
+    uint32_t w[80];
+    for (int i = 0; i < 16; ++i)
+      w[i] = (uint32_t)(unsigned char)d[at + 4 * i] << 24 | (uint32_t)(unsigned char)d[at + 4 * i + 1] << 16 | (uint32_t)(unsigned char)d[at + 4 * i + 2] << 8 | (unsigned char)d[at + 4 * i + 3];
+    for (int i = 16; i < 80; ++i) w[i] = rol(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+    uint32_t a = h[0], b = h[1], c = h[2], e4 = h[3], e = h[4];
+    for (int i = 0; i < 80; ++i) {
+      const uint32_t f = i < 20 ? (b & c) | (~b & e4) : i < 40 ? b ^ c ^ e4 : i < 60 ? (b & c) | (b & e4) | (c & e4) : b ^ c ^ e4;
+      const uint32_t k = i < 20 ? 0x5A827999 : i < 40 ? 0x6ED9EBA1 : i < 60 ? 0x8F1BBCDC : 0xCA62C1D6;
+      const uint32_t t = rol(a, 5) + f + e + k + w[i];
+      e = e4; e4 = c; c = rol(b, 30); b = a; a = t;
+    }
+    h[0] += a; h[1] += b; h[2] += c; h[3] += e4; h[4] += e;
+  }
+  for (int i = 0; i < 20; ++i) out[i] = (unsigned char)(h[i / 4] >> (24 - 8 * (i % 4)));
+}
+std::string webui_ws_accept(const std::string &key)
+{
+  unsigned char d[20];
+  sha1(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11", d);
+  static const char *b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string o;
+  for (int i = 0; i < 20; i += 3) {
+    const uint32_t v = (uint32_t)d[i] << 16 | (i + 1 < 20 ? (uint32_t)d[i + 1] << 8 : 0) | (i + 2 < 20 ? d[i + 2] : 0);
+    o += b64[(v >> 18) & 63]; o += b64[(v >> 12) & 63];
+    o += i + 1 < 20 ? b64[(v >> 6) & 63] : '=';
+    o += i + 2 < 20 ? b64[v & 63] : '=';
+  }
+  return o;
+}
+
 // ---- state -----------------------------------------------------------------------------------------------------------------------------
 namespace {
 std::mutex g_mx; // guards everything below
@@ -219,6 +312,10 @@ std::deque<std::string> g_upload_order;
 // Files a page may download (GET /api/file?id=): Lua names each, the server never picks a path (the phone app's mix to play along to)
 const size_t MAX_OFFERS = 64;
 std::map<std::string, std::string> g_offers; // id -> the path
+// Browser guests (webui.h). Their uploads are kept apart from the phones' (a guest's never pushes a phone's take out): one each, two at most.
+std::map<std::string, WebGuest> g_guests; // gid -> the guest
+std::deque<std::string> g_guest_uploads;  // their upload ids, oldest first (each id starts with its guest's gid)
+const size_t MAX_GUESTS = 8, MAX_GUEST_UPLOADS = 2, GUEST_QUEUE = 8; // (GUEST_QUEUE: one guest's actions waiting, so a flood can't fill the queue)
 
 double now_s() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 bool topic_ok(const char *t)
@@ -241,12 +338,14 @@ void json_str(std::string &o, const std::string &s)
 // (under g_mx) What every page shows: the topics as Live sync last published them, and whether Live sync is still asking (5 s).
 // since >= 0: only the topics changed after that version, marked "delta" (the event stream after its first: a big song's arrange view isn't
 // sent again each time someone's cursor moves; a page keeps the topics it has. James, rt)
-std::string snapshot_locked(long long since = -1)
+// only: that one topic and nothing else (a browser guest's stream: rt-browserjoin).
+std::string snapshot_locked(long long since = -1, const std::string &only = "")
 {
   std::string o = "{\"ver\":" + std::to_string(g_ver) + ",\"engine\":" + (now_s() - g_engine_at < 5 ? "true" : "false") +
                   (since >= 0 ? ",\"delta\":true" : "") + ",\"topics\":{";
   bool first = true;
   for (const auto &kv : g_topics) {
+    if (!only.empty() && kv.first != only) continue;
     if (since >= 0 && g_topic_ver[kv.first] <= since) continue;
     if (!first) o += ',';
     first = false;
@@ -337,10 +436,13 @@ bool read_page(const std::string &folder, const std::string &rel, std::string &o
 
 // The event stream: everything now, then the topics that changed whenever one does (or just "engine" when Live sync starts or stops asking);
 // a comment every 15 s keeps phones' and proxies' idle timers from closing it.
-void events(sock_t s)
+// gid: a browser guest's stream, only its own topic "guest-<gid>", ended when the guest is (rt-browserjoin).
+bool guest_on_locked(const std::string &gid) { auto it = g_guests.find(gid); return it != g_guests.end() && !it->second.session.empty() && now_s() < it->second.until; }
+void events(sock_t s, const std::string &gid = "")
 {
   if (!send_all(s, std::string("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n") + SAFE_HEADERS + "Connection: keep-alive\r\n\r\nretry: 2000\n\n")) return;
-  long long sent_ver = -1;
+  const std::string only = gid.empty() ? "" : "guest-" + gid;
+  long long sent_ver = -1, sent_tv = -1;
   bool sent_engine = false;
   double ping_at = now_s();
   for (;;) {
@@ -348,12 +450,15 @@ void events(sock_t s)
     {
       std::unique_lock<std::mutex> l(g_mx);
       g_cv.wait_for(l, std::chrono::seconds(1), [&] { return g_stop || g_ver != sent_ver; });
-      if (g_stop) return;
+      if (g_stop || (!gid.empty() && !guest_on_locked(gid))) return;
       const bool engine = now_s() - g_engine_at < 5;
-      if (g_ver != sent_ver || engine != sent_engine) {
-        data = snapshot_locked(sent_ver); // (-1 the first time: everything)
-        sent_ver = g_ver; sent_engine = engine;
+      const auto tv = only.empty() ? g_ver : (g_topic_ver.count(only) ? g_topic_ver[only] : 0); // (a guest's: only when its own topic moved)
+      if (only.empty() ? (g_ver != sent_ver || engine != sent_engine) : (tv != sent_tv || engine != sent_engine)) {
+        data = snapshot_locked(sent_tv < 0 ? -1 : sent_ver, only); // (-1 the first time: everything)
+        sent_tv = tv;
+        sent_engine = engine;
       }
+      sent_ver = g_ver;
     }
     if (!data.empty()) {
       for (char &c : data) if (c == '\n' || c == '\r') c = ' '; // (one event is one data line)
@@ -367,7 +472,16 @@ void events(sock_t s)
 }
 
 // A phone's take, its raw bytes (Content-Length, no more than MAX_UPLOAD): kept under a new id for StudioSync_WebUISaveUpload. -> { ok, id }
-void upload(sock_t s, const WebReq &r, std::string body)
+// gid: a browser guest's take: its id starts with the gid (Lua takes only those from that guest), its earlier one let go, two guests' at most.
+std::string rand_hex(int words) // (under g_mx: random_device isn't shared between threads)
+{
+  static std::random_device rd;
+  std::string o;
+  char b[12];
+  for (int i = 0; i < words; ++i) { snprintf(b, sizeof(b), "%08x", (unsigned)rd()); o += b; }
+  return o;
+}
+void upload(sock_t s, const WebReq &r, std::string body, const std::string &gid = "")
 {
   const std::string cl = header(r, "content-length");
   const long long n = cl.empty() || cl.size() > 12 || cl.find_first_not_of("0123456789") != std::string::npos ? -1 : atoll(cl.c_str());
@@ -381,14 +495,21 @@ void upload(sock_t s, const WebReq &r, std::string body)
     body.append(chunk.data(), (size_t)k);
   }
   body.resize((size_t)n);
-  static std::random_device rd;
-  char id[24];
-  snprintf(id, sizeof(id), "%08x%08x", (unsigned)rd(), (unsigned)rd());
+  std::string id;
   {
     std::lock_guard<std::mutex> l(g_mx);
-    while (g_upload_order.size() >= MAX_UPLOADS) { g_uploads.erase(g_upload_order.front()); g_upload_order.pop_front(); }
+    id = gid + rand_hex(2);
+    if (!gid.empty()) {
+      if (!guest_on_locked(gid)) return answer(s, 403, "application/json", "{\"ok\":false,\"why\":\"ended\"}"); // (kicked while it came)
+      for (auto it = g_guest_uploads.begin(); it != g_guest_uploads.end();)
+        if (it->compare(0, gid.size(), gid) == 0) { g_uploads.erase(*it); it = g_guest_uploads.erase(it); } else ++it;
+      while (g_guest_uploads.size() >= MAX_GUEST_UPLOADS) { g_uploads.erase(g_guest_uploads.front()); g_guest_uploads.pop_front(); }
+      g_guest_uploads.push_back(id);
+    } else {
+      while (g_upload_order.size() >= MAX_UPLOADS) { g_uploads.erase(g_upload_order.front()); g_upload_order.pop_front(); }
+      g_upload_order.push_back(id);
+    }
     g_uploads[id] = std::move(body);
-    g_upload_order.push_back(id);
   }
   answer(s, 200, "application/json", std::string("{\"ok\":true,\"id\":\"") + id + "\"}");
 }
@@ -499,6 +620,159 @@ void mix_stream(sock_t s)
   }
 }
 
+// ---- a browser guest's live audio (GET /api/guest/live, a WebSocket; webui.h) ----------------------------------------------------------
+// Down: the session mix ring (as REAPER's mix above, fed after live audio added the bandmates), each frame [SG1\0][u32 rate][f64 link-clock
+// time of its first sample][16-bit stereo]. The time comes from a seqlock'd stamp the audio thread writes per block (its frame count and
+// direct_now). Up: [16-bit mono] at that rate into the guest's own ring, which the audio thread drains: heard once GUP_TARGET has come,
+// trimmed back to it when more than GUP_OVER piles up (the two sound cards' drift, a burst after a stall), silent on an underrun until it
+// has refilled. shortcut: no resampler, the page runs its audio at REAPER's rate (the browser converts to its device); a guest's clock that
+// drifts far shows as drops/underruns in the status, upgrade to a drift-correcting resampler if Health shows them often.
+const unsigned long long GMIX_N = 1ull << 17;
+short g_gmix[GMIX_N * 2];
+std::atomic<unsigned long long> g_gmix_w{ 0 };
+std::atomic<double> g_gmix_sr{ 0 };
+std::atomic<unsigned> g_gstamp_seq{ 0 };
+std::atomic<unsigned long long> g_gstamp_w{ 0 };
+std::atomic<double> g_gstamp_t{ 0 };
+const int GUEST_LIVE = 2;              // guests live at once
+const unsigned long long GUP_N = 1ull << 15; // frames of a guest's sound waiting: 0.68 s at 48 kHz
+const double GUP_TARGET = 0.06, GUP_OVER = 0.15; // s
+const size_t WS_MAX = 65536;           // bytes in one frame from a guest (a 10 ms message is ~1 KB)
+struct GuestSlot {
+  std::atomic<int> taken{ 0 };         // 0 free, 2 being set up, 1 live
+  char gid[17] = {};
+  float ring[GUP_N];
+  std::atomic<unsigned long long> w{ 0 }, r{ 0 };
+  std::atomic<bool> playing{ false };
+  std::atomic<float> gain{ 1.f }, peak{ 0.f };
+  std::atomic<long long> under{ 0 }, drops{ 0 };
+};
+GuestSlot g_gslot[GUEST_LIVE];
+std::atomic<int> g_guests_live{ 0 };
+float g_talk[8192];                    // (the audio thread's own: the guests it heard in the last post call, for the next pre call's Talk)
+int g_talk_n = 0;
+
+bool ws_send(sock_t s, int op, const char *d, size_t n)
+{
+  std::string h(1, (char)(0x80 | op));
+  if (n < 126) h += (char)n;
+  else if (n < 65536) { h += (char)126; h += (char)(n >> 8); h += (char)(n & 255); }
+  else { h += (char)127; for (int i = 7; i >= 0; --i) h += (char)((unsigned long long)n >> (8 * i) & 255); }
+  return send_all(s, h + std::string(d, n));
+}
+double gstamp_time(unsigned long long pos, double sr) // (the link clock of session-mix frame pos)
+{
+  for (int i = 0; i < 100; ++i) {
+    const unsigned q = g_gstamp_seq.load(std::memory_order_acquire);
+    const unsigned long long w = g_gstamp_w.load(std::memory_order_relaxed);
+    const double t = g_gstamp_t.load(std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_acquire);
+    if (!(q & 1) && q == g_gstamp_seq.load(std::memory_order_relaxed)) return t + ((double)pos - (double)w) / sr;
+  }
+  return direct_now();
+}
+void guest_live(sock_t s, const WebReq &r, const std::string &gid)
+{
+  const std::string key = header(r, "sec-websocket-key");
+  if (lower(header(r, "upgrade")) != "websocket" || lower(header(r, "connection")).find("upgrade") == std::string::npos ||
+      header(r, "sec-websocket-version") != "13" || key.size() != 24)
+    return answer(s, 400, "text/plain", "this is a WebSocket\n");
+  for (auto &g : g_gslot) if (g.taken.load() == 1 && gid == g.gid) return answer(s, 409, "text/plain", "already live in another window\n");
+  GuestSlot *slot = nullptr;
+  for (auto &g : g_gslot) { int z = 0; if (g.taken.compare_exchange_strong(z, 2)) { slot = &g; break; } }
+  if (!slot) return answer(s, 503, "text/plain", "two guests are live already\n");
+  snprintf(slot->gid, sizeof(slot->gid), "%s", gid.c_str());
+  slot->w.store(0); slot->r.store(0); slot->playing.store(false); slot->peak.store(0); slot->under.store(0); slot->drops.store(0);
+  { std::lock_guard<std::mutex> l(g_mx); auto it = g_guests.find(gid); slot->gain.store(it != g_guests.end() ? it->second.gain : 1.f); }
+  slot->taken.store(1, std::memory_order_release);
+  g_guests_live.fetch_add(1);
+  struct Free { GuestSlot *s; ~Free() { g_guests_live.fetch_sub(1); s->taken.store(0, std::memory_order_release); } } free_slot{ slot };
+  if (!send_all(s, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + webui_ws_accept(key) + "\r\n\r\n")) return;
+  int one = 1;
+  setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof(one)); // (10 ms frames: no Nagle wait)
+  set_blocking(s, 2000); // (a guest that takes nothing for 2 s is gone)
+  std::string in, pcm;
+  unsigned long long pos = g_gmix_w.load(std::memory_order_acquire);
+  double check_at = 0, sec_at = now_s();
+  long long sec_frames = 0;
+  char b[16384];
+  while (!g_stop) {
+#ifdef _WIN32
+    WSAPOLLFD p = { s, POLLIN, 0 };
+    const int ready = WSAPoll(&p, 1, 5);
+#else
+    pollfd p = { s, POLLIN, 0 };
+    const int ready = poll(&p, 1, 5);
+#endif
+    if (ready < 0) return;
+    if (ready > 0) {
+      const int k = (int)recv(s, b, sizeof(b), 0);
+      if (k <= 0) return;
+      in.append(b, (size_t)k);
+    }
+    while (in.size() >= 2) { // (each whole frame in: masked, unfragmented, no bigger than WS_MAX)
+      const unsigned char b0 = (unsigned char)in[0], b1 = (unsigned char)in[1];
+      if (!(b1 & 0x80) || !(b0 & 0x80) || (b0 & 0x70)) return; // (a client's frames are masked; no fragments, no extensions)
+      size_t n = b1 & 127, hl = 2;
+      if (n == 126) { if (in.size() < 4) break; n = (size_t)(unsigned char)in[2] << 8 | (unsigned char)in[3]; hl = 4; }
+      else if (n == 127) return;
+      if (n > WS_MAX) return;
+      if (in.size() < hl + 4 + n) break;
+      std::string d = in.substr(hl + 4, n);
+      for (size_t i = 0; i < n; ++i) d[i] = (char)(d[i] ^ in[hl + (i & 3)]);
+      in.erase(0, hl + 4 + n);
+      const int op = b0 & 15;
+      if (op == 8) { ws_send(s, 8, "", 0); return; }
+      if (op == 9) { if (!ws_send(s, 10, d.data(), std::min<size_t>(n, 125))) return; continue; }
+      if (op != 2) continue; // (text, pong: nothing to do)
+      const unsigned long long frames = n / 2;
+      const double sr = g_gmix_sr.load();
+      sec_frames += (long long)frames;
+      { // (far faster than sound, past a second's burst after a stall: not a guest's page)
+        const double el = now_s() - sec_at, rmax = std::max(48000.0, sr);
+        if ((double)sec_frames > 3 * rmax * el + rmax) return;
+        if (el >= 2) { sec_at = now_s(); sec_frames = 0; }
+      }
+      const unsigned long long w = slot->w.load(std::memory_order_relaxed), rd = slot->r.load(std::memory_order_acquire);
+      if (w - rd + frames > GUP_N) { slot->drops.fetch_add(1); continue; } // (the audio thread isn't taking it: REAPER's audio stopped)
+      for (unsigned long long i = 0; i < frames; ++i) {
+        short v;
+        memcpy(&v, &d[(size_t)i * 2], 2);
+        slot->ring[(w + i) % GUP_N] = (float)v / 32768.f;
+      }
+      slot->w.store(w + frames, std::memory_order_release);
+    }
+    if (in.size() > 4 * WS_MAX) return;
+    const double sr = g_gmix_sr.load();
+    unsigned long long w = g_gmix_w.load(std::memory_order_acquire);
+    if (sr >= 8000 && sr <= 768000 && w != pos) {
+      if (w < pos || w - pos > GMIX_N / 2) pos = w - std::min(w, (unsigned long long)(sr * 0.05)); // (far behind: from now)
+      while (w - pos >= (unsigned long long)(sr * 0.005)) { // (5 ms at least a frame, 4096 frames at most)
+        const unsigned long long n = std::min<unsigned long long>(w - pos, 4096);
+        const unsigned rate = (unsigned)sr;
+        const double t = gstamp_time(pos, sr);
+        pcm.assign("SG1\0", 4);
+        pcm.append((const char *)&rate, 4);
+        pcm.append((const char *)&t, 8);
+        for (unsigned long long at = pos; at < pos + n;) {
+          const unsigned long long i = at % GMIX_N, m = std::min(pos + n - at, GMIX_N - i);
+          pcm.append((const char *)&g_gmix[i * 2], (size_t)(m * 4));
+          at += m;
+        }
+        if (g_gmix_w.load(std::memory_order_acquire) - pos > GMIX_N) { pos = g_gmix_w.load(); break; } // (written over while copying)
+        if (!ws_send(s, 2, pcm.data(), pcm.size())) return;
+        pos += n;
+      }
+    }
+    if (now_s() - check_at > 0.1) { // (kicked or run out: closed; the host's level for them)
+      check_at = now_s();
+      std::lock_guard<std::mutex> l(g_mx);
+      if (!guest_on_locked(gid)) { ws_send(s, 8, "\x03\xf0", 2); return; } // (1008: policy)
+      slot->gain.store(g_guests[gid].gain);
+    }
+  }
+}
+
 void handle(sock_t s, std::string buf, bool local)
 {
   set_blocking(s, 5000);
@@ -515,18 +789,36 @@ void handle(sock_t s, std::string buf, bool local)
   int port;
   { std::lock_guard<std::mutex> l(g_mx); token = g_token; folder = g_folder; port = g_port; }
   bool set_cookie = false;
-  if (webui_auth(r, local, token, port, set_cookie) != 0) {
-    { std::lock_guard<std::mutex> l(g_mx); ++g_refused; }
-    return answer(s, 403, "text/plain; charset=utf-8", local ? "Open this page from REAPER (StudioSync's Chat page: Web UI).\n"
-                                                             : "This needs the studio's link: StudioSync's Chat page, Copy phone link, on the computer in the studio.\n");
-  }
-  { std::lock_guard<std::mutex> l(g_mx); ++g_served; }
+  // (a browser guest: /api/guest/* is theirs alone, never the studio token's; a guest link (?g=) is always theirs to redeem; the guest's own
+  // files open with either. rt-browserjoin)
+  std::string gid;
+  const bool guest_only = r.path.compare(0, 11, "/api/guest/") == 0, redeem = r.path == "/guest.html" && !webui_param(r.query, "g").empty();
+  if (guest_only || redeem || webui_auth(r, local, token, port, set_cookie) != 0) {
+    set_cookie = false;
+    int g;
+    std::string session;
+    {
+      std::lock_guard<std::mutex> l(g_mx);
+      g = webui_guest_auth(r, g_guests, now_s(), rand_hex(4), gid);
+      if (g == 303) session = g_guests[gid].session;
+      ++(g == 403 ? g_refused : g_served);
+    }
+    if (g == 303)
+      return answer(s, 303, "text/plain", "", "Location: /guest.html\r\nSet-Cookie: ss_guest=" + session + "; Path=/; HttpOnly; SameSite=Lax\r\n");
+    if (g != 0)
+      return answer(s, 403, "text/plain; charset=utf-8", guest_only || redeem ? "This guest link was used already, has run out, or was ended. Ask for a new one.\n"
+                                                         : local ? "Open this page from REAPER (StudioSync's Chat page: Web UI).\n"
+                                                                 : "This needs the studio's link: StudioSync's Chat page, Copy phone link, on the computer in the studio.\n");
+    if (r.method == "POST" && r.path == "/api/guest/upload") return upload(s, r, buf.substr(end + 4), gid);
+    if (r.path == "/api/guest/events") return events(s, gid);
+    if (r.path == "/api/guest/live") return guest_live(s, r, gid);
+  } else { std::lock_guard<std::mutex> l(g_mx); ++g_served; }
   if (set_cookie) // (the token goes into a cookie and out of the address bar. Lax, not Strict: a Strict cookie isn't sent on the redirect of a
     // link followed from elsewhere (a chat app on a phone), so the page got 403. Every action still needs X-StudioSync. Desktop, rt)
     return answer(s, 303, "text/plain", "", "Location: " + r.path + "\r\nSet-Cookie: ss_webui=" + token + "; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax\r\n");
   if (r.method == "POST" && r.path == "/api/upload") return upload(s, r, buf.substr(end + 4));
   if (r.method == "POST") {
-    if (r.path != "/api/action") return answer(s, 404, "text/plain", "not found\n");
+    if (r.path != (gid.empty() ? "/api/action" : "/api/guest/action")) return answer(s, 404, "text/plain", "not found\n");
     const std::string cl = header(r, "content-length");
     const long long n = cl.empty() ? -1 : atoll(cl.c_str());
     if (n <= 0 || (size_t)n > MAX_BODY || cl.find_first_not_of("0123456789") != std::string::npos) return answer(s, 413, "text/plain", "too big\n");
@@ -541,7 +833,15 @@ void handle(sock_t s, std::string buf, bool local)
     {
       std::lock_guard<std::mutex> l(g_mx);
       if (g_actions.size() >= MAX_ACTIONS) return answer(s, 503, "application/json", "{\"ok\":false,\"why\":\"busy\"}");
-      g_actions.emplace_back(body, local && !proxied_req(r)); // (this computer's own page: not the link's port, not `tailscale serve`)
+      if (!gid.empty()) { // (a guest's, wrapped so it can only ever be the guest's own topic; a few at a time per guest)
+        if (!json_one_object(body)) return answer(s, 400, "text/plain", "an action is one JSON object\n");
+        const std::string tag = "{\"topic\":\"guestweb\",\"gid\":\"" + gid + "\",\"a\":";
+        size_t mine = 0;
+        for (const auto &a : g_actions) if (a.first.compare(0, tag.size(), tag) == 0) ++mine;
+        if (mine >= GUEST_QUEUE) return answer(s, 503, "application/json", "{\"ok\":false,\"why\":\"busy\"}");
+        body = tag + body + "}";
+      }
+      g_actions.emplace_back(body, local && !proxied_req(r) && gid.empty()); // (this computer's own page: not the link's port, not `tailscale serve`, not a guest)
     }
     return answer(s, 202, "application/json", "{\"ok\":true}");
   }
@@ -649,7 +949,86 @@ void webui_mix_feed(const double *const *out, int nout, int len, double srate)
   for (int k = 0; k < len; ++k, ++w) { short *d = &g_mix[(w % MIX_N) * 2]; d[0] = mix16(L[k]); d[1] = mix16(R[k]); }
   g_mix_w.store(w, std::memory_order_release);
 }
-int webui_mix_wanted() { return g_mix_on.load(); }
+int webui_mix_wanted() { return g_mix_on.load() + g_guests_live.load(); }
+
+// ---- browser guests (webui.h) ------------------------------------------------------------------------------------------------------------
+static bool hex_ok(const char *s, size_t lo, size_t hi)
+{
+  const size_t n = s ? strlen(s) : 0;
+  if (n < lo || n > hi) return false;
+  for (size_t i = 0; i < n; ++i) if (!((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'f'))) return false;
+  return true;
+}
+int webui_guest_set(const char *gid, const char *code, int code_s, int session_s)
+{
+  if (!hex_ok(gid, 16, 16)) return 0;
+  std::lock_guard<std::mutex> l(g_mx);
+  if (!code || !*code) { g_guests.erase(gid); g_cv.notify_all(); return 1; } // (its stream ends at once, its socket within 0.1 s)
+  if (!hex_ok(code, 24, 64) || code_s <= 0 || session_s <= 0) return 0;
+  if (!g_guests.count(gid) && g_guests.size() >= MAX_GUESTS) return 0;
+  WebGuest &g = g_guests[gid];
+  g = WebGuest(); // (a new code for a gid: its old browser's session ends with it)
+  g.code = code;
+  g.code_until = now_s() + std::min(code_s, session_s);
+  g.until = now_s() + session_s;
+  g_cv.notify_all();
+  return 1;
+}
+int webui_guest_gain(const char *gid, double gain)
+{
+  std::lock_guard<std::mutex> l(g_mx);
+  auto it = gid ? g_guests.find(gid) : g_guests.end();
+  if (it == g_guests.end() || !(gain >= 0)) return 0;
+  it->second.gain = (float)std::min(gain, 4.0);
+  return 1;
+}
+void webui_guest_audio(double *const *out, int nout, int len, double srate)
+{
+  if (g_guests_live.load(std::memory_order_relaxed) <= 0 || len <= 0 || nout <= 0 || !out || !out[0]) { g_talk_n = 0; return; }
+  g_gmix_sr.store(srate, std::memory_order_relaxed);
+  unsigned long long w = g_gmix_w.load(std::memory_order_relaxed);
+  const unsigned q = g_gstamp_seq.load(std::memory_order_relaxed);
+  g_gstamp_seq.store(q + 1, std::memory_order_relaxed);
+  std::atomic_thread_fence(std::memory_order_release);
+  g_gstamp_w.store(w, std::memory_order_relaxed);
+  g_gstamp_t.store(direct_now(), std::memory_order_relaxed);
+  g_gstamp_seq.store(q + 2, std::memory_order_release);
+  double *L = out[0], *R = nout > 1 && out[1] ? out[1] : nullptr;
+  for (int k = 0; k < len; ++k, ++w) { short *d = &g_gmix[(w % GMIX_N) * 2]; d[0] = mix16(L[k]); d[1] = mix16(R ? R[k] : L[k]); }
+  g_gmix_w.store(w, std::memory_order_release);
+  const int tn = std::min(len, 8192);
+  std::fill(g_talk, g_talk + tn, 0.f);
+  g_talk_n = tn;
+  for (auto &g : g_gslot) {
+    if (g.taken.load(std::memory_order_acquire) != 1) continue;
+    const unsigned long long gw = g.w.load(std::memory_order_acquire);
+    unsigned long long gr = g.r.load(std::memory_order_relaxed);
+    const double target = srate * GUP_TARGET;
+    if (!g.playing.load(std::memory_order_relaxed)) {
+      if ((double)(gw - gr) < target + len) continue; // (filling up first: a little buffer against the network's jitter)
+      g.playing.store(true, std::memory_order_relaxed);
+    }
+    if ((double)(gw - gr) > target + srate * GUP_OVER) { gr = gw - (unsigned long long)target; g.drops.fetch_add(1, std::memory_order_relaxed); }
+    if (gw - gr < (unsigned long long)len) { g.playing.store(false, std::memory_order_relaxed); g.under.fetch_add(1, std::memory_order_relaxed); continue; }
+    const float gain = g.gain.load(std::memory_order_relaxed);
+    float pk = 0;
+    for (int k = 0; k < len; ++k) {
+      const float v = g.ring[(gr + (unsigned long long)k) % GUP_N] * gain;
+      pk = std::max(pk, std::fabs(v));
+      L[k] += v;
+      if (R) R[k] += v;
+      if (k < tn) g_talk[k] += v;
+    }
+    g.r.store(gr + (unsigned long long)len, std::memory_order_release);
+    g.peak.store(std::max(pk, g.peak.load(std::memory_order_relaxed) * 0.97f), std::memory_order_relaxed); // (a meter: falls ~30 dB in 0.2 s at 128-frame blocks)
+  }
+}
+void webui_guest_talk(float *const *ch, int nch, int len)
+{
+  const int n = std::min(len, g_talk_n);
+  for (int c = 0; c < std::min(nch, 2); ++c)
+    if (ch && ch[c]) for (int k = 0; k < n; ++k) ch[c][k] += g_talk[k];
+}
 
 // ---- the core's functions --------------------------------------------------------------------------------------------------------------
 int webui_start(const char *folder, const char *secret, int port, const char *bind_ip)
@@ -726,7 +1105,24 @@ const char *webui_status()
   json_str(o, g_err);
   o += ",\"token\":";
   json_str(o, g_token);
-  o += ",\"clients\":" + std::to_string(g_clients) + ",\"served\":" + std::to_string(g_served) + ",\"refused\":" + std::to_string(g_refused) + "}";
+  o += ",\"clients\":" + std::to_string(g_clients) + ",\"served\":" + std::to_string(g_served) + ",\"refused\":" + std::to_string(g_refused);
+  // (browser guests: redeemed, live on the socket, their peak since the last ask, underruns and drops. rt-browserjoin)
+  o += ",\"guests\":{";
+  bool first = true;
+  for (const auto &g : g_guests) {
+    if (!first) o += ',';
+    first = false;
+    json_str(o, g.first);
+    o += std::string(":{\"redeemed\":") + (g.second.code.empty() ? "true" : "false") + ",\"on\":" + (now_s() < g.second.until ? "true" : "false");
+    for (auto &sl : g_gslot) {
+      if (sl.taken.load(std::memory_order_acquire) != 1 || g.first != sl.gid) continue;
+      char b[160];
+      snprintf(b, sizeof(b), ",\"live\":true,\"peak\":%.4f,\"under\":%lld,\"drops\":%lld", sl.peak.load(), sl.under.load(), sl.drops.load());
+      o += b;
+    }
+    o += '}';
+  }
+  o += "}}";
   g_status_out = o;
   return g_status_out.c_str();
 }
@@ -756,6 +1152,7 @@ int webui_save_upload(const char *id, const char *path)
   if (!ok) { if (it != g_uploads.end()) it->second.swap(data); return -1; } // (kept for another try: the take isn't lost to a full disk)
   if (it != g_uploads.end()) g_uploads.erase(it);
   g_upload_order.erase(std::remove(g_upload_order.begin(), g_upload_order.end(), std::string(id)), g_upload_order.end());
+  g_guest_uploads.erase(std::remove(g_guest_uploads.begin(), g_guest_uploads.end(), std::string(id)), g_guest_uploads.end());
   return data.size() > 0x7fffffff ? 0x7fffffff : (int)data.size();
 }
 
@@ -793,6 +1190,8 @@ void webui_shutdown()
     g_uploads.clear();
     g_upload_order.clear();
     g_offers.clear();
+    g_guests.clear();
+    g_guest_uploads.clear();
   }
 #ifdef _WIN32
   if (g_wsa) { WSACleanup(); g_wsa = false; }
@@ -809,7 +1208,11 @@ static const char *api_status() { return webui_status(); }
 static int api_poll_here() { return webui_poll_here(); }
 static int api_save_upload(const char *id, const char *path) { return webui_save_upload(id, path); }
 static int api_offer(const char *id, const char *path) { return webui_offer(id, path); }
+static int api_guest(const char *gid, const char *code, int code_s, int session_s) { return webui_guest_set(gid, code, code_s, session_s); }
+static int api_guest_gain(const char *gid, double gain) { return webui_guest_gain(gid, gain); }
 #define S_(i) (n > (i) ? (const char *)a[i] : nullptr)
+static void *va_guest(void **a, int n) { return n < 4 ? nullptr : (void *)(INT_PTR)api_guest(S_(0), S_(1), (int)(INT_PTR)a[2], (int)(INT_PTR)a[3]); }
+static void *va_guest_gain(void **a, int n) { return n < 2 || !a[1] ? nullptr : (void *)(INT_PTR)api_guest_gain(S_(0), *(double *)a[1]); } // (a double comes as a pointer)
 static void *va_save_upload(void **a, int n) { return (void *)(INT_PTR)api_save_upload(S_(0), S_(1)); }
 static void *va_offer(void **a, int n) { return (void *)(INT_PTR)api_offer(S_(0), S_(1)); }
 static void *va_start_(void **a, int n) { return (void *)(INT_PTR)api_start(S_(0), S_(1), n > 2 ? (int)(INT_PTR)a[2] : 0); }
@@ -834,7 +1237,8 @@ void webui_register(reaper_plugin_info_t *rec)
       "int\0\0\0Whether the action StudioSync_WebUIPoll handed out last came from a page on this computer (1), not a phone or another "
       "device on the studio's link or through `tailscale serve` (0). lib/ai.lua: a yes for an AI run." },
     { "StudioSync_WebUIStatus", (void *)api_status, (void *)va_status,
-      "const char*\0\0\0The web UI server's state, as JSON: listening, bind, port, error, token, clients, served, refused." },
+      "const char*\0\0\0The web UI server's state, as JSON: listening, bind, port, error, token, clients, served, refused, guests "
+      "({ gid: { redeemed, on, live, peak, under, drops } })." },
     { "StudioSync_WebUISaveUpload", (void *)api_save_upload, (void *)va_save_upload,
       "int\0const char*,const char*\0id,path\0"
       "A take a page uploaded (POST /api/upload's id), written to `path` and let go. Returns its bytes; 0 no such upload; -1 couldn't write "
@@ -843,6 +1247,14 @@ void webui_register(reaper_plugin_info_t *rec)
       "int\0const char*,const char*\0id,path\0"
       "Lets the pages download the file at `path` as GET /api/file?id=<id> (id: up to 32 lower-case hex characters; 64 files at most). "
       "An empty path withdraws it. Returns 1, or 0 for a bad id or too many." },
+    { "StudioSync_WebUIGuest", (void *)api_guest, (void *)va_guest,
+      "int\0const char*,const char*,int,int\0gid,code,code_seconds,session_seconds\0"
+      "A browser guest (lib/guestweb.lua): gid (16 lower-case hex) may join once with `code` (24-64 lower-case hex, as /guest.html?g=<code>) "
+      "within code_seconds; the session it opens ends session_seconds from now. code \"\": the guest is ended at once (kicked). Their page, "
+      "event stream (topic guest-<gid> only), live audio socket, actions (topic guestweb) and uploads (ids starting with gid) are theirs alone; "
+      "StudioSync_WebUIStatus's guests say how each goes. Returns 1, or 0 for a bad gid or code or more than 8 guests." },
+    { "StudioSync_WebUIGuestGain", (void *)api_guest_gain, (void *)va_guest_gain,
+      "int\0const char*,double\0gid,gain\0A browser guest's level (linear, 0-4) in what this computer hears and sends on. Returns 1 when that guest is known." },
   };
   char key[96];
   for (const auto &f : fns) {

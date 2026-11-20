@@ -1,0 +1,78 @@
+<!doctype html>
+<!-- StudioSync's guest page (lib/guestweb.lua, guest.js): join a session from a browser with an audio interface, no REAPER needed.
+     GPL-3.0-or-later. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>StudioSync: Guest</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="guest.css">
+<script src="phonefile.js" defer></script>
+<script src="guest.js" defer></script>
+</head>
+<body>
+<header>
+  <div class="title">
+    <strong>StudioSync</strong>
+    <span id="where" class="dim"></span>
+  </div>
+  <span id="conn" class="conn" role="status">connecting</span>
+</header>
+<section class="gpage" aria-labelledby="g-h">
+  <h2 id="g-h">Join as a guest</h2>
+  <p><span id="who">Guest</span>. <span id="ends" class="dim"></span></p>
+  <p id="pos" class="dim" role="status"></p>
+  <label for="input">Input (your audio interface)</label>
+  <select id="input"><option value="">Default input</option></select>
+  <label for="chans">Channels</label>
+  <select id="chans">
+    <option value="0">input 1</option><option value="1">input 2</option>
+    <option value="stereo">inputs 1 and 2, as stereo (takes; the session hears them mixed)</option>
+    <option value="sum">inputs 1 and 2, mixed to mono</option>
+  </select>
+  <p id="inputwhy" class="dim small"></p>
+  <div id="outrow" hidden>
+    <label for="output">Output (headphones)</label>
+    <select id="output"><option value="">Default output</option></select>
+  </div>
+  <button id="join" type="button" class="big">Join with this interface</button>
+  <div id="controls" hidden>
+    <label for="level">Your input</label>
+    <meter id="level" min="0" max="1" low="0.5" high="0.9" optimum="0.3" value="0"></meter>
+    <label for="vol">The session in your headphones</label>
+    <input id="vol" type="range" min="0" max="1.5" step="0.01" value="1">
+    <div class="row">
+      <button id="mute" type="button">Mute me</button>
+      <button id="rec" type="button" class="big">Record a take</button>
+    </div>
+    <p class="small">Round trip: <span id="rt"></span> <button id="test" type="button">Measure (loopback test)</button></p>
+    <p class="dim small">The test plays 8 clicks on your output: connect that output to an input with a cable (or hold your headphones to the
+      microphone) first. Takes are placed by it; it's kept for this input and output.</p>
+    <p class="small"><progress id="up" max="1" value="0"></progress>
+      <button id="again" type="button" hidden>Send again</button> <a id="save" hidden>Save the take to this computer</a></p>
+    <button id="leave" type="button">Leave the session</button>
+  </div>
+  <p id="msg" class="note" role="status" aria-live="polite"></p>
+  <p id="said" class="note small" aria-live="polite"></p>
+  <details class="small">
+    <summary>Headphones, latency and pro audio (ASIO)</summary>
+    <p>Use headphones: the session plays here and your input goes back to it, so speakers would send everyone's sound back to them.
+      Monitor yourself on your interface (its direct monitoring), not through this page.</p>
+    <p>You hear the session about a network trip plus ~0.1 s late, and the band hears you a network trip plus ~0.06 s late: fine to talk and
+      play along; takes still land in time, because they're placed by where the song was when you heard it.</p>
+    <p>Browsers can't use ASIO drivers. What this page gets per system:</p>
+    <ul class="dots">
+      <li><b>Windows:</b> the interface through Windows audio (WASAPI shared mode, the browser's own buffer, often 10-20 ms each way). Set
+        the interface's Windows sample rate to the session's, and close programs holding the interface in exclusive (ASIO) mode, or the
+        browser may see no input.</li>
+      <li><b>Mac:</b> Core Audio, the interface as it is (low latency; an aggregate device works for more inputs).</li>
+      <li><b>Linux:</b> PipeWire (or PulseAudio) as the browser's audio; JACK apps through pipewire-jack.</li>
+      <li>Two inputs at most reach a browser page; Chrome and Edge give the lowest latency.</li>
+    </ul>
+  </details>
+</section>
+</body>
+</html>

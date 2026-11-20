@@ -30,7 +30,7 @@ void webui_shutdown();
 // The audio hook (extension/rtaudio.cpp) hands each block of the first output pair here BEFORE live audio adds the bandmates it hears, so
 // a share never carries anyone's voice back to them. Audio thread: no lock or allocation; nothing at all unless a page streams it. (rt-share)
 void webui_mix_feed(const double *const *out, int nout, int len, double srate);
-int webui_mix_wanted(); // pages streaming it now: the main thread keeps the audio hook in while this is above 0
+int webui_mix_wanted(); // pages streaming it now, and browser guests live: the main thread keeps the audio hook in while this is above 0
 
 // ---- the pure parts (tests/webui_test.cpp) ----------------------------------------------------------------------------------------------
 struct WebReq {
@@ -50,6 +50,34 @@ std::string webui_cookie(const std::string &header, const std::string &name); //
 // that points its own name at 127.0.0.1 gets no further); every POST must carry X-StudioSync (a form on another site can't add it). A
 // local one a proxy handed over (X-Forwarded-*: `tailscale serve`, the pages' https address) needs the token, and may come from https://.
 int webui_auth(const WebReq &r, bool local, const std::string &token, int port, bool &set_cookie);
+
+// ---- browser guests (lib/guestweb.lua, docs/rt/rt-browserjoin.md) -----------------------------------------------------------------------
+// Someone without REAPER joins one project and room from a browser: a single-use code (?g= on /guest.html) becomes an HttpOnly session cookie
+// (ss_guest) that opens only the guest's own files and API (webui_guest_path), never the studio's token, other topics or files. Their
+// actions reach Lua wrapped as {"topic":"guestweb","gid":...,"a":<theirs>}; their event stream carries only the topic "guest-<gid>"; their
+// uploads get ids starting with their gid. Live audio rides one WebSocket (GET /api/guest/live): down, this computer's session mix (REAPER's
+// output with the bandmates live audio hears, taken before any guest is added: nobody hears themselves back) as 16-bit stereo at REAPER's
+// rate, each frame stamped with the link clock of its first sample; up, the guest's 16-bit mono at that rate, mixed into what this computer
+// hears and into the Talk it sends.
+// gid: 16 lower-case hex. code: 24-64 lower-case hex, redeemable for code_s seconds; the session ends session_s after it's set. code ""
+// ends the guest at once (its socket closes within 0.1 s). -> 1, 0 for a bad gid/code or too many guests.
+int webui_guest_set(const char *gid, const char *code, int code_s, int session_s);
+int webui_guest_gain(const char *gid, double gain); // the guest's level in what this computer hears and sends (0-4). -> 1 when known
+// The audio thread, the hook's post call after live audio mixed the bandmates in: the session mix for the guests, then each live guest added
+// to out. And from rt_capture through rt_talk_add (extension/rtaudio.h): the guests heard in the last block, added to the Talk sent.
+void webui_guest_audio(double *const *out, int nout, int len, double srate);
+void webui_guest_talk(float *const *ch, int nch, int len);
+struct WebGuest {
+  std::string code, session; // (code "" once redeemed: single use)
+  double code_until = 0, until = 0;
+  float gain = 1;
+};
+// May this guest request in? The same origin and X-StudioSync rules as webui_auth, and only webui_guest_path's paths. A valid ss_guest cookie:
+// 0 and its gid. A valid unused code (?g= on GET /guest.html): the code is used up, the session is `fresh`, 303 (the answer sets the cookie).
+// Else 403. Pure over `guests` (tests/webui_test.cpp).
+int webui_guest_auth(const WebReq &r, std::map<std::string, WebGuest> &guests, double now, const std::string &fresh, std::string &gid);
+bool webui_guest_path(const std::string &method, const std::string &path);
+std::string webui_ws_accept(const std::string &key); // RFC 6455's Sec-WebSocket-Accept for a Sec-WebSocket-Key
 
 #ifndef WEBUI_STANDALONE
 struct reaper_plugin_info_t;

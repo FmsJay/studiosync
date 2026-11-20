@@ -1597,6 +1597,7 @@ static void took(RtLink *l, std::chrono::steady_clock::time_point t0)
   const long long ns = (long long)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
   if (ns > l->max_ns.load(std::memory_order_relaxed)) l->max_ns.store(ns, std::memory_order_relaxed);
 }
+void (*rt_talk_add)(float *const *, int, int) = nullptr; // (rtaudio.h: a browser guest into the Talk sent. rt-browserjoin)
 void rt_capture(RtLink *l, const double *const *in, int nin, int len, double srate)
 {
   if (!l || len <= 0) return;
@@ -1620,6 +1621,7 @@ void rt_capture(RtLink *l, const double *const *in, int nin, int len, double sra
         else std::fill(dst, dst + len, 0.f);
       }
       if (pk > l->in_peak.load(std::memory_order_relaxed)) l->in_peak.store(pk, std::memory_order_relaxed);
+      if (on && rt_talk_add) rt_talk_add(l->inptr, l->nch, len); // (a browser guest goes on to the bandmates in this Talk. rt-browserjoin)
       const AooError e = l->src->process(l->inptr, len, l->tfed);
       if (e == kAooErrorOverflow) l->overflow.store(true); // (the send thread unsticks AOO's queue: tx_loop)
       if (e == kAooOk || e == kAooErrorOverflow) l->wake.set();
@@ -1755,6 +1757,7 @@ static void on_audio(bool isPost, int len, double srate, audio_hook_register_t *
     for (int c = 0; c < nout; ++c) out[c] = reg->GetBuffer(true, c);
     webui_mix_feed(out, nout, len, srate); // (a screen share's REAPER mix: taken before rt_mix adds the bandmates, so nobody hears themselves back)
     rt_mix(g_rt, out, nout, len, srate);
+    webui_guest_audio(out, nout, len, srate); // (browser guests: the session mix for them, bandmates in, then each guest added. rt-browserjoin)
   }
 }
 static audio_hook_register_t g_hook = { on_audio, nullptr, nullptr, 0, 0, nullptr };
@@ -1813,6 +1816,7 @@ void rtaudio_register(reaper_plugin_info_t *rec)
 {
   g_reg_hook = (int (*)(bool, audio_hook_register_t *))rec->GetFunc("Audio_RegHardwareHook");
   if (!g_rt) g_rt = rt_new();
+  rt_talk_add = webui_guest_talk; // (rt-browserjoin)
   static const struct { const char *name; void *fn, *va; const char *def; } fns[] = {
     { "StudioSync_LiveAudioStart", (void *)api_start, (void *)vla_start,
       "int\0int,int,int\0inputs,nch,kbps\0StudioSync's live audio: send hardware inputs inputs..inputs+nch-1 (0-based, nch 1-8) as Opus at kbps (16-512, the total) to the peers (StudioSync_LiveAudioPeers) over Tailscale UDP, and mix theirs into the first output pair. Call StudioSync_LiveAudioPeers first: it gives the studio secret and the port. Returns 1 when started (or already running: stop first to change inputs or rate)." },

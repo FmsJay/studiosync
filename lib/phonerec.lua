@@ -455,6 +455,18 @@ local function nudge(proj, cfg, b, ms)
   return say(string.format("%s nudged %+d ms (%+d ms in all)", l.name, ms, l.nudged))
 end
 
+-- A browser guest's take (lib/guestweb.lua, rt-browserjoin): the same way in as a phone's, placed by the guest's own play readings (t.t0: the
+-- link-clock moment of its first sample as the guest heard the session mix). What the Record page shows and nudges stays the phone's own.
+-- -> words, and true when it went in.
+function phonerec.put_with(proj, cfg, b, t, readings)
+  local keep = { S.readings, S.take_cue, S.said, S.said_at, S.last }
+  S.readings, S.take_cue = readings, nil
+  local ok, said, went = pcall(put_take_in, proj, cfg, b, t)
+  S.readings, S.take_cue, S.said, S.said_at, S.last = keep[1], keep[2], keep[3], keep[4], keep[5]
+  if not ok then return "the take couldn't be put in: " .. tostring(said) end
+  return said, went
+end
+
 -- Stopping the start the phone made (and only that): Stop together, or this computer's own stop where it started here alone.
 local function stop_mine(proj, cfg, b)
   S.started, S.cue, S.alive = nil, nil, nil
