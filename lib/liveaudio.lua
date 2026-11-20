@@ -73,19 +73,20 @@ function liveaudio.held(v, now)
   local on = t == "latch" or (tonumber(t) ~= nil and now - tonumber(t) < liveaudio.HELD)
   return on, on and name ~= "" and name or nil
 end
--- This computer's mic, from ExtState: mute, deaf, ptt (kept), talking, talkback (a name, while held), volume (everyone you hear, linear).
+-- This computer's mic, from ExtState: mute, deaf, ptt (kept), talking, talkback (a name, while held), volume (everyone you hear, linear),
+-- and recording (this computer's transport records).
 function liveaudio.me()
   local now = reaper.time_precise()
   local talking = liveaudio.held(ext("talking"), now)
   local tb, tb_name = liveaudio.held(ext("talkback"), now)
   return { mute = ext("mute") == "1", deaf = ext("deaf") == "1", ptt = ext("ptt") == "1", talking = talking, talkback = tb and tb_name or nil,
-    volume = math.max(0, math.min(4, tonumber(ext("volume")) or 1)) }
+    volume = math.max(0, math.min(4, tonumber(ext("volume")) or 1)), recording = (math.floor(tonumber(reaper.GetPlayState()) or 0) & 4) == 4 }
 end
 -- What this computer sends: on, and to whom only (a bandmate name: talkback), or nil for everyone. Held talk (and talkback) wins over Mute
 -- and Deafen for as long as it's held: holding is asking. Talkback without the extension's per-bandmate send sends nothing rather than
--- reaching everyone. Pure.
+-- reaching everyone, and talkback goes quiet while recording (James's pick, docs/realtime-roadmap.md: a cue never lands on a take). Pure.
 function liveaudio.send_plan(s, gate)
-  if s.talkback then return gate == true, s.talkback end
+  if s.talkback then return gate == true and not s.recording, s.talkback end
   if s.talking then return true, nil end
   return not (s.mute or s.deaf or s.ptt), nil
 end
@@ -427,7 +428,7 @@ end
 -- What the mic button says and its colour, from me() and the plan. Pure.
 function liveaudio.mic_label(s, gate, level)
   local on, only = liveaudio.send_plan(s, gate)
-  if only then return "Talkback: " .. only, ORANGE end
+  if only then return s.recording and "Talkback off: recording" or ("Talkback: " .. only), ORANGE end
   if s.deaf then return "Deafened", RED end
   if on then return (s.talking and (s.mute or s.ptt)) and "Talking" or "Mic live", GREEN end
   if s.ptt and not s.mute then return "Push to talk", GREY end
@@ -440,7 +441,9 @@ liveaudio.FIRST_RUN = "Live audio is on for this studio: while Live sync runs, t
 -- at_row(label): the bar's own placing.
 function liveaudio.bar_ui(ctx, ImGui, cfg, at_row, proj)
   if not (cfg and liveaudio.enabled(cfg.root) and liveaudio.available()) then return end
-  if not liveaudio.status().running then return end
+  local now = reaper.time_precise() -- (the extension's status four times a second, not every frame of the panel)
+  if not S.bar_at or now - S.bar_at > 0.25 or now < S.bar_at then S.bar_at, S.bar_run = now, liveaudio.status().running end
+  if not S.bar_run then return end
   liveaudio.poll()
   local s, gate = liveaudio.me(), liveaudio.can_gate()
   local label, colour = liveaudio.mic_label(s, gate, liveaudio.recent_level())
@@ -540,7 +543,7 @@ function liveaudio.call_ui(ctx, ImGui, cfg)
   hold_button(ctx, ImGui, "Hold to talk##lachold", "talking", nil, w)
   ImGui.EndDisabled(ctx)
   ImGui.SetItemTooltip(ctx, "Heard while you hold it (and a moment after), even when muted or on push-to-talk. A key: StudioSync - Live audio hold to talk.")
-  ImGui.BeginDisabled(ctx, not gate)
+  ImGui.BeginDisabled(ctx, not gate and not s.ptt) -- (an older extension: it can't be turned on, but one left on can always be turned off)
   local pch, pv = ImGui.Checkbox(ctx, "Push-to-talk##laptt", s.ptt)
   ImGui.EndDisabled(ctx)
   if pch then liveaudio.set("ptt", pv) end

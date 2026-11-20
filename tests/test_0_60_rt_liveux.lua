@@ -52,6 +52,9 @@ assert(plan({ mute = true }, true) == "false/nil" and plan({ deaf = true }, true
 assert(plan({ mute = true, talking = true }, true) == "true/nil" and plan({ ptt = true, talking = true }, true) == "true/nil", "held talk wins while it's held")
 assert(plan({ mute = true, talkback = "Bo" }, true) == "true/Bo", "talkback: only Bo")
 assert(plan({ talkback = "Bo" }, false) == "false/Bo", "talkback without the extension's per-bandmate send: nothing, never everyone")
+assert(plan({ talkback = "Bo", recording = true }, true) == "false/Bo" and la.mic_label({ talkback = "Bo", recording = true }, true) == "Talkback off: recording",
+  "talkback goes quiet while recording (a cue never lands on a take)")
+assert(plan({ talking = true, recording = true }, true) == "true/nil", "held talk to everyone while recording: as asked")
 local g, m = la.hear_plan({ gain = 0.5 }, { volume = 2 })
 assert(g == 1 and m == false, "their level times the master")
 g, m = la.hear_plan(nil, { volume = 1, deaf = true })
