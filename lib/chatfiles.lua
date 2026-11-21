@@ -138,7 +138,11 @@ function cf.send(cfg, b, dir, f, stamp, members)
   local size = math.tointeger(tonumber(f.size))
   if not size or size <= 0 or size > cf.MAX then return nil, string.format("files go up to %d MB", cf.MAX // 1048576) end
   if type(f.id) ~= "string" or not f.id:match("^%x+$") then return nil, "its upload has no id" end
-  if not (reaper.StudioSync_WebUISaveUpload and reaper.StudioSync_FileHash) then return nil, "StudioSync's extension here is too old" end
+  -- (the extension's receiving thread hashed the upload as it came in: nothing reads it whole here on REAPER's main thread. An older extension
+  -- hashes the saved file instead. rt-p5; extension/webui.cpp)
+  local sha = reaper.StudioSync_WebUIUploadHash and reaper.StudioSync_WebUIUploadHash(f.id)
+  if type(sha) ~= "string" or #sha ~= 64 then sha = nil end
+  if not (reaper.StudioSync_WebUISaveUpload and (sha or reaper.StudioSync_FileHash)) then return nil, "StudioSync's extension here is too old" end
   local key = stamp .. "~" .. name
   local to, all = cf.reachable(cfg, b, members)
   local link_only = members ~= nil and all and #to > 0
@@ -152,7 +156,7 @@ function cf.send(cfg, b, dir, f, stamp, members)
   local function refuse(w) os.remove(tmp); return nil, w end
   if n ~= size then return refuse("it didn't arrive whole from the page") end
   if cf.runs_head(head(tmp)) then return refuse("it's a program or a script, whatever its name says") end
-  local sha = reaper.StudioSync_FileHash(tmp)
+  sha = sha or reaper.StudioSync_FileHash(tmp)
   if type(sha) ~= "string" or #sha ~= 64 then return refuse("its SHA-256 couldn't be worked out") end
   os.remove(final)
   if not os.rename(tmp, final) then return refuse("it couldn't be put in place in " .. folder) end

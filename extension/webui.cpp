@@ -314,7 +314,16 @@ const size_t MAX_HEAD = 16 * 1024, MAX_BODY = 16 * 1024, MAX_FILE = 4 * 1024 * 1
 // A phone's take (lib/phonerec.lua): the recording, held until Lua saves it where the song wants it. 160 MB is 14 minutes of 48 kHz mono
 // 32-bit float; two at most, the oldest let go (a page whose take is never placed can't fill memory).
 const size_t MAX_UPLOAD = 160u * 1024 * 1024, MAX_UPLOADS = 2;
-std::map<std::string, std::string> g_uploads; // id -> the bytes
+// A page's upload (a phone's take, a file dropped in the chat): in memory up to STREAM_MIN, past it on disk as it arrives (a 150 MB file isn't
+// held in RAM), with its SHA-256 worked out by the thread that receives it, so Lua never reads the file whole on REAPER's main thread (rt-p5).
+const size_t STREAM_MIN = 4u * 1024 * 1024;
+struct Upload {
+  std::string data;  // the bytes, when small
+  std::string spool; // else the file they were written to (moved to where Lua says by webui_save_upload)
+  std::string sha;   // lower-case hex: StudioSync_FileHash's definition (the bytes with each CR before an LF dropped, unless there is a NUL)
+  size_t size = 0;
+};
+std::map<std::string, Upload> g_uploads; // id -> the upload
 std::deque<std::string> g_upload_order;
 // Files a page may download (GET /api/file?id=): Lua names each, the server never picks a path (the phone app's mix to play along to)
 const size_t MAX_OFFERS = 64;
@@ -488,35 +497,205 @@ std::string rand_hex(int words) // (under g_mx: random_device isn't shared betwe
   for (int i = 0; i < words; ++i) { snprintf(b, sizeof(b), "%08x", (unsigned)rd()); o += b; }
   return o;
 }
+// ---- uploads on disk, and their hash ---------------------------------------------------------------------------------------------------
+// A streaming SHA-256 (FIPS 180-4), as direct_sha256 but fed in pieces.
+struct Sha256 {
+  uint32_t h[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 };
+  unsigned char buf[64];
+  size_t fill = 0;
+  uint64_t total = 0;
+  static uint32_t rr(uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
+  void block(const unsigned char *p)
+  {
+    static const uint32_t K[64] = { 0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be,
+      0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+      0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354,
+      0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08,
+      0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+      0xc67178f2 };
+    uint32_t w[64];
+    for (int i = 0; i < 16; ++i) w[i] = ((uint32_t)p[i * 4] << 24) | ((uint32_t)p[i * 4 + 1] << 16) | ((uint32_t)p[i * 4 + 2] << 8) | p[i * 4 + 3];
+    for (int i = 16; i < 64; ++i) {
+      const uint32_t s0 = rr(w[i - 15], 7) ^ rr(w[i - 15], 18) ^ (w[i - 15] >> 3), s1 = rr(w[i - 2], 17) ^ rr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+      w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+    }
+    uint32_t v[8];
+    memcpy(v, h, sizeof v);
+    for (int i = 0; i < 64; ++i) {
+      const uint32_t t1 = v[7] + (rr(v[4], 6) ^ rr(v[4], 11) ^ rr(v[4], 25)) + ((v[4] & v[5]) ^ (~v[4] & v[6])) + K[i] + w[i];
+      const uint32_t t2 = (rr(v[0], 2) ^ rr(v[0], 13) ^ rr(v[0], 22)) + ((v[0] & v[1]) ^ (v[0] & v[2]) ^ (v[1] & v[2]));
+      v[7] = v[6]; v[6] = v[5]; v[5] = v[4]; v[4] = v[3] + t1; v[3] = v[2]; v[2] = v[1]; v[1] = v[0]; v[0] = t1 + t2;
+    }
+    for (int i = 0; i < 8; ++i) h[i] += v[i];
+  }
+  void feed(const unsigned char *p, size_t n)
+  {
+    total += n;
+    while (n) {
+      const size_t k = std::min(n, sizeof(buf) - fill);
+      memcpy(buf + fill, p, k);
+      fill += k; p += k; n -= k;
+      if (fill == sizeof(buf)) { block(buf); fill = 0; }
+    }
+  }
+  std::string hex()
+  {
+    const uint64_t bits = total * 8;
+    unsigned char pad[72] = { 0x80 };
+    const size_t padn = (fill < 56 ? 56 : 120) - fill;
+    unsigned char len[8];
+    for (int i = 0; i < 8; ++i) len[i] = (unsigned char)(bits >> (56 - 8 * i));
+    feed(pad, padn);
+    feed(len, 8);
+    char o[65];
+    for (int i = 0; i < 8; ++i) snprintf(o + i * 8, 9, "%08x", h[i]);
+    return std::string(o, 64);
+  }
+};
+// What StudioSync_FileHash gives for the same bytes (extension/sign.cpp as_signed): the hash of the bytes with every CR that's followed by an LF
+// dropped, unless a NUL is anywhere in them (binary: as they are). A file's end isn't known in advance, so both are worked out, and the right one picked.
+struct UpHash {
+  Sha256 raw, norm;
+  bool nul = false, cr = false;
+  void feed(const char *p, size_t n)
+  {
+    raw.feed((const unsigned char *)p, n);
+    for (size_t i = 0; i < n; ++i) {
+      const unsigned char c = (unsigned char)p[i];
+      if (c == 0) nul = true;
+      if (cr && c != '\n') norm.feed((const unsigned char *)"\r", 1); // (a CR not before an LF stays)
+      cr = false;
+      if (c == '\r') cr = true; else norm.feed(&c, 1);
+    }
+  }
+  std::string hex()
+  {
+    if (nul) return raw.hex();
+    if (cr) { norm.feed((const unsigned char *)"\r", 1); cr = false; } // (a CR at the very end stays)
+    return norm.hex();
+  }
+};
+std::string spool_dir()
+{
+#ifdef _WIN32
+  wchar_t w[MAX_PATH + 2];
+  const DWORD n = GetTempPathW(MAX_PATH, w);
+  if (n == 0 || n > MAX_PATH) return "";
+  char u[MAX_PATH * 4];
+  const int k = WideCharToMultiByte(CP_UTF8, 0, w, (int)n, u, (int)sizeof u, nullptr, nullptr);
+  return k > 0 ? std::string(u, (size_t)k) : "";
+#else
+  const char *t = getenv("TMPDIR");
+  std::string d = t && *t ? t : "/tmp";
+  if (d.back() != '/') d += '/';
+  return d;
+#endif
+}
+#ifdef _WIN32
+std::wstring wide_path(const std::string &u)
+{
+  const int n = MultiByteToWideChar(CP_UTF8, 0, u.c_str(), -1, nullptr, 0);
+  std::wstring w(n > 0 ? n : 1, L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, u.c_str(), -1, &w[0], n);
+  return w;
+}
+#endif
+FILE *open_wb(const std::string &path)
+{
+#ifdef _WIN32
+  return _wfopen(wide_path(path).c_str(), L"wb");
+#else
+  return fopen(path.c_str(), "wb");
+#endif
+}
+void remove_file(const std::string &path)
+{
+#ifdef _WIN32
+  DeleteFileW(wide_path(path).c_str());
+#else
+  unlink(path.c_str());
+#endif
+}
+// Put the spool file at `to` (a rename: instant on one volume; across volumes a copy, on the caller's thread). -> whether it's there.
+bool move_file(const std::string &from, const std::string &to)
+{
+#ifdef _WIN32
+  return MoveFileExW(wide_path(from).c_str(), wide_path(to).c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED) != 0;
+#else
+  if (rename(from.c_str(), to.c_str()) == 0) return true;
+  FILE *in = fopen(from.c_str(), "rb"), *out = in ? fopen(to.c_str(), "wb") : nullptr;
+  bool ok = in && out;
+  std::string chunk(65536, '\0');
+  size_t k;
+  while (ok && (k = fread(&chunk[0], 1, chunk.size(), in)) > 0) ok = fwrite(chunk.data(), 1, k, out) == k;
+  if (in) fclose(in);
+  if (out && fclose(out) != 0) ok = false;
+  if (ok) unlink(from.c_str()); else if (out) unlink(to.c_str());
+  return ok;
+#endif
+}
+// Let an upload go (g_mx held), its spool file with it.
+void upload_erase_locked(const std::string &id)
+{
+  auto it = g_uploads.find(id);
+  if (it == g_uploads.end()) return;
+  if (!it->second.spool.empty()) remove_file(it->second.spool);
+  g_uploads.erase(it);
+}
 void upload(sock_t s, const WebReq &r, std::string body, const std::string &gid = "")
 {
   const std::string cl = header(r, "content-length");
   const long long n = cl.empty() || cl.size() > 12 || cl.find_first_not_of("0123456789") != std::string::npos ? -1 : atoll(cl.c_str());
   if (n <= 0 || (size_t)n > MAX_UPLOAD) return answer(s, 413, "application/json", "{\"ok\":false,\"why\":\"too big\"}");
   set_blocking(s, 30000); // (a phone on a slow connection: 30 s without a byte is a phone that's gone)
-  body.reserve((size_t)n);
-  std::string chunk(65536, '\0');
-  while (body.size() < (size_t)n) {
-    const int k = (int)recv(s, &chunk[0], (int)chunk.size(), 0);
-    if (k <= 0) return;
-    body.append(chunk.data(), (size_t)k);
+  // (past STREAM_MIN the bytes go to a file as they come, and are hashed as they come: nothing is held whole, nothing is read again later)
+  Upload up;
+  up.size = (size_t)n;
+  UpHash hash;
+  FILE *sp = nullptr;
+  if ((size_t)n > STREAM_MIN) {
+    std::string dir = spool_dir(), name;
+    {
+      std::lock_guard<std::mutex> l(g_mx);
+      name = "studiosync-upload-" + rand_hex(4) + ".part";
+    }
+    if (!dir.empty() && (sp = open_wb(dir + name))) up.spool = dir + name;
   }
-  body.resize((size_t)n);
+  bool ok = true;
+  auto take = [&](const char *p, size_t k) {
+    hash.feed(p, k);
+    if (sp) { if (fwrite(p, 1, k, sp) != k) ok = false; } else up.data.append(p, k);
+  };
+  auto abandon = [&]() { if (sp) fclose(sp); sp = nullptr; if (!up.spool.empty()) remove_file(up.spool); };
+  if (!sp) up.data.reserve((size_t)n);
+  size_t got = std::min(body.size(), (size_t)n);
+  take(body.data(), got);
+  std::string chunk(65536, '\0');
+  while (got < (size_t)n && ok) {
+    const int k = (int)recv(s, &chunk[0], (int)std::min<size_t>(chunk.size(), (size_t)n - got), 0);
+    if (k <= 0) { abandon(); return; }
+    take(chunk.data(), (size_t)k);
+    got += (size_t)k;
+  }
+  if (sp && fclose(sp) != 0) ok = false;
+  sp = nullptr;
+  if (!ok) { abandon(); return answer(s, 507, "application/json", "{\"ok\":false,\"why\":\"disk\"}"); }
+  up.sha = hash.hex();
   std::string id;
   {
     std::lock_guard<std::mutex> l(g_mx);
     id = gid + rand_hex(2);
     if (!gid.empty()) {
-      if (!guest_on_locked(gid)) return answer(s, 403, "application/json", "{\"ok\":false,\"why\":\"ended\"}"); // (kicked while it came)
+      if (!guest_on_locked(gid)) { if (!up.spool.empty()) remove_file(up.spool); return answer(s, 403, "application/json", "{\"ok\":false,\"why\":\"ended\"}"); } // (kicked while it came)
       for (auto it = g_guest_uploads.begin(); it != g_guest_uploads.end();)
-        if (it->compare(0, gid.size(), gid) == 0) { g_uploads.erase(*it); it = g_guest_uploads.erase(it); } else ++it;
-      while (g_guest_uploads.size() >= MAX_GUEST_UPLOADS) { g_uploads.erase(g_guest_uploads.front()); g_guest_uploads.pop_front(); }
+        if (it->compare(0, gid.size(), gid) == 0) { upload_erase_locked(*it); it = g_guest_uploads.erase(it); } else ++it;
+      while (g_guest_uploads.size() >= MAX_GUEST_UPLOADS) { upload_erase_locked(g_guest_uploads.front()); g_guest_uploads.pop_front(); }
       g_guest_uploads.push_back(id);
     } else {
-      while (g_upload_order.size() >= MAX_UPLOADS) { g_uploads.erase(g_upload_order.front()); g_upload_order.pop_front(); }
+      while (g_upload_order.size() >= MAX_UPLOADS) { upload_erase_locked(g_upload_order.front()); g_upload_order.pop_front(); }
       g_upload_order.push_back(id);
     }
-    g_uploads[id] = std::move(body);
+    g_uploads[id] = std::move(up);
   }
   answer(s, 200, "application/json", std::string("{\"ok\":true,\"id\":\"") + id + "\"}");
 }
@@ -632,17 +811,20 @@ void mix_stream(sock_t s)
 // Down: the session mix ring (as REAPER's mix above, fed after live audio added the bandmates), each frame [SG1\0][u32 rate][f64 link-clock
 // time of its first sample][16-bit stereo]. The time comes from a seqlock'd stamp the audio thread writes per block (its frame count and
 // direct_now). Up: [16-bit mono] at that rate into the guest's own ring, which the audio thread drains: heard once GUP_TARGET has come,
-// trimmed back to it when more than GUP_OVER piles up (the two sound cards' drift, a burst after a stall), silent on an underrun until it
-// has refilled. shortcut: no resampler, the page runs its audio at REAPER's rate (the browser converts to its device); a guest's clock that
-// drifts far shows as drops/underruns in the status, upgrade to a drift-correcting resampler if Health shows them often.
+// trimmed back to it when more than GUP_OVER piles up (a burst after a stall), silent on an underrun until it has refilled. The page runs
+// its audio at REAPER's rate, but its sound card's clock isn't REAPER's: the ring is read at a rate that follows its average fill (1 + (fill
+// - GUP_TARGET) x GDRIFT_K, within GDRIFT_MAX: 0.5%) through a 4-point Hermite, so that drift no longer shows as a skip or a gap every few
+// minutes (rt-p11, backlog 1.19; the page's own side: lib/webui/guestworklet.js). Guests hear each other (rt-p11, 1.22): each slot's `oth`
+// holds the other live guests' sum at the session mix's frames, which its sender adds; and listeners hear them (webui_listen_feed after).
 const unsigned long long GMIX_N = 1ull << 17;
+const double GDRIFT_TAU = 2, GDRIFT_K = 0.05, GDRIFT_MAX = 0.005; // (s the fill is averaged over; rate per second of fill off target; bound)
 short g_gmix[GMIX_N * 2];
 std::atomic<unsigned long long> g_gmix_w{ 0 };
 std::atomic<double> g_gmix_sr{ 0 };
 std::atomic<unsigned> g_gstamp_seq{ 0 };
 std::atomic<unsigned long long> g_gstamp_w{ 0 };
 std::atomic<double> g_gstamp_t{ 0 };
-const int GUEST_LIVE = 2;              // guests live at once
+const int GUEST_LIVE = 4;              // guests live at once (lib/guestweb.lua MAX: 4 at a time; it was 2 while they couldn't hear each other)
 const unsigned long long GUP_N = 1ull << 15; // frames of a guest's sound waiting: 0.68 s at 48 kHz
 const double GUP_TARGET = 0.06, GUP_OVER = 0.15; // s
 const size_t WS_MAX = 65536;           // bytes in one frame from a guest (a 10 ms message is ~1 KB)
@@ -654,8 +836,16 @@ struct GuestSlot {
   std::atomic<bool> playing{ false };
   std::atomic<float> gain{ 1.f }, peak{ 0.f };
   std::atomic<long long> under{ 0 }, drops{ 0 };
+  double frac = 0, avg = 0;            // (the audio thread's: the read position past r, the fill averaged: the drift's rate)
+  short oth[GMIX_N];                   // (the other live guests' sum at each session-mix frame: the audio thread writes, this guest's sender adds)
 };
 GuestSlot g_gslot[GUEST_LIVE];
+float g_gv[GUEST_LIVE][8192];          // (the audio thread's: each guest's block as heard)
+float hermite4(float a, float b, float c, float d, float t) // (4-point, 3rd-order: b at t 0, c at t 1)
+{
+  const float c1 = 0.5f * (c - a), c2 = a - 2.5f * b + 2 * c - 0.5f * d, c3 = 0.5f * (d - a) + 1.5f * (b - c);
+  return ((c3 * t + c2) * t + c1) * t + b;
+}
 std::atomic<int> g_guests_live{ 0 };
 float g_talk[8192];                    // (the audio thread's own: the guests it heard in the last post call, for the next pre call's Talk)
 int g_talk_n = 0;
@@ -688,9 +878,10 @@ void guest_live(sock_t s, const WebReq &r, const std::string &gid)
   for (auto &g : g_gslot) if (g.taken.load() == 1 && gid == g.gid) return answer(s, 409, "text/plain", "already live in another window\n");
   GuestSlot *slot = nullptr;
   for (auto &g : g_gslot) { int z = 0; if (g.taken.compare_exchange_strong(z, 2)) { slot = &g; break; } }
-  if (!slot) return answer(s, 503, "text/plain", "two guests are live already\n");
+  if (!slot) return answer(s, 503, "text/plain", "four guests are live already\n");
   snprintf(slot->gid, sizeof(slot->gid), "%s", gid.c_str());
   slot->w.store(0); slot->r.store(0); slot->playing.store(false); slot->peak.store(0); slot->under.store(0); slot->drops.store(0);
+  slot->frac = 0; slot->avg = 0;
   { std::lock_guard<std::mutex> l(g_mx); auto it = g_guests.find(gid); slot->gain.store(it != g_guests.end() ? it->second.gain : 1.f); }
   slot->taken.store(1, std::memory_order_release);
   g_guests_live.fetch_add(1);
@@ -762,10 +953,11 @@ void guest_live(sock_t s, const WebReq &r, const std::string &gid)
         pcm.assign("SG1\0", 4);
         pcm.append((const char *)&rate, 4);
         pcm.append((const char *)&t, 8);
-        for (unsigned long long at = pos; at < pos + n;) {
-          const unsigned long long i = at % GMIX_N, m = std::min(pos + n - at, GMIX_N - i);
-          pcm.append((const char *)&g_gmix[i * 2], (size_t)(m * 4));
-          at += m;
+        for (unsigned long long at = pos; at < pos + n; ++at) { // (the session mix and the other guests: each guest hears the rest, not itself)
+          const unsigned long long i = at % GMIX_N;
+          const int o = slot->oth[i];
+          const short d[2] = { (short)std::max(-32768, std::min(32767, g_gmix[i * 2] + o)), (short)std::max(-32768, std::min(32767, g_gmix[i * 2 + 1] + o)) };
+          pcm.append((const char *)d, 4);
         }
         if (g_gmix_w.load(std::memory_order_acquire) - pos > GMIX_N) { pos = g_gmix_w.load(); break; } // (written over while copying)
         if (!ws_send(s, 2, pcm.data(), pcm.size())) return;
@@ -1000,8 +1192,42 @@ int webui_guest_gain(const char *gid, double gain)
 }
 void webui_guest_audio(double *const *out, int nout, int len, double srate)
 {
-  if (webui_listen_feed && len > 0 && nout > 0 && out && out[0]) webui_listen_feed(out[0], nout > 1 && out[1] ? out[1] : out[0], len, srate); // (listeners: the session mix, before any guest is added. rt-audience)
-  if (g_guests_live.load(std::memory_order_relaxed) <= 0 || len <= 0 || nout <= 0 || !out || !out[0]) { g_talk_n = 0; return; }
+  // (listeners: the session mix with the guests in it, rt-audience; rt-p11 moved it after them, they were left out)
+  auto listen = [&]() { if (webui_listen_feed && len > 0 && nout > 0 && out && out[0]) webui_listen_feed(out[0], nout > 1 && out[1] ? out[1] : out[0], len, srate); };
+  if (g_guests_live.load(std::memory_order_relaxed) <= 0 || len <= 0 || nout <= 0 || !out || !out[0]) { g_talk_n = 0; listen(); return; }
+  const int n = std::min(len, 8192); // (guests are heard in the first 8192 frames of a block: every real one)
+  bool heard[GUEST_LIVE] = {};
+  for (int s = 0; s < GUEST_LIVE; ++s) { // (each guest's block, read at its drift's rate)
+    GuestSlot &g = g_gslot[s];
+    if (g.taken.load(std::memory_order_acquire) != 1) continue;
+    const unsigned long long gw = g.w.load(std::memory_order_acquire);
+    unsigned long long gr = g.r.load(std::memory_order_relaxed);
+    const double target = srate * GUP_TARGET;
+    double have = (double)(gw - gr) - g.frac;
+    if (!g.playing.load(std::memory_order_relaxed)) {
+      if (have < target + n) continue; // (filling up first: a little buffer against the network's jitter)
+      g.playing.store(true, std::memory_order_relaxed);
+      g.avg = have;
+    }
+    if (have > target + srate * GUP_OVER) { gr = gw - (unsigned long long)target; g.frac = 0; have = target; g.avg = have; g.drops.fetch_add(1, std::memory_order_relaxed); }
+    if (have < n * (1 + GDRIFT_MAX) + 3) { g.playing.store(false, std::memory_order_relaxed); g.under.fetch_add(1, std::memory_order_relaxed); continue; }
+    g.avg += (have - g.avg) * std::min(1.0, n / (srate * GDRIFT_TAU));
+    const double rate = 1 + std::max(-GDRIFT_MAX, std::min(GDRIFT_MAX, (g.avg - target) / srate * GDRIFT_K));
+    const float gain = g.gain.load(std::memory_order_relaxed);
+    float pk = 0;
+    double p = g.frac;
+    for (int k = 0; k < n; ++k, p += rate) {
+      const unsigned long long i = (unsigned long long)p, b = gr + i; // (b - 1 wraps to the ring's end at the very start: silence there)
+      const float v = hermite4(g.ring[(b - 1) % GUP_N], g.ring[b % GUP_N], g.ring[(b + 1) % GUP_N], g.ring[(b + 2) % GUP_N], (float)(p - (double)i)) * gain;
+      pk = std::max(pk, std::fabs(v));
+      g_gv[s][k] = v;
+    }
+    const unsigned long long adv = (unsigned long long)p;
+    g.frac = p - (double)adv;
+    g.r.store(gr + adv, std::memory_order_release);
+    g.peak.store(std::max(pk, g.peak.load(std::memory_order_relaxed) * 0.97f), std::memory_order_relaxed); // (a meter: falls ~30 dB in 0.2 s at 128-frame blocks)
+    heard[s] = true;
+  }
   g_gmix_sr.store(srate, std::memory_order_relaxed);
   unsigned long long w = g_gmix_w.load(std::memory_order_relaxed);
   const unsigned q = g_gstamp_seq.load(std::memory_order_relaxed);
@@ -1011,34 +1237,27 @@ void webui_guest_audio(double *const *out, int nout, int len, double srate)
   g_gstamp_t.store(direct_now(), std::memory_order_relaxed);
   g_gstamp_seq.store(q + 2, std::memory_order_release);
   double *L = out[0], *R = nout > 1 && out[1] ? out[1] : nullptr;
+  const unsigned long long w0 = w;
   for (int k = 0; k < len; ++k, ++w) { short *d = &g_gmix[(w % GMIX_N) * 2]; d[0] = mix16(L[k]); d[1] = mix16(R ? R[k] : L[k]); }
-  g_gmix_w.store(w, std::memory_order_release);
-  const int tn = std::min(len, 8192);
-  std::fill(g_talk, g_talk + tn, 0.f);
-  g_talk_n = tn;
-  for (auto &g : g_gslot) {
-    if (g.taken.load(std::memory_order_acquire) != 1) continue;
-    const unsigned long long gw = g.w.load(std::memory_order_acquire);
-    unsigned long long gr = g.r.load(std::memory_order_relaxed);
-    const double target = srate * GUP_TARGET;
-    if (!g.playing.load(std::memory_order_relaxed)) {
-      if ((double)(gw - gr) < target + len) continue; // (filling up first: a little buffer against the network's jitter)
-      g.playing.store(true, std::memory_order_relaxed);
-    }
-    if ((double)(gw - gr) > target + srate * GUP_OVER) { gr = gw - (unsigned long long)target; g.drops.fetch_add(1, std::memory_order_relaxed); }
-    if (gw - gr < (unsigned long long)len) { g.playing.store(false, std::memory_order_relaxed); g.under.fetch_add(1, std::memory_order_relaxed); continue; }
-    const float gain = g.gain.load(std::memory_order_relaxed);
-    float pk = 0;
+  for (int s = 0; s < GUEST_LIVE; ++s) // (each slot's others, written before the frames are published: a sender reads both together)
     for (int k = 0; k < len; ++k) {
-      const float v = g.ring[(gr + (unsigned long long)k) % GUP_N] * gain;
-      pk = std::max(pk, std::fabs(v));
+      float o = 0;
+      if (k < n) for (int j = 0; j < GUEST_LIVE; ++j) if (j != s && heard[j]) o += g_gv[j][k];
+      g_gslot[s].oth[(w0 + (unsigned long long)k) % GMIX_N] = mix16(o);
+    }
+  g_gmix_w.store(w, std::memory_order_release);
+  std::fill(g_talk, g_talk + n, 0.f);
+  g_talk_n = n;
+  for (int s = 0; s < GUEST_LIVE; ++s) {
+    if (!heard[s]) continue;
+    for (int k = 0; k < n; ++k) {
+      const float v = g_gv[s][k];
       L[k] += v;
       if (R) R[k] += v;
-      if (k < tn) g_talk[k] += v;
+      g_talk[k] += v;
     }
-    g.r.store(gr + (unsigned long long)len, std::memory_order_release);
-    g.peak.store(std::max(pk, g.peak.load(std::memory_order_relaxed) * 0.97f), std::memory_order_relaxed); // (a meter: falls ~30 dB in 0.2 s at 128-frame blocks)
   }
+  listen();
 }
 void webui_guest_talk(float *const *ch, int nch, int len)
 {
@@ -1147,30 +1366,40 @@ const char *webui_status()
 int webui_save_upload(const char *id, const char *path)
 {
   if (!id || !path || !*path) return 0;
-  std::string data;
+  std::string data, spool;
+  size_t size = 0;
   {
     std::lock_guard<std::mutex> l(g_mx);
     auto it = g_uploads.find(id);
     if (it == g_uploads.end()) return 0;
-    data.swap(it->second);
+    size = it->second.size;
+    if (!it->second.spool.empty()) spool = it->second.spool; // (the file stays where it is until it's been moved)
+    else data.swap(it->second.data);
   }
-#ifdef _WIN32
-  const int n = MultiByteToWideChar(CP_UTF8, 0, path, -1, nullptr, 0);
-  std::wstring w(n > 0 ? n : 1, L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, path, -1, &w[0], n);
-  FILE *f = _wfopen(w.c_str(), L"wb");
-#else
-  FILE *f = fopen(path, "wb");
-#endif
-  bool ok = f && fwrite(data.data(), 1, data.size(), f) == data.size();
-  if (f && fclose(f) != 0) ok = false;
+  bool ok;
+  if (!spool.empty()) {
+    ok = move_file(spool, path);
+  } else {
+    FILE *f = open_wb(path);
+    ok = f && fwrite(data.data(), 1, data.size(), f) == data.size();
+    if (f && fclose(f) != 0) ok = false;
+  }
   std::lock_guard<std::mutex> l(g_mx);
   auto it = g_uploads.find(id);
-  if (!ok) { if (it != g_uploads.end()) it->second.swap(data); return -1; } // (kept for another try: the take isn't lost to a full disk)
-  if (it != g_uploads.end()) g_uploads.erase(it);
+  if (!ok) { if (it != g_uploads.end() && spool.empty()) it->second.data.swap(data); return -1; } // (kept for another try: the take isn't lost to a full disk)
+  if (it != g_uploads.end()) g_uploads.erase(it); // (its spool file is where Lua asked: nothing left to remove)
   g_upload_order.erase(std::remove(g_upload_order.begin(), g_upload_order.end(), std::string(id)), g_upload_order.end());
   g_guest_uploads.erase(std::remove(g_guest_uploads.begin(), g_guest_uploads.end(), std::string(id)), g_guest_uploads.end());
-  return data.size() > 0x7fffffff ? 0x7fffffff : (int)data.size();
+  return size > 0x7fffffff ? 0x7fffffff : (int)size;
+}
+
+const char *webui_upload_hash(const char *id)
+{
+  static std::string r;
+  std::lock_guard<std::mutex> l(g_mx);
+  auto it = id ? g_uploads.find(id) : g_uploads.end();
+  r = it == g_uploads.end() ? "" : it->second.sha;
+  return r.c_str();
 }
 
 int webui_offer(const char *id, const char *path)
@@ -1205,6 +1434,7 @@ void webui_shutdown()
     g_topics.clear();
     g_topic_ver.clear();
     g_actions.clear();
+    for (auto &u : g_uploads) if (!u.second.spool.empty()) remove_file(u.second.spool);
     g_uploads.clear();
     g_upload_order.clear();
     g_offers.clear();
@@ -1226,6 +1456,7 @@ static const char *api_poll() { return webui_poll(); }
 static const char *api_status() { return webui_status(); }
 static int api_poll_here() { return webui_poll_here(); }
 static int api_save_upload(const char *id, const char *path) { return webui_save_upload(id, path); }
+static const char *api_upload_hash(const char *id) { return webui_upload_hash(id); }
 static int api_offer(const char *id, const char *path) { return webui_offer(id, path); }
 static int api_guest(const char *gid, const char *code, int code_s, int session_s) { return webui_guest_set(gid, code, code_s, session_s); }
 static int api_guest_gain(const char *gid, double gain) { return webui_guest_gain(gid, gain); }
@@ -1233,6 +1464,7 @@ static int api_guest_gain(const char *gid, double gain) { return webui_guest_gai
 static void *va_guest(void **a, int n) { return n < 4 ? nullptr : (void *)(INT_PTR)api_guest(S_(0), S_(1), (int)(INT_PTR)a[2], (int)(INT_PTR)a[3]); }
 static void *va_guest_gain(void **a, int n) { return n < 2 || !a[1] ? nullptr : (void *)(INT_PTR)api_guest_gain(S_(0), *(double *)a[1]); } // (a double comes as a pointer)
 static void *va_save_upload(void **a, int n) { return (void *)(INT_PTR)api_save_upload(S_(0), S_(1)); }
+static void *va_upload_hash(void **a, int n) { return (void *)api_upload_hash(S_(0)); }
 static void *va_offer(void **a, int n) { return (void *)(INT_PTR)api_offer(S_(0), S_(1)); }
 static void *va_start_(void **a, int n) { return (void *)(INT_PTR)api_start(S_(0), S_(1), n > 2 ? (int)(INT_PTR)a[2] : 0); }
 static void *va_publish(void **a, int n) { api_publish(S_(0), S_(1)); return nullptr; }
@@ -1262,6 +1494,10 @@ void webui_register(reaper_plugin_info_t *rec)
       "int\0const char*,const char*\0id,path\0"
       "A take a page uploaded (POST /api/upload's id), written to `path` and let go. Returns its bytes; 0 no such upload; -1 couldn't write "
       "(it's kept for another try)." },
+    { "StudioSync_WebUIUploadHash", (void *)api_upload_hash, (void *)va_upload_hash,
+      "const char*\0const char*\0id\0"
+      "The SHA-256 (64 lower-case hex digits, StudioSync_FileHash's definition: a text file's CR LF as LF) of an upload still held (POST /api/upload's id), "
+      "worked out as it arrived by the thread that received it; \"\" when there is no such upload. Ask before StudioSync_WebUISaveUpload lets it go." },
     { "StudioSync_WebUIOffer", (void *)api_offer, (void *)va_offer,
       "int\0const char*,const char*\0id,path\0"
       "Lets the pages download the file at `path` as GET /api/file?id=<id> (id: up to 32 lower-case hex characters; 64 files at most). "

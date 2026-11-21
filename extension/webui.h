@@ -21,6 +21,9 @@ const char *webui_status(); // JSON: { listening, bind, port, error, token, clie
 // A phone's take that a page sent as POST /api/upload (its answer's id), written to path and let go. -> bytes; 0 no such upload; -1 couldn't
 // write it (kept for another try). lib/phonerec.lua
 int webui_save_upload(const char *id, const char *path);
+// An upload's SHA-256 (lower-case hex; StudioSync_FileHash's definition), worked out by the receiving thread as the bytes came in; "" when there's
+// no such upload. Past 4 MB an upload is written to a spool file as it arrives (webui_save_upload moves it), not held in memory. lib/chatfiles.lua
+const char *webui_upload_hash(const char *id);
 // A file the pages may download as GET /api/file?id=<id> (lower-case hex, 1-32): the server reads only paths Lua named. "" path withdraws
 // it. -> 1; 0 a bad id or MAX_OFFERS already. lib/phonerec.lua (the latest mix of each song, for the phone app to play along to)
 int webui_offer(const char *id, const char *path);

@@ -370,6 +370,78 @@ static void guest_live_tests(int link, const std::string &th, const std::string 
   CHECK(std::string(webui_status()).find(gid) == std::string::npos, "and the guest is gone from the status");
 }
 
+// rt-p11 (backlog 1.21, 1.22, 1.19): four guests live at once (it was two), each hearing the others but not itself, listeners hearing them,
+// and a guest's ring read at a rate that follows its fill (the guest's sound card against REAPER's clock), not one sample per sample.
+static double g_listen_dev = 0, g_listen_ref = 0; // (the listening tap's largest step above the tone's peak: rt-audience's feed, ahead of the guests before rt-p11)
+static void listen_tap(const double *L, const double *, int len, double)
+{
+  for (int k = 0; k < len; ++k) g_listen_dev = std::max(g_listen_dev, L[k] - g_listen_ref);
+}
+static void guests_together_tests(int link, const std::string &th)
+{
+  const char *gids[4] = { "1111111111111111", "2222222222222222", "3333333333333333", "4444444444444444" };
+  const char *codes[4] = { "c0de1111111111111111aaaa", "c0de2222222222222222aaaa", "c0de3333333333333333aaaa", "c0de4444444444444444aaaa" };
+  int ws[4] = { -1, -1, -1, -1 }, live = 0;
+  for (int i = 0; i < 4; ++i) {
+    webui_guest_set(gids[i], codes[i], 60, 3600);
+    const std::string r = get(link, std::string("/guest.html?g=") + codes[i], th);
+    const size_t at = r.find("ss_guest=");
+    const std::string ck = "Cookie: ss_guest=" + (at == std::string::npos ? std::string() : r.substr(at + 9, 32)) + "\r\n";
+    std::string resp;
+    ws[i] = ws_open(link, th, ck, resp);
+    live += code(resp) == 101;
+  }
+  CHECK(live == 4, "four guests live at once (lib/guestweb.lua's four; it was two)");
+  for (int i = 0; i < 100 && webui_mix_wanted() < 4; ++i) sleep_ms(5);
+  // A sends a 0.25 constant, B 0.125 (300 ms each, 10 ms frames); C and D send nothing
+  auto frame = [](short v) { std::string f(480 * 2, '\0'); for (int i = 0; i < 480; ++i) memcpy(&f[(size_t)i * 2], &v, 2); return f; };
+  for (int i = 0; i < 30; ++i) { ws_put(ws[0], 2, frame(8192)); ws_put(ws[1], 2, frame(4096)); }
+  sleep_ms(150);
+  webui_listen_feed = listen_tap;
+  std::vector<double> L(240), R(240);
+  double heard = 0;
+  long long n = 0;
+  for (int b = 0; b < 40; ++b) {
+    for (int k = 0; k < 240; ++k, ++n) { L[k] = 0.5 * sin(2 * 3.141592653589793 * 1000.0 * (double)n / 48000.0); R[k] = L[k]; }
+    g_listen_ref = 0.5;
+    double *out[2] = { L.data(), R.data() };
+    webui_guest_audio(out, 2, 240, 48000.0);
+    for (int k = 0; k < 240; ++k) heard = std::max(heard, L[k] - 0.5 * sin(2 * 3.141592653589793 * 1000.0 * (double)(n - 240 + k) / 48000.0));
+    sleep_ms(5);
+  }
+  webui_listen_feed = nullptr;
+  CHECK(fabs(heard - 0.375) < 0.002, "both guests heard here (0.25 + 0.125 on REAPER's output)");
+  CHECK(g_listen_dev > 0.375 - 0.01, "and in what listeners hear (the tap was before the guests: it had the tone alone)");
+  // each one's session mix: the tone, plus the others (16-bit peaks: the tone 16384, A 8192, B 4096), never themselves
+  short peak[3] = { 0, 0, 0 };
+  for (int g = 0; g < 3; ++g) {
+    std::string d;
+    for (int i = 0; i < 60; ++i) {
+      if (ws_get(ws[g], d) != 2 || d.size() < 20) continue;
+      for (size_t k = 16; k + 4 <= d.size(); k += 4) { short l; memcpy(&l, &d[k], 2); peak[g] = std::max(peak[g], l); }
+    }
+  }
+  CHECK(abs(peak[0] - (16384 + 4096)) < 300, "A hears the session mix and B, not itself");
+  CHECK(abs(peak[1] - (16384 + 8192)) < 300, "B hears the session mix and A, not itself");
+  CHECK(abs(peak[2] - (16384 + 8192 + 4096)) < 300, "C (silent) hears both");
+  // drift: 200 ms of A's sound waiting (well over its 60 ms size, under its 210 ms limit) is played back a little faster than real time
+  for (int b = 0; b < 30; ++b) { std::fill(L.begin(), L.end(), 0.0); std::fill(R.begin(), R.end(), 0.0); double *out[2] = { L.data(), R.data() }; webui_guest_audio(out, 2, 240, 48000.0); }
+  for (int i = 0; i < 20; ++i) ws_put(ws[0], 2, frame(8192));
+  sleep_ms(150);
+  int blocks = 0;
+  for (int b = 0; b < 60; ++b) {
+    std::fill(L.begin(), L.end(), 0.0); std::fill(R.begin(), R.end(), 0.0);
+    double *out[2] = { L.data(), R.data() };
+    webui_guest_audio(out, 2, 240, 48000.0);
+    blocks += L[120] > 0.2;
+    if (getenv("P11DBG")) printf("%d:%.3f/%.3f ", b, L[0], L[239]);
+  }
+  printf("     guests: 200 ms of A's sound played in %d blocks of 240 frames (40 at one sample per sample)\n", blocks);
+  CHECK(blocks >= 36 && blocks < 40, "a guest's buffer far over its size drains a little faster than real time (the drift's rate), not left as delay");
+  for (int i = 0; i < 4; ++i) { webui_guest_set(gids[i], "", 0, 0); closesocket(ws[i]); }
+  for (int i = 0; i < 100 && webui_mix_wanted() != 0; ++i) sleep_ms(10);
+}
+
 int main()
 {
 #ifdef _WIN32
@@ -508,6 +580,43 @@ int main()
     CHECK(back == take, "byte for byte");
   }
   CHECK(webui_save_upload(id.c_str(), saved.c_str()) == 0, "and let go once saved");
+  // rt-p5: past 4 MB an upload is written to a spool file as it arrives (not held in memory), and its SHA-256 is worked out by the thread that
+  // received it, StudioSync_FileHash's way (a CR before an LF dropped, unless a NUL is in the bytes): Lua never reads the file whole
+  {
+    auto hexof = [](const std::string &m) { unsigned char h[32]; direct_sha256((const unsigned char *)m.data(), m.size(), h); char o[65]; for (int i = 0; i < 32; ++i) snprintf(o + i * 2, 3, "%02x", h[i]); return std::string(o); };
+    auto signed_form = [](const std::string &m) { // sign.cpp as_signed
+      if (memchr(m.data(), 0, m.size())) return m;
+      std::string o;
+      for (size_t i = 0; i < m.size(); ++i) if (!(m[i] == '\r' && i + 1 < m.size() && m[i + 1] == '\n')) o += m[i];
+      return o;
+    };
+    auto read_back = [](const std::string &path) { std::string back; FILE *f = fopen(path.c_str(), "rb"); char b2[65536]; size_t k; while (f && (k = fread(b2, 1, sizeof b2, f)) > 0) back.append(b2, k); if (f) fclose(f); return back; };
+    auto id_of = [](const std::string &resp) { const size_t at = resp.find("\"id\":\""); return at == std::string::npos ? std::string() : resp.substr(at + 6, 16); };
+    std::string text; // 5 MB of lines, CR LF mostly, a lone CR here and there, one at the very end
+    for (size_t i = 0; text.size() < 5u * 1024 * 1024; ++i) text += std::string(i % 97 == 0 ? "lone\rcr" : "a line of text") + (i % 7 == 0 ? "\r\n" : "\n");
+    text += "\r";
+    std::string big = take; // binary (the take above has NULs), 9 MB
+    while (big.size() < 9u * 1024 * 1024) big += take;
+    for (const std::string *m : { &text, &big }) {
+      r = ask(link, up + std::to_string(m->size()) + "\r\n\r\n" + *m);
+      const std::string bid = id_of(body(r));
+      CHECK(code(r) == 200 && bid.size() == 16, m == &text ? "a big text upload: kept" : "a big binary upload: kept");
+      CHECK(std::string(webui_upload_hash(bid.c_str())) == hexof(signed_form(*m)), m == &text ? "its SHA-256 as StudioSync_FileHash works it out (CR LF as LF), from the receiving thread" : "its SHA-256 over the raw bytes (a NUL is in them)");
+      const std::string to = dir + (m == &text ? "/big.txt" : "/big.wav");
+      CHECK(webui_save_upload(bid.c_str(), (dir + "/no/such/folder/t.wav").c_str()) == -1 && std::string(webui_upload_hash(bid.c_str())).size() == 64, "a path that can't be written: -1, and it's kept (spool file and hash)");
+      CHECK(webui_save_upload(bid.c_str(), to.c_str()) == (int)m->size() && read_back(to) == *m, "saved: moved where Lua said, byte for byte");
+      CHECK(webui_save_upload(bid.c_str(), to.c_str()) == 0 && std::string(webui_upload_hash(bid.c_str())).empty(), "and let go once saved");
+    }
+    CHECK(std::string(webui_upload_hash("nope")).empty() && std::string(webui_upload_hash(nullptr)).empty(), "no such upload: no hash");
+    r = ask(link, up + "6\r\n\r\na\r\nb\rc"); // a small one is hashed the same way (held in memory)
+    const std::string sid = id_of(body(r));
+    CHECK(std::string(webui_upload_hash(sid.c_str())) == hexof("a\nb\rc"), "a small upload: the same rule");
+    r = ask(link, up + std::to_string(big.size()) + "\r\n\r\n" + big); // the oldest let go (MAX_UPLOADS): a spooled one's file goes with it
+    const std::string e1 = id_of(body(r));
+    ask(link, up + "5\r\n\r\nhello");
+    ask(link, up + "5\r\n\r\nhello");
+    CHECK(std::string(webui_upload_hash(e1.c_str())).empty() && webui_save_upload(e1.c_str(), (dir + "/gone.wav").c_str()) == 0, "pushed out by newer ones: let go");
+  }
   for (int i = 0; i < 3; ++i) ask(link, up + "5\r\n\r\nhello");
   CHECK(std::string(webui_status()).find("listening") != std::string::npos, "three more: the oldest let go, the server fine");
   // a file Lua offers (the phone app's mix to play along to): only by its id, streamed whole
@@ -593,6 +702,7 @@ int main()
     feeder.join();
   }
   guest_live_tests(link, th, ck); // (browser guests: rt-browserjoin)
+  guests_together_tests(link, th); // (four live, hearing each other, heard by listeners, drift: rt-p11)
   const std::string st = webui_status();
   CHECK(st.find("\"listening\":true") != std::string::npos && st.find("\"token\":\"" + tok + "\"") != std::string::npos, "status says listening, with the token");
 
