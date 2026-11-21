@@ -3,6 +3,8 @@
 // compensation keeps everything else in time with the returned audio. The timing itself is in plugin/hop_core.h. GPL-3.0-or-later.
 // MIDI in and out (rt-hopvst): the MIDI it gets goes along with the audio (an instrument on a bandmate's computer), and at the hidden track's
 // first Hop the MIDI that came over the network comes out, for that instrument. It doesn't pass its own MIDI input on.
+// 0.2.1 (rt-hop2): no hung notes over a hop: held-note and pedal snapshots go with the MIDI, and the remote's first Hop lets go of what
+// they (or their silence) say isn't held (plugin/hop_core.h). The mapping (hop_shm.h version 2) is the same as 0.2.0's.
 #include "DistrhoPlugin.hpp"
 #include "hop_core.h"
 
@@ -24,7 +26,7 @@ protected:
   const char *getMaker() const override { return "StudioSync"; }
   const char *getHomePage() const override { return "https://github.com/FmsJay/studiosync"; }
   const char *getLicense() const override { return "GPL-3.0-or-later"; }
-  uint32_t getVersion() const override { return d_version(0, 2, 0); }
+  uint32_t getVersion() const override { return d_version(0, 2, 1); }
 
   void initParameter(uint32_t index, Parameter &p) override
   {

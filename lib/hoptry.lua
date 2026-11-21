@@ -11,7 +11,7 @@
 -- UI's Try tab (lib/webui/tryfx.js) has all of it. GPL-3.0-or-later.
 local band = require("band")
 local hoptry = { PARAM_MAX = 256, NAME_MAX = 48, VAL_MAX = 24, PARAMS_EVERY = 1, PARAMS_AGAIN = 5, MATCH_MAX = 60, ASK_FOR = 30,
-  PRINT_LEAD = 2, PRINT_TAIL = 0.3, PRINT_MAX = 900, WANT_FOR = 30, BUILD_EVERY = 0.5, TOPIC = "tryfx" }
+  PRINT_LEAD = 2, PRINT_WARM = 1, PRINT_TAIL = 0.3, PRINT_MAX = 900, WANT_FOR = 30, BUILD_EVERY = 0.5, TOPIC = "tryfx" }
 local function hops() return require("hops") end
 local function S() return require("hops").S end
 
@@ -267,6 +267,12 @@ function hoptry.print(proj, cfg, id)
     armed = armed, mode = mode, label = string.format("%s (via %s's computer)", hoptry.clip(rec.fx, 80), hoptry.clip(rec.user, 40)), started = false }
   reaper.Main_OnCommand(1013, 0) -- Transport: Record
   band.log(string.format("printing %s over the time selection onto a new track", tostring(rec.fx)))
+  -- (rt-hop2: a play start sends the Hop its whole latency at once, and the first half second or so can't be back in time, so it plays the
+  -- dry input; the lead-in covers that, but REAPER can't play before 0. Said, so a dry start isn't a surprise: docs/rt/rt-hop2.md)
+  if ts < hoptry.PRINT_WARM then
+    band.log(string.format("the selection starts %.1f s into the project, too near the start for the hop to warm up first: about the first half second of the print will be the dry track. Start the selection at %d s or later for a print that's wet throughout",
+      ts, hoptry.PRINT_WARM))
+  end
   return true
 end
 -- Each tick while printing: at the end (or when playback stopped some other way), stop, keep the recording, put things back.

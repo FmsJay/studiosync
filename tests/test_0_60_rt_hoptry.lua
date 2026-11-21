@@ -339,6 +339,16 @@ assert(not hops.S.printing and cmds[#cmds - 1] == 40667 and cmds[#cmds] == 40252
 assert(pt.info.I_RECARM == 0 and pt.info.B_MAINSEND == 1 and drums.info.I_RECARM == 1, "the print track disarmed and heard; the other armed again")
 assert(pt.items[1].take.P_NAME == "serum (via Bo's computer)", "the take says what it is")
 ps = 0
+-- (rt-hop2: a selection too near the project's start for the lead-in: printed all the same, from 0, and said that its start will be dry)
+for _, l in ipairs(logs) do assert(not l:find("too near the start", 1, true), "a selection with room for the lead-in: no warning") end
+tsel = { 0.4, 4 }
+ok, why = hoptry.print("P1", cfg, 1)
+assert(ok and pos == 0 and cmds[#cmds] == 1013, "a selection at 0.4 s prints, from the project's start: " .. tostring(why))
+assert(logs[#logs]:find("starts 0.4 s into the project, too near the start", 1, true) and logs[#logs]:find("at 1 s or later", 1, true), "and says its start will be dry")
+ps, pos = 5, 4.4
+tick("P1")
+assert(not hops.S.printing, "that print ends too")
+ps = 0
 
 -- ---- 8. Bo stops it; a no; Live sync ending ------------------------------------------------------------------------------------------
 hops.S.serving = bo_serving

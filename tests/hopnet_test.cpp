@@ -33,6 +33,8 @@ typedef int sock_t;
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <random>
 #include <string>
@@ -65,6 +67,7 @@ struct Wire {
   long long dropped = 0;
   double late_at = 0, late_ms = 0; // (the wire's own lateness: when it last let a packet go STALL_S or more past its due, and the worst)
   int late_n = 0;                  // (and how many times, a new one 50 ms after the last)
+  std::function<bool(const unsigned char *, int)> lose_midi; // (rt-hop2: a MIDI datagram (T_MIDI, type 5) this wire loses on purpose)
 };
 struct End {
   sock_t s;
@@ -78,6 +81,7 @@ static int send_fn(void *user, const void *d, int n, const void *addr, int)
   Wire &w = *e->wire;
   std::lock_guard<std::mutex> g(w.mx);
   std::uniform_real_distribution<double> u(0, 1);
+  if (w.lose_midi && n > 4 && ((const unsigned char *)d)[4] == 5 && w.lose_midi((const unsigned char *)d, n)) { w.dropped++; return n; }
   if (u(w.rng) < w.loss) { w.dropped++; return n; }
   Pkt p;
   const double t = now_s(), ph = w.spike_every > 0 ? std::fmod(t, w.spike_every) : 1e9;
@@ -151,9 +155,35 @@ static const uint32_t L = 7200, LX = 256, PDC = 100, B = 256;
 // midi: a note every 100 ms goes with the audio, and the fake remote plug-in is an instrument that adds a click (+0.25 before its x0.5) on
 // the frame each one comes out of Hop X, so a note back exactly at its frame + lat is the MIDI lined up to the sample (rt-hopvst).
 static const float CLICK = 0.25f;
+// rt-hop2, held MIDI: what the sender plays (script, sender frames), which of its MIDI datagrams the wire loses (lose, from the run's start
+// t0), and what the remote's Hop X sounded: each note as X started and let go of it (X frames; off ~0: still sounding at the end), every
+// sustain change, and any snapshot X played itself (leaked: never).
+struct MEv { uint64_t f; uint8_t b0, b1, b2; };
+struct Sounded { int note; uint64_t on, off; };
+struct MidiPlan {
+  std::vector<MEv> script;
+  std::function<bool(const unsigned char *, int, double)> lose; // (datagram, its length, seconds since the run's start)
+  std::atomic<double> t0{ 0 };
+  std::vector<Sounded> sounded;
+  std::vector<std::pair<uint64_t, int>> pedal;
+  int leaked = 0;
+  uint64_t x_end = 0;
+};
+// Whether a MIDI datagram carries this message (its events: frame u64, msg u32, len u32 after the 20-byte header; extension/hopnet.cpp).
+static bool carries(const unsigned char *d, int n, uint32_t msg)
+{
+  uint16_t nf;
+  memcpy(&nf, d + 6, 2);
+  for (int k = 0; k < nf && 20 + k * 16 + 16 <= n; ++k) {
+    uint32_t m;
+    memcpy(&m, d + 20 + k * 16 + 8, 4);
+    if ((m & 0xFFFFFF) == msg) return true;
+  }
+  return false;
+}
 static Result run(int id0, double base_ms, double jitter_ms, double loss, double drift, double secs, const char *rsecret = "studio",
                   double stall_at = 0, double stall_ms = 0, int who = 0, double spike_every = 0, double spike_ms = 0, uint64_t jump = 0,
-                  uint32_t lat = L, bool dry = false, bool midi = false)
+                  uint32_t lat = L, bool dry = false, bool midi = false, MidiPlan *plan = nullptr)
 {
   Result res;
   const int hs = id0, hx = id0 + 1, hy = id0 + 2;
@@ -161,6 +191,7 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
   wa.base_ms = wb.base_ms = base_ms; wa.jitter_ms = wb.jitter_ms = jitter_ms; wa.loss = wb.loss = loss;
   wa.spike_every = spike_every; wa.spike_ms = spike_ms; // (the way out only: the remote's side of a spike is what's checked)
   wb.rng.seed(999);
+  if (plan) wa.lose_midi = [plan](const unsigned char *d, int n) { return plan->lose && plan->t0.load() > 0 && plan->lose(d, n, now_s() - plan->t0.load()); };
   End a{}, b{};
   a.wire = &wa; b.wire = &wb;
   const unsigned long pid = hop_reaper_pid();
@@ -198,6 +229,8 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
   std::thread ts([&] {
     std::vector<float> i0(B), i1(B), o0(B), o1(B);
     const double t0 = t0s = now_s();
+    if (plan) plan->t0 = t0;
+    size_t si = 0; // (the plan's next scripted event)
     double last = t0;
     uint64_t done = 0;
     bool stalled = false;
@@ -212,13 +245,17 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
         for (uint32_t k = 0; k < B; ++k) { i0[k] = sig(done + k); i1[k] = -sig(done + k); }
         const float *in[2] = { i0.data(), i1.data() };
         float *o[2] = { o0.data(), o1.data() };
-        HopMidiEv me[1];
+        HopMidiEv me[16];
         uint32_t nme = 0;
         const uint64_t next = (evs.size() + 1) * 4800 + (evs.size() * 37) % B; // (a note every 100 ms, anywhere in a block)
         if (midi && next >= done && next < done + B) {
           me[0].frame = (uint32_t)(next - done); me[0].size = 3; me[0].data[0] = 0x90; me[0].data[1] = 60; me[0].data[2] = 100; me[0].data[3] = 0;
           nme = 1;
           evs.push_back(next);
+        }
+        for (; plan && si < plan->script.size() && plan->script[si].f < done + B && nme < 16; ++si) {
+          const MEv &e = plan->script[si];
+          me[nme++] = HopMidiEv{ (uint32_t)(e.f > done ? e.f - done : 0), 3, { e.b0, e.b1, e.b2, 0 } };
         }
         cs.process(in, o, B, me, nme);
         out0.insert(out0.end(), o0.begin(), o0.end());
@@ -231,6 +268,7 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
   // the remote's audio clock (`drift` faster or slower): X -> 100-sample delay x 0.5 -> Y
   std::thread tr([&] {
     std::vector<float> z(B, 0.f), x0(B), x1(B), y0(B), y1(B), o0(B), o1(B), d0(PDC, 0.f), d1(PDC, 0.f);
+    std::vector<uint64_t> xon(128, 0); // (X frame + 1 each note started at, channel 1; 0: not sounding)
     size_t dp = 0;
     const double t0 = now_s();
     double last = t0;
@@ -244,7 +282,19 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
         const float *zin[2] = { z.data(), z.data() };
         float *xo[2] = { x0.data(), x1.data() };
         cx.process(zin, xo, B);
-        for (uint32_t e = 0; e < cx.nmout; ++e) { x0[cx.mout[e].frame] += CLICK; x1[cx.mout[e].frame] -= CLICK; } // (the instrument: a click on each note)
+        for (uint32_t e = 0; e < cx.nmout; ++e) {
+          const HopMidiEv &m = cx.mout[e];
+          const bool note_on = (m.data[0] & 0xF0) == 0x90 && m.data[2] > 0;
+          if (midi && note_on) { x0[m.frame] += CLICK; x1[m.frame] -= CLICK; } // (the instrument: a click on each note)
+          if (!plan) continue;
+          const uint64_t x = done + m.frame; // (the plan's instrument: what X left sounding, X frames)
+          if (m.data[0] == 0xF4 || m.data[0] == 0xF5) plan->leaked++;
+          else if (note_on) { if (!xon[m.data[1] & 127]) xon[m.data[1] & 127] = x + 1; }
+          else if ((m.data[0] & 0xF0) == 0x80 || (m.data[0] & 0xF0) == 0x90) {
+            if (xon[m.data[1] & 127]) plan->sounded.push_back({ m.data[1] & 127, xon[m.data[1] & 127] - 1, x });
+            xon[m.data[1] & 127] = 0;
+          } else if ((m.data[0] & 0xF0) == 0xB0 && m.data[1] == 64) plan->pedal.push_back({ x, m.data[2] });
+        }
         for (uint32_t k = 0; k < B; ++k) {
           y0[k] = d0[dp] * 0.5f; y1[k] = d1[dp] * 0.5f;
           d0[dp] = x0[k]; d1[dp] = x1[k];
@@ -256,6 +306,10 @@ static Result run(int id0, double base_ms, double jitter_ms, double loss, double
         done += B;
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (plan) {
+      for (int n = 0; n < 128; ++n) if (xon[n]) plan->sounded.push_back({ n, xon[n] - 1, ~0ull });
+      plan->x_end = done;
     }
   });
   ts.join(); tr.join();
@@ -352,6 +406,48 @@ template <class R, class Ok> static Result tries(R one, Ok ok)
     r = one();
   }
   return r;
+}
+
+// rt-hop2, held MIDI: how long past its note-off X kept each scripted note (unique note numbers, channel 1), lined up by K = X frame -
+// sender frame of a note started on time (the smallest seen); and whether the pedal was up at X bound_ms after each release.
+// stuck: still sounding when the run ended; hung: that, or let go more than bound_ms late; early: let go more than early_ms before its note-off.
+struct Held { int notes = 0, heard = 0, stuck = 0, hung = 0, early = 0, pedal_late = 0; double worst_ms = 0, early_ms = 0; };
+static Held held_check(const MidiPlan &p, double bound_ms, double early_ms)
+{
+  Held h;
+  uint64_t on[128], off[128];
+  for (int n = 0; n < 128; ++n) on[n] = off[n] = ~0ull;
+  for (const MEv &e : p.script) {
+    if ((e.b0 & 0xF0) == 0x90 && e.b2) on[e.b1 & 127] = e.f;
+    else if ((e.b0 & 0xF0) == 0x80) off[e.b1 & 127] = e.f;
+  }
+  int64_t K = INT64_MAX;
+  for (const Sounded &s : p.sounded) if (on[s.note] != ~0ull) K = std::min(K, (int64_t)s.on - (int64_t)on[s.note]);
+  for (int n = 0; n < 128; ++n) {
+    if (on[n] == ~0ull) continue;
+    h.notes++;
+    const Sounded *s = nullptr;
+    for (const Sounded &x : p.sounded) if (x.note == n) { s = &x; break; }
+    if (!s || K == INT64_MAX) continue; // (its note-on never reached X: nothing sounded)
+    h.heard++;
+    const double past = ((s->off == ~0ull ? (int64_t)p.x_end : (int64_t)s->off) - ((int64_t)off[n] + K)) / 48.0;
+    h.worst_ms = std::max(h.worst_ms, past);
+    h.stuck += s->off == ~0ull;
+    h.hung += s->off == ~0ull || past > bound_ms;
+    if (-past > early_ms) { h.early++; h.early_ms = std::max(h.early_ms, -past); }
+  }
+  for (const MEv &e : p.script) {
+    if ((e.b0 & 0xF0) != 0xB0 || e.b1 != 64 || e.b2 >= 64 || K == INT64_MAX) continue;
+    int v = 0;
+    for (const auto &pe : p.pedal) if ((int64_t)pe.first <= (int64_t)e.f + K + (int64_t)(bound_ms * 48)) v = pe.second;
+    h.pedal_late += v >= 64;
+  }
+  return h;
+}
+static void held_report(const Held &h, const MidiPlan &p)
+{
+  printf("  notes %d, %d sounded at X; the worst let go %.0f ms past its note-off; %d stuck, %d past the bound, %d cut early (by up to %.0f ms); "
+         "pedal still down %d; snapshots X played %d\n", h.notes, h.heard, h.worst_ms, h.stuck, h.hung, h.early, h.early_ms, h.pedal_late, p.leaked);
 }
 
 int main()
@@ -517,6 +613,81 @@ int main()
       CHECK(q.ev_exact * 100 >= q.events * 70, "most notes land under loss (%llu of %llu)", (unsigned long long)q.ev_exact, (unsigned long long)q.events);
     }
     CHECK(num(q.rst, "midi") >= (double)q.events, "the remote took every note under loss (%.0f of %llu)", num(q.rst, "midi"), (unsigned long long)q.events);
+  }
+  // rt-hop2: no hung notes. A note-off lost twice (its packet and the 20 ms repeat) hung its note until the try stopped: nothing after it
+  // carried it again. Now held-note snapshots go with the MIDI and the remote's Hop X lets go of what they (or their silence for 200 ms)
+  // say isn't held. The bound, under any loss pattern and any single burst: no note sounds at X more than HOLD_BOUND_MS past its note-off
+  // (200 ms with no snapshot, plus a block each side and the wire's jitter). With 10% of MIDI datagrams lost at random no held note or
+  // pedal is cut early (that would take every snapshot datagram for 200 ms lost: about eight in a row).
+  {
+    const double HOLD_BOUND_MS = 250, EARLY_MS = 50;
+    std::unique_ptr<MidiPlan> plan;
+    auto midi_run = [&](int id, double secs, std::vector<MEv> script, std::function<bool(const unsigned char *, int, double)> lose) {
+      plan.reset(new MidiPlan());
+      std::sort(script.begin(), script.end(), [](const MEv &a, const MEv &b) { return a.f < b.f; });
+      plan->script = std::move(script);
+      plan->lose = std::move(lose);
+      return run(id, 3, 2, 0, 0, secs, "studio", 0, 0, 0, 0, 0, 0, L, false, false, plan.get());
+    };
+    auto clean = [](const Result &x) { return x.hiccup == 0; };
+    const uint32_t NOTE_OFF = 0x80u | 60u << 8;
+    const std::vector<MEv> one = { { 72000, 0x90, 60, 100 }, { 96000, 0x80, 60, 0 } }; // (one note, 1.5 s to 2 s, then nothing)
+    {
+      int lost = 0;
+      Result r = tries([&] { lost = 0; return midi_run(44, 3.5, one, [&lost, NOTE_OFF](const unsigned char *d, int n, double) { return lost < 2 && carries(d, n, NOTE_OFF) && ++lost; }); }, clean);
+      Held h = held_check(*plan, HOLD_BOUND_MS, EARLY_MS);
+      report("a note-off lost twice", r);
+      held_report(h, *plan);
+      CHECK(lost == 2, "the note-off's first two datagrams lost (%d)", lost);
+      CHECK(h.heard == 1, "the note sounded at X");
+      CHECK(h.stuck == 0 && h.hung == 0, "a note-off lost twice doesn't hang the note (let go %.0f ms past its note-off)", h.worst_ms);
+      CHECK(plan->leaked == 0, "X never plays a snapshot itself");
+    }
+    {
+      Result r = tries([&] { return midi_run(47, 3.5, one, [NOTE_OFF](const unsigned char *d, int n, double) { return carries(d, n, NOTE_OFF); }); }, clean);
+      Held h = held_check(*plan, HOLD_BOUND_MS, EARLY_MS);
+      report("a note-off lost every time it's sent", r);
+      held_report(h, *plan);
+      CHECK(h.heard == 1 && h.stuck == 0, "a note-off that never arrives doesn't hang the note");
+      if (r.hiccup > 0 && !strict()) printf("  (the harness stalled: the bound passed over, SS_TIMING_STRICT off)\n");
+      else CHECK(h.hung == 0, "let go within %.0f ms of its note-off (%.0f)", HOLD_BOUND_MS, h.worst_ms);
+    }
+    // chords and the sustain pedal: a note every 60 ms from 1.2 s, each held 200 ms (3-4 at once), the pedal down 0.3 s three times
+    std::vector<MEv> dense;
+    for (int i = 0; 57600 + i * 2880 + 9600 < 220800; ++i) {
+      dense.push_back({ (uint64_t)(57600 + i * 2880), 0x90, (uint8_t)(30 + i), 100 });
+      dense.push_back({ (uint64_t)(57600 + i * 2880 + 9600), 0x80, (uint8_t)(30 + i), 0 });
+    }
+    for (uint64_t at : { 72000, 120000, 168000 }) { dense.push_back({ at, 0xB0, 64, 127 }); dense.push_back({ at + 14400, 0xB0, 64, 0 }); }
+    {
+      Result r = tries([&] {
+        auto rng = std::make_shared<std::mt19937>(4242);
+        return midi_run(54, 5, dense, [rng](const unsigned char *, int, double) { return std::uniform_real_distribution<double>(0, 1)(*rng) < 0.1; });
+      }, clean);
+      Held h = held_check(*plan, HOLD_BOUND_MS, EARLY_MS);
+      report("chords and the pedal, 10% of MIDI datagrams lost", r);
+      held_report(h, *plan);
+      CHECK(h.heard * 10 >= h.notes * 9, "the notes sounded at X (%d of %d)", h.heard, h.notes);
+      CHECK(h.stuck == 0 && plan->leaked == 0, "nothing stuck, no snapshot played");
+      if (r.hiccup > 0 && !strict()) printf("  (the harness stalled: the bound and early cuts passed over, SS_TIMING_STRICT off)\n");
+      else {
+        CHECK(h.hung == 0, "every note let go within %.0f ms of its note-off (worst %.0f)", HOLD_BOUND_MS, h.worst_ms);
+        CHECK(h.early == 0, "no held note cut early (%d, by up to %.0f ms)", h.early, h.early_ms);
+        CHECK(h.pedal_late == 0, "the pedal up again each time within the bound (%d late)", h.pedal_late);
+      }
+    }
+    {
+      Result r = tries([&] { return midi_run(57, 5, dense, [](const unsigned char *, int, double t) { return t >= 2.0 && t < 2.6; }); }, clean);
+      Held h = held_check(*plan, HOLD_BOUND_MS, EARLY_MS);
+      report("chords and the pedal, every MIDI datagram lost for 0.6 s", r);
+      held_report(h, *plan);
+      CHECK(h.stuck == 0 && plan->leaked == 0, "a burst leaves nothing stuck, no snapshot played");
+      if (r.hiccup > 0 && !strict()) printf("  (the harness stalled: the bound passed over, SS_TIMING_STRICT off)\n");
+      else {
+        CHECK(h.hung == 0, "through a burst every note let go within %.0f ms of its note-off (worst %.0f)", HOLD_BOUND_MS, h.worst_ms);
+        CHECK(h.pedal_late == 0, "through a burst the pedal up again within the bound (%d late)", h.pedal_late);
+      }
+    }
   }
   {
     Result r = run(41, 2, 0, 0, 0, 1.5, "not the studio's");
