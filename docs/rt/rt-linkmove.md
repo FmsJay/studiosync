@@ -325,3 +325,207 @@ in parts; lists from a computer not here, oversized, or naming paths refused; a 
   delete-comes-back risk is the reason it is off.
 - **session.json over the link** is taken only from its sharer's computer. Other computers still write it (the timeline, while older
   builds are in the room); those writes are refused over the link and come by Syncthing unchecked, as before.
+
+## Round 3: events catch up over the link, and the panel reads the link's copies (rt-linkmove2, 2026-11-21)
+
+rt-linkmove stopped mid-round (a usage limit) with the panel half written and not committed; rt-linkmove2 finished it. Offline only:
+nothing here was run in REAPER.
+
+### Summary for James
+
+- **A computer that comes back asks a bandmate for the changes it missed**, not only the media. They land within seconds of the link
+  coming up, in the link's inbox, and count exactly as a change that came over the link live does. It is behind the same switch as the
+  media half (`BandSync / link need list`, off by default).
+- **The "deleted while Live sync wasn't running" hole is closed** for media. A file is fetched from a bandmate's list only while the song
+  still plays it (the newest change to some item names it), and only once the changes on their way over the link have landed. A file
+  someone deleted that isn't played comes back from nowhere.
+- **The panel shows a claim or a grant as fast as Live sync takes it** (about 0.6 s), not when Syncthing brings the file (about 3 s).
+  Live sync keeps the copy where the panel can read it, on this computer only, and the panel checks it again itself.
+- **Hooks 1 and 2 in `lib/sync.lua` are in** (rt-edits put them in). So the person a claim is *given* to sees it at once on their own
+  computer too. No hooks are needed from me this round.
+- **The trust.roles fix (4cc9eba) is complete.** Nothing more was needed.
+
+### Per item
+
+| # | Item | State |
+|---|---|---|
+| 1 | Event catch-up over the link | **Done, off by default** (`lib/needlist.lua`). What has to be true to switch it on is below. |
+| 1 | The "deleted while Live sync wasn't running" hole (media) | **Closed** by fetching only what the folder's own changes say the song plays. |
+| 2 | The panel reads the link's copies | **Done** (`lib/signed.lua`, `lib/band.lua`). Studio-wide files reaching other rooms: not built, what it takes is below. |
+| 3 | trust.roles verdict cache (4cc9eba) | **Checked: complete.** |
+
+### What I kept and changed of rt-linkmove's unfinished work
+
+Kept, as designed: the shared place (`<REAPER resources>/StudioSync/direct/<studio id>/.linked/<path>` and a non-persisted ExtState
+`linked files`), `signed.import` taking each line through the same `accept` a link message gets, and the "folder's file still what it was"
+fingerprint. Kept: its test block.
+
+Fixed:
+
+- **A random test failure, and a real bug under it.** The tidy walked `linked` with `pairs` while `band.read` inside it could take another
+  script's new copy into `linked` (Lua leaves that walk undefined). About one run in three, Syncthing's copy landing didn't take the link's
+  copy off the shared list. The tidy now walks a list of paths made first.
+- **The panel never ended a given claim's minute.** Only Live sync's `signed.drain` ran the tidy, so with Live sync stopped or busy the
+  panel kept a given claim until the folder changed. `band.read` now runs `signed.import` whenever the shared list isn't empty; the import
+  takes new lines only when the text changed, and runs the tidy (at most once a second) either way. It guards against running inside itself.
+- Not mine and left alone: the one-line `edited_at` change in `StudioSync - Live sync.lua` is rt-edits'.
+
+### Item 1: events over the link
+
+**How.** The media ask (`need_ask`, every 30 s and at once when who's here changes) now also carries, when due, this computer's event ids
+per room and day: for each day of the last `EV_DAYS` (58) days, a count and a sum of the ids' hashes. The bandmate compares each day with
+its own (the folder and the link's inbox) and sends back its ids for each day that differs (`need_list` with `room` and `evs`, 300 a
+message, 6,000 at most). This computer asks for the ids it lacks (`need_ask` with `want`), and the bandmate sends those files with
+`StudioSync_DirectSend`, the way every new change goes. The extension puts them in the link's inbox, and `sync.receive` takes them as any
+change that came over the link. Due when who's here changes, and again on the next round after a round that asked for something, so the
+ids stop going once two computers agree.
+
+**Safe because:**
+
+- Nothing is written into the studio's folder. The inbox copy is read only on this computer, until Syncthing's file lands (then the inbox
+  copy is pruned). So this can't undo anyone's delete, and Syncthing stays the record.
+- Who may make each change is checked when it is applied, exactly as for a change from Syncthing or from the link live. Event files are
+  not signed anywhere, so "trusted as Syncthing's" means the same file, the same checks.
+- Never an id in the room's `trimmed/` lists (history trim's deletion record, which travels by Syncthing), and never one made more than 58
+  days ago. History trim takes only changes older than `trim.DAYS` (60), so the window alone keeps trimmed changes out; the list is a
+  second guard.
+- Never this computer's own changes, never a name the link wouldn't carry (`direct.rel_ok`), never a room this computer doesn't have,
+  never one already in the folder or the inbox. A list from a computer that isn't here on the link is refused.
+- The inbox normally drops a change named more than a day old. Fetched ones are older, so the room's inbox gets a `.boot` mark (as an
+  invitation's welcome does), which keeps them a day from now.
+- The bandmate sends at most 6,000 files a minute to one asker, 300 a message.
+
+**The media half's hole, closed.** A link want is let through to catch-up only while (a) no change asked for over the link is still on its
+way for the song (at most 60 s), and (b) the song as this computer has it plays the file: `drive.media_in_use` over every room's events,
+the inbox's too (the rule the cloud copy already uses to decide a delete). A file deleted while Live sync wasn't running is either unused
+(never fetched) or still played (fetched back, as the cloud copy brings it back too, and as the project needs it to play). Syncthing's own
+need list is not filtered: it's Syncthing's word, as before.
+
+**Still not covered.** A file whose deleting change hasn't reached either computer yet, by Syncthing or the link, and that the song as this
+computer has it still plays. That needs a change nobody but the deleter has, so it's a delete Syncthing would also be racing.
+
+**What has to be true to switch both halves on by default:**
+
+1. The three-computer checks below pass: changes and takes arrive within seconds with Syncthing paused; the delete checks never bring a
+   file back; no `*.sync-conflict-*` anywhere afterwards.
+2. A big song measured once: the first in-use read of 20,000 events (spread at 50 ms a catch-up look, every 5 s), and how long a list a
+   week away makes. If either hurts, keep the switch per song.
+3. The default comes in the build that has this round's filter. A computer on rt-linkmove's first build, switched on by hand, has the media
+   half without the filter and should be switched off or updated.
+4. James decides whether the review-later items below (no per-sender rate limit, the hash sums) wait for the security review.
+
+### Item 2: the panel
+
+**How.** When Live sync takes a signed file from the link and its check says yes, it also writes the file and its signature file to
+`<REAPER resources>/StudioSync/direct/<studio id>/.linked/<path inside the studio>` and adds a line to the non-persisted ExtState
+`BandSync / linked files`: the studio folder, the path, a generation, a fingerprint of the folder's file at that moment, the given-claim
+deadline, and whether it's a removal. Every script's `band.read` (and listings) looks at that ExtState. A new line is taken into that
+script's own overlay through the same `accept` a link message gets (signature, key, number, the folder's signature file, `trust.file_ok`),
+and only while the folder's file still matches the fingerprint. A line gone takes the copy out. Live sync removes a line, and the files,
+when it lets go of its copy (Syncthing's file landed, a higher-numbered signature file, a given claim's minute). The panel does the same
+for a given claim's minute by itself.
+
+Not shared: the unsigned own files (profiles, colours, recaps), which nothing in the panel checks today.
+
+**Studio-wide files reach only the bandmates in Live sync's room** (and those in the file's own room). What reaching everyone would take:
+`signed.drain` would send the studio-wide kinds (band.json, roles.json, closed.json, removal and guest marks, guest lists, devices files,
+profiles, colours, pictures) to every computer the studio's devices files name that has a Tailscale name, not to `direct.peers` of one
+room. That needs a studio-wide peer list in `lib/direct.lua` (its peer builder with `present` = nil, minus anyone with a removal mark, as
+band.json's secret rule does now), and the receivers already take a `signed` message whatever room it was sent from. Costs: a send to every
+bandmate's computer whether or not it's in a session (the extension's send to an unreachable one times out on its sending thread, behind
+the others), and it still reaches only computers where Live sync runs. About half a session. Not built.
+
+### How to check on three computers
+
+Desktop as an admin, laptop and a third computer as members, one song, the link up. On each computer, once, in a one-line ReaScript:
+`reaper.SetExtState("BandSync", "link need list", "1", true)` and `reaper.SetExtState("BandSync", "stream trace", "1", true)`. The trace is
+`<REAPER resources>/StudioSync/direct/stream_trace.log`. Set both back to `""` afterwards.
+
+**Events.**
+
+1. Quit REAPER on the third computer and pause Syncthing there (Syncthing's own page, Pause All).
+2. On the desktop, in the room: move a few items, add a marker, record a short take. Wait a minute (so the take is 30 s settled).
+3. Start REAPER on the third computer and Live sync in the same room, Syncthing still paused.
+4. Within about 10 s: the third computer's trace says `event catch-up: N changes in main asked of <desktop or laptop>`, the bandmate's says
+   `event catch-up: N changes in main sent to ...`; the moves and the marker are in the third computer's project; then `media want` and
+   `media in` for the take, and the take plays. `<REAPER resources>/StudioSync/direct/<studio id>/<Song>/rooms/main/events/` holds the
+   changes and a `.boot` file.
+5. Resume Syncthing on the third computer. Within a minute the inbox folder empties (each file goes when the folder's copy is there),
+   nothing moves in the project, no `*.sync-conflict-*`.
+
+**The delete hole.**
+
+1. Make a take on the desktop, let it reach everyone, then delete its item and wait for everyone to have the delete (the file is unused now).
+2. Quit REAPER on the laptop, leave its Syncthing running. Pause Syncthing on the third computer.
+3. On the desktop, delete that WAV from `<Song>/rooms/main/media`. Wait until the laptop's Syncthing has deleted it there (the third still
+   has it).
+4. Start the laptop's REAPER and Live sync with the third computer in the room. Watch a minute: the laptop's trace has no `media want` for
+   that file, and it stays gone. Resume the third's Syncthing: it goes there too and comes back nowhere.
+5. The other way: a WAV the song still plays, deleted the same way, does come back on the laptop (as the cloud copy brings it back). That's
+   the intended rule, and the log on the desktop says the file is still played.
+
+**The panel.**
+
+1. Pause Syncthing on the laptop and the third computer. Open the ImGui panel's Who controls on the third computer.
+2. On the desktop, Give the laptop's person control of a track. On the third computer the panel shows it within about a second (before,
+   about 3 s or until Syncthing). `BandSync / linked files` (ExtState) lists the claim's path, and the copy is in
+   `<REAPER resources>/StudioSync/direct/<studio id>/.linked/...`; nothing new in the studio's folder.
+3. Stop Live sync on the third computer and wait a minute: the panel stops showing the claim by itself (the given claim's minute).
+4. Start Live sync again, grant someone edit rights on the desktop: the panel shows the grant at once. Resume Syncthing: the line leaves
+   `linked files`, the `.linked` copy goes, the panel shows the same thing from the folder's file.
+
+### Hooks in files I may not touch
+
+None needed. Hooks 1 and 2 (rt-linkmove's list above) are in `lib/sync.lua` at HEAD, by rt-edits. No change to `lib/streams.lua` or
+`StudioSync - Live sync.lua` either: the event messages ride on the existing `need_ask` and `need_list` handlers.
+
+### Shared files touched this round
+
+- `lib/band.lua`: `shared_look` (looks at `linked files` from `band.read` and the listings). About 15 lines with rt-linkmove's part.
+- `lib/signed.lua`, `lib/needlist.lua`: mine.
+
+### What's still on Syncthing only (updated)
+
+Changed since the table above:
+
+- **A given claim on its own person's computer**: now on the link (hooks 1 and 2 are in).
+- **Catch-up for events**: built, behind the switch. **Catch-up's media list by default**: still off, but the delete hole is closed; the
+  switch waits for the checks above.
+- **The panel** reads the link's signed copies too. It still waits for Syncthing for the unsigned own files (profiles, colours, recaps) and
+  for anything Live sync isn't running to receive.
+
+Still Syncthing only, as before: files over 32 KB (long timelines, big session.json), driver.json, room.json and invitation records, room
+summaries, plays lists, plug-in and library lists, `chat/resolved`, `chat/stage.json`, drum maps, mixes, stems, restore points, the update
+code, media as the record, `_band` beyond the welcome's 30 KB and a new secret after a removal, NAT first contact, Syncthing's own
+configuration. Studio-wide files to computers outside Live sync's room (see item 2).
+
+### Review later (security), added this round
+
+- **Event ids and hash sums.** The day sums use a 32-bit FNV hash summed per day. Two different sets can collide (or be made to); then that
+  day isn't compared and its changes come by Syncthing as before. Nothing wrong is taken; something can be missed.
+- **No per-sender rate limit on asks.** A bandmate can ask for up to 6,000 event files a minute and the media list every 10 s. They hold the
+  same folder, so nothing is disclosed, but it costs this computer's upload.
+- **The event list can make this computer ask, never take.** What comes back is any event file the bandmate sends, with the same name rule
+  as live events; its content is checked as any event is when applied. A bandmate could already send any event file over the link.
+- **The `.boot` mark** keeps every inbox file of that room a day from the last fetch, not only the fetched ones.
+- **The in-use rule** goes by this computer's own events. A hostile event naming a media file (anyone may write events into the folder)
+  makes that file "played", so a link list can fetch it, never place it anywhere but its own room's media, and only a file a bandmate
+  really holds at that size.
+- **The shared place for the panel.** `linked files` and `.linked/` are written by Live sync and readable and writable by anything running as
+  this user on this computer. Every script checks each copy again with the same checks, so a planted copy is refused unless it is genuinely
+  signed by someone who may write it, and the fingerprint keeps it from being read over a newer folder file. A planted genuine older copy
+  is refused by the kept numbers. A given claim's copy, once spent by Live sync, is not spent again by the panel (the panel trusts Live
+  sync's spending): a planted line for a spent given claim would count in the panel, never in Live sync, which enforces edits.
+- **4cc9eba closed** the "same roles written by an admin" item in the list above.
+
+### Tests
+
+- `tests/test_0_60_rt_linkmove.lua`: the panel block now passes every run (it failed about one in three); added: with Live sync quiet, the
+  panel ends a given claim's minute and takes it off the shared list (fails without the import's tidy).
+- `tests/test_0_60_rt_linkmove_need.lua`: media from a list only while the song plays it (never played, item deleted, played again);
+  Syncthing's wants untouched; events: the ask carries day sums only when due, the answer lists only differing days and never one older
+  than 58 days, the asker asks for exactly what it lacks (not one it has, a trimmed one, its own, or one in the inbox), writes the inbox's
+  `.boot`, never asks twice; media waits while changes are on their way; the bandmate sends the files by `StudioSync_DirectSend` with the
+  event's own path; the ids stop after a round that brings nothing; bad lists, rooms, oversized lists, path-like ids, asks from a computer
+  not here and ids it doesn't hold are refused.
+- `python tests/run.py --no-luals`: fails 0 in a clean clone of the commit.

@@ -171,11 +171,12 @@ local function fresh_ok(root, rel, seq, sig)
   local was = load("seqs", root)[rel]
   return sw.fresh(type(was) == "table" and { [rel] = { seq = tonumber(was[1]) or 0, sig = was[2] } } or {}, rel, seq, short(sig), os.time())
 end
-local function take(root, rel, seq, sig)
+-- (spent: a given claim's link copy was taken here once, signed.on_msg; kept beside its number)
+local function take(root, rel, seq, sig, spent)
   local t = load("seqs", root)
   local was = t[rel]
-  if type(was) == "table" and tonumber(was[1]) == seq and was[2] == short(sig) then return end
-  t[rel] = { seq, short(sig) }
+  if type(was) == "table" and tonumber(was[1]) == seq and was[2] == short(sig) and (was[3] or not spent) then return end
+  t[rel] = { seq, short(sig), spent and 1 or nil }
   local n, oldest, okey = 0, math.huge, nil
   for k, v in pairs(t) do n = n + 1; if type(v) ~= "table" or (tonumber(v[1]) or 0) < oldest then oldest, okey = type(v) == "table" and tonumber(v[1]) or -1, k end end
   if n > signed.SEQS_MAX and okey then t[okey] = nil end -- shortcut: past SEQS_MAX files the oldest number is forgotten (first use again for it)
@@ -277,23 +278,78 @@ end
 
 -- ---- the direct link ---------------------------------------------------------------------------------------------------------------------
 -- Live sync's tick: what this computer wrote since, to the bandmates here (and those in the file's own room) now. Other studios' stay queued.
--- The link's copies still read here (band.overlay), as signed.on_msg put them in: path -> { root, kind, seq, till }.
+-- The link's copies still read here (band.overlay), as signed.on_msg put them in: path -> { root, rel, kind, seq, till, shared }.
 local linked, tidied = {}, -math.huge
 local forget
+
+-- ---- one computer, several scripts -----------------------------------------------------------------------------------------------------
+-- band.overlay is one script's. The copy Live sync took from the link is put where the other scripts on this computer can read it (the
+-- ImGui panel, another tab's Live sync, this one after it reloads): its bytes and signature file under <home>/direct/<studio>/.linked
+-- (this computer's own folder, never the synced one), and a line in a non-persisted ExtState, "linked files":
+--   root \t rel \t gen \t what the folder's file was when the copy came (its length and a hash, "-": none) \t till \t 1 (a tombstone)
+-- band.read looks at that ExtState; when it has changed, signed.import takes each new line's copy into this script's own band.overlay
+-- through the very checks a link message gets (accept: signature, key, number, the folder's signature file, trust.file_ok), and only
+-- while the folder's file is still what it was. A line that's gone takes its copy out here too. (rt-linkmove, round 3)
+local SHARED = "linked files" -- (lib/band.lua's shared_look reads the same key)
+local mine, gen_n = {}, 0 -- path -> the gen of the line this script wrote or has looked at
+local function fingerprint(s)
+  if s == nil then return "-" end
+  local h = 2166136261
+  for i = 1, #s do h = ((h ~ s:byte(i)) * 16777619) & 0xFFFFFFFF end
+  return #s .. ":" .. h
+end
+local function store_of(root, rel) return band.home() .. "/direct/" .. tostring(band.info(root).id) .. "/.linked/" .. rel end
+local function shared_lines(without)
+  local out = {}
+  for line in reaper.GetExtState(band.SECTION, SHARED):gmatch("[^\n]+") do
+    if line:sub(1, #without) ~= without then out[#out + 1] = line end
+  end
+  return out
+end
+-- -> true when the copy is where the other scripts find it.
+local function publish(root, rel, body, side, was, till)
+  if (reaper.GetResourcePath() or "") == "" or root:find("[\t\n]") then return false end
+  local store = store_of(root, rel)
+  reaper.RecursiveCreateDirectory(store:match("^(.*)/[^/]+$"), 0)
+  if body then band.write_atomic(store, body) else os.remove(store) end
+  if side then band.write_atomic(store .. ".sig", side) else os.remove(store .. ".sig") end
+  gen_n = gen_n + 1
+  local gen = string.format("%d.%d", math.floor(reaper.time_precise() * 1000), gen_n)
+  local lines = shared_lines(root .. "\t" .. rel .. "\t")
+  lines[#lines + 1] = table.concat({ root, rel, gen, was, till and string.format("%.3f", till) or "", body and "" or "1" }, "\t")
+  mine[root .. "/" .. rel] = gen
+  reaper.SetExtState(band.SECTION, SHARED, table.concat(lines, "\n"), false)
+  return true
+end
+local function retire(root, rel)
+  local store = store_of(root, rel)
+  os.remove(store); os.remove(store .. ".sig")
+  mine[root .. "/" .. rel] = nil
+  reaper.SetExtState(band.SECTION, SHARED, table.concat(shared_lines(root .. "\t" .. rel .. "\t"), "\n"), false)
+end
+local function let_go(path, l)
+  if l.shared then pcall(retire, l.root, l.rel) end
+  linked[path] = nil
+end
 -- About once a second: a link's copy goes when the folder's signature file is numbered after it (Syncthing brought a newer one's signature
 -- before its file, or the link's copy came late: never an older copy over a newer one), or when its time is up (a given claim: GIVEN_KEEP).
 local function tidy()
   local now = reaper.time_precise()
   if next(linked) == nil or math.abs(now - tidied) < 1 then return end
   tidied = now
-  for path, l in pairs(linked) do
-    if not band.overlay_of(path) then linked[path] = nil
+  -- (the paths first: band.read below may take another script's new copy in, signed.import, and a table can't grow while pairs walks it)
+  local paths = {}
+  for path in pairs(linked) do paths[#paths + 1] = path end
+  for _, path in ipairs(paths) do
+    local l = linked[path]
+    if not l then -- (let go meanwhile)
+    elseif not band.overlay_of(path) then let_go(path, l)
     else
       local have = l.seq and band.json_decode(band.read_raw(path .. ".sig") or "")
       if (l.till and now > l.till) or (type(have) == "table" and (tonumber(have.seq) or 0) > l.seq) then
         band.set_overlay(path, nil, nil, true)
         forget(l.root, l.kind)
-        linked[path] = nil
+        let_go(path, l)
       end
     end
   end
@@ -373,17 +429,64 @@ function signed.owner(root, rel, kind, j)
   return nil
 end
 -- A message "signed": { rel, body (nil: a tombstone), side }. -> true when it went in, or false and why.
-local on_msg
+local accept
 function signed.on_msg(cfg, d)
-  local ok, why = on_msg(cfg, d)
+  local ok, why = accept(cfg.root, cfg.user, d, nil)
   trace(ok and "in" or ("not taken (" .. tostring(why) .. ")"), type(d) == "table" and d.rel or "?")
   return ok, why
 end
-function on_msg(cfg, d)
+-- The copy another script on this computer took from the link (a line of "linked files"): into this script's band.overlay by the same
+-- checks, while the folder's file is still what it was then. Never an unsigned kind (profiles, colours, recaps: the web's, Live sync's own).
+local function take_shared(root, rel, was, till, del)
+  local kind = signed.kind(rel)
+  if not (kind and signed.LINK[kind]) or signed.OWN[kind] then return false end
+  local path, store = root .. "/" .. rel, store_of(root, rel)
+  if fingerprint(band.read_raw(path)) ~= was then return false, "the folder's file has changed since" end
+  local body, side = nil, band.read_raw(store .. ".sig")
+  if not del then body = band.read_raw(store) end
+  if not side or (not del and not body) then return false end
+  return accept(root, reaper.GetExtState(band.SECTION, "user"), { rel = rel, body = as_signed(rel, body), side = side }, till or false)
+end
+-- band.read's look (lib/band.lua shared_look) while "linked files" isn't empty: when it has changed, new lines taken and copies whose line is
+-- gone let go; and the tidy, so a given claim's minute ends in a script that never drains (the panel) too.
+local imported, importing, take_lines = nil, false, nil
+function signed.import(text)
+  if importing then return end
+  importing = true
+  pcall(function()
+    if text ~= imported then imported = text; take_lines(text) end
+    tidy()
+  end)
+  importing = false
+end
+function take_lines(text)
+  local now = {}
+  for line in tostring(text):gmatch("[^\n]+") do
+    local root, rel, gen, was, till, del = line:match("^([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)$")
+    if root and sw.rel_ok(rel) then
+      local path = root .. "/" .. rel
+      now[path] = gen
+      if mine[path] ~= gen then
+        mine[path] = gen
+        pcall(take_shared, root, rel, was, tonumber(till), del == "1")
+      end
+    end
+  end
+  for path in pairs(mine) do if not now[path] then mine[path] = nil end end
+  for path, l in pairs(linked) do
+    if l.shared and not now[path] then
+      band.set_overlay(path, nil, nil, true)
+      forget(l.root, l.kind)
+      linked[path] = nil
+    end
+  end
+end
+-- shared: nil for a message from the link; else the copy came from this computer's shared place, with its `till` (false: none).
+function accept(root, user, d, shared)
   if type(d) ~= "table" or type(d.rel) ~= "string" or (d.body ~= nil and type(d.body) ~= "string") or (d.side ~= nil and type(d.side) ~= "string") then
     return false, "not a signed file"
   end
-  local root, rel = cfg.root, d.rel
+  local rel = d.rel
   local kind = signed.kind(rel)
   if not (kind and signed.LINK[kind]) then return false, "not a file that comes over the link" end
   if #(d.body or "") > signed.BODY_MAX or #(d.side or "") > sw.SIDE_MAX then return false, "too big" end
@@ -396,12 +499,15 @@ function on_msg(cfg, d)
     if not (mime and (mime == "image/png" and "png" or "jpg") == rel:match("%.(%a+)$")) then return false, "not a profile picture" end
   end
   local here = band.overlay_of(path) -- (the same message again, while its copy is the one read: nothing to check twice)
-  if band.read(path) == body and (signed.OWN[kind] or (here and here.side or band.read(path .. ".sig")) == d.side) then return false, "already here" end
+  if band.read(path) == body and (signed.OWN[kind] or (here and here.side or band.read(path .. ".sig")) == d.side) then
+    if shared ~= nil and here and linked[path] then linked[path].shared = true end -- (another script here took the same message)
+    return false, "already here"
+  end
   -- (a claim given to this computer's person is folded into their own claims by sync.follow_claims, which must leave the link's copy alone
   -- until the folder's comes, or it folds it on every pass: taken here only where lib/sync.lua says it does, sync.GIVEN_WAITS. rt-linkmove)
   if kind == "given" then
     local g = band.json_decode(d.body or "")
-    if type(g) == "table" and g.user == cfg.user and require("sync").GIVEN_WAITS ~= true then return false, "given to you: it counts when Syncthing brings it" end
+    if type(g) == "table" and g.user == user and require("sync").GIVEN_WAITS ~= true then return false, "given to you: it counts when Syncthing brings it" end
   end
   if signed.OWN[kind] then -- (each one person's, checked by nobody today: only its shape, as its readers check it)
     local name = own_name(kind, d.body and band.json_decode(d.body))
@@ -412,6 +518,10 @@ function on_msg(cfg, d)
     if not by then return false, n end
     if deleted and kind ~= "removed" then return false, "only a removal mark is taken back" end
     if not fresh_ok(root, rel, n, sig) then return false, "older than one already taken" end
+    -- (a given claim's link copy is taken once on a computer: its file goes without a word when its person folds it in, and the same
+    -- message again would bring the claim back. The mark is beside its number, so the copy still checks out in the other scripts here)
+    local was = kind == "given" and shared == nil and load("seqs", root)[rel]
+    if type(was) == "table" and was[3] and (tonumber(was[1]) or 0) >= n then return false, "no older or repeated given claim: taken here once already" end
     -- (nor older than the folder's own signature file, whoever wrote it and whether or not a check has taken it yet: the link's copy would be
     -- read over a newer file. rt-linkmove)
     local have = band.json_decode(band.read_raw(path .. ".sig") or "")
@@ -419,16 +529,23 @@ function on_msg(cfg, d)
     if not signed.computer_of(root, by) then return false, "signed by a key no computer here is known by yet" end
     seq = n
   end
+  local was = shared == nil and not signed.OWN[kind] and fingerprint(band.read_raw(path))
   band.set_overlay(path, body, d.side)
   forget(root, kind)
   if signed.OWN[kind] then return true end
   local ok, said = pcall(require("trust").file_ok, root, rel)
   if ok and said == true then
     local g = kind == "given" and band.json_decode(d.body or "")
-    -- (a given claim's link copy is taken once on a computer: its file goes without a word when its person folds it in, and the same
-    -- message again would bring the claim back. Its number is spent; Syncthing's copy of it is judged by Syncthing, as before signing)
-    if g then take(root, rel, seq + 1, "") end
-    linked[path] = { root = root, kind = kind, seq = seq, till = g and g.user ~= cfg.user and reaper.time_precise() + signed.GIVEN_KEEP or nil }
+    local till = shared
+    if shared == nil then
+      till = g and g.user ~= user and reaper.time_precise() + signed.GIVEN_KEEP or false
+      if g then take(root, rel, seq, tostring(band.json_decode(d.side).sig):lower(), true) end
+    end
+    linked[path] = { root = root, rel = rel, kind = kind, seq = seq, till = till or nil, shared = shared ~= nil }
+    if shared == nil then
+      local okp, there = pcall(publish, root, rel, body, d.side, was, till or nil)
+      linked[path].shared = okp and there == true
+    end
     return true
   end
   band.set_overlay(path, nil, nil, true)

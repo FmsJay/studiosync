@@ -255,8 +255,21 @@ end
 -- or anyone's newer one), the folder's is read again, with its own checks. key -> { bytes (nil: deleted), side, was, dir, name }. (rt-linkfirst)
 band.overlay = {}
 local function okey(p) return (tostring(p):gsub("\\", "/"):lower()) end
+-- (and the copies another script on this computer took from the link, the panel beside Live sync: lib/signed.lua lists them in the
+-- ExtState "linked files"; while that isn't empty, signed.import takes new ones into this script's own overlay by the same checks and lets
+-- go of those whose time is up. rt-linkmove)
+local shared_seen = ""
+local function shared_look()
+  local get = reaper.GetExtState
+  local t = get and get(band.SECTION, "linked files")
+  if type(t) ~= "string" or (t == "" and shared_seen == "") then return end
+  shared_seen = t
+  local ok, s = pcall(require, "signed")
+  if ok and type(s) == "table" and s.import then pcall(s.import, t) end
+end
 function band.read(path)
   local s = band.read_raw(path)
+  shared_look()
   if next(band.overlay) ~= nil then
     local k = okey(path)
     local o = band.overlay[k]
@@ -329,6 +342,7 @@ function band.set_overlay(path, bytes, side, off)
 end
 -- A folder's names with the link's copies in it: new files added, deleted ones left out. `names` is shared, so a new table when that changes it.
 local function with_overlay(dir, names, ext)
+  shared_look()
   if next(band.overlay) == nil then return names end
   local d = okey(dir):gsub("/+$", "")
   local add, drop = {}, {}

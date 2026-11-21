@@ -45,6 +45,7 @@ local function computer(who)
   c.cfg = { root = c.root, user = who.name }
   c.reaper = setmetatable({
     time_precise = function() return clock end, GetOS = function() return "Win64" end,
+    GetResourcePath = function() return c.res or (T .. "/" .. who.name .. "/res") end, -- (this computer's own folder: band.home, never synced)
     GetExtState = function(_, k) return c.ext[k] or "" end, SetExtState = function(_, k, v) c.ext[k] = tostring(v) end,
     DeleteExtState = function(_, k) c.ext[k] = nil end,
     EnumerateFiles = function(dir, i)
@@ -458,6 +459,75 @@ write(Q.root .. "/" .. TLO, json({ user = "Olive", at = 0, order = "2099-01-01T0
 Q.by_file[TLO] = moe.dev:sub(1, 7)
 clock = clock + 3
 check(studio_order(Q) == S1, "and one Syncthing says Moe's computer wrote under Olive's name: left out, as before")
+
+-- ==== Another script on the same computer (the ImGui panel beside Live sync) reads the link's copies too ============================================
+-- Live sync took them from the link; the panel is a script of its own, with its own modules and its own band.overlay, the same folder,
+-- saved state and home. `other(c)`: such a script on c's computer.
+local function other(c)
+  local p = computer(c.who)
+  p.root, p.cfg, p.ext, p.by_file, p.services = c.root, c.cfg, c.ext, c.by_file, c.services
+  return p
+end
+local W = studio(computer(cy), true) -- (Cy's computer: Live sync)
+write(W.root .. "/" .. RDIR .. "/mode.json", json({ mode = "admins", by = "Olive" }))
+use(A)
+clock = clock + 2
+check(require("grants").set(A.cfg, SONG, ROOM, "Moe", true), "Ann lets Moe edit")
+local gp = drained(A, GR)[1]
+use(A)
+require("sync").give_claims(A.cfg, SONG, ROOM, "Olive", { "Pads" })
+local gvp = drained(A)[1]
+check(gp and gvp and gvp.rel:find("given%-Olive%-"), "(a grant and a given claim from Ann)")
+check(deliver(W, gp) == true and deliver(W, gvp) == true, "Cy's Live sync takes both from the link")
+check((W.ext["linked files"] or ""):find(GR, 1, true) and (W.ext["linked files"] or ""):find(gvp.rel, 1, true), "and lists them for the other scripts on this computer")
+local store = W.reaper.GetResourcePath() .. "/StudioSync/direct/" .. STUDIO .. "/.linked/"
+check(read(store .. GR) == gp.body and read(store .. GR .. ".sig") == gp.side and read(W.root .. "/" .. GR) == nil, "kept in this computer's own folder, not the synced one")
+local WP = other(W)
+WP.asked = 0
+use(WP)
+check(next(require("band").overlay) == nil, "(the panel script starts with no link copies of its own)")
+check(require("grants").list(WP.cfg, SONG, ROOM).Moe ~= nil and WP.asked == 0, "the panel shows the grant at once, by its signature (Syncthing not asked)")
+check(owner_of(WP, "Pads") == "Olive", "and the given claim")
+check(overlaid(WP, GR) and read(W.root .. "/" .. GR) == nil, "from its own overlay: nothing in the synced folder")
+-- the same checks in the panel: a copy put into the shared place by hand is not believed
+local fgr = RDIR .. "/grants/Moe.json"
+local fg = json({ by = "Moe", users = { Cy = { on = true, at = "2099-01-01T00:00:00Z" } } })
+write(store .. fgr, fg); write(store .. fgr .. ".sig", resign(moe, fgr, fg, FAR))
+W.ext["linked files"] = W.ext["linked files"] .. "\n" .. table.concat({ W.root, fgr, "9.9", "-", "", "" }, "\t")
+check(require("grants").list(WP.cfg, SONG, ROOM).Cy == nil and not overlaid(WP, fgr), "a member's grant slipped into the shared place: refused by the same check")
+-- nor one the folder has moved on from: Syncthing's file is there now, and it's the one read
+local og = json({ by = "Olive", users = { Cy = { on = true, at = "2099-01-01T00:00:00Z" } } })
+local ogr = RDIR .. "/grants/Olive.json"
+write(store .. ogr, og); write(store .. ogr .. ".sig", resign(olive, ogr, og, FAR))
+write(W.root .. "/" .. ogr, json({ by = "Olive", users = {} }))
+W.ext["linked files"] = W.ext["linked files"] .. "\n" .. table.concat({ W.root, ogr, "9.10", "-", "", "" }, "\t")
+clock = clock + 3
+check(require("grants").list(WP.cfg, SONG, ROOM).Cy == nil and not overlaid(WP, ogr), "a copy from before the folder's file changed isn't read over it")
+os.remove(W.root .. "/" .. ogr)
+-- Live sync reloaded (an update): the new script has them again
+local W2 = other(W)
+use(W2)
+check(require("grants").list(W2.cfg, SONG, ROOM).Moe ~= nil and owner_of(W2, "Pads") == "Olive", "a reloaded Live sync reads the link's copies again")
+-- Syncthing's copy of the grant arrives: Live sync lets its copy go and takes it off the list; the panel reads the folder's, the same grant
+syncthing(W, A, GR)
+drained(W)
+check(not (W.ext["linked files"] or ""):find("\t" .. GR .. "\t", 1, true) and read(store .. GR) == nil, "Syncthing's copy arrives: off the list, out of this computer's folder")
+use(WP)
+check(require("grants").list(WP.cfg, SONG, ROOM).Moe ~= nil and not overlaid(WP, GR), "the panel reads the folder's file now, and the grant stands")
+-- the given claim's minute is up (no file ever came here): gone in Live sync, and in the panel with it
+clock = clock + require("signed").GIVEN_KEEP + 5
+drained(W)
+check(owner_of(W, "Pads") == nil and owner_of(WP, "Pads") == nil and not overlaid(WP, gvp.rel), "a given claim's minute ends in the panel when it ends in Live sync")
+check(deliver(W, gvp) == false, "and the same given claim again is still refused (taken once)")
+-- Live sync quiet since (stopped, or busy): the panel ends a given claim's minute by itself
+use(A)
+clock = clock + 2
+require("sync").give_claims(A.cfg, SONG, ROOM, "Olive", { "Drums" })
+local gv3 = drained(A)[1]
+check(gv3 and deliver(W, gv3) == true, "(another given claim, taken by Cy's Live sync)")
+check(owner_of(WP, "Drums") == "Olive", "the panel shows it")
+clock = clock + require("signed").GIVEN_KEEP + 5
+check(owner_of(WP, "Drums") == nil and not (W.ext["linked files"] or ""):find(gv3.rel, 1, true), "with no Live sync tick since, the panel ends its minute and takes it off the list")
 
 -- ==== The roles: a refused link copy never gets the owner's own file refused after it (trust.roles' verdicts) =======================================
 -- Olive (the owner) makes Bee an admin. Ann (an admin) re-signs those very words and gets them to Moe's computer first.

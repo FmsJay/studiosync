@@ -35,7 +35,7 @@ put("RB", "main", "a.wav", 100)
 band.size = function(p) return disk[p] end
 band.subdirs = function(dir)
   if dir == "RA/Song/rooms" or dir == "RB/Song/rooms" then return { "main", "side" } end
-  return dir:match("^R[AB]/Song/rooms/[^/]+$") and { "events" } or {}
+  return (dir:match("^R[AB]/Song/rooms/main$") or dir:match("^R[AB]/Song/rooms/side$")) and { "events" } or {}
 end
 local was_files = band.files
 band.files = function(dir, ext)
@@ -47,6 +47,44 @@ band.files = function(dir, ext)
   return out
 end
 reaper.StudioSync_DirectFileTime = function(p) return mtime[p] or -1 end
+-- each computer's changes (events folder -> { [file] = event }), history trim's lists (trimmed folder -> { [file] = ids }), what else is a
+-- file (the link's inbox), and what the link sent as files (StudioSync_DirectSend) and wrote here
+local evdirs, trimdirs, onfile, filesent, written = {}, {}, {}, {}, {}
+local TODAY = os.date("!%Y%m%d")
+local function ev(root, room, id, e)
+  local d = root .. "/Song/rooms/" .. room .. "/events"
+  evdirs[d] = evdirs[d] or {}
+  evdirs[d][id .. ".json"], onfile[d .. "/" .. id .. ".json"] = e or { id = id }, true
+end
+local evn = 0
+local function id_of(by, day) evn = evn + 1; return string.format("%s-%s-100000Z-%05d-0001", by, day or TODAY, evn) end
+-- an item change that plays `file` (gone: the item deleted)
+local function play(root, room, file, oid, gone)
+  local id = id_of("Ann")
+  ev(root, room, id, { id = id, oid = oid or ("{O" .. evn .. "}"), time = string.format("2026-11-21T10:%02d:00Z", evn % 60), gone = gone, state = 'FILE "{media:' .. room .. '}/' .. file .. '"' })
+  return id
+end
+local inner_files = band.files
+band.files = function(dir, ext)
+  local t = evdirs[dir] or trimdirs[dir]
+  if not t then return inner_files(dir, ext) end
+  local out = {}
+  for f in pairs(t) do out[#out + 1] = f end
+  table.sort(out)
+  return out
+end
+local was_json = band.read_json
+band.read_json = function(p)
+  local d, f = p:match("^(.*)/([^/]+)$")
+  if evdirs[d] then return evdirs[d][f] end
+  if trimdirs[d] then return trimdirs[d][f] end
+  return was_json(p)
+end
+band.write_atomic = function(p, s) written[p] = s end
+reaper.file_exists = function(p) return onfile[p] == true end
+reaper.StudioSync_DirectSend = function(id, rel, path, to) filesent[#filesent + 1] = { id = id, rel = rel, path = path, to = to }; return 1 end
+-- Bee's song plays these (her computer's own changes): fetched from a bandmate's list only while it does
+play("RB", "main", "b.wav"); play("RB", "side", "c.flac"); play("RB", "main", "d.wav"); play("RB", "main", "new.wav")
 
 -- the link: who's here from each computer, and what was sent
 local me, here, here_dev, sent, started = BEE, {}, {}, {}, {}
@@ -166,5 +204,84 @@ clock = clock + needlist.KEEP + 1
 assert(#needlist.pending({}, "Song", here_b) == 0, "a want never fetched in an hour goes (Syncthing brings it as ever)")
 needlist.tick(cfgB, b)
 assert(last().kind == "need_ask" and last().d.seen == nil, "and that list is asked for again")
+
+-- ---- a bandmate's file the song doesn't play is never fetched: "deleted while Live sync wasn't running" ----
+as("Bee")
+local function files_of(list) local t = {}; for _, w in ipairs(list) do t[#t + 1] = w.file end; table.sort(t); return table.concat(t, " ") end
+play("RB", "main", "gone.wav", "{GONE}"); play("RB", "main", "gone.wav", "{GONE}", true) -- (its item deleted since)
+assert(needlist.on_list(cfgB, b, with({ digest = "3|15", files = { { "main", "unused.wav", 4 }, { "main", "gone.wav", 5 }, { "main", "back.wav", 6 } } })) == 3, "(all three lacking here: kept as wants)")
+clock = clock + streams.CATCHUP_LOOK
+assert(files_of(needlist.pending({}, "Song", here_b)) == "", "none is fetched: the song plays none of them (one never did, one's item was deleted)")
+local syn = { { room = "main", file = "unused.wav", size = 4, key = "Song/main/unused.wav" } }
+assert(needlist.pending(syn, "Song", here_b) == syn, "Syncthing's own wants are its word, as before")
+play("RB", "main", "back.wav")
+clock = clock + streams.CATCHUP_LOOK
+assert(files_of(needlist.pending({}, "Song", here_b)) == "back.wav", "a change that plays one is here now: that one is fetched")
+
+-- ---- events: Bee's computer comes back and asks Ann's for the changes it lacks ----
+local e_have = id_of("Ann"); ev("RA", "main", e_have); ev("RB", "main", e_have)
+local e_new, e_side = id_of("Moe"), id_of("Moe"); ev("RA", "main", e_new); ev("RA", "side", e_side)
+local e_week = id_of("Moe", os.date("!%Y%m%d", os.time() - 3 * 86400)); ev("RA", "main", e_week)
+local e_old = id_of("Moe", os.date("!%Y%m%d", os.time() - 70 * 86400)); ev("RA", "main", e_old)
+local e_trim = id_of("Moe"); ev("RA", "main", e_trim)
+trimdirs["RB/Song/rooms/main/trimmed"] = { ["Olive-20261101-000000.json"] = { e_trim } }
+local e_mine = id_of("Bee"); ev("RA", "main", e_mine)
+local e_inbox = id_of("Moe"); ev("RA", "main", e_inbox)
+local INBOX = "H/direct/studio1/Song/rooms/main/events/"
+onfile[INBOX .. e_inbox .. ".json"] = true -- (came over the link already)
+as("Bee"); here, here_dev = {}, {}
+needlist.tick(cfgB, b) -- (alone a moment: nobody to ask)
+as("Bee")
+clock = clock + 1
+assert(needlist.tick(cfgB, b) == 1 and type(last().d.evs) == "table" and last().d.evs.main and last().d.evs.side, "back with a bandmate: the ask carries its event ids per room and day")
+local eask = band.json_decode(band.json_encode(last().d))
+as("Ann")
+clock = clock + needlist.ANSWER_EVERY
+local before_e = #sent
+needlist.on_ask(cfgA, b, eask)
+local lists = {}
+for k = before_e + 1, #sent do if sent[k].d.evs then lists[sent[k].d.room] = sent[k].d; assert(sent[k].to[1] == "bee.ts.net:47281" and sent[k].kind == "need_list", "to the asker alone") end end
+local main_ids = table.concat(lists.main and lists.main.evs or {}, " ")
+assert(main_ids:find(e_new, 1, true) and main_ids:find(e_week, 1, true) and not main_ids:find(e_old, 1, true) and lists.side and lists.side.evs[1] == e_side,
+  "Ann's computer answers with its ids for each day that differs, never one older than EV_DAYS")
+as("Bee")
+before_e = #sent
+assert(needlist.on_list(cfgB, b, band.json_decode(band.json_encode(lists.main))) == 2, "Bee's computer asks for the two it lacks (not one it has, one trimmed, its own, or one in the link's inbox)")
+local want = sent[#sent]
+assert(#sent == before_e + 1 and want.kind == "need_ask" and want.to[1] == "ann.ts.net:47281" and want.d.want.room == "main"
+  and table.concat(want.d.want.ids, " ") == table.concat({ e_week, e_new }, " "), "from the one that listed them")
+assert(written["H/direct/studio1/Song/rooms/main/.boot"], "and the link's inbox keeps them a day from now (they're older than a day by name)")
+assert(needlist.on_list(cfgB, b, band.json_decode(band.json_encode(lists.main))) == 0, "the same list again: nothing asked twice")
+assert(needlist.on_list(cfgB, b, band.json_decode(band.json_encode(lists.side))) == 1, "the other room's")
+-- media waits while changes are on their way (one may be the one that deleted its item)
+clock = clock + streams.CATCHUP_LOOK
+assert(files_of(needlist.pending({}, "Song", here_b)) == "", "back.wav waits for the changes on their way")
+as("Ann")
+assert(needlist.on_ask(cfgA, b, band.json_decode(band.json_encode(want.d))) == 2 and #filesent == 2, "Ann's computer sends the two files over the link")
+assert(filesent[2].rel == "Song/rooms/main/events/" .. e_new .. ".json" and filesent[2].path == "RA/Song/rooms/main/events/" .. e_new .. ".json"
+  and filesent[1].to == "bee.ts.net:47281" and filesent[2].id == "studio1", "as every new change goes: into Bee's inbox, the event file's own path")
+as("Bee")
+onfile[INBOX .. e_new .. ".json"], onfile[INBOX .. e_week .. ".json"] = true, true -- (they landed)
+onfile["H/direct/studio1/Song/rooms/side/events/" .. e_side .. ".json"] = true
+assert(files_of(needlist.pending({}, "Song", here_b)) == "back.wav", "they're here: back.wav is fetched")
+-- once a round brings nothing, the ids stop going
+clock = clock + needlist.EVERY
+assert(needlist.tick(cfgB, b) == 1 and last().d.evs, "the round after one that brought some carries the ids again")
+assert(needlist.on_list(cfgB, b, band.json_decode(band.json_encode(lists.main))) == 0, "nothing new")
+clock = clock + needlist.EVERY
+assert(needlist.tick(cfgB, b) == 1 and last().d.evs == nil, "then they stop, until who's here changes")
+-- refused
+local function evlist(t) local c = { dev = ANN, room = "main", evs = { id_of("Moe") } }; for k, v in pairs(t) do c[k] = v end; return c end
+assert(needlist.on_list(cfgB, b, evlist({ dev = EVE })) == false and needlist.on_list(cfgB, b, evlist({ dev = BEE })) == false, "an id list from a computer not here, or this one's")
+assert(needlist.on_list(cfgB, b, evlist({ room = ".." })) == false and needlist.on_list(cfgB, b, evlist({ room = "nope" })) == false, "for a room that isn't a name, or isn't here")
+local many_ids = {}
+for i = 1, needlist.EV_PER_MSG + 1 do many_ids[i] = id_of("Moe") end
+assert(needlist.on_list(cfgB, b, evlist({ evs = many_ids })) == false, "more ids than a message holds")
+assert(needlist.on_list(cfgB, b, evlist({ evs = { "../x", "a/b", "Moe-x", 5, "Moe-" .. TODAY .. "-1.json" } })) == 0, "ids the link won't name a file by: none asked for")
+as("Ann")
+local n0 = #filesent
+assert(needlist.on_ask(cfgA, b, { dev = BEE, want = { room = "main", ids = { "../../x", "a/b" } } }) == 0 and #filesent == n0, "a want naming paths sends nothing")
+assert(needlist.on_ask(cfgA, b, { dev = EVE, want = { room = "main", ids = { e_new } } }) == 0 and #filesent == n0, "nor one from a computer not here")
+assert(needlist.on_ask(cfgA, b, { dev = BEE, want = { room = "main", ids = { "Moe-" .. TODAY .. "-000000Z-99999-0001" } } }) == 0, "nor a change it doesn't hold")
 
 print("ok link need list")
