@@ -84,6 +84,12 @@ assert(fs[k("/r/_band/devices/James.json")] and fs[k("/r/_band/devices/James.jso
 assert(fs[k("/r/_band/colours/James.json")] and fs[k("/r/_band/colours/James.json")].colour == 5, "the colour stays")
 local c = fs[k("/r/Song/rooms/main/claims/James.json")]
 assert(c and c.user == "James" and c.tracks[1] == "Gtr", "the claims stay (writing the new name then removing the old deleted them all)")
+-- (rt-p3) to another name: the old claims and devices files' signature files (lib/signed.lua) go with them, not left for good
+fs[k("/r/_band/devices/Bo.json")], fs[k("/r/_band/devices/Bo.json.sig")] = { user = "Bo", device = "BBBBBBB-B" }, "sig"
+fs[k("/r/Song/rooms/main/claims/Bo.json")], fs[k("/r/Song/rooms/main/claims/Bo.json.sig")] = { user = "Bo", tracks = { "Bass" } }, "sig"
+band.rename("/r", "Bo", "Bob")
+assert(fs[k("/r/_band/devices/Bob.json")] and fs[k("/r/Song/rooms/main/claims/Bob.json")], "(moved to the new name)")
+assert(fs[k("/r/_band/devices/Bo.json.sig")] == nil and fs[k("/r/Song/rooms/main/claims/Bo.json.sig")] == nil, "the old signature files go too")
 os.remove = real_remove
 
 -- names: Windows' reserved names, and a name that cleans to nothing

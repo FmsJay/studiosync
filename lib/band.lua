@@ -274,6 +274,9 @@ function band.read(path)
     local k = okey(path)
     local o = band.overlay[k]
     if o and s == o.was then return o.bytes end
+    -- (the folder's file changed to an older signed copy than the link's, Syncthing bringing an earlier write late: the link's copy stays
+    -- read, over the folder's file as it is now. lib/signed.lua keeper, rt-p3)
+    if o and o.keep and s and o.keep(s) then o.was = s; return o.bytes end
     if o then band.overlay[k] = nil end
   end
   if s == nil then return band.boot_copy(path) end -- (a studio just joined by invitation: its welcome's copy, lib/joinboot.lua)
@@ -330,13 +333,14 @@ function band.remove(path)
   if ok then signed_hook("on_remove", path) end
   return ok, e
 end
--- Put the link's copy of `path` in (bytes nil: deleted), or take it out (off).
-function band.set_overlay(path, bytes, side, off)
+-- Put the link's copy of `path` in (bytes nil: deleted), or take it out (off). keep(folder's bytes) -> true: a changed folder file is an older
+-- copy than this one, which stays read (band.read).
+function band.set_overlay(path, bytes, side, off, keep)
   local k = okey(path)
   if off then band.overlay[k] = nil
   else
     local dir, name = tostring(path):gsub("\\", "/"):match("^(.*)/([^/]+)$")
-    band.overlay[k] = { bytes = bytes, side = side, was = band.read_raw(path), dir = okey(dir or ""), name = name }
+    band.overlay[k] = { bytes = bytes, side = side, was = band.read_raw(path), dir = okey(dir or ""), name = name, keep = keep }
   end
   unlist(path)
 end
@@ -662,16 +666,19 @@ function band.rename(root, old, new)
   -- (each file read, the old one removed, then the new one written: "james" to "James" on a Windows or Mac disk is one file, and writing the new
   -- name then removing the old deleted every claims file, the colour and the devices file. Round 1 review, 0.59.45)
   local same = file(old):lower() == file(new):lower()
+  -- (and its signature file, lib/signed.lua: a claims or devices file's .sig stayed under the old name for good. Removed before the new
+  -- file is written, so on a case-only rename the new one's .sig is written after. rt-p3)
+  local function gone(p) band.remove(p); os.remove(p .. ".sig") end
   local function move(dir, t)
     if type(t) ~= "table" then return false end
     t.user = new
-    if file(old) ~= file(new) then band.remove(dir .. "/" .. file(old)) end
+    if file(old) ~= file(new) then gone(dir .. "/" .. file(old)) end
     band.write_json(dir .. "/" .. file(new), t)
     return true
   end
   local ddir = root .. "/_band/devices"
   local dev = band.read_json(ddir .. "/" .. file(old)) -- (its names on each Tailscale network go along: services.pin_tailnet)
-  if not (type(dev) == "table" and (same or not reaper.file_exists(ddir .. "/" .. file(new))) and move(ddir, dev)) then band.remove(ddir .. "/" .. file(old)) end
+  if not (type(dev) == "table" and (same or not reaper.file_exists(ddir .. "/" .. file(new))) and move(ddir, dev)) then gone(ddir .. "/" .. file(old)) end
   band.remove(root .. "/plugins/" .. file(old))
   band.remove(root .. "/plugins/" .. (old:gsub("[^%w%-_]", "_")) .. ".json") -- (the name lib/plugins.lua gives it: a name with a space stayed listed twice)
   move(root .. "/_band/colours", band.read_json(root .. "/_band/colours/" .. file(old)))

@@ -856,8 +856,8 @@ a separate last commit, "Need list on by default", to hold back until the round 
   small enough for the link, and the whole is checked exactly as a small file is. An older StudioSync ignores the parts and gets the file
   from Syncthing, as before.
 - **Take control shows in the panel at once:** driver.json goes over the link from the new driver's own computer.
-- **An older copy that Syncthing brings late no longer replaces a newer one for long.** If the link brought a newer write first, the newer
-  one is read again within a second, and stays until Syncthing brings it.
+- **An older copy that Syncthing brings late no longer replaces a newer one.** If the link brought a newer write first, the newer one stays
+  read (at once; within a second if the older file's signature lands after it) until Syncthing brings it.
 - **Catch-up's cloud check no longer reads Google Drive on REAPER's thread** when the cloud copy's worker is on.
 - **A bug from round 5, fixed:** the link's 8-second start hold had the same name as the edit hold, so a bandmate's edit counted as "being
   edited" for 8 s instead of 3 (the track tint and the "Bo is editing that item too" warning stayed longer). It's 3 s again.
@@ -876,10 +876,10 @@ a separate last commit, "Need list on by default", to hold back until the round 
 | `room.json`, room summaries, plays lists | **Not moved**, on purpose: item 4. |
 | A person with two computers | **Not fixable in P3's files**: a design question, item 7. |
 | `nat:` peers' hello | **Not built**: needs `lib/nat.lua` (P13), item 8. |
-| An older folder copy over a newer link copy | **Narrowed** to at most a second (the tidy). A line in `lib/band.lua` closes it: hooks. |
+| An older folder copy over a newer link copy | **Done**: `band.read` keeps the link's copy at once (follow-up commit); the tidy covers a signature file landing late. |
 | `streams.lua`'s cloud check off REAPER's thread | **Done** with the worker on (`drivebg.known_size`). |
 | List-only songs' `session.json.sig` | P2's (`lib/songsync.lua`), not touched. |
-| `band.rename` leaves an old `.sig` | `lib/band.lua` (P2's): hooks. |
+| `band.rename` leaves an old `.sig` | **Done** (follow-up commit): the old claims and devices files' `.sig` go too. |
 | Found: `presence.HOLD` set to 8 by round 5 | **Fixed** (renamed `LINK_HOLD`), item 9. |
 
 ### Item 1: the need list on by default
@@ -954,8 +954,11 @@ has a signature that checks out for its bytes and is numbered before the link's 
 it is now, and Live sync shares it again for the panel. A folder file without a matching signature (an older build rewrote it, or its
 signature file hasn't landed yet) is read, as before. When Syncthing brings the newest, the link's copy is let go as before.
 
-Left: up to a second of the older file between Syncthing landing it and the tidy; and the moment the folder's file has landed but its
-signature file hasn't. Hook 1 below closes the first.
+**Follow-up (once P2 freed `lib/band.lua`):** `band.read` itself asks before it drops the link's copy. Each overlay entry carries `keep`
+(`signed` keeper: the same signature check on the folder's bytes, the studio id taken beforehand so it never reads band.json inside
+band.read), so an older signed copy landing whole is never read, not even until the tidy; Live sync shares the copy again for the panel
+then. Left: the moment the folder's file has landed but its signature file hasn't (the older file is read), until the tidy after the
+signature file lands (at most a second).
 
 ### Item 6: catch-up's cloud check
 
@@ -995,29 +998,21 @@ counts as being edited (`presence.editing`: the status file's `editing` list, wh
 "Bo is editing that item too" warning; 3 s since rt-merge). Loading presence.lua set it to 8 for everyone. Renamed `LINK_HOLD`; `HOLD` is 3
 again.
 
-### Hooks in files I may not touch
+### Hooks
 
-1. **`lib/band.lua` `band.read` (P2's file): never the older folder copy, not even for the tidy's second.** Where it drops the link's copy
-   because the folder's file changed, ask first:
-
-   ```lua
-       if o and s == o.was then return o.bytes end
-       if o and o.keep and s and o.keep(s) then o.was = s; return o.bytes end -- (the folder's file is an older signed copy: lib/signed.lua, rt-p3)
-       if o then band.overlay[k] = nil end
-   ```
-
-   and `lib/signed.lua` gives the overlay's entry `keep` (keep_newer's signature check on the folder's bytes; 3 lines, mine, once that line
-   is in).
-2. **`lib/band.lua` `band.rename`:** where it removes the old name's claims file, also `os.remove(<that path> .. ".sig")`.
-3. **`lib/nat.lua` (P13):** item 8.
-4. **Section 4 of the backlog:** item 7's question.
+1. **`lib/band.lua` `band.read`: done** in the follow-up commit (`band.set_overlay`'s new `keep`, one line in `band.read`, `signed` keeper).
+2. **`lib/band.lua` `band.rename`: done** in the follow-up commit (`gone`: the file and its `.sig`).
+3. **`lib/nat.lua` (P13):** item 8, still open.
+4. **Section 4 of the backlog:** item 7's question, added in the follow-up commit (question 12).
 
 ### Files touched this round
 
 Only P3's: `lib/presence.lua` (the rename), `lib/direct.lua` (`studio_peers`, `strangers`), `lib/signed.lua`, `lib/streams.lua` (the cloud
 check), `lib/needlist.lua` (the measure budget; the default in its own commit). Tests: `tests/test_0_60_rt_linkmove.lua` (block "rt-p3"),
 `tests/test_0_60_rt_linkmove_need.lua`, `tests/test_0_60_rt_catchup.lua`, `tests/test_0_60_rt_catchup_link.lua`, and one stand-in line in
-`tests/test_0_60_rt_linkfirst.lua` (`studio_peers` on its stand-in link).
+`tests/test_0_60_rt_linkfirst.lua` (`studio_peers` on its stand-in link). Follow-up: `lib/band.lua` (`band.read`, `band.set_overlay`,
+`band.rename`) with `tests/test_0_59_45_trust.lua` (a rename's old `.sig` files go) and the race block in `tests/test_0_60_rt_linkmove.lua`
+(an older signed copy landing whole is never read; a signature file landing after its file: put back at the next tidy).
 
 ### Tests
 
@@ -1086,7 +1081,7 @@ delivering them out of order). Offline test only.
 ### Not done or not tested
 
 - Not run in REAPER (the checks above).
-- Items 7 and 8, and the hooks above.
+- Items 7 and 8.
 - Files over 256 KB stay on Syncthing. The welcome's 30 KB (`lib/joinboot.lua`, P10) is unchanged.
 - Restore points, mixes and stems, the update code: not moved, on purpose (the table in round 1).
 

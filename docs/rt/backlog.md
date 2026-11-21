@@ -439,6 +439,10 @@ of modes, SonoBus's extras, classic Jam (rt-audit 6, 7, 9, 10; built by rt-merge
 9. (was 11) Should a startup script that writes the grid keep making the grid per computer? Default: yes, reversible in `compat.run_check`. (rt-compat §6)
 10. (was 13) Is a low-res video proxy wanted later? Default: no. (rt-video2)
 11. (was 14) The BandSync rename shims: keep until a "drop pre-0.5 projects" release, if ever? Default: keep. (rt-audit §15)
+12. (new, rt-p3) One person, two computers? A person has one devices file naming one computer, so a second computer rewrites it every 30 s
+    and own files, the link's sends, NAT pairing and the key learnt flip between the two. Supporting it needs a devices model per computer and a rule
+    for who may add someone's second computer (a security design; removal, trust, direct, nat, joinboot, presence). Default: not built; one computer per
+    person per studio (a second name for a second computer). (rt-linkmove round 6, item 7)
 
 Open since round 5-7 (kept with their defaults in section 1 and the packages):
 - a. Edit > Undo undoing a heal or put-back point, and whether every put-back is its own StudioSync undo point or only a Keep's (items 1.7; round 6 question 2). Default: as built.

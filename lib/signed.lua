@@ -337,21 +337,37 @@ local function let_go(path, l)
   if l.shared then pcall(retire, l.root, l.rel) end
   linked[path] = nil
 end
--- Syncthing brought an earlier write after the link brought a later one: band.read dropped the link's copy because the folder's file changed,
--- but that file is signed and numbered before the copy, so the copy goes back in (over the folder's file as it is now) until the folder's is
--- as new. Only a folder file whose own signature checks out says "older": one an older build rewrote unsigned (a stale signature file) is
--- read, as before. -> true when put back. (rt-p3. shortcut: band.read reads the older file until this tidy, at most a second; asking here
--- from band.read itself is a line in lib/band.lua)
-local function keep_newer(path, l)
-  if not (l.body and l.seq) then return false end
-  local bytes, side = band.read_raw(path), band.read_raw(path .. ".sig")
+-- Syncthing brought an earlier write after the link brought a later one. Is `bytes`, the folder's file now, signed and numbered before the
+-- link's copy (seq)? Only a folder file whose own signature checks out says "older": one an older build rewrote unsigned (a stale signature
+-- file) is read, as before. id: the studio's, taken beforehand (band.read asks this, and band.info reads band.json). (rt-p3)
+local function older(id, rel, path, seq, bytes)
+  local side = band.read_raw(path .. ".sig")
   if not (bytes and side) then return false end
-  local by, n = sw.signer(verify, tostring(band.info(l.root).id), l.rel, as_signed(l.rel, bytes), side)
-  if not (by and n < l.seq) then return false end
-  band.set_overlay(path, l.body, l.side)
+  local by, n = sw.signer(verify, id, rel, as_signed(rel, bytes), side)
+  return by ~= nil and n < seq
+end
+-- band.read's `keep` for a link copy numbered seq (lib/band.lua set_overlay): it stays read over an older folder copy at once, and Live sync
+-- shares it again for the panel (the shared line names the folder's file as it is now). -> the function, or nil (no number: unsigned kinds).
+local function keeper(root, rel, seq)
+  if not seq then return nil end
+  local id, path = tostring(band.info(root).id), root .. "/" .. rel
+  return function(bytes)
+    local ok, yes = pcall(older, id, rel, path, seq, bytes)
+    if not (ok and yes) then return false end
+    local l = linked[path]
+    if l and l.own and l.shared then pcall(publish, root, rel, l.body, l.side, fingerprint(bytes), l.till) end
+    trace("kept over an older folder copy", rel)
+    return true
+  end
+end
+-- The same, for a copy band.read already dropped: the folder's file landed before its signature file did, so it couldn't say "older" then.
+-- The tidy asks again and puts the copy back in. -> true when put back.
+local function keep_newer(path, l)
+  if not l.body then return false end
+  local keep = keeper(l.root, l.rel, l.seq)
+  if not (keep and keep(band.read_raw(path))) then return false end
+  band.set_overlay(path, l.body, l.side, nil, keep)
   forget(l.root, l.kind)
-  if l.own and l.shared then pcall(publish, l.root, l.rel, l.body, l.side, fingerprint(bytes), l.till) end
-  trace("kept over an older folder copy", l.rel)
   return true
 end
 -- About once a second: a link's copy goes when the folder's signature file is numbered after it (Syncthing brought a newer one's signature
@@ -619,7 +635,7 @@ function accept(root, user, d, shared)
     seq = n
   end
   local was = shared == nil and not signed.OWN[kind] and fingerprint(band.read_raw(path))
-  band.set_overlay(path, body, d.side)
+  band.set_overlay(path, body, d.side, nil, keeper(root, rel, seq))
   forget(root, kind)
   if signed.OWN[kind] then return true end
   local ok, said = pcall(require("trust").file_ok, root, rel)
@@ -642,7 +658,7 @@ function accept(root, user, d, shared)
   end
   band.set_overlay(path, nil, nil, true)
   -- (the link's copy that was read here before this one stays: a refused message took a good one out with it. rt-linkmove)
-  if here then band.set_overlay(path, here.bytes, here.side) end
+  if here then band.set_overlay(path, here.bytes, here.side, nil, here.keep) end
   forget(root, kind)
   return false, ok and "not from someone who may" or tostring(said)
 end

@@ -740,9 +740,10 @@ do
   band.write_json(A.root .. "/" .. S2, { host = "Ann", song = SONG, v = 2 })
   local m2 = drained(A, S2)[1]
   check(m2 and deliver(B, m2) == true, "Bee's computer takes v2 from the link")
-  write(B.root .. "/" .. S2, v1); write(B.root .. "/" .. S2 .. ".sig", v1sig)
+  write(B.root .. "/" .. S2, v1)
   band = use(B)
-  check(band.read_json(B.root .. "/" .. S2).v == 1, "(Syncthing brings v1 late: band.read reads the folder's changed file)")
+  check(band.read_json(B.root .. "/" .. S2).v == 1, "(Syncthing brings v1 late, its signature file not yet: band.read reads the folder's changed file)")
+  write(B.root .. "/" .. S2 .. ".sig", v1sig)
   clock = clock + 2
   drained(B)
   band = use(B)
@@ -760,6 +761,10 @@ do
   band.write_json(A.root .. "/" .. S2, { host = "Ann", song = SONG, v = 3 })
   local m3 = drained(A, S2)[1]
   check(deliver(B, m3) == true, "v3 from the link over the folder's v1")
+  -- (band.read itself, lib/band.lua keep: Syncthing brings v2 with its signature file, older than the link's v3: v3 stays read at once, no tidy)
+  write(B.root .. "/" .. S2, m2.body); write(B.root .. "/" .. S2 .. ".sig", m2.side)
+  band = use(B)
+  check(band.read_json(B.root .. "/" .. S2).v == 3 and overlaid(B, S2), "an older signed copy landing whole: the link's v3 is read at once, never v2")
   syncthing(B, A, S2)
   clock = clock + 2
   drained(B)
