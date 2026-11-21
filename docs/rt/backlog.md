@@ -4,6 +4,29 @@ Gathered from every note in `docs/rt/`, from `docs/realtime-roadmap.md` and from
 re-tested: each line is what its source says, with the source in brackets. Where a later note or commit fixed something, it is left out
 or marked done. Lines marked "roadmap, older" come from rounds 1 and 2 and were not re-checked against every later commit.
 
+## Closed since this file was written (round 7, deployed as 0.59.49.77-78)
+These lines below are done; they stay in place so the sources can still be traced.
+- Section 1, a marker added in the first seconds after opening is lost: fixed, 46c2aae (kept on top of the newer timeline; checked in REAPER
+  on LinuxBox).
+- Section 1, an older StudioSync renames a claimed track for everyone: fixed, 46c2aae (receivers judge it; checked in REAPER).
+- Section 1, track order only repaired when a project opens, and Undo's stale `after`: fixed, 46c2aae (mid-session heal when idle and
+  stopped; checked in REAPER, except "never while playing or within 10 s of an edit").
+- Section 1, a note or point moved by both ends up doubled: fixed, 46c2aae (checked in REAPER in Open mode). Still doubled: a note moved
+  and resized at once.
+- Section 3, stage B's "signing session.json and hub/<person>.json" and the welcome's sequence numbers: done, 173565b.
+- Section 3, "Still on Syncthing and could move to the link": given claims, releases, track order, hub handovers, session.json, profile
+  pictures and the timeline files are link-first and signed (173565b, 0ecf1ff; link timing measured in REAPER, 0.03-0.15 s). The media
+  need list is built and switched off (a378e38). Still Syncthing only: listed at the end of `docs/rt/rt-linkmove.md`.
+- Section 3, hub ranking by who reaches whom: built, 3ce9edb (baseline checked in REAPER; partial reach needs a link blocked).
+- Section 3, drawing (Line, Box, Highlighter, undo, share notes kept, Mixer drawings on the time lapse): built, b9f5d06 (tools and undo
+  checked from a desktop browser against three real computers; phone, share notes and the panel's look not checked).
+- New and fixed in the same round: a claim given to someone whose name starts with the giver's and a hyphen was folded into the giver's
+  own claims (5cff73a).
+
+New questions for James from round 7 (add to section 4): two tempo changes crossing (the unsent one is kept, the bandmate's replaced);
+a rename over 10 minutes old made while the claimer was away stands; undo of a track move made before 0.59.49.77 no longer moves the
+track back; should a home that two bandmates can't reach be passed over as the song's hub.
+
 ## 1. Bugs and limits known but not fixed (most harmful first)
 
 The first six lines are the ones judged most harmful. After them, lines are grouped by area, edits first.
