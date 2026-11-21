@@ -194,6 +194,10 @@ const double RETRY_S = 3.0;          // s after falling back before the hub's mi
 // differ for a while) stops asking for JOIN_RETRY_S. Asking costs nothing (everyone's streams are heard meanwhile); it's said in the status
 // (join_fails) instead of "joining" for minutes (James, rt: the desktop joined the Mac's mix for 4 minutes, 2026-11-20).
 const double JOIN_S = 5.0, JOIN_RETRY_S = 10.0;
+// s: a pass of hub_watch this late (the send loop wakes every 5 ms) means this thread didn't run meanwhile, and the receive thread likely
+// neither (a VM's guest descheduled: LinuxBox fell back 24 times against 7 rescues, rt-hubsmall). The mix that waited in the socket meanwhile
+// isn't silence: such a pass gives the receive thread this long again before the mix's age counts.
+const double WATCH_LATE = 0.02;
 
 struct Slot {
   std::string peer, addr_s, err;
@@ -302,6 +306,7 @@ struct RtLink {
   bool nat_only = false;                     // (started with no Tailscale address: the socket on loopback, every peer through nat.cpp)
   std::atomic<double> hold_until{ 0 }; // (tests/rtaudio_test.cpp: rt_test_hold, Wi-Fi's bursts)
   std::atomic<double> hold_mix{ 0 };   // (rt_test_hold_mix: the hub's mixing stalls, as a busy hub's send thread)
+  std::atomic<double> hold_tx{ 0 };    // (rt_test_hold_tx: the send thread doesn't run, as a VM's descheduled guest)
   double speed = 1;                    // (rt_test_speed: the adaptive buffer's timings this many times faster)
   bool resample = true;                // (rt_test_drift: AOO's drift correction)
   // blocks the audio thread skipped while a reconfigure paused it (capture, mix), told to AOO as xruns on the next live block; how often it paused
@@ -340,6 +345,8 @@ struct RtLink {
   long long join_fails = 0;         // (asks that no mix answered in JOIN_S)
   double intra_until = 0;           // (apply_sends: frames coded without prediction until then)
   long long fallbacks = 0, rescues = 0; // (rescues: everyone's streams asked back while the mix paused)
+  double watch_at = -1e9, watch_free = -1e9; // (hub_watch's last pass; the last pass WATCH_LATE late that the mix's age waits out)
+  long long stalls = 0; double stall_max = 0; // (status: passes WATCH_LATE late, and the longest gap, s)
   std::string asked_sig;            // (the levels last asked for: asked again at once when they change)
   // serving: the audio thread's copy of every peer's block (and this computer's own Talk and Play), per callback, read by the send thread
   std::vector<float> hring, hmix;
@@ -943,9 +950,22 @@ void hub_watch(RtLink *l, double now)
   int st = was;
   bool via = false; // (what everyone is told: true, my streams come through the hub; false, send them to me)
   if (h != l->hub_peer.load()) { l->hub_peer.store(h); st = 0; l->retry_at = 0; }
+  // A pass WATCH_LATE late: this thread didn't run, so the mix's age waits for the receive thread's turn from here. Once per silence: a late
+  // pass with no mix datagram since the last such pass doesn't wait again, so a send thread that's late on every pass (a loaded machine)
+  // still falls back on a mix that really stopped, WATCH_LATE + gone after the first.
+  const double lag = now - l->watch_at;
+  l->watch_at = now;
+  if (lag > WATCH_LATE && lag < 10.0) {
+    ++l->stalls;
+    l->stall_max = std::max(l->stall_max, lag);
+    if (!h || h->mix_at.load() > l->watch_free) l->watch_free = now;
+  }
   if (!h) st = 0;
   else {
-    const double gone = std::max(GONE_MIN, h->target_ms + GONE_PAD) / 1000.0, quiet = now - h->mix_at.load();
+    const double raw = now - h->mix_at.load();
+    // (hearing it: the age counts from a late pass's WATCH_LATE on, for rescues as for falling back. Joining keeps the raw age: a mix that
+    // never came can't look like it's flowing)
+    const double gone = std::max(GONE_MIN, h->target_ms + GONE_PAD) / 1000.0, quiet = st == 2 ? std::min(raw, std::max(0.0, now - l->watch_free - WATCH_LATE)) : raw;
     const bool flowing = quiet < gone;
     if (st == 2 && !flowing) { st = 0; ++l->fallbacks; l->retry_at = now + RETRY_S; } // (the hub dropped, or stopped mixing for me: direct at once)
     else if (st != 2) {
@@ -1249,6 +1269,7 @@ void tx_loop(RtLink *l)
   full_speed();
   while (l->run.load()) {
     l->wake.wait_for(0.005);
+    while (now_s() < l->hold_tx.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1)); // (rt_test_hold_tx: 1 ms sleeps, as rx_loop's hold)
     reconfigure(l);
     apply_sends(l);
     if (!l->live.load()) continue;
@@ -1562,6 +1583,7 @@ int rt_hub(RtLink *l, const char *peer, int serve)
 void rt_test_hold(RtLink *l, double ms) { l->hold_until.store(now_s() + ms / 1000.0); }
 void rt_test_speed(RtLink *l, double x) { std::lock_guard<std::mutex> st(l->stats_mx); l->speed = x > 0 ? x : 1; }
 void rt_test_hold_mix(RtLink *l, double ms) { l->hold_mix.store(now_s() + ms / 1000.0); }
+void rt_test_hold_tx(RtLink *l, double ms) { l->hold_tx.store(now_s() + ms / 1000.0); l->wake.set(); }
 void rt_test_drift(RtLink *l, int resample) { l->resample = resample != 0; l->clk.hold = resample != 2; } // (before rt_start)
 double rt_test_clock(const double *t, int n, int len, double srate, double *used)
 {
@@ -1640,9 +1662,10 @@ std::string rt_status(RtLink *l)
     { std::lock_guard<std::mutex> p(l->pend_mx); hp = l->want_hub; }
     std::string hj = "\"hub\":{\"peer\":";
     json_str(hj, hp);
-    snprintf(b, sizeof(b), ",\"state\":\"%s\",\"serve\":%s,\"serving\":%d,\"load\":%.4f,\"max_us\":%.1f,\"skipped\":%lld,\"fallbacks\":%lld,\"rescues\":%lld,\"join_fails\":%lld,\"latency_ms\":%.1f,\"in_ms\":%.1f,\"direct_ms\":%.1f,\"hub_load\":%.4f,\"mix_gap_ms\":%.1f,\"level\":%.5f}",
+    snprintf(b, sizeof(b), ",\"state\":\"%s\",\"serve\":%s,\"serving\":%d,\"load\":%.4f,\"max_us\":%.1f,\"skipped\":%lld,\"fallbacks\":%lld,\"rescues\":%lld,\"join_fails\":%lld,\"latency_ms\":%.1f,\"in_ms\":%.1f,\"direct_ms\":%.1f,\"hub_load\":%.4f,\"mix_gap_ms\":%.1f,\"level\":%.5f,\"stalls\":%lld,\"stall_max_ms\":%.1f}",
              hs == 2 ? "hub" : hs == 1 ? "joining" : "direct", l->serve ? "true" : "false", l->hub_serving, l->hub_load, l->hub_max_us, l->hskipped.load(), l->fallbacks, l->rescues, l->join_fails,
-             through, h ? h->hin_ms.load() : -1.f, nd ? direct / nd : -1.0, h ? h->hload.load() : -1.f, h ? h->mix_gap.load() * 1000 : -1.0, h ? h->mpeak.exchange(0.f) : 0.f);
+             through, h ? h->hin_ms.load() : -1.f, nd ? direct / nd : -1.0, h ? h->hload.load() : -1.f, h ? h->mix_gap.load() * 1000 : -1.0, h ? h->mpeak.exchange(0.f) : 0.f,
+             l->stalls, l->stall_max * 1000);
     hj += b;
     o.insert(o.size() - 9, hj + ","); // (before "peers":{, as Play's)
     l->hub_max_us = 0;

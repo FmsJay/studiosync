@@ -33,6 +33,8 @@ void rt_test_speed(RtLink *l, double x);
 // tests only: the hub's mixing stalls for ms (its ring fills, as when its send thread is held up); and, before rt_start, AOO's drift
 // correction off (resample 0), or on without its first minutes' hold (2: the clock's estimate used in full from 6 s).
 void rt_test_hold_mix(RtLink *l, double ms);
+// tests only: the send thread doesn't run for ms (with rt_test_hold: a VM's guest descheduled; hub_watch's stalls)
+void rt_test_hold_tx(RtLink *l, double ms);
 void rt_test_drift(RtLink *l, int resample);
 // tests only: the audio clock's estimate (ppm, as clock_ppm) after callbacks at these times (s) with this block size and rate; used: what
 // the drift correction uses of it then (clock_used_ppm).

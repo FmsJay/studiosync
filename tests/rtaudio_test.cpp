@@ -376,6 +376,69 @@ static void rescue_test()
   for (int i = 0; i < 3; ++i) rt_free(L[i]);
 }
 
+// ---- A listener on a VM whose guest is descheduled now and then (LinuxBox, 2026-11-21: 24 fallbacks against 7 rescues, 29 send queue
+// overflows; rt-hubsmall): its receive and send threads stop together, the mix waits in the socket, and when the send thread woke first it
+// read the mix's age before the receive thread had taken it and fell back though nothing was lost (3.3 s on everyone's own streams). H mixes
+// for W, X and Y, each with a 30 ms buffer for it (gone at 50 ms). X's two threads are held five times, the send thread 150 ms and the
+// receive thread 10 ms longer (it wakes second: the case that fell back): no fallback, no rescue, 5 stalls. Then a real outage, H's mixing
+// stopped 400 ms: W, not held, falls back as before (a rescue first); X, held once more inside it, falls back soon after it wakes; and Y,
+// whose send thread is held 30 ms every 35 ms through it (late on every pass), falls back too (a late pass waits once per silence).
+static void stall_test()
+{
+  const int SR = 48000, LEN = 256, P0 = 47511;
+  char nm[4][32];
+  RtLink *L[4];
+  for (int i = 0; i < 4; ++i) { snprintf(nm[i], sizeof nm[i], "127.0.0.1:%d", P0 + i); L[i] = rt_new(); }
+  for (int i = 0; i < 4; ++i) {
+    std::string list;
+    for (int j = 0; j < 4; ++j) if (j != i) list += std::string(list.empty() ? "" : ", ") + "\"" + nm[j] + "\"";
+    rt_peers(L[i], ("{\"peers\":[" + list + "],\"port\":" + std::to_string(P0 + i) + ",\"secret\":\"studio\"}").c_str());
+    rt_start(L[i], 0, 1, 128, 0, "127.0.0.1");
+  }
+  auto at = [&](double s) { return (int)(s * SR / LEN); };
+  std::vector<double> in(LEN, 0.0), o1(LEN), o2(LEN);
+  const double *ii[1] = { in.data() };
+  double *oo[2] = { o1.data(), o2.data() };
+  std::string before, after, out_x, end_x, after_w, end_w, after_y, out_y, end_y;
+  int holds = 0, late = 0;
+  double stalled = 0, next_late = 0;
+  const auto t0 = std::chrono::steady_clock::now();
+  for (int b = 0; b < at(9.0); ++b) {
+    const auto due = t0 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
+    while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
+    const double now = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    stalled = std::max(stalled, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - due).count());
+    if (b == at(0.3)) for (int i = 1; i < 4; ++i) rt_peer_buffer(L[i], nm[0], 30, 30);
+    if (b == at(0.5)) { rt_hub(L[0], "", 1); for (int i = 1; i < 4; ++i) rt_hub(L[i], nm[0], 0); }
+    if (b == at(2.9)) before = rt_status(L[2]);
+    if (b >= at(3.0) && b < at(7.5) && (b - at(3.0)) % at(1.0) == 0) { rt_test_hold(L[2], 160); rt_test_hold_tx(L[2], 150); ++holds; }
+    if (b == at(7.9)) { after = rt_status(L[2]); after_w = rt_status(L[1]); after_y = rt_status(L[3]); }
+    if (b == at(8.0)) { rt_test_hold_mix(L[0], 400); rt_test_hold(L[2], 160); rt_test_hold_tx(L[2], 150); next_late = now; }
+    if (b >= at(8.0) && b < at(8.4) && now >= next_late) { rt_test_hold_tx(L[3], 30); next_late = now + 0.035; ++late; }
+    if (b == at(8.3)) { out_x = rt_status(L[2]); out_y = rt_status(L[3]); }
+    if (b == at(8.9)) { end_x = rt_status(L[2]); end_w = rt_status(L[1]); end_y = rt_status(L[3]); }
+    for (int i = 0; i < 4; ++i) { rt_capture(L[i], ii, 1, LEN, SR); rt_mix(L[i], oo, 2, LEN, SR); }
+  }
+  auto n = [&](const std::string &s, const char *k) { return atoll(field(s, "hub", k).c_str()); };
+  printf("     stalls: X's threads held 150 ms %d times: stalls %lld -> %lld (longest %s ms), fallbacks %lld -> %lld, rescues %lld -> %lld, X hears through H: %s -> %s\n",
+         holds, n(before, "stalls"), n(after, "stalls"), field(after, "hub", "stall_max_ms").c_str(), n(before, "fallbacks"), n(after, "fallbacks"),
+         n(before, "rescues"), n(after, "rescues"), field(before, "hub", "state").c_str(), field(after, "hub", "state").c_str());
+  printf("     stalls: H's mix stopped 400 ms: X (held 150 ms in it) %s at 0.3 s, fallbacks +%lld; Y (send thread held 30 ms %d times) %s at 0.3 s, fallbacks +%lld, stalls +%lld; W fallbacks +%lld, rescues +%lld\n",
+         field(out_x, "hub", "state").c_str(), n(end_x, "fallbacks") - n(after, "fallbacks"), late, field(out_y, "hub", "state").c_str(), n(end_y, "fallbacks") - n(after_y, "fallbacks"),
+         n(end_y, "stalls") - n(after_y, "stalls"), n(end_w, "fallbacks") - n(after_w, "fallbacks"), n(end_w, "rescues") - n(after_w, "rescues"));
+  check(n(after, "stalls") - n(before, "stalls") >= holds && atof(field(after, "hub", "stall_max_ms").c_str()) >= 140, "stalls: each hold of X's send thread is counted, the longest about 150 ms");
+  check_unless_stalled(n(after, "stalls") - n(before, "stalls") == holds, stalled, "stalls: and nothing else here was a stall");
+  check_unless_stalled(field(before, "hub", "state") == "\"hub\"" && field(after, "hub", "state") == "\"hub\"" && n(after, "fallbacks") == n(before, "fallbacks") && n(after, "rescues") == n(before, "rescues"),
+                       stalled, "stalls: X's own threads held 150 ms is neither a fallback nor a rescue (it fell back on each one it heard the hub in)");
+  check_unless_stalled(field(out_x, "hub", "state") == "\"direct\"" && n(end_x, "fallbacks") - n(after, "fallbacks") == 1, stalled,
+                       "stalls: the hub's mix stopping while X is held still sends X to everyone's own streams, within 150 ms of waking");
+  check_unless_stalled(field(out_y, "hub", "state") == "\"direct\"" && n(end_y, "fallbacks") - n(after_y, "fallbacks") == 1 && n(end_y, "stalls") - n(after_y, "stalls") >= 3, stalled,
+                       "stalls: a send thread late on every pass still falls back on a mix that stopped (a late pass waits once per silence)");
+  check_unless_stalled(n(end_w, "fallbacks") - n(after_w, "fallbacks") == 1 && n(end_w, "rescues") - n(after_w, "rescues") == 1, stalled,
+                       "stalls: W, not held, rescues and falls back on it as before");
+  for (int i = 0; i < 4; ++i) rt_free(L[i]);
+}
+
 // ---- Latency against underruns over a realistic spike pattern (1.0.22 in REAPER: 6 underruns took the desktop's buffer for the laptop from
 // 45 to 110 ms and it stayed, latency 97 -> 161 ms). D sends silence to E with E's receive thread held 3-12 ms every 50-150 ms (an internet
 // path's ordinary jitter) and 60 ms at each spike, at E's timings 20x faster (gap_s: the spikes' spacing in those timings). Returns E's
@@ -604,7 +667,8 @@ static void start_order_test()
 
 int main(int argc, char **argv)
 {
-  if (argc > 1 && strcmp(argv[1], "underruns") == 0) { drift_tests(); trim_test(); switch_test(); rescue_test(); spike_tests(); clock_tests(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
+  if (argc > 1 && strcmp(argv[1], "underruns") == 0) { drift_tests(); trim_test(); switch_test(); rescue_test(); stall_test(); spike_tests(); clock_tests(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
+  if (argc > 1 && strcmp(argv[1], "stalls") == 0) { stall_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "nothere") == 0) { not_here_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "startorder") == 0) { start_order_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "hubload") == 0) { hub_loads(true); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
@@ -978,6 +1042,7 @@ int main(int argc, char **argv)
   trim_test();
   switch_test();
   rescue_test();
+  stall_test(); // (a listener on a VM: its own threads held, not the hub gone)
   spike_tests();
   clock_tests();
   hub_loads(false); // (the hub's load at REAPER's small blocks, as the laptop's ASIO runs: 128 and 64 samples)
