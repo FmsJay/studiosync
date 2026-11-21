@@ -497,6 +497,80 @@ Six `sub_lap("drive/...")` lines in `P.save_drive`, and `perf.over`: created, pu
 2. `submit` no longer ~30 ms at each 3-minute round (no new worker each time). Look in `drive slow`, or for a `powershell` that stays
    between rounds.
 
+## Round 8 (0.59.49.87, restart at 10:41:10; the instrumentation named everything)
+
+### 1. The update files checked (77 ms) and sent again and again after the copy was current
+
+**Cause, from disk.** The cloud copy is right (all 152 files equal to the studio folder's). But the worker's staged copy of it for 0.59.49.87
+(`stage/a8e877a497e40410`) lacks `lib/grants.lua`, and the cloud's `lib/grants.lua` was rewritten at 11:01:34.
+- One fetch of `grants.lua` into the stage failed (around the upload, 10:44-10:45). A failed fetch is remembered until the file changes, so
+  the stage looked "done".
+- The check of that half stage failed, so the copy went "out" again: `grants.lua` was uploaded again (it differed from the stage, which
+  lacked it).
+- With lib/files.txt and its signature unchanged, round 6's `staged` memo kept that same half stage, so every update-files pass checked it
+  (77 ms) and uploaded again: 10:55:33, 10:55:47, 11:01:30...
+- The "is in the Google Drive copy" line didn't repeat because it's said once per version.
+
+**Fix (`drive.lua`, `drivebg.lua`).**
+- A staged copy is remembered and checked only when every file it lists is there.
+- A missing one is forgotten from the worker's failed list (`drivebg.forget`) and fetched again next plan.
+- So after a send the cloud's copy is checked once, and not again until lib/files.txt or its signature changes. That memo was already there;
+  the failing check was what kept clearing it.
+
+**Test 3j (extended).** After the new version goes out, the stand-in worker fails the first fetch of one staged file. Over six more update
+passes the copy is checked at most once and the file is never uploaded again. Round 7's code: 3 checks and a re-upload.
+
+### 2. The extension's check on its own thread (`extension/sign.cpp`, for 1.0.33)
+It was cheap, so it's done.
+- `sign_verify_start(dir, key)` runs `sign_verify_files` on a thread (`std::async`) and returns a ticket.
+- `sign_verify_poll(ticket)` returns "" while it runs, the answer once, then "?" for that ticket.
+- At most 16 at once; past that it returns "", and the caller checks the usual way.
+- `std::async`'s futures wait for their thread when destroyed, so unloading the extension never cuts one off.
+- Registered as `StudioSync_VerifyFilesStart(dir, key)` and `StudioSync_VerifyFilesPoll(ticket)`. `StudioSync_VerifyFiles` is unchanged.
+- No EXT_VERSION change, no binary. `sign.h` is untouched: the native test declares the two functions itself.
+- **Native test** (`tests/sign_test.cpp`, `tests/build_sign_test.cmd`, run here): the threaded answer equals the direct one; a wrong key is
+  refused the same way; an answer comes once; an unknown ticket gives "?"; past 16, "". All ok, and the Python-signed copy check too.
+
+**Lua side (`drive.lua`).** Where the extension has `StudioSync_VerifyFilesStart`, the update files' checks run on its thread.
+- The unit waits with `drivebg.NEED` and polls next plan; REAPER's thread never waits.
+- **Choosing the way:** that answer is used as before.
+- **The full check before a copy:** band.signed_ok's own steps run on the threaded answer, in the same order: the signed version is the one
+  on disk, the code files match the signed list, and every code file has a SHA-256 line.
+- Without it (extension 1.0.32 and older), the checks are as before: one 77 ms heavy step in a plan of its own.
+
+**Test 3j (threaded):** with stand-in `verify_start`/`verify_poll`, the version goes out and no plan exceeds 30 ms (the hashing's 8 ms plus a
+20 ms file). The synchronous way stays at the check + 4 ms.
+
+### 3. The rest at 10:51:08: waiting counted as stuck
+`drive rest` showed 8 of the last 10 plans as `cm? 0 sent`: the sweep waiting for a listing it had just asked for, a new one each time.
+- "Sunset Drive sessions (21 of 22)": the sweep's 22 items include songs only named here (songsync's list) with no folder in the cloud copy.
+  Each asked for its rooms, its projects folder and its projects' media folder, one listing job each.
+
+**Fixes.**
+- **`drive.lua`:** a plan in which a unit waits for something it asked the worker for, and a job went, doesn't count toward a rest, for up to
+  `drive.WAIT_MAX` (120 s) since anything last happened. A listing that never comes still ends in a rest; a job that hangs is failed by the
+  worker's own 30 s timeout, as before.
+- **`cloudmodes.lua`:** the sweep doesn't ask about a song's rooms or projects in the cloud copy when the cloud copy has no folder for it.
+
+**Test 3q:**
+- a sweep asking for a new folder 15 plans running: the round carries on and ends, no rest (round 7: it rests);
+- one that never stops asking: still rests, after `WAIT_MAX`;
+- a song only named here: no listing asked for its rooms or projects (round 7: 3).
+
+### 4. `drive/quiet` 15-20 ms
+This is Live sync's once-a-minute block in `P.save_drive`: `removal.tick`, `listen.tick`, the change count (`band.listing` of the room's
+events) and the 20-quiet-minutes check. None of it is the cloud copy's. `removal.lua`, `listen.lua` and those Live sync lines aren't mine, so
+I left them. If it matters, they could take turns (one of the three a minute) or be split across passes; worth a look by whoever owns them.
+
+### Also
+`drive slow` now carries the last five slow plans in `recent`, so one 2 s later no longer hides the one before (10:44:13's 102 ms).
+
+### REAPER checks after deploy
+1. After a restart: one update-files check (~77 ms, or nothing on REAPER's thread with extension 1.0.33) per version, and none at later
+   passes. The cloud's `_tools/studiosync/lib/grants.lua` keeps its time (no re-uploads).
+2. No `drive rest` during the first sweep; `cloud storage` with no flat stretch before it.
+3. With 1.0.33: `drive slow` shows no `tools` entry near 77 ms.
+
 ## Left / not done
 
 - **`trim.plan` itself** (lib/trim.lua, not mine) is 80-200 ms for a 2,500-change room with ~180 saved versions in Standard's window

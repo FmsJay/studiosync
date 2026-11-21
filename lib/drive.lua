@@ -802,6 +802,13 @@ local heavy, tools_until = math.huge, math.huge
 -- (and a plan of its own: nothing before it in the plan, nor in the unit (its look at the staged copy is a plan before), nor after it: the 77 ms
 -- check still shared plans with 30-45 ms of other work on the desktop, 123.8 ms at 09:22:48. drive.bg_step stops the plan after it. Round 6)
 local tools_t0, early, deferred = 0, true, 0
+-- ExtState "drive slow": the latest slow plan, and the last five in `recent` (one 2 s later overwrote a 102 ms plan at 10:44:13. Round 8)
+local slow_recent = {}
+local function said_slow(rec)
+  table.insert(slow_recent, rec)
+  if #slow_recent > 5 then table.remove(slow_recent, 1) end
+  pcall(reaper.SetExtState, band.SECTION, "drive slow", band.json_encode({ at = rec.at, total = rec.total, ms = rec.ms, recent = slow_recent }), false)
+end
 local function heavy_step()
   if heavy <= 0 then error(require("drivebg").NEED, 0) end
   -- (late in the plan, or after the unit's own work: the next plan's, but not for ever: a plan that can never be early still gets it)
@@ -818,6 +825,44 @@ local staged = {} -- cloud copy -> { text, sig, at }: its staged copy, looked ov
 drive.plan_t0 = nil -- (drive.bg_step: when the plan being made began)
 -- The extension's check of a copy alone: lib/files.txt.sig over lib/files.txt, and every file it lists by SHA-256. -> its answer.
 function drive.verify(dir, key) local f = reaper.StudioSync_VerifyFiles; return f and f(band.norm(dir), key) or "" end
+-- The same on the extension's own thread (1.0.33: StudioSync_VerifyFilesStart / Poll): -> a ticket, or nil (an older extension, or 16 running:
+-- the check is made the usual way); its answer: "" while it runs, "?" for a ticket it doesn't know. (rt-drive2, round 8)
+function drive.verify_start(dir, key)
+  local f = reaper.StudioSync_VerifyFilesStart
+  local t = f and f(band.norm and band.norm(dir) or dir, key)
+  return type(t) == "string" and t ~= "" and t or nil
+end
+function drive.verify_poll(t) local f = reaper.StudioSync_VerifyFilesPoll; local r = f and f(t); return type(r) == "string" and r or "?" end
+local verifying = {} -- folder .. key -> ticket of its check running on the extension's thread
+-- The extension's answer for `dir` from its own thread: drivebg.NEED while it runs (the unit is planned again; REAPER waits for nothing), the
+-- answer once it's done, or nil when the extension can't (older, or 16 running): then the caller checks the usual way.
+local function threaded(dir, key)
+  local k = dir .. "\0" .. key
+  local t = verifying[k]
+  if not t then
+    t = drive.verify_start(dir, key)
+    if not t then return nil end
+    verifying[k] = t
+    error(require("drivebg").NEED, 0)
+  end
+  local r = drive.verify_poll(t)
+  if r == "" then error(require("drivebg").NEED, 0) end
+  verifying[k] = nil
+  if r == "?" then error(require("drivebg").NEED, 0) end -- (asked again)
+  return r
+end
+-- band.signed_ok's checks with the extension's answer `answer` (its threaded one): the same, in the same order, but for that one call.
+local function signed_ok_with(dir, now, answer)
+  local v, text = answer:match("^ok (%S+)\n(.*)$")
+  if not v then return false, answer end
+  local version = band.version_on_disk(dir)
+  if v ~= version then return false, "lib/files.txt is signed for " .. v .. " but lib/band.lua is " .. tostring(version) end
+  if not band.list_matches(dir, now, v, text) then return false, "the code files aren't the ones the signed lib/files.txt lists" end
+  local sha = {}
+  for line in text:gmatch("[^\n]+") do local p = line:match("^sha256 %x+ (.+)$"); if p then sha[p] = true end end
+  for p in pairs(now) do if not sha[p] then return false, p .. " has no signed SHA-256 in lib/files.txt" end end
+  return true
+end
 -- band.code_files of `src`, hashed a few files a pass (planned): -> it, or nil while there are more to hash, and whether it hashed any now (the
 -- heavy check then waits for the next plan: a big file's hash, ~20 ms, and the check in one plan). Hashes from earlier passes count only while
 -- the folder's code files are the same names and lib/files.txt the same; the full check that uses them compares every one.
@@ -851,13 +896,26 @@ local function signed_copy(dir, key)
     if c.cloud(dir) then
       local st = staged[dir]
       if c.planned and not (st and st.text == text and st.sig == sig) then
-        staged[dir] = { text = text, sig = sig, at = c.stage(dir, drive.tools_files(text) or {}, sig) }
+        local rels = drive.tools_files(text) or {}
+        local stage = c.stage(dir, rels, sig)
+        -- (only a whole one: a file the worker couldn't fetch (the desktop: lib/grants.lua once, at 10:44) left it out, the check failed, the
+        -- copy went out again, and with the same lib/files.txt the same half stage was checked again every pass: 77 ms and an upload each time
+        -- after the copy was current. Round 8)
+        local gone = false
+        for _, rel in ipairs(rels) do
+          if not reaper.file_exists(stage .. "/" .. rel) then gone = true; require("drivebg").forget(dir .. "/" .. rel) end
+        end
+        if gone then error(require("drivebg").NEED, 0) end
+        staged[dir] = { text = text, sig = sig, at = stage }
         if heavy ~= math.huge then error(require("drivebg").NEED, 0) end -- (the check, next plan)
       end
       at = c.planned and staged[dir].at or c.stage(dir, drive.tools_files(text) or {}, sig)
     end
     local ok
-    if c.planned then heavy_step(); ok = drive.verify(at, key):match("^ok ") ~= nil -- (the extension's check: the full one is before a copy)
+    if c.planned then
+      local answer = threaded(at, key)
+      if not answer then heavy_step(); answer = drive.verify(at, key) end
+      ok = answer:match("^ok ") ~= nil -- (the extension's check: the full one is before a copy)
     else ok = band.signed_ok(at, key) == true end
     m = { text = text, sig = sig, key = key, ok = ok, stage = at ~= dir and at or nil }
     tools_memo[dir] = m
@@ -887,9 +945,14 @@ local function send_tools_planned(from, to, key, dated)
     sending = nil
     local now, worked = code_now(src)
     if not now or (worked and heavy ~= math.huge) then error(require("drivebg").NEED, 0) end
-    heavy_step()
+    local ok, why
+    local answer = threaded(src, key) -- (on the extension's thread where it can: then band.signed_ok's own checks with its answer)
+    if answer then ok, why = signed_ok_with(src, now, answer)
+    else
+      heavy_step()
+      ok, why = band.signed_ok(src, key, now)
+    end
     hashing[src] = nil -- (used once: the next check hashes again)
-    local ok, why = band.signed_ok(src, key, now)
     if not ok then return nil, why end
     local files = drive.tools_files(text)
     if not files then return nil, "its lib/files.txt names a file outside the copy" end
@@ -994,6 +1057,7 @@ drive.MAX_JOBS = 500 -- (a pass that never settles ends there: the next starts o
 -- it ends, and the next waits drive.EVERY. One that never settled planned again every pass, 15-76 ms each, for hours (rt-perf: Cross Test,
 -- "more" with 0 moved). rt-perfcut1. A room done again (rt-drive2: the open song's, every SOON s) isn't something happening.
 drive.STALL, drive.rest_until = 10, -math.huge
+drive.WAIT_MAX = 120 -- s a round may wait on the worker's listings and copies with nothing else happening before those plans count (round 8)
 -- (a new file of this computer's in the open song's rooms (a change, a saved version: an undo or a hub snapshot doesn't go out as a sent change)
 -- starts a short round of just those rooms, or brings them forward in the round going on, instead of waiting up to drive.EVERY for the next:
 -- the desktop's undo at 09:33:18 went up at 09:36:09. Live sync asks drive.bg_busy each pass; the listings are band.listing's, shared. Round 6)
@@ -1029,7 +1093,7 @@ function drive.bg_busy()
   if own_new() then quick_due = true end
   t = reaper.time_precise() - t
   if t > 0.02 and reaper.GetExtState(band.SECTION, "perf stats") == "1" then -- (as drive slow names a slow plan's parts: rt-drive2, round 7)
-    pcall(reaper.SetExtState, band.SECTION, "drive slow", band.json_encode({ at = os.time(), total = math.floor(t * 10000 + 0.5) / 10, ms = { busy = math.floor(t * 10000 + 0.5) / 10 } }), false)
+    said_slow({ at = os.time(), total = math.floor(t * 10000 + 0.5) / 10, ms = { busy = math.floor(t * 10000 + 0.5) / 10 } })
   end
   return round ~= nil or quick_due
 end
@@ -1089,6 +1153,7 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
   }
   local CM = require("cloudmodes")
   local read0, cm0 = read_n, CM.progress()
+  local waited = false -- (a unit waiting for something it asked the worker for)
   local trace = {} -- (each unit run this plan: name, ? waiting for a listing / ! failed / + done / - more, ms: the rest says the last ten)
   J.begin(droot)
   drive.plan_t0, drive.heavy_done = tp, false -- (from this call's start: its results' look counts too)
@@ -1111,6 +1176,7 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
         elseif u[1] == "cm" then u.done = not CM.sweeping() -- (a sweep goes on tick by tick, a room or two at a time)
         else u.done = not b end
         if u[1] == "room" and not u.done then rooms_left = true end
+        if not ok and J.is_need(a) then waited = true end
         trace[#trace + 1] = string.format("%s%s %.0f", u[1], (not ok and J.is_need(a)) and "?" or not ok and "!" or u.done and "+" or "-", (reaper.time_precise() - tu) * 1000)
         if drive.heavy_done then break end -- (the update files' heavy check: a plan of its own)
       end
@@ -1124,7 +1190,7 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
   if reaper.time_precise() - tp > 0.05 and reaper.GetExtState(band.SECTION, "perf stats") == "1" then
     local ms = {}
     for k, v in pairs(slow) do ms[k] = math.floor(v * 10000 + 0.5) / 10 end
-    pcall(reaper.SetExtState, band.SECTION, "drive slow", band.json_encode({ at = os.time(), total = math.floor((reaper.time_precise() - tp) * 10000 + 0.5) / 10, ms = ms }), false)
+    said_slow({ at = os.time(), total = math.floor((reaper.time_precise() - tp) * 10000 + 0.5) / 10, ms = ms })
   end
   if sent then round.jobs = round.jobs + 1 end
   -- (copied: the open song's rooms done, none of them planning a write now; a plan is only made with no job out, so every copy they planned
@@ -1138,9 +1204,15 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
   end
   if (all and not sent) or round.jobs > drive.MAX_JOBS then return done() end
   -- (something happening: a unit done for the first time, a change read, a step of the sweep; files moved count as the job comes back, above)
-  round.plans = (fresh or read_n > read0 or CM.progress() > cm0) and 0 or round.plans + 1
+  -- (and a plan that waits for listings or copies it has just asked the worker for isn't stuck: the desktop's sweep rested at 10:51:08 after 8
+  -- of 10 plans each waiting for a new listing. Only for drive.WAIT_MAX since the last thing that happened: one that never comes still rests.
+  -- rt-drive2, round 8)
+  local moving = fresh or read_n > read0 or CM.progress() > cm0
+  if moving then round.plans, round.wait_from = 0, nil
+  elseif waited and sent and t0 - (round.wait_from or t0) < drive.WAIT_MAX then round.wait_from = round.wait_from or t0
+  else round.plans = round.plans + 1 end
   round.trace = round.trace or {}
-  table.insert(round.trace, (#trace > 0 and table.concat(trace, " ") or "-") .. (sent and " sent" or "") .. (round.plans == 0 and " moving" or ""))
+  table.insert(round.trace, (#trace > 0 and table.concat(trace, " ") or "-") .. (sent and " sent" or "") .. (moving and " moving" or ""))
   if #round.trace > drive.STALL then table.remove(round.trace, 1) end
   if round.plans >= drive.STALL then
     drive.rest_until = reaper.time_precise() + drive.EVERY

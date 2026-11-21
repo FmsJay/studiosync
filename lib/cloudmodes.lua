@@ -496,8 +496,11 @@ function cm.tick(cfg, droot, now, budget)
   if not sw then
     if now - swept_at < cm.EVERY then return end
     local s = cm.settings_for(cfg.root)
-    local list, songs = {}, {}
-    for _, d in ipairs(C().subdirs(droot)) do if d:sub(1, 1) ~= "_" and C().subdirs(droot .. "/" .. d .. "/rooms")[1] then songs[d] = true end end
+    local list, songs, incloud = {}, {}, {}
+    for _, d in ipairs(C().subdirs(droot)) do
+      incloud[d] = true
+      if d:sub(1, 1) ~= "_" and C().subdirs(droot .. "/" .. d .. "/rooms")[1] then songs[d] = true end
+    end
     local okh, here = pcall(function() return require("songsync").here(cfg) end)
     for _, d in ipairs(okh and type(here) == "table" and here or {}) do songs[d] = true end
     local names = {}
@@ -505,12 +508,14 @@ function cm.tick(cfg, droot, now, budget)
     table.sort(names)
     for _, song in ipairs(names) do
       local rs = set_of(rooms_of(band.song_dir(cfg, song) .. "/rooms"))
-      for _, r in ipairs(rooms_of(droot .. "/" .. song .. "/rooms")) do rs[r] = true end
+      -- (a song with no folder in the cloud copy has no rooms or projects there: not asked for. The desktop's sweep waited on listings of
+      -- songs only named here (Sunset Drive...), one job each, and the round rested at 10:51:08. rt-drive2, round 8)
+      if incloud[song] then for _, r in ipairs(rooms_of(droot .. "/" .. song .. "/rooms")) do rs[r] = true end end
       local rl = {}
       for r in pairs(rs) do rl[#rl + 1] = r end
       table.sort(rl)
       for _, r in ipairs(rl) do list[#list + 1] = { song, r } end
-      list[#list + 1] = { song } -- (then its end-of-session projects)
+      if incloud[song] then list[#list + 1] = { song } end -- (then its end-of-session projects)
     end
     C().check() -- (planned: the cloud copy's songs and rooms all listed first)
     local okr, role = pcall(function() return require("groups").role(cfg.root, cfg.user) end)

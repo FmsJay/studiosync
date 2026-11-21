@@ -16,6 +16,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <chrono>
+#include <future>
+#include <map>
+#include <mutex>
 #include <vector>
 #include "direct.h"
 #include "sign.h"
@@ -455,6 +459,35 @@ std::string sign_verify_files(const std::string &dir_in, const std::string &key_
   return "ok " + version + "\n" + list;
 }
 
+// sign_verify_files on a thread of its own (StudioSync_VerifyFilesStart / Poll): a whole copy's SHA-256s were ~77 ms on REAPER's main thread,
+// a step the cloud copy's planner couldn't split (rt-drive2, round 8). At most 16 at once (a caller that never polls can't pile them up: then
+// "" and the caller checks the usual way). std::async's futures wait for their thread when they go, so unloading never cuts one off.
+namespace {
+std::mutex verify_mx;
+std::map<std::string, std::future<std::string>> verify_jobs;
+unsigned long verify_seq = 0;
+}
+// -> a ticket for sign_verify_poll, or "" when 16 are running already.
+std::string sign_verify_start(const std::string &dir, const std::string &key_hex)
+{
+  std::lock_guard<std::mutex> lock(verify_mx);
+  if (verify_jobs.size() >= 16) return "";
+  const std::string ticket = "v" + std::to_string(++verify_seq);
+  verify_jobs[ticket] = std::async(std::launch::async, [dir, key_hex]() { return sign_verify_files(dir, key_hex); });
+  return ticket;
+}
+// -> "" while it runs, its answer once it's done (as sign_verify_files', then forgotten), "?" for a ticket it doesn't know.
+std::string sign_verify_poll(const std::string &ticket)
+{
+  std::lock_guard<std::mutex> lock(verify_mx);
+  auto it = verify_jobs.find(ticket);
+  if (it == verify_jobs.end()) return "?";
+  if (it->second.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return "";
+  std::string r = it->second.get();
+  verify_jobs.erase(it);
+  return r;
+}
+
 std::string sign_key_create(const std::string &path)
 {
   u8 seed[32], pk[32];
@@ -510,12 +543,16 @@ static const char *api_verify_files(const char *dir, const char *key) { static s
 static const char *api_key_create(const char *path) { static std::string r; r = sign_key_create(str(path)); return r.c_str(); }
 static const char *api_sign(const char *path, const char *msg) { static std::string r; r = sign_with_key(str(path), str(msg)); return r.c_str(); }
 static const char *api_file_hash(const char *path) { static std::string r; r = sign_file_hash(str(path)); return r.c_str(); }
+static const char *api_verify_start(const char *dir, const char *key) { static std::string r; r = sign_verify_start(str(dir), str(key)); return r.c_str(); }
+static const char *api_verify_poll(const char *ticket) { static std::string r; r = sign_verify_poll(str(ticket)); return r.c_str(); }
 #define S_(i) (n > (i) ? (const char *)a[i] : nullptr)
 static void *va_verify(void **a, int n) { return (void *)(INT_PTR)api_verify(S_(0), S_(1), S_(2)); }
 static void *va_verify_files(void **a, int n) { return (void *)api_verify_files(S_(0), S_(1)); }
 static void *va_key_create(void **a, int n) { return (void *)api_key_create(S_(0)); }
 static void *va_sign(void **a, int n) { return (void *)api_sign(S_(0), S_(1)); }
 static void *va_file_hash(void **a, int n) { return (void *)api_file_hash(S_(0)); }
+static void *va_verify_start(void **a, int n) { return (void *)api_verify_start(S_(0), S_(1)); }
+static void *va_verify_poll(void **a, int n) { return (void *)api_verify_poll(S_(0)); }
 #undef S_
 
 void sign_register(reaper_plugin_info_t *rec)
@@ -535,6 +572,13 @@ void sign_register(reaper_plugin_info_t *rec)
       "const char*\0const char*,const char*\0keypath,message\0`message` signed with the update key at `keypath`: 128 hex digits, or \"\"." },
     { "StudioSync_FileHash", (void *)api_file_hash, (void *)va_file_hash,
       "const char*\0const char*\0path\0A file's SHA-256 as lib/files.txt lists it (text with CRLF read as LF): 64 hex digits, or \"\"." },
+    { "StudioSync_VerifyFilesStart", (void *)api_verify_start, (void *)va_verify_start,
+      "const char*\0const char*,const char*\0dir,key\0"
+      "StudioSync_VerifyFiles on a thread of its own: returns a ticket for StudioSync_VerifyFilesPoll, or \"\" when 16 are running already." },
+    { "StudioSync_VerifyFilesPoll", (void *)api_verify_poll, (void *)va_verify_poll,
+      "const char*\0const char*\0ticket\0"
+      "A StudioSync_VerifyFilesStart's answer: \"\" while it runs, then StudioSync_VerifyFiles' answer once (the ticket is then forgotten), "
+      "\"?\" for a ticket it doesn't know." },
   };
   char key[96];
   for (const auto &f : fns) {

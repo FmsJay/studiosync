@@ -20,6 +20,11 @@
 #define remove_dir(p) rmdir(p)
 #endif
 #include "../extension/sign.h"
+#include <chrono>
+#include <thread>
+// (extension/sign.cpp's threaded check, rt-drive2 round 8: declared here, sign.h left as it is)
+std::string sign_verify_start(const std::string &dir, const std::string &key_hex);
+std::string sign_verify_poll(const std::string &ticket);
 
 static int fails = 0;
 static void check(bool ok, const char *what) { printf("%s %s\n", ok ? "ok  " : "FAIL", what); if (!ok) ++fails; }
@@ -114,6 +119,25 @@ int main(int argc, char **argv)
   put(dir + "/lib/files.txt.sig", sign_with_key(key, SIGN_FILES_PREFIX + list) + "\n");
   std::string r = sign_verify_files(dir, pub);
   check(r == "ok 9.9.9\n" + list, "a signed copy checks, and the list comes back");
+  { // the same check on a thread of its own: a ticket, "" while it runs, the same answer once, then the ticket is forgotten
+    const std::string t1 = sign_verify_start(dir, pub), t2 = sign_verify_start(dir, std::string(64, 'a'));
+    check(!t1.empty() && !t2.empty() && t1 != t2, "threaded checks start, each with its own ticket");
+    std::string a1, a2;
+    for (int i = 0; i < 500 && (a1.empty() || a2.empty()); ++i) {
+      if (a1.empty()) a1 = sign_verify_poll(t1);
+      if (a2.empty()) a2 = sign_verify_poll(t2);
+      if (a1.empty() || a2.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    check(a1 == r, "the threaded answer is the same as the direct one");
+    check(a2.find("isn't signed by") != std::string::npos, "and a wrong key is refused the same way");
+    check(sign_verify_poll(t1) == "?" && sign_verify_poll("nope") == "?", "an answer is given once; an unknown ticket is \"?\"");
+    std::vector<std::string> many;
+    for (int i = 0; i < 20; ++i) many.push_back(sign_verify_start(dir, pub));
+    int empty = 0;
+    for (const auto &t : many) if (t.empty()) ++empty;
+    check(empty >= 4, "at most 16 at once: past that, \"\" (the caller checks the usual way)");
+    for (const auto &t : many) if (!t.empty()) { for (int i = 0; i < 500 && sign_verify_poll(t).empty(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+  }
   put(dir + "/lib/band.lua", "local band = { VERSION = \"9.9.9\" }\nreturn band\n");
   check(sign_verify_files(dir, pub).compare(0, 3, "ok ") == 0, "the same text with LF line ends still checks");
   put(dir + "/lib/band.lua", "local band = { VERSION = \"9.9.9\" }\r\rreturn band\r\n");

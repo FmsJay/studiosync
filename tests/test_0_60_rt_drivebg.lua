@@ -541,7 +541,7 @@ check(ended and other >= 40 and drive.rest_until == -math.huge, "and the round s
 -- (read only): the extension's check of the studio's copy 77 ms, band.code_files' Lua hashes of its code 191 ms; the pass made three full
 -- checks (the studio's copy, the cloud's, the one before copying) and read every file twice. Stand-in costs: the extension's check 77 ms,
 -- one code file's hash 2 ms, 100 code files.
-do
+local function tools_run(async)
   setup()
   local HT, CT, KEY = "/S/_tools/studiosync", "/C/_tools/studiosync", ("ab"):rep(32)
   local function tools_copy(dir, v)
@@ -560,8 +560,29 @@ do
   local saved = { band.studio_update_key, band.version_on_disk, band.signed_ok, band.code_hash, package.loaded.fromfolder, package.loaded.groups }
   band.studio_update_key = function() return KEY end
   band.version_on_disk = function(dir) return (fs[dir .. "/lib/band.lua"] or ""):match('VERSION = "([^"]+)"') end
-  local function sig_ok(dir) return (fs[dir .. "/lib/files.txt.sig"] or ""):match("^good ") ~= nil end
-  drive.verify = function(dir) clock = clock + 0.077; return sig_ok(dir) and ("ok " .. band.version_on_disk(dir) .. "\n") or "no" end
+  -- (as the extension's: the signature, and every listed file there: round 8's half stage failed it)
+  local function sig_ok(dir)
+    local text = fs[dir .. "/lib/files.txt"] or ""
+    for rel in text:gmatch("sha256 %x+ ([^\n]+)") do if not fs[dir .. "/" .. rel] then return false end end
+    return (fs[dir .. "/lib/files.txt.sig"] or ""):match("^good ") ~= nil
+  end
+  local verifies = 0
+  local function answer(dir) return sig_ok(dir) and ("ok " .. band.version_on_disk(dir) .. "\n" .. (fs[dir .. "/lib/files.txt"] or "")) or "no" end
+  drive.verify = function(dir) verifies = verifies + 1; clock = clock + 0.077; return answer(dir) end
+  local real_lm = band.list_matches
+  band.list_matches = function() return true end
+  if async then -- (round 8: the extension's check on its own thread, StudioSync_VerifyFilesStart / Poll in 1.0.33)
+    local jobs, n = {}, 0
+    drive.verify_start = function(dir) verifies = verifies + 1; n = n + 1; jobs["t" .. n] = { dir = dir, polls = 0 }; return "t" .. n end
+    drive.verify_poll = function(t)
+      local j = jobs[t]
+      if not j then return "?" end
+      j.polls = j.polls + 1
+      if j.polls < 2 then return "" end
+      jobs[t] = nil
+      return answer(j.dir)
+    end
+  end
   band.code_hash = function(s) clock = clock + (#s > 1000 and 0.02 or 0.002); return tostring(#s) end -- (a big one, band.lua's size: 20 ms)
   band.signed_ok = function(dir, key, now) -- (as band.lua's: the extension's check, then every code file hashed unless given)
     clock = clock + 0.077
@@ -588,13 +609,28 @@ do
     worst = math.max(worst, clock - before)
     if (fs[CT .. "/lib/files.txt.sig"] or "") == "good 0.60.5" then out_at = i; break end
   end
+  -- (round 8: after it went out, the cloud's copy is staged and checked once; a file the worker fails to fetch once (the desktop: lib/grants.lua)
+  -- is fetched again, not checked half and sent again every pass: 77 ms and an upload each time with the copy current)
+  local once = false
+  local fail = setmetatable({}, { __index = function(_, k) if k == CT .. "/lib/m42.lua" and not once then once = true; return true end end })
+  local v0, m42 = verifies, mt[CT .. "/lib/m42.lua"]
+  for _ = 1, 6 do
+    clock = clock + 200
+    for _ = 1, 60 do clock = clock + 2; stand_in_worker(fail); drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008) end
+  end
+  local after_verifies, reupload = verifies - v0, mt[CT .. "/lib/m42.lua"] ~= m42
   band.studio_update_key, band.version_on_disk, band.signed_ok, band.code_hash, package.loaded.fromfolder, package.loaded.groups = table.unpack(saved)
-  drive.mirror, band.read, reaper.file_exists = real_mirror, real_read, real_exists
+  drive.mirror, band.read, reaper.file_exists, band.list_matches = real_mirror, real_read, real_exists, real_lm
   local said = false
   for _, s in ipairs(logs) do if s:find("0.60.5 is in the ", 1, true) then said = true end end
   check(out_at and said and fs[CT .. "/lib/m42.lua"] == "-- module 42 of 0.60.5", "the owner's new version went out, whole: " .. tostring(out_at))
-  check(worst <= 0.077 + 0.004, string.format("no plan over one extension check and a few ms: the check a plan of its own (worst %.0f ms)", worst * 1000))
+  check(once and after_verifies <= 1 and not reupload, "then checked once, a failed fetch fetched again, never sent again: " .. after_verifies .. " " .. tostring(reupload))
+  return worst
 end
+local worst_sync = tools_run(false)
+check(worst_sync <= 0.077 + 0.004, string.format("no plan over one extension check and a few ms: the check a plan of its own (worst %.0f ms)", worst_sync * 1000))
+local worst_async = tools_run(true)
+check(worst_async <= 0.03, string.format("with the extension's threaded check, no plan waits for it (worst %.0f ms)", worst_async * 1000))
 
 -- ---- 3k. each change read and parsed once after a start, for the copy and the storage sweep both (rt-drive2, round 3) ----
 -- The desktop after its 07:33 restart: the first sweep took 17 minutes at 40-117 ms of every 10 s, both drive.lua and the sweep reading and
@@ -688,6 +724,48 @@ local ds2 = ext["drive slow"] and json.decode(ext["drive slow"])
 check(ds2 and ds2.ms and ds2.ms.busy and ds2.ms.busy >= 20, "a slow look for new files is named: " .. tostring(ext["drive slow"]))
 -- (and the worker waits 4 minutes for its next job, not 1: Live sync's rounds 3 minutes apart each started one, 20-35 ms of "submit")
 check(bg.PS1:find("-gt 240", 1, true) and bg.SH:find("-gt 2400", 1, true), "the worker idles 240 s")
+
+-- ---- 3q. waiting for listings it asked for isn't being stuck; a song not in the cloud copy isn't asked about (rt-drive2, round 8) ----
+-- The desktop, 10:51:08: the sweep's last 10 plans were 8 waits for a new listing each (songs only named here: Sunset Drive...), and the round
+-- rested with the sweep at its 21st of 22 items; the flat stretch followed. Stand-in: a sweep that asks for a new folder 15 plans running,
+-- then goes on; and one that never stops asking (it still rests, after drive.WAIT_MAX).
+local function wait_run(n_waits)
+  setup()
+  drive, bg, cm = fresh()
+  for _ = 1, 3 do clock = clock + 200; bg_pass() end -- (settled: only the sweep left in the round)
+  drive, bg, cm = fresh()
+  local asks, steps = 0, 0
+  cm.tick = function()
+    if asks < n_waits then asks = asks + 1; bg.want("/C/Ghost" .. asks .. "/sessions"); bg.planned.check() end
+    steps = steps + 1
+  end
+  cm.sweeping = function() return asks < n_waits or steps < asks + 3 end
+  cm.progress = function() return asks >= n_waits and steps or 0 end
+  clock = clock + 200
+  local rested
+  for _ = 1, 400 do
+    clock = clock + 2; stand_in_worker()
+    local was = drive.bg_busy()
+    drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008)
+    if was and not drive.bg_busy() then rested = drive.rest_until > clock; break end
+  end
+  return rested, asks
+end
+local rested15 = wait_run(15)
+check(rested15 == false, "15 plans in a row waiting for listings it asked for: the round carries on and ends, no rest")
+local rested_forever, asked = wait_run(10000)
+check(rested_forever == true and asked >= 40, "one that never stops asking still rests, after drive.WAIT_MAX: " .. tostring(rested_forever) .. " " .. asked)
+-- (and the real sweep doesn't ask about a song with no folder in the cloud copy)
+setup()
+drive, bg, cm = fresh()
+package.loaded.songsync = { here = function() return { "Song", "Ghost" } end }
+local listed_ghost = 0
+for _ = 1, 3 do clock = clock + 200; bg_pass() end
+for _, d in ipairs({ "/C/Ghost/rooms", "/C/Ghost/sessions", "/C/Ghost/sessions/media" }) do
+  if fs[bg.dir .. "/lists/" .. bg.hash(d) .. ".txt"] then listed_ghost = listed_ghost + 1 end
+end
+package.loaded.songsync = { here = function() return { "Song" } end }
+check(ext["cloud storage"] and listed_ghost == 0, "a song only named here: no listing asked for its rooms or projects in the cloud: " .. listed_ghost)
 
 -- ---- 3o. each end-of-session project read once, not every sweep (rt-drive2, round 5) ----
 -- The desktop: the sweep's plan of 34.8 ms was one 1.5 MB project read and scanned; Nostalgia's 13 are 19 MB, and every sweep read them again.

@@ -229,6 +229,7 @@ bg.C = direct
 function bg.peek(dir) return listing(dir) end
 function bg.want(dir) if not listing(dir) then want_list(dir) end end
 function bg.want_file(p) cached(p) end
+function bg.forget(p) F[p] = nil end -- (a copy the worker couldn't make: asked again, not left as failed until the file changes)
 function bg.missing() return missing end
 function bg.pending() return plan and #plan.ops or 0 end -- (steps in the plan being made: drive.bg_step tells a unit that has work by it)
 -- What the worker last said of cloud file `p` (its size), or nil: never asks.
