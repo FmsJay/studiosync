@@ -13,7 +13,7 @@ f:close()
 local a = src:find("local SUB_EVERY", 1, true)
 local z = src:find("local function tick_body()", a, true)
 check(a and z, "SUB_EVERY and sub_due sit before tick_body")
-local SUB_EVERY, sub_due = assert(load(src:sub(a, z - 1) .. "\nreturn SUB_EVERY, sub_due", "sched", "t", {}))()
+local SUB_EVERY, sub_due = assert(load(src:sub(a, z - 1) .. "\nreturn SUB_EVERY, sub_due", "sched", "t", { perf = { on = false } }))()
 for name, every in pairs(SUB_EVERY) do check(every >= 0.1 and every <= 1, "10 Hz or slower, at least once a second: " .. name .. " " .. every) end
 for _, name in ipairs({ "link", "controllers", "liveaudio", "ablink", "hops", "webui", "hub", "clip, together", "lock, follow file" }) do
   check(SUB_EVERY[name] == nil, "every tick, as before: " .. name)
@@ -45,6 +45,41 @@ for _, call in ipairs({ 'band.try("direct.live_tick"', 'band.try("controllers.ti
   check(line and not line:find("if", 1, true), "called every tick: " .. call .. " " .. tostring(line))
 end
 check(lap_src:find("local tnow = reaper.time_precise()", 1, true), "one clock read for the schedule")
+
+-- perf stats count a paced sub-tick's lap only when it ran ("ticks" shows its pace); off, nothing is noted (rt-perfcut3, after the desktop
+-- read ~320 ticks for every start sub-step)
+local sl = src:match("\n(local function sub_lap%(name%)[^\n]*)\n")
+check(sl, "sub_lap is one line")
+local function run_ticks(on)
+  local perf, laps = { on = on }, {}
+  local env = { perf = perf, lap = function(name) laps[name] = (laps[name] or 0) + 1 end }
+  local lap_fn = assert(load(sl .. "\nreturn sub_lap", "sub_lap", "t", env))()
+  local due = assert(load(src:sub(a, z - 1) .. "\nreturn sub_due", "sched2", "t", env))()
+  local at2, t2 = {}, 2000
+  for _ = 1, 320 do
+    t2 = t2 + 0.031
+    for _, name in ipairs({ "follow", "needlist", "link" }) do
+      due(at2, name, t2)
+      lap_fn("start/" .. name)
+    end
+  end
+  return laps, perf
+end
+local laps_on, p_on = run_ticks(true)
+check(laps_on["start/link"] == 320, "an unpaced step's lap every tick: " .. tostring(laps_on["start/link"]))
+check(laps_on["start/follow"] >= 75 and laps_on["start/follow"] <= 100, "follow's lap only when it ran: " .. tostring(laps_on["start/follow"]))
+check(laps_on["start/needlist"] >= 9 and laps_on["start/needlist"] <= 11, "needlist's once a second: " .. tostring(laps_on["start/needlist"]))
+check(not p_on.skip, "nothing left over for the next tick")
+local laps_off, p_off = run_ticks(false)
+check(next(laps_off) == nil and not p_off.skip, "perf stats off: no laps, nothing noted")
+-- each paced gate is followed by its own sub-lap before the next gate, so a skip can only drop its own lap
+local gates = {}
+for pos in lap_src:gmatch("()sub_due%(sub_at") do gates[#gates + 1] = pos end
+check(#gates >= 8, "the paced gates: " .. #gates)
+for i, pos in ipairs(gates) do
+  local nxt_lap = lap_src:find('sub_lap("start/', pos, true)
+  check(nxt_lap and (not gates[i + 1] or nxt_lap < gates[i + 1]), "a sub-lap right after paced gate " .. i)
+end
 
 -- ---- 2. the clock JSON: its "now" changes every call; decoded once while the estimates are the same ----
 local clock, gext = 1000, {}

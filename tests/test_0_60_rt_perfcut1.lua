@@ -30,7 +30,7 @@ for at in src:gmatch('()sub_lap%("start/') do
   check(at > body and at < start, "a sub-lap outside tick_body's start: at " .. at)
 end
 check(n >= 15, "the start lap's sub-ticks are marked: " .. n)
-check(src:find("local function sub_lap(name) if perf.on then lap(name) end end", 1, true), "a sub-lap only while perf stats is on")
+check(src:find("local function sub_lap(name) if perf.on then if perf.skip then perf.skip = false else lap(name) end end end", 1, true), "a sub-lap only while perf stats is on (and not for a paced step skipped: rt-perfcut3)")
 local calls = 0
 for at in src:gmatch("()laps_add%(perf%.laps") do
   calls = calls + 1

@@ -326,7 +326,9 @@ local perf = { on = false, at = -math.huge, ticks = {}, passes = {}, worst = 0, 
 -- (and each lap's total, ticks and worst over those 10 s, with the "start" lap split into its sub-ticks, so a measurement says which owns the
 -- ~1 ms a tick and the rare 126-548 ms stalls. The sub-ticks are marked only while perf stats is on. rt-perf's cut 3, rt-perfcut1)
 perf.laps = {}
-local function sub_lap(name) if perf.on then lap(name) end end
+-- (a paced sub-tick skipped this tick (sub_due) sets perf.skip: its sub-lap isn't counted, so "ticks" says how often it ran; its moment goes to the
+-- next lap. rt-perfcut3)
+local function sub_lap(name) if perf.on then if perf.skip then perf.skip = false else lap(name) end end end
 local function laps_add(sums, l) -- l: a tick's laps, name, seconds pairs
   for i = 1, #l - 1, 2 do
     local s = sums[l[i]]
@@ -1132,7 +1134,7 @@ local SUB_EVERY = { takes = 0.5, ["shared prefs"] = 1, calibrate = 1, signed = 0
 local sub_at = {}
 local function sub_due(at, name, now) -- at: name -> when it last ran. -> true when `name` runs this tick (noted in `at`)
   local every, last = SUB_EVERY[name], at[name]
-  if every and last and now - last < every and now >= last then return false end
+  if every and last and now - last < every and now >= last then perf.skip = perf.on; return false end -- (its sub-lap isn't counted: sub_lap)
   at[name] = now
   return true
 end
