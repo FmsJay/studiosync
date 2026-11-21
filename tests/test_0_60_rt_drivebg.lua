@@ -420,6 +420,40 @@ sf.map_files(rpp, function(p) a1[#a1 + 1] = p end)
 sf.each_file(rpp, function(p) a2[#a2 + 1] = p end)
 check(#a1 == 3 and table.concat(a1, "|") == table.concat(a2, "|"), "each_file: " .. table.concat(a1, "|") .. " / " .. table.concat(a2, "|"))
 
+-- ---- 3g. a round that rests after "up to date" doesn't say it isn't (rt-drive2, round 2) ----
+-- The desktop, 05:34, 05:49 and 06:10: "nothing is moving though it isn't up to date" with the copy up to date (drive status {"moved":0}).
+-- The round went on for the storage sweep, the sweep waited, and a rest that fell on the open room's 30 s look counted it as not up to date.
+-- Every offset of the sweep's wait against that look: never said, and the rest says up to date. A copy that keeps failing: said, once.
+local function rest_run(k, fail)
+  setup()
+  drive, bg, cm = fresh()
+  for _ = 1, 3 do clock = clock + 200; bg_pass() end -- (settled: the cloud copy has everything, a deleted take's manifest included)
+  if fail then local e = ev("James", 80); put(HERE .. "/events/" .. e.id .. ".json", json.encode(e)) end
+  drive, bg, cm = fresh()
+  local calls = 0
+  cm.tick = function() calls = calls + 1 end
+  cm.sweeping = function() return true end
+  cm.progress = function() return math.min(calls, k + 6) end -- (the sweep moves on for a while, then waits)
+  logs = {}
+  local told, rest_more, said = false, nil, 0
+  for _ = 1, 150 do
+    clock = clock + 2; stand_in_worker(fail)
+    local was = drive.bg_busy()
+    local m, more = drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008)
+    if m and not more then told = true end
+    if was and not drive.bg_busy() then rest_more = more; break end
+  end
+  for _, s in ipairs(logs) do if s:find("nothing is moving", 1, true) then said = said + 1 end end
+  return told, rest_more, said
+end
+for k = 0, 20 do
+  local told, rest_more, said = rest_run(k)
+  check(told and rest_more == false and said == 0, "rested after up to date, offset " .. k .. ": told " .. tostring(told) .. ", rest says more " ..
+    tostring(rest_more) .. ", said " .. said)
+end
+local _, fail_more, fail_said = rest_run(4, { [HERE .. "/events/" .. ev("James", 80).id .. ".json"] = true })
+check(fail_more == true and fail_said == 1, "a copy that keeps failing: not up to date, said once: " .. tostring(fail_more) .. " " .. fail_said)
+
 -- ---- 4. the real worker scripts ----
 os.remove, os.rename = real_remove, real_rename
 local py = rawget(_G, "python")

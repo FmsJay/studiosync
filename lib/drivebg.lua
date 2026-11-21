@@ -534,7 +534,7 @@ end
 local copy_said = {}
 local function collect(j, text)
   local r = bg.parse_result(text)
-  local moved, landed = 0, {}
+  local moved, landed, failed, wrote = 0, {}, {}, {}
   for i, op in ipairs(j.ops) do
     local x = r[i]
     local ok = x and x[1]
@@ -547,15 +547,20 @@ local function collect(j, text)
       if ok then F[op.a] = { size = tonumber(x[2]), mtime = x[3], file = op.b }
       elseif l and l.size[n] then F[op.a] = { size = l.size[n], mtime = l.mtime[n], failed = true } end
     elseif ok then
+      if op.op == "C" or op.op == "M" then wrote[#wrote + 1] = op.b end
       if op.tag == "count" or op.tag == "landed" then moved = moved + 1 end
       if op.tag == "landed" then landed[#landed + 1] = op.b end
-    elseif op.op == "C" and x and not copy_said[op.a] then
-      copy_said[op.a] = true
-      band.log("couldn't copy " .. tostring(op.a:match("[^/]+$")) .. " for the cloud copy: " .. tostring(x[2]))
+    else
+      -- (drive.bg_step: the copy isn't up to date while one stays failed; not a bandmate's change still arriving, left for later as before)
+      if (op.op == "C" or op.op == "M") and not (x and x[2] == "not whole yet") then failed[#failed + 1] = op.b end
+      if op.op == "C" and x and not copy_said[op.a] then
+        copy_said[op.a] = true
+        band.log("couldn't copy " .. tostring(op.a:match("[^/]+$")) .. " for the cloud copy: " .. tostring(x[2]))
+      end
     end
   end
   for _, fn in ipairs(j.after or {}) do pcall(fn) end
-  return { moved = moved, landed = landed }
+  return { moved = moved, landed = landed, failed = failed, wrote = wrote }
 end
 local function fail(j, why)
   os.remove(j.plan) -- (one the worker never took up never runs now)

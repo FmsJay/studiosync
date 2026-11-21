@@ -911,12 +911,16 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
   if r then
     for _, path in ipairs(r.landed) do drive.landed[#drive.landed + 1] = path end
     if round then round.moved, round.err = round.moved + r.moved, r.err or round.err end
+    if round then -- (copies that failed, until the same one goes: lib/drivebg.lua's results)
+      for _, t in ipairs(r.failed or {}) do round.failing[t] = true end
+      for _, t in ipairs(r.wrote or {}) do round.failing[t] = nil end
+    end
     if round and r.moved > 0 then round.plans = 0 end
     if r.err and round then return done() end -- (the worker failed: what it did is listed again by the next pass)
   end
   if not round and reaper.time_precise() < drive.rest_until then return r and r.moved, r and true, r and r.err end -- (resting)
   if not round or round.song ~= song or round.root ~= droot then
-    round = { song = song, root = droot, moved = 0, jobs = 0, plans = 0, units = {} }
+    round = { song = song, root = droot, moved = 0, jobs = 0, plans = 0, units = {}, failing = {} }
     for _, p in ipairs(rooms) do round.units[#round.units + 1] = { "room", p[1], p[2] } end
     for _, k in ipairs({ "upkeep", "tools", "cm" }) do round.units[#round.units + 1] = { k } end
   end
@@ -969,14 +973,18 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
   round.plans = (fresh or read_n > read0 or CM.progress() > cm0) and 0 or round.plans + 1
   if round.plans >= drive.STALL then
     drive.rest_until = reaper.time_precise() + drive.EVERY
-    if not drive.rest_said and not copied then
+    -- (behind: not up to date yet this round, files moved since it last was, or a copy that keeps failing. Not a room looked at again, nor
+    -- the storage sweep waiting for listings after "up to date": said at 05:34, 05:49 and 06:10 on the desktop with the copy up to date.
+    -- rt-drive2, round 2)
+    local behind = not round.told or round.moved > 0 or next(round.failing) ~= nil
+    if not drive.rest_said and behind then
       drive.rest_said = true
       band.log(drive.label(drive.service_of(droot)) .. " copy: nothing is moving though it isn't up to date, so it tries again every " ..
         math.floor(drive.EVERY / 60) .. " minutes rather than every pass")
     end
     local x = round
     round = nil
-    return x.moved, not copied and (not x.told or x.moved > 0), x.err
+    return x.moved, behind, x.err
   end
   -- ("up to date" said once, with the files moved since it was last said; a room looked at again stays "up to date" unless it moves some)
   if copied and (not round.told or round.moved > 0) then

@@ -108,6 +108,41 @@ when the copy was, and ended normally once the sweep finished, never resting.
 5. The log never says "nothing is moving though it isn't up to date" while the copy is actually up to date.
 6. `tests/reaper/rt_perf.lua` shows "laps over 10 s" per tab, with `start/...` rows: which sub-tick owns the start lap.
 
+## Round 2 (after the desktop's checks on 0.59.49.80)
+
+All checks passed except 5: "nothing is moving though it isn't up to date" still appeared at 05:34:42, 05:49:30 (36 s after "up to date
+(12 files)") and 06:10:27, with `drive status` `{"moved":0}`.
+
+**Cause.** After "up to date" the round goes on for the storage sweep. 05:34 was during the first sweep after the reload (it finished
+~05:38), and 05:49 and 06:10 during the next sweeps (one every 10 minutes). A sweep waits on listings: plans that need one only send a job,
+and plans where the open room's 30 s look used the whole budget give the sweep no turn. Ten such plans in a row and the round rests, which
+is fine. But the log's condition was "the copy units aren't all done", and a room re-opened for its 30 s look is not done while it waits for
+its listings. A rest that fell on that look logged the line.
+
+**Fix (`lib/drive.lua`, `lib/drivebg.lua`).** The line, and the rest's `more`, now go by `behind`: not up to date yet this round, or files
+moved since "up to date" was last said, or a copy that failed and hasn't gone since. The worker's results now list each copy or move that
+failed and each that went (`failed`, `wrote`); a failed one stays failing until the same target goes. A bandmate's change still arriving
+("not whole yet", left for later as before) doesn't count. A room looked at again, or the sweep waiting, isn't behind.
+
+**Test 3g.** From a settled copy, a round whose sweep makes progress for k + 6 plans and then waits, for every k from 0 to 20 (so the rest
+falls at every point of the room's 30 s look): it rests, the rest says up to date, and the line is never logged. The old drive.lua logs it
+at k = 2. And a copy that keeps failing (a new change the stand-in worker can't copy): the rest says not up to date and the line is logged
+once.
+
+**`reaper_studiosync.dylib` "changed while it copied" (05:27:18).** The deploy rewrote `_tools` (05:24:58-05:25:01) while a round was copying
+the update files to the cloud. That copy retries by itself: the next update-files pass (every `drive.EVERY` = 180 s, in a later round)
+checks the cloud's copy against its signature again. A copy with one file wrong doesn't check, so it goes "out" again with the files that
+differ. On the desktop the cloud's dylib was rewritten at 05:37:58, and all 150 files in `lib/files.txt` are now byte-identical between the
+studio folder and `G:`. Meanwhile no member could have taken the half copy, because "in" needs a copy that checks as signed. No fix needed.
+Its "couldn't copy" line is logged once per file per session, so a retry that fails again is silent (as before).
+
+REAPER check after deploy: over an hour with edits and sweeps (`cloud storage` `at` moving every ~10 minutes), the log has no "nothing is
+moving though it isn't up to date" unless a "couldn't copy ..." line came before it in that round.
+
+Not changed: "Google Drive: bringing the studio's copy of this room up to date" is still logged at the first job of most rounds (every
+SOON/EVERY), even when the round then has nothing to send. That line predates rt-drive2: a new round says `more` until its first check is
+done.
+
 ## Left / not done
 
 - **`trim.plan` itself** (lib/trim.lua, not mine) is 80-200 ms for a 2,500-change room with ~180 saved versions in Standard's window
