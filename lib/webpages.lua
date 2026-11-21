@@ -128,7 +128,7 @@ function webpages.action(proj, cfg, b, a)
     local rg = together.regions(proj)
     local k = math.floor(tonumber(a.from) or 0)
     together.start(proj, cfg, b, rg[k] and rg[k].pos or reaper.GetCursorPositionEx(proj), a.go == "record", webpages.bars(a.countin) or 1,
-      a.click ~= false, webpages.bars(a.lag) or 0)
+      a.click ~= false, webpages.bars(a.lag) or 0, a.skip == true) -- (skip: the page's "skip the time selection", lib/together.lua)
     return what .. " together, from the web page"
   end
 end

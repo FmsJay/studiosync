@@ -104,16 +104,87 @@ StudioSync's Undo doesn't).
 
 ## Questions for James
 
-1. **"When the driver starts with that action"**: ReaScript can't see which action started playback, and REAPER has no skip *mode* to read
+1. (answered in round 2: built) **"When the driver starts with that action"**: ReaScript can't see which action started playback, and REAPER has no skip *mode* to read
    (40317 is a one-shot action). So today the driver asks for the skip with the panel's box. To honour REAPER's own 40317 (and a toolbar
    button bound to it) directly, the extension would note it (`hookcommand` for 40317, not consuming it, writing an ExtState Live sync reads
    when the band starts): a small C++ change and an extension release. Build that? And should the web UI's Play/Song pages get the box?
-2. A start whose position is inside the time selection isn't given a skip (REAPER's own behaviour from inside a selection wasn't checked
-   offline). OK?
-3. With REAPER's "loop points linked to time selection" on, setting the leader's selection on a follower moves its loop range too; a looped
+2. (answered in round 2) A start inside the time selection: as REAPER does, below.
+3. (answered in round 2: put back) With REAPER's "loop points linked to time selection" on, setting the leader's selection on a follower moves its loop range too; a looped
    Play together with a skip then loops the selection. Leave it?
 
 ## Left / not done
 
 - Not run in REAPER or between computers. The full `tests/run.py --no-luals` result is in the report.
 - The web UI's starts don't carry a skip; follow mode doesn't either (it re-cues on the leader's jump, as before).
+
+## Round 2 (James's answers, 2026-11-21)
+
+Files: `extension/reaper_menu.cpp` (C++: needs the next extension release; no version bumped), `lib/together.lua`, `StudioSync - Live
+sync.lua` (shared: five small lines in the start fire and the follow code), `lib/webui/play.js`, `lib/webpages.lua`, `lib/webui/daw.js`,
+`lib/webui/daw.css`, `lib/dawview.lua`, `tests/test_0_60_rt_answers_skip.lua`, one expected string in `tests/test_0_60_rt_dawview.lua` (the
+Song page's Play now sends `{ play: 'start', skip: ... }`). `lib/webui.lua` and `lib/webui/index.html` weren't needed and weren't touched.
+
+**1. REAPER's own Play (skip time selection) drives it.**
+- The extension's `hookcommand` (`on_command`, StudioSync's build only, not ReaPersona's) notes every run of 40317 before anything else and
+  never eats it: ExtState `BandSync` / `play skip` = REAPER's `time_precise()` then. Key, toolbar button, menu or script all go through it.
+- Live sync's follow code (Follow each other / side by side, follow the driver): when this tab starts playing and a note from the last 2 s
+  (`together.PRESS_WINDOW`) is there for the tab in front, the start cue carries `skip` = the time selection that ends after the start
+  (`together.pressed_skip`; the note is taken, so a later plain Play isn't read as one). Followers fire it as REAPER's own action, as in round 1.
+- REAPER's jump over the selection isn't a seek any more, on the leader or on a follower that skipped it (`together.skip_jump`: the jump lands
+  where skipping puts it). Before, the leader's jump went out as a re-cue and everyone stopped and restarted. A real seek during a skip play
+  still re-cues, and keeps the skip.
+- A follower's own run of 40317 (from `together.play`) is noted by its extension too. `together.play` takes that note at once, so it is never
+  read as the follower's own press.
+- With an older extension nothing is noted: the panel's box is the way, as in round 1.
+- The web UI: the Play page has "skip the time selection" beside count-in, click and bars later (`skip` in its `go`, play only). The Song page
+  has a "skip selection" box beside the play button (`{ play: 'start', skip }`; `dawview.parse` takes `skip` only as `true` and only with a
+  start).
+
+**2. Starting inside the selection: do what REAPER does.** I couldn't find what 40317 does from inside a time selection: not in the reaper
+skill's API index, the local action lists, or two web searches (no REAPER forum posts came up; sources below). So no StudioSync rule is written
+for it: the start carries the skip whenever the selection ends after the start position (`together.skip_of`: before `e`, not only before `s`),
+and every computer runs REAPER's own 40317 from the same place over the same selection (`together.play`: cursor before `e`). Whatever REAPER
+does from inside (play on and skip nothing, or jump to the selection's end at once), each computer does the same. If the leader's REAPER jumps
+to the end at once, its start cue already says the end and carries no skip. Not settled: a late joiner's position when the start was inside
+(taken as plain time, which is right if REAPER plays on from inside). REAPER check 7 below settles it.
+Sources searched: [Reaper shortcut key list by headings](https://reaperaccessibility.com/wiki/Reaper_shortcut_key_list_by_headings),
+[Translations:Basic editing/9/en](https://reaperaccessibility.com/wiki/Translations:Basic_editing/9/en),
+[Ardour discourse: skip range in playback](https://discourse.ardour.org/t/skip-range-in-playback/103353) (describes REAPER's action, not from inside).
+
+**3. A follower's own time selection comes back.** `together.play` keeps this computer's own selection when it sets the leader's. Live sync's
+pass (`together.restore_own`) puts it back once the playhead is past the skipped selection's end, or when playback stops, whichever comes first.
+With loop points linked to the time selection, the loop comes back with it. A selection the person changed in the meantime is theirs: left as it
+is. The leader (its own selection is the skip) has nothing to put back.
+
+### Round 2 tests (`tests/test_0_60_rt_answers_skip.lua`, each failing with its change taken out)
+- The start from inside the selection carries the skip, and `together.play` runs 40317 from inside; a selection behind the start doesn't.
+- Own selection: kept while the playhead is before the end; back past it; back on stop first; a selection changed meanwhile is left alone;
+  nothing kept on the leader.
+- The press note: taken once; an old one or one from another tab isn't a press; a follower's own run is taken by `together.play`.
+- `skip_jump`: the jump over the skip, not a seek elsewhere or without a skip.
+- The C++: `on_command` notes 40317 before its own action's check, so it isn't eaten; `"play skip"` = `time_precise()`; StudioSync's build
+  only. Built with `extension/build_windows.cmd` (to a scratch file name through `DLL_OUT`, so the tracked DLL is unchanged) for StudioSync and
+  for ReaPersona: both compile. No native test covers `reaper_menu.cpp` (it needs REAPER's API); the native sign and keep tests pass.
+- Wiring in Live sync, the Play page, the Song page; `dawview.parse`'s `skip`.
+
+### Round 2 REAPER checks (after the extension release; desktop, laptop, LinuxBox)
+5. **REAPER's own action:** laptop and LinuxBox follow the desktop (panel > Play > Follow each other at 0 bars, or follow the driver). On the
+   desktop make a time selection over the verse, put the edit cursor before it, press Alt+Space (Play (skip time selection)) or a toolbar
+   button bound to it.
+   - All three jump over the verse together, with no stop and restart on the followers when the desktop jumps.
+   - The start event in `rooms/main/events/` has `"skip":[s,e]`.
+   - The followers' time selections are back to their own once past the verse, or when you stop before then.
+   - Press plain Space next: no skip anywhere.
+6. **Linked loop:** on the laptop turn on Options > "Loop points linked to time selection" and set its own selection and loop elsewhere. Repeat
+   5: after the verse, or at stop, the laptop's selection and loop are its own again. Check too that, playing on after its selection came back,
+   the laptop doesn't skip its own selection when the playhead reaches it. If it does, REAPER skips whatever the selection is at the time, and
+   the put-back has to wait until stop.
+7. **From inside the selection:** cursor inside the verse's selection, Alt+Space on the desktop. Note what REAPER does (plays on from the cursor,
+   or jumps to the selection's end) and that the followers do the same. Then start one follower's Live sync a few seconds late: say where it
+   starts, and I'll set the late start's rule to match.
+8. **Web UI:** Play page > tick "skip the time selection" > Play together: as step 4. Song page > tick "skip selection" > play: the same. In a
+   375 px phone view the Song page's bar still fits (the box wasn't checked in a browser).
+
+### Round 2 review-later (security)
+- `play skip` is local ExtState from this computer's own extension; a script could write it too, which only adds a skip to this person's own
+  start.

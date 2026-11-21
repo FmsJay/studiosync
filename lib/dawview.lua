@@ -231,6 +231,7 @@ function dawview.parse(a)
   -- (nohistory: the Song page saying it's off; a want without either, the phone's, leaves the history as another page asked)
   local out = { want = a.want == true or nil, history = a.history == true or nil, nohistory = a.history == false or nil }
   if a.play == "start" or a.play == "stop" then out.play = a.play end
+  out.skip = a.play == "start" and a.skip == true or nil -- (the Song page's "skip selection": lib/together.lua. James, 2026-11-21)
   -- (a saved version's file name, as recall names them: nothing that could point anywhere else)
   if type(a.restore) == "string" and #a.restore <= 200 and a.restore:match("^[%w][%w%-_ %.]*%.json$") and not a.restore:find("%.%.") then out.restore = a.restore end
   return out
@@ -406,7 +407,7 @@ function dawview.action(proj, cfg, b, a)
     local together = require("together")
     if d.play == "start" then
       -- (as the panel's Play together with its defaults: from the edit cursor, a bar's count-in with the click)
-      together.start(proj, cfg, b, reaper.GetCursorPositionEx(proj), false, 1, true, 0)
+      together.start(proj, cfg, b, reaper.GetCursorPositionEx(proj), false, 1, true, 0, d.skip)
       return "Play together, from the web page"
     end
     together.go(proj, cfg, b, { type = "stop" })

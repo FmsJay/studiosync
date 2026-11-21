@@ -13,6 +13,7 @@
 .dtime.rec { color: var(--rec); }
 .dfollow { font-size: 13px; color: var(--dim); display: flex; align-items: center; gap: 4px; }
 .dfollow select { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 3px 4px; max-width: 9em; }
+.dskip { font-size: 13px; color: var(--dim); display: flex; align-items: center; gap: 4px; white-space: nowrap; } /* (Play together skips the time selection: rt-answers) */
 .dhistb[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
 .dhist { border-bottom: 1px solid var(--line); background: var(--bg); padding: 6px 12px; max-height: 42vh; overflow-y: auto; }
 .dstrip { display: block; width: 100%; height: 36px; border-radius: 6px; cursor: pointer; }
@@ -71,6 +72,7 @@
   .dbar button { padding: 2px 7px; font-size: 12px; }
   .dfollow { font-size: 0; } /* (the select says it) */
   .dfollow select { font-size: 12px; max-width: 7em; }
+  .dskip { font-size: 11px; }
   .dtime { font-size: 11px; }
   .dhist { padding: 4px 6px; }
   .dedit { gap: 4px; padding: 3px 6px; }

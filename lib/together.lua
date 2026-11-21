@@ -109,20 +109,57 @@ function together.apply_loop(proj, loop)
     reaper.GetSetRepeatEx(proj, 1)
   elseif loop == false then reaper.GetSetRepeatEx(proj, 0) end
 end
--- The time selection a start skips: the one ahead of `pos`, as REAPER's Play (skip time selection) skips it, else false.
+-- The time selection a start skips: the one that ends after `pos`, else false. From inside it as from before it: every computer runs REAPER's
+-- own action from the same place over the same selection (together.play), so whatever REAPER does from there, they all do (James, round 2:
+-- "match REAPER"; not checked offline what that is: docs/rt/rt-answers.md).
 function together.skip_of(proj, pos)
   local s, e = reaper.GetSet_LoopTimeRange2(proj, false, false, 0, 0, false)
-  return e > s and s > (pos or 0) and { s, e } or false
+  return e > s and e > (pos or 0) and { s, e } or false
+end
+-- REAPER's own "Play (skip time selection)" just pressed here (its key, toolbar button or menu): the extension notes each run of 40317
+-- (extension/reaper_menu.cpp, ExtState "play skip" = REAPER's time_precise then; the extension release after 1.0.33). Live sync asks once, as it sees this tab start
+-- playing; the note is taken so a later plain Play isn't read as one. An older extension never notes it: the panel's box is the way then.
+together.PRESS_WINDOW = 2
+function together.pressed_skip(proj, pos)
+  local band = require("band")
+  local at = tonumber(reaper.GetExtState(band.SECTION, "play skip"))
+  if not at then return nil end
+  reaper.DeleteExtState(band.SECTION, "play skip", false)
+  if reaper.time_precise() - at > together.PRESS_WINDOW or reaper.EnumProjects(-1) ~= proj then return nil end
+  return together.skip_of(proj, pos) or nil
+end
+-- Did a playhead that should be at `expected` and is at `pos` just jump over the skip { s, e } (REAPER skipping it), rather than someone
+-- seeking? Then it isn't a seek for the others to follow: they skip it themselves. Pure.
+function together.skip_jump(skip, expected, pos)
+  local s, e = together.skip_range({ skip = skip })
+  return s ~= nil and expected >= s - 0.1 and math.abs((pos - e) - (expected - s)) < 0.5
+end
+-- This computer's own time selection, put back once the skip is behind the playhead or playback stops (James, round 2: with loop points linked
+-- to the time selection, the leader's selection moved its loop too). proj -> { s, e, past }. A selection you changed meanwhile is yours: left.
+together.own = {}
+function together.restore_own(proj)
+  local o = together.own[proj]
+  if not o then return false end
+  if reaper.GetPlayStateEx(proj) & 1 == 1 and reaper.GetPlayPosition2Ex(proj) < o.past then return false end
+  together.own[proj] = nil
+  local s, e = reaper.GetSet_LoopTimeRange2(proj, false, false, 0, 0, false)
+  if s ~= o.set_s or e ~= o.set_e then return false end
+  reaper.GetSet_LoopTimeRange2(proj, true, false, o.s, o.e, false)
+  return true
 end
 -- A start's play, fired here (Live sync): with a skip, REAPER's own Play (skip time selection) over that selection, so every computer skips
--- it as the leader does (the selection is set to the leader's here). Not for a recording, nor from past it (a late start: together.plan),
--- nor in a tab that isn't in front (REAPER's actions go to the tab in front: it plays through there, and says so). -> true when it skips.
+-- it as the leader does: the selection is set to the leader's for it, and this computer's own comes back after (restore_own). Not for a
+-- recording, nor from past it (a late start: together.plan), nor in a tab that isn't in front (REAPER's actions go to the tab in front: it plays
+-- through there, and says so). -> true when it skips.
 function together.play(proj, ev)
   local s, e = together.skip_range(ev)
-  if s and not ev.rec and reaper.GetCursorPositionEx(proj) < s then
+  if s and not ev.rec and reaper.GetCursorPositionEx(proj) < e then
     if reaper.EnumProjects(-1) == proj then
+      local os_, oe = reaper.GetSet_LoopTimeRange2(proj, false, false, 0, 0, false)
+      if os_ ~= s or oe ~= e then together.own[proj] = { s = os_, e = oe, past = e, set_s = s, set_e = e } end
       reaper.GetSet_LoopTimeRange2(proj, true, false, s, e, false)
       reaper.Main_OnCommandEx(40317, 0, proj) -- Transport: Play (skip time selection)
+      reaper.DeleteExtState(require("band").SECTION, "play skip", false) -- (the extension noted this run too: it isn't a press of yours)
       return true
     end
     require("band").log("a start that skips a time selection plays through it in a tab that isn't in front")
@@ -141,7 +178,7 @@ function together.go(proj, cfg, b, ev)
 end
 -- Play or Record together from `pos`, after `countin` bars, with listeners `lag` bars later (Time-sync only, else 0). The panel's Start together,
 -- the web UI's Play page and its Song page's Play (lib/webpages.lua, lib/dawview.lua) all start this way. (James, rt)
--- `skip`: as REAPER's Play (skip time selection), the time selection ahead of pos skipped on every computer (play only; together.skip_of).
+-- `skip`: as REAPER's Play (skip time selection), the time selection that ends after pos skipped on every computer (play only; together.skip_of).
 function together.start(proj, cfg, b, pos, rec, countin, click, lag, skip)
   together.go(proj, cfg, b, { type = "start", rec = rec or nil, pos = pos, countin = together.bars_before(proj, pos, countin), click = click or nil,
     lag = together.bars_after(proj, pos, lag or 0), lead = cfg.user, skip = skip and not rec and together.skip_of(proj, pos) or nil })

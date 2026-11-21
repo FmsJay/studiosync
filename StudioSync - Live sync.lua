@@ -1342,7 +1342,7 @@ local function tick_body() -- returns true to keep going
           reaper.Main_OnCommand(1013, 0) -- Transport: Record (the active project)
           if reaper.GetPlayStateEx(proj) & 4 == 0 then together_take = nil end -- (REAPER's Record Warning cancelled it: no take started together. 0.58.93)
         else
-          together.play(proj, transport) -- (a start that skips a time selection skips it here too: lib/together.lua. James, 2026-11-21)
+          if together.play(proj, transport) then side.skip = transport.skip end -- (a start that skips a time selection skips it here too, and REAPER's jump over it isn't a seek: lib/together.lua. James, 2026-11-21)
         end
         local said = transport.remote and string.format("%s from %.2f s: %s started it (they're producing you)", transport.rec and "recording" or "playing", from, tostring(transport.lead))
           or transport.rec and transport.follow and theirs
@@ -1367,6 +1367,7 @@ local function tick_body() -- returns true to keep going
     if reaper.GetToggleCommandStateEx(0, 40364) == 1 then reaper.Main_OnCommand(40364, 0) end
     click = nil
   end
+  if together.own[proj] then together.restore_own(proj) end -- (your own time selection back, once a start's skip is behind you: lib/together.lua)
   local lagbars = side_bars()
   local someone_follows = false -- (a cue file per press only when somebody's there to read it)
   if not lagbars then
@@ -1379,18 +1380,22 @@ local function tick_body() -- returns true to keep going
     local playing, pos, tp = ps & 1 == 1, reaper.GetPlayPosition2Ex(proj), reaper.time_precise()
     if tp >= side.quiet_until then
       local jumped = playing and side.playing and math.abs(pos - (side.pos + (tp - side.t))) > 0.5 -- a seek while playing
+        and not together.skip_jump(side.skip, side.pos + (tp - side.t), pos) -- (not REAPER skipping the time selection: the others skip it themselves)
       if playing ~= side.playing or jumped then
         local ev = playing and { type = "start", pos = pos, countin = 0, rec = ps & 4 == 4 or nil }
           or { type = "stop", pos = side.pos + (tp - side.t), pause = ps & 2 == 2 or nil } -- where the song was when you stopped
         ev.at, ev.lead, ev.follow = together.now(), cfg.user, true
         ev.start_at = together.start_at(0) -- (the same moment on the shared clock: the others' lag counts from it. James, 0.60.0-rt)
         ev.lag = together.bars_after(proj, pos, lagbars or 0)
+        -- (REAPER's own Play (skip time selection) pressed here: the others skip the same selection; a seek during it keeps it. James, 2026-11-21)
+        if playing and not ev.rec then ev.skip = (jumped and side.skip) or (not jumped and together.pressed_skip(proj, pos)) or nil; side.skip = ev.skip end
         sync.post(cfg, b.song, b.room, ev)
         fired[ev.id], cue_at = true, math.max(cue_at, ev.at)
         reaper.SetExtState(band.SECTION, "together " .. key, os.date("%H:%M:%S ") .. (playing and string.format("you %s from %.2f s: the others follow %.1f s behind",
           ev.rec and "recorded" or "played", pos, ev.lag) or "you stopped: the others stop too"), false)
       end
     end
+    if not playing then side.skip = nil end
     side.playing, side.pos, side.t = playing, pos, tp
   end
   band.try("recap.lane_tick", require("recap").lane_tick, proj) -- (smart lanes: a new take's lane named once it settles; nothing otherwise. James, rt)
