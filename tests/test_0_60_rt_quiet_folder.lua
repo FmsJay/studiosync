@@ -43,7 +43,7 @@ package.loaded.direct = {
   send_live = function(_, kind) if kind == "presence" then sends = sends + 1 end end,
 }
 package.loaded.rthealth = { free_mb = function() return 1000 end }
-package.loaded.colours = { look = function() return nil end }
+package.loaded.colours = { look = function() return nil end, parity = function() return true end } -- (the studio's Colour parity switch: rt-perfcut4)
 package.loaded.removal = { gone = function() return {} end }
 local sync = require("sync")
 sync.room_dir = function(_, song, room) return "R/" .. song .. "/rooms/" .. room end

@@ -1540,6 +1540,7 @@ local function perf_publish(now)
   end
   perf.on, perf.ticks, perf.passes, perf.worst, perf.worst_laps, perf.recv = reaper.GetExtState(band.SECTION, "perf stats") == "1", {}, {}, 0, "", {}
   perf.laps, perf.over = {}, {}
+  band.sublap = perf.on and lap or nil -- (laps inside lib code: sync.write_status, direct.live_tick; nil while perf stats is off. rt-perfcut4)
 end
 -- an error anywhere in a tick (a malformed cue from someone's machine, say) is logged, and Live sync carries on
 local said_at, sws_at = -math.huge, -math.huge

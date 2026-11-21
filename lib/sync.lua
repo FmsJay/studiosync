@@ -2288,6 +2288,7 @@ sync.CLASH_EVERY = 45
 local clash_at = {} -- status path -> when it was last read back
 -- link_only: the presence message alone, no file (while the link reaches everyone here: lib/presence.lua put_status. James, rt)
 function sync.write_status(proj, cfg, song, room, info, link_only)
+  local sublap = band.sublap -- (Live sync's, only while perf stats is on: where a status write's 10-32 ms goes. rt-perfcut4)
   local dir = sync.room_dir(cfg, song, room) .. "/status"
   if not link_only then reaper.RecursiveCreateDirectory(dir, 0) end
   local path = dir .. "/" .. (cfg.user:gsub("[^%w%-_ ]", "")) .. ".json"
@@ -2301,15 +2302,23 @@ function sync.write_status(proj, cfg, song, room, info, link_only)
         "Change the name on one of them: Settings > You")
     end
   end
+  if sublap then sublap("status/folder, name clash") end
   info.machine = sync.machine()
   info.user, info.time, info.version, info.room = cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ"), band.VERSION, room
   -- (free MB where takes land, so the others can say "Mac is low on disk": lib/rthealth.lua. James, rt)
   info.free_mb = require("rthealth").free_mb(proj)
   info.reaper = (reaper.GetAppVersion():match("^[%d%.]+")) -- (Setup > Health compares the band's: "7.79/win64" -> "7.79")
-  local okc, look = pcall(require("colours").look, proj) -- (what colours this computer shows, for Health's Colour parity row. James, rt)
+  if sublap then sublap("status/info") end
+  -- (what colours this computer shows, for Health's Colour parity row, which only exists with the studio's Colour parity on: with it off
+  -- nobody reads `look`, and building it walks every item, 23-31 ms on a heavy song. James, rt; rt-perfcut4 cut 7)
+  local okc, look = false, nil
+  if require("colours").parity(cfg.root) then okc, look = pcall(require("colours").look, proj) end
   info.look = okc and look or nil
+  if sublap then sublap("status/colour look") end
   if not link_only then band.write_json(path, info) end
+  if sublap then sublap("status/file") end
   require("direct").send_live(cfg, "presence", info, song, room) -- (seen at once by those here: lib/presence.lua from_msg. James, 0.60.0-rt)
+  if sublap then sublap("status/link send") end
 end
 
 -- Opening a project: what's new for it comes in before you get it, in one go. Left to Live sync, it comes a quarter of a second at a

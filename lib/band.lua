@@ -309,8 +309,10 @@ end
 local listed = {}
 -- (only the written file's own folder's listing is emptied: Live sync's lock file, written every 5 s, emptied every cached listing, the events
 -- folder's too. Matched in one spelling, as callers may pass either slash. Round 3 review, 0.59.48)
+local songs_memo = {} -- root -> { at, list }: band.songs' answer, held band.SONGS_HOLD s (rt-perfcut4)
 local function unlist(path)
   local dir = path:match("^(.*)[/\\]")
+  if not dir or path:sub(-12):lower() == "session.json" then songs_memo = {} end -- (a song made, changed or removed here shows at once)
   if not dir then listed = {}; return end
   dir = norm(dir):lower()
   for k in pairs(listed) do if norm(k):lower() == dir then listed[k] = nil end end
@@ -1560,7 +1562,22 @@ function band.session_path(cfg, song) return band.song_dir(cfg, song) .. "/sessi
 function band.takes_dir(cfg, song, room) return band.song_dir(cfg, song) .. "/rooms/" .. room .. "/takes" end
 
 -- Newest publish first (the song you're working on now is at the top of the menu).
+-- (held a few seconds: the hub's scan, a cloud plan, Listen and the Home page each asked, 5.3 ms a call on the desktop. A song a bandmate
+-- published shows here up to SONGS_HOLD s later than it came; Syncthing's own delay is longer. Not held while a join's first copy is coming
+-- (band.boot_songs): that answer changes under the caller. rt-perfcut4)
+band.SONGS_HOLD = 5
+function band.forget_songs() songs_memo = {} end
+local function copy_list(l) local c = {}; for i, d in ipairs(l) do c[i] = d end; return c end
 function band.songs(cfg)
+  local now = reaper.time_precise()
+  local m = songs_memo[cfg.root]
+  local held = reaper.GetExtState(band.SECTION, "join boots") == ""
+  if held and m and now >= m.at and now - m.at < band.SONGS_HOLD then return copy_list(m.list) end
+  local out = band.songs_read(cfg)
+  if held then songs_memo[cfg.root] = { at = now, list = copy_list(out) } end
+  return out
+end
+function band.songs_read(cfg)
   local out, when = {}, {}
   -- (a guest who was given only some projects sees only those: lib/access.lua, 0.58.89)
   local oka, allowed = pcall(function() return require("access").mine(cfg.root) end)

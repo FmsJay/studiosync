@@ -14,7 +14,7 @@ band.read_json = function(path) if path:find("/status/James.json$") then reads =
 band.write_json = function(path, t) if path:find("/status/James.json$") then on_disk = t end end
 package.loaded.direct = { send_live = function() end }
 package.loaded.rthealth = { free_mb = function() return 1000 end }
-package.loaded.colours = { look = function() return nil end }
+package.loaded.colours = { look = function() return nil end, parity = function() return true end } -- (the studio's Colour parity switch: rt-perfcut4)
 sync.room_dir = function() return "R/Song/rooms/main" end
 sync.machine = function() return "desk" end
 sync.put_back = function(text) said[#said + 1] = text end

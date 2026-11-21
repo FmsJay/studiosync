@@ -342,9 +342,12 @@ function direct.tick(cfg)
     if not seq then break end
     last_seq, n = seq, n + 1
   end
+  local sublap = band.sublap -- (rt-perfcut4: Live sync's laps while perf stats is on)
+  if sublap then sublap("link/poll, ensure") end
   if reaper.time_precise() - pruned_at > direct.PRUNE_EVERY then
     pruned_at = reaper.time_precise()
     pcall(direct.prune, cfg)
+    if sublap then sublap("link/prune") end
   end
   return n
 end
@@ -685,8 +688,21 @@ local beat_at = -math.huge
 -- lib/streams.lua its own steps there. Handed over only when it changes. (James, rt)
 local trace_set
 function direct.trace_path() return reaper.GetExtState(band.SECTION, "stream trace") == "1" and band.home() .. "/direct/stream_trace.log" or "" end
+-- The trace is capped (it grew without limit, a few MB an hour while someone streams): past TRACE_MAX bytes, checked each TRACE_CHECK s, it
+-- becomes stream_trace.log.old (the one before that goes) and a new one starts, as every writer appends by name. rt-perfcut4
+direct.TRACE_MAX, direct.TRACE_CHECK = 20 * 1048576, 60
+local trace_at = -math.huge
+function direct.trace_rotate(p, now)
+  if p == "" or now - trace_at < direct.TRACE_CHECK then return false end
+  trace_at = now
+  local n = band.size(p)
+  if not (n and n > direct.TRACE_MAX) then return false end
+  os.remove(p .. ".old")
+  return os.rename(p, p .. ".old") and true or false
+end
 local function trace_tick()
   local p = direct.trace_path()
+  direct.trace_rotate(p, reaper.time_precise())
   if p ~= trace_set and reaper.StudioSync_DirectTrace then
     if p ~= "" then reaper.RecursiveCreateDirectory(band.home() .. "/direct", 0) end
     reaper.StudioSync_DirectTrace(p)
@@ -694,18 +710,23 @@ local function trace_tick()
   end
 end
 function direct.live_tick(cfg, song, room, handlers)
+  local sublap = band.sublap -- (Live sync's, only while perf stats is on: the start/link lap in its parts. rt-perfcut4)
   local n = direct.tick(cfg)
   if not direct.available() then return n end
   trace_tick()
   direct.refresh_peers(cfg, song, room)
+  if sublap then sublap("link/peers") end
   if direct.live_available() then
     direct.keep_clock(cfg, song, room)
+    if sublap then sublap("link/clock") end
     local now = reaper.time_precise()
     if now - beat_at >= direct.HEARTBEAT and #direct.peers(cfg, song, room) > 0 then
       beat_at = now
       direct.send_live(cfg, "heartbeat", { user = cfg.user, time = os.date("!%Y-%m-%dT%H:%M:%SZ"), room = room }, song, room)
     end
+    if sublap then sublap("link/heartbeat") end
     direct.dispatch(direct.messages(cfg), song, room, handlers)
+    if sublap then sublap("link/messages") end
   end
   return n
 end

@@ -360,6 +360,8 @@ local items = 0
 for k = 0, nchunks - 1 do for _, l in ipairs(band.json_decode(published["dawc" .. k]).tr) do items = items + #l end end
 assert(items == 400 and nchunks == 10, "all 400 items in 10 chunks: " .. items .. ", " .. nchunks)
 sizes = {}
+-- (the item is a selected one, as a drag makes it: a look reads the tracks that may have changed, rt-perfcut4)
+package.loaded.mirror.hinted = function() return { [big.tracks[17].ptr] = true } end
 cc, big.tracks[17].items[3].pos = cc + 1, 100.25
 clock = clock + 1
 t0 = os.clock()

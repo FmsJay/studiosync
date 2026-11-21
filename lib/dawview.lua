@@ -307,11 +307,61 @@ local function take_notes(take, pos, len)
   note_cache[key] = { sig = sig, notes = notes, seen = true }
   return notes, h
 end
+-- One track's items as the page draws them. -> the list, whether some peaks are still to read, whether to read this track again next look
+-- (peaks REAPER hasn't built yet, or a video item, which the look offers again each time).
+local function read_items(tr, now, budget_end)
+  local items, pending, again = {}, false, false
+  for _, it in ipairs(dawview.items_of(tr)) do
+    local pos, len = reaper.GetMediaItemInfo_Value(it, "D_POSITION"), reaper.GetMediaItemInfo_Value(it, "D_LENGTH")
+    local take = reaper.GetActiveTake(it)
+    local o = { pos = pos, len = len, mute = reaper.GetMediaItemInfo_Value(it, "B_MUTE") ~= 0, name = "",
+      rgb = native_rgb(reaper.GetMediaItemInfo_Value(it, "I_CUSTOMCOLOR")) }
+    if take then
+      o.name = reaper.GetTakeName(take):sub(1, dawview.NAME_MAX)
+      o.rgb = native_rgb(reaper.GetMediaItemTakeInfo_Value(take, "I_CUSTOMCOLOR")) or o.rgb
+      if reaper.TakeIsMIDI(take) then o.midi = true; o.notes, o.nh = take_notes(take, pos, len)
+      elseif len > 0 then
+        local more
+        o.peaks, more = take_peaks(take, pos, len, now, budget_end)
+        pending = pending or more
+        o.vid = require("video").take(take, now)
+        again = again or more or o.peaks == nil or o.vid ~= nil
+      end
+    end
+    items[#items + 1] = o
+  end
+  return items, pending, again
+end
+-- A track's key in the partial look's memory: its pointer and its GUID (a pointer can be handed to a new track after a deletion).
+local function tkey(tr) return tostring(tr) .. "\0" .. tostring(reaper.GetTrackGUID(tr)) end
+-- What a track's items show that its own count, first and last item and lanes would move: a cheap line per track for the partial look (below).
+local function items_fp(tr)
+  local n = reaper.CountTrackMediaItems(tr)
+  local f = { n, reaper.GetMediaTrackInfo_Value(tr, "I_FREEMODE") }
+  if n > 0 then
+    local a, z = reaper.GetTrackMediaItem(tr, 0), reaper.GetTrackMediaItem(tr, n - 1)
+    f[#f + 1] = reaper.GetMediaItemInfo_Value(a, "D_POSITION")
+    f[#f + 1] = reaper.GetMediaItemInfo_Value(z, "D_POSITION")
+    f[#f + 1] = reaper.GetMediaItemInfo_Value(z, "D_LENGTH")
+  end
+  return table.concat(f, " ")
+end
 -- The project as the page draws it. -> raw (dawview.build's), whether some peaks are still to read, and the tracks' oids and names to places.
-function dawview.read(proj, key, now, budget_end)
+-- tc (the tick's, nil: everything is read): the last look's items per track by GUID. With `full` not set, a track's items are read again only when
+-- its fingerprint moved (items_fp), it's one an edit was most likely on (mirror.hinted: selected items and tracks, the MIDI editor's, the last
+-- touched; also what the last look hinted, so a deselect straight after an edit doesn't hide it), or it's waiting on peaks or holds a video.
+-- The track lines themselves (name, colour, mute, solo, folders, envelopes) are always read: they cost ~6 calls a track. A change the fingerprint
+-- and the hints can't see (another script's edit of an unselected item in the middle of a track) shows at the next whole read, within FLOOR s.
+-- (rt-perf cut 8: the whole read was 40-45 ms on a heavy song, up to four times a second while editing.)
+function dawview.read(proj, key, now, budget_end, tc, full)
   local mirror = require("mirror")
-  for _, c in pairs(peak_cache) do c.seen = nil end
-  for _, c in pairs(note_cache) do c.seen = nil end
+  local partial = tc ~= nil and not full
+  if not partial then
+    for _, c in pairs(peak_cache) do c.seen = nil end
+    for _, c in pairs(note_cache) do c.seen = nil end
+  end
+  local hint = tc and mirror.hinted and mirror.hinted(proj) or {}
+  local was_hint, keep = tc and tc.hint or {}, {}
   local raw = { key = key, len = reaper.GetProjectLength(proj), tracks = {}, markers = {}, bars = {}, sigs = {}, tempo = {} }
   local places, pending, level = {}, false, 0
   local paused = false
@@ -333,28 +383,34 @@ function dawview.read(proj, key, now, budget_end)
       local oid = mirror.track_oid(tr)
       if oid ~= "" then places[oid] = place end
       if name ~= "" and not places[name:lower()] then places[name:lower()] = place end
-      for _, it in ipairs(dawview.items_of(tr)) do
-        local pos, len = reaper.GetMediaItemInfo_Value(it, "D_POSITION"), reaper.GetMediaItemInfo_Value(it, "D_LENGTH")
-        local take = reaper.GetActiveTake(it)
-        local o = { pos = pos, len = len, mute = reaper.GetMediaItemInfo_Value(it, "B_MUTE") ~= 0, name = "",
-          rgb = native_rgb(reaper.GetMediaItemInfo_Value(it, "I_CUSTOMCOLOR")) }
-        if take then
-          o.name = reaper.GetTakeName(take):sub(1, dawview.NAME_MAX)
-          o.rgb = native_rgb(reaper.GetMediaItemTakeInfo_Value(take, "I_CUSTOMCOLOR")) or o.rgb
-          if reaper.TakeIsMIDI(take) then o.midi = true; o.notes, o.nh = take_notes(take, pos, len)
-          elseif len > 0 then
-            local more
-            o.peaks, more = take_peaks(take, pos, len, now, budget_end)
-            pending = pending or more
-            o.vid = require("video").take(take, now)
-          end
+      if tc then
+        local g, fp = tkey(tr), items_fp(tr)
+        local old = partial and tc.tracks[g]
+        if old and old.fp == fp and not old.again and not hint[tr] and not hint[tostring(tr)] and not was_hint[g] then
+          t.items = old.items
+          keep[g] = old
+        else
+          local more, again
+          t.items, more, again = read_items(tr, now, budget_end)
+          pending = pending or more
+          keep[g] = { fp = fp, items = t.items, again = again }
         end
-        t.items[#t.items + 1] = o
+      else
+        local more
+        t.items, more = read_items(tr, now, budget_end)
+        pending = pending or more
       end
     end
   end
-  for k, c in pairs(peak_cache) do if not c.seen then peak_cache[k] = nil end end -- (deleted items' and closed projects' go)
-  for k, c in pairs(note_cache) do if not c.seen then note_cache[k] = nil end end
+  if tc then
+    tc.tracks = keep
+    tc.hint = {}
+    for tr in pairs(hint) do if type(tr) ~= "string" then tc.hint[tkey(tr)] = true end end
+  end
+  if not partial then -- (a partial look didn't touch the takes of the tracks it kept: theirs stay until the next whole one)
+    for k, c in pairs(peak_cache) do if not c.seen then peak_cache[k] = nil end end -- (deleted items' and closed projects' go)
+    for k, c in pairs(note_cache) do if not c.seen then note_cache[k] = nil end end
+  end
   local i = 0
   while true do
     local n, rgn, pos, rend, name, num, color = reaper.EnumProjectMarkers3(proj, i)
@@ -392,6 +448,8 @@ local function scripts_dir() return (debug.getinfo(1, "S").source:match("^@?(.*)
 -- An action a page sent. -> words for the log, or nil.
 function dawview.action(proj, cfg, b, a)
   -- (stage 2: an item or marker edit, checked and applied by lib/dawedit.lua; its answer goes back as the dawedit topic, below)
+  -- (an edit or a piano roll change from a page writes items nobody selected: the next look reads every track. rt-perfcut4)
+  if type(a) == "table" and (type(a.edit) == "table" or type(a.look) == "table" or a.note ~= nil or a.auto ~= nil) then S.dirty_all = true end
   if type(a) == "table" and type(a.edit) == "table" then return require("dawedit").action(proj, cfg, b, a.edit) end
   -- (stage 3: what the piano roll and the automation lanes show, and their note and envelope point edits: lib/dawmidi.lua)
   if type(a) == "table" and (type(a.look) == "table" or a.note ~= nil or a.auto ~= nil) then return require("dawmidi").action(proj, cfg, b, a) end
@@ -438,10 +496,21 @@ function dawview.tick(proj, cfg, b, publish, who, now)
   if not S.look and (S.pending or (now - (S.looked or -math.huge) >= dawview.LOOK_EVERY and (cc ~= S.cc or now - (S.full or -math.huge) >= dawview.FLOOR))) then
     S.looked, S.cc = now, cc
     if not S.pending then S.full = now end
+    -- (a look reads only the tracks that may have changed, rt-perf cut 8, unless this one must see everything: the first, one each FLOOR s, after
+    -- StudioSync wrote the project (a bandmate's change landing, a put-back), after a page's edit, and while an undo can be redone: Undo moves
+    -- anything, selected or not)
+    local f_redo = reaper.Undo_CanRedo2
+    local redo = f_redo and f_redo(proj) or ""
+    local applied = require("mirror").applied or 0
+    local full = not S.tc or now - (S.whole or -math.huge) >= dawview.FLOOR or S.dirty_all or applied ~= S.applied or redo ~= "" or S.redo ~= ""
+    S.tc = S.tc or { tracks = {}, hint = {} }
+    if full then S.whole = now end
+    S.dirty_all, S.applied, S.redo = false, applied, redo
+    local tc = S.tc
     local budget_end = reaper.time_precise() + dawview.PEAK_BUDGET
     local st = S -- (a reset meanwhile starts a new S: this look's results go nowhere then)
     st.look = coroutine.create(function()
-      local raw, pending, places = dawview.read(proj, key, now, budget_end)
+      local raw, pending, places = dawview.read(proj, key, now, budget_end, tc, full)
       st.pending, st.places, st.track_names = pending, places, nil
       local header, chunks = dawview.build(raw)
       local changed, gone = dawview.diff(st, chunks)

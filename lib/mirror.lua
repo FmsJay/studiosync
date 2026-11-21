@@ -2855,6 +2855,7 @@ mirror.look_stats = mirror.look_stats or { quick = 0, full = 0, all_chunks = 0, 
 -- Another module wrote to a track or item outside a record (a print, video stand-ins: rt-video2): its chunk is read at the next quick look.
 function mirror.touch(proj, tr)
   if not tr then return end
+  mirror.applied = (mirror.applied or 0) + 1 -- (as mirror.apply's)
   local pk = tostring(proj)
   mirror.touched[pk] = mirror.touched[pk] or {}
   mirror.touched[pk][tr] = true
@@ -2916,6 +2917,7 @@ local function hinted(proj)
   for k, at in pairs(mirror.fx_open_at) do if now - at < 60 then set[k] = true end end
   return set
 end
+mirror.hinted = hinted -- (lib/dawview.lua's partial reads use the same hints; tests. rt-perfcut4)
 -- What a quick look needs to be the same as the last look's to build on it: anything that changes how every object reads.
 local function look_ctx(proj, user, media_dir, local_mix, at_sig)
   return table.concat({ media_dir, tostring(local_mix), tostring(user), restless_sig(), tostring(mirror.own_colours()), at_sig,
@@ -3644,6 +3646,7 @@ function mirror.will_wait(proj, ev, putting_back)
   return false
 end
 function mirror.apply(proj, ev, media_dir, local_mix)
+  mirror.applied = (mirror.applied or 0) + 1 -- (StudioSync wrote the project: lib/dawview.lua reads every track for the page again. rt-perfcut4)
   if ev.obj == "track" then mirror.order_band[tostring(proj)] = true end
   local kind, oid = ev.obj, ev.oid
   if ev.gone and mirror.PART[kind] then
