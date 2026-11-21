@@ -298,6 +298,63 @@ To finish sooner than ~11 minutes would need more than 8 ms a plan for this back
 3. `cloud storage` within ~11-12 minutes of the restart, with no 3-minute pause in the drive lap before it.
 4. At REAPER's exit: "REAPER was closing the project ...", not "never been saved".
 
+## Round 5 (the round 13 measurement on 0.59.49.84, restart at 08:44:45)
+
+Passed: no drive step over 62 ms, no stray "bringing" lines, an edit's "up to date (1 file)" in 2 s, and the new end-of-session wording.
+Failed: no `cloud storage` after 21 minutes, a 3-minute flat stretch (08:52:59-08:55:46), no "StudioSync 0.59.49.84 is in the Google
+Drive copy" line, and one `cm` part of 34.8 ms.
+
+**One cause for the first three: round 4's own rule kept the update files from ever being checked.**
+- Round 4 allowed a heavy check only in the first 4 ms of a plan. But before the check, the update-files unit looks over the cloud's
+  staged copy: 150 files, each a listing lookup and a file-exists, ~5-8 ms. So no plan ever reached the check.
+- The unit asked again every plan, and each time spent its ~8 ms. That left the sweep nothing (it only gets what's left).
+- Ten plans with no progress, and the round rested quietly at ~08:52:46 (the copy itself was up to date). A new round did the same; the
+  sweep only moved in the odd plan, so it never finished.
+- Read from disk: the cloud's `_tools/studiosync/lib/files.txt` still says 0.59.49.83 (written 08:13:07). band.lua, cloudmodes.lua,
+  drive.lua and sessionfile.lua differ from the studio folder's. **The update did not go up**; the cloud wasn't already current.
+- Reproduced offline: a dry run of the round 4 planner on the real folders (real update files, the extension's check stood in) rested at
+  virtual 440 s with the update-files unit never done.
+
+**Fix (`drive.lua`).**
+- Whether the update-files unit may make its heavy check is decided as it starts: if it started within 4 ms of the plan's start, one check;
+  otherwise none, and the next plan.
+- A plan that hashed code doesn't also make the check. A big file's ~20 ms hash and the 77 ms check never share a plan.
+- The same dry run now sends the update (the "is in the Google Drive copy" line, copies refused by the dry run), never rests, and the sweep
+  finishes and the round ends (`cloud storage` at virtual 982 s). Its worst plan was 61.5 ms.
+
+**The 34.8 ms `cm` plan: one end-of-session project read and scanned** (Nostalgia's are ~1.5 MB each), the one step a turn may always make.
+- `sessionfile.each_file` now finds "FILE " with a plain search and checks its line, instead of a pattern tried at every line start.
+  Same paths on all 33 of the studio's projects in the cloud copy; 9 ms for all of them instead of 151.
+- Each project's recordings are kept as a short list (`rpp_keys`) once it's read. Projects are written once under their own names, so
+  later sweeps read none.
+
+**How long the first sweep takes, honestly.**
+- The dry run, at 2 s a plan and 8 ms each, spent:
+  - 0-162 s reading Cross Test's changes;
+  - 162-406 s reading Nostalgia's;
+  - to ~710 s the update files;
+  - to 982 s the rest of the sweep.
+- That is about the floor this budget allows: ~2.6 s of work at 4 ms a second.
+- My earlier "11-12 minutes" left out the units running one after another, and the jobs in between. Expect about 15-17 minutes after a
+  restart at 8 ms a plan, with no rest in it. Shorter would need a bigger budget for this background work (James's call).
+
+**`submit` 19 ms** in the same plan: writing the plan file and, when the worker had idled out (60 s without a job), starting it again (a
+process start). Left as it is.
+
+### Tests (each fails without its fix, checked)
+- **3j:** looking over the staged copy now costs 5 ms. With round 4's rule the owner's new version never goes out ("nil").
+- **3o:** two sweeps over a settled cloud copy with two end-of-session projects. The first reads each project once, the second reads none,
+  and both count the same. Round 4 read them again ("2 then 2").
+- `each_file`'s behaviour is checked in 3f (quoted, unquoted, CRLF, tab-indented, `XFILE`, `<FILE`, a bare `FILE`). Its speed was measured,
+  not tested.
+
+### REAPER checks after deploy (desktop, after a restart)
+1. Within a few minutes: "StudioSync 0.59.49.<new> is in the Google Drive copy", and the cloud's `_tools/studiosync/lib/files.txt` names the
+   new version.
+2. `cloud storage` appears in ~15-17 minutes, with no flat stretch in the drive lap before it, and the drive lap then falls to ~0.1 ms per
+   window.
+3. No `drive slow` over ~65 ms. A second sweep 10 minutes later costs little (no project reads).
+
 ## Left / not done
 
 - **`trim.plan` itself** (lib/trim.lua, not mine) is 80-200 ms for a 2,500-change room with ~180 saved versions in Standard's window

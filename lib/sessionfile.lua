@@ -34,10 +34,22 @@ end
 
 -- Each FILE line's path in a project's text, as map_files sees them, without rebuilding the text: fn(path). (The cloud copy's storage sweep
 -- reads every end-of-session project for its recordings: map_files took 20-36 ms a project on REAPER's thread. rt-drive2.) Pure.
+-- (found by a plain search for "FILE ", then its line checked: the pattern tried every line start, 15 ms for a 1.5 MB project, most of the
+-- sweep's 34.8 ms plan on the desktop. rt-drive2, round 5)
+local WS = { [32] = true, [9] = true, [10] = true, [11] = true, [12] = true, [13] = true }
 function sessionfile.each_file(text, fn)
-  for rest in ("\n" .. text):gmatch("\n%s*FILE ([^\n]*)") do
-    local path = rest:sub(1, 1) == '"' and rest:match('^"([^"]*)"') or rest:match("^(%S+)")
-    if path then fn(path) end
+  local at = 1
+  while true do
+    local a = text:find("FILE ", at, true)
+    if not a then return end
+    at = a + 5
+    local j, nl = a - 1, false -- (only space before it on its line, and a line start: as "\n%s*FILE " on "\n" .. text)
+    while j >= 1 and WS[text:byte(j)] do nl = nl or text:byte(j) == 10; j = j - 1 end
+    if j == 0 or nl then
+      local rest = text:match("^[^\n]*", at)
+      local path = rest:sub(1, 1) == '"' and rest:match('^"([^"]*)"') or rest:match("^(%S+)")
+      if path then fn(path) end
+    end
   end
 end
 

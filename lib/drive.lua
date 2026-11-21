@@ -795,19 +795,21 @@ local tools_memo, tools_said = {}, {}
 -- (planned, the update files' heavy steps one a plan, the code's hashes a few ms a plan: after the restart at 07:33 on the desktop the pass
 -- held REAPER 970 ms in one go, three full checks (band.signed_ok: the extension's SHA-256s, 77 ms, and every code file hashed in Lua, 191 ms)
 -- and every file read twice. Once one is spent, drivebg.NEED: the unit is planned again next pass, keeping what's done. rt-drive2, round 3)
-local heavy, tools_until, heavy_by = math.huge, math.huge, math.huge
--- (and only early in a plan: after the room's look in the same plan, 77 ms of check made a 118 ms and a 176 ms step on the desktop. rt-drive2,
--- round 4)
+local heavy, tools_until = math.huge, math.huge
+-- (and only in a plan the update files' unit starts early in: after the room's look in the same plan, 77 ms of check made a 118 ms and a 176 ms
+-- step on the desktop (rt-drive2, round 4). Decided as the unit starts, not when the check comes: its own look at the cloud's staged copy
+-- (150 files) took longer than the 4 ms, so no plan ever got to the check, the update files never went up and the round rested. Round 5)
 local function heavy_step()
-  if heavy <= 0 or reaper.time_precise() > heavy_by then error(require("drivebg").NEED, 0) end
+  if heavy <= 0 then error(require("drivebg").NEED, 0) end
   heavy = heavy - 1
 end
-drive.HEAVY_BY = 0.004 -- s into a plan after which a heavy check waits for the next plan
+drive.HEAVY_BY = 0.004 -- s into a plan after which the update files' unit makes no heavy check (the next plan does)
 drive.plan_t0 = nil -- (drive.bg_step: when the plan being made began)
 -- The extension's check of a copy alone: lib/files.txt.sig over lib/files.txt, and every file it lists by SHA-256. -> its answer.
 function drive.verify(dir, key) local f = reaper.StudioSync_VerifyFiles; return f and f(band.norm(dir), key) or "" end
--- band.code_files of `src`, hashed a few files a pass (planned): -> it, or nil while there are more to hash. Hashes from earlier passes count
--- only while the folder's code files are the same names and lib/files.txt the same; the full check that uses them compares every one.
+-- band.code_files of `src`, hashed a few files a pass (planned): -> it, or nil while there are more to hash, and whether it hashed any now (the
+-- heavy check then waits for the next plan: a big file's hash, ~20 ms, and the check in one plan). Hashes from earlier passes count only while
+-- the folder's code files are the same names and lib/files.txt the same; the full check that uses them compares every one.
 local hashing = {}
 local function code_now(src)
   local names = {}
@@ -816,12 +818,13 @@ local function code_now(src)
   local sig = (band.read(src .. "/lib/files.txt") or "") .. "\0" .. table.concat(names, "\0")
   local h = hashing[src]
   if not (h and h.sig == sig) then h = { sig = sig, names = names, now = {}, i = 1 }; hashing[src] = h end
+  local worked = h.names[h.i] ~= nil
   while h.names[h.i] do
     if reaper.time_precise() > tools_until then return nil end
     local p = h.names[h.i]
     h.now[p], h.i, read_n = band.code_hash(band.read(src .. "/" .. p) or ""), h.i + 1, read_n + 1 -- (a file read: the back-off's something happening)
   end
-  return h.now
+  return h.now, worked
 end
 -- { version, sig } of the copy in `dir` when it checks as signed with `key`, else nil: checked once per lib/files.txt and .sig (a whole copy's
 -- SHA-256s each pass would be most of it). Only for choosing the way: what's copied is checked again first.
@@ -864,8 +867,8 @@ local function send_tools_planned(from, to, key, dated)
   local s = sending
   if not (s and s.id == id) then
     sending = nil
-    local now = code_now(src)
-    if not now then error(require("drivebg").NEED, 0) end
+    local now, worked = code_now(src)
+    if not now or (worked and heavy ~= math.huge) then error(require("drivebg").NEED, 0) end
     heavy_step()
     hashing[src] = nil -- (used once: the next check hashes again)
     local ok, why = band.signed_ok(src, key, now)
@@ -928,8 +931,11 @@ drive.TOOLS_STEP = 0.008 -- s of hashing the update files' code a plan
 function drive.tools_pass(cfg, droot, now)
   if now - drive.tools_at < drive.EVERY then return end
   drive.tools_at = now
-  heavy, tools_until, heavy_by = math.huge, math.huge, math.huge
-  if C().planned then heavy, tools_until, heavy_by = 1, reaper.time_precise() + drive.TOOLS_STEP, (drive.plan_t0 or reaper.time_precise()) + drive.HEAVY_BY end
+  heavy, tools_until = math.huge, math.huge
+  if C().planned then
+    local t = reaper.time_precise()
+    heavy, tools_until = (t - (drive.plan_t0 or t) <= drive.HEAVY_BY) and 1 or 0, t + drive.TOOLS_STEP
+  end
   local key = band.studio_update_key(cfg.root)
   if not key then return end
   -- (a guest's computer never runs or syncs the studio's copy: lib/fromfolder.lua wanted)

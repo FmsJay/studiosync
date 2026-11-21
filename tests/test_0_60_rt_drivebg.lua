@@ -569,6 +569,10 @@ do
   local real_mirror, real_read = drive.mirror, band.read
   drive.mirror = function(...) clock = clock + 0.03; return real_mirror(...) end
   band.read = function(p) if p:find("_tools/studiosync/", 1, true) or p:find("/stage/", 1, true) then clock = clock + 0.0002 end; return real_read(p) end
+  -- (round 5: looking over the cloud's staged copy, 100 files, takes 5 ms: past the 4 ms the heavy check was allowed into a plan, so it was never
+  -- made, on the desktop too: 0.59.49.84 never went up and the round rested)
+  local real_exists = reaper.file_exists
+  reaper.file_exists = function(p) if p:find("/stage/", 1, true) then clock = clock + 0.00005 end; return real_exists(p) end
   logs = {}
   local worst, out_at = 0, nil
   for i = 1, 3000 do
@@ -579,7 +583,7 @@ do
     if (fs[CT .. "/lib/files.txt.sig"] or "") == "good 0.60.5" then out_at = i; break end
   end
   band.studio_update_key, band.version_on_disk, band.signed_ok, band.code_hash, package.loaded.fromfolder, package.loaded.groups = table.unpack(saved)
-  drive.mirror, band.read = real_mirror, real_read
+  drive.mirror, band.read, reaper.file_exists = real_mirror, real_read, real_exists
   local said = false
   for _, s in ipairs(logs) do if s:find("0.60.5 is in the ", 1, true) then said = true end end
   check(out_at and said and fs[CT .. "/lib/m42.lua"] == "-- module 42 of 0.60.5", "the owner's new version went out, whole: " .. tostring(out_at))
@@ -632,6 +636,33 @@ for _ = 1, 3 do clock = clock + 2; stand_in_worker(); drive.bg_step(CFG, "/C", "
 ext["perf stats"] = nil
 local ds = ext["drive slow"] and json.decode(ext["drive slow"])
 check(ds and ds.total >= 60 and ds.ms.room >= 60, "ExtState drive slow: " .. tostring(ext["drive slow"]))
+
+-- ---- 3o. each end-of-session project read once, not every sweep (rt-drive2, round 5) ----
+-- The desktop: the sweep's plan of 34.8 ms was one 1.5 MB project read and scanned; Nostalgia's 13 are 19 MB, and every sweep read them again.
+setup()
+put("/C/Song/sessions/20261101-010101Z-James-main.rpp", '<REAPER_PROJECT\n  FILE "media/James/a.wav"\n>')
+put("/C/Song/sessions/20261102-010101Z-Bo-main.rpp", '<REAPER_PROJECT\n  FILE "media/Bo/b.wav"\n>')
+put("/C/Song/sessions/media/James/a.wav", "aaaa")
+local function sweep_reads()
+  local reads, real_pread = 0, bg.planned.read
+  bg.planned.read = function(p) if p:find("%.rpp$") then reads = reads + 1 end; return real_pread(p) end
+  ext["cloud storage"] = nil
+  clock = clock + 700
+  for _ = 1, 300 do
+    clock = clock + 2; stand_in_worker()
+    drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008)
+    if ext["cloud storage"] and not drive.bg_busy() then break end
+  end
+  bg.planned.read = real_pread
+  return reads, ext["cloud storage"] and json.decode(ext["cloud storage"])
+end
+drive, bg, cm = fresh()
+for _ = 1, 3 do clock = clock + 200; bg_pass() end -- (settled: the cloud copy the same for both sweeps)
+drive, bg, cm = fresh()
+local r1, s1 = sweep_reads()
+local r2, s2 = sweep_reads()
+check(s1 and s2 and r1 >= 2 and r2 == 0, "the projects read in the first sweep only: " .. r1 .. " then " .. r2)
+check(json.encode(s1.would) == json.encode(s2.would) and json.encode(s1.kinds) == json.encode(s2.kinds), "and the second sweep counts the same: " .. json.encode(s1.kinds) .. " / " .. json.encode(s2.kinds) .. " " .. json.encode(s1.would) .. " / " .. json.encode(s2.would))
 
 -- ---- 3n. the end-of-session project at a REAPER restart (rt-drive2, round 4) ----
 -- The desktop, 08:07:58: "couldn't save the end-of-session project to Google Drive: the project has never been saved", of a saved project,

@@ -432,14 +432,16 @@ end
 -- A song's end-of-session projects in the cloud copy (<song>/sessions/*.rpp and the recordings they use, sessions/media/<user>/): history,
 -- so Standard keeps the last `days` of them and Essentials none (lib/sessionfile.lua writes none then). -> true when done, nil while it carries
 -- on next pass (each project's text is read for its recordings: a few a pass).
-local rpp_text = {}
+-- (each project's recordings, "user/file", found once: an end-of-session project is written once under its own name. The first sweep after a
+-- start reads each a step; the next sweeps read none. Nostalgia's 13 were 19 MB, kept whole in Live sync's memory before. rt-drive2, round 5)
+local rpp_keys = {}
 local function sessions_pass(sw, droot, song, user, deadline)
   local s, sum, now = sw.s, sw.sum, os.time()
   local sdir = droot .. "/" .. song .. "/sessions"
   local cur = sw.cur
   if not (cur and cur.song == song and cur.sessions) then
     local rpps, media = C().files(sdir, ".rpp"), {} -- (planned: all asked for, then checked, before anything is counted)
-    if C().planned then for _, f in ipairs(rpps) do require("drivebg").want_file(sdir .. "/" .. f) end end
+    if C().planned then for _, f in ipairs(rpps) do if not rpp_keys[sdir .. "/" .. f] then require("drivebg").want_file(sdir .. "/" .. f) end end end
     for _, u in ipairs(C().subdirs(sdir .. "/media")) do media[#media + 1] = { u, C().files(sdir .. "/media/" .. u) } end
     C().check()
     cur = { song = song, sessions = true, rpps = rpps, media = media, used = {}, i = 1 } -- (used: "user/file" -> best tier, newest age)
@@ -454,22 +456,22 @@ local function sessions_pass(sw, droot, song, user, deadline)
     local age = cm.stamp_time(f)
     local tier = (age ~= "" and age >= sw.cutoff) and "recent" or "other"
     local p = sdir .. "/" .. f
-    local text = rpp_text[p] or C().read(p) -- (read here, one a step: 13 of them read at once were 100 ms)
-    C().check()
-    -- (kept only on REAPER's thread's way, where reading it meant the cloud drive; planned, the worker's copy is a local file: Nostalgia's 13
-    -- projects were 19 MB kept in Live sync's memory for good)
-    if not C().planned then rpp_text[p] = text end
-    require("sessionfile").each_file(text or "", function(path)
-      local k = path:match("^media/(.+)$")
-      if k then
-        local u = used[k] or { 3, "" }
-        used[k] = { math.min(u[1], cm.TIER[tier]), age > u[2] and age or u[2] }
-      end
-    end)
+    local keys = rpp_keys[p]
+    if not keys then
+      local text = C().read(p) -- (read here, one a step: 13 of them read at once were 100 ms)
+      C().check()
+      keys = {}
+      require("sessionfile").each_file(text or "", function(path) local k = path:match("^media/(.+)$"); if k then keys[#keys + 1] = k end end)
+      if text then rpp_keys[p] = keys end
+    end
+    for _, k in ipairs(keys) do
+      local u = used[k] or { 3, "" }
+      used[k] = { math.min(u[1], cm.TIER[tier]), age > u[2] and age or u[2] }
+    end
     local bytes = size_of(nil, p)
     if count(sum, s, "sessions", bytes, tier, tier, age) and may_remove(f:find("Z-" .. user:gsub("[^%w%-_]", "_") .. "-", 1, true) ~= nil, p, sw.is_owner, now) then
       remove(sum, p, bytes)
-      rpp_text[p] = nil
+      rpp_keys[p] = nil
     end
     cur.i, progress = cur.i + 1, progress + 1
   end
