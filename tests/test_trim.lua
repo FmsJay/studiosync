@@ -53,4 +53,58 @@ do
   assert(not g.x31, "the newest stays")
   assert(not g.notime, "a change with no time stays")
 end
+-- (rt-p2) a room with many saved versions: the same ids as a loop over the changes for every point (the old way), in far fewer comparisons.
+-- 2,500 changes and ~180 saved versions were 80-200 ms on REAPER's thread in the cloud copy's sweep.
+do
+  local mirror = require("mirror")
+  local real_newer, calls = mirror.newer, 0
+  mirror.newer = function(a, b) calls = calls + 1; return real_newer(a, b) end
+  math.randomseed(7)
+  local e, pts = {}, {}
+  local function t(day, sec) return string.format("2026-%02d-%02dT%02d:%02d:%02dZ", 1 + day // 28, 1 + day % 28, sec // 3600 % 24, sec // 60 % 60, sec % 60) end
+  for i = 1, 2500 do
+    local day = math.random(0, 200)
+    e[i] = { id = string.format("e%05d", i), oid = "I-" .. math.random(1, 300), rev = math.random(1, 9), time = t(day, math.random(0, 86399)),
+      type = (i % 50 == 0) and "timeline" or "obj", order = (i % 50 == 0) and t(day, i) or nil, user = (i % 3 == 0) and "Bo" or "James" }
+    if e[i].type == "timeline" then e[i].oid = nil end
+  end
+  for i = 1, 180 do pts[i] = { time = t(math.random(0, 200), math.random(0, 86399)), keep = (i % 4 ~= 0) or nil, label = (i % 4 == 0) and "hub snapshot" or "end of session" } end
+  local function old_points(evs, points) -- (the old loop, for the points' part only: what each major point stands on)
+    local function later(a, b)
+      if a.type ~= "obj" and b.type ~= "obj" then return (a.order or ((a.time or "") .. (a.id or ""))) > (b.order or ((b.time or "") .. (b.id or ""))) end
+      local x, y = { rev = a.rev, time = mirror.order_of(a) }, { rev = b.rev, time = mirror.order_of(b) }
+      if real_newer(x, y) ~= real_newer(y, x) then return real_newer(x, y) end
+      return (a.id or "") > (b.id or "")
+    end
+    local keep = {}
+    for _, p in ipairs(points) do
+      if trim.major(p) and p.time then
+        local at = {}
+        for _, ev in ipairs(evs) do
+          local k = ev.type == "obj" and ev.oid or ev.type == "timeline" and "\0timeline" or nil
+          if k and (ev.time or "") <= p.time and (not at[k] or later(ev, at[k])) then at[k] = ev end
+        end
+        for _, ev in pairs(at) do keep[ev.id] = true end
+      end
+    end
+    return keep
+  end
+  local cutoff = "2026-12-31T00:00:00Z"
+  calls = 0
+  local gone = {}
+  for _, id in ipairs(trim.plan(e, pts, cutoff)) do gone[id] = true end
+  local new_calls = calls
+  local base = {}
+  for _, id in ipairs(trim.plan(e, {}, cutoff)) do base[id] = true end -- (without points: what the points keep is the difference)
+  local want, kept = old_points(e, pts), 0
+  for _, ev in ipairs(e) do
+    if base[ev.id] then
+      assert((not gone[ev.id]) == (want[ev.id] == true), "the same ids kept for the saved versions as the old loop: " .. ev.id)
+      if not gone[ev.id] then kept = kept + 1 end
+    end
+  end
+  assert(kept > 100, "the saved versions keep changes here: " .. kept)
+  assert(new_calls < 20 * #e, "far fewer comparisons than a loop over every change for every point: " .. new_calls)
+  mirror.newer = real_newer
+end
 print("ok")

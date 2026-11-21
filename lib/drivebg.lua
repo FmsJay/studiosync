@@ -456,8 +456,17 @@ function bg.spawn(cmd, tok) return require("services").run_hidden("drive-worker-
 -- version in each heartbeat, and one running older scripts (a REAPER since updated) is replaced at the next job. The desktop's worker from
 -- 10:41 served three REAPERs across two restarts with the scripts it started with. (rt-drive2, round 9)
 function bg.version() return bg.hash(bg.PS1 .. "\0" .. bg.SH) end
+-- (each start's output file from services.run_hidden, <temp>/bandsync-drive-worker-<token>.txt, empty, stayed until REAPER quit: one a start.
+-- Those of earlier starts go at the next one, once their worker has let go of theirs (a running one holds it: tried again next time). rt-p2)
+local spawned = {}
+function bg.spawn_file(tok) return tmp() .. "/bandsync-drive-worker-" .. tok .. ".txt" end
 local function start_worker(dir)
+  for i = #spawned, 1, -1 do
+    local f = bg.spawn_file(spawned[i])
+    if os.remove(f) or not reaper.file_exists(f) then table.remove(spawned, i) end
+  end
   token = bg.hash(tostring(inst) .. tostring(now()) .. tostring(math.random()))
+  spawned[#spawned + 1] = token
   local script = dir .. (win() and "/worker.ps1" or "/worker.sh")
   local body = ((win() and bg.PS1 or bg.SH):gsub("@VER@", bg.version()))
   if band.read(script) ~= body then band.write_atomic(script, body) end

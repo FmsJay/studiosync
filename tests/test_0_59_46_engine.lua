@@ -225,7 +225,9 @@ end
 proxy.read = function() return table.concat({ "<REAPER_PROJECT", trk("Mine", false, "Audio/take.wav"), trk("Helper", true, "Audio/local.wav"),
   trk("Theirs", false, "C:/Users/v/taxes.wav"), ">" }, "\n") .. "\n" end
 proxy.write_atomic = function(path, text) written[path] = text end
+gext[band.SECTION .. "\0" .. "drive bg"] = "off" -- (the copies made here, as before the cloud copy's worker: with it on, its round makes them. rt-p2)
 local out = sessionfile.export("PE", { user = "Me", root = "J:/Studio" }, { song = "Demo", room = "main" }, "G:/Drive", "J:/Studio/Demo/rooms/main")
+gext[band.SECTION .. "\0" .. "drive bg"] = nil
 assert(out and saves == 1, "the copy is saved once (" .. saves .. ")")
 assert(#copied_from == 1 and copied_from[1] == "D:/Songs/Demo/Audio/take.wav", "only your own recording is copied: " .. table.concat(copied_from, ", "))
 assert(not written[out]:find("Helper", 1, true), "and your local track isn't in the cloud copy")

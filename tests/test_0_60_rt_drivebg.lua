@@ -53,6 +53,8 @@ local band = {
   home = function() return "/H" end,
   song_dir = function(cfg, song) return cfg.root .. "/" .. song end,
   studio_update_key = function() return nil end,
+  ext_json = function(_, k) local s = ext[k]; if not s or s == "" then return nil end; local ok, v = pcall(json.decode, s); return ok and v or nil end,
+  set_ext_json = function(_, k, t) ext[k] = json.encode(t) end,
 }
 package.loaded.band = band
 reaper = setmetatable({
@@ -225,7 +227,7 @@ local got = snapshot()
 check(diff(want1, got) == nil, "the worker's pass ends exactly as the old one: " .. tostring(diff(want1, got)) .. " " .. tostring(want1[diff(want1, got) or ""]) ..
   " / " .. tostring(got[diff(want1, got) or ""]))
 check(main_cloud == 0, "and REAPER's thread made no cloud call at all: " .. main_cloud)
-check(not err and moved >= 10 and jobs >= 2, "files moved counted from the worker's results: " .. tostring(moved) .. " in " .. jobs .. " jobs")
+check(not err and moved >= 10 and jobs >= 2, "files moved counted from the worker's results: " .. tostring(err) .. " " .. tostring(moved) .. " in " .. jobs .. " jobs")
 local landed = {}
 for _, p in ipairs(drive.landed) do landed[p] = true end
 check(landed[HERE .. "/media/bo.wav"] and #drive.landed == 1, "the recording brought down is told (Syncthing rescans it) once the worker has it in place")
@@ -979,6 +981,59 @@ do
   _, why = sf2.export({}, CFG, { song = "Song", room = "main" }, "/C", HERE)
   check(why == "the project has never been saved", "one never saved: as before: " .. tostring(why))
   band.project_file = nil
+end
+
+-- ---- 3u. the end-of-session projects' recordings copied by the worker, not on REAPER's thread (rt-p2, backlog 1.35) ----
+-- sessionfile.catch_up copied them with band.copy_atomic on REAPER's thread: up to 1.5 s at a session's end (export), 0.1 s after each pass.
+do
+  setup()
+  drive, bg, cm = fresh()
+  package.loaded.sessionfile = nil
+  local sf3 = require("sessionfile")
+  local FROM, TO = "/S/Song/proj/James take.wav", "/C/Song/sessions/media/James/James take.wav"
+  put(FROM, ("t"):rep(2000))
+  band.set_ext_json(band.SECTION, "session_media Song", { { from = FROM, to = TO } })
+  main_cloud = 0
+  check(sf3.catch_up("Song", 1.5) == 1 and not fs[TO] and main_cloud == 0, "called on REAPER's thread with the worker on: nothing copied there, left to the round")
+  bg_pass()
+  check(fs[TO] == fs[FROM] and main_cloud == 0, "the round's worker copied it, with no cloud call here: " .. tostring(fs[TO] ~= nil) .. " " .. main_cloud)
+  clock = clock + 200
+  bg_pass()
+  check(#(band.ext_json(band.SECTION, "session_media Song") or { 1 }) == 0, "and it leaves the list once the cloud's listing has it")
+  -- the worker off (three failures, or "drive bg" off): the old way, here
+  ext["drive bg"] = "off"
+  band.set_ext_json(band.SECTION, "session_media Song", { { from = FROM, to = TO .. "2" } })
+  check(sf3.catch_up("Song", 1.5) == 0 and fs[TO .. "2"] == fs[FROM], "with the worker off, copied here as before")
+  ext["drive bg"] = nil
+end
+
+-- ---- 3v. each worker start's output file goes at the next start (rt-p2, backlog 1.35) ----
+-- services.run_hidden leaves <temp>/bandsync-<name>.txt; the worker's name carries its token, so one empty file a start stayed until REAPER quit.
+do
+  setup()
+  drive, bg = fresh()
+  bg.spawn = function(_, tok) put(bg.spawn_file(tok), "") end
+  local function start()
+    clock = clock + 30 -- (past START_WAIT: the last one counts as not started)
+    bg.reset(); bg.begin("/C")
+    bg.planned.copy(HERE .. "/media/rec1.wav", THERE .. "/media/rec1.wav")
+    bg.submit()
+    local n, last = 0, nil
+    for p in pairs(fs) do if p:find("/bandsync%-drive%-worker%-%x+%.txt$") then n = n + 1; last = p end end
+    return n, last
+  end
+  put(HERE .. "/media/rec1.wav", "a")
+  local n1, f1 = start()
+  check(n1 == 1, "a start leaves its file: " .. n1)
+  local n2, f2 = start()
+  check(n2 == 1 and not fs[f1] and f2 ~= f1, "the next start takes the last one's away: " .. n2)
+  local plain = os.remove
+  os.remove = function(p) if p == f2 then return nil, "in use" end; return plain(p) end -- (its worker still holds it)
+  local n3 = start()
+  check(n3 == 2 and fs[f2], "one its worker still holds stays: " .. n3)
+  os.remove = plain
+  local n4 = start()
+  check(n4 == 1 and not fs[f2], "and goes at a later start: " .. n4)
 end
 
 -- ---- 4. the real worker scripts ----

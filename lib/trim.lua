@@ -90,14 +90,27 @@ function trim.plan(evs, points, cutoff)
       for _, id in pairs(p.known) do need(id, 0) end
     end
   end
-  for _, p in ipairs(points) do
-    if trim.major(p) and p.time then
-      local at = {}
-      for _, ev in ipairs(evs) do
+  -- (each major point's newest change of each object at or before it: one walk through the changes in time order, the points in time order,
+  -- keeping each object's newest so far and, at each point, only the objects whose newest moved since the point before (the others were kept
+  -- there already). A loop over the changes for every point was 80-200 ms for a 2,500-change room with ~180 saved versions on REAPER's thread
+  -- in the cloud copy's sweep (points x changes calls of `later`). rt-p2)
+  local times = {}
+  for _, p in ipairs(points) do if trim.major(p) and p.time then times[#times + 1] = p.time end end
+  if #times > 0 then
+    table.sort(times)
+    local list = {}
+    for _, ev in ipairs(evs) do local k = key_of(ev); if k and k ~= TRANSPORT then list[#list + 1] = ev end end
+    table.sort(list, function(a, z) return (a.time or "") < (z.time or "") end)
+    local at, moved, i = {}, {}, 1
+    for _, t in ipairs(times) do
+      while list[i] and (list[i].time or "") <= t do
+        local ev = list[i]
         local k = key_of(ev)
-        if k and k ~= TRANSPORT and (ev.time or "") <= p.time and (not at[k] or later(ev, at[k])) then at[k] = ev end
+        if not at[k] or later(ev, at[k]) then at[k], moved[k] = ev, true end
+        i = i + 1
       end
-      for _, ev in pairs(at) do keep[ev.id] = true end
+      for k in pairs(moved) do keep[at[k].id] = true end
+      moved = {}
     end
   end
   local out = {}

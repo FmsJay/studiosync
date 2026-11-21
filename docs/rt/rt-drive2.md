@@ -675,20 +675,84 @@ takes 1 ms under any of them.
     then 4 ms. It checks both log lines, the `drive pull` ExtState and the Health row while it goes on, and the row back to "up to date"
     after.
 
+## Round 11 (rt-p2, 2026-11-21: the backlog's package P2)
+
+The leftovers below and rt-cloudmodes' "Not done" list (backlog 1.34, 1.35 except `streams.lua`, 3.14, and 1.30's list-only `.sig`).
+The budgets are unchanged (4 / 16 / 32 ms). Offline tests only; nothing has run in REAPER yet. Each test was checked to fail with its
+change taken out.
+
+| Item | What changed | Test |
+| --- | --- | --- |
+| `trim.plan` 80-200 ms (1.35) | The saved versions' part walks the changes once in time order, keeping each object's newest so far, and at each major point keeps only the objects whose newest moved since the point before. It was a loop over every change for every point. Same ids. | `test_trim.lua`: 2,500 changes and 180 points give the same ids as the old loop, with under 20 comparisons a change (the old way: 389,625 in all) |
+| `cm.filter` judged a room in one go (1.35) | The filter makes trim plans one at a time within the pass's deadline, as the sweep does (`cm.LATER`). It returns false meanwhile, and `drive.mirror` carries on next pass. The lists it judges are kept while nothing changes, so no plan is made twice. | `test_0_60_rt_cloudmodes2.lua` 3: with each pass's time gone, one plan a pass and none twice (before: all in the first call) |
+| Empty temp file per worker start (1.35) | Each start removes the `bandsync-drive-worker-<token>.txt` left by earlier starts once their worker has let go of it. One still held is tried again at the next start. | `test_0_60_rt_drivebg.lua` 3v |
+| `sessionfile.catch_up` on REAPER's thread (1.35) | With the worker on, the round has a `sessions` unit that plans the copies, and the worker makes them. An entry leaves the list once the cloud's listing has it. A call on REAPER's thread (Live sync after a pass, or `sessionfile.export` at a session's end, up to 1.5 s) leaves the copies to the round. With the worker off, it copies as before. | drivebg 3u: nothing copied on REAPER's thread; the worker copies it; it leaves the list; with the worker off, copied here |
+| Essentials kept every take of a multi-take item (1.34, 3.14) | `cm.item_media` splits an item's state at its `TAKE` lines. BANDTAKE (the playing take's place among takes that aren't prints) and each print's `band_m_printof` decide what plays: the picked take, plus the prints made from it (a print plays on some computers and the dry take on others). Other takes count as history: not essential, but recent in Standard's window. With no BANDTAKE (one real take, or a change older than 0.58.85), everything counts as playing. | cloudmodes2 1: unit cases; Essentials sends up only the playing take and its print; Standard keeps a day-old change's other takes; Essentials' sweep removes the unplayed ones |
+| A member without a cloud folder left the cloud's version older (1.34) | `cm.filter` judges a room's own changes as the cloud copy will hold them: those already in it, plus this computer's own. So a newer change from a bandmate that never reaches the cloud doesn't stop yours going up. `cm.judge` also keeps a recording that either view plays: the cloud's view used to keep your change and drop its recording. Once the bandmate's change is in the cloud, the sweep removes yours. | cloudmodes2 2: James's change and its recording go up and stay; after Bo publishes, James's goes and isn't sent again |
+| Lowering the size limit didn't ask (1.34) | Settings > Options > Cloud copy: a lower limit (or a first one) opens "Lower size limit?", which lists what goes. The list comes from the last sweep, which now keeps what the mode holds that isn't essential, by day (`sum.ages`, `sum.kept`); `cm.limit_words` reads it. It also says when the essentials alone are over the limit. A higher limit, or none, is set at once. | cloudmodes2 4: the words; a stand-in ImGui shows nothing is set until "Limit to 1 GB", Cancel sets nothing, and raising or removing the limit happens at once |
+| Standard had no "last mixes" (1.34) | `drive.song_files` (the round's new `song` unit for the open song; `drive.upkeep` for the others) sends this computer's own mixes up (`<song>/mixes`, named `<Song> <date> <time> <who>`) as the mode keeps them. Essentials sends none, Standard sends its window plus the song's newest whatever its age, Everything sends all. The sweep has a `mixes` item per song: each computer removes only its own (or the owner's computer, after the hour). | cloudmodes2 5 |
+| The cloud copy didn't carry `session.json`, `room.json`, `band.json` (3.14) | `drive.song_files` sends each one up with its `.sig`, from the computer whose key signed the copy here (the `.sig`'s `by`), whenever the signature here differs from the cloud's: one writer per file. The file goes first, then its signature. A reader in between sees them not matching and keeps what it had. Up only, see below. | cloudmodes2 6: this computer's go up, a bandmate's or an unsigned one doesn't, nothing again until a newer signing |
+| List-only songs got `session.json` without its `.sig` (1.30) | `songsync.LISTING` now has `/*/session.json.sig` and `/*/rooms/*/room.json.sig`, so a song this computer only lists is judged by its signature, not by Syncthing alone. | `test_songsync.lua` |
+
+**Decisions taken by default (James's to overturn):**
+- **Who sends a mix up:** its maker, by the name. **Which are "the last mixes":** Standard's window, plus the song's newest. None in
+  Essentials.
+- **The signed settings go up only.** Nothing comes down from the cloud copy. A copy brought down would be written into the studio
+  folder by this computer. A computer that doesn't know the signer's key then goes by Syncthing's word, which would be this computer's,
+  so it would trust a file planted in the cloud. A restore onto an empty computer still needs the song's listing from Syncthing or the
+  join's welcome. Bringing them down through the link's checks (`signed.on_msg`, P3's file) is the way, if it's wanted. `room.json`
+  isn't a link kind.
+- `tests/test_0_59_46_engine.lua` runs `sessionfile.export` with ExtState `drive bg` = `off`, so it still checks that only your own
+  recording is copied (that test isn't mine; it's the only change there).
+
+### REAPER checks for round 11 (desktop, a test studio, perf stats on, after a restart)
+1. **Takes:** In a test studio set to Essentials, make an item with three takes, pick the second, and wait for a pass and then a sweep
+   (about 10 minutes). Drive's `<song>/rooms/<room>/media` holds only the second take's file, plus its print if one exists. Switch to
+   Everything: the other takes go up at the next pass.
+2. **A bandmate without a cloud folder:** On the laptop (`drive_root` = `off`), edit an item the desktop last edited, with the desktop
+   in Essentials. After the desktop's pass, Drive still has the desktop's change to that item and its recording, and the next sweep
+   doesn't remove them.
+3. **Filter:** In Standard on a room with ~180 saved versions (Cross Test), look at `drive slow` / `tick stats` while a pass runs. No
+   plan should show `room` over 16 ms. Before, `cm.filter` was a 100-300 ms step.
+4. **Sweep:** In the same studio, each sweep step stays under 16 ms. `trim.plan` no longer shows 80-200 ms steps (`drive slow` `cm`).
+5. **Temp files:** Run several passes over 10+ minutes so the worker idles out and restarts. `%TEMP%` should hold at most one or two
+   `bandsync-drive-worker-*.txt`, not one per start.
+6. **End-of-session copies:** End a session that used a recording from outside the studio folder (a project-folder WAV), so that
+   `session_media <song>` isn't empty. The session end makes no long REAPER stall. The next round's worker copies the file to
+   `<song>/sessions/media/<you>/`, and `session_media <song>` empties after the round after.
+7. **Size limit, Settings > Options > Cloud copy (owner):**
+   - Pick a limit lower than the current one: "Lower size limit?" lists about N files and their size. Cancel changes nothing.
+   - Confirm it: band.json's `cloud_storage.limit_mb` is set.
+   - Pick a higher limit: it's set at once.
+8. **First sweep timing:** After a restart with Nostalgia in the studio, note when `cloud storage` first appears and whether the
+   transport ran meanwhile. This is for the hour that's still unexplained.
+9. **Mixes, Standard 14 days:** Render a mix with Final mix. It's in Drive's `<song>/mixes` as before. Delete it from Drive by hand:
+   the next round sends it again. A mix of yours older than 14 days that isn't the song's newest goes at the next sweep (to Drive's
+   trash). A bandmate's mix stays.
+10. **Signed settings:** As the owner, change a band setting (band.json is re-signed). After the next round, Drive has
+    `_band/band.json` and `_band/band.json.sig`, identical to the studio folder's. The open song's `session.json` (+ `.sig`) goes up
+    from the computer that signed it. A bandmate's `room.json` doesn't go up from the desktop.
+11. **List-only song:** On the laptop, with a song it hasn't opened, `.stignore`'s StudioSync block has `!/*/session.json.sig`, and
+    the song's `session.json.sig` arrives.
+
 ## Left / not done
 
-- **`trim.plan` itself** (lib/trim.lua, not mine) is 80-200 ms for a 2,500-change room with ~180 saved versions in Standard's window
-  (its saved-versions loop is points x changes). The sweep now makes at most one per pass and skips the ones that can't take anything, but
-  a studio older than its window still gets one such step per plan, a few per sweep, every 10 minutes. Caching judgements across sweeps for
-  a room whose changes didn't change, or a faster trim.plan, would remove them.
-- **`cm.filter`** (drive.mirror's filter in Essentials/Standard) still judges a room in one go each time the room's change count moves:
-  not the desktop's case (Everything), but a 100-300 ms step in those modes.
-- A room's first full planned pass (all its folders, listings parsed) is still 30-55 ms; reading big single changes can make a pass 20-30 ms.
-- `sessionfile.catch_up` still copies on REAPER's thread when it has pending recordings (empty on the desktop: `session_media <song>` is
-  `[]`); it now runs whenever the copy is up to date, which it never was before.
+Done in round 11 (above): `trim.plan`'s 80-200 ms, `cm.filter` in one go, and `sessionfile.catch_up` on REAPER's thread. Still left:
+- A room's first full planned pass (all its folders, listings parsed) is still 30-55 ms, and reading a big single change can make a
+  pass 20-30 ms. Fixing it needs a compare that can stop and resume across passes (2,700 names on each side), which isn't built.
 - Why Nostalgia's read took an hour on the desktop rather than the ~6-20 minutes its numbers give is not fully explained: likely the transport
-  running (no planning while it plays) for part of it. The re-opened rooms make it harmless to the open song either way.
+  running (no planning while it plays) for part of it. The re-opened rooms make it harmless to the open song either way. Round 11 check 8
+  measures it.
+- `streams.lua`'s cloud check still runs on REAPER's thread (P3's file; `drivebg.known_size` can answer it from the worker's listing).
+- The two "Cloud storage" dialogs (a smaller mode, a lower limit) have never been drawn in REAPER.
 
 ## Review-later (security)
 
-None new: the worker, plans and the sweep's removal rules are unchanged (removals still only of the cloud folder, by the same judgement).
+- Round 11: the signed settings go to the cloud copy only from the computer whose key signed them. Nothing is read back from it into the
+  studio folder (see "Decisions" above for why: a file brought down would carry this computer's name to Syncthing).
+- Round 11: a mix's maker is read from its name, so anyone can name a mix after someone else. The sweep then takes it for that person's,
+  but only that person's own computer removes it (or the owner's, after the hour), as before.
+- Round 11: the filter trusts the cloud's listing of the room's changes (a planted change file there makes this computer send less). The
+  sweep already trusted the cloud copy's events this way (rt-cloudmodes' review-later).
+- Earlier rounds: none new. The worker, plans and the sweep's removal rules are unchanged (removals still only of the cloud folder, by the
+  same judgement).

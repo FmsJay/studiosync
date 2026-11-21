@@ -61,6 +61,33 @@ function cm.stamp_time(name)
 end
 function cm.cutoff(now, days) return os.date("!%Y-%m-%dT%H:%M:%SZ", now - days * 86400) end
 
+-- The recordings an item's state plays: { {room, file, inactive} }. `inactive`: a take the item doesn't play. Takes start at a "TAKE" line
+-- (the first take before any); which real take plays is BANDTAKE (mirror.picked_take: its place among the takes that aren't prints), and a
+-- print plays for the take it was made from (band_m_printof), on whichever computer plays prints. With no BANDTAKE (one real take, or a change
+-- from before 0.58.85) every take counts as playing: keeping more is safe. (rt-cloudmodes' shortcut, rt-p2) Pure.
+function cm.item_media(state, room)
+  local segs, cur = {}, {}
+  for line in (state .. "\n"):gmatch("([^\n]*)\n") do
+    if line:match("^%s*TAKE$") or line:match("^%s*TAKE%s") then segs[#segs + 1] = table.concat(cur, "\n"); cur = {} end
+    cur[#cur + 1] = line
+  end
+  segs[#segs + 1] = table.concat(cur, "\n")
+  local pick, real = tonumber(state:match("BANDTAKE (%d+)")), 0
+  local out = {}
+  for _, seg in ipairs(segs) do
+    local print_of = seg:find("%f[%w_]band_m_print%s") and (tonumber(seg:match("band_m_printof%s+\"?(%d+)")) or -1)
+    local plays = true
+    if pick then
+      if print_of then plays = print_of == -1 or print_of == pick else plays = real == pick end
+    end
+    if not print_of then real = real + 1 end
+    for rm, rel in seg:gmatch('FILE "{media:([^}]+)}/([^"]+)"') do out[#out + 1] = { rm, rel, not plays or nil } end
+    for rel in seg:gmatch('FILE "{media}/([^"]+)"') do out[#out + 1] = { room, rel, not plays or nil } end
+  end
+  if pick and real < 2 then for _, m in ipairs(out) do m[3] = nil end end -- (no choice: everything plays)
+  return out
+end
+
 -- What the modes need of one change: what trim.plan orders by, the recordings an item plays and its lane, a track's lanes. `room`: the room
 -- whose folder it's in (an older change names its own room's media as "{media}"). -> a record, or false. Pure.
 function cm.rec(ev, room)
@@ -69,9 +96,7 @@ function cm.rec(ev, room)
   local r = { id = ev.id, type = s(ev.type), oid = s(ev.oid), rev = tonumber(ev.rev), time = s(ev.time), user = s(ev.user), hlc = tonumber(ev.hlc),
     order = s(ev.order), base_ev = s(ev.base_ev), gone = ev.gone == true or nil, obj = s(ev.obj), track = s(ev.track) }
   if type(ev.state) == "string" then
-    r.media = {}
-    for rm, rel in ev.state:gmatch('FILE "{media:([^}]+)}/([^"]+)"') do r.media[#r.media + 1] = { rm, rel } end
-    for rel in ev.state:gmatch('FILE "{media}/([^"]+)"') do r.media[#r.media + 1] = { room, rel } end
+    r.media = cm.item_media(ev.state, room)
     r.lane = tonumber(ev.state:match("BANDLANE (%d+)"))
   elseif type(ev.state) == "table" and r.obj == "track" then
     r.freemode, r.lanes, r.plays = tonumber(ev.state.freemode), tonumber(ev.state.lanes), s(ev.state.plays)
@@ -125,7 +150,14 @@ function cm.judge(room, evs, rooms, points, cutoff)
   local by_id = {}
   for _, e in ipairs(evs) do by_id[e.id] = e end
   local mtier, mage = {}, {}
-  for r, list in pairs(rooms) do
+  -- (the room's recordings by its own `evs` too, where those differ from what `rooms` has for it: a file either view plays is kept. The
+  -- cloud's view alone kept a change of yours a bandmate without a cloud folder had replaced here, while every change here dropped the
+  -- recording it plays, so the cloud copy held the change without its recording. rt-p2)
+  local views = {}
+  for r, list in pairs(rooms) do views[#views + 1] = { r, list } end
+  if evs ~= rooms[room] then views[#views + 1] = { room, evs } end
+  for _, v in ipairs(views) do
+    local r, list = v[1], v[2]
     local e_ess, e_std = dropped(list, {}, "~", "e"), dropped(list, r == room and recent or {}, cutoff, "s" .. (r == room and #recent or 0))
     local tracks = {} -- (each track's newest change still standing: which lanes play)
     for _, e in ipairs(list) do
@@ -139,7 +171,8 @@ function cm.judge(room, evs, rooms, points, cutoff)
         if m[1] == room then
           local f = m[2]
           if (e.time or "") > (mage[f] or "") then mage[f] = e.time end
-          local t = (not e_ess[e.id] and not e.gone and cm.lane_plays(tracks[e.track], e.lane)) and 1 or (not e_std[e.id] and 2 or 3)
+          -- (a take the item doesn't play: not essential, history in Standard's window. rt-p2)
+          local t = (not e_ess[e.id] and not e.gone and not m[3] and cm.lane_plays(tracks[e.track], e.lane)) and 1 or (not e_std[e.id] and 2 or 3)
           mtier[f] = math.min(mtier[f] or 3, t)
         end
       end
@@ -258,9 +291,13 @@ local function split(here) return here:gsub("\\", "/"):match("^(.*)/([^/]+)/room
 
 -- ---- what a pass sends up ----
 -- drive.mirror's filter for room folder `here`: fn(sub, file) -> whether the cloud copy keeps it; nil (Everything, no limit: as before); false
--- while the song's changes are still being read (`deadline`, time_precise): the pass carries on next time.
+-- while the song's changes are still being read or judged (`deadline`, time_precise): the pass carries on next time.
+-- `there`, `user`: the room's cloud folder and this computer's person. The room's own changes are judged as the cloud copy will hold them:
+-- those already in it and this computer's own (which this pass sends). A bandmate's newer change that never reaches the cloud (no cloud
+-- folder on their computer) then doesn't make yours look replaced, so yours still goes up and the cloud's version of that object isn't left
+-- older. Once theirs is there, the sweep takes yours out again (it judges by the cloud's own changes). (rt-cloudmodes "Not done", rt-p2)
 local filters = {}
-function cm.filter(here, deadline)
+function cm.filter(here, deadline, there, user)
   local root, song, room = split(here)
   if not root then return nil end
   local s = cm.settings_for(root)
@@ -273,22 +310,46 @@ function cm.filter(here, deadline)
     rooms[r] = list
     sig[#sig + 1] = r .. "=" .. #list
   end
+  local inC
+  if there then
+    inC = set_of(C().files(there .. "/events", ".json"))
+    C().check()
+    local n = 0
+    for _ in pairs(inC) do n = n + 1 end
+    sig[#sig + 1] = "c=" .. n
+  end
   local points = read_points({ here .. "/recall" })
   local cutoff = cm.cutoff(os.time(), s.days)
   sig[#sig + 1] = #points .. "|" .. cutoff:sub(1, 13) -- (the window moves: judged again each hour)
   local key = table.concat(sig, "|")
   local c = filters[here]
-  if c and c.key == key then return c.fn end
-  local judge, cut = cm.judge(room, rooms[room] or {}, rooms, points, cutoff), cm.cut
-  local fn = function(sub, f) local t, age = judge(sub, f); return cm.keeps(t, age, s, cut) end
-  filters[here] = { key = key, fn = fn }
-  return fn
+  if c and c.key == key and c.fn then return c.fn end
+  if not (c and c.key == key) then -- (the lists judged are kept while the key holds: trim.plan's plans are kept per list, so a judging that
+    -- carries on next pass goes on from the plans already made)
+    local own = rooms[room] or {}
+    if inC then
+      local mine = require("drive").mine
+      own = {}
+      for _, e in ipairs(rooms[room] or {}) do if inC[e.id .. ".json"] or mine(e.id .. ".json", user) then own[#own + 1] = e end end
+    end
+    c = { key = key, rooms = rooms, own = own }
+    filters[here] = c
+  end
+  -- (a few trim plans a pass, not the room in one go: 100-300 ms on REAPER's thread in Essentials and Standard. rt-drive2 "Left", rt-p2)
+  plan_until, plan_made = deadline, false
+  local ok, judge = pcall(cm.judge, room, c.own, c.rooms, points, cutoff)
+  plan_until = nil
+  if not ok then if judge == cm.LATER then return false end; error(judge, 0) end
+  local cut = cm.cut
+  c.fn = function(sub, f) local t, age = judge(sub, f); return cm.keeps(t, age, s, cut) end
+  return c.fn
 end
 
 -- ---- the sweep: what the cloud copy holds, what each mode would, and what goes ----
 cm.SUBS = { "events", "recall", "recall/known", "media", "takes", "_trash", "_trash/media", "midi", "deleted", "trimmed" }
 cm.KIND = { events = "changes", recall = "saved versions", ["recall/known"] = "saved versions", media = "recordings", takes = "takes",
-  _trash = "trash", ["_trash/media"] = "trash", midi = "settings", deleted = "settings", trimmed = "settings", fx = "settings", sessions = "end-of-session projects" }
+  _trash = "trash", ["_trash/media"] = "trash", midi = "settings", deleted = "settings", trimmed = "settings", fx = "settings", sessions = "end-of-session projects",
+  mixes = "mixes" }
 local sizes, unwanted_since = {}, {}
 local function size_of(local_path, cloud_path)
   local s = sizes[cloud_path]
@@ -488,6 +549,47 @@ local function sessions_pass(sw, droot, song, user, deadline)
   return true
 end
 
+-- ---- a song's mixes (<song>/mixes: "<Song> <yyyy-mm-dd> <hhmmss> <who>.<ext>", StudioSync - Final mix.lua and lib/bounces.lua) ----
+-- Standard keeps "the last mixes": those of its window, and the song's newest whatever its age; Essentials none (a mix isn't the project);
+-- Everything all. Each is its maker's to send up and take out (the name says who: drive.mine's one-writer rule). (rt-cloudmodes "Not done", rt-p2)
+function cm.mix_time(name) -- -> "yyyy-mm-ddThh:mm:ss" (the computer's own clock, as the name has it), or "". Pure.
+  local y, mo, d, h, mi, s = tostring(name):match("(%d%d%d%d)%-(%d%d)%-(%d%d) (%d%d)(%d%d)(%d%d) ")
+  return y and (y .. "-" .. mo .. "-" .. d .. "T" .. h .. ":" .. mi .. ":" .. s) or ""
+end
+function cm.mix_user(name) -- -> who made it, as the name has it, or nil. Pure.
+  return (tostring(name):gsub("%.[^.]*$", "")):match("%d%d%d%d%-%d%d%-%d%d %d%d%d%d%d%d (.+)$")
+end
+-- names: every mix the song has, either side. -> fn(name) -> tier, age. Pure.
+function cm.mix_tiers(names, cutoff)
+  local newest = ""
+  for _, f in ipairs(names) do local t = cm.mix_time(f); if t > newest then newest = t end end
+  return function(f)
+    local t = cm.mix_time(f)
+    return ((t ~= "" and (t >= cutoff or t == newest)) and "recent" or "other"), t
+  end
+end
+local function mixes_pass(sw, cfg, droot, song)
+  local s, sum, now = sw.s, sw.sum, os.time()
+  local cdir = droot .. "/" .. song .. "/mixes"
+  local inC, names = set_of(C().files(cdir)), {}
+  C().check()
+  for f in pairs(inC) do names[#names + 1] = f end
+  for _, f in ipairs(band.files(band.song_dir(cfg, song) .. "/mixes")) do if not inC[f] then names[#names + 1] = f end end
+  table.sort(names)
+  local tier_of = cm.mix_tiers(names, sw.cutoff)
+  local me = band.clean and band.clean(cfg.user or "") or cfg.user
+  for _, f in ipairs(names) do
+    if not require("drive").arriving(f) then
+      local tier, age = tier_of(f)
+      local p = cdir .. "/" .. f
+      local bytes = size_of(band.song_dir(cfg, song) .. "/mixes/" .. f, p)
+      if count(sum, s, "mixes", bytes, tier, inC[f] and tier or nil, age) and may_remove(cm.mix_user(f) == me, p, sw.is_owner, now) then remove(sum, p, bytes) end
+      progress = progress + 1
+    end
+  end
+  return true
+end
+
 -- From Live sync's cloud pass: a room or two each time (`budget` seconds), a whole sweep of the studio's cloud copy at most every EVERY s.
 -- Writes what it found to ExtState "cloud storage" (the panel and Health read it). -> the summary when a sweep finished.
 local sw, swept_at = nil, -math.huge
@@ -516,6 +618,7 @@ function cm.tick(cfg, droot, now, budget)
       table.sort(rl)
       for _, r in ipairs(rl) do list[#list + 1] = { song, r } end
       if incloud[song] then list[#list + 1] = { song } end -- (then its end-of-session projects)
+      if incloud[song] then list[#list + 1] = { song, nil, "mixes" } end -- (and its mixes: rt-p2)
     end
     C().check() -- (planned: the cloud copy's songs and rooms all listed first)
     local okr, role = pcall(function() return require("groups").role(cfg.root, cfg.user) end)
@@ -527,6 +630,8 @@ function cm.tick(cfg, droot, now, budget)
     local it = sw.list[sw.i]
     if it[2] then
       if not room_pass(sw, cfg, droot, it[1], it[2], t0 + (budget or 0.1)) then return end
+    elseif it[3] == "mixes" then
+      mixes_pass(sw, cfg, droot, it[1])
     else
       if not sessions_pass(sw, droot, it[1], cfg.user, t0 + (budget or 0.1)) then return end
     end
@@ -536,6 +641,18 @@ function cm.tick(cfg, droot, now, budget)
   local sum, s = sw.sum, sw.s
   local limit = s.limit_mb and s.limit_mb * 1024 * 1024 or nil
   cm.cut, sum.over = cm.limit_cut(sum.items, limit)
+  -- (what the mode keeps that isn't essential, by day, oldest first: what a lower size limit would take, for its confirmation. rt-p2)
+  local by_day, ages = {}, {}
+  for _, it in ipairs(sum.items) do
+    if it[1] ~= "essential" then
+      local d = tostring(it[2]):sub(1, 10)
+      if not by_day[d] then by_day[d] = { d, 0, 0 }; ages[#ages + 1] = by_day[d] end
+      by_day[d][2], by_day[d][3] = by_day[d][2] + 1, by_day[d][3] + it[3]
+    end
+  end
+  table.sort(ages, function(a, z) return a[1] < z[1] end)
+  sum.ages, sum.kept = ages, 0
+  for _, it in ipairs(sum.items) do sum.kept = sum.kept + it[3] end
   sum.items, sum.cut, sum.at = nil, cm.cut, os.time()
   sw, swept_at = nil, now
   pcall(reaper.SetExtState, band.SECTION, "cloud storage", band.json_encode(sum), false)
@@ -552,7 +669,7 @@ function cm.where()
   if not sw then return nil end
   local it, cur = sw.list[sw.i] or {}, sw.cur
   local step = not cur and "reading or judging" or cur.sessions and ("projects " .. tostring(cur.i) .. "/" .. #cur.rpps) or ("files " .. tostring(cur.i) .. "/" .. #cur.work)
-  return string.format("%s %s (%d of %d): %s", tostring(it[1]), tostring(it[2] or "sessions"), sw.i, #sw.list, step)
+  return string.format("%s %s (%d of %d): %s", tostring(it[1]), tostring(it[2] or it[3] or "sessions"), sw.i, #sw.list, step)
 end
 function cm.mb(b)
   b = tonumber(b) or 0
@@ -588,8 +705,27 @@ function cm.drop_words(sum, mode, label)
     "Nothing on anyone's computer is touched.", d[1], cm.mb(d[2]), label, table.concat(parts, "; "), label)
 end
 
+-- The confirmation a lower size limit shows (`limit_mb`, from the last sweep `sum`): what goes from the cloud copy first, oldest first, and
+-- whether the essentials alone are over it. -> text, or nil (nothing goes / no sweep yet). By whole days, so it can say a few files more than go
+-- (a day's files go together here, a timestamp's in the sweep). Pure. (rt-cloudmodes "Not done": lowering the limit didn't ask. rt-p2)
+function cm.limit_words(sum, limit_mb, label)
+  if type(sum) ~= "table" or type(sum.ages) ~= "table" or not tonumber(sum.kept) or not limit_mb then return nil end
+  local limit, total, n, bytes, upto = limit_mb * 1024 * 1024, sum.kept, 0, 0, nil
+  for _, d in ipairs(sum.ages) do
+    if total <= limit then break end
+    total, n, bytes, upto = total - d[3], n + d[2], bytes + d[3], d[1]
+  end
+  local over = (tonumber(sum.ess) or 0) > limit
+  if n == 0 and not over then return nil end
+  local text = n > 0 and string.format("About %d files (%s) go from the %s copy first: what isn't essential, oldest first%s. They go to %s's trash " ..
+    "(kept there for its usual time, about 30 days). Nothing on anyone's computer is touched.", n, cm.mb(bytes), label,
+    (upto and upto ~= "") and (", dated " .. upto .. " and before") or "", label) or ""
+  if over then text = text .. (text ~= "" and " " or "") .. "The essentials alone are over this limit: they're never removed, so the copy stays over it." end
+  return text
+end
+
 -- Settings > Studio: the owner and admins pick; everyone sees what the cloud copy holds.
-local pending, days_edit -- (a smaller mode waiting for its confirmation; the days slider while it's dragged)
+local pending, days_edit, pending_limit -- (a smaller mode waiting for its confirmation; the days slider while it's dragged; a lower limit's, in GB)
 function cm.studio_ui(ctx, ImGui, cfg, may)
   local drive = require("drive")
   local label = drive.name(cfg)
@@ -625,8 +761,11 @@ function cm.studio_ui(ctx, ImGui, cfg, may)
     if ImGui.BeginCombo(ctx, "##cloudlimit", word(now_gb)) then
       for _, gb in ipairs({ 0, 1, 2, 5, 10, 20, 50, 100, 200 }) do
         if ImGui.Selectable(ctx, word(gb), gb == now_gb) and gb ~= now_gb then
-          cm.set(cfg.root, { mode = s.mode, days = s.days, limit_mb = gb > 0 and gb * 1024 or nil })
-          band.log("the cloud copy's size limit: " .. word(gb):lower())
+          if gb > 0 and (now_gb == 0 or gb < now_gb) then pending_limit = gb -- (lower: asked first, as a smaller mode is. rt-p2)
+          else
+            cm.set(cfg.root, { mode = s.mode, days = s.days, limit_mb = gb > 0 and gb * 1024 or nil })
+            band.log("the cloud copy's size limit: " .. word(gb):lower())
+          end
         end
       end
       ImGui.EndCombo(ctx)
@@ -655,6 +794,24 @@ function cm.studio_ui(ctx, ImGui, cfg, may)
     end
     ImGui.SameLine(ctx)
     if ImGui.Button(ctx, "Cancel") then pending = nil; ImGui.CloseCurrentPopup(ctx) end
+    ImGui.EndPopup(ctx)
+  end
+  if pending_limit then ImGui.OpenPopup(ctx, "Lower size limit?") end
+  if ImGui.BeginPopupModal(ctx, "Lower size limit?", nil, ImGui.WindowFlags_AlwaysAutoResize) then
+    local gb = pending_limit or 0
+    ImGui.PushTextWrapPos(ctx, 440)
+    ImGui.Text(ctx, "Limit the " .. label .. " copy to " .. gb .. " GB?")
+    ImGui.Text(ctx, cm.limit_words(sum, gb * 1024, label) or ("Past it, the oldest files that aren't essential go from the " .. label ..
+      " copy (to its trash, kept there about 30 days). Essentials are never removed. Nothing on anyone's computer is touched."))
+    ImGui.PopTextWrapPos(ctx)
+    if ImGui.Button(ctx, "Limit to " .. gb .. " GB") then
+      cm.set(cfg.root, { mode = s.mode, days = s.days, limit_mb = gb * 1024 })
+      band.log("the cloud copy's size limit: " .. gb .. " gb limit")
+      pending_limit = nil
+      ImGui.CloseCurrentPopup(ctx)
+    end
+    ImGui.SameLine(ctx)
+    if ImGui.Button(ctx, "Cancel##limit") then pending_limit = nil; ImGui.CloseCurrentPopup(ctx) end
     ImGui.EndPopup(ctx)
   end
 end

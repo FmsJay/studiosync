@@ -238,9 +238,25 @@ end
 
 -- Copy media the exported projects still need, for up to `budget` seconds (called from the Drive pass, so a big
 -- first copy is spread out instead of holding up REAPER). Returns how many are left.
+-- With the cloud copy's background worker on (lib/drivebg.lua), not here: the drive round's "sessions" unit plans the copies (bg.C planned), the
+-- worker makes them, and each leaves the list once the cloud folder's listing has it. A call on REAPER's thread meanwhile (Live sync after a
+-- pass, sessionfile.export) leaves them to it: they were up to 1.5 s of copying on REAPER's thread at a session's end. (backlog 1.35, rt-p2)
 function sessionfile.catch_up(song, budget)
   local list = get_pending(song)
   if #list == 0 then return 0 end
+  local bg = require("drivebg")
+  local C = bg.C
+  if not C.planned and bg.on() then return #list end
+  if C.planned then
+    local left = {}
+    for _, m in ipairs(list) do
+      if type(m) == "table" and m.from and m.to and not C.exists(m.to) and exists(m.from) then left[#left + 1] = m end
+    end
+    C.check() -- (every listing read first: a copy planned on a half-read one could be one the cloud has)
+    for _, m in ipairs(left) do C.copy(m.from, m.to, false, "count") end
+    set_pending(song, left)
+    return #left
+  end
   local t0, left = reaper.time_precise(), {}
   for _, m in ipairs(list) do
     if reaper.time_precise() - t0 < (budget or 1.5) and type(m) == "table" and m.from and m.to then

@@ -15,8 +15,10 @@ local BEGIN, END = "// StudioSync: what this computer downloads (written by Stud
 local OLD_BEGIN, OLD_END = "// BandSync: what this computer downloads (written by BandSync, up to the line below)", "// BandSync end" -- (from before the rename: replaced the same way)
 songsync.BAND_WIDE = { "/_*", "/plugins", "/drummaps", "/libraries" } -- (libraries: who has which sound, lib/libraries.lua; left out, each
 -- computer's report stayed on it and everyone counted everyone else as lacking. Desktop, rt)
-songsync.LISTING = { "/*/session.json", "/*/folder.json", "/*/live.json", "/*/invites", "/*/chat", "/*/inbox", -- (inbox: audio dropped in from any computer, lib/extras.lua)
-  "/*/rooms/*/room.json",
+-- (and the signatures beside the signed ones: a song this computer only lists got session.json without its .sig, so there it was judged by
+-- Syncthing alone, never by its signature. rt-linkmove's "Not done"; rt-p2)
+songsync.LISTING = { "/*/session.json", "/*/session.json.sig", "/*/folder.json", "/*/live.json", "/*/invites", "/*/chat", "/*/inbox", -- (inbox: audio dropped in from any computer, lib/extras.lua)
+  "/*/rooms/*/room.json", "/*/rooms/*/room.json.sig",
   "/*/rooms/*/summary", "/*/rooms/*/status", "/*/rooms/*/chat" }
 
 -- The block's lines for the songs wanted here. Pure.

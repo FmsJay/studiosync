@@ -587,7 +587,7 @@ function drive.mirror(here, there, budget, user, wait)
   local owners = drive.media_owners(events, here:match("([^/]+)$"))
   longer = drive.longer_names(events, user)
   -- (the studio's storage mode: what the cloud copy leaves out isn't sent up; nil in Everything with no limit, as before. lib/cloudmodes.lua, rt)
-  local keep_up = require("cloudmodes").filter(here, t0 + (budget or 1.5))
+  local keep_up = require("cloudmodes").filter(here, t0 + (budget or 1.5), there, user)
   if keep_up == false then return 0, true end
   -- (recall/known: a saved version's map, beside it since 0.59.46: one brought back from the cloud restored by time. Round 3 review, 0.59.48)
   -- (deleted: tombstones, before media so a pass has the cloud's before it copies any recording)
@@ -712,6 +712,55 @@ function drive.mirror(here, there, budget, user, wait)
   return n, false
 end
 
+-- A song's files beyond its rooms, sent up to the cloud copy (rt-p2: rt-cloudmodes "Not done", backlog 1.34 and 3.14):
+--  - this computer's own mixes (<song>/mixes, named "<Song> <date> <time> <who>": StudioSync - Final mix.lua copied a mix to the cloud only
+--    as it was rendered, and the hub's renders (lib/bounces.lua) never went), as the storage mode keeps them (cloudmodes.mix_tiers);
+--  - the song's session.json, each room's room.json and the studio's _band/band.json, each with its signature, from the computer that signed
+--    the copy here (its .sig's `by`): one writer per file, as drive.mine has for the rest. Nothing comes down from here: a copy from the
+--    cloud would be written into the studio folder by this computer, and readers that don't know the signer's key go by Syncthing's word,
+--    which would then be this computer's.
+-- Written once each (mixes) or whenever the signature here differs from the cloud's. -> files sent.
+local function send_up(a, z, json)
+  local c = C()
+  if c.planned then return c.copy(a, z, json, "count") end
+  reaper.RecursiveCreateDirectory(z:match("^(.*)/"), 0)
+  if (band.size(a) or 0) > drive.BIG then band.copy_background(a, z); return true end
+  return (pcall(band.copy_atomic, a, z))
+end
+function drive.song_files(cfg, droot, song)
+  local c, n = C(), 0
+  local sdir, cdir = band.song_dir(cfg, song), droot .. "/" .. song
+  local CM = require("cloudmodes")
+  local s = CM.settings_for(cfg.root)
+  local me = band.clean and band.clean(cfg.user or "") or cfg.user
+  local here, mixes = {}, {}
+  for _, f in ipairs(band.files(sdir .. "/mixes")) do if not arriving(f) then here[#here + 1] = f; if CM.mix_user(f) == me then mixes[#mixes + 1] = f end end end
+  local inC = {}
+  if mixes[1] then for _, f in ipairs(c.files(cdir .. "/mixes")) do inC[f] = true end end
+  local signed_files = { { cfg.root .. "/_band/band.json", droot .. "/_band/band.json" }, { sdir .. "/session.json", cdir .. "/session.json" } }
+  for _, r in ipairs(band.subdirs(sdir .. "/rooms")) do signed_files[#signed_files + 1] = { sdir .. "/rooms/" .. r .. "/room.json", cdir .. "/rooms/" .. r .. "/room.json" } end
+  local okm, my_id = pcall(function() return require("signed").my_id() end)
+  local send = {}
+  for _, pair in ipairs(signed_files) do
+    local side = okm and my_id and band.read(pair[1] .. ".sig")
+    local t = side and band.json_decode(side)
+    if type(t) == "table" and t.by == my_id and band.read(pair[1]) and c.read(pair[2] .. ".sig") ~= side then send[#send + 1] = pair end
+  end
+  c.check() -- (planned: every listing and cloud signature read before anything is sent)
+  local names = {}
+  for f in pairs(inC) do names[#names + 1] = f end
+  for _, f in ipairs(here) do if not inC[f] then names[#names + 1] = f end end
+  local tier_of = CM.mix_tiers(names, CM.cutoff(os.time(), s.days))
+  for _, f in ipairs(mixes) do
+    local tier, age = tier_of(f)
+    if not inC[f] and CM.keeps(tier, age, s, CM.cut) and send_up(sdir .. "/mixes/" .. f, cdir .. "/mixes/" .. f, false) then n = n + 1 end
+  end
+  for _, pair in ipairs(send) do -- (the file, then its signature: a reader between the two sees them not matching yet, and keeps what it had)
+    if send_up(pair[1], pair[2], true) and send_up(pair[1] .. ".sig", pair[2] .. ".sig", true) then n = n + 1 end
+  end
+  return n
+end
+
 -- ---- the cloud copy as the studio's backup and its always-on member where there's no hub (James, 2026-11-19, rt) ----
 -- A pass every EVERY s when nothing's happening; SOON s after changes went out (yours reach the cloud copy within half a minute, not three),
 -- or after catch-up found files Syncthing still needs and nobody on the link to bring them (the cloud may have them); straight on while a
@@ -769,6 +818,11 @@ function drive.upkeep(cfg, droot, songs, skip, budget)
     if not okm and require("drivebg").is_need(k) then turn.need = true; error(k, 0) end
     if not okm then turn.more = false; return n, false, song end -- (on to the next song next time: it stayed on this one. Review, 0.59.14)
     n, more = n + k, more or m
+  end
+  if not more then -- (then the song's mixes and signed settings: drive.song_files. rt-p2)
+    local okf, k = pcall(drive.song_files, cfg, droot, song)
+    if not okf and require("drivebg").is_need(k) then turn.need = true; error(k, 0) end
+    if okf then n = n + k end
   end
   turn.more = more
   return n, more, song
@@ -1234,7 +1288,9 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
     round = { song = song, root = droot, moved = 0, jobs = 0, plans = 0, units = {}, failing = {}, quick = quick or nil }
     if drive.pull_carry then round.pulling, round.pulled, drive.pull_carry = true, drive.pull_carry, nil end -- (a pull not caught up yet)
     for _, p in ipairs(rooms) do round.units[#round.units + 1] = { "room", p[1], p[2] } end
-    if not quick then for _, k in ipairs({ "upkeep", "tools", "cm" }) do round.units[#round.units + 1] = { k } end end -- (a short round: the rooms only)
+    -- (song: the open song's mixes and signed settings, drive.song_files; sessions: the recordings its end-of-session projects use, which
+    -- sessionfile.catch_up copied on REAPER's thread. rt-p2)
+    if not quick then for _, k in ipairs({ "song", "sessions", "upkeep", "tools", "cm" }) do round.units[#round.units + 1] = { k } end end -- (a short round: the rooms only)
   elseif quick then -- (the round going on: its rooms looked at now, not at their next SOON)
     for _, u in ipairs(round.units) do if u[1] == "room" and u.done and not u.failed then u.done, u.done_at = false, nil end end
   end
@@ -1254,6 +1310,8 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
   local units = {
     room = function(u) return drive.mirror(u[2], u[3], left(), cfg.user) end,
     upkeep = function() return drive.upkeep(cfg, droot, require("songsync").here(cfg), song, left()) end,
+    song = function() return drive.song_files(cfg, droot, song), false end,
+    sessions = function() require("sessionfile").catch_up(song); return 0, false end,
     tools = function() return drive.tools_pass(cfg, droot, reaper.time_precise()) end,
     cm = function() return require("cloudmodes").tick(cfg, droot, reaper.time_precise(), left()) end,
   }
