@@ -840,3 +840,263 @@ name> joined: the studio's rules are back". Its trace shows `ids sent to ... (tr
 - **A status message makes its sender "here"**, which turns off full control. That was already true of every status message. A member could
   keep you out of full control by sending your room a status in someone's name. They could already do that with a status file in the folder.
 - **No rate limit on received hellos.** Each costs one `from_msg`, as any status does.
+
+## Round 6: link-first leftovers (rt-p3, 2026-11-21)
+
+Package P3 of `docs/rt/backlog.md`'s "Plan to finish": the leftovers of item 1.30, item 3.3 and 1.35's `streams.lua` cloud check. Offline build
+and tests only: nothing here was run in REAPER. Commits: 0ca071c (the link-first items), 1028e3f (the need list measures 8 ms a list), and
+a separate last commit, "Need list on by default", to hold back until the round 5 re-check passes (see item 1).
+
+### Summary for James
+
+- **Studio-wide files reach everyone in the studio, not only your room.** A change to the band's settings, a removal mark, a devices file, a
+  profile or picture, and a song's session.json or hub handover now go over the link to every computer of the studio the link may send to,
+  wherever its Live sync is (another room, another song). Before, a bandmate in another room had them only when Syncthing brought them.
+- **Files over 32 KB go over the link too**, in parts, up to 256 KB: a big session.json, a long tempo map's timeline file. Each part is
+  small enough for the link, and the whole is checked exactly as a small file is. An older StudioSync ignores the parts and gets the file
+  from Syncthing, as before.
+- **Take control shows in the panel at once:** driver.json goes over the link from the new driver's own computer.
+- **An older copy that Syncthing brings late no longer replaces a newer one for long.** If the link brought a newer write first, the newer
+  one is read again within a second, and stays until Syncthing brings it.
+- **Catch-up's cloud check no longer reads Google Drive on REAPER's thread** when the cloud copy's worker is on.
+- **A bug from round 5, fixed:** the link's 8-second start hold had the same name as the edit hold, so a bandmate's edit counted as "being
+  edited" for 8 s instead of 3 (the track tint and the "Bo is editing that item too" warning stayed longer). It's 3 s again.
+- **The need list on by default is ready as its own commit.** Safe to turn on once the round 5 re-check passes; until then, hold it.
+- **Not done here:** a person with two computers (a design question, below) and a hello for computers reached without Tailscale (it needs
+  `lib/nat.lua`, P13's, and can't help while Syncthing is paused anyway).
+
+### Per item
+
+| Item | Result |
+|---|---|
+| The need list on by default | **Built, its own commit, hold it.** Why it's safe and what's left: item 1 below. |
+| Studio-wide files to computers outside Live sync's room | **Done** (`direct.studio_peers`, `signed.drain`). |
+| Files over 32 KB | **Done** up to 256 KB (`signed.FILE_MAX`), in parts. |
+| `driver.json` on the link | **Done** (kind `driver`, only from the driver's own computer). |
+| `room.json`, room summaries, plays lists | **Not moved**, on purpose: item 4. |
+| A person with two computers | **Not fixable in P3's files**: a design question, item 7. |
+| `nat:` peers' hello | **Not built**: needs `lib/nat.lua` (P13), item 8. |
+| An older folder copy over a newer link copy | **Narrowed** to at most a second (the tidy). A line in `lib/band.lua` closes it: hooks. |
+| `streams.lua`'s cloud check off REAPER's thread | **Done** with the worker on (`drivebg.known_size`). |
+| List-only songs' `session.json.sig` | P2's (`lib/songsync.lua`), not touched. |
+| `band.rename` leaves an old `.sig` | `lib/band.lua` (P2's): hooks. |
+| Found: `presence.HOLD` set to 8 by round 5 | **Fixed** (renamed `LINK_HOLD`), item 9. |
+
+### Item 1: the need list on by default
+
+**Built** as the last commit: `needlist.on()` is true unless ExtState `BandSync / link need list` is `"0"` (`"1"` and `""` are on). Turning it
+off on a computer: `reaper.SetExtState("BandSync", "link need list", "0", true)`.
+
+**Is it safe now? In the code, yes; on real computers, not yet shown.** The reasons it was off are each answered in code:
+
+- *A deleted file coming back* (rt-linkmove's first reason). A file from a bandmate's list is fetched only while the song as this computer
+  has it still plays it (round 3), never one with a tombstone, never one this computer held and lost since Live sync started, and never a take
+  on a track the band deleted (round 5). What's left is a file whose deleting change neither computer has yet, by Syncthing or the link:
+  Syncthing races that delete too.
+- *Changes* land in the link's inbox only, never in the folder, and are checked when applied like any change.
+- *Nobody to ask when Syncthing is paused* (the LinuxBox test): the hello and the retried ids (round 5).
+- *A big song*: the first in-use read is 16 ms a tick (round 5); a bandmate's answer now measures new files 8 ms a list (1028e3f).
+- *Older builds*: the default only comes with this build, which has every filter. A computer on rt-linkmove's first build answers only if
+  someone switched it on by hand there.
+
+**Why hold it anyway:** none of the above has run on real computers (round 5's checks A-C and round 3's "The delete hole" are the test).
+The re-check runs now, in parallel. If A, C and the delete hole pass, push the commit; if any fails, leave it out and the switch stays as it
+was (`"1"` turns it on by hand, as before).
+
+**Costs once on everywhere:** one small ask a bandmate per 30 s, its answer only when the list changed; on Live sync's start, the in-use read
+(16 ms a tick, never while playing or recording) and, the first time a bandmate asks, new files measured 8 ms a list. The event day sums for
+the last 58 days are hashed once per run on the answering side (tens of ms for 20,000 changes, not budgeted).
+
+### Item 2: studio-wide files to every computer of the studio
+
+`signed.drain` sends a studio-wide file (`_band/...`) or a song's own (`<song>/session.json`, `<song>/hub/<person>.json`) to the room's peers as
+before, plus `direct.studio_peers(cfg, song)`: every studio computer whose devices file passes the link's own check (`trust.device_ok`, as
+`refresh_peers`), with a Tailscale name on the studio's network, the song in a guest's list, and no removal mark. band.json (it holds the
+secret) still never goes to a computer whose person has a removal mark or that the link can't name. A room's own files (grants, claims,
+orders...) still go to that room's computers only. The receivers already took a `signed` message from any room or song
+(`direct.STUDIO_WIDE`); a receiving Live sync in another room puts it where its panel reads it too.
+
+`direct.strangers` (round 5's hello) now uses the same list minus those here and minus this person.
+
+**Costs:** a studio-wide write is now sent to each of the studio's computers, here or not. One that's switched off costs its own send lane
+one timeout (the extension keeps a lane per peer). Studio-wide files change rarely (settings, someone joining or leaving, a profile).
+
+### Item 3: files over 32 KB
+
+A signed file over `BODY_MAX` (32 KB) and up to `FILE_MAX` (256 KB) goes as `ceil(size / 30,000)` messages of kind `signed`, each
+`{ part = { rel, i, n, sum }, data = <30,000 bytes as base64>, side = <the signature file, with the last part only> }` (about 40 KB, under the
+link's 64 KB a message; base64 so the size doesn't depend on how JSON escapes the file). The receiver keeps parts per file and sum, at most
+`PARTS_OPEN` (8) files half-arrived, each dropped `PARTS_KEEP` (30) s after its last part; when all `n` are in, the whole must match `sum`
+and then goes through exactly the checks of a one-message file (signature, key, number, the folder's signature file, `trust.file_ok`). A
+part has no `rel`, so an older build refuses it as "not a signed file", without a log line, and gets the file from Syncthing.
+
+Over 256 KB stays on Syncthing only. Which files grow past 32 KB: session.json in a long song, a timeline file with many markers.
+
+### Item 4: driver.json, and what isn't moved
+
+driver.json's kind is now `driver` (it shared `room` with room.json) and it is in `LINK`. `signed.owner` says the file is its `driver`'s, so
+over the link it's taken only when that person's own computer signed it (`trust.own_file_ok`). Take control (`StudioSync - Take control.lua`)
+and a new room write it on the new driver's own computer, so they go at once. A handover (`sync.hand_over`, the old driver writing the new
+one's name), a rename and a removal's seat handed back are written by someone else: refused over the link, they come by Syncthing as before
+(the "driver" event already reaches Live sync live). Nothing checks driver.json when Syncthing brings it, before or now.
+
+**Not moved, and why:** room.json is rewritten by whoever bins a room or adopts a fork (`rooms.bin`, `lib/forks.lua`), and nothing checks who
+when Syncthing brings it, so the link has no writer to check it against; nothing waits on it (it changes when a room is made, binned or
+adopted). Room summaries (`summary/<user>.json`) and plays lists feed the song chooser before someone joins: their readers aren't the Live sync
+that would receive them, and the panel's shared copies carry only signed kinds.
+
+### Item 5: an older folder copy after a newer link copy
+
+`band.read` reads the folder's file as soon as it changes, so when Syncthing brought an earlier write after the link brought a later one,
+the earlier one was read until Syncthing brought the latest. Now the link's copy keeps its bytes and signature, and the tidy (at most once a
+second, on every `signed.drain` and every `band.read` while copies are shared) checks a copy whose folder file changed: if the folder's file
+has a signature that checks out for its bytes and is numbered before the link's copy, the link's copy goes back in, over the folder's file as
+it is now, and Live sync shares it again for the panel. A folder file without a matching signature (an older build rewrote it, or its
+signature file hasn't landed yet) is read, as before. When Syncthing brings the newest, the link's copy is let go as before.
+
+Left: up to a second of the older file between Syncthing landing it and the tidy; and the moment the folder's file has landed but its
+signature file hasn't. Hook 1 below closes the first.
+
+### Item 6: catch-up's cloud check
+
+`streams.catchup_tick`, alone on the link with a cloud copy, asked the cloud folder for each wanted file's size (`band.size` on Google Drive,
+up to a third of a second each). With the cloud copy's worker on (`drivebg.on()`), it now reads the size from the worker's listing
+(`drivebg.known_size`, never asks). A file not listed yet asks for one cloud pass per new Syncthing need list (that pass lists the folder and
+brings what's there), not one a minute. With the worker off, as before (the passes then run on REAPER's thread anyway).
+
+### Item 7: a person with two computers (not fixable in P3's files)
+
+A person has one devices file, `_band/devices/<person>.json`, naming one computer (`removal.publish`). With two computers, each rewrites it
+naming itself every 30 s ("one naming another computer is written over"), so the file flips between them. Everything keyed on it flips too:
+which computer `trust.own_file_ok` takes the person's own files from (over the link and from Syncthing alike), which one the link sends to
+(`direct.devices`), the NAT pairing, the key learnt. A hub handover or track order written on the computer the file doesn't name at that
+moment is refused over the link, and set aside from Syncthing for hub and session files.
+
+The fix is a devices model with a file per computer (or a list of computers per person) and a rule for who may add a person's second
+computer (the first computer signs the second's entry, or a manager does). That touches `lib/removal.lua`, `lib/trust.lua` (`device_ok`,
+`own_file_ok`, the pins), `lib/direct.lua`, `lib/nat.lua`, `lib/joinboot.lua` and `presence.from_msg` (which drops a status in your own name),
+and it's a security design first. Suggested for section 4 as a new question: *"Should one person be able to use two computers in one
+studio?"* Default: not built; a person uses one computer per studio (or a second name for the second computer).
+
+### Item 8: a hello for `nat:` peers (not built)
+
+The hello goes to `direct.strangers`, which has only Tailscale names. A bandmate reached without Tailscale is a `nat:<device>` peer only
+while its NAT link is up, and `nat.peers` sets links up only for people here (`present[d.user]`), so a computer not here has no link to say
+hello over. Two things would be needed: `lib/nat.lua` (P13's) setting links up for the studio's computers not here too when the direct link
+asks (`by == "direct"`), kept out of the peers it returns; and `direct.strangers` adding `nat:<device>` for those whose link is up. But a NAT
+link is met through rendezvous files in the shared folder, or stage 3's signalling over another link that's up. With Syncthing paused (the
+case the hello is for) neither works for a first link, so this only helps a computer that already reaches someone. Left for P13, with the
+router VM to test it on.
+
+### Item 9 (found): the edit hold
+
+Round 5 added `presence.HELLO_EVERY, presence.HOLD = 15, 8` for the link's start hold. `presence.HOLD` is also how long a changed object
+counts as being edited (`presence.editing`: the status file's `editing` list, which drives the track tint in `lib/people.lua` and mirror's
+"Bo is editing that item too" warning; 3 s since rt-merge). Loading presence.lua set it to 8 for everyone. Renamed `LINK_HOLD`; `HOLD` is 3
+again.
+
+### Hooks in files I may not touch
+
+1. **`lib/band.lua` `band.read` (P2's file): never the older folder copy, not even for the tidy's second.** Where it drops the link's copy
+   because the folder's file changed, ask first:
+
+   ```lua
+       if o and s == o.was then return o.bytes end
+       if o and o.keep and s and o.keep(s) then o.was = s; return o.bytes end -- (the folder's file is an older signed copy: lib/signed.lua, rt-p3)
+       if o then band.overlay[k] = nil end
+   ```
+
+   and `lib/signed.lua` gives the overlay's entry `keep` (keep_newer's signature check on the folder's bytes; 3 lines, mine, once that line
+   is in).
+2. **`lib/band.lua` `band.rename`:** where it removes the old name's claims file, also `os.remove(<that path> .. ".sig")`.
+3. **`lib/nat.lua` (P13):** item 8.
+4. **Section 4 of the backlog:** item 7's question.
+
+### Files touched this round
+
+Only P3's: `lib/presence.lua` (the rename), `lib/direct.lua` (`studio_peers`, `strangers`), `lib/signed.lua`, `lib/streams.lua` (the cloud
+check), `lib/needlist.lua` (the measure budget; the default in its own commit). Tests: `tests/test_0_60_rt_linkmove.lua` (block "rt-p3"),
+`tests/test_0_60_rt_linkmove_need.lua`, `tests/test_0_60_rt_catchup.lua`, `tests/test_0_60_rt_catchup_link.lua`, and one stand-in line in
+`tests/test_0_60_rt_linkfirst.lua` (`studio_peers` on its stand-in link).
+
+### Tests
+
+- `tests/test_0_60_rt_linkmove.lua`, block "rt-p3": band.json goes to the room and to a computer in another room, never to one with a removal
+  mark; session.json to its song's computers wherever they are; a grant to the room only. driver.json from Take control is taken at once by
+  its signature, Moe's computer naming Ann is refused, Syncthing's copy changes nothing. A 70 KB session.json goes in 3 parts, each under 64 KB
+  a message, the signature with the last, no `rel`; parts alone aren't taken, the last one in takes the whole by its signature with nothing in
+  the folder; a changed part, a part after the rest expired, too many parts, a path outside the studio and junk are refused; over 256 KB
+  nothing is sent. An older v1 brought after the link's v2 is read for a moment, then v2 again at the next tidy; an unsigned rewrite is read;
+  Syncthing bringing the newest lets the link's copy go.
+- `tests/test_0_60_rt_catchup.lua`: the cloud check's old path with the worker off; with it on, the cloud folder is never read, one pass per
+  new need list while unlisted, not again for the same list, a pass when the listing has the file at its size.
+- `tests/test_0_60_rt_catchup_link.lua`: `studio_peers` lists every trusted studio computer but this one and one taken out; the edit hold is 3.
+- `tests/test_0_60_rt_linkmove_need.lua`: two new files a list at 5 ms each, then the rest; off only with `"0"` (the default commit).
+- Each fails with its change taken out (checked one at a time: studio-wide reach, driver, parts, keep_newer, the cloud check, the hold, the
+  measure budget, the default).
+- `python tests/run.py --no-luals`: fails 0 in a clean clone of each commit.
+
+### The REAPER checks (round 6)
+
+All three computers on this build (with or without the need list commit, said per check), one song, desktop as an admin. On each, once:
+`reaper.SetExtState("BandSync", "stream trace", "1", true)` (set back to `""` afterwards). The trace is
+`<REAPER resources>/StudioSync/direct/stream_trace.log`. Syncthing is paused on LinuxBox only (James's OK; never the desktop's or laptop's).
+Use the `bandtest` scratch song.
+
+**A. Studio-wide files to another room (item 2).**
+
+1. Desktop and laptop in room `main`; LinuxBox in a side room of the same song (make one: New room). Pause Syncthing on LinuxBox.
+2. On the desktop, change your profile's display name (web UI > your profile). LinuxBox's trace: `signed in _band/profiles/<desktop person>.json`
+   within about a second, and its web UI shows the new name. Before this round: nothing until Syncthing.
+3. On the desktop, StudioSync - Publish session. LinuxBox's trace: `signed in <Song>/session.json`; `BandSync / linked files` on LinuxBox
+   lists it.
+4. On the desktop, give someone a grant in `main`: LinuxBox's trace has no `signed in .../grants/...` (a room's file stays in its room).
+5. Resume Syncthing on LinuxBox: no `*.sync-conflict-*`, nothing changes on screen.
+
+**B. A file over 32 KB (item 3).**
+
+1. All three in `main`, Syncthing paused on LinuxBox. On the desktop, in the scratch song, add 600 markers with a one-line ReaScript,
+   `for i = 0, 599 do reaper.AddProjectMarker(0, false, i * 2, 0, "m" .. i, -1) end`, then StudioSync - Publish session.
+2. The desktop's `<Song>/session.json` (or `rooms/main/timeline/<you>.json`) is over 32 KB (check its size). The desktop's trace: `signed out`
+   for it; LinuxBox's: `signed in` for the same path within a couple of seconds. The copy under LinuxBox's
+   `<REAPER resources>/StudioSync/direct/<studio id>/.linked/` is the same size as the desktop's file.
+3. Resume Syncthing; then Undo the markers so the song is as it was.
+
+**C. Take control (item 4).** Syncthing paused on LinuxBox, all three in `main`, the ImGui panel open on LinuxBox. On the laptop, run
+StudioSync - Take control. LinuxBox's panel shows the laptop's person as the driver within about a second; its trace: `signed in
+<Song>/rooms/main/driver.json`. Then on the laptop, hand the seat to the desktop from the panel: LinuxBox's trace has `signed <...>/driver.json
+not taken (not from someone who may)` (written for someone else), and the panel follows Syncthing or the "driver" event, as before.
+
+**D. The edit hold (item 9).** Desktop and laptop in `main`, room mode Open. On the desktop, move an item. On the laptop, the desktop
+person's tint on that track goes about 3 s after the move (before this round, about 8 s). Move the same item on the laptop 5 s after the
+desktop's move: no "<desktop person> is editing that item too" line in the laptop's log (before this round there was one); 1 s after: there
+is, as designed.
+
+**E. Catch-up's cloud check (item 6).** Desktop with its cloud copy and the worker on (the default), perf stats on. Only when it happens
+naturally: alone on the link with something Syncthing still needs, the trace says `cloud catch-up: ... may be in the cloud copy (not listed
+yet)` once per need list, or `... is in the cloud copy`, and no catch-up lap goes over a few ms.
+
+**F. The need list on by default (only with that commit deployed).** Run round 5's checks A and C and round 3's "The delete hole" without
+setting `link need list` on any computer: the same results. Then `reaper.SetExtState("BandSync", "link need list", "0", true)` on LinuxBox:
+its trace has no new `event catch-up` or `media want` lines from a need list after the next 30 s.
+
+Not staged by hand: item 5 (Syncthing landing an older write after a newer link copy needs two writes a second apart and Syncthing
+delivering them out of order). Offline test only.
+
+### Not done or not tested
+
+- Not run in REAPER (the checks above).
+- Items 7 and 8, and the hooks above.
+- Files over 256 KB stay on Syncthing. The welcome's 30 KB (`lib/joinboot.lua`, P10) is unchanged.
+- Restore points, mixes and stems, the update code: not moved, on purpose (the table in round 1).
+
+### Review later (security), added this round
+
+- **Parts are kept per file and sum, not per sender.** Any computer whose link frames verify can keep up to 8 half-arrived files (8 x 256 KB)
+  for 30 s, and by opening new ones push out another sender's half-arrived file (that file then comes by Syncthing). No per-sender rate limit.
+- **A link copy can now be up to 256 KB** (was 32 KB), from parts or from this computer's shared place (`.linked`).
+- **Studio-wide files go to every trusted computer of the studio**, here or not, band.json with its secret included (never to one with a
+  removal mark; Syncthing already gives the folder to all of them). A guest's computer gets them when its list has the song Live sync is in.
+- **driver.json over the link** is taken only from the new driver's own computer; the Syncthing path is still unchecked (anyone can write it).
+- **The "older folder copy" check** believes any folder copy whose signature checks out for its bytes, by any key (known here or not), when it
+  says "older". The result is only ever that the link's copy, already checked, stays read; it lasts until the folder has a copy numbered as new.
