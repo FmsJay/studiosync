@@ -252,11 +252,17 @@ function drive.media_owners(events, room)
 end
 
 local seen_events = {} -- path -> { type, take, time, id, user, media } (events are written once, so read once)
+local read_n = 0 -- (events read so far: a planned round that reads further is getting somewhere, drive.bg_step)
 -- -> the events, or nil once `deadline` (time_precise) has passed with some still unread: those read so far are kept, the next call carries on
 -- (the first pass after a start read a big room's 3,150 at once and held REAPER up 0.7 s)
+drive.READ_MIN = 0.004 -- s of reading each call gets after the folder's listing, whatever the deadline
 local function read_events(dir, deadline)
   local out = {}
-  for _, f in ipairs(band.files(dir, ".json")) do
+  local files = band.files(dir, ".json")
+  -- (listing a big room's events alone took longer than a planned pass's 8 ms: a change that came after that was never read, nor the room
+  -- copied. rt-perfcut1)
+  if deadline then deadline = math.max(deadline, reaper.time_precise() + drive.READ_MIN) end
+  for _, f in ipairs(files) do
     local p = dir .. "/" .. f
     local e = seen_events[p]
     if e == nil and deadline and reaper.time_precise() > deadline then return nil end
@@ -267,7 +273,7 @@ local function read_events(dir, deadline)
         e.media = {}
         for room, rel in ev.state:gmatch('FILE "{media:([^}]+)}/([^"]+)"') do e.media[#e.media + 1] = { room, rel } end
       end
-      if e then seen_events[p] = e end -- (one not readable yet may still be arriving: read again next time)
+      if e then seen_events[p], read_n = e, read_n + 1 end -- (one not readable yet may still be arriving: read again next time)
     end
     if e then out[#out + 1] = e end
   end
@@ -480,7 +486,13 @@ function drive.mirror(here, there, budget, user, wait)
   local t0, n = reaper.time_precise(), 0
   local c = C()
   -- (planned for the background worker: also once a job holds as much as one should, lib/drivebg.lua)
-  local function out_of_time() return reaper.time_precise() - t0 > (budget or 1.5) or c.full() end
+  -- (planned, the budget counts from the first step it plans: reading a big room's own folders took longer than a tick's 8 ms, so every pass
+  -- ran out before its first copy and planned nothing, for good. Cross Test: 1,694 changes never went up. rt-perfcut1)
+  local t_out = not c.planned and t0 or nil
+  local function out_of_time()
+    t_out = t_out or reaper.time_precise()
+    return reaper.time_precise() - t_out > (budget or 1.5) or c.full()
+  end
   local function copy(a, z, media)
     if c.planned then -- (the worker checks the size before and after, and a cloud JSON file for being whole; a local one is read here first)
       if a:match("%.json$") and not c.cloud(a) and band.read_json(a) == nil then return end
@@ -879,6 +891,9 @@ end
 -- nothing finished this tick (a job still out). `rooms`: { {here, there} } of the open song.
 local round
 drive.MAX_JOBS = 500 -- (a pass that never settles ends there: the next starts on the usual schedule)
+-- A round that plans STALL times in a row with nothing moved, no unit finished and no change read further rests: it ends, and the next waits
+-- drive.EVERY. One that never settled planned again every pass, 15-76 ms each, for hours (rt-perf: Cross Test, "more" with 0 moved). rt-perfcut1
+drive.STALL, drive.rest_until = 10, -math.huge
 function drive.bg_busy() return round ~= nil end
 function drive.bg_on() return require("drivebg").on() end
 function drive.bg_step(cfg, droot, song, rooms, budget)
@@ -887,16 +902,18 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
   if J.busy() then return nil end
   local function done()
     local x = round
-    round = nil
+    round, drive.rest_said = nil, nil
     return x.moved, false, x.err
   end
   if r then
     for _, path in ipairs(r.landed) do drive.landed[#drive.landed + 1] = path end
     if round then round.moved, round.err = round.moved + r.moved, r.err or round.err end
+    if round and r.moved > 0 then round.plans = 0 end
     if r.err and round then return done() end -- (the worker failed: what it did is listed again by the next pass)
   end
+  if not round and reaper.time_precise() < drive.rest_until then return r and r.moved, r and true, r and r.err end -- (resting)
   if not round or round.song ~= song or round.root ~= droot then
-    round = { song = song, root = droot, moved = 0, jobs = 0, units = {} }
+    round = { song = song, root = droot, moved = 0, jobs = 0, plans = 0, units = {} }
     for _, p in ipairs(rooms) do round.units[#round.units + 1] = { "room", p[1], p[2] } end
     for _, k in ipairs({ "upkeep", "tools", "cm" }) do round.units[#round.units + 1] = { k } end
   end
@@ -909,6 +926,8 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
     tools = function() return drive.tools_pass(cfg, droot, reaper.time_precise()) end,
     cm = function() return require("cloudmodes").tick(cfg, droot, reaper.time_precise(), left()) end,
   }
+  local read0, done0 = read_n, 0
+  for _, u in ipairs(round.units) do if u.done then done0 = done0 + 1 end end
   J.begin(droot)
   pcall(function()
     for _, u in ipairs(round.units) do
@@ -930,9 +949,21 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
   end)
   local sent = J.submit()
   if sent then round.jobs = round.jobs + 1 end
-  local all = true
-  for _, u in ipairs(round.units) do if not u.done then all = false end end
+  local all, ndone = true, 0
+  for _, u in ipairs(round.units) do if u.done then ndone = ndone + 1 else all = false end end
   if (all and not sent) or round.jobs > drive.MAX_JOBS then return done() end
+  round.plans = (ndone > done0 or read_n > read0) and 0 or round.plans + 1
+  if round.plans >= drive.STALL then
+    drive.rest_until = reaper.time_precise() + drive.EVERY
+    if not drive.rest_said then
+      drive.rest_said = true
+      band.log(drive.label(drive.service_of(droot)) .. " copy: nothing is moving though it isn't up to date, so it tries again every " ..
+        math.floor(drive.EVERY / 60) .. " minutes rather than every pass")
+    end
+    local x = round
+    round = nil
+    return x.moved, true, x.err
+  end
   return r and round.moved, r and true, r and r.err
 end
 

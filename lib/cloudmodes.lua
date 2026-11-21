@@ -178,7 +178,11 @@ local recs, pts = {}, {} -- path -> record (or false)
 local function C() return require("drivebg").C end
 local function read_events(dir, room, deadline, twin, twin_has)
   local out = {}
-  for _, f in ipairs(C().files(dir, ".json")) do
+  local files = C().files(dir, ".json")
+  -- (some reading each call, however long the listing took: a big room's listing alone outlasted a planned pass's budget, and the sweep never
+  -- got past it. rt-perfcut1, as drive.lua's read_events)
+  if deadline then deadline = math.max(deadline, reaper.time_precise() + require("drive").READ_MIN) end
+  for _, f in ipairs(files) do
     local p = (twin_has and twin_has[f]) and (twin .. "/" .. f) or (dir .. "/" .. f) -- (the studio folder's copy of a cloud file: the same file)
     local r = recs[p]
     if r == nil then

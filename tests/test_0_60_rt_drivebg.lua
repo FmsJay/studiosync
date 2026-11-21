@@ -293,6 +293,52 @@ check(worst < 0.02, string.format("the planned pass: no tick over 20 ms on the s
 slow_ms = 0
 print(string.format("slow drive: old pass %.0f ms in one go (%d cloud calls); planned, worst tick %.1f ms, none on REAPER's thread", old_took * 1000, old_calls, worst * 1000))
 
+-- ---- 3b. a room whose own folders take longer to read than a tick's budget (rt-perfcut1) ----
+-- Live sync plans 8 ms a tick. Reading Cross Test's 2,489 changes here took longer, so every pass ran out of time before its first copy and
+-- planned nothing, for good ("more" with 0 moved; 1,694 changes never went up). Stand-in: each listing of the room's own events costs 10 ms.
+local CFG = { root = "/S", user = "James" }
+setup()
+for i = 10, 60 do local e = ev("James", i); put(HERE .. "/events/" .. e.id .. ".json", json.encode(e)) end
+drive, bg = fresh()
+local real_files = band.files
+band.files = function(dir, e) if dir == HERE .. "/events" then clock = clock + 0.010 end; return real_files(dir, e) end
+local big_moved
+for _ = 1, 60 do
+  clock = clock + 2
+  stand_in_worker()
+  local m, more = drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008)
+  if m and not more then big_moved = m; break end
+end
+band.files = real_files
+local ups = 0
+for i = 1, 60 do if fs[THERE .. "/events/" .. ev("James", i).id .. ".json"] then ups = ups + 1 end end
+check(big_moved and ups == 59, "a room slower to read than the budget still goes up and the pass ends: " .. tostring(big_moved) .. " moved, " .. ups .. " of 59 changes")
+
+-- ---- 3c. a round that answers "more" while nothing moves rests, and the next waits drive.EVERY (rt-perfcut1) ----
+setup()
+drive, bg, cm = fresh()
+local plan_at = {}
+drive.mirror = function() plan_at[#plan_at + 1] = clock; return 0, true end -- (never done, never moves anything)
+drive.tools_pass = function() end
+cm.tick, cm.sweeping = function() end, function() return false end
+local rest_at, rest_ret
+logs = {}
+for _ = 1, 250 do
+  clock = clock + 2
+  stand_in_worker()
+  local m, more = drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008)
+  if m and not rest_at then rest_at, rest_ret = clock, { m, more } end
+end
+check(rest_at and rest_ret[1] == 0 and rest_ret[2] == true, "it rested, saying 0 moved and more to do")
+local first = #plan_at
+for i, t in ipairs(plan_at) do if t > rest_at then first = i - 1; break end end
+check(first == drive.STALL + 1, "planned " .. drive.STALL .. " times after its other units finished, then stopped: " .. first)
+check(plan_at[first + 1] and plan_at[first + 1] - rest_at >= drive.EVERY, "no plan before drive.EVERY: the next one " .. tostring(plan_at[first + 1] and plan_at[first + 1] - rest_at) .. " s later")
+check(#plan_at >= 2 * first, "and then it tries again: " .. #plan_at .. " plans")
+local said = 0
+for _, s in ipairs(logs) do if s:find("nothing is moving", 1, true) then said = said + 1 end end
+check(said == 1, "said once, not each time it rests: " .. said)
+
 -- ---- 4. the real worker scripts ----
 os.remove, os.rename = real_remove, real_rename
 local py = rawget(_G, "python")
