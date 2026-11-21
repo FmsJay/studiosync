@@ -305,8 +305,15 @@ function trust.roles(root, j)
         if type(d) == "table" and d.device then newd = d.device end
       end
       ok, why = trust.self_rename(pins, owner, admins, by, band.read_json(root .. "/_band/names.json"), newd)
-      if why == "names" then names_wait[root .. v] = os.time(); return pins.owner, pins.admins end
+      if why == "names" then
+        if not probing then names_wait[root .. v] = os.time() end
+        return pins.owner, pins.admins
+      end
     end
+    -- (a "no" to a copy that came by the link is neither kept nor said, as everywhere here: trust.file_ok asks this before a link copy
+    -- goes in. Kept, an admin's re-signed copy of the owner's new roles had the owner's own file, the same roles and date, refused after
+    -- it until REAPER restarted. rt-linkmove)
+    if probing and not ok then return pins.owner, pins.admins end
     verdicts[root .. v] = ok
     if not ok and not said[root .. v] then
       said[root .. v] = true
@@ -424,10 +431,27 @@ end
 -- A copy that came over the direct link (lib/signed.lua on_msg, already in band.overlay while this asks): does the check its readers make say
 -- yes now? By its kind, the same check as when Syncthing brings it; a room's mode.json, which nothing checks then, must be a manager's here.
 -- -> true, or false/nil (left out). (rt-linkfirst)
+-- A manager's copy of band.json or roles.json that came by the link: are the roles it says the ones trust.roles goes by with it in? An
+-- admin's copy that changes who's in charge isn't the owner's word: it is left out here, so trust.roles never rules on a link copy later
+-- (and never keeps that ruling for the owner's own file). The file the roles don't go by passes as a manager's. (rt-linkmove)
+local function roles_stand(root, rel)
+  local pins = trust.pins(root)
+  local r = pins and not pins.held and band.read_json(root .. "/_band/roles.json")
+  if rel ~= (type(r) == "table" and type(r.owner) == "string" and "_band/roles.json" or "_band/band.json") then return true end
+  local j, said_ = band.read_json(root .. "/_band/band.json"), band.read_json(root .. "/" .. rel)
+  if type(j) ~= "table" or type(said_) ~= "table" then return false end
+  local owner, admins = trust.roles(root, j)
+  local wo, wa = trust.roles_of(said_)
+  return owner == wo and table.concat(admins, "\n") == table.concat(wa, "\n")
+end
 local function file_ok(root, rel)
   local kind = require("signed").kind(rel)
   local j = band.read_json(root .. "/" .. rel)
-  if kind == "band" or kind == "guests" or kind == "mode" then return (trust.from_manager_file(root, rel)) end
+  if kind == "band" or kind == "guests" or kind == "mode" then
+    local ok = trust.from_manager_file(root, rel)
+    if ok ~= true or kind ~= "band" then return ok end
+    return roles_stand(root, rel)
+  end
   if kind == "closed" then return trust.from_owner_file(root, rel) end
   if kind == "removed" then
     if band.read(root .. "/" .. rel) == nil then return trust.deleted_by_manager(root, rel) end

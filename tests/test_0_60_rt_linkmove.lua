@@ -459,6 +459,22 @@ Q.by_file[TLO] = moe.dev:sub(1, 7)
 clock = clock + 3
 check(studio_order(Q) == S1, "and one Syncthing says Moe's computer wrote under Olive's name: left out, as before")
 
+-- ==== The roles: a refused link copy never gets the owner's own file refused after it (trust.roles' verdicts) =======================================
+-- Olive (the owner) makes Bee an admin. Ann (an admin) re-signs those very words and gets them to Moe's computer first.
+local BJ = "_band/band.json"
+local R = studio(computer(moe), true)
+local newroles = json({ id = STUDIO, name = "LM", owner = "Olive", admins = { "Ann", "Bee" }, roles_at = 5 })
+local function admins_on(c) use(c); local _, a = require("trust").roles(c.root, require("band").read_json(c.root .. "/" .. BJ)); return table.concat(a, ",") end
+check(admins_on(R) == "Ann", "before: Ann alone is an admin")
+R.logged = nil
+ok, why = deliver(R, { rel = BJ, body = newroles, side = resign(ann, BJ, newroles, FAR) })
+check(ok == false and admins_on(R) == "Ann" and not overlaid(R, BJ), "an admin's copy that changes who's in charge isn't taken over the link (" .. tostring(why) .. ")")
+check(R.logged == nil or not tostring(R.logged):find("roles were changed", 1, true), "and nothing is said or kept about it")
+ok, why = deliver(R, { rel = BJ, body = newroles, side = resign(olive, BJ, newroles, FAR + 1) })
+check(ok == true and admins_on(R) == "Ann,Bee", "the owner's own file, the same roles and date, is taken after it: " .. tostring(why) .. " " .. admins_on(R))
+local setting = json({ id = STUDIO, name = "LM", owner = "Olive", admins = { "Ann", "Bee" }, roles_at = 5, direct = true })
+check(deliver(R, { rel = BJ, body = setting, side = resign(ann, BJ, setting, FAR + 2) }) == true, "an admin's band.json that leaves the roles as they are still goes in at once")
+
 -- ==== a computer on an older build ====================================================================================================================
 -- receiving (36f90ae: these kinds aren't ones its link takes): refused without a word, and Syncthing's copy works as before
 local OLD = studio(computer(cy), true)
