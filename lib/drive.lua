@@ -928,7 +928,7 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
   -- this room up to date" at its first job, with nothing to send. rt-drive2, round 2)
   local function work() return round.moved > 0 or round.work or next(round.failing) ~= nil end
   if not J.ready() then return r and round.moved, r and work(), r and r.err end
-  local t0, rooms_left = reaper.time_precise(), false
+  local t0, rooms_left, room_wrote = reaper.time_precise(), false, false
   -- (the open song's rooms again every SOON s while the round goes on: they were done at 03:54 on the desktop while the round read another
   -- song's 2,406 changes for an hour, and nothing new of yours went up meanwhile. Not one that failed: that's logged once a round. rt-drive2)
   for _, u in ipairs(round.units) do
@@ -951,7 +951,7 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
         local saved = drive.tools_at
         local n0 = J.pending()
         local ok, a, b = J.unit(units[u[1]], u)
-        if u[1] ~= "cm" and J.pending() > n0 then round.work = true end -- (a copy unit planned writes; the sweep's removals aren't copying)
+        if u[1] ~= "cm" and J.pending() > n0 then round.work = true; room_wrote = room_wrote or u[1] == "room" end -- (a copy unit planned writes; the sweep's removals aren't copying)
         if not ok and J.is_need(a) then
           if u[1] == "tools" then drive.tools_at = saved end -- (asked again once the cloud's two files are read)
         elseif not ok then
@@ -966,11 +966,13 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
   end)
   local sent = J.submit()
   if sent then round.jobs = round.jobs + 1 end
-  -- (copied: every unit but the storage sweep done and nothing out. The sweep only counts what the cloud copy holds; waiting for it, which on
-  -- the desktop never got a turn, kept "still copying" up for good and the round never ended. rt-drive2)
-  local all, copied, fresh = true, not sent, false
+  -- (copied: the open song's rooms done, none of them planning a write now; a plan is only made with no job out, so every copy they planned
+  -- has come back. Not the sweep (rt-drive2: waiting for it kept "still copying" up for good), nor the other songs and the update files, nor a
+  -- job of theirs: on the desktop at 06:59 two files of this room were in the cloud at 07:00:23 and "up to date" came at 07:03:19, once the
+  -- other song's listings were read. rt-perfcut3)
+  local all, copied, fresh = true, not room_wrote, false
   for _, u in ipairs(round.units) do
-    if not u.done then all = false; if u[1] ~= "cm" then copied = false end
+    if not u.done then all = false; if u[1] == "room" then copied = false end
     elseif not u.done_at then u.done_at = reaper.time_precise(); fresh = fresh or not u.once; u.once = true end -- (a room done again isn't news)
   end
   if (all and not sent) or round.jobs > drive.MAX_JOBS then return done() end

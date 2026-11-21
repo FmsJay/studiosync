@@ -17,7 +17,9 @@ local function decode(name, raw)
   decoded[name] = { raw = raw, v = v }
   return v
 end
-local function clock_json() return decode("clock", reaper.StudioSync_DirectClock()) end
+-- (without its leading "now", which nothing here reads: it changes on every call, so the clock was decoded every tick all the same,
+-- ~0.05 ms each on the desktop. The estimates change about once a second a peer. rt-perfcut3)
+local function clock_json() return decode("clock", (reaper.StudioSync_DirectClock():gsub('^{"now":[^,]*,', "{", 1))) end
 local function status_json() return decode("status", reaper.StudioSync_DirectStatus()) end
 
 -- ---- pure ----------------------------------------------------------------------------------------------------------------------------

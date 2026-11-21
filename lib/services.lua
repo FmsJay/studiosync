@@ -424,11 +424,19 @@ end
 
 -- This machine's Syncthing device ID, or nil (Syncthing not running, or no answer yet: a background check).
 -- (`soon`: asked again within 3 s, not 5 minutes: just after Start Syncthing, lib/page_groups.lua. Round 2 review, 0.59.46)
+-- (an ID found is kept MY_ID_KEEP s: each call looked for syncthing.exe, read the answer's file and decoded it, 0.3 ms on the desktop, and
+-- the direct link's clock asked every tick, 1 % of a core alone. rt-perfcut3)
+local my_id = { at = -math.huge }
+services.MY_ID_KEEP = 10
 function services.my_device_id(soon)
+  local now = tonumber(reaper.time_precise and reaper.time_precise())
+  if now and my_id.id and now - my_id.at < services.MY_ID_KEEP and now >= my_id.at then return my_id.id end
   local st = services.syncthing_path()
   local data = st and band.json_decode(background("st-system", cli(st) .. " show system", soon and 3 or 300) or "")
   local id = type(data) == "table" and data.myID
-  return services.is_device_id(id) and id or nil
+  id = services.is_device_id(id) and id or nil
+  if now then my_id.id, my_id.at = id, now end
+  return id
 end
 
 -- Which computer last changed a file in a shared folder, as Syncthing has it (modifiedBy: the first 7 characters of its ID); "" when Syncthing

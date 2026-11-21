@@ -1125,6 +1125,17 @@ local live_handlers = {
   end,
 }
 live_handlers.start, live_handlers.stop = live_handlers.cue, live_handlers.cue
+-- The start lap's sub-ticks that only poll, each at its own pace (s between runs); every other runs each tick (~32 a second): the link's
+-- receive, shared controllers, live audio, Ableton Link, live hops, the web UI (a page's live keys, the phone's Record page), the hub (paced
+-- itself), the clip and Play together checks, the transport. Idle, the start lap was ~3 % of a core. rt-perfcut3
+local SUB_EVERY = { takes = 0.5, ["shared prefs"] = 1, calibrate = 1, signed = 0.1, needlist = 1, claimask = 0.1, bounces = 0.25, follow = 0.1 }
+local sub_at = {}
+local function sub_due(at, name, now) -- at: name -> when it last ran. -> true when `name` runs this tick (noted in `at`)
+  local every, last = SUB_EVERY[name], at[name]
+  if every and last and now - last < every and now >= last then return false end
+  at[name] = now
+  return true
+end
 local function tick_body() -- returns true to keep going
   if sync.tip_at and reaper.time_precise() - sync.tip_at > 6 then sync.tip_at = nil; reaper.TrackCtl_SetToolTip("", 0, 0, true) end
   if not reaper.ValidatePtr2(0, proj, "ReaProject*") then -- project closed: stop, and say so
@@ -1153,6 +1164,7 @@ local function tick_body() -- returns true to keep going
   keep_lock() -- (this REAPER syncs this song: 0.59.18)
   follow_file(reaper.time_precise())
   sub_lap("start/lock, follow file")
+  local tnow = reaper.time_precise()
   -- A bandmate's plug-in list changed (they installed some, or the pack): the "everyone has" folder made again here, not only at the next
   -- start. Looked at every 2 minutes, by whichever tab of the studio looks first. (James, 0.59.24: "make sure the studiosync plugins are
   -- refreshed for users to see what everyone has")
@@ -1175,7 +1187,7 @@ local function tick_body() -- returns true to keep going
   -- one or the other"), unless Settings > Advanced shows both (ExtState "show both takes"). REAPER's Show all takes in lanes (action 40435) is
   -- the project's own: set once in front, and again only when the setting changes, so Ctrl+L still works. A band song's takes are only ever
   -- dry and wet: its comps are lanes.
-  if reaper.EnumProjects(-1) == proj then
+  if sub_due(sub_at, "takes", tnow) and reaper.EnumProjects(-1) == proj then
     local want = reaper.GetExtState(band.SECTION, "show both takes") == "1" and 1 or 0
     if reaper.GetExtState(band.SECTION, "takelanes " .. key) ~= tostring(want) then
       if reaper.GetToggleCommandStateEx(0, 40435) ~= want then reaper.Main_OnCommand(40435, 0) end
@@ -1185,13 +1197,13 @@ local function tick_body() -- returns true to keep going
   sub_lap("start/plug-ins, takes")
   -- the studio's shared preferences while its song is in front; yours back when no song is (another song's Live sync does its studio's.
   -- lib/sharedprefs.lua. James, rt)
-  do
+  if sub_due(sub_at, "shared prefs", tnow) then
     local front = reaper.EnumProjects(-1)
     if front == proj then band.try("shared prefs", require("sharedprefs").tick, cfg.root)
     elseif not (front and band.binding(front)) then band.try("shared prefs", require("sharedprefs").tick, nil) end
   end
   sub_lap("start/shared prefs")
-  band.try("calibrate.tick", require("calibrate").tick) -- (REAPER's input offset for the interface in use, measured per interface: lib/calibrate.lua. James, rt)
+  if sub_due(sub_at, "calibrate", tnow) then band.try("calibrate.tick", require("calibrate").tick) end -- (REAPER's input offset for the interface in use, measured per interface: lib/calibrate.lua. James, rt)
   sub_lap("start/calibrate")
   if cmd > 0 then reaper.SetExtState(band.SECTION, "live cmd " .. cmd, tostring(reaper.time_precise()), false) end -- (band.start_live)
   -- the band's takes add up on your master: say so when it clips (at most every 30 s)
@@ -1211,9 +1223,9 @@ local function tick_body() -- returns true to keep going
   sub_lap("start/link")
   band.try("controllers.tick", require("controllers").tick, proj, cfg, b) -- (faders and knobs you move go out live: lib/controllers.lua. James, rt)
   sub_lap("start/controllers")
-  band.try("signed.drain", require("signed").drain, cfg, b.song, b.room) -- (signed studio files written here, to those here now: lib/signed.lua, rt-linkfirst)
+  if sub_due(sub_at, "signed", tnow) then band.try("signed.drain", require("signed").drain, cfg, b.song, b.room) end -- (signed studio files written here, to those here now: lib/signed.lua, rt-linkfirst)
   sub_lap("start/signed")
-  band.try("needlist.tick", require("needlist").tick, cfg, b) -- (asks a bandmate here what media it holds, for catch-up: lib/needlist.lua, rt-linkmove)
+  if sub_due(sub_at, "needlist", tnow) then band.try("needlist.tick", require("needlist").tick, cfg, b) end -- (asks a bandmate here what media it holds, for catch-up: lib/needlist.lua, rt-linkmove)
   sub_lap("start/needlist")
   if dok and (arrived or 0) > 0 then
     if not direct_held then direct_first = reaper.time_precise() end
@@ -1225,15 +1237,15 @@ local function tick_body() -- returns true to keep going
   sub_lap("start/liveaudio")
   band.try("hops.tick", require("hops").tick, cfg, b, proj) -- (live hops, both sides: lib/hops.lua. James, rt)
   sub_lap("start/hops")
-  band.try("claimask.tick", require("claimask").tick, proj, cfg, b) -- (asks: the panel's answers, ones run out; auto-claims gone idle. lib/claimask.lua, rt-claims)
+  if sub_due(sub_at, "claimask", tnow) then band.try("claimask.tick", require("claimask").tick, proj, cfg, b) end -- (asks: the panel's answers, ones run out; auto-claims gone idle. lib/claimask.lua, rt-claims)
   sub_lap("start/claimask")
   band.try("webui.tick", require("webui").tick, proj, cfg, b, live_handlers) -- (the web UI: who's here, claims and chat for the browser, its chat sends. lib/webui.lua, James, rt)
   sub_lap("start/webui")
   band.try("hub.tick", require("hub").tick, proj, cfg, b) -- (who's the studio's hub and this song's; the song hub's restore points while idle. lib/hub.lua, James, rt)
   sub_lap("start/hub")
-  band.try("bounces.tick", require("bounces").tick, proj, cfg, b) -- (distributed stems and the hub's mix, both sides: lib/bounces.lua. James, rt)
+  if sub_due(sub_at, "bounces", tnow) then band.try("bounces.tick", require("bounces").tick, proj, cfg, b) end -- (distributed stems and the hub's mix, both sides: lib/bounces.lua. James, rt)
   sub_lap("start/bounces")
-  band.try("follow.tick", require("follow").tick, proj, cfg, b, changed_at) -- (following a bandmate live, and who's editing what now: lib/follow.lua. James, rt)
+  if sub_due(sub_at, "follow", tnow) then band.try("follow.tick", require("follow").tick, proj, cfg, b, changed_at) end -- (following a bandmate live, and who's editing what now: lib/follow.lua. James, rt)
   sub_lap("start/follow")
   local tjson = reaper.GetExtState(band.SECTION, "transport " .. key) -- a start/stop from the panel or the band
   if tjson ~= "" then

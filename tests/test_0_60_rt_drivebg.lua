@@ -490,6 +490,36 @@ put(THERE .. "/events/Bo-20261101-000099Z-99.json", '{"type":"edit","id":"Bo-202
 brings()
 check(fs[HERE .. "/events/Bo-20261101-000099Z-99.json"], "and comes once it's whole (not asked again only while it stays as it was)")
 
+-- ---- 3i. "up to date" once this room's copies are back, not when the other songs and the sweep are done (rt-perfcut3) ----
+-- The desktop, 06:59: a hub snapshot (2 files) was in the cloud at 07:00:23, "Google Drive copy up to date (2 files)" came at 07:03:19,
+-- after the round had read another song's listings (and the sweep sent a job every plan). Stand-in: the other song wants 40 plans, the
+-- sweep a listing every plan.
+setup()
+drive, bg, cm = fresh()
+cm.tick, cm.sweeping = function() end, function() return false end
+for _ = 1, 3 do clock = clock + 200; bg_pass() end -- (settled)
+drive, bg, cm = fresh()
+local other, sweeps = 0, 0
+drive.upkeep = function() other = other + 1; return 0, other < 40 end
+cm.tick = function() sweeps = sweeps + 1; if other < 40 then bg.want("/C/sweep" .. sweeps) end end -- (a new folder each plan: a job every time)
+cm.sweeping = function() return other < 40 end
+cm.progress = function() return sweeps end
+local snap = { HERE .. "/recall/James-20261121-135904Z-hub_snapshot.json", HERE .. "/recall/known/James-20261121-135904Z-hub_snapshot.json" }
+for _, p in ipairs(snap) do put(p, json.encode({ time = "2026-11-21T13:59:04Z" })) end
+clock = clock + 200
+local up_at, told_at, told_n, told_other, ended = nil, nil, nil, nil, false
+for i = 1, 200 do
+  clock = clock + 2; stand_in_worker()
+  local m, more = drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008)
+  if not up_at and fs[snap[1]:gsub("^/S/", "/C/")] and fs[snap[2]:gsub("^/S/", "/C/")] then up_at = i end
+  if m and not more and m > 0 and not told_at then told_at, told_n, told_other = i, m, other end
+  if not drive.bg_busy() then ended = true; break end
+end
+check(up_at and told_at and told_n >= 2, "the snapshot went up and was told: " .. tostring(up_at) .. " " .. tostring(told_at) .. " " .. tostring(told_n))
+check(told_at - up_at <= 2 and told_other < 40, "up to date within a plan or two of the files being there, while the other song still reads: " ..
+  (told_at - up_at) .. " plans, other song at " .. told_other)
+check(ended and other >= 40 and drive.rest_until == -math.huge, "and the round still ends once the other song and the sweep are done: " .. other)
+
 -- ---- 4. the real worker scripts ----
 os.remove, os.rename = real_remove, real_rename
 local py = rawget(_G, "python")
