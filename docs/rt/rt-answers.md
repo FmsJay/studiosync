@@ -188,3 +188,32 @@ is. The leader (its own selection is the skip) has nothing to put back.
 ### Round 2 review-later (security)
 - `play skip` is local ExtState from this computer's own extension; a script could write it too, which only adds a skip to this person's own
   start.
+
+## REAPER check results (rt-r0, 2026-11-21, 0.59.49.92 + extension 1.0.34; desktop leads, laptop and LinuxBox follow)
+
+How: each step through the dev-eval hooks. The panel's buttons were stood in for by the same functions in the same order (`page_restore`'s
+`R.test.restore_whole` / `restore_tracks` / `undo_change` with the panel's env and opts; `hub.hand_song`; `together.start` / `together.go`); presses
+of REAPER's own transport by `Main_OnCommand(40317)`, `OnPlayButtonEx`, `OnStopButtonEx` on the desktop; the web pages in the desktop's browser.
+Transport timing from a defer sampler on each computer (play state, `GetPlayPosition2Ex`, selection, loop), mapped onto the desktop's link clock
+(`StudioSync_DirectClock` offsets: laptop -1357 ms, LinuxBox -68 ms). Everything was put back (marker, mute, test track, hub, selections, follow).
+
+| # | Result | Evidence |
+| --- | --- | --- |
+| 1 | **pass** | Drums item muted, 90 bpm at bar 3 (Keys 7.385 -> 9.026 s) on all three. Restore whole project to row 2725: one act (`...r431160`), its timeline event carries that act and `restored: true`, 11 items + 1 envelope; all three back at 130 bpm, unmuted. Undo this change on row 2740: 90 bpm back, Keys 9.026, Drums muted, on all three; the undo's timeline event has `"restored": true`; nothing more sent after. StudioSync's Undo would take 2738 (my own tempo act), not the restored map. Health's colour not read (positions compared directly). |
+| 2 | **pass** (MIDI item, not a recorded take) | New track with a 1-bar MIDI item at bar 2 (1.846 s); tempo 60 (item to 4.000 s, sent); item deleted; tempo back to 130. Restore selected tracks to the row after the tempo change: 1.846 s + 1.846 s, bar 2 beat 1, on all three (not 4.0 s). Not run: a real audio take (no recording into the studio), the Time-timebase case. |
+| 3 | **pass** (old song; no new song shared) | Desktop's `Cross Test/hub/James.json` has `added` (written 14:36 today) and a `.sig`. `home`/`hub` = James on all three. The laptop rewrote `session.json` (Syncthing carried it: the old rule now says no, `trust.own_file_ok(session.json, James) = false`), yet sharer = James, adder kept, nobody set aside, home James on all three. Handed to LinuxBox: all three `home`/`hub` = LinuxBox, LinuxBox "you're the hub", James.json keeps `added`; handed back. Not run: sharing a new song from the laptop (it would add a song to the studio). |
+| 4 | **pass** | Start together, skip ticked, selection = Verse (2.769-18.462), cursor 0: start event `skip: [2.769, 18.462]`; all three start within 53 ms and jump over the verse within 4 ms (no re-cue); song time after within 38 ms; followers take the desktop's selection, then their own back past it. Late joiner (LinuxBox's Live sync stopped, started 8.6 s after the planned moment): "playing together from 24.28 s", in step 75 ms behind (past the verse). Background tab on LinuxBox: plays through, log "a start that skips a time selection plays through it in a tab that isn't in front". Record together with the box ticked: no skip (desktop and laptop recorded through the verse; nothing armed). Not run: an older StudioSync. |
+| 5 | **pass, with the bug below** | 40317 pressed on the desktop with both following at 0 bars: start event has `skip`; all three jump together (140.17-140.23 s), no stop/restart; followers' own selections back past the verse, and back at stop when stopped before it; plain Play next: no skip anywhere. |
+| 6 | **fail** (the case foreseen above) | Laptop with linked loop, own selection/loop 30-34: both come back after the verse, but REAPER's skip play then skips whatever the selection is: the laptop jumped 29.98 -> 34.02 s, that jump went out as a seek (a `James-Laptop` start event at 34.016 s) and the desktop and LinuxBox jumped with it. Same in check 5 with LinuxBox's own 25-27 s selection (LinuxBox start event at 27.006 s, everyone followed). So the put-back has to wait until stop. |
+| 7 | **REAPER plays on from inside** | Cursor at 6 s inside the verse, 40317: REAPER plays on from 6 s and skips nothing, on all three (start event still carries `skip`); followers' selections back at 18.46 s. Late follower (LinuxBox 5.5 s late): "playing together from 11.59 s", plain time, in step (69 ms). The late-start rule as built (plain time from inside) matches REAPER. |
+| 8 | **Play page pass; Song page layout pass; Song page start not run** | Play page, count-in 0, click off, skip ticked, Play together: start event `skip: [2.769, 18.462]`, all three jump at 572.44-572.45 s. Song page at 375 px: play, stop and "skip selection" fit on the first row, no sideways scroll (scrollWidth 375). Its Play wasn't pressed: it always counts in one bar with the metronome on every computer (`dawview.lua` `together.start(..., 1, true, ...)`), a sound outside the handoff's sound-test rules. |
+
+**Bug (checks 5 and 6):** `together.restore_own` puts a follower's own time selection back while the skip play is still running; REAPER's 40317
+play skips the selection in place when the playhead reaches it, so the follower jumps over its own selection, and in Follow each other that
+jump is read as a seek (not `skip_jump`: `side.skip` is the leader's) and everyone follows it. Fix: put the selection back only at stop
+(drop the "past the end" branch of `restore_own`), or treat a jump over the follower's own restored selection as a skip and not post it.
+
+**Rig notes:** LinuxBox's REAPER has "Stop playback at end of project" on (`stopprojlen` = 1, its default; 0 on the desktop and laptop). Cross
+Test is 22.754 s long, so LinuxBox stops at 22.8 s in any Play together, and a start past the end (rt-ears' 60.05 s) stops at once: that is
+rt-ears' "transport doesn't run" (set to 0 in memory for checks 4/7's late joiner, put back to 1). LinuxBox also shows REAPER's "No tracks are
+armed" box on Record together (it blocked REAPER 75 s; Live sync then said "REAPER didn't start (record ... was cancelled)").
