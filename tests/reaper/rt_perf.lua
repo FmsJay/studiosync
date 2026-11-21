@@ -38,6 +38,14 @@ for i = 0, 512 do
     say(line("pass", st.passes))
     if st.recv then say(line("a bandmate's change: arrival -> applied", st.recv)) end -- (rt-look)
     if (st.worst or "") ~= "" then say("  slowest tick's laps (ms): " .. st.worst) end
+    -- (each lap over the 10 s: total ms (/ 100 = % of one core), ticks it ran in, worst ms; "start/..." are the start lap's sub-ticks. rt-perfcut1)
+    if type(st.laps) == "table" and st.laps[1] then
+      say("  laps over 10 s (total ms, ticks, worst ms):")
+      for i = 1, math.min(#st.laps, 12) do
+        local l = st.laps[i]
+        if type(l) == "table" then say(string.format("    %-24s %8.1f %6d %8.1f", tostring(l[1]), tonumber(l[2]) or 0, tonumber(l[3]) or 0, tonumber(l[4]) or 0)) end
+      end
+    end
   end
 end
 if tabs == 0 then say("No Live sync has published yet: is it running in a tab? (each publishes every 10 s once \"perf stats\" is on)") end

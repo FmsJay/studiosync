@@ -323,6 +323,24 @@ end
 -- Tick timings for tests/reaper/rt_perf.lua (James, rt: before and after an efficiency pass, on each computer): collected only while ExtState
 -- "perf stats" is "1" (looked at every 10 s), and published every 10 s as "tick stats <proj>". Off, it costs one comparison a tick.
 local perf = { on = false, at = -math.huge, ticks = {}, passes = {}, worst = 0, worst_laps = "", recv = {} }
+-- (and each lap's total, ticks and worst over those 10 s, with the "start" lap split into its sub-ticks, so a measurement says which owns the
+-- ~1 ms a tick and the rare 126-548 ms stalls. The sub-ticks are marked only while perf stats is on. rt-perf's cut 3, rt-perfcut1)
+perf.laps = {}
+local function sub_lap(name) if perf.on then lap(name) end end
+local function laps_add(sums, l) -- l: a tick's laps, name, seconds pairs
+  for i = 1, #l - 1, 2 do
+    local s = sums[l[i]]
+    if not s then s = { 0, 0, 0 }; sums[l[i]] = s end
+    s[1], s[2], s[3] = s[1] + l[i + 1], s[2] + 1, math.max(s[3], l[i + 1])
+  end
+end
+local function laps_table(sums) -- -> { { lap, total ms, ticks it ran in, worst ms }, ... }, the largest total first
+  local out = {}
+  local function ms(s) return math.floor(s * 100000 + 0.5) / 100 end
+  for name, s in pairs(sums) do out[#out + 1] = { name, ms(s[1]), s[2], ms(s[3]) } end
+  table.sort(out, function(a, z) return a[2] > z[2] end)
+  return out
+end
 local last_session -- a session.json caught mid-sync reads as nothing: keep the last good one
 local joined = {} -- machines this Live sync has already let in
 -- Are we in the middle of editing? (the project changed in the last 2 s, or the mouse button is down): the band's
@@ -1134,6 +1152,7 @@ local function tick_body() -- returns true to keep going
   reaper.SetExtState(band.SECTION, "live " .. key, tostring(reaper.time_precise()), false)
   keep_lock() -- (this REAPER syncs this song: 0.59.18)
   follow_file(reaper.time_precise())
+  sub_lap("start/lock, follow file")
   -- A bandmate's plug-in list changed (they installed some, or the pack): the "everyone has" folder made again here, not only at the next
   -- start. Looked at every 2 minutes, by whichever tab of the studio looks first. (James, 0.59.24: "make sure the studiosync plugins are
   -- refreshed for users to see what everyone has")
@@ -1163,6 +1182,7 @@ local function tick_body() -- returns true to keep going
       reaper.SetExtState(band.SECTION, "takelanes " .. key, tostring(want), false)
     end
   end
+  sub_lap("start/plug-ins, takes")
   -- the studio's shared preferences while its song is in front; yours back when no song is (another song's Live sync does its studio's.
   -- lib/sharedprefs.lua. James, rt)
   do
@@ -1170,7 +1190,9 @@ local function tick_body() -- returns true to keep going
     if front == proj then band.try("shared prefs", require("sharedprefs").tick, cfg.root)
     elseif not (front and band.binding(front)) then band.try("shared prefs", require("sharedprefs").tick, nil) end
   end
+  sub_lap("start/shared prefs")
   band.try("calibrate.tick", require("calibrate").tick) -- (REAPER's input offset for the interface in use, measured per interface: lib/calibrate.lua. James, rt)
+  sub_lap("start/calibrate")
   if cmd > 0 then reaper.SetExtState(band.SECTION, "live cmd " .. cmd, tostring(reaper.time_precise()), false) end -- (band.start_live)
   -- the band's takes add up on your master: say so when it clips (at most every 30 s)
   if reaper.EnumProjects(-1) == proj and reaper.GetPlayState() & 1 == 1 then
@@ -1183,23 +1205,36 @@ local function tick_body() -- returns true to keep going
     end
   end
   together.tick()
+  sub_lap("start/clip, together")
   -- (the direct link: an event file that arrived brings a receive pass and a cue look now, not in up to 2 s; messages go where they belong)
   local dok, arrived = band.try("direct.live_tick", direct.live_tick, cfg, b.song, b.room, live_handlers)
+  sub_lap("start/link")
   band.try("controllers.tick", require("controllers").tick, proj, cfg, b) -- (faders and knobs you move go out live: lib/controllers.lua. James, rt)
+  sub_lap("start/controllers")
   band.try("signed.drain", require("signed").drain, cfg, b.song, b.room) -- (signed studio files written here, to those here now: lib/signed.lua, rt-linkfirst)
+  sub_lap("start/signed")
   band.try("needlist.tick", require("needlist").tick, cfg, b) -- (asks a bandmate here what media it holds, for catch-up: lib/needlist.lua, rt-linkmove)
+  sub_lap("start/needlist")
   if dok and (arrived or 0) > 0 then
     if not direct_held then direct_first = reaper.time_precise() end
     cue_left, quick_at, last, direct_in_at, direct_held = true, -math.huge, -math.huge, reaper.time_precise(), true
   end
   band.try("ablink.tick", require("ablink").tick, cfg, b, proj) -- (this computer's Ableton Link session, when it's on here. James, rt)
+  sub_lap("start/ablink")
   band.try("liveaudio.tick", require("liveaudio").tick, cfg, b, proj) -- (live audio over the link, when the studio has it on: lib/liveaudio.lua. James, rt)
+  sub_lap("start/liveaudio")
   band.try("hops.tick", require("hops").tick, cfg, b, proj) -- (live hops, both sides: lib/hops.lua. James, rt)
+  sub_lap("start/hops")
   band.try("claimask.tick", require("claimask").tick, proj, cfg, b) -- (asks: the panel's answers, ones run out; auto-claims gone idle. lib/claimask.lua, rt-claims)
+  sub_lap("start/claimask")
   band.try("webui.tick", require("webui").tick, proj, cfg, b, live_handlers) -- (the web UI: who's here, claims and chat for the browser, its chat sends. lib/webui.lua, James, rt)
+  sub_lap("start/webui")
   band.try("hub.tick", require("hub").tick, proj, cfg, b) -- (who's the studio's hub and this song's; the song hub's restore points while idle. lib/hub.lua, James, rt)
+  sub_lap("start/hub")
   band.try("bounces.tick", require("bounces").tick, proj, cfg, b) -- (distributed stems and the hub's mix, both sides: lib/bounces.lua. James, rt)
+  sub_lap("start/bounces")
   band.try("follow.tick", require("follow").tick, proj, cfg, b, changed_at) -- (following a bandmate live, and who's editing what now: lib/follow.lua. James, rt)
+  sub_lap("start/follow")
   local tjson = reaper.GetExtState(band.SECTION, "transport " .. key) -- a start/stop from the panel or the band
   if tjson ~= "" then
     reaper.DeleteExtState(band.SECTION, "transport " .. key, false)
@@ -1470,9 +1505,11 @@ local function perf_publish(now)
   if perf.on and #perf.ticks > 0 then
     local R = require("rthealth")
     band.set_ext_json(band.SECTION, "tick stats " .. key, { at = os.time(), song = b.song, room = b.room, ticks = R.summary(perf.ticks),
+      laps = laps_table(perf.laps),
       passes = R.summary(perf.passes), worst = perf.worst_laps, recv = #perf.recv > 0 and R.summary(perf.recv) or nil }, false)
   end
   perf.on, perf.ticks, perf.passes, perf.worst, perf.worst_laps, perf.recv = reaper.GetExtState(band.SECTION, "perf stats") == "1", {}, {}, 0, "", {}
+  perf.laps = {}
 end
 -- an error anywhere in a tick (a malformed cue from someone's machine, say) is logged, and Live sync carries on
 local said_at, sws_at = -math.huge, -math.huge
@@ -1524,6 +1561,7 @@ tick = function()
   if perf.on then
     perf.ticks[#perf.ticks + 1] = took
     if took > perf.worst then perf.worst, perf.worst_laps = took, laps_text() end
+    laps_add(perf.laps, laps)
   end
   if t0 - perf.at >= 10 then perf_publish(t0) end
   if go then reaper.defer(tick) end

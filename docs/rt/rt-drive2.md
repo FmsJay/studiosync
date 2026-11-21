@@ -84,6 +84,18 @@ when the copy was, and ended normally once the sweep finished, never resting.
 
 `python tests/run.py --no-luals`: in the report (run in a clean clone of the commit).
 
+## Per-lap perf stats (rt-perfcut1's "Left" list, finished; a second commit)
+
+- `StudioSync - Live sync.lua` (small, additive; the only uncommitted lines in that file were rt-perfcut1's, committed with these):
+  `perf.laps`, `sub_lap`, `laps_add`, `laps_table`, `laps = laps_table(perf.laps)` in "tick stats", the reset, `laps_add` at the tick's end
+  inside `if perf.on` (rt-perfcut1's lines), and 17 `sub_lap("start/...")` lines in `tick_body` before `lap("start")`, one after each
+  sub-tick (lock and follow file, plug-ins and takes, shared prefs, calibrate, clip and together, link, controllers, signed, needlist,
+  ablink, liveaudio, hops, claimask, webui, hub, bounces, follow). With perf stats on, "start" is then only the transport ExtState part.
+  Off, a sub-lap is one comparison.
+- `tests/reaper/rt_perf.lua` prints each tab's laps over the 10 s: total ms (/ 100 = % of one core), ticks, worst ms, the 12 largest.
+- `tests/test_0_60_rt_perfcut1.lua`: `laps_add`/`laps_table` loaded from the file's text (totals, ticks, worst, order, rounding); every
+  `sub_lap("start/...")` inside `tick_body` before `lap("start")`; `laps_add` called once, inside `if perf.on`; published and reset.
+
 ## REAPER checks for James (desktop, once deployed)
 
 1. Cross Test open, Live sync running, `tests/reaper/rt_perf.lua` on: within a few minutes of the first round the log says "Google Drive copy
@@ -94,6 +106,7 @@ when the copy was, and ended normally once the sweep finished, never resting.
 3. The slowest ticks: "save, drive" mostly under ~15 ms, the worst under ~40 ms (a big change read, a listing parsed); no 100+ ms drive step.
 4. `%TEMP%/bandsync-drive-*/lists/`: Cross Test's room folders rewritten every ~30 s while a round lasts; between rounds, quiet.
 5. The log never says "nothing is moving though it isn't up to date" while the copy is actually up to date.
+6. `tests/reaper/rt_perf.lua` shows "laps over 10 s" per tab, with `start/...` rows: which sub-tick owns the start lap.
 
 ## Left / not done
 
