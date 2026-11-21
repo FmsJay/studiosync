@@ -741,7 +741,8 @@ function P.save_drive(t)
         band.try("services.rescan", function() require("services").rescan(band.info(cfg.root).id, path:sub(#cfg.root + 2)) end)
       end
       drive.landed = {}
-      reaper.SetExtState(band.SECTION, "drive status", band.json_encode({ at = os.time(), moved = moved, more = more or nil, err = err }), false)
+      reaper.SetExtState(band.SECTION, "drive status", band.json_encode({ at = os.time(), moved = moved, more = more or nil, err = err,
+        budget = drive.budget_mode and { drive.budget_mode, (drive.STEP_BUDGET or 0) * 1000 } or nil }), false) -- (this pass's budget: rt-drive2 round 10)
       if not more then band.try("sessionfile.catch_up", require("sessionfile").catch_up, b.song, 0.1) end
       if more and not drive_more then band.log(drive.label(drive.service_of(droot)) .. ": bringing the studio's copy of this room up to date (carries on between passes)") end
       if moved > 0 and not more then band.log(string.format("%s copy up to date (%d file%s this pass)", drive.label(drive.service_of(droot)), moved, moved == 1 and "" or "s")) end
@@ -1527,6 +1528,7 @@ local function perf_publish(now)
     local R = require("rthealth")
     band.set_ext_json(band.SECTION, "tick stats " .. key, { at = os.time(), song = b.song, room = b.room, ticks = R.summary(perf.ticks),
       laps = laps_table(perf.laps), over = #perf.over > 0 and perf.over or nil,
+      drive_budget = drive.budget_mode and { drive.budget_mode, (drive.STEP_BUDGET or 0) * 1000 } or nil, -- (the cloud copy's, rt-drive2 round 10)
       passes = R.summary(perf.passes), worst = perf.worst_laps, recv = #perf.recv > 0 and R.summary(perf.recv) or nil }, false)
   end
   perf.on, perf.ticks, perf.passes, perf.worst, perf.worst_laps, perf.recv = reaper.GetExtState(band.SECTION, "perf stats") == "1", {}, {}, 0, "", {}

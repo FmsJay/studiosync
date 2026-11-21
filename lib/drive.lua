@@ -1054,8 +1054,18 @@ end
 drive.tools_at = -math.huge
 drive.TOOLS_STEP = 0.008 -- s of hashing the update files' code a plan
 -- s of REAPER's thread Live sync gives the cloud copy's planning each pass (James, 2026-11-21: "Allow more", from 8 ms: the first sweep
--- after a restart took about 9 minutes at 8 ms a pass; the heavy signature check keeps a plan of its own whatever this is)
-drive.STEP_BUDGET = 0.016
+-- after a restart took about 9 minutes at 8 ms a pass; the heavy signature check keeps a plan of its own whatever this is). Chosen each pass
+-- by drive.bg_busy (drive.choose_budget), which Live sync asks just before it reads this. (James, round 10: "intensive when it needs to be and
+-- less when it doesn't, especially when fully getting a project from cloud")
+drive.QUIET_BUDGET = 0.004 -- caught up: no round, a short round of the rooms, a round whose copy is current and sweep idle
+drive.WORK_BUDGET = 0.016 -- catching up: a round with work (not current yet, the sweep, a copy failing)
+-- A big job (many files a job, either way: a song or room coming down whole, a big upload): WORK_BUDGET while you work, BIG_BUDGET while REAPER
+-- is stopped and untouched for IDLE_AFTER s, back at once on any activity. James OK'd 16 ms; 32 ms waits for his word, so it's 16 for now.
+drive.BIG_BUDGET = 0.016
+drive.IDLE_AFTER = 10
+drive.BIG_FILES = 50 -- files a job moves (or a plan holds) that make a job big
+drive.STEP_BUDGET = drive.QUIET_BUDGET
+drive.budget_mode = "quiet"
 function drive.tools_pass(cfg, droot, now)
   if now - drive.tools_at < drive.EVERY then return end
   drive.tools_at = now
@@ -1135,8 +1145,38 @@ local function own_new()
   end
   return found
 end
+-- Whether you're away: REAPER stopped, and no change to the project nor a moved mouse for drive.IDLE_AFTER s (polled each pass: two calls).
+local idle = { at = -math.huge }
+local function user_away(now)
+  local R = reaper
+  if not (R.GetMousePosition and R.GetProjectStateChangeCount and R.GetPlayState) then return false end
+  local x, y = R.GetMousePosition()
+  local key = tostring(x) .. "," .. tostring(y) .. "," .. tostring((R.GetProjectStateChangeCount(0)))
+  if key ~= idle.key then idle.key, idle.at = key, now end
+  return R.GetPlayState() == 0 and now - idle.at >= drive.IDLE_AFTER
+end
+-- The budget for this pass, and its mode in words. (rt-drive2, round 10)
+function drive.choose_budget(now)
+  local away = user_away(now)
+  local CM = require("cloudmodes")
+  local mode
+  -- (work: the first full round since REAPER started (it reads everything), the storage sweep, a copy failing, files moved this round
+  -- or the last plan holding writes. A round only looking, a short round of the rooms, no round: quiet)
+  if round and round.big_until and now < round.big_until then mode = away and "big, away" or "big"
+  elseif not round and not drive.first_done then mode = "work" -- (the first round's first plan)
+  elseif not round or round.quick then mode = "quiet"
+  elseif not drive.first_done or CM.sweeping() or next(round.failing) ~= nil or round.moved > 0 or (round.last_ops or 0) > 0 then mode = "work"
+  else mode = "quiet" end
+  local b = mode == "quiet" and drive.QUIET_BUDGET or mode == "big, away" and drive.BIG_BUDGET or drive.WORK_BUDGET
+  if mode ~= drive.budget_mode then
+    pcall(reaper.SetExtState, band.SECTION, "drive budget", band.json_encode({ at = os.time(), mode = mode, ms = b * 1000 }), false)
+  end
+  drive.budget_mode = mode
+  return b
+end
 function drive.bg_busy()
   local t = reaper.time_precise()
+  drive.STEP_BUDGET = drive.choose_budget(t)
   if own_new() then quick_due = true end
   t = reaper.time_precise() - t
   if t > 0.02 and reaper.GetExtState(band.SECTION, "perf stats") == "1" then -- (as drive slow names a slow plan's parts: rt-drive2, round 7)
@@ -1154,6 +1194,7 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
   local function done()
     local x = round
     round, drive.rest_said = nil, nil
+    if not x.quick then drive.first_done = true end -- (drive.choose_budget)
     return x.moved, false, x.err
   end
   if r then
@@ -1164,6 +1205,7 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
       for _, t in ipairs(r.wrote or {}) do round.failing[t] = nil end
     end
     if round and r.moved > 0 then round.plans = 0 end
+    if round and r.moved >= drive.BIG_FILES then round.big_until = reaper.time_precise() + 30 end -- (a big job: drive.choose_budget)
     if r.err and round then return done() end -- (the worker failed: what it did is listed again by the next pass)
   end
   local dirs = {}
@@ -1229,6 +1271,8 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
       end
     end
   end)
+  if J.pending() >= drive.BIG_FILES or J.full() then round.big_until = reaper.time_precise() + 30 end -- (a big plan: drive.choose_budget)
+  round.last_ops = J.pending()
   local ts = reaper.time_precise()
   local sent = J.submit()
   slow.submit = reaper.time_precise() - ts
@@ -1278,6 +1322,7 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
     end
     local x = round
     round = nil
+    if not x.quick then drive.first_done = true end -- (drive.choose_budget)
     -- (what the plans before it did, and where the sweep was: ExtState "drive rest". The desktop rested mid-sweep at 10:08:22 and nothing could
     -- tell why from outside. rt-drive2, round 7)
     pcall(reaper.SetExtState, band.SECTION, "drive rest", band.json_encode({ at = os.time(), plans = x.trace, sweep = CM.where and CM.where() or nil }), false)
@@ -1289,6 +1334,7 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
   if copied and (not round.told or round.moved > 0) then
     local m = round.moved
     round.told, round.moved = true, 0
+    if not round.quick then drive.first_done = true end -- (drive.choose_budget)
     return m, false, round.err
   end
   return r and round.moved, r and not copied and work(), r and r.err

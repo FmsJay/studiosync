@@ -834,6 +834,111 @@ do
   check(ds3 and ds3.ms.submit_write and ds3.ms.submit_write >= 60, "a slow plan write is named: " .. tostring(ext["drive slow"]))
 end
 
+-- ---- 3t. the cloud copy's share of each pass is chosen from what it's doing (rt-drive2, round 10) ----
+-- James: "intensive when it needs to be and less when it doesn't, especially when fully getting a project from cloud". 4 ms caught up, 16 ms
+-- catching up, and a big job 16 ms while you work, drive.BIG_BUDGET (16 until James says 32) only while REAPER is stopped and untouched.
+do
+  setup()
+  drive, bg, cm = fresh()
+  check(drive.QUIET_BUDGET == 0.004 and drive.WORK_BUDGET == 0.016 and drive.BIG_BUDGET == 0.016 and drive.IDLE_AFTER == 10,
+    "the budgets: 4 ms caught up, 16 ms catching up, and a big job's left at 16 ms until James OKs 32")
+  local real = { rawget(reaper, "GetMousePosition"), rawget(reaper, "GetProjectStateChangeCount"), rawget(reaper, "GetPlayState") }
+  local mx, cc, play = 10, 1, 0
+  reaper.GetMousePosition = function() return mx, 20 end
+  reaper.GetProjectStateChangeCount = function() return cc end
+  reaper.GetPlayState = function() return play end
+  local function passes(fail_paths, worker)
+    local seen = {}
+    for _ = 1, 60 do
+      clock = clock + 2
+      if worker ~= false then stand_in_worker(fail_paths) end
+      local busy = drive.bg_busy()
+      seen[drive.budget_mode .. " " .. string.format("%g", drive.STEP_BUDGET * 1000)] = true
+      local moved, more = drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, drive.STEP_BUDGET)
+      if moved and not more and not drive.bg_busy() and busy then return seen end
+    end
+    return seen
+  end
+  local function only(seen, want) local n = 0; for k in pairs(seen) do n = n + 1; if k ~= want then return false end end; return n > 0 end
+  local function words(seen) local t = {}; for k in pairs(seen) do t[#t + 1] = k end; table.sort(t); return table.concat(t, ", ") end
+  -- the first round after REAPER starts reads everything and brings the bandmate's work down: catching up
+  drive.bg_busy()
+  local before = drive.budget_mode .. " " .. string.format("%g", drive.STEP_BUDGET * 1000)
+  local first = passes()
+  check(before == "work 16" and only(first, "work 16"), "the first round since REAPER started: 16 ms: " .. before .. " / " .. words(first))
+  for _ = 1, 3 do clock = clock + 200; bg_pass() end -- (settled)
+  drive.bg_busy()
+  local said = ext["drive budget"] and json.decode(ext["drive budget"])
+  check(drive.STEP_BUDGET == 0.004 and drive.budget_mode == "quiet" and said and said.mode == "quiet" and said.ms == 4,
+    "caught up, no round: 4 ms, and ExtState \"drive budget\" says so: " .. tostring(ext["drive budget"]))
+  -- a round that only looks (no sweep due, nothing to copy): 4 ms all through
+  cm.tick, cm.sweeping = function() end, function() return false end
+  clock = clock + 200
+  local look = passes()
+  check(only(look, "quiet 4"), "a round with nothing to copy: 4 ms: " .. words(look))
+  -- the storage sweep going on: 16 ms
+  clock = clock + 200
+  stand_in_worker(); drive.bg_busy(); drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, drive.STEP_BUDGET)
+  cm.sweeping = function() return true end
+  drive.bg_busy()
+  check(drive.budget_mode == "work" and drive.STEP_BUDGET == 0.016, "while the storage sweep goes on: 16 ms: " .. drive.budget_mode)
+  cm.sweeping = function() return false end
+  passes()
+  -- a bandmate's change whose copy keeps failing: 16 ms while it's retried
+  local bo4 = ev("Bo", 120)
+  put(THERE .. "/events/" .. bo4.id .. ".json", json.encode(bo4))
+  clock = clock + 200
+  local failing = passes({ [THERE .. "/events/" .. bo4.id .. ".json"] = true })
+  check(failing["work 16"], "a copy failing and retried: 16 ms: " .. words(failing))
+  clock = clock + 200; passes()
+  -- a big job: 60 of the bandmate's changes coming down at once
+  drive.BIG_BUDGET = 0.032 -- (as it would be once James OKs it)
+  for i = 200, 259 do local e = ev("Bo", i); put(THERE .. "/events/" .. e.id .. ".json", json.encode(e)) end
+  clock = clock + 200
+  mx = mx + 1
+  local big
+  for _ = 1, 20 do
+    clock = clock + 2
+    stand_in_worker()
+    drive.bg_busy()
+    drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, drive.STEP_BUDGET)
+    drive.bg_busy()
+    if drive.budget_mode:find("^big") then big = drive.budget_mode .. " " .. string.format("%g", drive.STEP_BUDGET * 1000); break end
+  end
+  check(big == "big 16", "a big job while you've just been working: 16 ms: " .. tostring(big))
+  -- (the worker busy with it meanwhile: no results, the round carries on)
+  mx = mx + 1; drive.bg_busy()
+  local at0 = drive.STEP_BUDGET
+  clock = clock + 5; drive.bg_busy()
+  local at5 = drive.STEP_BUDGET
+  clock = clock + 6; drive.bg_busy()
+  local at11, mode11 = drive.STEP_BUDGET, drive.budget_mode
+  cc = cc + 1; drive.bg_busy()
+  local edited = drive.STEP_BUDGET
+  clock = clock + 11; drive.bg_busy()
+  local away2 = drive.STEP_BUDGET
+  play = 1; drive.bg_busy()
+  local playing = drive.STEP_BUDGET
+  play = 0; drive.bg_busy()
+  local stopped = drive.STEP_BUDGET
+  mx = mx + 1; drive.bg_busy()
+  local moved_mouse = drive.STEP_BUDGET
+  check(at0 == 0.016 and at5 == 0.016, "a big job: 16 ms for the first 10 s after you last did something: " .. at0 .. " " .. at5)
+  check(at11 == 0.032 and mode11 == "big, away", "then drive.BIG_BUDGET while REAPER's stopped and untouched: " .. at11 .. " " .. mode11)
+  check(edited == 0.016, "back to 16 ms at once when the project changes: " .. edited)
+  check(away2 == 0.032 and playing == 0.016 and stopped == 0.032, "and when REAPER plays: " .. away2 .. " " .. playing .. " " .. stopped)
+  check(moved_mouse == 0.016, "and when the mouse moves: " .. moved_mouse)
+  drive.BIG_BUDGET = 0.016
+  clock = clock + 11; drive.bg_busy()
+  check(drive.STEP_BUDGET == 0.016, "left at its default, a big job stays at 16 ms even while you're away: " .. drive.STEP_BUDGET)
+  passes()
+  check(fs[HERE .. "/events/" .. ev("Bo", 259).id .. ".json"], "the big job came down")
+  clock = clock + 200; passes()
+  drive.bg_busy()
+  check(drive.STEP_BUDGET == 0.004, "and once it's done: back to 4 ms: " .. drive.budget_mode)
+  reaper.GetMousePosition, reaper.GetProjectStateChangeCount, reaper.GetPlayState = real[1], real[2], real[3]
+end
+
 -- ---- 3o. each end-of-session project read once, not every sweep (rt-drive2, round 5) ----
 -- The desktop: the sweep's plan of 34.8 ms was one 1.5 MB project read and scanned; Nostalgia's 13 are 19 MB, and every sweep read them again.
 setup()

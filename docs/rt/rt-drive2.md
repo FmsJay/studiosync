@@ -632,6 +632,38 @@ After this deploy the desktop's worker 57792 (old scripts, no version in its hea
 2. `workers.txt`: a new PID at the first job after the deploy, then the same one across restarts while the scripts stay the same.
 3. Any slow `submit`: `drive slow` shows which part.
 
+## Round 10 (a budget chosen each pass)
+
+James: "intensive when it needs to be and less when it doesn't, especially when fully getting a project from cloud". The fixed
+`drive.STEP_BUDGET = 0.016` is now set each pass by `drive.bg_busy()` (through `drive.choose_budget`). Live sync calls it just before it
+passes `drive.STEP_BUDGET` to `drive.bg_step`, so Live sync's logic didn't change.
+
+| Mode | When | Budget |
+|---|---|---|
+| `quiet` | no round; a short round of the rooms (this computer's new file); a full round that only looks (nothing moved, the last plan held no writes, no sweep, nothing failing) | `drive.QUIET_BUDGET` 4 ms |
+| `work` | the first full round since REAPER started, and its first plan; the storage sweep going on; a copy failing and retried; files moved this round; the last plan held writes | `drive.WORK_BUDGET` 16 ms |
+| `big` | a job that moved, or a plan that held, `drive.BIG_FILES` (50) files or more, or a full plan (200 writes / 64 MB): a song or room coming down whole, a media backlog, a big upload. Lasts 30 s after the last such job or plan | 16 ms |
+| `big, away` | `big`, while REAPER is stopped and the mouse position and project change count haven't moved for `drive.IDLE_AFTER` (10 s) | `drive.BIG_BUDGET` |
+
+- **`drive.BIG_BUDGET` is 0.016 by default.** James's OK was for 16 ms; set it to 0.032 once he confirms.
+- The idle check costs three calls a pass (`GetMousePosition`, `GetProjectStateChangeCount(0)`, `GetPlayState`) and is polled every pass, so
+  any activity drops the budget back at the next pass. Live sync still never plans during playback or recording.
+- The heavy signature check keeps a plan of its own, whatever the budget (as before).
+- **Exposed:**
+  - ExtState `drive budget`: `{at, mode, ms}`, written when the mode changes;
+  - perf `tick stats`: `drive_budget = [mode, ms]`;
+  - `drive status`: `budget = [mode, ms]` at each pass that reports.
+- **Test 3t:**
+  - the defaults;
+  - the first round (16 ms), then caught up (4 ms, and the ExtState);
+  - a round that only looks (4 ms);
+  - the sweep (16 ms);
+  - a copy failing (16 ms);
+  - a 60-file job coming down: 16 ms for the first 10 s, `BIG_BUDGET` once away, back to 16 ms at once on a project change, playback or
+    a mouse move;
+  - left at its default, a big job stays at 16 ms;
+  - back to 4 ms once it's done.
+
 ## Left / not done
 
 - **`trim.plan` itself** (lib/trim.lua, not mine) is 80-200 ms for a 2,500-change room with ~180 saved versions in Standard's window
