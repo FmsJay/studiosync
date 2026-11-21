@@ -795,8 +795,15 @@ local tools_memo, tools_said = {}, {}
 -- (planned, the update files' heavy steps one a plan, the code's hashes a few ms a plan: after the restart at 07:33 on the desktop the pass
 -- held REAPER 970 ms in one go, three full checks (band.signed_ok: the extension's SHA-256s, 77 ms, and every code file hashed in Lua, 191 ms)
 -- and every file read twice. Once one is spent, drivebg.NEED: the unit is planned again next pass, keeping what's done. rt-drive2, round 3)
-local heavy, tools_until = math.huge, math.huge
-local function heavy_step() if heavy <= 0 then error(require("drivebg").NEED, 0) end; heavy = heavy - 1 end
+local heavy, tools_until, heavy_by = math.huge, math.huge, math.huge
+-- (and only early in a plan: after the room's look in the same plan, 77 ms of check made a 118 ms and a 176 ms step on the desktop. rt-drive2,
+-- round 4)
+local function heavy_step()
+  if heavy <= 0 or reaper.time_precise() > heavy_by then error(require("drivebg").NEED, 0) end
+  heavy = heavy - 1
+end
+drive.HEAVY_BY = 0.004 -- s into a plan after which a heavy check waits for the next plan
+drive.plan_t0 = nil -- (drive.bg_step: when the plan being made began)
 -- The extension's check of a copy alone: lib/files.txt.sig over lib/files.txt, and every file it lists by SHA-256. -> its answer.
 function drive.verify(dir, key) local f = reaper.StudioSync_VerifyFiles; return f and f(band.norm(dir), key) or "" end
 -- band.code_files of `src`, hashed a few files a pass (planned): -> it, or nil while there are more to hash. Hashes from earlier passes count
@@ -841,6 +848,10 @@ end
 -- nil and why.
 -- Planned (lib/drivebg.lua): checked in local folders only (`from` itself, or the cloud's copy as the worker staged it), each differing file a
 -- copy step (from the staged copy that was checked, into the studio folder), and `to` checked again by the next look, not here.
+-- (a copy checked in full, then compared and its copies planned a few files a plan: { id, files, i, n, keep, copied }. Reading 150 files twice to
+-- compare them after the 77 ms check made the 176 ms step at 08:13:07 on the desktop. Its copies go in the jobs of those plans, lib/files.txt
+-- and its signature last, as before; a copy half across never checks as signed. rt-drive2, round 4)
+local sending
 local function send_tools_planned(from, to, key, dated)
   local c = C()
   local src = c.cloud(from) and (tools_memo[from] or {}).stage or from
@@ -848,26 +859,38 @@ local function send_tools_planned(from, to, key, dated)
   for _, f in ipairs(c.files(to, ".lua")) do if f:find("^StudioSync %- ") then code[#code + 1] = f end end
   for _, f in ipairs(c.files(to .. "/lib", ".lua")) do code[#code + 1] = "lib/" .. f end
   c.check() -- (and before the hashing: listings asked for after it would be out of date again by the time it's done, every time)
-  local now = code_now(src)
-  if not now then error(require("drivebg").NEED, 0) end
-  heavy_step()
-  hashing[src] = nil -- (used once: the next check hashes again)
-  local ok, why = band.signed_ok(src, key, now)
-  if not ok then return nil, why end
-  local files = drive.tools_files(band.read(src .. "/lib/files.txt"))
-  if not files then return nil, "its lib/files.txt names a file outside the copy" end
-  local cmp = c.cloud(to) and (tools_memo[to] or {}).stage or to -- (what `to` has now: the cloud's staged copy, if it has a signed one)
-  local n, keep, copied = 0, {}, {}
-  for _, rel in ipairs(files) do
-    keep[rel] = true
-    local a = band.read(src .. "/" .. rel)
-    if not a then return nil, "couldn't read " .. rel end
-    if (c.cloud(to) and cmp == to) or band.read(cmp .. "/" .. rel) ~= a then
-      if c.copy(src .. "/" .. rel, to .. "/" .. rel, false, false) then n = n + 1; copied[#copied + 1] = { from .. "/" .. rel, to .. "/" .. rel } end
-    end
+  local text = band.read(src .. "/lib/files.txt") or ""
+  local id = table.concat({ src, to, text, band.read(src .. "/lib/files.txt.sig") or "" }, "\0")
+  local s = sending
+  if not (s and s.id == id) then
+    sending = nil
+    local now = code_now(src)
+    if not now then error(require("drivebg").NEED, 0) end
+    heavy_step()
+    hashing[src] = nil -- (used once: the next check hashes again)
+    local ok, why = band.signed_ok(src, key, now)
+    if not ok then return nil, why end
+    local files = drive.tools_files(text)
+    if not files then return nil, "its lib/files.txt names a file outside the copy" end
+    s = { id = id, files = files, i = 1, n = 0, keep = {}, copied = {} }
+    sending = s
   end
-  if dated and #copied > 0 then require("drivebg").after(function() drive.date_like(copied) end) end
-  for _, rel in ipairs(code) do if not keep[rel] and c.remove(to .. "/" .. rel, nil, false) then n = n + 1 end end
+  local cmp = c.cloud(to) and (tools_memo[to] or {}).stage or to -- (what `to` has now: the cloud's staged copy, if it has a signed one)
+  while s.files[s.i] do
+    if reaper.time_precise() > tools_until then error(require("drivebg").NEED, 0) end
+    local rel = s.files[s.i]
+    s.keep[rel] = true
+    local a = band.read(src .. "/" .. rel)
+    if not a then sending = nil; return nil, "couldn't read " .. rel end
+    if (c.cloud(to) and cmp == to) or band.read(cmp .. "/" .. rel) ~= a then
+      if c.copy(src .. "/" .. rel, to .. "/" .. rel, false, false) then s.n = s.n + 1; s.copied[#s.copied + 1] = { from .. "/" .. rel, to .. "/" .. rel } end
+    end
+    s.i, read_n = s.i + 1, read_n + 1 -- (a file read: the back-off's something happening)
+  end
+  sending = nil
+  if dated and #s.copied > 0 then require("drivebg").after(function() drive.date_like(s.copied) end) end
+  local n = s.n
+  for _, rel in ipairs(code) do if not s.keep[rel] and c.remove(to .. "/" .. rel, nil, false) then n = n + 1 end end
   tools_memo[to] = nil
   return n
 end
@@ -905,8 +928,8 @@ drive.TOOLS_STEP = 0.008 -- s of hashing the update files' code a plan
 function drive.tools_pass(cfg, droot, now)
   if now - drive.tools_at < drive.EVERY then return end
   drive.tools_at = now
-  heavy, tools_until = math.huge, math.huge
-  if C().planned then heavy, tools_until = 1, reaper.time_precise() + drive.TOOLS_STEP end
+  heavy, tools_until, heavy_by = math.huge, math.huge, math.huge
+  if C().planned then heavy, tools_until, heavy_by = 1, reaper.time_precise() + drive.TOOLS_STEP, (drive.plan_t0 or reaper.time_precise()) + drive.HEAVY_BY end
   local key = band.studio_update_key(cfg.root)
   if not key then return end
   -- (a guest's computer never runs or syncs the studio's copy: lib/fromfolder.lua wanted)
@@ -951,7 +974,9 @@ function drive.bg_busy() return round ~= nil end
 function drive.bg_on() return require("drivebg").on() end
 function drive.bg_step(cfg, droot, song, rooms, budget)
   local J = require("drivebg")
+  local tp = reaper.time_precise()
   local r = J.poll()
+  local slow = { poll = reaper.time_precise() - tp } -- (each part's time, said when a plan is slow and perf stats is on)
   if J.busy() then return nil end
   local function done()
     local x = round
@@ -996,13 +1021,16 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
   local CM = require("cloudmodes")
   local read0, cm0 = read_n, CM.progress()
   J.begin(droot)
+  drive.plan_t0 = t0
   pcall(function()
     for _, u in ipairs(round.units) do
       if left() <= 0 or J.full() then break end
       if not u.done and not (u[1] == "upkeep" and rooms_left) then
         local saved = drive.tools_at
         local n0 = J.pending()
+        local tu = reaper.time_precise()
         local ok, a, b = J.unit(units[u[1]], u)
+        slow[u[1]] = (slow[u[1]] or 0) + reaper.time_precise() - tu
         if u[1] == "room" and J.pending() > n0 then room_wrote = true end -- (the open song's room planned writes)
         if not ok and J.is_need(a) then
           if u[1] == "tools" then drive.tools_at = saved end -- (asked again once the cloud's two files are read)
@@ -1016,7 +1044,16 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
       end
     end
   end)
+  local ts = reaper.time_precise()
   local sent = J.submit()
+  slow.submit = reaper.time_precise() - ts
+  -- (a plan over 50 ms, while perf stats is on: ExtState "drive slow" says which part, in ms. The desktop's 201 ms step at 08:25:58 couldn't
+  -- be told apart from outside. rt-drive2, round 4)
+  if reaper.time_precise() - tp > 0.05 and reaper.GetExtState(band.SECTION, "perf stats") == "1" then
+    local ms = {}
+    for k, v in pairs(slow) do ms[k] = math.floor(v * 10000 + 0.5) / 10 end
+    pcall(reaper.SetExtState, band.SECTION, "drive slow", band.json_encode({ at = os.time(), total = math.floor((reaper.time_precise() - tp) * 10000 + 0.5) / 10, ms = ms }), false)
+  end
   if sent then round.jobs = round.jobs + 1 end
   -- (copied: the open song's rooms done, none of them planning a write now; a plan is only made with no job out, so every copy they planned
   -- has come back. Not the sweep (rt-drive2: waiting for it kept "still copying" up for good), nor the other songs and the update files, nor a
@@ -1036,14 +1073,18 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
     -- the storage sweep waiting for listings after "up to date": said at 05:34, 05:49 and 06:10 on the desktop with the copy up to date.
     -- rt-drive2, round 2)
     local behind = not round.told or round.moved > 0 or next(round.failing) ~= nil
+    local stuck = next(round.failing)
+    stuck = stuck and (" (" .. tostring(stuck:match("[^/]+$")) .. " keeps failing)") or ""
     if not drive.rest_said and behind then
       drive.rest_said = true
-      band.log(drive.label(drive.service_of(droot)) .. " copy: nothing is moving though it isn't up to date, so it tries again every " ..
+      band.log(drive.label(drive.service_of(droot)) .. " copy: nothing is moving though it isn't up to date" .. stuck .. ", so it tries again every " ..
         math.floor(drive.EVERY / 60) .. " minutes rather than every pass")
     end
     local x = round
     round = nil
-    return x.moved, behind, x.err
+    -- (a rest is never "more": Live sync said "bringing the studio's copy of this room up to date" for it, at 08:21:42 on the desktop with no
+    -- edit. Not up to date, it's said as the pass's error instead, which Health shows. rt-drive2, round 4)
+    return 0, false, behind and ("nothing moved for a while" .. stuck .. "; it tries again in " .. math.floor(drive.EVERY / 60) .. " minutes") or x.err
   end
   -- ("up to date" said once, with the files moved since it was last said; a room looked at again stays "up to date" unless it moves some)
   if copied and (not round.told or round.moved > 0) then

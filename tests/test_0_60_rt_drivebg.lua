@@ -327,10 +327,12 @@ logs = {}
 for _ = 1, 250 do
   clock = clock + 2
   stand_in_worker()
-  local m, more = drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008)
-  if m and not rest_at then rest_at, rest_ret = clock, { m, more } end
+  local m, more, err = drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008)
+  if m and not rest_at then rest_at, rest_ret = clock, { m, more, err } end
 end
-check(rest_at and rest_ret[1] == 0 and rest_ret[2] == true, "it rested, saying 0 moved and more to do")
+-- (round 4: a rest is never "more", which Live sync logs as "bringing ... up to date"; not up to date, it says why as the pass's error)
+check(rest_at and rest_ret[1] == 0 and rest_ret[2] == false and tostring(rest_ret[3]):find("nothing moved", 1, true), "it rested, saying 0 moved and why: " ..
+  tostring(rest_ret[2]) .. " " .. tostring(rest_ret[3]))
 local first = #plan_at
 for i, t in ipairs(plan_at) do if t > rest_at then first = i - 1; break end end
 check(first == drive.STALL + 1, "planned " .. drive.STALL .. " times after its other units finished, then stopped: " .. first)
@@ -439,24 +441,28 @@ local function rest_run(k, fail)
   cm.sweeping = function() return true end
   cm.progress = function() return math.min(calls, k + 6) end -- (the sweep moves on for a while, then waits)
   logs = {}
-  local told, rest_more, said = false, nil, 0
+  local told, rest_more, said, rest_err = false, nil, 0, nil
   for _ = 1, 150 do
     clock = clock + 2; stand_in_worker(fail)
     local was = drive.bg_busy()
-    local m, more = drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008)
+    local m, more, err = drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008)
     if m and not more then told = true end
-    if was and not drive.bg_busy() then rest_more = more; break end
+    if was and not drive.bg_busy() then rest_more, rest_err = more, err; break end
   end
   for _, s in ipairs(logs) do if s:find("nothing is moving", 1, true) then said = said + 1 end end
-  return told, rest_more, said
+  return told, rest_more, said, rest_err
 end
 for k = 0, 20 do
-  local told, rest_more, said = rest_run(k)
-  check(told and rest_more == false and said == 0, "rested after up to date, offset " .. k .. ": told " .. tostring(told) .. ", rest says more " ..
+  local told, rest_more, said, rest_err = rest_run(k)
+  check(told and rest_more == false and rest_err == nil and said == 0, "rested after up to date, offset " .. k .. ": told " .. tostring(told) .. ", rest says more " ..
     tostring(rest_more) .. ", said " .. said)
 end
-local _, fail_more, fail_said = rest_run(4, { [HERE .. "/events/" .. ev("James", 80).id .. ".json"] = true })
-check(fail_more == true and fail_said == 1, "a copy that keeps failing: not up to date, said once: " .. tostring(fail_more) .. " " .. fail_said)
+local _, fail_more, fail_said, fail_err = rest_run(4, { [HERE .. "/events/" .. ev("James", 80).id .. ".json"] = true })
+check(fail_more == false and tostring(fail_err):find(ev("James", 80).id .. ".json keeps failing", 1, true) and fail_said == 1,
+  "a copy that keeps failing: said once, and as the pass's error naming it, never as more: " .. tostring(fail_more) .. " " .. tostring(fail_err) .. " " .. fail_said)
+local fail_line = ""
+for _, s in ipairs(logs) do if s:find("nothing is moving", 1, true) then fail_line = s end end
+check(fail_line:find("keeps failing", 1, true), "and the log names it: " .. fail_line)
 
 -- ---- 3h. "bringing the studio's copy ... up to date" only for a round with something to send (rt-drive2, round 2) ----
 -- The desktop logged it at the first job of most rounds (every 30 s to 3 minutes), the round then sending nothing. Live sync logs it when a
@@ -538,7 +544,7 @@ do
     put(dir .. "/lib/band.lua", 'band.VERSION = "' .. v .. '"'); lines[#lines + 1] = "sha256 " .. ("1"):rep(64) .. " lib/band.lua"
     for i = 1, 99 do
       local p = string.format("lib/m%02d.lua", i)
-      put(dir .. "/" .. p, "-- module " .. i .. " of " .. v); lines[#lines + 1] = "sha256 " .. ("2"):rep(64) .. " " .. p
+      put(dir .. "/" .. p, "-- module " .. i .. " of " .. v .. (i == 99 and ("x"):rep(5000) or "")); lines[#lines + 1] = "sha256 " .. ("2"):rep(64) .. " " .. p
     end
     put(dir .. "/lib/files.txt", table.concat(lines, "\n") .. "\n"); put(dir .. "/lib/files.txt.sig", "good " .. v)
   end
@@ -550,7 +556,7 @@ do
   band.version_on_disk = function(dir) return (fs[dir .. "/lib/band.lua"] or ""):match('VERSION = "([^"]+)"') end
   local function sig_ok(dir) return (fs[dir .. "/lib/files.txt.sig"] or ""):match("^good ") ~= nil end
   drive.verify = function(dir) clock = clock + 0.077; return sig_ok(dir) and ("ok " .. band.version_on_disk(dir) .. "\n") or "no" end
-  band.code_hash = function(s) clock = clock + 0.002; return tostring(#s) end
+  band.code_hash = function(s) clock = clock + (#s > 1000 and 0.02 or 0.002); return tostring(#s) end -- (a big one, band.lua's size: 20 ms)
   band.signed_ok = function(dir, key, now) -- (as band.lua's: the extension's check, then every code file hashed unless given)
     clock = clock + 0.077
     if not now then for _, f in ipairs(band.files(dir .. "/lib", ".lua")) do band.code_hash(fs[dir .. "/lib/" .. f]) end end
@@ -558,6 +564,11 @@ do
   end
   package.loaded.fromfolder = { target = function() return HT end, at_least = function(a, b) return tostring(a) >= tostring(b) end }
   package.loaded.groups = { role = function() return "owner" end, trusted = function() return {} end }
+  -- (round 4: the room's look costs 30 ms in a plan, and reading an update file to compare 0.2 ms: the desktop's 118 and 176 ms steps were the
+  -- 77 ms check after the room's look, and the check followed by reading 150 files twice)
+  local real_mirror, real_read = drive.mirror, band.read
+  drive.mirror = function(...) clock = clock + 0.03; return real_mirror(...) end
+  band.read = function(p) if p:find("_tools/studiosync/", 1, true) or p:find("/stage/", 1, true) then clock = clock + 0.0002 end; return real_read(p) end
   logs = {}
   local worst, out_at = 0, nil
   for i = 1, 3000 do
@@ -568,10 +579,11 @@ do
     if (fs[CT .. "/lib/files.txt.sig"] or "") == "good 0.60.5" then out_at = i; break end
   end
   band.studio_update_key, band.version_on_disk, band.signed_ok, band.code_hash, package.loaded.fromfolder, package.loaded.groups = table.unpack(saved)
+  drive.mirror, band.read = real_mirror, real_read
   local said = false
   for _, s in ipairs(logs) do if s:find("0.60.5 is in the ", 1, true) then said = true end end
   check(out_at and said and fs[CT .. "/lib/m42.lua"] == "-- module 42 of 0.60.5", "the owner's new version went out, whole: " .. tostring(out_at))
-  check(worst <= 0.077 + 0.015, string.format("no plan over one extension check and a few ms of hashing (worst %.0f ms)", worst * 1000))
+  check(worst <= 0.077 + 0.012, string.format("no plan over one extension check and a few ms (worst %.0f ms)", worst * 1000))
 end
 
 -- ---- 3k. each change read and parsed once after a start, for the copy and the storage sweep both (rt-drive2, round 3) ----
@@ -587,6 +599,57 @@ band.read_json = real_rj
 local twice, n = 0, 0
 for _, k in pairs(parsed) do n = n + 1; if k > 1 then twice = twice + 1 end end
 check(n >= 39 and twice == 0 and ext["cloud storage"], "every change parsed once though the copy and the sweep both used it: " .. twice .. " of " .. n)
+
+-- ---- 3l. the sweep steps on when the round's other units leave it almost no time (rt-drive2, round 4) ----
+-- The desktop, 08:13-08:21: the sweep's turn came at the end of plans whose other units had used the time; a turn that stopped before its first
+-- step (a saved version not read, a trim plan not started, a file not counted) made no progress, the round rested at 08:21:42 and the sweep
+-- ended three minutes later. Stand-in: the other song uses 7.5 of the plan's 8 ms every plan while the sweep goes on, and listing the room's
+-- saved versions here costs 1 ms.
+setup()
+for i = 1, 3 do put(HERE .. "/recall/James-2026110" .. i .. "-010101Z.json", json.encode({ time = "2026-11-0" .. i .. "T01:01:01Z", keep = true })) end
+drive, bg, cm = fresh()
+cm.settings_for = function() return cm.clean({ mode = "everything" }) end
+drive.upkeep = function() clock = clock + 0.0075; return 0, cm.sweeping() end
+local real_files = band.files
+band.files = function(dir, e) if dir == HERE .. "/recall" then clock = clock + 0.001 end; return real_files(dir, e) end
+local swept = false
+for _ = 1, 400 do
+  clock = clock + 2; stand_in_worker()
+  drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008)
+  if ext["cloud storage"] and not drive.bg_busy() then swept = true; break end
+end
+band.files = real_files
+check(swept and drive.rest_until == -math.huge, "the sweep finished in the round, never resting: " .. tostring(swept) .. " " .. tostring(drive.rest_until))
+
+-- ---- 3m. a slow plan names its parts while perf stats is on (rt-drive2, round 4) ----
+setup()
+drive, bg, cm = fresh()
+cm.tick, cm.sweeping = function() end, function() return false end
+local real_mirror2 = drive.mirror
+drive.mirror = function(...) clock = clock + 0.06; return real_mirror2(...) end
+ext["perf stats"], ext["drive slow"] = "1", nil
+for _ = 1, 3 do clock = clock + 2; stand_in_worker(); drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008) end
+ext["perf stats"] = nil
+local ds = ext["drive slow"] and json.decode(ext["drive slow"])
+check(ds and ds.total >= 60 and ds.ms.room >= 60, "ExtState drive slow: " .. tostring(ext["drive slow"]))
+
+-- ---- 3n. the end-of-session project at a REAPER restart (rt-drive2, round 4) ----
+-- The desktop, 08:07:58: "couldn't save the end-of-session project to Google Drive: the project has never been saved", of a saved project,
+-- as REAPER closed it (the tab gave no file any more).
+do
+  setup()
+  drive, bg, cm = fresh()
+  package.loaded.sessionfile = nil
+  local sf2 = require("sessionfile")
+  put("/S/Song/Song.rpp", "<REAPER_PROJECT>")
+  band.project_file = function(root, song) return root .. "/" .. song .. "/" .. song .. ".rpp" end
+  local _, why = sf2.export({}, CFG, { song = "Song", room = "main" }, "/C", HERE)
+  check(tostring(why):find("REAPER was closing the project", 1, true), "a saved project being closed: said so: " .. tostring(why))
+  band.project_file = function() return "" end
+  _, why = sf2.export({}, CFG, { song = "Song", room = "main" }, "/C", HERE)
+  check(why == "the project has never been saved", "one never saved: as before: " .. tostring(why))
+  band.project_file = nil
+end
 
 -- ---- 4. the real worker scripts ----
 os.remove, os.rename = real_remove, real_rename

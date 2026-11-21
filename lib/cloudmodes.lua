@@ -96,7 +96,7 @@ local memo = setmetatable({}, { __mode = "k" }) -- (records list -> { [points/cu
 -- room took 331 ms in one go on REAPER's thread on the desktop (more in a test). While `plan_until` is set, a plan not made yet isn't started
 -- after it: cm.LATER, and the sweep carries on next pass from the plans already made. rt-drive2)
 cm.LATER = setmetatable({}, { __tostring = function() return "cloud storage: carries on next pass" end })
-local plan_until
+local plan_until, plan_made -- (and whether this pass made one: one always may be, or a pass whose time went before it made none, ever. rt-drive2, round 4)
 local progress = 0 -- (steps the sweep has made: drive.bg_step's back-off counts them as something happening)
 function cm.progress() return progress end
 local function dropped(evs, points, cutoff, tag)
@@ -104,13 +104,13 @@ local function dropped(evs, points, cutoff, tag)
   memo[evs] = m
   local k = tag .. "\0" .. cutoff
   if not m[k] then
-    if plan_until and reaper.time_precise() > plan_until then error(cm.LATER, 0) end
+    if plan_until and plan_made and reaper.time_precise() > plan_until then error(cm.LATER, 0) end
     -- (trim.plan only ever takes changes older than `cutoff`: with none, nothing, and no plan. Its saved versions' part was 80-200 ms a room
     -- in Standard's window, for no ids at all in a studio younger than the window)
     local old, ids = false, {}
     for _, e in ipairs(evs) do if type(e.time) == "string" and e.time < cutoff then old = true; break end end
     if old then for _, id in ipairs(require("trim").plan(evs, points, cutoff)) do ids[id] = true end end
-    m[k], progress = ids, progress + 1
+    m[k], progress, plan_made = ids, progress + 1, true
   end
   return m[k]
 end
@@ -229,15 +229,15 @@ local function read_events(dir, room, deadline, twin)
   return out
 end
 local function read_points(dirs, deadline) -- (-> nil once `deadline` has passed with some unread: those read are kept)
-  local out, seen = {}, {}
+  local out, seen, read_one = {}, {}, false -- (one read each call at least: rt-drive2, round 4)
   for _, dir in ipairs(dirs) do
     for _, f in ipairs(C().files(dir, ".json")) do
       if not seen[f] then
         seen[f] = true
         local p = dir .. "/" .. f
         if pts[p] == nil then
-          if deadline and reaper.time_precise() > deadline then return nil end
-          progress = progress + 1
+          if deadline and reaper.time_precise() > deadline and read_one then return nil end
+          progress, read_one = progress + 1, true
           local j = C().read_json(p)
           pts[p] = type(j) == "table" and type(j.time) == "string" and { time = j.time, keep = j.keep, label = j.label, file = f } or false
           if pts[p] then
@@ -372,7 +372,7 @@ local function room_pass(sw, cfg, droot, song, room, deadline)
     if not points then return nil end
     C().check() -- (planned: the cloud's saved versions read before anything is judged by them)
     local all, cloud = sg.all[room] or {}, sg.cloud[room] or {}
-    plan_until = deadline
+    plan_until, plan_made = deadline, false
     local ok, ju, jc = pcall(function()
       local u = cm.judge(room, all, sg.all, points, sw.cutoff)
       -- (the cloud copy has every change of the room: judged the same, so its plans aren't made twice)
@@ -405,8 +405,13 @@ local function room_pass(sw, cfg, droot, song, room, deadline)
     sw.cur = cur
   end
   local user, is_owner = cfg.user, sw.is_owner
+  -- (a few files each pass, one at least: on the desktop the room's other units used the pass's time before the sweep's turn, so for minutes
+  -- every turn of the sweep stopped before its first step, the round rested at 08:21:42 with "bringing ... up to date", and the sweep ended
+  -- three minutes later. rt-drive2, round 4)
+  local first = true
   while cur.work[cur.i] do
-    if reaper.time_precise() > deadline then return nil end
+    if not first and reaper.time_precise() > deadline then return nil end
+    first = false
     local sub, f, inL, inC = table.unpack(cur.work[cur.i])
     local cpath = there .. "/" .. sub .. "/" .. f
     local bytes = size_of(inL and (here .. "/" .. sub .. "/" .. f), cpath)
@@ -441,15 +446,19 @@ local function sessions_pass(sw, droot, song, user, deadline)
     sw.cur = cur
   end
   local used = cur.used
+  local first = true
   while cur.rpps[cur.i] do
-    if reaper.time_precise() > deadline then return nil end
+    if not first and reaper.time_precise() > deadline then return nil end
+    first = false
     local f = cur.rpps[cur.i]
     local age = cm.stamp_time(f)
     local tier = (age ~= "" and age >= sw.cutoff) and "recent" or "other"
     local p = sdir .. "/" .. f
     local text = rpp_text[p] or C().read(p) -- (read here, one a step: 13 of them read at once were 100 ms)
     C().check()
-    rpp_text[p] = text
+    -- (kept only on REAPER's thread's way, where reading it meant the cloud drive; planned, the worker's copy is a local file: Nostalgia's 13
+    -- projects were 19 MB kept in Live sync's memory for good)
+    if not C().planned then rpp_text[p] = text end
     require("sessionfile").each_file(text or "", function(path)
       local k = path:match("^media/(.+)$")
       if k then

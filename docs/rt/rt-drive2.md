@@ -219,6 +219,85 @@ a job holds): one "bringing", one "up to date (250)". The round-2 code says "bri
    back near rt-perfcut3's 7 ms.
 3. An edit: "Google Drive copy up to date (1 file this pass)" alone. A big copy: one "bringing" line first.
 
+## Round 4 (the round 12 measurement on 0.59.49.83, after a restart at 08:08:50)
+
+### 1. Drive steps over 100 ms: 118 ms (08:12:08 window), 176 ms (08:13:07), 201 ms (08:25:58)
+
+- **118 ms and 176 ms: the update-files unit.** The 77 ms extension check ran in a plan that had already spent its time.
+  - Hashing the code (8 ms a plan) ends on whichever file it's on, and band.lua and mirror.lua are ~200 KB each: ~20 ms in Lua. The heavy
+    check then ran in the same plan.
+  - At 08:13:07 the full check was followed in the same plan by reading all 150 files twice to compare them (4 MB each side).
+- **Fix:**
+  - A heavy check only runs in the first 4 ms of a plan (`drive.HEAVY_BY`, from `drive.plan_t0`). Otherwise `drivebg.NEED`, and the next
+    plan does it first.
+  - After the full check passes, the copy is compared and its copies planned a few files a plan (`sending`, `drive.TOOLS_STEP`), in those
+    plans' jobs. lib/files.txt and its signature still go last, so a copy half across never checks as signed.
+  - Each update-files plan is now the 77 ms check alone, or a few ms. The check itself is one call to the extension and can't be split.
+- **201 ms at 08:25:58: not identified.** It was the end of the round, a minute after the sweep, right after the undo's copy.
+  - From outside it can't be told which part it was. Probes on REAPER's thread: listing parses 1-5 ms, the room folders' listings 2.5-4.7
+    ms, `drive.root`'s look 0.6 ms, and the change files are small.
+  - **Added:** with perf stats on, a plan over 50 ms writes ExtState `drive slow` = { at, total, ms = { poll, room, upkeep, tools, cm, submit } }.
+    The next one names its part.
+  - One suspect is reduced anyway: the sweep kept every end-of-session project's text in Live sync's memory for good (Nostalgia's 13 are
+    19 MB). Planned, it now reads them from the worker's local copy each sweep and doesn't keep them. A smaller heap means shorter
+    garbage-collection steps, which land in whichever lap allocates.
+
+### 2. The first sweep took 16 minutes, not ~8
+
+**Why the halving didn't show.**
+- Parsing was never most of it. The work after a restart is ~2.6 s of CPU in all:
+  - the copy reading two songs' changes, ~1.4 s;
+  - the sweep counting ~7,000 files, judging and scanning the end-of-session projects, ~1 s;
+  - the update files' hashes, ~0.2 s.
+- At 8 ms a plan and 5 plans per 10 s that's ~11 minutes at least.
+- The units also run in order within a plan, and the sweep gets only what's left. While the other song is read (≥ 4 ms a plan), or the
+  room has its 30 s look (35-55 ms), the sweep gets nothing.
+- That's the 37-122 ms per 10 s: the 8 ms a plan, plus the room's looks, listing parses and single large changes.
+
+**And three of the 16 minutes were a rest.**
+- From 08:21:42 to 08:24:44 nothing ran (the lap dropped to 0.1 at 08:21:50), and the sweep finished in the next round (08:24:50).
+- The rest came because the sweep's turns were starting with less time than one step needed: a saved version not read, a trim plan not
+  started, a file not counted. Ten turns with no progress, and the back-off rested.
+- **Fix (`cloudmodes.lua`):** every turn makes at least one step: one saved version read, one trim plan made, one file counted, one
+  end-of-session project scanned. The sweep keeps moving however little time its turn gets.
+
+To finish sooner than ~11 minutes would need more than 8 ms a plan for this background work. That's a choice for James, not a bug.
+
+### 3. "Bringing ... up to date" at 08:21:42 with no edit
+
+- That line was the rest. The rest reported `more = behind`, and behind was true: a copy kept failing (which one isn't known; it was never
+  logged, so most likely a move). Live sync logs "bringing" when a result says `more` after one that didn't.
+- **Fix:** a rest is never `more`.
+  - Not up to date, it returns `0, false` and an error, "nothing moved for a while (X keeps failing); it tries again in 3 minutes". Health
+    shows it as the last pass failing.
+  - The log line names the failing file too: "nothing is moving though it isn't up to date (X keeps failing), ...".
+
+### 4. "Couldn't save the end-of-session project to Google Drive: the project has never been saved" (08:07:58)
+
+- **Wrong.** The project is saved. Live sync's end of session ran as REAPER closed (it restarted at 08:08:13), and a tab being closed gives
+  no file name, so `sessionfile.export` took it for an unsaved project.
+- It now says "REAPER was closing the project, so there was no file to copy (the saved version is kept)" when the song's own project file
+  is known and on disk. "Never been saved" is kept for a project that really has no file.
+- Quieting the line entirely would mean changing Live sync's `end_of_session` (outside my lines). The saved version itself was kept.
+
+### Tests (each fails without its fix, checked)
+- **3c/3g (updated):** a rest returns `more = false`, with the error when not up to date. A failing copy is named in the error and in the
+  log line. Round 3's code returned `more` (3c: "true nil").
+- **3j (tightened):** the room's look costs 30 ms in a plan, an update file read 0.2 ms, and one code file 20 ms. No plan goes over one
+  extension check + 12 ms. Without the early-plan rule: 105 ms. Without the spread compare: 119 ms.
+- **3l:** the other song uses 7.5 of the plan's 8 ms every plan, and listing the room's saved versions costs 1 ms. The sweep finishes in
+  the round, never resting. With round 3's cloudmodes it rests.
+- **3m:** a 60 ms plan with perf stats on writes `drive slow` naming the room.
+- **3n:** a saved project being closed says so; one never saved says "never been saved". Round 3's sessionfile says "never been saved"
+  for both.
+
+### REAPER checks after deploy (desktop, after a restart)
+1. With perf stats on: no drive step over ~90 ms. If one is, ExtState `drive slow` names its part.
+2. No "bringing the studio's copy ..." line without a "Google Drive copy up to date" after it. A rest shows in Health as the last pass
+   failing, with the file.
+3. `cloud storage` within ~11-12 minutes of the restart, with no 3-minute pause in the drive lap before it.
+4. At REAPER's exit: "REAPER was closing the project ...", not "never been saved".
+
 ## Left / not done
 
 - **`trim.plan` itself** (lib/trim.lua, not mine) is 80-200 ms for a 2,500-change room with ~180 saved versions in Standard's window

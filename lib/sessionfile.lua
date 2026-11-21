@@ -117,7 +117,13 @@ function sessionfile.export(proj, cfg, b, droot, room_dir)
     if not p then break end
     if p == proj then path = f end
   end
-  if not path or path == "" then return nil, "the project has never been saved" end
+  if not path or path == "" then
+    -- (REAPER closing the tab gives it no file any more: at a REAPER restart on the desktop, 08:07:58, this said "never been saved" of a saved
+    -- project. The saved version is kept either way; only the plain-REAPER copy in the cloud is missed. rt-drive2, round 4)
+    local known = band.project_file and band.project_file(cfg.root, b.song) or ""
+    if known ~= "" and reaper.file_exists(known) then return nil, "REAPER was closing the project, so there was no file to copy (the saved version is kept)" end
+    return nil, "the project has never been saved"
+  end
   local projdir = path:gsub("\\", "/"):match("^(.*)/")
   -- a copy as it is now, next to it (so relative paths read the same); the open project and its file are untouched
   local tmp = projdir .. "/.bandsync-session-copy.rpp"
