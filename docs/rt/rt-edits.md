@@ -738,3 +738,145 @@ and Health showing no mismatch.
   files are signed since rt-linkmove.
 - Fix V: `follow_claims` still folds only a file that passes `given_ok` (a giver who may, written by their computer). The link's copy
   is never folded.
+
+## Round 5 (rt-edits2, finishing rt-edits' cut-off round)
+
+Seven items from backlog 1, each with a fixture test in `tests/test_0_60_rt_edits.lua` that fails without its fix (each fix was switched
+off in turn and its test failed). rt-edits had items 1 to 3 written, uncommitted, when it stopped; they were kept as they were, checked
+and finished (items 2's stuck case and Restore, below). Files: `lib/sync.lua`, `lib/undo.lua`, `lib/mirror.lua`,
+`tests/fixtures/editreaper.lua`, the test, and one line in `StudioSync - Live sync.lua` (rt-edits' own: `edited_at = changed_at` in
+P.look's `mirror.watch` call).
+
+**W. A timeline edit made right after updating** (`sync.watch_timeline`). A last-look note in an older `TIMELINE_FORMAT` read as a first
+look, so a marker or tempo change made between the old version's last look and the new one's first was taken in and never sent. Now the
+older note is compared first (`sync.timeline_unsent`: the tempo map, and each marker's kind, place, end and name, which both formats hold).
+If they differ, the note stays and the change goes out as any change does. If nothing differs, it's a first look, as before. A tempo map
+that reads differently counts as a change (its fields haven't changed since format 4). Test: "Edits update" (nothing changed: no event;
+a marker: one event, reaches the desktop; a tempo change: likewise). This only matters on an update that bumps `TIMELINE_FORMAT`.
+
+**X. Undo of an act that is only a timeline change** (`mirror.last_mine`, `mirror.last_undo`, `lib/undo.lua`). A marker added and nothing
+else was stepped over, and Undo took back the edit before it.
+- Rule: a tempo map or marker change of yours is a change for Undo when it's the whole act. One sent with an act's items still goes back
+  with them (fix G, `sync.act_timeline`); it's passed over once its items are undone. One sent in a later pass than some of its act's items
+  is taken from those items, so the act goes back as one step.
+- Undo of one: `sync.undo_timeline` takes back what it added and brings back what it took away. A bandmate's markers since stay. Redo
+  puts it on again.
+- Nothing left to take back (a bandmate removed the marker, or changed the map since): every press stopped there before. Now Undo says
+  "The tempo map or markers have changed since: nothing was taken back. Undo again goes to your change before it." The change is noted in
+  the project (`undo passed`, the last 20) and passed over from then on, on this computer.
+- A Restore's timeline event now carries `restored` (`sync.restore_timeline`) and isn't a change Undo steps back, as a restored object
+  isn't.
+- Test: "Edits marker undo" (marker alone: undo, redo, undo, then the edit before it; a marker and an item as one act, both ways; a marker
+  the laptop removed: one press says so, the next undoes the edit before; Undo after a Restore).
+
+**Y. One act, one step, across looks** (`mirror.watch`, `mirror.last_act`). A script's edit to unselected items on two tracks is found
+one track now and the other within 10 s (the quick look's hints), and a plug-in chain goes once it holds still: each was its own act.
+- Rule: what a look finds while you haven't edited since the last look that sent something is the rest of that look's act, for up to
+  `ACT_KEEP` (70 s, past the next full look). "Edited" is Live sync's change count without its own writes (`opts.edited_at`). Without it
+  (the panel, Undo), nothing changes.
+- An Undo, Redo or Restore (`mirror.revert`) ends it: what the next look finds isn't the rest of the act before.
+- Test: "Edits acts" (two tracks found 4 s apart, no edit between: one act, one Undo; an edit between: two acts; past ACT_KEEP: two).
+
+**Z. Heal's changes made undo points on top of the person's list** (`mirror.keep_order`, `mirror.heal`).
+- What REAPER allows: every undo point is a snapshot of the project. There is no way to change the project without its state landing in
+  some point. With no block, the heal's changes go into the person's next point, and REAPER's Undo of that edit undoes the heal too.
+  API calls that make their own point (`ReorderSelectedTracks` makes "Change track order", one per track moved) do so unless they run inside
+  an undo block.
+- Chosen: one point per heal, named "StudioSync: the studio's track order" or "StudioSync: changes that hadn't arrived here". Ctrl+Z on a
+  "StudioSync" point is StudioSync's Undo of your own last change (`undo.native`), so the heal is skipped harmlessly, as a bandmate's
+  landed change already is. Before, "Change track order" on top read as your own edit: Ctrl+Z went to REAPER's Undo, which undid the heal,
+  and the next look sent that as your move. `mirror.heal` opens its block only once it changes something, and always closes it.
+- The fixture now keeps REAPER's undo points when a test asks (`F.undos`): a block is one point under its name, and a reorder outside one
+  is "Change track order". Test: "Edits order" (the order heal: one StudioSync point, no "Change track order"; a catch-up: one; a heal
+  that changes nothing: none).
+- Left: REAPER's own Edit > Undo (not the bound Ctrl+Z) still undoes a heal's point, as it does a landed change.
+
+**AA. Claims: deleting several claimed things at once asks** (`W.gone`). A deletion of someone else's claimed item or track went
+straight to the older suggestion (`propose`): put back at once, nobody asked.
+- Now it asks first, through the same `opts.ask` as an edit (`claimask.hold`). While the ask waits, the deletion is held: still gone
+  here, nothing sent, the band's changes to it waiting (`unsent`). A held track's plug-ins, automation and sends wait with it.
+- Release: the deletion goes out on a later look. Keep, or no answer: put back with the claimer's words, the track whole.
+- One ask per claim, however many of its things went (claimask keys asks by claim). Where no ask applies (Driver only, Admins only, an
+  older StudioSync), the suggestion path stays as it was.
+- The dead `room_mode == "claims"` code in `W.refuse` (the bar's "Claim it") is gone; `sync.put_back` is no longer passed a claim.
+- Test: "Edits ask" (two items and a track deleted at once: asked, held for two looks, no suggestion; Keep: all back, the log says why,
+  the laptop unchanged; again, then Release: the deletions reach the laptop).
+
+**AB. A note moved and resized at once by two people** (`moved_twice`, `merge_midi`). Closed.
+- A note pairs with its moved copy by channel, length and velocity. A resize changes the length, so a moved-and-resized note never paired
+  and stayed doubled.
+- Now what that leaves unpaired is paired again by channel and velocity alone, on the same rule: the loser removed exactly as many of that
+  kind as it added, in order of time, then pitch.
+- Why that's as safe as the first pass: the risk is the same one the first pass already takes. A note deleted and another drawn in its
+  place, of the same channel and velocity, reads as that note moved. Its copy is left out only where the winner changed the deleted note
+  too, and the loser is told, with Use mine. A note whose velocity changed as well still isn't paired, and still doubles.
+- Test: the last merge block (moved and resized against a move; both moved and resized; the other way round; a note taken away and another
+  of another velocity drawn: both stand).
+
+**AC. A member releasing a claim given to them** (`sync.set_claims`, `sync.authority`, `sync.follow_claims`).
+- The panel's path (a chip's x: their claims less that one, through `set_claims`) works once the given claim is folded in. Two things
+  undid it:
+  - **Others still counted it.** A computer that still read the given file counted it. That's one Syncthing hadn't told of the removal
+    yet, or one holding the direct link's copy for its minute (`signed.GIVEN_KEEP`). Now `set_claims` notes what you let go of, and when, in
+    your claims file (`dropped`, lasting claims only, kept 7 days). `sync.authority` passes over a given claim for you dated before
+    that. Claimed again, or given again later, it counts.
+  - **The fold re-dated it.** Folding a given claim made it today's (the comment said "dated as given"; the code didn't). So a driver's
+    release (`released/`) made between the gift and the fold was undone by the fold. Now a folded claim keeps the date it was given, and the
+    fold leaves out what a `released/` stamp or your own `dropped` came after. The released stamp and the folded claim agree.
+- Test: "Edits given" (folded with the given date; released from the panel; a computer still reading the given file doesn't count it; the
+  file folded again doesn't bring it back; a new gift counts; a driver's release before the fold holds after it).
+- Left: in the seconds between the link's copy and Syncthing's file on the member's own computer, the claim isn't in their own file. The
+  chip's release then has nothing to remove, and the claim stays until they release it again after the fold. See question 1.
+
+### Round 5 REAPER checks
+
+Same setup as above (Cross Test, desktop, laptop, LinuxBox on this build).
+
+35. **Undo of a marker alone (X):** on the desktop mute an item, then add a marker by itself. Wait for both on the others. One StudioSync
+    Undo: the marker is gone on all three and the item stays muted. Redo: the marker is back. Undo again, then Undo once more: the item
+    unmutes. Then add a marker, delete it on the laptop, and press Undo on the desktop. You see "...changed since: nothing was taken back.
+    Undo again goes to your change before it". The next Undo takes back your edit before it.
+36. **One act across looks (Y):** run a script on the desktop that, with nothing selected, mutes one item on XT Drums A and one on XT Rec A
+    (`SetMediaItemInfo_Value(it, "B_MUTE", 1)` on both, then `UpdateArrange()`). Their two events in `rooms/main/events/` carry the same
+    `act`, even when their times differ by seconds. One StudioSync Undo unmutes both on all three.
+37. **Heal undo points (Z):** make the track order differ on the laptop (as step 32) and wait for "N track(s) put in the studio's order".
+    REAPER's Edit menu reads "Undo StudioSync: the studio's track order", not "Change track order". Ctrl+Z then undoes your own last
+    change through StudioSync, and the order stays. When a "caught up on N change(s)" line appears, the menu reads "Undo StudioSync: changes
+    that hadn't arrived here".
+38. **Asks on deletions (AA):** Claims mode. LinuxBox claims XT Rec A by hand. On the desktop select two of XT Rec A's items and delete
+    them.
+    - LinuxBox gets one "James wants to edit XT Rec A: Release / Keep".
+    - On the desktop the items stay deleted and nothing goes out meanwhile.
+    - Keep: the items are back on the desktop, and its log says LinuxBox kept it.
+    - Delete again, Release: the items go on all three.
+    - Repeat with the XT Rec A track itself: Keep brings it back with its automation.
+39. **Moved and resized (AB):** as step 33, but one computer's script moves the note and changes its length at once. One note on all three,
+    where the later one put it.
+40. **A given claim released (AC):** on the desktop, give the laptop's person XT Keys C.
+    - Once the laptop logs "James gave you XT Keys C", release it from the laptop's panel (the chip's x).
+    - Within a second LinuxBox's Who controls no longer shows it as the laptop's. After a minute nothing has brought it back, on any
+      computer.
+    - Then stop Live sync on the laptop, give it XT Keys C again from the desktop, and as driver press "Release <laptop>'s claims".
+    - Start Live sync on the laptop: XT Keys C isn't the laptop's anywhere.
+
+Not checkable in REAPER yet: W, until an update bumps `TIMELINE_FORMAT` (then: stop Live sync before updating, add a marker, update, start
+Live sync; the log says "sent the markers to the studio" and the others get it).
+
+### Round 5 review-later (security)
+
+- `dropped` is read from a person's own claims file or their live claim. It can only make that person's given claims count less. It's
+  type-checked (string keys and times), compared, and never used as a path.
+- `undo passed` is local project state.
+- A held deletion keeps `unsent` set only while `claimask.hold` says the ask waits (`ASK_WAIT`). Keep, a timeout or Release ends it.
+
+### Round 5 questions for James
+
+1. A claim given to you, released from the panel in the few seconds before Syncthing's copy arrives (the direct link's copy only), isn't
+   released: there's nothing in your own claims to remove. The options:
+   - (a) leave it: release it again after the "gave you" line;
+   - (b) a one-line change in the panel so its release also marks a given-only claim as let go;
+   - (c) fold the link's copy at once (this changes rt-linkmove's agreed hook, and its test).
+2. Moved-and-resized pairing (AB): a note you delete and another you draw of the same channel and velocity, while a bandmate changes the
+   deleted note, is read as a move: your drawn note is left out, as a clash with Use mine. Keep it so, or keep doubling instead?
+3. A heal's undo point (Z) is skipped by the bound Ctrl+Z, but REAPER's own Edit > Undo still undoes it, and the next look then sends that
+   as yours. OK as it is?

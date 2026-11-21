@@ -306,6 +306,12 @@ function sync.claim_renamed(cfg, song, room, from, to)
   return moved
 end
 
+-- A claim's key in `since`, `auto` and `dropped`: "tracks:bass", "regions:verse", "times:<from>|<to>".
+function sync.claim_key(kind, n)
+  if kind == "times" then return type(n) == "table" and string.format("times:%.6f|%.6f", tonumber(n.from) or 0, tonumber(n.to) or 0) or nil end
+  return type(n) == "string" and (kind .. ":" .. n:lower()) or nil
+end
+sync.DROPPED_KEEP = 7 * 86400 -- seconds a claim you let go of is remembered against a given claim of it still read somewhere
 -- `renamed` (optional): new lower name -> old name, whose claim date the new one keeps (sync.claim_renamed).
 function sync.set_claims(cfg, song, room, claims, renamed)
   local now = os.date("!%Y-%m-%dT%H:%M:%SZ")
@@ -316,10 +322,32 @@ function sync.set_claims(cfg, song, room, claims, renamed)
   for _, k in ipairs({ "tracks", "regions", "prints" }) do
     for _, name in ipairs(claims[k] or {}) do
       local was = k ~= "regions" and renamed and renamed[name:lower()] or name
-      since[k .. ":" .. name:lower()] = (old.since or {})[k .. ":" .. name:lower()] or (old.since or {})[k .. ":" .. was:lower()] or now
+      -- (or the date it carries in: a given claim folded in keeps the date it was given, sync.follow_claims. rt-edits)
+      since[k .. ":" .. name:lower()] = (old.since or {})[k .. ":" .. name:lower()] or (old.since or {})[k .. ":" .. was:lower()]
+        or (type(claims.since) == "table" and type(claims.since[k .. ":" .. name:lower()]) == "string" and claims.since[k .. ":" .. name:lower()]) or now
     end
   end
   claims.since = since
+  -- (what you let go of, and when: a claim an admin gave you, folded in and then released from the panel, still counted where its given file
+  -- was still read: a computer Syncthing hadn't told of the removal yet, or one holding the direct link's copy for its minute. sync.authority
+  -- and sync.follow_claims pass over a given claim dated before you let go of it. Claimed again, it's no longer let go. rt-edits)
+  local had, has, dropped = {}, {}, {}
+  local cut = os.date("!%Y-%m-%dT%H:%M:%SZ", os.time() - sync.DROPPED_KEEP)
+  for k, t in pairs(type(old.dropped) == "table" and old.dropped or {}) do if type(k) == "string" and type(t) == "string" and t >= cut then dropped[k] = t end end
+  local function keys(c, into, lasting) -- (lasting: auto-claims left out. A given claim is never one, and they lapse all day: lib/claimask.lua)
+    local auto = type(c.auto) == "table" and c.auto or {}
+    for _, kind in ipairs({ "tracks", "regions", "times" }) do
+      for _, n in ipairs(type(c[kind]) == "table" and c[kind] or {}) do
+        local k = sync.claim_key(kind, n)
+        if k and not (lasting and (auto[k] ~= nil or (type(n) == "table" and n.auto ~= nil))) then into[k] = true end
+      end
+    end
+  end
+  keys(old, had, true)
+  keys(claims, has)
+  for k in pairs(had) do if not has[k] then dropped[k] = now end end
+  for k in pairs(has) do dropped[k] = nil end
+  claims.dropped = next(dropped) and dropped or nil
   if type(claims.auto) == "table" then -- (auto-claims: only what's still claimed keeps its mark. lib/claimask.lua)
     local keep = {}
     for _, k in ipairs({ "tracks", "regions" }) do
@@ -429,25 +457,40 @@ function sync.follow_claims(proj, cfg, song, room)
       if f:sub(1, #prefix) == prefix and not band.overlay_of(dir .. "/" .. f) then
         local g, c = band.read_json(dir .. "/" .. f), sync.my_claims(cfg, song, room)
         if sync.given_for(f, g, cfg.user) and c and given_ok(cfg, song, room, f, g) then
+          -- (dated as given: folding it in must not make it newer than a claim someone made since, nor than a release. Folded with the day's
+          -- date, a claim the driver released while you were away (released/) counted again from the fold. And not what you let go of after it
+          -- was given (`dropped`, sync.set_claims): sync.authority passes over both alike. rt-edits)
+          local gone, dropped = sync.released(cfg, song, room)[cfg.user], type(c.dropped) == "table" and c.dropped or {}
+          local function stands(k, t) return type(t) == "string" and not (gone and t <= gone) and not (type(dropped[k]) == "string" and dropped[k] >= t) end
+          local words = {}
+          c.since = type(c.since) == "table" and c.since or {}
           for _, kind in ipairs({ "tracks", "regions" }) do
             c[kind] = c[kind] or {}
             for _, n in ipairs(g[kind] or {}) do
-              local have = false
-              for _, m in ipairs(c[kind]) do have = have or m:lower() == n:lower() end
-              if not have then c[kind][#c[kind] + 1] = n end
+              local k = sync.claim_key(kind, n)
+              local t = k and (type(g.since) == "table" and g.since[k] or g.time)
+              if k and stands(k, t) then
+                local have = false
+                for _, m in ipairs(c[kind]) do have = have or m:lower() == n:lower() end
+                if not have then c[kind][#c[kind] + 1] = n end
+                c.since[k] = c.since[k] or t
+                words[#words + 1] = (kind == "regions" and "region " or "") .. n
+              end
             end
           end
           c.times = c.times or {}
-          for _, t in ipairs(g.times or {}) do c.times[#c.times + 1] = t end
-          -- (dated as given: folding it in must not make it newer than a claim someone made since)
-          sync.set_claims(cfg, song, room, c)
+          local any_time = false
+          for _, t in ipairs(g.times or {}) do
+            local k = sync.claim_key("times", t)
+            local have = false
+            for _, x in ipairs(c.times) do have = have or sync.claim_key("times", x) == k end
+            if k and not have and stands(k, t.at or g.time) then t.at = t.at or g.time; c.times[#c.times + 1] = t; any_time = true end
+          end
+          if any_time then words[#words + 1] = "a stretch of time" end
+          if #words > 0 then sync.set_claims(cfg, song, room, c) end
           os.remove(dir .. "/" .. f)
           os.remove(dir .. "/" .. f .. ".sig") -- (its signature file: every given claim left one in claims/ for good. rt-linkmove's hook 2)
-          local words = {}
-          for _, n in ipairs(g.tracks or {}) do words[#words + 1] = n end
-          for _, n in ipairs(g.regions or {}) do words[#words + 1] = "region " .. n end
-          if #(g.times or {}) > 0 then words[#words + 1] = "a stretch of time" end
-          band.log(tostring(g.by) .. " gave you " .. table.concat(words, ", ") .. ": yours to change now")
+          if #words > 0 then band.log(tostring(g.by) .. " gave you " .. table.concat(words, ", ") .. ": yours to change now") end
         end
       end
     end
@@ -587,6 +630,9 @@ function sync.authority(cfg, song, room, s)
     list[#list + 1] = c
   end
   for user, l in pairs(live) do if not from_file[user] then list[#list + 1] = l end end
+  -- (what each person let go of, by their own claims: their given claim dated before that doesn't count. sync.set_claims, rt-edits)
+  local dropped_by = {}
+  for _, c in ipairs(list) do if c and not c.given and type(c.user) == "string" and type(c.dropped) == "table" then dropped_by[c.user] = c.dropped end end
   -- (an auto-claim counts while its last edit is under AUTO_IDLE old: on every computer alike, whether or not its owner's Live sync has
   -- dropped it yet. lib/claimask.lua, James, rt)
   local idle_cut = os.date("!%Y-%m-%dT%H:%M:%SZ", os.time() - sync.AUTO_IDLE)
@@ -594,9 +640,11 @@ function sync.authority(cfg, song, room, s)
     if c and c.user and c.time then
       local gone = released[c.user]
       local auto = type(c.auto) == "table" and c.auto or {}
+      local dg = c.given and dropped_by[c.user]
+      local function let_go(k, t) local d = dg and k and dg[k]; return type(d) == "string" and type(t) == "string" and d >= t end
       for _, t in ipairs(c.times or {}) do
         local at = t.at or c.time
-        if tonumber(t.from) and tonumber(t.to) and t.to > t.from and not (gone and at <= gone) and not (t.auto ~= nil and not (type(t.auto) == "string" and t.auto >= idle_cut)) then
+        if tonumber(t.from) and tonumber(t.to) and t.to > t.from and not (gone and at <= gone) and not let_go(sync.claim_key("times", t), at) and not (t.auto ~= nil and not (type(t.auto) == "string" and t.auto >= idle_cut)) then
           times[#times + 1] = { user = c.user, time = at, from = t.from, to = t.to, auto = t.auto ~= nil or nil }
         end
       end
@@ -613,7 +661,7 @@ function sync.authority(cfg, song, room, s)
           local t = (c.since or {})[kk] or c.time
           local o = list[2][k] -- newest wins; the same second goes to the later name, so every machine agrees
           local a = auto[kk]
-          if not (gone and t <= gone) and not (a ~= nil and not (type(a) == "string" and a >= idle_cut))
+          if not (gone and t <= gone) and not let_go(kk, t) and not (a ~= nil and not (type(a) == "string" and a >= idle_cut))
               and (not o or o.time < t or (o.time == t and o.user < c.user)) then list[2][k] = { user = c.user, time = t, name = name, auto = a ~= nil or nil } end
         end
       end
@@ -780,7 +828,8 @@ function sync.restore_timeline(proj, cfg, song, room, entries, upto, session, fr
   sync.audio_follow_tempo(proj)
   band.apply_tempo(proj, t.tempo)
   band.apply_markers(proj, t.markers or {})
-  sync.post(cfg, song, room, { type = "timeline", tempo = t.tempo, markers = t.markers or {} }, proj) -- (proj: ordered after the newest map seen here. Review, 0.58.95)
+  -- (restored: a Restore, not a change StudioSync's Undo steps back, as a restored object isn't: mirror.last_mine. rt-edits)
+  sync.post(cfg, song, room, { type = "timeline", tempo = t.tempo, markers = t.markers or {}, restored = true }, proj) -- (proj: ordered after the newest map seen here. Review, 0.58.95)
   sync.setext(proj, band.SECTION, "timeline", sync.timeline_sig(proj))
   return true
 end
@@ -1468,7 +1517,13 @@ function sync.watch_timeline(proj, cfg, song, room, can)
   local me = cfg.user
   -- tempo map / markers first: if they changed, REAPER has just moved items for it, and those moves aren't edits
   local sig, seen = timeline_sig(proj), ext(proj, band.SECTION, "timeline")
-  if seen ~= sig and seen ~= "" and (band.json_decode(seen) or {})[4] ~= sync.TIMELINE_FORMAT then seen = "" end -- (noted in an older format: a first look)
+  -- (noted in an older format: a first look, unless what both formats hold differs: the tempo map, or a marker's kind, place, end or name
+  -- (sync.timeline_unsent). That's a marker or tempo change made after the last look of the older version, in the moments around updating:
+  -- taken for a first look it was taken in and never sent. Then the note stays, and it goes out below as the change it is. rt-edits)
+  if seen ~= sig and seen ~= "" and (band.json_decode(seen) or {})[4] ~= sync.TIMELINE_FORMAT then
+    local changed, untold = sync.timeline_unsent(proj)
+    if not (changed or untold) then seen = "" end
+  end
   -- (a signature's tempo map and markers alone: a reopened file's project settings often read differently (another REAPER's defaults). Laptop
   -- restart, James, rt)
   local function tm(x) local t = band.json_decode(x) or {}; return band.json_encode({ t[1] or {}, t[2] or {} }) end

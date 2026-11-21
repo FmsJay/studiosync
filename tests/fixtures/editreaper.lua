@@ -394,7 +394,12 @@ function E.new(path)
       return false
     end,
     Undo_CanUndo2 = function() return F.undo end, Undo_CanRedo2 = function() return F.redo end,
-    Undo_BeginBlock2 = function() end, Undo_EndBlock2 = function() end, Undo_OnStateChangeEx2 = function() end, Undo_BeginBlock = function() end, Undo_EndBlock = function() end,
+    -- (F.undos, when a test sets it to a list: REAPER's undo points as they're made, newest last. A block's changes are one point, its name;
+    -- ReorderSelectedTracks outside one makes REAPER's own "Change track order". rt-edits)
+    Undo_BeginBlock2 = function() F.depth = (F.depth or 0) + 1 end,
+    Undo_EndBlock2 = function(_, name) F.depth = math.max(0, (F.depth or 0) - 1); if F.undos and F.depth == 0 then F.undos[#F.undos + 1] = name end end,
+    Undo_OnStateChangeEx2 = function(_, name) if F.undos and (F.depth or 0) == 0 then F.undos[#F.undos + 1] = name end end,
+    Undo_BeginBlock = function() end, Undo_EndBlock = function() end,
     PreventUIRefresh = function() end, UpdateArrange = function() end, UpdateTimeline = function() end, TrackList_AdjustWindows = function() end,
     UpdateItemInProject = function() end,
     -- tracks
@@ -463,6 +468,7 @@ function E.new(path)
       for i, t in ipairs(rest) do if i == at + 1 then for _, m in ipairs(moving) do tracks[#tracks + 1] = m end end; tracks[#tracks + 1] = t end
       if at >= #rest then for _, m in ipairs(moving) do tracks[#tracks + 1] = m end end
       changed()
+      if F.undos and (F.depth or 0) == 0 then F.undos[#F.undos + 1] = "Change track order" end
       return true
     end,
     GetSetTrackGroupMembership = function() return 0 end, GetSetTrackGroupMembershipHigh = function() return 0 end,

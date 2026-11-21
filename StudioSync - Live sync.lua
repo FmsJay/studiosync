@@ -477,6 +477,7 @@ function P.look(t)
       t.redraw = true -- (a look can put back a refused edit, copy it to a track of yours or delete an item, with no undo point: always redrawn)
       local ok, sent = pcall(require("mirror").watch, proj, cfg, b.song, b.room, { can = my_can, owner_can = can, mode = who.mode, local_mix = sync.local_mix, is_claimed = who.is_claimed, owner_of = who.owner_of,
         held = held, here = here, printers = who.printers, quick = true, -- (quick: builds on the last look, lib/mirror.lua rt-look)
+        edited_at = changed_at, -- (when you last edited: what a look finds with no edit since the last one is the same act, one Undo step. rt-edits)
         ask = function(name, pos) return require("claimask").hold(cfg, b, who, name, pos) end, sent = require("claimask").on_sent, -- (Claims mode: lib/claimask.lua, rt-claims)
         soft = function(name, pos) return require("claimask").soft(who, name, pos, cfg.user) end }) -- (an auto-claim asks only for a clash: rt-merge)
       band.try("claimask.flush", require("claimask").flush, cfg, b, who, alone) -- (what went that nobody claimed is yours now)

@@ -885,29 +885,37 @@ end
 -- length and velocity, which a move keeps; an envelope's points), the loser took away exactly as many as it added. Then they pair in order
 -- (`pos`), which holds for one thing moved, a selection dragged, and everything shifted. Other counts (some deleted, some new, of one kind):
 -- not paired, both copies stay as before, rather than risk leaving out a note that was new.
+-- `loose` (optional): a wider kind, asked the same of what `group` left unpaired: a note moved and resized at once keeps its channel and
+-- velocity, not its length, so it was never paired and stayed doubled. Paired only on the same plain count, so the risk is the one `group`
+-- already takes: a note deleted and another drawn in its place, of the same channel and velocity, read as that note moved; it's left out only
+-- where the winner changed the deleted note too, and the loser is told, with Use mine. (rt-edits round 5)
 -- b, w, l: key -> its text (nil: not there); border, lorder: the base's and the loser's keys in order; group(side, key) -> a kind or nil;
 -- pos(side, key) -> a number. -> the loser's keys to leave out. Pure. rt-edits, backlog 1
-local function moved_twice(border, b, w, l, lorder, group, pos)
+local function moved_twice(border, b, w, l, lorder, group, pos, loose)
   local gone, added, out = {}, {}, {}
-  for _, k in ipairs(border) do
-    local g = l[k] == nil and group("b", k)
-    if g then gone[g] = gone[g] or {}; gone[g][#gone[g] + 1] = k end
-  end
-  if next(gone) == nil then return out end
-  for _, k in ipairs(lorder) do
-    local g = b[k] == nil and group("l", k)
-    if g and gone[g] then added[g] = added[g] or {}; added[g][#added[g] + 1] = k end
-  end
-  for g, list in pairs(gone) do
-    local a = added[g]
-    if a and #a == #list then
-      local function by(side) return function(x, y) local px, py = pos(side, x), pos(side, y); if px ~= py then return px < py end; return x < y end end
-      table.sort(list, by("b"))
-      table.sort(a, by("l"))
-      for i, k in ipairs(list) do
-        if w[k] ~= b[k] and w[a[i]] == nil then out[a[i]] = true end -- (the winner changed that one too, and not by the same move)
+  for _, k in ipairs(border) do if l[k] == nil then gone[#gone + 1] = k end end
+  if #gone == 0 then return out end
+  for _, k in ipairs(lorder) do if b[k] == nil then added[#added + 1] = k end end
+  for _, kind in ipairs({ group, loose }) do
+    local G, A, paired = {}, {}, {}
+    for _, k in ipairs(gone) do local g = kind("b", k); if g then G[g] = G[g] or {}; G[g][#G[g] + 1] = k end end
+    for _, k in ipairs(added) do local g = kind("l", k); if g and G[g] then A[g] = A[g] or {}; A[g][#A[g] + 1] = k end end
+    for g, list in pairs(G) do
+      local a = A[g]
+      if a and #a == #list then
+        local function by(side) return function(x, y) local px, py = pos(side, x), pos(side, y); if px ~= py then return px < py end; return x < y end end
+        table.sort(list, by("b"))
+        table.sort(a, by("l"))
+        for i, k in ipairs(list) do
+          paired[k], paired[a[i]] = true, true
+          if w[k] ~= b[k] and w[a[i]] == nil then out[a[i]] = true end -- (the winner changed that one too, and not by the same move)
+        end
       end
     end
+    local g2, a2 = {}, {} -- (what's left, for the looser kind)
+    for _, k in ipairs(gone) do if not paired[k] then g2[#g2 + 1] = k end end
+    for _, k in ipairs(added) do if not paired[k] then a2[#a2 + 1] = k end end
+    gone, added = g2, a2
   end
   return out
 end
@@ -1012,19 +1020,19 @@ function mirror.merge_midi(base, winner, loser)
   -- (a note the loser moved, in time or pitch, that the winner changed too: one note, the winner's. moved_twice)
   local function cmps(x) local t = {}; for k, u in pairs(x.units) do t[k] = u.cmp end; return t end
   local sides, info = { b = b, l = l }, {}
-  local function note(side, k) -- -> its kind (channel, length, velocity, mute) and place (tick, then pitch), once per key
+  local function note(side, k) -- -> its kind (channel, length, velocity, mute), place (tick, then pitch) and kind less its length, once per key
     local n = info[side .. k]
     if n == nil then
       local ch, pitch, tick = k:match("^N (%d+) (%d+) (%d+)#")
       local u = ch and sides[side].units[k]
-      n = u and u.evs[2] and { ch .. " " .. (u.evs[2].tick - u.evs[1].tick) .. " " .. u.evs[1].flag:upper() .. " " .. tostring(u.evs[1].bytes:match("^%x%x%s+%x%x%s+(.*)$")),
-        tonumber(tick) * 128 + tonumber(pitch) } or false
+      local rest = u and u.evs[2] and (u.evs[1].flag:upper() .. " " .. tostring(u.evs[1].bytes:match("^%x%x%s+%x%x%s+(.*)$")))
+      n = rest and { ch .. " " .. (u.evs[2].tick - u.evs[1].tick) .. " " .. rest, tonumber(tick) * 128 + tonumber(pitch), ch .. " " .. rest } or false
       info[side .. k] = n
     end
     return n
   end
   local drop = moved_twice(b.order, cmps(b), cmps(w), cmps(l), l.order, function(side, k) local n = note(side, k); return n and n[1] end,
-    function(side, k) return note(side, k)[2] end)
+    function(side, k) return note(side, k)[2] end, function(side, k) local n = note(side, k); return n and n[3] end)
   if next(drop) then clash = true end
   local seen = {}
   for _, x in ipairs({ w, l, b }) do
@@ -1594,16 +1602,37 @@ end
 
 -- The top bar's Undo / Redo (your own changes only, for everyone). Pure, over History's entries:
 -- last_mine: your newest change not undone yet (undo events carry `undoes`, redo events `redoes`).
-function mirror.last_mine(entries, user)
-  local undone = {}
+-- (a tempo map or marker change of yours is a change too, when it's the whole act: a marker added and nothing else was stepped over, and Undo
+-- took back the edit before it. One sent with an act's items goes back with them (lib/undo.lua), so it's passed over here: its act is undone
+-- when its items are (undone_act), and an undo's own timeline change counts as redone when its items' undo was (cancelled). One sent in a later
+-- pass than some of its act's items (a burst over several passes) is taken from those items, so the act still goes back as one. A Restore's
+-- (`restored`) is passed over, as a restored object is. `passed`: ids lib/undo.lua found nothing left to take back of (a bandmate removed
+-- the marker since): the next Undo is the change before. rt-edits)
+function mirror.last_mine(entries, user, passed)
+  local undone, undone_act, cancelled = {}, {}, {}
   for i = #entries, 1, -1 do
     local e = entries[i]
     if e.kind == "obj" and e.user == user then
       -- (every change of the act counts as undone, not only the one named: the next presses restored the same three items again, N² events
       -- for N items. `undoes_all` / `redoes_all`: lib/undo.lua. Round 1 review, 0.59.45)
       if e.undoes and not undone[e.id] then undone[e.undoes] = true; for _, x in ipairs(type(e.undoes_all) == "table" and e.undoes_all or {}) do undone[x] = true end
+      elseif e.undoes then cancelled[e.undoes] = true
       elseif e.redoes then undone[e.redoes] = true; for _, x in ipairs(type(e.redoes_all) == "table" and e.redoes_all or {}) do undone[x] = true end -- (a redo undoes an undo: the change it undid counts again)
-      elseif not e.restored and not e.auto and not undone[e.id] then return i end -- (auto: a print StudioSync refreshed)
+      elseif not e.restored and not e.auto then -- (auto: a print StudioSync refreshed)
+        if not undone[e.id] then return i end
+        if e.act then undone_act[e.act] = true end
+      end
+    elseif e.kind == "timeline" and e.user == user and type(e.tempo) == "table" and not e.restored then
+      if e.undoes then if not undone[e.id] and not cancelled[e.undoes] then undone[e.undoes] = true end
+      elseif e.redoes then undone[e.redoes] = true
+      elseif not undone[e.id] and not (e.act and undone_act[e.act]) and not (passed and passed[e.id]) then
+        for j = i - 1, 1, -1 do
+          local x = e.act and entries[j]
+          if not x then break end
+          if x.act == e.act and x.kind == "obj" and x.user == user and not (x.undoes or x.redoes or x.restored or x.auto or undone[x.id]) then return j end
+        end
+        return i
+      end
     end
   end
 end
@@ -1618,14 +1647,20 @@ function mirror.later_by_others(entries, i)
 end
 -- last_undo: your newest undo that hasn't been redone.
 function mirror.last_undo(entries, user)
-  local redone = {}
+  local redone, cancelled = {}, {}
   for i = #entries, 1, -1 do
     local e = entries[i]
     if e.kind == "obj" and e.user == user then
       if e.redoes then redone[e.redoes] = true; for _, x in ipairs(type(e.redoes_all) == "table" and e.redoes_all or {}) do redone[x] = true end
-      elseif e.undoes then if not redone[e.id] then return i end -- (one redone is passed over, not taken for a new change: redo stopped after
+      elseif e.undoes then
+        if not redone[e.id] then return i end -- (one redone is passed over, not taken for a new change: redo stopped after
         -- redoing an undo that removed something, as that carries no `restored`. Round 2 review, 0.59.46)
+        cancelled[e.undoes] = true -- (its timeline change, sent just before it, was redone with it)
       elseif not e.restored and not e.auto then return nil end -- a new change since: nothing to redo (a print StudioSync refreshed isn't one)
+    elseif e.kind == "timeline" and e.user == user and type(e.tempo) == "table" and not e.restored then -- (an undo that was only a tempo or marker change: rt-edits)
+      if e.redoes then redone[e.redoes] = true
+      elseif e.undoes then if not redone[e.id] and not cancelled[e.undoes] then return i end
+      else return nil end
     end
   end
 end
@@ -3944,6 +3979,8 @@ end
 -- One act, one id (rt-edits): every change a look sends carries it, and a tempo map or marker change sent just before that look
 -- (sync.watch_timeline runs first) takes the id the look will use, so Undo puts the act's region or markers back with its items.
 mirror.ACT_SECS = 2.5
+mirror.ACT_KEEP = 70 -- seconds a look's act still takes what later looks find, while you haven't edited (a full look runs every QUICK_FULL_SECS)
+mirror.last_act = mirror.last_act or {} -- tostring(proj) -> { act, at }: the act of the last look that sent anything, and when it looked
 mirror.look_act = mirror.look_act or {} -- tostring(proj) -> { act, at }: the id a timeline change just took
 local function new_act(me, now) return string.format("%s-%s-%d", require("sync").id_user(me), os.date("!%Y%m%d%H%M%S"), math.floor(now * 1000) % 1000000) end
 function mirror.act_for(proj, me)
@@ -4413,7 +4450,7 @@ function W.put_back(w, o, rev, evid, why)
       " (the studio's version hasn't arrived here yet): it stays as it is for now")
   end
   w.back = w.back + 1
-  if why.text then sync.put_back(why.text, nil, why.claim) end
+  if why.text then sync.put_back(why.text) end
 end
 -- What was refused goes to whoever claimed it, as a suggestion, if it's a claim that refused it. -> true when it went.
 function W.propose(w, o, rev, who, claim_name, pos, name, gone)
@@ -4639,10 +4676,8 @@ function W.refuse(w, o, rk, rev, evid, kord, last, name, ok_before)
   -- words, said in Driver only, where a claim doesn't count. Cross Test, 0.59.49.72. rt-merge)
   local how = mirror.refusal_words(opts.mode or sync.room_mode, where, me, sync.driver_name,
     w.is_claimed and w.is_claimed(ok_before and name or (last and last.name or ""), pos) and who or nil, to)
-  local claimed = who and who ~= me and who ~= sync.driver_name
-  local claim = not to and not claimed and sync.room_mode == "claims" and (ok_before and name or last.name) or nil -- (the bar's Claim it)
   local differed = last and mirror.first_diff(o.state, last.state)
-  put_back(o, rev, evid, { name = ok_before and name or (last.name or ""), to = to and who or nil, claim = claim ~= "" and claim or nil, copy = true,
+  put_back(o, rev, evid, { name = ok_before and name or (last.name or ""), to = to and who or nil, copy = true,
     text = string.format("Not sent: %s. %s%s", how, o.kind == "track" and "The track is back as it was" or o.kind == "item" and "The item is back as it was"
       or (mirror.PART[o.kind]:gsub("^%l", string.upper)) .. ((o.kind == "env") and " is back as it was" or " are back as they were"),
       differed and (" (what differed: " .. differed .. ")") or "") })
@@ -5111,6 +5146,8 @@ function W.gone(w)
       elseif mirror.PART[o.kind] and w.back_tracks[o.track or ""] then -- (its track's deletion was refused just now: it comes back whole, not
         -- bare with its plug-ins, automation and sends marked gone. Full review, 0.59.44)
         put_back(o, g.rev, g.evid, { name = name })
+      elseif mirror.PART[o.kind] and w.held_tracks[o.track or ""] then -- (its track's deletion waits for an answer, below: so do they)
+        mirror.unsent[tostring(proj) .. g.oid] = true
       elseif mirror.PART[o.kind] then -- (its track went: the track's own deletion covers it)
         remember(proj, g.oid, (g.rev or 0) + 1, "", g.evid)
       elseif o.kind == "item" and th == "" and not mine(tev)
@@ -5134,6 +5171,19 @@ function W.gone(w)
           band.log(string.format("you deleted %s, which held %s: they aren't in it any more", name ~= "" and name or "a track", table.concat(names, ", ")))
         end
       else
+        -- (Claims: someone else's claim is asked for first, as an edit to it is (W.refuse): deleting several of their items or tracks at once
+        -- went to the old suggestion instead. Held meanwhile: still gone here, nothing sent, the band's changes to it waiting; Release sends the
+        -- deletion on a later look, Keep or no answer puts it back with the words. One ask per claim, however many it covers. rt-edits)
+        local asked = opts.ask and opts.ask(name, last.pos)
+        if asked == true then
+          mirror.unsent[tostring(proj) .. g.oid] = true
+          if o.kind == "track" then w.held_tracks[g.oid] = true end
+          return
+        end
+        if type(asked) == "string" then
+          if o.kind == "track" then w.back_tracks[g.oid] = true end
+          return put_back(o, g.rev, g.evid, { name = name, text = asked })
+        end
         local who = w.owner_of and w.owner_of(name, last.pos)
         local to = propose(o, g.rev, who, name, last.pos, name, true)
         if o.kind == "track" then w.back_tracks[g.oid] = true end
@@ -5419,7 +5469,7 @@ function mirror.watch(proj, cfg, song, room, opts)
   local suggest = require("suggest")
   local w = { band = band, sync = sync, proj = proj, cfg = cfg, song = song, room = room, opts = opts, me = me, room_dir = room_dir, media = media,
     objs = objs, by_oid = by_oid, sent = 0, back = 0, suggest = suggest, kept_back = {}, holds = mirror.holds[tostring(proj)] or {}, credit = {},
-    back_tracks = {}, clean = {} }
+    back_tracks = {}, held_tracks = {}, clean = {} }
   w.pending = function() -- (how many of the band's changes wait here: once a look)
     if w.n_pending == nil then w.n_pending = sync.pending_events(proj, cfg, song, room) end
     return w.n_pending
@@ -5472,7 +5522,13 @@ function mirror.watch(proj, cfg, song, room, opts)
   -- (and the id a tempo map or marker change took just before this look, when there is one: mirror.act_for)
   local la = mirror.look_act[pk]
   mirror.look_act[pk] = nil
-  w.act = mirror.more_act[pk] or (la and math.abs(now - la.at) <= mirror.ACT_SECS and la.act) or new_act(me, now)
+  -- (and the act of the last look that sent anything, while you haven't edited since that look: what this look finds was made before it, so
+  -- it's the rest of that act. A script's edit to unselected items on two tracks is found one track now and the other up to 10 s later
+  -- (the quick look's hints), and a plug-in chain goes once it has held still: each was a second Undo step. `opts.edited_at`: when you last
+  -- edited, by Live sync's count (its own writes left out); without it, as before. Not past ACT_KEEP since that look. rt-edits)
+  local kept = mirror.last_act[pk]
+  kept = kept and opts.edited_at and opts.edited_at <= kept.at and now - kept.at <= mirror.ACT_KEEP and kept.act or nil
+  w.act = mirror.more_act[pk] or (la and math.abs(now - la.at) <= mirror.ACT_SECS and la.act) or kept or new_act(me, now)
   mirror.more = false
   -- (whether track colours count here, per project: see below. "band2": 0.38 looks once more, as 0.36/0.37 kept each
   -- machine's own colour where it should have taken the band's: Bass I differed PC/laptop for good, 2026-11-01)
@@ -5490,6 +5546,7 @@ function mirror.watch(proj, cfg, song, room, opts)
   mirror.index_for(nil)
   if not mirror.more then mirror.sweep_unsent(proj, seen) end
   mirror.more_act[pk] = mirror.more and w.act or nil
+  if w.sent > 0 then mirror.last_act[pk] = { act = w.act, at = now } end
   mirror.save_ids(proj)
   mirror.stash_unsent(proj, by_oid) -- (what's still not out, kept beside the project: crash-safe sessions, rt)
   if rescheme and not mirror.more then reaper.SetProjExtState(proj, mirror.CSEC, "colours", scheme) end
@@ -5621,6 +5678,7 @@ end
 mirror.REVERT_AT_ONCE, mirror.REVERT_SLICE = 120, 0.1 -- (changes; seconds per pass)
 function mirror.revert(proj, cfg, song, room, plan, opts)
   local sync = require("sync")
+  mirror.last_act[tostring(proj)] = nil -- (what a look finds after this isn't the rest of the act before it: mirror.watch. rt-edits)
   local function band_log(text) require("band").log(text) end
   local room_dir = sync.room_dir(cfg, song, room)
   local media = room_dir .. "/media"
@@ -5848,6 +5906,10 @@ function mirror.keep_order(proj, cfg, song, room)
   local moved, n = mirror.moved_tracks(here, want, {}), 0
   local sel = {}
   for i = 0, reaper.CountSelectedTracks(proj) - 1 do sel[#sel + 1] = reaper.GetSelectedTrack(proj, i) end
+  -- (one undo point, StudioSync's: each ReorderSelectedTracks made REAPER's own "Change track order" on top of the person's list, which Ctrl+Z
+  -- took for their own edit and undid in REAPER, and the next look sent that as their move. A "StudioSync: ..." point on top is one
+  -- StudioSync's Undo steps over to the person's own last change (undo.native). REAPER check, rt-edits)
+  reaper.Undo_BeginBlock2(proj)
   reaper.PreventUIRefresh(1)
   for k, x in ipairs(want) do
     local tr = moved[x] and mirror.find(proj, "track", x)
@@ -5861,6 +5923,7 @@ function mirror.keep_order(proj, cfg, song, room)
   for i = reaper.CountSelectedTracks(proj) - 1, 0, -1 do reaper.SetTrackSelected(reaper.GetSelectedTrack(proj, i), false) end
   for _, x in ipairs(sel) do if reaper.ValidatePtr2(proj, x, "MediaTrack*") then reaper.SetTrackSelected(x, true) end end
   reaper.PreventUIRefresh(-1)
+  reaper.Undo_EndBlock2(proj, "StudioSync: the studio's track order", -1)
   mirror.order_seen[tostring(proj)] = table.concat(mirrored_order(proj), ",") -- (not a move of this person's: the next look mustn't send it)
   reaper.TrackList_AdjustWindows(false)
   return n
@@ -6199,6 +6262,14 @@ mirror.MERGE_NEWS_SECS = 3600 -- how long after its newest change a merge is sti
 function mirror.heal(proj, room_dir, local_mix)
   local n = 0
   local newest, all = mirror.room_newest(room_dir)
+  -- (its changes under one undo point, StudioSync's, opened before the first: with none, the person's next edit took them into its own point,
+  -- and REAPER's Undo of that edit undid the catch-up too, which the next look sent as theirs. keep_order's reason too. rt-edits)
+  local open = false
+  local function apply(...)
+    if not open then reaper.Undo_BeginBlock2(proj); open = true end
+    return mirror.apply(...)
+  end
+  local ok_all, err_all = pcall(function()
   for oid, ev in pairs(newest) do
     local plain = ev
     ev = mirror.settled(room_dir, ev, all[oid]) -- (a merge of two changes made apart: what every computer holds)
@@ -6229,7 +6300,7 @@ function mirror.heal(proj, room_dir, local_mix)
       if ev.gone then
         if kh and kh ~= "" then
           -- (a part that can't change now, playing or its tab behind: next time, not recorded as gone with its chain still here. 0.59.14)
-          if mirror.apply(proj, { obj = ev.obj, oid = oid, gone = true, track = ev.track }, room_dir .. "/media", local_mix) then
+          if apply(proj, { obj = ev.obj, oid = oid, gone = true, track = ev.track }, room_dir .. "/media", local_mix) then
             remember(proj, oid, ev.rev, "", ev.id, order)
             n = n + 1
           end
@@ -6243,7 +6314,7 @@ function mirror.heal(proj, room_dir, local_mix)
         if held and type(held.state) == "table" and type(ev.state) == "table" and held.state.after == ev.state.after then
           put = setmetatable({ [mirror.STAY] = true }, { __index = ev })
         end
-        local ok, applied, h = pcall(mirror.apply, proj, put, room_dir .. "/media", local_mix)
+        local ok, applied, h = pcall(apply, proj, put, room_dir .. "/media", local_mix)
         if ok and applied then -- (a part waiting for its tab to be in front, or a track not here yet: next time)
           remember(proj, oid, ev.rev, h or "", ev.id, order)
           n = n + 1
@@ -6251,6 +6322,9 @@ function mirror.heal(proj, room_dir, local_mix)
       end
     end
   end
+  end)
+  if open then reaper.Undo_EndBlock2(proj, "StudioSync: changes that hadn't arrived here", -1) end
+  if not ok_all then error(err_all, 0) end
   return n
 end
 

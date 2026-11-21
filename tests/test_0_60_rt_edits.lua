@@ -624,6 +624,236 @@ do
   print("rt-edits: the render matrix and a renumbering go in Live sync's next pass, and land on a laptop with an older-format timeline")
 end
 
+-- ---- one act, one Undo step, however many looks find it: a script's edit to unselected items on two tracks is found one track now and the
+-- other some seconds later, and a plug-in chain goes once it has held still. Each look made its own act, so Undo took two presses ----
+do
+  build("Edits acts")
+  local function quick(c, edited_at) -- (Live sync's look, told when this person last edited)
+    as(c)
+    c.F.clock = c.F.clock + 1
+    sync.watch_timeline(c.F.proj, c.cfg, song, room, yes)
+    mirror.watch(c.F.proj, c.cfg, song, room, { can = yes, mode = "open", quick = true, edited_at = edited_at })
+    return new_events()
+  end
+  local function muted(it) return E.top_value(it.text, "MUTE") == "1 0" end
+  local b0, ka = item_named(bass, "Bass 0"), item_named(keys, "Keys A")
+  -- one edit (at t_edit) on two tracks; the look finds Bass's now and Keys's four seconds later, with no edit in between
+  tick()
+  as(A)
+  local t_edit = A.F.clock
+  set(b0, "MUTE", "1 0")
+  local first = quick(A, t_edit)
+  assert(#first == 1 and first[1].act, "(the first track's change goes)")
+  tick(3)
+  A.F.clock = A.F.clock + 4
+  set(ka, "MUTE", "1 0") -- (as the look comes to it only now)
+  local second = quick(A, t_edit)
+  assert(#second == 1 and second[1].act == first[1].act, "what a later look finds with no edit since is the same act")
+  tick()
+  recv(B)
+  tick()
+  as(A)
+  assert(press(false), "one Undo")
+  assert(not muted(b0) and not muted(ka), "takes back both tracks' changes")
+  settle(A, true)
+  tick()
+  recv(B)
+  same(A, B, "an act found by two looks, undone in one step")
+  -- an edit of yours after the first look is another act: Undo takes back only that
+  tick()
+  as(A)
+  local t1 = A.F.clock
+  set(b0, "MUTE", "1 0")
+  first = quick(A, t1)
+  tick(3)
+  A.F.clock = A.F.clock + 4
+  local t2 = A.F.clock
+  set(ka, "MUTE", "1 0")
+  second = quick(A, t2)
+  assert(#first == 1 and #second == 1 and second[1].act ~= first[1].act, "an edit made after the look is an act of its own")
+  tick()
+  as(A)
+  assert(press(false), "one Undo")
+  assert(muted(b0) and not muted(ka), "takes back only the later edit")
+  -- and not a minute later: what turns up then isn't the old act's
+  settle(A, true)
+  tick()
+  as(A)
+  set(ka, "MUTE", "1 0")
+  first = quick(A, t2)
+  A.F.clock = A.F.clock + mirror.ACT_KEEP + 5
+  set(b0, "MUTE", "0 0")
+  second = quick(A, t2)
+  assert(#first == 1 and #second == 1 and second[1].act ~= first[1].act, "nor over a minute after that look")
+  settle(A, true)
+  tick()
+  recv(B)
+  same(A, B, "acts")
+  print("rt-edits: what later looks find with no edit of yours since is the same act, one Undo step")
+end
+
+-- ---- Undo steps back an act that is only a timeline change (fix G's limit): a marker added and nothing else was stepped over, and Undo took
+-- back the edit before it ----
+do
+  build("Edits marker undo")
+  local function has(c, name) for _, m in ipairs(c.F.markers) do if m.name == name then return true end end return false end
+  local function both(what, want)
+    settle(A, true)
+    tick()
+    recv(B)
+    assert(has(A, "Solo") == want and has(B, "Solo") == want, what .. " (desktop " .. tostring(has(A, "Solo")) .. ", laptop " .. tostring(has(B, "Solo")) .. ")")
+    same(A, B, what)
+  end
+  -- an edit first, then a marker by itself
+  tick()
+  as(A)
+  set(item_named(bass, "Bass 1"), "MUTE", "1 0")
+  tick()
+  both("(an item muted)", false)
+  tick()
+  as(A)
+  A.F.add_marker(false, 9, 9, "Solo")
+  tick()
+  both("(a marker added, nothing else)", true)
+  tick()
+  as(A)
+  local res, why = press(false)
+  assert(res, "Undo takes the marker back (" .. tostring(why) .. ")")
+  assert(E.top_value(item_named(bass, "Bass 1").text, "MUTE") == "1 0", "and not the edit before it")
+  tick()
+  both("the marker undone", false)
+  tick()
+  as(A)
+  res, why = press(true)
+  assert(res, "Redo brings it back (" .. tostring(why) .. ")")
+  tick()
+  both("the marker redone", true)
+  tick()
+  as(A)
+  assert(press(false), "Undo again")
+  tick()
+  both("the marker undone again", false)
+  -- the next Undo is the edit before it
+  tick()
+  as(A)
+  res, why = press(false)
+  assert(res and E.top_value(item_named(bass, "Bass 1").text, "MUTE") ~= "1 0", "the next Undo steps back the edit before the marker (" .. tostring(res or why) .. ")")
+  tick()
+  both("the edit before it undone", false)
+  -- and a marker sent with an act's items still goes back with them, as one step
+  tick()
+  as(A)
+  A.F.add_marker(false, 9, 9, "Solo")
+  set(item_named(bass, "Bass 2"), "MUTE", "1 0")
+  tick()
+  both("(a marker and an item in one act)", true)
+  tick()
+  as(A)
+  assert(press(false), "one Undo")
+  assert(not has(A, "Solo") and E.top_value(item_named(bass, "Bass 2").text, "MUTE") ~= "1 0", "takes back the marker and the item together")
+  tick()
+  both("a marker and an item undone together", false)
+  tick()
+  as(A)
+  assert(press(true), "one Redo")
+  assert(has(A, "Solo") and E.top_value(item_named(bass, "Bass 2").text, "MUTE") == "1 0", "brings both back")
+  tick()
+  both("a marker and an item redone together", true)
+  -- (round 5) a marker of yours a bandmate took away since: Undo has nothing to take back, says so once, and the next press is the change
+  -- before it (every press stopped there)
+  local function lone(c) for _, m in ipairs(c.F.markers) do if m.name == "Lone" then return m end end end
+  tick()
+  as(A)
+  set(item_named(bass, "Bass 3"), "MUTE", "1 0")
+  tick()
+  both("(an item muted)", true)
+  tick()
+  as(A)
+  A.F.add_marker(false, 11, 11, "Lone")
+  tick()
+  both("(a lone marker)", true)
+  as(B)
+  local m = lone(B)
+  reaper.DeleteProjectMarker(B.F.proj, m.num, false)
+  tick()
+  settle(B, true)
+  tick()
+  recv(A)
+  assert(not lone(A), "(the laptop took it away, everywhere)")
+  tick()
+  as(A)
+  res, why = press(false)
+  assert(not res and tostring(why):find("changed since", 1, true), "nothing to take back of it: says so (" .. tostring(res or why) .. ")")
+  tick()
+  as(A)
+  res, why = press(false)
+  assert(res and E.top_value(item_named(bass, "Bass 3").text, "MUTE") ~= "1 0" and not lone(A), "the next Undo is the change before it (" .. tostring(res or why) .. ")")
+  tick()
+  both("the change before it undone", true)
+  -- and a Restore's timeline isn't a change Undo steps back: the change before it is
+  tick()
+  as(A)
+  set(item_named(bass, "Bass 0"), "MUTE", "1 0")
+  tick()
+  both("(another item muted)", true)
+  tick()
+  as(A)
+  local all = require("recall").entries(A.cfg, song, room)
+  assert(sync.restore_timeline(A.F.proj, A.cfg, song, room, all, 1, proxy.read_json(proxy.session_path(A.cfg, song))), "(a Restore puts an older timeline back)")
+  tick()
+  as(A)
+  res, why = press(false)
+  assert(res and E.top_value(item_named(bass, "Bass 0").text, "MUTE") ~= "1 0", "Undo after a Restore steps back the change before it, not the Restore (" .. tostring(res or why) .. ")")
+  print("rt-edits: Undo and Redo step an act that is only a marker or tempo change")
+end
+
+-- ---- a marker or tempo change made right after updating, before Live sync's first look in the new version (fix E's limit): the note of
+-- the last look is in the older format, which read as a first look, so the change was taken in and never sent ----
+do
+  build("Edits update")
+  local SEC = band.SECTION
+  local function older(c) -- (the last look's note, as the version before wrote it: format 5, markers without numbers or render rows)
+    as(c)
+    local seen = band.json_decode(select(2, reaper.GetProjExtState(c.F.proj, SEC, "timeline")))
+    for _, m in ipairs(seen[2]) do m.num, m.render = nil, nil end
+    seen[4] = 5
+    reaper.SetProjExtState(c.F.proj, SEC, "timeline", band.json_encode(seen))
+  end
+  local function timelines(sent) local t = {}; for _, ev in ipairs(sent) do if ev.type == "timeline" then t[#t + 1] = ev end end return t end
+  local function has(c, name) for _, m in ipairs(c.F.markers) do if m.name == name then return true end end return false end
+  -- nothing changed across the update: the first look in the new version is still not an edit
+  older(B)
+  tick()
+  local _, sent = look(B, true)
+  assert(#timelines(sent) == 0, "the first look after updating isn't taken for an edit")
+  as(B)
+  assert(band.json_decode(select(2, reaper.GetProjExtState(B.F.proj, SEC, "timeline")))[4] == sync.TIMELINE_FORMAT, "(and the note is in this version's format now)")
+  -- a marker added between the older version's last look and this one's first: it goes out
+  older(B)
+  B.F.add_marker(false, 21, 21, "After update")
+  tick()
+  _, sent = look(B, true)
+  local went = timelines(sent)
+  assert(#went == 1, "a marker added right after updating goes out at the first look (" .. #went .. ")")
+  tick()
+  recv(A)
+  assert(has(A, "After update"), "and reaches the desktop")
+  same(A, B, "a marker added across the update")
+  -- a tempo change likewise
+  older(B)
+  as(B)
+  reaper.SetTempoTimeSigMarker(B.F.proj, 0, 0, -1, -1, 96, 4, 4, false)
+  tick()
+  local all = {}
+  for _ = 1, 3 do _, sent = look(B, true); for _, ev in ipairs(timelines(sent)) do all[#all + 1] = ev end end
+  assert(#all == 1 and all[1].tempo[1].bpm == 96, "a tempo change made right after updating goes out too (" .. #all .. ")")
+  tick()
+  recv(A)
+  as(A)
+  assert(band.capture_tempo(A.F.proj)[1].bpm == 96, "and reaches the desktop")
+  print("rt-edits: a marker or tempo change made right after updating goes out at the new version's first look")
+end
+
 -- ---- REAPER check F6, 0.59.49.73: a tempo change left the receivers different ----
 -- A 100 bpm marker at 8 s on the desktop: REAPER moved what's in beats after it, and the desktop sent the map and the moved items and points.
 -- The laptop got the map first and ended the same. LinuxBox got the items and points first (they go as messages on the link; the map came as
@@ -1260,7 +1490,12 @@ do
   tick()
   recv(D)
   assert(names(D) ~= studio, "(the reopened file has its own order: " .. names(D) .. ")")
+  D.F.undos = {} -- (REAPER's undo points from here: round 5)
   assert(heal(D) == 1 and names(D) == studio, "a project opened with another order is put right once it has caught up (" .. names(D) .. ")")
+  -- a heal isn't the person's act: one undo point, StudioSync's, which StudioSync's Undo steps over (REAPER's "Change track order" on top was
+  -- taken for their own edit by Ctrl+Z, and REAPER undid the heal)
+  assert(#D.F.undos == 1 and D.F.undos[1] == "StudioSync: the studio's track order" and not undo.native(D.F.undos[1]),
+    "the order heal leaves one StudioSync undo point, no \"Change track order\" (" .. table.concat(D.F.undos, " / ") .. ")")
 
   -- 3. heal doesn't make a merge of two old changes on a computer that holds the newer of them: before tracks merged, every computer took
   -- the newer and counted the other done, and a heal a day later changed the track everywhere
@@ -1278,12 +1513,16 @@ do
   tick(mirror.MERGE_NEWS_SECS + 60)
   as(B)
   local held = select(3, mirror.known(B.F.proj, vox))
+  B.F.undos = {}
   mirror.heal(B.F.proj, rdir, false)
+  assert(#B.F.undos == 0, "a heal that changes nothing leaves no undo point")
   assert(select(3, mirror.known(B.F.proj, vox)) == held and reaper.GetMediaTrackInfo_Value(track(B, "Vox"), "B_MUTE") == 0,
     "a merge nobody made isn't made an hour later on a computer that holds the newer change")
   -- a computer that holds neither is behind: it still gets what heal settles on
   as(C)
+  C.F.undos = {}
   mirror.heal(C.F.proj, rdir, false)
+  assert(#C.F.undos == 1 and C.F.undos[1]:find("^StudioSync") and not undo.native(C.F.undos[1]), "a catch-up leaves one StudioSync undo point (" .. table.concat(C.F.undos, " / ") .. ")")
   assert(select(3, mirror.known(C.F.proj, vox)) ~= held and reaper.GetMediaTrackInfo_Value(track(C, "Vox"), "D_PAN") == 0.5
     and reaper.GetMediaTrackInfo_Value(track(C, "Vox"), "B_MUTE") == 1, "a computer that has neither change still catches up, on the merge")
   print("rt-edits: Undo leaves a track where it sits unless a move is undone; a track order that came apart is put right mid-session; no late merges")
@@ -1587,6 +1826,19 @@ do
   assert(count(m, "90 3c 60") == 1 and count(m, "90 40 60") == 1 and m:find("E 120 90 3c 60", 1, true) and not clash, "different notes moved: both moves:\n" .. tostring(m))
   m, clash = mirror.merge_midi(base, w, base)
   assert(m == w and not clash, "(only the winner moved it)")
+  -- moved and resized at once (round 5): the loser's C to 120 and 240 long, the winner's to 240. One note, the winner's
+  local lr = midi("E 120 90 3c 60", "E 240 80 3c 00", "E 600 90 40 60", "E 480 80 40 00", "E 480 b0 7b 00")
+  m, clash = mirror.merge_midi(base, w, lr)
+  assert(m == w and clash, "moved and resized by one, moved by the other: one note, the later one's:\n" .. tostring(m))
+  local wr = midi("E 240 90 3c 60", "E 720 80 3c 00", "E 0 90 40 60", "E 480 80 40 00", "E 480 b0 7b 00") -- (the winner moved and resized it too)
+  m, clash = mirror.merge_midi(base, wr, lr)
+  assert(m == wr and clash, "moved and resized by both: one note, the later one's:\n" .. tostring(m))
+  m, clash = mirror.merge_midi(base, lr, w)
+  assert(m == lr and clash, "and the other way round:\n" .. tostring(m))
+  -- not a move: the loser took the C away and drew a D of another velocity. Both stand beside the winner's moved C, as before
+  local ld = midi("E 960 90 40 60", "E 480 80 40 00", "E 0 90 3e 30", "E 240 80 3e 00", "E 240 b0 7b 00")
+  m = mirror.merge_midi(base, w, ld)
+  assert(count(m, "90 3c 60") == 1 and count(m, "90 3e 30") == 1 and count(m, "90 40 60") == 1, "a note taken away and another drawn aren't paired:\n" .. tostring(m))
   -- automation: a point both moved is one point
   local function env(...) return "<VOLENV2\nACT 1 -1\n" .. table.concat({ ... }, "\n") .. "\n>\n" end
   local eb = env("PT 0 1 0", "PT 4 0.5 0", "PT 8 1 0")
@@ -1603,5 +1855,123 @@ do
   me, both = mirror.merge_env(eb, e2, el)
   assert(me == env("PT 0 1 0", "PT 3 0.6 0", "PT 8 0.3 0") and #both == 0, "different points: both changes:\n" .. tostring(me))
   print("rt-edits: a note or automation point both people moved is one thing, the later one's")
+end
+
+-- ---- (round 5) Claims: deleting several claimed things at once asks their claimer, as an edit to one does (W.refuse). It went to the older
+-- suggestion path: put back at once, a suggestion written, nobody asked ----
+do
+  build("Edits ask")
+  local claimed = { Bass = true, Drums = true } -- (Bee's)
+  local answer, asked = true, {}
+  local function claims_look(released)
+    as(A)
+    A.F.clock = A.F.clock + 1
+    mirror.watch(A.F.proj, A.cfg, song, room, { can = function(_, name) return released or not claimed[name] end, mode = "open", quick = true,
+      is_claimed = function(name) return not released and claimed[name] == true end, owner_of = function(name) return claimed[name] and "Bee" or "James" end,
+      ask = function(name) if not released and claimed[name] then asked[name] = true; return answer end end })
+    return new_events()
+  end
+  local function suggestions() local n = 0; for p in pairs(files) do if p:find("/suggestions/", 1, true) then n = n + 1 end end return n end
+  local function track_named(name) for _, t in ipairs(A.F.tracks) do if t.name == name then return t end end end
+  local function count_items(t) return t and #t.items or 0 end
+  -- two of Bass's items and the Drums track (its automation with it), at once
+  tick()
+  as(A)
+  reaper.DeleteTrackMediaItem(bass, item_named(bass, "Bass 1"))
+  reaper.DeleteTrackMediaItem(bass, item_named(bass, "Bass 2"))
+  reaper.DeleteTrack(drums)
+  local went = claims_look()
+  assert(#went == 0 and asked.Bass and asked.Drums, "deleting someone's claimed things asks them (asked Bass " .. tostring(asked.Bass) .. ", Drums " .. tostring(asked.Drums) .. ", " .. #went .. " sent)")
+  assert(count_items(bass) == 2 and not track_named("Drums") and suggestions() == 0, "held while asking: still gone here, nothing put back, no suggestion")
+  went = claims_look()
+  assert(#went == 0 and count_items(bass) == 2 and not track_named("Drums"), "and on the next look, while the ask waits")
+  -- Keep (or no answer): put back, with the words
+  answer = "Not sent: Bee kept it. Your edit is put back"
+  logged = {}
+  went = claims_look()
+  assert(#went == 0 and count_items(bass) == 4 and track_named("Drums") and suggestions() == 0, "Keep: everything is back, nothing went out, no suggestion")
+  local said = false
+  for _, l in ipairs(logged) do said = said or l:find("Bee kept it", 1, true) ~= nil end
+  assert(said, "and the log says why")
+  settle(A, true)
+  same(A, B, "a kept claim: as it was everywhere")
+  -- asked again, then released: the deletion goes to everyone
+  tick()
+  as(A)
+  drums = track_named("Drums")
+  reaper.DeleteTrackMediaItem(bass, item_named(bass, "Bass 1"))
+  reaper.DeleteTrack(drums)
+  answer = true
+  went = claims_look()
+  assert(#went == 0, "(held again)")
+  went = claims_look(true)
+  local gone = 0
+  for _, ev in ipairs(went) do if ev.gone then gone = gone + 1 end end
+  assert(gone >= 2, "released: the deletions go (" .. gone .. ")")
+  tick()
+  recv(B)
+  same(A, B, "deletions held for an ask, then released")
+  print("rt-edits: deleting several claimed things at once asks their claimer; Keep puts them back, Release sends them")
+end
+
+-- ---- (round 5) A claim given to a member and released by them from their panel stays released; a release from the driver (released/) and
+-- the folded claim agree ----
+do
+  build("Edits given")
+  local groups, trust = require("groups"), require("trust")
+  local real_mm, real_ok = groups.may_manage, trust.claim_ok
+  groups.may_manage = function(_, who) return who == "James" end -- (James is the studio's admin)
+  trust.claim_ok = function() return true end -- (written by his own computer, as Syncthing says)
+  for _, x in ipairs({ A, B }) do x.F.reaper.file_exists = function(p) if p:find("/claims/", 1, true) then return files[p] ~= nil end return true end end
+  local real_remove = os.remove
+  os.remove = function(p) if files[p] ~= nil then files[p] = nil; return true end return real_remove(p) end -- (the shared folder's)
+  local function holder(c, name) as(c); local _, who = sync.authority(c.cfg, song, room, nil); local t = who.tracks[name:lower()]; return t and t.user end
+  local function fold() as(B); logged = {}; sync.follow_claims(B.F.proj, B.cfg, song, room) end
+  local function given_files() local t = {}; for p, v in pairs(files) do if p:find("/claims/given-", 1, true) then t[p] = v end end return t end
+  local function bee_has(name) as(B); for _, n in ipairs(sync.my_claims(B.cfg, song, room).tracks or {}) do if n == name then return true end end return false end
+  -- James gives Bee Keys; her Live sync folds it in, dated as given
+  as(A)
+  sync.give_claims(A.cfg, song, room, "Bee", { "Keys" })
+  local given_at = os.date("!%Y-%m-%dT%H:%M:%SZ")
+  local copies = given_files()
+  assert(next(copies) and holder(A, "Keys") == "Bee", "(Keys is Bee's at once)")
+  tick()
+  fold()
+  assert(bee_has("Keys") and not next(given_files()), "(folded into Bee's own claims, the given file gone)")
+  assert(sync.my_claims(B.cfg, song, room).since["tracks:keys"] == given_at, "folded in with the date it was given, not the day's")
+  -- Bee lets go of it from her panel (the chip's release: her claims less Keys)
+  tick()
+  as(B)
+  local c = sync.my_claims(B.cfg, song, room)
+  local keep = {}
+  for _, n in ipairs(c.tracks) do if n ~= "Keys" then keep[#keep + 1] = n end end
+  c.tracks = keep
+  sync.set_claims(B.cfg, song, room, c)
+  assert(holder(B, "Keys") ~= "Bee", "released")
+  -- a computer that still reads the given file (Syncthing hasn't told it of the removal yet, or it holds the link's copy for its minute)
+  for p, v in pairs(copies) do files[p] = v end
+  assert(holder(A, "Keys") ~= "Bee", "stays released where the given file is still read")
+  fold()
+  assert(not bee_has("Keys") and holder(B, "Keys") ~= "Bee" and not next(given_files()), "and folding that file again doesn't bring it back")
+  -- given again later: a new gift counts
+  tick()
+  as(A)
+  sync.give_claims(A.cfg, song, room, "Bee", { "Keys" })
+  assert(holder(A, "Keys") == "Bee", "a new gift after the release counts")
+  tick()
+  fold()
+  assert(bee_has("Keys"), "and is folded in")
+  -- the driver releases Bee's claims after a gift and before her computer folds it: it doesn't count again from the fold
+  tick()
+  as(A)
+  sync.give_claims(A.cfg, song, room, "Bee", { "Gtr" })
+  tick()
+  sync.release_claims(A.cfg, song, room, "Bee")
+  assert(holder(A, "Gtr") ~= "Bee" and holder(A, "Keys") ~= "Bee", "(the release covers what was given before it)")
+  tick()
+  fold()
+  assert(holder(A, "Gtr") ~= "Bee" and holder(B, "Gtr") ~= "Bee" and not bee_has("Gtr"), "the release and the folded claim agree: Gtr isn't Bee's")
+  groups.may_manage, trust.claim_ok, os.remove = real_mm, real_ok, real_remove
+  print("rt-edits: a given claim released by its member stays released; a driver's release and a later fold agree")
 end
 print("ok rt-edits")

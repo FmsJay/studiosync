@@ -116,7 +116,10 @@ function undo.step(proj, cfg, b, redo, opts)
   local mirror, recall, sync = require("mirror"), require("recall"), require("sync")
   local all = recall.entries(cfg, b.song, b.room)
   local i
-  if redo then i = mirror.last_undo(all, cfg.user) else i = mirror.last_mine(all, cfg.user) end -- (with "and/or", nothing to redo undid your last change)
+  -- (marker or tempo changes of yours with nothing left to take back: passed over, below. rt-edits)
+  local passed_text, passed = select(2, reaper.GetProjExtState(proj, band.SECTION, "undo passed")), {}
+  for id in passed_text:gmatch("%S+") do passed[id] = true end
+  if redo then i = mirror.last_undo(all, cfg.user) else i = mirror.last_mine(all, cfg.user, passed) end -- (with "and/or", nothing to redo undid your last change)
   if not i then
     return nil, redo and "Nothing to redo: you haven't undone anything since your last change." or "You haven't changed anything here yet."
   end
@@ -128,6 +131,26 @@ function undo.step(proj, cfg, b, redo, opts)
         " changed it after that: what they changed stays, unless it's what you changed.") or ""), "StudioSync", 4) ~= 6 then return nil end
   end
   local can, who = sync.authority(cfg, b.song, b.room, band.read_json(band.session_path(cfg, b.song)))
+  -- (an act that was only a tempo map or marker change, a marker added and nothing else: that goes back by itself, or comes back. What it
+  -- added goes and what it took away returns; a bandmate's markers since stay. sync.undo_timeline, rt-edits)
+  if e.kind == "timeline" then
+    if not can(cfg.user, nil, nil) then return nil, "The tempo map and markers aren't yours to change here: nothing was taken back." end
+    local okt, changed = pcall(sync.undo_timeline, proj, cfg, b.song, b.room, all, i, redo and { redoes = e.id } or { undoes = e.id },
+      band.read_json(band.session_path(cfg, b.song)))
+    if not okt then return nil, "undo failed: " .. tostring(changed) end
+    if not changed then
+      -- (a bandmate took the marker away since, or changed the map: every press stopped here, and the changes before it couldn't be undone.
+      -- Passed over from now on, on this computer; a redo has nothing to bring back. The last 20 kept)
+      if not redo then
+        local ids = {}
+        for id in passed_text:gmatch("%S+") do ids[#ids + 1] = id end
+        ids[#ids + 1] = e.id
+        reaper.SetProjExtState(proj, band.SECTION, "undo passed", table.concat(ids, " ", math.max(1, #ids - 19)))
+      end
+      return nil, "The tempo map or markers have changed since: nothing was taken back." .. (redo and "" or " Undo again goes to your change before it.")
+    end
+    return what
+  end
   local o = { can = can, mode = who and who.mode, driver = who and who.driver, is_claimed = who and who.is_claimed, local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1" }
   -- (the whole act, as Restore's rows: it could land on a print swapped in the same second, and nothing you'd hear went back)
   local plan, ids = mirror.plan_undo_moment(all, i)
