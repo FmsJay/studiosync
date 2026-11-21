@@ -1014,17 +1014,23 @@ local function own_new()
     if (mt and now - (watch.moved[d] or -math.huge) < 3) or (not mt and now - (watch.at[d] or -math.huge) >= 5) or watch.n[d] == nil then
       watch.mt[d], watch.at[d] = mt, now
       local l = band.listing(d, ".json")
-      if #l ~= (watch.n[d] or -1) then
-        local seen, set = watch.names[d], {}
-        for _, f in ipairs(l) do set[f] = true; if seen and not seen[f] and mine(f, watch.user) then found = true end end
-        watch.names[d], watch.n[d] = set, #l
+      if #l ~= (watch.n[d] or -1) then -- (this computer's files counted, not a set of every name: 16 ms passes on the desktop as bandmates' arrived)
+        local mine_n = 0
+        for _, f in ipairs(l) do if owned(f, watch.u) and mine(f, watch.user) then mine_n = mine_n + 1 end end
+        if watch.n[d] and mine_n > (watch.mine[d] or 0) then found = true end
+        watch.mine[d], watch.n[d] = mine_n, #l
       end
     end
   end
   return found
 end
 function drive.bg_busy()
+  local t = reaper.time_precise()
   if own_new() then quick_due = true end
+  t = reaper.time_precise() - t
+  if t > 0.02 and reaper.GetExtState(band.SECTION, "perf stats") == "1" then -- (as drive slow names a slow plan's parts: rt-drive2, round 7)
+    pcall(reaper.SetExtState, band.SECTION, "drive slow", band.json_encode({ at = os.time(), total = math.floor(t * 10000 + 0.5) / 10, ms = { busy = math.floor(t * 10000 + 0.5) / 10 } }), false)
+  end
   return round ~= nil or quick_due
 end
 function drive.bg_on() return require("drivebg").on() end
@@ -1051,7 +1057,7 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
   end
   local dirs = {}
   for _, p in ipairs(rooms) do dirs[#dirs + 1] = p[1] .. "/events"; dirs[#dirs + 1] = p[1] .. "/recall" end
-  if not watch or table.concat(watch.dirs, "\0") ~= table.concat(dirs, "\0") then watch = { dirs = dirs, user = cfg.user, n = {}, names = {}, mt = {}, at = {}, moved = {} }; own_new() end
+  if not watch or table.concat(watch.dirs, "\0") ~= table.concat(dirs, "\0") then watch = { dirs = dirs, user = cfg.user, u = (cfg.user or ""):gsub("[^%w%-_]", "_"), n = {}, mine = {}, mt = {}, at = {}, moved = {} }; own_new() end
   local quick = quick_due
   quick_due = false
   if not round and not quick and reaper.time_precise() < drive.rest_until then return r and r.moved, r and false, r and r.err end -- (resting)
@@ -1083,6 +1089,7 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
   }
   local CM = require("cloudmodes")
   local read0, cm0 = read_n, CM.progress()
+  local trace = {} -- (each unit run this plan: name, ? waiting for a listing / ! failed / + done / - more, ms: the rest says the last ten)
   J.begin(droot)
   drive.plan_t0, drive.heavy_done = tp, false -- (from this call's start: its results' look counts too)
   pcall(function()
@@ -1104,6 +1111,7 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
         elseif u[1] == "cm" then u.done = not CM.sweeping() -- (a sweep goes on tick by tick, a room or two at a time)
         else u.done = not b end
         if u[1] == "room" and not u.done then rooms_left = true end
+        trace[#trace + 1] = string.format("%s%s %.0f", u[1], (not ok and J.is_need(a)) and "?" or not ok and "!" or u.done and "+" or "-", (reaper.time_precise() - tu) * 1000)
         if drive.heavy_done then break end -- (the update files' heavy check: a plan of its own)
       end
     end
@@ -1131,6 +1139,9 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
   if (all and not sent) or round.jobs > drive.MAX_JOBS then return done() end
   -- (something happening: a unit done for the first time, a change read, a step of the sweep; files moved count as the job comes back, above)
   round.plans = (fresh or read_n > read0 or CM.progress() > cm0) and 0 or round.plans + 1
+  round.trace = round.trace or {}
+  table.insert(round.trace, (#trace > 0 and table.concat(trace, " ") or "-") .. (sent and " sent" or "") .. (round.plans == 0 and " moving" or ""))
+  if #round.trace > drive.STALL then table.remove(round.trace, 1) end
   if round.plans >= drive.STALL then
     drive.rest_until = reaper.time_precise() + drive.EVERY
     -- (behind: not up to date yet this round, files moved since it last was, or a copy that keeps failing. Not a room looked at again, nor
@@ -1146,6 +1157,9 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
     end
     local x = round
     round = nil
+    -- (what the plans before it did, and where the sweep was: ExtState "drive rest". The desktop rested mid-sweep at 10:08:22 and nothing could
+    -- tell why from outside. rt-drive2, round 7)
+    pcall(reaper.SetExtState, band.SECTION, "drive rest", band.json_encode({ at = os.time(), plans = x.trace, sweep = CM.where and CM.where() or nil }), false)
     -- (a rest is never "more": Live sync said "bringing the studio's copy of this room up to date" for it, at 08:21:42 on the desktop with no
     -- edit. Not up to date, it's said as the pass's error instead, which Health shows. rt-drive2, round 4)
     return 0, false, behind and ("nothing moved for a while" .. stuck .. "; it tries again in " .. math.floor(drive.EVERY / 60) .. " minutes") or x.err

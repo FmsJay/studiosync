@@ -39,4 +39,14 @@ for at in src:gmatch("()laps_add%(perf%.laps") do
 end
 check(calls == 1, "the tick adds its laps once: " .. calls)
 check(src:find("laps = laps_table(perf.laps),", 1, true) and src:find("perf.laps = {}", 1, true), "published in tick stats and reset after")
-print("ok perf laps: totals, ticks and worst per lap, the start lap's sub-ticks, only while perf stats is on")
+-- the "save, drive" lap in parts inside P.save_drive (rt-drive2, round 7), and every tick over 50 ms kept with its laps while perf stats is on
+local sd = src:find("function P.save_drive(t)", 1, true)
+local sd_end = sd and src:find("\nfunction P%.", sd + 10)
+check(sd and sd_end, "P.save_drive found")
+local dn = 0
+for at in src:gmatch('()sub_lap%("drive/') do dn = dn + 1; check(at > sd and at < sd_end, "a drive sub-lap outside P.save_drive: at " .. at) end
+check(dn >= 6, "the drive lap's parts are marked: " .. dn)
+local ov = src:find("perf.over[#perf.over + 1]", 1, true)
+check(ov and src:sub(math.max(1, ov - 400), ov):find("if perf.on then", 1, true), "ticks over 50 ms kept only while perf stats is on")
+check(src:find("over = #perf.over > 0 and perf.over or nil", 1, true) and src:find("perf.laps, perf.over = {}, {}", 1, true), "published and reset")
+print("ok perf laps: totals, ticks and worst per lap, the start lap's sub-ticks, the drive lap's parts, ticks over 50 ms, only while perf stats is on")

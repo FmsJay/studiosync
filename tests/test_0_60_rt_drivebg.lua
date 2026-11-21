@@ -334,6 +334,10 @@ end
 -- (round 4: a rest is never "more", which Live sync logs as "bringing ... up to date"; not up to date, it says why as the pass's error)
 check(rest_at and rest_ret[1] == 0 and rest_ret[2] == false and tostring(rest_ret[3]):find("nothing moved", 1, true), "it rested, saying 0 moved and why: " ..
   tostring(rest_ret[2]) .. " " .. tostring(rest_ret[3]))
+-- (round 7: and what the plans before it did, in ExtState "drive rest": the desktop rested mid-sweep at 10:08:22 and nothing told why)
+local rest_rec = ext["drive rest"] and json.decode(ext["drive rest"])
+check(rest_rec and type(rest_rec.plans) == "table" and #rest_rec.plans == drive.STALL and tostring(rest_rec.plans[1]):find("room", 1, true),
+  "drive rest: the last plans, each unit's outcome: " .. tostring(ext["drive rest"]))
 local first = #plan_at
 for i, t in ipairs(plan_at) do if t > rest_at then first = i - 1; break end end
 check(first == drive.STALL + 1, "planned " .. drive.STALL .. " times after its other units finished, then stopped: " .. first)
@@ -671,6 +675,19 @@ end
 check(went and went <= 10, "this computer's undo and hub snapshot went up within seconds: " .. tostring(went))
 live(10)
 check(not drive.bg_busy() and sweeps == 0 and others == 0, "in a short round of the rooms only, the sweep not started again: " .. sweeps .. " " .. others)
+-- (round 7: drive.bg_busy's own look, slow (a big listing here 25 ms), is named in "drive slow" while perf stats is on: Live sync's drive lap
+-- had runs over 85 ms that the plan's record never saw)
+local real_listing = band.listing
+band.listing = function(d, e) clock = clock + 0.025; return real_listing(d, e) end
+ext["perf stats"], ext["drive slow"] = "1", nil
+local late2 = ev("James", 97)
+put(HERE .. "/events/" .. late2.id .. ".json", json.encode(late2))
+for _ = 1, 4 do clock = clock + 2; drive.bg_busy() end
+band.listing, ext["perf stats"] = real_listing, nil
+local ds2 = ext["drive slow"] and json.decode(ext["drive slow"])
+check(ds2 and ds2.ms and ds2.ms.busy and ds2.ms.busy >= 20, "a slow look for new files is named: " .. tostring(ext["drive slow"]))
+-- (and the worker waits 4 minutes for its next job, not 1: Live sync's rounds 3 minutes apart each started one, 20-35 ms of "submit")
+check(bg.PS1:find("-gt 240", 1, true) and bg.SH:find("-gt 2400", 1, true), "the worker idles 240 s")
 
 -- ---- 3o. each end-of-session project read once, not every sweep (rt-drive2, round 5) ----
 -- The desktop: the sweep's plan of 34.8 ms was one 1.5 MB project read and scanned; Nostalgia's 13 are 19 MB, and every sweep read them again.

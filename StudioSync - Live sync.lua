@@ -326,6 +326,7 @@ local perf = { on = false, at = -math.huge, ticks = {}, passes = {}, worst = 0, 
 -- (and each lap's total, ticks and worst over those 10 s, with the "start" lap split into its sub-ticks, so a measurement says which owns the
 -- ~1 ms a tick and the rare 126-548 ms stalls. The sub-ticks are marked only while perf stats is on. rt-perf's cut 3, rt-perfcut1)
 perf.laps = {}
+perf.over = {} -- (each tick over 50 ms in the 10 s, with its laps: up to 8. rt-drive2, round 7)
 -- (a paced sub-tick skipped this tick (sub_due) sets perf.skip: its sub-lap isn't counted, so "ticks" says how often it ran; its moment goes to the
 -- next lap. rt-perfcut3)
 local function sub_lap(name) if perf.on then if perf.skip then perf.skip = false else lap(name) end end end
@@ -699,6 +700,7 @@ function P.save_drive(t)
       end
     end
   end
+  sub_lap("drive/save") -- (the "save, drive" lap in parts while perf stats is on: runs over 50 ms the drive's own record missed. rt-drive2, round 7)
   if now - quiet.checked > 60 then
     quiet.checked = now
     band.try("removal.tick", require("removal").tick) -- (Autostart does this too, where it's on)
@@ -707,8 +709,10 @@ function P.save_drive(t)
     if n ~= quiet.n then quiet.n, quiet.since = n, now
     elseif now - quiet.since > 1200 then band.try("end_of_session", end_of_session, "20 minutes with no changes") end
   end
+  sub_lap("drive/quiet")
   local droot = drive.root(cfg)
   require("streams").cloud_root = droot -- (catch-up asks for a cloud pass when nobody on the link has what Syncthing still needs)
+  sub_lap("drive/root")
   -- every 3 minutes (each pass while a big copy is still going): Drive limits how often one account may change files. A pass copies for 0.1 s,
   -- and not in a pass that looked: 1.5 s every 10 s held REAPER up that long each time while a big song's room went across (3,150 changes,
   -- 2026-11-10). Half a minute after your changes went out, or when catch-up wants the cloud copy, sooner (drive.pass_due: the cloud copy
@@ -723,11 +727,13 @@ function P.save_drive(t)
   -- listings, under 10 ms a tick, and reads its results, so a pass that has started carries on tick by tick until it's done. Where the worker
   -- fails three times running, or ExtState "drive bg" is "off", the pass below runs here as before)
   local drive_busy = drive.bg_busy()
+  sub_lap("drive/due, busy")
   if droot and drive.bg_on() and reaper.GetPlayStateEx(proj) == 0 and (drive_due or drive_busy) then
     if not drive_busy then drive_at, drive_soon_at, require("streams").cloud_due = now, nil, nil end
     local at = {}
     for _, room in ipairs(rooms) do at[#at + 1] = { sync.room_dir(cfg, b.song, room), droot .. "/" .. b.song .. "/rooms/" .. room } end
     local moved, more, err = drive.bg_step(cfg, droot, b.song, at, 0.008)
+    sub_lap("drive/step")
     if moved then
       for _, path in ipairs(drive.landed) do
         local s = require("streams")
@@ -741,6 +747,7 @@ function P.save_drive(t)
       if moved > 0 and not more then band.log(string.format("%s copy up to date (%d file%s this pass)", drive.label(drive.service_of(droot)), moved, moved == 1 and "" or "s")) end
       drive_more = more
     end
+    sub_lap("drive/status")
   elseif drive_due then
     drive_at, drive_soon_at, require("streams").cloud_due = now, nil, nil
     local moved, more, err = 0, false, nil
@@ -1519,11 +1526,11 @@ local function perf_publish(now)
   if perf.on and #perf.ticks > 0 then
     local R = require("rthealth")
     band.set_ext_json(band.SECTION, "tick stats " .. key, { at = os.time(), song = b.song, room = b.room, ticks = R.summary(perf.ticks),
-      laps = laps_table(perf.laps),
+      laps = laps_table(perf.laps), over = #perf.over > 0 and perf.over or nil,
       passes = R.summary(perf.passes), worst = perf.worst_laps, recv = #perf.recv > 0 and R.summary(perf.recv) or nil }, false)
   end
   perf.on, perf.ticks, perf.passes, perf.worst, perf.worst_laps, perf.recv = reaper.GetExtState(band.SECTION, "perf stats") == "1", {}, {}, 0, "", {}
-  perf.laps = {}
+  perf.laps, perf.over = {}, {}
 end
 -- an error anywhere in a tick (a malformed cue from someone's machine, say) is logged, and Live sync carries on
 local said_at, sws_at = -math.huge, -math.huge
@@ -1576,6 +1583,7 @@ tick = function()
     perf.ticks[#perf.ticks + 1] = took
     if took > perf.worst then perf.worst, perf.worst_laps = took, laps_text() end
     laps_add(perf.laps, laps)
+    if took > 0.05 and #perf.over < 8 then perf.over[#perf.over + 1] = string.format("%.0f ms at %s: %s", took * 1000, os.date("%H:%M:%S"), laps_text()) end
   end
   if t0 - perf.at >= 10 then perf_publish(t0) end
   if go then reaper.defer(tick) end

@@ -46,6 +46,8 @@ for i = 0, 512 do
         if type(l) == "table" then say(string.format("    %-24s %8.1f %6d %8.1f", tostring(l[1]), tonumber(l[2]) or 0, tonumber(l[3]) or 0, tonumber(l[4]) or 0)) end
       end
     end
+    -- (every tick over 50 ms in the 10 s, with its laps, "drive/..." the cloud copy's parts. rt-drive2, round 7)
+    if type(st.over) == "table" then for _, o in ipairs(st.over) do say("  over 50 ms: " .. tostring(o)) end end
   end
 end
 if tabs == 0 then say("No Live sync has published yet: is it running in a tab? (each publishes every 10 s once \"perf stats\" is on)") end

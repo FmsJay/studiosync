@@ -417,6 +417,86 @@ Also: a job's results collected during a rest said `more`; now they don't (the s
    (1 file this pass)". `cloud storage`'s `at` doesn't change with it.
 3. A bandmate's edit arriving starts no drive round: the drive lap stays ~0.1 ms per window.
 
+## Round 7 (0.59.49.86, restart at 09:59:48)
+
+Passed: an edit reached the cloud in 0.2 s and its Undo in 2.3 s, a hub snapshot in 2.1 s, `cloud storage`'s `at` was unchanged, and a
+bandmate's change started nothing.
+
+Failed:
+- runs over 85 ms in Live sync's drive lap that `drive slow` didn't name (111, 128, 121 ms, and some of 73-79 ms);
+- an 834 ms tick with drive at 485 ms, 24 s after the restart;
+- the 3-minute flat stretch before `cloud storage`;
+- a plan every ~3 minutes after the round.
+
+### 1-2. Naming everything in the drive lap
+`drive slow` only ever timed `drive.bg_step`. Live sync's "save, drive" lap also covers other work in `P.save_drive`:
+- the project save after a delete went out;
+- every 60 s: `removal.tick`, `listen.tick`, the change count and the end-of-session check (this also runs at Live sync's first pass,
+  which is when the 485 ms was: Live sync had restarted at 10:00:11);
+- `drive.root`;
+- `drive.bg_busy`;
+- after a step: the status, Syncthing rescans of anything brought down (each one starts a process), and `sessionfile.catch_up`.
+
+**Now (perf stats on):**
+- That lap is split into sub-laps: `drive/save`, `drive/quiet`, `drive/root`, `drive/due, busy`, `drive/step`, `drive/status`, and
+  `save, drive` is what's left.
+- Every tick over 50 ms in a 10 s window is kept with all its laps (up to 8), published as `over` in "tick stats" and printed by
+  `tests/reaper/rt_perf.lua`. The "slow tick" ExtState (ticks over 150 ms) shows the parts too.
+- `drive.bg_busy` writes `drive slow` with `ms.busy` when its own look takes over 20 ms.
+- So the next measurement will name the 485 ms and the 73-128 ms runs exactly. I couldn't from outside.
+
+**What's already cut:**
+- **The worker now waits 240 s for its next job, not 60 s.** Live sync's rounds are 3 minutes apart, so each one started a new PowerShell on
+  REAPER's thread. That was the 32.6 ms "submit" at 10:11:18.
+- **`drive.bg_busy`'s look for new files now counts this computer's files** instead of building a set of every name. When a bandmate's
+  change arrived it listed and set-built 2,700 names: the ~16 ms single-pass spikes every minute or so.
+- **Compiling the drive's modules isn't it:** measured on REAPER's thread at 17 ms for all 19 together.
+
+**Suspects for the 485 ms, unconfirmed:** Live sync's first-pass 60 s block (`removal.tick`, `listen.tick`, outside my files), `drive.root`'s
+first look in a new Live sync, and process starts (the worker, rescans). The sub-laps will say which.
+
+### 3. The flat stretch (10:08:32-10:11:26)
+- A round rested mid-sweep at ~10:08:22. It was quiet because the copy was up to date, and the sweep finished in the next round
+  (`cloud storage` at 11:38).
+- **Not reproduced offline:** the same planner against the real folders, at 2 s a plan with 4 s jobs, finished the sweep at virtual 702 s
+  with no rest.
+- **Now** every rest writes ExtState `drive rest` = { at, plans = what each of the last ten plans did, sweep = where it was }.
+  - Each plan is listed as its units: `name?` waiting for a listing, `name!` failed, `name+` done, `name-` more to do, each with its ms.
+  - `sent` if it sent a job, `moving` if something happened.
+  - `sweep` gives the song, room or projects, and how far.
+- The next rest will say why.
+
+### 4. The plan every ~3 minutes after the round (10:12:24, 10:15:26, 10:18:27)
+- **What it is:** Live sync's scheduled cloud pass (`drive.EVERY`, 180 s), a full round:
+  - the open room's ten cloud folders listed, then its full plan (28-51 ms: comparing 2,700 changes both ways);
+  - the other song;
+  - the update files (cheap, memo);
+  - the storage sweep every 10 minutes.
+- **What it's still for:**
+  - bringing down a bandmate's work that is only in the cloud copy (someone working while not on the link with you);
+  - keeping the other songs' copies;
+  - the update files and the sweep.
+- **What it's no longer for:** this computer's own changes go up within seconds by the short rounds (round 6).
+- **Whether every 3 minutes is needed** is a product choice. It could stretch when nothing came in (3, 6, 12 minutes), at the cost of a
+  bandmate's cloud-only work arriving later. Catch-up already asks for a pass when Syncthing needs files nobody on the link has. I left it
+  at 3 minutes; it's no longer a process start each time.
+
+### Tests (each fails without its fix, checked)
+- **3c:** a rest writes `drive rest` with the last ten plans' units.
+- **3p:** a slow look for new files (25 ms) writes `drive slow` with `ms.busy`. The worker scripts idle 240 s.
+- **tests/test_0_60_rt_perfcut1.lua:** `sub_lap("drive/...")` marks are only inside `P.save_drive` (at least 6). Ticks over 50 ms are kept
+  only inside `if perf.on`, and published and reset. Round 6's Live sync has none.
+
+### Live sync lines (shared file, additive, perf-stat lines only)
+Six `sub_lap("drive/...")` lines in `P.save_drive`, and `perf.over`: created, published as `over`, reset, and filled at the tick's end inside
+`if perf.on`.
+
+### REAPER checks after deploy (perf stats on, after a restart)
+1. `tests/reaper/rt_perf.lua`'s "over 50 ms" lines and the "slow tick" ExtState name which `drive/...` part each slow drive run is. Send me
+   them, with `drive slow` and `drive rest` if present.
+2. `submit` no longer ~30 ms at each 3-minute round (no new worker each time). Look in `drive slow`, or for a `powershell` that stays
+   between rounds.
+
 ## Left / not done
 
 - **`trim.plan` itself** (lib/trim.lua, not mine) is 80-200 ms for a 2,500-change room with ~180 saved versions in Standard's window

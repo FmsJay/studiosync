@@ -26,6 +26,8 @@ bg.MAX_OPS, bg.MAX_BYTES = 200, 64 * 1024 * 1024 -- a job's writes at most: its 
 bg.GAP = 1 -- s between one job and the next at least (Drive limits how often one account changes files)
 bg.START_WAIT = 20 -- s for a worker just started to show a heartbeat (PowerShell can take seconds, cold)
 bg.BEAT_STALE = 5 -- s an idle worker may go without one
+-- (a worker stops after 240 s with no job (the scripts below; was 60 s): Live sync's rounds are 3 minutes apart, so each started a new
+-- PowerShell on REAPER's thread, 20-35 ms of "submit" on the desktop. rt-drive2, round 7)
 bg.OP_WAIT = 30 -- s the worker may go without a heartbeat on a step (a copy beats each second it makes progress) before it counts as stuck or gone
 bg.GIVE_UP, bg.REST = 3, 600 -- failures in a row before passes run on REAPER's thread again, and for how long
 bg.NEED = setmetatable({}, { __tostring = function() return "cloud copy: waiting for the worker's listing" end })
@@ -331,7 +333,7 @@ while ($true) {
     $idle = Now
     Beat '-' 0
   } else {
-    if ((Now) - $idle -gt 60) { exit }
+    if ((Now) - $idle -gt 240) { exit }
     if ((Now) -ne $beat) { Beat '-' 0; $beat = Now }
     Start-Sleep -Milliseconds 100
   }
@@ -421,7 +423,7 @@ while :; do
     mv -f "$res.tmp" "$res"; rm -f "$p"
     idle=0; beat - 0
   else
-    idle=$((idle + 1)); [ "$idle" -gt 600 ] && exit 0
+    idle=$((idle + 1)); [ "$idle" -gt 2400 ] && exit 0
     n=$((n + 1)); [ $((n % 10)) -eq 1 ] && beat - 0
     sleep 0.1
   fi

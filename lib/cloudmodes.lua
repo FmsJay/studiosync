@@ -542,6 +542,13 @@ function cm.tick(cfg, droot, now, budget)
   return sum
 end
 function cm.sweeping() return sw ~= nil end -- (drive.bg_step keeps a pass going while a sweep is)
+-- Where the sweep is, in words, for drive.lua's "drive rest" record: nil when none. (rt-drive2, round 7)
+function cm.where()
+  if not sw then return nil end
+  local it, cur = sw.list[sw.i] or {}, sw.cur
+  local step = not cur and "reading or judging" or cur.sessions and ("projects " .. tostring(cur.i) .. "/" .. #cur.rpps) or ("files " .. tostring(cur.i) .. "/" .. #cur.work)
+  return string.format("%s %s (%d of %d): %s", tostring(it[1]), tostring(it[2] or "sessions"), sw.i, #sw.list, step)
+end
 function cm.mb(b)
   b = tonumber(b) or 0
   if b >= 1024 ^ 3 then return string.format("%.1f GB", b / 1024 ^ 3) end
