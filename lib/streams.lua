@@ -1033,6 +1033,7 @@ streams.CLOUD_EVERY = 60
 -- arriving (streams.catchup_wake, from Live sync's receive) start again at CATCHUP_EVERY. (James, rt)
 streams.CLOUD_WAIT_MAX = 300
 local cloud_wait, cloud_quiet_at = nil, nil
+local cloud_listed_text -- (the need list a cloud pass was asked for while its files weren't listed yet: rt-p3)
 function streams.catchup_wake() cloud_wait, cloud_quiet_at = nil, nil end
 streams.cloud_root, streams.cloud_due = nil, nil -- (Live sync's: the cloud copy's root here; a cloud pass wanted now)
 function streams.catchup_tick(cfg, b)
@@ -1061,12 +1062,24 @@ function streams.catchup_tick(cfg, b)
   end
   if to_cloud then
     local cloud_rooms = streams.cloud_root .. "/" .. b.song .. "/rooms/"
+    -- (with the cloud copy's worker on, a cloud file's size is the worker's listing's, never asked of the cloud folder on REAPER's thread (a
+    -- Google Drive file can take a third of a second). Not listed yet: one cloud pass for each new need list, which lists the folder and
+    -- brings what's there. Worker off: asked here, as the passes are then too. rt-p3)
+    local okb, bg = pcall(require, "drivebg")
+    local listed = okb and type(bg) == "table" and bg.on() and bg.known_size or nil
     for k, w in ipairs(need_wants) do
       if k > streams.CATCHUP_BATCH then break end
-      if not skip(w) and band.size(cloud_rooms .. w.room .. "/media/" .. w.file) == w.size then
-        streams.cloud_due, cloud_asked_at = true, now
-        streams.trace("cloud catch-up: " .. w.key .. " is in the cloud copy, nobody on the link: a cloud pass now")
-        break
+      if not skip(w) then
+        local cp = cloud_rooms .. w.room .. "/media/" .. w.file
+        local size
+        if listed then size = listed(cp) else size = band.size(cp) end
+        local maybe = listed and size == nil and cloud_listed_text ~= need_text
+        if size == w.size or maybe then
+          if maybe then cloud_listed_text = need_text end
+          streams.cloud_due, cloud_asked_at = true, now
+          streams.trace("cloud catch-up: " .. w.key .. (maybe and " may be in the cloud copy (not listed yet)" or " is in the cloud copy") .. ", nobody on the link: a cloud pass now")
+          break
+        end
       end
     end
     if streams.cloud_due then streams.catchup_wake()

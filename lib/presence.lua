@@ -200,15 +200,16 @@ function presence.put_status(cfg, song, room, s, info, fp, now, write)
 end
 -- A bandmate whose status file is stale here (Syncthing paused or broken on either computer) but whose Live sync runs in this room is here
 -- all the same once the link hears them: put_status's hello reaches their computer, their status comes back over the link (from_msg), and
--- from then on presence.peers has them, so the link sends them everything and "nobody else is here" isn't said. For the first HOLD s of
--- this script, before any hello could have been answered, you aren't read as alone while the link is on (link_hold), so
+-- from then on presence.peers has them, so the link sends them everything and "nobody else is here" isn't said. For the first LINK_HOLD s
+-- of this script, before any hello could have been answered, you aren't read as alone while the link is on (link_hold), so
 -- full control isn't granted on stale files alone in the seconds before the link has heard who's here. rt-catchup
-presence.HELLO_EVERY, presence.HOLD = 15, 8
+-- (LINK_HOLD, not HOLD: named HOLD, it set the edit hold at the top from 3 s to 8 s for every edit. rt-p3)
+presence.HELLO_EVERY, presence.LINK_HOLD = 15, 8
 local hold_from
 function presence.link_hold(cfg)
   local now, direct = reaper.time_precise(), require("direct")
   hold_from = hold_from or now
-  if now - hold_from >= presence.HOLD then return false end
+  if now - hold_from >= presence.LINK_HOLD then return false end
   local ok, on = pcall(function() return direct.available() and direct.live_available() and direct.enabled(cfg.root) and require("groups").tailnet(cfg.root) ~= nil end)
   return ok and on == true
 end

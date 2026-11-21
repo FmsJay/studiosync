@@ -67,6 +67,7 @@ local function computer(who)
   }
   -- (the link: everything this computer sends, kept for the test to hand over)
   c.direct = { peers = function() return { "peer:47281" }, {}, { ["peer:47281"] = "Peer" } end, forget_devices = function() end,
+    studio_peers = function() return {}, {} end, -- (studio-wide files to the studio's other computers too: tests/test_0_60_rt_linkmove6.lua)
     send_live = function(_, kind, d, song, room, _, to) c.sent[#c.sent + 1] = { kind = kind, d = d, song = song, room = room, to = to }; return true end }
   return c
 end
@@ -653,6 +654,118 @@ P.by_file[GM] = ann.dev:sub(1, 7)
 check(owner_of(P, "Drums") == "Moe", "an unsigned given claim, Syncthing says Ann's computer: counts as before")
 write(P.root .. "/" .. ORD, ob)
 check(require("band").read_json(P.root .. "/" .. ORD).list[1] == "t2", "an unsigned track order reads as before")
+
+-- ==== rt-p3 (round 6): studio-wide files beyond the room, files over 32 KB in parts, driver.json, an older folder copy ===================
+do
+  -- studio-wide and song-wide files go to every studio computer the link may send to (direct.studio_peers), room files to the room
+  local band = use(A)
+  local asked_song
+  A.direct.studio_peers = function(_, song) asked_song = song; return { "far:47281", "moe:47281" }, { ["far:47281"] = "Far", ["moe:47281"] = "Moe" } end
+  write(A.root .. "/_band/removed/Moe.json", json({ user = "Moe", device = moe.dev, by = "Ann", at = os.time() }))
+  band.write_json(A.root .. "/_band/band.json", { id = STUDIO, name = "LM", owner = "Olive", admins = { "Ann" }, sonobus = "secret-p3" })
+  local bj = drained(A, "_band/band.json")[1]
+  local to = table.concat(A.sent[#A.sent].to, " ")
+  check(bj and to == "peer:47281 far:47281", "band.json: to the room and to a computer in another room, never to one with a removal mark: " .. to)
+  os.remove(A.root .. "/_band/removed/Moe.json")
+  band.write_json(A.root .. "/" .. SONG .. "/session.json", { host = "Ann", song = SONG, v = 0 })
+  drained(A)
+  check(asked_song == SONG and table.concat(A.sent[#A.sent].to, " ") == "peer:47281 far:47281 moe:47281", "a song's session.json: its song's computers, wherever they are")
+  require("grants").set(A.cfg, SONG, ROOM, "Moe", true)
+  drained(A)
+  check(table.concat(A.sent[#A.sent].to, " ") == "peer:47281", "a room's file: the room's computers only, as before")
+  A.direct.studio_peers = function() return {}, {} end
+
+  -- driver.json: from the driver's own computer, at once (the panel reads the file; Live sync had the "driver" event already)
+  local DRV = RDIR .. "/driver.json"
+  use(A)
+  require("sync").set_driver(A.cfg, SONG, ROOM, "Ann")
+  local dv = drained(A, DRV)[1]
+  check(dv and dv.side, "Take control: driver.json goes over the link, signed")
+  B.asked = 0
+  ok, why = deliver(B, dv)
+  use(B)
+  check(ok == true and require("sync").driver(B.cfg, SONG, ROOM) == "Ann" and B.asked == 0, "Bee's computer has Ann as the driver at once: " .. tostring(why))
+  local db = json({ driver = "Ann" })
+  ok = deliver(B, { rel = DRV, body = db, side = resign(moe, DRV, db, FAR + 50) })
+  check(ok == false, "Moe's computer naming Ann the driver: refused (only the driver's own computer)")
+  syncthing(B, A, DRV)
+  use(B)
+  check(not overlaid(B, DRV) and require("sync").driver(B.cfg, SONG, ROOM) == "Ann", "Syncthing's copy: nothing changes")
+
+  -- a file over 32 KB: in parts, put together, checked as one
+  band = use(A)
+  local S2 = SONG .. "/session.json"
+  local big = {}
+  for i = 1, 3000 do big[i] = { i, "marker " .. i .. " \"quoted\"" } end
+  band.write_json(A.root .. "/" .. S2, { host = "Ann", song = SONG, markers = big })
+  local body = read(A.root .. "/" .. S2)
+  check(#body > require("signed").BODY_MAX * 2, "a session.json of " .. #body .. " bytes")
+  A.sent = {}
+  require("signed").drain(A.cfg, SONG, ROOM)
+  local parts = {}
+  for _, m in ipairs(A.sent) do if m.kind == "signed" and m.d.part then parts[#parts + 1] = m.d end end
+  local n = math.ceil(#body / require("signed").PART)
+  check(#parts == n and parts[n].side and not parts[1].side and parts[1].rel == nil, "sent in " .. #parts .. " parts, the signature file with the last, no rel (an older build: \"not a signed file\")")
+  for _, m in ipairs(A.sent) do check(#json({ song = SONG, room = ROOM, d = m.d }) <= 65536, "each part fits the link's 64 KB a message") end
+  B.asked = 0
+  for i = n, 2, -1 do ok, why = deliver(B, parts[i]); check(ok == false and tostring(why):find("^part"), "part " .. i .. " alone: kept, not taken") end
+  ok, why = deliver(B, parts[1])
+  band = use(B)
+  check(ok == true and #band.read_json(B.root .. "/" .. S2).markers == 3000 and B.asked == 0, "the last part in: the whole file taken by its signature: " .. tostring(why))
+  check(read(B.root .. "/" .. S2) ~= body, "nothing written into the shared folder")
+  -- a part changed, a part missing past PARTS_KEEP, junk
+  local bad = { part = { S2, 1, n, parts[1].part[4] }, data = require("profile").base64(("x"):rep(require("signed").PART)) }
+  for i = 2, n do deliver(O, parts[i]) end
+  ok, why = deliver(O, bad)
+  check(ok == false and tostring(why):find("add up") and not overlaid(O, S2), "a changed part: refused (" .. tostring(why) .. ")")
+  for i = 2, n do deliver(O, parts[i]) end
+  clock = clock + require("signed").PARTS_KEEP + 1
+  ok, why = deliver(O, parts[1])
+  check(ok == false and not overlaid(O, S2), "a part that comes after the rest were dropped (PARTS_KEEP): nothing taken (" .. tostring(why) .. ")")
+  check(deliver(O, { part = { S2, 1, 99, "x" }, data = "AAAA" }) == false, "more parts than FILE_MAX allows: refused")
+  check(deliver(O, { part = { "../x/session.json", 1, 2, "x" }, data = "AAAA" }) == false, "a path outside the studio: refused")
+  check(deliver(O, { part = { S2, 1, 2, "x" }, data = "not base64!" }) == false, "not base64: refused")
+  -- over FILE_MAX: stays on Syncthing
+  band = use(A)
+  for i = 1, 12000 do big[i] = { i, "marker " .. i .. " with a longer name" } end
+  band.write_json(A.root .. "/" .. S2, { host = "Ann", song = SONG, markers = big })
+  check(#read(A.root .. "/" .. S2) > require("signed").FILE_MAX and #drained(A) == 0 and #A.sent == 0, "over FILE_MAX: nothing over the link, Syncthing carries it")
+
+  -- an older folder copy after a newer link copy: the link's copy goes back in (tidy) while the folder's is signed and numbered before it
+  band = use(A)
+  band.write_json(A.root .. "/" .. S2, { host = "Ann", song = SONG, v = 1 })
+  local v1, v1sig = read(A.root .. "/" .. S2), read(A.root .. "/" .. S2 .. ".sig")
+  drained(A)
+  band = use(A)
+  band.write_json(A.root .. "/" .. S2, { host = "Ann", song = SONG, v = 2 })
+  local m2 = drained(A, S2)[1]
+  check(m2 and deliver(B, m2) == true, "Bee's computer takes v2 from the link")
+  write(B.root .. "/" .. S2, v1); write(B.root .. "/" .. S2 .. ".sig", v1sig)
+  band = use(B)
+  check(band.read_json(B.root .. "/" .. S2).v == 1, "(Syncthing brings v1 late: band.read reads the folder's changed file)")
+  clock = clock + 2
+  drained(B)
+  band = use(B)
+  check(band.read_json(B.root .. "/" .. S2).v == 2 and overlaid(B, S2), "the next tidy: v1 is numbered before the link's v2, so v2 is read again")
+  check(read(B.root .. "/" .. S2) == v1, "(nothing written into the folder)")
+  -- an older build rewrites it unsigned (the signature file stale): read, as before
+  write(B.root .. "/" .. S2, json({ host = "Ann", song = SONG, v = 9 }))
+  clock = clock + 2
+  drained(B)
+  band = use(B)
+  check(band.read_json(B.root .. "/" .. S2).v == 9 and not overlaid(B, S2), "an unsigned rewrite isn't \"older\": the folder's file is read")
+  -- the newest by Syncthing after a restore: the link's copy is let go
+  write(B.root .. "/" .. S2, v1); write(B.root .. "/" .. S2 .. ".sig", v1sig)
+  band = use(A)
+  band.write_json(A.root .. "/" .. S2, { host = "Ann", song = SONG, v = 3 })
+  local m3 = drained(A, S2)[1]
+  check(deliver(B, m3) == true, "v3 from the link over the folder's v1")
+  syncthing(B, A, S2)
+  clock = clock + 2
+  drained(B)
+  band = use(B)
+  check(band.read_json(B.root .. "/" .. S2).v == 3 and not overlaid(B, S2), "Syncthing brings v3 itself: the link's copy is let go")
+end
 
 clean()
 print("ok link-first: given claims, releases, track order, hub handovers, session.json, profile pictures, the welcome's numbers")

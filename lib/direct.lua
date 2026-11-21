@@ -189,17 +189,27 @@ end
 -- link never carried a thing between them (the LinuxBox test, 2026-11-21). The hello is this computer's status: a bandmate's Live sync in
 -- this song and room takes it as any status off the link, and from then on each is here for the other. -> "name:port" list, sorted.
 function direct.strangers(cfg, song, room)
-  local t = require("groups").tailnet(cfg.root)
-  if not t then return {} end
-  local here, removal = {}, require("removal")
+  local here = {}
   for _, p in ipairs((direct.refresh_peers(cfg, song, room))) do here[p] = true end
-  local ok = sendable(cfg, song, reaper.time_precise())
-  local all = direct.peers_from(devices(cfg.root), t.suffix, require("services").my_device_id(), direct.port(), nil, function(d)
-    return d.user ~= cfg.user and not removal.mark(cfg.root, d.user) and ok(d) -- (another computer of yours drops your status: presence.from_msg)
-  end)
+  local all, users = direct.studio_peers(cfg, song)
   local out = {}
-  for _, p in ipairs(all) do if not here[p] then out[#out + 1] = p end end
+  for _, p in ipairs(all) do
+    if not here[p] and users[p] ~= cfg.user then out[#out + 1] = p end -- (another computer of yours drops your status: presence.from_msg)
+  end
   return out
+end
+-- Every computer of the studio the link may send to, here or not: the same device check as the link's own peers (sendable), a Tailscale name
+-- on the studio's network, the song in a guest's list, no removal mark; this person's other computer too. The studio-wide and song-wide
+-- signed files go to all of them, not only to those in Live sync's room (lib/signed.lua drain), and the hello to those not here
+-- (strangers). -> "name:port" list (sorted), peer -> user. (rt-p3)
+function direct.studio_peers(cfg, song)
+  local t = require("groups").tailnet(cfg.root)
+  if not t then return {}, {} end
+  local removal, ok = require("removal"), sendable(cfg, song, reaper.time_precise())
+  local list, _, users = direct.peers_from(devices(cfg.root), t.suffix, require("services").my_device_id(), direct.port(), nil, function(d)
+    return not removal.mark(cfg.root, d.user) and ok(d)
+  end)
+  return list, users
 end
 function direct.refresh_peers(cfg, song, room) -- -> the list, peer -> device id, and peer -> user
   local key, now = cfg.root .. "\n" .. tostring(song) .. "\n" .. tostring(room), reaper.time_precise()

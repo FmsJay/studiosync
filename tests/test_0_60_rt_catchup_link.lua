@@ -2,7 +2,7 @@
 --   1. a computer whose Syncthing is paused reads everyone's status file as stale, so nobody was here, the link had no peers and the need
 --      list never asked. Now Live sync's status write also goes, every HELLO_EVERY s, to the studio's computers whose person isn't here
 --      (lib/direct.lua strangers: trusted, Tailscale-named, not removed, not this person's), and a bandmate's status that comes back over the
---      link makes them here (presence.from_msg, as before), so the link's peers have them. For the first HOLD s you aren't read as alone
+--      link makes them here (presence.from_msg, as before), so the link's peers have them. For the first LINK_HOLD s you aren't read as alone
 --      while the link is on (presence.link_hold), so full control isn't granted on stale files before the link could hear anyone;
 --   4. an item that went with its deleted track isn't "played" (drive.media_in_use), though its own newest change doesn't say so.
 package.path = "lib/?.lua;" .. package.path
@@ -67,6 +67,9 @@ local ANN_P, BEE_P = "desktop." .. SUFFIX .. ":" .. direct.PORT, "laptop." .. SU
 files[SDIR .. "/Ann.json"] = { user = "Ann", time = iso(300), room = "main" }
 files[SDIR .. "/Bee.json"] = { user = "Bee", time = iso(300), room = "main" }
 assert(#presence.peers(cfg, "Song", "main") == 0 and #direct.refresh_peers(cfg, "Song", "main") == 0, "stale files: nobody here, the link has no peers (the test's case)")
+-- (rt-p3: the studio's computers the link may send to, here or not, where studio-wide signed files go: lib/signed.lua drain)
+local all = direct.studio_peers(cfg, "Song")
+assert(#all == 2 and all[1] == ANN_P and all[2] == BEE_P, "studio_peers: every trusted studio computer, not this one, not one taken out: " .. table.concat(all, " "))
 local strangers = direct.strangers(cfg, "Song", "main")
 assert(#strangers == 2 and strangers[1] == ANN_P and strangers[2] == BEE_P,
   "the studio's trusted computers whose person isn't here: not this one, not one taken out of the studio: " .. table.concat(strangers, " "))
@@ -111,12 +114,14 @@ presence.put_status(cfg, "Song", "main", s, { n = 4 }, "4", clock, write)
 assert(#sent == n, "no link: nothing sent")
 direct.live_available = function() return true end
 
--- ---- 1b. not alone in the first HOLD s while the link is on --------------------------------------------------------------------------
+-- ---- 1b. not alone in the first LINK_HOLD s while the link is on ---------------------------------------------------------------------
 assert(presence.link_hold(cfg) == true, "the first call (Live sync's start, link on): held")
-clock = clock + presence.HOLD - 1
-assert(presence.link_hold(cfg) == true, "still within HOLD")
+clock = clock + presence.LINK_HOLD - 1
+assert(presence.link_hold(cfg) == true, "still within LINK_HOLD")
 clock = clock + 2
-assert(presence.link_hold(cfg) == false, "after HOLD: alone may be said, as before")
+assert(presence.link_hold(cfg) == false, "after LINK_HOLD: alone may be said, as before")
+-- (rt-p3: round 5 named it HOLD, which set the edit hold, presence.editing's and mirror's put-back rule, from 3 s to 8 s)
+assert(presence.HOLD == 3 and presence.LINK_HOLD == 8, "the edit hold stays 3 s; the link's start hold has a name of its own")
 
 -- ---- 4. an item that went with its deleted track isn't played ---------------------------------------------------------------------
 local drive = require("drive")

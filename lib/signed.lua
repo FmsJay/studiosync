@@ -18,14 +18,16 @@
 -- Unreviewed (security reviews come after all features, James 2026-11-19). Review-later list: docs/rt/rt-linkfirst.md.
 local band = require("band")
 local sw = require("signedwrites")
-local signed = { BODY_MAX = 32768, SEQS_MAX = 600 }
+-- (FILE_MAX: a file over BODY_MAX goes in parts of PART bytes, as base64 so each message's size is known (the link's limit is 64 KB a
+-- message); at most PARTS_OPEN files half-arrived at once, each dropped PARTS_KEEP s after its last part. rt-p3)
+local signed = { BODY_MAX = 32768, SEQS_MAX = 600, FILE_MAX = 262144, PART = 30000, PARTS_OPEN = 8, PARTS_KEEP = 30 }
 
 -- Which files are signed, by the path inside the studio: kind, or nil. Pure.
 local KINDS = {
   { "^_band/band%.json$", "band" }, { "^_band/roles%.json$", "band" }, { "^_band/closed%.json$", "closed" },
   { "^_band/removed/[^/]+%.json$", "removed" }, { "^_band/guest%-access/[^/]+%.json$", "guests" },
   { "^_band/guest%-invites/[^/]+%.json$", "guests" }, { "^_band/joins/[^/]+%.json$", "joins" }, { "^_band/devices/[^/]+%.json$", "devices" },
-  { "^[^/]+/rooms/[^/]+/mode%.json$", "mode" }, { "^[^/]+/rooms/[^/]+/driver%.json$", "room" }, { "^[^/]+/rooms/[^/]+/room%.json$", "room" },
+  { "^[^/]+/rooms/[^/]+/mode%.json$", "mode" }, { "^[^/]+/rooms/[^/]+/driver%.json$", "driver" }, { "^[^/]+/rooms/[^/]+/room%.json$", "room" },
   { "^[^/]+/rooms/[^/]+/grants/[^/]+%.json$", "grants" }, { "^[^/]+/rooms/[^/]+/claims/given%-[^/]+%.json$", "given" },
   -- (unsigned: files nobody checks today, each one person's; over the link only to be there sooner)
   { "^_band/profiles/[^/]+%.json$", "profile" }, { "^_band/colours/[^/]+%.json$", "colour" }, { "^[^/]+/rooms/[^/]+/recaps/[^/]+%.json$", "recap" },
@@ -41,10 +43,11 @@ local KINDS = {
   { "^[^/]+/rooms/[^/]+/claims/[^/]+%.json$", "claims" },
 }
 signed.OWN = { profile = true, colour = true, recap = true }
--- What goes over the link the moment it's written. (Not: invitation records, driver.json (a "driver" event goes already) and room.json:
--- signed, and Syncthing carries them.)
+-- What goes over the link the moment it's written. (Not: invitation records and room.json: signed, and Syncthing carries them. room.json is
+-- rewritten by whoever bins or adopts a room and nothing checks who, so the link has nobody to check it against; nothing waits on it.
+-- driver.json goes, from the driver's own computer: Live sync has the "driver" event already, the panel reads the file. rt-p3)
 signed.LINK = { band = true, closed = true, removed = true, guests = true, devices = true, mode = true, grants = true, profile = true, colour = true,
-  recap = true, given = true, released = true, order = true, hub = true, session = true, pic = true, timeline = true, claims = true }
+  recap = true, given = true, released = true, order = true, hub = true, session = true, pic = true, timeline = true, claims = true, driver = true }
 -- A given claim is over once the person it's for folds it into their own claims and deletes it (sync.follow_claims), which another computer
 -- may never see as a file: there the link's copy counts this long at most. shortcut: a minute, not "until their own claims carry it"; with
 -- Syncthing slower than that on both computers the claim waits for the file, as before this.
@@ -334,6 +337,23 @@ local function let_go(path, l)
   if l.shared then pcall(retire, l.root, l.rel) end
   linked[path] = nil
 end
+-- Syncthing brought an earlier write after the link brought a later one: band.read dropped the link's copy because the folder's file changed,
+-- but that file is signed and numbered before the copy, so the copy goes back in (over the folder's file as it is now) until the folder's is
+-- as new. Only a folder file whose own signature checks out says "older": one an older build rewrote unsigned (a stale signature file) is
+-- read, as before. -> true when put back. (rt-p3. shortcut: band.read reads the older file until this tidy, at most a second; asking here
+-- from band.read itself is a line in lib/band.lua)
+local function keep_newer(path, l)
+  if not (l.body and l.seq) then return false end
+  local bytes, side = band.read_raw(path), band.read_raw(path .. ".sig")
+  if not (bytes and side) then return false end
+  local by, n = sw.signer(verify, tostring(band.info(l.root).id), l.rel, as_signed(l.rel, bytes), side)
+  if not (by and n < l.seq) then return false end
+  band.set_overlay(path, l.body, l.side)
+  forget(l.root, l.kind)
+  if l.own and l.shared then pcall(publish, l.root, l.rel, l.body, l.side, fingerprint(bytes), l.till) end
+  trace("kept over an older folder copy", l.rel)
+  return true
+end
 -- About once a second: a link's copy goes when the folder's signature file is numbered after it (Syncthing brought a newer one's signature
 -- before its file, or the link's copy came late: never an older copy over a newer one), or when its time is up (a given claim: GIVEN_KEEP).
 local function tidy()
@@ -346,7 +366,7 @@ local function tidy()
   for _, path in ipairs(paths) do
     local l = linked[path]
     if not l then -- (let go meanwhile)
-    elseif not band.overlay_of(path) then let_go(path, l)
+    elseif not band.overlay_of(path) then if not keep_newer(path, l) then let_go(path, l) end
     else
       local have = l.seq and band.json_decode(band.read_raw(path .. ".sig") or "")
       if (l.till and now > l.till) or (type(have) == "table" and (tonumber(have.seq) or 0) > l.seq) then
@@ -368,21 +388,38 @@ function signed.drain(cfg, song, room)
     else
       local path = root .. "/" .. rel
       local body, side = as_signed(rel, band.read_raw(path)), band.read_raw(path .. ".sig")
-      if (body or side) and #(body or "") <= signed.BODY_MAX then
+      if (body or side) and #(body or "") <= signed.FILE_MAX then
         local to, seen = {}, {}
         local fsong, froom = rel:match("^([^/]+)/rooms/([^/]+)/")
         local peers, _, users = direct.peers(cfg, song, room)
         -- (band.json holds the studio's secret, made new when someone is taken out: never to a bandmate with a removal mark, nor to one this
         -- script can't name. Syncthing stops syncing with them; the link mustn't hand it over meanwhile)
         local secret = rel == "_band/band.json"
-        for _, p in ipairs(peers) do
-          local u = users and users[p]
+        local function add(p, u)
           if not seen[p] and not (secret and (type(u) ~= "string" or require("removal").mark(root, u))) then seen[p] = true; to[#to + 1] = p end
         end
+        for _, p in ipairs(peers) do add(p, users and users[p]) end
         if fsong and not (fsong == song and froom == room) then
           for _, p in ipairs(direct.peers(cfg, fsong, froom)) do if not seen[p] then seen[p] = true; to[#to + 1] = p end end
         end
-        if #to > 0 and direct.send_live(cfg, "signed", { rel = rel, body = body, side = side }, song, room, nil, to) then n = n + 1; trace("out", rel) end
+        -- (a studio-wide file, or a song's own (session.json, a hub handover): to every computer of the studio the link may send to, not only
+        -- to those in this room: a bandmate in another song or room had it only when Syncthing brought it. rt-p3)
+        if not fsong then
+          local all, ausers = direct.studio_peers(cfg, rel:match("^([^_/][^/]*)/") or song)
+          for _, p in ipairs(all) do add(p, ausers[p]) end
+        end
+        local sent = false
+        if #to > 0 and #(body or "") <= signed.BODY_MAX then sent = direct.send_live(cfg, "signed", { rel = rel, body = body, side = side }, song, room, nil, to)
+        elseif #to > 0 then
+          -- (over BODY_MAX: in parts, the signature file with the last. An older build takes no `part` (no rel: "not a signed file"). rt-p3)
+          local b64, k, sum = require("profile").base64, math.ceil(#body / signed.PART), fingerprint(body)
+          sent = true
+          for i = 1, k do
+            local piece = body:sub((i - 1) * signed.PART + 1, i * signed.PART)
+            sent = direct.send_live(cfg, "signed", { part = { rel, i, k, sum }, data = b64(piece), side = i == k and side or nil }, song, room, nil, to) and sent
+          end
+        end
+        if sent then n = n + 1; trace("out", rel) end
       end
     end
   end
@@ -430,11 +467,58 @@ function signed.owner(root, rel, kind, j)
   if kind == "timeline" then return type(j.user) == "string" and ufile(j.user) == f and j.user or nil end -- (named for who it says: lib/sync.lua studio_timeline)
   if kind == "claims" then return type(j.user) == "string" and ufile(j.user) == f and j.given == nil and j.user or nil end -- (as sync.authority reads one)
   if kind == "order" then return type(j.by) == "string" and j.by:gsub("[^%w%-_ ]", "_") .. ".json" == f and type(j.list) == "table" and j.by or nil end -- (lib/mirror.lua)
+  -- (who took control, written on their own computer by Take control or a new room: sync.set_driver. Written for someone else (a rename, a
+  -- removal handing the seat back), it comes by Syncthing as before. rt-p3)
+  if kind == "driver" then return type(j.driver) == "string" and j.driver or nil end
   return nil
 end
--- A message "signed": { rel, body (nil: a tombstone), side }. -> true when it went in, or false and why.
+-- A file over BODY_MAX comes in parts: { part = { rel, i, n, sum }, data = base64, side (with the last) }. Kept until all n are here, then
+-- the whole goes through the same checks as one message. -> the whole message when this part completes one; else nil and why. (rt-p3)
+local open_parts = {} -- rel \0 sum \0 n -> { got = { [i] = bytes }, have, side, at }
+local function on_part(d)
+  local p = d.part
+  local rel, i, n, sum = p[1], p[2], p[3], p[4]
+  local kind = type(rel) == "string" and signed.kind(rel)
+  if not (kind and signed.LINK[kind] and not signed.OWN[kind] and math.type(i) == "integer" and math.type(n) == "integer" and n >= 2
+      and n <= math.ceil(signed.FILE_MAX / signed.PART) and i >= 1 and i <= n and type(sum) == "string" and #sum <= 32 and type(d.data) == "string"
+      and #d.data <= math.ceil(signed.PART / 3) * 4 and #d.data % 4 == 0 and d.data:match("^[A-Za-z0-9+/]*=?=?$")
+      and (d.side == nil or (type(d.side) == "string" and #d.side <= sw.SIDE_MAX))) then
+    return nil, "not a part of a signed file"
+  end
+  local bytes = require("fxfiles").unbase64(d.data)
+  if not bytes or #bytes > signed.PART or (i < n and #bytes ~= signed.PART) then return nil, "not a part of a signed file" end
+  local now, key = reaper.time_precise(), rel .. "\0" .. sum .. "\0" .. n
+  local count, oldest, okey = 0, math.huge, nil
+  for k, e in pairs(open_parts) do
+    if now - e.at > signed.PARTS_KEEP then open_parts[k] = nil
+    else count = count + 1; if e.at < oldest then oldest, okey = e.at, k end end
+  end
+  local e = open_parts[key]
+  if not e then
+    if count >= signed.PARTS_OPEN and okey then open_parts[okey] = nil end -- shortcut: the oldest half-arrived file goes; it comes by Syncthing
+    e = { got = {}, have = 0 }
+    open_parts[key] = e
+  end
+  e.at = now
+  if not e.got[i] then e.got[i], e.have = bytes, e.have + 1 end
+  e.side = e.side or d.side
+  if e.have < n or not e.side then return nil, "part " .. i .. " of " .. n end
+  open_parts[key] = nil
+  local body = table.concat(e.got)
+  if fingerprint(body) ~= sum then return nil, "its parts don't add up" end
+  return { rel = rel, body = body, side = e.side }
+end
+-- A message "signed": { rel, body (nil: a tombstone), side }, or a part of one. -> true when it went in, or false and why.
 local accept
 function signed.on_msg(cfg, d)
+  if type(d) == "table" and type(d.part) == "table" then
+    local whole, why = on_part(d)
+    if not whole then
+      if why and not why:find("^part ") then trace("not taken (" .. why .. ")", tostring(d.part[1])) end
+      return false, why
+    end
+    d = whole
+  end
   local ok, why = accept(cfg.root, cfg.user, d, nil)
   trace(ok and "in" or ("not taken (" .. tostring(why) .. ")"), type(d) == "table" and d.rel or "?")
   return ok, why
@@ -493,7 +577,8 @@ function accept(root, user, d, shared)
   local rel = d.rel
   local kind = signed.kind(rel)
   if not (kind and signed.LINK[kind]) then return false, "not a file that comes over the link" end
-  if #(d.body or "") > signed.BODY_MAX or #(d.side or "") > sw.SIDE_MAX then return false, "too big" end
+  -- (FILE_MAX: a file over BODY_MAX arrives whole from its parts, or from this computer's shared place. One message can't pass 64 KB anyway)
+  if #(d.body or "") > signed.FILE_MAX or #(d.side or "") > sw.SIDE_MAX then return false, "too big" end
   local path = root .. "/" .. rel
   local body, seq = d.body, nil -- (body: the file's own bytes; d.body: what's signed, a picture's base64)
   if kind == "pic" then
@@ -547,7 +632,8 @@ function accept(root, user, d, shared)
       -- it had once left its number untaken, and the copy in between could be replayed over it. rt-linkmove3)
       take(root, rel, seq, tostring(band.json_decode(d.side).sig):lower(), g and true or nil)
     end
-    linked[path] = { root = root, rel = rel, kind = kind, seq = seq, till = till or nil, shared = shared ~= nil }
+    -- (body, side, own: to put the copy back over an older folder copy, tidy's keep_newer; own: this script took it from the link. rt-p3)
+    linked[path] = { root = root, rel = rel, kind = kind, seq = seq, till = till or nil, shared = shared ~= nil, body = body, side = d.side, own = shared == nil }
     if shared == nil then
       local okp, there = pcall(publish, root, rel, body, d.side, was, till or nil)
       linked[path].shared = okp and there == true

@@ -167,6 +167,8 @@ dc.id, dc.file, dc.size = "Cy-3", "big.wav", 1234
 assert(not streams.on_media_want(cfg, b, dc), "another version here: Syncthing sorts it out")
 
 -- ---- nobody on the link, but a cloud copy: Live sync's cloud pass is asked for (James, rt) ----
+-- (the cloud copy's worker off: the cloud file asked on this thread, as the passes then are. rt-p3: with it on, the worker's listing, below)
+gext[band.SECTION .. "\0drive bg"] = "off"
 here, here_dev = {}, {}
 need_text = band.json_encode({ rest = { { name = "Song/rooms/main/media/cloudonly.wav", size = 77 }, { name = "Song/rooms/main/media/nowhere.wav", size = 5 } } })
 local asks_before, sent_before = need_asks, #sent
@@ -208,4 +210,30 @@ here, here_dev = {}, {}
 run(streams.CATCHUP_LOOK)
 assert(everys[#everys] == streams.CATCHUP_EVERY, "a peer came and went: every 30 s again")
 streams.cloud_root = nil
+
+-- ---- the worker on (rt-p3): never a cloud file asked on REAPER's thread, only the worker's listing ----
+gext[band.SECTION .. "\0drive bg"] = ""
+local bg, listed, cloud_reads = require("drivebg"), {}, 0
+bg.on = function() return true end
+bg.known_size = function(p) return listed[p] end
+band.size = function(p) if p:sub(1, 2) == "C/" then cloud_reads = cloud_reads + 1 end return disk[p] end
+need_text = band.json_encode({ rest = { { name = "Song/rooms/main/media/cloudonly.wav", size = 77 } } })
+services.need = function() return need_text end
+streams.cloud_root, streams.cloud_due = "C", nil
+clock = clock + streams.CLOUD_EVERY
+streams.catchup_tick(cfg, b)
+assert(streams.cloud_due == true and cloud_reads == 0, "not listed yet: one cloud pass for this need list (it lists the folder), the cloud folder not read here")
+streams.cloud_due = nil
+clock = clock + streams.CLOUD_EVERY
+streams.catchup_tick(cfg, b)
+assert(not streams.cloud_due and cloud_reads == 0, "the same list, still not listed: not again (no pass every minute for a file nobody has)")
+listed["C/Song/rooms/main/media/cloudonly.wav"] = 76
+clock = clock + streams.CLOUD_EVERY
+streams.catchup_tick(cfg, b)
+assert(not streams.cloud_due, "listed at another size: not this file")
+listed["C/Song/rooms/main/media/cloudonly.wav"] = 77
+clock = clock + streams.CLOUD_EVERY
+streams.catchup_tick(cfg, b)
+assert(streams.cloud_due == true and cloud_reads == 0, "listed at its size: a cloud pass")
+streams.cloud_root, streams.cloud_due = nil, nil
 print("ok")

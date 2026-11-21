@@ -204,7 +204,7 @@ A.ext["signed outbox"] = ""
 -- ---- Ann's grant reaches Bee over the link, and counts there at once ------------------------------------------------------------------------
 -- (Ann's computer sends through a stand-in link; Bee's takes it through the real direct.dispatch, from another room: signed files are studio-wide)
 local sent = {}
-A.direct = { peers = function() return { "bee:47281" } end, forget_devices = function() end,
+A.direct = { peers = function() return { "bee:47281" } end, forget_devices = function() end, studio_peers = function() return {}, {} end,
   send_live = function(_, kind, d, song, room, _, to) sent[#sent + 1] = { kind = kind, d = d, song = song, room = room, to = to }; return true end }
 package.loaded.direct = A.direct
 use(B)
