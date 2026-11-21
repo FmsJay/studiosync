@@ -186,8 +186,29 @@ check(ok == true and owner_of(B, "Keys") == "Bee", "with it, Bee's own computer 
 clock = clock + require("signed").GIVEN_KEEP + 30
 drained(B)
 check(owner_of(B, "Keys") == "Bee", "and keeps it until the folder's copy comes (hers to fold in), however long")
+-- (rt-edits, the hook in lib/sync.lua: follow_claims never folds the link's copy in, so it isn't folded again on every pass; the folder's
+-- file is folded in once, and its signature file goes with it)
+check(require("sync").GIVEN_WAITS == true or was_waits == true, "lib/sync.lua says its follow_claims leaves a link copy alone")
+local function follow(c)
+  local band = use(c)
+  local sync, proj, said = require("sync"), {}, 0
+  sync.loading[tostring(proj)] = true -- (only the given claims' part: the rest follows a project's tracks)
+  band.log = function(s) if tostring(s):find("gave you", 1, true) then said = said + 1 end end
+  sync.follow_claims(proj, c.cfg, SONG, ROOM)
+  return said
+end
+local BEE_CLAIMS = B.root .. "/" .. RDIR .. "/claims/Bee.json"
+check(follow(B) == 0 and follow(B) == 0 and read(BEE_CLAIMS) == nil, "the link's copy is never folded into Bee's own claims")
+check(owner_of(B, "Keys") == "Bee" and overlaid(B, given2.rel), "and still counts, as the link's copy")
 syncthing(B, A, given2.rel)
 check(owner_of(B, "Keys") == "Bee" and not overlaid(B, given2.rel), "Syncthing's copy takes over on Bee's computer")
+check(read(B.root .. "/" .. given2.rel) and read(B.root .. "/" .. given2.rel .. ".sig"), "(the folder's file and its signature file are here)")
+check(follow(B) == 1, "the folder's file is folded into Bee's claims, with a word")
+check((read(BEE_CLAIMS) or ""):find('"Keys"', 1, true), "her own claims file has the track")
+check(read(B.root .. "/" .. given2.rel) == nil and read(B.root .. "/" .. given2.rel .. ".sig") == nil, "the given file goes, and its signature file with it")
+check(follow(B) == 0, "once: not again on the next pass")
+clock = clock + 3
+check(owner_of(B, "Keys") == "Bee", "and it's hers, by her own claims now")
 require("sync").GIVEN_WAITS = was_waits
 
 -- refused: unsigned, a byte changed, a member's, a member signing in an admin's name, a name that isn't its person's
@@ -378,14 +399,74 @@ check(signed.seed_seqs(J.root, { { REL, (os.time() + 3 * 86400) * 1000, ("0"):re
 check(signed.seed_seqs(J.root, { { "../x/_band/band.json", 9, ("0"):rep(16) }, { GR, "9", "x" }, "junk", { "_band/profiles/Ann.json", 9, ("0"):rep(16) } }) == 0, "nor anything that isn't a signed studio file's number")
 check(signed.seed_seqs(J.root, nil) == 0, "no numbers in the welcome (an older inviter): nothing, as before")
 
+-- ==== The studio's timeline, one file per computer (sync.session_timeline, sync.studio_timeline; rt-edits, 0ae5fbf) ================================
+-- Each computer keeps the last tempo map and markers it sent in rooms/<room>/timeline/<person>.json; the newest stamp among them is the
+-- studio's. The map itself travels as a "timeline" event; the file is what a computer opening the song, or checking what it holds, reads.
+local TL, TLO = RDIR .. "/timeline/Ann.json", RDIR .. "/timeline/Olive.json"
+local S1, S2, S0 = "2026-11-20T10:00:00Zann-1", "2026-11-20T10:05:00Zann-2", "2026-11-20T09:00:00Zolive-1"
+local function studio_order(c) use(c); local t = require("sync").studio_timeline(c.cfg, SONG, ROOM); return t and t.timeline_order, t and t.by end
+use(A)
+require("sync").session_timeline(A.cfg, SONG, { { 0, 120 } }, { { "m", 1 } }, S1, nil, ROOM)
+check(sw.signer(verify, STUDIO, TL, read(A.root .. "/" .. TL), read(A.root .. "/" .. TL .. ".sig")) == sw.device_id(ann.pub), "a timeline file is signed by the computer that wrote it")
+local tl1 = drained(A, TL)
+check(#tl1 == 1 and tl1[1].side, "and goes over the link, once: " .. #tl1)
+tl1 = tl1[1]
+check(#drained(A, TL) == 0, "nothing more to send until it's written again")
+check(studio_order(B) == nil, "before: Bee's computer has no stamped timeline for the room")
+B.asked = 0
+B.ext["signed outbox"] = nil
+ok, why = deliver(B, tl1)
+local o1, by1 = studio_order(B)
+check(ok == true and o1 == S1 and by1 == "Ann" and B.asked == 0, "Ann's timeline is the studio's on Bee's computer at once, by its signature: " .. tostring(why) .. " " .. tostring(o1))
+check(read(B.root .. "/" .. TL) == nil, "nothing written into the shared folder")
+check(deliver(B, tl1) == false and (B.ext["signed outbox"] or "") == "" and #drained(B, TL) == 0, "the same message again is not taken twice, and Bee's computer sends nothing on")
+syncthing(B, A, TL)
+check(studio_order(B) == S1 and not overlaid(B, TL) and (B.ext["signed outbox"] or "") == "", "Syncthing's copy arrives: the same timeline, nothing sent")
+-- a newer stamp, then the older file replayed: over the link, and against a newer file in the folder no check has looked at yet
+use(A)
+clock = clock + 2
+require("sync").session_timeline(A.cfg, SONG, { { 0, 90 } }, { { "m", 1 } }, S2, nil, ROOM)
+local tl2 = drained(A, TL)[1]
+check(deliver(B, tl2) == true and studio_order(B) == S2, "her next timeline, at once")
+ok, why = deliver(B, tl1)
+check(ok == false and why:find("older") and studio_order(B) == S2, "the older file replayed: refused, the newer stamp stays (" .. tostring(why) .. ")")
+syncthing(O, A, TL)
+ok, why = deliver(O, tl1)
+check(ok == false and why:find("older") and studio_order(O) == S2, "nor read over a newer file Syncthing brought: " .. tostring(why))
+-- another person's file with an older stamp: taken as theirs, and the newest stamp among the files is still the studio's
+local ob0 = json({ user = "Olive", at = os.time(), order = S0, tempo = { { 0, 60 } }, markers = {} })
+check(deliver(B, { rel = TLO, body = ob0, side = resign(olive, TLO, ob0, FAR) }) == true and studio_order(B) == S2, "Olive's older timeline doesn't replace Ann's newer stamp")
+-- refused: unsigned, a byte changed, someone else's signature, a file not named for who it says
+local fb = json({ user = "Ann", at = os.time(), order = "2099-01-01T00:00:00Zforged", tempo = { { 0, 200 } }, markers = {} })
+check(deliver(B, { rel = TL, body = fb }) == false, "unsigned: refused")
+check(deliver(B, { rel = TL, body = fb, side = tl2.side }) == false, "another file under Ann's signature: refused")
+check(deliver(B, { rel = TL, body = fb, side = resign(moe, TL, fb, FAR) }) == false, "Moe signing Ann's timeline file: refused")
+check(deliver(B, { rel = TLO, body = fb, side = resign(ann, TLO, fb, FAR + 1) }) == false, "a file named for Olive that says it's Ann's: refused")
+check(studio_order(B) == S2 and overlaid(B, TL), "and the studio's timeline is still Ann's newest, read from the link's copy")
+-- the file that only says "this computer reads these" (sync.timeline_reads) goes the same way
+use(B)
+require("sync").timeline_reads(B.cfg, SONG, ROOM)
+local tlb = drained(B, RDIR .. "/timeline/Bee.json")[1]
+check(tlb and tlb.side and deliver(A, tlb) == true and require("band").read_json(A.root .. "/" .. RDIR .. "/timeline/Bee.json").reads == true, "Bee's own (reads only) is on Ann's computer at once")
+-- Syncthing alone, unsigned, as a computer on an older build writes it: judged by Syncthing's word, as today
+local Q = studio(computer(cy), false)
+write(Q.root .. "/" .. TL, json({ user = "Ann", at = 0, order = S1, tempo = { { 0, 120 } }, markers = {} }))
+Q.by_file[TL] = ann.dev:sub(1, 7)
+clock = clock + 3
+check(studio_order(Q) == S1 and Q.asked >= 1, "an unsigned timeline file, Syncthing says Ann's computer: the studio's, as before")
+write(Q.root .. "/" .. TLO, json({ user = "Olive", at = 0, order = "2099-01-01T00:00:00Zx", tempo = { { 0, 60 } }, markers = {} }))
+Q.by_file[TLO] = moe.dev:sub(1, 7)
+clock = clock + 3
+check(studio_order(Q) == S1, "and one Syncthing says Moe's computer wrote under Olive's name: left out, as before")
+
 -- ==== a computer on an older build ====================================================================================================================
 -- receiving (36f90ae: these kinds aren't ones its link takes): refused without a word, and Syncthing's copy works as before
 local OLD = studio(computer(cy), true)
 use(OLD)
 signed = require("signed")
-for _, k in ipairs({ "given", "released", "order", "hub", "session", "pic" }) do signed.LINK[k] = nil end
+for _, k in ipairs({ "given", "released", "order", "hub", "session", "pic", "timeline" }) do signed.LINK[k] = nil end
 OLD.logged = nil
-for _, d in ipairs({ rel2, hub1, ses1, ord1, msgs[2], given2 }) do
+for _, d in ipairs({ rel2, hub1, ses1, ord1, msgs[2], given2, tl2 }) do
   local took, said = deliver(OLD, d)
   check(took == false and said:find("link"), d.rel .. " on an older build: not taken (" .. tostring(said) .. ")")
 end

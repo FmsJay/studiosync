@@ -20,8 +20,8 @@ Offline only: nothing here was run in REAPER.
 - **Nothing old breaks.** A computer on an older build ignores these messages and gets the files from Syncthing as before. Files written
   by an older build (unsigned) are judged by Syncthing as before.
 - **Not moved, on purpose:** mixes, stems, restore points and the update code. What each would take is below.
-- **The timeline file** (`rooms/<room>/timeline/<user>.json`, commit 0ae5fbf) is **not signed and not link-first**. I left it alone as
-  asked; the three lines that would do it are under "Hooks".
+- **The timeline file** (`rooms/<room>/timeline/<user>.json`, commit 0ae5fbf) was not signed and not link-first. In a second round it
+  now is both (see "The timeline file").
 
 ## Per item
 
@@ -36,6 +36,7 @@ Offline only: nothing here was run in REAPER.
 | 4 | Profile pictures | **Done.** Signed and sent as base64; `band.size` reads the link's copy. |
 | 4 | Other small own files | Not done: `<Song>/chat/resolved`, `chat/stage.json`, drum maps (see the inventory for why each can wait). |
 | 5 | The welcome's sequence numbers | **Done.** |
+| – | The timeline file (`timeline/<person>.json`) | **Done** in a second round: signed and link-first. |
 | – | Mixes, stems, restore points, update code | Not moved (as asked). Costs and risks below. |
 
 ## What was built
@@ -88,15 +89,58 @@ and no C++.
    The flag lives in sync.lua on purpose: if a rewrite drops the condition, it drops the flag with it.
 2. **`lib/sync.lua`, `sync.follow_claims`: the orphan signature file** (since 36f90ae, not new). After `os.remove(dir .. "/" .. f)` add
    `os.remove(dir .. "/" .. f .. ".sig")`. Every given claim leaves a `given-*.json.sig` in `claims/` for good.
-3. **The timeline file, in my own `lib/signed.lua`** (held back because the task said to report, not change):
-   - `KINDS`: `{ "^[^/]+/rooms/[^/]+/timeline/[^/]+%.json$", "timeline" }`
-   - `LINK`: `timeline = true`
-   - `signed.owner`: `if kind == "timeline" then return type(j.user) == "string" and ufile(j.user) == f and j.user or nil end`
-
-   `sync.studio_timeline` already asks `trust.own_file_ok`, which takes a signature when there is one. A timeline file over 32 KB (a long
-   tempo map plus markers and project settings) would stay on Syncthing.
+3. **The timeline file, in my own `lib/signed.lua`: done** in the second round (three lines; see "The timeline file").
 4. **Nothing needed** in `lib/hub.lua` (handovers), `lib/mirror.lua` (`read_order` reads through `band.files` and `band.read_json`),
    `lib/profile.lua` or `lib/webui/`.
+
+## The timeline file (second round)
+
+`sync.session_timeline` (rt-edits, 0ae5fbf) writes the last tempo map and markers each computer sent to
+`rooms/<room>/timeline/<person>.json`; `sync.timeline_reads` writes a "reads only" one before a computer has a map of its own.
+`sync.studio_timeline` takes the newest stamp (`order`) among the files that are named for the person they say and that
+`trust.own_file_ok` accepts. The map itself still travels as a `timeline` event; the file is what a computer opening the song, or checking
+what it holds, reads. `lib/sync.lua` was read, not edited.
+
+**What changed** (`lib/signed.lua`, three lines): the kind `timeline` in `KINDS` and `LINK`, and `signed.owner` says the file is its
+`user`'s when it is named for that user. So every write of the file is signed, goes over the link at once (when it is under 32 KB), and is
+taken there only when that person's own computer signed it.
+
+**Checked by test:**
+
+- A timeline file with a missing signature, another file under a good signature, someone else's signature, or a name that isn't its
+  person's is not taken over the link, and the studio's timeline stays what it was.
+- An older replay doesn't replace a newer stamp, three ways: the same person's older file is refused by its number; it is refused against
+  a newer file Syncthing brought that no check has looked at; and another person's older-stamped file is taken as theirs but the newest
+  stamp among the files is still the studio's.
+- A computer on an older build: an unsigned file from Syncthing is judged by Syncthing's `modifiedBy` exactly as today (taken from the
+  person's computer, left out from another's). An older build receiving the link message ignores it.
+- The link copy and the later Syncthing copy end the same: the same studio timeline, the link's copy let go, nothing written into the
+  folder by the receiver, and nothing sent on. The same message twice is not taken twice. The writer sends each write once.
+
+**Does signing change who may write the file, where the studio pins computers?** The rule is the same: only the computer that person's
+devices file names (or this computer, for its own person). Three things differ once the file carries a good signature from a key this
+computer knows:
+
+1. **The writer is the computer that signed it, not the last one Syncthing saw change it.** A file another computer copies or puts back
+   unchanged, with its signature file, is still its author's. Before, Syncthing named the computer that put it there and it was set aside.
+2. **Ids are compared whole.** A computer whose id shares the owner's first 7 characters no longer passes (Syncthing's `modifiedBy` is 7
+   characters).
+3. **"Syncthing doesn't hold it" no longer says yes by itself.** An unsigned file Syncthing has no record of is believed, as everywhere in
+   trust.lua. A signed one is judged by its signer even then.
+
+Unchanged: a file with no signature, a stale one (an older build rewrote the file), a key not known here yet, or a number older than one
+taken all fall back to Syncthing's word. A person's second computer (not the one their devices file names) is set aside either way. A
+studio from before owners (no pins) believes anyone, either way.
+
+**What the link adds here is small.** The link's copy is read only by the Live sync that received it, and that one has already had the
+map as an event. A computer that opens the song later reads the folder's file, which Syncthing brought. So the gain is the signature
+(who wrote it no longer rests on Syncthing's word alone) and that the others see sooner that this computer reads these files, and stop
+writing session.json's timeline for it.
+
+**Costs to know.** Every timeline change now also signs the file and sends it (up to 32 KB) to the bandmates here, beside the `timeline`
+event that already goes. While someone on an older build is in the main room, `sync.session_timeline` also rewrites session.json; that
+copy is signed and sent too, and refused over the link everywhere unless the writer is the song's sharer (it comes by Syncthing as
+before). Both stop mattering once rt-edits' "old readers" are gone.
 
 ## How fast, and how to measure it on three real computers
 
@@ -128,6 +172,7 @@ A line `signed <path> not taken (why)` says why a computer refused one.
 | Track order | Drag a track to a new place, then stop | `.../order/<you>.json` | The others' tracks follow at their next order pass (tab in front, stopped). |
 | Hub handover | Hand the song's hub to another computer (`hub.hand_song`, wherever the build's UI offers it) | `<Song>/hub/<you>.json` | The others name the new hub as the song's home. |
 | session.json | Publish the session again (StudioSync - Publish session) | `<Song>/session.json` | "in" on the others (no "out" line on the desktop means it was over 32 KB). |
+| Timeline file | Add a marker or change the tempo | `.../timeline/<you>.json` | "in" on the others within a second (the marker itself arrives as the `timeline` event, as before). After Syncthing resumes, `timeline/<you>.json.sig` is beside the file on every computer, and reopening the song on a member opens on the desktop's markers and tempo with no "set aside" line in the log. |
 | Profile picture | Web UI > your profile > a new picture | `_band/profiles/<you>.json`, then `.../<you>.jpg` | The picture changes on the others' pages within a second. |
 
 Then resume Syncthing on the members: every file arrives, nothing changes on screen, and no `*.sync-conflict-*` appears.
@@ -180,12 +225,12 @@ Ableton Link, hops, views, controllers, bounces, the Sheet, video-call setup, NA
 **Moved by rt-linkfirst:** grants, a room's mode, band.json and roles.json, closing, removal and guest marks, guest lists and invitations,
 devices files, profiles, colours, recaps.
 
-**Moved now:** given claims, releases, track order, hub handovers, session.json, profile pictures; the welcome's sequence numbers; and,
-switched off, catch-up's media list.
+**Moved now:** given claims, releases, track order, hub handovers, session.json, profile pictures, the timeline files; the welcome's
+sequence numbers; and, switched off, catch-up's media list.
 
 | Still on Syncthing | Could the link carry it? | Why it waited |
 |---|---|---|
-| The timeline file (`timeline/<user>.json`) | Yes: three lines (hook 3). | Told to report, not change. Its content already travels as a `timeline` event; the file is for a computer opening the song later. Unsigned: judged by Syncthing's `modifiedBy`. |
+| A timeline file over 32 KB (a long tempo map, many markers, project settings) | Not as one message. | The link's message limit. Signed all the same. |
 | Catch-up for **events** | Yes (see "The need list"). | Time. |
 | Catch-up's media list by default | Built, off. | The delete-comes-back risk, until tested. |
 | A given claim on its own person's computer | Yes. | Hook 1. |
@@ -219,6 +264,7 @@ modules; real Ed25519 through `tools/sign_release.py`). For each file:
   refused without `sync.GIVEN_WAITS` and kept until the folder's copy with it; after a member's forged copy is refused, the admin's real
   one (the same words) is still taken.
 - **Releases:** a member who isn't the driver is refused; the same member as the room's driver is taken.
+- **The timeline file:** see "The timeline file".
 - **The welcome's numbers:** without them a computer new to the studio takes a replayed first grant (first use); with them it refuses it,
   asks Syncthing about the same old file put into the folder, and still takes the newest copy. A lower number, one three days ahead, a
   path outside the studio and junk change nothing.
@@ -236,7 +282,7 @@ in parts; lists from a computer not here, oversized, or naming paths refused; a 
 
 - **Not run in REAPER.** Signing uses `StudioSync_Sign`/`Verify` exactly as rt-linkfirst does. The base64 path for pictures was tested
   with the Python twin only.
-- **Not pushed.** The push was refused in this session (offline only). The commits are on the local `realtime` branch.
+- **Not pushed by me.** Commits are made locally; the coordinator pushes.
 - **A person with two computers.** `trust.own_file_ok` goes by the one computer their devices file names, as it does for Syncthing's
   copy. A hub handover or track order written on their other computer is refused over the link and comes by Syncthing, where the same
   rule already sets it aside for hub and session files.

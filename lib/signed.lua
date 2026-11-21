@@ -34,12 +34,14 @@ local KINDS = {
   { "^[^/]+/rooms/[^/]+/released/[^/]+%.json$", "released" }, { "^[^/]+/rooms/[^/]+/order/[^/]+%.json$", "order" },
   { "^[^_/][^/]*/hub/[^/]+%.json$", "hub" }, { "^[^_/][^/]*/session%.json$", "session" },
   { "^_band/profiles/[^/]+%.jpg$", "pic" }, { "^_band/profiles/[^/]+%.png$", "pic" },
+  -- (the last tempo map and markers each computer sent, one file per person: sync.session_timeline, read by sync.studio_timeline)
+  { "^[^/]+/rooms/[^/]+/timeline/[^/]+%.json$", "timeline" },
 }
 signed.OWN = { profile = true, colour = true, recap = true }
 -- What goes over the link the moment it's written. (Not: invitation records, driver.json (a "driver" event goes already) and room.json:
 -- signed, and Syncthing carries them.)
 signed.LINK = { band = true, closed = true, removed = true, guests = true, devices = true, mode = true, grants = true, profile = true, colour = true,
-  recap = true, given = true, released = true, order = true, hub = true, session = true, pic = true }
+  recap = true, given = true, released = true, order = true, hub = true, session = true, pic = true, timeline = true }
 -- A given claim is over once the person it's for folds it into their own claims and deletes it (sync.follow_claims), which another computer
 -- may never see as a file: there the link's copy counts this long at most. shortcut: a minute, not "until their own claims carry it"; with
 -- Syncthing slower than that on both computers the claim waits for the file, as before this.
@@ -366,6 +368,7 @@ function signed.owner(root, rel, kind, j)
   if type(j) ~= "table" then return nil end
   if kind == "hub" then return type(j.user) == "string" and ufile(j.user) == f and type(j.transfers) == "table" and j.user or nil end -- (lib/hub.lua)
   if kind == "session" then return type(j.host) == "string" and j.host or nil end -- (whoever shared the song: lib/hub.lua transfers)
+  if kind == "timeline" then return type(j.user) == "string" and ufile(j.user) == f and j.user or nil end -- (named for who it says: lib/sync.lua studio_timeline)
   if kind == "order" then return type(j.by) == "string" and j.by:gsub("[^%w%-_ ]", "_") .. ".json" == f and type(j.list) == "table" and j.by or nil end -- (lib/mirror.lua)
   return nil
 end
