@@ -461,20 +461,23 @@ check(fail_more == true and fail_said == 1, "a copy that keeps failing: not up t
 -- ---- 3h. "bringing the studio's copy ... up to date" only for a round with something to send (rt-drive2, round 2) ----
 -- The desktop logged it at the first job of most rounds (every 30 s to 3 minutes), the round then sending nothing. Live sync logs it when a
 -- result says more after one that didn't (drive_more); counted here the same way, over a whole round each.
-local function brings(add)
-  if add then local e = ev("James", add); put(HERE .. "/events/" .. e.id .. ".json", json.encode(e)) end
+-- Round 3 (the desktop, 07:50): a change copied in one job said only "up to date (1 file)", no "bringing" line: right, the line is for a copy
+-- that carries on between passes. Before, it came or not by whether the plan followed a job's results (the stand-in's always did).
+local function brings(add, count)
+  for i = 1, add and (count or 1) or 0 do local e = ev("James", add + i - 1); put(HERE .. "/events/" .. e.id .. ".json", json.encode(e)) end
   clock = clock + 200 -- (a new round of the same Live sync)
-  local n, was_more, moved = 0, false, 0
+  local n, was_more, moved, ups = 0, false, 0, 0
   for _ = 1, 100 do
     clock = clock + 2; stand_in_worker()
     local m, more = drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008)
     if m then
       if more and not was_more then n = n + 1 end
-      was_more, moved = more, moved + m
+      if not more and m > 0 then ups, moved = ups + 1, moved + m end -- (an up-to-date result carries the files since the last one)
+      was_more = more
     end
     if not drive.bg_busy() then break end
   end
-  return n, moved
+  return n, moved, ups
 end
 setup()
 drive, bg, cm = fresh()
@@ -482,8 +485,10 @@ cm.tick, cm.sweeping = function() end, function() return false end
 for _ = 1, 3 do clock = clock + 200; bg_pass() end -- (settled; the bandmate's half-written change found not whole, left for later)
 local quiet = brings()
 check(quiet == 0, "a round with nothing to send never says it's bringing the copy up to date: " .. quiet)
-local busy, moved_up = brings(90)
-check(busy == 1 and moved_up >= 1, "one with a change does, once: " .. busy .. " " .. moved_up)
+local busy, moved_up, ups = brings(90)
+check(busy == 0 and moved_up == 1 and ups == 1, "one change copied in one job: only up to date (1 file): " .. busy .. " " .. moved_up .. " " .. ups)
+busy, moved_up, ups = brings(100, 250)
+check(busy == 1 and moved_up == 250 and ups == 1, "250, more than a job holds: bringing once, then up to date (250): " .. busy .. " " .. moved_up .. " " .. ups)
 check(brings() == 0, "and the next quiet one doesn't")
 check(not fs[HERE .. "/events/Bo-20261101-000099Z-99.json"], "the bandmate's half-written change isn't here yet")
 put(THERE .. "/events/Bo-20261101-000099Z-99.json", '{"type":"edit","id":"Bo-20261101-000099Z-99"}') -- (it finished arriving)
@@ -519,6 +524,69 @@ check(up_at and told_at and told_n >= 2, "the snapshot went up and was told: " .
 check(told_at - up_at <= 2 and told_other < 40, "up to date within a plan or two of the files being there, while the other song still reads: " ..
   (told_at - up_at) .. " plans, other song at " .. told_other)
 check(ended and other >= 40 and drive.rest_until == -math.huge, "and the round still ends once the other song and the sweep are done: " .. other)
+
+-- ---- 3j. the update files' checks a step a plan (rt-drive2, round 3) ----
+-- The desktop, 07:39:25, after a restart: "StudioSync 0.59.49.82 is in the Google Drive copy" and one drive step of 970 ms. Measured there
+-- (read only): the extension's check of the studio's copy 77 ms, band.code_files' Lua hashes of its code 191 ms; the pass made three full
+-- checks (the studio's copy, the cloud's, the one before copying) and read every file twice. Stand-in costs: the extension's check 77 ms,
+-- one code file's hash 2 ms, 100 code files.
+do
+  setup()
+  local HT, CT, KEY = "/S/_tools/studiosync", "/C/_tools/studiosync", ("ab"):rep(32)
+  local function tools_copy(dir, v)
+    local lines = { "version " .. v }
+    put(dir .. "/lib/band.lua", 'band.VERSION = "' .. v .. '"'); lines[#lines + 1] = "sha256 " .. ("1"):rep(64) .. " lib/band.lua"
+    for i = 1, 99 do
+      local p = string.format("lib/m%02d.lua", i)
+      put(dir .. "/" .. p, "-- module " .. i .. " of " .. v); lines[#lines + 1] = "sha256 " .. ("2"):rep(64) .. " " .. p
+    end
+    put(dir .. "/lib/files.txt", table.concat(lines, "\n") .. "\n"); put(dir .. "/lib/files.txt.sig", "good " .. v)
+  end
+  tools_copy(HT, "0.60.5"); tools_copy(CT, "0.60.4")
+  drive, bg, cm = fresh()
+  cm.tick, cm.sweeping = function() end, function() return false end
+  local saved = { band.studio_update_key, band.version_on_disk, band.signed_ok, band.code_hash, package.loaded.fromfolder, package.loaded.groups }
+  band.studio_update_key = function() return KEY end
+  band.version_on_disk = function(dir) return (fs[dir .. "/lib/band.lua"] or ""):match('VERSION = "([^"]+)"') end
+  local function sig_ok(dir) return (fs[dir .. "/lib/files.txt.sig"] or ""):match("^good ") ~= nil end
+  drive.verify = function(dir) clock = clock + 0.077; return sig_ok(dir) and ("ok " .. band.version_on_disk(dir) .. "\n") or "no" end
+  band.code_hash = function(s) clock = clock + 0.002; return tostring(#s) end
+  band.signed_ok = function(dir, key, now) -- (as band.lua's: the extension's check, then every code file hashed unless given)
+    clock = clock + 0.077
+    if not now then for _, f in ipairs(band.files(dir .. "/lib", ".lua")) do band.code_hash(fs[dir .. "/lib/" .. f]) end end
+    return sig_ok(dir) or nil, "not signed"
+  end
+  package.loaded.fromfolder = { target = function() return HT end, at_least = function(a, b) return tostring(a) >= tostring(b) end }
+  package.loaded.groups = { role = function() return "owner" end, trusted = function() return {} end }
+  logs = {}
+  local worst, out_at = 0, nil
+  for i = 1, 3000 do
+    clock = clock + 2; stand_in_worker()
+    local before = clock
+    drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008)
+    worst = math.max(worst, clock - before)
+    if (fs[CT .. "/lib/files.txt.sig"] or "") == "good 0.60.5" then out_at = i; break end
+  end
+  band.studio_update_key, band.version_on_disk, band.signed_ok, band.code_hash, package.loaded.fromfolder, package.loaded.groups = table.unpack(saved)
+  local said = false
+  for _, s in ipairs(logs) do if s:find("0.60.5 is in the ", 1, true) then said = true end end
+  check(out_at and said and fs[CT .. "/lib/m42.lua"] == "-- module 42 of 0.60.5", "the owner's new version went out, whole: " .. tostring(out_at))
+  check(worst <= 0.077 + 0.015, string.format("no plan over one extension check and a few ms of hashing (worst %.0f ms)", worst * 1000))
+end
+
+-- ---- 3k. each change read and parsed once after a start, for the copy and the storage sweep both (rt-drive2, round 3) ----
+-- The desktop after its 07:33 restart: the first sweep took 17 minutes at 40-117 ms of every 10 s, both drive.lua and the sweep reading and
+-- parsing every change of every song.
+setup()
+for i = 10, 40 do local e = ev("James", i); put(HERE .. "/events/" .. e.id .. ".json", json.encode(e)) end
+drive, bg, cm = fresh()
+local parsed, real_rj = {}, band.read_json
+band.read_json = function(p) if p:find("^/S/Song/rooms/main/events/") then parsed[p] = (parsed[p] or 0) + 1 end; return real_rj(p) end
+for _ = 1, 3 do clock = clock + 200; bg_pass() end
+band.read_json = real_rj
+local twice, n = 0, 0
+for _, k in pairs(parsed) do n = n + 1; if k > 1 then twice = twice + 1 end end
+check(n >= 39 and twice == 0 and ext["cloud storage"], "every change parsed once though the copy and the sweep both used it: " .. twice .. " of " .. n)
 
 -- ---- 4. the real worker scripts ----
 os.remove, os.rename = real_remove, real_rename

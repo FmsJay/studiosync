@@ -188,6 +188,14 @@ end
 local recs, pts = {}, {} -- path -> record (or false)
 -- (every cloud read and write here goes through `C`, lib/drivebg.lua: on REAPER's thread as before, or from the background worker's listings)
 local function C() return require("drivebg").C end
+-- A change file drive.lua has just parsed (`ev`, the file at `p` in room `room`'s events folder of the studio folder): its record kept, as
+-- read_events would make it. drive.note_event is the other way round. rt-drive2, round 3
+function cm.note(p, ev, room)
+  if recs[p] == nil and room then
+    local r = cm.rec(ev, room)
+    if r and r.id .. ".json" == p:match("[^/]+$") then recs[p], progress = r, progress + 1 end
+  end
+end
 -- (a folder being read over several passes keeps the listing it started from, and the studio folder's names: listing 2,500 changes on each
 -- side every pass was most of a pass. Once through, it's listed again for what came meanwhile. rt-drive2)
 local reading = {}
@@ -207,9 +215,13 @@ local function read_events(dir, room, deadline, twin)
     local r = recs[p]
     if r == nil then
       if deadline and reaper.time_precise() > deadline then reading[dir] = rd; return nil end
-      r = cm.rec(C().read_json(p), room)
+      local j = C().read_json(p)
+      r = cm.rec(j, room)
       if r and r.id .. ".json" ~= f then r = false end
-      if r then recs[p], progress = r, progress + 1 end -- (one not readable yet may still be arriving: read again next time)
+      if r then
+        recs[p], progress = r, progress + 1 -- (one not readable yet may still be arriving: read again next time)
+        if not C().cloud(p) then require("drive").note_event(p, j) end -- (the studio folder's: drive.lua's record from the same parse)
+      end
     end
     if r then out[#out + 1] = r end
   end

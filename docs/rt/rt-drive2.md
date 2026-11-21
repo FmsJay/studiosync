@@ -153,6 +153,72 @@ said `more` until its first check was done.
 - Tests 3b, 3e and the stand-in pass helper now read a pass as over when its round is (`more = false` alone no longer means the round has
   done its work).
 
+## Round 3 (the round 11 recheck on 0.59.49.82, after the desktop's REAPER restarted at 07:33)
+
+### 1. One drive step of 970 ms at 07:39:25 ("StudioSync 0.59.49.82 is in the Google Drive copy")
+
+**Cause.** After a restart the update-files unit (`drive.tools_pass`) has no memo, and one plan ran it all on REAPER's thread. Measured
+there, read only (`probe7_rt-drive2.lua`):
+- `band.signed_ok` of the studio's copy costs ~270 ms: the extension's SHA-256 check (`StudioSync_VerifyFiles`) 77 ms, plus every code file
+  hashed in Lua (`band.code_files`) 191 ms.
+- The pass made three of these: the studio's copy and the cloud's staged copy (to choose the way), and the copy about to go.
+- It also read every listed file twice to compare (4 MB, ~30 ms).
+
+**Fix (`lib/drive.lua`).**
+- Planned, the way is chosen with the extension's check alone (`drive.verify`: signature plus every listed file's SHA-256). The full
+  `band.signed_ok` still runs, and must pass, before anything is copied.
+- One such heavy check per plan. Once it's spent, `drivebg.NEED`: the unit is planned again next pass and keeps what it has done (the
+  memos, and the tools_at restore that was already there).
+- The code files for the full check are hashed `drive.TOOLS_STEP` (8 ms) a plan, then passed to `band.signed_ok(src, key, now)`.
+  - Hashes from earlier plans count only while lib/files.txt and the code files' names are the same, and they're used once.
+  - A file changed after it was hashed fails the check (its hash no longer matches the signed list); it never passes.
+  - Each file hashed counts as something happening for the back-off.
+- The destination's listings are asked for **before** the hashing. Asked after it, they were 30 s old again by the time the hashing was done:
+  test 3j found that livelock.
+- Direct mode (the fallback on REAPER's thread) is unchanged.
+
+**Test 3j.** Stand-in costs: the extension's check 77 ms, 2 ms a code file, 100 code files. The owner's new version goes out whole and is
+logged, and no plan exceeds one extension check plus ~15 ms. The old way: 554 ms in one plan.
+
+### 2. The drive lap at 40-117 ms of every 10 s from 07:41 to 07:46, `cloud storage` empty
+
+**This was the first sweep after the restart.**
+- The floor in every window is ~40 ms: 5 passes × the 8 ms the plan is given.
+- The sweep was reading every change of every song (~5,000) a few ms a pass. The copy (rooms, other songs) parses the same files first,
+  and each kept its own record, so every change was read and parsed twice.
+- `cloud storage` appeared at 07:50:35 (probe6), 17 minutes after the restart. After that the round ends; perf stats were already off by
+  then, so I couldn't measure the steady state (rt-perfcut3's table: 7 ms per 10 s).
+- It recurs after every restart, not in between: later sweeps re-read only new changes.
+
+**Fix.** Each change is parsed once:
+- `drive.lua`'s `read_events` hands the parsed file to `cloudmodes.note`.
+- The sweep's `read_events` hands its parse of a studio-folder change to `drive.note_event`, whichever reads first.
+- An upload's validity check doesn't read again a change already read whole (events are written once).
+- That halves the parsing after a restart, so the first sweep should take about half as long.
+
+**Test 3k.** A round with the sweep: every change of the room is parsed exactly once. The old code parsed all 40 twice.
+
+### 3. "Google Drive copy up to date (1 file this pass)" 70 s after an edit, with no "bringing ..." line
+
+**The expectation was wrong, and the line was inconsistent.**
+- The "bringing" line ("carries on between passes") is meant for a copy that takes more than one pass.
+- In round 2, `more` said "work" as soon as a plan held writes. That only reached Live sync when the planning pass also collected a job's
+  results:
+  - it did in the stand-in, whose room plan always followed a listing job;
+  - on the desktop the copy planned on a pass without results, and the next pass's results finished it, so only "up to date" was said.
+- Now `more` means files moved with more still to plan, or a copy failing. So a copy done in one job says only "up to date (N files)", and
+  one spanning jobs says "bringing" once, then "up to date (N)".
+
+**Test 3h (updated).** A quiet round logs nothing. One change copied in one job: no "bringing", one "up to date (1)". 250 changes (more than
+a job holds): one "bringing", one "up to date (250)". The round-2 code says "bringing" for the one-change round.
+
+### REAPER checks after deploy
+1. After a restart (or a new version deployed), no drive step over ~100 ms. The update files go out over a minute or so of passes, then
+   "StudioSync <v> is in the Google Drive copy".
+2. `cloud storage` appears in about half the 17 minutes after a restart. During that time the drive lap is ~40 ms per 10 s; afterwards it's
+   back near rt-perfcut3's 7 ms.
+3. An edit: "Google Drive copy up to date (1 file this pass)" alone. A big copy: one "bringing" line first.
+
 ## Left / not done
 
 - **`trim.plan` itself** (lib/trim.lua, not mine) is 80-200 ms for a 2,500-change room with ~180 saved versions in Standard's window

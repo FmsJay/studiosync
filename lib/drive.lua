@@ -257,6 +257,22 @@ local read_n = 0 -- (events read so far: a planned round that reads further is g
 -- (the first pass after a start read a big room's 3,150 at once and held REAPER up 0.7 s)
 drive.READ_MIN = 0.004 -- s of reading each call gets after the folder's listing, whatever the deadline
 local reading = {} -- (a folder read over several passes keeps the listing it started from, then is listed again for what came meanwhile. rt-drive2)
+local function summary(ev)
+  local e = ev and { type = ev.type, take = ev.take, time = ev.time, id = ev.id, user = ev.user, oid = ev.oid, gone = ev.gone == true or nil } or false
+  if e and type(ev.state) == "string" then -- (an item's chunk: the recordings it plays)
+    e.media = {}
+    for room, rel in ev.state:gmatch('FILE "{media:([^}]+)}/([^"]+)"') do e.media[#e.media + 1] = { room, rel } end
+  end
+  return e
+end
+-- A change file's contents as the storage sweep read them (lib/cloudmodes.lua): kept here too, so a change is read and parsed once after a
+-- start, not once by each (the desktop's first pass after a restart read every change twice: 17 minutes, 40-117 ms of every 10 s). rt-drive2
+function drive.note_event(p, ev)
+  if seen_events[p] == nil and type(ev) == "table" then
+    local e = summary(ev)
+    if e then seen_events[p], read_n = e, read_n + 1 end
+  end
+end
 local function read_events(dir, deadline)
   local out = {}
   local files = reading[dir] or band.files(dir, ".json")
@@ -269,12 +285,11 @@ local function read_events(dir, deadline)
     if e == nil and deadline and reaper.time_precise() > deadline then reading[dir] = files; return nil end
     if not e then
       local ev = band.read_json(p)
-      e = ev and { type = ev.type, take = ev.take, time = ev.time, id = ev.id, user = ev.user, oid = ev.oid, gone = ev.gone == true or nil } or false
-      if e and type(ev.state) == "string" then -- (an item's chunk: the recordings it plays)
-        e.media = {}
-        for room, rel in ev.state:gmatch('FILE "{media:([^}]+)}/([^"]+)"') do e.media[#e.media + 1] = { room, rel } end
+      e = summary(ev)
+      if e then
+        seen_events[p], read_n = e, read_n + 1 -- (one not readable yet may still be arriving: read again next time)
+        require("cloudmodes").note(p, ev, dir:match("([^/]+)/events$")) -- (and the sweep's record of it, from the same parse)
       end
-      if e then seen_events[p], read_n = e, read_n + 1 end -- (one not readable yet may still be arriving: read again next time)
     end
     if e then out[#out + 1] = e end
   end
@@ -497,7 +512,8 @@ function drive.mirror(here, there, budget, user, wait)
   end
   local function copy(a, z, media)
     if c.planned then -- (the worker checks the size before and after, and a cloud JSON file for being whole; a local one is read here first)
-      if a:match("%.json$") and not c.cloud(a) and band.read_json(a) == nil then return end
+      -- (a change already read whole here isn't read again: written once. rt-drive2, round 3)
+      if a:match("%.json$") and not c.cloud(a) and not seen_events[a] and band.read_json(a) == nil then return end
       if c.copy(a, z, a:match("%.json$") ~= nil, media and "landed" or "count") then n = n + 1 end
       return
     end
@@ -776,6 +792,30 @@ function drive.tools_way(hv, h, t, owner)
 end
 
 local tools_memo, tools_said = {}, {}
+-- (planned, the update files' heavy steps one a plan, the code's hashes a few ms a plan: after the restart at 07:33 on the desktop the pass
+-- held REAPER 970 ms in one go, three full checks (band.signed_ok: the extension's SHA-256s, 77 ms, and every code file hashed in Lua, 191 ms)
+-- and every file read twice. Once one is spent, drivebg.NEED: the unit is planned again next pass, keeping what's done. rt-drive2, round 3)
+local heavy, tools_until = math.huge, math.huge
+local function heavy_step() if heavy <= 0 then error(require("drivebg").NEED, 0) end; heavy = heavy - 1 end
+-- The extension's check of a copy alone: lib/files.txt.sig over lib/files.txt, and every file it lists by SHA-256. -> its answer.
+function drive.verify(dir, key) local f = reaper.StudioSync_VerifyFiles; return f and f(band.norm(dir), key) or "" end
+-- band.code_files of `src`, hashed a few files a pass (planned): -> it, or nil while there are more to hash. Hashes from earlier passes count
+-- only while the folder's code files are the same names and lib/files.txt the same; the full check that uses them compares every one.
+local hashing = {}
+local function code_now(src)
+  local names = {}
+  for _, f in ipairs(band.files(src, ".lua")) do if f:find("^StudioSync %- ") then names[#names + 1] = f end end
+  for _, f in ipairs(band.files(src .. "/lib", ".lua")) do names[#names + 1] = "lib/" .. f end
+  local sig = (band.read(src .. "/lib/files.txt") or "") .. "\0" .. table.concat(names, "\0")
+  local h = hashing[src]
+  if not (h and h.sig == sig) then h = { sig = sig, names = names, now = {}, i = 1 }; hashing[src] = h end
+  while h.names[h.i] do
+    if reaper.time_precise() > tools_until then return nil end
+    local p = h.names[h.i]
+    h.now[p], h.i, read_n = band.code_hash(band.read(src .. "/" .. p) or ""), h.i + 1, read_n + 1 -- (a file read: the back-off's something happening)
+  end
+  return h.now
+end
 -- { version, sig } of the copy in `dir` when it checks as signed with `key`, else nil: checked once per lib/files.txt and .sig (a whole copy's
 -- SHA-256s each pass would be most of it). Only for choosing the way: what's copied is checked again first.
 -- (planned, lib/drivebg.lua: a cloud copy is checked in a local folder the worker copies it into, `stage`, never read in the cloud folder here)
@@ -788,7 +828,10 @@ local function signed_copy(dir, key)
   if not (m and m.text == text and m.sig == sig and m.key == key) then
     local at = dir
     if c.cloud(dir) then at = c.stage(dir, drive.tools_files(text) or {}, sig) end
-    m = { text = text, sig = sig, key = key, ok = band.signed_ok(at, key) == true, stage = at ~= dir and at or nil }
+    local ok
+    if c.planned then heavy_step(); ok = drive.verify(at, key):match("^ok ") ~= nil -- (the extension's check: the full one is before a copy)
+    else ok = band.signed_ok(at, key) == true end
+    m = { text = text, sig = sig, key = key, ok = ok, stage = at ~= dir and at or nil }
     tools_memo[dir] = m
   end
   return m.ok and { version = text:match("^version (%S+)"), sig = sig } or nil
@@ -801,15 +844,19 @@ end
 local function send_tools_planned(from, to, key, dated)
   local c = C()
   local src = c.cloud(from) and (tools_memo[from] or {}).stage or from
-  local ok, why = band.signed_ok(src, key)
+  local code = {} -- (listed first: a job that copies and then waits for a listing would copy it all again)
+  for _, f in ipairs(c.files(to, ".lua")) do if f:find("^StudioSync %- ") then code[#code + 1] = f end end
+  for _, f in ipairs(c.files(to .. "/lib", ".lua")) do code[#code + 1] = "lib/" .. f end
+  c.check() -- (and before the hashing: listings asked for after it would be out of date again by the time it's done, every time)
+  local now = code_now(src)
+  if not now then error(require("drivebg").NEED, 0) end
+  heavy_step()
+  hashing[src] = nil -- (used once: the next check hashes again)
+  local ok, why = band.signed_ok(src, key, now)
   if not ok then return nil, why end
   local files = drive.tools_files(band.read(src .. "/lib/files.txt"))
   if not files then return nil, "its lib/files.txt names a file outside the copy" end
   local cmp = c.cloud(to) and (tools_memo[to] or {}).stage or to -- (what `to` has now: the cloud's staged copy, if it has a signed one)
-  local code = {} -- (listed first: a job that copies and then waits for a listing would copy it all again)
-  for _, f in ipairs(c.files(to, ".lua")) do if f:find("^StudioSync %- ") then code[#code + 1] = f end end
-  for _, f in ipairs(c.files(to .. "/lib", ".lua")) do code[#code + 1] = "lib/" .. f end
-  c.check()
   local n, keep, copied = 0, {}, {}
   for _, rel in ipairs(files) do
     keep[rel] = true
@@ -854,9 +901,12 @@ local function send_tools(from, to, key, dated)
 end
 -- From Live sync's cloud pass, at most every EVERY s (reads two small files in the cloud copy, and a listing only when there's work).
 drive.tools_at = -math.huge
+drive.TOOLS_STEP = 0.008 -- s of hashing the update files' code a plan
 function drive.tools_pass(cfg, droot, now)
   if now - drive.tools_at < drive.EVERY then return end
   drive.tools_at = now
+  heavy, tools_until = math.huge, math.huge
+  if C().planned then heavy, tools_until = 1, reaper.time_precise() + drive.TOOLS_STEP end
   local key = band.studio_update_key(cfg.root)
   if not key then return end
   -- (a guest's computer never runs or syncs the studio's copy: lib/fromfolder.lua wanted)
@@ -924,9 +974,11 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
     for _, p in ipairs(rooms) do round.units[#round.units + 1] = { "room", p[1], p[2] } end
     for _, k in ipairs({ "upkeep", "tools", "cm" }) do round.units[#round.units + 1] = { k } end
   end
-  -- ("still copying" only with something to send: files moved, a copy planned or failing. Every round said "bringing the studio's copy of
-  -- this room up to date" at its first job, with nothing to send. rt-drive2, round 2)
-  local function work() return round.moved > 0 or round.work or next(round.failing) ~= nil end
+  -- ("still copying" only while a copy carries on between passes: files moved and more to plan, or a copy failing. Every round said
+  -- "bringing the studio's copy of this room up to date" at its first job, with nothing to send (rt-drive2, round 2); and "a copy planned"
+  -- said it only when the plan happened to follow a job's results: a one-job copy said "up to date (1 file)" with no "bringing" line before
+  -- it on the desktop at 07:50, in the stand-in with one. A copy done in one job says only "up to date". rt-drive2, round 3)
+  local function work() return round.moved > 0 or next(round.failing) ~= nil end
   if not J.ready() then return r and round.moved, r and work(), r and r.err end
   local t0, rooms_left, room_wrote = reaper.time_precise(), false, false
   -- (the open song's rooms again every SOON s while the round goes on: they were done at 03:54 on the desktop while the round read another
@@ -951,7 +1003,7 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
         local saved = drive.tools_at
         local n0 = J.pending()
         local ok, a, b = J.unit(units[u[1]], u)
-        if u[1] ~= "cm" and J.pending() > n0 then round.work = true; room_wrote = room_wrote or u[1] == "room" end -- (a copy unit planned writes; the sweep's removals aren't copying)
+        if u[1] == "room" and J.pending() > n0 then room_wrote = true end -- (the open song's room planned writes)
         if not ok and J.is_need(a) then
           if u[1] == "tools" then drive.tools_at = saved end -- (asked again once the cloud's two files are read)
         elseif not ok then
@@ -994,7 +1046,6 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
     return x.moved, behind, x.err
   end
   -- ("up to date" said once, with the files moved since it was last said; a room looked at again stays "up to date" unless it moves some)
-  if copied then round.work = nil end -- (all it planned has come back: moved, or failing)
   if copied and (not round.told or round.moved > 0) then
     local m = round.moved
     round.told, round.moved = true, 0
