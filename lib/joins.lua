@@ -70,7 +70,9 @@ function joins.valid_request(d)
   -- lib/joinboot.lua, rt-joinlink)
   local key = type(d.key) == "string" and #d.key == 64 and d.key:match("^%x+$") and d.key:lower() or nil
   local nonce = type(d.nonce) == "string" and #d.nonce >= 16 and #d.nonce <= 64 and d.nonce:match("^%x+$") and d.nonce or nil
-  return { token = d.token, device = d.device, name = name ~= "" and name or "a collaborator", reply = reply, key = key, nonce = nonce }
+  -- (parts: the joiner takes a sealed welcome over one message, in pieces, with files past 30 KB. lib/joinboot.lua, rt-p10)
+  return { token = d.token, device = d.device, name = name ~= "" and name or "a collaborator", reply = reply, key = key, nonce = nonce,
+    parts = d.parts == true or nil }
 end
 
 -- ---- this computer's key and what it can make -------------------------------------------------------------------------------------------
@@ -249,12 +251,36 @@ function joins.send(tok, nonce)
   -- (what the welcome is sealed to: this computer's static key, only where it can open one and the ask has its nonce)
   local okk, key = pcall(function() return nonce and reaper.StudioSync_Unseal and require("nat").public_key() or nil end)
   local data = band.json_encode({ token = joins.encode(tok), device = dev, name = me(), reply = reply and reply:gsub("%.$", "") or nil,
-    key = okk and key or nil, nonce = nonce })
+    key = okk and key or nil, nonce = nonce, parts = okk and key and true or nil })
   return reaper.StudioSync_DirectMsg(joins.CHANNEL, "join", data, tok.host .. ":" .. direct.port()) == 1
+end
+-- Windows without the direct link's firewall rule: the ask goes out, but nothing can come back in (the welcome, the first copy, an invite
+-- link's invitation). Said once a run per computer asked. -> true when said. (rt-p10, backlog 1.29)
+local fw_noted = {}
+function joins.firewall_note(host, what)
+  if not band.WIN or fw_noted[host] or require("direct").firewall_ok() then return false end
+  fw_noted[host] = true
+  band.log(string.format("Windows' firewall rule for StudioSync's direct link isn't on here, so %s can't answer this computer over the link: %s " ..
+    "Press the firewall button on Health's direct-link row (one Windows prompt) and it comes straight away.", tostring(host), what))
+  return true
+end
+-- The ask reaches the inviter only over its Tailscale network: a computer not on it (no Tailscale, or another network, as a test VM joining
+-- with the connection without Tailscale) is never let in by the invitation itself. Said once a run, with what happens instead. (rt-p10)
+local function net_of(h) return (tostring(h or ""):gsub("%.$", ""):lower():match("^[^.]+%.(.+)$")) end
+function joins.tailnet_note(tok)
+  local mine = net_of(require("services").my_tailscale_name())
+  if (mine and mine == net_of(tok.host)) or fw_noted["ts " .. tok.host] then return false end
+  fw_noted["ts " .. tok.host] = true
+  band.log(string.format("This computer isn't on %s's Tailscale network, so the invitation can't let it in by itself: once they let it in from their " ..
+    "side (Let them in), Syncthing brings the studio. The first copy over the link needs Tailscale (invitations over the connection without " ..
+    "Tailscale aren't built yet).", tok.host))
+  return true
 end
 -- Joined `root` (services.join_band) with an invitation: asked now, and again every RESEND s from joins.tick until it's in. -> true when asked.
 -- (the token is kept in this computer's own settings until then: it's this computer's to use)
 function joins.request(root, tok)
+  joins.tailnet_note(tok)
+  joins.firewall_note(tok.host, "you're let in all the same once it hears your ask, and Syncthing brings the studio (slower than the link).")
   local pending = band.ext_json(band.SECTION, "joins pending") or {}
   pending[root] = { token = joins.encode(tok), nonce = band.secret(32) }
   band.set_ext_json(band.SECTION, "joins pending", pending, true)
@@ -263,6 +289,14 @@ function joins.request(root, tok)
 end
 function joins.on_welcome(id, d)
   local pending = band.ext_json(band.SECTION, "joins pending") or {}
+  -- (a sealed welcome over one message comes in pieces: put together for an invitation pending here only. lib/joinboot.lua, rt-p10)
+  if type(d) == "table" and type(d.part) == "table" then
+    local mine = false
+    for _, p in pairs(pending) do local tok = type(p) == "table" and joins.parse(p.token); mine = mine or (tok and tok.id == id) end
+    local whole = mine and require("joinboot").welcome_part(id, d)
+    if not whole then return false end
+    d = { sealed = whole }
+  end
   for root, p in pairs(pending) do
     local tok = type(p) == "table" and joins.parse(p.token)
     -- (sealed to this computer's key: the studio's first copy with it, checked as the answer to this computer's own ask. lib/joinboot.lua)

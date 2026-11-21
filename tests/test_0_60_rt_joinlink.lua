@@ -463,5 +463,172 @@ check(band.ext_json(band.SECTION, "join boots")[ROOT_J] == nil and band.read(ROO
 check(jb.rel_ok("_band/band.json.sig") and not jb.rel_ok("_band/joins/x.json") and not jb.rel_ok("../x/session.json") and not jb.rel_ok("Song/rooms/main/events/x.json"),
   "what a boot copy may be")
 
+-- ==== rt-p10: every room of the song, a welcome over 30 KB (in parts), an older joiner, the firewall note, a new secret sealed =================
+-- Ann's song grows a side room (Bridge: three items, one playing a take of its own, one main's), a binned room (Old), and a session.json
+-- over 30 KB (1,200 markers). Kim, a fourth computer, joins with a new invitation.
+band, joins = use(A)
+local BR = ROOT_A .. "/" .. SONG .. "/rooms/Bridge/"
+wj(BR .. "room.json", { parent = "main", by = "Ann", time = "2026-11-21T10:00:00Z" })
+wj(ROOT_A .. "/" .. SONG .. "/rooms/Old/room.json", { parent = "main", by = "Ann", time = "2026-11-21T09:00:00Z", binned = "Ann" })
+local function room_ev(room, t)
+  n_ev = n_ev + 1
+  t.id = string.format("Ann-20261121-%06dZ-%05d-0001", 100000 + n_ev, n_ev)
+  t.time, t.user, t.hlc = string.format("2026-11-21T11:%02d:%02dZ", (n_ev // 60) % 60, n_ev % 60), "Ann", 1800000000000 + n_ev
+  write(ROOT_A .. "/" .. SONG .. "/rooms/" .. room .. "/events/" .. t.id .. ".json", band.json_encode(t))
+  return t
+end
+local BRIDGE_TAKE = ("fLaC" .. string.rep("b", 20000))
+write(BR .. "media/bridge-01.flac", BRIDGE_TAKE)
+for i = 1, 3 do
+  local oid = string.format("I-ANN-20261121-%04d", i)
+  local state = i == 1 and '<ITEM\nFILE "{media}/bridge-01.flac"\n>' or i == 2 and '<ITEM\nFILE "{media:main}/take-01.flac"\n>' or '<ITEM\nPOSITION 9\n>'
+  local r1b = room_ev("Bridge", { type = "obj", obj = "item", oid = oid, rev = 1, state = state })
+  room_ev("Bridge", { type = "obj", obj = "item", oid = oid, rev = 2, base = 1, base_ev = r1b.id, state = state })
+end
+room_ev("Old", { type = "obj", obj = "item", oid = "I-ANN-20261121-9000", rev = 1, state = '<ITEM\n>' })
+local marks = {}
+for i = 1, 1200 do marks[i] = { i * 2, "marker " .. i .. " with a longer name" } end
+local BIG_SESSION = band.json_encode({ song = SONG, host = "Ann", srate = 48000, version = 3, markers = marks })
+check(#BIG_SESSION > 30000, "(session.json is over 30 KB: " .. #BIG_SESSION .. ")")
+write(ROOT_A .. "/" .. SONG .. "/session.json", BIG_SESSION)
+check(table.concat(require("joinboot").rooms_for(ROOT_A, SONG), ",") == "main,Bridge", "the rooms to hand over: main first, then Bridge; never a binned room")
+
+local K = computer("Kim", stid("KKKKKKK"))
+K.trust = nil
+K.services.modified_by = function() return nil end
+local ROOT_K = K.root
+local text2, tok2 = joins.make(ROOT_A, "member", now)
+check(text2, "Ann makes Kim's invitation")
+-- an older joiner (its ask has no `parts`): no first copy with session.json over 30 KB, as before
+do
+  local r_old = { token = text2, device = K.dev, name = "Kim", reply = K.ts, key = nat_pub(K.natkey), nonce = string.rep("12", 16) }
+  check(require("joinboot").send(ROOT_A, joins.parse(text2), r_old, { made = now }, now + 400) == false, "an older joiner: no first copy (session.json over 30 KB), today's welcome then")
+  require("joinboot").jobs[tok2.id] = nil
+  A.ext["join welcomed " .. tok2.id], A.ext["join booted " .. tok2.id] = nil, nil
+end
+joins.tick(now + 401)
+band, joins = use(K)
+K.ext.user, K.ext.sync_root, K.ext.bands = "Kim", ROOT_K, ROOT_K
+mkdirs(ROOT_K)
+write(ROOT_K .. "/.stignore", "")
+band.pin_id(ROOT_K, STUDIO)
+band.set_ext_json(band.SECTION, "joining " .. ROOT_K, { name = "Joinlink", id = STUDIO }, true)
+require("trust").set_inviter(ROOT_K, ANN_DEV)
+check(joins.request(ROOT_K, joins.parse(text2)), "Kim asks")
+band, joins = use(A)
+clock = clock + 6
+joins.tick(now + 402)
+local kw = 0
+for _, m in ipairs(K.polls) do if m[3] == "welcome" and band.json_decode(m[4]).part then kw = kw + 1 end end
+check(kw >= 2, "the welcome went to Kim sealed, in " .. kw .. " parts (over one message)")
+local job2 = require("joinboot").jobs[tok2.id]
+check(job2 and #job2.media == 13, "the song's media from every room, each once: " .. tostring(job2 and #job2.media))
+rounds = 1
+repeat
+  band, joins = use(K)
+  jb = require("joinboot")
+  clock = clock + 2
+  joins.tick(now + 402 + 2 * rounds)
+  st = jb.state(ROOT_K)
+  if st and st.playable then break end
+  band, joins = use(A)
+  joins.tick(now + 403 + 2 * rounds)
+  rounds = rounds + 1
+until rounds > 20
+check(st and st.playable, "Kim's computer has the song playable: " .. band.json_encode(st or {}))
+check(band.read(ROOT_K .. "/" .. SONG .. "/session.json") == BIG_SESSION and not read(ROOT_K .. "/" .. SONG .. "/session.json"), "Kim reads the 30 KB+ session.json from the welcome")
+check(band.read(ROOT_K .. "/" .. SONG .. "/rooms/Bridge/room.json") == read(BR .. "room.json"), "and the side room's settings")
+local kin = band.home() .. "/direct/" .. STUDIO .. "/" .. SONG .. "/rooms/"
+local nb = 0
+for _ in tostring(list_of(kin .. "Bridge/events", false)):gmatch("[^\n]+") do nb = nb + 1 end
+check(nb == 3, "the side room's changes, compacted (3 of 6), in its own inbox: " .. nb)
+check(tostring(list_of(kin .. "Old/events", false)) == "", "nothing of a binned room")
+check(read(kin .. "Bridge/.boot"), "the side room's inbox keeps them past its day too")
+check(read(ROOT_K .. "/" .. SONG .. "/rooms/Bridge/media/bridge-01.flac") == BRIDGE_TAKE, "the side room's own take, placed byte for byte")
+local mk = band.json_decode(read(jb.dir(STUDIO) .. "/manifest.json"))
+check(mk.rooms.main and mk.rooms.Bridge == 3 and mk.rooms.Old == nil, "the manifest counts each room's changes")
+
+-- a Windows joiner without the firewall rule: told why nothing comes back over the link, once, and what to press
+band, joins = use(J)
+local direct_j = require("direct")
+local fw0, win0 = direct_j.firewall_ok, band.WIN
+direct_j.firewall_ok, band.WIN = function() return false end, true
+local nlogs = #J.logs
+joins.request(T .. "/elsewhere", joins.parse(text2))
+joins.request(T .. "/elsewhere", joins.parse(text2))
+local notes = 0
+for k = nlogs + 1, #J.logs do if J.logs[k]:find("firewall rule", 1, true) and J.logs[k]:find("Health", 1, true) then notes = notes + 1 end end
+check(notes == 1, "a Windows joiner without the firewall rule is told, once: " .. tostring(J.logs[#J.logs]))
+direct_j.firewall_ok, band.WIN = fw0, win0
+-- a joiner not on the inviter's Tailscale network (a test VM joining without Tailscale): told the invitation can't let it in by itself, once
+check(not said(J, "Tailscale network, so the invitation") and not said(K, "Tailscale network, so the invitation"), "(a joiner on the studio's network isn't told that): " .. tostring(said(J, "isn't on ") or said(K, "isn't on ")))
+local ts0 = J.services.my_tailscale_name
+J.services.my_tailscale_name = function() return nil end
+nlogs = #J.logs
+joins.request(T .. "/elsewhere", joins.parse(text2))
+joins.request(T .. "/elsewhere", joins.parse(text2))
+notes = 0
+for k = nlogs + 1, #J.logs do if J.logs[k]:find("isn't on ann." .. SUFFIX .. "'s Tailscale network", 1, true) and J.logs[k]:find("Let them in", 1, true) then notes = notes + 1 end end
+check(notes == 1, "no Tailscale here: told how it comes in instead, once: " .. tostring(J.logs[#J.logs]))
+J.services.my_tailscale_name = ts0
+band.set_ext_json(band.SECTION, "joins pending", {}, true)
+
+-- a new secret after a removal: sealed to each computer's own key, never in the clear; one with no key known gets it from Syncthing
+band, joins = use(A)
+local signed_a, direct_a = require("signed"), require("direct")
+A.trust.device_ok = function() return true end
+wj(ROOT_A .. "/_band/devices/Jo.json", { user = "Jo", device = JO_DEV, nat = { pub = nat_pub(J.natkey), tailnet = true } })
+local JO_PEER, BO_PEER = J.ts .. ":47281", "bo." .. SUFFIX .. ":47281"
+direct_a.studio_peers = function() return { JO_PEER, BO_PEER }, { [JO_PEER] = "Jo", [BO_PEER] = "Bo" } end
+local outs = {}
+direct_a.send_live = function(_, kind, d, _, _, _, to) outs[#outs + 1] = { kind = kind, d = d, to = table.concat(to, " ") }; return true end
+local function bj(secret) local j = band.read_json(ROOT_A .. "/_band/band.json"); j.sonobus = secret; band.write_json(ROOT_A .. "/_band/band.json", j) end
+signed_a.drain(A.cfg, SONG, "main") -- (what was queued before)
+outs = {}
+bj(SECRET) -- (the first band.json this computer sends: as before, in the clear, to everyone it may send to)
+signed_a.drain(A.cfg, SONG, "main")
+check(#outs == 1 and outs[1].d.rel == "_band/band.json" and outs[1].to == JO_PEER .. " " .. BO_PEER, "an unchanged secret: band.json as before")
+outs = {}
+local NEW = "N3W-secret-after-moe-0002"
+bj(NEW)
+local nl = #A.logs
+signed_a.drain(A.cfg, SONG, "main")
+check(#outs == 1 and outs[1].to == JO_PEER and type(outs[1].d.sealed) == "string" and outs[1].d.rel == nil, "the new secret: one message, sealed, to Jo's computer only")
+for _, o in ipairs(outs) do check(not band.json_encode(o.d):find(NEW, 1, true), "the new secret is never in the clear") end
+check(said(A, "goes to Bo by Syncthing") and #A.logs > nl, "Bo's computer, with no key known: by Syncthing, said")
+local sealed_bj = outs[1].d
+outs = {}
+bj(NEW) -- (alerts.set writes band.json again straight after: still the new secret, still sealed)
+band.write_json(ROOT_A .. "/_band/band.json", (function() local j = band.read_json(ROOT_A .. "/_band/band.json"); j.alerts = "x"; return j end)())
+signed_a.drain(A.cfg, SONG, "main")
+check(#outs == 1 and outs[1].d.sealed and outs[1].to == JO_PEER, "written again within SECRET_NEW: sealed again")
+local k_secret = "signed secret " .. STUDIO
+A.ext[k_secret] = A.ext[k_secret]:gsub("\t%d+$", "\t" .. (os.time() - signed_a.SECRET_NEW - 1))
+outs = {}
+band.write_json(ROOT_A .. "/_band/band.json", (function() local j = band.read_json(ROOT_A .. "/_band/band.json"); j.alerts = "y"; return j end)())
+signed_a.drain(A.cfg, SONG, "main")
+check(#outs == 1 and outs[1].d.rel == "_band/band.json" and outs[1].to == JO_PEER .. " " .. BO_PEER, "SECRET_NEW later (Syncthing has it everywhere): as before")
+-- Jo's computer opens it and takes it as any band.json from the link; Eve's can't open it
+band, joins = use(J)
+local okj, whyj = require("signed").on_msg(J.cfg, sealed_bj)
+check(okj and band.read_json(ROOT_J .. "/_band/band.json").sonobus == NEW, "Jo's computer opens the sealed band.json and reads the new secret: " .. tostring(whyj))
+band, joins = use(E)
+local oke, whye = require("signed").on_msg({ root = E.root, user = "Eve" }, sealed_bj)
+check(not oke and whye == "not sealed to this computer", "Eve's computer can't open it: " .. tostring(whye))
+-- signed.pieces / collect, as the welcome uses them: out of order, a changed part, a wrong count
+do
+  local sg = require("signed")
+  local text3 = string.rep("0123456789abcdef", 5000)
+  local pcs, store, whole = sg.pieces(text3), {}, nil
+  check(#pcs == 3, "80,000 bytes: 3 pieces")
+  for _, k in ipairs({ 3, 1, 2 }) do whole = sg.collect(store, "x", pcs[k][1], pcs[k][2], pcs[k][3], pcs[k][4], 9) end
+  check(whole == text3 and next(store) == nil, "put together out of order, nothing left over")
+  sg.collect(store, "x", 1, 3, pcs[1][3], pcs[1][4], 9)
+  sg.collect(store, "x", 2, 3, pcs[1][3], pcs[2][4], 9)
+  local w3, why3 = sg.collect(store, "x", 3, 3, pcs[1][3], require("profile").base64(("z"):rep(#text3 - 60000)), 9)
+  check(not w3 and why3:find("add up"), "a changed part: refused")
+  check(not sg.collect({}, "x", 1, 20, "s", pcs[1][4], 9), "more parts than allowed: refused")
+end
+
 clean()
 print("ok")

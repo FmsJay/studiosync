@@ -304,6 +304,71 @@ local function fingerprint(s)
   for i = 1, #s do h = ((h ~ s:byte(i)) * 16777619) & 0xFFFFFFFF end
   return #s .. ":" .. h
 end
+-- Any text in parts of PART bytes, as base64: { { i, n, sum, data } }. A signed file over BODY_MAX (drain), and lib/joinboot.lua's sealed
+-- welcome over one message (rt-p10). Pure.
+function signed.pieces(text)
+  local b64, k, sum, out = require("profile").base64, math.ceil(#text / signed.PART), fingerprint(text), {}
+  for i = 1, k do out[i] = { i, k, sum, b64(text:sub((i - 1) * signed.PART + 1, i * signed.PART)) } end
+  return out
+end
+-- One part into `store` (the caller's own table): at most PARTS_OPEN texts half-arrived in it, each dropped PARTS_KEEP s after its last part;
+-- `extra` (the first given) comes back with the whole. -> the whole text and extra once all n are in and add up; else nil and why.
+function signed.collect(store, key, i, n, sum, data, max_n, extra)
+  if not (math.type(i) == "integer" and math.type(n) == "integer" and n >= 2 and n <= max_n and i >= 1 and i <= n and type(sum) == "string"
+      and #sum <= 32 and type(data) == "string" and #data <= math.ceil(signed.PART / 3) * 4 and #data % 4 == 0 and data:match("^[A-Za-z0-9+/]*=?=?$")) then
+    return nil, "not a part"
+  end
+  local bytes = require("fxfiles").unbase64(data)
+  if not bytes or #bytes > signed.PART or (i < n and #bytes ~= signed.PART) then return nil, "not a part" end
+  local now = reaper.time_precise()
+  key = key .. "\0" .. sum .. "\0" .. n
+  local count, oldest, okey = 0, math.huge, nil
+  for k, e in pairs(store) do
+    if now - e.at > signed.PARTS_KEEP then store[k] = nil
+    else count = count + 1; if e.at < oldest then oldest, okey = e.at, k end end
+  end
+  local e = store[key]
+  if not e then
+    if count >= signed.PARTS_OPEN and okey then store[okey] = nil end -- shortcut: the oldest half-arrived text goes; it comes by Syncthing
+    e = { got = {}, have = 0 }
+    store[key] = e
+  end
+  e.at = now
+  if not e.got[i] then e.got[i], e.have = bytes, e.have + 1 end
+  e.extra = e.extra or extra
+  if e.have < n then return nil, "part " .. i .. " of " .. n end
+  store[key] = nil
+  local whole = table.concat(e.got)
+  if fingerprint(whole) ~= sum then return nil, "its parts don't add up" end
+  return whole, e.extra
+end
+-- band.json holds the studio's secret, made new when someone is taken out (lib/removal.lua rotate, then alerts.set writes it again). A new
+-- one never goes over the link in the clear: for SECRET_NEW s after this computer first sends it, it goes sealed to each computer's own key
+-- (StudioSync_Seal; the key its devices file publishes, nat.pub) and to a computer with no key known here not at all (Syncthing brings it).
+-- An unchanged secret goes as before: they know it. The first band.json this computer sends counts as unchanged (nothing to compare with).
+-- -> the peers still to send to in the clear, and how many got it sealed. (rt-p10, backlog 3.2)
+signed.SECRET_NEW, signed.SEALED_MAX = 600, 60000
+function signed.seal_secret(cfg, body, side, to, who, song, room)
+  local j = band.json_decode(body or "")
+  local fp, k, now = fingerprint(tostring(type(j) == "table" and j.sonobus or "")), ext_key("secret", cfg.root), os.time()
+  local was_fp, was_at = reaper.GetExtState(band.SECTION, k):match("^(.-)\t(%d+)$")
+  if was_fp == nil then reaper.SetExtState(band.SECTION, k, fp .. "\t0", true); return to, 0 end
+  if was_fp ~= fp then was_at = now; reaper.SetExtState(band.SECTION, k, fp .. "\t" .. now, true) end
+  if now - tonumber(was_at) >= signed.SECRET_NEW then return to, 0 end
+  local n, skipped, direct, trust = 0, {}, require("direct"), require("trust")
+  local text = band.json_encode({ rel = "_band/band.json", body = body, side = side })
+  for _, p in ipairs(to) do
+    local u = who[p]
+    local d = type(u) == "string" and band.read_json(cfg.root .. "/_band/devices/" .. (u:gsub("[^%w%-_ ]", "")) .. ".json")
+    local pub = type(d) == "table" and type(d.nat) == "table" and type(d.nat.pub) == "string" and #d.nat.pub == 64 and d.nat.pub:match("^%x+$") and d.nat.pub
+    local okd, mine = pcall(trust.device_ok, cfg.root, u, type(d) == "table" and d.device)
+    local sealed = pub and okd and mine == true and reaper.StudioSync_Seal and tostring(reaper.StudioSync_Seal(pub, text) or "") or ""
+    if sealed:sub(1, 4) == "SSS1" and #sealed <= signed.SEALED_MAX and direct.send_live(cfg, "signed", { sealed = sealed }, song, room, nil, { p }) then n = n + 1
+    else skipped[#skipped + 1] = tostring(u) end
+  end
+  if #skipped > 0 then band.log("the studio's new secret goes to " .. table.concat(skipped, ", ") .. " by Syncthing, not the link: no key to seal it to") end
+  return {}, n
+end
 local function store_of(root, rel) return band.home() .. "/direct/" .. tostring(band.info(root).id) .. "/.linked/" .. rel end
 local function shared_lines(without)
   local out = {}
@@ -410,9 +475,9 @@ function signed.drain(cfg, song, room)
         local peers, _, users = direct.peers(cfg, song, room)
         -- (band.json holds the studio's secret, made new when someone is taken out: never to a bandmate with a removal mark, nor to one this
         -- script can't name. Syncthing stops syncing with them; the link mustn't hand it over meanwhile)
-        local secret = rel == "_band/band.json"
+        local secret, who = rel == "_band/band.json", {}
         local function add(p, u)
-          if not seen[p] and not (secret and (type(u) ~= "string" or require("removal").mark(root, u))) then seen[p] = true; to[#to + 1] = p end
+          if not seen[p] and not (secret and (type(u) ~= "string" or require("removal").mark(root, u))) then seen[p], who[p] = true, u; to[#to + 1] = p end
         end
         for _, p in ipairs(peers) do add(p, users and users[p]) end
         if fsong and not (fsong == song and froom == room) then
@@ -424,17 +489,17 @@ function signed.drain(cfg, song, room)
           local all, ausers = direct.studio_peers(cfg, rel:match("^([^_/][^/]*)/") or song)
           for _, p in ipairs(all) do add(p, ausers[p]) end
         end
-        local sent = false
+        local sent, sealed_n = false, 0
+        if secret and #to > 0 and body then to, sealed_n = signed.seal_secret(cfg, body, side, to, who, song, room) end -- (a new secret: rt-p10)
         if #to > 0 and #(body or "") <= signed.BODY_MAX then sent = direct.send_live(cfg, "signed", { rel = rel, body = body, side = side }, song, room, nil, to)
         elseif #to > 0 then
           -- (over BODY_MAX: in parts, the signature file with the last. An older build takes no `part` (no rel: "not a signed file"). rt-p3)
-          local b64, k, sum = require("profile").base64, math.ceil(#body / signed.PART), fingerprint(body)
           sent = true
-          for i = 1, k do
-            local piece = body:sub((i - 1) * signed.PART + 1, i * signed.PART)
-            sent = direct.send_live(cfg, "signed", { part = { rel, i, k, sum }, data = b64(piece), side = i == k and side or nil }, song, room, nil, to) and sent
+          for _, pc in ipairs(signed.pieces(body)) do
+            sent = direct.send_live(cfg, "signed", { part = { rel, pc[1], pc[2], pc[3] }, data = pc[4], side = pc[1] == pc[2] and side or nil }, song, room, nil, to) and sent
           end
         end
+        sent = sent or sealed_n > 0
         if sent then n = n + 1; trace("out", rel) end
       end
     end
@@ -495,34 +560,13 @@ local function on_part(d)
   local p = d.part
   local rel, i, n, sum = p[1], p[2], p[3], p[4]
   local kind = type(rel) == "string" and signed.kind(rel)
-  if not (kind and signed.LINK[kind] and not signed.OWN[kind] and math.type(i) == "integer" and math.type(n) == "integer" and n >= 2
-      and n <= math.ceil(signed.FILE_MAX / signed.PART) and i >= 1 and i <= n and type(sum) == "string" and #sum <= 32 and type(d.data) == "string"
-      and #d.data <= math.ceil(signed.PART / 3) * 4 and #d.data % 4 == 0 and d.data:match("^[A-Za-z0-9+/]*=?=?$")
-      and (d.side == nil or (type(d.side) == "string" and #d.side <= sw.SIDE_MAX))) then
+  if not (kind and signed.LINK[kind] and not signed.OWN[kind] and (d.side == nil or (type(d.side) == "string" and #d.side <= sw.SIDE_MAX))) then
     return nil, "not a part of a signed file"
   end
-  local bytes = require("fxfiles").unbase64(d.data)
-  if not bytes or #bytes > signed.PART or (i < n and #bytes ~= signed.PART) then return nil, "not a part of a signed file" end
-  local now, key = reaper.time_precise(), rel .. "\0" .. sum .. "\0" .. n
-  local count, oldest, okey = 0, math.huge, nil
-  for k, e in pairs(open_parts) do
-    if now - e.at > signed.PARTS_KEEP then open_parts[k] = nil
-    else count = count + 1; if e.at < oldest then oldest, okey = e.at, k end end
-  end
-  local e = open_parts[key]
-  if not e then
-    if count >= signed.PARTS_OPEN and okey then open_parts[okey] = nil end -- shortcut: the oldest half-arrived file goes; it comes by Syncthing
-    e = { got = {}, have = 0 }
-    open_parts[key] = e
-  end
-  e.at = now
-  if not e.got[i] then e.got[i], e.have = bytes, e.have + 1 end
-  e.side = e.side or d.side
-  if e.have < n or not e.side then return nil, "part " .. i .. " of " .. n end
-  open_parts[key] = nil
-  local body = table.concat(e.got)
-  if fingerprint(body) ~= sum then return nil, "its parts don't add up" end
-  return { rel = rel, body = body, side = e.side }
+  local body, side = signed.collect(open_parts, rel, i, n, sum, d.data, math.ceil(signed.FILE_MAX / signed.PART), d.side)
+  if not body then return nil, side == "not a part" and "not a part of a signed file" or side end
+  if not side then return nil, "not signed" end
+  return { rel = rel, body = body, side = side }
 end
 -- A message "signed": { rel, body (nil: a tombstone), side }, or a part of one. -> true when it went in, or false and why.
 local accept
@@ -534,6 +578,13 @@ function signed.on_msg(cfg, d)
       return false, why
     end
     d = whole
+  end
+  -- (a new secret, sealed to this computer's own key: signed.seal_secret. rt-p10)
+  if type(d) == "table" and d.sealed ~= nil then
+    local kp = type(d.sealed) == "string" and #d.sealed <= signed.SEALED_MAX and reaper.StudioSync_Unseal and require("nat").key_path()
+    local inner = kp and band.json_decode(tostring(reaper.StudioSync_Unseal(kp, d.sealed) or ""))
+    if type(inner) ~= "table" or inner.rel ~= "_band/band.json" then trace("not taken (not sealed to this computer)", "_band/band.json"); return false, "not sealed to this computer" end
+    d = { rel = inner.rel, body = inner.body, side = inner.side }
   end
   local ok, why = accept(cfg.root, cfg.user, d, nil)
   trace(ok and "in" or ("not taken (" .. tostring(why) .. ")"), type(d) == "table" and d.rel or "?")

@@ -4,9 +4,10 @@
 -- signature):
 --  - the welcome, sealed to the joiner's static key from its ask (StudioSync_Seal: X25519 + XChaCha20-Poly1305, extension/nat.cpp): the
 --    studio's _band essentials as signed files (band.json, which holds the studio's secret, roles, removal marks, names, devices, guest
---    lists), the current song's session.json and its main room's settings (mode, driver, grants), and what follows;
---  - the song's main room as it stands: the newest change of each object (every change of one two people edited apart, so the joiner's
---    merge comes out as everyone's), the newest tempo map, every other kind of event but cues, as event files into the joiner's link inbox
+--    lists), the current song's session.json and its rooms' settings (mode, driver, grants), and what follows; over 30 KB, in parts
+--    (a joiner that asks with `parts`, rt-p10);
+--  - each room of the song (main and the side rooms not binned, rt-p10) as it stands: the newest change of each object (every change of
+--    one two people edited apart, so the joiner's merge comes out as everyone's), the newest tempo map, every other kind of event but cues, as event files into the joiner's link inbox
 --    (where Live sync reads the link's events);
 --  - the media those changes play, streamed, smallest first.
 -- On the joiner nothing is written into the shared folder but the media (as the link's media always is): the files land in a store beside
@@ -16,8 +17,11 @@
 -- Without the extension's sealing (older than this), a key in the ask, or the link: today's welcome, and Syncthing brings everything.
 -- Unreviewed (security reviews come after all features, James 2026-11-19). Review-later list: docs/rt/rt-joinlink.md.
 local band = require("band")
-local jb = { WELCOME_MAX = 30000, BODY_MAX = 32768, SIDE_MAX = 2048, EVENTS_PER_TICK = 500, MEDIA_AT_ONCE = 6, MEDIA_MAX = 300,
-  KEEP = 2 * 86400, GRACE = 600, EVENT_MAX = 4 * 1024 * 1024 }
+-- (WELCOME_MAX: a welcome in one message, for a joiner on an older build; WELCOME_BIG: one that asked with `parts`, its files each up to
+-- signed.FILE_MAX, sealed and sent in signed.pieces when the sealed text passes ONE_MAX (the link's 64 KB a message). rt-p10)
+local jb = { WELCOME_MAX = 30000, WELCOME_BIG = 240000, ONE_MAX = 62000, BODY_MAX = 32768, SIDE_MAX = 2048, EVENTS_PER_TICK = 500, MEDIA_AT_ONCE = 6,
+  MEDIA_MAX = 300, ROOMS_MAX = 64, KEEP = 2 * 86400, GRACE = 600, EVENT_MAX = 4 * 1024 * 1024 }
+jb.SEALED_MAX = 2 * jb.WELCOME_BIG + 4096
 local EXT = "join boots" -- { [root] = { id = studio id, at = os.time() of the welcome, band_at = when the folder's band.json first showed } }
 
 -- ---- pure -------------------------------------------------------------------------------------------------------------------------------
@@ -97,19 +101,34 @@ function jb.media_of(evs, room)
 end
 
 -- ---- the computer that made the invitation ---------------------------------------------------------------------------------------------
--- The files to carry, most needed first (whatever doesn't fit in the welcome comes with Syncthing): { rel }.
-function jb.files_for(root, song, room)
+-- The song's rooms to hand over: main first, then each side room not binned. (rt-p10: it was the main room only)
+function jb.rooms_for(root, song)
+  local out, direct = { "main" }, require("direct")
+  for _, r in ipairs(band.subdirs(root .. "/" .. song .. "/rooms")) do
+    local m = r ~= "main" and #out < jb.ROOMS_MAX and direct.plain(r) and (band.read_json(root .. "/" .. song .. "/rooms/" .. r .. "/room.json") or {})
+    if m and not m.binned then out[#out + 1] = r end
+  end
+  return out
+end
+-- The files to carry, most needed first (whatever doesn't fit in the welcome comes with Syncthing): { rel }. rooms: { room } (main first):
+-- the main room's settings with the song's, the side rooms' last.
+function jb.files_for(root, song, rooms)
+  if type(rooms) ~= "table" then rooms = { rooms or "main" } end
   local rels = { "_band/band.json", "_band/roles.json" }
-  if song then
+  local function room_files(room)
     local rdir = song .. "/rooms/" .. room
-    rels[#rels + 1] = song .. "/session.json"
     for _, f in ipairs({ "mode.json", "driver.json", "room.json" }) do rels[#rels + 1] = rdir .. "/" .. f end
     for _, f in ipairs(band.files(root .. "/" .. rdir .. "/grants", ".json")) do rels[#rels + 1] = rdir .. "/grants/" .. f end
+  end
+  if song then
+    rels[#rels + 1] = song .. "/session.json"
+    room_files(rooms[1])
   end
   for _, f in ipairs(band.files(root .. "/_band/removed", ".json")) do rels[#rels + 1] = "_band/removed/" .. f end
   rels[#rels + 1] = "_band/names.json"
   for _, f in ipairs(band.files(root .. "/_band/devices", ".json")) do rels[#rels + 1] = "_band/devices/" .. f end
   for _, f in ipairs(band.files(root .. "/_band/guest-access", ".json")) do rels[#rels + 1] = "_band/guest-access/" .. f end
+  if song then for k = 2, #rooms do room_files(rooms[k]) end end
   return rels
 end
 -- The song to hand over: the one in front here (when it's this studio's and the joiner may see it), else the newest the joiner may see.
@@ -153,16 +172,21 @@ function jb.send(root, tok, r, rec, now)
   -- (what goes is worked out once per invitation: an ask again, every RESEND s while the welcome is missed, reads no events)
   local prep = prepared[tok.id]
   if not prep then
-    prep = { song = jb.song_for(root, r.device), evs = {}, media = {} }
+    prep = { song = jb.song_for(root, r.device), evs = {}, media = {}, rooms = {}, room_list = { "main" } }
     if prep.song then
-      prep.evs = jb.events_for(root, prep.song, "main")
-      local plain = {}
-      for _, e in ipairs(prep.evs) do plain[#plain + 1] = e.ev end
-      for _, m in ipairs(jb.media_of(plain, "main")) do
-        local name = require("streams").media_name(m.room, m.file)
-        local p = root .. "/" .. prep.song .. "/rooms/" .. m.room .. "/media/" .. m.file
-        local size = name and band.size(p)
-        if size and size > 0 and #prep.media < jb.MEDIA_MAX then prep.media[#prep.media + 1] = { room = m.room, file = m.file, size = size, name = name, path = p } end
+      local seen = {}
+      prep.room_list = jb.rooms_for(root, prep.song)
+      -- (every room of the song, each kept as compact says; the media any of them plays, once. rt-p10)
+      for _, room in ipairs(prep.room_list) do
+        local evs, plain = jb.events_for(root, prep.song, room), {}
+        prep.rooms[room] = #evs
+        for _, e in ipairs(evs) do e.room = room; prep.evs[#prep.evs + 1] = e; plain[#plain + 1] = e.ev end
+        for _, m in ipairs(jb.media_of(plain, room)) do
+          local name = require("streams").media_name(m.room, m.file)
+          local p = root .. "/" .. prep.song .. "/rooms/" .. m.room .. "/media/" .. m.file
+          local size = name and not seen[name] and band.size(p)
+          if size and size > 0 and #prep.media < jb.MEDIA_MAX then seen[name] = true; prep.media[#prep.media + 1] = { room = m.room, file = m.file, size = size, name = name, path = p } end
+        end
       end
       table.sort(prep.media, function(a, z) if a.size ~= z.size then return a.size < z.size end return a.name < z.name end)
     end
@@ -179,30 +203,39 @@ function jb.send(root, tok, r, rec, now)
   -- the welcome's by Syncthing's silence. lib/signed.lua)
   local okk, keys = pcall(function() return require("signed").known_keys(root) end)
   w.keys = okk and keys or {}
-  w.events = #evs
+  w.events, w.rooms = #evs, prep.song and prep.rooms or nil
   w.media = {}
   for _, m in ipairs(media) do w.media[#w.media + 1] = { room = m.room, file = m.file, size = m.size } end
   local size = #band.json_encode(w)
-  for _, rel in ipairs(jb.files_for(root, song, "main")) do
+  -- (a joiner that asked with `parts` takes a welcome of WELCOME_BIG, each file up to signed.FILE_MAX; an older one, WELCOME_MAX. rt-p10)
+  local limit, fmax = jb.WELCOME_MAX, jb.BODY_MAX
+  if r.parts == true then limit, fmax = jb.WELCOME_BIG, require("signed").FILE_MAX end
+  for _, rel in ipairs(jb.files_for(root, song, prep.room_list)) do
     local body = band.read_raw(root .. "/" .. rel)
     local needed = rel == "_band/band.json" or rel == tostring(song) .. "/session.json"
-    if body and #body <= jb.BODY_MAX then
+    if body and #body <= fmax then
       local side = band.read_raw(root .. "/" .. rel .. ".sig")
       local f = { rel = rel, body = body, side = side and #side <= jb.SIDE_MAX and side or nil }
       local n = #band.json_encode(f) + 1
-      if size + n <= jb.WELCOME_MAX then w.files[#w.files + 1] = f; size = size + n
+      if size + n <= limit then w.files[#w.files + 1] = f; size = size + n
       elseif needed then return false end -- (band.json and the song's session.json, or no first copy: Syncthing's as today)
     elseif needed then return false end
   end
   -- (and, in the room that's left, the newest number this computer has taken per signed file: the joiner never takes an older copy put
   -- back as its first. lib/signed.lua known_seqs, rt-linkmove)
-  local oks, seqs = pcall(function() return require("signed").known_seqs(root, jb.WELCOME_MAX - size - 16) end)
+  local oks, seqs = pcall(function() return require("signed").known_seqs(root, limit - size - 16) end)
   w.seqs = oks and #seqs > 0 and seqs or nil
   local sealed = tostring(reaper.StudioSync_Seal(r.key, band.json_encode(w)) or "")
   if sealed:sub(1, 4) ~= "SSS1" then return false end
   local channel, peer = "join-" .. tok.id, r.reply .. ":" .. require("direct").port()
   reaper.StudioSync_DirectStart(channel, tok.sig, band.home() .. "/direct/join", -1)
-  if reaper.StudioSync_DirectMsg(channel, "welcome", band.json_encode({ sealed = sealed }), peer) ~= 1 then return false end
+  -- (over one message: the sealed text in signed.pieces, put together on the joiner, jb.welcome_part. rt-p10)
+  local msgs = { { sealed = sealed } }
+  if #sealed > jb.ONE_MAX then
+    msgs = {}
+    for _, pc in ipairs(require("signed").pieces(sealed)) do msgs[#msgs + 1] = { part = { pc[1], pc[2], pc[3] }, data = pc[4] } end
+  end
+  for _, m in ipairs(msgs) do if reaper.StudioSync_DirectMsg(channel, "welcome", band.json_encode(m), peer) ~= 1 then return false end end
   reaper.SetExtState(band.SECTION, k, tostring(now), false)
   -- (the song's changes and media once per invitation: an ask again means only the welcome was missed, and it comes every RESEND s)
   if song and reaper.GetExtState(band.SECTION, "join booted " .. tok.id) == "" then
@@ -224,7 +257,7 @@ function jb.maker_tick()
       local sent = 0
       while j.ei <= #j.events and sent < jb.EVENTS_PER_TICK do
         local e = j.events[j.ei]
-        local rel = j.song .. "/rooms/main/events/" .. e.ev.id .. ".json"
+        local rel = j.song .. "/rooms/" .. (e.room or "main") .. "/events/" .. e.ev.id .. ".json"
         local ok = e.path and reaper.StudioSync_DirectSend(j.channel, rel, e.path, j.peer) == 1
         if not ok and e.path and band.size(e.path) then break end -- (the link's queue full: the rest next tick; a file gone since: skipped)
         j.ei, sent = j.ei + 1, sent + 1
@@ -254,8 +287,17 @@ local function norm(p) return (tostring(p):gsub("\\", "/"):gsub("/+$", "")) end
 local function mkdir_for(p) reaper.RecursiveCreateDirectory(p:match("^(.*)/[^/]+$"), 0) end
 local taken_at = {} -- root -> time_precise of the welcome (ready-to-play's clock)
 -- A sealed welcome for the invitation pending for `root` (p: { token, nonce }). -> the welcome's fields (as today's welcome), or nil + why.
+-- A part of a sealed welcome over one message ({ part = { i, n, sum }, data }) for the invitation `id`: -> the whole sealed text once all are
+-- here, else nil. (rt-p10)
+local welcome_parts = {}
+function jb.welcome_part(id, d)
+  local p = type(d) == "table" and type(d.part) == "table" and d.part
+  if not p then return nil end
+  local signed = require("signed")
+  return (signed.collect(welcome_parts, tostring(id), p[1], p[2], p[3], d.data, math.ceil(jb.SEALED_MAX / signed.PART)))
+end
 function jb.take(root, tok, p, sealed)
-  if not (reaper.StudioSync_Unseal and type(sealed) == "string" and #sealed <= 140000) then return nil, "can't open a sealed welcome here" end
+  if not (reaper.StudioSync_Unseal and type(sealed) == "string" and #sealed <= jb.SEALED_MAX) then return nil, "can't open a sealed welcome here" end
   local kp = require("nat").key_path()
   local text = kp and tostring(reaper.StudioSync_Unseal(kp, sealed) or "") or ""
   local w = text ~= "" and band.json_decode(text)
@@ -263,9 +305,9 @@ function jb.take(root, tok, p, sealed)
   if w.studio ~= tok.studio or w.id ~= tok.id then return nil, "for another invitation" end
   if w.device ~= require("services").my_device_id() then return nil, "for another computer" end
   if type(p) ~= "table" or type(p.nonce) ~= "string" or w.nonce ~= p.nonce then return nil, "a replayed welcome (not the answer to this computer's ask)" end
-  local dir, rels = jb.dir(tok.studio), {}
+  local dir, rels, fmax = jb.dir(tok.studio), {}, require("signed").FILE_MAX
   for _, f in ipairs(type(w.files) == "table" and w.files or {}) do
-    if type(f) == "table" and jb.rel_ok(f.rel) and not f.rel:find("%.sig$") and type(f.body) == "string" and #f.body <= jb.BODY_MAX then
+    if type(f) == "table" and jb.rel_ok(f.rel) and not f.rel:find("%.sig$") and type(f.body) == "string" and #f.body <= fmax then
       mkdir_for(dir .. "/" .. f.rel)
       band.write_atomic(dir .. "/" .. f.rel, f.body)
       if type(f.side) == "string" and #f.side <= jb.SIDE_MAX then band.write_atomic(dir .. "/" .. f.rel .. ".sig", f.side) end
@@ -280,13 +322,21 @@ function jb.take(root, tok, p, sealed)
     if song and name and size and size > 0 and size == math.floor(size) and #media < jb.MEDIA_MAX then media[#media + 1] = { room = m.room, file = m.file, size = math.floor(size), name = name } end
   end
   local n = tonumber(w.events) and math.max(0, math.floor(tonumber(w.events))) or 0
+  -- (each room's changes: an older maker's welcome names none, its changes all the main room's. rt-p10)
+  local rooms, nr = {}, 0
+  for room, k in pairs(type(w.rooms) == "table" and w.rooms or {}) do
+    if nr < jb.ROOMS_MAX and type(room) == "string" and require("direct").plain(room) and tonumber(k) then rooms[room], nr = math.max(0, math.floor(tonumber(k))), nr + 1 end
+  end
+  if nr == 0 then rooms.main = n end
   if song then -- (the link's inbox keeps these past its day: they're as old as the song. lib/direct.lua prune)
-    local mark = band.home() .. "/direct/" .. tok.studio .. "/" .. song .. "/rooms/main/.boot"
-    mkdir_for(mark)
-    band.write_atomic(mark, tostring(os.time()))
+    for room in pairs(rooms) do
+      local mark = band.home() .. "/direct/" .. tok.studio .. "/" .. song .. "/rooms/" .. room .. "/.boot"
+      mkdir_for(mark)
+      band.write_atomic(mark, tostring(os.time()))
+    end
   end
   mkdir_for(dir .. "/manifest.json")
-  band.write_atomic(dir .. "/manifest.json", band.json_encode({ root = root, song = song, events = n, media = media, files = rels, channel = "join-" .. tok.id }))
+  band.write_atomic(dir .. "/manifest.json", band.json_encode({ root = root, song = song, events = n, rooms = rooms, media = media, files = rels, channel = "join-" .. tok.id }))
   local t = boots()
   t[root] = { id = tok.studio, at = os.time() }
   band.set_ext_json(band.SECTION, EXT, t, true)
@@ -330,22 +380,25 @@ function jb.songs(root)
   end
   return {}
 end
--- Where the joiner stands: { files, events, events_want, media, media_want, playable }. events: the main room's changes here (folder and
--- inbox); playable once the song's session.json, every change and every media file are.
+-- Where the joiner stands: { files, events, events_want, media, media_want, playable }. events: each room's changes here (folder and inbox),
+-- each counted up to what its room wants; playable once the song's session.json, every room's changes and every media file are.
 function jb.state(root)
   local b = boots()[root]
   local m = b and band.json_decode(band.read_raw(jb.dir(b.id) .. "/manifest.json") or "")
   if type(m) ~= "table" or type(m.song) ~= "string" then return nil end
-  local dir = root .. "/" .. m.song .. "/rooms/main/events"
-  local have = {}
-  for _, f in ipairs(band.files(dir, ".json")) do have[f] = true end
-  for _, f in ipairs(band.files(band.home() .. "/direct/" .. b.id .. "/" .. m.song .. "/rooms/main/events", ".json")) do have[f] = true end
-  local n, placed = 0, 0
-  for _ in pairs(have) do n = n + 1 end
+  local n, placed, short = 0, 0, false
+  for room, want in pairs(type(m.rooms) == "table" and m.rooms or { main = m.events }) do
+    local have, k = {}, 0
+    for _, f in ipairs(band.files(root .. "/" .. m.song .. "/rooms/" .. room .. "/events", ".json")) do have[f] = true end
+    for _, f in ipairs(band.files(band.home() .. "/direct/" .. b.id .. "/" .. m.song .. "/rooms/" .. room .. "/events", ".json")) do have[f] = true end
+    for _ in pairs(have) do k = k + 1 end
+    short = short or k < (tonumber(want) or 0)
+    n = n + math.min(k, tonumber(want) or k)
+  end
   for _, x in ipairs(m.media) do if band.size(root .. "/" .. m.song .. "/rooms/" .. x.room .. "/media/" .. x.file) == x.size then placed = placed + 1 end end
   local session = band.read(root .. "/" .. m.song .. "/session.json") ~= nil
   return { song = m.song, events = n, events_want = m.events, media = placed, media_want = #m.media, session = session,
-    playable = session and n >= m.events and placed >= #m.media }
+    playable = session and not short and placed >= #m.media }
 end
 -- A streamed media file, here and whole (the extension checked its length and SHA-256): into the room's media folder, as the link's media
 -- always goes (lib/streams.lua place), and Syncthing told. -> true once it's there.
