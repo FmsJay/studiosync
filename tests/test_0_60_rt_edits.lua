@@ -421,6 +421,21 @@ local function numbers_of(c)
 end
 
 local undo = require("undo")
+-- One Undo (or Redo) on the desktop whose writes cross a clock second: its third change is written in the next one. (REAPER check,
+-- 0.59.49.75: an Undo that wrote 3 changes at 02:00:13 and 18 at 02:00:14 was redone as "the act has 18 changes", and two items and three
+-- automation points stayed missing on every computer; Undo then stepped to an older change. An Undo's changes were grouped by their second.)
+local function press(redo)
+  local real_post, n = sync.post, 0
+  sync.post = function(...)
+    n = n + 1
+    if n == 3 then tick(1) end
+    return real_post(...)
+  end
+  local ok, res, why = pcall(undo.step, A.F.proj, A.cfg, { song = song, room = room }, redo, {})
+  sync.post = real_post
+  if not ok then error(res, 0) end
+  return res, why
+end
 local renames = 0
 local function run(mode)
   local quick = mode == "quick"
@@ -481,7 +496,7 @@ local function run(mode)
       same(A, B, what .. ": the laptop's rename came over")
       tick()
       as(A)
-      local res, why = undo.step(A.F.proj, A.cfg, { song = song, room = room }, false, {})
+      local res, why = press(false)
       assert(res, what .. ": undone (" .. tostring(why) .. ")")
       settle(A, quick)
       tick()
@@ -513,7 +528,7 @@ local function run(mode)
       -- redo, so the next case builds on it (and redo is one key too)
       tick()
       as(A)
-      local redone, why_not = undo.step(A.F.proj, A.cfg, { song = song, room = room }, true, {})
+      local redone, why_not = press(true)
       assert(redone, what .. ": redone (" .. tostring(why_not) .. ")")
       settle(A, quick)
       tick()
@@ -526,6 +541,35 @@ local function run(mode)
         if oid ~= gtr_oid then assert(redone_st[oid] == h, what .. ": Redo brought " .. oid .. " back as the edit left it (" .. tostring(h) .. " vs " .. tostring(redone_st[oid]) .. ")") end
       end
       for oid in pairs(redone_st) do assert(now_st[oid], what .. ": Redo made nothing the edit hadn't (" .. oid .. ")") end
+      -- and Undo steps back to the same edit again, then Redo forward (after a partial Redo, Undo went to an older change)
+      tick()
+      as(A)
+      res, why = press(false)
+      assert(res, what .. ": undone a second time (" .. tostring(why) .. ")")
+      settle(A, quick)
+      tick()
+      recv(B)
+      same(A, B, what .. ": undone a second time, the same on the laptop")
+      local again = state(A)
+      for oid, h in pairs(before) do
+        if oid ~= gtr_oid then assert(again[oid] == h, what .. ": the second Undo put " .. oid .. " back (" .. tostring(h) .. " vs " .. tostring(again[oid]) .. ")") end
+      end
+      for oid in pairs(again) do assert(before[oid], what .. ": the second Undo took away what the edit made (" .. oid .. ")") end
+      assert(timeline(A) == tl_before, what .. ": and its tempo map and markers")
+      tick()
+      as(A)
+      redone, why_not = press(true)
+      assert(redone, what .. ": redone a second time (" .. tostring(why_not) .. ")")
+      settle(A, quick)
+      tick()
+      recv(B)
+      same(A, B, what .. ": redone a second time, the same on the laptop")
+      redone_st = state(A)
+      for oid, h in pairs(now_st) do
+        if oid ~= gtr_oid then assert(redone_st[oid] == h, what .. ": the second Redo brought " .. oid .. " back (" .. tostring(h) .. " vs " .. tostring(redone_st[oid]) .. ")") end
+      end
+      for oid in pairs(redone_st) do assert(now_st[oid], what .. ": the second Redo made nothing the edit hadn't (" .. oid .. ")") end
+      assert(timeline(A) == tl_edit, what .. ": and its tempo map and markers")
     end
   end
 end
@@ -589,7 +633,27 @@ end
 do
   build("Edits tempo")
   local X, Y, Z = computer("Linus", "C:/X/Edits tempo.rpp"), computer("Yan", "C:/Y/Edits tempo.rpp"), computer("Zed", "C:/Z/Edits tempo.rpp")
-  for _, c in ipairs({ X, Y, Z }) do seed_markers(c.F); tick(); recv(c); same(A, c, "tempo order: " .. c.cfg.user .. " has the song") end
+  -- (Zed's REAPER writes items its own way, as LinuxBox's does: the same items, another text, so other hashes. Its records are its own readings.)
+  Z.F.dialect = function(c) return (c:gsub("\nCHANMODE 0\n", "\nCHANMODE 0 0\n")) end
+  for _, c in ipairs({ X, Y }) do seed_markers(c.F); tick(); recv(c); same(A, c, "tempo order: " .. c.cfg.user .. " has the song") end
+  seed_markers(Z.F); tick(); recv(Z)
+  -- every item and point where the desktop has it, by place and length (Zed's text differs, so not by hash), and the same timeline
+  local function same_timing(what)
+    local function places(c)
+      local _, _, objs = state(c)
+      local out = {}
+      for _, o in ipairs(objs) do
+        if o.kind == "item" then out[o.oid] = o.track .. " " .. tostring(o.state:match("POSITION [^\n]*")) .. " " .. tostring(o.state:match("LENGTH [^\n]*"))
+        elseif o.kind == "env" then out[o.oid] = o.state end
+      end
+      return out
+    end
+    local pa, pz = places(A), places(Z)
+    for oid, v in pairs(pa) do assert(pz[oid] == v, what .. ": " .. oid .. " is where the desktop has it (" .. tostring(v) .. " vs " .. tostring(pz[oid]) .. ")") end
+    for oid in pairs(pz) do assert(pa[oid], what .. ": nothing the desktop hasn't (" .. oid .. ")") end
+    assert(timeline(A) == timeline(Z), what .. ": the same tempo map and markers")
+  end
+  same_timing("tempo order: Zed has the song")
   local edir = sync.room_dir(A.cfg, song, room) .. "/events"
   local function len_of(c, name) for _, t in ipairs(c.F.tracks) do for _, it in ipairs(t.items) do if it.text:find('NAME "' .. name .. '"', 1, true) then return tonumber(E.top_value(it.text, "LENGTH")) end end end end
   local function tempo_edit(what, edit)
@@ -617,20 +681,39 @@ do
     tick()
     recv(X)
     same(A, X, what .. ": LinuxBox, the items and points first")
-    -- a fourth: the map lands, a look runs, and only then do the items and points arrive. What its REAPER moved when the map landed isn't
-    -- its edit: nothing goes out (REAPER check, 0.59.49.74: both receivers sent their own copies, "...as you did, at the same time: both
-    -- changes are kept", and asked the track's claimer to let them "edit")
-    for _, ev in pairs(oids) do hidden[edir .. "/" .. ev.id .. ".json"] = true end
+    -- a fourth, as LinuxBox got it: the map lands alone, looks run, the items and points trickle in with more looks between, and its REAPER
+    -- writes items its own way. What its REAPER moved when the map landed is never its edit: nothing goes out and nothing is refused or put
+    -- back, at any look. (REAPER checks: 0.59.49.74, both receivers sent their own copies, "...as you did, at the same time: both changes are
+    -- kept"; 0.59.49.75, LinuxBox still asked the track's claimer to let it "edit" and put eight "edits" back at each tempo step, as the
+    -- compare was with the sender's text.)
+    local list = {}
+    for _, ev in pairs(oids) do list[#list + 1] = ev; hidden[edir .. "/" .. ev.id .. ".json"] = true end
+    table.sort(list, function(a, b) return a.id < b.id end)
+    local function quiet(when)
+      local refused = 0
+      local opts = { can = function() refused = refused + 1; return false end, mode = "open", quick = true } -- (it may edit nothing: an edit would be refused)
+      as(Z)
+      Z.F.clock = Z.F.clock + 1
+      sync.watch_timeline(Z.F.proj, Z.cfg, song, room, yes)
+      local back0 = select(2, mirror.watch(Z.F.proj, Z.cfg, song, room, opts)) or 0
+      local zsent = new_events()
+      assert(#zsent == 0 and back0 == 0, what .. ", " .. when .. ": what REAPER moved as the map landed isn't that computer's edit (" .. #zsent .. " sent, " .. back0 .. " put back)")
+    end
     as(Z)
     Z.F.clock = Z.F.clock + 1
     sync.receive(Z.F.proj, Z.cfg, song, room, yes)
-    local _, zsent = look(Z, true)
-    assert(#zsent == 0, what .. ": what REAPER moved as the map landed isn't that computer's edit (" .. #zsent .. " sent)")
-    assert(not mirror.tempo_landed[tostring(Z.F.proj)], what .. ": only in the look after the map landed")
-    for _, ev in pairs(oids) do hidden[edir .. "/" .. ev.id .. ".json"] = nil end
-    tick()
-    recv(Z)
-    same(A, Z, what .. ": the map first, a look, then the items and points")
+    quiet("the map alone")
+    quiet("a second look")
+    for i, ev in ipairs(list) do
+      hidden[edir .. "/" .. ev.id .. ".json"] = nil
+      if i == #list // 2 or i == #list then
+        as(Z)
+        Z.F.clock = Z.F.clock + 1
+        sync.receive(Z.F.proj, Z.cfg, song, room, yes)
+        quiet(i == #list and "all of them here" or "half the items here")
+      end
+    end
+    same_timing(what .. ": the map first, looks, then the items and points a few at a time")
     return map, oids
   end
   local l0 = len_of(A, "Gtr")
@@ -642,6 +725,7 @@ do
     for path, ev in pairs(files) do if type(ev) == "table" and ev.oid == oid and ev.tl then ev.tl = nil end end
   end
   hidden[edir .. "/" .. map.id .. ".json"] = true
+  sync.ev_cache = {} -- (the stand-in computers share one memory of the files read and still waiting: Yan reads them afresh, without the stamp)
   as(Y)
   Y.F.clock = Y.F.clock + 1
   sync.receive(Y.F.proj, Y.cfg, song, room, yes)
@@ -755,6 +839,70 @@ do
   assert(has(B, "Bridge"), "and the laptop still has it")
   same(D3, B, "reopen 3: as the studio")
   print("rt-edits: a project reopened behind the studio's timeline takes it before anything of its own goes out")
+end
+
+-- ---- REAPER check, 0.59.49.75: an Undo was short because a bandmate had auto-claimed the track since ----
+-- "19 brought back (2 not yours to change)": the laptop held an auto-claim on XT Drums A, made after the desktop's copy had gone out, so the
+-- copy's item there stayed on every computer. An auto-claim doesn't block an edit that merges (364c039); taking back your own change, when the
+-- newest version of the thing is still yours, has nothing of the claimer's in it, so it goes through, here and on the computers that receive
+-- it. A lasting claim still refuses.
+do
+  build("Edits claim")
+  local claimask = require("claimask")
+  local function has(c, name) for _, t in ipairs(c.F.tracks) do for _, x in ipairs(t.items) do if x.text:find('NAME "' .. name .. '"', 1, true) then return true end end end return false end
+  local function session() return proxy.read_json(proxy.session_path(A.cfg, song)) end
+  tick()
+  as(A)
+  F.add_item(bass, audio(50, 2, "bass-extra.flac", "Bass extra"))
+  tick()
+  look(A, true)
+  settle(A, true)
+  tick()
+  recv(B)
+  assert(has(B, "Bass extra"), "the desktop's new item is on the laptop")
+  -- the laptop auto-claims Bass after that
+  local iso = os.date("!%Y-%m-%dT%H:%M:%SZ")
+  local cpath = sync.claims_path(B.cfg, song, room, "Bee")
+  files[cpath] = { user = "Bee", time = iso, tracks = { "Bass" }, regions = {}, since = { ["tracks:bass"] = iso }, auto = { ["tracks:bass"] = iso } }
+  as(A)
+  A.F.clock = A.F.clock + 100
+  local can, who = sync.authority(A.cfg, song, room, session())
+  assert(can("James", "Bass", 50) == false and claimask.soft(who, "Bass", 50, "James") == "Bee", "Bass is the laptop's now, by an auto-claim")
+  tick()
+  local res, why = press(false)
+  assert(res and not has(A, "Bass extra"), "one Undo takes the desktop's own item back past the auto-claim (" .. tostring(res or why) .. ")")
+  assert(not tostring(res):find("not yours", 1, true), "none refused: " .. tostring(res))
+  -- the laptop goes by the same claims: the deletion lands at once, not after the minute a refused change waits
+  as(B)
+  B.F.clock = B.F.clock + 100
+  local can_b, who_b = sync.authority(B.cfg, song, room, session())
+  local gone
+  for _, ev in ipairs(new_events()) do if ev.gone and ev.user == "James" then gone = ev end end
+  assert(gone and gone.undoes and can_b("James", gone.name, gone.pos) == false, "the deletion is an Undo's, of something on a track the laptop claims")
+  sync.soft = { room = room, fn = function(name, pos, user) return claimask.soft(who_b, name, pos, user) end }
+  sync.receive(B.F.proj, B.cfg, song, room, can_b)
+  assert(not has(B, "Bass extra"), "it lands on the laptop at once")
+  sync.soft = nil
+  -- a lasting claim refuses, as ever: an item of the desktop's muted while Bass was free, then Bass claimed for good, then Undo
+  files[cpath] = nil
+  as(A)
+  A.F.clock = A.F.clock + 100
+  tick()
+  local mine = item_named(bass, "Bass 0")
+  set(mine, "MUTE", "1 0")
+  set(mine, "SEL", "1")
+  tick()
+  look(A, true)
+  settle(A, true)
+  files[cpath] = { user = "Bee", time = iso, tracks = { "Bass" }, regions = {}, since = { ["tracks:bass"] = iso } }
+  A.F.clock = A.F.clock + 100
+  can, who = sync.authority(A.cfg, song, room, session())
+  assert(can("James", "Bass", 0.5) == false and claimask.soft(who, "Bass", 0.5, "James") == nil, "a lasting claim now")
+  tick()
+  res, why = press(false)
+  assert(E.top_value(mine.text, "MUTE") == "1 0" and tostring(res or why):find("not yours", 1, true), "Undo on a lastingly claimed track is refused: " .. tostring(res or why))
+  files[cpath] = nil
+  print("rt-edits: an Undo of your own change goes past a bandmate's auto-claim made since; a lasting claim still refuses")
 end
 
 -- ---- the studio's timeline, one file per computer (James, 2026-11-20: no file that several computers write) ----
@@ -948,5 +1096,87 @@ do
   A.F.clock = A.F.clock + 1
   sync.receive(A.F.proj, A.cfg, song, room, yes)
   assert(said("Bee: record together at 3") and reaper.GetExtState(band.SECTION, key) ~= "", "a start made just now is taken as ever")
+end
+-- ---- a track's colour never flips by itself (REAPER check, 0.59.49.75: XT Drums A's colour went out from the desktop and back from the
+-- laptop at each restart, "something with no undo point changed XT Drums A right after a bandmate's change landed", and each one auto-claimed
+-- the track, which then held back an Undo). The colour hold put an old colour back over one that had just landed ----
+do
+  build("Edits colour")
+  local FLAG = 0x1000000
+  local function track_of(c, name)
+    as(c)
+    for i = 0, reaper.CountTracks(c.F.proj) - 1 do
+      local tr = reaper.GetTrack(c.F.proj, i)
+      if select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)) == name then return tr end
+    end
+  end
+  local function raw(c, name) local tr = track_of(c, name); return reaper.GetMediaTrackInfo_Value(tr, "I_CUSTOMCOLOR") end
+  -- the desktop takes a track out, then colours another; the laptop gets both in one pass (as it does catching up after a restart)
+  as(A)
+  reaper.DeleteTrack(track_of(A, "Gtr"))
+  settle(A, true)
+  tick()
+  as(A)
+  reaper.SetMediaTrackInfo_Value(track_of(A, "Drums"), "I_CUSTOMCOLOR", FLAG | 0x3040C0)
+  settle(A, true)
+  tick()
+  recv(B) -- (errors if the laptop sends anything back in the looks after)
+  assert(not track_of(B, "Gtr"), "the track went on the laptop")
+  assert(raw(B, "Drums") == FLAG | 0x3040C0, "the colour that landed after a track went stays (" .. tostring(raw(B, "Drums")) .. ")")
+  as(B)
+  assert(reaper.GetExtState(band.SECTION, "colour hold") == "", "no colour hold where nothing recolours tracks by itself")
+  same(A, B, "a track out and a colour in one pass")
+  -- "no colour" is one thing however REAPER holds it: 16576 with the flag off (every Cross Test track) and 0 are the same, and aren't written
+  assert(mirror.colour_key(16576) == 0 and mirror.colour_key(0) == 0 and mirror.colour_key(nil) == 0 and mirror.colour_key(FLAG | 16576) == FLAG | 16576,
+    "a colour with the flag off is none")
+  assert(mirror.track_line({ name = "x", color = 16576 }, false, true) == mirror.track_line({ name = "x", color = 0 }, false, true), "and reads as none")
+  -- (tracks shared by a build that hashed the stored number: nothing goes out again for them after the update)
+  local real_key = mirror.colour_key
+  mirror.colour_key = function(c) return math.tointeger(tonumber(c) or 0) or tonumber(c) or 0 end
+  as(A)
+  reaper.SetMediaTrackInfo_Value(track_of(A, "Keys"), "I_CUSTOMCOLOR", 16576)
+  local went = look(A, true)
+  assert(next(went), "(the older build sent the stored number)")
+  tick()
+  recv(B)
+  assert(raw(B, "Keys") == 16576, "(and the older build wrote it)")
+  mirror.colour_key = real_key
+  tick()
+  local _, a_sent = look(A, true)
+  local _, b_sent = look(B, true)
+  assert(#a_sent == 0 and #b_sent == 0, "tracks an older build shared don't go out again (" .. #a_sent .. ", " .. #b_sent .. ")")
+  same(A, B, "after the update")
+  -- one computer holds none as 0, the other as 16576: neither sends, and a change that lands leaves the stored number alone
+  as(B)
+  reaper.SetMediaTrackInfo_Value(track_of(B, "Keys"), "I_CUSTOMCOLOR", 0)
+  _, b_sent = look(B, true)
+  assert(#b_sent == 0, "none stored another way isn't a change (" .. #b_sent .. " sent)")
+  as(A)
+  reaper.GetSetMediaTrackInfo_String(track_of(A, "Keys"), "P_NAME", "Keys 2", true)
+  went = look(A, true)
+  assert(next(went), "a rename goes")
+  tick()
+  recv(B)
+  assert(track_of(B, "Keys 2") and raw(B, "Keys 2") == 0, "none over none writes nothing (" .. tostring(track_of(B, "Keys 2") and raw(B, "Keys 2")) .. ")")
+  same(A, B, "none, stored two ways")
+  -- where SWS's auto track colouring is on, the hold still holds, but never over a colour StudioSync set since
+  as(B)
+  local real_own = mirror.own_colours -- (its answer is kept a second by one clock; the computers here each have their own)
+  mirror.own_colours = function() return true end
+  local bass_b, drums_b = track_of(B, "Bass"), track_of(B, "Drums")
+  local bass_was = raw(B, "Bass")
+  mirror.hold_colours(B.F.proj, mirror.track_colours(B.F.proj))
+  reaper.SetMediaTrackInfo_Value(bass_b, "I_CUSTOMCOLOR", FLAG | 0x0000FF) -- (SWS's rule recolours it)
+  reaper.SetMediaTrackInfo_Value(drums_b, "I_CUSTOMCOLOR", FLAG | 0x00FF00) -- (the band's new colour lands)
+  mirror.held_colour(drums_b)
+  mirror.hold_colours()
+  assert(raw(B, "Bass") == bass_was, "what SWS recoloured is put back")
+  assert(raw(B, "Drums") == FLAG | 0x00FF00, "what StudioSync set stays")
+  mirror.own_colours = function() return false end
+  reaper.SetMediaTrackInfo_Value(bass_b, "I_CUSTOMCOLOR", FLAG | 0x0000FF)
+  mirror.hold_colours()
+  assert(raw(B, "Bass") == FLAG | 0x0000FF and reaper.GetExtState(band.SECTION, "colour hold") == "", "and the hold ends when SWS's colouring goes off")
+  mirror.own_colours = real_own
+  print("rt-edits: a track's colour that landed is never put back, and no colour is no colour however it's stored")
 end
 print("ok rt-edits")

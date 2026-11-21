@@ -145,6 +145,11 @@ function undo.step(proj, cfg, b, redo, opts)
   -- event. Round 1 review, 0.59.45)
   local act = ids and #ids > 1 and ids or nil
   if redo then o.redoes, o.redoes_all = e.id, act else o.undoes, o.undoes_all = e.id, act end
+  -- (every change this press makes carries one step id: a Redo then takes back all of them, whatever second each was written in.
+  -- mirror.plan_undo_moment. And only a bandmate's auto-claim made since doesn't stand in front of taking your own change back: mirror.revert.
+  -- rt-edits)
+  o.act = string.format("%s-%s-%s%d", sync.id_user(cfg.user), os.date("!%Y%m%d%H%M%S"), redo and "r" or "u", math.random(0, 999999))
+  o.soft = who and function(name, pos) return require("claimask").soft(who, name, pos, cfg.user) end or nil
   -- (the act's tempo map or markers first, where it changed them and they're yours to change: a region copied with its items stayed on every
   -- computer after the undo. The tempo goes back before the items, so REAPER moves nothing the restores put in place. REAPER check F3, rt-edits)
   local tl = can(cfg.user, nil, nil) and sync.act_timeline(all, i, cfg.user, redo)

@@ -278,13 +278,25 @@ its own REAPER's moves as changes:
   kept"). For automation it also held the sender's back until its own had gone;
 - where it may not, it went through the refusal path, which asks the claimer ("LinuxBox wants to edit XT Rec A: Release or Keep").
 
-Fix: `mirror.tempo_changed(proj, landed)` notes when the map wasn't made here (a bandmate's change, or the studio's map put in place as a
-project opened). In the first whole look after that, an item or automation whose only difference from its record is its timing is taken in
-as it is: not sent, not asked about, not put back. The map's sender sends its own, which lands over it. Only that one look, so a move you
-make a moment later still goes out.
+First fix (0ae5fbf, replaced): a flag for the first whole look after a map landed, in which an item whose only difference from the
+sender's event was its timing was taken in. Rechecked on 0.59.49.75 it held on the laptop but not on LinuxBox, which still asked ("LinuxBox
+wants to edit XT Rec A: Release or Keep") and put eight "edits" back at each tempo step. Two reasons:
+- LinuxBox's REAPER writes an item's text a little differently from the desktop's, so "the same as the sender's event but for timing" was
+  never true there;
+- the flag lasted one look, and the items trickled in over several.
 
-Test ("Edits tempo" block): a fourth computer gets the map, runs a look, and only then gets the items and points. It sends nothing, and ends
-as the desktop. Without the fix it sent 9 changes.
+Fix now (`mirror.map_landing`, called by `sync.apply`, `sync.timeline_heal` and the timeline's first look, around `band.apply_tempo`): every
+item and automation is read just before the map is put in place and again just after. One that was as its record says before, and differs
+only in its timing after, has its record moved with it there and then. So no look ever sees it as changed, however many looks run and
+however late the sender's own versions arrive (they land over it):
+- nothing is sent, nobody is asked, nothing is put back;
+- the compare is between this computer's own two readings, so how its REAPER writes an item doesn't matter;
+- a change of your own that hadn't gone out yet is left alone (its record didn't match before), so it still goes.
+Cost: two full reads of the project for each tempo map that lands.
+
+Test ("Edits tempo" block): a fourth computer whose REAPER writes items another way gets the map alone. It may edit nothing, so any "edit"
+would be refused. Looks run after the map alone, again, with half the items there and with all of them: nothing sent, nothing refused or
+put back at any of them, and it ends with every item and point where the desktop has it.
 
 **L. The marker-colour echo** (`lib/band.lua`, `band.sws_colours`). Measured in REAPER (a marker added on the desktop and put back).
 
@@ -335,6 +347,65 @@ someone else is left out.
 share: so it's both, not main's only. The desktop's project file is from 11-19, so every cue since is news to it at each restart. Nothing
 played: Live sync drops a cue whose moment has passed. Now a start or stop older than `sync.CUE_OLD` (120 s) is marked done without being
 applied or logged. The test's last block checks an old one and a fresh one.
+
+**O. Redo was short when the Undo's writes crossed a clock second** (`lib/mirror.lua`, `mirror.plan_undo_moment`; `lib/undo.lua`). Found in
+REAPER on 0.59.49.75: an Undo wrote 3 changes at 02:00:13 and 18 at 02:00:14; Redo said "the act has 18 changes" and two items and three
+automation points stayed missing on every computer. Undo then stepped to an older change.
+
+Cause: the changes one Undo (or Redo) writes were found again by `undoes`/`redoes` and *the same second*. Fix: every change of one press
+carries one step id (`act`, made in `undo.step`), and the plan groups by `undoes`/`redoes` and that id, whatever second each was written in.
+An older build's changes have no id and group by the second as before.
+
+Undo stepping to an older change after the short Redo was the same fault: the Redo's own changes were split over two seconds too, so the next
+Undo found only part of them. It goes with the fix.
+
+Test: the matrix's Undo and Redo now write their third change in the next second (`press`), for every case, and each case runs a second
+Undo and Redo with every object and the timeline checked after each. Without the fix the first case fails at Redo.
+
+**P. Undo past an auto-claim made since** (`lib/mirror.lua`, `mirror.revert`; `lib/sync.lua`, `sync.receive`; `lib/undo.lua`). Found in
+REAPER on 0.59.49.75: "19 brought back (2 not yours to change)", because the laptop held an auto-claim on XT Drums A.
+
+Decision: an Undo or Redo of your own change goes past a bandmate's **auto-claim**, as the original edit did, when the newest version of
+the thing is still yours (so nothing of theirs is in what's taken back). On the sender `mirror.revert` allows it; on every receiver
+`sync.receive` lets it land past its own auto-claim when the version it's built on is the sender's. A **lasting claim** (one somebody made
+by hand) still refuses, and the Undo says "not yours to change" as before. If the claimer has changed the thing since, the newest version
+isn't yours and the Undo is held back there as before.
+
+Test ("Edits claim" block): the laptop auto-claims Bass after the desktop's item went out. Undo goes through on the desktop and lands at
+once on the laptop. With a lasting claim an Undo of a mute is refused.
+
+**Q. A track's colour flipped at each restart, and each flip auto-claimed the track** (`lib/mirror.lua`). Found in REAPER on 0.59.49.75
+(XT Drums A).
+
+Who writes the colour: StudioSync's own colour hold (`mirror.hold_colours`), not SWS (its auto track colouring reads off on both
+computers). The hold was made for SWS's rules, which recolour every track when one goes in or out: it snapshots every track's colour just
+before a track is inserted or deleted and puts the snapshot back at each look for 5 s. A computer reopened from an old file catches up:
+- a track goes (the snapshot is taken, old colours and all);
+- another track's newer colour lands in the same pass;
+- the next look puts the old colour back. That reads as this computer's own change ("something with no undo point changed XT Drums A
+  right after a bandmate's change landed"), goes out, and auto-claims the track.
+On the desktop the snapshot also held a stale "who's working" paint (the old file has XT Drums A at 33538636 with the band's colour, 16576,
+kept beside it). When the paint came off, the hold put the paint's number back as if it were the track's colour, and that went out.
+Both builds do it: main's Live sync on the desktop sent 33538636 at each restart (its events carry no `act`), the realtime build on the
+laptop sent 16576 back.
+
+Those two numbers are not the same colour: 33538636 has REAPER's "custom colour set" flag (0x1000000), 16576 doesn't, so it means "no
+colour", whatever its other bits. REAPER keeps whatever number is set (measured: 33538636, 16576, 0 and flag|16576 all read back as set).
+
+Fix:
+- the hold only runs where SWS's auto track colouring is on on this computer. With it off, which is how a studio song runs
+  (`band.sws_colours`), nothing recolours tracks by itself and there's nothing to hold;
+- where it does run, a colour StudioSync itself sets replaces that track's entry in the snapshot (`mirror.held_colour`);
+- "no colour" compares equal however it's stored (`mirror.colour_key`): a colour without the flag hashes as 0, and landing "none" over
+  "none" writes nothing. A track shared by an older build, whose hash was made from the stored number, is taken as the same track by the
+  existing alias check (`mirror.same_line`), so nothing goes out again after the update. `mirror.HV` stays 8.
+
+Test (last block but one): a track out and a colour change in one pass on the laptop: the colour stays, nothing is sent back (without the
+fix: "Bee sent back what landed"). 16576 and 0 read the same, a track an older build shared doesn't go out again, and "none" over "none"
+writes nothing. With SWS's colouring on, the hold still puts back what SWS recoloured but not over a colour StudioSync set.
+
+Left: main's build has the same hold. Until the desktop runs only a build with this fix, a restart there can still send the stale paint
+once; this build then no longer sends it back, so it stops after one change instead of bouncing.
 
 ### Not carried (gaps, not fixed)
 
@@ -464,6 +535,23 @@ and Health showing no mismatch.
     `session.sync-conflict` file appears. With all three on this build, session.json's modified time doesn't move on a marker change. With
     one computer on the older build and here, it does.
 25. **Old cues (fix N):** restart REAPER on the desktop: no "record together" or "stop together" lines in the log from the catch-up.
+26. **Undo and Redo across a second (fix O):** the F3 steps again (Copy contents of Verse to 24.0 s, wait for it on the others, one
+    StudioSync undo, one redo, then undo, redo, undo). The undo's events may be spread over two seconds (look at their `time`). Each redo's
+    "the act has N changes" is the undo's whole count (21 in the last runs), and after each step all three computers hold the same: 8 items
+    at 3.69 s only after an undo, 8 there and 8 at 24.92 s after a redo, with XT Drums A's and XT Rec A's automation points to match. The
+    second undo takes the same act back, not an older change.
+27. **Undo past an auto-claim (fix P):** make the copy on the desktop, then on the laptop change something small on XT Drums A so it
+    auto-claims the track (not the copied items). Undo on the desktop: "N brought back" with no "not yours to change", and the laptop takes
+    it without asking. Then claim XT Drums A by hand on the laptop and try the same: the desktop's Undo says "not yours to change" for
+    that track's objects.
+28. **Tempo marker, LinuxBox quiet (fix K, redone):** the tempo marker at 8.0 s (`SetTempoTimeSigMarker(proj, -1, 8.0, -1, -1, 100, 0, 0,
+    false)`), the first tempo to 120, then both back, with the laptop or LinuxBox holding a claim or auto-claim on XT Rec A. On the desktop
+    no "wants to edit ... Release or Keep"; on LinuxBox no "Not sent: ... didn't answer" and no "Your edit is put back"; no "change(s) went
+    to the others" after the map on the laptop or LinuxBox. All three match after each step.
+29. **Colour at restart (fix Q):** restart REAPER on the desktop, then on the laptop. No event for XT Drums A appears in
+    `Cross Test/rooms/main/events/` from either restart, no "something with no undo point changed XT Drums A" line, and nobody holds an
+    auto-claim on it afterwards. If the desktop still runs main's Live sync first, one colour event from the desktop is possible; the
+    laptop must not answer it with one of its own.
 
 ## Untested / limits
 
@@ -493,3 +581,8 @@ and Health showing no mismatch.
 - `loop` on a start cue sets the loop range and repeat only; both numbers are checked. A bandmate could already start your transport with
   Play together.
 - The `colour try` ExtState is local; nothing received can set it.
+- Undo past an auto-claim (fix P): `undoes`, `redoes` and `base_ev` are the sender's word. A changed client could mark an ordinary edit as
+  an undo to get past a bandmate's auto-claim on a thing whose newest version is its own. It gets no further than that: signed messages,
+  room permissions and lasting claims are checked as before, and an auto-claim already lets edits that merge through. Review later:
+  receivers could check that the state brought back equals an earlier version of that object.
+- The colour hold's ExtState is local. `mirror.colour_key` only reads a number.

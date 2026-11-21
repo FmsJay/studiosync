@@ -1166,9 +1166,13 @@ end
 function sync.apply(proj, ev, dir, can, me)
   if ev.type == "obj" then return require("mirror").receive(proj, ev, dir .. "/media", sync.local_mix, me) end -- mirror sync
   if ev.type == "timeline" then -- REAPER moves the items for the new map, as it would for a local change
-    if tempo_sig(ev.tempo) ~= tempo_sig(band.capture_tempo(proj)) then require("mirror").tempo_changed(proj, true) end -- (landed: not made here)
     sync.audio_follow_tempo(proj)
-    band.apply_tempo(proj, ev.tempo or {})
+    local moves = tempo_sig(ev.tempo) ~= tempo_sig(band.capture_tempo(proj))
+    if moves then require("mirror").tempo_changed(proj) end
+    if moves and me then
+      -- (a map that wasn't made here: what REAPER moves for it is taken in as it lands, never this computer's edit. mirror.map_landing, rt-edits)
+      require("mirror").map_landing(proj, me, dir .. "/media", sync.local_mix, function() band.apply_tempo(proj, ev.tempo or {}) end)
+    else band.apply_tempo(proj, ev.tempo or {}) end
     band.apply_project(proj, ev.project) -- (title, notes, group names, timebase, ruler lanes: from 0.31.1; before the markers that sit in them)
     band.apply_markers(proj, ev.markers or {})
     setext(proj, band.SECTION, "timeline", timeline_sig(proj))
@@ -1250,9 +1254,9 @@ function sync.timeline_heal(proj, cfg, song, room)
   reaper.Undo_BeginBlock2(proj)
   local ok, e = pcall(function()
     if tempo_sig(t.tempo) ~= tempo_sig(band.capture_tempo(proj)) then
-      require("mirror").tempo_changed(proj, true)
+      require("mirror").tempo_changed(proj)
       sync.audio_follow_tempo(proj)
-      band.apply_tempo(proj, t.tempo)
+      require("mirror").map_landing(proj, cfg.user, sync.room_dir(cfg, song, room) .. "/media", sync.local_mix, function() band.apply_tempo(proj, t.tempo) end)
     end
     if type(t.project) == "table" then band.apply_project(proj, t.project) end
     band.apply_markers(proj, t.markers)
@@ -1381,7 +1385,10 @@ function sync.watch_timeline(proj, cfg, song, room, can)
       if tempo_off or proj_off or plain(s.markers) ~= plain(band.capture_markers(proj)) then
         reaper.Undo_BeginBlock2(proj)
         local ok, e = pcall(function() -- (the undo point closed whatever happens: review, 0.58.92)
-          if tempo_off then band.apply_tempo(proj, s.tempo); require("mirror").tempo_changed(proj, true) end
+          if tempo_off then
+            require("mirror").tempo_changed(proj)
+            require("mirror").map_landing(proj, cfg.user, sync.room_dir(cfg, song, room) .. "/media", sync.local_mix, function() band.apply_tempo(proj, s.tempo) end)
+          end
           if proj_off then band.apply_project(proj, s.project) end
           band.apply_markers(proj, s.markers)
         end)
@@ -1675,8 +1682,15 @@ function sync.receive(proj, cfg, song, room, can)
   -- sent it; one to the same note, point or setting is refused as before. sync.soft: Live sync's, for its own room. rt-merge)
   local function soft_ok(ev)
     local m = require("mirror")
-    local who = sync.soft and sync.soft.room == room and m.mergeable(ev) and sync.soft.fn(ev.name or "", ev.pos, ev.user)
+    local who = sync.soft and sync.soft.room == room and sync.soft.fn(ev.name or "", ev.pos, ev.user)
     if not who then return false end
+    -- (an Undo or Redo of the sender's own change: what it's built on is theirs, so nothing of the claimer's is in it. Their sends it as the edit
+    -- went, mirror.revert; a deletion among them, which isn't something to merge. rt-edits)
+    if (ev.undoes or ev.redoes) and ev.base_ev then
+      local built_on = m.event_file(sync.room_dir(cfg, song, room), ev.base_ev)
+      if built_on and built_on.user == ev.user then return true end
+    end
+    if not m.mergeable(ev) then return false end
     -- (from the version its maker's computer held, the change's own base, as its sender judged it: not what this computer holds)
     if not ev.base_ev then return true end -- (new: nothing of the claimer's is in it)
     local from = m.event_file(sync.room_dir(cfg, song, room), ev.base_ev)

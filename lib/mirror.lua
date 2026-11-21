@@ -1494,11 +1494,16 @@ function mirror.plan_undo_moment(entries, i)
     local tracks = {}
     if e.gone and e.obj == "track" then tracks[e.oid] = true end
     for _, v in pairs(plan) do if v and v.obj ~= "track" and v.track then tracks[v.track] = true end end
+    -- (an Undo's or Redo's own changes by its step id, whatever second each was written in (lib/undo.lua gives every change of one press the
+    -- same `act`): an Undo whose writes crossed a clock second, 3 in one and 18 in the next, was redone as "18 changes", and items and automation
+    -- points stayed missing on every computer, alike. Without a step id (an older build's), the same second, as before. REAPER check,
+    -- 0.59.49.75, rt-edits)
     for j, x in ipairs(entries) do
-      if x.kind == "obj" and x.time == e.time and x.user == e.user and x.oid ~= e.oid then
-        local deleted = e.gone and x.gone and not x.restored and ((x.obj == "track" and tracks[x.oid]) or (x.obj == "item" and x.track and tracks[x.track]))
+      if x.kind == "obj" and x.user == e.user and x.oid ~= e.oid then
+        local now = x.time == e.time
+        local deleted = now and e.gone and x.gone and not x.restored and ((x.obj == "track" and tracks[x.oid]) or (x.obj == "item" and x.track and tracks[x.track]))
         local same_undo = (e.undoes and x.undoes == e.undoes) or (e.redoes and x.redoes == e.redoes)
-        if deleted or same_undo then add(j) end
+        if deleted or (same_undo and (now or (e.act ~= nil and x.act == e.act))) then add(j) end
       end
     end
     -- (and in another second: a track with a few hundred items is deleted a quarter second a pass, so its deletion and its items' straddle
@@ -1633,7 +1638,7 @@ local auto_colour = { at = -math.huge }
 function mirror.own_colours()
   if not reaper.NamedCommandLookup then return false end
   if reaper.time_precise() - auto_colour.at > 1 then
-    local id = reaper.NamedCommandLookup("_SWSAUTOCOLOR_ENABLE")
+    local id = reaper.NamedCommandLookup("_SWSAUTOCOLOR_ENABLE") or 0
     auto_colour.at, auto_colour.on = reaper.time_precise(), id > 0 and reaper.GetToggleCommandState(id) == 1
   end
   return auto_colour.on
@@ -1661,6 +1666,15 @@ function mirror.icon_here(icon)
   local here = reaper.GetResourcePath():gsub("\\", "/") .. "/Data/track_icons/" .. name
   return reaper.file_exists(here) and here or (icon or "")
 end
+-- A track's colour for comparing: one without REAPER's 0x1000000 "custom colour set" flag is no colour at all, whatever its other bits hold
+-- (REAPER keeps the last colour there: every Cross Test track reads 16576 with the flag off). So "none" is 0 however it's stored, on either
+-- side, and two tracks with no colour never differ by it. Pure. rt-edits
+function mirror.colour_key(c)
+  local n = tonumber(c) or 0
+  local i = math.tointeger(n)
+  if i and i & 0x1000000 == 0 then return 0 end
+  return i or n
+end
 function mirror.track_line(t, local_mix, colour)
   -- (its parent left out, "" in its place: it follows from the depths above it, which travel, so a folder change arriving in pieces made the
   -- tracks under it read as edited, and put back or sent each other back and forth. 0.59.14, review. An older event's hash names it, which the
@@ -1670,7 +1684,7 @@ function mirror.track_line(t, local_mix, colour)
   for _, kp in ipairs(mirror.TRACK_MORE) do f[#f + 1] = t[kp[1]] or "" end
   for _, kp in ipairs(mirror.TRACK_MIX) do f[#f + 1] = local_mix and "" or (t[kp[1]] or "") end
   if colour == nil then colour = not mirror.own_colours() end
-  if colour then f[#f + 1] = t.color or 0 end -- (left off, not blank, when it doesn't count: the line from before 0.36)
+  if colour then f[#f + 1] = mirror.colour_key(t.color) end -- (left off, not blank, when it doesn't count: the line from before 0.36)
   -- Automation mode, only when it's Read (power-user review, 0.58.62): left off at the default, so no track's hash changed and nothing was sent
   -- again. Read or Trim/Read is how the song plays; Touch, Latch and Write are what one person is doing, so they travel as Read.
   if (tonumber(t.automode) or 0) >= 1 then f[#f + 1] = "am1" end
@@ -1893,7 +1907,11 @@ function mirror.set_track_state(proj, tr, t, local_mix)
     if v and kp[1] == "freemode" and in_use > 1 then v = 2 end
     if v then reaper.SetMediaTrackInfo_Value(tr, kp[2], v) end
   end
-  if t.color and not t.autocolour then require("band").set_track_colour(tr, require("band").color_in(t.color)) end
+  -- (not from "no colour" to "no colour": nothing to write, whatever bits each holds. And the colour hold below is told, so it holds this one)
+  if t.color and not t.autocolour and mirror.colour_key(require("band").color_in(t.color)) ~= mirror.colour_key(require("band").track_colour(tr)) then
+    require("band").set_track_colour(tr, require("band").color_in(t.color))
+    mirror.held_colour(tr)
+  end
   -- (from a StudioSync that sends it; never out of a Touch, Latch or Write someone is using here)
   if t.automode ~= nil and reaper.GetMediaTrackInfo_Value(tr, "I_AUTOMODE") <= 1 then reaper.SetMediaTrackInfo_Value(tr, "I_AUTOMODE", (tonumber(t.automode) or 0) >= 1 and 1 or 0) end
   reaper.GetSetMediaTrackInfo_String(tr, "P_ICON", mirror.icon_here(t.icon), true) -- (this computer's own copy of a REAPER icon: 0.59.17)
@@ -3817,14 +3835,36 @@ mirror.holds = mirror.holds or {} -- project -> track oid -> { what runs through
 mirror.bus_said = mirror.bus_said or {} -- track oid -> when "that changes how X sounds" was last said
 mirror.tempo_until = mirror.tempo_until or {} -- project -> until when items may be moving for a tempo change
 mirror.TEMPO_SECS = 15
--- `landed`: the map came from the studio (a bandmate's change, or the studio's map put in place as a project opened), it wasn't made here. Then
--- what REAPER moves for it isn't this computer's edit: the look after it takes those moves in without sending them or asking anyone
--- (mirror.tempo_landed, W.one). A receiver sent its own copy of each move, which met the sender's ("...as you did, at the same time: both changes
--- are kept"), and asked the track's claimer to let it "edit". REAPER check, 0.59.49.74, rt-edits.
-mirror.tempo_landed = mirror.tempo_landed or {} -- tostring(proj) -> true until the first whole look after a map landed here
-function mirror.tempo_changed(proj, landed)
-  mirror.tempo_until[tostring(proj)] = reaper.time_precise() + mirror.TEMPO_SECS
-  mirror.tempo_landed[tostring(proj)] = landed and true or nil
+function mirror.tempo_changed(proj) mirror.tempo_until[tostring(proj)] = reaper.time_precise() + mirror.TEMPO_SECS end
+-- A tempo map that wasn't made here is put in place by `set` (a bandmate's change, or the studio's map as a project opens): what REAPER moves
+-- for it isn't this computer's edit. Every item and automation is read before and after; one that was as the studio has it and now differs
+-- only in its timing has its record moved with it, there and then, so no look ever sees it as changed: nothing is sent, nobody is asked,
+-- nothing is put back, however late the sender's own versions arrive (they land over it). By this computer's own two readings, not against
+-- the event's text: LinuxBox's REAPER writes an item a little differently from the desktop's, so a compare with the sender's text failed there
+-- and it asked the track's claimer to let it "edit", then put its "edit" back, eight lines at each tempo step. REAPER checks, 0.59.49.74-75,
+-- rt-edits. Cost: two full reads of the project per tempo map that lands. -> how many it moved.
+function mirror.map_landing(proj, user, media_dir, local_mix, set)
+  local ok, objs = pcall(mirror.scan, proj, user, media_dir, local_mix)
+  local before = {}
+  for _, o in ipairs(ok and objs or {}) do
+    if (o.kind == "item" or o.kind == "env") and type(o.state) == "string" then before[o.oid] = o end
+  end
+  set()
+  local ok2, after = pcall(mirror.scan, proj, user, media_dir, local_mix)
+  if not (ok and ok2) then return 0 end
+  local n = 0
+  for _, o in ipairs(after) do
+    local b = before[o.oid]
+    if b and b.hash ~= o.hash and b.track == o.track and type(o.state) == "string" then
+      local rev, h, evid, kord = mirror.known(proj, o.oid)
+      if rev and h == b.hash and (o.kind == "env" and mirror.env_sans_tempo(o.state) == mirror.env_sans_tempo(b.state)
+          or o.kind == "item" and mirror.sans_tempo(o.state) == mirror.sans_tempo(b.state)) then
+        mirror.remember(proj, o.oid, rev, o.hash, evid, kord)
+        n = n + 1
+      end
+    end
+  end
+  return n
 end
 -- The tempo map a change was made under, while REAPER may be moving things for one (TEMPO_SECS after a tempo change here): the newest map this
 -- project holds, as sync.NEWEST names it. It goes on the change as `tl`, and a receiver lands the change only once it holds that map
@@ -3991,14 +4031,31 @@ function mirror.track_colours(proj)
   for t = 0, reaper.CountTracks(proj) - 1 do local x = reaper.GetTrack(proj, t); c[reaper.GetTrackGUID(x)] = reaper.GetMediaTrackInfo_Value(x, "I_CUSTOMCOLOR") end
   return c
 end
+-- (Only where SWS's auto track colouring is on here, the one thing that recolours tracks by itself: with it off, which is how a studio song
+-- runs (band.sws_colours), the hold had nothing to fight and put its snapshot back over colours that changed for a reason. A project
+-- reopened from an old file caught up: tracks went (the hold was taken), a track's newer colour landed in the same pass, and the next look
+-- put the old colour back, which then went out as this computer's own change ("something with no undo point changed XT Drums A right after
+-- a bandmate's change landed") and auto-claimed the track. The desktop and the laptop sent XT Drums A's colour back and forth at each
+-- restart so, under main's build and this one. REAPER check, 0.59.49.75, rt-edits. mirror.held_colour: a colour StudioSync sets while a hold
+-- runs is what's held from then.)
+function mirror.held_colour(tr)
+  local band = require("band")
+  if reaper.GetExtState(band.SECTION, "colour hold") == "" then return end
+  local k = band.ext_json(band.SECTION, "colour hold")
+  local g = reaper.GetTrackGUID(tr)
+  if type(k) == "table" and type(k.colours) == "table" and k.colours[g] ~= nil then
+    k.colours[g] = reaper.GetMediaTrackInfo_Value(tr, "I_CUSTOMCOLOR")
+    band.set_ext_json(band.SECTION, "colour hold", k, false)
+  end
+end
 function mirror.hold_colours(proj, colours)
   local band = require("band")
-  if proj then
+  if proj and mirror.own_colours() then
     band.set_ext_json(band.SECTION, "colour hold", { proj = tostring(proj), till = reaper.time_precise() + 5, colours = colours }, false)
   end
   local k = band.ext_json(band.SECTION, "colour hold")
   if not k then return end
-  if reaper.time_precise() > (tonumber(k.till) or 0) then return reaper.DeleteExtState(band.SECTION, "colour hold", false) end
+  if reaper.time_precise() > (tonumber(k.till) or 0) or not mirror.own_colours() then return reaper.DeleteExtState(band.SECTION, "colour hold", false) end
   for i = 0, 512 do
     local p = reaper.EnumProjects(i)
     if not p then break end
@@ -4537,7 +4594,7 @@ function W.one(w, o)
     end
     if ev and type(ev.state) == "table" and sans_colour(ev.state) == sans_colour(o.state) then
       if scheme ~= "own" and tonumber(ev.state.color) and not ev.state.autocolour and o.ptr and not mirror.tried_track(proj, o.ptr) -- (a colour look tried here stays: rt-nohold)
-          and band.color_in(ev.state.color) ~= band.track_colour(o.ptr) then
+          and mirror.colour_key(band.color_in(ev.state.color)) ~= mirror.colour_key(band.track_colour(o.ptr)) then
         band.set_track_colour(o.ptr, band.color_in(ev.state.color))
         o.state = mirror.track_state(proj, o.ptr, opts.local_mix)
         o.hash = mirror.track_hash(o.state, opts.local_mix)
@@ -4687,18 +4744,6 @@ function W.one(w, o)
         if ok and applied then remember(proj, o.oid, ev.rev, hash or "", ev.id, mirror.order_of(ev)) end
       else w.clean[o.oid] = true end -- (nothing to bring: done until it changes. A bring that didn't land is tried every look)
       return
-    end
-  end
-  -- (the studio's tempo map just landed here and REAPER moved this with it, nothing else about it changed: not an edit of yours. Taken in as
-  -- it is, never sent, asked about or put back; whoever changed the map sends theirs, which lands over it. Before the settling below: marked
-  -- unsent there, the sender's automation waited for this computer's copy to go first. Only in the first look after the map landed
-  -- (mirror.tempo_changed), so a move of your own a moment later still goes. rt-edits)
-  if rev and h ~= "" and mirror.tempo_landed[tostring(proj)] and (o.kind == "item" or o.kind == "env") and type(o.state) == "string" then
-    local had = event_file(room_dir, evid)
-    if had and not had.gone and type(had.state) == "string" and (o.kind == "env" and mirror.env_sans_tempo(o.state) == mirror.env_sans_tempo(had.state)
-        or o.kind == "item" and (had.track == nil or had.track == o.track) and mirror.sans_tempo(o.state) == mirror.sans_tempo(had.state)) then
-      mirror.unsent[rk] = nil
-      return remember(proj, o.oid, rev, o.hash, evid, kord)
     end
   end
   -- plug-ins and automation: only while stopped, once settled (not a whole chain per knob turn, or an envelope per
@@ -5364,7 +5409,6 @@ function mirror.watch(proj, cfg, song, room, opts)
   mirror.index_for(nil)
   if not mirror.more then mirror.sweep_unsent(proj, seen) end
   mirror.more_act[pk] = mirror.more and w.act or nil
-  if not mirror.more then mirror.tempo_landed[pk] = nil end -- (every object has been looked at since the map landed)
   mirror.save_ids(proj)
   mirror.stash_unsent(proj, by_oid) -- (what's still not out, kept beside the project: crash-safe sessions, rt)
   if rescheme and not mirror.more then reaper.SetProjExtState(proj, mirror.CSEC, "colours", scheme) end
@@ -5574,7 +5618,12 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
         done = done + 1
         p.landed = true
       else waiting = waiting + 1 end -- (can't land here now: not sent, and said. 0.59.14, review)
-    elseif not (opts.can(cfg.user, name, p.t and p.t.pos or nil) or sync.maker_may(p.t and p.t.obj == "track" and p.oid or (p.t and p.t.track) or p.oid, cfg.user, name, p.t and p.t.pos or nil, opts.mode, p.t and p.t.obj == "item" and p.oid or nil)) then
+    -- (or an Undo or Redo of your own change that only a bandmate's auto-claim, made since, stands in front of: it goes through as the edit did,
+    -- when the newest version of the thing is still yours, so nothing of theirs is in it. "19 brought back (2 not yours to change)" left a
+    -- copied item on every computer because the laptop had auto-claimed the track meanwhile. A lasting claim still refuses. opts.soft: lib/undo.lua.
+    -- rt-edits)
+    elseif not (opts.can(cfg.user, name, p.t and p.t.pos or nil) or ((opts.undoes or opts.redoes) and opts.soft and last and last.user == cfg.user
+        and opts.soft(name, (p.t and p.t.pos) or last.pos) ~= nil) or sync.maker_may(p.t and p.t.obj == "track" and p.oid or (p.t and p.t.track) or p.oid, cfg.user, name, p.t and p.t.pos or nil, opts.mode, p.t and p.t.obj == "item" and p.oid or nil)) then
       refused = refused + 1
     elseif p.t then
       local ok, nh = mirror.apply(proj, p.t, media, opts.local_mix)

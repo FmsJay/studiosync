@@ -101,7 +101,10 @@ function E.new(path)
       out[#out + 1] = ">"
     end
     for i = 2, #L do out[#out + 1] = L[i] end
-    return table.concat(out, "\n") .. "\n"
+    local c = table.concat(out, "\n") .. "\n"
+    -- (F.dialect: this REAPER writes an item a little differently from another's, as a Linux one does from a Windows one: the same item, another
+    -- text. A function of the chunk, applied to every read.)
+    return F.dialect and F.dialect(c) or c
   end
   -- the item's text from a chunk: its IGUID and <EXT (or <EXTI) block taken out (into it.ext; none: no P_EXT, as REAPER does)
   local function take_in(it, c)
