@@ -292,7 +292,7 @@ function M.section_together()
   local side = select(2, reaper.GetProjExtState(proj, band.SECTION, "side"))
   local rt_now = same_room_on() -- (Real time mode is following at 0 bars: switch it off on Home. Review, 0.59.8)
   ImGui.BeginDisabled(ctx, rt_now)
-  local ch, on = check("Follow each other: press play, stop and record as usual", side ~= "")
+  local ch, on = check("Play and stop together: press play, stop and record as usual", side ~= "")
   ImGui.EndDisabled(ctx)
   if rt_now then ch = false end
   if ch then

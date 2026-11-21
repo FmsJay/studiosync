@@ -83,7 +83,7 @@ webpages.action(P, cfg, b, { topic = "play", follow = true, bars = 0 })
 assert(projext["P1/side"] == "0", "on at 0 bars")
 rt_on = true
 local said = webpages.action(P, cfg, b, { topic = "play", follow = false })
-assert(said:find("Real time mode") and projext["P1/side"] == "0", "Real time mode on: left alone (it follows at 0)")
+assert(said:find("Real time mode") and said:find("Play and stop together") and projext["P1/side"] == "0", "Real time mode on: left alone (it follows at 0)")
 rt_on = false
 
 -- Play, Record, Stop together: from a region or the cursor, with the page's count-in, click and lag; refused as the Song page's are

@@ -166,6 +166,10 @@ assert(type(v) == "string" and v:find("ReaPersona") and compat.events[#compat.ev
 clock = 2010
 assert(compat.timeline_veto("P1", sig(nil, { snap = 1 }), sig(nil, { snap = 0 })) == nil, "later: your own change, sent as ever")
 assert(compat.timeline_veto("P1", sig(nil, { snap = 1 }), sig({ { bpm = 99, time = 0 } }, { snap = 1 })) == nil, "a tempo change is never the persona's")
+clock = 2020; gext["ReaPersona\0switching"] = "2019" -- (ReaPersona's own stamp: a switch to the persona already in use, or one whose changes land later)
+assert(type(compat.timeline_veto("P1", sig(nil, { snap = 1 }), sig(nil, { snap = 0 }))) == "string", "ReaPersona's switching stamp: the studio's put back")
+clock = 2030
+assert(compat.timeline_veto("P1", sig(nil, { snap = 1 }), sig(nil, { snap = 0 })) == nil, "the stamp ages out")
 for i = 1, compat.GRID_N - 1 do clock = 2100 + i; assert(compat.timeline_veto("P1", sig(nil, { grid = { i, 0, 0 } }), sig(nil, { grid = { i + 1, 0, 0 } })) == nil, "a grid change goes out") end
 clock = 2110
 assert(compat.timeline_veto("P1", sig(nil, { grid = { 7, 0, 0 } }), sig(nil, { grid = { 8, 0, 0 } })) == "quiet", "the fifth grid change in a minute: a script")

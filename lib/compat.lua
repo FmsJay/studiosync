@@ -153,11 +153,20 @@ compat.KINDS = {
   pext = { "writes StudioSync's ids on tracks or items (P_EXT:band_...)", "Don't run it on a studio song: a changed id makes the studio see a new track or item and lose the old one's history." },
   grid = { "changes the project grid as it runs", "A studio song shares its grid, so StudioSync keeps the grid this computer's own while this runs: snapping here follows your grid, the others keep theirs." },
   tempo = { "changes the tempo map as it runs", "In a studio song a tempo change goes to everyone (driver) or is put back: turn it off while a studio song is open." },
+  uirefresh = { "stops REAPER's screen redrawing (PreventUIRefresh(1) with no matching -1 in the script)", "A script that stops between the two leaves the tracks frozen on screen while StudioSync still syncs behind it: ask its author to wrap the work in pcall so the -1 always runs. If tracks stop redrawing, restart REAPER (nothing can read the count)." },
   colour = { "recolours tracks as it runs", "Track colours are shared in a studio song: each recolour goes to everyone. Turn it off for studio songs, or let StudioSync colour them (Settings > Colours)." },
 }
 function compat.scan_text(text, background)
   local found = {}
   text = text or ""
+  -- (every line's comment cut off first; a count that can't balance is the only sign REAPER lets a script leave: the refresh count itself can't be read)
+  local plus, minus = 0, 0
+  for line in text:gmatch("[^\r\n]+") do
+    local code = line:gsub("%-%-.*$", "")
+    for _ in code:gmatch("PreventUIRefresh%s*%(%s*1%s*%)") do plus = plus + 1 end
+    for _ in code:gmatch("PreventUIRefresh%s*%(%s*%-1%s*%)") do minus = minus + 1 end
+  end
+  if plus > minus then found.uirefresh = true end
   background = background or text:find("reaper%.defer%s*%(") ~= nil
   for line in text:gmatch("[^\r\n]+") do
     if not line:find("^%s*%-%-") then
@@ -252,6 +261,10 @@ local function poll_persona()
   local s = reaper.GetExtState("ReaPersona", "style")
   if persona.style ~= nil and s ~= persona.style then persona.at, persona.name = now(), s end
   persona.style = s
+  -- (ReaPersona (next release) stamps the time it started and finished a switch, so a switch to the persona already in use, and one whose changes land
+  -- a few passes later, are caught as well)
+  local sw = tonumber(reaper.GetExtState("ReaPersona", "switching"))
+  if sw and sw <= now() and now() - sw < compat.PERSONA_SECS and (persona.at or -math.huge) < sw then persona.at, persona.name = sw, s end
 end
 compat.persona = persona -- (tests)
 -- sync.watch_timeline, before it sends or puts back a change to the tempo map, markers or project settings. -> nil (go on as ever),

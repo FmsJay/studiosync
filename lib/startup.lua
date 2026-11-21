@@ -24,6 +24,11 @@ local known = {}
 -- The plan is kept on disk all the time, not only at quit: after a crash REAPER reopened the tabs itself, with its boxes up until
 -- someone answered and the song catching up a little at a time behind them (PC, 2026-11-03: nearly 2 minutes against 20 s).
 local kept, kept_was, kept_n, fewer_since
+-- The choice as the plan on disk has it: keep_open_mode (another script's Lua state, Live sync's) rewrites it there, and this copy would write the old one back.
+local function held()
+  local plan = band.read_json(FILE)
+  return type(plan) == "table" and tonumber(plan.loadlastproj) or kept_was
+end
 function startup.note()
   local tabs, front = {}, reaper.EnumProjects(-1)
   for i = 0, 512 do
@@ -44,11 +49,11 @@ function startup.note()
   kept, kept_n = sig, #tabs
   if startup.plan(tabs) then
     startup.last_band = { tabs = tabs, at = reaper.time_precise() } -- (for on_quit, if a quit that stalls outlasts the 3 s above)
-    kept_was = kept_was or reaper.SNM_GetIntConfigVar("loadlastproj", 1)
+    kept_was = held() or reaper.SNM_GetIntConfigVar("loadlastproj", 1)
     band.write_json(FILE, { tabs = tabs, loadlastproj = kept_was })
     set_open_mode(startup.no_open(kept_was))
   elseif kept_was then -- (no band song open any more: as you had it)
-    set_open_mode(kept_was)
+    set_open_mode(held())
     kept_was = nil
     os.remove(FILE)
   end
@@ -77,7 +82,7 @@ function startup.on_quit()
   if band.read_json(FILE) or not usable() then return end
   local tabs = startup.quit_tabs(known, startup.last_band, reaper.time_precise())
   if not tabs then return end
-  local was = kept_was or reaper.SNM_GetIntConfigVar("loadlastproj", 1)
+  local was = held() or reaper.SNM_GetIntConfigVar("loadlastproj", 1)
   band.write_json(FILE, { tabs = tabs, loadlastproj = was })
   set_open_mode(startup.no_open(was))
 end

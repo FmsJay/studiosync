@@ -233,8 +233,8 @@ assert(pm.mate == "Bo" and pm.paused and pm.seen == "Paused: Bo: Bass selected",
 pm = webpages.play_model({ side = "", cursor = "1", mate = "", paused = false, seen = "" })
 assert(pm.mate == nil and pm.paused == nil and pm.seen == nil, "nobody")
 ext["follow driver"] = "1"
-assert(webpages.action(P, cfg, b, { topic = "play", mate = "Bo" }):find("following Bo") and ext["follow " .. P] == "Bo" and ext["follow driver"] == "",
-  "the web page follows Bo, as the panel's Follow does")
+assert(webpages.action(P, cfg, b, { topic = "play", mate = "Bo" }):find("watching Bo") and ext["follow " .. P] == "Bo" and ext["follow driver"] == "",
+  "the web page watches Bo, as the panel's Follow does")
 assert(webpages.action(P, cfg, b, { topic = "play", mate = "Mallory" }):find("left as it is") and ext["follow " .. P] == "Bo", "nobody by that name here: left")
 assert(webpages.action(P, cfg, b, { topic = "play", mate = "James" }):find("left as it is"), "not yourself")
 ext["follow paused " .. P] = "Bo"

@@ -101,18 +101,18 @@ function webpages.action(proj, cfg, b, a)
   if type(a.mate) == "string" then -- (Follow a bandmate, as the panel's Follow on their card: only someone this room has. lib/follow.lua)
     local key = "follow " .. tostring(proj)
     S.at.play = -math.huge
-    if a.mate == "" then reaper.DeleteExtState(band.SECTION, key, false); return "stopped following, from the web page" end
+    if a.mate == "" then reaper.DeleteExtState(band.SECTION, key, false); return "stopped watching, from the web page" end
     local known = false
     for _, st in ipairs(require("presence").all(cfg, b.song, b.room) or {}) do known = known or st.user == a.mate end
-    if not known or a.mate == cfg.user then return "the web page's Follow was left as it is: nobody called that is in this room" end
+    if not known or a.mate == cfg.user then return "the web page's Watch was left as it is: nobody called that is in this room" end
     reaper.SetExtState(band.SECTION, key, a.mate, false)
     reaper.SetExtState(band.SECTION, "follow driver", "", true)
-    return "following " .. a.mate .. ", from the web page"
+    return "watching " .. a.mate .. ", from the web page"
   end
   if a.resume then S.at.play = -math.huge; reaper.DeleteExtState(band.SECTION, "follow paused " .. tostring(proj), false); return end
   if a.follow ~= nil or a.bars ~= nil then
     -- (Real time mode is following at 0 bars: changed here, it would quietly switch Real time off. As the panel's, greyed out then)
-    if require("live").realtime_on(proj) then return "the web page's Follow each other was left as it is: Real time mode is on (Home)" end
+    if require("live").realtime_on(proj) then return "the web page's Play and stop together was left as it is: Real time mode is on (Home)" end
     local side = select(2, reaper.GetProjExtState(proj, band.SECTION, "side"))
     local on = a.follow == true or (a.follow == nil and side ~= "")
     reaper.SetProjExtState(proj, band.SECTION, "side", on and tostring(webpages.bars(a.bars) or tonumber(side) or 2) or "")
