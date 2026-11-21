@@ -304,7 +304,7 @@ end
 -- (a studio's manager-only files are signed as they're written, and some go over the direct link at once: lib/signed.lua. rt-linkfirst)
 local function signed_hook(fn, path)
   local p = tostring(path):gsub("\\", "/")
-  if p:find("/_band/", 1, true) or p:find("/rooms/", 1, true) then
+  if p:find("/_band/", 1, true) or p:find("/rooms/", 1, true) or p:find("/hub/", 1, true) or p:sub(-13) == "/session.json" then -- (and a song's own: rt-linkmove)
     local ok, s = pcall(require, "signed")
     if ok and type(s) == "table" and s[fn] then pcall(s[fn], p) end
   end
@@ -348,11 +348,20 @@ local function with_overlay(dir, names, ext)
   return out
 end
 
-function band.size(path)
+local function file_size(path)
   local f = io.open(path, "rb")
   if not f then return nil end
   local n = f:seek("end"); f:close()
   return n
+end
+function band.size(path)
+  -- (a file that came over the direct link ahead of Syncthing's, a profile's picture: its size as band.read reads it. Looked up by name
+  -- first: this is asked of big media files too. rt-linkmove)
+  if next(band.overlay) ~= nil and band.overlay[okey(path)] then
+    local o = band.overlay_of(path)
+    if o then return o.bytes and #o.bytes or nil end
+  end
+  return file_size(path)
 end
 
 -- Write under a temp name, then rename, so a syncing peer never picks up a half-written file.
@@ -407,7 +416,7 @@ function band.copy_atomic(src, dst)
     total = total + #chunk
   end
   fi:close()
-  if total ~= band.size(src) then fo:close(); os.remove(tmp); error("couldn't read all of " .. src) end
+  if total ~= file_size(src) then fo:close(); os.remove(tmp); error("couldn't read all of " .. src) end -- (the folder's file: what was copied)
   finish(tmp, dst, fo, total)
 end
 

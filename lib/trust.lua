@@ -130,6 +130,9 @@ function trust.inviter(root)
 end
 
 local verdicts, said, asked, names_wait = {}, {}, {}, {}
+-- trust.file_ok is asking about a copy that came by the direct link: a "no" is neither kept nor said. The caches below go by what a file
+-- says, not by who signed it, so a member's copy of someone's file, refused, would have had the real one refused after it. (rt-linkmove)
+local probing = false
 -- Which computer changed it: the one whose key signed it as it reads now (lib/signed.lua: a good signature, a key this computer knows as that
 -- computer's, a number not older than one taken), as its whole ID; else Syncthing's modifiedBy, as before (an unsigned file, one an older
 -- StudioSync rewrote, a key not known yet). A copy that came over the direct link has no Syncthing answer: its signature or "not yet".
@@ -172,6 +175,7 @@ function trust.device_ok(root, user, device)
     local by = changed_by(root, rel)
     if not by then return c and c.ok end
     c = { ok = took(root, rel, trust.wrote_itself(device, by), by), at = os.time() }
+    if probing and not c.ok then return false end
     devs[k] = c
     -- (believed as always, Syncthing saying its own computer wrote it: the key it carries is that computer's from now on, lib/signed.lua. Never
     -- from a signature: a key is only ever learnt this way. rt-linkfirst)
@@ -251,6 +255,7 @@ function trust.cached(cache, k, root)
   return nil
 end
 function trust.cache(cache, k, ok, root)
+  if ok == false and probing then return ok end
   if ok == false and trust.held(root) then cache[k] = "held" else cache[k] = ok end
   return ok
 end
@@ -329,6 +334,7 @@ function trust.mark_ok(root, rel, m)
   local ok = by == "" or trust.from_manager(pins, by, services.my_device_id()) or (m.left == true and is(m.device, by))
   -- (a mark written here a moment ago: Syncthing may not have looked at it yet, and still names whoever wrote the file before)
   if not ok and os.time() - (tonumber(m.at) or 0) < 120 then return nil end
+  if probing and not ok then return false end
   marks[k] = took(root, rel, ok, by)
   if not ok then band.log(string.format("%s: %s came from a computer (%s) that isn't the owner's or an admin's, so it was set aside", band.info(root).name, rel, services.device_name(by))) end
   return ok
@@ -381,7 +387,7 @@ function trust.claim_ok(root, rel, c)
   local mine = services.my_device_id()
   local ok = by == "" or (mine ~= nil and is(mine, by)) or trust.from_user(pins, by, c.by)
   trust.cache(claims, k, took(root, rel, ok, by), root)
-  if not ok then band.log(string.format("%s: a claim said to be given by %s came from another computer (%s), so it was set aside", band.info(root).name, tostring(c.by), services.device_name(by))) end
+  if not ok and not probing then band.log(string.format("%s: a claim said to be given by %s came from another computer (%s), so it was set aside", band.info(root).name, tostring(c.by), services.device_name(by))) end
   return ok
 end
 
@@ -411,14 +417,14 @@ function trust.own_file_ok(root, rel, user, at)
   end
   if not ok and os.time() - (tonumber(at) or 0) < 120 then return nil end
   trust.cache(own, k, took(root, rel, ok, by), root)
-  if not ok then band.log(string.format("%s: %s says it's %s's, but another computer (%s) wrote it, so it was set aside", band.info(root).name, rel, tostring(user), services.device_name(by))) end
+  if not ok and not probing then band.log(string.format("%s: %s says it's %s's, but another computer (%s) wrote it, so it was set aside", band.info(root).name, rel, tostring(user), services.device_name(by))) end
   return ok
 end
 
 -- A copy that came over the direct link (lib/signed.lua on_msg, already in band.overlay while this asks): does the check its readers make say
 -- yes now? By its kind, the same check as when Syncthing brings it; a room's mode.json, which nothing checks then, must be a manager's here.
 -- -> true, or false/nil (left out). (rt-linkfirst)
-function trust.file_ok(root, rel)
+local function file_ok(root, rel)
   local kind = require("signed").kind(rel)
   local j = band.read_json(root .. "/" .. rel)
   if kind == "band" or kind == "guests" or kind == "mode" then return (trust.from_manager_file(root, rel)) end
@@ -434,7 +440,24 @@ function trust.file_ok(root, rel)
     return type(j) == "table" and type(j.by) == "string" and user_file(j.by) == rel:match("([^/]+)$") and require("groups").may_manage(root, j.by)
       and trust.claim_ok(root, rel, j) or false
   end
+  -- (a claim someone in charge gave, as sync.authority's given_ok, and under the name its writer gives it: given-<who it's for>-<when>. rt-linkmove)
+  if kind == "given" then
+    local pre = "given-" .. user_file(type(j) == "table" and j.user or ""):sub(1, -6) .. "-"
+    return type(j) == "table" and type(j.by) == "string" and type(j.user) == "string" and rel:match("([^/]+)$"):sub(1, #pre) == pre
+      and require("groups").may_manage(root, j.by) and trust.claim_ok(root, rel, j) or false
+  end
+  -- (one person's own file, lib/signed.lua owner: from that person's own computer, as its readers ask of Syncthing's copy, or as nothing asks
+  -- of it then (a release, a track order). rt-linkmove)
+  local who = require("signed").owner(root, rel, kind, j)
+  if who then return trust.own_file_ok(root, rel, who) end
   return false
+end
+function trust.file_ok(root, rel)
+  probing = true
+  local ok, said_ = pcall(file_ok, root, rel)
+  probing = false
+  if not ok then error(said_, 0) end
+  return said_
 end
 
 return trust

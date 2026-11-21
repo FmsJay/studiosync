@@ -194,6 +194,10 @@ function jb.send(root, tok, r, rec, now)
       elseif needed then return false end -- (band.json and the song's session.json, or no first copy: Syncthing's as today)
     elseif needed then return false end
   end
+  -- (and, in the room that's left, the newest number this computer has taken per signed file: the joiner never takes an older copy put
+  -- back as its first. lib/signed.lua known_seqs, rt-linkmove)
+  local oks, seqs = pcall(function() return require("signed").known_seqs(root, jb.WELCOME_MAX - size - 16) end)
+  w.seqs = oks and #seqs > 0 and seqs or nil
   local sealed = tostring(reaper.StudioSync_Seal(r.key, band.json_encode(w)) or "")
   if sealed:sub(1, 4) ~= "SSS1" then return false end
   local channel, peer = "join-" .. tok.id, r.reply .. ":" .. require("direct").port()
@@ -289,6 +293,7 @@ function jb.take(root, tok, p, sealed)
   band.forget_info()
   local okk, nk = pcall(function() return require("signed").seed_keys(root, w.keys) end)
   if not okk then band.log("couldn't take the welcome's keys: " .. tostring(nk)) end
+  pcall(function() return require("signed").seed_seqs(root, w.seqs) end) -- (the newest numbers its inviter has taken: floors here. rt-linkmove)
   taken_at[root] = reaper.time_precise()
   band.log(string.format("the studio's first copy came over the link: %d files%s", #rels,
     song and string.format(", '%s' on its way (%d changes, %d media files)", song, n, #media) or ""))

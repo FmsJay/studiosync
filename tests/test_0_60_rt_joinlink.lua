@@ -315,6 +315,16 @@ check(#songs == 1 and songs[1] == SONG, "the song is on Jo's Projects list")
 local s1, side1, linked = require("signed").current(ROOT_J, "_band/band.json")
 check(s1 == read(ROOT_A .. "/_band/band.json") and side1 == read(ROOT_A .. "/_band/band.json.sig") and linked,
   "signed.current sees the copy and its signature, as one Syncthing knows nothing of")
+-- the welcome's newest sequence numbers (rt-linkmove): Ann's computer's, kept on Jo's before it has checked a single file, for a file the
+-- welcome doesn't carry too (the invitation's record), so an older copy put back is never Jo's first
+do
+  local theirs, kept = band.json_decode(A.ext["signed seqs " .. STUDIO] or ""), band.ext_json(band.SECTION, "signed seqs " .. STUDIO)
+  local jr = "_band/joins/" .. tok.id .. ".json"
+  check(type(theirs) == "table" and type(kept) == "table" and theirs[jr] and theirs["_band/band.json"], "(Ann's computer has numbers for its files)")
+  for _, rel in ipairs({ "_band/band.json", jr }) do
+    check(type(kept[rel]) == "table" and kept[rel][1] == theirs[rel][1] and kept[rel][2] == theirs[rel][2], "the welcome's number for " .. rel .. " is kept on Jo's computer")
+  end
+end
 -- Jo's trust: each boot copy by its signature and the keys the welcome brought (never by Syncthing's silence)
 local trust, signed = require("trust"), require("signed")
 check(signed.computer_of(ROOT_J, sw.device_id(BO_PUB)) == BO_DEV and signed.computer_of(ROOT_J, sw.device_id(py_key(sr, A.kp))) == ANN_DEV,

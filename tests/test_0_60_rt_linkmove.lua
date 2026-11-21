@@ -1,0 +1,411 @@
+-- More of the studio's small files over the direct link first, signed (lib/signed.lua, lib/trust.lua file_ok, docs/rt/rt-linkmove.md): given
+-- claims, a driver's or manager's releases, a person's track order, their handovers of a song's hub, a song's session.json, a profile's
+-- picture, and the welcome's newest sequence numbers. The rig is tests/test_0_60_rt_linkfirst.lua's: stand-in computers in one Lua state,
+-- each with its own folder, saved state, Syncthing answers and copy of every module. Olive owns the studio, Ann is an admin, Bee and Moe
+-- are members; Cy's computer is on an older build. For each file: it arrives by the link first and counts at once with nothing written
+-- into the folder, Syncthing's copy arriving later changes nothing, it still works by Syncthing alone (unsigned, from an older build), and
+-- a bad signature, someone else's signature and an older replay are refused. Ed25519 is tools/sign_release.py's. Lupa, repo root.
+package.path = "lib/?.lua;" .. package.path
+local T = (os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp"):gsub("\\", "/") .. "/ss_linkmove_" .. os.time() .. "_" .. math.random(100000, 999999)
+local SEP = package.config:sub(1, 1)
+local function clean() os.execute(SEP == "\\" and ('rmdir /s /q "' .. T:gsub("/", "\\") .. '" 2>nul') or ("rm -rf '" .. T .. "'")) end
+local function check(cond, what) if not cond then clean(); error(what, 2) end end
+
+python.eval("__import__('sys').path.insert(0, 'tools')")
+local sr = python.eval("__import__('sign_release')")
+local py_sign = python.eval("lambda sr, kp, m: sr.sign(sr.load_seed(kp), m.encode('utf-8')).hex()")
+local py_key = python.eval("lambda sr, kp: sr.public_key(sr.new_key(kp)).hex()")
+local py_verify = python.eval("lambda sr, s, m, k: sr.verify(bytes.fromhex(k), m.encode('utf-8'), bytes.fromhex(s))")
+local mkdirs = python.eval("lambda d: __import__('os').makedirs(d, exist_ok=True)")
+local listdir = python.eval("lambda d: '\\n'.join(f for f in sorted(__import__('os').listdir(d)) if __import__('os').path.isfile(d + '/' + f)) if __import__('os').path.isdir(d) else ''")
+local function verify(s, m, k) local ok, r = pcall(py_verify, sr, s, m, k); return ok and r == true end
+local function read(p) local f = io.open(p, "rb"); if not f then return nil end local s = f:read("a"); f:close(); return s end
+local function write(p, s) mkdirs(p:match("^(.*)/[^/]+$")); local f = assert(io.open(p, "wb")); f:write(s); f:close() end
+mkdirs(T)
+
+local ID = "^" .. ("[%u%d]"):rep(7) .. ("%-" .. ("[%u%d]"):rep(7)):rep(7) .. "$"
+local function is_id(x) return type(x) == "string" and x:match(ID) ~= nil end
+local function stid(a) return (a .. ("-" .. a:sub(1, 1):rep(7)):rep(7)) end
+local STUDIO, SONG, ROOM = "studio-lm1", "Song", "main"
+local RDIR = SONG .. "/rooms/" .. ROOM
+local clock = 1000
+
+local function person(name, letter)
+  local kp = T .. "/" .. name .. "-key"
+  local pub = py_key(sr, kp)
+  return { name = name, kp = kp, pub = pub, dev = stid(letter:rep(7)), sign = function(m) return py_sign(sr, kp, m) end }
+end
+local olive, ann, moe, bee, cy = person("Olive", "O"), person("Ann", "A"), person("Moe", "M"), person("Bee", "B"), person("Cy", "C")
+local everyone = { olive, ann, moe, bee, cy }
+
+local base = {}
+for k in pairs(package.loaded) do base[k] = true end
+local function computer(who)
+  local c = { who = who, root = T .. "/" .. who.name .. "/studio", ext = {}, by_file = {}, gone = {}, asked = 0, mods = {}, sent = {} }
+  c.cfg = { root = c.root, user = who.name }
+  c.reaper = setmetatable({
+    time_precise = function() return clock end, GetOS = function() return "Win64" end,
+    GetExtState = function(_, k) return c.ext[k] or "" end, SetExtState = function(_, k, v) c.ext[k] = tostring(v) end,
+    DeleteExtState = function(_, k) c.ext[k] = nil end,
+    EnumerateFiles = function(dir, i)
+      if i < 0 then return nil end
+      local list = {}
+      for f in tostring(listdir(dir)):gmatch("[^\n]+") do list[#list + 1] = f end
+      return list[i + 1]
+    end,
+    EnumerateSubdirectories = function() return nil end,
+    RecursiveCreateDirectory = function(d) mkdirs(d); return 1 end,
+    file_exists = function(p) return read(p) ~= nil end,
+    StudioSync_KeyCreate = function(p) return py_key(sr, p) end,
+    StudioSync_Sign = function(kp, m) return py_sign(sr, kp, m) end,
+    StudioSync_Verify = function(s, m, k) return verify(s, m, k) and 1 or 0 end,
+  }, { __index = function() return function() return "" end end })
+  c.services = {
+    is_device_id = is_id, my_device_id = function() return who.dev end, device_name = function(x) return tostring(x) end,
+    modified_by = function(_, rel) c.asked = c.asked + 1; return c.by_file[rel], c.gone[rel] end,
+  }
+  -- (the link: everything this computer sends, kept for the test to hand over)
+  c.direct = { peers = function() return { "peer:47281" }, {}, { ["peer:47281"] = "Peer" } end, forget_devices = function() end,
+    send_live = function(_, kind, d, song, room, _, to) c.sent[#c.sent + 1] = { kind = kind, d = d, song = song, room = room, to = to }; return true end }
+  return c
+end
+local current
+local function use(c)
+  if current ~= c then
+    if current then
+      current.mods = {}
+      for k, v in pairs(package.loaded) do if not base[k] then current.mods[k] = v end end
+    end
+    for k in pairs(package.loaded) do if not base[k] then package.loaded[k] = nil end end
+    for k, v in pairs(c.mods) do package.loaded[k] = v end
+    package.loaded.services = package.loaded.services or c.services
+    package.loaded.direct = c.direct
+    reaper, current = c.reaper, c
+  end
+  local band = require("band")
+  band.log = function(s) c.logged = s end
+  require("signed").key_path = function() return c.who.kp end
+  return band
+end
+local function json(t) return require("band").json_encode(t) end
+local function pins_key(root) return "role pins " .. STUDIO .. " " .. root:gsub("\\", "/"):gsub("/+$", ""):lower() end
+-- A computer in the studio: the roles pinned, everyone's devices file (each with its key) there and vouched for by Syncthing; `learn`: the
+-- keys learnt the usual way (trust.device_ok), as a computer on this build has them a minute after it starts.
+local function studio(c, learn)
+  local band = use(c)
+  write(c.root .. "/_band/band.json", json({ id = STUDIO, name = "LM", owner = "Olive", admins = { "Ann" } }))
+  for _, p in ipairs(everyone) do
+    write(c.root .. "/_band/devices/" .. p.name .. ".json", json({ user = p.name, device = p.dev, key = p.pub }))
+    c.by_file["_band/devices/" .. p.name .. ".json"] = p.dev:sub(1, 7)
+  end
+  write(c.root .. "/" .. RDIR .. "/mode.json", json({ mode = "open", by = "Olive" }))
+  write(c.root .. "/" .. RDIR .. "/driver.json", json({ driver = "Olive" }))
+  band.set_ext_json(band.SECTION, pins_key(c.root), { owner = "Olive", admins = { "Ann" }, devices = { Olive = { olive.dev }, Ann = { ann.dev } } }, true)
+  c.ext.user = c.who.name
+  if learn then for _, p in ipairs(everyone) do if p ~= c.who then check(require("trust").device_ok(c.root, p.name, p.dev) == true, p.name .. "'s devices file") end end end
+  c.asked = 0
+  return c
+end
+local A, B, O = studio(computer(ann), true), studio(computer(bee), true), studio(computer(olive), true)
+
+-- What computer `c` wrote since the last look, as the link carries it: its outbox emptied (signed.drain), the messages for `rel` (or all).
+local function drained(c, rel)
+  use(c)
+  c.sent = {}
+  require("signed").drain(c.cfg, SONG, ROOM)
+  local out = {}
+  for _, m in ipairs(c.sent) do if m.kind == "signed" and (not rel or m.d.rel == rel) then out[#out + 1] = m.d end end
+  return out
+end
+-- Hand a message to computer `c` through the real direct.dispatch's shape: -> signed.on_msg's answer.
+local function deliver(c, d) use(c); return require("signed").on_msg(c.cfg, d) end
+-- Syncthing brings the writer's file and its signature file into `c`'s folder.
+local function syncthing(c, from, rel)
+  local body, side = read(from.root .. "/" .. rel), read(from.root .. "/" .. rel .. ".sig")
+  if body then write(c.root .. "/" .. rel, body) else os.remove(c.root .. "/" .. rel) end
+  if side then write(c.root .. "/" .. rel .. ".sig", side) end
+  clock = clock + 1
+end
+local function overlaid(c, rel) use(c); return require("band").overlay_of(c.root .. "/" .. rel) ~= nil end
+local function owner_of(c, track)
+  use(c)
+  local _, who = require("sync").authority(c.cfg, SONG, ROOM, nil)
+  local t = who.tracks[track:lower()]
+  return t and t.user or nil
+end
+local sw = require("signedwrites")
+local function resign(signer, rel, body, seq) return sw.make(signer.sign, signer.pub, STUDIO, rel, seq, body) end
+local FAR = (os.time() + 3600) * 1000 -- (a number after anything written during the test)
+
+-- ==== 1. A given claim ==========================================================================================================================
+use(A)
+require("sync").give_claims(A.cfg, SONG, ROOM, "Cy", { "Bass" })
+local given = drained(A)
+check(#given == 1 and given[1].rel:find("^" .. RDIR .. "/claims/given%-Cy%-") and given[1].side, "Ann's given claim goes over the link, signed: " .. #given)
+local GV = given[1].rel
+-- a third computer (Olive's): it counts at once, nothing in the folder
+check(owner_of(O, "Bass") == nil, "before: nobody's")
+O.asked = 0
+local ok, why = deliver(O, given[1])
+check(ok == true and owner_of(O, "Bass") == "Cy" and O.asked == 0, "the given claim counts on Olive's computer at once, by its signature: " .. tostring(why))
+check(read(O.root .. "/" .. GV) == nil, "nothing written into the shared folder")
+-- the same message again: once only (a given claim's file is deleted without a word when it's folded in; a replay would bring it back)
+local again, why_again = deliver(O, given[1])
+check(again == false, "the same message again changes nothing (" .. tostring(why_again) .. ")")
+-- Syncthing's copy arrives later: nothing changes
+syncthing(O, A, GV)
+check(owner_of(O, "Bass") == "Cy" and not overlaid(O, GV), "Syncthing's copy takes over and the claim stands")
+-- Cy folded it in and deleted it (sync.follow_claims, on his computer): gone here too, and a replay of the link's message doesn't bring it back
+os.remove(O.root .. "/" .. GV); os.remove(O.root .. "/" .. GV .. ".sig")
+clock = clock + 1
+ok, why = deliver(O, given[1])
+check(ok == false and why:find("older") and owner_of(O, "Bass") == nil, "a replay after it was folded in and deleted: refused (" .. tostring(why) .. ")")
+
+-- on a computer the file never reaches (folded and deleted before Syncthing brought it): the link's copy counts for GIVEN_KEEP seconds
+use(A)
+require("sync").give_claims(A.cfg, SONG, ROOM, "Bee", { "Keys" })
+local given2 = drained(A)[1]
+check(given2 and given2.rel ~= GV, "a second given claim")
+check(deliver(O, given2) == true and owner_of(O, "Keys") == "Bee", "taken on Olive's computer")
+clock = clock + require("signed").GIVEN_KEEP - 5
+drained(O)
+check(owner_of(O, "Keys") == "Bee", "still counted inside its minute")
+clock = clock + 10
+drained(O) -- (Live sync's tick: signed.drain tidies)
+check(owner_of(O, "Keys") == nil and not overlaid(O, given2.rel), "and let go after it, where no file ever came")
+
+-- the person it's for: only where lib/sync.lua's follow_claims leaves the link's copy alone (sync.GIVEN_WAITS), or it would fold it every pass
+use(B)
+local was_waits = require("sync").GIVEN_WAITS
+require("sync").GIVEN_WAITS = nil
+ok, why = deliver(B, given2)
+check(ok == false and why:find("Syncthing") and owner_of(B, "Keys") == nil, "without the hook, Bee's own computer waits for Syncthing's copy (" .. tostring(why) .. ")")
+require("sync").GIVEN_WAITS = true
+ok, why = deliver(B, given2)
+check(ok == true and owner_of(B, "Keys") == "Bee", "with it, Bee's own computer counts her given claim at once: " .. tostring(why))
+clock = clock + require("signed").GIVEN_KEEP + 30
+drained(B)
+check(owner_of(B, "Keys") == "Bee", "and keeps it until the folder's copy comes (hers to fold in), however long")
+syncthing(B, A, given2.rel)
+check(owner_of(B, "Keys") == "Bee" and not overlaid(B, given2.rel), "Syncthing's copy takes over on Bee's computer")
+require("sync").GIVEN_WAITS = was_waits
+
+-- refused: unsigned, a byte changed, a member's, a member signing in an admin's name, a name that isn't its person's
+local GM = RDIR .. "/claims/given-Moe-20990101-000000.json"
+local gm = json({ user = "Moe", by = "Ann", tracks = { "Drums" }, regions = {}, times = {}, since = {}, time = "2099-01-01T00:00:00Z", given = true })
+check(deliver(O, { rel = GM, body = gm }) == false, "unsigned: refused")
+check(deliver(O, { rel = GM, body = gm:gsub("Drums", "Drumz"), side = resign(ann, GM, gm, FAR) }) == false, "a byte changed: refused")
+ok, why = deliver(O, { rel = GM, body = gm, side = resign(moe, GM, gm, FAR) })
+check(ok == false and owner_of(O, "Drums") == nil and not overlaid(O, GM), "Moe signing a claim in Ann's name: refused (" .. tostring(why) .. ")")
+local gm2 = gm:gsub('"by":"Ann"', '"by":"Moe"')
+check(deliver(O, { rel = GM, body = gm2, side = resign(moe, GM, gm2, FAR + 1) }) == false and owner_of(O, "Drums") == nil, "Moe giving himself a claim: refused")
+local GX = RDIR .. "/claims/given-Bee-20990101-000000.json"
+check(deliver(O, { rel = GX, body = gm, side = resign(ann, GX, gm, FAR) }) == false, "a given claim under another person's name: refused")
+check(deliver(O, { rel = GM, body = gm, side = resign(ann, GM, gm, FAR + 2) }) == true and owner_of(O, "Drums") == "Moe", "(Ann's own, the same claim: taken)")
+
+-- ==== 1. A release =================================================================================================================================
+local REL = RDIR .. "/released/Ann.json"
+for _, c in ipairs({ B, O }) do -- Moe's claim on Lead, on both
+  write(c.root .. "/" .. RDIR .. "/claims/Moe.json", json({ user = "Moe", tracks = { "Lead" }, regions = {}, times = {}, time = "2020-01-01T00:00:00Z" }))
+end
+clock = clock + 3 -- (a folder's listing is kept a moment)
+check(owner_of(B, "Lead") == "Moe", "Moe holds Lead")
+use(A)
+require("sync").release_claims(A.cfg, SONG, ROOM, "Moe")
+check(read(A.root .. "/" .. REL .. ".sig"), "a release is signed as it's written")
+local rel1 = drained(A, REL)[1]
+check(rel1 and rel1.side, "and goes over the link")
+B.asked = 0
+ok, why = deliver(B, rel1)
+check(ok == true and owner_of(B, "Lead") == nil and B.asked == 0, "Ann's release counts on Bee's computer at once: " .. tostring(why))
+check(read(B.root .. "/" .. REL) == nil, "nothing written into the shared folder")
+syncthing(B, A, REL)
+check(owner_of(B, "Lead") == nil and not overlaid(B, REL), "Syncthing's copy arrives: nothing changes")
+-- a newer release, then the older one replayed
+use(A)
+clock = clock + 2
+require("sync").release_claims(A.cfg, SONG, ROOM, "Cy")
+local rel2 = drained(A, REL)[1]
+check(deliver(B, rel2) == true and require("sync").released(B.cfg, SONG, ROOM).Cy ~= nil, "her next release, at once")
+ok, why = deliver(B, rel1)
+check(ok == false and why:find("older") and require("sync").released(B.cfg, SONG, ROOM).Cy ~= nil, "the older one replayed: refused (" .. tostring(why) .. ")")
+-- a newer file already in the folder that no check has looked at yet: an older link copy is never read over it
+syncthing(O, A, REL)
+ok, why = deliver(O, rel1)
+check(ok == false and why:find("older") and require("sync").released(O.cfg, SONG, ROOM).Cy ~= nil, "older than the folder's copy: refused (" .. tostring(why) .. ")")
+-- Syncthing brings a newer signature file ahead of its file: the link's copy is let go (signed.drain's tidy), the folder's read again
+local M = studio(computer(moe), true)
+check(deliver(M, rel1) == true and overlaid(M, REL), "(Moe's computer takes the first release from the link)")
+write(M.root .. "/" .. REL .. ".sig", rel2.side)
+clock = clock + 2
+drained(M)
+check(not overlaid(M, REL), "a newer signature file in the folder: the link's older copy goes")
+-- who may: a member who isn't the room's driver may not (nothing checks a release Syncthing brings; over the link it's the driver's or a manager's)
+local RM = RDIR .. "/released/Moe.json"
+local rm = json({ Ann = "2099-01-01T00:00:00Z" })
+ok, why = deliver(B, { rel = RM, body = rm, side = resign(moe, RM, rm, FAR) })
+check(ok == false and require("sync").released(B.cfg, SONG, ROOM).Ann == nil, "Moe (a member, not the driver) releasing Ann's claims: refused (" .. tostring(why) .. ")")
+check(deliver(B, { rel = REL, body = rm, side = resign(moe, REL, rm, FAR) }) == false, "Moe signing a release under Ann's name: refused")
+check(deliver(B, { rel = RM, body = rm }) == false, "unsigned: refused")
+write(B.root .. "/" .. RDIR .. "/driver.json", json({ driver = "Moe" }))
+ok, why = deliver(B, { rel = RM, body = rm, side = resign(moe, RM, rm, FAR + 1) })
+check(ok == true and require("sync").released(B.cfg, SONG, ROOM).Ann ~= nil, "Moe as the room's driver: his release is taken: " .. tostring(why))
+
+-- ==== 2. A song's hub handovers and its session.json ==================================================================================================
+local HUB, SES = SONG .. "/hub/Ann.json", SONG .. "/session.json"
+local band = use(A)
+mkdirs(A.root .. "/" .. SONG .. "/hub")
+band.write_json(A.root .. "/" .. SES, { host = "Ann", song = SONG, published = os.date("!%Y-%m-%dT%H:%M:%SZ"), tempo = { { 0, 120 } } })
+band.write_json(A.root .. "/" .. HUB, { user = "Ann", transfers = { { to = "Bee", at = os.time() } } })
+check(sw.signer(verify, STUDIO, HUB, read(A.root .. "/" .. HUB), read(A.root .. "/" .. HUB .. ".sig")) == sw.device_id(ann.pub), "a hub handover is signed by its computer")
+check(sw.signer(verify, STUDIO, SES, read(A.root .. "/" .. SES), read(A.root .. "/" .. SES .. ".sig")) == sw.device_id(ann.pub), "and so is session.json")
+mkdirs(T .. "/elsewhere/Song")
+band.write_json(T .. "/elsewhere/Song/session.json", { host = "Ann" })
+check(read(T .. "/elsewhere/Song/session.json.sig") == nil, "a session.json outside a studio's folder isn't signed")
+local msgs = drained(A)
+local hub1, ses1
+for _, d in ipairs(msgs) do if d.rel == HUB then hub1 = d elseif d.rel == SES then ses1 = d end end
+check(hub1 and ses1 and #msgs == 2, "both go over the link: " .. #msgs)
+band = use(B)
+B.asked = 0
+ok, why = deliver(B, hub1)
+check(ok == true and band.read_json(B.root .. "/" .. HUB).transfers[1].to == "Bee", "the handover is read on Bee's computer at once: " .. tostring(why))
+check(require("trust").own_file_ok(B.root, HUB, "Ann", os.time()) == true and B.asked == 0, "and it's Ann's own by its signature (what lib/hub.lua asks), Syncthing not asked")
+check(deliver(B, ses1) == true and require("trust").own_file_ok(B.root, SES, "Ann", os.time()) == true and B.asked == 0, "session.json the same")
+check(read(B.root .. "/" .. HUB) == nil and read(B.root .. "/" .. SES) == nil, "nothing written into the shared folder")
+syncthing(B, A, HUB); syncthing(B, A, SES)
+check(not overlaid(B, HUB) and require("trust").own_file_ok(B.root, HUB, "Ann", os.time()) == true and band.read_json(B.root .. "/" .. SES).host == "Ann", "Syncthing's copies arrive: nothing changes")
+-- someone else's hand in Ann's file, a file under another name, session.json from someone who didn't share the song
+local hb = json({ user = "Ann", transfers = { { to = "Moe", at = os.time() } } })
+ok, why = deliver(B, { rel = HUB, body = hb, side = resign(moe, HUB, hb, FAR) })
+check(ok == false and band.read_json(B.root .. "/" .. HUB).transfers[1].to == "Bee", "Moe signing a handover in Ann's file: refused (" .. tostring(why) .. ")")
+check(B.logged == nil or not tostring(B.logged):find("set aside"), "and no verdict is kept from a copy that came by the link")
+check(deliver(B, { rel = SONG .. "/hub/Olive.json", body = hb, side = resign(ann, SONG .. "/hub/Olive.json", hb, FAR) }) == false, "a handover file under another name than its person's: refused")
+check(deliver(B, { rel = HUB, body = hb:gsub("Moe", "Mox"), side = resign(ann, HUB, hb, FAR) }) == false, "a byte changed: refused")
+local sb = json({ host = "Ann", song = SONG, published = "2099-01-01T00:00:00Z" })
+check(deliver(B, { rel = SES, body = sb, side = resign(moe, SES, sb, FAR) }) == false and band.read_json(B.root .. "/" .. SES).published ~= "2099-01-01T00:00:00Z",
+  "session.json from a computer that isn't its sharer's: refused over the link (Syncthing still carries it)")
+check(deliver(B, { rel = "_band/session.json", body = sb, side = resign(ann, "_band/session.json", sb, FAR) }) == false, "only a song's session.json")
+check(deliver(B, hub1) == false, "the first handover replayed: refused")
+
+-- ==== 4. A person's track order, and a profile's picture ============================================================================================
+local ORD = RDIR .. "/order/Ann.json"
+band = use(A)
+mkdirs(A.root .. "/" .. RDIR .. "/order")
+band.write_json(A.root .. "/" .. ORD, { list = { "t1", "t2" }, time = "2026-11-20T10:00:00Z", by = "Ann" })
+local ord1 = drained(A, ORD)[1]
+check(ord1 and ord1.side, "a track order is signed and goes over the link")
+band = use(B)
+ok, why = deliver(B, ord1)
+check(ok == true and band.read_json(B.root .. "/" .. ORD).list[2] == "t2" and #band.files(B.root .. "/" .. RDIR .. "/order", ".json") == 1, "read on Bee's computer at once: " .. tostring(why))
+local ob = json({ list = { "t2", "t1" }, time = "2099-01-01T00:00:00Z", by = "Ann" })
+check(deliver(B, { rel = ORD, body = ob, side = resign(moe, ORD, ob, FAR) }) == false and band.read_json(B.root .. "/" .. ORD).list[1] == "t1", "Moe's order in Ann's name: refused")
+check(deliver(B, { rel = ORD, body = ob }) == false, "unsigned: refused")
+syncthing(B, A, ORD)
+check(band.read_json(B.root .. "/" .. ORD).list[1] == "t1" and not overlaid(B, ORD), "Syncthing's copy arrives: nothing changes")
+
+-- a picture: a whole 8x8 PNG as lib/profile.lua checks one, NUL bytes and all (signed and sent as base64)
+local function be32(n) return string.char((n >> 24) & 255, (n >> 16) & 255, (n >> 8) & 255, n & 255) end
+local PNG = "\137PNG\r\n\26\n" .. "\0\0\0\13IHDR" .. be32(8) .. be32(8) .. "\8\2\0\0\0" .. "CRC!" .. "\0\0\0\1IDAT\0crc!" .. "\0\0\0\0IEND\174\66\96\130"
+local PJ, PP = "_band/profiles/Ann.json", "_band/profiles/Ann.png"
+band = use(A)
+check(require("profile").image_info(PNG) == "image/png", "(the stand-in picture is one lib/profile.lua takes)")
+mkdirs(A.root .. "/_band/profiles")
+band.write_atomic(A.root .. "/" .. PP, PNG) -- (as profile.action: the picture, then its profile)
+band.write_json(A.root .. "/" .. PJ, { user = "Ann", name = "Ann A", pic = "png", time = "2026-11-20T10:00:00Z" })
+msgs = drained(A)
+check(#msgs == 2 and msgs[1].rel == PJ and msgs[2].rel == PP and msgs[2].side and msgs[2].body == require("profile").base64(PNG), "the profile, then its picture, signed, as base64")
+band = use(B)
+check(deliver(B, msgs[2]) == false, "a picture no profile here names yet: refused")
+check(deliver(B, msgs[1]) == true, "the profile")
+ok, why = deliver(B, msgs[2])
+check(ok == true and band.read(B.root .. "/" .. PP) == PNG and band.size(B.root .. "/" .. PP) == #PNG, "then the picture, read whole here at once: " .. tostring(why))
+local people = require("profile").all(B.root)
+check(people.Ann and people.Ann.pic == "data:image/png;base64," .. require("profile").base64(PNG), "and on the profile the pages get")
+check(read(B.root .. "/" .. PP) == nil, "nothing written into the shared folder")
+check(deliver(B, { rel = PP, body = msgs[2].body }) == false, "a picture unsigned: refused")
+local other = require("profile").base64(PNG:gsub("CRC!", "CRC?"))
+check(deliver(B, { rel = PP, body = other, side = resign(moe, PP, other, FAR) }) == false and band.read(B.root .. "/" .. PP) == PNG, "Moe's picture for Ann: refused")
+local junk = require("profile").base64(("x"):rep(60))
+check(deliver(B, { rel = PP, body = junk, side = resign(ann, PP, junk, FAR) }) == false, "not a picture: refused, even signed by its person")
+check(deliver(B, { rel = "_band/profiles/Ann.jpg", body = msgs[2].body, side = resign(ann, "_band/profiles/Ann.jpg", msgs[2].body, FAR) }) == false, "a PNG under a .jpg name: refused")
+syncthing(B, A, PJ); syncthing(B, A, PP)
+clock = clock + 11 -- (profiles are read again every 10 s)
+check(require("profile").all(B.root).Ann.pic == people.Ann.pic and not overlaid(B, PP), "Syncthing's copies arrive: nothing changes")
+
+-- ==== 5. The welcome's newest sequence numbers ============================================================================================================
+-- Ann lets Bee edit, then takes it back: two numbers for one grants file. A computer new to the studio is handed the first grant again.
+local GR = RDIR .. "/grants/Ann.json"
+use(A)
+write(A.root .. "/" .. RDIR .. "/mode.json", json({ mode = "admins", by = "Olive" }))
+check(require("grants").set(A.cfg, SONG, ROOM, "Bee", true), "Ann lets Bee edit")
+local g1 = drained(A, GR)[1]
+clock = clock + 2
+check(require("grants").set(A.cfg, SONG, ROOM, "Bee", false), "and takes it back")
+local g2 = drained(A, GR)[1]
+local seqs = require("signed").known_seqs(A.root, 8000)
+local has
+for _, e in ipairs(seqs) do has = has or (e[1] == GR and e) end
+check(has and math.type(has[2]) == "integer" and #has[3] == 16, "the inviter's computer knows the grants file's newest number")
+check(seqs[1][1]:sub(1, 6) == "_band/" and #require("signed").known_seqs(A.root, 60) == 0 and #json(require("signed").known_seqs(A.root, 300)) <= 300, "the studio's own files first, and within the room the welcome has left")
+-- (the welcome carries them, lib/joinboot.lua: through JSON and back, as the sealed welcome does)
+seqs = require("band").json_decode(json(seqs))
+-- without them: a computer that never saw the file takes the first validly signed copy it's handed, however old (first use)
+local J0 = studio(computer(cy), true)
+write(J0.root .. "/" .. RDIR .. "/mode.json", json({ mode = "admins", by = "Olive" }))
+check(deliver(J0, g1) == true and require("grants").list(J0.cfg, SONG, ROOM).Bee ~= nil, "without the welcome's numbers, the replayed first grant is taken (first use)")
+-- with them
+local J = studio(computer(cy), true)
+write(J.root .. "/" .. RDIR .. "/mode.json", json({ mode = "admins", by = "Olive" }))
+use(J)
+local signed = require("signed")
+check(signed.seed_seqs(J.root, seqs) == #seqs, "the joiner takes the welcome's numbers")
+ok, why = deliver(J, g1)
+check(ok == false and why:find("older") and require("grants").list(J.cfg, SONG, ROOM).Bee == nil, "with them, the replayed first grant is refused (" .. tostring(why) .. ")")
+-- and put into the folder instead: not the signature's word, so Syncthing is asked (who put it there), as for any older copy put back
+write(J.root .. "/" .. GR, g1.body); write(J.root .. "/" .. GR .. ".sig", g1.side)
+J.by_file[GR] = moe.dev:sub(1, 7)
+J.asked = 0
+clock = clock + 3
+check(require("grants").list(J.cfg, SONG, ROOM).Bee == nil and J.asked >= 1, "the old grant put into the folder by Moe's computer: Syncthing asked, refused")
+os.remove(J.root .. "/" .. GR); os.remove(J.root .. "/" .. GR .. ".sig")
+clock = clock + 31
+ok, why = deliver(J, g2)
+check(ok == true, "the newest copy, the very one the numbers name, still goes in: " .. tostring(why))
+-- the numbers only ever raise a floor, and never one dated more than a day ahead (it would shut the real file out)
+check(signed.seed_seqs(J.root, { { GR, 5, ("0"):rep(16) } }) == 0, "a lower number changes nothing")
+check(signed.seed_seqs(J.root, { { REL, (os.time() + 3 * 86400) * 1000, ("0"):rep(16) } }) == 0, "a number three days ahead isn't taken")
+check(signed.seed_seqs(J.root, { { "../x/_band/band.json", 9, ("0"):rep(16) }, { GR, "9", "x" }, "junk", { "_band/profiles/Ann.json", 9, ("0"):rep(16) } }) == 0, "nor anything that isn't a signed studio file's number")
+check(signed.seed_seqs(J.root, nil) == 0, "no numbers in the welcome (an older inviter): nothing, as before")
+
+-- ==== a computer on an older build ====================================================================================================================
+-- receiving (36f90ae: these kinds aren't ones its link takes): refused without a word, and Syncthing's copy works as before
+local OLD = studio(computer(cy), true)
+use(OLD)
+signed = require("signed")
+for _, k in ipairs({ "given", "released", "order", "hub", "session", "pic" }) do signed.LINK[k] = nil end
+OLD.logged = nil
+for _, d in ipairs({ rel2, hub1, ses1, ord1, msgs[2], given2 }) do
+  local took, said = deliver(OLD, d)
+  check(took == false and said:find("link"), d.rel .. " on an older build: not taken (" .. tostring(said) .. ")")
+end
+check(OLD.logged == nil and next(require("band").overlay) == nil, "nothing logged, nothing kept")
+-- sending (it signs none of these, and sends none): Syncthing brings the plain files, judged as they always were
+local P = studio(computer(cy), false) -- (no keys learnt either: the Syncthing path alone)
+band = use(P)
+write(P.root .. "/" .. REL, json({ Moe = "2030-01-01T00:00:00Z" }))
+check(require("sync").released(P.cfg, SONG, ROOM).Moe == "2030-01-01T00:00:00Z", "an unsigned release from Syncthing counts, as before")
+write(P.root .. "/" .. HUB, hb)
+P.by_file[HUB] = ann.dev:sub(1, 7)
+check(require("trust").own_file_ok(P.root, HUB, "Ann", 0) == true and P.asked >= 1, "an unsigned hub handover: Syncthing says Ann's computer wrote it, taken as before")
+write(P.root .. "/" .. SONG .. "/hub/Olive.json", json({ user = "Olive", transfers = {} }))
+P.by_file[SONG .. "/hub/Olive.json"] = moe.dev:sub(1, 7)
+check(require("trust").own_file_ok(P.root, SONG .. "/hub/Olive.json", "Olive", 0) == false, "and one Syncthing says Moe's computer wrote: set aside as before")
+write(P.root .. "/" .. GM, gm)
+P.by_file[GM] = ann.dev:sub(1, 7)
+check(owner_of(P, "Drums") == "Moe", "an unsigned given claim, Syncthing says Ann's computer: counts as before")
+write(P.root .. "/" .. ORD, ob)
+check(require("band").read_json(P.root .. "/" .. ORD).list[1] == "t2", "an unsigned track order reads as before")
+
+clean()
+print("ok link-first: given claims, releases, track order, hub handovers, session.json, profile pictures, the welcome's numbers")
