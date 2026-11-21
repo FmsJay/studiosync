@@ -64,6 +64,12 @@
 6. History: markers and tempo appear on the ruler at their moments, a moved track changes lanes when it moved; press Listen and play: the
    lapse jumps to the point and an orange playhead follows the audio; B · Now jumps to the last frame.
 
+## Check results (rt-r0, 2026-11-21)
+
+Not run: 1-3, 5 and the Listen half of 6 render the preview in a background REAPER (`lib/bgrender.lua`'s hidden `-renderproject` job), and
+this recheck ran under "exactly one REAPER per computer". 4 is close to rt-answers check 1 (passed there, through the Restore page; the History
+page's own Restore wasn't pressed). 6's ruler (markers and tempo at their moments) not looked at.
+
 ## Limits
 - Automation placed from History that was made under another map isn't moved onto the map then (envelopes follow tempo with each map
   change in the prep, so unchanged ones are right; a changed one made under an older map keeps its seconds' QN from today's map).

@@ -160,6 +160,15 @@ use a project whose home is away (one the Mac shared), or have its home click He
 - `docs/rt/backlog.md` still lists this as not built (lines 44-45 and 170): not my file.
 - Not run in REAPER or between real computers.
 
+## Check results (rt-r0, 2026-11-21, 0.59.49.92 + extension 1.0.34)
+
+- **1: pass** (with Cross Test's home, the desktop, present). All three views: `hub` = `home` = James, `why` = `home`; each status file's hub
+  part `sees` names the two others; `far` false everywhere. Health's row not read.
+- 2, 4, 5, 6, 7: not run: each needs the direct link blocked between two computers (no firewall changes on the desktop or laptop; LinuxBox's
+  `iptables` needs James's OK). 3: not run (my hand-off test for rt-answers check 3 wrote hub lines on purpose).
+- Also seen (rt-answers check 3): handing Cross Test's hub to LinuxBox and back moved `hub` on all three within 25 s, one "you're the hub"
+  line on LinuxBox and one "is its hub now" on the desktop each way.
+
 ## Review later (security)
 
 `sees`, like `ext`, `since`, `link` and "I hold it", is each member's own word in its own status. What a lying member's computer could do

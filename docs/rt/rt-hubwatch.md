@@ -53,6 +53,12 @@ a stall" is the most likely to be passed over on a stalling runner (an unseen st
   that's rt-hubsmall's "not recommended yet" item.
 - Hand the hub off or quit the hub's REAPER: listeners still go direct within about a buffer (the hub-drop test's case).
 
+## Check results (rt-r0, 2026-11-21, extension 1.0.34)
+
+Without a sound test (Deafen stayed 1 everywhere): `StudioSync_LiveAudioStatus`'s hub block has `stalls` and `stall_max_ms` on all three.
+LinuxBox: `stalls` 31, `stall_max_ms` 86.7 while not serving or listening to a hub (state direct); desktop and laptop 0. `fallbacks` and
+`rescues` 0 everywhere (no hub in use). The before/after comparison during a four-computer sound test and the hub hand-off: not run.
+
 ## Found, not changed
 
 - After a stall the receive thread's widest spacing (`mix_gap`) learns the stall (150 ms) for up to 60 s (GAP_SPAN), so the rescue line

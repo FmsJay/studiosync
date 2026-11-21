@@ -862,6 +862,20 @@ Same setup as above (Cross Test, desktop, laptop, LinuxBox on this build).
 Not checkable in REAPER yet: W, until an update bumps `TIMELINE_FORMAT` (then: stop Live sync before updating, add a marker, update, start
 Live sync; the log says "sent the markers to the studio" and the others get it).
 
+### Round 5 REAPER check results (rt-r0, 2026-11-21, 0.59.49.92 + extension 1.0.34)
+
+Edits through the desktop's eval hook; StudioSync's Undo/Redo as `undo.step` (what the Undo action runs when a StudioSync change is on top).
+
+- **35: pass.** Drums A muted, then a marker alone; on all three. Undo: the marker gone on all three, the item still muted. Redo: the
+  marker back on all three. Undo, Undo: marker gone, then the item unmuted, on all three. A new marker deleted on the laptop, then Undo on
+  the desktop: "The tempo map or markers have changed since: nothing was taken back. Undo again goes to your change before it."; the next
+  Undo took back my change before it (here a track deletion, which it brought back with its takes: put back by hand). Wording nit: the
+  log says "undo: changed the tempo or markers: now 130 bpm 4/4 at 0.00 s, 2 marker(s)/region(s)" when the undo leaves 1, and "1" on the
+  redo that leaves 2: the "now" describes the change taken back, not the result.
+- **36: pass.** A script with nothing selected muted XT Drums A's and XT Rec A's first items: two events with the same `act`
+  (`...359-940781`; same second here, so "even when their times differ" wasn't exercised); one Undo unmuted both on all three.
+- 37-40: not run (time). 38 and 40 need the claim-ask and the claim chip in the panel; 37 needs ~3 minutes of idle per heal.
+
 ### Round 5 review-later (security)
 
 - `dropped` is read from a person's own claims file or their live claim. It can only make that person's given claims count less. It's

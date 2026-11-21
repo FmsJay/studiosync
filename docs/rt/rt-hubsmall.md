@@ -208,6 +208,15 @@ up to a quarter of a second. Decide after a test with `stalls`, once the VM's sh
 5. **Item 5:** the desktop's status says `"net": "wired"`. Unplug Ethernet with Wi-Fi up: within 5 minutes it says `"wifi"`.
 6. **Item 6:** with shared CPU on, block one link for 20 s. The mix's host doesn't move. For 60 s: it moves once, about 42 s in.
 
+## Check results (rt-r0, 2026-11-21, 0.59.49.92 + extension 1.0.34)
+
+- 1: see rt-hubwatch's results (the counter is there; LinuxBox 31 stalls, others 0; no sound test run).
+- **2: pass.** The desktop's `Cross Test/rooms/main/status/James.json` was rewritten at 15:41:28, 15:41:58, 15:42:28, 15:42:59 MT (every
+  ~30 s, not 2 s) with the Mac away; `lrtt` 40 in it.
+- 3, 4, 6: not run: they need the direct link blocked between two computers, a firewall change not allowed on the desktop or laptop (the
+  LinuxBox `iptables` way needs James's OK for that kind of change).
+- **5: half.** The desktop's status says `"net": "wired"`, the laptop's `"wifi"`, LinuxBox's `"wired"`. The unplug half not run.
+
 ## Review later (security)
 
 - **Vouching (3)** goes by another member's `sees`. A member could name a computer whose status is late to make the others send it live
