@@ -222,11 +222,21 @@ end
 
 -- ---- writing (band.write_json's and band.remove's hooks) ------------------------------------------------------------------------------------
 local OUTBOX = "signed outbox"
+-- With the stream trace on (ExtState "stream trace" = "1", lib/direct.lua trace_path): when a file was written, sent and taken, on the
+-- studio's shared clock, so the time from one computer's write to another's taking it reads off the two computers' traces. (rt-linkmove)
+local function trace(what, rel)
+  pcall(function()
+    local direct = require("direct")
+    if direct.trace_path() == "" then return end
+    require("streams").trace(string.format("signed %s %s at %.3f", what, tostring(rel), direct.shared_now() or -1))
+  end)
+end
 local function queue(root, rel)
   local q = reaper.GetExtState(band.SECTION, OUTBOX)
   local line = root .. "\t" .. rel
   for l in q:gmatch("[^\n]+") do if l == line then return end end
   reaper.SetExtState(band.SECTION, OUTBOX, (q ~= "" and q .. "\n" or "") .. line, false)
+  trace("written", rel)
 end
 local function sign_side(root, rel, bytes, deleted)
   local pub, kp = signed.key()
@@ -311,7 +321,7 @@ function signed.drain(cfg, song, room)
         if fsong and not (fsong == song and froom == room) then
           for _, p in ipairs(direct.peers(cfg, fsong, froom)) do if not seen[p] then seen[p] = true; to[#to + 1] = p end end
         end
-        if #to > 0 and direct.send_live(cfg, "signed", { rel = rel, body = body, side = side }, song, room, nil, to) then n = n + 1 end
+        if #to > 0 and direct.send_live(cfg, "signed", { rel = rel, body = body, side = side }, song, room, nil, to) then n = n + 1; trace("out", rel) end
       end
     end
   end
@@ -360,7 +370,13 @@ function signed.owner(root, rel, kind, j)
   return nil
 end
 -- A message "signed": { rel, body (nil: a tombstone), side }. -> true when it went in, or false and why.
+local on_msg
 function signed.on_msg(cfg, d)
+  local ok, why = on_msg(cfg, d)
+  trace(ok and "in" or ("not taken (" .. tostring(why) .. ")"), type(d) == "table" and d.rel or "?")
+  return ok, why
+end
+function on_msg(cfg, d)
   if type(d) ~= "table" or type(d.rel) ~= "string" or (d.body ~= nil and type(d.body) ~= "string") or (d.side ~= nil and type(d.side) ~= "string") then
     return false, "not a signed file"
   end

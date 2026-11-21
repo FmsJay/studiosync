@@ -1073,6 +1073,9 @@ local live_handlers = {
   media = function(d) require("streams").on_media(cfg, b, d) end,
   -- (a bandmate catching up asks for a media file its Syncthing still needs; sent back if it's here: lib/streams.lua on_media_want. James, rt)
   media_want = function(d) require("streams").on_media_want(cfg, b, d) end,
+  -- (catch-up's list of missing media, asked of a bandmate over the link beside Syncthing's own: lib/needlist.lua. rt-linkmove)
+  need_ask = function(d) require("needlist").on_ask(cfg, b, d) end,
+  need_list = function(d) require("needlist").on_list(cfg, b, d) end,
   -- (a bandmate's Ableton Link state: their Link apps and ours line up on the bar. lib/ablink.lua. James, rt)
   ablink = function(d) require("ablink").on_msg(cfg, b, proj, d) end,
   -- (live hops: a bandmate asks this computer to host a plug-in they don't have, or stops; lib/hops.lua. James, rt)
@@ -1173,6 +1176,7 @@ local function tick_body() -- returns true to keep going
   local dok, arrived = band.try("direct.live_tick", direct.live_tick, cfg, b.song, b.room, live_handlers)
   band.try("controllers.tick", require("controllers").tick, proj, cfg, b) -- (faders and knobs you move go out live: lib/controllers.lua. James, rt)
   band.try("signed.drain", require("signed").drain, cfg, b.song, b.room) -- (signed studio files written here, to those here now: lib/signed.lua, rt-linkfirst)
+  band.try("needlist.tick", require("needlist").tick, cfg, b) -- (asks a bandmate here what media it holds, for catch-up: lib/needlist.lua, rt-linkmove)
   if dok and (arrived or 0) > 0 then
     if not direct_held then direct_first = reaper.time_precise() end
     cue_left, quick_at, last, direct_in_at, direct_held = true, -math.huge, -math.huge, reaper.time_precise(), true

@@ -1078,7 +1078,13 @@ function streams.catchup_tick(cfg, b)
   end
   local me = services.my_device_id()
   if not me then return 0 end
-  local due = streams.catchup_due(need_wants, streams.asked, skip, streams.media, b.song, now)
+  -- (and what a bandmate here holds that this computer lacks, asked over the link: lib/needlist.lua, off unless switched on. rt-linkmove)
+  local wants = need_wants
+  local okn, more = pcall(function()
+    return require("needlist").pending(need_wants, b.song, function(w) return band.size(rooms .. w.room .. "/media/" .. w.file) ~= nil end)
+  end)
+  if okn and type(more) == "table" then wants = more end
+  local due = streams.catchup_due(wants, streams.asked, skip, streams.media, b.song, now)
   for _, w in ipairs(due) do
     local tries = (streams.asked[w.key] or {}).tries or 0
     local peer = streams.catchup_peer(peers, dev_of or {}, w.by, tries)
