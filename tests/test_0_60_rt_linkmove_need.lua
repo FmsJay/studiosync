@@ -286,4 +286,15 @@ assert(needlist.on_ask(cfgA, b, { dev = BEE, want = { room = "main", ids = { "..
 assert(needlist.on_ask(cfgA, b, { dev = EVE, want = { room = "main", ids = { e_new } } }) == 0 and #filesent == n0, "nor one from a computer not here")
 assert(needlist.on_ask(cfgA, b, { dev = BEE, want = { room = "main", ids = { "Moe-" .. TODAY .. "-000000Z-99999-0001" } } }) == 0, "nor a change it doesn't hold")
 
+-- ---- new files are measured MEASURE s a list at most (rt-p3: a big song's first answer measured 6,000 files in one go) ----
+local had = #needlist.mine(cfgA, "Song")
+for i = 1, 5 do put("RA", "main", "m" .. i .. ".wav", 10) end
+local was_size = band.size
+band.size = function(p) clock = clock + 0.005; return disk[p] end -- (each new file costs 5 ms)
+local n1 = #needlist.mine(cfgA, "Song")
+local n2 = #needlist.mine(cfgA, "Song")
+local n3 = #needlist.mine(cfgA, "Song")
+band.size = was_size
+assert(n1 == had + 2 and n2 == had + 4 and n3 == had + 5, "two new files a list (8 ms), the rest in the next ones: " .. had .. " " .. n1 .. " " .. n2 .. " " .. n3)
+
 print("ok link need list")

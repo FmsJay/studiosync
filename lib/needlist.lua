@@ -32,10 +32,12 @@ function needlist.on() return reaper.GetExtState(band.SECTION, needlist.EXT) == 
 
 -- This computer's media in the song's rooms that the link could carry: { { room, file, size } } in name order, and its digest. Only files
 -- last written SETTLE s ago or more (one still being recorded or copied in isn't whole), each measured once (media is written once, under a
--- name of its own).
+-- name of its own). New files are measured for at most MEASURE s a list (a big song's first answer measured all 6,000 in one go on REAPER's
+-- thread); the rest go in the next answers, as the list's digest changes. rt-p3
+needlist.MEASURE = 0.008
 local sizes = {}
 function needlist.mine(cfg, song)
-  local out, bytes = {}, 0
+  local out, bytes, t0 = {}, 0, reaper.time_precise()
   local rooms, time_of = cfg.root .. "/" .. song .. "/rooms", reaper.StudioSync_DirectFileTime
   local streams = require("streams")
   for _, room in ipairs(band.subdirs(rooms)) do
@@ -44,7 +46,7 @@ function needlist.mine(cfg, song)
       if #out >= needlist.MAX then break end
       local path = dir .. "/" .. f
       local size = sizes[path]
-      if not size and time_of and streams.media_name(room, f) then
+      if not size and time_of and streams.media_name(room, f) and reaper.time_precise() - t0 < needlist.MEASURE then
         local t = tonumber(time_of(path)) or -1
         size = t >= 0 and os.time() - t >= needlist.SETTLE and band.size(path) or nil
         if size and size > 0 then sizes[path] = size else size = nil end
