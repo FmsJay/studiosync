@@ -137,8 +137,16 @@ assert(webhome.stamp_of("junk.json") == nil and webhome.stamp_of("a-b-c.json") =
 assert(webhome.iso("20261120-101500") == "2026-11-20T10:15:00Z" and webhome.iso("x") == nil, "iso")
 local top = webhome.newest({ "a3", "a1", "b9", "a2", "x" }, 2, function(f) return f:match("%d") end)
 assert(#top == 2 and top[1].f == "b9" and top[2].f == "a3", "the newest k, newest first")
+local real_chat = require("page_chat")
 local mx = webhome.mix_of("Sunset 2026-11-20 101500 Bee.wav")
 assert(mx and mx.user == "Bee" and mx.time:match("^2026%-11%-%d%dT%d%d:%d%d:%d%dZ$"), "a mix's name: who and when (local time to UTC)")
+-- rt-p5: a mix's time is the file's own modified time when it's known (one clock for everyone), the name's (the renderer's local clock) otherwise
+local mt = webhome.mix_of("Sunset 2026-11-20 101500 Bee.wav", "2026-11-20 14:00:00")
+assert(mt.time == os.date("!%Y-%m-%dT%H:%M:%SZ", os.time({ year = 2026, month = 11, day = 20, hour = 14, min = 0, sec = 0 })) and mt.user == "Bee",
+  "a mix's time from the file's modified time, not its name: " .. tostring(mt.time))
+assert(webhome.mix_of("Sunset 2026-11-20 101500 Bee.wav", "1601-01-01 00:00:00").time == mx.time and webhome.mix_of("Sunset 2026-11-20 101500 Bee.wav", "junk").time == mx.time
+  and webhome.stat_utc(nil) == nil, "a zeroed or unreadable modified time: the name's")
+assert(webhome.stems_of("2026-11-20 1015 Bee", "2026-11-20 16:30:00").time == os.date("!%Y-%m-%dT%H:%M:%SZ", os.time({ year = 2026, month = 11, day = 20, hour = 16, min = 30, sec = 0 })), "a stems folder's too")
 assert(webhome.mix_of("notes.txt") == nil and webhome.mix_of("Sunset final.wav") == nil and webhome.mix_of(".Sunset 2026-11-20 101500 Bee.wav") == nil, "not a mix")
 local st = webhome.stems_of("2026-11-20 1015 Bee")
 assert(st and st.user == "Bee" and st.time, "a stems folder")
@@ -183,7 +191,10 @@ projects = { { p = "P1", file = "C:/x/Sunset.rpp", binding = { song = "Sunset", 
 front = "P1"
 local chat_calls = {}
 package.loaded.page_chat = {
-  read = function(_, _, sc) chat_calls[#chat_calls + 1] = sc; return { msgs = { { user = "Bee", text = "@Jimmy listen", time = iso_ago(30), file = "c/m9.json", where = "Moonrise" } }, todo = {}, links = {} } end,
+  -- (the cheap read of the newest, as Home asks for it: rt-p5; the chat's own mention rule and names)
+  newest = function(_, _, sc, k, kt) chat_calls[#chat_calls + 1] = { sc, k, kt }; return { msgs = { { user = "Bee", text = "@Jimmy listen", time = iso_ago(30), file = "c/m9.json", where = "Moonrise" } }, todo = {} } end,
+  names_of = function(c) return { c.user, "Jimmy", "everyone", "all" } end,
+  mentions = real_chat.mentions,
   unread = function() return 3 end,
 }
 local H = webhome.build("P1", cfg, b, clock)
@@ -203,13 +214,44 @@ for _, x in ipairs(H.online) do if x.me then me_on = x end end
 assert(me_on and me_on.song == "Sunset" and not me_on.away and #H.online == 3, "you, where your tabs are")
 assert(#H.takes == 1 and H.takes[1].user == "Bee" and H.takes[1].track == "Guitar" and H.takes[1].song == "Sunset", "the new take")
 assert(#H.bounces == 2 and H.bounces[1].kind == "stems" and H.bounces[2].kind == "mix" and H.bounces[2].user == "Bee", "mixes and stems, newest first")
-assert(#H.mentions == 1 and H.mentions[1].id == "m9" and H.unread == 3 and chat_calls[1] == "band", "a mention by your display name; this project's unread count; the studio's chat read")
+assert(#H.mentions == 1 and H.mentions[1].id == "m9" and H.unread == 3 and chat_calls[1][1] == "band", "a mention by your display name; this project's unread count; the studio's chat read")
+assert(chat_calls[1][2] == webhome.CHAT_MSGS and chat_calls[1][3] == webhome.CHAT_TODOS and webhome.CHAT_MSGS < 500, "the newest only, not the whole chat (rt-p5)")
+assert(H.projects[1].since == nil and H.opened == nil, "no stamp from the page: nothing 'since'; nothing opened")
 -- with the chat's own index (rt-chat2's unread_summary): every conversation's count
 package.loaded.page_chat.unread_summary = function() return { total = 5, mentions = 1, by = { song = { n = 2, name = "This project", kind = "here" }, ["ch:abc"] = { n = 3, name = "mixing", kind = "ch" }, band = { n = 0, name = "Studio" } } } end
 clock = clock + 100
 webhome._reset()
 H = webhome.build("P1", cfg, b, clock)
 assert(H.unread == 5 and H.unread_at == 1 and #H.unread_by == 2 and H.unread_by[1].name == "mixing", "unread by conversation, most first")
+
+-- rt-p5: the mix's time from the file's modified time when JS_File_Stat is there (the renderer's clock isn't ours), cached per file
+local stat_calls = 0
+reaper.JS_File_Stat = function(path)
+  stat_calls = stat_calls + 1
+  if path:find("210000 Bee.wav", 1, true) then return 0, 4, "", "2026-11-21 20:00:00" end
+  return -1
+end
+webhome._reset()
+H = webhome.build("P1", cfg, b, clock + 200)
+assert(H.bounces[1].kind == "mix" and H.bounces[1].time == os.date("!%Y-%m-%dT%H:%M:%SZ", os.time({ year = 2026, month = 11, day = 21, hour = 20, min = 0, sec = 0 })),
+  "the mix is newest by its file's own time (the stems folder's can't be read: its name's)")
+local calls0 = stat_calls
+H = webhome.build("P1", cfg, b, clock + 400)
+assert(stat_calls == calls0, "a file's modified time is read once")
+reaper.JS_File_Stat = nil
+-- since you were last here: others' changes newer than the stamp the page sent (a bad stamp ignored; yours and automatic ones not counted)
+webhome._reset()
+webhome.action("P1", cfg, b, { topic = "home", want = true, since = { Sunset = iso_ago(1800), Moonrise = iso_ago(3 * 3600), Quiet = "yesterday", [("x"):rep(200)] = iso_ago(5), ["Nope"] = 7 } })
+H = webhome.build("P1", cfg, b, clock + 600)
+local by_name = {}
+for _, p in ipairs(H.projects) do by_name[p.name] = p end
+assert(by_name.Sunset.since == 1 and by_name.Moonrise.since == 1 and by_name.Quiet.since == nil and by_name.Sunset.since_at, "since: Cy's change after 30 minutes ago (Bee's, an hour ago, is older), Bee's note 2 h ago; Di's automatic one isn't counted")
+webhome.action("P1", cfg, b, { topic = "home", want = true, since = { Sunset = iso_ago(10) } })
+H = webhome.build("P1", cfg, b, clock + 700)
+assert(H.projects[1].since == nil and H.projects[1].name == "Sunset", "stamped after the last change: nothing since")
+webhome.action("P1", cfg, b, { topic = "home", want = true })
+H = webhome.build("P1", cfg, b, clock + 800)
+assert(H.projects[1].since == nil, "a want with no map keeps the last one: still nothing since")
 
 -- ---- opening a project: the panel's way --------------------------------------------------------------------------------------------------
 ran = {}
@@ -219,6 +261,21 @@ assert(webhome.open(cfg, { song = "Sunset" }):find("switched") and ran[1] == "se
 ran = {}
 said = webhome.open(cfg, { song = "Moonrise", room = "idea" })
 assert(said:find("opening") and ext[band.SECTION .. "/open project"] == "Moonrise|idea" and ran[1]:find("StudioSync %- Open session%.lua$") and ran[2] == "run 4242", "else Open session, told which")
+-- rt-p5: run quietly (its boxes go to the page, not onto a screen nobody's at), and the page is told what the script said
+local quiet_during
+reaper.Main_OnCommand = function(id) ran[#ran + 1] = "run " .. id; quiet_during = ext[band.SECTION .. "/open quiet"]; ext[band.SECTION .. "/open said"] = "Couldn't read 'Moonrise' yet: it may still be arriving." end
+ran = {}
+said = webhome.open(cfg, { song = "Moonrise", room = "idea" })
+assert(quiet_during == "1" and ext[band.SECTION .. "/open quiet"] == nil and ext[band.SECTION .. "/open said"] == nil, "the script runs with the quiet flag; both are gone after")
+assert(said:find("still be arriving"), "the log says what the script said: " .. said)
+webhome._reset()
+webhome.open(cfg, { song = "Moonrise", room = "idea" })
+webhome.action("P1", cfg, b, { topic = "home", want = true })
+H = webhome.build("P1", cfg, b, clock + 900)
+assert(H.opened and H.opened.song == "Moonrise" and H.opened.room == "idea" and H.opened.said:find("still be arriving"), "and the page is told")
+H = webhome.build("P1", cfg, b, clock + 900 + 100)
+assert(H.opened and os.time() - H.opened.at < 60, "(for a minute)")
+reaper.Main_OnCommand = function(id) ran[#ran + 1] = "run " .. id end
 assert(webhome.open(cfg, 7) == nil and webhome.open(cfg, { song = 5 }) == nil, "junk: nothing")
 
 -- ---- the tick: Home only while a page shows it, profiles while any page looks ---------------------------------------------------------------
@@ -240,12 +297,35 @@ assert(not pub.home, "nobody showing it any more: not built")
 said = webhome.action("P1", cfg, b, { topic = "profile", id = "x9", name = "J" })
 webhome.tick("P1", cfg, b, publish, clock)
 assert(pub.profiles.reply.id == "x9" and pub.profiles.reply.ok and pub.profiles.people["James Bond"].name == "J", "a profile change: its answer and the new profile at once")
+-- rt-p5: a status line: yours only, cleaned, cut, cleared, stale after a day
+said = webhome.action("P1", cfg, b, { topic = "profile", id = "st1", status = "back at 8" })
+webhome.tick("P1", cfg, b, publish, clock + 1000)
+assert(pub.profiles.reply.ok and pub.profiles.people["James Bond"].status == "back at 8" and pub.profiles.people["James Bond"].status_at, "a status line: saved, shown at once")
+webhome.action("P1", cfg, b, { topic = "profile", id = "st2", status = ("mixing tonight, don't call "):rep(10) })
+webhome.tick("P1", cfg, b, publish, clock + 1000)
+assert(#pub.profiles.people["James Bond"].status <= profile.STATUS_MAX and pub.profiles.people["James Bond"].status:find("^mixing"), "cut to STATUS_MAX")
+webhome.action("P1", cfg, b, { topic = "profile", id = "st3", status = 5 })
+webhome.tick("P1", cfg, b, publish, clock + 1000)
+assert(pub.profiles.reply.why and pub.profiles.reply.id == "st3", "not a status: refused")
+assert(pub.profiles.people["James Bond"].name == "J", "and the name stays")
+webhome.action("P1", cfg, b, { topic = "profile", id = "st4", status = "" })
+webhome.tick("P1", cfg, b, publish, clock + 1000)
+assert(pub.profiles.reply.ok and pub.profiles.people["James Bond"].status == nil, "an empty one clears it")
+local pf = profile.dir("R") .. "/James_Bond.json"
+FS[pf] = band.json_encode({ user = "James Bond", name = "J", status = "old news", status_at = os.date("!%Y-%m-%dT%H:%M:%SZ", os.time() - 25 * 3600) })
+profile.forget("R")
+assert(profile.all("R")["James Bond"].status == nil, "a day old: no longer shown")
+FS[pf] = band.json_encode({ user = "James Bond", name = "J", status = "<b>hi</b>\nthere", status_at = os.date("!%Y-%m-%dT%H:%M:%SZ") })
+profile.forget("R")
+assert(profile.all("R")["James Bond"].status == "<b>hi</b> there", "a bandmate's file is cleaned on reading too (control characters; the page shows text only)")
 band.write_atomic = function() error("disk full") end
 said = webhome.action("P1", cfg, b, { topic = "profile", id = "x10", pic = profile.base64(jpeg(10, 10)) })
 webhome.tick("P1", cfg, b, publish, clock)
 assert(said:find("couldn't be saved") and pub.profiles.reply.id == "x10" and pub.profiles.reply.why, "a write that fails: said, not raised")
 local webui = require("webui")
 assert(webui.ACTIONS.home and webui.ACTIONS.profile, "topics the pages may send")
+local open_session = io.open("StudioSync - Open session.lua", "rb"):read("a")
+assert(open_session:find('"open quiet"', 1, true) and open_session:find('"open said"', 1, true), "Open session says its boxes to the log and the page when a page asked (rt-p5)")
 
 -- ---- the page files -------------------------------------------------------------------------------------------------------------------------
 local function read(path) local f = assert(io.open(path, "rb")); local s = f:read("a"); f:close(); return s end
@@ -258,5 +338,10 @@ end
 assert(index:find('"tabs.js"', 1, true) < index:find('"profile.js"', 1, true) and index:find('"profile.js"', 1, true) < index:find('"home.js"', 1, true), "after tabs.js, profile.js before home.js")
 assert(read("lib/webui/home.js"):find("ssTabs.act('home'", 1, true) and read("lib/webui/profile.js"):find("ssTabs.act('profile'", 1, true), "each sends on its own topic")
 assert(read("lib/webui/profile.js"):find("data:image\\/(png|jpeg);base64", 1, true), "only a data: PNG or JPEG becomes a picture")
+-- rt-p5: the page's side of the status line, "since you were last here", the banner over a link without notifications, the to-do assignee
+local hjs, cjs = read("lib/webui/home.js"), read("lib/webui/chat.js")
+assert(hjs:find("status: t", 1, true) and hjs:find("since: sinceMap", 1, true) and hjs:find("isSecureContext", 1, true) and hjs:find("hbanner", 1, true) and hjs:find("h.opened", 1, true),
+  "home.js: status line, since map, a banner where browsers won't notify, what Open said")
+assert(cjs:find("todofor", 1, true) and cjs:find("'everyone', 'all'", 1, true), "chat.js: a to-do's assignee, mentions of several names")
 assert(read("lib/webui/app.js"):find("li.dataset.avUser = x.user", 1, true), "Who's here rows carry who, for their picture")
 print("ok")

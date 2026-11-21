@@ -4,6 +4,14 @@
 local dir = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]")
 package.path = dir .. "/lib/?.lua;" .. package.path
 local band = require("band")
+-- Asked from a web page (lib/webhome.lua open: perhaps a phone, with nobody at this screen): its boxes would block REAPER here, so what it would say goes
+-- to the log and to the page instead (ExtState "open said", read by webhome.open). rt-p5
+if reaper.GetExtState(band.SECTION, "open quiet") == "1" then
+  band.msg = function(text)
+    band.log("opening a project for a web page: " .. tostring(text))
+    reaper.SetExtState(band.SECTION, "open said", tostring(text), false)
+  end
+end
 if require("fromfolder").handoff(debug.getinfo(1, "S").source) then return end -- (an old copy's button or key: the copy this computer runs from now. 0.59.24)
 
 local cfg = band.settings()

@@ -23,7 +23,9 @@ webhome.DAYS = 14         -- mentions this recent
 webhome.FRESH = 45        -- seconds a status counts as online (rooms.people's rule)
 webhome.PROJECTS = 60     -- projects listed
 webhome.TEXT = 300        -- characters of a message shown
-webhome.EVERYONE = { "everyone", "all" } -- (@everyone and @all mention every member)
+webhome.EVERYONE = { "everyone", "all" } -- (@everyone and @all mention every member: page_chat.EVERYONE)
+webhome.CHAT_MSGS, webhome.CHAT_TODOS = 150, 80 -- the studio's newest messages and to-dos read for Home (page_chat.newest: not the whole chat)
+webhome.SINCE_MAX = 40   -- projects a page may name in "since you were last here"
 
 local S = { want = -math.huge, at = -math.huge, chat_at = -math.huge, chat = nil, prof_at = -math.huge, reply = nil }
 local function scripts_dir() return debug.getinfo(1, "S").source:match("^@?(.*)[/\\]lib[/\\][^/\\]+$") or "." end
@@ -63,37 +65,31 @@ local function utc(y, mo, d, h, mi, s)
   return t and os.date("!%Y-%m-%dT%H:%M:%SZ", t) or nil
 end
 webhome.AUDIO = { wav = true, flac = true, mp3 = true, ogg = true, m4a = true, aif = true, aiff = true }
+-- JS_File_Stat's modified time ("YYYY-MM-DD hh:mm:ss", this computer's own clock) -> ISO UTC, or nil. Pure but for the time zone.
+function webhome.stat_utc(mt)
+  local y, mo, d, h, mi, s = tostring(mt or ""):match("^(%d%d%d%d)%D(%d%d)%D(%d%d)%D+(%d%d)%D(%d%d)%D(%d%d)")
+  if not y or tonumber(y) < 2000 then return nil end -- (a zeroed FILETIME is 1601)
+  local ok, t = pcall(utc, y, mo, d, h, mi, s)
+  return ok and t or nil
+end
 -- A mix's file name ("<song> YYYY-MM-DD HHMMSS <user>.<audio>": Final mix and Render mix) -> { name, user, time }, or nil.
-function webhome.mix_of(f)
+-- The name's time is the renderer's own clock, in their time zone; the file's modified time (mtime: JS_File_Stat's, kept by the shared folder's
+-- sync) is the same moment in everyone's, so it wins when it's there. (Home showed a bandmate's mix hours off in another zone. rt-p5)
+function webhome.mix_of(f, mtime)
   local ext = tostring(f):match("%.([^.]+)$")
   if not ext or not webhome.AUDIO[ext:lower()] or f:sub(1, 1) == "." then return nil end
   local y, mo, d, h, mi, s, user = f:match("(%d%d%d%d)%-(%d%d)%-(%d%d) (%d%d)(%d%d)(%d%d) (.-)%.[^.]+$")
   if not y then return nil end
-  return { name = f, user = user ~= "" and user or nil, time = utc(y, mo, d, h, mi, s) }
+  return { name = f, user = user ~= "" and user or nil, time = webhome.stat_utc(mtime) or utc(y, mo, d, h, mi, s) }
 end
 -- A stems folder's name ("YYYY-MM-DD HHMM <user>": Render stems) -> { name, user, time }, or nil.
-function webhome.stems_of(dir)
+function webhome.stems_of(dir, mtime)
   local y, mo, d, h, mi, user = tostring(dir):match("^(%d%d%d%d)%-(%d%d)%-(%d%d) (%d%d)(%d%d) (.+)$")
   if not y then return nil end
-  return { name = dir, user = user, time = utc(y, mo, d, h, mi, 0) }
+  return { name = dir, user = user, time = webhome.stat_utc(mtime) or utc(y, mo, d, h, mi, 0) }
 end
--- Does this text mention any of `names` ("@James", case aside, not "@Jameson")? Pure.
-function webhome.mentions(text, names)
-  local low = type(text) == "string" and text:lower() or ""
-  if not low:find("@", 1, true) then return false end
-  for _, n in ipairs(names) do
-    if type(n) == "string" and n ~= "" then
-      local pat, i = "@" .. n:lower(), 1
-      while true do
-        local s, e = low:find(pat, i, true)
-        if not s then break end
-        if not low:sub(e + 1, e + 1):match("[%w_]") then return true end
-        i = e + 1
-      end
-    end
-  end
-  return false
-end
+-- Does this text mention any of `names` ("@James", case aside, not "@Jameson")? The chat's own rule, so Home and the chat agree. Pure.
+function webhome.mentions(text, names) return require("page_chat").mentions(text, names) end
 local function short(s, n)
   s = tostring(s or "")
   local len = utf8.len(s)
@@ -138,6 +134,22 @@ function webhome.take_of(ev, name_of)
 end
 
 -- ---- reading the studio's folder -------------------------------------------------------------------------------------------------------
+local mtimes = {} -- path -> its modified time as JS_File_Stat says it ("" when it can't), kept: a mix or a stems folder doesn't change after it's made
+function webhome.mtime(path)
+  local m = mtimes[path]
+  if m == nil then
+    m = ""
+    if reaper.JS_File_Stat then
+      local ok, status, _, _, modified = pcall(reaper.JS_File_Stat, path)
+      if ok and status == 0 and modified then m = tostring(modified) end
+    end
+    local n = 0
+    for _ in pairs(mtimes) do n = n + 1 end
+    if n >= 2000 then mtimes = {} end
+    mtimes[path] = m
+  end
+  return m ~= "" and m or nil
+end
 local scans = {} -- events folder -> { at, n, top = webhome.newest's }
 local takes_memo = {} -- event path -> its take, or false
 local function take_name(ev)
@@ -145,7 +157,8 @@ local function take_name(ev)
   if type(st) ~= "string" then return nil end
   return st:match('\nNAME "([^"\n]*)"') or st:match("\nNAME ([^\n]*)"), st:match('FILE "([^"]+)"')
 end
--- A room's newest changes: who changed it last, when and what, and its new takes. Another room's folder is listed at most every OTHER_EVERY s.
+-- A room's newest changes: who changed it last, when and what, its new takes and (the third value) each change by anyone: { { user, time } }, for
+-- "since you were last here". Another room's folder is listed at most every OTHER_EVERY s.
 local function room_news(cfg, song, room, here, now)
   local edir = band.song_dir(cfg, song) .. "/rooms/" .. room .. "/events"
   local c = scans[edir]
@@ -156,11 +169,12 @@ local function room_news(cfg, song, room, here, now)
     c.at = now
     scans[edir] = c
   end
-  local recall, last, takes = require("recall"), nil, {}
+  local recall, last, takes, changes = require("recall"), nil, {}, {}
   for _, x in ipairs(c.top) do
     local path = edir .. "/" .. x.f
     local ev = recall.event(path)
     if ev then
+      if not ev.auto and type(ev.user) == "string" then changes[#changes + 1] = { user = ev.user, time = webhome.iso(x.time) } end
       if not last and not ev.auto and type(ev.user) == "string" then
         local ok, what = pcall(recall.describe, ev)
         last = { user = ev.user, time = webhome.iso(x.time), what = ok and short(what, 120) or nil, room = room }
@@ -170,9 +184,10 @@ local function room_news(cfg, song, room, here, now)
       if t then takes[#takes + 1] = { user = t.user, track = t.track, name = t.name, song = song, room = room, time = webhome.iso(x.time) } end
     end
   end
-  return last, takes
+  return last, takes, changes
 end
 -- Who's in a room now (rooms.people's rule, with what they're doing): { { user, rec, play, away } }, you left out.
+-- (each one's status line, "back at 8", comes from the profiles topic: lib/profile.lua)
 local function room_people(cfg, song, room)
   local dir, sts = band.song_dir(cfg, song) .. "/rooms/" .. room .. "/status", {}
   for _, f in ipairs(band.files(dir, ".json")) do
@@ -201,8 +216,13 @@ function webhome.build(proj, cfg, b, now)
     if #names == 0 then names = { "main" } end
     local p = { name = song, stage = extras.stage(cfg.root, song), current = song == b.song or nil, rooms = #names, online = {} }
     for _, room in ipairs(names) do
-      local last, tk = room_news(cfg, song, room, song == b.song and room == b.room, now)
+      local last, tk, changes = room_news(cfg, song, room, song == b.song and room == b.room, now)
       if last and (not p.last or last.time > p.last.time) then p.last = last end
+      local since = S.since and S.since[song]
+      if since then -- (since you were last here: others' changes newer than the time this browser last saw the project; the scan's depth is the most it counts)
+        for _, c in ipairs(changes) do if c.user ~= cfg.user and c.time and c.time > since then p.since = (p.since or 0) + 1 end end
+        p.since_at = since
+      end
       for _, t in ipairs(tk) do takes[#takes + 1] = t end
       for _, x in ipairs(room_people(cfg, song, room)) do
         x.room = room ~= "main" and room or nil
@@ -220,11 +240,11 @@ function webhome.build(proj, cfg, b, now)
       if type(s) == "table" and type(s.published) == "string" then p.last = { user = type(s.host) == "string" and s.host or nil, time = s.published, what = "published it" } end
     end
     for _, f in ipairs(band.files(sdir .. "/mixes")) do
-      local m = webhome.mix_of(f)
+      local m = webhome.mix_of(f, webhome.mtime(sdir .. "/mixes/" .. f))
       if m and m.time then m.kind, m.song = "mix", song; bounces[#bounces + 1] = m end
     end
     for _, d in ipairs(band.subdirs(sdir .. "/stems")) do
-      local m = webhome.stems_of(d)
+      local m = webhome.stems_of(d, webhome.mtime(sdir .. "/stems/" .. d))
       if m and m.time then m.kind, m.song = "stems", song; bounces[#bounces + 1] = m end
     end
     projects[#projects + 1] = p
@@ -243,10 +263,8 @@ function webhome.build(proj, cfg, b, now)
   if not S.chat or now - S.chat_at >= webhome.CHAT_EVERY then
     S.chat_at = now
     local chat = require("page_chat")
-    local me = require("profile").all(cfg.root)[cfg.user]
-    local names = { cfg.user, me and me.name or nil }
-    for _, n in ipairs(webhome.EVERYONE) do names[#names + 1] = n end
-    local ok, t = pcall(chat.read, cfg, b, "band")
+    local names = chat.names_of(cfg) -- (the chat's own: your name, your display name, everyone)
+    local ok, t = pcall(chat.newest, cfg, b, "band", webhome.CHAT_MSGS, webhome.CHAT_TODOS) -- (the newest, not the whole studio's chat)
     S.chat = webhome.chat_model(ok and t or nil, cfg.user, names, os.time())
     -- unread: every conversation's where the chat keeps an index of them (rt-chat2's chat.unread_summary: DMs and channels too), else the
     -- panel's count for this project
@@ -276,6 +294,7 @@ function webhome.build(proj, cfg, b, now)
   end
   return { me = cfg.user, studio = band.info(cfg.root).name, song = b.song, room = b.room ~= "main" and b.room or nil,
     projects = projects, online = online, takes = takes, bounces = bounces, recap = recap,
+    opened = S.opened and os.time() - S.opened.at < 60 and S.opened or nil,
     unread = S.chat.unread, unread_at = S.chat.unread_at, unread_by = S.chat.unread_by, mentions = S.chat.mentions, todos = S.chat.todos, recent = S.chat.recent }
 end
 
@@ -294,12 +313,24 @@ function webhome.open(cfg, o)
     if not ok then return "the web page asked to open a room '" .. o.song .. "' doesn't have" end
   end
   local tab = require("rooms").tab(o.song, room)
-  if tab then reaper.SelectProjectInstance(tab); return "switched to '" .. o.song .. "', from the web page" end
+  if tab then
+    reaper.SelectProjectInstance(tab)
+    S.opened = { song = o.song, room = room ~= "main" and room or nil, said = "It's already open on that computer: switched to it.", at = os.time() }
+    return "switched to '" .. o.song .. "', from the web page"
+  end
   local id = reaper.AddRemoveReaScript(true, 0, scripts_dir() .. "/StudioSync - Open session.lua", true)
   if not id or id <= 0 then return "couldn't register 'StudioSync - Open session' as an action (is the Scripts folder read-only?)" end
   reaper.SetExtState(band.SECTION, "open project", o.song .. "|" .. room, false)
+  -- (a page asked, perhaps from a phone nobody at this computer is watching: the script's own boxes ("still arriving", "open that room first") would
+  -- sit there blocking REAPER's window. With this flag it says them to the log and to ExtState "open said" instead, and the page is told. rt-p5)
+  reaper.SetExtState(band.SECTION, "open quiet", "1", false)
+  reaper.DeleteExtState(band.SECTION, "open said", false)
   reaper.Main_OnCommand(id, 0)
-  return "opening '" .. o.song .. "', from the web page"
+  reaper.DeleteExtState(band.SECTION, "open quiet", false)
+  local said = reaper.GetExtState(band.SECTION, "open said")
+  reaper.DeleteExtState(band.SECTION, "open said", false)
+  S.opened = { song = o.song, room = room ~= "main" and room or nil, said = said ~= "" and said or nil, at = os.time() }
+  return "opening '" .. o.song .. "', from the web page" .. (said ~= "" and (": " .. said) or "")
 end
 -- a: { topic = "home", want, open = { song, room } } or { topic = "profile", ... } (lib/profile.lua). -> words for the log, or nil.
 function webhome.action(proj, cfg, b, a)
@@ -310,7 +341,17 @@ function webhome.action(proj, cfg, b, a)
     S.reply, S.prof_at, S.chat = reply, -math.huge, nil -- (a new display name mentions you from now on)
     return said
   end
-  if a.want then S.want, S.at = now + webhome.WANT_FOR, -math.huge end
+  if a.want then
+    S.want, S.at = now + webhome.WANT_FOR, -math.huge
+    -- (since you were last here: the page says when it last saw each project; a map song -> ISO time, bounded, checked, a page's own browser's word)
+    if type(a.since) == "table" then
+      local m, n = {}, 0
+      for song, t in pairs(a.since) do
+        if n < webhome.SINCE_MAX and type(song) == "string" and #song <= 120 and type(t) == "string" and #t <= 20 and t:match("^%d%d%d%d%-%d%d%-%d%dT%d%d:%d%d:%d%dZ$") then m[song], n = t, n + 1 end
+      end
+      S.since = m
+    end
+  end
   if a.open ~= nil then return webhome.open(cfg, a.open) end
 end
 -- Each tick in front, while a page looks (lib/webui.lua).
@@ -326,6 +367,6 @@ function webhome.tick(proj, cfg, b, publish, now)
     publish("home", ok and m or { me = cfg.user, error = tostring(m) })
   end
 end
-function webhome._reset() S = { want = -math.huge, at = -math.huge, chat_at = -math.huge, chat = nil, prof_at = -math.huge, reply = nil }; scans, takes_memo = {}, {} end
+function webhome._reset() S = { want = -math.huge, at = -math.huge, chat_at = -math.huge, chat = nil, prof_at = -math.huge, reply = nil }; scans, takes_memo, mtimes = {}, {}, {} end
 
 return webhome

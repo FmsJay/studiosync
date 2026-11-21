@@ -47,6 +47,16 @@ assert(table.concat(chat.names_ok({ "Bo", "Al", "Bo" }), ",") == "Al,Bo" and cha
   and chat.names_ok({ "A", "B", "C", "D", "E", "F", "G", "H", "I" }) == nil, "members")
 assert(chat.mentions("hey @james, listen", "James") and chat.mentions("@James", "James") and not chat.mentions("@Jameson", "James")
   and not chat.mentions("james", "James") and not chat.mentions(nil, "James"), "mentions")
+-- rt-p5: mentions of several names: a user name, a display name, everyone; the chat's counts and Home agree
+assert(chat.mentions("hi @Everyone", { "James", "everyone" }) and chat.mentions("@jimmy x", { "James", "Jimmy" }) and not chat.mentions("@jimmyx", { "Jimmy" })
+  and chat.mentions("ok @James Bond!", { "James Bond" }) and not chat.mentions("@all", { "James" }) and not chat.mentions("@x", {}) and not chat.mentions("@x", 5), "mentions of several names")
+package.loaded.profile = { all = function() return { James = { name = "Jimmy" }, Bo = { name = "Bo" } } end }
+local nm = chat.names_of({ root = "R", user = "James" })
+assert(nm[1] == "James" and nm[2] == "Jimmy" and nm[3] == "everyone" and nm[4] == "all", "what mentions you: user name, display name, everyone, all")
+assert(#chat.names_of({ root = "R", user = "Bo" }) == 3, "a display name that's the user name: once")
+package.loaded.profile = { all = function() error("no profiles here") end }
+assert(#chat.names_of({ root = "R", user = "James" }) == 3, "profiles unreadable: still the user name and everyone")
+package.loaded.profile = nil
 assert(chat.topic_of("dm:0123456789abcdef") == "chat_dm_0123456789abcdef" and #chat.topic_of("dm:0123456789abcdef") <= 32, "a topic the server takes")
 
 -- ---- a stand-in shared folder and extension ------------------------------------------------------------------------------------------------
@@ -178,6 +188,47 @@ pub = {}
 chat.web_tick(cfg, b, function(t, v) pub[t] = v end, clock + 10, false)
 assert(not next(pub), "nobody looking: nothing built")
 
+-- ---- rt-p5: the newest messages without reading the rest; a to-do for someone; @everyone counts ------------------------------------------
+do
+  local bdir = chat.dir(cfg, b, "band")
+  for i = 1, 8 do fs[bdir .. "/msgs/20991231-1000" .. string.format("%02d", i) .. "-Bo-1111.json"] = { text = "msg " .. i, user = "Bo", time = "2099-12-31T10:00:" .. string.format("%02d", i) .. "Z", room = "main" } end
+  fs[bdir .. "/msgs/20991231-100009-Bo-2222.json"] = { text = "all hands @everyone", user = "Bo", time = "2099-12-31T10:00:09Z", room = "main" }
+  for i = 1, 3 do fs[bdir .. "/todo/20991231-1001" .. string.format("%02d", i) .. "-Bo-3333.json"] = { text = "todo " .. i, user = "Bo", time = "2099-12-31T10:01:0" .. i .. "Z", done = false } end
+  local reads, real_read = 0, band.read_json
+  band.read_json = function(path) if path:find(bdir, 1, true) then reads = reads + 1 end return real_read(path) end
+  local t = chat.newest(cfg, b, "band", 3, 2)
+  assert(#t.msgs == 3 and t.msgs[1].text == "msg 7" and t.msgs[3].text == "all hands @everyone" and #t.todo == 2 and t.todo[2].text == "todo 3", "the newest k of each, oldest first")
+  assert(reads == 5 and t.msgs[3].file:find("2222%.json$") and t.msgs[1].where, "only those files read (3 + 2), each with its file and where")
+  reads = 0
+  chat.newest(cfg, b, "band", 3, 2)
+  assert(reads == 2, "a message's second read is from memory: only the to-dos (they change) are read again: " .. reads)
+  reads = 0
+  local bigk = chat.newest(cfg, b, "band", 500, 500)
+  assert(#bigk.msgs >= 9 and #bigk.msgs <= chat.NEWEST_MAX and #bigk.todo >= 3, "asking for more than there is gives all (k is capped)")
+  band.read_json = real_read
+  local full = chat.read(cfg, b, "band")
+  assert(#full.msgs >= 9 and #full.todo >= 3, "chat.read is as it was")
+  -- @everyone counts as a mention in the chat's own unread count
+  ext["StudioSync/chat seen band "] = "20991231-000000"
+  local n, at = chat.unread_in(cfg, b, "band")
+  assert(n >= 9 and at == 1, "unread: @everyone mentions you: " .. at)
+  ext["StudioSync/chat seen band "] = nil
+  -- a to-do for someone: only a person of the studio (or yourself)
+  clock = clock + 20
+  chat.web_action(cfg, b, { topic = "chat", scope = "band", todo = "mix the bridge", todofor = "Bo" })
+  clock = clock + 20
+  chat.web_action(cfg, b, { topic = "chat", scope = "band", todo = "stranger's", todofor = "Mallory" })
+  chat.web_action(cfg, b, { topic = "chat", scope = "band", todo = "mine", todofor = "James" })
+  chat.web_action(cfg, b, { topic = "chat", scope = "band", todo = "nobody's" })
+  local by = {}
+  for _, d in pairs(chat.read(cfg, b, "band").todo) do by[d.text] = d["for"] or false end
+  assert(by["mix the bridge"] == "Bo" and by["stranger's"] == false and by["mine"] == "James" and by["nobody's"] == false, "a to-do for Bo, for you; not for someone who isn't in the studio")
+  local cmodel = require("webui").chat_model(chat.read(cfg, b, "band"), nil, nil, "band")
+  local shown
+  for _, d in ipairs(cmodel.todo) do if d.text == "mix the bridge" then shown = d end end
+  assert(shown and shown["for"] == "Bo", "the page is told who a to-do is for")
+end
+
 -- ---- files --------------------------------------------------------------------------------------------------------------------------------
 local WAV = "RIFF" .. string.rep("x", 96)
 -- a DM whose member the link reaches: over the link only, off the shared folder
@@ -195,6 +246,23 @@ streams_out[1] = { rel = "_chat/" .. key, peers = { ["bo:47281"] = { sent = 10, 
 clock = clock + 3
 chat.web_tick(cfg, b, function() end, clock, false)
 assert(fs["R/_band/dm/" .. dm:sub(4) .. "/files/" .. key] == WAV and logged[#logged]:find("shared folder"), "fell back to the shared folder")
+-- rt-p5: the extension's receiving thread hashed the upload as it came: no read of the whole file on REAPER's main thread
+local hashed, up_sha = 0, ("ab"):rep(32)
+local file_hash = reaper.StudioSync_FileHash
+reaper.StudioSync_FileHash = function(path) hashed = hashed + 1; return file_hash(path) end
+reaper.StudioSync_WebUIUploadHash = function(id) return uploads[id] and up_sha or "" end
+uploads.aa03 = WAV
+clock = clock + 10
+chat.web_action(cfg, b, { topic = "chat", scope = "band", file = { id = "aa03", name = "again.wav", size = #WAV } })
+local m3
+for _, v in pairs(fs) do if type(v) == "table" and v.attach and v.attach.name == "again.wav" then m3 = v end end
+assert(m3 and m3.attach.sha == up_sha and hashed == 0, "the upload's own SHA-256 is used, and the saved file isn't hashed again here")
+reaper.StudioSync_WebUIUploadHash = nil
+uploads.aa04 = WAV
+clock = clock + 10
+chat.web_action(cfg, b, { topic = "chat", scope = "band", file = { id = "aa04", name = "old.wav", size = #WAV } })
+assert(hashed == 1, "an older extension: the saved file is hashed as before")
+reaper.StudioSync_FileHash = file_hash
 -- the Studio scope: through the shared folder, and over the link to those here
 uploads.aa02 = WAV
 streamed = {}

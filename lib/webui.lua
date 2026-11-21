@@ -125,6 +125,7 @@ function webui.chat_model(t, where_of, max, scope)
           time = type(m.time) == "string" and m.time or nil, where = where_of and where_of(m.where) or nil }
         if kind == "links" then e.url, e.title = m.url, type(m.title) == "string" and m.title ~= "" and m.title or nil else e.text = m.text end
         if kind == "todo" then e.done, e.by = m.done == true or nil, m.done and type(m.done_by) == "string" and m.done_by or nil end
+        if kind == "todo" and type(m["for"]) == "string" and #m["for"] <= 64 then e["for"] = m["for"] end -- (who it's for: rt-p5; Home's "For you" reads it too)
         if kind == "msgs" and m.attach ~= nil then e.file = require("chatfiles").model(m.attach, m.fstat) end -- (a file sent in the chat: lib/chatfiles.lua)
         if kind == "msgs" and m.join ~= nil then e.join = require("invite").chat_model(m) end -- (a join request: Join / Decline, lib/invite.lua)
         list[#list + 1] = e

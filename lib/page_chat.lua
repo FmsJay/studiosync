@@ -135,6 +135,44 @@ function chat.read(cfg, b, sc)
   cache, cache_at, cache_key = t, reaper.time_precise(), key
   return t
 end
+-- The newest messages and to-dos of a scope without reading the rest (Home's read of the whole studio's chat every 15 s: rt-p5, rt-home's
+-- wish). Names begin with their UTC stamp, so the newest are known from the folder listing alone; only those files are read, and a message
+-- (never changed once written) is kept from one read to the next, so a quiet studio costs the listings. -> { msgs, todo }, each oldest first, as
+-- chat.read's (file, where; links and live messages not included). k: messages, kt: to-dos (a to-do's done flag changes: read each time).
+chat.NEWEST_MAX = 300
+local newest_memo, newest_n = {}, 0
+function chat.newest(cfg, b, sc, k, kt)
+  local t = { msgs = {}, todo = {} }
+  for _, kind in ipairs({ "msgs", "todo" }) do
+    local want = math.max(1, math.min(tonumber(kind == "msgs" and k or kt or k) or 40, chat.NEWEST_MAX))
+    local names = {}
+    for _, src in ipairs(chat.sources(cfg, b, sc)) do
+      for _, f in ipairs(band.files(src[1] .. "/" .. kind, ".json")) do names[#names + 1] = { src = src, f = f, key = f:match("^%d%d%d%d%d%d%d%d%-%d%d%d%d%d%d") or "" } end
+    end
+    table.sort(names, function(x, y) if x.key ~= y.key then return x.key > y.key end return x.f > y.f end)
+    for i = 1, math.min(#names, want) do
+      local n = names[i]
+      local path = n.src[1] .. "/" .. kind .. "/" .. n.f
+      local v = kind == "msgs" and newest_memo[path] or nil
+      if not v then
+        v = band.read_json(path)
+        if kind == "msgs" and type(v) == "table" then
+          if newest_n >= 600 then newest_memo, newest_n = {}, 0 end
+          newest_memo[path], newest_n = v, newest_n + 1
+        end
+      end
+      local here = not n.src.room or type(v) ~= "table" or v.room == n.src.room or (v.room == nil and n.src.room == "main")
+      if type(v) == "table" and here then
+        local m = {}
+        for kk, x in pairs(v) do m[kk] = x end
+        m.file, m.where = path, n.src[2]
+        t[kind][#t[kind] + 1] = m
+      end
+    end
+    table.sort(t[kind], function(x, y) return (x.time or "") < (y.time or "") end)
+  end
+  return t
+end
 local function load(cfg, b)
   chat.take_live(cfg)
   return chat.read(cfg, b, scope)
@@ -175,7 +213,8 @@ function chat.post(cfg, b, text, sc, extra)
   add(cfg, b, "msgs", v, sc or "song")
 end
 -- To-dos and links, ticking one off and deleting your own: the panel's tabs and the web UI's Chat (chat.web_action) both go through these.
-function chat.add_todo(cfg, b, text, sc) add(cfg, b, "todo", { text = text, done = false }, sc) end
+-- for_user: who it's for (a person of the studio, you included), shown to them on Home's "For you". rt-p5, rt-home's wish
+function chat.add_todo(cfg, b, text, sc, for_user) add(cfg, b, "todo", { text = text, done = false, ["for"] = type(for_user) == "string" and for_user ~= "" and for_user or nil }, sc) end
 function chat.add_link(cfg, b, title, url, sc) add(cfg, b, "links", { title = title, url = url }, sc) end
 function chat.set_done(cfg, d, v) d.done, d.done_by = v, cfg.user; local f = d.file; d.file = nil; band.write_json(f, d); cache = nil end
 function chat.remove(cfg, e) -- -> true when it was yours and is gone (for everyone)
@@ -346,7 +385,11 @@ function chat.web_action(cfg, b, a)
   if (text or todo or url or type(a.file) == "table") and not chat.scope_ok(cfg, sc, true) then return "that channel is archived: nothing sent" end
   if a.seen == true then chat.mark_seen(cfg, b, sc) end
   if text then chat.post(cfg, b, text, sc) end
-  if todo then chat.add_todo(cfg, b, todo, sc) end
+  if todo then
+    local who = type(a.todofor) == "string" and a.todofor or nil
+    if who and who ~= cfg.user and not chat.has(chat.people(cfg), who) then who = nil end -- (someone of the studio, or nobody)
+    chat.add_todo(cfg, b, todo, sc, who)
+  end
   if url then chat.add_link(cfg, b, clean(a.title) or "", url, sc) end
   if a.done ~= nil then
     local d = chat.find(cfg, b, sc, "todo", a.done)
@@ -388,28 +431,48 @@ local function seen_key(b, sc)
   if chat.conv_of(sc) then return "chat seen " .. sc end
   return "chat seen " .. sc .. " " .. (sc == "band" and "" or b.song) .. (sc == "room" and (" " .. (b.room or "main")) or "")
 end
--- Does `text` mention `me` ("@Bo", any case, not "@Bobby")? Pure.
-function chat.mentions(text, me)
-  if type(text) ~= "string" or type(me) ~= "string" or me == "" then return false end
-  local t, m, i = text:lower(), "@" .. me:lower(), 1
-  while true do
-    local s, e = t:find(m, i, true)
-    if not s then return false end
-    if not t:sub(e + 1, e + 1):match("[%w_]") then return true end
-    i = e + 1
+-- Does `text` mention any of `names` ("@Bo", any case, not "@Bobby")? names: one name or a list (a user name, a display name, everyone: names_of).
+-- (Home, the chat's counts and the page agree on what a mention is: rt-p5.) Pure.
+function chat.mentions(text, names)
+  if type(text) ~= "string" or not text:find("@", 1, true) then return false end
+  if type(names) == "string" then names = { names } end
+  if type(names) ~= "table" then return false end
+  local t = text:lower()
+  for _, me in ipairs(names) do
+    if type(me) == "string" and me ~= "" then
+      local m, i = "@" .. me:lower(), 1
+      while true do
+        local s, e = t:find(m, i, true)
+        if not s then break end
+        if not t:sub(e + 1, e + 1):match("[%w_]") then return true end
+        i = e + 1
+      end
+    end
   end
+  return false
+end
+chat.EVERYONE = { "everyone", "all" } -- (@everyone and @all mention every member)
+-- What mentions you: your user name, your display name (lib/profile.lua) and everyone. Pure but for the profile files it reads.
+function chat.names_of(cfg)
+  local names = { cfg.user }
+  local ok, all = pcall(function() return require("profile").all(cfg.root) end)
+  local me = ok and type(all) == "table" and all[cfg.user] or nil
+  if type(me) == "table" and type(me.name) == "string" and me.name ~= "" and me.name ~= cfg.user then names[#names + 1] = me.name end
+  for _, n in ipairs(chat.EVERYONE) do names[#names + 1] = n end
+  return names
 end
 -- A scope's messages (its own folder) newer than you last read it, not yours: how many, and how many of those mention you.
 chat.MENTION_READS = 200
 function chat.unread_in(cfg, b, sc)
   local seen = reaper.GetExtState(band.SECTION, seen_key(b, sc)) -- (each scope has its own: reading one doesn't clear the others)
   local dir, mine, n, at = chat.dir(cfg, b, sc) .. "/msgs", "-" .. (cfg.user:gsub("[^%w]", "_")) .. "-", 0, 0
+  local names = chat.names_of(cfg)
   for _, f in ipairs(band.files(dir, ".json")) do
     if f:sub(1, 15) > seen and not f:find(mine, 1, true) then
       n = n + 1
       if n <= chat.MENTION_READS then
         local v = band.read_json(dir .. "/" .. f)
-        if type(v) == "table" and chat.mentions(v.text, cfg.user) then at = at + 1 end
+        if type(v) == "table" and chat.mentions(v.text, names) then at = at + 1 end
       end
     end
   end

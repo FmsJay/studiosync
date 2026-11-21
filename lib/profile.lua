@@ -1,7 +1,8 @@
 -- Each member's profile for the web UI (James: "profile pictures and other customisation"): a display name, a small picture and their
 -- colour, shown in presence, chat and Home. The colour is lib/people.lua's own (one per person, the same in every studio they're in); the
 -- name and the picture are per studio, in the studio's shared folder, one writer per file as everything else there:
---   _band/profiles/<id>.json       { user, name, pic = "jpg" | "png" | nil, time }
+--   _band/profiles/<id>.json       { user, name, pic = "jpg" | "png" | nil, status, status_at, time }  (status: a short line like "back at 8", shown
+--                                  on Home's Online now for STATUS_HOURS; rt-p5)
 --   _band/profiles/<id>.jpg|.png   the picture: PNG or JPEG only, at most PIC_MAX bytes and PIC_DIM px a side
 -- A picture comes from a page already re-encoded (drawn into a small canvas and saved as JPEG there), and is checked here whatever the page
 -- did: real PNG or JPEG bytes (signature, header, end marker, the size in its own header), never anything else (no SVG, nothing that runs).
@@ -12,6 +13,8 @@ local profile = {}
 profile.PIC_MAX = 10000   -- bytes of a picture (a 96 px JPEG is 3-6 KB; the server takes 16 KB per action, base64 makes it 4/3)
 profile.PIC_DIM = 256     -- pixels a side at most
 profile.NAME_MAX = 40     -- bytes of a display name
+profile.STATUS_MAX = 60   -- bytes of a status line
+profile.STATUS_HOURS = 24 -- a status line is shown this long after it was set (then it's stale: "back at 8" is a day old)
 profile.EVERY = 10        -- seconds between reading everyone's profiles (a page's own change: at once)
 profile.MAX_PEOPLE = 60   -- profiles read (the topic stays well under the server's 1 MB per topic)
 
@@ -109,6 +112,17 @@ function profile.pic_url(path)
   return mime and ("data:" .. mime .. ";base64," .. profile.base64(s)) or nil
 end
 local cache = {} -- root -> { at, people }
+-- A status line from a page: the same rule as a name, at most STATUS_MAX bytes; "" -> nil (no status).
+function profile.clean_status(s)
+  local t = require("webui").clean_text(type(s) == "string" and s:sub(1, 400) or nil)
+  if not t then return nil end
+  if #t > profile.STATUS_MAX then
+    t = t:sub(1, profile.STATUS_MAX)
+    while #t > 0 and not utf8.len(t) do t = t:sub(1, -2) end
+    t = t:gsub("%s+$", "")
+  end
+  return t ~= "" and t or nil
+end
 function profile.forget(root) cache[root] = nil end
 -- Everyone's profile: user -> { name, colour = "#rrggbb", pic = data: URL }. A file's user must be the one its name says (no file speaks for
 -- someone else's name); colours for everyone people.lua knows of, these too. Kept EVERY s.
@@ -121,6 +135,9 @@ function profile.all(root)
     local p = band.read_json(dir .. "/" .. f)
     if type(p) == "table" and type(p.user) == "string" and id(p.user) .. ".json" == f then
       local e = { name = type(p.name) == "string" and profile.clean_name(p.name) or nil }
+      -- (a status line, until it's STATUS_HOURS old: cleaned again here, as any file from a bandmate)
+      local at = type(p.status_at) == "string" and band.age(p.status_at) or nil
+      if type(p.status) == "string" and at and at < profile.STATUS_HOURS * 3600 then e.status, e.status_at = profile.clean_status(p.status), p.status_at end
       if p.pic == "jpg" or p.pic == "png" then
         local path = dir .. "/" .. id(p.user) .. "." .. p.pic
         -- (and its size: a profile can come over the direct link before its picture does, lib/signed.lua. rt-linkfirst)
@@ -147,11 +164,17 @@ end
 function profile.action(cfg, a)
   local dir, me = profile.dir(cfg.root), id(cfg.user)
   local cur = band.read_json(dir .. "/" .. me .. ".json")
-  local p = { user = cfg.user, name = type(cur) == "table" and cur.name or nil, pic = type(cur) == "table" and cur.pic or nil }
+  local p = { user = cfg.user, name = type(cur) == "table" and cur.name or nil, pic = type(cur) == "table" and cur.pic or nil,
+    status = type(cur) == "table" and cur.status or nil, status_at = type(cur) == "table" and cur.status_at or nil }
   local changed, why = false, nil
   if a.name ~= nil then
     local n = profile.clean_name(a.name)
     if a.name ~= "" and not n then why = "that name can't be used" else p.name, changed = n, true end
+  end
+  if a.status ~= nil then
+    local t = profile.clean_status(a.status)
+    if a.status ~= "" and not t then why = why or "that status can't be used"
+    else p.status, p.status_at, changed = t, t and os.date("!%Y-%m-%dT%H:%M:%SZ") or nil, true end
   end
   if a.colour ~= nil then
     local c = profile.colour_of(a.colour)

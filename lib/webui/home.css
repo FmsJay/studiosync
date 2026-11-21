@@ -121,3 +121,11 @@ main.has-home { grid-template-columns: minmax(300px, 1.25fr) minmax(280px, 1fr);
   .hcard { padding: 8px; }
   .hnotify { display: none; }
 }
+
+/* rt-p5: a status line of your own, a banner where the browser can't notify (the phone link), "since you were last here", what Open said */
+.hstatusrow { display: block; margin: 0 0 8px; }
+.hstatusin { width: 100%; box-sizing: border-box; font: inherit; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: inherit; }
+.hstatus { font-style: italic; opacity: .8; margin-left: 6px; overflow-wrap: anywhere; }
+.hbanner { padding: 8px 12px; margin: 0 0 8px; border-radius: 8px; background: var(--accent, #2a6df4); color: #fff; cursor: pointer; overflow-wrap: anywhere; }
+.hnote { margin: 0 0 8px; }
+.hsince { margin-top: 2px; font-size: .85em; color: var(--accent, #2a6df4); }
