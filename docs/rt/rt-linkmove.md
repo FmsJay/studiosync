@@ -811,21 +811,20 @@ track's own silent output (no input, no microphone). Times are LinuxBox's trace 
   the marker and the take in LinuxBox's project. No "nobody else is here" on any computer. `direct peers ... Cross Test/main`: LinuxBox lists
   both, the desktop and laptop list LinuxBox. Syncthing resumed 22:26:49; at 22:27:55 LinuxBox's link inbox was empty (5 files before),
   Syncthing idle with nothing needed, nothing moved, no `sync-conflict` anywhere.
-- **B: not run as written; what ran instead fails.** Stopping Live sync on the desktop and laptop (their tab's owner token) doesn't hold:
-  Autostart starts it again within ~30 s ("starting Live sync again for ...": desktop 22:30:05, laptop 22:30:11). So when LinuxBox's Live sync
-  started (22:30:36, Syncthing paused, after a new take and two moves on the desktop), both others had been running for 25-30 s:
-  - 22:30:38 "16 changes from the others"; 22:30:44 "nobody else is here: you have full control" (wrong: both were running);
-  - 22:30:50 "James-Laptop joined"; the trace then catches up from the laptop (`4 changes asked of james-laptop`, the new take from the
-    laptop at 22:30:57);
-  - the desktop never: 22:31:01 "James is driving but isn't here", and still at 22:34:10 LinuxBox's peers and link clock had only the
-    laptop, and the desktop's link clock only the laptop. A fresh module load in each eval host says the device checks pass on both and
-    LinuxBox's `direct.strangers` includes `james-main`, so the hello should go; it isn't heard. After Syncthing resumed (22:34:58) the
-    desktop was on LinuxBox's link clock by 22:36:35.
-  - So: a desktop whose Live sync (re)started while LinuxBox was down, then LinuxBox back with Syncthing paused, don't find each other over
-    the link (the laptop bridges). In A the desktop's Live sync had been running throughout and it worked. To look at: whether the
-    desktop's fresh Live sync ever puts LinuxBox in its strangers (`sendable`'s 50 ms budget leaves a device unasked until a refresh reaches
-    it under budget; LinuxBox's devices file sorts last) and whether LinuxBox takes the desktop's hello.
-  - To run B as written, Autostart has to be kept from restarting Live sync (or REAPER quit) on the desktop and laptop.
+- **B: not run as written; what ran instead: one finding.** Stopping Live sync on the desktop and laptop (their tab's owner token)
+  doesn't hold: Autostart starts it again within ~30 s ("starting Live sync again for ...": desktop 22:30:05, laptop 22:30:11), and on the
+  desktop Autostart started **main's** Live sync (no live audio, link, hub or web UI lines; the web UI said "Live sync isn't running"; the
+  realtime one, started at 22:31:12, said "already running"), so the desktop wasn't on the link at all until I handed it back to the
+  realtime Live sync at 22:40. With that, what LinuxBox did (Live sync started 22:30:36, Syncthing paused, after a new take and two moves on
+  the desktop) is as designed except for one timing:
+  - 22:30:38 "16 changes from the others"; **22:30:44 "nobody else is here: you have full control"** although the laptop's realtime Live
+    sync had been running for 24 s; 22:30:50 "James-Laptop joined"; then the trace catches up from the laptop (`4 changes asked of
+    james-laptop`, the new take from the laptop at 22:30:57). So the hello took 14 s, longer than `presence.LINK_HOLD` (8 s): the laptop
+    only says hello every `HELLO_EVERY` (15 s) and doesn't answer a stranger's hello at once. Either hold for one hello interval (15 s plus
+    a margin) or answer a hello from a stranger with a hello straight back.
+  - The desktop (main's Live sync) wasn't seen: "James is driving but isn't here" (22:31:01), right for what was running.
+  - To run B as written, Autostart has to be kept from restarting Live sync (or REAPER quit) on the desktop and laptop, and the desktop must
+    restart into the realtime Live sync, not main's.
 - **C: steps 5-7 only, pass.** The desktop deleted the take's track, then the two take files (Recycle Bin) with the need list on: gone on
   the laptop and LinuxBox within 23 s, no `media want ...R0_take` in any trace after, and nothing came back.
 - Also seen: LinuxBox's Live sync logs "Syncthing didn't answer (is it running, with a folder called ...)" at every start (55 times today):
