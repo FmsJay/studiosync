@@ -527,8 +527,8 @@ assert(ask.words:find("Brings back 1 track and 2 items", 1, true) and ask.words:
 wh.action(proj, cfg, b, { topic = "history", restore = { id = "wrong", yes = true } })
 assert(not reverted and got.hhear.ask, "a yes for another ask does nothing")
 wh.action(proj, cfg, b, { topic = "history", restore = { id = ask.id, yes = true } })
-assert(reverted and reverted.opts.at_once == true and type(reverted.opts.act) == "string" and reverted.opts.act:find("^James%-") and package.loaded.sync.timeline == 1,
-  "yes: the whole song back as one act, one undo point, the tempo map too")
+assert(reverted and reverted.opts.at_once == true and type(reverted.opts.act) == "string" and reverted.opts.act:find("^James%-") and package.loaded.sync.timeline == nil,
+  "yes: the whole song back as one act, one undo point; History holds no tempo change, so the map stays (rt-history2: tests/test_0_60_rt_history2.lua)")
 assert(reverted.plan["T-A-3"] == false and reverted.plan["T-A-4"].id == "e6", "the plan as the Restore page makes it")
 tick()
 assert(not got.hhear.ask and got.hhear.said:find("brought back", 1, true), "said what happened")
@@ -545,7 +545,7 @@ wh.action(proj, cfg, b, { topic = "history", restore = { id = ask2.id, yes = tru
 assert(not reverted, "an ask runs out")
 wh.action(proj, cfg, b, { topic = "history", restore = { t = POINT, tracks = { "T-A-2" } } })
 wh.action(proj, cfg, b, { topic = "history", restore = { id = hh.S.ask.id, yes = true } })
-assert(reverted and reverted.plan["F-A-2"] and reverted.plan["I-A-3"] and reverted.plan["T-A-4"] == nil and reverted.plan["I-A-2"] == nil and package.loaded.sync.timeline == 1,
+assert(reverted and reverted.plan["F-A-2"] and reverted.plan["I-A-3"] and reverted.plan["T-A-4"] == nil and reverted.plan["I-A-2"] == nil and package.loaded.sync.timeline == nil,
   "Bass only: its plug-ins and items, nothing of Drums or Vox, and the tempo map left")
 wh.action(proj, cfg, b, { topic = "history", restore = { t = POINT, tracks = { "../x" } } })
 wh.action(proj, cfg, b, { topic = "history", restore = { t = POINT, tracks = {} } })

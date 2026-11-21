@@ -528,6 +528,7 @@ const char *offer_type(const std::string &path)
   const size_t dot = path.rfind('.');
   const std::string ext = dot == std::string::npos ? "" : lower(path.substr(dot + 1));
   static const struct { const char *ext, *type; } types[] = { { "mp4", "video/mp4" }, { "m4v", "video/mp4" }, { "mov", "video/quicktime" },
+    { "opus", "audio/ogg" }, // (History's previews, lib/histhear.lua: Ogg Opus; Safari won't play one sent as bytes. rt-history2)
     { "webm", "video/webm" }, { "mkv", "video/x-matroska" }, { "png", "image/png" }, { "jpg", "image/jpeg" }, { "jpeg", "image/jpeg" }, { "gif", "image/gif" } };
   for (const auto &t : types) if (ext == t.ext) return t.type;
   return "application/octet-stream";

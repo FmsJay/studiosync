@@ -13,7 +13,7 @@
 local band = require("band")
 local histhear = {}
 histhear.KEEP = 10          -- previews kept on this computer (per song and room), newest last
-histhear.RECIPE = 2         -- how a preview is rendered: raised when that changes, so a preview an older build kept is never served (0.59.49.74 played .73's clipping one)
+histhear.RECIPE = 3         -- how a preview is rendered: raised when that changes, so a preview an older build kept is never served (0.59.49.74 played .73's clipping one; 3: the tempo map, markers, track order and master automation then, rt-history2)
 histhear.PASSES = 2         -- renders of the copy at most (bgrender's pass script: a sampler still loading gets its second)
 histhear.START_GAP = 3      -- seconds between starting renders (a page can't make this computer start one after another)
 histhear.ASK_FOR = 120      -- seconds a restore's "what changes" stays good for its yes
@@ -124,16 +124,19 @@ histhear.lit = lit
 
 -- The saved copy's text rebuilt to a moment. plan: mirror.plan_restore's (oid -> that moment's version, or false: it didn't exist then; an
 -- object not in it stays as it is). o: { media = the room's media folder, now = oid -> the version id held here (an object already at that
--- version is left as it is, its state never read), exists(path), guid() -> a new "{...}" }.
+-- version is left as it is, its state never read), exists(path), guid() -> a new "{...}", moves = histhear.moves_since's list (tracks moved
+-- since go back), map_of(ev) -> the timeline entry a version was made under (histhear.map_of) }.
 -- -> the text, and { tracks = track oid -> a track's settings then (prep sets them), items = oid -> { lane, pick, track }, missing = media not here,
--- len = the song's length in seconds, skipped = parts that couldn't go in (a receive from a track not there), n = objects changed }. Pure.
+-- len = the song's length in seconds, skipped = parts that couldn't go in (a receive from a track not there), n = objects changed,
+-- placed = item oid -> the timeline entry it was made under (false: before any History keeps) for each item put in from History,
+-- master = { env, fxen } the master's automation then (when it changed), moved = tracks put back where they sat }. Pure.
 function histhear.rebuild(text, plan, o)
   o = o or {}
   local mirror = require("mirror")
   local now, media = o.now or {}, o.media or ""
   local L = split(text)
   local root = units(L, 2, #L - 1)
-  local info = { tracks = {}, items = {}, missing = {}, len = 0, skipped = 0, n = 0, locals = 0 }
+  local info = { tracks = {}, items = {}, missing = {}, len = 0, skipped = 0, n = 0, locals = 0, placed = {} }
   -- the tracks, in order; every receive tied to its source's record (renumbered once tracks come and go)
   local orig = {}
   for _, u in ipairs(root) do
@@ -192,6 +195,19 @@ function histhear.rebuild(text, plan, o)
     end
   until not placed
   for _, r in ipairs(new) do table.insert(list, 1, r) end -- (the track it sat under is gone: first, as mirror.apply)
+  -- tracks moved since go back, the newest move first: each under the track it sat under before that move (its change says so, `moved`:
+  -- histhear.moves_since). A track that's only been changed otherwise stays where it sits, as mirror.revert has it. rt-history2
+  for _, m in ipairs(o.moves or {}) do
+    local r = by_oid[m.oid]
+    local cur, at
+    for i, x in ipairs(list) do if x == r then cur = i end end
+    if m.from == "" then at = 0 else for i, x in ipairs(list) do if x.oid == m.from and x ~= r then at = i end end end
+    if cur and at then
+      table.remove(list, cur)
+      table.insert(list, at < cur and at + 1 or at, r)
+      info.moved = (info.moved or 0) + 1
+    end
+  end
   -- receives renumbered to the tracks as they are now; one from a track not there goes, with its envelopes
   local index = {}
   for i, r in ipairs(list) do index[r] = i - 1 end
@@ -228,7 +244,13 @@ function histhear.rebuild(text, plan, o)
             table.insert(root, at, { tag = "MASTERFXLIST", lines = L2, block = true })
           end
           info.n = info.n + 1
-        else info.skipped = info.skipped + 1 end -- shortcut: the master's automation and sends stay as they are now; rebuild them if asked for.
+        elseif kind == "env" then
+          -- (the master's automation, E-MASTER, as mirror.apply puts it in: its envelopes in a track chunk's form, with their view lines, which
+          -- prep swaps into the master's own chunk in the background REAPER; its FX button, BANDFXEN. Automation items aren't rebuilt.)
+          local x = mirror.splice_parts("<TRACK\n>\n", "env", state, function() return nil end, function() return nil end) or ""
+          info.master = { env = x:gsub("^<TRACK\n", ""):gsub(">\n$", ""), fxen = state:find("BANDFXEN 0", 1, true) and 0 or 1 }
+          info.n = info.n + 1
+        else info.skipped = info.skipped + 1 end -- (the master has no sends or other parts in History: F-MASTER and E-MASTER only)
       else
         local r = track_of(ev, oid)
         if not r then if ev then info.skipped = info.skipped + 1 end
@@ -270,6 +292,7 @@ function histhear.rebuild(text, plan, o)
           local lines, lane, pick, needs = item_lines(ev.state, media)
           r.kids[#r.kids + 1] = { tag = "ITEM", lines = lines, block = true }
           if lane or pick then info.items[oid] = { lane = lane and lane < mirror.BAD_LANE and lane or nil, pick = pick, track = r.oid } end
+          if o.map_of then info.placed[oid] = o.map_of(ev) or false end -- (its seconds are on the tempo map it was made under: histhear.tempo_plan)
           for _, p in ipairs(needs) do if o.exists and not o.exists(p) then info.missing[#info.missing + 1] = p end end
         elseif ev then info.skipped = info.skipped + 1 end
         info.n = info.n + 1
@@ -320,6 +343,60 @@ end
 -- go in as literals (lit). Tracks and items are found by the band's own id (P_EXT band_oid), which a project keeps through a load: a GUID
 -- isn't (a <TRACK {GUID}> with no TRACKID line loads under a new one, so nothing keyed by GUID matched: no names, every lane playing, a
 -- preview clipping at 0 dB. Desktop, 0.59.49.73). Which lanes play is set last, once the items are on their lanes. Pure.
+-- Then the tempo map then (TL: histhear.tempo_plan), put in the way live sync puts a map in (band.apply_tempo), so REAPER moves what follows
+-- the tempo as it does when a map lands: everything held in place (timebase time), then for the copy's own (on today's map) and for each
+-- other map items were made under: that map in, those items let go, the map then in (REAPER moves them onto it), held again; at the end every
+-- item's own timebase back. Then the markers then, and the master's automation then (ME), swapped into its chunk as mirror.apply does.
+local PREP_TIME = [==[
+local function tempo(map)
+  for i = reaper.CountTempoTimeSigMarkers(proj) - 1, 0, -1 do reaper.DeleteTempoTimeSigMarker(proj, i) end
+  for _, m in ipairs(map) do reaper.SetTempoTimeSigMarker(proj, -1, m.time, -1, -1, m.bpm, m.num, m.denom, m.linear == true) end
+  reaper.UpdateTimeline()
+end
+if TL.tempo then
+  local all = {}
+  for i = 0, reaper.CountMediaItems(proj) - 1 do
+    local it = reaper.GetMediaItem(proj, i)
+    local _, oid = reaper.GetSetMediaItemInfo_String(it, 'P_EXT:band_oid', '', false)
+    all[#all + 1] = { it = it, mode = reaper.GetMediaItemInfo_Value(it, 'C_BEATATTACHMODE'), g = (TL.groups or {})[(oid or ''):upper()] or 0 }
+    reaper.SetMediaItemInfo_Value(it, 'C_BEATATTACHMODE', 0)
+  end
+  for k = 0, #(TL.maps or {}) do
+    if k > 0 then tempo(TL.maps[k]) end
+    for _, x in ipairs(all) do if x.g == k then reaper.SetMediaItemInfo_Value(x.it, 'C_BEATATTACHMODE', x.mode) end end
+    tempo(TL.tempo)
+    for _, x in ipairs(all) do if x.g == k then reaper.SetMediaItemInfo_Value(x.it, 'C_BEATATTACHMODE', 0) end end
+  end
+  for _, x in ipairs(all) do reaper.SetMediaItemInfo_Value(x.it, 'C_BEATATTACHMODE', x.mode) end
+end
+if TL.markers then
+  for i = reaper.CountProjectMarkers(proj) - 1, 0, -1 do reaper.DeleteProjectMarkerByIndex(proj, i) end
+  for _, m in ipairs(TL.markers) do
+    local pos = tonumber(m.pos) or 0
+    reaper.AddProjectMarker2(proj, m.region == true, pos, tonumber(m['end']) or pos, tostring(m.name or ''), math.tointeger(tonumber(m.num)) or -1, 0)
+  end
+end
+if ME then
+  local master = reaper.GetMasterTrack(proj)
+  local ok, chunk = reaper.GetTrackStateChunk(master, '', false)
+  if ok then
+    local out, d, drop, put = {}, 0, false, false
+    local env = (ME.env or ''):gsub('\n$', '')
+    local function put_env() if not put then put = true; if env ~= '' then out[#out + 1] = env end end end
+    for line in (chunk:gsub('\r', '') .. '\n'):gmatch('(.-)\n') do
+      local s = line:match('^%s*(.-)%s*$')
+      if d == 1 and not drop and s:sub(1, 1) == '<' then
+        local tag = s:match('^<(%S+)') or ''
+        if tag:find('ENV') and tag:sub(1, 3) ~= 'AUX' then drop = true elseif tag == 'FXCHAIN' or tag == 'ITEM' then put_env() end
+      end
+      if d == 1 and s == '>' and not drop then put_env() end
+      if not drop and s ~= '' then out[#out + 1] = line end
+      if s:sub(1, 1) == '<' then d = d + 1 elseif s == '>' then d = d - 1; if drop and d == 1 then drop = false end end
+    end
+    reaper.SetTrackStateChunk(master, table.concat(out, '\n') .. '\n', false)
+  end
+  reaper.SetMediaTrackInfo_Value(master, 'I_FXEN', ME.fxen or 1)
+end]==]
 function histhear.prep(info)
   local mirror = require("mirror")
   local tracks = {}
@@ -380,6 +457,8 @@ function histhear.prep(info)
     "  local t = settings(tr)",
     "  if t then for l, v in ipairs(t.plays) do if v then reaper.SetMediaTrackInfo_Value(tr, 'C_LANEPLAYS:' .. (l - 1), v) end end end",
     "end",
+    "local TL, ME = " .. lit(info.tl or {}) .. ", " .. lit(info.master or false),
+    PREP_TIME,
     "reaper.UpdateTimeline()",
     "" }, "\n")
 end
@@ -393,6 +472,85 @@ function histhear.upto(entries, t)
     if x and x <= t then n = i elseif x and x > t then break end
   end
   return n
+end
+-- ---- pure: the tempo map, markers and track order then (rt-history2) ---------------------------------------------------------------------
+-- A timeline change's place among the others: the order sync.post gave it (after the newest map seen where it was made), which is what the
+-- studio goes by (sync.newest_map, sync.studio_timeline), not its file time. Older ones have none: their time and id.
+local function tl_order(e) return tostring(e.order or ((e.time or "") .. (e.id or ""))) end
+local function is_tl(e) return e.kind == "timeline" and type(e.tempo) == "table" and #e.tempo > 0 end
+-- The tempo map and markers as they stood at entries[upto]: of the timeline changes at or before it, the one the studio put in place last
+-- (the highest order: one from a computer whose clock ran ahead sorts later by time but wasn't the map then). None by then: o.first (the map
+-- the song began with, histhear.first_map), else, when History holds no timeline change at all, today's stands then too ({ how = "today" }).
+-- -> { tempo, markers, how = "then" | "first" | "today", ev }, or nil when the map then isn't known (changes since, none kept before). Pure.
+function histhear.timeline_at(entries, upto, o)
+  o = o or {}
+  local best, any
+  for i, e in ipairs(entries) do
+    if is_tl(e) then
+      any = true
+      if i <= upto and (not best or tl_order(e) > tl_order(best)) then best = e end
+    end
+  end
+  if best then return { tempo = best.tempo, markers = type(best.markers) == "table" and best.markers or {}, how = "then", ev = best } end
+  if type(o.first) == "table" and type(o.first.tempo) == "table" then return { tempo = o.first.tempo, markers = type(o.first.markers) == "table" and o.first.markers or {}, how = "first" } end
+  if not any then return { how = "today" } end
+  return nil
+end
+-- The map the song began with, where one was kept: a side room's room.json (the map it was made from), else session.json's first_timeline
+-- (kept while someone on an older build read the timeline there). Not session.json's own tempo: since the timeline went into one file per
+-- computer (0ae5fbf) it's no longer kept up to date, so it can be any map since, not the first.
+function histhear.first_map(cfg, b, session)
+  local meta = band.read_json(require("sync").room_dir(cfg, b.song, b.room) .. "/room.json")
+  if type(meta) == "table" and meta.parent then return type(meta.tempo) == "table" and meta or nil end
+  return type(session) == "table" and type(session.first_timeline) == "table" and session.first_timeline or nil
+end
+-- -> fn(ev): the timeline change an object's version was made under (its seconds are on that map), or nil before any. A change sent while
+-- REAPER may still be moving things for a new map names it (`tl`, mirror.map_stamp); others were made under the newest one before them. Pure.
+function histhear.map_of(entries)
+  local tls = {}
+  for _, e in ipairs(entries) do if is_tl(e) then tls[#tls + 1] = e end end
+  return function(ev)
+    local best, mine = nil, (ev.time or "") .. (ev.id or "")
+    for _, t in ipairs(tls) do
+      local ok
+      if type(ev.tl) == "string" then ok = tl_order(t) <= ev.tl else ok = (t.time or "") .. (t.id or "") < mine end
+      if ok and (not best or tl_order(t) > tl_order(best)) then best = t end
+    end
+    return best
+  end
+end
+-- Tracks moved since entries[upto], newest first: { oid, from = the track it sat under before that move ("" the top) }. A move's change says
+-- where it sat (`moved`, since rt-edits; a restore's and an undo's say where they took it from), so putting each back in turn, newest first,
+-- is the order then. Moves from before rt-edits carry none and aren't taken back. Pure.
+function histhear.moves_since(entries, upto)
+  local out = {}
+  for i = #entries, upto + 1, -1 do
+    local e = entries[i]
+    if e.kind == "obj" and e.obj == "track" and type(e.oid) == "string" and type(e.moved) == "string" then out[#out + 1] = { oid = e.oid:upper(), from = e.moved:upper() } end
+  end
+  return out
+end
+-- What prep does with the tempo map, from the map then (timeline_at), today's (`now`, the copy's own) and the map each item put in from
+-- History was made under (rebuild's `placed`). Seconds are only right on their own map: an item made under another is moved onto the map
+-- then the way REAPER moves it when a map lands (by its timebase), and so is everything already in the copy, from today's.
+-- -> nil (nothing to change), or { tempo = the map then or nil (as it is), markers, maps = the other maps, groups = item oid -> its map's
+-- place in maps }. Pure.
+function histhear.tempo_plan(placed, tl, now)
+  if not (tl and tl.tempo) then return nil end
+  local nowk, maps, idx, groups = lit(now or {}), {}, {}, {}
+  local oids = {}
+  for oid in pairs(placed or {}) do oids[#oids + 1] = oid end
+  table.sort(oids)
+  for _, oid in ipairs(oids) do
+    local e = placed[oid]
+    local m = e and e.tempo or tl.tempo -- (made before any change History keeps: on the map then, its seconds kept)
+    local k = lit(m)
+    if k ~= nowk then
+      if not idx[k] then maps[#maps + 1] = m; idx[k] = #maps end
+      groups[oid] = idx[k]
+    end
+  end
+  return { tempo = (lit(tl.tempo) ~= nowk or #maps > 0) and tl.tempo or nil, markers = tl.markers or {}, maps = maps, groups = groups }
 end
 -- A plan as the song really stood then. mirror.plan_restore gives each object its own newest version at the point, but deleting a track
 -- sends no change for what was on it: an item whose version then sits on a track that was gone then went with that track, so it wasn't
@@ -456,6 +614,16 @@ function histhear.describe(plan, held, name_of)
   local words = parts[1]:sub(1, 1):upper() .. table.concat(parts, "; "):sub(2)
   if #names > 0 then words = words .. ". Tracks: " .. table.concat(names, ", ") .. (more > 0 and (" and " .. more .. " more") or "") end
   return words .. ". Today's version stays in History, and Undo takes this back.", n
+end
+-- A whole-song restore's words with the tempo map and markers: tl as timeline_at gives it, now = sync.timeline_sig decoded ({ tempo, markers,
+-- ... }). -> words, how many things change. Pure.
+function histhear.tempo_words(words, n, tl, now)
+  local differs = tl and tl.tempo and not (type(now) == "table" and band.json_encode({ tl.tempo, tl.markers or {} }) == band.json_encode({ now[1], now[2] or {} }))
+  local say = differs and "It puts the tempo map and markers back as they were too."
+    or not tl and "The tempo map and markers then aren't kept in History: today's stay." or nil
+  if not say then return words, n end
+  if differs and n == 0 then return "Puts the tempo map and markers back as they were. Today's version stays in History, and Undo takes this back.", 1 end
+  return words .. " " .. say, n + (differs and 1 or 0)
 end
 -- A preview's file id for the web server: 32 lower-case hex from a key. Pure.
 function histhear.file_id(key)
@@ -592,12 +760,18 @@ local function start(proj, cfg, b, slot, s)
   local text = band.read(copy)
   os.remove(copy)
   if not text then tidy(dir); return "the project's copy couldn't be saved" end
-  local plan = {}
-  if slot == "then" then plan = histhear.settle(mirror.plan_restore(entries_of(cfg, b), s.upto), function(oid) return histhear.here(proj, oid) end) end
+  local plan, entries, tl = {}, nil, nil
+  if slot == "then" then
+    entries = entries_of(cfg, b)
+    plan = histhear.settle(mirror.plan_restore(entries, s.upto), function(oid) return histhear.here(proj, oid) end)
+    tl = histhear.timeline_at(entries, s.upto, { first = histhear.first_map(cfg, b, band.read_json(band.session_path(cfg, b.song))) })
+  end
   local now = {}
   for oid in pairs(plan) do local _, _, ev = mirror.known(proj, oid); now[oid] = ev end
   local out, info = histhear.rebuild(text, plan, { media = sync.room_dir(cfg, b.song, b.room) .. "/media", now = now, exists = reaper.file_exists,
-    guid = function() return reaper.genGuid("") end })
+    guid = function() return reaper.genGuid("") end, moves = entries and histhear.moves_since(entries, s.upto), map_of = entries and histhear.map_of(entries) })
+  info.tl = histhear.tempo_plan(info.placed, tl, band.capture_tempo(proj)) -- (today's map: what the copy was saved with)
+  s.tempo = tl and tl.how or "unknown"
   band.write_atomic(dir .. "/job.rpp", out)
   band.write_atomic(dir .. "/prep.lua", histhear.prep(info))
   band.write_atomic(dir .. "/maxpasses.txt", tostring(histhear.PASSES))
@@ -670,7 +844,7 @@ function histhear.tick(proj, cfg, b, publish, now)
     local s = S.slots[slot]
     if s then
       model[slot] = { t = s.t, state = s.state, why = s.why, file = s.state == "ready" and s.file or nil, cached = s.cached, missing = s.missing,
-        pass = s.pass, passes = s.passes, secs = s.job and math.floor(now - s.job.started) or nil, len = s.len and math.floor(s.len + 0.5) or nil }
+        pass = s.pass, passes = s.passes, secs = s.job and math.floor(now - s.job.started) or nil, len = s.len and math.floor(s.len + 0.5) or nil, tempo = s.tempo }
     end
   end
   publish("hhear", model)
@@ -704,7 +878,11 @@ function histhear.restore(proj, cfg, b, r)
     local act = string.format("%s-%s-r%d", sync.id_user and sync.id_user(cfg.user) or cfg.user, os.date("!%Y%m%d%H%M%S"), math.floor(reaper.time_precise() * 1000) % 1000000)
     local opts = { can = can, mode = who and who.mode, driver = who and who.driver, is_claimed = who and who.is_claimed, at_once = true, act = act,
       local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1" }
-    if not p.tracks then sync.restore_timeline(proj, cfg, b.song, b.room, entries, upto, session) end
+    if not p.tracks then -- (the map then, as the preview has it: histhear.timeline_at; unknown or never changed: left as it is)
+      local tl = histhear.timeline_at(entries, upto, { first = histhear.first_map(cfg, b, session) })
+      if tl and tl.how == "then" then sync.restore_timeline(proj, cfg, b.song, b.room, { tl.ev }, 1, session)
+      elseif tl and tl.how == "first" then sync.restore_timeline(proj, cfg, b.song, b.room, {}, 0, { first_timeline = tl }) end
+    end
     local said = mirror.revert(proj, cfg, b.song, b.room, plan, opts)
     S.said = "Restored to " .. os.date("%a %H:%M", p.t) .. ": " .. tostring(said)
     return "History page: " .. S.said
@@ -720,6 +898,8 @@ function histhear.restore(proj, cfg, b, r)
   for _, e in ipairs(entries) do if e.kind == "obj" and e.obj == "track" and e.oid and (e.name or "") ~= "" then names[e.oid:upper()] = e.name end end
   for _, x in ipairs(S.tracks or {}) do names[x[1]] = x[2] end
   local words, n = histhear.describe(plan, function(oid) local _, h, ev = mirror.known(proj, oid); return h, ev end, function(oid) return names[oid:upper()] end)
+  if not tracks then words, n = histhear.tempo_words(words, n, histhear.timeline_at(entries, upto, { first = histhear.first_map(cfg, b, band.read_json(band.session_path(cfg, b.song))) }),
+    sync.timeline_sig and band.json_decode(sync.timeline_sig(proj))) end
   S.ask = { id = band.secret(16), words = words, n = n, t = t, tracks = tracks, whole = not tracks or nil, until_ = reaper.time_precise() + histhear.ASK_FOR }
   S.said = nil
   return nil

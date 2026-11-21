@@ -37,11 +37,11 @@ function webhistory.epoch(iso)
   local days = era * 146097 + yoe * 365 + yoe // 4 - yoe // 100 + doy - 719468
   return days * 86400 + tonumber(H) * 3600 + tonumber(M) * 60 + tonumber(S)
 end
--- An event's file text -> an item's { len, lane, midi, take }, or a track's { plays }. `decode`: the event decoded (only asked for a new item's, the one that can be a take).
+-- An event's file text -> an item's { len, lane, midi, take }, or a track's { plays, after (the track it sat under) }. `decode`: the event decoded (only asked for a new item's, the one that can be a take).
 function webhistory.detail(text, ev, decode)
   text = type(text) == "string" and text or ""
   if ev.obj == "track" then -- (a track: which of its fixed lanes play; nil when it has none, everything on it plays)
-    return { plays = text:match('"freemode":%s*2[,}]') and text:match('"plays":%s*"([%d,]*)"') or nil }
+    return { plays = text:match('"freemode":%s*2[,}]') and text:match('"plays":%s*"([%d,]*)"') or nil, after = text:match('"after":%s*"([^"\\]*)"') }
   end
   local out = { lane = tonumber(text:match("BANDLANE (%d+)")), len = tonumber(text:match("\\nLENGTH ([%d%.eE%+%-]+)")), midi = text:find("<SOURCE MIDI", 1, true) ~= nil or nil }
   if (ev.rev or 1) == 1 and not ev.restored and not ev.gone then
@@ -111,9 +111,11 @@ function webhistory.build(evs, info, o)
 
   -- the replay: tracks and items as they stand after each event
   local tracks, tix = {}, {} -- out: { { name, place } }; key -> { id, alive }
+  local order = {} -- track ids alive, top first, as they stood (rt-history2: a track sits under the track its change says, `after`)
   local items, nitems = {}, 0 -- key -> { iid, tid, pos, len, u, k }
   local frames, sessions, days = {}, {}, {}
   local F, last_t, nchanges, per = nil, nil, 0, 1
+  local last_tp
   local nsess, prev_t = 0, nil
   for _, e in ipairs(list) do
     if what(e) ~= "note" then
@@ -141,7 +143,8 @@ function webhistory.build(evs, info, o)
     f.p = flat(F.p, function(id, x) return { id, x } end)
     f.g, f.ta, f.tg = flat(F.g), flat(F.ta), flat(F.tg)
     f.m = flat(F.m, function(id, x) return { id, x[1], x[2] } end)
-    f.r = F.r
+    f.r, f.mk, f.tp = F.r, F.mk, F.tp
+    if F.o then f.o = { table.unpack(order) } end -- (the lanes' order as it stood, when it changed)
     frames[#frames + 1] = f
     F = nil
   end
@@ -150,7 +153,29 @@ function webhistory.build(evs, info, o)
     F.s = math.max(0, #sessions - 1) -- (the session of its last change)
     return F
   end
-  local function track(key, name, t)
+  -- A track into the order under `after` ("" the top, a track's key; not known: where it sits today among those there then). -> whether it moved.
+  local function place(tr, after, t)
+    local cur, at
+    for i, x in ipairs(order) do if x == tr.id then cur = i end end
+    local a = after and after ~= "" and tix[after]
+    if after == "" then at = 0 elseif a and a.alive and a ~= tr then for i, x in ipairs(order) do if x == a.id then at = i end end end
+    if not at and cur then return false end -- (a place it can't tell: it stays)
+    if cur then
+      if (at == 0 and cur == 1) or (at and at > 0 and order[cur - 1] == order[at]) then return false end
+      table.remove(order, cur)
+      if at and at > cur then at = at - 1 end
+    end
+    if not at then
+      local mine = tracks[tr.id + 1][2]
+      mine = mine >= 0 and mine or math.huge
+      at = #order
+      for i, x in ipairs(order) do local p = tracks[x + 1][2]; if (p >= 0 and p or math.huge) > mine then at = i - 1; break end end
+    end
+    table.insert(order, at + 1, tr.id)
+    frame(t).o = true
+    return true
+  end
+  local function track(key, name, t, after)
     local tr = tix[key]
     if not tr then
       tracks[#tracks + 1] = { short(name), places[key] or -1 }
@@ -161,6 +186,7 @@ function webhistory.build(evs, info, o)
       tr.alive = true
       local f = frame(t)
       if f.tg[tr.id] then f.tg[tr.id] = nil else f.ta[tr.id] = true end
+      place(tr, after, t)
     end
     return tr
   end
@@ -186,6 +212,7 @@ function webhistory.build(evs, info, o)
     if not (tr and tr.alive) then return end
     tr.alive = false
     for ik, it in pairs(items) do if it.alive and it.tid == tr.id then item_gone(ik, t) end end
+    for i, x in ipairs(order) do if x == tr.id then table.remove(order, i); frame(t).o = true; break end end
     local f = frame(t)
     if f.ta[tr.id] then f.ta[tr.id] = nil else f.tg[tr.id] = true end
   end
@@ -254,18 +281,20 @@ function webhistory.build(evs, info, o)
         if not wins(e) then k = (e.gone or not had) and EDIT or MIX
         elseif e.gone then track_gone(key, t); k = EDIT
         else
-          local tr = track(key, w == "track" and e.name or e.track, t)
           local d = w == "track" and info and info(e)
+          local after = d and d.after and (d.after == "" and "" or upper(d.after)) or nil
+          local tr = track(key, w == "track" and e.name or e.track, t, after)
           if w == "track" then stats.need = stats.need + 1; if d then stats.have = stats.have + 1 end end
           if d and (d.plays or "") ~= (tr.plays or "") then tr.plays = d.plays; f.p[tr.id] = d.plays or "" end -- (a lane switch: what shows changes)
           if not had and w == "track" and (e.rev or 1) == 1 and not e.restored then local cw = credit(ui, nil, t); cw[6] = cw[6] + 1 end
-          k = had and MIX or EDIT
+          local moved = had and after ~= nil and place(tr, after, t) -- (where its change says it sits: a move, or the order catching up)
+          k = (had and not (moved and type(e.moved) == "string")) and MIX or EDIT
           if had then f.m[tr.id] = { ui, k } end
         end
       elseif w == "part" then
         local tkey = upper(e.track) or (upper(e.oid) and ("T" .. upper(e.oid):sub(2))) or "?"
         k = MIX
-        if wins(e) and not (tix[tkey] and not tix[tkey].alive) then f.m[track(tkey, e.name, t).id] = { ui, k } end
+        if tkey ~= "T-MASTER" and wins(e) and not (tix[tkey] and not tix[tkey].alive) then f.m[track(tkey, e.name, t).id] = { ui, k } end -- (the master isn't a lane)
       elseif w == "time" then
         k = TIME
         if (e.kind or e.type) == "timeline" and type(e.markers) == "table" then
@@ -276,6 +305,19 @@ function webhistory.build(evs, info, o)
             end
           end
           f.r = r
+          local mk = {} -- (markers, not regions: a flag on the ruler each)
+          for _, m in ipairs(e.markers) do
+            if type(m) == "table" and not m.region and tonumber(m.pos) and #mk < webhistory.REGIONS_MAX then mk[#mk + 1] = { r3(m.pos), short(m.name) } end
+          end
+          f.mk = mk
+        end
+        if (e.kind or e.type) == "timeline" and type(e.tempo) == "table" then -- (the tempo map, when it changed: { time, bpm, num, denom } each)
+          local tp = {}
+          for _, m in ipairs(e.tempo) do
+            if type(m) == "table" and tonumber(m.time) and tonumber(m.bpm) and #tp < webhistory.REGIONS_MAX then tp[#tp + 1] = { r3(m.time), r3(m.bpm), tonumber(m.num) or 0, tonumber(m.denom) or 0 } end
+          end
+          local sig = band.json_encode(tp)
+          if #tp > 0 and sig ~= last_tp then last_tp, f.tp = sig, tp end
         end
       end
       credit(ui, k, t)

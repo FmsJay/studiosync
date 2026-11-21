@@ -537,6 +537,9 @@ int main()
   spit(dir + "/clip.MP4", mix.substr(0, 5000));
   CHECK(webui_offer("cd56", (dir + "/clip.MP4").c_str()) == 1 && get(link, "/api/file?id=cd56", th, ck).find("Content-Type: video/mp4") != std::string::npos,
         "a video typed as one, so a <video> plays it");
+  spit(dir + "/preview.opus", mix.substr(0, 3000));
+  CHECK(webui_offer("cd56", (dir + "/preview.opus").c_str()) == 1 && get(link, "/api/file?id=cd56", th, ck).find("Content-Type: audio/ogg") != std::string::npos,
+        "History's preview (Ogg Opus) typed as audio, so Safari plays it (rt-history2)");
   webui_offer("cd56", "");
   CHECK(code(get(link, "/api/file?id=ab12", th)) == 403, "and only with the studio's token");
   CHECK(code(get(link, "/api/file?id=cd34", th, ck)) == 404 && code(get(link, "/api/file?id=", th, ck)) == 404, "an id not offered: 404");
