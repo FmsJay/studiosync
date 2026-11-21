@@ -6,6 +6,8 @@
 -- (the panel shows only arrange-view ones). A file's name is its id. Live for everyone over the direct link: a drawing goes as a "draw"
 -- message the moment it's made (and a removal too), shown at once until its file arrives (the file is the record, as chat's messages).
 -- Anyone in the room draws; you remove your own, admins (groups.may_manage) any. (James, rt)
+-- rt-draw2: the pages' Undo and Redo of your own drawings (webdraw.step); a note drawn on a screen share is kept as its author's own drawing,
+-- from = "share" (lib/webui/call.js -> draw.js shareNote), and Clear share notes takes yours away.
 local band = require("band")
 local webdraw = {}
 webdraw.KINDS = { pen = true, marker = true, line = true, arrow = true, box = true, circle = true, text = true }
@@ -18,6 +20,7 @@ webdraw.LIVE_FOR = 600         -- seconds a drawing or removal from the link wai
 webdraw.TOPIC_MAX = 400        -- drawings the pages get (the newest)
 webdraw.TOPIC_POINTS = 60000   -- points in all of them (a long stroke thinned for the page past its share)
 webdraw.LIST_EVERY = 1         -- seconds between looks at the folder (and at once after a change here or from the link)
+webdraw.STEPS_MAX = 50         -- things a page did that Undo remembers, for each room and view
 
 -- ---- pure ------------------------------------------------------------------------------------------------------------------------------
 local function fin(x, lim) return type(x) == "number" and x == x and math.abs(x) <= lim end
@@ -65,7 +68,8 @@ function webdraw.clean(a)
     out[i] = mixer and { r3(clamp(p[1], 0, 1)), p[2], r3(clamp(p[3], 0, 1)) } or { r3(p[1]), p[2], r3(clamp(p[3], 0, 1)) }
   end
   local s = { kind = a.kind, points = out, view = mixer and "mixer" or nil, color = webdraw.colour_in(a.color),
-    size = (a.size == 2 or a.size == 4 or a.size == 8) and a.size or 4 }
+    size = (a.size == 2 or a.size == 4 or a.size == 8) and a.size or 4,
+    from = (a.from == "share" and not mixer) and "share" or nil } -- (a note drawn on a screen share: Clear share notes takes these)
   if a.kind == "text" then
     local t = type(a.text) == "string" and a.text:gsub("%c", " "):match("^%s*(.-)%s*$") or ""
     if t == "" or not utf8.len(t) or utf8.len(t) > webdraw.TEXT_MAX then return nil, "no words, or too many" end
@@ -104,11 +108,13 @@ function webdraw.model(key, list, tracks, colours, me, admin)
     budget = budget - #p // 3
     local c = math.tointeger(s.color)
     out[#out + 1] = { id = s.id, u = s.user, t = epoch(s.time), k = s.kind or "pen", c = c and hex(c >> 8) or hex(colours[s.user]),
-      w = tonumber(s.size) or 3, x = s.kind == "text" and s.text or nil, v = s.view, o = o, p = p, live = s.live or nil }
+      w = tonumber(s.size) or 3, x = s.kind == "text" and s.text or nil, v = s.view, o = o, p = p, live = s.live or nil,
+      sh = s.from == "share" or nil }
   end
   return { key = key, me = me, admin = admin or nil, tracks = tracks or {}, list = out, more = #sorted > #out and #sorted - #out or nil }
 end
--- A page's action ({ topic = "draw", ... }) -> { add = drawing } or { remove = { ids } } or { clear = "mine"|"all" }, or nil and why.
+-- A page's action ({ topic = "draw", ... }) -> { add = drawing } or { remove = { ids } } or { clear = "mine"|"all" (share: only your
+-- notes from a screen share) } or { step = "undo"|"redo", view }, or nil and why.
 function webdraw.parse(a)
   if type(a) ~= "table" then return nil end
   if a.add ~= nil then
@@ -122,7 +128,12 @@ function webdraw.parse(a)
     for _, id in ipairs(ids) do if not webdraw.id_ok(id) then return nil, "not a drawing" end end
     return { remove = ids }
   end
+  if a.share ~= nil then return (a.clear == "mine" and a.share == true) and { clear = "mine", share = true } or nil end
   if a.clear == "mine" or a.clear == "all" then return { clear = a.clear } end
+  if a.undo == true or a.redo == true then
+    if a.view ~= nil and a.view ~= "mixer" then return nil, "not a view drawings go on" end
+    return { step = a.undo == true and "undo" or "redo", view = a.view }
+  end
   return nil
 end
 -- May `by` remove a drawing `author` made? Their own, or anyone's when they may manage the studio.
@@ -179,12 +190,13 @@ local function send(cfg, b, d, id)
   return require("direct").send_live(cfg, "draw", d, b.song, b.room or "main", id)
 end
 -- A new drawing (a page's, or the panel's: s in the panel's form): its file, and to those here at once. -> its id.
+-- (time: one Undo took away and Redo puts back keeps the time it was drawn, so History still shows it then.)
 local made = 0
-function webdraw.save(cfg, b, s)
+function webdraw.save(cfg, b, s, time)
   local d = webdraw.dir(cfg, b)
   reaper.RecursiveCreateDirectory(d, 0)
   made = made + 1
-  s.user, s.time = cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ")
+  s.user, s.time = cfg.user, time or os.date("!%Y-%m-%dT%H:%M:%SZ")
   -- (the panel's own name form; the number from this script's count and a random part, so the panel and Live sync never pick the same)
   local id = string.format("%s-%s-%d", (cfg.user:gsub("[^%w%-_]", "_")), os.date("!%Y%m%d-%H%M%S"), made * 1000000 + math.random(0, 999999))
   band.write_json(d .. "/" .. id .. ".json", s)
@@ -257,6 +269,78 @@ function webdraw.take_live(cfg, b)
   if ok then direct.dispatch(msgs, b.song, b.room or "main", { draw = function(d) webdraw.from_msg(cfg, d) end }) end
 end
 
+-- ---- the pages' Undo and Redo (rt-draw2) -----------------------------------------------------------------------------------------------
+-- What this computer's pages did in each room and view, newest last. A step is { ids } (drawings of yours that are there: taken back by
+-- removing them) or { gone } (drawings of yours taken away with the Eraser: taken back by saving them again, as new files with the times
+-- they were drawn). Taking a step back turns it into its opposite on the other pile. Only ever your own drawings: an admin's eraser on
+-- someone else's, and Clear, aren't steps. Kept while Live sync runs.
+local steps = {} -- the room's folder .. "|" .. view -> { undo = {}, redo = {} }
+local function steps_of(cfg, b, view)
+  local k = webdraw.dir(cfg, b) .. "|" .. (view or "")
+  steps[k] = steps[k] or { undo = {}, redo = {} }
+  return steps[k]
+end
+local function push(pile, e)
+  pile[#pile + 1] = e
+  if #pile > webdraw.STEPS_MAX then table.remove(pile, 1) end
+end
+local function did(cfg, b, view, e) -- a page did something new: Undo has it, and there's nothing to Redo any more
+  local st = steps_of(cfg, b, view)
+  push(st.undo, e)
+  st.redo = {}
+end
+local renamed = {} -- a drawing put back is a new file: its old id -> its new one, so the steps before still find it
+local function now_id(id)
+  while renamed[id] do id = renamed[id] end
+  return id
+end
+local function flip(cfg, b, e) -- -> the opposite step, or nil when nothing of it is left to take back
+  if e.ids then
+    local want, gone, ids = {}, {}, {}
+    for _, id in ipairs(e.ids) do want[now_id(id)] = true end
+    for _, s in ipairs(webdraw.read(cfg, b)) do if want[s.id] and s.user == cfg.user then gone[#gone + 1] = s; ids[#ids + 1] = s.id end end
+    if #ids == 0 then return nil end
+    webdraw.remove(cfg, b, ids, cfg.user, false)
+    return { gone = gone }
+  end
+  local ids = {}
+  for _, s in ipairs(e.gone) do
+    if #webdraw.read(cfg, b) >= webdraw.ROOM_MAX then break end
+    local v = {}
+    for k, x in pairs(s) do if k ~= "id" and k ~= "file" and k ~= "live" then v[k] = x end end
+    ids[#ids + 1] = webdraw.save(cfg, b, v, type(s.time) == "string" and s.time or nil)
+    renamed[s.id] = ids[#ids]
+  end
+  return #ids > 0 and { ids = ids } or nil
+end
+-- Undo or Redo on one view (nil: the arrange view; "mixer"). Undo with nothing a page did here takes your newest drawing on that view, as
+-- the panel's Undo does. -> true when something changed.
+function webdraw.step(cfg, b, which, view)
+  local st = steps_of(cfg, b, view)
+  local from, to = st[which], st[which == "undo" and "redo" or "undo"]
+  local e = table.remove(from)
+  if not e and which == "undo" then
+    for _, s in ipairs(webdraw.read(cfg, b)) do if s.user == cfg.user and s.view == view then e = { ids = { s.id } } end end -- (read's order: the newest last)
+  end
+  while e do
+    local back = flip(cfg, b, e)
+    if back then push(to, back); return true end
+    e = table.remove(from) -- (its drawings went some other way: the step before it)
+  end
+  return false
+end
+-- For the pages' buttons: { Undo, Redo on the arrange view, Undo, Redo on the Mixer } (true: there's something to take).
+function webdraw.can_step(cfg, b, list)
+  local out = {}
+  for i, view in ipairs({ false, "mixer" }) do
+    local st = steps_of(cfg, b, view or nil)
+    local mine = false
+    for _, s in ipairs(list) do if s.user == cfg.user and s.view == (view or nil) then mine = true; break end end
+    out[i * 2 - 1], out[i * 2] = mine or #st.undo > 0, #st.redo > 0
+  end
+  return out
+end
+
 -- ---- Live sync's tick and the pages' actions (through lib/webui.lua) -------------------------------------------------------------------
 -- An action a page sent. -> words for the log, or nil.
 function webdraw.action(_, cfg, b, a)
@@ -264,27 +348,44 @@ function webdraw.action(_, cfg, b, a)
   if not d then return why and ("the web page's drawing wasn't kept: " .. why) or nil end
   if d.add then
     if #webdraw.read(cfg, b) >= webdraw.ROOM_MAX then return "the web page's drawing wasn't kept: this room has " .. webdraw.ROOM_MAX .. " drawings (remove some first)" end
-    webdraw.save(cfg, b, d.add)
+    did(cfg, b, d.add.view, { ids = { webdraw.save(cfg, b, d.add) } })
     return nil
   end
+  if d.step then webdraw.step(cfg, b, d.step, d.view); return nil end
   local admin = admin_of(cfg, cfg.user)
   local ids = d.remove
   if d.clear then
     if d.clear == "all" and not admin then return "the web page's Clear all was refused: only the studio's owner and admins remove everyone's drawings" end
     ids = {}
-    for _, s in ipairs(webdraw.read(cfg, b)) do if d.clear == "all" or s.user == cfg.user then ids[#ids + 1] = s.id end end
+    for _, s in ipairs(webdraw.read(cfg, b)) do
+      if d.clear == "all" or (s.user == cfg.user and (not d.share or s.from == "share")) then ids[#ids + 1] = s.id end
+    end
+    -- (Clear can't be undone, and starts Undo afresh)
+    if not d.share then for _, view in ipairs({ false, "mixer" }) do local st = steps_of(cfg, b, view or nil); st.undo, st.redo = {}, {} end end
+  end
+  local mine = {} -- (the Eraser on your own: a step Undo takes back, on the view each was on)
+  if not d.clear then
+    local want = {}
+    for _, id in ipairs(ids) do want[id] = true end
+    for _, s in ipairs(webdraw.read(cfg, b)) do
+      if want[s.id] and s.user == cfg.user then local k = s.view or false; mine[k] = mine[k] or {}; mine[k][#mine[k] + 1] = s end
+    end
   end
   local n, refused = webdraw.remove(cfg, b, ids, cfg.user, admin)
+  for view, gone in pairs(mine) do did(cfg, b, view or nil, { gone = gone }) end
   if refused > 0 then return "the web page asked to remove " .. refused .. " drawing" .. (refused == 1 and "" or "s") .. " of someone else's: only your own, unless you're an admin" end
-  if d.clear then return "cleared " .. n .. " drawing" .. (n == 1 and "" or "s") .. " from the web page" end
+  if d.clear then return "cleared " .. n .. (d.share and " share note" or " drawing") .. (n == 1 and "" or "s") .. " from the web page" end
 end
 local S = { cc = nil, tracks = {} }
--- The tracks as the Song page shows them, in its order: { { oid, REAPER's track number, name } }.
+-- The tracks as the Song page shows them, in its order: { { oid, REAPER's track number, name, 8 characters of its GUID } } (the GUID's
+-- start is screen share's own name for a track, lib/webcall.lua view_model: how a share's notes find their tracks. rt-draw2).
 function webdraw.tracks(proj)
   local out, dawview, mirror = {}, require("dawview"), require("mirror")
   for i = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, i)
-    if dawview.shown(tr) then out[#out + 1] = { mirror.track_oid(tr), i, select(2, reaper.GetTrackName(tr)) } end
+    if dawview.shown(tr) then
+      out[#out + 1] = { mirror.track_oid(tr), i, select(2, reaper.GetTrackName(tr)), (tostring(reaper.GetTrackGUID(tr) or ""):gsub("[{}%-]", ""):sub(1, 8)) }
+    end
   end
   return out
 end
@@ -296,7 +397,9 @@ function webdraw.tick(proj, cfg, b, publish, now)
   local list = webdraw.read(cfg, b)
   local names, seen = { cfg.user }, {}
   for _, s in ipairs(list) do if type(s.user) == "string" and not seen[s.user] then seen[s.user] = true; names[#names + 1] = s.user end end
-  publish("draw", webdraw.model(b.song .. "/" .. (b.room or "main"), list, S.tracks, require("people").colours(cfg.root, names), cfg.user, admin_of(cfg, cfg.user)))
+  local m = webdraw.model(b.song .. "/" .. (b.room or "main"), list, S.tracks, require("people").colours(cfg.root, names), cfg.user, admin_of(cfg, cfg.user))
+  m.un = webdraw.can_step(cfg, b, list)
+  publish("draw", m)
 end
 
 return webdraw
