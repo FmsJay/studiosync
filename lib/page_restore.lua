@@ -103,7 +103,48 @@ local function plan_for(i, point, scope, anywhere)
   local histhear, proj = require("histhear"), E.proj()
   return histhear.settle(mirror.plan_restore(entries, i, scope), not anywhere and function(oid) return histhear.here(proj, oid) end or nil)
 end
-R.test = { plan_for = plan_for, entries = function(list) entries = list end } -- (tests/test_0_60_rt_histhear_panel.lua)
+-- Each restored item's version onto its beat under the map in place, as History's Restore does (mirror.revert's opts.map_of: the map it was
+-- made under, histhear.map_of, else the song's first). James, 2026-11-21 (rt-edits round 6 question 3).
+local function map_of_now(cfg, b, session)
+  local histhear = require("histhear")
+  local map_of, first = histhear.map_of(entries), histhear.first_map(cfg, b, session)
+  return function(ev) local t = map_of(ev) or first; return t and t.tempo end
+end
+-- "Restore whole project to here": the map then, then the objects, as one act. The timeline change carries the act, so "Undo this change" on
+-- any of its rows takes the map back too (undo_change).
+local function restore_whole(i, point, opts)
+  local b, cfg, proj, view = E.b(), E.cfg(), E.proj(), E.view()
+  opts.act = string.format("%s-%s-r%d", sync.id_user(cfg.user), os.date("!%Y%m%d%H%M%S"), math.random(0, 999999))
+  opts.map_of = map_of_now(cfg, b, view.session)
+  sync.restore_timeline(proj, cfg, b.song, b.room, entries, i, view.session, nil, opts.act)
+  return mirror.revert(proj, cfg, b.song, b.room, plan_for(i, point), opts)
+end
+-- "Restore selected tracks to here" (scope: mirror.selection_scope), each item onto its beat as above.
+local function restore_tracks(i, point, scope, opts)
+  local b, cfg, proj, view = E.b(), E.cfg(), E.proj(), E.view()
+  opts.map_of = map_of_now(cfg, b, view.session)
+  return mirror.revert(proj, cfg, b.song, b.room, plan_for(i, point, scope), opts)
+end
+-- "Undo this change": the change and the rest of its moment. On a whole-song Restore's row, the tempo map and markers it put in go back first,
+-- as StudioSync's Undo takes back an act's (sync.undo_timeline): the items then land under today's map, and what REAPER moves for it isn't an
+-- edit of yours (opts.retimed). Only where the map is still the Restore's and yours to change. James, 2026-11-21 (rt-edits round 6 question 1 (b)).
+local function undo_change(i, opts)
+  local b, cfg, proj, view = E.b(), E.cfg(), E.proj(), E.view()
+  local e, tl = entries[i], nil
+  if e and e.act and opts.can(cfg.user, nil, nil) then
+    for j = #entries, 1, -1 do
+      local x = entries[j]
+      if x.kind == "timeline" and x.restored and x.act == e.act and type(x.tempo) == "table" then tl = j; break end
+    end
+  end
+  if tl then
+    local ok, changed, tempo = pcall(sync.undo_timeline, proj, cfg, b.song, b.room, entries, tl, { restored = true }, view.session)
+    if not ok then band.log("undo: the tempo map and markers stay as they are (" .. tostring(changed) .. ")") end
+    opts.retimed = ok and changed == true and tempo == true
+  end
+  return mirror.revert(proj, cfg, b.song, b.room, mirror.plan_undo_moment(entries, i), opts)
+end
+R.test = { plan_for = plan_for, entries = function(list) entries = list end, restore_whole = restore_whole, restore_tracks = restore_tracks, undo_change = undo_change } -- (tests/test_0_60_rt_histhear_panel.lua, test_0_60_rt_answers.lua)
 local function back_button(i, what, single, point)
   local b, cfg, proj, view, wide, points, can, who = E.b(), E.cfg(), E.proj(), E.view(), E.wide(), E.points(), E.can(), E.who()
   local e, mirror = entries[i], require("mirror")
@@ -125,7 +166,7 @@ local function back_button(i, what, single, point)
       local whose = #others == 1 and me and "your" or "their"
       if #others == 0 or reaper.MB(table.concat(others, ", ") .. " changed it after this: undoing it takes " .. whose .. " change back too. Undo anyway?",
           "StudioSync", 4) == 6 then
-        band.log(mirror.revert(proj, cfg, b.song, b.room, mirror.plan_undo_moment(entries, i), opts)); hist_at = 0
+        band.log(undo_change(i, opts)); hist_at = 0
       end
     end
     ImGui.EndDisabled(ctx)
@@ -142,7 +183,7 @@ local function back_button(i, what, single, point)
     local scope = mirror.selection_scope(proj)
     if not scope then band.msg("Select the tracks to put back first (click their names in REAPER).")
     elseif reaper.MB("Put the selected tracks (their items and plug-ins) back to how they were " .. what .. "?\n\nEverything else stays as it is now.", "StudioSync", 4) == 6 then
-      band.log(mirror.revert(proj, cfg, b.song, b.room, plan_for(i, point, scope), opts)); hist_at = 0
+      band.log(restore_tracks(i, point, scope, opts)); hist_at = 0
     end
   end
   ImGui.EndDisabled(ctx)
@@ -153,8 +194,7 @@ local function back_button(i, what, single, point)
   ImGui.BeginDisabled(ctx, not driving or before_history)
   if ImGui.SmallButton(ctx, "Restore whole project to here") and reaper.MB("Make the whole project look like it did " .. what .. "?\n\n" ..
       "Everything since then is undone, for everyone. It's a change like any other, so you can come back the same way.", "StudioSync", 4) == 6 then
-    sync.restore_timeline(proj, cfg, b.song, b.room, entries, i, view.session)
-    band.log(mirror.revert(proj, cfg, b.song, b.room, plan_for(i, point), opts))
+    band.log(restore_whole(i, point, opts))
     E.refresh_now(); hist_at = 0
   end
   ImGui.EndDisabled(ctx)

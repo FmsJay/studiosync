@@ -8,16 +8,27 @@ local together = {}
 
 together.LEAD = 5 -- seconds between the click and the start: the shared folder takes 1-3 s to deliver the event
 
+-- A start's skip: the time selection REAPER's "Transport: Play (skip time selection)" (40317) plays over, { s, e } in the start
+-- (together.start), checked as anything a bandmate sends is. -> s, e, or nil. Pure. (James, 2026-11-21: "Play together" honours it)
+function together.skip_range(ev)
+  local k = type(ev) == "table" and type(ev.skip) == "table" and ev.skip or nil
+  local s, e = k and tonumber(k[1]), k and tonumber(k[2])
+  if s and e and s >= 0 and e > s and e < 1e7 then return s, e end
+end
 -- When and from where this machine starts. Pure.
--- ev = { at = epoch seconds, pos = song position, countin = seconds, lag = seconds, lead = user }; me; now (epoch).
--- Returns fire (epoch) and from (position). Already past fire: fire now, from as far into the song as time has gone.
+-- ev = { at = epoch seconds, pos = song position, countin = seconds, lag = seconds, lead = user, skip = { s, e } }; me; now (epoch).
+-- Returns fire (epoch) and from (position). Already past fire: fire now, from as far into the song as time has gone (past a skipped
+-- time selection, as far as the others have got by skipping it).
 function together.plan(ev, me, now)
   local fire = ev.at + ((ev.lead and ev.lead ~= me) and (ev.lag or 0) or 0)
   local from = (ev.pos or 0) - (ev.countin or 0)
   if from < 0 then fire, from = fire - from, 0 end -- can't play before 0: start at 0, that much later
   if now and now > fire then
     if ev.behind then return now, from end -- (producing someone: by position it lines up at any lag, so nothing's missed by being late)
-    return now, from + (now - fire)
+    local s, e = together.skip_range(ev)
+    local at = from + (now - fire)
+    if s and from < s and at >= s then at = at + (e - s) end
+    return now, at
   end
   return fire, from
 end
@@ -98,6 +109,27 @@ function together.apply_loop(proj, loop)
     reaper.GetSetRepeatEx(proj, 1)
   elseif loop == false then reaper.GetSetRepeatEx(proj, 0) end
 end
+-- The time selection a start skips: the one ahead of `pos`, as REAPER's Play (skip time selection) skips it, else false.
+function together.skip_of(proj, pos)
+  local s, e = reaper.GetSet_LoopTimeRange2(proj, false, false, 0, 0, false)
+  return e > s and s > (pos or 0) and { s, e } or false
+end
+-- A start's play, fired here (Live sync): with a skip, REAPER's own Play (skip time selection) over that selection, so every computer skips
+-- it as the leader does (the selection is set to the leader's here). Not for a recording, nor from past it (a late start: together.plan),
+-- nor in a tab that isn't in front (REAPER's actions go to the tab in front: it plays through there, and says so). -> true when it skips.
+function together.play(proj, ev)
+  local s, e = together.skip_range(ev)
+  if s and not ev.rec and reaper.GetCursorPositionEx(proj) < s then
+    if reaper.EnumProjects(-1) == proj then
+      reaper.GetSet_LoopTimeRange2(proj, true, false, s, e, false)
+      reaper.Main_OnCommandEx(40317, 0, proj) -- Transport: Play (skip time selection)
+      return true
+    end
+    require("band").log("a start that skips a time selection plays through it in a tab that isn't in front")
+  end
+  reaper.OnPlayButtonEx(proj)
+  return false
+end
 function together.go(proj, cfg, b, ev)
   local band = require("band")
   if ev.type == "start" and ev.loop == nil then ev.loop = together.loop_of(proj) end
@@ -109,9 +141,10 @@ function together.go(proj, cfg, b, ev)
 end
 -- Play or Record together from `pos`, after `countin` bars, with listeners `lag` bars later (Time-sync only, else 0). The panel's Start together,
 -- the web UI's Play page and its Song page's Play (lib/webpages.lua, lib/dawview.lua) all start this way. (James, rt)
-function together.start(proj, cfg, b, pos, rec, countin, click, lag)
+-- `skip`: as REAPER's Play (skip time selection), the time selection ahead of pos skipped on every computer (play only; together.skip_of).
+function together.start(proj, cfg, b, pos, rec, countin, click, lag, skip)
   together.go(proj, cfg, b, { type = "start", rec = rec or nil, pos = pos, countin = together.bars_before(proj, pos, countin), click = click or nil,
-    lag = together.bars_after(proj, pos, lag or 0), lead = cfg.user })
+    lag = together.bars_after(proj, pos, lag or 0), lead = cfg.user, skip = skip and not rec and together.skip_of(proj, pos) or nil })
 end
 -- The project's regions, in order, for "start from": { { name, pos } } (an unnamed one is "region <n>").
 function together.regions(proj)

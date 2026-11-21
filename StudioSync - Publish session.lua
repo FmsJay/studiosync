@@ -80,6 +80,8 @@ band.write_json(band.session_path(cfg, song), {
   published = os.date("!%Y-%m-%dT%H:%M:%SZ"), srate = band.srate(proj),
   tempo = band.capture_tempo(proj), markers = band.capture_markers(proj),
 })
+-- (the member who added the song is its home, in their own signed hub file: lib/hub.lua note_added. James, 2026-11-21)
+if not old or old.host == cfg.user then pcall(require("hub").note_added, cfg, song) end
 band.bind(proj, { role = "host", song = song, room = "main", version = version, root = cfg.root })
 reaper.SetProjExtState(proj, band.SECTION, "timeline", band.json_encode({ band.capture_tempo(proj), band.capture_markers(proj) }))
 reaper.Main_SaveProject(proj, false)

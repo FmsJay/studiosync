@@ -883,8 +883,9 @@ function histhear.restore(proj, cfg, b, r)
     opts.map_of = function(ev) local t = map_of(ev) or first; return t and t.tempo end
     if not p.tracks then -- (the map then, as the preview has it: histhear.timeline_at; unknown or never changed: left as it is)
       local tl = histhear.timeline_at(entries, upto, { first = histhear.first_map(cfg, b, session) })
-      if tl and tl.how == "then" then sync.restore_timeline(proj, cfg, b.song, b.room, { tl.ev }, 1, session)
-      elseif tl and tl.how == "first" then sync.restore_timeline(proj, cfg, b.song, b.room, {}, 0, { first_timeline = tl }) end
+      -- (under the Restore's act, so "Undo this change" on one of its rows takes the map back: lib/page_restore.lua. James, 2026-11-21)
+      if tl and tl.how == "then" then sync.restore_timeline(proj, cfg, b.song, b.room, { tl.ev }, 1, session, nil, act)
+      elseif tl and tl.how == "first" then sync.restore_timeline(proj, cfg, b.song, b.room, {}, 0, { first_timeline = tl }, nil, act) end
     end
     local said = mirror.revert(proj, cfg, b.song, b.room, plan, opts)
     S.said = "Restored to " .. os.date("%a %H:%M", p.t) .. ": " .. tostring(said)

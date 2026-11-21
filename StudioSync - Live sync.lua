@@ -1342,7 +1342,7 @@ local function tick_body() -- returns true to keep going
           reaper.Main_OnCommand(1013, 0) -- Transport: Record (the active project)
           if reaper.GetPlayStateEx(proj) & 4 == 0 then together_take = nil end -- (REAPER's Record Warning cancelled it: no take started together. 0.58.93)
         else
-          reaper.OnPlayButtonEx(proj)
+          together.play(proj, transport) -- (a start that skips a time selection skips it here too: lib/together.lua. James, 2026-11-21)
         end
         local said = transport.remote and string.format("%s from %.2f s: %s started it (they're producing you)", transport.rec and "recording" or "playing", from, tostring(transport.lead))
           or transport.rec and transport.follow and theirs

@@ -809,7 +809,8 @@ end
 -- The tempo map and markers as they were at entries[upto] (the newest change of them by then, else the session's own), for
 -- the whole song going back: they stayed as they were (laptop, 0.42.5). Only the driver's to change. -> whether it changed them.
 -- `from`: the room `entries` are the history of, when that isn't `room` (a new room made from a moment in another's).
-function sync.restore_timeline(proj, cfg, song, room, entries, upto, session, from)
+-- `act`: the Restore's act, on its timeline change too, so "Undo this change" on one of its rows takes the map back (lib/page_restore.lua).
+function sync.restore_timeline(proj, cfg, song, room, entries, upto, session, from, act)
   local t
   for i = 1, math.min(upto, #entries) do
     local e = entries[i]
@@ -838,7 +839,7 @@ function sync.restore_timeline(proj, cfg, song, room, entries, upto, session, fr
   else band.apply_tempo(proj, t.tempo) end
   band.apply_markers(proj, t.markers or {})
   -- (restored: a Restore, not a change StudioSync's Undo steps back, as a restored object isn't: mirror.last_mine. rt-edits)
-  sync.post(cfg, song, room, { type = "timeline", tempo = t.tempo, markers = t.markers or {}, restored = true }, proj) -- (proj: ordered after the newest map seen here. Review, 0.58.95)
+  sync.post(cfg, song, room, { type = "timeline", tempo = t.tempo, markers = t.markers or {}, restored = true, act = act }, proj) -- (proj: ordered after the newest map seen here. Review, 0.58.95)
   sync.setext(proj, band.SECTION, "timeline", sync.timeline_sig(proj))
   return true
 end
@@ -1441,7 +1442,8 @@ end
 -- it. Markers: what T added goes and what it took away comes back, by kind, place, end and name; everything else stays as it is now, a
 -- bandmate's markers since among them. Where T changed the tempo map, places can't be compared across the two maps, so the whole of P comes
 -- back, and only if what's here is still T. The tempo goes first, so REAPER moves things back before the act's items are restored.
--- `tags`: { undoes = id } or { redoes = id }, on the change it sends. -> true when it changed anything, and whether that was the tempo map.
+-- `tags`: { undoes = id } or { redoes = id }, on the change it sends; { restored = true }: "Undo this change" on a Restore's row (lib/page_restore.lua),
+-- a Restore like the rows it puts back, so StudioSync's Undo and Redo pass over it. -> true when it changed anything, and whether that was the tempo map.
 -- REAPER check F3, rt-edits.
 function sync.undo_timeline(proj, cfg, song, room, entries, j, tags, session)
   local T = entries[j]
@@ -1497,7 +1499,7 @@ function sync.undo_timeline(proj, cfg, song, room, entries, j, tags, session)
   reaper.Undo_EndBlock2(proj, "StudioSync: the tempo map and markers of what you undid", -1)
   if not ok then error(e, 0) end
   local tev = { type = "timeline", tempo = band.capture_tempo(proj), markers = band.capture_markers(proj), project = band.capture_project(proj),
-    undoes = tags and tags.undoes, redoes = tags and tags.redoes }
+    undoes = tags and tags.undoes, redoes = tags and tags.redoes, restored = tags and tags.restored }
   sync.post(cfg, song, room, tev, proj)
   sync.timeline_live[proj] = true
   sync.session_timeline(cfg, song, tev.tempo, tev.markers, order(tev), tev.project, room)

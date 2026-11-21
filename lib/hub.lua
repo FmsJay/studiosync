@@ -3,7 +3,7 @@
 -- who holds a role now; band.json's preferred hub; the song's own hub.json), so nobody is told and nothing is negotiated.
 --   Studio hub: the owner's preferred computer when it's online (handed back to it once it's been on HANDBACK s), else whoever holds it now
 --     (so it doesn't flap), else the ranking: the direct link listening there first, then online longest, then its machine id.
---   A song's hub: its home (whoever shared the song, or whoever it was handed to since: hub.json), else whoever holds it now, else the studio
+--   A song's hub: its home (the member who added the song, or whoever it was handed to since: <song>/hub/), else whoever holds it now, else the studio
 --     hub if it has the song open, else the ranking among those in the song; nobody there: the cloud copy stands in (it already carries every
 --     restore point both ways: lib/drive.lua). Below the home, a song's ranking starts with who reaches whom (hub.reach, rt-hubrank): the
 --     computer the most others in the room reach, then the one that reaches the most itself, then the ranking above; whoever holds the role
@@ -358,36 +358,60 @@ local function may_fn(root)
   local groups = require("groups")
   return function(u) local r = groups.role(root, u); return r == "owner" or r == "admin" or r == "open" end
 end
--- -> who shared the song (nil: not known, or not checked yet), every handover that counts { to, by, at }, and the names whose file came from
--- another computer (set aside; one not checked yet just waits).
+-- -> who shared the song (nil: not known, or not checked yet), every handover that counts { to, by, at }, the names whose file came from
+-- another computer (set aside; one not checked yet just waits), session.json's own word of who shared it, and whether that one's adding is
+-- kept (below).
+-- Who shared it is the member who added the song (James, 2026-11-21): the adder's own hub file says so (`added`, written once by their own
+-- computer when they share it, hub.note_added; signed like every hub file, lib/signed.lua "hub"), and it counts when it's the person
+-- session.json names. Then whoever last wrote session.json no longer matters: a bandmate's computer rewriting it (an older build's timeline)
+-- set the sharer aside, and the song's home came and went with it (rt-hubfix part 2). A song with no kept adder: as before, session.json's
+-- host when that person's own computer wrote it.
 function hub.transfers(cfg, song)
-  local trust, refused, list = require("trust"), {}, {}
+  local trust, refused, list, adders = require("trust"), {}, {}, {}
   local s = band.read_json(band.session_path(cfg, song)) or {}
-  local sharer = type(s.host) == "string" and s.host or nil
-  if sharer then
-    local ok = trust.own_file_ok(cfg.root, song .. "/session.json", sharer, type(s.published) == "string" and os.time() - band.age(s.published) or nil)
-    if ok == false then refused[#refused + 1] = sharer end
-    if ok ~= true then sharer = nil end
-  end
+  local named = type(s.host) == "string" and s.host or nil
   local dir = hub_dir(cfg, song)
   for _, f in ipairs(band.files(dir, ".json")) do
     local j = band.read_json(dir .. "/" .. f)
     if type(j) == "table" and type(j.user) == "string" and trust.user_file(j.user) == f and type(j.transfers) == "table" then
-      local newest = 0
+      local newest = tonumber(j.added) or 0
       for _, t in ipairs(j.transfers) do if type(t) == "table" then newest = math.max(newest, tonumber(t.at) or 0) end end
       local ok = trust.own_file_ok(cfg.root, song .. "/hub/" .. f, j.user, newest)
       if ok == false then refused[#refused + 1] = j.user end
       if ok == true then
+        if tonumber(j.added) then adders[j.user] = true end
         for _, t in ipairs(j.transfers) do if type(t) == "table" then list[#list + 1] = { to = t.to, by = j.user, at = t.at } end end
       end
     end
   end
+  local sharer = named and adders[named] and named or nil
+  if named and not sharer then
+    local ok = trust.own_file_ok(cfg.root, song .. "/session.json", named, type(s.published) == "string" and os.time() - band.age(s.published) or nil)
+    if ok == false then refused[#refused + 1] = named end
+    if ok == true then sharer = named end
+  end
   table.sort(refused)
-  return sharer, list, refused
+  return sharer, list, refused, named, named ~= nil and adders[named] == true
 end
+-- The member who added `song`, noted once in their own hub file (kept with its handovers). -> true when it wrote it.
+function hub.note_added(cfg, song)
+  local dir = hub_dir(cfg, song)
+  local path = dir .. "/" .. require("trust").user_file(cfg.user)
+  local j = band.read_json(path)
+  j = type(j) == "table" and j or {}
+  if tonumber(j.added) then return false end
+  reaper.RecursiveCreateDirectory(dir, 0)
+  band.write_json(path, { user = cfg.user, transfers = type(j.transfers) == "table" and j.transfers or {}, added = os.time() })
+  return true
+end
+local noted = {} -- root\nsong -> this computer noted its person as the adder (hub.home)
 -- -> the song's home, whether it was handed on, and the names set aside (hub.transfers).
+-- (a song shared before the adder was kept: the sharer session.json names notes it from their own computer the first time it looks, so it
+-- keeps its home whoever writes session.json from then on. Only that person's computer, for that person.)
 function hub.home(cfg, song)
-  local sharer, list, refused = hub.transfers(cfg, song)
+  local sharer, list, refused, named, added = hub.transfers(cfg, song)
+  local k = tostring(cfg.root) .. "\n" .. tostring(song)
+  if named and named == cfg.user and not added and not noted[k] then noted[k] = true; pcall(hub.note_added, cfg, song) end
   local home, moved = hub.home_of(sharer, list, may_fn(cfg.root))
   return home, moved, refused
 end
@@ -407,7 +431,7 @@ function hub.hand_song(cfg, song, to)
   list[#list + 1] = { to = to, at = os.time() }
   while #list > hub.TRANSFERS_KEPT do table.remove(list, 1) end -- (the oldest go: the chain from the sharer is replayed from what's left)
   reaper.RecursiveCreateDirectory(dir, 0)
-  band.write_json(path, { user = cfg.user, transfers = list })
+  band.write_json(path, { user = cfg.user, transfers = list, added = j.added }) -- (added: kept, hub.note_added)
   band.log(string.format("'%s': its hub is %s's computer from now on (the project's home)", song, to))
   return true
 end

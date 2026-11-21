@@ -17,6 +17,7 @@ local live_mode, live_send, live_server = "synced", true, nil
 local srv_at, srv_up, srv_by, srv_addr = 0, false, nil, nil
 local LIVE_MODES = { { "synced", "Time-sync (play along, in time with the project)" }, { "listen", "Real time (SonoBus, lowest delay)" }, { "jam", "Jam (NINJAM intervals)" } }
 local countin, lag_bars, bars = 1, 0, 1
+local skip_sel = false -- (Play together skips the time selection, as REAPER's Play (skip time selection): lib/together.lua. James, 2026-11-21)
 local server_at = 0
 -- Reach the server: curl connects, and with nothing to say it runs out of time (28) or ends clean (0); it can't connect otherwise. (Blocks up to 3 s: only on a click.)
 local function test_server(addr)
@@ -353,7 +354,10 @@ function M.start_together(play_along)
     ImGui.SetItemTooltip(ctx, "Time-sync only: the others start this many bars after you\n(one NINJAM interval), so what they hear of you lines up.\nLeave 0 for everything else.")
   end
   local pos = start_from > 0 and rg[start_from].pos or reaper.GetCursorPositionEx(proj)
-  local function start(rec) together.start(proj, cfg, b, pos, rec, countin, click_on, play_along and lag_bars or 0) end
+  local function start(rec) together.start(proj, cfg, b, pos, rec, countin, click_on, play_along and lag_bars or 0, skip_sel) end
+  local _, sk = ImGui.Checkbox(ctx, "skip the time selection", skip_sel); skip_sel = sk
+  ImGui.SetItemTooltip(ctx, "As REAPER's Play (skip time selection): Play together jumps over the time selection on every computer\n" ..
+    "(to hear the song without the verse, say). Bandmates on an older StudioSync play through it.")
   if ImGui.Button(ctx, "Play together") then start(false) end
   next_to("Record together")
   if ImGui.Button(ctx, "Record together") then start(true) end
