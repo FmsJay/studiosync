@@ -105,7 +105,7 @@ end
 -- ---- the web page's claim-ask countdown (backlog 1.4): it moved only when the presence topic changed; now every second, in place ----
 do
   local fh = assert(io.open("lib/webui/app.js", "rb"))
-  local js = fh:read("a")
+  local js = fh:read("a"):gsub("\r\n", "\n") -- (a checkout with Windows line ends)
   fh:close()
   local body = js:match("function asks%(a%) {(.-)\n}\n")
   assert(body, "app.js has asks(a)")
