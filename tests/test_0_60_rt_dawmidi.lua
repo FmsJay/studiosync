@@ -78,6 +78,15 @@ for i, bad in ipairs({ { op = "vol", lane = 0, to = 1, i = 0, v = -1 }, { op = "
   assert(dawmidi.parse_send(bad) == nil, "a send edit refused: #" .. i)
 end
 assert(select(3, dawmidi.parse_send({ id = "s9", op = "glue" })) == "s9", "a refusal keeps its id")
+-- automation items (rt-p14): named by index and place; moved, given a length, muted
+local ai = dawmidi.parse_auto({ id = "i1", op = "ai_move", lane = 0, e = 1, name = "Pan", n = 1, t = 10, to = 11 })
+assert(ai and ai.n == 1 and ai.t == 10 and ai.at == 11 and ai.id == "i1", "an automation item move")
+assert(dawmidi.parse_auto({ op = "ai_resize", lane = 0, e = 1, name = "Pan", n = 0, t = 2, len = 3 }).len == 3 and dawmidi.parse_auto({ op = "ai_mute", lane = 0, e = 1, name = "Pan", n = 0, t = 2, on = true }).on == true, "resize, mute")
+for i, bad in ipairs({ { op = "ai_move", lane = 0, e = 1, name = "Pan", n = 1, t = 10 }, { op = "ai_move", lane = 0, e = 1, name = "Pan", t = 10, to = 1 }, { op = "ai_resize", lane = 0, e = 1, name = "Pan", n = 0, t = 2, len = 0 },
+    { op = "ai_resize", lane = 0, e = 1, name = "Pan", n = 0, t = 2 }, { op = "ai_mute", lane = 0, e = 1, n = 0, t = 2, on = true }, { op = "ai_move", lane = 0, e = 1, name = "Pan", n = -1, t = 1, to = 1 },
+    { op = "ai_delete", lane = 0, e = 1, name = "Pan", n = 0, t = 2 } }) do
+  assert(dawmidi.parse_auto(bad) == nil, "an automation item edit refused: #" .. i)
+end
 assert(dawmidi.snap_qn(5.3, 4, 0.5) == 5.5 and dawmidi.snap_qn(5.3, 4, 0) == 5.3 and dawmidi.snap_qn(3.6, 3.5, 1) == 3.5, "snapped from the bar's start (a 7/8 bar starts mid-beat)")
 assert(dawmidi.norm(0.5, -1, 1) == 0.75 and dawmidi.norm(9, 0, 1) == 1 and dawmidi.denorm(0.75, -1, 1) == 0.5, "normalised and back")
 
@@ -147,6 +156,14 @@ reaper.InsertEnvelopePointEx = function(e, _, t, v, shape) e.pts[#e.pts + 1] = {
 reaper.DeleteEnvelopePointEx = function(e, _, i) table.remove(e.pts, i + 1); return true end
 reaper.Envelope_SortPointsEx = function(e) esort(e); return true end
 reaper.Envelope_FormatValue = function(e, v) return string.format("%s %.2f", e.name, v) end
+-- automation items: an envelope's list of { pos, len, mute }
+reaper.CountAutomationItems = function(e) return #(e.ais or {}) end
+local AIK = { D_POSITION = "pos", D_LENGTH = "len", D_MUTE = "mute" }
+reaper.GetSetAutomationItemInfo = function(e, a, k, v, set)
+  local x = e.ais[a + 1]
+  if set then x[AIK[k]] = v; return v end
+  return x[AIK[k]]
+end
 reaper.GetProjectStateChangeCount = function() return clock end
 -- sends: a track's list of { dest = the destination's stand-in, v, p, m }
 reaper.GetTrackNumSends = function(tr) return #(tr.t.sends or {}) end
@@ -169,7 +186,7 @@ local function song()
       { name = "Keys", oid = "T-JAMES-1", items = { { pos = 4, len = 8, oid = "I-JAMES-1", takes = { { notes = {
           { s = 0, e = 960, k = 60, v = 100 }, { s = 960, e = 1920, k = 64, v = 90 }, { s = 1920, e = 2880, k = 67, v = 80, muted = true } } } } } },
         envs = { { name = "Volume", chunk = "<VOLENV2", pts = { { t = 0, v = 0.5 }, { t = 8, v = 0.25 } } },
-                 { name = "Pan", chunk = "<PANENV2", pts = { { t = 2, v = -0.5 } } },
+                 { name = "Pan", chunk = "<PANENV2", pts = { { t = 2, v = -0.5 } }, ais = { { pos = 2, len = 4, mute = 0 }, { pos = 10, len = 2.5, mute = 1 } } },
                  { name = "Mute", chunk = "<MUTEENV", pts = {} },
                  { name = "Cutoff / ReaEQ", fx = 0, param = 3, pts = { { t = 1, v = 1000 } } } } },
       { name = "Mine", ["local"] = true, items = {} },
@@ -291,6 +308,32 @@ peers = {}
 room("claims") -- (Driver + claims, removed in rt: works as Driver only)
 assert(select(2, auto("Andie", { op = "add", lane = 0, e = 1, name = "Pan", t = 1, v = 0.5 })).why:find("only the driver"), "Driver + claims reads as Driver only")
 
+-- ---- automation item edits ----------------------------------------------------------------------------------------------------------------
+song(); room("open", { Chilio = { tracks = { "Bass" } } })
+local pais = fake.tracks[1].envs[2].ais
+r = select(2, auto("James", { id = "q1", op = "ai_move", lane = 0, e = 1, name = "Pan", n = 0, t = 2, to = 3.2 }))
+assert(r.id == "q1" and r.ok and pais[1].pos == 3 and pais[1].len == 4 and undo[#undo].label == "StudioSync web page: move automation item" and not undo[#undo].open, "moved, snapped as REAPER snaps, in one undo point: " .. tostring(r.why))
+r = select(2, auto("James", { op = "ai_move", lane = 0, e = 1, name = "Pan", n = 0, t = 2, to = 5 }))
+assert(r.why:find("automation item changed meanwhile") and pais[1].pos == 3, "the page's view is stale: refused")
+r = select(2, auto("James", { op = "ai_move", lane = 0, e = 1, name = "Pan", n = 2, t = 10, to = 5 }))
+assert(r.why:find("automation item changed meanwhile"), "no such item: refused")
+r = select(2, auto("James", { op = "ai_move", lane = 0, e = 0, name = "Pan", n = 0, t = 3, to = 5 }))
+assert(r.why:find("envelope changed meanwhile"), "an envelope named wrongly: refused")
+r = select(2, auto("James", { op = "ai_resize", lane = 0, e = 1, name = "Pan", n = 0, t = 3, len = 3.2 }))
+assert(r.ok and pais[1].len == 3 and undo[#undo].label == "StudioSync web page: resize automation item", "resized: the end snapped (3 + 3.2 -> 6), as a trimmed item's")
+r = select(2, auto("James", { op = "ai_resize", lane = 0, e = 1, name = "Pan", n = 1, t = 10, len = 0.1 }))
+assert(r.ok and pais[2].len == dawedit.MIN_LEN, "never shorter than MIN_LEN")
+r = select(2, auto("James", { op = "ai_mute", lane = 0, e = 1, name = "Pan", n = 1, t = 10, on = false }))
+assert(r.ok and pais[2].mute == 0 and undo[#undo].label == "StudioSync web page: unmute automation item", "unmuted")
+r = select(2, auto("James", { op = "ai_mute", lane = 0, e = 1, name = "Pan", n = 0, t = 3, on = true }))
+assert(r.ok and pais[1].mute == 1 and undo[#undo].label == "StudioSync web page: mute automation item", "muted")
+fake.tracks[3].envs[1].ais = { { pos = 1, len = 1, mute = 0 } }
+r = select(2, auto("James", { op = "ai_move", lane = 1, e = 0, name = "Volume", n = 0, t = 1, to = 2 }))
+assert(r.why:find("Chilio has claimed Bass") and fake.tracks[3].envs[1].ais[1].pos == 1, "a claimed track's automation items are its claimant's")
+assert(select(2, auto("Chilio", { op = "ai_move", lane = 1, e = 0, name = "Volume", n = 0, t = 1, to = 2 })).ok and fake.tracks[3].envs[1].ais[1].pos == 2, "the claimant's")
+room("claims")
+assert(select(2, auto("Andie", { op = "ai_mute", lane = 0, e = 1, name = "Pan", n = 0, t = 3, on = false })).why:find("only the driver"), "Driver + claims reads as Driver only")
+
 -- ---- send edits ---------------------------------------------------------------------------------------------------------------------------
 song(); room("open", { Chilio = { tracks = { "Bass" } } })
 said, r = send("James", { id = "t1", op = "vol", lane = 0, to = 1, i = 0, v = 0.5 })
@@ -359,6 +402,7 @@ assert(#ev == 1 and ev[1].lane == 0 and #ev[1].env == 4, "only the open track's 
 local v1, p1, m1, f1 = table.unpack(ev[1].env)
 assert(v1.k == "vol" and v1.p[2] == 0.5 and v1.p[5] == 0.25 and v1.i == 0, "volume points across its raw range (0.5 raw of 0 to 1 raw)")
 assert(p1.k == "pan" and p1.p[2] == 0.25 and m1.k == "mute" and f1.k == "fx" and f1.n == "Cutoff / ReaEQ", "pan -0.5 is a quarter up; kinds by chunk name, then FX")
+assert(#p1.a == 6 and p1.a[1] == 2 and p1.a[2] == 4 and p1.a[3] == 0 and p1.a[4] == 10 and p1.a[5] == 2.5 and p1.a[6] == 1 and v1.a == nil, "an envelope's automation items: place, length, muted; none: no key")
 assert(#v1.f == dawmidi.LABELS + 1 and v1.f[1] == "Volume 0.00" and v1.f[#v1.f] == "Volume 1.00", "REAPER's own labels across the range")
 -- the item moves (a stage 2 edit, or in REAPER): followed, and named where it is now
 published.dawmidi = nil
@@ -438,7 +482,8 @@ for _, want in ipairs({ "ssDaw.act({ look:", "note: Object.assign({ id }", "t.da
     "pointerdown", "'wheel'", "'keydown'", "setTimeout(", "snapBack(" }) do
   assert(pr:find(want, 1, true), "pianoroll.js has " .. want)
 end
-for _, want in ipairs({ "ssDaw.act({ look:", "auto: Object.assign({ id }", "t.dawenv", "t.dawedit", "op: 'add'", "op: 'move'", "op: 'delete'", "X.extra =", "X.drawAuto =" }) do
+for _, want in ipairs({ "ssDaw.act({ look:", "auto: Object.assign({ id }", "t.dawenv", "t.dawedit", "op: 'add'", "op: 'move'", "op: 'delete'", "X.extra =", "X.drawAuto =",
+    "op: 'ai_move'", "op: 'ai_resize'", "op: 'ai_mute'", "function aiAt(L, x, y, touch)", "aiOvr", "'Mute automation item'" }) do
   assert(al:find(want, 1, true), "autolanes.js has " .. want)
 end
 for _, want in ipairs({ "act({ look: { send: sendLane } })", "act({ send: Object.assign({ id, lane: sendLane }, o) })", "T.dawsend", "t.dawsend", "add('Sends…'", "bSends.addEventListener",

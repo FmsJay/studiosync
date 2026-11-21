@@ -83,5 +83,32 @@ Internal names (`follow`, `dfollow`) are unchanged.
   to an unclaimed one (it appears for them); remove one; a send to this computer's own track isn't listed; change a send in REAPER while the panel
   is open (the panel follows).
 
+## 4. Automation items (`lib/dawmidi.lua`, `lib/webui/autolanes.js`)
+- **Scope, and why:** an envelope's automation items are **shown, moved, resized and muted**. **Not done:** adding one, deleting one, and editing the
+  points inside one. Deleting: no API removes an automation item (`mirror.lua`'s `clear_ai` takes the `POOLEDENVINST` lines out of the envelope
+  chunk; that is a chunk rewrite of a whole envelope, not an edit I'd make from a drag). Adding: `InsertAutomationItem` with a negative pool
+  absorbs the envelope's own points under it, and with a pool number needs a fresh one project-wide (`mirror.next_pool`, local to mirror.lua);
+  neither is a one-line edit. Points inside: I could not confirm from the disk whether `GetEnvelopePointEx(env, ai, n)`'s times are project
+  or pool time (`mirror.item_lines` reads with the 0x10000000 one-pass flag), so what an item plays isn't drawn, only where it is.
+  `tests/reaper/auto_items.lua` is the place to settle that if these are wanted.
+- **Read:** `dawenv`'s envelopes carry `a`, flat triples (position, length, muted) from `CountAutomationItems` /
+  `GetSetAutomationItemInfo(D_POSITION, D_LENGTH, D_MUTE)`, up to 200 an envelope; no key when there are none. Three calls an item, only for
+  the open lanes.
+- **Edit:** `{auto:{op: ai_move | ai_resize | ai_mute, lane, e, name, n (the item's index), t (where it was), to | len | on}}`, named as a point is
+  (the envelope by index and name) and refused when the item at that index isn't at `t` any more. The track's automation rule, as a point edit
+  (the track's name with no spot: its claim, Driver only; a bandmate editing it too merges). Move: `D_POSITION`, snapped as REAPER snaps (SnapToGrid,
+  only with snapping on). Resize: the end snapped like a trimmed item's, never under `dawedit.MIN_LEN`. One undo point each ("move automation
+  item", "resize automation item", "mute automation item" / "unmute ...").
+- **Page:** a box over each item's span on its lane (dimmer when muted, an accent outline when selected, "automation item" when wide enough);
+  drag it to move, drag its right edge to resize (a phone: the selected item only; a tap selects), the menu offers Mute / Unmute. A drag on a
+  spot with no item or point still pans. A point under an item wins over the item.
+- **Tests:** `tests/test_0_60_rt_dawmidi.lua` (parse, the published triples, each edit on a stand-in REAPER, stale index or place, a claimed track,
+  its claimant, Driver only), `tests/rt_p14_browser.mjs` (open the lanes, drag, refusal, resize by the edge, the menu's Unmute, a drag on nothing).
+  The first run of the Lua test caught a real bug in the reader (the third value of each triple went into slot 5).
+- **Check in REAPER:** a track with an automation item (volume, a send's, an FX knob's): the box sits where REAPER's does; drag it by a bar and
+  compare; resize by the right edge (REAPER's own end moves the same, and Ctrl+Z puts it back once); mute it (REAPER shows it muted and the
+  envelope plays without it); a pooled pair (moving one doesn't move the other); looped or rate-changed items (position and length only);
+  a bandmate's item on a track they claimed (refused).
+
 ## Review later (security)
 - (none yet)

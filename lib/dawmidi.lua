@@ -4,7 +4,8 @@
 --   dawmidi  the open MIDI item's notes: only that item's, found as stage 2 names items (lib/dawedit.lua's find_item) and followed after
 --            that by the item itself, so a move or trim doesn't lose it; the page names it by the place this topic gives
 --   dawenv   the envelopes of the tracks whose automation lanes the page has open (volume, pan, width, mute, FX parameters, sends): only
---            those tracks', points normalised to the envelope's range, with its own value labels for the page's readout
+--            those tracks', points normalised to the envelope's range, with its own value labels for the page's readout, and its automation
+--            items' place, length and mute (`a`, flat triples: rt-p14)
 --   dawsend  the sends of the one track whose sends panel the page has open (rt-p14): each one's destination (by its place among the shown
 --            tracks), level, pan and mute
 -- Edits, each checked as stage 2's are and applied through the API in one undo point; the normal sync sends them on, and the answer goes
@@ -20,6 +21,7 @@ dawmidi.NOTES_MAX = 4000  -- notes sent from the open item (the first ones)
 dawmidi.POINTS_MAX = 2000 -- points sent per envelope (the first ones)
 dawmidi.LANES_MAX = 8     -- tracks with their automation open at once
 dawmidi.SENDS_MAX = 32    -- sends sent from the open track (the first ones)
+dawmidi.AI_MAX = 200      -- automation items sent per envelope (the first ones)
 dawmidi.LABELS = 16       -- value labels per envelope (REAPER's own wording at even steps across its range)
 dawmidi.WANT_FOR = 30     -- seconds a page's look lasts (pages say it every 10 s)
 dawmidi.FLOOR = 10        -- a whole look at least this often
@@ -83,7 +85,8 @@ function dawmidi.parse_note(e)
   end
   return out
 end
-local AUTO_OPS = { add = "add envelope point", move = "move envelope point", delete = "delete envelope point" }
+local AUTO_OPS = { add = "add envelope point", move = "move envelope point", delete = "delete envelope point",
+  ai_move = "move automation item", ai_resize = "resize automation item", ai_mute = "mute automation item" }
 -- An envelope point edit from a page -> what it asks for, checked, or nil, why and its id. v: 0 to 1 across the envelope's range.
 function dawmidi.parse_auto(e)
   if type(e) ~= "table" then return nil, "not an edit" end
@@ -91,6 +94,19 @@ function dawmidi.parse_auto(e)
   if not AUTO_OPS[e.op] then return nil, "not an edit this page can make", id end
   local out = { op = e.op, id = id, lane = int(e.lane), e = int(e.e), name = type(e.name) == "string" and #e.name <= 200 and e.name or nil }
   if not (out.lane and out.e and out.name) then return nil, "that isn't an envelope the page showed", id end
+  if e.op:find("^ai_") then
+    -- (an automation item: named by its index on the envelope and where it was; moved to `to`, given a new length, or muted)
+    out.n, out.t = int(e.n), num(e.t)
+    if not (out.n and out.t) then return nil, "that isn't an automation item the page showed", id end
+    if e.op == "ai_move" then
+      out.at = num(e.to)
+      if not out.at then return nil, "no place to put it", id end
+    elseif e.op == "ai_resize" then
+      out.len = num(e.len)
+      if not (out.len and out.len > 0) then return nil, "an automation item needs a length", id end
+    else out.on = e.on == true end
+    return out
+  end
   if e.op ~= "add" then
     out.n, out.t = int(e.n), num(e.t)
     if not (out.n and out.t) then return nil, "that isn't a point the page showed", id end
@@ -214,7 +230,14 @@ function dawmidi.envelopes(tr)
         local s = reaper.Envelope_FormatValue(env, dawmidi.denorm(k / dawmidi.LABELS, lo, hi))
         labels[#labels + 1] = type(s) == "string" and s:sub(1, 24) or ""
       end
-      out[#out + 1] = { i = i, n = name:sub(1, 80), k = kind, f = labels, p = pts }
+      -- (its automation items: position, length, muted. Not their points: what an item plays isn't drawn, only where it is)
+      local ais = {}
+      for a = 0, math.min(tonumber(reaper.CountAutomationItems(env)) or 0, dawmidi.AI_MAX) - 1 do
+        local n = #ais
+        ais[n + 1], ais[n + 2] = r3(reaper.GetSetAutomationItemInfo(env, a, "D_POSITION", 0, false)), r3(reaper.GetSetAutomationItemInfo(env, a, "D_LENGTH", 0, false))
+        ais[n + 3] = reaper.GetSetAutomationItemInfo(env, a, "D_MUTE", 0, false) ~= 0 and 1 or 0
+      end
+      out[#out + 1] = { i = i, n = name:sub(1, 80), k = kind, f = labels, p = pts, a = #ais > 0 and ais or nil }
     end
   end
   return out
@@ -294,6 +317,16 @@ local function auto_apply(proj, cfg, b, e)
   local can, who = dawedit.authority(cfg, b)
   local why = dawedit.item_refusal(can, who, cfg.user, dawedit.track_name(tr), toid, nil, nil)
   if why then return why end
+  if e.op:find("^ai_") then
+    local pos = e.n < (tonumber(reaper.CountAutomationItems(env)) or 0) and reaper.GetSetAutomationItemInfo(env, e.n, "D_POSITION", 0, false)
+    if not (pos and math.abs(pos - e.t) <= dawmidi.TOL) then return "that automation item changed meanwhile" end
+    return dawedit.in_undo(proj, e.op == "ai_mute" and not e.on and "unmute automation item" or AUTO_OPS[e.op], function()
+      if e.op == "ai_move" then reaper.GetSetAutomationItemInfo(env, e.n, "D_POSITION", dawedit.snap(proj, e.at), true)
+      elseif e.op == "ai_resize" then -- (the end snaps as a trimmed item's does; never shorter than an item may be)
+        reaper.GetSetAutomationItemInfo(env, e.n, "D_LENGTH", math.max(dawedit.MIN_LEN, dawedit.snap(proj, pos + e.len) - pos), true)
+      else reaper.GetSetAutomationItemInfo(env, e.n, "D_MUTE", e.on and 1 or 0, true) end
+    end)
+  end
   if e.op ~= "add" then
     local ok, t = reaper.GetEnvelopePointEx(env, -1, e.n)
     if not (ok and math.abs(t - e.t) <= dawmidi.TOL) then return "that point changed meanwhile" end

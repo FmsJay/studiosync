@@ -287,6 +287,58 @@ ok((await text('.dfollow')).startsWith('View') && await ev('document.querySelect
   await push(project());
 }
 
+// ---- automation items -----------------------------------------------------------------------------------------------------------------
+{
+  const lookEnv = () => [...actions].reverse().find((a) => a.look && a.look.env !== undefined);
+  const labels = Array.from({ length: 17 }, (_, i) => (i * 6.25).toFixed(0) + '%');
+  const envTopic = (a0, a1) => ({ dawenv: { key: KEY, lanes: [{ lane: 1, env: [{ i: 0, n: 'Volume', k: 'vol', f: labels, p: [0, 0.5, 0], a: a0 }, { i: 1, n: 'Pan', k: 'pan', f: labels, p: [], a: a1 }] }] } });
+  // open Bass's lanes by a tap on its name
+  const [nx, ny] = await ev('(() => { const r = document.querySelector(".dcv").getBoundingClientRect(), D = window.ssDaw; return [r.left + 30, r.top + D.laneY(1) + 20]; })()');
+  await click(nx, ny);
+  await sleep(100);
+  ok(lookEnv() && JSON.stringify(lookEnv().look.env) === '[1]', 'a tap on Bass’s name opens its lanes (' + JSON.stringify(lookEnv() && lookEnv().look) + ')');
+  await push(envTopic([4, 4, 0, 12, 2, 1], undefined));
+  await sleep(100);
+  const laneXY = (t, e, dy = 17) => ev('(() => { const r = document.querySelector(".dcv").getBoundingClientRect(), D = window.ssDaw, v = D.view(); return [r.left + D.xOf(' + t + '), r.top + D.laneY(1) + v.LANE + ' + e + ' * 34 + ' + dy + ']; })()');
+  const [ax, ay] = await laneXY(6, 0);
+  const [bx] = await laneXY(10, 0);
+  await drag(ax, ay, bx, ay); // from 6 s, 4 s on: the item at 4 to 8 moves by 4 s... snapped to the grid
+  let a = lastAction();
+  ok(a.auto && a.auto.op === 'ai_move' && a.auto.n === 0 && a.auto.t === 4 && Math.abs(a.auto.to - 8) < 1e-6 && a.auto.lane === 1 && a.auto.e === 0 && a.auto.name === 'Volume', 'dragging an automation item sends ai_move naming it (' + JSON.stringify(a.auto) + ')');
+  await push({ dawedit: { id: a.auto.id, why: 'Chilio has claimed Bass there' } });
+  ok((await text('.dmsg')).includes('Not changed: Chilio has claimed Bass there'), 'a refusal says why');
+  const n0 = actions.length;
+  await drag(ax, ay, bx, ay);
+  a = lastAction();
+  await push(Object.assign({ dawedit: { id: a.auto.id, ok: true } }, envTopic([8, 4, 0, 12, 2, 1], undefined)));
+  await sleep(100);
+  ok(actions.length > n0, 'and a second try goes out');
+  const [ex, ey] = await laneXY(12, 0); // the moved item is now 8 to 12: its right edge
+  const [fx] = await laneXY(14, 0);
+  await drag(ex - 3, ey, fx - 3, ey);
+  a = lastAction();
+  ok(a.auto && a.auto.op === 'ai_resize' && a.auto.n === 0 && a.auto.t === 8 && Math.abs(a.auto.len - 6) < 1e-6, 'its right edge resizes (' + JSON.stringify(a.auto) + ')');
+  await push({ dawedit: { id: a.auto.id, why: 'again' } });
+  // the menu on the muted one (12 to 14 s)
+  const [mx, my] = await laneXY(13, 0);
+  await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: mx, y: my, button: 'right', buttons: 2, clickCount: 1 });
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: mx, y: my, button: 'right', buttons: 0, clickCount: 1 });
+  await sleep(100);
+  const items = await ev('[...document.querySelectorAll(".dmenu button")].map((x) => x.textContent)');
+  ok(items.includes('Unmute automation item') && items.some((x) => x.startsWith('Add a point here')), 'the menu on a muted automation item offers Unmute (and still a point)');
+  await ev('[...document.querySelectorAll(".dmenu button")].find((x) => x.textContent === "Unmute automation item").click(); 1');
+  await sleep(100);
+  a = lastAction();
+  ok(a.auto.op === 'ai_mute' && a.auto.on === false && a.auto.n === 1 && a.auto.t === 12, 'and sends ai_mute off for it (' + JSON.stringify(a.auto) + ')');
+  // an empty spot in the lane still pans (no item there), and a click on a point still wins over an item under it
+  const nn = actions.length;
+  const [px, py] = await laneXY(2, 0);
+  await drag(px, py, px + 40, py);
+  ok(actions.length === nn || !lastAction().auto, 'a drag on a spot with no item sends no automation edit');
+  state.topics = project();
+  await push(project());
+}
+
 ok(errors.length === 0, 'no page errors' + (errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''));
 console.log(fails ? 'FAIL ' + fails : 'ok');
 await done(fails ? 1 : 0);
