@@ -144,3 +144,137 @@ two, and the link's upload speed.
 - Everything read from the mapping is masked or clamped as before; the sample rate used for the 50/200/400 ms windows is taken from the
   mapping only between 8 kHz and 768 kHz (48 kHz otherwise).
 - X now drops a note-on more than 200 ms late; it never starts anything on its own.
+
+# Round 2 (rt-p4, backlog package P4: items 1.17 and 1.18)
+
+Offline, native and headless only: **nothing was run in REAPER or on the test computers.** Changed: `extension/hopnet.cpp` (needs an
+extension release; the coordinator bumps EXT_VERSION), `lib/hops.lua`, `lib/hoptry.lua`, `lib/webui/tryfx.js`, `tests/hopnet_test.cpp`,
+`tests/test_0_60_rt_hoptry.lua`. The Hop plug-in is unchanged (stays 0.2.1, no plug-in build needed for this round).
+
+| Item | Status |
+| --- | --- |
+| 4. Only the first 256 knobs | Fixed: pages of 256, up to 4,096 knobs; the Try tab pages through them and its filter looks through all |
+| 2. Print's first 0.5 s dry at 0 | Built, REAPER-dependent: a print without room for its lead-in records with REAPER's pre-roll on (put back after), and checks afterwards whether playback really went back far enough; says so if not |
+| 3. Switching tabs on the owner's computer | Built, REAPER-dependent: hosting goes on behind another tab (it used to stop following), and while hosting, REAPER's two "Run background projects" options are on (put back after) |
+| 5. Two hops at once lost more | Fixed in the extension: two or more hops to one computer are paced across the block, both ways. Test: 47.7% lost before, 0% after |
+
+## 4. Knobs in pages (`lib/hoptry.lua`, `lib/hops.lua`, `lib/webui/tryfx.js`)
+- **The owner** (`hoptry.host_params`, once a second): reads every knob's value (up to `PARAM_MAX` = 4,096; a JUCE VST3's 2,048 MIDI-CC
+  proxies after its own still fit). A page of 256 goes when one of its values changed, when it's its turn (one page a second in rotation, so
+  each is sent again every `PARAMS_AGAIN` s or every `pages` s, whichever is longer), or when it was never sent; names and value texts are
+  read only for a page that goes. At most `PAGES_EVERY` = 4 pages a tick (~25 KB each; the direct link caps a message at 64 KB), the rest at
+  the next tick.
+- **On the wire:** page 0 is the old `"params"` message (plus `off = 0`), so an **older requester** shows the first 256 exactly as before;
+  pages 1+ go as a new op `"page"` with `off`, which an older StudioSync ignores (its `hops.on_msg` routed only params/set). An **older
+  owner** sends only page 0: the new requester shows 256, as before.
+- **The requester** (`hoptry.on_msg`): a page is taken only at a multiple of 256 under 4,096, and only its own indexes (`clean_params(list,
+  off)`: at most 256, values clamped 0..1, texts clipped); pages are merged by index into one list (in any order; page 0 says how many knobs
+  there are and drops pages past that). `set_param` works on any index the owner has (the owner checks `p < NumParams`).
+- **The Try tab:** one page at a time (`{knobs = {id, page}}`: "Earlier knobs" / "Later knobs", "Knobs 257-512 of 600") or, with a filter
+  typed, the first 256 knobs of all pages whose name has it (`{knobs = {id, q}}`, sent 300 ms after typing; the rows on screen are hidden at
+  once as before). Past 4,096: "The first 4096 of its N knobs come here; the rest only in its own window there." The topic still carries one
+  page of knobs, so it stays the size it was.
+- **Cost:** the owner reads up to 4,096 normalized values a second on REAPER's thread (cheap calls; not measured in REAPER). A knob's value
+  text that changes without its value (rare) shows up to `pages` s late on pages other than the one in turn.
+
+## 2. Print's lead-in (`lib/hoptry.lua`)
+- A selection starting under `PRINT_LEAD` (2 s) can't have the 2 s lead-in (the edit cursor goes to 0). Print now turns on REAPER's
+  **Pre-roll: Toggle pre-roll on record** (action 41819, checked in this drive's REAPER action list) for the print when it's off, and turns
+  it off again when the print ends. With pre-roll, REAPER plays from `prerollmeas` measures before the cursor (1 measure in this REAPER's ini).
+- Whether REAPER plays **before 0** in its pre-roll is the one REAPER fact this rests on, so Print doesn't assume it: `print_tick` keeps the
+  lowest play position it saw (every half second while it runs), and after the print, if playback didn't start at least `PRINT_WARM` (1 s)
+  before the selection, it logs "the print's lead-in was only N s ... about the first half second of the print may be the dry track. Start
+  the selection at 2 s or later, or set a longer pre-roll". The old up-front warning is gone (it was right only without pre-roll).
+- If the REAPER check shows pre-roll doesn't play before 0, the fallback is the loop design in item 2 above (not built).
+
+## 3. Switching tabs on the owner's computer (`lib/hops.lua`)
+- `hops.tick` no longer returns when Live sync's tab isn't in front: the **hosting** part (knobs to the requester, the song's knobs to an
+  offload's copies, the idle drop, leftover hidden tracks) runs behind another tab too; this computer's **own** hops still wait for its tab
+  to be in front, as before. (REAPER's whatsnew: "support background projects for GetTrackGUID(), GetTrackInfo(), DeleteTrack()".)
+- `hops.run_background`: while this computer hosts a hop, REAPER's **Project tabs: Run background projects** (40871) and **Run stopped
+  background projects** (40873) are on; each one StudioSync turned on goes back off the tick after the last hosted hop ends, and when Live
+  sync stops. One that was already on is left alone. Said once in the log. They're REAPER's own global options (reaper.ini), so a crash while
+  hosting leaves them on (review-later list).
+- Not built: the hidden track following the tab in front (rebuilt in the new tab). Only needed if the REAPER check shows the two options
+  don't keep a background tab's FX running.
+
+## 5. Two hops paced (`extension/hopnet.cpp`)
+- With two or more hops streaming to the same computer (sending end: same address, active; serving end: same requester address, a packet in
+  the last second), each hop's frames go out at `PACE` = 1.5 x real time from the first packet of its block, instead of everything published
+  since the last 1 ms poll at once: a 512-frame block (4 datagrams) over ~5.3 ms at 48 kHz. The credit builds only while frames wait, so a
+  quiet spell between blocks banks nothing but the first packet. Never more than one block behind: a play start's whole-latency burst still
+  goes at once (those frames can't be back in time anyway). The returns from the remote are paced the same way. **A lone hop is unchanged.**
+- **Cost:** the last datagram of a block waits up to (block - 128) / 1.5 frames (5.3 ms at 512, 13 ms at 1024); that's added to the sender's
+  `need_ms` (and the remote's part in its pong), so Health and the long-link budget account for it. A MIDI event goes once its frame has.
+- Status: `"paced": true/false` in both roles' net JSON. The wire format is unchanged, so either end can be an older extension.
+
+## Tests (each fails with its change removed)
+- `tests/hopnet_test.cpp`: **two hops at once** through a link of 8 Mbit/s each way with a drop-tail queue of 6 datagrams (two hops are
+  6.4 Mbit/s), both Hops in the same 512-frame block: paced, both hops lost 0 frames, every frame exact once up, no datagram dropped by the
+  queue. **Against HEAD's hopnet.cpp: hop 1 lost 47.7% (529 datagrams dropped by the queue), 4 checks fail.** Also: a lone hop reports
+  `paced:false` both ways. All the old scenarios pass unchanged (this desktop, 1 ms timers). On coarse timers (a hosted Mac) the loss checks
+  are reported and passed over, as the other timing checks are.
+- `tests/test_0_60_rt_hoptry.lua`: pages (clean_params by offset, `knob_view`); 600 knobs go as params + 2 pages, each under 64 KB, merged
+  in any order, odd and too-far offsets ignored; the model's page, Later, never past the last, the filter through every page, at most a page
+  of matches; a knob past 256 turned and only its page sent again; 1,100 knobs: four pages, the fifth at the next tick; back to 3 knobs drops
+  the old pages; behind another tab the knobs still go; hosting turns 40871/40873 on; Print at 0.4 s turns pre-roll on and back off, no
+  warning when playback went before 0, the lead-in warning when it didn't, pre-roll already on is left on. Mutations checked one at a time
+  (the front-tab return put back, the `"page"` routing removed, the pre-roll removed): each fails its assertion. Against HEAD's hops.lua or
+  hoptry.lua the test fails too.
+- Headless Chrome (no media devices) against a stand-in `ssTabs` around the real `tryfx.js`: 256 rows, "Knobs 1-256 of 600",
+  Earlier/Later state and their action, page 2's rows replace page 1's, a knob on page 3 sends its own index, the filter's action after
+  300 ms, one match with no paging, three knobs with no nav, the "first 4096" note. With HEAD's tryfx.js it fails.
+- `python tests/run.py --no-luals` in a clean clone of HEAD (cc86dcc) plus these files: **fails 0**.
+- Builds, to scratch copies only (no tracked binary touched): `extension\build_windows.cmd` with `DLL_OUT=rtp4_studiosync-x64.dll` links;
+  `plugin\build_windows.cmd` builds the VST3 and CLAP.
+
+## Check in REAPER, round 2 (after the extension release with this hopnet.cpp, on both computers; Hop 0.2.1 as before)
+
+**Allow without a click.** A try needs the owner's yes. Instead of Allow on the laptop's screen, the laptop's own web UI takes it from the
+laptop itself (a request from 127.0.0.1 needs no token, only the header the page sends). From the desktop, `ssh laptop`, then in its
+PowerShell (47281 is the direct link's port; use the studio's if it was changed):
+
+    $u = 'http://127.0.0.1:47281/api'; $h = @{ 'X-StudioSync' = '1' }
+    Invoke-RestMethod -Method Post -Uri "$u/action" -Headers $h -ContentType 'application/json' -Body '{"topic":"tryfx","want":true}'
+    Start-Sleep 2; (Invoke-RestMethod "$u/state").topics.tryfx.asks          # each ask: token, user, key
+    Invoke-RestMethod -Method Post -Uri "$u/action" -Headers $h -ContentType 'application/json' -Body ('{"topic":"tryfx","allow":' + $TOKEN + '}')
+
+The ask must still be pending (the requester asks every 3 s; an ask lapses 30 s after its last). If that route can't be used, James clicks
+**Allow for this session** on the laptop: Settings > Health, the row "<name> asks to try your <plug-in> on this computer"; or the web UI's
+Try tab > Your plug-ins > **Allow**.
+
+1. **Knob pages.** Desktop tries a laptop-only plug-in with more than 256 parameters (a big synth; the Try tab says "Knobs 1-256 of N").
+   Later knobs shows 257-512; turn knob 300 on the desktop: the laptop's plug-in moves. Type part of a name that's past 256 in the filter:
+   it's listed. Turn a knob past 256 in the plug-in's own window on the laptop: the desktop's value follows within ~2 s. Live sync's
+   `start/hops` sub-lap on the laptop with the try running stays under ~2 ms.
+2. **Print at 0.** On the desktop, a try running, a time selection 0-4 s, Print. Log: "with REAPER's pre-roll". Note whether playback
+   started before 0 (negative time on the timeline) and that pre-roll is off again after. Listen to the print's first second (or compare it
+   with `ears.py wav` against a render of the dry track): wet from 0 means pre-roll plays before 0. If the log says "the print's lead-in was
+   only ...", REAPER didn't play before 0: report it (the loop design is next).
+3. **Tab switch.** While the desktop tries a laptop plug-in: the laptop logs "hosting a hop: REAPER now runs project tabs that aren't in
+   front", and `reaper.GetToggleCommandState(40871)` and `(40873)` read 1 there. Bring another project tab to the front on the laptop
+   (`reaper.SelectProjectInstance` through the dev-eval hook; no click), stopped and then playing: the desktop keeps hearing the plug-in and
+   its Health row stays green; turn a knob on the desktop: the laptop's plug-in follows. Stop the try: within a second both options read
+   what they did before.
+4. **Two hops paced.** Two tries (or a try and an offload) from the desktop to the laptop at once over the internet link: both hops' net
+   JSON (`StudioSync_HopStatus`) says `"paced":true`; Health's lost % for each over a minute, against round 1's one-hop figure. One hop
+   alone: `"paced":false` and the same lost % as before. Note each REAPER's block size (pacing costs up to a block / 1.5 in `need_ms`).
+5. **Note tails (ears).** As rt-ears.md "Left": on the desktop `track add=true note=60 instrument=<the try's track> capture=true`, `note
+   frames=144000 off=48000`, `capread`, then `python tools/ears/ears.py tail GOT.wav --on 1 --off 3`: passes (the tail ends within release +
+   200 ms + a block). Then the lost note-off: set the desktop's Hop offline while the note is held, and capture on the laptop's hidden track.
+
+## Review later (security), round 2
+- A `"page"` message is bounded like `"params"`: its offset a multiple of 256 under 4,096, at most 256 entries, only indexes in its page,
+  texts clipped; at most 16 pages a try. It's taken only for a try this computer made, over the direct link (signed).
+- `{knobs = {id, page, q}}` from the web page: the id must be a try in this project, the page is clamped, the filter clipped to 48 bytes.
+- Hosting turns on two REAPER-wide options and puts back only what it turned on; a crash or REAPER killed mid-hosting leaves them on. They
+  make every background tab run, not only Live sync's.
+- Pacing changes only when datagrams go, never what goes or to whom.
+
+## Left
+- The REAPER facts items 2 and 3 rest on (pre-roll playing before 0; the two options keeping a background tab's FX running) are unchecked;
+  each has a fallback design above, not built.
+- A lone hop with big blocks (1,024+) still sends each block at once (unchanged on purpose: one hop measured fine).
+- `tryfx.css` (not in P4's files) has no style for the new `.tfnav` row: it wraps as plain buttons.
+- No `tools/ears` run offline: the native held-MIDI checks (round 1) already measure each note-off at Hop X exactly; ears' `tail` belongs to
+  the REAPER check (step 5), where it measures the real instrument's sound.
