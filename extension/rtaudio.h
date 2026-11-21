@@ -54,6 +54,10 @@ int rt_peer_play(RtLink *l, const char *peer, double gain);
 // this computer mixes for every listener that asks (its own Talk and Play in it), on the send thread. -> 1. (James, rt)
 int rt_hub(RtLink *l, const char *peer, int serve);
 std::string rt_status(RtLink *l); // JSON: the link, and per peer latency, jitter buffer, loss, level (see rtaudio.cpp)
+// The ears tap (tools/ears; docs/rt/rt-p11.md): what this computer hears of peer's stream ("talk", "play", "hub": decoded, before any level),
+// or with peer "" and "play" its own Play as it goes out, written to path (a .wav: 32-bit float stereo) for seconds (0..60) by a worker; the
+// audio thread only copies into a ring. One at a time, while running. -> 1 started. rt_status's "ears" says how it goes.
+int rt_ears(RtLink *l, const char *peer, const char *stream, const char *path, double seconds);
 // The audio thread (REAPER's hook, or the test's clock): capture before REAPER's processing, mix after. No lock, allocation or REAPER call.
 void rt_capture(RtLink *l, const double *const *in, int nin, int len, double srate);
 // A browser guest heard here, added to the Talk sent (extension/webui.cpp webui_guest_talk; null: nothing). Called in rt_capture on the audio

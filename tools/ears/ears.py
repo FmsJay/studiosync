@@ -6,8 +6,10 @@ A known signal goes in at one computer, each other computer captures what it rec
                                                         REAPER player), pattern.json (sections and timing events)
   python tools/ears/ears.py env PATTERN_DIR SEND RECV --peer NAME [--hub] [--gain G] [--offset-ms MS]
                                                         live audio from extension status polls (tools/ears/ears.lua "poll" files)
-  python tools/ears/ears.py wav REF.wav GOT.wav [--pattern PATTERN_DIR] [--codec]
-                                                        two recordings of the same signal (Jam's copies, a capture tap)
+  python tools/ears/ears.py wav REF.wav GOT.wav [--pattern PATTERN_DIR] [--exact] [--stamps]
+                                                        two recordings of the same signal (Jam's copies, a capture tap). Live audio's
+                                                        ears tap (ears.lua "tap") leaves REF.wav.json / GOT.wav.json beside each: with
+                                                        --stamps, the latency on the link clock and whether it held steady (rt-p11)
   python tools/ears/ears.py tail GOT.wav --on S --off S [--release-ms MS] [--bound-ms MS]
                                                         the Hop: a note's tail must end within the bound after its note-off
 
@@ -543,7 +545,49 @@ def compare_wav(ref, got, sr, meta=None, exact=False):
     }
     if exact:
         res["pass"]["bit_exact"] = res["max_abs_diff"] is not None and res["max_abs_diff"] <= 1.0 / 32768
+    if not exact:  # (a live path: its delay must hold still through the recording, LAT_IQR_MS / LAT_JUMP_MS as env's)
+        sl = steady_lags(ref, got, sr, lag)
+        ms = [x[1] / sr * 1000 for x in sl if x[2] >= 0.8]  # (a window matched less well than that: a repeat in the music, left out)
+        if len(ms) >= 3:
+            res["steady"] = {"windows": len(ms), "min_ms": round(min(ms), 1), "max_ms": round(max(ms), 1),
+                             "jump_ms": round(max(abs(b - a) for a, b in zip(ms, ms[1:])), 1)}
+            res["pass"]["steady"] = max(ms) - min(ms) <= LAT_JUMP_MS
     return res
+
+
+def steady_lags(ref, got, sr, base_lag, win_s=0.5, search_ms=200.0, min_rms_db=-50.0):
+    """The lag of got against ref window by window (each win_s of ref with sound in it, searched within +-search_ms of base_lag): a delay
+    that moves (sound dropped or repeated, a re-buffer, a skip) shows as a step. -> [(t_s in ref, lag_samples, corr)]."""
+    out = []
+    w, s = int(win_s * sr), int(search_ms / 1000 * sr)
+    for a in range(0, len(ref) - w, w):
+        r = ref[a:a + w]
+        if db(np.sqrt(np.mean(r ** 2))) < min_rms_db:
+            continue
+        g0 = a + base_lag - s
+        if g0 < 0 or g0 + w + 2 * s > len(got):
+            continue
+        seg = got[g0:g0 + w + 2 * s]
+        c = signal.fftconvolve(seg, r[::-1], mode="valid")  # (only lags with r wholly inside seg: 0 .. 2s)
+        i = int(np.argmax(np.abs(c)))
+        e = math.sqrt(float(np.sum(r ** 2)) * float(np.sum(seg[i:i + w] ** 2))) or 1.0
+        out.append((a / sr, g0 + i - a, float(abs(c[i]) / e)))
+    return out
+
+
+def stamp_latency(ref_path, got_path, lag, sr):
+    """The ears tap's stamps (REF.wav.json, GOT.wav.json from ears.lua "tap": t_first on each one's link clock, its me and its
+    StudioSync_DirectClock): latency = when got heard a sample less when ref sent it, on the sender's clock. None without both."""
+    try:
+        rs = json.load(open(ref_path + ".json"))
+        gs = json.load(open(got_path + ".json"))
+    except (OSError, ValueError):
+        return None
+    peers = (gs.get("clock") or {}).get("peers") or {}
+    sender = rs.get("me") or ""
+    off = next((v.get("offset_ms") for k, v in peers.items() if sender and k.startswith(sender)), 0.0) or 0.0
+    # (offset_ms: the receiver's estimate of the sender's clock minus its own; got's stamp moved onto the sender's clock)
+    return (gs["t_first"] + off / 1000.0 + lag / sr - rs["t_first"]) * 1000.0
 
 
 # ---------------------------------------------------------------------------------------------------------------------------------------
@@ -587,6 +631,7 @@ def main(argv):
     e.add_argument("--peer", default=""); e.add_argument("--hub", action="store_true"); e.add_argument("--gain", type=float, default=1.0)
     e.add_argument("--offset-ms", type=float, default=None, help="the sender's clock minus the receiver's (default: the receiver poll's clock)")
     w = sub.add_parser("wav"); w.add_argument("ref"); w.add_argument("got"); w.add_argument("--pattern"); w.add_argument("--exact", action="store_true")
+    w.add_argument("--stamps", action="store_true", help="the ears tap's REF.wav.json/GOT.wav.json: latency on the link clock")
     t = sub.add_parser("tail"); t.add_argument("got"); t.add_argument("--on", type=float, required=True); t.add_argument("--off", type=float, required=True)
     t.add_argument("--release-ms", type=float, default=0.0); t.add_argument("--bound-ms", type=float, default=200.0); t.add_argument("--block", type=int, default=512)
     a = ap.parse_args(argv)
@@ -617,7 +662,11 @@ def main(argv):
             px, meta = load_pattern(a.pattern)
             lag, _ = align(px, ref)
             meta["pattern_at"] = lag / sr
-        return _verdict(compare_wav(ref, got, sr, meta, exact=a.exact))
+        res = compare_wav(ref, got, sr, meta, exact=a.exact)
+        if a.stamps:
+            res["latency_ms"] = stamp_latency(a.ref, a.got, res["lag_samples"], sr)
+            res["pass"]["stamped"] = res["latency_ms"] is not None
+        return _verdict(res)
     if a.cmd == "tail":
         sr, x = read_wav(a.got)
         return _verdict(note_tail(x, sr, a.on, a.off, a.release_ms, a.bound_ms, a.block))

@@ -59,6 +59,7 @@ typedef int sock_t;
 #endif
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -162,9 +163,18 @@ const double PAUSE_S = 1.0;          // an underrun after the stream was down lo
 //  - a paused block is told to AOO as an xrun, so the stream keeps its time (an empty block goes out in its place).
 const double SRC_BUFFER = 0.1;
 // ms: a stream whose measured buffer never came below its size + TRIM_OVER for a whole stretch (BUF_STEP / 2 twice: AOO can finish buffering
-// above its size when packets stall and then burst in) re-buffers at its size while that peer is quiet. BUF_MARGIN: a shrink needs this much
-// of the buffer unused at its lowest lately, after the shrink (so it never eats into what jitter used).
+// above its size when packets stall and then burst in) sheds what's above its size (a skip rt_mix crossfades over one block: no re-buffer,
+// no gap, so it needn't wait for the peer to be quiet). BUF_MARGIN: a shrink needs this much of the buffer unused at its lowest lately,
+// after the shrink (so it never eats into what jitter used).
 const double TRIM_OVER = 25, BUF_MARGIN = 5;
+// ms: AOO's jitter buffer holds twice its latency by default, and a packet that doesn't fit resets the stream (an overrun: a re-buffer, its
+// latency of silence or concealment and the decoder rejoining over ~100 ms). The 2026-11-21 sound test (docs/rt/rt-ears.md, Findings 1;
+// docs/rt/rt-p11.md): the laptop's buffer for the desktop's Play had finished a quiet re-buffer ~100 ms above its 145 ms size (packets that
+// came late on an internet link, then together), played ~100 ms later than live audio said for seconds, and the next burst overran it
+// mid-tone; no counter moved (overruns weren't counted, and AOO's buffer latency is the size when buffering ended, not what's held since).
+// So the buffer gets CAP_HEAD more room than its size, and what sits above its size is shed (TRIM_OVER) instead of left to overrun.
+const double CAP_HEAD = 300;
+const double SHED_STEP = 40; // ms: the most shed in one block (each step decodes that much at once on the audio thread: ~8 Opus frames)
 // s: the goal is the least latency, so the odd 20 ms of audio lost to a lone spike beats 60 ms more delay for minutes (1.0.22 held grown
 // sizes up to 8 minutes: latency through the hub 234 -> 286 ms). An underrun with none other in the last BUF_LONE s (and not right after
 // going back below a size that underran) is a lone spike: the buffer grows a step but comes back down after BUF_STEADY as if it hadn't.
@@ -220,7 +230,10 @@ struct Slot {
                                                                     // buffer last went back below one)
   long long lone = 0;                                                // (underruns taken as lone spikes: not held)
   long long jitter_seen = 0;
-  long long switched = 0, trims = 0; // (underruns that came from a hub mix <-> direct switch; quiet re-buffers of a buffer far above its size)
+  long long switched = 0, trims = 0; // (underruns that came from a hub mix <-> direct switch; buffers far above their size shed: adapt)
+  long long overruns = 0, punderruns = 0, poverruns = 0, ptrims = 0, moverruns = 0; // (AOO's resets of Talk, Play, the mix; Play's own counts)
+  double plat_ms = 0, pfill_ms = -1; // (Play: AOO's source + sink latency for it; its buffer as measured, the last look)
+  std::atomic<int> shed[3]{ { 0 }, { 0 }, { 0 } }; // (samples rt_mix skips, crossfaded, on Talk's, Play's and the mix's next block: adapt)
   double switch_at = -1e9, mswitch_at = -1e9; // (when this computer last switched between the hub's mix and direct streams; when it last
                                               // joined or left the mix itself (not a rescue: the mix's own gaps are its network's): hub_watch)
   double fill_ms = -1;               // (the measured buffer of what is heard from this peer: Talk, else Play, else its hub mix; the last look)
@@ -265,6 +278,23 @@ struct Slot {
   std::atomic<bool> in_mix{ true };
   float dw = 1.f;
   std::atomic<double> rx_at{ -1e9 }; // (the receive thread's: its last datagram with the studio's tag, so it lists this computer. rt-roomlist)
+};
+// The ears tap (rt_ears; docs/rt/rt-ears.md "Left", docs/rt/rt-p11.md): one stream as this computer hears it, or its own Play as it goes out,
+// copied by the audio thread into a lock-free ring (stereo, interleaved) that a worker writes as a 32-bit float WAV. The audio thread only
+// copies (no lock, allocation or file); a full ring loses frames and says so (lost).
+const uint64_t EARS_RING = 1u << 17; // frames: ~2.7 s at 48 kHz, drained every 5 ms
+const double EARS_MAX_S = 60;
+struct Ears {
+  std::atomic<int> kind{ 0 };   // 0 off, 1 this computer's Play, 2 a peer's Talk, 3 its Play, 4 its hub mix for me (addr: that peer)
+  sockaddr_in addr{};           // (written before kind)
+  std::vector<float> ring;      // (EARS_RING x 2, made before kind is set; the audio thread writes only while kind is set)
+  std::atomic<uint64_t> w{ 0 }, r{ 0 };
+  std::atomic<long long> lost{ 0 }, frames{ 0 };
+  std::atomic<double> first_at{ -1 }; // (now_s() as its first frame's block was heard or sent)
+  std::atomic<int> state{ 0 };  // 0 none, 1 writing, 2 done, 3 failed
+  std::atomic<bool> stop{ false };
+  std::thread thr;
+  std::string path, what;
 };
 } // namespace
 
@@ -327,6 +357,9 @@ struct RtLink {
   uint64_t play_r = 0;                   // (the audio thread's: the next live out frame to send)
   std::vector<float> pbuf, pinter;
   float *pptr[2] = {};
+  std::vector<float> xbuf;               // (the audio thread's: the block before a shed's skip, crossfaded into the one after: rt_mix)
+  float *xptr[2] = {};
+  Ears ears;                             // (rt_ears)
   std::atomic<float> play_peak{ 0.f };
   std::atomic<long long> play_ok_cb{ -1000000 }; // (the callback count when a full block last came from the ring: is the live out track running?)
   // The hub's live mix (rt_hub). want_hub, want_serve: rt_hub's (pend_mx). The send thread's: serve, hub_name; hub_peer and hub_state the
@@ -617,6 +650,7 @@ void AOO_CALL sink_event(void *user, const AooEvent *e, AooThreadLevel)
     p->underruns += 1;
     under(p, p->down_at, p->switch_at, p->jitter);
     break;
+  case kAooEventBufferOverrun: p->overruns += 1; break; // (a burst that didn't fit: AOO re-buffered. CAP_HEAD)
   default: break;
   }
 }
@@ -633,7 +667,9 @@ void AOO_CALL play_sink_event(void *user, const AooEvent *e, AooThreadLevel) // 
   }
   case kAooEventStreamStop: case kAooEventSourceRemove: p->pstreaming = false; p->pdown_at = -1e9; break;
   case kAooEventBlockDrop: p->dropped += e->blockDrop.count; break;
-  case kAooEventBufferUnderrun: under(p, p->pdown_at, p->switch_at, p->pjitter); break;
+  case kAooEventBufferUnderrun: p->punderruns += 1; under(p, p->pdown_at, p->switch_at, p->pjitter); break;
+  case kAooEventBufferOverrun: p->poverruns += 1; break;
+  case kAooEventStreamLatency: p->plat_ms = (e->streamLatency.sourceLatency + e->streamLatency.sinkLatency) * 1000; break;
   default: break;
   }
 }
@@ -654,6 +690,7 @@ void AOO_CALL mix_sink_event(void *user, const AooEvent *e, AooThreadLevel) // (
   case kAooEventStreamStop: case kAooEventSourceRemove: p->mstreaming = false; p->mdown_at = -1e9; break;
   case kAooEventBlockDrop: p->dropped += e->blockDrop.count; break;
   case kAooEventBufferUnderrun: under(p, p->mdown_at, p->mswitch_at, p->mjitter); break;
+  case kAooEventBufferOverrun: p->moverruns += 1; break;
   default: break;
   }
 }
@@ -676,6 +713,15 @@ void tune(RtLink *l, AooSource *s)
   if (!s) return;
   s->setBufferSize(SRC_BUFFER);
   s->setDynamicResampling(l->resample ? kAooTrue : kAooFalse);
+}
+
+// A sink's buffer: its latency (what AOO buffers before playing, the adaptive size) and room for CAP_HEAD more (AOO's capacity; it overruns
+// past that). Both re-buffer its stream (kAooCtlSetLatency/SetBufferSize: reset_sources), so only where the size changes.
+void size_sink(AooSink *s, double ms)
+{
+  if (!s) return;
+  s->setLatency(ms / 1000.0);
+  s->setBufferSize((ms + CAP_HEAD) / 1000.0);
 }
 
 void pause_audio(RtLink *l)
@@ -709,7 +755,7 @@ std::unique_ptr<Slot> make_slot(RtLink *l, const std::string &peer)
   p->sink = AooSink_new(p->sink_id);
   if (!p->sink) { p->resolved = false; p->err = "no AOO sink"; return p; }
   p->sink->setEventHandler(sink_event, p.get(), kAooEventModePoll);
-  p->sink->setLatency(BUF_FLOOR / 1000.0);
+  size_sink(p->sink, BUF_FLOOR);
   p->sink->setPacketSize(1200);
   tune(l, p->sink);
   p->psink_id = id_of(p->addr_s + "/play");
@@ -717,7 +763,7 @@ std::unique_ptr<Slot> make_slot(RtLink *l, const std::string &peer)
   p->psink = AooSink_new(p->psink_id);
   if (p->psink) {
     p->psink->setEventHandler(play_sink_event, p.get(), kAooEventModePoll);
-    p->psink->setLatency(BUF_FLOOR / 1000.0);
+    size_sink(p->psink, BUF_FLOOR);
     p->psink->setPacketSize(1200);
     tune(l, p->psink);
   }
@@ -726,7 +772,7 @@ std::unique_ptr<Slot> make_slot(RtLink *l, const std::string &peer)
   p->msink = AooSink_new(p->msink_id);
   if (p->msink) {
     p->msink->setEventHandler(mix_sink_event, p.get(), kAooEventModePoll);
-    p->msink->setLatency(BUF_FLOOR / 1000.0);
+    size_sink(p->msink, BUF_FLOOR);
     p->msink->setPacketSize(1200);
     tune(l, p->msink);
   }
@@ -833,6 +879,9 @@ void reconfigure(RtLink *l)
     l->mixbuf.assign((size_t)2 * slen, 0.f);
     l->pbuf.assign((size_t)2 * slen, 0.f);
     l->pinter.assign((size_t)2 * slen, 0.f);
+    l->xbuf.assign((size_t)2 * slen, 0.f);
+    l->xptr[0] = &l->xbuf[0];
+    l->xptr[1] = &l->xbuf[(size_t)slen];
     for (int c = 0; c < l->nch; ++c) l->inptr[c] = &l->inbuf[(size_t)c * slen];
     for (int c = 0; c < 2; ++c) { l->mixptr[c] = &l->mixbuf[(size_t)c * slen]; l->pptr[c] = &l->pbuf[(size_t)c * slen]; }
     setup_source(l, l->src, l->nch, true);
@@ -1199,17 +1248,21 @@ void handle_ctl(RtLink *l, Slot &p, const unsigned char *d, int n, double now)
 //    below the largest size that underran until 120 s passed with none, so at ~3 underruns a minute every buffer ratcheted to the ceiling.)
 //    shortcut: a peer that never goes quiet keeps its bigger buffer; fine for a band.
 //  - a stream that finished buffering far above its size (packets stalled, then burst in: the laptop's buffer for the Mac sat at 190 ms
-//    against 110) holds that latency for good; it re-buffers at its size while the peer is quiet (TRIM_OVER, "trims").
+//    against 110; the laptop's for the desktop's Play ~100 ms over, rt-ears) holds that latency for good, and the next burst overran it; what
+//    sits above its size is shed (TRIM_OVER, "trims"): rt_mix skips it, crossfading the block before the skip into the one after, so it
+//    needn't wait for quiet (it was a re-buffer, a gap, while quiet only; and each re-buffer could finish high again).
 // rt_mix fades sound back in after any gap, so none of this clicks. The send thread's, under stats_mx.
 // A stream's buffer, measured: AOO's fill ratio (frames held plus what's in its resampler, over its capacity) x that capacity, which AOO makes
-// twice its latency in Opus frames, from the latency as a float (aoo/src/sink.cpp, source_desc::update). -1: no such stream now.
+// the larger of its latency and the buffer size size_sink gives (CAP_HEAD more), in Opus frames, from each as a float (aoo/src/sink.cpp,
+// source_desc::update). -1: no such stream now.
 double fill_of(RtLink *l, AooSink *s, const sockaddr_in &a, AooId id, double target_ms)
 {
   double r = -1;
   AooEndpoint ep = { &a, (AooAddrSize)sizeof(a), id };
   if (!s || l->cfg_sr <= 0 || s->getBufferFillRatio(ep, r) != kAooOk || r < 0) return -1;
   const double lat = (float)(target_ms / 1000.0), per = 1000.0 / OPUS_MS, least = std::ceil((double)l->cfg_len / OPUS_FRAME * 48000.0 / l->cfg_sr);
-  return r * std::max(std::max(std::ceil(lat * per), least), std::ceil(lat * 2 * per)) * OPUS_MS;
+  const double cap = (float)((target_ms + CAP_HEAD) / 1000.0);
+  return r * std::max(std::max(std::ceil(lat * per), least), std::ceil(cap * per)) * OPUS_MS;
 }
 void adapt(RtLink *l, Slot &p, double now)
 {
@@ -1225,12 +1278,16 @@ void adapt(RtLink *l, Slot &p, double now)
     if (f < 0) x.lw->reset(now);
     else x.lw->add(f, now, BUF_STEP / 2 / sp);
     if (x.id == SRC_ID || p.fill_ms < 0) p.fill_ms = f; // (a listener through a hub hears the mix: Talk's is -1)
+    if (x.id == PLAY_ID) p.pfill_ms = f;
   }
-  for (Stream &x : st) { // (far above its size for two whole stretches, the peer quiet: re-buffered at its size)
+  for (int k = 0; k < 3; ++k) { // (far above its size for a whole stretch: shed down to its size, rt_mix's crossfaded skip)
+    Stream &x = st[k];
+    if (!x.on) { p.shed[k].store(0); continue; } // (a skip asked for a stream that stopped would cut into its next start)
     const double lo = x.lw->low();
-    if (!quiet || lo < 0 || lo < p.target_ms + TRIM_OVER) continue;
-    AooEndpoint ep = { &p.addr, (AooAddrSize)sizeof(p.addr), x.id };
-    if (x.s->resetSource(ep) == kAooOk) ++p.trims;
+    if (lo < 0 || lo < p.target_ms + TRIM_OVER) continue;
+    p.shed[k].store((int)(std::min(lo - p.target_ms, 1000.0) * l->cfg_sr / 1000.0));
+    ++p.trims;
+    if (x.id == PLAY_ID) ++p.ptrims;
     x.lw->reset(now);
   }
   double want = p.target_ms;
@@ -1258,9 +1315,9 @@ void adapt(RtLink *l, Slot &p, double now)
   if (want == p.target_ms) return;
   p.target_ms = want;
   p.last_change = now;
-  p.sink->setLatency(want / 1000.0);
-  if (p.psink) p.psink->setLatency(want / 1000.0);
-  if (p.msink) p.msink->setLatency(want / 1000.0);
+  size_sink(p.sink, want);
+  size_sink(p.psink, want);
+  size_sink(p.msink, want);
   for (Stream &x : st) x.lw->reset(now); // (re-buffered: measured again from here)
 }
 
@@ -1425,6 +1482,7 @@ void rt_free(RtLink *l)
 {
   if (!l) return;
   rt_stop(l);
+  if (l->ears.thr.joinable()) l->ears.thr.join(); // (a tap that finished on its own)
   for (const hop_map &m : l->pnames) hop_shm_unlink(&m); // (the live out mappings' POSIX names; the plug-in's open one stays valid)
   delete l;
 }
@@ -1491,6 +1549,8 @@ void rt_stop(RtLink *l)
 {
   std::lock_guard<std::mutex> g(l->api_mx);
   if (!l->run.load()) return;
+  l->ears.kind.store(0); l->ears.stop.store(true); // (the ears tap ends with what it has)
+  if (l->ears.thr.joinable()) l->ears.thr.join();
   pause_audio(l);
   l->run.store(false);
   l->wake.set();
@@ -1572,6 +1632,87 @@ int rt_peer_buffer(RtLink *l, const char *peer, double floor_ms, double ceil_ms)
     if (peer && l->slots[i]->peer == peer) { l->slots[i]->floor_ms = f; l->slots[i]->ceil_ms = c; return 1; }
   return 0;
 }
+// The ears tap's worker: drains the ring into a 32-bit float stereo WAV until it has `want` frames (or is stopped, or 15 s past due).
+namespace {
+void ears_wav(FILE *f, int sr, uint64_t frames) // (RIFF, format 3: what every DAW and scipy read)
+{
+  auto le = [&](unsigned v, int n) { for (int i = 0; i < n; ++i) fputc((int)(v >> (8 * i)) & 255, f); };
+  const unsigned data = (unsigned)(frames * 8);
+  fseek(f, 0, SEEK_SET);
+  fwrite("RIFF", 1, 4, f); le(36 + data, 4); fwrite("WAVEfmt ", 1, 8, f); le(16, 4);
+  le(3, 2); le(2, 2); le((unsigned)sr, 4); le((unsigned)sr * 8, 4); le(8, 2); le(32, 2);
+  fwrite("data", 1, 4, f); le(data, 4);
+}
+FILE *ears_open(const std::string &p)
+{
+#ifdef _WIN32
+  const int n = MultiByteToWideChar(CP_UTF8, 0, p.c_str(), -1, nullptr, 0);
+  if (n <= 0) return nullptr;
+  std::wstring w((size_t)n, L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, p.c_str(), -1, &w[0], n);
+  return _wfopen(w.c_str(), L"wb");
+#else
+  return fopen(p.c_str(), "wb");
+#endif
+}
+void ears_loop(RtLink *l, std::string path, uint64_t want, int sr)
+{
+  Ears &e = l->ears;
+  FILE *f = ears_open(path);
+  if (!f) { e.kind.store(0); e.state.store(3); return; }
+  ears_wav(f, sr, 0);
+  uint64_t got = 0;
+  bool ok = true;
+  const double give_up = now_s() + (double)want / sr + 15;
+  while (got < want && !e.stop.load() && now_s() < give_up) {
+    const uint64_t r = e.r.load(std::memory_order_relaxed), w = e.w.load(std::memory_order_acquire), n = std::min(w - r, want - got);
+    if (!n) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); continue; }
+    const uint64_t at = r & (EARS_RING - 1), run = std::min(n, EARS_RING - at); // (up to the ring's end; the next pass goes on from its start)
+    ok = fwrite(&e.ring[(size_t)(2 * at)], sizeof(float) * 2, (size_t)run, f) == run && ok;
+    e.r.store(r + run, std::memory_order_release);
+    got += run;
+    e.frames.store((long long)got);
+  }
+  e.kind.store(0, std::memory_order_release);
+  ears_wav(f, sr, got);
+  ok = fclose(f) == 0 && ok;
+  e.state.store(ok && got == want ? 2 : 3);
+}
+} // namespace
+int rt_ears(RtLink *l, const char *peer, const char *stream, const char *path, double seconds)
+{
+  if (!l || !peer || !stream || !path || !(seconds > 0) || seconds > EARS_MAX_S) return 0;
+  const std::string pth = path, st = stream, who = peer;
+  // (a local call only, never from the link; a .wav file, no ".." step: it can't be pointed at anything but a new recording)
+  if (pth.size() < 5 || pth.find("..") != std::string::npos) return 0;
+  std::string ext = pth.substr(pth.size() - 4);
+  for (char &c : ext) c = (char)tolower((unsigned char)c);
+  if (ext != ".wav") return 0;
+  const int kind = who.empty() ? (st == "play" ? 1 : 0) : st == "talk" ? 2 : st == "play" ? 3 : st == "hub" ? 4 : 0;
+  if (!kind) return 0;
+  std::lock_guard<std::mutex> g(l->api_mx);
+  Ears &e = l->ears;
+  if (e.state.load() == 1) return 0; // (one at a time)
+  if (e.thr.joinable()) e.thr.join();
+  if (!l->run.load() || l->cfg_sr <= 0) return 0;
+  sockaddr_in a{};
+  if (kind > 1) {
+    std::lock_guard<std::mutex> c(l->cfg_mx);
+    bool found = false;
+    for (int i = 0; i < l->nslots && !found; ++i) if (l->slots[i]->resolved && l->slots[i]->peer == who) { a = l->slots[i]->addr; found = true; }
+    if (!found) return 0;
+  }
+  if (e.ring.empty()) e.ring.assign((size_t)(2 * EARS_RING), 0.f); // (kept once made: the audio thread may still be finishing a copy into it)
+  e.addr = a;
+  e.r.store(e.w.load());
+  e.lost.store(0); e.frames.store(0); e.first_at.store(-1); e.stop.store(false); e.state.store(1);
+  e.path = pth;
+  e.what = (who.empty() ? std::string("own") : who) + " " + st;
+  const int sr = l->cfg_sr;
+  e.kind.store(kind, std::memory_order_release);
+  e.thr = std::thread(ears_loop, l, pth, (uint64_t)(seconds * sr), sr);
+  return 1;
+}
 int rt_hub(RtLink *l, const char *peer, int serve)
 {
   std::lock_guard<std::mutex> g(l->pend_mx);
@@ -1638,6 +1779,16 @@ std::string rt_status(RtLink *l)
            l->overflows, l->clk.ppm.load(), l->clk.used.load());
   o.insert(o.size() - 9, b);
   const double now = now_s();
+  { // (the ears tap: what, state, frames written, lost (the worker behind), and its first frame's age on the steady clock: Lua's
+    // StudioSync_DirectNow() less first_age_s is when it was heard on the link clock)
+    static const char *const es[] = { "none", "writing", "done", "failed" };
+    const double fa = l->ears.first_at.load();
+    std::string ej = "\"ears\":{\"what\":";
+    json_str(ej, l->ears.what);
+    snprintf(b, sizeof(b), ",\"state\":\"%s\",\"frames\":%lld,\"lost\":%lld,\"first_age_s\":%.6f},", es[l->ears.state.load() & 3], l->ears.frames.load(), l->ears.lost.load(),
+             fa < 0 ? -1.0 : now - fa);
+    o.insert(o.size() - 9, ej + b);
+  }
   { // (not_here_peers: each studio computer sending here off the list in the last minute, seconds ago and datagrams. rt-roomlist)
     std::string nj = "\"not_here_peers\":{";
     bool any = false;
@@ -1691,6 +1842,13 @@ std::string rt_status(RtLink *l)
     o.insert(o.size() - 1, b);
     snprintf(b, sizeof(b), ",\"heard_ago\":%.2f", std::min(1e6, now - p.rx_at.load(std::memory_order_relaxed))); // (its last tagged datagram: it lists this computer. rt-roomlist)
     o.insert(o.size() - 1, b);
+    // (overruns: AOO's resets of Talk's buffer for a burst that didn't fit (CAP_HEAD). Play's own: its underruns, overruns, resyncs (both: each a
+    // re-buffer, a gap), trims (sheds), its buffer as measured and its latency from that (half the round trip + that buffer + AOO's codec and
+    // reblocking for it: what's held now, where latency_ms is Talk's size when its buffering ended), and its mix's overruns)
+    const double plat = p.rtt_ms >= 0 && p.pfill_ms >= 0 ? p.rtt_ms / 2 + p.pfill_ms + p.plat_ms : -1;
+    snprintf(b, sizeof(b), ",\"overruns\":%lld,\"play_underruns\":%lld,\"play_overruns\":%lld,\"play_resyncs\":%lld,\"play_trims\":%lld,\"play_buffer_ms\":%.1f,\"play_latency_ms\":%.1f,\"mix_overruns\":%lld",
+             p.overruns, p.punderruns, p.poverruns, p.punderruns + p.poverruns, p.ptrims, p.pfill_ms, plat, p.moverruns);
+    o.insert(o.size() - 1, b);
   }
   o += "}}";
   return o;
@@ -1743,6 +1901,17 @@ void rt_capture(RtLink *l, const double *const *in, int nin, int len, double sra
 // pass, just before this, so the newest `len` frames are this block's sound of the armed tracks. Fewer there (the track isn't running,
 // REAPER stopped its audio, no Hop yet): silence goes out. Far behind (a new Hop instance, a stall): only the newest block, never a backlog
 // that would sit in the stream as delay. (James, rt)
+// The ears tap's copy (rt_ears): this block into its ring, or counted lost when the worker is behind. The audio thread's: copies only.
+static void ears_put(RtLink *l, const float *L, const float *R, int len)
+{
+  Ears &e = l->ears;
+  const uint64_t w = e.w.load(std::memory_order_relaxed), r = e.r.load(std::memory_order_acquire);
+  if (e.ring.size() < 2 * EARS_RING || w - r + (uint64_t)len > EARS_RING) { e.lost.fetch_add(len, std::memory_order_relaxed); return; }
+  if (e.first_at.load(std::memory_order_relaxed) < 0) e.first_at.store(now_s(), std::memory_order_relaxed);
+  float *d = e.ring.data();
+  for (int k = 0; k < len; ++k) { const uint64_t at = (w + (uint64_t)k) & (EARS_RING - 1); d[2 * at] = L[k]; d[2 * at + 1] = R[k]; }
+  e.w.store(w + (uint64_t)len, std::memory_order_release);
+}
 static void play_feed(RtLink *l, int len, AooNtpTime t)
 {
   hop_shm *s = l->pshm;
@@ -1761,6 +1930,7 @@ static void play_feed(RtLink *l, int len, AooNtpTime t)
   }
   if (pk > l->play_peak.load(std::memory_order_relaxed)) l->play_peak.store(pk, std::memory_order_relaxed);
   if (!l->play_send.load(std::memory_order_relaxed)) { std::fill(L, L + len, 0.f); std::fill(R, R + len, 0.f); } // (muted: silence, the stream kept)
+  if (l->ears.kind.load(std::memory_order_acquire) == 1) ears_put(l, L, R, len); // (the ears tap: this computer's Play as it goes out)
   if (rt_play_tap) rt_play_tap(l->pptr, 2, len, l->cfg_sr); // (Jam takes the same block, after Mute me: extension/direct_audio.cpp. rt-jam)
   const AooError e = l->psrc->process(l->pptr, len, t);
   if (e == kAooErrorOverflow) l->poverflow.store(true);
@@ -1794,9 +1964,23 @@ void rt_mix(RtLink *l, double *const *out, int nout, int len, double srate)
     l->mixw = w1;
     // one stream of a peer, heard: Talk at its level, Play at its own (the personal monitor mix; gain 0: the peer muted, both); r0 -> r1: its
     // weight over this block; to: the ring's copy (L, then R), before any level
-    auto hear = [&](Slot &p, AooSink *sink, std::atomic<bool> &mono, std::atomic<float> &peak, bool &was_quiet, float gain, float r0, float r1, float *to) {
+    // shed: adapt's skip for this stream (its buffer far above its size), at most SHED_STEP a block: this block, kept, crossfaded into the
+    // stream that far on (AOO skips it in the next process: reportXRun, a lock-free count; that process takes a block too). ek: the ears tap's
+    // kind for this stream.
+    const int shed_step = std::max(len, (int)(l->cfg_sr * SHED_STEP / 1000));
+    auto hear = [&](Slot &p, AooSink *sink, std::atomic<bool> &mono, std::atomic<float> &peak, bool &was_quiet, float gain, float r0, float r1, float *to,
+                    std::atomic<int> &shed, int ek) {
       if (!sink || sink->process(l->mixptr, len, t, nullptr, nullptr) != kAooOk) { if (to) std::fill(to, to + 2 * len, 0.f); return; }
       float *L = l->mixptr[0], *R = l->mixptr[1];
+      const int sk = std::min(shed.load(std::memory_order_relaxed), shed_step);
+      if (sk >= len && !l->xbuf.empty()) {
+        shed.fetch_sub(sk, std::memory_order_relaxed);
+        std::copy(L, L + len, l->xptr[0]); std::copy(R, R + len, l->xptr[1]);
+        if (sk > len) sink->reportXRun(sk - len);
+        if (sink->process(l->mixptr, len, t, nullptr, nullptr) == kAooOk)
+          for (int k = 0; k < len; ++k) { const float g = ((float)k + 0.5f) / (float)len; L[k] = l->xptr[0][k] * (1 - g) + L[k] * g; R[k] = l->xptr[1][k] * (1 - g) + R[k] * g; }
+        else { std::copy(l->xptr[0], l->xptr[0] + len, L); std::copy(l->xptr[1], l->xptr[1] + len, R); }
+      }
       if (mono.load(std::memory_order_relaxed)) std::copy(L, L + len, R); // (a mono sender: both ears)
       float pk = 0;
       for (int k = 0; k < len; ++k) pk = std::max(pk, std::max(std::fabs(L[k]), std::fabs(R[k])));
@@ -1805,6 +1989,7 @@ void rt_mix(RtLink *l, double *const *out, int nout, int len, double srate)
       const bool quiet = pk < 1e-4f; // (AOO's silence in a gap or a re-buffer: under -80 dBFS)
       if (was_quiet && !quiet) for (int k = 0; k < len; ++k) { const float g = (float)k / (float)len; L[k] *= g; R[k] *= g; } // (back after a gap: faded in over one block, no click)
       was_quiet = quiet;
+      if (ek && l->ears.kind.load(std::memory_order_acquire) == ek && same_addr(l->ears.addr, p.addr)) ears_put(l, L, R, len); // (as heard, before any level)
       if (to) { std::copy(L, L + len, to); std::copy(R, R + len, to + len); }
       if (gain <= 0 || (r0 <= 0 && r1 <= 0) || !out) return;
       const double gn = gain, dr = (double)(r1 - r0) / len;
@@ -1817,12 +2002,12 @@ void rt_mix(RtLink *l, double *const *out, int nout, int len, double srate)
       float *to = rec ? rec + (size_t)i * 4 * len : nullptr;
       const float d0 = p.dw, d1 = p.in_mix.load(std::memory_order_relaxed) ? 1 - w1 : 1.f; // (one the hub's mix hasn't: its own streams, always)
       p.dw = d1;
-      hear(p, p.sink, p.mono, p.peak, p.was_quiet, m ? 0.f : p.gain.load(std::memory_order_relaxed), d0, d1, to);
-      hear(p, p.psink, p.pmono, p.ppeak, p.pwas_quiet, m ? 0.f : p.pgain.load(std::memory_order_relaxed), d0, d1, to ? to + 2 * len : nullptr);
+      hear(p, p.sink, p.mono, p.peak, p.was_quiet, m ? 0.f : p.gain.load(std::memory_order_relaxed), d0, d1, to, p.shed[0], 2);
+      hear(p, p.psink, p.pmono, p.ppeak, p.pwas_quiet, m ? 0.f : p.pgain.load(std::memory_order_relaxed), d0, d1, to ? to + 2 * len : nullptr, p.shed[1], 3);
     }
     if (hp) { // (my hub's mix, already at my levels: decoded while asked for, so it's ready the moment it's heard)
       std::atomic<bool> stereo{ false };
-      hear(*hp, hp->msink, stereo, hp->mpeak, hp->mwas_quiet, 1.f, w0, w1, nullptr);
+      hear(*hp, hp->msink, stereo, hp->mpeak, hp->mwas_quiet, 1.f, w0, w1, nullptr, hp->shed[2], 4);
     }
     if (rec) { // (this computer's own Talk, the first two inputs sent (mono: both ears), and its Play, as they went out)
       float *own = rec + (size_t)l->nslots * 4 * len;
@@ -1929,6 +2114,8 @@ static int api_peer_play(const char *peer, double gain) { return g_rt ? rt_peer_
 static void *vla_play(void **a, int n) { return n < 2 ? nullptr : (void *)(INT_PTR)api_play((int)(INT_PTR)a[0], (int)(INT_PTR)a[1]); }
 static void *vla_peer_play(void **a, int n) { return n < 2 || !a[1] ? nullptr : (void *)(INT_PTR)api_peer_play((const char *)a[0], *(double *)a[1]); }
 static int api_hub(const char *peer, int serve) { return g_rt ? rt_hub(g_rt, peer, serve) : 0; }
+static int api_ears(const char *peer, const char *stream, const char *path, double secs) { return g_rt ? rt_ears(g_rt, peer, stream, path, secs) : 0; }
+static void *vla_ears(void **a, int n) { return n < 4 || !a[3] ? nullptr : (void *)(INT_PTR)api_ears((const char *)a[0], (const char *)a[1], (const char *)a[2], *(double *)a[3]); } // (a double comes as a pointer)
 static void *vla_hub(void **a, int n) { return n < 2 ? nullptr : (void *)(INT_PTR)api_hub((const char *)a[0], (int)(INT_PTR)a[1]); }
 
 void rtaudio_shutdown()
@@ -1950,7 +2137,7 @@ void rtaudio_register(reaper_plugin_info_t *rec)
     { "StudioSync_LiveAudioPeers", (void *)api_peers, (void *)vla_peers,
       "int\0const char*\0json\0Who to send to and hear, and the key: {\"secret\":\"<the studio secret>\",\"port\":47281,\"peers\":[\"name:port\",...]} (the direct link's list; Tailscale addresses only). Returns how many peers, or -1 when the JSON isn't that." },
     { "StudioSync_LiveAudioStatus", (void *)api_status, (void *)vla_status,
-      "const char*\0\0\0StudioSync's live audio as JSON: running, bind, error, secret, srate, block, level (what you send, peak since the last ask), callbacks, max_us, pauses, paused_blocks, overflows (reconfigures that held the audio, blocks skipped meanwhile, AOO's send queue full), sent, received, rejected, last_reject, last_reject_from (its sender's ip:port), not_here, not_here_from (datagrams with the studio's secret from a computer not on the peer list here: dropped, not refused), and per peer: resolved, streaming, rtt_ms, latency_ms, buffer_ms (the jitter buffer), target_ms, floor_ms, ceiling_ms (the adaptive buffer's size and bounds), fill_ms (the buffer as measured), jitter (underruns that grew it), switched (underruns a hub mix/direct switch brought), trims (quiet re-buffers of a buffer far above its size), loss (0-1), dropped, underruns, level (peak since the last ask), gain, mute, play_streaming, play_level, play_gain (their Play stream); and play (the live out hop id, 0: no Play), play_alive, play_send, play_level (what this computer plays out); and hook: pre, post (the audio hook's calls before and after REAPER's processing), in_nch, out_nch (the channel counts REAPER put in the hook's struct: 0 on REAPER 7), ins, outs (the hardware buffers it handed over: what is captured and mixed into)." },
+      "const char*\0\0\0StudioSync's live audio as JSON: running, bind, error, secret, srate, block, level (what you send, peak since the last ask), callbacks, max_us, pauses, paused_blocks, overflows (reconfigures that held the audio, blocks skipped meanwhile, AOO's send queue full), sent, received, rejected, last_reject, last_reject_from (its sender's ip:port), not_here, not_here_from (datagrams with the studio's secret from a computer not on the peer list here: dropped, not refused), and per peer: resolved, streaming, rtt_ms, latency_ms, buffer_ms (the jitter buffer), target_ms, floor_ms, ceiling_ms (the adaptive buffer's size and bounds), fill_ms (the buffer as measured), jitter (underruns that grew it), switched (underruns a hub mix/direct switch brought), trims (buffers far above their size shed, crossfaded), loss (0-1), dropped, underruns, overruns (bursts that didn't fit: a re-buffer), level (peak since the last ask), gain, mute, play_streaming, play_level, play_gain, play_underruns, play_overruns, play_resyncs, play_trims, play_buffer_ms (Play's buffer as measured), play_latency_ms (from that: Play's own) (their Play stream), mix_overruns; ears (StudioSync_LiveAudioEars: what, state, frames, lost, first_age_s); and play (the live out hop id, 0: no Play), play_alive, play_send, play_level (what this computer plays out); and hook: pre, post (the audio hook's calls before and after REAPER's processing), in_nch, out_nch (the channel counts REAPER put in the hook's struct: 0 on REAPER 7), ins, outs (the hardware buffers it handed over: what is captured and mixed into)." },
     { "StudioSync_LiveAudioPeerSet", (void *)api_peer_set, (void *)vla_peer_set,
       "int\0const char*,double,int\0peer,gain,mute\0A peer's level (linear, 0-4) and mute in what you hear (the cue mix). Returns 1 when that peer is in the list." },
     { "StudioSync_LiveAudioPeerBuffer", (void *)api_peer_buffer, (void *)vla_peer_buffer,
@@ -1961,6 +2148,8 @@ void rtaudio_register(reaper_plugin_info_t *rec)
       "int\0int,int\0hop_id,send\0Play, live audio's second stream: what the StudioSync Hop with this id (1-64, on the hidden live out track the armed tracks send to post-FX) is fed, sent beside Talk so each listener sets the two apart. hop_id 0: no Play stream. send 0: silence while the stream stays up (Mute me, Deafen). StudioSync_LiveAudioStatus's play, play_alive, play_level say how it goes. Returns 1." },
     { "StudioSync_LiveAudioPeerPlay", (void *)api_peer_play, (void *)vla_peer_play,
       "int\0const char*,double\0peer,gain\0A peer's Play level (linear, 0-4) in what you hear, apart from their Talk level (StudioSync_LiveAudioPeerSet, whose mute is the whole bandmate's). Returns 1 when that peer is in the list." },
+    { "StudioSync_LiveAudioEars", (void *)api_ears, (void *)vla_ears,
+      "int\0const char*,const char*,const char*,double\0peer,stream,path,seconds\0The ears tap (tools/ears, docs/rt/rt-p11.md): writes what this computer actually hears of a bandmate's stream to path, a 32-bit float stereo WAV (path must end .wav; seconds 0-60): peer (in the list) and stream \"talk\", \"play\" or \"hub\" (its live mix for this computer), as decoded and before any level; or peer \"\" and stream \"play\" for this computer's own Play as it goes out (after Mute me). One at a time, while live audio runs. StudioSync_LiveAudioStatus's ears says what, state (writing/done/failed), frames, lost and first_age_s (StudioSync_DirectNow() less it: when its first frame was heard, on the link clock). Returns 1 when started." },
     { "StudioSync_LiveAudioHub", (void *)api_hub, (void *)vla_hub,
       "int\0const char*,int\0peer,serve\0The hub's live mix: peer (in the list) mixes for this computer, which then sends its streams to it alone and hears the one stream it mixes at this computer's own levels, back to everyone's own streams at once when that mix stops; \"\": peer to peer. serve 1: this computer mixes for every listener that asks. StudioSync_LiveAudioStatus's hub (peer, state direct/joining/hub, serve, serving, load, max_us, skipped, fallbacks, join_fails (asks no mix answered in 5 s: asked again 10 s later), latency_ms, in_ms, direct_ms, hub_load) and per peer via_hub (heard in the hub's mix; one the hub doesn't hear is heard directly), direct say how it goes. Returns 1." },
   };

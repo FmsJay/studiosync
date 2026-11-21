@@ -227,8 +227,21 @@ static void drift_tests()
 // ---- A buffer left far above its size (the four-computer test: the laptop's buffer for the Mac sat at 190 ms against 110, the Mac's for the
 // desktop 195 against 120). A re-buffer that comes while packets are held up (Wi-Fi's stall) takes in the held ones when they burst in, and
 // AOO plays from there for good. D sends to E; at 2 s E's receive thread is held 70 ms and E's buffer for D goes from 30 to 60 ms 43 ms
-// into it (its floor and ceiling 60): E's buffer ends up ~45 ms over its size. D plays a tone until 4 s: no re-buffer while it plays; then,
-// quiet, E re-buffers at its size (a "trim"). E's timings 4x faster here.
+// into it (its floor and ceiling 60): E's buffer ends up ~45 ms over its size. D plays a tone until 6 s: once a stretch has shown the
+// buffer above its size, what's over is shed (a "trim": a skip rt_mix crossfades, rt-p11; it was a re-buffer, a gap, so it waited for quiet),
+// with no gap in what E hears, and it stays at its size once D is quiet. E's timings 4x faster here.
+// Gaps: the smallest RMS over 10 ms windows of what's heard in [s0, s1) (a 0.5 tone's is 0.35; a re-buffer's silence or concealment ~0).
+static double min_rms(const std::vector<double> &x, double s0, double s1, int sr = 48000)
+{
+  double lo = 1e9;
+  const size_t w = (size_t)sr / 100;
+  for (size_t i = (size_t)(s0 * sr); i + w <= (size_t)(s1 * sr) && i + w <= x.size(); i += w / 2) {
+    double e = 0;
+    for (size_t k = i; k < i + w; ++k) e += x[k] * x[k];
+    lo = std::min(lo, sqrt(e / (double)w));
+  }
+  return lo;
+}
 static void trim_test()
 {
   const int SR = 48000, LEN = 256, PD = 47457, PE = 47458;
@@ -244,29 +257,160 @@ static void trim_test()
   std::vector<double> id(LEN), ie(LEN, 0.0), o1(LEN), o2(LEN);
   const double *ind[1] = { id.data() }, *ine[1] = { ie.data() };
   double *oo[2] = { o1.data(), o2.data() };
-  double hi = 0, lo_after = 1e9, stalled = 0;
+  double hi = 0, lo_loud = 1e9, lo_after = 1e9, stalled = 0;
   long long trims_loud = -1, n = 0;
+  std::vector<double> heard;
   const auto t0 = std::chrono::steady_clock::now();
   for (int b = 0; b < at(8.0); ++b) {
     const auto due = t0 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
     while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
     if (b > at(2.0)) stalled = std::max(stalled, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - due).count());
-    for (int k = 0; k < LEN; ++k, ++n) id[k] = b < at(4.0) ? 0.5 * sin(2 * PI * 440 * n / SR) : 0.0;
+    for (int k = 0; k < LEN; ++k, ++n) id[k] = b < at(6.0) ? 0.5 * sin(2 * PI * 440 * n / SR) : 0.0;
     if (b == at(2.0)) rt_test_hold(E, 70);
     if (b == at(2.0) + 8) rt_peer_buffer(E, pd, 60, 60); // (43 ms into the stall: what was held up is taken in after the re-buffer)
-    if (b >= at(3.0) && b < at(4.0) && b % 8 == 0) hi = std::max(hi, atof(field(rt_status(E), pd, "fill_ms").c_str()));
-    if (b == at(4.0)) trims_loud = atoll(field(rt_status(E), pd, "trims").c_str());
-    if (b >= at(6.5) && b % 8 == 0) { const double f = atof(field(rt_status(E), pd, "fill_ms").c_str()); if (f >= 0) lo_after = std::min(lo_after, f); }
+    if (b >= at(2.6) && b < at(3.2) && b % 8 == 0) hi = std::max(hi, atof(field(rt_status(E), pd, "fill_ms").c_str()));
+    if (b >= at(5.0) && b < at(6.0) && b % 8 == 0) { const double f = atof(field(rt_status(E), pd, "fill_ms").c_str()); if (f >= 0) lo_loud = std::min(lo_loud, f); }
+    if (b == at(6.0)) trims_loud = atoll(field(rt_status(E), pd, "trims").c_str());
+    if (b >= at(7.0) && b % 8 == 0) { const double f = atof(field(rt_status(E), pd, "fill_ms").c_str()); if (f >= 0) lo_after = std::min(lo_after, f); }
+    std::fill(o1.begin(), o1.end(), 0.0);
     rt_capture(D, ind, 1, LEN, SR); rt_capture(E, ine, 1, LEN, SR);
-    rt_mix(D, oo, 2, LEN, SR); rt_mix(E, oo, 2, LEN, SR);
+    rt_mix(D, oo, 2, LEN, SR);
+    std::fill(o1.begin(), o1.end(), 0.0);
+    rt_mix(E, oo, 2, LEN, SR);
+    heard.insert(heard.end(), o1.begin(), o1.end());
   }
   const std::string end = rt_status(E);
-  printf("     trim: E's buffer for D (size %s ms) held at up to %.0f ms while D played (trims %lld), %.0f ms at its lowest after D went quiet (trims %s)\n",
-         field(end, pd, "target_ms").c_str(), hi, trims_loud, lo_after < 1e9 ? lo_after : -1.0, field(end, pd, "trims").c_str());
+  const double gap = min_rms(heard, 2.4, 5.95);
+  printf("     trim: E's buffer for D (size %s ms) at up to %.0f ms after the stall, %.0f ms at its lowest from 5 s while D still played (trims %lld), %.0f ms after D went quiet (trims %s); quietest 10 ms heard 2.4-5.95 s: RMS %.3f\n",
+         field(end, pd, "target_ms").c_str(), hi, lo_loud < 1e9 ? lo_loud : -1.0, trims_loud, lo_after < 1e9 ? lo_after : -1.0, field(end, pd, "trims").c_str(), gap);
   check(hi > 60 + 25, "trim: a re-buffer during a stall leaves E's buffer far above its size");
-  check(trims_loud == 0, "trim: not re-buffered while D plays");
-  check_unless_stalled(atoll(field(end, pd, "trims").c_str()) >= 1 && lo_after < 60 + 15 && lo_after > 20, stalled, "trim: D quiet, E's buffer re-buffers back to its size");
+  check_unless_stalled(trims_loud >= 1 && lo_loud < 60 + 15, stalled, "trim: what's above its size is shed while D plays (it was held until quiet)");
+  check_unless_stalled(gap > 0.1, stalled, "trim: the shed is crossfaded: no gap in what E hears (a re-buffer was one)");
+  check_unless_stalled(lo_after < 60 + 15 && lo_after > 20, stalled, "trim: D quiet, E's buffer stays at its size");
   rt_free(D); rt_free(E);
+}
+
+// ---- Play's resync (rt-ears Findings 1, rt-p11): the laptop heard the desktop's Play ~100 ms later than live audio said, then mid-tone ~130
+// ms of silence, garbage and a fade-in, and no counter moved. A buffer that finished buffering above its size has little room left in AOO's
+// default capacity (twice its size), so the next burst overruns it: AOO resets the stream. P sends a 0.5 tone as Play (hop 62's ring) to Q.
+// At 2 s Q's receive thread is held 70 ms and its buffer set to 60 ms 43 ms in (as trim_test: ~45 ms over); at 3 s Q's audio callbacks are
+// held up 43 ms (packets pile in on top: no longer fits 120 ms). Now: no overrun, no gap, the excess shed, and Play's own counters say so. Then the ears tap: Q
+// records what it hears of P's Play and P its own Play as it goes out, 1 s each, and both WAVs hold the tone.
+static bool read_wav_f32(const std::string &path, int &sr, std::vector<float> &lr)
+{
+  FILE *f = fopen(path.c_str(), "rb");
+  if (!f) return false;
+  unsigned char h[44];
+  const bool ok = fread(h, 1, 44, f) == 44 && !memcmp(h, "RIFF", 4) && !memcmp(h + 8, "WAVEfmt ", 8) && h[20] == 3 && h[22] == 2 && h[34] == 32 && !memcmp(h + 36, "data", 4);
+  if (ok) {
+    sr = h[24] | h[25] << 8 | h[26] << 16 | h[27] << 24;
+    const unsigned n = (unsigned)(h[40] | h[41] << 8 | h[42] << 16 | (unsigned)h[43] << 24) / 4;
+    lr.resize(n);
+    lr.resize(fread(lr.data(), 4, n, f));
+  }
+  fclose(f);
+  return ok;
+}
+static void play_resync_test()
+{
+  const int SR = 48000, LEN = 256, PP = 47621, PQ = 47622, HOP = 62;
+  const double PI = 3.14159265358979;
+  char pp[32], pq[32];
+  snprintf(pp, sizeof pp, "127.0.0.1:%d", PP); snprintf(pq, sizeof pq, "127.0.0.1:%d", PQ);
+  RtLink *P = rt_new(), *Q = rt_new();
+  rt_peers(P, (std::string("{\"peers\":[\"") + pq + "\"],\"port\":" + std::to_string(PP) + ",\"secret\":\"studio\"}").c_str());
+  rt_peers(Q, (std::string("{\"peers\":[\"") + pp + "\"],\"port\":" + std::to_string(PQ) + ",\"secret\":\"studio\"}").c_str());
+  rt_start(P, 0, 1, 128, 0, "127.0.0.1"); rt_start(Q, 0, 1, 128, 0, "127.0.0.1");
+  rt_test_speed(Q, 4);
+  hop_map hm;
+  hop_shm *ring = hop_shm_open(&hm, hop_reaper_pid(), HOP);
+  check(ring != nullptr, "play resync: the test's own Hop mapping");
+  auto at = [&](double s) { return (int)(s * SR / LEN); };
+  std::vector<double> silent(LEN, 0.0), o1(LEN), o2(LEN), heard;
+  std::vector<float> inter((size_t)LEN * 2);
+  const double *in0[1] = { silent.data() };
+  double *oo[2] = { o1.data(), o2.data() };
+  char tmp[512];
+  const char *td = getenv("TEMP") ? getenv("TEMP") : getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp";
+  snprintf(tmp, sizeof tmp, "%s/ss_rt_ears_%d", td, (int)hop_reaper_pid());
+  const std::string heard_wav = std::string(tmp) + "_heard.wav", sent_wav = std::string(tmp) + "_sent.wav";
+  double stalled = 0, hi = 0, lo_late = 1e9;
+  int ears_q = -1, ears_p = -1, ears_bad = 0, ears_busy = -1, held = 0;
+  std::string mid;
+  long long n = 0;
+  const auto t0 = std::chrono::steady_clock::now();
+  for (int b = 0; b < at(8.5); ++b) {
+    const auto due = t0 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
+    while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
+    if (b > at(2.0)) stalled = std::max(stalled, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - due).count());
+    for (int k = 0; k < LEN; ++k, ++n) inter[2 * k] = inter[2 * k + 1] = (float)(0.5 * sin(2 * PI * 440 * n / SR));
+    if (b == at(0.3)) rt_play(P, HOP, 1);
+    if (b == at(2.0)) rt_test_hold(Q, 70);
+    if (b == at(2.0) + 8) rt_peer_buffer(Q, pp, 60, 60);
+    if (b >= at(2.6) && b < at(3.0) && b % 8 == 0) hi = std::max(hi, atof(field(rt_status(Q), pp, "play_buffer_ms").c_str()));
+    if (b >= at(6.0) && b < at(7.0) && b % 8 == 0) { const double f = atof(field(rt_status(Q), pp, "play_buffer_ms").c_str()); if (f >= 0) lo_late = std::min(lo_late, f); }
+    if (b == at(6.5)) mid = rt_status(Q);
+    if (b == at(7.0)) {
+      ears_bad = rt_ears(Q, pp, "play", (std::string(tmp) + ".txt").c_str(), 1.0) + rt_ears(Q, "127.0.0.1:1", "play", heard_wav.c_str(), 1.0) +
+                 rt_ears(Q, pp, "play", heard_wav.c_str(), 61.0) + rt_ears(Q, pp, "loud", heard_wav.c_str(), 1.0) + rt_ears(Q, "", "talk", heard_wav.c_str(), 1.0) +
+                 rt_ears(Q, pp, "play", (std::string(tmp) + "/../x.wav").c_str(), 1.0);
+      ears_q = rt_ears(Q, pp, "play", heard_wav.c_str(), 1.0);
+      ears_busy = rt_ears(Q, pp, "talk", sent_wav.c_str(), 1.0);
+      ears_p = rt_ears(P, "", "play", sent_wav.c_str(), 1.0);
+    }
+    rt_capture(P, in0, 1, LEN, SR);
+    if (ring) { const uint64_t w = hop_load(&ring->send_w); hop_copy_in(ring->send, w, inter.data(), LEN); hop_store(&ring->send_w, w + LEN); }
+    std::fill(o1.begin(), o1.end(), 0.0);
+    rt_mix(P, oo, 2, LEN, SR);
+    // (3 s: Q's audio callbacks held up 43 ms, then all at once, as a busy system's or a VM's: what arrived meanwhile sits on top of a buffer
+    // already ~45 ms over its size, past AOO's default room of twice its size)
+    if (b >= at(3.0) && b < at(3.0) + 8) { ++held; continue; }
+    for (; held >= 0; --held) {
+      rt_capture(Q, in0, 1, LEN, SR);
+      std::fill(o1.begin(), o1.end(), 0.0);
+      rt_mix(Q, oo, 2, LEN, SR);
+      heard.insert(heard.end(), o1.begin(), o1.end());
+    }
+    held = 0;
+  }
+  const std::string endq = rt_status(Q), endp = rt_status(P);
+  const double gap = min_rms(heard, 2.4, 8.4);
+  printf("     play resync: Q's Play buffer %.0f ms after the stall (size 60), %.0f ms at its lowest 6-7 s; overruns %s, resyncs %s, trims %s; quietest 10 ms heard 2.4-8.4 s: RMS %.3f\n",
+         hi, lo_late < 1e9 ? lo_late : -1.0, field(endq, pp, "play_overruns").c_str(), field(endq, pp, "play_resyncs").c_str(), field(endq, pp, "play_trims").c_str(), gap);
+  check(hi > 60 + 25, "play resync: the stall leaves Q's Play buffer far above its size (play_buffer_ms)");
+  check_unless_stalled(gap > 0.1, stalled, "play resync: no gap in what Q hears (the burst overran AOO's buffer: a re-buffer mid-tone)");
+  check_unless_stalled(field(endq, pp, "play_overruns") == "0" && field(endq, pp, "play_resyncs") == "0" && field(endq, pp, "overruns") == "0", stalled,
+                       "play resync: no overrun of Play or Talk, no Play re-buffer (and the counters are there)");
+  check_unless_stalled(atoll(field(endq, pp, "play_trims").c_str()) >= 1 && lo_late < 60 + 15, stalled, "play resync: Play's excess shed (play_trims), its buffer back at its size");
+  const double plat = atof(field(mid, pp, "play_latency_ms").c_str());
+  check(plat > 0 && plat < 60 + 40, "play resync: play_latency_ms, from Play's own buffer");
+  check(ears_bad == 0, "ears: a path not .wav or with .., a peer not in the list, over 60 s, an unknown stream, own Talk: refused");
+  check(ears_q == 1 && ears_busy == 0 && ears_p == 1, "ears: Q taps P's Play, a second tap at once is refused, P taps its own Play");
+  for (int i = 0; i < 300 && (field(rt_status(Q), "", "state") == "\"writing\"" || field(rt_status(P), "", "state") == "\"writing\""); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  const std::string eq = rt_status(Q), ep = rt_status(P);
+  int srq = 0, srp = 0;
+  std::vector<float> wq, wp;
+  const bool okq = read_wav_f32(heard_wav, srq, wq), okp = read_wav_f32(sent_wav, srp, wp);
+  double rq = 0, err = 0;
+  for (size_t i = 0; i < wq.size(); ++i) rq += (double)wq[i] * wq[i];
+  rq = wq.empty() ? 0 : sqrt(rq / wq.size());
+  // (P's own Play is the ring's tone sample for sample: its amplitude and phase fitted over the whole second, then every sample compared)
+  if (wp.size() >= 4) {
+    const size_t nf = wp.size() / 2;
+    double a = 0, c = 0;
+    for (size_t i = 0; i < nf; ++i) { a += wp[2 * i] * sin(2 * PI * 440 * (double)i / SR); c += wp[2 * i] * cos(2 * PI * 440 * (double)i / SR); }
+    const double amp = 2 * sqrt(a * a + c * c) / nf, ph = atan2(c, a);
+    for (size_t i = 0; i < nf; ++i) err = std::max(err, std::fabs(wp[2 * i] - amp * sin(2 * PI * 440 * (double)i / SR + ph)));
+    if (std::fabs(amp - 0.5) > 0.01) err = std::max(err, std::fabs(amp - 0.5));
+  }
+  printf("     ears: Q %s (%d Hz, %zu frames, RMS %.3f); P %s (%d Hz, %zu frames, largest error against the tone %.4f); Q's status %s\n", okq ? "read" : "unread", srq, wq.size() / 2, rq,
+         okp ? "read" : "unread", srp, wp.size() / 2, err, eq.find("\"ears\"") == std::string::npos ? "(no ears)" : eq.substr(eq.find("\"ears\""), 120).c_str());
+  check(okq && srq == SR && wq.size() == (size_t)SR * 2 && rq > 0.3 && rq < 0.42, "ears: Q's WAV holds 1 s of P's Play as heard (the tone's level)");
+  check(okp && srp == SR && wp.size() == (size_t)SR * 2 && err < 0.01, "ears: P's WAV is its own Play as it went out, sample for sample");
+  check(field(eq, "", "state") == "\"done\"" && atof(field(eq, "", "first_age_s").c_str()) > 0.9 && field(eq, "", "lost") == "0", "ears: Q's status: done, the first frame's age, nothing lost");
+  remove(heard_wav.c_str()); remove(sent_wav.c_str());
+  if (ring) { hop_shm_close(&hm); hop_shm_unlink(&hm); }
+  rt_free(P); rt_free(Q);
 }
 
 // ---- A switch between the hub's mix and direct streams isn't network jitter (the four-computer test: the Mac's buffers grew with its rescues).
@@ -667,7 +811,8 @@ static void start_order_test()
 
 int main(int argc, char **argv)
 {
-  if (argc > 1 && strcmp(argv[1], "underruns") == 0) { drift_tests(); trim_test(); switch_test(); rescue_test(); stall_test(); spike_tests(); clock_tests(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
+  if (argc > 1 && strcmp(argv[1], "underruns") == 0) { drift_tests(); trim_test(); play_resync_test(); switch_test(); rescue_test(); stall_test(); spike_tests(); clock_tests(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
+  if (argc > 1 && strcmp(argv[1], "playresync") == 0) { trim_test(); play_resync_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "stalls") == 0) { stall_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "nothere") == 0) { not_here_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "startorder") == 0) { start_order_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
@@ -1040,6 +1185,7 @@ int main(int argc, char **argv)
   start_order_test(); // (the four-computer test's start order: a hub whose list leaves a computer out)
   drift_tests(); // (the four-computer test's underruns: drift, a buffer left high, a hub switch)
   trim_test();
+  play_resync_test(); // (Play's resync after a buffer left high, its counters, the ears tap: rt-p11)
   switch_test();
   rescue_test();
   stall_test(); // (a listener on a VM: its own threads held, not the hub gone)

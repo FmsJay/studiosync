@@ -97,6 +97,30 @@ class EarsTest(unittest.TestCase):
         r = ears.compare_wav(ref, dull, SR, dict(self.meta, pattern_at=1.0))
         self.assertFalse(r["pass"]["spectrum"], r)
 
+    def test_wav_live_tap_steady_and_stamped(self):
+        # rt-p11: the ears tap's two WAVs of live audio. The field's fault: ~300 ms for 4 s, then a resync to ~200 ms (100 ms never heard).
+        ref = np.concatenate([np.zeros(SR), self.x, np.zeros(SR // 2)])
+        ok = link(ref, 0.2, lowpass=18000, noise_db=-70)
+        r = ears.compare_wav(ref, ok, SR, dict(self.meta, pattern_at=1.0))
+        self.assertTrue(r["pass"]["steady"], r)
+        cut = int((1.0 + 4.0) * SR)
+        late = np.concatenate([np.zeros(int(0.3 * SR)), ref[:cut], ref[cut + int(0.1 * SR):]])
+        r = ears.compare_wav(ref, late, SR, dict(self.meta, pattern_at=1.0))
+        self.assertFalse(r["pass"]["steady"], r)
+        self.assertGreaterEqual(r["steady"]["max_ms"] - r["steady"]["min_ms"], 90)
+        # the stamps: the sender's first frame at 100.0 on its link clock, the receiver's at 99.5 on its own, which it reckons 1.2 s behind
+        # the sender's (offset_ms +1200 for it); the WAVs' lag 0.2 s: 99.5 + 1.2 + 0.2 - 100.0 = 0.9 s
+        import json
+        import tempfile
+        d = tempfile.mkdtemp()
+        rp, gp = os.path.join(d, "ref.wav"), os.path.join(d, "got.wav")
+        with open(rp + ".json", "w") as f:
+            json.dump({"t_first": 100.0, "me": "desk"}, f)
+        with open(gp + ".json", "w") as f:
+            json.dump({"t_first": 99.5, "me": "lap", "clock": {"peers": {"desk.ts.net:47281": {"offset_ms": 1200.0}}}}, f)
+        self.assertAlmostEqual(ears.stamp_latency(rp, gp, int(0.2 * SR), SR), 900.0, delta=0.01)
+        self.assertIsNone(ears.stamp_latency(rp, os.path.join(d, "none.wav"), 0, SR))
+
     def _env(self, latency, block_s=512, block_r=128, gain=1.0, drops=(), offset_ms=0.0):
         sig = np.concatenate([np.zeros(SR), self.x, np.zeros(SR)])
         s_rows = polls(sig, 1000.0, block_s, seed=3)
