@@ -35,6 +35,8 @@ void rt_test_speed(RtLink *l, double x);
 void rt_test_hold_mix(RtLink *l, double ms);
 // tests only: the send thread doesn't run for ms (with rt_test_hold: a VM's guest descheduled; hub_watch's stalls)
 void rt_test_hold_tx(RtLink *l, double ms);
+// tests only: nothing arrives for ms (a Wi-Fi outage here: hub_watch's own_outage)
+void rt_test_drop(RtLink *l, double ms);
 void rt_test_drift(RtLink *l, int resample);
 // tests only: the audio clock's estimate (ppm, as clock_ppm) after callbacks at these times (s) with this block size and rate; used: what
 // the drift correction uses of it then (clock_used_ppm).

@@ -7,7 +7,8 @@
 --     hub if it has the song open, else the ranking among those in the song; nobody there: the cloud copy stands in (it already carries every
 --     restore point both ways: lib/drive.lua). Below the home, a song's ranking starts with who reaches whom (hub.reach, rt-hubrank): the
 --     computer the most others in the room reach, then the one that reaches the most itself, then the ranking above; whoever holds the role
---     keeps it unless another has been reached by more of the others for REACH_SETTLE s.
+--     keeps it unless another has been reached by more of the others for REACH_SETTLE s. The home itself is passed over while HOME_MISS of
+--     the others can't reach it and another is reached by all (rt-p9); a computer whose Syncthing is behind takes no role (hub.lagging).
 --   Nothing depends on it: peer to peer and Syncthing stay the baseline, and what the hub keeps is never the only copy.
 -- The hub is someone's working REAPER: its one job here (a song's restore points, "hub snapshot") runs only while that REAPER is stopped and
 -- untouched for IDLE s, never while anything records or plays, at most every SNAP_EVERY s and within a CPU budget; the person can hand the role
@@ -29,7 +30,12 @@ local hub = { SCAN_EVERY = 10, FRESH = 45, HANDBACK = 30, SNAP_EVERY = 1800, IDL
   -- (rt-hubrank: a song's hub by who reaches whom.) REACH: how many more of the others must reach another computer than reach the one
   -- holding the role before it moves; REACH_SETTLE: for how long, without a break (a link that drops for a moment takes a name out of
   -- `sees` after LINK_GONE s and puts it back at once: that alone never moves the role).
-  REACH = 1, REACH_SETTLE = 30 }
+  REACH = 1, REACH_SETTLE = 30,
+  -- (rt-p9, backlog 4.d) HOME_MISS: the song's home is passed over once this many of the others here can't reach it while another is
+  -- reached by all, for REACH_SETTLE s (and hosts again once reached for as long). LAG_HEARD: a computer that hears at least this many
+  -- bandmates over the direct link while none of their status files here is under VOUCH s old has its Syncthing paused or broken: it says
+  -- `lag` in its status and nobody elects it (hub.lagging).
+  HOME_MISS = 2, LAG_HEARD = 2 }
 
 -- ---- pure ----------------------------------------------------------------------------------------------------------------------------
 -- Candidates: { user, machine, since (os.time it came online), link (its direct link listens), off (handed the role on), studio (holds the
@@ -65,7 +71,17 @@ local function settled(c, now, others_hold)
   return not others_hold or (now - math.max(tonumber(c.since) or now, tonumber(c.back) or -math.huge)) >= hub.HANDBACK
 end
 
-local function taking(c) return not c.listening end
+-- Takes a role it doesn't hold: not just come online. Its own `listening` (hub.tick), and for everyone else the same LISTEN s from its
+-- `since`, so the others don't name a computer that won't take the role yet (they named it up to 15 s early: HANDBACK against LISTEN. rt-p9)
+local function taking(c, now)
+  return not c.listening and not (now and tonumber(c.since) and now - c.since < hub.LISTEN)
+end
+-- Those that may hold a role: not handed on, and not behind on Syncthing (hub.lagging), unless every one is (then as before rt-p9).
+local function eligible(list)
+  local ok, all = {}, {}
+  for _, c in ipairs(list) do if not c.off then all[#all + 1] = c; if not c.lag then ok[#ok + 1] = c end end end
+  return #ok > 0 and ok or all
+end
 -- Is an extension new enough for the hub's jobs? Pure.
 function hub.fit(ext) return type(ext) == "string" and ext ~= "" and band.compare_versions(ext, hub.EXT) >= 0 end
 -- A candidate's: one whose status doesn't say (an older StudioSync there, until its update arrives) counts as before, so an update that
@@ -79,14 +95,12 @@ local function fit_only(list)
 end
 -- -> the studio hub's user (nil: nobody online who'll take it) and why: "preferred", "kept", "ranked", or "nobody".
 function hub.elect_studio(cands, preferred, now)
-  local ok = {}
-  for _, c in ipairs(cands or {}) do if not c.off then ok[#ok + 1] = c end end
-  ok = fit_only(ok)
+  local ok = fit_only(eligible(cands or {}))
   local holder = best(ok, function(c) return c.studio == true end)
   local p = preferred and find(ok, preferred)
-  if p and taking(p) and settled(p, now, holder and holder ~= p) then return p.user, "preferred" end
+  if p and taking(p, now) and settled(p, now, holder and holder ~= p) then return p.user, "preferred" end
   if holder then return holder.user, "kept" end
-  local r = best(ok, taking)
+  local r = best(ok, function(c) return taking(c, now) end)
   if r then return r.user, "ranked" end
   return nil, "nobody"
 end
@@ -107,20 +121,46 @@ end
 -- keeps the role unless another is clearly better reached, the studio hub is passed over for one clearly better reached, and the ranking
 -- is hub.closer. Two that both say they hold it: hub.better's as ever, at once and the same everywhere (the numbers reach the computers
 -- at different moments: between two holders they'd name different ones for a while), and reach then moves it through the settling time.
+-- Is the song's home `h` passed over (backlog 4.d, rt-p9)? HOME_MISS or more of the others here don't reach it while another that would
+-- take the role is reached by all of them. With mem: only once that has been so for REACH_SETTLE s without a break, and it hosts again once
+-- it hasn't been so for as long (a link that drops for a moment moves nothing either way). Pure.
+local function home_far(h, here, now, mem)
+  local far = (tonumber(h.miss) or 0) >= hub.HOME_MISS
+  if far then
+    far = false
+    for _, c in ipairs(here) do if c ~= h and tonumber(c.miss) == 0 and taking(c, now) then far = true end end
+  end
+  if not mem then return far end
+  local m = mem.home
+  if not m or m.who ~= h.user then m = { who = h.user, passed = false }; mem.home = m end
+  if far == m.passed then m.at = nil
+  else
+    m.at = m.at or now
+    if now - m.at >= hub.REACH_SETTLE then m.passed, m.at = far, nil end
+  end
+  return m.passed
+end
+-- -> also, as a third value, how many here can't reach the home when it's passed over (nil otherwise).
 function hub.elect_song(cands, song, home, studio, now, mem)
   local here = {}
-  for _, c in ipairs(cands or {}) do if not c.off and type(c.songs) == "table" and c.songs[song] then here[#here + 1] = c end end
-  here = fit_only(here)
-  local holder = best(here, function(c) return c.songs[song].holds == true end)
-  local r = best(here, taking, hub.closer)
-  local worse = clearly(r, holder, now, mem)
+  for _, c in ipairs(cands or {}) do if type(c.songs) == "table" and c.songs[song] then here[#here + 1] = c end end
+  here = fit_only(eligible(here))
   local h = home and find(here, home)
-  if h and taking(h) and settled(h, now, holder and holder ~= h) then return h.user, "home" end
-  if holder and not worse then return holder.user, "kept" end
+  local passed = h and home_far(h, here, now, mem) and tonumber(h.miss) or nil
+  if passed then -- (passed over: not as the home, nor as the one holding it)
+    local rest = {}
+    for _, c in ipairs(here) do if c ~= h then rest[#rest + 1] = c end end
+    here, h = rest, nil
+  end
+  local holder = best(here, function(c) return c.songs[song].holds == true end)
+  local r = best(here, function(c) return taking(c, now) end, hub.closer)
+  local worse = clearly(r, holder, now, mem)
+  if h and taking(h, now) and settled(h, now, holder and holder ~= h) then return h.user, "home" end
+  if holder and not worse then return holder.user, "kept", passed end
   local s = studio and find(here, studio)
-  if s and not clearly(r, s) then return studio, "studio" end
-  if r then return r.user, "ranked" end
-  return nil, "nobody"
+  if s and not clearly(r, s) then return studio, "studio", passed end
+  if r then return r.user, "ranked", passed end
+  return nil, "nobody", passed
 end
 
 -- A song's home: whoever shared it, then each handover in order that its sharer, the home at the time, or the owner or an admin (may(by))
@@ -155,6 +195,7 @@ end
 local function person(c, st)
   local h = type(st.hub) == "table" and st.hub or {}
   c.time, c.machine, c.since, c.link, c.off, c.studio = st.time, st.machine, tonumber(h.since), h.link == true, h.off == true, h.studio == true
+  c.lag = h.lag == true or nil -- (its Syncthing is behind: hub.lagging)
   c.ext, c.sees = type(h.ext) == "string" and h.ext or nil, hub.seen(st)
 end
 function hub.candidates(sts, now, age_of)
@@ -199,7 +240,7 @@ function hub.with_room(list, sts, song)
       local c = { user = st.user, songs = {} }
       if old and not old.late then for k, v in pairs(old.songs) do c.songs[k] = v end end
       local newer = old and old.time and old.time > st.time
-      if newer then for _, k in ipairs({ "time", "machine", "since", "link", "off", "studio", "ext", "sees" }) do c[k] = old[k] end
+      if newer then for _, k in ipairs({ "time", "machine", "since", "link", "off", "studio", "ext", "sees", "lag" }) do c[k] = old[k] end
       else person(c, st) end
       local was = newer and type(old.songs) == "table" and old.songs[song]
       c.songs[song] = { holds = type(st.hub) == "table" and st.hub.song == true or nil, sees = type(was) == "table" and was.sees or hub.seen(st) }
@@ -231,12 +272,16 @@ end
 -- word: their status's sees) and blind (how many of them it doesn't reach, by its own). One whose status doesn't say (no ext: an older
 -- StudioSync, as hub.fits) is nobody's miss and has none itself, so it ranks as before; those not in the song get neither. Every computer
 -- works out the same numbers from the same statuses. In place; -> cands. Pure.
+-- guests (a set of names, rt-p9): a guest in the room counts as one of the others each must reach, by that computer's own word (does its
+-- `sees` name the guest?), never the guest's: a guest's word moves nothing, but a hub a guest can't reach is a miss. Guests get no numbers.
 local function sees_in(c, song) local s = c.songs[song].sees; return type(s) == "table" and s or {} end
-function hub.reach(cands, song)
-  local here = {}
+function hub.reach(cands, song, guests)
+  local here, gs = {}, {}
   for _, c in ipairs(cands or {}) do
     c.miss, c.blind = nil, nil
-    if type(c.songs) == "table" and type(c.songs[song]) == "table" and c.ext ~= nil then here[#here + 1] = c end
+    if type(c.songs) == "table" and type(c.songs[song]) == "table" and c.ext ~= nil then
+      if guests and guests[c.user] then gs[#gs + 1] = c else here[#here + 1] = c end
+    end
   end
   for _, c in ipairs(here) do
     c.miss, c.blind = 0, 0
@@ -246,17 +291,36 @@ function hub.reach(cands, song)
         if not sees_in(c, song)[o.user] then c.blind = c.blind + 1 end
       end
     end
+    for _, g in ipairs(gs) do if not sees_in(c, song)[g.user] then c.miss = c.miss + 1 end end
   end
   return cands
 end
--- Those in the song's room whose direct link doesn't reach `user` (the song's hub), by their own word; sorted names, for Health. Pure.
-function hub.far(cands, song, user)
-  local out = {}
+-- Those in the song's room whose direct link doesn't reach `user` (the song's hub), by their own word (a guest: by the hub's word, as
+-- hub.reach); sorted names, for Health. Pure.
+function hub.far(cands, song, user, guests)
+  local out, hc = {}, find(cands or {}, user)
   for _, c in ipairs(cands or {}) do
-    if c.user ~= user and c.ext ~= nil and type(c.songs) == "table" and type(c.songs[song]) == "table" and not sees_in(c, song)[user] then out[#out + 1] = c.user end
+    if c.user ~= user and c.ext ~= nil and type(c.songs) == "table" and type(c.songs[song]) == "table" then
+      local g = guests and guests[c.user]
+      if (g and hc and type(hc.songs) == "table" and type(hc.songs[song]) == "table" and not sees_in(hc, song)[c.user]) or (not g and not sees_in(c, song)[user]) then out[#out + 1] = c.user end
+    end
   end
   table.sort(out)
   return out
+end
+-- Is this computer's Syncthing behind (paused or broken here)? live: the room's statuses the direct link brought (presence.live: user ->
+-- status); list: the scan's candidates (status files under VOUCH s old). True when the link hears LAG_HEARD or more bandmates and none of
+-- them has such a file here. One bandmate alone can't tell whose Syncthing it is (theirs or this one's), so two computers never lag. Pure.
+function hub.lagging(live, list)
+  local files, heard = {}, 0
+  for _, c in ipairs(list or {}) do files[c.user] = true end
+  for user, st in pairs(type(live) == "table" and live or {}) do
+    if type(st) == "table" and type(st.time) == "string" and band.age(st.time) < hub.FRESH then
+      if files[user] then return false end
+      heard = heard + 1
+    end
+  end
+  return heard >= hub.LAG_HEARD
 end
 
 -- Failover in seconds. reach: direct.reach's user -> { ok, at } for those here; mem: this computer's memory of each, kept between ticks. One
@@ -316,13 +380,16 @@ local WHY_STUDIO = { preferred = "the owner's pick", kept = "holding it", ranked
 local function who(u, me) return u == me and "you" or u end
 function hub.line(v, me)
   local s = v.studio and (who(v.studio, me) .. " (" .. (WHY_STUDIO[v.studio_why] or "?") .. ")") or "nobody online"
+  -- (passed: the home is here but that many can't reach it, rt-p9)
+  local away = v.home and (v.passed and (", " .. v.home .. " is the project's home but " .. v.passed .. " here can't reach it directly") or (", " .. v.home .. " is away")) or ""
   local why = v.why == "home" and (v.moved and "it was handed to them" or "shared it")
-    or v.why == "kept" and ("holding it" .. (v.home and v.home ~= v.hub and (" until " .. v.home .. " is back") or ""))
-    or v.why == "studio" and ("the studio hub" .. (v.home and (", " .. v.home .. " is away") or ""))
-    or v.why == "ranked" and ("the one the others here reach best, then online longest" .. (v.home and (", " .. v.home .. " is away") or "")) or ""
+    or v.why == "kept" and ("holding it" .. (v.home and v.home ~= v.hub and (v.passed and away or (" until " .. v.home .. " is back")) or ""))
+    or v.why == "studio" and ("the studio hub" .. away)
+    or v.why == "ranked" and ("the one the others here reach best, then online longest" .. away) or ""
   local song = v.hub and (who(v.hub, me) .. " (" .. why .. ")") or "nobody here, so the cloud copy stands in"
   local out = "Hub: " .. s .. "; this project: " .. song .. "."
   if v.guest then out = out .. " You're a guest here: guests are never a hub." end
+  if v.lag then out = out .. " Syncthing is behind here (the direct link hears bandmates whose status files haven't arrived), so this computer takes no hub role until it catches up." end
   if type(v.gone) == "table" and #v.gone > 0 then out = out .. " The direct link lost " .. table.concat(v.gone, ", ") .. ": not counted until it reaches them again." end
   if type(v.refused) == "table" and #v.refused > 0 then
     out = out .. " A handover in " .. table.concat(v.refused, ", ") .. "'s name came from another computer, so it doesn't count."
@@ -440,6 +507,7 @@ end
 local held = {} -- root -> { studio = bool, songs = { [song] = bool } }: this script's last election
 local link_ok = false
 local sees_now = {} -- root\nsong -> those this computer's direct link reaches in that song's room now (sorted names): hub.tick
+local lag_now = {} -- root\nsong -> true while this computer's Syncthing is behind (hub.lagging): hub.tick
 -- This computer's extension as REAPER loaded it ("menu extension": the extension says its version there), or nil.
 local function my_ext() local v = reaper.GetExtState(band.SECTION, "menu extension"); return type(v) == "string" and v ~= "" and v or nil end
 -- (ext: so a computer whose extension is too old for the hub's jobs isn't elected; sees: so the others count someone whose status comes late
@@ -448,7 +516,7 @@ function hub.status_part(cfg, b)
   local h = held[cfg.root] or { songs = {} }
   local sees = b and sees_now[cfg.root .. "\n" .. tostring(b.song)]
   return { since = hub.since(), link = link_ok or nil, off = hub.off(cfg.root) or nil, studio = h.studio or nil, song = b and h.songs[b.song] or nil,
-    ext = my_ext() or "0", sees = sees and #sees > 0 and sees or nil }
+    ext = my_ext() or "0", sees = sees and #sees > 0 and sees or nil, lag = b and lag_now[cfg.root .. "\n" .. tostring(b.song)] or nil }
 end
 
 -- The studio's statuses, read a few songs at a time (SCAN_MS a tick), every SCAN_EVERY s; shared through ExtState with the other Live sync tabs,
@@ -495,7 +563,7 @@ local function scan(cfg)
   return list
 end
 -- This computer as it is now (fresher than its own status file): since, link, off, and in this song.
-local function with_me(list, cfg, song, sees)
+local function with_me(list, cfg, song, sees, lag)
   local out, me = {}, nil
   for _, c in ipairs(list or {}) do
     if c.user == cfg.user then
@@ -508,7 +576,7 @@ local function with_me(list, cfg, song, sees)
   local h = held[cfg.root] or { songs = {} }
   me.machine = me.machine or require("sync").machine()
   me.since, me.link, me.off, me.studio = hub.since(), link_ok, hub.off(cfg.root), h.studio == true
-  me.ext, me.sees = my_ext() or "0", {}
+  me.ext, me.sees, me.lag = my_ext() or "0", {}, lag or nil
   for _, u in ipairs(sees or {}) do me.sees[u] = true end
   me.songs[song] = { holds = h.songs[song] == true, sees = me.sees }
   -- Just came online: for LISTEN s it takes no role it doesn't hold, so it has heard the room first: the others' statuses read over more than
@@ -559,21 +627,26 @@ function hub.tick(proj, cfg, b)
   sees_now[tk] = sees
   -- (the room's statuses as the link brought them, this computer as it is now, then who still counts: rt-hubfix)
   local okp, sts = pcall(function() return require("presence").peers(cfg, b.song, b.room) end)
-  list = hub.vouched(with_me(hub.with_room(list, okp and type(sts) == "table" and sts or {}, b.song), cfg, b.song, sees))
+  -- (Syncthing behind here: the statuses' files vs the link's own. Said in this computer's status, so nobody elects it, the same everywhere: rt-p9)
+  local okl, live = pcall(function() return require("presence").live(cfg, b.song, b.room) end)
+  local lag = hub.lagging(okl and live or nil, list)
+  lag_now[tk] = lag or nil
+  list = hub.vouched(with_me(hub.with_room(list, okp and type(sts) == "table" and sts or {}, b.song), cfg, b.song, sees, lag))
   local lost, fast = {}, false
   for _, c in ipairs(list) do if gone[c.user] then lost[#lost + 1] = c.user end end
   for _, r in pairs(reach) do if r.ok then fast = true end end
   local gs = guests(cfg.root)
-  -- (who reaches whom in this room: before the link's own losses go, so every computer counts the same statuses; a guest's word isn't counted)
-  local room = hub.reach(hub.drop(list, nil, gs), b.song)
+  -- (who reaches whom in this room: before the link's own losses go, so every computer counts the same statuses; a guest counts as one to
+  -- reach, by the others' word, never its own)
+  local room = hub.reach(list, b.song, gs)
   list = hub.drop(list, gone, gs, back)
   local groups = require("groups")
   local pref = groups.trusted(cfg.root).hub
   local studio, swhy = hub.elect_studio(list, type(pref) == "string" and pref or nil, now)
   local home, moved, refused = hub.home(cfg, b.song)
   reach_mem[tk] = reach_mem[tk] or {}
-  local song, why = hub.elect_song(list, b.song, home, studio, now, reach_mem[tk])
-  local far = song and hub.far(room, b.song, song) or {}
+  local song, why, passed = hub.elect_song(list, b.song, home, studio, now, reach_mem[tk])
+  local far = song and hub.far(room, b.song, song, gs) or {}
   local h = held[cfg.root] or { songs = {} }
   h.studio, h.songs[b.song] = studio == cfg.user, song == cfg.user
   held[cfg.root] = h
@@ -587,7 +660,7 @@ function hub.tick(proj, cfg, b)
   end
   local v = { studio = studio, studio_why = swhy, song = b.song, hub = song, why = why, home = home, moved = moved, fast = fast or nil,
     gone = #lost > 0 and lost or nil, guest = gs[cfg.user] or nil, refused = refused and #refused > 0 and refused or nil,
-    hub_fit = hub_fit, old = any_fit and #old > 0 and old or nil, far = #far > 0 and far or nil }
+    hub_fit = hub_fit, old = any_fit and #old > 0 and old or nil, far = #far > 0 and far or nil, passed = passed, lag = lag or nil }
   local key = cfg.root .. "\n" .. b.song
   local was = view[key]
   if not was or was.hub ~= song or was.studio ~= studio then

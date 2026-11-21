@@ -208,6 +208,10 @@ const double JOIN_S = 5.0, JOIN_RETRY_S = 10.0;
 // neither (a VM's guest descheduled: LinuxBox fell back 24 times against 7 rescues, rt-hubsmall). The mix that waited in the socket meanwhile
 // isn't silence: such a pass gives the receive thread this long again before the mix's age counts.
 const double WATCH_LATE = 0.02;
+// A listener's own outage (its Wi-Fi: nothing from anyone) isn't the hub's: it stays on the mix while nobody else is heard either, for at most
+// OWN_MAX s, when someone else was heard in the OWN_BEFORE s before the mix stopped (the listeners' 'M' every MODE_EVERY; a room of two falls
+// back as before). Someone else heard since, with no mix in OWN_GRACE s after: the hub is gone (own_outage). rt-p9
+const double OWN_MAX = 2.0, OWN_BEFORE = 2 * MODE_EVERY, OWN_GRACE = 0.02;
 
 struct Slot {
   std::string peer, addr_s, err;
@@ -259,6 +263,7 @@ struct Slot {
   std::atomic<float> mpeak{ 0.f }, hin_ms{ -1.f }, hload{ -1.f }; // (hin_ms, hload: the hub's 'I': its input latency and load)
   std::atomic<double> mix_at{ -1e9 }, mix_first{ -1e9 }, mix_gap{ 0 }; // (the receive thread's: the last mix datagram, the first after a gap, the widest spacing)
   double gap_cur = 0, gap_prev = 0, gap_at = 0;                     // (the receive thread's: the widest spacing in this stretch and the last)
+  double gap_wait_from = 0, gap_wait_to = 0;                        // (the receive thread's: a gap waiting for the send thread's next pass: gap_learn)
   double last_direct_ms = -1;                                      // (stats_mx: its own stream's latency when last heard directly)
   // As the hub: this listener's mix (msrc sends to its msink) and what it last asked for (mix_mx): when, its levels, whom its Talk mustn't reach
   AooSource *msrc = nullptr;
@@ -337,6 +342,7 @@ struct RtLink {
   std::atomic<double> hold_until{ 0 }; // (tests/rtaudio_test.cpp: rt_test_hold, Wi-Fi's bursts)
   std::atomic<double> hold_mix{ 0 };   // (rt_test_hold_mix: the hub's mixing stalls, as a busy hub's send thread)
   std::atomic<double> hold_tx{ 0 };    // (rt_test_hold_tx: the send thread doesn't run, as a VM's descheduled guest)
+  std::atomic<double> drop_until{ 0 }; // (rt_test_drop: nothing arrives, as a Wi-Fi outage here)
   double speed = 1;                    // (rt_test_speed: the adaptive buffer's timings this many times faster)
   bool resample = true;                // (rt_test_drift: AOO's drift correction)
   // blocks the audio thread skipped while a reconfigure paused it (capture, mix), told to AOO as xruns on the next live block; how often it paused
@@ -380,6 +386,8 @@ struct RtLink {
   long long fallbacks = 0, rescues = 0; // (rescues: everyone's streams asked back while the mix paused)
   double watch_at = -1e9, watch_free = -1e9; // (hub_watch's last pass; the last pass WATCH_LATE late that the mix's age waits out)
   long long stalls = 0; double stall_max = 0; // (status: passes WATCH_LATE late, and the longest gap, s)
+  std::atomic<double> watch_pass{ -1e9 }, stall_from{ 0 }, stall_to{ 0 }; // (hub_watch's last pass, and its last late one's gap, for gap_learn)
+  double other_first = 0, other_mix = 0; // (own_outage, the send thread's: when someone else was first seen after the mix's last datagram)
   std::string asked_sig;            // (the levels last asked for: asked again at once when they change)
   // serving: the audio thread's copy of every peer's block (and this computer's own Talk and Play), per callback, read by the send thread
   std::vector<float> hring, hmix;
@@ -986,6 +994,26 @@ void put_addr(std::vector<unsigned char> &o, const sockaddr_in &a) // (4 bytes o
 }
 void put_f32(std::vector<unsigned char> &o, float v) { unsigned char b[4]; memcpy(b, &v, 4); o.insert(o.end(), b, b + 4); }
 
+// Nothing from anyone but the hub since its mix stopped, while someone else was heard just before: this computer's own outage (OWN_MAX).
+bool own_outage(RtLink *l, const Slot *h, double now)
+{
+  const double mix = h->mix_at.load();
+  if (now - mix > OWN_MAX) return false;
+  bool before = false, since = false;
+  for (int i = 0; i < l->nslots; ++i) {
+    const Slot &p = *l->slots[i];
+    if (&p == h) continue;
+    const double r = p.rx_at.load(std::memory_order_relaxed);
+    since = since || r > mix;
+    before = before || r > mix - OWN_BEFORE;
+  }
+  if (!since) { l->other_first = 0; return before; }
+  // (someone else came after the mix: the network is up here. OWN_GRACE from the first such pass for the mix to show too, as both come back
+  // at once after an outage; then the hub is gone. Counted from the first sight, not the newest datagram: a rescue has everyone streaming here)
+  if (l->other_first == 0 || l->other_mix != mix) { l->other_first = now; l->other_mix = mix; }
+  return now - l->other_first < OWN_GRACE;
+}
+
 // A listener: asks its hub for its mix ('R': every bandmate's Talk and Play level here, mute as 0, and whom its Talk mustn't reach: talkback),
 // switches to it once it has flowed ENTER_S, and back to everyone's own streams the moment it stops coming (no mix datagram for its buffer
 // + GONE_PAD), telling everyone ('M') either way. A computer that serves never hears through another (every hub hears everyone directly).
@@ -1008,14 +1036,17 @@ void hub_watch(RtLink *l, double now)
     ++l->stalls;
     l->stall_max = std::max(l->stall_max, lag);
     if (!h || h->mix_at.load() > l->watch_free) l->watch_free = now;
+    l->stall_from.store(now - lag);
+    l->stall_to.store(now);
   }
+  l->watch_pass.store(now); // (after the stall: gap_learn reads a pass past a gap as "the stall is known")
   if (!h) st = 0;
   else {
     const double raw = now - h->mix_at.load();
     // (hearing it: the age counts from a late pass's WATCH_LATE on, for rescues as for falling back. Joining keeps the raw age: a mix that
     // never came can't look like it's flowing)
     const double gone = std::max(GONE_MIN, h->target_ms + GONE_PAD) / 1000.0, quiet = st == 2 ? std::min(raw, std::max(0.0, now - l->watch_free - WATCH_LATE)) : raw;
-    const bool flowing = quiet < gone;
+    const bool flowing = quiet < gone || (st == 2 && own_outage(l, h, now)); // (this computer's own outage: no fallback, rt-p9)
     if (st == 2 && !flowing) { st = 0; ++l->fallbacks; l->retry_at = now + RETRY_S; } // (the hub dropped, or stopped mixing for me: direct at once)
     else if (st != 2) {
       int ns = now < l->retry_at ? 0 : flowing && now - h->mix_first.load() >= ENTER_S && h->mstreaming ? 2 : 1;
@@ -1393,6 +1424,29 @@ void not_here(RtLink *l, const sockaddr_in &from)
 }
 // One datagram from a peer: from the socket (rx_loop) or opened by the connection without Tailscale (rt_nat_rx, libjuice's thread). The
 // AOO calls happen under cfg_mx either way, so the two never run them at once.
+// The mix's widest spacing lately (GAP_SPAN), the rescue line's floor. The part of a gap this computer's own stall covers (the send thread's
+// last late pass: a VM's guest descheduled stops both threads and the mix waits in the socket) isn't the link's, so it's left out, once the
+// send thread has passed since the gap ended (it may wake after this thread). A 150 ms stall raised the rescue line past `gone` for up to
+// 60 s, and a real hub drop then fell back without the early rescue (rt-hubwatch "Found"). rt-p9
+void gap_keep(Slot &p, double now, double g)
+{
+  if (now - p.gap_at > GAP_SPAN) { p.gap_prev = p.gap_cur; p.gap_cur = 0; p.gap_at = now; }
+  p.gap_cur = std::max(p.gap_cur, g);
+  p.mix_gap.store(std::max(p.gap_cur, p.gap_prev));
+}
+double own_stall(RtLink *l, double a, double b) { return std::max(0.0, std::min(b, l->stall_to.load()) - std::max(a, l->stall_from.load())); }
+void gap_learn(RtLink *l, Slot &p, double last, double now)
+{
+  if (p.gap_wait_to > 0 && (l->watch_pass.load() >= p.gap_wait_to || now - p.gap_wait_to > 1.0 || now - last > WATCH_LATE)) {
+    gap_keep(p, now, p.gap_wait_to - p.gap_wait_from - own_stall(l, p.gap_wait_from, p.gap_wait_to));
+    p.gap_wait_to = 0;
+  }
+  const double since = now - last;
+  if (since >= 1.0) return; // (a pause, not jitter)
+  if (since <= WATCH_LATE) gap_keep(p, now, since);
+  else if (l->watch_pass.load() >= now) gap_keep(p, now, since - own_stall(l, last, now));
+  else { p.gap_wait_from = last; p.gap_wait_to = now; }
+}
 void rx_one(RtLink *l, const unsigned char *d, int n, const sockaddr_in &from)
 {
   l->received.fetch_add(1, std::memory_order_relaxed);
@@ -1436,16 +1490,12 @@ void rx_one(RtLink *l, const unsigned char *d, int n, const sockaddr_in &from)
     else if (type == kAooMsgTypeSource && id == SRC_ID && l->src) l->src->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
     else if (type == kAooMsgTypeSource && id == PLAY_ID && l->psrc) l->psrc->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
     else if (type == kAooMsgTypeSink && id == p->msink_id && p->msink) { // (my hub's mix for me: when it last came, and since when unbroken)
-      const double now = now_s(), since = now - p->mix_at.load();
+      const double now = now_s(), last = p->mix_at.load(), since = now - last;
       if (since > 0.1) p->mix_first.store(now);
-      // (the widest spacing in the last 5-10 s: how long a pause is only jitter. It left out gaps over 0.1 s and faded in ~1 s, so a link that
+      // (the widest spacing in the last 30-60 s: how long a pause is only jitter. It left out gaps over 0.1 s and faded in ~1 s, so a link that
       // stalls ~0.1 s every second or two (the Mac's, through the desktop's mix: Wi-Fi) asked everyone's streams back each time: 40 rescues a
       // minute with the hub steady)
-      if (since < 1.0) {
-        if (now - p->gap_at > GAP_SPAN) { p->gap_prev = p->gap_cur; p->gap_cur = 0; p->gap_at = now; }
-        p->gap_cur = std::max(p->gap_cur, since);
-        p->mix_gap.store(std::max(p->gap_cur, p->gap_prev));
-      }
+      gap_learn(l, *p, last, now);
       p->mix_at.store(now);
       p->msink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
     } else if (type == kAooMsgTypeSource && id == MIX_ID && p->msrc) p->msrc->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
@@ -1464,6 +1514,7 @@ void rx_loop(RtLink *l)
     socklen_t fl = sizeof(from);
     const int n = (int)recvfrom(l->s, (char *)buf.data(), (int)buf.size(), 0, (sockaddr *)&from, &fl);
     if (n <= 0 || fl < (socklen_t)sizeof(from)) continue; // (the receive timeout: a look at run)
+    if (now_s() < l->drop_until.load()) continue;          // (rt_test_drop)
     rx_one(l, buf.data(), n, from);
   }
 }
@@ -1725,6 +1776,7 @@ void rt_test_hold(RtLink *l, double ms) { l->hold_until.store(now_s() + ms / 100
 void rt_test_speed(RtLink *l, double x) { std::lock_guard<std::mutex> st(l->stats_mx); l->speed = x > 0 ? x : 1; }
 void rt_test_hold_mix(RtLink *l, double ms) { l->hold_mix.store(now_s() + ms / 1000.0); }
 void rt_test_hold_tx(RtLink *l, double ms) { l->hold_tx.store(now_s() + ms / 1000.0); l->wake.set(); }
+void rt_test_drop(RtLink *l, double ms) { l->drop_until.store(now_s() + ms / 1000.0); }
 void rt_test_drift(RtLink *l, int resample) { l->resample = resample != 0; l->clk.hold = resample != 2; } // (before rt_start)
 double rt_test_clock(const double *t, int n, int len, double srate, double *used)
 {

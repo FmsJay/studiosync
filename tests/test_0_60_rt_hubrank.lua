@@ -386,11 +386,17 @@ do
   c.desk.lmix, c.me.lmix = nil, true
   p, why = livex.mix_pick(list)
   assert(p.user == "me" and why == "kept", "this computer mixes and everybody reaches it: kept, a few ms of round trip isn't clearly better")
-  -- the numbers count everyone in the room by the statuses, not only those live audio reaches here; a guest's word isn't counted
+  -- the numbers count everyone in the room by the statuses, not only those live audio reaches here; a guest counts as one to reach, by the
+  -- others' word, never its own (rt-p9: before, a guest wasn't counted at all, so the mix could go to a computer a guest can't reach)
   list = livex.mix_cands(sts, { ["d:1"] = "desk" }, me, nil, {})
   assert(#list == 2 and by(list).desk.miss == 2, "only the desktop is on the link here: it's still missed by the two this computer can't hear")
   sts[#sts + 1] = st("gus", "wifi", 40, { "desk" })
-  assert(by(livex.mix_cands(sts, on_link, me, nil, { gus = true })).linux.miss == 0 and by(livex.mix_cands(sts, on_link, me, nil, {})).linux.miss == 1, "a guest's word: not counted; a member's: counted")
+  table.insert(sts[4].hub.sees, "gus") -- (linux reaches gus; desk and this computer don't)
+  local g = by(livex.mix_cands(sts, on_link, me, nil, { gus = true }))
+  assert(g.linux.miss == 0 and g.desk.miss == 3 and g.me.miss == 1,
+    "a guest: its own word isn't counted (it leaves linux out), but desk and this computer don't reach it: one more miss each")
+  assert(livex.mix_pick(livex.mix_cands(sts, on_link, me, nil, { gus = true })).user == "linux", "so the mix goes to linux, whom everybody, the guest too, can be reached from")
+  assert(by(livex.mix_cands(sts, on_link, me, nil, {})).linux.miss == 1, "the same word from a member counts: it leaves linux out")
   -- statuses that say nothing about reach (an older StudioSync): as before
   list = livex.mix_cands({ { user = "desk", net = "wired", lrtt = 20, cpu = 30, lhub = true, hub = {} } }, { ["d:1"] = "desk" }, { user = "me", net = "wifi", rtt = 30, cpu = 10, can = true }, nil, {})
   assert(by(list).desk.miss == nil and by(list).me.miss == nil and livex.mix_pick(list).user == "desk", "no numbers: wired first, as before")

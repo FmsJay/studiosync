@@ -574,6 +574,10 @@ static void stall_test()
   check_unless_stalled(n(after, "stalls") - n(before, "stalls") == holds, stalled, "stalls: and nothing else here was a stall");
   check_unless_stalled(field(before, "hub", "state") == "\"hub\"" && field(after, "hub", "state") == "\"hub\"" && n(after, "fallbacks") == n(before, "fallbacks") && n(after, "rescues") == n(before, "rescues"),
                        stalled, "stalls: X's own threads held 150 ms is neither a fallback nor a rescue (it fell back on each one it heard the hub in)");
+  // (rt-p9: the receive thread learnt each hold as the mix's widest spacing, 150 ms, for up to 60 s: the rescue line went past `gone` and a
+  // real hub drop then fell back with no rescue first. The part the send thread's late pass covers is left out now)
+  printf("     stalls: X's widest spacing of the mix after the holds: %s ms (W's, not held: %s ms)\n", field(after, "hub", "mix_gap_ms").c_str(), field(after_w, "hub", "mix_gap_ms").c_str());
+  check_unless_stalled(atof(field(after, "hub", "mix_gap_ms").c_str()) < 60, stalled, "stalls: X's own stalls aren't learnt as the mix's spacing (it was ~150 ms)");
   check_unless_stalled(field(out_x, "hub", "state") == "\"direct\"" && n(end_x, "fallbacks") - n(after, "fallbacks") == 1, stalled,
                        "stalls: the hub's mix stopping while X is held still sends X to everyone's own streams, within 150 ms of waking");
   check_unless_stalled(field(out_y, "hub", "state") == "\"direct\"" && n(end_y, "fallbacks") - n(after_y, "fallbacks") == 1 && n(end_y, "stalls") - n(after_y, "stalls") >= 3, stalled,
@@ -581,6 +585,67 @@ static void stall_test()
   check_unless_stalled(n(end_w, "fallbacks") - n(after_w, "fallbacks") == 1 && n(end_w, "rescues") - n(after_w, "rescues") == 1, stalled,
                        "stalls: W, not held, rescues and falls back on it as before");
   for (int i = 0; i < 4; ++i) rt_free(L[i]);
+}
+
+// ---- A listener's own outage (its Wi-Fi, rt-p9; rt-hubsmall's "not recommended yet", backlog 1.20): nothing arrives at X for 300 ms, from the
+// hub or anyone. Falling back then was no use (no direct stream comes either) and cost RETRY_S + ENTER_S of everyone's own streams after it.
+// H mixes for W, X and Y (30 ms buffers, gone at 50 ms); W and Y say their mode to X every MODE_EVERY. X stays on the mix through it. Then
+// H's mix really stops (600 ms): X and W fall back within about MODE_EVERY. And a room of two (H and Z only, nobody else to hear): Z's own
+// outage falls back as before (nothing tells the two apart there).
+static void outage_test()
+{
+  const int SR = 48000, LEN = 256, P0 = 47521;
+  char nm[4][32];
+  RtLink *L[4];
+  for (int i = 0; i < 4; ++i) { snprintf(nm[i], sizeof nm[i], "127.0.0.1:%d", P0 + i); L[i] = rt_new(); }
+  for (int i = 0; i < 4; ++i) {
+    std::string list;
+    for (int j = 0; j < 4; ++j) if (j != i) list += std::string(list.empty() ? "" : ", ") + "\"" + nm[j] + "\"";
+    rt_peers(L[i], ("{\"peers\":[" + list + "],\"port\":" + std::to_string(P0 + i) + ",\"secret\":\"studio\"}").c_str());
+    rt_start(L[i], 0, 1, 128, 0, "127.0.0.1");
+  }
+  char zn[2][32];
+  RtLink *Z[2];
+  for (int i = 0; i < 2; ++i) { snprintf(zn[i], sizeof zn[i], "127.0.0.1:%d", P0 + 5 + i); Z[i] = rt_new(); }
+  for (int i = 0; i < 2; ++i) {
+    rt_peers(Z[i], ("{\"peers\":[\"" + std::string(zn[1 - i]) + "\"],\"port\":" + std::to_string(P0 + 5 + i) + ",\"secret\":\"studio\"}").c_str());
+    rt_start(Z[i], 0, 1, 128, 0, "127.0.0.1");
+  }
+  auto at = [&](double s) { return (int)(s * SR / LEN); };
+  std::vector<double> in(LEN, 0.0), o1(LEN), o2(LEN);
+  const double *ii[1] = { in.data() };
+  double *oo[2] = { o1.data(), o2.data() };
+  std::string before, mid, after, before_w, out_x, out_w, end_x, end_w, zb, ze;
+  double stalled = 0;
+  const auto t0 = std::chrono::steady_clock::now();
+  for (int b = 0; b < at(6.0); ++b) {
+    const auto due = t0 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
+    while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
+    stalled = std::max(stalled, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - due).count());
+    if (b == at(0.3)) { for (int i = 1; i < 4; ++i) rt_peer_buffer(L[i], nm[0], 30, 30); rt_peer_buffer(Z[1], zn[0], 30, 30); }
+    if (b == at(0.5)) { rt_hub(L[0], "", 1); for (int i = 1; i < 4; ++i) rt_hub(L[i], nm[0], 0); rt_hub(Z[0], "", 1); rt_hub(Z[1], zn[0], 0); }
+    if (b == at(2.9)) { before = rt_status(L[2]); zb = rt_status(Z[1]); }
+    if (b == at(3.0)) { rt_test_drop(L[2], 300); rt_test_drop(Z[1], 300); }
+    if (b == at(3.2)) mid = rt_status(L[2]);
+    if (b == at(3.9)) { after = rt_status(L[2]); before_w = rt_status(L[1]); ze = rt_status(Z[1]); }
+    if (b == at(4.0)) rt_test_hold_mix(L[0], 600);
+    if (b == at(4.4)) { out_x = rt_status(L[2]); out_w = rt_status(L[1]); }
+    if (b == at(5.9)) { end_x = rt_status(L[2]); end_w = rt_status(L[1]); }
+    for (int i = 0; i < 4; ++i) { rt_capture(L[i], ii, 1, LEN, SR); rt_mix(L[i], oo, 2, LEN, SR); }
+    for (int i = 0; i < 2; ++i) { rt_capture(Z[i], ii, 1, LEN, SR); rt_mix(Z[i], oo, 2, LEN, SR); }
+  }
+  auto n = [&](const std::string &s, const char *k) { return atoll(field(s, "hub", k).c_str()); };
+  printf("     outage: X heard nothing 300 ms: %s -> %s (in it) -> %s, fallbacks %lld -> %lld; a room of two: fallbacks %lld -> %lld\n", field(before, "hub", "state").c_str(),
+         field(mid, "hub", "state").c_str(), field(after, "hub", "state").c_str(), n(before, "fallbacks"), n(after, "fallbacks"), n(zb, "fallbacks"), n(ze, "fallbacks"));
+  printf("     outage: then H's mix stopped 600 ms: X %s, W %s at 0.4 s; fallbacks X +%lld, W +%lld\n", field(out_x, "hub", "state").c_str(), field(out_w, "hub", "state").c_str(),
+         n(end_x, "fallbacks") - n(after, "fallbacks"), n(end_w, "fallbacks") - n(before_w, "fallbacks"));
+  check_unless_stalled(field(before, "hub", "state") == "\"hub\"" && field(mid, "hub", "state") == "\"hub\"" && field(after, "hub", "state") == "\"hub\"" &&
+                       n(after, "fallbacks") == n(before, "fallbacks"), stalled, "outage: X's own outage (nothing from anyone) keeps it on the mix, no fallback (it fell back: 3.3 s of everyone's streams)");
+  check_unless_stalled(n(ze, "fallbacks") - n(zb, "fallbacks") == 1, stalled, "outage: in a room of two (nobody else to hear) the same outage falls back as before");
+  check_unless_stalled(field(out_x, "hub", "state") == "\"direct\"" && field(out_w, "hub", "state") == "\"direct\"" && n(end_x, "fallbacks") - n(after, "fallbacks") == 1 &&
+                       n(end_w, "fallbacks") - n(before_w, "fallbacks") == 1, stalled, "outage: the hub's mix really stopping still sends X and W to everyone's own streams within 0.4 s");
+  for (int i = 0; i < 4; ++i) rt_free(L[i]);
+  for (int i = 0; i < 2; ++i) rt_free(Z[i]);
 }
 
 // ---- Latency against underruns over a realistic spike pattern (1.0.22 in REAPER: 6 underruns took the desktop's buffer for the laptop from
@@ -811,9 +876,10 @@ static void start_order_test()
 
 int main(int argc, char **argv)
 {
-  if (argc > 1 && strcmp(argv[1], "underruns") == 0) { drift_tests(); trim_test(); play_resync_test(); switch_test(); rescue_test(); stall_test(); spike_tests(); clock_tests(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
+  if (argc > 1 && strcmp(argv[1], "underruns") == 0) { drift_tests(); trim_test(); play_resync_test(); switch_test(); rescue_test(); stall_test(); outage_test(); spike_tests(); clock_tests(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "playresync") == 0) { trim_test(); play_resync_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "stalls") == 0) { stall_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
+  if (argc > 1 && strcmp(argv[1], "outage") == 0) { outage_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "nothere") == 0) { not_here_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "startorder") == 0) { start_order_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "hubload") == 0) { hub_loads(true); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
@@ -1189,6 +1255,7 @@ int main(int argc, char **argv)
   switch_test();
   rescue_test();
   stall_test(); // (a listener on a VM: its own threads held, not the hub gone)
+  outage_test(); // (a listener's own Wi-Fi outage: kept on the mix. rt-p9)
   spike_tests();
   clock_tests();
   hub_loads(false); // (the hub's load at REAPER's small blocks, as the laptop's ASIO runs: 128 and 64 samples)

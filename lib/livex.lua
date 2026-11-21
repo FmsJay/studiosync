@@ -316,19 +316,19 @@ livex.guests = guests -- (the studio's guests' names, read every GUESTS_EVERY s:
 -- The candidates from the room's statuses (presence.peers: those here) and this computer as it is now; users: peer -> name of those live
 -- audio reaches here (only they can be mixed for). -> list, shared CPU on anywhere in the room. Pure but for its arguments.
 -- Each one's miss and blind (who reaches whom: lib/hub.lua reach) count everyone in the room by the statuses, not only those on the link
--- here, so every computer ranks the same numbers; a guest's word isn't counted, as for the song's hub. me.hub: this computer's own
+-- here, so every computer ranks the same numbers; a guest counts as one to reach, by the others' word, never its own, as for the song's
+-- hub (rt-p9). me.hub: this computer's own
 -- (hub.status_part: ext, sees). rt-hubrank
 function livex.mix_cands(sts, users, me, home, gs)
   local on_link, list, scpu = {}, {}, me.scpu == true
   local hubm, room, at = require("hub"), {}, {}
   local function person(st)
-    if gs[st.user] then return end
     at[st.user] = { user = st.user, ext = type(st.hub) == "table" and st.hub.ext or nil, songs = { here = { sees = hubm.seen(st) } } }
     room[#room + 1] = at[st.user]
   end
   for _, st in ipairs(sts or {}) do if type(st) == "table" and type(st.user) == "string" then person(st) end end
   person(me)
-  hubm.reach(room, "here")
+  hubm.reach(room, "here", gs)
   for _, name in pairs(users or {}) do on_link[name] = true end
   for _, st in ipairs(sts or {}) do
     if type(st) == "table" and type(st.user) == "string" and on_link[st.user] then

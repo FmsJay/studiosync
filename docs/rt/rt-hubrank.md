@@ -195,3 +195,174 @@ What it can't do: lower its own miss (that is the others' word), elect a guest, 
 elect an old extension, or affect the studio hub. A guest's `sees` is ignored (the guest marks decide who is a guest, not the guest's
 status). `sees` is read from statuses that already passed presence's and the link's checks; `hub.reach` is n squared over the room's
 members, with nothing stored per name beyond the candidates list.
+
+## Round 2: package P9 (rt-p9, 2026-11-21)
+
+Backlog P9 (items 1.20 and 4.d). Lua (`lib/hub.lua`, `lib/livex.lua`) and C++ (`extension/rtaudio.cpp`: `hub_watch` and the receive
+thread's gap learning; `extension/rtaudio.h`: one test hook). The C++ needs the next extension release; nothing bumped, no binaries.
+**Offline and native tests only: nothing run in REAPER or between computers.**
+
+| Item | Built | Test (fails without it: checked) |
+|---|---|---|
+| A computer with Syncthing paused isn't a second hub | `hub.lagging`, `lag` in the status | `test_0_60_rt_hubp9.lua` 1 |
+| A home that two bandmates can't reach (4.d) | passed over after 30 s, hosts again after 30 s | `test_0_60_rt_hubp9.lua` 2 |
+| A guest's reach counted | a guest is one each must reach, by that computer's own word | `test_0_60_rt_hubp9.lua` 3, `_hubrank` 4 |
+| A returning computer named 15 s early | the others apply its LISTEN from its `since` | `test_0_60_rt_hubp9.lua` 4, `_hub` (handbacks) |
+| The mix host settled 30 s like the song's hub | already built (rt-hubsmall item 6); nothing changed | `test_0_60_rt_hubsmall.lua` 6 |
+| The stall-learning `mix_gap` | the part of a gap the send thread's stall covers isn't learnt | `rtaudio_test stalls` (new check) |
+| A Wi-Fi listener kept through its own outage | `own_outage` in `hub_watch` | `rtaudio_test outage` (new) |
+| The studio hub's election by reach | not built (no word between computers in different songs, as before) | |
+
+### 1. Syncthing paused: not a second hub
+
+The design constraint stands (rt-linkmove round 5): every computer elects from the same inputs. The open room's statuses already reach
+the election over the link (`hub.with_room` merges `presence.peers`, which has the link's statuses). What a computer with Syncthing paused
+lacks is everyone in the room it doesn't reach directly, and every other song (so the studio hub): there it elects on stale files. So it
+now **says so in its own status** and takes itself out:
+
+- `hub.lagging(live, list)`: the link brought fresh statuses from `LAG_HEARD` (2) or more bandmates in this room, and none of them has a
+  status file here under `VOUCH` (150 s) old. One bandmate alone can't tell whose Syncthing is paused (theirs or this one's), so two
+  computers never lag; with three, the paused one sees every file stale, the others see only its file stale.
+- Its status's hub part says `"lag": true`. Every computer that has its status (by file or link) reads it the same way: it isn't eligible
+  for the song's hub or the studio hub (like `off`). Its own election leaves itself out the same way, so it never claims a role and gives
+  up one it holds (its restore points couldn't travel anyway). If everyone in the room says `lag`, it's as before (the roles still go
+  to someone). The home is passed over too while it lags.
+- Health: "Syncthing is behind here (...), so this computer takes no hub role until it catches up." The view carries `lag`.
+- When Syncthing runs again, the next scan (10 s) clears it; whoever holds the role meanwhile keeps it.
+- Limits: a computer paused for under 150 s isn't noticed (the vouching rules cover that span as before); one that hears only one
+  bandmate over the link can't tell and elects as before. Its own view of who the hub is can still be wrong while paused (it may name a
+  computer that isn't the holder, since it can't see the holder); it just doesn't claim. Relaying the elected name was not built.
+
+### 2. A home that two bandmates can't reach (backlog 4.d, the section-4 default)
+
+`hub.elect_song`: the home is passed over when `HOME_MISS` (2) or more of the others in the room don't reach it (`miss`, their word) and
+another computer that would take the role is reached by all (`miss` 0). With the tick's memory, only after that has held for
+`REACH_SETTLE` (30 s) without a break, and it hosts again once it hasn't held for as long (a link that drops for a moment, or flaps 20 s a
+minute, moves nothing). Passed over, it isn't kept as the holder either; the ranking below the home decides (usually the one everybody
+reaches). The owner's pick for the studio hub isn't touched. Health: "this project: Cy (the one the others here reach best, then online
+longest, James is the project's home but 2 here can't reach it directly)". The view carries `passed` (that number).
+
+### 3. A guest's reach
+
+`hub.reach(cands, song, guests)`: a guest in the room counts as one of the others each computer must reach, judged by that computer's own
+`sees` (does it name the guest?), never by the guest's: a guest's word still moves nothing, but a hub a guest can't reach now has a miss
+for it. Guests get no numbers and are never elected (as before). `hub.far` names a guest the hub's own word says it doesn't reach.
+`livex.mix_cands` does the same for the live mix's host.
+
+### 4. Not named before it takes the role
+
+A computer takes no role for its first `LISTEN` (45 s) online, but the others handed a role back to it after `HANDBACK` (30 s), so they
+named it up to 15 s before it took it. `taking(c, now)` now also applies `LISTEN` from the candidate's own `since` (in its status), so
+every computer names it when it takes it. `HANDBACK` still applies to a computer the link lost and found again (`back`). Before LISTEN
+is over, nobody is named for a role nobody holds, as the computer's own view already did.
+
+### 5. The live mix's host
+
+Already built by rt-hubsmall item 6 (`livex.mix_decide` waits `hub.REACH_SETTLE` for a move only about reach; `_hubsmall` part 6).
+Backlog 1.20's "settles reach in 4 s" is out of date.
+
+### 6. The stall-learning `mix_gap` (C++)
+
+rt-hubwatch's "Found, not changed": after a VM stall the receive thread learnt the stall (150 ms) as the mix's widest spacing for up to
+60 s, so the rescue line went past `gone` and a real hub drop then fell back without the early rescue. Now `hub_watch` records its last
+late pass's gap (`stall_from`, `stall_to`) and each pass's time (`watch_pass`); the receive thread (`gap_learn`) leaves out the part of a
+gap that window covers. A gap over `WATCH_LATE` waits for the send thread's next pass after it (the threads wake in either order) and is
+decided then, on the next gap, or after 1 s. Gaps the send thread didn't share (Wi-Fi's bursts: the receive thread alone) are learnt as
+before (`rescue_test` unchanged). Test: X's threads held 150 ms five times; X's `mix_gap_ms` after: 10-14 ms (without the change: 161 ms).
+
+### 7. A Wi-Fi listener kept through its own outage (C++)
+
+rt-hubsmall had this as "not recommended yet" (a real hub drop could wait up to a quarter second). Built with that bound: `own_outage`
+keeps a listener on the mix while **nothing** has come from anyone else since the mix's last datagram, when someone else was heard in the
+`OWN_BEFORE` (0.5 s, two of the listeners' 'M' rounds) before it; for at most `OWN_MAX` (2 s). Someone else heard after the mix stopped
+means the network is up here: `OWN_GRACE` (20 ms) from the first pass that sees it, for the mix to show too, then the fallback. In a room
+of two (nobody else to hear) it falls back as before. Cost: a real hub drop falls back when the first other datagram arrives plus 20 ms;
+the other listeners' 'M' come every 0.25 s and at once when they fall back themselves, so at most about 0.27 s. A rescue ('M' = 0) is
+still sent during the outage. Tests (`rtaudio_test outage`): X hears nothing for 300 ms: stays "hub", no fallback (without it: "direct",
++1 fallback, 3.3 s on everyone's streams); a room of two: +1 fallback as before; then the hub's mix stops 600 ms: X and W both "direct"
+by 0.4 s, +1 fallback each. The `stalls` test's late-every-pass listener still falls back (the grace counts from the first sight of
+someone else, not the newest datagram: a rescue has everyone streaming to it).
+
+### Tests
+
+- `tests/test_0_60_rt_hubp9.lua` (new): parts 1-5 above. Each part fails against the code before this round (run part by part against
+  `git archive HEAD lib`; the paused computer's tick on its own: "Lin" made itself the hub).
+- `tests/test_0_60_rt_hub.lua`: the tie tests' computers are online 100 s (10 s was still in LISTEN); the preferred and home handbacks wait
+  LISTEN from their `since`, with a check that they aren't named at HANDBACK.
+- `tests/test_0_60_rt_hubrank.lua` part 4: a guest now costs a miss to the computers that don't reach it; its own word still doesn't count.
+- `tests/rtaudio_test.cpp`: the `stalls` check on `mix_gap_ms`, and `outage_test` (also in `underruns` and the full run). Both fail with
+  the change taken out (checked on Windows with each fix replaced by the old code).
+
+### REAPER checks (R2, the VM lab)
+
+Blocks and pauses happen **only inside the VMs** (`tools/lab/netlab.sh` through `lab.sh net`, Syncthing's REST on the VM), never on the
+desktop's or laptop's firewall. Computers: LinuxBox (x1), LinuxBox2 (x2, once it's joined to Smiley Studios / Cross Test: rt-lab's pending
+steps), the desktop; the laptop for B. All on this Lua; F needs the next extension release on all of them. Deafen on everywhere except F.
+The view on any computer, read-only through the dev-eval hook: `reaper.GetExtState("BandSync", "hub view <studio id> Cross Test")` (JSON:
+`hub`, `why`, `home`, `far`, `passed`, `lag`). Block the address the link uses (the Tailscale address, as rt-lab says).
+
+**A. Syncthing paused isn't a second hub.**
+1. All three in the room; LinuxBox2 holds the song's hub (a project whose home is away, or the desktop and LinuxBox click Health > Hand
+   it on, then Be a hub again once LinuxBox2 has it). Each view: `hub` = LinuxBox2's name.
+2. Pause LinuxBox2's Syncthing (its REST `/rest/system/pause`, as rt-r0 did on LinuxBox). Wait 3 minutes.
+3. Expected: from about 150 s after the pause, LinuxBox2's view has `lag` true, Health says "Syncthing is behind here", its log says
+   "'Cross Test': <name> is its hub now" once, and its status over the link has `"lag":true` in the hub part (the desktop's
+   `presence live` ExtState for the room). The desktop's and LinuxBox's views name the same new hub within seconds of each other; no
+   "you're the hub" on LinuxBox2 afterwards.
+4. Partial reach on top: `lab.sh net x2 block <desktop's Tailscale IP> 47281`. For 10 minutes no "you're the hub" on LinuxBox2, and the
+   desktop and LinuxBox keep naming one hub. `lab.sh net x2 undo`.
+5. Resume Syncthing on LinuxBox2. Within about 20 s `lag` is gone from its view; the hub stays where it is (no hub log lines).
+
+**B. A home two bandmates can't reach (four computers: the laptop too).** Cross Test's home is the desktop, all four present.
+1. `lab.sh net x1 block <desktop's Tailscale IP> 47281` and the same on x2.
+2. Expected: about 12 s later each of the two drops the desktop from `sees`; 30 s after that, all four views name the computer everybody
+   reaches (the laptop, or whichever has `miss` 0), `why` = `ranked`, `passed` = 2; Health on all four: "James is the project's home but
+   2 here can't reach it directly". One "you're the hub" on the new hub, one "is its hub now" on the desktop.
+3. 10 minutes: no further hub lines.
+4. Undo both blocks: about 30 s later the desktop hosts again (`why` = `home`), once.
+5. Short: block the same two for 20 s and undo: no hub lines anywhere.
+6. Three computers only (no laptop), the same two blocks: the desktop stays the hub (nobody else is reached by all), and Health names
+   the two in "No direct link to this project's hub from".
+
+**C. A guest's reach (if LinuxBox2 can be a guest of the room).** A project whose home is away, the desktop holding its hub, LinuxBox a
+member. `lab.sh net x2 block <desktop's Tailscale IP> 47281` (on the guest). About 42 s later the hub moves to LinuxBox on the desktop's
+and LinuxBox's views (the desktop no longer reaches the guest); before the move Health's hub row names LinuxBox2 in "No direct link ...
+from". Undo.
+
+**D. Not named before it takes the role.** Hand Cross Test's hub to LinuxBox (Settings > Studio). Quit LinuxBox's REAPER (SIGTERM),
+wait for the desktop to name another hub, start it again and open the song with Live sync. Expected: the desktop's view names LinuxBox
+within a couple of seconds of LinuxBox's own "you're the hub" line (about 45 s after its start), never about 15 s before it. Hand the hub
+back afterwards.
+
+**E. The live mix's host:** rt-hubsmall check 6 (unchanged).
+
+**F. After the extension release (sound on, Deafen off on the three, nobody's microphone: a track's own test tone).**
+1. The desktop mixes for the other two. Read LinuxBox's `StudioSync_LiveAudioStatus` hub block over a few minutes: `stalls` grows (a VM)
+   while `mix_gap_ms` stays near its usual spacing (tens of ms), not jumping to 100-150 ms after a stall. Then quit the desktop's REAPER:
+   LinuxBox's `rescues` +1 then `fallbacks` +1 (before: a fallback with no rescue whenever a stall had been learnt).
+2. LinuxBox2 a listener (the desktop the hub, LinuxBox another listener). On LinuxBox2, in one ssh call, block the desktop's and
+   LinuxBox's addresses entirely for 1 s, then undo (`lab.sh net x2 block <desktop IP>; lab.sh net x2 block <LinuxBox IP>; sleep 1;
+   lab.sh net x2 undo`, or the same three netlab lines inside one ssh). Expected: LinuxBox2's `fallbacks` unchanged and `state` "hub"
+   right after (before: +1 fallback, "direct" for about 3 s).
+3. The same with only the desktop's address blocked for 1 s: +1 fallback within about 0.3 s (the hub gone, the others still heard).
+
+### Left
+
+- The studio hub's election doesn't use reach (unchanged).
+- A paused computer's own view of the hub can be wrong (no claim, but it may ask for a mix where there's none until the join gives up);
+  a paused computer that hears only one bandmate over the link isn't detected; under 150 s isn't detected.
+- The home is passed over only when someone else is reached by all; a room where nobody is keeps the home.
+- `own_outage` needs a third computer in the room; a room of two falls back on its own outage as before.
+- Nothing run in REAPER or the lab; `docs/rt/backlog.md` still lists these as open (not my file).
+
+### Review later (security), this round
+
+- **`lag` is the computer's own word**, like `off`: with it a member can only take itself out. Leaving it out while paused gives the
+  behaviour before this round.
+- **A guest's reach** is judged by the members' own `sees`, so a guest can't move the role by what it says. A member could leave a guest
+  out of its `sees` (a miss for itself only) or name it falsely (one fewer miss for itself: rt-hubrank's item 4 again).
+- **Passing over the home** goes by the others' `sees` (rt-hubrank's item 1): two members who both leave the home out of their `sees` can
+  move the song's hub off the home after 30 s, when someone else is reached by all. Before, nobody could move it off the home. A possible
+  limit later: count a miss on the home only when the home's own `sees` agrees (it doesn't reach them either).
+- `own_outage` reads when tagged datagrams last came (`rx_at`); a peer that keeps sending while the hub is gone shortens the wait, and
+  nothing lengthens it past `OWN_MAX`.

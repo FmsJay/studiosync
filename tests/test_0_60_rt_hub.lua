@@ -36,9 +36,9 @@ do
   -- the same answer whatever order the computers are listed in (every computer sees them in its own order)
   assert(hub.elect_studio({ linux, mac, lap, desk }, nil, T) == "Lap" and hub.elect_studio({ mac, desk, linux, lap }, nil, T) == "Lap", "order doesn't matter")
   -- ties: the same since, the same link: machine id, then name
-  local a, b2 = c("Al", T - 10, { link = true, machine = "bbbb" }), c("Bo", T - 10, { link = true, machine = "aaaa" })
+  local a, b2 = c("Al", T - 100, { link = true, machine = "bbbb" }), c("Bo", T - 100, { link = true, machine = "aaaa" }) -- (past hub.LISTEN: rt-p9)
   assert(hub.elect_studio({ a, b2 }, nil, T) == "Bo" and hub.elect_studio({ b2, a }, nil, T) == "Bo", "a tie goes to the lower machine id, either way round")
-  local x, y = c("Xa", T - 10, { link = true, machine = "same" }), c("Ya", T - 10, { link = true, machine = "same" })
+  local x, y = c("Xa", T - 100, { link = true, machine = "same" }), c("Ya", T - 100, { link = true, machine = "same" })
   assert(hub.elect_studio({ y, x }, nil, T) == "Xa", "and then the name")
   -- preferred offline: the ranking; nobody at all
   assert(hub.elect_studio({ lap, mac }, "Desk", T) == "Lap", "preferred offline: the ranking")
@@ -58,11 +58,14 @@ do
   -- the desktop (preferred) comes back: not at once while someone holds it ...
   local desk = c("Desk", T - 5, { link = true })
   assert(hub.elect_studio({ lap, linux, desk }, "Desk", T) == "Lap", "preferred back 5 s: Lap keeps it a moment (a computer dropping in and out doesn't flap the role)")
-  -- ... then handed back once it's been on HANDBACK s
-  assert(hub.elect_studio({ lap, linux, desk }, "Desk", T + hub.HANDBACK) == "Desk", "preferred on long enough: handed back")
-  -- and while nobody holds it, at once
+  -- ... then handed back once it's been on HANDBACK s and past its own LISTEN s (it takes no role before that, so nobody names it before
+  -- that either: they named it 15 s early, rt-p9)
+  assert(hub.elect_studio({ lap, linux, desk }, "Desk", T - 5 + hub.LISTEN - 1) == "Lap", "preferred on HANDBACK s but still listening: Lap keeps it")
+  assert(hub.elect_studio({ lap, linux, desk }, "Desk", T - 5 + hub.LISTEN) == "Desk", "preferred on long enough: handed back")
+  -- and while nobody holds it, at once once it's past LISTEN; before that, the ranking (as its own view says)
   local lap2 = c("Lap", T - 900, { link = true })
-  assert(hub.elect_studio({ lap2, desk }, "Desk", T) == "Desk", "nobody holds it: the preferred one at once")
+  assert(hub.elect_studio({ lap2, desk }, "Desk", T) == "Lap", "nobody holds it, the preferred one just came online: not named before it takes it")
+  assert(hub.elect_studio({ lap2, c("Desk", T - hub.LISTEN, { link = true }) }, "Desk", T) == "Desk", "nobody holds it: the preferred one at once")
   -- two holding it at once (a handover's moment, views apart): the better-ranked holder, and the other lets go next time
   local l3, m3 = c("Lap", T - 900, { link = true, studio = true }), c("Mac", T - 950, { link = true, studio = true })
   assert(hub.elect_studio({ l3, m3 }, nil, T) == "Mac" and hub.elect_studio({ m3, l3 }, nil, T) == "Mac", "two holders: the same one wins on every computer")
@@ -162,7 +165,9 @@ do
   -- home comes back: after HANDBACK s
   local bo_new = in_song("Bo", T - 3)
   assert(hub.elect_song({ desk, mac_h, bo_new }, "Song", "Bo", "Desk", T) == "Mac", "home just back: the holder keeps it a moment")
-  assert(hub.elect_song({ desk, mac_h, bo_new }, "Song", "Bo", "Desk", T + hub.HANDBACK) == "Bo", "home back long enough: handed back")
+  -- (and past its own LISTEN s: it takes no role before that, so the others don't name it before that either. They did, 15 s early: rt-p9)
+  assert(hub.elect_song({ desk, mac_h, bo_new }, "Song", "Bo", "Desk", T + hub.HANDBACK) == "Mac", "home back HANDBACK s but still listening: not named yet")
+  assert(hub.elect_song({ desk, mac_h, bo_new }, "Song", "Bo", "Desk", T - 3 + hub.LISTEN) == "Bo", "home back long enough: handed back")
   -- home handed on (Health's Hand it on): the studio hub stands in
   local bo_off = in_song("Bo", T - 100, { off = true })
   assert(hub.elect_song({ bo_off, desk }, "Song", "Bo", "Desk", T) == "Desk", "home handed the role on: the studio hub")
@@ -170,7 +175,7 @@ do
   local chilio = in_song("Chilio", T - 50)
   assert(hub.elect_song({ chilio }, "Song", "Bo", nil, T) == "Chilio", "alone in the song: the one there is its hub")
   local chilio_h = in_song("Chilio", T - 50, { holds = true })
-  assert(hub.elect_song({ chilio_h, in_song("Bo", T + 10) }, "Song", "Bo", nil, T + 10 + hub.HANDBACK) == "Bo", "the home comes on later and takes it back")
+  assert(hub.elect_song({ chilio_h, in_song("Bo", T + 10) }, "Song", "Bo", nil, T + 10 + hub.LISTEN) == "Bo", "the home comes on later and takes it back")
   -- everyone works out the same: each computer's list in its own order
   local list1, list2 = { bo_new, desk, mac_h }, { mac_h, bo_new, desk }
   for _, at in ipairs({ T, T + 10, T + hub.HANDBACK, T + 100 }) do
