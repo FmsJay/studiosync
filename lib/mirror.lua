@@ -1900,7 +1900,8 @@ end
 -- this machine holds, and the event it came in, which is what a put-back re-applies).
 mirror.SEC = "BandSync.mirror"
 local function ext(proj, key) return select(2, reaper.GetProjExtState(proj, mirror.SEC, key)) end
-local function setext(proj, key, v) reaper.SetProjExtState(proj, mirror.SEC, key, v) end
+mirror.rec_writes = mirror.rec_writes or 0 -- (records written by this script: mirror.root holds its code until one is. rt-perfcut2)
+local function setext(proj, key, v) mirror.rec_writes = mirror.rec_writes + 1; reaper.SetProjExtState(proj, mirror.SEC, key, v) end
 -- rev|hash|event id|order ("order" = time .. user of that revision: equal revs are settled by it, the same way
 -- on every machine)
 function mirror.known(proj, oid)
@@ -2137,9 +2138,34 @@ end
 -- once, so its own track's text needn't change with them). Each look serialized every item twice, a third to a half of a warm look at
 -- 2,000-3,000 MIDI items. Cost: one string compare a track, one plain find on a track whose chunk changed, and last look's track chunks kept in
 -- memory (an item's own chunk only while its track changes: Round 4 review, 0.59.49). Round 3 review, 0.59.48
+-- Real MIDI pools (rt-perfcut2). REAPER writes "POOLEDEVTS {guid}" into every MIDI item, pooled or not (rt-perf: 60 MIDI items, 60 GUIDs),
+-- so the token alone had every MIDI track and all its items read at every look. A pool is a GUID that two or more items in the project hold.
+-- A chunk's pool GUIDs, each with how many of its items hold it, or nil. (Plain finds: a pattern over a 3 MB synth track costs far more.)
+function mirror.pool_ids(chunk)
+  local t, i = nil, 1
+  while true do
+    local _, b = chunk:find("POOLEDEVTS ", i, true)
+    if not b then return t end
+    local g = chunk:match("^%S+", b + 1)
+    if g then t = t or {}; g = g:upper(); t[g] = (t[g] or 0) + 1 end
+    i = b + 1
+  end
+end
+-- The GUIDs held by two or more items, over a table whose values are mirror.pool_ids'. -> { [guid] = true }
+function mirror.shared_pools(of)
+  local n, out = {}, {}
+  for _, p in pairs(of) do for g, c in pairs(p) do n[g] = (n[g] or 0) + c; if n[g] >= 2 then out[g] = true end end end
+  return out
+end
+function mirror.in_pool(p, shared)
+  for g in pairs(p or {}) do if shared[g] then return true end end
+  return false
+end
 local look_items, look_proj = {}, {} -- tostring(proj) -> { [track] = { chunk, media, pooled, items = { [item GUID] = { chunk, base } } } }; -> proj
 -- (`partial`: `list` holds only some tracks' items, a quick look's changed tracks: the others' boxes are kept as they were. rt-look)
-function mirror.item_states(proj, list, chunks, media_dir, dirty, partial)
+-- (`pooled_tr`: { [track] = true } for the tracks holding a real pool (mirror.pool_ids): REAPER writes POOLEDEVTS into every MIDI item,
+-- pooled or not. Without it, as before: any POOLEDEVTS counts. rt-perfcut2)
+function mirror.item_states(proj, list, chunks, media_dir, dirty, partial, pooled_tr)
   local pk = tostring(proj)
   local was, now, out = look_items[pk] or {}, {}, {}
   local try = require("band").colour_try(proj)
@@ -2151,7 +2177,8 @@ function mirror.item_states(proj, list, chunks, media_dir, dirty, partial)
       if prev and prev.media ~= media_dir then prev = nil end
       local same = prev ~= nil and ch ~= nil and prev.chunk == ch
       local pooled
-      if same then pooled = prev.pooled else pooled = ch ~= nil and ch:find("POOLEDEVTS", 1, true) ~= nil end
+      if pooled_tr then pooled = pooled_tr[x.tr] == true
+      elseif same then pooled = prev.pooled else pooled = ch ~= nil and ch:find("POOLEDEVTS", 1, true) ~= nil end
       box = { chunk = not dirty[x.tr] and ch or nil, media = media_dir, items = {}, prev = prev, pooled = pooled }
       box.same = same and not pooled and not dirty[x.tr]
       now[x.tr] = box
@@ -2470,6 +2497,11 @@ end
 -- chunk is read at least each QUICK_ALL_SECS, and a full look (mirror.scan, every object through W.one, as before) runs each QUICK_FULL_SECS
 -- and logs anything the quick one would have missed. mirror.watch with opts.quick only (Live sync's looks); everything else looks in full.
 mirror.QUICK_ALL_SECS, mirror.QUICK_FULL_SECS = 10, 60
+-- How far apart the timed full looks are, by how long the last one took (rt-perfcut2): they keep to QUICK_FULL_SHARE of REAPER's main thread,
+-- at least QUICK_FULL_SECS and at most QUICK_FULL_MAX apart. A small song's (10-15 ms) stays a minute; a heavy song's 300+ ms stall comes every
+-- 2.5 minutes, 0.6 s and over every 5. The safety net found nothing in 297 looks (rt-perf); the every-chunk read each 10 s stays as it was.
+mirror.QUICK_FULL_SHARE, mirror.QUICK_FULL_MAX = 0.002, 300
+function mirror.full_every(took) return math.min(mirror.QUICK_FULL_MAX, math.max(mirror.QUICK_FULL_SECS, (took or 0) / mirror.QUICK_FULL_SHARE)) end
 mirror.more_act = mirror.more_act or {} -- tostring(proj) -> the act a burst's first pass sent under, while more of it waits (mirror.watch)
 mirror.looks = mirror.looks or {} -- tostring(proj) -> what the last look saw (tracks by GUID, objects' hashes, which were clean)
 mirror.remembered = mirror.remembered or {} -- tostring(proj) -> { oid = true }: records written since the last look (remember)
@@ -2570,13 +2602,13 @@ end
 -- A new look record. `L`: the last one, for what carries over.
 local function new_look(L, ctx, now)
   return { ctx = ctx, tracks = {}, where = {}, all_at = L and L.all_at or now, full_at = L and L.full_at or now, tempo = L and L.tempo, attn = {}, clean = {},
-    raw = {}, guid_of = {} }
+    raw = {}, guid_of = {}, full_took = L and L.full_took }
 end
 
 function mirror.scan(proj, user, media_dir, local_mix, rec)
   mirror.memo_turn() -- (between looks only: see mirror.memo)
   mirror.restless_load()
-  local objs, by_oid, tracks, chunks = {}, {}, {}, {}
+  local objs, by_oid, tracks, chunks, pools = {}, {}, {}, {}, {}
   local tl, oid_at, at_sig = scan_tracks(proj, user)
   local tg = {} -- track -> its record (rec)
   for _, x in ipairs(tl) do
@@ -2587,11 +2619,12 @@ function mirror.scan(proj, user, media_dir, local_mix, rec)
       objs[#objs + 1], by_oid[oid], tracks[tr] = o, o, oid
       local _, chunk = reaper.GetTrackStateChunk(tr, "", false)
       chunks[tr] = chunk -- (its items' states may be last look's: mirror.item_states)
+      pools[tr] = mirror.pool_ids(chunk)
       local lfx = track_lfx(tr)
       local parts = head_parts(chunk, lfx, at_sig, oid_at)
       add_parts(objs, by_oid, tr, oid, parts)
       if rec then
-        local e = { ptr = tr, oid = oid, chunk = chunk, lfx = lfx, parts = parts, pooled = chunk:find("POOLEDEVTS", 1, true) ~= nil, fp = track_fp(tr, o.hash, lfx), items = {},
+        local e = { ptr = tr, oid = oid, chunk = chunk, lfx = lfx, parts = parts, pools = pools[tr], fp = track_fp(tr, o.hash, lfx), items = {},
           lanes = t.freemode == 2 }
         rec.tracks[x.guid], tg[tr], rec.guid_of[tr] = e, e, x.guid
         for _, p in ipairs({ "T", table.unpack(mirror.PARTS) }) do rec.where[p .. oid:sub(2)] = x.guid end
@@ -2599,6 +2632,12 @@ function mirror.scan(proj, user, media_dir, local_mix, rec)
     end
   end
   add_master(proj, objs, by_oid, oid_at)
+  local shared, pooled_tr = mirror.shared_pools(pools), {}
+  for tr, p in pairs(pools) do pooled_tr[tr] = mirror.in_pool(p, shared) or nil end
+  if rec then
+    rec.shared = shared
+    for tr, e in pairs(tg) do e.pooled = pooled_tr[tr] == true end
+  end
   local il, jn = {}, {}
   for i = 0, reaper.CountMediaItems(proj) - 1 do
     local it = reaper.GetMediaItem(proj, i)
@@ -2612,7 +2651,7 @@ function mirror.scan(proj, user, media_dir, local_mix, rec)
   end
   local dirty = {} -- (tracks an item's id was set on just now, after their chunks were read: mirror.item_states)
   settle_ids(proj, il, "I", user, function(it, oid) reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", oid, true); dirty[reaper.GetMediaItem_Track(it)] = true end)
-  local states = mirror.item_states(proj, il, chunks, media_dir, dirty)
+  local states = mirror.item_states(proj, il, chunks, media_dir, dirty, nil, pooled_tr)
   for i, x in ipairs(il) do
     local norm = states[i]
     local o = { kind = "item", oid = x.oid, ptr = x.ptr, track = x.toid, state = norm, hash = mirror.item_hash(x.toid, norm),
@@ -2673,17 +2712,19 @@ function mirror.quick_scan(proj, user, media_dir, local_mix, L, remembered, now)
     if L.raw[oid] ~= o.hash then found = true end
     recs[k] = r
   end
-  local function read(r)
+  local function read(r, pooled)
     if r.read then return end
     r.read = true
     local tr, oid, e = r.x.ptr, r.x.oid, r.e
     local _, chunk = reaper.GetTrackStateChunk(tr, "", false)
     r.chunk = chunk
+    local same = e and e.ptr == tr and e.oid == oid and e.chunk == chunk
+    r.pools = same and e.pools or mirror.pool_ids(chunk)
+    r.pooled = pooled or mirror.in_pool(r.pools, L.shared or {}) -- (a real pool: mirror.pool_ids. rt-perfcut2)
     -- (byte for byte the last look's: its parts and items stand. Not pooled MIDI: a pooled copy's notes can change in another track's chunk)
-    if e and e.ptr == tr and e.oid == oid and not e.pooled and not r.lanes and not e.lanes and e.lfx == r.lfx and e.chunk == chunk then return end
+    if same and not r.pooled and not r.lanes and not e.lanes and e.lfx == r.lfx then return end
     r.changed = true
     r.parts = head_parts(chunk, r.lfx, at_sig, oid_at)
-    r.pooled = chunk:find("POOLEDEVTS", 1, true) ~= nil
     r.il = {}
     for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
       local it = reaper.GetTrackMediaItem(tr, j)
@@ -2691,7 +2732,7 @@ function mirror.quick_scan(proj, user, media_dir, local_mix, L, remembered, now)
         r.il[#r.il + 1] = { ptr = it, tr = tr, toid = oid, oid = itm_oid(it), guid = select(2, reaper.GetSetMediaItemInfo_String(it, "GUID", "", false)), j = j }
       end
     end
-    r.states = mirror.item_states(proj, r.il, { [tr] = chunk }, media_dir, {}, true)
+    r.states = mirror.item_states(proj, r.il, { [tr] = chunk }, media_dir, {}, true, { [tr] = r.pooled })
     -- (did it change anything the band would see? A selection or a lane's height changes the chunk, not the objects)
     local p = e and e.parts
     if not p or p.fxh ~= r.parts.fxh or p.env ~= r.parts.env or p.recv ~= r.parts.recv or p.misc ~= r.parts.misc or #e.items ~= #r.il then found = true
@@ -2713,6 +2754,18 @@ function mirror.quick_scan(proj, user, media_dir, local_mix, L, remembered, now)
     for _, r in ipairs(recs) do read(r) end
   end
   if all then N.all_at = now end
+  -- (a pool that formed this look, a pooled copy on one track of an item on another: every track holding it is read as pooled now, so an edit
+  -- to the pool made with it goes at once, not at the next read of every chunk. rt-perfcut2)
+  local shared
+  repeat
+    local of, more = {}, false
+    for k, r in ipairs(recs) do of[k] = r.pools or (r.e and r.e.pools) end
+    shared = mirror.shared_pools(of)
+    for _, r in ipairs(recs) do
+      if not r.pooled and mirror.in_pool(r.pools or (r.e and r.e.pools), shared) then r.read = false; read(r, true); more = true end
+    end
+  until not more
+  N.shared = shared
   -- items: ids settled as mirror.scan does, over the changed tracks' items and any unchanged one sharing an id with them (a copy and its source)
   local new_oids, blank = {}, false
   for _, r in ipairs(recs) do
@@ -2739,7 +2792,7 @@ function mirror.quick_scan(proj, user, media_dir, local_mix, L, remembered, now)
   end
   for _, r in ipairs(recs) do
     if r.changed and dirty[r.x.ptr] then
-      r.states = mirror.item_states(proj, r.il, { [r.x.ptr] = r.chunk }, media_dir, { [r.x.ptr] = true }, true)
+      r.states = mirror.item_states(proj, r.il, { [r.x.ptr] = r.chunk }, media_dir, { [r.x.ptr] = true }, true, { [r.x.ptr] = r.pooled })
     end
   end
   -- the objects, in mirror.scan's order: each track and its parts, the master's, then every item
@@ -2752,10 +2805,11 @@ function mirror.quick_scan(proj, user, media_dir, local_mix, L, remembered, now)
     local e = r.e
     local ne
     if r.changed then
-      ne = { ptr = tr, oid = oid, chunk = r.chunk, lfx = r.lfx, parts = r.parts, pooled = r.pooled, fp = r.fp, items = {}, lanes = r.lanes }
+      ne = { ptr = tr, oid = oid, chunk = r.chunk, lfx = r.lfx, parts = r.parts, pools = r.pools, fp = r.fp, items = {}, lanes = r.lanes }
     else
-      ne = e.fp == r.fp and e or { ptr = e.ptr, oid = e.oid, chunk = e.chunk, lfx = e.lfx, parts = e.parts, pooled = e.pooled, fp = r.fp, items = e.items }
+      ne = e.fp == r.fp and e or { ptr = e.ptr, oid = e.oid, chunk = e.chunk, lfx = e.lfx, parts = e.parts, pools = e.pools, fp = r.fp, items = e.items }
     end
+    ne.pooled = mirror.in_pool(ne.pools, shared)
     add_parts(objs, by_oid, tr, oid, ne.parts)
     if r.changed or r.need then for k = #objs - 3, #objs do check[#check + 1] = objs[k] end end
     N.tracks[g], N.guid_of[tr] = ne, g
@@ -5425,12 +5479,53 @@ local function look_commit(w, N, raw, L, now, full, undo, redo, all)
     for tr in pairs(w.ara) do if N.guid_of[tr] then N.ara[N.guid_of[tr]] = true end end
   else N.ara = L and L.ara end
   N.undo, N.redo = undo, redo
-  if full then N.full_at, N.all_at = now, now end
+  if full then N.full_at, N.all_at, N.full_took = now, now, reaper.time_precise() - now end -- (its whole time, the safety net's quick scan too)
   local s = mirror.look_stats
   if full then s.full = s.full + 1 else s.quick = s.quick + 1 end
   if full or all then s.all_chunks = s.all_chunks + 1 end
   mirror.looks[tostring(proj)] = N
   reaper.SetExtState(require("band").SECTION, "look stats", string.format("quick %d, full %d, every chunk read %d, missed %d", s.quick, s.full, s.all_chunks, s.missed), false)
+end
+-- Whether a call wrote to the project (rt-perfcut2: Live sync redraws after a look only when it sent, put back or wrote something). REAPER's
+-- writers are wrapped for the call's length: a Set..., Delete..., Add..., Insert..., Move... and the like, or a GetSet... whose last argument
+-- (its "set") is true. ExtState and P_EXT notes don't count: nothing on screen changes. -> whether any wrote, then fn's results. An error is
+-- raised again once the writers are put back.
+do
+  local WRITERS = { "^Set", "^Delete", "^Add", "^Insert", "^Move", "^Reorder", "^Split", "^Apply", "^Main_On", "^Undo_Do", "^Undo_OnStateChange",
+    "^TrackFX_Set", "^TrackFX_Delete", "^TrackFX_Add", "^TrackFX_Copy", "^TakeFX_Set", "^TakeFX_Delete", "^TakeFX_Add", "^TakeFX_Copy",
+    "^MIDI_Set", "^MIDI_Insert", "^MIDI_Delete", "^MIDI_Sort", "^GetSet", "^CreateTrackSend", "^RemoveTrackSend", "^CreateNewMIDIItem",
+    "^Envelope_Sort", "^UpdateItemInProject" }
+  local QUIET = { SetExtState = true, DeleteExtState = true, SetProjExtState = true }
+  local names_of = setmetatable({}, { __mode = "k" }) -- (REAPER's writers by name, per reaper table: the tests swap theirs)
+  function mirror.counting_writes(fn, ...)
+    local R = reaper
+    local names = names_of[R]
+    if not names then
+      names = {}
+      for k, v in pairs(R) do
+        if type(k) == "string" and type(v) == "function" and not QUIET[k] then
+          for _, p in ipairs(WRITERS) do if k:find(p) then names[#names + 1] = k; break end end
+        end
+      end
+      names_of[R] = names
+    end
+    local saved, wrote = {}, false
+    for _, k in ipairs(names) do
+      local f, w = R[k], nil
+      if k:sub(1, 6) == "GetSet" then
+        w = function(...)
+          local n = select("#", ...)
+          if n > 0 and select(n, ...) == true and not tostring((select(2, ...))):find("^P_EXT:") then wrote = true end
+          return f(...)
+        end
+      else w = function(...) wrote = true; return f(...) end end
+      saved[k], R[k] = { f, w }, w
+    end
+    local r = table.pack(pcall(fn, ...))
+    for k, s in pairs(saved) do if R[k] == s[2] then R[k] = s[1] end end -- (unless the call swapped one itself)
+    if not r[1] then error(r[2], 0) end
+    return wrote, table.unpack(r, 2, r.n)
+  end
 end
 -- One pass: what changed here goes out if this person may change it, else the band's version is put back.
 -- opts: local_mix, can (sync.authority's), mode (room mode); ask(name, pos), sent(o, name, ev): Claims mode's asks and auto-claims (lib/claimask.lua).
@@ -5450,7 +5545,7 @@ function mirror.watch(proj, cfg, song, room, opts)
   local remembered = mirror.remembered[pk] or {}
   mirror.remembered[pk] = {}
   local undo, redo = undo_names(proj)
-  local due = not (opts.quick and L) or now - L.full_at >= mirror.QUICK_FULL_SECS or (undo ~= L.undo and (redo or L.redo))
+  local due = not (opts.quick and L) or now - L.full_at >= mirror.full_every(L.full_took) or (undo ~= L.undo and (redo or L.redo))
   local objs, by_oid, info, rec
   if not due then objs, by_oid, info = mirror.quick_scan(proj, cfg.user, media, opts.local_mix, L, remembered, now) end
   if not info then
@@ -6025,7 +6120,14 @@ end
 
 -- One code for this whole project as mirrored (every object's version here): two machines with the same code hold
 -- the same project. Published in the status file; Who's here compares it.
+-- (held between passes, 10-13 ms a pass on a heavy song: until the project's change count moves, this script writes a record, or ROOT_HOLD
+-- seconds pass, for records another script wrote (the panel's Restore or Undo). rt-perfcut2)
+mirror.ROOT_HOLD = 10
+mirror.root_memo = mirror.root_memo or {}
 function mirror.root(proj)
+  local pk, cc, now = tostring(proj), reaper.GetProjectStateChangeCount and reaper.GetProjectStateChangeCount(proj), reaper.time_precise()
+  local m = mirror.root_memo[pk]
+  if m and m.cc == cc and m.n == mirror.rec_writes and now >= m.at and now - m.at < mirror.ROOT_HOLD then return m.code end
   local t, i = {}, 0
   while true do
     local ok, oid, v = reaper.EnumProjExtState(proj, mirror.SEC, i)
@@ -6038,7 +6140,9 @@ function mirror.root(proj)
     if h and h ~= "" then t[#t + 1] = oid:upper() .. "=" .. tostring(ev) end
   end
   table.sort(t)
-  return mirror.hash(table.concat(t, "\n"))
+  local code = mirror.hash(table.concat(t, "\n"))
+  mirror.root_memo[pk] = { cc = cc, n = mirror.rec_writes, at = now, code = code }
+  return code
 end
 -- The mirrored tracks' order as one code, beside `mirror` in the status: the code above doesn't hold it (a track's place isn't part of its
 -- version), so two computers with the same code could show their tracks in another order with nothing said. rt-undo

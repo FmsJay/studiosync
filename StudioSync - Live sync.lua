@@ -337,7 +337,7 @@ local polled_at, pass_took = -math.huge, 0 -- (when the last pass started, and h
 -- (the cloud copy's part of the last pass: left out of pass_took. It runs on its own schedule, drive.pass_due, never in a pass that looks, and its
 -- ~200 ms held the next edit's look 1 s on the desktop: Cross Test, an envelope point out in 0.21-0.65 s. rt-look)
 local pass_drive = 0
-local redraw_cc -- (the project's change count at the last redraw: P.status. James, rt)
+local redraw_cc, redraw_owed -- (the project's change count at the last redraw: P.status. James, rt; a redraw waiting for the tab to be in front, rt-perfcut2)
 -- Only your edits count: noted at the start of each tick, and whatever the tick itself changed (looks, receives, heal, prints attaching,
 -- paint) taken in at its end. Nothing else runs in between, so a count that moved meanwhile was StudioSync's. (Noted only in receive, any
 -- write of ours since the last look read as "you editing" and held a direct-link change 2 s. James, rt)
@@ -474,12 +474,15 @@ function P.look(t)
       local held = function(oid) return presence.holder(presence.peers(cfg, b.song, b.room), oid) end -- (edit holds)
       local here = {} -- (bandmates in the song now: one of them may print what its author can't, lib/prints.lua)
       for _, st in ipairs(presence.peers(cfg, b.song, b.room)) do here[st.user] = true end
-      t.redraw = true -- (a look can put back a refused edit, copy it to a track of yours or delete an item, with no undo point: always redrawn)
-      local ok, sent = pcall(require("mirror").watch, proj, cfg, b.song, b.room, { can = my_can, owner_can = can, mode = who.mode, local_mix = sync.local_mix, is_claimed = who.is_claimed, owner_of = who.owner_of,
+      -- (a look can put back a refused edit, copy it to a track of yours or delete an item, with no undo point: redrawn when it sent, put back or
+      -- wrote anything, not after every look, 7-24 ms each. mirror.counting_writes, rt-perfcut2)
+      local ok, wrote, sent, back = pcall(require("mirror").counting_writes, require("mirror").watch, proj, cfg, b.song, b.room, { can = my_can, owner_can = can, mode = who.mode, local_mix = sync.local_mix, is_claimed = who.is_claimed, owner_of = who.owner_of,
         held = held, here = here, printers = who.printers, quick = true, -- (quick: builds on the last look, lib/mirror.lua rt-look)
         edited_at = changed_at, -- (when you last edited: what a look finds with no edit since the last one is the same act, one Undo step. rt-edits)
         ask = function(name, pos) return require("claimask").hold(cfg, b, who, name, pos) end, sent = require("claimask").on_sent, -- (Claims mode: lib/claimask.lua, rt-claims)
         soft = function(name, pos) return require("claimask").soft(who, name, pos, cfg.user) end }) -- (an auto-claim asks only for a clash: rt-merge)
+      if not ok then sent = wrote end
+      if not ok or wrote or sent > 0 or (back or 0) > 0 then t.redraw = true end
       band.try("claimask.flush", require("claimask").flush, cfg, b, who, alone) -- (what went that nobody claimed is yours now)
       if not ok then band.log("mirror sync: " .. tostring(sent))
       elseif sent > 0 then band.log(sent .. " change(s) went to " .. (b.room == "main" and "the others" or ("the room '" .. b.room .. "'"))); pcall(require("api").event, "sent", { n = sent, song = b.song, room = b.room }) end
@@ -846,11 +849,14 @@ function P.status(t)
   -- landed, live clips, claim regions, pings, following, paint), or the project's change count moved since the last redraw, which takes in
   -- everything with an undo point (receives, timeline, colours) and whatever else ran in the tick since. Was every pass, idle or not: a whole
   -- arrange redraw every 0.5-2 s per tab. (James, rt)
+  -- (and only with this tab in front: both redraw the tab in front, so a song behind redrew another, 16-24 ms on a heavy one. Owed until it's in
+  -- front again. rt-perfcut2)
   local cc = reaper.GetProjectStateChangeCount(proj)
-  if t.redraw or cc ~= redraw_cc then
+  redraw_owed = redraw_owed or t.redraw or cc ~= redraw_cc
+  if redraw_owed and reaper.EnumProjects(-1) == proj then
     reaper.TrackList_AdjustWindows(false)
     reaper.UpdateArrange()
-    redraw_cc = reaper.GetProjectStateChangeCount(proj)
+    redraw_cc, redraw_owed = reaper.GetProjectStateChangeCount(proj), false
   end
   lap("redraw")
 end
