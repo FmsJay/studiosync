@@ -126,6 +126,8 @@ assert(list.files[1][1] == "main" and list.files[1][2] == "a.wav" and list.files
 assert(needlist.on_ask(cfgA, b, ask) == 0, "not again to the same asker within ANSWER_EVERY")
 as("Bee")
 list = band.json_decode(band.json_encode(list)) -- (as it comes off the link)
+-- (and Ann's answer to the event ids, empty: no day of hers differs. Unanswered, the ids would go again: rt-catchup)
+for k = #sent, 1, -1 do if sent[k].d.evs then assert(#sent[k].d.evs == 0); needlist.on_list(cfgB, b, band.json_decode(band.json_encode(sent[k].d))); break end end
 assert(needlist.on_list(cfgB, b, list) == 2, "the two Bee's computer lacks are wanted")
 local function here_b(w) return disk["RB/Song/rooms/" .. w.room .. "/media/" .. w.file] ~= nil end
 local wants = needlist.pending({}, "Song", here_b)

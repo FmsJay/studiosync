@@ -186,7 +186,31 @@ function presence.put_status(cfg, song, room, s, info, fp, now, write)
   write(info, what == "link")
   s.fp, s.at, s.reach, s.info = fp, now, reach, info
   if what == "file" then s.file_fp, s.file_at, s.file_hub = fp, now, hub end
+  -- (and to the studio's computers whose person isn't here by this view, every HELLO_EVERY s: lib/direct.lua strangers. rt-catchup)
+  if now - (s.hello_at or -math.huge) >= presence.HELLO_EVERY then
+    s.hello_at = now
+    pcall(function()
+      local direct = require("direct")
+      if not (direct.available() and direct.live_available() and direct.ensure(cfg)) then return end
+      local to = direct.strangers(cfg, song, room)
+      if #to > 0 then direct.send_live(cfg, "presence", info, song, room, nil, to) end
+    end)
+  end
   return what
+end
+-- A bandmate whose status file is stale here (Syncthing paused or broken on either computer) but whose Live sync runs in this room is here
+-- all the same once the link hears them: put_status's hello reaches their computer, their status comes back over the link (from_msg), and
+-- from then on presence.peers has them, so the link sends them everything and "nobody else is here" isn't said. For the first HOLD s of
+-- this script, before any hello could have been answered, you aren't read as alone while the link is on (link_hold), so
+-- full control isn't granted on stale files alone in the seconds before the link has heard who's here. rt-catchup
+presence.HELLO_EVERY, presence.HOLD = 15, 8
+local hold_from
+function presence.link_hold(cfg)
+  local now, direct = reaper.time_precise(), require("direct")
+  hold_from = hold_from or now
+  if now - hold_from >= presence.HOLD then return false end
+  local ok, on = pcall(function() return direct.available() and direct.live_available() and direct.enabled(cfg.root) and require("groups").tailnet(cfg.root) ~= nil end)
+  return ok and on == true
 end
 -- Who else is editing this object right now (nil when nobody is). Pure apart from the peers list.
 -- Track groups that tie together tracks made by different people (review, 0.58.89): a group number travels as it is, so two people who

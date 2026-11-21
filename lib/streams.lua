@@ -1123,6 +1123,8 @@ end
 function streams.tick(proj, cfg, b, recording, in_front)
   if in_front then streams.send_tick(proj, cfg, b, recording) end
   streams.receive_tick(proj, cfg, b, recording)
+  -- (the link's need list: the song's changes read 16 ms a tick after a start, never while playing or recording, as the cloud copy. rt-catchup)
+  if not recording and reaper.GetPlayStateEx(proj) == 0 then pcall(require("needlist").warm) end
   streams.catchup_tick(cfg, b)
   return streams.media_tick(cfg, b)
 end

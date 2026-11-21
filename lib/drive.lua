@@ -258,7 +258,8 @@ local read_n = 0 -- (events read so far: a planned round that reads further is g
 drive.READ_MIN = 0.004 -- s of reading each call gets after the folder's listing, whatever the deadline
 local reading = {} -- (a folder read over several passes keeps the listing it started from, then is listed again for what came meanwhile. rt-drive2)
 local function summary(ev)
-  local e = ev and { type = ev.type, take = ev.take, time = ev.time, id = ev.id, user = ev.user, oid = ev.oid, gone = ev.gone == true or nil } or false
+  local e = ev and { type = ev.type, take = ev.take, time = ev.time, id = ev.id, user = ev.user, oid = ev.oid, gone = ev.gone == true or nil,
+    obj = ev.obj, track = ev.track } or false
   if e and type(ev.state) == "string" then -- (an item's chunk: the recordings it plays)
     e.media = {}
     for room, rel in ev.state:gmatch('FILE "{media:([^}]+)}/([^"]+)"') do e.media[#e.media + 1] = { room, rel } end
@@ -379,6 +380,8 @@ end
 
 -- The files of room `room` the song plays as it stands: the newest change to each object (by time, then id) in each room, unless that change
 -- removed it, and the {media:<room>} files it names. `rooms`: { [room] = its events }. Pure.
+-- Nor an item whose track's newest change removed the track: it went with it, though its own newest change (an edit made before the track's
+-- delete reached that computer) doesn't say so, and every computer drops such an edit (lib/mirror.lua on_gone_track). rt-catchup
 function drive.media_in_use(rooms, room)
   local out = {}
   for _, events in pairs(rooms) do
@@ -390,7 +393,8 @@ function drive.media_in_use(rooms, room)
       end
     end
     for _, l in pairs(last) do
-      if not l.ev.gone then for _, m in ipairs(l.ev.media or {}) do if m[1] == room then out[m[2]] = true end end end
+      local t = l.ev.track and last[l.ev.track]
+      if not l.ev.gone and not (t and t.ev.gone) then for _, m in ipairs(l.ev.media or {}) do if m[1] == room then out[m[2]] = true end end end
     end
   end
   return out

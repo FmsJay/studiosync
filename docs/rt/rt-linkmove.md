@@ -640,3 +640,203 @@ claims file per room takes a place in the 600-entry numbers store.
 - **Studios from before owners** (no pins): `trust.own_file_ok` says yes to anyone, so any member with a known key can send another
   person's claims file over the link, as for hub handovers and track orders. The folder path already allowed the same.
 - **Claims files fill the numbers store** (600 entries) faster; past it the oldest number is forgotten and first use applies to it again.
+
+## Round 5: catch-up when Syncthing is paused, found by the LinuxBox test (rt-catchup, 2026-11-21)
+
+The LinuxBox test (2026-11-21) ran the "Events" check above and found three gaps, and one question about deleted tracks. Offline build and
+tests only: nothing here was run in REAPER.
+
+### Summary for James
+
+- **Catch-up now works when Syncthing is paused or broken on the computer that comes back.** Before, that computer read everyone's status
+  file as stale, so nobody was "here", the link had nobody to talk to, and nothing was asked ("nobody else is here: you have full control").
+  Now Live sync says hello over the link to the studio's computers it doesn't see, every 15 s. A bandmate in the same room answers with its
+  own status, and from then on each is here for the other, whatever the files say.
+- **You don't get full control on stale files.** A bandmate heard on the link is here, so the band's rules hold. And for the first 8 s of
+  Live sync, while the link may not have heard anyone yet, you aren't read as alone at all.
+- **The changes you missed are asked for again until someone answers.** Before, the list of your changes went once. If the bandmate didn't
+  know your computer yet it dropped the ask, and the changes took 85 s or never came. Now the ask goes again after 5, 10, 20, then every 30 s,
+  until a bandmate answers. A bandmate whose changes all match says so in an empty answer, and the asking stops.
+- **Missing takes are found in about 5 s, not 50.** Working out which media the song plays now reads the song's changes at 16 ms a tick
+  just after a start (never while playing or recording), not 50 ms every 5 s.
+- **A take on a track someone deleted no longer counts as played**, even when someone else moved it before the delete reached them. That was
+  a bug. It's fixed for the need list and for the cloud copy alike.
+- **The hub election still goes by status files only** (why below). A computer with Syncthing paused can still think it's its song's hub
+  while it's paused, as before this change.
+
+### Item 1: a bandmate heard on the link counts as here
+
+**Why nothing happened.** Who's here (`presence.peers`) comes from the status files, plus any status that came over the link
+(`presence.from_msg`, since 0.60.0-rt). The link sends only to those here (`direct.refresh_peers`). With LinuxBox's Syncthing paused, its
+copies of the others' files were over 45 s old, and the others' copy of LinuxBox's file was just as old. So neither side ever sent the other
+a status, and neither ever counted the other as here. The link's half of "who's here" was in place but never got its first message.
+
+**The fix: a hello.** When Live sync writes its status (`presence.put_status`, at least every 15 s), it also sends that status, at most
+every `HELLO_EVERY` (15) s, to `direct.strangers`. Those are the studio's computers the link may send to whose person isn't here by this
+computer's view:
+
+- the devices file passes the same check as the link's own peers (`trust.device_ok`: written by that computer, by Syncthing's word or the
+  file's signature);
+- it has a Tailscale name on the studio's network, and the song is in their list if they're a guest (`access.shows`);
+- no removal mark for that person, and not your own other computer.
+
+A bandmate's Live sync in the same song and room takes the hello like any status off the link (`from_msg`; no change on the receiving side,
+so the computers that already have this build answer too). Within `PEERS_EVERY` (2) s that bandmate's link lists this computer, and its
+heartbeat (every 5 s) or its next status comes back here. Expected time from Live sync starting to both computers being here for each other
+is about 3 to 8 s.
+
+**What uses "here", and what I decided for each:**
+
+| Gate | Uses the link's view? | Why |
+|---|---|---|
+| Who the link sends to (`direct.refresh_peers`, the need list, catch-up, live audio, claims, grants) | **Yes** (already merged; now it actually gets a first message) | This is what the link is for. A bandmate it can hear and send to is reachable, whatever Syncthing says. |
+| Full control (`sync.present` -> Live sync's "nobody else is here") | **Yes**, plus a start hold | A status heard over the link comes from a running Live sync in this room, signed with the studio's key. Being "here" stops full control. That's the safe direction: a stale file never grants it while the link hears someone. `presence.link_hold`: in Live sync's first `HOLD` (8) s, while the link is on, you aren't alone (no log either). After that, alone is decided as before. |
+| Edit holds, follow, hear, producer, claim-ask (`presence.peers` / `presence.here`) | **Yes** (unchanged: they already merged live statuses) | Same statuses as from the file, only sooner. |
+| Hub election (`lib/hub.lua scan`) | **No, files only** (unchanged) | Every computer must elect from the same inputs, and other songs elect from the files alone. The others read LinuxBox's file as stale, so they never count it. If LinuxBox alone counted the link, the two views still wouldn't match. The link only takes away a holder it lost (`hub.link_watch`), never adds one. **Known cost:** a computer with Syncthing paused can elect itself its song's hub. Its hub snapshots stay in its own folder until Syncthing runs again, then travel like any file. That was already so before this round, and it's listed under "Not done". |
+| "Quiet" status files (`presence.link_carries`) | Yes (unchanged) | A status written to the folder every 30 s instead of 15 once the link reaches everyone here. A computer heard only over the link is "here" and reached, so this computer's own file can go quiet. Its file is useless to a computer whose Syncthing is paused anyway. |
+
+**Trust.** The hello and the answer are link messages: the extension signs each frame with the studio's key (HMAC-SHA256) and drops any
+it can't verify. The receiver takes the status's `user` as it does for every status message. Names are chosen, and any member could already
+send a status message. Sending goes only to computers that pass the link's usual device check.
+
+**Costs.** One small message per hello to each studio computer that isn't here, every 15 to 30 s. A computer that's switched off costs its
+own send lane one 3 s timeout (the extension keeps a lane per peer, so nobody else waits). The first device check for a computer this one
+has never checked may ask Syncthing: one ask per hello at most, stopped after 50 ms, with Syncthing's 5 s timeout throttled to once per 30 s
+per file. That's the same as `refresh_peers` for those here.
+
+**Not covered:** a bandmate reachable only over the connection without Tailscale (`nat:` peers). It gets no hello, since `nat.peers` is
+also keyed on presence. And the start hold makes a computer that really is alone wait 8 s for full control when the link is on.
+
+### Item 2: the event ids, asked until answered
+
+**Confirmed from the code** (`lib/needlist.lua` at 8b6c501). `ev_due` was set only when who's here changed, or after a round that asked for
+something. The ask went to one peer, and the bandmate's `on_ask` dropped it when `peer_of` found no peer for the asker's device, as on a
+fresh start before its link listed this computer. Nothing came back, so `ev_due` stayed false and the next 30 s round went without the ids.
+They went again only if who's here changed. That's the 85 s run (who's here changed by chance) and the run where they never came.
+`tests/test_0_60_rt_catchup_need.lua` reproduces it: an ask dropped by a bandmate that doesn't know the asker, and with the old code the next
+tick sends no ids.
+
+**Fix.** An ask that carried the ids waits for an answer (`ev_wait`). If none has come, the ids go again after `EV_RETRY` (5) s, then 10,
+20, then every `EVERY` (30) s, until a bandmate answers. Each retry goes to the next bandmate in turn. Any id list from a bandmate here
+counts as the answer. A bandmate whose days all match now answers with an empty list (`need_list { dev, evs = {} }`). An older asker refuses
+that message (it has no room), so nothing changes for it. When who's here changes, the wait starts over.
+
+**Trace lines added** (with `stream trace` on): `event catch-up: ids sent to <peer> (try N)` on the asker, and `event catch-up: an ask from
+<name>'s computer dropped: not here for this one yet` on the bandmate.
+
+### Item 3: the first read of which media the song plays
+
+`in_use` read the song's changes at 0.05 s per call, and only catch-up's look called it, every `CATCHUP_LOOK` (5) s. Each call also listed
+every room's events again. With 2,700 changes that's about 50 s. Now:
+
+- the read resumes where it stopped (`pass`: the listing is made once per read);
+- `needlist.warm` reads `WARM` (16 ms, the cloud copy's `WORK_BUDGET` for its first round since REAPER started) every Live sync tick from
+  `streams.tick` until the read is through. `needlist.tick` starts it once the switch is on, before the link has any peers, so the read is
+  usually done before a bandmate's list arrives. It never runs while playing or recording, as with the cloud copy's planning;
+- a change that lands over the link (an `ev_wanted` one) clears the cached read, so a take that only the new change plays is wanted on the
+  same look, not 5 s later.
+
+Test: 2,700 changes at 0.2 ms a read. The bandmate's file is wanted on the first catch-up look after its list arrives (5 s; before the fix,
+50 s). No tick reads for longer than 16 ms plus one file. What's left of the wait is catch-up's own 5 s look.
+
+### Item 4: a take on a deleted track
+
+**Verdict: a bug, fixed.** `drive.media_in_use` decided "played" from each item's own newest change. When a track is deleted, its items
+normally get their own deleting changes. But an edit to one of those items made elsewhere before the delete arrived (a move, a trim) is newer
+than the delete. So the item's newest change didn't remove it, and its file counted as played. Yet every computer drops that edit
+(`mirror.lua on_gone_track`: a change to something on a track the band has deleted), and the item exists nowhere. Now an item whose track's
+newest change removed the track isn't played. A track that comes back (a newer change to it, such as a restore) makes its items count again.
+
+This is shared code. For the need list it closes a small form of the "deleted while Live sync wasn't running" hole: such a file is no longer
+fetched from a bandmate. For the cloud copy, a file played only by items on deleted tracks, once gone from a room's media, is now written down
+as deleted (tombstoned) instead of brought back with "still played". That's the same rule as a take whose item was deleted. The event
+summaries in `lib/drive.lua` and `lib/needlist.lua` now keep each change's `obj` and `track`.
+
+### The REAPER re-check (LinuxBox, its own Syncthing paused; James OK'd this, never the desktop's or the laptop's)
+
+All three computers on the build with this round, one song, all in the same room, the link up. On each computer, once, in a one-line
+ReaScript: `reaper.SetExtState("BandSync", "link need list", "1", true)` and `reaper.SetExtState("BandSync", "stream trace", "1", true)`. The
+trace is `<REAPER resources>/StudioSync/direct/stream_trace.log`; Live sync's log is the StudioSync log as usual. Set both ExtStates back to
+`""` afterwards.
+
+**A. Fresh start with Syncthing paused (items 1, 2, 3).**
+
+1. Quit REAPER on LinuxBox. Pause Syncthing on LinuxBox only (its own web page, Pause All).
+2. On the desktop, in the room: move two items, add a marker, record a 10 s take. Wait 60 s, so the take has settled and LinuxBox's copies of
+   the status files are well past 45 s old.
+3. Start REAPER on LinuxBox, open the song, and start Live sync in the same room. Note the time (t = 0).
+4. Expected on LinuxBox:
+   - Live sync's log never says "nobody else is here: you have full control". If it does, note when, and whether "... joined: the studio's
+     rules are back" follows within seconds (that would mean the hello took over 8 s).
+   - The trace has `event catch-up: ids sent to <desktop or laptop> (try 1)` by about t = 10 s. If it shows `(try 2)` or later, the desktop's
+     or laptop's trace should show `event catch-up: an ask from <LinuxBox's name>'s computer dropped: not here for this one yet` for the
+     earlier tries, and the tries stop once one is answered.
+   - `event catch-up: N changes in main asked of ...` by about t = 15 s, and the bandmate's trace says `... sent to ...`. The two moves and the
+     marker appear in LinuxBox's project.
+   - `media want <Song>/main/<take>.wav` and then `media in` by about t = 25 s, and the take plays on LinuxBox.
+   - ExtState `BandSync / direct peers <studio id> <Song>/main` on LinuxBox lists both other computers' `name:port`.
+5. Expected on the desktop and laptop: the same ExtState lists LinuxBox's `name:port` within about 10 s of t = 0. Nobody's log says "nobody
+   else is here".
+6. Resume Syncthing on LinuxBox. Within a minute LinuxBox's link inbox (`<REAPER resources>/StudioSync/direct/<studio id>/<Song>/rooms/main/events/`)
+   empties, nothing moves in the project, and no `*.sync-conflict-*` appears anywhere.
+
+**B. The other order.** Do A.1 and A.2, then stop Live sync on the desktop and the laptop. Start REAPER and Live sync on LinuxBox (Syncthing
+still paused) and wait 30 s. After 8 s "nobody else is here: you have full control" is right this time, because nobody else is running.
+Then start Live sync on the desktop in the room. Expected, without touching LinuxBox: within about 10 s, LinuxBox's log says "<desktop's
+name> joined: the studio's rules are back". Its trace shows `ids sent to ... (try N)`, then the event catch-up and the take as in A.4.
+
+**C. A take on a deleted track (item 4).** Optional, about 10 minutes.
+
+1. On the desktop, record a take `T` on a new track `Gtr`. Wait until it's on all three computers (its file in each `<Song>/rooms/main/media`).
+2. On LinuxBox: stop Live sync (keep the project open), then pause Syncthing.
+3. On the desktop: delete track `Gtr`. Wait 60 s.
+4. On LinuxBox: move `T`'s item a little, then start Live sync in the room (Syncthing still paused). Expected: LinuxBox's move goes out and
+   the desktop's delete comes in. `Gtr` is gone on LinuxBox and comes back nowhere.
+5. On the desktop, delete `T`'s file from `<Song>/rooms/main/media` by hand. Wait until the laptop's Syncthing has deleted it there too
+   (LinuxBox still has it, its Syncthing paused).
+6. Stop and start Live sync on the laptop. Watch its trace for a minute: no `media want <Song>/main/T...` (before this round it was fetched
+   back from LinuxBox's list, since LinuxBox's move was the item's newest change). With a cloud copy set up, the desktop's log doesn't say the
+   file is still played.
+7. Resume Syncthing on LinuxBox: the file goes there too and comes back nowhere.
+
+### Shared files touched this round (small, additive)
+
+- `StudioSync - Live sync.lua`: one line in `P.who` (`alone` also needs `not presence.link_hold(cfg)`).
+- `lib/presence.lua`: the hello in `put_status`, and `link_hold`.
+- `lib/direct.lua`: `refresh_peers`'s device check moved into `sendable` (unchanged), plus `direct.strangers`.
+- `lib/streams.lua`: one line in `streams.tick` (`needlist.warm`).
+- `lib/drive.lua`: `media_in_use`'s track rule, and `summary` keeps `obj` and `track`.
+- `lib/needlist.lua`: mine (this doc's earlier rounds).
+- `tests/test_0_60_rt_linkmove_need.lua`: one line, so Bee also takes Ann's (now always sent) answer to the event ids.
+
+### Tests
+
+- `tests/test_0_60_rt_catchup_link.lua`: with stale status files nobody is here and the link has no peers; `strangers` lists the trusted
+  studio computers, never one removed, untrusted or this one; the status write sends them a hello, at most every `HELLO_EVERY`, nothing with
+  the link off; a status back over the link makes that bandmate here and on the link's list (so not alone), and the hello then goes only to
+  the rest; `link_hold` holds for `HOLD` s; `media_in_use` leaves out an item that went with its deleted track and counts it again when the
+  track comes back.
+- `tests/test_0_60_rt_catchup_need.lua`: an ask with the ids dropped by a bandmate that doesn't know the asker goes again after `EV_RETRY`,
+  then doubling; a bandmate whose days match answers with an empty list, and the asking stops; with 2,700 changes a bandmate's file is wanted
+  within 10 s of its list (it was 50 s) and no tick reads for longer than `WARM`; a change that lands is read on the same look.
+- Each fails with its change taken out (checked one at a time: hello, hold, track rule, retry, empty answer, warm, re-read on landing).
+- `python tests/run.py --no-luals`: fails 0 in a clean clone of the commit.
+
+### Not done or not tested
+
+- Not run in REAPER (the re-check above).
+- Hub election with Syncthing paused: still files only (see the table). A computer whose Syncthing is paused can hold its song's hub
+  alongside the real one until Syncthing runs again. Making the election link-aware would need every computer to share the same link view,
+  which is a design change for `lib/hub.lua`.
+- `nat:` peers get no hello.
+- The need list is still off by default (`link need list`). This round removes two of the reasons it couldn't be on for this case. The
+  switch still waits for the three-computer checks in round 3.
+
+### Review later (security), added this round
+
+- **The hello shows your status** (song, room, what you're editing, the hub part) to every studio computer that passes the device check, not
+  only those in your room. They're studio members, and the status file is in the shared folder for all of them anyway, but this goes out
+  even when you'd expect only your room's members to see it live.
+- **A status message makes its sender "here"**, which turns off full control. That was already true of every status message. A member could
+  keep you out of full control by sending your room a status in someone's name. They could already do that with a status file in the folder.
+- **No rate limit on received hellos.** Each costs one `from_msg`, as any status does.

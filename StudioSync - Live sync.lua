@@ -419,7 +419,7 @@ function P.who(t)
   -- (gone for 90 s before you're alone, back at once: a dialog left open on their machine pauses its status for a
   -- while, and each pause handed the laptop full control for a moment, 2026-10-31)
   local others = sync.present(cfg, b.song, b.room, sync.alone and 45 or 90)
-  local alone = #others == 0
+  local alone = #others == 0 and not require("presence").link_hold(cfg) -- (not in the first seconds, before the link has heard who's here: rt-catchup)
   if alone ~= sync.alone then
     if alone or sync.alone ~= nil then
       band.log(alone and "nobody else is here: you have full control (what you change still goes to the others, and reaches them when they're back)"

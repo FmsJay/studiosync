@@ -170,6 +170,37 @@ function direct.forget_devices(root) dev_cache[root] = nil end
 direct.PEERS_EVERY = 2
 local peer_cache, asked_dev = {}, {} -- root\nsong\nroom -> { at, list, dev_of }; root\0user\0device -> true once trust.device_ok answered
 local function peers_ext(cfg, song, room) return "direct peers " .. tostring(band.info(cfg.root).id) .. " " .. tostring(song) .. "/" .. tostring(room) end
+-- May the link send this computer (a devices file's d) the song's messages? Only a file its own computer wrote, as services.pin_tailnet: a
+-- rewritten one would point the studio's changes somewhere else. Syncthing's answer (or the file's signature) is kept by lib/trust.lua; not
+-- known yet is not yet. A guest whose list leaves the song out: a narrowing only.
+local function sendable(cfg, song, now)
+  local access, trust = require("access"), require("trust")
+  return function(d)
+    local k = cfg.root .. "\0" .. tostring(d.user) .. "\0" .. tostring(d.device)
+    if not asked_dev[k] and reaper.time_precise() - now > 0.05 then return false end -- (the next refresh asks it)
+    local ok, said = pcall(trust.device_ok, cfg.root, d.user, d.device)
+    if ok and said ~= nil then asked_dev[k] = true end
+    return ok and said == true and access.shows(access.read(cfg.root, d.device), song)
+  end
+end
+-- The studio's computers the link may send to whose person isn't here by this computer's view (their status file stale here, nothing heard
+-- from them on the link), minus anyone with a removal mark: where lib/presence.lua's hello goes. Who's here comes from status files, and
+-- a status message reaches only those here, so two computers whose Syncthing is paused or broken never counted each other as here, and the
+-- link never carried a thing between them (the LinuxBox test, 2026-11-21). The hello is this computer's status: a bandmate's Live sync in
+-- this song and room takes it as any status off the link, and from then on each is here for the other. -> "name:port" list, sorted.
+function direct.strangers(cfg, song, room)
+  local t = require("groups").tailnet(cfg.root)
+  if not t then return {} end
+  local here, removal = {}, require("removal")
+  for _, p in ipairs((direct.refresh_peers(cfg, song, room))) do here[p] = true end
+  local ok = sendable(cfg, song, reaper.time_precise())
+  local all = direct.peers_from(devices(cfg.root), t.suffix, require("services").my_device_id(), direct.port(), nil, function(d)
+    return d.user ~= cfg.user and not removal.mark(cfg.root, d.user) and ok(d) -- (another computer of yours drops your status: presence.from_msg)
+  end)
+  local out = {}
+  for _, p in ipairs(all) do if not here[p] then out[#out + 1] = p end end
+  return out
+end
 function direct.refresh_peers(cfg, song, room) -- -> the list, peer -> device id, and peer -> user
   local key, now = cfg.root .. "\n" .. tostring(song) .. "\n" .. tostring(room), reaper.time_precise()
   local c = peer_cache[key]
@@ -178,16 +209,7 @@ function direct.refresh_peers(cfg, song, room) -- -> the list, peer -> device id
   if t then
     local present = {}
     for _, st in ipairs(require("presence").peers(cfg, song, room)) do present[st.user] = true end
-    local access, trust = require("access"), require("trust")
-    list, dev_of, users = direct.peers_from(devices(cfg.root), t.suffix, require("services").my_device_id(), direct.port(), present, function(d)
-      -- (only a file its own computer wrote, as services.pin_tailnet: a rewritten one would point the studio's changes somewhere else. Asked
-      -- only for those here, and Syncthing's answer is kept by lib/trust.lua; not known yet is not yet)
-      local k = cfg.root .. "\0" .. tostring(d.user) .. "\0" .. tostring(d.device)
-      if not asked_dev[k] and reaper.time_precise() - now > 0.05 then return false end -- (the next refresh asks it)
-      local ok, said = pcall(trust.device_ok, cfg.root, d.user, d.device)
-      if ok and said ~= nil then asked_dev[k] = true end
-      return ok and said == true and access.shows(access.read(cfg.root, d.device), song) -- (a guest whose list leaves the song out: a narrowing only)
-    end)
+    list, dev_of, users = direct.peers_from(devices(cfg.root), t.suffix, require("services").my_device_id(), direct.port(), present, sendable(cfg, song, now))
   end
   -- (stage 2 of the connection without Tailscale: a bandmate whose link without it is up goes as "nat:<device>", the extension carrying
   -- the frames over that link; while it isn't up, its Tailscale entry stays, if any. lib/nat.lua checks who, as for live audio. rt-nat2)
