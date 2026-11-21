@@ -46,7 +46,7 @@ assert(e and e.op == "move" and e.to == 6.2 and e.tolane == 0 and e.id == "e1", 
 assert(dawedit.parse({ op = "colour", lane = 0, idx = 0, p = 0, l = 1, c = "#A0B0C0" }).c == "#a0b0c0", "a colour, lower-cased")
 assert(dawedit.parse({ op = "colour", lane = 0, idx = 0, p = 0, l = 1, c = "" }).c == false, "no colour")
 local bad = {
-  { op = "delete", lane = 0, idx = 0, p = 0, l = 1 }, { op = "move", lane = -1, idx = 0, p = 0, l = 1, to = 1 }, { op = "move", lane = 0.5, idx = 0, p = 0, l = 1, to = 1 },
+  { op = "delete", lane = 0, idx = 0, p = 0 }, { op = "delete_marker", p = 1 }, { op = "move", lane = -1, idx = 0, p = 0, l = 1, to = 1 }, { op = "move", lane = 0.5, idx = 0, p = 0, l = 1, to = 1 },
   { op = "move", lane = 0, idx = 0, p = 0, l = 1 }, { op = "move", lane = 0, idx = 0, p = 0 / 0, l = 1, to = 1 }, { op = "colour", lane = 0, idx = 0, p = 0, l = 1, c = "red" },
   { op = "add_marker", at = 1, name = "[ping] James" }, { op = "add_marker", at = 1, name = ("x"):rep(101) }, { op = "add_marker", at = 5, region = true, to = 5 },
   { op = "rename_marker", i = 1, p = 1, name = 7 }, { op = "move_marker", i = 1, p = 1 }, "nope",
@@ -55,6 +55,7 @@ for n, b in ipairs(bad) do assert(dawedit.parse(b) == nil, "refused: #" .. n) en
 local _, why, id = dawedit.parse({ id = "e9", op = "move", lane = 0 })
 assert(why and id == "e9", "a refusal keeps its id, so the page hears why")
 assert(select(3, dawedit.parse({ id = "<script>", op = "nope" })) == nil, "ids are plain")
+assert(dawedit.parse({ op = "delete", lane = 1, idx = 0, p = 4, l = 2 }).op == "delete" and dawedit.parse({ op = "delete_marker", i = 2, r = true, p = 3 }).r == true, "deletes parse")
 assert(dawedit.parse({ op = "rename_marker", i = 2, r = true, p = 3, name = " Chorus\n2 " }).name == "Chorus 2", "names cleaned")
 
 -- ---- a stand-in REAPER ------------------------------------------------------------------------------------------------------------------
@@ -88,6 +89,14 @@ reaper.MoveMediaItemToTrack = function(it, tr)
   return true
 end
 local splits = {}
+reaper.DeleteTrackMediaItem = function(tr, it)
+  for j, x in ipairs(tr.t.items) do if x == it then table.remove(tr.t.items, j); it.deleted = true; return true end end
+  return false
+end
+reaper.DeleteProjectMarker = function(_, num, rgn)
+  for j, m in ipairs(fake.markers) do if m.num == num and (m.region or false) == rgn then table.remove(fake.markers, j); return true end end
+  return false
+end
 reaper.SplitMediaItem = function(it, at) splits[#splits + 1] = { it, at }; return {} end
 reaper.SnapToGrid = function(_, t) return math.floor(t * 2 + 0.5) / 2 end -- (a half-second grid, snapping on)
 reaper.Undo_BeginBlock2 = function() undo[#undo + 1] = { open = true } end
@@ -220,6 +229,33 @@ assert(r.ok and it(0, 0).color == (0xFF0000 | 0x1000000), "else the item's")
 r = select(2, act("Chilio", { op = "colour", lane = 1, idx = 0, p = 4, l = 2, c = "" }))
 assert(r.ok and it(1, 0).takes[1].color == 0 and it(1, 0).color == 0, "none: both cleared")
 
+-- delete (rt-p14): the same checks as any edit to the item; one undo point; asked for before it goes (web_ask looks at the item)
+song(); room("open", { Chilio = { tracks = { "Bass" } } })
+claimask.present = function() return false end
+said, r = act("James", { id = "d1", op = "delete", lane = 1, idx = 0, p = 4, l = 2 })
+assert(r.why and r.why:find("Chilio has claimed Bass") and #fake.tracks[3].items == 2 and #undo == 0, "someone else's claimed track: not deleted: " .. tostring(r.why))
+r = select(2, act("Chilio", { op = "delete", lane = 1, idx = 0, p = 4, l = 2 }))
+assert(r.ok and #fake.tracks[3].items == 1 and fake.tracks[3].items[1].oid == "I-JAMES-9", "its claimant deletes it")
+assert(#undo == 1 and not undo[1].open and undo[1].label == "StudioSync web page: delete item", "in one undo point, closed")
+r = select(2, act("Chilio", { op = "delete", lane = 1, idx = 0, p = 4, l = 2 }))
+assert(r.why:find("changed meanwhile") and #fake.tracks[3].items == 1, "the page's view is stale: nothing deleted (it was another item now)")
+song()
+claimask.present = function(_, _, u) return u == "Chilio" end
+local seen_items
+local real_web_ask = claimask.web_ask
+claimask.web_ask = function(...) seen_items = #fake.tracks[3].items; return real_web_ask(...) end
+said, r = act("James", { id = "d2", op = "delete", lane = 1, idx = 0, p = 4, l = 2 })
+assert(r.ok and r.ask == "Chilio" and #fake.tracks[3].items == 1 and said:find("delete item") and said:find("Chilio is asked"), "Chilio here: deleted here, and asked: " .. tostring(r.why))
+assert(seen_items == 2, "the ask was worked out while the item was still there (" .. tostring(seen_items) .. ")")
+claimask.web_ask = real_web_ask
+claimask.present = function() return false end
+room("driver")
+r = select(2, act("Andie", { op = "delete", lane = 2, idx = 0, p = 34, l = 4 }))
+assert(r.why:find("only the driver %(James%)") and #fake.tracks[4].items == 1, "Driver only: the maker is refused")
+room("open")
+r = select(2, act("Andie", { op = "delete", lane = 2, idx = 0, p = 34, l = 4 }))
+assert(r.ok and #fake.tracks[4].items == 0, "open: its maker deletes it")
+
 -- ---- markers and regions ----------------------------------------------------------------------------------------------------------------
 song(); room("driver", { Chilio = { regions = { "Verse" } } })
 r = select(2, act("Andie", { op = "add_marker", at = 3.1, name = "Bridge" }))
@@ -266,12 +302,28 @@ assert(published.dawedit and published.dawedit.why and published.dawedit.why:fin
 assert(published.daw.snap == 1 and published.daw.markers[1].i == 1 and published.daw.markers[2].i == 1, "the header says snapping is on, and names markers by number")
 assert(#published.daw.markers == 2, "pings left out")
 
+-- delete a marker or a region: the timeline's rule and a claimed region stays theirs
+song(); room("driver", { Chilio = { regions = { "Verse" } } })
+r = select(2, act("Andie", { op = "delete_marker", i = 1, r = false, p = 2 }))
+assert(r.why:find("only the driver changes markers") and #fake.markers == 3, "Driver only: refused")
+r = select(2, act("James", { op = "delete_marker", i = 1, r = true, p = 10 }))
+assert(r.why:find("Chilio has claimed the region Verse"), "a claimed region: refused (" .. tostring(r.why) .. ")")
+room("open")
+r = select(2, act("Andie", { op = "delete_marker", i = 1, r = false, p = 2 }))
+assert(r.ok and #fake.markers == 2 and undo[#undo].label == "StudioSync web page: delete marker", "a marker deleted")
+r = select(2, act("Andie", { op = "delete_marker", i = 1, r = true, p = 10 }))
+assert(r.ok and #fake.markers == 1 and fake.markers[1].name == "[ping] Chilio" and undo[#undo].label:find("delete region"), "a region deleted")
+r = select(2, act("Andie", { op = "delete_marker", i = 3, r = false, p = 40 }))
+assert(r.why:find("changed meanwhile") and #fake.markers == 1, "this computer's own marks aren't the page's to delete")
+
 -- ---- the page's edit hooks ------------------------------------------------------------------------------------------------------------
 local function read(path) local f = assert(io.open(path, "rb"), path); local s = f:read("a"); f:close(); return s end
 local js, css = read("lib/webui/daw.js"), read("lib/webui/daw.css")
 for _, want in ipairs({ "act({ edit: Object.assign({ id }, o) })", "t.dawedit", "snapBack(r.why)", "op: 'move_marker'", "op: 'rename_marker'", "op: 'add_marker'",
     "itemOp('split')", "itemOp('mute'", "itemOp('colour'", "'trim_start'", "'trim_end'", "head.snap", "'contextmenu'", "setTimeout(() => { lp = null; lpFired = true",
-    "if (touch && !mine) return;", "edDown(e);", "if (edMove(e)) return;", "if (edUp(e, was)) return;", "edItems(g, first, last);", "edMarker(m0)" }) do
+    "if (touch && !mine) return;", "edDown(e);", "if (edMove(e)) return;", "if (edUp(e, was)) return;", "edItems(g, first, last);", "edMarker(m0)",
+    "itemOp('delete')", "op: 'delete_marker'", "bDel.addEventListener('click', doDelete)", "add('Delete', doDelete)", "X.autoClear",
+    'aria-label="Watch a bandmate"', "'Watch ' + v" }) do
   assert(js:find(want, 1, true), "the Project page has " .. want)
 end
 assert(css:find(".dmenu", 1, true) and css:find(".dedit", 1, true), "the edit row and the menu are styled")

@@ -19,8 +19,8 @@ dawedit.reply = nil    -- the last edit's answer, published by dawview.tick
 dawedit.asking = nil   -- whom the edit being made asks for what they claimed (lib/claimask.lua), else nil
 
 -- ---- pure ------------------------------------------------------------------------------------------------------------------------------
-local OPS = { move = "item", trim_start = "item", trim_end = "item", split = "item", mute = "item", colour = "item",
-  add_marker = "marker", move_marker = "marker", rename_marker = "marker" }
+local OPS = { move = "item", trim_start = "item", trim_end = "item", split = "item", mute = "item", colour = "item", delete = "item",
+  add_marker = "marker", move_marker = "marker", rename_marker = "marker", delete_marker = "marker" }
 local function num(x) x = tonumber(x); return x and x == x and x > -1e7 and x < 1e7 and x or nil end
 local function int(x) x = tonumber(x); return x and x >= 0 and x < 1e6 and math.floor(x) == x and math.floor(x) or nil end
 -- A marker's or region's name from a page: control characters become spaces, ends trimmed; nil when too long, not text, or one of this
@@ -161,7 +161,8 @@ function dawedit.item_why(cfg, b, can, who, it, tr, pos)
 end
 
 local LABEL = { move = "move item", trim_start = "trim item start", trim_end = "trim item end", split = "split item", mute = "mute item",
-  colour = "item colour", add_marker = "add marker", move_marker = "move marker", rename_marker = "rename marker" }
+  colour = "item colour", delete = "delete item", add_marker = "add marker", move_marker = "move marker", rename_marker = "rename marker",
+  delete_marker = "delete marker" }
 -- -> nil when done, or why not.
 local function apply(proj, cfg, b, e)
   local can, who = dawedit.authority(cfg, b)
@@ -179,6 +180,7 @@ local function apply(proj, cfg, b, e)
     local why = dawedit.timeline_refusal(can, who, user, { e.r and m.name or "", e.r and e.name or "" })
     if why then return why end
     local label = e.r and LABEL[e.op]:gsub("marker", "region") or LABEL[e.op]
+    if e.op == "delete_marker" then return in_undo(proj, label, function() reaper.DeleteProjectMarker(proj, e.i, e.r) end) end
     if e.op == "move_marker" then
       local to = snap(proj, e.to)
       -- (name "": unchanged; colour 0: unchanged)
@@ -191,6 +193,12 @@ local function apply(proj, cfg, b, e)
   -- (allowed where it is, and where it goes: moving an item off a claimed track, or onto one, mustn't slip past the claim)
   local why, refusal = dawedit.item_why(cfg, b, can, who, it, tr, pos)
   if why then return why end
+  if e.op == "delete" then
+    -- (asked before it goes: web_ask looks at the item, which is gone after)
+    local q = dawedit.asking_at
+    if dawedit.asking and q then q.pre = require("claimask").web_ask(proj, cfg, b, q.who, q.it, dawedit.asking, q.name, q.pos) or false end
+    return in_undo(proj, LABEL[e.op], function() reaper.DeleteTrackMediaItem(tr, it) end)
+  end
   if e.op == "move" then
     local to, dest = snap(proj, e.to), e.tolane and tracks[e.tolane + 1] or tr
     if not dest then return "that track changed meanwhile" end
@@ -254,7 +262,9 @@ function dawedit.action(proj, cfg, b, raw)
   local ask = not why and dawedit.asking or nil
   -- (only when mirror.watch will ask: an edit that merges with an auto-claimer's change goes out. lib/claimask.lua web_ask, rt-p1)
   local q = dawedit.asking_at
-  if ask and q then ask = require("claimask").web_ask(proj, cfg, b, q.who, q.it, ask, q.name, q.pos) end
+  if ask and q then
+    if q.pre ~= nil then ask = q.pre or nil else ask = require("claimask").web_ask(proj, cfg, b, q.who, q.it, ask, q.name, q.pos) end
+  end
   dawedit.reply = { id = id, ok = not why or nil, why = why, ask = ask }
   if why then return "the web page's edit wasn't made: " .. why end
   if ask then return "the web page: " .. (LABEL[e.op] or e.op) .. ", held here while " .. ask .. " is asked for it" end
