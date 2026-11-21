@@ -241,6 +241,25 @@ local n = #dmsgs
 clock = clock + invite.RESEND + 1
 invite.tick(os.time())
 assert(#dmsgs == n + 1, "asked again")
+-- (rt-p10) a code link for another Tailscale network: said at once, honestly (the invitation message instead); nothing asked, nothing sent
+local n_d, asked2 = #dmsgs, false
+invite.confirm = function() asked2 = true; return true end
+clock = clock + 5
+local okx, whyx = invite.handle_link(invite.code_link(OTHER, "New band", "alice.tailother.ts.net", code))
+assert(not okx and whyx:find("Tailscale network") and said[#said]:find("invitation message", 1, true) and not asked2 and #dmsgs == n_d,
+  "another Tailscale network: the honest message, no Yes box, nothing sent: " .. tostring(said[#said]))
+local ts_name = package.loaded.services.my_tailscale_name
+package.loaded.services.my_tailscale_name = function() return nil end
+clock = clock + 5
+okx, whyx = invite.handle_link(invite.code_link(OTHER, "New band", "alice.tail9.ts.net", code))
+assert(not okx and whyx:find("Tailscale network") and said[#said]:find("isn't on it", 1, true) and not asked2 and #dmsgs == n_d, "no Tailscale here: the same, before any Yes box")
+package.loaded.services.my_tailscale_name = ts_name
+-- (rt-p10) Windows without the direct link's firewall rule: the invitation can't come back, so it says so (and what to press) instead of asking
+direct.firewall_ok = function() return false end
+clock = clock + 5
+okx, whyx = invite.handle_link(invite.code_link(OTHER, "New band", "alice.tail9.ts.net", code))
+assert(not okx and whyx:find("firewall") and said[#said]:find("Health", 1, true) and #dmsgs == n_d, "no firewall rule: said, nothing sent: " .. tostring(said[#said]))
+direct.firewall_ok = function() return true end
 
 -- ---- codes: the inviter's computer --------------------------------------------------------------------------------------------------------
 ext = A_EXT
@@ -312,6 +331,24 @@ n_open = #opened
 clock = clock + 5
 invite.tick(os.time())
 assert(#opened == n_open + 1 and opened[#opened].song == "Blue" and FS["H/link/pending.txt"] == nil, "a clicked link: read, gone, opened")
+-- (rt-p10) two clicks before StudioSync reads them: both kept (each its own file), the older first, one each LINK_EVERY s, none lost
+FS["H/link/pending-1700000002-7.txt"] = "studiosync://join?s=" .. SID .. "&p=Sunset%20Drive"
+FS["H/link/pending-1700000001-9.txt"] = "studiosync://join?s=" .. SID .. "&p=Blue"
+n_open = #opened
+clock = clock + 5
+invite.tick(os.time())
+assert(#opened == n_open + 1 and opened[#opened].song == "Blue" and FS["H/link/pending-1700000001-9.txt"] == nil, "the older click first")
+clock = clock + 1
+invite.tick(os.time())
+assert(#opened == n_open + 1 and FS["H/link/pending-1700000002-7.txt"], "the next waits LINK_EVERY s, kept (not lost to 'a link a moment ago')")
+clock = clock + 1.5
+invite.tick(os.time())
+assert(#opened == n_open + 2 and opened[#opened].song == "Sunset Drive" and FS["H/link/pending-1700000002-7.txt"] == nil, "then the second")
+for i = 1, invite.QUEUE_MAX + 5 do FS[string.format("H/link/pending-1700000100-%d.txt", i)] = "x" end
+invite.take_pending()
+local left = 0
+for p in pairs(FS) do if p:find("^H/link/pending%-") then left = left + 1; FS[p] = nil end end
+assert(left == invite.QUEUE_MAX - 1, "at most QUEUE_MAX wait, the rest dropped: " .. left)
 
 -- ---- the URL handler, per system, on a stand-in file layer ------------------------------------------------------------------------------
 local uh = require("urlhandler")
@@ -332,7 +369,9 @@ local win_o = { os = "win", home = TMP .. "/home", scripts = TMP .. "/Scripts/St
 local fw = fake()
 assert(uh.install(win_o, fw.io), "Windows: put in")
 local js = fw.files[TMP .. "/home/link/studiosync-link.js"]
-assert(js and js:find('"C:\\\\tmp\\\\ssinv test\\\\home\\\\link\\\\pending.txt"', 1, true), "the launcher names the pending file, escaped")
+assert(js and js:find('DIR = "C:\\\\tmp\\\\ssinv test\\\\home\\\\link"', 1, true), "the launcher names the link folder, escaped")
+assert(js:find('DIR + "\\\\pending-" + Math.floor(new Date().getTime() / 1000)', 1, true) and not js:find("pending.txt", 1, true),
+  "each click its own pending-<seconds>-<n>.txt (rt-p10: one file was replaced by a second click)")
 assert(js:find("FolderExists(SCRIPTS)", 1, true) and js:find("reg.exe delete", 1, true), "and takes the handler away once StudioSync is gone")
 assert(not js:find("Run(url", 1, true) and not js:find("+ url", 1, true), "the link is never part of a command")
 local cmdline
@@ -370,13 +409,27 @@ assert(uh.install(lin_o, fl.io), "Linux: put in")
 local desk = fl.files["/home/j$x/.local/share/applications/studiosync-link.desktop"]
 assert(desk and desk:find("MimeType=x-scheme-handler/studiosync;", 1, true) and desk:find('Exec=/bin/sh "/home/j\\$x/.config/REAPER/StudioSync/link/studiosync-link.sh" %u', 1, true), "the .desktop file, $ escaped")
 local sh = fl.files["/home/j$x/.config/REAPER/StudioSync/link/studiosync-link.sh"]
-assert(sh:find("printf '%s' \"$1\"", 1, true) and sh:find("PENDING='/home/j$x/", 1, true) and not sh:find("eval", 1, true), "the launcher: printf, single-quoted paths, no eval")
+assert(sh:find("printf '%s' \"$1\"", 1, true) and sh:find("DIR='/home/j$x/", 1, true) and not sh:find("eval", 1, true), "the launcher: printf, single-quoted paths, no eval")
+assert(sh:find('P="$DIR/pending-$(date +%s)-$$.txt"', 1, true), "each click its own file (rt-p10)")
+assert(src:find('quoted form of (linkdir & "/pending-") & "$(date +%s)-$$.txt;', 1, true), "the Mac applet too (rt-p10)")
 assert(uh.installed(lin_o, fl.io), "installed")
 assert(uh.uninstall(lin_o, fl.io) and fl.files["/home/j$x/.local/share/applications/studiosync-link.desktop"] == nil, "Linux: taken away")
 local fl2 = fake()
 fl2.files["/home/j$x/.local/share/applications/studiosync-link.desktop"] = "[Desktop Entry]\nExec=someone-else %u\n"
 uh.uninstall(lin_o, fl2.io)
 assert(fl2.files["/home/j$x/.local/share/applications/studiosync-link.desktop"], "a .desktop file that isn't ours stays")
+-- (rt-p10) untick takes xdg-mime's default out of mimeapps.list (it named the missing .desktop file); everything else stays
+local fl3 = fake()
+local ML = "/home/j$x/.config/mimeapps.list"
+fl3.files[ML] = "[Default Applications]\nx-scheme-handler/studiosync=studiosync-link.desktop;\ntext/html=firefox.desktop\n\n[Added Associations]\n" ..
+  "x-scheme-handler/studiosync=other.desktop;studiosync-link.desktop;\n"
+fl3.files["/home/j$x/.local/share/applications/mimeapps.list"] = "[Default Applications]\ntext/plain=gedit.desktop\n"
+assert(uh.uninstall(lin_o, fl3.io), "Linux: taken away, mimeapps.list there")
+assert(fl3.files[ML] == "[Default Applications]\ntext/html=firefox.desktop\n\n[Added Associations]\nx-scheme-handler/studiosync=other.desktop;\n",
+  "our default line gone, another handler kept, the rest as it was: " .. tostring(fl3.files[ML]))
+assert(fl3.files["/home/j$x/.local/share/applications/mimeapps.list"] == "[Default Applications]\ntext/plain=gedit.desktop\n", "one that doesn't name ours: untouched")
+local xdg = uh.paths({ os = "linux", home = "/h/s", scripts = "/h/sc", exe = "/r", user_home = "/h", config_home = "/xdg" })
+assert(xdg.mimeapps[1] == "/xdg/mimeapps.list", "XDG_CONFIG_HOME's mimeapps.list when it's set")
 -- refusals and a failing step
 assert(not uh.install_steps({ os = "win", home = "a\nb", scripts = "s", exe = "e" }), "a control character in a path: nothing")
 assert(not uh.install_steps({ os = "beos", home = "a", scripts = "s", exe = "e" }), "an unknown system: nothing")
@@ -397,6 +450,7 @@ for _, f in ipairs({ "lib/webui/invite.js", "lib/webui/join.js" }) do
   for u in js:gmatch("https?://[%w%.:]+") do assert(u:find("^http://127%.0%.0%.1"), f .. ": nothing remote (" .. u .. ")") end
 end
 assert(read("lib/webui/join.js"):find("addEventListener('click'", 1, true), "join.html sends nothing without a press")
+assert(read("lib/webui/join.js"):find("Tailscale network. If this computer isn", 1, true), "join.html says a code link needs the inviter's Tailscale network (rt-p10)")
 assert(read("lib/webui/chat.js"):find("ssInvite.joinBox(m, scope, mine)", 1, true), "chat.js puts Join / Decline on a request")
 
 print("ok - invite links, ask to join and the URL handler")

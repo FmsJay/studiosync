@@ -3,6 +3,7 @@
 -- away when they untick it (lib/invite.lua studio_ui), or by the launcher itself once StudioSync's scripts are gone (uninstalled: no separate
 -- uninstaller exists). The launcher never runs the link: it writes it, as plain text, to <home>/link/pending.txt and starts or wakes REAPER;
 -- StudioSync reads that file within a second (lib/invite.lua tick, from Autostart and the panel) and checks it there like any other input.
+-- Each click writes its own <home>/link/pending-<seconds>-<n>.txt, so two clicks before StudioSync reads them are both kept (rt-p10).
 --   Windows  HKCU\Software\Classes\studiosync (per user, no admin), its command wscript.exe running <home>/link/studiosync-link.js with the
 --            link as its own argument (no cmd.exe, so nothing in a link is read as a command), then reaper.exe -nonewinst.
 --   macOS    ~/Applications/StudioSync Link.app, an AppleScript applet (osacompile) with CFBundleURLTypes, registered with lsregister; its
@@ -48,6 +49,8 @@ function urlhandler.paths(o)
       p.launcher = p.dir .. "/studiosync-link.sh"
       p.apps = (no_ctl(o.data_home) and o.data_home or (o.user_home .. "/.local/share")) .. "/applications"
       p.desktop = p.apps .. "/" .. urlhandler.DESKTOP
+      -- (where xdg-mime default writes, and the older place: the default is taken out of both on untick. rt-p10)
+      p.mimeapps = { (no_ctl(o.config_home) and o.config_home or (o.user_home .. "/.config")) .. "/mimeapps.list", p.apps .. "/mimeapps.list" }
       p.script = p.dir .. "/install.sh"
     end
   end
@@ -60,7 +63,7 @@ function urlhandler.win_launcher(p)
     "// StudioSync link launcher, written by lib/urlhandler.lua (Settings > Open StudioSync links on this computer). GPL-3.0-or-later.",
     "// It only writes the link it was given to a file StudioSync reads and checks, then starts or wakes REAPER: the link is never run.",
     "var fso = new ActiveXObject(\"Scripting.FileSystemObject\"), sh = new ActiveXObject(\"WScript.Shell\");",
-    "var PENDING = " .. urlhandler.js_str(win(p.pending)) .. ", SCRIPTS = " .. urlhandler.js_str(win(p.scripts)) .. ", EXE = " .. urlhandler.js_str(win(p.exe)) .. ";",
+    "var DIR = " .. urlhandler.js_str(win(p.dir)) .. ", SCRIPTS = " .. urlhandler.js_str(win(p.scripts)) .. ", EXE = " .. urlhandler.js_str(win(p.exe)) .. ";",
     "if (!fso.FolderExists(SCRIPTS)) { // (StudioSync is gone: so is its link handler)",
     "  try { sh.Run('reg.exe delete \"" .. urlhandler.WIN_KEY .. "\" /f', 0, true); fso.DeleteFile(WScript.ScriptFullName); } catch (e) {}",
     "  WScript.Quit(0);",
@@ -68,9 +71,9 @@ function urlhandler.win_launcher(p)
     "var url = WScript.Arguments.length > 0 ? String(WScript.Arguments(0)) : \"\";",
     "if (url.length > 0 && url.length <= " .. urlhandler.LINK_MAX .. " && url.toLowerCase().indexOf(\"studiosync:\") === 0 && /^[\\x21-\\x7e]+$/.test(url)) {",
     "  try {",
-    "    var f = fso.CreateTextFile(PENDING + \".tmp\", true, false); f.Write(url); f.Close();",
-    "    if (fso.FileExists(PENDING)) fso.DeleteFile(PENDING);",
-    "    fso.MoveFile(PENDING + \".tmp\", PENDING);",
+    "    var P = DIR + \"\\\\pending-\" + Math.floor(new Date().getTime() / 1000) + \"-\" + Math.floor(Math.random() * 1000000000) + \".txt\";",
+    "    var f = fso.CreateTextFile(P + \".tmp\", true, false); f.Write(url); f.Close();",
+    "    fso.MoveFile(P + \".tmp\", P);",
     "    sh.Run('\"' + EXE + '\" -nonewinst', 1, false);",
     "  } catch (e) {}",
     "}",
@@ -96,8 +99,8 @@ function urlhandler.mac_source(p)
     "    return",
     "  end try",
     "  if theURL does not start with \"studiosync:\" or (length of theURL) > " .. urlhandler.LINK_MAX .. " then return",
-    "  set pending to " .. q(p.pending),
-    "  do shell script \"printf '%s' \" & quoted form of theURL & \" > \" & quoted form of (pending & \".tmp\") & \" && mv -f \" & quoted form of (pending & \".tmp\") & \" \" & quoted form of pending",
+    "  set linkdir to " .. q(p.dir),
+    [[  do shell script "f=" & quoted form of (linkdir & "/pending-") & "$(date +%s)-$$.txt; printf '%s' " & quoted form of theURL & " > \"$f.tmp\" && mv -f \"$f.tmp\" \"$f\""]],
     "  do shell script \"open \" & quoted form of " .. q(p.exe),
     "end open location",
     "" }, "\n")
@@ -135,13 +138,14 @@ function urlhandler.linux_launcher(p)
     "#!/bin/sh",
     "# StudioSync link launcher, written by lib/urlhandler.lua (Settings > Open StudioSync links on this computer). GPL-3.0-or-later.",
     "# It only writes the link it was given to a file StudioSync reads and checks, then starts or wakes REAPER: the link is never run.",
-    "PENDING=" .. q(p.pending) .. "; SCRIPTS=" .. q(p.scripts) .. "; EXE=" .. q(p.exe) .. "; DESKTOP=" .. q(p.desktop),
+    "DIR=" .. q(p.dir) .. "; SCRIPTS=" .. q(p.scripts) .. "; EXE=" .. q(p.exe) .. "; DESKTOP=" .. q(p.desktop),
     "if [ ! -d \"$SCRIPTS\" ]; then # (StudioSync is gone: so is its link handler)",
     "  rm -f \"$DESKTOP\" \"$0\"; update-desktop-database \"$(dirname \"$DESKTOP\")\" >/dev/null 2>&1; exit 0",
     "fi",
     "case \"$1\" in [Ss][Tt][Uu][Dd][Ii][Oo][Ss][Yy][Nn][Cc]:*) ;; *) exit 0 ;; esac",
     "[ \"${#1}\" -le " .. urlhandler.LINK_MAX .. " ] || exit 0",
-    "printf '%s' \"$1\" > \"$PENDING.tmp\" && mv -f \"$PENDING.tmp\" \"$PENDING\"",
+    "P=\"$DIR/pending-$(date +%s)-$$.txt\"",
+    "printf '%s' \"$1\" > \"$P.tmp\" && mv -f \"$P.tmp\" \"$P\"",
     "\"$EXE\" -nonewinst >/dev/null 2>&1 &",
     "" }, "\n")
 end
@@ -163,6 +167,21 @@ function urlhandler.linux_script(p)
     "chmod 755 " .. q(p.launcher),
     "xdg-mime default " .. urlhandler.DESKTOP .. " x-scheme-handler/studiosync",
     "update-desktop-database " .. q(p.apps) .. " >/dev/null 2>&1 || true", "" }, "\n")
+end
+
+-- A mimeapps.list without our handler as studiosync's default (xdg-mime default left it there after untick, naming a missing file):
+-- our .desktop taken out of each x-scheme-handler/studiosync line, the line gone when nothing is left. Everything else as it was. Pure.
+function urlhandler.drop_default(text)
+  local out = {}
+  for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+    local v = line:match("^x%-scheme%-handler/studiosync%s*=(.*)$")
+    if v then
+      local keep = {}
+      for d in v:gmatch("[^;%s]+") do if d ~= urlhandler.DESKTOP then keep[#keep + 1] = d end end
+      if #keep > 0 then out[#out + 1] = "x-scheme-handler/studiosync=" .. table.concat(keep, ";") .. ";" .. (line:find("\r$") and "\r" or "") end
+    else out[#out + 1] = line end
+  end
+  return table.concat(out, "\n")
 end
 
 -- ---- the steps ---------------------------------------------------------------------------------------------------------------------------
@@ -217,6 +236,11 @@ function urlhandler.uninstall_steps(o, io)
     local text = io and io.read and io.read(p.desktop)
     if text == nil or tostring(text):find(urlhandler.desktop_q(p.launcher), 1, true) then s[#s + 1] = { remove = p.desktop } end -- (as its Exec line quotes it)
     s[#s + 1] = { remove = p.launcher }
+    for _, ml in ipairs(p.mimeapps) do -- (read through io: only a file there, and only when it names ours, is written)
+      local text = io and io.read and io.read(ml)
+      local kept = type(text) == "string" and urlhandler.drop_default(text)
+      if kept and kept ~= text then s[#s + 1] = { write = ml, text = kept } end
+    end
     s[#s + 1] = { run = "update-desktop-database " .. urlhandler.sh_q(p.apps) }
   end
   s[#s + 1] = { remove = p.pending }
@@ -256,7 +280,7 @@ function urlhandler.here(scripts)
   local exe_dir = (reaper.GetExePath() or ""):gsub("\\", "/")
   local exe = kind == "win" and (exe_dir .. "/reaper.exe") or kind == "mac" and (exe_dir:match("^(.-%.app)") or "/Applications/REAPER.app") or (exe_dir .. "/reaper")
   return { os = kind, home = band.home(), scripts = scripts, exe = exe, user_home = os.getenv("HOME"), data_home = os.getenv("XDG_DATA_HOME"),
-    system_root = os.getenv("SystemRoot") }
+    config_home = os.getenv("XDG_CONFIG_HOME"), system_root = os.getenv("SystemRoot") }
 end
 -- The real file layer: StudioSync's own writes, REAPER's ExecProcess (no shell on Windows: CreateProcess reads the quotes).
 function urlhandler.real_io()

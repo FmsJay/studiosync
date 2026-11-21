@@ -157,3 +157,67 @@ no StudioSync uninstaller), the launcher takes the handler away itself on its ne
   and the same Yes box as a click).
 - **Windows: the handler runs wscript.exe**, which some security tools flag; consider a tiny signed helper exe later.
 - **`chat.post`'s `extra`** lets any caller add fields to a message; only `join` and `join_answer` are used now.
+
+## Round 2: an honest word for a link that can't work, one link per click, the xdg-mime default (rt-p10, 2026-11-21)
+
+Package P10 of `docs/rt/backlog.md` ("Plan to finish"): item 1.33. Offline build and tests only; nothing here ran in REAPER. The first-copy
+half of P10 is `docs/rt/rt-joinlink.md` round 2; the summary is `docs/rt/rt-p10.md`.
+
+### What changed
+
+| Item | Now | Where |
+|---|---|---|
+| A code link **for someone not on the inviter's Tailscale network** asked for two minutes and then said "no answer" | **An honest message at once** (section 4 has no question on this; a link can't carry a Tailscale key, so the backlog's "or an honest message" is the fix): before the Yes box, when this computer has no Tailscale or is on another Tailscale network than the link's host, a box says the link only works on the inviter's network and to ask for the invitation message (Invite a collaborator) and paste it with Paste join code, which brings this computer onto their network when their studio has a Tailscale key set up. Nothing is sent and the code isn't used. The web fallback page (join.html) says the same before the press. | `lib/invite.lua` `handle_link`, `lib/webui/join.js` |
+| Windows **without the direct link's firewall rule** asked for a code's invitation that could never come back | A box says the answer can't reach this computer until the rule is on (Health's direct-link row), then to open the link again, or paste the invitation message. Nothing sent, the code unused. | `lib/invite.lua` `redeem` |
+| **One pending link at a time**: a second click before StudioSync read the first replaced it; and a link read within 2 s of another was refused as "a moment ago" and lost | Each click writes its own `<home>/link/pending-<seconds>-<n>.txt` (Windows launcher, Mac applet, Linux script); StudioSync reads the oldest one each `LINK_EVERY` (2) s and leaves the others waiting, at most `QUEUE_MAX` (20; more are deleted). An older launcher's `pending.txt` is still read first. Re-tick the handler once to get the new launcher. | `lib/urlhandler.lua`, `lib/invite.lua` `take_pending`, `tick` |
+| **Linux kept the `xdg-mime` default after untick** (mimeapps.list naming a missing .desktop file) | Untick takes `studiosync-link.desktop` out of every `x-scheme-handler/studiosync=` line of `$XDG_CONFIG_HOME/mimeapps.list` (or `~/.config/mimeapps.list`) and of `~/.local/share/applications/mimeapps.list`; the line goes when nothing is left on it; another handler on the same line, and every other line, stay. A file that doesn't name ours isn't written. | `lib/urlhandler.lua` `drop_default`, `uninstall_steps` |
+
+### Tests
+
+`tests/test_0_60_rt_invite.lua`, additions:
+- A code link whose host is on another tailnet, and one opened with no Tailscale here: the honest box, no Yes box, nothing sent. Windows
+  without the rule: the box names Health, nothing sent.
+- Two queued clicks: the older opens first; the second waits `LINK_EVERY` s, kept; then opens. 25 waiting: 20 kept, the rest deleted.
+- The launchers: each writes its own `pending-<seconds>-<n>.txt` (Windows, Linux, Mac), no fixed `pending.txt`.
+- Untick on Linux with a mimeapps.list naming ours twice (the default, and alongside `other.desktop` under Added Associations): ours gone,
+  `other.desktop` and every other line kept; a mimeapps.list not naming ours untouched; `XDG_CONFIG_HOME` honoured.
+- join.html says a code link needs the inviter's Tailscale network.
+
+Each fix was disabled alone in a scratch copy and its test then failed: the honest message, the firewall box, one link each `LINK_EVERY`,
+the queued files, the xdg-mime default, join.html's line.
+
+### REAPER checks (round 2)
+
+Scratch studio only (never Chilio's). The handler is a system setting: tick it only on LinuxBox (or LinuxBox2), where `xdg-mime` is
+allowed; not on the desktop, laptop or Mac without James's OK.
+
+1. **No Tailscale (LinuxBox2 before it joins, from rt-joinlink round 2 A).** Desktop: Settings > Studio > Invitations > Copy invite link
+   (member). On LinuxBox2, open it through the web fallback (`http://127.0.0.1:<port>/join.html?...` with Live sync running) or paste it to
+   the handler: join.html shows "This works only on <host>'s Tailscale network ..."; Open in REAPER gives the box "This link only works on
+   <host>'s Tailscale network, and this computer isn't on it ..." with no Yes box before it. The desktop's log has nothing about the code;
+   the link still works afterwards from a computer on the tailnet.
+2. **Another tailnet.** Only if a computer on another Tailscale network is at hand: the same box, and no Yes box.
+3. **Two links, two clicks (LinuxBox, handler ticked).** Copy two member links for two projects (Home > project > Link). In a terminal,
+   `xdg-open '<link 1>'; xdg-open '<link 2>'` at once. `ls ~/.config/REAPER/StudioSync/link/` briefly shows two `pending-*.txt`; the first
+   project opens, then the second about 2 s later. Nothing is lost.
+4. **Untick (LinuxBox).** `xdg-mime query default x-scheme-handler/studiosync` says `studiosync-link.desktop` while ticked. Untick: the query
+   says nothing, `grep studiosync ~/.config/mimeapps.list` finds nothing (or only another handler, if one was there), and
+   `~/.local/share/applications/studiosync-link.desktop` is gone.
+5. **Windows without the firewall rule.** Only on a Windows computer that lacks the rule (don't remove it anywhere for this): opening a code
+   link gives the box naming Health's direct-link row; nothing reaches the inviter.
+
+### Left
+
+- Not run in REAPER.
+- Someone not on the studio's tailnet still needs the invitation message: a link can't carry a Tailscale key. Joining without Tailscale by
+  invitation is P13's (invitations over a NAT link).
+- Two clicks in the same second may be read in either order (named by the second, then a random number).
+- The launchers already installed keep writing `pending.txt` (still read) until the handler is ticked again.
+- The launcher's own clean-up when StudioSync is gone doesn't touch mimeapps.list (only Settings' untick does).
+
+### Review later (security), added this round
+
+- **Up to 20 links can wait** in `<home>/link/`, writable by any program running as the user (as `pending.txt` was); each still gets the
+  same checks and Yes box, read one each 2 s.
+- **The untick rewrites mimeapps.list** through StudioSync's atomic write, removing only our entry; a mimeapps.list that is a symlink is
+  replaced by a file.

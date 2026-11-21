@@ -22,6 +22,7 @@ invite.ASK_MAX, invite.ASK_WINDOW = 10, 3600 -- asks from this computer per wind
 invite.REDEEM_FOR, invite.RESEND = 120, 10   -- the joiner asks for its invitation this long, this often
 invite.FAIL_MAX, invite.FAIL_WINDOW = 30, 600 -- refused code asks before this computer stops listening to them for a window
 invite.LINK_EVERY = 2          -- seconds between two links handled (a page or a launcher repeating one)
+invite.QUEUE_MAX = 20          -- links clicked and waiting to be read (the launcher's files, oldest first); more are dropped
 local SECRET = "StudioSync join link v1\n" -- (the reply channel's key: this plus the code, which only the two computers know)
 
 local function me() return reaper.GetExtState(band.SECTION, "user") end
@@ -221,10 +222,19 @@ end
 
 -- ---- links: this computer's end ------------------------------------------------------------------------------------------------------
 function invite.pending_path() return band.home() .. "/link/pending.txt" end
--- The launcher's file (lib/urlhandler.lua): read once, gone at once. -> its text, or nil.
+-- The launcher's files (lib/urlhandler.lua): each click its own pending-<time>-<n>.txt, so a second click before StudioSync reads the first
+-- no longer replaces it (rt-p10); pending.txt is an older launcher's. The oldest is read once and gone at once; past QUEUE_MAX waiting, the
+-- newest go. -> its text, or nil.
 function invite.take_pending()
-  local p = invite.pending_path()
-  if not reaper.file_exists(p) then return nil end
+  local dir, q = band.home() .. "/link", {}
+  if reaper.file_exists(invite.pending_path()) then q[1] = "pending.txt" end
+  local queued = {}
+  for _, f in ipairs(band.files(dir, ".txt")) do if f:match("^pending%-%d+%-%d+%.txt$") then queued[#queued + 1] = f end end
+  -- shortcut: ordered by name (the second it was clicked, then a random number): two clicks in one second may swap
+  table.sort(queued, function(a, z) local ta, tz = tonumber(a:match("^pending%-(%d+)")), tonumber(z:match("^pending%-(%d+)")); if ta ~= tz then return ta < tz end return a < z end)
+  for _, f in ipairs(queued) do if #q < invite.QUEUE_MAX then q[#q + 1] = f else os.remove(dir .. "/" .. f) end end
+  if #q == 0 then return nil end
+  local p = dir .. "/" .. q[1]
   local n = band.size(p)
   local s = n and n <= invite.LINK_MAX * 4 and band.read(p) or ""
   os.remove(p)
@@ -258,6 +268,15 @@ function invite.handle_link(text, now)
     return true, said
   end
   if root then invite.say("You're already in " .. band.info(root).name .. "."); return false, "already in it" end
+  -- (a code link only works on the inviter's Tailscale network: off it (no Tailscale, or another network), say so now, before the Yes box,
+  -- not after two minutes of asking. rt-p10)
+  local mine = tostring(require("services").my_tailscale_name() or ""):gsub("%.$", ""):lower()
+  local function net(h) return h:match("^[^.]+%.(.+)$") end
+  if not net(mine) or net(mine) ~= net(t.host) then
+    invite.say("This link only works on " .. t.host .. "'s Tailscale network, and this computer isn't on it. Ask them for the invitation message " ..
+      "(Invite a collaborator) and paste it with Paste join code: when their studio has a Tailscale key set up, it brings this computer onto their network too.")
+    return false, "not on their Tailscale network"
+  end
   if not invite.confirm("Join the studio '" .. t.name .. "'?\n\nThis link asks " .. t.host .. " to let this computer in. Only say Yes to a link from " ..
       "someone you know: it connects your computer to theirs and their files come here.") then
     return false, "not accepted"
@@ -348,6 +367,12 @@ function invite.redeem(t, now)
       "and paste it with Paste join code.")
     return false, "no direct link here"
   end
+  -- (the invitation comes back over the link, which Windows lets in only with the firewall rule: without it, say so rather than ask. rt-p10)
+  if band.WIN and not require("direct").firewall_ok() then
+    invite.say("This computer can't hear " .. t.host .. "'s answer yet: Windows' firewall rule for StudioSync's direct link isn't on. Press the firewall " ..
+      "button on Health's direct-link row (one Windows prompt), then open the link again. Or ask them for the invitation message and paste it with Paste join code.")
+    return false, "no firewall rule here"
+  end
   local h = band.code_hash(t.code)
   local all = redeems()
   all[h] = { code = t.code, studio = t.studio, name = t.name, host = t.host, ends = now + invite.REDEEM_FOR }
@@ -384,7 +409,8 @@ function invite.tick(now)
   local t = reaper.time_precise()
   if t - tick_at < 1 and t >= tick_at then return end
   tick_at, now = t, now or os.time()
-  local s = invite.take_pending()
+  -- (one link each LINK_EVERY s: taken sooner, handle_link would refuse it as "a moment ago" and it was lost. rt-p10)
+  local s = t - link_at >= invite.LINK_EVERY and invite.take_pending()
   if s then band.try("invite.handle_link", invite.handle_link, s, now) end
   local all, changed = redeems(), false
   for h, p in pairs(all) do
