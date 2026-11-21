@@ -197,6 +197,43 @@ room("driver")
 assert(select(2, note("Chilio", { op = "vel", item = KEYS, n = 0, s = 1920, k = 67, v = 50 })).why:find("only the driver"), "Driver only")
 assert(select(2, note("James", { op = "vel", item = KEYS, n = 0, s = 1920, k = 67, v = 50 })).ok, "the driver may")
 
+-- rt-p5: step input. A run of notes goes in with no undo point of its own; one "step input" point when the run ends (STEP_GAP after the last
+-- note, or at once for any other edit), so one Ctrl+Z takes the run back
+reaper.Undo_OnStateChangeEx2 = function(_, label) undo[#undo + 1] = { open = false, label = label } end
+local valid_ptr = reaper.ValidatePtr2
+reaper.ValidatePtr2 = function(pr, p, cls) if cls == "MediaItem_Take*" then return true end return valid_ptr(pr, p, cls) end
+song(); room("open")
+local n0 = #keys()
+for i = 1, 3 do
+  r = select(2, note("James", { id = "s" .. i, op = "add", item = KEYS, k = 60 + i, a = 5 + i * 0.5, z = 5.5 + i * 0.5, v = 100, g = 0, step = true }))
+  assert(r.ok, "a step note goes in: " .. tostring(r.why))
+  clock = clock + 0.3
+end
+assert(#keys() == n0 + 3 and #undo == 0, "three step notes: in, and no undo point of their own yet")
+dawmidi.step_flush("P", clock) -- (the tick does this)
+assert(#undo == 0, "not yet: STEP_GAP hasn't passed since the last note")
+clock = clock + dawmidi.STEP_GAP
+dawmidi.tick("P", as("James"), b, function() end, clock)
+assert(#undo == 1 and undo[1].label == "StudioSync web page: step input (3 notes)", "the run's one undo point, made by the tick: " .. tostring(undo[1] and undo[1].label))
+dawmidi.tick("P", as("James"), b, function() end, clock + 5)
+assert(#undo == 1, "once")
+-- any other edit ends a run first, then has its own point
+song(); room("open")
+note("James", { op = "add", item = KEYS, k = 70, a = 5, z = 5.5, v = 100, g = 0, step = true })
+note("James", { op = "add", item = KEYS, k = 71, a = 5.5, z = 6, v = 100, g = 0, step = true })
+r = select(2, note("James", { op = "vel", item = KEYS, n = 0, s = 0, k = 60, v = 40 }))
+assert(r.ok and #undo == 2 and undo[1].label == "StudioSync web page: step input (2 notes)" and undo[2].label:find("note velocity"), "another edit: the run's point, then its own")
+-- an add that isn't step input keeps its own point, as before
+song(); room("open")
+note("James", { op = "add", item = KEYS, k = 72, a = 5, z = 5.5, v = 100, g = 0 })
+assert(#undo == 1 and undo[1].label == "StudioSync web page: add note", "a plain add: its own point")
+-- a refused step note is refused as any (nothing in, no run begun)
+song(); room("open", { Chilio = { tracks = { "Bass" } } })
+r = select(2, note("James", { op = "add", item = { lane = 1, idx = 0, p = 0, l = 4 }, k = 40, a = 1, z = 2, step = true }))
+assert(r.why:find("Chilio has claimed Bass") and #fake.tracks[3].items[1].takes[1].notes == 1, "a claimed track's step note: refused, nothing changed")
+dawmidi.step_flush("P", clock + 100, true)
+assert(#undo == 0, "and no run to end")
+
 -- ---- envelope point edits -----------------------------------------------------------------------------------------------------------------
 song(); room("open", { Chilio = { tracks = { "Bass" } } })
 local vol, pan, mute, eq = table.unpack(fake.tracks[1].envs)

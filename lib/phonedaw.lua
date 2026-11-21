@@ -77,10 +77,11 @@ local function in_undo(proj, label, fn)
   if not ok then return tostring(err) end
 end
 local function track_name(tr) return select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)) end
--- -> nil when done, or why not.
+-- -> nil when done, or why not; and, when done, whom the pick asks for what they claimed.
 local function apply(proj, cfg, b, d)
-  local sync, mirror, dawedit = require("sync"), require("mirror"), require("dawedit")
-  local can, who = sync.authority(cfg, b.song, b.room, band.read_json(band.session_path(cfg, b.song)))
+  local mirror, dawedit = require("mirror"), require("dawedit")
+  local can, who = dawedit.authority(cfg, b)
+  dawedit.asking, dawedit.asking_at = nil, nil
   local t = d.take
   local tr = shown_tracks(proj)[t.lane + 1]
   local it = tr and require("dawview").items_of(tr)[t.idx + 1]
@@ -89,9 +90,13 @@ local function apply(proj, cfg, b, d)
   local tk = t.k < reaper.CountTakes(it) and reaper.GetTake(it, t.k)
   if not tk then return "that take isn't there any more" end
   local ioid = mirror.item_oid(it) -- (a bandmate editing it too isn't a refusal: both changes merge. rt-merge)
-  local why = dawedit.item_refusal(can, who, cfg.user, track_name(tr), mirror.track_oid(tr), ioid ~= "" and ioid or nil, t.p)
+  -- (a claim someone else gave up on asking isn't a refusal: made here, then mirror.watch asks them. lib/claimask.lua, rt-claims; backlog 1.5)
+  local why = dawedit.item_why(cfg, b, can, who, it, tr, t.p)
   if why then return why end
-  return in_undo(proj, "pick take", function() reaper.SetActiveTake(tk) end)
+  local err = in_undo(proj, "pick take", function() reaper.SetActiveTake(tk) end)
+  local q = dawedit.asking_at
+  -- (only when mirror.watch will ask: web_ask says who, or nil when the pick merges with an auto-claimer's change and goes out)
+  return err, not err and dawedit.asking and q and require("claimask").web_ask(proj, cfg, b, q.who, q.it, dawedit.asking, q.name, q.pos) or nil
 end
 
 -- ---- Live sync's tick (through lib/webui.lua) -------------------------------------------------------------------------------------------
@@ -102,15 +107,16 @@ function phonedaw.reset() S = { want_until = -math.huge } end -- (tests)
 function phonedaw.action(proj, cfg, b, a)
   if a.keys ~= nil then return require("livekeys").action(proj, cfg, b, a.keys) end -- (the Play view's notes, live on a track: lib/livekeys.lua)
   local d, why, id = phonedaw.parse(a)
+  local ask
   if d then
     if d.want then S.want_until = reaper.time_precise() + phonedaw.WANT_FOR end
     if not d.take then return end
     id = d.id
-    why = apply(proj, cfg, b, d)
+    why, ask = apply(proj, cfg, b, d)
   end
-  S.reply, S.looked = { id = id, ok = not why or nil, why = why }, nil -- (looked again at once: the phone sees its change)
+  S.reply, S.looked = { id = id, ok = not why or nil, why = why, ask = ask }, nil -- (looked again at once: the phone sees its change)
   if why then return "the phone's take pick wasn't made: " .. why end
-  return "the phone picked take " .. (d.take.k + 1) .. " of an item"
+  return "the phone picked take " .. (d.take.k + 1) .. " of an item" .. (ask and ", held here while " .. ask .. " is asked for it" or "")
 end
 
 -- Each tick in front, while a phone looks. publish(topic, table) is lib/webui.lua's (sends only what changed).

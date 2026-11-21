@@ -62,6 +62,7 @@ function dawmidi.parse_note(e)
     out.k, out.a, out.z, out.v, out.ch = pitch(e.k), num(e.a), num(e.z), pitch(e.v) or 100, int(e.ch) or 0
     if not (out.k and out.a and out.z and out.z > out.a) then return nil, "a note needs a pitch, a start and an end after it", id end
     out.v, out.ch = math.max(1, out.v), math.min(out.ch, 15)
+    out.step = e.step == true or nil -- (a note of the piano roll's step input: a run of them is one undo point. rt-p5)
     return out
   end
   out.n, out.s, out.k = int(e.n), num(e.s), pitch(e.k)
@@ -193,6 +194,7 @@ function dawmidi.envelopes(tr)
 end
 
 -- ---- applying edits ---------------------------------------------------------------------------------------------------------------------
+local S = { item_until = -math.huge, env_until = -math.huge } -- (what a page is looking at, and a step input run in progress)
 local function note_apply(proj, cfg, b, e)
   local dawedit = require("dawedit")
   local it, tr, pos = dawedit.find_item(proj, e.item)
@@ -214,7 +216,17 @@ local function note_apply(proj, cfg, b, e)
   if e.op == "add" then
     local s = math.max(0, tick(e.a))
     local z = math.max(tick(e.z), s + 1)
-    return dawedit.in_undo(proj, NOTE_OPS[e.op], function() reaper.MIDI_InsertNote(take, false, false, s, z, e.ch, e.k, e.v, false) end)
+    local function insert() reaper.MIDI_InsertNote(take, false, false, s, z, e.ch, e.k, e.v, false) end
+    if not e.step then return dawedit.in_undo(proj, NOTE_OPS[e.op], insert) end
+    -- Step input (rt-p5): each note of a run goes in with no undo point of its own, and one "step input" point is made when the run ends
+    -- (dawmidi.step_flush: STEP_GAP s after the last note, or at once for any other edit), so Ctrl+Z takes the whole run back.
+    -- shortcut: if nothing flushes (the page left and Live sync stopped), REAPER's next undo point of any kind takes the notes in.
+    if S.step and S.step.take ~= take then dawmidi.step_flush(proj, reaper.time_precise(), true) end
+    local ok, err = pcall(insert)
+    reaper.UpdateArrange()
+    if not ok then return tostring(err) end
+    S.step = { proj = proj, take = take, at = reaper.time_precise(), n = (S.step and S.step.n or 0) + 1 }
+    return nil
   end
   local ok, _, _, s, z, _, k = reaper.MIDI_GetNote(take, e.n)
   if not (ok and math.abs(s - e.s) < 0.5 and k == e.k) then return "that note changed meanwhile" end
@@ -253,7 +265,16 @@ local function auto_apply(proj, cfg, b, e)
 end
 
 -- ---- through lib/dawview.lua --------------------------------------------------------------------------------------------------------------
-local S = { item_until = -math.huge, env_until = -math.huge }
+dawmidi.STEP_GAP = 1.5 -- seconds after a step input run's last note that its one undo point is made
+-- The run of step input notes ends: its one undo point, if it's over (STEP_GAP s since the last note, or force). Sync sees the change from here.
+function dawmidi.step_flush(proj, now, force)
+  local st = S.step
+  if not st or (not force and now - st.at < dawmidi.STEP_GAP) then return end
+  S.step = nil
+  if reaper.ValidatePtr2(st.proj or proj, st.take, "MediaItem_Take*") then
+    reaper.Undo_OnStateChangeEx2(st.proj or proj, "StudioSync web page: step input (" .. st.n .. (st.n == 1 and " note)" or " notes)"), -1, -1)
+  end
+end
 -- Everything goes again (the tab in front changed).
 function dawmidi.reset() S.built, S.cc, S.sig = nil, nil, nil end
 -- An action a page sent ({ look }, { note }, { auto }). -> words for the log, or nil.
@@ -273,6 +294,7 @@ function dawmidi.action(proj, cfg, b, a)
   local dawedit = require("dawedit")
   local parse, apply, ops = dawmidi.parse_note, note_apply, NOTE_OPS
   if a.note == nil then parse, apply, ops = dawmidi.parse_auto, auto_apply, AUTO_OPS end
+  if not (type(a.note) == "table" and a.note.step == true and a.note.op == "add") then dawmidi.step_flush(proj, now, true) end -- (any other edit ends a step run first)
   local e, why, id = parse(a.note or a.auto)
   if e then id = e.id; why = apply(proj, cfg, b, e) end
   dawedit.reply = { id = id, ok = not why or nil, why = why }
@@ -282,6 +304,7 @@ function dawmidi.action(proj, cfg, b, a)
 end
 -- Each tick dawview.tick runs (a page shows the Project page). publish: lib/webui.lua's (sends only what changed).
 function dawmidi.tick(proj, cfg, b, publish, now)
+  dawmidi.step_flush(proj, now)
   local item_on, env_on = now < S.item_until, now < S.env_until
   if not (item_on or env_on) then return end
   local cc = reaper.GetProjectStateChangeCount(proj)

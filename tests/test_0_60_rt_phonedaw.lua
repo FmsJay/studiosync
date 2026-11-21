@@ -130,6 +130,15 @@ room("open", { Chilio = { tracks = { "Vox" } } })
 local said, r = pick("James", 1)
 assert(r and r.id == "q1" and r.why and r.why:find("Chilio has claimed Vox") and vox.active == vox.takes[1] and #undo == 0, "someone else's claimed track: refused, nothing changed: " .. tostring(r and r.why))
 assert(said:find("wasn't made"), "and the log says so")
+-- a claimer who is here is asked instead (lib/claimask.lua askable, as lib/dawedit.lua does): made, the answer says whom (backlog 1.5, rt-p5)
+local here = { "Chilio" }
+presence.here = function() return here end
+said, r = pick("James", 1)
+assert(r.ok and r.ask == "Chilio" and vox.active == vox.takes[2] and #undo == 1 and said:find("asked for it"), "a present claimer is asked, not refused: " .. tostring(r.why))
+vox.active = vox.takes[1]; undo = {}
+presence.here = function() return {} end
+said, r = pick("James", 1)
+assert(r.why and not r.ask and vox.active == vox.takes[1], "a claimer who isn't here: refused as before")
 said, r = pick("Chilio", 1)
 assert(r.ok and vox.active == vox.takes[2] and #undo == 1 and not undo[1].open and undo[1].label == "StudioSync phone: pick take", "its claimant picks take 2, in one undo point")
 assert(pub.phonedaw.takes["1:0"].a == 1, "and the phone sees it at once")

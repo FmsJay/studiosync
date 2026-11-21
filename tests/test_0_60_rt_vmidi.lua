@@ -42,7 +42,12 @@ local lk = require("livekeys")
 local d = lk.parse({ track = "{A-1}", sid = "p1", ev = { { 0x90, 60, 100, 1 }, { 0x80, 60, 0, 2 }, { 0xC0, 5, 0, 3 }, { 0x90, 200, 1, 4 },
   { 0xF0, 1, 1, 5 }, { 0x90, 61, 1, -1 }, { 0x90, 62, 1.5, 6 }, "x", { 0xB0, 64, 127, 7 } } })
 assert(d and d.on and d.track == "{A-1}" and d.sid == "p1", "a keys message")
-assert(#d.ev == 3 and d.ev[1][2] == 60 and d.ev[2][1] == 0x80 and d.ev[3][1] == 0xB0, "only notes, controllers, bends and pressures with plain bytes and a sequence")
+assert(#d.ev == 4 and d.ev[1][2] == 60 and d.ev[2][1] == 0x80 and d.ev[3][1] == 0xC0 and d.ev[3][2] == 5 and d.ev[4][1] == 0xB0,
+  "notes, program changes, controllers, bends and pressures with plain bytes and a sequence (nothing else: rt-p5 lets program changes through)")
+assert(#lk.parse({ track = "{A}", sid = "p", ev = { { 0xC3, 9, nil, 4 } } }).ev == 1 and lk.parse({ track = "{A}", sid = "p", ev = { { 0xC3, 9, nil, 4 } } }).ev[1][3] == 0,
+  "a program change has one data byte: the page may leave the second out")
+assert(#lk.parse({ track = "{A}", sid = "p", ev = { { 0xC0, 200, 0, 1 }, { 0xF0, 1, 1, 2 }, { 0xF8, 0, 0, 3 } } }).ev == 0, "a program number past 127, system messages: dropped")
+assert(lk.parse({ track = "{A}", sid = "p", pads = true }).pads and not lk.parse({ track = "{A}", sid = "p", pads = "yes" }).pads, "the page says whether it plays pads")
 assert(lk.parse({ on = false }).on == false, "an off needs no track")
 assert(lk.parse({ track = "x", sid = "p" }) == nil, "a track is a GUID")
 assert(lk.parse({ track = "{A}", sid = "<b>" }) == nil, "a page id is plain")
@@ -56,6 +61,14 @@ local rel = lk.release(held)
 assert(#rel == 6 and rel[1][1] == 0x80 and rel[1][2] == 60 and rel[2][1] == 0x89 and rel[2][2] == 36, "each held note's off (a note-on at 0 is an off)")
 assert(rel[3][1] == 0xB0 and rel[3][2] == 64 and rel[4][2] == 123 and rel[5][1] == 0xB9, "then sustain up and all notes off on each channel used")
 assert(lk.takes_vkb(lk.INPUT) and lk.takes_vkb(4096 + (63 << 5)) and not lk.takes_vkb(4096 + (3 << 5)) and not lk.takes_vkb(2), "the virtual keyboard, or all MIDI inputs")
+assert(lk.input(0) == lk.INPUT and lk.input(3) == lk.INPUT + 3, "the virtual keyboard on one channel")
+assert(lk.takes_vkb(lk.input(3), 3) and not lk.takes_vkb(lk.input(3), 4) and lk.takes_vkb(lk.INPUT, 4) and lk.takes_vkb(4096 + (63 << 5) + 4, 4) and not lk.takes_vkb(4096 + (63 << 5) + 4, 5),
+  "a track on another page's channel doesn't hear this one")
+assert(lk.pick_channel({}, false) == 1 and lk.pick_channel({ [1] = true }, false) == 2 and lk.pick_channel({}, true) == 10 and lk.pick_channel({ [10] = true }, true) == 1, "channels: first free; pads want 10")
+assert(lk.pick_channel({ [1] = true, [2] = true, [3] = true, [4] = true, [5] = true, [6] = true, [7] = true, [8] = true, [9] = true }, false) == 11, "keys keep off 10 while others are free")
+local all16 = {}
+for c = 1, 16 do all16[c] = true end
+assert(lk.pick_channel(all16, false) == nil, "all 16 taken: none")
 
 -- ---- a stand-in REAPER -----------------------------------------------------------------------------------------------------------------
 local tracks, sent = {}, {}
@@ -83,11 +96,12 @@ room = function(...) room0(...); clock = clock + lk.AUTH_EVERY end -- (who may i
 room("open")
 local said = play("James", { track = "{AA}", sid = "p1", ev = { { 0x90, 60, 100, 1 }, { 0x90, 64, 90, 2 } } })
 assert(said and said:find("playing Keys live"), "through phonedaw's action, said once: " .. tostring(said))
-assert(keys.I_RECARM == 1 and keys.I_RECMON == 1 and keys.I_RECINPUT == lk.INPUT, "the track armed, monitored, on the virtual keyboard")
+assert(keys.I_RECARM == 1 and keys.I_RECMON == 1 and keys.I_RECINPUT == lk.input(1), "the track armed, monitored, on the virtual keyboard, on the page's own channel")
 assert(#sent == 2 and sent[1][1] == 0x90 and sent[1][2] == 60 and sent[2][2] == 64, "the notes went into REAPER's queue in order")
 tick()
-assert(pub.phonekeys.seq == 2 and pub.phonekeys.sid == "p1" and pub.phonekeys.track == "{AA}" and not pub.phonekeys.why, "the topic says the last one applied: the page's round trip")
-assert(pub.phonekeys.also and pub.phonekeys.also[1] == "Synth", "and which other armed tracks hear the virtual keyboard too")
+local pk = pub.phonekeys.pages.p1
+assert(pk.seq == 2 and pk.sid == "p1" and pk.track == "{AA}" and pk.ch == 1 and not pk.why, "the topic says the last one applied: the page's round trip")
+assert(pk.also and pk.also[1] == "Synth", "and which other armed tracks hear the virtual keyboard too")
 -- overtaking: the off (4) came before its on (3)
 sent = {}
 play("James", { track = "{AA}", sid = "p1", ev = { { 0x80, 67, 0, 4 } } })
@@ -104,7 +118,7 @@ tick()
 assert(#sent == 0, "let go once")
 clock = clock + lk.IDLE
 tick()
-assert(keys.I_RECARM == 0 and keys.I_RECMON == 0 and keys.I_RECINPUT == 1024 and pub.phonekeys.track == nil, "quiet for IDLE: put back as it was")
+assert(keys.I_RECARM == 0 and keys.I_RECMON == 0 and keys.I_RECINPUT == 1024 and pub.phonekeys.pages.p1.track == nil, "quiet for IDLE: put back as it was")
 -- a word from the page: off
 play("James", { track = "{AA}", sid = "p2", ev = { { 0x90, 50, 100, 1 } } })
 sent = {}
@@ -122,7 +136,7 @@ room("open", { Chilio = { tracks = { "Synth" } } })
 local why = play("James", { track = "{BB}", sid = "p3", ev = { { 0x90, 60, 100, 1 } } })
 assert(why and why:find("Chilio has claimed Synth"), "someone else's claimed track: refused: " .. tostring(why))
 tick()
-assert(pub.phonekeys.why:find("Chilio") and pub.phonekeys.sid == "p3", "and the page hears why")
+assert(pub.phonekeys.pages.p3.why:find("Chilio") and pub.phonekeys.pages.p3.sid == "p3", "and the page hears why")
 play("Chilio", { track = "{BB}", sid = "p3", ev = { { 0x90, 60, 100, 1 } } })
 play("Chilio", { on = false, sid = "p3" })
 assert(synth.I_RECARM == 1 and synth.I_RECMON == 1 and synth.I_RECINPUT == 4096 + (63 << 5), "its claimant may; an armed track is left armed, its input as it was")
@@ -134,7 +148,7 @@ room("open", { Chilio = { tracks = { "Keys" } } })
 sent = {}
 clock = clock + lk.AUTH_EVERY + 0.1
 tick()
-assert(sent[1] and sent[1][1] == 0x80 and keys.I_RECARM == 0 and pub.phonekeys.why:find("Chilio"), "claimed meanwhile: notes off, put back, said")
+assert(sent[1] and sent[1][1] == 0x80 and keys.I_RECARM == 0 and pub.phonekeys.pages.p5.why:find("Chilio"), "claimed meanwhile: notes off, put back, said")
 room("open")
 -- another track taken over: the first let go and put back; Driver only
 play("James", { track = "{AA}", sid = "p6", ev = { { 0x90, 60, 100, 1 } } })
@@ -154,10 +168,58 @@ assert(sent[1][2] == 62 and synth.I_RECARM == 0 and synth.I_RECINPUT == 0, "at e
 play("James", { track = "{AA}", sid = "p8", ev = {} })
 tracks = { synth, mine }
 tick()
-assert(pub.phonekeys.track == nil and pub.phonekeys.why:find("deleted"), "a deleted track: let go, said")
+assert(pub.phonekeys.pages.p8.track == nil and pub.phonekeys.pages.p8.why:find("deleted"), "a deleted track: let go, said")
 room("driver")
 tracks = { keys, synth, mine }
 assert(play("Chilio", { track = "{AA}", sid = "p9" }):find("only the driver"), "Driver only")
+
+-- ---- rt-p5: a channel for each page: two phones play two tracks; program changes; one page takes a track another holds -------------------------------
+lk.reset()
+local bass = { name = "Bass", guid = "{DD}", oid = "T-JAMES-4", I_RECINPUT = 1024, I_RECMON = 0, I_RECARM = 0 }
+local lead = { name = "Lead", guid = "{EE}", oid = "T-JAMES-5", I_RECINPUT = 1024, I_RECMON = 0, I_RECARM = 0 }
+keys.I_RECINPUT, keys.I_RECMON, keys.I_RECARM = 1024, 0, 0
+synth.I_RECINPUT, synth.I_RECMON, synth.I_RECARM = 4096 + (63 << 5), 1, 1
+tracks = { keys, synth, mine, bass, lead }
+room("open")
+sent = {}
+play("James", { track = "{AA}", sid = "pa", ev = { { 0x90, 60, 100, 1 } } })
+play("James", { track = "{DD}", sid = "pb", ev = { { 0x90, 40, 100, 1 }, { 0xC0, 33, nil, 2 } } })
+assert(keys.I_RECINPUT == lk.input(1) and bass.I_RECINPUT == lk.input(2), "two pages, two tracks: each on a channel of its own")
+assert(keys.I_RECARM == 1 and bass.I_RECARM == 1, "both armed at once (the old rule let the second take over)")
+assert(sent[1][1] == 0x90 and sent[2][1] == 0x91 and sent[2][2] == 40, "each page's notes go in on its own channel")
+assert(sent[3][1] == 0xC1 and sent[3][2] == 33 and sent[3][3] == 0, "a program change goes through, on its page's channel")
+tick()
+local pg = pub.phonekeys.pages
+assert(pg.pa.ch == 1 and pg.pb.ch == 2 and pg.pa.track == "{AA}" and pg.pb.track == "{DD}", "the topic tells each page its own")
+assert(pg.pb.also and #pg.pb.also == 1 and pg.pb.also[1] == "Synth" and pg.pa.also and #pg.pa.also == 1, "a track on another page's channel isn't said to hear it: only the all-input one")
+-- a pad page wants channel 10, and sends whatever channel; it comes out on 10
+sent = {}
+play("James", { track = "{EE}", sid = "pc", pads = true, ev = { { 0x99, 36, 110, 1 } } })
+assert(lead.I_RECINPUT == lk.input(10) and sent[1][1] == 0x99 and sent[1][2] == 36, "pads: channel 10")
+-- a held note on one page isn't let go by another's panic or stop
+play("James", { track = "{DD}", sid = "pb", ev = { { 0x90, 41, 100, 3 } } })
+sent = {}
+play("James", { on = false, sid = "pa" })
+assert(keys.I_RECARM == 0 and keys.I_RECINPUT == 1024 and bass.I_RECARM == 1 and lead.I_RECARM == 1, "one page stops: only its own track is put back")
+for _, e in ipairs(sent) do assert((e[1] & 15) == 0, "and only its own channel is let go") end
+-- a second page asking for a track another holds takes it; the first is told
+sent = {}
+play("James", { track = "{DD}", sid = "pd", ev = { { 0x90, 50, 100, 1 } } })
+tick()
+assert(pub.phonekeys.pages.pb.track == nil and pub.phonekeys.pages.pb.why:find("another page"), "the page that had it hears why")
+assert(bass.I_RECINPUT == lk.input(1) and pub.phonekeys.pages.pd.ch == 1 and sent[#sent][1] == 0x90 and sent[#sent][2] == 50, "and the new page plays it, on the channel that came free")
+-- sixteen pages at most: the 17th is told no
+lk.reset()
+room("open")
+local many = { mine }
+for i = 1, 17 do many[#many + 1] = { name = "T" .. i, guid = "{F" .. i .. "}", oid = "T-JAMES-" .. (10 + i), I_RECINPUT = 1024, I_RECMON = 0, I_RECARM = 0 } end
+tracks = many
+for i = 1, 16 do play("James", { track = "{F" .. i .. "}", sid = "q" .. i, ev = { { 0x90, 60, 100, 1 } } }) end
+local seventeen = play("James", { track = "{F17}", sid = "q17", ev = {} })
+assert(seventeen and seventeen:find("16 pages"), "a 17th page: told no, nothing changed: " .. tostring(seventeen))
+assert(many[18].I_RECARM == 0 and many[17].I_RECARM == 1, "the 17th track wasn't armed")
+lk.on_exit()
+for _, t in ipairs(tracks) do if t ~= mine then assert(t.I_RECARM == 0 and t.I_RECINPUT == 1024, "at exit every page's track is put back: " .. t.name) end end
 
 -- ---- the pages' hooks (a link check, not a browser test: that ran in Chromium against a stand-in server) --------------------------------
 local function read(p) local f = assert(io.open(p, "rb")); local s = f:read("a"); f:close(); return s end
@@ -167,6 +229,7 @@ assert(html:find('src="vkeys.js"', 1, true) and html:find('href="vkeys.css"', 1,
 for _, f in ipairs({ "vkeys.js", "vkeys.css" }) do assert(sw:find("'" .. f .. "'", 1, true), "kept on the phone for offline: " .. f) end
 assert(rec:find("ssKeysBus", 1, true) and pd:find("ssKeysBus", 1, true), "the on-screen notes reach a MIDI take")
 assert(pd:find("keys:", 1, true) and pd:find("phonekeys", 1, true) and pd:find("panic", 1, true), "the Play view plays live, times it and lets go")
+assert(pd:find("pages[K.sid]", 1, true) and pd:find("pads:", 1, true) and pd:find("channel", 1, true), "and reads its own channel's entry of the topic, asking for the pads' channel when it plays pads")
 assert(vk:find("requestMIDIAccess", 1, true) and vk:find("pointerdown", 1, true) and vk:find("GM_PADS", 1, true), "Web MIDI, pointer events and the GM pads in vkeys.js")
 assert(read("lib/webui/vkeys.css"):find("touch-action: none", 1, true), "no scrolling or zooming while playing")
 assert(pr:find("vkeys.js", 1, true) and pr:find("Step", 1, true), "the piano roll's step input")
