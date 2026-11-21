@@ -799,6 +799,38 @@ name> joined: the studio's rules are back". Its trace shows `ids sent to ... (tr
    file is still played.
 7. Resume Syncthing on LinuxBox: the file goes there too and comes back nowhere.
 
+### Re-check results (rt-r0, 2026-11-21, 0.59.49.92 + extension 1.0.34)
+
+Need list and stream trace on for the run on all three, off again after. LinuxBox's REAPER quit by SIGTERM (no save), its Syncthing paused
+and resumed through its REST API (`/rest/system/pause`, `/resume`); the desktop's edits through its eval hook; the take recorded from a new
+track's own silent output (no input, no microphone). Times are LinuxBox's trace and log (UTC).
+
+- **A: pass.** Desktop moved two items, added a marker, recorded a 9.3 s take while LinuxBox was down and paused; LinuxBox's Live sync
+  started 22:26:04. Trace: `ids sent to james-main (try 1)` +2.9 s, `5 changes in main asked of james-main` +3.0 s (the desktop's trace:
+  `5 changes in main sent to linuxbox`), `media want .../5d98c11c-04-XT_R0_take-261121_1524.flac` +6.0 s, `media in` +6.1 s; the moves,
+  the marker and the take in LinuxBox's project. No "nobody else is here" on any computer. `direct peers ... Cross Test/main`: LinuxBox lists
+  both, the desktop and laptop list LinuxBox. Syncthing resumed 22:26:49; at 22:27:55 LinuxBox's link inbox was empty (5 files before),
+  Syncthing idle with nothing needed, nothing moved, no `sync-conflict` anywhere.
+- **B: not run as written; what ran instead fails.** Stopping Live sync on the desktop and laptop (their tab's owner token) doesn't hold:
+  Autostart starts it again within ~30 s ("starting Live sync again for ...": desktop 22:30:05, laptop 22:30:11). So when LinuxBox's Live sync
+  started (22:30:36, Syncthing paused, after a new take and two moves on the desktop), both others had been running for 25-30 s:
+  - 22:30:38 "16 changes from the others"; 22:30:44 "nobody else is here: you have full control" (wrong: both were running);
+  - 22:30:50 "James-Laptop joined"; the trace then catches up from the laptop (`4 changes asked of james-laptop`, the new take from the
+    laptop at 22:30:57);
+  - the desktop never: 22:31:01 "James is driving but isn't here", and still at 22:34:10 LinuxBox's peers and link clock had only the
+    laptop, and the desktop's link clock only the laptop. A fresh module load in each eval host says the device checks pass on both and
+    LinuxBox's `direct.strangers` includes `james-main`, so the hello should go; it isn't heard. After Syncthing resumed (22:34:58) the
+    desktop was on LinuxBox's link clock by 22:36:35.
+  - So: a desktop whose Live sync (re)started while LinuxBox was down, then LinuxBox back with Syncthing paused, don't find each other over
+    the link (the laptop bridges). In A the desktop's Live sync had been running throughout and it worked. To look at: whether the
+    desktop's fresh Live sync ever puts LinuxBox in its strangers (`sendable`'s 50 ms budget leaves a device unasked until a refresh reaches
+    it under budget; LinuxBox's devices file sorts last) and whether LinuxBox takes the desktop's hello.
+  - To run B as written, Autostart has to be kept from restarting Live sync (or REAPER quit) on the desktop and laptop.
+- **C: steps 5-7 only, pass.** The desktop deleted the take's track, then the two take files (Recycle Bin) with the need list on: gone on
+  the laptop and LinuxBox within 23 s, no `media want ...R0_take` in any trace after, and nothing came back.
+- Also seen: LinuxBox's Live sync logs "Syncthing didn't answer (is it running, with a folder called ...)" at every start (55 times today):
+  `services.tune_band_folder`'s `syncthing cli config folders ... get` fails from REAPER there, though the same command answers `1` over SSH.
+
 ### Shared files touched this round (small, additive)
 
 - `StudioSync - Live sync.lua`: one line in `P.who` (`alone` also needs `not presence.link_hold(cfg)`).
