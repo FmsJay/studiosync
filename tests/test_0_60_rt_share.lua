@@ -51,7 +51,7 @@ assert(webcall.page(cfg, b, { t = "duck", to = CHI, on = true }, 100) == false a
 webcall.link(cfg, b, { t = "here", user = "chilio", dev = CHI }, 100)
 calls = {}
 assert(webcall.page(cfg, b, { t = "duck", to = CHI, on = true }, 100) == false and #sent == 0, "duck: this computer only")
-assert(liveaudio.ducks.chilio == clock + webcall.DUCK_FOR, "chilio's Play ducked for DUCK_FOR s, by name")
+assert(liveaudio.ducks["chilio-pc.tail9.ts.net:47281"] == clock + webcall.DUCK_FOR and liveaudio.ducks.chilio == nil, "chilio's Play ducked for DUCK_FOR s, by their computer (rt-p11: not by name)")
 assert(#calls == 1 and calls[1][1] == "chilio-pc.tail9.ts.net:47281" and calls[1][2] == 0, "and live audio's Play level for chilio goes to 0 at once")
 clock = clock + webcall.DUCK_FOR + 1
 calls = {}
@@ -60,8 +60,8 @@ assert(#calls == 1 and calls[1][2] == 1, "a duck nobody renews runs out: Play ba
 clock = 1000
 webcall.page(cfg, b, { t = "duck", to = CHI, on = true }, 100)
 webcall.page(cfg, b, { t = "duck", to = CHI, on = false }, 100)
-assert(liveaudio.ducks.chilio == nil, "duck off: gone")
-assert(webcall.page(cfg, b, { t = "duck", to = "chilio", on = true }, 100) == false and liveaudio.ducks.chilio == nil, "only a device id")
+assert(liveaudio.ducks["chilio-pc.tail9.ts.net:47281"] == nil, "duck off: gone")
+assert(webcall.page(cfg, b, { t = "duck", to = "chilio", on = true }, 100) == false and liveaudio.ducks.chilio == nil and liveaudio.ducks["chilio-pc.tail9.ts.net:47281"] == nil, "only a device id")
 
 -- REAPER's arrange view
 local v = webcall.view_model(0)
