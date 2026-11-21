@@ -778,6 +778,7 @@ do
   local function has(c, name) for _, m in ipairs(c.F.markers) do if m.name == name then return true end end return false end
   local function reopen() return { F = E.open(A.F.path, saved), cfg = A.cfg } end
   local function no_timeline(sent, what) for _, ev in ipairs(sent) do assert(ev.type ~= "timeline", what) end end
+  local function said(text) for _, l in ipairs(logged) do if l:find(text, 1, true) then return true end end end
   -- (the studio's newest timeline is the desktop's own, in the file it keeps of the last one it sent: rooms/main/timeline/James.json)
   local sp = sync.timeline_path(A.cfg, song, room, A.cfg.user)
   assert(type(files[sp]) == "table" and type(files[sp].order) == "string" and sync.studio_timeline(A.cfg, song, room).timeline_order == files[sp].order,
@@ -792,12 +793,26 @@ do
   assert(not has(D, "Bridge"), "the reopened file is from before the region")
   D.F.add_marker(false, 50, 50, "Mine") -- (and a marker added the moment it opened)
   tick()
+  logged = {}
   local _, sent = look(D, true)
   assert(has(D, "Bridge"), "an older file reopened after an update takes the studio's timeline at its first look")
-  no_timeline(sent, "and sends none of its own while behind")
+  -- (the marker added as it opened is kept on top of the studio's, and goes out with the studio's region in it: never the stale file's list.
+  -- It was dropped and the log didn't say. Backlog 1)
+  assert(has(D, "Mine"), "a marker added as the project opened is kept when the studio's newer timeline replaces the file's")
+  assert(said("the studio's newer tempo map and markers landed before your own change had gone out. Kept on top of theirs: 1 marker(s) or region(s) you added"),
+    "and the log says so")
+  local went = {}
+  for _, ev in ipairs(sent) do if ev.type == "timeline" then went[#went + 1] = ev end end
+  assert(#went == 1, "it goes out once (" .. #went .. ")")
+  local in_it = {}
+  for _, m in ipairs(went[1].markers) do in_it[m.name] = true end
+  assert(in_it.Bridge and in_it.Mine and in_it.Verse, "with the studio's region and yours")
   tick()
   recv(D)
-  same(D, B, "reopen 1: as the studio")
+  tick()
+  recv(B)
+  assert(has(B, "Mine") and has(B, "Bridge"), "the laptop gets it and keeps the region")
+  same(D, B, "reopen 1: as the studio, with the marker")
   -- 2. as the desktop's autosave was: the newest map's stamp, its event marked done, none of its markers
   local D2 = reopen()
   as(D2)
@@ -823,21 +838,26 @@ do
   sync.loading[tostring(D3.F.proj)] = true
   tick()
   look(D3, true)
-  D3.F.add_marker(false, 50, 50, "Mine")
+  D3.F.add_marker(false, 60, 60, "Mine too")
   tick()
   _, sent = look(D3, true)
   no_timeline(sent, "a stale file's markers don't go out with your edit before it has caught up")
   D3.F.clock = D3.F.clock + 1
+  logged = {}
   sync.receive(D3.F.proj, D3.cfg, song, room, yes)
   sync.loading[tostring(D3.F.proj)] = nil
   files[sp] = keep
   assert(has(D3, "Bridge"), "caught up: the studio's region is here")
+  -- (the newer timeline landed whole and the marker went with it, unsaid. Backlog 1)
+  assert(has(D3, "Mine too"), "and the marker added in those first seconds is still here")
+  assert(said("newer tempo map and markers landed before your own change had gone out. Kept on top of theirs: 1 marker(s) or region(s) you added"),
+    "the log says it was kept")
   tick()
   _, sent = look(D3, true)
   tick()
   recv(B)
-  assert(has(B, "Bridge"), "and the laptop still has it")
-  same(D3, B, "reopen 3: as the studio")
+  assert(has(B, "Bridge") and has(B, "Mine too"), "the laptop still has the region, and gets the marker")
+  same(D3, B, "reopen 3: as the studio, with the marker")
   print("rt-edits: a project reopened behind the studio's timeline takes it before anything of its own goes out")
 end
 
@@ -1097,6 +1117,359 @@ do
   sync.receive(A.F.proj, A.cfg, song, room, yes)
   assert(said("Bee: record together at 3") and reaper.GetExtState(band.SECTION, key) ~= "", "a start made just now is taken as ever")
 end
+-- ---- track order (backlog 1, rt-undo's limits): Undo and Restore moved a track under the track its older version names; nothing put the
+-- order right during a session; heal could make a merge of two old changes long after every computer had settled on the newer ----
+do
+  build("Edits order")
+  local C = computer("Cee", "C:/C/Edits order.rpp")
+  seed_markers(C.F)
+  tick()
+  recv(C)
+  same(A, C, "order: a third computer has the song")
+  local rdir = sync.room_dir(A.cfg, song, room)
+  local function track(c, name)
+    as(c)
+    for i = 0, reaper.CountTracks(c.F.proj) - 1 do
+      local tr = reaper.GetTrack(c.F.proj, i)
+      if select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)) == name then return tr end
+    end
+  end
+  local function names(c) local t = {}; for _, x in ipairs(c.F.tracks) do t[#t + 1] = x.name end return table.concat(t, " ") end
+  local function to_all(what)
+    settle(A, true)
+    tick()
+    recv(B)
+    tick()
+    recv(C)
+    assert(names(B) == names(A) and names(C) == names(A), what .. ": the same order everywhere (" .. names(A) .. " / " .. names(B) .. " / " .. names(C) .. ")")
+    same(A, B, what)
+  end
+  local function heal(c, idle) as(c); return mirror.order_heal(c.F.proj, c.cfg, song, room, c.F.clock, idle or 60) end
+  for _, c in ipairs({ A, B, C }) do assert(heal(c) == 0, "(the order is right as each opens)") end
+
+  -- 1. Undo of a mute leaves the track where it sits: a track added above it since isn't in its older version's "sits under"
+  as(A)
+  A.F.add_track("New", 3)
+  tick()
+  to_all("a track added under Bass")
+  assert(names(A) == "Drums Bass New Keys Gtr Vox", "(New sits between Bass and Keys: " .. names(A) .. ")")
+  as(A)
+  reaper.SetMediaTrackInfo_Value(track(A, "Keys"), "B_MUTE", 1)
+  tick()
+  to_all("Keys muted")
+  tick()
+  as(A)
+  assert(press(false), "the mute is undone")
+  assert(reaper.GetMediaTrackInfo_Value(track(A, "Keys"), "B_MUTE") == 0, "(Keys plays again)")
+  assert(names(A) == "Drums Bass New Keys Gtr Vox", "Undo of a mute leaves the track where it sits (" .. names(A) .. ")")
+  tick()
+  to_all("the mute undone")
+  -- a move of yours says where the track sat, so Undo puts it back there and Redo moves it again
+  tick()
+  as(A)
+  reaper.SetOnlyTrackSelected(track(A, "Keys"))
+  reaper.ReorderSelectedTracks(0, 0)
+  local went = look(A, true)
+  local keys_ev
+  for _, ev in pairs(went) do if ev.name == "Keys" and ev.obj == "track" then keys_ev = ev end end
+  assert(keys_ev and keys_ev.moved == mirror.track_oid(track(A, "New")), "a moved track's change names the track it sat under")
+  tick()
+  to_all("Keys moved to the top")
+  assert(names(A) == "Keys Drums Bass New Gtr Vox", "(Keys is first: " .. names(A) .. ")")
+  tick()
+  as(A)
+  assert(press(false), "the move is undone")
+  assert(names(A) == "Drums Bass New Keys Gtr Vox", "Undo of a move puts the track back where it sat, under New (" .. names(A) .. ")")
+  tick()
+  to_all("the move undone")
+  tick()
+  as(A)
+  assert(press(true), "and redone")
+  assert(names(A) == "Keys Drums Bass New Gtr Vox", "Redo moves it again (" .. names(A) .. ")")
+  tick()
+  to_all("the move redone")
+
+  -- 2. an order that came apart is put right during the session (REAPER check, 0.59.49.76): the desktop reopened an older file, and one
+  -- change of a track carried that file's place. LinuxBox moved the track; the laptop didn't (here: its tab was behind)
+  for _, c in ipairs({ A, B, C }) do heal(c) end
+  local studio = names(B)
+  as(A)
+  for i, t in ipairs(A.F.tracks) do if t.name == "Gtr" then table.insert(A.F.tracks, table.remove(A.F.tracks, i)); break end end -- (the older file's order: nobody moved it)
+  for _, t in ipairs(A.F.tracks) do t.sel = nil end
+  mirror.order_seen[tostring(A.F.proj)] = nil -- (as a file just opened: its order is the file's, nobody's move)
+  reaper.SetMediaTrackInfo_Value(track(A, "Gtr"), "B_MUTE", 1) -- (and a change of the track goes out, as the older StudioSync's colour did)
+  tick()
+  went = {}
+  settle(A, true, went)
+  A.F.clock = A.F.clock + 70
+  settle(A, true, went)
+  local n = 0
+  for _, ev in pairs(went) do n = n + 1; assert(ev.name == "Gtr" and ev.moved == nil, "(only Gtr's change goes, not as a move)") end
+  assert(n == 1, "(one change: " .. n .. ")")
+  local stale_file = A.F.save()
+  tick()
+  recv(C)
+  assert(names(C) == names(A) and names(C) ~= studio, "(a computer that's here takes the place the change carries: " .. names(C) .. ")")
+  local real_enum = B.F.reaper.EnumProjects
+  B.F.reaper.EnumProjects = function(i) if i == -1 then return {}, "" end return real_enum(i) end -- (the laptop's tab is behind)
+  recv(B)
+  B.F.reaper.EnumProjects = real_enum
+  assert(names(B) == studio, "(a tab that's behind keeps its order: " .. names(B) .. ")")
+  -- the others say their order every few seconds; Live sync notes who is apart, and for how long
+  local function apart(c, other)
+    as(other)
+    local code = mirror.order_code(other.F.proj)
+    as(c)
+    local root = mirror.root(c.F.proj)
+    mirror.apart_note(c.F.proj, root, mirror.order_code(c.F.proj), 0, { { user = other.cfg.user, mirror = root, order = code, pending = 0 } }, c.F.clock)
+  end
+  apart(C, B)
+  assert(heal(C) == 0 and names(C) ~= studio, "not at once: the codes differ for some seconds after any edit")
+  C.F.clock = C.F.clock + mirror.APART_SECS + 1
+  apart(C, B)
+  assert(heal(C) == 0, "nor within two minutes of a bandmate's move landing here: its mover's order list may still be on its way")
+  C.F.clock = C.F.clock + mirror.ORDER_WAIT
+  apart(C, B)
+  assert(heal(C, 3) == 0, "never 3 s after an edit of yours")
+  C.F.playing = 1
+  assert(heal(C) == 0, "never while playing or recording")
+  C.F.playing = 0
+  local real_enum_c = C.F.reaper.EnumProjects
+  C.F.reaper.EnumProjects = function(i) if i == -1 then return {}, "" end return real_enum_c(i) end
+  assert(heal(C) == 0, "never in a tab that's behind")
+  C.F.reaper.EnumProjects = real_enum_c
+  logged = {}
+  assert(heal(C) == 1 and names(C) == studio, "stopped, in front, idle and apart for 30 s: the track goes back onto the studio's order (" .. names(C) .. ")")
+  assert(logged[1] and logged[1]:find("1 track(s) put in the studio's order", 1, true), "and the log says so")
+  local _, sent = look(C, true)
+  assert(#sent == 0, "that isn't a move of this person's: nothing goes out (" .. #sent .. ")")
+  -- the desktop too, whose file it was
+  A.F.clock = A.F.clock + mirror.APART_SECS + 1
+  apart(A, B)
+  A.F.clock = A.F.clock + mirror.APART_SECS + 1
+  apart(A, B)
+  assert(heal(A) == 1 and names(A) == studio, "and on the computer whose file had the old order (" .. names(A) .. ")")
+  _, sent = look(A, true)
+  assert(#sent == 0, "nothing goes out there either (" .. #sent .. ")")
+  tick()
+  recv(B)
+  same(A, B, "order healed: the laptop")
+  same(A, C, "order healed: the third computer")
+  -- and a project opened from a file with another order is put right once it has caught up, without waiting for anyone to be apart
+  local D = { F = E.open(A.F.path, stale_file), cfg = A.cfg }
+  tick()
+  recv(D)
+  assert(names(D) ~= studio, "(the reopened file has its own order: " .. names(D) .. ")")
+  assert(heal(D) == 1 and names(D) == studio, "a project opened with another order is put right once it has caught up (" .. names(D) .. ")")
+
+  -- 3. heal doesn't make a merge of two old changes on a computer that holds the newer of them: before tracks merged, every computer took
+  -- the newer and counted the other done, and a heal a day later changed the track everywhere
+  tick()
+  as(A)
+  reaper.SetMediaTrackInfo_Value(track(A, "Vox"), "B_MUTE", 1)
+  as(B)
+  reaper.SetMediaTrackInfo_Value(track(B, "Vox"), "D_PAN", 0.5)
+  look(A, true)
+  tick()
+  look(B, true) -- (the newer of the two, made apart: the laptop holds it)
+  local vox = mirror.track_oid(track(B, "Vox"))
+  local newest, all = mirror.room_newest(rdir)
+  assert(newest[vox].user == "Bee" and mirror.settled(rdir, newest[vox], all[vox]).id ~= newest[vox].id, "(heal settles on a merge of the two)")
+  tick(mirror.MERGE_NEWS_SECS + 60)
+  as(B)
+  local held = select(3, mirror.known(B.F.proj, vox))
+  mirror.heal(B.F.proj, rdir, false)
+  assert(select(3, mirror.known(B.F.proj, vox)) == held and reaper.GetMediaTrackInfo_Value(track(B, "Vox"), "B_MUTE") == 0,
+    "a merge nobody made isn't made an hour later on a computer that holds the newer change")
+  -- a computer that holds neither is behind: it still gets what heal settles on
+  as(C)
+  mirror.heal(C.F.proj, rdir, false)
+  assert(select(3, mirror.known(C.F.proj, vox)) ~= held and reaper.GetMediaTrackInfo_Value(track(C, "Vox"), "D_PAN") == 0.5
+    and reaper.GetMediaTrackInfo_Value(track(C, "Vox"), "B_MUTE") == 1, "a computer that has neither change still catches up, on the merge")
+  print("rt-edits: Undo leaves a track where it sits unless a move is undone; a track order that came apart is put right mid-session; no late merges")
+end
+-- ---- a claimed track renamed by a computer whose StudioSync doesn't ask (one from before 0.59.49.74): only the sender judged a rename, and
+-- receivers took it by its new name, which nobody has claimed (backlog 1). Now every receiver judges it by the name the track has there:
+-- the others hold it, and the claimer's computer answers with the track as it is, so the old name comes back on the renamer's too ----
+do
+  build("Edits rename")
+  local C = computer("Cee", "C:/C/Edits rename.rpp")
+  seed_markers(C.F)
+  tick()
+  recv(C)
+  same(A, C, "rename: a third computer has the song")
+  local function said(text) for _, l in ipairs(logged) do if l:find(text, 1, true) then return true end end end
+  local function session() return proxy.read_json(proxy.session_path(A.cfg, song)) end
+  local function track(c, name)
+    as(c)
+    for i = 0, reaper.CountTracks(c.F.proj) - 1 do
+      local tr = reaper.GetTrack(c.F.proj, i)
+      if select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)) == name then return tr end
+    end
+  end
+  local function rename(c, from, to) reaper.GetSetMediaTrackInfo_String(track(c, from), "P_NAME", to, true) end
+  local function claims(c) -- (the room's claims as that computer reads them now)
+    as(c)
+    c.F.clock = c.F.clock + 100
+    return sync.authority(c.cfg, song, room, session())
+  end
+  local function receive(c, can) as(c); c.F.clock = c.F.clock + 1; logged = {}; sync.receive(c.F.proj, c.cfg, song, room, can) end
+  -- the desktop holds Bass, by an auto-claim
+  local iso = os.date("!%Y-%m-%dT%H:%M:%SZ")
+  files[sync.claims_path(A.cfg, song, room, "James")] = { user = "James", time = iso, tracks = { "Bass", "Keys" }, regions = {},
+    since = { ["tracks:bass"] = iso, ["tracks:keys"] = iso }, auto = { ["tracks:bass"] = iso } }
+  -- the laptop's StudioSync doesn't ask: its rename goes out (look() sends whatever changed, as that version did)
+  rename(B, "Bass", "Bass 2")
+  tick()
+  assert(next((look(B, true))), "(the older StudioSync sends the rename)")
+  tick()
+  -- a third computer holds it, as any change its sender may not make
+  local can_c = claims(C)
+  assert(can_c("Bee", "Bass", 0) == false and can_c("Bee", "Bass 2", 0) == true, "(Bass is the desktop's; nobody has claimed the new name)")
+  receive(C, can_c)
+  assert(track(C, "Bass") and not track(C, "Bass 2"), "a bandmate's computer doesn't take a rename of a claimed track by its new name")
+  -- the claimer's computer doesn't take it either, and answers
+  local can_a, who_a = claims(A)
+  receive(A, can_a)
+  assert(track(A, "Bass") and not track(A, "Bass 2"), "the claimer's track keeps its name")
+  assert(said("Bee renamed Bass, which you've claimed, to Bass 2"), "and its log says what happened")
+  as(A)
+  A.F.clock = A.F.clock + 1
+  mirror.watch(A.F.proj, A.cfg, song, room, { can = can_a, mode = "open", quick = true, is_claimed = who_a.is_claimed, owner_of = who_a.owner_of })
+  local back
+  for _, ev in ipairs(new_events()) do if ev.obj == "track" and ev.user == "James" then back = ev end end
+  assert(back and back.name == "Bass" and tostring(back.note):find("Bee's rename to Bass 2 is put back", 1, true), "the track goes out as it is here, saying why")
+  -- the renamer's computer takes that as any change: the old name is back there, and its log has the line
+  tick()
+  logged = {}
+  recv(B)
+  assert(track(B, "Bass") and not track(B, "Bass 2"), "the name is back on the computer that renamed it")
+  assert(said("James has claimed Bass: Bee's rename to Bass 2 is put back"), "and that computer's log says why")
+  receive(C, can_c)
+  assert(track(C, "Bass") and not track(C, "Bass 2"), "the third computer never showed the new name")
+  tick()
+  recv(C)
+  same(A, B, "rename put back: the renamer")
+  same(A, C, "rename put back: the third computer")
+  -- the claimer's own rename lands at once
+  rename(A, "Bass", "Bass DI")
+  tick()
+  as(A)
+  A.F.clock = A.F.clock + 1
+  mirror.watch(A.F.proj, A.cfg, song, room, { can = can_a, mode = "open", quick = true, is_claimed = who_a.is_claimed, owner_of = who_a.owner_of })
+  new_events()
+  tick()
+  receive(C, can_c)
+  assert(track(C, "Bass DI"), "the claimer's own rename lands at once")
+  tick()
+  recv(B)
+  -- a rename from long ago (the claimer was away): it lands after the minute a refused change waits, and isn't taken back
+  rename(B, "Keys", "Keys 2")
+  tick()
+  assert(next((look(B, true))), "(another rename, of a lastingly claimed track)")
+  tick(sync.RENAME_BACK + 60)
+  files[sync.claims_path(A.cfg, song, room, "James")].auto = {}
+  can_a = claims(A)
+  assert(can_a("Bee", "Keys", 0) == false, "(Keys is still the desktop's)")
+  receive(A, can_a)
+  assert(track(A, "Keys") and not said("put back"), "an old rename waits its minute")
+  A.F.clock = A.F.clock + 61
+  receive(A, can_a)
+  assert(track(A, "Keys 2"), "then lands: a name everyone has had for a while isn't taken back")
+  files[sync.claims_path(A.cfg, song, room, "James")] = nil
+  print("rt-edits: a claimed track renamed by a StudioSync that doesn't ask keeps its name everywhere")
+end
+-- ---- a timeline change of yours that hasn't gone out when a bandmate's lands is made again on top of theirs (backlog 1): the timeline
+-- travels whole, so theirs replaced yours and nothing said so ----
+do
+  build("Edits unsent")
+  local function said(text) for _, l in ipairs(logged) do if l:find(text, 1, true) then return true end end end
+  local function count(c, name) local n = 0; for _, m in ipairs(c.F.markers) do if m.name == name then n = n + 1 end end return n end
+  local function mark(c, name) for _, m in ipairs(c.F.markers) do if m.name == name then return m end end end
+  local function lands(c) -- (a bandmate's change arrives between two looks)
+    as(c)
+    c.F.clock = c.F.clock + 1
+    logged = {}
+    sync.receive(c.F.proj, c.cfg, song, room, yes)
+  end
+  local function round(what)
+    tick()
+    look(B, true)
+    tick()
+    recv(A)
+    tick()
+    recv(B)
+    same(A, B, what)
+  end
+  -- a marker added on the laptop, a region added on the desktop: both stay
+  B.F.add_marker(false, 30, 30, "Lap")
+  as(A)
+  A.F.add_marker(true, 32, 40, "Outro")
+  tick()
+  look(A, true)
+  tick()
+  lands(B)
+  assert(count(B, "Outro") == 1 and count(B, "Lap") == 1, "the bandmate's region lands and your unsent marker stays")
+  assert(said("James's newer tempo map and markers landed before your own change had gone out"), "the log says so")
+  round("an unsent marker under a bandmate's timeline")
+  assert(count(A, "Lap") == 1 and count(A, "Outro") == 1, "and it reaches the desktop, with the region kept")
+  -- a marker moved and one removed on the laptop, the desktop adds another: the move isn't doubled, the removed one stays gone
+  mark(B, "Cue").pos = 5; mark(B, "Cue").rend = 5
+  for i, m in ipairs(B.F.markers) do if m.name == "Lap" then table.remove(B.F.markers, i); break end end
+  B.F.clock = B.F.clock + 1
+  as(A)
+  A.F.add_marker(false, 44, 44, "End")
+  tick()
+  look(A, true)
+  tick()
+  lands(B)
+  assert(count(B, "Cue") == 1 and mark(B, "Cue").pos == 5 and count(B, "Lap") == 0 and count(B, "End") == 1, "a move stays one marker, a removal stays removed")
+  round("an unsent move and removal under a bandmate's timeline")
+  assert(count(A, "Cue") == 1 and mark(A, "Cue").pos == 5 and count(A, "Lap") == 0, "on the desktop too")
+  -- the bandmate changes the tempo map, you had added a marker: it's kept at its beat
+  B.F.add_marker(false, 8, 8, "Beat")
+  local qn = B.F.qn_of(8)
+  as(A)
+  reaper.SetTempoTimeSigMarker(A.F.proj, 0, 0, -1, -1, 100, 4, 4, false)
+  tick()
+  settle(A, true)
+  tick()
+  lands(B)
+  assert(count(B, "Beat") == 1 and math.abs(B.F.qn_of(mark(B, "Beat").pos) - qn) < 1e-6, "your marker is kept where REAPER moved it for the map")
+  round("an unsent marker under a bandmate's tempo change")
+  -- you change the tempo map, the bandmate's marker lands: your map is kept on top, their marker too
+  as(B)
+  reaper.SetTempoTimeSigMarker(B.F.proj, 0, 0, -1, -1, 90, 4, 4, false)
+  as(A)
+  A.F.add_marker(false, 2, 2, "Two")
+  tick()
+  look(A, true)
+  tick()
+  lands(B)
+  as(B)
+  assert(band.capture_tempo(B.F.proj)[1].bpm == 90 and count(B, "Two") == 1, "your tempo map is kept and their marker lands")
+  assert(said("Kept on top of theirs: your tempo map (theirs is replaced)"), "the log says whose map stands")
+  tick()
+  settle(B, true)
+  tick()
+  recv(A)
+  as(A)
+  assert(band.capture_tempo(A.F.proj)[1].bpm == 90 and count(A, "Two") == 1, "and goes to the desktop")
+  assert(timeline(A) == timeline(B), "the same tempo map and markers on both")
+  -- a note from an older version whose tempo map reads differently: nothing is made again, and the log says the timeline was replaced
+  as(B)
+  local seen = band.json_decode(select(2, reaper.GetProjExtState(B.F.proj, band.SECTION, "timeline")))
+  seen[4], seen[1][1].bpm = 5, 77
+  reaper.SetProjExtState(B.F.proj, band.SECTION, "timeline", band.json_encode(seen))
+  as(A)
+  A.F.add_marker(false, 3, 3, "Three")
+  tick()
+  look(A, true)
+  tick()
+  lands(B)
+  assert(count(B, "Three") == 1 and said("replaced this project's"), "what can't be told apart is replaced, and the log says so")
+  print("rt-edits: a marker or tempo change of yours that hadn't gone out is kept on top of a bandmate's timeline that lands")
+end
 -- ---- a track's colour never flips by itself (REAPER check, 0.59.49.75: XT Drums A's colour went out from the desktop and back from the
 -- laptop at each restart, "something with no undo point changed XT Drums A right after a bandmate's change landed", and each one auto-claimed
 -- the track, which then held back an Undo). The colour hold put an old colour back over one that had just landed ----
@@ -1178,5 +1551,57 @@ do
   assert(raw(B, "Bass") == FLAG | 0x0000FF and reaper.GetExtState(band.SECTION, "colour hold") == "", "and the hold ends when SWS's colouring goes off")
   mirror.own_colours = real_own
   print("rt-edits: a track's colour that landed is never put back, and no colour is no colour however it's stored")
+end
+-- ---- one note or automation point moved by both people is one thing: the later move stands, never two copies (backlog 1, rt-merge's limits).
+-- A move reads as one taken away and one added, so each side's copy was kept ----
+do
+  local function midi(...)
+    local t = { "<SOURCE MIDI", "HASDATA 1 960 QN" }
+    for _, l in ipairs({ ... }) do t[#t + 1] = l end
+    t[#t + 1] = ">"
+    return table.concat(t, "\n")
+  end
+  local function count(text, what) local n = 0; for _ in text:gmatch(what) do n = n + 1 end return n end
+  -- a C (3c) at 0 and an E (40) at 960, each 480 long
+  local base = midi("E 0 90 3c 60", "E 480 80 3c 00", "E 480 90 40 60", "E 480 80 40 00", "E 480 b0 7b 00")
+  -- both moved the C: the winner to 240, the loser to 120
+  local w = midi("E 240 90 3c 60", "E 480 80 3c 00", "E 240 90 40 60", "E 480 80 40 00", "E 480 b0 7b 00")
+  local l = midi("E 120 90 3c 60", "E 480 80 3c 00", "E 360 90 40 60", "E 480 80 40 00", "E 480 b0 7b 00")
+  local m, clash = mirror.merge_midi(base, w, l)
+  assert(m == w and clash, "a note both moved is one note, where the later move put it, and a clash:\n" .. tostring(m))
+  -- the winner changed its pitch, the loser moved it in time: one note, the winner's
+  local wp = midi("E 0 90 3e 60", "E 480 80 3e 00", "E 480 90 40 60", "E 480 80 40 00", "E 480 b0 7b 00")
+  m, clash = mirror.merge_midi(base, wp, l)
+  assert(m == wp and clash, "a pitch change against a move: one note:\n" .. tostring(m))
+  -- the winner changed it in place (velocity), the loser moved it: one note, the winner's
+  local wv = midi("E 0 90 3c 30", "E 480 80 3c 00", "E 480 90 40 60", "E 480 80 40 00", "E 480 b0 7b 00")
+  m, clash = mirror.merge_midi(base, wv, l)
+  assert(m == wv and clash, "changed by one, moved by the other: one note, the later one's:\n" .. tostring(m))
+  -- the winner removed it, the loser moved it: the later removal stands
+  local wd = midi("E 960 90 40 60", "E 480 80 40 00", "E 480 b0 7b 00")
+  m, clash = mirror.merge_midi(base, wd, l)
+  assert(m == wd and clash, "removed by the later one, moved by the other: gone:\n" .. tostring(m))
+  -- the loser moved one note, the winner another: both moves stand, no clash
+  local we = midi("E 0 90 3c 60", "E 480 80 3c 00", "E 720 90 40 60", "E 480 80 40 00", "E 240 b0 7b 00") -- (the E to 1200)
+  m, clash = mirror.merge_midi(base, we, l)
+  assert(count(m, "90 3c 60") == 1 and count(m, "90 40 60") == 1 and m:find("E 120 90 3c 60", 1, true) and not clash, "different notes moved: both moves:\n" .. tostring(m))
+  m, clash = mirror.merge_midi(base, w, base)
+  assert(m == w and not clash, "(only the winner moved it)")
+  -- automation: a point both moved is one point
+  local function env(...) return "<VOLENV2\nACT 1 -1\n" .. table.concat({ ... }, "\n") .. "\n>\n" end
+  local eb = env("PT 0 1 0", "PT 4 0.5 0", "PT 8 1 0")
+  local ew = env("PT 0 1 0", "PT 5 0.4 0", "PT 8 1 0")
+  local el = env("PT 0 1 0", "PT 3 0.6 0", "PT 8 1 0")
+  local me, both = mirror.merge_env(eb, ew, el)
+  assert(me == ew and #both == 1, "a point both moved is one point, the later one's, and a clash:\n" .. tostring(me))
+  -- the winner changed its value, the loser moved it: one point
+  local ev = env("PT 0 1 0", "PT 4 0.2 0", "PT 8 1 0")
+  me, both = mirror.merge_env(eb, ev, el)
+  assert(me == ev and #both >= 1, "a point changed by one and moved by the other is one point:\n" .. tostring(me))
+  -- the loser moved one point and the winner changed another: both stand
+  local e2 = env("PT 0 1 0", "PT 4 0.5 0", "PT 8 0.3 0")
+  me, both = mirror.merge_env(eb, e2, el)
+  assert(me == env("PT 0 1 0", "PT 3 0.6 0", "PT 8 0.3 0") and #both == 0, "different points: both changes:\n" .. tostring(me))
+  print("rt-edits: a note or automation point both people moved is one thing, the later one's")
 end
 print("ok rt-edits")

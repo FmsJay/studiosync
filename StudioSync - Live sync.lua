@@ -608,6 +608,10 @@ function P.heal(t)
       if not ok then band.log("couldn't bring the project in line with the studio: " .. tostring(n))
       elseif n > 0 then band.log(string.format("caught up on %d change%s that hadn't arrived here", n, n == 1 and "" or "s")); mirror_due, t.redraw = true, true end
     end
+    -- (and the track order: a move that never landed here, or an older file's order. Only stopped, in front, caught up, and 10 s after your
+    -- last edit with no mouse button down: mirror.order_heal. rt-edits)
+    local oko, moved = pcall(require("mirror").order_heal, proj, cfg, b.song, b.room, now, mouse_down() and 0 or now - changed_at)
+    if oko and (moved or 0) > 0 then mirror_due, t.redraw = true, true end
   end
 
   lap("in line")

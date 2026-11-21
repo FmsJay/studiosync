@@ -232,8 +232,8 @@ Fix, three parts:
   waits if a newer map is waiting to land, or if that can't be told yet (`sync.timeline_behind`). A marker added before the open still goes
   out at once when nothing newer waits, as before.
 
-Limit: when a newer map does land, it replaces the whole timeline, so a marker you added in those first seconds is gone. The log doesn't
-say so yet.
+Limit, fixed since (fix R): when a newer map did land, it replaced the whole timeline, so a marker you added in those first seconds was
+gone and the log didn't say so.
 
 Test (the "Edits reopen" block), each from a saved copy of the project reopened as a new REAPER would:
 - a file noted in an older format with session.json newer takes the studio's region at its first look and sends nothing;
@@ -407,6 +407,117 @@ writes nothing. With SWS's colouring on, the hold still puts back what SWS recol
 Left: main's build has the same hold. Until the desktop runs only a build with this fix, a restart there can still send the stale paint
 once; this build then no longer sends it back, so it stops after one change instead of bouncing.
 
+**R. A marker, region or tempo change of yours that hadn't gone out was lost when a newer timeline landed** (`lib/sync.lua`). Backlog 1,
+fourth round.
+
+The timeline travels whole. A change of yours waits while a project catches up after opening (fix I), and a bandmate's can land between
+two of your looks at any time. What landed replaced yours, and nothing said so.
+
+Rule now: **what you changed since this project's last look is made again on top of what landed**, as if you had made it a moment later.
+The next look sends it. If the timeline isn't yours to change (Driver only), that look puts it back and says so, as for any such change.
+- `sync.timeline_unsent`, before the newer timeline goes in: the difference between the project and its last look's note.
+  - Markers and regions added and removed, told apart by kind, place, end and name. A moved or renamed one is one of each.
+  - The tempo map, if it differs. Then markers are told apart by kind, number and name, because REAPER moved them all.
+- `sync.timeline_carry`, after the newer tempo map is in: the markers you added are read again where REAPER moved them for that map.
+- `sync.timeline_redo`, after the newer markers are in and noted as seen: yours removed again, yours added again (a number the newer
+  timeline gave to another marker is left to REAPER), your tempo map put back on if you had changed it. The log says what was kept:
+  "<who>'s newer tempo map and markers landed before your own change had gone out. Kept on top of theirs: ...".
+- Both changed the tempo map: yours is kept and theirs is replaced, and the log says "your tempo map (theirs is replaced)". This is the
+  same outcome as two people changing the map one after the other.
+- The same in the first look of a project opened behind the studio's timeline (`sync.watch_timeline`).
+- What can't be told: a note written by an older version (another `TIMELINE_FORMAT`) whose tempo map reads differently. Then the newer
+  timeline replaces the project's as before, and the log says so and that REAPER's Undo brings yours back. Markers alone are still merged
+  from an older note. Project settings (title, notes, grid) aren't covered: REAPER reads some of them differently as a file opens.
+
+Tests: the "Edits reopen" block (a marker added as the project opens survives both paths and reaches the laptop) and the new "Edits
+unsent" block (a marker under a bandmate's region; a move and a removal, not doubled; a marker kept at its beat under a bandmate's tempo
+change; your tempo map kept over a bandmate's marker; an older note that can't be compared).
+
+**S. A claimed track renamed by a computer whose StudioSync doesn't ask** (`lib/sync.lua` `sync.receive`, `lib/mirror.lua`
+`mirror.set_back`). Backlog 1.
+
+Only the sender judged a rename; receivers took it by its new name, which nobody has claimed. So a computer on a build from before the
+rename fix (0.59.49.74) could rename a bandmate's claimed track for everyone. Now:
+- **Every receiver judges it by the name the track has there**, which is the name the claim is on (`refused` in `sync.receive`). A rename
+  its sender may not make waits like any refused change: up to a minute, for a claim or handover that may still be on its way.
+- **The claimer's computer answers instead of applying it** (`set_back`): the rename is noted as the band's newest version without being
+  put in place, so the next look sends the track as it is there, built on the rename. The old name comes back on every computer, the
+  renamer's too. The others, still holding the rename for their minute, never show it. Only a computer whose own person may change the
+  track under its present name answers, so there is one answer, from the computer whose claims are its own and current.
+- **Bound:** only a rename made in the last `sync.RENAME_BACK` (600 s). An older one (the claimer was away) lands after its minute, and
+  the claim follows the track (`sync.follow_claims`) as before: a name everyone has had for a while isn't taken back.
+- **What the older sender sees:** its rename shows on its own computer for a few seconds, then the old name is back, with a line in its
+  log from the claimer's change: "<claimer> has claimed <track>: <renamer>'s rename to <new name> is put back (their StudioSync is older
+  and didn't ask first)". The claimer's log says the same from its side, and that they can rename it themselves.
+
+Test ("Edits rename" block): a third computer holds the rename; the claimer's keeps the name and answers; the renamer's goes back; the
+claimer's own rename lands at once; a rename older than the bound lands after its minute.
+
+**T. Track order** (`lib/mirror.lua`, one call in `StudioSync - Live sync.lua`). Backlog 1, rt-undo's limits, and the REAPER check on
+0.59.49.76.
+
+What the check showed (events in `Cross Test/rooms/main/events`): at the desktop's restart, main's Live sync sent XT Drums A at rev 18
+with its older file's place, "sits under XT Rec A". XT Rec A's own newest change (23:13:51Z) says "sits under XT Drums A": a ring.
+- LinuxBox, running, applied the one change and moved XT Drums A under XT Rec A.
+- The laptop applied it too (20:51:06 its time), restarted, reopened its older file and caught up. A catch-up applies each track's newest
+  change: XT Drums A went under XT Rec A, then XT Rec A went under XT Drums A. It ended in the studio's order.
+- Nothing put the order right during a session: `mirror.keep_order` ran once as a project opened, and did nothing then if changes still
+  waited.
+
+1. **The order heals during the session** (`mirror.order_heal`, asked by Live sync every pass). Tracks go onto the studio's newest order
+   list (`order/<person>.json`, as when opening), so whichever computer is off moves. The rule, so tracks never move under someone at
+   work:
+   - only with this tab in front, the transport stopped (not playing, not recording), and the project's first catch-up done;
+   - only 10 s (`ORDER_IDLE`) after your last edit, and never while a mouse button is down;
+   - the first time after opening: as soon as nothing of the band's waits to land. No waiting for anyone to differ;
+   - after that: only when a caught-up bandmate has had another track order for 30 s (the same input as Health's red row), not within
+     120 s (`ORDER_WAIT`) of a bandmate's move landing here (the mover's order list comes through Syncthing, seconds behind the move),
+     and at most every 30 s.
+   The log says "N track(s) put in the studio's order". The look after sends nothing: it isn't your move.
+2. **Undo and Restore leave a track where it sits unless a move is taken back.** A track's older version names the track it sat under
+   on the day it was made. Undo of a mute moved the track above one added since, for everyone. Now a change sent with a move of yours
+   says where the track sat before (`moved`, set in `W.send`), and `mirror.revert` asks `mirror.moved_since`: if a move is among what's
+   taken back, the track goes back under that track; if none is, it stays. Redo moves it again (the undo's change carries `moved` too).
+   Moves made before this build carry no `moved`, so undoing one of those no longer moves the track back.
+3. **Heal doesn't make an old merge** (`mirror.heal`, `MERGE_NEWS_SECS` = 1 hour). Where heal settles on a merge of two changes, this
+   computer holds the newer of them, and the merge's newest change is over an hour old, heal leaves it. That is the case of two changes
+   from before tracks merged, or the same change sent by two computers: every computer took the newer one then. A computer that holds
+   neither the merge nor the newer change is behind and still gets it.
+
+Tests ("Edits order" block): Undo of a mute with a track added above since; a move, its Undo and Redo; the check's scenario (a change
+carrying an older file's place, one computer moving, one not), with each of the rule's conditions refusing in turn and then the heal on
+both computers that were off; a file reopened with another order; a merge an hour old on the computer that holds the newer change, and
+on one that holds neither.
+
+**U. A note or automation point moved by both people was doubled** (`lib/mirror.lua` `moved_twice`, `merge_midi`, `merge_env`). Backlog 1,
+rt-merge's limits.
+
+A note has no id, so a move reads as one taken away and one added, and each side's copy was kept.
+
+Rule now: **the same note or point is one thing; the later change stands, whole.** Where the earlier side moved it and the later side
+changed it too (moved it, changed it in place, or removed it), the later side's stands and the earlier side's moved copy is left out. It
+counts as a clash, so the earlier side is told and has Use mine, as for any clash. In Claims mode the same-piece ask already applies before
+it gets this far (`mirror.clashes` goes by pieces: the note taken away is the claimer's piece).
+- Which added note is the moved one is only told where it's plain: among notes of one channel, length and velocity (a move keeps those),
+  the side took away exactly as many as it added. They pair in order of time, then pitch. That covers one note moved, a selection dragged
+  and everything shifted. A pitch change is a move.
+- Points: the same, among one envelope's points, paired in order of time.
+- Other counts (some deleted and some new of one kind): not paired, both copies stay as before. So does a note moved and resized at once.
+  Left like that on purpose: leaving out a note that was really new would lose work.
+
+Tests (last block): both moved one note; a pitch change, a velocity change and a removal against a move; different notes moved (both
+stand, no clash); the same for points. The 4,000-note merge in rt-merge's test still runs in well under a second.
+
+**V. Given claims: the link's copy, and the signature file** (`lib/sync.lua` `sync.follow_claims`). Asked for by rt-linkmove (its hooks 1
+and 2).
+- `follow_claims` skips a given claim while what's read is the direct link's copy (`band.overlay_of`). Folded from that copy, it was
+  folded again on every pass, because there is no file to remove. `sync.authority` counts the link's copy meanwhile, so the track is the
+  person's at once. The folder's file is folded in, once, when Syncthing brings it. `sync.GIVEN_WAITS = true` tells `lib/signed.lua` that
+  this holds, so it now takes a given claim's link copy on its own person's computer.
+- Folding removes the given file's `.sig` too. Every given claim had left one in `claims/`.
+Test: in `tests/test_0_60_rt_linkmove.lua`, beside rt-linkmove's own (the link's copy is never folded and still counts; the folder's
+file is folded once, with one "gave you" line; the file and its `.sig` are gone; nothing on the next pass).
+
 ### Not carried (gaps, not fixed)
 
 - **"Transport: Play (skip time selection)"** and REAPER 7's region playlists ("skip hidden regions") are playback, not project state.
@@ -553,6 +664,38 @@ and Health showing no mismatch.
     auto-claim on it afterwards. If the desktop still runs main's Live sync first, one colour event from the desktop is possible; the
     laptop must not answer it with one of its own.
 
+30. **A marker added as a project opens (fix R):** add a region on the desktop and wait for it on the others. Restart REAPER on the
+    laptop. As soon as Cross Test shows, before the log's "loaded: the studio's N change(s)" line, run
+    `reaper.AddProjectMarker2(proj, false, 30.0, 0, "M30", -1, 0)` there. The laptop's log says "...newer tempo map and markers landed
+    before your own change had gone out. Kept on top of theirs: 1 marker(s) or region(s) you added", then "sent the markers to the studio".
+    All three have the region and M30. Delete both afterwards.
+31. **A rename from a StudioSync that doesn't ask (fix S):** needs a sender that doesn't judge the rename. Either a computer on
+    0.59.49.70 to .73, or a script on LinuxBox that posts the change as that build did: read XT Rec A's record (`mirror.known`), its
+    newest event's state, set `name` (and `state.name`) to "XT Rec A9", post it with `sync.post` at `rev + 1` on `base_ev`, rename the
+    track there and `mirror.remember` it. With the desktop holding an auto-claim on XT Rec A:
+    - the desktop's track keeps its name; its log says "LinuxBox renamed XT Rec A, which you've claimed, to XT Rec A9 ... the name is put
+      back for everyone";
+    - the laptop never shows XT Rec A9;
+    - LinuxBox's track is XT Rec A again within a few seconds, with "James has claimed XT Rec A: LinuxBox's rename to XT Rec A9 is put
+      back ..." in its log.
+32. **Track order (fix T):**
+    - Restart REAPER on the desktop. If main's Live sync sends its one stale change (XT Drums A under XT Rec A), LinuxBox and the laptop
+      move the track. With Cross Test in front, stopped and nobody editing, each logs "1 track(s) put in the studio's order" within about
+      three minutes (120 s after the move landed, 30 s apart, 10 s idle) and shows Keys C, Drums A, Rec A. The desktop does the same when
+      the realtime build's Live sync is the one running there; under main's it stays on its file's order and Health stays red for it.
+    - Without main's help: put another project tab in front on the laptop, move a track on the desktop, bring Cross Test to the front
+      on the laptop and leave it alone. Within about 40 s it logs the line and has the desktop's order. While playing, or within 10 s of
+      an edit, it must not move.
+    - Add a track between two others, mute the lower one, one StudioSync undo: the track order is unchanged on all three. Move a
+      track, one StudioSync undo: it's back where it sat on all three. Redo: moved again.
+33. **A note moved by both (fix U):** Who controls set to Open (in Claims mode the second mover is asked instead). Move the same note
+    of XT Drums A's MIDI item on the laptop and on LinuxBox to two different places within the same half second (a script on each,
+    started together). One note on all three, where the later mover put it; the earlier mover's log has the clash line with Use mine. The
+    same with one point of XT Rec A's volume envelope.
+34. **A given claim (fix V):** on the desktop, Who controls > a member > Give them control of > a track. On that member's computer the
+    track is theirs to edit within a second; "<admin> gave you <track>" is logged once, when Syncthing's file arrives; afterwards
+    `Cross Test/rooms/main/claims/` holds no `given-*.json` and no `given-*.json.sig`.
+
 ## Untested / limits
 
 - Everything here ran against the stand-in REAPER. What's assumed about REAPER, and must be checked by the list above:
@@ -586,3 +729,12 @@ and Health showing no mismatch.
   room permissions and lasting claims are checked as before, and an auto-claim already lets edits that merge through. Review later:
   receivers could check that the state brought back equals an earlier version of that object.
 - The colour hold's ExtState is local. `mirror.colour_key` only reads a number.
+- Fix R reads and writes only this project's own timeline. The log line names the sender of the timeline that landed.
+- Fix S: a receiver now also judges a track change by the name the track has there, with the same `can` as before, so nothing is
+  allowed that wasn't. The answer's `note` is text built on the claimer's computer from track and person names; every computer logs a
+  change's `note` for an hour, as before. A legitimate rename whose claim file is late waits up to a minute where it landed at once.
+- Fix T: `moved` is a string from a bandmate's event. It's only read on the computer that undoes or restores, as the id of a track to
+  sit under; `mirror.apply` moves only under a track that exists. The order heal moves tracks only onto the studio's order list, whose
+  files are signed since rt-linkmove.
+- Fix V: `follow_claims` still folds only a file that passes `given_ok` (a giver who may, written by their computer). The link's copy
+  is never folded.

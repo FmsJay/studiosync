@@ -877,6 +877,40 @@ local function merge_keyed(bl, wl, ll)
   end
   return out, both
 end
+-- One thing moved by both. A note or an automation point has no id: a move reads as one taken away and one added, so a note both people
+-- moved ended up twice, once where each put it (and a note the winner changed in place, twice: theirs, and the loser's moved copy). Now the
+-- same note or point is one thing: where the loser moved it and the winner changed it too (moved, changed in place, or removed), the
+-- winner's stands whole and the loser's moved copy is left out, as a clash (the loser is told, with Use mine, as for any clash).
+-- Which of the loser's added things is a base thing moved is only told where it's plain: among things of one kind (`group`: a note's channel,
+-- length and velocity, which a move keeps; an envelope's points), the loser took away exactly as many as it added. Then they pair in order
+-- (`pos`), which holds for one thing moved, a selection dragged, and everything shifted. Other counts (some deleted, some new, of one kind):
+-- not paired, both copies stay as before, rather than risk leaving out a note that was new.
+-- b, w, l: key -> its text (nil: not there); border, lorder: the base's and the loser's keys in order; group(side, key) -> a kind or nil;
+-- pos(side, key) -> a number. -> the loser's keys to leave out. Pure. rt-edits, backlog 1
+local function moved_twice(border, b, w, l, lorder, group, pos)
+  local gone, added, out = {}, {}, {}
+  for _, k in ipairs(border) do
+    local g = l[k] == nil and group("b", k)
+    if g then gone[g] = gone[g] or {}; gone[g][#gone[g] + 1] = k end
+  end
+  if next(gone) == nil then return out end
+  for _, k in ipairs(lorder) do
+    local g = b[k] == nil and group("l", k)
+    if g and gone[g] then added[g] = added[g] or {}; added[g][#added[g] + 1] = k end
+  end
+  for g, list in pairs(gone) do
+    local a = added[g]
+    if a and #a == #list then
+      local function by(side) return function(x, y) local px, py = pos(side, x), pos(side, y); if px ~= py then return px < py end; return x < y end end
+      table.sort(list, by("b"))
+      table.sort(a, by("l"))
+      for i, k in ipairs(list) do
+        if w[k] ~= b[k] and w[a[i]] == nil then out[a[i]] = true end -- (the winner changed that one too, and not by the same move)
+      end
+    end
+  end
+  return out
+end
 -- Keys for lines: the first word, and which of that word it is ("PT 4.5": a point, by its time, when `pt`).
 local function keyed_lines(lines, pt)
   local nth, out = {}, {}
@@ -975,10 +1009,27 @@ function mirror.merge_midi(base, winner, loser)
   local function ppq(x) for _, t in ipairs(x.head) do local q = t:match("^HASDATA%s+%S+%s+(%S+)") if q then return q end end end
   if ppq(b) ~= ppq(w) or ppq(w) ~= ppq(l) then return nil end
   local clash, chosen = false, {}
+  -- (a note the loser moved, in time or pitch, that the winner changed too: one note, the winner's. moved_twice)
+  local function cmps(x) local t = {}; for k, u in pairs(x.units) do t[k] = u.cmp end; return t end
+  local sides, info = { b = b, l = l }, {}
+  local function note(side, k) -- -> its kind (channel, length, velocity, mute) and place (tick, then pitch), once per key
+    local n = info[side .. k]
+    if n == nil then
+      local ch, pitch, tick = k:match("^N (%d+) (%d+) (%d+)#")
+      local u = ch and sides[side].units[k]
+      n = u and u.evs[2] and { ch .. " " .. (u.evs[2].tick - u.evs[1].tick) .. " " .. u.evs[1].flag:upper() .. " " .. tostring(u.evs[1].bytes:match("^%x%x%s+%x%x%s+(.*)$")),
+        tonumber(tick) * 128 + tonumber(pitch) } or false
+      info[side .. k] = n
+    end
+    return n
+  end
+  local drop = moved_twice(b.order, cmps(b), cmps(w), cmps(l), l.order, function(side, k) local n = note(side, k); return n and n[1] end,
+    function(side, k) return note(side, k)[2] end)
+  if next(drop) then clash = true end
   local seen = {}
   for _, x in ipairs({ w, l, b }) do
     for _, k in ipairs(x.order) do
-      if not seen[k] then
+      if not seen[k] and not drop[k] then
         seen[k] = true
         local bu, wu, lu = b.units[k], w.units[k], l.units[k]
         local s, c = mirror.side3(bu and bu.cmp, wu and wu.cmp, lu and lu.cmp)
@@ -1067,7 +1118,21 @@ function mirror.merge_env(base, winner, loser)
     end
     local bb, wb, lb = inner and body(b), inner and body(w), inner and body(l)
     if bb and wb and lb then
-      local m, c = merge_keyed(keyed_lines(bb, true), keyed_lines(wb, true), keyed_lines(lb, true))
+      -- (a point the loser moved that the winner changed too: one point, the winner's. moved_twice)
+      local kb, kw, kl = keyed_lines(bb, true), keyed_lines(wb, true), keyed_lines(lb, true)
+      local function map(list) local t, order = {}, {}; for n, x in ipairs(list) do t[x[1]], order[n] = x[2], x[1] end; return t, order end
+      local mb, ob = map(kb)
+      local ml, ol = map(kl)
+      local function at(key) return tonumber(key:match("^PT (%S+)#")) end
+      local drop = moved_twice(ob, mb, (map(kw)), ml, ol, function(_, key) return at(key) and "PT" end, function(_, key) return at(key) end)
+      local dropped = {}
+      if next(drop) then
+        local kept = {}
+        for _, x in ipairs(kl) do if drop[x[1]] then dropped[#dropped + 1] = x[1] else kept[#kept + 1] = x end end
+        kl = kept
+      end
+      local m, c = merge_keyed(kb, kw, kl)
+      for _, x in ipairs(dropped) do c[#c + 1] = x end
       for j = #both, 1, -1 do if both[j] == k then table.remove(both, j) end end
       for _, x in ipairs(c) do both[#both + 1] = k .. " " .. x end
       local pts, rest = {}, {}
@@ -3206,6 +3271,7 @@ function mirror.apply(proj, ev, media_dir, local_mix)
         for i = 0, reaper.CountSelectedTracks(proj) - 1 do sel[#sel + 1] = reaper.GetSelectedTrack(proj, i) end
         reaper.SetOnlyTrackSelected(tr)
         reaper.ReorderSelectedTracks(above and math.floor(reaper.GetMediaTrackInfo_Value(above, "IP_TRACKNUMBER")) or 0, 0)
+        mirror.order_landed[tostring(proj)] = reaper.time_precise() -- (its mover's order list is on its way: mirror.order_heal waits for it)
         reaper.SetOnlyTrackSelected(tr); reaper.SetTrackSelected(tr, false)
         for _, x in ipairs(sel) do if reaper.ValidatePtr2(proj, x, "MediaTrack*") then reaper.SetTrackSelected(x, true) end end
       end
@@ -4228,6 +4294,10 @@ function W.order(w)
     local selected = {}
     for _, o in ipairs(objs) do if o.kind == "track" and o.ptr and reaper.IsTrackSelected(o.ptr) then selected[o.oid] = true end end
     moved_set = mirror.moved_tracks(split(mirror.order_seen[order_key]), split(order), selected)
+    -- (and the track each sat under before: its change says so, `moved`, so Undo and Restore put it back there. mirror.moved_since)
+    w.moved_from = {}
+    local old = split(mirror.order_seen[order_key])
+    for k, x in ipairs(old) do if moved_set[x] then w.moved_from[x] = old[k - 1] or "" end end
   end
   -- the first look at a project: which take plays is looked at again. (A part that arrived while the plug-in looked
   -- loaded stayed on silent notes, with its print sitting right there: laptop, 0.42.3)
@@ -4430,6 +4500,7 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
     base_ev = evid ~= "" and evid or nil, -- (the version this one started from: a merge finds the base there, mirror.merge_item)
     name = name, pos = o.pos, hash = o.hash, hv = mirror.HV, act = w.act, tl = mirror.map_stamp(proj) } -- (hash: what it is here; every receiver checks it came out the same)
   if o.kind == "track" and opts.local_mix then ev.state, ev.local_mix = mirror.band_faders(state, last and not last.gone and last.state), true end
+  if o.kind == "track" and w.moved_from then ev.moved = w.moved_from[o.oid] end -- (the track it sat under before you moved it: mirror.moved_since)
   if o.kind == "track" and o.ptr and (tonumber(o.state.lanes) or 0) > 1 then
     -- (the first comp area: REAPER's new lane holds only that piece, and the rest of the part goes silent, with no word: Mac, 0.42.10)
     local items = {}
@@ -4445,7 +4516,8 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
     end
   end
   if mirror.auto[tostring(proj) .. o.oid] then ev.auto, mirror.auto[tostring(proj) .. o.oid] = true, nil end
-  ev.note = credit[o.oid] or bus_note(o, name, last) -- (said on every machine as it lands: sync.receive)
+  local sb = mirror.set_backs[rk]
+  ev.note = credit[o.oid] or (sb and sb.id == evid and sb.note) or bus_note(o, name, last) -- (said on every machine as it lands: sync.receive)
   if ev.note and not credit[o.oid] then band.log(ev.note) end
   if o.kind == "fx" then
     -- (samples, IRs, models it loads; and the presets REAPER shows on it from your own preset folder, looked through, never in the event:
@@ -4503,6 +4575,14 @@ function mirror.refusal_words(mode, where, me, driver, claimer, to)
   end
   if mode == "admins" then return "only admins, and whoever an admin lets edit here, change what nobody has claimed in this room" end
   return "it isn't yours to change right now"
+end
+-- A bandmate's change to a track that wasn't theirs to make, answered instead of applied (sync.receive: a rename of a track you've claimed,
+-- from a StudioSync that didn't ask). It's noted as the band's newest version without being put in place, so the next look finds the track
+-- differs from it and sends it as it is here, built on theirs: it goes back on every computer. `note`: said in everyone's log as it lands.
+mirror.set_backs = mirror.set_backs or {} -- tostring(proj) .. oid -> { id = the answered change, note }
+function mirror.set_back(proj, ev, note)
+  remember(proj, ev.oid, ev.rev or 0, ev.hash or "set back", ev.id, mirror.order_of(ev))
+  mirror.set_backs[tostring(proj) .. ev.oid] = { id = ev.id, note = note }
 end
 function W.refuse(w, o, rk, rev, evid, kord, last, name, ok_before)
   local band, sync, proj, cfg, song, room, opts, me = w.band, w.sync, w.proj, w.cfg, w.song, w.room, w.opts, w.me
@@ -4824,7 +4904,8 @@ function W.one(w, o)
   -- (a wet take StudioSync just made: whoever is to print it may send it, whatever the claims: prints.printer)
   local auto = o.kind == "item" and mirror.auto[tostring(proj) .. o.oid]
   local ok_now = auto or allowed(o, name, o.pos) or (o.kind == "track" and last ~= nil and allowed(o, last.name or "", last.pos))
-  local ok_before = auto or not last or last.gone or allowed(o, last.name or "", last.pos)
+  -- (or it answers a change that wasn't its sender's to make: mirror.set_back. A claim on the name that change gave it doesn't stand in front)
+  local ok_before = auto or not last or last.gone or allowed(o, last.name or "", last.pos) or (mirror.set_backs[rk] or {}).id == evid
   if ok_now and ok_before then return W.send(w, o, rk, rev, evid, kord, last, name, knobs) end
   -- (held back only by a bandmate's auto-claim, Claims mode: an item, automation or track settings that merge with their change go out, and
   -- only an edit to the same note, point or setting asks them. Asked, two people adding notes to one part waited 30 s and were put back:
@@ -5578,6 +5659,24 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
     end
     local last = evid and evid ~= "" and event_file(room_dir, evid) or nil
     if not p.t and last and name == "" then name = last.name or "" end
+    -- (a track stays where it sits, unless a move someone made is among what's taken back: then it goes back under the track it sat under
+    -- before that move, which the move's change names (`moved`). An older version's "sits under" is the place of the day it was made, and a
+    -- track isn't sent again when another lands above it: Undo of a mute moved the track above one added since, for everyone. rt-undo's
+    -- limits, rt-edits. p.moved: where it sat before this put it back, for the Redo.)
+    if p.t and p.t.obj == "track" and type(p.t.state) == "table" and last and not last.gone then
+      local tr = mirror.find(proj, "track", p.oid)
+      local here = tr and mirror.track_state(proj, tr, opts.local_mix).after
+      if here then
+        local from = mirror.moved_since(room_dir, last, p.t.id)
+        if from and from ~= here then p.moved = here end
+        if (from or here) ~= p.t.state.after then
+          local st = {}
+          for k, v in pairs(p.t.state) do st[k] = v end
+          st.after = from or here
+          p.t = setmetatable({ state = st }, { __index = p.t })
+        end
+      end
+    end
     -- (an owner's restore or deletion takes the owner step, as their sends do: mirror.owned. Round 1 review, 0.59.45)
     local function owned(pos) return not opts.exact and mirror.owned(opts, cfg.user, name, pos) end
     -- Going back never removes what a bandmate has made since: the driver going back a version took the Mac's new track and
@@ -5611,7 +5710,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       local ok, nh = mirror.apply(proj, p.t, media, opts.local_mix)
       if ok then
         mirror.hlc_seen(last and last.hlc)
-        local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id,
+        local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id, moved = p.moved,
           undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, act = opts.act, tl = mirror.map_stamp(proj) }
         local id = sync.post(cfg, song, room, ev)
         remember(proj, p.oid, ev.rev, nh, id, mirror.order_of(ev))
@@ -5629,7 +5728,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       local ok, nh = mirror.apply(proj, p.t, media, opts.local_mix)
       if ok then
         mirror.hlc_seen(last and last.hlc)
-        local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id,
+        local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id, moved = p.moved,
           undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, revived = (last and last.gone and last.user ~= cfg.user) or nil, act = opts.act, tl = mirror.map_stamp(proj) } -- (act: a History page restore is one act, rt-history)
         local id = sync.post(cfg, song, room, ev)
         remember(proj, p.oid, ev.rev, nh, id, mirror.order_of(ev))
@@ -5764,6 +5863,51 @@ function mirror.keep_order(proj, cfg, song, room)
   reaper.PreventUIRefresh(-1)
   mirror.order_seen[tostring(proj)] = table.concat(mirrored_order(proj), ",") -- (not a move of this person's: the next look mustn't send it)
   reaper.TrackList_AdjustWindows(false)
+  return n
+end
+
+-- Did someone move this track between the version `upto` (an event id) and `x`, a newer version built on it? -> the track it sat under
+-- before the oldest such move ("" for the top), or nil when nobody moved it. A change sent with a move of yours carries `moved` (W.send);
+-- changes from before rt-edits carry none, so those moves aren't taken back. Walks what x builds on (a merged version: its winner), 200
+-- versions at most.
+function mirror.moved_since(room_dir, x, upto)
+  local from, steps = nil, 0
+  while type(x) == "table" and x.id ~= upto and steps < 200 do
+    if type(x.moved) == "string" then from = x.moved end
+    steps = steps + 1
+    local next_id = mirror.split_merge(x.id) or x.base_ev
+    x = next_id and event_file(room_dir, next_id) or nil
+  end
+  return from
+end
+-- Track order put right during a session. keep_order ran only as a project opened, and did nothing then if changes still waited, so a move
+-- that never landed (its tab was behind; a catch-up that applied two tracks' old places one after the other) or an older file's order stayed
+-- until the project was opened again, with Health red. REAPER check, 0.59.49.76: the desktop reopened an older file and one change of a
+-- track carried that file's place; LinuxBox moved the track, the laptop, catching up after a restart, ended on the studio's list, and nothing
+-- brought them together for 15 minutes. Live sync asks every pass (P.heal). The rule, so tracks never move under someone at work:
+--   only this tab in front, the transport stopped (not playing or recording), this project's first catch-up done;
+--   only `idle` >= ORDER_IDLE: seconds since your last edit, 0 while a mouse button is down (Live sync's count);
+--   the first time after opening: once nothing of the band's waits to land;
+--   after that: only when a caught-up bandmate has had another track order for APART_SECS (mirror.apart_for, Health's red row), not within
+--   ORDER_WAIT of a bandmate's move landing here (its mover's order list comes through Syncthing, seconds behind the move), and at most
+--   every APART_SECS.
+-- Where the tracks go: the studio's newest order list, as when opening (mirror.wanted_order). Every computer goes to the same list, so
+-- whichever of them is off moves. -> how many tracks moved.
+mirror.ORDER_IDLE, mirror.ORDER_WAIT = 10, 120
+mirror.order_landed = mirror.order_landed or {} -- tostring(proj) -> when a bandmate's track move last landed here (mirror.apply)
+mirror.order_kept = mirror.order_kept or {} -- tostring(proj) -> when order_heal last put the order right, or found it right
+function mirror.order_heal(proj, cfg, song, room, now, idle)
+  local sync, pk = require("sync"), tostring(proj)
+  if (idle or 0) < mirror.ORDER_IDLE or sync.loading[pk] or reaper.EnumProjects(-1) ~= proj or reaper.GetPlayStateEx(proj) ~= 0 then return 0 end
+  if mirror.order_kept[pk] then
+    local _, _, what = mirror.apart_for(proj, now)
+    if what ~= "order" or now - mirror.order_kept[pk] < mirror.APART_SECS or now - (mirror.order_landed[pk] or -math.huge) < mirror.ORDER_WAIT then return 0 end
+  elseif sync.pending_events(proj, cfg, song, room) > 0 then return 0 end
+  mirror.order_kept[pk] = now
+  local n = mirror.keep_order(proj, cfg, song, room)
+  if n > 0 then
+    require("band").log(string.format("%d track(s) put in the studio's order: a move that hadn't landed here, or an older file's order", n))
+  end
   return n
 end
 
@@ -6051,12 +6195,21 @@ end
 -- already holds are left as they are (what came out different there isn't fixed by applying it again). Returns how
 -- many were brought in line.
 mirror.STAY = {} -- (see mirror.apply: a track version put in place without moving the track)
+mirror.MERGE_NEWS_SECS = 3600 -- how long after its newest change a merge is still caught up on by a computer that holds that change (mirror.heal)
 function mirror.heal(proj, room_dir, local_mix)
   local n = 0
   local newest, all = mirror.room_newest(room_dir)
   for oid, ev in pairs(newest) do
+    local plain = ev
     ev = mirror.settled(room_dir, ev, all[oid]) -- (a merge of two changes made apart: what every computer holds)
     local krev, kh, kev, kord = mirror.known(proj, oid)
+    -- (not a merge found long after its changes were made, on a computer that holds the newest of them: every computer took that one then and
+    -- counted the other done (before tracks and automation merged; or the same change sent by two computers), so nobody holds the merge and
+    -- nobody is behind. Made now, the track changed on each computer whenever its heal next ran, a day or a month late. A merge is caught
+    -- up on while it's news, MERGE_NEWS_SECS from its newest change; a computer that holds neither the merge nor the newest is behind, and still
+    -- gets it. rt-undo's limits, rt-edits)
+    local old_merge = ev ~= plain and kev == plain.id and mirror.split_merge(ev.id) ~= nil
+      and os.time() - (select(2, id_span(ev.id)) or math.huge) > mirror.MERGE_NEWS_SECS
     -- (and a part recorded gone here whose newest change isn't a deletion, its track here: a track that came back bare. Round 1 review, 0.59.45)
     local bare = kev == ev.id and kh == "" and not ev.gone and mirror.PART[ev.obj] and ev.track and mirror.find(proj, "track", ev.track)
     -- (never back to an older version: what this computer holds is newer than the newest read, and wasn't among what was read, so nothing
@@ -6069,7 +6222,7 @@ function mirror.heal(proj, room_dir, local_mix)
       local function read(id) local w, l = mirror.split_merge(id); if w then return read(w) and read(l) end; return ids[id] == true end
       ahead = not read(kev)
     end
-    if mirror.unsent[tostring(proj) .. oid] or ahead then -- a change of yours not sent yet (held, settling): it goes out, or is put back, by mirror.watch. Sync engine review, 0.58.76
+    if mirror.unsent[tostring(proj) .. oid] or ahead or old_merge then -- a change of yours not sent yet (held, settling): it goes out, or is put back, by mirror.watch. Sync engine review, 0.58.76
     elseif (kev ~= ev.id or bare) and not mirror.edited_here(proj, oid, kh, kev and kev ~= "" and event_file(room_dir, kev) or nil, room_dir .. "/media", local_mix) then
       -- (not over an edit of yours a look hasn't sent yet: the next look sends it, or puts it back. Round 1 review, 0.59.45) -- (exactly: merge ids are the same everywhere, and "held inside a merge" hid two different ones for good. Review, 0.58.47)
       local order = mirror.order_of(ev)
