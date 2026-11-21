@@ -13,6 +13,7 @@
 local band = require("band")
 local histhear = {}
 histhear.KEEP = 10          -- previews kept on this computer (per song and room), newest last
+histhear.RECIPE = 2         -- how a preview is rendered: raised when that changes, so a preview an older build kept is never served (0.59.49.74 played .73's clipping one)
 histhear.PASSES = 2         -- renders of the copy at most (bgrender's pass script: a sampler still loading gets its second)
 histhear.START_GAP = 3      -- seconds between starting renders (a page can't make this computer start one after another)
 histhear.ASK_FOR = 120      -- seconds a restore's "what changes" stays good for its yes
@@ -470,6 +471,8 @@ local function cache_dir(cfg, b) return (bg().TMP:gsub("/bandsync%-render$", "")
 histhear.SWEEP_EVERY, histhear.SWEEP_FOR, histhear.SWEEP_WAIT = 2, 60, 30
 local function tidy(dir)
   if not dir then return end
+  local empty_dir = bg().empty_dir -- (the folders too: on Windows os.remove left every job's empty folders behind)
+  if empty_dir then return empty_dir(dir) end
   local function empty(d)
     local names = {}
     for i = 0, 199 do local f = reaper.EnumerateFiles(d, i); if not f then break end; names[#names + 1] = f end
@@ -567,7 +570,7 @@ function histhear.action(proj, cfg, b, a)
     local s = S.slots[slot]
     if s and s.key == key and (s.state == "queued" or s.state == "rendering" or s.state == "ready") then return nil end
     if slot == "then" and s and s.job then drop(s.job.dir) end -- (one render at a time: a new point replaces the one going)
-    local id = histhear.file_id(cfg.root .. "|" .. b.song .. "|" .. b.room .. "|" .. key)
+    local id = histhear.file_id(cfg.root .. "|" .. b.song .. "|" .. b.room .. "|" .. key .. "|r" .. histhear.RECIPE)
     local path = cache_dir(cfg, b) .. "/" .. id .. ".opus"
     s = { t = t, key = key, upto = upto, id = id, path = path, state = "queued", asked = reaper.time_precise() }
     if reaper.file_exists(path) then s.state, s.file, s.cached = "ready", offer(slot, id, path), true; keep(cache_dir(cfg, b), id) end

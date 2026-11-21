@@ -474,17 +474,37 @@ local function finished(j)
   if reaper.file_exists(j.dir .. "/done.txt") or reaper.file_exists(j.dir .. "/passes.txt") then return files end
   return nil
 end
+-- Empty folders removed, the deepest first. On Windows os.remove only deletes files, so every job's folder stayed behind with its empty
+-- Backups, pass1 and pass2 (desktop, 0.59.49.74): one rmdir for them all, in the background (it removes a folder only when it is empty).
+function bg.rmdirs(dirs)
+  local there = {}
+  for _, d in ipairs(dirs) do if os.rename(d, d) then there[#there + 1] = d end end -- (only those still there: a sweep calls this again and again)
+  if #there == 0 then return end
+  if WIN and reaper.ExecProcess then
+    local q = {}
+    for _, d in ipairs(there) do if not d:find('"', 1, true) then q[#q + 1] = '"' .. d:gsub("/", "\\") .. '"' end end
+    if #q > 0 then reaper.ExecProcess("cmd.exe /c rmdir " .. table.concat(q, " "), -1) end
+  else
+    for _, d in ipairs(there) do os.remove(d) end
+  end
+end
+-- A folder's files deleted, its subfolders' too, then the folders themselves.
+function bg.empty_dir(dir)
+  local dirs = {}
+  local function empty(d)
+    local names = {}
+    for i = 0, 199 do local f = reaper.EnumerateFiles(d, i); if not f then break end; names[#names + 1] = f end
+    for _, f in ipairs(names) do os.remove(d .. "/" .. f) end
+    dirs[#dirs + 1] = d
+  end
+  for _, sub in ipairs(band.subdirs(dir)) do empty(dir .. "/" .. sub) end
+  empty(dir)
+  bg.rmdirs(dirs)
+end
 local function drop(key)
   local j = jobs[key]
   -- (the whole folder, its pass folders and REAPER's job .rpp-bak too: band.files skipped those, so every job left its folder behind. 2026-11-20)
-  local function empty(dir)
-    local names = {}
-    for i = 0, 199 do local f = reaper.EnumerateFiles(dir, i); if not f then break end; names[#names + 1] = f end
-    for _, f in ipairs(names) do os.remove(dir .. "/" .. f) end
-    os.remove(dir)
-  end
-  for _, sub in ipairs(band.subdirs(j.dir)) do empty(j.dir .. "/" .. sub) end
-  empty(j.dir)
+  bg.empty_dir(j.dir)
   jobs[key] = nil
 end
 -- Still going: something new in its folder lately (a pass begun, its file growing), within the limit for its length. -> true / false
