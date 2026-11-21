@@ -456,10 +456,10 @@ local function scripts_dir() return (debug.getinfo(1, "S").source:match("^@?(.*)
 function dawview.action(proj, cfg, b, a)
   -- (stage 2: an item or marker edit, checked and applied by lib/dawedit.lua; its answer goes back as the dawedit topic, below)
   -- (an edit or a piano roll change from a page writes items nobody selected: the next look reads every track. rt-perfcut4)
-  if type(a) == "table" and (type(a.edit) == "table" or type(a.look) == "table" or a.note ~= nil or a.auto ~= nil) then S.dirty_all = true end
+  if type(a) == "table" and (type(a.edit) == "table" or type(a.look) == "table" or a.note ~= nil or a.auto ~= nil or a.send ~= nil) then S.dirty_all = true end
   if type(a) == "table" and type(a.edit) == "table" then return require("dawedit").action(proj, cfg, b, a.edit) end
   -- (stage 3: what the piano roll and the automation lanes show, and their note and envelope point edits: lib/dawmidi.lua)
-  if type(a) == "table" and (type(a.look) == "table" or a.note ~= nil or a.auto ~= nil) then return require("dawmidi").action(proj, cfg, b, a) end
+  if type(a) == "table" and (type(a.look) == "table" or a.note ~= nil or a.auto ~= nil or a.send ~= nil) then return require("dawmidi").action(proj, cfg, b, a) end
   local d = dawview.parse(a)
   if not d then return end
   local now = reaper.time_precise()

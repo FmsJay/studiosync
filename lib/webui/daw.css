@@ -43,6 +43,17 @@
 .dedit .esel { flex: 1 1 8em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dedit .eshape { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 2px 3px; max-width: 11em; }
 .dedit .ecol { width: 34px; height: 26px; padding: 0 2px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.dsends { position: absolute; z-index: 2; top: 40px; right: 8px; width: min(440px, calc(100% - 16px)); max-height: calc(100% - 52px); overflow: auto; padding: 8px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 16px rgba(0, 0, 0, .35); font-size: 13px; }
+.dsends[hidden] { display: none; }
+.dsends .shead, .dsends .sadd { display: flex; align-items: center; gap: 6px; }
+.dsends .shead { justify-content: space-between; margin-bottom: 6px; font-weight: 600; }
+.dsends .sadd { margin-top: 8px; }
+.dsends .srow { display: grid; grid-template-columns: minmax(4em, 1fr) auto minmax(60px, 1.4fr) 4.2em minmax(40px, 0.8fr) 5em auto; align-items: center; gap: 6px; padding: 3px 0; border-bottom: 1px solid var(--line); }
+.dsends .sname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsends .sval { font-variant-numeric: tabular-nums; color: var(--dim); font-size: 12px; }
+.dsends button, .dsends select { font-size: 13px; }
+@media (max-width: 520px) { .dsends .srow { grid-template-columns: 1fr 1fr; } .dsends .sname { grid-column: 1 / -1; } }
 .dmenu { position: absolute; z-index: 2; display: flex; flex-direction: column; min-width: 150px; padding: 4px; background: var(--panel);
   border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 14px rgba(0, 0, 0, .25); }
 .dmenu[hidden] { display: none; }

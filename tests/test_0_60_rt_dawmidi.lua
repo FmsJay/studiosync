@@ -65,6 +65,19 @@ for i, b in ipairs({ { op = "add", lane = 0, e = 1, t = 3, v = 0.5 }, { op = "mo
     { op = "delete", lane = 0, e = 1, name = "Pan", n = 0 }, { op = "add", lane = 0, e = 1, name = ("x"):rep(201), t = 1, v = 0 }, { op = "shape", lane = 0, e = 1, name = "Pan" } }) do
   assert(dawmidi.parse_auto(b) == nil, "a point edit refused: #" .. i)
 end
+-- sends (rt-p14): a send is named by its track's place, its index and its destination's place
+assert(dawmidi.parse_look({ send = 2 }).send == 2 and dawmidi.parse_look({ send = false }).send == false and dawmidi.parse_look({ send = -1 }).send == false, "a look at a track's sends; false closes the panel")
+assert(dawmidi.parse_look({ env = { 0 } }).send == nil, "and says nothing of them when it doesn't")
+local sv = dawmidi.parse_send({ id = "s1", op = "vol", lane = 0, to = 1, i = 0, v = 0.5 })
+assert(sv and sv.v == 0.5 and sv.i == 0 and sv.to == 1 and sv.id == "s1", "a send level")
+assert(dawmidi.parse_send({ op = "add", lane = 0, to = 1 }).i == nil and dawmidi.parse_send({ op = "mute", lane = 0, to = 1, i = 2, on = true }).on == true
+  and dawmidi.parse_send({ op = "pan", lane = 0, to = 1, i = 2, p = -0.5 }).p == -0.5 and dawmidi.parse_send({ op = "remove", lane = 0, to = 1, i = 2 }).i == 2, "add, mute, pan, remove")
+for i, bad in ipairs({ { op = "vol", lane = 0, to = 1, i = 0, v = -1 }, { op = "vol", lane = 0, to = 1, i = 0, v = 4.5 }, { op = "vol", lane = 0, to = 1, i = 0 },
+    { op = "pan", lane = 0, to = 1, i = 0, p = 1.5 }, { op = "remove", lane = 0, to = 1 }, { op = "remove", lane = 0, to = 1, i = 256 }, { op = "add", lane = 0 },
+    { op = "add", to = 1 }, { op = "mode", lane = 0, to = 1, i = 0 }, { op = "vol", lane = 0, to = 1, i = 0, v = 0 / 0 }, "nope" }) do
+  assert(dawmidi.parse_send(bad) == nil, "a send edit refused: #" .. i)
+end
+assert(select(3, dawmidi.parse_send({ id = "s9", op = "glue" })) == "s9", "a refusal keeps its id")
 assert(dawmidi.snap_qn(5.3, 4, 0.5) == 5.5 and dawmidi.snap_qn(5.3, 4, 0) == 5.3 and dawmidi.snap_qn(3.6, 3.5, 1) == 3.5, "snapped from the bar's start (a 7/8 bar starts mid-beat)")
 assert(dawmidi.norm(0.5, -1, 1) == 0.75 and dawmidi.norm(9, 0, 1) == 1 and dawmidi.denorm(0.75, -1, 1) == 0.5, "normalised and back")
 
@@ -135,6 +148,20 @@ reaper.DeleteEnvelopePointEx = function(e, _, i) table.remove(e.pts, i + 1); ret
 reaper.Envelope_SortPointsEx = function(e) esort(e); return true end
 reaper.Envelope_FormatValue = function(e, v) return string.format("%s %.2f", e.name, v) end
 reaper.GetProjectStateChangeCount = function() return clock end
+-- sends: a track's list of { dest = the destination's stand-in, v, p, m }
+reaper.GetTrackNumSends = function(tr) return #(tr.t.sends or {}) end
+reaper.GetTrackSendInfo_Value = function(tr, _, i, k)
+  local s = tr.t.sends[i + 1]
+  if k == "P_DESTTRACK" then return s.dest.ptr elseif k == "D_VOL" then return s.v elseif k == "D_PAN" then return s.p elseif k == "B_MUTE" then return s.m and 1 or 0 end
+  return 0
+end
+reaper.SetTrackSendInfo_Value = function(tr, _, i, k, v)
+  local s = tr.t.sends[i + 1]
+  if k == "D_VOL" then s.v = v elseif k == "D_PAN" then s.p = v elseif k == "B_MUTE" then s.m = v ~= 0 end
+  return true
+end
+reaper.CreateTrackSend = function(tr, dest) tr.t.sends = tr.t.sends or {}; tr.t.sends[#tr.t.sends + 1] = { dest = dest.t, v = 1, p = 0 }; return #tr.t.sends - 1 end
+reaper.RemoveTrackSend = function(tr, _, i) table.remove(tr.t.sends, i + 1); return true end
 
 local function song()
   setup({
@@ -150,12 +177,14 @@ local function song()
           { pos = 6, len = 2, oid = "I-CHILIO-2", takes = { {} } } }, envs = { { name = "Volume", chunk = "<VOLENV2", pts = {} } } },
     },
   })
+  fake.tracks[1].sends = { { dest = fake.tracks[3], v = 1, p = 0, m = false }, { dest = fake.tracks[2], v = 0.7, p = 0, m = false } } -- (Keys -> Bass, and one to this computer's own track)
   undo = {}
 end
 local b = { song = "S", room = "main" }
 local function as(user) return { root = "R", user = user } end
 local function note(user, e) return dawview.action("P", as(user), b, { topic = "daw", note = e }), dawedit.reply end
 local function auto(user, e) return dawview.action("P", as(user), b, { topic = "daw", auto = e }), dawedit.reply end
+local function send(user, e) return dawview.action("P", as(user), b, { topic = "daw", send = e }), dawedit.reply end
 local function keys() return fake.tracks[1].items[1].takes[1].notes end
 local KEYS = { lane = 0, idx = 0, p = 4, l = 8 }
 
@@ -262,6 +291,43 @@ peers = {}
 room("claims") -- (Driver + claims, removed in rt: works as Driver only)
 assert(select(2, auto("Andie", { op = "add", lane = 0, e = 1, name = "Pan", t = 1, v = 0.5 })).why:find("only the driver"), "Driver + claims reads as Driver only")
 
+-- ---- send edits ---------------------------------------------------------------------------------------------------------------------------
+song(); room("open", { Chilio = { tracks = { "Bass" } } })
+said, r = send("James", { id = "t1", op = "vol", lane = 0, to = 1, i = 0, v = 0.5 })
+assert(r.id == "t1" and r.why and r.why:find("Chilio has claimed Bass") and fake.tracks[1].sends[1].v == 1 and #undo == 0, "a send to a track a bandmate claimed: refused, nothing changed (the receive is the destination's): " .. tostring(r.why))
+assert(said:find("wasn't made"), "and the log says so")
+r = select(2, send("Chilio", { op = "vol", lane = 0, to = 1, i = 0, v = 0.5 }))
+assert(r.ok and fake.tracks[1].sends[1].v == 0.5 and #undo == 1 and undo[1].label == "StudioSync web page: send level Bass" and not undo[1].open, "its claimant sets the level in one undo point")
+song(); room("open")
+r = select(2, send("James", { op = "pan", lane = 0, to = 1, i = 0, p = -0.25 }))
+assert(r.ok and fake.tracks[1].sends[1].p == -0.25 and undo[1].label == "StudioSync web page: send pan Bass", "pan")
+r = select(2, send("James", { op = "mute", lane = 0, to = 1, i = 0, on = true }))
+assert(r.ok and fake.tracks[1].sends[1].m == true, "mute")
+r = select(2, send("James", { op = "mute", lane = 0, to = 1, i = 0, on = false }))
+assert(r.ok and fake.tracks[1].sends[1].m == false, "and unmute")
+r = select(2, send("James", { op = "vol", lane = 0, to = 0, i = 0, v = 1 }))
+assert(r.why:find("send changed meanwhile") and #undo == 3, "the send isn't to the track the page said: refused")
+r = select(2, send("James", { op = "vol", lane = 0, to = 1, i = 5, v = 1 }))
+assert(r.why:find("send changed meanwhile"), "no such send: refused")
+r = select(2, send("James", { op = "add", lane = 1, to = 0 }))
+assert(r.ok and #fake.tracks[3].sends == 1 and fake.tracks[3].sends[1].dest == fake.tracks[1] and undo[#undo].label == "StudioSync web page: add send to Keys", "a send added: Bass to Keys")
+r = select(2, send("James", { op = "add", lane = 1, to = 1 }))
+assert(r.why:find("can't send to itself") and #fake.tracks[3].sends == 1, "not to itself")
+r = select(2, send("James", { op = "add", lane = 7, to = 0 }))
+assert(r.why:find("track changed meanwhile"), "a track that isn't there")
+r = select(2, send("James", { op = "remove", lane = 0, to = 1, i = 0 }))
+assert(r.ok and #fake.tracks[1].sends == 1 and fake.tracks[1].sends[1].dest == fake.tracks[2] and undo[#undo].label == "StudioSync web page: remove send Bass", "removed (the one to this computer's own track stays)")
+room("driver")
+r = select(2, send("Andie", { op = "add", lane = 1, to = 0 }))
+assert(r.why:find("only the driver %(James%)") and #fake.tracks[3].sends == 1, "Driver only: refused")
+room("open")
+song()
+dawedit.reply = nil
+send("James", { id = "t2", op = "vol", lane = 0, to = 1, i = 0, v = 2 })
+assert(dawedit.reply.ok and fake.tracks[1].sends[1].v == 2, "+6 dB")
+r = select(2, send("James", { id = "t3", op = "vol", lane = 0, to = 1, i = 0, v = 9 }))
+assert(r.id == "t3" and r.why and fake.tracks[1].sends[1].v == 2, "past +12 dB: refused, and the answer names the edit")
+
 -- ---- what the page is sent: only while it looks, only the open item and the open tracks ----------------------------------------------
 song(); room("open")
 local published = {}
@@ -324,6 +390,35 @@ clock = clock + dawmidi.WANT_FOR + 1
 dawview.action("P", as("James"), b, { want = true })
 tick()
 assert(not published.dawenv, "a look runs out after WANT_FOR without the page saying it again")
+-- the sends panel (rt-p14): its track's sends only, to the shown tracks only, while the page looks
+dawview.action("P", as("James"), b, { look = { item = false, env = {} } })
+published = {}
+clock = clock + 1
+tick()
+assert(not published.dawsend, "nothing of the sends until a page opens a track's")
+dawview.action("P", as("James"), b, { look = { send = 0 } })
+tick()
+local sd = published.dawsend
+assert(sd and sd.lane == 0 and sd.name == "Keys" and #sd.sends == 1, "the open track's sends: the one to this computer's own track isn't shown")
+assert(sd.sends[1].i == 0 and sd.sends[1].to == 1 and sd.sends[1].n == "Bass" and sd.sends[1].v == 1 and sd.sends[1].p == 0 and sd.sends[1].m == nil, "index, destination place and name, level, pan")
+published.dawsend = nil
+fake.tracks[1].sends[1].m = true
+clock = clock + 1
+tick()
+assert(published.dawsend and published.dawsend.sends[1].m == 1, "a send muted in REAPER: sent again")
+send("James", { id = "t4", op = "vol", lane = 0, to = 1, i = 0, v = 0.5 })
+tick()
+assert(published.dawedit.id == "t4" and published.dawsend.sends[1].v == 0.5, "an edit is answered and the sends come again at once")
+dawview.action("P", as("James"), b, { look = { send = false } })
+published = {}
+clock = clock + 1
+tick()
+assert(not published.dawsend, "closed: not built")
+dawview.action("P", as("James"), b, { look = { send = 0 } })
+clock = clock + dawmidi.WANT_FOR + 1
+dawview.action("P", as("James"), b, { want = true })
+tick()
+assert(not published.dawsend, "a look runs out after WANT_FOR")
 -- a deleted item: said once
 dawview.action("P", as("James"), b, { look = { item = KEYS } })
 fake.tracks[1].items = {}
@@ -346,6 +441,11 @@ end
 for _, want in ipairs({ "ssDaw.act({ look:", "auto: Object.assign({ id }", "t.dawenv", "t.dawedit", "op: 'add'", "op: 'move'", "op: 'delete'", "X.extra =", "X.drawAuto =" }) do
   assert(al:find(want, 1, true), "autolanes.js has " .. want)
 end
+for _, want in ipairs({ "act({ look: { send: sendLane } })", "act({ send: Object.assign({ id, lane: sendLane }, o) })", "T.dawsend", "t.dawsend", "add('Sends…'", "bSends.addEventListener",
+    "op: 'vol'", "op: 'pan'", "op: 'mute'", "op: 'remove'", "op: 'add', to:" }) do
+  assert(daw:find(want, 1, true), "daw.js has " .. want)
+end
+assert(not daw:find("innerHTML%s*=%s*[^'\n]*%+"), "daw.js puts no data in as HTML")
 assert(not (pr .. al):find("innerHTML%s*=%s*[^'\n]*%+"), "no data put in as HTML")
 assert(css:find(".proll", 1, true) and css:find("touch-action: none", 1, true), "the piano roll is styled and takes touches")
 print("ok")

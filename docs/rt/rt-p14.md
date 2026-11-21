@@ -58,5 +58,30 @@ Internal names (`follow`, `dfollow`) are unchanged.
   the item's fade menu); snapping on and off; a fade longer than the item (clamped); an item with a fade REAPER made from a crossfade (not
   drawn).
 
+## 3. Sends (`lib/dawmidi.lua`, `lib/dawview.lua`, `lib/webui/daw.js`, `daw.css`)
+- **Page:** a **Sends** button in the edit row (the selected item's track) and **Sends...** in the right-click / long-press menu on a track's
+  name open a panel over the arrange view: each send's destination, a Mute box, a level slider (-60 to +12 dB, the far left is off: 0) with
+  its dB readout, a pan slider with its readout, Remove; and, at the bottom, a list of every other track with Add send. Each change is one
+  edit when the slider is let go. Values update in place; a hand on a slider keeps it, and an answer that refuses puts them back and says why.
+- **Topic and path:** `{topic:"daw", look:{send: <the track's place> | false}}` (every 10 s, 30 s grace, as the piano roll's and the lanes') makes
+  `dawmidi.tick` publish `dawsend` `{key, lane, name, sends:[{i (REAPER's index), to (the destination's place among the shown tracks), n,
+  v (linear), p, m}]}` only while open and only when REAPER's change count moves. Sends to a hidden track or this computer's own (the live out
+  track) aren't shown, as in the Mixer. Edits: `{topic:"daw", send:{id, op: add | remove | vol | pan | mute, lane, to, i?, v? p? on?}}`
+  -> `dawview.action` (sets `dirty_all`) -> `dawmidi.action` -> `send_apply`; the answer is the `dawedit` topic (`{id, ok | why}`).
+  A send is named by its track's place, its index and its destination's place, and must still be what the page saw.
+- **Permissions:** a send is the destination's own object in the sync (`AUXRECV` is on the track it goes to), so the destination's rule is asked,
+  exactly as the Mixer does (`webmixer`'s comment): `sync.authority` for its name with no spot, or the maker while nobody claimed it
+  (`dawedit.item_refusal`). Level 0 to 4 (+12 dB), pan -1 to 1, a track can't send to itself, at most 32 sends shown a track. One undo point each
+  ("send level Bass", "add send to Keys", "remove send Bass" ...). Mixer's own level slider is unchanged (it keeps its own
+  `webmixer` path and "Not yet" list; this panel adds send mute, pan, add and remove for the Project page).
+- **Not done:** a send's mode (post-fader / pre-FX), send channels, receives' view from the destination, sends with MIDI routing.
+- **Tests:** `tests/test_0_60_rt_dawmidi.lua` (parse, each edit on a stand-in REAPER, the destination's claim refusing, its claimant, Driver only,
+  stale sends, not to itself, the topic only while looking and only for the shown tracks, closing, running out), `tests/rt_p14_browser.mjs` (the
+  panel from the edit row and from the name's menu, level, pan, mute, remove, add, a refusal putting the slider back, in-place updates).
+- **Check in REAPER:** on a project with sends: open the panel on a track with two sends and compare levels with REAPER's send fader (0.0 dB, and a
+  -6.0 dB one), pan and mute; move a slider, Ctrl+Z in REAPER takes it back once; add a send to a bandmate's claimed track (refused, says who) and
+  to an unclaimed one (it appears for them); remove one; a send to this computer's own track isn't listed; change a send in REAPER while the panel
+  is open (the panel follows).
+
 ## Review later (security)
 - (none yet)

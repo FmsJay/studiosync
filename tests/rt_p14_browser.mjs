@@ -61,6 +61,7 @@ const proc = spawn(chrome, ['--headless=new', '--remote-debugging-port=0', '--us
 let fails = 0;
 const done = async (code) => { try { proc.kill(); } catch (e) {} server.close(); await new Promise((r) => setTimeout(r, 300)); try { fs.rmSync(prof, { recursive: true, force: true }); } catch (e) {} process.exit(code); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+process.on('uncaughtException', (e) => { console.log('FAIL the driver stopped: ' + (e && e.message)); done(1); }); // (a check that throws is a failure, not a crash)
 let port = 0;
 for (let i = 0; i < 100 && !port; i++) { await sleep(100); try { port = parseInt(fs.readFileSync(path.join(prof, 'DevToolsActivePort'), 'utf8').split('\n')[0], 10); } catch (e) {} }
 if (!port) { console.log('FAIL Chrome did not start'); await done(1); }
@@ -209,6 +210,79 @@ ok((await text('.dfollow')).startsWith('View') && await ev('document.querySelect
   a = lastAction();
   ok(a.edit.op === 'move' && Math.abs(a.edit.to - 1) < 1e-6, 'the middle still moves the item (' + JSON.stringify(a.edit) + ')');
   await push({ dawedit: { id: a.edit.id, why: 'again' } });
+  state.topics = project();
+  await push(project());
+}
+
+// ---- sends ----------------------------------------------------------------------------------------------------------------------------
+{
+  const panelOpen = () => ev('(() => { const p = document.querySelector(".dsends"); return !!p && !p.hidden; })()');
+  const lastLook = () => [...actions].reverse().find((a) => a.look && a.look.send !== undefined);
+  ok(!(await panelOpen()), 'the sends panel starts closed');
+  await click(...(await at(40, 2))); // (an empty spot: nothing selected)
+  ok((await button('Sends')).disabled, 'Sends is off with nothing selected');
+  await click(...(await at(14, 1))); // Bass's item
+  let b = await button('Sends');
+  ok(!b.disabled, 'Sends is on with an item selected');
+  await click(b.x, b.y);
+  ok(await panelOpen() && (await text('.dsends .stitle')) === 'Sends from Bass', 'it opens for the item’s track');
+  await sleep(100);
+  ok(lastLook() && lastLook().look.send === 1, 'and says it is looking at that track (' + JSON.stringify(lastLook() && lastLook().look) + ')');
+  ok((await text('.dsends .slist')).includes('Loading'), 'until the sends come');
+  const sendTopic = (extra) => Object.assign({ key: KEY, lane: 1, name: 'Bass', sends: [{ i: 0, to: 2, n: 'Keys', v: 1, p: 0 }, { i: 1, to: 0, n: 'Drums', v: 0.5, p: -0.25, m: 1 }] }, extra || {});
+  await push({ dawsend: sendTopic() });
+  await sleep(100);
+  ok(await ev('document.querySelectorAll(".dsends .srow").length') === 2, 'a row a send');
+  ok((await text('.dsends .srow:nth-child(2) .sval')).startsWith('-6.0 dB') && (await text('.dsends .srow:nth-child(2) .smute input')) === '' &&
+    await ev('document.querySelector(".dsends .srow:nth-child(2) .smute input").checked') === true && (await ev('document.querySelectorAll(".dsends .sval")[3].textContent')) === '25% left', 'their level, mute and pan as published');
+  ok(await ev('document.querySelector(".dsends .srow .sval").textContent') === '0.0 dB', 'unity reads 0.0 dB');
+  // the level: a change event sends the value, linear (-6.0 dB here)
+  const setRange = (row, n, v) => ev('(() => { const r = document.querySelectorAll(".dsends .srow")[' + row + '].querySelectorAll("input[type=range]")[' + n + ']; r.value = "' + v + '"; r.dispatchEvent(new Event("input")); r.dispatchEvent(new Event("change")); })()');
+  await setRange(0, 0, -60);
+  await sleep(100);
+  let a = lastAction();
+  ok(a.send && a.send.op === 'vol' && a.send.lane === 1 && a.send.to === 2 && a.send.i === 0 && Math.abs(a.send.v - Math.pow(10, -0.3)) < 1e-9 && /^[\w-]+$/.test(a.send.id), 'a level change sends vol for that send (' + JSON.stringify(a.send) + ')');
+  await push({ dawedit: { id: a.send.id, why: 'Chilio has claimed Keys there' } });
+  ok((await text('.dmsg')).includes('Not changed: Chilio has claimed Keys there') && await ev('document.querySelectorAll(".dsends .srow")[0].querySelector("input[type=range]").value') === '0', 'a refusal says why and puts the slider back');
+  await setRange(0, 0, -600);
+  await sleep(100);
+  a = lastAction();
+  ok(a.send.op === 'vol' && a.send.v === 0, 'the far left is off (0)');
+  await setRange(1, 1, 50);
+  await sleep(100);
+  a = lastAction();
+  ok(a.send.op === 'pan' && a.send.i === 1 && a.send.to === 0 && a.send.p === 0.5, 'pan sends -1 to 1 (' + JSON.stringify(a.send) + ')');
+  await ev('(() => { const c = document.querySelectorAll(".dsends .srow")[0].querySelector("input[type=checkbox]"); c.checked = true; c.dispatchEvent(new Event("change")); })()');
+  await sleep(100);
+  a = lastAction();
+  ok(a.send.op === 'mute' && a.send.on === true && a.send.i === 0, 'mute');
+  await ev('[...document.querySelectorAll(".dsends .srow")[1].querySelectorAll("button")].find((x) => x.textContent === "Remove").click(); 1');
+  await sleep(100);
+  a = lastAction();
+  ok(a.send.op === 'remove' && a.send.i === 1 && a.send.to === 0, 'remove');
+  // the add list leaves out the track itself
+  ok(await ev('[...document.querySelectorAll(".dsends select option")].map((o) => o.textContent).join(",")') === 'Drums,Keys', 'the add list is every other track');
+  await ev('(() => { const s = document.querySelector(".dsends select"); s.value = "2"; })()');
+  await ev('[...document.querySelectorAll(".dsends button")].find((x) => x.textContent === "Add send").click(); 1');
+  await sleep(100);
+  a = lastAction();
+  ok(a.send.op === 'add' && a.send.lane === 1 && a.send.to === 2 && a.send.i === undefined, 'add sends the destination (' + JSON.stringify(a.send) + ')');
+  // a send changed under the panel: updated in place, not rebuilt (a hand on a slider keeps it)
+  await push({ dawedit: { id: a.send.id, ok: true }, dawsend: sendTopic({ sends: [{ i: 0, to: 2, n: 'Keys', v: 2, p: 0 }, { i: 1, to: 0, n: 'Drums', v: 0.5, p: -0.25, m: 1 }] }) });
+  await sleep(100);
+  ok((await ev('document.querySelectorAll(".dsends .sval")[0].textContent')) === '+6.0 dB', 'a new level shows');
+  // the right-click menu on a track's name
+  const [hx, hy] = await ev('(() => { const r = document.querySelector(".dcv").getBoundingClientRect(), D = window.ssDaw; return [r.left + 30, r.top + D.laneY(0) + 20]; })()');
+  await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: hx, y: hy, button: 'right', buttons: 2, clickCount: 1 });
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: hx, y: hy, button: 'right', buttons: 0, clickCount: 1 });
+  await sleep(100);
+  ok((await ev('[...document.querySelectorAll(".dmenu button")].map((x) => x.textContent)')).includes('Sends…'), 'a track’s name has Sends… in its menu');
+  await ev('[...document.querySelectorAll(".dmenu button")].find((x) => x.textContent === "Sends…").click(); 1');
+  await sleep(100);
+  ok((await text('.dsends .stitle')) === 'Sends from Drums' && lastLook().look.send === 0, 'it opens that track’s');
+  await ev('[...document.querySelectorAll(".dsends button")].find((x) => x.textContent === "Close").click(); 1');
+  await sleep(100);
+  ok(!(await panelOpen()) && lastLook().look.send === false, 'Close says it stopped looking');
   state.topics = project();
   await push(project());
 }

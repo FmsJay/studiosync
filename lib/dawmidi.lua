@@ -5,6 +5,8 @@
 --            that by the item itself, so a move or trim doesn't lose it; the page names it by the place this topic gives
 --   dawenv   the envelopes of the tracks whose automation lanes the page has open (volume, pan, width, mute, FX parameters, sends): only
 --            those tracks', points normalised to the envelope's range, with its own value labels for the page's readout
+--   dawsend  the sends of the one track whose sends panel the page has open (rt-p14): each one's destination (by its place among the shown
+--            tracks), level, pan and mute
 -- Edits, each checked as stage 2's are and applied through the API in one undo point; the normal sync sends them on, and the answer goes
 -- back as stage 2's dawedit topic ({ id, ok | why }), so the page that sent it snaps back on a refusal:
 --   notes (add, move, resize, delete, velocity): an edit to their item, so mirror.watch's rule where the item is, and not while a bandmate
@@ -17,6 +19,7 @@ local dawmidi = {}
 dawmidi.NOTES_MAX = 4000  -- notes sent from the open item (the first ones)
 dawmidi.POINTS_MAX = 2000 -- points sent per envelope (the first ones)
 dawmidi.LANES_MAX = 8     -- tracks with their automation open at once
+dawmidi.SENDS_MAX = 32    -- sends sent from the open track (the first ones)
 dawmidi.LABELS = 16       -- value labels per envelope (REAPER's own wording at even steps across its range)
 dawmidi.WANT_FOR = 30     -- seconds a page's look lasts (pages say it every 10 s)
 dawmidi.FLOOR = 10        -- a whole look at least this often
@@ -40,6 +43,7 @@ function dawmidi.parse_look(t)
   if type(t) ~= "table" then return nil end
   local out = {}
   if t.item ~= nil then out.item = ref_of(t.item) or false end
+  if t.send ~= nil then out.send = int(t.send) or false end -- (a track's place, or false: the sends panel closed)
   if t.env ~= nil then
     out.env = {}
     for _, l in ipairs(type(t.env) == "table" and t.env or {}) do
@@ -97,6 +101,29 @@ function dawmidi.parse_auto(e)
     if not (out.at and out.v) then return nil, "no place to put it", id end
     out.v = math.max(0, math.min(1, out.v))
   end
+  return out
+end
+local SEND_OPS = { add = "add send", remove = "remove send", vol = "send level", pan = "send pan", mute = "send mute" }
+dawmidi.SEND_VOL_MAX = 4 -- linear: +12 dB
+-- A send edit from a page -> what it asks for, checked, or nil, why and its id. A send is named by its track's place, its index on that track
+-- and its destination's place (the page shows the shown tracks, and these places are among them); `add` has no index.
+function dawmidi.parse_send(e)
+  if type(e) ~= "table" then return nil, "not an edit" end
+  local id = id_of(e)
+  if not SEND_OPS[e.op] then return nil, "not an edit this page can make", id end
+  local out = { op = e.op, id = id, lane = int(e.lane), to = int(e.to) }
+  if not (out.lane and out.to) then return nil, "that isn't a send the page showed", id end
+  if e.op ~= "add" then
+    out.i = int(e.i)
+    if not (out.i and out.i < 256) then return nil, "that isn't a send the page showed", id end
+  end
+  if e.op == "vol" then
+    out.v = num(e.v)
+    if not (out.v and out.v >= 0 and out.v <= dawmidi.SEND_VOL_MAX) then return nil, "a send's level is 0 to +12 dB", id end
+  elseif e.op == "pan" then
+    out.p = num(e.p)
+    if not (out.p and out.p >= -1 and out.p <= 1) then return nil, "a send's pan is -1 to 1", id end
+  elseif e.op == "mute" then out.on = e.on == true end
   return out
 end
 -- A position in quarter notes on a grid of `step` quarter notes counted from its bar's start (`qs`), as REAPER's MIDI editor snaps.
@@ -193,8 +220,25 @@ function dawmidi.envelopes(tr)
   return out
 end
 
+-- One track's sends as the page draws them: { i (REAPER's index), to (the destination's place among the shown tracks), n (its name), v (level,
+-- linear), p (pan), m (muted: 1) }. Sends to hidden tracks and this computer's own (the live out track) aren't shown, as in the Mixer.
+function dawmidi.sends(proj, tr)
+  local dawedit, out = require("dawedit"), {}
+  local place = {}
+  for k, t in ipairs(dawedit.shown_tracks(proj)) do place[t] = k - 1 end
+  for i = 0, math.min(tonumber(reaper.GetTrackNumSends(tr, 0)) or 0, 255) - 1 do
+    local dest = reaper.GetTrackSendInfo_Value(tr, 0, i, "P_DESTTRACK")
+    local to = dest and place[dest]
+    if to and #out < dawmidi.SENDS_MAX then
+      out[#out + 1] = { i = i, to = to, n = dawedit.track_name(dest):sub(1, 40), v = r3(reaper.GetTrackSendInfo_Value(tr, 0, i, "D_VOL")),
+        p = r3(reaper.GetTrackSendInfo_Value(tr, 0, i, "D_PAN")), m = reaper.GetTrackSendInfo_Value(tr, 0, i, "B_MUTE") ~= 0 and 1 or nil }
+    end
+  end
+  return out
+end
+
 -- ---- applying edits ---------------------------------------------------------------------------------------------------------------------
-local S = { item_until = -math.huge, env_until = -math.huge } -- (what a page is looking at, and a step input run in progress)
+local S = { item_until = -math.huge, env_until = -math.huge, send_until = -math.huge } -- (what a page is looking at, and a step input run in progress)
 local function note_apply(proj, cfg, b, e)
   local dawedit = require("dawedit")
   local it, tr, pos = dawedit.find_item(proj, e.item)
@@ -264,6 +308,33 @@ local function auto_apply(proj, cfg, b, e)
   end)
 end
 
+-- A send edit. A send is the destination's own object in the sync (its receive: mirror's "AUXRECV" on the track it goes to), so it's the
+-- destination's rule that's asked, as the Mixer does: the track's name, with no spot (sync.authority / sync.maker_may). A bandmate editing
+-- it too isn't a refusal: they merge.
+local function send_apply(proj, cfg, b, e)
+  local dawedit, mirror = require("dawedit"), require("mirror")
+  local tracks = dawedit.shown_tracks(proj)
+  local tr, dest = tracks[e.lane + 1], tracks[e.to + 1]
+  if not (tr and dest) then return "that track changed meanwhile" end
+  if e.op == "add" and tr == dest then return "a track can't send to itself" end
+  if e.op ~= "add" and not (e.i < (tonumber(reaper.GetTrackNumSends(tr, 0)) or 0) and reaper.GetTrackSendInfo_Value(tr, 0, e.i, "P_DESTTRACK") == dest) then
+    return "that send changed meanwhile"
+  end
+  local can, who = dawedit.authority(cfg, b)
+  local why = dawedit.item_refusal(can, who, cfg.user, dawedit.track_name(dest), mirror.track_oid(dest), nil, nil)
+  if why then return why end
+  local label = SEND_OPS[e.op] .. " " .. (e.op == "add" and "to " or "") .. dawedit.track_name(dest)
+  return dawedit.in_undo(proj, label, function()
+    if e.op == "add" then
+      if reaper.CreateTrackSend(tr, dest) < 0 then error("REAPER couldn't make that send") end
+    elseif e.op == "remove" then
+      if not reaper.RemoveTrackSend(tr, 0, e.i) then error("REAPER couldn't remove that send") end
+    elseif e.op == "vol" then reaper.SetTrackSendInfo_Value(tr, 0, e.i, "D_VOL", e.v)
+    elseif e.op == "pan" then reaper.SetTrackSendInfo_Value(tr, 0, e.i, "D_PAN", e.p)
+    else reaper.SetTrackSendInfo_Value(tr, 0, e.i, "B_MUTE", e.on and 1 or 0) end
+  end)
+end
+
 -- ---- through lib/dawview.lua --------------------------------------------------------------------------------------------------------------
 dawmidi.STEP_GAP = 1.5 -- seconds after a step input run's last note that its one undo point is made
 -- The run of step input notes ends: its one undo point, if it's over (STEP_GAP s since the last note, or force). Sync sees the change from here.
@@ -288,14 +359,16 @@ function dawmidi.action(proj, cfg, b, a)
       if not same then S.item = l.item and require("dawedit").find_item(proj, l.item) or nil; S.ref, S.built, S.sig = nil, nil, nil; S.asked = l.item or nil end
       S.item_until = l.item and now + dawmidi.WANT_FOR or -math.huge
     end
+    if l.send ~= nil then S.send, S.built = l.send or nil, nil; S.send_until = l.send and now + dawmidi.WANT_FOR or -math.huge end
     if l.env ~= nil then S.env, S.built = l.env, nil; S.env_until = #l.env > 0 and now + dawmidi.WANT_FOR or -math.huge end
     return
   end
   local dawedit = require("dawedit")
   local parse, apply, ops = dawmidi.parse_note, note_apply, NOTE_OPS
-  if a.note == nil then parse, apply, ops = dawmidi.parse_auto, auto_apply, AUTO_OPS end
+  if a.send ~= nil then parse, apply, ops = dawmidi.parse_send, send_apply, SEND_OPS
+  elseif a.note == nil then parse, apply, ops = dawmidi.parse_auto, auto_apply, AUTO_OPS end
   if not (type(a.note) == "table" and a.note.step == true and a.note.op == "add") then dawmidi.step_flush(proj, now, true) end -- (any other edit ends a step run first)
-  local e, why, id = parse(a.note or a.auto)
+  local e, why, id = parse(a.note or a.auto or a.send)
   if e then id = e.id; why = apply(proj, cfg, b, e) end
   dawedit.reply = { id = id, ok = not why or nil, why = why }
   S.built = nil -- (looked at again at once, whatever the change count)
@@ -305,8 +378,8 @@ end
 -- Each tick dawview.tick runs (a page shows the Project page). publish: lib/webui.lua's (sends only what changed).
 function dawmidi.tick(proj, cfg, b, publish, now)
   dawmidi.step_flush(proj, now)
-  local item_on, env_on = now < S.item_until, now < S.env_until
-  if not (item_on or env_on) then return end
+  local item_on, env_on, send_on = now < S.item_until, now < S.env_until, now < S.send_until
+  if not (item_on or env_on or send_on) then return end
   local cc = reaper.GetProjectStateChangeCount(proj)
   if S.built and cc == S.cc and now - S.built < dawmidi.FLOOR then return end
   S.built, S.cc = now, cc
@@ -333,6 +406,10 @@ function dawmidi.tick(proj, cfg, b, publish, now)
       end
       S.ref = ref
     end
+  end
+  if send_on and S.send then
+    local tr = require("dawedit").shown_tracks(proj)[S.send + 1]
+    publish("dawsend", { key = key, lane = S.send, name = tr and require("dawedit").track_name(tr):sub(1, 40) or nil, sends = tr and dawmidi.sends(proj, tr) or {} })
   end
   if env_on then
     local tracks, lanes = require("dawedit").shown_tracks(proj), {}
