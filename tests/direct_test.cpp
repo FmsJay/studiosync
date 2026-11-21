@@ -411,11 +411,13 @@ static void link_speed(const std::string &studio, const char *peer, const std::s
     for (int i = 0; i < 8; ++i) { chunk[7] = (char)i; fwrite(chunk.data(), 1, chunk.size(), f); }
     fclose(f);
   }
+  bool coarse = false; // (sleeps over twice what was asked, and SS_TIMING_STRICT off: a hosted Mac)
   { // (this computer's sleeps, which the test's slow ways and far peers are made of)
     std::vector<double> sl;
     for (int i = 0; i < 15; ++i) { const double t = now_ms(); std::this_thread::sleep_for(std::chrono::milliseconds(3)); sl.push_back(now_ms() - t); }
     std::sort(sl.begin(), sl.end());
-    printf("     a 3 ms sleep here: %.1f ms (median of 15), %.1f ms at worst\n", sl[7], sl.back());
+    coarse = sl[7] > 6 && !timing_strict();
+    printf("     a 3 ms sleep here: %.1f ms (median of 15), %.1f ms at worst%s\n", sl[7], sl.back(), coarse ? " (coarse)" : "");
   }
   direct_test_link(57, 1);
   const double before = stream_file(studio, peer, inbox, src, "Song A/catchup one at a time.wav", size);
@@ -449,17 +451,30 @@ static void link_speed(const std::string &studio, const char *peer, const std::s
 
   const std::string relayed = dir + "/relayed.wav";
   spit(relayed, std::string(1 << 20, 'r'));
-  direct_test_bandwidth(2000);
-  direct_test_link(120, 0);
-  const double slow = stream_file(studio, peer, inbox, relayed, "Song A/relayed.wav", 1 << 20);
-  direct_test_bandwidth(0);
-  direct_test_link(0, 0);
-  st = direct_status();
-  const double srate = json_num(st, "rate", st.find(std::string("\"") + peer + "\"")), swin = json_num(st, "window", st.find(std::string("\"") + peer + "\""));
-  const std::string ss = direct_streams();
-  const size_t sat = ss.find("\"rel\":\"Song A/relayed.wav\"");
-  printf("     1 MB over 2 Mbit/s and 120 ms: %.1f s, window %.0f (each pass starts at 4 at most), status rate %.0f KB/s\n", slow, swin, srate / 1e3);
-  CHECK(sat != std::string::npos && ss.find("\"resends\":0,\"error\":\"\"", sat) < ss.find("}}", sat) && swin <= 3 && srate > 120e3 && srate < 400e3,
+  // On coarse timers up to 3 tries, like the windowed 8 MB above, because there the test's own slow way is lumpy: it sleeps after each read,
+  // so a round of two frames takes 0.3 or 0.6 s by where the reads fall, and the 120 ms round trip (a sleep too) measures 190-220 ms. A
+  // short last round then looks like 1.5 frames in flight and doubles the window as the pass ends. Traced on a hosted Mac, 1 run in 4:
+  // 4 -> 2 in the first round, 2 for five rounds, 2 -> 4 on the last (0.29 s for its two frames, 221 ms). A window that is never cut
+  // fails every try. Fine timers get one try, as before: there the short round is 0.9 frames.
+  double slow = 0, srate = 0, swin = 0;
+  bool answered = false;
+  for (int k = 0; k < (coarse ? 3 : 1) && !(answered && swin <= 3); ++k) {
+    const std::string rel = k ? "Song A/relayed " + std::to_string(k) + ".wav" : "Song A/relayed.wav";
+    direct_test_bandwidth(2000);
+    direct_test_link(120, 0);
+    slow = stream_file(studio, peer, inbox, relayed, rel, 1 << 20);
+    direct_test_bandwidth(0);
+    direct_test_link(0, 0);
+    st = direct_status();
+    const size_t pat = st.find(std::string("\"") + peer + "\"");
+    srate = json_num(st, "rate", pat); swin = json_num(st, "window", pat);
+    const std::string ss = direct_streams();
+    const size_t sat = ss.find("\"rel\":\"" + rel + "\"");
+    answered = sat != std::string::npos && ss.find("\"resends\":0,\"error\":\"\"", sat) < ss.find("}}", sat);
+    printf("     1 MB over 2 Mbit/s and 120 ms: %.1f s, window %.0f (each pass starts at 4 at most), status rate %.0f KB/s, round trip %.0f ms\n", slow, swin, srate / 1e3,
+           json_num(st, "rtt_ms", pat));
+  }
+  CHECK(answered && swin <= 3 && srate > 120e3 && srate < 400e3,
         "a slow relayed way: the window is cut to the link (3 at most), every frame answered in time, the rate is the link's");
 }
 
@@ -810,6 +825,7 @@ static int stream_to(const char *peer, int secs)
 
 int main(int argc, char **argv)
 {
+  setvbuf(stdout, nullptr, _IONBF, 0); // (each line as it's made: a run that stops says where)
 #ifdef _WIN32
   WSADATA w; WSAStartup(MAKEWORD(2, 2), &w);
 #endif
@@ -856,7 +872,7 @@ int main(int argc, char **argv)
   mkdir(tmpl, 0755);
 #endif
   const std::string dir = tmpl, inbox = dir + "/inbox", studio = "studiosync-test", secret = "0123456789abcdef01234567";
-  const int port = 47391;
+  const int port = getenv("SS_TEST_PORT") ? atoi(getenv("SS_TEST_PORT")) : 47391; // (another port when something here has this one: an agent's stand-in server did)
   CHECK(direct_start(studio.c_str(), secret.c_str(), inbox.c_str(), port, "127.0.0.1") == 1, "listening on 127.0.0.1");
   printf("     status: %s\n", direct_status());
   char peer[64]; snprintf(peer, sizeof peer, "127.0.0.1:%d", port);

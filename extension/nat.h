@@ -184,6 +184,7 @@ std::string nat_test_link(NatHub *h, const char *dev);   // that link's state an
 void nat_test_only(NatHub *h, int only, const char *bind = nullptr);
 void nat_test_netchange(NatHub *h);           // as if this computer's network changed (Wi-Fi to tethering)
 void nat_test_carry(NatHub *h, bool on);      // rendezvous messages over other links (on by default)
+void nat_test_gap(int ms);                    // every link waits this long between having its keys and telling libjuice the peer's addresses
 #endif
 #ifndef NAT_STANDALONE
 struct reaper_plugin_info_t;

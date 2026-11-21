@@ -286,6 +286,10 @@ static bool spit_atomic(const std::string &p, const std::string &s)
   return ok && umove(tmp, p); // (only this side writes this name)
 }
 
+#ifdef NAT_STANDALONE
+static std::atomic<int> g_test_gap_ms{ 0 }; // (the test's: nat_test_gap)
+void nat_test_gap(int ms) { g_test_gap_ms.store(ms); }
+#endif
 static void on_state(juice_agent_t *, juice_state_t st, void *u) { ((NatLink *)u)->state.store((int)st); }
 static void on_gathered(juice_agent_t *, void *u) { ((NatLink *)u)->gathered.store(true); }
 static void on_recv(juice_agent_t *, const char *d, size_t n, void *u)
@@ -395,14 +399,23 @@ int nat_link_tick(NatLink *l)
         if (atoll(jfield(text, "t").c_str()) > l->c.offer_t) { l->failed = true; l->why = "a newer offer came before this one was answered"; return -1; }
       }
       else {
-        std::lock_guard<std::mutex> g(l->mx);
-        const std::string &a = l->initiator ? l->c.me : l->c.peer, &b = l->initiator ? l->c.peer : l->c.me;
-        if (!nat_derive(l->sess, l->K, l->initiator, l->c.my_static, l->c.peer_static, l->eph, pe, a, b)) { l->failed = true; l->why = "a bad key"; return -1; }
-        l->ready.store(true, std::memory_order_release); // (before the peer's candidates: no datagram can arrive before the keys)
-        memcpy(l->offer_e, pe, 32); // (the answer carries the offer's key back)
-        memcpy(l->peer_e, pe, 32);
-        l->peer_t = atoll(jfield(text, "t").c_str());
-        l->got = true;
+        {
+          std::lock_guard<std::mutex> g(l->mx);
+          const std::string &a = l->initiator ? l->c.me : l->c.peer, &b = l->initiator ? l->c.peer : l->c.me;
+          if (!nat_derive(l->sess, l->K, l->initiator, l->c.my_static, l->c.peer_static, l->eph, pe, a, b)) { l->failed = true; l->why = "a bad key"; return -1; }
+          l->ready.store(true, std::memory_order_release); // (before the peer's candidates: no datagram can arrive before the keys)
+          memcpy(l->offer_e, pe, 32); // (the answer carries the offer's key back)
+          memcpy(l->peer_e, pe, 32);
+          l->peer_t = atoll(jfield(text, "t").c_str());
+          l->got = true;
+        }
+        // (l->mx is let go first: the calls below wait for libjuice's thread, and that thread may be in on_recv waiting for l->mx. The peer
+        // that answered checks our address before we've read its answer, libjuice answers those checks, and the peer's hellos arrive from
+        // then on: one landing between "ready" and here, with the lock still held, stopped both threads for good, and every status call
+        // after them. The macOS runner's 50-minute nat_test)
+#ifdef NAT_STANDALONE
+        if (const int gap = g_test_gap_ms.load()) std::this_thread::sleep_for(std::chrono::milliseconds(gap)); // (the test: that moment, held open)
+#endif
         juice_set_remote_description(l->agent, sdp.c_str());
         if (!l->initiator) juice_gather_candidates(l->agent);
       }
@@ -1375,13 +1388,15 @@ static void box_signal(void *u, const char *d, size_t n)
   hub_signal_rx(b->h, b, hop, whole);
 }
 
-static std::shared_ptr<LinkBox> make_box(NatHub *h, HubPeer &p, const std::string &offer_e = std::string(), long long offer_t = 0) // (h->mx held)
+// A link's box and its settings (h->mx held). The link itself is made by the caller once h->mx is let go (b->l = nat_link_new(c)): making
+// one waits for libjuice's thread, and that thread takes h->mx for every datagram it hands to live audio (its receiver asks nat_up). A new
+// link made under h->mx while audio arrived on another stopped both threads for good, and REAPER's with them at its next status call.
+static std::shared_ptr<LinkBox> make_box(NatHub *h, HubPeer &p, NatLinkConfig &c, const std::string &offer_e = std::string(), long long offer_t = 0)
 {
   std::shared_ptr<LinkBox> b = std::make_shared<LinkBox>();
   b->h = h;
   b->addr = p.addr;
   b->dev = p.dev;
-  NatLinkConfig c;
   c.folder = h->folder; c.me = h->me; c.peer = p.dev; c.secret = h->secret; c.my_static = h->keys;
   memcpy(c.peer_static, p.pub, 32);
   if (!h->stun.empty()) { c.stun_host = h->stun[0].first; c.stun_port = h->stun[0].second; }
@@ -1405,9 +1420,12 @@ static std::shared_ptr<LinkBox> make_box(NatHub *h, HubPeer &p, const std::strin
   c.user = b.get();
   b->opener_bit = !(h->me < p.dev);
   memcpy(b->lossy, h->lossy, sizeof b->lossy);
-  b->l = nat_link_new(c);
-  if (!b->l) return nullptr;
   return b;
+}
+static bool still_peer(NatHub *h, const HubPeer &p) // (h->mx held: a setup hasn't dropped or replaced it)
+{
+  auto it = h->peers.find(p.dev);
+  return it != h->peers.end() && it->second.get() == &p;
 }
 // This computer's address on its default route (no datagram is sent: a UDP connect only picks the route). "" without a network.
 static std::string net_id()
@@ -1556,10 +1574,17 @@ static void hub_loop(NatHub *h)
         continue;
       }
       if (initiator) {
+        std::shared_ptr<LinkBox> b; // (before the locks: one that isn't kept is freed after they're let go)
+        NatLinkConfig c;
+        {
+          std::lock_guard<std::mutex> g(h->mx);
+          if (now < p.next_try || !still_peer(h, p)) continue;
+          b = make_box(h, p, c);
+        }
+        b->l = nat_link_new(c);
         std::lock_guard<std::mutex> g(h->mx);
-        if (now < p.next_try || h->peers.find(p.dev) == h->peers.end()) continue;
-        std::shared_ptr<LinkBox> b = make_box(h, p);
-        if (b) p.box = b; else { p.why = "libjuice wouldn't start (the ports taken?)"; p.next_try = now + 30; }
+        if (!b->l) { p.why = "libjuice wouldn't start (the ports taken?)"; p.next_try = now + 30; }
+        else if (still_peer(h, p)) p.box = b;
         continue;
       }
       if (now < p.next_offer_look) continue; // (the responder: a new offer starts a link; stage 3: from another link or the folder)
@@ -1571,10 +1596,17 @@ static void hub_loop(NatHub *h)
         any = any || m.kind == "offer";
         if (m.kind == "offer" && m.e != p.answered_e && m.t >= p.answered_t && m.t > newest_t) { newest = m.e; newest_t = m.t; } // (never an older one again)
       }
+      std::shared_ptr<LinkBox> b;
+      NatLinkConfig c;
+      {
+        std::lock_guard<std::mutex> g(h->mx);
+        if (!still_peer(h, p)) continue;
+        if (newest.empty()) { if (!any && !bad.empty()) p.why = "their rendezvous file: " + bad; continue; } // (none new: answered already, or none yet)
+        b = make_box(h, p, c, newest, newest_t);
+      }
+      b->l = nat_link_new(c);
       std::lock_guard<std::mutex> g(h->mx);
-      if (h->peers.find(p.dev) == h->peers.end()) continue;
-      if (newest.empty()) { if (!any && !bad.empty()) p.why = "their rendezvous file: " + bad; continue; } // (none new: answered already, or none yet)
-      if (std::shared_ptr<LinkBox> b = make_box(h, p, newest, newest_t)) { p.box = b; p.answered_e = newest; p.answered_t = newest_t; p.why.clear(); }
+      if (b->l && still_peer(h, p)) { p.box = b; p.answered_e = newest; p.answered_t = newest_t; p.why.clear(); }
     }
     items.clear(); // (a link dropped by a setup is freed here, outside the lock)
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -1780,7 +1812,10 @@ int nat_hub_setup(NatHub *h, const char *json)
     const size_t c = turn.rfind(':');
     if (c != std::string::npos && c > 0 && atoi(turn.c_str() + c + 1) > 0 && atoi(turn.c_str() + c + 1) < 65536) { th = turn.substr(0, c); tp = atoi(turn.c_str() + c + 1); }
   }
-  std::vector<std::shared_ptr<HubPeer>> gone; // (their links freed outside the lock: an agent waits for libjuice's thread)
+  std::vector<std::shared_ptr<HubPeer>> gone;
+  // (their links, freed once the locks below are let go: freeing one waits for libjuice's thread, and that thread takes sigmx for a
+  // rendezvous message carried over another link and h->mx for live audio's datagrams. Freed under them, it stopped this thread, REAPER's)
+  std::vector<std::shared_ptr<LinkBox>> gone_boxes;
   {
     std::lock_guard<std::mutex> g(h->mx);
     if (h->turn_host != th || h->turn_port != tp) { h->next_probe = 0; h->relay_ok = false; } // (a new relay: its STUN asked before links use it)
@@ -1818,9 +1853,10 @@ int nat_hub_setup(NatHub *h, const char *json)
     h->sig_peers.clear();
     for (const auto &kv : h->peers) h->sig_peers[kv.first] = true;
     for (auto it = h->inbox.begin(); it != h->inbox.end();) it = h->sig_peers.count(it->first) ? std::next(it) : h->inbox.erase(it);
-    for (auto &p : gone) p->box.reset(); // (the loop may hold its own reference for one pass; it's freed after that)
+    for (auto &p : gone) { if (p->box) gone_boxes.push_back(std::move(p->box)); p->box.reset(); }
   }
   crypto_wipe(k.priv, 32);
+  gone_boxes.clear(); // (the loop may hold its own reference to one for a pass; it's freed after that)
   gone.clear();
   if (!h->run.load()) {
     if (h->thr.joinable()) h->thr.join();

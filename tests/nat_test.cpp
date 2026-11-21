@@ -40,7 +40,8 @@
 #include "../extension/third_party/libjuice/include/juice/juice.h"
 
 static int fails = 0;
-#define CHECK(c, what) do { if (c) printf("ok   %s\n", what); else { printf("FAIL %s\n", what); ++fails; } } while (0)
+static char g_last[200] = "(none yet)"; // (the last check made: the watchdog says where a hang began)
+#define CHECK(c, what) do { snprintf(g_last, sizeof g_last, "%s", (const char *)(what)); if (c) printf("ok   %s\n", what); else { printf("FAIL %s\n", what); ++fails; } } while (0)
 static double now_ms() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 static void sleep_ms(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 static long long unix_s() { return (long long)std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count(); }
@@ -138,6 +139,13 @@ static void crypto_checks()
 
 // ---- ICE -------------------------------------------------------------------------------------------------------------------------------
 struct Pair { NatLink *a = nullptr, *b = nullptr; };
+static bool can_bind(const char *ip);
+static bool local_relay(NatLink *l) // (this end's half of the chosen pair is its own relayed address)
+{
+  const std::string st = nat_link_status(l);
+  const size_t a = st.find("\n  local  ");
+  return a != std::string::npos && st.substr(a + 1, st.find('\n', a + 1) - a - 1).find(" typ relay") != std::string::npos;
+}
 static NatLinkConfig cfg(const std::string &dir, const char *me, const char *peer, const char *secret, const NatKeys &mine, const NatKeys &theirs, int port, bool relay)
 {
   NatLinkConfig c;
@@ -575,6 +583,63 @@ static bool can_bind(const char *ip)
   sock_close((unsigned long long)s);
   return ok;
 }
+// libjuice's one thread hands on what arrives while holding its own lock, and takes the link's lock (to open a datagram), the hub's (live
+// audio's receiver asks nat_up for each one) and the signals' lock on the way. Anything that calls into libjuice while holding one of those
+// stops both threads for good, and the next status call with them: REAPER's. Three places did (extension/nat.cpp: nat_link_tick with the
+// peer's addresses, a setup dropping a peer, the hub making a link). Each is driven here until it would have stopped; a stop fails the
+// check and ends the run (nothing after it could finish).
+static void lock_checks(int stun)
+{
+  const std::string dir = temp_dir();
+  std::string why;
+  const std::string pa = nat_key_public(dir + "/a.key", why), pb = nat_key_public(dir + "/b.key", why), pc = nat_key_public(dir + "/c.key", why);
+  // the peer that answered says hello before this side has read its answer: with 300 ms between this side's keys and libjuice being told
+  // the peer's addresses, a hello arrives in between every time
+  nat_test_gap(300);
+  NatHub *a = nat_hub_new(), *b = nat_hub_new();
+  std::atomic<bool> up{ false }, done{ false }, stop{ false };
+  std::thread first([&] {
+    nat_hub_setup(a, hub_json(dir, "devA", "a.key", stun, { { "devB", pb } }).c_str());
+    nat_hub_setup(b, hub_json(dir, "devB", "b.key", stun, { { "devA", pa } }).c_str());
+    up.store(wait_for(30000, [&] { return peer_up(a, "devB") && peer_up(b, "devA"); }));
+    done.store(true);
+  });
+  const bool ok1 = wait_for(60000, [&] { return done.load(); }) && up.load();
+  CHECK(ok1, "a hello that arrives before the peer's addresses are set: the link still comes up (no thread stops)");
+  if (!done.load()) { printf("     stopped: the hub's thread and libjuice's each hold a lock the other waits for\n"); fflush(stdout); _exit(1); }
+  first.join();
+  nat_test_gap(0);
+  // live audio arrives on B from A (its receiver asks nat_up, as extension/rtaudio.cpp's does) while B's setup adds and drops a third
+  // computer: each add makes a link, each drop frees one
+  nat_set_rx(b, [](void *u, const unsigned char *, int, const void *from) { nat_up((NatHub *)u, from); }, b);
+  done.store(false);
+  std::atomic<int> rounds{ 0 };
+  std::thread flood([&] {
+    sockaddr_in sb{};
+    nat_resolve(a, "nat:devB", &sb);
+    const std::string m(200, 'f');
+    while (!stop.load()) { for (int i = 0; i < 50; ++i) nat_sendto(a, &sb, m.data(), (int)m.size()); sleep_ms(1); }
+  });
+  std::thread churn([&] {
+    for (int i = 0; i < 40; ++i) {
+      nat_hub_setup(b, hub_json(dir, "devB", "b.key", stun, { { "devA", pa }, { "devC", pc } }).c_str());
+      sleep_ms(30);
+      nat_hub_setup(b, hub_json(dir, "devB", "b.key", stun, { { "devA", pa } }).c_str());
+      sleep_ms(5);
+      rounds.fetch_add(1);
+    }
+    done.store(true);
+  });
+  const bool ok2 = wait_for(60000, [&] { return done.load(); });
+  printf("     %d of 40 rounds of a peer added and dropped under live audio\n", rounds.load());
+  CHECK(ok2 && peer_up(b, "devA"), "a setup adds and drops a peer 40 times while live audio arrives on another link: nothing stops, the link stays up");
+  if (!ok2) { printf("     stopped: a thread holds the hub's lock and waits for libjuice's, which waits for the hub's\n"); fflush(stdout); _exit(1); }
+  stop.store(true);
+  flood.join(); churn.join();
+  nat_set_rx(b, nullptr, nullptr);
+  nat_hub_free(a); nat_hub_free(b);
+  drop_files(dir);
+}
 static void stage3_checks(int stun)
 {
   const std::string dr = temp_dir(), dir = temp_dir();
@@ -742,8 +807,14 @@ static void ice_checks()
   nat_keypair(sa); nat_keypair(sb); nat_keypair(sx);
   for (int relay = 0; relay < 2; ++relay) {
     const std::string dir = temp_dir();
-    NatLink *a = nat_link_new(cfg(dir, "devA", "devB", "the studio secret", sa, sb, port, relay != 0));
-    NatLink *b = nat_link_new(cfg(dir, "devB", "devA", "the studio secret", sb, sa, port, relay != 0));
+    NatLinkConfig ca = cfg(dir, "devA", "devB", "the studio secret", sa, sb, port, relay != 0), cb = cfg(dir, "devB", "devA", "the studio secret", sb, sa, port, relay != 0);
+    // (relayed only: each end on a loopback address of its own, as stage 3's pair. On one address a check from A's own socket passes B's
+    // relayed address (TURN permits by IP, and A's relayed address has the same one), B learns A's real address from it, and ICE moves to
+    // that direct pair moments after the link comes up: "typ relay" one moment, "typ prflx" the next. The macOS runner, once)
+    const bool apart = relay && can_bind("127.0.0.2") && can_bind("127.0.0.3");
+    if (apart) { ca.bind = "127.0.0.2"; cb.bind = "127.0.0.3"; }
+    NatLink *a = nat_link_new(ca);
+    NatLink *b = nat_link_new(cb);
     double took = 0;
     const bool up = a && b && wait_up(a, b, 20000, took);
     char what[160];
@@ -752,7 +823,8 @@ static void ice_checks()
     if (a) printf("     A: %s\n", nat_link_status(a).c_str());
     if (b) printf("     B: %s\n", nat_link_status(b).c_str());
     if (up) {
-      if (relay) CHECK(nat_link_status(a).find("typ relay") != std::string::npos, "the chosen path goes through the relay");
+      if (apart) CHECK(local_relay(a) && local_relay(b), "the chosen path goes through the relay (each end from its own relayed address)");
+      else if (relay) printf("SKIP the relayed path's own check: this computer has no 127.0.0.2 / 127.0.0.3 (macOS: sudo ifconfig lo0 alias 127.0.0.2 up)\n");
       exchange(a, b, 200);
       std::string raw = nat_link_last_sealed(b), got;
       nat_link_inject(a, raw);
@@ -782,6 +854,7 @@ static void ice_checks()
   }
   hub_checks(port);
   stage3_checks(port);
+  lock_checks(port);
   juice_server_destroy(srv);
 }
 
@@ -848,15 +921,42 @@ static int run_peer(int argc, char **argv)
   return up ? 0 : 1;
 }
 
+// The run as a whole is bounded. Each wait in the checks has its own limit, but a thread that never comes back from a join or a lock has none:
+// the macOS runner once sat 50 minutes in one. After NAT_TEST_TIMEOUT seconds (600) the test says where it was, prints every thread's stack
+// where the system has a tool for it, and ends as failed.
+static std::atomic<bool> g_finished{ false };
+static void watchdog()
+{
+  const char *e = getenv("NAT_TEST_TIMEOUT");
+  const int secs = e && atoi(e) > 0 ? atoi(e) : 600;
+  std::thread([secs] {
+    for (int i = 0; i < secs * 5 && !g_finished.load(); ++i) sleep_ms(200);
+    if (g_finished.load()) return;
+    printf("FAIL the test didn't finish in %d s (a thread never came back); the last check made: %s\n", secs, g_last);
+    char cmd[300] = "";
+#if defined(__APPLE__)
+    snprintf(cmd, sizeof cmd, "f=${TMPDIR:-/tmp}/nat_test_hang.txt; (sudo -n sample %d 1 -file $f || sample %d 1 -file $f) >/dev/null 2>&1; sed -n '/^Call graph/,/^Total number/p' $f | head -n 600", (int)getpid(), (int)getpid());
+#elif defined(__linux__)
+    snprintf(cmd, sizeof cmd, "(sudo -n gdb -p %d -batch -ex 'thread apply all bt' || gdb -p %d -batch -ex 'thread apply all bt') 2>&1 | tail -n 300", (int)getpid(), (int)getpid());
+#endif
+    if (cmd[0] && system(cmd) != 0) printf("     (no stacks: the tool for them isn't here)\n");
+    fflush(stdout);
+    _exit(3);
+  }).detach();
+}
+
 int main(int argc, char **argv)
 {
   setvbuf(stdout, nullptr, _IONBF, 0);
   juice_set_log_level(getenv("NAT_VERBOSE") ? JUICE_LOG_LEVEL_DEBUG : JUICE_LOG_LEVEL_NONE);
   if (argc > 1 && !strcmp(argv[1], "server")) return run_server(argc, argv);
   if (argc > 1 && !strcmp(argv[1], "peer")) return run_peer(argc, argv);
+  watchdog();
+  if (getenv("NAT_TEST_HANG")) { std::mutex m; m.lock(); std::thread([&m] { m.lock(); }).join(); } // (to see the watchdog work: a lock nobody lets go)
   crypto_checks();
   rel_checks();
   ice_checks();
+  g_finished.store(true);
   printf(fails ? "FAILED %d\n" : "all ok\n", fails);
   return fails ? 1 : 0;
 }
