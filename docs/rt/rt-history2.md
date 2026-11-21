@@ -105,3 +105,41 @@ files, compile/free-names/locals/js checks pass in the worktree).
   shows the item); before it was drawn: none. (2) Make the item under tempo A, change the tempo to B, preview a point after: the item sits on the same
   beats as it did (bar numbers), not the same seconds. (3) Fixed lanes track with a comp (two takes, comp areas across both): the time lapse at that
   moment draws the comp lane's pieces dashed and says "Comp pieces N" in the counts; a take lane that doesn't play stays hidden.
+
+## Round 3 (rt-p1b: P6's two sync-core leftovers; offline tests only, not run in REAPER or a browser)
+- **A restored item under another tempo map** (`mirror.retime`, `lib/mirror.lua`): in beats (position, length, rate) the whole item is stretched as
+  REAPER stretches it when the map changes: length to the same beats (as before), and with it `SNAPOFFS` and both fades' length and auto length
+  (seconds inside the item, so they stay on the same part of the audio), and every audio take's `PLAYRATE` by the inverse (the same stretch of source
+  fills the new length; `SOFFS` is a source position and stays). A MIDI take's rate stays: its notes are in beats already. Beats (position only)
+  moves only the position; time moves nothing. A version made under the map in place comes back byte for byte.
+- **Automation restored under another map** (`mirror.retime_env`, called by `mirror.revert` for `env` changes with `opts.map_of`, so both History's
+  and the Restore page's Restore): every `PT` point, each automation item's place (`POOLEDENVINST`, `BANDAI`) and, in mode 1, its length go onto their
+  beats, and the item's points (`BANDAIPT`, read as project time) with them; an automation item's rate stays (its pool is in beats). Values that
+  don't move keep their text.
+- **A comp piece's source lane** (`mirror.comp_from`; `W.send` adds `from_lane` to an item's change, and a restored change carries its version's):
+  a piece in a lane that plays which is the same file (by name), rate and alignment as an item on another lane of its track, within that item's span,
+  names that lane (0-based, the lowest when several match). Not set for a source take in a lane that doesn't play, MIDI, or an item not on a lane.
+  `lib/webhistory.lua` (small additive edit: `detail` reads `from_lane`, a frame's item row gets it as an 8th field only when known) and
+  `lib/webui/history.js`: such an item is a comp piece (dashed, counted) even when its lane plays alone, and is labelled "from lane N" (1-based;
+  "LN" when narrow). Older changes have no `from_lane`, and their pieces show as before.
+- Limits: a gradual (linear) tempo change still isn't converted (left as stored); an item with timebase -1 goes by the project's timebase, not its
+  track's (as before); take envelopes inside an item aren't stretched; MIDI comp pieces and pieces of a looped or rate-changed source aren't named
+  unless rate and alignment match exactly (1 ms).
+- Tests: `tests/test_0_60_rt_p1b.lua` (new: the stretch, the MIDI take, position only, unchanged maps; automation points, items and their points, a map
+  with a change in it; comp matching cases; `detail` and the frame row; history.js wiring) and two end-to-end blocks in `tests/test_0_60_rt_edits.lua`
+  (Drums' automation restored from its version made under 120 onto a project now at 60: points 0 8 16 24, and the laptop the same; a comp piece's
+  sent change names lane 2, a source take and an unaligned item none). Each change was confirmed to fail its test with the change removed
+  (11 mutations).
+- **Check in REAPER (desktop)**:
+  1. An audio take with a fade in, a fade out and a snap offset (Alt+drag in the item's top) at 120 bpm, project timebase beats (position, length,
+     rate). Change the tempo to 60, then in REAPER itself note what the item looks like (length, fades, rate in Item properties). Undo the tempo change,
+     delete the take, set 60 again, and Restore the take from History (a point before the delete): the length, fades, snap offset and rate match
+     what REAPER did itself. If REAPER keeps fades or snap offset in seconds for that timebase, say so (one line each in `mirror.retime`).
+  2. The same with a MIDI item: after the Restore its rate is still 1.0 and its notes sit on the same beats.
+  3. Project timebase beats (position only): the restored take keeps its length, fades and rate; only its position moves.
+  4. Draw volume automation with points on bar lines and an automation item (Insert automation item) at 120, change to 60, delete the points and
+     the item, Restore that automation from History: the points and the item sit on the same bar lines as before; the item's shape plays the same
+     (if its points come back shifted, `BANDAIPT` times are relative, not project time: tell me).
+  5. A track in fixed lanes, two takes, comp across both (comp areas); on the other computer, History: the comp lane's pieces are dashed and read
+     "from lane 2" / "from lane 3" (or "L2") on each piece, matching where REAPER drew the comp areas. A piece made before this build shows dashed
+     with no label (only when its lane plays with others), as before.

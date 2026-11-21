@@ -2118,6 +2118,22 @@ do
   tick()
   recv(B)
   same(A, B, "a take put back onto its beat")
+  -- (rt-p1b) automation restored from a version made under another map: its points onto their beats too (mirror.retime_env), not its seconds
+  local v_env, d_oid = nil, select(2, A.F.raw.GetSetMediaTrackInfo_String(drums, "P_EXT:band_oid", "", false)):upper()
+  for _, e in ipairs(recall.entries(A.cfg, song, room)) do if e.kind == "obj" and e.obj == "env" and not e.gone and tostring(e.track):upper() == d_oid then v_env = v_env or e end end
+  assert(v_env and type(v_env.state) == "string" and v_env.state:find("\nPT 4 0.5 0\n", 1, true), "Drums' first automation version, made under 120")
+  tick()
+  as(A)
+  res = mirror.revert(A.F.proj, A.cfg, song, room, { [v_env.oid] = v_env }, { can = yes, mode = "open", at_once = true,
+    map_of = function(ev) return ev.id == v_env.id and tf or nil end })
+  local pts = {}
+  for t in select(2, reaper.GetEnvelopeStateChunk(reaper.GetTrackEnvelope(drums, 0), "", false)):gmatch("\nPT (%S+)") do pts[#pts + 1] = tonumber(t) end
+  assert(#pts == 4 and pts[2] == 8 and pts[3] == 16 and pts[4] == 24, "the points of a version made under 120 sit on their beats under 60 (" .. table.concat(pts, " ") .. ", " .. tostring(res) .. ")")
+  tick()
+  settle(A, true)
+  tick()
+  recv(B)
+  same(A, B, "automation put back onto its beats")
   print("rt-edits: a Restore across a tempo change is whole, sends nothing more as yours, and Undo takes it back as one; a take lands on its beat")
 end
 -- ---- (round 6) and an Undo that carries a timeline change: what REAPER moves for the map outside the act (a bandmate's item added since) isn't
@@ -2315,5 +2331,33 @@ do
   assert(mirror.heal(B.F.proj, rdir, false) == 1 and #B.F.undos == 1, "and lands, with its point, once stopped")
   same(A, B, "(automation healed)")
   print("rt-edits: a heal's undo point and its log line pair up")
+end
+-- ---- (rt-p1b, P6 item 2) a comp piece's change names the lane it came from (from_lane), for History's time lapse ----
+do
+  build("Edits comp")
+  tick()
+  as(A)
+  F = A.F
+  vox.vals.I_FREEMODE, vox.vals.I_NUMFIXEDLANES, vox.vals["C_LANEPLAYS:0"], vox.vals["C_LANEPLAYS:1"], vox.vals["C_LANEPLAYS:2"] = 2, 3, 1, 0, 0
+  for k = 1, 2 do F.add_item(vox, audio(10, 8, "vox-take" .. k .. ".flac", "Vox take " .. k)).lane = k end
+  F.changed()
+  local got = {}
+  settle(A, true, got)
+  for _, ev in pairs(got) do assert(ev.obj ~= "item" or ev.from_lane == nil, "a source take names no lane (its lane doesn't play)") end
+  tick()
+  -- REAPER's comp area over 12-15 s from take 2: a piece in the playing lane, the same file, 2 s into it
+  local piece = F.add_item(vox, audio(12, 3, "vox-take2.flac", "Vox take 2", { soffs = 2 }))
+  piece.lane = 0
+  local other = F.add_item(vox, audio(30, 2, "vox-take1.flac", "Vox take 1", { soffs = 1 })) -- (take 1's audio, off its alignment: not a piece of it)
+  other.lane = 0
+  F.changed()
+  got = {}
+  settle(A, true, got)
+  local pe, oe = got[piece.ext.band_oid], got[other.ext.band_oid]
+  assert(pe and pe.from_lane == 2, "the comp piece's change names lane 2 (index) it came from (" .. tostring(pe and pe.from_lane) .. ")")
+  assert(oe and oe.from_lane == nil, "an item in the playing lane that isn't a stretch of another lane's names none")
+  recv(B)
+  same(A, B, "comp pieces")
+  print("rt-edits: a comp piece's change names its source lane")
 end
 print("ok rt-edits")

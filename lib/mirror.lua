@@ -1691,6 +1691,35 @@ function mirror.lane_cover(items)
   end
   return span(true), span(false)
 end
+-- Which fixed lane a comp piece came from: REAPER's comp copies a stretch of a source lane's item into the lane that plays, so the piece is
+-- the same file, rate and alignment (where the source's start falls on the timeline) as an item on another lane, within its span. `state`:
+-- the piece's item state; `plays`: its track's "1,0,0" (C_LANEPLAYS per lane); `others`: the track's other item states. -> the lowest such
+-- lane (0-based, as BANDLANE), or nil (not on a lane, a lane that doesn't play, MIDI, or no match). History's time lapse names it
+-- (lib/webui/history.js, from the change's `from_lane`). P6 item 2, rt-p1b. Pure.
+local function piece_of(st)
+  local lane = tonumber(st:match("BANDLANE (%d+)"))
+  local file = st:match('\n%s*FILE "([^"\n]+)"')
+  if not lane or not file then return nil end
+  local rate = tonumber(st:match("\n%s*PLAYRATE (%S+)")) or 1
+  local pos, len = tonumber(st:match("\n%s*POSITION (%S+)")), tonumber(st:match("\n%s*LENGTH (%S+)"))
+  if not pos or not len or rate <= 0 then return nil end
+  return { lane = lane, file = file:match("[^/\\]*$"):lower(), rate = rate, pos = pos, len = len,
+    zero = pos - (tonumber(st:match("\n%s*SOFFS (%S+)")) or 0) / rate }
+end
+function mirror.comp_from(state, plays, others)
+  local me = type(state) == "string" and piece_of(state)
+  if not me then return nil end
+  local flags = {}
+  for v in ((plays or "") .. ","):gmatch("([^,]*),") do flags[#flags + 1] = v end
+  if flags[me.lane + 1] == "0" then return nil end
+  local best
+  for _, st in ipairs(others or {}) do
+    local x = type(st) == "string" and piece_of(st)
+    if x and x.lane ~= me.lane and x.file == me.file and math.abs(x.rate - me.rate) < 1e-6 and math.abs(x.zero - me.zero) < 1e-3
+      and me.pos >= x.pos - 1e-3 and me.pos + me.len <= x.pos + x.len + 1e-3 and (not best or x.lane < best) then best = x.lane end
+  end
+  return best
+end
 
 -- Which lane entries[i]'s item sat on, or nil (not on a lane). A delete holds no state, so it's the one its item had last.
 -- Kept on the entry: lists call this for every row they draw. Pure.
@@ -2111,8 +2140,12 @@ end
 -- An item's version made under the tempo map `from`, put where REAPER would have moved it on the map `to` (band.capture_tempo's lists): on the
 -- same beat, by its timebase (its BEAT line, else `mode`, the project's: 1 beats (position, length, rate), 2 beats (position only), 0 time).
 -- A take restored to a point after a tempo change it was last changed before sat at its old seconds, off its beat (rt-history2's limits).
--- shortcut: position, and length in mode 1; a rate, fades and snap offset stay as stored, and a map with a gradual (linear) tempo change
--- isn't converted at all. Upgrade if a REAPER check shows those off. Pure.
+-- Mode 1 stretches the whole item as REAPER does for that timebase: its length to the same beats, and with it the snap offset and fades
+-- (seconds inside the item: they stay on the same part of the audio), and an audio take's rate by the inverse (the same stretch of source
+-- fills the new length; SOFFS, a source position, stays). A MIDI take's rate stays: its notes are in beats already. Mode 2 moves the
+-- position only. (rt-p1b, P6's round 2 proposal)
+-- shortcut: a map with a gradual (linear) tempo change isn't converted at all, the item's timebase -1 goes by the project's (not its track's),
+-- and take envelopes stay as stored. Upgrade if a REAPER check shows those off. Pure.
 local function map_qn(map, t)
   local q, pt, pb = 0, 0, map[1].bpm
   for _, m in ipairs(map) do
@@ -2130,23 +2163,75 @@ local function map_time(map, q)
   end
   return pt + (q - pq) * 60 / pb
 end
-function mirror.retime(state, from, to, mode)
-  if type(state) ~= "string" or type(from) ~= "table" or type(to) ~= "table" or #from == 0 or #to == 0 then return state end
+local function maps_ok(from, to)
+  if type(from) ~= "table" or type(to) ~= "table" or #from == 0 or #to == 0 then return false end
   for _, map in ipairs({ from, to }) do
-    for _, m in ipairs(map) do if m.linear or not (tonumber(m.time) and tonumber(m.bpm) and m.bpm > 0) then return state end end
+    for _, m in ipairs(map) do if m.linear or not (tonumber(m.time) and tonumber(m.bpm) and m.bpm > 0) then return false end end
   end
+  return true
+end
+local function g14(x) return string.format("%.14g", x) end
+local function join_like(L, was) if L[#L] == "" then L[#L] = nil end; return table.concat(L, "\n") .. (was:sub(-1) == "\n" and "\n" or "") end
+function mirror.retime(state, from, to, mode)
+  if type(state) ~= "string" or not maps_ok(from, to) then return state end
   local beat = tonumber(state:match("\n%s*BEAT (%-?%d+)"))
   if beat and beat >= 0 then mode = beat end
   local p, l = tonumber(state:match("\n%s*POSITION ([%d%.%-e]+)")), tonumber(state:match("\n%s*LENGTH ([%d%.%-e]+)"))
   if (mode ~= 1 and mode ~= 2) or not p then return state end
   local np = map_time(to, map_qn(from, p))
   local out = state
-  if math.abs(np - p) > 1e-9 then out = out:gsub("(\n%s*POSITION )[^\n]+", "%1" .. string.format("%.14g", np), 1) end
-  if mode == 1 and l then
+  if math.abs(np - p) > 1e-9 then out = out:gsub("(\n%s*POSITION )[^\n]+", "%1" .. g14(np), 1) end
+  if mode == 1 and l and l > 0 then
     local nl = map_time(to, map_qn(from, p + l)) - np
-    if math.abs(nl - l) > 1e-9 then out = out:gsub("(\n%s*LENGTH )[^\n]+", "%1" .. string.format("%.14g", nl), 1) end
+    if math.abs(nl - l) > 1e-9 then
+      local s = nl / l
+      out = out:gsub("(\n%s*LENGTH )[^\n]+", "%1" .. g14(nl), 1)
+      -- (the item's own lines, depth 1, take by take: SNAPOFFS, FADEIN/FADEOUT's length and auto length, each audio take's PLAYRATE)
+      local L, depth, take = {}, 0, { midi = false }
+      local takes = { take }
+      for line in (out .. "\n"):gmatch("([^\n]*)\n") do
+        L[#L + 1] = line
+        local kw = line:match("^%s*(%S+)") or ""
+        if depth == 1 then
+          if kw == "TAKE" then take = { midi = false }; takes[#takes + 1] = take
+          elseif kw == "SNAPOFFS" then L[#L] = line:gsub("^(%s*SNAPOFFS )(%S+)", function(a, v) return a .. g14((tonumber(v) or 0) * s) end)
+          elseif kw == "FADEIN" or kw == "FADEOUT" then
+            L[#L] = line:gsub("^(%s*%S+ %S+ )(%S+) (%S+)", function(a, len, auto) return a .. g14((tonumber(len) or 0) * s) .. " " .. g14((tonumber(auto) or 0) * s) end)
+          elseif kw == "PLAYRATE" then take.rate = #L end
+        end
+        if line:find("^%s*<SOURCE MIDI") then take.midi = true end
+        if kw:sub(1, 1) == "<" then depth = depth + 1 elseif kw == ">" then depth = depth - 1 end
+      end
+      for _, t in ipairs(takes) do
+        if t.rate and not t.midi then L[t.rate] = L[t.rate]:gsub("^(%s*PLAYRATE )(%S+)", function(a, v) return a .. g14((tonumber(v) or 1) / s) end) end
+      end
+      out = join_like(L, out)
+    end
   end
   return out
+end
+-- An automation part's version made under the map `from`, onto the same beats on `to`, as REAPER moves points when the map changes (`mode`:
+-- the project's timebase; 0 = time, nothing moves): each point (PT), each automation item's place (POOLEDENVINST; BANDAI, mirror.ai_lines)
+-- and, in mode 1, its length, and its points (BANDAIPT, project time) onto their beats. An item's rate stays: its pool is in beats
+-- (D_POOL_QNLEN). (P6's round 2 proposal, rt-p1b. shortcut: as mirror.retime, a gradual tempo change isn't converted.) Pure.
+function mirror.retime_env(state, from, to, mode)
+  if type(state) ~= "string" or (mode ~= 1 and mode ~= 2) or not maps_ok(from, to) then return state end
+  local function at(t) return map_time(to, map_qn(from, t)) end
+  local function put(was, now) return math.abs(now - tonumber(was)) > 1e-9 and g14(now) or was end -- (unmoved: its text kept)
+  local L = {}
+  for line in (state .. "\n"):gmatch("([^\n]*)\n") do
+    local a, t, z = line:match("^(%s*PT )(%S+)(.*)$")
+    local h, pos, len, rest = line:match("^(%s*POOLEDENVINST %S+ )(%S+) (%S+)(.*)$")
+    if not h then h, pos, len, rest = line:match("^(BANDAI %S+ )(%S+) (%S+)(.*)$") end
+    local ph, pt, pz = line:match("^(BANDAIPT %S+ %S+ )(%S+)(.*)$")
+    if a and tonumber(t) then line = a .. put(t, at(tonumber(t))) .. z
+    elseif h and tonumber(pos) and tonumber(len) then
+      local np = at(tonumber(pos))
+      line = h .. put(pos, np) .. " " .. (mode == 1 and put(len, at(tonumber(pos) + tonumber(len)) - np) or len) .. rest
+    elseif ph and tonumber(pt) then line = ph .. put(pt, at(tonumber(pt))) .. pz end
+    L[#L + 1] = line
+  end
+  return join_like(L, state)
 end
 
 -- ---- REAPER side ------------------------------------------------------------------------------------------
@@ -4908,6 +4993,11 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
     name = name, pos = o.pos, hash = o.hash, hv = mirror.HV, act = w.act, tl = mirror.map_stamp(proj) } -- (hash: what it is here; every receiver checks it came out the same)
   if o.kind == "track" and opts.local_mix then ev.state, ev.local_mix = mirror.band_faders(state, last and not last.gone and last.state), true end
   if o.kind == "track" and w.moved_from then ev.moved = w.moved_from[o.oid] end -- (the track it sat under before you moved it: mirror.moved_since)
+  if o.kind == "item" and type(state) == "string" and state:find("BANDLANE", 1, true) then -- (a comp piece's source lane: mirror.comp_from)
+    local others, t = {}, by_oid[o.track]
+    for _, x in ipairs(objs or {}) do if x.kind == "item" and x.track == o.track and x.oid ~= o.oid then others[#others + 1] = x.state end end
+    ev.from_lane = mirror.comp_from(state, t and type(t.state) == "table" and t.state.plays, others)
+  end
   if o.kind == "track" and o.ptr and (tonumber(o.state.lanes) or 0) > 1 then
     -- (the first comp area: REAPER's new lane holds only that piece, and the rest of the part goes silent, with no word: Mac, 0.42.10)
     local items = {}
@@ -6182,11 +6272,12 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
     end
     -- (an item's version made under another tempo map than the one in place now goes onto its beat here, as REAPER moved it when the maps
     -- changed: opts.map_of(version) -> the map it was made under (History's Restore: lib/histhear.lua). rt-history2's limits, rt-edits round 6)
-    if opts.map_of and p.t and p.t.obj == "item" and type(p.t.state) == "string" then
+    -- (and an automation part's points and items the same way: mirror.retime_env. rt-p1b)
+    if opts.map_of and p.t and (p.t.obj == "item" or p.t.obj == "env") and type(p.t.state) == "string" then
       local from = opts.map_of(p.t)
       if from then
         now_map = now_map or require("band").capture_tempo(proj)
-        local st = mirror.retime(p.t.state, from, now_map, reaper.GetSetProjectInfo(proj, "PROJECT_TIMEBASE", 0, false))
+        local st = (p.t.obj == "item" and mirror.retime or mirror.retime_env)(p.t.state, from, now_map, reaper.GetSetProjectInfo(proj, "PROJECT_TIMEBASE", 0, false))
         if st ~= p.t.state then p.t = setmetatable({ state = st }, { __index = p.t }) end
       end
     end
@@ -6223,7 +6314,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       local ok, nh = mirror.apply(proj, p.t, media, opts.local_mix)
       if ok then
         mirror.hlc_seen(last and last.hlc)
-        local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id, moved = p.moved,
+        local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id, moved = p.moved, from_lane = p.t.from_lane,
           undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, act = opts.act, tl = mirror.map_stamp(proj) }
         local id = sync.post(cfg, song, room, ev)
         remember(proj, p.oid, ev.rev, nh, id, mirror.order_of(ev))
@@ -6241,7 +6332,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       local ok, nh = mirror.apply(proj, p.t, media, opts.local_mix)
       if ok then
         mirror.hlc_seen(last and last.hlc)
-        local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id, moved = p.moved,
+        local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id, moved = p.moved, from_lane = p.t.from_lane,
           undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, revived = (last and last.gone and last.user ~= cfg.user) or nil, act = opts.act, tl = mirror.map_stamp(proj) } -- (act: a History page restore is one act, rt-history)
         local id = sync.post(cfg, song, room, ev)
         remember(proj, p.oid, ev.rev, nh, id, mirror.order_of(ev))

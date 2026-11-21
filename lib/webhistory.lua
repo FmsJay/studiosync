@@ -37,13 +37,14 @@ function webhistory.epoch(iso)
   local days = era * 146097 + yoe * 365 + yoe // 4 - yoe // 100 + doy - 719468
   return days * 86400 + tonumber(H) * 3600 + tonumber(M) * 60 + tonumber(S)
 end
--- An event's file text -> an item's { len, lane, midi, take }, or a track's { plays, after (the track it sat under) }. `decode`: the event decoded (only asked for a new item's, the one that can be a take).
+-- An event's file text -> an item's { len, lane, midi, take, from (a comp piece's source lane: mirror.comp_from, rt-p1b) }, or a track's { plays, after (the track it sat under) }. `decode`: the event decoded (only asked for a new item's, the one that can be a take).
 function webhistory.detail(text, ev, decode)
   text = type(text) == "string" and text or ""
   if ev.obj == "track" then -- (a track: which of its fixed lanes play; nil when it has none, everything on it plays)
     return { plays = text:match('"freemode":%s*2[,}]') and text:match('"plays":%s*"([%d,]*)"') or nil, after = text:match('"after":%s*"([^"\\]*)"') }
   end
-  local out = { lane = tonumber(text:match("BANDLANE (%d+)")), len = tonumber(text:match("\\nLENGTH ([%d%.eE%+%-]+)")), midi = text:find("<SOURCE MIDI", 1, true) ~= nil or nil }
+  local out = { lane = tonumber(text:match("BANDLANE (%d+)")), len = tonumber(text:match("\\nLENGTH ([%d%.eE%+%-]+)")), midi = text:find("<SOURCE MIDI", 1, true) ~= nil or nil,
+    from = tonumber(text:match('"from_lane":%s*(%d+)')) }
   if (ev.rev or 1) == 1 and not ev.restored and not ev.gone then
     local full = decode and decode(text)
     local st = type(full) == "table" and type(full.state) == "string" and full.state or nil
@@ -139,7 +140,7 @@ function webhistory.build(evs, info, o)
       for i, id in ipairs(ids) do out[i] = row and row(id, map[id]) or id end
       return out
     end
-    f.i = flat(F.i, function(_, it) return { it.iid, it.tid, r3(it.pos), r3(it.len), it.u, it.k, it.lane or -1 } end)
+    f.i = flat(F.i, function(_, it) return { it.iid, it.tid, r3(it.pos), r3(it.len), it.u, it.k, it.lane or -1, it.from } end) -- (from: only when known)
     f.p = flat(F.p, function(id, x) return { id, x } end)
     f.g, f.ta, f.tg = flat(F.g), flat(F.ta), flat(F.tg)
     f.m = flat(F.m, function(id, x) return { id, x[1], x[2] } end)
@@ -190,11 +191,11 @@ function webhistory.build(evs, info, o)
     end
     return tr
   end
-  local function item_set(key, tr, pos, len, ui, k, t, lane)
+  local function item_set(key, tr, pos, len, ui, k, t, lane, from)
     local it = items[key]
     if not it then nitems = nitems + 1; it = { iid = nitems - 1 }; items[key] = it end
     it.tid, it.pos, it.len, it.u, it.k, it.alive = tr.id, pos, len, ui, k, true
-    if lane ~= false then it.lane = lane end -- (false: not read yet, the last known lane stays)
+    if lane ~= false then it.lane, it.from = lane, from end -- (false: not read yet, the last known lane stays)
     local f = frame(t)
     f.g[it.iid] = nil
     f.i[it.iid] = it
@@ -264,7 +265,7 @@ function webhistory.build(evs, info, o)
           -- (an edit that lost to a newer revision, or onto a track already deleted, changes nothing: it went with its track, as in REAPER)
           local lane = false -- (not read yet)
           if d then lane = d.lane end
-          if won and not (had and not had.alive) then item_set(key, track(tkey, e.name, t), pos, len, ui, k, t, lane) end
+          if won and not (had and not had.alive) then item_set(key, track(tkey, e.name, t), pos, len, ui, k, t, lane, d and d.from) end
         end
       elseif w == "litem" then
         local key = "L" .. tostring(e.take or e.id)
