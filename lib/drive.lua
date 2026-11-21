@@ -1009,6 +1009,9 @@ end
 -- From Live sync's cloud pass, at most every EVERY s (reads two small files in the cloud copy, and a listing only when there's work).
 drive.tools_at = -math.huge
 drive.TOOLS_STEP = 0.008 -- s of hashing the update files' code a plan
+-- s of REAPER's thread Live sync gives the cloud copy's planning each pass (James, 2026-11-21: "Allow more", from 8 ms: the first sweep
+-- after a restart took about 9 minutes at 8 ms a pass; the heavy signature check keeps a plan of its own whatever this is)
+drive.STEP_BUDGET = 0.016
 function drive.tools_pass(cfg, droot, now)
   if now - drive.tools_at < drive.EVERY then return end
   drive.tools_at = now

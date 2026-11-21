@@ -732,7 +732,7 @@ function P.save_drive(t)
     if not drive_busy then drive_at, drive_soon_at, require("streams").cloud_due = now, nil, nil end
     local at = {}
     for _, room in ipairs(rooms) do at[#at + 1] = { sync.room_dir(cfg, b.song, room), droot .. "/" .. b.song .. "/rooms/" .. room } end
-    local moved, more, err = drive.bg_step(cfg, droot, b.song, at, 0.008)
+    local moved, more, err = drive.bg_step(cfg, droot, b.song, at, drive.STEP_BUDGET or 0.008)
     sub_lap("drive/step")
     if moved then
       for _, path in ipairs(drive.landed) do
