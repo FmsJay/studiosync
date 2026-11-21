@@ -2047,3 +2047,40 @@ this file. Deployed as 0.59.49.63-64, extension 1.0.24.
   streams, in extension 1.0.24. Not run between two real computers yet.
 - Also checked in REAPER this round: automation lanes from the web page (and refused on a claimed track); a distributed bounce whose
   helper drops out mid-render (redone by the others; its temp folder leak fixed, dd7ec37).
+
+## Rounds 4 to 6: the notes in docs/rt/ (2026-11-20)
+Deployed as 0.59.49.65 to .74, extensions 1.0.25 to 1.0.30. Each line names the note that holds what's built, how to use it, what's
+untested and the review-later security list.
+
+**Editing together**
+- **Quick looks** (`docs/rt/rt-look.md`): edits also go as link messages; desktop to laptop measured 0.22-0.31 s (was about 4.6 s).
+- **Hold my changes removed** (`docs/rt/rt-nohold.md`) and **what real time made unnecessary** (`docs/rt/rt-audit.md`).
+- **Two people on one thing** (`docs/rt/rt-merge.md`): MIDI notes, envelope points and track properties merge; the same piece asks.
+- **Modes and claims** (`docs/rt/rt-claims.md`): Open, Claims, Driver only, Admins only; auto-claims, asking for a claim, editing grants.
+- **Edits we hadn't tried** (`docs/rt/rt-edits.md`): the edit matrix; undo of regions, tempo changes arriving in either order, a project
+  behind the studio's timeline. Open: a marker-colour echo, and session.json written by several computers.
+- **REAPER's Undo, then another edit** (`docs/rt/rt-undo.md`): heal reads the link inbox and never goes back.
+- **Signed studio files over the link first** (`docs/rt/rt-linkfirst.md`); **the cloud copy off REAPER's thread** (`docs/rt/rt-drivebg.md`);
+  **cloud storage modes** (`docs/rt/rt-cloudmodes.md`).
+
+**Live audio and playing together**
+- **Audio never reached the extension inside REAPER** (`docs/rt/rt-audience.md`, "Found on the real desktop"): REAPER leaves the hook's
+  channel counts at 0. Fixed in extension 1.0.30; confirmed by counters on three computers, not yet by ear.
+- **Hub fixes** (`docs/rt/rt-hubfix.md`), **room lists that disagree** (`docs/rt/rt-roomlist.md`), **SonoBus's extras and who mixes**
+  (`docs/rt/rt-sonox.md`).
+- **Jam** (`docs/rt/rt-jam.md`) and **the full-quality copy** (`docs/rt/rt-double.md`).
+- **Try a plug-in you don't have** (`docs/rt/rt-hopvst.md`).
+
+**Web, phone and guests**
+- **Listening links** (`docs/rt/rt-audience.md`): tailnet links on; public listening built off, the owner's switch.
+- **Browser guests** (`docs/rt/rt-browserjoin.md`), **screen share with REAPER's sound** (`docs/rt/rt-share.md`), **video**
+  (`docs/rt/rt-video2.md`), **drawing** (`docs/rt/rt-draw.md`), **history playback** (`docs/rt/rt-history.md`), **AI tools**
+  (`docs/rt/rt-ai.md`, built against stand-ins only), **the phone's Project view** (`docs/rt/rt-phonefix.md`), **four small fixes**
+  (`docs/rt/rt-small.md`).
+
+**Joining and connecting**
+- **Invites and the studiosync:// handler** (`docs/rt/rt-invite.md`), **the first copy over the link** (`docs/rt/rt-joinlink.md`),
+  **connect without Tailscale, stage 3** (`docs/rt/rt-nat3.md`), **fewer dependencies** (`docs/rt/rt-lite.md`).
+
+**CI**
+- **The Mac job's timing tests** (`docs/rt/rt-ci.md`, `docs/rt/rt-ci3.md`) and **the relay's two failing checks** (`docs/rt/rt-macrelay.md`).
