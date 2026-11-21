@@ -256,16 +256,17 @@ local read_n = 0 -- (events read so far: a planned round that reads further is g
 -- -> the events, or nil once `deadline` (time_precise) has passed with some still unread: those read so far are kept, the next call carries on
 -- (the first pass after a start read a big room's 3,150 at once and held REAPER up 0.7 s)
 drive.READ_MIN = 0.004 -- s of reading each call gets after the folder's listing, whatever the deadline
+local reading = {} -- (a folder read over several passes keeps the listing it started from, then is listed again for what came meanwhile. rt-drive2)
 local function read_events(dir, deadline)
   local out = {}
-  local files = band.files(dir, ".json")
+  local files = reading[dir] or band.files(dir, ".json")
   -- (listing a big room's events alone took longer than a planned pass's 8 ms: a change that came after that was never read, nor the room
   -- copied. rt-perfcut1)
   if deadline then deadline = math.max(deadline, reaper.time_precise() + drive.READ_MIN) end
   for _, f in ipairs(files) do
     local p = dir .. "/" .. f
     local e = seen_events[p]
-    if e == nil and deadline and reaper.time_precise() > deadline then return nil end
+    if e == nil and deadline and reaper.time_precise() > deadline then reading[dir] = files; return nil end
     if not e then
       local ev = band.read_json(p)
       e = ev and { type = ev.type, take = ev.take, time = ev.time, id = ev.id, user = ev.user, oid = ev.oid, gone = ev.gone == true or nil } or false
@@ -277,6 +278,7 @@ local function read_events(dir, deadline)
     end
     if e then out[#out + 1] = e end
   end
+  if reading[dir] then reading[dir] = nil; return read_events(dir, deadline) end
   return out
 end
 
@@ -891,8 +893,9 @@ end
 -- nothing finished this tick (a job still out). `rooms`: { {here, there} } of the open song.
 local round
 drive.MAX_JOBS = 500 -- (a pass that never settles ends there: the next starts on the usual schedule)
--- A round that plans STALL times in a row with nothing moved, no unit finished and no change read further rests: it ends, and the next waits
--- drive.EVERY. One that never settled planned again every pass, 15-76 ms each, for hours (rt-perf: Cross Test, "more" with 0 moved). rt-perfcut1
+-- A round that plans STALL times in a row with nothing moved, no unit finished, no change read further and no step of the storage sweep rests:
+-- it ends, and the next waits drive.EVERY. One that never settled planned again every pass, 15-76 ms each, for hours (rt-perf: Cross Test,
+-- "more" with 0 moved). rt-perfcut1. A room done again (rt-drive2: the open song's, every SOON s) isn't something happening.
 drive.STALL, drive.rest_until = 10, -math.huge
 function drive.bg_busy() return round ~= nil end
 function drive.bg_on() return require("drivebg").on() end
@@ -917,8 +920,13 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
     for _, p in ipairs(rooms) do round.units[#round.units + 1] = { "room", p[1], p[2] } end
     for _, k in ipairs({ "upkeep", "tools", "cm" }) do round.units[#round.units + 1] = { k } end
   end
-  if not J.ready() then return r and round.moved, r and true, r and r.err end
+  if not J.ready() then return r and round.moved, r and (not round.told or round.moved > 0), r and r.err end
   local t0, rooms_left = reaper.time_precise(), false
+  -- (the open song's rooms again every SOON s while the round goes on: they were done at 03:54 on the desktop while the round read another
+  -- song's 2,406 changes for an hour, and nothing new of yours went up meanwhile. Not one that failed: that's logged once a round. rt-drive2)
+  for _, u in ipairs(round.units) do
+    if u[1] == "room" and u.done_at and not u.failed and t0 - u.done_at >= drive.SOON then u.done, u.done_at = false, nil end
+  end
   local function left() return budget - (reaper.time_precise() - t0) end
   local units = {
     room = function(u) return drive.mirror(u[2], u[3], left(), cfg.user) end,
@@ -926,8 +934,8 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
     tools = function() return drive.tools_pass(cfg, droot, reaper.time_precise()) end,
     cm = function() return require("cloudmodes").tick(cfg, droot, reaper.time_precise(), left()) end,
   }
-  local read0, done0 = read_n, 0
-  for _, u in ipairs(round.units) do if u.done then done0 = done0 + 1 end end
+  local CM = require("cloudmodes")
+  local read0, cm0 = read_n, CM.progress()
   J.begin(droot)
   pcall(function()
     for _, u in ipairs(round.units) do
@@ -938,10 +946,10 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
         if not ok and J.is_need(a) then
           if u[1] == "tools" then drive.tools_at = saved end -- (asked again once the cloud's two files are read)
         elseif not ok then
-          u.done, round.err = true, tostring(a)
+          u.done, u.failed, round.err = true, true, tostring(a)
           band.log(drive.label(drive.service_of(droot)) .. " copy: " .. tostring(a))
         elseif u[1] == "tools" then u.done = true
-        elseif u[1] == "cm" then u.done = not require("cloudmodes").sweeping() -- (a sweep goes on tick by tick, a room or two at a time)
+        elseif u[1] == "cm" then u.done = not CM.sweeping() -- (a sweep goes on tick by tick, a room or two at a time)
         else u.done = not b end
         if u[1] == "room" and not u.done then rooms_left = true end
       end
@@ -949,22 +957,34 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
   end)
   local sent = J.submit()
   if sent then round.jobs = round.jobs + 1 end
-  local all, ndone = true, 0
-  for _, u in ipairs(round.units) do if u.done then ndone = ndone + 1 else all = false end end
+  -- (copied: every unit but the storage sweep done and nothing out. The sweep only counts what the cloud copy holds; waiting for it, which on
+  -- the desktop never got a turn, kept "still copying" up for good and the round never ended. rt-drive2)
+  local all, copied, fresh = true, not sent, false
+  for _, u in ipairs(round.units) do
+    if not u.done then all = false; if u[1] ~= "cm" then copied = false end
+    elseif not u.done_at then u.done_at = reaper.time_precise(); fresh = fresh or not u.once; u.once = true end -- (a room done again isn't news)
+  end
   if (all and not sent) or round.jobs > drive.MAX_JOBS then return done() end
-  round.plans = (ndone > done0 or read_n > read0) and 0 or round.plans + 1
+  -- (something happening: a unit done for the first time, a change read, a step of the sweep; files moved count as the job comes back, above)
+  round.plans = (fresh or read_n > read0 or CM.progress() > cm0) and 0 or round.plans + 1
   if round.plans >= drive.STALL then
     drive.rest_until = reaper.time_precise() + drive.EVERY
-    if not drive.rest_said then
+    if not drive.rest_said and not copied then
       drive.rest_said = true
       band.log(drive.label(drive.service_of(droot)) .. " copy: nothing is moving though it isn't up to date, so it tries again every " ..
         math.floor(drive.EVERY / 60) .. " minutes rather than every pass")
     end
     local x = round
     round = nil
-    return x.moved, true, x.err
+    return x.moved, not copied and (not x.told or x.moved > 0), x.err
   end
-  return r and round.moved, r and true, r and r.err
+  -- ("up to date" said once, with the files moved since it was last said; a room looked at again stays "up to date" unless it moves some)
+  if copied and (not round.told or round.moved > 0) then
+    local m = round.moved
+    round.told, round.moved = true, 0
+    return m, false, round.err
+  end
+  return r and round.moved, r and not copied and (not round.told or round.moved > 0), r and r.err
 end
 
 return drive

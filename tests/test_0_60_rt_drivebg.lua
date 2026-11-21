@@ -339,6 +339,87 @@ local said = 0
 for _, s in ipairs(logs) do if s:find("nothing is moving", 1, true) then said = said + 1 end end
 check(said == 1, "said once, not each time it rests: " .. said)
 
+-- ---- 3d. the open song's rooms again while the round goes on (rt-drive2) ----
+-- The desktop, 11-21: Cross Test's room was done at 03:54, then the round read another song's 2,406 changes for an hour (counted as something
+-- happening, so it never rested) and nothing new of James's went up until the next round at 04:55.
+setup()
+drive, bg, cm = fresh()
+drive.upkeep = function() return 0, true end -- (the other song: not done all this time)
+local reads = 0
+cm.progress = function() reads = reads + 1; return reads end -- (and something read every pass)
+for _ = 1, 30 do clock = clock + 2; stand_in_worker(); drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008) end
+check(fs[THERE .. "/events/" .. ev("James", 1).id .. ".json"] and drive.bg_busy(), "the room went up; the round goes on")
+local late = ev("James", 70)
+put(HERE .. "/events/" .. late.id .. ".json", json.encode(late))
+local put_at, late_up = clock, nil
+for _ = 1, 60 do
+  clock = clock + 2; stand_in_worker(); drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008)
+  if fs[THERE .. "/events/" .. late.id .. ".json"] then late_up = clock - put_at; break end
+end
+check(late_up and late_up <= drive.SOON + 10 and drive.bg_busy(), "a change made meanwhile goes up within SOON s, in the same round: " .. tostring(late_up))
+
+-- ---- 3e. "up to date" once the copy is, while the storage sweep carries on; the round ends after it, without resting (rt-drive2) ----
+-- The desktop since 04:52: the sweep (needed for the round to end) got a turn only in what the rooms left of a tick, and its reading wasn't
+-- counted as something happening: every round rested after 10 plans, "still copying" for good, and the sweep never finished.
+setup()
+drive, bg, cm = fresh()
+local steps = 0
+cm.tick = function() steps = steps + 1 end
+cm.sweeping = function() return steps < 40 end
+cm.progress = function() return steps end
+logs = {}
+local told, told_moved, taken_back, ended = 0, nil, false, false
+for _ = 1, 300 do
+  clock = clock + 2; stand_in_worker()
+  local m, more = drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008)
+  if m and not more and cm.sweeping() then told_moved = told_moved or m; if m > 0 then told = told + 1 end end
+  if m and more and told_moved then taken_back = true end
+  if not drive.bg_busy() then ended = true; break end
+end
+check(told_moved and told_moved >= 10, "up to date while the sweep goes on, with the files moved: " .. tostring(told_moved))
+check(not taken_back, "and not taken back while the room is looked at again (only files it moves then are said: " .. told .. ")")
+check(ended and steps >= 40 and drive.rest_until == -math.huge, "the round ends once the sweep is done, without resting: " .. steps)
+for _, s in ipairs(logs) do check(not s:find("nothing is moving", 1, true), "and never said it rested") end
+
+-- ---- 3f. the sweep a step at a time (rt-drive2) ----
+-- One drive step took 331 ms on REAPER's thread (04:26:27): a room of the sweep judged (trim.plan, 80-200 ms each with saved versions, four a
+-- room), sized (an open per file) and every end-of-session project parsed, all in one call. Stand-in costs: a trim plan 50 ms, a change read
+-- 1 ms.
+setup()
+for i = 1, 3 do put(HERE .. "/recall/James-2026110" .. i .. "-010101Z.json", json.encode({ time = "2026-11-0" .. i .. "T01:01:01Z", keep = true })) end
+drive, bg, cm = fresh()
+for _ = 1, 3 do clock = clock + 200; bg_pass() end -- (settled first: the sweep then counts what stays)
+local T = require("trim")
+local real_plan, real_rj, plans = T.plan, band.read_json, 0
+T.plan = function(...) clock, plans = clock + 0.05, plans + 1; return real_plan(...) end
+band.read_json = function(p) clock = clock + 0.001; return real_rj(p) end
+ext["cloud storage"] = nil
+clock = clock + 700
+local worst_step, calls = 0, 0
+for _ = 1, 500 do
+  clock = clock + 2; stand_in_worker()
+  local before = clock
+  drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008)
+  worst_step, calls = math.max(worst_step, clock - before), calls + 1
+  if ext["cloud storage"] and not drive.bg_busy() then break end
+end
+T.plan, band.read_json = real_plan, real_rj
+local planned_sum = ext["cloud storage"] and json.decode(ext["cloud storage"])
+check(planned_sum and plans >= 2, "the sweep finished, with its trim plans: " .. plans)
+check(worst_step <= 0.008 + 0.05 + 0.005, string.format("no pass over its budget plus one trim plan (worst %.0f ms in %d passes)", worst_step * 1000, calls))
+drive, bg, cm = fresh() -- (the same sweep in one go on REAPER's thread, the old way: the same sums)
+local direct_sum = cm.tick(CFG, "/C", clock + 10000, 100)
+for _, k in ipairs({ "stored", "would", "drop", "kinds", "ess" }) do
+  check(json.encode(direct_sum[k]) == json.encode(planned_sum[k]), "a step at a time counts as the whole sweep did: " .. k .. " " .. json.encode(direct_sum[k]) .. " / " .. json.encode(planned_sum[k]))
+end
+-- (each end-of-session project read for its recordings without rebuilding its text: the same paths as map_files finds)
+local sf = require("sessionfile")
+local rpp = '<REAPER_PROJECT\n  <SOURCE WAVE\n    FILE "media/James/a b.wav" 1\n  >\n  FILE media/Bo/c.flac\r\n\tFILE "../rooms/main/takes/x.flac"\nXFILE "no.wav"\n    <FILE\nFILE\n>'
+local a1, a2 = {}, {}
+sf.map_files(rpp, function(p) a1[#a1 + 1] = p end)
+sf.each_file(rpp, function(p) a2[#a2 + 1] = p end)
+check(#a1 == 3 and table.concat(a1, "|") == table.concat(a2, "|"), "each_file: " .. table.concat(a1, "|") .. " / " .. table.concat(a2, "|"))
+
 -- ---- 4. the real worker scripts ----
 os.remove, os.rename = real_remove, real_rename
 local py = rawget(_G, "python")

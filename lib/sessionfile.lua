@@ -32,6 +32,15 @@ function sessionfile.map_files(text, map)
   return table.concat(out, "\n") .. "\n"
 end
 
+-- Each FILE line's path in a project's text, as map_files sees them, without rebuilding the text: fn(path). (The cloud copy's storage sweep
+-- reads every end-of-session project for its recordings: map_files took 20-36 ms a project on REAPER's thread. rt-drive2.) Pure.
+function sessionfile.each_file(text, fn)
+  for rest in ("\n" .. text):gmatch("\n%s*FILE ([^\n]*)") do
+    local path = rest:sub(1, 1) == '"' and rest:match('^"([^"]*)"') or rest:match("^(%S+)")
+    if path then fn(path) end
+  end
+end
+
 local function exists(p) return reaper.file_exists(p) end
 -- Without opening it: a file on Google Drive took 0.6 s to open, and a project holds dozens, so a backup stopped REAPER for 46 s
 -- and Live sync looked dead. Only for files that have been there a while: one just written can read wrong, so band.size's own
