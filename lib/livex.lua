@@ -220,10 +220,16 @@ function livex.status_part(proj)
     lmix = type(la.S.hub) == "table" and la.S.hub.serve == true or nil }
 end
 
--- The ranking: wired first, then the lower round trip (in RTT_STEP ms bands, so a few ms of jitter doesn't reorder), then more CPU headroom,
--- then the song's hub, then the name. c: { user, net, rtt, cpu, home }. Pure.
+-- The ranking: the one the most others in the room reach, then the one that reaches the most of them (lib/hub.lua reach: a computer two
+-- bandmates can't reach can't mix for them, however fast its network. rt-hubrank), then wired, then the lower round trip (in RTT_STEP ms
+-- bands, so a few ms of jitter doesn't reorder), then more CPU headroom, then the song's hub, then the name.
+-- c: { user, miss, blind, net, rtt, cpu, home }. Pure.
 local function band_of(c) return tonumber(c.rtt) and math.floor(c.rtt / livex.RTT_STEP) or math.huge end
 function livex.mix_better(a, b)
+  local ma, mb = tonumber(a.miss) or 0, tonumber(b.miss) or 0
+  if ma ~= mb then return ma < mb end
+  ma, mb = tonumber(a.blind) or 0, tonumber(b.blind) or 0
+  if ma ~= mb then return ma < mb end
   if (a.net == "wired") ~= (b.net == "wired") then return a.net == "wired" end
   if band_of(a) ~= band_of(b) then return band_of(a) < band_of(b) end
   local ca, cb = tonumber(a.cpu) or 100, tonumber(b.cpu) or 100
@@ -232,8 +238,9 @@ function livex.mix_better(a, b)
   return tostring(a.user) < tostring(b.user)
 end
 -- Who mixes while shared CPU runs. cands: { user, net, rtt, cpu, can (its extension mixes), guest, off (handed the hub role on), lmix (mixes
--- now), home (the song's hub) }. The one mixing now keeps it unless another is clearly better: wired against its Wi-Fi, a round trip
--- RTT_STEP ms lower, or it's busy (cpu past BUSY: shared CPU's own line) while another isn't. -> user, why ("best", "kept", "busy"), or nil. Pure.
+-- now), home (the song's hub), miss, blind (mix_cands) }. The one mixing now keeps it unless another is clearly better: reached by more of
+-- the others, wired against its Wi-Fi, a round trip RTT_STEP ms lower, or it's busy (cpu past BUSY: shared CPU's own line) while another
+-- isn't. -> user, why ("best", "kept", "busy"), or nil. Pure.
 function livex.mix_pick(cands)
   local ok, idle = {}, {}
   for _, c in ipairs(cands or {}) do
@@ -247,7 +254,7 @@ function livex.mix_pick(cands)
   end
   if not best then return nil end
   if holder and holder ~= best then
-    local clearly = (best.net == "wired" and holder.net ~= "wired")
+    local clearly = (tonumber(holder.miss) or 0) > (tonumber(best.miss) or 0) or (best.net == "wired" and holder.net ~= "wired")
       or (tonumber(best.rtt) and tonumber(holder.rtt) and holder.rtt - best.rtt >= livex.RTT_STEP)
     if not clearly then return holder, "kept" end
   end
@@ -260,6 +267,7 @@ function livex.mix_words(c, why, me)
   parts[#parts + 1] = c.net == "wired" and "wired" or c.net == "wifi" and "on Wi-Fi" or "network not known"
   if tonumber(c.rtt) then parts[#parts + 1] = string.format("%d ms round trip to the others", c.rtt) end
   if tonumber(c.cpu) then parts[#parts + 1] = string.format("CPU %d%%", c.cpu) end
+  if (tonumber(c.miss) or 0) > 0 then parts[#parts + 1] = string.format("%d here can't reach it directly", c.miss) end
   local whose = c.user == me and "you mix" or (tostring(c.user) .. " mixes")
   local tail = why == "kept" and "it was mixing already and nobody here is clearly better connected" or why == "busy" and
     "every computer here is busy, so the best-connected of them" or "the best-connected computer here"
@@ -275,8 +283,20 @@ local function guests(root)
 end
 -- The candidates from the room's statuses (presence.peers: those here) and this computer as it is now; users: peer -> name of those live
 -- audio reaches here (only they can be mixed for). -> list, shared CPU on anywhere in the room. Pure but for its arguments.
+-- Each one's miss and blind (who reaches whom: lib/hub.lua reach) count everyone in the room by the statuses, not only those on the link
+-- here, so every computer ranks the same numbers; a guest's word isn't counted, as for the song's hub. me.hub: this computer's own
+-- (hub.status_part: ext, sees). rt-hubrank
 function livex.mix_cands(sts, users, me, home, gs)
   local on_link, list, scpu = {}, {}, me.scpu == true
+  local hubm, room, at = require("hub"), {}, {}
+  local function person(st)
+    if gs[st.user] then return end
+    at[st.user] = { user = st.user, ext = type(st.hub) == "table" and st.hub.ext or nil, songs = { here = { sees = hubm.seen(st) } } }
+    room[#room + 1] = at[st.user]
+  end
+  for _, st in ipairs(sts or {}) do if type(st) == "table" and type(st.user) == "string" then person(st) end end
+  person(me)
+  hubm.reach(room, "here")
   for _, name in pairs(users or {}) do on_link[name] = true end
   for _, st in ipairs(sts or {}) do
     if type(st) == "table" and type(st.user) == "string" and on_link[st.user] then
@@ -288,6 +308,7 @@ function livex.mix_cands(sts, users, me, home, gs)
     end
   end
   list[#list + 1] = { user = me.user, net = me.net, rtt = me.rtt, cpu = me.cpu, can = me.can, guest = gs[me.user] == true, off = me.off, lmix = me.lmix, home = me.user == home }
+  for _, c in ipairs(list) do if at[c.user] then c.miss, c.blind = at[c.user].miss, at[c.user].blind end end
   return list, scpu
 end
 -- liveaudio.hub_tick: who mixes. hub: the song's hub (lib/hub.lua's view). -> the host to use (nil: nobody yet: everyone's own streams), Health's
@@ -299,7 +320,8 @@ function livex.mix_host(cfg, b, hub, users, st, laS)
   local okc, cpu = pcall(function() return require("hops").cpu_now() end)
   local okn, net = pcall(livex.net_now)
   local me = { user = cfg.user, net = okn and net or nil, rtt = livex.rtt_tens(st), cpu = okc and cpu or nil, can = require("liveaudio").hub_fit(),
-    off = require("hub").off(cfg.root), lmix = type(laS.hub) == "table" and laS.hub.serve == true, scpu = livex.scpu_here(reaper.EnumProjects(-1)) }
+    off = require("hub").off(cfg.root), lmix = type(laS.hub) == "table" and laS.hub.serve == true, scpu = livex.scpu_here(reaper.EnumProjects(-1)),
+    hub = require("hub").status_part(cfg, b) } -- (its ext and sees, as its status says them: who reaches whom, mix_cands)
   local list, scpu = livex.mix_cands(sts, users, me, hub, guests(cfg.root))
   S.mix = S.mix or {}
   return livex.mix_decide(S.mix, list, scpu, hub, cfg.user, reaper.time_precise())
