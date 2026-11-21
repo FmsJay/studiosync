@@ -171,6 +171,48 @@ ok((await text('.dfollow')).startsWith('View') && await ev('document.querySelect
   await push(project());
 }
 
+// ---- fades ----------------------------------------------------------------------------------------------------------------------------
+{
+  const topY = async (lane) => ev('(() => { const r = document.querySelector(".dcv").getBoundingClientRect(); return r.top + window.ssDaw.laneY(' + lane + ') + 6; })()');
+  const [x8] = await at(8, 0), [x0] = await at(0, 0), y = await topY(0), t2 = (await at(2.1, 0))[0], t6 = (await at(6.1, 0))[0];
+  await drag(x0 + 3, y, t2, y + 1); // the top-left corner of Drums' item: the fade-in handle (not a move, not a trim)
+  let a = lastAction();
+  ok(a.edit && a.edit.op === 'fade' && a.edit.side === 'in' && Math.abs(a.edit.len - 2) < 1e-6 && a.edit.lane === 0 && a.edit.p === 0 && a.edit.l === 8, 'dragging the top-left corner sends a fade in, snapped to the grid (' + JSON.stringify(a.edit) + ')');
+  await push({ dawedit: { id: a.edit.id, why: 'only the driver changes things in this room' } });
+  ok(await ev('!window.ssDaw.lanes[0][0].fi') && (await text('.dmsg')).includes('Not changed'), 'a refusal leaves the item as it was');
+  await drag(x0 + 3, y, t2, y + 1);
+  a = lastAction();
+  let c0 = project().dawc0;
+  c0.tr[0][0].fi = 2;
+  await push({ dawedit: { id: a.edit.id, ok: true }, dawc0: c0 });
+  await sleep(100);
+  ok(await ev('window.ssDaw.lanes[0][0].fi === 2'), 'its chunk comes back with the fade');
+  await drag(x8 - 3, y, t6, y + 1); // the fade-out handle: the top-right corner
+  a = lastAction();
+  ok(a.edit.op === 'fade' && a.edit.side === 'out' && Math.abs(a.edit.len - 2) < 1e-6, 'the top-right corner sends a fade out (' + JSON.stringify(a.edit) + ')');
+  c0.tr[0][0].fo = 2;
+  await push({ dawedit: { id: a.edit.id, ok: true }, dawc0: c0 });
+  await sleep(100);
+  // the shape boxes show and set the shapes
+  await click(...(await at(4, 0)));
+  const n = edits().length;
+  await ev('(() => { const s = document.querySelector("select[aria-label=\\"Fade in shape\\"]"); s.value = "3"; s.dispatchEvent(new Event("change")); })()');
+  await sleep(100);
+  a = lastAction();
+  ok(edits().length === n + 1 && a.edit.op === 'fade' && a.edit.side === 'in' && a.edit.shape === 3 && a.edit.len === undefined, 'a shape box sends the shape alone (' + JSON.stringify(a.edit) + ')');
+  c0.tr[0][0].fis = 3;
+  await push({ dawedit: { id: a.edit.id, ok: true }, dawc0: c0 });
+  await sleep(100);
+  ok(await ev('document.querySelector("select[aria-label=\\"Fade in shape\\"]").value') === '3' && await ev('document.querySelector("select[aria-label=\\"Fade out shape\\"]").value') === '0', 'and they show what the item has');
+  // a click in the middle still selects and drag still moves (the corner is only the corner)
+  await drag(...(await at(4, 0)), ...(await at(5, 0)));
+  a = lastAction();
+  ok(a.edit.op === 'move' && Math.abs(a.edit.to - 1) < 1e-6, 'the middle still moves the item (' + JSON.stringify(a.edit) + ')');
+  await push({ dawedit: { id: a.edit.id, why: 'again' } });
+  state.topics = project();
+  await push(project());
+}
+
 ok(errors.length === 0, 'no page errors' + (errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''));
 console.log(fails ? 'FAIL ' + fails : 'ok');
 await done(fails ? 1 : 0);

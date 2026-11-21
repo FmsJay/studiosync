@@ -100,11 +100,14 @@ local function item_out(it)
   local o = { p = r3(it.pos), l = r3(it.len), c = it.rgb, m = it.mute and 1 or nil, n = it.name ~= "" and it.name or nil }
   if it.midi then o.x = 1; o.nt = it.notes else o.k = it.peaks end
   o.v = it.vid -- (a video or picture item: which file, where in it, how fast; the page draws its frames. lib/video.lua, rt-video2)
+  -- (its own fades, in and out: length and, when not linear, shape 0..6. Not the auto-crossfade's: those come from overlaps. rt-p14)
+  if (it.fi or 0) > 0 then o.fi, o.fis = r3(it.fi), it.fis ~= 0 and it.fis or nil end
+  if (it.fo or 0) > 0 then o.fo, o.fos = r3(it.fo), it.fos ~= 0 and it.fos or nil end
   return o
 end
 local function item_sig(it)
   return table.concat({ r3(it.pos), r3(it.len), it.rgb or "", it.mute and 1 or 0, it.name or "", it.midi and ("x" .. (it.nh or #(it.notes or {}))) or (it.peaks or ""),
-    it.vid and (it.vid.id .. "@" .. it.vid.o .. "x" .. it.vid.r) or "" }, "|")
+    it.vid and (it.vid.id .. "@" .. it.vid.o .. "x" .. it.vid.r) or "", r3(it.fi or 0), it.fis or 0, r3(it.fo or 0), it.fos or 0 }, "|")
 end
 function dawview.build(raw, per)
   per = per or dawview.CHUNK_TRACKS
@@ -315,7 +318,11 @@ local function read_items(tr, now, budget_end)
     local pos, len = reaper.GetMediaItemInfo_Value(it, "D_POSITION"), reaper.GetMediaItemInfo_Value(it, "D_LENGTH")
     local take = reaper.GetActiveTake(it)
     local o = { pos = pos, len = len, mute = reaper.GetMediaItemInfo_Value(it, "B_MUTE") ~= 0, name = "",
-      rgb = native_rgb(reaper.GetMediaItemInfo_Value(it, "I_CUSTOMCOLOR")) }
+      rgb = native_rgb(reaper.GetMediaItemInfo_Value(it, "I_CUSTOMCOLOR")),
+      fi = reaper.GetMediaItemInfo_Value(it, "D_FADEINLEN"), fo = reaper.GetMediaItemInfo_Value(it, "D_FADEOUTLEN") }
+    -- (the shapes only where there's a fade: two calls fewer an item on a song with none)
+    if (o.fi or 0) > 0 then o.fis = math.floor(reaper.GetMediaItemInfo_Value(it, "C_FADEINSHAPE")) end
+    if (o.fo or 0) > 0 then o.fos = math.floor(reaper.GetMediaItemInfo_Value(it, "C_FADEOUTSHAPE")) end
     if take then
       o.name = reaper.GetTakeName(take):sub(1, dawview.NAME_MAX)
       o.rgb = native_rgb(reaper.GetMediaItemTakeInfo_Value(take, "I_CUSTOMCOLOR")) or o.rgb

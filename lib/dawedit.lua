@@ -19,7 +19,7 @@ dawedit.reply = nil    -- the last edit's answer, published by dawview.tick
 dawedit.asking = nil   -- whom the edit being made asks for what they claimed (lib/claimask.lua), else nil
 
 -- ---- pure ------------------------------------------------------------------------------------------------------------------------------
-local OPS = { move = "item", trim_start = "item", trim_end = "item", split = "item", mute = "item", colour = "item", delete = "item",
+local OPS = { move = "item", trim_start = "item", trim_end = "item", split = "item", mute = "item", colour = "item", delete = "item", fade = "item",
   add_marker = "marker", move_marker = "marker", rename_marker = "marker", delete_marker = "marker" }
 local function num(x) x = tonumber(x); return x and x == x and x > -1e7 and x < 1e7 and x or nil end
 local function int(x) x = tonumber(x); return x and x >= 0 and x < 1e6 and math.floor(x) == x and math.floor(x) or nil end
@@ -50,6 +50,15 @@ function dawedit.parse(e)
       if not out.tolane then return nil, "not a track the page showed", id end
     end
     if e.op == "mute" then out.on = e.on == true end
+    if e.op == "fade" then
+      -- (a fade's side, its length from the item's edge in seconds, its shape 0..6 (REAPER's "type 1 (linear)" to "type 7"): either or both)
+      out.side = (e.side == "in" or e.side == "out") and e.side or nil
+      if e.len ~= nil then out.len = num(e.len); if not out.len or out.len < 0 then out.len = nil end end
+      if e.shape ~= nil then out.shape = int(e.shape); if out.shape and out.shape > 6 then out.shape = nil end end
+      if not out.side or (out.len == nil and out.shape == nil) or (e.len ~= nil and out.len == nil) or (e.shape ~= nil and out.shape == nil) then
+        return nil, "a fade is in or out, a length of 0 or more and a shape 0 to 6", id
+      end
+    end
     if e.op == "colour" then
       if e.c == nil or e.c == "" then out.c = false
       elseif type(e.c) == "string" and e.c:match("^#%x%x%x%x%x%x$") then out.c = e.c:lower()
@@ -161,7 +170,7 @@ function dawedit.item_why(cfg, b, can, who, it, tr, pos)
 end
 
 local LABEL = { move = "move item", trim_start = "trim item start", trim_end = "trim item end", split = "split item", mute = "mute item",
-  colour = "item colour", delete = "delete item", add_marker = "add marker", move_marker = "move marker", rename_marker = "rename marker",
+  colour = "item colour", delete = "delete item", fade = "item fade", add_marker = "add marker", move_marker = "move marker", rename_marker = "rename marker",
   delete_marker = "delete marker" }
 -- -> nil when done, or why not.
 local function apply(proj, cfg, b, e)
@@ -240,6 +249,20 @@ local function apply(proj, cfg, b, e)
     why = refusal(tr, at) -- (the new right-hand piece starts there)
     if why then return why end
     return in_undo(proj, LABEL[e.op], function() reaper.SplitMediaItem(it, at) end)
+  end
+  if e.op == "fade" then
+    -- (the length is from the item's edge, snapped as REAPER snaps the fade handle; not past the other fade, which stays as it is)
+    local inn = e.side == "in"
+    local other = math.min(len, reaper.GetMediaItemInfo_Value(it, inn and "D_FADEOUTLEN" or "D_FADEINLEN"))
+    local fl
+    if e.len then
+      fl = e.len <= 0 and 0 or inn and snap(proj, pos + e.len) - pos or (pos + len) - snap(proj, pos + len - e.len)
+      fl = math.max(0, math.min(fl, len - other))
+    end
+    return in_undo(proj, "item " .. (inn and "fade in" or "fade out") .. (e.len and "" or " shape"), function()
+      if fl then reaper.SetMediaItemInfo_Value(it, inn and "D_FADEINLEN" or "D_FADEOUTLEN", fl) end
+      if e.shape then reaper.SetMediaItemInfo_Value(it, inn and "C_FADEINSHAPE" or "C_FADEOUTSHAPE", e.shape) end
+    end)
   end
   if e.op == "mute" then
     return in_undo(proj, e.on and LABEL[e.op] or "unmute item", function() reaper.SetMediaItemInfo_Value(it, "B_MUTE", e.on and 1 or 0) end)

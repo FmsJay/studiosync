@@ -74,7 +74,8 @@ reaper.GetMediaTrackInfo_Value = function(tr, k) if k == "B_SHOWINTCP" then retu
 reaper.GetSetMediaTrackInfo_String = function(tr, k) if k == "P_NAME" then return true, tr.t.name end return true, "" end
 reaper.CountTrackMediaItems = function(tr) return #tr.t.items end
 reaper.GetTrackMediaItem = function(tr, j) return tr.t.items[j + 1] end
-local IV = { D_POSITION = "pos", D_LENGTH = "len", B_MUTE = "mute", I_CUSTOMCOLOR = "color", B_LOOPSRC = "loop" }
+local IV = { D_POSITION = "pos", D_LENGTH = "len", B_MUTE = "mute", I_CUSTOMCOLOR = "color", B_LOOPSRC = "loop", D_FADEINLEN = "fi", D_FADEOUTLEN = "fo",
+  C_FADEINSHAPE = "fis", C_FADEOUTSHAPE = "fos" }
 reaper.GetMediaItemInfo_Value = function(it, k) return it[IV[k]] or 0 end
 reaper.SetMediaItemInfo_Value = function(it, k, v) it[IV[k]] = v; return true end
 reaper.GetActiveTake = function(it) return (it.takes or {})[1] end
@@ -229,6 +230,28 @@ assert(r.ok and it(0, 0).color == (0xFF0000 | 0x1000000), "else the item's")
 r = select(2, act("Chilio", { op = "colour", lane = 1, idx = 0, p = 4, l = 2, c = "" }))
 assert(r.ok and it(1, 0).takes[1].color == 0 and it(1, 0).color == 0, "none: both cleared")
 
+-- fades (rt-p14): length from the item's edge snapped as REAPER snaps a fade handle, never past the other fade; a shape 0..6; same checks as any item edit
+assert(dawedit.parse({ op = "fade", lane = 0, idx = 0, p = 0, l = 4, side = "in", len = 1 }).len == 1 and dawedit.parse({ op = "fade", lane = 0, idx = 0, p = 0, l = 4, side = "out", shape = 6 }).shape == 6, "fades parse")
+for n, bad in ipairs({ { side = "in" }, { side = "mid", len = 1 }, { side = "in", len = -1 }, { side = "in", shape = 7 }, { side = "in", shape = 1.5 }, { side = "in", len = "x" }, { len = 1 } }) do
+  bad.op, bad.lane, bad.idx, bad.p, bad.l = "fade", 0, 0, 0, 4
+  assert(dawedit.parse(bad) == nil, "a bad fade refused: #" .. n)
+end
+song(); room("open", { Chilio = { tracks = { "Bass" } } })
+said, r = act("James", { id = "f1", op = "fade", lane = 0, idx = 0, p = 0, l = 4, side = "in", len = 1.3 })
+assert(r.ok and it(0, 0).fi == 1.5 and undo[#undo].label == "StudioSync web page: item fade in" and said:find("item fade"), "fade in: snapped on the grid: " .. tostring(r.why) .. " " .. tostring(it(0, 0).fi))
+r = select(2, act("James", { op = "fade", lane = 0, idx = 0, p = 0, l = 4, side = "out", len = 1.2 }))
+assert(r.ok and it(0, 0).fo == 1 and undo[#undo].label == "StudioSync web page: item fade out", "fade out: measured from the item's end, snapped")
+r = select(2, act("James", { op = "fade", lane = 0, idx = 0, p = 0, l = 4, side = "in", len = 3.9 }))
+assert(r.ok and it(0, 0).fi == 3 and it(0, 0).fo == 1, "never past the other fade (the item is 4 s, the out fade 1 s)")
+r = select(2, act("James", { op = "fade", lane = 0, idx = 0, p = 0, l = 4, side = "in", len = 0 }))
+assert(r.ok and it(0, 0).fi == 0, "length 0: no fade (not snapped to a grid line)")
+r = select(2, act("James", { op = "fade", lane = 0, idx = 0, p = 0, l = 4, side = "out", shape = 3 }))
+assert(r.ok and it(0, 0).fos == 3 and it(0, 0).fo == 1 and undo[#undo].label:find("fade out shape"), "a shape alone leaves the length")
+r = select(2, act("James", { op = "fade", lane = 1, idx = 0, p = 4, l = 2, side = "in", len = 1 }))
+assert(r.why and r.why:find("Chilio has claimed Bass") and (it(1, 0).fi or 0) == 0, "a claimed track: refused, nothing changed")
+r = select(2, act("Chilio", { op = "fade", lane = 1, idx = 0, p = 4, l = 2, side = "in", len = 1 }))
+assert(r.ok and it(1, 0).fi == 1, "its claimant")
+
 -- delete (rt-p14): the same checks as any edit to the item; one undo point; asked for before it goes (web_ask looks at the item)
 song(); room("open", { Chilio = { tracks = { "Bass" } } })
 claimask.present = function() return false end
@@ -322,7 +345,7 @@ local js, css = read("lib/webui/daw.js"), read("lib/webui/daw.css")
 for _, want in ipairs({ "act({ edit: Object.assign({ id }, o) })", "t.dawedit", "snapBack(r.why)", "op: 'move_marker'", "op: 'rename_marker'", "op: 'add_marker'",
     "itemOp('split')", "itemOp('mute'", "itemOp('colour'", "'trim_start'", "'trim_end'", "head.snap", "'contextmenu'", "setTimeout(() => { lp = null; lpFired = true",
     "if (touch && !mine) return;", "edDown(e);", "if (edMove(e)) return;", "if (edUp(e, was)) return;", "edItems(g, first, last);", "edMarker(m0)",
-    "itemOp('delete')", "op: 'delete_marker'", "bDel.addEventListener('click', doDelete)", "add('Delete', doDelete)", "X.autoClear",
+    "itemOp('delete')", "itemOp('fade'", "drawFades(g, it, y, h, a, z, xa, xz);", "mode = din <= dout ? 'fade_in' : 'fade_out'", "op: 'fade', side: inn ? 'in' : 'out'", "op: 'delete_marker'", "bDel.addEventListener('click', doDelete)", "add('Delete', doDelete)", "X.autoClear",
     'aria-label="Watch a bandmate"', "'Watch ' + v" }) do
   assert(js:find(want, 1, true), "the Project page has " .. want)
 end

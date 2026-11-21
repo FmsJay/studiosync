@@ -34,5 +34,29 @@ Internal names (`follow`, `dfollow`) are unchanged.
   delete on a track they claimed (Claims, they're here: made here and asked; away: refused, snaps back, says who); as a guest in Driver only
   (refused); the Delete key with the piano roll open deletes a note only.
 
+## 2. Fades (`lib/dawview.lua`, `lib/dawedit.lua`, `lib/webui/daw.js`, `daw.css`)
+- **Read:** each item carries its own fade lengths (`fi`, `fo` seconds, only when there is one) and, when not linear, the shape (`fis`, `fos`,
+  REAPER's 0 to 6, shown as "type 1 (linear)" to "type 7", REAPER's own words for its set-fade-shape actions). Two more REAPER calls an item
+  (`D_FADEINLEN`, `D_FADEOUTLEN`), two more only for an item that has a fade; on rt-bigproj's 4,000 items a whole look costs 8,000 calls more
+  (the partial look's per-track reads are unchanged). The item's signature has them, so a fade edit resends only its chunk. **Not** the
+  auto-crossfade lengths (`D_FADEINLEN_AUTO`): those come from overlaps and aren't the item's own, so a crossfade REAPER made from an overlap
+  isn't drawn. `items_fp` (the partial look's fingerprint) is **not** extended: a fade edit in REAPER selects the item (a hinted track, read at
+  once), a bandmate's lands through `mirror.apply` (a whole read) and the page's own sets `dirty_all`; only another script's fade on an
+  unselected item shows at the next whole read (10 s), as for any other property already read.
+- **Edit:** op `fade` `{side: in|out, len?, shape?}` (either or both): `item_why` like a trim; the length is from the item's edge, snapped as
+  REAPER snaps the fade handle (SnapToGrid: only with snapping on; 0 stays 0), never past the other fade (which isn't changed). Set with
+  `SetMediaItemInfo_Value(D_FADEINLEN | D_FADEOUTLEN | C_FADEINSHAPE | C_FADEOUTSHAPE)` in one undo point ("item fade in", "item fade out",
+  "... shape"). Fades are item-level lines of the item's state (`mirror.lua` ITEM_LEVEL FADEIN/FADEOUT), so the normal sync carries them.
+- **Page:** the dimmed triangle and a line along each fade (drawn straight whatever the shape, as other envelope shapes are), a square handle at
+  each fade's end on the selected item (top corners), dragged to set the length (mouse: any item's corner; phone: the selected item's), and two
+  boxes in the edit row for the shapes. A drag through the middle still moves the item.
+- **Tests:** `tests/test_0_60_rt_dawedit.lua` (parse and refusals, snapped lengths, out measured from the end, not past the other, 0, shape alone,
+  a claimed track, its claimant), `tests/test_0_60_rt_dawview.lua` (the reader, the chunk, shapes read only with a fade),
+  `tests/rt_p14_browser.mjs` (corner drags, a refusal, the chunk back, the shape boxes, the middle still moves).
+- **Check in REAPER:** drag each fade handle on an item and compare with REAPER's own fade (length, and one Ctrl+Z); change the shape and look
+  at the item in REAPER (the shape numbers are REAPER's C_FADEINSHAPE 0 to 6; the page's labels follow its action names, unchecked against
+  the item's fade menu); snapping on and off; a fade longer than the item (clamped); an item with a fade REAPER made from a crossfade (not
+  drawn).
+
 ## Review later (security)
 - (none yet)

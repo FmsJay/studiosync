@@ -119,7 +119,7 @@ assert(#dawview.history_model("S", evs, {}, lane_of, {}, 2).dots == 2, "only the
 
 -- ---- the reader, against a stand-in REAPER -------------------------------------------------------------------------------------------
 -- fake = { tracks = { { name, oid, depth, hidden, ["local"], mute, solo, color, lanes = { [lane] = plays }, items = { { pos, len, lane, midi, notes, name } } } } }
-local peaks_asked = 0
+local peaks_asked, shape_calls = 0, 0
 local function setup_fake(f)
   fake = f
   local T, I, K = {}, {}, {}
@@ -149,7 +149,9 @@ local function setup_fake(f)
   reaper.GetTrackMediaItem = function(tr, j) return tr.t.items[j + 1] end
   reaper.GetMediaItemInfo_Value = function(item, k)
     if k == "D_POSITION" then return item.pos elseif k == "D_LENGTH" then return item.len elseif k == "I_FIXEDLANE" then return item.lane or 0
-    elseif k == "B_MUTE" then return item.mute and 1 or 0 end
+    elseif k == "B_MUTE" then return item.mute and 1 or 0
+    elseif k == "D_FADEINLEN" then return item.fi or 0 elseif k == "D_FADEOUTLEN" then return item.fo or 0
+    elseif k == "C_FADEINSHAPE" or k == "C_FADEOUTSHAPE" then shape_calls = shape_calls + 1; return (k == "C_FADEINSHAPE" and item.fis or item.fos) or 0 end
     return 0
   end
   reaper.GetActiveTake = function(item) return item.take end
@@ -207,6 +209,20 @@ assert(mk.midi and #mk.notes == 6 and mk.notes[1] == 0 and mk.notes[2] == 500 an
   "MIDI notes: muted left out, cut at the item's end, ms from its start: " .. band.json_encode(mk.notes))
 assert(#rr.markers == 2 and rr.markers[2].region and rr.markers[2].rgb == "#00ff00", "markers and regions, not pings")
 assert(rr.bars[1] == 0 and rr.bars[2] == 2 and #rr.sigs == 2 and rr.sigs[2][1] == 2 and rr.sigs[2][2] == 3 and rr.grid == 0.25, "bars, time signatures, grid")
+-- fades (rt-p14): an item's own fade lengths and, only where there is a fade and it isn't linear, the shape; sent only when there is a fade
+assert(k1.fi == 0 and k1.fo == 0 and k1.fis == nil and k1.fos == nil, "no fade: nothing to read but the two lengths")
+local chunk = select(2, dawview.build({ key = "S/main", len = 10, tracks = { { name = "T", depth = 0, items = {
+  { pos = 0, len = 4, name = "", peaks = "AB", fi = 0.5, fis = 2, fo = 0.25, fos = 0 }, { pos = 5, len = 1, name = "", peaks = "AB", fi = 0, fo = 0 } } } } }, 4))[1].t.tr[1]
+assert(chunk[1].fi == 0.5 and chunk[1].fis == 2 and chunk[1].fo == 0.25 and chunk[1].fos == nil, "a fade goes out with its shape unless linear")
+assert(chunk[2].fi == nil and chunk[2].fo == nil and chunk[2].fis == nil, "no fade: no keys")
+fake.tracks[1].items[1].fi, fake.tracks[1].items[1].fis, fake.tracks[1].items[1].fo, fake.tracks[1].items[1].fos = 0.5, 3, 0.2, 1
+shape_calls = 0
+dawview.read("P1", "S/main", clock, clock + 1)
+assert(shape_calls == 2, "the shapes are read only for the item with fades (" .. shape_calls .. " calls)")
+local rf = dawview.read("P1", "S/main", clock, clock + 1)
+local f1 = rf.tracks[1].items[1]
+assert(f1.fi == 0.5 and f1.fis == 3 and f1.fo == 0.2 and f1.fos == 1, "the reader gets both fades and their shapes")
+fake.tracks[1].items[1].fi, fake.tracks[1].items[1].fis, fake.tracks[1].items[1].fo, fake.tracks[1].items[1].fos = nil, nil, nil, nil
 local asked = peaks_asked
 dawview.read("P1", "S/main", clock, clock + 1)
 assert(peaks_asked == asked, "peaks kept: not read again while the take is the same")

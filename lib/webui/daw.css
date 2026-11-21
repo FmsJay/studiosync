@@ -41,6 +41,7 @@
 .dedit button { padding: 3px 9px; font-size: 13px; }
 .dedit button:disabled, .dedit input:disabled { opacity: .45; cursor: default; }
 .dedit .esel { flex: 1 1 8em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dedit .eshape { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 2px 3px; max-width: 11em; }
 .dedit .ecol { width: 34px; height: 26px; padding: 0 2px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
 .dmenu { position: absolute; z-index: 2; display: flex; flex-direction: column; min-width: 150px; padding: 4px; background: var(--panel);
   border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 14px rgba(0, 0, 0, .25); }
