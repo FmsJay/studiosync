@@ -305,4 +305,61 @@ assert(not hhj:find("innerHTML", 1, true) and not hj:find("innerHTML", 1, true),
 local cpp = read("extension/webui.cpp")
 local ot = cpp:match("const char %*offer_type%(.-octet%-stream")
 assert(ot and ot:find('{ "opus", "audio/ogg" }', 1, true), "the server says an .opus is audio/ogg (Safari plays it then; Chromium and Firefox sniffed it)")
+-- ---- rt-p6 (backlog 1.12): the master's automation items in the preview, and automation made under another tempo map ------------------------------------
+do
+  local MC = "<TRACK\nNAME \"\"\n<VOLENV2\nEGUID {X}\nACT 1 -1\nPT 0 1 0\n>\n<FXCHAIN\nBYPASS 0 0 0\n>\n>\n"
+  -- made at 09:15 under A (120 bpm: 4 s is beat 8); the moment's map is B (60 bpm: beat 8 is 8 s). An item 2 s in, 2 s long: beats 4 to 8.
+  local state = "<VOLENV2\nACT 1 -1\nPT 0 0.5 0\nPT 4 1 0\n>\nBANDAI VOLENV2 2 2 0 1 0 1 0 0 4\nBANDAIPT VOLENV2 0 0 0.3 0 0\nBANDAIPT VOLENV2 0 1 0.9 0 0\n"
+  local mp = { ["E-MASTER"] = { id = "m1", obj = "env", track = "T-MASTER", time = "2026-11-10T09:15:00Z", state = state } }
+  local _, mi = hh.rebuild(NOW_RPP, mp, { map_of = map_of })
+  assert(mi.ai.MASTER and mi.ai.MASTER:find("^BANDAI VOLENV2 2 2 0 1") and select(2, mi.ai.MASTER:gsub("BANDAIPT", "")) == 2, "the master's automation items are kept for prep: " .. tostring(mi.ai.MASTER))
+  assert(mi.envplaced.MASTER and mi.envplaced.MASTER.tempo == A, "and the map the automation was made under")
+  mi.tl = hh.tempo_plan(mi.placed, tl, C, mi.envplaced)
+  assert(mi.tl.envs.MASTER == 1 and mi.tl.maps[1] == A and mi.tl.tempo == B, "prep's plan moves it onto the map then")
+  assert(next(hh.tempo_plan({}, { tempo = C, markers = {} }, C, { MASTER = { tempo = C } }).envs) == nil, "automation made under today's map: not moved")
+  -- a background REAPER with envelope points and automation items (as the API keeps them)
+  local Q = job_reaper(out, MC)
+  local env = { pts = { { t = 0, v = 0.5 }, { t = 4, v = 1 } }, ais = {} }
+  local a = Q.api
+  a.CountTracks = function() return 0 end
+  a.CountTrackEnvelopes = function() return 1 end
+  a.GetTrackEnvelope = function() return env end
+  a.GetTrackEnvelopeByChunkName = function(_, name) assert(name == "<VOLENV2"); return env end
+  a.CountAutomationItems = function(e) return #e.ais end
+  a.InsertAutomationItem = function(e, pool, pos, len) e.ais[#e.ais + 1] = { pool = pool, D_POSITION = pos, D_LENGTH = len, pts = { { t = 0, v = 0 } } }; return #e.ais - 1 end
+  a.GetSetAutomationItemInfo = function(e, i, k, v, set) local x = e.ais[i + 1]; if set then x[k] = v else return x[k] or 0 end end
+  a.CountEnvelopePointsEx = function(e, i) return #e.ais[(i & 0xFFFF) + 1].pts end
+  a.DeleteEnvelopePointEx = function(e, i, p) table.remove(e.ais[(i & 0xFFFF) + 1].pts, p + 1) end
+  a.InsertEnvelopePointEx = function(e, i, t, v) local x = e.ais[(i & 0xFFFF) + 1]; x.pts[#x.pts + 1] = { t = t, v = v }; return true end
+  a.Envelope_SortPointsEx = function() end
+  a.CountEnvelopePoints = function(e) return #e.pts end
+  a.GetEnvelopePoint = function(e, i) local p = e.pts[i + 1]; return true, p.t, p.v, 0, 0, false end
+  a.SetEnvelopePoint = function(e, i, t) e.pts[i + 1].t = t; return true end
+  a.Envelope_SortPoints = function() end
+  a.TimeMap2_timeToQN = function(_, t) return qn(Q.tempo, t) end
+  a.TimeMap2_QNToTime = function(_, q) return secs(Q.tempo, q) end
+  run(hh.prep(mi), Q)
+  assert(#env.ais == 1 and env.ais[1].pool == 0 and env.ais[1].D_PLAYRATE == 1 and #env.ais[1].pts == 2 and near(env.ais[1].pts[2].v, 0.9), "the master's automation item is rebuilt (rate, points)")
+  assert(near(env.pts[1].t, 0) and near(env.pts[2].t, 8), "a point 4 s into A (beat 8) is 8 s into B: " .. env.pts[2].t)
+  assert(near(env.ais[1].D_POSITION, 4) and near(env.ais[1].D_LENGTH, 4), "the item's beats 4-8 on A are 4-8 s on B: " .. env.ais[1].D_POSITION .. " + " .. env.ais[1].D_LENGTH)
+  -- on today's map (no move): the points stay
+  local tn = hh.tempo_plan({}, tl, C, { MASTER = { tempo = C } })
+  mi.tl = tn
+  local Q2 = job_reaper(out, MC)
+  env = { pts = { { t = 0, v = 0.5 }, { t = 4, v = 1 } }, ais = {} }
+  for k, f in pairs(a) do if Q2.api[k] == nil then Q2.api[k] = f end end
+  Q2.api.TimeMap2_timeToQN = function(_, t) return qn(Q2.tempo, t) end
+  Q2.api.TimeMap2_QNToTime = function(_, q) return secs(Q2.tempo, q) end
+  run(hh.prep(mi), Q2)
+  assert(near(env.pts[2].t, 4), "made under today's map: its seconds stay")
+  -- a track's own automation: kept and placed the same way
+  local tp = { ["E-1"] = { id = "m2", obj = "env", track = "T-1", time = "2026-11-10T09:15:00Z", state = state } }
+  local _, ti = hh.rebuild(NOW_RPP, tp, { map_of = map_of })
+  assert(ti.ai["T-1"] and ti.envplaced["T-1"] and ti.envplaced["T-1"].tempo == A, "a track's automation: its items and its map are kept too")
+end
+-- rt-p6 (backlog 3.13): the time lapse's comp areas: items on a lane that plays with the others (plays "2") are drawn dashed and counted
+assert(hj:find("p[a[6]] === '2'", 1, true) and hj:find("g.setLineDash([2, 2]); g.lineWidth = 1; g.strokeRect(x + 0.5", 1, true) and hj:find("add('Comp pieces', String(s.nc))", 1, true)
+  and hj:find("nc: compNow()", 1, true), "history.js: comp areas drawn and counted")
+local fr = wh.detail('{"freemode":2,"plays":"0,2,2"}', { obj = "track" })
+assert(fr.plays == "0,2,2", "a comp's lanes reach the frames as they are (the page reads the 2s)")
 print("ok")

@@ -79,3 +79,29 @@
 ## Left
 Nothing half done. Not run: the full `tests/run.py` in a clean clone was not finished before the desktop restart (the four history test
 files, compile/free-names/locals/js checks pass in the worktree).
+
+## Round 2 (rt-p6, backlog package P6; offline tests only, not run in REAPER or a browser)
+- **Master automation items in the preview** (`lib/histhear.lua`): `rebuild` keeps each automation part's `BANDAI`/`BANDAIPT` lines (`info.ai`,
+  keyed by track oid, `MASTER` for the master) and prep rebuilds them through the API (the `PREP_ENV` part: `InsertAutomationItem`, rate, offset,
+  baseline, amplitude, loop, mute, pool length, points of one pass; as `mirror.set_ai`). Done for track envelopes too (they lost theirs the same
+  way). A plug-in parameter's items (`PARMENV:`) and a receive's (`AUX:`) stay as the copy has them.
+- **Automation placed under another tempo map**: `rebuild` also records the map each automation put in was made under (`info.envplaced`);
+  `histhear.tempo_plan(placed, tl, now, envplaced)` gives `envs` (key -> its map's place in `maps`). prep reads each such envelope's point times
+  and item positions on the copy's map, puts the map each was made under in (the same dance as for items), reads their beats there, and after the
+  map then is in for good writes every point and item at its beat (explicit times, so it does not depend on the envelope's timebase).
+  The ME swap (master chunk) now runs before the tempo block, so the master's envelopes exist when it moves them.
+- **Time lapse comp areas** (`lib/webui/history.js`): a lane that plays with the others (`C_LANEPLAYS` 2, already in the frames' `p`) is a
+  comp: its items are drawn with a dashed outline and counted ("Comp pieces"). The events still don't say which lane each piece came from, so the
+  page can't name it (decision: show what the events hold; naming the source needs a new field in the item's change, in the sync core).
+- **Not mine, needs the owner of `lib/mirror.lua`** (restore, not preview): `mirror.revert` converts an item's position (and length in beats
+  mode) from the map it was made under with `mirror.retime`; its rate, fades and snap offset are kept as stored, a gradual tempo change isn't
+  converted, and an envelope's points (`p.t.obj == "env"`) aren't retimed at all. Proposal: in `mirror.retime` scale `D_FADEINLEN`, `D_FADEOUTLEN`
+  and `D_SNAPOFFSET` by the length ratio of the item's own span between the two maps (as it does for the length), and run the same for env states.
+- Tests (`tests/test_0_60_rt_history2.lua`, end of file; each fails with its change removed, tried): the items and the map kept by `rebuild`, the plan's
+  `envs`, prep in a stand-in REAPER with envelopes and automation items (point 4 s on A is 8 s on B, item beats 4-8 stay beats 4-8, rebuilt rate and
+  points, nothing moves for today's map), and history.js's comp wiring.
+- **Check in REAPER (desktop)**: (1) a song with an automation item on the master volume (Insert automation item) drawn after a tempo change:
+  History, scrub to a point after it, Listen: the kept `hear-*/job.rpp` plus the render has the item (open the copy in a tab: the master volume lane
+  shows the item); before it was drawn: none. (2) Make the item under tempo A, change the tempo to B, preview a point after: the item sits on the same
+  beats as it did (bar numbers), not the same seconds. (3) Fixed lanes track with a comp (two takes, comp areas across both): the time lapse at that
+  moment draws the comp lane's pieces dashed and says "Comp pieces N" in the counts; a take lane that doesn't play stays hidden.

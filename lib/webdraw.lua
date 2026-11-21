@@ -155,7 +155,13 @@ function webdraw.read(cfg, b)
   if d == cache.dir and not dirty and now - cache.at < webdraw.LIST_EVERY then return cache.list end
   cache.dir, cache.at, dirty = d, now, false
   local list, seen = {}, {}
-  for path, t in pairs(tombs) do if now - t.at > webdraw.LIVE_FOR then tombs[path] = nil end end
+  for path, t in pairs(tombs) do
+    if now - t.at > webdraw.LIVE_FOR then
+      -- (a removal from the link was checked when it came: if Syncthing's deletion still hasn't, the file goes here, or it would show again)
+      if not t.del then pcall(os.remove, path) end
+      tombs[path] = nil
+    end
+  end
   for _, f in ipairs(band.files(d, ".json")) do
     local path, id = d .. "/" .. f, f:sub(1, -6)
     seen[path] = true

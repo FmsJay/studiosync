@@ -188,10 +188,13 @@ assert(video.take({ src = { type = "SECTION", parent = take.src } }, 2).id == v.
 assert(video.take({ src = { type = "VIDEO", file = "C:/Users/me/home video.mp4" } }, 3) == nil, "a file outside the studio: no frames, nothing offered")
 assert(video.take({ src = { type = "VIDEO", file = "R/Song/rooms/main/media/song.m4a" } }, 3) == nil, "an m4a (audio through the video decoder): its waveform as ever")
 assert(video.take({ src = { type = "WAVE", file = "R/Song/rooms/main/media/a.mp4" } }, 3) == nil, "not a video source")
+-- rt-p6 (1.28): a song with 30 video files on screen: every one stays offered (16 left items 17+ with no frames)
+for k = 1, 30 do video.take({ src = { type = "VIDEO", file = "R/S/rooms/main/media/big" .. k .. ".mp4" } }, 4 + k / 100) end
+for k = 1, 30 do assert(offered[video.id("R/S/rooms/main/media/big" .. k .. ".mp4")], "30 files at once: big" .. k .. " offered") end
 for k = 1, video.MAX_OFFERS + 3 do video.take({ src = { type = "VIDEO", file = "R/S/rooms/main/media/c" .. k .. ".mp4" } }, 10 + k) end
 local n = 0
 for _ in pairs(offered) do n = n + 1 end
-assert(n == video.MAX_OFFERS and not offered[v.id] and offered[video.id("R/S/rooms/main/media/c" .. (video.MAX_OFFERS + 3) .. ".mp4")], "at most 16 offered, the oldest withdrawn")
+assert(n == video.MAX_OFFERS and not offered[v.id] and offered[video.id("R/S/rooms/main/media/c" .. (video.MAX_OFFERS + 3) .. ".mp4")], "at most MAX_OFFERS offered, the oldest withdrawn")
 video.root = nil
 assert(video.take(take, 50) == nil, "before Live sync names the studio: nothing")
 -- dawview carries it to the page, and a changed one sends its chunk again

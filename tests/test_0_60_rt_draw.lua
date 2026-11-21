@@ -187,6 +187,15 @@ assert(deliver("Bo") == 1 and #on("Bo", WB.read, CB, B) == 0 and disks.Bo[DIR ..
 syncthing("James", "Bo")
 assert(disks.Bo[DIR .. "/" .. id1 .. ".json"] == nil, "and then it has")
 
+-- rt-p6 (1.23): a removal from the link whose Syncthing deletion never comes: after LIVE_FOR the file goes on Bo's computer too (it showed again)
+on("James", WJ.action, nil, CJ, B, { topic = "draw", add = { kind = "text", pts = { { 3, "T-JAMES-1", 0.5 } }, text = "never deleted" } })
+local id3 = on("James", WJ.read, CJ, B)[1].id
+deliver("Bo"); syncthing("James", "Bo")
+on("James", WJ.action, nil, CJ, B, { topic = "draw", remove = { id3 } })
+assert(deliver("Bo") == 1 and #on("Bo", WB.read, CB, B) == 0 and disks.Bo[DIR .. "/" .. id3 .. ".json"], "hidden while Syncthing's deletion is awaited")
+clock = clock + WJ.LIVE_FOR + 5
+assert(#on("Bo", WB.read, CB, B) == 0 and disks.Bo[DIR .. "/" .. id3 .. ".json"] == nil, "past 10 minutes it stays hidden (its file is removed here)")
+syncthing("James", "Bo")
 -- an admin removes anyone's, even one whose file hasn't come yet (it goes when it arrives)
 on("James", WJ.action, nil, CJ, B, { topic = "draw", add = { kind = "text", pts = { { 3, "T-JAMES-1", 0.5 } }, text = "verse 2" } })
 local id2 = on("James", WJ.read, CJ, B)[1].id

@@ -12,7 +12,7 @@
 -- (lib/bgrender.lua profile_ini). The project's video settings (size, fit) travel with the other project settings (band.PROJECT_CFG).
 -- GPL-3.0-or-later.
 local band = require("band")
-local video = { MAX_OFFERS = 16 } -- (the web server takes 64 offers in all, shared with the phone's mixes and chat downloads)
+local video = { MAX_OFFERS = 40 } -- (the web server takes 64 offers in all, shared with the phone's mixes and chat downloads; 16 left items 17+ of a big song with no frames)
 
 -- ---- pure ------------------------------------------------------------------------------------------------------------------------------
 -- What a browser can draw frames from: "v" a video, "i" a still picture (REAPER shows pictures on the timeline as video too), nil anything

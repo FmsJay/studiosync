@@ -129,14 +129,22 @@ histhear.lit = lit
 -- -> the text, and { tracks = track oid -> a track's settings then (prep sets them), items = oid -> { lane, pick, track }, missing = media not here,
 -- len = the song's length in seconds, skipped = parts that couldn't go in (a receive from a track not there), n = objects changed,
 -- placed = item oid -> the timeline entry it was made under (false: before any History keeps) for each item put in from History,
--- master = { env, fxen } the master's automation then (when it changed), moved = tracks put back where they sat }. Pure.
+-- master = { env, fxen } the master's automation then (when it changed), moved = tracks put back where they sat,
+-- ai = track oid ("MASTER" for the master) -> its automation items then as BANDAI lines (prep rebuilds them), envplaced = the same keys ->
+-- the timeline entry the automation put in was made under (false: before any History keeps) }. Pure.
+-- A version's automation items: its BANDAI and BANDAIPT lines (mirror.ai_lines' form), or nil.
+local function ai_lines(state)
+  local out = {}
+  for l in tostring(state):gmatch("[^\n]+") do if l:find("^BANDAI") then out[#out + 1] = l end end
+  return #out > 0 and table.concat(out, "\n") or nil
+end
 function histhear.rebuild(text, plan, o)
   o = o or {}
   local mirror = require("mirror")
   local now, media = o.now or {}, o.media or ""
   local L = split(text)
   local root = units(L, 2, #L - 1)
-  local info = { tracks = {}, items = {}, missing = {}, len = 0, skipped = 0, n = 0, locals = 0, placed = {} }
+  local info = { tracks = {}, items = {}, missing = {}, len = 0, skipped = 0, n = 0, locals = 0, placed = {}, ai = {}, envplaced = {} }
   -- the tracks, in order; every receive tied to its source's record (renumbered once tracks come and go)
   local orig = {}
   for _, u in ipairs(root) do
@@ -249,6 +257,8 @@ function histhear.rebuild(text, plan, o)
           -- prep swaps into the master's own chunk in the background REAPER; its FX button, BANDFXEN. Automation items aren't rebuilt.)
           local x = mirror.splice_parts("<TRACK\n>\n", "env", state, function() return nil end, function() return nil end) or ""
           info.master = { env = x:gsub("^<TRACK\n", ""):gsub(">\n$", ""), fxen = state:find("BANDFXEN 0", 1, true) and 0 or 1 }
+          info.ai.MASTER = ai_lines(state)
+          if o.map_of and ev then info.envplaced.MASTER = o.map_of(ev) or false end
           info.n = info.n + 1
         else info.skipped = info.skipped + 1 end -- (the master has no sends or other parts in History: F-MASTER and E-MASTER only)
       else
@@ -266,7 +276,13 @@ function histhear.rebuild(text, plan, o)
         else
           local chunk = table.concat(flat({ block("<TRACK " .. (r.guid or ""), r.kids) }), "\n")
           local out = mirror.splice_parts(chunk, kind, state, index_of, oid_at)
-          if out then local L2 = split(out); r.kids = units(L2, 2, #L2 - 1); info.n = info.n + 1 else info.skipped = info.skipped + 1 end
+          if out then
+            local L2 = split(out); r.kids = units(L2, 2, #L2 - 1); info.n = info.n + 1
+            if kind == "env" then
+              info.ai[r.oid] = ai_lines(state)
+              if o.map_of and ev then info.envplaced[r.oid] = o.map_of(ev) or false end
+            end
+          else info.skipped = info.skipped + 1 end
         end
       end
     end
@@ -347,35 +363,8 @@ end
 -- the tempo as it does when a map lands: everything held in place (timebase time), then for the copy's own (on today's map) and for each
 -- other map items were made under: that map in, those items let go, the map then in (REAPER moves them onto it), held again; at the end every
 -- item's own timebase back. Then the markers then, and the master's automation then (ME), swapped into its chunk as mirror.apply does.
-local PREP_TIME = [==[
-local function tempo(map)
-  for i = reaper.CountTempoTimeSigMarkers(proj) - 1, 0, -1 do reaper.DeleteTempoTimeSigMarker(proj, i) end
-  for _, m in ipairs(map) do reaper.SetTempoTimeSigMarker(proj, -1, m.time, -1, -1, m.bpm, m.num, m.denom, m.linear == true) end
-  reaper.UpdateTimeline()
-end
-if TL.tempo then
-  local all = {}
-  for i = 0, reaper.CountMediaItems(proj) - 1 do
-    local it = reaper.GetMediaItem(proj, i)
-    local _, oid = reaper.GetSetMediaItemInfo_String(it, 'P_EXT:band_oid', '', false)
-    all[#all + 1] = { it = it, mode = reaper.GetMediaItemInfo_Value(it, 'C_BEATATTACHMODE'), g = (TL.groups or {})[(oid or ''):upper()] or 0 }
-    reaper.SetMediaItemInfo_Value(it, 'C_BEATATTACHMODE', 0)
-  end
-  for k = 0, #(TL.maps or {}) do
-    if k > 0 then tempo(TL.maps[k]) end
-    for _, x in ipairs(all) do if x.g == k then reaper.SetMediaItemInfo_Value(x.it, 'C_BEATATTACHMODE', x.mode) end end
-    tempo(TL.tempo)
-    for _, x in ipairs(all) do if x.g == k then reaper.SetMediaItemInfo_Value(x.it, 'C_BEATATTACHMODE', 0) end end
-  end
-  for _, x in ipairs(all) do reaper.SetMediaItemInfo_Value(x.it, 'C_BEATATTACHMODE', x.mode) end
-end
-if TL.markers then
-  for i = reaper.CountProjectMarkers(proj) - 1, 0, -1 do reaper.DeleteProjectMarkerByIndex(proj, i) end
-  for _, m in ipairs(TL.markers) do
-    local pos = tonumber(m.pos) or 0
-    reaper.AddProjectMarker2(proj, m.region == true, pos, tonumber(m['end']) or pos, tostring(m.name or ''), math.tointeger(tonumber(m.num)) or -1, 0)
-  end
-end
+local PREP_ENV = [==[
+-- (the master's automation then, swapped into its chunk as mirror.apply does, and the automation items then; before the tempo map, which moves them)
 if ME then
   local master = reaper.GetMasterTrack(proj)
   local ok, chunk = reaper.GetTrackStateChunk(master, '', false)
@@ -396,7 +385,124 @@ if ME then
     reaper.SetTrackStateChunk(master, table.concat(out, '\n') .. '\n', false)
   end
   reaper.SetMediaTrackInfo_Value(master, 'I_FXEN', ME.fxen or 1)
+end
+if next(AI or {}) then -- (the automation items then: the envelope part's splice and the chunk left none; mirror.set_ai's rebuild, the track's own envelopes)
+  local KEYS = { 'D_POSITION', 'D_LENGTH', 'D_STARTOFFS', 'D_PLAYRATE', 'D_BASELINE', 'D_AMPLITUDE', 'D_LOOPSRC', 'D_MUTE' }
+  local ONE, pool = 0x10000000, 0
+  local function owner(key)
+    if key == 'MASTER' then return reaper.GetMasterTrack(proj) end
+    for i = 0, reaper.CountTracks(proj) - 1 do
+      local t = reaper.GetTrack(proj, i)
+      if ((select(2, reaper.GetSetMediaTrackInfo_String(t, 'P_EXT:band_oid', '', false))) or ''):upper() == key then return t end
+    end
+  end
+  for t = -1, reaper.CountTracks(proj) - 1 do
+    local tr = t < 0 and reaper.GetMasterTrack(proj) or reaper.GetTrack(proj, t)
+    for e = 0, reaper.CountTrackEnvelopes(tr) - 1 do
+      local env = reaper.GetTrackEnvelope(tr, e)
+      for a = 0, reaper.CountAutomationItems(env) - 1 do pool = math.max(pool, reaper.GetSetAutomationItemInfo(env, a, 'D_POOL_ID', 0, false) + 1) end
+    end
+  end
+  for key, lines in pairs(AI) do
+    local tr, made, count = owner(key), {}, {}
+    for line in (tr and lines or ''):gmatch('[^\n]+') do
+      local tag, rest = line:match('^BANDAI (%S+) (.*)$')
+      if tag then
+        local v = {}
+        for x in rest:gmatch('%S+') do v[#v + 1] = tonumber(x) end
+        local env = tag:sub(1, 8) ~= 'PARMENV:' and tag:sub(1, 4) ~= 'AUX:' and reaper.GetTrackEnvelopeByChunkName(tr, '<' .. tag)
+        local k = count[tag] or 0
+        count[tag] = k + 1
+        if env and v[2] then
+          local a = reaper.InsertAutomationItem(env, pool, v[1], v[2])
+          pool = pool + 1
+          local pass = v[#KEYS + 1] and ONE or 0
+          if pass ~= 0 then reaper.GetSetAutomationItemInfo(env, a, 'D_POOL_QNLEN', v[#KEYS + 1], true) end
+          for i = 3, #KEYS do if v[i] then reaper.GetSetAutomationItemInfo(env, a, KEYS[i], v[i], true) end end
+          for _ = 1, reaper.CountEnvelopePointsEx(env, a | ONE) do reaper.DeleteEnvelopePointEx(env, a | ONE, 0) end
+          made[tag .. ' ' .. k] = { env, a | pass }
+        end
+      else
+        local ptag, k, t, val, shape, ten = line:match('^BANDAIPT (%S+) (%d+) (%S+) (%S+) (%S+) (%S+)$')
+        local m = ptag and made[ptag .. ' ' .. k]
+        if m then reaper.InsertEnvelopePointEx(m[1], m[2], tonumber(t), tonumber(val), tonumber(shape), tonumber(ten), false, true) end
+      end
+    end
+    for _, m in pairs(made) do reaper.Envelope_SortPointsEx(m[1], m[2]) end
+  end
 end]==]
+local PREP_TIME = [==[
+local function tempo(map)
+  for i = reaper.CountTempoTimeSigMarkers(proj) - 1, 0, -1 do reaper.DeleteTempoTimeSigMarker(proj, i) end
+  for _, m in ipairs(map) do reaper.SetTempoTimeSigMarker(proj, -1, m.time, -1, -1, m.bpm, m.num, m.denom, m.linear == true) end
+  reaper.UpdateTimeline()
+end
+local function track_of(key)
+  if key == 'MASTER' then return reaper.GetMasterTrack(proj) end
+  for i = 0, reaper.CountTracks(proj) - 1 do
+    local t = reaper.GetTrack(proj, i)
+    if ((select(2, reaper.GetSetMediaTrackInfo_String(t, 'P_EXT:band_oid', '', false))) or ''):upper() == key then return t end
+  end
+end
+if TL.tempo then
+  -- automation put in from History, made under another map: its points and items by the beats they had there (read now, on the copy's map)
+  local EV = {}
+  for key, k in pairs(TL.envs or {}) do
+    local tr = track_of(key)
+    for e = 0, (tr and reaper.CountTrackEnvelopes(tr) or 0) - 1 do
+      local env = reaper.GetTrackEnvelope(tr, e)
+      local x = { env = env, pts = {}, ai = {}, k = k }
+      for p = 0, reaper.CountEnvelopePoints(env) - 1 do x.pts[p + 1] = select(2, reaper.GetEnvelopePoint(env, p)) end
+      for a = 0, reaper.CountAutomationItems(env) - 1 do
+        x.ai[a + 1] = { reaper.GetSetAutomationItemInfo(env, a, 'D_POSITION', 0, false), reaper.GetSetAutomationItemInfo(env, a, 'D_LENGTH', 0, false) }
+      end
+      EV[#EV + 1] = x
+    end
+  end
+  local all = {}
+  for i = 0, reaper.CountMediaItems(proj) - 1 do
+    local it = reaper.GetMediaItem(proj, i)
+    local _, oid = reaper.GetSetMediaItemInfo_String(it, 'P_EXT:band_oid', '', false)
+    all[#all + 1] = { it = it, mode = reaper.GetMediaItemInfo_Value(it, 'C_BEATATTACHMODE'), g = (TL.groups or {})[(oid or ''):upper()] or 0 }
+    reaper.SetMediaItemInfo_Value(it, 'C_BEATATTACHMODE', 0)
+  end
+  for k = 0, #(TL.maps or {}) do
+    if k > 0 then
+      tempo(TL.maps[k])
+      for _, x in ipairs(EV) do
+        if x.k == k then
+          x.qp, x.qa = {}, {}
+          for i, t in ipairs(x.pts) do x.qp[i] = reaper.TimeMap2_timeToQN(proj, t) end
+          for i, v in ipairs(x.ai) do x.qa[i] = { reaper.TimeMap2_timeToQN(proj, v[1]), reaper.TimeMap2_timeToQN(proj, v[1] + v[2]) } end
+        end
+      end
+    end
+    for _, x in ipairs(all) do if x.g == k then reaper.SetMediaItemInfo_Value(x.it, 'C_BEATATTACHMODE', x.mode) end end
+    tempo(TL.tempo)
+    for _, x in ipairs(all) do if x.g == k then reaper.SetMediaItemInfo_Value(x.it, 'C_BEATATTACHMODE', 0) end end
+  end
+  for _, x in ipairs(all) do reaper.SetMediaItemInfo_Value(x.it, 'C_BEATATTACHMODE', x.mode) end
+  -- (the map then is in for good: each envelope's points and items go where their beats are on it)
+  for _, x in ipairs(EV) do
+    if x.qp then
+      for i, q in ipairs(x.qp) do reaper.SetEnvelopePoint(x.env, i - 1, reaper.TimeMap2_QNToTime(proj, q), nil, nil, nil, nil, true) end
+      reaper.Envelope_SortPoints(x.env)
+      for i, q in ipairs(x.qa) do
+        local from = reaper.TimeMap2_QNToTime(proj, q[1])
+        reaper.GetSetAutomationItemInfo(x.env, i - 1, 'D_POSITION', from, true)
+        reaper.GetSetAutomationItemInfo(x.env, i - 1, 'D_LENGTH', reaper.TimeMap2_QNToTime(proj, q[2]) - from, true)
+      end
+    end
+  end
+end
+if TL.markers then
+  for i = reaper.CountProjectMarkers(proj) - 1, 0, -1 do reaper.DeleteProjectMarkerByIndex(proj, i) end
+  for _, m in ipairs(TL.markers) do
+    local pos = tonumber(m.pos) or 0
+    reaper.AddProjectMarker2(proj, m.region == true, pos, tonumber(m['end']) or pos, tostring(m.name or ''), math.tointeger(tonumber(m.num)) or -1, 0)
+  end
+end
+]==]
 function histhear.prep(info)
   local mirror = require("mirror")
   local tracks = {}
@@ -457,7 +563,8 @@ function histhear.prep(info)
     "  local t = settings(tr)",
     "  if t then for l, v in ipairs(t.plays) do if v then reaper.SetMediaTrackInfo_Value(tr, 'C_LANEPLAYS:' .. (l - 1), v) end end end",
     "end",
-    "local TL, ME = " .. lit(info.tl or {}) .. ", " .. lit(info.master or false),
+    "local TL, ME, AI = " .. lit(info.tl or {}) .. ", " .. lit(info.master or false) .. ", " .. lit(info.ai or {}),
+    PREP_ENV,
     PREP_TIME,
     "reaper.UpdateTimeline()",
     "" }, "\n")
@@ -535,22 +642,27 @@ end
 -- then the way REAPER moves it when a map lands (by its timebase), and so is everything already in the copy, from today's.
 -- -> nil (nothing to change), or { tempo = the map then or nil (as it is), markers, maps = the other maps, groups = item oid -> its map's
 -- place in maps }. Pure.
-function histhear.tempo_plan(placed, tl, now)
+function histhear.tempo_plan(placed, tl, now, envplaced)
   if not (tl and tl.tempo) then return nil end
   local nowk, maps, idx, groups = lit(now or {}), {}, {}, {}
   local oids = {}
   for oid in pairs(placed or {}) do oids[#oids + 1] = oid end
   table.sort(oids)
-  for _, oid in ipairs(oids) do
-    local e = placed[oid]
+  local function group(e, into, key)
     local m = e and e.tempo or tl.tempo -- (made before any change History keeps: on the map then, its seconds kept)
     local k = lit(m)
     if k ~= nowk then
       if not idx[k] then maps[#maps + 1] = m; idx[k] = #maps end
-      groups[oid] = idx[k]
+      into[key] = idx[k]
     end
   end
-  return { tempo = (lit(tl.tempo) ~= nowk or #maps > 0) and tl.tempo or nil, markers = tl.markers or {}, maps = maps, groups = groups }
+  for _, oid in ipairs(oids) do group(placed[oid], groups, oid) end
+  -- (automation put in from History is on the map it was made under too: its points and items are moved onto the map then, by their beats)
+  local envs, keys = {}, {}
+  for key in pairs(envplaced or {}) do keys[#keys + 1] = key end
+  table.sort(keys)
+  for _, key in ipairs(keys) do group(envplaced[key], envs, key) end
+  return { tempo = (lit(tl.tempo) ~= nowk or #maps > 0) and tl.tempo or nil, markers = tl.markers or {}, maps = maps, groups = groups, envs = envs }
 end
 -- A plan as the song really stood then. mirror.plan_restore gives each object its own newest version at the point, but deleting a track
 -- sends no change for what was on it: an item whose version then sits on a track that was gone then went with that track, so it wasn't
@@ -770,7 +882,7 @@ local function start(proj, cfg, b, slot, s)
   for oid in pairs(plan) do local _, _, ev = mirror.known(proj, oid); now[oid] = ev end
   local out, info = histhear.rebuild(text, plan, { media = sync.room_dir(cfg, b.song, b.room) .. "/media", now = now, exists = reaper.file_exists,
     guid = function() return reaper.genGuid("") end, moves = entries and histhear.moves_since(entries, s.upto), map_of = entries and histhear.map_of(entries) })
-  info.tl = histhear.tempo_plan(info.placed, tl, band.capture_tempo(proj)) -- (today's map: what the copy was saved with)
+  info.tl = histhear.tempo_plan(info.placed, tl, band.capture_tempo(proj), info.envplaced) -- (today's map: what the copy was saved with)
   s.tempo = tl and tl.how or "unknown"
   band.write_atomic(dir .. "/job.rpp", out)
   band.write_atomic(dir .. "/prep.lua", histhear.prep(info))

@@ -106,3 +106,12 @@ unchanged:
 - `byte_range`: one range only, digits only, 40 characters at most; `atoll` of a 19+ digit number saturates (then clamped to the file).
 - The link list now takes m4a/m4v/mkv/avi/gif: still never anything that runs; media decoders (REAPER's, the browser's) parse bandmates'
   files, as with audio.
+
+## Round 2 (rt-p6, backlog 1.28; offline tests only, not run in a browser)
+- **More than 16 video files**: `video.MAX_OFFERS` 16 -> 40 (`lib/video.lua`). The web server takes 64 offers in all, shared with the phone's
+  mixes (one per song) and chat downloads; a song with 17+ video files lost the oldest offers, so those items had no thumbnails. Beyond 40
+  distinct files on screen the oldest still go (the server's cap is the limit; the low-res proxy stays unbuilt, backlog 4.10). The page
+  (`lib/webui/video.js`) no longer gives up for good on a file that failed once (not offered yet, or let go): it asks again after 20 s.
+- Tests: `tests/test_0_60_rt_video.lua` ("rt-p6 (1.28)": 30 files all stay offered; fails at 16).
+- **Check in a browser**: a song with 20-30 short video items on different files, shared, on the Project page: every item draws frames after
+  a few seconds, and again after zooming; the Health page / `StudioSync_WebUIOffer` still has room for the latest mix of a song (phone download).

@@ -151,3 +151,14 @@ file with a new id and the `time` it was first drawn, so History still shows it 
    Mixer drawing appears from the frame after it was drawn, on its track's strip. Untick Drawings: the row goes.
 10. Restart Live sync on the desktop, then Undo on the web: it takes the desktop's newest drawing on that view. Health/log: nothing new
     except "cleared N share notes from the web page".
+
+## Round 2 (rt-p6, backlog 1.23; offline tests only, not run in REAPER)
+- **A removal from the link whose Syncthing deletion never comes** (`lib/webdraw.lua`, `read`): a removal a bandmate sent over the link hid the
+  file for `LIVE_FOR` (10 minutes) and then the drawing showed again if the deletion hadn't arrived. The removal was already checked when it came
+  (only what its sender may remove), so when its hold ends and the file is still here, this computer deletes the file itself (it is what the
+  sender's own deletion would do; Syncthing then carries a deletion nobody disagrees with). Test: `tests/test_0_60_rt_draw.lua` ("rt-p6 (1.23)",
+  fails with the line removed). Decision taken from the backlog: none was James's.
+- Still as in rt-draw2: Undo's piles live in Live sync's memory; Clear mine and Clear all can't be undone; a share note's limits.
+- **Check in REAPER (two computers)**: Bo draws a mark, both see it. Pause Syncthing on James's computer, Bo removes the mark (it hides at once on
+  James's through the link); wait 11 minutes, with Syncthing still paused: the mark stays hidden and its file in `rooms/<room>/drawings` on James's
+  computer is gone (before: it showed again). Resume Syncthing: no mark comes back.
