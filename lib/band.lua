@@ -458,7 +458,9 @@ local function enum(fn, dir, unsorted)
   fn(dir, -1) -- invalidate REAPER's directory cache so newly synced files show up
   while true do
     local name = fn(dir, i)
-    if not name then break end
+    -- ("" is no file name either: test stand-ins answer "" for every REAPER function they don't define, and a listing that never ended
+    -- took 22 GB on the desktop, 2026-11-21, when live audio's tick began reading the removal marks in test_0_60_rt_hubmix.)
+    if not name or name == "" then break end
     out[#out + 1] = name; i = i + 1
   end
   if not unsorted then table.sort(out) end
