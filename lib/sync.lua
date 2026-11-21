@@ -347,6 +347,11 @@ function sync.set_claims(cfg, song, room, claims, renamed)
   keys(claims, has)
   for k in pairs(had) do if not has[k] then dropped[k] = now end end
   for k in pairs(has) do dropped[k] = nil end
+  -- (`let_go`: keys the caller lets go of though they may not be in your file: a claim given to you that only the direct link's copy has
+  -- brought so far, released from the panel before Syncthing's file arrives and is folded in. It had nothing to remove, so it stayed yours.
+  -- Backlog 1.8, James's default (b), rt-p1)
+  for k in pairs(type(claims.let_go) == "table" and claims.let_go or {}) do if type(k) == "string" and not has[k] then dropped[k] = now end end
+  claims.let_go = nil
   claims.dropped = next(dropped) and dropped or nil
   if type(claims.auto) == "table" then -- (auto-claims: only what's still claimed keeps its mark. lib/claimask.lua)
     local keep = {}
@@ -1101,6 +1106,7 @@ function sync.post(cfg, song, room, ev, proj)
   sync.posted = ev_seq -- (Live sync's cloud pass comes sooner after changes went out: James, rt)
   ev.format, ev.user, ev.time = band.FORMAT, cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ")
   if ev.type == "obj" and not ev.hlc then ev.hlc = require("mirror").hlc_next() end -- (what equal revisions are settled by: mirror.order_of)
+  if ev.type == "obj" then ev.mg = require("mirror").MG end -- (what this version merges: a chain merges only with another that says so. rt-p1)
   -- made with nobody else here (full control): everyone takes it when it reaches them, whoever drove then
   if sync.alone then ev.alone = true; if proj then setext(proj, band.SECTION, "alone_last", ev.time) end end
   ev.id = string.format("%s-%s-%05d-%04d", sync.id_user(cfg.user), os.date("!%Y%m%d-%H%M%SZ"), ev_seq, math.random(0, 9999))
@@ -1613,7 +1619,8 @@ function sync.watch_timeline(proj, cfg, song, room, can)
   end
   if seen ~= sig then
     local was = seen ~= "" and band.json_decode(seen)
-    if not (type(was) == "table" and tempo_sig(was[1]) == tempo_sig(band.capture_tempo(proj))) then require("mirror").tempo_changed(proj) end
+    -- (with the map from before it: an item moved by hand in these seconds is told from one the map moved. mirror.map_moved, backlog 1.10, rt-p1)
+    if not (type(was) == "table" and tempo_sig(was[1]) == tempo_sig(band.capture_tempo(proj))) then require("mirror").tempo_changed(proj, type(was) == "table" and was[1] or nil) end
     if seen ~= "" then
       -- (another script's doing: the grid turning this computer's own is no change; a ReaPersona persona switch is put back. lib/compat.lua, James, rt)
       local okv, veto = pcall(require("compat").timeline_veto, proj, seen, sig)

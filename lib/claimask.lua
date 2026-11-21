@@ -186,6 +186,23 @@ function claimask.askable(cfg, b, who, name, pos)
   if a and (a.state == "kept" or a.state == "timeout") and reaper.time_precise() - a.done_at < claimask.COOLDOWN then return nil end
   return th.user
 end
+-- A web page's edit already made to item `it` (lib/dawedit.lua), on what askable said `owner` holds: does mirror.watch still ask them for it?
+-- Not when the deciding claim is their auto-claim and the edit touches nothing they changed lately (mirror.clashes, as W.one judges it with
+-- opts.soft): it goes out, and the page shouldn't say "Asked <name> for it". -> the claimer when it asks, else nil. (Backlog 1.5: the page
+-- couldn't tell a clash from a different piece, so every edit to an auto-claimed track read as asked. rt-p1)
+-- name, pos: the track and place the ask was for.
+function claimask.web_ask(proj, cfg, b, who, it, owner, name, pos)
+  local mirror, sync = require("mirror"), require("sync")
+  local soft = claimask.soft(who, name, pos, cfg.user)
+  if not soft then return owner end -- (a lasting claim: every edit asks)
+  if not (it and reaper.ValidatePtr2(proj, it, "MediaItem*")) then return owner end
+  local oid = mirror.item_oid(it)
+  local room_dir = sync.room_dir(cfg, b.song, b.room)
+  local _, _, kev = mirror.known(proj, oid)
+  local last = oid ~= "" and (kev or "") ~= "" and mirror.event_file(room_dir, kev) or nil
+  if not last then return nil end -- (a new item: nothing of theirs in it)
+  return mirror.clashes(room_dir, "item", mirror.item_state(it, room_dir .. "/media"), last, soft) and soft or nil
+end
 -- mirror.watch's W.refuse asks this before refusing (opts.ask). -> true: held (nothing sent, nothing put back, the band's changes to it wait);
 -- a string: put it back with these words; nil: not a claim this asks about (refused as before). After a Keep or no answer, a second value:
 -- true when these words were just said for that answer (the rest of the same put-back: one Keep of a track logged its words 10 times), so

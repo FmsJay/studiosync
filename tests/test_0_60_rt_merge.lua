@@ -38,6 +38,7 @@ proxy.copy_atomic = function() return true end
 proxy.session_path = function() return "SESSION" end
 package.loaded.band = proxy
 local mirror = require("mirror")
+mirror.MERGE_SINCE = {} -- (the clock here is 2026-11-20, around when track merging began: merges as built since, in any time zone. rt-p1)
 local sync = require("sync")
 require("direct").send_live = function() return true end
 require("prints").choose = function() end
@@ -297,6 +298,58 @@ do
   print("rt-merge: an item deleted on one computer while the other edits it: deleted everywhere")
 end
 
+-- a track deleted on one while the other renames it: the deletion, everywhere, though the rename is the newer (backlog 1.3: newest won, so
+-- the rename brought the track back for everyone. rt-p1)
+do
+  local oid = gtr.ext.band_oid
+  tick(); as(A); reaper.DeleteTrack(gtr); settle(A)
+  tick(); as(B); reaper.GetSetMediaTrackInfo_String(track_on(B, gtr), "P_NAME", "Gtr Lead", true); settle(B) -- (a second later, not having seen it)
+  tick(); recv(A); recv(B)
+  same("a track deleted on one, renamed on the other")
+  as(A); local on_a = mirror.find(A.F.proj, "track", oid)
+  as(B); local on_b = mirror.find(B.F.proj, "track", oid)
+  assert(not on_a and not on_b, "the track is gone on both (desktop " .. tostring(on_a ~= nil) .. ", laptop " .. tostring(on_b ~= nil) .. ")")
+  print("rt-merge: a track deleted on one computer while the other renames it: deleted everywhere")
+end
+
+-- the colour try (backlog 1.6, rt-p1): a bandmate's change landing on a tried item kept the band's colour, so the try no longer showed there;
+-- Put back left the tried colour on a region that had none (SetProjectMarkerByIndex2's colour 0 means "leave it")
+do
+  local colours = require("colours")
+  local RED = 0x1000000 | 0x0000FF
+  tick(); as(A)
+  local P = A.F.proj
+  A.F.add_marker(true, 0, 8, "Verse", nil, 0) -- (a region with no colour: 0, as REAPER reads it)
+  local it = item_named(bass, "Bass 3")
+  local track_was = reaper.GetMediaTrackInfo_Value(bass, "I_CUSTOMCOLOR")
+  tick()
+  colours.try_first(P, function()
+    reaper.SetMediaItemInfo_Value(it, "I_CUSTOMCOLOR", RED)
+    reaper.SetMediaTrackInfo_Value(bass, "I_CUSTOMCOLOR", RED)
+    for i, m in ipairs(A.F.markers) do if m.region then reaper.SetProjectMarkerByIndex2(P, i - 1, true, m.pos, m.rend, m.num, m.name, RED, 0) end end
+  end)
+  assert(next(look(A)) == nil, "trying sends nothing")
+  -- the laptop turns the tried item down and pans the tried track; both land on the desktop, under the tried colours
+  tick(); as(B)
+  set(B, item_on(B, it), "VOLPAN", "0.3 0 1 -1")
+  reaper.SetMediaTrackInfo_Value(track_on(B, bass), "D_PAN", 0.25)
+  settle(B); tick(); recv(A)
+  as(A)
+  assert(E.top_value(it.text, "VOLPAN"):match("^0%.3 ") and reaper.GetMediaItemInfo_Value(it, "I_CUSTOMCOLOR") == RED,
+    "the laptop's change to the tried item landed, and the tried colour is still on it: " .. tostring(reaper.GetMediaItemInfo_Value(it, "I_CUSTOMCOLOR")))
+  assert(math.abs(bass.pan - 0.25) < 1e-6 and reaper.GetMediaTrackInfo_Value(bass, "I_CUSTOMCOLOR") == RED, "the pan landed on the tried track, still in its tried colour")
+  same("a bandmate's changes to tried things")
+  -- Put back: everything as before the try, the region with no colour again, and nothing sent
+  as(A); colours.put_back(P)
+  local rc
+  for _, m in ipairs(A.F.markers) do if m.region and m.name == "Verse" then rc = m.color end end
+  assert((rc or 0) == 0, "put back: the region that had no colour has none again (" .. tostring(rc) .. ")")
+  assert(reaper.GetMediaItemInfo_Value(it, "I_CUSTOMCOLOR") == 0 and reaper.GetMediaTrackInfo_Value(bass, "I_CUSTOMCOLOR") == track_was, "put back: item and track as before")
+  assert(next(look(A)) == nil, "put back sends nothing")
+  same("put back after a bandmate's changes")
+  print("rt-merge: a colour try stays on what a bandmate changes meanwhile; Put back clears a region that had no colour")
+end
+
 -- a bandmate editing the same item: your edit goes out, said once, never put back
 do
   logged = {}
@@ -335,6 +388,10 @@ do
   tick(); as(B)
   local b = item_on(B, a)
   with_notes(B, b, { "E 0 90 3c 60", "E 240 90 43 60", "E 120 80 43 00", "E 120 80 3c 00", "E 0 90 40 50", "E 480 80 40 00", "E 240 90 45 60", "E 240 80 45 00", "E 480 b0 7b 00" })
+  -- (the web Project page's word for the same edit made from it: not "asked James", as it goes out. Backlog 1.5, rt-p1)
+  local claimask = require("claimask")
+  local who = { mode = "open", is_claimed = claimed, tracks = { [K:lower()] = { name = K, user = "James", auto = true } } }
+  assert(claimask.web_ask(B.F.proj, B.cfg, { song = song, room = room }, who, b, "James", K, 0) == nil, "the web page: a different note isn't asked for")
   tick()
   local sent = {}
   settle(B, sent)
@@ -347,6 +404,10 @@ do
   tick(); as(B)
   b = item_on(B, a)
   with_notes(B, b, { "E 0 90 3c 60", "E 240 90 43 7f", "E 120 80 43 00", "E 120 80 3c 00", "E 0 90 40 50", "E 480 80 40 00", "E 240 90 45 60", "E 240 80 45 00", "E 480 b0 7b 00" })
+  assert(claimask.web_ask(B.F.proj, B.cfg, { song = song, room = room }, who, b, "James", K, 0) == "James", "the web page: the claimer's own note is asked for")
+  who.tracks[K:lower()].auto = nil
+  assert(claimask.web_ask(B.F.proj, B.cfg, { song = song, room = room }, who, b, "James", K, 0) == "James", "a lasting claim: always asked")
+  who.tracks[K:lower()].auto = true
   tick()
   sent = {}
   settle(B, sent)
@@ -472,6 +533,26 @@ do
   assert(n_changed("item", i1, (i1:gsub("E 0 90 3c 60", "E 0 90 3c 70"))) == 1 and n_changed("item", i1, (i1:gsub("E 0 90 3c 60", "e 0 90 3c 60"))) == 0,
     "one note changed: one piece; selecting it: none")
   print("rt-merge: merge_midi, merge_track and merge_env on their own")
+  -- a plug-in chain's merged version, as every computer rebuilds it from the two events and their base (backlog 3.13, rt-p1): plug-in by
+  -- plug-in, with the files both sides' plug-ins load; not with a version from a StudioSync that doesn't merge chains (no `mg`)
+  do
+    local rdir = "C:/fake/FxMerge/rooms/main"
+    local function plug(name, data) return "BYPASS 0 0 0\n<JS " .. name .. " \"\"\n" .. data .. "\n>\nWAK 0 0" end
+    local function chain(...) return "<FXCHAIN\n" .. table.concat({ ... }, "\n") .. "\n>\n" end
+    local function put(ev) files[rdir .. "/events/" .. ev.id .. ".json"] = ev; return ev end
+    local base = put({ type = "obj", obj = "fx", oid = "F-X", id = "Al-20261120-230000Z-00001-0001", rev = 1, track = "T-X", mg = 1, state = chain(plug("eq", "1"), plug("comp", "2")) })
+    local w = put({ type = "obj", obj = "fx", oid = "F-X", id = "Bee-20261120-230100Z-00002-0001", rev = 2, base = 1, base_ev = base.id, track = "T-X", mg = 1, user = "Bee",
+      state = chain(plug("eq", "5"), plug("comp", "2")), files = { { path = "C:/a.wav", copy = "fx/a.wav" } } })
+    local l = put({ type = "obj", obj = "fx", oid = "F-X", id = "James-20261120-230100Z-00003-0001", rev = 2, base = 1, base_ev = base.id, track = "T-X", mg = 1, user = "James",
+      state = chain(plug("eq", "1"), plug("comp", "9")), files = { { path = "C:/b.wav", copy = "fx/b.wav" } } })
+    local m = mirror.event_file(rdir, mirror.merge_id(w.id, l.id))
+    assert(m and m.state == chain(plug("eq", "5"), plug("comp", "9")) and #m.clashed == 0, "a chain's merged version: each plug-in from whoever changed it")
+    assert(#m.files == 2 and m.files[2].copy == "fx/b.wav", "with the files both sides' plug-ins load")
+    local old = put({ type = "obj", obj = "fx", oid = "F-X", id = "Cee-20261120-230100Z-00004-0001", rev = 2, base = 1, base_ev = base.id, track = "T-X", user = "Cee",
+      state = chain(plug("eq", "1"), plug("comp", "7")) })
+    assert(mirror.event_file(rdir, mirror.merge_id(w.id, old.id)) == nil, "a chain from a StudioSync that doesn't merge chains: no merged version (the newer stands)")
+    print("rt-merge: a plug-in chain's merged version is rebuilt plug-in by plug-in, with both sides' files, only between versions that merge chains")
+  end
   -- a big part: 4,000 notes, one added on each side, merged in well under a pass
   local ev = { "<SOURCE MIDI", "HASDATA 1 960 QN" }
   for i = 1, 4000 do ev[#ev + 1] = string.format("E %d 90 %02x 60", i == 1 and 0 or 120, 36 + i % 48); ev[#ev + 1] = string.format("E 120 80 %02x 00", 36 + i % 48) end

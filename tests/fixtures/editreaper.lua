@@ -566,6 +566,11 @@ function E.new(path)
       return i + 1, m.region, m.pos, m.rend, m.name, m.num, m.color
     end,
     GetNumRegionsOrMarkers = function() return 0 end, -- (no ruler lanes here: band.apply_markers' lane step ended in an error, after the markers. rt-nohold)
+    -- (REAPER 7.62's per-marker calls, by the same index as EnumProjectMarkers3: a colour cleared to none, which SetProjectMarker*'s 0 can't.
+    -- Lanes read as none, as before these were here. rt-p1)
+    GetRegionOrMarker = function(_, i) return markers[i + 1] end,
+    GetRegionOrMarkerInfo_Value = function(_, m, key) if key == "I_CUSTOMCOLOR" then return m.color or 0 end; return -1 end,
+    SetRegionOrMarkerInfo_Value = function(_, m, key, v) if key == "I_CUSTOMCOLOR" then m.color = v; changed() end; return true end,
     EnumProjectMarkers2 = function(_, i) local m = markers[i + 1]; if not m then return 0 end; return i + 1, m.region, m.pos, m.rend, m.name, m.num end,
     EnumProjectMarkers = function(i) local m = markers[i + 1]; if not m then return 0 end; return i + 1, m.region, m.pos, m.rend, m.name, m.num end,
     AddProjectMarker2 = function(_, region, pos, rend, name, want, color) local m = F.add_marker(region, pos, rend, name, (want and want >= 0) and want or nil, color); return m.num end,

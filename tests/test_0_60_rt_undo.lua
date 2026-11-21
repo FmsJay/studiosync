@@ -48,6 +48,7 @@ proxy.copy_atomic = function() return true end
 proxy.session_path = function() return "SESSION" end
 package.loaded.band = proxy
 local mirror = require("mirror")
+mirror.MERGE_SINCE = {} -- (the clock here is 2026-11-20, around when track merging began: merges as built since, in any time zone. rt-p1)
 local sync = require("sync")
 local direct = require("direct")
 require("prints").choose = function() end

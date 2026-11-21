@@ -154,7 +154,7 @@ function dawedit.item_why(cfg, b, can, who, it, tr, pos)
     local why = dawedit.item_refusal(can, who, user, track_name(t), mirror.track_oid(t), ioid ~= "" and ioid or nil, at)
     -- (Claims: theirs to give, not a refusal. Made here, mirror.watch holds it and asks them. lib/claimask.lua, rt-claims)
     local owner = why and require("claimask").askable(cfg, b, who, track_name(t), at)
-    if owner then dawedit.asking = owner; return nil end
+    if owner then dawedit.asking, dawedit.asking_at = owner, { it = it, who = who, name = track_name(t), pos = at }; return nil end
     return why
   end
   return refusal(tr, pos), refusal
@@ -249,9 +249,12 @@ end
 -- An edit a page sent (dawview.action). Sets dawedit.reply for the page. -> words for the log.
 function dawedit.action(proj, cfg, b, raw)
   local e, why, id = dawedit.parse(raw)
-  dawedit.asking = nil
+  dawedit.asking, dawedit.asking_at = nil, nil
   if e then id = e.id; why = apply(proj, cfg, b, e) end
   local ask = not why and dawedit.asking or nil
+  -- (only when mirror.watch will ask: an edit that merges with an auto-claimer's change goes out. lib/claimask.lua web_ask, rt-p1)
+  local q = dawedit.asking_at
+  if ask and q then ask = require("claimask").web_ask(proj, cfg, b, q.who, q.it, ask, q.name, q.pos) end
   dawedit.reply = { id = id, ok = not why or nil, why = why, ask = ask }
   if why then return "the web page's edit wasn't made: " .. why end
   if ask then return "the web page: " .. (LABEL[e.op] or e.op) .. ", held here while " .. ask .. " is asked for it" end

@@ -557,7 +557,14 @@ local function put_back_from(proj, pub)
     for i = 0, reaper.CountProjectMarkers(proj) - 1 do
       local _, region, pos, rend, name, num, colour = reaper.EnumProjectMarkers3(proj, i)
       local c = pub.marks[band.mark_key(region, num)]
-      if c and colour == c[2] then reaper.SetProjectMarkerByIndex2(proj, i, region, pos, rend, num, name, c[1], 0); n = n + 1 end
+      if c and colour == c[2] then
+        -- (to none: SetProjectMarkerByIndex2's colour 0 means "leave it", and a region that had none kept the tried one. REAPER 7.62's
+        -- per-marker setter can clear it, as band.apply_markers does. Backlog 1.6, rt-p1)
+        local mk = (tonumber(c[1]) or 0) == 0 and reaper.GetRegionOrMarker and reaper.GetRegionOrMarker(proj, i, "")
+        if mk then reaper.SetRegionOrMarkerInfo_Value(proj, mk, "I_CUSTOMCOLOR", 0)
+        else reaper.SetProjectMarkerByIndex2(proj, i, region, pos, rend, num, name, c[1], 0) end
+        n = n + 1
+      end
     end
   end
   return n

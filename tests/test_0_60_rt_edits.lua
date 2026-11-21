@@ -685,6 +685,26 @@ do
   set(b0, "MUTE", "0 0")
   second = quick(A, t2)
   assert(#first == 1 and #second == 1 and second[1].act ~= first[1].act, "nor over a minute after that look")
+  -- (backlog 1.10, rt-p1) a heavy song's timed full looks come up to QUICK_FULL_MAX apart: what the next one finds is still the act's, then not
+  settle(A, true)
+  tick()
+  as(A)
+  local L = mirror.looks[tostring(A.F.proj)]
+  local took = L.full_took
+  L.full_took = mirror.QUICK_FULL_MAX * mirror.QUICK_FULL_SHARE -- (a full look this long: the next one five minutes on)
+  local t3 = A.F.clock
+  set(ka, "MUTE", "0 0")
+  first = quick(A, t3)
+  A.F.clock = A.F.clock + mirror.ACT_KEEP + 5
+  set(b0, "MUTE", "1 0")
+  second = quick(A, t3)
+  assert(#first == 1 and #second == 1 and second[1].act == first[1].act, "a heavy song: found a minute on, before its next full look: the same act")
+  A.F.clock = A.F.clock + mirror.QUICK_FULL_MAX + mirror.ACT_KEEP
+  set(ka, "MUTE", "1 0")
+  local third = quick(A, t3)
+  assert(#third == 1 and third[1].act ~= first[1].act, "and not past that full look")
+  L = mirror.looks[tostring(A.F.proj)]
+  L.full_took = took
   settle(A, true)
   tick()
   recv(B)
@@ -1502,6 +1522,8 @@ do
 
   -- 3. heal doesn't make a merge of two old changes on a computer that holds the newer of them: before tracks merged, every computer took
   -- the newer and counted the other done, and a heal a day later changed the track everywhere
+  local since = mirror.MERGE_SINCE
+  mirror.MERGE_SINCE = {} -- (this song's clock is 2026-11-20, around when track merging began: as built since, whatever the time zone. rt-p1)
   tick()
   as(A)
   reaper.SetMediaTrackInfo_Value(track(A, "Vox"), "B_MUTE", 1)
@@ -1528,6 +1550,13 @@ do
   assert(#C.F.undos == 1 and C.F.undos[1]:find("^StudioSync") and not undo.native(C.F.undos[1]), "a catch-up leaves one StudioSync undo point (" .. table.concat(C.F.undos, " / ") .. ")")
   assert(select(3, mirror.known(C.F.proj, vox)) ~= held and reaper.GetMediaTrackInfo_Value(track(C, "Vox"), "D_PAN") == 0.5
     and reaper.GetMediaTrackInfo_Value(track(C, "Vox"), "B_MUTE") == 1, "a computer that has neither change still catches up, on the merge")
+  -- 4. the same pair made before track merging began (backlog 1.1, rt-p1): no computer merged it then, so heal doesn't either. It settles on
+  -- the newer, as every receive did; a merge here would change the track everywhere, a day late
+  mirror.MERGE_SINCE = { track = os.date("!%Y%m%d-%H%M%S", now_t + 86400), env = os.date("!%Y%m%d-%H%M%S", now_t + 86400) }
+  newest, all = mirror.room_newest(rdir)
+  assert(mirror.settled(rdir, newest[vox], all[vox]).id == newest[vox].id, "a pair from before track merging: heal settles on the newer")
+  assert(not mirror.mergeable(newest[vox]) and mirror.merge_for(B.F.proj, newest[vox], rdir) == nil, "and nothing merges it")
+  mirror.MERGE_SINCE = since
   print("rt-edits: Undo leaves a track where it sits unless a move is undone; a track order that came apart is put right mid-session; no late merges")
 end
 -- ---- a claimed track renamed by a computer whose StudioSync doesn't ask (one from before 0.59.49.74): only the sender judged a rename, and
@@ -1811,14 +1840,22 @@ do
   local l = midi("E 120 90 3c 60", "E 480 80 3c 00", "E 360 90 40 60", "E 480 80 40 00", "E 480 b0 7b 00")
   local m, clash = mirror.merge_midi(base, w, l)
   assert(m == w and clash, "a note both moved is one note, where the later move put it, and a clash:\n" .. tostring(m))
-  -- the winner changed its pitch, the loser moved it in time: one note, the winner's
+  -- the winner changed its pitch, the loser moved it in time: one note, with both (rt-p1: a pitch change no longer counts as a move)
   local wp = midi("E 0 90 3e 60", "E 480 80 3e 00", "E 480 90 40 60", "E 480 80 40 00", "E 480 b0 7b 00")
+  local both_ways = midi("E 120 90 3e 60", "E 480 80 3e 00", "E 360 90 40 60", "E 480 80 40 00", "E 480 b0 7b 00")
   m, clash = mirror.merge_midi(base, wp, l)
-  assert(m == wp and clash, "a pitch change against a move: one note:\n" .. tostring(m))
-  -- the winner changed it in place (velocity), the loser moved it: one note, the winner's
+  assert(m == both_ways and not clash, "a pitch change and a move in time: one note, transposed and moved:\n" .. tostring(m))
+  m, clash = mirror.merge_midi(base, l, wp)
+  assert(m == both_ways and not clash, "and the other way round:\n" .. tostring(m))
+  -- both transposed it: one note, the later one's pitch, a clash
+  local lp = midi("E 0 90 3b 60", "E 480 80 3b 00", "E 480 90 40 60", "E 480 80 40 00", "E 480 b0 7b 00")
+  m, clash = mirror.merge_midi(base, wp, lp)
+  assert(m == wp and clash, "both transposed it: the later pitch:\n" .. tostring(m))
+  -- the winner changed it in place (velocity), the loser moved it: one note, moved, with the winner's velocity (rt-p1)
   local wv = midi("E 0 90 3c 30", "E 480 80 3c 00", "E 480 90 40 60", "E 480 80 40 00", "E 480 b0 7b 00")
   m, clash = mirror.merge_midi(base, wv, l)
-  assert(m == wv and clash, "changed by one, moved by the other: one note, the later one's:\n" .. tostring(m))
+  assert(m == midi("E 120 90 3c 30", "E 480 80 3c 00", "E 360 90 40 60", "E 480 80 40 00", "E 480 b0 7b 00") and not clash,
+    "changed by one, moved by the other: one note, with both:\n" .. tostring(m))
   -- the winner removed it, the loser moved it: the later removal stands
   local wd = midi("E 960 90 40 60", "E 480 80 40 00", "E 480 b0 7b 00")
   m, clash = mirror.merge_midi(base, wd, l)
@@ -1829,10 +1866,12 @@ do
   assert(count(m, "90 3c 60") == 1 and count(m, "90 40 60") == 1 and m:find("E 120 90 3c 60", 1, true) and not clash, "different notes moved: both moves:\n" .. tostring(m))
   m, clash = mirror.merge_midi(base, w, base)
   assert(m == w and not clash, "(only the winner moved it)")
-  -- moved and resized at once (round 5): the loser's C to 120 and 240 long, the winner's to 240. One note, the winner's
+  -- moved and resized at once (round 5): the loser's C to 120 and 240 long, the winner's to 240. One note: the later place, the other's
+  -- length (rt-p1: what only one of them changed is theirs)
   local lr = midi("E 120 90 3c 60", "E 240 80 3c 00", "E 600 90 40 60", "E 480 80 40 00", "E 480 b0 7b 00")
   m, clash = mirror.merge_midi(base, w, lr)
-  assert(m == w and clash, "moved and resized by one, moved by the other: one note, the later one's:\n" .. tostring(m))
+  assert(m == midi("E 240 90 3c 60", "E 240 80 3c 00", "E 480 90 40 60", "E 480 80 40 00", "E 480 b0 7b 00") and clash,
+    "moved and resized by one, moved by the other: one note, the later place, the other's length:\n" .. tostring(m))
   local wr = midi("E 240 90 3c 60", "E 720 80 3c 00", "E 0 90 40 60", "E 480 80 40 00", "E 480 b0 7b 00") -- (the winner moved and resized it too)
   m, clash = mirror.merge_midi(base, wr, lr)
   assert(m == wr and clash, "moved and resized by both: one note, the later one's:\n" .. tostring(m))
@@ -1974,6 +2013,26 @@ do
   tick()
   fold()
   assert(holder(A, "Gtr") ~= "Bee" and holder(B, "Gtr") ~= "Bee" and not bee_has("Gtr"), "the release and the folded claim agree: Gtr isn't Bee's")
+  -- (backlog 1.8, James's default (b), rt-p1) a claim given and released from Bee's panel before her computer folded it in (only the direct
+  -- link's copy here): her own claims had nothing to remove, so it stayed hers. The chip's release now lets it go as well
+  tick()
+  as(A)
+  sync.give_claims(A.cfg, song, room, "Bee", { "Bass" })
+  assert(holder(B, "Bass") == "Bee" and not bee_has("Bass"), "(given, read by Bee's computer, not folded into her own claims yet)")
+  tick()
+  as(B)
+  c = sync.my_claims(B.cfg, song, room)
+  c.let_go = { [sync.claim_key("tracks", "Bass")] = true } -- (as the panel's chip release does: StudioSync - Panel.lua ui.claim_chips)
+  sync.set_claims(B.cfg, song, room, c)
+  assert(holder(A, "Bass") ~= "Bee" and holder(B, "Bass") ~= "Bee", "released from the panel before the fold: not Bee's anywhere")
+  tick()
+  fold()
+  assert(not bee_has("Bass") and holder(B, "Bass") ~= "Bee", "and the fold that comes later doesn't bring it back")
+  local fh = assert(io.open("StudioSync - Panel.lua", "rb"))
+  local panel = fh:read("a")
+  fh:close()
+  assert(panel:match("local function release%(o%).-c%.let_go = { %[sync%.claim_key%(o%[2%], o%[3%]%) or \"\"%] = true }.-sync%.set_claims%(cfg, b%.song, b%.room, c%)"),
+    "the panel's chip release lets the claim go though it's only given")
   groups.may_manage, trust.claim_ok, os.remove = real_mm, real_ok, real_remove
   print("rt-edits: a given claim released by its member stays released; a driver's release and a later fold agree")
 end
@@ -2121,6 +2180,13 @@ do
   set(item_named(bass, "Bass 3"), "MUTE", "1 0")
   claims_look()
   assert(claimed.Bass == 1, "an edit made just after the tempo change still claims its track")
+  -- (backlog 1.10, rt-p1) and so does an item moved by hand in those seconds: off the beat the map would have kept it on
+  tick()
+  as(A)
+  local d1 = item_named(drums, "Drums 1")
+  set(d1, "POSITION", f(tonumber(E.top_value(d1.text, "POSITION")) + 0.5))
+  claims_look()
+  assert(claimed.Drums == 1, "an item moved by hand just after the tempo change claims its track (" .. tostring(claimed.Drums) .. ")")
   tick()
   recv(B)
   same(A, B, "a tempo change that claimed nothing")

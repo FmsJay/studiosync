@@ -780,6 +780,7 @@ function ui.claim_chips(owned, short)
       if not same then keep[#keep + 1] = n end
     end
     c[o[2]] = keep
+    c.let_go = { [sync.claim_key(o[2], o[3]) or ""] = true } -- (and a claim given you that only the link has brought yet: let go too. Backlog 1.8, rt-p1)
     sync.set_claims(cfg, b.song, b.room, c)
   end
   local avail, used = ImGui.GetContentRegionAvail(ctx), 0

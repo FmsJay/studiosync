@@ -891,31 +891,39 @@ end
 -- where the winner changed the deleted note too, and the loser is told, with Use mine. (rt-edits round 5)
 -- b, w, l: key -> its text (nil: not there); border, lorder: the base's and the loser's keys in order; group(side, key) -> a kind or nil;
 -- pos(side, key) -> a number. -> the loser's keys to leave out. Pure. rt-edits, backlog 1
-local function moved_twice(border, b, w, l, lorder, group, pos, loose)
+-- (move_pairs: the pairing on its own, for one side `s` ("l" or "w") of what it holds (`x`, its keys in order `xorder`): base key -> that side's
+-- moved copy. merge_midi pairs both sides' moves, so a note one moved and the other changed is merged by what each changed. rt-p1)
+local function move_pairs(border, b, x, xorder, s, group, pos, loose)
   local gone, added, out = {}, {}, {}
-  for _, k in ipairs(border) do if l[k] == nil then gone[#gone + 1] = k end end
+  for _, k in ipairs(border) do if x[k] == nil then gone[#gone + 1] = k end end
   if #gone == 0 then return out end
-  for _, k in ipairs(lorder) do if b[k] == nil then added[#added + 1] = k end end
+  for _, k in ipairs(xorder) do if b[k] == nil then added[#added + 1] = k end end
   for _, kind in ipairs({ group, loose }) do
-    local G, A, paired = {}, {}, {}
+    local G, A = {}, {}
     for _, k in ipairs(gone) do local g = kind("b", k); if g then G[g] = G[g] or {}; G[g][#G[g] + 1] = k end end
-    for _, k in ipairs(added) do local g = kind("l", k); if g and G[g] then A[g] = A[g] or {}; A[g][#A[g] + 1] = k end end
+    for _, k in ipairs(added) do local g = kind(s, k); if g and G[g] then A[g] = A[g] or {}; A[g][#A[g] + 1] = k end end
     for g, list in pairs(G) do
       local a = A[g]
       if a and #a == #list then
-        local function by(side) return function(x, y) local px, py = pos(side, x), pos(side, y); if px ~= py then return px < py end; return x < y end end
+        local function by(side) return function(p, q) local pp, pq = pos(side, p), pos(side, q); if pp ~= pq then return pp < pq end; return p < q end end
         table.sort(list, by("b"))
-        table.sort(a, by("l"))
-        for i, k in ipairs(list) do
-          paired[k], paired[a[i]] = true, true
-          if w[k] ~= b[k] and w[a[i]] == nil then out[a[i]] = true end -- (the winner changed that one too, and not by the same move)
-        end
+        table.sort(a, by(s))
+        for i, k in ipairs(list) do out[k] = a[i] end
       end
     end
+    local paired = {}
+    for k, v in pairs(out) do paired[k], paired[v] = true, true end
     local g2, a2 = {}, {} -- (what's left, for the looser kind)
     for _, k in ipairs(gone) do if not paired[k] then g2[#g2 + 1] = k end end
     for _, k in ipairs(added) do if not paired[k] then a2[#a2 + 1] = k end end
     gone, added = g2, a2
+  end
+  return out
+end
+local function moved_twice(border, b, w, l, lorder, group, pos, loose)
+  local out = {}
+  for k, a in pairs(move_pairs(border, b, l, lorder, "l", group, pos, loose or function() end)) do
+    if w[k] ~= b[k] and w[a] == nil then out[a] = true end -- (the winner changed that one too, and not by the same move)
   end
   return out
 end
@@ -1017,9 +1025,8 @@ function mirror.merge_midi(base, winner, loser)
   local function ppq(x) for _, t in ipairs(x.head) do local q = t:match("^HASDATA%s+%S+%s+(%S+)") if q then return q end end end
   if ppq(b) ~= ppq(w) or ppq(w) ~= ppq(l) then return nil end
   local clash, chosen = false, {}
-  -- (a note the loser moved, in time or pitch, that the winner changed too: one note, the winner's. moved_twice)
   local function cmps(x) local t = {}; for k, u in pairs(x.units) do t[k] = u.cmp end; return t end
-  local sides, info = { b = b, l = l }, {}
+  local sides, info = { b = b, w = w, l = l }, {}
   local function note(side, k) -- -> its kind (channel, length, velocity, mute), place (tick, then pitch) and kind less its length, once per key
     local n = info[side .. k]
     if n == nil then
@@ -1031,9 +1038,86 @@ function mirror.merge_midi(base, winner, loser)
     end
     return n
   end
-  local drop = moved_twice(b.order, cmps(b), cmps(w), cmps(l), l.order, function(side, k) local n = note(side, k); return n and n[1] end,
-    function(side, k) return note(side, k)[2] end, function(side, k) local n = note(side, k); return n and n[3] end)
-  if next(drop) then clash = true end
+  -- (a note one side moved, in time or pitch, that the other changed too (moved, resized, its velocity or mute): one note, made of what each
+  -- changed, and where both changed the same thing (its start, pitch, length, velocity, mute) the winner's. A transposition and a move in time
+  -- both stand. A note the winner removed stays removed. Before, the winner's note stood whole: a pitch change counted as a move. rt-p1)
+  local cb, cw, cl = cmps(b), cmps(w), cmps(l)
+  local function group(side, k) local n = note(side, k); return n and n[1] end
+  local function pos(side, k) return note(side, k)[2] end
+  local function loose(side, k) local n = note(side, k); return n and n[3] end
+  local pw, pl = move_pairs(b.order, cb, cw, w.order, "w", group, pos, loose), move_pairs(b.order, cb, cl, l.order, "l", group, pos, loose)
+  local drop = {}
+  local function parts(u) -- a note's start, length, channel, pitch, on velocity and the rest, flags, and its note-off's status, velocity and rest
+    local on, off = u.evs[1], u.evs[2]
+    local s, p, v, rest = on.bytes:match("^(%x%x)%s+(%x%x)%s+(%x%x)(.*)$")
+    local os_, _, ov, orest = off.bytes:match("^(%x%x)%s+(%x%x)%s+(%x%x)(.*)$")
+    if not (s and os_) then return nil end
+    s, os_ = tonumber(s, 16), tonumber(os_, 16)
+    return { start = on.tick, len = off.tick - on.tick, ch = s & 0x0F, pitch = tonumber(p, 16), vel = v, rest = rest, flag = on.flag:upper(), offs = os_ & 0xF0,
+      offv = ov, orest = orest, oflag = off.flag:upper() }
+  end
+  for _, k in ipairs(b.order) do
+    local mw, ml = pw[k], pl[k]
+    local vw, vl = w.units[mw or k], l.units[ml or k]
+    if (mw or ml) and mw ~= ml and vw and vl and (mw or cw[k] ~= cb[k]) and (ml or cl[k] ~= cb[k]) and b.units[k].evs[2] then
+      local pb, pw_, pl_ = parts(b.units[k]), parts(vw), parts(vl)
+      if pb and pw_ and pl_ then
+        local n = {}
+        for f in pairs(pb) do
+          local s, c = mirror.side3(pb[f], pw_[f], pl_[f])
+          n[f] = s == "w" and pw_[f] or pl_[f]
+          clash = clash or c
+        end
+        drop[k] = true
+        if mw then drop[mw] = true end
+        if ml then drop[ml] = true end
+        local on = { tick = n.start, flag = n.flag, bytes = string.format("%02x %02x %s%s", 0x90 | n.ch, n.pitch, n.vel, n.rest), on = true }
+        local off = { tick = n.start + n.len, flag = n.oflag, bytes = string.format("%02x %02x %s%s", n.offs | n.ch, n.pitch, n.offv, n.orest), paired = true }
+        chosen[#chosen + 1], chosen[#chosen + 2] = on, off
+      end
+    end
+  end
+  -- (a note the loser moved that the winner removed: gone, as the winner left it. moved_twice)
+  for a in pairs(moved_twice(b.order, cb, cw, cl, l.order, group, pos, loose)) do if not drop[a] then drop[a], clash = true, true end end
+  -- (one controller (or pitch bend, pressure) drawn by both over the same stretch: the winner's drawing stands across each run of ticks it
+  -- changed, and the loser's points inside it go, so the two curves aren't interleaved into a zigzag. The loser's drawing elsewhere stays. A
+  -- run is changed points no more than a quarter note apart. rt-p1)
+  local force_w = {}
+  do
+    local function lane(k) -- -> a lane name and the tick, for a CC, pitch bend, channel or poly pressure event
+      local tick, st, a = k:match("^E (%d+) (%d+) (%d*)#")
+      st = tonumber(st)
+      if not st then return nil end
+      local hi = st & 0xF0
+      if hi == 0xB0 or hi == 0xA0 then return st .. " " .. a, tonumber(tick) end
+      if hi == 0xE0 or hi == 0xD0 then return tostring(st), tonumber(tick) end
+    end
+    local quarter = tonumber(ppq(b) or "") or 960
+    local runs, lanes = {}, {}
+    for _, x in ipairs({ w, b }) do
+      for _, k in ipairs(x.order) do
+        local ln, t = lane(k)
+        if ln and cw[k] ~= cb[k] then runs[ln] = runs[ln] or {}; runs[ln][#runs[ln] + 1] = t end
+      end
+    end
+    for ln, ticks in pairs(runs) do
+      table.sort(ticks)
+      local list, lo, hi = {}, ticks[1], ticks[1]
+      for i = 2, #ticks + 1 do
+        local t = ticks[i]
+        if t and t - hi <= quarter then hi = t else list[#list + 1] = { lo, hi }; lo, hi = t, t end
+      end
+      lanes[ln] = list
+    end
+    for _, x in ipairs({ l, b }) do
+      for _, k in ipairs(x.order) do
+        local ln, t = lane(k)
+        if ln and lanes[ln] and cl[k] ~= cb[k] and cw[k] == cb[k] then
+          for _, r in ipairs(lanes[ln]) do if t >= r[1] and t <= r[2] then force_w[k], clash = true, true end end
+        end
+      end
+    end
+  end
   local seen = {}
   for _, x in ipairs({ w, l, b }) do
     for _, k in ipairs(x.order) do
@@ -1041,6 +1125,7 @@ function mirror.merge_midi(base, winner, loser)
         seen[k] = true
         local bu, wu, lu = b.units[k], w.units[k], l.units[k]
         local s, c = mirror.side3(bu and bu.cmp, wu and wu.cmp, lu and lu.cmp)
+        if force_w[k] then s = "w" end
         clash = clash or c
         local u = lu
         if s == "w" then u = wu end
@@ -1195,11 +1280,131 @@ function mirror.merge_track(base, winner, loser)
   return out, both
 end
 
--- What merges, and how: items line by line (notes by note), automation by point, tracks by setting. Plug-in chains don't: one person's chain
--- stands (docs/rt/rt-merge.md). -> the merged state and the keys both changed, or nil.
-mirror.MERGES = { item = "merge_item", env = "merge_env", track = "merge_track" }
+-- A plug-in chain (mirror.fxchain's text) as its pieces: the lines before the first plug-in, then each plug-in (from its BYPASS line to the
+-- line before the next one's, its saved data, preset name and lanes with it) keyed by the name REAPER gives the plug-in itself (not one you
+-- renamed it to) and which of that name it is. FX ids are each computer's own and never travel (FX_LOCAL), so the name is what all agree on.
+-- -> { head = { lines }, units = { { key, text, cmp } }, last } or nil when it isn't a chain. Pure. rt-p1
+local function fx_units(state)
+  if state == "" then return { head = {}, units = {}, last = ">" } end
+  local lines = {}
+  for l in (state or ""):gmatch("[^\n]+") do lines[#lines + 1] = l end
+  if lines[1] ~= "<FXCHAIN" or lines[#lines] ~= ">" then return nil end
+  local head, units, nth, depth, cur = {}, {}, {}, 1, nil
+  local function cmp(text) -- (as fx_hash reads a plug-in: its file named one way on every platform, a VST's program line left out)
+    local ls = {}
+    for l in portable(text):gmatch("[^\n]+") do ls[#ls + 1] = l end
+    for i = #ls, 1, -1 do
+      if ls[i]:match("^<VST") then
+        local j = i + 1
+        while j <= #ls and ls[j] ~= ">" and ls[j]:sub(1, 1) ~= "<" do j = j + 1 end
+        if ls[j] == ">" and j - i - 1 >= 2 and ls[j - 1]:match("^[A-Za-z0-9+/]+=*$") then table.remove(ls, j - 1) end
+      end
+    end
+    return table.concat(ls, "\n")
+  end
+  local function close() if cur then cur.text = table.concat(cur.lines, "\n"); cur.cmp = cmp(cur.text); cur.lines = nil end end
+  for i = 2, #lines - 1 do
+    local l = lines[i]
+    if depth == 1 and l:match("^BYPASS ") then close(); cur = { lines = { l } }; units[#units + 1] = cur
+    elseif cur then
+      if not cur.key and l:sub(1, 1) == "<" then
+        local name = (l:match("^<(%S+)") or "") .. " " .. (restless_key(l) or "")
+        nth[name] = (nth[name] or 0) + 1
+        cur.key = name .. "#" .. nth[name]
+      end
+      cur.lines[#cur.lines + 1] = l
+    else head[#head + 1] = l end
+    if l:sub(1, 1) == "<" then depth = depth + 1 elseif l == ">" then depth = depth - 1 end
+  end
+  close()
+  for i, u in ipairs(units) do if not u.key then u.key = "?" .. i end end -- (a BYPASS with no plug-in after it: by its place)
+  return { head = head, units = units, last = ">" }
+end
+-- Two versions of a track's plug-in chain, changed apart from one base, put together plug-in by plug-in: one person's EQ change and another's
+-- compressor change both stand, and so do plug-ins each added. The same plug-in changed by both: the winner's. The order: whoever moved
+-- plug-ins round, with what the other added put in after the plug-in it followed there; both moved them: the winner's order (a clash).
+-- -> the merged chain and the keys both changed, or nil when one isn't a chain. Pure. (backlog 1.3 and 3.13: one chain stood, the other was
+-- told with Use mine.) rt-p1
+function mirror.merge_fx(base, winner, loser)
+  local b, w, l = fx_units(base), fx_units(winner), fx_units(loser)
+  if not (b and w and l) then return nil end
+  local function by(x) local t, order = {}, {}; for i, u in ipairs(x.units) do t[u.key], order[i] = u, u.key end; return t, order end
+  local B, ob = by(b)
+  local W, ow = by(w)
+  local L, ol = by(l)
+  -- (the same kind of plug-in added by both, unlike: two plug-ins, not one clash. Nothing was there to clash over)
+  for i, k in ipairs(ol) do
+    if not B[k] and W[k] and L[k].cmp ~= W[k].cmp then local k2 = k .. "\0l"; L[k2], L[k], ol[i] = L[k], nil, k2 end
+  end
+  local both, text = {}, {}
+  for _, list in ipairs({ ow, ol }) do
+    for _, k in ipairs(list) do
+      if text[k] == nil then
+        local s, c = mirror.side3(B[k] and B[k].cmp, W[k] and W[k].cmp, L[k] and L[k].cmp)
+        local u = L[k]
+        if s == "w" then u = W[k] end -- (not "and/or": the winner's nil, taken away, would read as the loser's)
+        text[k] = u and u.text or false
+        if c then both[#both + 1] = k end
+      end
+    end
+  end
+  -- the order: did either side move plug-ins it shares with the base?
+  local function moved(o)
+    local inb, a, c = {}, {}, {}
+    for _, k in ipairs(o) do inb[k] = true end
+    for _, k in ipairs(ob) do if inb[k] then a[#a + 1] = k end end
+    local inx = {}
+    for _, k in ipairs(ob) do inx[k] = true end
+    for _, k in ipairs(o) do if inx[k] then c[#c + 1] = k end end
+    return table.concat(a, "\0") ~= table.concat(c, "\0")
+  end
+  local mw, ml = moved(ow), moved(ol)
+  local first, second = ow, ol
+  if ml and not mw then first, second = ol, ow end
+  if mw and ml and table.concat(ow, "\0") ~= table.concat(ol, "\0") then both[#both + 1] = "\0order" end
+  local seq, at = {}, {}
+  for _, k in ipairs(first) do seq[#seq + 1] = k; at[k] = true end
+  for i, k in ipairs(second) do
+    if not at[k] then
+      local where = 0
+      for j = i - 1, 1, -1 do
+        for n, x in ipairs(seq) do if x == second[j] then where = n; break end end
+        if where > 0 then break end
+      end
+      table.insert(seq, where + 1, k); at[k] = true
+    end
+  end
+  local out = { "<FXCHAIN" }
+  local hb, hw, hl = keyed_lines(b.head), keyed_lines(w.head), keyed_lines(l.head)
+  local head, hboth = merge_keyed(hb, hw, hl)
+  for _, e in ipairs(head) do out[#out + 1] = e[2] end
+  for _, k in ipairs(hboth) do both[#both + 1] = "head " .. k end
+  for _, k in ipairs(seq) do if text[k] then out[#out + 1] = text[k] end end
+  if #out == 1 then return (#w.units == 0 and winner) or (#l.units == 0 and loser) or "<FXCHAIN\n>\n", both end -- (nothing left: as the side that emptied it)
+  out[#out + 1] = ">"
+  return table.concat(out, "\n") .. "\n", both
+end
+
+-- What merges, and how: items line by line (notes by note), automation by point, tracks by setting, plug-in chains by plug-in (rt-p1).
+-- -> the merged state and the keys both changed, or nil.
+-- Which versions may be merged, the same on every computer (rt-p1, backlog 1.1):
+--   a track's settings or automation only when made after merging them began (rt-merge, c130487, 2026-11-20 19:42 UTC): older pairs made
+--   apart were settled newest-wins by every computer then, and heal (mirror.settled) merging them now changed the track everywhere, a day late;
+--   a plug-in chain only when both versions come from a StudioSync that merges chains (`mg` >= 1, set by sync.post): with an older one about,
+--   it keeps the newest, so these do too.
+mirror.MG = 1 -- (on every change this version sends, as `mg`: 1 = plug-in chains merge by plug-in)
+mirror.MERGE_SINCE = { track = "20261120-194204", env = "20261120-194204" }
+mirror.MERGE_MG = { fx = 1 }
+mirror.MERGES = { item = "merge_item", env = "merge_env", track = "merge_track", fx = "merge_fx" }
 function mirror.mergeable(x)
-  return type(x) == "table" and not x.gone and mirror.MERGES[x.obj] ~= nil and type(x.state) == (x.obj == "track" and "table" or "string")
+  if not (type(x) == "table" and not x.gone and mirror.MERGES[x.obj] ~= nil and type(x.state) == (x.obj == "track" and "table" or "string")) then return false end
+  local need = mirror.MERGE_MG[x.obj]
+  if need and (tonumber(x.mg) or 0) < need then return false end
+  local since = mirror.MERGE_SINCE[x.obj]
+  if since and type(x.id) == "string" then
+    for d in x.id:gmatch("(%d%d%d%d%d%d%d%d%-%d%d%d%d%d%d)Z") do if d < since then return false end end
+  end
+  return true
 end
 function mirror.merge_state(kind, base, winner, loser, loser_name)
   local f = mirror.MERGES[kind]
@@ -1253,6 +1458,15 @@ function mirror.pieces(kind, state)
         for _, kl in ipairs(keyed_lines(body, true)) do out[u.key .. "\0" .. kl[1]] = kl[2] end
       else out[u.key] = table.concat(u.lines, "\n") end
     end
+    return out
+  end
+  if kind == "fx" then -- (each plug-in, the lines before them, and the order as one piece. rt-p1)
+    local x = fx_units(state)
+    if not x then return nil end
+    local order = {}
+    for _, kl in ipairs(keyed_lines(x.head)) do out["head " .. kl[1]] = kl[2] end
+    for i, u in ipairs(x.units) do out[u.key] = u.cmp; order[i] = u.key end
+    out["\0order"] = table.concat(order, "\0")
     return out
   end
   return nil
@@ -2049,8 +2263,13 @@ function mirror.set_track_state(proj, tr, t, local_mix)
     if v then reaper.SetMediaTrackInfo_Value(tr, kp[2], v) end
   end
   -- (not from "no colour" to "no colour": nothing to write, whatever bits each holds. And the colour hold below is told, so it holds this one)
-  if t.color and not t.autocolour and mirror.colour_key(require("band").color_in(t.color)) ~= mirror.colour_key(require("band").track_colour(tr)) then
-    require("band").set_track_colour(tr, require("band").color_in(t.color))
+  -- (a colour look tried on it here, and the band's colour is still the one from before the try: the tried one stays on. A bandmate's change
+  -- landing on it, or an item landing (lanes_back), put the band's back over the try. Backlog 1.6, rt-p1)
+  local want = t.color and require("band").color_in(t.color)
+  local tried = want and mirror.tried_track(proj, tr)
+  if tried and mirror.colour_key(want) == mirror.colour_key(tonumber(tried[1]) or 0) then want = tonumber(tried[2]) or want end
+  if want and not t.autocolour and mirror.colour_key(want) ~= mirror.colour_key(require("band").track_colour(tr)) then
+    require("band").set_track_colour(tr, want)
     mirror.held_colour(tr)
   end
   -- (from a StudioSync that sends it; never out of a Touch, Latch or Write someone is using here)
@@ -3545,7 +3764,13 @@ function mirror.apply(proj, ev, media_dir, local_mix)
       local unpooled, n = (ch or ""):gsub("\n%s*POOLEDEVTS[^\n]*", "")
       if got and n > 0 then reaper.SetItemStateChunk(it, unpooled, false) end
     end
-    reaper.SetItemStateChunk(it, mirror.resolve_media(mirror.only_shared((ev.state:gsub("BANDLANE %d+\n?", ""):gsub("BANDTAKE %d+\n?", ""))), media_dir), false)
+    -- (a colour look tried here on this item, and the band's version keeps the colour from before it: the tried colour stays on, so the try
+    -- still shows, Keep still sends it and Put back still restores. The bandmate's change replaced it. Backlog 1.6, rt-p1)
+    local state = ev.state
+    local try = require("band").colour_try(proj)
+    local tried = try and try.items and try.items[select(2, reaper.GetSetMediaItemInfo_String(it, "GUID", "", false))]
+    if tried and portable(state:match("\n(COLOR [^\n]*)") or "") == portable(tried[1] or "") then state = mirror.with_colour_line(state, tried[2] or "") end
+    reaper.SetItemStateChunk(it, mirror.resolve_media(mirror.only_shared((state:gsub("BANDLANE %d+\n?", ""):gsub("BANDTAKE %d+\n?", ""))), media_dir), false)
     reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", oid, true)
     if pick then mirror.pick_take(it, pick)
     elseif active and active < reaper.CountTakes(it) then reaper.SetMediaItemInfo_Value(it, "I_CURTAKE", active) end
@@ -3595,8 +3820,11 @@ mirror.MERGE_DAYS = 30 -- (lib/trim.lua keeps history twice as long)
 -- its way. Pure but for reading events. (Cross test, James, rt)
 -- shortcut: an edit made before an older deletion that was restored since still merges with the restore; walk each side's ancestry for gones if
 -- restore races ever show up.
+-- (a track's deletion against an edit of its settings too: newest won, so a rename a moment after someone deleted the track brought it back for
+-- everyone, or not, by the clock. Backlog 1.3, rt-p1)
+local RACES = { item = true, track = true }
 function mirror.gone_race(room_dir, a, b)
-  if not (a and b and a.obj == "item" and b.obj == "item" and a.id ~= b.id and (a.gone == true) ~= (b.gone == true)) then return nil end
+  if not (a and b and RACES[a.obj] and a.obj == b.obj and a.id ~= b.id and (a.gone == true) ~= (b.gone == true)) then return nil end
   local g, e = a.gone and a or b, a.gone and b or a
   local d = mirror.descends(room_dir, e, g.id, g.hlc)
   if d == nil then return "wait" end
@@ -3686,6 +3914,16 @@ local function lanes_back(proj, ev, media_dir, local_mix)
   end
 end
 
+-- (a plug-in chain landed: its track's parts pick again, so one with a plug-in you don't have plays its print on Auto, not the dry take
+-- through a plug-in that isn't there. It waited for that part's next change. James, 0.59.13)
+local function fx_landed(proj, ev)
+  local tr = mirror.find(proj, "track", ev.track)
+  if tr then
+    local prints = require("prints")
+    for i = 0, reaper.CountTrackMediaItems(tr) - 1 do prints.choose(reaper.GetTrackMediaItem(tr, i), true) end
+    prints.hold_fx(tr) -- (once for the track, not once per item: review, 0.59.14)
+  end
+end
 -- An incoming "obj" event (from sync.apply). Returns true when handled (applied or older than what we hold).
 function mirror.receive(proj, ev, media_dir, local_mix, me)
   if ev.obj == "fx" and ev.restless then mirror.restless_load(); mirror.restless_add(ev.restless) end
@@ -3698,7 +3936,7 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   -- (an item's deletion against an edit that didn't see it: the deletion, in any order, rather than rev and clock: mirror.gone_race. Two
   -- minutes for a version between that's on its way, as merge_for waits. Cross test, James, rt)
   local race
-  if not merging and ev.obj == "item" then
+  if not merging and RACES[ev.obj] then
     local _, _, kev = mirror.known(proj, ev.oid)
     if (kev or "") ~= "" then race = mirror.gone_race(room_dir, ev, mirror.event_file(room_dir, kev)) end
     if race == "wait" then
@@ -3761,7 +3999,7 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
       end
       local lost, on = merging.loser, (ev.name or "") ~= "" and ev.name or "an unnamed track"
       -- (what was merged, in words: an item, a track's settings, its automation. rt-merge)
-      local what = ev.obj == "track" and ("track " .. on) or ev.obj == "env" and ("the automation on " .. on) or ("an item on " .. on)
+      local what = ev.obj == "track" and ("track " .. on) or ev.obj == "env" and ("the automation on " .. on) or ev.obj == "fx" and ("the plug-ins on " .. on) or ("an item on " .. on)
       local takes = false
       for _, key in ipairs(merging.clashed or {}) do takes = takes or (key:find("<SOURCE", 1, true) ~= nil and not key:find("\0notes", 1, true)) end
       if lost and me and lost.user == me and #(merging.clashed or {}) > 0 then -- (only what you both changed is theirs; Use mine brings all of yours back)
@@ -3770,6 +4008,7 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
       elseif me and (merging.user == me or (lost and lost.user == me)) then
         require("band").log(string.format("%s changed %s as you did, at the same time: both changes are kept", tostring(merging.user == me and lost and lost.user or merging.user), what))
       end
+      if ev.obj == "fx" then fx_landed(proj, ev) end -- (a merged chain picks its track's prints as any chain does. rt-p1)
     end
     return ok
   end
@@ -3812,16 +4051,7 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
       mirror.PART[ev.obj] and (mirror.PART[ev.obj] .. " on " .. where) or ev.obj == "track" and ("track " .. where) or ("an item on " .. where)))
   end
   if ok and ev.obj == "item" then lanes_back(proj, ev, media_dir, local_mix) end
-  -- (a plug-in chain landed: its track's parts pick again, so one with a plug-in you don't have plays its print on Auto, not the dry take
-  -- through a plug-in that isn't there. It waited for that part's next change. James, 0.59.13)
-  if ok and ev.obj == "fx" and not ev.gone then
-    local tr = mirror.find(proj, "track", ev.track)
-    if tr then
-      local prints = require("prints")
-      for i = 0, reaper.CountTrackMediaItems(tr) - 1 do prints.choose(reaper.GetTrackMediaItem(tr, i), true) end
-      prints.hold_fx(tr) -- (once for the track, not once per item: review, 0.59.14)
-    end
-  end
+  if ok and ev.obj == "fx" and not ev.gone then fx_landed(proj, ev) end
   return ok
 end
 
@@ -3947,6 +4177,13 @@ local function event_file(room_dir, evid, depth)
   v.state, v.clashed = mirror.merge_state(w.obj, b.state, w.state, l.state, l.user)
   if v.state == nil then return nil end
   v.id, v.rev, v.hash, v.base, v.base_ev, v.loser = evid, math.max(w.rev or 0, l.rev or 0), nil, b.rev or 0, base_id, l
+  -- (and the files the loser's plug-ins load (a sampler's sample, an impulse): their plug-in is in the merge too, and with the winner's list
+  -- alone a computer that took the winner first never fetched them. rt-p1)
+  if type(l.files) == "table" and #l.files > 0 then
+    local all = {}
+    for _, list in ipairs({ type(w.files) == "table" and w.files or {}, l.files }) do for _, x in ipairs(list) do all[#all + 1] = x end end
+    v.files = all
+  end
   -- (the later of the two clocks: with the winner's, a walk from a later change stopped here before reaching the loser. Review, 0.58.47)
   if tonumber(w.hlc) or tonumber(l.hlc) then v.hlc = math.max(tonumber(w.hlc) or 0, tonumber(l.hlc) or 0) end
   merged[key] = v
@@ -4033,7 +4270,32 @@ mirror.holds = mirror.holds or {} -- project -> track oid -> { what runs through
 mirror.bus_said = mirror.bus_said or {} -- track oid -> when "that changes how X sounds" was last said
 mirror.tempo_until = mirror.tempo_until or {} -- project -> until when items may be moving for a tempo change
 mirror.TEMPO_SECS = 15
-function mirror.tempo_changed(proj) mirror.tempo_until[tostring(proj)] = reaper.time_precise() + mirror.TEMPO_SECS end
+-- `from` (optional): the tempo map before this change (band.capture_tempo's list), when it's this computer's own; the first of a burst is kept.
+mirror.tempo_from = mirror.tempo_from or {} -- project -> the map items were on before the tempo change REAPER may be moving them for
+function mirror.tempo_changed(proj, from)
+  local pk = tostring(proj)
+  if reaper.time_precise() >= (mirror.tempo_until[pk] or 0) then mirror.tempo_from[pk] = nil end
+  if type(from) == "table" and not mirror.tempo_from[pk] then mirror.tempo_from[pk] = { map = from, at = os.date("!%Y-%m-%dT%H:%M:%SZ") } end
+  mirror.tempo_until[pk] = reaper.time_precise() + mirror.TEMPO_SECS
+end
+-- Did the tempo map, not a hand, move this item from its last version (`last`, an event) to `now` (its state)? Only where this computer's own
+-- map change is known (mirror.tempo_from): REAPER keeps an item on its beat, so where the old map's beat falls on the new map (mirror.retime)
+-- is where the map put it; a version made after the change is already on the new map. Elsewhere: true, as before. (An item moved by hand in
+-- the 15 s after a tempo change read as the map's move and didn't claim its track. Backlog 1.10, rt-p1)
+-- shortcut: in a burst of tempo changes, a version made between two of them is judged against the first map: a map move then claims, as
+-- before AL. Keep each change's map if REAPER checks show bursts claiming.
+function mirror.map_moved(proj, last, now)
+  local tf = mirror.tempo_from[tostring(proj)]
+  if not tf or type(last.state) ~= "string" then return true end
+  local to = require("band").capture_tempo(proj)
+  local want = last.state
+  if not (type(last.time) == "string" and last.time > tf.at) then want = mirror.retime(want, tf.map, to, reaper.GetSetProjectInfo(proj, "PROJECT_TIMEBASE", 0, false)) end
+  for _, k in ipairs({ "POSITION", "LENGTH" }) do
+    local a, b = tonumber(want:match("\n%s*" .. k .. " ([%d%.%-e]+)")), tonumber(now:match("\n%s*" .. k .. " ([%d%.%-e]+)"))
+    if a and b and math.abs(a - b) > 1e-6 then return false end
+  end
+  return true
+end
 -- A tempo map that wasn't made here is put in place by `set` (a bandmate's change, or the studio's map as a project opens): what REAPER moves
 -- for it isn't this computer's edit. Every item and automation is read before and after; one that was as the studio has it and now differs
 -- only in its timing has its record moved with it, there and then, so no look ever sees it as changed: nothing is sent, nobody is asked,
@@ -4077,6 +4339,11 @@ end
 -- (sync.watch_timeline runs first) takes the id the look will use, so Undo puts the act's region or markers back with its items.
 mirror.ACT_SECS = 2.5
 mirror.ACT_KEEP = 70 -- seconds a look's act still takes what later looks find, while you haven't edited (a full look runs every QUICK_FULL_SECS)
+-- (and past the next timed full look however far apart they are: a heavy song's are up to QUICK_FULL_MAX apart, and a part of an act only the
+-- full look found came after ACT_KEEP, a second Undo step. L: the tab's look record. Backlog 1.10, rt-p1)
+function mirror.act_keep(L)
+  return math.max(mirror.ACT_KEEP, (L and mirror.full_every(L.full_took) or 0) + mirror.ACT_KEEP - mirror.QUICK_FULL_SECS)
+end
 mirror.last_act = mirror.last_act or {} -- tostring(proj) -> { act, at }: the act of the last look that sent anything, and when it looked
 mirror.look_act = mirror.look_act or {} -- tostring(proj) -> { act, at }: the id a timeline change just took
 local function new_act(me, now) return string.format("%s-%s-%d", require("sync").id_user(me), os.date("!%Y%m%d%H%M%S"), math.floor(now * 1000) % 1000000) end
@@ -4675,7 +4942,8 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
   -- (not a move that is only the tempo map's: it travels, made under its map (`tl`), but nobody worked on that track. The desktop's own 90 bpm
   -- marker sent 11 items and auto-claimed all three tracks. REAPER recheck, 0.59.49.80, round 7)
   local tempo_only = ev.tl ~= nil and last and type(last.state) == "string" and type(o.state) == "string"
-    and (o.kind == "item" and mirror.sans_tempo(o.state) == mirror.sans_tempo(last.state) or o.kind == "env" and mirror.env_sans_tempo(o.state) == mirror.env_sans_tempo(last.state))
+    and (o.kind == "item" and mirror.sans_tempo(o.state) == mirror.sans_tempo(last.state) and mirror.map_moved(proj, last, o.state)
+      or o.kind == "env" and mirror.env_sans_tempo(o.state) == mirror.env_sans_tempo(last.state))
   if opts.sent and not tempo_only then pcall(opts.sent, o, name, ev) end -- (Claims: what you edit becomes yours. lib/claimask.lua, rt-claims)
   pcall(require("compat").sent, proj, o.oid, name, o.kind, o.ptr, ev.auto) -- (changed again right after a bandmate's change, or by itself: lib/compat.lua)
   require("streams").offer_media(cfg, song, room, media, ev, last) -- (the media it newly names, to whoever's here over the direct link too. James, rt)
@@ -4742,7 +5010,7 @@ function W.refuse(w, o, rk, rev, evid, kord, last, name, ok_before)
   -- it. (Put back, a bandmate's part sat at its old time, out of step with the new tempo, until theirs arrived.)
   if last and reaper.time_precise() < (mirror.tempo_until[tostring(proj)] or 0) and type(last.state) == "string" and (o.kind == "env"
       and mirror.env_sans_tempo(o.state) == mirror.env_sans_tempo(last.state)
-      or o.kind == "item" and mirror.sans_tempo(o.state) == mirror.sans_tempo(last.state)) then
+      or o.kind == "item" and mirror.sans_tempo(o.state) == mirror.sans_tempo(last.state) and mirror.map_moved(proj, last, o.state)) then
     mirror.unsent[rk] = nil
     return remember(proj, o.oid, rev, o.hash, evid, kord)
   end
@@ -5684,7 +5952,7 @@ function mirror.watch(proj, cfg, song, room, opts)
   -- (the quick look's hints), and a plug-in chain goes once it has held still: each was a second Undo step. `opts.edited_at`: when you last
   -- edited, by Live sync's count (its own writes left out); without it, as before. Not past ACT_KEEP since that look. rt-edits)
   local kept = mirror.last_act[pk]
-  kept = kept and opts.edited_at and opts.edited_at <= kept.at and now - kept.at <= mirror.ACT_KEEP and kept.act or nil
+  kept = kept and opts.edited_at and opts.edited_at <= kept.at and now - kept.at <= mirror.act_keep(mirror.looks[pk]) and kept.act or nil
   w.act = mirror.more_act[pk] or (la and math.abs(now - la.at) <= mirror.ACT_SECS and la.act) or kept or new_act(me, now)
   mirror.more = false
   -- (whether track colours count here, per project: see below. "band2": 0.38 looks once more, as 0.36/0.37 kept each
@@ -6362,7 +6630,7 @@ end
 -- computer's receive did it. `all`: its changes (room_newest). -> an event, or a merged version.
 function mirror.settled(room_dir, newest, all)
   -- (an edit a deletion beats, mirror.gone_race, isn't a candidate: heal took the newest edit over the deletion receive had kept. Cross test, James, rt)
-  if newest.obj == "item" and not newest.gone then
+  if RACES[newest.obj] and not newest.gone then
     local gones, alive, top = {}, {}, nil
     for _, x in ipairs(all or {}) do if x.gone then gones[#gones + 1] = x end end
     local function newer(x, y) return not y or mirror.newer({ rev = x.rev, time = mirror.order_of(x) }, { rev = y.rev, time = mirror.order_of(y) }) end
