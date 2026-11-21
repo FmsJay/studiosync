@@ -2,7 +2,9 @@
 -- Project page (lib/webui/pianoroll.js, autolanes.js), through lib/dawview.lua's action and tick. Topics, built only while a page shows them
 -- (it says so every 10 s, an action "look"; 30 s grace) and looked at again only when REAPER's change count moves:
 --   dawmidi  the open MIDI item's notes: only that item's, found as stage 2 names items (lib/dawedit.lua's find_item) and followed after
---            that by the item itself, so a move or trim doesn't lose it; the page names it by the place this topic gives
+--            that by the item itself, so a move or trim doesn't lose it; the page names it by the place this topic gives. And its
+--            controllers (rt-p14): `ccs`, which CC numbers it has, and, for the one number the page asked for (a look's `cc`), `cc`: its
+--            events, five numbers each (its index among the take's controller events, ms from the item's start, value, ticks, channel)
 --   dawenv   the envelopes of the tracks whose automation lanes the page has open (volume, pan, width, mute, FX parameters, sends): only
 --            those tracks', points normalised to the envelope's range, with its own value labels for the page's readout, and its automation
 --            items' place, length and mute (`a`, flat triples: rt-p14)
@@ -18,6 +20,7 @@
 local band = require("band")
 local dawmidi = {}
 dawmidi.NOTES_MAX = 4000  -- notes sent from the open item (the first ones)
+dawmidi.CC_MAX = 4000     -- controller events sent from the open item for the one number shown (the first ones)
 dawmidi.POINTS_MAX = 2000 -- points sent per envelope (the first ones)
 dawmidi.LANES_MAX = 8     -- tracks with their automation open at once
 dawmidi.SENDS_MAX = 32    -- sends sent from the open track (the first ones)
@@ -40,11 +43,13 @@ local function ref_of(t)
   return r.lane and r.idx and r.p and r.l and r or nil
 end
 dawmidi.ref_of = ref_of
--- What a page shows ({ item = ref | false, env = { track places } }; either may be left out: the piano roll and the lanes say theirs apart).
+-- What a page shows ({ item = ref | false, cc = a CC number | false, env = { track places }, send = a track's place | false }; any may be left out: the piano
+-- roll, the lanes and the sends panel say theirs apart).
 function dawmidi.parse_look(t)
   if type(t) ~= "table" then return nil end
   local out = {}
   if t.item ~= nil then out.item = ref_of(t.item) or false end
+  if t.cc ~= nil then local n = int(t.cc); out.cc = n and n <= 127 and n or false end -- (the controller lane shown under the notes, or false: none)
   if t.send ~= nil then out.send = int(t.send) or false end -- (a track's place, or false: the sends panel closed)
   if t.env ~= nil then
     out.env = {}
@@ -55,7 +60,8 @@ function dawmidi.parse_look(t)
   end
   return out
 end
-local NOTE_OPS = { add = "add note", move = "move note", resize = "resize note", delete = "delete note", vel = "note velocity" }
+local NOTE_OPS = { add = "add note", move = "move note", resize = "resize note", delete = "delete note", vel = "note velocity",
+  cc_add = "add controller point", cc_move = "move controller point", cc_delete = "delete controller point" }
 -- A note edit from a page -> what it asks for, checked, or nil, why and its id. g: the grid the page snapped to, in quarter notes (0: none).
 function dawmidi.parse_note(e)
   if type(e) ~= "table" then return nil, "not an edit" end
@@ -64,6 +70,23 @@ function dawmidi.parse_note(e)
   local out = { op = e.op, id = id, item = ref_of(e.item), g = num(e.g) or 0 }
   if not out.item then return nil, "that isn't an item the page showed", id end
   if out.g < 0 or out.g > 16 then out.g = 0 end
+  if e.op:find("^cc_") then
+    -- (a controller point of the open item: a CC number 0 to 127 and, but for an add, its index among the take's events and its ticks)
+    out.c = pitch(e.c)
+    if not out.c then return nil, "a controller is 0 to 127", id end
+    if e.op == "cc_add" then
+      out.a, out.v, out.ch = num(e.a), pitch(e.v), math.min(int(e.ch) or 0, 15)
+      if not (out.a and out.v) then return nil, "a controller point needs a time and a value 0 to 127", id end
+    else
+      out.n, out.s = int(e.n), num(e.s)
+      if not (out.n and out.s) then return nil, "that isn't a controller point the page showed", id end
+      if e.op == "cc_move" then
+        out.to, out.v = num(e.to), pitch(e.v)
+        if not (out.to and out.v) then return nil, "no place to put it", id end
+      end
+    end
+    return out
+  end
   if e.op == "add" then
     out.k, out.a, out.z, out.v, out.ch = pitch(e.k), num(e.a), num(e.z), pitch(e.v) or 100, int(e.ch) or 0
     if not (out.k and out.a and out.z and out.z > out.a) then return nil, "a note needs a pitch, a start and an end after it", id end
@@ -182,6 +205,28 @@ function dawmidi.notes(take, pos)
   end
   return out, n
 end
+-- The open item's controllers: which CC numbers it has (sorted), and the events of `want` (a CC number or nil), flat, five each: the event's index among all
+-- the take's controller events (its name for an edit, with its ticks and the number), ms from the item's start, value, ticks, channel. Only plain CCs
+-- (0xB0): not pitch bend, pressure or program.
+function dawmidi.ccs(take, pos, want)
+  local has, ev = {}, {}
+  local _, _, ncc = reaper.MIDI_CountEvts(take)
+  for i = 0, (tonumber(ncc) or 0) - 1 do
+    local ok, _, _, ppq, chanmsg, chan, msg2, msg3 = reaper.MIDI_GetCC(take, i)
+    if ok and chanmsg == 0xB0 then
+      has[msg2] = true
+      if msg2 == want and #ev < dawmidi.CC_MAX * 5 then
+        local n = #ev
+        ev[n + 1], ev[n + 2] = i, math.floor((reaper.MIDI_GetProjTimeFromPPQPos(take, ppq) - pos) * 1000 + 0.5)
+        ev[n + 3], ev[n + 4], ev[n + 5] = math.floor(msg3), r3(ppq), math.floor(chan)
+      end
+    end
+  end
+  local list = {}
+  for k in pairs(has) do list[#list + 1] = k end
+  table.sort(list)
+  return list, ev
+end
 -- The built-in envelopes by what they are (names can be translated; their chunk names can't). Sends' and anything else go by name.
 local BUILTIN = { ["<VOLENV2"] = "vol", ["<VOLENV"] = "vol", ["<VOLENV3"] = "vol", ["<PANENV2"] = "pan", ["<PANENV"] = "pan",
   ["<WIDTHENV2"] = "pan", ["<WIDTHENV"] = "pan", ["<MUTEENV"] = "mute" }
@@ -279,6 +324,15 @@ local function note_apply(proj, cfg, b, e)
       return math.floor(reaper.MIDI_GetPPQPosFromProjQN(take, dawmidi.snap_qn(qn, tonumber(qs) or 0, e.g)) + 0.5)
     end
     return math.floor(reaper.MIDI_GetPPQPosFromProjTime(take, t) + 0.5)
+  end
+  if e.op == "cc_add" then
+    return dawedit.in_undo(proj, NOTE_OPS[e.op], function() reaper.MIDI_InsertCC(take, false, false, math.max(0, tick(e.a)), 0xB0, e.ch, e.c, e.v); reaper.MIDI_Sort(take) end)
+  elseif e.op == "cc_move" or e.op == "cc_delete" then
+    local ok, _, _, ppq, chanmsg, _, msg2 = reaper.MIDI_GetCC(take, e.n)
+    if not (ok and chanmsg == 0xB0 and msg2 == e.c and math.abs(ppq - e.s) < 0.5) then return "that controller point changed meanwhile" end
+    return dawedit.in_undo(proj, NOTE_OPS[e.op], function()
+      if e.op == "cc_move" then reaper.MIDI_SetCC(take, e.n, nil, nil, math.max(0, tick(e.to)), nil, nil, nil, e.v, false) else reaper.MIDI_DeleteCC(take, e.n) end
+    end)
   end
   if e.op == "add" then
     local s = math.max(0, tick(e.a))
@@ -392,6 +446,7 @@ function dawmidi.action(proj, cfg, b, a)
       if not same then S.item = l.item and require("dawedit").find_item(proj, l.item) or nil; S.ref, S.built, S.sig = nil, nil, nil; S.asked = l.item or nil end
       S.item_until = l.item and now + dawmidi.WANT_FOR or -math.huge
     end
+    if l.cc ~= nil and (l.cc or nil) ~= S.ccn then S.ccn, S.sig, S.built = l.cc or nil, nil, nil end
     if l.send ~= nil then S.send, S.built = l.send or nil, nil; S.send_until = l.send and now + dawmidi.WANT_FOR or -math.huge end
     if l.env ~= nil then S.env, S.built = l.env, nil; S.env_until = #l.env > 0 and now + dawmidi.WANT_FOR or -math.huge end
     return
@@ -426,16 +481,18 @@ function dawmidi.tick(proj, cfg, b, publish, now)
       S.sig = nil
       publish("dawmidi", { key = key, asked = S.asked, gone = "that item changed meanwhile, or isn't MIDI any more" })
     else
-      local _, h = reaper.MIDI_GetHash(take, true)
-      local sig = table.concat({ tostring(h), ref.lane, ref.idx, ref.p, ref.l }, "|")
+      local _, h = reaper.MIDI_GetHash(take, false) -- (every event, not the notes only: a controller edit must show too)
+      local sig = table.concat({ tostring(h), ref.lane, ref.idx, ref.p, ref.l, S.ccn or "" }, "|")
       if sig ~= S.sig then
         S.sig = sig
         local pos = reaper.GetMediaItemInfo_Value(it, "D_POSITION")
         local notes, n = dawmidi.notes(take, pos)
+        local ccs, ccev = dawmidi.ccs(take, pos, S.ccn)
         local rgb = require("dawview").native_rgb(reaper.GetMediaItemTakeInfo_Value(take, "I_CUSTOMCOLOR"))
           or require("dawview").native_rgb(reaper.GetMediaItemInfo_Value(it, "I_CUSTOMCOLOR")) or require("dawview").native_rgb(band.track_colour(tr))
         publish("dawmidi", { key = key, asked = S.asked, ref = ref, name = reaper.GetTakeName(take):sub(1, 40), track = require("dawedit").track_name(tr),
-          c = rgb, nt = notes, more = (tonumber(n) or 0) > dawmidi.NOTES_MAX and 1 or nil })
+          c = rgb, nt = notes, more = (tonumber(n) or 0) > dawmidi.NOTES_MAX and 1 or nil, ccs = #ccs > 0 and ccs or nil,
+          cc = S.ccn and { c = S.ccn, ev = ccev } or nil })
       end
       S.ref = ref
     end

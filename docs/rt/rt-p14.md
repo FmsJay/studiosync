@@ -110,5 +110,40 @@ Internal names (`follow`, `dfollow`) are unchanged.
   envelope plays without it); a pooled pair (moving one doesn't move the other); looped or rate-changed items (position and length only);
   a bandmate's item on a track they claimed (refused).
 
+## 5. CC lanes in the piano roll (`lib/dawmidi.lua`, `lib/webui/pianoroll.js`)
+- **Page:** a **Controller** box in the roll's bar (None, the usual controllers, and any other number the item has, marked with a dot) puts a
+  lane under the velocity lane (the notes and the velocity lane give up its height): the number's events as a stepped line, each value
+  holding to the next point, with its points and the selected one's value. Drag a point (time snapped to the roll's grid, value from the
+  lane's height, 0 to 127), double-click (double-tap) an empty spot to add one, Delete or the menu removes the selected one. A phone: the
+  selected point moves, anything else pans; long press for the menu. Plain CC messages only (0xB0): pitch bend, pressure and program
+  change aren't shown or touched. Step input (P5's flag) and the note editing are unchanged.
+- **Topic and path:** the roll's look says `{item, cc: <number> | false}` (every 10 s, as before). `dawmidi` now carries `ccs` (the CC numbers
+  the item has) and, for the number asked for, `cc: {c, ev}` with five numbers an event (its index among all the take's controller events,
+  ms from the item's start, value, ticks, channel; up to 4,000 events). The signature uses `MIDI_GetHash(take, false)` (every event, not the
+  notes only: a controller edit changes nothing else) and the number, so changing the number or an edit in REAPER publishes at once.
+  Edits go on the notes' channel: `{note:{op: cc_add | cc_move | cc_delete, item, c, a | n s to v, ch?, g}}` -> `note_apply`: the item's rule as
+  a note's (`item_why`: its track and spot, claims, Driver only, Claims asking), found as the page named the item, and the event named by
+  index, ticks and number and refused when it isn't that any more (so a pitch bend or another number's isn't touched). Add:
+  `MIDI_InsertCC(take, false, false, ticks, 0xB0, channel, number, value)` then `MIDI_Sort`; move: `MIDI_SetCC` (time on the page's grid in
+  the take's own ticks, as notes; value); delete: `MIDI_DeleteCC`. One undo point each ("add controller point" ...).
+- **Not done:** a point's shape or ramp (the line is drawn stepped), pitch bend / pressure / program change lanes, a lane's channel filter
+  (all channels of the number are shown; an add uses channel 1), box-select, copy/paste.
+- **Tests:** `tests/test_0_60_rt_dawmidi.lua` (parse and refusals, the reader, each edit on a stand-in REAPER, stale index/ticks/number, a pitch
+  bend not a CC, a claimed track, Driver only, the topic: numbers, events for the one asked, change in REAPER republishes, switching number,
+  closing). It caught that the first version dropped the take's event index (the page would have named the wrong event whenever another
+  number's events sit between). `tests/rt_p14_browser.mjs` (the roll opens, the box, the look, drag, refusal, select and Delete, double-click add,
+  the menu, close).
+- **Check in REAPER:** an item with CC 1 and CC 7 automation (and a pitch bend): the box lists them; the lane matches REAPER's own CC lane
+  (values and times); drag a point (one Ctrl+Z); add one (it's a CC at channel 1, which REAPER's lane shows); delete one; with the lane open a
+  bandmate's change to the item shows within a second; a claimed track refuses; the notes and velocity lane still work with the lane open
+  (resize the window short: the notes area shrinks).
+
 ## Review later (security)
-- (none yet)
+- The page-supplied numbers are all validated and clamped on this computer (`parse_send`, `parse_note`'s controller ops, `parse_auto`'s item ops, the
+  fade fields) before any REAPER call; sizes: 32 sends, 200 automation items an envelope, 4,000 controller events a topic. The sends and
+  controller topics are only built while a page says it looks (30 s grace), like the others. Nothing here touches signing, the link or the
+  files, and no check was weakened: each edit takes the rule the equivalent edit in REAPER takes (`dawedit.item_refusal` / `item_why`).
+- A send is checked against the destination track only (the Mixer's rule); the source track's claim isn't asked. If a source's owner should also
+  be asked, that is a rule change in `send_apply` for the security review.
+- Deleting an item from a page deletes it for everyone through the normal sync (as REAPER's Delete does): one Ctrl+Z here, and the sync's
+  put-back protects a claimed track as for any other deletion; worth a look in the review that a Driver-only room refuses it (tested).

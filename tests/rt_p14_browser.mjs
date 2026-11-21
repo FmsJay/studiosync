@@ -339,6 +339,66 @@ ok((await text('.dfollow')).startsWith('View') && await ev('document.querySelect
   await push(project());
 }
 
+// ---- CC lanes in the piano roll -------------------------------------------------------------------------------------------------------
+{
+  const lookItem = () => [...actions].reverse().find((a) => a.look && a.look.item !== undefined);
+  const ref = { lane: 2, idx: 0, p: 2, l: 6 };
+  const roll = (extra) => Object.assign({ key: KEY, ref, asked: ref, name: 'Riff', track: 'Keys', c: '#44aa66', nt: [0, 500, 60, 100, 0, 0], ccs: [1, 7] }, extra || {});
+  const ccEv = { c: 1, ev: [0, 0, 10, 0, 0, 2, 500, 60, 960, 0] }; // (two events of CC 1; the one of CC 7 between them is the take's number 1)
+  await click(...(await at(5, 2)), 2); // a double-click on Keys' MIDI item opens its roll
+  await sleep(150);
+  ok(await ev('(() => { const p = document.querySelector(".proll"); return !!p && !p.hidden; })()'), 'a double-click on a MIDI item opens the piano roll');
+  ok(lookItem() && lookItem().look.item.lane === 2 && lookItem().look.cc === false, 'it says what it looks at and no controller yet (' + JSON.stringify(lookItem() && lookItem().look) + ')');
+  await push({ dawmidi: roll() });
+  await sleep(100);
+  const opts = await ev('[...document.querySelectorAll(".proll select[aria-label=\\"Controller lane\\"] option")].map((o) => o.textContent)');
+  ok(opts[0] === 'None' && opts.some((o) => o.startsWith('CC 1 Modulation')) && opts.some((o) => o.startsWith('CC 64 Sustain')) && opts.find((o) => o.startsWith('CC 7')).includes('●') && !opts.find((o) => o.startsWith('CC 64')).includes('●'),
+    'the controller box: none, the usual ones, those the item has marked (' + opts.slice(0, 4).join(' | ') + ')');
+  await ev('(() => { const s = document.querySelector(".proll select[aria-label=\\"Controller lane\\"]"); s.value = "1"; s.dispatchEvent(new Event("change")); })()');
+  await sleep(150);
+  ok(lookItem().look.cc === 1, 'choosing CC 1 says so in the look');
+  await push({ dawmidi: roll({ cc: ccEv }) });
+  await sleep(100);
+  // the lane's geometry, as the roll lays it out (KEYS 44, a velocity lane and the controller lane of 56 px at the bottom, fit to the item)
+  const G = await ev('(() => { const r = document.querySelector(".pcv").getBoundingClientRect(); return { l: r.left, t: r.top, w: r.width, h: r.height }; })()');
+  const pps = (G.w - 44) / (6 * 1.04), px0 = 2 - 6 * 0.02, topCC = G.h - 56;
+  const X = (t) => G.l + 44 + (t - px0) * pps, Y = (v) => G.t + topCC + 4 + (1 - v / 127) * 48;
+  const noteActs = () => actions.filter((a) => a.note);
+  await drag(X(2.5), Y(60), X(3.5), Y(100)); // the second point, to 3.5 s and up
+  await sleep(100);
+  let a = lastAction();
+  ok(a.note && a.note.op === 'cc_move' && a.note.c === 1 && a.note.n === 2 && a.note.s === 960 && Math.abs(a.note.to - 3.5) < 1e-6 && Math.abs(a.note.v - 100) <= 2 && a.note.item && a.note.item.lane === 2,
+    'dragging a controller point sends cc_move naming it by index, ticks and number (' + JSON.stringify(a.note) + ')');
+  await push({ dawedit: { id: a.note.id, why: 'Chilio has claimed Keys there' } });
+  ok((await text('.pmsg')).includes('Not changed: Chilio has claimed Keys there'), 'a refusal says why');
+  await click(X(2.5), Y(60));
+  const n0 = noteActs().length;
+  await key('Delete', 'Delete', 46);
+  a = lastAction();
+  ok(noteActs().length === n0 + 1 && a.note.op === 'cc_delete' && a.note.n === 2 && a.note.s === 960 && a.note.c === 1, 'a click selects a point and Delete removes it (' + JSON.stringify(a.note) + ')');
+  await push({ dawedit: { id: a.note.id, why: 'again' } });
+  await click(X(5), Y(80), 2); // a double-click on an empty spot of the lane
+  await sleep(100);
+  a = lastAction();
+  ok(a.note && a.note.op === 'cc_add' && a.note.c === 1 && Math.abs(a.note.a - 5) < 0.3 && Math.abs(a.note.v - 80) <= 2, 'a double-click on an empty spot adds a point (' + JSON.stringify(a.note) + ')');
+  await push({ dawedit: { id: a.note.id, why: 'again' } });
+  // the menu on a point, then the lane closed
+  await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: X(2), y: Y(10), button: 'right', buttons: 2, clickCount: 1 });
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: X(2), y: Y(10), button: 'right', buttons: 0, clickCount: 1 });
+  await sleep(100);
+  const items = await ev('[...document.querySelectorAll(".proll .dmenu button")].map((x) => x.textContent)');
+  ok(items.some((x) => x.startsWith('Delete controller point (10)')), 'the menu on a point offers to delete it (' + items.join(' | ') + ')');
+  await ev('[...document.querySelectorAll(".proll .dmenu button")].find((x) => x.textContent === "Close").click(); 1');
+  await ev('(() => { const s = document.querySelector(".proll select[aria-label=\\"Controller lane\\"]"); s.value = ""; s.dispatchEvent(new Event("change")); })()');
+  await sleep(150);
+  ok(lookItem().look.cc === false, 'choosing None says so');
+  // the notes still work with the lane closed: Escape closes the roll
+  await key('Escape', 'Escape', 27);
+  ok(!(await ev('(() => { const p = document.querySelector(".proll"); return !!p && !p.hidden; })()')), 'Escape closes the roll');
+  state.topics = project();
+  await push(project());
+}
+
 ok(errors.length === 0, 'no page errors' + (errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''));
 console.log(fails ? 'FAIL ' + fails : 'ok');
 await done(fails ? 1 : 0);

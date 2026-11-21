@@ -65,6 +65,18 @@ for i, b in ipairs({ { op = "add", lane = 0, e = 1, t = 3, v = 0.5 }, { op = "mo
     { op = "delete", lane = 0, e = 1, name = "Pan", n = 0 }, { op = "add", lane = 0, e = 1, name = ("x"):rep(201), t = 1, v = 0 }, { op = "shape", lane = 0, e = 1, name = "Pan" } }) do
   assert(dawmidi.parse_auto(b) == nil, "a point edit refused: #" .. i)
 end
+-- controllers (rt-p14): the lane shown, and a controller point named by its index, its ticks and its CC number
+assert(dawmidi.parse_look({ item = { lane = 0, idx = 0, p = 4, l = 8 }, cc = 7 }).cc == 7 and dawmidi.parse_look({ cc = false }).cc == false and dawmidi.parse_look({ cc = 128 }).cc == false
+  and dawmidi.parse_look({ cc = -1 }).cc == false and dawmidi.parse_look({ item = false }).cc == nil, "a look at a CC lane: 0 to 127, false closes it, silent when it isn't said")
+local ca = dawmidi.parse_note({ id = "c1", op = "cc_add", item = it0, c = 1, a = 5, v = 0 })
+assert(ca and ca.c == 1 and ca.a == 5 and ca.v == 0 and ca.ch == 0 and ca.id == "c1", "a controller add: value 0 is a value")
+local cm = dawmidi.parse_note({ op = "cc_move", item = it0, c = 1, n = 2, s = 960, to = 6, v = 99 })
+assert(cm and cm.n == 2 and cm.s == 960 and cm.to == 6 and cm.v == 99 and dawmidi.parse_note({ op = "cc_delete", item = it0, c = 7, n = 0, s = 0 }).c == 7, "move, delete")
+for i, bad in ipairs({ { op = "cc_add", item = it0, c = 128, a = 1, v = 1 }, { op = "cc_add", item = it0, a = 1, v = 1 }, { op = "cc_add", item = it0, c = 1, a = 1, v = 128 }, { op = "cc_add", item = it0, c = 1, v = 1 },
+    { op = "cc_move", item = it0, c = 1, n = 0, s = 0, v = 1 }, { op = "cc_move", item = it0, c = 1, n = 0, s = 0, to = 1 }, { op = "cc_delete", item = it0, c = 1, s = 0 },
+    { op = "cc_delete", c = 1, n = 0, s = 0 }, { op = "cc_wheel", item = it0, c = 1 } }) do
+  assert(dawmidi.parse_note(bad) == nil, "a controller edit refused: #" .. i)
+end
 -- sends (rt-p14): a send is named by its track's place, its index and its destination's place
 assert(dawmidi.parse_look({ send = 2 }).send == 2 and dawmidi.parse_look({ send = false }).send == false and dawmidi.parse_look({ send = -1 }).send == false, "a look at a track's sends; false closes the panel")
 assert(dawmidi.parse_look({ env = { 0 } }).send == nil, "and says nothing of them when it doesn't")
@@ -115,7 +127,17 @@ reaper.GetTakeName = function() return "Riff" end
 reaper.ColorFromNative = function(c) return c & 255, (c >> 8) & 255, (c >> 16) & 255 end
 reaper.ValidatePtr2 = function(_, p) for _, t in ipairs(fake.tracks) do for _, it in ipairs(t.items) do if it == p then return true end end end return false end
 local function pos_of(tk) return tk.item.pos end
-reaper.MIDI_CountEvts = function(tk) return 1, #tk.notes, 0, 0 end
+reaper.MIDI_CountEvts = function(tk) return 1, #tk.notes, #(tk.ccs or {}), 0 end
+local function csort(tk) table.sort(tk.ccs, function(a, z) return a.ppq < z.ppq end) end
+reaper.MIDI_GetCC = function(tk, i)
+  local x = (tk.ccs or {})[i + 1]
+  if not x then return false end
+  return true, false, false, x.ppq, x.msg or 0xB0, x.ch or 0, x.c, x.v
+end
+reaper.MIDI_SetCC = function(tk, i, _, _, ppq, _, _, _, v) local x = tk.ccs[i + 1]; x.ppq, x.v = ppq or x.ppq, v or x.v; csort(tk); return true end
+reaper.MIDI_InsertCC = function(tk, _, _, ppq, msg, ch, c, v) tk.ccs = tk.ccs or {}; tk.ccs[#tk.ccs + 1] = { ppq = ppq, msg = msg, ch = ch, c = c, v = v }; return true end
+reaper.MIDI_DeleteCC = function(tk, i) table.remove(tk.ccs, i + 1); return true end
+reaper.MIDI_Sort = function(tk) if tk.ccs then csort(tk) end return true end
 reaper.MIDI_GetNote = function(tk, i)
   local x = tk.notes[i + 1]
   if not x then return false end
@@ -130,7 +152,12 @@ reaper.MIDI_SetNote = function(tk, i, _, _, s, e, _, k, v)
 end
 reaper.MIDI_InsertNote = function(tk, _, _, s, e, ch, k, v) tk.notes[#tk.notes + 1] = { s = s, e = e, ch = ch, k = k, v = v }; sort(tk); return true end
 reaper.MIDI_DeleteNote = function(tk, i) table.remove(tk.notes, i + 1); return true end
-reaper.MIDI_GetHash = function(tk) local h = {}; for _, x in ipairs(tk.notes) do h[#h + 1] = x.s .. ":" .. x.e .. ":" .. x.k .. ":" .. x.v end; return true, table.concat(h, ",") end
+reaper.MIDI_GetHash = function(tk, notesonly)
+  local h = {}
+  for _, x in ipairs(tk.notes) do h[#h + 1] = x.s .. ":" .. x.e .. ":" .. x.k .. ":" .. x.v end
+  if not notesonly then for _, x in ipairs(tk.ccs or {}) do h[#h + 1] = "c" .. x.ppq .. ":" .. x.c .. ":" .. x.v end end
+  return true, table.concat(h, ",")
+end
 reaper.MIDI_GetProjTimeFromPPQPos = function(tk, ppq) return pos_of(tk) + ppq / 1920 end
 reaper.MIDI_GetPPQPosFromProjTime = function(tk, t) return (t - pos_of(tk)) * 1920 end
 reaper.MIDI_GetPPQPosFromProjQN = function(tk, qn) return (qn / 2 - pos_of(tk)) * 1920 end
@@ -184,7 +211,8 @@ local function song()
   setup({
     tracks = {
       { name = "Keys", oid = "T-JAMES-1", items = { { pos = 4, len = 8, oid = "I-JAMES-1", takes = { { notes = {
-          { s = 0, e = 960, k = 60, v = 100 }, { s = 960, e = 1920, k = 64, v = 90 }, { s = 1920, e = 2880, k = 67, v = 80, muted = true } } } } } },
+          { s = 0, e = 960, k = 60, v = 100 }, { s = 960, e = 1920, k = 64, v = 90 }, { s = 1920, e = 2880, k = 67, v = 80, muted = true } },
+          ccs = { { ppq = 0, c = 1, v = 10 }, { ppq = 480, c = 7, v = 100 }, { ppq = 960, c = 1, v = 60 }, { ppq = 1000, msg = 0xE0, c = 0, v = 64 } } } } } },
         envs = { { name = "Volume", chunk = "<VOLENV2", pts = { { t = 0, v = 0.5 }, { t = 8, v = 0.25 } } },
                  { name = "Pan", chunk = "<PANENV2", pts = { { t = 2, v = -0.5 } }, ais = { { pos = 2, len = 4, mute = 0 }, { pos = 10, len = 2.5, mute = 1 } } },
                  { name = "Mute", chunk = "<MUTEENV", pts = {} },
@@ -308,6 +336,35 @@ peers = {}
 room("claims") -- (Driver + claims, removed in rt: works as Driver only)
 assert(select(2, auto("Andie", { op = "add", lane = 0, e = 1, name = "Pan", t = 1, v = 0.5 })).why:find("only the driver"), "Driver + claims reads as Driver only")
 
+-- ---- controller edits ---------------------------------------------------------------------------------------------------------------------
+local function ccs() return fake.tracks[1].items[1].takes[1].ccs end
+song(); room("open", { Chilio = { tracks = { "Bass" } } })
+said, r = note("James", { id = "k1", op = "cc_add", item = KEYS, c = 1, a = 5, v = 90, g = 0 })
+assert(r.id == "k1" and r.ok and #ccs() == 5 and said:find("add controller point"), "a controller point added: " .. tostring(r.why))
+local made
+for _, x in ipairs(ccs()) do if x.v == 90 then made = x end end
+assert(made and made.c == 1 and made.msg == 0xB0 and made.ch == 0 and made.ppq == 1920, "a CC (0xB0) number 1, at the ticks of 5 s in an item starting at 4 s (1920 a second here)")
+assert(#undo == 1 and undo[1].label == "StudioSync web page: add controller point" and not undo[1].open, "in one undo point")
+r = select(2, note("James", { op = "cc_move", item = KEYS, c = 1, n = 2, s = 960, to = 6.1, v = 30, g = 1 }))
+assert(r.ok, "moved: " .. tostring(r.why))
+local mv
+for _, x in ipairs(ccs()) do if x.v == 30 then mv = x end end
+assert(mv and mv.ppq == 3840 and mv.c == 1, "its new time on the grid the page snapped to (a beat), its new value")
+r = select(2, note("James", { op = "cc_move", item = KEYS, c = 1, n = 2, s = 960, to = 6, v = 31 }))
+assert(r.why:find("controller point changed meanwhile"), "the page's view is stale: refused")
+r = select(2, note("James", { op = "cc_delete", item = KEYS, c = 7, n = 0, s = 0 }))
+assert(r.why:find("controller point changed meanwhile") and #ccs() == 5, "named for another controller number: refused")
+r = select(2, note("James", { op = "cc_delete", item = KEYS, c = 1, n = 3, s = 1000 }))
+assert(r.why:find("controller point changed meanwhile") and #ccs() == 5, "a pitch bend isn't a CC: refused")
+r = select(2, note("James", { op = "cc_delete", item = KEYS, c = 7, n = 1, s = 480 }))
+assert(r.ok and #ccs() == 4 and undo[#undo].label == "StudioSync web page: delete controller point", "deleted")
+r = select(2, note("James", { op = "cc_add", item = { lane = 1, idx = 0, p = 0, l = 4 }, c = 1, a = 1, v = 5 }))
+assert(r.why:find("Chilio has claimed Bass") and not fake.tracks[3].items[1].takes[1].ccs, "a claimed track's item: refused, nothing changed")
+room("driver")
+r = select(2, note("Andie", { op = "cc_add", item = KEYS, c = 1, a = 5, v = 5 }))
+assert(r.why:find("only the driver %(James%)"), "Driver only: refused")
+room("open")
+
 -- ---- automation item edits ----------------------------------------------------------------------------------------------------------------
 song(); room("open", { Chilio = { tracks = { "Bass" } } })
 local pais = fake.tracks[1].envs[2].ais
@@ -404,6 +461,35 @@ assert(v1.k == "vol" and v1.p[2] == 0.5 and v1.p[5] == 0.25 and v1.i == 0, "volu
 assert(p1.k == "pan" and p1.p[2] == 0.25 and m1.k == "mute" and f1.k == "fx" and f1.n == "Cutoff / ReaEQ", "pan -0.5 is a quarter up; kinds by chunk name, then FX")
 assert(#p1.a == 6 and p1.a[1] == 2 and p1.a[2] == 4 and p1.a[3] == 0 and p1.a[4] == 10 and p1.a[5] == 2.5 and p1.a[6] == 1 and v1.a == nil, "an envelope's automation items: place, length, muted; none: no key")
 assert(#v1.f == dawmidi.LABELS + 1 and v1.f[1] == "Volume 0.00" and v1.f[#v1.f] == "Volume 1.00", "REAPER's own labels across the range")
+-- the controllers (rt-p14): which numbers the item has, and the events of the one asked for
+assert(m.ccs and #m.ccs == 2 and m.ccs[1] == 1 and m.ccs[2] == 7 and m.cc == nil, "the CC numbers it has (a pitch bend isn't one); no events until a lane is asked for")
+dawview.action("P", as("James"), b, { look = { item = KEYS, cc = 1 } })
+published.dawmidi = nil
+clock = clock + 1
+tick()
+m = published.dawmidi
+assert(m and m.cc and m.cc.c == 1 and #m.cc.ev == 10, "a CC lane asked for: its events, five numbers each")
+assert(m.cc.ev[1] == 0 and m.cc.ev[2] == 0 and m.cc.ev[3] == 10 and m.cc.ev[4] == 0 and m.cc.ev[5] == 0 and m.cc.ev[6] == 2 and m.cc.ev[7] == 500 and m.cc.ev[8] == 60 and m.cc.ev[9] == 960,
+  "index among the take's controller events (the number 7 one is between them), ms from the item's start, value, ticks, channel")
+published.dawmidi = nil
+clock = clock + 1
+tick()
+assert(not published.dawmidi, "nothing changed: not sent again")
+fake.tracks[1].items[1].takes[1].ccs[1].v = 11
+clock = clock + 1
+tick()
+assert(published.dawmidi and published.dawmidi.cc.ev[3] == 11, "a controller changed in REAPER (the notes the same): sent again")
+dawview.action("P", as("James"), b, { look = { item = KEYS, cc = 7 } })
+published.dawmidi = nil
+clock = clock + 1
+tick()
+assert(published.dawmidi.cc.c == 7 and #published.dawmidi.cc.ev == 5 and published.dawmidi.cc.ev[1] == 1 and published.dawmidi.cc.ev[3] == 100, "another number asked for: its events at once")
+dawview.action("P", as("James"), b, { look = { item = KEYS, cc = false } })
+published.dawmidi = nil
+clock = clock + 1
+tick()
+assert(published.dawmidi and published.dawmidi.cc == nil and published.dawmidi.ccs, "the lane closed: no events, the numbers still")
+fake.tracks[1].items[1].takes[1].ccs[1].v = 10
 -- the item moves (a stage 2 edit, or in REAPER): followed, and named where it is now
 published.dawmidi = nil
 fake.tracks[1].items[1].pos = 6
@@ -479,7 +565,8 @@ for _, want in ipairs({ "window.ssDaw", "X.extra", "X.drawAuto", "X.autoDown", "
   assert(daw:find(want, 1, true), "daw.js has " .. want)
 end
 for _, want in ipairs({ "ssDaw.act({ look:", "note: Object.assign({ id }", "t.dawmidi", "t.dawedit", "op: 'add'", "op: 'move'", "op: 'resize'", "op: 'delete'", "op: 'vel'",
-    "pointerdown", "'wheel'", "'keydown'", "setTimeout(", "snapBack(" }) do
+    "pointerdown", "'wheel'", "'keydown'", "setTimeout(", "snapBack(",
+    "op: 'cc_add'", "op: 'cc_delete'", "'cc_move'", "function drawCC(g, C, col, top)", "look: { item: want || false, cc: ccN === null ? false : ccN }", "step: true" }) do
   assert(pr:find(want, 1, true), "pianoroll.js has " .. want)
 end
 for _, want in ipairs({ "ssDaw.act({ look:", "auto: Object.assign({ id }", "t.dawenv", "t.dawedit", "op: 'add'", "op: 'move'", "op: 'delete'", "X.extra =", "X.drawAuto =",
