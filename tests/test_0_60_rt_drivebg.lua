@@ -40,6 +40,7 @@ local band = {
     return out
   end,
   subdirs = function(dir) on_cloud(dir); return kids(dir, true) end,
+  listing = function(dir, e) local out = {}; for _, f in ipairs(kids(dir, false)) do if not e or f:lower():sub(-#e) == e then out[#out + 1] = f end end; return out end,
   read = function(p) on_cloud(p); return fs[p] end,
   read_json = function(p) on_cloud(p); local s = fs[p]; if not s then return nil end; local ok, v = pcall(json.decode, s); return ok and type(v) == "table" and v or nil end,
   write_json = function(p, t) on_cloud(p); put(p, json.encode(t)) end,
@@ -550,7 +551,8 @@ do
   end
   tools_copy(HT, "0.60.5"); tools_copy(CT, "0.60.4")
   drive, bg, cm = fresh()
-  cm.tick, cm.sweeping = function() end, function() return false end
+  -- (round 6: the sweep after it in a plan costs 5 ms: the check must have its plan to itself, as it hadn't on the desktop, 123.8 ms)
+  cm.tick, cm.sweeping = function() clock = clock + 0.005 end, function() return true end
   local saved = { band.studio_update_key, band.version_on_disk, band.signed_ok, band.code_hash, package.loaded.fromfolder, package.loaded.groups }
   band.studio_update_key = function() return KEY end
   band.version_on_disk = function(dir) return (fs[dir .. "/lib/band.lua"] or ""):match('VERSION = "([^"]+)"') end
@@ -587,7 +589,7 @@ do
   local said = false
   for _, s in ipairs(logs) do if s:find("0.60.5 is in the ", 1, true) then said = true end end
   check(out_at and said and fs[CT .. "/lib/m42.lua"] == "-- module 42 of 0.60.5", "the owner's new version went out, whole: " .. tostring(out_at))
-  check(worst <= 0.077 + 0.012, string.format("no plan over one extension check and a few ms (worst %.0f ms)", worst * 1000))
+  check(worst <= 0.077 + 0.004, string.format("no plan over one extension check and a few ms: the check a plan of its own (worst %.0f ms)", worst * 1000))
 end
 
 -- ---- 3k. each change read and parsed once after a start, for the copy and the storage sweep both (rt-drive2, round 3) ----
@@ -636,6 +638,39 @@ for _ = 1, 3 do clock = clock + 2; stand_in_worker(); drive.bg_step(CFG, "/C", "
 ext["perf stats"] = nil
 local ds = ext["drive slow"] and json.decode(ext["drive slow"])
 check(ds and ds.total >= 60 and ds.ms.room >= 60, "ExtState drive slow: " .. tostring(ext["drive slow"]))
+
+-- ---- 3p. a new change of this computer's starts a short round in seconds (rt-drive2, round 6) ----
+-- The desktop, after its round ended: a StudioSync Undo at 09:33:18 went up at 09:36:09, a hub snapshot at 09:36:21 at 09:39:10 (neither goes
+-- out as a sent change, which is what Live sync's own "soon" pass waits for). Live sync calls drive.bg_step only while drive.bg_busy(), or
+-- on its schedule (left out here: none falls in the minute).
+setup()
+drive, bg, cm = fresh()
+local sweeps, others = 0, 0
+cm.tick, cm.sweeping = function() sweeps = sweeps + 1 end, function() return false end
+for _ = 1, 3 do clock = clock + 200; bg_pass() end -- (settled; the round over)
+drive.upkeep = function() others = others + 1; return 0, false end
+sweeps = 0
+local function live(n) -- (Live sync's gate, each pass)
+  for _ = 1, n do clock = clock + 2; stand_in_worker(); if drive.bg_busy() then drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008) end end
+end
+live(5)
+check(not drive.bg_busy(), "nothing new: no round")
+local bo2 = ev("Bo", 95)
+put(HERE .. "/events/" .. bo2.id .. ".json", json.encode(bo2)) -- (a bandmate's change Syncthing brought: not this computer's to send)
+live(5)
+check(not drive.bg_busy(), "a bandmate's change here starts none")
+local undo = ev("James", 96, { type = "undo" })
+put(HERE .. "/events/" .. undo.id .. ".json", json.encode(undo))
+local snap2 = HERE .. "/recall/James-20261121-163621Z-hub_snapshot.json"
+put(snap2, json.encode({ time = "2026-11-21T16:36:21Z" }))
+local went
+for i = 1, 30 do
+  live(1)
+  if fs[THERE .. "/events/" .. undo.id .. ".json"] and fs[snap2:gsub("^/S/", "/C/")] then went = i * 2; break end
+end
+check(went and went <= 10, "this computer's undo and hub snapshot went up within seconds: " .. tostring(went))
+live(10)
+check(not drive.bg_busy() and sweeps == 0 and others == 0, "in a short round of the rooms only, the sweep not started again: " .. sweeps .. " " .. others)
 
 -- ---- 3o. each end-of-session project read once, not every sweep (rt-drive2, round 5) ----
 -- The desktop: the sweep's plan of 34.8 ms was one 1.5 MB project read and scanned; Nostalgia's 13 are 19 MB, and every sweep read them again.

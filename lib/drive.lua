@@ -799,11 +799,22 @@ local heavy, tools_until = math.huge, math.huge
 -- (and only in a plan the update files' unit starts early in: after the room's look in the same plan, 77 ms of check made a 118 ms and a 176 ms
 -- step on the desktop (rt-drive2, round 4). Decided as the unit starts, not when the check comes: its own look at the cloud's staged copy
 -- (150 files) took longer than the 4 ms, so no plan ever got to the check, the update files never went up and the round rested. Round 5)
+-- (and a plan of its own: nothing before it in the plan, nor in the unit (its look at the staged copy is a plan before), nor after it: the 77 ms
+-- check still shared plans with 30-45 ms of other work on the desktop, 123.8 ms at 09:22:48. drive.bg_step stops the plan after it. Round 6)
+local tools_t0, early, deferred = 0, true, 0
 local function heavy_step()
   if heavy <= 0 then error(require("drivebg").NEED, 0) end
-  heavy = heavy - 1
+  -- (late in the plan, or after the unit's own work: the next plan's, but not for ever: a plan that can never be early still gets it)
+  if (not early or reaper.time_precise() - tools_t0 > drive.HEAVY_IN) and deferred < drive.HEAVY_WAIT then
+    deferred = deferred + 1
+    error(require("drivebg").NEED, 0)
+  end
+  heavy, deferred, drive.heavy_done = heavy - 1, 0, true
 end
-drive.HEAVY_BY = 0.004 -- s into a plan after which the update files' unit makes no heavy check (the next plan does)
+drive.HEAVY_BY = 0.003 -- s into a plan after which the update files' unit makes no heavy check (the next plan does)
+drive.HEAVY_IN = 0.005 -- s of the unit's own work before a heavy check, at most (more: the check is the next plan's)
+drive.HEAVY_WAIT = 5 -- plans a heavy check waits for a quiet one at most
+local staged = {} -- cloud copy -> { text, sig, at }: its staged copy, looked over in an earlier plan
 drive.plan_t0 = nil -- (drive.bg_step: when the plan being made began)
 -- The extension's check of a copy alone: lib/files.txt.sig over lib/files.txt, and every file it lists by SHA-256. -> its answer.
 function drive.verify(dir, key) local f = reaper.StudioSync_VerifyFiles; return f and f(band.norm(dir), key) or "" end
@@ -837,7 +848,14 @@ local function signed_copy(dir, key)
   local m = tools_memo[dir]
   if not (m and m.text == text and m.sig == sig and m.key == key) then
     local at = dir
-    if c.cloud(dir) then at = c.stage(dir, drive.tools_files(text) or {}, sig) end
+    if c.cloud(dir) then
+      local st = staged[dir]
+      if c.planned and not (st and st.text == text and st.sig == sig) then
+        staged[dir] = { text = text, sig = sig, at = c.stage(dir, drive.tools_files(text) or {}, sig) }
+        if heavy ~= math.huge then error(require("drivebg").NEED, 0) end -- (the check, next plan)
+      end
+      at = c.planned and staged[dir].at or c.stage(dir, drive.tools_files(text) or {}, sig)
+    end
     local ok
     if c.planned then heavy_step(); ok = drive.verify(at, key):match("^ok ") ~= nil -- (the extension's check: the full one is before a copy)
     else ok = band.signed_ok(at, key) == true end
@@ -931,10 +949,10 @@ drive.TOOLS_STEP = 0.008 -- s of hashing the update files' code a plan
 function drive.tools_pass(cfg, droot, now)
   if now - drive.tools_at < drive.EVERY then return end
   drive.tools_at = now
-  heavy, tools_until = math.huge, math.huge
+  heavy, tools_until, early, tools_t0 = math.huge, math.huge, true, math.huge -- (on REAPER's thread's way: no limits)
   if C().planned then
     local t = reaper.time_precise()
-    heavy, tools_until = (t - (drive.plan_t0 or t) <= drive.HEAVY_BY) and 1 or 0, t + drive.TOOLS_STEP
+    heavy, tools_until, tools_t0, early = 1, t + drive.TOOLS_STEP, t, t - (drive.plan_t0 or t) <= drive.HEAVY_BY
   end
   local key = band.studio_update_key(cfg.root)
   if not key then return end
@@ -976,7 +994,39 @@ drive.MAX_JOBS = 500 -- (a pass that never settles ends there: the next starts o
 -- it ends, and the next waits drive.EVERY. One that never settled planned again every pass, 15-76 ms each, for hours (rt-perf: Cross Test,
 -- "more" with 0 moved). rt-perfcut1. A room done again (rt-drive2: the open song's, every SOON s) isn't something happening.
 drive.STALL, drive.rest_until = 10, -math.huge
-function drive.bg_busy() return round ~= nil end
+-- (a new file of this computer's in the open song's rooms (a change, a saved version: an undo or a hub snapshot doesn't go out as a sent change)
+-- starts a short round of just those rooms, or brings them forward in the round going on, instead of waiting up to drive.EVERY for the next:
+-- the desktop's undo at 09:33:18 went up at 09:36:09. Live sync asks drive.bg_busy each pass; the listings are band.listing's, shared. Round 6)
+local watch, quick_due = nil, false
+local function folder_time(dir) -- (the folder's own modified time, which a file added or removed moves; nil without js_ReaScriptAPI)
+  if not reaper.JS_File_Stat then return nil end
+  local ok, status, _, _, modified = pcall(reaper.JS_File_Stat, dir)
+  return ok and status == 0 and modified and tostring(modified) or nil
+end
+local function own_new()
+  if not watch then return false end
+  local found, now = false, reaper.time_precise()
+  for _, d in ipairs(watch.dirs) do
+    -- (listed only when the folder's time moved, or every 5 s without it: an idle pass costs a stat, not a 2,700-name listing)
+    -- (and for 3 s after it moved: the time is to the second, so a file added later in that second moves nothing)
+    local mt = folder_time(d)
+    if mt and mt ~= watch.mt[d] then watch.moved[d] = now end
+    if (mt and now - (watch.moved[d] or -math.huge) < 3) or (not mt and now - (watch.at[d] or -math.huge) >= 5) or watch.n[d] == nil then
+      watch.mt[d], watch.at[d] = mt, now
+      local l = band.listing(d, ".json")
+      if #l ~= (watch.n[d] or -1) then
+        local seen, set = watch.names[d], {}
+        for _, f in ipairs(l) do set[f] = true; if seen and not seen[f] and mine(f, watch.user) then found = true end end
+        watch.names[d], watch.n[d] = set, #l
+      end
+    end
+  end
+  return found
+end
+function drive.bg_busy()
+  if own_new() then quick_due = true end
+  return round ~= nil or quick_due
+end
 function drive.bg_on() return require("drivebg").on() end
 function drive.bg_step(cfg, droot, song, rooms, budget)
   local J = require("drivebg")
@@ -999,11 +1049,18 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
     if round and r.moved > 0 then round.plans = 0 end
     if r.err and round then return done() end -- (the worker failed: what it did is listed again by the next pass)
   end
-  if not round and reaper.time_precise() < drive.rest_until then return r and r.moved, r and true, r and r.err end -- (resting)
+  local dirs = {}
+  for _, p in ipairs(rooms) do dirs[#dirs + 1] = p[1] .. "/events"; dirs[#dirs + 1] = p[1] .. "/recall" end
+  if not watch or table.concat(watch.dirs, "\0") ~= table.concat(dirs, "\0") then watch = { dirs = dirs, user = cfg.user, n = {}, names = {}, mt = {}, at = {}, moved = {} }; own_new() end
+  local quick = quick_due
+  quick_due = false
+  if not round and not quick and reaper.time_precise() < drive.rest_until then return r and r.moved, r and false, r and r.err end -- (resting)
   if not round or round.song ~= song or round.root ~= droot then
-    round = { song = song, root = droot, moved = 0, jobs = 0, plans = 0, units = {}, failing = {} }
+    round = { song = song, root = droot, moved = 0, jobs = 0, plans = 0, units = {}, failing = {}, quick = quick or nil }
     for _, p in ipairs(rooms) do round.units[#round.units + 1] = { "room", p[1], p[2] } end
-    for _, k in ipairs({ "upkeep", "tools", "cm" }) do round.units[#round.units + 1] = { k } end
+    if not quick then for _, k in ipairs({ "upkeep", "tools", "cm" }) do round.units[#round.units + 1] = { k } end end -- (a short round: the rooms only)
+  elseif quick then -- (the round going on: its rooms looked at now, not at their next SOON)
+    for _, u in ipairs(round.units) do if u[1] == "room" and u.done and not u.failed then u.done, u.done_at = false, nil end end
   end
   -- ("still copying" only while a copy carries on between passes: files moved and more to plan, or a copy failing. Every round said
   -- "bringing the studio's copy of this room up to date" at its first job, with nothing to send (rt-drive2, round 2); and "a copy planned"
@@ -1027,7 +1084,7 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
   local CM = require("cloudmodes")
   local read0, cm0 = read_n, CM.progress()
   J.begin(droot)
-  drive.plan_t0 = t0
+  drive.plan_t0, drive.heavy_done = tp, false -- (from this call's start: its results' look counts too)
   pcall(function()
     for _, u in ipairs(round.units) do
       if left() <= 0 or J.full() then break end
@@ -1047,6 +1104,7 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
         elseif u[1] == "cm" then u.done = not CM.sweeping() -- (a sweep goes on tick by tick, a room or two at a time)
         else u.done = not b end
         if u[1] == "room" and not u.done then rooms_left = true end
+        if drive.heavy_done then break end -- (the update files' heavy check: a plan of its own)
       end
     end
   end)

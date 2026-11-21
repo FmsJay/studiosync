@@ -355,6 +355,68 @@ process start). Left as it is.
    window.
 3. No `drive slow` over ~65 ms. A second sweep 10 minutes later costs little (no project reads).
 
+## Round 6 (0.59.49.85, restart at 09:19:49)
+
+Passed: the update went up at 09:24:23 (the cloud's files.txt says .85), `cloud storage` came at 09:30:00 (10 min 11 s, no flat stretch),
+and an edit went up in 6 s. Two things were left.
+
+### 1. The update files' step over 65 ms four times (123.8 ms at 09:22:48, 76.5, 78.4, 109.0 ms)
+
+**Cause.** The 77 ms check still shared its plan with other work:
+- the unit's own look at the cloud's staged copy (150 files, ~5-8 ms), in the same call before the check;
+- whatever the plan's units had done before the unit, up to the 4 ms allowed;
+- the sweep after it in the same plan.
+
+**Fix (`drive.lua`): the check is now a plan of its own.**
+- **Staging first:** the staged copy is looked over in one plan and remembered for its lib/files.txt and signature (`staged`); the check
+  runs in a later plan.
+- **Nothing before it:** the check runs only if the unit started within 3 ms of the plan's start (`drive.HEAVY_BY`, counted from the start
+  of `drive.bg_step`, so collecting the last job's results counts), and the unit itself did at most 5 ms of work first (`drive.HEAVY_IN`).
+- **Nothing after it:** `drive.bg_step` stops the plan right after the unit that made the check (`drive.heavy_done`), so the sweep doesn't
+  run in that plan.
+- **No livelock:** a check waits for a quiet plan at most `drive.HEAVY_WAIT` (5) plans. A plan that can never be quiet still gets it, so it
+  can't stall the way round 4's rule did.
+
+**Expect** an update-files plan of about 77 ms (the extension's check alone, one call) two or three times per new version or restart, and a
+few ms otherwise.
+
+**Test 3j:** the sweep after the unit now costs 5 ms a plan, and no plan may exceed the check + 4 ms. Round 5's code: 83 ms.
+
+### 2. A change made after the round ended waited ~3 minutes for the next round
+
+**Cause.**
+- Live sync starts a cloud pass soon after **sent** changes (`sync.posted`), otherwise every 3 minutes.
+- A StudioSync Undo and the hub's snapshot (saved version) are files this computer writes in the room without sending them as changes. They
+  waited for the 3-minute pass: 09:33:18 → 09:36:09, 09:36:21 → 09:39:10.
+
+**Fix (`drive.lua`).** `drive.bg_busy()`, which Live sync asks each pass, now also says yes when a new file of this computer's appears in
+the open song's rooms' `events` or `recall`.
+- **What it starts:** a short round of just those rooms, without the other songs, the update files or the storage sweep, so the sweep
+  isn't started again.
+- **During a round:** it brings the rooms forward instead of waiting for their 30 s look.
+- **How it's cheap:** each folder's own modified time is read (js_ReaScriptAPI's `JS_File_Stat`, 0.06 ms; checked on the desktop). The
+  folder is listed only when that time moves, and for 3 s after, since it's to the second. Without js_ReaScriptAPI it's listed every 5 s.
+  The listing is `band.listing`'s, shared.
+- **What counts:** only names that are this computer's (`drive.mine`). A bandmate's change Syncthing brings starts nothing.
+- **During a rest:** a short round still starts; full rounds still wait.
+
+**Test 3p** uses Live sync's gate (bg_step only while busy):
+- nothing new: no round;
+- a bandmate's change: none;
+- this computer's undo and a hub snapshot: both in the cloud copy within 10 s, in a round of the rooms only (neither the other song nor the
+  sweep is called).
+
+The old code never sends them within the minute.
+
+Also: a job's results collected during a rest said `more`; now they don't (the stray "bringing" line's last way in).
+
+### REAPER checks after deploy
+1. After a restart: `drive slow` with `tools` only at ~77 ms, and no plan with tools over ~85 ms.
+2. With the round over (`drive status` without `more`, `cloud storage` set): a StudioSync Undo, and a hub snapshot, each in
+   `G:/My Drive/StudioSync - Smiley Studios/Cross Test/rooms/main/{events,recall}` within ~10 s, and "Google Drive copy up to date
+   (1 file this pass)". `cloud storage`'s `at` doesn't change with it.
+3. A bandmate's edit arriving starts no drive round: the drive lap stays ~0.1 ms per window.
+
 ## Left / not done
 
 - **`trim.plan` itself** (lib/trim.lua, not mine) is 80-200 ms for a 2,500-change room with ~180 saved versions in Standard's window
