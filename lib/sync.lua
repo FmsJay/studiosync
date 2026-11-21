@@ -591,11 +591,14 @@ function sync.claims_files(dir)
       local ok, status, size, _, mt = pcall(stat, path)
       local key = ok and status == 0 and tostring(size) .. "|" .. tostring(mt) or nil
       local e = was[f]
-      if key and e and e.key == key and e.settled then c = e.c
+      local linked = band.overlay_of and band.overlay_of(path)
+      if key and e and e.key == key and e.settled and not linked then c = e.c
       else
         c = band.read_json(path)
         -- (a read that failed, the file busy mid-replace, isn't kept: it would hide that claim until the file changed again)
-        e = key and c and { key = key, c = c, settled = (band.file_age(mt) or -1) >= sync.CLAIMS_SETTLE } or nil
+        -- (nor the direct link's copy, read in place of the folder's file until that changes: the cache returned the folder's older words, and
+        -- kept under the folder file's size and time, the copy's would outlive it. lib/signed.lua, rt-linkmove3)
+        e = key and c and not linked and { key = key, c = c, settled = (band.file_age(mt) or -1) >= sync.CLAIMS_SETTLE } or nil
       end
       now_c[f] = e
     else
@@ -826,7 +829,13 @@ function sync.restore_timeline(proj, cfg, song, room, entries, upto, session, fr
   local now = band.json_decode(sync.timeline_sig(proj))
   if type(now) == "table" and band.json_encode({ t.tempo, t.markers or {} }) == band.json_encode({ now[1], now[2] }) then return false end
   sync.audio_follow_tempo(proj)
-  band.apply_tempo(proj, t.tempo)
+  -- (what REAPER moves for the map is the Restore's, as when a bandmate's map lands (mirror.map_landing): read as unsent edits, 10 of a
+  -- whole-song Restore were left as they were, then went out as the person's own act, which StudioSync's Undo took back instead. Every
+  -- receiver moves its own for the map. REAPER recheck, 0.59.49.79, rt-edits round 6)
+  if tempo_sig(t.tempo) ~= tempo_sig(band.capture_tempo(proj)) then
+    require("mirror").tempo_changed(proj)
+    require("mirror").map_landing(proj, cfg.user, sync.room_dir(cfg, song, room) .. "/media", sync.local_mix, function() band.apply_tempo(proj, t.tempo) end)
+  else band.apply_tempo(proj, t.tempo) end
   band.apply_markers(proj, t.markers or {})
   -- (restored: a Restore, not a change StudioSync's Undo steps back, as a restored object isn't: mirror.last_mine. rt-edits)
   sync.post(cfg, song, room, { type = "timeline", tempo = t.tempo, markers = t.markers or {}, restored = true }, proj) -- (proj: ordered after the newest map seen here. Review, 0.58.95)
@@ -1479,7 +1488,9 @@ function sync.undo_timeline(proj, cfg, song, room, entries, j, tags, session)
     if want_t then
       require("mirror").tempo_changed(proj)
       sync.audio_follow_tempo(proj)
-      band.apply_tempo(proj, want_t)
+      -- (what REAPER moves for it, outside the act being undone, isn't the person's edit: each receiver moves its own. As sync.restore_timeline,
+      -- rt-edits round 6)
+      require("mirror").map_landing(proj, cfg.user, sync.room_dir(cfg, song, room) .. "/media", sync.local_mix, function() band.apply_tempo(proj, want_t) end)
     end
     band.apply_markers(proj, want_m)
   end)
@@ -2064,13 +2075,23 @@ function sync.receive(proj, cfg, song, room, can)
   -- batches, out of history order): once this pass has drained the queue, everything's newest change that hasn't
   -- landed is put in place (mirror.heal: only what differs)
   local mirror = require("mirror")
+  if undo_open then reaper.Undo_EndBlock2(proj, "StudioSync: changes from the others", -1)
+  -- (a change that waited, landed: its point now. Every kind of state, not items only (Undo_OnStateChange2): a plug-in chain, automation or
+  -- track change landing under an items-only point was taken back by your next native Ctrl+Z and sent as your change. Round 3 review, 0.59.48)
+  elseif late_point then reaper.Undo_OnStateChangeEx2(proj, "StudioSync: changes from the others", -1, -1) end
+  -- (the heals below come after that point, each with its own, "StudioSync: changes that hadn't arrived here" (mirror.heal), and the same log
+  -- line as Live sync's heal: inside this pass's block its point was lost in "changes from the others" while its line said otherwise, and the
+  -- held-deletion heal left its point with no line and a second, empty "changes from the others" on top. REAPER recheck, 0.59.49.79, round 6)
+  local function healed(n, why)
+    if n > 0 then sync.redraw = true; band.log(string.format("caught up on %d change%s that hadn't arrived here%s", n, n == 1 and "" or "s", why)) end
+  end
   local orph = mirror.orphaned[tostring(proj)]
   if orph and not budget_out then
     local back = false
     for toid in pairs(orph) do if mirror.find(proj, "track", toid) then orph[toid] = nil; back = true end end
     if back then -- (only when such a track exists again: a track that stays deleted costs one lookup a pass)
       local hok, n = pcall(mirror.heal, proj, rdir, sync.local_mix)
-      if hok and n > 0 then sync.redraw = true; band.log(string.format("%d change(s) landed once their track was back", n)) end -- (no undo point, not in `applied`: Live sync's redraw. James, rt)
+      if hok then healed(n, " (their track is back)") end
     end
     if next(orph) == nil then mirror.orphaned[tostring(proj)] = nil end
   end
@@ -2080,12 +2101,8 @@ function sync.receive(proj, cfg, song, room, can)
   if mirror.heal_due[pk] and not budget_out and reaper.EnumProjects(-1) == proj and reaper.GetPlayStateEx(proj) == 0 then
     mirror.heal_due[pk] = nil
     local hok, n = pcall(mirror.heal, proj, rdir, sync.local_mix)
-    if hok and n > 0 then late_point = true end -- (on a later pass than the edit's, perhaps: an undo point of its own)
+    if hok then healed(n, "") end
   end
-  if undo_open then reaper.Undo_EndBlock2(proj, "StudioSync: changes from the others", -1)
-  -- (a change that waited, landed: its point now. Every kind of state, not items only (Undo_OnStateChange2): a plug-in chain, automation or
-  -- track change landing under an items-only point was taken back by your next native Ctrl+Z and sent as your change. Round 3 review, 0.59.48)
-  elseif late_point then reaper.Undo_OnStateChangeEx2(proj, "StudioSync: changes from the others", -1, -1) end
   if sync.loading[pk] and not budget_out then
     sync.loading[pk], loading_said[pk] = nil, nil
     reaper.DeleteExtState(band.SECTION, "loading " .. pk, false)

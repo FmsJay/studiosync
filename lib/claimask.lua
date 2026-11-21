@@ -187,7 +187,11 @@ function claimask.askable(cfg, b, who, name, pos)
   return th.user
 end
 -- mirror.watch's W.refuse asks this before refusing (opts.ask). -> true: held (nothing sent, nothing put back, the band's changes to it wait);
--- a string: put it back with these words; nil: not a claim this asks about (refused as before).
+-- a string: put it back with these words; nil: not a claim this asks about (refused as before). After a Keep or no answer, a second value:
+-- true when these words were just said for that answer (the rest of the same put-back: one Keep of a track logged its words 10 times), so
+-- the put-back needn't say them again. A new edit in the COOLDOWN after it is told why it wasn't asked, and when it can be. REAPER recheck,
+-- 0.59.49.79, rt-edits round 6
+claimask.SAID_GAP = 5 -- seconds: put-backs for one answer within this of each other are one put-back, said once
 function claimask.hold(cfg, b, who, name, pos)
   if type(who) ~= "table" or who.mode ~= "open" or not (who.is_claimed and who.is_claimed(name, pos)) then return nil end
   local th = claimask.which(who, name, pos)
@@ -201,8 +205,16 @@ function claimask.hold(cfg, b, who, name, pos)
   end
   if a then
     if a.state == "asked" or a.state == "released" then require("mirror").unsettled = true; return true end -- (Live sync looks again soon)
-    if a.state == "kept" then return "Not sent: " .. th.user .. " kept " .. what .. ". Your edit is put back" end
-    return "Not sent: " .. th.user .. " didn't answer about " .. what .. " in " .. claimask.ASK_WAIT .. " s. Your edit is put back (edit it again to ask again in a minute)"
+    local quiet = a.said_at ~= nil and now - a.said_at < claimask.SAID_GAP
+    local later = a.said_at ~= nil and not quiet -- (a new edit since the answer's own put-back)
+    a.said_at = now
+    if later then
+      local ago, left = math.floor(now - a.done_at + 0.5), math.max(1, math.ceil(claimask.COOLDOWN - (now - a.done_at)))
+      return string.format("Not sent: %s %s %s %d s ago, so they aren't asked again yet: edit it again in %d s to ask. Your edit is put back", th.user,
+        a.state == "kept" and "kept" or "didn't answer about", what, ago, left), false
+    end
+    if a.state == "kept" then return "Not sent: " .. th.user .. " kept " .. what .. ". Your edit is put back", quiet end
+    return "Not sent: " .. th.user .. " didn't answer about " .. what .. " in " .. claimask.ASK_WAIT .. " s. Your edit is put back (edit it again to ask again in a minute)", quiet
   end
   if not claimask.present(cfg, b, th.user) then
     return "Not sent: " .. th.user .. " has claimed " .. what .. " and isn't here to release it. Your edit is put back (the driver or an admin can release their claims)"

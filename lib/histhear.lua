@@ -878,6 +878,9 @@ function histhear.restore(proj, cfg, b, r)
     local act = string.format("%s-%s-r%d", sync.id_user and sync.id_user(cfg.user) or cfg.user, os.date("!%Y%m%d%H%M%S"), math.floor(reaper.time_precise() * 1000) % 1000000)
     local opts = { can = can, mode = who and who.mode, driver = who and who.driver, is_claimed = who and who.is_claimed, at_once = true, act = act,
       local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1" }
+    -- (each item's version onto its beat on the map in place: one made under an older map than the point's sat at its old seconds. rt-edits round 6)
+    local map_of, first = histhear.map_of(entries), histhear.first_map(cfg, b, session)
+    opts.map_of = function(ev) local t = map_of(ev) or first; return t and t.tempo end
     if not p.tracks then -- (the map then, as the preview has it: histhear.timeline_at; unknown or never changed: left as it is)
       local tl = histhear.timeline_at(entries, upto, { first = histhear.first_map(cfg, b, session) })
       if tl and tl.how == "then" then sync.restore_timeline(proj, cfg, b.song, b.room, { tl.ev }, 1, session)

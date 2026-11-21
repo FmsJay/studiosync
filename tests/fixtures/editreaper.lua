@@ -632,7 +632,12 @@ function E.new(path)
     GetSetRepeatEx = function(_, v) if v >= 0 then F.repeat_on = v end; return F.repeat_on end,
     GetSetRepeat = function(v) if v >= 0 then F.repeat_on = v end; return F.repeat_on end,
     -- project info
-    GetSetProjectInfo = function(_, k, v, set) if set then info[k] = v; changed() end; return info[k] or 0 end,
+    -- (PROJECT_TIMEBASE unset: as F.timebase, 1 = beats (position, length, rate), REAPER's default for a new project; 0 = time)
+    GetSetProjectInfo = function(_, k, v, set)
+      if set then info[k] = v; changed() end
+      if k == "PROJECT_TIMEBASE" and info[k] == nil then return F.timebase == "beats" and 1 or 0 end
+      return info[k] or 0
+    end,
     GetSetProjectInfo_String = function(_, k, v, set) if set then info_s[k] = v; changed() end; return true, info_s[k] or "" end,
     GetSetProjectNotes = function(_, set, v) if set then info_s.notes = v end; return info_s.notes or "" end,
     GetSetProjectGrid = function() return 0, 0.25, 0, 0 end,

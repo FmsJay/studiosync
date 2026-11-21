@@ -245,7 +245,8 @@ assert(healed == 0, "and while playing")
 reaper.GetPlayStateEx = function() return 0 end
 sync.receive("PH", cfg, "S", "main", can)
 assert(healed == 1 and not mirror.heal_due.PH, "in front and stopped: it heals")
-assert(#points == 1 and points[1] == -1, "with an undo point of every kind (" .. tostring(points[1]) .. ")")
+-- (its point is mirror.heal's own block, every kind of state, after the receive's: no second, empty "changes from the others". rt-edits round 6)
+assert(#points == 0, "with no second undo point on top of the heal's own (" .. tostring(points[1]) .. ")")
 mirror.heal = real_heal
 reaper.SetExtState = real_set
 -- sync2: a change that waits on its first pass (here an edit of yours to it unsent) opens no undo block, so leaves no empty undo point

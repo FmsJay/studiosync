@@ -80,6 +80,33 @@ busy["Sam.json"] = nil
 r = get()
 assert(r["Sam.json"].tracks[1] == "Drums", "and read on the next call, not remembered as nothing")
 
+-- a release over the direct link (rt-linkmove3): its copy is read in place of the settled, unchanged folder file, at once, and isn't kept
+-- under that file's size and time; once Syncthing's copy lands, the cache works as before
+do
+  local linked = {} -- name -> text: the link's copy, read in place of the folder's file
+  local real_read, real_overlay = band.read_json, band.overlay_of
+  band.read_json = function(path) local l = linked[path:match("[^/]+$")]; if l then reads = reads + 1; return band.json_decode(l) end; return real_read(path) end
+  band.overlay_of = function(path) return linked[path:match("[^/]+$")] and {} or nil end
+  files["Bee.json"] = { text = claims("Bee", { "Keys", "Horns" }), mt = at(600) }
+  get()
+  r = get()
+  assert(r["Bee.json"].tracks[2] == "Horns", "(settled and cached)")
+  linked["Bee.json"] = claims("Bee", { "Keys" })
+  r = get()
+  assert(#r["Bee.json"].tracks == 1, "a release that arrives as a link copy over a settled claims file shows at once")
+  r = get()
+  assert(#r["Bee.json"].tracks == 1, "and still while it's the copy: never the folder file's cached words")
+  linked["Bee.json"] = nil
+  files["Bee.json"] = { text = claims("Bee", { "Keys" }), mt = at(590) } -- (Syncthing's copy: the link's is let go)
+  get()
+  files["Bee.json"].text = claims("Bee", { "Keyz" }) -- (unchanged size and time: a settled entry is the cache's, not read again)
+  r = get()
+  assert(r["Bee.json"].tracks[1] == "Keys", "Syncthing's copy landed: cached as before")
+  band.read_json, band.overlay_of = real_read, real_overlay
+  files["Bee.json"] = nil
+  get()
+end
+
 -- without js_ReaScriptAPI: read every time, as before
 reaper.JS_File_Stat = nil
 local n = reads

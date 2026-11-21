@@ -880,3 +880,126 @@ Live sync; the log says "sent the markers to the studio" and the others get it).
    deleted note, is read as a move: your drawn note is left out, as a clash with Use mine. Keep it so, or keep doubling instead?
 3. A heal's undo point (Z) is skipped by the bound Ctrl+Z, but REAPER's own Edit > Undo still undoes it, and the next look then sends that
    as yours. OK as it is?
+
+## Round 6 (rt-edits3, fixes from the REAPER recheck of 0.59.49.79)
+
+Six findings from the recheck on three computers, plus a hook from rt-linkmove3. Each has a fixture test that fails without its fix (each fix
+was switched off in turn in a copy of `lib/` and its test failed). Files: `lib/sync.lua`, `lib/mirror.lua`, `lib/claimask.lua`, three lines in
+`lib/histhear.lua` (the Restore path), `tests/fixtures/editreaper.lua` (`PROJECT_TIMEBASE`), `tests/test_0_60_rt_edits.lua`,
+`tests/test_0_60_rt_claims_cache.lua`. Offline only: not run in REAPER.
+
+**AD. A whole-song Restore across a tempo change was short, and its rest went out as your edit** (`sync.restore_timeline`,
+`sync.undo_timeline`). The map went in first, REAPER moved the beat-based items, and `mirror.revert` took those for unsent edits ("10 left
+as they are"); the next look sent them as your own act, so StudioSync's Undo took those moves back.
+- Rule: a tempo map that Restore, Undo or Redo puts in goes in through `mirror.map_landing`, as a bandmate's map does (Round 3). What REAPER
+  moves for it, and was as the studio had it, has its record moved with it: it isn't an edit of yours, isn't refused by the revert, and isn't
+  sent. Each receiver moves its own when the map lands. Items with a real unsent edit of yours are still left alone and said.
+- So the Restore is whole and one act. "Undo this change" on any of its rows covers all of it. StudioSync's top-bar Undo after a Restore still
+  steps back your change before it (Round 5's rule), and now it isn't the Restore's moves.
+- Test: "Edits restore tempo" (the fixture moves beat items on tempo changes as REAPER does: before the fix, 11 left as they are). "Edits undo
+  tempo": the Undo of a tempo change, with a bandmate's item added after it, sends nothing more (before: that item, as yours).
+- **A take restored to a point after a tempo change it was last changed before** (rt-history2's limit): `mirror.retime` puts an item's
+  version onto its beat on the map in place, by its timebase (its `BEAT` line, else the project's `PROJECT_TIMEBASE`: 1 beats (position,
+  length, rate), 2 beats (position only), 0 time). `mirror.revert` does it when `opts.map_of(version)` names the map the version was made
+  under. History's Restore passes it (`histhear.map_of`, else the song's first map). The panel's Restore page doesn't (not my file).
+  Limits: position, and length in mode 1, only. A rate, fades and snap offset stay as stored, and a map with a gradual tempo change isn't
+  converted at all.
+
+**AE. The order heal waited on any bandmate whose project code differed** (`mirror.apart_note`, `mirror.order_apart_for`,
+`mirror.order_heal`). A computer on 0.58.75 always has another mirror code, so the laptop's apart note said "project", and the heal waited on
+"order" for over 6 minutes.
+- Rule: a second note, `apart order <proj>`, compares the track order alone against each caught-up computer that says its order (an older
+  one says none and isn't counted), whatever else differs. The heal goes by it. Health's row (the "apart" note) is unchanged. The heal's other
+  rules stay as they were: stopped, in front, 10 s after your last edit, apart for 30 s, not within 2 minutes of a bandmate's move landing.
+- Test: "Edits order": the `apart` helper now lists an old-version bandmate with another code and no order beside them.
+
+**AF. One Keep logged its words once per thing** (`claimask.hold`, `W.put_back`). A kept track and its items logged "Not sent: LinuxBox
+kept XT Rec A" 10 times.
+- Rule: after a Keep or no answer, `claimask.hold` also returns whether these words were just said for that answer. Put-backs within
+  `claimask.SAID_GAP` (5 s) of each other are one put-back. `W.put_back` then doesn't log them again (an item copy's own words still are).
+  The answer's own line ("LinuxBox kept XT Rec A: your edit is put back") still comes first, from `claimask.on_answer`.
+- Test: "Edits keep" (5 lines before, 1 now).
+
+**AG. After a Keep on a deleted track, REAPER's "Remove tracks" stayed on top** (`mirror.watch`, `W.put_back`).
+- What REAPER allows: every change lands in some undo point. With no block of its own, a put-back went into your next point, and Ctrl+Z on
+  that edit went back to the "Remove tracks" state, deleting what the claimer kept.
+- Rule: what a look puts back is one undo point, "StudioSync: put back what wasn't sent". It's opened before the first change (not for a
+  change that waits: an empty point) and closed after the look's deletions. The look's middle runs in a pcall, so an error can't leave the
+  block open. A "StudioSync" point on top makes Ctrl+Z StudioSync's Undo of your own last change (`undo.native`), as for heals (Round 5).
+  This covers every put-back (a refused edit, a place-only reset), not just a Keep's.
+- Left as before: REAPER's own Edit > Undo still undoes such a point (Round 5 question 3).
+- Test: "Edits keep" (no point before; one StudioSync point now).
+
+**AH. A heal's undo point and its log line didn't pair** (`mirror.heal`, `sync.receive`). What I found:
+- The heals inside `sync.receive` ran inside its open undo block. Their point merged into "changes from the others" while the orphan heal's
+  line said something else. The held-deletion heal (`mirror.heal_due`), with no outer block, left a "changes that hadn't arrived here" point
+  with no line, then a second, empty "changes from the others" on top (`late_point`).
+- `mirror.heal` opened its block before any apply, even one that waits (automation while recording, a chain while playing). That made a
+  point with nothing in it and no line.
+- A deleted part of a track that isn't here counted as a change ("caught up on 1") although nothing changed.
+- Now: both receive heals run after the receive's point closes, each makes its own point, and each logs the same line as Live sync's heal
+  ("caught up on N change(s) that hadn't arrived here", the orphan one adds "(their track is back)"). No `late_point` for a heal. `mirror.heal`
+  opens its block only for a change `mirror.will_wait` doesn't hold back, as `sync.receive` does. A gone part with no track is only recorded.
+- What can't be made exact: `mirror.will_wait` is the cheap check. A change it misses that `mirror.apply` still refuses leaves an empty point
+  with no line, as in `sync.receive` since Round 3. Not verified offline: whether REAPER keeps a point for a block with nothing changed.
+  Check 46 shows it.
+- Test: "Edits heal point" (held-deletion heal: one point and one line, before two points and no line; automation while recording: no point,
+  then one when stopped).
+
+**AI. A delete in the minute after a Keep was put back without a word of why** (`claimask.hold`). The 60 s cooldown stays.
+- Now a new edit in the cooldown (more than `SAID_GAP` after the answer's own put-back) is told once: "Not sent: LinuxBox kept XT Rec A 46 s
+  ago, so they aren't asked again yet: edit it again in 14 s to ask. Your edit is put back". A missed answer is told the same way.
+- Test: "Edits keep" (the delete 40 s after).
+
+**AJ. Claims cache over a link copy** (`sync.claims_files`, rt-linkmove3's round 4 hook, applied as proposed). With `JS_File_Stat` the cache
+kept a settled claims file's words by its size and time. A link copy read in place of that unchanged file was hidden, so the panel showed a
+release late. Now the cache isn't used, and isn't filled, while the link's copy is the one read (`band.overlay_of`). Test:
+`tests/test_0_60_rt_claims_cache.lua` (a release as a link copy over a settled file shows at once; after Syncthing's copy, cached as before).
+
+### Round 6 REAPER checks
+
+Same setup (Cross Test, desktop, laptop, LinuxBox on this build).
+
+41. **Restore across a tempo change (AD):** on the desktop (driver) change the tempo (a tempo marker at bar 3, 90 bpm). Wait for it on
+    the others. History > a point before the change > Restore whole song:
+    - the words say "N change(s) brought back and sent to the others" with no "left as they are";
+    - the next look sends nothing more (`rooms/main/events/` gets no new James events after the Restore's own, which all carry one `act`);
+    - all three hold the same project (Health green).
+    - Ctrl+Z (StudioSync Undo) then undoes your change before the Restore, never "10 changes".
+    - On the Restore page, "Undo this change" on one of the Restore's rows brings back every object it changed.
+42. **Undo of a tempo change (AD):** on the desktop change the tempo, wait, add an item on the laptop after the change, wait. On the desktop
+    Ctrl+Z: the map goes back on all three, and the desktop sends no event for the laptop's item (REAPER moved it on each computer).
+43. **A take onto its beat (AD):** record a take, change the tempo (marker before the take), delete the take, then History > a point after
+    the tempo change and before the delete > Restore whole song. The take sits on the same beat as before the delete, on all three. This also
+    checks `PROJECT_TIMEBASE`'s values: a project set to Time leaves it at its stored seconds.
+44. **Order heal beside an older build (AE):** with a computer on an older StudioSync (0.58.x) in the room, make the laptop's track order
+    differ (as step 32). Within about a minute of the laptop being idle and stopped, it logs "N track(s) put in the studio's order".
+45. **Keep (AF, AG, AI):** Claims mode, LinuxBox claims XT Rec A. On the desktop delete the XT Rec A track; LinuxBox presses Keep.
+    - The desktop's log has one "LinuxBox kept XT Rec A: your edit is put back" and one "Not sent: LinuxBox kept XT Rec A. Your edit is put
+      back", not 10.
+    - Edit > Undo reads "Undo StudioSync: put back what wasn't sent". Make any edit, then Ctrl+Z: the edit goes, and XT Rec A stays.
+    - Within the minute, delete XT Rec A again: it comes back at once, with one line "... kept XT Rec A N s ago, so they aren't asked again
+      yet: edit it again in M s to ask".
+46. **Heal points (AH):** each "caught up on N change(s) that hadn't arrived here" line has an "Undo StudioSync: changes that hadn't arrived
+    here" point at that moment, and no such point appears without a line. If a point appears with no line, note what the log says just
+    before: that is a `will_wait` miss, or REAPER keeping a point for an empty block.
+47. **Claims over the link (AJ):** with js_ReaScriptAPI installed and a claims file older than a minute, Bee releases a claim from her panel.
+    On another computer the panel shows it released within a second or two, not when Syncthing's copy lands.
+
+### Round 6 review-later (security)
+
+- `apart order` is local, non-persisted ExtState built from bandmates' statuses, as the apart note already is.
+- `opts.map_of` maps come from History's own timeline events; `mirror.retime` reads only numbers (`tonumber`) and writes `%.14g`.
+- The claims cache change only reads less from cache; trust checks are unchanged.
+
+### Round 6 questions for James
+
+1. "Undo this change" on a whole-song Restore's row (the panel's Restore page, `lib/page_restore.lua`, not my file) takes back the Restore's
+   objects but not its tempo map. Items then sit at today's seconds on the Restore's map. Options:
+   - (a) leave it: Restore again to today's point instead;
+   - (b) put the Restore's timeline event under its `act` and have that button also put back the map before it (as Undo does with
+     `sync.act_timeline`). Small, but in `page_restore.lua` and `sync.restore_timeline`'s signature.
+2. Every put-back is now its own StudioSync undo point (AG), so a refused edit's put-back is skipped by Ctrl+Z like a landed change. OK, or
+   only a Keep's?
+3. The panel's Restore page doesn't put a take onto its beat (AD, the History page does). Pass `map_of` there too (one line in
+   `page_restore.lua`)?

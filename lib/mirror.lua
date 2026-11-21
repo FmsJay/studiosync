@@ -1894,6 +1894,46 @@ function mirror.sans_tempo(state)
   end
   return table.concat(out, "\n")
 end
+-- An item's version made under the tempo map `from`, put where REAPER would have moved it on the map `to` (band.capture_tempo's lists): on the
+-- same beat, by its timebase (its BEAT line, else `mode`, the project's: 1 beats (position, length, rate), 2 beats (position only), 0 time).
+-- A take restored to a point after a tempo change it was last changed before sat at its old seconds, off its beat (rt-history2's limits).
+-- shortcut: position, and length in mode 1; a rate, fades and snap offset stay as stored, and a map with a gradual (linear) tempo change
+-- isn't converted at all. Upgrade if a REAPER check shows those off. Pure.
+local function map_qn(map, t)
+  local q, pt, pb = 0, 0, map[1].bpm
+  for _, m in ipairs(map) do
+    if m.time > t then break end
+    q, pt, pb = q + (m.time - pt) * pb / 60, m.time, m.bpm
+  end
+  return q + (t - pt) * pb / 60
+end
+local function map_time(map, q)
+  local pq, pt, pb = 0, 0, map[1].bpm
+  for _, m in ipairs(map) do
+    local mq = pq + (m.time - pt) * pb / 60
+    if mq > q then break end
+    pq, pt, pb = mq, m.time, m.bpm
+  end
+  return pt + (q - pq) * 60 / pb
+end
+function mirror.retime(state, from, to, mode)
+  if type(state) ~= "string" or type(from) ~= "table" or type(to) ~= "table" or #from == 0 or #to == 0 then return state end
+  for _, map in ipairs({ from, to }) do
+    for _, m in ipairs(map) do if m.linear or not (tonumber(m.time) and tonumber(m.bpm) and m.bpm > 0) then return state end end
+  end
+  local beat = tonumber(state:match("\n%s*BEAT (%-?%d+)"))
+  if beat and beat >= 0 then mode = beat end
+  local p, l = tonumber(state:match("\n%s*POSITION ([%d%.%-e]+)")), tonumber(state:match("\n%s*LENGTH ([%d%.%-e]+)"))
+  if (mode ~= 1 and mode ~= 2) or not p then return state end
+  local np = map_time(to, map_qn(from, p))
+  local out = state
+  if math.abs(np - p) > 1e-9 then out = out:gsub("(\n%s*POSITION )[^\n]+", "%1" .. string.format("%.14g", np), 1) end
+  if mode == 1 and l then
+    local nl = map_time(to, map_qn(from, p + l)) - np
+    if math.abs(nl - l) > 1e-9 then out = out:gsub("(\n%s*LENGTH )[^\n]+", "%1" .. string.format("%.14g", nl), 1) end
+  end
+  return out
+end
 
 -- ---- REAPER side ------------------------------------------------------------------------------------------
 -- Everything below talks to REAPER. Kept per project: SEC "<oid>" = "rev|hash|event id" (the newest revision
@@ -4411,9 +4451,11 @@ function W.put_back(w, o, rev, evid, why)
   local suggest, kept_back, credit, moved_set, seen, t_send, scheme, rescheme = w.suggest, w.kept_back, w.credit, w.moved_set, w.seen, w.t_send, w.scheme, w.rescheme
   mirror.unsent[tostring(proj) .. o.oid] = nil -- (the band's version is back: nothing of ours waits)
   held_back_clear(proj, o.oid)
+  local said_text = why.text
   local ev = event_file(room_dir, evid)
   if ev and not ev.gone then
     if o.kind == "fx" and playing then return end -- (reloading plug-ins mid-song: after the stop)
+    w.back_point(ev)
     -- (your edit to someone else's item, refused: a copy of yours first goes to a track of your own, as a new item would. Not when it went to
     -- them as a suggestion: that holds it, and accepted, a copy would be a second part. Only a selected one: what you just edited, not every
     -- part a refused tempo change moved, say. Review, 0.58.91)
@@ -4476,6 +4518,7 @@ function W.put_back(w, o, rev, evid, why)
   elseif not rev then
     -- never the band's: something new this person may not add. Kept here, on a track of their own (never deleted)
     local where = (why.name or "") ~= "" and why.name or "an unnamed track"
+    if (o.kind == "item" or o.kind == "track") and o.ptr or o.kind == "misc" then w.back_point() end
     if o.kind == "item" and o.ptr then
       reaper.MoveMediaItemToTrack(o.ptr, keep_track(proj, why.name or ""))
       -- (out of the pool it shares with the part it was copied from, which is then put back from its event: REAPER's MIDI code crashed on a
@@ -4504,7 +4547,8 @@ function W.put_back(w, o, rev, evid, why)
       " (the studio's version hasn't arrived here yet): it stays as it is for now")
   end
   w.back = w.back + 1
-  if why.text then sync.put_back(why.text) end
+  -- (why.quiet: these words were just said for the same answer (claimask.hold); a copy's own words, added above, still are. rt-edits round 6)
+  if why.text and not (why.quiet and why.text == said_text) then sync.put_back(why.text) end
 end
 -- What was refused goes to whoever claimed it, as a suggestion, if it's a claim that refused it. -> true when it went.
 function W.propose(w, o, rev, who, claim_name, pos, name, gone)
@@ -4720,9 +4764,10 @@ function W.refuse(w, o, rk, rev, evid, kord, last, name, ok_before)
   if not ok_before and last then pos = last.pos end
   local who = owner_of and owner_of(ok_before and name or (last.name or ""), pos)
   -- (Claims: someone else's claim is asked for, the edit held here meanwhile, or put back with why. lib/claimask.lua, rt-claims)
-  local asked = opts.ask and opts.ask(ok_before and name or (last and last.name or ""), pos)
+  local asked, quiet = nil, nil
+  if opts.ask then asked, quiet = opts.ask(ok_before and name or (last and last.name or ""), pos) end
   if asked == true then mirror.unsent[rk] = true; return end
-  if type(asked) == "string" then return put_back(o, rev, evid, { name = ok_before and name or (last and last.name or ""), copy = true, text = asked }) end
+  if type(asked) == "string" then return put_back(o, rev, evid, { name = ok_before and name or (last and last.name or ""), copy = true, text = asked, quiet = quiet }) end
   -- (someone's claim: what was done to it goes to them to accept. lib/suggest.lua)
   local to = propose(o, rev, who, ok_before and name or (last and last.name or ""), pos, name)
   -- (plain words, whose it is first: "Undone: ... put back (claim it, or take control)" read as your own Undo. UX review, 0.58.47)
@@ -5228,7 +5273,8 @@ function W.gone(w)
         -- (Claims: someone else's claim is asked for first, as an edit to it is (W.refuse): deleting several of their items or tracks at once
         -- went to the old suggestion instead. Held meanwhile: still gone here, nothing sent, the band's changes to it waiting; Release sends the
         -- deletion on a later look, Keep or no answer puts it back with the words. One ask per claim, however many it covers. rt-edits)
-        local asked = opts.ask and opts.ask(name, last.pos)
+        local asked, quiet = nil, nil
+        if opts.ask then asked, quiet = opts.ask(name, last.pos) end
         if asked == true then
           mirror.unsent[tostring(proj) .. g.oid] = true
           if o.kind == "track" then w.held_tracks[g.oid] = true end
@@ -5236,7 +5282,7 @@ function W.gone(w)
         end
         if type(asked) == "string" then
           if o.kind == "track" then w.back_tracks[g.oid] = true end
-          return put_back(o, g.rev, g.evid, { name = name, text = asked })
+          return put_back(o, g.rev, g.evid, { name = name, text = asked, quiet = quiet })
         end
         local who = w.owner_of and w.owner_of(name, last.pos)
         local to = propose(o, g.rev, who, name, last.pos, name, true)
@@ -5574,6 +5620,13 @@ function mirror.watch(proj, cfg, song, room, opts)
   w.is_claimed, w.owner_of = opts.is_claimed or sync.is_claimed, opts.owner_of or sync.owner_of
   w.others_claims = function(oids, names) return W.others_claims(w, oids, names) end
   w.put_back = function(...) return W.put_back(w, ...) end
+  -- (what a look puts back is one undo point, StudioSync's, opened before its first change (not for one that waits: an empty point) and closed
+  -- after W.gone: with none, a Keep's put-back of a deleted track went into the person's next point, REAPER's "Remove tracks" stayed on top,
+  -- and Ctrl+Z after their next edit deleted what the claimer kept. A "StudioSync" point on top is StudioSync's Undo of their own last change
+  -- (undo.native), as heals' are (round 5). REAPER recheck, 0.59.49.79, rt-edits round 6)
+  w.back_point = function(ev)
+    if not w.back_open and not (ev and mirror.will_wait(proj, ev)) then reaper.Undo_BeginBlock2(proj); w.back_open = true end
+  end
   w.propose = function(...) return W.propose(w, ...) end
   w.bus_note = function(...) return W.bus_note(w, ...) end
   if W.keep_held(w) then return 0, 0 end
@@ -5633,11 +5686,15 @@ function mirror.watch(proj, cfg, song, room, opts)
   local sws_ran = reaper.time_precise() - (tonumber(reaper.GetExtState(require("band").SECTION, "sws colours ran")) or -math.huge) < 5
   local rescheme = first_here or sws_ran or select(2, reaper.GetProjExtState(proj, mirror.CSEC, "colours")) ~= scheme
   w.seen, w.t_send, w.scheme, w.rescheme = seen, t_send, scheme, rescheme
-  if info then look_dirty(w, L, info, raw, remembered) end
-  W.each(w)
-  W.prints(w)
-  if info then w.gone_oids = look_gone_oids(w, L, remembered, info) end
-  W.gone(w)
+  local ok_look, err_look = pcall(function()
+    if info then look_dirty(w, L, info, raw, remembered) end
+    W.each(w)
+    W.prints(w)
+    if info then w.gone_oids = look_gone_oids(w, L, remembered, info) end
+    W.gone(w)
+  end)
+  if w.back_open then reaper.Undo_EndBlock2(proj, "StudioSync: put back what wasn't sent", -1); w.back_open = nil end
+  if not ok_look then error(err_look, 0) end
   mirror.index_for(nil)
   if not mirror.more then mirror.sweep_unsent(proj, seen) end
   mirror.more_act[pk] = mirror.more and w.act or nil
@@ -5803,6 +5860,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
   end
   list = sorted
   local done, refused, kept, kept_names, there, waiting, edited = 0, 0, 0, {}, 0, 0, 0
+  local now_map -- (the tempo map in place, read once: opts.map_of below)
   local function one(p)
     local rev, h, evid = mirror.known(proj, p.oid)
     local name = p.t and p.t.name or ""
@@ -5828,6 +5886,16 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
           st.after = from or here
           p.t = setmetatable({ state = st }, { __index = p.t })
         end
+      end
+    end
+    -- (an item's version made under another tempo map than the one in place now goes onto its beat here, as REAPER moved it when the maps
+    -- changed: opts.map_of(version) -> the map it was made under (History's Restore: lib/histhear.lua). rt-history2's limits, rt-edits round 6)
+    if opts.map_of and p.t and p.t.obj == "item" and type(p.t.state) == "string" then
+      local from = opts.map_of(p.t)
+      if from then
+        now_map = now_map or require("band").capture_tempo(proj)
+        local st = mirror.retime(p.t.state, from, now_map, reaper.GetSetProjectInfo(proj, "PROJECT_TIMEBASE", 0, false))
+        if st ~= p.t.state then p.t = setmetatable({ state = st }, { __index = p.t }) end
       end
     end
     -- (an owner's restore or deletion takes the owner step, as their sends do: mirror.owned. Round 1 review, 0.59.45)
@@ -6046,7 +6114,7 @@ end
 --   only this tab in front, the transport stopped (not playing or recording), this project's first catch-up done;
 --   only `idle` >= ORDER_IDLE: seconds since your last edit, 0 while a mouse button is down (Live sync's count);
 --   the first time after opening: once nothing of the band's waits to land;
---   after that: only when a caught-up bandmate has had another track order for APART_SECS (mirror.apart_for, Health's red row), not within
+--   after that: only when a caught-up bandmate has had another track order for APART_SECS (mirror.order_apart_for, whatever else differs), not within
 --   ORDER_WAIT of a bandmate's move landing here (its mover's order list comes through Syncthing, seconds behind the move), and at most
 --   every APART_SECS.
 -- Where the tracks go: the studio's newest order list, as when opening (mirror.wanted_order). Every computer goes to the same list, so
@@ -6058,8 +6126,7 @@ function mirror.order_heal(proj, cfg, song, room, now, idle)
   local sync, pk = require("sync"), tostring(proj)
   if (idle or 0) < mirror.ORDER_IDLE or sync.loading[pk] or reaper.EnumProjects(-1) ~= proj or reaper.GetPlayStateEx(proj) ~= 0 then return 0 end
   if mirror.order_kept[pk] then
-    local _, _, what = mirror.apart_for(proj, now)
-    if what ~= "order" or now - mirror.order_kept[pk] < mirror.APART_SECS or now - (mirror.order_landed[pk] or -math.huge) < mirror.ORDER_WAIT then return 0 end
+    if not mirror.order_apart_for(proj, now) or now - mirror.order_kept[pk] < mirror.APART_SECS or now - (mirror.order_landed[pk] or -math.huge) < mirror.ORDER_WAIT then return 0 end
   elseif sync.pending_events(proj, cfg, song, room) > 0 then return 0 end
   mirror.order_kept[pk] = now
   local n = mirror.keep_order(proj, cfg, song, room)
@@ -6158,28 +6225,43 @@ mirror.APART_SECS = 30
 function mirror.apart_note(proj, mine, order, pending, peers, now)
   local band = require("band")
   local names, key, what = {}, { tostring(mine), tostring(order) }, nil
+  local onames, okey = {}, { tostring(order) }
   for _, st in ipairs(peers) do
     local caught_up = st.mirror and st.pending == 0
     local p = caught_up and st.mirror ~= mine
-    local o = caught_up and not p and st.order ~= nil and order ~= nil and st.order ~= order
+    local o = caught_up and st.order ~= nil and order ~= nil and st.order ~= order
     if p or o then
       names[#names + 1] = tostring(st.user)
       key[#key + 1] = tostring(st.user) .. "=" .. tostring(st.mirror) .. "/" .. tostring(st.order)
       what = (p or what == "project") and "project" or "order"
     end
+    if o then onames[#onames + 1] = tostring(st.user); okey[#okey + 1] = tostring(st.user) .. "=" .. tostring(st.order) end
   end
   -- (pending: a number, or a function asked only when someone's apart: counting walks the folder's listing)
-  if #names > 0 and (type(pending) == "function" and pending() or pending or 0) ~= 0 then names = {} end
-  local k = "apart " .. tostring(proj)
-  local had = reaper.GetExtState(band.SECTION, k)
-  if #names == 0 then
-    if had ~= "" then reaper.DeleteExtState(band.SECTION, k, false) end
-    return
+  if #names > 0 and (type(pending) == "function" and pending() or pending or 0) ~= 0 then names, onames = {}, {} end
+  local function note(k, list, parts, w)
+    local had = reaper.GetExtState(band.SECTION, k)
+    if #list == 0 then
+      if had ~= "" then reaper.DeleteExtState(band.SECTION, k, false) end
+      return
+    end
+    local h = mirror.hash(table.concat(parts, " "))
+    local since, was = had:match("^([^|]*)|([^|]*)|")
+    local v = (was == h and since or string.format("%.3f", now)) .. "|" .. h .. "|" .. w .. "|" .. table.concat(list, ", ")
+    if v ~= had then reaper.SetExtState(band.SECTION, k, v, false) end
   end
-  key = mirror.hash(table.concat(key, " "))
-  local since, was = had:match("^([^|]*)|([^|]*)|")
-  local v = (was == key and since or string.format("%.3f", now)) .. "|" .. key .. "|" .. what .. "|" .. table.concat(names, ", ")
-  if v ~= had then reaper.SetExtState(band.SECTION, k, v, false) end
+  note("apart " .. tostring(proj), names, key, what)
+  -- (and the track order alone, against each caught-up computer that says its order, whatever else differs: one bandmate on an older StudioSync,
+  -- whose project code always differs, made the note "project", and the order heal waited on "order" for over 6 minutes. REAPER recheck,
+  -- 0.59.49.79, rt-edits round 6)
+  note("apart order " .. tostring(proj), onames, okey, "order")
+end
+-- -> who, for how many seconds, while some caught-up computer has held another track order for APART_SECS; nil otherwise.
+function mirror.order_apart_for(proj, now)
+  local since, names = reaper.GetExtState(require("band").SECTION, "apart order " .. tostring(proj)):match("^([^|]*)|[^|]*|[^|]*|(.*)$")
+  since = tonumber(since)
+  if not since or now - since < mirror.APART_SECS then return nil end
+  return names, now - since
 end
 -- -> who, for how many seconds, and what differs ("project" or "order"); nil while nobody's apart or it hasn't stood APART_SECS.
 function mirror.apart_for(proj, now)
@@ -6368,10 +6450,12 @@ function mirror.heal(proj, room_dir, local_mix)
   local newest, all = mirror.room_newest(room_dir)
   -- (its changes under one undo point, StudioSync's, opened before the first: with none, the person's next edit took them into its own point,
   -- and REAPER's Undo of that edit undid the catch-up too, which the next look sent as theirs. keep_order's reason too. rt-edits)
+  -- (and not for a change that waits (mirror.will_wait, as sync.receive opens none): opened, it closed as a point with nothing in it and no log
+  -- line. REAPER recheck, 0.59.49.79, rt-edits round 6)
   local open = false
-  local function apply(...)
-    if not open then reaper.Undo_BeginBlock2(proj); open = true end
-    return mirror.apply(...)
+  local function apply(p, e, ...)
+    if not open and not mirror.will_wait(p, e) then reaper.Undo_BeginBlock2(proj); open = true end
+    return mirror.apply(p, e, ...)
   end
   local ok_all, err_all = pcall(function()
   for oid, ev in pairs(newest) do
@@ -6402,7 +6486,10 @@ function mirror.heal(proj, room_dir, local_mix)
       -- (not over an edit of yours a look hasn't sent yet: the next look sends it, or puts it back. Round 1 review, 0.59.45) -- (exactly: merge ids are the same everywhere, and "held inside a merge" hid two different ones for good. Review, 0.58.47)
       local order = mirror.order_of(ev)
       if ev.gone then
-        if kh and kh ~= "" then
+        -- (a part of a track that isn't here: only its record. Applied, it changed nothing and still counted, a "caught up" line for nothing. round 6)
+        if kh and kh ~= "" and mirror.PART[ev.obj] and not mirror.find(proj, "track", ev.track or ("T" .. oid:sub(2))) then
+          remember(proj, oid, ev.rev, "", ev.id, order)
+        elseif kh and kh ~= "" then
           -- (a part that can't change now, playing or its tab behind: next time, not recorded as gone with its chain still here. 0.59.14)
           if apply(proj, { obj = ev.obj, oid = oid, gone = true, track = ev.track }, room_dir .. "/media", local_mix) then
             remember(proj, oid, ev.rev, "", ev.id, order)

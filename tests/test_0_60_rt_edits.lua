@@ -1451,7 +1451,10 @@ do
     local code = mirror.order_code(other.F.proj)
     as(c)
     local root = mirror.root(c.F.proj)
-    mirror.apart_note(c.F.proj, root, mirror.order_code(c.F.proj), 0, { { user = other.cfg.user, mirror = root, order = code, pending = 0 } }, c.F.clock)
+    -- (with a bandmate on an older StudioSync beside them, caught up, whose project code differs and who says no order: the order heal goes by
+    -- the order alone. It waited on "order" while that bandmate made the note "project", 6 minutes and more: REAPER recheck, 0.59.49.79, round 6)
+    mirror.apart_note(c.F.proj, root, mirror.order_code(c.F.proj), 0, { { user = other.cfg.user, mirror = root, order = code, pending = 0 },
+      { user = "Old", mirror = "an older code", pending = 0 } }, c.F.clock)
   end
   apart(C, B)
   assert(heal(C) == 0 and names(C) ~= studio, "not at once: the codes differ for some seconds after any edit")
@@ -1973,5 +1976,217 @@ do
   assert(holder(A, "Gtr") ~= "Bee" and holder(B, "Gtr") ~= "Bee" and not bee_has("Gtr"), "the release and the folded claim agree: Gtr isn't Bee's")
   groups.may_manage, trust.claim_ok, os.remove = real_mm, real_ok, real_remove
   print("rt-edits: a given claim released by its member stays released; a driver's release and a later fold agree")
+end
+
+-- ---- (round 6) REAPER recheck, 0.59.49.79: a whole-song Restore across a tempo change said "3 change(s) brought back ... (10 left as they are:
+-- you've changed them here since ...)": the map went in first, REAPER moved the beat-based items, and the revert took them for unsent edits;
+-- the next look sent those 10 as the person's own act, so StudioSync's Undo took them back instead of the Restore ----
+do
+  build("Edits restore tempo")
+  local recall = require("recall")
+  local session = function() return proxy.read_json(proxy.session_path(A.cfg, song)) end
+  local upto = #recall.entries(A.cfg, song, room) -- (the song as shared: the point to go back to)
+  tick()
+  as(A)
+  set(item_named(bass, "Bass 1"), "MUTE", "1 0")
+  tick()
+  settle(A, true)
+  tick()
+  as(A)
+  reaper.SetTempoTimeSigMarker(A.F.proj, -1, 2, -1, -1, 90, 4, 4, false) -- (90 bpm from 2 s: REAPER moves what's after it)
+  tick()
+  settle(A, true)
+  tick()
+  recv(B)
+  same(A, B, "(a tempo change from 2 s)")
+  local moved_from = pos(item_named(drums, "Drums 2"))
+  assert(math.abs(moved_from - 8) > 0.5, "(REAPER moved the items after the tempo change: " .. moved_from .. ")")
+  -- Restore the whole song to before both, as the Restore page does: the map first, then the objects
+  tick()
+  as(A)
+  local entries = recall.entries(A.cfg, song, room)
+  assert(sync.restore_timeline(A.F.proj, A.cfg, song, room, entries, upto, session()), "(the map then goes back)")
+  local act = "James-20261120120000-r1"
+  local res = mirror.revert(A.F.proj, A.cfg, song, room, mirror.plan_restore(entries, upto), { can = yes, mode = "open", at_once = true, act = act })
+  assert(not tostring(res):find("left as they are", 1, true), "what REAPER moved for the map is the Restore's, not edits of yours made since (" .. tostring(res) .. ")")
+  assert(math.abs(pos(item_named(drums, "Drums 2")) - 8) < 1e-6 and E.top_value(item_named(bass, "Bass 1").text, "MUTE") ~= "1 0", "the song is as it was")
+  local restored = new_events()
+  local _, sent = look(A, true)
+  assert(#sent == 0, "nothing more goes out as the person's own edit after it (" .. #sent .. ")")
+  for _, ev in ipairs(restored) do if ev.type == "obj" then assert(ev.act == act and ev.restored, "every change the Restore sent is one act (" .. tostring(ev.oid) .. ")") end end
+  tick()
+  recv(B)
+  same(A, B, "a whole-song Restore across a tempo change")
+  -- Undo this change on any of its rows takes all of it back, as one step (nothing of the person's own is mixed in)
+  local all = recall.entries(A.cfg, song, room)
+  local j, n = nil, 0
+  for i, e in ipairs(all) do if e.act == act then j = j or i; n = n + 1 end end
+  local _, ids = mirror.plan_undo_moment(all, j)
+  assert(n > 0 and #ids == n, "Undo this change on a row of the Restore covers all " .. n .. " of its changes (" .. #ids .. ")")
+  -- (rt-history2's limit) an item last changed before a tempo change, restored to a point after it, goes onto its beat on the map in place
+  local tf = { { time = 0, bpm = 120 } }
+  local tt = { { time = 0, bpm = 60 } }
+  local item = "<ITEM\nPOSITION 8\nLENGTH 2\nNAME \"x\"\n>"
+  local r = mirror.retime(item, tf, tt, 1)
+  assert(r:find("\nPOSITION 16\n", 1, true) and r:find("\nLENGTH 4\n", 1, true), "beats (position, length, rate): its beat and length in beats kept (" .. r .. ")")
+  r = mirror.retime(item, tf, tt, 2)
+  assert(r:find("\nPOSITION 16\n", 1, true) and r:find("\nLENGTH 2\n", 1, true), "beats (position only)")
+  assert(mirror.retime(item:gsub("\n>", "\nBEAT 0\n>"), tf, tt, 1) == item:gsub("\n>", "\nBEAT 0\n>"), "an item set to time stays")
+  assert(mirror.retime(item, tf, tt, 0) == item, "a project in time stays")
+  assert(mirror.retime(item, tf, { { time = 0, bpm = 60, linear = true } }, 1) == item, "(a gradual tempo change isn't converted: left as stored)")
+  -- end to end: the desktop's tempo goes to 60 from the start, Gtr (at 2 s, beat 4, under 120) is deleted, then put back from its version made
+  -- under 120: on beat 4 under 60, at 4 s
+  local v_gtr
+  for _, e in ipairs(recall.entries(A.cfg, song, room)) do if e.kind == "obj" and e.name == "Gtr" and e.obj == "item" and not e.gone then v_gtr = v_gtr or e end end
+  tick()
+  as(A)
+  reaper.SetTempoTimeSigMarker(A.F.proj, 0, 0, -1, -1, 60, 4, 4, false)
+  for i = reaper.CountTempoTimeSigMarkers(A.F.proj) - 1, 1, -1 do reaper.DeleteTempoTimeSigMarker(A.F.proj, i) end
+  tick()
+  settle(A, true)
+  tick()
+  as(A)
+  reaper.DeleteTrackMediaItem(gtr, gtr.items[1])
+  tick()
+  settle(A, true)
+  as(A)
+  res = mirror.revert(A.F.proj, A.cfg, song, room, { [v_gtr.oid] = v_gtr }, { can = yes, mode = "open", at_once = true,
+    map_of = function(ev) return ev.id == v_gtr.id and tf or nil end })
+  assert(gtr.items[1] and math.abs(pos(gtr.items[1]) - 4) < 1e-6 and math.abs(len(gtr.items[1]) - 12) < 1e-6,
+    "a take restored from a version made under another map lands on its beat (" .. tostring(gtr.items[1] and pos(gtr.items[1])) .. ", " .. tostring(res) .. ")")
+  tick()
+  settle(A, true)
+  tick()
+  recv(B)
+  same(A, B, "a take put back onto its beat")
+  print("rt-edits: a Restore across a tempo change is whole, sends nothing more as yours, and Undo takes it back as one; a take lands on its beat")
+end
+-- ---- (round 6) and an Undo that carries a timeline change: what REAPER moves for the map outside the act (a bandmate's item added since) isn't
+-- the person's edit either ----
+do
+  build("Edits undo tempo")
+  tick()
+  as(A)
+  reaper.SetTempoTimeSigMarker(A.F.proj, -1, 2, -1, -1, 90, 4, 4, false)
+  tick()
+  settle(A, true)
+  tick()
+  recv(B)
+  as(B)
+  local bgtr
+  for _, t in ipairs(B.F.tracks) do if t.name == "Gtr" then bgtr = t end end
+  B.F.add_item(bgtr, audio(20, 2, "late.flac", "Late"))
+  tick()
+  settle(B, true)
+  tick()
+  recv(A)
+  same(A, B, "(a bandmate's item after the tempo change)")
+  tick()
+  as(A)
+  local res, why = press(false)
+  assert(res, "the tempo change is undone (" .. tostring(why) .. ")")
+  new_events()
+  local _, sent = look(A, true)
+  local names = {}
+  for _, ev in ipairs(sent) do names[#names + 1] = tostring(ev.name or ev.type) end
+  assert(#sent == 0, "what REAPER moved for the map, outside the act, doesn't go out as yours (" .. table.concat(names, ", ") .. ")")
+  tick()
+  recv(B)
+  same(A, B, "an Undo of a tempo change, with a bandmate's item since")
+  print("rt-edits: an Undo that puts a tempo map back sends nothing more as yours")
+end
+
+-- ---- (round 6) REAPER recheck, 0.59.49.79: one Keep logged "Not sent: LinuxBox kept XT Rec A" 10 times; the put-back of a kept deleted track
+-- left REAPER's "Remove tracks" on top of the undo list; a second delete 46 s after a Keep was put back without a word of why ----
+do
+  build("Edits keep")
+  local claimask = require("claimask")
+  claimask._reset()
+  local real_present = claimask.present
+  claimask.present = function() return true end
+  local b = { song = song, room = room }
+  local who = { mode = "open", tracks = { drums = { user = "Bee", name = "Drums" } }, is_claimed = function(name) return name == "Drums" end }
+  local function claims_look()
+    as(A)
+    A.F.clock = A.F.clock + 1
+    mirror.watch(A.F.proj, A.cfg, song, room, { can = function(_, name) return name ~= "Drums" end, mode = "open", quick = true,
+      is_claimed = who.is_claimed, owner_of = function(name) return name == "Drums" and "Bee" or "James" end,
+      ask = function(name, p) return claimask.hold(A.cfg, b, who, name, p) end })
+    return new_events()
+  end
+  local function track_named(name) for _, t in ipairs(A.F.tracks) do if t.name == name then return t end end end
+  local function lines(pat) local n = 0; for _, l in ipairs(logged) do if l:find(pat, 1, true) then n = n + 1 end end return n end
+  tick()
+  as(A)
+  reaper.DeleteTrack(drums)
+  assert(#claims_look() == 0 and not track_named("Drums"), "(deleting Bee's track asks her; held meanwhile)")
+  local ask
+  for _, a in pairs(claimask._out()) do ask = a end
+  assert(ask and ask.state == "asked", "(one ask)")
+  claimask.on_answer(A.cfg, b, { id = ask.id, from = "Bee", to = "James", answer = "keep" })
+  logged, A.F.undos = {}, {}
+  claims_look()
+  local t = track_named("Drums")
+  assert(t and #t.items == 4, "Keep: the track is back with its items")
+  assert(lines("Not sent: Bee kept Drums") == 1, "the Keep's words are said once for its put-back, not once per thing (" .. lines("Not sent: Bee kept Drums") .. ")")
+  assert(#A.F.undos == 1 and A.F.undos[1] == "StudioSync: put back what wasn't sent" and not undo.native(A.F.undos[1]),
+    "the put-back is one StudioSync undo point on top, so Ctrl+Z doesn't take it for your own edit (" .. table.concat(A.F.undos, " / ") .. ")")
+  settle(A, true)
+  same(A, B, "a kept track: as it was everywhere")
+  -- deleted again 46 s after the Keep: put back without asking (the cooldown), and told why and when it can ask
+  A.F.clock = A.F.clock + 40
+  tick()
+  as(A)
+  drums = track_named("Drums")
+  reaper.DeleteTrack(drums)
+  logged, A.F.undos = {}, {}
+  claims_look()
+  assert(track_named("Drums"), "(within a minute of the Keep: put back, not asked)")
+  local said
+  for _, l in ipairs(logged) do if l:find("kept Drums", 1, true) and l:find("s ago", 1, true) and l:find("edit it again in", 1, true) then said = l end end
+  assert(said and lines("kept Drums") == 1, "and said once why, with when it can be asked again (" .. table.concat(logged, " | ") .. ")")
+  assert(#A.F.undos == 1, "(one point)")
+  claimask.present = real_present
+  claimask._reset()
+  print("rt-edits: a Keep's put-back is said once, is one StudioSync undo point, and a delete in the minute after is told why")
+end
+
+-- ---- (round 6) REAPER recheck, 0.59.49.79: a heal's undo point and its log line didn't pair: a "caught up on 1 change" with no point (its
+-- block was inside the receive's), a "changes that hadn't arrived here" point with no line, and an empty point when what it would bring waits ----
+do
+  build("Edits heal point")
+  local rdir = sync.room_dir(A.cfg, song, room)
+  local function skip_on_b(sent) -- (what went from the desktop is counted done on the laptop, never applied: as a skipped change)
+    assert(#sent > 0, "(something went)")
+    for _, ev in ipairs(sent) do as(B); sync.setext(B.F.proj, sync.APPLIED, ev.id, "1") end
+  end
+  tick()
+  as(A)
+  set(item_named(bass, "Bass 2"), "MUTE", "1 0")
+  skip_on_b(select(2, look(A, true)))
+  -- an edit landing over a held deletion asks for a heal at the end of the receive (mirror.heal_due)
+  as(B)
+  mirror.heal_due[tostring(B.F.proj)] = true
+  B.F.undos, logged = {}, {}
+  B.F.clock = B.F.clock + 1
+  sync.receive(B.F.proj, B.cfg, song, room, yes)
+  assert(#B.F.undos == 1 and B.F.undos[1] == "StudioSync: changes that hadn't arrived here", "one point, the heal's (" .. table.concat(B.F.undos, " / ") .. ")")
+  local caught = 0
+  for _, l in ipairs(logged) do if l:find("caught up on 1 change that hadn't arrived here", 1, true) then caught = caught + 1 end end
+  assert(caught == 1, "and its line (" .. table.concat(logged, " | ") .. ")")
+  same(A, B, "(healed)")
+  -- automation that can't land while recording: no point opened for it
+  tick()
+  as(A)
+  F = A.F
+  shift_env(drums, 4, 0.5, 8)
+  skip_on_b(select(2, look(A, true)))
+  as(B)
+  B.F.playing, B.F.undos = 5, {}
+  assert(mirror.heal(B.F.proj, rdir, false) == 0 and #B.F.undos == 0, "what waits opens no point (" .. table.concat(B.F.undos, " / ") .. ")")
+  B.F.playing = 0
+  assert(mirror.heal(B.F.proj, rdir, false) == 1 and #B.F.undos == 1, "and lands, with its point, once stopped")
+  same(A, B, "(automation healed)")
+  print("rt-edits: a heal's undo point and its log line pair up")
 end
 print("ok rt-edits")
