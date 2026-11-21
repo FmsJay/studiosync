@@ -25,7 +25,8 @@ local band = require("band")
 -- LOST_MAX: % of a hop's audio not back in time over LATE_WINDOW s that hands an offload back: that link loses 0.3-0.7% (a packet now and
 -- then) and a 150-200 ms stall every minute or so (2.1% of a window), which isn't falling behind; before the spike fix it lost 8-13%.
 local hops = { EVERY = 0.5, ASK_EVERY = 3, IDLE = 30, NAME = "StudioSync Hop", TAG = "for=hop;", TRACK_TAG = "hop", MARGIN_MS = 30, REMOTE_LATENCY = 256,
-  LATENCY = 8192, LAT_MAX = 32768, OLD_MAX = 8192, SPARE_MS = 20, HELD = "band_fx_held", MAX_CHAIN = 32, BUSY = 75, CPU_EVERY = 20, START = 20, AWAY = 10, LATE_WINDOW = 10, LATE_MAX = 8, LOST_MAX = 5, SETTLE = 3, SAY_BACK = 300 }
+  LATENCY = 8192, LAT_MAX = 32768, OLD_MAX = 8192, SPARE_MS = 20, HELD = "band_fx_held", MAX_CHAIN = 32, BUSY = 75, CPU_EVERY = 20, START = 20, AWAY = 10, LATE_WINDOW = 10, LATE_MAX = 8, LOST_MAX = 5, SETTLE = 3, SAY_BACK = 300,
+  RUN_BG = { 40871, 40873 } } -- (Project tabs: Run background projects; Run stopped background projects. hops.run_background)
 -- (this script's state; kept across Live sync's reload in place (band.reload: the same Lua, the modules loaded again): a fresh one forgot the
 -- hidden tracks this computer hosts, so a stop never removed them, and the next ask made a second track for the same hop. Laptop, rt)
 local S = rawget(_G, "STUDIOSYNC_HOPS_S") or {}
@@ -638,7 +639,7 @@ function hops.on_msg(proj, cfg, d, song, room)
   local token = math.tointeger(tonumber(d.token))
   if d.op == "serve" then hops.serve(proj, cfg, d, song, room)
   elseif d.op == "stop" and token then drop_served(proj, token); require("hoptry").gone(token)
-  elseif (d.op == "params" or d.op == "set") and token then require("hoptry").on_msg(proj, cfg, d, token)
+  elseif (d.op == "params" or d.op == "page" or d.op == "set") and token then require("hoptry").on_msg(proj, cfg, d, token)
   elseif d.op == "fail" and token then
     for _, rec in pairs(hops.records(proj)) do
       if rec.token == token and rec.try and d.denied then -- (the owner said no, or stopped it: the try ends here too, and says why)
@@ -701,10 +702,12 @@ function hops.tick(cfg, b, proj)
   if now - S.at < hops.EVERY then return end
   S.at = now
   require("hoptry").print_tick(now) -- (a print of a tried plug-in ends on time: lib/hoptry.lua)
-  if not (cfg and hops.available()) or (proj and reaper.EnumProjects(-1) ~= proj) then return end
+  if not (cfg and hops.available()) then return end
+  hops.run_background(next(S.serving) ~= nil)
   local secret = secret_of(cfg)
   if not secret then return end
-  local recs, linked = hops.records(proj), false
+  -- (this computer's own hops only while its Live sync tab is in front; hosting goes on behind another tab too: rt-hop2 item 3)
+  local recs, linked = (proj == nil or reaper.EnumProjects(-1) == proj) and hops.records(proj) or {}, false
   for key, rec in pairs(recs) do
     local id = math.floor(rec.id)
     local tr = track_by_oid(proj, rec.oid)
@@ -749,6 +752,21 @@ function hops.tick(cfg, b, proj)
     else follow(proj, cfg, token, sv) end
   end
 end
+-- REAPER may not run a project tab that isn't in front, and a hop hosted here stopped when its owner switched tabs (rt-hop2 item 3). While
+-- this computer hosts one, REAPER's "Project tabs: Run background projects" and "Run stopped background projects" are on; each one turned
+-- on here goes back off when the last hosted hop ends (the next tick) or Live sync stops.
+function hops.run_background(on)
+  if on and not S.bg then
+    S.bg = {}
+    for _, c in ipairs(hops.RUN_BG) do
+      if reaper.GetToggleCommandState(c) == 0 then reaper.Main_OnCommand(c, 0); S.bg[#S.bg + 1] = c end
+    end
+    if #S.bg > 0 then band.log("hosting a hop: REAPER now runs project tabs that aren't in front (Project tabs: Run background projects), so it keeps playing if you switch tabs; put back when the hop ends") end
+  elseif not on and S.bg then
+    for _, c in ipairs(S.bg) do if reaper.GetToggleCommandState(c) == 1 then reaper.Main_OnCommand(c, 0) end end
+    S.bg = nil
+  end
+end
 -- A hop whose link needs more than its budget gets a bigger one (hops.budget_for), only while REAPER is stopped (a latency change mid-play
 -- makes REAPER recompute its delay compensation, which can glitch) and once the hop has run settled; kept in its record (rt-hopvst).
 function hops.long_link(proj, key, rec, tr, st, now)
@@ -781,6 +799,7 @@ function hops.on_exit(proj, cfg)
   end
   S.connected = {}
   for token in pairs(S.serving) do drop_served(proj, token) end
+  hops.run_background(false)
   S.allow, S.pending, S.refused = {}, {}, {}
 end
 

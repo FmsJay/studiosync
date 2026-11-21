@@ -148,8 +148,9 @@ local ps, pos, cmds = 0, 0, {}
 reaper.GetPlayStateEx = function() return ps end
 reaper.GetPlayPosition2Ex = function() return pos end
 reaper.ValidatePtr2 = function() return true end
-reaper.Main_OnCommand = function(c) cmds[#cmds + 1] = c end
-reaper.GetToggleCommandState = function(c) return c == 40252 and 1 or 0 end
+local toggles = { [40252] = 1 } -- (rt-p4: pre-roll on record 41819, Project tabs: Run background projects 40871, Run stopped ones 40873, toggled by running them)
+reaper.Main_OnCommand = function(c) cmds[#cmds + 1] = c; if c == 41819 or c == 40871 or c == 40873 then toggles[c] = 1 - (toggles[c] or 0) end end
+reaper.GetToggleCommandState = function(c) return toggles[c] or 0 end
 local tsel = { 0, 0 }
 reaper.GetSet_LoopTimeRange2 = function(_, set, _, a, z) if set then tsel = { a, z } end; return tsel[1], tsel[2] end
 reaper.SetEditCurPos2 = function(_, t) pos = t end
@@ -188,7 +189,14 @@ assert(#cp == 2 and cp[1].v == 1 and cp[2].i == 2 and #cp[2].n == hoptry.NAME_MA
 assert(hoptry.clean_params("x") == nil, "not a list")
 local big = {}
 for i = 1, 400 do big[i] = { i = i - 1, n = "p", v = 0, s = "" } end
-assert(#hoptry.clean_params(big) == hoptry.PARAM_MAX, "at most PARAM_MAX")
+assert(#hoptry.clean_params(big) == hoptry.PAGE, "at most a page")
+cp = hoptry.clean_params(big, 256)
+assert(#cp == 144 and cp[1].i == 256, "a page from its offset: only knobs in it")
+assert(#hoptry.clean_params({ { i = 600, n = "x", v = 0 } }, 256) == 0, "past its page: left out")
+local kv, kn = hoptry.knob_view({ { i = 0, n = "Gain" }, { i = 300, n = "Cutoff" }, { i = 301, n = "Res" } }, 1, "")
+assert(#kv == 2 and kv[1].i == 300 and kn == 2, "knob_view: a page")
+kv, kn = hoptry.knob_view({ { i = 0, n = "Gain" }, { i = 300, n = "Cutoff" } }, 0, "cut")
+assert(#kv == 1 and kv[1].n == "Cutoff" and kn == 1, "knob_view: a filter through every page, any case")
 assert(hops.budget_for(8192, 125, 170.7) == nil, "the desktop <-> laptop link fits the default budget")
 assert(hops.budget_for(8192, 200, 170.7) == 11264, "a longer link: covered with SPARE_MS to spare, in 1024s")
 assert(hops.budget_for(8192, 2000, 170.7) == hops.LAT_MAX, "never more than the Hop's most")
@@ -276,6 +284,78 @@ assert(hidden.fx[2].v[2] == 0.8, "only James, a knob it has, a real value")
 hops.on_msg("P2", cfg_bo, { op = "set", token = ask.d.token, p = 1, v = 7, user = "James" }, "Song", "main")
 assert(hidden.fx[2].v[2] == 1, "kept 0..1")
 
+-- ---- 4b. rt-p4: knobs past 256 come a page at a time; James's page shows one page, or a filter through all of them ---------------------
+assert(toggles[40871] == 1 and toggles[40873] == 1, "hosting a hop: REAPER runs background tabs, playing or stopped (rt-hop2 item 3)")
+do
+  local serum = hidden.fx[2]
+  local keep = { serum.pnames, serum.lo, serum.hi, serum.v }
+  local function knobs(n)
+    serum.pnames, serum.lo, serum.hi, serum.v = {}, {}, {}, {}
+    for p = 1, n do serum.pnames[p], serum.lo[p], serum.hi[p], serum.v[p] = p == 590 and "Filter Cutoff" or "Knob " .. p, 0, 1, 0.5 end
+  end
+  local function went(n0) local g = {}; for i = n0 + 1, #sent do if sent[i].d.op == "params" or sent[i].d.op == "page" then g[#g + 1] = sent[i].d end end; return g end
+  knobs(600)
+  local n0 = #sent
+  tick("P2", cfg_bo)
+  local got = went(n0)
+  assert(#got == 3 and got[1].op == "params" and got[1].off == 0 and #got[1].list == 256 and got[2].op == "page" and got[2].off == 256 and got[2].list[1].i == 256
+    and got[3].off == 512 and #got[3].list == 88 and got[3].total == 600, "600 knobs: page 0 as params (what an older StudioSync shows), the rest as pages with their offsets")
+  for _, d in ipairs(got) do assert(#band.json_encode(d) < 64 * 1024, "each under the link's 64 KB") end
+  front = "P1"
+  for _, k in ipairs({ 3, 1, 2 }) do hops.on_msg("P1", cfg, got[k], "Song", "main") end -- (in any order)
+  local pm = hops.S.params[ask.d.token]
+  assert(#pm.list == 600 and pm.list[300].i == 299 and pm.list[600].i == 599 and pm.total == 600, "James has all 600, merged by index")
+  hops.on_msg("P1", cfg, { op = "page", off = 100, token = ask.d.token, list = { { i = 100, n = "x", v = 1, s = "" } }, total = 600 }, "Song", "main")
+  hops.on_msg("P1", cfg, { op = "page", off = 8192, token = ask.d.token, list = {}, total = 600 }, "Song", "main")
+  assert(#hops.S.params[ask.d.token].list == 600 and hops.S.params[ask.d.token].list[101].n == "Knob 101", "a page at an odd or too-far offset is ignored")
+  local b = { song = "Song", room = "main" }
+  local t = hoptry.model("P1", cfg, b).tries[1]
+  assert(#t.params == 256 and t.params[1].i == 0 and t.page == 0 and t.pages == 3 and t.total == 600 and not t.kq, "the page shows the first 256")
+  hoptry.web_action("P1", cfg, b, { knobs = { id = 1, page = 2 } })
+  t = hoptry.model("P1", cfg, b).tries[1]
+  assert(t.page == 2 and #t.params == 88 and t.params[1].i == 512, "Later knobs: the third page")
+  hoptry.web_action("P1", cfg, b, { knobs = { id = 1, page = 99 } })
+  assert(hoptry.model("P1", cfg, b).tries[1].page == 2, "never past the last page")
+  hoptry.web_action("P1", cfg, b, { knobs = { id = 1, q = "CUTOFF" } })
+  t = hoptry.model("P1", cfg, b).tries[1]
+  assert(t.kq == "CUTOFF" and t.matched == 1 and #t.params == 1 and t.params[1].i == 589, "the filter looks through every page")
+  hoptry.web_action("P1", cfg, b, { knobs = { id = 1, q = "knob" } })
+  t = hoptry.model("P1", cfg, b).tries[1]
+  assert(t.matched == 599 and #t.params == 256, "a filter shows at most a page of what matches")
+  hoptry.web_action("P1", cfg, b, { knobs = { id = 1, q = "", page = 0 } })
+  assert(hoptry.set_param("P1", cfg, 1, 589, 0.9), "a knob past 256 turned on James's page")
+  front = "P2"
+  hops.on_msg("P2", cfg_bo, last("set").d, "Song", "main")
+  assert(serum.v[590] == 0.9, "turned on Bo's copy")
+  n0 = #sent
+  tick("P2", cfg_bo)
+  got = went(n0)
+  assert(#got == 1 and got[1].op == "page" and got[1].off == 512 and got[1].list[78].v == 0.9, "only the page that changed goes again")
+  -- (at most PAGES_EVERY pages a tick: a plug-in with 1,100 knobs, all new)
+  knobs(1100)
+  hops.S.sent[ask.d.token], hops.S.serving[ask.d.token].pv = nil, nil
+  n0 = #sent
+  tick("P2", cfg_bo)
+  got = went(n0)
+  assert(#got == hoptry.PAGES_EVERY and got[4].off == 768, "four pages in one tick")
+  n0 = #sent
+  tick("P2", cfg_bo)
+  got = went(n0)
+  assert(#got >= 1 and got[1].off == 1024 and #got[1].list == 76, "the fifth at the next")
+  -- Bo switches to another tab: the hosting goes on (rt-hop2 item 3: it used to stop following until he came back)
+  serum.pnames, serum.lo, serum.hi, serum.v = table.unpack(keep)
+  front = "P1" -- (P1 stands in for Bo's other tab)
+  n0 = #sent
+  tick("P2", cfg_bo)
+  got = went(n0)
+  assert(#got == 1 and got[1].total == 3 and #got[1].list == 3, "behind another tab its knobs still go (back to Serum's 3)")
+  hops.on_msg("P1", cfg, got[1], "Song", "main")
+  local np = 0
+  for _ in pairs(hops.S.params[ask.d.token].pages) do np = np + 1 end
+  assert(#hops.S.params[ask.d.token].list == 3 and np == 1, "James: 3 knobs, the old pages gone")
+  front = "P2"
+end
+
 -- ---- 5. the web page: search and try from it -----------------------------------------------------------------------------------------
 -- (one Lua state plays both computers here: Bo's hosting is put aside while James's ticks run, as it lives on Bo's computer)
 local bo_serving = hops.S.serving
@@ -329,6 +409,8 @@ assert(keys.sends[1].dst == pt and keys.sends[1].I_SENDMODE == 3, "fed post-FX f
 assert(drums.info.I_RECARM == 0, "other armed tracks held off while it prints")
 assert(cmds[#cmds - 1] == 40076 and cmds[#cmds] == 1013 and pos == 8, "auto-punch on the time selection, recording from 2 s before")
 assert(select(2, hoptry.print("P1", cfg, 1)):find("running already", 1, true), "one print at a time")
+ps, pos = 5, 8.3
+tick("P1")
 ps, pos = 5, 15
 tick("P1")
 assert(hops.S.printing, "still recording")
@@ -339,15 +421,38 @@ assert(not hops.S.printing and cmds[#cmds - 1] == 40667 and cmds[#cmds] == 40252
 assert(pt.info.I_RECARM == 0 and pt.info.B_MAINSEND == 1 and drums.info.I_RECARM == 1, "the print track disarmed and heard; the other armed again")
 assert(pt.items[1].take.P_NAME == "serum (via Bo's computer)", "the take says what it is")
 ps = 0
--- (rt-hop2: a selection too near the project's start for the lead-in: printed all the same, from 0, and said that its start will be dry)
-for _, l in ipairs(logs) do assert(not l:find("too near the start", 1, true), "a selection with room for the lead-in: no warning") end
+-- (rt-hop2 item 2, rt-p4: a selection too near the project's start for the lead-in records with REAPER's pre-roll on, put back after; it
+-- says so only when playback didn't go far enough back before the selection)
+for _, l in ipairs(logs) do assert(not l:find("lead-in was only", 1, true), "a selection with room for the lead-in: no warning") end
+assert(toggles[41819] ~= 1, "pre-roll on record is off to begin with")
 tsel = { 0.4, 4 }
 ok, why = hoptry.print("P1", cfg, 1)
-assert(ok and pos == 0 and cmds[#cmds] == 1013, "a selection at 0.4 s prints, from the project's start: " .. tostring(why))
-assert(logs[#logs]:find("starts 0.4 s into the project, too near the start", 1, true) and logs[#logs]:find("at 1 s or later", 1, true), "and says its start will be dry")
+assert(ok and pos == 0 and cmds[#cmds - 1] == 41819 and cmds[#cmds] == 1013 and toggles[41819] == 1, "a selection at 0.4 s: pre-roll on, then record from 0: " .. tostring(why))
+assert(logs[#logs]:find("with REAPER's pre-roll", 1, true), "said")
+ps, pos = 5, -1.6 -- (REAPER plays the pre-roll before 0)
+tick("P1")
 ps, pos = 5, 4.4
 tick("P1")
-assert(not hops.S.printing, "that print ends too")
+assert(not hops.S.printing and toggles[41819] == 0, "that print ends too, pre-roll off again as it was")
+for _, l in ipairs(logs) do assert(not l:find("lead-in was only", 1, true), "a 2 s pre-roll before 0: no warning") end
+ps = 0
+tsel = { 0.4, 4 }
+ok = hoptry.print("P1", cfg, 1)
+ps, pos = 5, 0.2 -- (it didn't play before 0)
+tick("P1")
+ps, pos = 5, 4.4
+tick("P1")
+assert(not hops.S.printing and logs[#logs]:find("lead-in was only 0.2 s", 1, true) and logs[#logs]:find("at 2 s or later", 1, true), "no pre-roll before 0: its start may be dry, said")
+ps = 0
+toggles[41819] = 1 -- (pre-roll already on here: left on)
+ok = hoptry.print("P1", cfg, 1)
+assert(cmds[#cmds] == 1013 and cmds[#cmds - 1] ~= 41819, "pre-roll already on: not touched")
+ps, pos = 5, -1
+tick("P1")
+ps, pos = 5, 4.4
+tick("P1")
+assert(not hops.S.printing and toggles[41819] == 1, "and still on after")
+toggles[41819] = 0
 ps = 0
 
 -- ---- 8. Bo stops it; a no; Live sync ending ------------------------------------------------------------------------------------------

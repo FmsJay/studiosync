@@ -68,6 +68,7 @@ struct Wire {
   double late_at = 0, late_ms = 0; // (the wire's own lateness: when it last let a packet go STALL_S or more past its due, and the worst)
   int late_n = 0;                  // (and how many times, a new one 50 ms after the last)
   std::function<bool(const unsigned char *, int)> lose_midi; // (rt-hop2: a MIDI datagram (T_MIDI, type 5) this wire loses on purpose)
+  double cap_bps = 0; int qmax = 0; double busy = 0; long long qdrop = 0; // (rt-p4: a bottleneck: cap_bps, a drop-tail queue of qmax bytes)
 };
 struct End {
   sock_t s;
@@ -83,6 +84,17 @@ static int send_fn(void *user, const void *d, int n, const void *addr, int)
   std::uniform_real_distribution<double> u(0, 1);
   if (w.lose_midi && n > 4 && ((const unsigned char *)d)[4] == 5 && w.lose_midi((const unsigned char *)d, n)) { w.dropped++; return n; }
   if (u(w.rng) < w.loss) { w.dropped++; return n; }
+  if (w.cap_bps > 0) { // (the bottleneck: what's queued before this datagram, in bytes; full, it's dropped; else it leaves when the link gets to it)
+    const double t = now_s();
+    if (std::max(0.0, w.busy - t) * w.cap_bps / 8 + n > w.qmax) { w.qdrop++; return n; }
+    Pkt q;
+    w.busy = std::max(w.busy, t) + n * 8.0 / w.cap_bps;
+    q.due = w.busy + w.base_ms / 1000.0;
+    q.d.assign((const unsigned char *)d, (const unsigned char *)d + n);
+    q.to = *(const sockaddr_in *)addr;
+    w.q.push_back(std::move(q));
+    return n;
+  }
   Pkt p;
   const double t = now_s(), ph = w.spike_every > 0 ? std::fmod(t, w.spike_every) : 1e9;
   p.due = (ph < w.spike_ms / 1000.0 ? t - ph + w.spike_ms / 1000.0 : t) + (w.base_ms + w.jitter_ms * u(w.rng)) / 1000.0;
@@ -450,6 +462,123 @@ static void held_report(const Held &h, const MidiPlan &p)
          "pedal still down %d; snapshots X played %d\n", h.notes, h.heard, h.worst_ms, h.stuck, h.hung, h.early, h.early_ms, h.pedal_late, p.leaked);
 }
 
+// rt-p4 (rt-hop2 item 5, "two hops at once lost more"): two hops between the same two computers, both Hops publishing in the same
+// 512-frame block, through a link of 8 Mbit/s each way with a queue of 6 datagrams (two hops are 6.4 Mbit/s). Sent unpaced, each block's
+// 8 datagrams went at once and 2 of them never fit; paced (extension/hopnet.cpp PACE), they spread over the block and all fit.
+struct Two { uint64_t sent[2] = {}, lost[2] = {}, exact[2] = {}, wet[2] = {}, wrong[2] = {}; long long qdrop[2] = {}; bool paced[2] = {}, stalled = false; };
+static Two two_hops(int id0, double secs)
+{
+  Two res;
+  const uint32_t BB = 512;
+  Wire wa, wb;
+  for (Wire *w : { &wa, &wb }) { w->base_ms = 5; w->cap_bps = 8e6; w->qmax = 6 * 1060; }
+  End a{}, b{};
+  a.wire = &wa; b.wire = &wb;
+  const unsigned long pid = hop_reaper_pid();
+  a.net = hopnet_new(send_fn, &a, pid);
+  b.net = hopnet_new(send_fn, &b, pid);
+  a.s = udp(a.me); b.s = udp(b.me);
+  hop_map m[6];
+  hop_shm *sh[6];
+  bool all = true;
+  for (int k = 0; k < 6; ++k) { sh[k] = hop_shm_open(&m[k], pid, id0 + k); if (sh[k]) sh[k]->srate = 48000; else all = false; }
+  CHECK(all, "two hops' mappings open");
+  if (!all) return res;
+  HopCore cs[2], cx[2], cy[2]; // (hop k: sender id0 + k; its remote X id0 + 2 + 2k, Y id0 + 3 + 2k)
+  char json[256], peer[64];
+  snprintf(peer, sizeof(peer), "127.0.0.1:%d", ntohs(b.me.sin_port));
+  for (int k = 0; k < 2; ++k) {
+    cs[k].latency = L; cs[k].dry_when_late = 0; cs[k].reset(); cs[k].attach(sh[k]);
+    cx[k].latency = LX; cx[k].dry_when_late = 0; cx[k].reset(); cx[k].attach(sh[2 + 2 * k]);
+    cy[k].latency = LX; cy[k].dry_when_late = 0; cy[k].reset(); cy[k].attach(sh[3 + 2 * k]);
+    snprintf(json, sizeof(json), "{\"secret\":\"studio\",\"token\":%u,\"x\":%d,\"y\":%d,\"pdc\":%u,\"margin_ms\":20}", 4100000000u + id0 + k,
+             id0 + 2 + 2 * k, id0 + 3 + 2 * k, PDC);
+    CHECK(hopnet_serve(b.net, json) == 1, "serve starts");
+    snprintf(json, sizeof(json), "{\"secret\":\"studio\",\"token\":%u}", 4100000000u + id0 + k);
+    CHECK(hopnet_connect(a.net, id0 + k, peer, json) == 1, "connect starts");
+  }
+  std::vector<float> out[2];
+  for (auto &o : out) o.reserve((size_t)(secs * 48000) + 4096);
+  std::atomic<bool> stalled{ false };
+  g_run = true;
+  std::thread t1(wire_loop, &wa, &a), t2(wire_loop, &wb, &b), t3(rx_loop, &a), t4(rx_loop, &b);
+  std::thread ts([&] { // the sender's audio clock: both hops in the same block, hop 1's signal the negative of hop 0's
+    std::vector<float> i0(BB), o0(BB), o1(BB);
+    const double t0 = now_s();
+    double last = t0;
+    uint64_t done = 0;
+    while (now_s() - t0 < secs) {
+      if (now_s() - last > STALL_S) stalled = true;
+      last = now_s();
+      const uint64_t due = (uint64_t)((now_s() - t0) * 48000);
+      while (done + BB <= due) {
+        for (int k = 0; k < 2; ++k) {
+          for (uint32_t j = 0; j < BB; ++j) i0[j] = k ? -sig(done + j) : sig(done + j);
+          const float *in[2] = { i0.data(), i0.data() };
+          float *o[2] = { o0.data(), o1.data() };
+          cs[k].process(in, o, BB);
+          out[k].insert(out[k].end(), o0.begin(), o0.end());
+        }
+        done += BB;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  });
+  std::thread tr([&] { // the remote's: each X -> 100-sample delay x 0.5 -> its Y, both in the same block
+    std::vector<float> z(BB, 0.f), x0(BB), x1(BB), y0(BB), o0(BB), o1(BB);
+    std::vector<float> d[2] = { std::vector<float>(PDC, 0.f), std::vector<float>(PDC, 0.f) };
+    size_t dp[2] = { 0, 0 };
+    const double t0 = now_s();
+    double last = t0;
+    uint64_t done = 0;
+    while (now_s() - t0 < secs) {
+      if (now_s() - last > STALL_S) stalled = true;
+      last = now_s();
+      const uint64_t due = (uint64_t)((now_s() - t0) * 48000);
+      while (done + BB <= due) {
+        for (int k = 0; k < 2; ++k) {
+          const float *zin[2] = { z.data(), z.data() };
+          float *xo[2] = { x0.data(), x1.data() };
+          cx[k].process(zin, xo, BB);
+          for (uint32_t j = 0; j < BB; ++j) { y0[j] = d[k][dp[k]] * 0.5f; d[k][dp[k]] = x0[j]; dp[k] = (dp[k] + 1) % PDC; }
+          const float *yin[2] = { y0.data(), y0.data() };
+          float *yo[2] = { o0.data(), o1.data() };
+          cy[k].process(yin, yo, BB);
+        }
+        done += BB;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  });
+  ts.join(); tr.join();
+  const std::string st[2] = { hopnet_status(a.net, id0), hopnet_status(a.net, id0 + 1) };
+  g_run = false;
+  t1.join(); t2.join(); t3.join(); t4.join();
+  hopnet_free(a.net); hopnet_free(b.net);
+  close_sock(a.s); close_sock(b.s);
+  for (int k = 0; k < 6; ++k) { hop_shm_close(&m[k]); hop_shm_unlink(&m[k]); }
+  res.stalled = stalled;
+  res.qdrop[0] = wa.qdrop; res.qdrop[1] = wb.qdrop;
+  for (int k = 0; k < 2; ++k) {
+    res.sent[k] = (uint64_t)std::max(0.0, num(st[k], "sent")); res.lost[k] = (uint64_t)std::max(0.0, num(st[k], "lost"));
+    res.paced[k] = st[k].find("\"paced\":true") != std::string::npos;
+    uint64_t first = 0;
+    for (uint64_t i = L; i < out[k].size(); ++i) { // (once up: 0.5 x its input L frames before, silence (lost), or a fade between)
+      const float e = 0.5f * (k ? -sig(i - L) : sig(i - L)), o = out[k][(size_t)i];
+      if (o == e && !first) first = i;
+      if (!first) continue;
+      res.wet[k]++;
+      if (o == e) res.exact[k]++;
+      else if (!(o == 0.f || (std::fabs(o) <= std::fabs(e) * 1.001f && (o > 0) == (e > 0)))) res.wrong[k]++;
+    }
+    printf("  hop %d: sent %llu, lost %llu (%.2f%%), exact %.2f%% once up, wrong %llu, paced %s\n    %s\n", k, (unsigned long long)res.sent[k],
+           (unsigned long long)res.lost[k], res.sent[k] ? 100.0 * res.lost[k] / res.sent[k] : 0.0, res.wet[k] ? 100.0 * res.exact[k] / res.wet[k] : 0.0,
+           (unsigned long long)res.wrong[k], res.paced[k] ? "yes" : "no", st[k].c_str());
+  }
+  printf("  the link's queue dropped %lld datagrams out, %lld back\n", res.qdrop[0], res.qdrop[1]);
+  return res;
+}
+
 int main()
 {
 #ifdef _WIN32
@@ -468,6 +597,7 @@ int main()
     CHECK(r.first_wet > 0 && r.first_wet < 48000, "the hop comes up within a second");
     CHECK(r.wrong == 0, "nothing misaligned or wrong");
     CHECK(num(r.sst, "rtt_ms") >= 0 && num(r.sst, "remote_ms") > 0, "round trip measured");
+    CHECK(r.sst.find("\"paced\":false") != std::string::npos && r.rst.find("\"paced\":false") != std::string::npos, "a lone hop isn't paced (rt-p4)");
     if (r.hiccup > 0) recovered(r, 3); // (the runner paused: a moment of fallback audio and a slip or two are fair, staying behind isn't)
     else if (coarse()) {
       // (no stall seen, but the way out's three timed stages each up to a tick late, unseen, outlast the remote's 20 ms margin on a hosted
@@ -694,6 +824,18 @@ int main()
     report("wrong secret at the remote", r);
     CHECK(r.exact == 0 && r.wrong == 0, "nothing comes back: only silence");
     CHECK(num(r.sst, "returned") == 0 && num(r.rst, "received") == 0, "no audio crossed");
+  }
+  {
+    printf("two hops at once on an 8 Mbit/s link with a 6-datagram queue (rt-p4):\n");
+    Two t = two_hops(1, 3); // (ids 1-6: free again, each run unlinks its own)
+    for (int k = 1; k < 3 && t.stalled; ++k) { printf("  (the harness stalled: again)\n"); t = two_hops(1, 3); }
+    CHECK(t.wrong[0] == 0 && t.wrong[1] == 0, "two hops: nothing misaligned or wrong");
+    CHECK(t.paced[0] && t.paced[1], "two hops to one computer are paced");
+    if (coarse() || (t.stalled && !strict())) printf("  (coarse timers or the harness stalled: the loss checks passed over)\n");
+    else {
+      for (int k = 0; k < 2; ++k) CHECK(t.sent[k] > 48000 && t.lost[k] * 100 < t.sent[k], "two hops: hop %d loses under 1%% on a link with a small queue", k);
+      CHECK(t.qdrop[0] + t.qdrop[1] <= 8, "the link's queue hardly overflows (%lld)", t.qdrop[0] + t.qdrop[1]);
+    }
   }
   printf(fails ? "FAILED %d\n" : "ok: all hop network checks passed\n", fails);
   return fails ? 1 : 0;

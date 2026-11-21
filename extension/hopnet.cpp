@@ -67,6 +67,12 @@ const int MPKT = 32, MEV = 16;                                // MIDI: events a 
 const uint64_t MM = HOP_MIDI - 1;
 const double LATE_HOLD = 0.08, LATE_GAP = 0.04;              // s: packets late at the remote for LATE_HOLD, never LATE_GAP apart, are drift
 enum { F_ALIVE = 1, F_DELTA = 2, F_SRATE = 4 };              // the remote's state, in each pong
+// rt-hop2 item 5 (two hops at once lost more): both Hops publish in the same REAPER block, and each poll sent everything published since the
+// last one back to back, so two hops to one computer made bursts twice as big at the same instants, which a link with a small queue drops.
+// With two or more hops to one computer (either way), each hop's frames go out paced at PACE times real time from the first packet of its
+// block: a 512-frame block over 5.3 ms at 48 kHz, not at once. Never more than a block behind (a play start's whole-latency burst still
+// goes at once: those frames can't be back in time anyway). A lone hop is unchanged. Costs its last packet up to (block - 128) / PACE frames.
+const double PACE = 1.5;
 
 double now_s() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 uint64_t now_us() { return (uint64_t)(now_s() * 1e6); }
@@ -147,6 +153,8 @@ struct Sess {
   std::string key;
   double win_at = 0;
   unsigned char pkt[MAXD + 16];
+  bool pace = false, waiting = false; // (pace: another hop goes to the same computer; waiting: frames left for the next poll)
+  double pace_at = 0, credit = 0;
   // ---- sending end
   int hop = 0;
   hop_map m = {};
@@ -237,6 +245,27 @@ void block_seen(Win &win, uint64_t &last_w, uint64_t &last_b, hop_shm *p)
 int64_t biggest(const Win &w) { const int64_t m = w.min(); return m == INT64_MAX ? 0 : -m; } // (blocks are kept negated: min() is the biggest)
 uint64_t guard_of(Sess &s) { return (uint64_t)std::max<int64_t>(biggest(s.blk), 128) + 48; } // (a block, and our 1 ms)
 
+// How many of the `have` frames waiting may go now (see PACE): all of them unpaced; paced, whole packets as the credit allows (it builds
+// only while frames wait, so a quiet spell between blocks banks nothing but the first packet), and anything more than `block` behind.
+uint64_t paced(Sess &s, double now, double srate, uint64_t have, uint64_t block)
+{
+  const double dt = std::max(0.0, std::min(0.1, now - s.pace_at));
+  s.pace_at = now;
+  if (!s.pace) { s.waiting = false; return have; }
+  s.credit = s.waiting ? s.credit + dt * (srate > 0 ? srate : 48000) * PACE : PKT;
+  uint64_t go = have > block ? have - block : 0;
+  while (go < have) {
+    const uint64_t n = std::min<uint64_t>(PKT, have - go);
+    if (s.credit < (double)n) break;
+    s.credit -= (double)n;
+    go += n;
+  }
+  s.waiting = go < have;
+  return go;
+}
+// What pacing adds to a hop's round trip at most, in frames: its last packet's wait.
+uint64_t pace_cost(const Sess &s, int64_t block) { return s.pace && block > PKT ? (uint64_t)((block - PKT) / PACE) : 0; }
+
 void midi_send(HopNet *h, Sess &s, hop_shm *p, uint64_t w, double now);
 
 void send_step(HopNet *h, Sess &s, double now)
@@ -264,14 +293,15 @@ void send_step(HopNet *h, Sess &s, double now)
   }
   if (s.r > w || w - s.r > HALF) s.r = w; // (the plug-in started again, or we fell far behind: from now)
   float buf[PKT * HOP_CH];
-  while (s.r < w) {
-    const uint32_t n = (uint32_t)std::min<uint64_t>(PKT, w - s.r);
+  const uint64_t upto = s.r + paced(s, now, p->srate, w - s.r, (uint64_t)std::max<int64_t>(biggest(s.blk), PKT));
+  while (s.r < upto) {
+    const uint32_t n = (uint32_t)std::min<uint64_t>(PKT, upto - s.r);
     hop_copy_out(p->send, s.r, n, buf);
     out(h, s, T_AUDIO, n, s.r, buf, (int)(n * HOP_CH * sizeof(float)), s.addr);
     s.r += n;
     s.sent += n;
   }
-  midi_send(h, s, p, w, now);
+  midi_send(h, s, p, s.r, now); // (a MIDI event goes once its frame has: paced, a frame waiting here hasn't gone yet)
   // Publish what came back, in order; a frame the plug-in will need in its next block that isn't back is filled in (lost): the dry input
   // when the plug-in says so, else silence; the frames after it fade from that back to the return.
   const uint64_t L = hop_load(&p->latency), g = guard_of(s);
@@ -401,6 +431,7 @@ void serve_step(HopNet *h, Sess &s, double now)
   if (!s.yr_set || s.yr > yw || yw - s.yr > HALF) { s.yr = yw; s.yr_set = true; }
   const int64_t shift = s_delta(s) - (int64_t)s.pdc - (int64_t)hop_load(&X->latency);
   float buf[PKT * HOP_CH];
+  const uint64_t yend = s.yr + paced(s, now, X->srate, yw - s.yr, (uint64_t)std::max<int64_t>(biggest(s.xblk), PKT));
   uint64_t y0 = 0, f0 = 0;
   uint32_t n = 0;
   auto flush = [&]() {
@@ -410,7 +441,7 @@ void serve_step(HopNet *h, Sess &s, double now)
     s.s_returned += n;
     n = 0;
   };
-  for (uint64_t y = s.yr; y < yw; ++y) {
+  for (uint64_t y = s.yr; y < yend; ++y) {
     const int64_t x = (int64_t)y + shift;
     const Fm e = x >= 0 ? s.fmap[(size_t)((uint64_t)x & HOP_MASK)] : Fm{ 0, 0 };
     if (x < 0 || e.x1 != (uint64_t)x + 1) { flush(); continue; }
@@ -419,7 +450,7 @@ void serve_step(HopNet *h, Sess &s, double now)
     ++n;
   }
   flush();
-  s.yr = yw;
+  s.yr = yend;
 }
 
 // MIDI events numbered seq0.. into X's ret_midi at X frame f + A, each number once (the sender repeats them); none before the audio has
@@ -460,7 +491,7 @@ void serve_rx(HopNet *h, Sess &s, int type, uint32_t nf, uint64_t frame, const u
     const double xs = X->srate > 0 ? X->srate : 48000;
     unsigned char o[32];
     // what this end adds: the jitter buffer, a block each for X and Y, X's own latency, the plug-ins', and our polling
-    const uint64_t remote = (uint64_t)frames_of(s.margin_ms, xs) + 2 * s_guard(s) + hop_load(&X->latency) + s.pdc;
+    const uint64_t remote = (uint64_t)frames_of(s.margin_ms, xs) + 2 * s_guard(s) + hop_load(&X->latency) + s.pdc + pace_cost(s, biggest(s.xblk));
     put32(o, (uint32_t)xs); put32(o + 4, s_flags(s, now)); put32(o + 8, (uint32_t)remote); put32(o + 12, (uint32_t)s.s_slips);
     put64(o + 16, s.s_received); put64(o + 24, s.s_dropped);
     out(h, s, T_PONG, 0, frame, o, 32, s.from);
@@ -558,6 +589,13 @@ void loop(HopNet *h)
     {
       std::lock_guard<std::mutex> g(h->mx);
       const double now = now_s();
+      for (auto &s : h->ss) { // (paced while another hop streams to or from the same computer: see PACE)
+        int n = 0;
+        for (auto &o : h->ss)
+          n += o->serve == s->serve && (s->serve ? o->have_peer && now - o->last_rx < 1 && same_addr(o->from, s->from)
+                                                 : o->resolved && o->active && same_addr(o->addr, s->addr));
+        s->pace = n > 1;
+      }
       for (auto &s : h->ss) {
         if (s->serve) serve_step(h, *s, now); else send_step(h, *s, now);
         roll(*s, now);
@@ -718,19 +756,19 @@ std::string hopnet_status(HopNet *h, int hop_id)
       const double remote = s.r_frames * 1000.0 / (s.r_srate ? s.r_srate : sr);
       const int64_t sl = s.slack.min();
       // what the round trip needs: the network both ways, the remote's part, our block and 1 ms polls, a packet's wait each way
-      const double need = s.rtt_ms >= 0 ? s.rtt_ms + remote + (guard_of(s) + 2 * PKT) * 1000.0 / sr : -1;
+      const double need = s.rtt_ms >= 0 ? s.rtt_ms + remote + (guard_of(s) + 2 * PKT + pace_cost(s, biggest(s.blk))) * 1000.0 / sr : -1;
       std::string o = "{\"role\":\"send\",\"peer\":";
       json_str(o, s.peer);
       snprintf(b, sizeof(b),
                ",\"token\":%u,\"resolved\":%s,\"serving\":%s,\"active\":%s,\"rtt_ms\":%.1f,\"remote_ms\":%.1f,\"budget_ms\":%.1f,\"need_ms\":%.1f,"
                "\"slack_ms\":%.1f,\"sent\":%llu,\"returned\":%llu,\"lost\":%llu,\"late\":%llu,\"remote_alive\":%s,\"remote_lined_up\":%s,"
-               "\"same_rate\":%s,\"remote_slips\":%u,\"remote_received\":%llu,\"remote_dropped\":%llu,\"holes\":%llu,\"midi_sent\":%llu,\"dry_lost\":%s}",
+               "\"same_rate\":%s,\"remote_slips\":%u,\"remote_received\":%llu,\"remote_dropped\":%llu,\"holes\":%llu,\"midi_sent\":%llu,\"dry_lost\":%s,\"paced\":%s}",
                s.token, s.resolved ? "true" : "false", now - s.last_pong < 2 ? "true" : "false", s.active ? "true" : "false", s.rtt_ms, remote,
                budget, need, sl == INT64_MAX ? -1.0 : sl * 1000.0 / sr, (unsigned long long)s.sent, (unsigned long long)s.returned,
                (unsigned long long)s.lost, (unsigned long long)s.late, (s.r_flags & F_ALIVE) ? "true" : "false",
                (s.r_flags & F_DELTA) ? "true" : "false", (s.r_flags & F_SRATE) || !s.r_flags ? "true" : "false", s.r_slips,
                (unsigned long long)s.r_received, (unsigned long long)s.r_dropped, (unsigned long long)s.holes, (unsigned long long)s.msent,
-               hop_shm_ok(p) && hop_load(&p->dry_lost) ? "true" : "false");
+               hop_shm_ok(p) && hop_load(&p->dry_lost) ? "true" : "false", s.pace ? "true" : "false");
       return o + b;
     }
     if (s.serve && s.xid == hop_id) {
@@ -739,11 +777,11 @@ std::string hopnet_status(HopNet *h, int hop_id)
       const double remote = ((double)frames_of(s.margin_ms, sr) + 2.0 * s_guard(s) + (hop_shm_ok(X) ? hop_load(&X->latency) : 0) + s.pdc) * 1000.0 / sr;
       snprintf(b, sizeof(b),
                "{\"role\":\"serve\",\"token\":%u,\"x\":%d,\"y\":%d,\"alive\":%s,\"lined_up\":%s,\"same_rate\":%s,\"heard\":%s,\"idle_s\":%.1f,"
-               "\"remote_ms\":%.1f,\"pdc\":%u,\"margin_ms\":%.1f,\"received\":%llu,\"returned\":%llu,\"dropped\":%llu,\"slips\":%llu,\"midi\":%llu}",
+               "\"remote_ms\":%.1f,\"pdc\":%u,\"margin_ms\":%.1f,\"received\":%llu,\"returned\":%llu,\"dropped\":%llu,\"slips\":%llu,\"midi\":%llu,\"paced\":%s}",
                s.token, s.xid, s.yid, s_alive(s, now) ? "true" : "false", s_delta_ok(s) ? "true" : "false", s.srate_ok ? "true" : "false",
                s.have_peer ? "true" : "false", s.have_peer ? now - s.last_rx : now - s.started, remote, s.pdc, s.margin_ms,
                (unsigned long long)s.s_received, (unsigned long long)s.s_returned, (unsigned long long)s.s_dropped, (unsigned long long)s.s_slips,
-               (unsigned long long)s.s_midi);
+               (unsigned long long)s.s_midi, s.pace ? "true" : "false");
       return b;
     }
   }

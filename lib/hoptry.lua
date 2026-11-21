@@ -10,8 +10,12 @@
 -- The panel's side is Settings > Health (an ask's Allow, a try's Stop there) and the action "StudioSync - Try a bandmate's plug-in"; the web
 -- UI's Try tab (lib/webui/tryfx.js) has all of it. GPL-3.0-or-later.
 local band = require("band")
-local hoptry = { PARAM_MAX = 256, NAME_MAX = 48, VAL_MAX = 24, PARAMS_EVERY = 1, PARAMS_AGAIN = 5, MATCH_MAX = 60, ASK_FOR = 30,
-  PRINT_LEAD = 2, PRINT_WARM = 1, PRINT_TAIL = 0.3, PRINT_MAX = 900, WANT_FOR = 30, BUILD_EVERY = 0.5, TOPIC = "tryfx" }
+-- Knobs in pages (rt-p4, rt-hop2 item 4): a direct-link message caps at 64 KB, so the knob list goes PAGE at a time: page 0 as "params" (what
+-- an older StudioSync shows: the first 256, as before), the others as "page" with their offset (an older one ignores those). At most
+-- PAGES_EVERY pages a tick, up to PARAM_MAX knobs (a JUCE VST3's 2,048 MIDI-CC proxies after its own still fit).
+local hoptry = { PARAM_MAX = 4096, PAGE = 256, PAGES_EVERY = 4, NAME_MAX = 48, VAL_MAX = 24, PARAMS_EVERY = 1, PARAMS_AGAIN = 5, MATCH_MAX = 60, ASK_FOR = 30,
+  PRINT_LEAD = 2, PRINT_WARM = 1, PRINT_TAIL = 0.3, PRINT_MAX = 900, WANT_FOR = 30, BUILD_EVERY = 0.5, TOPIC = "tryfx",
+  PREROLL = 41819 } -- (Pre-roll: Toggle pre-roll on record)
 local function hops() return require("hops") end
 local function S() return require("hops").S end
 
@@ -54,15 +58,16 @@ function hoptry.search(lists, here, mine, q, max)
   for i = #out, (max or hoptry.MATCH_MAX) + 1, -1 do out[i] = nil end
   return out, n
 end
--- A knob list from the host's message, made safe to keep and show: at most PARAM_MAX entries with a whole index, a name, a value 0..1 and
--- its text. nil when it isn't a list. Pure.
-function hoptry.clean_params(list)
+-- A page of knobs from the host's message, made safe to keep and show: at most PAGE entries with a whole index in its page (from `off`), a
+-- name, a value 0..1 and its text. nil when it isn't a list. Pure.
+function hoptry.clean_params(list, off)
   if type(list) ~= "table" then return nil end
+  off = off or 0
   local out = {}
   for _, e in ipairs(list) do
-    if #out >= hoptry.PARAM_MAX then break end
+    if #out >= hoptry.PAGE then break end
     local i, v = type(e) == "table" and math.tointeger(tonumber(e.i)), type(e) == "table" and tonumber(e.v)
-    if i and i >= 0 and v and v == v then
+    if i and i >= off and i < off + hoptry.PAGE and v and v == v then
       out[#out + 1] = { i = i, n = hoptry.clip(e.n, hoptry.NAME_MAX), v = math.max(0, math.min(1, v)), s = hoptry.clip(e.s, hoptry.VAL_MAX) }
     end
   end
@@ -143,38 +148,74 @@ local function track_of(proj, guid)
     if reaper.GetTrackGUID(tr) == guid then return tr end
   end
 end
--- The tried plug-in's knobs (FX 1 on the hidden track) to whoever tries it: once a second while they change, every PARAMS_AGAIN s anyway.
+-- The tried plug-in's knobs (FX 1 on the hidden track) to whoever tries it, a page at a time: a page goes when one of its values changed
+-- (all values are read each second; names and value texts only for a page that goes), and each page in turn every PARAMS_AGAIN s or so
+-- anyway; at most PAGES_EVERY pages a tick, the rest at the next.
 function hoptry.host_params(cfg, token, sv, tr)
   local now = reaper.time_precise()
   if now - (sv.params_at or -math.huge) < hoptry.PARAMS_EVERY then return end
   sv.params_at = now
   local n = reaper.TrackFX_GetNumParams(tr, 1)
-  local list = {}
-  for p = 0, math.min(n, hoptry.PARAM_MAX) - 1 do
-    local _, name = reaper.TrackFX_GetParamName(tr, 1, p, "")
-    local _, s = reaper.TrackFX_GetFormattedParamValue(tr, 1, p, "")
-    list[#list + 1] = { i = p, n = hoptry.clip(name, hoptry.NAME_MAX), v = math.floor(reaper.TrackFX_GetParamNormalized(tr, 1, p) * 10000 + 0.5) / 10000,
-      s = hoptry.clip(s, hoptry.VAL_MAX) }
+  local total, P = math.min(n, hoptry.PARAM_MAX), hoptry.PAGE
+  local pages = math.max(1, (total + P - 1) // P)
+  local st = S()
+  if type(st.sent[token]) ~= "table" then st.sent[token] = {} end
+  local sent = st.sent[token]
+  sv.pv, sv.due, sv.full = sv.pv or {}, sv.due or {}, sv.full or {}
+  sv.turn = ((sv.turn or -1) + 1) % pages
+  for pg = 0, pages - 1 do
+    local due = pg == sv.turn or sent[pg] == nil
+    for p = pg * P, math.min(total, (pg + 1) * P) - 1 do
+      local v = math.floor(reaper.TrackFX_GetParamNormalized(tr, 1, p) * 10000 + 0.5) / 10000
+      if sv.pv[p] ~= v then sv.pv[p], due = v, true end
+    end
+    if due then sv.due[pg] = true end
   end
-  local st, enc = S(), band.json_encode(list)
-  if st.sent[token] == enc and now - (sv.params_full or -math.huge) < hoptry.PARAMS_AGAIN then return end
-  st.sent[token], sv.params_full = enc, now
-  sv.peer = sv.peer or hops().peers_by_user(cfg, sv.song, sv.room)[sv.user]
-  require("direct").send_live(cfg, "hop", { op = "params", token = token, fx = sv.name, instrument = sv.instrument or nil, total = n, list = list,
-    user = cfg.user }, sv.song, sv.room, nil, sv.peer and { sv.peer } or nil)
+  local went = 0
+  for pg = 0, pages - 1 do
+    if sv.due[pg] and went < hoptry.PAGES_EVERY then
+      sv.due[pg] = nil
+      local list = {}
+      for p = pg * P, math.min(total, (pg + 1) * P) - 1 do
+        local _, name = reaper.TrackFX_GetParamName(tr, 1, p, "")
+        local _, s = reaper.TrackFX_GetFormattedParamValue(tr, 1, p, "")
+        list[#list + 1] = { i = p, n = hoptry.clip(name, hoptry.NAME_MAX), v = sv.pv[p], s = hoptry.clip(s, hoptry.VAL_MAX) }
+      end
+      local enc = band.json_encode(list)
+      if sent[pg] ~= enc or now - (sv.full[pg] or -math.huge) >= hoptry.PARAMS_AGAIN then
+        sent[pg], sv.full[pg], went = enc, now, went + 1
+        sv.peer = sv.peer or hops().peers_by_user(cfg, sv.song, sv.room)[sv.user]
+        require("direct").send_live(cfg, "hop", { op = pg == 0 and "params" or "page", off = pg * P, token = token, fx = sv.name, instrument = sv.instrument or nil,
+          total = n, list = list, user = cfg.user }, sv.song, sv.room, nil, sv.peer and { sv.peer } or nil)
+      end
+    end
+  end
 end
 
 -- ---- both: what comes over the link ----------------------------------------------------------------------------------------------------
 -- "params" (to whoever tries it) and "set" (a knob turned there, to the owner's hidden copy: only that try's own requester's).
 function hoptry.on_msg(proj, cfg, d, token)
   local st = S()
-  if d.op == "params" then
+  if d.op == "params" or d.op == "page" then -- (a page of its knobs, merged by index: page 0 says how many there are)
+    local off = d.op == "page" and math.tointeger(tonumber(d.off)) or 0
+    if not off or off < 0 or off % hoptry.PAGE ~= 0 or off >= hoptry.PARAM_MAX then return end
     for _, rec in pairs(hops().records(proj)) do
       if rec.try and rec.token == token then
-        local list = hoptry.clean_params(d.list)
+        local list = hoptry.clean_params(d.list, off)
         if list then
-          st.params[token] = { list = list, fx = hoptry.clip(d.fx, 200), instrument = d.instrument == true, total = math.tointeger(tonumber(d.total)) or #list,
-            at = reaper.time_precise() }
+          local pm = st.params[token] or { pages = {} }
+          pm.pages[off // hoptry.PAGE] = list
+          pm.fx, pm.instrument, pm.at = hoptry.clip(d.fx, 200), d.instrument == true, reaper.time_precise()
+          if off == 0 then pm.total = math.max(0, math.tointeger(tonumber(d.total)) or #list) end
+          local n = math.min(pm.total or 0, hoptry.PARAM_MAX)
+          pm.list = {}
+          for pg = 0, (n + hoptry.PAGE - 1) // hoptry.PAGE - 1 do
+            for _, e in ipairs(pm.pages[pg] or {}) do pm.list[#pm.list + 1] = e end
+          end
+          if off == 0 then -- (a page past its knobs: one it had before page 0 said fewer. Only then: a later page may come before page 0)
+            for pg in pairs(pm.pages) do if pg > 0 and pg * hoptry.PAGE >= n then pm.pages[pg] = nil end end
+          end
+          st.params[token] = pm
         end
       end
     end
@@ -263,16 +304,18 @@ function hoptry.print(proj, cfg, id)
   for _, m in ipairs({ 40076, 40253 }) do if reaper.GetToggleCommandState(m) == 1 then mode = m end end
   reaper.Main_OnCommand(40076, 0) -- Options: Record mode: time selection auto punch
   reaper.SetEditCurPos2(proj, math.max(0, ts - hoptry.PRINT_LEAD), false, false)
+  -- (rt-hop2 item 2: a play start sends the Hop its whole latency at once, and the first half second or so can't be back in time, so it plays
+  -- the dry input; the lead-in covers that, but from 0 there's none. So a selection without room for the lead-in records with REAPER's
+  -- pre-roll on (it plays from before the edit cursor, before 0 at the project's start), put back after; print_tick watches whether
+  -- playback really went far enough back, and says so if it didn't. docs/rt/rt-hop2.md round 2)
+  local preroll = ts < hoptry.PRINT_LEAD and reaper.GetToggleCommandState(hoptry.PREROLL) ~= 1
+  if preroll then reaper.Main_OnCommand(hoptry.PREROLL, 0) end
   st.printing = { proj = proj, id = rec.id, track = reaper.GetTrackGUID(pt), stop_at = te + hoptry.PRINT_TAIL, ends = reaper.time_precise() + (te - ts) + hoptry.PRINT_LEAD + 30,
-    armed = armed, mode = mode, label = string.format("%s (via %s's computer)", hoptry.clip(rec.fx, 80), hoptry.clip(rec.user, 40)), started = false }
+    armed = armed, mode = mode, label = string.format("%s (via %s's computer)", hoptry.clip(rec.fx, 80), hoptry.clip(rec.user, 40)), started = false,
+    preroll = preroll or nil, ts = ts, low = math.huge }
   reaper.Main_OnCommand(1013, 0) -- Transport: Record
-  band.log(string.format("printing %s over the time selection onto a new track", tostring(rec.fx)))
-  -- (rt-hop2: a play start sends the Hop its whole latency at once, and the first half second or so can't be back in time, so it plays the
-  -- dry input; the lead-in covers that, but REAPER can't play before 0. Said, so a dry start isn't a surprise: docs/rt/rt-hop2.md)
-  if ts < hoptry.PRINT_WARM then
-    band.log(string.format("the selection starts %.1f s into the project, too near the start for the hop to warm up first: about the first half second of the print will be the dry track. Start the selection at %d s or later for a print that's wet throughout",
-      ts, hoptry.PRINT_WARM))
-  end
+  band.log(string.format("printing %s over the time selection onto a new track%s", tostring(rec.fx),
+    ts < hoptry.PRINT_LEAD and " (with REAPER's pre-roll, so the hop has started before the selection)" or ""))
   return true
 end
 -- Each tick while printing: at the end (or when playback stopped some other way), stop, keep the recording, put things back.
@@ -284,12 +327,14 @@ function hoptry.print_tick(now)
   if not reaper.ValidatePtr2(0, proj, "ReaProject*") then st.printing = nil; return end
   local ps = tonumber(reaper.GetPlayStateEx(proj)) or 0
   if ps & 4 == 4 then pr.started = true end
+  if ps ~= 0 then pr.low = math.min(pr.low, tonumber(reaper.GetPlayPosition2Ex(proj)) or math.huge) end -- (how far back it played: the lead-in it had)
   local done = (pr.started and ps & 4 == 0) or (ps & 4 == 4 and reaper.GetPlayPosition2Ex(proj) >= pr.stop_at) or now > pr.ends
     or (not pr.started and now > pr.ends - 25) -- (recording never started: REAPER's audio isn't running?)
   if not done then return end
   st.printing = nil
   if ps ~= 0 then reaper.Main_OnCommand(40667, 0) end -- Transport: Stop (save all recorded media)
   reaper.Main_OnCommand(pr.mode, 0) -- (the record mode it had)
+  if pr.preroll and reaper.GetToggleCommandState(hoptry.PREROLL) == 1 then reaper.Main_OnCommand(hoptry.PREROLL, 0) end -- (pre-roll off again, as it was)
   local pt = track_of(proj, pr.track)
   if pt then
     reaper.SetMediaTrackInfo_Value(pt, "I_RECARM", 0)
@@ -302,6 +347,10 @@ function hoptry.print_tick(now)
   for _, g in ipairs(pr.armed) do local o = track_of(proj, g); if o then reaper.SetMediaTrackInfo_Value(o, "I_RECARM", 1) end end
   local got = pt and reaper.CountTrackMediaItems(pt) or 0
   band.log(got > 0 and ("printed " .. pr.label .. ": it's yours to keep on its own track") or "the print recorded nothing (was REAPER's audio running?)")
+  if pr.started and pr.ts and pr.low > pr.ts - hoptry.PRINT_WARM then -- (seen every half second: a lead-in under that may be missed, and reads as none)
+    band.log(string.format("the print's lead-in was only %.1f s (REAPER's pre-roll didn't play far enough before the selection at %.1f s): about the first half second of the print may be the dry track. Start the selection at %d s or later, or set a longer pre-roll (Options > Metronome/pre-roll settings), for a print that's wet throughout",
+      math.max(0, pr.ts - pr.low), pr.ts, hoptry.PRINT_LEAD))
+  end
 end
 
 -- ---- Health (the owner's asks, with Allow) ---------------------------------------------------------------------------------------------
@@ -316,7 +365,20 @@ function hoptry.health_rows(proj, cfg)
 end
 
 -- ---- the web UI's Try tab --------------------------------------------------------------------------------------------------------------
-local web = { want = -math.huge, q = "", at = -math.huge }
+local web = { want = -math.huge, q = "", at = -math.huge, kn = {} } -- (kn: try id -> the knob page shown and its filter)
+-- The knobs a try's box shows, of all it has (`list`): those whose name has `q` in it (any case), or else page `page`; at most PAGE.
+-- -> them, and how many matched. Pure.
+function hoptry.knob_view(list, page, q)
+  local out, n, lo = {}, 0, (page or 0) * hoptry.PAGE
+  q = tostring(q or ""):lower()
+  for _, e in ipairs(list or {}) do
+    if q ~= "" and e.n:lower():find(q, 1, true) or q == "" and e.i >= lo and e.i < lo + hoptry.PAGE then
+      n = n + 1
+      if #out < hoptry.PAGE then out[#out + 1] = e end
+    end
+  end
+  return out, n
+end
 -- -> what the page shows: your tries with their knobs and state, the search's matches, asks for and uses of your own plug-ins.
 function hoptry.model(proj, cfg, b)
   local hp, st = hops(), S()
@@ -325,12 +387,21 @@ function hoptry.model(proj, cfg, b)
     if rec.try then
       local ok, text = hp.health_text(rec, hp.available() and band.json_decode(reaper.StudioSync_HopStatus(math.floor(rec.id))) or {})
       local pm = st.params[rec.token]
-      tries[#tries + 1] = { id = rec.id, fx = rec.fx, user = rec.user, track = rec.track, ok = ok, text = text, params = pm and pm.list or nil,
-        total = pm and pm.total or nil, name = pm and pm.fx or nil, instrument = pm and pm.instrument or nil,
-        printing = st.printing ~= nil and st.printing.id == rec.id or nil }
+      local kv = web.kn[rec.id] or {}
+      local q = kv.q or ""
+      local pages = pm and math.max(1, (math.min(pm.total or 0, hoptry.PARAM_MAX) + hoptry.PAGE - 1) // hoptry.PAGE) or nil
+      local page = math.min(kv.page or 0, (pages or 1) - 1)
+      local params, matched = nil, nil
+      if pm then params, matched = hoptry.knob_view(pm.list, page, q) end
+      tries[#tries + 1] = { id = rec.id, fx = rec.fx, user = rec.user, track = rec.track, ok = ok, text = text, params = params,
+        total = pm and pm.total or nil, name = pm and pm.fx or nil, instrument = pm and pm.instrument or nil, page = pm and page or nil, pages = pages,
+        kq = q ~= "" and q or nil, matched = q ~= "" and matched or nil, printing = st.printing ~= nil and st.printing.id == rec.id or nil }
     end
   end
   table.sort(tries, function(a, z) return a.id < z.id end)
+  local live = {}
+  for _, t in ipairs(tries) do live[t.id] = true end
+  for id in pairs(web.kn) do if not live[id] then web.kn[id] = nil end end -- (an ended try's page: a new one with its id starts at the top)
   local peer_of, lists, mine = lists_here(cfg, b.song, b.room)
   local here, people = {}, {}
   for u in pairs(peer_of) do here[u] = true; people[#people + 1] = u end
@@ -348,8 +419,8 @@ function hoptry.web_tick(proj, cfg, b, publish, now)
   local ok, m = pcall(hoptry.model, proj, cfg, b)
   publish(hoptry.TOPIC, ok and m or { error = tostring(m) })
 end
--- What the page sends: {want}, {q}, {try = {user, key}}, {set = {id, p, v}}, {stop = id}, {print = id}, {allow = token}, {refuse = token},
--- {end_use = token}. -> a line for the log, or nil.
+-- What the page sends: {want}, {q}, {try = {user, key}}, {set = {id, p, v}}, {knobs = {id, page, q}}, {stop = id}, {print = id},
+-- {allow = token}, {refuse = token}, {end_use = token}. -> a line for the log, or nil.
 function hoptry.web_action(proj, cfg, b, a)
   local now = reaper.time_precise()
   web.want = now + hoptry.WANT_FOR
@@ -360,6 +431,16 @@ function hoptry.web_action(proj, cfg, b, a)
   if a.refuse and token then return hoptry.refuse(cfg, token) end
   if a.end_use and token then return hoptry.end_use(proj, cfg, token) end
   if type(a.set) == "table" then hoptry.set_param(proj, cfg, a.set.id, a.set.p, a.set.v); return nil end
+  if type(a.knobs) == "table" then -- (which page of a try's knobs the page shows, or its filter)
+    local id = math.tointeger(tonumber(a.knobs.id))
+    if not try_rec(proj, id) then return nil end
+    local kv = web.kn[id] or {}
+    local pg = math.tointeger(tonumber(a.knobs.page))
+    if pg then kv.page = math.max(0, math.min(pg, hoptry.PARAM_MAX // hoptry.PAGE - 1)) end
+    if type(a.knobs.q) == "string" then kv.q = hoptry.clip(a.knobs.q, 48) end
+    web.kn[id] = kv
+    return nil
+  end
   if a.stop then
     local rec = try_rec(proj, a.stop)
     if rec and hops().stop(proj, cfg, rec.id) then return "stopped trying " .. tostring(rec.fx) end
