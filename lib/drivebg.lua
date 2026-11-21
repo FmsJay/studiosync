@@ -232,6 +232,17 @@ function bg.want_file(p) cached(p) end
 function bg.forget(p) F[p] = nil end -- (a copy the worker couldn't make: asked again, not left as failed until the file changes)
 function bg.missing() return missing end
 function bg.pending() return plan and #plan.ops or 0 end -- (steps in the plan being made: drive.bg_step tells a unit that has work by it)
+-- Files (and bytes) the plan being made brings down from the cloud into the studio folders (not the update files' stage): drive.bg_step tells
+-- a big pull by it. (rt-drive2, round 10)
+function bg.pulls()
+  local n, bytes = 0, 0
+  for _, op in ipairs(plan and plan.ops or {}) do
+    if op[1] == "C" and cloud(op[2]) and not cloud(op[3]) and not (bg.dir and op[3]:sub(1, #bg.dir + 1) == bg.dir .. "/") then
+      n, bytes = n + 1, bytes + (op.bytes or 0)
+    end
+  end
+  return n, bytes
+end
 -- What the worker last said of cloud file `p` (its size), or nil: never asks.
 function bg.known_size(p) local d, n = parent(p); local l = d and listing(d); return l and l.size[n] end
 

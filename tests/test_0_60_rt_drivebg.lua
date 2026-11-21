@@ -835,41 +835,46 @@ do
 end
 
 -- ---- 3t. the cloud copy's share of each pass is chosen from what it's doing (rt-drive2, round 10) ----
--- James: "intensive when it needs to be and less when it doesn't, especially when fully getting a project from cloud". 4 ms caught up, 16 ms
--- catching up, and a big job 16 ms while you work, drive.BIG_BUDGET (16 until James says 32) only while REAPER is stopped and untouched.
+-- James: "intensive when it needs to be and less when it doesn't, especially when fully getting a project from cloud", then "Big cloud pulls
+-- should go up yes, and probably continue until caught up otherwise you'd be working on old information in reaper right?". 4 ms caught up,
+-- 16 ms catching up (and uploads), 32 ms for a big pull until it's caught up, whatever you're doing in REAPER.
 do
   setup()
   drive, bg, cm = fresh()
-  check(drive.QUIET_BUDGET == 0.004 and drive.WORK_BUDGET == 0.016 and drive.BIG_BUDGET == 0.016 and drive.IDLE_AFTER == 10,
-    "the budgets: 4 ms caught up, 16 ms catching up, and a big job's left at 16 ms until James OKs 32")
+  check(drive.QUIET_BUDGET == 0.004 and drive.WORK_BUDGET == 0.016 and drive.BIG_BUDGET == 0.032,
+    "the budgets: 4 ms caught up, 16 ms catching up, 32 ms for a big pull")
   local real = { rawget(reaper, "GetMousePosition"), rawget(reaper, "GetProjectStateChangeCount"), rawget(reaper, "GetPlayState") }
-  local mx, cc, play = 10, 1, 0
+  local mx, cc = 10, 1
   reaper.GetMousePosition = function() return mx, 20 end
   reaper.GetProjectStateChangeCount = function() return cc end
-  reaper.GetPlayState = function() return play end
-  local function passes(fail_paths, worker)
-    local seen = {}
-    for _ = 1, 60 do
+  reaper.GetPlayState = function() return 0 end
+  local function now_mode() return drive.budget_mode .. " " .. string.format("%g", drive.STEP_BUDGET * 1000) end
+  local function passes(fail_paths, each)
+    local seen, order = {}, {}
+    for _ = 1, 80 do
       clock = clock + 2
-      if worker ~= false then stand_in_worker(fail_paths) end
+      stand_in_worker(fail_paths)
+      if each then each() end
       local busy = drive.bg_busy()
-      seen[drive.budget_mode .. " " .. string.format("%g", drive.STEP_BUDGET * 1000)] = true
+      seen[now_mode()] = true
+      order[#order + 1] = now_mode()
       local moved, more = drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, drive.STEP_BUDGET)
-      if moved and not more and not drive.bg_busy() and busy then return seen end
+      if moved and not more and not drive.bg_busy() and busy then return seen, order end
     end
-    return seen
+    return seen, order
   end
   local function only(seen, want) local n = 0; for k in pairs(seen) do n = n + 1; if k ~= want then return false end end; return n > 0 end
   local function words(seen) local t = {}; for k in pairs(seen) do t[#t + 1] = k end; table.sort(t); return table.concat(t, ", ") end
-  -- the first round after REAPER starts reads everything and brings the bandmate's work down: catching up
+  local function logged(pat) for _, l in ipairs(logs) do if l:find(pat) then return l end end end
+  -- the first round after REAPER starts reads everything and brings the bandmate's few changes down: catching up
   drive.bg_busy()
-  local before = drive.budget_mode .. " " .. string.format("%g", drive.STEP_BUDGET * 1000)
+  local before = now_mode()
   local first = passes()
   check(before == "work 16" and only(first, "work 16"), "the first round since REAPER started: 16 ms: " .. before .. " / " .. words(first))
   for _ = 1, 3 do clock = clock + 200; bg_pass() end -- (settled)
   drive.bg_busy()
   local said = ext["drive budget"] and json.decode(ext["drive budget"])
-  check(drive.STEP_BUDGET == 0.004 and drive.budget_mode == "quiet" and said and said.mode == "quiet" and said.ms == 4,
+  check(now_mode() == "quiet 4" and said and said.mode == "quiet" and said.ms == 4,
     "caught up, no round: 4 ms, and ExtState \"drive budget\" says so: " .. tostring(ext["drive budget"]))
   -- a round that only looks (no sweep due, nothing to copy): 4 ms all through
   cm.tick, cm.sweeping = function() end, function() return false end
@@ -881,7 +886,7 @@ do
   stand_in_worker(); drive.bg_busy(); drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, drive.STEP_BUDGET)
   cm.sweeping = function() return true end
   drive.bg_busy()
-  check(drive.budget_mode == "work" and drive.STEP_BUDGET == 0.016, "while the storage sweep goes on: 16 ms: " .. drive.budget_mode)
+  check(now_mode() == "work 16", "while the storage sweep goes on: 16 ms: " .. now_mode())
   cm.sweeping = function() return false end
   passes()
   -- a bandmate's change whose copy keeps failing: 16 ms while it's retried
@@ -889,53 +894,45 @@ do
   put(THERE .. "/events/" .. bo4.id .. ".json", json.encode(bo4))
   clock = clock + 200
   local failing = passes({ [THERE .. "/events/" .. bo4.id .. ".json"] = true })
-  check(failing["work 16"], "a copy failing and retried: 16 ms: " .. words(failing))
+  check(failing["work 16"] and not failing["pull 32"], "a copy failing and retried: 16 ms: " .. words(failing))
   clock = clock + 200; passes()
-  -- a big job: 60 of the bandmate's changes coming down at once
-  drive.BIG_BUDGET = 0.032 -- (as it would be once James OKs it)
-  for i = 200, 259 do local e = ev("Bo", i); put(THERE .. "/events/" .. e.id .. ".json", json.encode(e)) end
+  -- a big upload (60 of your changes going up): 16 ms, not a pull
+  for i = 130, 189 do local e = ev("James", i); put(HERE .. "/events/" .. e.id .. ".json", json.encode(e)) end
   clock = clock + 200
-  mx = mx + 1
-  local big
-  for _ = 1, 20 do
-    clock = clock + 2
-    stand_in_worker()
-    drive.bg_busy()
-    drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, drive.STEP_BUDGET)
-    drive.bg_busy()
-    if drive.budget_mode:find("^big") then big = drive.budget_mode .. " " .. string.format("%g", drive.STEP_BUDGET * 1000); break end
-  end
-  check(big == "big 16", "a big job while you've just been working: 16 ms: " .. tostring(big))
-  -- (the worker busy with it meanwhile: no results, the round carries on)
-  mx = mx + 1; drive.bg_busy()
-  local at0 = drive.STEP_BUDGET
-  clock = clock + 5; drive.bg_busy()
-  local at5 = drive.STEP_BUDGET
-  clock = clock + 6; drive.bg_busy()
-  local at11, mode11 = drive.STEP_BUDGET, drive.budget_mode
-  cc = cc + 1; drive.bg_busy()
-  local edited = drive.STEP_BUDGET
-  clock = clock + 11; drive.bg_busy()
-  local away2 = drive.STEP_BUDGET
-  play = 1; drive.bg_busy()
-  local playing = drive.STEP_BUDGET
-  play = 0; drive.bg_busy()
-  local stopped = drive.STEP_BUDGET
-  mx = mx + 1; drive.bg_busy()
-  local moved_mouse = drive.STEP_BUDGET
-  check(at0 == 0.016 and at5 == 0.016, "a big job: 16 ms for the first 10 s after you last did something: " .. at0 .. " " .. at5)
-  check(at11 == 0.032 and mode11 == "big, away", "then drive.BIG_BUDGET while REAPER's stopped and untouched: " .. at11 .. " " .. mode11)
-  check(edited == 0.016, "back to 16 ms at once when the project changes: " .. edited)
-  check(away2 == 0.032 and playing == 0.016 and stopped == 0.032, "and when REAPER plays: " .. away2 .. " " .. playing .. " " .. stopped)
-  check(moved_mouse == 0.016, "and when the mouse moves: " .. moved_mouse)
-  drive.BIG_BUDGET = 0.016
-  clock = clock + 11; drive.bg_busy()
-  check(drive.STEP_BUDGET == 0.016, "left at its default, a big job stays at 16 ms even while you're away: " .. drive.STEP_BUDGET)
-  passes()
-  check(fs[HERE .. "/events/" .. ev("Bo", 259).id .. ".json"], "the big job came down")
+  local up = passes()
+  check(fs[THERE .. "/events/" .. ev("James", 189).id .. ".json"] and up["work 16"] and not up["pull 32"], "a big upload: 16 ms: " .. words(up))
   clock = clock + 200; passes()
+  -- a big pull: 450 of the bandmate's changes coming down (more than a job holds), while you keep working in REAPER
+  logs = {}
+  for i = 200, 649 do local e = ev("Bo", i); put(THERE .. "/events/" .. e.id .. ".json", json.encode(e)) end
+  clock = clock + 200
+  local pulling_row, pulling_state
+  local seen, order = passes(nil, function()
+    mx, cc = mx + 1, cc + 1 -- (the mouse moving and the project changing every pass)
+    if not pulling_state and ext["drive pull"] and ext["drive pull"] ~= "" then
+      pulling_state = json.decode(ext["drive pull"])
+      pulling_row = drive.health_row({ at = os.time(), moved = 3 }, os.time(), "Google Drive")
+    end
+  end)
+  local i1 = 0
+  for i, m in ipairs(order) do if m == "pull 32" then i1 = i; break end end
+  local kept = i1 > 0
+  for i = i1, #order do if order[i] ~= "pull 32" then kept = i == #order and order[i] == "quiet 4" and kept end end
+  local pulled_passes = 0
+  for _, m in ipairs(order) do if m == "pull 32" then pulled_passes = pulled_passes + 1 end end
+  check(i1 > 0 and i1 <= 3, "a big pull: 32 ms from its first job: " .. table.concat(order, ", "))
+  check(kept and pulled_passes >= 3, "and kept until caught up, with the mouse moving and the project changing every pass: " .. table.concat(order, ", "))
+  check(fs[HERE .. "/events/" .. ev("Bo", 649).id .. ".json"], "the pull came down whole")
+  check(logged("bringing the studio's changes down %(%d+ files so far%); this project is behind the studio until it's done"),
+    "the log says a big pull started: " .. table.concat(logs, " | "))
+  check(logged("caught up with the studio %(%d+ files brought down%)"), "and when it's caught up: " .. table.concat(logs, " | "))
+  check(pulling_state and pulling_state.song == "Song" and pulling_state.files >= 50, "ExtState \"drive pull\" while it goes on: " .. tostring(pulling_state and json.encode(pulling_state)))
+  check(pulling_row and pulling_row[4]:find("catching up from the studio") and pulling_row[5]:find("behind the studio"),
+    "Health says the project is catching up from the studio: " .. tostring(pulling_row and pulling_row[5]))
+  local after_row = drive.health_row({ at = os.time(), moved = 3 }, os.time(), "Google Drive")
+  check((ext["drive pull"] or "") == "" and after_row[4]:find("up to date"), "and once caught up, it doesn't: " .. tostring(after_row[4]))
   drive.bg_busy()
-  check(drive.STEP_BUDGET == 0.004, "and once it's done: back to 4 ms: " .. drive.budget_mode)
+  check(now_mode() == "quiet 4", "back to 4 ms once it's done: " .. now_mode())
   reaper.GetMousePosition, reaper.GetProjectStateChangeCount, reaper.GetPlayState = real[1], real[2], real[3]
 end
 

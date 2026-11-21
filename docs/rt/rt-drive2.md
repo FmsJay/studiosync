@@ -634,22 +634,33 @@ After this deploy the desktop's worker 57792 (old scripts, no version in its hea
 
 ## Round 10 (a budget chosen each pass)
 
-James: "intensive when it needs to be and less when it doesn't, especially when fully getting a project from cloud". The fixed
-`drive.STEP_BUDGET = 0.016` is now set each pass by `drive.bg_busy()` (through `drive.choose_budget`). Live sync calls it just before it
-passes `drive.STEP_BUDGET` to `drive.bg_step`, so Live sync's logic didn't change.
+James: "intensive when it needs to be and less when it doesn't, especially when fully getting a project from cloud". Then, on the first
+version (which kept 32 ms for when you were away): "Big cloud pulls should go up yes, and probably continue until caught up otherwise you'd
+be working on old information in reaper right?"
+
+The fixed `drive.STEP_BUDGET = 0.016` is now set each pass by `drive.bg_busy()` (through `drive.choose_budget`). Live sync calls it just
+before it passes `drive.STEP_BUDGET` to `drive.bg_step`, so Live sync's logic didn't change. A budget is a cap: a plan that's done in 1 ms
+takes 1 ms under any of them.
 
 | Mode | When | Budget |
 |---|---|---|
-| `quiet` | no round; a short round of the rooms (this computer's new file); a full round that only looks (nothing moved, the last plan held no writes, no sweep, nothing failing) | `drive.QUIET_BUDGET` 4 ms |
-| `work` | the first full round since REAPER started, and its first plan; the storage sweep going on; a copy failing and retried; files moved this round; the last plan held writes | `drive.WORK_BUDGET` 16 ms |
-| `big` | a job that moved, or a plan that held, `drive.BIG_FILES` (50) files or more, or a full plan (200 writes / 64 MB): a song or room coming down whole, a media backlog, a big upload. Lasts 30 s after the last such job or plan | 16 ms |
-| `big, away` | `big`, while REAPER is stopped and the mouse position and project change count haven't moved for `drive.IDLE_AFTER` (10 s) | `drive.BIG_BUDGET` |
+| `quiet` | no round; a short round of the rooms for a few new files of yours (under `drive.FEW`, 10, writes a plan); a full round that only looks (nothing moved, the last plan held no writes, no sweep, nothing failing) | `drive.QUIET_BUDGET` 4 ms |
+| `work` | the first full round since REAPER started, and its first plan; the storage sweep going on; a copy failing and retried; files moved this round; the last plan held writes; a short round with 10+ writes (a big upload) | `drive.WORK_BUDGET` 16 ms |
+| `pull` | a big pull: the round has brought down `drive.BIG_FILES` (50) files or `drive.BIG_BYTES` (256 MB) from the cloud into the studio folders (a song or room coming down whole, a backlog). Kept until caught up | `drive.BIG_BUDGET` 32 ms |
 
-- **`drive.BIG_BUDGET` is 0.016 by default.** James's OK was for 16 ms; set it to 0.032 once he confirms.
-- The idle check costs three calls a pass (`GetMousePosition`, `GetProjectStateChangeCount(0)`, `GetPlayState`) and is polled every pass, so
-  any activity drops the budget back at the next pass. Live sync still never plans during playback or recording.
-- The heavy signature check keeps a plan of its own, whatever the budget (as before).
-- **Exposed:**
+- **A big pull keeps 32 ms until caught up,** whether or not you're using REAPER. Caught up means the open song's rooms are up to date and the
+  last plan brought nothing down, or the round ends with nothing left. A round cut at `drive.MAX_JOBS` hands its pull to the next round.
+- Live sync still never plans during playback or recording, so nothing changes there.
+- Uploads and the first sweep stay at 16 ms. The heavy signature check keeps a plan of its own, whatever the budget (as before).
+- Pulls are counted from the plans the worker was sent: `drivebg.pulls()` gives the copies from the cloud folder into the studio folders,
+  not the update files' stage.
+- **Visible while it goes on:**
+  - the log, once: `Google Drive: bringing the studio's changes down (N files so far); this project is behind the studio until it's done`;
+  - the log, once, at the end: `Google Drive: caught up with the studio (N files brought down)`;
+  - Health's cloud copy row: `catching up from the studio (N files brought down so far)`, with "the project here is behind the studio
+    until it's done: bandmates' latest changes may not be in it yet". It comes from ExtState `drive pull` (`{at, song, files}`), written
+    each plan while it goes on and cleared when it ends. Errors still show first.
+- **Exposed for measurements:**
   - ExtState `drive budget`: `{at, mode, ms}`, written when the mode changes;
   - perf `tick stats`: `drive_budget = [mode, ms]`;
   - `drive status`: `budget = [mode, ms]` at each pass that reports.
@@ -659,10 +670,10 @@ passes `drive.STEP_BUDGET` to `drive.bg_step`, so Live sync's logic didn't chang
   - a round that only looks (4 ms);
   - the sweep (16 ms);
   - a copy failing (16 ms);
-  - a 60-file job coming down: 16 ms for the first 10 s, `BIG_BUDGET` once away, back to 16 ms at once on a project change, playback or
-    a mouse move;
-  - left at its default, a big job stays at 16 ms;
-  - back to 4 ms once it's done.
+  - a 60-file upload (16 ms, never `pull`);
+  - a 450-file pull, with the mouse moving and the project changing every pass: 32 ms from its first job, kept every pass until caught up,
+    then 4 ms. It checks both log lines, the `drive pull` ExtState and the Health row while it goes on, and the row back to "up to date"
+    after.
 
 ## Left / not done
 
