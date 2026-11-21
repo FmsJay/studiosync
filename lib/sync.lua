@@ -146,10 +146,60 @@ function sync.audio_follow_tempo(proj)
 end
 
 
--- The driver's new timeline goes into session.json too: refreshing, or a bandmate joining later, gets it.
--- `stamp`: the timeline event's order (time..id), so a computer opening the song can tell whether it already holds a newer map. James, rt
+-- The room's newest tempo map and markers, for a computer opening the song or checking what it holds: each computer keeps the last one IT
+-- sent in a file of its own, rooms/<room>/timeline/<user>.json, and the newest stamp among them is the studio's (sync.studio_timeline). No file
+-- has two writers, as with claims. It went into session.json, written by whichever computer changed the timeline: two changing it within
+-- a second or two left Syncthing a session.sync-conflict copy, and the hub set session.json aside as "says it's James's, but another computer
+-- wrote it" (James, 2026-11-20: no file that several computers write). session.json's timeline is still read (a computer on an older build
+-- writes only that), and still written, in the main room, while anyone here is on a build that only reads that (sync.timeline_old_readers).
+-- A side room's timeline no longer goes into session.json at all: it was read there as the main room's. rt-edits
+-- `stamp_order`: the timeline event's order (time..id), so a computer opening the song can tell whether it already holds a newer map. James, rt
 -- `project`: its settings (band.capture_project), for that same look. Crash-safe sessions, rt
-function sync.session_timeline(cfg, song, tempo, markers, stamp_order, project)
+local function user_file(user) return (tostring(user):gsub("[^%w%-_ ]", "")) .. ".json" end
+function sync.timeline_path(cfg, song, room, user) return sync.room_dir(cfg, song, room) .. "/timeline/" .. user_file(user) end
+-- This computer's own file says it reads these, before it has a timeline of its own to put in it (watch_timeline's first look).
+function sync.timeline_reads(cfg, song, room)
+  local path = sync.timeline_path(cfg, song, room, cfg.user)
+  local have = band.read_json(path)
+  if type(have) == "table" then return end
+  reaper.RecursiveCreateDirectory(sync.room_dir(cfg, song, room) .. "/timeline", 0)
+  band.write_json(path, { user = cfg.user, at = os.time(), reads = true })
+end
+-- Is anyone here now on a build that reads only session.json's timeline? They have no file in timeline/. Can't tell: yes, as before.
+function sync.timeline_old_readers(cfg, song, room)
+  local ok, peers = pcall(require("presence").peers, cfg, song, room)
+  if not ok or type(peers) ~= "table" then return true end
+  for _, st in ipairs(peers) do
+    local theirs = type(st.user) == "string" and band.read_json(sync.timeline_path(cfg, song, room, st.user))
+    if type(st.user) == "string" and type(theirs) ~= "table" then return true end
+  end
+  return false
+end
+-- -> the studio's newest timeline for the room, { tempo, markers, project, timeline_order } (session.json itself when its own is the newest,
+-- or the only one: it may be unstamped, from before rt), or nil. A file counts only when it's named for the person it says and, where the
+-- studio pins computers, that person's own computer wrote it (trust.own_file_ok, as for session.json's sharer); one not known yet is left out.
+function sync.studio_timeline(cfg, song, room)
+  local best
+  local dir = sync.room_dir(cfg, song, room) .. "/timeline"
+  for _, f in ipairs(band.files(dir, ".json")) do
+    local t = band.read_json(dir .. "/" .. f)
+    if type(t) == "table" and type(t.user) == "string" and user_file(t.user) == f and type(t.order) == "string" and type(t.tempo) == "table" and #t.tempo > 0
+        and type(t.markers) == "table" and (not best or t.order > best.timeline_order) then
+      local okt, mine = pcall(require("trust").own_file_ok, cfg.root, song .. "/rooms/" .. room .. "/timeline/" .. f, t.user, tonumber(t.at))
+      if not okt or mine == true then
+        best = { tempo = t.tempo, markers = t.markers, project = type(t.project) == "table" and t.project or nil, timeline_order = t.order, by = t.user }
+      end
+    end
+  end
+  local sj = room == "main" and band.read_json(band.session_path(cfg, song)) or nil
+  if type(sj) == "table" and type(sj.tempo) == "table" and (not best or (sj.timeline_order ~= nil and tostring(sj.timeline_order) > best.timeline_order)) then return sj end
+  return best
+end
+function sync.session_timeline(cfg, song, tempo, markers, stamp_order, project, room)
+  room = room or "main"
+  reaper.RecursiveCreateDirectory(sync.room_dir(cfg, song, room) .. "/timeline", 0)
+  band.write_json(sync.timeline_path(cfg, song, room, cfg.user), { user = cfg.user, at = os.time(), order = stamp_order, tempo = tempo, markers = markers, project = project })
+  if room ~= "main" or not sync.timeline_old_readers(cfg, song, room) then return end
   local sp = band.session_path(cfg, song)
   local s = band.read_json(sp)
   if s then
@@ -1101,6 +1151,7 @@ end
 -- A change stamped with the tempo map it was made under (mirror.map_stamp) waits while this project's newest map is older than that one: up
 -- to MAP_WAIT seconds from when it came, then it lands anyway (the map was refused here, or never arrives). rt-edits
 sync.MAP_WAIT = 30
+sync.CUE_OLD = 120 -- seconds after which a start or stop that arrives is only history (sync.receive)
 function sync.map_waits(proj, ev, me)
   if type(ev.tl) ~= "string" or ev.user == me or ev.tl <= ext(proj, sync.NEWEST, "timeline") then return false end
   return reaper.time_precise() - sync.refused_since("map " .. tostring(ev.id)) <= sync.MAP_WAIT
@@ -1115,7 +1166,7 @@ end
 function sync.apply(proj, ev, dir, can, me)
   if ev.type == "obj" then return require("mirror").receive(proj, ev, dir .. "/media", sync.local_mix, me) end -- mirror sync
   if ev.type == "timeline" then -- REAPER moves the items for the new map, as it would for a local change
-    if tempo_sig(ev.tempo) ~= tempo_sig(band.capture_tempo(proj)) then require("mirror").tempo_changed(proj) end
+    if tempo_sig(ev.tempo) ~= tempo_sig(band.capture_tempo(proj)) then require("mirror").tempo_changed(proj, true) end -- (landed: not made here)
     sync.audio_follow_tempo(proj)
     band.apply_tempo(proj, ev.tempo or {})
     band.apply_project(proj, ev.project) -- (title, notes, group names, timebase, ruler lanes: from 0.31.1; before the markers that sit in them)
@@ -1190,8 +1241,8 @@ function sync.timeline_heal(proj, cfg, song, room)
     local ev = band.read_json(sync.room_dir(cfg, song, room) .. "/events/" .. id .. ".json")
     if type(ev) == "table" and ev.type == "timeline" and ev.id == id then t = ev end
   end
-  if not t and room == "main" then
-    local sj = band.read_json(band.session_path(cfg, song))
+  if not t then
+    local sj = sync.studio_timeline(cfg, song, room)
     if type(sj) == "table" and tostring(sj.timeline_order) == held then t = sj end
   end
   if not (type(t) == "table" and type(t.tempo) == "table" and #t.tempo > 0 and type(t.markers) == "table") then return false end
@@ -1199,7 +1250,7 @@ function sync.timeline_heal(proj, cfg, song, room)
   reaper.Undo_BeginBlock2(proj)
   local ok, e = pcall(function()
     if tempo_sig(t.tempo) ~= tempo_sig(band.capture_tempo(proj)) then
-      require("mirror").tempo_changed(proj)
+      require("mirror").tempo_changed(proj, true)
       sync.audio_follow_tempo(proj)
       band.apply_tempo(proj, t.tempo)
     end
@@ -1273,7 +1324,7 @@ function sync.undo_timeline(proj, cfg, song, room, entries, j, tags, session)
     undoes = tags and tags.undoes, redoes = tags and tags.redoes }
   sync.post(cfg, song, room, tev, proj)
   sync.timeline_live[proj] = true
-  sync.session_timeline(cfg, song, tev.tempo, tev.markers, order(tev), tev.project)
+  sync.session_timeline(cfg, song, tev.tempo, tev.markers, order(tev), tev.project, room)
   setext(proj, band.SECTION, "timeline", timeline_sig(proj))
   sync.timeline_checked[proj] = ext(proj, sync.NEWEST, "timeline")
   sync.resnap(proj)
@@ -1313,7 +1364,8 @@ function sync.watch_timeline(proj, cfg, song, room, can)
     -- (or behind by session.json's stamp, whatever this file last noted: a file from before a TIMELINE_FORMAT change read as a first look, so
     -- an older file reopened after an update kept its stale markers, and its next marker edit would have dropped the studio's region for
     -- everyone. REAPER check F7, rt-edits)
-    local sj = room == "main" and band.read_json(band.session_path(cfg, song))
+    pcall(sync.timeline_reads, cfg, song, room) -- (this computer reads the per-computer timeline files: the others then stop writing session.json's)
+    local sj = sync.studio_timeline(cfg, song, room)
     local behind = type(sj) == "table" and sj.timeline_order ~= nil and tostring(sj.timeline_order) > ext(proj, sync.NEWEST, "timeline")
     local s = type(sj) == "table" and (behind or (seen ~= "" and tm(seen) == tm(sig))) and sj
     -- (only a session.json map newer than the newest this project has applied or made (NEWEST), or, unstamped (written before rt), none
@@ -1329,7 +1381,7 @@ function sync.watch_timeline(proj, cfg, song, room, can)
       if tempo_off or proj_off or plain(s.markers) ~= plain(band.capture_markers(proj)) then
         reaper.Undo_BeginBlock2(proj)
         local ok, e = pcall(function() -- (the undo point closed whatever happens: review, 0.58.92)
-          if tempo_off then band.apply_tempo(proj, s.tempo); require("mirror").tempo_changed(proj) end
+          if tempo_off then band.apply_tempo(proj, s.tempo); require("mirror").tempo_changed(proj, true) end
           if proj_off then band.apply_project(proj, s.project) end
           band.apply_markers(proj, s.markers)
         end)
@@ -1378,7 +1430,7 @@ function sync.watch_timeline(proj, cfg, song, room, can)
         local tev = { type = "timeline", tempo = tempo, markers = markers, project = band.capture_project(proj), act = require("mirror").act_for(proj, me) }
         sync.post(cfg, song, room, tev, proj) -- (proj: without it no order was set, 0.58.93's fix never applied. Review, 0.58.95)
         sync.timeline_live[proj] = true
-        sync.session_timeline(cfg, song, tempo, markers, order(tev), tev.project)
+        sync.session_timeline(cfg, song, tempo, markers, order(tev), tev.project, room)
         local before = band.json_decode(seen) or {}
         local now, what = band.json_decode(sig) or {}, {} -- (say what changed: it was "tempo map and markers" whatever it was)
         for i, word in ipairs({ "the tempo map", "the markers", "the project settings (notes, title, timebase, lanes, grid, metronome, render format)" }) do
@@ -1712,6 +1764,11 @@ function sync.receive(proj, cfg, song, room, can)
       band.log("skipped a change from " .. tostring(ev.user) .. " that StudioSync can't read (" .. tostring(ev.id) .. ")")
     elseif (ev.type == "timeline" and ev.user ~= cfg.user and newest_map ~= ev.id) or superseded(proj, ev) or (obj and latest[ev.oid] ~= ev and apart(ev, latest[ev.oid]) == false) then
       setext(proj, sync.APPLIED, ev.id, "1") -- superseded
+    -- (a start or stop from long ago: a project reopened from an old file read every one since as news, and the log said "<who>: record together
+    -- at 1.84" and "stop together" at each restart. Live sync never played them (their moment had passed), so nothing to do and nothing to say.
+    -- sync.CUE_OLD seconds: a producer's cue counts for 30, a band one for its lead. rt-edits)
+    elseif (ev.type == "start" or ev.type == "stop") and band.age(ev.time) > sync.CUE_OLD then
+      setext(proj, sync.APPLIED, ev.id, "1")
     -- (not our own newest map when it's newer than this project's: REAPER killed or restarted without saving reopened a file from before it, and
     -- marked done unapplied, the file's older tempo, markers and settings stayed, and went out with the next marker. Crash-safe sessions, James, rt)
     elseif ev.user == cfg.user and not obj and not (ev.type == "timeline" and newest_map == ev.id) then

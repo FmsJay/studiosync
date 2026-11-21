@@ -317,6 +317,17 @@ local cases = {
     end
     F.changed()
   end },
+  -- (REAPER check, 0.59.49.74: "Time selection: Copy contents" on a track in lanes leaves the items REAPER already had (their GUIDs, so their
+  -- ids) at the copy's place, and new items, the same in every way, where they were. Undo was right; Redo brought back 4 of the 8: bringing a
+  -- new one back, mirror.sits_there found "the same thing already on that lane" in its twin, which the same Redo was about to move away.)
+  { name = "a time selection's contents copied on a track in lanes (the items REAPER had end up at the copy)", min = 6, timeline = true, edit = function()
+    for _, it in ipairs({ table.unpack(items(vox)) }) do
+      local c = copy(it, nil, pos(it))
+      c.lane = it.lane
+      set(it, "POSITION", f(pos(it) + 20))
+    end
+    F.add_marker(true, 84, 88, "Take two")
+  end },
   { name = "recording with a time selection, auto-punch (the take trimmed to it)", min = 1, edit = function()
     F.add_item(bass, audio(70, 2, "bass-punch.flac", "Bass punch", { soffs = 1.5 }))
   end },
@@ -485,6 +496,20 @@ local function run(mode)
       end
       for oid in pairs(after) do assert(before[oid], what .. ": one Ctrl+Z took away what the edit made (" .. oid .. ")") end
       assert(gtr.name == "Gtr " .. renames, what .. ": the laptop's rename stays (" .. tostring(gtr.name) .. ")")
+      -- (the Redo's bring-backs, asked one by one: each new item's place holds its twin now, which the same Redo moves away. Whichever order
+      -- the plan is walked in, the twin doesn't count)
+      if case.name:find("copied on a track in lanes", 1, true) then
+        as(A)
+        local twins = 0
+        for _, ev in pairs(oids) do
+          if ev.obj == "item" and ev.base == 0 and type(ev.state) == "string" and ev.state:find("BANDLANE", 1, true) then
+            twins = twins + 1
+            assert(mirror.sits_there(A.F.proj, ev) == true, what .. ": its twin sits on that lane (what Redo took for 'already there')")
+            assert(mirror.sits_there(A.F.proj, ev, oids) == false, what .. ": a twin the plan moves away isn't 'already there'")
+          end
+        end
+        assert(twins == 3, what .. ": three new items to bring back (" .. twins .. ")")
+      end
       -- redo, so the next case builds on it (and redo is one key too)
       tick()
       as(A)
@@ -495,6 +520,12 @@ local function run(mode)
       recv(B)
       same(A, B, what .. ": redone the same on the laptop")
       assert(timeline(A) == tl_edit, what .. ": and redo brought the tempo map and markers back\n" .. tl_edit .. "\n" .. timeline(A))
+      -- (and every object the edit left: all three computers agreed on a Redo that had lost half a track's items, so nothing flagged it)
+      local redone_st = state(A)
+      for oid, h in pairs(now_st) do
+        if oid ~= gtr_oid then assert(redone_st[oid] == h, what .. ": Redo brought " .. oid .. " back as the edit left it (" .. tostring(h) .. " vs " .. tostring(redone_st[oid]) .. ")") end
+      end
+      for oid in pairs(redone_st) do assert(now_st[oid], what .. ": Redo made nothing the edit hadn't (" .. oid .. ")") end
     end
   end
 end
@@ -557,8 +588,8 @@ end
 -- receiver lands it only once it holds that map; the map goes as a message too.
 do
   build("Edits tempo")
-  local X, Y = computer("Linus", "C:/X/Edits tempo.rpp"), computer("Yan", "C:/Y/Edits tempo.rpp")
-  for _, c in ipairs({ X, Y }) do seed_markers(c.F); tick(); recv(c); same(A, c, "tempo order: " .. c.cfg.user .. " has the song") end
+  local X, Y, Z = computer("Linus", "C:/X/Edits tempo.rpp"), computer("Yan", "C:/Y/Edits tempo.rpp"), computer("Zed", "C:/Z/Edits tempo.rpp")
+  for _, c in ipairs({ X, Y, Z }) do seed_markers(c.F); tick(); recv(c); same(A, c, "tempo order: " .. c.cfg.user .. " has the song") end
   local edir = sync.room_dir(A.cfg, song, room) .. "/events"
   local function len_of(c, name) for _, t in ipairs(c.F.tracks) do for _, it in ipairs(t.items) do if it.text:find('NAME "' .. name .. '"', 1, true) then return tonumber(E.top_value(it.text, "LENGTH")) end end end end
   local function tempo_edit(what, edit)
@@ -586,6 +617,20 @@ do
     tick()
     recv(X)
     same(A, X, what .. ": LinuxBox, the items and points first")
+    -- a fourth: the map lands, a look runs, and only then do the items and points arrive. What its REAPER moved when the map landed isn't
+    -- its edit: nothing goes out (REAPER check, 0.59.49.74: both receivers sent their own copies, "...as you did, at the same time: both
+    -- changes are kept", and asked the track's claimer to let them "edit")
+    for _, ev in pairs(oids) do hidden[edir .. "/" .. ev.id .. ".json"] = true end
+    as(Z)
+    Z.F.clock = Z.F.clock + 1
+    sync.receive(Z.F.proj, Z.cfg, song, room, yes)
+    local _, zsent = look(Z, true)
+    assert(#zsent == 0, what .. ": what REAPER moved as the map landed isn't that computer's edit (" .. #zsent .. " sent)")
+    assert(not mirror.tempo_landed[tostring(Z.F.proj)], what .. ": only in the look after the map landed")
+    for _, ev in pairs(oids) do hidden[edir .. "/" .. ev.id .. ".json"] = nil end
+    tick()
+    recv(Z)
+    same(A, Z, what .. ": the map first, a look, then the items and points")
     return map, oids
   end
   local l0 = len_of(A, "Gtr")
@@ -649,9 +694,11 @@ do
   local function has(c, name) for _, m in ipairs(c.F.markers) do if m.name == name then return true end end return false end
   local function reopen() return { F = E.open(A.F.path, saved), cfg = A.cfg } end
   local function no_timeline(sent, what) for _, ev in ipairs(sent) do assert(ev.type ~= "timeline", what) end end
-  local sp = proxy.session_path(A.cfg, song)
-  assert(type(files[sp].timeline_order) == "string", "session.json has the map's stamp")
-  -- 1. noted in an older format, session.json newer: the studio's timeline at its first look, before anything of its own may go
+  -- (the studio's newest timeline is the desktop's own, in the file it keeps of the last one it sent: rooms/main/timeline/James.json)
+  local sp = sync.timeline_path(A.cfg, song, room, A.cfg.user)
+  assert(type(files[sp]) == "table" and type(files[sp].order) == "string" and sync.studio_timeline(A.cfg, song, room).timeline_order == files[sp].order,
+    "the desktop's timeline file has the map's stamp")
+  -- 1. noted in an older format, the studio's timeline newer: the studio's at its first look, before anything of its own may go
   local D = reopen()
   as(D)
   local seen = band.json_decode(select(2, reaper.GetProjExtState(D.F.proj, SEC, "timeline")))
@@ -670,7 +717,7 @@ do
   -- 2. as the desktop's autosave was: the newest map's stamp, its event marked done, none of its markers
   local D2 = reopen()
   as(D2)
-  reaper.SetProjExtState(D2.F.proj, sync.NEWEST, "timeline", files[sp].timeline_order)
+  reaper.SetProjExtState(D2.F.proj, sync.NEWEST, "timeline", files[sp].order)
   for path, ev in pairs(files) do
     if type(ev) == "table" and ev.type == "timeline" and path:find("/" .. song .. "/", 1, true) then reaper.SetProjExtState(D2.F.proj, sync.APPLIED, ev.id, "1") end
   end
@@ -684,7 +731,7 @@ do
   same(D2, B, "reopen 2: as the studio")
   _, sent = look(D2, true)
   no_timeline(sent, "once: nothing more")
-  -- 3. session.json not here yet, a marker added before its first catch-up is done: nothing of the timeline goes out until it has caught up
+  -- 3. no timeline file here yet, a marker added before its first catch-up is done: nothing of the timeline goes out until it has caught up
   local D3 = reopen()
   as(D3)
   local keep = files[sp]
@@ -708,6 +755,142 @@ do
   assert(has(B, "Bridge"), "and the laptop still has it")
   same(D3, B, "reopen 3: as the studio")
   print("rt-edits: a project reopened behind the studio's timeline takes it before anything of its own goes out")
+end
+
+-- ---- the studio's timeline, one file per computer (James, 2026-11-20: no file that several computers write) ----
+-- session.json's timeline was written by whichever computer changed it: two within a second or two left a session.sync-conflict copy, and the
+-- hub set session.json aside as written by another computer than its sharer's. Now each computer keeps the last timeline it sent in
+-- rooms/<room>/timeline/<user>.json; the newest stamp is the studio's. session.json's is still read, and still written while a build that
+-- only reads that is here.
+do
+  build("Edits files")
+  local sj = proxy.session_path(A.cfg, song)
+  local rdir = sync.room_dir(A.cfg, song, room)
+  local function tfile(user, r) return files[sync.timeline_path(A.cfg, song, r or room, user)] end
+  local sj0 = band.json_encode(files[sj])
+  assert(type(tfile("James")) == "table" and type(tfile("Bee")) == "table", "each computer's own file says it reads these, from its first look")
+  assert(sync.studio_timeline(A.cfg, song, room) and sync.studio_timeline(A.cfg, song, room).timeline_order == nil, "nothing sent yet: session.json's own, unstamped")
+  -- the desktop changes the timeline: its own file, session.json untouched
+  as(A)
+  F.add_marker(false, 40, 40, "One")
+  tick()
+  look(A, true)
+  local mine = tfile("James")
+  assert(mine.user == "James" and type(mine.order) == "string" and #mine.markers == 4 and #mine.tempo == 1, "the desktop's timeline is in its own file")
+  assert(band.json_encode(files[sj]) == sj0, "and session.json isn't written: everyone here reads the files")
+  assert(sync.studio_timeline(A.cfg, song, room).timeline_order == mine.order, "the studio's newest is the desktop's")
+  tick()
+  recv(B)
+  -- the laptop changes it next: its own file; the newest stamp wins
+  as(B)
+  B.F.add_marker(false, 42, 42, "Two")
+  tick()
+  look(B, true)
+  local theirs = tfile("Bee")
+  assert(theirs.user == "Bee" and theirs.order > mine.order and #theirs.markers == 5, "the laptop's is in the laptop's file")
+  assert(band.json_encode(tfile("James")) == band.json_encode(mine), "the desktop's file is the desktop's alone")
+  local st = sync.studio_timeline(A.cfg, song, room)
+  assert(st.timeline_order == theirs.order and st.by == "Bee" and #st.markers == 5, "the newest stamp is the studio's timeline")
+  assert(band.json_encode(files[sj]) == sj0, "session.json still untouched")
+  tick()
+  recv(A)
+  same(A, B, "files: the same timeline")
+  -- someone on a build that only reads session.json is here (they have no file): session.json's timeline is written too, as before
+  files[rdir .. "/status/Old-Mac.json"] = { user = "Old-Mac", time = os.date("!%Y-%m-%dT%H:%M:%SZ") }
+  as(A)
+  A.F.clock = math.max(A.F.clock, B.F.clock) + 100 -- (past presence's one-second memory of who's here, which the stand-in computers share)
+  assert(sync.timeline_old_readers(A.cfg, song, room) == true, "an older build is here")
+  F.add_marker(false, 44, 44, "Three")
+  tick()
+  look(A, true)
+  assert(files[sj].timeline_order == tfile("James").order and #files[sj].markers == 6 and type(files[sj].first_timeline) == "table",
+    "with an older build here the timeline goes into session.json too")
+  -- and what that build writes there, newer than any file, is read as the studio's
+  local keep = band.json_encode(files[sj])
+  files[sj].timeline_order, files[sj].markers = "9998-01-01T00:00:00ZOld-Mac-1", {}
+  st = sync.studio_timeline(A.cfg, song, room)
+  assert(st.timeline_order == "9998-01-01T00:00:00ZOld-Mac-1" and #st.markers == 0, "session.json's timeline is still read when it's the newest")
+  files[sj] = band.json_decode(keep)
+  files[rdir .. "/status/Old-Mac.json"] = nil
+  A.F.clock = A.F.clock + 100
+  assert(sync.timeline_old_readers(A.cfg, song, room) == false, "gone again")
+  -- a side room's timeline has files of its own and never goes into session.json (it was read there as the main room's)
+  keep = band.json_encode(files[sj])
+  sync.session_timeline(A.cfg, song, { { time = 0, bpm = 90, num = 4, denom = 4, linear = false } }, {}, "9997-01-01T00:00:00ZJames-1", nil, "side")
+  assert(band.json_encode(files[sj]) == keep and tfile("James", "side").order == "9997-01-01T00:00:00ZJames-1", "a side room's goes to the side room's file only")
+  assert(sync.studio_timeline(A.cfg, song, "side").tempo[1].bpm == 90 and sync.studio_timeline(A.cfg, song, room).timeline_order == tfile("James").order,
+    "each room reads its own")
+  -- a file that says it's someone else's than its name is left out
+  files[rdir .. "/timeline/Mallory.json"] = { user = "James", order = "9999-12-31T00:00:00ZMallory-1", tempo = { { time = 0, bpm = 60, num = 4, denom = 4, linear = false } }, markers = {} }
+  assert(sync.studio_timeline(A.cfg, song, room).timeline_order == tfile("James").order, "a file not named for who it says it is isn't read")
+  files[rdir .. "/timeline/Mallory.json"] = nil
+  tick()
+  recv(B)
+  same(A, B, "files: the same timeline at the end")
+  print("rt-edits: the studio's timeline is one file per computer; session.json's only while an older build is here")
+end
+
+-- ---- REAPER check, 0.59.49.74: the marker-colour echo ----
+-- The desktop made a marker with the default colour. Both computers have SWS's auto marker colouring on with the rule "any marker": the
+-- laptop's SWS coloured the marker a moment after it landed (22955745 where 0 came), the laptop read that as its own timeline change and sent
+-- it; the desktop's SWS did the same to its own. Three timeline changes in two seconds, two computers writing session.json. Now SWS's auto
+-- marker and region colouring are off while a studio song is in front, as its auto track colouring always was (band.sws_colours).
+do
+  build("Edits sws")
+  local function timelines(sent) local n = 0; for _, ev in ipairs(sent) do if ev.type == "timeline" then n = n + 1 end end; return n end
+  local function colour_of(c, name) for _, m in ipairs(c.F.markers) do if m.name == name then return m.color end end end
+  for _, c in ipairs({ A, B }) do
+    as(c)
+    c.F.sws["_SWSAUTOCOLOR_ENABLE"], c.F.sws["_S&MAUTOCOLOR_MKR_ENABLE"], c.F.sws["_S&MAUTOCOLOR_RGN_ENABLE"] = false, true, true
+    reaper.SetProjExtState(c.F.proj, band.SECTION, "song", song) -- (a studio song, in front)
+  end
+  -- as it went: the laptop's SWS colours what landed, and the laptop sends that as a change of its own
+  as(A)
+  band.sws_colours()
+  assert(A.F.sws["_S&MAUTOCOLOR_MKR_ENABLE"] == false and reaper.GetExtState(band.SECTION, "sws marker colour off") == "1", "the desktop: SWS's marker colouring off, and noted as StudioSync's doing")
+  F.add_marker(false, 30, 30, "Echo")
+  tick()
+  local _, sent = look(A, true)
+  assert(timelines(sent) == 1, "the marker went out")
+  as(B)
+  B.F.clock = B.F.clock + 1
+  sync.receive(B.F.proj, B.cfg, song, room, yes)
+  assert(colour_of(B, "Echo") == 0, "it landed with the default colour")
+  assert(B.F.sws_tick() >= 1 and colour_of(B, "Echo") == 22955745, "the laptop's SWS, still on, colours it: the stand-in does what SWS did")
+  _, sent = look(B, true)
+  assert(timelines(sent) == 1, "and the laptop sends that back as its own timeline change: the echo")
+  tick()
+  recv(A)
+  -- with the switch: nothing colours it, nothing comes back
+  as(B)
+  band.sws_colours()
+  assert(B.F.sws["_S&MAUTOCOLOR_MKR_ENABLE"] == false and B.F.sws["_S&MAUTOCOLOR_RGN_ENABLE"] == false, "the laptop: SWS's marker and region colouring off")
+  as(A)
+  F.add_marker(false, 34, 34, "Quiet")
+  tick()
+  _, sent = look(A, true)
+  assert(timelines(sent) == 1, "the second marker went out")
+  for _ = 1, 3 do
+    for _, c in ipairs({ B, A }) do
+      as(c)
+      c.F.clock = c.F.clock + 1
+      sync.receive(c.F.proj, c.cfg, song, room, yes)
+      c.F.sws_tick()
+      band.sws_colours()
+      _, sent = look(c, true)
+      assert(timelines(sent) == 0, c.cfg.user .. ": a timeline read back after it landed is what was applied, nothing is sent back")
+    end
+  end
+  assert(colour_of(A, "Quiet") == 0 and colour_of(B, "Quiet") == 0, "and it keeps the default colour on both")
+  same(A, B, "sws: the same timeline")
+  -- another project comes to the front: SWS's switches go back as the person had them, and only those StudioSync turned off
+  as(B)
+  reaper.SetProjExtState(B.F.proj, band.SECTION, "song", "")
+  band.sws_colours()
+  assert(B.F.sws["_S&MAUTOCOLOR_MKR_ENABLE"] == true and B.F.sws["_S&MAUTOCOLOR_RGN_ENABLE"] == true and B.F.sws["_SWSAUTOCOLOR_ENABLE"] == false,
+    "back on for other projects; what was off stays off")
+  assert(reaper.GetExtState(band.SECTION, "sws marker colour off") == "", "and no longer noted")
+  print("rt-edits: SWS's marker colouring no longer echoes a timeline change back")
 end
 -- ---- the transport: Play together carries the leader's loop and repeat (each REAPER looped by its own before: a loop rehearsal came apart at
 -- the first loop end). "Play (skip time selection)" and region playlists aren't carried: docs/rt/rt-edits.md ----
@@ -741,5 +924,29 @@ do
   assert(B.F.repeat_on == 1, "an older StudioSync's start leaves yours")
   local src = io.open("StudioSync - Live sync.lua"):read("a")
   assert(src:find("together.apply_loop(proj, ev.loop)", 1, true), "Live sync puts a band start's loop in place")
+end
+
+-- ---- an old start or stop isn't replayed into the log (REAPER check, 0.59.49.74: after each restart the desktop, reopened from an old file,
+-- logged "James-Laptop: record together at 1.84..." and "stop together" again; nothing played) ----
+do
+  local edir = sync.room_dir(A.cfg, song, room) .. "/events"
+  local function cue(id, age, pos)
+    files[edir .. "/" .. id .. ".json"] = { id = id, type = "start", user = "Bee", lead = "Bee", rec = true, pos = pos, countin = 0, format = 1,
+      time = real_date("!%Y-%m-%dT%H:%M:%SZ", now_t - age), at = now_t - age + 2 }
+  end
+  local function said(text) for _, l in ipairs(logged) do if l:find(text, 1, true) then return true end end end
+  as(A)
+  local key = "transport " .. tostring(A.F.proj)
+  reaper.DeleteExtState(band.SECTION, key, false)
+  logged = {}
+  cue("Bee-20261120-100000Z-00001-0001", 600, 1.84)
+  A.F.clock = A.F.clock + 1
+  sync.receive(A.F.proj, A.cfg, song, room, yes)
+  assert(not said("record together") and reaper.GetExtState(band.SECTION, key) == "", "a start from ten minutes ago: marked done, not said, nothing set to play")
+  assert(select(2, reaper.GetProjExtState(A.F.proj, sync.APPLIED, "Bee-20261120-100000Z-00001-0001")) == "1", "and not looked at again")
+  cue("Bee-20261120-235959Z-00002-0002", 1, 3)
+  A.F.clock = A.F.clock + 1
+  sync.receive(A.F.proj, A.cfg, song, room, yes)
+  assert(said("Bee: record together at 3") and reaper.GetExtState(band.SECTION, key) ~= "", "a start made just now is taken as ever")
 end
 print("ok rt-edits")

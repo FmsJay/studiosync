@@ -3817,7 +3817,15 @@ mirror.holds = mirror.holds or {} -- project -> track oid -> { what runs through
 mirror.bus_said = mirror.bus_said or {} -- track oid -> when "that changes how X sounds" was last said
 mirror.tempo_until = mirror.tempo_until or {} -- project -> until when items may be moving for a tempo change
 mirror.TEMPO_SECS = 15
-function mirror.tempo_changed(proj) mirror.tempo_until[tostring(proj)] = reaper.time_precise() + mirror.TEMPO_SECS end
+-- `landed`: the map came from the studio (a bandmate's change, or the studio's map put in place as a project opened), it wasn't made here. Then
+-- what REAPER moves for it isn't this computer's edit: the look after it takes those moves in without sending them or asking anyone
+-- (mirror.tempo_landed, W.one). A receiver sent its own copy of each move, which met the sender's ("...as you did, at the same time: both changes
+-- are kept"), and asked the track's claimer to let it "edit". REAPER check, 0.59.49.74, rt-edits.
+mirror.tempo_landed = mirror.tempo_landed or {} -- tostring(proj) -> true until the first whole look after a map landed here
+function mirror.tempo_changed(proj, landed)
+  mirror.tempo_until[tostring(proj)] = reaper.time_precise() + mirror.TEMPO_SECS
+  mirror.tempo_landed[tostring(proj)] = landed and true or nil
+end
 -- The tempo map a change was made under, while REAPER may be moving things for one (TEMPO_SECS after a tempo change here): the newest map this
 -- project holds, as sync.NEWEST names it. It goes on the change as `tl`, and a receiver lands the change only once it holds that map
 -- (sync.receive). An item or automation that came before its map was put where the new map has it, then moved again by REAPER when the map
@@ -4681,6 +4689,18 @@ function W.one(w, o)
       return
     end
   end
+  -- (the studio's tempo map just landed here and REAPER moved this with it, nothing else about it changed: not an edit of yours. Taken in as
+  -- it is, never sent, asked about or put back; whoever changed the map sends theirs, which lands over it. Before the settling below: marked
+  -- unsent there, the sender's automation waited for this computer's copy to go first. Only in the first look after the map landed
+  -- (mirror.tempo_changed), so a move of your own a moment later still goes. rt-edits)
+  if rev and h ~= "" and mirror.tempo_landed[tostring(proj)] and (o.kind == "item" or o.kind == "env") and type(o.state) == "string" then
+    local had = event_file(room_dir, evid)
+    if had and not had.gone and type(had.state) == "string" and (o.kind == "env" and mirror.env_sans_tempo(o.state) == mirror.env_sans_tempo(had.state)
+        or o.kind == "item" and (had.track == nil or had.track == o.track) and mirror.sans_tempo(o.state) == mirror.sans_tempo(had.state)) then
+      mirror.unsent[rk] = nil
+      return remember(proj, o.oid, rev, o.hash, evid, kord)
+    end
+  end
   -- plug-ins and automation: only while stopped, once settled (not a whole chain per knob turn, or an envelope per
   -- point drawn)
   if o.kind == "fx" or o.kind == "env" then
@@ -5344,6 +5364,7 @@ function mirror.watch(proj, cfg, song, room, opts)
   mirror.index_for(nil)
   if not mirror.more then mirror.sweep_unsent(proj, seen) end
   mirror.more_act[pk] = mirror.more and w.act or nil
+  if not mirror.more then mirror.tempo_landed[pk] = nil end -- (every object has been looked at since the map landed)
   mirror.save_ids(proj)
   mirror.stash_unsent(proj, by_oid) -- (what's still not out, kept beside the project: crash-safe sessions, rt)
   if rescheme and not mirror.more then reaper.SetProjExtState(proj, mirror.CSEC, "colours", scheme) end
@@ -5438,8 +5459,20 @@ end
 
 -- A deleted item being brought back whose very place on its lane is taken by the same thing under another id. Undoing a pass makes
 -- REAPER rebuild its comp piece as a new item, so the comp lane's own row, undone after, played a second copy on top (Mac 0.42.27, PC 0.45).
-function mirror.sits_there(proj, ev)
+-- `plan` (mirror.revert's: oid -> the version it goes to, or false to remove): an item the same plan is about to move off that place or
+-- remove doesn't count. REAPER's "Copy contents" on a track in lanes leaves the items it had at the copy's place and new ones, the same in every
+-- way, where they were; Redo brought a new one back, found its twin still on the lane (the same Redo moved it away a moment later), and left
+-- it out: 4 of 8 items gone on every computer, alike, so nothing flagged it. REAPER check, 0.59.49.74, rt-edits.
+function mirror.sits_there(proj, ev, plan)
   if ev.obj ~= "item" or type(ev.state) ~= "string" or mirror.find(proj, "item", ev.oid) then return false end
+  local function leaving(it, lane, pos)
+    local to = plan and plan[itm_oid(it)]
+    if to == nil then return false end
+    if to == false then return true end
+    if type(to) ~= "table" or type(to.state) ~= "string" then return false end
+    local tl, tp = tonumber(to.state:match("BANDLANE (%d+)")), tonumber(to.state:match("POSITION ([%d%.%-e]+)"))
+    return to.track ~= ev.track or tl ~= lane or not tp or math.abs(tp - pos) >= 1e-6
+  end
   local lane, pos, len = tonumber(ev.state:match("BANDLANE (%d+)")), tonumber(ev.state:match("POSITION ([%d%.%-e]+)")), tonumber(ev.state:match("LENGTH ([%d%.%-e]+)"))
   local tr = ev.track and mirror.find(proj, "track", ev.track)
   if not (tr and lane and pos and len) then return false end
@@ -5449,7 +5482,7 @@ function mirror.sits_there(proj, ev)
   for i = 0, reaper.CountTrackMediaItems(tr) - 1 do
     local it = reaper.GetTrackMediaItem(tr, i)
     if reaper.GetMediaItemInfo_Value(it, "I_FIXEDLANE") == lane and math.abs(reaper.GetMediaItemInfo_Value(it, "D_POSITION") - pos) < 1e-6
-      and math.abs(reaper.GetMediaItemInfo_Value(it, "D_LENGTH") - len) < 1e-6 then
+      and math.abs(reaper.GetMediaItemInfo_Value(it, "D_LENGTH") - len) < 1e-6 and not leaving(it, lane, pos) then
       if not name then return true end
       for k = 0, reaper.CountTakes(it) - 1 do
         local take = reaper.GetTake(it, k)
@@ -5521,7 +5554,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
     -- (opts.retimed: the undo just put the tempo map back, and REAPER moved the items and points with it. That isn't an edit of yours made
     -- since, nor "already there": each still goes back to what it was and is sent, or the look after took REAPER's moves for new changes of
     -- yours, and Redo had nothing to redo. rt-edits)
-    elseif p.t and not opts.exact and not (opts.retimed and (p.t.obj == "item" or p.t.obj == "env")) and mirror.sits_there(proj, p.t) then there = there + 1
+    elseif p.t and not opts.exact and not (opts.retimed and (p.t.obj == "item" or p.t.obj == "env")) and mirror.sits_there(proj, p.t, plan) then there = there + 1
     elseif not opts.exact and not (opts.retimed and p.t and (p.t.obj == "item" or p.t.obj == "env")) and mirror.edited_here(proj, p.oid, h, last, media, opts.local_mix) then
       -- (changed here since it last went out or came in, and not sent yet (a look hasn't run): left as it is. Going back
       -- put the old version over it for everyone, with no copy and nothing in History. Cost: one hash per planned item or track. Round 1

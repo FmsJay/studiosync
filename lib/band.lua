@@ -742,18 +742,29 @@ end
 -- track, so a machine with it on could neither send the band's colours nor keep them. It goes back on when another
 -- project comes to the front (Live sync and Autostart both look). "sws colour off": StudioSync switched it off, so
 -- StudioSync switches it back (and only then: someone who has it off themselves keeps it off).
+-- (and its auto marker and auto region colouring, the same way: a marker made with the default colour was coloured by each computer's own SWS
+-- rule a moment after it was made or landed, each read that as a change of its own to the timeline, and three timeline changes went out in two
+-- seconds from two computers. Measured on Cross Test: colour 0 sent, 22955745 read back on the laptop, whose rule is "any marker". The command
+-- names are SWS's, checked in REAPER. rt-edits)
+band.SWS_COLOURS = { { "_SWSAUTOCOLOR_ENABLE", "sws colour off", true }, { "_S&MAUTOCOLOR_MKR_ENABLE", "sws marker colour off" },
+  { "_S&MAUTOCOLOR_RGN_ENABLE", "sws region colour off" } }
 function band.sws_colours()
-  local id = reaper.NamedCommandLookup and reaper.NamedCommandLookup("_SWSAUTOCOLOR_ENABLE") or 0
-  if id <= 0 then return end
+  if not reaper.NamedCommandLookup then return end
   local front = band.binding(reaper.EnumProjects(-1)) ~= nil
-  local on, ours = reaper.GetToggleCommandState(id) == 1, reaper.GetExtState(band.SECTION, "sws colour off") ~= ""
-  if front and on then
-    reaper.Main_OnCommand(id, 0)
-    reaper.SetExtState(band.SECTION, "sws colour off", "1", true)
-    reaper.SetExtState(band.SECTION, "sws colours ran", tostring(reaper.time_precise()), false) -- (it may have just recoloured this tab: mirror.watch)
-  elseif not front and ours then
-    if not on then reaper.Main_OnCommand(id, 0) end
-    reaper.DeleteExtState(band.SECTION, "sws colour off", true)
+  for _, t in ipairs(band.SWS_COLOURS) do
+    local id = reaper.NamedCommandLookup(t[1]) or 0
+    if id > 0 then
+      local on, ours = reaper.GetToggleCommandState(id) == 1, reaper.GetExtState(band.SECTION, t[2]) ~= ""
+      if front and on then
+        reaper.Main_OnCommand(id, 0)
+        reaper.SetExtState(band.SECTION, t[2], "1", true)
+        -- (it may have just recoloured this tab's tracks: mirror.watch)
+        if t[3] then reaper.SetExtState(band.SECTION, "sws colours ran", tostring(reaper.time_precise()), false) end
+      elseif not front and ours then
+        if not on then reaper.Main_OnCommand(id, 0) end
+        reaper.DeleteExtState(band.SECTION, t[2], true)
+      end
+    end
   end
 end
 

@@ -260,6 +260,17 @@ function E.new(path)
     sort_markers(); changed()
     return m
   end
+  -- SWS, as the desktop and laptop have it (sws-autocoloricon.ini: auto marker colouring on, one rule, "any marker" gets a colour): F.sws holds
+  -- the switches it's installed with (command name -> on), F.sws_tick is its timer: a marker with no colour of its own gets the rule's.
+  F.sws, F.sws_ids = {}, { [53273] = "_SWSAUTOCOLOR_ENABLE", [53274] = "_S&MAUTOCOLOR_MKR_ENABLE", [53275] = "_S&MAUTOCOLOR_RGN_ENABLE" }
+  F.sws_marker_colour = 22955745
+  function F.sws_tick()
+    if not F.sws["_S&MAUTOCOLOR_MKR_ENABLE"] then return 0 end
+    local n = 0
+    for _, m in ipairs(markers) do if not m.region and (m.color or 0) == 0 then m.color = F.sws_marker_colour; n = n + 1 end end
+    if n > 0 then changed() end
+    return n
+  end
 
   -- ---- takes ----
   local function take(it, k)
@@ -618,8 +629,11 @@ function E.new(path)
     GetSetProjectGrid = function() return 0, 0.25, 0, 0 end,
     ColorToNative = function(r, g, b) return r | (g << 8) | (b << 16) end,
     ColorFromNative = function(c) return c & 255, (c >> 8) & 255, (c >> 16) & 255 end,
-    GetToggleCommandStateEx = function() return 0 end, GetToggleCommandState = function() return 0 end,
-    NamedCommandLookup = function() return 0 end,
+    -- SWS's auto-colour switches (F.sws: command name -> on, for the ones SWS is "installed" with; F.sws_tick does what SWS's timer does)
+    GetToggleCommandStateEx = function(_, id) local n = F.sws_ids[id]; return n and (F.sws[n] and 1 or 0) or 0 end,
+    GetToggleCommandState = function(id) local n = F.sws_ids[id]; return n and (F.sws[n] and 1 or 0) or 0 end,
+    NamedCommandLookup = function(name) if F.sws[name] ~= nil then for id, n in pairs(F.sws_ids) do if n == name then return id end end end; return 0 end,
+    Main_OnCommand = function(id) local n = F.sws_ids[id]; if n then F.sws[n] = not F.sws[n] end end,
     file_exists = function() return true end,
     RecursiveCreateDirectory = function() return 1 end,
     JS_Mouse_GetState = function() return 0 end,

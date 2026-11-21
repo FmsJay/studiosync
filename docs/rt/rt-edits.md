@@ -249,8 +249,92 @@ copy.
 - The 11-19 one is a timeline from the Mac while the desktop was also sending.
 - It also explains the log line "session.json says it's James's, but another computer wrote it, so it was set aside": that check
   (`trust.own_file_ok`, used by the hub) expects only the sharer's computer to write session.json, and `sync.session_timeline` breaks that.
-- Not fixed: both want a decision (one writer for session.json's timeline, or the timeline kept in a file per computer). Listed under
-  "What's left".
+- Both are fixed in the next round: fixes L and M below.
+
+**J. Redo after undoing "Copy contents" lost half a lane track's items** (`lib/mirror.lua`, `mirror.sits_there`). Found in REAPER on
+0.59.49.74.
+
+Cause, as the checker guessed, reproduced in the stand-in first:
+- on a track in lanes, REAPER's "Time selection: Copy contents" leaves the items it already had (their GUIDs, so their ids) at the copy's
+  place, and makes new items, the same in every way, where they were;
+- Undo takes the new ones away and moves the old ones back. Redo brings the new ones back and moves the old ones to the copy's place;
+- bringing a new item back, `mirror.revert` asks `mirror.sits_there`: "is the same thing already on that lane under another id?" (that
+  check stops a comp piece coming back twice). The old item, its twin, was still there, because the same Redo hadn't moved it yet;
+- which items were lost depended on the order the plan was walked in, which is why the two runs lost different lanes. Every computer applied
+  the same events, so all agreed and nothing flagged it.
+
+Fix: `sits_there` is given the plan, and an item the plan is about to move off that place, or remove, doesn't count.
+
+Test: a new matrix case makes that edit on the lanes track. After Undo, each bring-back is asked both ways: without the plan the twin counts
+(the old answer), with it it doesn't. Every case now also checks, after Redo, that every object is as the edit left it; before, only the
+laptop being equal to the desktop was checked, and they were equal.
+
+**K. What REAPER moves when a tempo map lands is not that computer's edit** (`lib/mirror.lua`, `lib/sync.lua`). Found in REAPER on
+0.59.49.74.
+
+Cause: with fix H a receiver takes the map first. If a look then runs before the sender's items and automation arrive, the receiver sees
+its own REAPER's moves as changes:
+- where it may edit the object, it sent its own copy, which then met the sender's ("...as you did, at the same time: both changes are
+  kept"). For automation it also held the sender's back until its own had gone;
+- where it may not, it went through the refusal path, which asks the claimer ("LinuxBox wants to edit XT Rec A: Release or Keep").
+
+Fix: `mirror.tempo_changed(proj, landed)` notes when the map wasn't made here (a bandmate's change, or the studio's map put in place as a
+project opened). In the first whole look after that, an item or automation whose only difference from its record is its timing is taken in
+as it is: not sent, not asked about, not put back. The map's sender sends its own, which lands over it. Only that one look, so a move you
+make a moment later still goes out.
+
+Test ("Edits tempo" block): a fourth computer gets the map, runs a look, and only then gets the items and points. It sends nothing, and ends
+as the desktop. Without the fix it sent 9 changes.
+
+**L. The marker-colour echo** (`lib/band.lua`, `band.sws_colours`). Measured in REAPER (a marker added on the desktop and put back).
+
+Cause: SWS, not StudioSync's colours. Both computers have SWS's auto marker colouring on (`sws-autocoloricon.ini`: `AutoColorMarkerEnable=1`,
+one rule, "any marker" gets a colour). A marker made or landed with the default colour is coloured by that computer's SWS a moment later;
+each computer read that as its own change to the timeline and sent it. The desktop's SWS did it to its own marker too: the run showed three
+timeline changes for one marker.
+
+Fix: SWS's auto marker colouring and auto region colouring are switched off while a studio song is in front, and back on for other
+projects, exactly as its auto track colouring has been since 2026-11-01. Only what StudioSync switched off is switched back. The command
+names (`_S&MAUTOCOLOR_MKR_ENABLE`, `_S&MAUTOCOLOR_RGN_ENABLE`) were checked in REAPER.
+
+Not covered: anything else that recolours a marker after it lands (another script) would echo the same way.
+
+Test ("Edits sws" block): the stand-in's SWS colours a default-colour marker as SWS did, and the laptop sends it back (the echo). With the
+switch, a new marker goes out once, nothing comes back over three rounds of passes, and it keeps the default colour on both.
+
+**M. The studio's timeline is one file per computer** (`lib/sync.lua`). James, 2026-11-20: no file that several computers write.
+
+- Each computer keeps the last timeline it sent in `rooms/<room>/timeline/<user>.json` (`sync.session_timeline`). The newest stamp among them
+  is the studio's (`sync.studio_timeline`), which is what a project opening behind takes and what the stamp check reads.
+- A file counts only if it's named for the person it says it's from. Where the studio pins computers, that person's own computer must
+  have written it (`trust.own_file_ok`, the check session.json's sharer already gets). One not known yet is left out.
+- session.json's timeline is still read: when it's the newest (a computer on an older build wrote it), or the only one.
+- session.json's timeline is still written, in the main room only, while anyone here is on a build that only reads that. A computer on this
+  build says so by having a file in `timeline/` from its first look (`sync.timeline_reads`), so "everyone here has a file" is the rule
+  (`sync.timeline_old_readers`). Nobody's version number is compared.
+- A side room's timeline used to be written into session.json, where it was read as the main room's. It now goes to the side room's own
+  files only, and a side room gets the "opened behind" look too.
+
+Your rule, checked: it holds. One thing to know: a computer that's away while everyone else is on the new build comes back to a
+session.json whose timeline is older. That's safe on an older build too, because it takes session.json's map only when its stamp is newer
+than its own, and the room's events bring it the newest map either way.
+
+Not done here:
+- session.json as it stands was last written by a computer that isn't its sharer's, so the hub's "set aside" stays until the sharer's
+  computer writes it again. Nothing writes it now once everyone is on this build.
+- `StudioSync - Open session.lua` still starts a new project from session.json's tempo and markers. Live sync's first look then takes the
+  newest from the files.
+
+Test ("Edits files" block): each computer writes only its own file, the newest stamp wins, session.json is untouched until an older build is
+here and written again when one is, session.json's newer timeline is still read, a side room keeps to its own files, and a file named for
+someone else is left out.
+
+**N. Old starts and stops were replayed into the log** (`lib/sync.lua`, `sync.receive`).
+
+"James-Laptop: record together at 1.84..." and "stop together" after each desktop restart come from `sync.receive`, which main and realtime
+share: so it's both, not main's only. The desktop's project file is from 11-19, so every cue since is news to it at each restart. Nothing
+played: Live sync drops a cue whose moment has passed. Now a start or stop older than `sync.CUE_OLD` (120 s) is marked done without being
+applied or logged. The test's last block checks an old one and a fresh one.
 
 ### Not carried (gaps, not fixed)
 
@@ -367,6 +451,19 @@ and Health showing no mismatch.
 20. **Reopened behind (fix I):** with a region made since the desktop's last save, restart REAPER on the desktop (it reopens the older
     file). The region is there after Live sync's first passes, the log says the project was behind, and no "sent the markers" line
     follows. The laptop keeps the region.
+21. **Redo of a region copy (fix J):** the F3 steps again (Copy contents of Verse to 24.0 s, a volume change on the laptop, one StudioSync
+    undo, one StudioSync redo). After the redo all 8 of XT Rec A's items are at 3.69 s and 8 at 24.92 s on all three, and the log's count
+    is the undo's (21). Then undo again to put it back.
+22. **Tempo change, no asks or echoes (fix K):** the tempo marker at 8.0 s, then the first tempo to 120, then both back. On the desktop no
+    "wants to edit ... Release or Keep" appears and no "...as you did, at the same time"; on the laptop and LinuxBox no "change(s) went to
+    the others" follows the map. All three still match after each step.
+23. **Marker colour (fix L):** add a marker on the desktop with the default colour. One "sent the markers" line on the desktop, none on the
+    laptop; the marker keeps colour 0 on both. In REAPER's Actions list, "SWS/S&M: Toggle auto marker coloring enable" and "...region..."
+    read off while Cross Test is in front, and on again with another project in front.
+24. **Timeline files (fix M):** after any marker change, `Cross Test/rooms/main/timeline/` holds one file per computer and no new
+    `session.sync-conflict` file appears. With all three on this build, session.json's modified time doesn't move on a marker change. With
+    one computer on the older build and here, it does.
+25. **Old cues (fix N):** restart REAPER on the desktop: no "record together" or "stop together" lines in the log from the catch-up.
 
 ## Untested / limits
 
