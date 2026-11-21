@@ -132,6 +132,18 @@ note-off (ReaSynth's release), allowed 210.7 ms: pass. With a StudioSync Hop in 
 4. **The laptop's and LinuxBox's eval hooks are shared and have no lock.** Another session's probe came back as my result twice (and saw my
    test's Deafen off). `rig.sh` gives its source its own name and retries untagged results; a lock like the desktop's would be better.
 
+Diagnosed afterwards (rt-r0, 2026-11-21):
+- 3 is LinuxBox's REAPER setting, not StudioSync: "Stop playback at end of project" is on there (`stopprojlen` = 1, REAPER's default, absent
+  from its reaper.ini; 0 on the desktop and laptop). Cross Test is 22.754 s long, so a start at 60.05 s stops at once and any Play together
+  stops at 22.8 s on LinuxBox (seen in rt-answers check 4: play state 1 -> 0 at 22.839 s while its Live sync went on "playing"). With it set to
+  0 in memory, LinuxBox played on past the end, in step. To run Jam there: `reaper.SNM_SetIntConfigVar("stopprojlen", 0)` for the run (put
+  back after), or start inside the project. The "Syncthing didn't answer" line is separate: `services.tune_band_folder`'s Syncthing CLI call
+  fails from REAPER on LinuxBox at every Live sync start (the same command works over SSH); harmless here.
+- 4: LinuxBox's `~/reval.sh` and the bandtest folder's `lap_eval.sh` now take a lock like the desktop's `run.sh` (a `dev/.evallock` folder on
+  that computer, taken over after 10 minutes, and a wait for a pending `eval.lua`); two probes started together each got their own result on
+  both. `tools/ears/rig.sh`'s laptop path writes the hook directly and doesn't take the laptop's lock yet (it goes through `~/reval.sh` on
+  LinuxBox, so it does there); its retry on untagged results stays.
+
 ## Limits
 - Live audio is compared from peaks, not waveforms: no spectrum, and timing to a read's span (13 ms; LinuxBox ~100 ms, where latency
   steadiness, short gaps and the band envelope can't be judged reliably). Hole edges can still give a false onset next to them.
