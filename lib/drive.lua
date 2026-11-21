@@ -924,7 +924,10 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
     for _, p in ipairs(rooms) do round.units[#round.units + 1] = { "room", p[1], p[2] } end
     for _, k in ipairs({ "upkeep", "tools", "cm" }) do round.units[#round.units + 1] = { k } end
   end
-  if not J.ready() then return r and round.moved, r and (not round.told or round.moved > 0), r and r.err end
+  -- ("still copying" only with something to send: files moved, a copy planned or failing. Every round said "bringing the studio's copy of
+  -- this room up to date" at its first job, with nothing to send. rt-drive2, round 2)
+  local function work() return round.moved > 0 or round.work or next(round.failing) ~= nil end
+  if not J.ready() then return r and round.moved, r and work(), r and r.err end
   local t0, rooms_left = reaper.time_precise(), false
   -- (the open song's rooms again every SOON s while the round goes on: they were done at 03:54 on the desktop while the round read another
   -- song's 2,406 changes for an hour, and nothing new of yours went up meanwhile. Not one that failed: that's logged once a round. rt-drive2)
@@ -946,7 +949,9 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
       if left() <= 0 or J.full() then break end
       if not u.done and not (u[1] == "upkeep" and rooms_left) then
         local saved = drive.tools_at
+        local n0 = J.pending()
         local ok, a, b = J.unit(units[u[1]], u)
+        if u[1] ~= "cm" and J.pending() > n0 then round.work = true end -- (a copy unit planned writes; the sweep's removals aren't copying)
         if not ok and J.is_need(a) then
           if u[1] == "tools" then drive.tools_at = saved end -- (asked again once the cloud's two files are read)
         elseif not ok then
@@ -987,12 +992,13 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
     return x.moved, behind, x.err
   end
   -- ("up to date" said once, with the files moved since it was last said; a room looked at again stays "up to date" unless it moves some)
+  if copied then round.work = nil end -- (all it planned has come back: moved, or failing)
   if copied and (not round.told or round.moved > 0) then
     local m = round.moved
     round.told, round.moved = true, 0
     return m, false, round.err
   end
-  return r and round.moved, r and not copied and (not round.told or round.moved > 0), r and r.err
+  return r and round.moved, r and not copied and work(), r and r.err
 end
 
 return drive

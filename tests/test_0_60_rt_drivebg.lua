@@ -201,7 +201,7 @@ local function stand_in_worker(fail_paths)
   end
 end
 local function bg_pass(fail_paths, max)
-  local jobs, results = 0, {}
+  local jobs, results, total = 0, {}, 0
   for _ = 1, max or 200 do
     clock = clock + 2
     stand_in_worker(fail_paths)
@@ -210,7 +210,8 @@ local function bg_pass(fail_paths, max)
     local moved, more, err = drive.bg_step({ root = "/S", user = "James" }, "/C", "Song", { { HERE, THERE } }, 0.5)
     results[#results + 1] = { took = os.clock() - t0, cloud = main_cloud - before }
     if require("drivebg").job() then jobs = jobs + 1 end
-    if moved and not more then return moved, err, jobs, results end
+    -- (a result that says up to date carries the files moved since the last one did; the pass is over once its round is)
+    if moved and not more then total = total + moved; if not drive.bg_busy() then return total, err, jobs, results end end
   end
   error("the pass never finished")
 end
@@ -307,7 +308,7 @@ for _ = 1, 60 do
   clock = clock + 2
   stand_in_worker()
   local m, more = drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008)
-  if m and not more then big_moved = m; break end
+  if m and not more then big_moved = (big_moved or 0) + m; if not drive.bg_busy() then break end end
 end
 band.files = real_files
 local ups = 0
@@ -368,16 +369,19 @@ cm.tick = function() steps = steps + 1 end
 cm.sweeping = function() return steps < 40 end
 cm.progress = function() return steps end
 logs = {}
-local told, told_moved, taken_back, ended = 0, nil, false, false
+local told, told_moved, again, was_more, ended = 0, nil, 0, false, false
 for _ = 1, 300 do
   clock = clock + 2; stand_in_worker()
   local m, more = drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008)
-  if m and not more and cm.sweeping() then told_moved = told_moved or m; if m > 0 then told = told + 1 end end
-  if m and more and told_moved then taken_back = true end
+  if m and not more and m > 0 and cm.sweeping() then told_moved = told_moved or m; told = told + 1 end
+  if m then
+    if more and not was_more and told_moved then again = again + 1 end -- (Live sync's "bringing ... up to date" after the first one)
+    was_more = more
+  end
   if not drive.bg_busy() then ended = true; break end
 end
 check(told_moved and told_moved >= 10, "up to date while the sweep goes on, with the files moved: " .. tostring(told_moved))
-check(not taken_back, "and not taken back while the room is looked at again (only files it moves then are said: " .. told .. ")")
+check(again <= told - 1, "and not taken back while the room is looked at again, only for files it then moves: " .. again .. " " .. told)
 check(ended and steps >= 40 and drive.rest_until == -math.huge, "the round ends once the sweep is done, without resting: " .. steps)
 for _, s in ipairs(logs) do check(not s:find("nothing is moving", 1, true), "and never said it rested") end
 
@@ -453,6 +457,38 @@ for k = 0, 20 do
 end
 local _, fail_more, fail_said = rest_run(4, { [HERE .. "/events/" .. ev("James", 80).id .. ".json"] = true })
 check(fail_more == true and fail_said == 1, "a copy that keeps failing: not up to date, said once: " .. tostring(fail_more) .. " " .. fail_said)
+
+-- ---- 3h. "bringing the studio's copy ... up to date" only for a round with something to send (rt-drive2, round 2) ----
+-- The desktop logged it at the first job of most rounds (every 30 s to 3 minutes), the round then sending nothing. Live sync logs it when a
+-- result says more after one that didn't (drive_more); counted here the same way, over a whole round each.
+local function brings(add)
+  if add then local e = ev("James", add); put(HERE .. "/events/" .. e.id .. ".json", json.encode(e)) end
+  clock = clock + 200 -- (a new round of the same Live sync)
+  local n, was_more, moved = 0, false, 0
+  for _ = 1, 100 do
+    clock = clock + 2; stand_in_worker()
+    local m, more = drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008)
+    if m then
+      if more and not was_more then n = n + 1 end
+      was_more, moved = more, moved + m
+    end
+    if not drive.bg_busy() then break end
+  end
+  return n, moved
+end
+setup()
+drive, bg, cm = fresh()
+cm.tick, cm.sweeping = function() end, function() return false end
+for _ = 1, 3 do clock = clock + 200; bg_pass() end -- (settled; the bandmate's half-written change found not whole, left for later)
+local quiet = brings()
+check(quiet == 0, "a round with nothing to send never says it's bringing the copy up to date: " .. quiet)
+local busy, moved_up = brings(90)
+check(busy == 1 and moved_up >= 1, "one with a change does, once: " .. busy .. " " .. moved_up)
+check(brings() == 0, "and the next quiet one doesn't")
+check(not fs[HERE .. "/events/Bo-20261101-000099Z-99.json"], "the bandmate's half-written change isn't here yet")
+put(THERE .. "/events/Bo-20261101-000099Z-99.json", '{"type":"edit","id":"Bo-20261101-000099Z-99"}') -- (it finished arriving)
+brings()
+check(fs[HERE .. "/events/Bo-20261101-000099Z-99.json"], "and comes once it's whole (not asked again only while it stays as it was)")
 
 -- ---- 4. the real worker scripts ----
 os.remove, os.rename = real_remove, real_rename

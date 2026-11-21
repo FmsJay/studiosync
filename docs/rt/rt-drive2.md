@@ -139,9 +139,19 @@ Its "couldn't copy" line is logged once per file per session, so a retry that fa
 REAPER check after deploy: over an hour with edits and sweeps (`cloud storage` `at` moving every ~10 minutes), the log has no "nothing is
 moving though it isn't up to date" unless a "couldn't copy ..." line came before it in that round.
 
-Not changed: "Google Drive: bringing the studio's copy of this room up to date" is still logged at the first job of most rounds (every
-SOON/EVERY), even when the round then has nothing to send. That line predates rt-drive2: a new round says `more` until its first check is
-done.
+**"Google Drive: bringing the studio's copy of this room up to date" only with something to send (follow-up commit).** Live sync logs it
+when a pass result says `more` after one that didn't. It came at the first job of most rounds, every 30 s to 3 minutes, because a new round
+said `more` until its first check was done.
+- Now `more` (outside a rest) means work: files moved since "up to date" was last said, a copy unit put write steps into a plan since the
+  copy was last done (`drivebg.pending()` before and after each unit; the sweep's removals don't count), or a copy that keeps failing.
+- A round with nothing to send says `more = false` throughout. Its status is written as up to date and the line isn't logged.
+- A bandmate's cloud change the worker found "not whole yet" isn't planned again until its size or time in the listing changes. That's how
+  the old pass left it for later. Planned every pass, it made every look "copying"; it comes as soon as it's whole.
+- Test 3h, from a settled copy, using the same Live sync rule (a false-to-true change of `more` counts as one log line): a quiet round logs
+  it 0 times, a round with one new change once, the next quiet round 0. The half-written change comes once it's whole. The old code logs it
+  in the quiet round.
+- Tests 3b, 3e and the stand-in pass helper now read a pass as over when its round is (`more = false` alone no longer means the round has
+  done its work).
 
 ## Left / not done
 

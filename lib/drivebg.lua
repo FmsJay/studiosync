@@ -196,7 +196,17 @@ function P.read_json(p)
   local f = cached(p)
   return f and band.read_json(f)
 end
-function P.copy(a, z, json, tag) return push("C", a, z, json and "j" or "", tag, P.size(a) or 0) end
+local notwhole = {} -- cloud JSON file -> { size, mtime } it had when the worker found it not whole yet (a bandmate's change still arriving)
+function P.copy(a, z, json, tag)
+  -- (not again until it changes, as the old pass left one that didn't read for later: planned every pass, it made each look "copying". rt-drive2)
+  local w = json and notwhole[a]
+  if w then
+    local d, n = parent(a)
+    local l = d and get(d)
+    if l and l.size[n] == w.size and l.mtime[n] == w.mtime then return false end
+  end
+  return push("C", a, z, json and "j" or "", tag, P.size(a) or 0)
+end
 function P.rename(a, z) return push("M", a, z, "", "count") end
 function P.remove(p, guard, tag) return push("R", p, guard or "", "", tag == nil and "count" or tag) end
 function P.mkdir() return true end
@@ -218,6 +228,7 @@ function bg.peek(dir) return listing(dir) end
 function bg.want(dir) if not listing(dir) then want_list(dir) end end
 function bg.want_file(p) cached(p) end
 function bg.missing() return missing end
+function bg.pending() return plan and #plan.ops or 0 end -- (steps in the plan being made: drive.bg_step tells a unit that has work by it)
 -- What the worker last said of cloud file `p` (its size), or nil: never asks.
 function bg.known_size(p) local d, n = parent(p); local l = d and listing(d); return l and l.size[n] end
 
@@ -534,7 +545,7 @@ end
 local copy_said = {}
 local function collect(j, text)
   local r = bg.parse_result(text)
-  local moved, landed, failed, wrote = 0, {}, {}, {}
+  local moved, landed, failed, wrote, waits = 0, {}, {}, {}, {}
   for i, op in ipairs(j.ops) do
     local x = r[i]
     local ok = x and x[1]
@@ -552,12 +563,18 @@ local function collect(j, text)
       if op.tag == "landed" then landed[#landed + 1] = op.b end
     else
       -- (drive.bg_step: the copy isn't up to date while one stays failed; not a bandmate's change still arriving, left for later as before)
-      if (op.op == "C" or op.op == "M") and not (x and x[2] == "not whole yet") then failed[#failed + 1] = op.b end
+      if op.op == "C" and x and x[2] == "not whole yet" then waits[#waits + 1] = op.a
+      elseif op.op == "C" or op.op == "M" then failed[#failed + 1] = op.b end
       if op.op == "C" and x and not copy_said[op.a] then
         copy_said[op.a] = true
         band.log("couldn't copy " .. tostring(op.a:match("[^/]+$")) .. " for the cloud copy: " .. tostring(x[2]))
       end
     end
+  end
+  for _, a in ipairs(waits) do -- (as the job's own listing after its writes has it)
+    local d, n = parent(a)
+    local l = d and L[d] and listing(d)
+    if l and l.size[n] then notwhole[a] = { size = l.size[n], mtime = l.mtime[n] } end
   end
   for _, fn in ipairs(j.after or {}) do pcall(fn) end
   return { moved = moved, landed = landed, failed = failed, wrote = wrote }
@@ -615,6 +632,7 @@ end
 -- (tests)
 function bg.reset()
   L, F, dirty, plan, missing, job, fails, rest_until, last_submit, token, spawned_at = {}, {}, {}, nil, false, nil, 0, -math.huge, -math.huge, nil, -math.huge
+  notwhole = {}
   bg.C = direct
 end
 function bg.job() return job end
