@@ -191,7 +191,9 @@ end
 -- true when these words were just said for that answer (the rest of the same put-back: one Keep of a track logged its words 10 times), so
 -- the put-back needn't say them again. A new edit in the COOLDOWN after it is told why it wasn't asked, and when it can be. REAPER recheck,
 -- 0.59.49.79, rt-edits round 6
-claimask.SAID_GAP = 5 -- seconds: put-backs for one answer within this of each other are one put-back, said once
+-- (15, not 5: the full look after a Keep put the kept track back a second time 9 s after the first, with a cooldown line nobody's edit caused.
+-- REAPER recheck, 0.59.49.80, round 7. The cause is fixed in mirror.watch; this keeps any other such repeat quiet)
+claimask.SAID_GAP = 15 -- seconds: put-backs for one answer within this of each other are one put-back, said once
 function claimask.hold(cfg, b, who, name, pos)
   if type(who) ~= "table" or who.mode ~= "open" or not (who.is_claimed and who.is_claimed(name, pos)) then return nil end
   local th = claimask.which(who, name, pos)

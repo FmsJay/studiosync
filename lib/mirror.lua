@@ -2329,6 +2329,7 @@ end
 mirror.reopened = {}
 mirror.auto = {} -- proj .. oid -> its next send is a print StudioSync refreshed (Undo skips those)
 mirror.print_quiet = {} -- proj .. oid -> { key, at }: nothing to print for it as of then (W.prints)
+mirror.tracks_back = mirror.tracks_back or {} -- tostring(proj) -> { oid = event }: tracks put back by a look, settings again after their items (mirror.watch)
 mirror.unsent = {} -- proj .. oid -> changed here, not sent yet (settling, playing, a burst's rest): mirror.receive waits
 -- Items that can't go out (their audio couldn't be copied into the studio's folder or isn't on this computer, or their send threw), per
 -- project: Sync and exit counts them (mirror.waiting). Not mirror.unsent, which receive waits on: the band's version of such an item would
@@ -3315,10 +3316,12 @@ function mirror.only_retimed(proj, io, room_dir)
   local b = e and e.base_ev and mirror.event_file(room_dir, e.base_ev)
   return b and type(e.state) == "string" and type(b.state) == "string" and mirror.sans_tempo(e.state) == mirror.sans_tempo(b.state) or false
 end
-function mirror.will_wait(proj, ev)
+-- (putting_back: the band's version goes over this computer's own unsent one (W.put_back), so that flag doesn't hold it. The tab's published
+-- unsent list still named a held deletion as Keep put it back, so the put-back opened no undo point: REAPER recheck, 0.59.49.80, round 7)
+function mirror.will_wait(proj, ev, putting_back)
   -- (not on a track deleted since: receive returns before its unsent check, and a wrong "waits" left an empty point. Round 4 review, 0.59.49)
   if on_gone_track(proj, ev) then return false end
-  if mirror.unsent[tostring(proj) .. ev.oid] or mirror.unsent_elsewhere(proj)[ev.oid] then return true end
+  if not putting_back and (mirror.unsent[tostring(proj) .. ev.oid] or mirror.unsent_elsewhere(proj)[ev.oid]) then return true end
   local kind = ev.obj
   if mirror.PART[kind] and not mirror.find(proj, "track", ev.track or ("T" .. ev.oid:sub(2))) then return false end -- (no track: as apply finds)
   -- (and within FX_SET_GAP of the band's last chain on it, as apply waits. Round 4 review, 0.59.49)
@@ -4505,7 +4508,9 @@ function W.put_back(w, o, rev, evid, why)
       end
     end
     local ok, h = mirror.apply(proj, ev, media, opts.local_mix)
-    if ok then remember(proj, o.oid, ev.rev, h, ev.id, mirror.order_of(ev))
+    if ok then
+      remember(proj, o.oid, ev.rev, h, ev.id, mirror.order_of(ev))
+      if o.kind == "track" and type(ev.state) == "table" then local tb = mirror.tracks_back[tostring(proj)] or {}; tb[o.oid] = ev; mirror.tracks_back[tostring(proj)] = tb end
     elseif mirror.PART[o.kind] then return -- (waits for this tab to come to the front)
     elseif o.kind == "item" and mirror.in_editor == o.oid then return -- (open in the MIDI editor: once it's closed)
     elseif o.kind == "item" and ev.track and mirror.find(proj, "track", ev.track) then
@@ -4667,7 +4672,11 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
     if #files > 0 then ev.files = files end
   end
   local id = sync.post(cfg, song, room, ev)
-  if opts.sent then pcall(opts.sent, o, name, ev) end -- (Claims: what you edit becomes yours. lib/claimask.lua, rt-claims)
+  -- (not a move that is only the tempo map's: it travels, made under its map (`tl`), but nobody worked on that track. The desktop's own 90 bpm
+  -- marker sent 11 items and auto-claimed all three tracks. REAPER recheck, 0.59.49.80, round 7)
+  local tempo_only = ev.tl ~= nil and last and type(last.state) == "string" and type(o.state) == "string"
+    and (o.kind == "item" and mirror.sans_tempo(o.state) == mirror.sans_tempo(last.state) or o.kind == "env" and mirror.env_sans_tempo(o.state) == mirror.env_sans_tempo(last.state))
+  if opts.sent and not tempo_only then pcall(opts.sent, o, name, ev) end -- (Claims: what you edit becomes yours. lib/claimask.lua, rt-claims)
   pcall(require("compat").sent, proj, o.oid, name, o.kind, o.ptr, ev.auto) -- (changed again right after a bandmate's change, or by itself: lib/compat.lua)
   require("streams").offer_media(cfg, song, room, media, ev, last) -- (the media it newly names, to whoever's here over the direct link too. James, rt)
   if o.kind == "fx" and o.ptr then mirror.fx_quiet[rk], mirror.fx_quiet_presets[rk] = mirror.fx_params(o.ptr), mirror.fx_presets(o.ptr); knobs_agreed(proj, o, rk) end -- (what it's changed from, next time)
@@ -5625,7 +5634,7 @@ function mirror.watch(proj, cfg, song, room, opts)
   -- and Ctrl+Z after their next edit deleted what the claimer kept. A "StudioSync" point on top is StudioSync's Undo of their own last change
   -- (undo.native), as heals' are (round 5). REAPER recheck, 0.59.49.79, rt-edits round 6)
   w.back_point = function(ev)
-    if not w.back_open and not (ev and mirror.will_wait(proj, ev)) then reaper.Undo_BeginBlock2(proj); w.back_open = true end
+    if not w.back_open and not (ev and mirror.will_wait(proj, ev, true)) then reaper.Undo_BeginBlock2(proj); w.back_open = true end
   end
   w.propose = function(...) return W.propose(w, ...) end
   w.bus_note = function(...) return W.bus_note(w, ...) end
@@ -5692,6 +5701,21 @@ function mirror.watch(proj, cfg, song, room, opts)
     W.prints(w)
     if info then w.gone_oids = look_gone_oids(w, L, remembered, info) end
     W.gone(w)
+    -- (a track put back takes its settings again once its items are back, and is remembered as it reads then, as mirror.revert's finish does:
+    -- REAPER names a lane only once an item is in it, so a kept track read as changed at the next full look, which put it back a second time,
+    -- with a cooldown line nobody's edit caused. REAPER recheck, 0.59.49.80, round 7. After a burst's last pass.)
+    local tb = mirror.tracks_back[pk]
+    if tb and not mirror.more then
+      mirror.tracks_back[pk] = nil
+      for oid, ev in pairs(tb) do
+        local tr = mirror.find(proj, "track", oid)
+        local rev, h, evid, ord = mirror.known(proj, oid)
+        if tr and evid == ev.id and (h or "") ~= "" then
+          mirror.set_track_state(proj, tr, ev.state, opts.local_mix)
+          remember(proj, oid, rev, mirror.track_hash(mirror.track_state(proj, tr, opts.local_mix), opts.local_mix), evid, ord)
+        end
+      end
+    end
   end)
   if w.back_open then reaper.Undo_EndBlock2(proj, "StudioSync: put back what wasn't sent", -1); w.back_open = nil end
   if not ok_look then error(err_look, 0) end

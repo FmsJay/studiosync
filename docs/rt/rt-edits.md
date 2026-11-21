@@ -1003,3 +1003,54 @@ Same setup (Cross Test, desktop, laptop, LinuxBox on this build).
    only a Keep's?
 3. The panel's Restore page doesn't put a take onto its beat (AD, the History page does). Pass `map_of` there too (one line in
    `page_restore.lua`)?
+
+## Round 7 (rt-edits3, from the recheck of 0.59.49.80)
+
+Round 6 passed its checks 41 to 44 and 47. Two things were left. Files: `lib/mirror.lua`, `lib/claimask.lua`, `tests/test_0_60_rt_edits.lua`.
+Each fix's test fails with that fix switched off.
+
+**AK. A Keep's own put-back left no undo point, and the next full look put the track back again** (`mirror.will_wait`, `mirror.watch`,
+`claimask.SAID_GAP`). What happened: the track came back within 2 s, but REAPER's top point stayed "Remove tracks" until +11 s. Then a
+full look put it back a second time, made "StudioSync: put back what wasn't sent", and logged a cooldown line nobody's edit caused. In the
+first run, an edit made in that window went under the put-back point.
+- The missing point: the put-back's block opens only for a change that won't wait (`mirror.will_wait`), and that check counted the object's
+  own unsent flag. That includes the tab's published unsent list (ExtState `unsent <proj>`), which Live sync rewrites only after the look and
+  which still named the held deletion. So every object of the Keep's put-back read as "waits", and no block opened. Now `will_wait(proj, ev,
+  true)` from `W.put_back` leaves this computer's own unsent flags out: the band's version is going over them. The Keep's put-back is one
+  StudioSync point at once.
+- The second put-back: a track put back is made again before its items (W.gone puts tracks first). As `mirror.revert`'s finish already
+  knew, REAPER names a lane (and keeps fixed lanes) only once items are on it, so the track read differently once its items were back. Now,
+  after a look's last pass (not mid-burst), each track it put back gets its settings again (`set_track_state` with the band's version) and
+  its record takes the hash it reads as then (`mirror.tracks_back`). That's the same as revert's finish.
+- And so no repeat can add a cooldown line: put-backs for one answer within `claimask.SAID_GAP` are one put-back, and the gap is now 15 s
+  (it was 5). A new edit later in the minute still gets the cooldown line.
+- Not proven offline: which of REAPER's lane reads made the track differ at +11 s. The test's stand-in drops lane names set while a track has
+  no items. Check 48 is the proof.
+- Test: "Edits keep". Live sync's published unsent list is now written after each look. With it, the first put-back made no point before the
+  fix. The full look after puts nothing back and logs nothing, and the lanes keep their names (before: names lost).
+
+**AL. A tempo change auto-claimed every track whose items only moved for it** (`W.send`). The desktop's own 90 bpm marker sent 11 items as
+its changes (rt-edits round 3's `tl` design: they travel, made under their map) and auto-claimed all three tracks.
+- Rule: an item or automation change sent while REAPER may be moving things for a tempo change here (`tl` set), that differs from its last
+  version only in what a tempo change moves (`mirror.sans_tempo`, `mirror.env_sans_tempo`), doesn't claim its track. It still goes out, as
+  before.
+- An edit made in those seconds that changes anything else (a mute, a take, notes) still claims.
+- Left: an item you move by hand in those 15 seconds reads the same as one the map moved, so it doesn't claim. The next edit to it does.
+- Test: "Edits tempo claim" (11 items out and 4 tracks claimed before; 11 out and none claimed now; a mute just after claims Bass).
+
+**Round 6 question 1** (the Restore's timeline event has no `act`): nothing cheap and safe to do in my files. The only reader of a timeline
+event's `act` is StudioSync's Undo (`sync.act_timeline`), and that steps over Restores by design. "Undo this change" on a Restore row
+(`lib/page_restore.lua`) doesn't read timeline events. Giving the event an `act` changes nothing until that button does, so it stays
+James's question.
+
+### Round 7 REAPER checks
+
+Same setup.
+
+48. **Keep (AK):** Claims mode, LinuxBox claims XT Rec A (8 lanes). On the desktop delete XT Rec A; LinuxBox presses Keep.
+    - Within 2 s the track is back with its 8 lanes, named as before, and Edit > Undo reads "Undo StudioSync: put back what wasn't sent".
+    - For the next minute no second put-back and no "Not sent: ... s ago" line appear unless you edit it again.
+    - Make an edit right after the Keep, then Ctrl+Z: only your edit goes; XT Rec A stays.
+49. **Tempo change claims nothing (AL):** Claims mode, nothing claimed. On the desktop add a tempo marker (90 bpm). The items go out as
+    before (11 events with `tl`). Who controls shows no new claims of the desktop's, and the desktop's claims file has no new `auto` entries.
+    Then mute an item: its track is claimed.

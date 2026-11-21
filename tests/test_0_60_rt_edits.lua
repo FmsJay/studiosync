@@ -2095,6 +2095,37 @@ do
   same(A, B, "an Undo of a tempo change, with a bandmate's item since")
   print("rt-edits: an Undo that puts a tempo map back sends nothing more as yours")
 end
+-- ---- (round 7) REAPER recheck, 0.59.49.80: the desktop's own 90 bpm marker sent 11 items as yours and auto-claimed all three tracks. They
+-- travel (made under their map, `tl`), but a move that is only the tempo map's isn't work on a track: no auto-claim ----
+do
+  build("Edits tempo claim")
+  local claimed = {}
+  local function claims_look()
+    as(A)
+    A.F.clock = A.F.clock + 1
+    sync.watch_timeline(A.F.proj, A.cfg, song, room, yes)
+    mirror.watch(A.F.proj, A.cfg, song, room, { can = yes, mode = "open", quick = true, sent = function(_, name) claimed[name] = (claimed[name] or 0) + 1 end })
+    return new_events()
+  end
+  tick()
+  as(A)
+  reaper.SetTempoTimeSigMarker(A.F.proj, -1, 2, -1, -1, 90, 4, 4, false)
+  local items = 0
+  for _ = 1, 6 do for _, ev in ipairs(claims_look()) do if ev.obj == "item" then items = items + 1; assert(ev.tl, "(made under its map)") end end end
+  local names = {}
+  for n in pairs(claimed) do names[#names + 1] = n end
+  assert(items >= 5 and #names == 0, "what only the tempo map moved goes out (" .. items .. " items) and claims nothing (" .. table.concat(names, ", ") .. ")")
+  -- a real edit in the same seconds still claims its track
+  tick()
+  as(A)
+  set(item_named(bass, "Bass 3"), "MUTE", "1 0")
+  claims_look()
+  assert(claimed.Bass == 1, "an edit made just after the tempo change still claims its track")
+  tick()
+  recv(B)
+  same(A, B, "a tempo change that claimed nothing")
+  print("rt-edits: a move that is only the tempo map's travels and claims nothing")
+end
 
 -- ---- (round 6) REAPER recheck, 0.59.49.79: one Keep logged "Not sent: LinuxBox kept XT Rec A" 10 times; the put-back of a kept deleted track
 -- left REAPER's "Remove tracks" on top of the undo list; a second delete 46 s after a Keep was put back without a word of why ----
@@ -2106,20 +2137,43 @@ do
   claimask.present = function() return true end
   local b = { song = song, room = room }
   local who = { mode = "open", tracks = { drums = { user = "Bee", name = "Drums" } }, is_claimed = function(name) return name == "Drums" end }
-  local function claims_look()
+  local back_n = 0
+  local function claims_look(full)
     as(A)
     A.F.clock = A.F.clock + 1
-    mirror.watch(A.F.proj, A.cfg, song, room, { can = function(_, name) return name ~= "Drums" end, mode = "open", quick = true,
+    back_n = select(2, mirror.watch(A.F.proj, A.cfg, song, room, { can = function(_, name) return name ~= "Drums" end, mode = "open", quick = not full,
       is_claimed = who.is_claimed, owner_of = function(name) return name == "Drums" and "Bee" or "James" end,
-      ask = function(name, p) return claimask.hold(A.cfg, b, who, name, p) end })
+      ask = function(name, p) return claimask.hold(A.cfg, b, who, name, p) end }))
+    -- (as Live sync publishes after each look: this tab's unsent objects, read by Restore, Undo and the panel)
+    local ids, key = {}, tostring(A.F.proj)
+    for k in pairs(mirror.unsent) do if k:sub(1, #key) == key then ids[#ids + 1] = k:sub(#key + 1) end end
+    table.sort(ids)
+    reaper.SetExtState(band.SECTION, "unsent " .. key, table.concat(ids, ","), false)
     return new_events()
   end
   local function track_named(name) for _, t in ipairs(A.F.tracks) do if t.name == name then return t end end end
   local function lines(pat) local n = 0; for _, l in ipairs(logged) do if l:find(pat, 1, true) then n = n + 1 end end return n end
+  -- (Drums in two named lanes. A stand-in for REAPER's lanes on a track made again before its items: a lane named while the track has no
+  -- items keeps no name, so the kept track came back without them. Round 7)
+  as(A)
+  reaper.SetMediaTrackInfo_Value(drums, "I_NUMFIXEDLANES", 2)
+  reaper.GetSetMediaTrackInfo_String(drums, "P_LANENAME:0", "Kit", true)
+  reaper.GetSetMediaTrackInfo_String(drums, "P_LANENAME:1", "Room", true)
+  tick()
+  settle(A, true)
+  tick()
+  recv(B)
+  same(A, B, "(Drums in named lanes)")
+  local real_s = A.F.reaper.GetSetMediaTrackInfo_String
+  A.F.reaper.GetSetMediaTrackInfo_String = function(tr, k, v, set)
+    if set and k:find("^P_LANENAME:") and #tr.items == 0 then return true, "" end
+    return real_s(tr, k, v, set)
+  end
   tick()
   as(A)
   reaper.DeleteTrack(drums)
   assert(#claims_look() == 0 and not track_named("Drums"), "(deleting Bee's track asks her; held meanwhile)")
+  assert(#claims_look() == 0 and reaper.GetExtState(band.SECTION, "unsent " .. tostring(A.F.proj)) ~= "", "(still held, and published as unsent)")
   local ask
   for _, a in pairs(claimask._out()) do ask = a end
   assert(ask and ask.state == "asked", "(one ask)")
@@ -2130,7 +2184,13 @@ do
   assert(t and #t.items == 4, "Keep: the track is back with its items")
   assert(lines("Not sent: Bee kept Drums") == 1, "the Keep's words are said once for its put-back, not once per thing (" .. lines("Not sent: Bee kept Drums") .. ")")
   assert(#A.F.undos == 1 and A.F.undos[1] == "StudioSync: put back what wasn't sent" and not undo.native(A.F.undos[1]),
-    "the put-back is one StudioSync undo point on top, so Ctrl+Z doesn't take it for your own edit (" .. table.concat(A.F.undos, " / ") .. ")")
+    "the put-back is one StudioSync undo point on top, at once, so Ctrl+Z doesn't take it for your own edit (" .. table.concat(A.F.undos, " / ") .. ")")
+  -- (round 7) the looks after see nothing left to put back: no second put-back, no cooldown line nobody's edit caused
+  logged, A.F.undos = {}, {}
+  claims_look(true)
+  claims_look()
+  assert(back_n == 0 and #logged == 0 and #A.F.undos == 0, "the full look after puts nothing back again (" .. back_n .. ": " .. table.concat(logged, " | ") .. ")")
+  assert(select(2, real_s(track_named("Drums"), "P_LANENAME:1", "", false)) == "Room", "and its lanes have their names")
   settle(A, true)
   same(A, B, "a kept track: as it was everywhere")
   -- deleted again 46 s after the Keep: put back without asking (the cooldown), and told why and when it can ask
@@ -2146,6 +2206,7 @@ do
   for _, l in ipairs(logged) do if l:find("kept Drums", 1, true) and l:find("s ago", 1, true) and l:find("edit it again in", 1, true) then said = l end end
   assert(said and lines("kept Drums") == 1, "and said once why, with when it can be asked again (" .. table.concat(logged, " | ") .. ")")
   assert(#A.F.undos == 1, "(one point)")
+  A.F.reaper.GetSetMediaTrackInfo_String = real_s
   claimask.present = real_present
   claimask._reset()
   print("rt-edits: a Keep's put-back is said once, is one StudioSync undo point, and a delete in the minute after is told why")

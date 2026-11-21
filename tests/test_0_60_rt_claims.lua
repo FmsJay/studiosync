@@ -281,7 +281,7 @@ assert(#backs == 1 and backs[1].text:find("Chilio kept Bass") and backs[1].copy,
 refuse(nil)
 assert(#backs == 1 and backs[1].text:find("claimed by Chilio"), "not an ask: refused as before")
 local src = io.open("lib/mirror.lua", "rb"); local ms = src:read("a"); src:close()
-assert(ms:find("if opts.sent then pcall(opts.sent, o, name, ev) end", 1, true), "W.send reports what went (auto-claims)")
+assert(ms:find("if opts.sent and not tempo_only then pcall(opts.sent, o, name, ev) end", 1, true), "W.send reports what went (auto-claims), but not a move only the tempo map made (rt-edits round 7)")
 src = io.open("StudioSync - Live sync.lua", "rb"); local ls = src:read("a"); src:close()
 for _, want in ipairs({ 'claim_ask = function(d) require("claimask").on_ask(cfg, b, d) end', 'claim_answer = function(d) require("claimask").on_answer(cfg, b, d) end',
     'ask = function(name, pos) return require("claimask").hold(cfg, b, who, name, pos) end, sent = require("claimask").on_sent', 'require("claimask").flush, cfg, b, who, alone',
