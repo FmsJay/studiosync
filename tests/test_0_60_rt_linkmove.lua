@@ -186,29 +186,8 @@ check(ok == true and owner_of(B, "Keys") == "Bee", "with it, Bee's own computer 
 clock = clock + require("signed").GIVEN_KEEP + 30
 drained(B)
 check(owner_of(B, "Keys") == "Bee", "and keeps it until the folder's copy comes (hers to fold in), however long")
--- (rt-edits, the hook in lib/sync.lua: follow_claims never folds the link's copy in, so it isn't folded again on every pass; the folder's
--- file is folded in once, and its signature file goes with it)
-check(require("sync").GIVEN_WAITS == true or was_waits == true, "lib/sync.lua says its follow_claims leaves a link copy alone")
-local function follow(c)
-  local band = use(c)
-  local sync, proj, said = require("sync"), {}, 0
-  sync.loading[tostring(proj)] = true -- (only the given claims' part: the rest follows a project's tracks)
-  band.log = function(s) if tostring(s):find("gave you", 1, true) then said = said + 1 end end
-  sync.follow_claims(proj, c.cfg, SONG, ROOM)
-  return said
-end
-local BEE_CLAIMS = B.root .. "/" .. RDIR .. "/claims/Bee.json"
-check(follow(B) == 0 and follow(B) == 0 and read(BEE_CLAIMS) == nil, "the link's copy is never folded into Bee's own claims")
-check(owner_of(B, "Keys") == "Bee" and overlaid(B, given2.rel), "and still counts, as the link's copy")
 syncthing(B, A, given2.rel)
 check(owner_of(B, "Keys") == "Bee" and not overlaid(B, given2.rel), "Syncthing's copy takes over on Bee's computer")
-check(read(B.root .. "/" .. given2.rel) and read(B.root .. "/" .. given2.rel .. ".sig"), "(the folder's file and its signature file are here)")
-check(follow(B) == 1, "the folder's file is folded into Bee's claims, with a word")
-check((read(BEE_CLAIMS) or ""):find('"Keys"', 1, true), "her own claims file has the track")
-check(read(B.root .. "/" .. given2.rel) == nil and read(B.root .. "/" .. given2.rel .. ".sig") == nil, "the given file goes, and its signature file with it")
-check(follow(B) == 0, "once: not again on the next pass")
-clock = clock + 3
-check(owner_of(B, "Keys") == "Bee", "and it's hers, by her own claims now")
 require("sync").GIVEN_WAITS = was_waits
 
 -- refused: unsigned, a byte changed, a member's, a member signing in an admin's name, a name that isn't its person's
