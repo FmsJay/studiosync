@@ -22,4 +22,11 @@ assert(asked[1] == "root Saltmarsh/rooms/main/claims/given-Kim-20261116-010000.j
 claims["claims/given-Kim-20261116-010000.json"].by = "Mal"
 can, who = sync.authority({ root = "root" }, "Saltmarsh", "main", { host = "James" })
 assert(not who.tracks.bass, "from someone who may not give one: nobody's, as before")
+-- whose a given claim is: the name's start and the person the file says (a name that starts with yours and a hyphen isn't you)
+local lap = { user = "James-Laptop", by = "James", tracks = { "Drums" }, given = true }
+assert(sync.given_for("given-James-Laptop-20261121-041500.json", lap, "James-Laptop"), "for James-Laptop: theirs")
+assert(not sync.given_for("given-James-Laptop-20261121-041500.json", lap, "James"), "for James-Laptop: not James's, though the name starts the same")
+assert(sync.given_for("given-James-20261121-041500.json", { user = "James", by = "Bee" }, "James"), "for James: James's")
+assert(not sync.given_for("given-James-20261121-041500.json", { user = "Kim", by = "Bee" }, "James"), "a name for James that says Kim: nobody folds it")
+assert(not sync.given_for("given-James-20261121-041500.json", nil, "James"), "unreadable: not folded")
 print("ok")

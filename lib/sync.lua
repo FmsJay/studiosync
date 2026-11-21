@@ -412,6 +412,13 @@ local function given_ok(cfg, song, room, f, c)
   return type(c.by) == "string" and require("groups").may_manage(cfg.root, c.by)
     and require("trust").claim_ok(cfg.root, song .. "/rooms/" .. room .. "/claims/" .. f, c) == true
 end
+-- Is this given claim (its file's name, what it holds) for this person? By the name's start AND the person the file says it is for: the
+-- name alone matched another's whose name starts with yours and a hyphen ("given-James-" is how "given-James-Laptop-..." starts too), so
+-- James's computer folded James-Laptop's claim into its own and deleted the file before the laptop's Syncthing had it (rt-check3, 0.59.49.77).
+function sync.given_for(f, g, user)
+  local prefix = "given-" .. (tostring(user):gsub("[^%w%-_ ]", "")) .. "-"
+  return f:sub(1, #prefix) == prefix and type(g) == "table" and g.user == user
+end
 function sync.follow_claims(proj, cfg, song, room)
   do -- claims an admin gave me, into my own file
     local dir, prefix = sync.room_dir(cfg, song, room) .. "/claims", "given-" .. (cfg.user:gsub("[^%w%-_ ]", "")) .. "-"
@@ -421,7 +428,7 @@ function sync.follow_claims(proj, cfg, song, room)
       -- the folder's file is here. sync.GIVEN_WAITS says so to lib/signed.lua. rt-linkmove's hook 1, rt-edits)
       if f:sub(1, #prefix) == prefix and not band.overlay_of(dir .. "/" .. f) then
         local g, c = band.read_json(dir .. "/" .. f), sync.my_claims(cfg, song, room)
-        if type(g) == "table" and c and given_ok(cfg, song, room, f, g) then
+        if sync.given_for(f, g, cfg.user) and c and given_ok(cfg, song, room, f, g) then
           for _, kind in ipairs({ "tracks", "regions" }) do
             c[kind] = c[kind] or {}
             for _, n in ipairs(g[kind] or {}) do
