@@ -134,13 +134,15 @@ function together.skip_jump(skip, expected, pos)
   local s, e = together.skip_range({ skip = skip })
   return s ~= nil and expected >= s - 0.1 and math.abs((pos - e) - (expected - s)) < 0.5
 end
--- This computer's own time selection, put back once the skip is behind the playhead or playback stops (James, round 2: with loop points linked
--- to the time selection, the leader's selection moved its loop too). proj -> { s, e, past }. A selection you changed meanwhile is yours: left.
+-- This computer's own time selection, put back when playback stops (James, round 2: with loop points linked to the time selection, the
+-- leader's selection moved its loop too). Not sooner: REAPER's Play (skip time selection) skips whatever the selection is when the playhead
+-- reaches it, so one put back mid-play was skipped too, and that jump went out as a seek everyone followed (rt-r0 checks 5-6, fixed by rt-fix5).
+-- proj -> { s, e, set_s, set_e }. A selection you changed meanwhile is yours: left.
 together.own = {}
 function together.restore_own(proj)
   local o = together.own[proj]
   if not o then return false end
-  if reaper.GetPlayStateEx(proj) & 1 == 1 and reaper.GetPlayPosition2Ex(proj) < o.past then return false end
+  if reaper.GetPlayStateEx(proj) & 3 ~= 0 then return false end -- (paused too: a resumed play still skips)
   together.own[proj] = nil
   local s, e = reaper.GetSet_LoopTimeRange2(proj, false, false, 0, 0, false)
   if s ~= o.set_s or e ~= o.set_e then return false end
@@ -148,7 +150,7 @@ function together.restore_own(proj)
   return true
 end
 -- A start's play, fired here (Live sync): with a skip, REAPER's own Play (skip time selection) over that selection, so every computer skips
--- it as the leader does: the selection is set to the leader's for it, and this computer's own comes back after (restore_own). Not for a
+-- it as the leader does: the selection is set to the leader's for it, and this computer's own comes back at stop (restore_own). Not for a
 -- recording, nor from past it (a late start: together.plan), nor in a tab that isn't in front (REAPER's actions go to the tab in front: it plays
 -- through there, and says so). -> true when it skips.
 function together.play(proj, ev)
@@ -156,7 +158,7 @@ function together.play(proj, ev)
   if s and not ev.rec and reaper.GetCursorPositionEx(proj) < e then
     if reaper.EnumProjects(-1) == proj then
       local os_, oe = reaper.GetSet_LoopTimeRange2(proj, false, false, 0, 0, false)
-      if os_ ~= s or oe ~= e then together.own[proj] = { s = os_, e = oe, past = e, set_s = s, set_e = e } end
+      if os_ ~= s or oe ~= e then together.own[proj] = { s = os_, e = oe, set_s = s, set_e = e } end
       reaper.GetSet_LoopTimeRange2(proj, true, false, s, e, false)
       reaper.Main_OnCommandEx(40317, 0, proj) -- Transport: Play (skip time selection)
       reaper.DeleteExtState(require("band").SECTION, "play skip", false) -- (the extension noted this run too: it isn't a press of yours)
@@ -167,6 +169,15 @@ function together.play(proj, ev)
   reaper.OnPlayButtonEx(proj)
   return false
 end
+-- Record together on a computer with no armed track: REAPER's own Record shows its modal "No tracks are armed" box, which held LinuxBox's
+-- REAPER for 75 s (rt-r0). Live sync asks this first, and with none armed plays along instead of recording, and says so (NO_ARM). rt-fix5
+function together.armed(proj)
+  for i = 0, reaper.CountTracks(proj) - 1 do
+    if reaper.GetMediaTrackInfo_Value(reaper.GetTrack(proj, i), "I_RECARM") == 1 then return true end
+  end
+  return false
+end
+together.NO_ARM = "recording together, but no track is armed here: playing along without recording (arm a track to record with the others)"
 function together.go(proj, cfg, b, ev)
   local band = require("band")
   if ev.type == "start" and ev.loop == nil then ev.loop = together.loop_of(proj) end

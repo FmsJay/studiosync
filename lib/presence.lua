@@ -65,6 +65,10 @@ local function live_ext(cfg, key) return "presence live " .. tostring(band.info(
 function presence.from_msg(cfg, song, room, st, kind)
   if type(st) ~= "table" or type(st.user) ~= "string" or st.user == cfg.user or type(st.time) ~= "string" or (st.room ~= nil and st.room ~= room) then return false end
   local key = song .. "/" .. room
+  if kind == "presence" and st.hello ~= nil then -- (a hello from a computer that doesn't see this one as here: answered at once. rt-fix5)
+    st.hello = nil
+    pcall(presence.answer, cfg, song, room, st.user)
+  end
   fed = true
   live_st[key] = live_st[key] or {}
   local had = live_st[key][st.user]
@@ -175,6 +179,7 @@ function presence.status_due(s, fp, hub, quiet, reach, now)
   if now - (s.file_at or -math.huge) >= presence.FILE_QUIET or hub ~= s.file_hub then return "file" end
   if fp ~= s.fp or reach ~= s.reach or now - (s.at or -math.huge) > presence.HEARTBEAT then return "link" end
 end
+local last_info = {} -- song/room -> this computer's last status written (what a hello is answered with: presence.answer)
 -- One status write, from Live sync's pass and its heartbeat while a pass waits: write(info, link_only) is sync.write_status's. s (kept between
 -- calls) remembers the last send in info too. -> "file", "link" or nil (nothing due).
 function presence.put_status(cfg, song, room, s, info, fp, now, write)
@@ -186,17 +191,50 @@ function presence.put_status(cfg, song, room, s, info, fp, now, write)
   write(info, what == "link")
   s.fp, s.at, s.reach, s.info = fp, now, reach, info
   if what == "file" then s.file_fp, s.file_at, s.file_hub = fp, now, hub end
-  -- (and to the studio's computers whose person isn't here by this view, every HELLO_EVERY s: lib/direct.lua strangers. rt-catchup)
-  if now - (s.hello_at or -math.huge) >= presence.HELLO_EVERY then
-    s.hello_at = now
+  last_info[song .. "/" .. room] = info
+  -- (and a hello to the studio's computers whose person isn't here by this view: lib/direct.lua strangers. rt-catchup. Each gets its first as
+  -- soon as the link is up and may send to it, looked for every HELLO_LOOK s, then one every HELLO_EVERY s. The first hello used to be spent
+  -- on the first write whether the link was up yet or not, and one a device check missed waited 15 s. rt-fix5)
+  if now - (s.hello_look or -math.huge) >= presence.HELLO_LOOK then
     pcall(function()
       local direct = require("direct")
       if not (direct.available() and direct.live_available() and direct.ensure(cfg)) then return end
-      local to = direct.strangers(cfg, song, room)
-      if #to > 0 then direct.send_live(cfg, "presence", info, song, room, nil, to) end
+      s.hello_look = now
+      if now - (s.hello_at or -math.huge) >= presence.HELLO_EVERY then s.hello_at, s.helloed = now, {} end
+      local to = {}
+      for _, p in ipairs(direct.strangers(cfg, song, room)) do
+        if not s.helloed[p] then s.helloed[p] = true; to[#to + 1] = p end
+      end
+      if #to > 0 then direct.send_live(cfg, "presence", presence.hello_of(info), song, room, nil, to) end
     end)
   end
   return what
+end
+-- This computer's status marked as a hello (a copy: the mark never goes into the status Live sync keeps writing). An older StudioSync takes it
+-- as a plain status. Pure.
+function presence.hello_of(info)
+  local h = {}
+  for k, v in pairs(info) do h[k] = v end
+  h.hello = true
+  return h
+end
+-- A hello from `user`'s computer, answered at once with this computer's last status, to that person's computers only, at most once every
+-- ANSWER_EVERY s for each. (It used to wait for this computer's own next hello, up to 15 s: "nobody else is here" at 8 s on LinuxBox while
+-- the laptop ran, round 5 B. rt-fix5.) Only after this computer's first status write. Nothing when the link can't name them yet: their next
+-- hello, or this computer's heartbeat once from_msg made them here, brings them. -> true when sent.
+local answered = {} -- song/room NUL user -> when
+function presence.answer(cfg, song, room, user)
+  local key, now = song .. "/" .. room, reaper.time_precise()
+  local info, k = last_info[key], key .. "\0" .. user
+  if not info or now - (answered[k] or -math.huge) < presence.ANSWER_EVERY then return false end
+  local direct = require("direct")
+  local all, users = direct.studio_peers(cfg, song)
+  local to = {}
+  for _, p in ipairs(all) do if users[p] == user then to[#to + 1] = p end end
+  if #to == 0 then return false end
+  answered[k] = now
+  direct.send_live(cfg, "presence", info, song, room, nil, to)
+  return true
 end
 -- A bandmate whose status file is stale here (Syncthing paused or broken on either computer) but whose Live sync runs in this room is here
 -- all the same once the link hears them: put_status's hello reaches their computer, their status comes back over the link (from_msg), and
@@ -204,7 +242,12 @@ end
 -- of this script, before any hello could have been answered, you aren't read as alone while the link is on (link_hold), so
 -- full control isn't granted on stale files alone in the seconds before the link has heard who's here. rt-catchup
 -- (LINK_HOLD, not HOLD: named HOLD, it set the edit hold at the top from 3 s to 8 s for every edit. rt-p3)
-presence.HELLO_EVERY, presence.LINK_HOLD = 15, 8
+-- LINK_HOLD covers one round trip with margin (rt-fix5): the hello at the first pass (Live sync's start), answered at once (presence.answer),
+-- taken on the next link tick, read by presence.peers within 1 s and by the next pass within 2 s: about 3 s. The margin covers one device
+-- check that missed its 50 ms (the next look, HELLO_LOOK s on) and a bandmate that couldn't name this computer yet and reaches it by its
+-- heartbeat (every 5 s). It was 8 s with a hello every 15 s and none answered: LinuxBox said "nobody else is here" at 8 s and heard the
+-- laptop at 14 s (rt-linkmove round 5 B).
+presence.HELLO_EVERY, presence.HELLO_LOOK, presence.ANSWER_EVERY, presence.LINK_HOLD = 15, 2, 5, 12
 local hold_from
 function presence.link_hold(cfg)
   local now, direct = reaper.time_precise(), require("direct")

@@ -1336,15 +1336,17 @@ local function tick_body() -- returns true to keep going
         reaper.SetEditCurPos2(proj, from, false, false)
         if transport.click and (transport.countin or 0) > 0 then click_until(transport.pos or from) end
         together_take = transport.rec and not (transport.follow and theirs) -- (a take started together may be stopped together)
+        local no_arm = together_take and not together.armed(proj) -- (nothing armed: REAPER's modal "No tracks are armed" box held LinuxBox 75 s. rt-fix5)
+        if no_arm then together_take = nil; reaper.OnPlayButtonEx(proj) end -- (plays along instead: together.NO_ARM)
         if together_take then -- side by side: the one who records records, the rest listen
           if front ~= proj then band.log("recording together: switched to '" .. b.song .. "', as REAPER records only in the tab in front") end
           reaper.SelectProjectInstance(proj)
           reaper.Main_OnCommand(1013, 0) -- Transport: Record (the active project)
           if reaper.GetPlayStateEx(proj) & 4 == 0 then together_take = nil end -- (REAPER's Record Warning cancelled it: no take started together. 0.58.93)
-        else
+        elseif not no_arm then
           if together.play(proj, transport) then side.skip = transport.skip end -- (a start that skips a time selection skips it here too, and REAPER's jump over it isn't a seek: lib/together.lua. James, 2026-11-21)
         end
-        local said = transport.remote and string.format("%s from %.2f s: %s started it (they're producing you)", transport.rec and "recording" or "playing", from, tostring(transport.lead))
+        local said = no_arm and together.NO_ARM or transport.remote and string.format("%s from %.2f s: %s started it (they're producing you)", transport.rec and "recording" or "playing", from, tostring(transport.lead))
           or transport.rec and transport.follow and theirs
           and string.format("playing along with %s's recording from %.2f s (%.0f ms after the planned moment)", tostring(transport.user), from, (tnow - fire) * 1000)
           or string.format("%s together from %.2f s (%s; %.0f ms after the planned moment)", transport.rec and "recording" or "playing",
@@ -1367,7 +1369,7 @@ local function tick_body() -- returns true to keep going
     if reaper.GetToggleCommandStateEx(0, 40364) == 1 then reaper.Main_OnCommand(40364, 0) end
     click = nil
   end
-  if together.own[proj] then together.restore_own(proj) end -- (your own time selection back, once a start's skip is behind you: lib/together.lua)
+  if together.own[proj] then together.restore_own(proj) end -- (your own time selection back once playback stops after a start's skip: lib/together.lua)
   local lagbars = side_bars()
   local someone_follows = false -- (a cue file per press only when somebody's there to read it)
   if not lagbars then

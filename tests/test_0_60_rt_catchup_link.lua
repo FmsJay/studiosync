@@ -80,7 +80,7 @@ local function write(info, link_only) info.user, info.time, info.room = cfg.user
 local info = { n = 1 }
 presence.put_status(cfg, "Song", "main", s, info, "1", clock, write)
 local hello = sent[#sent]
-assert(#wrote == 1 and hello and hello.kind == "presence" and hello.d == info and hello.d.user == "Lin" and hello.song == "Song" and hello.room == "main"
+assert(#wrote == 1 and hello and hello.kind == "presence" and hello.d.n == 1 and hello.d.hello == true and info.hello == nil and hello.d.user == "Lin" and hello.song == "Song" and hello.room == "main"
   and #hello.to == 2 and hello.to[1] == ANN_P and hello.to[2] == BEE_P, "this computer's status goes to them over the link, though nobody is here")
 local n = #sent
 clock = clock + 1
@@ -121,7 +121,7 @@ assert(presence.link_hold(cfg) == true, "still within LINK_HOLD")
 clock = clock + 2
 assert(presence.link_hold(cfg) == false, "after LINK_HOLD: alone may be said, as before")
 -- (rt-p3: round 5 named it HOLD, which set the edit hold, presence.editing's and mirror's put-back rule, from 3 s to 8 s)
-assert(presence.HOLD == 3 and presence.LINK_HOLD == 8, "the edit hold stays 3 s; the link's start hold has a name of its own")
+assert(presence.HOLD == 3 and presence.LINK_HOLD == 12, "the edit hold stays 3 s; the link's start hold has a name of its own (12 s since rt-fix5)")
 
 -- ---- 4. an item that went with its deleted track isn't played ---------------------------------------------------------------------
 local drive = require("drive")

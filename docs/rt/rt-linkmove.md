@@ -1126,3 +1126,54 @@ delivering them out of order). Offline test only.
 - **driver.json over the link** is taken only from the new driver's own computer; the Syncthing path is still unchecked (anyone can write it).
 - **The "older folder copy" check** believes any folder copy whose signature checks out for its bytes, by any key (known here or not), when it
   says "older". The result is only ever that the link's copy, already checked, stays read; it lasts until the folder has a copy numbered as new.
+
+## rt-fix5: the hello answered at once, and Syncthing's command line on Linux (2026-11-21)
+
+Fixes for the round 5 B finding and the "Syncthing didn't answer" line above. Offline build and tests only; nothing here was run in REAPER.
+Files: `lib/presence.lua`, `lib/services.lua`, `tests/test_0_60_rt_fix5.lua`, `tests/test_0_60_rt_fix5_syncthing.lua`, two expected values in
+`tests/test_0_60_rt_catchup_link.lua`.
+
+**Item 2: "nobody else is here" at 8 s while a bandmate's Live sync ran.**
+- *The first hello isn't spent before the link is up.* It was taken at the first status write whether or not the link could send. Now the
+  stranger list is looked at every `HELLO_LOOK` (2) s once the link is up; each stranger gets its first hello at once, then one every
+  `HELLO_EVERY` (15) s as before. A computer whose device check missed its 50 ms gets its hello at the next look, not 15 s later.
+- *A hello is answered at once.* The hello is this computer's status with `hello = true` (on a copy; an older StudioSync takes it as a plain
+  status). A Live sync that takes one answers straight back with its own last status, to that person's computers only (`direct.studio_peers`,
+  the link's usual device check), at most once every `ANSWER_EVERY` (5) s per person (`presence.answer`). The answer carries no mark, so it
+  isn't answered back, and the mark isn't kept in the stored status.
+- *The hold covers the round trip.* `presence.LINK_HOLD` is 12 s (was 8). The hello at the first pass, answered at once, read within 1 s
+  (`presence.peers`) and by the next pass within 2 s is about 3 s; the rest is margin for one missed device check (2 s) and for a bandmate that
+  couldn't name this computer yet and reaches it by its heartbeat (5 s).
+- Cost: the stranger list is worked out at most every 2 s (the same device cache as `refresh_peers`); one answer per hello per 5 s.
+
+**Item 4: "Syncthing didn't answer" at every Live sync start on LinuxBox.** Found over SSH (read-only): Syncthing is `/usr/bin/syncthing`
+(1.27.2, settings in `~/.local/state/syncthing`); StudioSync finds that path (nothing set in ExtState); and the exact `get` answers `true` when
+run with REAPER's own environment copied from `/proc/<pid>/environ` (same HOME and PATH). The computer's ID, asked through StudioSync's
+background script (`/bin/sh` and a script file), always worked there, while every call made straight through REAPER's `ExecProcess` as
+`"/usr/bin/syncthing" cli ...` failed (also "couldn't stop syncing with Sam", `services.unshare`). So the difference is REAPER's own command
+line handling outside Windows (macOS's was already known to mangle quotes), not PATH or HOME. Fix: on a Mac or Linux every waited command in
+`lib/services.lua` (`exec`, so `tune_band_folder`, join, share, unshare, removal) goes through a self-deleting script run by `/bin/sh`, as the
+background, Tailscale and REST calls already did (`via_sh`; `run_now` now uses it rather than its own copy). Paths and names on those command
+lines are in the shell's single quotes there (`q`), so the shell can't read anything in them. Windows is unchanged. Not proven in REAPER: check
+E below.
+
+**Tests:** `test_0_60_rt_fix5.lua` part 2 (the link up after the first write, a stranger missed by its device check, the answer, the hold's
+size) and `test_0_60_rt_fix5_syncthing.lua` (as Linux: the absolute path found, every Syncthing call through `/bin/sh` and a script, a quote in
+`--home`), each failing with its change taken out.
+
+**Review later (security):** a hello now gets an answer: any computer whose link frames verify (the studio's key) and that the device check
+passes can draw one status message per 5 s per person it claims in `user`; the answer goes only to that person's own computers. Waited
+Syncthing commands outside Windows now pass through `/bin/sh`: every value on them is single-quoted (`q`, `label_q`) or a checked id
+(`[%w%-]`, device ids), as the background commands already were.
+
+### rt-fix5 REAPER checks
+
+D. **Round 5 B's timing (item 2).** Keep Autostart from restarting the others' Live sync (or quit their REAPER), as round 5 B says. Laptop:
+   realtime Live sync running in Cross Test / main. LinuxBox: Syncthing paused, start Live sync in the same room (t = 0). Expected on
+   LinuxBox: no "nobody else is here" while the laptop runs ("James-Laptop joined" or no alone line at all); the laptop in `direct peers ...
+   Cross Test/main` within about 3 s. Then stop the laptop's Live sync and wait: LinuxBox says "nobody else is here" only once the laptop's
+   status ages out (45 s), as before. Also start LinuxBox's Live sync with nobody else running: "nobody else is here" after about 12 s, not 8.
+E. **Syncthing on LinuxBox (item 4).** Start Live sync on LinuxBox in a fresh REAPER session. Expected: no "Syncthing didn't answer" line;
+   either "Syncthing's studio folder tuned for live use: ..." or nothing (already tuned). Over SSH, read-only: `syncthing cli config folders
+   studiosync-smiley-studios-a963 fswatcher-delays get` says `1`. No `bandsync-ask.sh` is left in `$XDG_RUNTIME_DIR`. On the Mac when it's
+   back: the same start, no "didn't answer".

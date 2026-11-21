@@ -84,21 +84,27 @@ front = "P"
 calls, sel, cursor = {}, { 10, 20 }, 12
 assert(together.play("P", { skip = { 10, 20 } }) and calls[#calls] == "action 40317", "from inside the selection: REAPER's Play (skip time selection) too")
 
--- (round 2) this computer's own time selection comes back once the skip is behind the playhead, or playback stops
+-- (round 2, rt-fix5) this computer's own time selection comes back when playback stops, never mid-play: REAPER's skip play skips whatever
+-- the selection is when the playhead reaches it, so one put back past the skip was skipped too (rt-r0 checks 5-6: LinuxBox's own 25-27 s)
 calls, sel, cursor, playstate, together.own = {}, { 1, 2 }, 4, 1, {}
 together.play("P", { skip = { 10, 20 } })
 playpos = 15
 assert(not together.restore_own("P") and sel[1] == 10, "still before the skip's end: the leader's selection stays")
 playpos = 20.2
-assert(together.restore_own("P") and sel[1] == 1 and sel[2] == 2 and together.own.P == nil, "past it: your own selection (and so a linked loop) is back")
-sel = { 1, 2 }
-together.play("P", { skip = { 10, 20 } })
-playstate, playpos = 0, 12
-assert(together.restore_own("P") and sel[1] == 1, "stopped first: back then")
+assert(not together.restore_own("P") and sel[1] == 10 and together.own.P, "past it, still playing: not yet (REAPER would skip your own selection too)")
+playstate = 2
+assert(not together.restore_own("P") and sel[1] == 10, "paused: not yet (a resumed play still skips)")
+playstate = 0
+assert(together.restore_own("P") and sel[1] == 1 and sel[2] == 2 and together.own.P == nil, "back at stop: your own selection (and so a linked loop) is back")
 sel, playstate = { 1, 2 }, 1
 together.play("P", { skip = { 10, 20 } })
-sel, playpos = { 30, 40 }, 25
+playstate, playpos = 0, 12
+assert(together.restore_own("P") and sel[1] == 1, "stopped before the skip's end: back then")
+sel, playstate = { 1, 2 }, 1
+together.play("P", { skip = { 10, 20 } })
+sel, playpos, playstate = { 30, 40 }, 25, 0
 assert(not together.restore_own("P") and sel[1] == 30 and together.own.P == nil, "a selection you made meanwhile is yours: left")
+playstate = 1
 sel = { 10, 20 }
 together.play("P", { skip = { 10, 20 } })
 assert(together.own.P == nil, "the leader's own selection is the skip: nothing to put back")

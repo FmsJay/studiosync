@@ -158,7 +158,7 @@ is. The leader (its own selection is the skip) has nothing to put back.
 
 ### Round 2 tests (`tests/test_0_60_rt_answers_skip.lua`, each failing with its change taken out)
 - The start from inside the selection carries the skip, and `together.play` runs 40317 from inside; a selection behind the start doesn't.
-- Own selection: kept while the playhead is before the end; back past it; back on stop first; a selection changed meanwhile is left alone;
+- Own selection: kept while the playhead is before the end; back at stop (rt-fix5; was "back past it"); a selection changed meanwhile is left alone;
   nothing kept on the leader.
 - The press note: taken once; an old one or one from another tab isn't a press; a follower's own run is taken by `together.play`.
 - `skip_jump`: the jump over the skip, not a seek elsewhere or without a skip.
@@ -217,3 +217,36 @@ jump is read as a seek (not `skip_jump`: `side.skip` is the leader's) and everyo
 Test is 22.754 s long, so LinuxBox stops at 22.8 s in any Play together, and a start past the end (rt-ears' 60.05 s) stops at once: that is
 rt-ears' "transport doesn't run" (set to 0 in memory for checks 4/7's late joiner, put back to 1). LinuxBox also shows REAPER's "No tracks are
 armed" box on Record together (it blocked REAPER 75 s; Live sync then said "REAPER didn't start (record ... was cancelled)").
+
+## rt-fix5: fixes from this re-check (2026-11-21)
+
+Offline build and tests only; nothing here was run in REAPER. Files: `lib/together.lua`, `StudioSync - Live sync.lua` (shared: the record
+start, four lines, and one comment), `tests/test_0_60_rt_answers_skip.lua`, `tests/test_0_60_rt_fix5.lua`. `lib/page_play.lua` not touched.
+
+**1. A follower's own time selection comes back at stop, never mid-play (checks 5 and 6).** `together.restore_own` waited for the playhead to
+pass the skipped selection's end; REAPER's Play (skip time selection) skips whatever the selection is when the playhead reaches it, so the
+follower then skipped its own selection and that jump went out as a seek everyone followed (LinuxBox's 25-27 s, the laptop's linked loop at
+30-34 s). Now the selection, and so a linked loop, is put back only once playback has stopped (paused counts as playing: a resumed play still
+skips). The round 2 rule "past the skip, or at stop, whichever comes first" is now "at stop".
+
+**3. Record together with nothing armed (rig note above).** Before REAPER's Record, Live sync asks `together.armed(proj)` (any track with
+`I_RECARM`). With none armed it doesn't record there: it plays along from the same place (so it stays in time with the take), logs it and puts
+it on the panel's "together" line: "recording together, but no track is armed here: playing along without recording (arm a track to record
+with the others)". REAPER's modal "No tracks are armed" box isn't reached.
+
+Tests (each fails with its change taken out): `test_0_60_rt_answers_skip.lua` "past it, still playing: not yet", "paused: not yet", "back at
+stop"; `test_0_60_rt_fix5.lua` part 3 (`together.armed`, and the Live sync wiring before `Main_OnCommand(1013)`).
+
+### rt-fix5 REAPER checks (desktop leads, laptop and LinuxBox follow, Cross Test)
+
+9. **Check 6 again (item 1).** Laptop: Options > "Loop points linked to time selection" on, own selection and loop at 30-34 s. LinuxBox: own
+   selection at 25-27 s. Desktop: selection over the verse, cursor before it, Alt+Space (40317) with both following at 0 bars. Let it play past
+   34 s (LinuxBox stops at 22.8 s by its own "Stop playback at end of project": set `stopprojlen` 0 in memory for this, as before).
+   - While playing, the followers keep the desktop's selection; nobody jumps at 25 s or 30 s, and no `James-Laptop` or `LinuxBox` start event
+     appears in `rooms/main/events/` during the play.
+   - Stop on the desktop: within a second the laptop's selection and loop are 30-34 s again, LinuxBox's 25-27 s.
+   - Pause instead of stop: the selections stay the desktop's until stopped.
+10. **Record together, nothing armed on LinuxBox (item 3).** Disarm every track on LinuxBox; arm a silent track (no input) on the desktop.
+    Panel > Record together. Expected on LinuxBox: no "No tracks are armed" box; its REAPER plays along in time; its log and panel line say
+    "recording together, but no track is armed here: playing along without recording ...". The desktop records as usual. Stop together
+    stops LinuxBox too. Put the arms back.

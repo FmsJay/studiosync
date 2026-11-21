@@ -8,7 +8,8 @@ local services = {}
 
 local WIN = reaper.GetOS():match("^Win") ~= nil
 
-local function q(s) return '"' .. s .. '"' end
+-- (a Mac or Linux: in a shell's single quotes, as every command with these goes through /bin/sh there: via_sh, background. rt-fix5)
+local function q(s) return WIN and ('"' .. s .. '"') or ("'" .. tostring(s):gsub("'", "'\\''") .. "'") end
 -- Syncthing's settings folder when it isn't where Syncthing looks by itself (a snap, a portable SyncTrayzor, a --home, a Flatpak REAPER's own
 -- XDG folders): the installer finds the one that runs and keeps it here, so every `syncthing cli`, the API key and a start reach that
 -- Syncthing, never a second one with a second identity. (Installer review, 0.58.78)
@@ -25,12 +26,13 @@ local function label_q(s) return q((tostring(s):gsub('["`$\\%%]', ""))) end
 -- timeout is what REAPER hands back then: "259" (still running) on Windows, curl's own "28" for its -m, or simply the whole limit gone. Measured,
 -- 0.58.93: the first version waited for an empty answer, which never came.
 local stuck_until = {}
+local via_sh -- (below, once TMP is known)
 local function exec(cmd, ms, key)
   key = key or "cli"
   local t0 = reaper.time_precise()
   local change = cmd:find(" add ", 1, true) or cmd:find(" delete", 1, true) or cmd:find(" set ", 1, true)
   if not change and (stuck_until[key] or 0) > t0 then return nil end
-  local r = reaper.ExecProcess(cmd, ms)
+  local r = reaper.ExecProcess(WIN and cmd or via_sh(cmd), ms)
   local hung = ms > 0 and (reaper.time_precise() - t0 >= ms / 1000 * 0.9 or (type(r) == "string" and (r:match("^259\n") or r:match("^28\n"))))
   if hung then
     if (stuck_until[key] or 0) <= reaper.time_precise() then band.log("Syncthing didn't answer within " .. math.floor(ms / 1000) .. " s: StudioSync leaves it alone for a minute") end
@@ -79,6 +81,15 @@ function background(name, cmd, every)
   return last[name]
 end
 services.background, services.TMP = background, TMP -- (lib/alerts.lua sends through it)
+-- A waited command on a Mac or Linux: through a script file run by /bin/sh, as the background runs, Tailscale's and the REST calls are.
+-- Started straight from REAPER, LinuxBox's every `"/usr/bin/syncthing" cli ...` failed ("Syncthing didn't answer" at each Live sync
+-- start, 124 times on 11-20) while the same command answered in a shell and through the background script; REAPER's own command line
+-- parsing outside Windows is the difference (macOS's already mangled quotes). The script deletes itself once read: some carry a key. rt-fix5
+function via_sh(cmd)
+  local sh = TMP .. "/bandsync-ask.sh"
+  band.write_atomic(sh, "rm -f \"$0\"\nexport TAILSCALE_BE_CLI=1\n" .. cmd .. "\n")
+  return "/bin/sh '" .. sh .. "'"
+end
 
 -- When REAPER quits: the background scripts and config files StudioSync left in the temp folder go (some hold Syncthing's API key or a
 -- Tailscale token: they stayed there for good. Review, 0.58.52). Each is made again when it's next needed.
@@ -351,12 +362,7 @@ local function st_api(path, method)
 end
 -- Syncthing's REST answer, now: for what someone just asked for, not for every frame. -> the text, or nil.
 local function run_now(cmd, secs, key) -- (key: its own back-off; a hung Syncthing made the token look gone and Tailscale calls fail. Review, 0.58.95)
-  if not WIN then
-    local sh = TMP .. "/bandsync-ask.sh"
-    band.write_atomic(sh, "rm -f \"$0\"\nexport TAILSCALE_BE_CLI=1\n" .. cmd .. "\n") -- (gone once read: it holds the API key)
-    cmd = "/bin/sh '" .. sh .. "'"
-  end
-  local r = exec(cmd, (secs + 1) * 1000, key or "api") or ""
+  local r = exec(cmd, (secs + 1) * 1000, key or "api") or "" -- (on a Mac or Linux through a script file, gone once read: it holds the API key. via_sh)
   if not r:match("^0\n") then return nil end
   local out = r:gsub("^0\n", "")
   return out ~= "" and out or nil
