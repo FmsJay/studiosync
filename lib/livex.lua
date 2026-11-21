@@ -12,7 +12,8 @@
 --    others, CPU headroom by the `cpu` every computer already publishes; never a guest or a computer handed on. The same answer on every
 --    computer from the same status files; the one mixing now keeps it unless another is clearly better. Otherwise the song's hub (lib/hub.lua).
 local band = require("band")
-local livex = { THEIR_EVERY = 2, THEIR_STEP = 10, THEIR_START = 100, NUDGE = 300, RTT_STEP = 20, BUSY = 75, SETTLE = 4, NET_EVERY = 300, GUESTS_EVERY = 10 } -- (NET_EVERY: the network probe starts a hidden PowerShell on Windows; a network type rarely changes)
+local livex = { THEIR_EVERY = 2, THEIR_STEP = 10, THEIR_START = 100, NUDGE = 300, RTT_STEP = 20, BUSY = 75, SETTLE = 4, NET_EVERY = 300, GUESTS_EVERY = 10,
+  LRTT_FLOOR = 10 } -- (NET_EVERY: the network probe starts a hidden PowerShell on Windows; a network type rarely changes. LRTT_FLOOR: livex.lrtt)
 local S = { their_at = -math.huge }
 livex.S = S
 
@@ -188,11 +189,29 @@ function livex.net_parse(out)
   if out:find("802%.3") or out:find("Hardware Port:", 1, true) or out:find("linux wired", 1, true) then return "wired" end
   return nil
 end
+-- The adapter of the route this computer's traffic takes now (rt-hubsmall: with Ethernet and Wi-Fi both up, the first default route listed,
+-- or Windows' lowest RouteMetric alone (both 0 on the desktop: it's the interface metric, 25 against 30, that sends traffic over Ethernet),
+-- could name the one not in use). The system's own route choice for a public address (nothing is sent):
+--  - Windows: Find-NetRoute (the route and interface metrics together, as Windows picks), then that adapter's PhysicalMediaType; through a
+--    VPN or a Tailscale exit node (no physical medium), the physical adapter with the lowest route + interface metric;
+--  - macOS: `route -n get default` (the primary service's interface), then its hardware port; through a VPN's utun, the first interface in
+--    `scutil --nwi`'s order that is a hardware port;
+--  - Linux: `ip route get` (the kernel's choice, metrics and policy rules included), then whether that interface is wireless; through
+--    Tailscale, WireGuard or a tunnel, the default route with the lowest metric that isn't one.
+-- Anything else: not known (nil), ranked as not wired, Health says "network not known". Built-in tools only.
+livex.NET_WIN = 'powershell -NoProfile -Command "$i=(Find-NetRoute -RemoteIPAddress 1.1.1.1 -ErrorAction SilentlyContinue | Select-Object -First 1).InterfaceIndex; ' ..
+  '$a=$null; if ($i) { $a=Get-NetAdapter -InterfaceIndex $i -ErrorAction SilentlyContinue }; if (-not $a -or $a.PhysicalMediaType -eq \'Unspecified\') { ' ..
+  '$a=Get-NetRoute -DestinationPrefix 0.0.0.0/0 -ErrorAction SilentlyContinue | ForEach-Object { $p=Get-NetAdapter -InterfaceIndex $_.ifIndex -Physical -ErrorAction SilentlyContinue; ' ..
+  'if ($p) { [pscustomobject]@{ a=$p; m=$_.RouteMetric+(Get-NetIPInterface -InterfaceIndex $_.ifIndex -AddressFamily IPv4).InterfaceMetric } } } | ' ..
+  'Sort-Object m | Select-Object -First 1 | ForEach-Object { $_.a } }; if ($a) { $a.PhysicalMediaType }"'
+livex.NET_UNIX = [[if [ "$(uname)" = Darwin ]; then ports=$(networksetup -listallhardwareports 2>/dev/null); port() { printf '%s\n' "$ports" | awk -v d="$1" '/Hardware Port:/{p=$0} /Device:/{if ($2==d) print p}'; }; ]] ..
+  [[p=$(port "$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')"); if [ -z "$p" ]; then for d in $(scutil --nwi 2>/dev/null | awk '/Network interfaces:/{for(i=3;i<=NF;i++) print $i}'); do p=$(port "$d"); [ -n "$p" ] && break; done; fi; echo "$p"; ]] ..
+  [[else d=$(ip -o route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="dev"){print $(i+1); exit}}'); ]] ..
+  [[case "$d" in ""|tailscale*|wg*|tun*) d=$(ip route show default 2>/dev/null | awk '{m=0; v=""; for(i=1;i<NF;i++){if($i=="dev")v=$(i+1); if($i=="metric")m=$(i+1)} if(v!~/^(tailscale|wg|tun)/) print m, v}' | sort -n | awk 'NR==1{print $2}');; esac; ]] ..
+  [[if [ -n "$d" ]; then if [ -d "/sys/class/net/$d/wireless" ] || [ -e "/sys/class/net/$d/phy80211" ]; then echo "linux wifi"; else echo "linux wired"; fi; fi; fi]]
 function livex.net_now()
   local win = reaper.GetOS():find("Win") ~= nil
-  local cmd = win and 'powershell -NoProfile -Command "$r=Get-NetRoute -DestinationPrefix 0.0.0.0/0 -ErrorAction SilentlyContinue | Sort-Object RouteMetric | Select-Object -First 1; if ($r) { (Get-NetAdapter -InterfaceIndex $r.ifIndex).PhysicalMediaType }"'
-    or [[if [ "$(uname)" = Darwin ]; then d=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}'); networksetup -listallhardwareports 2>/dev/null | awk -v d="$d" '/Hardware Port:/{p=$0} /Device:/{if ($2==d) print p}'; else d=$(ip route show default 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="dev"){print $(i+1); exit}}'); if [ -n "$d" ]; then if [ -d "/sys/class/net/$d/wireless" ]; then echo "linux wifi"; else echo "linux wired"; fi; fi; fi]]
-  return livex.net_parse(require("services").run_hidden("netkind", cmd, livex.NET_EVERY))
+  return livex.net_parse(require("services").run_hidden("netkind", win and livex.NET_WIN or livex.NET_UNIX, livex.NET_EVERY))
 end
 -- This computer's round trip to those it hears (ms, the mean of the extension's per-stream round trips), or nil. Pure.
 function livex.rtt_of(st)
@@ -206,6 +225,17 @@ end
 -- The same in tens of ms, as it goes in the status (and as this computer counts itself, so every computer ranks the same numbers): `cpu` is
 -- in tens too, and a status that changes is sent again, while a round trip moves by a few ms every second. Pure.
 function livex.rtt_tens(st) local r = livex.rtt_of(st); return r and math.floor(r / 10 + 0.5) * 10 or nil end
+-- What the status says (and this computer ranks itself by): the round trip in tens, held until it has moved RTT_STEP ms or more from what it
+-- says (the pick's own band, mix_better) and at most every LRTT_FLOOR s. (rt-hubsmall: a mean of round trips crosses a tens boundary every
+-- few seconds, so the status changed nearly every pass, and a computer the link didn't reach everywhere rewrote its status file every 2 s
+-- for Syncthing to carry: rt-hubfix part 2.) nil while live audio measures nothing. Pure but for its memory (S.lrtt).
+function livex.lrtt(st, now)
+  local r = livex.rtt_tens(st)
+  if not r then S.lrtt = nil; return nil end
+  local h = S.lrtt
+  if not h or (math.abs(r - h.v) >= livex.RTT_STEP and now - h.at >= livex.LRTT_FLOOR) then h = { v = r, at = now }; S.lrtt = h end
+  return h.v
+end
 -- Shared CPU in use from this computer: one of this song's tracks has its effects offloaded to a bandmate (lib/hops.lua records).
 function livex.scpu_here(proj)
   local ok, recs = pcall(function() return require("hops").records(proj) end)
@@ -216,7 +246,7 @@ end
 function livex.status_part(proj)
   local la = require("liveaudio")
   local okn, net = pcall(livex.net_now)
-  return { net = okn and net or nil, lrtt = la.available() and livex.rtt_tens(la.status()) or nil, scpu = livex.scpu_here(proj) or nil,
+  return { net = okn and net or nil, lrtt = la.available() and livex.lrtt(la.status(), reaper.time_precise()) or nil, scpu = livex.scpu_here(proj) or nil,
     lmix = type(la.S.hub) == "table" and la.S.hub.serve == true or nil }
 end
 
@@ -240,7 +270,7 @@ end
 -- Who mixes while shared CPU runs. cands: { user, net, rtt, cpu, can (its extension mixes), guest, off (handed the hub role on), lmix (mixes
 -- now), home (the song's hub), miss, blind (mix_cands) }. The one mixing now keeps it unless another is clearly better: reached by more of
 -- the others, wired against its Wi-Fi, a round trip RTT_STEP ms lower, or it's busy (cpu past BUSY: shared CPU's own line) while another
--- isn't. -> user, why ("best", "kept", "busy"), or nil. Pure.
+-- isn't. -> user, why ("best", "kept", "busy", or "reach": it replaces the one mixing only by being reached by more), or nil. Pure.
 function livex.mix_pick(cands)
   local ok, idle = {}, {}
   for _, c in ipairs(cands or {}) do
@@ -254,9 +284,10 @@ function livex.mix_pick(cands)
   end
   if not best then return nil end
   if holder and holder ~= best then
-    local clearly = (tonumber(holder.miss) or 0) > (tonumber(best.miss) or 0) or (best.net == "wired" and holder.net ~= "wired")
-      or (tonumber(best.rtt) and tonumber(holder.rtt) and holder.rtt - best.rtt >= livex.RTT_STEP)
-    if not clearly then return holder, "kept" end
+    local reach = (tonumber(holder.miss) or 0) > (tonumber(best.miss) or 0)
+    local faster = (best.net == "wired" and holder.net ~= "wired") or (tonumber(best.rtt) and tonumber(holder.rtt) and holder.rtt - best.rtt >= livex.RTT_STEP)
+    if not (reach or faster) then return holder, "kept" end
+    if not faster then return best, "reach" end -- (better reached alone: mix_decide waits the song hub's REACH_SETTLE, as a link drop moves it)
   end
   return best, (#idle == 0 and "busy") or "best"
 end
@@ -281,6 +312,7 @@ local function guests(root)
   guests_c = { at = reaper.time_precise(), root = root, set = ok and type(set) == "table" and set or guests_c.set or {} }
   return guests_c.set
 end
+livex.guests = guests -- (the studio's guests' names, read every GUESTS_EVERY s: lib/liveaudio.lua's vouch_merge too)
 -- The candidates from the room's statuses (presence.peers: those here) and this computer as it is now; users: peer -> name of those live
 -- audio reaches here (only they can be mixed for). -> list, shared CPU on anywhere in the room. Pure but for its arguments.
 -- Each one's miss and blind (who reaches whom: lib/hub.lua reach) count everyone in the room by the statuses, not only those on the link
@@ -319,7 +351,7 @@ function livex.mix_host(cfg, b, hub, users, st, laS)
   sts = okp and type(sts) == "table" and sts or {}
   local okc, cpu = pcall(function() return require("hops").cpu_now() end)
   local okn, net = pcall(livex.net_now)
-  local me = { user = cfg.user, net = okn and net or nil, rtt = livex.rtt_tens(st), cpu = okc and cpu or nil, can = require("liveaudio").hub_fit(),
+  local me = { user = cfg.user, net = okn and net or nil, rtt = livex.lrtt(st, reaper.time_precise()), cpu = okc and cpu or nil, can = require("liveaudio").hub_fit(),
     off = require("hub").off(cfg.root), lmix = type(laS.hub) == "table" and laS.hub.serve == true, scpu = livex.scpu_here(reaper.EnumProjects(-1)),
     hub = require("hub").status_part(cfg, b) } -- (its ext and sees, as its status says them: who reaches whom, mix_cands)
   local list, scpu = livex.mix_cands(sts, users, me, hub, guests(cfg.root))
@@ -337,7 +369,10 @@ function livex.mix_decide(mem, list, scpu, hub, me, now)
     local cur_ok = false
     for _, x in ipairs(list) do if x.user == mem.cur and x.can and not x.guest and not x.off then cur_ok = true end end
     if mem.cand ~= c.user then mem.cand, mem.since = c.user, now end
-    if cur_ok and now - mem.since < livex.SETTLE then c = nil end
+    -- (rt-hubsmall: a move only because more of the others reach it waits as long as the song's hub does for the same reason, hub.REACH_SETTLE:
+    -- a link that drops for a moment takes a name out of `sees` for LINK_GONE s and moved the mix after 4. Wired, round trip and busy come
+    -- from status values that change seldom (lrtt is held), so SETTLE only covers statuses arriving at different moments.)
+    if cur_ok and now - mem.since < (why == "reach" and require("hub").REACH_SETTLE or livex.SETTLE) then c = nil end
     if c then mem.cur, mem.cand, mem.since = c.user, nil, nil end
   end
   local host

@@ -609,8 +609,11 @@ end
 liveaudio.HEARD_S = 15
 -- Pure. list: the room's peers here; st: the extension's status (not_here_peers: address -> { ago }; peers[peer].heard_ago); peer_of(addr) ->
 -- the peer ("name:port") and its user when it's a studio computer trusted here, else nil; kept: peer -> { at, user } (kept between calls,
--- changed here); now. -> the list with the heard ones added (new, sorted), and peer -> user for those.
-function liveaudio.heard_merge(list, st, peer_of, kept, now)
+-- changed here); now; near: user -> true while that computer is still in the room here (its status under hub.VOUCH s old: late, not gone),
+-- nil: nobody. -> the list with the heard ones added (new, sorted), and peer -> user for those.
+-- (rt-hubsmall: one heard once stays while it's near, silent or not. A sender whose talkback goes to someone else sends this computer nothing,
+-- so it dropped off after HEARD_S though it was in the room all along, and came back only with its next word to everyone.)
+function liveaudio.heard_merge(list, st, peer_of, kept, now, near)
   local listed, out, users = {}, {}, {}
   for _, p in ipairs(list or {}) do listed[p] = true; out[#out + 1] = p end
   for addr, e in pairs(type(st.not_here_peers) == "table" and st.not_here_peers or {}) do
@@ -624,10 +627,50 @@ function liveaudio.heard_merge(list, st, peer_of, kept, now)
     local p = type(st.peers) == "table" and st.peers[peer]
     local ago = type(p) == "table" and tonumber(p.heard_ago)
     if ago then k.at = math.max(k.at, now - ago) end
-    if listed[peer] or now - k.at > liveaudio.HEARD_S then kept[peer] = nil else out[#out + 1] = peer; users[peer] = k.user end
+    if listed[peer] or (now - k.at > liveaudio.HEARD_S and not (near and near[k.user])) then kept[peer] = nil else out[#out + 1] = peer; users[peer] = k.user end
   end
   table.sort(out)
   return out, users
+end
+-- A computer neither side lists (rt-hubsmall; rt-roomlist left it): each one's status is late at the other (Syncthing behind, a dialog
+-- holding Live sync), so neither sends audio or link messages to the other, and heard_merge has nothing to go by. What the link does carry
+-- here: the statuses of the others, each with whom its own direct link reaches now (hub.sees, as lib/hub.lua vouches for a late computer).
+-- So one whose status here is late but under hub.VOUCH s (near) while a computer whose status is fresh here (fresh: presence.peers) says
+-- its link reaches it now goes on the list: this computer sends to it, its audio then reaches that one, whose heard_merge adds this one in
+-- turn, and both hear each other until a status lands. A guest's word isn't counted (guests: name -> true), as for the song's hub.
+-- Pure. list, users: the room's peers here and peer -> user; peer_of(user) -> its peer when it's a studio computer trusted here (as the room's
+-- own list asks), else nil. -> the list with those added (new, sorted), and peer -> user for those.
+function liveaudio.vouch_merge(list, users, fresh, near, peer_of, guests)
+  local listed, have, by = {}, {}, {}
+  for _, p in ipairs(list or {}) do listed[p] = true end
+  for _, u in pairs(users or {}) do have[u] = true end
+  for _, st in ipairs(fresh or {}) do
+    if type(st) == "table" and type(st.user) == "string" and not (guests or {})[st.user] then
+      have[st.user] = have[st.user] or false -- (fresh here: the room's own list has it, or can't have it (no Tailscale name): not this rule's)
+      for u in pairs(require("hub").seen(st)) do by[u] = by[u] or st.user end
+    end
+  end
+  local out, added = {}, {}
+  for _, p in ipairs(list or {}) do out[#out + 1] = p end
+  for user in pairs(near or {}) do
+    if by[user] and have[user] == nil then
+      local peer = peer_of(user)
+      if peer and not listed[peer] then listed[peer] = true; out[#out + 1] = peer; added[peer] = user end
+    end
+  end
+  table.sort(out)
+  return out, added, by
+end
+-- A studio computer by its person's name: its devices file's Tailscale name, then direct.studio_peer (its own computer wrote that file, a
+-- guest's list has the song), as heard_merge's address -> computer. -> its peer, or nil.
+function liveaudio.peer_of_user(cfg, song, user)
+  local t = require("groups").tailnet(cfg.root)
+  local d = t and band.read_json(cfg.root .. "/_band/devices/" .. require("trust").user_file(user))
+  local name = type(d) == "table" and d.user == user and type(d.ts) == "table" and d.ts[t.suffix]
+  if type(name) ~= "string" then return nil end
+  local direct = require("direct")
+  local peer, u = direct.studio_peer(cfg, song, name .. ":" .. direct.port())
+  return u == user and peer or nil
 end
 -- A not_here address ("100.x.y.z:port") -> the studio computer's peer and user, or nil: its Tailscale name from `tailscale status`, then the
 -- studio's devices files (direct.studio_peer). The connection without Tailscale's synthetic addresses aren't looked up (lib/nat.lua lists those).
@@ -682,19 +725,39 @@ function liveaudio.tick(cfg, b, proj)
   if nok and type(nlist) == "table" and #nlist > 0 then list, users = nat.merge(list, dev_of, users, nlist, nusers, ndevs) end
   if b and b.song then -- (and those whose live audio comes here though this room doesn't list them yet: rt-roomlist)
     S.heard = S.heard or {}
-    local hl, hu = liveaudio.heard_merge(list, st, function(addr) return liveaudio.peer_of_addr(cfg, b.song, addr) end, S.heard, now)
-    if #hl > #list then
-      local u = {}
-      for k, v in pairs(users or {}) do u[k] = v end
+    local presence, room = require("presence"), b.room or "main"
+    local okn, nl = pcall(presence.here, cfg, b.song, room, require("hub").VOUCH) -- (still in the room here: late, not gone. rt-hubsmall)
+    local near = {}
+    for _, u in ipairs(okn and type(nl) == "table" and nl or {}) do near[u] = true end
+    local hl, hu = liveaudio.heard_merge(list, st, function(addr) return liveaudio.peer_of_addr(cfg, b.song, addr) end, S.heard, now, near)
+    -- (and those neither side lists while a computer here reaches them: rt-hubsmall. Their peer looked up at most every 10 s each)
+    local okf, fresh = pcall(presence.peers, cfg, b.song, room)
+    local u = {}
+    for k, v in pairs(users or {}) do u[k] = v end
+    for k, v in pairs(hu) do u[k] = v end
+    S.vpeer = S.vpeer or {}
+    local okv, vl, vu, by = pcall(liveaudio.vouch_merge, hl, u, okf and type(fresh) == "table" and fresh or {}, near, function(user)
+      local c = S.vpeer[user]
+      if not (c and now - c.at < 10) then local okp, p = pcall(liveaudio.peer_of_user, cfg, b.song, user); c = { at = now, peer = okp and p or nil }; S.vpeer[user] = c end
+      return c.peer
+    end, require("livex").guests(cfg.root))
+    if not okv then vl, vu, by = hl, {}, {} end
+    if #vl > #list then
+      S.heard_said = S.heard_said or {}
       for k, v in pairs(hu) do
-        u[k] = v
-        S.heard_said = S.heard_said or {}
         if not S.heard_said[k] then
           S.heard_said[k] = true
           band.log("live audio: " .. tostring(v) .. "'s computer sends here before this room lists it (its status is late here), so it's heard and hears you meanwhile")
         end
       end
-      list, users = hl, u
+      for k, v in pairs(vu) do
+        u[k] = v
+        if not S.heard_said[k] then
+          S.heard_said[k] = true
+          band.log("live audio: " .. tostring(v) .. "'s status is late here, but " .. tostring(by[v]) .. "'s computer reaches it, so you send to it meanwhile (it then hears you, and you it)")
+        end
+      end
+      list, users = vl, u
     end
   end
   if type(users) == "table" then -- (who each peer is, for the panel and the actions: the cue mix and talkback go by name)
