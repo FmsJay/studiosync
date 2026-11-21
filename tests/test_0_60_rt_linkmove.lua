@@ -545,6 +545,86 @@ check(ok == true and admins_on(R) == "Ann,Bee", "the owner's own file, the same 
 local setting = json({ id = STUDIO, name = "LM", owner = "Olive", admins = { "Ann", "Bee" }, roles_at = 5, direct = true })
 check(deliver(R, { rel = BJ, body = setting, side = resign(ann, BJ, setting, FAR + 2) }) == true, "an admin's band.json that leaves the roles as they are still goes in at once")
 
+-- ==== A person's own claims file (rooms/<room>/claims/<person>.json): signed, and over the link first (rt-linkmove3) ==================================
+-- The finding (three computers): Bee let go of a claim given to her, from the panel; Live sync elsewhere had it at once (the "claim"
+-- message), but the panel on a third computer read it only when Syncthing brought her claims file. Now her file is a signed own file:
+-- Cy's Live sync takes it from the link and the panel beside it reads it at once.
+do
+  local CL = RDIR .. "/claims/Bee.json"
+  syncthing(W, B, CL) -- (Cy's computer has Bee's claims as Syncthing last brought them: Keys, given to her and folded in above)
+  clock = clock + 3
+  check(owner_of(WP, "Keys") == "Bee", "before: the panel on Cy's computer shows Keys as Bee's")
+  local before = read(W.root .. "/" .. CL)
+  -- she lets it go
+  use(B)
+  clock = clock + 2
+  require("sync").set_claims(B.cfg, SONG, ROOM, { tracks = {}, regions = {}, times = {} })
+  check(read(B.root .. "/" .. CL .. ".sig"), "a person's claims file is signed as it's written")
+  local cl1 = drained(B, CL)[1]
+  check(cl1 and cl1.side, "and goes over the link")
+  W.asked = 0
+  ok, why = deliver(W, cl1)
+  check(ok == true and owner_of(W, "Keys") == nil and W.asked == 0, "her release counts in Cy's Live sync at once, by its signature: " .. tostring(why))
+  check(owner_of(WP, "Keys") == nil and read(W.root .. "/" .. CL) == before, "and in the panel, before Syncthing's copy (nothing written into the folder)")
+  -- she claims something
+  use(B)
+  clock = clock + 2
+  require("sync").set_claims(B.cfg, SONG, ROOM, { tracks = { "Horns" }, regions = {}, times = {} })
+  local cl2 = drained(B, CL)[1]
+  ok, why = deliver(W, cl2)
+  check(ok == true and owner_of(WP, "Horns") == "Bee" and WP.asked == 0, "a claim she makes: in the panel at once: " .. tostring(why))
+  -- an older replay: refused against the number taken, and against a newer file in the folder no check has looked at yet
+  ok, why = deliver(W, cl1)
+  check(ok == false and why:find("older") and owner_of(WP, "Horns") == "Bee", "her release replayed after her new claim: refused (" .. tostring(why) .. ")")
+  syncthing(O, B, CL)
+  ok, why = deliver(O, cl1)
+  check(ok == false and why:find("older") and owner_of(O, "Horns") == "Bee", "older than the folder's copy: refused (" .. tostring(why) .. ")")
+  -- her file back to words it had before (a "yes" kept by the words, trust.own_file_ok): its number is taken all the same, so the copy in
+  -- between can't be replayed over it
+  local wp = json({ user = "Bee", tracks = { "Sax" }, regions = {}, times = {}, time = "2098-01-01T00:00:00Z" })
+  local wq = json({ user = "Bee", tracks = {}, regions = {}, times = {}, time = "2098-01-01T00:00:01Z" })
+  local q = { rel = CL, body = wq, side = resign(bee, CL, wq, FAR + 11) }
+  check(deliver(O, { rel = CL, body = wp, side = resign(bee, CL, wp, FAR + 10) }) == true and deliver(O, q) == true, "(two more of hers)")
+  check(deliver(O, { rel = CL, body = wp, side = resign(bee, CL, wp, FAR + 12) }) == true and owner_of(O, "Sax") == "Bee", "her file back to its earlier words")
+  ok, why = deliver(O, q)
+  check(ok == false and owner_of(O, "Sax") == "Bee", "the copy in between, replayed: refused (" .. tostring(why) .. ")")
+  -- refused: unsigned, another file under her signature, someone else's signature, a file not named for who it says, a given claim's words
+  local fc = json({ user = "Bee", tracks = { "Lead" }, regions = {}, times = {}, time = "2099-01-01T00:00:00Z" })
+  check(deliver(W, { rel = CL, body = fc }) == false, "unsigned: refused")
+  check(deliver(W, { rel = CL, body = fc, side = cl2.side }) == false, "another file under Bee's signature: refused")
+  ok, why = deliver(W, { rel = CL, body = fc, side = resign(moe, CL, fc, FAR) })
+  check(ok == false and owner_of(WP, "Lead") == nil and owner_of(W, "Horns") == "Bee", "Moe signing Bee's claims: refused, her real ones still read (" .. tostring(why) .. ")")
+  local CM = RDIR .. "/claims/Moe.json"
+  check(deliver(W, { rel = CM, body = fc, side = resign(bee, CM, fc, FAR) }) == false and owner_of(W, "Lead") == nil, "a file named for Moe that says it's Bee's: refused")
+  local fg = json({ user = "Bee", tracks = { "Lead" }, regions = {}, times = {}, time = "2099-01-01T00:00:00Z", given = true })
+  check(deliver(W, { rel = CL, body = fg, side = resign(bee, CL, fg, FAR) }) == false, "a given claim's words in her own file: refused")
+  check(owner_of(W, "Horns") == "Bee" and owner_of(WP, "Horns") == "Bee", "(and her real claims stand everywhere here)")
+  -- Syncthing's copy arrives later: nothing changes, the link's copy goes, off the shared list, nothing sent on
+  syncthing(W, B, CL)
+  drained(W)
+  check(owner_of(W, "Horns") == "Bee" and owner_of(WP, "Horns") == "Bee" and not overlaid(W, CL) and not overlaid(WP, CL) and #W.sent == 0,
+    "Syncthing's copy takes over in Live sync and the panel, and the claim stands")
+  check(not (W.ext["linked files"] or ""):find("\t" .. CL .. "\t", 1, true), "and the copy is off the shared list")
+  -- an older build rewrites her file (unsigned, the old signature file left beside it): read as before, and judged by Syncthing's word
+  write(W.root .. "/" .. CL, json({ user = "Bee", tracks = { "Organ" }, regions = {}, times = {}, time = "2030-01-01T00:00:00Z" }))
+  W.by_file[CL] = bee.dev:sub(1, 7)
+  clock = clock + 3
+  W.asked = 0
+  check(owner_of(WP, "Organ") == "Bee", "an older build's unsigned claims file reads as before")
+  check(require("trust").own_file_ok(W.root, CL, "Bee", 0) == true and W.asked >= 1, "a stale signature file: Syncthing's word, as before")
+  -- a computer with no keys learnt (the Syncthing path alone): an unsigned file counts by its name, as it always has
+  local P2 = studio(computer(moe), false)
+  write(P2.root .. "/" .. CL, json({ user = "Bee", tracks = { "Organ" }, regions = {}, times = {}, time = "2030-01-01T00:00:00Z" }))
+  check(owner_of(P2, "Organ") == "Bee", "an unsigned claims file from Syncthing counts, as before")
+  -- receiving on an older build: not a kind its link takes, refused without a word
+  local OLD2 = studio(computer(moe), true)
+  use(OLD2)
+  require("signed").LINK.claims = nil
+  OLD2.logged = nil
+  local took, said = deliver(OLD2, cl2)
+  check(took == false and said:find("link") and OLD2.logged == nil and not overlaid(OLD2, CL), "an older build ignores a claims file over the link (" .. tostring(said) .. ")")
+end
+
 -- ==== a computer on an older build ====================================================================================================================
 -- receiving (36f90ae: these kinds aren't ones its link takes): refused without a word, and Syncthing's copy works as before
 local OLD = studio(computer(cy), true)

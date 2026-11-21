@@ -529,3 +529,114 @@ configuration. Studio-wide files to computers outside Live sync's room (see item
   event's own path; the ids stop after a round that brings nothing; bad lists, rooms, oversized lists, path-like ids, asks from a computer
   not here and ids it doesn't hold are refused.
 - `python tests/run.py --no-luals`: fails 0 in a clean clone of the commit.
+
+## Round 4: a person's own claims file over the link first (rt-linkmove3, 2026-11-21)
+
+Found in the REAPER recheck on three computers: a member released a claim that had been given to them, from the panel. Live sync on the
+other computers saw it at once (the `claim` message), but a panel-like reader on LinuxBox, which reads claims through `sync.authority` as
+the ImGui panel does, still showed the claim for 3.2 s. `rooms/<room>/claims/<person>.json` wasn't one of signed's kinds, so the panel
+waited for Syncthing. Offline only: nothing here was run in REAPER.
+
+### Summary for James
+
+- **A claim made or let go now reaches the panel as fast as a given claim does** (about a second): the person's claims file is signed as it
+  is written and goes over the link, and the panel reads the link's copy.
+- **Only that person's own computer counts.** Over the link a claims file is taken only when it is named for the person it says it is
+  from, isn't a given claim's words, and is signed by the computer that person's devices file names (`trust.own_file_ok`, as for a hub
+  handover or a track order).
+- **One change is still needed in `lib/sync.lua`** (which I may not touch) for computers with js_ReaScriptAPI: its claims cache would
+  otherwise go on reading an older claims file that hasn't changed in the folder. Without it, a brand-new claims file, and any claims file
+  changed in the last minute, already show at once; an older one waits for Syncthing as before. See "Hook".
+- **Nothing old breaks.** An older build's unsigned claims file reads as before (by its name), a stale signature file falls back to
+  Syncthing's word, and an older build ignores the link message.
+
+### What changed
+
+| Piece | Where |
+|---|---|
+| New signed kind `claims`: `<song>/rooms/<room>/claims/<file>.json`, after `given` (same folder), and in `LINK`. | `lib/signed.lua` `KINDS`, `LINK` |
+| Whose file it is: its `user`, when the file is named for that user (`claims/<user>.json`, as `sync.claims_path` names it) and it isn't a given claim (`given` absent). `trust.file_ok` already sends every `signed.owner` kind to `trust.own_file_ok`, so `lib/trust.lua` needed no change. | `lib/signed.lua` `owner` |
+| Every accepted link copy now takes its number at once, not only through trust's `took`. `trust.own_file_ok` caches a "yes" by the file's words, so a person's file going back to words it had before left its number untaken, and the copy in between could be replayed over it. Given claims keep their "spent" mark as before. | `lib/signed.lua` `accept` |
+
+The write hook already reaches `rooms/` (`lib/band.lua` `signed_hook`), and every writer of a claims file goes through `band.write_json` on
+its own person's computer (`sync.set_claims`, `sync.follow_claims`, `band.rename`), so the panel's own Claim and Release are signed too and
+leave at Live sync's next tick (the outbox is the shared ExtState). Not touched: `lib/band.lua`, `lib/trust.lua`, `lib/sync.lua`.
+
+### Hook in a file I may not touch
+
+**`lib/sync.lua`, `sync.claims_files`: never the cache over a link copy.** With `JS_File_Stat` (js_ReaScriptAPI) the cache keeps a claims
+file's words by the folder file's size and time once settled (60 s). A link copy is read in place of an unchanged folder file, so the cache
+went on returning the folder's older words, and caching the link copy's words under the folder file's key would outlive the copy. Two
+lines change (the `if` and the `e =` in the stat branch):
+
+```lua
+      if key and e and e.key == key and e.settled and not band.overlay_of(path) then c = e.c
+      else
+        c = band.read_json(path)
+        -- (a read that failed, the file busy mid-replace, isn't kept: it would hide that claim until the file changed again)
+        -- (nor the direct link's copy, read in place of the folder's file until that changes: kept under the folder file's size and time,
+        -- it outlived the copy. lib/signed.lua, rt-linkmove3)
+        e = key and c and not band.overlay_of(path) and { key = key, c = c, settled = (band.file_age(mt) or -1) >= sync.CLAIMS_SETTLE } or nil
+      end
+```
+
+`band.overlay_of` returns at once when this script holds no link copies. Live sync itself doesn't depend on this (its `sync.live_claims`
+already has the newer claims); the panel and other readers do.
+
+### Tests (`tests/test_0_60_rt_linkmove.lua`, block "A person's own claims file")
+
+- Bee releases Keys (given to her and folded in): the file is signed as written and goes over the link; Cy's Live sync counts the release
+  at once by its signature (Syncthing not asked), and the panel beside it shows it before Syncthing's copy, with nothing written into the
+  folder. Then she claims Horns: in the panel at once.
+- An older replay: her release replayed after her new claim is refused by the number taken; on another computer it is refused against a
+  newer file in the folder no check has looked at; her file going back to earlier words still takes its number, so the copy in between
+  can't be replayed (fails without the `accept` change).
+- Refused: unsigned, another file under her signature, Moe's signature on her file, a file named for Moe that says it's Bee's, a given
+  claim's words in her own file. Her real claims stay read in Live sync and the panel.
+- Syncthing's copy later: nothing changes, both scripts let the link copy go, it leaves `linked files`, nothing is sent on.
+- An older build: its unsigned rewrite (stale signature file beside it) reads as before and `trust.own_file_ok` falls back to Syncthing;
+  a computer with no keys learnt reads an unsigned file by its name; a receiver whose link doesn't know `claims` ignores it silently.
+- The stand-in REAPER has no working `JS_File_Stat`, so these run the cache-less branch of `sync.claims_files`. The hook above was checked
+  in a scratch copy with a `JS_File_Stat` stand-in on the panel (see the report).
+
+`python tests/run.py --no-luals`: fails 0 in a clean clone of the commit.
+
+### How to check on three computers
+
+Desktop as an admin, laptop and a third computer (LinuxBox) as members, one song, the link up, Live sync running on all three, keys
+learnt (a minute in the room). Trace on, on each: `reaper.SetExtState("BandSync", "stream trace", "1", true)` (set back to `""` after).
+
+1. Pause Syncthing on the desktop and LinuxBox.
+2. On the desktop, give the laptop's person a track (Who controls > Give them control of). On the laptop, from the panel, Release it.
+3. On LinuxBox the panel (or the panel-like reader) stops showing the claim within about a second. Its trace: `signed in
+   <Song>/rooms/<room>/claims/<laptop person>.json`; the laptop's: `signed written` then `signed out` for that path.
+   `BandSync / linked files` on LinuxBox lists the path, and the copy is under `<REAPER resources>/StudioSync/direct/<studio id>/.linked/`.
+4. On the laptop, Claim another track from the panel: LinuxBox's panel shows it within about a second.
+5. Resume Syncthing: `claims/<person>.json.sig` arrives beside the file on every computer, the line leaves `linked files`, nothing
+   changes on screen, no `*.sync-conflict-*`.
+6. With js_ReaScriptAPI installed and the `lib/sync.lua` hook not yet in, step 2 on a claims file last written more than a minute before
+   still waits for Syncthing on LinuxBox's panel: that's the hook's case. With it in, it doesn't.
+
+### Costs
+
+Every claims write (a claim, a release, an auto-claim's touch, at most once a minute per claim) also signs the file, writes a `.sig`
+beside it (one more small file for Syncthing) and sends the file over the link (up to 32 KB; bigger stays on Syncthing). Each person's
+claims file per room takes a place in the 600-entry numbers store.
+
+### Not done or not tested
+
+- Not run in REAPER.
+- The hook above (in another agent's file).
+- **An older folder copy can still briefly replace a newer link copy**, as for every kind: if Syncthing brings an earlier write after the
+  link brought a later one, the folder's file is read (it changed) until Syncthing brings the latest. Live sync is covered by
+  `sync.live_claims`; the panel sees the earlier words for that moment, as it did before this change.
+- `band.rename` removes the old name's claims file and leaves its `.sig` (harmless: claims are listed by `.json`).
+
+### Review later (security), added this round
+
+- **The Syncthing path for claims files is still unchecked**: a claims file counts by its name alone, as before. Only the link path is
+  checked. A member can still write another person's claims file into the folder. Checking it there (`trust.own_file_ok` in
+  `sync.authority`) is a `lib/sync.lua` change and costs a Syncthing question per file until signed.
+- **Studios from before owners** (no pins): `trust.own_file_ok` says yes to anyone, so any member with a known key can send another
+  person's claims file over the link, as for hub handovers and track orders. The folder path already allowed the same.
+- **Claims files fill the numbers store** (600 entries) faster; past it the oldest number is forgotten and first use applies to it again.

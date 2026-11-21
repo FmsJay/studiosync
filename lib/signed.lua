@@ -36,12 +36,15 @@ local KINDS = {
   { "^_band/profiles/[^/]+%.jpg$", "pic" }, { "^_band/profiles/[^/]+%.png$", "pic" },
   -- (the last tempo map and markers each computer sent, one file per person: sync.session_timeline, read by sync.studio_timeline)
   { "^[^/]+/rooms/[^/]+/timeline/[^/]+%.json$", "timeline" },
+  -- (a person's own claims, written only by their own computer: sync.set_claims, follow_claims. After "given" above, which shares the folder.
+  -- So a claim made or let go shows in the panel at once, not when Syncthing brings it. rt-linkmove3)
+  { "^[^/]+/rooms/[^/]+/claims/[^/]+%.json$", "claims" },
 }
 signed.OWN = { profile = true, colour = true, recap = true }
 -- What goes over the link the moment it's written. (Not: invitation records, driver.json (a "driver" event goes already) and room.json:
 -- signed, and Syncthing carries them.)
 signed.LINK = { band = true, closed = true, removed = true, guests = true, devices = true, mode = true, grants = true, profile = true, colour = true,
-  recap = true, given = true, released = true, order = true, hub = true, session = true, pic = true, timeline = true }
+  recap = true, given = true, released = true, order = true, hub = true, session = true, pic = true, timeline = true, claims = true }
 -- A given claim is over once the person it's for folds it into their own claims and deletes it (sync.follow_claims), which another computer
 -- may never see as a file: there the link's copy counts this long at most. shortcut: a minute, not "until their own claims carry it"; with
 -- Syncthing slower than that on both computers the claim waits for the file, as before this.
@@ -425,6 +428,7 @@ function signed.owner(root, rel, kind, j)
   if kind == "hub" then return type(j.user) == "string" and ufile(j.user) == f and type(j.transfers) == "table" and j.user or nil end -- (lib/hub.lua)
   if kind == "session" then return type(j.host) == "string" and j.host or nil end -- (whoever shared the song: lib/hub.lua transfers)
   if kind == "timeline" then return type(j.user) == "string" and ufile(j.user) == f and j.user or nil end -- (named for who it says: lib/sync.lua studio_timeline)
+  if kind == "claims" then return type(j.user) == "string" and ufile(j.user) == f and j.given == nil and j.user or nil end -- (as sync.authority reads one)
   if kind == "order" then return type(j.by) == "string" and j.by:gsub("[^%w%-_ ]", "_") .. ".json" == f and type(j.list) == "table" and j.by or nil end -- (lib/mirror.lua)
   return nil
 end
@@ -539,7 +543,9 @@ function accept(root, user, d, shared)
     local till = shared
     if shared == nil then
       till = g and g.user ~= user and reaper.time_precise() + signed.GIVEN_KEEP or false
-      if g then take(root, rel, seq, tostring(band.json_decode(d.side).sig):lower(), true) end
+      -- (every kind's number, not only through trust's took: own_file_ok's "yes" is cached by the words, so a person's file back to words
+      -- it had once left its number untaken, and the copy in between could be replayed over it. rt-linkmove3)
+      take(root, rel, seq, tostring(band.json_decode(d.side).sig):lower(), g and true or nil)
     end
     linked[path] = { root = root, rel = rel, kind = kind, seq = seq, till = till or nil, shared = shared ~= nil }
     if shared == nil then
