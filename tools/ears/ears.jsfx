@@ -1,0 +1,59 @@
+desc: StudioSync Ears (test pattern player and capture, tools/ears)
+// GPL-3.0-or-later. Driven by tools/ears/ears.lua through gmem "StudioSyncEars" (docs/rt/rt-ears.md). Plays without the transport, so a
+// test needs no Play together: an armed track's FX run while REAPER is stopped.
+//  Role Play: on a new command, plays the pattern Lua loaded (mono, both outputs), or with a MIDI note set, sends that note on at the start
+//  and off `off` frames later (the Hop's held-note check), silence otherwise.
+//  Role Capture: on a new command, records its input (L+R)/2 for `frames` frames into its slot's buffer.
+// gmem: [0] pattern frames, [1024..] the pattern; per slot s (0-3), base 8+8s: +0 command (Lua counts it up), +1 the command taken,
+// +2 the song position at the start (-1: stopped), +3 1 while running, +5 frames (capture) or note-off frame (MIDI), +7 frames done;
+// a capture's buffer at 1048576 * (1 + s).
+slider1:0<0,1,1{Play,Capture}>Role
+slider2:0<0,3,1>Slot
+slider3:0<0,127,1>MIDI note (0: the audio pattern)
+options:gmem=StudioSyncEars
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+ext_noinit = 1;
+PAT = 1024;
+seen = -1;
+running = 0;
+pos = 0;
+held = 0;
+
+@block
+base = 8 + slider2 * 8;
+cap = 1048576 * (1 + slider2);
+cmd = gmem[base];
+seen < 0 ? seen = cmd; // (an old command isn't fired when the effect loads)
+cmd != seen ? (
+  seen = cmd;
+  running = 1;
+  pos = 0;
+  gmem[base + 1] = cmd;
+  gmem[base + 2] = play_state & 1 ? play_position : -1;
+  gmem[base + 3] = 1;
+  gmem[base + 7] = 0;
+  slider1 == 0 && slider3 > 0 ? ( midisend(0, 0x90, slider3, 100); held = 1; );
+);
+running && slider1 == 0 && slider3 > 0 ? (
+  off = gmem[base + 5];
+  held && off >= pos && off < pos + samplesblock ? ( midisend(off - pos, 0x80, slider3, 0); held = 0; );
+  pos + samplesblock > off + srate * 2 ? ( running = 0; gmem[base + 3] = 0; ); // (2 s after the note-off: done)
+  pos += samplesblock;
+  gmem[base + 7] = pos;
+);
+
+@sample
+slider1 == 0 ? (
+  slider3 == 0 && running ? (
+    pos < gmem[0] ? ( spl0 = spl1 = gmem[PAT + pos]; pos += 1; ) : ( spl0 = spl1 = 0; running = 0; gmem[base + 3] = 0; gmem[base + 7] = pos; );
+  ) : ( spl0 = spl1 = 0; );
+) : (
+  running ? (
+    pos < gmem[base + 5] ? ( gmem[cap + pos] = (spl0 + spl1) * 0.5; pos += 1; gmem[base + 7] = pos; ) : ( running = 0; gmem[base + 3] = 0; );
+  );
+);

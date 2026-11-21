@@ -1,0 +1,144 @@
+"""Offline checks for tools/ears/ears.py: a simulated link (delay, a lossy-codec stand-in, dropouts) and simulated status polls must give the
+numbers that were put in. Run: python -m unittest discover -s tools/ears (tests/run.py does). Skipped without numpy/scipy."""
+import os
+import sys
+import unittest
+
+try:
+    import numpy as np
+    from scipy import signal
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import ears
+except ImportError:  # (numpy/scipy missing: nothing to check here)
+    ears = None
+
+SR = 48000
+
+
+def link(x, delay_s, gain=1.0, lowpass=None, noise_db=None, drops=(), seed=1):
+    """What a receiver would get: delayed, scaled, optionally low-passed (a lossy codec's top end), noise added, and stretches zeroed."""
+    y = np.concatenate([np.zeros(int(delay_s * SR)), x * gain])
+    if lowpass:
+        y = signal.sosfilt(signal.butter(8, lowpass, fs=SR, output="sos"), y)
+    if noise_db is not None:
+        y = y + 10 ** (noise_db / 20) * np.random.default_rng(seed).standard_normal(len(y))
+    for a, b in drops:
+        y[int((delay_s + a) * SR):int((delay_s + b) * SR)] = 0
+    return y
+
+
+def polls(x, wall0, block, rate_s=0.002, steal_every=0.033, gap_every=None, seed=2, drops=()):
+    """Status polls as ears.lua writes them: blocks of `block` frames run at wall times wall0 + k*block/SR (x's sample k*block starts block k);
+    each poll reports the peak of the blocks run since the previous poll and the callback count; every steal_every s a foreign read
+    (Live sync's) takes the peaks and the next poll is marked first. drops: (a, b) seconds of x heard as silence."""
+    rng = np.random.default_rng(seed)
+    nb = len(x) // block
+    bt = wall0 + np.arange(nb) * block / SR
+    bp = np.array([np.max(np.abs(x[k * block:(k + 1) * block])) for k in range(nb)])
+    for a, b in drops:
+        bp[(np.arange(nb) * block / SR >= a) & (np.arange(nb) * block / SR < b)] = 0
+    rows, t, k, cb, first, next_steal = [], wall0 - 0.5, 0, 0, True, wall0 - 0.5 + steal_every
+    while t < bt[-1] + 0.5:
+        t += rate_s * (0.8 + 0.4 * rng.random())
+        if t >= next_steal:  # a foreign read: blocks so far consumed, unseen
+            while k < nb and bt[k] <= next_steal:
+                k += 1; cb += 1
+            next_steal += steal_every
+            first = True
+            t += 0.010  # (the defer cycle's pause)
+        pk = 0.0
+        while k < nb and bt[k] <= t:
+            pk = max(pk, bp[k]); k += 1; cb += 1
+        rows.append({"t": t, "cb": cb, "first": first, "own": pk, "hub": pk, "peers": {"A:1": [pk, 0.0]}})
+        first = False
+    return rows
+
+
+@unittest.skipIf(ears is None, "numpy/scipy not installed")
+class EarsTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.x, cls.meta = ears.make_pattern()
+        cls.x = cls.x.astype(float)
+
+    def test_pattern(self):
+        self.assertLessEqual(np.max(np.abs(self.x)), ears.PEAK + 0.01)
+        self.assertEqual(len(self.meta["events"]), 13)
+        a, b = self.meta["sections"]["band"]
+        band = self.x[int(a * SR):int(b * SR)]
+        # a band, not a tone: energy spread over the spectrum (bass and the top both there)
+        c, bands = ears.third_octave_db(band, SR)
+        self.assertGreater(bands[c < 120].max(), bands.max() - 25)
+        self.assertGreater(bands[c > 6000].max(), bands.max() - 40)
+
+    def test_wav_lossless_path(self):
+        ref = np.concatenate([np.zeros(SR), self.x])
+        got = link(ref, 0.0)
+        q = np.round(got * 32767) / 32767  # (16-bit like Jam's WAV)
+        r = ears.compare_wav(np.round(ref * 32767) / 32767, q, SR, dict(self.meta, pattern_at=1.0), exact=True)
+        self.assertTrue(all(r["pass"].values()), r)
+        self.assertEqual(r["lag_samples"], 0)
+
+    def test_wav_codec_path(self):
+        ref = np.concatenate([np.zeros(SR), self.x])
+        got = link(ref, 0.0734, gain=10 ** (-0.5 / 20), lowpass=18000, noise_db=-70)
+        r = ears.compare_wav(ref, got, SR, dict(self.meta, pattern_at=1.0))
+        self.assertAlmostEqual(r["lag_ms"], 73.4, delta=0.1)
+        self.assertAlmostEqual(r["level_db"], -0.5, delta=0.3)
+        self.assertTrue(all(r["pass"].values()), r)
+
+    def test_wav_dropout_and_dull(self):
+        ref = np.concatenate([np.zeros(SR), self.x])
+        got = link(ref, 0.05, drops=[(1.0 + 6.0, 1.0 + 6.06)])
+        r = ears.compare_wav(ref, got, SR, dict(self.meta, pattern_at=1.0))
+        self.assertFalse(r["pass"]["no_gaps"], r)
+        self.assertGreaterEqual(r["longest_gap_ms"], 40)
+        dull = link(ref, 0.05, lowpass=2500)
+        r = ears.compare_wav(ref, dull, SR, dict(self.meta, pattern_at=1.0))
+        self.assertFalse(r["pass"]["spectrum"], r)
+
+    def _env(self, latency, block_s=512, block_r=128, gain=1.0, drops=(), offset_ms=0.0):
+        sig = np.concatenate([np.zeros(SR), self.x, np.zeros(SR)])
+        s_rows = polls(sig, 1000.0, block_s, seed=3)
+        # the receiver's clock runs offset_ms behind the sender's: its wall times are smaller by that much
+        r_rows = polls(sig * gain, 1000.0 + latency - offset_ms / 1000, block_r, seed=4, drops=[(1 + a, 1 + b) for a, b in drops])
+        return ears.compare_env(self.x, self.meta, s_rows, r_rows, "A:1", gain=gain, offset_ms=offset_ms)
+
+    def test_env_latency_level(self):
+        r = self._env(0.104, offset_ms=-1358.5)
+        self.assertAlmostEqual(r["latency_ms"], 104, delta=6)
+        self.assertTrue(all(r["pass"].values()), r)
+
+    def test_env_hub_gain(self):
+        r = self._env(0.15, block_r=512, gain=0.01)
+        self.assertAlmostEqual(r["latency_ms"], 150, delta=8)
+        self.assertTrue(all(r["pass"].values()), r)
+        r = ears.compare_env(self.x, self.meta, polls(np.concatenate([np.zeros(SR), self.x]), 0.0, 512),
+                             polls(np.concatenate([np.zeros(SR), self.x]) * 0.1, 0.15, 512), "A:1", gain=0.01)
+        self.assertFalse(r["pass"]["level"], r)  # 20 dB louder than asked for
+
+    def test_env_dropout(self):
+        r = self._env(0.1, drops=[(6.0, 6.2)])
+        self.assertFalse(r["pass"]["no_gaps"], r)
+        self.assertGreaterEqual(r["gap_ms"], 100)
+
+    def test_note_tail(self):
+        n = 2 * SR
+        x = np.zeros(n)
+        on, off, delay, release = 0.2, 0.8, 0.09, 0.03
+        a, b = int((on + delay) * SR), int((off + delay) * SR)
+        t = np.arange(n) / SR
+        x[a:b] = 0.3 * np.sin(2 * np.pi * 220 * t[a:b])
+        rel = int(release * SR)
+        x[b:b + rel] = 0.3 * np.sin(2 * np.pi * 220 * t[b:b + rel]) * np.linspace(1, 0, rel)
+        r = ears.note_tail(x, SR, on, off, release_ms=30)
+        self.assertTrue(all(r["pass"].values()), r)
+        self.assertAlmostEqual(r["delay_ms"], 90, delta=1)
+        hung = x.copy()
+        hung[b:b + int(0.6 * SR)] = 0.3 * np.sin(2 * np.pi * 220 * t[b:b + int(0.6 * SR)])  # a lost note-off: rings 600 ms on
+        r = ears.note_tail(hung, SR, on, off, release_ms=30)
+        self.assertFalse(r["pass"]["stops_in_bound"], r)
+
+
+if __name__ == "__main__":
+    unittest.main()
