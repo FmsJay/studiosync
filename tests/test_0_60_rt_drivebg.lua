@@ -767,6 +767,73 @@ end
 package.loaded.songsync = { here = function() return { "Song" } end }
 check(ext["cloud storage"] and listed_ghost == 0, "a song only named here: no listing asked for its rooms or projects in the cloud: " .. listed_ghost)
 
+-- ---- 3r. a room with nothing changed on either side isn't passed over in full again (rt-drive2, round 9) ----
+-- The desktop, 12:14:30: a 3-minute pass with nothing to copy, and the room's full pass took 51.7 ms on REAPER's thread. Stand-in: folder
+-- times from js_ReaScriptAPI (as REAPER's JS_File_Stat answers: a time that moves when a file is added or removed).
+do
+  setup()
+  drive, bg, cm = fresh()
+  cm.tick, cm.sweeping = function() end, function() return false end
+  local real_stat, real_age = rawget(reaper, "JS_File_Stat"), band.file_age
+  reaper.JS_File_Stat = function(dir)
+    local newest, any = 0, false
+    for k, t in pairs(mt) do if k:sub(1, #dir + 1) == dir .. "/" and fs[k] then any = true; newest = math.max(newest, t) end end
+    if not any then return -1 end
+    return 0, 0, "", os.date("!%Y.%m.%d %H:%M:%S", 1577836800 + newest)
+  end
+  band.file_age = function() return 1e6 end
+  for _ = 1, 3 do clock = clock + 200; bg_pass() end -- (settled)
+  local full, real_files = 0, band.files
+  band.files = function(dir, e) if dir == HERE .. "/events" then full = full + 1 end; return real_files(dir, e) end
+  for _ = 1, 3 do clock = clock + 200; bg_pass() end -- (three 3-minute passes, nothing new anywhere)
+  local quiet_full = full
+  local late3 = ev("James", 98)
+  put(HERE .. "/events/" .. late3.id .. ".json", json.encode(late3))
+  clock = clock + 200; bg_pass()
+  local mine_up = fs[THERE .. "/events/" .. late3.id .. ".json"] ~= nil
+  local bo3 = ev("Bo", 99)
+  put(THERE .. "/events/" .. bo3.id .. ".json", json.encode(bo3))
+  clock = clock + 200; bg_pass()
+  local theirs_down = fs[HERE .. "/events/" .. bo3.id .. ".json"] ~= nil
+  band.files, reaper.JS_File_Stat, band.file_age = real_files, real_stat, real_age
+  check(quiet_full == 0, "three passes with nothing changed: no full pass of the room: " .. quiet_full)
+  check(mine_up and theirs_down, "a change here goes up, and one in the cloud comes down, at the next pass: " .. tostring(mine_up) .. " " .. tostring(theirs_down))
+end
+
+-- ---- 3s. a worker running older scripts is replaced; the plan's write and the worker's start are named when slow (rt-drive2, round 9) ----
+do
+  setup()
+  drive, bg, cm = fresh()
+  local spawns = 0
+  bg.spawn = function() spawns = spawns + 1 end
+  bg.begin("/C")
+  bg.want("/C/Song/rooms/main/events")
+  bg.submit()
+  local jd = bg.dir
+  local tok = (fs[jd .. "/owner"] or ""):match("%S+")
+  check(spawns == 1 and tok, "the first job starts a worker")
+  put(jd .. "/beat", tok .. " " .. os.time() .. " - 0 " .. bg.version())
+  bg.reset(); bg.tmp("/T"); bg.spawn = function() spawns = spawns + 1 end
+  bg.begin("/C"); bg.want("/C/Song/rooms/main/media"); bg.submit()
+  check(spawns == 1, "one running these scripts, from another REAPER or tab, is shared: " .. spawns)
+  put(jd .. "/beat", tok .. " " .. os.time() .. " - 0 0123456789abcdef")
+  bg.reset(); bg.tmp("/T"); bg.spawn = function() spawns = spawns + 1 end
+  bg.begin("/C"); bg.want("/C/Song/rooms/main/recall"); bg.submit()
+  check(spawns == 2 and (fs[jd .. "/owner"] or ""):match("%S+") ~= tok, "one running older scripts is replaced (it stops: owner moved): " .. spawns)
+  check((fs[jd .. "/worker.ps1"] or fs[jd .. "/worker.sh"] or ""):find(bg.version(), 1, true), "and the scripts written say their version")
+  -- a slow submit says its parts in "drive slow" (perf stats on)
+  setup()
+  drive, bg, cm = fresh()
+  cm.tick, cm.sweeping = function() end, function() return false end
+  local real_wa = band.write_atomic
+  band.write_atomic = function(path, s2) if path:find("/plan%-") then clock = clock + 0.06 end; return real_wa(path, s2) end
+  ext["perf stats"], ext["drive slow"] = "1", nil
+  for _ = 1, 3 do clock = clock + 2; stand_in_worker(); drive.bg_step(CFG, "/C", "Song", { { HERE, THERE } }, 0.008) end
+  band.write_atomic, ext["perf stats"] = real_wa, nil
+  local ds3 = ext["drive slow"] and json.decode(ext["drive slow"])
+  check(ds3 and ds3.ms.submit_write and ds3.ms.submit_write >= 60, "a slow plan write is named: " .. tostring(ext["drive slow"]))
+end
+
 -- ---- 3o. each end-of-session project read once, not every sweep (rt-drive2, round 5) ----
 -- The desktop: the sweep's plan of 34.8 ms was one 1.5 MB project read and scanned; Nostalgia's 13 are 19 MB, and every sweep read them again.
 setup()

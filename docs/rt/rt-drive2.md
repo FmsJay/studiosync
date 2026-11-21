@@ -571,6 +571,67 @@ I left them. If it matters, they could take turns (one of the three a minute) or
 2. No `drive rest` during the first sweep; `cloud storage` with no flat stretch before it.
 3. With 1.0.33: `drive slow` shows no `tools` entry near 77 ms.
 
+## Round 9 (0.59.49.89 with 16 ms a pass, restart at 12:01:10)
+
+Passed: `cloud storage` in 4 min 12 s, no rest, the update once. Left: two plans over budget, and one worker serving three REAPERs.
+
+### 1a. The room's 51.7 ms step (12:14:30, a 3-minute pass with nothing to copy)
+That was the room's full planned pass: a 2,700-change room compared both ways. It's 35-55 ms on REAPER's thread, and it ran in every
+3-minute pass whether or not anything had changed.
+
+**Fix (`drive.lua`, `drivebg.lua`): a room with nothing changed on either side isn't passed over in full again.**
+- **The signature (`drive.quiet_sig`)** is made of:
+  - each cloud folder's listing as a number that moves whenever its content does (`drivebg.listed_version`, fresh listings only);
+  - each studio folder's own modified time (js_ReaScriptAPI's `JS_File_Stat`; a time under 2 s old isn't trusted yet, since it can still
+    move within its second);
+  - the storage mode: only Everything with no limit (the other modes judge by the hour).
+- **The skip:** when a pass had nothing to do (0 files planned), its signature is remembered. The next pass with the same signature is
+  skipped (0, done).
+- **What still triggers a full pass:** a change here (a file added in a folder), a change in the cloud (a listing that differs), or anything
+  unreadable (no js_ReaScriptAPI, a stale listing). This applies to the other songs' rooms (upkeep) too.
+- **Also:** while the cloud's listings are being fetched, the pass no longer reads the studio folder first; the next pass reads.
+
+**Test 3r** (stand-in folder times):
+- three 3-minute passes with nothing new: no full pass (round 8's code: 12);
+- a change here goes up, and one in the cloud comes down, at the next pass.
+
+### 1b. The 31.9 ms submit with the worker running (12:02:40)
+- Writing the plan file is the only real work in `submit` with a worker already running: no process started, same PID all run.
+- My best explanation is the antivirus scanning the new file as it's closed. I couldn't measure it: a probe would have to write files.
+- **Now named next time:** `drivebg.submit` times its parts (building the plan, writing it, looking at or starting the worker), and a slow
+  plan's `drive slow` carries `submit_plan`, `submit_write` and `submit_worker`.
+- If it's the write, the cure is outside Lua (excluding `%TEMP%\bandsync-drive-*` from scanning), or fewer, bigger plans.
+- **Test 3s:** a slow plan write is named.
+
+The same plan's `cm` 27.9 ms is one sweep step, the one a turn may always make: a trim plan or a room's file list, for instance. It's
+under the 16 ms budget in most plans; I left it.
+
+### 2. One worker serving three REAPERs
+**Sharing is intended and safe.**
+- There's one worker per cloud folder on this computer, whichever REAPER or Live sync tab started it.
+- Each job is a plan file of its own, answered in a result file of its own; `owner` says which worker may write; REAPER keeps no state in it.
+- A REAPER that restarts just hands its plans to the worker that's there.
+
+**What wasn't safe:** a worker started by an older StudioSync kept its old scripts after an update. Round 7's 60 → 240 s change would never
+have reached the desktop's worker from 10:41.
+
+**Fix:**
+- The scripts carry their version (`drivebg.version()`, a hash of both scripts) and say it in each heartbeat.
+- A worker running other scripts counts as not running at the next job: a new one starts, `owner` moves, and the old one stops before its
+  next step.
+
+**Test 3s:**
+- a worker with this version's heartbeat is shared;
+- one with another version is replaced;
+- the scripts written say their version.
+
+After this deploy the desktop's worker 57792 (old scripts, no version in its heartbeat) is replaced once at the first job.
+
+### REAPER checks after deploy
+1. In 3-minute passes with nothing new, no `drive slow` with `room` or `upkeep` (the full pass is skipped); after an edit, one full pass.
+2. `workers.txt`: a new PID at the first job after the deploy, then the same one across restarts while the scripts stay the same.
+3. Any slow `submit`: `drive slow` shows which part.
+
 ## Left / not done
 
 - **`trim.plan` itself** (lib/trim.lua, not mine) is 80-200 ms for a 2,500-change room with ~180 saved versions in Standard's window

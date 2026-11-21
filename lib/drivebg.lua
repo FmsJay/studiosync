@@ -238,13 +238,14 @@ function bg.known_size(p) local d, n = parent(p); local l = d and listing(d); re
 -- ---- the worker ----
 bg.PS1 = [=[
 param([string]$Dir, [string]$Token)
+$Ver = '@VER@'
 $ErrorActionPreference = 'Stop'
 $utf8 = New-Object System.Text.UTF8Encoding $false
 $slow = 0
 if (Test-Path -LiteralPath "$Dir/slow") { $slow = [double]((Get-Content -LiteralPath "$Dir/slow" -Raw).Trim()) }
 function Now { [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
 function Owned { try { ([IO.File]::ReadAllText("$Dir/owner")).Trim() -eq $Token } catch { $false } }
-function Beat($p, $i) { try { [IO.File]::WriteAllText("$Dir/beat.tmp", "$Token $(Now) $p $i", $utf8); Put "$Dir/beat.tmp" "$Dir/beat" } catch {} }
+function Beat($p, $i) { try { [IO.File]::WriteAllText("$Dir/beat.tmp", "$Token $(Now) $p $i $Ver", $utf8); Put "$Dir/beat.tmp" "$Dir/beat" } catch {} }
 function Put($t, $z) { if ([IO.File]::Exists($z)) { try { [IO.File]::Replace($t, $z, $null); return } catch { [IO.File]::Delete($z) } }; [IO.File]::Move($t, $z) }
 function Whole($p) { $s = [IO.File]::ReadAllText($p).Trim(); return ($s.StartsWith('{') -and $s.EndsWith('}')) -or ($s.StartsWith('[') -and $s.EndsWith(']')) }
 function List($d, $out) {
@@ -341,12 +342,12 @@ while ($true) {
 }
 ]=]
 bg.SH = [=[
-D=$1; T=$2
+D=$1; T=$2; V=@VER@
 TAB=$(printf '\t')
 SLOW=; [ -f "$D/slow" ] && read -r SLOW < "$D/slow"
 if stat -c %s / >/dev/null 2>&1; then GNU=1; else GNU=; fi
 owned() { cur=; read -r cur < "$D/owner" 2>/dev/null; [ "$cur" = "$T" ]; }
-beat() { printf '%s %s %s %s\n' "$T" "$(date +%s)" "$1" "$2" > "$D/beat.tmp" 2>/dev/null && mv -f "$D/beat.tmp" "$D/beat"; }
+beat() { printf '%s %s %s %s %s\n' "$T" "$(date +%s)" "$1" "$2" "$V" > "$D/beat.tmp" 2>/dev/null && mv -f "$D/beat.tmp" "$D/beat"; }
 size_of() { wc -c < "$1" | tr -d ' '; }
 mtime_of() { if [ -n "$GNU" ]; then stat -L -c %Y "$1"; else stat -L -f %m "$1"; fi; }
 list1() {
@@ -439,10 +440,15 @@ local after = {} -- functions to run once the job they were planned with has fin
 local function sh_q(s) return "'" .. tostring(s):gsub("'", "'\\''") .. "'" end
 -- How the worker is started: hidden, never waited for (services.run_hidden). Tests put their own here.
 function bg.spawn(cmd, tok) return require("services").run_hidden("drive-worker-" .. tok, cmd, 0) end
+-- The worker is shared: one per cloud folder on this computer, whichever REAPER or Live sync tab started it (each job is a plan file of its own,
+-- answered in a result file of its own; `owner` says which worker may write). What ties it to a REAPER is its code: it says its scripts'
+-- version in each heartbeat, and one running older scripts (a REAPER since updated) is replaced at the next job. The desktop's worker from
+-- 10:41 served three REAPERs across two restarts with the scripts it started with. (rt-drive2, round 9)
+function bg.version() return bg.hash(bg.PS1 .. "\0" .. bg.SH) end
 local function start_worker(dir)
   token = bg.hash(tostring(inst) .. tostring(now()) .. tostring(math.random()))
   local script = dir .. (win() and "/worker.ps1" or "/worker.sh")
-  local body = win() and bg.PS1 or bg.SH
+  local body = ((win() and bg.PS1 or bg.SH):gsub("@VER@", bg.version()))
   if band.read(script) ~= body then band.write_atomic(script, body) end
   band.write_atomic(dir .. "/owner", token)
   local cmd = win() and ('powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' .. script .. '" "' .. dir .. '" ' .. token)
@@ -452,14 +458,14 @@ local function start_worker(dir)
 end
 local function read_beat(dir)
   local s = band.read(dir .. "/beat")
-  local t, at, name, i = (s or ""):match("^(%S+) (%d+) (%S+) (%d+)")
-  return t, tonumber(at), name, tonumber(i)
+  local t, at, name, i, v = (s or ""):match("^(%S+) (%d+) (%S+) (%d+) ?(%S*)")
+  return t, tonumber(at), name, tonumber(i), v
 end
 local function owner(dir) return (band.read(dir .. "/owner") or ""):match("%S+") end
 local function worker_alive(dir)
   local own = owner(dir)
-  local t, at = read_beat(dir)
-  if own and t == own and at and os.time() - at <= bg.BEAT_STALE then return true end
+  local t, at, _, _, v = read_beat(dir)
+  if own and t == own and at and os.time() - at <= bg.BEAT_STALE and v == bg.version() then return true end
   return own ~= nil and own == token and now() - spawned_at < bg.START_WAIT
 end
 
@@ -517,16 +523,22 @@ function bg.submit()
   plan = nil
   if not p then return false end
   if not inst then inst = string.format("%08x", math.random(0, 0x7fffffff)) end
+  local t0 = now()
   local text, ops = plan_text(p, bg.dir)
   if #ops == 0 then return false end
   reaper.RecursiveCreateDirectory(bg.dir, 0)
   seq = seq + 1
   local name = string.format("plan-%s-%08d", inst, seq)
+  local t1 = now()
   band.write_atomic(bg.dir .. "/" .. name .. ".txt", text)
+  local t2 = now()
   job = { dir = bg.dir, name = name, plan = bg.dir .. "/" .. name .. ".txt", res = bg.dir .. "/result-" .. name:sub(6) .. ".txt", ops = ops,
     after = p.after, at = now(), checked = now() }
   last_submit = now()
-  if not worker_alive(bg.dir) then start_worker(bg.dir) end
+  local started = not worker_alive(bg.dir)
+  if started then start_worker(bg.dir) end
+  -- (its parts, for drive.lua's "drive slow": a 31.9 ms submit at 12:02:40 on the desktop with the worker running. Round 9)
+  bg.submit_ms = { plan = (t1 - t0) * 1000, write = (t2 - t1) * 1000, worker = (now() - t2) * 1000, started = started or nil }
   return true
 end
 
@@ -546,6 +558,9 @@ function bg.parse_result(text)
   return out, whole
 end
 local copy_said = {}
+local shown, shown_v = {}, {} -- cloud folder -> its last listing's text, and a number that moves whenever that text does
+-- A number for cloud folder `dir`'s listing that moves whenever its content does, while its listing is fresh; else nil.
+function bg.listed_version(dir) return listing(dir) and shown_v[dir] or nil end
 local function collect(j, text)
   local r = bg.parse_result(text)
   local moved, landed, failed, wrote, waits = 0, {}, {}, {}, {}
@@ -555,6 +570,8 @@ local function collect(j, text)
     if op.tag == "list" then
       if ok then L[op.a] = { at = now(), file = op.b }; dirty[op.a] = nil
       else L[op.a] = { at = now(), text = "none\n" } end -- (a folder that couldn't be listed reads as empty, as EnumerateFiles' would)
+      local t = ok and band.read(op.b) or "none\n" -- (its content numbered: the same listing again keeps its number)
+      if t ~= shown[op.a] then shown[op.a], shown_v[op.a] = t, (shown_v[op.a] or 0) + 1 end
     elseif op.tag == "fetch" then
       local d, n = parent(op.a)
       local l = d and L[d] and listing(d)

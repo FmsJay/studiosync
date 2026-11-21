@@ -497,6 +497,44 @@ local function want_room(here, there)
   end
 end
 
+-- What a planned room pass reads, as one string, or nil when it can't be told: each cloud folder's listing (drivebg.listed_version: fresh
+-- listings only), each studio folder's own modified time (js_ReaScriptAPI; a time under 2 s old can still move within its second, so not yet),
+-- and the studio's storage mode (only Everything with no limit: the others judge by the hour). The same string, the same pass.
+local quiet_room = {}
+local function stat_time(dir)
+  if not reaper.JS_File_Stat then return nil end
+  local ok, status, _, _, modified = pcall(reaper.JS_File_Stat, dir)
+  if ok and status == 0 and modified then return tostring(modified) end
+  -- (no time: "none" only for a folder that isn't there; one that is, unread, can't be told)
+  reaper.EnumerateFiles(dir, -1); reaper.EnumerateSubdirectories(dir, -1) -- (REAPER's cached listing dropped first)
+  if reaper.EnumerateFiles(dir, 0) or reaper.EnumerateSubdirectories(dir, 0) then return nil end
+  return "none"
+end
+function drive.quiet_sig(here, there)
+  local J = require("drivebg")
+  local parts = {}
+  local fx = J.peek(there .. "/fx")
+  local subs = {}
+  for _, sub in ipairs(drive.ROOM_SUBS) do subs[#subs + 1] = sub end
+  local users = {}
+  for _, u in ipairs(fx and fx.dirs or {}) do users[u] = true end
+  for _, u in ipairs(band.subdirs(here .. "/fx")) do users[u] = true end
+  for u in pairs(users) do subs[#subs + 1] = "fx/" .. u end
+  table.sort(subs)
+  for _, sub in ipairs(subs) do
+    local v = J.listed_version(there .. "/" .. sub)
+    local t = stat_time(here .. "/" .. sub)
+    if not v or not t then return nil end
+    if t ~= "none" then local age = band.file_age and band.file_age(t); if not age or age < 2 then return nil end end
+    parts[#parts + 1] = sub .. "=" .. v .. "/" .. t
+  end
+  local root = here:match("^(.*)/[^/]+/rooms/[^/]+$")
+  local cm = require("cloudmodes")
+  local s = root and cm.settings_for(root)
+  if not s or s.mode ~= "everything" or s.limit_mb then return nil end
+  return table.concat(parts, "|")
+end
+
 -- One pass for one room. Copying stops once `budget` seconds have gone (big FLACs on a slow link): the next pass
 -- carries on. Returns files copied or moved, and whether work is left.
 function drive.mirror(here, there, budget, user, wait)
@@ -534,6 +572,11 @@ function drive.mirror(here, there, budget, user, wait)
     n = n + 1
   end
   if c.planned then want_room(here, there) end -- (everything below reads, asked for in one job, not a job a folder)
+  -- (nothing changed on either side since this room's last pass that had nothing to do: that pass again, skipped. A full pass of a 2,700-change
+  -- room is 35-55 ms (51.7 ms at 12:14:30 on the desktop, in a 3-minute pass with nothing to copy). rt-drive2, round 9)
+  if c.planned then c.check() end -- (and nothing read here while the cloud's listings are being fetched: the pass after them reads)
+  local quiet_now = c.planned and drive.quiet_sig(here, there) or nil
+  if quiet_now and quiet_room[here] == quiet_now then return 0, false end
   -- written once: whatever's missing goes across
   local events = read_events(here .. "/events", t0 + (budget or 1.5))
   if not events then return 0, true end -- (who owns which recording isn't known yet: nothing's copied on half a list)
@@ -661,6 +704,7 @@ function drive.mirror(here, there, budget, user, wait)
       ::next_side::
     end
   end
+  if quiet_now and n == 0 then quiet_room[here] = quiet_now end
   return n, false
 end
 
@@ -1188,6 +1232,8 @@ function drive.bg_step(cfg, droot, song, rooms, budget)
   local ts = reaper.time_precise()
   local sent = J.submit()
   slow.submit = reaper.time_precise() - ts
+  local sp = sent and J.submit_ms -- (and its parts: building the plan, writing it, looking at / starting the worker)
+  if sp and slow.submit > 0.01 then slow.submit_plan, slow.submit_write, slow.submit_worker = sp.plan / 1000, sp.write / 1000, sp.worker / 1000 end
   -- (a plan over 50 ms, while perf stats is on: ExtState "drive slow" says which part, in ms. The desktop's 201 ms step at 08:25:58 couldn't
   -- be told apart from outside. rt-drive2, round 4)
   if reaper.time_precise() - tp > 0.05 and reaper.GetExtState(band.SECTION, "perf stats") == "1" then
