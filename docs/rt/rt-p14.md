@@ -11,6 +11,26 @@ checked (`sync.authority`, `sync.maker_may`, claims and Driver only, `claimask` 
 point ("StudioSync web page: ...") and answers as the `dawedit` topic (`{id, ok | why, ask}`); the normal sync carries it from there. A page
 edit sets `dawview`'s `dirty_all`, so the next look reads every track (rt-perfcut4).
 
+| Part | Commit | Files |
+| --- | --- | --- |
+| 0 + 1 Watch wording, delete | dac7459 | `lib/dawedit.lua`, `lib/webui/daw.js`, `lib/webui/autolanes.js` (`X.autoClear` only) |
+| 2 Fades | 14ff962 | `lib/dawview.lua` (reader), `lib/dawedit.lua`, `lib/webui/daw.js`, `daw.css` |
+| 3 Sends | 386e3a3 | `lib/dawmidi.lua`, `lib/dawview.lua` (routing), `lib/webui/daw.js`, `daw.css` |
+| 4 Automation items | 0cade05 | `lib/dawmidi.lua`, `lib/webui/autolanes.js` |
+| 5 CC lanes | 59001c0 | `lib/dawmidi.lua`, `lib/webui/pianoroll.js` |
+
+`lib/webui/autolanes.js` isn't in the backlog's file list for P14, but it is where the automation lanes are drawn and no other package lists it,
+so automation items live there. No shared file was touched (`lib/webui.lua`, `lib/webui/app.js`, `tabs.js`, `index.html`, `page_health.lua`,
+`StudioSync - Live sync.lua`): the new topic `dawsend` and the new actions ride the existing `daw` topic and its `ACTIONS` entry. The tests
+are `tests/test_0_60_rt_dawedit.lua`, `..._dawview.lua`, `..._dawmidi.lua` (each fails without its change, checked against the commit before)
+and `tests/rt_p14_browser.mjs`.
+
+P1's claim-ask path: delete and fade are `dawedit.lua` item edits, so they get `item_why`'s Claims handling and `claimask.web_ask`'s `ask` in the
+answer as move, mute and trim do (delete works the ask out before the item goes). Notes, controller points, sends and automation items are
+`dawmidi.lua`'s: an item edit there (a note, a controller point) is still made in Claims mode when the claimer is here and held by
+`mirror.watch`, but the answer has never carried `ask` (an existing gap for notes; not changed), and the track-level ones (sends, automation)
+are refused on a claimed track as point edits always were.
+
 ## 0. Wording: the "Follow" select (`lib/webui/daw.js`)
 P7 renamed the other Follows. The Project page's select is now labelled **View** (its accessible name is "Watch a bandmate"), the options read
 Nobody / Play cursor / This REAPER / **Watch <name>**, and the note says "Watching <name>: their view arrives once their StudioSync sends it."
@@ -137,6 +157,13 @@ Internal names (`follow`, `dfollow`) are unchanged.
   (values and times); drag a point (one Ctrl+Z); add one (it's a CC at channel 1, which REAPER's lane shows); delete one; with the lane open a
   bandmate's change to the item shows within a second; a claimed track refuses; the notes and velocity lane still work with the lane open
   (resize the window short: the notes area shrinks).
+
+## 6. Region playlists (backlog 1.11): decided, left
+REAPER 7's region playlists ("skip hidden regions") aren't carried in Play together; the backlog's default was "rare: leave", and that stands. Nothing
+was built. The page's regions are the project's markers and regions as `EnumProjectMarkers3` lists them, so a region that a playlist hides still
+plays on the page's timeline exactly as before. If it is wanted later: the playlist lives in the project file (the name of its block wasn't
+checked on this drive), not in the API this page uses, so it would be carried like the other project-level settings in `mirror.lua` / `lib/together.lua` first, and the page would
+only show it.
 
 ## Review later (security)
 - The page-supplied numbers are all validated and clamped on this computer (`parse_send`, `parse_note`'s controller ops, `parse_auto`'s item ops, the
