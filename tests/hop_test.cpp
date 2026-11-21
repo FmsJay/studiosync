@@ -272,9 +272,9 @@ int main()
       hop_shm_unlink(&ms); hop_shm_close(&ms); hop_shm_unlink(&mx); hop_shm_close(&mx);
       return got;
     };
-    auto first = [](const std::vector<Ev> &got, uint8_t b0, uint8_t b1, uint8_t b2) {
+    auto first = [](const std::vector<Ev> &got, uint8_t b0, uint8_t b1, uint8_t b2) -> uint64_t { // (one return type: GCC deduced unsigned long and unsigned long long)
       for (const Ev &e : got) if (e.b0 == b0 && e.b1 == b1 && e.b2 == b2) return e.f;
-      return ~0ull;
+      return ~(uint64_t)0;
     };
     auto snaps = [](const std::vector<Ev> &got) { int n = 0; for (const Ev &e : got) n += e.b0 == 0xF4 || e.b0 == 0xF5; return n; };
     auto none = [](const hop_midi &) { return false; };
