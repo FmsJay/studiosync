@@ -280,6 +280,74 @@ function E.new(path)
     return 0
   end
 
+  -- ---- the tempo map: what's in beats stays on its beat when the map changes, as in REAPER with its default timebases ----
+  -- (checked against REAPER 7.86 on Cross Test: 130 bpm, a 100 bpm marker added at 8.0 s took an item at 7.385 + 3.692 s to 4.615 s long, an
+  -- audio item's end from 22.754 to 27.180 and a region's end from 18.46 to 21.60; the first tempo to 120 then moved that marker to 8.667 s.
+  -- An item whose chunk says "BEAT 0" stands for one set to the time timebase, and stays.)
+  F.base_bpm, F.timebase = 120, "beats"
+  local function qn_in(map, base, t)
+    local q, pt, pb = 0, 0, base
+    for _, m in ipairs(map) do
+      if m[1] > t then break end
+      q = q + (m[1] - pt) * pb / 60
+      pt, pb = m[1], m[2]
+    end
+    return q + (t - pt) * pb / 60
+  end
+  local function time_in(map, base, q)
+    local pq, pt, pb = 0, 0, base
+    for _, m in ipairs(map) do
+      local mq = pq + (m[1] - pt) * pb / 60
+      if mq > q then break end
+      pq, pt, pb = mq, m[1], m[2]
+    end
+    return pt + (q - pq) * 60 / pb
+  end
+  function F.qn_of(t) return qn_in(tempo, F.base_bpm, t) end
+  function F.time_of(q) return time_in(tempo, F.base_bpm, q) end
+  local function g14(x) return string.format("%.14g", x) end
+  -- One edit of the tempo map (`fn` makes it and returns the marker it set or took out).
+  function F.tempo_edit(fn)
+    local old, old_base, at = {}, F.base_bpm, {}
+    for i, m in ipairs(tempo) do old[i] = { m[1], m[2] } end
+    for _, m in ipairs(tempo) do at[m] = qn_in(old, old_base, m[1]) end
+    local edited = fn()
+    table.sort(tempo, function(a, b) return a[1] < b[1] end)
+    local et, built = edited and edited[1] or math.huge, {}
+    for _, m in ipairs(tempo) do -- (the tempo markers after it keep their beats)
+      if m ~= edited and at[m] and m[1] > et then m[1] = time_in(built, F.base_bpm, at[m]) end
+      built[#built + 1] = m
+    end
+    if F.timebase == "beats" then
+      local function move(t) return time_in(tempo, F.base_bpm, qn_in(old, old_base, t)) end
+      for _, t in ipairs(tracks) do
+        for _, it in ipairs(t.items) do
+          if top_value(it.text, "BEAT") ~= "0" then
+            local p, l = tonumber(top_value(it.text, "POSITION")) or 0, tonumber(top_value(it.text, "LENGTH")) or 0
+            local np, ne = move(p), move(p + l)
+            if math.abs(np - p) > 1e-12 then it.text = set_top(it.text, "POSITION", g14(np)) end
+            if math.abs((ne - np) - l) > 1e-12 then it.text = set_top(it.text, "LENGTH", g14(ne - np)) end
+          end
+        end
+        if t.body ~= "" then
+          t.body = t.body:gsub("(\n?)PT (%S+)", function(nl, v)
+            local x = tonumber(v)
+            if not x then return nl .. "PT " .. v end
+            local nx = move(x)
+            return nl .. "PT " .. (math.abs(nx - x) > 1e-12 and g14(nx) or v)
+          end)
+        end
+      end
+      for _, m in ipairs(markers) do
+        local np = move(m.pos)
+        if m.region then local ne = move(m.rend); if math.abs(ne - m.rend) > 1e-12 then m.rend = tonumber(g14(ne)) end end
+        if math.abs(np - m.pos) > 1e-12 then m.pos = tonumber(g14(np)) end
+        if not m.region then m.rend = m.pos end
+      end
+    end
+    changed()
+  end
+
   local R = {
     time_precise = function() return F.clock end,
     GetOS = function() return "Win64" end, GetAppVersion = function() return "7.30/x64" end,
@@ -519,14 +587,19 @@ function E.new(path)
     end,
     SetTempoTimeSigMarker = function(_, idx, t, _, _, bpm, num, den, lin)
       local p = { t, bpm, num > 0 and num or 4, den > 0 and den or 4, lin }
-      if idx >= 0 and tempo[idx + 1] then tempo[idx + 1] = p else tempo[#tempo + 1] = p end
-      table.sort(tempo, function(a, b) return a[1] < b[1] end)
-      changed(); return true
+      F.tempo_edit(function()
+        if idx >= 0 and tempo[idx + 1] then tempo[idx + 1] = p else tempo[#tempo + 1] = p end
+        return p
+      end)
+      return true
     end,
-    DeleteTempoTimeSigMarker = function(_, i) table.remove(tempo, i + 1); changed(); return true end,
-    TimeMap_GetTimeSigAtTime = function() return tempo[1] and tempo[1][3] or 4, tempo[1] and tempo[1][4] or 4, tempo[1] and tempo[1][2] or 120 end,
-    TimeMap2_timeToQN = function(_, t) return t * (tempo[1] and tempo[1][2] or 120) / 60 end,
-    TimeMap2_QNToTime = function(_, qn) return qn * 60 / (tempo[1] and tempo[1][2] or 120) end,
+    DeleteTempoTimeSigMarker = function(_, i)
+      F.tempo_edit(function() local m = table.remove(tempo, i + 1); if #tempo == 0 and m then F.base_bpm = m[2] end; return m end)
+      return true
+    end,
+    TimeMap_GetTimeSigAtTime = function() return tempo[1] and tempo[1][3] or 4, tempo[1] and tempo[1][4] or 4, tempo[1] and tempo[1][2] or F.base_bpm end,
+    TimeMap2_timeToQN = function(_, t) return F.qn_of(t) end,
+    TimeMap2_QNToTime = function(_, qn) return F.time_of(qn) end,
     TimeMap_QNToMeasures = function(_, qn) return math.floor(qn / 4) + 1 end,
     TimeMap_GetMeasureInfo = function(_, i) return i * 2, i * 4, (i + 1) * 4, 4, 4, tempo[1] and tempo[1][2] or 120 end,
     -- the transport's loop, time selection and repeat
@@ -564,6 +637,63 @@ function E.new(path)
     F.missing[k] = true
     return function() end
   end })
+  -- ---- the project as its file holds it (F.save), for opening again later as REAPER does after a restart without saving (E.open) ----
+  local function deep(v)
+    if type(v) ~= "table" then return v end
+    local o = {}
+    for k, x in pairs(v) do o[k] = deep(x) end
+    return o
+  end
+  function F.save()
+    local snap = { tracks = {}, markers = deep(markers), tempo = deep(tempo), base_bpm = F.base_bpm, pext = deep(pext), info = deep(info), info_s = deep(info_s),
+      matrix = {}, loop = deep(F.loop), repeat_on = F.repeat_on }
+    for i, t in ipairs(tracks) do
+      local st = { guid = t.guid, name = t.name, color = t.color, vol = t.vol, pan = t.pan, mute = t.mute, depth = t.depth, vals = deep(t.vals), ext = deep(t.ext),
+        svals = deep(t.svals), body = t.body, items = {} }
+      for j, it in ipairs(t.items) do st.items[j] = { guid = it.guid, ext = deep(it.ext), lane = it.lane, text = it.text } end
+      snap.tracks[i] = st
+    end
+    for num, l in pairs(matrix) do
+      local g = {}
+      for _, t in ipairs(l) do g[#g + 1] = t.is_master and "MASTER" or t.guid end
+      snap.matrix[num] = g
+    end
+    return snap
+  end
+  function F.load(snap)
+    for i = #tracks, 1, -1 do tracks[i] = nil end
+    local by_guid = { MASTER = master }
+    for i, st in ipairs(snap.tracks) do
+      local t = { guid = st.guid, name = st.name, color = st.color, vol = st.vol, pan = st.pan, mute = st.mute, depth = st.depth, vals = deep(st.vals) or {}, ext = deep(st.ext) or {},
+        svals = deep(st.svals), body = st.body or "", items = {} }
+      for j, si in ipairs(st.items) do t.items[j] = { guid = si.guid, track = t, ext = deep(si.ext) or {}, lane = si.lane or 0, text = si.text, tk = {} } end
+      tracks[i], by_guid[t.guid] = t, t
+    end
+    for i = #markers, 1, -1 do markers[i] = nil end
+    for i, m in ipairs(snap.markers) do markers[i] = deep(m) end
+    for i = #tempo, 1, -1 do tempo[i] = nil end
+    for i, m in ipairs(snap.tempo) do tempo[i] = deep(m) end
+    F.base_bpm = snap.base_bpm or 120
+    for k in pairs(pext) do pext[k] = nil end
+    for k, v in pairs(snap.pext) do pext[k] = deep(v) end
+    for k in pairs(info) do info[k] = nil end
+    for k, v in pairs(snap.info or {}) do info[k] = v end
+    for k in pairs(info_s) do info_s[k] = nil end
+    for k, v in pairs(snap.info_s or {}) do info_s[k] = v end
+    for k in pairs(matrix) do matrix[k] = nil end
+    for num, g in pairs(snap.matrix or {}) do
+      matrix[num] = {}
+      for _, id in ipairs(g) do if by_guid[id] then table.insert(matrix[num], by_guid[id]) end end
+    end
+    F.loop, F.repeat_on = deep(snap.loop) or { 0, 0 }, snap.repeat_on or 0
+    changed()
+  end
+  return F
+end
+-- A project file opened in a REAPER just started: a new project pointer and master track, everything else as the file had it.
+function E.open(path, snap)
+  local F = E.new(path)
+  F.load(snap)
   return F
 end
 

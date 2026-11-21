@@ -145,6 +145,15 @@ function undo.step(proj, cfg, b, redo, opts)
   -- event. Round 1 review, 0.59.45)
   local act = ids and #ids > 1 and ids or nil
   if redo then o.redoes, o.redoes_all = e.id, act else o.undoes, o.undoes_all = e.id, act end
+  -- (the act's tempo map or markers first, where it changed them and they're yours to change: a region copied with its items stayed on every
+  -- computer after the undo. The tempo goes back before the items, so REAPER moves nothing the restores put in place. REAPER check F3, rt-edits)
+  local tl = can(cfg.user, nil, nil) and sync.act_timeline(all, i, cfg.user, redo)
+  if tl then
+    local okt, err, tempo = pcall(sync.undo_timeline, proj, cfg, b.song, b.room, all, tl, redo and { redoes = e.id } or { undoes = e.id },
+      band.read_json(band.session_path(cfg, b.song)))
+    if not okt then band.log("undo: the tempo map and markers stay as they are (" .. tostring(err) .. ")") end
+    o.retimed = okt and err == true and tempo == true -- (REAPER just moved things for the map: mirror.revert)
+  end
   local ok, res = pcall(mirror.revert, proj, cfg, b.song, b.room, plan, o)
   if not ok then return nil, "undo failed: " .. tostring(res) end
   return res

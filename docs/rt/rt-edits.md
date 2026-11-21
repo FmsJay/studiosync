@@ -56,8 +56,8 @@ song.
 | Recording with a time selection, auto-punch (the take trimmed to it) | passes; the record mode itself travels as `projrecmode` in the project settings |
 | Markers and regions renumbered | **failed, fixed** (fix B) |
 | The region render matrix | **failed, fixed** (fix B) |
-| Tempo change under items in time | passes |
-| Tempo change under items in beats (REAPER re-times them) | passes |
+| A tempo marker added under items in beats (REAPER moves what's after it), one item set to time staying | **failed in REAPER, fixed** (fixes G, H) |
+| The first tempo changed under items in beats (REAPER moves them all) | **failed in REAPER, fixed** (fixes G, H) |
 | A track template inserted, made from a shared track (its items carry the studio's ids) | passes: new ids, the original untouched everywhere |
 | An item moved to another track, nothing else changed | **failed in REAPER, fixed** (fix F) |
 | An item dragged to another track and along it | passes |
@@ -158,6 +158,99 @@ Test: two cases replace the one. "An item moved to another track, nothing else c
 `edited_here` says yes, then goes through the whole matrix (sent by a quick and a full look, applied by a move on the laptop, one Ctrl+Z,
 redo, late joiner). "An item dragged to another track and along it" keeps the old case. With the fix taken out, the first fails at "detected
 and sent (0 objects)".
+
+**G. Ctrl+Z left the act's region and markers behind** (`lib/mirror.lua`, `lib/sync.lua`, `lib/undo.lua`). Found in REAPER on 0.59.49.73
+(F3: "Time selection: Copy contents" synced, and after the StudioSync undo every computer still had the copied region).
+
+Cause: an act held object changes only. The tempo map and markers go as one "timeline" change, sent just before the look that sends the
+items, and Undo never looked at it.
+
+Fix:
+- **The timeline change is part of the act.** `sync.watch_timeline` runs before the look, so it takes the act id the look is about to use
+  (`mirror.act_for`); the look then sends under that id if it follows within `mirror.ACT_SECS` (2.5 s).
+- **Undo puts it back first** (`sync.undo_timeline`, called from `undo.step`), where the timeline is yours to change:
+  - markers and regions: what the act added goes, what it took away comes back, matched by kind, place, end and name. Everything else stays
+    as it is now, including a bandmate's markers made since;
+  - where the act changed the tempo map, places can't be compared across the two maps, so the whole earlier timeline comes back, and only
+    if what's here is still what the act left. Otherwise the timeline is left alone;
+  - the tempo goes back before the items, so REAPER moves nothing the restores put in place.
+- **Redo** does the same in reverse: the undo's own timeline change carries `undoes`, and redo inverts that one.
+- After a tempo undo REAPER has just moved the act's items and points. `mirror.revert` now takes that for what it is (`opts.retimed`),
+  not for "an unsent edit of yours" or "already there". Before, it left those items alone, the next look sent REAPER's moves as new
+  changes, and Redo then said there was nothing to redo.
+
+Not changed: an act that is only a timeline change (a marker added and nothing else) is still not something StudioSync's Undo steps back.
+REAPER's own undo does, when your edit is on top.
+
+Test: every matrix case that changes the timeline now also checks, after one Ctrl+Z, that the tempo map, regions and markers are what they
+were before the edit, and after Redo that they're what the edit left. That covers the region copies, the ripple that moves markers, and both
+tempo cases.
+
+**H. A tempo change left receivers different** (`lib/mirror.lua`, `lib/sync.lua`). Found in REAPER on 0.59.49.73 (F6).
+
+Cause, matched to the numbers from the check:
+- when the tempo map changes, REAPER moves everything that's in beats. The sender sends the map, and the items and automation REAPER moved;
+- the items and automation go as messages on the link and usually arrive first. The map came as a file only;
+- a receiver that took an item first put it where the new map has it (4.615 s long), and then its own REAPER moved it again when the map
+  landed (5.815 s: scaled twice). The laptop got the map first and was right; LinuxBox wasn't;
+- nothing put it right afterwards: a receiver that may not change the item takes REAPER's move as "nobody's edit" and records it.
+
+Fix:
+- every change sent while REAPER may be moving things for a map (15 s after a tempo change) names the map it was made under (`tl`, from
+  `mirror.map_stamp`). Undo's and Restore's changes carry it too;
+- a receiver lands such a change only once it holds that map (`sync.map_waits` in `sync.receive`). In the pass that brings the map, the map
+  lands first and the change after it. If the map never comes, the change lands anyway after `sync.MAP_WAIT` (30 s);
+- the map now goes as a message on the link too, so it isn't the slow one.
+
+Older versions send no `tl`, so their changes land as before.
+
+Test (the "Edits tempo" block): a tempo marker, the first tempo changed, both put back. Each time the laptop takes the map first and a
+third computer is given the items and points first, with the map's file held back. Nothing lands there before the map, and both end as the
+desktop. A fourth computer is given the same changes without `tl`: its length comes out scaled twice, as LinuxBox's did.
+
+The stand-in REAPER now moves items, track envelope points, markers, regions and later tempo markers by their beats when the map changes.
+Its numbers match the check's: at 130 bpm, a 100 bpm marker at 8.0 s takes an item at 7.385 + 3.692 s to 4.615 s long.
+
+**I. A project behind the studio's timeline could keep its stale markers, and would have published them** (`lib/sync.lua`). Found in REAPER
+on 0.59.49.73 (F7: the desktop had lost the Verse region).
+
+What the desktop's files show:
+- `Cross Test.rpp` was last saved on 11-19 at 15:11. Every restart reopens that file and catches up.
+- That file noted its timeline in an older `TIMELINE_FORMAT`. A note in another format reads as a first look, and the "opened behind the
+  song" look at session.json only ran for a note in the current format. So after the update that look was skipped.
+- The autosave made 5 minutes after the 15:22 restart has the newest map's stamp, that map's event marked done, and no region. I couldn't
+  find the path that marked it done without applying it (two REAPERs were running on the desktop at 15:22, which may be part of it).
+
+Fix, three parts:
+- **Behind by the stamp.** At a project's first look, if session.json's map is newer than the newest this project has made or applied, the
+  project takes it, whatever the file last noted (nothing, another format, or marker edits never sent). The stamp is now set only after the
+  map is in place.
+- **The stamp is checked against what's here** (`sync.timeline_heal`). Once per stamp and opening, when nothing of yours waits to go, the
+  map the stamp names is read (its event, or session.json) and compared with the project's tempo and markers (kind, place, end, name). If
+  they differ, the map is put in place and the log says so. This is what would have brought the desktop's region back.
+- **Nothing of the timeline goes out while behind.** While a project is still catching up after opening, a tempo or marker change of yours
+  waits if a newer map is waiting to land, or if that can't be told yet (`sync.timeline_behind`). A marker added before the open still goes
+  out at once when nothing newer waits, as before.
+
+Limit: when a newer map does land, it replaces the whole timeline, so a marker you added in those first seconds is gone. The log doesn't
+say so yet.
+
+Test (the "Edits reopen" block), each from a saved copy of the project reopened as a new REAPER would:
+- a file noted in an older format with session.json newer takes the studio's region at its first look and sends nothing;
+- a project with the newest stamp and the event marked done, but without its markers, gets them;
+- with session.json not there and a marker added before the first catch-up, nothing of the timeline goes out, and the laptop keeps the region.
+
+**The two `session.sync-conflict` files in Cross Test.** session.json is written by `sync.session_timeline`, on whichever computer sends a
+timeline change. Two computers sending one within a second or two of each other both write it, and Syncthing keeps the loser as a conflict
+copy.
+- Today's (21:25:43-44 UTC): the desktop added a marker with the default colour. The laptop applied it, read it back with a colour
+  (22955745 where the desktop said 0), took that for a change of its own and sent the timeline back one second later. The desktop applied
+  that and sent again. Three timeline changes in two seconds, two computers writing session.json. This marker-colour echo is not fixed here.
+- The 11-19 one is a timeline from the Mac while the desktop was also sending.
+- It also explains the log line "session.json says it's James's, but another computer wrote it, so it was set aside": that check
+  (`trust.own_file_ok`, used by the hub) expects only the sharer's computer to write session.json, and `sync.session_timeline` breaks that.
+- Not fixed: both want a decision (one writer for session.json's timeline, or the timeline kept in a file per computer). Listed under
+  "What's left".
 
 ### Not carried (gaps, not fixed)
 
@@ -266,6 +359,14 @@ and Health showing no mismatch.
     - repeat after saving mid-try (Ctrl+S during the try);
     - with Hold my changes on, open Settings > Health: a yellow row says Hold is on and how to switch it off;
     - **switch Hold off on the laptop's Cross Test now** (it still has the old value).
+18. **Undo of a region copy (fix G):** "Time selection: Copy contents" of a region with its items, wait for it on the others, make any edit
+    on the laptop, then one StudioSync undo on the desktop. The copied region is gone on all three with the items, and redo brings both back.
+19. **Tempo changes (fix H):** on the desktop, `SetTempoTimeSigMarker(proj, -1, 8.0, -1, -1, 100, 0, 0, false)`, then the first tempo to
+    120, then both back. After each, the laptop and LinuxBox have the desktop's item positions and lengths and envelope points, and stay
+    so. Then undo one of them with StudioSync's undo: the map and the items go back together everywhere.
+20. **Reopened behind (fix I):** with a region made since the desktop's last save, restart REAPER on the desktop (it reopens the older
+    file). The region is there after Live sync's first passes, the log says the project was behind, and no "sent the markers" line
+    follows. The laptop keeps the region.
 
 ## Untested / limits
 

@@ -25,9 +25,10 @@ local band = require("band")
 local proxy = setmetatable({}, { __index = band })
 proxy.read_json = function(path) local v = files[path]; if type(v) == "table" then return band.json_decode(band.json_encode(v)) end end
 proxy.write_json = function(path, v) files[path] = band.json_decode(band.json_encode(v)); return true end
+local hidden = {} -- path -> true: not here yet, for whoever lists now
 local function listing(dir, ext)
   local out = {}
-  for p in pairs(files) do local d, fn = p:match("^(.*)/([^/]*)$"); if d == dir and (not ext or fn:sub(-#ext) == ext) then out[#out + 1] = fn end end
+  for p in pairs(files) do local d, fn = p:match("^(.*)/([^/]*)$"); if d == dir and (not ext or fn:sub(-#ext) == ext) and not hidden[p] then out[#out + 1] = fn end end
   table.sort(out)
   return out
 end
@@ -36,7 +37,7 @@ proxy.files = listing
 proxy.log = function(t) logged[#logged + 1] = t end
 proxy.size = function() return 960044 end
 proxy.copy_atomic = function() return true end
-proxy.session_path = function() return "SESSION" end
+proxy.session_path = function(_, s) return "SESSION/" .. tostring(s) .. ".json" end
 package.loaded.band = proxy
 local mirror = require("mirror")
 local sync = require("sync")
@@ -61,10 +62,13 @@ local function state(c)
   for _, o in ipairs(objs) do out[o.oid] = o.hash; if o.kind == "track" then order[#order + 1] = o.oid end end
   return out, table.concat(order, ","), objs
 end
-local function timeline(c)
+local function timeline(c) -- (times to a nanosecond: what REAPER moved for a tempo map and what a map's event says differ in the 14th digit)
   as(c)
-  local m = band.capture_markers(c.F.proj)
-  return band.json_encode({ band.capture_tempo(c.F.proj), m })
+  local function r(x) return type(x) == "number" and math.floor(x * 1e9 + 0.5) / 1e9 or x end
+  local t, m = band.capture_tempo(c.F.proj), band.capture_markers(c.F.proj)
+  for _, x in ipairs(t) do x.time, x.bpm = r(x.time), r(x.bpm) end
+  for _, x in ipairs(m) do x.pos, x["end"] = r(x.pos), r(x["end"]) end
+  return band.json_encode({ t, m })
 end
 local function same(x, y, what)
   local sx, ox, objx = state(x)
@@ -97,8 +101,9 @@ local function look(c, quick)
   as(c)
   c.F.clock = c.F.clock + 1
   local q0, f0 = mirror.look_stats.quick, mirror.look_stats.full
-  mirror.watch(c.F.proj, c.cfg, song, room, { can = yes, mode = "open", quick = quick })
+  -- (as Live sync's P.look: the tempo map and markers first, "a tempo change moves the items", then the look at the items)
   sync.watch_timeline(c.F.proj, c.cfg, song, room, yes)
+  mirror.watch(c.F.proj, c.cfg, song, room, { can = yes, mode = "open", quick = quick })
   local sent, oids = new_events(), {}
   for _, ev in ipairs(sent) do if ev.oid then oids[ev.oid] = ev end end
   return oids, sent, (mirror.look_stats.full > f0 and "full") or (mirror.look_stats.quick > q0 and "quick") or "none"
@@ -175,6 +180,8 @@ local function build(name)
   F.add_item(gtr, audio(2, 6, "gtr.flac", "Gtr"))
   seed_markers(F)
   seed_markers(B.F)
+  as(A)
+  files[proxy.session_path(A.cfg, song)] = band.json_decode(band.json_encode({ sync = "mirror", host = "James", tempo = band.capture_tempo(F.proj), markers = band.capture_markers(F.proj) }))
   settle(A, true)
   A.F.clock = A.F.clock + 70 -- (past the plug-ins' loading minute: looks are quick from here)
   settle(A, true)
@@ -323,12 +330,20 @@ local cases = {
     reaper.SetRegionRenderMatrix(F.proj, marker("Chorus").num, bass, 1)
     reaper.SetRegionRenderMatrix(F.proj, marker("Chorus").num, F.master, 1)
   end },
-  { name = "a tempo change under items in time (audio stays where it is)", min = 0, timeline = true, undo = false, edit = function()
-    reaper.SetTempoTimeSigMarker(F.proj, -1, 32, -1, -1, 100, 4, 4, false)
+  -- (REAPER moves what's in beats when the map changes: the fixture does too, as measured on Cross Test. The moved items and points go out
+  -- with the map, and every other computer must end where the desktop is whichever arrives first: REAPER check F6, below.)
+  { name = "a tempo marker added under items in beats (REAPER moves what's after it), one item set to time staying", min = 1, timeline = true, edit = function()
+    local last = bass.items[#bass.items]
+    set(last, "BEAT", "0")
+    local was = pos(last)
+    reaper.SetTempoTimeSigMarker(F.proj, -1, 6, -1, -1, 100, 4, 4, false)
+    assert(pos(last) == was and pos(last) > 6, "the item in time stayed")
   end },
-  { name = "a tempo change under items in beats (REAPER moves them)", min = 1, timeline = true, edit = function()
+  { name = "the first tempo changed under items in beats (REAPER moves them all)", min = 1, timeline = true, edit = function()
+    local it = keys.items[#keys.items]
+    local was = pos(it)
     reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, 132, 4, 4, false)
-    for _, it in ipairs(items(keys)) do set(it, "POSITION", f(pos(it) * 120 / 132)); set(it, "LENGTH", f(len(it) * 120 / 132)) end
+    assert(math.abs(pos(it) - was) > 0.01, "REAPER moved the items in beats")
   end },
   { name = "a track template inserted (from a shared track: its items carry the studio's ids)", min = 2, full = true, edit = function()
     local t = F.add_track("Drums (template)", 3)
@@ -403,6 +418,7 @@ local function run(mode)
     if os.getenv("RT_EDITS_TRACE") then io.stderr:write(what, "\n") end
     tick()
     local before = state(A)
+    local tl_before = timeline(A)
     as(A)
     case.edit()
     tick()
@@ -438,6 +454,7 @@ local function run(mode)
     tick()
     recv(B)
     same(A, B, what .. ": applied the same on the laptop")
+    local tl_edit = timeline(A)
     if case.name:find("render matrix", 1, true) then assert(matrix_of(A) == matrix_of(B), what .. ": " .. matrix_of(A) .. " vs " .. matrix_of(B)) end
     if case.name:find("renumbered", 1, true) then assert(numbers_of(A) == numbers_of(B), what .. ": " .. numbers_of(A) .. " vs " .. numbers_of(B)) end
     -- the laptop's own edit meanwhile, then one Ctrl+Z on the desktop
@@ -459,6 +476,8 @@ local function run(mode)
       tick()
       recv(B)
       same(A, B, what .. ": undone the same on the laptop")
+      -- (and its tempo map, regions and markers: a copied region stayed on every computer after the undo. REAPER check F3)
+      assert(timeline(A) == tl_before, what .. ": one Ctrl+Z put the tempo map and markers back\n" .. tl_before .. "\n" .. timeline(A))
       local after = state(A)
       local gtr_oid = select(2, A.F.raw.GetSetMediaTrackInfo_String(gtr, "P_EXT:band_oid", "", false)):upper()
       for oid, h in pairs(before) do
@@ -469,11 +488,13 @@ local function run(mode)
       -- redo, so the next case builds on it (and redo is one key too)
       tick()
       as(A)
-      assert(undo.step(A.F.proj, A.cfg, { song = song, room = room }, true, {}), what .. ": redone")
+      local redone, why_not = undo.step(A.F.proj, A.cfg, { song = song, room = room }, true, {})
+      assert(redone, what .. ": redone (" .. tostring(why_not) .. ")")
       settle(A, quick)
       tick()
       recv(B)
       same(A, B, what .. ": redone the same on the laptop")
+      assert(timeline(A) == tl_edit, what .. ": and redo brought the tempo map and markers back\n" .. tl_edit .. "\n" .. timeline(A))
     end
   end
 end
@@ -526,6 +547,167 @@ do
   assert(numbers_of(B) == numbers_of(A), "the laptop took the renumbering: " .. numbers_of(A) .. " vs " .. numbers_of(B))
   assert(matrix_of(B) == matrix_of(A), "and the render matrix: " .. matrix_of(A) .. " vs " .. matrix_of(B))
   print("rt-edits: the render matrix and a renumbering go in Live sync's next pass, and land on a laptop with an older-format timeline")
+end
+
+-- ---- REAPER check F6, 0.59.49.73: a tempo change left the receivers different ----
+-- A 100 bpm marker at 8 s on the desktop: REAPER moved what's in beats after it, and the desktop sent the map and the moved items and points.
+-- The laptop got the map first and ended the same. LinuxBox got the items and points first (they go as messages on the link; the map came as
+-- a file), put them where the new map has them, and then its REAPER moved them again when the map landed: lengths scaled twice (4.615 s on the
+-- desktop, 5.815 s there), and nothing put them right. Now each change made while REAPER moves things for a map says which map (`tl`), and a
+-- receiver lands it only once it holds that map; the map goes as a message too.
+do
+  build("Edits tempo")
+  local X, Y = computer("Linus", "C:/X/Edits tempo.rpp"), computer("Yan", "C:/Y/Edits tempo.rpp")
+  for _, c in ipairs({ X, Y }) do seed_markers(c.F); tick(); recv(c); same(A, c, "tempo order: " .. c.cfg.user .. " has the song") end
+  local edir = sync.room_dir(A.cfg, song, room) .. "/events"
+  local function len_of(c, name) for _, t in ipairs(c.F.tracks) do for _, it in ipairs(t.items) do if it.text:find('NAME "' .. name .. '"', 1, true) then return tonumber(E.top_value(it.text, "LENGTH")) end end end end
+  local function tempo_edit(what, edit)
+    tick()
+    as(A)
+    edit()
+    tick()
+    local oids, sent = look(A, true)
+    settle(A, true, oids)
+    local map
+    for _, ev in ipairs(sent) do if ev.type == "timeline" then map = ev end end
+    assert(map and next(oids), what .. ": the map and what REAPER moved went out")
+    for oid, ev in pairs(oids) do assert(type(ev.tl) == "string" and ev.tl:find(map.id, 1, true), what .. ": " .. oid .. " says which map it was made under") end
+    tick()
+    recv(B) -- (the laptop: the map first, as its file sorts)
+    same(A, B, what .. ": the laptop, map first")
+    -- LinuxBox: the items and points are here, the map's file isn't yet
+    local before = state(X)
+    hidden[edir .. "/" .. map.id .. ".json"] = true
+    as(X)
+    X.F.clock = X.F.clock + 1
+    sync.receive(X.F.proj, X.cfg, song, room, yes)
+    for oid, h in pairs(state(X)) do assert(before[oid] == h, what .. ": nothing lands on LinuxBox before its map (" .. oid .. ")") end
+    hidden[edir .. "/" .. map.id .. ".json"] = nil
+    tick()
+    recv(X)
+    same(A, X, what .. ": LinuxBox, the items and points first")
+    return map, oids
+  end
+  local l0 = len_of(A, "Gtr")
+  local map, oids = tempo_edit("a 100 bpm marker at 6 s", function() reaper.SetTempoTimeSigMarker(F.proj, -1, 6, -1, -1, 100, 4, 4, false) end)
+  local l1 = len_of(A, "Gtr")
+  assert(math.abs(l1 - l0 * 1.2) < 1e-6 or l1 > l0, "REAPER stretched the item across the marker (" .. l0 .. " -> " .. l1 .. ")")
+  -- the way it went wrong, on a fourth computer: the same changes as 0.59.49.73 sent them (no map named), the map's file after them
+  for oid in pairs(oids) do
+    for path, ev in pairs(files) do if type(ev) == "table" and ev.oid == oid and ev.tl then ev.tl = nil end end
+  end
+  hidden[edir .. "/" .. map.id .. ".json"] = true
+  as(Y)
+  Y.F.clock = Y.F.clock + 1
+  sync.receive(Y.F.proj, Y.cfg, song, room, yes)
+  hidden[edir .. "/" .. map.id .. ".json"] = nil
+  Y.F.clock = Y.F.clock + 1
+  sync.receive(Y.F.proj, Y.cfg, song, room, yes)
+  local l2 = len_of(Y, "Gtr")
+  assert(l2 > l1 + 0.1, "without the stamp the stand-in REAPER does what REAPER did: the length scaled twice (" .. l1 .. " on the desktop, " .. l2 .. " there)")
+  -- the first tempo, then both put back: the same on the laptop and on LinuxBox each time
+  tempo_edit("the first tempo to 110", function() reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, 110, 4, 4, false) end)
+  tempo_edit("the first tempo back", function() reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, 120, 4, 4, false) end)
+  tempo_edit("the marker taken out", function() reaper.DeleteTempoTimeSigMarker(F.proj, 1) end)
+  assert(math.abs(len_of(A, "Gtr") - l0) < 1e-9 and math.abs(len_of(X, "Gtr") - l0) < 1e-9, "and back where it all began")
+  -- a change whose map never comes still lands, after sync.MAP_WAIT
+  tick()
+  as(A)
+  local it = A.F.tracks[1].items[1]
+  A.F.set_text(it, E.set_top(E.set_top(it.text, "MUTE", "1 0"), "SEL", "1"))
+  local o2 = look(A, true)
+  local stuck = o2[it.ext.band_oid]
+  assert(stuck, "an edit went out")
+  files[edir .. "/" .. stuck.id .. ".json"].tl = "9999-01-01T00:00:00ZNobody-1"
+  as(X)
+  X.F.clock = X.F.clock + 1
+  sync.receive(X.F.proj, X.cfg, song, room, yes)
+  assert(state(X)[stuck.oid] ~= state(A)[stuck.oid], "it waits for its map")
+  as(X)
+  X.F.clock = X.F.clock + sync.MAP_WAIT + 1
+  sync.receive(X.F.proj, X.cfg, song, room, yes)
+  assert(state(X)[stuck.oid] == state(A)[stuck.oid], "and lands without it after " .. sync.MAP_WAIT .. " s")
+  print("rt-edits: tempo changes end the same whichever comes first, the map or what REAPER moved for it")
+end
+
+-- ---- REAPER check F7, 0.59.49.73: the desktop had lost the Verse region ----
+-- Its REAPER restarted and reopened a project file from the day before (Cross Test.rpp was never saved since). The file had noted its timeline
+-- in an older TIMELINE_FORMAT, which read as a first look, so the "opened behind the song" look at session.json was skipped; the autosave after
+-- shows the newest map's stamp, its event marked done, and no region. Its next marker edit would have dropped the region for everyone.
+do
+  build("Edits reopen")
+  tick()
+  local saved = A.F.save() -- (the file on the desktop's disk: never saved again)
+  as(A)
+  F.add_marker(true, 20, 28, "Bridge")
+  tick()
+  look(A, true)
+  tick()
+  recv(B)
+  same(A, B, "reopen: the Bridge region is the studio's")
+  local SEC = band.SECTION
+  local function has(c, name) for _, m in ipairs(c.F.markers) do if m.name == name then return true end end return false end
+  local function reopen() return { F = E.open(A.F.path, saved), cfg = A.cfg } end
+  local function no_timeline(sent, what) for _, ev in ipairs(sent) do assert(ev.type ~= "timeline", what) end end
+  local sp = proxy.session_path(A.cfg, song)
+  assert(type(files[sp].timeline_order) == "string", "session.json has the map's stamp")
+  -- 1. noted in an older format, session.json newer: the studio's timeline at its first look, before anything of its own may go
+  local D = reopen()
+  as(D)
+  local seen = band.json_decode(select(2, reaper.GetProjExtState(D.F.proj, SEC, "timeline")))
+  seen[4] = 5
+  for _, m in ipairs(seen[2]) do m.num, m.render = nil, nil end
+  reaper.SetProjExtState(D.F.proj, SEC, "timeline", band.json_encode(seen))
+  assert(not has(D, "Bridge"), "the reopened file is from before the region")
+  D.F.add_marker(false, 50, 50, "Mine") -- (and a marker added the moment it opened)
+  tick()
+  local _, sent = look(D, true)
+  assert(has(D, "Bridge"), "an older file reopened after an update takes the studio's timeline at its first look")
+  no_timeline(sent, "and sends none of its own while behind")
+  tick()
+  recv(D)
+  same(D, B, "reopen 1: as the studio")
+  -- 2. as the desktop's autosave was: the newest map's stamp, its event marked done, none of its markers
+  local D2 = reopen()
+  as(D2)
+  reaper.SetProjExtState(D2.F.proj, sync.NEWEST, "timeline", files[sp].timeline_order)
+  for path, ev in pairs(files) do
+    if type(ev) == "table" and ev.type == "timeline" and path:find("/" .. song .. "/", 1, true) then reaper.SetProjExtState(D2.F.proj, sync.APPLIED, ev.id, "1") end
+  end
+  reaper.SetProjExtState(D2.F.proj, SEC, "timeline", sync.timeline_sig(D2.F.proj))
+  tick()
+  _, sent = look(D2, true)
+  assert(has(D2, "Bridge"), "a project that counts the newest map as here but doesn't hold it gets it")
+  no_timeline(sent, "and that isn't a change of its own")
+  tick()
+  recv(D2)
+  same(D2, B, "reopen 2: as the studio")
+  _, sent = look(D2, true)
+  no_timeline(sent, "once: nothing more")
+  -- 3. session.json not here yet, a marker added before its first catch-up is done: nothing of the timeline goes out until it has caught up
+  local D3 = reopen()
+  as(D3)
+  local keep = files[sp]
+  files[sp] = nil
+  sync.loading[tostring(D3.F.proj)] = true
+  tick()
+  look(D3, true)
+  D3.F.add_marker(false, 50, 50, "Mine")
+  tick()
+  _, sent = look(D3, true)
+  no_timeline(sent, "a stale file's markers don't go out with your edit before it has caught up")
+  D3.F.clock = D3.F.clock + 1
+  sync.receive(D3.F.proj, D3.cfg, song, room, yes)
+  sync.loading[tostring(D3.F.proj)] = nil
+  files[sp] = keep
+  assert(has(D3, "Bridge"), "caught up: the studio's region is here")
+  tick()
+  _, sent = look(D3, true)
+  tick()
+  recv(B)
+  assert(has(B, "Bridge"), "and the laptop still has it")
+  same(D3, B, "reopen 3: as the studio")
+  print("rt-edits: a project reopened behind the studio's timeline takes it before anything of its own goes out")
 end
 -- ---- the transport: Play together carries the leader's loop and repeat (each REAPER looped by its own before: a loop rehearsal came apart at
 -- the first loop end). "Play (skip time selection)" and region playlists aren't carried: docs/rt/rt-edits.md ----

@@ -998,7 +998,8 @@ function sync.post(cfg, song, room, ev, proj)
   -- (an object change also as a message: a file waits its turn on the link's one sending thread, behind every computer's copy, the clock's
   -- pings and the streams, so a slow or asleep computer first in line held the others' up to 1.5 s; each bandmate's messages go at once on a
   -- lane of their own. Up to direct.MSG_MAX (a big chain or MIDI item goes as the file only); the file is still the record. rt-look)
-  if ev.type == "obj" then direct.send_live(cfg, "event", ev, song, room, ev.id) end
+  -- (and a tempo map or marker change: the items REAPER moved for it wait for it on the other side, sync.map_waits. rt-edits)
+  if ev.type == "obj" or ev.type == "timeline" then direct.send_live(cfg, "event", ev, song, room, ev.id) end
   if proj then stamp(proj, ev) end
   if ev.type == "start" or ev.type == "stop" then -- (a cue: Syncthing told to look at it now, not when its watcher gets round to it)
     local id = band.info(cfg.root).id
@@ -1097,6 +1098,13 @@ end
 function sync.note_item(proj, ev)
   return (ev.take and band.find_take(proj, ev.take)) or (type(ev.item) == "string" and require("mirror").find(proj, "item", ev.item)) or nil
 end
+-- A change stamped with the tempo map it was made under (mirror.map_stamp) waits while this project's newest map is older than that one: up
+-- to MAP_WAIT seconds from when it came, then it lands anyway (the map was refused here, or never arrives). rt-edits
+sync.MAP_WAIT = 30
+function sync.map_waits(proj, ev, me)
+  if type(ev.tl) ~= "string" or ev.user == me or ev.tl <= ext(proj, sync.NEWEST, "timeline") then return false end
+  return reaper.time_precise() - sync.refused_since("map " .. tostring(ev.id)) <= sync.MAP_WAIT
+end
 -- Whether a change that isn't an object's changes this project: a play or stop together, a driver change and a note on nothing here don't.
 -- (only then an arrival's undo block: opened for every bandmate's event, it closed empty on top of REAPER's list and sent Ctrl+Z StudioSync's
 -- way. Cost: a lookup per note. Round 4 review, 0.59.49)
@@ -1132,6 +1140,159 @@ end
 -- Compare the project with its snapshots and post what changed, for whatever `can` says this person may
 -- change (track owner, region owner or driver). Changes they may not make stay local (and are locked in
 -- the first place, see apply_locks).
+-- Is a tempo map or marker change newer than this project's waiting to land? true, false, or nil while that can't be told (the room's
+-- changes waiting here haven't all been read yet: sync.receive notes it once they are). Asked only while a project catches up after opening.
+sync.map_pending = {} -- tostring(proj) -> a newer map was among what waited, as of the last sync.receive that read everything
+function sync.timeline_behind(proj, cfg, song, room)
+  local known = sync.map_pending[tostring(proj)]
+  if known ~= nil then return known end
+  -- (anything at all not taken in yet, your own from before a restart included: the desktop's newer map was its own)
+  local dir = sync.room_dir(cfg, song, room) .. "/events"
+  local settled = sync.settled_for(proj, dir)
+  for _, f in ipairs((require("direct").listing(cfg, dir))) do
+    if not settled[f] and ext(proj, sync.APPLIED, f:sub(1, -6)) == "" then return nil end
+  end
+  return false
+end
+-- Does this project hold the newest tempo map and markers it says it does (sync.NEWEST names the change: its time, then its id)? Asked once
+-- per stamp and opening, when nothing of yours waits to go: if the map's tempo or markers (kind, place, end, name) aren't what's here, they're
+-- put in place. The desktop's Cross Test, reopened from an older file, had the newest map's stamp and its event marked done, and none of its
+-- markers: nothing looked again, and its next marker edit would have dropped the region for everyone. REAPER check F7, rt-edits.
+-- -> true when it put the map in place. Cost: one small file read per new stamp.
+sync.timeline_checked = {}
+function sync.timeline_differs(proj, t)
+  local function near(a, b) return math.abs((tonumber(a) or 0) - (tonumber(b) or 0)) < 1e-6 end
+  local tempo, markers = band.capture_tempo(proj), band.capture_markers(proj)
+  if type(t.tempo) ~= "table" or type(t.markers) ~= "table" or #t.tempo ~= #tempo or #t.markers ~= #markers then return true end
+  for i, m in ipairs(t.tempo) do
+    local h = tempo[i]
+    if not (near(m.time, h.time) and near(m.bpm, h.bpm) and m.num == h.num and m.denom == h.denom) then return true end
+  end
+  local left = {}
+  for _, h in ipairs(markers) do left[#left + 1] = h end
+  for _, m in ipairs(t.markers) do
+    local found
+    for i, h in ipairs(left) do
+      if (m.region and true or false) == (h.region and true or false) and near(m.pos, h.pos) and (not m.region or near(m["end"], h["end"])) and m.name == h.name then found = i; break end
+    end
+    if not found then return true end
+    table.remove(left, found)
+  end
+  return false
+end
+function sync.timeline_heal(proj, cfg, song, room)
+  local held = ext(proj, sync.NEWEST, "timeline")
+  if held == "" or sync.timeline_checked[proj] == held then return false end
+  sync.timeline_checked[proj] = held
+  local t
+  local id = held:match("^%d%d%d%d%-%d%d%-%d%dT%d%d:%d%d:%d%dZ([%w%-_%.]+)$") -- (a stamp ending "+" is "after that one": its own id isn't in it)
+  if id then
+    local ev = band.read_json(sync.room_dir(cfg, song, room) .. "/events/" .. id .. ".json")
+    if type(ev) == "table" and ev.type == "timeline" and ev.id == id then t = ev end
+  end
+  if not t and room == "main" then
+    local sj = band.read_json(band.session_path(cfg, song))
+    if type(sj) == "table" and tostring(sj.timeline_order) == held then t = sj end
+  end
+  if not (type(t) == "table" and type(t.tempo) == "table" and #t.tempo > 0 and type(t.markers) == "table") then return false end
+  if not sync.timeline_differs(proj, t) then return false end
+  reaper.Undo_BeginBlock2(proj)
+  local ok, e = pcall(function()
+    if tempo_sig(t.tempo) ~= tempo_sig(band.capture_tempo(proj)) then
+      require("mirror").tempo_changed(proj)
+      sync.audio_follow_tempo(proj)
+      band.apply_tempo(proj, t.tempo)
+    end
+    if type(t.project) == "table" then band.apply_project(proj, t.project) end
+    band.apply_markers(proj, t.markers)
+  end)
+  reaper.Undo_EndBlock2(proj, "StudioSync: the project's tempo map and markers", -1)
+  if not ok then error(e, 0) end
+  band.log("this project's tempo map and markers weren't the studio's newest, which it had counted as here: they're back as the studio has them")
+  return true
+end
+
+-- An act's tempo map or marker change, put back with it (Undo and Redo: lib/undo.lua). entries[j] is that change (T); P is the timeline before
+-- it. Markers: what T added goes and what it took away comes back, by kind, place, end and name; everything else stays as it is now, a
+-- bandmate's markers since among them. Where T changed the tempo map, places can't be compared across the two maps, so the whole of P comes
+-- back, and only if what's here is still T. The tempo goes first, so REAPER moves things back before the act's items are restored.
+-- `tags`: { undoes = id } or { redoes = id }, on the change it sends. -> true when it changed anything, and whether that was the tempo map.
+-- REAPER check F3, rt-edits.
+function sync.undo_timeline(proj, cfg, song, room, entries, j, tags, session)
+  local T = entries[j]
+  if not (T and T.kind == "timeline" and type(T.tempo) == "table") then return false end
+  local P
+  for i = j - 1, 1, -1 do
+    local e = entries[i]
+    if e.kind == "timeline" and type(e.tempo) == "table" then P = e; break end
+  end
+  if not P then
+    local meta = band.read_json(sync.room_dir(cfg, song, room) .. "/room.json")
+    if meta and meta.parent then P = meta.tempo and meta or nil else P = (session and session.first_timeline) or session end
+  end
+  if not (P and type(P.tempo) == "table") then return false end
+  local function key(m)
+    return string.format("%s|%.6f|%.6f|%s", m.region and "r" or "m", tonumber(m.pos) or 0, m.region and (tonumber(m["end"]) or 0) or 0, tostring(m.name))
+  end
+  local function keys(list)
+    local t = {}
+    for _, m in ipairs(type(list) == "table" and list or {}) do t[key(m)] = m end
+    return t
+  end
+  local now_m = band.capture_markers(proj)
+  local in_p, in_t = keys(P.markers), keys(T.markers)
+  local want_t, want_m
+  if tempo_sig(P.tempo) ~= tempo_sig(T.tempo) then
+    if sync.timeline_differs(proj, T) then return false end -- (the map or markers changed since: left as they are)
+    want_t, want_m = P.tempo, type(P.markers) == "table" and P.markers or {}
+  else
+    local out, have, changed = {}, {}, false
+    for _, m in ipairs(now_m) do
+      local k = key(m)
+      if in_t[k] and not in_p[k] then changed = true else out[#out + 1] = m; have[k] = true end
+    end
+    for _, m in ipairs(type(P.markers) == "table" and P.markers or {}) do
+      local k = key(m)
+      if not in_t[k] and not have[k] then out[#out + 1] = m; have[k] = true; changed = true end
+    end
+    if not changed then return false end
+    want_m = out
+  end
+  reaper.Undo_BeginBlock2(proj)
+  local ok, e = pcall(function()
+    if want_t then
+      require("mirror").tempo_changed(proj)
+      sync.audio_follow_tempo(proj)
+      band.apply_tempo(proj, want_t)
+    end
+    band.apply_markers(proj, want_m)
+  end)
+  reaper.Undo_EndBlock2(proj, "StudioSync: the tempo map and markers of what you undid", -1)
+  if not ok then error(e, 0) end
+  local tev = { type = "timeline", tempo = band.capture_tempo(proj), markers = band.capture_markers(proj), project = band.capture_project(proj),
+    undoes = tags and tags.undoes, redoes = tags and tags.redoes }
+  sync.post(cfg, song, room, tev, proj)
+  sync.timeline_live[proj] = true
+  sync.session_timeline(cfg, song, tev.tempo, tev.markers, order(tev), tev.project)
+  setext(proj, band.SECTION, "timeline", timeline_sig(proj))
+  sync.timeline_checked[proj] = ext(proj, sync.NEWEST, "timeline")
+  sync.resnap(proj)
+  return true, want_t ~= nil
+end
+-- Which of `me`'s timeline changes belongs to the change being undone or redone (entries[i], as lib/undo.lua picked it): undoing, the one sent
+-- under its act; redoing, the one the undo sent (it carries the same `undoes`). The newest such. -> its index, or nil.
+function sync.act_timeline(entries, i, me, redo)
+  local e = entries[i]
+  if not e then return nil end
+  for j = #entries, 1, -1 do
+    local x = entries[j]
+    if x.kind == "timeline" and x.user == me and type(x.tempo) == "table" then
+      if redo then if e.undoes and x.undoes == e.undoes then return j end
+      elseif e.act and x.act == e.act then return j end
+    end
+  end
+end
+
 sync.timeline_looked = {}
 sync.timeline_live = {} -- project -> a timeline was applied or made here since it was opened (watch_timeline's first look; W.order clears it)
 -- The song's tempo map and markers: the driver's changes go out, anyone else's are put back (mirror sync carries
@@ -1149,14 +1310,18 @@ function sync.watch_timeline(proj, cfg, song, room, can)
     sync.timeline_looked[proj] = true
     -- (tempo and markers only: with the settings, this look was skipped and the stale markers were then posted with them, wiping a region the
     -- others had. Laptop restart, James, rt)
-    local s = room == "main" and seen ~= "" and tm(seen) == tm(sig) and band.read_json(band.session_path(cfg, song))
+    -- (or behind by session.json's stamp, whatever this file last noted: a file from before a TIMELINE_FORMAT change read as a first look, so
+    -- an older file reopened after an update kept its stale markers, and its next marker edit would have dropped the studio's region for
+    -- everyone. REAPER check F7, rt-edits)
+    local sj = room == "main" and band.read_json(band.session_path(cfg, song))
+    local behind = type(sj) == "table" and sj.timeline_order ~= nil and tostring(sj.timeline_order) > ext(proj, sync.NEWEST, "timeline")
+    local s = type(sj) == "table" and (behind or (seen ~= "" and tm(seen) == tm(sig))) and sj
     -- (only a session.json map newer than the newest this project has applied or made (NEWEST), or, unstamped (written before rt), none
     -- applied or made in this session: it comes through Syncthing, seconds behind a map over the direct link, and the stale one was put
     -- back over the new. Cross test step 1, James, rt)
     local held = ext(proj, sync.NEWEST, "timeline")
     if s and not (s.timeline_order and tostring(s.timeline_order) > held or not s.timeline_order and not sync.timeline_live[proj]) then s = nil end
     if s and type(s.tempo) == "table" and type(s.markers) == "table" and #s.tempo > 0 then
-      if s.timeline_order then setext(proj, sync.NEWEST, "timeline", tostring(s.timeline_order)) end -- (what it holds now: older maps stay superseded)
       local function plain(x) return band.json_encode(band.json_decode(band.json_encode(x))) end
       local tempo_off = plain(s.tempo) ~= plain(band.capture_tempo(proj))
       -- (and its settings, where session.json has them: they're in the map's event, which this project now counts as had. Crash-safe sessions, rt)
@@ -1172,6 +1337,9 @@ function sync.watch_timeline(proj, cfg, song, room, can)
         if not ok then error(e, 0) end
         band.log("this project was behind the studio's copy: its tempo map and markers are back as the studio has them")
       end
+      -- (what it holds now: older maps stay superseded. Only once it does hold it: stamped before an apply that failed, the map's own event
+      -- was then taken for already here. rt-edits)
+      if s.timeline_order then setext(proj, sync.NEWEST, "timeline", tostring(s.timeline_order)) end
       -- (behind, with no tempo or marker change of ours: what it holds now is what the studio has. Settings that still read differently went
       -- out as a change, newer than the studio's map, and every computer took this file's. Crash-safe sessions, James, rt)
       sig = timeline_sig(proj)
@@ -1183,6 +1351,19 @@ function sync.watch_timeline(proj, cfg, song, room, can)
   -- the band's newer map, or your own from before a crash, may be about to land. Sent now, this file's settings went out as newer than the
   -- studio's. Once caught up, what still differs is yours and goes out. Crash-safe sessions, James, rt)
   if seen ~= sig and seen ~= "" and sync.loading[tostring(proj)] and tm(seen) == tm(sig) then return end
+  -- (nor a tempo or marker change while this project is behind the studio's map, or can't tell yet: a newer map is about to land, and a stale
+  -- file's markers sent with one edit of yours would replace everyone's. A marker of yours added before the open still goes out at once when
+  -- nothing newer waits. sync.timeline_behind, REAPER check F7, rt-edits)
+  if seen ~= sig and seen ~= "" and sync.loading[tostring(proj)] and sync.timeline_behind(proj, cfg, song, room) ~= false then
+    local was = band.json_decode(seen)
+    if not (type(was) == "table" and tempo_sig(was[1]) == tempo_sig(band.capture_tempo(proj))) then require("mirror").tempo_changed(proj) end
+    return
+  end
+  -- (and what this project's stamp says it holds is what's here: sync.timeline_heal, once per stamp. rt-edits)
+  if seen == sig and not sync.loading[tostring(proj)] then
+    local okh, healed = pcall(sync.timeline_heal, proj, cfg, song, room)
+    if okh and healed then sig = timeline_sig(proj); seen = sig; setext(proj, band.SECTION, "timeline", sig) end
+  end
   if seen ~= sig then
     local was = seen ~= "" and band.json_decode(seen)
     if not (type(was) == "table" and tempo_sig(was[1]) == tempo_sig(band.capture_tempo(proj))) then require("mirror").tempo_changed(proj) end
@@ -1193,7 +1374,8 @@ function sync.watch_timeline(proj, cfg, song, room, can)
       if veto == "quiet" then -- (nothing to send or put back: "seen" takes it below)
       elseif can(me, nil, nil) and not veto then -- the song's timeline is the driver's
         local tempo, markers = band.capture_tempo(proj), band.capture_markers(proj)
-        local tev = { type = "timeline", tempo = tempo, markers = markers, project = band.capture_project(proj) }
+        -- (act: the id the look after this sends its items under, so one Undo takes the region or markers back with them. rt-edits)
+        local tev = { type = "timeline", tempo = tempo, markers = markers, project = band.capture_project(proj), act = require("mirror").act_for(proj, me) }
         sync.post(cfg, song, room, tev, proj) -- (proj: without it no order was set, 0.58.93's fix never applied. Review, 0.58.95)
         sync.timeline_live[proj] = true
         sync.session_timeline(cfg, song, tempo, markers, order(tev), tev.project)
@@ -1247,7 +1429,7 @@ end
 -- room, named as its file would be (no path in it), not one already here; the extension checked it came from the studio and its size.
 -- -> true when it's new (Live sync then receives at once). rt-look
 function sync.take_event(cfg, song, room, ev)
-  if type(ev) ~= "table" or ev.type ~= "obj" or type(ev.id) ~= "string" or #ev.id > 200 or not ev.id:match("^[%w%-_%.%(%)&]+$")
+  if type(ev) ~= "table" or (ev.type ~= "obj" and ev.type ~= "timeline") or type(ev.id) ~= "string" or #ev.id > 200 or not ev.id:match("^[%w%-_%.%(%)&]+$")
       or ev.id:find("..", 1, true) or ev.id:sub(1, 1) == "." or sync.is_mine(ev.id, cfg.user) then return false end
   local direct = require("direct")
   local dir = sync.room_dir(cfg, song, room) .. "/events"
@@ -1422,6 +1604,7 @@ function sync.receive(proj, cfg, song, room, can)
   -- (ours count too, and the newest this project already has: an older map of theirs landed over our newer one, theirs took ours, and the two
   -- projects kept different tempo maps. Review, 0.58.92)
   newest_map = sync.newest_map(pending, ext(proj, sync.NEWEST, "timeline"))
+  sync.map_pending[pk] = newest_map ~= nil -- (a newer map waits here: sync.timeline_behind)
   -- Both worked alone (neither could see the other's changes): theirs may undo some of ours. Before
   -- any of them lands, where things are here is saved as a kept restore point, so our side is never lost.
   local mine_alone = ext(proj, band.SECTION, "alone_last")
@@ -1539,6 +1722,10 @@ function sync.receive(proj, cfg, song, room, can)
       -- synced here yet, so it waits a minute from when it arrived, then lands like any other, as an object change does. Dropped once
       -- 10 minutes old, one that came in before the handover it rested on was lost for good. Review, 0.58.91
       sync.deferred[ev.id] = true
+    elseif obj and sync.map_waits(proj, ev, cfg.user) then
+      -- (made while REAPER moved things for a tempo map that isn't here yet: it lands once the map has, in the pass that brings it. Landed
+      -- before it, REAPER moved it a second time when the map came: REAPER check F6. rt-edits)
+      sync.waited[ev.id] = true
     elseif obj and refused(ev) and reaper.time_precise() - sync.refused_since(ev.id) <= 60 then
       -- (the minute is from when it arrived here, not the sender's own clock: one running a minute or more behind had a refused change land at
       -- once. Review, 0.58.92)

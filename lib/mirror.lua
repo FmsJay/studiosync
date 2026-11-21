@@ -3818,6 +3818,26 @@ mirror.bus_said = mirror.bus_said or {} -- track oid -> when "that changes how X
 mirror.tempo_until = mirror.tempo_until or {} -- project -> until when items may be moving for a tempo change
 mirror.TEMPO_SECS = 15
 function mirror.tempo_changed(proj) mirror.tempo_until[tostring(proj)] = reaper.time_precise() + mirror.TEMPO_SECS end
+-- The tempo map a change was made under, while REAPER may be moving things for one (TEMPO_SECS after a tempo change here): the newest map this
+-- project holds, as sync.NEWEST names it. It goes on the change as `tl`, and a receiver lands the change only once it holds that map
+-- (sync.receive). An item or automation that came before its map was put where the new map has it, then moved again by REAPER when the map
+-- landed: lengths scaled twice on LinuxBox, and nothing put them right (REAPER check F6, rt-edits). nil outside that window.
+function mirror.map_stamp(proj)
+  if reaper.time_precise() >= (mirror.tempo_until[tostring(proj)] or 0) then return nil end
+  local v = select(2, reaper.GetProjExtState(proj, require("sync").NEWEST, "timeline"))
+  return v ~= "" and v or nil
+end
+-- One act, one id (rt-edits): every change a look sends carries it, and a tempo map or marker change sent just before that look
+-- (sync.watch_timeline runs first) takes the id the look will use, so Undo puts the act's region or markers back with its items.
+mirror.ACT_SECS = 2.5
+mirror.look_act = mirror.look_act or {} -- tostring(proj) -> { act, at }: the id a timeline change just took
+local function new_act(me, now) return string.format("%s-%s-%d", require("sync").id_user(me), os.date("!%Y%m%d%H%M%S"), math.floor(now * 1000) % 1000000) end
+function mirror.act_for(proj, me)
+  local pk, now = tostring(proj), reaper.time_precise()
+  local a = mirror.more_act[pk] or new_act(me, now)
+  mirror.look_act[pk] = { act = a, at = now }
+  return a
+end
 
 -- Where a recording this person wasn't allowed to add goes (kept, never deleted): a track of their own, not sent.
 local function keep_track(proj, name)
@@ -4343,7 +4363,7 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
   mirror.hlc_seen(last and last.hlc) -- (the clock past what this builds on: after a restart it could fall behind, and every walk stopped short)
   local ev = { type = "obj", obj = o.kind, oid = o.oid, rev = same_edit and rev or mirror.next_rev(rev, owned), base = rev or 0, state = state, track = o.track,
     base_ev = evid ~= "" and evid or nil, -- (the version this one started from: a merge finds the base there, mirror.merge_item)
-    name = name, pos = o.pos, hash = o.hash, hv = mirror.HV, act = w.act } -- (hash: what it is here; every receiver checks it came out the same)
+    name = name, pos = o.pos, hash = o.hash, hv = mirror.HV, act = w.act, tl = mirror.map_stamp(proj) } -- (hash: what it is here; every receiver checks it came out the same)
   if o.kind == "track" and opts.local_mix then ev.state, ev.local_mix = mirror.band_faders(state, last and not last.gone and last.state), true end
   if o.kind == "track" and o.ptr and (tonumber(o.state.lanes) or 0) > 1 then
     -- (the first comp area: REAPER's new lane holds only that piece, and the rest of the part goes silent, with no word: Mac, 0.42.10)
@@ -5303,7 +5323,10 @@ function mirror.watch(proj, cfg, song, room, opts)
   -- (one look, one act: every change it sends carries the same `act`, so one Undo takes back all of it, whatever tracks and kinds it touched (a
   -- region copied with its items on several tracks and their envelope points was three presses). A burst spread over passes keeps the first
   -- pass's act. rt-edits)
-  w.act = mirror.more_act[pk] or string.format("%s-%s-%d", sync.id_user(me), os.date("!%Y%m%d%H%M%S"), math.floor(now * 1000) % 1000000)
+  -- (and the id a tempo map or marker change took just before this look, when there is one: mirror.act_for)
+  local la = mirror.look_act[pk]
+  mirror.look_act[pk] = nil
+  w.act = mirror.more_act[pk] or (la and math.abs(now - la.at) <= mirror.ACT_SECS and la.act) or new_act(me, now)
   mirror.more = false
   -- (whether track colours count here, per project: see below. "band2": 0.38 looks once more, as 0.36/0.37 kept each
   -- machine's own colour where it should have taken the band's: Bass I differed PC/laptop for good, 2026-11-01)
@@ -5495,8 +5518,11 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       -- (not a part recorded as gone with its track, which still names its last real change: Restore brought a deleted track back bare. Full
       -- review, 0.59.44. But only when its track is here (tracks are placed first): a still-deleted track's parts read as "couldn't change here
       -- yet, do it again" for good. Round 1 review, 0.59.45)
-    elseif p.t and not opts.exact and mirror.sits_there(proj, p.t) then there = there + 1
-    elseif not opts.exact and mirror.edited_here(proj, p.oid, h, last, media, opts.local_mix) then
+    -- (opts.retimed: the undo just put the tempo map back, and REAPER moved the items and points with it. That isn't an edit of yours made
+    -- since, nor "already there": each still goes back to what it was and is sent, or the look after took REAPER's moves for new changes of
+    -- yours, and Redo had nothing to redo. rt-edits)
+    elseif p.t and not opts.exact and not (opts.retimed and (p.t.obj == "item" or p.t.obj == "env")) and mirror.sits_there(proj, p.t) then there = there + 1
+    elseif not opts.exact and not (opts.retimed and p.t and (p.t.obj == "item" or p.t.obj == "env")) and mirror.edited_here(proj, p.oid, h, last, media, opts.local_mix) then
       -- (changed here since it last went out or came in, and not sent yet (a look hasn't run): left as it is. Going back
       -- put the old version over it for everyone, with no copy and nothing in History. Cost: one hash per planned item or track. Round 1
       -- review, 0.59.45)
@@ -5509,7 +5535,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       if ok then
         mirror.hlc_seen(last and last.hlc)
         local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id,
-          undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, act = opts.act }
+          undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, act = opts.act, tl = mirror.map_stamp(proj) }
         local id = sync.post(cfg, song, room, ev)
         remember(proj, p.oid, ev.rev, nh, id, mirror.order_of(ev))
         done = done + 1
@@ -5522,7 +5548,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       if ok then
         mirror.hlc_seen(last and last.hlc)
         local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id,
-          undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, revived = (last and last.gone and last.user ~= cfg.user) or nil, act = opts.act } -- (act: a History page restore is one act, rt-history)
+          undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, revived = (last and last.gone and last.user ~= cfg.user) or nil, act = opts.act, tl = mirror.map_stamp(proj) } -- (act: a History page restore is one act, rt-history)
         local id = sync.post(cfg, song, room, ev)
         remember(proj, p.oid, ev.rev, nh, id, mirror.order_of(ev))
         done = done + 1
