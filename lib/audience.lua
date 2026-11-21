@@ -85,16 +85,31 @@ function audience.playing(play_state, la)
   end
   return false
 end
--- Who's playing, by name: this computer's user while it plays or sends, and each bandmate heard making sound. Pure.
-function audience.who(me, me_on, la, name_of)
-  local out = {}
-  if me_on and me then out[#out + 1] = me end
+-- Who's playing, by name: this computer's user while it plays or sends, each bandmate heard making sound, and (rt-p11, backlog 1.21) each
+-- bandmate whose own status says their transport plays or records (sts: lib/presence.lua peers), so a bandmate playing counts while this
+-- computer's live audio is off. Pure.
+function audience.who(me, me_on, la, name_of, sts)
+  local out, seen = {}, {}
+  if me_on and me then out[#out + 1] = me; seen[me] = true end
   local peers = {}
   for peer, p in pairs(type(la) == "table" and type(la.peers) == "table" and la.peers or {}) do
-    if type(p) == "table" and p.streaming and math.max(tonumber(p.level) or 0, tonumber(p.play_level) or 0) > 0.003 then peers[#peers + 1] = name_of(peer) end
+    if type(p) == "table" and p.streaming and math.max(tonumber(p.level) or 0, tonumber(p.play_level) or 0) > 0.003 then
+      local n = name_of(peer)
+      if n and not seen[n] then peers[#peers + 1] = n; seen[n] = true end
+    end
   end
+  for _, n in ipairs(audience.band_playing(sts)) do if not seen[n] then peers[#peers + 1] = n; seen[n] = true end end
   table.sort(peers)
   for _, n in ipairs(peers) do out[#out + 1] = n end
+  return out
+end
+-- Bandmates whose status (their status file or its link copy: lib/presence.lua peers, fresh ones only) says their transport plays or
+-- records. -> their names. Pure.
+function audience.band_playing(sts)
+  local out = {}
+  for _, st in ipairs(type(sts) == "table" and sts or {}) do
+    if type(st) == "table" and type(st.user) == "string" and (st.playing == true or st.recording == true) then out[#out + 1] = st.user end
+  end
   return out
 end
 -- How long a link works, in words: minutes under an hour (a 15-minute link said "0 hours"), else hours. Pure.
@@ -261,9 +276,11 @@ function audience.tick(proj, cfg, b, publish, now)
   local lok, la = pcall(require("liveaudio").status)
   la = lok and type(la) == "table" and la or {}
   local ps = math.floor(tonumber(reaper.GetPlayStateEx(proj)) or 0)
-  local live = audience.playing(ps, la)
+  local pok, sts = pcall(require("presence").peers, cfg, b.song, b.room or "main")
+  sts = pok and type(sts) == "table" and sts or {}
+  local live = audience.playing(ps, la) or #audience.band_playing(sts) > 0 -- (a bandmate playing counts, live audio on or off: rt-p11)
   local names = require("liveaudio").names()
-  local who = audience.who(cfg.user, ps & 5 ~= 0, la, function(p) return require("liveaudio").name_of(p, names) end)
+  local who = audience.who(cfg.user, ps & 5 ~= 0, la, function(p) return require("liveaudio").name_of(p, names) end, sts)
   local mpath, mname = latest_mix(cfg, b.song)
   local full, pubj = audience.info(b.song, live, who, mname)
   reaper.StudioSync_AudienceInfo(full, pubj, mpath or "")

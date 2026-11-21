@@ -14,3 +14,12 @@ template <class Reg, class T> static inline int hook_buffers(Reg *reg, bool outp
   while (n < most && (bufs[n] = reg->GetBuffer(output, n)) != nullptr) ++n;
   return n;
 }
+// The output pair REAPER's master plays out of (rt-p11, backlog 1.24: a master routed off the first pair wasn't heard in a screen share's
+// sound, by guests or listeners, and live audio's bandmates went where nobody listened): `first` its first channel (0-based, from the master's
+// hardware output, lib/liveaudio.lua out_pair). That pair when the device has it (one channel: mono), else the first pair as before.
+template <class Reg, class T> static inline int hook_pair(Reg *reg, int first, T **out)
+{
+  out[0] = out[1] = nullptr;
+  if (first > 0 && (out[0] = reg->GetBuffer(true, first)) != nullptr) return (out[1] = reg->GetBuffer(true, first + 1)) != nullptr ? 2 : 1;
+  return hook_buffers(reg, true, out, 2);
+}

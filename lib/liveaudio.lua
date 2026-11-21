@@ -232,7 +232,7 @@ function liveaudio.apply(st)
       if solo and name ~= solo then m = true end
       if math.abs((tonumber(p.gain) or 1) - g) > 0.005 or (p.mute == true) ~= m then reaper.StudioSync_LiveAudioPeerSet(peer, g, m and 1 or 0) end
       local pg = liveaudio.play_gain(mix[name] or mix[peer], s)
-      if (liveaudio.ducks[name] or -math.huge) > reaper.time_precise() then pg = 0 end -- (rt-share: their share's sound carries it)
+      if (liveaudio.ducks[peer] or liveaudio.ducks[name] or -math.huge) > reaper.time_precise() then pg = 0 end -- (rt-share: their share's sound carries it; by computer, rt-p11)
       if name == ext("duck play") then pg = 0 end -- (producing them: their take streams on your grid instead. lib/producer.lua, rt-sonox)
       if can_play and math.abs((tonumber(p.play_gain) or 1) - pg) > 0.005 then reaper.StudioSync_LiveAudioPeerPlay(peer, pg) end
       local f, c = liveaudio.bounds(bufs[name])
@@ -683,11 +683,31 @@ function liveaudio.peer_of_addr(cfg, song, addr)
 end
 
 -- Live sync's tick (the song in front drives it: one engine per computer). Never raises (band.try around it).
+-- The output pair REAPER's master plays out of (rt-p11, backlog 1.24): dsts, its hardware outputs' I_DSTCHAN (first channel, &1024 mono,
+-- &512 ReaRoute, not a device output). -> the first device output's first channel, 0-based; 0 (the first pair) when it has none. Pure.
+function liveaudio.out_pair(dsts)
+  for _, d in ipairs(type(dsts) == "table" and dsts or {}) do
+    d = math.floor(tonumber(d) or -1)
+    if d >= 0 and d & 512 == 0 then return d & 1023 end
+  end
+  return 0
+end
+-- Tells the extension the master's pair when it changes (a master routed to outputs 3/4: live audio mixes the bandmates there, and a share's
+-- sound, guests and listeners take REAPER's mix from there).
+local function tell_out_pair(proj)
+  if not reaper.StudioSync_LiveAudioOutPair then return end
+  local m = reaper.GetMasterTrack(proj or 0)
+  local dsts = {}
+  for i = 0, (m and reaper.GetTrackNumSends(m, 1) or 0) - 1 do dsts[#dsts + 1] = reaper.GetTrackSendInfo_Value(m, 1, i, "I_DSTCHAN") end
+  local first = liveaudio.out_pair(dsts)
+  if first ~= S.out_pair then S.out_pair = first; reaper.StudioSync_LiveAudioOutPair(first) end
+end
 function liveaudio.tick(cfg, b, proj)
   local now = reaper.time_precise()
   if now - S.at < liveaudio.EVERY then return end
   S.at = now
   if proj and reaper.EnumProjects(-1) ~= proj then return end
+  pcall(tell_out_pair, proj)
   local direct, groups = require("direct"), require("groups")
   local on = cfg ~= nil and liveaudio.enabled(cfg.root)
   local avail = liveaudio.available()

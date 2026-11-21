@@ -105,7 +105,8 @@ function webcall.local_msg(a, clock)
   if not o then return false end
   local la = require("liveaudio")
   la.ducks = la.ducks or {}
-  la.ducks[o.user] = a.on == true and clock + webcall.DUCK_FOR or nil
+  -- (by their computer's peer, so a bandmate's other computer in the room isn't muted too: rt-p11, backlog 1.24; by name only when unknown)
+  la.ducks[o.peer or o.user] = a.on == true and clock + webcall.DUCK_FOR or nil
   pcall(la.apply)
   return true
 end
@@ -193,7 +194,7 @@ function webcall.link(cfg, b, d, now)
   if not m then return false end
   local o = open[m.dev]
   if not o or o.user ~= m.user then dirty = true end
-  open[m.dev] = { user = m.user, host = host_of(known[m.dev]), at = now } -- (any message from them says their page is open)
+  open[m.dev] = { user = m.user, host = host_of(known[m.dev]), peer = known[m.dev], at = now } -- (any message from them says their page is open)
   if m.t ~= "here" then push(m, now) end
   return true
 end

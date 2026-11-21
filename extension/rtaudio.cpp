@@ -2043,6 +2043,7 @@ static std::string g_status;
 // put in the struct (0 on REAPER 7.86: extension/audiohook.h) and the buffers GetBuffer gave. (rt-audience, after the desktop's check)
 static std::atomic<long long> g_hook_pre{ 0 }, g_hook_post{ 0 };
 static std::atomic<int> g_hook_in_set{ 0 }, g_hook_out_set{ 0 }, g_hook_ins{ 0 }, g_hook_outs{ 0 };
+static std::atomic<int> g_out_first{ 0 }; // (the output pair REAPER's master plays out of: StudioSync_LiveAudioOutPair, lib/liveaudio.lua. rt-p11)
 static void on_audio(bool isPost, int len, double srate, audio_hook_register_t *reg)
 {
   if (!isPost) { // (before REAPER's processing: the hardware inputs as they came in)
@@ -2055,7 +2056,7 @@ static void on_audio(bool isPost, int len, double srate, audio_hook_register_t *
   } else { // (after: added to what REAPER is about to play out of the first output pair)
     double *out[2] = { nullptr, nullptr };
     g_hook_out_set.store(reg->output_nch, std::memory_order_relaxed);
-    const int nout = hook_buffers(reg, true, out, 2); // (not reg->output_nch: 0, so nobody was mixed in and no feed below ever ran)
+    const int nout = hook_pair(reg, g_out_first.load(std::memory_order_relaxed), out); // (not reg->output_nch: 0, so nobody was mixed in and no feed below ever ran; the master's pair, rt-p11)
     g_hook_outs.store(nout, std::memory_order_relaxed);
     g_hook_post.fetch_add(1, std::memory_order_relaxed);
     webui_mix_feed(out, nout, len, srate); // (a screen share's REAPER mix: taken before rt_mix adds the bandmates, so nobody hears themselves back)
@@ -2114,6 +2115,8 @@ static int api_peer_play(const char *peer, double gain) { return g_rt ? rt_peer_
 static void *vla_play(void **a, int n) { return n < 2 ? nullptr : (void *)(INT_PTR)api_play((int)(INT_PTR)a[0], (int)(INT_PTR)a[1]); }
 static void *vla_peer_play(void **a, int n) { return n < 2 || !a[1] ? nullptr : (void *)(INT_PTR)api_peer_play((const char *)a[0], *(double *)a[1]); }
 static int api_hub(const char *peer, int serve) { return g_rt ? rt_hub(g_rt, peer, serve) : 0; }
+static int api_out_pair(int first) { g_out_first.store(first > 0 && first < 1024 ? first : 0); return 1; }
+static void *vla_out_pair(void **a, int n) { return n < 1 ? nullptr : (void *)(INT_PTR)api_out_pair((int)(INT_PTR)a[0]); }
 static int api_ears(const char *peer, const char *stream, const char *path, double secs) { return g_rt ? rt_ears(g_rt, peer, stream, path, secs) : 0; }
 static void *vla_ears(void **a, int n) { return n < 4 || !a[3] ? nullptr : (void *)(INT_PTR)api_ears((const char *)a[0], (const char *)a[1], (const char *)a[2], *(double *)a[3]); } // (a double comes as a pointer)
 static void *vla_hub(void **a, int n) { return n < 2 ? nullptr : (void *)(INT_PTR)api_hub((const char *)a[0], (int)(INT_PTR)a[1]); }
@@ -2148,6 +2151,8 @@ void rtaudio_register(reaper_plugin_info_t *rec)
       "int\0int,int\0hop_id,send\0Play, live audio's second stream: what the StudioSync Hop with this id (1-64, on the hidden live out track the armed tracks send to post-FX) is fed, sent beside Talk so each listener sets the two apart. hop_id 0: no Play stream. send 0: silence while the stream stays up (Mute me, Deafen). StudioSync_LiveAudioStatus's play, play_alive, play_level say how it goes. Returns 1." },
     { "StudioSync_LiveAudioPeerPlay", (void *)api_peer_play, (void *)vla_peer_play,
       "int\0const char*,double\0peer,gain\0A peer's Play level (linear, 0-4) in what you hear, apart from their Talk level (StudioSync_LiveAudioPeerSet, whose mute is the whole bandmate's). Returns 1 when that peer is in the list." },
+    { "StudioSync_LiveAudioOutPair", (void *)api_out_pair, (void *)vla_out_pair,
+      "int\0int\0first\0The output pair REAPER's master plays out of (first: its first hardware output, 0-based; lib/liveaudio.lua reads the master's hardware output): live audio mixes the bandmates into it, and a screen share's sound, browser guests and listeners take REAPER's mix from it. A pair the device doesn't have: the first pair. Returns 1." },
     { "StudioSync_LiveAudioEars", (void *)api_ears, (void *)vla_ears,
       "int\0const char*,const char*,const char*,double\0peer,stream,path,seconds\0The ears tap (tools/ears, docs/rt/rt-p11.md): writes what this computer actually hears of a bandmate's stream to path, a 32-bit float stereo WAV (path must end .wav; seconds 0-60): peer (in the list) and stream \"talk\", \"play\" or \"hub\" (its live mix for this computer), as decoded and before any level; or peer \"\" and stream \"play\" for this computer's own Play as it goes out (after Mute me). One at a time, while live audio runs. StudioSync_LiveAudioStatus's ears says what, state (writing/done/failed), frames, lost and first_age_s (StudioSync_DirectNow() less it: when its first frame was heard, on the link clock). Returns 1 when started." },
     { "StudioSync_LiveAudioHub", (void *)api_hub, (void *)vla_hub,

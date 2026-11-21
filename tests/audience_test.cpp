@@ -172,6 +172,13 @@ static void pure_tests()
     reg.input_nch = 3;
     g_fake_asked = 0;
     CHECK(hook_buffers(&reg, false, in, 64) == 3 && g_fake_asked == 3, "a count REAPER did set is the most asked for");
+    // rt-p11: the master's own output pair (a master routed to outputs 3/4)
+    reg.input_nch = 0;
+    g_fake_have = 4;
+    CHECK(hook_pair(&reg, 2, out) == 2 && out[0] == g_fake[2] && out[1] == g_fake[3], "the master on outputs 3/4: that pair");
+    CHECK(hook_pair(&reg, 3, out) == 1 && out[0] == g_fake[3] && !out[1], "its first channel the device's last: that one");
+    CHECK(hook_pair(&reg, 6, out) == 2 && out[0] == g_fake[0] && out[1] == g_fake[1], "a pair the device doesn't have: the first pair, as before");
+    CHECK(hook_pair(&reg, 0, out) == 2 && out[0] == g_fake[0], "the first pair: as hook_buffers");
   }
   CHECK(audience_route("GET", "/listen/") == AUD_PAGE && audience_route("GET", "/listen/listen.js") == AUD_JS && audience_route("GET", "/listen/listen.css") == AUD_CSS &&
         audience_route("GET", "/listen/live") == AUD_LIVE && audience_route("GET", "/listen/mix") == AUD_MIX, "the listener paths");

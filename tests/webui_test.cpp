@@ -424,20 +424,24 @@ static void guests_together_tests(int link, const std::string &th)
   CHECK(abs(peak[0] - (16384 + 4096)) < 300, "A hears the session mix and B, not itself");
   CHECK(abs(peak[1] - (16384 + 8192)) < 300, "B hears the session mix and A, not itself");
   CHECK(abs(peak[2] - (16384 + 8192 + 4096)) < 300, "C (silent) hears both");
-  // drift: 200 ms of A's sound waiting (well over its 60 ms size, under its 210 ms limit) is played back a little faster than real time
+  // drift: 200 ms of A's sound waiting (well over its 60 ms size, under its 210 ms limit), a ramp rising one 16-bit step a sample, is played
+  // back a little faster than real time: the output rises by the rate a sample (one sample per sample: exactly one step)
   for (int b = 0; b < 30; ++b) { std::fill(L.begin(), L.end(), 0.0); std::fill(R.begin(), R.end(), 0.0); double *out[2] = { L.data(), R.data() }; webui_guest_audio(out, 2, 240, 48000.0); }
-  for (int i = 0; i < 20; ++i) ws_put(ws[0], 2, frame(8192));
-  sleep_ms(150);
-  int blocks = 0;
-  for (int b = 0; b < 60; ++b) {
+  for (int i = 0; i < 20; ++i) {
+    std::string f(480 * 2, '\0');
+    for (int k = 0; k < 480; ++k) { const short v = (short)(i * 480 + k); memcpy(&f[(size_t)k * 2], &v, 2); }
+    ws_put(ws[0], 2, f);
+  }
+  sleep_ms(500); // (all of it in the ring before the audio thread starts on it)
+  double step = 0;
+  for (int b = 0; b < 12; ++b) {
     std::fill(L.begin(), L.end(), 0.0); std::fill(R.begin(), R.end(), 0.0);
     double *out[2] = { L.data(), R.data() };
     webui_guest_audio(out, 2, 240, 48000.0);
-    blocks += L[120] > 0.2;
-    if (getenv("P11DBG")) printf("%d:%.3f/%.3f ", b, L[0], L[239]);
+    if (b == 10) step = (L[239] - L[10]) / 229 * 32768; // (well inside the ramp: the leftover of the earlier sound long played)
   }
-  printf("     guests: 200 ms of A's sound played in %d blocks of 240 frames (40 at one sample per sample)\n", blocks);
-  CHECK(blocks >= 36 && blocks < 40, "a guest's buffer far over its size drains a little faster than real time (the drift's rate), not left as delay");
+  printf("     guests: 200 ms of A's sound waiting plays at %.4f samples a sample (1 at one sample per sample)\n", step);
+  CHECK(step > 1.003 && step < 1.0055, "a guest's buffer far over its size is read a little faster than real time (the drift's rate, 0.5% at most), not left as delay");
   for (int i = 0; i < 4; ++i) { webui_guest_set(gids[i], "", 0, 0); closesocket(ws[i]); }
   for (int i = 0; i < 100 && webui_mix_wanted() != 0; ++i) sleep_ms(10);
 }
