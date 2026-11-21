@@ -120,6 +120,16 @@ there), and the test's output is unbuffered, so a run that stops says where.
 `timeout-minutes` on the jobs (mac 45, linux 40, linux-ninjam 20; a job runs 10-15 minutes) and on every test step (10; nat_test 15,
 its own watchdog ends it at 10 with the stacks). Additions only.
 
+## Results (second round, commit b700cfc)
+- CI run 44843799259, four attempts of the mac job: nat_test, direct_test and nat_audio_test passed in all four. Attempts 1, 3 and 4 were
+  green as a whole; attempt 2's only failure was hopnet_test ("no lasting loss from a second after the stall": 94.48% against the
+  coarse-timer 95% after a 131 ms stall), which is rt-ci3's and untouched here. Linux passed (x86_64 and aarch64).
+- The throwaway branch (run 44841997505, since deleted): nat_test 9 times, three at once, all ok; the watchdog shown on a made-up hang.
+- JAMES-MAIN: nat_test all ok, direct_test `fails 0` with SS_TIMING_STRICT on (`SS_TEST_PORT=47491`), `python tests/run.py --no-luals`
+  fails 0. The Windows extension wasn't rebuilt (the release does that); nat.cpp's non-test build is what the Mac and Linux jobs compiled.
+- For REAPER on the real computers: nothing new to look at. The fixes change no behaviour except that the three stops can't happen; they
+  would have shown as REAPER freezing with "Connect without Tailscale" on, most likely with three computers and live audio.
+
 ## Review later (nat.cpp, from reading its locks)
 - A link's last reference can be let go on libjuice's own thread: `hub_signal_rx` holds one while it passes a message on, and `nat_up`
   (asked by live audio's receiver on that thread) holds one for an instant. If the hub drops that link at that moment, `juice_destroy`
