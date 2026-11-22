@@ -2119,6 +2119,16 @@ function mirror.same_line(x, y, local_mix)
   return plain(x) == plain(y)
 end
 
+-- Do two track states differ only in their lanes (how many, their names, which play: the settings that go together) and maybe their place?
+-- Pure.
+function mirror.same_but_lanes(x, y, local_mix)
+  if mirror.same_line(x, y, local_mix) then return false end
+  local a, b = {}, {}
+  for k, v in pairs(x) do a[k] = v end
+  for k, v in pairs(y) do b[k] = v end
+  for _, k in ipairs({ "freemode", "lanes", "plays", "lanenames" }) do a[k], b[k] = 0, 0 end
+  return mirror.same_line(a, b, local_mix)
+end
 -- With Local mixing on, a track's faders and pan here are this person's own: what goes out carries the band's (its last event's) in their
 -- place. They always went out, so a rename sent your own mix to everyone not on Local mixing, and Follow's copy of a bandmate's faders with
 -- it (0.59.14, review). A track the band hasn't had yet: its own, there's nothing else. Pure.
@@ -5694,6 +5704,19 @@ function W.one(w, o)
   -- delete its older items, and refused its claimant on the rest. A view: the read event isn't changed. Full review, 0.59.44)
   local now_name = last and o.kind ~= "track" and last.track and by_oid[last.track] and by_oid[last.track].state.name
   if now_name and now_name ~= last.name then last = setmetatable({ name = now_name }, { __index = last }) end
+  -- (a track whose lanes alone read differently from the band's version here (their names, which play), on a look with no edit of this
+  -- person's behind it, after the project's first: REAPER's own reading, not a change. A fresh REAPER read XT Rec A's lane names as 1 to 8 and
+  -- their play states its own way some seconds after opening, with nobody editing, and that went out and replaced the band's lane names on
+  -- every computer (LinuxBox2, rt-r1; left by rt-fix6a, which stopped the auto-claim). What's here stands for the band's version, said once;
+  -- a comp or a lane renamed by hand has an edit behind it and goes out as before, as does what a project's first look finds changed while
+  -- Live sync was off. Only with Live sync's edit time (opts.edited_at). rt-converge)
+  if o.kind == "track" and last and not last.gone and type(last.state) == "table" and w.edited == false and not w.first_here
+      and mirror.same_but_lanes(o.state, last.state, opts.local_mix) then
+    say_once("lanes" .. rk, string.format("%s: its lanes read differently here than the studio has them, with no edit of yours: left as they are, and not sent",
+      (o.state.name or "") ~= "" and o.state.name or "a track"))
+    mirror.unsent[rk] = nil
+    return remember(proj, o.oid, rev, o.hash, evid, kord)
+  end
   -- (on the track the band has it on: moved to another track with nothing else changed, it's a change. REAPER check, rt-edits)
   if o.kind == "item" and last and (last.track == nil or last.track == o.track) and type(last.state) == "string" and type(o.state) == "string"
       and mirror.same_but_labels(o.state, last.state) then

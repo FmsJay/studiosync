@@ -18,6 +18,7 @@
 -- 13. A plug-in knob turned here that no look has seen holds the band's chain back (mirror.receive): rt-r2's P1-4 and P1-1.
 -- 14. REAPER's own Undo of a track deletion brings the track back for everyone (mirror.watch, settle_ids): rt-r2's P1-6.
 -- 15. (a pin) which plug-in changes ask the bandmate who holds the track while they edit: rt-r2's P1-5.
+-- 16. A track's lanes that only read differently here, with no edit behind the look, don't go out (W.one): LinuxBox2's lane names.
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -793,6 +794,44 @@ do
   assert(mirror.clashes(R, "fx", c(150, 250), eq2, "James") == true,
     "the other plug-in is his recent work too when he added the chain within the claim's ten minutes: asked (why P1-5 asked in rt-r2)")
   print("rt-converge 15: (pin) another plug-in than the claimer changed merges without an ask; one they added lately asks")
+end
+
+-- ---- 16. lanes that only read differently here, with no edit behind the look, don't go out (LinuxBox2's lane names, left by rt-fix6a) -----------
+do
+  local S = studio("Conv16", "everyone")
+  local A, B = S.computer("James"), S.computer("Bee")
+  local function lanes(c, names, plays)
+    local tr = S.track(c, "Rec")
+    reaper.SetMediaTrackInfo_Value(tr, "I_FREEMODE", 2)
+    reaper.SetMediaTrackInfo_Value(tr, "I_NUMFIXEDLANES", #names)
+    for i, n in ipairs(names) do
+      reaper.GetSetMediaTrackInfo_String(tr, "P_LANENAME:" .. (i - 1), n, true)
+      reaper.SetMediaTrackInfo_Value(tr, "C_LANEPLAYS:" .. (i - 1), plays[i])
+    end
+  end
+  local function lanes_of(c) S.as(c); return mirror.track_state(c.F.proj, S.track(c, "Rec"), false).lanenames end
+  S.edit(A, function(F) F.add_track("Rec"); lanes(A, { "1", "Verse take 2", "Verse take 3" }, { 0, 0, 1 }) end)
+  S.recv(B)
+  assert(lanes_of(B) == "1,Verse take 2,Verse take 3", "the band's lane names on Bee's (" .. lanes_of(B) .. ")")
+  local function bee_sent() return #S.events(function(v) return v.obj == "track" and v.user == "Bee" end) end
+  -- Bee's REAPER reads the lanes its own way, some seconds after opening: nobody edited
+  T = T + 2
+  S.as(B)
+  logged = {}
+  lanes(B, { "1", "2", "3" }, { 2, 0, 2 })
+  S.settle(B)
+  assert(bee_sent() == 0, "it doesn't go out (was: sent, and the band's lane names were replaced by 1, 2, 3 on every computer)")
+  assert(told("lanes read differently here"), "and it's said once")
+  S.recv(A)
+  assert(lanes_of(A) == "1,Verse take 2,Verse take 3", "James keeps the band's lane names")
+  -- a lane Bee renames herself has an edit behind it: that goes out
+  T = T + 40
+  B.F.clock = B.F.clock + 40
+  S.edit(B, function(F) lanes(B, { "1", "2", "Chorus" }, { 2, 0, 2 }) end)
+  assert(bee_sent() == 1, "Bee's own rename of a lane goes out")
+  S.recv(A)
+  assert(lanes_of(A) == "1,2,Chorus", "and lands on James's (" .. lanes_of(A) .. ")")
+  print("rt-converge 16: lanes that read differently with nobody editing aren't sent; a lane renamed by hand is")
 end
 
 print("ok rt-converge")
