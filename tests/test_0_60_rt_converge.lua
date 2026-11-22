@@ -23,6 +23,7 @@
 -- 18. An item moved onto a track a bandmate deleted that moment goes with the track on every computer (mirror.receive).
 -- 19. Deleting an item goes out though a grey stand-in still carries its id here (mirror.local_copy_is_it, W.gone).
 -- 20. A deletion of yours waiting for a claimer's answer doesn't hold the item's later versions back once the band has deleted it (mirror.receive).
+-- 21. An item's version on a track deleted since stands though the item's earlier versions land after it (mirror.receive).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -1051,6 +1052,44 @@ do
   assert(S.items(B, "Gtr") == 1, "the item is back with its track (was: held back for good behind Bee's deletion, which nothing was left to answer): " .. S.items(B, "Gtr"))
   here_now = {}
   print("rt-converge 20: a deletion waiting for an answer doesn't hold the item back once the band has deleted it")
+end
+
+-- ---- 21. an item moved onto a track deleted meanwhile, its versions arriving newest first: the older one doesn't bring it back (seed 5010) -----
+do
+  local S = studio("Conv21", "everyone")
+  local A, B = S.computer("James"), S.computer("Bee")
+  S.edit(A, function(F) F.add_track("Keys"); F.add_track("Tmp") end)
+  S.recv(B)
+  -- apart: Bee records an item on Keys and moves it to Tmp; James deletes Tmp
+  T = T + 2
+  local before = {}
+  for p in pairs(files) do before[p] = true end
+  S.edit(B, function(F) F.add_item(S.track(B, "Keys"), midi(1, 2)) end)
+  local oid = S.track(B, "Keys").items[1].ext.band_oid
+  T = T + mirror.SESSION_SECS + 5 -- (a second edit of it, not the same one going on)
+  S.edit(B, function(F) reaper.MoveMediaItemToTrack(S.track(B, "Keys").items[1], S.track(B, "Tmp")) end)
+  local bees = {}
+  for p, v in pairs(files) do if not before[p] then bees[p] = v; files[p] = nil end end -- (Bee's changes haven't reached James)
+  local made, moved
+  for p, v in pairs(bees) do if type(v) == "table" and v.oid == oid then if v.track == S.track(B, "Tmp").ext.band_oid then moved = p else made = p end end end
+  assert(made and moved, "Bee's two versions of the item: made on Keys, moved to Tmp")
+  S.edit(A, function(F) reaper.DeleteTrack(S.track(A, "Tmp")) end)
+  for p, v in pairs(bees) do if p ~= made then files[p] = v end end -- (Syncthing brings the later version first)
+  S.recv(B)
+  assert(not S.track(B, "Tmp") and S.items(B, "Keys") == 0, "on Bee's the item went with Tmp")
+  S.recv(A)
+  files[made] = bees[made] -- (and the version it was made with after)
+  for _ = 1, 2 do S.recv(A); S.recv(B) end
+  assert(S.items(A, "Keys") == 0, "on James's too: the older version doesn't land over the one that went with Tmp (was: the item on Keys here alone): " .. S.items(A, "Keys"))
+  assert(S.items(B, "Keys") == 0, "and it stays gone on Bee's")
+  -- Tmp comes back (its deletion taken back): the item with it, where Bee moved it, on both
+  local gone = S.events(function(v) return v.obj == "track" and v.gone end)[1]
+  local back = band.json_decode(band.json_encode(S.events(function(v) return v.oid == gone.oid and not v.gone end)[1]))
+  back.id, back.rev, back.base, back.base_ev, back.hlc, back.user = "James-20270115-120000Z-00099-0021", gone.rev + 1, gone.rev, gone.id, gone.hlc + 5, "James"
+  files[S.dir .. "/events/" .. back.id .. ".json"] = back
+  for _ = 1, 2 do S.recv(A); S.recv(B) end
+  assert(S.items(A, "Tmp") == 1 and S.items(B, "Tmp") == 1, "back with its track on both: " .. S.items(A, "Tmp") .. S.items(B, "Tmp"))
+  print("rt-converge 21: an item's version on a deleted track stands though its earlier versions land later")
 end
 
 print("ok rt-converge")

@@ -4274,18 +4274,21 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
     -- it was moved to, as it did on its mover's computer when the deletion landed there. Left where it was, it stayed on every computer but
     -- the mover's. Recorded gone with its track under this version, so it comes back, on that track, if the track does (mirror.heal). One
     -- of yours not sent yet is kept on "(yours, not sent)" instead. The soak's seed 103. rt-converge)
+    -- (recorded so whether or not the item is here yet: its earlier versions may land after this one (Syncthing brings files in any order,
+    -- and a version waits for its audio), and with nothing recorded the earlier one landed as the newest: the item on its old track on this
+    -- computer, gone with the deleted track on the others. The soak's seed 5010. rt-converge)
     if ev.obj == "item" and not ev.gone and not merging then
       local it = mirror.find(proj, "item", ev.oid)
+      local key = tostring(proj) .. ev.oid
       if it then
-        local key = tostring(proj) .. ev.oid
         if mirror.unsent[key] or mirror.unsent_elsewhere(proj)[ev.oid] then
           reaper.MoveMediaItemToTrack(it, mirror.keep_track(proj, select(2, reaper.GetTrackName(reaper.GetMediaItem_Track(it)))))
           reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", true)
-          mirror.unsent[key] = nil
         else reaper.DeleteTrackMediaItem(reaper.GetMediaItem_Track(it), it) end
-        remember(proj, ev.oid, ev.rev, "", ev.id, order)
         mirror.dropped = false
       end
+      mirror.unsent[key] = nil
+      remember(proj, ev.oid, ev.rev, "", ev.id, order)
     end
     return true
   end
@@ -5942,7 +5945,7 @@ function W.gone(w)
     else ok, oid = reaper.EnumProjExtState(proj, mirror.SEC, i) end
     if not ok then break end
     i = i + 1
-    local rev, h, evid = mirror.known(proj, oid)
+    local rev, h, evid, kord = mirror.known(proj, oid)
     -- (object records only, "rev|hash|event|order": the section also keeps "fxk <oid>" and "master fxen held", which read as gone and were
     -- overwritten with "0|||" every pass: knob checks failed after the first minute and the band's master FX switch went back on. Review, 0.58.92)
     if not seen[oid] and rev and h ~= "" then
@@ -5959,7 +5962,7 @@ function W.gone(w)
         -- (a stand-in for it goes with it: grey for good otherwise. One is made again if a version of it still has to land. rt-converge)
         if stray and standin then reaper.DeleteTrackMediaItem(reaper.GetMediaItem_Track(stray), stray)
         elseif stray then reaper.GetSetMediaItemInfo_String(stray, "P_EXT:band_oid", "", true) end
-        gone[#gone + 1] = { oid = oid, rev = rev, evid = evid }
+        gone[#gone + 1] = { oid = oid, rev = rev, evid = evid, order = kord }
       end
     end
   end
@@ -6011,7 +6014,9 @@ function W.gone(w)
         -- the band deleted its track, and the item went with it here before the item's own delete arrived: theirs,
         -- not ours (the Mac put back 226 of a deleted track's items one by one: laptop's restore, 0.34.4). Same rev,
         -- so the item's delete still lands when it comes.
-        remember(proj, g.oid, g.rev or 0, "", g.evid)
+        -- (and the same order: recorded without it, an earlier version of the same rev that arrived after (one session's first change, a
+        -- bandmate's made at once) beat the record and brought the item back, on this computer alone. rt-converge)
+        remember(proj, g.oid, g.rev or 0, "", g.evid, g.order)
       elseif allowed(o, name, last.pos) or ask_once() == false then
         -- (the clock past what it deletes, and an owner's step, as W.send does: a restart behind the version's clock read as made apart, and
         -- a non-owner's later edit brought an owner's deletion back. Round 1 review, 0.59.45)
