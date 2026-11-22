@@ -3,6 +3,7 @@
 --  1. A version names the tempo map its seconds are on (`tm`): put in place on another map it lands on its beat (mirror.apply), versions made
 --     under different maps merge on one map (mirror.event_file), and a hand edit after a bandmate's map isn't taken for the map's move
 --     (mirror.map_moved): the soak's bugs 1, 5 and 7.
+--  2. A received change is judged by the claims as they stood when it was made (sync.authority's `at`): bug 3.
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -128,6 +129,27 @@ do
   local on106 = mirror.state_on(m2, M106, 1)
   assert(near(num(on106, "POSITION"), 20 * 120 / 106), "which lands at the same place under the new map as the other merge does")
   print("rt-converge 1c: versions made under different tempo maps merge on one map")
+end
+
+-- ---- 2. a change is judged by the claims as they stood when it was made -----------------------------------------------------------------------
+do
+  local cfg = { root = "R", user = "Dee" }
+  files["R/Song/rooms/main/mode.json"] = { mode = "open", by = "James" }
+  files[R .. "/claims/Cee.json"] = { user = "Cee", time = iso(T), tracks = { "Bass" }, since = { ["tracks:bass"] = iso(T) },
+    times = { { from = 10, to = 20, at = iso(T) } } }
+  local can, who = sync.authority(cfg, "Song", "main", { host = "James", markers = {} })
+  assert(who.mode == "open" and who.is_claimed("Bass"), "Claims mode; Cee holds Bass now")
+  assert(can("James", "Bass") == false, "today, Bass isn't James's to change")
+  assert(can("James", "Bass", nil, nil, nil, iso(T - 3600)) == true, "but his change from an hour before Cee's claim is judged by the claims then: allowed")
+  assert(can("James", "Bass", nil, nil, nil, iso(T + 5)) == false, "one made after the claim: refused, as before")
+  assert(can("James", "Keys", 12, nil, nil, iso(T - 5)) == true and can("James", "Keys", 12, nil, nil, iso(T + 5)) == false, "a claimed stretch of time the same way")
+  assert(who.is_claimed("Bass", nil, iso(T - 1)) == nil and who.owner_of("Bass", nil, nil, iso(T + 1)) == "Cee", "is_claimed and owner_of take the time too")
+  sync.room_mode = "open"
+  local ev = { type = "obj", obj = "track", oid = "T-JAMES-1", user = "James", name = "Bass", time = iso(T - 3600), state = { name = "Bass" } }
+  assert(sync.obj_allowed(ev, can) == true, "sync.receive's judgement of a change (obj_allowed) goes by its own time")
+  ev.time = iso(T + 5)
+  assert(sync.obj_allowed(ev, can) == false, "and still refuses one made under the claim")
+  print("rt-converge 2: a received change is judged by the claims of its own time")
 end
 
 print("ok rt-converge")

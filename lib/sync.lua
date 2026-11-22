@@ -683,44 +683,51 @@ function sync.authority(cfg, song, room, s)
     if x.time ~= y.time then return x.time > y.time end
     return x.user > y.user
   end)
-  local function in_time(pos)
-    for _, t in ipairs(pos and times or {}) do if pos >= t.from and pos < t.to then return t end end
+  -- (`at`, optional, a change's own time: a claim made after it doesn't count. A change is judged by the claims as they stood when it was
+  -- made, as far as today's files say: by today's, a late joiner refused James's whole track because Cee claimed it an hour after he made
+  -- it, and showed the song without it for the minute a refused change waits; and a computer whose own auto-claim came after a bandmate's
+  -- edit held that edit back a minute. The soak's bug 3. A claim that was there then and is released since is no longer known, and doesn't
+  -- refuse either. sync.receive passes it; a look judges this person's own edit by the claims now. rt-converge)
+  local function then_(c, at) return c and not (at and type(c.time) == "string" and c.time > at) and c or nil end
+  local function in_time(pos, at)
+    for _, t in ipairs(pos and times or {}) do if pos >= t.from and pos < t.to and then_(t, at) then return t end end
   end
-  local function owner(track, pos, drv)
+  local function owner(track, pos, drv, at)
     local t = base_name(track)
-    if t and tracks[t:lower()] then return tracks[t:lower()].user end
-    local tc = in_time(pos)
+    local c = t and then_(tracks[t:lower()], at)
+    if c then return c.user end
+    local tc = in_time(pos, at)
     if tc then return tc.user end
     if pos then
       for _, sp in ipairs(spans) do
-        if pos >= sp.from and pos < sp.to and regions[sp.name] then return regions[sp.name].user end
+        if pos >= sp.from and pos < sp.to and then_(regions[sp.name], at) then return regions[sp.name].user end
       end
     end
     return drv or driver
   end
-  local function claimed(track, pos)
+  local function claimed(track, pos, at)
     local t = base_name(track)
-    if t and tracks[t:lower()] then return true end
-    if in_time(pos) then return true end
+    if t and then_(tracks[t:lower()], at) then return true end
+    if in_time(pos, at) then return true end
     for _, sp in ipairs(pos and spans or {}) do
-      if pos >= sp.from and pos < sp.to and regions[sp.name] then return true end
+      if pos >= sp.from and pos < sp.to and then_(regions[sp.name], at) then return true end
     end
   end
   local granted = mode == "admins" and require("grants").list(cfg, song, room) or {} -- (Admins only: who an admin let edit in this room)
   sync.owner_of = owner -- for messages ("... is James's to change")
   sync.is_claimed = claimed -- (sync.maker_may)
-  return function(user, track, pos, take, drv) -- drv: the driver to judge by (an event's own time), else today's
+  return function(user, track, pos, take, drv, at) -- drv: the driver to judge by (an event's own time), else today's; at: that time, for claims
       if mode == "driver" then return user == (drv or driver) end
       if mode == "everyone" then return true end -- (Open: claims off)
       if mode == "admins" then
-        if claimed(track, pos) then return owner(track, pos, drv) == user end
+        if claimed(track, pos, at) then return owner(track, pos, drv, at) == user end
         return require("groups").may_manage(cfg.root, user) or granted[user] ~= nil -- (or let edit here by an admin: lib/grants.lua)
       end
-      if owner(track, pos, drv) == user then return true end
+      if owner(track, pos, drv, at) == user then return true end
       -- open: anything nobody claimed, by anyone, the song's tempo map, markers and settings too (James, 2026-10-31:
       -- Open means open; before, those stayed the driver's)
-      if mode == "open" and not claimed(track, pos) then return true end
-      return take ~= nil and sync.author(take) == sync.author_of(user) and not claimed(track, pos)
+      if mode == "open" and not claimed(track, pos, at) then return true end
+      return take ~= nil and sync.author(take) == sync.author_of(user) and not claimed(track, pos, at)
     end,
     -- (is_claimed and owner_of: this room's, for callers to pass on. The module's sync.is_claimed / sync.owner_of are the last call's, and one
     -- for another room in between judged this one by that room's claims. They stay, for callers not passing these yet. Round 1 review, 0.59.45)
@@ -1188,8 +1195,9 @@ end
 -- is Driver only (the same rule mirror.watch uses when sending).
 sync.failed = {} -- event id -> how many times applying it threw
 function sync.obj_allowed(ev, can, driver)
-  if can(ev.user, ev.name or "", ev.pos, nil, driver) then return true end
-  return sync.maker_may(ev.obj == "track" and ev.oid or ev.track, ev.user, ev.name or "", ev.pos, sync.room_mode, ev.obj == "item" and ev.oid or nil)
+  local at = type(ev.time) == "string" and ev.time or nil -- (by the claims as they stood when it was made: sync.authority's `at`. rt-converge)
+  if can(ev.user, ev.name or "", ev.pos, nil, driver, at) then return true end
+  return sync.maker_may(ev.obj == "track" and ev.oid or ev.track, ev.user, ev.name or "", ev.pos, sync.room_mode, ev.obj == "item" and ev.oid or nil, nil, at)
 end
 
 -- A track's maker may change it and what's on it while nobody has claimed it, unless the room is Driver only. Before
@@ -1199,11 +1207,11 @@ end
 -- `item`: an item's own oid. Your own recording on a track nobody claimed goes out too, as the take rule in sync.authority
 -- says (it went to "(yours, not sent)" while the panel said "recording still goes out": UX review, 0.58.76).
 -- `is_claimed` (optional): the room's (sync.authority's who.is_claimed), else the last authority call's. Round 1 review, 0.59.45
-function sync.maker_may(oid, user, name, pos, mode, item, is_claimed)
+function sync.maker_may(oid, user, name, pos, mode, item, is_claimed, at)
   local mirror = require("mirror")
   is_claimed = is_claimed or sync.is_claimed
   return mode ~= "driver" and mode ~= "admins" and (mirror.is_creator(oid, user) or (item ~= nil and mirror.is_creator(item, user)))
-    and not (is_claimed and is_claimed(name, pos))
+    and not (is_claimed and is_claimed(name, pos, at))
 end
 
 -- Add tracks to my claims. -> true, or nil and why.
@@ -1916,7 +1924,7 @@ function sync.receive(proj, cfg, song, room, can)
       end
     end
     return not (sync.ANYONE[ev.type] or ev.alone or (ev.type == "obj" and (sync.obj_allowed(ev, can, driver_at(ev.time)) or soft_ok(ev)))
-      or (ev.type ~= "obj" and can(ev.user, ev.was or ev.track, ev.pos, ev.take, driver_at(ev.time))))
+      or (ev.type ~= "obj" and can(ev.user, ev.was or ev.track, ev.pos, ev.take, driver_at(ev.time), ev.time)))
   end
   -- Catching up (joining late, back from a week away): only the newest revision of each object is applied; the
   -- older ones are counted as done (they stay in the folder for Restore). Replaying every revision of every object
