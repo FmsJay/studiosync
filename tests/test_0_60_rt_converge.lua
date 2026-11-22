@@ -499,4 +499,32 @@ do
   print("rt-converge 9: new tracks in the order they landed; a move after a bandmate's track landed, or of an auto-claimed track, reaches the order list")
 end
 
+-- ---- 10. a computer catching up drops an edit that a deletion beat, as those that were here did -----------------------------------------------
+do
+  local undo = require("undo")
+  local S = studio("Conv10", "everyone")
+  local A, C = S.computer("James"), S.computer("Cee")
+  S.edit(A, function(F) F.add_item(F.add_track("Keys"), midi(1, 2)) end)
+  S.recv(C)
+  -- James deletes the item; Cee, who hasn't that yet, mutes it; James takes his deletion back
+  T = T + 2
+  S.edit(A, function(F) reaper.DeleteTrackMediaItem(S.track(A, "Keys"), S.track(A, "Keys").items[1]) end)
+  T = T + 2
+  S.edit(C, function(F) reaper.SetMediaItemInfo_Value(S.track(C, "Keys").items[1], "B_MUTE", 1) end)
+  T = T + 2
+  S.as(A)
+  A.F.clock = A.F.clock + 1
+  assert(tostring(undo.step(A.F.proj, A.cfg, S.b, false, {})):find("^1 change"), "James's Undo of the deletion")
+  S.settle(A)
+  S.recv(A); S.recv(C); S.recv(A); S.recv(C)
+  local function muted(c) S.as(c); return reaper.GetMediaItemInfo_Value(S.track(c, "Keys").items[1], "B_MUTE") end
+  assert(S.items(A, "Keys") == 1 and S.items(C, "Keys") == 1 and muted(A) == 0 and muted(C) == 0,
+    "the item is back, as James had it: Cee's mute, made without seeing the deletion, went with it (on both, as before)")
+  -- a late joiner reads all four changes at once
+  local D = S.computer("Dee")
+  S.recv(D)
+  assert(S.items(D, "Keys") == 1 and muted(D) == 0, "and a late joiner ends the same (was: the mute merged back in, there alone): " .. muted(D))
+  print("rt-converge 10: catching up, an edit a deletion beat stays dropped though a restore made the deletion older news")
+end
+
 print("ok rt-converge")

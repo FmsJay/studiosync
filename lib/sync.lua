@@ -2086,6 +2086,7 @@ function sync.receive(proj, cfg, song, room, can)
       local ok, res = pcall(function()
         local lands
         if obj then lands = m.wins(proj, ev.oid, ev.rev or 0, m.order_of(ev)) or m.merge_for(proj, ev, sync.room_dir(cfg, song, room)) ~= nil -- (or it's merged in)
+          or m.lands_over(proj, ev, sync.room_dir(cfg, song, room)) -- (or over a version a deletion beat: mirror.beaten_by)
         else lands = sync.alters(proj, ev) end
         -- (nor on its first wait, where that's cheap to know: mirror.will_wait. Round 3 review, 0.59.48)
         if lands and not waited and obj and m.will_wait(proj, ev) then waited = true end

@@ -4154,6 +4154,14 @@ function mirror.merge_order(leaves)
   return acc
 end
 
+-- Does `ev` land over the version held here because that one was made without seeing a deletion ev builds on (mirror.beaten_by)? For
+-- sync.receive's undo point, which asks before mirror.receive does.
+function mirror.lands_over(proj, ev, room_dir)
+  if not RACES[ev.obj] or ev.gone then return false end
+  local _, kh, kev = mirror.known(proj, ev.oid)
+  local held = (kev or "") ~= "" and kh ~= "" and kev ~= ev.id and mirror.event_file(room_dir, kev) or nil
+  return held ~= nil and mirror.beaten_by(room_dir, held, ev)
+end
 -- An item landing in a lane resets which lanes play: the track's own settings go back on top (a merged item too: review, 0.58.47).
 local function lanes_back(proj, ev, media_dir, local_mix)
   if not ev.track then return end
@@ -4188,7 +4196,17 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   local order = mirror.order_of(ev)
   -- (before the usual "theirs wins or not": the loser's other changes go in too)
   local room_dir = media_dir:gsub("/media$", "")
-  local merging, wait = mirror.merge_for(proj, ev, room_dir)
+  -- (a restore race: mirror.beaten_by. This change made without seeing a deletion that what's held here builds on: dropped, as where the
+  -- deletion landed first. What's held made without seeing a deletion this change builds on: this one lands over it, not merged with it)
+  local over = false
+  if RACES[ev.obj] and not ev.gone then
+    local _, kh0, kev0 = mirror.known(proj, ev.oid)
+    local held = (kev0 or "") ~= "" and kh0 ~= "" and kev0 ~= ev.id and mirror.event_file(room_dir, kev0) or nil
+    if held and mirror.beaten_by(room_dir, ev, held) then mirror.dropped = true; return true end
+    over = held ~= nil and mirror.beaten_by(room_dir, held, ev)
+  end
+  local merging, wait
+  if not over then merging, wait = mirror.merge_for(proj, ev, room_dir) end
   if wait then return false end
   -- (an item's deletion against an edit that didn't see it: the deletion, in any order, rather than rev and clock: mirror.gone_race. Two
   -- minutes for a version between that's on its way, as merge_for waits. Cross test, James, rt)
@@ -4206,7 +4224,7 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   -- (mirror.dropped: handled but nothing changed here, so sync.receive doesn't log "<who>: changed an item on X" for it. Cross test, James, rt)
   mirror.dropped = true
   if race == false then return true end
-  if race == nil and not merging and not mirror.wins(proj, ev.oid, ev.rev or 0, order) then return true end
+  if race == nil and not merging and not over and not mirror.wins(proj, ev.oid, ev.rev or 0, order) then return true end
   mirror.dropped = ev.gone ~= true and on_gone_track(proj, ev)
   -- (on a track the band has deleted since: nothing to apply it to, ever. Waiting for it kept "still to come" above
   -- 0 for good: review, 2026-10-31. Before the unsent check below: a flag
@@ -4469,6 +4487,43 @@ local function event_file(room_dir, evid, depth)
   return v
 end
 mirror.event_file = event_file
+-- Is version `x` beaten by a deletion that `w` builds on and x doesn't: x was made without seeing a deletion that was taken back since (an
+-- Undo, a Restore), and w is that restore or comes after it? A deletion beats an edit made without seeing it (mirror.gone_race), and stays the
+-- winner when someone restores the thing: the restore is what the thing is, and the beaten edit isn't merged back in. Judged against the
+-- deletion itself that only happened where the deletion landed before the restore; where the restore came first, or both in one pass, the
+-- beaten edit was merged into it, so computers ended different by the order things arrived (gone_race's old shortcut; the soak's Undo and
+-- Redo of a share with a bandmate's edit between). x's ancestry once, then w's down to where the two meet. Pure but for reading events.
+-- rt-converge
+function mirror.beaten_by(room_dir, x, w)
+  if not (type(x) == "table" and type(w) == "table") or x.gone or not RACES[x.obj] or x.obj ~= w.obj or x.id == w.id then return false end
+  local mine, todo, steps = { [x.id or ""] = true }, { x }, 0
+  while #todo > 0 and steps < 400 do
+    steps = steps + 1
+    for _, id in ipairs(parents(table.remove(todo))) do
+      if not mine[id] then
+        mine[id] = true
+        local y = event_file(room_dir, id)
+        if y then todo[#todo + 1] = y end
+      end
+    end
+  end
+  local seen
+  todo, steps, seen = { w }, 0, {}
+  while #todo > 0 and steps < 400 do
+    steps = steps + 1
+    local y = table.remove(todo)
+    local id = y.id or ""
+    if not mine[id] and not seen[id] then
+      seen[id] = true
+      if y.gone then return true end
+      for _, p in ipairs(parents(y)) do
+        local e = event_file(room_dir, p)
+        if e then todo[#todo + 1] = e end
+      end
+    end
+  end
+  return false
+end
 
 -- The name permissions use for an object (claims are by track name): its track's name.
 local function perm_name(o, by_oid)
