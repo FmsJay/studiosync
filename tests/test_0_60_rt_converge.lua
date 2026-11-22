@@ -820,6 +820,46 @@ do
   S3.settle(Q3)
   for _ = 1, 2 do J3.F.clock = J3.F.clock + 6; S3.recv(J3) end
   assert(eq_of(J3) == "100", "and when she turns it back, that goes out too (was: read as James's first version 'as it reads here', and kept on her computer alone): " .. tostring(eq_of(J3)))
+  -- a chain the band deleted while its track was away here, then the track back and a new chain for it: that lands (no plug-in is here,
+  -- so no knob can have been turned; the knobs noted when the old chain landed are from before the track went)
+  local S4 = studio("Conv13d", "everyone")
+  local J4, Q4 = S4.computer("James"), S4.computer("Bee")
+  fx_api(J4); fx_api(Q4)
+  S4.edit(J4, function(F) F.add_track("Drums"); F.add_track("Keys", nil, chain(100, 200)) end)
+  J4.F.clock = J4.F.clock + 70
+  S4.settle(J4)
+  S4.recv(Q4)
+  Q4.F.clock = Q4.F.clock + 70
+  S4.settle(Q4)
+  assert(S4.track(Q4, "Keys").body:find("QUFB100AAAA", 1, true), "the chain is on Bee's")
+  local fx1 = S4.events(function(v) return v.obj == "fx" end)[1]
+  local tr1 = S4.events(function(v) return v.obj == "track" and v.name == "Keys" end)[1]
+  local function version(of, id, rev, more) -- (a later version of `of`, as Cee would send it)
+    local ev = band.json_decode(band.json_encode(of))
+    ev.id, ev.rev, ev.base, ev.base_ev, ev.hlc, ev.user, ev.time, ev.hash = id, rev, of.rev, of.id, math.floor(T * 1000) + rev, "Cee", iso(T), nil
+    for k, v in pairs(more or {}) do ev[k] = v end
+    files[S4.dir .. "/events/" .. id .. ".json"] = ev
+    return ev
+  end
+  T = T + 2
+  S4.edit(J4, function(F) reaper.DeleteTrack(S4.track(J4, "Keys")) end)
+  S4.recv(Q4)
+  assert(not S4.track(Q4, "Keys"), "James's deletion of the track landed on Bee's")
+  local tgone = S4.events(function(v) return v.obj == "track" and v.gone end)[1]
+  T = T + 2
+  local fgone = version(fx1, "Cee-20270115-150000Z-00001-0134", fx1.rev + 1, { gone = true, state = false })
+  fgone.state = nil
+  files[S4.dir .. "/events/" .. fgone.id .. ".json"] = fgone
+  S4.recv(Q4)
+  T = T + 2
+  version(tgone, "Cee-20270115-150002Z-00002-0134", tgone.rev + 1, { gone = false, state = tr1.state, restored = true })
+  S4.recv(Q4)
+  assert(S4.track(Q4, "Keys") and not S4.track(Q4, "Keys").body:find("QUFB", 1, true), "the track is back on Bee's, bare")
+  T = T + 2
+  version(fgone, "Cee-20270115-150004Z-00003-0134", fgone.rev + 1, { gone = false, state = fx1.state })
+  for _ = 1, 3 do Q4.F.clock = Q4.F.clock + 6; S4.recv(Q4) end
+  assert(S4.track(Q4, "Keys").body:find("QUFB100AAAA", 1, true),
+    "the new chain lands on Bee's (was: the knobs noted before the track went read as a knob turned since, and the chain waited for good)")
   print("rt-converge 13: a knob turned from a script isn't lost to a bandmate's chain landing before the next look")
 end
 

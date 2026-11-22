@@ -4347,7 +4347,11 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   if ev.obj == "fx" and not ev.gone then
     local key = tostring(proj) .. ev.oid
     local tr = not mirror.unsent[key] and mirror.fx_last[key] ~= nil and mirror.find(proj, "track", ev.track)
-    if tr and mirror.fx_last[key] ~= mirror.fx_params(tr) then mirror.unsent[key], mirror.fx_doubt[key], mirror.unsettled = true, true, true end
+    -- (not where no plug-in is here: none has a knob to turn. The chain had gone with its track, or by the band's deletion, with the knobs
+    -- of its last landing still noted; that read as "moved", and no look settles a chain recorded gone, so the band's new chain for the
+    -- track waited behind the doubt for good, on this computer alone. The soak's seed 5008. rt-converge)
+    local knobs = tr and mirror.fx_params(tr)
+    if tr and knobs ~= "" and mirror.fx_last[key] ~= knobs then mirror.unsent[key], mirror.fx_doubt[key], mirror.unsettled = true, true, true end
   end
   if mirror.unsent[tostring(proj) .. ev.oid] or mirror.unsent_elsewhere(proj)[ev.oid] then return false end
   -- (an item of yours held back (its audio couldn't be copied, its last version unreadable) is about to be replaced by the band's: a copy goes to
