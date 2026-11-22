@@ -671,4 +671,58 @@ do
   print("rt-converge 13: a knob turned from a script isn't lost to a bandmate's chain landing before the next look")
 end
 
+-- ---- 14. REAPER's own Undo of a track deletion brings the track back for everyone (rt-r2's P1-6: read as a reopen, deleted again, errors) ------
+do
+  local S = studio("Conv14", "everyone")
+  local A, B = S.computer("James"), S.computer("Bee")
+  fx_api(A); fx_api(B)
+  S.edit(A, function(F) F.add_item(F.add_track("Gtr", nil, chain(100, 200)), midi(1, 2)); F.add_track("Keys") end)
+  A.F.clock = A.F.clock + 70
+  S.settle(A)
+  S.recv(B)
+  local gtr = S.track(A, "Gtr")
+  local guid, body, item_guid, item_text = gtr.guid, gtr.body, gtr.items[1].guid, gtr.items[1].text
+  -- (REAPER brings a deleted track back as its undo point had it: the same GUIDs, and no StudioSync id on it or its item)
+  local function undo_delete(c)
+    local t = c.F.add_track("Gtr", 1, body)
+    t.guid, t.ext = guid, {}
+    local it = c.F.add_item(t, item_text)
+    it.guid, it.ext = item_guid, {}
+    return t
+  end
+  T = T + 2
+  S.edit(A, function(F) reaper.DeleteTrack(gtr) end)
+  S.recv(B)
+  assert(not S.track(A, "Gtr") and not S.track(B, "Gtr"), "James deleted Gtr: gone on both")
+  logged = {}
+  T = T + 2
+  S.edit(A, function(F) undo_delete(A) end)
+  A.F.clock = A.F.clock + 2
+  S.settle(A)
+  assert(S.track(A, "Gtr") and S.items(A, "Gtr") == 1, "REAPER's Undo of the deletion: the track stays back on James's (was: deleted again as 'the band deleted it since')")
+  assert(not told("opened without its last save"), "and isn't taken for a file opened without its last save: " .. (told("opened without") or ""))
+  for _ = 1, 2 do B.F.clock = B.F.clock + 6; S.recv(B) end
+  assert(S.track(B, "Gtr") and S.items(B, "Gtr") == 1, "it's back on Bee's too, with its item")
+  assert(S.track(B, "Gtr").body:find("ReaComp", 1, true), "and its plug-ins")
+  -- a file really opened without its last save, with a track the band deleted since: the track goes again, and what was on it is passed over
+  T = T + 2
+  S.edit(B, function(F) reaper.DeleteTrack(S.track(B, "Gtr")) end)
+  S.recv(A)
+  assert(not S.track(A, "Gtr"), "Bee deleted it: gone on James's")
+  local dead = {}
+  local count = A.F.reaper.TrackFX_GetCount
+  rawset(A.F.reaper, "TrackFX_GetCount", function(tr) assert(not dead[tr], "bad argument #1 to 'TrackFX_GetCount' (MediaTrack expected)"); return count(tr) end)
+  local del = A.F.reaper.DeleteTrack
+  rawset(A.F.reaper, "DeleteTrack", function(tr) dead[tr] = true; return del(tr) end)
+  S.as(A)
+  mirror.order_seen[tostring(A.F.proj)] = nil -- (the project's first look again: it was opened afresh)
+  logged = {}
+  undo_delete(A)
+  A.F.changed()
+  S.settle(A)
+  assert(told("opened without its last save") and not S.track(A, "Gtr"), "an older file's copy of a track the band deleted: gone again, as before")
+  assert(not told("mirror sync skipped"), "and nothing of the track is looked at once it's gone (was: its plug-ins read through the dead track, an error each): " .. (told("mirror sync skipped") or ""))
+  print("rt-converge 14: Ctrl+Z after a track delete sends the track back; a reopened file's deleted track goes without errors")
+end
+
 print("ok rt-converge")

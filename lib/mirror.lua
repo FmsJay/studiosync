@@ -2757,13 +2757,20 @@ local function settle_ids(proj, list, kind, user, set_oid, also_held)
     if c and c.guid[x.guid] ~= x.oid then c.guid[x.guid], c.dirty = x.oid, true end
     if x.restored then
       mirror.reopened[tostring(proj) .. x.oid] = true
-      if kind == "T" then for _, p in ipairs(mirror.PARTS) do mirror.reopened[tostring(proj) .. p .. x.oid:sub(2)] = true end end
+      mirror.restored_now[#mirror.restored_now + 1] = tostring(proj) .. x.oid -- (which, for the look that follows: mirror.watch)
+      if kind == "T" then
+        for _, p in ipairs(mirror.PARTS) do
+          mirror.reopened[tostring(proj) .. p .. x.oid:sub(2)] = true
+          mirror.restored_now[#mirror.restored_now + 1] = tostring(proj) .. p .. x.oid:sub(2)
+        end
+      end
     end
   end
 end
 -- oids given back after an unsaved reopen whose state here is older than the band's: put back, never sent, until they
 -- match what this machine last knew (proj .. oid -> true)
 mirror.reopened = {}
+mirror.restored_now = {} -- the keys settle_ids marked since the last look (mirror.watch takes them)
 mirror.auto = {} -- proj .. oid -> its next send is a print StudioSync refreshed (Undo skips those)
 mirror.print_quiet = {} -- proj .. oid -> { key, at }: nothing to print for it as of then (W.prints)
 mirror.tracks_back = mirror.tracks_back or {} -- tostring(proj) -> { oid = event }: tracks put back by a look, settings again after their items (mirror.watch)
@@ -5599,6 +5606,9 @@ function W.one(w, o)
     if h == "" then -- the band deleted it since: gone here too (2026-10-31: three deleted tracks came back on a reopen)
       mirror.reopened[rk] = nil
       if o.kind == "track" or o.kind == "item" then mirror.apply(proj, { obj = o.kind, oid = o.oid, gone = true }, media, opts.local_mix) end
+      -- (its plug-ins, automation and items were read before it went: W.each passes over them, or each threw on the dead track,
+      -- "bad argument #1 to 'TrackFX_GetCount' (MediaTrack expected)". P1-6, rt-r2)
+      if o.kind == "track" then w.gone_now = w.gone_now or {}; w.gone_now[o.oid] = true end
       w.back = w.back + 1
       return
     end
@@ -6016,7 +6026,7 @@ function W.each(w)
   local dirty = w.dirty -- (a quick look: only what may have changed, or still has something to do. rt-look)
   for _, o in ipairs(w.objs) do
     w.seen[o.oid] = true
-    if (not dirty or dirty[o.oid]) and not mirror.previewing[tostring(w.proj) .. o.oid] then
+    if (not dirty or dirty[o.oid]) and not mirror.previewing[tostring(w.proj) .. o.oid] and not (w.gone_now and o.track and w.gone_now[o.track]) then
       local ok, err = pcall(W.one, w, o)
       if not ok then held_back_set(w.proj, o.oid); w.say_once("err" .. o.oid, "mirror sync skipped " .. o.oid .. ": " .. tostring(err)) end -- (a send that threw: counted. Round 1 review, 0.59.45)
     end
@@ -6328,6 +6338,17 @@ function mirror.watch(proj, cfg, song, room, opts)
   objs, by_oid = w.objs, w.by_oid
   W.credit(w)
   W.order(w)
+  -- (something that came back without its id in a session that has been looking at this project all along isn't a file opened without its
+  -- last save: it's REAPER's own Undo bringing back what this person deleted (the track returns as its undo point had it, before StudioSync
+  -- wrote its id on it). Taken for a reopen, the track was deleted again as "the band deleted it since", with "this project was opened without
+  -- its last save", and Ctrl+Z after a track delete brought it back nowhere (P1-6, rt-r2). Not marked, it's this person's change like any:
+  -- built on the deletion, it goes back to everyone, or is put back if it isn't theirs to bring back. Only a project's first look keeps the
+  -- marks. rt-converge)
+  do
+    local now_back = mirror.restored_now
+    mirror.restored_now = {}
+    if not w.first_here then for _, k in ipairs(now_back) do if k:sub(1, #pk) == pk then mirror.reopened[k] = nil end end end
+  end
   local raw = {} -- (each object's hash as read, before W.one re-anchors any: what the next look compares with)
   for _, o in ipairs(objs) do raw[o.oid] = o.hash end
   local first_here = w.first_here
