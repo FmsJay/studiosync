@@ -20,6 +20,7 @@
 -- 15. (a pin) which plug-in changes ask the bandmate who holds the track while they edit: rt-r2's P1-5.
 -- 16. A track's lanes that only read differently here, with no edit behind the look, don't go out (W.one): LinuxBox2's lane names.
 -- 17. A merge isn't built while a version it rests on is still on its way (mirror.event_file, mirror.merge_for).
+-- 18. An item moved onto a track a bandmate deleted that moment goes with the track on every computer (mirror.receive).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -881,6 +882,36 @@ do
   local m = mirror.event_file(R, mid)
   assert(m and events_of(m.state) == events_of(cee.state), "once it's here: the merge every computer builds, Cee's value over a base James's undo left as it was (" .. events_of(m and m.state or "") .. ")")
   print("rt-converge 17: a merge waits for the versions it rests on, and is the same on every computer")
+end
+
+-- ---- 18. an item moved onto a track a bandmate deleted that moment goes with the track on every computer (the soak's seed 103) ----------------
+do
+  local S = studio("Conv18", "everyone")
+  local A, B, C = S.computer("James"), S.computer("Bee"), S.computer("Cee")
+  S.edit(A, function(F) F.add_item(F.add_track("Keys"), midi(1, 2)); F.add_track("Tmp") end)
+  S.recv(B); S.recv(C)
+  -- Bee deletes Tmp; Cee, who hasn't that yet, moves the item onto it
+  T = T + 2
+  local seen = {}
+  for p in pairs(files) do seen[p] = true end
+  S.edit(B, function(F) reaper.DeleteTrack(S.track(B, "Tmp")) end)
+  local gone
+  for p, v in pairs(files) do if not seen[p] and type(v) == "table" and v.obj == "track" and v.gone then gone = v end end
+  S.edit(C, function(F) reaper.MoveMediaItemToTrack(S.track(C, "Keys").items[1], S.track(C, "Tmp")) end)
+  assert(S.items(C, "Tmp") == 1, "moved on Cee's")
+  for _ = 1, 2 do S.recv(A); S.recv(B); S.recv(C) end
+  assert(not S.track(A, "Tmp") and not S.track(B, "Tmp") and not S.track(C, "Tmp"), "Tmp is gone everywhere")
+  assert(S.items(C, "Keys") == 0, "on Cee's the item went with the track it was moved to, as before")
+  assert(S.items(A, "Keys") == 0 and S.items(B, "Keys") == 0,
+    "and on the others too (was: it stayed on Keys there, where Cee's move never landed): " .. S.items(A, "Keys") .. " / " .. S.items(B, "Keys"))
+  -- the track comes back (its deletion undone): the item with it, where Cee put it, on all three
+  local first = S.events(function(v) return v.oid == gone.oid and not v.gone end)[1]
+  local back = band.json_decode(band.json_encode(first))
+  back.id, back.rev, back.base, back.base_ev, back.hlc, back.user = "Bee-20270115-110000Z-00099-0018", gone.rev + 1, gone.rev, gone.id, gone.hlc + 5, "Bee"
+  files[S.dir .. "/events/" .. back.id .. ".json"] = back
+  for _ = 1, 2 do S.recv(A); S.recv(B); S.recv(C) end
+  assert(S.items(A, "Tmp") == 1 and S.items(B, "Tmp") == 1 and S.items(C, "Tmp") == 1, "back with its track on all three: " .. S.items(A, "Tmp") .. S.items(B, "Tmp") .. S.items(C, "Tmp"))
+  print("rt-converge 18: an item moved onto a track deleted that moment goes with it everywhere, and comes back with it")
 end
 
 print("ok rt-converge")

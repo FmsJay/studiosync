@@ -4262,6 +4262,23 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
     mirror.orphaned[tostring(proj)] = o
     -- (an item's own deletion is recorded though: it went with its track, and every computer then holds the same deletion, whichever came first)
     if ev.gone then remember(proj, ev.oid, ev.rev, "", ev.id, order) end
+    -- (and an item moved onto that track by someone who hadn't the deletion yet, still here on the track it came from: it went with the track
+    -- it was moved to, as it did on its mover's computer when the deletion landed there. Left where it was, it stayed on every computer but
+    -- the mover's. Recorded gone with its track under this version, so it comes back, on that track, if the track does (mirror.heal). One
+    -- of yours not sent yet is kept on "(yours, not sent)" instead. The soak's seed 103. rt-converge)
+    if ev.obj == "item" and not ev.gone and not merging then
+      local it = mirror.find(proj, "item", ev.oid)
+      if it then
+        local key = tostring(proj) .. ev.oid
+        if mirror.unsent[key] or mirror.unsent_elsewhere(proj)[ev.oid] then
+          reaper.MoveMediaItemToTrack(it, mirror.keep_track(proj, select(2, reaper.GetTrackName(reaper.GetMediaItem_Track(it)))))
+          reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", true)
+          mirror.unsent[key] = nil
+        else reaper.DeleteTrackMediaItem(reaper.GetMediaItem_Track(it), it) end
+        remember(proj, ev.oid, ev.rev, "", ev.id, order)
+        mirror.dropped = false
+      end
+    end
     return true
   end
   -- a change of ours to it hasn't gone out yet (plug-ins and automation waiting to settle or
