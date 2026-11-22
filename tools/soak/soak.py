@@ -451,6 +451,32 @@ def report(seed, bad, sim, keep=None):
     return "\n".join(lines)
 
 
+def selfcheck():
+    """The soak's own parts that could lie: node.lua's plug-in model (the chain's text through the API) and the driver's plug-in edits (a
+    chain with nested blocks once came out unbalanced and made a track out of an item). Raises on a failure."""
+    n = Node("James", 1, 0.0)
+    ok = n.call(1, "eval", r'''
+local t = F.add_track("X")
+t.body = "<VOLENV2\nPT 0 1 0\n>\n<FXCHAIN\nSHOW 0\nLASTSEL 0\nDOCKED 0\nBYPASS 0 0 0\n<VST \"VST: ReaEQ (Cockos)\" reaeq.dll 0 \"\" 1<5>\nQUFB250AAAA\n>\nFLOATPOS 0 0 0 0\nFXID {A}\nWAK 0 0\nBYPASS 1 0 0\n<JS utility/volume \"\"\nQUFB900AAAA\n>\nWAK 0 0\n>\n<AUXVOLENV\n>\n"
+assert(reaper.TrackFX_GetCount(t) == 2, "two plug-ins")
+assert(math.abs(reaper.TrackFX_GetParamNormalized(t, 1, 0) - 0.9) < 1e-9, "the second one's knob")
+assert(select(2, reaper.TrackFX_GetFXName(t, 1)) == "utility/volume" and not reaper.TrackFX_GetEnabled(t, 1), "its name, bypassed")
+return "ok"''')
+    assert ok == "true\tok", "soak self-check, the plug-in model: " + ok
+    n.call(1, "share")
+    for i in range(60):
+        n.call(2 + i, "edit", "fx", json.dumps([((i * 0.137 + k * 0.29) % 1) for k in range(6)]))
+    ok = n.call(70, "eval", r'''
+for _, t in ipairs(F.tracks) do
+  local d = 0
+  for l in (t.body or ""):gmatch("[^\n]+") do if l:sub(1, 1) == "<" then d = d + 1 elseif l == ">" then d = d - 1 end; assert(d >= 0, "unbalanced: " .. t.name) end
+  assert(d == 0 and select(2, (t.body or ""):gsub("<FXCHAIN", "")) <= 1, "one balanced chain: " .. t.name)
+end
+return "ok"''')
+    assert ok == "true\tok", "soak self-check, the driver's plug-in edits: " + ok
+    assert not json.loads(n.call(70, "errors")), "soak self-check: errors " + n.call(70, "errors")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true", help="about 60 s: a few short seeds")
@@ -467,6 +493,7 @@ def main():
     ap.add_argument("--shrink", action="store_true", help="with --seed: shrink a failure to its fewest edits")
     ap.add_argument("--shrink-secs", type=float, default=600)
     ap.add_argument("--trace", action="store_true")
+    ap.add_argument("--selfcheck", action="store_true", help="only the soak's own self-check (--quick runs it first too)")
     a = ap.parse_args()
     global FIRST_EDIT
     FIRST_EDIT = a.first_edit
@@ -508,6 +535,11 @@ def main():
             print_shrunk(a.seed, edits, faults, signature(bad), a.shrink_secs, probe, n)
         return 1
 
+    if a.selfcheck or a.quick:
+        selfcheck()
+        print("soak self-check ok", flush=True)
+        if a.selfcheck:
+            return 0
     budget = 55 if a.quick else a.minutes * 60
     n = a.edits or (40 if a.quick else 150)
     t_end = time.monotonic() + budget

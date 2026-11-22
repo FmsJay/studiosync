@@ -5,6 +5,17 @@
 -- Everything crosses to Python as JSON text. Set before this runs: SOAK_USER, SOAK_SEED, SOAK_SKEW (seconds this computer's clock is off).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local E = require("editreaper")
+-- (GUIDs: the stand-in counts them from 0 in every Lua, so two computers made the same ones, and a track made here could share a GUID with a
+-- take that came from a bandmate. REAPER's are random: each computer's count starts in a range of its own)
+do
+  local off = 0
+  for c in tostring(SOAK_USER):gmatch(".") do off = (off * 31 + c:byte()) % 4093 end
+  for i = 1, 20 do
+    local name = debug.getupvalue(E.guid, i)
+    if name == "seq" then debug.setupvalue(E.guid, i, (off + 1) * 0x100000); break end
+    if not name then break end
+  end
+end
 local real_date, real_time = os.date, os.time
 local T0 = real_time({ year = 2026, month = 11, day = 22, hour = 12, min = 0, sec = 0 })
 local ROOT, SONG, ROOM = "C:/soak/Studio", "Soak", "main"
@@ -324,16 +335,26 @@ end
 local function body_set(t, body) t.body = body; F.changed() end
 local FX = { 'VST "VST: ReaEQ (Cockos)" reaeq.dll 0 "" 1919247729<56535472656571726561657100000000> ""', 'VST "VST: ReaComp (Cockos)" reacomp.dll 0 "" 1919247213<56535472636D70726561636F6D7000> ""',
   'JS utility/volume ""', 'VST "VST: ReaDelay (Cockos)" readelay.dll 0 "" 1919247468<5653547265646C72656164656C617900> ""' }
-local function fx_blocks(body) -- the plug-ins of a track's <FXCHAIN, each its lines; and the body around it
-  local s, e = body:find("<FXCHAIN\n.-\n>\n")
-  if not s then return {}, body, nil end
-  local inner, list, cur, d = body:sub(s + #"<FXCHAIN\n", e - 2), {}, nil, 0
-  for l in inner:gmatch("[^\n]+") do
-    if d == 0 and l:match("^BYPASS ") then cur = { l }; list[#list + 1] = cur
-    elseif cur then cur[#cur + 1] = l end
-    if l:sub(1, 1) == "<" then d = d + 1 elseif l == ">" then d = d - 1 end
+-- The plug-ins of a track's <FXCHAIN, each its lines; and the body before and after the chain (to its own closing ">", past the plug-ins'
+-- nested blocks). No chain: {}, the body, nil.
+local function fx_blocks(body)
+  local L, before, list, cur, d, start, stop = {}, {}, {}, nil, 0, nil, nil
+  for l in body:gmatch("[^\n]+") do L[#L + 1] = l end
+  for i, l in ipairs(L) do
+    if not start then
+      if l == "<FXCHAIN" and d == 0 then start, d = i, 1 else before[#before + 1] = l end
+      if not start then if l:sub(1, 1) == "<" then d = d + 1 elseif l == ">" then d = d - 1 end end
+    elseif not stop then
+      if d == 1 and l:match("^BYPASS ") then cur = { l }; list[#list + 1] = cur
+      elseif d == 1 and l == ">" then stop = i
+      elseif cur then cur[#cur + 1] = l end
+      if not stop then if l:sub(1, 1) == "<" then d = d + 1 elseif l == ">" then d = d - 1 end end
+    end
   end
-  return list, body:sub(1, s - 1), body:sub(e + 1)
+  if not start then return {}, body, nil end
+  local pre = #before > 0 and (table.concat(before, "\n") .. "\n") or ""
+  local post = stop and stop < #L and (table.concat(L, "\n", stop + 1) .. "\n") or ""
+  return list, pre, post
 end
 local function fx_write(t, list, before, after)
   local out = {}
