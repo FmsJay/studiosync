@@ -525,7 +525,14 @@ EDITS.tempo = function(r)
     return "first tempo to " .. bpm
   elseif r[1] < 0.75 or n < 2 then
     local t = 2 + math.floor(r[3] * 40)
-    reaper.SetTempoTimeSigMarker(F.proj, -1, t, -1, -1, bpm, 4, 4, false)
+    -- (one tempo marker to a place, as REAPER keeps them: a second set at a marker's time changes that marker. The stand-in kept both, in
+    -- whatever order its sort left two of one time, and two computers then read one map as two tempos from there on. rt-converge)
+    local at = -1
+    for i = 0, n - 1 do
+      local _, mt = reaper.GetTempoTimeSigMarker(F.proj, i)
+      if math.abs(mt - t) < 1e-9 then at = i end
+    end
+    reaper.SetTempoTimeSigMarker(F.proj, at, t, -1, -1, bpm, 4, 4, false)
     return "tempo marker " .. bpm .. " at " .. t
   end
   local i = 1 + math.floor(r[3] * (n - 1))
