@@ -1315,4 +1315,65 @@ do
   print("rt-converge 26: a deleted track's auto-claim goes with it, and an edit held for its deleter's answer goes with the track")
 end
 
+-- ---- 27. a deleted track comes back where it sat when it was deleted (the soak's undo probe, seeds 6037 and 7055) -------------------------------
+do
+  local undo = require("undo")
+  local S = studio("Conv27", "everyone")
+  local A, B = S.computer("James"), S.computer("Bee")
+  S.edit(A, function(F) F.add_track("Drums"); F.add_track("Bass") end)
+  S.recv(B)
+  local function step(c, redo)
+    S.as(c)
+    c.F.clock = c.F.clock + 1
+    T = T + 2
+    local res, why = undo.step(c.F.proj, c.cfg, S.b, redo, {})
+    S.settle(c)
+    return tostring(res or why)
+  end
+  -- James adds a track at the top; Bee then adds one above it, so James's sits second with no new version of its own
+  T = T + 2
+  S.edit(A, function(F) F.add_track("New", 1) end)
+  S.recv(B)
+  T = T + 2
+  S.edit(B, function(F) F.add_track("Top", 1) end)
+  S.recv(A)
+  assert(S.names(A) == "Top, New, Drums, Bass" and S.names(B) == S.names(A), "the song on both (" .. S.names(A) .. " / " .. S.names(B) .. ")")
+  -- James's Undo takes his track away, his Redo brings it back: second again
+  local u = step(A, false)
+  assert(S.names(A) == "Top, Drums, Bass", "James's Undo takes his track away (" .. u .. "; " .. S.names(A) .. ")")
+  local gone = S.events(function(v) return v.obj == "track" and v.gone and v.name == "New" end)[1]
+  assert(gone and gone.was_after == S.track(A, "Top").ext.band_oid, "its deletion names the track it sat under")
+  S.recv(B)
+  local r = step(A, true)
+  assert(S.names(A) == "Top, New, Drums, Bass", "and his Redo brings it back where it sat (was: at the top, where it was first made): " .. r .. "; " .. S.names(A))
+  S.recv(B)
+  assert(S.names(B) == "Top, New, Drums, Bass", "on Bee's too (" .. S.names(B) .. ")")
+  -- two tracks made in one act and taken away by one Undo come back in their order (each deletion names where its track sat before the act)
+  T = T + 2
+  S.edit(A, function(F) F.add_track("P1"); F.add_track("P2") end)
+  S.recv(B)
+  assert(S.names(A) == "Top, New, Drums, Bass, P1, P2", "two more tracks (" .. S.names(A) .. ")")
+  step(A, false)
+  assert(S.names(A) == "Top, New, Drums, Bass", "one Undo takes both away (" .. S.names(A) .. ")")
+  S.recv(B)
+  step(A, true)
+  assert(S.names(A) == "Top, New, Drums, Bass, P1, P2", "and the Redo brings them back in their order (" .. S.names(A) .. ")")
+  S.recv(B)
+  assert(S.names(B) == "Top, New, Drums, Bass, P1, P2", "on Bee's too (" .. S.names(B) .. ")")
+  step(A, false)
+  S.recv(B)
+  assert(S.names(A) == "Top, New, Drums, Bass" and S.names(B) == S.names(A), "(taken away again for what follows)")
+  -- the same for a track deleted by hand in REAPER (the look sends that deletion) and brought back by Undo
+  T = T + 2
+  S.edit(A, function(F) reaper.DeleteTrack(S.track(A, "New")) end)
+  local by_hand = S.events(function(v) return v.obj == "track" and v.gone and v.name == "New" and not v.undoes and not v.redoes end)[1]
+  assert(by_hand and by_hand.was_after == S.track(A, "Top").ext.band_oid, "a deletion made in REAPER names it too")
+  S.recv(B)
+  step(A, false)
+  assert(S.names(A) == "Top, New, Drums, Bass", "Undo of the deletion: back where it sat (" .. S.names(A) .. ")")
+  S.recv(B)
+  assert(S.names(B) == "Top, New, Drums, Bass", "on Bee's too (" .. S.names(B) .. ")")
+  print("rt-converge 27: a deleted track comes back where it sat")
+end
+
 print("ok rt-converge")

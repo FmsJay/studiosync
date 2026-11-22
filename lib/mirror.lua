@@ -5173,6 +5173,7 @@ function W.order(w)
       elseif o.kind == "fx" and o.ptr then mirror.fx_load_knobs[order_key .. o.oid] = mirror.fx_params(o.ptr) end
     end
   end
+  w.order_was = mirror.order_seen[order_key] -- (the tracks as the look before had them: where a track deleted since sat, W.gone)
   mirror.order_seen[order_key], mirror.order_band[order_key] = order, nil
   w.moved_set, w.first_here = moved_set, first_here
 end
@@ -6065,7 +6066,16 @@ function W.gone(w)
         -- a non-owner's later edit brought an owner's deletion back. Round 1 review, 0.59.45)
         mirror.hlc_seen(last.hlc)
         local unasked = asked_memo ~= nil and asked_memo[1] == false or nil -- (past an auto-claim that couldn't be asked: as W.send says it)
-        local ev = { type = "obj", obj = o.kind, oid = g.oid, rev = mirror.next_rev(g.rev, mirror.owned(opts, me, name, last.pos, w.is_claimed)), base = g.rev or 0, base_ev = (g.evid or "") ~= "" and g.evid or nil, gone = true, track = o.track, name = name, pos = last.pos, act = w.act, unasked = unasked }
+        -- (a track's deletion names the track it sat under, `was_after`: where it goes back if the deletion is undone, mirror.revert)
+        local was_after
+        if o.kind == "track" and type(w.order_was) == "string" then
+          local prev = ""
+          for x in w.order_was:gmatch("[^,]+") do
+            if x == g.oid then was_after = prev; break end
+            prev = x
+          end
+        end
+        local ev = { type = "obj", obj = o.kind, oid = g.oid, rev = mirror.next_rev(g.rev, mirror.owned(opts, me, name, last.pos, w.is_claimed)), base = g.rev or 0, base_ev = (g.evid or "") ~= "" and g.evid or nil, gone = true, track = o.track, name = name, pos = last.pos, act = w.act, unasked = unasked, was_after = was_after }
         local id = sync.post(cfg, song, room, ev)
         if o.kind == "track" and opts.sent then pcall(opts.sent, o, name, ev) end -- (Claims: your auto-claim on a track you deleted goes with it. rt-converge)
         remember(proj, g.oid, ev.rev, "", id, mirror.order_of(ev)) -- (with its order: a racing edit is settled alike everywhere)
@@ -6699,6 +6709,30 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
     if ka ~= kx then if a.t then return ka < kx else return ka > kx end end
     return a.oid < x.oid -- (then by id: among equals the order was the plan table's, which Lua walks differently every run. rt-converge)
   end)
+  -- (a deleted track that comes back goes where it sat when it was deleted, which its deletion names (`was_after`): its last version's
+  -- "sits under" is the place of the day that version was made, and a track isn't sent again when others land above it or the studio's
+  -- order moves it, so an Undo then Redo of adding a track brought it back at the top, for everyone. Before the ordering below, which goes
+  -- by the place each will take. The soak's undo probe, seeds 6037 and 7055. rt-converge)
+  for _, p in ipairs(list) do
+    if p.t and p.t.obj == "track" and type(p.t.state) == "table" then
+      local _, _, kev = mirror.known(proj, p.oid)
+      local last = (kev or "") ~= "" and event_file(room_dir, kev) or nil
+      if last and last.gone and type(last.was_after) == "string" and #last.was_after < 200 and last.was_after ~= p.t.state.after then
+        local st = {}
+        for k, v in pairs(p.t.state) do st[k] = v end
+        st.after = last.was_after
+        p.t = setmetatable({ state = st }, { __index = p.t })
+      end
+    end
+  end
+  -- (and where each track sits now, before any of them goes: what a deletion made here says, for its return. Read as each went, the second
+  -- of two tracks deleted in one act sat "at the top", and Undo then Redo of a whole song brought its tracks back in reverse)
+  local sat, above = {}, ""
+  for i = 0, reaper.CountTracks(proj) - 1 do
+    local tr = reaper.GetTrack(proj, i)
+    local o = not local_track(tr) and trk_oid(tr) or ""
+    if o ~= "" then sat[o], above = above, o end
+  end
   -- and a track only after the one it sits under, when that comes back too: put back first, Keys found no K4 Inner
   -- yet and went to the top, out of its folder (laptop, block K)
   local back, placed, sorted = {}, {}, {}
@@ -6834,10 +6868,11 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       local kind = mirror.KIND[p.oid:sub(1, 1)] or "item"
       -- (a part: emptied on its track, which apply needs named. One that can't change now isn't sent: sent, this computer's chain went out
       -- again as a change of its own. 0.59.14, review)
+      local was_after = kind == "track" and sat[p.oid] or nil -- (where it sat before this act, for its return: above)
       if not mirror.apply(proj, { obj = kind, oid = p.oid, gone = true, track = last and last.track }, media, opts.local_mix) then waiting = waiting + 1; return end
       mirror.hlc_seen(last and last.hlc)
       local gev = { type = "obj", obj = kind, oid = p.oid, rev = mirror.next_rev(rev, owned(last and last.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, gone = true, undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, act = opts.act,
-        name = last and last.name, track = last and last.track, pos = last and last.pos } -- (named: read later, it said "an unnamed track")
+        name = last and last.name, track = last and last.track, pos = last and last.pos, was_after = was_after } -- (named: read later, it said "an unnamed track")
       local id = sync.post(cfg, song, room, gev)
       remember(proj, p.oid, gev.rev, "", id, mirror.order_of(gev))
       done = done + 1
