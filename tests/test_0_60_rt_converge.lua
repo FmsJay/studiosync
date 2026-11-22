@@ -14,6 +14,7 @@
 --     (mirror.wanted_order, mirror.order_after_band, W.send).
 -- 10. An edit beaten by a deletion stays beaten when the deletion is taken back, in whatever order they arrive (mirror.beaten_by).
 -- 11. Undo and Redo of an act with a marker or tempo change go by the timeline's own order (sync.undo_timeline).
+-- 12. No choice follows Lua's table order: heal and Undo work through their objects in one order (mirror.heal, mirror.revert): bug 8.
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -567,6 +568,37 @@ do
   S.recv(C)
   assert(marks(C) == "C1,B1", "on Cee's too (" .. marks(C) .. ")")
   print("rt-converge 11: the Redo of an Undo brings its marker back though a bandmate's timeline change sorts after it in History")
+end
+
+-- ---- 12. no choice follows Lua's table order (the soak's bug 8: two runs of one seed wrote different things) -----------------------------------
+do
+  local undo = require("undo")
+  local S = studio("Conv12", "everyone")
+  local A, B = S.computer("James"), S.computer("Bee")
+  local names = { "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8" }
+  S.edit(A, function(F) for i, n in ipairs(names) do F.add_item(F.add_track(n), midi(i, 1)) end end)
+  -- a. heal lands a whole song in one go, in one order: tracks under the tracks they sit under, then what's on them
+  S.as(B)
+  local n = mirror.heal(B.F.proj, S.dir, false)
+  assert(S.names(B) == table.concat(names, ", "), "every track where it belongs after one heal (was: as Lua walked its table, a track before the one above it went to the top): " .. S.names(B))
+  for _, nm in ipairs(names) do assert(S.items(B, nm) == 1, "and its item on it (was: an item before its track waited for the next heal): " .. nm) end
+  assert(n >= 16, "all of them: " .. n)
+  -- b. an Undo's changes go out in one order: by id, whichever way Lua walks the plan
+  T = T + 2
+  local seen = {}
+  for p in pairs(files) do seen[p] = true end
+  S.edit(A, function(F) for _, t in ipairs(A.F.tracks) do reaper.SetMediaItemInfo_Value(t.items[1], "B_MUTE", 1) end end)
+  for p in pairs(files) do seen[p] = true end
+  S.as(A)
+  A.F.clock = A.F.clock + 1
+  T = T + 2
+  assert(tostring(undo.step(A.F.proj, A.cfg, S.b, false, {})):find("^8 change"), "the eight mutes undone as one act")
+  local sent = {}
+  for p, v in pairs(files) do if not seen[p] and type(v) == "table" and v.obj == "item" then sent[#sent + 1] = v end end
+  table.sort(sent, function(a, b) return a.id < b.id end) -- (ids count up as changes go out)
+  assert(#sent == 8, "eight restores went out: " .. #sent)
+  for i = 2, #sent do assert(sent[i - 1].oid < sent[i].oid, "in the order of their ids (was: the plan table's own order, another every run)") end
+  print("rt-converge 12: heal and Undo work through their objects in one order on every computer and every run")
 end
 
 print("ok rt-converge")

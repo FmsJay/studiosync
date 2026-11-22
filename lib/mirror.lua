@@ -6543,7 +6543,8 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
   table.sort(list, function(a, x)
     local ka, kx = order[a.t and a.t.obj or (a.oid:sub(1, 1) == "T" and "track" or "item")] or 3, order[x.t and x.t.obj or (x.oid:sub(1, 1) == "T" and "track" or "item")] or 3
     if (a.t and 1 or 0) ~= (x.t and 1 or 0) then return a.t ~= false end
-    if a.t then return ka < kx else return ka > kx end
+    if ka ~= kx then if a.t then return ka < kx else return ka > kx end end
+    return a.oid < x.oid -- (then by id: among equals the order was the plan table's, which Lua walks differently every run. rt-converge)
   end)
   -- and a track only after the one it sits under, when that comes back too: put back first, Keys found no K4 Inner
   -- yet and went to the top, out of its folder (laptop, block K)
@@ -7184,8 +7185,30 @@ function mirror.heal(proj, room_dir, local_mix)
     if not open and not mirror.will_wait(p, e) then reaper.Undo_BeginBlock2(proj); open = true end
     return mirror.apply(p, e, ...)
   end
+  -- (in one order on every computer and every run: tracks, each after the track it sits under when that's among them, then their parts,
+  -- then items, by id. Walked as Lua's table gave them, an item came before its track and waited for the next heal, five minutes on, and a
+  -- track before the one it sits under went to the top; which computer had which depended on its Lua's hash seed. The soak's bug 8.
+  -- rt-converge)
+  local oids, rank = {}, { T = 1, F = 2, E = 2, R = 2, M = 2 }
+  for oid in pairs(newest) do oids[#oids + 1] = oid end
+  table.sort(oids, function(a, b)
+    local ra, rb = rank[a:sub(1, 1)] or 3, rank[b:sub(1, 1)] or 3
+    if ra ~= rb then return ra < rb end
+    return a < b
+  end)
+  local ordered, placed = {}, {}
+  local function place(oid)
+    if placed[oid] then return end
+    placed[oid] = true
+    local ev = newest[oid]
+    local above = ev.obj == "track" and not ev.gone and type(ev.state) == "table" and ev.state.after
+    if type(above) == "string" and newest[above] and newest[above].obj == "track" then place(above) end
+    ordered[#ordered + 1] = oid
+  end
+  for _, oid in ipairs(oids) do place(oid) end
   local ok_all, err_all = pcall(function()
-  for oid, ev in pairs(newest) do
+  for _, oid in ipairs(ordered) do
+    local ev = newest[oid]
     local plain = ev
     ev = mirror.settled(room_dir, ev, all[oid]) -- (a merge of two changes made apart: what every computer holds)
     local krev, kh, kev, kord = mirror.known(proj, oid)
