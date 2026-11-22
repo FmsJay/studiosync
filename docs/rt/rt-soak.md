@@ -78,7 +78,8 @@ room's mode is Claims (`open`, the default) for three seeds in five and Open (`e
   then `mirror.revert` of `mirror.plan_restore`, as the Restore page does). Each edit is made on a random computer as REAPER leaves the
   project. Edits come in bursts (0.6 s apart on average) with gaps of 3-12 s, from 20 s after the share, squeezed into 0.9 s per edit.
 - **Quiesce:** after the last edit the faults stop, everything still on its way arrives (paused Syncthing resumes), and passes continue until
-  nothing but presence has moved for 90 s (Live sync's heal waits 60 s; at most 400 s, past that it's a `settle` failure: something never stops
+  nothing but presence has moved for 140 s (was 90: Live sync's heal waits 60 s, its order heal 120 from a bandmate's track move landing;
+  at most 400 s, past that it's a `settle` failure: something never stops
   sending).
 
 **The oracle**, in order, stopping at the first category that fails:
@@ -98,6 +99,27 @@ room's mode is Claims (`open`, the default) for three seeds in five and Open (`e
 **The shrinker** is ddmin over the edits, then one at a time, keeping the network's randomness and the clocks the seed's, and accepting a
 smaller list only when it fails with the same signature (category, and for object differences the kind of object: track, item, plug-ins,
 automation...). It prints the replay command and each remaining edit as the computer made it.
+
+## Status after rt-converge (2026-11-22)
+
+All nine bugs below are fixed in `docs/rt/rt-converge.md` (causes, fixes, the pass-rate table, what's left), each with a test in
+`tests/test_0_60_rt_converge.lua`. Every repro command in this note passes at that head. Bug by bug: 1, 5, 7: a version names its tempo
+map; 2: only a real rename is answered, and the newer of two claims on one track holds it; 3: a change is judged by the claims of its own
+time; 4: a returning track brings its items back everywhere; 6: only a move moves a track, the order list follows every move, new tracks
+are ordered as they landed; 8: `mirror.revert` and `mirror.heal` work in one order (two runs of a seed now write the same things);
+9: an Undo of nothing leaves nothing to redo, and Undo goes by what a change was built on.
+
+The soak itself changed too (eleven artifacts, listed there): each computer starts the link and runs Live sync's apart note, the
+stand-in REAPER moves items for a tempo change as `mirror.retime` does, the late joiner waits out refused changes and gets the order
+heal a real one gets, the oracle waits 140 s of quiet (the order heal needs 120) and allows a whole number written two ways, each file
+write has its own Syncthing version, the in-memory disk keeps up with `band.write_atomic`, the driver edits studio tracks only and keeps
+one tempo marker to a place, and the undo probe doesn't compare where the log says a claim stood in front of the Redo.
+
+**`python tools/soak/soak.py --quick` passes: the `tests/run.py` entry below can be fatal (`True`).** A 20-minute `--long` run passes
+over 95 % of its seeds (rt-converge.md has each run); the failures left are listed there with what they are: a knob turned in the moment
+the first track goes, a restore racing a bandmate's edit, and a late joiner's order of tracks made in the last seconds.
+
+The rest of this section is the note as written at HEAD 905f000, kept for the record.
 
 ## What the long run found
 
