@@ -160,9 +160,33 @@ function N.receive()
   end
   return n
 end
-function N.pass() local more = N.look(); local n = N.receive(); return json({ more = more, got = n }) end
--- (Live sync's status: the file every FILE_QUIET s and a presence message beside it, so the others know who's here)
-function N.status() band.try("write_status", sync.write_status, F.proj, cfg, SONG, ROOM, {}, false); return true end
+-- (Live sync's P.heal and the order heal: a bandmate with every change whose project has differed from ours for a minute, while we're caught up
+-- too, brings ours in line (at most every 5 minutes); the track order put right 10 s after the last edit. Counted for the soak's stats.)
+local heal_since, healed_at, heals = nil, -math.huge, 0
+local function heal()
+  local now = F.clock
+  local mine, differs = mirror.root(F.proj), false
+  for _, st in ipairs(require("presence").peers(cfg, SONG, ROOM)) do
+    if st.mirror and st.pending == 0 and st.mirror ~= mine then differs = true end
+  end
+  if differs and sync.pending_events(F.proj, cfg, SONG, ROOM) == 0 then heal_since = heal_since or now else heal_since = nil end
+  if heal_since and now - heal_since > 60 and now - healed_at > 300 then
+    healed_at, heal_since = now, nil
+    local ok, n = pcall(mirror.heal, F.proj, sync.room_dir(cfg, SONG, ROOM), false)
+    if not ok then ERRORS[#ERRORS + 1] = string.format("%.1f mirror.heal: %s", now, tostring(n)) elseif (n or 0) > 0 then heals = heals + 1 end
+  end
+  local ok, moved = pcall(mirror.order_heal, F.proj, cfg, SONG, ROOM, now, now - changed_at)
+  if not ok then ERRORS[#ERRORS + 1] = string.format("%.1f mirror.order_heal: %s", now, tostring(moved)) elseif (moved or 0) > 0 then heals = heals + 1 end
+  return (ok and moved or 0)
+end
+function N.pass() local more = N.look(); local n = N.receive(); n = n + heal(); return json({ more = more, got = n, heals = heals }) end
+-- (Live sync's status: the file every FILE_QUIET s and a presence message beside it, so the others know who's here; with what P.heal compares:
+-- the project's root, what's still to apply, the track order's code)
+function N.status()
+  local info = { pending = sync.pending_events(F.proj, cfg, SONG, ROOM), mirror = mirror.root(F.proj), order = mirror.order_code(F.proj) }
+  band.try("write_status", sync.write_status, F.proj, cfg, SONG, ROOM, info, false)
+  return true
+end
 -- (the room's mode, as its owner set it: "open" is Claims, the default; "everyone" is Open, claims off)
 function N.set_mode(mode) sync.set_mode(cfg, SONG, ROOM, mode, USER); return true end
 

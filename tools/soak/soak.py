@@ -26,6 +26,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 os.chdir(REPO)
 NODE_LUA = open(os.path.join(REPO, "tools", "soak", "node.lua"), encoding="utf-8").read()
 USERS = ["James", "Bee", "Cee"]
+QUIET = 90  # simulated s with nothing but presence moving before the oracle runs (Live sync's heal waits 60 s of a bandmate differing)
 FIRST_EDIT = DEFAULT_FIRST = 20.0  # simulated seconds after the song is shared (--first-edit)
 
 # The edits the driver makes, and how often (weights).
@@ -79,6 +80,7 @@ class Sim:
         self.paused = [0.0] * len(self.nodes)
         self.down, self.lane_t = {}, {}  # (from, to) -> the link lane is down until; the last delivery time on it (in order)
         self.meaningful = 0
+        self.heals_seen = {}
         self.quiescing, self.quiet_logged = False, 0
         self.t = 0.0
         self.dt = steps_s
@@ -210,7 +212,7 @@ class Sim:
             moved = self.step(next_pass, healing=True)
             if moved or any(not w[2][-1] for w in self.q):
                 quiet_since = self.t
-            if self.t - quiet_since >= 40:
+            if self.t - quiet_since >= QUIET:
                 return True
         return False
 
@@ -228,6 +230,8 @@ class Sim:
             if next_pass[i] <= self.t:
                 next_pass[i] = self.t + self.rng.uniform(0.4, 1.2)
                 r = json.loads(x.call(self.t, "pass"))
+                self.stats["heals"] = self.stats.get("heals", 0) + max(0, r.get("heals", 0) - self.heals_seen.get(i, 0))
+                self.heals_seen[i] = r.get("heals", 0)
                 self.stats["passes"] += 1
                 before = self.meaningful
                 self.drain(i, healing)
