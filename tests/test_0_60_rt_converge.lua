@@ -292,4 +292,57 @@ do
   print("rt-converge 5: a rename and an edit that cross, each holder by another name: settled, no rename war")
 end
 
+-- ---- 6. an item moved off a track before the track was deleted elsewhere: its deletion lands (the soak's seed 37) ------------------------------
+do
+  local S = studio("Conv6", "everyone")
+  local A, B = S.computer("James"), S.computer("Bee")
+  S.edit(A, function(F) F.add_item(F.add_track("Gtr"), midi(1, 2)); F.add_track("Drums") end)
+  S.recv(B)
+  -- Bee moves the item to Drums; James, who hasn't that yet, deletes Gtr with the item on it
+  S.edit(B, function(F) reaper.MoveMediaItemToTrack(S.track(B, "Gtr").items[1], S.track(B, "Drums")) end)
+  assert(S.items(B, "Drums") == 1, "moved on Bee's")
+  S.edit(A, function(F) reaper.DeleteTrack(S.track(A, "Gtr")) end)
+  S.recv(A); S.recv(B); S.recv(A); S.recv(B)
+  assert(not S.track(A, "Gtr") and not S.track(B, "Gtr"), "Gtr is gone on both")
+  assert(S.items(A, "Drums") == 0, "James's deletion beats the move made without seeing it: no item on his Drums (" .. S.items(A, "Drums") .. ")")
+  assert(S.items(B, "Drums") == 0, "nor on Bee's, where the item wasn't on the deleted track any more (was: recorded gone and left in the project): " .. S.items(B, "Drums"))
+  print("rt-converge 6: an item's deletion lands though the item had moved off its deleted track here")
+end
+
+-- ---- 7. what was refused doesn't stay on this computer alone (the soak's seeds 26 and 37: asked about every 90 s for good) -----------------------
+do
+  local S = studio("Conv7", "open")
+  local A = S.computer("James")
+  here_now = { James = true } -- (Cee isn't here: an edit of her claim is put back at once, with why)
+  S.edit(A, function(F) F.add_item(F.add_track("Keys"), midi(1, 2)); F.add_track("Drums") end)
+  T = T + sync.AUTO_IDLE + 120
+  files[S.dir .. "/claims/Cee.json"] = { user = "Cee", time = iso(T), tracks = { "Keys" }, since = { ["tracks:keys"] = iso(T) } }
+  T = T + 5
+  -- automation drawn on Keys, which had none: not James's to add
+  logged = {}
+  local keys = S.track(A, "Keys")
+  S.edit(A, function(F) keys.body = keys.body .. "<VOLENV2\nEGUID {E-1}\nACT 1 -1\nVIS 1 1 1\nLANEHEIGHT 0 0\nARM 0\nDEFSHAPE 0 -1 -1\nPT 0 1 0\nPT 4 0.5 0\n>\n"; F.changed() end)
+  assert(told("Cee has claimed Keys and isn't here to release it"), "refused, with why")
+  assert(not keys.body:find("VOLENV2", 1, true), "and taken off again: what you see is what the band has (was: it stayed on this computer, asked about every 90 s)")
+  local n = 0
+  for _, v in pairs(files) do if type(v) == "table" and v.obj == "env" then n = n + 1 end end
+  assert(n == 0, "nothing went out")
+  -- an item the band deleted, here again (REAPER's own Undo of the deletion landing): not James's to bring back
+  local item = keys.items[1]
+  local oid = item.ext.band_oid
+  local rev, _, evid = mirror.known(A.F.proj, oid)
+  local first = files[S.dir .. "/events/" .. evid .. ".json"]
+  local gone = { type = "obj", obj = "item", oid = oid, gone = true, rev = rev + 1001, base = rev, base_ev = evid, user = "Cee", name = "Keys", track = first.track,
+    id = "Cee-20270115-090000Z-00001-0007", time = iso(T), hlc = first.hlc + 5000, format = first.format }
+  files[S.dir .. "/events/" .. gone.id .. ".json"] = gone
+  local text = item.text
+  S.recv(A)
+  assert(#keys.items == 0, "Cee's deletion landed")
+  logged = {}
+  S.edit(A, function(F) local it = F.add_item(keys, text); it.ext.band_oid = oid end)
+  assert(#keys.items == 0 and S.items(A, "Keys (yours, not sent)") == 1, "put back: off Keys, kept on a track of James's own (was: 'couldn't put back', and it stayed on Keys)")
+  assert(not told("couldn't put back"), "and nothing says the studio's version hasn't arrived: " .. (told("couldn't put back") or ""))
+  print("rt-converge 7: refused automation on a track that had none is taken off; a deleted item brought back here goes to a track of your own")
+end
+
 print("ok rt-converge")

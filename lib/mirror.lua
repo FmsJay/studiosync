@@ -3731,7 +3731,12 @@ end
 local function on_gone_track(proj, ev)
   if ev.obj == "track" or not ev.track or ev.track == mirror.MASTER then return false end
   local trev, th = mirror.known(proj, ev.track)
-  return trev ~= nil and th == "" and not mirror.find(proj, "track", ev.track)
+  if not (trev ~= nil and th == "" and not mirror.find(proj, "track", ev.track)) then return false end
+  -- (not an item's deletion while the item itself is still here: moved to another track here before its old track went, it didn't go with
+  -- that track, and "it went with its track" recorded it gone and left it in the project. The look then found an item the band doesn't
+  -- have, couldn't put back a deletion, and asked the track's claimer for it every 90 s for good. The deletion lands. rt-converge)
+  if ev.gone and ev.obj == "item" and mirror.find(proj, "item", ev.oid) then return false end
+  return true
 end
 -- Is this computer's record of an item a change that only moved it as a tempo change does (mirror.sans_tempo), against what it built on?
 function mirror.only_retimed(proj, io, room_dir)
@@ -4998,30 +5003,8 @@ function W.put_back(w, o, rev, evid, why)
   held_back_clear(proj, o.oid)
   local said_text = why.text
   local ev = event_file(room_dir, evid)
-  if ev and not ev.gone then
-    if o.kind == "fx" and playing then return end -- (reloading plug-ins mid-song: after the stop)
-    w.back_point(ev)
-    -- (your edit to someone else's item, refused: a copy of yours first goes to a track of your own, as a new item would. Not when it went to
-    -- them as a suggestion: that holds it, and accepted, a copy would be a second part. Only a selected one: what you just edited, not every
-    -- part a refused tempo change moved, say. Review, 0.58.91)
-    -- (once for that edit: while the band's version waits for its recording the put-back returns, and every pass made another copy. Review, 0.58.95)
-    -- (and per refused version: the band's event doesn't change when you're refused, so a second refused edit in the session got no copy and
-    -- no word, and was gone. Full review, 0.59.44)
-    local copy_key = tostring(proj) .. o.oid .. tostring(evid) .. "\0" .. tostring(o.hash)
-    -- (the copied flag only once the copy is made: set before, a copy that failed was never tried again and the edit went. Round 1 review, 0.59.45)
-    if o.kind == "item" and why.copy and not why.to and why.text and not mirror.copied[copy_key] and o.ptr and reaper.ValidatePtr2(proj, o.ptr, "MediaItem*") and reaper.IsMediaItemSelected(o.ptr) then
-      local got, ch = reaper.GetItemStateChunk(o.ptr, "", false)
-      if got then
-        local on = select(2, reaper.GetTrackName(reaper.GetMediaItem_Track(o.ptr)))
-        local copy = reaper.AddMediaItemToTrack(keep_track(proj, on))
-        -- (new ids, and out of any pool: plain MIDI, as a pooled copy travels. A pool entry left behind is what REAPER's MIDI code crashed on)
-        if copy and reaper.SetItemStateChunk(copy, (ch:gsub("\n%s*POOLEDEVTS[^\n]*", ""):gsub("\n%s*I?GUID[^\n]*", ""):gsub("<SOURCE MIDIPOOL", "<SOURCE MIDI")), false) then
-          reaper.GetSetMediaItemInfo_String(copy, "P_EXT:band_oid", "", true)
-          mirror.copied[copy_key] = true
-          why.text = why.text .. ". Your version is on '" .. on .. " (yours, not sent)'"
-        end
-      end
-    end
+  local copy_key = tostring(proj) .. o.oid .. tostring(evid) .. "\0" .. tostring(o.hash)
+  local function keep_part_copy()
     -- (your plug-in settings, refused, saved first as an FX chain to load back: a song's knob work made while playing went for good when the
     -- driver changed hands before the stop. Review, 0.59.18. Once for that edit, as the item copy above)
     if o.kind == "fx" and why.text and not why.to and not mirror.copied[copy_key] and type(o.state) == "string" and o.state:find("\n<", 1, true) then
@@ -5049,6 +5032,31 @@ function W.put_back(w, o, rev, evid, why)
         why.text = why.text .. ". Your automation is kept: Restore > Kept automation puts it back"
       end
     end
+  end
+  if ev and not ev.gone then
+    if o.kind == "fx" and playing then return end -- (reloading plug-ins mid-song: after the stop)
+    w.back_point(ev)
+    -- (your edit to someone else's item, refused: a copy of yours first goes to a track of your own, as a new item would. Not when it went to
+    -- them as a suggestion: that holds it, and accepted, a copy would be a second part. Only a selected one: what you just edited, not every
+    -- part a refused tempo change moved, say. Review, 0.58.91)
+    -- (once for that edit: while the band's version waits for its recording the put-back returns, and every pass made another copy. Review, 0.58.95)
+    -- (and per refused version: the band's event doesn't change when you're refused, so a second refused edit in the session got no copy and
+    -- no word, and was gone. Full review, 0.59.44)
+    -- (the copied flag only once the copy is made: set before, a copy that failed was never tried again and the edit went. Round 1 review, 0.59.45)
+    if o.kind == "item" and why.copy and not why.to and why.text and not mirror.copied[copy_key] and o.ptr and reaper.ValidatePtr2(proj, o.ptr, "MediaItem*") and reaper.IsMediaItemSelected(o.ptr) then
+      local got, ch = reaper.GetItemStateChunk(o.ptr, "", false)
+      if got then
+        local on = select(2, reaper.GetTrackName(reaper.GetMediaItem_Track(o.ptr)))
+        local copy = reaper.AddMediaItemToTrack(keep_track(proj, on))
+        -- (new ids, and out of any pool: plain MIDI, as a pooled copy travels. A pool entry left behind is what REAPER's MIDI code crashed on)
+        if copy and reaper.SetItemStateChunk(copy, (ch:gsub("\n%s*POOLEDEVTS[^\n]*", ""):gsub("\n%s*I?GUID[^\n]*", ""):gsub("<SOURCE MIDIPOOL", "<SOURCE MIDI")), false) then
+          reaper.GetSetMediaItemInfo_String(copy, "P_EXT:band_oid", "", true)
+          mirror.copied[copy_key] = true
+          why.text = why.text .. ". Your version is on '" .. on .. " (yours, not sent)'"
+        end
+      end
+    end
+    keep_part_copy()
     local ok, h = mirror.apply(proj, ev, media, opts.local_mix)
     if ok then
       remember(proj, o.oid, ev.rev, h, ev.id, mirror.order_of(ev))
@@ -5062,12 +5070,16 @@ function W.put_back(w, o, rev, evid, why)
       if o.kind == "item" and o.ptr and reaper.ValidatePtr2(proj, o.ptr, "MediaItem*") then reaper.DeleteTrackMediaItem(reaper.GetMediaItem_Track(o.ptr), o.ptr) end
       remember(proj, o.oid, rev or 0, "", evid, mirror.order_of(ev))
     end
-  elseif not rev then
+  elseif not rev or (ev and ev.gone) then
     -- never the band's: something new this person may not add. Kept here, on a track of their own (never deleted)
+    -- (or no longer the band's: its newest version is a deletion, and it's here again (REAPER's own Undo, or a deletion that hadn't landed).
+    -- "Its last change can't be read" left it in the project, asked about again every 90 s. Kept the same way, and no longer the band's item.
+    -- rt-converge)
     local where = (why.name or "") ~= "" and why.name or "an unnamed track"
     if (o.kind == "item" or o.kind == "track") and o.ptr or o.kind == "misc" then w.back_point() end
     if o.kind == "item" and o.ptr then
       reaper.MoveMediaItemToTrack(o.ptr, keep_track(proj, why.name or ""))
+      if rev then reaper.GetSetMediaItemInfo_String(o.ptr, "P_EXT:band_oid", "", true) end
       -- (out of the pool it shares with the part it was copied from, which is then put back from its event: REAPER's MIDI code crashed on a
       -- later tab close with a freed entry in its list, about 1 run in 5 after this step, and never without it: PC, 2026-11-03)
       do
@@ -5084,6 +5096,16 @@ function W.put_back(w, o, rev, evid, why)
       -- a group or lock put on someone's track: nothing here is worth keeping, and left on, your VCA went on moving their track on
       -- this computer alone (what you hear and render differs from everyone else). If they accept, it lands as theirs.
       if not mirror.apply(proj, { obj = "misc", oid = o.oid, track = o.track, state = "" }, media, opts.local_mix) then return end -- (waits for this tab to come to the front)
+    elseif (o.kind == "fx" or o.kind == "env" or o.kind == "recv") and why.text and o.track then
+      -- (plug-ins, automation or sends put on a track that had none, and not this person's to add: taken off again, the plug-ins or the
+      -- automation kept as any refused edit's are. Left on ("it stays on this computer"), this computer played the bandmate's part through a
+      -- plug-in nobody else had, for good, and asked them for the track again every 90 s for as long as the session ran: the soak never
+      -- went quiet. What you see is what the band has. rt-converge)
+      if o.kind == "fx" and playing then return end -- (plug-ins change only while stopped)
+      if mirror.will_wait(proj, { obj = o.kind, oid = o.oid, track = o.track }, true) then return end -- (its tab behind, or recording: next look)
+      w.back_point()
+      keep_part_copy()
+      if not mirror.apply(proj, { obj = o.kind, oid = o.oid, track = o.track, name = why.name, state = "" }, media, opts.local_mix) then return end
     elseif why.text then -- (a part that never went out: said once. Every pass, it pushed all else out of the log: laptop, 0.42.4)
       say_once("never" .. o.oid, why.text .. " (it stays on this computer)")
       return
