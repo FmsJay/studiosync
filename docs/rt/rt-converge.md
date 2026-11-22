@@ -743,6 +743,9 @@ of `presence.peers` after 45 s (150 s for hub vouching), which is the normal tim
 counts a status that changed here in the last 10 s, and `heard_merge` needs a packet from the Mac within 15 s. Worth checking on the Mac
 itself: Chilio's MacBook wakes or runs with REAPER and StudioSync open, while it was read as offline.
 
+**Checks.** In a clean clone of da64192/860f54a, `python tests/run.py --no-luals` ended `fails 0` in local time and with `TZ=UTC0`. The
+10-minute long soak (`--first 15000`, 150 edits) passed 42 of 43 seeds (97.7 %). The one failure was 15033, the same pre-existing failure as before rt-fix9.
+
 **Round 2 REAPER re-checks.**
 1. **A, as rt-r5:** the desktop renames XT Drums A while the laptop moves its fader (4-50 ms apart on the shared clock); then a colour, then
    a mute. Pass: the desktop keeps its rename (colour, mute) through the laptop's change with the laptop's fader on it at once, and logs
