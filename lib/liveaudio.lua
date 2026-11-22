@@ -824,6 +824,7 @@ function liveaudio.tick(cfg, b, proj)
   end
   if not st.running and now - S.fail_at > liveaudio.RETRY then
     if reaper.StudioSync_LiveAudioStart(first, nch, kbps) == 1 then
+      S.fail_why = nil -- (started: the next failure is said again)
       reaper.SetExtState(band.SECTION, "live audio by", tostring(proj), false)
       S.play_asked, S.hub_asked = nil, nil -- (a new engine: Play and the hub's mix asked for again)
       liveaudio.update_sources(proj)
@@ -838,7 +839,8 @@ function liveaudio.tick(cfg, b, proj)
       end
     else
       S.fail_at = now
-      band.log("live audio didn't start: " .. tostring(liveaudio.status().error or "?"))
+      local why = tostring(liveaudio.status().error or "?")
+      if liveaudio.fail_new(why) then band.log("live audio didn't start: " .. why) end -- (once, then on change: LinuxBox2 without Tailscale logged it every 10 s. rt-fix6b)
     end
     return
   end
@@ -846,6 +848,12 @@ function liveaudio.tick(cfg, b, proj)
   liveaudio.apply(st) -- (the mic and the cue mix kept here, put back on each bandmate: a new peer, or after a restart, starts at full level)
   if b and b.song then liveaudio.hub_tick(cfg, b, list, users, st) end -- (who mixes: the song's hub from the studio's threshold)
   if proj then pcall(require("livex").their_tick, proj, st) end -- (Their time's delay follows the measurement: rt-sonox)
+end
+-- A failed start's reason: true when it's new (said once, then only when it changes); kept for Health. rt-fix6b
+function liveaudio.fail_new(why)
+  if why == S.fail_why then return false end
+  S.fail_why = why
+  return true
 end
 -- Live sync ending in this tab: the engine stops if this tab started it.
 function liveaudio.on_exit(proj)
@@ -971,6 +979,7 @@ function liveaudio.health_row(cfg, b)
   local st = liveaudio.status()
   if not st.running then
     local err = tostring(st.error or "")
+    if err == "" and S.fail_why then err = "didn't start: " .. S.fail_why end -- (the last failed start, said once in the log: rt-fix6b)
     return { "live audio", err == "", err == "" and "grey" or "yellow", "Live audio: starts while Live sync runs with a studio project in front.", "Live audio: " .. err }
   end
   local theirs = {}

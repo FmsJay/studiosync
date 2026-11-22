@@ -233,19 +233,29 @@ end
 -- default), Syncthing held them back about 7 s at a time (2026-10-28, laptop -> PC). Checked once per Live sync
 -- start; only what differs is set. Returns what it set ({} when nothing), or nil + why.
 services.WATCH = { ["fswatcher-enabled"] = "true", ["fswatcher-delays"] = "1", ["fswatcher-timeouts"] = "2" }
+-- A `syncthing cli` answer saying this Syncthing has no such setting: it answered (an exit code above 0) and names the key, as Syncthing
+-- 1.27's "No help topic for 'fswatcher-timeouts'" (exit 3) does. A missing folder names the folder instead, a timeout answers nothing (or
+-- REAPER's own negative code, -1005 on LinuxBox2): those are "didn't answer", tried again later. Pure. rt-fix6b
+function services.no_such_setting(r, key)
+  return type(r) == "string" and r:match("^[1-9]%d*\n") ~= nil and r:lower():find("'" .. key:lower() .. "'", 1, true) ~= nil
+end
 function services.tune_band_folder(folder)
   folder = folder or "bandsync" -- (each band's own Syncthing folder: band.info)
   local st = services.syncthing_path()
   if not st then return nil, "Syncthing wasn't found" end
   local set = {}
   for key, want in pairs(services.WATCH) do
-    local got = (exec(cli(st) .. " config folders " .. folder .. " " .. key .. " get", 8000) or ""):match("^0\n(.-)%s*$")
-    if not got then return nil, "Syncthing didn't answer (is it running, with a folder called " .. folder .. "?)" end
-    if tonumber(got) and tonumber(want) and tonumber(got) == tonumber(want) or got == want then -- (2 and 2.0 alike)
+    local r = exec(cli(st) .. " config folders " .. folder .. " " .. key .. " get", 8000)
+    local got = (r or ""):match("^0\n(.-)%s*$")
+    if not got and services.no_such_setting(r, key) then -- (an older Syncthing without this setting: skipped quietly, the rest still tuned. rt-fix6b)
+    elseif not got then return nil, "Syncthing didn't answer (is it running, with a folder called " .. folder .. "?)"
+    elseif tonumber(got) and tonumber(want) and tonumber(got) == tonumber(want) or got == want then -- (2 and 2.0 alike)
     else
-      local r = exec(cli(st) .. " config folders " .. folder .. " " .. key .. " set " .. want, 8000) or ""
-      if not r:match("^0\n") then return nil, "couldn't set " .. key .. ": " .. r:gsub("^%d+\n", "") end
-      set[#set + 1] = key .. " " .. got .. " -> " .. want
+      r = exec(cli(st) .. " config folders " .. folder .. " " .. key .. " set " .. want, 8000) or ""
+      if services.no_such_setting(r, key) then -- (as above)
+      elseif not r:match("^%d+\n") or r:match("^259\n") then return nil, "Syncthing didn't answer setting " .. key -- (timed out: Live sync tries again, further apart each time)
+      elseif not r:match("^0\n") then return nil, "couldn't set " .. key .. ": " .. r:gsub("^%d+\n", "")
+      else set[#set + 1] = key .. " " .. got .. " -> " .. want end
     end
   end
   -- (and old versions kept, 30 days, staggered: without them a deletion anywhere, by a bug or a slip, reached every copy with nothing to

@@ -393,7 +393,7 @@ function P.syncthing()
         "then Live sync carries on by itself")
     end
   end
-  if tune_left > 0 and reaper.time_precise() - tune_at > 30 then
+  if tune_left > 0 and reaper.time_precise() - tune_at > math.min(300, 30 * 2 ^ (10 - tune_left)) then -- (30 s, then further apart: each try can hold REAPER up to 8 s. rt-fix6b)
     tune_left, tune_at = tune_left - 1, reaper.time_precise()
     local set, err = require("services").tune_band_folder(band.info(cfg.root).id)
     if set then
@@ -1296,11 +1296,14 @@ local function tick_body() -- returns true to keep going
       if lag then transport.lag = lag end
       transport.lag_set = true
     end
+    if transport.type == "start" and transport.pre == nil then -- (this computer's own Record pre-roll: it presses Record that much sooner, so its playhead is where everyone's is. rt-fix6b)
+      transport.pre = transport.rec and not (transport.follow and theirs) and together.armed(proj) and together.preroll(proj, (transport.pos or 0) - (transport.countin or 0)) or 0
+    end
     local fire = transport.type == "stop" and ((transport.at or 0) + (theirs and (transport.lag or 0) or 0)) or together.plan(transport, cfg.user, nil)
     if transport.type == "stop" and transport.follow and theirs and transport.pos then fire = fire + 2 end -- the position decides; time is a backstop
     if transport.type == "start" and tnow < fire then reaper.SetExtState(band.SECTION, "together_at " .. key, tostring(fire), false) end
     -- (where its count-in ends, how long it is and when it fires: the web UI's Beat page counts it down. lib/songsheet.lua, James, rt)
-    if transport.type == "start" then reaper.SetExtState(band.SECTION, "together_from " .. key, string.format("%.6f %.6f %.6f", transport.pos or 0, transport.countin or 0, fire), false) end
+    if transport.type == "start" then reaper.SetExtState(band.SECTION, "together_from " .. key, string.format("%.6f %.6f %.6f", transport.pos or 0, transport.countin or 0, fire + (transport.pre or 0)), false) end
     due_in = fire - tnow -- the regular poll can take 100-200 ms: it waits while a start/stop is close
     -- (never into the middle of your own take: a recording you started yourself isn't cut by someone else's start or stop, and a record cue
     -- doesn't take you away from another tab that's playing or recording. Review, 0.58.91)
@@ -1385,9 +1388,9 @@ local function tick_body() -- returns true to keep going
     if tp >= side.quiet_until then
       local jumped = playing and side.playing and math.abs(pos - (side.pos + (tp - side.t))) > 0.5 -- a seek while playing
         and not together.skip_jump(side.skip, side.pos + (tp - side.t), pos) -- (not REAPER skipping the time selection: the others skip it themselves)
-      if playing ~= side.playing or jumped then
+      if together.side_press(playing, ps & 2 == 2, side.playing, side.paused, jumped) then -- (a pause then a stop: both go out. rt-fix6b)
         local ev = playing and { type = "start", pos = pos, countin = 0, rec = ps & 4 == 4 or nil }
-          or { type = "stop", pos = side.pos + (tp - side.t), pause = ps & 2 == 2 or nil } -- where the song was when you stopped
+          or { type = "stop", pos = side.paused and side.pos or side.pos + (tp - side.t), pause = ps & 2 == 2 or nil } -- where the song was when you stopped (paused: where it stayed)
         ev.at, ev.lead, ev.follow = together.now(), cfg.user, true
         ev.start_at = together.start_at(0) -- (the same moment on the shared clock: the others' lag counts from it. James, 0.60.0-rt)
         ev.lag = together.bars_after(proj, pos, lagbars or 0)
@@ -1400,7 +1403,7 @@ local function tick_body() -- returns true to keep going
       end
     end
     if not playing then side.skip = nil end
-    side.playing, side.pos, side.t = playing, pos, tp
+    side.playing, side.pos, side.t, side.paused = playing, pos, tp, ps & 2 == 2
   end
   band.try("recap.lane_tick", require("recap").lane_tick, proj) -- (smart lanes: a new take's lane named once it settles; nothing otherwise. James, rt)
   local st = reaper.GetPlayStateEx(proj)

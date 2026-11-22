@@ -19,8 +19,10 @@ end
 -- ev = { at = epoch seconds, pos = song position, countin = seconds, lag = seconds, lead = user, skip = { s, e } }; me; now (epoch).
 -- Returns fire (epoch) and from (position). Already past fire: fire now, from as far into the song as time has gone (past a skipped
 -- time selection, as far as the others have got by skipping it).
+-- ev.pre: seconds this computer's own Record pre-rolls (together.preroll; set here, never sent): it fires that much sooner, so its playhead
+-- is at `from` at the planned moment like everyone else's (rt-r1 check 10: the recording computer ran a bar behind the others).
 function together.plan(ev, me, now)
-  local fire = ev.at + ((ev.lead and ev.lead ~= me) and (ev.lag or 0) or 0)
+  local fire = ev.at + ((ev.lead and ev.lead ~= me) and (ev.lag or 0) or 0) - (tonumber(ev.pre) or 0)
   local from = (ev.pos or 0) - (ev.countin or 0)
   if from < 0 then fire, from = fire - from, 0 end -- can't play before 0: start at 0, that much later
   if now and now > fire then
@@ -178,6 +180,20 @@ function together.armed(proj)
   return false
 end
 together.NO_ARM = "recording together, but no track is armed here: playing along without recording (arm a track to record with the others)"
+-- Seconds REAPER's Record pre-rolls on this computer from `pos`: with "Pre-roll: Toggle pre-roll on record" (41819) on, Record starts playing
+-- prerollmeas bars before the cursor (its own setting, per computer) and records from the cursor. 0 when it's off or unreadable. rt-fix6b
+function together.preroll(proj, pos)
+  if reaper.GetToggleCommandStateEx(0, 41819) ~= 1 then return 0 end
+  local ok, has, v = pcall(reaper.get_config_var_string, "prerollmeas")
+  local bars = ok and has and tonumber(v) or 0
+  return bars > 0 and bars < 100 and together.bars_before(proj, pos or 0, bars) or 0
+end
+-- A side-by-side press to pass on (Live sync, the bandmates who follow you): play/stop changed, a seek while playing, or a pause that turned
+-- into a stop: REAPER's play state 2 -> 0 is "not playing" both times, so the stop after a pause went nowhere and the followers stayed paused
+-- with the leader's selection (rt-r1 check 9). Pure. rt-fix6b
+function together.side_press(playing, paused, was_playing, was_paused, jumped)
+  return playing ~= was_playing or (playing and jumped and true) or (not playing and (paused and true or false) ~= (was_paused and true or false))
+end
 function together.go(proj, cfg, b, ev)
   local band = require("band")
   if ev.type == "start" and ev.loop == nil then ev.loop = together.loop_of(proj) end

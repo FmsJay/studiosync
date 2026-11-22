@@ -121,6 +121,32 @@ class EarsTest(unittest.TestCase):
         self.assertAlmostEqual(ears.stamp_latency(rp, gp, int(0.2 * SR), SR), 900.0, delta=0.01)
         self.assertIsNone(ears.stamp_latency(rp, os.path.join(d, "none.wav"), 0, SR))
 
+    def test_wav_speed_and_silent_tap(self):
+        # rt-fix6b: rt-r1's laptop heard the desktop's Play 1.5 % fast (the tone ladder's 440 Hz at 446.5): "speed" fails on that, passes 1:1
+        ref = np.concatenate([np.zeros(SR), self.x, np.zeros(SR // 2)])
+        r = ears.compare_wav(ref, link(ref, 0.1, lowpass=18000, noise_db=-70), SR, dict(self.meta, pattern_at=1.0))
+        self.assertAlmostEqual(r["speed"], 1.0, delta=0.0005)
+        self.assertTrue(r["pass"]["speed"], r)
+        fast = signal.resample(ref, int(len(ref) / 1.015))  # (played 1.5 % fast: the same sound in fewer samples)
+        r = ears.compare_wav(ref, np.concatenate([np.zeros(int(0.1 * SR)), fast]), SR, dict(self.meta, pattern_at=1.0))
+        self.assertAlmostEqual(r["speed"], 1.015, delta=0.001)
+        self.assertFalse(r["pass"]["speed"], r)
+        # rt-r1's r6: the desktop's tap ended 10 s before the laptop's Play went out: "silent", with where each ran
+        import json
+        import tempfile
+        r = ears.compare_wav(ref, np.zeros(len(ref)) + 1e-34, SR, dict(self.meta, pattern_at=1.0))
+        self.assertFalse(r["pass"]["heard"], r)
+        self.assertIn("silent", r["error"])
+        d = tempfile.mkdtemp()
+        rp, gp = os.path.join(d, "ref.wav"), os.path.join(d, "got.wav")
+        with open(rp + ".json", "w") as f:
+            json.dump({"t_first": 140.0, "me": "lap"}, f)
+        with open(gp + ".json", "w") as f:
+            json.dump({"t_first": 101.0, "me": "desk", "clock": {"peers": {"lap.ts.net:47281": {"offset_ms": 1000.0}}}}, f)
+        w = ears.tap_window(rp, gp, ref, np.zeros(30 * SR), SR)
+        self.assertIn("ended", w["why"])
+        self.assertAlmostEqual(w["tap_s"][1], 132.0, delta=0.01)
+
     def _env(self, latency, block_s=512, block_r=128, gain=1.0, drops=(), offset_ms=0.0):
         sig = np.concatenate([np.zeros(SR), self.x, np.zeros(SR)])
         s_rows = polls(sig, 1000.0, block_s, seed=3)

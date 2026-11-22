@@ -3,6 +3,9 @@
 #   rig.sh setup                     ears.jsfx into each REAPER's Effects/StudioSync Ears/, the pattern into a scratch folder on each
 #   rig.sh run d|l|x 'EARS={...}'    one ears.lua call on that computer (tagged result; retried if a shared hook hands back another's)
 #   rig.sh live TAG SENDER [HUB]     polls on all three, the pattern fired on SENDER, the poll files fetched into $OUT
+#                                    TAP="l x" (receivers): also each one's ears tap of SENDER's Play (its hub mix with HUB) and SENDER's
+#                                    own, started after the polls and right before the fire, so the taps hold the sound (rt-r1's r6: a
+#                                    tap started by hand 39 s before the fire ended before the sound); the WAVs and .json fetched too
 #   rig.sh cleanup                   ears.jsfx and the scratch folders off all three
 # Before "live": the sender needs `track add=true`, `load`, `live role=send`; the receivers `live role=recv volume=0` (0.01 through a hub).
 # Afterwards: `live role=restore` everywhere (Deafen back on), `hub peer='' serve=0`, `track add=false`.
@@ -52,10 +55,21 @@ case "${1:-}" in
   live) # live TAG SENDER [HUB]
     T="$2"; S="$3"; HB="${4:-}"; WAIT="${WAIT:-12}"
     hubarg() { [ -z "$HB" ] && return; if [ "$1" = "$HB" ]; then printf ", hub_peer='', hub_serve=1"; else printf ", hub_peer='%s', hub_serve=0" "${PEER[$HB]}"; fi; }
-    for w in l x d; do run "$w" "EARS={mode='poll', out=[[${TMP[$w]}/${T}_$w.jsonl]], secs=$((32 + WAIT))$(hubarg "$w")}"; done
-    sleep "$WAIT"; run "$S" "EARS={mode='fire', slot=0}"
+    TAP="${TAP:-}"; EXTRA=0; [ -n "$TAP" ] && EXTRA=40 # (the polls also cover the tap calls, a few seconds each)
+    for w in l x d; do run "$w" "EARS={mode='poll', out=[[${TMP[$w]}/${T}_$w.jsonl]], secs=$((32 + WAIT + EXTRA))$(hubarg "$w")}"; done
+    sleep "$WAIT"
+    for r in $TAP; do # (receivers first, then the sender's own, then the fire: each tap's 30 s hold the 10 s pattern and its delay)
+      st=play; [ -n "$HB" ] && [ "$r" != "$HB" ] && st=hub
+      run "$r" "EARS={mode='tap', peer='$([ "$st" = hub ] && echo "${PEER[$HB]}" || echo "${PEER[$S]}")', stream='$st', secs=30, out=[[${TMP[$r]}/${T}_$r.wav]]}"
+    done
+    [ -n "$TAP" ] && run "$S" "EARS={mode='tap', peer='', stream='play', secs=30, out=[[${TMP[$S]}/${T}_$S.wav]]}"
+    run "$S" "EARS={mode='fire', slot=0}"
     sleep 32
     scp -q "laptop:$L_TMP/${T}_l.jsonl" "$OUT/"; scp -q "$X:$X_TMP/${T}_x.jsonl" "$OUT/"
+    for w in $TAP $([ -n "$TAP" ] && echo "$S"); do
+      case "$w" in l) scp -q "laptop:$L_TMP/${T}_l.wav" "laptop:$L_TMP/${T}_l.wav.json" "$OUT/" ;; x) scp -q "$X:$X_TMP/${T}_x.wav" "$X:$X_TMP/${T}_x.wav.json" "$OUT/" ;; esac
+    done
+    [ -n "$TAP" ] && echo "taps: python $HERE/ears.py wav $OUT/${T}_$S.wav $OUT/${T}_<receiver>.wav --pattern $OUT/pattern --stamps (speed, steady, no_gaps)"
     echo "compare: python $HERE/ears.py env $OUT/pattern $OUT/${T}_$S.jsonl $OUT/${T}_<receiver>.jsonl --peer <sender name> (or --hub --gain 0.01)" ;;
   cleanup)
     rm -rf "$D_FX"

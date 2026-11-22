@@ -38,6 +38,9 @@ void rt_test_hold_tx(RtLink *l, double ms);
 // tests only: nothing arrives for ms (a Wi-Fi outage here: hub_watch's own_outage)
 void rt_test_drop(RtLink *l, double ms);
 void rt_test_drift(RtLink *l, int resample);
+// tests only: this computer's audio clock estimate made wrong by ppm on purpose (rt-r1's laptop read its sinks' rate 1.5-2 % off: the
+// read-rate servo must still match what arrives). rt-fix6b
+void rt_test_clock_bias(RtLink *l, double ppm);
 // tests only: the audio clock's estimate (ppm, as clock_ppm) after callbacks at these times (s) with this block size and rate; used: what
 // the drift correction uses of it then (clock_used_ppm).
 double rt_test_clock(const double *t, int n, int len, double srate, double *used = nullptr);

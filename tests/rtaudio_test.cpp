@@ -741,6 +741,75 @@ static void clock_tests()
          " 102 ppm slow reads %.0f\n", stair, stair2, slow);
   check(std::fabs(stair + 125) < 15 && std::fabs(stair2 + 125) < 60, "clock: a staircase of dropped buffers is measured over minutes (not as its flat parts)");
   check(std::fabs(slow + 102) < 5, "clock: a plain slow device, its callbacks late by 0-2 ms and now and then 50 ms, measured within 5 ppm");
+  // (rt-fix6b: the same device with stalls: callbacks that never came for 1.2 s at 3 minutes and 0.4 s at 7 (REAPER busy, the device
+  // reopened), and the computer's clock set back 0.8 s at 5. They were read as rate: about +2000 ppm, the desktop's -1824 after a restart)
+  t.clear();
+  double gap = 0;
+  for (long long k = 0; k < 56250; ++k) {
+    const double at = k * 512 / (48000 * (1 - 102e-6));
+    if (at > 180 && gap == 0) gap = 1.2;
+    if (at > 300 && gap == 1.2) gap = 0.4;
+    if (at > 420 && gap == 0.4) gap = 0.8;
+    t.push_back(at + late() + (at > 180 ? 1.2 : 0) - (at > 300 ? 0.8 : 0) + (at > 420 ? 0.4 : 0));
+  }
+  const double stalled = rt_test_clock(t.data(), (int)t.size(), 512, 48000);
+  printf("     clock: the slow device with stalls of 1.2 and 0.4 s and its clock set back 0.8 s reads %.0f ppm\n", stalled);
+  check(std::fabs(stalled + 102) < 5, "clock: stalls and a clock set aren't taken as the device's rate (rt-r1: the laptop played the desktop's Play 2 % fast)");
+}
+
+// ---- rt-fix6b: a receiver whose drift correction reads the sender 1.5 % wrong (rt-r1's laptop: the desktop's Play at 446.5 Hz, an underrun
+// every few seconds) still plays what arrives at its rate: the read-rate servo follows each stream's buffer. P sends 440 Hz; Q's clock
+// estimate is made 1.5 % off (rt_test_clock_bias); Q's adaptive timings 4x (rt_test_speed), so the servo settles within the run.
+static void rate_test()
+{
+  const int SR = 48000, LP = 512, LQ = 128, PP = 47631, PQ = 47632;
+  const double PI = 3.14159265358979;
+  char pp[32], pq[32];
+  snprintf(pp, sizeof pp, "127.0.0.1:%d", PP); snprintf(pq, sizeof pq, "127.0.0.1:%d", PQ);
+  RtLink *P = rt_new(), *Q = rt_new();
+  rt_peers(P, (std::string("{\"peers\":[\"") + pq + "\"],\"port\":" + std::to_string(PP) + ",\"secret\":\"studio\"}").c_str());
+  rt_peers(Q, (std::string("{\"peers\":[\"") + pp + "\"],\"port\":" + std::to_string(PQ) + ",\"secret\":\"studio\"}").c_str());
+  rt_start(P, 0, 1, 128, 0, "127.0.0.1"); rt_start(Q, 0, 1, 128, 0, "127.0.0.1");
+  rt_test_clock_bias(Q, 15000);
+  rt_test_speed(Q, 4);
+  rt_peer_buffer(Q, pp, 60, 60);
+  std::vector<double> ip(LP), iq(LQ, 0.0), op1(LP), op2(LP), oq1(LQ), oq2(LQ), heard;
+  double *oP[2] = { op1.data(), op2.data() }, *oQ[2] = { oq1.data(), oq2.data() };
+  long long bp = 0, bq = 0, n = 0, u10 = -1;
+  double stalled = 0;
+  const auto t0 = std::chrono::steady_clock::now();
+  for (;;) {
+    const double dp = (double)bp * LP / SR, dq = (double)bq * LQ / SR, due = std::min(dp, dq);
+    if (due > 26.0) break;
+    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < due) std::this_thread::yield();
+    const double late_ms = (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() - due) * 1000;
+    if (due > 2) stalled = std::max(stalled, late_ms);
+    if (dp <= dq) {
+      for (int k = 0; k < LP; ++k, ++n) ip[k] = 0.5 * sin(2 * PI * 440 * n / SR);
+      const double *ii[1] = { ip.data() };
+      rt_capture(P, ii, 1, LP, SR); rt_mix(P, oP, 2, LP, SR); ++bp;
+    } else {
+      const double *ii[1] = { iq.data() };
+      std::fill(oq1.begin(), oq1.end(), 0.0);
+      rt_capture(Q, ii, 1, LQ, SR); rt_mix(Q, oQ, 2, LQ, SR); ++bq;
+      heard.insert(heard.end(), oq1.begin(), oq1.end());
+      if (u10 < 0 && dq >= 12.0) u10 = atoll(field(rt_status(Q), pp, "underruns").c_str());
+    }
+  }
+  const std::string sq = rt_status(Q);
+  rt_free(P); rt_free(Q);
+  // (the pitch over 20-25 s: zero crossings, interpolated)
+  double first = -1, last = -1;
+  int cnt = 0;
+  for (size_t i = (size_t)20 * SR + 1; i < (size_t)25 * SR && i < heard.size(); ++i)
+    if (heard[i - 1] < 0 && heard[i] >= 0) { const double x = (i - 1) + heard[i - 1] / (heard[i - 1] - heard[i]); if (first < 0) first = x; last = x; ++cnt; }
+  const double hz = cnt > 1 ? (cnt - 1) * SR / (last - first) : -1;
+  const long long u20 = atoll(field(sq, pp, "underruns").c_str());
+  const double rate = atof(field(sq, pp, "rate_ppm").c_str());
+  printf("     rate: Q's clock 1.5 %% off: heard %.2f Hz at 20-25 s, underruns %lld by 12 s and %lld by 26 s, Talk's read rate %.0f ppm\n", hz, u10, u20, rate);
+  check_unless_stalled(std::fabs(hz - 440) < 440 * 0.002, stalled, "rate: Q plays what P sends at P's rate (440 Hz, not 446.6) with its own clock 1.5 % off");
+  check_unless_stalled(u20 == u10, stalled, "rate: no underrun in Q's last 14 s (it ran dry every few seconds)");
+  check(rate < -10000 && rate > -20000, "rate: the servo learned the 1.5 % (rate_ppm in the status)");
 }
 
 // ---- A studio computer this one doesn't list (Health on the desktop: "refused 13589 (last: not one of the studio's computers here from
@@ -876,7 +945,8 @@ static void start_order_test()
 
 int main(int argc, char **argv)
 {
-  if (argc > 1 && strcmp(argv[1], "underruns") == 0) { drift_tests(); trim_test(); play_resync_test(); switch_test(); rescue_test(); stall_test(); outage_test(); spike_tests(); clock_tests(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
+  if (argc > 1 && strcmp(argv[1], "underruns") == 0) { drift_tests(); trim_test(); play_resync_test(); switch_test(); rescue_test(); stall_test(); outage_test(); spike_tests(); clock_tests(); rate_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
+  if (argc > 1 && strcmp(argv[1], "rate") == 0) { clock_tests(); rate_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "playresync") == 0) { trim_test(); play_resync_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "stalls") == 0) { stall_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "outage") == 0) { outage_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
@@ -1258,6 +1328,7 @@ int main(int argc, char **argv)
   outage_test(); // (a listener's own Wi-Fi outage: kept on the mix. rt-p9)
   spike_tests();
   clock_tests();
+  rate_test(); // (a receiver whose clock estimate is off: the read-rate servo. rt-fix6b)
   hub_loads(false); // (the hub's load at REAPER's small blocks, as the laptop's ASIO runs: 128 and 64 samples)
   rt_free(A); rt_free(B); rt_free(C); rt_free(bad);
   printf(fails ? "fails %d\n" : "ok, fails 0\n", fails);

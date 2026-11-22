@@ -499,9 +499,44 @@ def spectral_diff(a, b, sr):
     return float(np.mean(np.abs(A[w] - B[w])))
 
 
+SPEED_TOL = 0.002  # got's pitch against ref's: the laptop played the desktop's Play 1.5-2 % fast (rt-r1, rt-fix6b); a live path is 1:1
+
+
+def tone_hz(x, sr, lo=200.0, hi=2000.0):
+    """The strongest frequency between lo and hi over x (a fine FFT, interpolated), or None when x is silent. For the speed check."""
+    if len(x) < sr // 10 or np.max(np.abs(x)) < 1e-4:
+        return None
+    n = 1 << int(math.ceil(math.log2(len(x) * 4)))
+    spec = np.abs(np.fft.rfft(x * np.hanning(len(x)), n=n))
+    f = np.fft.rfftfreq(n, 1.0 / sr)
+    i = int(np.argmax(np.where((f >= lo) & (f <= hi), spec, 0)))
+    if 0 < i < len(spec) - 1:  # (parabolic interpolation of the peak in dB)
+        a, b, c = (20 * np.log10(spec[i + k] + 1e-30) for k in (-1, 0, 1))
+        d = 0.5 * (a - c) / (a - 2 * b + c) if (a - 2 * b + c) != 0 else 0.0
+        return float((i + d) * sr / n)
+    return float(f[i])
+
+
+def tone_scan(x, sr, f0, win_s=0.25):
+    """The median strongest frequency of x's 0.25 s windows whose peak lies within 10 % of f0 (the pattern's tone ladder), or None."""
+    w, out = int(win_s * sr), []
+    for a in range(0, len(x) - w, w):
+        seg = x[a:a + w]
+        if np.max(np.abs(seg)) < 0.01:
+            continue
+        f = tone_hz(seg, sr, f0 * 0.9, f0 * 1.1)
+        full = tone_hz(seg, sr)
+        if f and full and abs(full - f) < 1.0:  # (the window's strongest tone overall is that one: a tone step, not the band or a click)
+            out.append(f)
+    return float(np.median(out)) if len(out) >= 2 else None
+
+
 def compare_wav(ref, got, sr, meta=None, exact=False):
     """ref, got: the same signal recorded at two ends. meta: the pattern's (with pattern_at: where it starts in ref, s) for per-section
     spectra. exact: a lossless path (bit-exact, 16-bit)."""
+    if np.max(np.abs(got)) < 1e-4 <= np.max(np.abs(ref)):  # (rt-r1's r6: a tap that ended before the sound came read as "silent")
+        return {"error": "GOT is silent (peak %.1e): its tap ran while nothing came (see tap_window with --stamps), or the stream was muted"
+                % float(np.max(np.abs(got))), "pass": {"heard": False}}
     lag, peak = align(ref, got)
     r_off = max(0, -lag)  # (r[i] is ref[i + r_off], g[i] the got sample heard with it)
     g = got[max(0, lag):]
@@ -536,12 +571,19 @@ def compare_wav(ref, got, sr, meta=None, exact=False):
     else:
         spec["all"] = round(spectral_diff(r, g, sr), 2)
     res["spectral_db"] = spec
+    if meta:  # (the tone ladder's tone, wherever it is in each: a receiver playing fast has no single lag to align by)
+        f0 = meta.get("tone_hz", 440.0)
+        fr, fg = tone_scan(ref, sr, f0), tone_scan(got, sr, f0)
+    else:
+        fr, fg = tone_hz(r, sr), tone_hz(g, sr)
+    res["speed"] = round(fg / fr, 5) if fr and fg else None
     lim = SPEC_DB_EXACT if exact else SPEC_DB
     res["pass"] = {
         "aligned": peak >= (0.999 if exact else 0.8),
         "level": res["level_db"] is not None and abs(res["level_db"]) <= (0.01 if exact else LEVEL_DB),
         "no_gaps": res["gap_ms"] == 0,
         "spectrum": all(v <= lim for v in spec.values()),
+        "speed": res["speed"] is None or abs(res["speed"] - 1) <= SPEED_TOL,
     }
     if exact:
         res["pass"]["bit_exact"] = res["max_abs_diff"] is not None and res["max_abs_diff"] <= 1.0 / 32768
@@ -588,6 +630,28 @@ def stamp_latency(ref_path, got_path, lag, sr):
     off = next((v.get("offset_ms") for k, v in peers.items() if sender and k.startswith(sender)), 0.0) or 0.0
     # (offset_ms: the receiver's estimate of the sender's clock minus its own; got's stamp moved onto the sender's clock)
     return (gs["t_first"] + off / 1000.0 + lag / sr - rs["t_first"]) * 1000.0
+
+
+def tap_window(ref_path, got_path, ref, got, sr):
+    """A silent GOT: where its tap ran against when REF's sound went out, both on the sender's link clock (s), and what that says. rt-fix6b"""
+    try:
+        rs = json.load(open(ref_path + ".json"))
+        gs = json.load(open(got_path + ".json"))
+    except (OSError, ValueError):
+        return None
+    peers = (gs.get("clock") or {}).get("peers") or {}
+    sender = rs.get("me") or ""
+    off = next((v.get("offset_ms") for k, v in peers.items() if sender and k.startswith(sender)), 0.0) or 0.0
+    loud = np.flatnonzero(np.abs(ref) >= 1e-3)
+    if not len(loud) or rs.get("t_first") is None or gs.get("t_first") is None:
+        return None
+    s0, s1 = rs["t_first"] + loud[0] / sr, rs["t_first"] + loud[-1] / sr
+    g0 = gs["t_first"] + off / 1000.0
+    g1 = g0 + len(got) / sr
+    why = ("GOT's tap ended %.1f s before the sound went out: start it later (rig.sh live TAP=...)" % (s0 - g1) if g1 < s0
+           else "GOT's tap started %.1f s after the sound ended" % (g0 - s1) if g0 > s1 + MAX_DELAY
+           else "GOT's tap overlapped the sound: the stream itself came silent here")
+    return {"sound_s": [round(s0, 3), round(s1, 3)], "tap_s": [round(g0, 3), round(g1, 3)], "why": why}
 
 
 # ---------------------------------------------------------------------------------------------------------------------------------------
@@ -663,7 +727,9 @@ def main(argv):
             lag, _ = align(px, ref)
             meta["pattern_at"] = lag / sr
         res = compare_wav(ref, got, sr, meta, exact=a.exact)
-        if a.stamps:
+        if a.stamps and "error" in res:
+            res["tap_window"] = tap_window(a.ref, a.got, ref, got, sr)
+        elif a.stamps:
             res["latency_ms"] = stamp_latency(a.ref, a.got, res["lag_samples"], sr)
             res["pass"]["stamped"] = res["latency_ms"] is not None
         return _verdict(res)
