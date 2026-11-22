@@ -4154,7 +4154,14 @@ function mirror.merge_for(proj, ev, room_dir)
   if #keep < 2 then return nil end
   local id = mirror.merge_order(keep)
   if id == kev then return nil end
-  return mirror.event_file(room_dir, id)
+  mirror.base_missing = nil
+  local merged_ev = mirror.event_file(room_dir, id)
+  if not merged_ev and mirror.base_missing then -- (what they both build on is still on its way: this one waits for it, two minutes at most)
+    local now = reaper.time_precise()
+    mirror.first_seen[ev.id] = mirror.first_seen[ev.id] or now
+    if now - mirror.first_seen[ev.id] < 120 then return nil, true end
+  end
+  return merged_ev
 end
 -- Versions made apart, as one merged version's id, the same whatever order they're given in: oldest first, each newer one winning over
 -- what came before. `leaves`: { { id, rev, order } }. Pure.
@@ -4444,15 +4451,16 @@ end
 local function parents(x) local w, l = mirror.split_merge(x.id); return w and { w, l } or { x.base_ev } end
 -- The version two versions both build on, nearest to them: everything one builds on, then the first of those the other reaches. "The older of the
 -- two bases" lost what one side changed in between (both made two changes apart: review, 0.58.47). -> its id, or nil.
+-- (-> nil, true when none was found and a version one of them builds on couldn't be read here: it may only be on its way. rt-converge)
 local function common_base(room_dir, a, b)
-  local behind, todo, steps = {}, { a }, 0
+  local behind, todo, steps, missing = {}, { a }, 0, false
   while #todo > 0 and steps < 400 do
     steps = steps + 1
     for _, id in ipairs(parents(table.remove(todo, 1))) do
       if not behind[id] then
         behind[id] = true
         local y = mirror.event_file(room_dir, id)
-        if y then todo[#todo + 1] = y end
+        if y then todo[#todo + 1] = y else missing = true end
       end
     end
   end
@@ -4465,10 +4473,11 @@ local function common_base(room_dir, a, b)
       if not seen[id] then
         seen[id] = true
         local y = mirror.event_file(room_dir, id)
-        if y then todo[#todo + 1] = y end
+        if y then todo[#todo + 1] = y else missing = true end
       end
     end
   end
+  return nil, missing
 end
 local merged = {} -- room dir \0 id -> the version (events never change, so neither do their merges)
 local function event_file(room_dir, evid, depth)
@@ -4480,7 +4489,12 @@ local function event_file(room_dir, evid, depth)
   if depth > 12 then return nil end
   local w, l = event_file(room_dir, w_id, depth), event_file(room_dir, l_id, depth)
   if not (mirror.mergeable(w) and mirror.mergeable(l) and w.obj == l.obj) then return nil end
-  local base_id = common_base(room_dir, w, l)
+  local base_id, missing = common_base(room_dir, w, l)
+  -- (a version one of them builds on isn't here yet, so where the two meet can't be told: no merge for now, and none remembered. With "the
+  -- older of their two bases" in its place a computer that had a change before the change it was built on (the link ahead of Syncthing) put
+  -- the two together from the wrong version, kept that for good, and held a merge of the same name as everyone else's with other notes in
+  -- it: nothing ever compared them again. The soak's seed 43. mirror.merge_for waits for it as it waits for a change in between. rt-converge)
+  if not base_id and missing then mirror.base_missing = true; return nil end
   if not base_id then -- (no shared past here: the older of their two bases, as before 0.58.47)
     local older = w
     if (l.base or 0) < (w.base or 0) or ((l.base or 0) == (w.base or 0) and (l.base_ev or "") < (w.base_ev or "")) then older = l end

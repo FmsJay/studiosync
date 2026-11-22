@@ -19,6 +19,7 @@
 -- 14. REAPER's own Undo of a track deletion brings the track back for everyone (mirror.watch, settle_ids): rt-r2's P1-6.
 -- 15. (a pin) which plug-in changes ask the bandmate who holds the track while they edit: rt-r2's P1-5.
 -- 16. A track's lanes that only read differently here, with no edit behind the look, don't go out (W.one): LinuxBox2's lane names.
+-- 17. A merge isn't built while a version it rests on is still on its way (mirror.event_file, mirror.merge_for).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -851,6 +852,35 @@ do
   S.recv(A)
   assert(lanes_of(A) == "1,2,Chorus", "and lands on James's (" .. lanes_of(A) .. ")")
   print("rt-converge 16: lanes that read differently with nobody editing aren't sent; a lane renamed by hand is")
+end
+
+-- ---- 17. a merge isn't built while a version it rests on is still on its way (the soak's seed 43: one merge id, two contents) ------------------
+do
+  local hlc = math.floor(T * 1000)
+  local function put(id, user, notes, base, n)
+    local ev = { type = "obj", obj = "item", oid = "I-M17", id = id, user = user, state = midi(8, 4, notes), base_ev = base, rev = n, hlc = hlc + n, time = iso(T) }
+    files[R .. "/events/" .. id .. ".json"] = ev
+    return ev
+  end
+  local function events_of(st) local t = {}; for l in st:gmatch("[^\n]+") do if l:match("^E ") then t[#t + 1] = l end end; return table.concat(t, " / ") end
+  local root = put("James-20270115-100000Z-00001-1701", "James", "E 0 90 43 60\nE 480 80 43 00\nE 0 b0 07 64", nil, 1)
+  -- Bee draws a controller value, Cee changes it; James, apart from them, changes the first value and then undoes that
+  local bee = put("Bee-20270115-100002Z-00001-1702", "Bee", "E 0 90 43 60\nE 480 80 43 00\nE 0 b0 07 64\nE 307 b0 07 70", root.id, 2)
+  local cee = put("Cee-20270115-100006Z-00001-1703", "Cee", "E 0 90 43 60\nE 480 80 43 00\nE 0 b0 07 64\nE 307 b0 07 72", bee.id, 3)
+  local j1 = put("James-20270115-100003Z-00002-1704", "James", "E 0 90 43 60\nE 480 80 43 00\nE 0 b0 07 6e", root.id, 2)
+  local j2 = put("James-20270115-100004Z-00003-1705", "James", "E 0 90 43 60\nE 480 80 43 00\nE 0 b0 07 64", j1.id, 3)
+  local mid = mirror.merge_id(cee.id, j2.id)
+  -- James's first change hasn't reached this computer yet (his undo came over the link, ahead of Syncthing's copy of what it was built on)
+  local j1_path = R .. "/events/" .. j1.id .. ".json"
+  local held = files[j1_path]
+  files[j1_path] = nil
+  mirror.base_missing = nil
+  local early = mirror.event_file(R, mid)
+  assert(early == nil and mirror.base_missing == true, "no merge while a version one side rests on isn't here (was: put together from 'the older of their two bases', and kept)")
+  files[j1_path] = held
+  local m = mirror.event_file(R, mid)
+  assert(m and events_of(m.state) == events_of(cee.state), "once it's here: the merge every computer builds, Cee's value over a base James's undo left as it was (" .. events_of(m and m.state or "") .. ")")
+  print("rt-converge 17: a merge waits for the versions it rests on, and is the same on every computer")
 end
 
 print("ok rt-converge")
