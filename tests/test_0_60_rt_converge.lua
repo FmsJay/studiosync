@@ -579,7 +579,24 @@ do
   S3.edit(C, function(F) reaper.SetOnlyTrackSelected(S3.track(C, "Keys")); reaper.ReorderSelectedTracks(0, 0) end)
   assert(#S3.events(function(v) return v.obj == "track" and v.user == "Cee" and v.moved ~= nil end) == 1, "Cee's move of Keys went out (it merges with James's fader)")
   assert(files[S3.dir .. "/order/Cee.json"], "and the studio's order list follows it (was: only when every moved track was the mover's outright)")
-  print("rt-converge 9: new tracks in the order they landed; a move after a bandmate's track landed, or of an auto-claimed track, reaches the order list")
+  -- d. two moves made at once: the later mover's list hasn't the other's move, and a late joiner goes by the newest list
+  local S4 = studio("Conv9d", "everyone")
+  local P, Q, D = S4.computer("James"), S4.computer("Cee"), nil
+  S4.edit(P, function(F) for _, n in ipairs({ "T1", "T2", "T3", "T4" }) do F.add_track(n) end end)
+  S4.recv(Q)
+  T = T + 2
+  S4.edit(P, function(F) reaper.SetOnlyTrackSelected(S4.track(P, "T1")); reaper.ReorderSelectedTracks(4, 0) end) -- (T1 to the bottom)
+  T = T + 2
+  S4.edit(Q, function(F) reaper.SetOnlyTrackSelected(S4.track(Q, "T3")); reaper.ReorderSelectedTracks(0, 0) end) -- (T3 to the top, without James's move)
+  T = T + 2
+  S4.recv(P); S4.recv(Q)
+  assert(S4.names(P) == "T3, T2, T4, T1" and S4.names(Q) == S4.names(P), "both moves on both (" .. S4.names(P) .. " / " .. S4.names(Q) .. ")")
+  D = S4.computer("Dee")
+  S4.recv(D)
+  S4.as(D)
+  mirror.keep_order(D.F.proj, D.cfg, S4.song, "main") -- (a project's first order heal: onto the studio's list)
+  assert(S4.names(D) == S4.names(P), "a late joiner ends on the same order (was: on Cee's list, written before James's move reached her): " .. S4.names(D))
+  print("rt-converge 9: new tracks in the order they landed; a move after a bandmate's track landed, or of an auto-claimed track, reaches the order list; so does a move that lands")
 end
 
 -- ---- 10. a computer catching up drops an edit that a deletion beat, as those that were here did -----------------------------------------------

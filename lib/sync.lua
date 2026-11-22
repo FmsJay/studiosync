@@ -2130,6 +2130,14 @@ function sync.receive(proj, cfg, song, room, can)
   end
   require("mirror").index_for(nil)
   require("mirror").order_after_band(proj)
+  -- (a bandmate's track move landed in this pass: this computer says the order it has now. The studio's order is the newest list anyone
+  -- wrote, each a whole list, and only movers wrote one: of two moves made at once the later mover's list had not the other's move in it, so
+  -- a late joiner, who goes by the list, lost that move while everyone who was here had both. With each computer saying its order as moves
+  -- land, the newest list is one with every move in it. A small file per landed move. rt-converge)
+  if require("mirror").order_moved[pk] then
+    require("mirror").order_moved[pk] = nil
+    pcall(require("mirror").publish_order, proj, sync.room_dir(cfg, song, room), cfg.user)
+  end
   -- a change skipped because its track was gone, and the track may have come back since (a download arrives in
   -- batches, out of history order): once this pass has drained the queue, everything's newest change that hasn't
   -- landed is put in place (mirror.heal: only what differs)

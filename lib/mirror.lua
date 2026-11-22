@@ -3890,6 +3890,7 @@ function mirror.apply(proj, ev, media_dir, local_mix)
         reaper.SetOnlyTrackSelected(tr)
         reaper.ReorderSelectedTracks(above and math.floor(reaper.GetMediaTrackInfo_Value(above, "IP_TRACKNUMBER")) or 0, 0)
         mirror.order_landed[tostring(proj)] = reaper.time_precise() -- (its mover's order list is on its way: mirror.order_heal waits for it)
+        mirror.order_moved[tostring(proj)] = true -- (and this computer says the order it has now, after the pass: sync.receive)
         reaper.SetOnlyTrackSelected(tr); reaper.SetTrackSelected(tr, false)
         for _, x in ipairs(sel) do if reaper.ValidatePtr2(proj, x, "MediaTrack*") then reaper.SetTrackSelected(x, true) end end
       end
@@ -6950,6 +6951,7 @@ end
 -- whichever of them is off moves. -> how many tracks moved.
 mirror.ORDER_IDLE, mirror.ORDER_WAIT = 10, 120
 mirror.order_landed = mirror.order_landed or {} -- tostring(proj) -> when a bandmate's track move last landed here (mirror.apply)
+mirror.order_moved = mirror.order_moved or {} -- tostring(proj) -> true: a bandmate's move landed in this receive pass (sync.receive publishes the order)
 mirror.order_kept = mirror.order_kept or {} -- tostring(proj) -> when order_heal last put the order right, or found it right
 function mirror.order_heal(proj, cfg, song, room, now, idle)
   local sync, pk = require("sync"), tostring(proj)
