@@ -11,4 +11,4 @@ local cfg = b and band.settings()
 local undo = require("undo")
 if not (b and cfg) or undo.native(reaper.Undo_CanRedo2(proj)) then return reaper.Main_OnCommand(40030, 0) end -- Edit: Redo
 local res, why = undo.step(proj, cfg, b, true)
-if res then band.log(res) elseif why then band.msg(why) end
+if res then band.log(res) elseif why then undo.say(why) end -- (never a modal box: it held that REAPER, Live sync and all. rt-fix9)

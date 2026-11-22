@@ -21,7 +21,10 @@ local controllers = {}
 controllers.RATE = 0.05    -- seconds between moves of one control sent (20 a second)
 controllers.LET_GO = 0.5   -- seconds after a control last moved here that it's let go
 controllers.HELD = 1.5     -- seconds a bandmate's hold counts after their last move (their let-go lost)
-controllers.CONFIRM = 20   -- seconds a shown move waits for the band's change (a control surface's may wait for the 10 s look)
+controllers.CONFIRM = 60   -- seconds a shown move waits for the band's change (a control surface's may wait for the 10 s look)
+-- (60, not 20: the change for a shown move can come by Syncthing alone when the link's copy is lost, tens of seconds; at 20 the fader went
+-- back and then forward again when it landed. rt-r5's 27 s itself was mirror.receive holding the change behind the preview's own value, fixed
+-- there: rt-fix9)
 controllers.WATCH = 3      -- seconds a touched plug-in knob is still read after it last moved
 controllers.MAX = 64       -- moves in one message
 controllers.pass = nil     -- (Live sync's last pass: can, my_can, who, hold; set in its P.who)

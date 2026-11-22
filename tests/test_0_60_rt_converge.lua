@@ -35,7 +35,7 @@
 -- 30. An item put in place anew (a put-back, a restore) keeps its id when it's copied before the next look (mirror.apply notes its GUID).
 -- 31. A track's part changed just as the track was deleted comes back as it was changed when the track does (mirror.receive's record).
 -- (rt-fix9, from the fifth REAPER re-check, rt-r4)
--- 32. A track's settings changed here that no look has seen hold a bandmate's change to that track back (mirror.receive): rt-r4's bug A.
+-- 32. A track's settings changed here and not sent yet stand through a bandmate's change to that track (mirror.receive): rt-r4's bug A, rt-r5.
 -- 33. A tempo change made after a bandmate's claims nothing (mirror.env_same_but_times, mirror.moved_by_map in W.send): rt-r4's bug B.
 -- 34. A merge with a side that's only the tempo map's move takes the other side's (`retimed`, mirror.event_file), and says nothing of it.
 -- 35. An auto-claim on a name no track has lets go at once (sync.drop_gone_claims).
@@ -1590,15 +1590,15 @@ do
   print("rt-converge 31: a track's part changed just as the track was deleted comes back as it was changed, everywhere")
 end
 
--- ---- 32. a track's settings changed here that no look has seen hold a bandmate's change to that track back (rt-r4's bug A) ------------------
+-- ---- 32. a track's settings changed here and not sent yet stand through a bandmate's change to that track (rt-r4's bug A, rt-r5) ---------------
 do
   local S = studio("Conv32", "everyone")
   local A, B = S.computer("James"), S.computer("Bee")
-  S.edit(A, function(F) F.add_track("Drums"); F.add_track("Keys") end)
+  S.edit(A, function(F) F.add_track("Drums"); F.add_track("Keys"); F.add_track("Bass") end)
   S.recv(B)
   local function vol(c, name) S.as(c); local t = S.track(c, name); return t and reaper.GetMediaTrackInfo_Value(t, "D_VOL") or -1 end
-  -- James renames Drums, and before a look of his has seen it (an edit inside Live sync's pass, as rt-r4's timed rename), Bee's fader move of
-  -- the same track, made that moment, arrives
+  local function james_sent(name) return #S.events(function(v) return v.obj == "track" and v.user == "James" and v.name == name end) end
+  -- a. James renames Drums, and before a look of his has seen it, Bee's fader move of the same track, made that moment, arrives
   T = T + 2
   S.as(A)
   A.F.clock = A.F.clock + 1
@@ -1606,18 +1606,57 @@ do
   A.edited = A.F.clock
   S.edit(B, function(F) reaper.SetMediaTrackInfo_Value(S.track(B, "Drums"), "D_VOL", 0.5) end)
   S.recv(A, true)
-  assert(S.track(A, "Drums R5") and vol(A, "Drums R5") == 1,
-    "Bee's change waits: James's rename is still on his track (was: her version, built on the old name, replaced it whole and the rename never went out): " .. S.names(A))
+  assert(S.track(A, "Drums R5") and vol(A, "Drums R5") == 0.5,
+    "Bee's fader lands at once and James's rename stays on his track (was: her version, built on the old name, replaced it whole): " .. S.names(A) .. " " .. vol(A, "Drums R5"))
   S.settle(A)
-  assert(#S.events(function(v) return v.obj == "track" and v.user == "James" and v.name == "Drums R5" end) == 1, "James's look sent his rename")
+  assert(james_sent("Drums R5") == 1, "James's next look sent his rename, built on Bee's change")
   for _ = 1, 2 do S.recv(A); S.recv(B) end
   assert(S.track(A, "Drums R5") and S.track(B, "Drums R5") and vol(A, "Drums R5") == 0.5 and vol(B, "Drums R5") == 0.5,
     "both have both: the rename and the fader (" .. S.names(A) .. " " .. vol(A, "Drums R5") .. " / " .. S.names(B) .. " " .. vol(B, "Drums R5") .. ")")
-  -- a track whose settings a look has seen (or that a change put here) doesn't hold anything back
-  S.edit(B, function(F) reaper.SetMediaTrackInfo_Value(S.track(B, "Keys"), "D_VOL", 0.25) end)
+  -- b. rt-r5's order: James's look reads his rename but doesn't send it (Bee's fader move is showing on the track as a live preview, so the
+  -- look leaves the track alone: mirror.previewing), and then Bee's change lands
+  T = T + 2
+  S.as(A)
+  A.F.clock = A.F.clock + 1
+  reaper.SetMediaTrackInfo_Value(S.track(A, "Keys"), "I_CUSTOMCOLOR", 0x1000000 + 255)
+  A.edited = A.F.clock
+  local key = tostring(A.F.proj) .. mirror.track_oid(S.track(A, "Keys"))
+  S.edit(B, function(F) reaper.SetMediaTrackInfo_Value(S.track(B, "Keys"), "D_VOL", 0.7) end)
+  S.as(A)
+  reaper.SetMediaTrackInfo_Value(S.track(A, "Keys"), "D_VOL", 0.7) -- (the preview's value, as lib/controllers.lua sets it)
+  mirror.previewing[key] = true
+  local keys_sent = function() return #S.events(function(v) return v.obj == "track" and v.user == "James" and v.name == "Keys" end) end
+  local before = keys_sent()
+  S.look(A)
+  assert(keys_sent() == before, "the look read the colour but sent nothing (the preview)")
   S.recv(A, true)
-  assert(vol(A, "Keys") == 0.25, "Bee's change to a track James hasn't touched lands at once: " .. vol(A, "Keys"))
-  print("rt-converge 32: a track's settings changed here that no look has seen hold a bandmate's change to the track back")
+  S.as(A)
+  assert(reaper.GetMediaTrackInfo_Value(S.track(A, "Keys"), "I_CUSTOMCOLOR") == 0x1000000 + 255 and vol(A, "Keys") == 0.7,
+    "Bee's change lands and James's colour stays (was: the look had recorded it as seen, and her version replaced the track whole)")
+  mirror.previewing[key] = nil -- (the band's change for the preview has landed: lib/controllers.lua ends it)
+  S.settle(A)
+  for _ = 1, 2 do S.recv(B); S.recv(A) end
+  S.as(B)
+  assert(reaper.GetMediaTrackInfo_Value(S.track(B, "Keys"), "I_CUSTOMCOLOR") == 0x1000000 + 255 and vol(B, "Keys") == 0.7, "Bee has James's colour and her fader")
+  -- c. a bandmate's fader shown here as a live preview, then their change for it: it lands at once, not held behind the preview's own value
+  -- (rt-r5: held, the preview gave up after 20 s and put the fader back, and the change landed 8 s after that: 0.9 -> 1.0 -> 0.9)
+  S.as(A)
+  local bkey = tostring(A.F.proj) .. mirror.track_oid(S.track(A, "Bass"))
+  reaper.SetMediaTrackInfo_Value(S.track(A, "Bass"), "D_VOL", 0.9)
+  mirror.previewing[bkey] = true
+  local rev0 = mirror.known(A.F.proj, mirror.track_oid(S.track(A, "Bass")))
+  S.edit(B, function(F) reaper.SetMediaTrackInfo_Value(S.track(B, "Bass"), "D_VOL", 0.9) end)
+  S.recv(A, true)
+  S.as(A)
+  assert(mirror.known(A.F.proj, mirror.track_oid(S.track(A, "Bass"))) ~= rev0 and not mirror.unsent[bkey] and vol(A, "Bass") == 0.9,
+    "Bee's change for the shown move landed at once (was: held behind the preview's value until the preview gave up)")
+  mirror.previewing[bkey] = nil
+  assert(require("controllers").CONFIRM >= 60, "and a shown move waits a minute for the band's change, which can come by Syncthing alone (was: 20 s)")
+  -- d. a track whose settings went out or landed as they are holds nothing of its own over the band's change
+  S.edit(B, function(F) reaper.GetSetMediaTrackInfo_String(S.track(B, "Bass"), "P_NAME", "Bass 2", true) end)
+  S.recv(A, true)
+  assert(S.track(A, "Bass 2") and vol(A, "Bass 2") == 0.9, "Bee's rename of a track James hasn't touched lands as it is: " .. S.names(A))
+  print("rt-converge 32: a track's settings changed here and not sent yet stand through a bandmate's change to the track, whatever the look did")
 end
 
 -- ---- 33. a tempo change made after a bandmate's claims nothing (rt-r4's bug B) ----------------------------------------------------------------
@@ -1777,6 +1816,17 @@ do
   assert(undo.pending(A.F.proj) == nil and pos(A) == 3, "unanswered, it runs out and nothing changed")
   local _, _, again = undo.step(A.F.proj, A.cfg, S.b, false, {})
   assert(again and pos(A) == 3, "a press after it ran out asks again rather than going ahead")
+  -- and nothing to undo or redo is said the same way, never in a box: the Ctrl+Z / Ctrl+Shift+Z scripts and the panel (rt-r5)
+  local said_n = #logged
+  undo.say("You haven't changed anything here yet.")
+  assert(boxes == 0 and logged[#logged] == "You haven't changed anything here yet." and #logged == said_n + 1, "undo.say: the log, no box")
+  for _, f in ipairs({ "StudioSync - Undo.lua", "StudioSync - Redo.lua" }) do
+    local h = assert(io.open(f, "rb"))
+    local text = h:read("a")
+    h:close()
+    assert(not text:find("band.msg(", 1, true) and not text:find("reaper.MB(", 1, true) and text:find("undo.say(why)", 1, true),
+      f .. " says why it did nothing without a modal box (was: band.msg, a reaper.MB)")
+  end
   undo.confirm = was_confirm
   print("rt-converge 36: StudioSync's Undo asks without a modal box: the key again or the panel's Yes, else nothing")
 end

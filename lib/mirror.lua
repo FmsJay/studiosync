@@ -3978,7 +3978,7 @@ function mirror.apply(proj, ev, media_dir, local_mix)
       end
     end
     local t = mirror.track_state(proj, tr, local_mix)
-    mirror.track_seen[tostring(proj) .. oid] = mirror.track_line(t, local_mix) -- (as it was put in place: mirror.receive's unseen-edit check)
+    mirror.track_seen[tostring(proj) .. oid] = t -- (as it was put in place: mirror.receive's keep_unsent)
     -- (landed, only its place in this machine's list can differ: the band's hash stands, so fingerprints agree, and it isn't
     -- "came out different". Track order can differ: PC Fight, laptop, 0.42.3)
     local h = mirror.track_hash(t, local_mix)
@@ -4305,6 +4305,41 @@ local function fx_landed(proj, ev)
   end
 end
 -- An incoming "obj" event (from sync.apply). Returns true when handled (applied or older than what we hold).
+-- A bandmate's track change `x` about to land: the settings changed here and not sent yet, against the band's version as this computer holds
+-- it (mirror.track_seen), are kept over it where it doesn't change them itself. The record is then the band's version, under the band's
+-- hash, so the next look finds the track changed and sends yours built on theirs: both stand. Not the settings a bandmate's live move is
+-- showing on the track (lib/controllers.lua): those are theirs. A rename, a colour or a mute made in the same moment as a bandmate's fader
+-- move was lost under it, on the renamer's computer too, with no line: the band's version, built on the old settings, replaced the track
+-- whole (rt-r4 check 4, rt-r5 check 1, 4 of 4). rt-fix9's first answer held the band's change back while the track read otherwise than the
+-- last look had read it; but the fader move's live preview stops that look sending the track (mirror.previewing), so the look read the rename,
+-- recorded it as seen and never sent it, and the band's change then landed whole; and where the preview's own value was the difference, the
+-- band's change waited behind it until the preview gave up and put the fader back (rt-r5's 27 s, "put back" before it landed). Kept here, no
+-- local change waits on the order the look and the receive run in, and nothing waits on a look at all. -> what to put in place, and the hash
+-- to record when something was kept (else nil). rt-fix9
+local TRACK_OWN = { after = true, parent = true, solo = true, autocolour = true } -- (its place, its parent, each person's own solo)
+local PREVIEWED = { vol = true, pan = true, mute = true }
+local function same_setting(a, b)
+  local x, y = tonumber(a), tonumber(b)
+  if x and y then return math.abs(x - y) <= 1e-6 * math.max(1, math.abs(x)) end
+  return tostring(a) == tostring(b)
+end
+local function keep_unsent(proj, x, local_mix)
+  if x.obj ~= "track" or x.gone or type(x.state) ~= "table" then return x, nil end
+  local key = tostring(proj) .. x.oid
+  local base = mirror.track_seen[key]
+  local tr = type(base) == "table" and mirror.find(proj, "track", x.oid)
+  if not tr then return x, nil end
+  local cur, previewing = mirror.track_state(proj, tr, local_mix), mirror.previewing[key]
+  local full
+  for k, v in pairs(cur) do
+    if not TRACK_OWN[k] and not (previewing and PREVIEWED[k]) and not same_setting(v, base[k]) and same_setting(x.state[k], base[k]) then
+      if not full then full = {}; for k2, v2 in pairs(x.state) do full[k2] = v2 end end
+      full[k] = v
+    end
+  end
+  if not full then return x, nil end
+  return setmetatable({ state = full }, { __index = x }), mirror.track_hash(x.state, local_mix)
+end
 function mirror.receive(proj, ev, media_dir, local_mix, me)
   if ev.obj == "fx" and ev.restless then mirror.restless_load(); mirror.restless_add(ev.restless) end
   mirror.hlc_seen(ev.hlc)
@@ -4410,17 +4445,6 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
     local knobs = tr and mirror.fx_params(tr)
     if tr and knobs ~= "" and mirror.fx_last[key] ~= knobs then mirror.unsent[key], mirror.fx_doubt[key], mirror.unsettled = true, true, true end
   end
-  -- (and a track's settings changed here that no look has seen yet: theirs waits for the look, which sends yours built on the version both
-  -- came from, and the two merge by setting (mirror.merge_track). A rename made in the same moment as a bandmate's fader move landed under it:
-  -- the band's version, built on the old name, replaced the track whole, the rename never went out and the track was back to its old name
-  -- with no line anywhere (rt-r4 check 4, two of two; P1-4's class, which commit 16 closed for plug-in knobs). Any setting a track carries:
-  -- name, colour, mute, volume and pan, lanes. Against the settings as the last look read them or a change put them here, not the place in
-  -- the list, which a bandmate's track landing above it moves. rt-fix9)
-  if ev.obj == "track" and not ev.gone and type(ev.state) == "table" then
-    local key = tostring(proj) .. ev.oid
-    local tr = not mirror.unsent[key] and mirror.track_seen[key] ~= nil and mirror.find(proj, "track", ev.oid)
-    if tr and mirror.track_line(mirror.track_state(proj, tr, local_mix), local_mix) ~= mirror.track_seen[key] then mirror.unsent[key], mirror.unsettled = true, true end
-  end
   if mirror.unsent[tostring(proj) .. ev.oid] or mirror.unsent_elsewhere(proj)[ev.oid] then return false end
   -- (an item of yours held back (its audio couldn't be copied, its last version unreadable) is about to be replaced by the band's: a copy goes to
   -- "(yours, not sent)" first, as a refusal keeps one; it went with no copy. Only for held-back items. Round 2 review, 0.59.46)
@@ -4452,8 +4476,10 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
     return setmetatable({ [mirror.STAY] = true }, { __index = x })
   end
   if merging then
-    local ok, h = mirror.apply(proj, placed(merging), media_dir, local_mix)
+    local land, band_h = keep_unsent(proj, merging, local_mix)
+    local ok, h = mirror.apply(proj, placed(land), media_dir, local_mix)
     if ok and held then hb[ev.oid] = nil end
+    if ok and band_h then h = band_h; mirror.track_seen[tostring(proj) .. ev.oid] = merging.state end
     if ok then
       remember(proj, ev.oid, merging.rev, h, merging.id, mirror.order_of(merging))
       if ev.obj == "item" then
@@ -4497,8 +4523,10 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   local midiview = ev.obj == "item" and not ev.gone and require("midiview")
   if midiview and not (midiview.on() and midiview.recent(ev.time)) then midiview = nil end
   local notes_before = midiview and midiview.notes(mirror.find(proj, "item", ev.oid))
-  local ok, h = mirror.apply(proj, placed(ev), media_dir, local_mix)
+  local land, band_h = keep_unsent(proj, ev, local_mix)
+  local ok, h = mirror.apply(proj, placed(land), media_dir, local_mix)
   if ok and held then hb[ev.oid] = nil end
+  if ok and band_h then h = band_h; mirror.track_seen[tostring(proj) .. ev.oid] = ev.state end
   if ok then remember(proj, ev.oid, ev.rev, h, ev.id, order) end
   if ok and ev.obj == "item" then require("sync").landed_media = true end -- (Live sync builds its peaks, if nothing else will)
   if ok and midiview then midiview.show(proj, mirror.find(proj, "item", ev.oid), notes_before) end
@@ -4508,7 +4536,7 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   local same_way = ev.obj ~= "track" or type(ev.state) ~= "table" or (ev.state.autocolour == true) == (mirror.own_colours() == true)
     and (ev.local_mix == true) == (local_mix == true) -- (nor when one has Local mixing on and the other not: their faders count differently. 0.59.14)
   -- (nor when it was put on another tempo map than it was made under: it reads as it should here, not as it did there. rt-converge)
-  if ok and ev.hash and ev.hv == mirror.HV and same_way and h ~= ev.hash and not ev.gone and not mirror.retimed_here then
+  if ok and ev.hash and ev.hv == mirror.HV and same_way and h ~= ev.hash and not ev.gone and not mirror.retimed_here and not band_h then
     local band = require("band")
     local n = (tonumber(reaper.GetExtState(band.SECTION, "mirror drift " .. tostring(proj))) or 0) + 1
     reaper.SetExtState(band.SECTION, "mirror drift " .. tostring(proj), tostring(n), false)
@@ -4776,7 +4804,7 @@ mirror.master_seen = {} -- project -> its master track at the last look (W.order
 mirror.fx_quiet = mirror.fx_quiet or {}
 mirror.fx_last = mirror.fx_last or {} -- proj .. chain oid -> its knobs when it last landed here or went out from here (mirror.receive's unseen-edit check)
 mirror.fx_doubt = mirror.fx_doubt or {} -- proj .. chain oid -> true: mirror.receive held the band's chain back for a look to say whether the knobs are an edit
-mirror.track_seen = mirror.track_seen or {} -- proj .. track oid -> its settings (mirror.track_line) as the last look read them or a change put them here (mirror.receive)
+mirror.track_seen = mirror.track_seen or {} -- proj .. track oid -> its state as the band's version is here: as it landed, went out, or a look found it unchanged (mirror.receive)
 local function fx_open_now(tr)
   if reaper.TrackFX_GetChainVisible(tr) ~= -1 then return true end
   for i = 0, reaper.TrackFX_GetCount(tr) - 1 do
@@ -5555,6 +5583,7 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
     pcall(sync.claim_renamed, cfg, song, room, last.name, name)
   end
   mirror.sessions[rk] = { rev = ev.rev, at = reaper.time_precise(), id = id }
+  if o.kind == "track" then mirror.track_seen[rk] = o.state end -- (what went out is the band's now: mirror.receive's keep_unsent. rt-fix9)
   -- (in ExtState, as last_at: a ProjExtState write counts as a project change, and held the band's changes until another look. Round 1
   -- review, 0.59.45)
   if name ~= "" and not ev.auto and reaper.GetExtState(band.SECTION, "last_track " .. tostring(proj)) ~= name then
@@ -5789,6 +5818,7 @@ function W.one(w, o)
     -- (and no leftover print flag: it let the next real edit past the permission checks and hid it from Undo. Nothing held back either: what
     -- it was is the band's. Round 1 review, 0.59.45)
     mirror.reopened[rk], mirror.unsent[rk], mirror.auto[rk] = nil, nil, nil
+    if o.kind == "track" then mirror.track_seen[rk] = o.state end -- (the band's, as it reads here: mirror.receive's keep_unsent. rt-fix9)
     held_back_clear(proj, o.oid)
     w.clean[o.oid] = true -- (nothing to do again until it or its record changes: a quick look leaves it out. rt-look)
     return
@@ -6272,7 +6302,6 @@ function W.each(w)
   local dirty = w.dirty -- (a quick look: only what may have changed, or still has something to do. rt-look)
   for _, o in ipairs(w.objs) do
     w.seen[o.oid] = true
-    if o.kind == "track" and type(o.state) == "table" then mirror.track_seen[tostring(w.proj) .. o.oid] = mirror.track_line(o.state, w.opts.local_mix) end -- (mirror.receive)
     if (not dirty or dirty[o.oid]) and not mirror.previewing[tostring(w.proj) .. o.oid] and not (w.gone_now and o.track and w.gone_now[o.track]) then
       local ok, err = pcall(W.one, w, o)
       if not ok then held_back_set(w.proj, o.oid); w.say_once("err" .. o.oid, "mirror sync skipped " .. o.oid .. ": " .. tostring(err)) end -- (a send that threw: counted. Round 1 review, 0.59.45)

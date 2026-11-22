@@ -3089,7 +3089,7 @@ function F.top_bar()
   -- (no buttons for these: Ctrl+Z and Ctrl+Shift+Z do it, and Edit > Undo: Live sync steps in. The radial menu still asks for them here.)
   local function undo_redo(redo) -- (lib/undo.lua: the same as the StudioSync - Undo / Redo actions, but always asks)
     local res, why = require("undo").step(proj, cfg, b, redo, { ask = true, describe = describe })
-    if res then band.log(res) elseif why then band.msg(why) end
+    if res then band.log(res) elseif why then require("undo").say(why) end -- (no modal box: rt-fix9)
     restore.refresh_soon()
   end
   local tabs_below = false

@@ -125,15 +125,20 @@ function undo.ask(proj, id, redo, text)
   band.set_ext_json(band.SECTION, ask_key(proj), { id = tostring(id), redo = redo == true, text = text, till = os.time() + undo.ASK_WAIT }, false)
   local key = redo and (undo.key_name():gsub("%+Z", "+Shift+Z")) or undo.key_name()
   local say = text .. " Press " .. key .. " again within " .. undo.ASK_WAIT .. " s for yes (or Yes in StudioSync's bar); otherwise nothing changes."
-  band.log(say)
-  -- (by the mouse when the panel isn't showing, as sync.put_back's words: Autostart takes it away after a few seconds)
+  undo.say(say)
+  return say
+end
+-- Words for whoever pressed Undo or Redo, never in a modal box ("You haven't changed anything here yet.", "Nothing to redo ..."): in the
+-- log, and by the mouse when the panel isn't showing, as sync.put_back's words (Autostart takes the tooltip away after a few seconds). A box
+-- held that REAPER, Live sync and all, until someone answered it (rt-r5). rt-fix9
+function undo.say(text)
+  band.log(text)
   local beat = tonumber(reaper.GetExtState(band.SECTION, "panel alive"))
   if not (beat and reaper.time_precise() - beat < 5 and reaper.GetExtState(band.SECTION, "panel minimized") == "") then
     local x, y = reaper.GetMousePosition()
-    reaper.TrackCtl_SetToolTip("StudioSync: " .. say, x + 14, y + 14, true)
+    reaper.TrackCtl_SetToolTip("StudioSync: " .. text, x + 14, y + 14, true)
     reaper.SetExtState(band.SECTION, "tooltip until", tostring(reaper.time_precise() + 8), false)
   end
-  return say
 end
 
 -- Undo (or with `redo`, redo) this person's newest own change in the bound project. `opts.ask`: asks first, always
