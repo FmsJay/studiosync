@@ -250,3 +250,29 @@ stop"; `test_0_60_rt_fix5.lua` part 3 (`together.armed`, and the Live sync wirin
     Panel > Record together. Expected on LinuxBox: no "No tracks are armed" box; its REAPER plays along in time; its log and panel line say
     "recording together, but no track is armed here: playing along without recording ...". The desktop records as usual. Stop together
     stops LinuxBox too. Put the arms back.
+
+### rt-fix5 check results (rt-r1, 2026-11-21, 0.59.49.93 + extension 1.0.35; desktop leads, laptop and LinuxBox follow)
+
+How: through the dev-eval hooks; 40317 / `OnPauseButtonEx` / `OnStopButtonEx` on the desktop's Cross Test tab; Record and Stop together as
+`together.start(..., rec)` / `together.go(stop)`; a defer sampler on each computer (play state, position, selection, loop) mapped onto the
+desktop's link clock. Follow each other at 0 bars ("side" = "0") on all three for the run (the desktop too: with its "side" empty it posts
+no start at all, so the followers stayed stopped on the first try), then back (desktop "", laptop "2", LinuxBox ""). LinuxBox's
+`stopprojlen` 0 in memory for the run, back to 1. The laptop's linked loop (40621) was already on and stayed on.
+
+| # | Result | Evidence |
+| --- | --- | --- |
+| 9 | **pass, plus one bug** | Laptop 30-34 s selection and loop, LinuxBox 25-27 s, desktop the verse, 40317 at 0. All three take the desktop's selection at the start (same sample), jump the verse together (2.74 -> 18.47 s, within 70 ms), and play on to 59-65 s with no jump at 25, 27, 30 or 34 s and the desktop's selection kept. `rooms/main/events/` got only James's start (with `skip`) and stop; no `James-Laptop` or `LinuxBox` event. Stop on the desktop: the laptop's selection and loop are 30-34 again and LinuxBox's 25-27 in the same sample as their stop (about 60 ms after the desktop's). Pause instead: the followers pause too (30.6 s) and keep the desktop's selection. |
+| 10 | **pass** (on the laptop too) | A silent armed track ("XT R1 take", its own output, no input) on the desktop only. Record together: no "No tracks are armed" box on LinuxBox or the laptop (both hooks answered throughout); both play along from 0 and log "recording together, but no track is armed here: playing along without recording (arm a track to record with the others)"; the desktop recorded a 10.6 s take; Stop together stopped both ("stopped together (James) at 12.44 s, by time"). The test track and take were deleted after (the take went to the Recycle Bin in the need-list check). |
+
+**Bug (check 9): a pause then a stop on the leader isn't passed on.** Live sync posts a stop when `playing` (`ps & 1`) changes, so the
+pause posts `stop` with `pause: true` (event `James-20261122-001129Z-00004`) and the stop after it posts nothing: paused is already "not
+playing". The followers stayed paused at 30.6 s with the desktop's selection while the desktop sat stopped (checked 5 s and 30 s after);
+pressing Stop on each follower put their own selections back at once. Fix: also post a stop when the state goes from paused (2) to
+stopped (0) (`StudioSync - Live sync.lua`, the `playing ~= side.playing or jumped` test).
+
+**Found (check 10): Record together is a bar out on a computer with REAPER's record pre-roll.** The desktop and laptop have
+`preroll` = 2 (pre-roll before recording) with `prerollmeas` 1. The desktop's Record started at -1.856 s at the planned moment while
+the followers started at 0 at the same moment (samples: desktop t - pos = ...527.454, laptop ...525.580, LinuxBox ...525.615), so the
+followers play 1.85 s (one bar at 130 bpm) ahead of the recording computer, and stopped at 12.44 s where the desktop was at 10.70 s.
+Followers that record would pre-roll too and line up; play-along ones (this round's item 3) and plain followers don't. Not fixed here:
+either start the play-along followers at `pos - prerollmeas` bars, or have `together.start` (rec) leave the leader's pre-roll out.

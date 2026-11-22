@@ -147,3 +147,29 @@ Default kept: none, the web UI only.
   link's warning text doesn't say so yet.
 - System audio mid-share opens the browser's own picker again (the user picks; nothing new is captured without that).
 - `StudioSync_LiveAudioOutPair` takes any channel number under 1024 from a local script; a pair the device lacks falls back to the first.
+
+## REAPER check results (rt-r1, 2026-11-21, 0.59.49.93 + extension 1.0.35)
+
+How: `tools/ears` as written (`rig.sh setup`/`cleanup`, `ears.lua` load/track/live/poll/tap/fire), each call through the locked hook
+runners (rig.sh's laptop path takes no lock); the sender's "XT Ears" track (its own, never sent, no master send), receivers Mute me and
+volume 0, never a microphone; Deafen back to 1 on all three after. Each run fired after more than 10 s of silence on the sender's Play.
+Results in my scratchpad (`rt-r1/ears/r3..r6_*`).
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| 1, run r3 (desktop -> laptop) | **fail** | `ears.py wav --stamps`: latency 305 ms on the sender's clock while the laptop's `play_latency_ms` said 111-136; gaps 210 ms (longest 40); not aligned (corr 0.13), so `steady` not computed; `env`: latency 310-368 ms falling through the run, gaps at 4.45, 9.10, 9.15 s. Laptop's `play_underruns`/`play_resyncs` 5 -> 12 during the run, `play_overruns` 0, `play_trims` 0 -> 1. |
+| 1, run r4 (same, again) | **fail** | stamps 82 ms (laptop said 84 at the start, 192 at the end); gaps 260 ms (longest 70); corr 0.07; `env` 85-164 ms, gaps at 4.45, 6.65 s; `play_resyncs` 18 -> 28, `play_overruns` 0. |
+| 2, desktop -> LinuxBox (r5) | **pass by hand, ears.py says fail** | No gaps, level 0.0 dB, spectra 0.08/0.15 dB; every 0.25 s window that matches at 0.98+ sits at the same lag (or one click period, 250 ms, away in the click train), so the delay held; `ears.py`'s `steady` flags the click train's and the tone ladder's periodic lags (127 ms "jump"), and corr 0.72 < 0.8 fails "aligned". Stamps 176 ms vs LinuxBox's `play_latency_ms` 82-96. LinuxBox's counters unchanged (5/0/5). |
+| 2, laptop -> desktop (r6) | **not measurable: the desktop's tap is silent** | The desktop's tap of `james-laptop...:47281` `play` wrote 30 s of ~0 (peak 2e-34) while the desktop's own poll in the same seconds read that peer's `play_level` at 0.50 (the pattern) and the laptop's own tap has it at full level. The tap's status said `what: james-laptop... play`, `done`, 1440000 frames, 0 lost. Not found why: `rt_ears` takes the first resolved slot with that peer name, and `hear` writes only for `same_addr(ears.addr, p.addr)`; the desktop's entry for the laptop shows `lone: 2`. |
+| 2, through the hub | not run (time) | |
+| 3, quiet minute after a song (laptop) | **partial** | 4 reads over 80 s with the desktop's Play silent: `overruns` 0, `play_overruns` 0, `play_resyncs` steady at 51; `trims` 16 -> 18, `play_trims` 6 -> 7 (sheds); `play_buffer_ms` against `target_ms`: 111/110, 150/80, 45/60, 27/30 (one read 70 ms over while the target shrank). Clicks not judged (nothing listened to). But between the runs, with the desktop silent, `play_resyncs` rose 12 -> 18 -> 51 over ~8 minutes. |
+
+**Finding: the laptop plays the desktop's Play stream 1.5-2 % fast.** The pattern's 440 Hz tone ladder arrives at the laptop at
+446.5 Hz (r3) and 448.8 Hz (r4), on every step, with the tones 0.49 s apart instead of 0.50; LinuxBox hears the same stream at
+440.0 Hz. Playing 2 % fast drains a ~100 ms buffer in about 5 s, which is the steady climb of `play_underruns` = `play_resyncs` (one
+underrun, one re-buffer, a gap each) and the latency sawtooth above; so rt-p11's overrun fix holds (`play_overruns` 0 throughout) but
+the laptop's Play now underruns instead. All three run 48 kHz (desktop WASAPI 512, laptop ASIO 128, LinuxBox PulseAudio 512), and
+`clock_ppm` reads 0.8 (desktop), -59 (laptop), -9 (LinuxBox), so it isn't the local clock estimate; 2 % is the clamp in `clock_step`
+(`v` within +-0.02), which suggests the laptop's sink (AOO's dynamic resampling) takes the desktop's rate as 2 % slow. To look at in
+`extension/rtaudio.cpp`: what the desktop's source stamps (kAooPreciseTimestamp from `clock_step`) and what the laptop's sink makes
+of them over the internet path (78 ms round trip); `rt_test_drift(l, 0)` on the laptop would show whether it's the resampler.

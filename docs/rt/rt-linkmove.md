@@ -1177,3 +1177,49 @@ E. **Syncthing on LinuxBox (item 4).** Start Live sync on LinuxBox in a fresh RE
    either "Syncthing's studio folder tuned for live use: ..." or nothing (already tuned). Over SSH, read-only: `syncthing cli config folders
    studiosync-smiley-studios-a963 fswatcher-delays get` says `1`. No `bandsync-ask.sh` is left in `$XDG_RUNTIME_DIR`. On the Mac when it's
    back: the same start, no "didn't answer".
+
+### rt-fix5 and need-list check results (rt-r1, 2026-11-21, 0.59.49.93 + extension 1.0.35)
+
+How: the dev-eval hooks; LinuxBox's Syncthing paused and resumed through its REST API (James OK'd LinuxBox only); a Live sync "stopped"
+by taking its tab's owner token with Autostart held off by a far-future `elsewhere <tab>` ExtState (Autostart reads it as "syncing in
+another REAPER"; not persisted, removed after), started again from the studio folder's `_tools/studiosync` copy; LinuxBox's REAPER quit
+by SIGTERM (no save) and started with `~/start-reaper.sh -new`; the laptop's REAPER restarted with `lap_restart.ps1`. `stream trace` on
+for the run on all three. Times UTC.
+
+- **D: pass** (one wording note). Desktop's Live sync off (held 70 s, no restart), LinuxBox's Syncthing paused, its REAPER quit, 60 s.
+  - LinuxBox started in a fresh REAPER at 00:20:39 with the laptop running: no "nobody else is here"; "James is driving but isn't here"
+    (right: the desktop was off). Timed again at 00:29:15 with a sampler of the ExtState every frame: `direct peers ... Cross Test/main` =
+    `james-laptop...:47281` at 00:29:17 (2 s), `alone` never set in 40 s. The laptop listed `linuxbox...:47281`.
+  - Laptop's Live sync stopped at 00:21:52 (its status last written 00:21:3x-5x): LinuxBox took the hub at 00:22:36 and said "nobody else
+    is here" at 00:23:20, 88 s later. That is the code's rule (`sync.present(..., sync.alone and 45 or 90)`: 90 s before you're alone,
+    45 s to be back), not the 45 s this check expected.
+  - LinuxBox alone (Live sync restarted with nobody else running): started 00:24:10, "nobody else is here" 00:24:22 (12 s).
+- **E: fail.** "Syncthing: Syncthing didn't answer (is it running, with a folder called studiosync-smiley-studios-a963?)" at every Live
+  sync start on LinuxBox: the fresh REAPER (00:20:39, Syncthing paused), 00:24:10 (paused), 00:25:12 (Syncthing running and connected),
+  00:33:15. Not REAPER's command line: the module's own `exec`/`cli` (its upvalues) and `/bin/sh` with a script both answer `0
+1
+` in
+  that REAPER in 0.03 s, and no `bandsync-ask.sh` is left in `$XDG_RUNTIME_DIR`; `fswatcher-delays get` says `1`. **Cause:**
+  `services.WATCH` asks `fswatcher-timeouts`, which LinuxBox's Syncthing (1.27.2, Ubuntu's package) doesn't have:
+  `syncthing cli config folders studiosync-smiley-studios-a963 fswatcher-timeouts get` prints "No help topic for 'fswatcher-timeouts'"
+  with exit code 3 (`fswatcher-enabled` = true, `fswatcher-delays` = 1 answer). Any key that doesn't answer returns "didn't answer"
+  (`lib/services.lua` tune_band_folder), so the versioning (LinuxBox's `versioning type` is empty: never set to staggered), auto-accept
+  and label steps after it never run there either. Fix: treat "No help topic" (or a non-zero exit with output) as "this Syncthing has no
+  such setting" and go on to the next key.
+- **Need list (`link need list` = 1 on all three for the run, then back to ""):**
+  - **Round 5 C steps 1-4: pass.** Take T (the check 10 take `4b8e6012-04-XT_R1_take-261121_1715.flac`, 10.6 s, on its own track "XT
+    R1 take") on all three disks. LinuxBox's Live sync stopped, Syncthing paused (00:31:47); the desktop deleted the track (00:31:51);
+    60 s; LinuxBox moved T's item +0.5 s and started Live sync (00:33:15): "1 change(s) went to the others" at once (the desktop's trace:
+    `1 changes in main asked of linuxbox`), and "James: deleted a track on XT R1 take ... 2 changes from the others" at 00:34:16. The
+    track is gone on LinuxBox and never came back on any of the three (checked at 00:33:45, 00:34:3x and 00:39:30). Note: the delete's
+    two events were in LinuxBox's link inbox from 00:31:51 (the extension took them while its Live sync was off), yet were applied 61 s
+    after the start, not within the ~15 s round 5 A saw; LinuxBox's trace has its own `ids sent to james-main (try 1)` and nothing asked
+    of the desktop.
+  - **Round 3's delete hole, steps 1-4: pass.** T's file unused everywhere (its track deleted above). Laptop's Live sync off, LinuxBox's
+    Syncthing paused; the desktop sent T's file to the Recycle Bin (00:35:34); the laptop's Syncthing had deleted it by 00:35:40
+    (LinuxBox kept it). The laptop's REAPER restarted (00:36:0x, Live sync 0.59.49.93 by Autostart): in 85 s its trace has catch-up ids
+    to the desktop and LinuxBox and no `media want` for T; the file stayed gone. LinuxBox's Syncthing resumed (00:38:29): gone there by
+    00:39:30, back nowhere, no `media want ...XT_R1` in any trace, no new `sync-conflict`.
+  - **Step 5 (a file the song still plays comes back): not run.** Windows wouldn't delete it: the desktop's REAPER holds the played
+    file open ("being used by another process"), so the case can't happen this way on Windows.
+  - **Verdict: A (rt-r0), C 1-4 and the delete hole 1-4 pass.** The 61 s before the delete applied on LinuxBox is the one thing to look at.
