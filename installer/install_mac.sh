@@ -590,6 +590,7 @@ if [ -n "$need" ]; then
     else rm -f "$f.part"; warn "${n%%=*} didn't download"; fi
   done
 else ok "ReaPack, ReaImGui, js_ReaScriptAPI and SWS are already installed"; fi
+xattr -d com.apple.quarantine "$PLUG"/reaper_*.dylib 2>/dev/null # (one copied in from a Safari download is refused by REAPER; curl's never are)
 API="$RES/Scripts/ReaTeam Extensions/API"
 if [ ! -f "$API/imgui.lua" ]; then
   mkdir -p "$API" && curl -fsSL "https://codeberg.org/cfillion/reaimgui/raw/v$REAIMGUI/shims/imgui.lua" -o "$API/imgui.lua" && ok "ReaImGui shim installed"
@@ -662,11 +663,28 @@ if [ "$TAG" = main ]; then # the newest released version (what ReaPack serves), 
     grep -o 'version name="[0-9.]*"' | grep -o '[0-9][0-9.]*' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
   [ -n "$V" ] && TAG="v$V"
 fi
-ZREF="heads/main"; [ "$TAG" != main ] && ZREF="tags/$TAG"
+ZREF="heads/$TAG"; case "$TAG" in v[0-9]*) ZREF="tags/$TAG";; esac # (a vN tag, else a branch: BS_TAG=<branch> for a test)
 curl -fsSL "https://codeload.github.com/$REPO/zip/refs/$ZREF" -o "$WORK/bandsync.zip" && ditto -x -k "$WORK/bandsync.zip" "$WORK/src"
 HELPER="$(find "$WORK/src" -path '*/installer/studiosync_setup.lua' | head -1)"
 [ -n "$HELPER" ] || { warn "StudioSync's setup files didn't download: check the internet connection, then run this again."; exit 1; }
 HDIR="$(dirname "$HELPER")"
+# The StudioSync Hop plug-in (plays a bandmate's plug-ins and live audio's Play: docs/rt/rt-hop2.md), from this StudioSync's own download
+# (plugin/dist), into ~/Library/Audio/Plug-Ins/CLAP and VST3, which REAPER scans; copied again only when it changed. (rt-installer, 2026-11-22: no installer put it in)
+install_hop() { # <the download's plugin/dist/<platform> folder> <CLAP folder> <VST3 folder>
+  local from="$1" n=0 k dest
+  [ -e "$from/StudioSync Hop.clap" ] || { warn "The StudioSync Hop plug-in isn't in this StudioSync download (plugin/dist): playing a bandmate's plug-ins needs it."; return 0; }
+  for k in "clap:$2" "vst3:$3"; do
+    dest="${k#*:}/StudioSync Hop.${k%%:*}"
+    [ -e "$from/StudioSync Hop.${k%%:*}" ] || continue
+    diff -rq "$from/StudioSync Hop.${k%%:*}" "$dest" >/dev/null 2>&1 && continue
+    mkdir -p "${k#*:}" && rm -rf "$dest" && ditto "$from/StudioSync Hop.${k%%:*}" "$dest" || { warn "StudioSync Hop couldn't be put in ${k#*:}: run this again."; return 0; }
+    # (a copy unzipped by Safari or Finder carries the quarantine mark, and REAPER won't load a quarantined, ad-hoc signed plug-in)
+    xattr -dr com.apple.quarantine "$dest" 2>/dev/null
+    n=$((n + 1))
+  done
+  [ $n -gt 0 ] && ok "StudioSync Hop plug-in installed (restart REAPER, or rescan plug-ins, so it finds it)" || ok "StudioSync Hop plug-in is already installed"
+}
+install_hop "$(dirname "$HDIR")/plugin/dist/mac" "$HOME/Library/Audio/Plug-Ins/CLAP" "$HOME/Library/Audio/Plug-Ins/VST3"
 request() { # mode -> runs the helper in REAPER, leaves its JSON result in $HDIR/studiosync_setup_result.json
   local panel=false; [ "$1" = verify ] && panel=true
   local jsfx=false; yes "$PLUGINS" && jsfx=true

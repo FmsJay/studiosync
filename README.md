@@ -35,7 +35,8 @@ Otherwise, one line for your computer installs REAPER (if you don't have it), St
 
 It always installs the newest released version. Coming from another DAW? It asks which one, and sets REAPER up to feel like it
 ([ReaPersona](https://github.com/FmsJay/ReaPersona)). Already use REAPER with ReaPack? Add `https://github.com/FmsJay/studiosync/raw/main/index.xml`
-as a repository and install **StudioSync**. More detail: [Setup](#setup-each-person-once).
+as a repository and install **StudioSync**; run the install line once anyway for the **StudioSync Hop** plug-in (playing a bandmate's
+plug-ins), which ReaPack can't install. More detail: [Setup](#setup-each-person-once).
 
 ## Start a new studio
 

@@ -417,6 +417,26 @@ function Install-Plugin($name, $repo, $pattern, $tag, $have) {
   }
   if (& $there) { Ok "$name installed" } else { Warn "$name : not found where expected afterwards ($($have -join ' or ')); check it in REAPER's FX browser" }
 }
+# The StudioSync Hop plug-in (plays a bandmate's plug-ins and live audio's Play: docs/rt/rt-hop2.md), from this StudioSync's own download
+# (plugin/dist), into this user's CLAP and VST3 folders under %LOCALAPPDATA%\Programs\Common, which REAPER scans: no admin rights. Copied again
+# only when it changed; one REAPER holds is said, and the next run puts it in. (rt-installer, 2026-11-22: no installer put it in)
+function Install-Hop($from, $common) {
+  if (-not (Test-Path -LiteralPath (Join-Path $from "StudioSync Hop.clap"))) { Warn "The StudioSync Hop plug-in isn't in this StudioSync download (plugin\dist): playing a bandmate's plug-ins needs it."; return }
+  $n = 0
+  foreach ($k in @(@("CLAP", "StudioSync Hop.clap"), @("VST3", "StudioSync Hop.vst3"))) {
+    $s = Join-Path $from $k[1]; $d = Join-Path (Join-Path $common $k[0]) $k[1]
+    if (-not (Test-Path -LiteralPath $s)) { continue }
+    $hash = { param($p) @(Get-ChildItem -LiteralPath $p -Recurse -File | ForEach-Object { $_.Name + " " + (Get-FileHash -LiteralPath $_.FullName).Hash }) }
+    if ((Test-Path -LiteralPath $d) -and ((& $hash $s) -join "|") -eq ((& $hash $d) -join "|")) { continue }
+    try {
+      New-Item -ItemType Directory -Force (Split-Path $d) | Out-Null
+      if (Test-Path -LiteralPath $d) { Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction Stop }
+      Copy-Item -LiteralPath $s $d -Recurse -Force -ErrorAction Stop
+      $n++
+    } catch { Warn "StudioSync Hop couldn't be put in $(Split-Path $d) (REAPER may be using it): close REAPER and run this again."; return }
+  }
+  if ($n) { Ok "StudioSync Hop plug-in installed (restart REAPER, or rescan plug-ins, so it finds it)" } else { Ok "StudioSync Hop plug-in is already installed" }
+}
 # (-PluginsOnly runs this block on its own: its condition stays exactly "$wantPlugins")
 if ($wantPlugins) {
   $vst3 = Join-Path $env:CommonProgramFiles "VST3"
@@ -629,12 +649,13 @@ if ($Tag -eq "main") { # the newest released version (what ReaPack serves), not 
     if ($vers) { $Tag = "v" + ($vers | Sort-Object { [version]$_ } | Select-Object -Last 1) }
   } catch { }
 }
-$zipRef = if ($Tag -eq "main") { "heads/main" } else { "tags/$Tag" }
+$zipRef = if ($Tag -match '^v[0-9]') { "tags/$Tag" } else { "heads/$Tag" } # (a vN tag, else a branch: -Tag <branch> for a test)
 try { Invoke-WebRequest -UseBasicParsing "https://codeload.github.com/$Repo/zip/refs/$zipRef" -OutFile (Join-Path $work "bandsync.zip") }
 catch { Warn "StudioSync's scripts didn't download ($($_.Exception.Message)). Check the internet connection, then run this again."; exit 1 }
 Expand-Archive (Join-Path $work "bandsync.zip") $work
 $src = Get-ChildItem $work -Directory | Select-Object -First 1
 $helper = Join-Path $src.FullName "installer\studiosync_setup.lua"
+if (-not $NoApps) { Install-Hop (Join-Path $src.FullName "plugin\dist\windows-x64") (Join-Path $env:LOCALAPPDATA "Programs\Common") }
 $utf8 = New-Object System.Text.UTF8Encoding($false) # no BOM: the Lua JSON reader wants plain UTF-8
 function Request($mode) {
   # (syncthing_*: which Syncthing this set up; band_*: the invitation's studio by name till its band.json arrives. studiosync_setup.lua, 0.58.78)

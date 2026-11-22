@@ -691,7 +691,7 @@ if [ "$TAG" = main ]; then # the newest released version (what ReaPack serves), 
     grep -o 'version name="[0-9.]*"' | grep -o '[0-9][0-9.]*' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
   [ -n "$V" ] && TAG="v$V"
 fi
-ZREF="heads/main"; [ "$TAG" != main ] && ZREF="tags/$TAG"
+ZREF="heads/$TAG"; case "$TAG" in v[0-9]*) ZREF="tags/$TAG";; esac # (a vN tag, else a branch: BS_TAG=<branch> for a test)
 # (a Flatpak REAPER has a /tmp of its own and can't see this one: the setup files go in its own folder instead. Cross-platform review, 0.58.78)
 SRC="$WORK/src"; [ "$REAPER_BIN" = flatpak ] && { SRC="$FLATPAK_APP/cache/studiosync_setup"; rm -rf "$SRC"; trap 'rm -rf "$WORK" "$SRC"' EXIT; }
 mkdir -p "$SRC"
@@ -699,6 +699,22 @@ curl -fsSL "https://codeload.github.com/$REPO/tar.gz/refs/$ZREF" | tar -xz -C "$
 HELPER="$(find "$SRC" -path '*/installer/studiosync_setup.lua' | head -1)"
 [ -n "$HELPER" ] || { warn "StudioSync's setup files didn't download: check the internet connection, then run this again."; exit 1; }
 HDIR="$(dirname "$HELPER")"
+# The StudioSync Hop plug-in (plays a bandmate's plug-ins and live audio's Play: docs/rt/rt-hop2.md), from this StudioSync's own download
+# (plugin/dist), into ~/.clap and ~/.vst3, which REAPER scans; copied again only when it changed. (rt-installer, 2026-11-22: no installer put it in)
+install_hop() { # <the download's plugin/dist/<platform> folder> <CLAP folder> <VST3 folder>
+  local from="$1" n=0 k dest
+  [ -e "$from/StudioSync Hop.clap" ] || { warn "The StudioSync Hop plug-in isn't in this StudioSync download (plugin/dist): playing a bandmate's plug-ins needs it."; return 0; }
+  for k in "clap:$2" "vst3:$3"; do
+    dest="${k#*:}/StudioSync Hop.${k%%:*}"
+    [ -e "$from/StudioSync Hop.${k%%:*}" ] || continue
+    diff -rq "$from/StudioSync Hop.${k%%:*}" "$dest" >/dev/null 2>&1 && continue
+    mkdir -p "${k#*:}" && rm -rf "$dest" && cp -R "$from/StudioSync Hop.${k%%:*}" "$dest" || { warn "StudioSync Hop couldn't be put in ${k#*:}: run this again."; return 0; }
+    n=$((n + 1))
+  done
+  [ $n -gt 0 ] && ok "StudioSync Hop plug-in installed (restart REAPER, or rescan plug-ins, so it finds it)" || ok "StudioSync Hop plug-in is already installed"
+}
+case "$ARCH" in x86_64|aarch64) install_hop "$(dirname "$HDIR")/plugin/dist/linux-$ARCH" "$HOME/.clap" "$HOME/.vst3";;
+  *) warn "There's no StudioSync Hop plug-in for $ARCH: everything else works; playing a bandmate's plug-ins doesn't.";; esac
 # REAPER -nonewinst <file>: to the REAPER that's running, or a new one when none is. On Linux a REAPER finds the running one by a
 # pipe in XDG_RUNTIME_DIR whose name comes from XDG_SESSION_ID (reaperctl.<hash>), so started from another login session (a terminal
 # over SSH, or one the desktop started apart from REAPER) it found none and opened a second REAPER, and each hand-over again opened
