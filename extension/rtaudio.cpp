@@ -98,60 +98,74 @@ struct Low {
   }
   double low() const { return prev < 0 ? -1 : cur < 0 ? prev : std::min(prev, cur); } // (-1 until a whole stretch was measured)
 };
-// This computer's audio clock (rt_capture: the audio thread's), for AOO's drift correction. AOO's DLL read each callback's time as it came,
-// so a callback held up (the macOS CI runner's 15-250 ms stalls) pulled its estimate: the test's corrected drift swung to -2.2 ms a second.
-// Here lateness can't count: a callback is never early, so the earliest of each CLK_SPAN s (its time against k blocks at the nominal rate)
-// is the device's own timing. The rate is the slope between the oldest and newest of those minima kept (CLK_N of them: 10 minutes; up
-// to 3 averaged at each end), not a median of short slopes: WASAPI through Voicemeeter (the desktop) calls back on the system's clock and
-// drops a whole 10 ms buffer every minute or so, a staircase that is flat between steps (the median read ~+10 ppm, or -1300 with a step
-// inside its 30 s) and -102 ppm over minutes (counted: 20.5 ms in 172 s). AOO gets evenly spaced times at that rate (kAooPreciseTimestamp:
-// no DLL), from base. Until 3 minima, the nominal rate. The estimate takes ~10 minutes to settle (the desktop: -375 ppm at 3 minutes, -78
-// at 13, -102 counted), so the rate used holds at the nominal until CLK_HOLD s of minima, then ramps in linearly up to the full window.
-const double CLK_SPAN = 2, CLK_HOLD = 120;
-const int CLK_N = 300;
-// A step between one span's minimum and the next bigger than CLK_STEP s (+ 2 blocks) isn't the clock's rate: callbacks that never came (REAPER
-// busy loading a project or restarting, the device reopened at the same rate, an ASIO driver skipping buffers under load) or the computer's
-// clock set. It was taken as rate for up to 10 minutes: the desktop read -1824 ppm after its restart, and rt-r1's laptop played the desktop's
-// Play 1.5-2 % fast (2 % is the clamp below), underrunning every few seconds. Such a step is taken out of the minima after it (off); the
-// staircase above (one 10 ms buffer at a time) stays in. rt-fix6b
-const double CLK_STEP = 0.025;
+// This computer's audio clock (rt_capture: the audio thread's). Two things, apart since rt-audio3:
+//  - the times AOO is handed: one block after the other at the NOMINAL rate, from base. Nothing here depends on an estimate of the device's
+//    real rate any more: what a stream is read at comes from that stream's own buffer (the read-rate control, RATE_* below), which is the
+//    one thing that says what really arrives against what is really played. Before, each side stamped its stream with its own estimate
+//    (kAooPreciseTimestamp) and AOO read at the ratio of the two, so a wrong estimate at either end drained or filled every buffer: the
+//    desktop's device changes its rate from minute to minute (Voicemeeter's WASAPI at 512: 47404-48138 Hz over 10 s stretches, rt-r3) while
+//    its estimate was a ten-minute average, and LinuxBox's (a VM) read 1000-1500 ppm low while its callbacks counted +135.
+//  - an estimate of the device's real rate against this computer's clock, for the status only (clock_ppm). Lateness can't count: a callback
+//    is never early, so the earliest of each CLK_SPAN s (its time against k blocks at the nominal rate) is the device's own timing, and the
+//    rate is the slope between the earliest of the first CLK_END minima kept and the earliest of the last CLK_END (CLK_N of them: 10 minutes),
+//    not a median of short slopes: WASAPI through Voicemeeter drops whole 10 ms buffers, a staircase that is flat between steps.
+const double CLK_SPAN = 2;
+const int CLK_N = 300, CLK_END = 15, CLK_WAIT = 3;
+// Callbacks that never came (REAPER busy loading a project or restarting, the device reopened at the same rate, an ASIO driver skipping
+// buffers under load) aren't the clock's rate: the desktop read -1824 ppm for ten minutes after a restart (rt-fix6b). So a jump UP between one
+// span's minimum and the next of more than CLK_STEP s (+ 2 blocks) is watched for CLK_WAIT spans, and taken out of the minima (off) if the
+// earliest callback is still that late then: lost for good. One that comes back (a VM's guest held up and catching up) was lateness, not a
+// step. A jump DOWN is left in: lateness that had built up and went (PulseAudio's timing in a VM creeps later, then snaps back) is the
+// device's timing, and the earlier of the two was the truth. fix6b took every jump over the line out, either way, at once: LinuxBox's 275-375
+// "steps" were those snaps, so what was left was the creep, read as a device 1000-1500 ppm slow. Only a jump down of more than CLK_SET s is
+// taken out: the computer's clock set back (the time here is the steady clock's, so only a test's own times do that).
+const double CLK_STEP = 0.025, CLK_SET = 0.25;
 struct Clock {
   AooNtpTime base = 0;
-  int len = 0, hn = 0;
-  double sr = 0, nom = 0, per = 0, fed = 0, bmin = 1e300, bstart = 0, hx[CLK_N] = {}, hy[CLK_N] = {};
-  double raw = 1e300, off = 0; // (the last span's minimum as measured, and the steps taken out so far)
+  int len = 0, hn = 0, pend = 0; // (pend: spans since a jump up being watched; 0: none)
+  double sr = 0, nom = 0, fed = 0, t0 = 0, bmin = 1e300, bstart = 0, hx[CLK_N] = {}, hy[CLK_N] = {};
+  double raw = 1e300, off = 0, plevel = 0, plo = 0; // (the last span's minimum as measured, the steps taken out so far; a watched jump: the level before it, the lowest since)
   long long k = 0;
-  bool hold = true; // (false: the whole estimate from the first 3 minima, rt_test_drift 2: the drift test's 16 s)
-  std::atomic<double> ppm{ 0 }, used{ 0 }, bias{ 0 }; // (for the status: the estimate, and the share of it the correction uses; bias: tests only)
+  std::atomic<double> ppm{ 0 }, bias{ 0 }; // (the estimate, for the status; bias: tests only)
   std::atomic<long long> steps{ 0 };
 };
-AooNtpTime clock_step(Clock &c, int len, double sr, AooNtpTime now) // (now: this callback's time; rt_test_clock gives its own)
+// now: this callback's time on the steady clock, s (rt_test_clock gives its own); ntp: AOO's time now, the base of the times handed out.
+AooNtpTime clock_step(Clock &c, int len, double sr, double now, AooNtpTime ntp)
 {
   if (len != c.len || sr != c.sr || c.base == 0) {
-    c.len = len; c.sr = sr; c.nom = c.per = len / sr; c.base = now; c.fed = 0; c.k = 0; c.bmin = 1e300; c.bstart = 0; c.hn = 0; c.ppm.store(0); c.used.store(0);
-    c.raw = 1e300; c.off = 0;
-    return now;
+    c.len = len; c.sr = sr; c.nom = len / sr; c.base = ntp; c.t0 = now; c.fed = 0; c.k = 0; c.bmin = 1e300; c.bstart = 0; c.hn = 0; c.ppm.store(0);
+    c.raw = 1e300; c.off = 0; c.pend = 0;
+    return ntp;
   }
   const double x = (double)++c.k * c.nom;
-  c.bmin = std::min(c.bmin, aoo_ntpTimeDuration(c.base, now) - x);
+  c.bmin = std::min(c.bmin, now - c.t0 - x);
   if (x - c.bstart >= CLK_SPAN) {
-    if (c.hn == CLK_N) { std::copy(c.hx + 1, c.hx + CLK_N, c.hx); std::copy(c.hy + 1, c.hy + CLK_N, c.hy); --c.hn; }
-    if (c.raw < 1e299 && std::fabs(c.bmin - c.raw) > CLK_STEP + 2 * c.nom) { c.off += c.bmin - c.raw; c.steps.fetch_add(1, std::memory_order_relaxed); } // (a stall or a clock set: not rate)
+    const double line = CLK_STEP + 2 * c.nom, d = c.raw < 1e299 ? c.bmin - c.raw : 0;
+    if (c.pend > 0) {
+      c.plo = std::min(c.plo, c.bmin);
+      if (++c.pend > CLK_WAIT) { // (still that late: callbacks lost for good, not this clock's rate)
+        if (c.plo - c.plevel > line) { c.off += c.plo - c.plevel; c.steps.fetch_add(1, std::memory_order_relaxed); }
+        c.pend = 0;
+      }
+    } else if (d > line) { c.pend = 1; c.plevel = c.raw; c.plo = c.bmin; }
+    else if (d < -CLK_SET) { c.off += d; c.steps.fetch_add(1, std::memory_order_relaxed); } // (the clock set back)
     c.raw = c.bmin;
-    c.hx[c.hn] = x; c.hy[c.hn] = c.bmin - c.off; ++c.hn;
+    if (c.pend == 0) { // (a watched jump's spans are left out: which side of it they're on isn't known yet)
+      if (c.hn == CLK_N) { std::copy(c.hx + 1, c.hx + CLK_N, c.hx); std::copy(c.hy + 1, c.hy + CLK_N, c.hy); --c.hn; }
+      c.hx[c.hn] = x; c.hy[c.hn] = c.bmin - c.off; ++c.hn;
+    }
     c.bstart = x; c.bmin = 1e300;
     if (c.hn >= 3) {
-      const int m = std::min(3, c.hn / 3);
-      double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-      for (int i = 0; i < m; ++i) { x0 += c.hx[i]; y0 += c.hy[i]; x1 += c.hx[c.hn - 1 - i]; y1 += c.hy[c.hn - 1 - i]; }
-      const double v = std::max(-0.02, std::min(0.02, (y1 - y0) / (x1 - x0))); // (real seconds per nominal second, less 1; a VM's 0.5% is inside)
-      const double w = !c.hold ? 1 : std::max(0.0, std::min(1.0, (c.hx[c.hn - 1] - c.hx[0] - CLK_HOLD) / (CLK_SPAN * (CLK_N - 1) - CLK_HOLD)));
-      c.per = c.nom * (1 + v * w);
+      // (the earliest at each end, each at its own time: on a staircase both ends then sit at the start of a tread, so the slope between
+      // them is the rate over that stretch, and a late stretch at either end (a VM's creep) isn't taken for the device)
+      const int m = std::min(CLK_END, c.hn / 3);
+      int a = 0, b = c.hn - m;
+      for (int i = 1; i < m; ++i) { if (c.hy[i] < c.hy[a]) a = i; if (c.hy[c.hn - m + i] < c.hy[b]) b = c.hn - m + i; }
+      const double v = std::max(-0.02, std::min(0.02, (c.hy[b] - c.hy[a]) / (c.hx[b] - c.hx[a]))); // (real seconds per nominal second, less 1)
       c.ppm.store((1 / (1 + v) - 1) * 1e6);
-      c.used.store((1 / (1 + v * w) - 1) * 1e6);
     }
   }
-  c.fed += c.per * (1 + c.bias.load(std::memory_order_relaxed)); // (bias: rt_test_clock_bias, a wrong estimate on purpose)
+  c.fed += c.nom * (1 + c.bias.load(std::memory_order_relaxed)); // (bias: rt_test_clock_bias, times that run wrong on purpose)
   return c.base + (AooNtpTime)(c.fed * 4294967296.0);
 }
 // The adaptive jitter buffer, per peer (adapt below). ms: a peer's own floor and ceiling come from rt_peer_buffer, these are the defaults
@@ -178,18 +192,40 @@ const double SRC_BUFFER = 0.1;
 // no gap, so it needn't wait for the peer to be quiet). BUF_MARGIN: a shrink needs this much of the buffer unused at its lowest lately,
 // after the shrink (so it never eats into what jitter used).
 const double TRIM_OVER = 25, BUF_MARGIN = 5;
-// The read-rate servo (rt-fix6b): AOO's drift correction reads each stream at the sender's rate over this computer's, both estimates
-// (clock_step); when either is wrong (rt-r1: the laptop read the desktop's Play 1.5-2 % fast, ~4 underruns a minute and 210-260 ms of gaps
-// in 30 s) the buffer drains or fills for good. So each stream's read rate follows the slope of its measured fill: its average over each
-// RATE_WIN s against the window before (a buffer draining 15 ms a second arrives 1.5 % slower than it's read). Only three slopes in a row
-// with the same sign, each past RATE_MIN, count, and then the smallest of them less RATE_MIN (RATE_G of that, so it settles in a few
-// windows). A step in the fill (a burst after a stall, a shed, a re-buffer: those last two also start the windows again) moves one or two
-// windows, never three; a bursty network's buffer that sits low on average has no slope; and slopes under RATE_MIN are the fill's own
-// noise (it's measured in Opus frames: taken, they were a random walk of a few hundred ppm, and the drift test's buffer moved 0.1-0.5 ms a
-// second), left to AOO's correction. The level stays the shed's and the adaptive size's (a nudge toward the size drained the drift test's
-// buffer 1 ms a second after its stalls). Within RATE_CAP. It reaches AOO as the time rt_mix gives that sink: AOO's sink takes its own rate
-// from those times (kAooPreciseTimestamp), so a sink timed 1 % fast reads 1 % faster.
-const double RATE_WIN = 1.0, RATE_G = 0.6, RATE_MIN = 0.001, RATE_CAP = 0.03;
+// The read-rate control (rt-audio3; it was rt-fix6b's slope servo on top of AOO's ratio of two clock estimates). What a stream must be
+// read at is (the sender's real sample rate) / (this device's real one), and the only thing that measures both is the stream's own buffer:
+// what arrives against what is played. So each stream is read at 1 + R + P, and AOO is told nothing else (clock_step hands out nominal times):
+//  - R, the bandmate's learned ratio less 1 (one device there against one here, so one R for its Talk, its Play and its mix: a stream that
+//    starts later reads right from its first block). It integrates the level error, so it settles where the level holds at its size;
+//  - P, proportional to the level error: the level's median over RATE_WIN s (a median: the tail of a burst, a VM's ten blocks at once and
+//    one late read don't move it) less the level the stream settled at when it started (near its size: RATE_SET_*). It brings the level
+//    back after a step, and holds it while R learns.
+// The level is a time, not a count: what the buffer held at the last read plus how old its newest packet was then (rt_mix's `age`). The
+// count alone moves in the sender's blocks: with 256-sample blocks at both ends and 200 ppm between them it sat still for 26 s while the
+// delay heard grew 5 ms, then jumped a block; the control saw nothing, then a step (drift_tests: the delay moved as if uncorrected). With
+// the packet's age the level moves as the delay does. A packet held up on the way reads as a lower level for that read, which it is; one
+// older than RATE_AGE at a read means nothing is coming, and there is no level.
+// Two speeds, faded between. Slow (RATE_KP: critically damped, 20 s) while the level stays within RATE_FAST_MS of its size: a steady
+// device's ratio moves by ppm, and a quiet loop adds no wobble of its own. Fast (RATE_KP_F: 4 s) after a window further off than that and
+// for a bandmate's first seconds, RATE_FAST_S in all, the last RATE_FADE_S of them fading back to slow (a step between the two gains was
+// a step in the rate). The desktop's device loses 2 to 12 of its 10 ms ticks in 10 s, and a 1.2 % step then costs ~20 ms of buffer before
+// it is followed (the slow loop would take ~100). What each part may do is bounded: P by RATE_P and RATE_P_F (so a buffer left far over
+// its size by a stall is still shed, TRIM_OVER, not played off-pitch for seconds), the error R learns from by RATE_I_MS a window, the sum
+// by RATE_CAP. And R learns only while P isn't getting its way: a level left off by a stall or a burst comes back at P's own pace, and R,
+// integrating all the way, read up to 0.9 % fast and then overshot; a real rate error holds the level off against P, or moves it further.
+// So a window counts for R only when the level, against RATE_BACK windows ago, came back less than half of what P alone would have done.
+// Tried before and dropped (rt-fix6b): the slope alone (no level term) left a residual under its 0.1 % floor that walked the buffer into
+// an underrun or a shed every couple of minutes (the laptop's idle resyncs), and three 1 s slopes in a row couldn't follow a device whose
+// rate moves every few seconds. It reaches AOO as the time rt_mix gives that sink: AOO's sink takes its own rate from those times
+// (kAooPreciseTimestamp), so a sink timed 1 % fast reads 1 % faster.
+const double RATE_WIN = 0.5, RATE_CAP = 0.03;
+const int RATE_W = 96, RATE_NEED = 8;                 // a window's samples kept (a reservoir), and the fewest that make a window
+const double RATE_KP = 0.1, RATE_KP_F = 0.5;          // per s, slow and fast; the integral's gain is kp * kp / 4 (critically damped)
+const double RATE_P = 0.002, RATE_P_F = 0.005;        // the most P may add or take: 0.2 % slow, 0.5 % fast (9 cents)
+const double RATE_FAST_MS = 6, RATE_FAST_S = 10, RATE_FADE_S = 5, RATE_I_MS = 20;
+const double RATE_SET_LO = 5, RATE_SET_HI = 12;       // ms: how far from its size a stream's held level may be (HI: half of TRIM_OVER)
+const double RATE_AGE = 0.25;                         // s: the newest packet older than this at a read: nothing is coming, no level
+const int RATE_BACK = 4;                              // windows back the level is compared with (2 s: P's 10 ms then, against a window's 2 ms of noise)
 // ms: AOO's jitter buffer holds twice its latency by default, and a packet that doesn't fit resets the stream (an overrun: a re-buffer, its
 // latency of silence or concealment and the decoder rejoining over ~100 ms). The 2026-11-21 sound test (docs/rt/rt-ears.md, Findings 1;
 // docs/rt/rt-p11.md): the laptop's buffer for the desktop's Play had finished a quiet re-buffer ~100 ms above its 145 ms size (packets that
@@ -261,10 +297,20 @@ struct Slot {
   long long overruns = 0, punderruns = 0, poverruns = 0, ptrims = 0, moverruns = 0; // (AOO's resets of Talk, Play, the mix; Play's own counts)
   double plat_ms = 0, pfill_ms = -1; // (Play: AOO's source + sink latency for it; its buffer as measured, the last look)
   std::atomic<int> shed[3]{ { 0 }, { 0 }, { 0 } }; // (samples rt_mix skips, crossfaded, on Talk's, Play's and the mix's next block: adapt)
-  std::atomic<double> rate[3]{ { 1.0 }, { 1.0 }, { 1.0 } }; // (each stream's read rate, the fill servo's: adapt; rt_mix times its sink at it)
-  double rint[3] = { 0, 0, 0 };     // (the servo's, adapt: each stream's learned rate, less 1)
-  double wsum[3] = { 0, 0, 0 }, wt0[3] = { 0, 0, 0 }, wprev[3] = { -1, -1, -1 }, wsl[3][3] = {}; // (its window: the fill summed since wt0, the
-  int wn[3] = { 0, 0, 0 }, nsl[3] = { 0, 0, 0 };                                                 // last window's average, the last slopes)
+  std::atomic<double> rate[3]{ { 1.0 }, { 1.0 }, { 1.0 } }; // (each stream's read rate, the read-rate control's: adapt; rt_mix times its sink at it)
+  std::atomic<double> arr_at[3]{ { 0.0 }, { 0.0 }, { 0.0 } }; // (when each stream's newest datagram came: the receive thread's)
+  std::atomic<double> age[3]{ { 0.0 }, { 0.0 }, { 0.0 } };    // (how old that was at each stream's last read, s: rt_mix's, for the level)
+  double rint = 0;                   // (adapt's: this bandmate's learned ratio, less 1: R, one for its three streams)
+  double wbuf[3][RATE_W] = {}, wt0[3] = { 0, 0, 0 }, werr[3] = { 0, 0, 0 }; // (each stream's window: its fill samples since wt0; its last window's error, s)
+  int wn[3] = { 0, 0, 0 };           // (samples seen this window)
+  double wage[3] = { 0, 0, 0 };      // (and their packet ages' sum, ms: what of the level isn't in the buffer)
+  double whist[3][RATE_BACK] = {}, whp[3][RATE_BACK] = {}; // (each stream's last windows, the oldest first: its error, and how far P moved the level in it, s)
+  int wh[3] = { 0, 0, 0 };
+  double wset[3] = { -1, -1, -1 };   // (the level each stream is held at, ms: where it settled at its start; -1: not yet)
+  double fast_until = 0;             // (the fast loop until then: RATE_FAST_S)
+  bool learning = true;              // (no window of this bandmate's yet: its first starts the fast loop)
+  double kp_was = RATE_KP;           // (P's gain at the last look: the fade's hand-over to R)
+  unsigned wrng = 12345;             // (the reservoir's)
   double toff[3] = { 0, 0, 0 };      // (the audio thread's: each sink's time ahead of the block's, s, from its rate)
   double switch_at = -1e9, mswitch_at = -1e9; // (when this computer last switched between the hub's mix and direct streams; when it last
                                               // joined or left the mix itself (not a rescue: the mix's own gaps are its network's): hub_watch)
@@ -741,8 +787,9 @@ void AOO_CALL source_event(void *user, const AooEvent *e, AooThreadLevel)
   if (p->rtt_ms < 0) p->rtt_ms = ntp_ms(q.t1, q.t4) - ntp_ms(q.t2, q.t3);
 }
 
-// AOO's drift correction (dynamic resampling: the top of the file) on every sink and source, and the source's hand-off queue. The rate it
-// corrects with comes from the times rt_capture hands AOO (clock_step; kAooPreciseTimestamp in setup). rt_test_drift: off.
+// AOO's dynamic resampling on every sink and source, and the source's hand-off queue. The rate a sink resamples at comes from the times
+// rt_mix hands it (kAooPreciseTimestamp in setup): the block's nominal time moved by that stream's read-rate control (RATE_*, adapt), so
+// AOO's own drift estimate (its DLL) plays no part. rt_test_drift: off.
 void tune(RtLink *l, AooSink *s) { if (s) s->setDynamicResampling(l->resample ? kAooTrue : kAooFalse); }
 void tune(RtLink *l, AooSource *s)
 {
@@ -1332,30 +1379,63 @@ void adapt(RtLink *l, Slot &p, double now)
   const bool quiet = p.quiet_since >= 0 && now - p.quiet_since > BUF_QUIET_S;
   struct Stream { AooSink *s; AooId id; bool on; Low *lw; } st[3] = { { p.sink, SRC_ID, p.streaming, &p.lt }, { p.psink, PLAY_ID, p.pstreaming, &p.lp },
                                                                      { p.msink, MIX_ID, p.mstreaming, &p.lm } };
+  double fills[3];
+  int playing = 0;
+  for (int k = 0; k < 3; ++k) { fills[k] = st[k].on ? fill_of(l, st[k].s, p.addr, st[k].id, p.target_ms) : -1; playing += fills[k] >= 0 ? 1 : 0; }
+  // (the read-rate control's gains now: g 1 in the fast loop, 0 in the slow one, fading between; P's share for stream k, inside its bound)
+  auto gains = [&](double &kp, double &pmax) {
+    const double g = std::max(0.0, std::min(1.0, (p.fast_until - now) / RATE_FADE_S));
+    kp = RATE_KP + g * (RATE_KP_F - RATE_KP);
+    pmax = RATE_P + g * (RATE_P_F - RATE_P);
+  };
+  auto part = [&](int k) { double kp, pmax; gains(kp, pmax); return std::max(-pmax, std::min(pmax, kp * p.werr[k])); };
   for (int k = 0; k < 3; ++k) { // (each stream's buffer while it plays, and its lowest lately)
     Stream &x = st[k];
-    const double f = x.on ? fill_of(l, x.s, p.addr, x.id, p.target_ms) : -1;
+    const double f = fills[k];
     if (f < 0) x.lw->reset(now);
     else x.lw->add(f, now, BUF_STEP / 2 / sp);
     if (x.id == SRC_ID || p.fill_ms < 0) p.fill_ms = f; // (a listener through a hub hears the mix: Talk's is -1)
     if (x.id == PLAY_ID) p.pfill_ms = f;
-    // (the read-rate servo, RATE_*: not while it re-buffers or stops; what it learned stays for when it's back)
-    if (f < 0) { p.wn[k] = 0; p.wprev[k] = -1; p.nsl[k] = 0; p.rate[k].store(1 + p.rint[k], std::memory_order_relaxed); continue; }
-    if (p.wn[k]++ == 0) { p.wt0[k] = now; p.wsum[k] = 0; }
-    p.wsum[k] += f;
-    if (now - p.wt0[k] < RATE_WIN / sp || p.wn[k] < 2) continue;
-    const double w = p.wsum[k] / p.wn[k];
-    if (p.wprev[k] >= 0) { // (fraction: ms of fill per ms)
-      double *sl = p.wsl[k];
-      sl[0] = sl[1]; sl[1] = sl[2]; sl[2] = (w - p.wprev[k]) / 1000.0 / (now - p.wt0[k]);
-      if (++p.nsl[k] >= 3 && ((sl[0] > RATE_MIN && sl[1] > RATE_MIN && sl[2] > RATE_MIN) || (sl[0] < -RATE_MIN && sl[1] < -RATE_MIN && sl[2] < -RATE_MIN))) {
-        const double least = std::copysign(std::min(std::fabs(sl[0]), std::min(std::fabs(sl[1]), std::fabs(sl[2]))) - RATE_MIN, sl[2]);
-        p.rint[k] = std::max(-RATE_CAP, std::min(RATE_CAP, p.rint[k] + RATE_G * std::max(-RATE_CAP, std::min(RATE_CAP, least))));
-        p.nsl[k] = 0; // (three new slopes before the next step: each measured at the rate just set)
-      }
+    // (the read-rate control, RATE_*: not while it re-buffers or stops; R stays for when it's back)
+    const double age = p.age[k].load(std::memory_order_relaxed);
+    if (f < 0 || age > RATE_AGE) { p.wn[k] = 0; p.wh[k] = 0; p.werr[k] = 0; p.wset[k] = -1; continue; }
+    const double lv = f + std::max(0.0, age) * 1000; // (the level, a time: the comment at RATE_*)
+    const int n = p.wn[k]++;
+    if (n == 0) { p.wt0[k] = now; p.wage[k] = 0; }
+    p.wage[k] += lv - f;
+    if (n < RATE_W) p.wbuf[k][n] = lv;
+    else { // (a reservoir: every sample of the window as likely kept)
+      p.wrng = p.wrng * 1103515245u + 12345u;
+      const unsigned j = (p.wrng >> 8) % (unsigned)(n + 1);
+      if (j < (unsigned)RATE_W) p.wbuf[k][j] = lv;
     }
-    p.rate[k].store(1 + p.rint[k], std::memory_order_relaxed);
-    p.wprev[k] = w;
+    if (now - p.wt0[k] < RATE_WIN || p.wn[k] < RATE_NEED) continue;
+    const int m = std::min(p.wn[k], RATE_W);
+    std::nth_element(p.wbuf[k], p.wbuf[k] + m / 2, p.wbuf[k] + m);
+    // (the level it's held at: where the stream settled when it started, its buffer within RATE_SET_LO under and RATE_SET_HI over its size
+    // (`in`: what of the level is the packets' age, not buffer). AOO ends its buffering a few ms off the size, differently each time, and
+    // steering that to the size itself was a pitch step at every start and, at the fast loop's gain, a few hundred ppm learned into R
+    // from nothing)
+    const double med = p.wbuf[k][m / 2], in = p.wage[k] / p.wn[k];
+    if (p.wset[k] < 0) p.wset[k] = std::max(p.target_ms + in - RATE_SET_LO, std::min(p.target_ms + in + RATE_SET_HI, med));
+    const double e = (med - p.wset[k]) / 1000.0, dt = std::min(now - p.wt0[k], 2 * RATE_WIN); // (a window stretched by a stall counts as two at most)
+    const double moved = std::fabs(part(k)) * dt; // (how far P, as it was through this window, moved the level toward its size)
+    if (p.learning || std::fabs(e) * 1000 > RATE_FAST_MS) { p.learning = false; p.fast_until = now + RATE_FAST_S; }
+    // (R learns only while P isn't getting its way, the comment at RATE_*: the level against RATE_BACK windows ago came back less than
+    // half of what P alone did since. Not from a stream's first two windows: where its buffering ended isn't a rate, and one window back
+    // P has had half a window to act, which reads as "not coming back" half the time)
+    double did = moved;
+    for (int i = 1; i < p.wh[k]; ++i) did += p.whp[k][i];
+    if (p.wh[k] >= 2 && std::fabs(e) > std::fabs(p.whist[k][0]) - 0.5 * did) {
+      double kp, pmax;
+      gains(kp, pmax);
+      const double ei = std::max(-RATE_I_MS / 1000, std::min(RATE_I_MS / 1000, e));
+      p.rint = std::max(-RATE_CAP, std::min(RATE_CAP, p.rint + kp * kp / 4 * ei * dt / playing));
+    }
+    if (p.wh[k] == RATE_BACK) { std::copy(p.whist[k] + 1, p.whist[k] + RATE_BACK, p.whist[k]); std::copy(p.whp[k] + 1, p.whp[k] + RATE_BACK, p.whp[k]); --p.wh[k]; }
+    p.whist[k][p.wh[k]] = e;
+    p.whp[k][p.wh[k]++] = moved;
+    p.werr[k] = e;
     p.wn[k] = 0;
   }
   for (int k = 0; k < 3; ++k) { // (far above its size for a whole stretch: shed down to its size, rt_mix's crossfaded skip)
@@ -1364,14 +1444,25 @@ void adapt(RtLink *l, Slot &p, double now)
     const double lo = x.lw->low();
     if (lo < 0 || lo < p.target_ms + TRIM_OVER) continue;
     p.shed[k].store((int)(std::min(lo - p.target_ms, 1000.0) * l->cfg_sr / 1000.0));
-    p.wn[k] = 0; p.wprev[k] = -1; p.nsl[k] = 0; // (the shed's drop isn't a rate)
+    p.wn[k] = 0; p.wh[k] = 0; p.werr[k] = 0; p.wset[k] = -1; // (shed down to its size: no error left, and the drop isn't a rate)
     ++p.trims;
     if (x.id == PLAY_ID) ++p.ptrims;
     x.lw->reset(now);
   }
+  { // (the fast loop fading to the slow one: what P gives up as its gain falls goes into R, so the rate doesn't move and the level stays
+    // where it settled. Without it the level had to travel to five times its error for the slow P to do the same work)
+    double kp, pmax, e = 0;
+    gains(kp, pmax);
+    for (int k = 0; k < 3; ++k) if (fills[k] >= 0) e += p.werr[k];
+    if (kp < p.kp_was && playing > 0 && std::fabs(p.kp_was * e / playing) < pmax) p.rint = std::max(-RATE_CAP, std::min(RATE_CAP, p.rint + (p.kp_was - kp) * e / playing));
+    p.kp_was = kp;
+  }
+  // (each stream's read rate: R and its own P)
+  for (int k = 0; k < 3; ++k) p.rate[k].store(1 + std::max(-RATE_CAP, std::min(RATE_CAP, p.rint + part(k))), std::memory_order_relaxed);
   double want = p.target_ms;
   if (p.jitter + p.pjitter + p.mjitter != p.jitter_seen) { // (Talk's, Play's or its mix's: one buffer size for all, they come over the same network)
     p.jitter_seen = p.jitter + p.pjitter + p.mjitter;
+    for (int k = 0; k < 3; ++k) { p.wn[k] = 0; p.wh[k] = 0; p.werr[k] = 0; p.wset[k] = -1; } // (re-buffered: where it lands isn't a rate; also at the ceiling, where the size stays)
     const bool back = now - p.last_retry < p.retry_s / sp; // (it went back below a held size too soon)
     if (now - p.last_under > BUF_LONE / sp && !back) ++p.lone; // (a lone spike: grown a step, not held)
     else {
@@ -1398,7 +1489,7 @@ void adapt(RtLink *l, Slot &p, double now)
   size_sink(p.psink, want);
   size_sink(p.msink, want);
   for (Stream &x : st) x.lw->reset(now); // (re-buffered: measured again from here)
-  for (int k = 0; k < 3; ++k) { p.wn[k] = 0; p.wprev[k] = -1; p.nsl[k] = 0; } // (nor the re-buffer's)
+  for (int k = 0; k < 3; ++k) { p.wn[k] = 0; p.wh[k] = 0; p.werr[k] = 0; p.wset[k] = -1; } // (and the read-rate control's windows)
 }
 
 void tx_loop(RtLink *l)
@@ -1534,8 +1625,9 @@ void rx_one(RtLink *l, const unsigned char *d, int n, const sockaddr_in &from)
     Slot *p = slot_of(l, from);
     if (!p) { not_here(l, from); return; }
     p->rx_at.store(now_s(), std::memory_order_relaxed);
-    if (type == kAooMsgTypeSink && id == p->sink_id && p->sink) p->sink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
-    else if (type == kAooMsgTypeSink && id == p->psink_id && p->psink) p->psink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
+    // (arr_at: for the level the read-rate control holds, RATE_*; a ping's answer counts as a packet too, one read in a second)
+    if (type == kAooMsgTypeSink && id == p->sink_id && p->sink) { p->arr_at[0].store(now_s(), std::memory_order_relaxed); p->sink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from)); }
+    else if (type == kAooMsgTypeSink && id == p->psink_id && p->psink) { p->arr_at[1].store(now_s(), std::memory_order_relaxed); p->psink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from)); }
     else if (type == kAooMsgTypeSource && id == SRC_ID && l->src) l->src->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
     else if (type == kAooMsgTypeSource && id == PLAY_ID && l->psrc) l->psrc->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
     else if (type == kAooMsgTypeSink && id == p->msink_id && p->msink) { // (my hub's mix for me: when it last came, and since when unbroken)
@@ -1546,6 +1638,7 @@ void rx_one(RtLink *l, const unsigned char *d, int n, const sockaddr_in &from)
       // minute with the hub steady)
       gap_learn(l, *p, last, now);
       p->mix_at.store(now);
+      p->arr_at[2].store(now, std::memory_order_relaxed);
       p->msink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
     } else if (type == kAooMsgTypeSource && id == MIX_ID && p->msrc) p->msrc->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
     else { reject(l, "for a stream that isn't theirs", from); return; }
@@ -1637,6 +1730,7 @@ int rt_start(RtLink *l, int first_input, int nch, int kbps, int port, const char
   tune(l, l->src);
   tune(l, l->psrc);
   l->pauses = l->overflows = 0; l->skipped = 0; l->skip_in = 0; l->skip_out = 0;
+  l->watch_at = -1e9; // (a new send thread: the time stopped isn't a stall of it. The hub's stall_max_ms read 1613.8 from one restart, rt-r3)
   l->phop = 0; l->pstream = false;  // (rt_play's choice is kept: the send thread opens its mapping again)
   { std::lock_guard<std::mutex> p(l->pend_mx); l->peers_dirty = true; } // (the list given before start, if any)
   l->run.store(true);
@@ -1826,13 +1920,13 @@ void rt_test_speed(RtLink *l, double x) { std::lock_guard<std::mutex> st(l->stat
 void rt_test_hold_mix(RtLink *l, double ms) { l->hold_mix.store(now_s() + ms / 1000.0); }
 void rt_test_hold_tx(RtLink *l, double ms) { l->hold_tx.store(now_s() + ms / 1000.0); l->wake.set(); }
 void rt_test_drop(RtLink *l, double ms) { l->drop_until.store(now_s() + ms / 1000.0); }
-void rt_test_drift(RtLink *l, int resample) { l->resample = resample != 0; l->clk.hold = resample != 2; } // (before rt_start)
+void rt_test_drift(RtLink *l, int resample) { l->resample = resample != 0; } // (before rt_start. 0: AOO's resampling off, and the read-rate control with it)
 void rt_test_clock_bias(RtLink *l, double ppm) { l->clk.bias.store(ppm * 1e-6); }
-double rt_test_clock(const double *t, int n, int len, double srate, double *used)
+double rt_test_clock(const double *t, int n, int len, double srate, double *handed)
 {
   std::unique_ptr<Clock> c(new Clock());
-  for (int i = 0; i < n; ++i) clock_step(*c, len, srate, aoo_ntpTimeFromSeconds(1e6 + t[i]));
-  if (used) *used = c->used.load();
+  for (int i = 0; i < n; ++i) clock_step(*c, len, srate, t[i], aoo_ntpTimeFromSeconds(1e6));
+  if (handed) *handed = c->k > 0 ? (c->fed / ((double)c->k * c->nom) - 1) * 1e6 : 0; // (the times AOO was handed against the nominal ones, ppm)
   return c->ppm.load();
 }
 
@@ -1875,10 +1969,10 @@ std::string rt_status(RtLink *l)
            l->play_send.load() ? "true" : "false", l->play_peak.exchange(0.f));
   o.insert(o.size() - 9, b); // (before "peers":{)
   // (pauses: reconfigures that held the audio thread; paused_blocks: the blocks it skipped meanwhile, made up as xruns; overflows: AOO's send queue full)
-  // (clock_ppm: this computer's audio clock against its own clock, as clock_step measures it for the drift correction; 0 for its first 6 s.
-  // clock_used_ppm: what the correction uses of it: 0 for the first ~2 minutes, all of it from ~10)
-  snprintf(b, sizeof(b), "\"pauses\":%lld,\"paused_blocks\":%lld,\"overflows\":%lld,\"clock_ppm\":%.1f,\"clock_used_ppm\":%.1f,\"clock_steps\":%lld,", l->pauses, l->skipped.load(),
-           l->overflows, l->clk.ppm.load(), l->clk.used.load(), l->clk.steps.load()); // (clock_steps: stalls taken out of the estimate. rt-fix6b)
+  // (clock_ppm: this computer's audio device against its own clock, as clock_step measures it: for the eye only since rt-audio3, nothing
+  // reads at it; 0 for its first 6 s. clock_steps: callbacks lost for good, or the clock set, left out of it)
+  snprintf(b, sizeof(b), "\"pauses\":%lld,\"paused_blocks\":%lld,\"overflows\":%lld,\"clock_ppm\":%.1f,\"clock_steps\":%lld,", l->pauses, l->skipped.load(),
+           l->overflows, l->clk.ppm.load(), l->clk.steps.load());
   o.insert(o.size() - 9, b);
   const double now = now_s();
   { // (the ears tap: what, state, frames written, lost (the worker behind), and its first frame's age on the steady clock: Lua's
@@ -1948,9 +2042,11 @@ std::string rt_status(RtLink *l)
     // re-buffer, a gap), trims (sheds), its buffer as measured and its latency from that (half the round trip + that buffer + AOO's codec and
     // reblocking for it: what's held now, where latency_ms is Talk's size when its buffering ended), and its mix's overruns)
     const double plat = p.rtt_ms >= 0 && p.pfill_ms >= 0 ? p.rtt_ms / 2 + p.pfill_ms + p.plat_ms : -1;
-    snprintf(b, sizeof(b), ",\"overruns\":%lld,\"play_underruns\":%lld,\"play_overruns\":%lld,\"play_resyncs\":%lld,\"play_trims\":%lld,\"play_buffer_ms\":%.1f,\"play_latency_ms\":%.1f,\"mix_overruns\":%lld,\"rate_ppm\":%.0f,\"play_rate_ppm\":%.0f,\"mix_rate_ppm\":%.0f",
+    // (the read-rate control's, adapt: what each stream is read at now, and ratio_ppm, this bandmate's learned ratio: its device's real rate
+    // over this one's, less 1. rate_fast: the fast loop runs. rt-audio3)
+    snprintf(b, sizeof(b), ",\"overruns\":%lld,\"play_underruns\":%lld,\"play_overruns\":%lld,\"play_resyncs\":%lld,\"play_trims\":%lld,\"play_buffer_ms\":%.1f,\"play_latency_ms\":%.1f,\"mix_overruns\":%lld,\"rate_ppm\":%.0f,\"play_rate_ppm\":%.0f,\"mix_rate_ppm\":%.0f,\"ratio_ppm\":%.0f,\"rate_fast\":%s",
              p.overruns, p.punderruns, p.poverruns, p.punderruns + p.poverruns, p.ptrims, p.pfill_ms, plat, p.moverruns,
-             (p.rate[0].load() - 1) * 1e6, (p.rate[1].load() - 1) * 1e6, (p.rate[2].load() - 1) * 1e6); // (the read-rate servo's: adapt. rt-fix6b)
+             (p.rate[0].load() - 1) * 1e6, (p.rate[1].load() - 1) * 1e6, (p.rate[2].load() - 1) * 1e6, p.rint * 1e6, now < p.fast_until ? "true" : "false");
     o.insert(o.size() - 1, b);
   }
   o += "}}";
@@ -1974,7 +2070,7 @@ void rt_capture(RtLink *l, const double *const *in, int nin, int len, double sra
     l->callbacks.fetch_add(1, std::memory_order_relaxed);
     l->seen_sr.store(srate, std::memory_order_relaxed);
     l->seen_len.store(len, std::memory_order_relaxed);
-    l->tfed = clock_step(l->clk, len, srate, aoo_getCurrentNtpTime()); // (every block, paused or not: the device's clock runs on)
+    l->tfed = clock_step(l->clk, len, srate, now_s(), aoo_getCurrentNtpTime()); // (every block, paused or not: the device's clock runs on)
     l->clk_cb = l->callbacks.load(std::memory_order_relaxed);
     if (l->live.load() && (int)srate == l->cfg_sr && len == l->cfg_len) {
       if (const int k = l->skip_in.exchange(0)) l->src->reportXRun(k); // (blocks a reconfigure paused: the stream keeps its time)
@@ -2071,13 +2167,17 @@ void rt_mix(RtLink *l, double *const *out, int nout, int len, double srate)
     // stream that far on (AOO skips it in the next process: reportXRun, a lock-free count; that process takes a block too). ek: the ears tap's
     // kind for this stream.
     const int shed_step = std::max(len, (int)(l->cfg_sr * SHED_STEP / 1000));
+    const double tread = now_s();
     auto hear = [&](Slot &p, AooSink *sink, std::atomic<bool> &mono, std::atomic<float> &peak, bool &was_quiet, float gain, float r0, float r1, float *to,
                     std::atomic<int> &shed, int ek) {
       // (this sink's time at its servo's rate, adapt's RATE_*: AOO's sink reads at the rate its times say; ek 2-4 is Talk, Play, the mix)
       double &off = p.toff[ek - 2];
       off += (p.rate[ek - 2].load(std::memory_order_relaxed) - 1) * len / l->cfg_sr;
       const AooNtpTime ts = off >= 0 ? t + (AooNtpTime)(off * 4294967296.0) : t - (AooNtpTime)(-off * 4294967296.0);
+      // (the newest packet's age at this read: AOO takes what has arrived into its buffer in process, so the two belong together)
+      const double came = p.arr_at[ek - 2].load(std::memory_order_relaxed);
       if (!sink || sink->process(l->mixptr, len, ts, nullptr, nullptr) != kAooOk) { if (to) std::fill(to, to + 2 * len, 0.f); return; }
+      p.age[ek - 2].store(tread - came, std::memory_order_relaxed);
       float *L = l->mixptr[0], *R = l->mixptr[1];
       const int sk = std::min(shed.load(std::memory_order_relaxed), shed_step);
       if (sk >= len && !l->xbuf.empty()) {
@@ -2247,7 +2347,7 @@ void rtaudio_register(reaper_plugin_info_t *rec)
     { "StudioSync_LiveAudioPeers", (void *)api_peers, (void *)vla_peers,
       "int\0const char*\0json\0Who to send to and hear, and the key: {\"secret\":\"<the studio secret>\",\"port\":47281,\"peers\":[\"name:port\",...]} (the direct link's list; Tailscale addresses only). Returns how many peers, or -1 when the JSON isn't that." },
     { "StudioSync_LiveAudioStatus", (void *)api_status, (void *)vla_status,
-      "const char*\0\0\0StudioSync's live audio as JSON: running, bind, error, secret, srate, block, level (what you send, peak since the last ask), callbacks, max_us, pauses, paused_blocks, overflows (reconfigures that held the audio, blocks skipped meanwhile, AOO's send queue full), sent, received, rejected, last_reject, last_reject_from (its sender's ip:port), not_here, not_here_from (datagrams with the studio's secret from a computer not on the peer list here: dropped, not refused), and per peer: resolved, streaming, rtt_ms, latency_ms, buffer_ms (the jitter buffer), target_ms, floor_ms, ceiling_ms (the adaptive buffer's size and bounds), fill_ms (the buffer as measured), jitter (underruns that grew it), switched (underruns a hub mix/direct switch brought), trims (buffers far above their size shed, crossfaded), loss (0-1), dropped, underruns, overruns (bursts that didn't fit: a re-buffer), level (peak since the last ask), gain, mute, play_streaming, play_level, play_gain, play_underruns, play_overruns, play_resyncs, play_trims, play_buffer_ms (Play's buffer as measured), play_latency_ms (from that: Play's own) (their Play stream), mix_overruns, rate_ppm, play_rate_ppm, mix_rate_ppm (each stream's read rate from its buffer, against AOO's drift correction); clock_ppm, clock_used_ppm, clock_steps (stalls left out of the estimate); ears (StudioSync_LiveAudioEars: what, state, frames, lost, first_age_s); and play (the live out hop id, 0: no Play), play_alive, play_send, play_level (what this computer plays out); and hook: pre, post (the audio hook's calls before and after REAPER's processing), in_nch, out_nch (the channel counts REAPER put in the hook's struct: 0 on REAPER 7), ins, outs (the hardware buffers it handed over: what is captured and mixed into)." },
+      "const char*\0\0\0StudioSync's live audio as JSON: running, bind, error, secret, srate, block, level (what you send, peak since the last ask), callbacks, max_us, pauses, paused_blocks, overflows (reconfigures that held the audio, blocks skipped meanwhile, AOO's send queue full), sent, received, rejected, last_reject, last_reject_from (its sender's ip:port), not_here, not_here_from (datagrams with the studio's secret from a computer not on the peer list here: dropped, not refused), and per peer: resolved, streaming, rtt_ms, latency_ms, buffer_ms (the jitter buffer), target_ms, floor_ms, ceiling_ms (the adaptive buffer's size and bounds), fill_ms (the buffer as measured), jitter (underruns that grew it), switched (underruns a hub mix/direct switch brought), trims (buffers far above their size shed, crossfaded), loss (0-1), dropped, underruns, overruns (bursts that didn't fit: a re-buffer), level (peak since the last ask), gain, mute, play_streaming, play_level, play_gain, play_underruns, play_overruns, play_resyncs, play_trims, play_buffer_ms (Play's buffer as measured), play_latency_ms (from that: Play's own) (their Play stream), mix_overruns, rate_ppm, play_rate_ppm, mix_rate_ppm (what each stream is read at, from its own buffer), ratio_ppm (the bandmate's device rate over this one's as learned, less 1), rate_fast (the fast loop runs); clock_ppm (this device against this computer's clock, for the eye only), clock_steps (callbacks lost for good, left out of it); ears (StudioSync_LiveAudioEars: what, state, frames, lost, first_age_s); and play (the live out hop id, 0: no Play), play_alive, play_send, play_level (what this computer plays out); and hook: pre, post (the audio hook's calls before and after REAPER's processing), in_nch, out_nch (the channel counts REAPER put in the hook's struct: 0 on REAPER 7), ins, outs (the hardware buffers it handed over: what is captured and mixed into)." },
     { "StudioSync_LiveAudioPeerSet", (void *)api_peer_set, (void *)vla_peer_set,
       "int\0const char*,double,int\0peer,gain,mute\0A peer's level (linear, 0-4) and mute in what you hear (the cue mix). Returns 1 when that peer is in the list." },
     { "StudioSync_LiveAudioPeerBuffer", (void *)api_peer_buffer, (void *)vla_peer_buffer,

@@ -30,20 +30,20 @@ int rt_peer_buffer(RtLink *l, const char *peer, double floor_ms, double ceil_ms)
 // bursts), and the adaptive buffer's timings x times faster.
 void rt_test_hold(RtLink *l, double ms);
 void rt_test_speed(RtLink *l, double x);
-// tests only: the hub's mixing stalls for ms (its ring fills, as when its send thread is held up); and, before rt_start, AOO's drift
-// correction off (resample 0), or on without its first minutes' hold (2: the clock's estimate used in full from 6 s).
+// tests only: the hub's mixing stalls for ms (its ring fills, as when its send thread is held up); and, before rt_start, AOO's resampling
+// off (resample 0: no drift correction at all, the read-rate control has nothing to act through), else on.
 void rt_test_hold_mix(RtLink *l, double ms);
 // tests only: the send thread doesn't run for ms (with rt_test_hold: a VM's guest descheduled; hub_watch's stalls)
 void rt_test_hold_tx(RtLink *l, double ms);
 // tests only: nothing arrives for ms (a Wi-Fi outage here: hub_watch's own_outage)
 void rt_test_drop(RtLink *l, double ms);
 void rt_test_drift(RtLink *l, int resample);
-// tests only: this computer's audio clock estimate made wrong by ppm on purpose (rt-r1's laptop read its sinks' rate 1.5-2 % off: the
-// read-rate servo must still match what arrives). rt-fix6b
+// tests only: the times this computer hands AOO made to run wrong by ppm on purpose (rt-r1's laptop read its sinks' rate 1.5-2 % off: the
+// read-rate control must still match what arrives). rt-fix6b
 void rt_test_clock_bias(RtLink *l, double ppm);
-// tests only: the audio clock's estimate (ppm, as clock_ppm) after callbacks at these times (s) with this block size and rate; used: what
-// the drift correction uses of it then (clock_used_ppm).
-double rt_test_clock(const double *t, int n, int len, double srate, double *used = nullptr);
+// tests only: the audio clock's estimate (ppm, as clock_ppm) after callbacks at these times (s) with this block size and rate; handed: how
+// far the times AOO was handed ran from the nominal ones, ppm (0: nothing reads at the estimate. rt-audio3).
+double rt_test_clock(const double *t, int n, int len, double srate, double *handed = nullptr);
 // What this computer sends. peer "" (or null): everything, on 0 = silence while the stream stays up (Mute me, push-to-talk; kept across
 // restarts). A peer in the list: whether it gets this computer's stream (talkback). -> 1 done, 0 when that peer isn't in the list. (James, rt)
 int rt_send(RtLink *l, const char *peer, int on);

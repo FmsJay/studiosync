@@ -133,14 +133,14 @@ static void hub_loads(bool busy)
 // DLL took those in and swung the correction to -2.2 ms a second there; the clock is now measured from each stretch's earliest callback.
 // under: R's underruns from 8 s; excused: those of them that came within 0.5 s of a stall of the test process itself over 15 ms (its
 // callbacks then catch up all at once, before T's packets have crossed: the macOS CI runner's own stalls), apart from the ones it makes.
-static double drift_slope(bool fix, double ppm_t, double ppm_r, int port0, long long &under, long long &excused, bool stalls = false)
+static double drift_slope(bool fix, double ppm_t, double ppm_r, int port0, long long &under, long long &excused, bool stalls = false, double *ratio = nullptr, double *lat = nullptr)
 {
   const int SR = 48000, LEN = 256;
   const double PI = 3.14159265358979;
   char pt[32], pr[32];
   snprintf(pt, sizeof pt, "127.0.0.1:%d", port0); snprintf(pr, sizeof pr, "127.0.0.1:%d", port0 + 1);
   RtLink *T = rt_new(), *R = rt_new();
-  rt_test_drift(T, fix ? 2 : 0); rt_test_drift(R, fix ? 2 : 0); // (2: no 2-minute hold, clock_tests checks that)
+  rt_test_drift(T, fix ? 1 : 0); rt_test_drift(R, fix ? 1 : 0);
   rt_peers(T, (std::string("{\"peers\":[\"") + pr + "\"],\"port\":" + std::to_string(port0) + ",\"secret\":\"studio\"}").c_str());
   rt_peers(R, (std::string("{\"peers\":[\"") + pt + "\"],\"port\":" + std::to_string(port0 + 1) + ",\"secret\":\"studio\"}").c_str());
   rt_start(T, 0, 1, 128, 0, "127.0.0.1"); rt_start(R, 0, 1, 128, 0, "127.0.0.1");
@@ -189,6 +189,8 @@ static double drift_slope(bool fix, double ppm_t, double ppm_r, int port0, long 
       }
     }
   }
+  if (ratio) *ratio = atof(field(rt_status(R), pt, "ratio_ppm").c_str()); // (what R learned of T's rate against its own: rt-audio3)
+  if (lat) lat[0] = atof(field(rt_status(R), pt, "latency_ms").c_str()); // (what R's status says the latency is; lat[1]: as heard, below)
   rt_free(T); rt_free(R);
   // each onset's delay after the burst sent last before it (a burst missed in the output is just left out); the slope: the median of the
   // slopes between onsets one after the other, so a re-buffer (a step in the delay: a stall longer than the buffer underruns here, as R's
@@ -202,6 +204,7 @@ static double drift_slope(bool fix, double ppm_t, double ppm_r, int port0, long 
     if (getenv("DRIFT_DEBUG")) printf("       %s %.1f s: delay %.2f ms\n", fix ? "on " : "off", from, d_ms.back());
   }
   for (size_t i = 1; i < at_s.size(); ++i) if (at_s[i] > at_s[i - 1]) sl.push_back((d_ms[i] - d_ms[i - 1]) / (at_s[i] - at_s[i - 1]));
+  if (lat && !d_ms.empty()) { std::vector<double> d = d_ms; std::nth_element(d.begin(), d.begin() + d.size() / 2, d.end()); lat[1] = d[d.size() / 2]; }
   if (sl.size() < 6) return 1e9;
   std::nth_element(sl.begin(), sl.begin() + sl.size() / 2, sl.end());
   return sl[sl.size() / 2];
@@ -209,17 +212,28 @@ static double drift_slope(bool fix, double ppm_t, double ppm_r, int port0, long 
 static void drift_tests()
 {
   long long u_off = 0, u_on = 0, u_on2 = 0, x_off = 0, x_on = 0, x_on2 = 0;
-  const double off = drift_slope(false, 100, -100, 47451, u_off, x_off), on = drift_slope(true, 100, -100, 47453, u_on, x_on);
+  double r_on = 0, lat_on[2] = { -1, -1 };
+  const double off = drift_slope(false, 100, -100, 47451, u_off, x_off), on = drift_slope(true, 100, -100, 47453, u_on, x_on, false, &r_on, lat_on);
   // (1e9: not measured, under 6 onsets heard from 8 s: the hosted Mac's own stalls on top of the four made ones lost the bursts (CI run
   // 44780868653). Tried again up to 3 times; a slope that was measured is always checked)
-  double on2 = 1e9;
-  for (int i = 0; i < 3 && on2 >= 1e9; ++i) on2 = drift_slope(true, -50, 50, i ? 47555 + 2 * i : 47455, u_on2, x_on2, true);
-  printf("     drift: T's delay to R moves %+.3f ms/s with T +100 ppm and R -100 ppm uncorrected (underruns %lld), %+.3f ms/s corrected (%lld); T -50, R +50 corrected, the test stalling 30-250 ms four times: %+.3f ms/s (%lld)\n",
-         off, u_off, on, u_on, on2, u_on2);
+  double on2 = 1e9, r_on2 = 0;
+  for (int i = 0; i < 3 && on2 >= 1e9; ++i) on2 = drift_slope(true, -50, 50, i ? 47555 + 2 * i : 47455, u_on2, x_on2, true, &r_on2);
+  printf("     drift: T's delay to R moves %+.3f ms/s with T +100 ppm and R -100 ppm uncorrected (underruns %lld), %+.3f ms/s corrected (%lld; R learned %+.0f ppm, the real ratio +200); T -50, R +50 corrected, the test stalling 30-250 ms four times: %+.3f ms/s (%lld; R learned %+.0f ppm, the real ratio -100)\n",
+         off, u_off, on, u_on, r_on, on2, u_on2, r_on2);
   check(off > 0.12 && off < 0.35, "drift: uncorrected, a sender 200 ppm fast fills the receiver's buffer ~0.2 ms a second (what the field's buffers did)");
-  check(std::fabs(on) < 0.06, "drift: with AOO's dynamic resampling the buffer holds still (+100/-100)");
+  check(std::fabs(on) < 0.06, "drift: corrected, the buffer holds still (+100/-100)");
+  check(std::fabs(r_on - 200) < 300, "drift: and the receiver learned the ratio from its buffer alone, no clock estimate (within 300 ppm of +200 by 16 s)");
+  // (rt-r3: the tap's stamps said 127.6 ms where the status said 152-171: the status against what is heard, on one clock, with nothing moving)
+  printf("     drift: T's burst is heard %.1f ms after it's played (8-16 s, the median); R's status says latency_ms %.1f\n", lat_on[1], lat_on[0]);
+  check(lat_on[0] > 0 && std::fabs(lat_on[0] - lat_on[1]) < 12, "drift: the status's latency_ms is the delay heard, within 12 ms (a block of each end and the round trip's half)");
+  // (rt-audio3: through the stalls the delay doesn't hold still any more, and shouldn't: a stall leaves the buffer off its size (a re-buffer, a
+  // burst) and the read-rate control brings it back, at 0.5 % at most. What must hold is the rate: a stall isn't learnt as one. AOO's DLL
+  // took them in and swung to -2200 ppm; the slope servo before this one kept still by leaving the level wherever a stall had put it)
   if (on2 >= 1e9 && !timing_strict()) printf("  (passed over: the stalling run heard too few bursts to measure in 3 tries; SS_TIMING_STRICT off) drift through stalls\n");
-  else check(std::fabs(on2) < 0.06, "drift: with AOO's dynamic resampling the buffer holds still through the test's stalls (-50/+50)");
+  else {
+    check(std::fabs(r_on2 + 100) < 700, "drift: the test's stalls aren't learnt as a rate (the ratio stays within 700 ppm of -100)");
+    check(on2 < 0.06 && on2 > -6.5, "drift: and after them the delay only comes back toward its size, at about 0.5 % a second at most (never away)");
+  }
   if (x_on) printf("     drift: %lld underrun(s) of the corrected run came right after a stall of the test itself%s\n", x_on, timing_strict() ? "" : " (passed over: SS_TIMING_STRICT off)");
   check(u_on == 0 && (x_on == 0 || !timing_strict()), "drift: corrected, no underruns (but in a stall of this process, SS_TIMING_STRICT off)");
 }
@@ -726,14 +740,13 @@ static void clock_tests()
     if (j % 8000 != 7999) acc += 480;
     for (; acc >= 512; acc -= 512) t.push_back(j * 0.010 + late());
   }
-  double u10 = 1, u2 = 1, u5 = 0;
-  const double stair = rt_test_clock(t.data(), (int)t.size(), 512, 48000, &u10);
-  const double stair2 = rt_test_clock(t.data(), (int)t.size() / 5, 512, 48000, &u2); // (2 minutes in)
-  const double stair5 = rt_test_clock(t.data(), (int)t.size() / 2, 512, 48000, &u5); // (5 minutes in)
-  printf("     clock: the correction uses %.0f ppm at 2 minutes, %.0f of %.0f at 5, %.0f of %.0f at 10\n", u2, u5, stair5, u10, stair);
-  check(u2 == 0, "clock: no drift correction while the estimate has under 2 minutes of history (it reads hundreds of ppm off then)");
-  check(u5 < -10 && u5 > stair5 * 0.6, "clock: the correction ramps in between 2 and 10 minutes (part of the estimate at 5)");
-  check(std::fabs(u10 - stair) < 0.5, "clock: all of the estimate used once its 10 minutes of history are full");
+  double h10 = 1, h2 = 1;
+  const double stair = rt_test_clock(t.data(), (int)t.size(), 512, 48000, &h10);
+  const double stair2 = rt_test_clock(t.data(), (int)t.size() / 5, 512, 48000, &h2); // (2 minutes in)
+  // (rt-audio3: AOO is handed nominal times whatever the estimate says: a wrong estimate at either end drained or filled every buffer, and
+  // each stream's own buffer says what to read at instead. It was the estimate, ramped in over 10 minutes: -125 ppm here by then)
+  printf("     clock: the times AOO is handed run %.2f ppm from nominal after 2 minutes, %.2f after 10 (the estimate: %.0f, %.0f)\n", h2, h10, stair2, stair);
+  check(std::fabs(h2) < 0.01 && std::fabs(h10) < 0.01, "clock: AOO is handed nominal times, whatever the device's estimate reads (nothing reads at an estimate)");
   t.clear();
   for (long long k = 0; k < 56250; ++k) t.push_back(k * 512 / (48000 * (1 - 102e-6)) + late());
   const double slow = rt_test_clock(t.data(), (int)t.size(), 512, 48000);
@@ -755,6 +768,23 @@ static void clock_tests()
   const double stalled = rt_test_clock(t.data(), (int)t.size(), 512, 48000);
   printf("     clock: the slow device with stalls of 1.2 and 0.4 s and its clock set back 0.8 s reads %.0f ppm\n", stalled);
   check(std::fabs(stalled + 102) < 5, "clock: stalls and a clock set aren't taken as the device's rate (rt-r1: the laptop played the desktop's Play 2 % fast)");
+  // (rt-audio3: LinuxBox, a VM, whose device counted +135 ppm while 1.0.37's estimate read -1008 to -1521 with 275-375 "steps". Its callbacks
+  // come ten at once (the last of each ten on time), their timing creeps later, 75 ms in 30 s, and snaps back, and the guest is held 0.1-0.7 s
+  // now and then and catches up. 1.0.37 took every jump over 25 ms + 2 blocks out, either way: the snaps back went, the creep stayed, read
+  // as a device 2500 ppm slow. A jump down is the device's own timing; a jump up counts only if the callbacks stay late)
+  t.clear();
+  {
+    const double per = 512 / (48000 * (1 + 135e-6));
+    double free_at = 0;
+    for (long long b = 0; b < 5625; ++b) { // (10 minutes of bursts of ten)
+      const double at = (10 * b + 9) * per, due = at + 0.0025 * fmod(at, 30.0);
+      if (rnd(0, 1) < 0.01) free_at = due + rnd(0.1, 0.7);
+      for (int k = 0; k < 10; ++k) t.push_back(std::max(due, free_at) + rnd(0, 0.003));
+    }
+  }
+  const double vm = rt_test_clock(t.data(), (int)t.size(), 512, 48000);
+  printf("     clock: a VM's device 135 ppm fast, its callbacks ten at once, creeping 75 ms late every 30 s and held 0.1-0.7 s now and then, reads %+.0f ppm\n", vm);
+  check(std::fabs(vm - 135) < 150, "clock: a VM's creeping, bursting callbacks aren't read as a slow device (LinuxBox read -1008 to -1521 ppm at +135, rt-r3)");
 }
 
 // ---- rt-fix6b: a receiver whose drift correction reads the sender 1.5 % wrong (rt-r1's laptop: the desktop's Play at 446.5 Hz, an underrun
@@ -810,6 +840,172 @@ static void rate_test()
   check_unless_stalled(std::fabs(hz - 440) < 440 * 0.002, stalled, "rate: Q plays what P sends at P's rate (440 Hz, not 446.6) with its own clock 1.5 % off");
   check_unless_stalled(u20 == u10, stalled, "rate: no underrun in Q's last 14 s (it ran dry every few seconds)");
   check(rate < -10000 && rate > -20000, "rate: the servo learned the 1.5 % (rate_ppm in the status)");
+}
+
+// ---- rt-audio3: devices that don't keep their rate, and a VM's timing (rt-r3, extension 1.0.37, on the real rig) ---------------------------
+// A tone's pitch over [a, b) of x (zero crossings, interpolated), Hz at sr; -1: under two crossings.
+static double pitch_hz(const std::vector<double> &x, size_t a, size_t b, double sr)
+{
+  double first = -1, last = -1;
+  int cnt = 0;
+  for (size_t i = a + 1; i < b && i < x.size(); ++i)
+    if (x[i - 1] < 0 && x[i] >= 0) { const double at = (double)(i - 1) + x[i - 1] / (x[i - 1] - x[i]); if (first < 0) first = at; last = at; ++cnt; }
+  return cnt > 1 ? (cnt - 1) * sr / (last - first) : -1;
+}
+// The desktop's device (WASAPI through Voicemeeter at 512): REAPER is called back on a 10 ms tick with 480 samples a tick, and ticks are
+// dropped, 2 to 12 of them in 10 s, a different share every few seconds (measured: 47404-48138 Hz over 10 s stretches, 47716-47890 over
+// 30-45 s). So its real rate is 0.1-1.2 % under 48 kHz and moves all the time. Heard through 1.0.37: the laptop -> the desktop 0.25 % fast
+// with 250 ms of gaps and the desktop's Play re-buffers rising; the desktop -> the laptop re-buffering every 2 minutes while idle, its read
+// rate swinging +-3000 ppm. Here L (a steady device, 128-sample blocks) and D (that device) each send the other a tone for 45 s; from 15 s
+// on, each must hear the other whole (no re-buffer, no shed, no gap) at the pitch the two real rates give, and D's status must say what
+// D's device really does. Fails on 1.0.37's rtaudio.cpp (a clock estimate held at nominal for its first minutes, then a ten-minute
+// average; a servo that wants three 1 s slopes in a row).
+static void device_test()
+{
+  const int SR = 48000, LL = 128, LD = 512, PL = 47641, PD = 47642;
+  const double PI = 3.14159265358979, T_END = 45.0, T_SET = 15.0;
+  const double drop[8] = { 0.004, 0.012, 0.001, 0.008, 0.003, 0.010, 0.002, 0.006 }; // (the share of D's ticks dropped, a new one every 6 s)
+  char pl[32], pd[32];
+  snprintf(pl, sizeof pl, "127.0.0.1:%d", PL); snprintf(pd, sizeof pd, "127.0.0.1:%d", PD);
+  RtLink *L = rt_new(), *D = rt_new();
+  rt_peers(L, (std::string("{\"peers\":[\"") + pd + "\"],\"port\":" + std::to_string(PL) + ",\"secret\":\"studio\"}").c_str());
+  rt_peers(D, (std::string("{\"peers\":[\"") + pl + "\"],\"port\":" + std::to_string(PD) + ",\"secret\":\"studio\"}").c_str());
+  rt_start(L, 0, 1, 128, 0, "127.0.0.1"); rt_start(D, 0, 1, 128, 0, "127.0.0.1");
+  std::vector<double> il(LL), id(LD), ol1(LL), ol2(LL), od1(LD), od2(LD), heard_l, heard_d;
+  double *oL[2] = { ol1.data(), ol2.data() }, *oD[2] = { od1.data(), od2.data() };
+  long long bl = 0, tick = 0, nl = 0, nd = 0, bd = 0, bd_set = -1;
+  int acc = 0;
+  double debt = 0, stalled = 0, real_set = 0, real_end = 0;
+  std::string sl0, sd0;
+  const auto t0 = std::chrono::steady_clock::now();
+  for (;;) {
+    const double due_l = (double)bl * LL / SR, due_t = (double)tick * 0.010, due = std::min(due_l, due_t);
+    if (due > T_END) break;
+    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < due) std::this_thread::yield();
+    const double real = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    if (due > 2) stalled = std::max(stalled, (real - due) * 1000);
+    if (bd_set < 0 && due >= T_SET) { bd_set = bd; real_set = real; sl0 = rt_status(L); sd0 = rt_status(D); }
+    real_end = real;
+    if (due_l <= due_t) {
+      for (int k = 0; k < LL; ++k, ++nl) il[k] = 0.5 * sin(2 * PI * 440 * nl / SR);
+      const double *ii[1] = { il.data() };
+      std::fill(ol1.begin(), ol1.end(), 0.0);
+      rt_capture(L, ii, 1, LL, SR); rt_mix(L, oL, 2, LL, SR); ++bl;
+      heard_l.insert(heard_l.end(), ol1.begin(), ol1.end());
+    } else { // (a tick of D's device: 480 samples unless it's dropped, and a callback for every 512 of them)
+      debt += drop[(int)(due_t / 6) % 8];
+      if (debt >= 1) debt -= 1; else acc += 480;
+      for (; acc >= LD; acc -= LD) {
+        for (int k = 0; k < LD; ++k, ++nd) id[k] = 0.5 * sin(2 * PI * 660 * nd / SR);
+        const double *ii[1] = { id.data() };
+        std::fill(od1.begin(), od1.end(), 0.0);
+        rt_capture(D, ii, 1, LD, SR); rt_mix(D, oD, 2, LD, SR); ++bd;
+        heard_d.insert(heard_d.end(), od1.begin(), od1.end());
+      }
+      ++tick;
+    }
+  }
+  const std::string sl = rt_status(L), sd = rt_status(D);
+  rt_free(L); rt_free(D);
+  auto num = [](const std::string &s, const char *peer, const char *key) { return atof(field(s, peer, key).c_str()); };
+  // (D's real rate from 15 s to the end, counted here; what each hears is at the other's rate over its own)
+  const double d_hz = bd_set >= 0 && real_end > real_set ? (double)(bd - bd_set) * LD / (real_end - real_set) : 0;
+  const double hz_l = pitch_hz(heard_l, (size_t)(T_SET * SR), heard_l.size(), SR), want_l = 660 * d_hz / SR; // (L hears D's 660)
+  const double hz_d = pitch_hz(heard_d, (size_t)bd_set * LD, heard_d.size(), SR), want_d = 440 * SR / d_hz;  // (D hears L's 440)
+  std::vector<double> hd(heard_d.begin() + (ptrdiff_t)((size_t)bd_set * LD), heard_d.end());
+  const double gap_l = min_rms(heard_l, T_SET, T_END - 0.1), gap_d = min_rms(hd, 0, (double)hd.size() / SR - 0.1);
+  const double ul = num(sl, pd, "underruns") - num(sl0, pd, "underruns"), ud = num(sd, pl, "underruns") - num(sd0, pl, "underruns");
+  const double tl = num(sl, pd, "trims") - num(sl0, pd, "trims"), td = num(sd, pl, "trims") - num(sd0, pl, "trims");
+  const double ol = num(sl, pd, "overruns") - num(sl0, pd, "overruns"), od = num(sd, pl, "overruns") - num(sd0, pl, "overruns");
+  printf("     device: D's device ran %.0f Hz from 15 s (%+.0f ppm); L hears D's 660 Hz at %.2f (%.2f at the two real rates), D hears L's 440 Hz at %.2f (%.2f)\n",
+         d_hz, (d_hz / SR - 1) * 1e6, hz_l, want_l, hz_d, want_d);
+  printf("     device: from 15 s: L's buffer for D underran %.0f times, shed %.0f, overran %.0f (quietest 10 ms heard: RMS %.3f; size %s ms, learned %+.0f ppm); D's for L: %.0f, %.0f, %.0f (RMS %.3f; size %s ms, learned %+.0f ppm); the test's own longest stall %.0f ms\n",
+         ul, tl, ol, gap_l, field(sl, pd, "target_ms").c_str(), num(sl, pd, "ratio_ppm"), ud, td, od, gap_d, field(sd, pl, "target_ms").c_str(), num(sd, pl, "ratio_ppm"), stalled);
+  check(d_hz > SR * 0.99 && d_hz < SR * 0.998, "device: the test's device runs 0.2-1 % under 48 kHz, as the desktop's does");
+  check_unless_stalled(ul == 0 && ud == 0 && ol == 0 && od == 0, stalled, "device: neither end's buffer runs dry or over once settled (the desktop's Play re-buffered every minute or two)");
+  check_unless_stalled(tl == 0 && td == 0, stalled, "device: and nothing is shed: the read rate follows the device, the buffer isn't cut to fit");
+  check_unless_stalled(gap_l > 0.25 && gap_d > 0.25, stalled, "device: no gap in what either hears (250 ms of gaps in 10 s, rt-r3)");
+  check_unless_stalled(std::fabs(hz_l / want_l - 1) < 0.001 && std::fabs(hz_d / want_d - 1) < 0.001, stalled,
+                       "device: each hears the other at the pitch the two real rates give, within 0.1 % over 30 s (nothing lost, nothing added)");
+  // (what each learned: the other's rate over its own. L's of D: D's deficit, so negative; D's of L: the same, positive)
+  check_unless_stalled(std::fabs(num(sl, pd, "ratio_ppm") - (d_hz / SR - 1) * 1e6) < 4000 && std::fabs(num(sd, pl, "ratio_ppm") - (SR / d_hz - 1) * 1e6) < 4000, stalled,
+                       "device: the status says what each learned of the other's rate (ratio_ppm, within the device's own swing)");
+}
+
+// LinuxBox, a VM: its REAPER is called back for ten 512-sample blocks at once about every 107 ms, the guest is held for 60-100 ms now and
+// then (its threads all stop, then catch up), and the times it hands AOO were 1000-1500 ppm wrong (1.0.37's clock estimate, see clock_tests'
+// VM case; here rt_test_clock_bias makes them so), so it heard the desktop 0.3 % slow with 240-1820 ms of gaps in 10 s and its Play
+// re-buffers ran 1 -> 15 in a run. S (a steady device) sends V a tone for 45 s; V's buffer for S is given the 120-200 ms such a guest
+// settles at. From 15 s on V must hear S whole, at the pitch the two real rates give.
+static void vm_test()
+{
+  const int SR = 48000, LS = 256, LV = 512, PS = 47651, PV = 47652, BURST = 10;
+  const double PI = 3.14159265358979, T_END = 45.0, T_SET = 15.0, V_PPM = 135;
+  char ps[32], pv[32];
+  snprintf(ps, sizeof ps, "127.0.0.1:%d", PS); snprintf(pv, sizeof pv, "127.0.0.1:%d", PV);
+  RtLink *S = rt_new(), *V = rt_new();
+  rt_peers(S, (std::string("{\"peers\":[\"") + pv + "\"],\"port\":" + std::to_string(PS) + ",\"secret\":\"studio\"}").c_str());
+  rt_peers(V, (std::string("{\"peers\":[\"") + ps + "\"],\"port\":" + std::to_string(PV) + ",\"secret\":\"studio\"}").c_str());
+  rt_start(S, 0, 1, 128, 0, "127.0.0.1"); rt_start(V, 0, 1, 128, 0, "127.0.0.1");
+  rt_test_clock_bias(V, -1500);
+  std::vector<double> is(LS), iv(LV, 0.0), os1(LS), os2(LS), ov1(LV), ov2(LV), heard;
+  double *oS[2] = { os1.data(), os2.data() }, *oV[2] = { ov1.data(), ov2.data() };
+  const double per_v = (double)BURST * LV / (SR * (1 + V_PPM * 1e-6)); // (a burst of V's callbacks: this long apart, real time)
+  unsigned rng = 9001;
+  auto rnd = [&](double lo, double hi) { rng = rng * 1103515245u + 12345u; return lo + (hi - lo) * ((rng >> 8) & 0xffff) / 65535.0; };
+  long long bs = 0, bursts = 0, ns = 0, bv = 0, bv_set = -1;
+  double stalled = 0, real_set = 0, real_end = 0, held_until = 0, next_hold = 4.0, jit = 0;
+  bool sized = false;
+  std::string sv0;
+  const auto t0 = std::chrono::steady_clock::now();
+  for (;;) {
+    const double due_s = (double)bs * LS / SR, due_v = std::max((double)(bursts + 1) * per_v + jit, held_until), due = std::min(due_s, due_v);
+    if (due > T_END) break;
+    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < due) std::this_thread::yield();
+    const double real = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    if (due > 2) stalled = std::max(stalled, (real - due) * 1000);
+    if (!sized && due > 0.5) sized = rt_peer_buffer(V, ps, 120, 200) == 1;
+    if (bv_set < 0 && due >= T_SET) { bv_set = bv; real_set = real; sv0 = rt_status(V); }
+    real_end = real;
+    if (due >= next_hold) { // (the guest held: its receive and send threads stop, and its callbacks with them, then all catch up)
+      const double ms = rnd(60, 100);
+      rt_test_hold(V, ms); rt_test_hold_tx(V, ms);
+      held_until = due + ms / 1000;
+      next_hold = due + rnd(2.0, 4.0);
+    }
+    if (due_s <= due_v) {
+      for (int k = 0; k < LS; ++k, ++ns) is[k] = 0.5 * sin(2 * PI * 440 * ns / SR);
+      const double *ii[1] = { is.data() };
+      rt_capture(S, ii, 1, LS, SR); rt_mix(S, oS, 2, LS, SR); ++bs;
+    } else { // (every burst V's device has run by now, ten blocks each, back to back)
+      while ((double)(bursts + 1) * per_v + jit <= due) {
+        for (int b = 0; b < BURST; ++b) {
+          const double *ii[1] = { iv.data() };
+          std::fill(ov1.begin(), ov1.end(), 0.0);
+          rt_capture(V, ii, 1, LV, SR); rt_mix(V, oV, 2, LV, SR); ++bv;
+          heard.insert(heard.end(), ov1.begin(), ov1.end());
+        }
+        ++bursts;
+        jit = rnd(0, 0.015); // (the next one up to 15 ms late)
+      }
+    }
+  }
+  const std::string sv = rt_status(V);
+  rt_free(S); rt_free(V);
+  auto num = [](const std::string &s, const char *peer, const char *key) { return atof(field(s, peer, key).c_str()); };
+  // (V's real rate is the one its bursts are timed at: counted over 30 s it's only good to a burst, 107 ms in 30 s)
+  const double v_hz = SR * (1 + V_PPM * 1e-6);
+  const double hz = pitch_hz(heard, (size_t)bv_set * LV, heard.size(), SR), want = 440 * SR / v_hz;
+  std::vector<double> hv(heard.begin() + (ptrdiff_t)((size_t)bv_set * LV), heard.end());
+  const double gap = min_rms(hv, 0, (double)hv.size() / SR - 0.1);
+  const double u = num(sv, ps, "underruns") - num(sv0, ps, "underruns"), t = num(sv, ps, "trims") - num(sv0, ps, "trims"), o = num(sv, ps, "overruns") - num(sv0, ps, "overruns");
+  printf("     vm: V's device runs %.0f Hz (%+.0f ppm), its AOO times 1500 ppm off; V hears S's 440 Hz at %.2f (%.2f at the two real rates); its buffer for S underran %.0f times, shed %.0f, overran %.0f (quietest 10 ms heard: RMS %.3f; size %s ms, learned %+.0f ppm, read at %+.0f now); the test's own longest stall %.0f ms\n",
+         v_hz, (v_hz / SR - 1) * 1e6, hz, want, u, t, o, gap, field(sv, ps, "target_ms").c_str(), num(sv, ps, "ratio_ppm"), num(sv, ps, "rate_ppm"), stalled);
+  check_unless_stalled(std::fabs(hz / want - 1) < 0.001, stalled, "vm: a VM hears a bandmate at the pitch the two real rates give, its own times 1500 ppm wrong (0.3 % slow, rt-r3)");
+  check_unless_stalled(u == 0 && o == 0 && gap > 0.25, stalled, "vm: with no re-buffer and no gap once settled, through the guest's holds (240-1820 ms of gaps in 10 s)");
+  check_unless_stalled(t <= 1, stalled, "vm: and at most one shed in 30 s: the bursts and holds aren't cut out of the buffer");
+  // (what it must learn: S's rate over V's, and the 1500 ppm its own times run slow)
+  check_unless_stalled(std::fabs(num(sv, ps, "ratio_ppm") - (1500 - V_PPM)) < 600, stalled, "vm: it learned the ratio from its buffer, wrong times and all (ratio_ppm within 600 ppm of +1365)");
 }
 
 // ---- A studio computer this one doesn't list (Health on the desktop: "refused 13589 (last: not one of the studio's computers here from
@@ -945,7 +1141,10 @@ static void start_order_test()
 
 int main(int argc, char **argv)
 {
-  if (argc > 1 && strcmp(argv[1], "underruns") == 0) { drift_tests(); trim_test(); play_resync_test(); switch_test(); rescue_test(); stall_test(); outage_test(); spike_tests(); clock_tests(); rate_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
+  if (argc > 1 && strcmp(argv[1], "underruns") == 0) { drift_tests(); trim_test(); play_resync_test(); switch_test(); rescue_test(); stall_test(); outage_test(); spike_tests(); clock_tests(); rate_test(); device_test(); vm_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
+  if (argc > 1 && strcmp(argv[1], "device") == 0) { device_test(); vm_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
+  if (argc > 1 && strcmp(argv[1], "clock") == 0) { clock_tests(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
+  if (argc > 1 && strcmp(argv[1], "drift") == 0) { drift_tests(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "rate") == 0) { clock_tests(); rate_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "playresync") == 0) { trim_test(); play_resync_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "stalls") == 0) { stall_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
@@ -1329,6 +1528,8 @@ int main(int argc, char **argv)
   spike_tests();
   clock_tests();
   rate_test(); // (a receiver whose clock estimate is off: the read-rate servo. rt-fix6b)
+  device_test(); // (a device that doesn't keep its rate: the desktop's. rt-audio3)
+  vm_test(); // (a VM: its callbacks ten at once, the guest held, its times wrong. rt-audio3)
   hub_loads(false); // (the hub's load at REAPER's small blocks, as the laptop's ASIO runs: 128 and 64 samples)
   rt_free(A); rt_free(B); rt_free(C); rt_free(bad);
   printf(fails ? "fails %d\n" : "ok, fails 0\n", fails);
