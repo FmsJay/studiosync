@@ -33,6 +33,7 @@
 -- 28. An item's older versions don't wait for ever where its newest sits on a track deleted since (mirror.receive).
 -- 29. Heal doesn't go over a version held here that it couldn't read and the settled one doesn't build on (mirror.heal).
 -- 30. An item put in place anew (a put-back, a restore) keeps its id when it's copied before the next look (mirror.apply notes its GUID).
+-- 31. A track's part changed just as the track was deleted comes back as it was changed when the track does (mirror.receive's record).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -1545,6 +1546,40 @@ do
   assert(#sent == 1 and sent[1].oid ~= oid and sent[1].track == S.track(B, "Drums").ext.band_oid,
     "what went out is one new item on Drums (was: the band's item 'moved to Drums' and a new item where it had been)")
   print("rt-converge 30: an item put in place anew keeps its id when it's copied before the next look")
+end
+
+-- ---- 31. plug-ins taken off just as their track was deleted stay off when the track comes back (the soak's long run, seed 11013) ---------------
+do
+  local undo = require("undo")
+  local S = studio("Conv31", "everyone")
+  local A, B, C = S.computer("James"), S.computer("Bee"), S.computer("Cee")
+  fx_api(A); fx_api(B); fx_api(C)
+  S.edit(A, function(F) F.add_track("Drums"); F.add_track("Gtr", nil, chain(100, 200)) end)
+  A.F.clock = A.F.clock + 70
+  S.settle(A)
+  for _, c in ipairs({ B, C }) do S.recv(c); c.F.clock = c.F.clock + 70; S.settle(c) end
+  local function plugs(c) local t = S.track(c, "Gtr"); return t and (t.body:find("QUFB", 1, true) and "on" or "off") or "no track" end
+  assert(plugs(B) == "on" and plugs(C) == "on", "the chain is on all three")
+  -- James deletes Gtr; Bee, who hasn't that yet, takes its plug-ins off
+  T = T + 2
+  S.edit(A, function(F) reaper.DeleteTrack(S.track(A, "Gtr")) end)
+  T = T + 1
+  S.edit(B, function(F) S.track(B, "Gtr").body = ""; F.changed() end)
+  B.F.clock = B.F.clock + 2
+  S.settle(B)
+  assert(#S.events(function(v) return v.obj == "fx" and v.user == "Bee" end) == 1, "Bee's change to the chain went out")
+  for _ = 1, 2 do for _, c in ipairs({ A, B, C }) do c.F.clock = c.F.clock + 6; S.recv(c) end end
+  assert(plugs(A) == "no track" and plugs(B) == "no track" and plugs(C) == "no track", "Gtr is gone on all three")
+  -- James takes his deletion back: the track returns without the plug-ins Bee took off, on every computer
+  S.as(A)
+  A.F.clock = A.F.clock + 1
+  T = T + 2
+  undo.step(A.F.proj, A.cfg, S.b, false, {})
+  S.settle(A)
+  for _ = 1, 3 do for _, c in ipairs({ A, B, C }) do c.F.clock = c.F.clock + 6; S.recv(c) end end
+  assert(plugs(A) == plugs(B) and plugs(B) == plugs(C) and plugs(C) == "off",
+    "the same on all three, Bee's change standing (was: the plug-ins back on the computers her change reached after the deletion): " .. plugs(A) .. " / " .. plugs(B) .. " / " .. plugs(C))
+  print("rt-converge 31: a track's part changed just as the track was deleted comes back as it was changed, everywhere")
 end
 
 print("ok rt-converge")

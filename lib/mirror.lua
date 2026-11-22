@@ -4337,6 +4337,11 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
       mirror.unsent[key] = nil
       remember(proj, ev.oid, land.rev, "", land.id, merging and mirror.order_of(merging) or order)
     end
+    -- (and a track's part, its plug-ins, automation or sends: its newer version is recorded too, gone with the track under that version.
+    -- A returning track brings each part back as this computer's record names it (mirror.bring_parts); with nothing recorded for a change
+    -- that arrived while the track was away, that was the version before, and a plug-in a bandmate had taken off just as the track was
+    -- deleted was back on this computer alone once the deletion was undone. The soak's long run, seed 11013. rt-converge)
+    if mirror.PART[ev.obj] and not ev.gone then remember(proj, ev.oid, land.rev, "", land.id, merging and mirror.order_of(merging) or order) end
     return true
   end
   -- a change of ours to it hasn't gone out yet (plug-ins and automation waiting to settle or
