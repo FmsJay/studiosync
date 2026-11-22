@@ -7440,12 +7440,18 @@ function mirror.heal(proj, room_dir, local_mix)
     -- (never back to an older version: what this computer holds is newer than the newest read, and wasn't among what was read, so nothing
     -- here weighed it: it came over the direct link and its copies aren't readable now, or its file is half-synced. It's judged once it reads.
     -- One that was read and still isn't the settled one is a race the settled one won, a deletion over an edit: that lands. F5, rt-undo)
-    local ahead = krev and (kev or "") ~= "" and kev ~= ev.id and mirror.newer({ rev = krev, time = kord }, { rev = ev.rev, time = mirror.order_of(ev) })
+    -- (nor over a version held here that wasn't read and that the settled one doesn't build on, whichever is the newer by revision and
+    -- clock: unread, nothing weighed it, and a deletion beats an edit made without seeing it however late the edit is (mirror.gone_race).
+    -- A deletion that had come over the link, its file not here yet, was undone by heal on one computer: the item back there alone. The
+    -- soak's seed 8059. Where what the settled one builds on can't all be read (history trimmed), by revision and clock, as before.
+    -- rt-converge)
+    local ahead = krev and (kev or "") ~= "" and kev ~= ev.id
     if ahead then
       local ids = {}
       for _, x in ipairs(all[oid]) do ids[x.id] = true end
       local function read(id) local w, l = mirror.split_merge(id); if w then return read(w) and read(l) end; return ids[id] == true end
-      ahead = not read(kev)
+      ahead = not read(kev) and (mirror.newer({ rev = krev, time = kord }, { rev = ev.rev, time = mirror.order_of(ev) })
+        or mirror.descends(room_dir, ev, kev) == false)
     end
     if mirror.unsent[tostring(proj) .. oid] or ahead or old_merge then -- a change of yours not sent yet (held, settling): it goes out, or is put back, by mirror.watch. Sync engine review, 0.58.76
     elseif (kev ~= ev.id or bare) and not mirror.edited_here(proj, oid, kh, kev and kev ~= "" and event_file(room_dir, kev) or nil, room_dir .. "/media", local_mix) then

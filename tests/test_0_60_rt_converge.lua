@@ -31,6 +31,7 @@
 -- 26. A track you deleted lets go of your auto-claim on it (lib/claimask.lua), and an edit held for the deleter's answer goes with the track: rt-r3.
 -- 27. A deleted track comes back where it sat when it was deleted (`was_after`, mirror.revert).
 -- 28. An item's older versions don't wait for ever where its newest sits on a track deleted since (mirror.receive).
+-- 29. Heal doesn't go over a version held here that it couldn't read and the settled one doesn't build on (mirror.heal).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -1491,6 +1492,33 @@ do
   local _, kh, kev = mirror.known(D2.F.proj, oid)
   assert(kh == "" and kev == moved.id, "its record of the item is the version that went with Tmp (was: that merged with the edit the deletion had beaten): " .. tostring(kev))
   print("rt-converge 28: catching up, an item's older versions on a track deleted since are settled, not left waiting")
+end
+
+-- ---- 29. heal doesn't undo a deletion held here whose file isn't readable just now (the soak's seed 8059) ---------------------------------------
+do
+  local S = studio("Conv29", "everyone")
+  local A, B, C = S.computer("James"), S.computer("Bee"), S.computer("Cee")
+  S.edit(A, function(F) F.add_item(F.add_track("Keys"), midi(1, 2)) end)
+  S.recv(B); S.recv(C)
+  local oid = S.track(A, "Keys").items[1].ext.band_oid
+  -- James deletes the item; Cee, who hasn't that yet, changes it a moment later
+  T = T + 2
+  S.edit(A, function(F) F.remove_item(S.track(A, "Keys").items[1]) end)
+  T = T + 1
+  S.edit(C, function(F) local it = S.track(C, "Keys").items[1]; F.set_text(it, (it.text:gsub("FADEIN 1 0 ", "FADEIN 1 0.5 "))) end)
+  S.recv(B)
+  assert(S.items(B, "Keys") == 0, "on Bee's the deletion beat the edit made without seeing it")
+  -- the deletion had come over the link: its file isn't in the folder yet when heal runs (Cee's edit is, and is the newer by the clock)
+  local gone = S.events(function(v) return v.oid == oid and v.gone end)[1]
+  local path = S.dir .. "/events/" .. gone.id .. ".json"
+  files[path] = nil
+  S.as(B)
+  mirror.heal(B.F.proj, S.dir, false)
+  assert(S.items(B, "Keys") == 0, "heal leaves it deleted: what's held here wasn't read, and Cee's edit doesn't build on it (was: the item came back, on Bee's alone)")
+  files[path] = gone
+  mirror.heal(B.F.proj, S.dir, false)
+  assert(S.items(B, "Keys") == 0, "and with the deletion's file here, still deleted")
+  print("rt-converge 29: heal doesn't undo a deletion whose file isn't readable just now")
 end
 
 print("ok rt-converge")
