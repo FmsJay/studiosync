@@ -4094,6 +4094,12 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     reaper.UpdateItemInProject(it)
     local st = mirror.item_state(it, media_dir)
     note_theirs(it, false, mirror.item_paths(st)) -- (as read back: mirror.theirs. Cost: a pattern over the state just read)
+    -- (which item holds this id here, said as it's put in place and not only by the next look: one made anew (a put-back, a restore) has
+    -- another GUID than the note names, and copied before the next look, neither it nor its copy was "the one this machine knew", the first
+    -- in the project took the id, and where that was the copy the two swapped: the original went out as a new item and the id as "moved
+    -- to where the copy is", which then met the bandmates' changes to the original. The soak's seed 8023, two items alike. rt-converge)
+    local guid = select(2, reaper.GetSetMediaItemInfo_String(it, "GUID", "", false))
+    if guid ~= "" and select(2, reaper.GetProjExtState(proj, mirror.GSEC, oid)) ~= guid then reaper.SetProjExtState(proj, mirror.GSEC, oid, guid) end
     return true, mirror.item_hash(ev.track, st)
   end
   return true, ""

@@ -32,6 +32,7 @@
 -- 27. A deleted track comes back where it sat when it was deleted (`was_after`, mirror.revert).
 -- 28. An item's older versions don't wait for ever where its newest sits on a track deleted since (mirror.receive).
 -- 29. Heal doesn't go over a version held here that it couldn't read and the settled one doesn't build on (mirror.heal).
+-- 30. An item put in place anew (a put-back, a restore) keeps its id when it's copied before the next look (mirror.apply notes its GUID).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -1519,6 +1520,31 @@ do
   mirror.heal(B.F.proj, S.dir, false)
   assert(S.items(B, "Keys") == 0, "and with the deletion's file here, still deleted")
   print("rt-converge 29: heal doesn't undo a deletion whose file isn't readable just now")
+end
+
+-- ---- 30. an item put in place anew and copied before the next look keeps its id; the copy is the new item (the soak's seed 8023) ----------------
+do
+  local S = studio("Conv30", "everyone")
+  local A, B = S.computer("James"), S.computer("Bee")
+  S.edit(A, function(F) F.add_track("Drums"); F.add_item(F.add_track("Keys"), midi(1, 2)) end)
+  S.recv(B)
+  local oid = S.track(B, "Keys").items[1].ext.band_oid
+  local first = S.events(function(v) return v.oid == oid end)[1]
+  -- the band's version is put in place anew on Bee's, as a put-back or a restore does it: another item, another GUID
+  S.as(B)
+  B.F.remove_item(S.track(B, "Keys").items[1])
+  assert(mirror.apply(B.F.proj, first, S.dir .. "/media", false), "put in place anew")
+  -- and Bee copies it onto Drums, above it, before any look
+  local copy = B.F.add_item(S.track(B, "Drums"), S.track(B, "Keys").items[1].text)
+  copy.ext.band_oid = oid
+  B.edited = B.F.clock + 1
+  S.settle(B)
+  assert(S.track(B, "Keys").items[1].ext.band_oid == oid, "the one on Keys is still the band's item")
+  assert(S.track(B, "Drums").items[1].ext.band_oid ~= oid, "and the copy on Drums is the new one")
+  local sent = S.events(function(v) return v.user == "Bee" end)
+  assert(#sent == 1 and sent[1].oid ~= oid and sent[1].track == S.track(B, "Drums").ext.band_oid,
+    "what went out is one new item on Drums (was: the band's item 'moved to Drums' and a new item where it had been)")
+  print("rt-converge 30: an item put in place anew keeps its id when it's copied before the next look")
 end
 
 print("ok rt-converge")
