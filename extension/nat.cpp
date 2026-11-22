@@ -23,6 +23,7 @@ typedef SOCKET nat_sock_t;
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <sys/select.h> // (P13: the UPnP look's select)
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
