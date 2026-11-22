@@ -82,6 +82,7 @@ class Sim:
         self.paused = [0.0] * len(self.nodes)
         self.down, self.lane_t = {}, {}  # (from, to) -> the link lane is down until; the last delivery time on it (in order)
         self.meaningful = 0
+        self.writes = 0          # how many files have been written: each write's version
         self.heals_seen = {}
         self.quiescing, self.quiet_logged = False, 0
         self.t = 0.0
@@ -136,7 +137,11 @@ class Sim:
             else:
                 path, data = e[1], (e[2] if e[0] == "put" else None)
                 self.stats["files"] += 1
-                ver = (self.t, i)
+                # (each write its own version, later writes newer: two writes of one file in one 0.1 s step shared a version, so whichever
+                # copy arrived last stood, and a computer kept the older of two order lists or claims files written back to back, which
+                # Syncthing never does. rt-converge)
+                self.writes += 1
+                ver = (self.t, self.writes, i)
                 self.version[path] = max(self.version.get(path, ver), ver)
                 self.writers.setdefault(path, set()).add(i)
                 for j in range(len(self.nodes)):
@@ -160,7 +165,7 @@ class Sim:
             self.nodes[j].call(self.t, "link", what[2], what[3])
             return
         _, j, path, data, ver, half, _ = what
-        src = ver[1]
+        src = ver[-1]
         if not healing and (self.paused[j] > self.t or self.paused[src] > self.t):  # (Syncthing paused at either end: when it's back)
             self.push(max(self.paused[j], self.paused[src]) + self.rng.uniform(0.5, 5), what)
             return

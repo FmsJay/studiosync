@@ -370,6 +370,14 @@ local function midi_items()
   return out
 end
 local function body_set(t, body) t.body = body; F.changed() end
+-- (the tracks an edit is made on: the studio's, not this computer's own "(yours, not sent)" tracks. An item dragged onto one of those is,
+-- by design, out of the studio on this computer alone ("it isn't sent from there, and the others keep it where it was"), which the oracle
+-- then read as "missing here": the driver doesn't do that. rt-converge)
+local function studio_tracks()
+  local out = {}
+  for _, t in ipairs(F.tracks) do if not (t.ext and (t.ext.band_local or t.ext.band_live_track)) then out[#out + 1] = t end end
+  return out
+end
 local FX = { 'VST "VST: ReaEQ (Cockos)" reaeq.dll 0 "" 1919247729<56535472656571726561657100000000> ""', 'VST "VST: ReaComp (Cockos)" reacomp.dll 0 "" 1919247213<56535472636D70726561636F6D7000> ""',
   'JS utility/volume ""', 'VST "VST: ReaDelay (Cockos)" readelay.dll 0 "" 1919247468<5653547265646C72656164656C617900> ""' }
 -- The plug-ins of a track's <FXCHAIN, each its lines; and the body before and after the chain (to its own closing ">", past the plug-ins'
@@ -437,21 +445,21 @@ EDITS.item_delete = function(r)
   return "deleted item " .. o
 end
 EDITS.item_new = function(r)
-  local t = pick(F.tracks, r[1]); if not t then return end
+  local t = pick(studio_tracks(), r[1]); if not t then return end
   local p = at(r[2])
   F.add_item(t, audio(p, 1 + math.floor(r[3] * 40) / 10, USER .. " take " .. file_n + 1))
   F.sort_items(t)
   return "recorded a new item on " .. tname(t) .. " at " .. p
 end
 EDITS.item_copy = function(r) -- (REAPER's copy: the chunk and P_EXT as they were, new GUIDs, then placed)
-  local it = pick(items_in_order(), r[1]); local t = pick(F.tracks, r[2]); if not (it and t) then return end
+  local it = pick(items_in_order(), r[1]); local t = pick(studio_tracks(), r[2]); if not (it and t) then return end
   local c = F.add_item(t, (F.item_chunk(it):gsub("\nIGUID [^\n]*", ""):gsub("\nGUID [^\n]*", function() return "\nGUID " .. E.guid() end)))
   setv(c, "POSITION", f(at(r[3])))
   F.sort_items(t)
   return "copied item " .. oid_of(it) .. " to " .. tname(t) .. " at " .. at(r[3])
 end
 EDITS.item_to_track = function(r)
-  local it = pick(items_in_order(), r[1]); local t = pick(F.tracks, r[2]); if not (it and t) or it.track == t then return end
+  local it = pick(items_in_order(), r[1]); local t = pick(studio_tracks(), r[2]); if not (it and t) or it.track == t then return end
   reaper.MoveMediaItemToTrack(it, t)
   return "moved item " .. oid_of(it) .. " to track " .. tname(t)
 end
@@ -461,27 +469,27 @@ EDITS.track_add = function(r)
   return "added a track at " .. n
 end
 EDITS.track_rename = function(r)
-  local t = pick(F.tracks, r[1]); if not t then return end
+  local t = pick(studio_tracks(), r[1]); if not t then return end
   local was = tname(t)
   reaper.GetSetMediaTrackInfo_String(t, "P_NAME", "T" .. math.floor(r[2] * 10000), true)
   return "renamed track " .. was .. " to " .. t.name
 end
 EDITS.track_delete = function(r)
   if #F.tracks <= 2 then return end
-  local t = pick(F.tracks, r[1])
+  local t = pick(studio_tracks(), r[1]); if not t then return end
   local was = tname(t)
   reaper.DeleteTrack(t)
   return "deleted track " .. was
 end
 EDITS.track_volume = function(r)
-  local t = pick(F.tracks, r[1]); if not t then return end
+  local t = pick(studio_tracks(), r[1]); if not t then return end
   local v = math.floor(r[2] * 2000) / 1000
   reaper.SetMediaTrackInfo_Value(t, "D_VOL", v)
   return "set track " .. tname(t) .. " volume " .. v
 end
 EDITS.track_move = function(r)
   if #F.tracks < 2 then return end
-  local t = pick(F.tracks, r[1])
+  local t = pick(studio_tracks(), r[1]); if not t then return end
   local to = math.floor(r[2] * #F.tracks)
   reaper.SetOnlyTrackSelected(t)
   reaper.ReorderSelectedTracks(to, 0)
@@ -572,7 +580,7 @@ EDITS.cc = function(r) -- a controller value drawn or changed
   return "CC7 " .. v .. " in item " .. oid_of(it)
 end
 EDITS.fx = function(r) -- a plug-in added, removed, moved or turned (its state line)
-  local t = pick(F.tracks, r[1]); if not t then return end
+  local t = pick(studio_tracks(), r[1]); if not t then return end
   local list, before, after = fx_blocks(t.body)
   local what
   if r[2] < 0.35 or #list == 0 then
@@ -600,7 +608,7 @@ EDITS.envelope = function(r) -- an automation point moved in value
   for _, t in ipairs(F.tracks) do if t.body:find("<VOLENV2", 1, true) then withenv[#withenv + 1] = t end end
   local t = pick(withenv, r[1])
   if not t then
-    t = pick(F.tracks, r[1]); if not t then return end
+    t = pick(studio_tracks(), r[1]); if not t then return end
     body_set(t, t.body .. ENV:gsub("{E1}", E.guid()))
     return "added volume automation on " .. tname(t)
   end
@@ -609,7 +617,7 @@ EDITS.envelope = function(r) -- an automation point moved in value
   return "moved automation point " .. k .. " on " .. tname(t)
 end
 EDITS.claim = function(r)
-  local t = pick(F.tracks, r[1]); if not t then return end
+  local t = pick(studio_tracks(), r[1]); if not t then return end
   if r[2] < 0.7 then sync.claim_tracks(cfg, SONG, ROOM, { t.name }); return "claimed " .. tname(t) end
   local c = sync.my_claims(cfg, SONG, ROOM)
   if c then c.tracks = {}; sync.set_claims(cfg, SONG, ROOM, c) end
