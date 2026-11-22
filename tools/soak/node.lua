@@ -327,9 +327,18 @@ local function at(x) return math.floor(x * 600000) / 10000 end -- (a fresh rando
 local function setv(it, key, v) F.set_text(it, E.set_top(it.text, key, v)) end
 oid_of = function(x) return (x and x.ext and x.ext.band_oid) or "?" end
 local function tname(t) return t and (t.name ~= "" and t.name or oid_of(t)) or "?" end
+-- (the items by their id and place, not by where each sits in its track's list: that order comes from the order changes landed in, which
+-- varies between runs of one seed, so the same random number picked another item)
+local function items_in_order()
+  local l = F.all_items()
+  local key = {}
+  for _, it in ipairs(l) do key[it] = (it.ext.band_oid or "~") .. string.format("%020.6f", tonumber(E.top_value(it.text, "POSITION")) or 0) .. it.guid end
+  table.sort(l, function(a, b) return key[a] < key[b] end)
+  return l
+end
 local function midi_items()
   local out = {}
-  for _, it in ipairs(F.all_items()) do if it.text:find("<SOURCE MIDI", 1, true) then out[#out + 1] = it end end
+  for _, it in ipairs(items_in_order()) do if it.text:find("<SOURCE MIDI", 1, true) then out[#out + 1] = it end end
   return out
 end
 local function body_set(t, body) t.body = body; F.changed() end
@@ -377,24 +386,24 @@ rawset(reaper, "TrackFX_GetOffline", function() return false end)
 rawset(reaper, "TrackFX_GetFXGUID", function(tr, i) local b = fx_of(tr, i); for _, l in ipairs(b or {}) do local g = l:match("^FXID (%S+)"); if g then return g end end end)
 local EDITS = {}
 EDITS.item_move = function(r)
-  local it = pick(F.all_items(), r[1]); if not it then return end
+  local it = pick(items_in_order(), r[1]); if not it then return end
   reaper.SetMediaItemInfo_Value(it, "D_POSITION", at(r[2]))
   return "moved item " .. oid_of(it) .. " to " .. at(r[2])
 end
 EDITS.item_resize = function(r)
-  local it = pick(F.all_items(), r[1]); if not it then return end
+  local it = pick(items_in_order(), r[1]); if not it then return end
   local l = 0.5 + math.floor(r[2] * 70000) / 10000
   reaper.SetMediaItemInfo_Value(it, "D_LENGTH", l)
   return "resized item " .. oid_of(it) .. " to " .. l
 end
 EDITS.item_mute = function(r)
-  local it = pick(F.all_items(), r[1]); if not it then return end
+  local it = pick(items_in_order(), r[1]); if not it then return end
   local m = reaper.GetMediaItemInfo_Value(it, "B_MUTE") == 1 and 0 or 1
   reaper.SetMediaItemInfo_Value(it, "B_MUTE", m)
   return (m == 1 and "muted" or "unmuted") .. " item " .. oid_of(it)
 end
 EDITS.item_delete = function(r)
-  local it = pick(F.all_items(), r[1]); if not it then return end
+  local it = pick(items_in_order(), r[1]); if not it then return end
   local o = oid_of(it)
   reaper.DeleteTrackMediaItem(it.track, it)
   return "deleted item " .. o
@@ -407,14 +416,14 @@ EDITS.item_new = function(r)
   return "recorded a new item on " .. tname(t) .. " at " .. p
 end
 EDITS.item_copy = function(r) -- (REAPER's copy: the chunk and P_EXT as they were, new GUIDs, then placed)
-  local it = pick(F.all_items(), r[1]); local t = pick(F.tracks, r[2]); if not (it and t) then return end
+  local it = pick(items_in_order(), r[1]); local t = pick(F.tracks, r[2]); if not (it and t) then return end
   local c = F.add_item(t, (F.item_chunk(it):gsub("\nIGUID [^\n]*", ""):gsub("\nGUID [^\n]*", function() return "\nGUID " .. E.guid() end)))
   setv(c, "POSITION", f(at(r[3])))
   F.sort_items(t)
   return "copied item " .. oid_of(it) .. " to " .. tname(t) .. " at " .. at(r[3])
 end
 EDITS.item_to_track = function(r)
-  local it = pick(F.all_items(), r[1]); local t = pick(F.tracks, r[2]); if not (it and t) or it.track == t then return end
+  local it = pick(items_in_order(), r[1]); local t = pick(F.tracks, r[2]); if not (it and t) or it.track == t then return end
   reaper.MoveMediaItemToTrack(it, t)
   return "moved item " .. oid_of(it) .. " to track " .. tname(t)
 end
