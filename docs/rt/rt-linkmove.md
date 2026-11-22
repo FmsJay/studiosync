@@ -1207,11 +1207,16 @@ for the run on all three. Times UTC.
   and label steps after it never run there either. Fix: treat "No help topic" (or a non-zero exit with output) as "this Syncthing has no
   such setting" and go on to the next key.
 - **Need list (`link need list` = 1 on all three for the run, then back to ""):**
-  - **Round 5 C steps 1-4: pass.** Take T (the check 10 take `4b8e6012-04-XT_R1_take-261121_1715.flac`, 10.6 s, on its own track "XT
+  - **Round 5 C steps 1-4: the need list's part passes; "gone on LinuxBox" fails.** Take T (the check 10 take `4b8e6012-04-XT_R1_take-261121_1715.flac`, 10.6 s, on its own track "XT
     R1 take") on all three disks. LinuxBox's Live sync stopped, Syncthing paused (00:31:47); the desktop deleted the track (00:31:51);
     60 s; LinuxBox moved T's item +0.5 s and started Live sync (00:33:15): "1 change(s) went to the others" at once (the desktop's trace:
     `1 changes in main asked of linuxbox`), and "James: deleted a track on XT R1 take ... 2 changes from the others" at 00:34:16. The
-    track is gone on LinuxBox and never came back on any of the three (checked at 00:33:45, 00:34:3x and 00:39:30). Note: the delete's
+    track never came back on the desktop or the laptop (checked at 00:33:45, 00:34:3x, 00:39:30 and 01:06). **But it isn't gone on
+    LinuxBox:** a compare at 01:06 found it there as "XT R1 take (yours, not sent)" with LinuxBox's moved item (0.51 s; its file by then
+    deleted by the step below), LinuxBox's own claim from the move ("claimed XT R1 take for you as you edit", 00:33:15) having kept it as a
+    local track though its log says "James: deleted a track on XT R1 take". (My earlier look missed it: it searched for the old name.) Removed
+    by hand on LinuxBox afterwards; all four computers then matched. Whether keeping a claimer's deleted track as theirs is wanted here is
+    James's call; round 5 C expected it gone. Note: the delete's
     two events were in LinuxBox's link inbox from 00:31:51 (the extension took them while its Live sync was off), yet were applied 61 s
     after the start, not within the ~15 s round 5 A saw; LinuxBox's trace has its own `ids sent to james-main (try 1)` and nothing asked
     of the desktop.
@@ -1222,4 +1227,6 @@ for the run on all three. Times UTC.
     00:39:30, back nowhere, no `media want ...XT_R1` in any trace, no new `sync-conflict`.
   - **Step 5 (a file the song still plays comes back): not run.** Windows wouldn't delete it: the desktop's REAPER holds the played
     file open ("being used by another process"), so the case can't happen this way on Windows.
-  - **Verdict: A (rt-r0), C 1-4 and the delete hole 1-4 pass.** The 61 s before the delete applied on LinuxBox is the one thing to look at.
+  - **Verdict for the need list: A (rt-r0), C 1-4 and the delete hole 1-4 pass on what the need list decides** (nothing came back over
+    the link, no `media want` for a deleted or unplayed file, nothing re-shared through Syncthing). Two things outside it: C's track kept on
+    LinuxBox as "yours, not sent" (the claim rule, not the need list), and the 61 s before the delete applied there.

@@ -121,3 +121,45 @@ The driver, to build in a later round (`tools/lab/s23_cdp.py`):
 - `netlab.sh` and `vm_identity.sh` run as root inside the VMs through key-only ssh from the desktop; `lab.sh identity` refuses LinuxBox itself.
 - A forwarded DevTools port exposes the phone's Chrome on the desktop's `127.0.0.1:9222`; remove the forward after each run.
 - `vm_identity.sh` deletes `~/.studiosync/device-key` and the Syncthing state of the VM it runs on: a wrong target loses that VM's identity.
+
+## LinuxBox2 joined to the test studio without Tailscale (rt-r1, 2026-11-21, James's OK; 0.59.49.93 + extension 1.0.35)
+
+Done as the waiting steps above, with (b): no Tailscale on LinuxBox2, and **nat mode not switched on** (band.json `nat` untouched): the
+join and Cross Test's convergence didn't need it (Syncthing carries everything when the link can't reach a computer).
+
+1. Powered-off snapshot `pre-studio-rt-r1` of LinuxBox2 (vmrun), then `vmrun -T ws start ... nogui` (192.168.86.130).
+2. Copied in by scp: `extension/reaper_studiosync-x86_64.so` from 7e4e388 (md5 d11fe87a..., the same as LinuxBox's) to `~/REAPER/UserPlugins`,
+   and LinuxBox's `~/.vst3/StudioSync Hop.vst3` and `~/.clap/StudioSync Hop.clap`; LinuxBox's `_tools/studiosync` (0.59.49.93) to
+   `~/studiosync-boot/studiosync` (outside the studio's folder, which join_band makes), only to run the join.
+3. Syncthing started in the clone (`syncthing serve --no-browser --no-restart --logflags=0`, first run, device `L6QCBAS-...`).
+4. Desktop: Invite a collaborator as the Invitation window does for someone who has StudioSync (`joins.make(root, "member")` + `invite_text(...,
+   "has", token)`): a signed invitation (record `_band/joins/1c75332c...json`).
+5. LinuxBox2 (first run: name "LinuxBox2", ExtState `sync_root` ~/StudioSync as ReaPack's first run makes it, Deafen = 1 set first): Paste join code
+   > Join as the panel does (`services.parse_join`, `services.join_band`, `joins.request`): folder `~/StudioSync Smiley Studios` added with the
+   desktop as introducer; the invitation's ask goes over the link, which can't reach the desktop from here (no Tailscale names), so:
+6. Desktop: the panel's join request appeared (`services.join_asks`: `linuxbox2`, no folder yet) and Let them in (`tools.let_in`) added the device;
+   20 s later its folder offer appeared and the second Let them in shared **only** `studiosync-smiley-studios-a963` (the desktop's
+   `reapersona-sync` and `studiosync-chilio-8bbf` don't list it; checked with `syncthing cli config folders <id> devices list`).
+7. LinuxBox2 synced the studio (idle, need 0, 60 MB: the songs as listings) and was introduced to the studio's other devices; LinuxBox logged
+   "LinuxBox2's computer (L6QCBAS) is in Smiley Studios: this one syncs with it directly now".
+8. LinuxBox2 opened Cross Test with the studio's own "Open session" (quiet) at 01:06:32: "opened 'Cross Test' (hosted by James), Live sync started".
+
+**Converges: pass.** Cross Test compared on all four (rt-check2's cmp.lua): LinuxBox2 = the desktop = the laptop at once (only the desktop's
+and laptop's local "StudioSync live out" track differs, as it does on LinuxBox). A move on the desktop (XT Keys C to 8.0) and one on
+LinuxBox2 (XT Drums A to 2.5) were on all four within 15-20 s; put back after (the second from LinuxBox2, see below), all four alike again.
+
+**Found:**
+- **A claim ask can't reach a computer off the link.** LinuxBox2's move auto-claimed XT Drums A; the desktop's put-back move asked LinuxBox2
+  to release it, "Not sent: LinuxBox2 didn't answer about XT Drums A in 30 s. Your edit is put back". Without Tailscale (or nat mode) a
+  bandmate's claimed track can't be edited by anyone until the claim's 10 minutes run out; Syncthing doesn't carry the ask.
+- **Log spam:** LinuxBox2 logs "live audio didn't start: Tailscale isn't up here (no 100.64.0.0/10 address)" every ~10 s for as long as Live
+  sync runs.
+- **Syncthing's first tune on a fresh Syncthing:** "Syncthing didn't answer within 8 s: StudioSync leaves it alone for a minute" and
+  "couldn't set fswatcher-delays: -1005" at the first Live sync start (the set took over 8 s), on top of the `fswatcher-timeouts` key that
+  Syncthing 1.27 doesn't have (rt-linkmove's check E).
+- LinuxBox's earlier "XT R1 take (yours, not sent)" (rt-linkmove's check C) showed up in this compare; removed there.
+
+**Not done:** the P10 joining checks (rt-joinlink / rt-invite round 2: their commits come after 7e4e388, not deployed); live audio, Hop and the
+link with LinuxBox2 (they need Tailscale or nat mode); a second join. **State after:** LinuxBox2 is in Smiley Studios (its devices file and the
+desktop's Syncthing device and share stay), Cross Test open, Deafen 1, and suspended (`vmrun suspend`). To undo the join: revert to snapshot
+`pre-studio-rt-r1`, remove device `L6QCBAS` from the desktop's Syncthing and take LinuxBox2 out in the panel (Settings > Studio).

@@ -214,3 +214,18 @@ says otherwise, with nothing claimed by hand. Write pass, fail or not run next t
 - [ ] **P1-16 Hand move after a tempo change (1.10).** Claims mode, nothing claimed. On the desktop add a 90 bpm tempo marker. Within 15 s,
   drag an XT Drums A item by hand. XT Drums A is claimed by the desktop (Who controls); the tracks REAPER only moved for the map aren't. Then
   repeat with XT Drums A claimed by the laptop by hand: the hand move is asked for (or put back), not silently kept on the desktop alone.
+
+### R1 results (rt-r1, 2026-11-21, 0.59.49.93 + extension 1.0.35)
+
+Only P1-8 was run (time); P1-1..7 and P1-9..16 not run. P1-14 as written stops the laptop's Syncthing, which James hasn't OK'd (only the test
+VMs' may be paused): it would need LinuxBox or LinuxBox2 in the laptop's place.
+
+- **P1-8: fail** (room mode "open", as it was; the desktop held an auto-claim on XT Keys C from an earlier move). Deferred scripts on the
+  link clock: the desktop moved XT Keys C's note 48@0-960 a beat later at 100.019 (desktop link clock), the laptop transposed it up a tone
+  0.41 s later (099.241 on its own clock = 100.43 on the desktop's). The move had already reached the laptop (it transposed 48@960 into
+  50@960). The laptop logged "James is editing that item on XT Keys C too: both changes go in, and where you both change the same thing the
+  later one stands", then "asked James to release XT Keys C: your edit waits here for their answer (up to 30 s)" and "Not sent: James didn't
+  answer about XT Keys C in 30 s. Your edit is put back"; the desktop showed "James-Laptop wants to edit XT Keys C: Release or Keep". All
+  three ended 48@960-1920: the transposition lost. So the desktop's soft auto-claim (claimask.soft) took a change to another field of the
+  same note as a clash, though the merge said both go in. A truly simultaneous pair (neither seeing the other, inside the link's ~40 ms)
+  wasn't produced. Note put back to 48@0-960 on all three.
