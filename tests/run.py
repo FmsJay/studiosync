@@ -67,7 +67,7 @@ for f in sorted(glob.glob("tests/*.lua")) + sorted(glob.glob("addons/*/tests/*.l
     except Exception as e:
         fails += 1
         print(f, "FAIL", str(e)[:300])
-steps = [("-m unittest discover -q -s addons/ai/tests", True), ("-m unittest discover -q -s tools/ears", True), ("tools/compile_check.py", True), ("tools/free_names.py", True), ("tests/check_locals.py", True), ("tools/js_check.py", True), ("tools/files_check.py", release)]
+steps = [("-m unittest discover -q -s addons/ai/tests", True), ("-m unittest discover -q -s tools/ears", True), ("tools/compile_check.py", True), ("tools/free_names.py", True), ("tests/check_locals.py", True), ("tools/js_check.py", True), ("tools/files_check.py", release), ("tools/soak/soak.py --quick", True)]  # convergence soak: three computers on the real sync code (docs/rt/rt-soak.md); ~60 s
 if luals:
     steps.append(("tools/luals_check.py Warning --gate", True))
 for step, fatal in steps:
