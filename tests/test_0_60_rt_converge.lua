@@ -4,6 +4,11 @@
 --     under different maps merge on one map (mirror.event_file), and a hand edit after a bandmate's map isn't taken for the map's move
 --     (mirror.map_moved): the soak's bugs 1, 5 and 7.
 --  2. A received change is judged by the claims as they stood when it was made (sync.authority's `at`): bug 3.
+--  3. A track change moves its track only when its place is what it changes (mirror.receive): bug 6.
+--  4. A track that comes back brings its items back on every computer (mirror.apply's note, mirror.heal): bug 4.
+--  5. Two holders of one track, by its old name and its new, don't answer each other's rename for ever (sync.receive): bug 2.
+--  6. An item's deletion lands though the item had moved off its deleted track here (mirror.receive).
+--  7. What was refused doesn't stay on this computer alone, asked about every 90 s (W.put_back).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -150,6 +155,102 @@ do
   ev.time = iso(T + 5)
   assert(sync.obj_allowed(ev, can) == false, "and still refuses one made under the claim")
   print("rt-converge 2: a received change is judged by the claims of its own time")
+end
+
+-- ---- computers: the chunk-faithful stand-in REAPER, each look and receive wired as Live sync wires them (one Lua: caches are shared) ----------
+local claimask = require("claimask")
+local wire = {}
+require("direct").send_live = function(cfg, kind, d) wire[#wire + 1] = { kind = kind, d = d, from = cfg.user }; return true end
+claimask.reachable = function() return nil end
+local here_now = {}
+claimask.present = function(_, _, u) return here_now[u] == true end
+local function studio(song, mode)
+  local S = { song = song, dir = "R/" .. song .. "/rooms/main", sess = { host = "James", markers = {} }, b = { song = song, room = "main" }, by_user = {} }
+  files[S.dir .. "/mode.json"] = { mode = mode, by = "James" }
+  local function as(c) reaper = c.F.reaper end
+  S.as = as
+  function S.computer(user)
+    local c = { F = E.new("C:/" .. user .. "/" .. song .. ".rpp"), cfg = { user = user, root = "R" }, user = user }
+    c.F.reaper.MB = function() return 6 end
+    c.F.reaper.GetMousePosition = function() return 0, 0 end
+    c.F.reaper.file_exists = function(p) return not p:find("%.json$") or files[p] ~= nil end
+    c.F.reaper.SetExtState(band.SECTION, "user", user, false)
+    c.edited = -1
+    S.by_user[user] = c
+    return c
+  end
+  local function link()
+    while #wire > 0 do
+      local m = table.remove(wire, 1)
+      if m.kind == "claim" then sync.live_claim(song, "main", m.d) end
+    end
+  end
+  function S.look(c)
+    as(c)
+    c.F.clock = c.F.clock + 1
+    local may, w = sync.authority(c.cfg, song, "main", S.sess)
+    sync.driver_name, sync.room_mode = w.driver, w.mode
+    mirror.watch(c.F.proj, c.cfg, song, "main", { can = may, owner_can = may, mode = w.mode, is_claimed = w.is_claimed, owner_of = w.owner_of, quick = true,
+      edited_at = c.edited, soft = function(name, pos) return claimask.soft(w, name, pos, c.cfg.user) end,
+      ask = function(name, pos) return claimask.hold(c.cfg, S.b, w, name, pos) end, sent = claimask.on_sent })
+    claimask.flush(c.cfg, S.b, w, false)
+    link()
+    as(c)
+  end
+  function S.settle(c)
+    for _ = 1, 20 do
+      local n = 0
+      for _ in pairs(files) do n = n + 1 end
+      S.look(c)
+      local m = 0
+      for _ in pairs(files) do m = m + 1 end
+      if m == n and not mirror.more and not mirror.unsettled then return end
+      mirror.unsettled = nil
+    end
+    error("never settled")
+  end
+  function S.edit(c, fn) as(c); c.F.clock = c.F.clock + 1; fn(c.F); c.edited = c.F.clock; S.settle(c) end
+  function S.recv(c, no_look)
+    as(c)
+    sync.ev_cache = {} -- (the stand-in computers share one memory of the files read and still waiting)
+    for _ = 1, 20 do
+      c.F.clock = c.F.clock + 1
+      local may, w = sync.authority(c.cfg, song, "main", S.sess)
+      sync.room_mode = w.mode
+      sync.soft = { room = "main", fn = function(name, pos, user) return claimask.soft(w, name, pos, user) end }
+      local got = sync.receive(c.F.proj, c.cfg, song, "main", may)
+      if (tonumber(got) or 0) == 0 and not sync.backlog and not sync.read_cut then break end
+    end
+    link()
+    if not no_look then S.settle(c) end
+  end
+  function S.names(c) local t = {}; for _, tr in ipairs(c.F.tracks) do t[#t + 1] = tr.name end; return table.concat(t, ", ") end
+  function S.track(c, name) for _, t in ipairs(c.F.tracks) do if t.name == name then return t end end end
+  function S.items(c, name) local t = S.track(c, name); return t and #t.items or -1 end
+  function S.events(pred) local out = {}; for p, v in pairs(files) do if p:find(S.dir .. "/events/", 1, true) and type(v) == "table" and pred(v) then out[#out + 1] = v end end; return out end
+  return S
+end
+local function told(pattern) for _, l in ipairs(logged) do if l:find(pattern) then return l end end end
+
+-- ---- 3. a track change moves its track only when its place is what it changes (the soak's bug 6) -----------------------------------------------
+do
+  local S = studio("Conv3", "everyone")
+  local A, B = S.computer("James"), S.computer("Bee")
+  S.edit(A, function(F) for _, n in ipairs({ "Drums", "Bass", "Keys", "Gtr" }) do F.add_track(n) end end)
+  S.recv(B)
+  assert(S.names(B) == "Drums, Bass, Keys, Gtr", "the song on both (" .. S.names(B) .. ")")
+  -- Bee drags Gtr to the top; James, who hasn't that yet, renames Drums
+  S.edit(B, function(F) reaper.SetOnlyTrackSelected(S.track(B, "Gtr")); reaper.ReorderSelectedTracks(0, 0) end)
+  assert(S.names(B) == "Gtr, Drums, Bass, Keys", "moved on Bee's (" .. S.names(B) .. ")")
+  S.edit(A, function(F) reaper.GetSetMediaTrackInfo_String(S.track(A, "Drums"), "P_NAME", "T108", true) end)
+  S.recv(A); S.recv(B)
+  assert(S.names(A) == "Gtr, T108, Bass, Keys", "James has Bee's move and his own rename (" .. S.names(A) .. ")")
+  assert(S.names(B) == S.names(A), "and Bee the same: the rename, which says nothing of the track's place, didn't put Drums back on top there (" .. S.names(B) .. ")")
+  -- a real move still lands, also one back under the track the record names
+  S.edit(A, function(F) reaper.SetOnlyTrackSelected(S.track(A, "Keys")); reaper.ReorderSelectedTracks(0, 0) end)
+  S.recv(B)
+  assert(S.names(B) == "Keys, Gtr, T108, Bass" and S.names(A) == S.names(B), "a move lands (" .. S.names(B) .. ")")
+  print("rt-converge 3: a rename doesn't move its track; a move does")
 end
 
 print("ok rt-converge")

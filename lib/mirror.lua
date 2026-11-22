@@ -4219,8 +4219,19 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
       mirror.copied[key] = true
     end
   end
+  -- (a track's change moves the track only when its place is what it changes, against the version held here, as mirror.heal lands one: every
+  -- track change carries the place its track had where it was made, so a bandmate's rename of Drums, landing after your own move of Gtr above
+  -- it, put Drums back on top here and nowhere else, until the order heal two minutes later. The soak's bug 6. A change that says it is a
+  -- move (`moved`, W.send) always places: a track dragged back under the one its record names reads the same there. rt-converge)
+  local function placed(x)
+    if x.obj ~= "track" or x.gone or type(x.state) ~= "table" or x.moved ~= nil or (type(x.loser) == "table" and x.loser.moved ~= nil) then return x end
+    local _, _, kev = mirror.known(proj, x.oid)
+    local had = (kev or "") ~= "" and mirror.event_file(room_dir, kev)
+    if had and not had.gone and type(had.state) == "table" and had.state.after == x.state.after then return setmetatable({ [mirror.STAY] = true }, { __index = x }) end
+    return x
+  end
   if merging then
-    local ok, h = mirror.apply(proj, merging, media_dir, local_mix)
+    local ok, h = mirror.apply(proj, placed(merging), media_dir, local_mix)
     if ok and held then hb[ev.oid] = nil end
     if ok then
       remember(proj, ev.oid, merging.rev, h, merging.id, mirror.order_of(merging))
@@ -4262,7 +4273,7 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   local midiview = ev.obj == "item" and not ev.gone and require("midiview")
   if midiview and not (midiview.on() and midiview.recent(ev.time)) then midiview = nil end
   local notes_before = midiview and midiview.notes(mirror.find(proj, "item", ev.oid))
-  local ok, h = mirror.apply(proj, ev, media_dir, local_mix)
+  local ok, h = mirror.apply(proj, placed(ev), media_dir, local_mix)
   if ok and held then hb[ev.oid] = nil end
   if ok then remember(proj, ev.oid, ev.rev, h, ev.id, order) end
   if ok and ev.obj == "item" then require("sync").landed_media = true end -- (Live sync builds its peaks, if nothing else will)
