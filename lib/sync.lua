@@ -1464,10 +1464,15 @@ end
 function sync.undo_timeline(proj, cfg, song, room, entries, j, tags, session)
   local T = entries[j]
   if not (T and T.kind == "timeline" and type(T.tempo) == "table") then return false end
+  -- (the timeline change before it by the timeline's own order (sync.post's `order`: after the newest one seen where it was made), not by
+  -- History's rows, which sort by each computer's clock: a marker you added a second after a bandmate's Restore, stamped the same second,
+  -- sat before their change in History, so the Redo of your Undo compared against their timeline, found nothing to bring back, and your
+  -- marker stayed gone. The soak's undo probe, seed 31. rt-converge)
   local P
-  for i = j - 1, 1, -1 do
-    local e = entries[i]
-    if e.kind == "timeline" and type(e.tempo) == "table" then P = e; break end
+  local t_order = order(T)
+  for i, e in ipairs(entries) do
+    if i ~= j and e.kind == "timeline" and type(e.tempo) == "table" and type(e.time) == "string" and type(e.id) == "string"
+        and order(e) < t_order and (not P or order(e) > order(P)) then P = e end
   end
   if not P then
     local meta = band.read_json(sync.room_dir(cfg, song, room) .. "/room.json")

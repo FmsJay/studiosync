@@ -13,6 +13,7 @@
 --  9. The studio's track order is the order everyone landed: new tracks as they were made, and every move reaches the order list
 --     (mirror.wanted_order, mirror.order_after_band, W.send).
 -- 10. An edit beaten by a deletion stays beaten when the deletion is taken back, in whatever order they arrive (mirror.beaten_by).
+-- 11. Undo and Redo of an act with a marker or tempo change go by the timeline's own order (sync.undo_timeline).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -194,6 +195,7 @@ local function studio(song, mode)
     c.F.clock = c.F.clock + 1
     local may, w = sync.authority(c.cfg, song, "main", S.sess)
     sync.driver_name, sync.room_mode = w.driver, w.mode
+    if S.timeline then sync.watch_timeline(c.F.proj, c.cfg, song, "main", may) end -- (markers and tempo first, as Live sync looks)
     mirror.watch(c.F.proj, c.cfg, song, "main", { can = may, owner_can = may, mode = w.mode, is_claimed = w.is_claimed, owner_of = w.owner_of, quick = true,
       edited_at = c.edited, soft = function(name, pos) return claimask.soft(w, name, pos, c.cfg.user) end,
       ask = function(name, pos) return claimask.hold(c.cfg, S.b, w, name, pos) end, sent = claimask.on_sent })
@@ -525,6 +527,46 @@ do
   S.recv(D)
   assert(S.items(D, "Keys") == 1 and muted(D) == 0, "and a late joiner ends the same (was: the mute merged back in, there alone): " .. muted(D))
   print("rt-converge 10: catching up, an edit a deletion beat stays dropped though a restore made the deletion older news")
+end
+
+-- ---- 11. Undo and Redo of an act with a marker go by the timeline's own order, not History's rows (the soak's seed 31) --------------------------
+do
+  local undo = require("undo")
+  local S = studio("Conv11", "everyone")
+  S.timeline = true
+  local B, C = S.computer("Bee"), S.computer("Cee")
+  S.edit(C, function(F) F.add_item(F.add_track("Keys"), midi(1, 2)) end)
+  S.recv(B)
+  local function marks(c) S.as(c); local t = {}; for _, m in ipairs(band.capture_markers(c.F.proj)) do t[#t + 1] = m.name end; return table.concat(t, ",") end
+  -- Cee adds a marker; Bee, in the same second by the clocks, has it land and then adds her own with a note (one act)
+  S.edit(C, function(F) F.add_marker(false, 2, 2, "C1") end)
+  S.recv(B)
+  assert(marks(B) == "C1", "Cee's marker is on Bee's (" .. marks(B) .. ")")
+  S.edit(B, function(F)
+    F.add_marker(false, 7, 7, "B1")
+    local it = S.track(B, "Keys").items[1]
+    F.set_text(it, (it.text:gsub("E 960 b0 7b 00", "E 100 90 40 60\nE 100 80 40 00\nE 760 b0 7b 00")))
+  end)
+  assert(marks(B) == "C1,B1", "Bee's marker (" .. marks(B) .. ")")
+  local tl = S.events(function(v) return v.type == "timeline" end)
+  table.sort(tl, function(a, b) return a.time .. a.id < b.time .. b.id end)
+  assert(#tl == 2 and tl[1].user == "Bee" and tl[2].user == "Cee" and (tl[1].order or "") > tl[2].time .. tl[2].id,
+    "the case: Bee's timeline change is the newer by the timeline's order, and sits before Cee's in History's rows (one clock second)")
+  local function step(redo)
+    S.as(B)
+    B.F.clock = B.F.clock + 1
+    T = T + 2
+    local res, why = undo.step(B.F.proj, B.cfg, S.b, redo, {})
+    S.settle(B)
+    return tostring(res or why)
+  end
+  local u = step(false)
+  assert(marks(B) == "C1", "Bee's Undo takes her marker back with the note (" .. u .. "; " .. marks(B) .. ")")
+  local r = step(true)
+  assert(marks(B) == "C1,B1", "and her Redo brings it back (was: compared against Cee's timeline, nothing to bring back): " .. r .. "; " .. marks(B))
+  S.recv(C)
+  assert(marks(C) == "C1,B1", "on Cee's too (" .. marks(C) .. ")")
+  print("rt-converge 11: the Redo of an Undo brings its marker back though a bandmate's timeline change sorts after it in History")
 end
 
 print("ok rt-converge")
