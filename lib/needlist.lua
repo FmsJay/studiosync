@@ -20,7 +20,8 @@
 -- copy is still the record, and the inbox copy goes when it lands. Never an id in the room's trimmed/ lists, never one older than EV_DAYS
 -- (history trim takes only changes older than trim.DAYS), never this computer's own. Asked when who's here changes, again while a round
 -- brought something, and again (EV_RETRY s, doubling) until a bandmate answers, an empty list meaning every day matches (rt-catchup).
--- Off unless this computer's ExtState "link need list" is "1", on both computers, until tested on real computers (rt-linkmove.md).
+-- On unless this computer's ExtState "link need list" is "0" (rt-p3: it was off unless "1" until the filters above were in; why it's safe and
+-- the re-check in docs/rt/rt-linkmove.md round 6, item 1).
 -- Unreviewed (security reviews come after all features, James 2026-11-19).
 local band = require("band")
 local direct = require("direct")
@@ -28,7 +29,7 @@ local needlist = { EVERY = 30, SETTLE = 30, PER_MSG = 300, MAX = 6000, ANSWER_EV
   EV_DAYS = 58, EV_PER_MSG = 300, EV_MAX = 6000, EV_ROOMS = 20, EV_WAIT = 60, -- (EV_ROOMS: 20 rooms of 58 days of sums stay well under direct.MSG_MAX)
   EV_RETRY = 5, WARM = 0.016 } -- (EV_RETRY: s before an unanswered ask of event ids goes again, doubling to EVERY; WARM: s a tick, the first read)
 
-function needlist.on() return reaper.GetExtState(band.SECTION, needlist.EXT) == "1" end
+function needlist.on() return reaper.GetExtState(band.SECTION, needlist.EXT) ~= "0" end
 
 -- This computer's media in the song's rooms that the link could carry: { { room, file, size } } in name order, and its digest. Only files
 -- last written SETTLE s ago or more (one still being recorded or copied in isn't whole), each measured once (media is written once, under a

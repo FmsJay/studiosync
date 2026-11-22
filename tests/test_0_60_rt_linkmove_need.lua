@@ -105,13 +105,15 @@ local function as(who)
 end
 local function last() return sent[#sent] end
 
--- ---- off until switched on ----
+-- ---- on by default (rt-p3); off only when switched off ----
+assert(needlist.on(), "on with nothing set")
+gext[band.SECTION .. "\0" .. needlist.EXT] = "0"
 as("Bee")
 assert(needlist.tick(cfgB, b) == 0 and #sent == 0, "off: nothing is asked")
 assert(needlist.on_ask(cfgA, b, { user = "Bee", dev = BEE }) == 0 and needlist.on_list(cfgB, b, { dev = ANN, digest = "1|1", part = 1, of = 1, files = {} }) == false, "off: nothing answered or taken")
 clock = clock + streams.CATCHUP_LOOK
 assert(streams.catchup_tick(cfgB, b) == 0, "and catch-up goes by Syncthing's list alone, as before")
-gext[band.SECTION .. "\0" .. needlist.EXT] = "1"
+gext[band.SECTION .. "\0" .. needlist.EXT] = "" -- (back to the default: on)
 
 -- ---- Bee asks, Ann lists, Bee's wants fill ----
 assert(needlist.tick(cfgB, b) == 1 and last().kind == "need_ask" and last().d.dev == BEE and last().d.seen == nil and last().to[1] == "ann.ts.net:47281", "Bee's computer asks the bandmate here")
