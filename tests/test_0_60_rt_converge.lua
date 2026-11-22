@@ -512,7 +512,32 @@ do
   u = tostring(undo.step(Q.F.proj, Q.cfg, S4.b, false, {}))
   S4.settle(Q)
   assert(S4.items(Q, "Keys") == 0 and u:find("deleted by a bandmate since"), "Bee's Undo of her move leaves his deletion (was: the item came back for everyone, as it was before her move): " .. u)
-  print("rt-converge 8: a Redo takes away what your own Undo brought back; Undo and Redo of a change built on a merge keep the merge; no Redo after an Undo of nothing; an Undo doesn't revive what a bandmate deleted")
+  -- e. Bee deletes an item while James, who hasn't that yet, mutes it (her deletion beats his mute); she undoes her deletion, then redoes it
+  local S5 = studio("Conv8e", "everyone")
+  local P5, Q5 = S5.computer("James"), S5.computer("Bee")
+  S5.edit(P5, function(F) F.add_item(F.add_track("Keys"), midi(1, 2)) end)
+  S5.recv(Q5)
+  T = T + 2
+  S5.edit(Q5, function(F) reaper.DeleteTrackMediaItem(S5.track(Q5, "Keys"), S5.track(Q5, "Keys").items[1]) end)
+  P5.F.clock = math.max(P5.F.clock, Q5.F.clock) + 40 -- (his mute is another edit than the share, and by the clock the later of the two: History ranks it above her deletion)
+  S5.edit(P5, function(F) reaper.SetMediaItemInfo_Value(S5.track(P5, "Keys").items[1], "B_MUTE", 1) end)
+  S5.recv(P5); S5.recv(Q5)
+  assert(S5.items(P5, "Keys") == 0 and S5.items(Q5, "Keys") == 0, "the deletion beat the mute made without seeing it: gone on both")
+  local function step5(redo)
+    S5.as(Q5)
+    Q5.F.clock = Q5.F.clock + 1
+    T = T + 2
+    local res, why = undo.step(Q5.F.proj, Q5.cfg, S5.b, redo, {})
+    S5.settle(Q5)
+    return tostring(res or why)
+  end
+  u = step5(false)
+  assert(S5.items(Q5, "Keys") == 1, "Bee's Undo of her deletion: the item is back (" .. u .. ")")
+  r = step5(true)
+  assert(S5.items(Q5, "Keys") == 0, "and her Redo deletes it again (was: it put James's beaten mute in its place, ranked above the deletion in History): " .. r)
+  S5.recv(P5)
+  assert(S5.items(P5, "Keys") == 0, "on James's too")
+  print("rt-converge 8: a Redo takes away what your own Undo brought back; Undo and Redo of a change built on a merge keep the merge; no Redo after an Undo of nothing; an Undo doesn't revive what a bandmate deleted; a Redo of a deletion deletes")
 end
 
 -- ---- 9. the studio's track order is the order everyone landed (the soak's late joiner, "track order differs") ----------------------------------

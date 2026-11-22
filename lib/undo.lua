@@ -179,12 +179,19 @@ function undo.step(proj, cfg, b, redo, opts)
     for _, id in ipairs(ids or {}) do mine[id] = true end
     for _, x in ipairs(all) do if mine[x.id] and x.oid and plan[x.oid] then newest[x.oid] = x end end
     for oid, x in pairs(newest) do
-      -- (a change built on a merge of two made apart: that merge is the version before it, which History has no row for. By the rows, "before"
-      -- was one of the two alone, so an Undo of your edit, or the Redo of an Undo, took a bandmate's merged-in change away with it: the soak's
-      -- undo probe, "Undo then Redo didn't bring the song back". rt-converge)
-      if plan[oid] and type(x.base_ev) == "string" and mirror.split_merge(x.base_ev) then
-        local was = mirror.event_file(room_dir, x.base_ev)
-        if was and not was.gone and was.obj == plan[oid].obj then plan[oid] = was end
+      -- (the version before a change is the one it was built on (`base_ev`), down past the act's own changes, not the best-ranked older row
+      -- of History. They differ where changes raced: a change built on a merge of two made apart (History has no row for a merge, so
+      -- "before" was one of the two alone, and an Undo of your edit, or its Redo, took a bandmate's merged-in change away); and your Undo
+      -- of your own deletion, whose Redo found a bandmate's edit ranked above the deletion it had lost to, and brought that back instead of
+      -- deleting again. The soak's undo probe, "Undo then Redo didn't bring the song back". Where a version on the way down can't be read,
+      -- History's pick stands, as before. rt-converge)
+      local was, hops = x, 0
+      repeat
+        was = type(was.base_ev) == "string" and mirror.event_file(room_dir, was.base_ev) or nil
+        hops = hops + 1
+      until not was or not mine[was.id] or hops > 50
+      if was and hops <= 50 and was.obj == x.obj then
+        if was.gone then plan[oid] = false else plan[oid] = was end
       end
       local _, _, kev = mirror.known(proj, oid)
       plan[oid] = mirror.undo_keeping(x, plan[oid], (kev or "") ~= "" and mirror.event_file(room_dir, kev) or nil)
