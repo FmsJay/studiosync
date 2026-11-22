@@ -1192,6 +1192,16 @@ do
   assert(marks(B) == "N1@8,R@12", "Bee's Undo takes back her move of the region and nothing else (was: Cee's rename too, which Bee's change was never made on): " .. u .. "; " .. marks(B))
   local r = step(true)
   assert(marks(B) == "N1@8,R@13", "and her Redo: the region where she moved it (" .. r .. "; " .. marks(B) .. ")")
+  -- a marker Bee renamed, renamed again by Cee since: Bee's Undo leaves it as Cee has it (the soak's undo probe, seed 6002 again)
+  T = T + 2
+  rename(B, "B1")
+  S.recv(C)
+  T = T + 2
+  rename(C, "C1")
+  S.recv(B)
+  assert(marks(B) == "C1@8,R@13", "Cee's name on Bee's (" .. marks(B) .. ")")
+  step(false)
+  assert(marks(B) == "C1@8,R@13", "Bee's Undo of her rename: the marker is Cee's by now and stays (was: the old name came back beside it, two markers on one place): " .. marks(B))
   print("rt-converge 23: Undo of a timeline change goes back to the version it was made on")
 end
 

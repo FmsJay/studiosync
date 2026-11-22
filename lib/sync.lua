@@ -1536,9 +1536,18 @@ function sync.undo_timeline(proj, cfg, song, room, entries, j, tags, session)
       local k = key(m)
       if in_t[k] and not in_p[k] then changed = true else out[#out + 1] = m; have[k] = true end
     end
+    -- (what the undone change took away or changed comes back, unless a marker with its number is still here in another shape: a bandmate
+    -- renamed or moved that one since, and it's theirs as it is. Compared by place and name alone it wasn't found, and the old one came
+    -- back beside it: two markers on one place after an Undo of a rename someone had renamed again. The soak's undo probe, seed 6002. rt-converge)
+    -- shortcut: a marker a bandmate added since under the same number (REAPER gives the lowest free one) also keeps the old one away; go by
+    -- a marker id of StudioSync's own if that ever shows.
+    local taken = {}
+    for _, m in ipairs(out) do if m.num ~= nil then taken[(m.region and "r" or "m") .. tostring(m.num)] = true end end
     for _, m in ipairs(type(p_marks) == "table" and p_marks or {}) do
       local k = key(m)
-      if not in_t[k] and not have[k] then out[#out + 1] = m; have[k] = true; changed = true end
+      if not in_t[k] and not have[k] and not (m.num ~= nil and taken[(m.region and "r" or "m") .. tostring(m.num)]) then
+        out[#out + 1] = m; have[k] = true; changed = true
+      end
     end
     if not changed then return false end
     want_m = out
