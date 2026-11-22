@@ -152,3 +152,17 @@ again to read each tab's "tick stats". Set `OFF = true` in the script (or `Delet
 ## Review-later (security)
 
 None. No check, size limit or trust rule changed. `mirror.applied` and `mirror.hinted` only count and read local project state.
+
+## Re-check results (rt-r2, 2026-11-21 evening MT / 11-22 UTC, StudioSync 0.59.49.94 from 905f000 + extension 1.0.36 on the desktop, laptop, LinuxBox and LinuxBox2; Deafen 1 everywhere, no sound tests)
+
+- **7.1 Cut 7: pass.** Colour parity off (`groups.set_colour_parity(root, false)` on the desktop, put back on after): status files written at
+  02:14:30 and 02:15:28 UTC have no `look`; parity on: 02:15:58 has it (453 bytes). The lap name `status/colour look` still appears (0 ms) in a
+  slowest tick's list with parity off. Health's row not looked at.
+- **7.2 (5 minutes idle, Home page open, 10 samples 19:06:38-19:10:44 MT):** tick median 0.3-0.5 ms, p95 3.1-5.1 ms, slowest 39-72 ms (1-2 ticks
+  over 50 ms per 10 s, each `drive/step` 20-53 ms plus `status/folder` up to 17 ms or `status/file` 7 ms); pass median 8-21 ms. Per 10 s:
+  `start/webui` 65-99 ms, `drive/step` 92-135 (4-5 ticks), `start/liveaudio` 46-50, `cue check` 32-42, `listen, midi view` 21-33,
+  `start/lock, follow file` 26-30, `start/hub` 10-17, `receive` 17-21. **status/**: `status/file` 6.6-30 ms a write (mostly 7-9: not ~2),
+  `status/folder, name clash` 1.5-17, `status/colour look` 0 (not the largest on this 3-track song), `status/link send` 1. **link/**: clock 11-19,
+  peers 7-9, messages 4-7, poll/ensure 3-5, heartbeat ~1, prune 1.4: 30-40 ms per 10 s together (less than the 60-90 expected for start/link).
+  The biggest idle costs are `start/webui` (with a page open) and `drive/step`.
+- 7.3, 7.5: not run (no throwaway studio for the heavy song). 7.4: not run.

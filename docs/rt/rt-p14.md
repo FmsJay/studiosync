@@ -174,3 +174,39 @@ only show it.
   be asked, that is a rule change in `send_apply` for the security review.
 - Deleting an item from a page deletes it for everyone through the normal sync (as REAPER's Delete does): one Ctrl+Z here, and the sync's
   put-back protects a claimed track as for any other deletion; worth a look in the review that a Driver-only room refuses it (tested).
+
+## Re-check results (rt-r2, 2026-11-21 evening MT / 11-22 UTC, StudioSync 0.59.49.94 from 905f000 + extension 1.0.36 on the desktop, laptop, LinuxBox and LinuxBox2; Deafen 1 everywhere, no sound tests)
+
+The desktop's web UI (`http://127.0.0.1:47281/`, the Claude app's built-in browser, 800 px wide) against Cross Test, with the laptop, LinuxBox and
+LinuxBox2 in the song; REAPER read through the eval hook; one Ctrl+Z = REAPER's 40029 in the Cross Test tab. Everything put back: Cross Test on
+all four computers identical to before (rt-check2's compare).
+
+- **0 Wording: pass.** The select's accessible name "Watch a bandmate", label "View", options Nobody / Play cursor / This REAPER / Watch James-Laptop
+  / Watch LinuxBox / Watch LinuxBox2.
+- **1 Delete: pass.** Item: undo point "StudioSync web page: delete item", gone on the laptop and LinuxBox2, one Ctrl+Z brought it back on all.
+  Marker and region (added with + Marker / + Region, deleted from the right-click menu): gone here and on the others. A track the laptop claimed by
+  hand (laptop here): the page said "Asked James-Laptop for it (they claimed it): your edit waits for their answer, and goes back if they keep it.",
+  the laptop got "James wants to edit XT Drums A", 30 s later "Not sent ... put back" and the item was back. Not run: the away case, Driver only as a
+  guest, the Delete key with notes.
+- **2 Fades: pass, one doubt.** Fade-in drag 0 -> 0.7692 s (snapped), shape box type 3 -> `C_FADEINSHAPE` 2 (labels are shape + 1, as built), on
+  the laptop; fade-out 1.0769 s and one Ctrl+Z -> 0; a fade-out dragged past the start clamps to the item length (3.6923); back to 0 stays 0.
+  Doubt: the fade-in's single Ctrl+Z couldn't be shown: a "StudioSync: changes from the others" point landed between the drag and the shape, and a
+  later 40029 undid "StudioSync: go back" and put the shape back. Not run: snapping off, a crossfade-made fade.
+- **3 Sends: mostly pass, one bug.** Two sends from XT Keys C made in REAPER: the panel showed 0.0 dB and -6.0 dB; mute -> `B_MUTE` 1, level -32.0 dB
+  = 0.025, pan "100% right" = 1.00; Add send to a track the laptop claimed: "Not changed: James-Laptop has claimed XT Rec A there."; Remove worked;
+  Add send to an unclaimed track appeared on the laptop.
+  - **Bug: the last-moved slider never follows REAPER.** `renderSends` treats `document.activeElement` as "a hand on it", and a range input keeps
+    focus after a drag ends, so send 1's level stayed at -32.0 dB on the page while REAPER had 0 dB (after Ctrl+Z) and then -3 dB (set by script);
+    send 2, not focused, followed (-9 dB). After `blur()` it followed (-4 dB). `lib/webui/daw.js` near "unless a hand is on that control": track
+    pointer down/up (or the `input` event's time) instead of focus.
+  - One Ctrl+Z after "send level XT Drums A" took back that level **and** the pan of the other send made 2 s before ("2 change(s) brought back"):
+    StudioSync's act grouping, not one slider.
+  - At 800 px both rows read "-> XT ..." (the destination's name cut): can't tell them apart.
+- **4 Automation items: pass.** An item made with `InsertAutomationItem` at 10-14 s sat where REAPER's is; dragged a bar -> 12.0 s (beat snap); right
+  edge -> length 4.6154, one Ctrl+Z -> 4.0; Mute from the menu -> `D_MUTE` 1, on the laptop; on a track the laptop claimed: "Not changed: James-Laptop
+  has claimed XT Rec A there." and it snapped back. Not run: pooled pair, looped item. Removed after (chunk without POOLEDENVINST).
+- **5 CC lanes: pass, one surprise.** CC1 x3, CC7 and a pitch bend added by script: the Controller box marks CC 1 and CC 7, no pitch bend; the lane's
+  steps match. **A vertical drag moved the point's time too**: the point at tick 480 dragged up became value 93 at tick **0** (snapped to the
+  1-beat grid), leaving two CC1 at tick 0; worth snapping only when the time actually moved. Double-click added CC1 ch 1 = 61 at 1920 (beat snap);
+  the Delete key with the roll open deleted the point only (item and note kept); a CC the laptop added showed on the desktop's lane by the next look.
+  All CCs removed after.

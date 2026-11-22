@@ -235,3 +235,42 @@ VMs' may be paused): it would need LinuxBox or LinuxBox2 in the laptop's place.
 - [ ] **P1-8 again.** Claims mode, the desktop holding an auto-claim on XT Keys C. The desktop moves a note a beat later; within a second the
   laptop transposes that note. Pass: no ask, "both changes go in" on the laptop, all three end with the note moved and transposed. Then the
   laptop moves the same note again: asked, as before (both changed its start).
+
+### R2 results (rt-r2, 2026-11-21 evening MT / 11-22 UTC, StudioSync 0.59.49.94 from 905f000 + extension 1.0.36 on the desktop, laptop, LinuxBox and LinuxBox2; Deafen 1 everywhere, no sound tests)
+
+Timed edits on the shared clock (`direct.shared_now`, each computer's eval hook deferring to the same moment; pairs ran within 7-40 ms of each other
+unless said). Claims mode ("open"). ReaEQ + ReaComp added to XT Keys C for P1-1..5 and removed after; Cross Test identical on all four afterwards.
+
+- **P1-1: pass once, fail once.** With no claims (third try, both at ...263.0): all four ended with the desktop's EQ band and the laptop's ReaComp
+  ratio, both logs "... changed the plug-ins on XT Keys C as you did, at the same time: both changes are kept". But the laptop's change reached the
+  desktop **61 s** later (19:24:23 -> 19:25:24 MT; the desktop's reached the laptop at once). First try (the desktop's auto-claim from adding the
+  plug-ins still on): all four ended with the EQ change only, the laptop's ratio gone on the laptop too, and **the laptop logged nothing about its
+  own change** (no ask, no Not sent, no theirs stands): a silent loss.
+- **P1-2: pass.** Both set ReaEQ's band 2 gain (0.4 desktop, 0.8 laptop): all four 0.4; laptop "James changed the same thing as you on the plug-ins
+  on XT Keys C: theirs stands where you both changed it, and the rest of your change is in". The desktop's line said "... both changes are kept"
+  (wrong on the winner's side). Laptop -> desktop again 61 s. Use mine not tried.
+- **P1-3: pass.** Desktop JS Volume at the end, laptop ReaDelay after ReaEQ: all four EQ, ReaDelay, Comp, Volume. FX_SET_GAP not observed.
+- **P1-4: fail.** Desktop moved ReaComp to the top while the laptop changed ReaEQ: the order stands everywhere but the laptop's EQ value is gone on
+  all four, the laptop included, and its log has only "James: changed the plug-ins on XT Keys C": the same silent loss as P1-1's first try. Looks
+  like an incoming chain applied over a local edit the laptop's pass hadn't seen yet.
+- **P1-5: fail.** A ReaComp change on the laptop while the desktop's soft auto-claim on XT Keys C came from ReaEQ (and from adding both): "asked
+  James to release XT Keys C" -> "Not sent ... put back" (+ the RfxChain saved), twice; once preceded by "James is editing the plug-ins on XT Keys C
+  too: both changes go in ..." (rt-r1's P1-8 pattern: the soft claim asks although the merge would keep both).
+- **P1-6: pass, but Ctrl+Z fails with errors.** Desktop deleted XT Gtr at ...145.04, the laptop renamed it 120 ms later: laptop "James also changed
+  something on XT Gtr at the same moment as you: theirs is in."; gone on all four and stayed gone. (At 1 s the delete had already landed: the link is
+  faster than the check's two seconds.) **Ctrl+Z** (40029, undoing "rt-r2 delete XT Gtr") brought it back nowhere, not even on the desktop: Live sync
+  logged "this project was opened without its last save: what changed since is back as the studio has it" (`mirror.reopened` took the undo for a
+  reopen), then "mirror sync skipped F-JAMES-20261122023748-22814: .../lib/mirror.lua:296: bad argument #1 to 'TrackFX_GetCount' (MediaTrack
+  expected)" and ".../lib/mirror.lua:5935: bad argument #1 to 'f' (MediaTrack expected)". The laptop also kept an auto-claim on the gone
+  "XT Gtr renamed" until released by hand.
+- **P1-7: inconclusive.** Each inserted 16 CC1 points over the same beats (no deletes, unlike REAPER's pencil), 0.4 s apart: all four have both
+  curves interleaved (33 events), the far point kept; laptop "James is editing that item on XT Keys C too ..." and "'rt-r2 CC1 drawn' changed XT
+  Keys C right after a bandmate's change landed: it went out as yours". A real pencil stroke (removing the bar's events) is needed to judge.
+- **P1-14 (LinuxBox in the laptop's place, only its Syncthing paused): fail.** The desktop gave LinuxBox XT Keys C (`given-LinuxBox-20261122-024750.json`);
+  its link copy reached LinuxBox at once (`direct/<studio>/.linked/.../claims/given-...json`) but LinuxBox's Live sync didn't take it while Syncthing
+  was paused: no "James gave you" for 2 minutes, so the early release can't happen. I released anyway (nothing to drop); on resume, 02:49:48 "James gave
+  you XT Keys C: yours to change now" and LinuxBox held it. Released again by hand.
+- **P1-16: pass.** 90 bpm tempo marker, then a scripted move of XT Drums A 8 s later: "claimed XT Drums A for you as you edit", XT Rec A (moved by the
+  map only) not claimed. With XT Drums A claimed by hand on the laptop, tempo 100 and a move: asked, then "Not sent ... put back". Marker removed and
+  the item set back after.
+- P1-9 (no "Look over the room" action found by that name), P1-10, P1-11, P1-12, P1-13 (panel/web flows), P1-15 (no heavy song): not run.

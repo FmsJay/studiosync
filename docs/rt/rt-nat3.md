@@ -319,3 +319,24 @@ Stage 1-3's checks first. Desktop = studio hub, laptop off the tailnet.
   resent and its own stream stalls; resends it triggers are bounded to once a round trip per segment.
 - Quiet links: one rendezvous file per offline studio computer whose pair goes this way, every 30 s doubling to 10 minutes, and hellos to them.
 - The relay's hold: a member that makes links through the relay fail can hold it back for others on that computer (a nuisance).
+
+## Round 2 re-check results (no RouterBox) (rt-r2, 2026-11-21 evening MT / 11-22 UTC, StudioSync 0.59.49.94 from 905f000 + extension 1.0.36 on the desktop, laptop, LinuxBox and LinuxBox2; Deafen 1 everywhere, no sound tests)
+
+Connect without Tailscale on for Smiley Studios 02:55:32-03:35:54 UTC (`groups.set_nat`, put back: band.json has no `nat` key). LinuxBox2 (no
+Tailscale) had NAT links up (direct, host/prflx) to the desktop, LinuxBox and the laptop within a minute. Health read from the desktop's web Health
+page and from LinuxBox2's `/api/state` "health" topic through an ssh tunnel (the web UI wants `Host: localhost:47281`; another port gets 403).
+An eval-host rendering of the rows shows device ids, not names (nat's name map lives in Live sync's state): don't judge wording from one.
+
+- **Stale row: pass on the desktop, fail on the computer off the tailnet.** Desktop: "reaches james-laptop, linuxbox, LinuxBox2 (without Tailscale,
+  through both NATs)", no can't-reach for LinuxBox2. LinuxBox2: "reaches James (without Tailscale, through both NATs), LinuxBox (...), James-Laptop
+  (...); can't reach chilis-macbook-pro, james-laptop, james-main, linuxbox (its name doesn't resolve (Tailscale off there or here?))": the Tailscale
+  names of computers it does reach stay as can't-reach (they're retried every ~10 s, so `direct.STALE` never drops them). Leaving out a failed
+  Tailscale peer whose person is reached over `nat:` would fix it.
+- **Tailscale row: pass.** LinuxBox2: grey "Without Tailscale on this computer: changes, chat, claims, the shared clock, live audio and video calls go
+  over StudioSync's own connection; these still need Tailscale here: the Hop plug-in, Listen along, listening links, browser guests, invite links,
+  and phone pages ...". Desktop: "Reached without Tailscale: LinuxBox2. ...".
+- **The hello: pass.** LinuxBox2's Syncthing paused, its Live sync stopped (LinuxBox dropped `nat:L6QCBAS...` from `direct peers` 43 s later), started
+  03:01:26: LinuxBox listed it again 2-3 s later. Syncthing resumed.
+- **SACK under loss: not run.** It needs a take streamed from LinuxBox2 (or another ~1 MB transfer from it), and its PulseAudio input may be the
+  desktop's real input through VMware's sound device; no other transfer was at hand. For the record, after an hour of links: `resent` 0-2 per peer.
+- Seen: the relay row on LinuxBox2 says the hub's relay "doesn't answer: its router may not forward UDP 47298-47314", as expected without the forward.

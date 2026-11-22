@@ -221,3 +221,25 @@ allowed; not on the desktop, laptop or Mac without James's OK.
   same checks and Yes box, read one each 2 s.
 - **The untick rewrites mimeapps.list** through StudioSync's atomic write, removing only our entry; a mimeapps.list that is a symlink is
   replaced by a file.
+
+### Round 2 re-check results (rt-r2, 2026-11-21 evening MT / 11-22 UTC, StudioSync 0.59.49.94 from 905f000 + extension 1.0.36 on the desktop, laptop, LinuxBox and LinuxBox2; Deafen 1 everywhere, no sound tests)
+
+- **1: pass (with one change to the setup).** LinuxBox2 has no Tailscale but is already in Smiley Studios, where `handle_link` stops at "You're
+  already in", so the link named the desktop's host and a studio LinuxBox2 isn't in. Through `invite.handle_link` with its boxes captured:
+  "This link only works on james-main.tail99132c.ts.net's Tailscale network, and this computer isn't on it. Ask them for the invitation message
+  (Invite a collaborator) and paste it with Paste join code: ...", no Yes box, nothing sent. join.js carries "This works only on <h>'s Tailscale
+  network" (read in the source; the page wasn't opened on LinuxBox2).
+- **2:** not run (no computer on another tailnet).
+- **3: pass for the files, two findings.** LinuxBox, handler ticked as Settings does (`urlhandler.install` + `link handler` = 1): two `xdg-open` of
+  a member link at once left `pending-1795312935-148239.txt` and `pending-1795312936-148257.txt` (one per click), both read later and gone.
+  - **Nothing reads them on LinuxBox without the panel:** `invite.tick` runs from `joins.tick`, i.e. Autostart or the panel, and LinuxBox's
+    Autostart is off (`__startup.lua` "STRESS-OFF"). A rig matter, but any computer without Autostart running has the same gap.
+  - **Bug: the Linux launcher started a second REAPER.** Its `"$EXE" -nonewinst` ran `/home/studio/REAPER/reaper -nonewinst` (pid 148245) beside
+    the running `./reaper -nosplash -new` (144710) instead of waking it. The second one ran the shared dev hook, opened the panel and Cross Test
+    ("'Cross Test' is syncing in another REAPER on this computer: work there, or close it there first. This one doesn't sync it"), and read the
+    two links 1 s apart ("opening 'Cross Test', from the web page (a link)", "switched to 'Cross Test', ... (a link)"). I stopped it with SIGTERM
+    within a minute (no save). Worth checking whether `-nonewinst` finds an instance started from another path / with `-new`, and whether the
+    launcher should skip starting REAPER when one runs (`pgrep -x reaper`).
+- **4: pass.** Untick (`urlhandler.uninstall`): `xdg-mime query default x-scheme-handler/studiosync` empty, no studiosync line in
+  `~/.config/mimeapps.list`, `studiosync-link.desktop` and the launcher gone.
+- **5:** not run (no Windows computer without the rule).

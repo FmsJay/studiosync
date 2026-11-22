@@ -285,3 +285,25 @@ link isn't on here ... Health's direct-link row"; the inviter lets it in; Syncth
   signature): at most 8 half-arrived sealed texts of up to 17 pieces each (about 480 KB) per store, each 30 s.
 - **A bigger welcome** (up to 240 KB, files up to 256 KB) is written into the joiner's boot store: the same file kinds as before
   (`jb.rel_ok`), only bigger.
+
+### Round 2 re-check results (rt-r2, 2026-11-21 evening MT / 11-22 UTC, StudioSync 0.59.49.94 from 905f000 + extension 1.0.36 on the desktop, laptop, LinuxBox and LinuxBox2; Deafen 1 everywhere, no sound tests)
+
+How: the dev-eval hooks; "Connect without Tailscale" switched on for Smiley Studios on the desktop with `groups.set_nat(root, true)` at 02:55:32 UTC
+(band.json `"nat": true`) and off again at 03:35:54 (`set_nat(false)`: band.json has no `nat` key, as before).
+
+- **A1: done** (the switch above; an invitation made with `joins.make(root, "member")`, revoked after with `joins.revoke`).
+- **A2: pass, emulated.** LinuxBox2 is already in Smiley Studios (rt-r1), where Paste join code's Join says "you're already in" and asks nothing,
+  so I called what Join calls, `joins.request`, for a scratch folder with no `_band/band.json`. 02:55:59: "This computer isn't on
+  james-main.tail99132c.ts.net's Tailscale network, so the invitation can't let it in by itself: once they let it in from their side (Let them in),
+  Syncthing brings the studio. The first copy over the link needs Tailscale (...)" once, and not again over the next 25 s of resends; nothing
+  about a first copy; nothing in the desktop's log. The scratch ask and folder were removed after.
+- **A3:** done in rt-r1 (Let them in).
+- **A4: pass.** `_band/devices/LinuxBox2.json` carries `nat.pub` (64 hex) with `tailnet: false`; James and James-Laptop got theirs too (LinuxBox's
+  had none yet 30 s after the switch; Chilio-Mac's none, offline).
+- **B: not run, can't work as written.** A computer taken out keeps its studio folder, which stays in `band.bands()` and isn't "old"
+  (`groups.remember_old` runs only from `groups.leave`), so Paste join code there returns "already" and `page_groups.lua` asks only when
+  `<root>/_band/band.json` is missing: no `joins.request`, so no welcome and no first copy. B needs a computer with no copy of the studio.
+- **C: not run (held).** Taking LinuxBox out makes every computer's `removal.tick` unshare it in its own Syncthing (`services.unshare`), the
+  desktop's and the laptop's included, and Let them in re-shares on the desktop: Syncthing changes on the real PCs, which this round's limits rule
+  out. Needs the coordinator's OK (or a third VM as the one taken out, with the desktop's share change accepted).
+- **D:** not run (no Windows computer without the rule).

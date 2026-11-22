@@ -366,3 +366,45 @@ back afterwards.
   limit later: count a miss on the home only when the home's own `sees` agrees (it doesn't reach them either).
 - `own_outage` reads when tagged datagrams last came (`rx_at`); a peer that keeps sending while the hub is gone shortens the wait, and
   nothing lengthens it past `OWN_MAX`.
+
+### R2 re-check results (rt-r2, 2026-11-21 evening MT / 11-22 UTC, StudioSync 0.59.49.94 from 905f000 + extension 1.0.36 on the desktop, laptop, LinuxBox and LinuxBox2; Deafen 1 everywhere, no sound tests)
+
+Blocks only inside the VMs (`tools/lab/lab.sh net`, plus raw iptables/ip6tables rules in a chain of my own, all removed: `undo` and the chain
+deleted; checked empty). Connect without Tailscale was on for these (LinuxBox2 reaches the others only that way). Views read from
+`hub view <studio> Cross Test` on all four.
+
+**Lab lessons (for whoever runs these next):**
+- `block 192.168.86.1` on a VM cuts the desktop's own ssh to it (the desktop's VMnet8 address is the ssh source). I got back into LinuxBox through
+  LinuxBox2 (`ssh -J studio@192.168.86.130 studio@192.168.86.129`) and made the blocks UDP-only. Block UDP only (`-p udp`), or keep a jump host.
+- To cut the desktop from a VM completely, block UDP for **every** desktop address: 192.168.86.1 (VMnet8), 192.168.6.1 (VMnet1), 192.168.0.5 (LAN),
+  the public address, **and its Tailscale address 100.106.240.32 even on LinuxBox2 (no Tailscale)**: the desktop's link socket answers the VM from
+  its Tailscale address through VMware's NAT (tcpdump on LinuxBox2: "In IP 100.106.240.32.47283"), plus IPv6 UDP (link-local). Until all were cut,
+  the NAT link came straight back ("up 45 s").
+
+- **A: pass (substituted).** LinuxBox2 can't hold Cross Test's hub here (the desktop is its home), so LinuxBox's Syncthing was paused instead (REST,
+  03:21:45 UTC). LinuxBox's view `lag: true` by 03:24:51 (between 150 and 186 s); the desktop's `presence live` has LinuxBox's hub part
+  `{"ext":"1.0.36","lag":true,"link":true,"sees":["James","James-Laptop","LinuxBox2"]}`; no hub lines anywhere; all views kept James. Resumed
+  03:25:26: `lag` gone at 03:25:36. A4 (partial reach on top) not run; LinuxBox's Health wording not read.
+- **B (four computers):**
+  - **Fail: a 21 s hand-off with one miss.** While only LinuxBox couldn't reach the desktop (from 03:03:45), the desktop logged at 03:05:13
+    "'Cross Test': James-Laptop is its hub now" and at 03:05:34 "you're the hub ..." (the laptop the same in reverse). `HOME_MISS` is 2 and
+    `REACH_SETTLE` 30 s, so one miss shouldn't move it.
+  - LinuxBox, cut off from the desktop, viewed `hub = James-Laptop, why = studio, studio = James-Laptop` from 03:07 while the other three said James.
+  - Both VMs cut (03:12:59): 03:13:49 laptop "you're the hub for 'Cross Test' now", 03:13:52 desktop "'Cross Test': James-Laptop is its hub now"
+    (50 s: 12 + 30 + the poll). All four views hub = James-Laptop, but `why = "kept"` (not "ranked"); `passed = 2` on the desktop and laptop, nil on
+    the VMs; the **studio** hub split: James on the desktop and laptop, James-Laptop on LinuxBox and LinuxBox2 (they don't reach the owner's pick).
+    Desktop Health: "this project: James-Laptop (holding it, James is the project's home but 2 here can't reach it directly)" (pass); LinuxBox2's:
+    "this project: James-Laptop (holding it until James is back). The direct link lost James ...".
+  - B3: no further hub lines for the 4 minutes I held it (03:13:52-03:17:44; not 10). B4 pass: undone 03:17:44, desktop "you're the hub" 03:18:20,
+    laptop "James is its hub now", why = home everywhere, once. B5 pass: both VMs cut 03:19:48-03:20:11: no hub lines. B6 not run (laptop needed out).
+- **C: not run.** Needs a project whose home is away (Cross Test's home is the desktop, and a guest's miss can't pass over the home). Note:
+  LinuxBox2 and LinuxBox both start Live sync with "live sync for 'Cross Test' (guest, room main, driver James)", and LinuxBox then took the hub
+  role in D, so that word isn't the guest role there (or a guest got a role).
+- **D: pass.** `hub.hand_song` Cross Test -> LinuxBox (03:25:49), "you're the hub" on LinuxBox 03:25:51. LinuxBox's REAPER SIGTERM 03:26:09; the
+  desktop named James (why = studio) by 03:26:23. Restarted, Live sync 03:26:47, "you're the hub" 03:27:32 (45 s), the desktop's view named LinuxBox
+  by 03:27:35 (polled every ~2 s), never before. Handed back to James (hub/James.json keeps both transfers; views home = James).
+- **E:** not run (live audio mix host; no sound this round).
+- **F, non-audio:** hub block of `StudioSync_LiveAudioStatus` (deafened, the desktop mixing): LinuxBox `stalls` 113 (max 239 ms) two minutes after
+  its restart, `mix_gap_ms` 197.3 then 25.2; LinuxBox2 `stalls` 3170 (max 758 ms), `fallbacks` 12, `rescues` 13, `join_fails` 21,
+  `mix_gap_ms` 65.9 then 29.2. One 197 ms reading is above the "tens of ms" expectation (shortly after a start). The desktop-quit rescue and the 1 s
+  outage tests not run (they need the mix running with sound as written).

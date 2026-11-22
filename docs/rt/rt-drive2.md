@@ -756,3 +756,16 @@ Done in round 11 (above): `trim.plan`'s 80-200 ms, `cm.filter` in one go, and `s
   sweep already trusted the cloud copy's events this way (rt-cloudmodes' review-later).
 - Earlier rounds: none new. The worker, plans and the sweep's removal rules are unchanged (removals still only of the cloud folder, by the
   same judgement).
+
+### Round 11 re-check results (rt-r2, 2026-11-21 evening MT / 11-22 UTC, StudioSync 0.59.49.94 from 905f000 + extension 1.0.36 on the desktop, laptop, LinuxBox and LinuxBox2; Deafen 1 everywhere, no sound tests)
+
+Desktop, Smiley Studios (Standard, Drive at G:), perf stats on 19:05-19:21 MT.
+- **3: pass.** `drive slow` room 9.5 ms.
+- **4: pass.** `cm` 16.4-17.3 ms (no 80-200 ms). But one `submit` of 55.2 ms (`submit_plan` 49 ms) made a 72.6 ms tick, and idle ticks over 50 ms
+  came 1-2 per 10 s with `drive/step` 20-53 ms in them.
+- **5: pass.** One `bandsync-drive-worker-*.txt` in %TEMP% after hours of Live sync.
+- **10: pass (steady state).** Drive's `_band/band.json` + `.sig` and `Cross Test/session.json` + `.sig` identical to the studio folder's (no band
+  setting changed for it; the Colour parity toggles in rt-perfcut4 were later and weren't re-checked here).
+- **11: pass for .stignore** (`!/*/session.json.sig`, `!/*/rooms/*/room.json.sig` on the laptop); "arrives" n/a: Nostalgia's session.json was never
+  signed (no `.sig` on any computer).
+- 1, 2, 6, 7, 8, 9: not run (mode changes and 10-minute sweeps, a restart, renders, the ImGui dialogs).

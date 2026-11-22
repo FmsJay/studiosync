@@ -1237,3 +1237,12 @@ for the run on all three. Times UTC.
   Live sync and Syncthing. Pass: the deletion applies on LinuxBox within a few seconds (not ~60 s: the 61 s was LinuxBox's own new auto-claim
   refusing the older deletion for a minute), no "<track> (yours, not sent)" on LinuxBox, the track on none of the three.
 - [ ] A take recorded on LinuxBox on a track the desktop deletes a few seconds later is still kept on "<track> (yours, not sent)".
+
+### Round 6 re-check results (rt-r2, 2026-11-21 evening MT / 11-22 UTC, StudioSync 0.59.49.94 from 905f000 + extension 1.0.36 on the desktop, laptop, LinuxBox and LinuxBox2; Deafen 1 everywhere, no sound tests)
+
+- **D: pass.** Room mode set to Open ("everyone") with `sync.set_mode`, put back to "open" after. The desktop moved XT Drums A, the laptop moved it
+  4.9 s later: no "is editing that item too" (only "'Move media items' changed XT Drums A right after a bandmate's change landed: it went out as
+  yours"); 1.0 s later: "James is editing that item on XT Drums A too: both changes go in ...". The tint's timing not watched. Item put back.
+- **F (need list on by default):** 905f000 has it on; no extra run beyond the edits above (no `media want` problems seen); the "0" switch on LinuxBox
+  not tried.
+- A, B, C: not run (time; B needs the bandtest scratch song, which isn't in Smiley Studios). E: didn't come up naturally.

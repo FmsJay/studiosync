@@ -41,3 +41,9 @@ Backlog items 1.36, 3.10 and 4.3 (section 4 question 3). Offline only; nothing w
 ## Files
 
 Mine: `lib/compat.lua`, `lib/startup.lua`, `lib/page_play.lua`, `lib/webpages.lua`, `lib/webui/play.js`, the four test files above, this doc. Shared files: none. ReaPersona: `ReaPersona/reapersona_core.lua`, `tests/test_core.lua`, `CHANGELOG.md`.
+
+## Re-check results (rt-r2, 2026-11-21 evening MT / 11-22 UTC, StudioSync 0.59.49.94 from 905f000 + extension 1.0.36 on the desktop, laptop, LinuxBox and LinuxBox2; Deafen 1 everywhere, no sound tests)
+
+- **1: pass (web).** Play page: "Play and stop together: press play, stop and record as usual"; above it "Watch a bandmate" with Watch James-Laptop /
+  LinuxBox / LinuxBox2. The panel's Play page not looked at.
+- 2, 3, 6: skipped (ReaPersona's commit isn't released). 4, 5: not run (Preferences and Health's button are panel/ImGui steps).

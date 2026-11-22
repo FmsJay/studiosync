@@ -145,3 +145,10 @@ result here (pass, fail, not run) with the numbers.
   on anything that isn't an Ogg page or an Opus head, and is local-only (no link message starts it); 16 jobs at most.
 - A `double` anchor's `endp` lets a peer push where this computer's no-transport parts land later in the project (bounded 0-1e6 s), as an
   early `t` already could (rt-double's note).
+
+## Re-check results (non-audio only) (rt-r2, 2026-11-21 evening MT / 11-22 UTC, StudioSync 0.59.49.94 from 905f000 + extension 1.0.36 on the desktop, laptop, LinuxBox and LinuxBox2; Deafen 1 everywhere, no sound tests)
+
+- **1: pass on all four** (Windows desktop and laptop, both Linux VMs, so check 13's first part on Linux too): `StudioSync_JamDecode("", "", 2)` ->
+  `{"state":"none","frames":0,"error":""}`, `StudioSync_KeepStatus()` has `"stamps":[`, `StudioSync_JamStatus()` has `"codec":`.
+- `jam_hear`'s effect wasn't run: Health's Jam row checks live audio's Play before listeners (`jam.why_not`), so with Deafen on it only ever says Play
+  isn't going, and Jam's switch also turns In time and Play-and-stop-together at 0 bars on. Everything else needs sound.

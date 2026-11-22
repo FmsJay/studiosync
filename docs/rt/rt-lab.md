@@ -172,3 +172,13 @@ desktop's Syncthing device and share stay), Cross Test open, Deafen 1, and suspe
 - [ ] **Claim asks off the link.** LinuxBox2 (no Tailscale) moves an item on XT Drums A (auto-claim). On the desktop move the same item: it goes
   out at once with "can't reach them to ask", nobody is asked, all four end alike (within a minute where both moved it). Then Claim XT Drums A
   by hand on LinuxBox2 and edit it on the desktop: put back at once with the "can't reach them" words, no 30 s wait.
+
+## rt-r2 notes (rt-r2, 2026-11-21 evening MT / 11-22 UTC, StudioSync 0.59.49.94 from 905f000 + extension 1.0.36 on the desktop, laptop, LinuxBox and LinuxBox2; Deafen 1 everywhere, no sound tests)
+
+- LinuxBox2 resumed 01:35 UTC, extension 1.0.36 installed (`rel36_for_lb2.so`, sha256 ee32e29b..., the 1.0.35 .so moved to
+  `~/.local/share/Trash/files/reaper_studiosync-x86_64.so.1035-1795311354`), its tools reached 0.59.49.94 by Syncthing, REAPER restarted
+  (`pkill -TERM -x reaper; ~/start-reaper.sh -new`), Cross Test opened with the studio's Open session; Deafen 1. **Suspended at 03:37 UTC**, Cross
+  Test open, Syncthing running, nothing paused or blocked.
+- Blocking the desktop from a VM: see rt-hubrank's R2 "Lab lessons" (UDP only, every desktop address including its Tailscale address, and IPv6).
+- LinuxBox2's web UI from the desktop: `ssh -L 47290:127.0.0.1:47281 studio@192.168.86.130`, then requests with `Host: localhost:47281`
+  (`/api/state`, `/api/action` with `X-StudioSync: 1`); a browser can't, as it sends its own Host.
