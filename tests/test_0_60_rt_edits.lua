@@ -972,7 +972,8 @@ do
   assert(math.abs(l1 - l0 * 1.2) < 1e-6 or l1 > l0, "REAPER stretched the item across the marker (" .. l0 .. " -> " .. l1 .. ")")
   -- the way it went wrong, on a fourth computer: the same changes as 0.59.49.73 sent them (no map named), the map's file after them
   for oid in pairs(oids) do
-    for path, ev in pairs(files) do if type(ev) == "table" and ev.oid == oid and ev.tl then ev.tl = nil end end
+    -- (nor the map itself, `tm`: since rt-converge a version carries it and lands on its beat whenever it comes, tests/test_0_60_rt_converge.lua)
+    for path, ev in pairs(files) do if type(ev) == "table" and ev.oid == oid and ev.tl then ev.tl, ev.tm = nil, nil end end
   end
   hidden[edir .. "/" .. map.id .. ".json"] = true
   sync.ev_cache = {} -- (the stand-in computers share one memory of the files read and still waiting: Yan reads them afresh, without the stamp)
