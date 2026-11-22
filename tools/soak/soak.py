@@ -314,7 +314,9 @@ class Sim:
                         bad.append(("errors", "%s, during the undo probe: %s" % (USERS[j], e.splitlines()[0][:400])))
                 if bad:
                     return bad
-            if all(r.startswith(("undo: ", "redo: ")) and "nothing (" not in r for r in res):
+            # (not where either says some of it wasn't the person's to change: a claim made since stands in front of the Redo, as it would of
+            # any new change, and the song then differs by design, in the log's own words. rt-converge)
+            if all(r.startswith(("undo: ", "redo: ")) and "nothing (" not in r and "not yours to change" not in r for r in res):
                 after = sts[0]
                 bad += [("undo", "%s's Undo then Redo didn't bring the song back: %s" % (USERS[i], x[1])) for x in self.compare([base, after], "", names=["before", "after"])]
                 if bad:
