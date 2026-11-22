@@ -4264,7 +4264,11 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   local over = false
   if RACES[ev.obj] and not ev.gone then
     local _, kh0, kev0 = mirror.known(proj, ev.oid)
-    local held = (kev0 or "") ~= "" and kh0 ~= "" and kev0 ~= ev.id and mirror.event_file(room_dir, kev0) or nil
+    -- (the version recorded here, whether or not the item is: one that went with its deleted track is recorded under a version that isn't
+    -- a deletion, and with the item away this check was skipped, so an edit a deletion had beaten was merged into it on a computer catching
+    -- up. rt-converge)
+    local held = (kev0 or "") ~= "" and kev0 ~= ev.id and mirror.event_file(room_dir, kev0) or nil
+    if held and held.gone then held = nil end
     if held and mirror.beaten_by(room_dir, ev, held) then mirror.dropped = true; return true end
     over = held ~= nil and mirror.beaten_by(room_dir, held, ev)
   end
@@ -4288,15 +4292,19 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   mirror.dropped = true
   if race == false then return true end
   if race == nil and not merging and not over and not mirror.wins(proj, ev.oid, ev.rev or 0, order) then return true end
-  mirror.dropped = ev.gone ~= true and on_gone_track(proj, ev)
+  -- (what would be put in place: a merged version sits on its winner's track, which may not be this change's. Asked of the change alone, a
+  -- merge whose winner sat on a deleted track was tried every pass for good, "its track hasn't arrived": a computer catching up kept
+  -- "Receiving 2" and never took the studio's track order, which waits for nothing to be pending. The soak's late joiner, seed 7051. rt-converge)
+  local land = merging or ev
+  mirror.dropped = ev.gone ~= true and on_gone_track(proj, land)
   -- (on a track the band has deleted since: nothing to apply it to, ever. Waiting for it kept "still to come" above
   -- 0 for good: review, 2026-10-31. Before the unsent check below: a flag
   -- left on a part of a deleted track held this back for good. 0.59.14, review)
-  if on_gone_track(proj, ev) then
+  if on_gone_track(proj, land) then
     -- (unless the track comes back later in the same download: its return may still be on its way, so the room is
     -- looked over once its changes have all landed; sync.receive. Laptop, 0.34.8: a fresh song lost Keys' items)
     local o = mirror.orphaned[tostring(proj)] or {}
-    o[ev.track] = true
+    o[land.track] = true
     mirror.orphaned[tostring(proj)] = o
     -- (an item's own deletion is recorded though: it went with its track, and every computer then holds the same deletion, whichever came first)
     -- (and nothing of yours waits on it any more: a deletion of yours held for a claimer's answer, or an edit that went with the track, left
@@ -4310,7 +4318,7 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
     -- (recorded so whether or not the item is here yet: its earlier versions may land after this one (Syncthing brings files in any order,
     -- and a version waits for its audio), and with nothing recorded the earlier one landed as the newest: the item on its old track on this
     -- computer, gone with the deleted track on the others. The soak's seed 5010. rt-converge)
-    if ev.obj == "item" and not ev.gone and not merging then
+    if ev.obj == "item" and not ev.gone then
       local it = mirror.find(proj, "item", ev.oid)
       local key = tostring(proj) .. ev.oid
       if it then
@@ -4321,7 +4329,7 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
         mirror.dropped = false
       end
       mirror.unsent[key] = nil
-      remember(proj, ev.oid, ev.rev, "", ev.id, order)
+      remember(proj, ev.oid, land.rev, "", land.id, merging and mirror.order_of(merging) or order)
     end
     return true
   end

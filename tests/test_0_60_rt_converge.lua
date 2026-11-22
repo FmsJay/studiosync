@@ -27,6 +27,10 @@
 -- 22. Undo of a marker change made before a bandmate's tempo change compares the markers on the map in place (sync.undo_timeline).
 -- 23. Undo of a timeline change goes back to the version it was made on, not the one before it by order (sync.post's built_on).
 -- 24. A note the claimer moved is still theirs after your own change to it: a second move of it asks (mirror.clashes): rt-r3's P1-8, part two.
+-- 25. A change sent past an auto-claim whose claimer the link can't reach says so, and lands at once elsewhere too (`unasked`): rt-r3.
+-- 26. A track you deleted lets go of your auto-claim on it (lib/claimask.lua), and an edit held for the deleter's answer goes with the track: rt-r3.
+-- 27. A deleted track comes back where it sat when it was deleted (`was_after`, mirror.revert).
+-- 28. An item's older versions don't wait for ever where its newest sits on a track deleted since (mirror.receive).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -1374,6 +1378,69 @@ do
   S.recv(B)
   assert(S.names(B) == "Top, New, Drums, Bass", "on Bee's too (" .. S.names(B) .. ")")
   print("rt-converge 27: a deleted track comes back where it sat")
+end
+
+-- ---- 28. a computer catching up: an item's older versions don't wait for ever on a track deleted since (the soak's late joiner, seed 7051) ------
+do
+  -- a. two changes made apart, the newer a move onto a track that a third person deleted that moment: their merge has no track to land on
+  local S = studio("Conv28", "everyone")
+  local A, B, C = S.computer("James"), S.computer("Bee"), S.computer("Cee")
+  S.edit(A, function(F) F.add_item(F.add_track("Keys"), midi(1, 2)); F.add_track("Tmp") end)
+  S.recv(B); S.recv(C)
+  T = T + 2
+  S.edit(C, function(F) local it = S.track(C, "Keys").items[1]; F.set_text(it, (it.text:gsub("FADEIN 1 0 ", "FADEIN 1 0.5 "))) end)
+  T = T + 2
+  S.edit(B, function(F) reaper.MoveMediaItemToTrack(S.track(B, "Keys").items[1], S.track(B, "Tmp")) end)
+  S.edit(A, function(F) reaper.DeleteTrack(S.track(A, "Tmp")) end)
+  for _ = 1, 3 do S.recv(A); S.recv(B); S.recv(C) end
+  local D = S.computer("Dee") -- (opens the song now)
+  for _ = 1, 3 do S.recv(D) end
+  for _, c in ipairs({ A, B, C, D }) do
+    S.as(c)
+    assert(S.names(c) == "Keys" and S.items(c, "Keys") == 0, "Tmp and the item moved onto it are gone on " .. c.user .. "'s: " .. S.names(c) .. " / " .. S.items(c, "Keys"))
+    assert(sync.pending_events(c.F.proj, c.cfg, "Conv28", "main") == 0,
+      "and nothing is still to come there (was: the merge of the two changes waited for its track for good): " .. sync.pending_events(c.F.proj, c.cfg, "Conv28", "main"))
+  end
+
+  -- b. an edit a deletion had beaten, the item brought back, then moved onto a track deleted that moment
+  local S2 = studio("Conv28b", "everyone")
+  local A2, B2 = S2.computer("James"), S2.computer("Bee")
+  S2.edit(A2, function(F) F.add_item(F.add_track("Keys"), midi(1, 2)); F.add_track("Tmp") end)
+  S2.recv(B2)
+  local oid = S2.track(A2, "Keys").items[1].ext.band_oid
+  local first = S2.events(function(v) return v.oid == oid end)[1]
+  T = T + 2
+  S2.edit(A2, function(F) F.remove_item(S2.track(A2, "Keys").items[1]) end)
+  S2.edit(B2, function(F) local it = S2.track(B2, "Keys").items[1]; F.set_text(it, (it.text:gsub("FADEIN 1 0 ", "FADEIN 1 0.5 "))) end)
+  for _ = 1, 2 do S2.recv(A2); S2.recv(B2) end
+  assert(S2.items(A2, "Keys") == 0 and S2.items(B2, "Keys") == 0, "James's deletion beat Bee's edit, made without seeing it")
+  local gone = S2.events(function(v) return v.oid == oid and v.gone end)[1]
+  local back = band.json_decode(band.json_encode(first))
+  back.id, back.rev, back.base, back.base_ev, back.hlc, back.user, back.restored = "Cee-20270115-140000Z-00098-0028", gone.rev + 1, gone.rev, gone.id, gone.hlc + 5, "Cee", true
+  files[S2.dir .. "/events/" .. back.id .. ".json"] = back
+  for _ = 1, 2 do S2.recv(A2); S2.recv(B2) end
+  assert(S2.items(A2, "Keys") == 1 and S2.items(B2, "Keys") == 1, "brought back on both")
+  -- apart: James deletes Tmp; Bee, who hasn't that yet, moves the item onto it: it goes with Tmp, with no deletion of its own
+  T = T + 2
+  S2.edit(A2, function(F) reaper.DeleteTrack(S2.track(A2, "Tmp")) end)
+  S2.edit(B2, function(F) reaper.MoveMediaItemToTrack(S2.track(B2, "Keys").items[1], S2.track(B2, "Tmp")) end)
+  for _ = 1, 2 do S2.recv(A2); S2.recv(B2) end
+  local moved = S2.events(function(v) return v.oid == oid and v.user == "Bee" and not v.gone and v.rev > back.rev end)[1]
+  assert(moved and S2.items(A2, "Keys") == 0 and S2.items(B2, "Keys") == 0 and not S2.track(B2, "Tmp"), "the item went with Tmp on both")
+  assert(#S2.events(function(v) return v.oid == oid and v.gone and v.rev > back.rev end) == 0, "(the case: no deletion of the item itself went out)")
+  -- a computer that joins now, Bee's beaten edit reaching it last (Syncthing brings files in any order)
+  local beaten = S2.events(function(v) return v.oid == oid and v.user == "Bee" and v.rev <= gone.rev end)[1]
+  local late = S2.dir .. "/events/" .. beaten.id .. ".json"
+  files[late] = nil
+  local D2 = S2.computer("Dee")
+  for _ = 1, 2 do S2.recv(D2) end
+  files[late] = beaten
+  for _ = 1, 2 do S2.recv(D2) end
+  S2.as(D2)
+  assert(sync.pending_events(D2.F.proj, D2.cfg, "Conv28b", "main") == 0, "nothing still to come on the computer that joined")
+  local _, kh, kev = mirror.known(D2.F.proj, oid)
+  assert(kh == "" and kev == moved.id, "its record of the item is the version that went with Tmp (was: that merged with the edit the deletion had beaten): " .. tostring(kev))
+  print("rt-converge 28: catching up, an item's older versions on a track deleted since are settled, not left waiting")
 end
 
 print("ok rt-converge")
