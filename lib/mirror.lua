@@ -1707,21 +1707,36 @@ function mirror.moved_tracks(old, new, selected)
 end
 
 -- The order the studio's tracks should be in: the newest list anyone published, then whatever's newer than that list under the
--- track it sat under (`after`: oid -> oid above), or at the end. Ties by oid, so every computer comes to the same list. Pure.
+-- track it sat under (`after`: oid -> oid above), or at the end. The same list on every computer. Pure.
+-- (the newer tracks in the order they were made (their ids say when: K-USER-<when>-<n>; then by id), each put under the track its change
+-- names, as it landed on every computer that was here: of two added under one track the later one sits right under it, the earlier below.
+-- By id alone the earlier came first, so the list wasn't the order three computers had all landed, a late joiner went to the list, and the
+-- order heal then moved everyone else's tracks to it. The soak's late joiner, "track order differs". rt-converge)
 function mirror.wanted_order(list, here, after)
   local has, out, put = {}, {}, {}
   for _, x in ipairs(here) do has[x] = true end
   for _, x in ipairs(list or {}) do if has[x] and not put[x] then put[x] = true; out[#out + 1] = x end end
-  local new = {}
-  for _, x in ipairs(here) do if not put[x] then new[#new + 1] = x end end
-  table.sort(new)
+  local new, made = {}, {}
+  for _, x in ipairs(here) do
+    if not put[x] then
+      new[#new + 1] = x
+      local when, n = tostring(x):match("%-(%d+)%-(%d+)$")
+      made[x] = { when or "", tonumber(n) or 0 }
+    end
+  end
+  table.sort(new, function(a, b)
+    local ma, mb = made[a], made[b]
+    if ma[1] ~= mb[1] then return ma[1] < mb[1] end
+    if ma[2] ~= mb[2] then return ma[2] < mb[2] end
+    return tostring(a) < tostring(b)
+  end)
   repeat
-    local landed = false
-    for k = #new, 1, -1 do -- (from the end, so of two under one track the lower oid ends up first)
+    local landed, k = false, 1
+    while k <= #new do -- (oldest first: each lands right under the track it names, above what landed there before it)
       local x, above = new[k], after[new[k]] or ""
       local at = above == "" and 0 or nil
       if not at then for i, y in ipairs(out) do if y == above then at = i end end end
-      if at then table.insert(out, at + 1, x); put[x] = true; table.remove(new, k); landed = true end
+      if at then table.insert(out, at + 1, x); put[x] = true; table.remove(new, k); landed = true else k = k + 1 end
     end
   until not landed
   for _, x in ipairs(new) do out[#out + 1] = x end -- (what it sat under is gone)
@@ -5212,6 +5227,7 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
   mirror.map_tag(proj, ev) -- (the tempo map its seconds are on: whoever lands it elsewhere puts it on the same beat there. rt-converge)
   if o.kind == "track" and opts.local_mix then ev.state, ev.local_mix = mirror.band_faders(state, last and not last.gone and last.state), true end
   if o.kind == "track" and w.moved_from then ev.moved = w.moved_from[o.oid] end -- (the track it sat under before you moved it: mirror.moved_since)
+  if ev.moved ~= nil then w.order_out = true end -- (a move of yours goes out: the studio's order list follows, after this look's sends)
   if o.kind == "item" and type(state) == "string" and state:find("BANDLANE", 1, true) then -- (a comp piece's source lane: mirror.comp_from)
     local others, t = {}, by_oid[o.track]
     for _, x in ipairs(objs or {}) do if x.kind == "item" and x.track == o.track and x.oid ~= o.oid then others[#others + 1] = x.state end end
@@ -6303,6 +6319,11 @@ function mirror.watch(proj, cfg, song, room, opts)
     W.prints(w)
     if info then w.gone_oids = look_gone_oids(w, L, remembered, info) end
     W.gone(w)
+    -- (the studio's order list, whenever a move of yours went out: it was written only when every moved track was yours outright, so a move of
+    -- a bandmate's auto-claimed track, which goes out and merges (W.one's soft path), reached everyone here but never the list. Anyone who
+    -- opened the song later went to the old list, and the order heal then pulled everyone else back to it: the move undone for all, minutes
+    -- later. The soak's late joiner, "track order differs". As it stands after this look's sends and put-backs. rt-converge)
+    if w.order_out then mirror.publish_order(proj, room_dir, me) end
     -- (a track put back takes its settings again once its items are back, and is remembered as it reads then, as mirror.revert's finish does:
     -- REAPER names a lane only once an item is in it, so a kept track read as changed at the next full look, which put it back a second time,
     -- with a cooldown line nobody's edit caused. REAPER recheck, 0.59.49.80, round 7. After a burst's last pass.)
@@ -6667,6 +6688,17 @@ local function mirrored_order(proj)
     end
   end
   return list
+end
+-- After a receive pass that landed a bandmate's track (made, moved or deleted): the order as that left it is what the next look compares
+-- with. A look took any difference in the order for the band's doing whenever a track of theirs had landed since the look before
+-- (mirror.order_band), so a track you dragged in the seconds after a bandmate added one was never sent as a move: it stayed where you put it
+-- on your computer alone, or rode out on the track's next change with no order list behind it. Now only what you changed after their
+-- track landed reads as yours. (A band track landing outside a receive pass, a heal or a put-back, keeps the old rule until the next look.)
+-- rt-converge
+function mirror.order_after_band(proj)
+  local pk = tostring(proj)
+  if not mirror.order_band[pk] or mirror.order_seen[pk] == nil then return end
+  mirror.order_seen[pk], mirror.order_band[pk] = table.concat(mirrored_order(proj), ","), nil
 end
 function mirror.read_order(room_dir)
   local band, best = require("band"), nil

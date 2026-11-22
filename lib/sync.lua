@@ -2121,6 +2121,7 @@ function sync.receive(proj, cfg, song, room, can)
     end
   end
   require("mirror").index_for(nil)
+  require("mirror").order_after_band(proj)
   -- a change skipped because its track was gone, and the track may have come back since (a download arrives in
   -- batches, out of history order): once this pass has drained the queue, everything's newest change that hasn't
   -- landed is put in place (mirror.heal: only what differs)

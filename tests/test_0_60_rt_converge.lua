@@ -10,6 +10,9 @@
 --  6. An item's deletion lands though the item had moved off its deleted track here (mirror.receive).
 --  7. What was refused doesn't stay on this computer alone, asked about every 90 s (W.put_back).
 --  8. Undo then Redo brings the song back (mirror.revert, lib/undo.lua): bug 9 and the soak's undo probe.
+--  9. The studio's track order is the order everyone landed: new tracks as they were made, and every move reaches the order list
+--     (mirror.wanted_order, mirror.order_after_band, W.send).
+-- 10. An edit beaten by a deletion stays beaten when the deletion is taken back, in whatever order they arrive (mirror.beaten_by).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -452,6 +455,48 @@ do
   r = step2(true)
   assert(r:find("took nothing back") and S2.items(J, "Drums") == 0, "and the Redo after it redoes nothing (was: it redid the Undo before, and the item was back): " .. r)
   print("rt-converge 8: a Redo takes away what your own Undo brought back; Undo and Redo of a change built on a merge keep the merge; no Redo after an Undo of nothing")
+end
+
+-- ---- 9. the studio's track order is the order everyone landed (the soak's late joiner, "track order differs") ----------------------------------
+do
+  -- a. pure: of two tracks added under one, the later sits right under it, as it landed on every computer that was here
+  local function w(list, here, after) return table.concat(mirror.wanted_order(list, here, after), " ") end
+  local x, y, z = "T-BEE-20270101000001-10001", "T-CEE-20270101000002-10002", "T-BEE-20270101000003-20003"
+  assert(w({ "A", "B" }, { "A", x, y, "B" }, { [x] = "A", [y] = "A" }) == "A " .. y .. " " .. x .. " B", "the later one first (was: by id, the earlier first)")
+  assert(w({ "A", "B" }, { "B", y, x, "A" }, { [x] = "A", [y] = "A" }) == "A " .. y .. " " .. x .. " B", "whatever the order here")
+  assert(w({ "A" }, { "A", x, y, z }, { [x] = "A", [y] = "A", [z] = x }) == "A " .. y .. " " .. x .. " " .. z, "and one under an earlier new one, where it landed")
+  -- b. a track dragged just after a bandmate's new track landed is this person's move: it goes out as one, with the order list
+  local S = studio("Conv9", "everyone")
+  local A, B = S.computer("James"), S.computer("Bee")
+  S.edit(A, function(F) for _, n in ipairs({ "Drums", "Bass", "Keys" }) do F.add_track(n) end end)
+  S.recv(B)
+  S.edit(A, function(F) F.add_track("New") end)
+  S.recv(B, true) -- (James's track lands on Bee's; no look yet)
+  T = T + 2
+  S.edit(B, function(F) reaper.SetOnlyTrackSelected(S.track(B, "Keys")); reaper.ReorderSelectedTracks(0, 0) end)
+  assert(S.names(B) == "Keys, Drums, Bass, New", "moved on Bee's (" .. S.names(B) .. ")")
+  local moves = S.events(function(v) return v.obj == "track" and v.user == "Bee" and v.moved ~= nil end)
+  assert(#moves == 1, "Bee's move went out as a move (was: taken for the band's doing, as a track of theirs had landed since the last look): " .. #moves)
+  local ol = files[S.dir .. "/order/Bee.json"]
+  assert(ol and ol.list[1] == moves[1].oid, "and the studio's order list has it")
+  S.recv(A)
+  assert(S.names(A) == S.names(B), "on James's too (" .. S.names(A) .. ")")
+  -- c. a move of a bandmate's auto-claimed track goes out and merges (Claims): the order list follows that too
+  local S3 = studio("Conv9c", "open")
+  local J, C = S3.computer("James"), S3.computer("Cee")
+  here_now = { James = true, Cee = true }
+  S3.edit(J, function(F) for _, n in ipairs({ "Drums", "Bass", "Keys" }) do F.add_track(n) end end)
+  S3.recv(C)
+  T = T + sync.AUTO_IDLE + 120
+  S3.edit(J, function(F) reaper.SetMediaTrackInfo_Value(S3.track(J, "Keys"), "D_VOL", 0.5) end) -- (James works on Keys: his while he edits)
+  S3.recv(C)
+  assert(select(2, sync.authority(C.cfg, S3.song, "main", S3.sess)).tracks.keys.user == "James", "Keys is James's auto-claim")
+  T = T + 2
+  files[S3.dir .. "/order/Cee.json"] = nil
+  S3.edit(C, function(F) reaper.SetOnlyTrackSelected(S3.track(C, "Keys")); reaper.ReorderSelectedTracks(0, 0) end)
+  assert(#S3.events(function(v) return v.obj == "track" and v.user == "Cee" and v.moved ~= nil end) == 1, "Cee's move of Keys went out (it merges with James's fader)")
+  assert(files[S3.dir .. "/order/Cee.json"], "and the studio's order list follows it (was: only when every moved track was the mover's outright)")
+  print("rt-converge 9: new tracks in the order they landed; a move after a bandmate's track landed, or of an auto-claimed track, reaches the order list")
 end
 
 print("ok rt-converge")
