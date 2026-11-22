@@ -124,12 +124,30 @@ band.log_error = function(where, err) ERRORS[#ERRORS + 1] = string.format("%.1f 
 local mirror, sync, direct, undo = require("mirror"), require("sync"), require("direct"), require("undo")
 local recall, claimask = require("recall"), require("claimask")
 direct.available = function() return true end -- (the extension is mandatory: its inbox is read)
+-- (and the link is started for this studio, as Live sync's direct.ensure leaves it: mirror reads a version that has only come over the link
+-- from the inbox of the studios in direct.started (direct.path with no cfg). Left empty, every such version was "not readable on this
+-- computer" until Syncthing's copy came, which the real Live sync never says: a soak artifact. rt-converge)
+direct.started[ROOT] = { at = 0, ok = true }
 direct.send_live = function(_, kind, d, song, room, id)
   outbox[#outbox + 1] = { "link", kind, band.json_encode({ song = song, room = room, id = id, d = d }) }
   return true
 end
 require("prints").choose = function() end -- (which take plays: this computer's own)
 package.loaded.trust = setmetatable({ claim_ok = function() return true end }, { __index = require("trust") }) -- (Syncthing says who wrote each file: here, truly them)
+-- (REAPER's own move of an item for a tempo change: the stand-in moves its place and length; REAPER, in beats (position, length, rate), also
+-- stretches what's inside it (fades, snap offset, an audio take's rate), which is what mirror.retime does when StudioSync puts a version on
+-- another map (rt-p1b). Two computers that reached one map by the two roads then differed in the soak alone, by the stand-in's shortfall.
+-- Here REAPER's move is mirror.retime's, for every item. rt-converge)
+do
+  local real = F.tempo_edit
+  F.tempo_edit = function(fn)
+    local old, was = band.capture_tempo(F.proj), {}
+    for _, it in ipairs(F.all_items()) do was[it] = it.text end
+    real(fn)
+    local new = band.capture_tempo(F.proj)
+    for it, text in pairs(was) do it.text = mirror.retime(text, old, new, 1) end
+  end
+end
 local MEDIA = sync.room_dir(cfg, SONG, ROOM) .. "/media"
 -- (the song's folders, as the studio's folder has them once the song is shared: Syncthing makes a folder before its first file)
 for _, d in ipairs({ "events", "status", "claims", "released", "media" }) do add_dirs(sync.room_dir(cfg, SONG, ROOM) .. "/" .. d) end

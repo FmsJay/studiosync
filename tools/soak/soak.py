@@ -262,11 +262,15 @@ class Sim:
         for path, data in json.loads(self.nodes[0].call(self.t, "shared_files")):
             d.call(self.t, "put", path, data)
         self.dee = d
-        for _ in range(120):
+        # (until nothing has landed for 70 s: a change that looks refused by the claims waits a minute where it arrives, then lands
+        # (sync.receive), and a late joiner that stopped at its first quiet pass was compared before those had. rt-converge)
+        quiet = 0
+        for _ in range(800):
             self.t = round(self.t + 0.5, 6)
             r = json.loads(d.call(self.t, "pass"))
             json.loads(d.call(self.t, "drain"))
-            if not r["got"] and not r["more"]:
+            quiet = 0 if (r["got"] or r["more"]) else quiet + 1
+            if quiet >= 140:
                 break
         ds = json.loads(d.call(self.t, "state"))
         for e in json.loads(d.call(self.t, "errors")):
