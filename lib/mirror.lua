@@ -1523,10 +1523,25 @@ end
 function mirror.clashes(room_dir, kind, state, from, user)
   local cut = (require("together").now() - require("sync").AUTO_IDLE) * 1000
   local theirs, any, todo, seen, n = {}, false, { from }, {}, 0
+  -- (a note of theirs that a later version moved or changed again goes by another key by then: its key as `from` has it, through each
+  -- version between (mirror.note_changes pairs a note with what it was). Without it a second move of a note the claimer had moved, after
+  -- your own transposition of it, wasn't seen as theirs and nobody was asked: P1-8's second part, rt-r3. rt-converge)
+  local fwd = {}
+  local function forward(x, y) -- y: what x was made on, or a side of the merge x is -> y's note keys as `from` has those notes
+    local fx = fwd[x.id] or {}
+    if kind ~= "item" or type(x.state) ~= "string" or type(y.state) ~= "string" then return fx end
+    local fy
+    for kx, nc in pairs(mirror.note_changes(y.state, x.state)) do
+      fy = fy or setmetatable({}, { __index = fx })
+      fy[nc.from] = fx[kx] or kx
+    end
+    return fy or fx
+  end
   while #todo > 0 and n < 64 do
     local x = table.remove(todo, 1)
     if type(x) == "table" and x.id and not seen[x.id] then
       seen[x.id], n = true, n + 1
+      local F = fwd[x.id] or {}
       local w, l = mirror.split_merge(x.id)
       local at = w and math.huge or mirror.order_parts(mirror.order_of(x)) -- (a merged version is as new as its newer side: both are looked at)
       if at >= cut then -- (what it builds on is older still: no further down than an auto-claim lasts)
@@ -1539,18 +1554,22 @@ function mirror.clashes(room_dir, kind, state, from, user)
           -- (a MIDI note they moved or changed: which of its parts, so a transposition of their moved note isn't a clash. rt-fix6a)
           local notes = kind == "item" and b and mirror.mergeable(b) and mirror.note_changes(b.state, x.state) or {}
           for k in pairs(mirror.pieces_changed(bp, xp)) do
-            local nc, t = notes[k], theirs[k]
+            local kk = F[k] or k
+            local nc, t = notes[k], theirs[kk]
             if nc and t ~= true then
               t = t or {}
               for f in pairs(nc.fields) do t[f] = true end
-              theirs[k] = t
-            else theirs[k] = true end
+              theirs[kk] = t
+            else theirs[kk] = true end
             any = true
           end
         end
         for _, id in ipairs(w and { w, l } or { x.base_ev }) do
           local y = mirror.event_file(room_dir, id)
-          if y then todo[#todo + 1] = y elseif not w and x.user == user then return true end
+          if y then
+            if y.id and fwd[y.id] == nil then fwd[y.id] = forward(x, y) end
+            todo[#todo + 1] = y
+          elseif not w and x.user == user then return true end
         end
       end
     end

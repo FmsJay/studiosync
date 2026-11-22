@@ -26,6 +26,7 @@
 -- 21. An item's version on a track deleted since stands though the item's earlier versions land after it (mirror.receive).
 -- 22. Undo of a marker change made before a bandmate's tempo change compares the markers on the map in place (sync.undo_timeline).
 -- 23. Undo of a timeline change goes back to the version it was made on, not the one before it by order (sync.post's built_on).
+-- 24. A note the claimer moved is still theirs after your own change to it: a second move of it asks (mirror.clashes): rt-r3's P1-8, part two.
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -1188,6 +1189,39 @@ do
   local r = step(true)
   assert(marks(B) == "N1@8,R@13", "and her Redo: the region where she moved it (" .. r .. "; " .. marks(B) .. ")")
   print("rt-converge 23: Undo of a timeline change goes back to the version it was made on")
+end
+
+-- ---- 24. a note the claimer moved, transposed by you, then moved by you again: the second move asks (rt-r3's P1-8, second part) ----------------
+do
+  local function item(...) -- notes { tick, pitch, len } -> an item's state with one MIDI take (as tests/test_0_60_rt_fix6a.lua)
+    local evs = {}
+    for _, n in ipairs({ ... }) do
+      evs[#evs + 1] = { n[1], string.format("90 %02x 60", n[2]) }
+      evs[#evs + 1] = { n[1] + n[3], string.format("80 %02x 00", n[2]) }
+    end
+    table.sort(evs, function(a, b) if a[1] ~= b[1] then return a[1] < b[1] end return a[2] < b[2] end)
+    local lines, last = {}, 0
+    for _, e in ipairs(evs) do lines[#lines + 1] = string.format("E %d %s", e[1] - last, e[2]); last = e[1] end
+    lines[#lines + 1] = string.format("E %d b0 7b 00", 3840 - last)
+    return "<ITEM\nPOSITION 0\nLENGTH 4\nTAKE\nNAME \"k\"\n<SOURCE MIDI\nHASDATA 1 960 QN\n" .. table.concat(lines, "\n") .. "\n>\n>\n"
+  end
+  local hlc = math.floor(T * 1000)
+  local function put(id, user, state, base, age)
+    local ev = { type = "obj", id = id, user = user, obj = "item", oid = "I-P24", state = state, base_ev = base, hlc = hlc - age * 1000, time = iso(T - age) }
+    files[R .. "/events/" .. id .. ".json"] = ev
+    return ev
+  end
+  -- the note was there for an hour; James moved it a beat later two minutes ago (his auto-claim is on); the laptop transposed it right after
+  local first = put("Laptop-20270115-070000Z-00001-0241", "Laptop", item({ 0, 48, 960 }, { 1920, 55, 960 }), nil, 3600)
+  local moved = put("James-20270115-075800Z-00001-0242", "James", item({ 960, 48, 960 }, { 1920, 55, 960 }), first.id, 120)
+  local up = put("Laptop-20270115-075801Z-00002-0243", "Laptop", item({ 960, 50, 960 }, { 1920, 55, 960 }), moved.id, 119)
+  assert(mirror.clashes(R, "item", up.state, moved, "James") == false, "the transposition of the note James moved: no ask (rt-fix6a, as before)")
+  assert(mirror.clashes(R, "item", item({ 1920, 50, 960 }, { 1920, 55, 960 }), up, "James") == true,
+    "the same note moved again, on top of the laptop's own transposition: its start is James's work, asked (was: not asked, it went out)")
+  assert(mirror.clashes(R, "item", item({ 960, 52, 960 }, { 1920, 55, 960 }), up, "James") == false, "transposed again: its pitch was never James's, no ask")
+  assert(mirror.clashes(R, "item", item({ 960, 50, 960 }, { 1920, 57, 960 }), up, "James") == false, "another note: no ask")
+  assert(mirror.clashes(R, "item", item({ 1920, 55, 960 }), up, "James") == true, "the note taken away: asked")
+  print("rt-converge 24: a note the claimer moved stays theirs through your own change to it")
 end
 
 print("ok rt-converge")
