@@ -454,6 +454,18 @@ function claimask.tick(proj, cfg, b)
       band.log(said or ("couldn't answer: " .. tostring(why)))
     end
   end
+  -- (the panel's Yes to StudioSync's Undo or Redo asking, lib/undo.lua: carried out here, so the panel's own pass never runs the step. rt-fix9)
+  local ua = band.ext_json(band.SECTION, "undo answer " .. tostring(proj))
+  if ua ~= nil then
+    reaper.DeleteExtState(band.SECTION, "undo answer " .. tostring(proj), false)
+    local undo = require("undo")
+    local q = undo.pending(proj)
+    if type(ua) == "table" and ua.yes == true and q and ua.id == q.id then
+      local ok, res, why = pcall(undo.step, proj, cfg, b, q.redo, { confirmed = q.id })
+      band.log(not ok and ("undo: " .. tostring(res)) or res or why or "undo: it changed since: nothing was done")
+    end
+    undo.clear(proj)
+  end
   for id, q in pairs(inq) do if now - q.at > claimask.ASK_WAIT then inq[id] = nil end end -- (they've put it back by now)
   for k, a in pairs(out) do
     if a.state == "asked" and now - a.at > claimask.ASK_WAIT then a.state, a.done_at = "timeout", now; require("mirror").unsettled = true end
@@ -475,6 +487,18 @@ end
 -- ---- the panel's bar ---------------------------------------------------------------------------------------------------------------------
 -- Asks waiting on you (Release / Keep) and yours waiting on others, for the front tab. Answers go to its Live sync (ExtState).
 function claimask.bar(ctx, ImGui, proj)
+  local u = require("undo").pending(proj) -- (StudioSync's Undo or Redo asking, lib/undo.lua: Yes goes to Live sync, No just ends it. rt-fix9)
+  if u then
+    ImGui.AlignTextToFramePadding(ctx)
+    ImGui.TextColored(ctx, 0xFFD040FF, string.format("%s (%d s)", u.text, math.max(0, (tonumber(u.till) or 0) - os.time())))
+    for _, yes in ipairs({ true, false }) do
+      ImGui.SameLine(ctx)
+      if ImGui.SmallButton(ctx, yes and "Yes##undoask" or "No##undoask") then
+        if yes then reaper.SetExtState(band.SECTION, "undo answer " .. tostring(proj), band.json_encode({ id = u.id, yes = true }), false)
+        else require("undo").clear(proj) end
+      end
+    end
+  end
   local raw = reaper.GetExtState(band.SECTION, "claim asks " .. tostring(proj))
   local m = raw ~= "" and band.json_decode(raw)
   if type(m) ~= "table" then return end

@@ -51,7 +51,7 @@ local MEDIA
 
 local function computer(user, path)
   local c = { F = E.new(path), cfg = { user = user, root = ROOT } }
-  c.F.reaper.MB = function() return 6 end -- (Undo asks when a bandmate changed it since: yes)
+  require("undo").confirm = function() return true end -- (Undo asks when a bandmate changed it since: yes, at once. lib/undo.lua, rt-fix9)
   c.F.reaper.GetMousePosition = function() return 0, 0 end -- (sync.put_back's tip goes by the mouse)
   return c
 end

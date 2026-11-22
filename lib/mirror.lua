@@ -2226,9 +2226,40 @@ function mirror.env_sans_tempo(state)
     local kw, rest = line:match("^%s*(%S+)%s*(.*)$")
     if kw == "PT" then out[#out + 1] = "PT " .. rest:gsub("^%S+%s*", "")
     elseif kw == "POOLEDENVINST" then out[#out + 1] = "POOLEDENVINST " .. rest:gsub("^%S+%s+%S+%s+%S+%s*", "")
+    -- (and an automation item's place and length, and its points' times, as mirror.ai_lines writes them: a tempo change moves those too.
+    -- rt-fix9)
+    elseif kw == "BANDAI" then out[#out + 1] = "BANDAI " .. rest:gsub("^(%S+)%s+%S+%s+%S+", "%1")
+    elseif kw == "BANDAIPT" then out[#out + 1] = "BANDAIPT " .. rest:gsub("^(%S+%s+%S+)%s+%S+", "%1")
     else out[#out + 1] = line end
   end
   return table.concat(out, "\n")
+end
+-- Two automation states alike but for what a tempo change moves (env_sans_tempo), line by line and number by number: a point's line written
+-- with other digits, or without the trailing fields another REAPER writes (missing ones read as 0), is the same point. A bandmate's REAPER
+-- writes its automation its own way, and the text compare took this computer's own tempo change, made right after a bandmate's, for an edit
+-- of the one track with automation, and claimed it (rt-r4's bug B, three of three; never after a tempo change of this computer's own). Pure.
+local function same_words(x, y)
+  if x == y then return true end
+  local tx, ty = {}, {}
+  for t in x:gmatch("%S+") do tx[#tx + 1] = t end
+  for t in y:gmatch("%S+") do ty[#ty + 1] = t end
+  if tx[1] ~= ty[1] then return false end
+  for i = 2, math.max(#tx, #ty) do
+    local p, q = tx[i] or "0", ty[i] or "0"
+    if p ~= q then
+      local m, n = tonumber(p), tonumber(q)
+      if not (m and n and math.abs(m - n) <= 1e-9 * math.max(1, math.abs(m))) then return false end
+    end
+  end
+  return true
+end
+function mirror.env_same_but_times(a, b)
+  local la, lb = {}, {}
+  for l in mirror.env_sans_tempo(a):gmatch("[^\n]+") do la[#la + 1] = l end
+  for l in mirror.env_sans_tempo(b):gmatch("[^\n]+") do lb[#lb + 1] = l end
+  if #la ~= #lb then return false end
+  for i = 1, #la do if not same_words(la[i], lb[i]) then return false end end
+  return true
 end
 -- An item without what a tempo change moves: where it sits, how long, and how fast. Pure.
 local TEMPO_MOVES = { POSITION = true, LENGTH = true, PLAYRATE = true, SOFFS = true, SNAPOFFS = true, FADEIN = true, FADEOUT = true }
@@ -2389,6 +2420,20 @@ end
 function mirror.on_map(proj, ev)
   if not (type(ev) == "table" and type(ev.tm) == "table") then return type(ev) == "table" and ev.state or nil, false end
   return mirror.state_on(ev, require("band").capture_tempo(proj), reaper.GetSetProjectInfo(proj, "PROJECT_TIMEBASE", 0, false))
+end
+-- Did a tempo map, not a hand, make `now` out of `was`: two readings of one item or automation on this computer, under the maps `from` and `to`
+-- (`mode`: the project's timebase)? As mirror.only_map_moved, but against this computer's own reading at its last look instead of the band's
+-- text, which another REAPER writes its own way: W.send's other way to tell a tempo change of yours from an edit. Pure. rt-fix9
+function mirror.moved_by_map(kind, was, now, from, to, mode)
+  if type(was) ~= "string" or type(now) ~= "string" or not (map_ok(from) and map_ok(to)) or same_map(from, to) then return false end
+  if kind == "env" then return mirror.env_same_but_times(was, now) end
+  if kind ~= "item" or mirror.sans_tempo(was) ~= mirror.sans_tempo(now) then return false end
+  local want = mirror.retime(was, from, to, mode)
+  for _, k in ipairs({ "POSITION", "LENGTH" }) do
+    local a, b = tonumber(want:match("\n%s*" .. k .. " ([%d%.%-e]+)")), tonumber(now:match("\n%s*" .. k .. " ([%d%.%-e]+)"))
+    if a and b and math.abs(a - b) > 1e-6 then return false end
+  end
+  return true
 end
 -- `state` with each line that says the same as a line of `ref` to 7 decimals written as `ref` writes it: a place worked out two ways (REAPER's
 -- own move for a map, mirror.retime's) differs in its last digits, and a merge reading that as "both changed it" called a clash. Pure.
@@ -3933,6 +3978,7 @@ function mirror.apply(proj, ev, media_dir, local_mix)
       end
     end
     local t = mirror.track_state(proj, tr, local_mix)
+    mirror.track_seen[tostring(proj) .. oid] = mirror.track_line(t, local_mix) -- (as it was put in place: mirror.receive's unseen-edit check)
     -- (landed, only its place in this machine's list can differ: the band's hash stands, so fingerprints agree, and it isn't
     -- "came out different". Track order can differ: PC Fight, laptop, 0.42.3)
     local h = mirror.track_hash(t, local_mix)
@@ -4364,6 +4410,17 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
     local knobs = tr and mirror.fx_params(tr)
     if tr and knobs ~= "" and mirror.fx_last[key] ~= knobs then mirror.unsent[key], mirror.fx_doubt[key], mirror.unsettled = true, true, true end
   end
+  -- (and a track's settings changed here that no look has seen yet: theirs waits for the look, which sends yours built on the version both
+  -- came from, and the two merge by setting (mirror.merge_track). A rename made in the same moment as a bandmate's fader move landed under it:
+  -- the band's version, built on the old name, replaced the track whole, the rename never went out and the track was back to its old name
+  -- with no line anywhere (rt-r4 check 4, two of two; P1-4's class, which commit 16 closed for plug-in knobs). Any setting a track carries:
+  -- name, colour, mute, volume and pan, lanes. Against the settings as the last look read them or a change put them here, not the place in
+  -- the list, which a bandmate's track landing above it moves. rt-fix9)
+  if ev.obj == "track" and not ev.gone and type(ev.state) == "table" then
+    local key = tostring(proj) .. ev.oid
+    local tr = not mirror.unsent[key] and mirror.track_seen[key] ~= nil and mirror.find(proj, "track", ev.oid)
+    if tr and mirror.track_line(mirror.track_state(proj, tr, local_mix), local_mix) ~= mirror.track_seen[key] then mirror.unsent[key], mirror.unsettled = true, true end
+  end
   if mirror.unsent[tostring(proj) .. ev.oid] or mirror.unsent_elsewhere(proj)[ev.oid] then return false end
   -- (an item of yours held back (its audio couldn't be copied, its last version unreadable) is about to be replaced by the band's: a copy goes to
   -- "(yours, not sent)" first, as a refusal keeps one; it went with no copy. Only for held-back items. Round 2 review, 0.59.46)
@@ -4408,7 +4465,10 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
       local what = ev.obj == "track" and ("track " .. on) or ev.obj == "env" and ("the automation on " .. on) or ev.obj == "fx" and ("the plug-ins on " .. on) or ("an item on " .. on)
       local takes = false
       for _, key in ipairs(merging.clashed or {}) do takes = takes or (key:find("<SOURCE", 1, true) ~= nil and not key:find("\0notes", 1, true)) end
-      if lost and me and lost.user == me and #(merging.clashed or {}) > 0 then -- (only what you both changed is theirs; Use mine brings all of yours back)
+      -- (nothing said where your side was only your tempo change's move: you changed nothing of it. rt-fix9)
+      local only_map = lost and lost.user == me and merging.l_retimed or merging.user == me and merging.w_retimed
+      if only_map then
+      elseif lost and me and lost.user == me and #(merging.clashed or {}) > 0 then -- (only what you both changed is theirs; Use mine brings all of yours back)
         require("sync").put_back(string.format("%s changed the same thing as you on %s: %s, and the rest of your change is in", tostring(merging.user), what,
           takes and "their take plays, and yours is kept as another take on it" or "theirs stands where you both changed it"), { oid = ev.oid, ev = lost.id, name = ev.name })
       elseif me and (merging.user == me or (lost and lost.user == me)) then
@@ -4598,8 +4658,17 @@ local function event_file(room_dir, evid, depth)
     ls, moved_l = mirror.state_on(l, w.tm, w.tb)
     if moved_b or moved_l then ws, ls = mirror.snap_to(ws, bs), mirror.snap_to(ls, bs) end
   end
+  -- (a side that is only the map's move of the version both came from (`retimed`, W.send) brings nothing of its own: the merge is the other
+  -- side's, on the winner's map. Against a version from before maps were named, its moved timing read as a change of its own: the other's move
+  -- "clashed", "theirs stands where you both changed it" was said on the computer that had only changed the tempo (rt-r4 check 1), and where
+  -- the map's side won, the hand's move was lost. rt-fix9)
+  -- (only where that side builds straight on that version: one on a change of its own made since keeps that change)
+  local only_w = w.retimed and not l.retimed and w.base_ev == base_id
+  local only_l = l.retimed and not w.retimed and l.base_ev == base_id
+  if only_w then ws = bs elseif only_l then ls = bs end
   v.state, v.clashed = mirror.merge_state(w.obj, bs, ws, ls, l.user)
   if v.state == nil then return nil end
+  v.retimed, v.w_retimed, v.l_retimed = nil, only_w or nil, only_l or nil -- (the merge isn't the map's move alone; which side was: mirror.receive's words)
   v.id, v.rev, v.hash, v.base, v.base_ev, v.loser = evid, math.max(w.rev or 0, l.rev or 0), nil, b.rev or 0, base_id, l
   -- (and the files the loser's plug-ins load (a sampler's sample, an impulse): their plug-in is in the merge too, and with the winner's list
   -- alone a computer that took the winner first never fetched them. rt-p1)
@@ -4707,6 +4776,7 @@ mirror.master_seen = {} -- project -> its master track at the last look (W.order
 mirror.fx_quiet = mirror.fx_quiet or {}
 mirror.fx_last = mirror.fx_last or {} -- proj .. chain oid -> its knobs when it last landed here or went out from here (mirror.receive's unseen-edit check)
 mirror.fx_doubt = mirror.fx_doubt or {} -- proj .. chain oid -> true: mirror.receive held the band's chain back for a look to say whether the knobs are an edit
+mirror.track_seen = mirror.track_seen or {} -- proj .. track oid -> its settings (mirror.track_line) as the last look read them or a change put them here (mirror.receive)
 local function fx_open_now(tr)
   if reaper.TrackFX_GetChainVisible(tr) ~= -1 then return true end
   for i = 0, reaper.TrackFX_GetCount(tr) - 1 do
@@ -4777,7 +4847,7 @@ function mirror.only_map_moved(proj, o, last)
   local named = map_ok(last.tm)
   if not named and reaper.time_precise() >= (mirror.tempo_until[tostring(proj)] or 0) then return false end
   if o.kind == "env" then
-    return mirror.env_sans_tempo(o.state) == mirror.env_sans_tempo(last.state) and (not named or select(2, mirror.on_map(proj, last)) == true)
+    return mirror.env_same_but_times(o.state, last.state) and (not named or select(2, mirror.on_map(proj, last)) == true)
   end
   return o.kind == "item" and mirror.sans_tempo(o.state) == mirror.sans_tempo(last.state) and mirror.map_moved(proj, last, o.state)
 end
@@ -4802,7 +4872,7 @@ function mirror.map_landing(proj, user, media_dir, local_mix, set)
     local b = before[o.oid]
     if b and b.hash ~= o.hash and b.track == o.track and type(o.state) == "string" then
       local rev, h, evid, kord = mirror.known(proj, o.oid)
-      if rev and h == b.hash and (o.kind == "env" and mirror.env_sans_tempo(o.state) == mirror.env_sans_tempo(b.state)
+      if rev and h == b.hash and (o.kind == "env" and mirror.env_same_but_times(o.state, b.state)
           or o.kind == "item" and mirror.sans_tempo(o.state) == mirror.sans_tempo(b.state)) then
         mirror.remember(proj, o.oid, rev, o.hash, evid, kord)
         n = n + 1
@@ -5354,6 +5424,16 @@ function W.propose(w, o, rev, who, claim_name, pos, name, gone)
   return suggest.add(room_dir, me, who, c)
 end
 -- It may go: out it goes, as this person's change.
+-- An item's or automation's reading at the look `L` (the last one's record), if it was the band's version then (W.one found it unchanged):
+-- what W.send tells a tempo change's move from an edit by. Automation as its track's lines, without automation items' (read through the API,
+-- not kept): a track with those goes by the band's text as before. -> the state, or nil. rt-fix9
+local function look_reading(L, o)
+  if not (L.map and L.clean and L.clean[o.oid] ~= nil and L.where and L.tracks) then return nil end
+  local e = L.tracks[L.where[o.oid] or ""]
+  if not e then return nil end
+  if o.kind == "env" then return e.parts and e.parts.env end
+  for _, q in ipairs(o.kind == "item" and e.items or {}) do if q.oid == o.oid then return q.state end end
+end
 function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
   local band, sync, proj, cfg, song, room, opts, me = w.band, w.sync, w.proj, w.cfg, w.song, w.room, w.opts, w.me
   local room_dir, media, objs, by_oid, holds, playing = w.room_dir, w.media, w.objs, w.by_oid, w.holds, w.playing
@@ -5449,10 +5529,15 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
     local files = require("fxfiles").share(mirror.take_fx(state), media, last and type(last.state) == "string" and mirror.take_fx(last.state) or nil, last and last.files, mirror.theirs(o.ptr))
     if #files > 0 then ev.files = files end
   end
-  local id = sync.post(cfg, song, room, ev)
   -- (not a move that is only the tempo map's: it travels, made under its map (`tl`), but nobody worked on that track. The desktop's own 90 bpm
   -- marker sent 11 items and auto-claimed all three tracks. REAPER recheck, 0.59.49.80, round 7)
+  -- (or against this computer's own reading at its last look, while it was the band's: the band's text is another REAPER's when a bandmate's
+  -- change was the last, and a tempo change made after a bandmate's auto-claimed the track with automation, three of three (rt-r4's bug B).
+  -- Said on the change (`retimed`): a merge then takes nothing of it but the map, mirror.event_file. rt-fix9)
   local tempo_only = (ev.tl ~= nil or map_ok(last and last.tm)) and mirror.only_map_moved(proj, o, last)
+    or w.look_was and mirror.moved_by_map(o.kind, look_reading(w.look_was, o), o.state, w.look_was.map, w.map_now, reaper.GetSetProjectInfo(proj, "PROJECT_TIMEBASE", 0, false))
+  if tempo_only then ev.retimed = true end
+  local id = sync.post(cfg, song, room, ev)
   -- (and only from an edit of yours: mirror.user_edited. rt-fix6a)
   if opts.sent and not tempo_only and w.edited ~= false then pcall(opts.sent, o, name, ev) end -- (Claims: what you edit becomes yours. lib/claimask.lua, rt-claims)
   pcall(require("compat").sent, proj, o.oid, name, o.kind, o.ptr, ev.auto) -- (changed again right after a bandmate's change, or by itself: lib/compat.lua)
@@ -6187,6 +6272,7 @@ function W.each(w)
   local dirty = w.dirty -- (a quick look: only what may have changed, or still has something to do. rt-look)
   for _, o in ipairs(w.objs) do
     w.seen[o.oid] = true
+    if o.kind == "track" and type(o.state) == "table" then mirror.track_seen[tostring(w.proj) .. o.oid] = mirror.track_line(o.state, w.opts.local_mix) end -- (mirror.receive)
     if (not dirty or dirty[o.oid]) and not mirror.previewing[tostring(w.proj) .. o.oid] and not (w.gone_now and o.track and w.gone_now[o.track]) then
       local ok, err = pcall(W.one, w, o)
       if not ok then held_back_set(w.proj, o.oid); w.say_once("err" .. o.oid, "mirror sync skipped " .. o.oid .. ": " .. tostring(err)) end -- (a send that threw: counted. Round 1 review, 0.59.45)
@@ -6328,6 +6414,7 @@ end
 -- The look done: what it saw, for the next quick look to build on. `N`: the scan's record; `full`: this was a full look.
 local function look_commit(w, N, raw, L, now, full, undo, redo, all)
   if not N then return end
+  N.map = w.map_now -- (the tempo map its readings are under: W.send's look_reading. rt-fix9)
   local proj, pk = w.proj, tostring(w.proj)
   local flags, dirty, where, attn = flagged(pk), w.dirty, N.where, N.attn
   N.raw = raw
@@ -6471,7 +6558,9 @@ function mirror.watch(proj, cfg, song, room, opts)
   local suggest = require("suggest")
   local w = { band = band, sync = sync, proj = proj, cfg = cfg, song = song, room = room, opts = opts, me = me, room_dir = room_dir, media = media,
     objs = objs, by_oid = by_oid, sent = 0, back = 0, suggest = suggest, kept_back = {}, holds = mirror.holds[tostring(proj)] or {}, credit = {},
-    back_tracks = {}, held_tracks = {}, clean = {}, unasked = {} }
+    back_tracks = {}, held_tracks = {}, clean = {}, unasked = {},
+    -- (the last look's record, with each item's reading and the map then, and this look's map: W.send. rt-fix9)
+    look_was = L, map_now = band.capture_tempo(proj) }
   w.edited = mirror.user_edited(pk, opts.edited_at, now, reaper.Undo_CanUndo2 and reaper.Undo_CanUndo2(proj) or nil) -- (auto-claims: rt-fix6a)
   w.pending = function() -- (how many of the band's changes wait here: once a look)
     if w.n_pending == nil then w.n_pending = sync.pending_events(proj, cfg, song, room) end

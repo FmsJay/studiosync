@@ -34,6 +34,12 @@
 -- 29. Heal doesn't go over a version held here that it couldn't read and the settled one doesn't build on (mirror.heal).
 -- 30. An item put in place anew (a put-back, a restore) keeps its id when it's copied before the next look (mirror.apply notes its GUID).
 -- 31. A track's part changed just as the track was deleted comes back as it was changed when the track does (mirror.receive's record).
+-- (rt-fix9, from the fifth REAPER re-check, rt-r4)
+-- 32. A track's settings changed here that no look has seen hold a bandmate's change to that track back (mirror.receive): rt-r4's bug A.
+-- 33. A tempo change made after a bandmate's claims nothing (mirror.env_same_but_times, mirror.moved_by_map in W.send): rt-r4's bug B.
+-- 34. A merge with a side that's only the tempo map's move takes the other side's (`retimed`, mirror.event_file), and says nothing of it.
+-- 35. An auto-claim on a name no track has lets go at once (sync.drop_gone_claims).
+-- 36. StudioSync's Undo asks without a modal box (lib/undo.lua, claimask.tick, claimask.bar). And 22: the Undo's words for a marker change.
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -197,7 +203,7 @@ local function studio(song, mode)
   S.as = as
   function S.computer(user)
     local c = { F = E.new("C:/" .. user .. "/" .. song .. ".rpp"), cfg = { user = user, root = "R" }, user = user }
-    c.F.reaper.MB = function() return 6 end
+    require("undo").confirm = function() return true end -- (Undo asks when a bandmate changed it since: yes, at once. lib/undo.lua, rt-fix9)
     c.F.reaper.GetMousePosition = function() return 0, 0 end
     c.F.reaper.file_exists = function(p) return not p:find("%.json$") or files[p] ~= nil end
     c.F.reaper.SetExtState(band.SECTION, "user", user, false)
@@ -1181,6 +1187,8 @@ do
     return tostring(res or why)
   end
   local u = step(false)
+  assert(u:find("changed the markers", 1, true) and not u:find("bpm", 1, true),
+    "the Undo says what the change changed, not the tempo it was made under (was: 'now 120 bpm', Cee's 100 standing; rt-r4): " .. u)
   assert(marks(B) == "Cue@9.600,Verse@14.400-19.200",
     "Bee's Undo: the old name on the marker where it is now, the region back on its beats (was: N1 stayed, with a second Cue at 8 s and the region at 12): " .. u .. "; " .. marks(B))
   local r = step(true)
@@ -1580,6 +1588,197 @@ do
   assert(plugs(A) == plugs(B) and plugs(B) == plugs(C) and plugs(C) == "off",
     "the same on all three, Bee's change standing (was: the plug-ins back on the computers her change reached after the deletion): " .. plugs(A) .. " / " .. plugs(B) .. " / " .. plugs(C))
   print("rt-converge 31: a track's part changed just as the track was deleted comes back as it was changed, everywhere")
+end
+
+-- ---- 32. a track's settings changed here that no look has seen hold a bandmate's change to that track back (rt-r4's bug A) ------------------
+do
+  local S = studio("Conv32", "everyone")
+  local A, B = S.computer("James"), S.computer("Bee")
+  S.edit(A, function(F) F.add_track("Drums"); F.add_track("Keys") end)
+  S.recv(B)
+  local function vol(c, name) S.as(c); local t = S.track(c, name); return t and reaper.GetMediaTrackInfo_Value(t, "D_VOL") or -1 end
+  -- James renames Drums, and before a look of his has seen it (an edit inside Live sync's pass, as rt-r4's timed rename), Bee's fader move of
+  -- the same track, made that moment, arrives
+  T = T + 2
+  S.as(A)
+  A.F.clock = A.F.clock + 1
+  reaper.GetSetMediaTrackInfo_String(S.track(A, "Drums"), "P_NAME", "Drums R5", true)
+  A.edited = A.F.clock
+  S.edit(B, function(F) reaper.SetMediaTrackInfo_Value(S.track(B, "Drums"), "D_VOL", 0.5) end)
+  S.recv(A, true)
+  assert(S.track(A, "Drums R5") and vol(A, "Drums R5") == 1,
+    "Bee's change waits: James's rename is still on his track (was: her version, built on the old name, replaced it whole and the rename never went out): " .. S.names(A))
+  S.settle(A)
+  assert(#S.events(function(v) return v.obj == "track" and v.user == "James" and v.name == "Drums R5" end) == 1, "James's look sent his rename")
+  for _ = 1, 2 do S.recv(A); S.recv(B) end
+  assert(S.track(A, "Drums R5") and S.track(B, "Drums R5") and vol(A, "Drums R5") == 0.5 and vol(B, "Drums R5") == 0.5,
+    "both have both: the rename and the fader (" .. S.names(A) .. " " .. vol(A, "Drums R5") .. " / " .. S.names(B) .. " " .. vol(B, "Drums R5") .. ")")
+  -- a track whose settings a look has seen (or that a change put here) doesn't hold anything back
+  S.edit(B, function(F) reaper.SetMediaTrackInfo_Value(S.track(B, "Keys"), "D_VOL", 0.25) end)
+  S.recv(A, true)
+  assert(vol(A, "Keys") == 0.25, "Bee's change to a track James hasn't touched lands at once: " .. vol(A, "Keys"))
+  print("rt-converge 32: a track's settings changed here that no look has seen hold a bandmate's change to the track back")
+end
+
+-- ---- 33. a tempo change made after a bandmate's claims nothing (rt-r4's bug B) ----------------------------------------------------------------
+do
+  -- a. pure: automation and items told from the map's move number by number, and by this computer's own two readings
+  local a = "<VOLENV2\nACT 1 -1\nPT 0 1 0 0 0\nPT 4 0.5 0 0 0\nBANDAI 1 2 4 0 0\nBANDAIPT 1 0 2 0.5 0 0\n>"
+  local b = "<VOLENV2\nACT 1 -1\nPT 0 1 0\nPT 4.8 0.50000000000001 0\nBANDAI 1 2.4 4.8 0 0\nBANDAIPT 1 0 2.4 0.5 0 0\n>"
+  assert(mirror.env_same_but_times(a, b), "the same points written another way, moved in time: alike")
+  assert(not mirror.env_same_but_times(a, (b:gsub("0%.50000000000001", "0.6"))), "a point's value changed: not alike")
+  assert(not mirror.env_same_but_times(a, b .. "\nPT 9 1 0"), "a point added: not alike")
+  assert(mirror.moved_by_map("env", a, b, M120, { { time = 0, bpm = 100 } }, 1), "automation moved by a map change here")
+  assert(not mirror.moved_by_map("env", a, b, M120, M120, 1), "no map change: an edit")
+  local it = midi(8, 4)
+  local moved = mirror.retime(it, M120, M106, 1)
+  assert(mirror.moved_by_map("item", it, moved, M120, M106, 1), "an item REAPER moved for the map")
+  assert(not mirror.moved_by_map("item", it, (moved:gsub("POSITION [^\n]+", "POSITION 20")), M120, M106, 1), "moved by hand as well: an edit")
+  assert(not mirror.moved_by_map("item", it, (moved:gsub('NAME "K"', 'NAME "L"')), M120, M106, 1), "renamed as well: an edit")
+  -- b. a bandmate's REAPER writes the automation's points with trailing fields this one doesn't, and this one rewrites them its own way once
+  -- its own tempo change moves them; and the band's text of an item isn't this computer's reading of it
+  local S = studio("Conv33", "open")
+  S.timeline = true
+  local A, B = S.computer("James"), S.computer("Bee")
+  here_now = { James = true, Bee = true }
+  local ENV = "<VOLENV2\nEGUID {E1}\nACT 1 -1\nVIS 1 1 1\nLANEHEIGHT 0 0\nARM 0\nDEFSHAPE 0 -1 -1\nPT 0 1 0\nPT 4 0.5 0\nPT 8 1 0\n>\n"
+  S.edit(A, function(F) local t = F.add_track("Rec", nil, ENV); F.add_item(t, midi(4, 2)); F.add_track("Keys") end)
+  S.recv(B)
+  T = T + sync.AUTO_IDLE + 120 -- (making the song is nobody's work in progress any more)
+  local function claims(user)
+    for p, v in pairs(files) do if p:find(S.dir .. "/claims/", 1, true) and type(v) == "table" and v.user == user then return table.concat(v.tracks or {}, ",") end end
+    return ""
+  end
+  T = T + 5
+  S.edit(B, function(F) reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, 100, 4, 4, false) end)
+  assert(claims("Bee") == "", "Bee's tempo change claims nothing on hers: " .. claims("Bee"))
+  for _, v in ipairs(S.events(function(v) return v.user == "Bee" and v.obj == "env" end)) do
+    v.state = v.state:gsub("(PT %S+ %S+ %S+)", "%1 0 0") -- (Bee's REAPER writes each point with its trailing fields)
+  end
+  S.recv(A)
+  local wrote_own = function(F) local t = S.track(A, "Rec"); t.body = t.body:gsub("(PT %S+ %S+ %S+) 0 0", "%1") end
+  -- (and the band's text of Rec's item isn't James's reading of it: a line another REAPER writes its own way)
+  local _, _, kev = mirror.known(A.F.proj, mirror.item_oid(S.track(A, "Rec").items[1]))
+  local band_item = mirror.event_file(S.dir, kev)
+  assert(band_item and band_item.user == "Bee", "the item's newest version on James's is Bee's re-sent one")
+  band_item.state = band_item.state:gsub("LOOP 0", "LOOP 0\nCHANMODE 0")
+  T = T + 5
+  S.edit(A, function(F) reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, 90, 4, 4, false); wrote_own(F) end)
+  assert(claims("James") == "",
+    "James's tempo change, made after Bee's, claims nothing (was: Rec, by its automation's text and its item's): " .. claims("James"))
+  -- a hand edit of the automation in the same look still claims
+  T = T + 5
+  S.edit(A, function(F) reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, 80, 4, 4, false); local t = S.track(A, "Rec"); t.body = t.body:gsub("PT (%S+) 0%.5 0", "PT %1 0.25 0"); F.changed() end)
+  assert(claims("James") == "Rec", "a point changed with the tempo: claimed as an edit: " .. claims("James"))
+  print("rt-converge 33: a tempo change made after a bandmate's claims nothing; one with a hand edit still does")
+end
+
+-- ---- 34. a merge with a side that's only the tempo map's move (rt-r4 check 1's "theirs stands") ---------------------------------------------
+do
+  local hlc = math.floor(T * 1000)
+  local function put(id, user, state, base, tm, n, retimed)
+    local ev = { type = "obj", obj = "item", oid = "I-R34", track = "T-R34", name = "Keys", id = id, user = user, state = state, base_ev = base, rev = n, hlc = hlc + n, time = iso(T), tm = tm, tb = tm and 1 or nil, retimed = retimed }
+    files[R .. "/events/" .. id .. ".json"] = ev
+    return ev
+  end
+  -- the version both came from is from before versions named their map (on 120 bpm)
+  local base = put("A-20270116-080001Z-00001-0001", "A", midi(8, 4), nil, nil, 1)
+  -- Cee set the tempo to 106: only the map moved the item, and it went out saying so
+  local w = put("Cee-20270116-080003Z-00001-0002", "Cee", midi(string.format("%.14g", 8 * 120 / 106), string.format("%.14g", 4 * 120 / 106)), base.id, M106, 3, true)
+  -- Bee, without the map yet, moved the item to 20 s
+  local l = put("Bee-20270116-080002Z-00001-0003", "Bee", midi(20, 4), base.id, M120, 2)
+  local m = mirror.event_file(R, mirror.merge_id(w.id, l.id))
+  assert(m and near(num(m.state, "POSITION"), 20 * 120 / 106) and near(num(m.state, "LENGTH"), 4 * 120 / 106) and #(m.clashed or {}) == 0,
+    "the map's side won: Bee's move stands on the new map, nothing clashed (was: Cee's timing stood, Bee's move lost): " .. tostring(num(m.state, "POSITION")))
+  assert(m.retimed == nil and m.w_retimed == true, "the merge isn't the map's move alone; it says the winner's side was")
+  local m2 = mirror.event_file(R, mirror.merge_id(l.id, w.id))
+  assert(m2 and near(num(m2.state, "POSITION"), 20) and #(m2.clashed or {}) == 0, "the hand's side won: its move, nothing clashed (was: 'theirs stands where you both changed it')")
+  -- a side that's the map's move of a change of its own made since keeps that change: only a side built straight on the shared version is
+  -- the map's move alone
+  local x = put("Cee-20270116-080004Z-00001-0004", "Cee", (midi(8, 4):gsub('NAME "K"', 'NAME "Cee"')), base.id, M120, 4)
+  local w2 = put("Cee-20270116-080005Z-00001-0005", "Cee", (midi(string.format("%.14g", 8 * 120 / 106), string.format("%.14g", 4 * 120 / 106)):gsub('NAME "K"', 'NAME "Cee"')), x.id, M106, 5, true)
+  local m3 = mirror.event_file(R, mirror.merge_id(w2.id, l.id))
+  assert(m3 and m3.state:find('NAME "Cee"', 1, true) and m3.w_retimed == nil, "Cee's rename, made before her tempo change, stays in the merge")
+  -- what Cee's computer says as the merge lands: nothing of "the same thing as you"
+  local said = #logged
+  local F = E.new("C:/Cee34/Song.rpp")
+  reaper = F.reaper
+  reaper.SetExtState(band.SECTION, "user", "Cee", false)
+  local tr = F.add_track("Keys")
+  reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_oid", "T-R34", true)
+  reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, 106, 4, 4, false)
+  assert(mirror.receive(F.proj, base, R .. "/media", false, "Cee") and mirror.receive(F.proj, w, R .. "/media", false, "Cee"), "Cee holds her re-sent version")
+  mirror.receive(F.proj, l, R .. "/media", false, "Cee")
+  local words = {}
+  for k = said + 1, #logged do words[#words + 1] = logged[k] end
+  assert(not table.concat(words, "\n"):find("as you", 1, true), "Cee is told nothing of 'the same thing as you' for her tempo change: " .. table.concat(words, " | "))
+  reaper = F0.reaper
+  print("rt-converge 34: a side that's only the tempo map's move brings nothing to a merge but the map")
+end
+
+-- ---- 35. an auto-claim on a name no track has lets go at once (rt-r4: a renamer's auto-claim outlived the track's return) -----------------------
+do
+  local F = E.new("C:/Dee35/Song.rpp")
+  reaper = F.reaper
+  F.add_track("Gtr")
+  local cfg = { root = "R", user = "Dee" }
+  local dir = "R/Conv35/rooms/main"
+  files[dir .. "/claims/Dee.json"] = { user = "Dee", time = iso(T), tracks = { "Gtr renamed", "Bass", "Gtr" }, since = {}, auto = { ["tracks:gtr renamed"] = iso(T), ["tracks:gtr"] = iso(T) } }
+  local n = sync.drop_gone_claims(F.proj, cfg, "Conv35", "main")
+  local c = files[dir .. "/claims/Dee.json"]
+  assert(n == 1 and table.concat(c.tracks, ",") == "Bass,Gtr" and c.auto["tracks:gtr renamed"] == nil,
+    "the auto-claim on a name nothing has goes at once; one on a track that's here stays; a lasting one waits as before: " .. table.concat(c.tracks, ","))
+  reaper = F0.reaper
+  print("rt-converge 35: an auto-claim on a name no track has lets go at once")
+end
+
+-- ---- 36. StudioSync's Undo asks without a modal box (rt-r4: the laptop sat behind one for over an hour) ----------------------------------------
+do
+  local undo = require("undo")
+  local S = studio("Conv36", "everyone")
+  local A, B = S.computer("James"), S.computer("Bee")
+  S.edit(A, function(F) F.add_item(F.add_track("Keys"), midi(1, 2)) end)
+  S.recv(B)
+  T = T + 2
+  S.edit(A, function(F) local it = S.track(A, "Keys").items[1]; F.set_text(it, (it.text:gsub("POSITION 1", "POSITION 3"))) end)
+  S.recv(B)
+  T = T + 2
+  S.edit(B, function(F) local it = S.track(B, "Keys").items[1]; F.set_text(it, (it.text:gsub('NAME "K"', 'NAME "B"'))) end)
+  S.recv(A)
+  local boxes = 0
+  A.F.reaper.MB = function() boxes = boxes + 1; return 6 end
+  local was_confirm = undo.confirm
+  undo.confirm = nil
+  local function pos(c) S.as(c); return num(S.track(c, "Keys").items[1].text, "POSITION") end
+  S.as(A)
+  T = T + 2
+  local res, why, asked = undo.step(A.F.proj, A.cfg, S.b, false, {})
+  assert(res == nil and why == nil and type(asked) == "string" and asked:find("Bee changed it after that", 1, true) and boxes == 0,
+    "Bee changed it since: asked in words, with no box: " .. tostring(asked))
+  assert(undo.pending(A.F.proj) and pos(A) == 3, "the ask is noted for the panel's bar, and nothing changed yet")
+  assert(told("again within"), "and said in the log")
+  -- the same key again: yes
+  local res2 = undo.step(A.F.proj, A.cfg, S.b, false, {})
+  S.settle(A)
+  assert(res2 and pos(A) == 1 and undo.pending(A.F.proj) == nil and boxes == 0, "pressed again: the Undo goes ahead (" .. tostring(res2) .. ")")
+  -- the panel's Redo, which always asks: its bar's Yes answers it, through Live sync's claimask.tick
+  T = T + 2
+  local _, _, asked2 = undo.step(A.F.proj, A.cfg, S.b, true, { ask = true })
+  assert(asked2 and pos(A) == 1 and boxes == 0, "the panel's Redo asks, with no box")
+  local q = undo.pending(A.F.proj)
+  reaper.SetExtState(band.SECTION, "undo answer " .. tostring(A.F.proj), band.json_encode({ id = q.id, yes = true }), false)
+  claimask.tick(A.F.proj, A.cfg, S.b)
+  S.settle(A)
+  assert(pos(A) == 3 and undo.pending(A.F.proj) == nil and boxes == 0, "the bar's Yes carried it out: " .. tostring(pos(A)))
+  -- no answer: nothing changes, and the ask runs out
+  T = T + 2
+  undo.step(A.F.proj, A.cfg, S.b, false, {})
+  T = T + undo.ASK_WAIT + 1
+  assert(undo.pending(A.F.proj) == nil and pos(A) == 3, "unanswered, it runs out and nothing changed")
+  local _, _, again = undo.step(A.F.proj, A.cfg, S.b, false, {})
+  assert(again and pos(A) == 3, "a press after it ran out asks again rather than going ahead")
+  undo.confirm = was_confirm
+  print("rt-converge 36: StudioSync's Undo asks without a modal box: the key again or the panel's Yes, else nothing")
 end
 
 print("ok rt-converge")

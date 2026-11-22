@@ -271,6 +271,10 @@ function sync.drop_gone_claims(proj, cfg, song, room)
     for _, n in ipairs(c[k] or {}) do
       local key = k .. ":" .. n:lower()
       if here[n:lower()] then missing_since[key] = nil; keep[#keep + 1] = n
+      -- (an auto-claim goes at once: it's for while you work on a track, and nothing has that name. A rename beaten by a bandmate's deletion
+      -- left the renamer's on the new name, a name nothing had, through the track's return under its old one, until released by hand
+      -- (rt-r2 P1-6, rt-r4). Back the track comes, the next edit claims it again. rt-fix9)
+      elseif k == "tracks" and type(c.auto) == "table" and c.auto[key] then missing_since[key] = nil; c.auto[key] = nil; dropped[#dropped + 1] = n
       else
         missing_since[key] = missing_since[key] or now
         if now - missing_since[key] < sync.GONE_WAIT then keep[#keep + 1] = n else dropped[#dropped + 1] = n end
@@ -1465,9 +1469,9 @@ end
 -- `tags`: { undoes = id } or { redoes = id }, on the change it sends; { restored = true }: "Undo this change" on a Restore's row (lib/page_restore.lua),
 -- a Restore like the rows it puts back, so StudioSync's Undo and Redo pass over it. -> true when it changed anything, and whether that was the tempo map.
 -- REAPER check F3, rt-edits.
-function sync.undo_timeline(proj, cfg, song, room, entries, j, tags, session)
+-- The timeline before entries[j] (a timeline change, T): what its Undo goes back to. -> it, or nil.
+local function timeline_before(cfg, song, room, entries, j, session)
   local T = entries[j]
-  if not (T and T.kind == "timeline" and type(T.tempo) == "table") then return false end
   -- (the timeline change before it by the timeline's own order (sync.post's `order`: after the newest one seen where it was made), not by
   -- History's rows, which sort by each computer's clock: a marker you added a second after a bandmate's Restore, stamped the same second,
   -- sat before their change in History, so the Redo of your Undo compared against their timeline, found nothing to bring back, and your
@@ -1488,10 +1492,44 @@ function sync.undo_timeline(proj, cfg, song, room, entries, j, tags, session)
     local meta = band.read_json(sync.room_dir(cfg, song, room) .. "/room.json")
     if meta and meta.parent then P = meta.tempo and meta or nil else P = (session and session.first_timeline) or session end
   end
-  if not (P and type(P.tempo) == "table") then return false end
-  local function key(m)
-    return string.format("%s|%.6f|%.6f|%s", m.region and "r" or "m", tonumber(m.pos) or 0, m.region and (tonumber(m["end"]) or 0) or 0, tostring(m.name))
+  return P and type(P.tempo) == "table" and P or nil
+end
+local function mark_key(m)
+  return string.format("%s|%.6f|%.6f|%s", m.region and "r" or "m", tonumber(m.pos) or 0, m.region and (tonumber(m["end"]) or 0) or 0, tostring(m.name))
+end
+-- What the timeline change entries[j] changed, in words for Undo and Redo: "changed the tempo map (130 -> 100 bpm) and the markers". History's
+-- own words say what the version holds ("now 130 bpm"), which an Undo of a marker rename made under 130 bpm said while a bandmate's 100 stayed
+-- (rt-r4). rt-fix9
+function sync.timeline_words(cfg, song, room, entries, j, session)
+  local T, P = entries[j], timeline_before(cfg, song, room, entries, j, session)
+  if not (P and type(T.tempo) == "table") then return "changed the tempo map or markers" end
+  local what = {}
+  if tempo_sig(P.tempo) ~= tempo_sig(T.tempo) then
+    local a, z = P.tempo[1], T.tempo[1]
+    what[#what + 1] = "the tempo map" .. ((#P.tempo == 1 and #T.tempo == 1 and a and z and tonumber(a.bpm) and tonumber(z.bpm))
+      and string.format(" (%g -> %g bpm)", a.bpm, z.bpm) or "")
   end
+  local had, n = {}, 0
+  for _, m in ipairs(type(P.markers) == "table" and P.markers or {}) do had[mark_key(m)] = (had[mark_key(m)] or 0) + 1 end
+  for _, m in ipairs(type(T.markers) == "table" and T.markers or {}) do
+    local k = mark_key(m)
+    if (had[k] or 0) > 0 then had[k] = had[k] - 1 else n = n + 1 end
+  end
+  for _, c in pairs(had) do n = n + c end
+  -- (under another map every marker's seconds move: only the markers' count and names say whether they changed then)
+  if n > 0 and #what > 0 then
+    local names = function(list) local t = {}; for _, m in ipairs(type(list) == "table" and list or {}) do t[#t + 1] = tostring(m.name) end; table.sort(t); return table.concat(t, "\0") end
+    if names(P.markers) == names(T.markers) then n = 0 end
+  end
+  if n > 0 then what[#what + 1] = "the markers" end
+  return #what > 0 and ("changed " .. table.concat(what, " and ")) or "changed the tempo map or markers"
+end
+function sync.undo_timeline(proj, cfg, song, room, entries, j, tags, session)
+  local T = entries[j]
+  if not (T and T.kind == "timeline" and type(T.tempo) == "table") then return false end
+  local P = timeline_before(cfg, song, room, entries, j, session)
+  if not P then return false end
+  local key = mark_key
   local function keys(list)
     local t = {}
     for _, m in ipairs(type(list) == "table" and list or {}) do t[key(m)] = m end

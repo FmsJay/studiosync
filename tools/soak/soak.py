@@ -495,6 +495,20 @@ end
 return "ok"''')
     assert ok == "true\tok", "soak self-check, the driver's plug-in edits: " + ok
     assert not json.loads(n.call(70, "errors")), "soak self-check: errors " + n.call(70, "errors")
+    # (the stand-in's tempo markers as REAPER keeps them: a second inserted at a marker's time is ignored, the first tempo kept. rt-r4 check 9)
+    t = Node("Bee", 2, 0.0)
+    ok = t.call(1, "eval", r'''
+local p = F.proj
+assert(reaper.AddTempoTimeSigMarker(p, 10, 120, 0, 0, false) and reaper.AddTempoTimeSigMarker(p, 10, 110, 0, 0, false), "both inserts say true")
+reaper.SetTempoTimeSigMarker(p, -1, 10, -1, -1, 100, 4, 4, false)
+local n, bpm, at = 0, nil, -1
+for i = 0, reaper.CountTempoTimeSigMarkers(p) - 1 do local _, tt, _, _, b = reaper.GetTempoTimeSigMarker(p, i); if math.abs(tt - 10) < 1e-9 then n, bpm, at = n + 1, b, i end end
+assert(n == 1 and bpm == 120, "one marker at 10 s, the first tempo: " .. n .. " " .. tostring(bpm))
+reaper.SetTempoTimeSigMarker(p, at, 10, -1, -1, 90, 4, 4, false)
+local _, _, _, _, b2 = reaper.GetTempoTimeSigMarker(p, at)
+assert(b2 == 90, "changed by its index: " .. tostring(b2))
+return "ok"''')
+    assert ok == "true\tok", "soak self-check, the stand-in's tempo markers: " + ok
 
 
 def main():

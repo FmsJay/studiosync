@@ -111,7 +111,6 @@ rawset(reaper, "EnumerateFiles", enumerate(false))
 rawset(reaper, "EnumerateSubdirectories", enumerate(true))
 rawset(reaper, "file_exists", function(p) return fs[norm(p)] ~= nil end)
 rawset(reaper, "RecursiveCreateDirectory", function(p) add_dirs(norm(p)); return 1 end)
-rawset(reaper, "MB", function() return 6 end) -- (Undo asks when a bandmate changed it since: yes)
 rawset(reaper, "GetMousePosition", function() return 0, 0 end)
 rawset(reaper, "IsProjectDirty", function() return 0 end)
 add_dirs(ROOT .. "/_band")
@@ -124,6 +123,8 @@ local LOG, ERRORS = {}, {}
 local real_log = band.log
 band.log = function(t) LOG[#LOG + 1] = string.format("%.1f %s", now, tostring(t)); if #LOG > 400 then table.remove(LOG, 1) end; return real_log(t) end
 band.log_error = function(where, err) ERRORS[#ERRORS + 1] = string.format("%.1f %s: %s", now, tostring(where), tostring(err)) end
+-- (a modal box would hold that REAPER, Live sync and all, until answered: nothing in a sync path may open one. rt-fix9)
+rawset(reaper, "MB", function(text) ERRORS[#ERRORS + 1] = "a modal box opened: " .. tostring(text):sub(1, 120); return 7 end)
 local mirror, sync, direct, undo = require("mirror"), require("sync"), require("direct"), require("undo")
 local recall, claimask = require("recall"), require("claimask")
 direct.available = function() return true end -- (the extension is mandatory: its inbox is read)
@@ -150,6 +151,28 @@ do
     local new = band.capture_tempo(F.proj)
     for it, text in pairs(was) do it.text = mirror.retime(text, old, new, 1) end
   end
+end
+-- (REAPER keeps one tempo marker to a place, and a second inserted where one is is ignored, the first tempo kept: rt-r4 check 9,
+-- AddTempoTimeSigMarker at 10 s with 120 and again with 110 left one marker of 120, both calls returning true. The stand-in added a second
+-- marker. Here an insert (SetTempoTimeSigMarker's index -1, or AddTempoTimeSigMarker) at a marker's time does nothing. Changing the marker that
+-- is there by its index changes it, as in REAPER. Kept in the soak, not tests/fixtures/editreaper.lua, which other tests share. rt-fix9)
+do
+  local set = reaper.SetTempoTimeSigMarker
+  local function taken(p, t)
+    for i = 0, reaper.CountTempoTimeSigMarkers(p) - 1 do
+      local _, mt = reaper.GetTempoTimeSigMarker(p, i)
+      if math.abs(mt - t) < 1e-9 then return true end
+    end
+    return false
+  end
+  rawset(reaper, "SetTempoTimeSigMarker", function(p, idx, t, m, b, bpm, num, den, lin)
+    if idx < 0 and taken(p, t) then return true end
+    return set(p, idx, t, m, b, bpm, num, den, lin)
+  end)
+  rawset(reaper, "AddTempoTimeSigMarker", function(p, t, bpm, num, den, lin)
+    if taken(p, t) then return true end
+    return set(p, -1, t, -1, -1, bpm, num, den, lin)
+  end)
 end
 local MEDIA = sync.room_dir(cfg, SONG, ROOM) .. "/media"
 -- (the song's folders, as the studio's folder has them once the song is shared: Syncthing makes a folder before its first file)
@@ -654,7 +677,12 @@ EDITS.claim = function(r)
 end
 -- (Ctrl+Z / Ctrl+Shift+Z on a StudioSync song: lib/undo.lua's step)
 local function step(redo)
-  local ok, res, why = pcall(undo.step, F.proj, cfg, B, redo, {})
+  local ok, res, why, asked = pcall(undo.step, F.proj, cfg, B, redo, {})
+  -- (a bandmate changed it since: StudioSync asks, never with a modal box, and the same key pressed again is Yes. lib/undo.lua, rt-fix9)
+  if ok and asked then
+    if undo.pending(F.proj) == nil then ERRORS[#ERRORS + 1] = string.format("%.1f undo.step asked with nothing noted", now) end
+    ok, res, why = pcall(undo.step, F.proj, cfg, B, redo, {})
+  end
   if not ok then ERRORS[#ERRORS + 1] = string.format("%.1f undo.step: %s", now, tostring(res)); return "undo.step raised" end
   return (redo and "redo" or "undo") .. ": " .. tostring(res or ("nothing (" .. tostring(why) .. ")"))
 end

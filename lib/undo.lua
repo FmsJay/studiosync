@@ -108,9 +108,38 @@ function undo.bind_keys(dir)
   end
 end
 
+-- Undo's ask, when a bandmate changed the same thing since (or always, from the panel), is never a modal box: REAPER's MB holds every script
+-- in that REAPER, Live sync among them, until someone answers, and a scripted Undo on the laptop sat behind one for over an hour (rt-r4). The
+-- ask is noted per tab (ExtState "undo ask <proj>": the change, Undo or Redo, the words, until when) and said in the log, a tooltip and the
+-- panel's bar (Yes / No: lib/claimask.lua). The same Undo (or Redo) pressed again within ASK_WAIT s is Yes, and so is the bar's Yes, which
+-- Live sync carries out (claimask.tick). No answer is No: nothing changes. rt-fix9
+undo.ASK_WAIT = 30
+undo.confirm = nil -- (tests: function(words) -> true answers Yes at once, false No)
+local function ask_key(proj) return "undo ask " .. tostring(proj) end
+function undo.pending(proj) -- -> the ask waiting in this tab ({ id, redo, text, till }), or nil
+  local a = band.ext_json(band.SECTION, ask_key(proj))
+  if type(a) == "table" and type(a.id) == "string" and type(a.text) == "string" and (tonumber(a.till) or 0) >= os.time() then return a end
+end
+function undo.clear(proj) reaper.DeleteExtState(band.SECTION, ask_key(proj), false) end
+function undo.ask(proj, id, redo, text)
+  band.set_ext_json(band.SECTION, ask_key(proj), { id = tostring(id), redo = redo == true, text = text, till = os.time() + undo.ASK_WAIT }, false)
+  local key = redo and (undo.key_name():gsub("%+Z", "+Shift+Z")) or undo.key_name()
+  local say = text .. " Press " .. key .. " again within " .. undo.ASK_WAIT .. " s for yes (or Yes in StudioSync's bar); otherwise nothing changes."
+  band.log(say)
+  -- (by the mouse when the panel isn't showing, as sync.put_back's words: Autostart takes it away after a few seconds)
+  local beat = tonumber(reaper.GetExtState(band.SECTION, "panel alive"))
+  if not (beat and reaper.time_precise() - beat < 5 and reaper.GetExtState(band.SECTION, "panel minimized") == "") then
+    local x, y = reaper.GetMousePosition()
+    reaper.TrackCtl_SetToolTip("StudioSync: " .. say, x + 14, y + 14, true)
+    reaper.SetExtState(band.SECTION, "tooltip until", tostring(reaper.time_precise() + 8), false)
+  end
+  return say
+end
+
 -- Undo (or with `redo`, redo) this person's newest own change in the bound project. `opts.ask`: asks first, always
 -- (the panel); otherwise it asks only when a bandmate changed the same thing since. `opts.describe(e)`: the wording.
--- Returns what happened, for the Activity list, or nil and why not.
+-- `opts.confirmed`: the change already answered Yes (the panel's bar, through Live sync).
+-- Returns what happened, for the Activity list, or nil and why not; nil, nil, the words when it asked (undo.ask: already said).
 function undo.step(proj, cfg, b, redo, opts)
   opts = opts or {}
   local mirror, recall, sync = require("mirror"), require("recall"), require("sync")
@@ -141,12 +170,22 @@ function undo.step(proj, cfg, b, redo, opts)
     elseif reaper.GetExtState(band.SECTION, nothing_key) ~= "" then reaper.DeleteExtState(band.SECTION, nothing_key, false) end
   end
   local e = all[i]
-  local what = (redo and "redo: " or "undo: ") .. (opts.describe or recall.describe)(e)
+  -- (a tempo or marker change by what it changed, not "now 130 bpm": History's words are the version's, and an Undo of a marker rename said
+  -- "now 130 bpm" while a bandmate's 100 stayed. rt-r4, rt-fix9)
+  local what = (redo and "redo: " or "undo: ") .. (e.kind == "timeline" and sync.timeline_words(cfg, b.song, b.room, all, i, band.read_json(band.session_path(cfg, b.song)))
+    or (opts.describe or recall.describe)(e))
   local others = mirror.later_by_others(all, i)
-  if opts.ask or #others > 0 then
-    if reaper.MB(what:sub(1, 1):upper() .. what:sub(2) .. "?\n\nIt goes to everyone." .. (#others > 0 and ("\n\n" .. table.concat(others, ", ") ..
-        " changed it after that: what they changed stays, unless it's what you changed.") or ""), "StudioSync", 4) ~= 6 then return nil end
+  if (opts.ask or #others > 0) and opts.confirmed ~= tostring(e.id) then
+    local text = what:sub(1, 1):upper() .. what:sub(2) .. "? It goes to everyone." .. (#others > 0 and (" " .. table.concat(others, ", ") ..
+      " changed it after that: what they changed stays, unless it's what you changed.") or "")
+    local a = undo.pending(proj)
+    if undo.confirm then
+      if not undo.confirm(text) then return nil end
+    elseif not (a and a.id == tostring(e.id) and a.redo == (redo == true)) then
+      return nil, nil, undo.ask(proj, e.id, redo, text)
+    end
   end
+  undo.clear(proj)
   local can, who = sync.authority(cfg, b.song, b.room, band.read_json(band.session_path(cfg, b.song)))
   -- (an act that was only a tempo map or marker change, a marker added and nothing else: that goes back by itself, or comes back. What it
   -- added goes and what it took away returns; a bandmate's markers since stay. sync.undo_timeline, rt-edits)
