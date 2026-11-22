@@ -25,6 +25,7 @@ function producer.via(proj)
   return ext(proj, "produce via") == "ninjam" and "ninjam" or "stamp"
 end
 producer.DUCK = "live audio duck play" -- (ExtState: whose Play is quiet in what you hear, while their take streams here: lib/liveaudio.lua apply)
+local fast_rec = {} -- performer -> { rec, at }: their word that a take started or ended (producer.on_rec, rt-p12)
 function producer.set_via(proj, via) reaper.SetProjExtState(proj, band.SECTION, "produce via", via) end
 function producer.lag(proj) return tonumber(ext(proj, "produce lag")) or producer.LAG[producer.via(proj)] end
 function producer.set_lag(proj, s)
@@ -418,11 +419,56 @@ function producer.tick(proj, cfg, b, peers)
   stamp.read(proj, producer.via(proj) == "stamp", pair_of(proj, name))
   local them
   for _, st in ipairs(peers) do if st.user == name then them = st end end
-  -- (the live route: their take reaches you on your grid as it streams, so their live Play, ahead of it, is quiet here while they record)
-  local duck = producer.via(proj) == "live" and them and them.recording and name or ""
+  -- (the live route: their take reaches you on your grid as it streams, so their live Play, ahead of it, is quiet here while they record;
+  -- their word over the link at the take's start or end goes before their status, which lags up to a second: rt-p12)
+  local recording = producer.rec_state(them and them.recording, fast_rec[name], reaper.time_precise())
+  local duck = producer.via(proj) == "live" and recording and name or ""
   if reaper.GetExtState(band.SECTION, producer.DUCK) ~= duck then reaper.SetExtState(band.SECTION, producer.DUCK, duck, false) end
   -- what's being sung over goes quiet here while they're recording, and comes back when the take's here
-  producer.quiet_tracks(proj, them and them.recording and type(them.armed) == "table" and them.armed or {})
+  producer.quiet_tracks(proj, them and recording and type(them.armed) == "table" and them.armed or {})
+end
+
+-- ---- the take's start and end at once (rt-p12, backlog 1.16): Produce's duck went by the performer's status, read about once a second, so
+-- the first second of a take was heard twice (live, and again from the take on the producer's grid). The performer's computer now says
+-- "recording" / "stopped" over the link the tick it happens, to those producing it; the producer ducks (or not) on that word at once, and
+-- the status takes over again after FAST_FOR s.
+producer.FAST_FOR = 5
+-- Is the performer recording now? status_rec: their status says; msg: their last word ({ rec, at }) or nil. Pure.
+function producer.rec_state(status_rec, msg, now)
+  if msg and now - msg.at < producer.FAST_FOR then return msg.rec == true end
+  return status_rec == true
+end
+-- The performer's side, every Live sync tick: a take starting or ending goes to whoever produces this computer, at once.
+local rec_was = {}
+function producer.rec_tick(proj, cfg, b)
+  local tab = tostring(proj)
+  local rec = reaper.GetPlayStateEx(proj) & 4 == 4
+  if rec == (rec_was[tab] == true) then return end
+  rec_was[tab] = rec
+  local by = reaper.GetExtState(band.SECTION, "produced by " .. tab)
+  local direct = require("direct")
+  if by == "" or not direct.live_available() then return end
+  local peers, _, users = direct.peers(cfg, b.song, b.room)
+  local want, to = {}, {}
+  for _, n in ipairs(names(by)) do want[n] = true end
+  for _, p in ipairs(peers) do if type(users) == "table" and want[users[p]] then to[#to + 1] = p end end
+  if #to == 0 then to = peers end -- (who's who not known here: everyone, and each producer goes by its own choice)
+  if #to == 0 then return end
+  direct.send_live(cfg, "produce_rec", { user = cfg.user, rec = rec }, b.song, b.room,
+    "prodrec-" .. (tostring(cfg.user):gsub("[^%w%-_]", "_")) .. "-" .. math.floor(reaper.time_precise() * 1000), to)
+end
+-- The producer's side: their word. Taken only for the one this computer produces over the live route; the duck changes at once. -> taken.
+function producer.on_rec(d)
+  if type(d) ~= "table" or type(d.user) ~= "string" or #d.user > 60 then return false end
+  local proj = reaper.EnumProjects(-1)
+  if not (proj and producer.who(proj) == d.user and producer.via(proj) == "live") then return false end
+  fast_rec[d.user] = { rec = d.rec == true, at = reaper.time_precise() }
+  local duck = d.rec == true and d.user or ""
+  if reaper.GetExtState(band.SECTION, producer.DUCK) ~= duck then
+    reaper.SetExtState(band.SECTION, producer.DUCK, duck, false)
+    pcall(require("liveaudio").apply) -- (now, not at live audio's next tick)
+  end
+  return true
 end
 
 -- A start the stream itself told us about: faster than the shared folder. -> a cue like Live sync's own, or nil. Pure. seen: what was last acted on.

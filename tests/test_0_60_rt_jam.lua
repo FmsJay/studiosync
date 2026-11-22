@@ -87,16 +87,17 @@ assert(#jam.out_segs(raw, 0) == jam.SEGS and jam.out_segs(raw, 0)[1][1] == 20 - 
 local t, ok = jam.health_text({ sending = true, peers = 2 }, { { user = "Ann", bars = 1, heard = 12, late = 1, missed = 0 }, { user = "Cy", bars = 1, heard = 0, late = 0, missed = 0 } }, 1, "0")
 assert(ok and t:find("every 1 bar") and t:find("to 2") and t:find("Ann %(12 intervals, 1 late%)") and t:find("Cy %(waiting"), "what goes out, who's heard and how late")
 t, ok = jam.health_text({ why = "live audio's Play isn't going" }, { { user = "Ann", bars = 2, heard = 3, late = 0, missed = 1 } }, 1, "2")
-assert(not ok and t:find("send nothing") and t:find("every 2 bars, not 1") and t:find("1 missed") and t:find("isn't at 0 bars"), "problems said")
+assert(not ok and t:find("send nothing") and t:find("every 2 bars, not 1") and t:find("1 missed") and t:find("Play and stop together isn't at 0 bars"), "problems said (P7's words: Play and stop together)")
+do local fh = io.open("lib/jam.lua", "r"); local src = fh:read("a"); fh:close(); assert(not src:find("Follow each other", 1, true), "no \"Follow each other\" left in lib/jam.lua (rt-p7's rename)") end
 assert(jam.why_not(false, true, 1):find("newer") and jam.why_not(true, false, 1):find("Play") and jam.why_not(true, true, 0):find("nobody") and jam.why_not(true, true, 2) == nil, "why nothing goes out")
 
--- ---- settings: Jam turns In time on and Follow each other at 0, and puts Follow back ----
+-- ---- settings: Jam turns In time on and Play and stop together at 0, and puts it back ----
 pext[band.SECTION .. "\0side"] = "2"
 jam.set({}, true)
 assert(jam.on() and streams.mode() == "in_time" and pext[band.SECTION .. "\0side"] == "0", "on: In time, everyone follows at 0 bars")
 assert(streams.in_time_lag({ type = "start", rec = true, follow = true, lead = "Ann" }, "Bob", "in_time", 2, nil) == nil, "In time's lag is off while jamming")
 jam.set({}, false)
-assert(not jam.on() and pext[band.SECTION .. "\0side"] == "2", "off: Follow each other as it was")
+assert(not jam.on() and pext[band.SECTION .. "\0side"] == "2", "off: Play and stop together as it was")
 assert(streams.in_time_lag({ type = "start", rec = true, follow = true, lead = "Ann" }, "Bob", "in_time", 2, nil) == 2, "and In time's lag back")
 
 -- ---- a round trip with stand-ins: Ann sends, Bob (and Cy) hear ----

@@ -1104,6 +1104,8 @@ local live_handlers = {
   -- (a bandmate jamming: where each stretch of their stream sits in the song, and its end. lib/jam.lua, rt-jam)
   jam = function(d) require("jam").on_msg(cfg, b, d) end,
   jam_end = function(d) require("jam").on_end(d) end,
+  jam_hear = function(d) require("jam").on_hear(cfg, b, d) end, -- (a bandmate with Jam on: runs go to them, from the start of one going. rt-p12)
+  produce_rec = function(d) require("producer").on_rec(d) end, -- (the one you produce started or ended a take: the duck at once. rt-p12)
   double = function(d) require("double").on_msg(cfg, b, d) end, -- (a bandmate's full-quality copy: the jam's anchor, what they added. lib/double.lua, rt-double)
   -- (where a bandmate punches in and their pre-roll, shown on this timeline till their recording ends: lib/streams.lua on_punch. James, rt)
   punch = function(d) require("streams").on_punch(proj, cfg, b, d) end,
@@ -1452,6 +1454,7 @@ local function tick_body() -- returns true to keep going
   if (tonumber(media_placed) or 0) > 0 then last = -math.huge end
   band.try("jam.tick", require("jam").tick, proj, cfg, b, reaper.EnumProjects(-1) == proj) -- (Jam: ours out while playing, bandmates' an interval late. lib/jam.lua, rt-jam)
   band.try("double.tick", require("double").tick, proj, cfg, b, reaper.EnumProjects(-1) == proj) -- (each part kept in full quality, landed at the jam's stop. lib/double.lua, rt-double)
+  band.try("producer.rec_tick", require("producer").rec_tick, proj, cfg, b) -- (a take starting or ending, told at once to whoever produces you. rt-p12)
   lap("listen, midi view")
   local every = reaper.GetPlayStateEx(proj) & 1 == 1 and 2 -- playing: a pass can stall REAPER ~0.5 s (seen on the laptop)
     or (lagbars or now - stopped_at < 8 or require("bgrender").waiting() or require("prints").waiting()) and 0.5 or 2 -- side by side, just after a recording, or with a print on its way: look often

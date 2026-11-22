@@ -7,16 +7,20 @@
 --    grows and put items in the project at its own play position), and stamps every stretch in the audio thread with this computer's link
 --    clock and REAPER's play position. One 32-bit float WAV per armed track (mono, or the stereo pair it records), its raw hardware input as
 --    REAPER would record it, in "<record path>/StudioSync full quality/" (out of the record folder itself, where lib/streams.lua looks for a
---    take REAPER is writing). Tracks recording MIDI or their own output (instruments) aren't copied: REAPER's Record keeps those.
+--    take REAPER is writing). Tracks recording MIDI (instruments played from a keyboard) keep the MIDI as it's played, from REAPER's recent
+--    input history (MIDI_GetRecentInputEvent), and land as MIDI items (rt-p12); tracks recording their own output aren't copied (Record).
 --  - When: Jam on, from play to stop; live audio otherwise (any transport), until the transport stops after playing, live audio stops, nobody
 --    is left on the link for ALONE s (a dropped computer's part lands up to the drop), the copy is switched off, the panel's "Add my part now",
 --    or Live sync ends. Nothing is written into the project before then; a file nearing 4 GB or a change of armed inputs only starts new files.
---  - Lining up, per stretch (a segment: { file frame, link clock, playing, play position }, a new one at every play, stop, seek, loop or
---    dropped block): played with the transport, at its song position less this computer's input + output latency and REAPER's input offset
---    (lib/calibrate.lua's measured one), as REAPER places a recording, so every part sits on the bars it was played to; without the transport,
---    by the studio's shared clock (lib/direct.lua shared_now): at the jam's anchor position plus the time since the anchor, less the input
---    latency and offset. The anchor { shared time, project position } is the earliest any computer in the jam started from (each sends theirs
---    every EVERY s and takes the earliest it hears), its position the song position it started at, or a bar past the project's end.
+--  - Lining up, per stretch (a segment: { file frame, link clock, playing, play position, play rate }, a new one at every play, stop, seek,
+--    loop, change of play rate or dropped block): played with the transport, at its song position less this computer's input + output latency
+--    and REAPER's input offset (lib/calibrate.lua's measured one), as REAPER places a recording, so every part sits on the bars it was played
+--    to (at another play rate: one item, its play rate the inverse, rt-p12); without the transport, by the studio's shared clock (lib/direct.lua
+--    shared_now): at the jam's anchor position plus the time since the anchor, less the input latency and offset, the item's play rate set from
+--    a fit of the extension's stamps (a frame and its clock each second), so two interfaces 20 ppm apart don't drift 7 ms in 5 minutes (rt-p12).
+--    The anchor { shared time, project position } is the earliest any computer in the jam started from (each sends theirs every EVERY s and
+--    takes the earliest it hears), its position the song position it started at, or a bar past the project's end: the furthest end any of them
+--    reported (rt-p12), so a live jam never lands on top of a longer copy of the song elsewhere.
 --  - Media: an ordinary new item on the person's track; Live sync's look sends it and lib/streams.lua offers its file over the link at once,
 --    with Syncthing as the record. Where the track already has something there, the part goes on a new lane that doesn't play (the comp
 --    stays), as lib/prints.lua takes_into_new_lanes does, while the studio's "Takes become lanes" is on; else beside it, as REAPER would.
@@ -25,29 +29,57 @@
 local band = require("band")
 local direct = require("direct")
 local double = { TICK = 0.1, EVERY = 2, QUIET = 10, ALONE = 10, MIN_LEN = 0.05, FILES = 16, CHANS = 32, FILE_BYTES = 3e9, SHOW_FOR = 60,
-  DONE_WINDOW = 60, KEY = "keep full copy", STATE = "double state", CMD = "double land", DIR = "StudioSync full quality" }
+  DONE_WINDOW = 60, KEY = "keep full copy", STATE = "double state", CMD = "double land", DIR = "StudioSync full quality",
+  FIT_SPAN = 10, FIT_PPM = 1000, FIT_MS = 0.5, MIDI_MAX = 100000, MIDI_TAIL = 0.1 }
 
 -- ---- pure ------------------------------------------------------------------------------------------------------------------------------
--- tracks: { { guid, name, arm, input (I_RECINPUT), mode (I_RECMODE) } } -> what's copied { { guid, name, ch = { input[, input + 1] } } } and
--- what isn't { { name, why } }. An audio input recorded as input (mode 0, or forced mono/stereo 12/13): its hardware channel, the pair when
--- REAPER records it as stereo. Pure.
+-- tracks: { { guid, name, arm, input (I_RECINPUT), mode (I_RECMODE) } } -> what's copied { { guid, name, ch = { input[, input + 1] } } },
+-- what isn't { { name, why } }, and the MIDI tracks { { guid, name, dev, chan } }. An audio input recorded as input (mode 0, or forced
+-- mono/stereo 12/13): its hardware channel, the pair when REAPER records it as stereo. A MIDI input recorded as input, overdub or replace
+-- (0, 7-9, 15, 16; rt-p12): its device (63 any) and channel (0 any). Pure.
 local IN_MODES = { [0] = true, [12] = true, [13] = true }
+local MIDI_MODES = { [0] = true, [7] = true, [8] = true, [9] = true, [15] = true, [16] = true }
 function double.inputs(tracks)
-  local out, skipped, used = {}, {}, 0
+  local out, skipped, used, midi = {}, {}, 0, {}
   for _, t in ipairs(tracks) do
     if t.arm == 1 then
       local inp, mode = math.floor(tonumber(t.input) or -1), math.floor(tonumber(t.mode) or 0)
       local ch, why = inp >= 0 and inp & 1023 or -1, nil
-      if not IN_MODES[mode] or inp < 0 or inp & 4096 ~= 0 then why = "records MIDI or its own sound (REAPER's Record keeps those)"
+      if inp >= 0 and inp & 4096 ~= 0 and MIDI_MODES[mode] then why = "midi"
+      elseif not IN_MODES[mode] or inp < 0 or inp & 4096 ~= 0 then why = "records its own sound (REAPER's Record keeps that)"
       elseif inp & 2048 ~= 0 then why = "records a multichannel input"
       elseif ch >= 512 then why = "records a ReaRoute or loopback input" end
       local need = not why and inp & 1024 ~= 0 and 2 or 1
       if not why and (#out >= double.FILES or used + need > double.CHANS) then why = "more than one copy takes (16 tracks)" end
-      if why then skipped[#skipped + 1] = { name = t.name, why = why }
+      if why == "midi" then midi[#midi + 1] = { guid = t.guid, name = t.name, dev = (inp >> 5) & 63, chan = inp & 31 }
+      elseif why then skipped[#skipped + 1] = { name = t.name, why = why }
       else out[#out + 1] = { guid = t.guid, name = t.name, ch = need == 2 and { ch, ch + 1 } or { ch } }; used = used + need end
     end
   end
-  return out, skipped
+  return out, skipped, midi
+end
+-- Does a MIDI track take this event? t: { dev, chan }; dev: the event's device index (MIDI_GetRecentInputEvent's, its low 16 bits). Pure.
+function double.midi_takes(t, dev, status) return (t.dev == 63 or t.dev == (dev & 0xFFFF)) and (t.chan == 0 or t.chan == (status & 15) + 1) end
+-- A device's real rate from stamps { { n (file frame), t (shared clock) } }: the least-squares slope of frames against time, as a play rate
+-- for the item (frames a second / sr). 1 when there's too little to go by (under FIT_SPAN s), it's implausible (over FIT_PPM ppm off: a
+-- clock jump, not a crystal), or it moves the stretch's end less than FIT_MS ms. Pure.
+function double.fit(points, sr)
+  local n = #points
+  if n < 3 or sr <= 0 then return 1 end
+  local t0, n0 = points[1].t, points[1].n
+  local st, sn, stt, stn = 0, 0, 0, 0
+  for _, p in ipairs(points) do
+    local x, y = p.t - t0, p.n - n0
+    st, sn, stt, stn = st + x, sn + y, stt + x * x, stn + x * y
+  end
+  local span = points[n].t - t0
+  local den = n * stt - st * st
+  if span < double.FIT_SPAN or den <= 0 then return 1 end
+  local rate = (n * stn - st * sn) / den / sr
+  if rate ~= rate or math.abs(rate - 1) * 1e6 > double.FIT_PPM then return 1 end
+  local frames = points[n].n - n0
+  if math.abs(frames / sr - frames / sr / rate) * 1000 < double.FIT_MS then return 1 end
+  return rate
 end
 -- Which inputs, as one string (a change starts new files). Pure.
 function double.inputs_key(list)
@@ -65,24 +97,63 @@ function double.spec(list, paths)
   end
   return #lines > 0 and (table.concat(lines, "\n") .. "\n") or nil
 end
--- Where each stretch of a file goes. segs: { { n0 (file frame), t0 (shared clock, s), playing, p0 (play position) } } in file order; o = { sr,
--- frames (in the file), rec (s: input + output latency + REAPER's input offset), inp (s: input latency + offset), anchor = { t, pos } }.
--- -> { { pos, offs (seconds into the file), len, playing } }: played with the transport at p0 - rec; without, at anchor.pos + (t0 - inp -
--- anchor.t); nothing before the project's start; stretches that follow on exactly in the file and in the project are one. Pure.
+-- Where the jam's anchor puts it: its position, or (a bar past a project's end) the furthest end any computer reported. Pure.
+function double.anchor_pos(a) return a and (a.past and math.max(a.pos, tonumber(a.endp) or 0) or a.pos) or nil end
+-- Where each stretch of a file goes. segs: { { n0 (file frame), t0 (shared clock, s), playing, p0 (play position), rate (the project's play
+-- rate) } } in file order; o = { sr, frames (in the file), rec (s: input + output latency + REAPER's input offset), inp (s: input latency +
+-- offset), anchor = { t, pos[, past, endp] }, stamps = { { n, t } } (the drift fit's, any order) }.
+-- -> { { pos, offs (seconds into the file), len (in the project), playing, rate (the item's play rate) } }: played with the transport at
+-- p0 - rec * play rate, its play rate the inverse (one item for a stretch at 1.5 times, not one a block); without, at anchor + (t0 - inp -
+-- anchor.t), its play rate the device's real rate (double.fit over the stamps inside the stretch); nothing before the project's start;
+-- stretches that follow on exactly in the file and in the project are one. Pure.
 function double.place(segs, o)
   local out = {}
+  local apos = double.anchor_pos(o.anchor)
   for k, s in ipairs(segs) do
     local n1 = math.min(segs[k + 1] and segs[k + 1].n0 or o.frames, o.frames)
-    local offs, len, pos = s.n0 / o.sr, (n1 - s.n0) / o.sr, nil
-    if s.playing then pos = s.p0 - o.rec
-    elseif o.anchor then pos = o.anchor.pos + (s.t0 - o.inp - o.anchor.t) end
-    if pos and pos < 0 then offs, len, pos = offs - pos, len + pos, 0 end
+    local offs, rate, pos = s.n0 / o.sr, 1, nil
+    if s.playing then
+      local r = tonumber(s.rate) or 1
+      if r > 0.01 and r < 100 and math.abs(r - 1) > 1e-6 then rate = 1 / r end
+      pos = s.p0 - o.rec / rate
+    elseif apos then
+      local pts = { { n = s.n0, t = s.t0 } }
+      for _, p in ipairs(o.stamps or {}) do if p.n > s.n0 and p.n < n1 then pts[#pts + 1] = p end end
+      table.sort(pts, function(a, b) return a.n < b.n end)
+      rate = double.fit(pts, o.sr)
+      pos = apos + (s.t0 - o.inp - o.anchor.t)
+    end
+    local len = (n1 - s.n0) / o.sr / rate
+    if pos and pos < 0 then offs, len, pos = offs - pos * rate, len + pos, 0 end
     if pos and len >= double.MIN_LEN then
       local last = out[#out]
-      if last and math.abs(last.pos + last.len - pos) < 1e-4 and math.abs(last.offs + last.len - offs) < 1e-4 then last.len = last.len + len
-      else out[#out + 1] = { pos = pos, offs = offs, len = len, playing = s.playing } end
+      if last and last.rate == rate and math.abs(last.pos + last.len - pos) < 1e-4 and math.abs(last.offs + last.len * rate - offs) < 1e-4 then last.len = last.len + len
+      else out[#out + 1] = { pos = pos, offs = offs, len = len, playing = s.playing, rate = rate } end
     end
   end
+  return out
+end
+-- Where the MIDI played goes (rt-p12). evts: { { guid, msg, playing, pos (REAPER's project position for it, when playing), loop (REAPER's
+-- loop count), t (shared clock) } } in the order played; anchor as double.place's. -> { { guid, pos, len, evts = { { at, msg } } } }: an item a
+-- track a stretch (a play, the time stopped, each pass of a loop, a play again from earlier), each event with the transport at REAPER's own
+-- position for it, without at the anchor plus the time since it; nothing before the project's start. Pure.
+function double.midi_place(evts, anchor)
+  local out, cur = {}, {}
+  local apos = double.anchor_pos(anchor)
+  for _, e in ipairs(evts) do
+    local at = e.playing and tonumber(e.pos) or (apos and tonumber(e.t) and apos + (e.t - anchor.t)) or nil
+    if at and at >= 0 then
+      local key = e.playing and ("p" .. tostring(e.loop or 0)) or "l"
+      local g = cur[e.guid]
+      if not g or g.key ~= key or (e.playing and at < g.last - 1e-3) then
+        g = { guid = e.guid, key = key, evts = {}, first = at, last = at }
+        cur[e.guid], out[#out + 1] = g, g
+      end
+      g.evts[#g.evts + 1] = { at = at, msg = e.msg }
+      g.first, g.last = math.min(g.first, at), math.max(g.last, at)
+    end
+  end
+  for _, g in ipairs(out) do g.pos, g.len, g.key, g.first, g.last = g.first, g.last - g.first + double.MIDI_TAIL, nil, nil, nil end
   return out
 end
 -- The jam's last stretch, when it's only the moment between a transport stop and the copy's end (its next tick): left out. -> segs, frames. Pure.
@@ -96,18 +167,22 @@ function double.cut_tail(segs, frames)
   return segs, frames
 end
 -- The jam's anchor: the earlier start (the same moment: by name, so every computer picks the same). Pure.
+-- And the furthest project end any of them reported (endp: a bar past it; rt-p12), whichever start wins, so every computer that heard the same
+-- anchors lands at the same place, past everyone's copy of the song.
 function double.pick(a, b)
   if not a then return b end
   if not b then return a end
-  if b.t < a.t - 1e-6 or (math.abs(b.t - a.t) <= 1e-6 and tostring(b.user) < tostring(a.user)) then return b end
-  return a
+  local w = (b.t < a.t - 1e-6 or (math.abs(b.t - a.t) <= 1e-6 and tostring(b.user) < tostring(a.user))) and b or a
+  local e = math.max(tonumber(a.endp) or -1, tonumber(b.endp) or -1)
+  if e < 0 or (tonumber(w.endp) or -1) == e then return w end
+  return { t = w.t, pos = w.pos, user = w.user, past = w.past, endp = e }
 end
 -- Should a copy be recording now? -> yes, and why not (nil: nothing to say). Pure.
 function double.wanted(on, available, in_front, inputs, peers_ok, jam_on, playing, live_running)
   if not on then return false end
   if not available then return false, "needs a newer StudioSync extension (Extensions > ReaPack > Synchronize packages)" end
   if not in_front then return false, "the song's tab isn't in front" end
-  if inputs == 0 then return false, "arm a track with an audio input (MIDI and instrument tracks: use Record)" end
+  if inputs == 0 then return false, "arm a track with an audio or MIDI input (a track recording its own sound: use Record)" end
   if not peers_ok then return false, "nobody is here on the direct link" end
   if jam_on then return playing == true, not playing and "starts when the jam plays" or nil end
   if not live_running then return false, "starts when you jam (Jam, above) or live audio runs" end
@@ -122,7 +197,9 @@ function double.valid(d, me)
     local a = d.anchor
     local t, pos = type(a) == "table" and tonumber(a.t), type(a) == "table" and tonumber(a.pos)
     if not (t and pos) or t ~= t or pos ~= pos or t < 1e9 or t > 1e10 or pos < 0 or pos > 1e6 or type(a.user) ~= "string" or #a.user > 60 then return nil end
-    anchor = { t = t, pos = pos, user = a.user }
+    local endp = a.endp ~= nil and tonumber(a.endp) or nil
+    if a.endp ~= nil and (not endp or endp ~= endp or endp < 0 or endp > 1e6) then return nil end
+    anchor = { t = t, pos = pos, user = a.user, past = a.past == true or nil, endp = endp }
   end
   local tracks = {}
   if d.tracks ~= nil then
@@ -234,11 +311,52 @@ local function poll(proj)
     if i >= 0 and not c.segs[i] and c.rec then
       if off == nil then off = clock_offset() or false end
       if not off then run.unsynced = true end
-      local seg = { n0 = math.floor(tonumber(s[2]) or 0), t0 = (tonumber(s[3]) or 0) + (off or 0), playing = tonumber(s[4]) == 1, p0 = tonumber(s[5]) or 0 }
+      local seg = { n0 = math.floor(tonumber(s[2]) or 0), t0 = (tonumber(s[3]) or 0) + (off or 0), playing = tonumber(s[4]) == 1, p0 = tonumber(s[5]) or 0,
+        rate = tonumber(s[6]) or 1 }
       c.segs[i] = seg
       if not run.own then -- (where this computer's jam began: its first sample, on the shared clock, and where in the project that goes)
-        run.own = { t = seg.t0 - c.inp, pos = seg.playing and math.max(0, seg.p0 - c.rec) or past_end(proj), user = run.user }
+        local pe = not seg.playing and past_end(proj) or nil
+        run.own = { t = seg.t0 - c.inp, pos = pe or math.max(0, seg.p0 - c.rec * seg.rate), user = run.user, past = pe and true or nil, endp = pe }
         run.anchor = double.pick(run.anchor, run.own)
+      end
+    end
+  end
+  for _, s in ipairs(type(st.stamps) == "table" and st.stamps or {}) do -- (the drift fit's points, on the shared clock as read now: rt-p12)
+    local i = math.floor(tonumber(s[1]) or -1)
+    if i >= 0 and not c.stamps[i] then
+      if off == nil then off = clock_offset() or false end
+      c.stamps[i] = { n = math.floor(tonumber(s[2]) or 0), t = (tonumber(s[3]) or 0) + (off or 0) }
+    end
+  end
+end
+-- The MIDI played on armed MIDI tracks since the last look (rt-p12), from REAPER's recent-input history: each event with its project
+-- position (REAPER's own, while playing) and its moment on the shared clock (ts: samples before now, at the device's rate).
+local function link_now() -- (this computer's link clock on the shared clock: the base the segments' t0 is on)
+  return (reaper.StudioSync_DirectNow and reaper.StudioSync_DirectNow() or reaper.time_precise()) + (clock_offset() or 0)
+end
+local function device_rate() return tonumber((select(2, reaper.GetAudioDeviceInfo("SRATE", "")))) or 48000 end
+local function midi_poll()
+  if not (run and reaper.MIDI_GetRecentInputEvent) then return end
+  local newest = reaper.MIDI_GetRecentInputEvent(0) -- (index 0 latches the history: the indexes below count back from it)
+  if not run.midi_seq then run.midi_seq = newest; return end
+  if newest == run.midi_seq or #run.midi == 0 then run.midi_seq = newest; return end
+  local got, now, sr = {}, link_now(), device_rate()
+  for i = 0, 3999 do
+    local seq, buf, ts, dev, pos, loop = reaper.MIDI_GetRecentInputEvent(i)
+    if not seq or seq == 0 or seq == run.midi_seq then break end
+    got[#got + 1] = { buf = buf, ts = ts, dev = dev, pos = pos, loop = loop }
+  end
+  run.midi_seq = newest
+  for k = #got, 1, -1 do -- (oldest first)
+    local e = got[k]
+    local st = type(e.buf) == "string" and e.buf:byte(1) or 0
+    if st >= 0x80 and st < 0xF0 and #run.events < double.MIDI_MAX then -- (channel messages: notes, controllers, pitch bend, pressure, programs)
+      for _, t in ipairs(run.midi) do
+        if double.midi_takes(t, tonumber(e.dev) or 0, st) then
+          local p = tonumber(e.pos) or -1
+          run.events[#run.events + 1] = { guid = t.guid, msg = e.buf, playing = p >= 0, pos = p >= 0 and p or nil, loop = tonumber(e.loop) or 0,
+            t = now + (tonumber(e.ts) or 0) / sr }
+        end
       end
     end
   end
@@ -260,7 +378,7 @@ local function start_chunk(proj, cfg, b, list)
   end
   local spec = double.spec(list, paths)
   if not spec or reaper.StudioSync_KeepStart(spec) ~= 1 then return false end
-  run.cur = { files = files, segs = {}, frames = 0, sr = 0, wide = 1 }
+  run.cur = { files = files, segs = {}, stamps = {}, frames = 0, sr = 0, wide = 1 }
   for _, t in ipairs(list) do run.cur.wide = math.max(run.cur.wide, #t.ch) end
   run.chunks[#run.chunks + 1] = run.cur
   run.key = double.inputs_key(list)
@@ -275,6 +393,7 @@ end
 local function say(cfg, b, extra)
   local tracks = {}
   for _, f in ipairs(run.cur and run.cur.files or run.chunks[#run.chunks] and run.chunks[#run.chunks].files or {}) do tracks[#tracks + 1] = f.name end
+  for _, t in ipairs(run.midi or {}) do if #tracks < double.FILES then tracks[#tracks + 1] = t.name end end
   local d = { run = run.id, user = cfg.user, anchor = run.anchor, tracks = tracks }
   for k, v in pairs(extra or {}) do d[k] = v end
   run.seq, run.msg_at = run.seq + 1, reaper.time_precise()
@@ -308,6 +427,23 @@ local function put(tr, path, p, lanes_on, label)
   reaper.SetMediaItemInfo_Value(it, "D_LENGTH", p.len)
   reaper.SetMediaItemInfo_Value(it, "B_LOOPSRC", 0)
   reaper.SetMediaItemTakeInfo_Value(tk, "D_STARTOFFS", p.offs)
+  if p.rate and p.rate ~= 1 then -- (rt-p12: another play rate, or a device's drift; the pitch kept where the rate is a musical one, not a drift's)
+    reaper.SetMediaItemTakeInfo_Value(tk, "D_PLAYRATE", p.rate)
+    if math.abs(p.rate - 1) > 0.01 then reaper.SetMediaItemTakeInfo_Value(tk, "B_PPITCH", 1) end
+  end
+  reaper.GetSetMediaItemTakeInfo_String(tk, "P_NAME", label, true)
+  if lane then reaper.SetMediaItemInfo_Value(it, "I_FIXEDLANE", lane) end
+  reaper.UpdateItemInProject(it)
+  return true
+end
+-- A MIDI part (rt-p12): g = { pos, len, evts = { { at, msg } } } as an item of its own, each event at its project position.
+local function put_midi(tr, g, lanes_on, label)
+  local lane = lanes_on and overlaps(tr, g.pos, g.pos + g.len) and new_lane(tr) or nil
+  local it = reaper.CreateNewMIDIItemInProj(tr, g.pos, g.pos + g.len)
+  local tk = it and reaper.GetActiveTake(it)
+  if not tk then return false end
+  for _, e in ipairs(g.evts) do reaper.MIDI_InsertEvt(tk, false, false, reaper.MIDI_GetPPQPosFromProjTime(tk, e.at), e.msg) end
+  reaper.MIDI_Sort(tk)
   reaper.GetSetMediaItemTakeInfo_String(tk, "P_NAME", label, true)
   if lane then reaper.SetMediaItemInfo_Value(it, "I_FIXEDLANE", lane) end
   reaper.UpdateItemInProject(it)
@@ -327,7 +463,9 @@ local function land(proj, cfg, b)
     for ci, c in ipairs(run.chunks) do
       local segs, frames = seg_list(c), c.frames
       if ci == #run.chunks then segs, frames = double.cut_tail(segs, frames) end
-      local plan = frames > 0 and c.rec and double.place(segs, { sr = c.sr, frames = frames, rec = c.rec, inp = c.inp, anchor = run.anchor }) or {}
+      local stamps = {}
+      for _, p in pairs(c.stamps or {}) do stamps[#stamps + 1] = p end
+      local plan = frames > 0 and c.rec and double.place(segs, { sr = c.sr, frames = frames, rec = c.rec, inp = c.inp, anchor = run.anchor, stamps = stamps }) or {}
       for _, f in ipairs(c.files) do
         local tr = track_of(proj, f.guid)
         if not tr then miss(f.name .. "'s track is gone (the file: " .. f.path .. ")")
@@ -342,6 +480,16 @@ local function land(proj, cfg, b)
             require("mirror").touch(proj, tr) -- (read at the next quick look: it goes out as any new item does)
           end
         end
+      end
+    end
+    for _, g in ipairs(double.midi_place(run.events or {}, run.anchor)) do -- (the MIDI tracks' parts: rt-p12)
+      local tr = track_of(proj, g.guid)
+      local name = tr and select(2, reaper.GetTrackName(tr))
+      if not tr then miss("a MIDI track's part: its track is gone")
+      elseif not can(cfg.user, name, g.pos) then miss(name .. " isn't yours to change here (its MIDI)")
+      elseif put_midi(tr, g, lanes_on, label) then
+        if not placed[name] then placed[#placed + 1], placed[name] = name, true end
+        require("mirror").touch(proj, tr)
       end
     end
   end)
@@ -382,12 +530,24 @@ local function end_run(proj, cfg, b, now)
   run = nil
   show_done(now)
 end
-local function start_run(proj, cfg, b, list, peers, now)
+local function start_run(proj, cfg, b, list, midi, peers, now)
   local stamp = os.date("!%Y%m%d-%H%M%SZ") .. string.format("-%03d", math.floor(now * 1000) % 1000)
-  run = { id = clean(cfg.user):gsub(" ", "_") .. "-" .. stamp, user = cfg.user, chunks = {}, started = now, peer_at = now, seq = 0, msg_at = -math.huge, peers = peers }
-  if not start_chunk(proj, cfg, b, list) then run = nil; return "the extension couldn't start the copy" end
+  run = { id = clean(cfg.user):gsub(" ", "_") .. "-" .. stamp, user = cfg.user, chunks = {}, started = now, peer_at = now, seq = 0, msg_at = -math.huge, peers = peers,
+    midi = midi, events = {}, key = double.inputs_key(list) }
+  if #list > 0 and not start_chunk(proj, cfg, b, list) then run = nil; return "the extension couldn't start the copy" end
+  midi_poll() -- (where the MIDI history stands now: only what's played from here is kept)
+  if #list == 0 then -- (MIDI only: no capture's first sample to begin from, so now, as the panel's Add-it-now reads it)
+    local playing = reaper.GetPlayStateEx(proj) & 1 == 1
+    local pe = not playing and past_end(proj) or nil
+    if not clock_offset() then run.unsynced = true end
+    run.own = { t = link_now(), pos = pe or reaper.GetPlayPosition2Ex(proj), user = run.user, past = pe and true or nil, endp = pe }
+    run.anchor = double.pick(run.anchor, run.own)
+  end
   done = nil
-  band.log("full quality: recording your part (" .. table.concat((function() local n = {}; for _, f in ipairs(run.cur.files) do n[#n + 1] = f.name end; return n end)(), ", ") .. ") on this computer")
+  local n = {}
+  for _, f in ipairs(run.cur and run.cur.files or {}) do n[#n + 1] = f.name end
+  for _, t in ipairs(midi) do n[#n + 1] = t.name end
+  band.log("full quality: recording your part (" .. table.concat(n, ", ") .. ") on this computer")
 end
 
 -- Live sync's call, each tick (lib/jam.lua's beside it).
@@ -403,31 +563,36 @@ function double.tick(proj, cfg, b, in_front)
   end
   local playing = reaper.GetPlayStateEx(proj) & 1 == 1
   local list = armed(proj)
-  local inputs, skipped = double.inputs(list)
+  local inputs, skipped, midi = double.inputs(list)
   local peers = direct.live_available() and direct.peers(cfg, b.song, b.room) or {}
   if #peers > 0 and run then run.peer_at, run.peers = now, peers end
   local la = require("liveaudio")
-  local want, why = double.wanted(on, double.available(), in_front, #inputs, #peers > 0 or (run ~= nil and now - run.peer_at < double.ALONE),
+  local want, why = double.wanted(on, double.available(), in_front, #inputs + #midi, #peers > 0 or (run ~= nil and now - run.peer_at < double.ALONE),
     require("jam").on(), playing, la.S.sending ~= nil)
   if run then
     poll(proj)
+    run.midi = midi -- (MIDI goes to the tracks armed as it's played)
+    midi_poll()
     local c = run.cur
     local st = c and c.st or {}
     run.played = run.played or playing
     local asked = reaper.GetExtState(band.SECTION, double.CMD) ~= ""
     if asked then reaper.DeleteExtState(band.SECTION, double.CMD, false) end
-    if not want or asked or (run.played and not playing) or not c then end_run(proj, cfg, b, now); return
-    elseif st.state == "failed" or st.rate_changed == true or double.inputs_key(inputs) ~= run.key or c.frames * 4 * c.wide > double.FILE_BYTES then
+    local key = double.inputs_key(inputs)
+    if not want or asked or (run.played and not playing) then end_run(proj, cfg, b, now); return
+    elseif st.state == "failed" or st.rate_changed == true or key ~= run.key or (c and c.frames * 4 * c.wide > double.FILE_BYTES) then
       finish_chunk(proj) -- (new files, the same jam: they land together at its stop)
-      if not start_chunk(proj, cfg, b, inputs) then end_run(proj, cfg, b, now); return end
+      run.key = key
+      if #inputs > 0 and not start_chunk(proj, cfg, b, inputs) then end_run(proj, cfg, b, now); return end
     end
     if now - run.msg_at >= double.EVERY then say(cfg, b) end
   elseif want then
-    why = start_run(proj, cfg, b, inputs, peers, now)
+    why = start_run(proj, cfg, b, inputs, midi, peers, now)
   end
   if run then
     local names_ = {}
     for _, f in ipairs(run.cur and run.cur.files or {}) do names_[#names_ + 1] = f.name end
+    for _, t in ipairs(run.midi or {}) do names_[#names_ + 1] = t.name end
     local others = {}
     for user, e in pairs(double.book) do if not e.done_at or e.done_at < e.seen then if now - e.seen < double.QUIET then others[#others + 1] = user end end end
     table.sort(others)
@@ -487,7 +652,8 @@ function double.options(ctx, ImGui)
   ImGui.SetItemTooltip(ctx, "Each of you records your own armed tracks on your own computer, lossless (32-bit float, the raw input), while\n" ..
     "you jam or play live and hear each other as live audio or Jam's intervals. When the jam stops, each part goes into the song on its\n" ..
     "track, lined up as it was played (by the song's bars when the transport ran, else by the studio's shared clock, each computer's input\n" ..
-    "latency taken off), and reaches everyone as any new recording does. Tracks recording MIDI or an instrument's sound aren't copied.")
+    "latency taken off), and reaches everyone as any new recording does. MIDI tracks keep the MIDI you play; a track\n" ..
+    "recording its own sound isn't copied (use Record).")
   if not double.on() then return end
   local t = told()
   if t.state == "recording" then ImGui.TextDisabled(ctx, tostring(t.text))

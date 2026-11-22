@@ -99,7 +99,7 @@ local function load_double() package.loaded.double = nil; return require("double
 local double = load_double()
 
 -- ---- which tracks are copied ----
-local list, skipped = double.inputs({
+local list, skipped, midis = double.inputs({
   { guid = "a", name = "Gtr", arm = 1, input = 1024 + 2, mode = 0 },   -- stereo 3/4
   { guid = "b", name = "Vox", arm = 1, input = 0, mode = 0 },          -- mono 1
   { guid = "c", name = "Keys", arm = 1, input = 4096 + 63 * 32, mode = 0 }, -- MIDI
@@ -110,7 +110,8 @@ local list, skipped = double.inputs({
   { guid = "h", name = "Mono", arm = 1, input = 5, mode = 12 },        -- forced mono
 })
 assert(#list == 3 and list[1].ch[1] == 2 and list[1].ch[2] == 3 and #list[2].ch == 1 and list[2].ch[1] == 0 and list[3].ch[1] == 5, "stereo as its pair, mono as its input")
-assert(#skipped == 4 and skipped[1].name == "Keys" and skipped[1].why:find("MIDI") and skipped[2].name == "Synth" and skipped[3].why:find("ReaRoute") and skipped[4].why:find("multichannel"), "what isn't copied, and why")
+assert(#skipped == 3 and skipped[1].name == "Synth" and skipped[1].why:find("its own sound") and skipped[2].why:find("ReaRoute") and skipped[3].why:find("multichannel"), "what isn't copied, and why")
+assert(#midis == 1 and midis[1].name == "Keys" and midis[1].dev == 63 and midis[1].chan == 0, "a MIDI track: its MIDI is kept (rt-p12), any device, any channel")
 local lots = {}
 for i = 1, 20 do lots[i] = { guid = tostring(i), name = "T" .. i, arm = 1, input = 1024, mode = 0 } end
 local l2, s2 = double.inputs(lots)
@@ -242,8 +243,8 @@ ann.live = true
 step(1.5, function(n) if n == "Cy" and T >= E + 1001.5 then cy.live = true end end)
 step(2, function(n) if n == "Bob" and T >= E + 1003.25 then bob.live = true end end)
 cur = "Ann"
-assert(state("Ann").state == "recording" and state("Ann").text:find("^Recording your part in full quality %(Gtr%)"), "Ann: recording, and says so")
-assert(state("Ann").skipped and state("Ann").skipped[1]:find("^Keys records MIDI"), "Ann's MIDI track: not copied, and says so")
+assert(state("Ann").state == "recording" and state("Ann").text:find("^Recording your part in full quality %(Gtr, Keys%)"), "Ann: recording, and says so (her MIDI track too, rt-p12)")
+assert(state("Ann").skipped and #state("Ann").skipped == 0, "nothing of Ann's left out")
 assert(ann.specs[1]:match("^0,1\tP/Ann/StudioSync full quality/Song %- Gtr %- Ann .+%.wav\n$"), "Ann's stereo guitar: inputs 1-2, in the project's own folder")
 assert(cy.keep.on and bob.keep.on, "Bob and Cy record too")
 step(16.5) -- (to T = 1020)
@@ -267,9 +268,11 @@ assert(ann.added >= 1 and bob.added == 1, "Ann and Bob: their parts land when th
 local la_, lb_, lc_ = landed(ann, "Gtr", E + 1010), landed(bob, "Bass", E + 1010), landed(cy, "Vox", E + 1010)
 assert(#la_ == 1 and #lb_ == 1 and #lc_ == 1, "each holds the clap once")
 assert(near(la_[1].pos, lb_[1].pos, 1e-3) and near(la_[1].pos, lc_[1].pos, 1e-3), string.format("lined up: %.4f %.4f %.4f", la_[1].pos, lb_[1].pos, lc_[1].pos))
-assert(near(la_[1].pos, 1010 - 1000.125, 1e-3), "from Ann's start, the earliest (Bob's own start would have gone after his project's end)")
+-- (rt-p12, backlog 1.14: the anchor's place is the furthest project end any of them reported, Bob's 10 s song: a bar past it is bar 8, 14 s,
+-- not Ann's empty project's 0, which would land on top of Bob's copy of the song)
+assert(near(la_[1].pos, 14 + 1010 - 1000.125, 1e-3), "from Ann's start, the earliest, past the furthest project end: " .. la_[1].pos)
 local la2 = landed(ann, "Gtr", E + 1016.5)
-assert(#la2 == 1 and near(la2[1].pos, 1016.5 - 1000.125, 1e-3), "Ann's later files follow on exactly")
+assert(#la2 == 1 and near(la2[1].pos, 14 + 1016.5 - 1000.125, 1e-3), "Ann's later files follow on exactly")
 for _, w in pairs(worlds) do
   for _, tr in ipairs(w.tracks) do for _, it in ipairs(tr.items) do
     assert(it.take.s.P_NAME:find("^Jam %d%d:%d%d %- " .. w.name .. " %(full quality%)$") and it.info.B_LOOPSRC == 0, "named, never looped")

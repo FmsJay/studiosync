@@ -11,14 +11,18 @@
 --    slot's end). An item is made a little before its slot from what has arrived, and made again as the rest comes (REAPER reads a file's
 --    length once). Their level and mute are live audio's cue mix (their Play level, the master, Deafen).
 --  - Their live audio Play stream is silent here while they jam (liveaudio.ducks, as a screen share's sound does), so nobody is heard twice.
---  - Jam turns In time on and Follow each other at 0 bars, so Play together and everyone's own play and stop start and stop everyone at once;
+--  - Jam turns In time on and Play and stop together at 0 bars, so Play together and everyone's own play and stop start and stop everyone at once;
 --    In time's lag for a take you follow is off while jamming, and a take someone records while jamming is heard through Jam (its streamed
 --    placeholder stays muted): lib/streams.lua.
--- Limits: a bandmate who arrives mid-run hears that person from their next play; play rates other than 1 aren't followed. GPL-3.0-or-later.
+--  - Who gets it (rt-p12, backlog 1.15): each computer with Jam on says so every HEAR_EVERY s ("jam_hear"); a run streams only to those, and one
+--    who says so mid-run joins the stream from its start (the link sends a peer added later from the beginning), so they hear the next
+--    interval, not the next play. Over Opus (192 kbit/s, not 1.5 Mbit/s) when this device runs at 48 kHz and everyone it goes to can read it
+--    (their extension's StudioSync_JamDecode turns the growing copy into a growing WAV, placed as before); else the 16-bit WAV.
+-- Limits: play rates other than 1 aren't followed. GPL-3.0-or-later.
 local band = require("band")
 local direct = require("direct")
 local jam = { TICK = 0.1, EVERY = 1, LEAD = 1.5, NEAR = 1.0, REFRESH = 0.25, DUCK = 3, QUIET = 5, SEGS = 16, HEADER = 44, BLOCK = 4,
-  MIN_START = 0.05, RUN_MAX = 3600, TAG = "jam" }
+  MIN_START = 0.05, RUN_MAX = 3600, TAG = "jam", HEAR_EVERY = 2, HEAR_FOR = 6 }
 
 -- ---- pure ------------------------------------------------------------------------------------------------------------------------------
 -- The interval a fractional bar (0-based: bar 1 starts at 0) is in, N bars each. (A hair over, so a boundary read back a hair short counts.)
@@ -71,7 +75,7 @@ end
 function jam.valid(d, song, room, me)
   if type(d) ~= "table" or type(d.run) ~= "string" or #d.run > 120 or not d.run:match("^[%w%-_]+$") then return nil end
   if type(d.user) ~= "string" or d.user == me or not direct.plain(d.user) or #d.user > 60 then return nil end
-  if type(d.file) ~= "string" or not direct.plain(d.file) or not d.file:lower():match("%.wav$") then return nil end
+  if type(d.file) ~= "string" or not direct.plain(d.file) or not (d.file:lower():match("%.wav$") or d.file:lower():match("%.opus$")) then return nil end
   local sr, bars = tonumber(d.srate), tonumber(d.bars)
   if not sr or sr < 1000 or sr > 384000 or not bars or bars ~= math.floor(bars) or bars < 1 or bars > 16 then return nil end
   if type(d.segs) ~= "table" or #d.segs > 32 then return nil end
@@ -83,7 +87,18 @@ function jam.valid(d, song, room, me)
   end
   local rel = direct.stream_rel(song, require("streams").stream_name(room, d.user, d.file))
   if not rel then return nil end
-  return { run = d.run, user = d.user, file = d.file, rel = rel, srate = sr, bars = bars, segs = segs }
+  return { run = d.run, user = d.user, file = d.file, rel = rel, srate = sr, bars = bars, segs = segs, opus = d.file:lower():match("%.opus$") ~= nil }
+end
+-- Who a run goes to (rt-p12): the peers here whose person said "Jam on" within HEAR_FOR s. users: peer -> person (none known: everyone, the
+-- WAV, as before); listeners: person -> { at, opus }. -> the peers, peer -> reads Opus, and whether all of them do. Pure.
+function jam.audience(peers, users, listeners, now)
+  if type(users) ~= "table" or next(users) == nil then return peers, {}, false end
+  local out, opus, all = {}, {}, true
+  for _, p in ipairs(peers) do
+    local l = users[p] and listeners[users[p]]
+    if l and now - l.at < jam.HEAR_FOR then out[#out + 1] = p; opus[p] = l.opus == true; all = all and l.opus == true end
+  end
+  return out, opus, #out > 0 and all
 end
 -- An entry's segments in file order, each with its index (i: what a chunk's key goes by), one a later message left out kept. Pure.
 function jam.seg_list(e)
@@ -103,7 +118,7 @@ function jam.out_segs(raw, latency)
   return out
 end
 -- Health's words. me: { on, sending, peers (how many get it), why (nothing goes out: why) }; heard: { { user, bars, heard, late, missed,
--- live } }; bars: this computer's interval; side: Follow each other's bars ("" off). -> text, ok. Pure.
+-- live } }; bars: this computer's interval; side: Play and stop together's bars ("" off). -> text, ok. Pure.
 function jam.health_text(me, heard, bars, side)
   local parts, ok = {}, true
   local b = string.format("every %d bar%s", bars, bars == 1 and "" or "s")
@@ -119,7 +134,7 @@ function jam.health_text(me, heard, bars, side)
     each[#each + 1] = w
   end
   parts[#parts + 1] = #each > 0 and ("you hear " .. table.concat(each, ", ") .. ", an interval late") or "nobody else is jamming"
-  if side ~= "0" then parts[#parts + 1] = "Follow each other isn't at 0 bars, so a press doesn't start everyone at once: switch Jam off and on"; ok = false end
+  if side ~= "0" then parts[#parts + 1] = "Play and stop together isn't at 0 bars, so a press doesn't start everyone at once: switch Jam off and on"; ok = false end
   return "Jam (" .. b .. "): " .. table.concat(parts, "; "), ok
 end
 
@@ -127,7 +142,7 @@ end
 local function px(proj, k) return select(2, reaper.GetProjExtState(proj, band.SECTION, k)) end
 function jam.on() return reaper.GetExtState(band.SECTION, "stream jam") == "1" and require("streams").mode() == "in_time" end
 function jam.available() return reaper.StudioSync_JamStart ~= nil and reaper.StudioSync_JamStatus ~= nil and direct.live_available() end
--- On: In time, Jam, and Follow each other at 0 bars (its bars from before kept, and put back when it goes off).
+-- On: In time, Jam, and Play and stop together at 0 bars (its bars from before kept, and put back when it goes off).
 function jam.set(proj, on)
   if on then
     reaper.SetExtState(band.SECTION, "stream listen", "in_time", true)
@@ -173,6 +188,11 @@ local function track_for(proj, user)
   tracks[user] = tr
   return tr
 end
+-- A run forgotten here: an Opus copy's decoder stops and its WAV goes (the stream's own copy is the link's inbox to prune).
+local function forget(e)
+  if e.opus and reaper.StudioSync_JamDecode then reaper.StudioSync_JamDecode(e.path, e.wav, 2) end
+  if e.opus then os.remove(e.wav) end
+end
 -- Every Jam track goes (Jam off, Live sync ending, or a fresh start: items left from before nobody knows).
 function jam.clear(proj)
   local ts = proj and jam_tracks(proj) or {}
@@ -206,13 +226,14 @@ end
 function jam.on_msg(cfg, b, d)
   if not jam.on() then return false end -- (not jamming here: their live Play is heard as ever)
   local v = jam.valid(d, b.song, b.room, cfg.user)
-  if not v then return false end
+  if not v or (v.opus and not reaper.StudioSync_JamDecode) then return false end
   local now = reaper.time_precise()
   local e = jam.book[v.run]
   if not e then
     for _, o in pairs(jam.book) do if o.user == v.user then o.ended = true end end -- (their last run is over: a new one began)
     e = v
     e.path, e.items, e.heard, e.late, e.missed, e.missed_keys, e.frames = direct.stream_path(cfg, v.rel), {}, 0, 0, 0, {}, 0
+    e.wav = e.opus and (e.path .. ".wav") or e.path -- (what's placed: an Opus copy's growing WAV beside it, rt-p12)
     jam.book[v.run] = e
   else
     for i, s in pairs(v.segs) do e.segs[i] = s end
@@ -229,7 +250,7 @@ end
 local function new_source(path) return reaper.PCM_Source_CreateFromFile(path) end
 -- One chunk's item, made or made again from what has arrived. -> the item's record { it, key, dest, len, covered, shown, at, final }.
 local function place(tr, e, c, rec, now)
-  local src = new_source(e.path)
+  local src = new_source(e.wav or e.path)
   if not src then return rec end
   local it, tk = rec and rec.it
   if it and reaper.ValidatePtr2(0, it, "MediaItem*") then
@@ -265,7 +286,15 @@ function jam.receive_tick(proj, cfg, b, now)
   local mix, me, ducked = la.mix(), la.me(), false
   for run, e in pairs(jam.book) do
     local i = inn[e.rel]
-    if i then
+    if i and e.opus then -- (rt-p12: the extension decodes the copy as it grows, and says when it's whole)
+      if (tonumber(i.bytes) or 0) > 0 then
+        local dj = band.json_decode(reaper.StudioSync_JamDecode(e.path, e.wav, (i.done and e.ended) and 1 or 0)) or {}
+        local f = math.floor(tonumber(dj.frames) or 0)
+        if f ~= e.frames then e.frames, e.grew_at = f, now end
+        if dj.state == "done" then e.end_frame = e.frames end
+        if dj.state == "failed" and not e.dec_said then e.dec_said = true; band.log("Jam: " .. e.user .. "'s copy can't be read here: " .. tostring(dj.error)) end
+      end
+    elseif i then
       local f = jam.frames(i.bytes)
       if f ~= e.frames then e.frames, e.grew_at = f, now end
       if i.done and e.ended then e.end_frame = e.frames end
@@ -307,14 +336,14 @@ function jam.receive_tick(proj, cfg, b, now)
       if math.abs(reaper.GetMediaTrackInfo_Value(tr, "D_VOL") - g) > 1e-4 then reaper.SetMediaTrackInfo_Value(tr, "D_VOL", g) end
       if (reaper.GetMediaTrackInfo_Value(tr, "B_MUTE") == 1) ~= m then reaper.SetMediaTrackInfo_Value(tr, "B_MUTE", m and 1 or 0) end
     end
-    if not live and not next(e.items) and (e.ended or now - (e.seen or now) > 60) then jam.book[run] = nil end -- (over and played out)
+    if not live and not next(e.items) and (e.ended or now - (e.seen or now) > 60) then forget(e); jam.book[run] = nil end -- (over and played out)
   end
   if ducked then pcall(la.apply) end
 end
 
 -- ---- sending ---------------------------------------------------------------------------------------------------------------------------
-local run -- { id, path, file, rel, seq, sent (segments sent), msg_at, peers }
-local S = { why = nil, peers = 0 }
+local run -- { id, path, file, rel, seq, sent (segments sent), msg_at, peers, codec }
+local S = { why = nil, peers = 0, hear_at = -math.huge }
 jam.S = S
 local function jam_status() return band.json_decode(reaper.StudioSync_JamStatus()) or {} end
 local function jam_dir(cfg) return direct.inbox(cfg.root) .. "/.jam" end
@@ -346,32 +375,52 @@ local function tidy(cfg, keep)
   local dir = jam_dir(cfg)
   for _, f in ipairs(band.files(dir)) do if f ~= keep and not going[f] then os.remove(dir .. "/" .. f) end end
 end
--- Why nothing goes out now (nil: it can). Pure but for what it's handed.
-function jam.why_not(available, sending_play, peers)
+-- Why nothing goes out now (nil: it can). listening: how many of the peers have Jam on (nil: all). Pure but for what it's handed.
+function jam.why_not(available, sending_play, peers, listening)
   if not available then return "needs a newer StudioSync extension (Extensions > ReaPack > Synchronize packages)" end
   if not sending_play then return "live audio's Play isn't going (arm a track, and check Mute me and Deafen): Jam sends what Play would" end
   if peers == 0 then return "nobody is here on the direct link" end
+  if listening == 0 then return "nobody here has Jam on (it goes only to those who do)" end
 end
+-- A bandmate's "Jam on" (rt-p12): runs go to them, and to a run already going they're added from its start. -> taken.
+jam.listeners = {} -- person -> { at, opus }
+function jam.on_hear(cfg, _, d)
+  if type(d) ~= "table" or type(d.user) ~= "string" or d.user == cfg.user or #d.user > 60 or not direct.plain(d.user) then return false end
+  jam.listeners[d.user] = { at = reaper.time_precise(), opus = d.opus == true }
+  return true
+end
+local function device_rate() return tonumber((select(2, reaper.GetAudioDeviceInfo("SRATE", "")))) end
 function jam.send_tick(proj, cfg, b, now)
   local la = require("liveaudio")
-  local peers = direct.live_available() and direct.peers(cfg, b.song, b.room) or {}
+  local all, users = {}, nil
+  if direct.live_available() then all, _, users = direct.peers(cfg, b.song, b.room) end
+  local peers, opus_of, all_opus = jam.audience(all, users, jam.listeners, now)
   S.peers = #peers
-  S.why = jam.why_not(jam.available(), la.S.sending and la.S.sending.play, #peers)
+  S.why = jam.why_not(jam.available(), la.S.sending and la.S.sending.play, #all, #peers)
   local playing = reaper.GetPlayStateEx(proj) & 1 == 1
   if S.why or not playing then stop_run(cfg, b); return end
   local st = jam_status()
+  if run and run.codec == "opus" and st.state == "failed" then S.opus_off = true end -- (Opus refused here, a device not at 48 kHz: the WAV from now on)
   -- (a new run next tick: failed, another device rate, or an hour long: a WAV stays under 4 GB and nobody's inbox fills with one endless file)
   if run and (st.state == "failed" or st.rate_changed == true or st.on ~= true or (tonumber(st.frames) or 0) > (tonumber(st.srate) or 0) * jam.RUN_MAX) then stop_run(cfg, b); return end
   if not run then
     local stamp = os.date("!%Y%m%d-%H%M%SZ") .. string.format("-%03d", math.floor(now * 1000) % 1000)
     local id = (cfg.user:gsub("[^%w%-_]", "_")) .. "-" .. stamp
-    local file = "jam-" .. stamp .. ".wav"
+    local codec = all_opus and reaper.StudioSync_JamDecode and not S.opus_off and device_rate() == 48000 and "opus" or "wav"
+    local file = "jam-" .. stamp .. "." .. codec
     reaper.RecursiveCreateDirectory(jam_dir(cfg), 0)
     tidy(cfg, nil)
     local path = jam_dir(cfg) .. "/" .. file
     if reaper.StudioSync_JamStart(path) ~= 1 then S.why = "the extension couldn't start Jam's capture"; return end
-    run = { id = id, path = path, file = file, seq = 0, sent = 0, msg_at = -math.huge, peers = peers }
+    run = { id = id, path = path, file = file, seq = 0, sent = 0, msg_at = -math.huge, peers = peers, codec = codec }
     return
+  end
+  local had, new = {}, {} -- (someone who turned Jam on mid-run: from the start of the run's copy, if they can read it)
+  for _, p in ipairs(run.peers) do had[p] = true end
+  for _, p in ipairs(peers) do if not had[p] and (run.codec ~= "opus" or opus_of[p]) then new[#new + 1] = p; run.peers[#run.peers + 1] = p end end
+  if #new > 0 and run.rel then
+    direct.stream_start(cfg, run.path, b.song, b.room, require("streams").INTERVAL_MS, require("streams").stream_name(b.room, cfg.user, run.file), new)
+    run.msg_at = -math.huge -- (where its stretches sit, to them too, at once)
   end
   if not run.rel and (tonumber(st.frames) or 0) > 0 then -- (its header and first audio are on disk: the link can begin)
     run.rel = direct.stream_start(cfg, run.path, b.song, b.room, require("streams").INTERVAL_MS, require("streams").stream_name(b.room, cfg.user, run.file), run.peers)
@@ -393,8 +442,17 @@ function jam.tick(proj, cfg, b, in_front)
   if not jam.on() then
     if run then stop_run(cfg, b) end
     if next(tracks) or not cleaned then cleaned = true; jam.clear(proj) end
+    for _, e in pairs(jam.book) do forget(e) end
     jam.book = {}
     return
+  end
+  if now - S.hear_at >= jam.HEAR_EVERY and direct.live_available() then -- ("Jam on" here: the others' runs come to this computer, rt-p12)
+    S.hear_at = now
+    local all = direct.peers(cfg, b.song, b.room)
+    if #all > 0 then
+      direct.send_live(cfg, "jam_hear", { user = cfg.user, opus = reaper.StudioSync_JamDecode ~= nil }, b.song, b.room,
+        "jamhear-" .. (cfg.user:gsub("[^%w%-_]", "_")) .. "-" .. math.floor(now * 1000), all)
+    end
   end
   if in_front then jam.send_tick(proj, cfg, b, now) elseif run then stop_run(cfg, b) end
   jam.receive_tick(proj, cfg, b, now)
@@ -402,6 +460,7 @@ end
 function jam.on_exit(proj, cfg, b)
   if run then stop_run(cfg, b) end
   if proj and reaper.ValidatePtr2(0, proj, "ReaProject*") then jam.clear(proj) end
+  for _, e in pairs(jam.book) do forget(e) end
 end
 
 -- ---- what it shows ---------------------------------------------------------------------------------------------------------------------
@@ -442,7 +501,7 @@ function jam.options(ctx, ImGui)
   if ch then jam.set(proj, v) end
   ImGui.SetItemTooltip(ctx, "Classic NINJAM, built in: what each of you plays on your armed tracks reaches the others one interval (the bars\n" ..
     "behind, above) late, each interval starting on its bar, so you play along to each other. Nothing is recorded unless someone records.\n" ..
-    "Turns In time on and Follow each other at 0 bars, so play and stop start and stop everyone. Their live Play is silent while they jam,\n" ..
+    "Turns In time on and Play and stop together at 0 bars, so play and stop start and stop everyone. Their live Play is silent while they jam,\n" ..
     "so you hear each part once. Each person's level is their Play level in Chat > Call. Needs live audio and the direct link.")
   if not on then
     if require("streams").mode() == "in_time" then ImGui.TextDisabled(ctx, "In time follows a take as it's recorded.") end

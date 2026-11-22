@@ -104,8 +104,78 @@ function livex.their_tick(proj, st)
   local ms, who = livex.their_ms(st, la.names(), livex.solo_in(st and st.peers, la.names(), livex.solo()))
   band.set_ext_json(band.SECTION, "their measured " .. tostring(proj), ms and { ms = ms, who = who } or {}, false)
   local hear = require("hear")
+  livex.their_takes(proj, hear.delay(proj))
   local t = livex.their_next(ms, livex.nudge(proj), hear.delay(proj))
-  if t then hear.set_delay(proj, t) end
+  if t and not S.rec then hear.set_delay(proj, t) end -- (held while recording: a take moves back by one delay, rt-p12)
+end
+-- ---- takes recorded in Their time (rt-p12, backlog 1.16): they landed late by the delay (your backing played that much later, and you
+-- played to it), and nothing moved them. While not recording, the armed tracks' items are noted each tick; while recording, the delay is held
+-- and the armed tracks kept; when it ends, the new items on those tracks (not streamed placeholders) move earlier by that delay, one undo point.
+-- items: { { id, pos, len, offs, rate } } now; before: id -> true; delay: s. -> { { id, pos, len, offs } } for the new ones (none before the
+-- project's start: the front is trimmed). Pure.
+function livex.take_moves(items, before, delay)
+  local out = {}
+  if not (delay and delay > 0) then return out end
+  for _, it in ipairs(items) do
+    if not before[it.id] then
+      local pos, len, offs = it.pos - delay, it.len, it.offs or 0
+      if pos < 0 then offs, len, pos = offs - pos * (it.rate or 1), len + pos, 0 end
+      if len > 0 then out[#out + 1] = { id = it.id, pos = pos, len = len, offs = offs } end
+    end
+  end
+  return out
+end
+local function armed_items(proj, only)
+  local out, guids = {}, {}
+  for i = 0, reaper.CountTracks(proj) - 1 do
+    local tr = reaper.GetTrack(proj, i)
+    local g = reaper.GetTrackGUID(tr)
+    if (only and only[g]) or (not only and reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1) then
+      guids[g] = true
+      for j = 0, reaper.CountTrackMediaItems(tr) - 1 do
+        local it = reaper.GetTrackMediaItem(tr, j)
+        if band.item_ext(it, "band_arriving") == "" then
+          local tk = reaper.GetActiveTake(it)
+          out[#out + 1] = { id = select(2, reaper.GetSetMediaItemInfo_String(it, "GUID", "", false)), it = it, tk = tk, pos = reaper.GetMediaItemInfo_Value(it, "D_POSITION"),
+            len = reaper.GetMediaItemInfo_Value(it, "D_LENGTH"), offs = tk and reaper.GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS") or 0,
+            rate = tk and reaper.GetMediaItemTakeInfo_Value(tk, "D_PLAYRATE") or 1 }
+        end
+      end
+    end
+  end
+  return out, guids
+end
+function livex.their_takes(proj, delay_ms)
+  if reaper.GetPlayStateEx(proj) & 4 == 4 then
+    if not S.rec then -- (what was there just before; none noted lately (Their time came on mid-take): nothing is moved)
+      local _, guids = armed_items(proj)
+      local fresh = S.seen and reaper.time_precise() - S.seen_at <= 2 * livex.THEIR_EVERY + 1
+      S.rec = { delay = (tonumber(delay_ms) or 0) / 1000, before = fresh and S.seen or nil, tracks = guids }
+    end
+    return
+  end
+  if S.rec then
+    local items = armed_items(proj, S.rec.tracks)
+    local moves = S.rec.before and livex.take_moves(items, S.rec.before, S.rec.delay) or {}
+    if #moves > 0 then
+      local by = {}
+      for _, it in ipairs(items) do by[it.id] = it end
+      reaper.Undo_BeginBlock2(proj)
+      for _, m in ipairs(moves) do
+        local it = by[m.id]
+        reaper.SetMediaItemInfo_Value(it.it, "D_POSITION", m.pos)
+        reaper.SetMediaItemInfo_Value(it.it, "D_LENGTH", m.len)
+        if it.tk then reaper.SetMediaItemTakeInfo_Value(it.tk, "D_STARTOFFS", m.offs) end
+      end
+      reaper.Undo_EndBlock2(proj, string.format("StudioSync: takes recorded in Their time moved %d ms earlier", math.floor(S.rec.delay * 1000 + 0.5)), -1)
+      reaper.UpdateArrange()
+      band.log(string.format("Their time: %d take%s moved %d ms earlier, onto the beat you played to", #moves, #moves == 1 and "" or "s", math.floor(S.rec.delay * 1000 + 0.5)))
+    end
+    S.rec = nil
+  end
+  local now = {}
+  for _, it in ipairs((armed_items(proj))) do now[it.id] = true end
+  S.seen, S.seen_at = now, reaper.time_precise()
 end
 -- Home's words under Their time: -> the delay line. m: the last measurement ({ ms, who }), delay: the live mix's now, nudge. Pure.
 function livex.their_line(m, delay, nudge)
