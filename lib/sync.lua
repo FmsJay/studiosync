@@ -1490,7 +1490,34 @@ function sync.undo_timeline(proj, cfg, song, room, entries, j, tags, session)
     return t
   end
   local now_m = band.capture_markers(proj)
-  local in_p, in_t = keys(P.markers), keys(T.markers)
+  -- (both versions' markers on the map in place: a marker's seconds are under its own version's map, and REAPER has moved every marker
+  -- for each map since. Compared as written, nothing of the undone change matched a marker here: the one it had changed stayed, and the
+  -- one from before came back beside it at its old seconds; the Redo then took the wrong one away. Where a marker here is the one meant,
+  -- its place as REAPER wrote it (worked out two ways, a place differs past its 9th decimal). The soak's undo probe, seed 3003. rt-converge)
+  local cur_t = band.capture_tempo(proj)
+  local function placed(list)
+    if type(list) ~= "table" or tempo_sig(T.tempo) == tempo_sig(cur_t) then return list end
+    local mode, out = reaper.GetSetProjectInfo(proj, "PROJECT_TIMEBASE", 0, false), {}
+    local on = require("mirror").time_on
+    local function near(a, b) return math.abs((tonumber(a) or 0) - (tonumber(b) or 0)) < 1e-6 end
+    for i, m in ipairs(list) do
+      local c = {}
+      for k, v in pairs(m) do c[k] = v end
+      c.pos = on(tonumber(m.pos) or 0, T.tempo, cur_t, mode)
+      if m.region then c["end"] = on(tonumber(m["end"]) or 0, T.tempo, cur_t, mode) end
+      for _, h in ipairs(now_m) do
+        if (h.region and true or false) == (m.region and true or false) and near(h.pos, c.pos) and (not m.region or near(h["end"], c["end"])) then
+          c.pos = h.pos
+          if m.region then c["end"] = h["end"] end
+          break
+        end
+      end
+      out[i] = c
+    end
+    return out
+  end
+  local p_marks, t_marks = placed(P.markers), placed(T.markers)
+  local in_p, in_t = keys(p_marks), keys(t_marks)
   local want_t, want_m
   if tempo_sig(P.tempo) ~= tempo_sig(T.tempo) then
     if sync.timeline_differs(proj, T) then return false end -- (the map or markers changed since: left as they are)
@@ -1501,7 +1528,7 @@ function sync.undo_timeline(proj, cfg, song, room, entries, j, tags, session)
       local k = key(m)
       if in_t[k] and not in_p[k] then changed = true else out[#out + 1] = m; have[k] = true end
     end
-    for _, m in ipairs(type(P.markers) == "table" and P.markers or {}) do
+    for _, m in ipairs(type(p_marks) == "table" and p_marks or {}) do
       local k = key(m)
       if not in_t[k] and not have[k] then out[#out + 1] = m; have[k] = true; changed = true end
     end

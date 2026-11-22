@@ -24,6 +24,7 @@
 -- 19. Deleting an item goes out though a grey stand-in still carries its id here (mirror.local_copy_is_it, W.gone).
 -- 20. A deletion of yours waiting for a claimer's answer doesn't hold the item's later versions back once the band has deleted it (mirror.receive).
 -- 21. An item's version on a track deleted since stands though the item's earlier versions land after it (mirror.receive).
+-- 22. Undo of a marker change made before a bandmate's tempo change compares the markers on the map in place (sync.undo_timeline).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -1090,6 +1091,54 @@ do
   for _ = 1, 2 do S.recv(A); S.recv(B) end
   assert(S.items(A, "Tmp") == 1 and S.items(B, "Tmp") == 1, "back with its track on both: " .. S.items(A, "Tmp") .. S.items(B, "Tmp"))
   print("rt-converge 21: an item's version on a deleted track stands though its earlier versions land later")
+end
+
+-- ---- 22. Undo of a marker change, a bandmate's tempo change since: the markers on the map in place (the soak's undo probe, seed 3003) ---------
+do
+  local undo = require("undo")
+  local S = studio("Conv22", "everyone")
+  S.timeline = true
+  local B, C = S.computer("Bee"), S.computer("Cee")
+  S.edit(C, function(F) F.add_item(F.add_track("Keys"), midi(1, 2)) end)
+  S.recv(B)
+  S.edit(C, function(F) F.add_marker(false, 8, 8, "Cue"); F.add_marker(true, 12, 16, "Verse") end)
+  S.recv(B)
+  local function marks(c)
+    S.as(c)
+    local t = {}
+    for _, m in ipairs(band.capture_markers(c.F.proj)) do t[#t + 1] = string.format("%s@%.3f", m.name, m.pos) .. (m.region and string.format("-%.3f", m["end"]) or "") end
+    return table.concat(t, ",")
+  end
+  assert(marks(B) == "Cue@8.000,Verse@12.000-16.000", "the markers on Bee's (" .. marks(B) .. ")")
+  -- Bee renames the marker and takes the region out (one act); then Cee sets the tempo from 120 to 100: REAPER moves the marker to 9.6 s
+  T = T + 2
+  S.edit(B, function(F)
+    local m = F.markers[1]
+    reaper.SetProjectMarker4(F.proj, m.num, m.region, m.pos, m.rend, "N1", 0)
+    reaper.DeleteProjectMarker(F.proj, F.markers[2].num, true)
+  end)
+  S.recv(C)
+  assert(marks(C) == "N1@8.000", "Bee's change on Cee's (" .. marks(C) .. ")")
+  T = T + 2
+  S.edit(C, function(F) reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, 100, 4, 4, false) end)
+  S.recv(B)
+  assert(marks(B) == "N1@9.600" and marks(C) == "N1@9.600", "Cee's tempo moved the marker on both (" .. marks(B) .. " / " .. marks(C) .. ")")
+  local function step(redo)
+    S.as(B)
+    B.F.clock = B.F.clock + 1
+    T = T + 2
+    local res, why = undo.step(B.F.proj, B.cfg, S.b, redo, {})
+    S.settle(B)
+    return tostring(res or why)
+  end
+  local u = step(false)
+  assert(marks(B) == "Cue@9.600,Verse@14.400-19.200",
+    "Bee's Undo: the old name on the marker where it is now, the region back on its beats (was: N1 stayed, with a second Cue at 8 s and the region at 12): " .. u .. "; " .. marks(B))
+  local r = step(true)
+  assert(marks(B) == "N1@9.600", "and her Redo: as before the Undo (" .. r .. "; " .. marks(B) .. ")")
+  S.recv(C)
+  assert(marks(C) == "N1@9.600", "on Cee's too (" .. marks(C) .. ")")
+  print("rt-converge 22: Undo of a marker change compares markers on the map in place")
 end
 
 print("ok rt-converge")

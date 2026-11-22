@@ -2253,6 +2253,12 @@ local function maps_ok(from, to)
   end
   return true
 end
+-- A time under one tempo map, on the same beat under another: a marker's place (sync.undo_timeline). As mirror.retime: only where the
+-- timebase is beats and neither map has a gradual change; else the time as it is. Pure. rt-converge
+function mirror.time_on(t, from, to, mode)
+  if (mode ~= 1 and mode ~= 2) or type(t) ~= "number" or not maps_ok(from, to) then return t end
+  return map_time(to, map_qn(from, t))
+end
 local function g14(x) return string.format("%.14g", x) end
 local function join_like(L, was) if L[#L] == "" then L[#L] = nil end; return table.concat(L, "\n") .. (was:sub(-1) == "\n" and "\n" or "") end
 function mirror.retime(state, from, to, mode)
