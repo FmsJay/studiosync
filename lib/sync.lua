@@ -1762,6 +1762,17 @@ function sync.too_new(ev)
   return not sync.KNOWN[ev.type] or (tonumber(ev.format) or 0) > band.FORMAT
 end
 sync.version_looked = {} -- proj -> true: its skipped changes were looked at for this version
+-- A bandmate's deletion `ev`, held back here only by this computer's own auto-claim on its track: made before that claim? Then its maker couldn't
+-- ask (the claim didn't exist), and the claim came from an edit made without seeing the deletion (the track is still here): the deletion lands
+-- now, as a deletion beats an edit made without seeing it (mirror.gone_race). Refused, it waited the minute a refused change waits: LinuxBox
+-- moved an item on XT R1 take with Live sync off, auto-claimed the track as the move went out at the start, and James's deletion, in the link's
+-- inbox since before, applied 61 s later (rt-linkmove round 5 C, rt-r1). A deletion made after the claim waits its minute, as before. rt-fix6a
+function sync.gone_before_claim(cfg, song, room, ev)
+  local c = sync.my_claims(cfg, song, room)
+  local k = c and type(ev.name) == "string" and ev.name ~= "" and sync.claim_key("tracks", base_name(ev.name))
+  local since = k and type(c.since) == "table" and c.since[k]
+  return type(since) == "string" and type(c.auto) == "table" and c.auto[k] ~= nil and type(ev.time) == "string" and ev.time < since
+end
 function sync.receive(proj, cfg, song, room, can)
   local pk = tostring(proj)
   -- (changes skipped for good (unreadable, failed five times) are tried once more when StudioSync's version changes: a newer version may read
@@ -1885,6 +1896,7 @@ function sync.receive(proj, cfg, song, room, can)
       local built_on = m.event_file(sync.room_dir(cfg, song, room), ev.base_ev)
       if built_on and built_on.user == ev.user then return true end
     end
+    if ev.gone and who == cfg.user then return sync.gone_before_claim(cfg, song, room, ev) end
     if not m.mergeable(ev) then return false end
     -- (from the version its maker's computer held, the change's own base, as its sender judged it: not what this computer holds)
     if not ev.base_ev then return true end -- (new: nothing of the claimer's is in it)

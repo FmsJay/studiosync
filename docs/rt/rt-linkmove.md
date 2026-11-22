@@ -1230,3 +1230,10 @@ for the run on all three. Times UTC.
   - **Verdict for the need list: A (rt-r0), C 1-4 and the delete hole 1-4 pass on what the need list decides** (nothing came back over
     the link, no `media want` for a deleted or unplayed file, nothing re-shared through Syncthing). Two things outside it: C's track kept on
     LinuxBox as "yours, not sent" (the claim rule, not the need list), and the 61 s before the delete applied there.
+
+### Round 5 C re-check after rt-fix6a (docs/rt/rt-fix6a.md, part 2)
+
+- [ ] LinuxBox's Live sync off and Syncthing paused; the desktop deletes a track with a take on it; LinuxBox moves that take; LinuxBox starts
+  Live sync and Syncthing. Pass: the deletion applies on LinuxBox within a few seconds (not ~60 s: the 61 s was LinuxBox's own new auto-claim
+  refusing the older deletion for a minute), no "<track> (yours, not sent)" on LinuxBox, the track on none of the three.
+- [ ] A take recorded on LinuxBox on a track the desktop deletes a few seconds later is still kept on "<track> (yours, not sent)".

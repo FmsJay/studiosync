@@ -1015,18 +1015,11 @@ local function midi_read(block)
   end
   return { first = lines[1], head = head, tail = tail, units = units, order = order }
 end
--- Two versions of a MIDI take's notes, changed apart from one base, put together note by note (docs/rt/rt-merge.md): each note or event from
--- whichever side changed it, added or taken away; where both changed the same note, the winner's stands. A note moved is one taken away and one
--- added, so two people moving one note differently keep both copies. -> the merged block and whether a note clashed, or nil when any of the
--- three can't be read as notes (the take-copy rule stands) or they differ in ticks per quarter note. Pure.
-function mirror.merge_midi(base, winner, loser)
-  local b, w, l = midi_read(base), midi_read(winner), midi_read(loser)
-  if not (b and w and l) then return nil end
-  local function ppq(x) for _, t in ipairs(x.head) do local q = t:match("^HASDATA%s+%S+%s+(%S+)") if q then return q end end end
-  if ppq(b) ~= ppq(w) or ppq(w) ~= ppq(l) then return nil end
-  local clash, chosen = false, {}
-  local function cmps(x) local t = {}; for k, u in pairs(x.units) do t[k] = u.cmp end; return t end
-  local sides, info = { b = b, w = w, l = l }, {}
+-- (merge_midi's note helpers, shared with mirror.clashes so the claim judgement pairs a moved note as the merge does: rt-fix6a)
+local function midi_cmps(x) local t = {}; for k, u in pairs(x.units) do t[k] = u.cmp end; return t end
+-- group, pos, loose for move_pairs over `sides` (side letter -> a midi_read):
+local function note_keys(sides)
+  local info = {}
   local function note(side, k) -- -> its kind (channel, length, velocity, mute), place (tick, then pitch) and kind less its length, once per key
     local n = info[side .. k]
     if n == nil then
@@ -1038,24 +1031,67 @@ function mirror.merge_midi(base, winner, loser)
     end
     return n
   end
+  return function(side, k) local n = note(side, k); return n and n[1] end,
+    function(side, k) return note(side, k)[2] end,
+    function(side, k) local n = note(side, k); return n and n[3] end
+end
+local function note_parts(u) -- a note's start, length, channel, pitch, on velocity and the rest, flags, and its note-off's status, velocity and rest
+  local on, off = u.evs[1], u.evs[2]
+  local s, p, v, rest = on.bytes:match("^(%x%x)%s+(%x%x)%s+(%x%x)(.*)$")
+  local os_, _, ov, orest = off.bytes:match("^(%x%x)%s+(%x%x)%s+(%x%x)(.*)$")
+  if not (s and os_) then return nil end
+  s, os_ = tonumber(s, 16), tonumber(os_, 16)
+  return { start = on.tick, len = off.tick - on.tick, ch = s & 0x0F, pitch = tonumber(p, 16), vel = v, rest = rest, flag = on.flag:upper(), offs = os_ & 0xF0,
+    offv = ov, orest = orest, oflag = off.flag:upper() }
+end
+-- An item's MIDI notes that one version (`a`) moved or changed into the next (`b`), paired as merge_midi pairs a move: mirror.pieces' key of the
+-- note in `b` -> { from = its key in `a`, fields = { [part] = true } for each part of it that changed (start, pitch, len, vel...) }. Pure.
+function mirror.note_changes(a, b)
+  local out = {}
+  if type(a) ~= "string" or type(b) ~= "string" then return out end
+  local ea = elements(a)
+  local eb, order = elements(b)
+  for _, e in ipairs(order) do
+    local ta, tb = ea[e.key], eb[e.key]
+    local A = e.word == "<SOURCE" and ta and ta ~= tb and midi_read(ta)
+    local B = A and midi_read(tb)
+    if A and B then
+      local ca, cb = midi_cmps(A), midi_cmps(B)
+      local group, pos, loose = note_keys({ b = A, w = B })
+      local paired = move_pairs(A.order, ca, cb, B.order, "w", group, pos, loose)
+      for k in pairs(A.units) do if cb[k] and cb[k] ~= ca[k] then paired[k] = k end end -- (changed in place: its velocity, say)
+      for ka, kb in pairs(paired) do
+        local ua, ub = A.units[ka], B.units[kb]
+        local pa, pb = ua and ua.evs[2] and note_parts(ua), ub and ub.evs[2] and note_parts(ub)
+        if pa and pb then
+          local f = {}
+          for n, v in pairs(pa) do if pb[n] ~= v then f[n] = true end end
+          out[e.key .. "\0" .. kb] = { from = e.key .. "\0" .. ka, fields = f }
+        end
+      end
+    end
+  end
+  return out
+end
+-- Two versions of a MIDI take's notes, changed apart from one base, put together note by note (docs/rt/rt-merge.md): each note or event from
+-- whichever side changed it, added or taken away; where both changed the same note, the winner's stands. A note moved is one taken away and one
+-- added, so two people moving one note differently keep both copies. -> the merged block and whether a note clashed, or nil when any of the
+-- three can't be read as notes (the take-copy rule stands) or they differ in ticks per quarter note. Pure.
+function mirror.merge_midi(base, winner, loser)
+  local b, w, l = midi_read(base), midi_read(winner), midi_read(loser)
+  if not (b and w and l) then return nil end
+  local function ppq(x) for _, t in ipairs(x.head) do local q = t:match("^HASDATA%s+%S+%s+(%S+)") if q then return q end end end
+  if ppq(b) ~= ppq(w) or ppq(w) ~= ppq(l) then return nil end
+  local clash, chosen = false, {}
+  local cmps = midi_cmps
   -- (a note one side moved, in time or pitch, that the other changed too (moved, resized, its velocity or mute): one note, made of what each
   -- changed, and where both changed the same thing (its start, pitch, length, velocity, mute) the winner's. A transposition and a move in time
   -- both stand. A note the winner removed stays removed. Before, the winner's note stood whole: a pitch change counted as a move. rt-p1)
   local cb, cw, cl = cmps(b), cmps(w), cmps(l)
-  local function group(side, k) local n = note(side, k); return n and n[1] end
-  local function pos(side, k) return note(side, k)[2] end
-  local function loose(side, k) local n = note(side, k); return n and n[3] end
+  local group, pos, loose = note_keys({ b = b, w = w, l = l })
   local pw, pl = move_pairs(b.order, cb, cw, w.order, "w", group, pos, loose), move_pairs(b.order, cb, cl, l.order, "l", group, pos, loose)
   local drop = {}
-  local function parts(u) -- a note's start, length, channel, pitch, on velocity and the rest, flags, and its note-off's status, velocity and rest
-    local on, off = u.evs[1], u.evs[2]
-    local s, p, v, rest = on.bytes:match("^(%x%x)%s+(%x%x)%s+(%x%x)(.*)$")
-    local os_, _, ov, orest = off.bytes:match("^(%x%x)%s+(%x%x)%s+(%x%x)(.*)$")
-    if not (s and os_) then return nil end
-    s, os_ = tonumber(s, 16), tonumber(os_, 16)
-    return { start = on.tick, len = off.tick - on.tick, ch = s & 0x0F, pitch = tonumber(p, 16), vel = v, rest = rest, flag = on.flag:upper(), offs = os_ & 0xF0,
-      offv = ov, orest = orest, oflag = off.flag:upper() }
-  end
+  local parts = note_parts
   for _, k in ipairs(b.order) do
     local mw, ml = pw[k], pl[k]
     local vw, vl = w.units[mw or k], l.units[ml or k]
@@ -1500,7 +1536,17 @@ function mirror.clashes(room_dir, kind, state, from, user)
           if x.base_ev and not b then return true end
           local bp, xp = b and mirror.mergeable(b) and mirror.pieces(kind, b.state) or {}, mirror.pieces(kind, x.state)
           if not xp then return true end
-          for k in pairs(mirror.pieces_changed(bp, xp)) do theirs[k], any = true, true end
+          -- (a MIDI note they moved or changed: which of its parts, so a transposition of their moved note isn't a clash. rt-fix6a)
+          local notes = kind == "item" and b and mirror.mergeable(b) and mirror.note_changes(b.state, x.state) or {}
+          for k in pairs(mirror.pieces_changed(bp, xp)) do
+            local nc, t = notes[k], theirs[k]
+            if nc and t ~= true then
+              t = t or {}
+              for f in pairs(nc.fields) do t[f] = true end
+              theirs[k] = t
+            else theirs[k] = true end
+            any = true
+          end
         end
         for _, id in ipairs(w and { w, l } or { x.base_ev }) do
           local y = mirror.event_file(room_dir, id)
@@ -1512,7 +1558,19 @@ function mirror.clashes(room_dir, kind, state, from, user)
   if not any then return false end
   local fp, sp = mirror.mergeable(from) and from.obj == kind and mirror.pieces(kind, from.state), mirror.pieces(kind, state)
   if not (fp and sp) then return true end
-  for k in pairs(mirror.pieces_changed(fp, sp)) do if theirs[k] then return true end end
+  -- (a note of theirs this change moved or changed: a clash only where both changed the same part of it, as merge_midi puts the two together.
+  -- A transposition of a note they'd just moved asked them, and was put back after 30 s though the merge keeps both: P1-8, rt-r1. rt-fix6a)
+  local mine = {}
+  if kind == "item" then for _, nc in pairs(mirror.note_changes(from.state, state)) do mine[nc.from] = nc.fields end end
+  for k in pairs(mirror.pieces_changed(fp, sp)) do
+    local t = theirs[k]
+    if t == true then return true end
+    if t then
+      local f = mine[k]
+      if not f then return true end -- (taken away, or another note put there)
+      for part in pairs(f) do if t[part] then return true end end
+    end
+  end
   return false
 end
 -- Undo (or redo) of `e` keeps what others changed since: the version to go back to (`to`), with what the version held now (`now`) changed after
@@ -3622,6 +3680,22 @@ function mirror.only_retimed(proj, io, room_dir)
   local b = e and e.base_ev and mirror.event_file(room_dir, e.base_ev)
   return b and type(e.state) == "string" and type(b.state) == "string" and mirror.sans_tempo(e.state) == mirror.sans_tempo(b.state) or false
 end
+-- Is this computer's record of an item its own new work: every version back to the first this person's (a take just recorded, trimmed since)?
+-- An edit of an item the band had isn't: a track's deletion made without seeing it beats it, as for any edit (mirror.gone_race). A version that
+-- can't be read here counts as new (kept, as before). LinuxBox's move of the desktop's take, made with Live sync off, kept the deleted track as
+-- "XT R1 take (yours, not sent)" (rt-linkmove round 5 C, rt-r1). rt-fix6a
+function mirror.new_here(proj, io, room_dir)
+  local _, _, kev = mirror.known(proj, io)
+  local me = reaper.GetExtState(require("band").SECTION, "user")
+  local e = room_dir and (kev or "") ~= "" and mirror.event_file(room_dir, kev)
+  for _ = 1, 50 do
+    if not e then return true end
+    if e.user ~= me or mirror.split_merge(e.id or "") then return false end -- (a bandmate's, or merged with one)
+    if not e.base_ev then return true end
+    e = mirror.event_file(room_dir, e.base_ev)
+  end
+  return true
+end
 -- (putting_back: the band's version goes over this computer's own unsent one (W.put_back), so that flag doesn't hold it. The tab's published
 -- unsent list still named a held deletion as Keep put it back, so the put-back opened no undo point: REAPER recheck, 0.59.49.80, round 7)
 function mirror.will_wait(proj, ev, putting_back)
@@ -3674,7 +3748,8 @@ function mirror.apply(proj, ev, media_dir, local_mix)
         local io = itm_oid(it)
         -- (not one whose just-sent change was only REAPER re-timing it for a tempo map that landed: nobody's work, and kept, a delete-all
         -- with a tempo change left "(yours, not sent)" tracks on the computers that had re-timed it. Cross test, James, rt)
-        if io == "" or not mirror.known(proj, io) or mirror.unsent[tostring(proj) .. io] or elsewhere[io] or (mirror.just_made_here(proj, io) and not mirror.only_retimed(proj, io, room_dir)) then
+        -- (and just made here only when it's new work of ours: an edit of the band's item made without seeing the deletion goes with it. rt-fix6a)
+        if io == "" or not mirror.known(proj, io) or mirror.unsent[tostring(proj) .. io] or elsewhere[io] or (mirror.just_made_here(proj, io) and not mirror.only_retimed(proj, io, room_dir) and mirror.new_here(proj, io, room_dir)) then
           reaper.MoveMediaItemToTrack(it, mirror.keep_track(proj, tname))
           -- (yours now: not the band's item, and nothing waits on it, or the band's delete of it waited for good. 0.58.93)
           reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", true)
@@ -5037,7 +5112,8 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
   local tempo_only = ev.tl ~= nil and last and type(last.state) == "string" and type(o.state) == "string"
     and (o.kind == "item" and mirror.sans_tempo(o.state) == mirror.sans_tempo(last.state) and mirror.map_moved(proj, last, o.state)
       or o.kind == "env" and mirror.env_sans_tempo(o.state) == mirror.env_sans_tempo(last.state))
-  if opts.sent and not tempo_only then pcall(opts.sent, o, name, ev) end -- (Claims: what you edit becomes yours. lib/claimask.lua, rt-claims)
+  -- (and only from an edit of yours: mirror.user_edited. rt-fix6a)
+  if opts.sent and not tempo_only and w.edited ~= false then pcall(opts.sent, o, name, ev) end -- (Claims: what you edit becomes yours. lib/claimask.lua, rt-claims)
   pcall(require("compat").sent, proj, o.oid, name, o.kind, o.ptr, ev.auto) -- (changed again right after a bandmate's change, or by itself: lib/compat.lua)
   require("streams").offer_media(cfg, song, room, media, ev, last) -- (the media it newly names, to whoever's here over the direct link too. James, rt)
   if o.kind == "fx" and o.ptr then mirror.fx_quiet[rk], mirror.fx_quiet_presets[rk] = mirror.fx_params(o.ptr), mirror.fx_presets(o.ptr); knobs_agreed(proj, o, rk) end -- (what it's changed from, next time)
@@ -5137,6 +5213,7 @@ function W.refuse(w, o, rk, rev, evid, kord, last, name, ok_before)
   local asked, quiet = nil, nil
   if opts.ask then asked, quiet = opts.ask(ok_before and name or (last and last.name or ""), pos) end
   if asked == true then mirror.unsent[rk] = true; return end
+  if asked == false then return W.send(w, o, rk, rev, evid, kord, last, name) end -- (their auto-claim, and the link can't reach them to ask. rt-fix6a)
   if type(asked) == "string" then return put_back(o, rev, evid, { name = ok_before and name or (last and last.name or ""), copy = true, text = asked, quiet = quiet }) end
   -- (someone's claim: what was done to it goes to them to accept. lib/suggest.lua)
   local to = propose(o, rev, who, ok_before and name or (last and last.name or ""), pos, name)
@@ -5610,6 +5687,11 @@ function W.gone(w)
       local name = last.name or ""
       if o.kind ~= "track" and o.track and by_oid[o.track] then name = by_oid[o.track].state.name or name end -- (its track's name now, as W.one. 0.59.44)
       local _, th, tev = mirror.known(proj, o.track or "")
+      local asked_memo -- (Claims: the ask, made once, below; false lets the deletion go: an auto-claimer the link can't reach. rt-fix6a)
+      local function ask_once()
+        if not asked_memo then asked_memo = { nil, nil }; if opts.ask then asked_memo = { opts.ask(name, last.pos) } end end
+        return asked_memo[1], asked_memo[2]
+      end
       if kept_back[o.track or ""] then -- (on a folder or bus that was refused above: it comes back with it)
         put_back(o, g.rev, g.evid, { name = name })
       elseif mirror.PART[o.kind] and w.back_tracks[o.track or ""] then -- (its track's deletion was refused just now: it comes back whole, not
@@ -5625,7 +5707,7 @@ function W.gone(w)
         -- not ours (the Mac put back 226 of a deleted track's items one by one: laptop's restore, 0.34.4). Same rev,
         -- so the item's delete still lands when it comes.
         remember(proj, g.oid, g.rev or 0, "", g.evid)
-      elseif allowed(o, name, last.pos) then
+      elseif allowed(o, name, last.pos) or ask_once() == false then
         -- (the clock past what it deletes, and an owner's step, as W.send does: a restart behind the version's clock read as made apart, and
         -- a non-owner's later edit brought an owner's deletion back. Round 1 review, 0.59.45)
         mirror.hlc_seen(last.hlc)
@@ -5643,8 +5725,7 @@ function W.gone(w)
         -- (Claims: someone else's claim is asked for first, as an edit to it is (W.refuse): deleting several of their items or tracks at once
         -- went to the old suggestion instead. Held meanwhile: still gone here, nothing sent, the band's changes to it waiting; Release sends the
         -- deletion on a later look, Keep or no answer puts it back with the words. One ask per claim, however many it covers. rt-edits)
-        local asked, quiet = nil, nil
-        if opts.ask then asked, quiet = opts.ask(name, last.pos) end
+        local asked, quiet = ask_once()
         if asked == true then
           mirror.unsent[tostring(proj) .. g.oid] = true
           if o.kind == "track" then w.held_tracks[g.oid] = true end
@@ -5943,8 +6024,30 @@ do
     return wrote, table.unpack(r, 2, r.n)
   end
 end
+-- Was there an edit of this person's behind what this look sends? Auto-claims come only from one (W.send's opts.sent). Yes when Live sync's count
+-- moved by them (`edited_at`: its own writes left out) in the last EDIT_SECS, past the value its first look saw (Live sync's first tick takes
+-- the project's count as a change), or when a new undo point on top since the last look isn't StudioSync's own syncing (a web page's edit is
+-- made inside Live sync's tick, so it isn't in that count). No `edited_at` (a caller that doesn't keep it): yes, as before. A fresh REAPER on
+-- LinuxBox2 read XT Rec A's lane names its own way at open; that went out 21 s later and auto-claimed the track with nobody editing (rt-r1).
+-- shortcut: one answer for the whole look, so a read-back sent in the EDIT_SECS after a real edit elsewhere still claims; per object would need
+-- REAPER to say what an edit touched. rt-fix6a
+mirror.EDIT_SECS = 30
+mirror.edit_seen = mirror.edit_seen or {} -- tostring(proj) -> { base = the first look's edited_at, top = the undo point on top at the last look }
+function mirror.user_point(top) -- an undo point that's someone's edit (a web page's or the phone's too), not StudioSync syncing or recolouring
+  return type(top) == "string" and top ~= "" and not top:find("^StudioSync: ") and not top:find("^BandSync") and not require("compat").OWN[top]
+end
+function mirror.user_edited(pk, edited_at, now, top)
+  local s = mirror.edit_seen[pk]
+  if not s then s = { base = edited_at or false }; mirror.edit_seen[pk] = s end
+  local last_top = s.top -- (nil only before the first look; nothing to undo is "")
+  s.top = top or ""
+  if edited_at == nil then return true end
+  if edited_at ~= s.base and now - edited_at <= mirror.EDIT_SECS then return true end
+  return last_top ~= nil and (top or "") ~= last_top and mirror.user_point(top)
+end
 -- One pass: what changed here goes out if this person may change it, else the band's version is put back.
--- opts: local_mix, can (sync.authority's), mode (room mode); ask(name, pos), sent(o, name, ev): Claims mode's asks and auto-claims (lib/claimask.lua).
+-- opts: local_mix, can (sync.authority's), mode (room mode); ask(name, pos), sent(o, name, ev): Claims mode's asks and auto-claims (lib/claimask.lua);
+-- edited_at: when this person last edited (Live sync's count), for which looks may auto-claim (mirror.user_edited).
 -- Returns sent, put back.
 function mirror.watch(proj, cfg, song, room, opts)
   local band, sync = require("band"), require("sync")
@@ -5981,6 +6084,7 @@ function mirror.watch(proj, cfg, song, room, opts)
   local w = { band = band, sync = sync, proj = proj, cfg = cfg, song = song, room = room, opts = opts, me = me, room_dir = room_dir, media = media,
     objs = objs, by_oid = by_oid, sent = 0, back = 0, suggest = suggest, kept_back = {}, holds = mirror.holds[tostring(proj)] or {}, credit = {},
     back_tracks = {}, held_tracks = {}, clean = {} }
+  w.edited = mirror.user_edited(pk, opts.edited_at, now, reaper.Undo_CanUndo2 and reaper.Undo_CanUndo2(proj) or nil) -- (auto-claims: rt-fix6a)
   w.pending = function() -- (how many of the band's changes wait here: once a look)
     if w.n_pending == nil then w.n_pending = sync.pending_events(proj, cfg, song, room) end
     return w.n_pending

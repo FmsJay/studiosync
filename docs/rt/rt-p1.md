@@ -229,3 +229,9 @@ VMs' may be paused): it would need LinuxBox or LinuxBox2 in the laptop's place.
   three ended 48@960-1920: the transposition lost. So the desktop's soft auto-claim (claimask.soft) took a change to another field of the
   same note as a clash, though the merge said both go in. A truly simultaneous pair (neither seeing the other, inside the link's ~40 ms)
   wasn't produced. Note put back to 48@0-960 on all three.
+
+### Re-check after rt-fix6a (docs/rt/rt-fix6a.md, part 1)
+
+- [ ] **P1-8 again.** Claims mode, the desktop holding an auto-claim on XT Keys C. The desktop moves a note a beat later; within a second the
+  laptop transposes that note. Pass: no ask, "both changes go in" on the laptop, all three end with the note moved and transposed. Then the
+  laptop moves the same note again: asked, as before (both changed its start).

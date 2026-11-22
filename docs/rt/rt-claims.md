@@ -160,3 +160,9 @@ only for a refusal.
 - An ask names a thing by track or region name, up to 200 characters with no control characters, or by a time span. Phone alerts carry
   that name to the studio's ntfy channel, as chat alerts already do.
 - Auto-claim timestamps use each computer's own clock. A clock far ahead makes someone's auto-claims last longer, up to the skew.
+
+## A claimer the link can't reach (rt-fix6a)
+
+Since rt-fix6a (docs/rt/rt-fix6a.md, part 4) "Link can't reach them" is read from the link's own peer status before asking (the ask went to
+every computer and so always "sent"). Their **auto**-claim doesn't hold then: the edit (or deletion) goes out and the editor is told. Their
+**lasting** claim puts the edit back at once, saying why. Auto-claims also come only from an edit of the person's (part 3).

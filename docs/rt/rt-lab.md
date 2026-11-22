@@ -163,3 +163,12 @@ LinuxBox2 (XT Drums A to 2.5) were on all four within 15-20 s; put back after (t
 link with LinuxBox2 (they need Tailscale or nat mode); a second join. **State after:** LinuxBox2 is in Smiley Studios (its devices file and the
 desktop's Syncthing device and share stay), Cross Test open, Deafen 1, and suspended (`vmrun suspend`). To undo the join: revert to snapshot
 `pre-studio-rt-r1`, remove device `L6QCBAS` from the desktop's Syncthing and take LinuxBox2 out in the panel (Settings > Studio).
+
+### Re-checks after rt-fix6a (docs/rt/rt-fix6a.md, parts 3 and 4)
+
+- [ ] **No claim without an edit.** Open Cross Test on LinuxBox2 and touch nothing for two minutes. Pass: no claim of LinuxBox2's in Who
+  controls or its claims file, even if "change(s) went to the others" shows (its REAPER read XT Rec A's lane names its own way: that still goes
+  out, see rt-fix6a "Left"). Then move an item there: its track is claimed.
+- [ ] **Claim asks off the link.** LinuxBox2 (no Tailscale) moves an item on XT Drums A (auto-claim). On the desktop move the same item: it goes
+  out at once with "can't reach them to ask", nobody is asked, all four end alike (within a minute where both moved it). Then Claim XT Drums A
+  by hand on LinuxBox2 and edit it on the desktop: put back at once with the "can't reach them" words, no 30 s wait.

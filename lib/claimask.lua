@@ -12,7 +12,8 @@
 --     "<you> wants to edit <it>: Release / Keep" in the panel, the web page and a phone alert. Release: they let go of it, you take it (as
 --     lasting as theirs was), and your held edit goes out on the next look. Keep, or no answer in ASK_WAIT s: it's put back, with a copy of an
 --     item kept as any refused edit's is. Someone not here can't be asked: their claim stands (an admin or the driver can release it).
--- The asks travel over the direct link (claim_ask, claim_answer); with no link to them the edit is put back and says so.
+-- The asks travel over the direct link (claim_ask, claim_answer); with no link to them an auto-claim's edit goes out and a lasting claim's is put
+-- back, saying so (claimask.unreachable, rt-fix6a).
 local band = require("band")
 local claimask = {}
 
@@ -182,6 +183,7 @@ function claimask.askable(cfg, b, who, name, pos)
   if type(who) ~= "table" or who.mode ~= "open" or not (who.is_claimed and who.is_claimed(name, pos)) then return nil end
   local th = claimask.which(who, name, pos)
   if not th or th.user == cfg.user or not claimask.present(cfg, b, th.user) then return nil end
+  if not th.auto and claimask.reachable(cfg, b, th.user) == false then return nil end -- (a lasting claim the ask can't reach: refused. rt-fix6a)
   local a = out[room_of(b) .. "\0" .. claimask.key(th)]
   if a and (a.state == "kept" or a.state == "timeout") and reaper.time_precise() - a.done_at < claimask.COOLDOWN then return nil end
   return th.user
@@ -195,6 +197,7 @@ function claimask.web_ask(proj, cfg, b, who, it, owner, name, pos)
   local mirror, sync = require("mirror"), require("sync")
   local soft = claimask.soft(who, name, pos, cfg.user)
   if not soft then return owner end -- (a lasting claim: every edit asks)
+  if claimask.reachable(cfg, b, soft) == false then return nil end -- (the link can't reach them: it goes out, claimask.unreachable. rt-fix6a)
   if not (it and reaper.ValidatePtr2(proj, it, "MediaItem*")) then return owner end
   local oid = mirror.item_oid(it)
   local room_dir = sync.room_dir(cfg, b.song, b.room)
@@ -204,13 +207,41 @@ function claimask.web_ask(proj, cfg, b, who, it, owner, name, pos)
   return mirror.clashes(room_dir, "item", mirror.item_state(it, room_dir .. "/media"), last, soft) and soft or nil
 end
 -- mirror.watch's W.refuse asks this before refusing (opts.ask). -> true: held (nothing sent, nothing put back, the band's changes to it wait);
--- a string: put it back with these words; nil: not a claim this asks about (refused as before). After a Keep or no answer, a second value:
+-- a string: put it back with these words; nil: not a claim this asks about (refused as before); false: it goes out (an auto-claim whose
+-- claimer the link can't reach: claimask.unreachable, rt-fix6a). After a Keep or no answer, a second value:
 -- true when these words were just said for that answer (the rest of the same put-back: one Keep of a track logged its words 10 times), so
 -- the put-back needn't say them again. A new edit in the COOLDOWN after it is told why it wasn't asked, and when it can be. REAPER recheck,
 -- 0.59.49.79, rt-edits round 6
 -- (15, not 5: the full look after a Keep put the kept track back a second time 9 s after the first, with a cooldown line nobody's edit caused.
 -- REAPER recheck, 0.59.49.80, round 7. The cause is fixed in mirror.watch; this keeps any other such repeat quiet)
 claimask.SAID_GAP = 15 -- seconds: put-backs for one answer within this of each other are one put-back, said once
+-- Can the direct link reach `user`'s computer now (its last send or ping answered)? -> true, false, or nil when it can't tell (no link here, or
+-- a stand-in without one: the ask is tried, and a send that fails is "can't reach" as before). The ask goes to every computer the link reaches,
+-- so its send succeeded whenever anyone was reachable: one to LinuxBox2 (no Tailscale, nat off) waited 30 s for nobody and put the edit back
+-- (rt-r1, rt-lab). Tests replace it. rt-fix6a
+function claimask.reachable(cfg, b, user)
+  local direct = require("direct")
+  local ok, r = pcall(function() return direct.live_available() and direct.reach(cfg, b.song, b.room) or nil end)
+  if not ok or type(r) ~= "table" then return nil end
+  return r[user] ~= nil and r[user].ok == true
+end
+-- A claimer the ask can't reach (docs/rt/rt-fix6a.md). Their auto-claim doesn't hold: the edit goes out (false), as in Open, and the merge puts
+-- the two together, the later one standing where both changed the same thing; said once a COOLDOWN per thing. Nothing tells them over Syncthing
+-- in time (an ask file would take Syncthing's seconds to tens of seconds each way, and the 30 s wait was already the complaint). A lasting
+-- claim, one they made on purpose, holds: put back at once, saying why, not after 30 s of waiting for an answer that can't come. rt-fix6a
+local unreachable_said = {} -- song/room \0 key -> when it was said
+function claimask.unreachable(th, k, now, what)
+  if th.auto then
+    if now - (unreachable_said[k] or -math.huge) > claimask.COOLDOWN then
+      unreachable_said[k] = now
+      band.log(string.format("%s auto-claimed %s, but the direct link can't reach them to ask (no Tailscale or nat mode on their computer): your edit went out, " ..
+        "as an auto-claim doesn't hold when they can't be asked. Where you both changed the same thing, the later change stands", th.user, what))
+    end
+    return false
+  end
+  return "Not sent: " .. what .. " is " .. th.user .. "'s, and the direct link can't reach them to ask (no Tailscale or nat mode on their computer). " ..
+    "Your edit is put back (the driver or an admin can release their claims)"
+end
 function claimask.hold(cfg, b, who, name, pos)
   if type(who) ~= "table" or who.mode ~= "open" or not (who.is_claimed and who.is_claimed(name, pos)) then return nil end
   local th = claimask.which(who, name, pos)
@@ -244,8 +275,8 @@ function claimask.hold(cfg, b, who, name, pos)
   seq = seq + 1
   local id = require("mirror").user_tag(cfg.user) .. "-" .. os.date("!%Y%m%d%H%M%S") .. "-" .. seq
   local wire = th.kind == "times" and { kind = "times", from = th.from, to = th.to } or { kind = th.kind, name = th.name }
-  if not require("direct").send_live(cfg, "claim_ask", { id = id, from = cfg.user, to = th.user, thing = wire }, b.song, b.room) then
-    return "Not sent: " .. what .. " is " .. th.user .. "'s, and the direct link can't reach them right now to ask. Your edit is put back"
+  if claimask.reachable(cfg, b, th.user) == false or not require("direct").send_live(cfg, "claim_ask", { id = id, from = cfg.user, to = th.user, thing = wire }, b.song, b.room) then
+    return claimask.unreachable(th, k, now, what)
   end
   out[k] = { id = id, to = th.user, thing = th, at = now, state = "asked", room = room_of(b) }
   band.log("asked " .. th.user .. " to release " .. what .. ": your edit waits here for their answer (up to " .. claimask.ASK_WAIT .. " s)")

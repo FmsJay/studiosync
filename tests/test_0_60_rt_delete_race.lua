@@ -178,12 +178,14 @@ do
   assert(sync.timeline_looked[p] == nil, "a file opened again: looked at again")
 end
 
--- a real edit of yours just sent (not a re-time) still goes to "(yours, not sent)" when the track's deletion didn't see it
+-- a real edit of yours just sent (not a re-time) of the band's item, which the track's deletion didn't see: it goes with the track, as a deletion
+-- beats an edit made without seeing it (rt-fix6a, rt-linkmove round 5 C; it went to "(yours, not sent)" before). New work of yours is kept:
+-- tests/test_0_60_rt_fix6a.lua
 do
   local MINE = ev({ id = "Mac-20261119-172558Z-00002-0001", obj = "item", oid = I, track = T, rev = 5, base = 4, base_ev = V1.id, state = OLD:gsub("NAME \"d\"", "NAME \"take 2\""), user = "Mac", hlc = H0 + 130 })
   local p = start("Mac", true, MINE)
   mirror.receive(p, GT, MEDIA, false, "Mac")
-  assert(shape(p):find("^Drums %(yours, not sent%) | items 1"), "a just-sent take is kept: " .. shape(p))
+  assert(not shape(p):find("yours, not sent", 1, true), "a just-sent edit of the band's item goes with the track: " .. shape(p))
 end
 
 -- all of it arriving in one pass: the deletion isn't counted as older news than the newer edits
