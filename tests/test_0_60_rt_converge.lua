@@ -717,6 +717,25 @@ do
   for _ = 1, 3 do B.F.clock = B.F.clock + 6; A.F.clock = A.F.clock + 6; S.recv(B); S.recv(A) end -- (two chains on one track land 5 s apart: FX_SET_GAP)
   assert(comp_first(A) and comp_first(B), "James's order on both")
   assert(knobs(A) == "200 150" and knobs(B) == "200 150", "with Bee's EQ value, merged by plug-in (" .. tostring(knobs(A)) .. " / " .. tostring(knobs(B)) .. ")")
+  -- and the check doesn't hold a chain back for good: plug-ins Bee adds to a bare track in the project's first minute, then changed by James
+  -- (the knobs it compares with are those the chain last went out or landed with, not the bare track's from the project's first look)
+  local S2 = studio("Conv13b", "everyone")
+  local J, Q = S2.computer("James"), S2.computer("Bee")
+  fx_api(J); fx_api(Q)
+  S2.edit(J, function(F) F.add_track("Keys") end)
+  S2.recv(Q)
+  T = T + 2
+  S2.edit(Q, function(F) S2.track(Q, "Keys").body = chain(100, 200); F.changed() end)
+  Q.F.clock = Q.F.clock + 2
+  S2.settle(Q)
+  S2.recv(J)
+  assert(S2.track(J, "Keys").body:find("QUFB100AAAA", 1, true), "Bee's new plug-ins are on James's")
+  T = T + 2
+  S2.edit(J, function(F) S2.track(J, "Keys").body = chain(170, 200); F.changed() end)
+  J.F.clock = J.F.clock + 2
+  S2.settle(J)
+  for _ = 1, 3 do Q.F.clock = Q.F.clock + 6; S2.recv(Q) end
+  assert(S2.track(Q, "Keys").body:find("QUFB170AAAA", 1, true), "James's knob lands on Bee's (a check against the first look's knobs held it back for good)")
   print("rt-converge 13: a knob turned from a script isn't lost to a bandmate's chain landing before the next look")
 end
 

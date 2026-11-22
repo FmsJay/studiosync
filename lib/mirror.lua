@@ -3958,6 +3958,7 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     -- every part. What it reads as here, and for a while as it finishes loading, isn't a change.
     mirror.fx_readback[key], mirror.fx_loading[key], mirror.fx_load_knobs[key] = h, reaper.time_precise() + mirror.FX_LOAD_SECS, mirror.fx_params(tr)
     mirror.fx_quiet[key], mirror.fx_quiet_presets[key] = mirror.fx_load_knobs[key], nil
+    mirror.fx_last[key], mirror.fx_doubt[key] = mirror.fx_load_knobs[key], nil -- (its knobs as it landed: mirror.receive's unseen-edit check)
     if ev.hash then h = ev.hash end
     -- (a part that arrived before its plug-ins chose its take with nothing missing, and stayed on silent notes: laptop, 0.42.4)
     local prints = require("prints")
@@ -4264,12 +4265,13 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   -- (Live sync's own unsent, as it publishes it, too: "Bring into main" lands through here in the panel, whose table is empty. Round 2, 0.59.46)
   -- (and a plug-in's knob turned here that no look has seen yet: a script's, a control surface's or automation's write moves neither REAPER's
   -- change count nor its undo list, so Live sync's "a look first" gate didn't hold the band's chain back; it replaced this one, the knob's
-  -- new value with it, and the edit was gone on every computer with no line anywhere (P1-4 and P1-1's first try, rt-r2). The knobs as of the
-  -- last look (mirror.fx_quiet) against now: moved, it's an edit of yours not sent yet, and theirs waits for it like any other. rt-converge)
+  -- new value with it, and the edit was gone on every computer with no line anywhere (P1-4 and P1-1's first try, rt-r2). The knobs as the
+  -- chain last landed here or went out from here (mirror.fx_last) against now: moved, it may be an edit of yours not sent yet, and theirs
+  -- waits for the next look to say (it sends yours, or finds nothing changed and takes the knobs as they are: W.one). rt-converge)
   if ev.obj == "fx" and not ev.gone then
     local key = tostring(proj) .. ev.oid
-    local tr = not mirror.unsent[key] and mirror.fx_quiet[key] ~= nil and mirror.find(proj, "track", ev.track)
-    if tr and mirror.fx_quiet[key] ~= mirror.fx_params(tr) then mirror.unsent[key], mirror.unsettled = true, true end
+    local tr = not mirror.unsent[key] and mirror.fx_last[key] ~= nil and mirror.find(proj, "track", ev.track)
+    if tr and mirror.fx_last[key] ~= mirror.fx_params(tr) then mirror.unsent[key], mirror.fx_doubt[key], mirror.unsettled = true, true, true end
   end
   if mirror.unsent[tostring(proj) .. ev.oid] or mirror.unsent_elsewhere(proj)[ev.oid] then return false end
   -- (an item of yours held back (its audio couldn't be copied, its last version unreadable) is about to be replaced by the band's: a copy goes to
@@ -4605,6 +4607,8 @@ mirror.fx_open_text = mirror.fx_open_text or {} -- chain whose data the hash can
 mirror.cc_seen = {}
 mirror.master_seen = {} -- project -> its master track at the last look (W.order: a file opened again in the same tab has a new one)
 mirror.fx_quiet = mirror.fx_quiet or {}
+mirror.fx_last = mirror.fx_last or {} -- proj .. chain oid -> its knobs when it last landed here or went out from here (mirror.receive's unseen-edit check)
+mirror.fx_doubt = mirror.fx_doubt or {} -- proj .. chain oid -> true: mirror.receive held the band's chain back for a look to say whether the knobs are an edit
 local function fx_open_now(tr)
   if reaper.TrackFX_GetChainVisible(tr) ~= -1 then return true end
   for i = 0, reaper.TrackFX_GetCount(tr) - 1 do
@@ -5354,6 +5358,7 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
   pcall(require("compat").sent, proj, o.oid, name, o.kind, o.ptr, ev.auto) -- (changed again right after a bandmate's change, or by itself: lib/compat.lua)
   require("streams").offer_media(cfg, song, room, media, ev, last) -- (the media it newly names, to whoever's here over the direct link too. James, rt)
   if o.kind == "fx" and o.ptr then mirror.fx_quiet[rk], mirror.fx_quiet_presets[rk] = mirror.fx_params(o.ptr), mirror.fx_presets(o.ptr); knobs_agreed(proj, o, rk) end -- (what it's changed from, next time)
+  if o.kind == "fx" and o.ptr then mirror.fx_last[rk], mirror.fx_doubt[rk] = mirror.fx_quiet[rk], nil end -- (its knobs as it went out: mirror.receive)
   remember(proj, o.oid, ev.rev, o.hash, id, mirror.order_of(ev))
   -- (your claimed track renamed: the claim goes with it. 0.59.14)
   if o.kind == "track" and last and not last.gone and type(last.name) == "string" and last.name ~= "" and name ~= "" and last.name ~= name then
@@ -5579,6 +5584,9 @@ function W.one(w, o)
   end
   if h == o.hash and not knobs_moved then
     if o.kind == "fx" and o.ptr and not mirror.fxk_ok[rk] and loaded(proj, rk) then knobs_agreed(proj, o, rk) end
+    -- (mirror.receive doubted this chain, its knobs not as they last landed or went out, and this look finds it unchanged (a plug-in settling
+    -- as it loads): the knobs as they are now are what it compares with from here, or the band's chain would wait on it for good)
+    if o.kind == "fx" and o.ptr and mirror.fx_doubt[rk] then mirror.fx_last[rk], mirror.fx_doubt[rk] = mirror.fx_params(o.ptr), nil end
     -- (and no leftover print flag: it let the next real edit past the permission checks and hid it from Undo. Nothing held back either: what
     -- it was is the band's. Round 1 review, 0.59.45)
     mirror.reopened[rk], mirror.unsent[rk], mirror.auto[rk] = nil, nil, nil
