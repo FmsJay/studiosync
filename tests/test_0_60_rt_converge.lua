@@ -780,6 +780,30 @@ do
   S2.settle(J)
   for _ = 1, 3 do Q.F.clock = Q.F.clock + 6; S2.recv(Q) end
   assert(S2.track(Q, "Keys").body:find("QUFB170AAAA", 1, true), "James's knob lands on Bee's (a check against the first look's knobs held it back for good)")
+  -- a chain changed back to exactly what an earlier version of the band's was still goes out (not "the band's, as it reads here")
+  local S3 = studio("Conv13c", "everyone")
+  local J3, Q3 = S3.computer("James"), S3.computer("Bee")
+  fx_api(J3); fx_api(Q3)
+  S3.edit(J3, function(F) F.add_track("Keys", nil, chain(100, 200)) end)
+  J3.F.clock = J3.F.clock + 70
+  S3.settle(J3)
+  S3.recv(Q3)
+  Q3.F.clock = Q3.F.clock + 70
+  S3.settle(Q3)
+  local function eq_of(c) return S3.track(c, "Keys").body:match("QUFB(%d+)AAAA") end
+  T = T + 2
+  S3.edit(Q3, function(F) S3.track(Q3, "Keys").body = chain(150, 200); F.changed() end)
+  Q3.F.clock = Q3.F.clock + 2
+  S3.settle(Q3)
+  for _ = 1, 2 do J3.F.clock = J3.F.clock + 6; S3.recv(J3) end
+  assert(eq_of(J3) == "150", "Bee's knob is on James's (" .. tostring(eq_of(J3)) .. ")")
+  T = T + 40
+  Q3.F.clock = Q3.F.clock + 40
+  S3.edit(Q3, function(F) S3.track(Q3, "Keys").body = chain(100, 200); F.changed() end) -- (turned back to where James had it)
+  Q3.F.clock = Q3.F.clock + 2
+  S3.settle(Q3)
+  for _ = 1, 2 do J3.F.clock = J3.F.clock + 6; S3.recv(J3) end
+  assert(eq_of(J3) == "100", "and when she turns it back, that goes out too (was: read as James's first version 'as it reads here', and kept on her computer alone): " .. tostring(eq_of(J3)))
   print("rt-converge 13: a knob turned from a script isn't lost to a bandmate's chain landing before the next look")
 end
 

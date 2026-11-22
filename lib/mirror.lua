@@ -5391,6 +5391,11 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
   require("streams").offer_media(cfg, song, room, media, ev, last) -- (the media it newly names, to whoever's here over the direct link too. James, rt)
   if o.kind == "fx" and o.ptr then mirror.fx_quiet[rk], mirror.fx_quiet_presets[rk] = mirror.fx_params(o.ptr), mirror.fx_presets(o.ptr); knobs_agreed(proj, o, rk) end -- (what it's changed from, next time)
   if o.kind == "fx" and o.ptr then mirror.fx_last[rk], mirror.fx_doubt[rk] = mirror.fx_quiet[rk], nil end -- (its knobs as it went out: mirror.receive)
+  -- (and what an earlier version of the band's read back as here no longer stands for anything: the chain is this one now. Kept, a chain
+  -- changed back to exactly what that earlier version was (a plug-in added and taken off again, a knob turned and turned back) hashed as the
+  -- old read-back, was taken for "the band's, as it reads here", and never went out: it stayed on this computer alone, with no line. The
+  -- soak's "plug-ins differ" at 150 edits. rt-converge)
+  if o.kind == "fx" then mirror.fx_readback[rk] = nil end
   remember(proj, o.oid, ev.rev, o.hash, id, mirror.order_of(ev))
   -- (your claimed track renamed: the claim goes with it. 0.59.14)
   if o.kind == "track" and last and not last.gone and type(last.name) == "string" and last.name ~= "" and name ~= "" and last.name ~= name then
