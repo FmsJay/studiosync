@@ -217,6 +217,11 @@ local function heal()
   return (ok and moved or 0)
 end
 function N.pass() local more = N.look(); local n = N.receive(); n = n + heal(); return json({ more = more, got = n, heals = heals }) end
+-- (the order heal's own act, for the late joiner: mirror.order_heal puts a project on the studio's order once after opening, and after that
+-- only when a caught-up bandmate has had another order for 30 s. The late joiner has nobody beside it in the soak, so tracks that landed
+-- after its first heal (a change refused by the claims lands a minute later) stayed where they landed, which no real late joiner's would.
+-- -> how many tracks moved. rt-converge)
+function N.order_now() return mirror.keep_order(F.proj, cfg, SONG, ROOM) end
 -- (Live sync's status: the file every FILE_QUIET s and a presence message beside it, so the others know who's here; with what P.heal compares:
 -- the project's root, what's still to apply, the track order's code)
 function N.status()

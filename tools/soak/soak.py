@@ -279,6 +279,10 @@ class Sim:
             quiet = 0 if (r["got"] or r["more"]) else quiet + 1
             if quiet >= 140:
                 break
+        # (and the order heal a late joiner gets from the bandmates beside it: onto the studio's order, once everything has landed)
+        d.call(self.t, "order_now")
+        d.call(self.t, "pass")
+        json.loads(d.call(self.t, "drain"))
         ds = json.loads(d.call(self.t, "state"))
         for e in json.loads(d.call(self.t, "errors")):
             bad.append(("errors", "Dee (late joiner): %s" % e.splitlines()[0][:400]))
