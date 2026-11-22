@@ -582,8 +582,9 @@ do
   -- d. two moves made at once: the later mover's list hasn't the other's move, and a late joiner goes by the newest list
   local S4 = studio("Conv9d", "everyone")
   local P, Q, D = S4.computer("James"), S4.computer("Cee"), nil
+  local Away = S4.computer("Bee") -- (has the song, then is away while the two move tracks)
   S4.edit(P, function(F) for _, n in ipairs({ "T1", "T2", "T3", "T4" }) do F.add_track(n) end end)
-  S4.recv(Q)
+  S4.recv(Q); S4.recv(Away)
   T = T + 2
   S4.edit(P, function(F) reaper.SetOnlyTrackSelected(S4.track(P, "T1")); reaper.ReorderSelectedTracks(4, 0) end) -- (T1 to the bottom)
   T = T + 2
@@ -591,6 +592,11 @@ do
   T = T + 2
   S4.recv(P); S4.recv(Q)
   assert(S4.names(P) == "T3, T2, T4, T1" and S4.names(Q) == S4.names(P), "both moves on both (" .. S4.names(P) .. " / " .. S4.names(Q) .. ")")
+  T = T + 300 -- (minutes later)
+  files[S4.dir .. "/order/Bee.json"] = nil
+  S4.recv(Away)
+  assert(S4.names(Away) == S4.names(P), "the one who was away catches up on both moves (" .. S4.names(Away) .. ")")
+  assert(files[S4.dir .. "/order/Bee.json"] == nil, "and, catching up on old moves, says no order of its own (it would be the newest list, written half-way through them)")
   D = S4.computer("Dee")
   S4.recv(D)
   S4.as(D)

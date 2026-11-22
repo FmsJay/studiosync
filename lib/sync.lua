@@ -2031,7 +2031,7 @@ function sync.receive(proj, cfg, song, room, can)
   sync.ev_cache[dir] = kept
   local t0, budget_out = reaper.time_precise(), false -- (and a quarter second of applying per pass, a second while loading: the rest next pass)
   require("mirror").index_for(proj)
-  local applied, done, undo_open, late_point = 0, {}, false, false
+  local applied, done, undo_open, late_point, fresh_move = 0, {}, false, false, false
   sync.backlog = false
   local rdir = sync.room_dir(cfg, song, room)
   for _, ev in ipairs(pending) do
@@ -2111,6 +2111,10 @@ function sync.receive(proj, cfg, song, room, can)
       elseif res then
         setext(proj, sync.APPLIED, ev.id, "1")
         stamp(proj, ev)
+        if require("mirror").order_moved[pk] then -- (it moved a track here: mirror.apply. The order list follows, below)
+          require("mirror").order_moved[pk] = nil
+          fresh_move = fresh_move or band.age(ev.time) < sync.CUE_OLD
+        end
         if type(ev.note) == "string" and ev.user ~= cfg.user and band.age(ev.time) < 3600 then band.log(ev.note) end -- (a copy's credit, a bus: mirror.watch)
         if reaper.time_precise() - t0 > budget then budget_out, sync.backlog = true, true end
         -- (nor one mirror.receive dropped (on a deleted track, beaten by a deletion, older than what's here): "James-Laptop: changed an item on
@@ -2133,11 +2137,10 @@ function sync.receive(proj, cfg, song, room, can)
   -- (a bandmate's track move landed in this pass: this computer says the order it has now. The studio's order is the newest list anyone
   -- wrote, each a whole list, and only movers wrote one: of two moves made at once the later mover's list had not the other's move in it, so
   -- a late joiner, who goes by the list, lost that move while everyone who was here had both. With each computer saying its order as moves
-  -- land, the newest list is one with every move in it. A small file per landed move. rt-converge)
-  if require("mirror").order_moved[pk] then
-    require("mirror").order_moved[pk] = nil
-    pcall(require("mirror").publish_order, proj, sync.room_dir(cfg, song, room), cfg.user)
-  end
+  -- land, the newest list is one with every move in it. A small file per landed move. Only for a move made in the last CUE_OLD seconds, on
+  -- a project past its first catch-up: a computer catching up on old moves would say an order half-way through them, and as the newest
+  -- list that became the studio's. rt-converge)
+  if fresh_move and not sync.loading[pk] then pcall(require("mirror").publish_order, proj, sync.room_dir(cfg, song, room), cfg.user) end
   -- a change skipped because its track was gone, and the track may have come back since (a download arrives in
   -- batches, out of history order): once this pass has drained the queue, everything's newest change that hasn't
   -- landed is put in place (mirror.heal: only what differs)
