@@ -21,6 +21,7 @@ committed). Re-check steps with numbers to hit are below.
 ## What was built
 
 ### 1. The receive path reads from its own buffer, not from clock estimates (`extension/rtaudio.cpp`)
+*(Round 2, at the end of this file, changed what the control holds the level at, added a rule for a level that jumps, and raised the default ceiling.)*
 - **AOO is handed nominal times.** `clock_step` gives AOO one block after the other at the nominal rate; nothing reads at an estimate any more. The estimate stays for the status only (`clock_ppm`; `clock_used_ppm` is gone).
 - **The read-rate control** (the comment at `RATE_*`): each stream is read at `1 + R + P`.
   - `R` is the bandmate's learned ratio (their device's real rate over this one's, less 1): one per bandmate, shared by its Talk, Play and mix. It integrates the level error, but only while P isn't getting its way (against 2 s ago, the level came back less than half of what P alone did since), so a level left off by a stall or a burst teaches it nothing.
@@ -79,6 +80,7 @@ Native (`tests/rtaudio_test.cpp`; the PC was at 100 % CPU from other agents' soa
 - Changed expectations in existing tests, each for a reason above: `drift_tests` (the stalls run, the hold checks gone), `clock_tests` (the hold and ramp-in checks gone with the hold), `test_0_60_rt_fix7_hub.lua` part 3 (its holder is now blind too), `webui_test.cpp`'s drift check, `test_0_60_rt_p11.lua` (`ssPace` in place of `DRIFT_K`).
 
 ## Re-check on the real rig (needs the extension build after 1.0.37 on the desktop, laptop and LinuxBox, and this Lua)
+*(rt-r5 ran these on 1.0.38: its results are below. Round 2 has its own re-check at the end of this file; its steps replace 1-3, 8 and 10 here.)*
 
 Setup as `rt-ears.md` (`rig.sh setup`; `load`, `track add=true`, `live role=send` on the sender; `live role=recv volume=0` on receivers, `0.01` through a hub; Deafen back to 1 and `track add=false` after). Read each status through the dev-eval hooks.
 
@@ -186,3 +188,112 @@ calm one. Read the laptop rows with that in mind.
 
 **Left.** Jam's growing WAV (step 9); step 6's VM lab part; the guests and a2 again on a calm link; a1's two underruns on the calm link;
 the desktop's own Voicemeeter device (`clock_ppm` -1500 to -4200 through the window).
+
+## Round 2 (rt-audio3, 2026-11-22, from rt-r5's re-check above)
+
+**Offline builds and tests only, as before: nothing ran in REAPER, on the test computers or in the VMs.** I read rt-r5's saved polls,
+status dumps and WAVs (`<scratchpad>/rt-r5/`) and the desktop's own StudioSync log. The C++ needs the extension release after 1.0.38
+(EXT_VERSION not bumped, no binaries committed).
+
+### What rt-r5's evidence says (causes)
+
+| rt-r5 | Seen | Cause |
+|---|---|---|
+| A (a1, idle on the poor link) | The laptop read the desktop 0.73 % fast, `ratio_ppm` +2369 to +12156 for a device 0.4 % slow, P at its bound, 104 re-buffers in 9 minutes | Three things in the control, and the ceiling. (1) **It steered every stream to within 12 ms of its size.** On that link the buffer sat at its 150 ms ceiling and each re-buffer finished wherever the burst behind the hold left it: `fill_ms` 209 to 392 against 150 in `st/st_idle*_l.json`. That read as "too full", P read it off at +0.5 %, which drained it into the next hold. (2) **R learns while "P isn't getting its way"**, and a level that every burst refills never comes back: R integrated a level error that wasn't a rate, up to +12156 ppm. (3) A newest packet older than 0.25 s restarted the windows and the held level, so on a link that holds packets that long nothing was ever remembered. (4) An overrun (a burst that didn't fit: `play_overruns` 13 -> 50) didn't restart them at all. And the size could not go past 150 ms, 10 ms an underrun, on a link that held packets up to 750 ms. |
+| A, the calm idle | +4 underruns and resyncs in 6 minutes, `rate_fast` in every read | Two different things. The underruns are **the laptop's own link holding longer than its buffer**: in b1 (13:36) Talk and Play underran in the same poll row (`jitter` 541 -> 543 at 52.8 s) while LinuxBox, hearing the same sender through those seconds, had none. One such hold about every 90 s, each "a lone spike" by the buffer's own rule (grown a step, not held), so each is a gap again: see Left. `rate_fast` always: its threshold was 6 ms and one tick of the desktop's device is 10 ms. |
+| a2 | the laptop -> the desktop "speed 1.00232, 180 ms of gaps", no underrun | **The comparer.** The desktop's device ran 47777 Hz through the 9.7 s of sound and 47909 Hz over the 30 s tap (from the tap's own stamps); judged by the tap's average the receiver, in step, read 0.23 % sharp, and resampled by the wrong ratio its frames slipped 25 ms against the reference: "gaps". Judged over the sound's own span: `speed_error` **0.99954**, `gap_ms` **0**, steady. |
+| B | Live sync made the desktop the room's mixer for 103 s during a1 | **The Mac came onto the link.** The laptop's status right after a1 lists `chilis-macbook-pro` resolved, `rtt_ms` 31.1, `heard_ago` 13.31 (`st/st_post_a1_l.json`; it isn't there in `st_pre_a1_l.json`). Four computers for 43 s is `HUB_FROM`, and a room that was big enough stays so for `HUB_KEEP` 60 s: 43 + 60 = 103. Nothing held the switch back for a computer passing by, and nothing asks whether there is anything to mix. |
+| guests | pages' `under` +12 and +14 after minute 4, host rows 96 -> 533, a tone +-0.5 % | The host's ring for a guest was a fixed 60 ms: dry at every hold (437 times in 15 minutes). The page's buffer stopped at 0.4 s and grew 20 ms an underrun. Both ends' pace went by the buffer's mean, which falls and rises with every hold, so P ran at its 0.3 % either way, at both ends of a guest's path, and R wandered. |
+| a4 | through the hub "120 ms of gaps" on the laptop, fallbacks +0 | **The comparer.** No one 10 ms frame was lost: the delay wandered 10 ms through the pattern (steady: 17.7 to 28.0 ms) and a click that landed in the next 10 ms frame read as a gap, 12 times. With a gap needing the 10 ms either side to be empty too: 0 on the laptop, 10 ms on LinuxBox. |
+| small | `aligned` false everywhere, corr 0.33-0.46 | **The comparer**: one lag for 30 s of a live path, whose delay moves by more than a waveform's period. 0.1 s at a time, each at its own lag, the same recordings match at 0.92 to 0.98 (median). |
+
+rt-r5's own WAVs judged again with the comparer as it is now (`python tools/ears/ears.py wav REF GOT --pattern ... --stamps`):
+
+| Run | Before | Now |
+|---|---|---|
+| a1 d -> l (poor link) | speed_error 1.00734, gaps 900, corr 0.13: fail | speed_error 1.00757, gaps 80, not steady: **fail** (the real fault, A) |
+| b1 d -> l (calm) | 0.9994, gaps 0, aligned false | **ok**: 0.99982, gaps 0, corr_windows 0.974, steady (jump 2.6 ms) |
+| a2 l -> d | 1.00232, gaps 180, aligned false: fail | **ok**: 0.99954, gaps 0, corr_windows 0.976 |
+| a3 d -> x | 1.0016, gaps 40, aligned false | **ok**: 1.00164, gaps 0, corr_windows 0.946 |
+| a4 hub -> l | 0.99887, gaps 120, aligned false | **ok**: 0.99957, gaps 0, corr_windows 0.921 |
+| a4 hub -> x | 0.99829, gaps 10 | 0.99915, gaps 10 (one real 10 ms): no_gaps fails |
+
+### What changed
+
+**1. The read-rate control (`extension/rtaudio.cpp`, the comment at `RATE_*`).**
+- **It holds a stream where it settled, wherever that is against its size.** No steering to within 5 ms under and 12 over (`RATE_SET_*` is gone). What sits unused above the size is the shed's to take (`TRIM_OVER`, one crossfaded skip), what is missing below it is an underrun's to grow.
+- **A level that moves more than 30 ms between two windows isn't a rate** (`RATE_JUMP`: a device 6 % off): the network's delay moving, a stall, a burst. The held level moves with it, R learns nothing from it nor from the two windows after, and the loop is slow for 10 s (`RATE_CALM_S`: P within 0.2 %, R at the slow gain). Status: `rate_rough`.
+- **A newest packet older than 0.25 s at a read is left out**, nothing restarted: with the packet's age in the level, the level holds still while a link holds packets and lets them go together.
+- **A re-buffer of any kind restarts the windows** (underruns and overruns of Talk, Play and the mix, also the ones not counted as jitter); R is kept.
+- **The fast loop starts 10 ms off** (it was 6): one tick of a 10 ms device doesn't start it.
+
+**2. The buffer's size goes to what the link holds (`extension/rtaudio.cpp` adapt; `lib/liveaudio.lua`).**
+- The receive thread keeps the longest wait between two datagrams of a stream (under 1 s: more is a pause); adapt remembers the longest of the last 30 s. Status: `hold_ms`.
+- **From the second underrun in a row that wasn't lone, the size goes to that hold at once** (+5 ms, in 10 ms steps), not 10 ms an underrun. A lone underrun is still one step, not held.
+- **The default ceiling is 400 ms** (`BUF_CEIL`, `liveaudio.CEILING`; it was 150). Past 150 ms nobody plays along, so what counts there is hearing each other whole. A bandmate's own ceiling in Live audio's settings still caps it. *This is a default the user sees: two constants to put back if 150 was meant as a hard promise.*
+
+**3. The hub's mix (`lib/liveaudio.lua`).**
+- `liveaudio.senders`: how many computers in the room send (all but those whose own status word says muted, deafened, or that live audio can't run). **Under two, peer to peer, however big the room**: through the hub a lone sender's stream is decoded, mixed with nothing and encoded again for each listener.
+- `liveaudio.hub_n`: a room counts as big enough **once it has been so for `HUB_SETTLE` 60 s** (and then for `HUB_KEEP` 60 s after, as before). The same hold for how many send: someone unmuting for a word doesn't move the room.
+
+**4. `tools/ears` (`ears.py`).**
+- `stamp_rate(path, span)`: each device's rate **while its WAV's sound was recorded** (`sound_span`), not over the whole tap; `wav --stamps` uses it.
+- `aligned`: the median match of 0.1 s stretches, each at its own lag (`corr_windows` >= 0.8); `corr` is still reported.
+- When no one lag fits the waveform (`corr` < 0.8) the recording's lag comes from its loudness (`align_env`): a 3 ms wander had put the waveform's strongest peak 108 ms off.
+- A gap needs the 10 ms either side to be empty too.
+
+**5. Browser guests (`lib/webui/guestworklet.js`, `sharemix.js`, `listen.js`, `extension/webui.cpp`: the last is a shared file, the guest ring only).**
+- `ssPace` / `gpace`: the level is a time where the caller gives the newest piece's age (the guest page and the host's ring do): what waits plus how long ago the newest piece came. A window whose level jumped more than 30 ms: R learns nothing from it or the next. P within 0.1 % (it was 0.3 %).
+- The guest page's buffer may grow to 0.8 s (it was 0.4). **The host's ring for a guest grows too** (60 ms to 0.8 s, back 10 ms after a calm minute; it was a fixed 60 ms). Both grow when the sound comes again after running dry: to the hold that did it and a step, and not at all after a wait of a second or more (a pause, not the link). Status per guest: `size`.
+
+### Tests (each fails without its change)
+
+Native, `tests/rtaudio_test.cpp`, at High priority. **The whole suite on the final code: 153 checks ok, fails 0.**
+
+| Test | With the change | 1.0.38's `rtaudio.cpp` |
+|---|---|---|
+| `jitter` (new): D (the desktop's device, 0.4 % of its 10 ms ticks dropped: 47821 Hz) sends J a tone for 75 s; J's packets are held 51 times in the 50 s counted (40-150 ms mostly, 150-350 ms a quarter of the time, 350-750 ms now and then: 7.3 s in all), each hold let go at once | read D at -4639 to -3347 ppm, never fast; learned -4143 to -4071 (the device: -3735); the tone heard whole 657.31 Hz (657.54 at the two real rates); the fast loop in 1 of 51 looks; size 400 ms; 1 underrun, 1 overrun, 0 shed; 1.1 % silence | read at up to **+4269**; learned -3409 to -731 and rising; **661.50 Hz (0.6 % sharp)**; the fast loop in 51 of 51 looks; size 150 ms; 8 underruns, 3 overruns, 3 shed; 4.1 % silence: **5 fails** |
+| `landed` (new): R's 60 ms buffer runs dry behind an 85 ms hold and is filled again ~85 ms over its size | 440.015 Hz, read at up to 178 ppm off | **442.17 Hz (0.49 % sharp), read at 5021 ppm**: **2 fails** |
+| `device`, `vm`, `drift`, `rate`, `clock` (kept) | as round 1: device learned -4291 and +5011 ppm with no underrun, shed or gap; vm +1408 of +1365; drift -0.008 ms/s and +202 ppm of +200; through the test's stalls the ratio -30 ppm of -100 and the delay stays where a stall left it (-0.017 ms/s; 1.0.38 read it off at -5) | pass |
+
+- `tests/test_0_60_rt_audio3.lua` part 4: who sends, the plan with one sender, a room of four for 43 s, the hold for senders, the default ceiling. With `lib/liveaudio.lua` from before: fails (`senders` isn't there). `tests/test_0_60_rt_hubmix.lua`, `tests/test_0_60_rt_liveaudio.lua`: their expectations of the room's size and the default ceiling follow.
+- `tools/ears/test_ears.py`: 14 tests OK (two new: a live path whose delay wanders +-3 ms is aligned, has no gap and is steady, another sound isn't aligned, a real 80 ms dropout is still a gap; a device's rate over the sound's span).
+- `tests/rt_p11_drift_test.js` (Node): a guest over a link that holds ~0.2 s every ~1.5 s and ~0.6 s every ~50 s, REAPER +300 ppm, 15 minutes: 2 underruns from minute 4 on, read at -771 to +1555 ppm, its buffer 677 ms. The three scripts from before: 11 underruns, -3643 to +3094 ppm, 400 ms: **3 fails**.
+- `tests/webui_test.cpp`: a guest's ring that ran dry behind a 0.3 s hold goes to that hold (its size 0.06 s, then 0.52 s after the hold and the test's own waits; ten 0.25 s bursts after it: dry 0 more times). The `webui.cpp` from before: **2 fails**.
+- `extension\build_windows.cmd` with `DLL_OUT` in the scratch folder: exit 0 (a 4.0 MB DLL), the tracked DLL untouched. `python tests/run.py --no-luals` in a clean clone, also with `TZ=UTC0`: in the report (it runs on this file's commit).
+- Commits (local, not pushed): 281fd71 (the receive path and the buffer's size), 841272f (the hub's mix, the default ceiling in Lua), 583261e (tools/ears), 2e0fd5d (browser guests), and this file's.
+
+### Re-check on the real rig (needs the extension build after 1.0.38 on all computers, and this Lua)
+
+Setup as rt-r5's. Read each status through the dev-eval hooks; the new fields per bandmate are `rate_rough` and `hold_ms`.
+
+1. **The poor link, the desktop -> the laptop** (ping over 140 ms on average or peaks over 300; a1 again). **Hit:** on the laptop, the desktop's `ratio_ppm` between -500 and -8000 in every read, never positive (it was +2369 to +12156); `play_rate_ppm` within 2500 of it (it sat 5000 over); `rate_fast` false and `rate_rough` true in most reads; `target_ms` past 150 within the first minute, near `hold_ms` + 5, 400 at most; `speed_error` 1 +- 0.003; `play_resyncs` +3 at most in the run (13 -> 27).
+2. **Idle 9 minutes on the poor link.** **Hit:** `play_resyncs` +15 at most (it was +104), most of them in the first two minutes; `ratio_ppm` between -500 and -8000 in every read; `play_trims` +2 at most (+13); `play_buffer_ms` near `target_ms`, not 60-240 ms over it.
+3. **Idle 6 minutes on a calm link** (ping 74-90 ms). **Hit:** `rate_fast` false in at least 4 of 7 reads (true in every one); `play_rate_ppm` within 1500 of `ratio_ppm` in every read (-7637 against -2637); a Play underrun that doesn't come with a Talk one in the same read: 0. Underruns that hit both at once are the link's own holds (Left): count them, don't fail them.
+4. **The laptop -> the desktop, and through the hub** (a2, a4 again), with this `ears.py`. **Hit:** `ok` true: `speed_error` 1 +- 0.002, `gap_ms` 0, `aligned` true with `corr_windows` over 0.9, `steady`.
+5. **The hub's mix.** Three computers muted and one sending in a room of four: the log never says "you mix it for the others here" or "'s computer mixes it for the room". A fourth computer on the link for under a minute: no switch. Four computers, two of them unmuted, for over a minute: the switch within 70 s of the second unmuting.
+6. **Guests on the poor link** (`guests.py --laptop --soak-min 15 --extra 2`). **Hit:** each page's worklet `under` +8 at most after its 4th minute (+12, +14), `target` up to 0.8; the host rows' `under` +10 at most after the 4th minute (96 -> 533 in 15) with `size` over 0.06 in the status; `tone_b_hz` 1497.7 to 1502.3 (within 0.15 %; it was 1492.8-1506.3).
+
+### Left, untested, limits
+- **Nothing ran in REAPER or over a real network.** The jittery link is a model: a receive thread held and let go. A link whose delay ramps up and down (a queue filling) moves the level under 30 ms a window and is followed at the slow loop's pace.
+- **A link's lone holds still cost a gap each.** The laptop's link held longer than its buffer about every 90 s on the calm afternoon; by the buffer's own rule (an underrun with none other in 30 s is a lone spike: a step, not held) each one is a gap again. Holding a size that covers a hold seen every minute or two would cost that link 100-250 ms for good. James's call: see Recommendation 12.
+- On a link that is rough all the time R learns at the slow gain only: a device 0.4 % off takes a minute or two to be learned there, P (0.2 %) and the buffer covering meanwhile. R is kept across re-buffers.
+- `RATE_JUMP` is 30 ms a window: a device that lost more than three 10 ms ticks in half a second would be taken for a jump.
+- A stream left above its size by a burst stays there until the shed takes what a whole stretch (10 s) never used: more latency for that long, where 1.0.38 read it off sharp.
+- LinuxBox read the desktop 0.16 % fast in a3 (inside the bound). Not looked at beyond `vm_test`.
+- The listening page's pace doesn't use the piece's age (it looks once a packet, as packets arrive): unchanged, and it passed in rt-r5.
+- The guest's and the host ring's hold is counted in real time between pieces: a guest's page that stops sending for a second or more (a suspended tab) is a pause, and grows nothing.
+- An old (1.0.38) extension with this Lua is handed the 400 ms ceiling and still grows 10 ms an underrun.
+
+### Review later (security)
+- Who "sends" is each computer's own status word (`muted`, `deaf`), as `la` already was: a computer that says muted while sending keeps a room peer to peer, nothing more.
+- `hold_ms`, `rate_rough`, a guest's `size`: numbers in a local status. A guest's ring is 1.36 s at most (262 kB a guest, four guests), its size 0.8 s at most; the socket's rate limit is unchanged.
+- The default ceiling lets a bandmate's packets hold up to 400 + 300 ms of audio in this computer's buffer (it was 150 + 300); a user's own ceiling still caps it at 500.
+
+### Recommendations, added in round 2 (the ten above stand; these come from what rt-r5 took to explain)
+11. **Tap and poll in real time, so nothing has to estimate a device's rate.** *Evidence:* two of rt-r5's six failures were the comparer's (a2, a4), from a device whose rate differs between a 30 s tap and its 9 s of sound; `stamp_rate(span)` narrows the window but a 10 ms device still isn't known better than 0.1 % over 10 s. *Plan:* the ears tap stamps every block it writes with the link clock (one double a block beside the WAV); `ears.py` compares on that clock: speed, latency and gaps without any rate. A day.
+12. **Bridge a lone hold instead of re-buffering through it.** *Evidence:* the calm link's one hold every ~90 s (above); AOO's answer to a dry buffer is silence, a re-buffer and the decoder rejoining over ~100 ms. *Plan:* with the receive side owned (Recommendation 3): Opus PLC for the first 60-100 ms, then time-stretch what is there (WSOLA) while the hold lasts, and play the burst in faster after it; the size stays small and a lone hold is a soft patch, not a gap. With Recommendation 3.
+13. **Size the buffer from the holds seen, before the first gap.** *Evidence:* the size now goes to the longest hold of the last 30 s at the second close underrun: still two gaps to learn a link, and 30 s of memory. *Plan:* a histogram of waits between datagrams per bandmate over ten minutes; the size is its 99.x percentile plus a margin, moved by the level (Recommendation 6), so a link's character is known from its first minute and remembered through a quiet one. Two days after Recommendation 6.
+14. **Put the level's trace in the poll.** *Evidence:* a status read a minute can't say why a buffer ran dry, and the ears poll carries Talk's fields only: A's cause had to be put together from eleven one-minute snapshots and a model. *Plan:* `play_buffer_ms`, `hold_ms`, `ratio_ppm`, `play_rate_ppm` and `rate_rough` in each poll row (five numbers); the event ring of Recommendation 5 later. An hour.
+15. **Say why a computer counts as here.** *Evidence:* the Mac, asleep, was in the room for 43 s and the only trace is one status dump; the laptop still listed it "no answer" hours later. *Plan:* the log says "<name>'s computer is on the link (heard n s ago)" when the room's count changes, and Health lists who counts and why (status file, heard on the link, vouched). Half a day.
+16. **Recommendation 4 is now urgent**: the pace exists in five places (rtaudio.cpp, webui.cpp, three scripts) and they have started to differ (the piece's age in two of them, the jump rule in all, the fast loop in one). One `pace.h`, one `pace.js`.
