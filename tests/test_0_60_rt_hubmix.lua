@@ -60,10 +60,11 @@ assert(p == "" and not s and w:find("Bee's StudioSync extension is too old", 1, 
 p, s, w = plan({ n = 4, hub = "James", me = "James", users = four, can = true, hub_fit = false })
 assert(p == "" and s == true, "(this computer as the hub goes by its own `can`)")
 -- the room's size is held: big enough once, it stays so until it has been smaller for HUB_KEEP s
-local nm = {}
-assert(la.hub_n(nm, 3, 4, 0) == 3 and la.hub_n(nm, 4, 4, 10) == 4, "three, then four")
-assert(la.hub_n(nm, 3, 4, 20) == 4 and la.hub_n(nm, 3, 4, 10 + la.HUB_KEEP - 1) == 4, "someone's status late for a moment: still counted as four")
-assert(la.hub_n(nm, 3, 4, 10 + la.HUB_KEEP + 1) == 3, "gone for good: three")
+-- (rt-audio3: and big enough only once it has been so for HUB_SETTLE s: tests/test_0_60_rt_audio3.lua part 4; t0: the fourth is counted)
+local nm, t0 = {}, 10 + la.HUB_SETTLE
+assert(la.hub_n(nm, 3, 4, 0) == 3 and la.hub_n(nm, 4, 4, 10) == 3 and la.hub_n(nm, 4, 4, t0) == 4, "three, then four (once it has been four for HUB_SETTLE s)")
+assert(la.hub_n(nm, 3, 4, t0 + 10) == 4 and la.hub_n(nm, 3, 4, t0 + la.HUB_KEEP - 1) == 4, "someone's status late for a moment: still counted as four")
+assert(la.hub_n(nm, 3, 4, t0 + la.HUB_KEEP + 1) == 3, "gone for good: three")
 p, s, w = plan({ n = 4, hub = "Bee", me = "James", users = four, caps = all, can = false })
 assert(p == "" and w:find("extension here", 1, true), "this extension can't: said")
 p, s, w = plan({ n = 4, hub = nil, me = "James", users = four, caps = all, can = true })
@@ -136,6 +137,9 @@ assert(#E.calls == 1, "and not again")
 peers_here, users_here = { BEE, MAC, LIN }, { [BEE] = "Bee", [MAC] = "Chilio", [LIN] = "Lin" }
 statuses[#statuses + 1] = { user = "Lin" } -- (an older extension: no lhub)
 clock = clock + 1 -- (their statuses are read once a second)
+tick()
+assert(#E.calls == 1 and la.S.hub.why == nil, "four, but only just: peer to peer still (a room counts as big enough once it has been so for HUB_SETTLE s. rt-audio3)")
+clock = clock + la.HUB_SETTLE
 tick()
 assert(#E.calls == 1 and la.S.hub.why:find("extension here", 1, true), "four, but this computer's extension is older than the hub's mix needs: its own streams, and why")
 ext["BandSync/menu extension"] = "1.0.28"

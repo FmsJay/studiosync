@@ -221,4 +221,42 @@ do
   assert(src:find("if not hub.blind(okl and live or nil, sees, cfg.user) then lag, lag_from[tk] = false, nil", 1, true), "hub.tick asks hub.blind before a holder steps down")
 end
 
-print("ok: rt-audio3 (the firewall rule's one bad look held; no live audio, no live mix and no hub while another can; a hub that sees the whole room keeps its role with Syncthing behind)")
+-- ---- 4. (round 2, from rt-r5) the hub's mix needs two computers that send, and a room that has been big enough for HUB_SETTLE s ---------
+-- rt-r5: one computer sent, three listened muted, and Live sync still moved everyone to the desktop's mix for 103 s in the middle of the
+-- run: the Mac, asleep, had come onto the link for 43 s and made the room four. Through the hub a lone sender's stream is decoded, mixed
+-- with nothing and encoded again for each listener.
+do
+  local la4 = require("liveaudio")
+  local users = { ["bx.ts.net:47281"] = "Bx", ["cy.ts.net:47281"] = "Cy", ["dz.ts.net:47281"] = "Dz" }
+  -- who sends
+  assert(la4.senders({ Bx = "muted", Cy = "deaf", Dz = "muted" }, users, "on") == 1, "one sender: the rest muted or deafened (rt-r5's sound test)")
+  assert(la4.senders({ Bx = "on", Cy = "muted", Dz = "ptt" }, users, "muted") == 2, "on and push-to-talk send; muted doesn't, here neither")
+  assert(la4.senders({ Bx = "down", Cy = "firewall" }, users, "on") == 2, "live audio that can't run doesn't send; one that hasn't said may (Dz)")
+  assert(la4.senders({}, { a = "Bx", b = "Bx" }, "on") == 2, "a bandmate's two computers: counted once")
+  -- the plan
+  local o = { n = 4, from = 4, hub = "Bx", me = "Me", users = users, can = true, senders = 1 }
+  local peer, serve, why = la4.hub_plan(o)
+  assert(peer == "" and serve == false and why == nil, "a room of four where one sends: peer to peer, and nothing to say")
+  o.hub = "Me"
+  peer, serve = la4.hub_plan(o)
+  assert(peer == "" and serve == false, "nor does its hub say it mixes")
+  o.senders = 2
+  assert(select(2, la4.hub_plan(o)) == true, "two send: the hub mixes")
+  o.senders, o.hub = nil, "Bx"
+  assert(la4.hub_plan(o) == "bx.ts.net:47281", "(not asked: as before)")
+  -- a computer passing by: four for 43 s
+  local m = {}
+  assert(la4.hub_n(m, 3, 4, 0) == 3 and la4.hub_n(m, 4, 4, 100) == 3 and la4.hub_n(m, 4, 4, 143) == 3, "four for 43 s: still three (it was four at once, and for HUB_KEEP s after)")
+  assert(la4.hub_n(m, 3, 4, 144) == 3 and la4.hub_n(m, 4, 4, 150) == 3, "gone, and back: counted from then")
+  assert(la4.hub_n(m, 4, 4, 150 + la4.HUB_SETTLE) == 4, "four for HUB_SETTLE s: four")
+  assert(la4.hub_n(m, 3, 4, 200 + la4.HUB_SETTLE) == 4 and la4.hub_n(m, 4, 4, 201 + la4.HUB_SETTLE) == 4, "then held: a status late for a moment, and back at once")
+  -- how many send is held the same way (someone unmutes for a word: no switch; muted again: the mix stays HUB_KEEP s)
+  local sm = {}
+  assert(la4.hub_n(sm, 1, 2, 0) == 1 and la4.hub_n(sm, 2, 2, 5) == 1 and la4.hub_n(sm, 1, 2, 10) == 1, "a second sender for 5 s: one")
+  assert(la4.hub_n(sm, 2, 2, 20) == 1 and la4.hub_n(sm, 2, 2, 20 + la4.HUB_SETTLE) == 2 and la4.hub_n(sm, 1, 2, 30 + la4.HUB_SETTLE) == 2, "for HUB_SETTLE s: two, and held")
+  local src = assert(io.open("lib/liveaudio.lua", "rb")):read("a")
+  assert(src:find("senders = liveaudio.hub_n(S.hub_mem.send, liveaudio.senders(S.las, users, liveaudio.my_la()), 2, reaper.time_precise())", 1, true), "hub_tick counts them")
+  assert(la4.CEILING == 400, "the default ceiling: 400 ms (at 150 a link that holds packets longer ran dry at every hold, rt-r5)")
+end
+
+print("ok: rt-audio3 (the firewall rule's one bad look held; no live audio, no live mix and no hub while another can; a hub that sees the whole room keeps its role with Syncthing behind; a hub's mix only for two that send, in a room big enough for a while)")

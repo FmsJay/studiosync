@@ -167,19 +167,19 @@ ok, text = la.health_text({ nch = 1, kbps = 128, rejected = 0, not_here = 13589,
   ["mac.tail99.ts.net:47281"] = { resolved = true, streaming = true, latency_ms = 40, buffer_ms = 35, target_ms = 30, floor_ms = 30, loss = 0 } } })
 assert(ok and not text:find("refused", 1, true) and text:find("100.109.45.2:47281 sends here but isn't in this room here yet", 1, true), text)
 local f0, c0 = la.bounds(nil)
-assert(f0 == 30 and c0 == 150, "a bandmate's buffer bounds: the defaults")
+assert(f0 == 30 and c0 == 400, "a bandmate's buffer bounds: the defaults (the ceiling was 150: rt-audio3, from rt-r5)")
 f0, c0 = la.bounds({ floor = 200, ceiling = 100 })
 assert(f0 == 200 and c0 == 200, "a ceiling never under the floor")
 assert(select(1, la.bounds({ floor = 1 })) == 10, "a floor kept to what the extension takes")
 local bufcalls = {}
 reaper.StudioSync_LiveAudioPeerBuffer = function(peer, fl, ce) bufcalls[#bufcalls + 1] = peer .. " " .. fl .. " " .. ce; E.peers[peer].floor_ms, E.peers[peer].ceiling_ms = fl, ce; return 1 end
 la.apply()
-assert(#bufcalls == 1 and bufcalls[1] == "bee-laptop.tail99.ts.net:47281 30 150", "an extension that adapts: the defaults handed over once: " .. table.concat(bufcalls, ","))
+assert(#bufcalls == 1 and bufcalls[1] == "bee-laptop.tail99.ts.net:47281 30 400", "an extension that adapts: the defaults handed over once: " .. table.concat(bufcalls, ","))
 la.apply()
 assert(#bufcalls == 1, "and not again while they hold")
 la.set_buffer("bee-laptop.tail99.ts.net:47281", 20, 90)
 assert(bufcalls[2] == "bee-laptop.tail99.ts.net:47281 20 90" and la.buffers()["bee-laptop"].floor == 20, "a bandmate's own bounds, kept by name")
-la.set_buffer("bee-laptop.tail99.ts.net:47281", 30, 150)
+la.set_buffer("bee-laptop.tail99.ts.net:47281", 30, 400)
 assert(la.buffers()["bee-laptop"] == nil, "back to the defaults: nothing kept")
 reaper.StudioSync_LiveAudioPeerBuffer = nil
 ok, text = la.health_text({ nch = 1, kbps = 128, peers = {} })

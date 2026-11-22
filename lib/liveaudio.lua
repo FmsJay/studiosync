@@ -27,8 +27,12 @@
 -- stream each way per person instead of one to and from everyone (StudioSync_LiveAudioHub, extension after 1.0.18).
 local band = require("band")
 local liveaudio = { KBPS = 128, EVERY = 0.5, RETRY = 10, HELD = 0.6, TAIL = 0.25, SILENT = 1023, ECHO_LEVEL = 0.05,
-  FLOOR = 30, CEILING = 150, WIFI = 30, -- (each bandmate's jitter buffer, ms: the extension's defaults; WIFI: this far above the floor, Health says why)
-  HUB_FROM = 4, HUB_BUDGET = 0.25, HUB_REC_BUDGET = 0.10, HUB_COOL = 120, HUB_KEEP = 60 } -- (the hub's live mix, below: from 4 people; its share of a core, recording; s paused)
+  -- (each bandmate's jitter buffer, ms: the extension's defaults; WIFI: this far above the floor, Health says why. CEILING was 150: a link
+  -- that holds packets longer than that ran dry at every hold, rt-r5; past 150 ms nobody plays along, hearing each other whole counts)
+  FLOOR = 30, CEILING = 400, WIFI = 30,
+  -- (the hub's live mix, below: from 4 people; its share of a core, recording; s paused; s a room stays "big" after it was, and must be
+  -- before it counts: hub_n)
+  HUB_FROM = 4, HUB_BUDGET = 0.25, HUB_REC_BUDGET = 0.10, HUB_COOL = 120, HUB_KEEP = 60, HUB_SETTLE = 60 }
 local S = { at = -math.huge, json = nil, fail_at = -math.huge } -- (this script's state: the JSON last handed over, the last start that failed)
 liveaudio.S = S
 
@@ -525,9 +529,33 @@ function liveaudio.hub_fit()
 end
 -- The room's size for the threshold, held: big enough once, it counts as big enough until it has been smaller for HUB_KEEP s (someone's
 -- status coming late took them off the list for a moment, and everyone's audio switched to their own streams and back). mem: kept. Pure.
+-- (rt-audio3: and it counts as big enough only once it has been so for HUB_SETTLE s. rt-r5: the Mac, asleep, came onto the link for 43 s,
+-- a room of three was four, and everyone's audio went to the desktop's mix for 103 s and back in the middle of a sound test: two switches
+-- for one computer passing by. Also used for how many of them send, below.)
 function liveaudio.hub_n(mem, n, from, now)
-  if n >= from then mem.big_at = now; return n end
-  return mem.big_at and now - mem.big_at < liveaudio.HUB_KEEP and from or n
+  local held = mem.big_at ~= nil and now - mem.big_at < liveaudio.HUB_KEEP
+  if n >= from then
+    mem.since = mem.since or now
+    if held or now - mem.since >= liveaudio.HUB_SETTLE then mem.big_at = now; return n end
+    return math.min(n, from - 1)
+  end
+  mem.since = nil
+  return held and from or n
+end
+-- How many computers in the room send live audio, this one too: all but those whose own word says they don't (muted or deafened, both
+-- silence Talk and Play; live audio that can't run, lib/hub.lua NO_LA). A computer that hasn't said counts: it may be sending. las: user ->
+-- their status's word (their_srcs); users: peer -> name of those here; mine: my_la(). Pure.
+function liveaudio.senders(las, users, mine)
+  local no, seen, n = require("hub").NO_LA or {}, {}, 0
+  local function sends(w) return not (w == "muted" or w == "deaf" or no[w]) end
+  if sends(mine) then n = 1 end
+  for _, name in pairs(users or {}) do
+    if not seen[name] then
+      seen[name] = true
+      if sends((las or {})[name]) then n = n + 1 end
+    end
+  end
+  return n
 end
 function liveaudio.hub_from(root)
   local ok, v = pcall(function() return require("groups").live_hub(root) end)
@@ -537,12 +565,16 @@ end
 -- isn't used, else nil). o: n (people here, me too), from (the threshold), hub (this song's hub), me, users (peer -> name: those here), can
 -- (this computer's extension takes part: hub_fit), hub_fit (false: the hub's own extension is too old to mix, lib/hub.lua's view), budget
 -- (false: this computer's mixing is paused, budget_why says why), running (false: live audio isn't running here), hub_la (the hub's own
--- word for its live audio, my_la in its status). Pure.
+-- word for its live audio, my_la in its status), senders (how many computers here send, liveaudio.senders held by hub_n; nil: not asked).
+-- Pure.
+-- (rt-audio3, from rt-r5: a room where only one computer sends has nothing to mix: through the hub its one stream is decoded, mixed with
+-- nothing and encoded again for each listener, a hop and a codec more for the same sound. Peer to peer then, however big the room.)
 -- (rt-audio3: a computer whose live audio can't run never mixes for the room, whoever elected it: here its own engine not running, there
 -- its status's word, lib/hub.lua NO_LA. LinuxBox2, off the tailnet, was told to mix for the room between its failed starts.)
 function liveaudio.hub_plan(o)
   local from = tonumber(o.from) or liveaudio.HUB_FROM
   if from <= 0 or (tonumber(o.n) or 1) < from then return "", false, nil end
+  if o.senders and o.senders < 2 then return "", false, nil end
   if not o.can then return "", false, "needs a newer StudioSync extension here" end
   if not o.hub then return "", false, "this song has no hub here" end
   if o.hub == o.me and o.running == false then return "", false, "live audio isn't running on this computer, so it can't mix it for the room" end
@@ -594,9 +626,11 @@ function liveaudio.hub_tick(cfg, b, list, users, st)
   if okx then hub = xhub end
   local from = liveaudio.hub_from(cfg.root)
   local unfit = okv and type(v) == "table" and hub == v.hub and v.hub_fit == false -- (the song's hub itself: lib/livex.lua picks only one that can)
+  S.hub_mem.send = S.hub_mem.send or {}
   local peer, serve, why = liveaudio.hub_plan({ n = liveaudio.hub_n(S.hub_mem, #(list or {}) + 1, from, reaper.time_precise()), from = from, hub = hub,
     me = cfg.user, users = users, can = liveaudio.hub_fit(), hub_fit = not unfit, budget = ok_b, budget_why = why_b,
-    running = st.running ~= false, hub_la = hub and (S.las or {})[hub] or nil })
+    running = st.running ~= false, hub_la = hub and (S.las or {})[hub] or nil,
+    senders = liveaudio.hub_n(S.hub_mem.send, liveaudio.senders(S.las, users, liveaudio.my_la()), 2, reaper.time_precise()) })
   if okx and wait and not hub and why then why = wait end
   S.hub = { peer = peer, serve = serve, why = why, user = hub, pick = okx and (peer ~= "" or serve) and pick or nil }
   local key = peer .. "|" .. tostring(serve)
