@@ -693,3 +693,64 @@ LinuxBox's hooks kept answering). Probes: `<scratchpad>/rt-r5/` (`p.sh`, `tm.sh`
 
 **Left.** 8 (c) Undo of a marker made a second after a bandmate's panel Restore; 10 (a copied stand-in); 12's patched build; P1-9..P1-16;
 action 40256 with another tempo (a modal dialog).
+
+## rt-fix9, round 2: rt-r5's findings (2026-11-22)
+
+Files: `lib/mirror.lua`, `lib/undo.lua`, `lib/controllers.lua` (one constant), `StudioSync - Undo.lua`, `StudioSync - Redo.lua` and
+`StudioSync - Panel.lua` (one line each); tests in part 32 (rewritten) and part 36 of `tests/test_0_60_rt_converge.lua`. Nothing run in REAPER.
+
+**1. Fix A didn't engage in REAPER: confirmed from the code, and it's also rt-r5's 27 s (finding C).** The laptop's fader move reaches the
+desktop twice: first as a live preview over the link (`lib/controllers.lua` on_msg sets the fader and marks the track
+`mirror.previewing`), then as the change. While a track is previewing, `W.each` leaves it out of `W.one`, so the desktop's rename is
+neither sent nor put back; but rt-fix9's `W.each` wrote `track_seen` for every track as the look *read* it, previewing or not. So the look
+read the rename, recorded it as seen and never sent it; the laptop's change then found "nothing unseen" and replaced the track whole. In the
+control (the fader 300 ms later) a look had sent the rename before the preview came. The same hold explains finding C: where the preview's
+own value was the only difference (LinuxBox's fader shown at 0.9 before a look ran), the change for it was held as "an unseen edit of
+yours", the look never cleared the hold (no `W.one` while previewing), the preview gave up after `controllers.CONFIRM` (20 s) and put the
+fader back, the next look found the track clean and let the change in: 0.9 -> 1.0 -> 0.9 on both computers, 27 s. Seen on two computers at
+once, which fits this and not a lost link message.
+
+The fix doesn't hold anything any more, and doesn't depend on what the look did. `mirror.track_seen` is now the band's version of each
+track as this computer holds it (as it landed, as it went out, or as a look found it unchanged), never a reading of unsent work. When a
+bandmate's track change lands, `keep_unsent` keeps each setting that differs here from that record and that the incoming change doesn't
+change itself (name, colour, mute, volume, pan, lanes, phase...), puts the rest in place, and records the band's version under the band's
+hash; the next look (once the preview is over) finds the track changed and sends the kept settings built on it. Settings a live preview
+is showing on the track (volume, pan, mute) aren't kept: they're the bandmate's. The band's change for a preview lands at once, so the
+preview ends as it should. `controllers.CONFIRM` is also 60 s now, for a change that comes by Syncthing alone.
+
+Part 32 has the exact order rt-r5 hit: a look reads the change but doesn't send it (preview), then the receive lands, then the send. With
+cb7f8f8's code it fails at each step: (a) the hold, (b) the rename lost after a look recorded it, (c) the change for a shown move held.
+
+**2. The preview put back before its change** is item 1's hold (above). The preview does wait for the change (its revision moving) or
+`CONFIRM`. Why the change went by Syncthing and not the link in that try isn't proven; with the hold gone it lands as soon as either brings
+it.
+
+**3. `StudioSync - Undo.lua` / `Redo.lua` and the panel's Undo** say "You haven't changed anything here yet." and "Nothing to redo ..." with
+`undo.say` (the log and a tooltip by the mouse when the panel isn't showing) instead of `band.msg`'s `reaper.MB`. Part 36 checks the
+scripts have no `band.msg` or `reaper.MB` left.
+
+**4. "The offline Mac is still a peer": not a stale peer, from the evidence. No code changed.** The Mac was up through rt-r5:
+- `Cross Test/rooms/main/status/Chilio-Mac.json` was rewritten six times on 11-22: at 04:53, 06:23, 08:15, 09:32 and 11:56 MT (Syncthing's
+  `.stversions` copies) and the current one at 12:35 MT, written `2026-11-22T19:35:50Z`. It says StudioSync 0.59.49.96, extension 1.0.31,
+  `la: "deaf"`, `lhub: true`.
+- rt-r5's own extension status (`st/st_*_x.json`) has LinuxBox receiving live audio from the Mac's Tailscale address throughout
+  (`not_here_from: 100.113.132.122:47281`, `not_here: 4`).
+- The laptop's and LinuxBox's peer entries for it carry measured round trips (`rtt_ms` 31, 80, 102, 152).
+So the Mac's REAPER was running StudioSync on Tailscale. Its live audio reached LinuxBox, and LinuxBox listing a sender it hears is
+rt-roomlist's rule (`liveaudio.heard_merge`, HEARD_S = 15 s). The direct link's TCP connect to it got "no answer" (the Mac's firewall, or
+its link not listening while asleep and woken). Its status files reach here only now and then (once an hour or so), so between them it drops out
+of `presence.peers` after 45 s (150 s for hub vouching), which is the normal timeout. No peer is listed from a status a day old: `presence.clock_gap` only
+counts a status that changed here in the last 10 s, and `heard_merge` needs a packet from the Mac within 15 s. Worth checking on the Mac
+itself: Chilio's MacBook wakes or runs with REAPER and StudioSync open, while it was read as offline.
+
+**Round 2 REAPER re-checks.**
+1. **A, as rt-r5:** the desktop renames XT Drums A while the laptop moves its fader (4-50 ms apart on the shared clock); then a colour, then
+   a mute. Pass: the desktop keeps its rename (colour, mute) through the laptop's change with the laptop's fader on it at once, and logs
+   "1 change(s) went" for its own a moment later (after the preview ends); all three end with both. Same with LinuxBox as the fader mover.
+2. **The preview and its change:** LinuxBox moves XT Drums A's fader with nothing else going on. Pass: the desktop and laptop show it at
+   once and receive the change within a second or two; no "a bandmate's live move wasn't followed by their change" line, no jump back.
+3. **Ctrl+Z with nothing to undo** (a fresh room, or after undoing everything) and **Ctrl+Shift+Z with nothing to redo**, on the desktop
+   with the panel closed: a tooltip by the mouse and the log line, no box (REAPER's windows: only `tooltips_class32`). Same from the panel's
+   radial Undo: the log line, no box.
+4. **The Mac:** when it's said to be offline, look at the Mac (REAPER, Live sync, Tailscale) and at `Chilio-Mac.json`'s time. Expected: if
+   its REAPER isn't running, it leaves every peer list within 45 s of its last status and within 15 s of its last live audio packet.
