@@ -45,6 +45,7 @@ end
 -- play position can read a few hundred ms off for a moment (seen on the laptop: 6.418 -> 6.112 -> 6.446 in 2 ms).
 local past = 0
 local function reached(t, theirs)
+  if together.paused_stop(t, theirs, reaper.GetPlayStateEx(proj)) then past = 0; return true end -- (paused here: nothing to reach, stop now. rt-fix8)
   if not (t.type == "stop" and t.follow and theirs and t.pos and reaper.GetPlayStateEx(proj) & 1 == 1) then past = 0; return false end
   local hit
   past, hit = together.count_reading(past, reaper.GetPlayPosition2Ex(proj), t.pos)
@@ -1328,6 +1329,7 @@ local function tick_body() -- returns true to keep going
       if transport.type == "stop" then
         local at_pos = reaper.GetPlayPosition2Ex(proj)
         reaper.OnStopButtonEx(proj)
+        if transport.from_pause and transport.pos then reaper.SetEditCurPos2(proj, transport.pos, false, false) end -- (they stopped from a pause: the cursor where they stayed. rt-fix8)
         band.log(string.format("stopped together (%s) at %.3f s, %s", tostring(transport.user), at_pos,
           tnow >= fire and "by time" or string.format("by position (theirs: %.3f s)", transport.pos)))
         reaper.SetExtState(band.SECTION, "together " .. key, os.date("%H:%M:%S ") .. "stopped together (" .. tostring(transport.user) .. ")", false)
@@ -1391,7 +1393,7 @@ local function tick_body() -- returns true to keep going
         and not together.skip_jump(side.skip, side.pos + (tp - side.t), pos) -- (not REAPER skipping the time selection: the others skip it themselves)
       if together.side_press(playing, ps & 2 == 2, side.playing, side.paused, jumped) then -- (a pause then a stop: both go out. rt-fix6b)
         local ev = playing and { type = "start", pos = pos, countin = 0, rec = ps & 4 == 4 or nil }
-          or { type = "stop", pos = side.paused and side.pos or side.pos + (tp - side.t), pause = ps & 2 == 2 or nil } -- where the song was when you stopped (paused: where it stayed)
+          or { type = "stop", pos = side.paused and side.pos or side.pos + (tp - side.t), pause = ps & 2 == 2 or nil, from_pause = (not playing and side.paused) or nil } -- where the song was when you stopped (paused: where it stayed)
         ev.at, ev.lead, ev.follow = together.now(), cfg.user, true
         ev.start_at = together.start_at(0) -- (the same moment on the shared clock: the others' lag counts from it. James, 0.60.0-rt)
         ev.lag = together.bars_after(proj, pos, lagbars or 0)

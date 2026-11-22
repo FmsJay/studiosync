@@ -166,3 +166,42 @@ the song sounds); the listeners Mute me at live audio volume 0 (so their Jam tra
 | 4 a latecomer | **pass** | Run `...053008Z-446.opus` going to LinuxBox only (Jam on there, `stopprojlen` 0 for the run). The laptop's Jam on between link times ...547.1 and ...571.5: added to the same stream (its peers then the laptop and LinuxBox, sizes equal: sent from the start), and its first Jam item (bar 283) was placed at ...564.4 while its playhead was 1 s into that bar, then 284, 285, ... each on its bar; the desktop never stopped. |
 | 5 WAV fallback | not run | Needs LinuxBox's REAPER audio device set to 44.1 kHz (an audio preference change and device restart in the VM). |
 | 10 Their time, 11 Produce | not run (time) | |
+
+## The growing `.opus.wav`'s RIFF/data sizes are 0 (rt-fix8, 2026-11-21; proposal for rt-audio3 / the lead, no C++ changed here)
+
+**What the code does.** `dec_step` (`extension/direct_audio.cpp`) writes `wav_header(j.out, 2, 48000, 0, 16)` when it opens the WAV and the real
+sizes only when the job is whole (`wav_header(..., j.frames, 16)` before `dec_close`). So for the whole run the file says RIFF size 36, data size
+0, while the 16-bit frames keep being appended. (The sender's own non-Opus Jam WAV does the same by design, "the link sends the header last", so
+a receiver's copy of a WAV-codec run has a 0-size header until the end too. `keep_loop` is the one writer that refreshes its header, once a second:
+`wav_header(...); fseek(SEEK_END); fflush`.)
+
+**What REAPER does with it: not established.** Nothing on this machine documents it (no REAPER doc or ReaScript note covers a WAV whose data chunk
+size is 0 while the file is longer, and a web search found nothing from Cockos either; other readers differ: some treat 0 or 0xFFFFFFFF as "to the end of
+the file", Python's `wave` and others read 0 frames). Nothing measured it either: rt-p12 check 3 compared the audio read *by hand* past the header
+and the item *positions* from `jamwatch`; no check had REAPER play, or report the length of, a source made from the growing file. `lib/jam.lua`'s
+intent is clear and depends on it: `place()` makes a fresh `PCM_Source_CreateFromFile` each refresh ("REAPER reads a file's length once") and takes
+`covered = GetMediaSourceLength(src) - offs` as what can play. If REAPER takes data size 0 literally, `covered` is 0 for every growing run, the items
+are never `final` and are re-made each REFRESH, and an interval's sound only plays after the run's last header write (a run's end), not 1.5 s ahead.
+
+**Proposal (so it works whichever way REAPER reads a 0 size, and for every standard reader).** In `dec_step`, after `fflush(j.out)` and before the
+`if (j.eos || ...)` block, when `j.frames` changed since the last header write and at least 250 ms have passed (the same shape as `keep_loop`'s
+once-a-second refresh; 44 bytes, so cheap):
+
+```cpp
+wav_header(j.out, 2, 48000, (unsigned)j.frames, 16); // the sizes so far: any reader sees what is there
+fseek(j.out, 0, SEEK_END);                            // wav_header seeks to 0; the next frames go on at the end
+fflush(j.out);
+```
+
+`wav_header` is the existing function (RIFF `36 + data`, data `frames * 4`); `JamDec` needs a `long long hdr_frames` and a `steady_clock` stamp as
+`keep_loop` has. The final `wav_header(...)` stays. Reader safety: `jam.lua` only creates a source after `i.bytes > 0`, and a header rewrite is atomic enough
+(44 bytes in one `fwrite` run under one `fflush`); a source made in the same instant reads a header at most one refresh old, which only makes it a
+fraction shorter.
+
+**Check before or after the change (REAPER, any computer receiving an Opus run).** In the console while the run is live and the WAV is growing, with
+`P` the `<copy>.opus.wav` path, one pcall'd line with all arguments:
+`local s = reaper.PCM_Source_CreateFromFile(P); local len = reaper.GetMediaSourceLength(s); reaper.ShowConsoleMsg(len .. "\n")`, and `StudioSync_JamDecode(src, P, 0)`'s `frames / 48000`
+beside it. Pass: they agree within a refresh (a fraction of a second). 0, or a length that only jumps at the run's end, means REAPER takes the 0 literally and the
+proposal is needed. Without the change, also listen: is an interval's part audible 1.5 s before its bar, or only after the run ends? The WAV-codec run
+(`.wav` not `.opus`) can't be fixed on the receiver: its copy's header comes from the link at the end, so a fix there is the sender writing the header
+as it goes and the link sending it first.

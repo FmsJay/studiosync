@@ -178,11 +178,12 @@ function startup.open_quietly(open)
 end
 
 -- The command that hands a project to the REAPER that's running, with no boxes. Pure. exe_dir: reaper.GetExePath(); exe: the program, when
--- startup.reaper_exe found it.
+-- startup.reaper_exe found it. Linux: nil. Its `reaper -nonewinst` finds the running REAPER only through the login session and started a
+-- second REAPER beside it (rt-r2); this runs inside a REAPER, so none is ever to be started, and the project opens the ordinary way. rt-fix8
 function startup.hand_over(os_name, exe_dir, path, exe)
   local mac = os_name:find("^OSX") or os_name:find("^macOS")
-  -- (Linux: the reaper binary sits in the folder GetExePath gives. 0.58.74)
-  exe = exe or os_name:find("^Win") and (exe_dir .. "\\reaper.exe") or mac and (exe_dir .. "/REAPER.app/Contents/MacOS/REAPER") or (exe_dir .. "/reaper")
+  if not (mac or os_name:find("^Win")) then return nil end
+  exe = exe or os_name:find("^Win") and (exe_dir .. "\\reaper.exe") or (exe_dir .. "/REAPER.app/Contents/MacOS/REAPER")
   return string.format('"%s" -nonewinst -ignoreerrors "%s"', exe, path)
 end
 -- The running REAPER's program on a Mac, where GetExePath() is the folder holding the app (or the app itself), whatever the bundle is called:
@@ -234,9 +235,10 @@ local function hand_over_tabs(tabs, first, open, finish)
     if t.band then
       -- (found once; none to hand it to, it opens the ordinary way now rather than after a 20 s wait. Round 1 review, 0.59.45)
       if startup.exe == nil then startup.exe = startup.reaper_exe(reaper.GetOS(), reaper.GetExePath()) or false end
-      if startup.exe then
+      local cmd = startup.exe and startup.hand_over(reaper.GetOS(), reaper.GetExePath(), t.path, not windows() and startup.exe or nil)
+      if cmd then
         since = reaper.time_precise()
-        reaper.ExecProcess(startup.hand_over(reaper.GetOS(), reaper.GetExePath(), t.path, not windows() and startup.exe or nil), -1)
+        reaper.ExecProcess(cmd, -1)
         return reaper.defer(step)
       end
     end

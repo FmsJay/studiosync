@@ -194,6 +194,12 @@ end
 function together.side_press(playing, paused, was_playing, was_paused, jumped)
   return playing ~= was_playing or (playing and jumped and true) or (not playing and (paused and true or false) ~= (was_paused and true or false))
 end
+-- A follower's stop that the leader pressed from a pause (ev.from_pause, at the position where the song stayed), arriving where this computer
+-- is paused too: due at once. It paused 0.06-0.18 s past that position, so waiting to "reach" it ran to the 2 s backstop (rt-r3). `ps`: its
+-- play state. Pure. rt-fix8
+function together.paused_stop(ev, theirs, ps)
+  return (ev.type == "stop" and ev.follow and theirs and ev.pos and ev.from_pause and ps & 2 == 2) and true or false
+end
 function together.go(proj, cfg, b, ev)
   local band = require("band")
   if ev.type == "start" and ev.loop == nil then ev.loop = together.loop_of(proj) end

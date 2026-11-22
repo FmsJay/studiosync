@@ -157,3 +157,15 @@ Also seen: the hub flapped on all four at 21:44:57-21:46:23 MT with nothing bloc
 04:45:16 UTC then "James-Laptop is its hub now"), and again at 21:11:38 / 21:12:09 around the desktop's live audio restart. The desktop's
 Syncthing logged "didn't answer within 6 s" every two minutes from 21:10 and its studio folder sat in "scanning" from 21:42:42 for over 11
 minutes, which held everything that goes by Syncthing (LinuxBox2's changes reached the desktop 1.7-12 minutes late).
+
+## Re-check of check 5 (rt-fix8, 2026-11-21)
+rt-r3 check 5 failed: a Stop from a pause reached the followers but they stopped 2.00 s later, by the time backstop. They had paused 0.06-0.18 s past the
+leader's pause position, so (paused, not playing) they never "reached" it. A stop pressed from a pause now carries `from_pause`
+(`StudioSync - Live sync.lua`), `together.paused_stop(ev, theirs, play_state)` makes it due at once for a follower that is paused, and that follower's
+cursor goes to the leader's position (the log says "by position"). Test: `tests/test_0_60_rt_fix8.lua`.
+
+Re-check (no sound needed, desktop leader with the laptop and LinuxBox following, check 9's setup): Play on the desktop, Pause at about 12 s: both followers
+pause. Wait 10 s, Stop on the desktop. **Pass:** both followers stop within ~100 ms (not 2 s), their logs say `stopped together (James) at 12.0 s, by position`,
+their edit cursors sit at the desktop's pause position (about 11.95 s), their own time selections are back as before (rt-fix5). Also: a plain Play then Stop
+(no pause) still says "by position" and does not move the cursor; Pause, then Play again, then Stop still works; a follower that was paused by hand when
+the leader stops from playing stops with the leader's stop as before.

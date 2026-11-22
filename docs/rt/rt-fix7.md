@@ -98,3 +98,16 @@ The `link/*` laps (30-40 ms per 10 s) were below rt-perfcut4's 60-90 expectation
 - `hub.drop` keeps a computer this one's link lost on another member's word (its status's `sees`). A member could keep a dead or cut-off
   hub named by claiming to reach it; before, it could already keep a late status alive the same way (`hub.vouched`). Guests' word doesn't count.
 - `removal.mark_old` acts on accepted marks only (owner's or admin's computer, `trust.mark_ok`), and only changes this computer's own view.
+
+## Follow-up (rt-fix8, 2026-11-21): `startup.hand_over` on Linux
+`startup.hand_over` (the quiet hand-over of the project tabs a REAPER opens at its start, `lib/startup.lua`) used `reaper -nonewinst` on Linux too, the
+switch that started a second REAPER from the link launcher (it finds the running one only through the login session). It runs inside a REAPER, so the
+rule of the launcher ("start REAPER only when none of this user's runs") is always "none to start": on Linux it now returns no command and the tabs open
+the ordinary way (`Main_openProject`, no 20 s wait). Windows and the Mac keep theirs. Cost: no `-ignoreerrors` on Linux, so a studio project with a plug-in
+this computer lacks may show REAPER's own box at start (as on any Linux start before 0.58.74). Other uses of `-nonewinst` on Linux, checked: `installer/install_linux.sh`
+`handoff` (outside REAPER; hands to the running one with its session, or starts one when `pgrep -x reaper` finds none: its intent, left), `installer/SKILL.md`
+(a note for agents), `studiosync_setup.lua` (a comment). Test: `tests/test_startup.lua` (Linux gets nil).
+
+Re-check on LinuxBox / LinuxBox2: restart REAPER with Smiley Studios' tabs open and Live sync set to start: `pgrep -u $(id -u) -x reaper` shows ONE
+process after the tabs are up; every tab opens (check Projects); no `reaper -nonewinst` in `ps`. If a missing-plug-in box blocks, say so: the `-ignoreerrors` hand-over
+would need the same rule (one REAPER per user) in a launcher instead.
