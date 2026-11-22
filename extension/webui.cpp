@@ -812,12 +812,38 @@ void mix_stream(sock_t s)
 // time of its first sample][16-bit stereo]. The time comes from a seqlock'd stamp the audio thread writes per block (its frame count and
 // direct_now). Up: [16-bit mono] at that rate into the guest's own ring, which the audio thread drains: heard once GUP_TARGET has come,
 // trimmed back to it when more than GUP_OVER piles up (a burst after a stall), silent on an underrun until it has refilled. The page runs
-// its audio at REAPER's rate, but its sound card's clock isn't REAPER's: the ring is read at a rate that follows its average fill (1 + (fill
-// - GUP_TARGET) x GDRIFT_K, within GDRIFT_MAX: 0.5%) through a 4-point Hermite, so that drift no longer shows as a skip or a gap every few
-// minutes (rt-p11, backlog 1.19; the page's own side: lib/webui/guestworklet.js). Guests hear each other (rt-p11, 1.22): each slot's `oth`
-// holds the other live guests' sum at the session mix's frames, which its sender adds; and listeners hear them (webui_listen_feed after).
+// its audio at REAPER's rate, but its sound card's clock isn't REAPER's: the ring is read at 1 + R + P (gpace below) through a 4-point
+// Hermite, so that drift no longer shows as a skip or a gap every few minutes (rt-p11, backlog 1.19; the page's own side:
+// lib/webui/guestworklet.js). Guests hear each other (rt-p11, 1.22): each slot's `oth` holds the other live guests' sum at the session
+// mix's frames, which its sender adds; and listeners hear them (webui_listen_feed after).
+// gpace (rt-audio3; lib/webui/guestworklet.js ssPace, the same control, as extension/rtaudio.cpp's read-rate control): once a GPACE_WIN,
+// P = GPACE_KP x (the window's mean fill - its size), within GPACE_P (0.3 %), brings the level back; R, the guest's clock against REAPER's
+// as learned (within GPACE_R), integrates the error only while P isn't getting its way (the level, against GPACE_BACK windows ago, came
+// back less than half of what P alone did since). It was 1 + (fill - size) x 0.05 within 0.5 %, level only: behind a burst the ring sat over
+// its size and was read off at the full 0.5 % for most of a minute, here and again in the hearing guest's page, so a guest was heard up
+// to 0.85 % sharp (rt-t1). And a guest's ring starts AT its size: what piled up behind a pause is skipped while it's silent anyway.
 const unsigned long long GMIX_N = 1ull << 17;
-const double GDRIFT_TAU = 2, GDRIFT_K = 0.05, GDRIFT_MAX = 0.005; // (s the fill is averaged over; rate per second of fill off target; bound)
+const double GPACE_WIN = 0.5, GPACE_KP = 0.2, GPACE_P = 0.003, GPACE_R = 0.01, GPACE_I = 0.05, GFRESH_OVER = 0.06;
+const int GPACE_BACK = 4;
+struct GPace { // (the audio thread's)
+  double sum = 0, t = 0, r = 0, p = 0, rate = 1, he[GPACE_BACK] = {}, hp[GPACE_BACK] = {};
+  int n = 0;
+  void again() { sum = t = p = 0; n = 0; rate = 1 + r; } // (a start or a cut: the level anew, R kept)
+  double step(double fill, double target, double dt)
+  {
+    sum += fill * dt; t += dt;
+    if (t < GPACE_WIN) return rate;
+    const double e = sum / t - target, T = t, was = std::fabs(p) * T;
+    sum = t = 0;
+    double did = was;
+    for (int i = 1; i < n; ++i) did += hp[i];
+    if (n >= 2 && std::fabs(e) > std::fabs(he[0]) - 0.5 * did) r = std::max(-GPACE_R, std::min(GPACE_R, r + GPACE_KP * GPACE_KP / 4 * std::max(-GPACE_I, std::min(GPACE_I, e)) * T));
+    if (n == GPACE_BACK) { std::copy(he + 1, he + GPACE_BACK, he); std::copy(hp + 1, hp + GPACE_BACK, hp); --n; }
+    he[n] = e; hp[n++] = was;
+    p = std::max(-GPACE_P, std::min(GPACE_P, GPACE_KP * e));
+    return rate = 1 + r + p;
+  }
+};
 short g_gmix[GMIX_N * 2];
 std::atomic<unsigned long long> g_gmix_w{ 0 };
 std::atomic<double> g_gmix_sr{ 0 };
@@ -836,7 +862,8 @@ struct GuestSlot {
   std::atomic<bool> playing{ false };
   std::atomic<float> gain{ 1.f }, peak{ 0.f };
   std::atomic<long long> under{ 0 }, drops{ 0 };
-  double frac = 0, avg = 0;            // (the audio thread's: the read position past r, the fill averaged: the drift's rate)
+  double frac = 0, fresh = 0;          // (the audio thread's: the read position past r; s since it started playing)
+  GPace pace;                          // (and its read rate: gpace)
   short oth[GMIX_N];                   // (the other live guests' sum at each session-mix frame: the audio thread writes, this guest's sender adds)
 };
 GuestSlot g_gslot[GUEST_LIVE];
@@ -881,7 +908,7 @@ void guest_live(sock_t s, const WebReq &r, const std::string &gid)
   if (!slot) return answer(s, 503, "text/plain", "four guests are live already\n");
   snprintf(slot->gid, sizeof(slot->gid), "%s", gid.c_str());
   slot->w.store(0); slot->r.store(0); slot->playing.store(false); slot->peak.store(0); slot->under.store(0); slot->drops.store(0);
-  slot->frac = 0; slot->avg = 0;
+  slot->frac = 0; slot->fresh = 0; slot->pace = GPace();
   { std::lock_guard<std::mutex> l(g_mx); auto it = g_guests.find(gid); slot->gain.store(it != g_guests.end() ? it->second.gain : 1.f); }
   slot->taken.store(1, std::memory_order_release);
   g_guests_live.fetch_add(1);
@@ -1207,12 +1234,19 @@ void webui_guest_audio(double *const *out, int nout, int len, double srate)
     if (!g.playing.load(std::memory_order_relaxed)) {
       if (have < target + n) continue; // (filling up first: a little buffer against the network's jitter)
       g.playing.store(true, std::memory_order_relaxed);
-      g.avg = have;
+      gr = gw - (unsigned long long)(target + n); g.frac = 0; have = target + n; // (it starts at its size: a burst's pile is skipped in the silence, not played off sharp)
+      g.fresh = 0;
+      g.pace.again();
     }
-    if (have > target + srate * GUP_OVER) { gr = gw - (unsigned long long)target; g.frac = 0; have = target; g.avg = have; g.drops.fetch_add(1, std::memory_order_relaxed); }
-    if (have < n * (1 + GDRIFT_MAX) + 3) { g.playing.store(false, std::memory_order_relaxed); g.under.fetch_add(1, std::memory_order_relaxed); continue; }
-    g.avg += (have - g.avg) * std::min(1.0, n / (srate * GDRIFT_TAU));
-    const double rate = 1 + std::max(-GDRIFT_MAX, std::min(GDRIFT_MAX, (g.avg - target) / srate * GDRIFT_K));
+    // (and for its first second, the rest of that burst; later, past GUP_OVER: a burst after a stall, counted)
+    const bool fresh = g.fresh < 1 && have > target + srate * GFRESH_OVER;
+    if (fresh || have > target + srate * GUP_OVER) {
+      gr = gw - (unsigned long long)target; g.frac = 0; have = target; g.pace.again();
+      if (!fresh) g.drops.fetch_add(1, std::memory_order_relaxed);
+    }
+    g.fresh += n / srate;
+    if (have < n * (1 + GPACE_R + GPACE_P) + 3) { g.playing.store(false, std::memory_order_relaxed); g.under.fetch_add(1, std::memory_order_relaxed); continue; }
+    const double rate = g.pace.step(have / srate, GUP_TARGET, n / srate);
     const float gain = g.gain.load(std::memory_order_relaxed);
     float pk = 0;
     double p = g.frac;
