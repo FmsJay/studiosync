@@ -626,7 +626,12 @@ converges: the oracle has no idea of intent), so there's no soak scenario for it
 (no power over anyone else's change). The Undo ask is ExtState on this computer only.
 
 **Soak.** `python tools/soak/soak.py --long --minutes 10 --no-shrink --first 15000`, 150 edits a seed, from clean clones: before (9018131)
-44 seeds, 43 passed (97.7 %; 15033: an item's length differs between James and Cee); after: SOAK_AFTER.
+44 seeds, 43 passed (97.7 %; 15033: an item's length differs between James and Cee). After, at cb7f8f8: 45 seeds, 42 passed: 15033 again,
+15044 (a late joiner's MIDI merge, which fails the same way at 9018131: pre-existing, not looked into), and 15040, two readings of one
+automation point 1e-13 apart that the oracle's rounding to 9 decimals put on two sides of the 9th digit (the merge of a side that is only
+the map's move now takes the base's retimed text). The oracle now allows 1e-9 per number instead (f0ffde5). At f0ffde5: 44 seeds, 43 passed
+(97.7 %; 15033 only), the same rate as before. `python tests/run.py --no-luals`: `fails 0` in clean clones of cb7f8f8 (local time and
+`TZ=UTC0`) and of f0ffde5 (local time).
 
 **REAPER re-checks for rt-fix9.**
 1. **A again** (check 4): the desktop renames a track in the same moment the laptop moves that track's fader (timed on the shared clock, as
