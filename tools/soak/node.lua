@@ -191,14 +191,19 @@ function N.receive()
 end
 -- (Live sync's P.heal and the order heal: a bandmate with every change whose project has differed from ours for a minute, while we're caught up
 -- too, brings ours in line (at most every 5 minutes); the track order put right 10 s after the last edit. Counted for the soak's stats.)
-local heal_since, healed_at, heals = nil, -math.huge, 0
+local heal_since, healed_at, heals, claims_at = nil, -math.huge, 0, -math.huge
 local function heal()
   local now = F.clock
   local mine, differs = mirror.root(F.proj), false
   for _, st in ipairs(require("presence").peers(cfg, SONG, ROOM)) do
     if st.mirror and st.pending == 0 and st.mirror ~= mine then differs = true end
   end
+  -- (Live sync's note of who holds another project or track order, each pass: the order heal acts on it (mirror.order_apart_for). Without it
+  -- no soak computer ever put its track order right after its first look, which the real Live sync does: a soak artifact. rt-converge)
+  pcall(mirror.apart_note, F.proj, mine, mirror.order_code(F.proj), function() return sync.pending_events(F.proj, cfg, SONG, ROOM) end,
+    require("presence").peers(cfg, SONG, ROOM), now)
   if differs and sync.pending_events(F.proj, cfg, SONG, ROOM) == 0 then heal_since = heal_since or now else heal_since = nil end
+  if now - claims_at > 10 then claims_at = now; pcall(sync.drop_gone_claims, F.proj, cfg, SONG, ROOM) end -- (as P.heal: a deleted track's claim goes)
   if heal_since and now - heal_since > 60 and now - healed_at > 300 then
     healed_at, heal_since = now, nil
     local ok, n = pcall(mirror.heal, F.proj, sync.room_dir(cfg, SONG, ROOM), false)

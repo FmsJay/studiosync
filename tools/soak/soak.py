@@ -26,7 +26,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 os.chdir(REPO)
 NODE_LUA = open(os.path.join(REPO, "tools", "soak", "node.lua"), encoding="utf-8").read()
 USERS = ["James", "Bee", "Cee"]
-QUIET = 90  # simulated s with nothing but presence moving before the oracle runs (Live sync's heal waits 60 s of a bandmate differing)
+# simulated s with nothing but presence moving before the oracle runs: Live sync's heal waits 60 s of a bandmate differing, and its order
+# heal mirror.ORDER_WAIT (120 s) from a bandmate's track move landing plus a status round: at 90 the oracle ran before the order heal could
+QUIET = 140
 FIRST_EDIT = DEFAULT_FIRST = 20.0  # simulated seconds after the song is shared (--first-edit)
 
 # The edits the driver makes, and how often (weights).
