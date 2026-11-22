@@ -408,3 +408,5 @@ deleted; checked empty). Connect without Tailscale was on for these (LinuxBox2 r
   its restart, `mix_gap_ms` 197.3 then 25.2; LinuxBox2 `stalls` 3170 (max 758 ms), `fallbacks` 12, `rescues` 13, `join_fails` 21,
   `mix_gap_ms` 65.9 then 29.2. One 197 ms reading is above the "tens of ms" expectation (shortly after a start). The desktop-quit rescue and the 1 s
   outage tests not run (they need the mix running with sound as written).
+
+**rt-fix7 (2026-11-21):** a holder gives a role up for Syncthing being behind only after 30 s (the likely cause of B's 21 s hand-off, from the desktop's log); a passed-over home's successor says "ranked"; a computer cut from the hub keeps it named while another reaches it (no studio split); the hand-off log line says why. Checks: `docs/rt/rt-fix7.md`.

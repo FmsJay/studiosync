@@ -9,7 +9,8 @@
 --   macOS    ~/Applications/StudioSync Link.app, an AppleScript applet (osacompile) with CFBundleURLTypes, registered with lsregister; its
 --            `on open location` writes the file (quoted form of) and opens REAPER.
 --   Linux    ~/.local/share/applications/studiosync-link.desktop (MimeType x-scheme-handler/studiosync, Exec the launcher with %u), made the
---            default with xdg-mime; the launcher is a /bin/sh script that printf's "$1" to the file.
+--            default with xdg-mime; the launcher is a /bin/sh script that printf's "$1" to the file, and starts REAPER only when none of
+--            this user's runs (pgrep): Linux's `reaper -nonewinst` started a second REAPER (rt-fix7).
 -- Everything goes through an `io` table (write, remove, mkdir, run, read, exists) so tests run it on a stand-in file layer: nothing here ever
 -- touches the registry or a real home folder in a test. GPL-3.0-or-later.
 local urlhandler = {}
@@ -146,7 +147,12 @@ function urlhandler.linux_launcher(p)
     "[ \"${#1}\" -le " .. urlhandler.LINK_MAX .. " ] || exit 0",
     "P=\"$DIR/pending-$(date +%s)-$$.txt\"",
     "printf '%s' \"$1\" > \"$P.tmp\" && mv -f \"$P.tmp\" \"$P\"",
-    "\"$EXE\" -nonewinst >/dev/null 2>&1 &",
+    "# (a REAPER of this user's already running reads the file itself (Live sync, Autostart or the panel), so none is started then: on Linux",
+    "# REAPER's no-new-instance switch started a second REAPER beside the running one instead of handing it anything. rt-fix7)",
+    "N=$(basename \"$EXE\")",
+    "if command -v pgrep >/dev/null 2>&1; then pgrep -u \"$(id -u)\" -x \"$N\" >/dev/null 2>&1 && exit 0",
+    "elif command -v pidof >/dev/null 2>&1; then pidof \"$N\" >/dev/null 2>&1 && exit 0; fi",
+    "\"$EXE\" >/dev/null 2>&1 &",
     "" }, "\n")
 end
 function urlhandler.linux_desktop(p)

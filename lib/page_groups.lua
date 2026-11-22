@@ -128,7 +128,7 @@ function pg.join_button(env)
       local root, why = services.join_band(env.cfg(), code)
       if root then
         -- (a signed invitation: their computer is asked over the link, and lets this one in by itself. lib/joins.lua, James, rt)
-        local asking = code.invite and not reaper.file_exists(root .. "/_band/band.json")
+        local asking = code.invite and (why == "back" or not reaper.file_exists(root .. "/_band/band.json")) -- ("back": its old copy has band.json. rt-fix7)
         if asking then require("joins").request(root, code.invite) end
         band.log(asking and ("joined " .. band.info(root).name .. ": the invitation asks their computer to let you in, over Tailscale. Its projects arrive after that.")
           or why == "already" and ("you're already in " .. band.info(root).name) or

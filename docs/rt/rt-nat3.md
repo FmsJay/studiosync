@@ -340,3 +340,5 @@ An eval-host rendering of the rows shows device ids, not names (nat's name map l
 - **SACK under loss: not run.** It needs a take streamed from LinuxBox2 (or another ~1 MB transfer from it), and its PulseAudio input may be the
   desktop's real input through VMware's sound device; no other transfer was at hand. For the record, after an hour of links: `resent` 0-2 per peer.
 - Seen: the relay row on LinuxBox2 says the hub's relay "doesn't answer: its router may not forward UDP 47298-47314", as expected without the forward.
+
+**rt-fix7 (2026-11-21):** the stale row: a bandmate reached by any way (here without Tailscale) isn't "can't reach" by its Tailscale name. Checks: `docs/rt/rt-fix7.md`.

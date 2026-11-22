@@ -210,3 +210,5 @@ all four computers identical to before (rt-check2's compare).
   1-beat grid), leaving two CC1 at tick 0; worth snapping only when the time actually moved. Double-click added CC1 ch 1 = 61 at 1920 (beat snap);
   the Delete key with the roll open deleted the point only (item and note kept); a CC the laptop added showed on the desktop's lane by the next look.
   All CCs removed after.
+
+**rt-fix7 (2026-11-21):** the sends panel judges a hand by the pointer held or a move under 1.5 s ago, not focus (3); a vertical CC drag changes only the value and keeps the point's ticks (5). Checks: `docs/rt/rt-fix7.md`.

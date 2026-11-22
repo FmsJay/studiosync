@@ -449,10 +449,14 @@ function removal.tick(now)
   local told = ""
   for _, g in ipairs(band.bands()) do
     if me ~= "" and not require("groups").is_old(g.root) then pcall(require("localcopy").publish_holds, g.root, me) end
+    local out_mark
     for _, m in ipairs(all_marks(g.root)) do
       if m.user == me or (id and m.device == id) then
-        if m.guest and removal.due(m, now) then told = string.format("Your time as a guest in %s is over: nothing syncs with the studio any more, and your copy stays here.", g.name)
-        elseif not m.left and not m.guest then told = string.format("%s took you out of %s: nothing syncs with the studio any more, and your copy stays here. Ask to be invited again to come back.", tostring(m.by), g.name) end
+        if m.guest and removal.due(m, now) then told, out_mark = string.format("Your time as a guest in %s is over: nothing syncs with the studio any more, and your copy stays here.", g.name), m
+        elseif not m.left and not m.guest then
+          told = string.format("%s took you out of %s: nothing syncs with the studio any more, and your copy stays here. Ask to be invited again to come back.", tostring(m.by), g.name)
+          if removal.due(m, now) then out_mark = m end
+        end
       elseif removal.due(m, now) and m.device and (m.device == removal.device_of(g.root, m.user) or m.guest) then -- (only their own computer: a mark can name any; a guest's names it)
         local key = "removal done " .. g.id .. " " .. m.user .. " " .. tostring(m.at)
         local state = reaper.GetExtState(band.SECTION, key)
@@ -479,8 +483,20 @@ function removal.tick(now)
         end
       end
     end
+    pcall(removal.mark_old, g, out_mark)
   end
   reaper.SetExtState(band.SECTION, "removed from", told, false)
+end
+-- This computer taken out of studio g (out: its due removal mark, or its guest mark once the time is over; nil: none): the folder counts as
+-- old here, once per mark, as leaving makes it, so Paste join code and an invite link join it again (asking the inviter's computer, which
+-- brings the welcome and the first copy) instead of saying "you're already in" (rt-r2, rt-joinlink round 2 B). Hidden on the Groups page,
+-- it stays hidden; let in again (the mark gone), it isn't old any more. rt-fix7
+function removal.mark_old(g, out)
+  local key, groups = "out old " .. tostring(g.id), require("groups")
+  local had = reaper.GetExtState(band.SECTION, key)
+  if out then
+    if had ~= tostring(out.at) then reaper.SetExtState(band.SECTION, key, tostring(out.at), true); groups.remember_old(g.root, g.name, g.id) end
+  elseif had ~= "" then reaper.DeleteExtState(band.SECTION, key, true); groups.forget_old(g.root) end
 end
 
 return removal

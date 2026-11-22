@@ -485,6 +485,13 @@ function direct.health_line(cfg)
   if not s.enabled then return nil, "Direct link: turned off for this studio. Changes come through Syncthing." end
   local reached, failed, ms, nat_ok = {}, {}, nil, false
   local now = os.time()
+  -- (whose computer each peer is: a bandmate reached by any way isn't also "can't reach" by another. LinuxBox2, off the tailnet, kept "can't
+  -- reach james-laptop, james-main, linuxbox (its name doesn't resolve)" while it reached all three without Tailscale: the Tailscale names are
+  -- retried every ~10 s, so STALE never drops them. rt-fix7)
+  local okd, devs = pcall(devices, cfg.root)
+  local function whose(peer) return tostring(direct.who_of(okd and devs or {}, peer)):lower() end
+  local got = {}
+  for _, p in ipairs(s.peers) do if p.ok then got[whose(p.peer)] = true; got[direct.peer_name(p.peer):lower()] = true end end
   for _, p in ipairs(s.peers) do
     -- (P13, backlog 1.31: a peer the link stopped trying (a bandmate now reached as "nat:<device>" instead of by Tailscale, or gone) keeps its
     -- last failure in the extension's status until REAPER restarts; one in use is tried at least every ~10 s, so one older than STALE isn't)
@@ -493,7 +500,7 @@ function direct.health_line(cfg)
       local isnat = tostring(p.path):sub(1, 4) == "nat "
       local who = direct.peer_name(p.peer) .. (isnat and (" (" .. direct.way_text(p.path) .. ")") or "")
       if p.ok then reached[#reached + 1] = who; ms = ms and math.min(ms, p.ms or ms) or p.ms; nat_ok = nat_ok or isnat
-      else failed[#failed + 1] = direct.peer_name(p.peer) .. " (" .. tostring(p.error) .. ")" end
+      elseif not got[whose(p.peer)] then failed[#failed + 1] = direct.peer_name(p.peer) .. " (" .. tostring(p.error) .. ")" end
     end
   end
   -- (no Tailscale listener but bandmates reached without it: what they send comes over those links, so that's no warning. rt-nat2)

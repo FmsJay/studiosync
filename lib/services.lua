@@ -544,15 +544,19 @@ function services.join_band(cfg, code)
   local st = services.syncthing_path()
   if not st then return nil, "Syncthing isn't installed here: run StudioSync's installer again (it installs Syncthing), then paste the code again" end
   if code.id == services.my_device_id() then return nil, "That's your own join code: send it to whoever you're inviting." end
+  local groups, back = require("groups"), nil
   for _, x in ipairs(band.bands()) do
-    if x.id == code.band and not require("groups").is_old(x.root) then band.use_band(x.root); return x.root, "already" end
+    if x.id == code.band then
+      if not groups.is_old(x.root) then band.use_band(x.root); return x.root, "already" end
+      back = x.root -- (taken out of it, the copy kept: joined again into that copy. rt-fix7)
+    end
   end
   -- (it comes from whoever sent the code, and goes into a folder's path and a command)
   local name = band.clean(code.name or "")
   if name == "" then name = code.band end
   local here = ((cfg.base or cfg).root or ""):gsub("[/\\]+$", "")
   local parent = here:match("^(.*)[/\\][^/\\]+$") or here
-  local root, n = parent .. "/StudioSync " .. name, 1
+  local root, n = back or (parent .. "/StudioSync " .. name), 1
   while band.subdirs(root)[1] and band.info(root).id ~= code.band do n = n + 1; root = parent .. "/StudioSync " .. name .. " " .. n end -- (strangers' studios can share a name)
   reaper.RecursiveCreateDirectory(root, 0)
   local probe = io.open(root .. "/.studiosync-probe", "w") -- (a home folder on a Mac put it in /Users, where nobody can write. Onboarding review, 0.59.9)
@@ -575,9 +579,11 @@ function services.join_band(cfg, code)
     if not r:match("^0\n") then return nil, "Syncthing didn't pair with them: " .. r:gsub("^%d+\n", "") end
   end
   exec(cli(st) .. " config folders " .. code.band .. " devices add --device-id " .. code.id, 15000)
-  require("groups").forget_old(root) -- (back in one you'd left)
+  -- (back in one you'd left or been taken out of: "back", so the invitation still asks their computer, though the copy has its band.json. rt-fix7)
+  local was_old = groups.is_old(root)
+  groups.forget_old(root)
   band.use_band(root)
-  return root
+  return root, was_old and "back" or nil
 end
 
 -- A bandmate already known here offering a band's folder: someone in one of your bands joining another of them (an

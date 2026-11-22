@@ -1217,6 +1217,7 @@ local function tick_body() -- returns true to keep going
   sub_lap("start/shared prefs")
   if sub_due(sub_at, "calibrate", tnow) then band.try("calibrate.tick", require("calibrate").tick) end -- (REAPER's input offset for the interface in use, measured per interface: lib/calibrate.lua. James, rt)
   sub_lap("start/calibrate")
+  band.try("invite.live_tick", require("invite").live_tick) -- (a clicked studiosync:// link, read here where Autostart isn't running; once a second: lib/invite.lua, rt-fix7)
   if cmd > 0 then reaper.SetExtState(band.SECTION, "live cmd " .. cmd, tostring(reaper.time_precise()), false) end -- (band.start_live)
   -- the band's takes add up on your master: say so when it clips (at most every 30 s)
   if reaper.EnumProjects(-1) == proj and reaper.GetPlayState() & 1 == 1 then

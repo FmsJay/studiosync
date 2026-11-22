@@ -243,3 +243,5 @@ allowed; not on the desktop, laptop or Mac without James's OK.
 - **4: pass.** Untick (`urlhandler.uninstall`): `xdg-mime query default x-scheme-handler/studiosync` empty, no studiosync line in
   `~/.config/mimeapps.list`, `studiosync-link.desktop` and the launcher gone.
 - **5:** not run (no Windows computer without the rule).
+
+**rt-fix7 (2026-11-21):** the Linux launcher starts REAPER only when none of this user's runs (no `-nonewinst`), and Live sync reads clicked links where Autostart isn't running (3). Checks: `docs/rt/rt-fix7.md`.

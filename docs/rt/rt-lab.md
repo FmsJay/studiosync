@@ -3,6 +3,11 @@
 Package T2 of `docs/rt/backlog.md` "Plan to finish". James's direction: tests that need a blocked link, or "hub ranking with a firewall", go in VMs
 (LinuxBox plus another VM), never the real PCs' firewalls; network shaping happens only inside VMs. Scripts and usage: `tools/lab/README.md`.
 
+> **Warning: never use a VM's audio input for a test** (rt-fix7, from rt-r2). LinuxBox2's PulseAudio input may be the desktop's **real** input
+> passed through VMware's sound device: the desktop's microphone or a Voicemeeter bus. Test signals must come from a source generated inside
+> the VM, such as a PulseAudio null sink with a tone played into it and its `.monitor` as the input (recipe in `tools/lab/README.md`). Check
+> the VM's selected input before any sound test; with no generated source set up, keep Deafen on and run no sound tests there.
+
 ## What exists now
 
 | Thing | State |

@@ -59,7 +59,7 @@ package.loaded.alerts = { send = function(cfg, kind, title, text) alerts_out[#al
 package.loaded.api = { event = function() end }
 package.loaded.webhome = { open = function(cfg, o) opened[#opened + 1] = o; return "opening '" .. o.song .. "'" end }
 local manage, tail = true, { suffix = "tail9.ts.net" }
-package.loaded.groups = { may_manage = function() return manage end, tailnet = function() return tail end, trusted = function() return {} end }
+package.loaded.groups = { may_manage = function() return manage end, tailnet = function() return tail end, trusted = function() return {} end, is_old = function() return false end }
 local MYDEV = "AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH"
 local joined = {}
 package.loaded.services = {

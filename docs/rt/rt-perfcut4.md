@@ -166,3 +166,5 @@ None. No check, size limit or trust rule changed. `mirror.applied` and `mirror.h
   peers 7-9, messages 4-7, poll/ensure 3-5, heartbeat ~1, prune 1.4: 30-40 ms per 10 s together (less than the 60-90 expected for start/link).
   The biggest idle costs are `start/webui` (with a page open) and `drive/step`.
 - 7.3, 7.5: not run (no throwaway studio for the heavy song). 7.4: not run.
+
+**rt-fix7 (2026-11-21):** 7.2's `status/file` was the atomic write opening its .tmp again to measure it (Windows' scanner holds a just-written file): measured from the write handle now, and no doomed rename on Windows. Checks: `docs/rt/rt-fix7.md`.

@@ -390,12 +390,17 @@ end
 -- place made it the band's copy (review, 2026-10-31).
 local function finish(tmp, path, f, want)
   unlist(path)
+  -- (its size from the handle written with: seek flushes, so a write the disk refused shows here as before. Opening the .tmp again to measure
+  -- it waited for the virus scanner each time: 4-37 ms of a status write's 7-9 on the desktop, rt-perfcut4 7.2. rt-fix7)
+  local size = f:seek("end")
   local ok_close = f:close()
-  if not ok_close or band.size(tmp) ~= want then
+  if not ok_close or size ~= want then
     os.remove(tmp)
     error("couldn't write " .. path .. " (is the disk full?)")
   end
-  if os.rename(tmp, path) then return end -- POSIX: replaces it in one step
+  -- POSIX: replaces it in one step. (Not tried on Windows, which never renames over a file: a failing call each write. The steps below put a
+  -- first file in place too. rt-fix7)
+  if not band.WIN and os.rename(tmp, path) then return end
   -- Windows won't rename over a file: move the old one aside first (never deleted before the new one is in place;
   -- named so Syncthing ignores it, as it does the .tmp)
   local dir, name = path:match("^(.*)/([^/]+)$")

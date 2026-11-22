@@ -6,6 +6,19 @@ router VM and the S23: `docs/rt/rt-lab.md`.
 
 Rule (James, 2026-11-21): a blocked link, lost packets or latency are made **inside the VMs only**. Never in the real PCs' firewalls.
 
+**Never use a VM's audio input for a test.** VMware's sound device can hand a VM the desktop's real input: LinuxBox2's PulseAudio input may
+be the desktop's microphone or a Voicemeeter bus (rt-r2). A test signal must come from a source generated inside the VM, for example a
+PulseAudio null sink with a tone played into it, and its monitor as the input:
+
+```bash
+pactl load-module module-null-sink sink_name=sstest sink_properties=device.description=sstest
+pactl set-default-source sstest.monitor          # what REAPER (or StudioSync) records from
+paplay --device=sstest tone.wav                   # or: sox -n -t pulseaudio sstest synth 30 sine 440
+pactl unload-module module-null-sink              # after
+```
+
+Check REAPER's input in the VM is `sstest.monitor` (or another generated source) before arming anything, and keep Deafen on otherwise.
+
 | File | Runs on | What |
 |---|---|---|
 | `lab.sh` | desktop (Git Bash) | `vms`, `start`/`stop`/`ip` `x`/`x2`, `clone NAME`, `net x/x2 ...`, `identity x2 NAME`. `x` = LinuxBox, `x2` = LinuxBox2. IPs from `vmrun getGuestIPAddress`, or set `X_IP` / `X2_IP`. |

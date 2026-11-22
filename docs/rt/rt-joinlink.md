@@ -307,3 +307,5 @@ How: the dev-eval hooks; "Connect without Tailscale" switched on for Smiley Stud
   desktop's and the laptop's included, and Let them in re-shares on the desktop: Syncthing changes on the real PCs, which this round's limits rule
   out. Needs the coordinator's OK (or a third VM as the one taken out, with the desktop's share change accepted).
 - **D:** not run (no Windows computer without the rule).
+
+**rt-fix7 (2026-11-21):** a computer taken out has its folder marked old once its removal is due, so Paste join code and links join it again and ask the inviter's computer (B). Checks: `docs/rt/rt-fix7.md`.

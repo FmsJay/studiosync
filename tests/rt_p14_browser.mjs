@@ -267,10 +267,36 @@ ok((await text('.dfollow')).startsWith('View') && await ev('document.querySelect
   await sleep(100);
   a = lastAction();
   ok(a.send.op === 'add' && a.send.lane === 1 && a.send.to === 2 && a.send.i === undefined, 'add sends the destination (' + JSON.stringify(a.send) + ')');
-  // a send changed under the panel: updated in place, not rebuilt (a hand on a slider keeps it)
+  // a send changed under the panel: updated in place, not rebuilt (a hand on a slider keeps it; the last move was under HAND_MS ago: rt-fix7)
+  await sleep(1600);
   await push({ dawedit: { id: a.send.id, ok: true }, dawsend: sendTopic({ sends: [{ i: 0, to: 2, n: 'Keys', v: 2, p: 0 }, { i: 1, to: 0, n: 'Drums', v: 0.5, p: -0.25, m: 1 }] }) });
   await sleep(100);
   ok((await ev('document.querySelectorAll(".dsends .sval")[0].textContent')) === '+6.0 dB', 'a new level shows');
+  // rt-fix7 (rt-r2: the last-moved slider kept focus and never followed REAPER again): a hand is the pointer held, or a move under 1.5 s ago
+  const lvl = (v) => push({ dawsend: sendTopic({ sends: [{ i: 0, to: 2, n: 'Keys', v, p: 0 }, { i: 1, to: 0, n: 'Drums', v: 0.5, p: -0.25, m: 1 }] }) });
+  const lvText = () => ev('document.querySelectorAll(".dsends .sval")[0].textContent');
+  await ev('document.querySelectorAll(".dsends .srow")[0].querySelector("input[type=range]").focus(); 1');
+  await lvl(1);
+  await sleep(100);
+  ok(await ev('document.activeElement === document.querySelectorAll(".dsends .srow")[0].querySelector("input[type=range]")') && (await lvText()) === '0.0 dB',
+    'a focused slider nobody holds follows REAPER (it stayed where it was: -32 dB on the page, 0 dB in REAPER)');
+  const [sx, sy] = await ev('(() => { const r = document.querySelectorAll(".dsends .srow")[0].querySelector("input[type=range]").getBoundingClientRect(); return [r.left + r.width * 0.3, r.top + r.height / 2]; })()');
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: sx, y: sy });
+  await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: sx, y: sy, button: 'left', buttons: 1, clickCount: 1 });
+  await sleep(1700);
+  const held = await lvText();
+  await lvl(0.5);
+  await sleep(100);
+  ok((await lvText()) === held && held !== '-6.0 dB', 'held down (longer than the grace): the page keeps the hand’s value (' + held + ')');
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: sx, y: sy, button: 'left', buttons: 0, clickCount: 1 });
+  await sleep(50);
+  await lvl(0.5);
+  await sleep(100);
+  ok((await lvText()) === held, 'let go a moment ago: still the hand’s (its answer is on the way)');
+  await sleep(1600);
+  await lvl(Math.pow(10, -3 / 20));
+  await sleep(100);
+  ok((await lvText()) === '-3.0 dB', 'then REAPER’s again (-3 dB set by a script there): ' + (await lvText()));
   // the right-click menu on a track's name
   const [hx, hy] = await ev('(() => { const r = document.querySelector(".dcv").getBoundingClientRect(), D = window.ssDaw; return [r.left + 30, r.top + D.laneY(0) + 20]; })()');
   await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: hx, y: hy, button: 'right', buttons: 2, clickCount: 1 });
@@ -371,6 +397,21 @@ ok((await text('.dfollow')).startsWith('View') && await ev('document.querySelect
     'dragging a controller point sends cc_move naming it by index, ticks and number (' + JSON.stringify(a.note) + ')');
   await push({ dawedit: { id: a.note.id, why: 'Chilio has claimed Keys there' } });
   ok((await text('.pmsg')).includes('Not changed: Chilio has claimed Keys there'), 'a refusal says why');
+  // rt-fix7 (rt-r2 P14 5: dragged straight up, the point at 480 ticks went to the beat at 0): an up-and-down drag changes the value only
+  await push({ dawmidi: roll({ cc: { c: 1, ev: ccEv.ev.concat([3, 2030, 30, 3898, 0]) } }) });
+  await sleep(100);
+  await drag(X(4.03) + 3, Y(30), X(4.03) - 2, Y(90));
+  await sleep(100);
+  a = lastAction();
+  ok(a.note && a.note.op === 'cc_move' && a.note.n === 3 && Math.abs(a.note.to - 4.03) < 1e-6 && a.note.keep === true && Math.abs(a.note.v - 90) <= 2,
+    'a vertical drag keeps its time (4.03 s, off the grid) and says keep (' + JSON.stringify(a.note) + ')');
+  await push({ dawedit: { id: a.note.id, why: 'again' } });
+  await drag(X(4.03), Y(30), X(4.6), Y(30));
+  await sleep(100);
+  a = lastAction();
+  ok(a.note && a.note.op === 'cc_move' && a.note.n === 3 && Math.abs(a.note.to - 4.03) > 0.1 && !a.note.keep, 'dragged sideways past the slack: its time moves (snapped) (' + JSON.stringify(a.note) + ')');
+  await push({ dawedit: { id: a.note.id, why: 'again' }, dawmidi: roll({ cc: ccEv }) });
+  await sleep(100);
   await click(X(2.5), Y(60));
   const n0 = noteActs().length;
   await key('Delete', 'Delete', 46);

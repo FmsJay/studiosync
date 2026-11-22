@@ -83,6 +83,7 @@ function dawmidi.parse_note(e)
       if e.op == "cc_move" then
         out.to, out.v = num(e.to), pitch(e.v)
         if not (out.to and out.v) then return nil, "no place to put it", id end
+        out.keep = e.keep == true or nil -- (only its value: the time stays at its ticks, not where the page's ms would put it. rt-fix7)
       end
     end
     return out
@@ -331,7 +332,7 @@ local function note_apply(proj, cfg, b, e)
     local ok, _, _, ppq, chanmsg, _, msg2 = reaper.MIDI_GetCC(take, e.n)
     if not (ok and chanmsg == 0xB0 and msg2 == e.c and math.abs(ppq - e.s) < 0.5) then return "that controller point changed meanwhile" end
     return dawedit.in_undo(proj, NOTE_OPS[e.op], function()
-      if e.op == "cc_move" then reaper.MIDI_SetCC(take, e.n, nil, nil, math.max(0, tick(e.to)), nil, nil, nil, e.v, false) else reaper.MIDI_DeleteCC(take, e.n) end
+      if e.op == "cc_move" then reaper.MIDI_SetCC(take, e.n, nil, nil, not e.keep and math.max(0, tick(e.to)) or nil, nil, nil, nil, e.v, false) else reaper.MIDI_DeleteCC(take, e.n) end
     end)
   end
   if e.op == "add" then

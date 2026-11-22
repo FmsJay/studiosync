@@ -156,7 +156,8 @@ function hub.elect_song(cands, song, home, studio, now, mem)
   local r = best(here, function(c) return taking(c, now) end, hub.closer)
   local worse = clearly(r, holder, now, mem)
   if h and taking(h, now) and settled(h, now, holder and holder ~= h) then return h.user, "home" end
-  if holder and not worse then return holder.user, "kept", passed end
+  -- (the home passed over: the ranking below it decides, so its pick says "ranked" though it holds the role by now. rt-fix7)
+  if holder and not worse then return holder.user, passed and holder == r and "ranked" or "kept", passed end
   local s = studio and find(here, studio)
   if s and not clearly(r, s) then return studio, "studio", passed end
   if r then return r.user, "ranked", passed end
@@ -350,10 +351,19 @@ function hub.link_watch(mem, reach, now)
   return gone, back
 end
 -- The candidates without those the link lost and without guests (guests are never a hub: James, rt), each with its `back`. -> a new list. Pure.
+-- One the link lost here stays while another here (not lost, not a guest) says its own link reaches it: the computer cut off from the hub
+-- then names what the others name (rt-r2: LinuxBox and LinuxBox2, cut from the desktop, named the laptop the studio's hub and the song's
+-- while the desktop and the laptop named James; the song's home is passed over by reach instead, the same everywhere. rt-fix7)
 function hub.drop(list, gone, guests, back)
-  local out = {}
+  local out, g, gs = {}, gone or {}, guests or {}
   for _, c in ipairs(list or {}) do
-    if not ((gone or {})[c.user] or (guests or {})[c.user]) then c.back = (back or {})[c.user]; out[#out + 1] = c end
+    local lost = g[c.user]
+    if lost then
+      for _, v in ipairs(list) do
+        if v ~= c and not g[v.user] and not gs[v.user] and type(v.sees) == "table" and v.sees[c.user] == true then lost = false; break end
+      end
+    end
+    if not (lost or gs[c.user]) then c.back = (back or {})[c.user]; out[#out + 1] = c end
   end
   return out
 end
@@ -508,6 +518,7 @@ local held = {} -- root -> { studio = bool, songs = { [song] = bool } }: this sc
 local link_ok = false
 local sees_now = {} -- root\nsong -> those this computer's direct link reaches in that song's room now (sorted names): hub.tick
 local lag_now = {} -- root\nsong -> true while this computer's Syncthing is behind (hub.lagging): hub.tick
+local lag_from = {} -- root\nsong -> os.time it first lagged while holding a role (hub.tick)
 -- This computer's extension as REAPER loaded it ("menu extension": the extension says its version there), or nil.
 local function my_ext() local v = reaper.GetExtState(band.SECTION, "menu extension"); return type(v) == "string" and v ~= "" and v or nil end
 -- (ext: so a computer whose extension is too old for the hub's jobs isn't elected; sees: so the others count someone whose status comes late
@@ -630,6 +641,11 @@ function hub.tick(proj, cfg, b)
   -- (Syncthing behind here: the statuses' files vs the link's own. Said in this computer's status, so nobody elects it, the same everywhere: rt-p9)
   local okl, live = pcall(function() return require("presence").live(cfg, b.song, b.room) end)
   local lag = hub.lagging(okl and live or nil, list)
+  -- (holding a role, it gives it up for that only once it has lasted REACH_SETTLE s without a break: the desktop's Syncthing slow for a
+  -- moment handed Cross Test to the laptop and back within 21 s in rt-r2. Holding nothing, it takes none at once, as before. rt-fix7)
+  local hh = held[cfg.root]
+  if not lag then lag_from[tk] = nil
+  elseif hh and (hh.studio or hh.songs[b.song]) then lag_from[tk] = lag_from[tk] or now; lag = now - lag_from[tk] >= hub.REACH_SETTLE end
   lag_now[tk] = lag or nil
   list = hub.vouched(with_me(hub.with_room(list, okp and type(sts) == "table" and sts or {}, b.song), cfg, b.song, sees, lag))
   local lost, fast = {}, false
@@ -665,7 +681,11 @@ function hub.tick(proj, cfg, b)
   local was = view[key]
   if not was or was.hub ~= song or was.studio ~= studio then
     if song == cfg.user and (not was or was.hub ~= cfg.user) then band.log("you're the hub for '" .. b.song .. "' now: it keeps the project's restore points while you're not playing or recording (Health: Hand it on)")
-    elseif was and was.hub == cfg.user and song ~= cfg.user then band.log("'" .. b.song .. "': " .. (song and (song .. " is its hub now") or "no hub here now: the cloud copy stands in")) end
+    elseif was and was.hub == cfg.user and song ~= cfg.user then
+      -- (and why, so a hand-off in the log can be told apart: rt-r2's 21 s one couldn't. rt-fix7)
+      local cause = lag and " (Syncthing is behind here)" or passed and (" (" .. passed .. " here can't reach " .. tostring(home) .. " directly)") or ""
+      band.log("'" .. b.song .. "': " .. (song and (song .. " is its hub now" .. cause) or "no hub here now: the cloud copy stands in"))
+    end
   end
   view[key] = v
   v.job = hub.job_tick(proj, cfg, b, song == cfg.user)

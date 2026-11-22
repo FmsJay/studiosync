@@ -350,6 +350,15 @@ assert(r.ok, "moved: " .. tostring(r.why))
 local mv
 for _, x in ipairs(ccs()) do if x.v == 30 then mv = x end end
 assert(mv and mv.ppq == 3840 and mv.c == 1, "its new time on the grid the page snapped to (a beat), its new value")
+-- (rt-fix7, rt-r2 P14 5: an up-and-down drag says keep: the value alone, the ticks as they are, whatever time the page's ms say)
+local mvn
+for i, x in ipairs(ccs()) do if x == mv then mvn = i - 1 end end
+r = select(2, note("James", { op = "cc_move", item = KEYS, c = 1, n = mvn, s = 3840, to = 6.0004, v = 40, keep = true }))
+assert(r.ok and mv.ppq == 3840 and mv.v == 40, "keep: only the value changes (" .. tostring(mv.ppq) .. ")")
+r = select(2, note("James", { op = "cc_move", item = KEYS, c = 1, n = mvn, s = 3840, to = 6.0004, v = 30, keep = "yes" }))
+assert(r.ok and mv.ppq ~= 3840, "keep only when it's true")
+r = select(2, note("James", { op = "cc_move", item = KEYS, c = 1, n = mvn, s = mv.ppq, to = 6, v = 30 }))
+assert(r.ok and mv.ppq == 3840, "(put back)")
 r = select(2, note("James", { op = "cc_move", item = KEYS, c = 1, n = 2, s = 960, to = 6, v = 31 }))
 assert(r.why:find("controller point changed meanwhile"), "the page's view is stale: refused")
 r = select(2, note("James", { op = "cc_delete", item = KEYS, c = 7, n = 0, s = 0 }))

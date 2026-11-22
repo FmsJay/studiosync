@@ -241,7 +241,9 @@ function invite.take_pending()
   return s
 end
 local function member_root(studio)
-  for _, x in ipairs(band.bands()) do if x.id == studio and not x.waiting then return x.root end end
+  -- (not one this computer left or was taken out of: its copy stays, but a code link for it joins again. rt-fix7)
+  local groups = require("groups")
+  for _, x in ipairs(band.bands()) do if x.id == studio and not x.waiting and not groups.is_old(x.root) then return x.root end end
 end
 invite.confirm = function(text) return reaper.MB(text, "StudioSync", 4) == 6 end -- (tests stand in)
 invite.say = function(text) band.msg(text) end
@@ -395,15 +397,23 @@ function invite.on_token(h, d, now)
   all[h] = nil
   band.set_ext_json(band.SECTION, "invite redeem", all, true)
   local cfg = band.settings()
-  local root, why = cfg and services.join_band(cfg, code)
+  local root, why
+  if cfg then root, why = services.join_band(cfg, code) end -- (not `cfg and join_band(...)`: that keeps only its first value, and lost why)
   if not root then band.log("the invite link to " .. p.name .. " didn't join: " .. tostring(why or "StudioSync isn't set up here")); return false end
-  local asking = not reaper.file_exists(root .. "/_band/band.json")
+  local asking = why == "back" or not reaper.file_exists(root .. "/_band/band.json") -- ("back": a copy kept from before. rt-fix7)
   if asking then require("joins").request(root, code.invite) end
   band.log("joined " .. p.name .. " from an invite link" .. (asking and ": their computer lets you in over Tailscale, then the projects arrive" or ""))
   return true
 end
 
--- ---- each tick (from joins.tick: Autostart and the panel) -----------------------------------------------------------------------------
+-- ---- each tick (from joins.tick: Autostart and the panel; from Live sync while Autostart isn't running: invite.live_tick) ----------------
+-- Live sync's: a clicked link (lib/urlhandler.lua's file) is read in a REAPER without Autostart too, where it waited for the panel (rt-r2:
+-- LinuxBox's launcher left two files nobody read). Not while Autostart beats (every 2 s, "autostart beat"), which reads them. rt-fix7
+function invite.live_tick(now)
+  local beat = tonumber(reaper.GetExtState(band.SECTION, "autostart beat"))
+  if beat and reaper.time_precise() - beat < 20 and reaper.time_precise() >= beat then return end
+  return invite.tick(now)
+end
 local tick_at = -math.huge
 function invite.tick(now)
   local t = reaper.time_precise()
