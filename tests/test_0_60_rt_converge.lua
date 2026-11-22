@@ -638,4 +638,37 @@ local function chain(eq, comp, comp_first)
   return "<FXCHAIN\nSHOW 0\nLASTSEL 0\nDOCKED 0\n" .. table.concat(first, "\n") .. "\n" .. table.concat(second, "\n") .. "\n>\n"
 end
 
+-- ---- 13. a knob turned here that no look has seen holds the band's chain back (rt-r2's P1-4 and P1-1: the edit gone everywhere, no line) --------
+do
+  local S = studio("Conv13", "everyone")
+  local A, B = S.computer("James"), S.computer("Bee")
+  fx_api(A); fx_api(B)
+  S.edit(A, function(F) F.add_track("Keys", nil, chain(100, 200)) end)
+  A.F.clock = A.F.clock + 70
+  S.settle(A)
+  S.recv(B)
+  B.F.clock = B.F.clock + 70 -- (past the minute a landed chain may still be loading)
+  S.settle(B)
+  local function knobs(c) local t = S.track(c, "Keys"); return (t.body:gsub("\n", " "):gsub(".-QUFB(%d+)AAAA", "%1 ", 2):match("^(%d+ %d+)")) end
+  local function comp_first(c) local b = S.track(c, "Keys").body; return b:find("ReaComp", 1, true) < b:find("ReaEQ", 1, true) end
+  assert(knobs(B) == "100 200", "the chain is on Bee's (" .. tostring(knobs(B)) .. ")")
+  -- Bee turns the EQ's knob from a script: REAPER's change count doesn't move, so no look has seen it yet when James's reorder arrives
+  T = T + 2
+  S.as(B)
+  S.track(B, "Keys").body = chain(150, 200)
+  S.edit(A, function(F) S.track(A, "Keys").body = chain(100, 200, true); F.changed() end)
+  A.F.clock = A.F.clock + 2
+  S.settle(A)
+  assert(#S.events(function(v) return v.obj == "fx" and v.user == "James" end) == 2, "James's reorder went out")
+  S.recv(B, true) -- (it arrives; Bee's computer hasn't looked since her knob)
+  assert(knobs(B) == "150 200" and not comp_first(B), "Bee's knob is still there: James's chain waits for her edit to go out (was: it replaced the chain, her value gone everywhere, no line)")
+  B.edited = B.F.clock
+  S.settle(B)
+  assert(#S.events(function(v) return v.obj == "fx" and v.user == "Bee" end) == 1, "the look after it sends her knob")
+  for _ = 1, 3 do B.F.clock = B.F.clock + 6; A.F.clock = A.F.clock + 6; S.recv(B); S.recv(A) end -- (two chains on one track land 5 s apart: FX_SET_GAP)
+  assert(comp_first(A) and comp_first(B), "James's order on both")
+  assert(knobs(A) == "200 150" and knobs(B) == "200 150", "with Bee's EQ value, merged by plug-in (" .. tostring(knobs(A)) .. " / " .. tostring(knobs(B)) .. ")")
+  print("rt-converge 13: a knob turned from a script isn't lost to a bandmate's chain landing before the next look")
+end
+
 print("ok rt-converge")

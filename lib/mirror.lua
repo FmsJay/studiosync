@@ -4245,6 +4245,15 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   -- (watch marks those: comparing hashes here also caught what applying the band's last change had changed as a
   -- side effect, like a frozen track's items, and held it back for good)
   -- (Live sync's own unsent, as it publishes it, too: "Bring into main" lands through here in the panel, whose table is empty. Round 2, 0.59.46)
+  -- (and a plug-in's knob turned here that no look has seen yet: a script's, a control surface's or automation's write moves neither REAPER's
+  -- change count nor its undo list, so Live sync's "a look first" gate didn't hold the band's chain back; it replaced this one, the knob's
+  -- new value with it, and the edit was gone on every computer with no line anywhere (P1-4 and P1-1's first try, rt-r2). The knobs as of the
+  -- last look (mirror.fx_quiet) against now: moved, it's an edit of yours not sent yet, and theirs waits for it like any other. rt-converge)
+  if ev.obj == "fx" and not ev.gone then
+    local key = tostring(proj) .. ev.oid
+    local tr = not mirror.unsent[key] and mirror.fx_quiet[key] ~= nil and mirror.find(proj, "track", ev.track)
+    if tr and mirror.fx_quiet[key] ~= mirror.fx_params(tr) then mirror.unsent[key], mirror.unsettled = true, true end
+  end
   if mirror.unsent[tostring(proj) .. ev.oid] or mirror.unsent_elsewhere(proj)[ev.oid] then return false end
   -- (an item of yours held back (its audio couldn't be copied, its last version unreadable) is about to be replaced by the band's: a copy goes to
   -- "(yours, not sent)" first, as a refusal keeps one; it went with no copy. Only for held-back items. Round 2 review, 0.59.46)
