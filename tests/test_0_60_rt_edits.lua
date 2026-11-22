@@ -1460,7 +1460,13 @@ do
   local stale_file = A.F.save()
   tick()
   recv(C)
-  assert(names(C) == names(A) and names(C) ~= studio, "(a computer that's here takes the place the change carries: " .. names(C) .. ")")
+  -- (since rt-converge a change that isn't a move no longer moves its track where it lands (mirror.says_move): the third computer keeps the
+  -- studio's order. For the order heal's own rules below its order is put apart as the desktop's was, as a move landed with no list behind it)
+  assert(names(C) == studio, "(a computer that's here keeps its order: the change says no move: " .. names(C) .. ")")
+  as(C)
+  for i, t in ipairs(C.F.tracks) do if t.name == "Gtr" then table.insert(C.F.tracks, table.remove(C.F.tracks, i)); break end end
+  mirror.order_landed[tostring(C.F.proj)] = C.F.clock
+  assert(names(C) == names(A) and names(C) ~= studio, "(the third computer's order apart: " .. names(C) .. ")")
   local real_enum = B.F.reaper.EnumProjects
   B.F.reaper.EnumProjects = function(i) if i == -1 then return {}, "" end return real_enum(i) end -- (the laptop's tab is behind)
   recv(B)

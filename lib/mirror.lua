@@ -4283,12 +4283,13 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   -- track change carries the place its track had where it was made, so a bandmate's rename of Drums, landing after your own move of Gtr above
   -- it, put Drums back on top here and nowhere else, until the order heal two minutes later. The soak's bug 6. A change that says it is a
   -- move (`moved`, W.send) always places: a track dragged back under the one its record names reads the same there. rt-converge)
+  -- (and only a move: the place a change names is where its track sat on its sender's computer, which follows whatever landed there; a
+  -- fader moved on a computer whose order had drifted moved the track on everyone else's, away from the studio's order list. mirror.says_move)
   local function placed(x)
-    if x.obj ~= "track" or x.gone or type(x.state) ~= "table" or x.moved ~= nil or (type(x.loser) == "table" and x.loser.moved ~= nil) then return x end
-    local _, _, kev = mirror.known(proj, x.oid)
-    local had = (kev or "") ~= "" and mirror.event_file(room_dir, kev)
-    if had and not had.gone and type(had.state) == "table" and had.state.after == x.state.after then return setmetatable({ [mirror.STAY] = true }, { __index = x }) end
-    return x
+    if x.obj ~= "track" or x.gone or type(x.state) ~= "table" then return x end
+    local _, kh, kev = mirror.known(proj, x.oid)
+    if (kev or "") == "" or kh == "" or mirror.says_move(room_dir, x, kev) then return x end
+    return setmetatable({ [mirror.STAY] = true }, { __index = x })
   end
   if merging then
     local ok, h = mirror.apply(proj, placed(merging), media_dir, local_mix)
@@ -6362,14 +6363,9 @@ function mirror.watch(proj, cfg, song, room, opts)
     if not mirror.said[key] then mirror.said[key] = true; band.log(text) end
   end
   w.playing, w.mine, w.allowed, w.say_once = playing, mine, allowed, say_once
-  if next(w.moved_set) then -- (a move that isn't yours to make goes back, below)
-    local yours = true
-    for oid in pairs(w.moved_set) do
-      local o = by_oid[oid]
-      if o and not allowed(o, perm_name(o, by_oid), nil) then yours = false end
-    end
-    if yours then mirror.publish_order(proj, room_dir, me) end
-  end
+  -- (the studio's order list is written after this look's sends, and only when a move went out: w.order_out, below. Written here, before any
+  -- was judged, it went out for a move that was then held for an ask and put back half a minute later: the list said an order no change had
+  -- made, and the order heal moved everyone's tracks to it. rt-converge)
   local seen = {}
   mirror.index_for(proj) -- (put-backs find items through the index, not a walk through every item each: 0.59.14, review)
   -- a burst (hundreds of items moved at once) goes out a quarter second a pass, the rest on the next passes, which
@@ -6864,6 +6860,13 @@ function mirror.moved_since(room_dir, x, upto)
   end
   return from
 end
+-- Does landing version `x` of a track move the track, on a computer that holds version `held` (an event id)? Only when someone moved it on
+-- purpose in between: x, or a version x builds on down to `held`, says it is a move (`moved`: W.send, mirror.revert), on either side of a
+-- merge. The place every change names (`after`) is only where the track sat on its sender's computer. rt-converge
+function mirror.says_move(room_dir, x, held)
+  if mirror.moved_since(room_dir, x, held) ~= nil then return true end
+  return type(x.loser) == "table" and mirror.moved_since(room_dir, x.loser, held) ~= nil
+end
 -- Track order put right during a session. keep_order ran only as a project opened, and did nothing then if changes still waited, so a move
 -- that never landed (its tab was behind; a catch-up that applied two tracks' old places one after the other) or an older file's order stayed
 -- until the project was opened again, with Health red. REAPER check, 0.59.49.76: the desktop reopened an older file and one change of a
@@ -7283,8 +7286,10 @@ function mirror.heal(proj, room_dir, local_mix)
         -- keeps the "sits under" of the day it was made, and one that only sits elsewhere since isn't sent again. The settled version of
         -- XT Rec A was a merge of its newest change with the same change as three computers had each sent it a day before, another id and
         -- the same content, and each computer's heal, whenever it ran, moved the track back under the track it once sat under. F5, rt-undo)
+        -- (and only where a move was made on purpose between the version held and this one, as mirror.receive lands one: mirror.says_move.
+        -- rt-converge)
         local held, put = ev.obj == "track" and (kev or "") ~= "" and event_file(room_dir, kev), ev
-        if held and type(held.state) == "table" and type(ev.state) == "table" and held.state.after == ev.state.after then
+        if held and type(held.state) == "table" and type(ev.state) == "table" and (held.state.after == ev.state.after or not mirror.says_move(room_dir, ev, kev)) then
           put = setmetatable({ [mirror.STAY] = true }, { __index = ev })
         end
         local ok, applied, h = pcall(apply, proj, put, room_dir .. "/media", local_mix)

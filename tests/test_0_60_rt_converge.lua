@@ -261,7 +261,37 @@ do
   S.edit(A, function(F) reaper.SetOnlyTrackSelected(S.track(A, "Keys")); reaper.ReorderSelectedTracks(0, 0) end)
   S.recv(B)
   assert(S.names(B) == "Keys, Gtr, T108, Bass" and S.names(A) == S.names(B), "a move lands (" .. S.names(B) .. ")")
-  print("rt-converge 3: a rename doesn't move its track; a move does")
+  -- a computer whose order has drifted (an older file's order: nobody moved anything) changes a fader: the track's place there isn't news
+  S.as(B)
+  table.insert(B.F.tracks, table.remove(B.F.tracks, 1)) -- (Keys at the bottom on Bee's, by no move of hers)
+  mirror.order_seen[tostring(B.F.proj)] = nil
+  S.edit(B, function(F) reaper.SetMediaTrackInfo_Value(S.track(B, "Keys"), "D_VOL", 0.5) end)
+  local sent = S.events(function(v) return v.obj == "track" and v.name == "Keys" and v.user == "Bee" end)
+  assert(#sent == 1 and sent[1].moved == nil and sent[1].state.after ~= "", "Bee's fader change names the place Keys has on her computer, and says no move")
+  S.recv(A)
+  assert(S.names(A) == "Keys, Gtr, T108, Bass", "James's Keys stays where the studio has it (was: it went to the bottom, as the change's place said): " .. S.names(A))
+  -- a move that's held for an ask isn't in the studio's order list (Claims: the track is James's while he edits; Cee renames and moves it)
+  local S2 = studio("Conv3c", "open")
+  local J, C = S2.computer("James"), S2.computer("Cee")
+  here_now = { James = true, Cee = true }
+  S2.edit(J, function(F) for _, n in ipairs({ "Drums", "Bass", "Keys" }) do F.add_track(n) end end)
+  S2.recv(C)
+  T = T + sync.AUTO_IDLE + 120
+  S2.edit(J, function(F) reaper.SetMediaTrackInfo_Value(S2.track(J, "Keys"), "D_VOL", 0.5) end)
+  S2.recv(C)
+  files[S2.dir .. "/order/Cee.json"] = nil
+  T = T + 2
+  S2.as(C)
+  C.F.clock = C.F.clock + 1
+  reaper.GetSetMediaTrackInfo_String(S2.track(C, "Keys"), "P_NAME", "K2", true)
+  reaper.SetOnlyTrackSelected(S2.track(C, "K2"))
+  reaper.ReorderSelectedTracks(0, 0)
+  C.edited = C.F.clock
+  S2.look(C)
+  assert(#S2.events(function(v) return v.obj == "track" and v.user == "Cee" end) == 0, "Cee's rename and move of James's track wait for his answer: nothing went out")
+  assert(files[S2.dir .. "/order/Cee.json"] == nil, "and the studio's order list doesn't say a move nobody has (was: written before the move was judged)")
+  mirror.unsettled = nil
+  print("rt-converge 3: a rename doesn't move its track; a move does; a drifted place isn't a move; a held move isn't in the order list")
 end
 
 -- ---- 4. a returning track's items come back on every computer (the soak's bug 4) ----------------------------------------------------------------
