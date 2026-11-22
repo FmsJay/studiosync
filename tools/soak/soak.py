@@ -350,11 +350,14 @@ class Sim:
         if not (a and b):
             return False
         sa, sb = a.call(self.t, "show", oid), b.call(self.t, "show", oid)
-        def num9(m):  # (and a whole number as one: "0.99999999999997" against "1", a rate that went to another map and back)
-            s = ("%.9f" % float(m.group(0))).rstrip("0").rstrip(".")
-            return "0" if s == "-0" else s
-        r = lambda s: re.sub(r"-?\d+\.\d+(e-?\d+)?", num9, s)
-        if sa != "(not here)" and sb != "(not here)" and r(sa) == r(sb):
+        # (number by number within 1e-9, not rounded to 9 decimals: 10.493362393502 and 10.4933623935 rounded to two sides of the 9th digit,
+        # seed 15040 at rt-fix9. A whole number as one too: "0.99999999999997" against "1", a rate that went to another map and back)
+        num = re.compile(r"-?\d+(?:\.\d+)?(?:e-?\d+)?")
+        def same(x, y):
+            nx, ny = num.findall(x), num.findall(y)
+            return num.split(x) == num.split(y) and len(nx) == len(ny) and all(
+                p == q or abs(float(p) - float(q)) <= 1e-9 * max(1.0, abs(float(p))) for p, q in zip(nx, ny))
+        if sa != "(not here)" and sb != "(not here)" and same(sa, sb):
             self.stats["float_noise"] = self.stats.get("float_noise", 0) + 1
             return True
         return False
