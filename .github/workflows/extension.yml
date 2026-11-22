@@ -46,11 +46,11 @@ jobs:
         run: |
           clang++ -std=c++17 -O2 -DDIRECT_STANDALONE tests/direct_test.cpp extension/direct.cpp extension/direct_audio.cpp -o direct_test
           ./direct_test
-      - name: Jam's capture (tests/jam_test.cpp, extension/direct_audio.cpp; rt-jam)
+      - name: Jam's capture (tests/jam_test.cpp, extension/direct_audio.cpp; rt-jam; over Opus and its decoder, rt-p12)
         if: ${{ !cancelled() }}
         timeout-minutes: 10
         run: |
-          clang++ -std=c++17 -O2 -DDIRECT_STANDALONE tests/jam_test.cpp extension/direct.cpp extension/direct_audio.cpp -o jam_test
+          clang++ -std=c++17 -O2 -DDIRECT_STANDALONE -DJAM_OPUS -I extension/third_party/opus/include tests/jam_test.cpp extension/direct.cpp extension/direct_audio.cpp libssdeps.a -o jam_test
           ./jam_test
       - name: The full-quality copy's capture (tests/keep_test.cpp, extension/direct_audio.cpp; rt-double)
         if: ${{ !cancelled() }}
@@ -154,11 +154,11 @@ jobs:
         run: |
           g++ -std=c++17 -O2 -pthread -DDIRECT_STANDALONE tests/direct_test.cpp extension/direct.cpp extension/direct_audio.cpp -o direct_test
           ./direct_test
-      - name: Jam's capture (tests/jam_test.cpp, extension/direct_audio.cpp; rt-jam)
+      - name: Jam's capture (tests/jam_test.cpp, extension/direct_audio.cpp; rt-jam; over Opus and its decoder, rt-p12)
         if: ${{ !cancelled() }}
         timeout-minutes: 10
         run: |
-          g++ -std=c++17 -O2 -pthread -DDIRECT_STANDALONE tests/jam_test.cpp extension/direct.cpp extension/direct_audio.cpp -o jam_test
+          g++ -std=c++17 -O2 -pthread -DDIRECT_STANDALONE -DJAM_OPUS -I extension/third_party/opus/include tests/jam_test.cpp extension/direct.cpp extension/direct_audio.cpp libssdeps.a -o jam_test
           ./jam_test
       - name: The full-quality copy's capture (tests/keep_test.cpp, extension/direct_audio.cpp; rt-double)
         if: ${{ !cancelled() }}

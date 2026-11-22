@@ -8,6 +8,7 @@
 #endif
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -20,6 +21,10 @@
 #include "direct.h"
 #ifdef _WIN32
 #include <windows.h>
+#endif
+#if !defined(DIRECT_STANDALONE) || defined(JAM_OPUS) // (Jam over Opus, rt-p12: the extension links Opus for live audio; a standalone test asks)
+#define SS_JAM_OPUS 1
+#include "opus.h"
 #endif
 
 namespace {
@@ -151,38 +156,299 @@ double g_jlast_end = 0;
 std::thread g_jthr;
 std::string g_jstatus;
 std::mutex g_jmx; // (main-thread API calls only)
+int g_jcodec = 0; // 0: 16-bit WAV; 1: Ogg Opus (rt-p12: about 192 kbit/s in place of 1.5 Mbit/s a listener). Set before the worker starts.
+std::atomic<const char *> g_jerr{ "" };
+
+#ifdef SS_JAM_OPUS
+// Ogg (RFC 3533) for Opus (RFC 7845): every packet on a page of its own, so the receiver's decoder (below) reads whole pages as they grow.
+const int JAM_KBPS = 192, OPUS_FR = 960; // (20 ms frames at 48 kHz)
+unsigned g_crc[256];
+void crc_init() { for (unsigned i = 0; i < 256; ++i) { unsigned r = i << 24; for (int k = 0; k < 8; ++k) r = (r & 0x80000000u) ? (r << 1) ^ 0x04c11db7u : r << 1; g_crc[i] = r; } }
+unsigned crc_add(unsigned c, const unsigned char *d, size_t n) { for (size_t i = 0; i < n; ++i) c = (c << 8) ^ g_crc[((c >> 24) ^ d[i]) & 255]; return c; }
+void put32(unsigned char *p, unsigned v) { for (int i = 0; i < 4; ++i) p[i] = (unsigned char)(v >> (8 * i)); }
+bool ogg_page(FILE *f, const unsigned char *pkt, size_t n, int type, long long granule, unsigned seq)
+{
+  const size_t segs = n / 255 + 1; // (a packet of a multiple of 255 bytes ends with a 0-byte segment)
+  if (segs > 255) return false;
+  unsigned char h[27 + 255];
+  memcpy(h, "OggS", 4); h[4] = 0; h[5] = (unsigned char)type;
+  for (int i = 0; i < 8; ++i) h[6 + i] = (unsigned char)((unsigned long long)granule >> (8 * i));
+  put32(h + 14, 0x53534a4du); put32(h + 18, seq); put32(h + 22, 0); h[26] = (unsigned char)segs;
+  for (size_t i = 0; i < segs; ++i) h[27 + i] = (unsigned char)(i + 1 < segs ? 255 : n % 255);
+  put32(h + 22, crc_add(crc_add(0, h, 27 + segs), pkt, n));
+  return fwrite(h, 1, 27 + segs, f) == 27 + segs && fwrite(pkt, 1, n, f) == n;
+}
+#endif
 
 void jam_loop(std::string path)
 {
   while (g_jsr.load() <= 0 && !g_jstop) std::this_thread::sleep_for(std::chrono::milliseconds(10)); // (its rate comes with the first block)
-  FILE *f = g_jstop ? nullptr : open_w(path);
-  if (!f) { g_jstate = 3; return; }
   const int sr = (int)g_jsr.load();
-  wav_header(f, 2, sr, 0, 16);
+#ifdef SS_JAM_OPUS
+  OpusEncoder *enc = nullptr;
+  int pre = 0;
+  if (g_jcodec == 1 && !g_jstop) {
+    int err = 0;
+    if (sr != 48000) { g_jerr = "Opus needs the audio device at 48 kHz"; g_jstate = 3; return; }
+    enc = opus_encoder_create(48000, 2, OPUS_APPLICATION_AUDIO, &err);
+    if (!enc) { g_jerr = "no Opus encoder"; g_jstate = 3; return; }
+    opus_encoder_ctl(enc, OPUS_SET_BITRATE(JAM_KBPS * 1000));
+    opus_encoder_ctl(enc, OPUS_SET_COMPLEXITY(8)); // (the worker's, not the audio thread's: a little more care than live audio's 5)
+    opus_encoder_ctl(enc, OPUS_GET_LOOKAHEAD(&pre));
+  }
+#else
+  if (g_jcodec == 1) { g_jerr = "this build has no Opus"; g_jstate = 3; return; }
+#endif
+  FILE *f = g_jstop ? nullptr : open_w(path);
+  if (!f) {
+#ifdef SS_JAM_OPUS
+    if (enc) opus_encoder_destroy(enc);
+#endif
+    g_jerr = "couldn't write the file"; g_jstate = 3; return;
+  }
+  bool ok = true;
+#ifdef SS_JAM_OPUS
+  // (OpusHead: version 1, stereo, pre-skip, 48 kHz in, no gain, mapping 0; then OpusTags. The receiver drops pre-skip frames, so its copy's
+  // frame k is the frame k fed here: the segments' file frames hold for it too.)
+  std::vector<float> acc((size_t)OPUS_FR * 2);
+  unsigned char pkt[4000];
+  size_t fill = 0;
+  long long packets = 0;
+  unsigned seq = 0;
+  auto encode = [&](int type, long long granule) {
+    const int n = opus_encode_float(enc, acc.data(), OPUS_FR, pkt, (int)sizeof(pkt));
+    ok = n > 0 && ogg_page(f, pkt, (size_t)n, type, granule, seq++) && ok;
+    ++packets;
+  };
+  if (enc) {
+    crc_init();
+    unsigned char head[19] = { 'O', 'p', 'u', 's', 'H', 'e', 'a', 'd', 1, 2, (unsigned char)(pre & 255), (unsigned char)(pre >> 8), 0, 0, 0, 0, 0, 0, 0 };
+    put32(head + 12, 48000);
+    unsigned char tags[8 + 4 + 10 + 4] = { 'O', 'p', 'u', 's', 'T', 'a', 'g', 's' };
+    put32(tags + 8, 10); memcpy(tags + 12, "StudioSync", 10); put32(tags + 22, 0);
+    ok = ogg_page(f, head, sizeof(head), 2, 0, seq++) && ogg_page(f, tags, sizeof(tags), 0, 0, seq++);
+  } else
+#endif
+    wav_header(f, 2, sr, 0, 16);
   fflush(f);
   static short buf[4096 * 2];
   long long frames = 0;
-  bool ok = true;
   for (;;) {
     const bool last = g_jstop.load(); // (read before draining: whatever came before the stop is written)
     const size_t r = g_jr.load(std::memory_order_relaxed), w = g_jw.load(std::memory_order_acquire);
     if (w == r) { if (last) break; std::this_thread::sleep_for(std::chrono::milliseconds(10)); continue; }
     const size_t n = std::min<size_t>(w - r, 4096);
-    for (size_t k = 0; k < n; ++k) {
-      const float *s = g_jring + ((r + k) & (JAM_RING - 1)) * 2;
-      for (int c = 0; c < 2; ++c) buf[k * 2 + c] = (short)std::lround(std::max(-1.f, std::min(1.f, s[c])) * 32767.f);
+#ifdef SS_JAM_OPUS
+    if (enc) {
+      for (size_t k = 0; k < n; ++k) {
+        const float *s = g_jring + ((r + k) & (JAM_RING - 1)) * 2;
+        for (int c = 0; c < 2; ++c) acc[fill * 2 + (size_t)c] = std::max(-1.f, std::min(1.f, s[c]));
+        if (++fill == (size_t)OPUS_FR) { encode(0, (packets + 1) * OPUS_FR); fill = 0; }
+      }
+    } else
+#endif
+    {
+      for (size_t k = 0; k < n; ++k) {
+        const float *s = g_jring + ((r + k) & (JAM_RING - 1)) * 2;
+        for (int c = 0; c < 2; ++c) buf[k * 2 + c] = (short)std::lround(std::max(-1.f, std::min(1.f, s[c])) * 32767.f);
+      }
+      ok = fwrite(buf, 4, n, f) == n && ok;
     }
     g_jr.store(r + n, std::memory_order_release);
-    ok = fwrite(buf, 4, n, f) == n && ok;
     fflush(f); // (the link reads the file by its size: every 10 ms of it is there to send)
     frames += (long long)n;
     g_jfile_frames = frames;
   }
-  wav_header(f, 2, sr, (unsigned)frames, 16); // (the real sizes at the end: the link sends the header last)
+#ifdef SS_JAM_OPUS
+  if (enc) { // (the encoder's lookahead flushed out with silence; the last page's granule trims the copy to exactly the frames fed)
+    const long long need = frames + pre;
+    for (;;) {
+      for (size_t k = fill * 2; k < acc.size(); ++k) acc[k] = 0;
+      fill = 0;
+      const bool eos = (packets + 1) * OPUS_FR >= need;
+      encode(eos ? 4 : 0, eos ? need : (packets + 1) * OPUS_FR);
+      if (eos) break;
+    }
+    opus_encoder_destroy(enc);
+  } else
+#endif
+    wav_header(f, 2, sr, (unsigned)frames, 16); // (the real sizes at the end: the link sends the header last)
   ok = fclose(f) == 0 && ok;
+  if (!ok) g_jerr = "a write failed";
   g_jstate = ok ? 2 : 3;
 }
+
+// ---- A receiver's decoder (rt-p12): a bandmate's growing Ogg Opus copy -> a growing 16-bit stereo WAV beside it, which lib/jam.lua places
+// as before. One worker for every job, reading whole pages as they arrive (the link appends only), never past what's there.
+FILE *open_r(const std::string &p)
+{
+#ifdef _WIN32
+  const int n = MultiByteToWideChar(CP_UTF8, 0, p.c_str(), -1, nullptr, 0);
+  std::wstring w(n > 0 ? n : 1, L'\0');
+  if (n > 0) MultiByteToWideChar(CP_UTF8, 0, p.c_str(), -1, &w[0], n);
+  return _wfopen(w.c_str(), L"rb");
+#else
+  return fopen(p.c_str(), "rb");
+#endif
+}
+struct JamDec {
+  std::string src, dst, part;
+  FILE *in = nullptr, *out = nullptr;
+#ifdef SS_JAM_OPUS
+  OpusDecoder *dec = nullptr;
+#endif
+  long long off = 0, frames = 0, limit = -1;
+  int pkts = 0, ch = 2, pre = 0, skipped = 0, state = 1; // (state: 1 decoding, 2 done, 3 failed)
+  bool finish = false, eos = false;
+  const char *err = "";
+  std::vector<float> pcm;
+};
+const size_t DEC_JOBS = 16, DEC_PART_MAX = 1 << 16;
+std::vector<JamDec *> g_djobs;
+std::mutex g_dmx;
+std::atomic<bool> g_dstop{ false }, g_drunning{ false }; // (the worker is detached: nothing left joinable when a process ends mid-job)
+std::string g_dout;
+void dec_close(JamDec &j)
+{
+  if (j.in) fclose(j.in);
+  if (j.out) fclose(j.out);
+  j.in = j.out = nullptr;
+#ifdef SS_JAM_OPUS
+  if (j.dec) opus_decoder_destroy(j.dec);
+  j.dec = nullptr;
+#endif
+}
+void dec_fail(JamDec &j, const char *why) { j.err = why; j.state = 3; dec_close(j); }
+#ifdef SS_JAM_OPUS
+void dec_packet(JamDec &j, const unsigned char *p, size_t n)
+{
+  if (j.pkts++ == 0) {
+    if (n < 19 || memcmp(p, "OpusHead", 8) != 0 || (p[9] != 1 && p[9] != 2)) return dec_fail(j, "not an Opus copy");
+    j.ch = p[9];
+    j.pre = p[10] | (p[11] << 8);
+    int err = 0;
+    j.dec = opus_decoder_create(48000, j.ch, &err);
+    if (!j.dec) return dec_fail(j, "no Opus decoder");
+    return;
+  }
+  if (j.pkts == 2) return; // (OpusTags)
+  const int got = opus_decode_float(j.dec, p, (int)n, j.pcm.data(), 5760, 0);
+  if (got < 0) return dec_fail(j, "a bad Opus packet");
+  short o[5760 * 2];
+  int m = 0;
+  for (int k = 0; k < got; ++k) {
+    if (j.skipped < j.pre) { ++j.skipped; continue; }
+    if (j.limit >= 0 && j.frames + m >= j.limit) break;
+    const float l = j.pcm[(size_t)k * (size_t)j.ch], r = j.pcm[(size_t)k * (size_t)j.ch + (size_t)(j.ch - 1)];
+    o[m * 2] = (short)std::lround(std::max(-1.f, std::min(1.f, l)) * 32767.f);
+    o[m * 2 + 1] = (short)std::lround(std::max(-1.f, std::min(1.f, r)) * 32767.f);
+    ++m;
+  }
+  if (m > 0 && fwrite(o, 4, (size_t)m, j.out) != (size_t)m) return dec_fail(j, "a write failed");
+  j.frames += m;
+}
+#endif
+void dec_step(JamDec &j)
+{
+#ifdef SS_JAM_OPUS
+  if (!j.in) j.in = open_r(j.src);
+  if (!j.in) { if (j.finish) dec_fail(j, "no copy to read"); return; }
+  if (!j.out) {
+    j.out = open_w(j.dst);
+    if (!j.out) return dec_fail(j, "couldn't write the WAV");
+    wav_header(j.out, 2, 48000, 0, 16);
+    j.pcm.assign(5760 * 2, 0.f);
+  }
+  bool at_end = false;
+  for (int pages = 0; pages < 100 && j.state == 1 && !j.eos; ++pages) { // (about 2 s of audio a pass, then the next job's turn)
+    unsigned char h[27 + 255];
+    clearerr(j.in);
+    if (fseek(j.in, (long)j.off, SEEK_SET) != 0 || fread(h, 1, 27, j.in) != 27) { at_end = true; break; }
+    if (memcmp(h, "OggS", 4) != 0 || h[4] != 0) return dec_fail(j, "not an Ogg page");
+    const int nseg = h[26];
+    if ((int)fread(h + 27, 1, (size_t)nseg, j.in) != nseg) { at_end = true; break; }
+    size_t body = 0;
+    for (int i = 0; i < nseg; ++i) body += h[27 + i];
+    std::vector<unsigned char> d(body);
+    if (body && fread(d.data(), 1, body, j.in) != body) { at_end = true; break; }
+    j.off += 27 + nseg + (long long)body;
+    if (h[5] & 4) { // (the last page: its granule says how many frames the copy has)
+      long long g = 0;
+      for (int i = 7; i >= 0; --i) g = (g << 8) | h[6 + i];
+      j.eos = true;
+      j.limit = std::max(0LL, g - j.pre);
+    }
+    size_t at = 0;
+    for (int i = 0; i < nseg && j.state == 1; ++i) {
+      j.part.append((const char *)d.data() + at, h[27 + i]);
+      at += h[27 + i];
+      if (j.part.size() > DEC_PART_MAX) return dec_fail(j, "a packet too big");
+      if (h[27 + i] < 255) { dec_packet(j, (const unsigned char *)j.part.data(), j.part.size()); j.part.clear(); }
+    }
+  }
+  if (j.state != 1) return;
+  fflush(j.out);
+  if (j.eos || (j.finish && at_end)) { // (whole: the header's real sizes)
+    wav_header(j.out, 2, 48000, (unsigned)j.frames, 16);
+    dec_close(j);
+    j.state = 2;
+  }
+#else
+  dec_fail(j, "this build has no Opus");
+#endif
+}
+void dec_loop()
+{
+  while (!g_dstop) {
+    {
+      std::lock_guard<std::mutex> l(g_dmx);
+      for (JamDec *j : g_djobs) if (j->state == 1) dec_step(*j);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  g_drunning = false;
+}
+const char *dec_json(const JamDec *j)
+{
+  static const char *states[] = { "none", "decoding", "done", "failed" };
+  char b[200];
+  snprintf(b, sizeof(b), "{\"state\":\"%s\",\"frames\":%lld,\"error\":\"%s\"}", j ? states[j->state & 3] : "none", j ? j->frames : 0, j ? j->err : "");
+  g_dout = b;
+  return g_dout.c_str();
+}
+void dec_stop_all()
+{
+  g_dstop = true;
+  for (int i = 0; i < 1000 && g_drunning; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  std::lock_guard<std::mutex> l(g_dmx);
+  for (JamDec *j : g_djobs) { dec_close(*j); delete j; }
+  g_djobs.clear();
+}
 } // namespace
+
+const char *direct_jam_decode(const char *src, const char *dst, int mode)
+{
+  std::lock_guard<std::mutex> l(g_dmx);
+  JamDec *j = nullptr;
+  size_t at = 0;
+  for (; at < g_djobs.size(); ++at) if (src && g_djobs[at]->src == src) { j = g_djobs[at]; break; }
+  if (mode == 2) {
+    if (j) { dec_close(*j); delete j; g_djobs.erase(g_djobs.begin() + (long)at); }
+    return dec_json(nullptr);
+  }
+  if (!j) {
+    static JamDec refused;
+    refused.state = 3;
+    if (!src || !*src || !dst || !*dst) { refused.err = "no file named"; return dec_json(&refused); }
+    if (g_djobs.size() >= DEC_JOBS) { refused.err = "too many copies at once"; return dec_json(&refused); }
+    j = new JamDec();
+    j->src = src; j->dst = dst;
+    g_djobs.push_back(j);
+    if (!g_drunning) { g_dstop = false; g_drunning = true; std::thread(dec_loop).detach(); }
+  }
+  if (mode == 1) j->finish = true;
+  return dec_json(j);
+}
 
 void direct_jam_feed(const float *const *ch, int nch, int len, double srate, double pos, bool playing)
 {
@@ -225,6 +491,10 @@ int direct_jam_start(const char *path)
   if (!g_jring) return 0;
   g_jw = 0; g_jr = 0; g_jdropped = 0; g_jfile_frames = 0; g_jsegs = 0; g_jsr = 0; g_jrate_changed = false; g_jstop = false;
   g_jlast_ok = false;
+  const size_t pl = strlen(path); // (".opus": Ogg Opus; anything else the 16-bit WAV. rt-p12)
+  g_jcodec = pl > 5 && (path[pl - 5] == '.') && tolower((unsigned char)path[pl - 4]) == 'o' && tolower((unsigned char)path[pl - 3]) == 'p' &&
+             tolower((unsigned char)path[pl - 2]) == 'u' && tolower((unsigned char)path[pl - 1]) == 's' ? 1 : 0;
+  g_jerr = "";
   g_jstate = 1;
   g_jthr = std::thread(jam_loop, std::string(path));
   g_jon.store(true, std::memory_order_release);
@@ -249,9 +519,10 @@ const char *direct_jam_status()
 {
   std::lock_guard<std::mutex> l(g_jmx);
   static const char *states[] = { "none", "writing", "done", "failed" };
-  char b[256];
-  snprintf(b, sizeof(b), "{\"on\":%s,\"state\":\"%s\",\"srate\":%.0f,\"frames\":%lld,\"fed\":%lld,\"dropped\":%lld,\"rate_changed\":%s,\"segs\":[",
-           g_jon ? "true" : "false", states[g_jstate.load() & 3], g_jsr.load(), g_jfile_frames.load(), (long long)g_jw.load(), g_jdropped.load(),
+  char b[384];
+  const int st = g_jstate.load() & 3; // (the error is set before a failed state)
+  snprintf(b, sizeof(b), "{\"on\":%s,\"state\":\"%s\",\"codec\":\"%s\",\"error\":\"%s\",\"srate\":%.0f,\"frames\":%lld,\"fed\":%lld,\"dropped\":%lld,\"rate_changed\":%s,\"segs\":[",
+           g_jon ? "true" : "false", states[st], g_jcodec == 1 ? "opus" : "wav", g_jerr.load(), g_jsr.load(), g_jfile_frames.load(), (long long)g_jw.load(), g_jdropped.load(),
            g_jrate_changed ? "true" : "false");
   g_jstatus = b;
   // (the newest JAM_SEGS - 1, each [index, file frame, position]; one the audio thread may be writing over is left out by reading the count again)
@@ -277,10 +548,11 @@ const char *direct_jam_status()
 // rewrites each header every second, so a computer that dies mid-jam leaves files readable up to then. Nothing runs until StudioSync_KeepStart.
 namespace {
 const size_t KEEP_RING = 1 << 18; // frames (about 5 s at 48 kHz; the worker drains it every 10 ms)
-const int KEEP_MAX_CH = 32, KEEP_MAX_FILES = 16, KEEP_SEGS = 64;
+const int KEEP_MAX_CH = 32, KEEP_MAX_FILES = 16, KEEP_SEGS = 64, KEEP_STAMPS = 64;
 const double KEEP_JUMP = 0.02; // s: a seek or a loop, not the play position's own jitter
 const unsigned long long KEEP_MAX_BYTES = 0xFFFFFFFFull - 64; // (a WAV's sizes are 32-bit: Lua starts a new file long before)
-struct KeepSeg { long long n0; double t0; int playing; double p0; };
+struct KeepSeg { long long n0; double t0; int playing; double p0; double rate; };
+struct KeepStamp { long long n; double t; }; // (rt-p12: a file frame and its link clock, one a second: lib/double.lua fits the device's real rate)
 struct KeepFile { std::string path; int nch; };
 float *g_kring = nullptr;
 std::vector<KeepFile> g_kfiles; // (set before the hook goes in, read only while it runs)
@@ -288,12 +560,14 @@ int g_kch[KEEP_MAX_CH], g_knch = 0; // ring channel -> hardware input, every fil
 std::atomic<bool> g_kon{ false }, g_kstop{ false }, g_krate_changed{ false };
 std::atomic<int> g_kin_cb{ 0 }, g_kstate{ 0 }; // (state: 0 none, 1 writing, 2 done, 3 failed)
 std::atomic<size_t> g_kw{ 0 }, g_kr{ 0 };
-std::atomic<long long> g_kdropped{ 0 }, g_kfile_frames{ 0 }, g_ksegs{ 0 };
+std::atomic<long long> g_kdropped{ 0 }, g_kfile_frames{ 0 }, g_ksegs{ 0 }, g_kstamps{ 0 };
 std::atomic<double> g_ksr{ 0 };
 KeepSeg g_kseg[KEEP_SEGS];
+KeepStamp g_kstamp[KEEP_STAMPS];
 bool g_klast_ok = false; // (the audio thread's, while g_kon)
 int g_klast_playing = -1;
-double g_klast_end = 0;
+double g_klast_end = 0, g_klast_rate = 1;
+long long g_knext_stamp = 0;
 std::thread g_kthr;
 std::string g_kstatus;
 std::mutex g_kmx; // (main-thread API calls only)
@@ -345,7 +619,7 @@ void keep_loop()
 }
 } // namespace
 
-void direct_keep_feed(const double *const *in, int nin, int len, double srate, double now, double pos, bool playing)
+void direct_keep_feed(const double *const *in, int nin, int len, double srate, double now, double pos, bool playing, double rate)
 {
   g_kin_cb.fetch_add(1, std::memory_order_acq_rel);
   if (g_kon.load(std::memory_order_acquire) && in && len > 0 && srate > 0) {
@@ -357,14 +631,23 @@ void direct_keep_feed(const double *const *in, int nin, int len, double srate, d
       if (KEEP_RING - (w - r) < (size_t)len) { g_kdropped.fetch_add(len, std::memory_order_relaxed); g_klast_ok = false; } // (a whole block: the next starts a segment)
       else {
         const int pl = playing ? 1 : 0;
-        if (!g_klast_ok || pl != g_klast_playing || (pl && std::fabs(pos - g_klast_end) > KEEP_JUMP)) {
+        if (!(rate > 0.01 && rate < 100)) rate = 1; // (REAPER's own range is 0.25-4)
+        // (a play rate other than 1 moves the play position that much faster: one stretch at its rate, not a segment a block. rt-p12)
+        if (!g_klast_ok || pl != g_klast_playing || (pl && (std::fabs(pos - g_klast_end) > KEEP_JUMP || std::fabs(rate - g_klast_rate) > 1e-6))) {
           const long long c = g_ksegs.load(std::memory_order_relaxed);
-          g_kseg[c % KEEP_SEGS] = { (long long)w, now, pl, pos };
+          g_kseg[c % KEEP_SEGS] = { (long long)w, now, pl, pos, pl ? rate : 1.0 };
           g_ksegs.store(c + 1, std::memory_order_release);
+        }
+        if ((long long)w >= g_knext_stamp) { // (the drift fit's points: this block's first frame and its clock, about once a second)
+          const long long c = g_kstamps.load(std::memory_order_relaxed);
+          g_kstamp[c % KEEP_STAMPS] = { (long long)w, now };
+          g_kstamps.store(c + 1, std::memory_order_release);
+          g_knext_stamp = (long long)w + (long long)srate;
         }
         g_klast_ok = true;
         g_klast_playing = pl;
-        g_klast_end = pos + len / srate;
+        g_klast_rate = rate;
+        g_klast_end = pos + len / srate * rate;
         for (int k = 0; k < len; ++k) {
           float *d = g_kring + ((w + (size_t)k) & (KEEP_RING - 1)) * (size_t)g_knch;
           for (int c = 0; c < g_knch; ++c) { const int i = g_kch[c]; d[c] = i < nin && in[i] ? (float)in[i][k] : 0.f; }
@@ -404,8 +687,8 @@ int direct_keep_start(const char *spec)
   g_kfiles = files;
   std::copy(chans, chans + nch, g_kch);
   g_knch = nch;
-  g_kw = 0; g_kr = 0; g_kdropped = 0; g_kfile_frames = 0; g_ksegs = 0; g_ksr = 0; g_krate_changed = false; g_kstop = false;
-  g_klast_ok = false; g_klast_playing = -1;
+  g_kw = 0; g_kr = 0; g_kdropped = 0; g_kfile_frames = 0; g_ksegs = 0; g_kstamps = 0; g_ksr = 0; g_krate_changed = false; g_kstop = false;
+  g_klast_ok = false; g_klast_playing = -1; g_klast_rate = 1; g_knext_stamp = 0;
   g_kstate = 1;
   g_kthr = std::thread(keep_loop);
   g_kon.store(true, std::memory_order_release);
@@ -442,7 +725,7 @@ const char *direct_keep_status()
            g_kon ? "true" : "false", states[g_kstate.load() & 3], g_ksr.load(), g_kfile_frames.load(), (int)g_kfiles.size(), g_kdropped.load(),
            g_krate_changed ? "true" : "false");
   g_kstatus = b;
-  // (the newest KEEP_SEGS - 1, each [index, file frame, clock, playing, position]; one the audio thread may be writing over is left out)
+  // (the newest KEEP_SEGS - 1, each [index, file frame, clock, playing, position, rate]; one the audio thread may be writing over is left out)
   const long long c = g_ksegs.load(std::memory_order_acquire);
   KeepSeg got[KEEP_SEGS];
   const long long from = std::max(0LL, c - (KEEP_SEGS - 1));
@@ -450,7 +733,17 @@ const char *direct_keep_status()
   const long long safe = std::max(from, g_ksegs.load(std::memory_order_acquire) - (KEEP_SEGS - 1));
   for (long long i = safe; i < c; ++i) {
     const KeepSeg &s = got[i % KEEP_SEGS];
-    snprintf(b, sizeof(b), "%s[%lld,%lld,%.6f,%d,%.9f]", i > safe ? "," : "", i, s.n0, s.t0, s.playing, s.p0);
+    snprintf(b, sizeof(b), "%s[%lld,%lld,%.6f,%d,%.9f,%.9f]", i > safe ? "," : "", i, s.n0, s.t0, s.playing, s.p0, s.rate);
+    g_kstatus += b;
+  }
+  g_kstatus += "],\"stamps\":[";
+  const long long sc = g_kstamps.load(std::memory_order_acquire); // (the same way: the newest KEEP_STAMPS - 1, each [index, file frame, clock])
+  KeepStamp sg[KEEP_STAMPS];
+  const long long sfrom = std::max(0LL, sc - (KEEP_STAMPS - 1));
+  for (long long i = sfrom; i < sc; ++i) sg[i % KEEP_STAMPS] = g_kstamp[i % KEEP_STAMPS];
+  const long long ssafe = std::max(sfrom, g_kstamps.load(std::memory_order_acquire) - (KEEP_STAMPS - 1));
+  for (long long i = ssafe; i < sc; ++i) {
+    snprintf(b, sizeof(b), "%s[%lld,%lld,%.6f]", i > ssafe ? "," : "", i, sg[i % KEEP_STAMPS].n, sg[i % KEEP_STAMPS].t);
     g_kstatus += b;
   }
   g_kstatus += "]}";
@@ -489,6 +782,7 @@ static bool g_hooked = false;
 #include "rtaudio.h"
 static double (*g_play_pos2)(ReaProject *) = nullptr;
 static int (*g_play_state)(ReaProject *) = nullptr;
+static double (*g_play_rate)(ReaProject *) = nullptr; // (Master_GetPlayRate: the keep hook's stretches at another rate, rt-p12)
 static std::atomic<double> g_jpos{ 0 };
 static std::atomic<bool> g_jplaying{ false };
 static void on_jam_audio(bool isPost, int, double, audio_hook_register_t *)
@@ -515,7 +809,8 @@ static void on_keep_audio(bool isPost, int len, double srate, audio_hook_registe
   if (isPost || !g_kon.load(std::memory_order_acquire)) return;
   const double *in[64] = { nullptr };
   const int nin = hook_buffers(reg, false, in, 64); // (not reg->input_nch: REAPER leaves it 0. rt-audience)
-  direct_keep_feed(in, nin, len, srate, direct_now(), g_play_pos2 ? g_play_pos2(nullptr) : 0, g_play_state && (g_play_state(nullptr) & 1) != 0);
+  direct_keep_feed(in, nin, len, srate, direct_now(), g_play_pos2 ? g_play_pos2(nullptr) : 0, g_play_state && (g_play_state(nullptr) & 1) != 0,
+                   g_play_rate ? g_play_rate(nullptr) : 1.0);
 }
 static audio_hook_register_t g_khook = { on_keep_audio, nullptr, nullptr, 0, 0, nullptr };
 static bool g_khooked = false;
@@ -602,29 +897,34 @@ static const char *api_j_status() { return direct_jam_status(); }
 static void *va_j_start(void **a, int n) { return n < 1 ? nullptr : (void *)(INT_PTR)api_j_start((const char *)a[0]); }
 static void *va_j_stop(void **, int) { api_j_stop(); return nullptr; }
 static void *va_j_status(void **, int) { return (void *)api_j_status(); }
+static const char *api_j_decode(const char *src, const char *dst, int mode) { return direct_jam_decode(src, dst, mode); }
+static void *va_j_decode(void **a, int n) { return n < 3 ? nullptr : (void *)api_j_decode((const char *)a[0], (const char *)a[1], (int)(INT_PTR)a[2]); }
 static int api_k_start(const char *spec) { return direct_keep_start(spec); }
 static void api_k_stop() { direct_keep_stop(); }
 static const char *api_k_status() { return direct_keep_status(); }
 static void *va_k_start(void **a, int n) { return n < 1 ? nullptr : (void *)(INT_PTR)api_k_start((const char *)a[0]); }
 static void *va_k_stop(void **, int) { api_k_stop(); return nullptr; }
 static void *va_k_status(void **, int) { return (void *)api_k_status(); }
-static void stop_all() { direct_audio_stop(); direct_jam_stop(); direct_keep_stop(); }
+static void stop_all() { direct_audio_stop(); direct_jam_stop(); direct_keep_stop(); dec_stop_all(); }
 
 void direct_audio_register(reaper_plugin_info_t *rec)
 {
   g_reg_hook = (int (*)(bool, audio_hook_register_t *))rec->GetFunc("Audio_RegHardwareHook");
   *(void **)&g_play_pos2 = rec->GetFunc("GetPlayPosition2Ex");
   *(void **)&g_play_state = rec->GetFunc("GetPlayStateEx");
+  *(void **)&g_play_rate = rec->GetFunc("Master_GetPlayRate");
   rt_play_tap = jam_tap; // (it does nothing until StudioSync_JamStart)
   static const struct { const char *name; void *fn, *va; const char *def; } fns[] = {
     { "StudioSync_KeepStart", (void *)api_k_start, (void *)va_k_start,
       "int\0const char*\0spec\0The full-quality copy (lib/double.lua): record armed tracks' hardware inputs, raw, to 32-bit float WAVs, one per line of spec (\"ch[,ch2]<tab>path\", 0-based inputs). Returns 1 when started." },
     { "StudioSync_KeepStop", (void *)api_k_stop, (void *)va_k_stop, "void\0\0\0Stop the full-quality copy: the rest is written and each WAV's header gets its real sizes." },
     { "StudioSync_KeepStatus", (void *)api_k_status, (void *)va_k_status,
-      "const char*\0\0\0The full-quality copy as JSON: on, state (none, writing, done, failed), srate, frames, files, dropped, rate_changed, segs ([index, file frame, link clock, playing, play position] for each stretch)." },
+      "const char*\0\0\0The full-quality copy as JSON: on, state (none, writing, done, failed), srate, frames, files, dropped, rate_changed, segs ([index, file frame, link clock, playing, play position, play rate] for each stretch), stamps ([index, file frame, link clock], one a second)." },
     { "StudioSync_JamStart", (void *)api_j_start, (void *)va_j_start,
-      "int\0const char*\0path\0Jam (lib/jam.lua): while the transport plays, write live audio's Play feed to a growing 16-bit stereo WAV at path, for the direct link to stream. Returns 1 when started." },
+      "int\0const char*\0path\0Jam (lib/jam.lua): while the transport plays, write live audio's Play feed to a growing 16-bit stereo WAV at path (Ogg Opus at 192 kbit/s when path ends .opus: 48 kHz devices only), for the direct link to stream. Returns 1 when started." },
     { "StudioSync_JamStop", (void *)api_j_stop, (void *)va_j_stop, "void\0\0\0Stop Jam's capture: the rest is written and the WAV's header gets its real sizes." },
+    { "StudioSync_JamDecode", (void *)api_j_decode, (void *)va_j_decode,
+      "const char*\0const char*,const char*,int\0src,dst,mode\0Jam over Opus (lib/jam.lua): turn a bandmate's growing Ogg Opus copy (src) into a growing 16-bit stereo WAV (dst) on a worker thread. mode 0 goes on (a new job starts), 1 finishes once all of src is read, 2 drops the job. Returns JSON: state (none, decoding, done, failed), frames, error." },
     { "StudioSync_JamStatus", (void *)api_j_status, (void *)va_j_status,
       "const char*\0\0\0Jam's capture as JSON: on, state (none, writing, done, failed), srate, frames (in the file), fed, dropped, rate_changed, segs ([index, file frame, play position] for each stretch played without a jump)." },
     { "StudioSync_DirectAudioStart", (void *)api_a_start, (void *)va_a_start,

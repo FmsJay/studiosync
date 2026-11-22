@@ -24,7 +24,7 @@ static long long num(const std::string &j, const char *key)
   const size_t at = j.find(std::string("\"") + key + "\":");
   return at == std::string::npos ? -1 : atoll(j.c_str() + at + strlen(key) + 3);
 }
-struct Seg { long long n0; double t0; int playing; double p0; };
+struct Seg { long long n0; double t0; int playing; double p0; double rate; };
 static std::vector<Seg> segs(const std::string &j)
 {
   std::vector<Seg> out;
@@ -32,7 +32,18 @@ static std::vector<Seg> segs(const std::string &j)
   if (at == std::string::npos) return out;
   at += 8;
   long long i; Seg s; int used = 0;
-  while (sscanf(j.c_str() + at, "[%lld,%lld,%lf,%d,%lf]%n", &i, &s.n0, &s.t0, &s.playing, &s.p0, &used) == 5) { out.push_back(s); at += (size_t)used; if (j[at] == ',') ++at; }
+  while (sscanf(j.c_str() + at, "[%lld,%lld,%lf,%d,%lf,%lf]%n", &i, &s.n0, &s.t0, &s.playing, &s.p0, &s.rate, &used) == 6) { out.push_back(s); at += (size_t)used; if (j[at] == ',') ++at; }
+  return out;
+}
+// rt-p12: stamps as [[index, frame, clock], ...]
+static std::vector<std::pair<long long, double>> stamps(const std::string &j)
+{
+  std::vector<std::pair<long long, double>> out;
+  size_t at = j.find("\"stamps\":[");
+  if (at == std::string::npos) return out;
+  at += 10;
+  long long i, n; double t; int used = 0;
+  while (sscanf(j.c_str() + at, "[%lld,%lld,%lf]%n", &i, &n, &t, &used) == 3) { out.push_back({ n, t }); at += (size_t)used; if (j[at] == ',') ++at; }
   return out;
 }
 static std::vector<unsigned char> slurp(const std::string &p)
@@ -48,16 +59,16 @@ static float f32(const std::vector<unsigned char> &d, size_t at) { unsigned v = 
 
 // Four hardware inputs: input c carries c + 1 + frame / 1e6 (each sample tells which input and frame it was).
 static long long g_frame = 0;
-static void feed(int blocks, int len, double sr, double &clock, double &pos, bool playing)
+static void feed(int blocks, int len, double sr, double &clock, double &pos, bool playing, double rate = 1.0)
 {
   std::vector<std::vector<double>> ch(4, std::vector<double>((size_t)len));
   for (int b = 0; b < blocks; ++b) {
     for (int c = 0; c < 4; ++c) for (int k = 0; k < len; ++k) ch[(size_t)c][(size_t)k] = c + 1 + (double)(g_frame + k) / 1e6;
     const double *in[4] = { ch[0].data(), ch[1].data(), ch[2].data(), ch[3].data() };
-    direct_keep_feed(in, 4, len, sr, clock, pos, playing);
+    direct_keep_feed(in, 4, len, sr, clock, pos, playing, rate);
     g_frame += len;
     clock += len / sr;
-    if (playing) pos += len / sr;
+    if (playing) pos += len / sr * rate;
   }
 }
 
@@ -99,6 +110,11 @@ int main()
   check(s.size() == 4 && s[2].n0 == 140 * len && std::fabs(s[2].p0 - 2.0) < 1e-9, "the loop back: its frame and position");
   check(s.size() == 4 && s[3].n0 == 200 * len && s[3].playing == 0, "the stop: a new one, recording on");
   check(num(j, "frames") == 205 * len && num(j, "files") == 2, "every frame in both files");
+  check(s.size() == 4 && s[1].rate == 1.0 && s[3].rate == 1.0, "each segment says its play rate (1)");
+  // rt-p12: a stamp a second (its frame and clock) for the drift fit: 205 blocks of 256 at 48 kHz is 1.09 s, so frames 0 and 48128
+  auto st = stamps(j); // (the test's clock sums 188 steps at 1.8e9: about 2e-5 s of rounding)
+  check(st.size() == 2 && st[0].first == 0 && std::fabs(st[0].second - 1.8e9) < 1e-6 && st[1].first == 188 * len &&
+        std::fabs(st[1].second - (1.8e9 + 188.0 * len / sr)) < 1e-4, "a stamp at the first block and one a second after, each with its clock");
   // a second rate: flagged, not taken
   direct_keep_feed(nothing, 1, 1, 44100, clock, pos, false);
   j = status();
@@ -140,6 +156,20 @@ int main()
   check(direct_keep_start(("0\t" + a + "\n").c_str()) == 1, "starts");
   direct_keep_stop();
   check(slurp(a).empty() && status().find("\"state\":\"done\"") != std::string::npos, "stopped before any audio: done, no file");
+  // rt-p12: played at another rate the play position moves that much faster: one segment with its rate, not one a block; a change of rate
+  // starts the next
+  check(direct_keep_start(("0\t" + a + "\n").c_str()) == 1, "starts (rates)");
+  g_frame = 0;
+  pos = 4.0;
+  feed(20, len, sr, clock, pos, true, 1.5);
+  const double p_half = pos;
+  feed(20, len, sr, clock, pos, true, 0.5);
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  s = segs(status());
+  check(s.size() == 2 && std::fabs(s[0].rate - 1.5) < 1e-9 && std::fabs(s[0].p0 - 4.0) < 1e-9 && s[1].n0 == 20 * len && std::fabs(s[1].rate - 0.5) < 1e-9 &&
+        std::fabs(s[1].p0 - p_half) < 1e-9, "1.5 times: one stretch at 1.5; then 0.5: one more at 0.5");
+  direct_keep_stop();
+  remove(a.c_str());
   remove(a.c_str()); remove(b.c_str());
   printf(fails ? "keep_test: %d FAILED\n" : "keep_test: all ok\n", fails);
   return fails ? 1 : 0;

@@ -63,17 +63,22 @@ void direct_audio_process(const double *const *in, int nin, int len, double srat
 // Jam (extension/direct_audio.cpp, lib/jam.lua): live audio's Play feed to a growing 16-bit stereo WAV while the transport plays.
 int direct_jam_start(const char *path); // a worker writes the file; 0 when already running
 void direct_jam_stop();                 // the rest written, the header's real sizes, the worker joined
-const char *direct_jam_status();        // JSON: { on, state, srate, frames, fed, dropped, rate_changed, segs = [[index, file frame, position], ...] }
+const char *direct_jam_status();        // JSON: { on, state, codec, error, srate, frames, fed, dropped, rate_changed, segs = [[index, file frame, position], ...] }
+// (rt-p12) A path ending ".opus" writes Ogg Opus instead (48 kHz devices only: else the state is "failed" and error says why). A receiver turns
+// a growing Ogg Opus copy into a growing 16-bit stereo WAV: mode 0 go on (a new job starts), 1 finish once all of src is read, 2 drop the job.
+// -> JSON { state (none, decoding, done, failed), frames, error }. At most 16 jobs. Without Opus in the build: { state "failed" }.
+const char *direct_jam_decode(const char *src, const char *dst, int mode);
 // The audio thread's work (REAPER's: rt_play_tap, with the block's play position read before processing): ch[0..nch-1] of len frames.
 void direct_jam_feed(const float *const *ch, int nch, int len, double srate, double pos, bool playing);
 // The full-quality copy (extension/direct_audio.cpp, lib/double.lua, docs/rt/rt-double.md): armed tracks' raw hardware inputs to 32-bit float
 // WAVs, one per track. spec: a line per file, "ch[,ch2]\tpath" (0-based hardware inputs; at most 16 files, 32 channels).
 int direct_keep_start(const char *spec); // 1 when started; 0 when already running or the spec is bad
 void direct_keep_stop();                 // the rest written, the headers' real sizes, the worker joined
-const char *direct_keep_status();        // JSON: { on, state, srate, frames, dropped, rate_changed, segs = [[index, file frame, clock, playing, position], ...] }
+const char *direct_keep_status();        // JSON: { on, state, srate, frames, dropped, rate_changed, segs = [[index, file frame, clock, playing, position, rate], ...],
+                                         //   stamps = [[index, file frame, clock], ...]: one a second, for the drift fit (rt-p12) }
 // The audio thread's work (REAPER's: the keep hook's pre call): `in` as direct_audio_process; now: direct_now() at this call; pos, playing:
-// REAPER's play position and state for this block.
-void direct_keep_feed(const double *const *in, int nin, int len, double srate, double now, double pos, bool playing);
+// REAPER's play position and state for this block; rate: the project's play rate (a stretch at another rate stays one segment, rt-p12).
+void direct_keep_feed(const double *const *in, int nin, int len, double srate, double now, double pos, bool playing, double rate = 1.0);
 
 // For the test: the pieces a frame is made of, and the WAV layout the receiver keeps playable.
 void direct_sha256(const unsigned char *msg, size_t len, unsigned char out[32]);
