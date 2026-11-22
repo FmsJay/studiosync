@@ -147,6 +147,58 @@ class EarsTest(unittest.TestCase):
         self.assertIn("ended", w["why"])
         self.assertAlmostEqual(w["tap_s"][1], 132.0, delta=0.01)
 
+    def test_device_rate(self):
+        # rt-audio3: a device's real rate from looks at its callback count. The desktop's: 0.25 % under 48 kHz at 512, looked at every
+        # 20-50 ms, the count up to 20 ms behind (its callbacks come 2-27 ms apart)
+        rng = np.random.default_rng(5)
+        t = np.cumsum(rng.uniform(0.02, 0.05, 900)) + 1000.0
+        cb = np.floor((t - 1000.0 - rng.uniform(0, 0.02, len(t))) * 47880.0 / 512)
+        self.assertAlmostEqual(ears.device_rate(list(zip(t, cb)), 512) / 47880.0, 1.0, delta=0.0003)
+        # a VM: ten blocks at once
+        cbv = np.floor((t - 1000.0) * 48006.5 / 512 / 10) * 10
+        self.assertAlmostEqual(ears.device_rate(list(zip(t, cbv)), 512) / 48006.5, 1.0, delta=0.0005)
+        self.assertIsNone(ears.device_rate([(0.0, 0), (1.0, 90)], 512))  # (under 2 s of looks: no rate)
+        self.assertIsNone(ears.device_rate(list(zip(t, cb)), None))      # (an older stamp, without the block size)
+        rows = [r for r in polls(np.zeros(SR * 6), 1000.0, 512) if 1000.2 <= r["t"] <= 1005.8]  # (a poll's rows while the audio runs)
+        self.assertAlmostEqual(ears.poll_rate({"block": 512}, rows) / SR, 1.0, delta=0.001)
+
+    def test_wav_judged_by_real_rates(self):
+        # rt-r3's r9 (the laptop -> the desktop): the receiver's device runs 0.25 % under 48 kHz and it plays the sender in real time, as
+        # it should: the same sound in 0.25 % fewer of its samples. Judged against 1 that read "0.25 % fast, 250 ms of gaps, not aligned"
+        ref = np.concatenate([np.zeros(SR), self.x, np.zeros(SR // 2)])
+        meta = dict(self.meta, pattern_at=1.0)
+        got = np.concatenate([np.zeros(int(0.1 * SR)), signal.resample(ref, int(round(len(ref) * 47880 / 48000)))])
+        r = ears.compare_wav(ref, got, SR, meta)
+        self.assertFalse(r["pass"]["speed"], r)
+        self.assertGreater(r["gap_ms"], 0, r)  # (the artefact: frames 25 ms apart by the pattern's end)
+        r = ears.compare_wav(ref, got, SR, meta, rates=(48000.0, 47880.0))
+        self.assertAlmostEqual(r["speed"], 1.0025, delta=0.0005)
+        self.assertAlmostEqual(r["speed_error"], 1.0, delta=0.0005)
+        for k in ("speed", "aligned", "no_gaps", "level", "spectrum", "steady"):
+            self.assertTrue(r["pass"][k], (k, r))
+        # rt-r3's r7 (the desktop -> the laptop): the SENDER's device is 0.3 % slow and the receiver plays its samples one for one, its
+        # buffer draining to a re-buffer every minute. Judged against 1 that read "speed 0.99993: pass"
+        r = ears.compare_wav(ref, np.concatenate([np.zeros(int(0.1 * SR)), ref]), SR, meta, rates=(47860.0, 48000.0))
+        self.assertAlmostEqual(r["speed_expected"], 0.99708, delta=0.0001)
+        self.assertFalse(r["pass"]["speed"], r)
+        # a hub's mix arrives at the listener's own volume (0.01): its level is judged against that
+        r = ears.compare_wav(ref, link(ref, 0.1, lowpass=18000, noise_db=-110) * 0.01, SR, meta, gain=0.01)
+        self.assertTrue(r["pass"]["level"] and r["pass"]["aligned"], r)
+        self.assertFalse(ears.compare_wav(ref, link(ref, 0.1, lowpass=18000, noise_db=-110) * 0.01, SR, meta)["pass"]["level"])
+        # the stamps' latency counts lag on the sender's real sample clock
+        import json
+        import tempfile
+        d = tempfile.mkdtemp()
+        rp, gp = os.path.join(d, "ref.wav"), os.path.join(d, "got.wav")
+        with open(rp + ".json", "w") as f:
+            json.dump({"t_first": 100.0, "me": "desk", "block": 512, "cbs": [[100.0 + i * 0.03, int(i * 0.03 * 47860 / 512)] for i in range(400)]}, f)
+        with open(gp + ".json", "w") as f:
+            json.dump({"t_first": 99.5, "me": "lap", "clock": {"peers": {"desk.ts.net:47281": {"offset_ms": 1200.0}}}}, f)
+        self.assertAlmostEqual(ears.stamp_rate(rp) / 47860.0, 1.0, delta=0.0005)
+        self.assertIsNone(ears.stamp_rate(gp))
+        lag = 10 * SR  # (the receiver's tap started 10 s of samples before the sender's first sample was heard)
+        self.assertAlmostEqual(ears.stamp_latency(rp, gp, lag, SR, 47860.0) - ears.stamp_latency(rp, gp, lag, SR), 10000.0 * (48000 / 47860.0 - 1), delta=0.01)
+
     def _env(self, latency, block_s=512, block_r=128, gain=1.0, drops=(), offset_ms=0.0):
         sig = np.concatenate([np.zeros(SR), self.x, np.zeros(SR)])
         s_rows = polls(sig, 1000.0, block_s, seed=3)

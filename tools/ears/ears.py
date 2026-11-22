@@ -531,12 +531,68 @@ def tone_scan(x, sr, f0, win_s=0.25):
     return float(np.median(out)) if len(out) >= 2 else None
 
 
-def compare_wav(ref, got, sr, meta=None, exact=False):
+def device_rate(pairs, block):
+    """A device's REAL sample rate, Hz, from (link-clock time, audio callbacks so far) pairs and its block size: the slope of callbacks
+    against time, as the median of the slopes between looks at least half the span apart (callbacks come in bursts, a VM's ten at once,
+    and looks are jittery, so no single pair of looks is trusted). None with under 2 s of looks. rt-audio3: the desktop's device (WASAPI
+    through Voicemeeter) runs 0.2-1 % under 48 kHz and moves from minute to minute; what a WAV's samples mean in time is this, not 48000."""
+    p = [(float(t), float(c)) for t, c in (pairs or []) if t is not None and c is not None]
+    runs, a = [], 0  # (the count starts again when live audio restarts: the longest stretch without that)
+    for i in range(1, len(p) + 1):
+        if i == len(p) or p[i][1] < p[i - 1][1]:
+            runs.append(p[a:i]); a = i
+    p = max(runs, key=len) if runs else []
+    if not block or len(p) < 8 or p[-1][0] - p[0][0] < 2.0:
+        return None
+    step = max(1, len(p) // 200)
+    p = p[::step]
+    span = p[-1][0] - p[0][0]
+    sl = [(c2 - c1) / (t2 - t1) for i, (t1, c1) in enumerate(p) for (t2, c2) in p[i + 1:] if t2 - t1 >= span / 2]
+    return float(np.median(sl)) * float(block) if sl else None
+
+
+def poll_rate(head, rows):
+    """The same from a status poll (ears.lua "poll": each row's t and cb; the header's block since rt-audio3)."""
+    return device_rate([(r.get("t"), r.get("cb")) for r in rows], (head or {}).get("block"))
+
+
+def stamp_rate(path):
+    """The same from an ears tap's stamp (<wav>.json: cbs and block, ears.lua "tap" since rt-audio3). None for an older stamp."""
+    try:
+        with open(path + ".json") as f:
+            s = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return device_rate(s.get("cbs"), s.get("block"))
+
+
+def to_rate(x, want):
+    """x stretched in time by `want` (the same sound in want times the samples), band-limited."""
+    from fractions import Fraction
+    fr = Fraction(float(want)).limit_denominator(4000)
+    return signal.resample_poly(x, fr.numerator, fr.denominator) if fr.numerator != fr.denominator else x
+
+
+def compare_wav(ref, got, sr, meta=None, exact=False, rates=None, gain=1.0):
     """ref, got: the same signal recorded at two ends. meta: the pattern's (with pattern_at: where it starts in ref, s) for per-section
-    spectra. exact: a lossless path (bit-exact, 16-bit)."""
-    if np.max(np.abs(got)) < 1e-4 <= np.max(np.abs(ref)):  # (rt-r1's r6: a tap that ended before the sound came read as "silent")
+    spectra. exact: a lossless path (bit-exact, 16-bit). gain: the level got is expected at against ref (a hub's mix at the listener's
+    volume: 0.01).
+    rates: (ref's device's real rate, got's), Hz (device_rate), or None for both at sr. A WAV holds a device's samples, and a second of
+    them lasts 1 / its real rate: a receiver that plays what arrives in real time, as it should, holds the sound in (got's rate / ref's)
+    times the samples. So got is first put on ref's sample clock (stretched by ref's rate / got's), every check is made on that, and
+    `speed` is judged against the two real rates. Before rt-audio3 it was judged against 1: on the desktop (0.2-1 % under 48 kHz) a
+    receiver that followed its device read "0.25 % fast, 250 ms of gaps" (the gaps: 10 ms frames compared 25 ms apart by the pattern's
+    end) and one that played sample for sample, its buffer draining to a re-buffer every minute, read "speed 0.99993: pass"."""
+    if np.max(np.abs(got)) < 1e-4 * min(1.0, gain) <= np.max(np.abs(ref)):  # (rt-r1's r6: a tap that ended before the sound came read as "silent")
         return {"error": "GOT is silent (peak %.1e): its tap ran while nothing came (see tap_window with --stamps), or the stream was muted"
                 % float(np.max(np.abs(got))), "pass": {"heard": False}}
+    want = float(rates[0]) / float(rates[1]) if rates and rates[0] and rates[1] else 1.0  # (got's tone over ref's when all is well)
+    raw = got
+    if abs(want - 1) > 2e-5 and not exact:
+        got = to_rate(got, want)
+    if gain != 1.0:
+        got = got / gain
+        raw = raw / gain
     lag, peak = align(ref, got)
     r_off = max(0, -lag)  # (r[i] is ref[i + r_off], g[i] the got sample heard with it)
     g = got[max(0, lag):]
@@ -573,17 +629,21 @@ def compare_wav(ref, got, sr, meta=None, exact=False):
     res["spectral_db"] = spec
     if meta:  # (the tone ladder's tone, wherever it is in each: a receiver playing fast has no single lag to align by)
         f0 = meta.get("tone_hz", 440.0)
-        fr, fg = tone_scan(ref, sr, f0), tone_scan(got, sr, f0)
+        fr, fg = tone_scan(ref, sr, f0), tone_scan(raw, sr, f0)
     else:
-        fr, fg = tone_hz(r, sr), tone_hz(g, sr)
-    res["speed"] = round(fg / fr, 5) if fr and fg else None
+        fr, fg = tone_hz(ref, sr), tone_hz(raw, sr)
+    res["speed"] = round(fg / fr, 5) if fr and fg else None  # (got's samples against ref's, as recorded)
+    res["speed_expected"] = round(want, 5)                   # (what the two devices' real rates make of a receiver in step)
+    res["speed_error"] = round(fg / fr / want, 5) if fr and fg else None
+    if rates:
+        res["rates_hz"] = [round(float(rates[0]), 1) if rates[0] else None, round(float(rates[1]), 1) if rates[1] else None]
     lim = SPEC_DB_EXACT if exact else SPEC_DB
     res["pass"] = {
         "aligned": peak >= (0.999 if exact else 0.8),
         "level": res["level_db"] is not None and abs(res["level_db"]) <= (0.01 if exact else LEVEL_DB),
         "no_gaps": res["gap_ms"] == 0,
         "spectrum": all(v <= lim for v in spec.values()),
-        "speed": res["speed"] is None or abs(res["speed"] - 1) <= SPEED_TOL,
+        "speed": res["speed_error"] is None or abs(res["speed_error"] - 1) <= SPEED_TOL,
     }
     if exact:
         res["pass"]["bit_exact"] = res["max_abs_diff"] is not None and res["max_abs_diff"] <= 1.0 / 32768
@@ -617,9 +677,11 @@ def steady_lags(ref, got, sr, base_lag, win_s=0.5, search_ms=200.0, min_rms_db=-
     return out
 
 
-def stamp_latency(ref_path, got_path, lag, sr):
+def stamp_latency(ref_path, got_path, lag, sr, ref_rate=None):
     """The ears tap's stamps (REF.wav.json, GOT.wav.json from ears.lua "tap": t_first on each one's link clock, its me and its
-    StudioSync_DirectClock): latency = when got heard a sample less when ref sent it, on the sender's clock. None without both."""
+    StudioSync_DirectClock): latency = when got heard a sample less when ref sent it, on the sender's clock. None without both.
+    ref_rate: the sender's device's real rate (compare_wav's rates[0]), with lag counted on its sample clock: lag samples last
+    lag / that, not lag / sr (rt-r3: 127.6 ms stamped against 152-171 in the status, with the taps seconds apart on a device 0.3 % off)."""
     try:
         rs = json.load(open(ref_path + ".json"))
         gs = json.load(open(got_path + ".json"))
@@ -629,7 +691,7 @@ def stamp_latency(ref_path, got_path, lag, sr):
     sender = rs.get("me") or ""
     off = next((v.get("offset_ms") for k, v in peers.items() if sender and k.startswith(sender)), 0.0) or 0.0
     # (offset_ms: the receiver's estimate of the sender's clock minus its own; got's stamp moved onto the sender's clock)
-    return (gs["t_first"] + off / 1000.0 + lag / sr - rs["t_first"]) * 1000.0
+    return (gs["t_first"] + off / 1000.0 + lag / (ref_rate or sr) - rs["t_first"]) * 1000.0
 
 
 def tap_window(ref_path, got_path, ref, got, sr):
@@ -695,7 +757,10 @@ def main(argv):
     e.add_argument("--peer", default=""); e.add_argument("--hub", action="store_true"); e.add_argument("--gain", type=float, default=1.0)
     e.add_argument("--offset-ms", type=float, default=None, help="the sender's clock minus the receiver's (default: the receiver poll's clock)")
     w = sub.add_parser("wav"); w.add_argument("ref"); w.add_argument("got"); w.add_argument("--pattern"); w.add_argument("--exact", action="store_true")
-    w.add_argument("--stamps", action="store_true", help="the ears tap's REF.wav.json/GOT.wav.json: latency on the link clock")
+    w.add_argument("--stamps", action="store_true", help="the ears tap's REF.wav.json/GOT.wav.json: latency on the link clock, and each device's real rate")
+    w.add_argument("--polls", nargs=2, metavar=("REF.jsonl", "GOT.jsonl"), help="each end's status poll, for the devices' real rates (stamps from before rt-audio3 have none)")
+    w.add_argument("--rates", nargs=2, type=float, metavar=("REF_HZ", "GOT_HZ"), help="the devices' real rates, measured some other way")
+    w.add_argument("--gain", type=float, default=1.0, help="the level GOT is expected at against REF (a hub's mix at the listener's volume: 0.01)")
     t = sub.add_parser("tail"); t.add_argument("got"); t.add_argument("--on", type=float, required=True); t.add_argument("--off", type=float, required=True)
     t.add_argument("--release-ms", type=float, default=0.0); t.add_argument("--bound-ms", type=float, default=200.0); t.add_argument("--block", type=int, default=512)
     a = ap.parse_args(argv)
@@ -726,11 +791,22 @@ def main(argv):
             px, meta = load_pattern(a.pattern)
             lag, _ = align(px, ref)
             meta["pattern_at"] = lag / sr
-        res = compare_wav(ref, got, sr, meta, exact=a.exact)
+        # (each device's real rate: given, else from the polls, else from the taps' own stamps; without both, speed is judged against 1 and says so)
+        rates = None
+        if a.rates:
+            rates = tuple(a.rates)
+        elif a.polls:
+            rates = tuple(poll_rate(*read_poll(p)) for p in a.polls)
+        elif a.stamps:
+            rates = (stamp_rate(a.ref), stamp_rate(a.got))
+        known = bool(rates and rates[0] and rates[1])
+        res = compare_wav(ref, got, sr, meta, exact=a.exact, rates=rates if known else None, gain=a.gain)
+        if not known and not a.exact:
+            res["rates_note"] = "the devices' real rates aren't known (no cbs in the stamps, no --polls or --rates): speed is judged against 1, which is wrong for a device off its nominal rate"
         if a.stamps and "error" in res:
             res["tap_window"] = tap_window(a.ref, a.got, ref, got, sr)
         elif a.stamps:
-            res["latency_ms"] = stamp_latency(a.ref, a.got, res["lag_samples"], sr)
+            res["latency_ms"] = stamp_latency(a.ref, a.got, res["lag_samples"], sr, rates[0] if known else None)
             res["pass"]["stamped"] = res["latency_ms"] is not None
         return _verdict(res)
     if a.cmd == "tail":

@@ -19,9 +19,11 @@
 --                                               deafened), restore (Deafen on, the rest as it was); live audio volume V
 --  hub       peer=<name:port> serve=0|1         who mixes, straight to the extension (Live sync asks again only when its own plan changes)
 --  capread   slot=1 out=<file.wav>              a capture slot into a 32-bit float WAV
---  tap       peer=<name:port>|"" stream=talk|play|hub secs=N out=<file.wav>
+--  tap       peer=<name:port>|"" stream=talk|play|hub secs=N out=<file.wav> [wait=N] [over=X]
 --                                               live audio's waveform tap (StudioSync_LiveAudioEars): a bandmate's stream as heard here, or
---                                               peer="" stream=play this computer's own Play as sent; <out>.json stamps it (ears.py wav --stamps)
+--                                               peer="" stream=play this computer's own Play as sent; <out>.json stamps it (ears.py wav --stamps),
+--                                               with this device's callbacks through the tap (its real rate). wait=N: armed, the tap starts
+--                                               when the stream first carries sound (level over X, default 0.000015), or after N s
 --  jamset    on=true|false                      Jam on (In time, Jam, Follow each other at 0) or back as it was
 --  transport play=true|false [pos=S]            Cross Test plays from S, or stops (and the cursor goes back where it was)
 --  jamwatch  out=<file> secs=N                  the hidden Jam tracks' items, logged whenever they change, with the play position
@@ -174,7 +176,9 @@ function modes.poll()
   local f = assert(io.open(E.out, "w"))
   local secs = tonumber(E.secs) or 20
   local clock = reaper.StudioSync_DirectClock and reaper.StudioSync_DirectClock() or "{}"
-  f:write(string.format('{"me":%s,"start":%.6f,"secs":%s,"clock":%s}\n', q(me()), now(), secs, clock))
+  local st0 = reaper.StudioSync_LiveAudioStatus() or "" -- (block and srate: ears.py reads the device's real rate from each line's cb. rt-audio3)
+  f:write(string.format('{"me":%s,"start":%.6f,"secs":%s,"block":%s,"srate":%s,"clock":%s}\n', q(me()), now(), secs, st0:match('"block":(%d+)') or "null",
+    st0:match('"srate":(%d+)') or "null", clock))
   local t_end = reaper.time_precise() + secs
   local hub_at = -math.huge
   local function keep_hub()
@@ -263,32 +267,72 @@ end
 -- The ears tap (extension 1.0.35+, rt-p11): what this computer actually hears of a bandmate's live audio stream, or its own Play as it goes
 -- out, as a WAV, with a stamp beside it (<out>.json: t_first, the link clock when its first frame was heard or sent; me; DirectClock) that
 -- ears.py wav --stamps turns into the latency and its steadiness. peer="" stream="play": this computer's own Play.
+-- rt-audio3:
+--  - wait=N: armed. The tap starts when the stream first carries sound (its level in the status over `over`, default 0.000015: the pattern's
+--    noise bed reads 0.003, 0.00003 through a hub at volume 0.01; digital silence reads 0), or after N s whatever came. A tap started by
+--    hand ended before the sound three times (rt-r1 r6: 10 s early; rt-r3 r8: 108 s; r13: the laptop's, silent), each call through a shared
+--    hook taking its own time. Armed, the order of the calls doesn't matter: arm every end, then fire.
+--  - the stamp also has this device's callbacks against the link clock through the tap (cbs: [[t, callbacks], ...]) with block and srate:
+--    ears.py reads the device's REAL rate from them, and judges speed and latency by the two real rates (the desktop's device runs 0.2-1 %
+--    under 48 kHz: a receiver that follows it was judged 0.25 % fast, one that didn't was passed).
+local function stream_level(s, peer, stream)
+  local i = s:find('"peers":{', 1, true) or #s
+  local head, peers = s:sub(1, i - 1), s:sub(i + 9)
+  if peer == "" then return tonumber(head:match('"play_level":([%d%.]+)')) or 0 end
+  if stream == "hub" then return tonumber((head:match('"hub":(%b{})') or ""):match('"level":([%d%.]+)')) or 0 end
+  local at = peers:find('"' .. peer .. '":{', 1, true)
+  local body = at and peers:match("%b{}", at + #peer + 3) or ""
+  return tonumber(body:match(stream == "play" and '"play_level":([%d%.]+)' or '"level":([%d%.]+)')) or 0
+end
 function modes.tap()
   assert(reaper.StudioSync_LiveAudioEars and reaper.StudioSync_LiveAudioStatus and reaper.StudioSync_DirectNow, "needs the StudioSync extension with StudioSync_LiveAudioEars (1.0.35+)")
   local peer, stream, secs = tostring(E.peer or ""), tostring(E.stream or "play"), math.max(0.1, math.min(60, tonumber(E.secs) or 12))
   local out = assert(E.out, "out=<file.wav>")
-  local started = reaper.StudioSync_LiveAudioEars(peer, stream, out, secs)
-  if started ~= 1 then return "tap refused (" .. peer .. " " .. stream .. "): live audio running? peer in the list? another tap writing? path a .wav?" end
-  local t_first, t_end = nil, reaper.time_precise() + secs + 20
+  local wait, over = math.max(0, tonumber(E.wait) or 0), tonumber(E.over) or 0.000015
+  local armed_until = reaper.time_precise() + wait
+  local started, t_first, t_end, cbs, waited = nil, nil, nil, {}, nil
   local function stamp(state, s)
     local f = io.open(out .. ".json", "w")
     if not f then return end
-    f:write(string.format('{"t_first":%s,"me":%s,"peer":%s,"stream":%s,"state":%s,"frames":%s,"lost":%s,"clock":%s}\n', t_first and string.format("%.6f", t_first) or "null",
-      q(me()), q(peer), q(stream), q(state), s:match('"ears":{.-"frames":(%d+)') or "0", s:match('"ears":{.-"lost":(%d+)') or "0",
-      reaper.StudioSync_DirectClock and reaper.StudioSync_DirectClock() or "{}"))
+    f:write(string.format('{"t_first":%s,"me":%s,"peer":%s,"stream":%s,"state":%s,"frames":%s,"lost":%s,"waited_s":%s,"block":%s,"srate":%s,"cbs":[%s],"clock":%s}\n',
+      t_first and string.format("%.6f", t_first) or "null", q(me()), q(peer), q(stream), q(state), s:match('"ears":{.-"frames":(%d+)') or "0",
+      s:match('"ears":{.-"lost":(%d+)') or "0", waited and string.format("%.2f", waited) or "null", s:match('"block":(%d+)') or "null", s:match('"srate":(%d+)') or "null",
+      table.concat(cbs, ","), reaper.StudioSync_DirectClock and reaper.StudioSync_DirectClock() or "{}"))
     f:close()
   end
+  local function start()
+    waited = wait - (armed_until - reaper.time_precise())
+    started = reaper.StudioSync_LiveAudioEars(peer, stream, out, secs)
+    t_end = reaper.time_precise() + secs + 20
+    if started ~= 1 then stamp("refused", "") end
+    return started == 1
+  end
   local function cycle()
+    if not started then -- (armed: a few looks a cycle, 2 ms apart, so a block's peak isn't missed between another reader's asks)
+      local c0, loud = reaper.time_precise(), false
+      repeat
+        local ok, s = pcall(reaper.StudioSync_LiveAudioStatus)
+        loud = ok and stream_level(s or "", peer, stream) > over
+        local t = reaper.time_precise()
+        while not loud and reaper.time_precise() - t < 0.002 do end
+      until loud or reaper.time_precise() - c0 > 0.012
+      if not loud and reaper.time_precise() < armed_until then reaper.defer(cycle); return end
+      if not start() then return end
+    end
     local ok, s = pcall(reaper.StudioSync_LiveAudioStatus)
     s = ok and s or ""
     local age = tonumber(s:match('"ears":{.-"first_age_s":(%-?[%d%.]+)'))
     if not t_first and age and age >= 0 then t_first = now() - age end -- (read together: the age is as of this status)
+    local cb = s:match('"callbacks":(%d+)')
+    if cb and #cbs < 4000 then cbs[#cbs + 1] = string.format("[%.6f,%s]", now(), cb) end -- (the device's real rate through the tap: ears.py device_rate)
     local state = s:match('"ears":{.-"state":"(%a+)"') or "?"
     if state == "writing" and reaper.time_precise() < t_end then reaper.defer(cycle); return end
     stamp(state, s)
   end
+  if wait <= 0 and not start() then return "tap refused (" .. peer .. " " .. stream .. "): live audio running? peer in the list? another tap writing? path a .wav?" end
   reaper.defer(cycle)
-  return string.format("tapping %s %s for %.1f s into %s (and %s.json when done)", peer == "" and "own" or peer, stream, secs, out, out)
+  return string.format("%s %s %s for %.1f s into %s (and %s.json when done)", wait > 0 and string.format("armed (up to %.0f s for sound), then tapping", wait) or "tapping",
+    peer == "" and "own" or peer, stream, secs, out, out)
 end
 
 function modes.jamset()
