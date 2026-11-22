@@ -410,3 +410,16 @@ deleted; checked empty). Connect without Tailscale was on for these (LinuxBox2 r
   outage tests not run (they need the mix running with sound as written).
 
 **rt-fix7 (2026-11-21):** a holder gives a role up for Syncthing being behind only after 30 s (the likely cause of B's 21 s hand-off, from the desktop's log); a passed-over home's successor says "ranked"; a computer cut from the hub keeps it named while another reaches it (no studio split); the hand-off log line says why. Checks: `docs/rt/rt-fix7.md`.
+
+### F results (rt-r3, 2026-11-22 05:10-05:19 UTC, extension 1.0.37 on the desktop, laptop and LinuxBox; LinuxBox2 suspended)
+
+The desktop sent the ears pattern and served the mix (`StudioSync_LiveAudioHub("", 1)`), the laptop and LinuxBox listened through it at volume
+0.01, Mute me, nobody's microphone; Deafen back to 1 and `hub peer='' serve=0` everywhere after.
+- **F1: fail.** LinuxBox's hub block over ~9 minutes: `stalls` 15491 -> 16195 (`stall_max_ms` 1753), and `mix_gap_ms` 285, 191, 130, 291, 420,
+  572, 552 ms: not tens of ms. The laptop (no stalls at all) also reached 407-597 ms. Fallbacks came on their own about once a minute (LinuxBox 2
+  -> 8, the laptop 1 -> 11 with no block). The desktop, the hub, reported `stalls` 211 with `stall_max_ms` 1613.8 (its Voicemeeter device and
+  its live audio restarting itself, see rt-fix6b's results). The REAPER-quit half wasn't run (the fallbacks were already coming by themselves).
+- **F2 (LinuxBox the listener in LinuxBox2's place, which has no Tailscale and so no live audio): fail or not measurable.** In one ssh, LinuxBox
+  dropped everything to and from the desktop's and the laptop's Tailscale addresses for 1.1 s (05:17:00.97-05:17:02.08): `fallbacks` 5 -> 6,
+  state "hub" again 5 s later. With a fallback a minute anyway, this one +1 can't be told from the background.
+- **F3: +1 as expected (6 -> 7)** after only the desktop's address was dropped for 1 s, but 38 s later it was 8 with no block.

@@ -152,3 +152,17 @@ result here (pass, fail, not run) with the numbers.
   `{"state":"none","frames":0,"error":""}`, `StudioSync_KeepStatus()` has `"stamps":[`, `StudioSync_JamStatus()` has `"codec":`.
 - `jam_hear`'s effect wasn't run: Health's Jam row checks live audio's Play before listeners (`jam.why_not`), so with Deafen on it only ever says Play
   isn't going, and Jam's switch also turns In time and Play-and-stop-together at 0 bars on. Everything else needs sound.
+
+## Re-check results with sound (rt-r3, 2026-11-22 05:24-05:34 UTC, StudioSync 0.59.49.95 from 747151f + extension 1.0.37 on the desktop, laptop and LinuxBox)
+
+The desktop sent the ears pattern ("XT Ears", its own, no master send) on Play only, transport from 60 s (past the song's end, so nothing of
+the song sounds); the listeners Mute me at live audio volume 0 (so their Jam tracks play at 0: Jam's level is the cue mix's); `tools/ears`'
+`jamset`/`transport`/`jamwatch`; Jam, Deafen and "Play and stop together" put back on all three after, LinuxBox's `stopprojlen` back to 1.
+
+| # | Result | Numbers |
+| --- | --- | --- |
+| 2 only to those with Jam on | **pass** | Jam on the desktop only, playing: Health "Jam (every 1 bar): you send nothing: nobody here has Jam on (it goes only to those who do); nobody else is jamming", `JamStatus` `on: false`, no jam stream. The laptop's Jam on: the run `main~James~jam-20261122-052600Z-018.opus` started (the run's name says 05:26:00, the laptop's `jamset` returned 05:26:05), `codec: "opus"`, its only peer the laptop (LinuxBox, Jam off, not in it). Bytes: ~1.3 MB a minute while the pattern sounded (136873 -> 409581 bytes over the 10 s pattern and ~3 s around it: about 192 kbit/s), ~90 KB a minute of silence. |
+| 3 Opus heard right | **pass** | The desktop's own Play tap against the laptop's decoded `.streams/Cross Test/main~James~jam-...opus.wav`: corr 0.9995, level 0.0 dB, no gaps, spectrum 0.06 / 0.02 dB, speed 1.0000, steady (0.0 ms over 17 windows). Every Jam item in `jamwatch` starts on its bar line: `bar` 114.000000, 115.000000, ... (0.000 ms at the log's 1 µs). Note: the growing `.opus.wav` has 0 in its RIFF/data sizes while the run goes on (Python's wave readers see it as empty; read past the header by hand), and the `.opus` beside it read 0 bytes on the laptop. |
+| 4 a latecomer | **pass** | Run `...053008Z-446.opus` going to LinuxBox only (Jam on there, `stopprojlen` 0 for the run). The laptop's Jam on between link times ...547.1 and ...571.5: added to the same stream (its peers then the laptop and LinuxBox, sizes equal: sent from the start), and its first Jam item (bar 283) was placed at ...564.4 while its playhead was 1 s into that bar, then 284, 285, ... each on its bar; the desktop never stopped. |
+| 5 WAV fallback | not run | Needs LinuxBox's REAPER audio device set to 44.1 kHz (an audio preference change and device restart in the VM). |
+| 10 Their time, 11 Produce | not run (time) | |

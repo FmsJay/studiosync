@@ -187,3 +187,5 @@ desktop's Syncthing device and share stay), Cross Test open, Deafen 1, and suspe
 - Blocking the desktop from a VM: see rt-hubrank's R2 "Lab lessons" (UDP only, every desktop address including its Tailscale address, and IPv6).
 - LinuxBox2's web UI from the desktop: `ssh -L 47290:127.0.0.1:47281 studio@192.168.86.130`, then requests with `Host: localhost:47281`
   (`/api/state`, `/api/action` with `X-StudioSync: 1`); a browser can't, as it sends its own Host.
+
+- rt-r3 (2026-11-22 UTC, 0.59.49.95 + extension 1.0.37): the rt-fix6a re-checks (P1-8, round 5 C, no claim without an edit, claim asks off the link) are written up in `docs/rt/rt-fix6a.md`, "REAPER re-check results (rt-r3 ...)".

@@ -1246,3 +1246,5 @@ for the run on all three. Times UTC.
 - **F (need list on by default):** 905f000 has it on; no extra run beyond the edits above (no `media want` problems seen); the "0" switch on LinuxBox
   not tried.
 - A, B, C: not run (time; B needs the bandtest scratch song, which isn't in Smiley Studios). E: didn't come up naturally.
+
+- rt-r3 (2026-11-22 UTC, 0.59.49.95 + extension 1.0.37): the rt-fix6a re-checks (P1-8, round 5 C, no claim without an edit, claim asks off the link) are written up in `docs/rt/rt-fix6a.md`, "REAPER re-check results (rt-r3 ...)".

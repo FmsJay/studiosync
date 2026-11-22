@@ -173,3 +173,18 @@ the laptop's Play now underruns instead. All three run 48 kHz (desktop WASAPI 51
 (`v` within +-0.02), which suggests the laptop's sink (AOO's dynamic resampling) takes the desktop's rate as 2 % slow. To look at in
 `extension/rtaudio.cpp`: what the desktop's source stamps (kAooPreciseTimestamp from `clock_step`) and what the laptop's sink makes
 of them over the internet path (78 ms round trip); `rt_test_drift(l, 0)` on the laptop would show whether it's the resampler.
+
+## REAPER check results, round 2 (rt-r3, 2026-11-21 evening MT / 11-22 UTC, StudioSync 0.59.49.95 from 747151f + extension 1.0.37)
+
+Same way as rt-r1 (`tools/ears`, the sender's own "XT Ears" track, receivers Mute me at volume 0, 0.01 through a hub, no microphone, Deafen
+back to 1 after). Files in my scratchpad `rt-r3/ears/` (r7-r13). Details of r7-r9 in `rt-fix6b.md` (checks 2-4).
+
+| Check | Result | Numbers |
+| --- | --- | --- |
+| 1 again (desktop -> laptop, r7) | **pass** except the latency match | speed 0.99993, no gaps, `steady` (22.7 ms over 18 windows), corr 0.92; stamps 127.6 ms while the laptop's `play_latency_ms` read 152-171 (25-44 ms over, not within ~20); `play_overruns` 0; `play_resyncs` 0 -> 3 around the run. |
+| 2 desktop -> LinuxBox | **fail** | r10 (LinuxBox2 running too): gaps 1820 ms (longest 420), speed 0.99703, LinuxBox's `play_resyncs` 1 -> 15. r12 (LinuxBox2 suspended): gaps 240 ms (longest 30), **speed 0.99703**, `steady` (14 ms), corr 0.28; `play_underruns` 62 -> 64, `play_resyncs` 210 -> 214 (206 already before the run). Cause seen: LinuxBox's own clock estimate is off. Its callbacks measured over 33 s: 48006 Hz (+135 ppm), but `clock_ppm` read -1008 .. -1521 with `clock_steps` 275-375 (4-7 at 20:55): a VM's audio thread steps hundreds of times, and the estimate after taking them out is ~1000-1600 ppm low, so its sinks read ~0.3 % slow. |
+| 2 laptop -> desktop | **fail** | r9: speed 1.0025, gaps 250 ms (longest 40), corr 0.31 (`rt-fix6b.md` check 3): the desktop's Voicemeeter device is 0.2-0.6 % short of 48 kHz. |
+| 2 through the hub (r13) | **fail** | Desktop sending and serving (`serving` 2), laptop and LinuxBox `stream='hub'`. The laptop's tap of the mix: level -90 dB (silent); LinuxBox's: -42 dB (the 0.01 volume), gaps 6180 ms (longest 4000). In the polls the hub state was "hub" 23451 / "direct" 2860 / "joining" 515 reads on the laptop, 20721 / 1020 / 210 on LinuxBox; `env` says latency 425-775 ms, gaps through 7.8-8.35 s. Fallbacks during the ~3 minutes: laptop 1 -> 6, LinuxBox 2 -> 5; `mix_gap_ms` laptop 51 -> 407, LinuxBox 285 / 191. The desktop (the hub) reported `stalls` 211, `stall_max_ms` 1613.8. (The rig's sender tap didn't run this time, so the WAVs were compared with the pattern itself.) |
+| 3 quiet minute (laptop) | **pass, mostly** | `overruns` 0, `play_overruns` 0 at every read; `play_buffer_ms` against `target_ms`: 109/90, 129/100, 164/150 (one 29 ms over); `play_trims` 0 -> 6 over 12 minutes; but `play_resyncs` 0 -> 9 in those minutes (rt-fix6b check 4). Clicks not judged. |
+| 4 master on 3/4 | not run | The desktop's master goes to Voicemeeter VAIO3 (used by work calls) and LinuxBox's PulseAudio output is a stereo pair: no way without touching a real device's routing. |
+| 9 live indicator | **pass** | Desktop deafened and stopped (play state 0); the laptop pressed Play: the desktop's web UI topic `audience` read `live: true, who: ["James-Laptop"]` three times over 9 s (it read `live: false, who: []` before). Read through `/api/state` on 127.0.0.1, not the listening page itself. |

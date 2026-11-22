@@ -278,3 +278,16 @@ Try tab > Your plug-ins > **Allow**.
 - `tryfx.css` (not in P4's files) has no style for the new `.tfnav` row: it wraps as plain buttons.
 - No `tools/ears` run offline: the native held-MIDI checks (round 1) already measure each note-off at Hop X exactly; ears' `tail` belongs to
   the REAPER check (step 5), where it measures the real instrument's sound.
+
+## Round 2 check results (rt-r3, 2026-11-21 22:40-23:02 MT, StudioSync 0.59.49.95 + extension 1.0.37, Hop 0.2.1; desktop tries, laptop hosts)
+
+Tries started from the desktop's web UI (`/api/action` topic `tryfx`, on 127.0.0.1) on XT Rec A; each Allow through the laptop's own web UI
+over `ssh laptop` (`Invoke-RestMethod` as written above), never its screen. Desktop block 512 (WASAPI/Voicemeeter), laptop 128 (ASIO).
+
+| # | Result | Numbers |
+| --- | --- | --- |
+| 1 knob pages | not run | None of the laptop's 19 laptop-only plug-ins has over 256 knobs (all effects: RX 10 tools, PSP Saturator, NoiseSuppression, two FMSJay bridges); RX 10 Spectral De-noise reads `total` 30, `pages` 1. |
+| 2 Print at 0 | **pass** (by the log and playback; not listened to) | Selection 0-4 s, Print: "printing ... onto a new track (with REAPER's pre-roll, so the hop has started before the selection)"; the desktop's playback started at **-1.824 s** (REAPER does play before 0 in its pre-roll); "printed ..." 9 s later, no "lead-in was only" warning; the print item at 0.000-4.000. The desktop's record pre-roll was already on (`preroll` 2) and was left on. The print track and its file removed after (file to the Recycle Bin). |
+| 3 tab switch | **pass**, one doubt | The laptop logged "hosting a hop: REAPER now runs project tabs that aren't in front ..."; 40871 = 1 and 40873 = 1 there. A new empty tab brought to the front (40859, checked by name), stopped and then playing: the try kept running (desktop's row: lost 7.38 % before, 6.78 % with the other tab stopped, 9.15 % with it playing, cumulative), and a knob set on the desktop (`set` p0 0.7) moved the laptop's hidden-track plug-in 0.5000 -> 0.7000 while the other tab played. Tab closed (40860, empty and clean). After stopping the try: **40873 = 0, 40871 = 1** (read 3 s and 25 s after; I didn't read them before the try, so whether 40871 was on before is unknown). The hop rows were red ("lost ...", `ok` false) from the start: 31.8 % lost in the first 8 s, thousands of late blocks. |
+| 4 two hops paced | **pass** | RX 10 De-ess and RX 10 De-hum tried at once: `StudioSync_HopStatus` `"paced":true` on both; after ~70 s lost 4.33 % and 4.67 % (cumulative from their start, most in the first seconds). With the second stopped: hop 1 `"paced":false`, lost 4.66 % a minute later (no new loss). Upload speeds not measured. |
+| 5 note tails | not run | Needs a laptop-only instrument for `instrument=`; the laptop has none. |
