@@ -2810,6 +2810,7 @@ mirror.auto = {} -- proj .. oid -> its next send is a print StudioSync refreshed
 mirror.print_quiet = {} -- proj .. oid -> { key, at }: nothing to print for it as of then (W.prints)
 mirror.tracks_back = mirror.tracks_back or {} -- tostring(proj) -> { oid = event }: tracks put back by a look, settings again after their items (mirror.watch)
 mirror.unsent = {} -- proj .. oid -> changed here, not sent yet (settling, playing, a burst's rest): mirror.receive waits
+mirror.asked_of = {} -- proj .. oid -> { who, at }: an edit held here for that bandmate's answer, as of the last look that held it (W.refuse)
 -- Items that can't go out (their audio couldn't be copied into the studio's folder or isn't on this computer, or their send threw), per
 -- project: Sync and exit counts them (mirror.waiting). Not mirror.unsent, which receive waits on: the band's version of such an item would
 -- wait for ever if the file never comes back. Round 1 review, 0.59.45
@@ -3876,7 +3877,14 @@ function mirror.apply(proj, ev, media_dir, local_mix)
         -- (not one whose just-sent change was only REAPER re-timing it for a tempo map that landed: nobody's work, and kept, a delete-all
         -- with a tempo change left "(yours, not sent)" tracks on the computers that had re-timed it. Cross test, James, rt)
         -- (and just made here only when it's new work of ours: an edit of the band's item made without seeing the deletion goes with it. rt-fix6a)
-        if io == "" or not mirror.known(proj, io) or mirror.unsent[tostring(proj) .. io] or elsewhere[io] or (mirror.just_made_here(proj, io) and not mirror.only_retimed(proj, io, room_dir) and mirror.new_here(proj, io, room_dir)) then
+        -- (nor an edit of the band's item held here for the answer of the bandmate who has now deleted the track: nothing is left to answer,
+        -- and it goes with the track as it would have had it gone out, where it was kept on "(yours, not sent)" for holding their claim on a
+        -- track they'd deleted. An item of your own making is still kept. rt-r3, rt-converge)
+        local asked = io ~= "" and mirror.asked_of[tostring(proj) .. io]
+        local moot = asked and ev.user ~= nil and asked.who == ev.user and reaper.time_precise() - asked.at < 60 and mirror.known(proj, io) ~= nil
+          and not mirror.new_here(proj, io, room_dir)
+        if moot then mirror.unsent[tostring(proj) .. io], mirror.asked_of[tostring(proj) .. io] = nil, nil end
+        if io == "" or not mirror.known(proj, io) or ((mirror.unsent[tostring(proj) .. io] or elsewhere[io]) and not moot) or (mirror.just_made_here(proj, io) and not mirror.only_retimed(proj, io, room_dir) and mirror.new_here(proj, io, room_dir)) then
           reaper.MoveMediaItemToTrack(it, mirror.keep_track(proj, tname))
           -- (yours now: not the band's item, and nothing waits on it, or the band's delete of it waited for good. 0.58.93)
           reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", true)
@@ -5525,7 +5533,11 @@ function W.refuse(w, o, rk, rev, evid, kord, last, name, ok_before)
   -- (Claims: someone else's claim is asked for, the edit held here meanwhile, or put back with why. lib/claimask.lua, rt-claims)
   local asked, quiet = nil, nil
   if opts.ask then asked, quiet = opts.ask(ok_before and name or (last and last.name or ""), pos) end
-  if asked == true then mirror.unsent[rk] = true; return end
+  if asked == true then
+    mirror.unsent[rk] = true
+    mirror.asked_of[rk] = { who = who, at = reaper.time_precise() } -- (held for their answer, as of this look: mirror.apply, a track deleted)
+    return
+  end
   -- (their auto-claim, and the link can't reach them to ask: it goes out, rt-fix6a, and says so (`unasked`), so the computers the link does
   -- reach land it at once too. Unsaid, each of them held it back for the claimer's auto-claim, a minute or two: rt-r3. rt-converge)
   if asked == false then
@@ -6055,6 +6067,7 @@ function W.gone(w)
         local unasked = asked_memo ~= nil and asked_memo[1] == false or nil -- (past an auto-claim that couldn't be asked: as W.send says it)
         local ev = { type = "obj", obj = o.kind, oid = g.oid, rev = mirror.next_rev(g.rev, mirror.owned(opts, me, name, last.pos, w.is_claimed)), base = g.rev or 0, base_ev = (g.evid or "") ~= "" and g.evid or nil, gone = true, track = o.track, name = name, pos = last.pos, act = w.act, unasked = unasked }
         local id = sync.post(cfg, song, room, ev)
+        if o.kind == "track" and opts.sent then pcall(opts.sent, o, name, ev) end -- (Claims: your auto-claim on a track you deleted goes with it. rt-converge)
         remember(proj, g.oid, ev.rev, "", id, mirror.order_of(ev)) -- (with its order: a racing edit is settled alike everywhere)
         mirror.unsent[tostring(proj) .. g.oid] = nil
         w.sent = w.sent + 1

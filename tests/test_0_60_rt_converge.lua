@@ -1267,4 +1267,52 @@ do
   print("rt-converge 25: a change sent past an unreachable auto-claimer lands at once on the computers the link reaches")
 end
 
+-- ---- 26. deleting a track you'd auto-claimed lets the claim go; a bandmate's edit held for your answer goes with the track (rt-r3) -------------
+do
+  local S = studio("Conv26", "open")
+  local A, B = S.computer("James"), S.computer("Bee")
+  here_now = { James = true, Bee = true }
+  S.look(A); S.look(B) -- (each project's first look: what's edited after it is an edit, mirror.user_edited)
+  S.edit(A, function(F) F.add_item(F.add_track("Take"), midi(1, 2)); F.add_track("Keys") end)
+  local function claims(user)
+    for p, v in pairs(files) do
+      if p:find(S.dir .. "/claims/", 1, true) and type(v) == "table" and v.user == user then return table.concat(v.tracks or {}, ",") end
+    end
+    return ""
+  end
+  assert(claims("James"):find("Take", 1, true), "James's auto-claim on the track he made (" .. claims("James") .. ")")
+  S.recv(B)
+  -- Bee moves the item: James is asked, and her move waits here
+  T = T + 2
+  logged = {}
+  S.as(B)
+  local it = S.track(B, "Take").items[1]
+  B.F.set_text(it, (it.text:gsub("POSITION 1", "POSITION 4")))
+  B.edited = B.F.clock + 1
+  for _ = 1, 2 do S.look(B) end
+  assert(told("asked James to release Take") and #S.events(function(v) return v.user == "Bee" end) == 0, "Bee's move is held for James's answer")
+  -- James deletes the track
+  T = T + 2
+  logged = {}
+  S.edit(A, function(F) reaper.DeleteTrack(S.track(A, "Take")) end)
+  assert(not claims("James"):find("Take", 1, true), "his auto-claim goes with the track he deleted (was: on for ten more minutes): " .. claims("James"))
+  assert(told("let go of your claim on Take: you deleted it"), "and the log says so")
+  -- an ask about it that crossed with the deletion: answered Release at once, nobody is prompted
+  logged = {}
+  S.as(A)
+  claimask.on_ask(A.cfg, S.b, { id = "ask-26", from = "Bee", to = "James", thing = { kind = "tracks", name = "Take" } })
+  local answered
+  for _, m in ipairs(wire) do if m.kind == "claim_answer" and m.d.id == "ask-26" then answered = m.d.answer end end
+  assert(answered == "release" and not told("wants to edit Take"), "an ask about the deleted track isn't put to James (was: Release or Keep for a track he'd deleted): " .. tostring(answered))
+  -- the deletion lands on Bee's: the track goes, and her held move of the band's item with it
+  logged = {}
+  S.recv(B, true); S.look(B)
+  assert(not S.track(B, "Take"), "Take is gone on Bee's")
+  assert(not S.track(B, "Take (yours, not sent)"), "with her held move of it: nothing is left to answer (was: kept as 'Take (yours, not sent)')")
+  S.look(B)
+  assert(S.names(B) == "Keys", "and it stays that way (" .. S.names(B) .. ")")
+  here_now = {}
+  print("rt-converge 26: a deleted track's auto-claim goes with it, and an edit held for its deleter's answer goes with the track")
+end
+
 print("ok rt-converge")

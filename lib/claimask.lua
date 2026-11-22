@@ -376,6 +376,11 @@ end
 -- mirror.watch's W.send, for each change that went (opts.sent).
 function claimask.on_sent(o, name, ev)
   if type(ev) ~= "table" or ev.auto or type(name) ~= "string" or name == "" or #sent_now >= 500 then return end
+  -- (a track you deleted, W.gone: your auto-claim on it goes with it, claimask.flush. rt-converge)
+  if ev.gone then
+    if o.kind == "track" then sent_now[#sent_now + 1] = { name = base(name), gone = true } end
+    return
+  end
   local len = o.kind == "item" and type(o.state) == "string" and tonumber(o.state:match("\nLENGTH ([%d%.e%-]+)")) or nil
   sent_now[#sent_now + 1] = { name = base(name), pos = tonumber(ev.pos), len = len, kind = o.kind }
 end
@@ -385,17 +390,30 @@ function claimask.flush(cfg, b, who, alone)
   sent_now = {}
   if alone or type(who) ~= "table" or who.mode ~= "open" or #list == 0 then return 0 end
   local sync = require("sync")
-  local free, mine = {}, {}
+  local free, mine, gone = {}, {}, {}
   for _, s in ipairs(list) do
-    if not (who.is_claimed and who.is_claimed(s.name, s.pos)) then free[#free + 1] = s
+    if s.gone then gone[#gone + 1] = s
+    elseif not (who.is_claimed and who.is_claimed(s.name, s.pos)) then free[#free + 1] = s
     else
       local th = claimask.which(who, s.name, s.pos)
       if th and th.user == cfg.user then mine[claimask.key(th)] = th end
     end
   end
-  local c = (#free > 0 or next(mine)) and sync.my_claims(cfg, b.song, b.room)
+  local c = (#free > 0 or next(mine) or #gone > 0) and sync.my_claims(cfg, b.song, b.room)
   if not c then return 0 end
   local now, changed, made = os.time(), false, {}
+  -- (a track you deleted: your auto-claim on it is let go now, not after its ten idle minutes. Left on, it stood in Who controls for a
+  -- track that wasn't there, a bandmate's edit made before your deletion reached them was held to ask you, and you were asked to Release
+  -- or Keep a track you'd deleted: rt-r3. A claim you made on purpose stays, as before: sync.drop_gone_claims. rt-converge)
+  local let_go = {}
+  for _, s in ipairs(gone) do
+    local th = { kind = "tracks", name = s.name }
+    if c.auto and c.auto[claimask.key(th)] then
+      claimask.remove(c, th)
+      mine[claimask.key(th)], changed, let_go[#let_go + 1] = nil, true, s.name
+    end
+  end
+  if #let_go > 0 then band.log("let go of your claim on " .. table.concat(let_go, ", ") .. ": you deleted it") end
   for k, th in pairs(mine) do -- (touched again: at most once a TOUCH_EVERY, and only an auto one)
     local at
     if th.kind == "times" then for _, t in ipairs(c.times or {}) do if type(t) == "table" and same_time(t, th) then at = t.auto end end
