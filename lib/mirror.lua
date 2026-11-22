@@ -4266,7 +4266,10 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
     o[ev.track] = true
     mirror.orphaned[tostring(proj)] = o
     -- (an item's own deletion is recorded though: it went with its track, and every computer then holds the same deletion, whichever came first)
-    if ev.gone then remember(proj, ev.oid, ev.rev, "", ev.id, order) end
+    -- (and nothing of yours waits on it any more: a deletion of yours held for a claimer's answer, or an edit that went with the track, left
+    -- its flag on, which only a look at an object still recorded here takes off (W.gone), and the item's return then waited behind it for
+    -- good, on this computer alone. The soak's seed 5045. rt-converge)
+    if ev.gone then remember(proj, ev.oid, ev.rev, "", ev.id, order); mirror.unsent[tostring(proj) .. ev.oid] = nil end
     -- (and an item moved onto that track by someone who hadn't the deletion yet, still here on the track it came from: it went with the track
     -- it was moved to, as it did on its mover's computer when the deletion landed there. Left where it was, it stayed on every computer but
     -- the mover's. Recorded gone with its track under this version, so it comes back, on that track, if the track does (mirror.heal). One

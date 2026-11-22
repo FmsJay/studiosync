@@ -22,6 +22,7 @@
 -- 17. A merge isn't built while a version it rests on is still on its way (mirror.event_file, mirror.merge_for).
 -- 18. An item moved onto a track a bandmate deleted that moment goes with the track on every computer (mirror.receive).
 -- 19. Deleting an item goes out though a grey stand-in still carries its id here (mirror.local_copy_is_it, W.gone).
+-- 20. A deletion of yours waiting for a claimer's answer doesn't hold the item's later versions back once the band has deleted it (mirror.receive).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -1007,6 +1008,49 @@ do
   S.recv(A)
   assert(S.items(A, "Keys") == 0, "deleted on James's too")
   print("rt-converge 19: an item's deletion goes out past a stand-in carrying its id")
+end
+
+-- ---- 20. a deletion waiting for an answer, and the band deletes the item's track meanwhile: its return still lands (the soak, seed 5045) -------
+do
+  local S = studio("Conv20", "open")
+  local A, B = S.computer("James"), S.computer("Bee")
+  S.edit(A, function(F) F.add_item(F.add_track("Gtr"), midi(1, 2)); F.add_track("Keys") end)
+  S.recv(B)
+  local oid = S.track(B, "Gtr").items[1].ext.band_oid
+  local toid = S.track(B, "Gtr").ext.band_oid
+  T = T + sync.AUTO_IDLE + 120
+  files[S.dir .. "/claims/Cee.json"] = { user = "Cee", time = iso(T), tracks = { "Gtr" }, since = { ["tracks:gtr"] = iso(T) } }
+  here_now = { James = true, Bee = true, Cee = true } -- (Cee is here: she's asked, and Bee's deletion waits for her answer)
+  T = T + 5
+  logged = {}
+  S.as(B)
+  B.F.remove_item(S.track(B, "Gtr").items[1])
+  B.edited = B.F.clock + 1
+  for _ = 1, 3 do S.look(B) end -- (a look that waits for an answer never settles: looked at as Live sync does)
+  assert(told("asked Cee to release Gtr") and #S.events(function(v) return v.oid == oid and v.gone end) == 0, "Bee's deletion waits for Cee's answer: nothing sent")
+  -- Cee deletes Gtr herself, with its item
+  local function version(of, id, rev, more)
+    local ev = band.json_decode(band.json_encode(of))
+    ev.id, ev.rev, ev.base, ev.base_ev, ev.hlc, ev.user, ev.time = id, rev, of.rev, of.id, of.hlc + 5000, "Cee", iso(T)
+    for k, v in pairs(more or {}) do ev[k] = v end
+    files[S.dir .. "/events/" .. id .. ".json"] = ev
+    return ev
+  end
+  local item1 = S.events(function(v) return v.oid == oid end)[1]
+  local track1 = S.events(function(v) return v.oid == toid end)[1]
+  T = T + 2
+  local tgone = version(track1, "Cee-20270115-100000Z-00001-0020", track1.rev + 1001, { gone = true })
+  local igone = version(item1, "Cee-20270115-100000Z-00002-0020", item1.rev + 1001, { gone = true })
+  S.recv(B, true); S.look(B)
+  assert(not S.track(B, "Gtr"), "Gtr is gone on Bee's")
+  -- and takes that back: the track and its item return
+  T = T + 2
+  version(tgone, "Cee-20270115-100002Z-00003-0020", tgone.rev + 1, { gone = false, state = track1.state })
+  version(igone, "Cee-20270115-100002Z-00004-0020", igone.rev + 1, { gone = false, state = item1.state })
+  for _ = 1, 2 do S.recv(B, true); S.look(B) end
+  assert(S.items(B, "Gtr") == 1, "the item is back with its track (was: held back for good behind Bee's deletion, which nothing was left to answer): " .. S.items(B, "Gtr"))
+  here_now = {}
+  print("rt-converge 20: a deletion waiting for an answer doesn't hold the item back once the band has deleted it")
 end
 
 print("ok rt-converge")
