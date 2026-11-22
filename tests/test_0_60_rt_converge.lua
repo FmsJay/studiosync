@@ -25,6 +25,7 @@
 -- 20. A deletion of yours waiting for a claimer's answer doesn't hold the item's later versions back once the band has deleted it (mirror.receive).
 -- 21. An item's version on a track deleted since stands though the item's earlier versions land after it (mirror.receive).
 -- 22. Undo of a marker change made before a bandmate's tempo change compares the markers on the map in place (sync.undo_timeline).
+-- 23. Undo of a timeline change goes back to the version it was made on, not the one before it by order (sync.post's built_on).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -1139,6 +1140,54 @@ do
   S.recv(C)
   assert(marks(C) == "N1@9.600", "on Cee's too (" .. marks(C) .. ")")
   print("rt-converge 22: Undo of a marker change compares markers on the map in place")
+end
+
+-- ---- 23. Undo of a marker change goes back to the version it was made on (the soak's undo probe, seed 6002) ------------------------------------
+do
+  local undo = require("undo")
+  local S = studio("Conv23", "everyone")
+  S.timeline = true
+  local B, C = S.computer("Bee"), S.computer("Cee")
+  S.edit(C, function(F) F.add_item(F.add_track("Keys"), midi(1, 2)) end)
+  S.recv(B)
+  S.edit(C, function(F) F.add_marker(false, 8, 8, "Cue"); F.add_marker(true, 12, 16, "R") end)
+  S.recv(B)
+  local function marks(c)
+    S.as(c)
+    local t = {}
+    for _, m in ipairs(band.capture_markers(c.F.proj)) do t[#t + 1] = string.format("%s@%g", m.name, m.pos) end
+    return table.concat(t, ",")
+  end
+  local function rename(c, to) S.edit(c, function(F) local m = F.markers[1]; reaper.SetProjectMarker4(F.proj, m.num, m.region, m.pos, m.rend, to, 0) end) end
+  T = T + 2
+  rename(C, "N1")
+  S.recv(B)
+  assert(marks(B) == "N1@8,R@12", "Cee's rename on Bee's (" .. marks(B) .. ")")
+  -- Cee renames it back; before that reaches Bee, she moves the region (her change is the later of the two, and wasn't made on Cee's)
+  T = T + 2
+  local snap = {}
+  for p, v in pairs(files) do snap[p] = v end
+  rename(C, "Cue")
+  local cees = {}
+  for p, v in pairs(files) do if snap[p] ~= v then cees[p] = v; files[p] = snap[p] end end
+  T = T + 2
+  S.edit(B, function(F) local m = F.markers[2]; reaper.SetProjectMarker4(F.proj, m.num, true, 13, 17, m.name, 0) end)
+  for p, v in pairs(cees) do if files[p] == snap[p] then files[p] = v end end
+  S.recv(B); S.recv(C)
+  assert(marks(B) == "N1@8,R@13" and marks(C) == "N1@8,R@13", "the newer timeline, Bee's, on both (" .. marks(B) .. " / " .. marks(C) .. ")")
+  local function step(redo)
+    S.as(B)
+    B.F.clock = B.F.clock + 1
+    T = T + 2
+    local res, why = undo.step(B.F.proj, B.cfg, S.b, redo, {})
+    S.settle(B)
+    return tostring(res or why)
+  end
+  local u = step(false)
+  assert(marks(B) == "N1@8,R@12", "Bee's Undo takes back her move of the region and nothing else (was: Cee's rename too, which Bee's change was never made on): " .. u .. "; " .. marks(B))
+  local r = step(true)
+  assert(marks(B) == "N1@8,R@13", "and her Redo: the region where she moved it (" .. r .. "; " .. marks(B) .. ")")
+  print("rt-converge 23: Undo of a timeline change goes back to the version it was made on")
 end
 
 print("ok rt-converge")

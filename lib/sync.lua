@@ -1125,6 +1125,8 @@ function sync.post(cfg, song, room, ev, proj)
   if k then
     local seen = ext(proj, sync.NEWEST, k)
     if seen >= ev.time .. ev.id then ev.order = seen .. "+" end
+    -- (the tempo map and markers this one was made on, by that change's order: what its Undo goes back to, sync.undo_timeline. rt-converge)
+    if k == "timeline" and seen ~= "" then ev.built_on = seen end
   end
   local dir = sync.room_dir(cfg, song, room) .. "/events"
   reaper.RecursiveCreateDirectory(dir, 0)
@@ -1470,11 +1472,17 @@ function sync.undo_timeline(proj, cfg, song, room, entries, j, tags, session)
   -- History's rows, which sort by each computer's clock: a marker you added a second after a bandmate's Restore, stamped the same second,
   -- sat before their change in History, so the Redo of your Undo compared against their timeline, found nothing to bring back, and your
   -- marker stayed gone. The soak's undo probe, seed 31. rt-converge)
+  -- (first, the one it says it was made on (`built_on`, from this package on): of two timeline changes made a moment apart the later by order
+  -- wasn't made on the earlier, and compared with it the Undo also took back what its maker had never seen: a bandmate's rename of another
+  -- marker, undone that same second, went back on with the Undo of a region's move. The soak's undo probe, seed 6002. rt-converge)
   local P
   local t_order = order(T)
-  for i, e in ipairs(entries) do
-    if i ~= j and e.kind == "timeline" and type(e.tempo) == "table" and type(e.time) == "string" and type(e.id) == "string"
-        and order(e) < t_order and (not P or order(e) > order(P)) then P = e end
+  local function version(e, i) return i ~= j and e.kind == "timeline" and type(e.tempo) == "table" and type(e.time) == "string" and type(e.id) == "string" end
+  if type(T.built_on) == "string" and T.built_on ~= "" then
+    for i, e in ipairs(entries) do if version(e, i) and order(e) == T.built_on then P = e end end
+  end
+  for i, e in ipairs(P and {} or entries) do
+    if version(e, i) and order(e) < t_order and (not P or order(e) > order(P)) then P = e end
   end
   if not P then
     local meta = band.read_json(sync.room_dir(cfg, song, room) .. "/room.json")
