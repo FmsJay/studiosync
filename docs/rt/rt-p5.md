@@ -108,3 +108,17 @@ No version file touched (EXT_VERSION, `make_index.py`, `tools.lua`): the extensi
 
 **REAPER (real computers):** step input with a 1/16 grid and a controller: chord, Rest, Back; wait 2 s; Edit > Undo shows one
 "StudioSync web page: step input (N notes)" and one Ctrl+Z removes them all; notes appear on the other computer after the point is made.
+
+## Check results (rt-t1, 2026-11-22, 0.59.49.95 + extension 1.0.37; details in `rt-t1.md`)
+
+Unattended with `tools/devices/p5_checks.py --phone`: the S23's Chrome over the phone link (adb over Wi-Fi + DevTools), a second page in
+headless Chrome on the laptop, the bandmate as the laptop's own web UI; everything made was deleted after, REAPER's inputs read back.
+| Check | Result |
+| --- | --- |
+| 1 two pages, two virtual keyboard channels | **pass**: channel 1 (S23) and 2 (laptop page); REAPER's inputs 6081/6082, armed; back to input 0, unarmed 0.4 s after off |
+| 2 the second page takes the track | **pass** on the S23 ("another page took this track"); intermittent from laptop pages: 2 of 7 runs the first page wasn't told within 15 s |
+| 5 mention banner over http | **pass**: banner text and title "(1) StudioSync"; the buzz can't be observed |
+| 8 status line | **pass**: on the laptop's page 0.7 s later; cleared |
+| 10 a to-do for a bandmate | **pass**: on James-Laptop's Home 13.3 s later |
+| 11 upload past the spool | **pass**: 5 MB, the shared copy's SHA-256 equals what was sent (deleting the message leaves the file in `_band/chat/files/`: rt-t1 finding 6) |
+| 3, 4, 6, 7, 9 | not run (a real USB keyboard; Claims mode; would switch REAPER's tab; another time zone; a bandmate edit with another project in front) |

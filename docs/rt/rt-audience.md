@@ -214,3 +214,11 @@ script and style don't (they carry nothing).
   public listeners run (the same trust as the web UI itself).
 - **`/listen/` bypasses the web UI's token by design**: any future file named under `/listen/` would need adding to the allow-list
   deliberately (it can't leak by accident: unknown paths are 404).
+
+## Check results (rt-t1, 2026-11-22, 0.59.49.95 + extension 1.0.37; details in `rt-t1.md`)
+
+Unattended with `tools/devices/listen.py`: the desktop played the ears pattern through its master at -40 dB, a Chrome listener on the
+desktop opened a tailnet listening link, and the page's output was compared with the pattern. **Pass**: level -0.09 dB, gaps 180 ms
+(longest 70), speed 1.0018, delay steady (largest step 18.9 ms), no underrun, 0.19 s ahead. Browser guests are in what listeners hear
+(rt-p11 check 7: both guests, at their set volume). **Pending**: the S23 playing the link with a scrcpy capture: James had just touched the
+phone at the time, and since the desktop crash at 00:15 nothing may use the desktop's audio output until the cause is known.

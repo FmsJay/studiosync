@@ -188,3 +188,17 @@ back to 1 after). Files in my scratchpad `rt-r3/ears/` (r7-r13). Details of r7-r
 | 3 quiet minute (laptop) | **pass, mostly** | `overruns` 0, `play_overruns` 0 at every read; `play_buffer_ms` against `target_ms`: 109/90, 129/100, 164/150 (one 29 ms over); `play_trims` 0 -> 6 over 12 minutes; but `play_resyncs` 0 -> 9 in those minutes (rt-fix6b check 4). Clicks not judged. |
 | 4 master on 3/4 | not run | The desktop's master goes to Voicemeeter VAIO3 (used by work calls) and LinuxBox's PulseAudio output is a stereo pair: no way without touching a real device's routing. |
 | 9 live indicator | **pass** | Desktop deafened and stopped (play state 0); the laptop pressed Play: the desktop's web UI topic `audience` read `live: true, who: ["James-Laptop"]` three times over 9 s (it read `live: false, who: []` before). Read through `/api/state` on 127.0.0.1, not the listening page itself. |
+
+## Check results, browser guests (rt-t1, 2026-11-22, 0.59.49.95 + extension 1.0.37; details in `rt-t1.md`)
+
+Run unattended with `tools/devices/guests.py --laptop`: two guests in headless Chrome on the laptop with fake microphones (the ears pattern;
+1500 Hz), volume 0.01, through the desktop's guest link; a listening-link listener on the desktop. The desktop was CPU-loaded by another
+agent's soak (86-92 % at the start).
+| Check | Result | Numbers |
+| --- | --- | --- |
+| 7 each guest hears the other, not itself | **pass** at join | A hears B's tone at -55.1 dBFS (expected -55.1); B hears A's pattern at -0.02 dB, gaps 160 ms (longest 40), spectra 0.3 dB; neither hears itself |
+| 7 a listening link hears both | **pass** | tone -55.1 dBFS, pattern -0.09 dB, gaps 200 ms (longest 30) |
+| 7 a third and fourth live | **pass** | 4 live |
+| 7 15 min, no new drops/under | **fail** | host's rows: under +5, drops +1 per guest; each guest page's worklet: under +226/+237, drops +90/+95 (the down path, 80 ms target over a 78 ms internet round trip) |
+| 8 listening page over 15 min | **fail** (loaded desktop) | `under` +8, `ahead` 0.14-1.03 s |
+| (drift) | **finding** | a guest is heard up to +0.85 % sharp after joining (two 0.5 % drift controllers in a row), still +0.2-0.5 % 15 min later |
