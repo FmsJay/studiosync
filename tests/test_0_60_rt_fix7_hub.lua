@@ -91,7 +91,9 @@ do
   local listed = { "Pi.json", "Qu.json" }
   band.files = function(d) return d == "R/Song/rooms/main/status" and listed or {} end
   local function iso(ago) return os.date("!%Y-%m-%dT%H:%M:%SZ", real_time() - ago) end
-  local function st(user, since) return { user = user, machine = "m" .. user, time = iso(2), hub = { since = real_time() - since, link = true, ext = "1.0.36", sees = { "Ja", "Pi", "Qu" } } } end
+  -- (rt-audio3: the others also reach Zed, whom this computer's link doesn't: behind AND blind to someone, the case a holder still steps down
+  -- for. Seeing everyone the others reach, it keeps the role however long its Syncthing is behind: tests/test_0_60_rt_audio3.lua part 3)
+  local function st(user, since) return { user = user, machine = "m" .. user, time = iso(2), hub = { since = real_time() - since, link = true, ext = "1.0.36", sees = { "Ja", "Pi", "Qu", "Zed" } } } end
   files["R/Song/rooms/main/status/Pi.json"], files["R/Song/rooms/main/status/Qu.json"] = st("Pi", 500), st("Qu", 400)
   local live_now = { Pi = st("Pi", 500), Qu = st("Qu", 400) }
   package.loaded.presence = { peers = function() return { live_now.Pi, live_now.Qu } end, live = function() return live_now end }

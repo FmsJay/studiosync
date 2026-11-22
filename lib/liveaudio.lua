@@ -177,12 +177,13 @@ end
 function liveaudio.their_srcs(cfg)
   local now = reaper.time_precise()
   if S.srcs and now - S.srcs_at < 1 then return S.srcs end
-  S.srcs, S.srcs_at, S.caps = {}, now, {}
+  S.srcs, S.srcs_at, S.caps, S.las = {}, now, {}, {}
   local b = S.b
   if not (cfg and b and b.song) then return S.srcs end
   local ok, sts = pcall(require("presence").peers, cfg, b.song, b.room or "main")
   for _, x in ipairs(ok and type(sts) == "table" and sts or {}) do
-    if type(x) == "table" and x.user then S.srcs[x.user], S.caps[x.user] = x.lsrc, x.lhub == true end -- (lhub: their extension mixes at a hub, hub_plan)
+    -- (lhub: their extension mixes at a hub; la: their live audio's own word, my_la: one that can't run never mixes for the room. hub_plan)
+    if type(x) == "table" and x.user then S.srcs[x.user], S.caps[x.user], S.las[x.user] = x.lsrc, x.lhub == true, x.la end
   end
   return S.srcs
 end
@@ -494,10 +495,13 @@ function liveaudio.why_not(on, available, secret, firewall)
   if not firewall then return "Windows needs its firewall rule first: press Set up live audio in Health", "firewall" end
 end
 -- This computer's live audio for its status file (Live sync), so the others' Health can say why they don't hear it: nil (the studio has it
--- off), "ext", "tailscale", "firewall", else "on", "muted", "deaf" or "ptt".
+-- off), "ext", "tailscale", "firewall", "down" (it may run here but didn't start: no Tailscale address, its port taken), else "on", "muted",
+-- "deaf" or "ptt". The first four are lib/hub.lua's NO_LA: such a computer hosts nobody's live mix and isn't elected a hub while another
+-- can (LinuxBox2, off the tailnet, said "on" while its engine never started, and "you're the hub". rt-audio3).
 function liveaudio.my_la()
   if S.code == "off" then return nil end
   if S.code then return S.code end
+  if S.fail_why then return "down" end
   local s = liveaudio.me()
   return s.deaf and "deaf" or s.mute and "muted" or s.ptt and "ptt" or "on"
 end
@@ -532,12 +536,17 @@ end
 -- -> peer (the hub's "name:port", "" for peer to peer), serve (this computer mixes), why (Health's words when the room is big enough but it
 -- isn't used, else nil). o: n (people here, me too), from (the threshold), hub (this song's hub), me, users (peer -> name: those here), can
 -- (this computer's extension takes part: hub_fit), hub_fit (false: the hub's own extension is too old to mix, lib/hub.lua's view), budget
--- (false: this computer's mixing is paused, budget_why says why). Pure.
+-- (false: this computer's mixing is paused, budget_why says why), running (false: live audio isn't running here), hub_la (the hub's own
+-- word for its live audio, my_la in its status). Pure.
+-- (rt-audio3: a computer whose live audio can't run never mixes for the room, whoever elected it: here its own engine not running, there
+-- its status's word, lib/hub.lua NO_LA. LinuxBox2, off the tailnet, was told to mix for the room between its failed starts.)
 function liveaudio.hub_plan(o)
   local from = tonumber(o.from) or liveaudio.HUB_FROM
   if from <= 0 or (tonumber(o.n) or 1) < from then return "", false, nil end
   if not o.can then return "", false, "needs a newer StudioSync extension here" end
   if not o.hub then return "", false, "this song has no hub here" end
+  if o.hub == o.me and o.running == false then return "", false, "live audio isn't running on this computer, so it can't mix it for the room" end
+  if o.hub ~= o.me and o.hub_la and require("hub").NO_LA[o.hub_la] then return "", false, o.hub .. "'s live audio isn't running, so its computer can't mix it for the room" end
   if o.hub ~= o.me and o.hub_fit == false then return "", false, o.hub .. "'s StudioSync extension is too old to mix it (REAPER there needs a restart after the update)" end
   local peer
   for p, name in pairs(o.users or {}) do if name == o.hub then peer = p end end
@@ -586,7 +595,8 @@ function liveaudio.hub_tick(cfg, b, list, users, st)
   local from = liveaudio.hub_from(cfg.root)
   local unfit = okv and type(v) == "table" and hub == v.hub and v.hub_fit == false -- (the song's hub itself: lib/livex.lua picks only one that can)
   local peer, serve, why = liveaudio.hub_plan({ n = liveaudio.hub_n(S.hub_mem, #(list or {}) + 1, from, reaper.time_precise()), from = from, hub = hub,
-    me = cfg.user, users = users, can = liveaudio.hub_fit(), hub_fit = not unfit, budget = ok_b, budget_why = why_b })
+    me = cfg.user, users = users, can = liveaudio.hub_fit(), hub_fit = not unfit, budget = ok_b, budget_why = why_b,
+    running = st.running ~= false, hub_la = hub and (S.las or {})[hub] or nil })
   if okx and wait and not hub and why then why = wait end
   S.hub = { peer = peer, serve = serve, why = why, user = hub, pick = okx and (peer ~= "" or serve) and pick or nil }
   local key = peer .. "|" .. tostring(serve)
@@ -865,7 +875,8 @@ function liveaudio.on_exit(proj)
 end
 
 -- Why a bandmate isn't heard, from the word in their status (my_la). %s: the extension StudioSync wants.
-liveaudio.THEM = { ext = "needs extension %s", tailscale = "not on the studio's Tailscale", firewall = "needs Windows' firewall rule (Set up live audio, in their Health)" }
+liveaudio.THEM = { ext = "needs extension %s", tailscale = "not on the studio's Tailscale", firewall = "needs Windows' firewall rule (Set up live audio, in their Health)",
+  down = "live audio didn't start there (their Health says why)" }
 liveaudio.THEIR_MIC = { muted = "muted", deaf = "deafened", ptt = "push-to-talk" }
 local function them(code)
   local t = liveaudio.THEM[code]

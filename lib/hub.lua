@@ -35,7 +35,11 @@ local hub = { SCAN_EVERY = 10, FRESH = 45, HANDBACK = 30, SNAP_EVERY = 1800, IDL
   -- reached by all, for REACH_SETTLE s (and hosts again once reached for as long). LAG_HEARD: a computer that hears at least this many
   -- bandmates over the direct link while none of their status files here is under VOUCH s old has its Syncthing paused or broken: it says
   -- `lag` in its status and nobody elects it (hub.lagging).
-  HOME_MISS = 2, LAG_HEARD = 2 }
+  HOME_MISS = 2, LAG_HEARD = 2,
+  -- (rt-audio3) A status's `la` (lib/liveaudio.lua my_la) that says live audio can't run on that computer: no extension for it, off the
+  -- studio's Tailscale, Windows' firewall rule missing, or it didn't start. From liveaudio's HUB_FROM people a song's hub hosts the room's
+  -- live mix, so such a computer isn't elected while another can (LinuxBox2, off the tailnet, said "you're the hub" in rt-r3).
+  NO_LA = { ext = true, tailscale = true, firewall = true, down = true } }
 
 -- ---- pure ----------------------------------------------------------------------------------------------------------------------------
 -- Candidates: { user, machine, since (os.time it came online), link (its direct link listens), off (handed the role on), studio (holds the
@@ -76,11 +80,15 @@ end
 local function taking(c, now)
   return not c.listening and not (now and tonumber(c.since) and now - c.since < hub.LISTEN)
 end
--- Those that may hold a role: not handed on, and not behind on Syncthing (hub.lagging), unless every one is (then as before rt-p9).
+-- Those that may hold a role: not handed on; of those, the ones whose live audio can run (nola: hub.NO_LA), unless none's can (the restore
+-- points need none, so the role still goes to someone); of those, the ones not behind on Syncthing (hub.lagging), unless every one is (then
+-- as before rt-p9). Live audio first: a computer behind on Syncthing can still mix for the room, one without live audio never can.
 local function eligible(list)
-  local ok, all = {}, {}
-  for _, c in ipairs(list) do if not c.off then all[#all + 1] = c; if not c.lag then ok[#ok + 1] = c end end end
-  return #ok > 0 and ok or all
+  local all, can, ok = {}, {}, {}
+  for _, c in ipairs(list) do if not c.off then all[#all + 1] = c; if not c.nola then can[#can + 1] = c end end end
+  local pool = #can > 0 and can or all
+  for _, c in ipairs(pool) do if not c.lag then ok[#ok + 1] = c end end
+  return #ok > 0 and ok or pool
 end
 -- Is an extension new enough for the hub's jobs? Pure.
 function hub.fit(ext) return type(ext) == "string" and ext ~= "" and band.compare_versions(ext, hub.EXT) >= 0 end
@@ -197,6 +205,7 @@ local function person(c, st)
   local h = type(st.hub) == "table" and st.hub or {}
   c.time, c.machine, c.since, c.link, c.off, c.studio = st.time, st.machine, tonumber(h.since), h.link == true, h.off == true, h.studio == true
   c.lag = h.lag == true or nil -- (its Syncthing is behind: hub.lagging)
+  c.nola = hub.NO_LA[st.la] or nil -- (its live audio can't run: it hosts nobody's live mix. rt-audio3)
   c.ext, c.sees = type(h.ext) == "string" and h.ext or nil, hub.seen(st)
 end
 function hub.candidates(sts, now, age_of)
@@ -241,7 +250,7 @@ function hub.with_room(list, sts, song)
       local c = { user = st.user, songs = {} }
       if old and not old.late then for k, v in pairs(old.songs) do c.songs[k] = v end end
       local newer = old and old.time and old.time > st.time
-      if newer then for _, k in ipairs({ "time", "machine", "since", "link", "off", "studio", "ext", "sees", "lag" }) do c[k] = old[k] end
+      if newer then for _, k in ipairs({ "time", "machine", "since", "link", "off", "studio", "ext", "sees", "lag", "nola" }) do c[k] = old[k] end
       else person(c, st) end
       local was = newer and type(old.songs) == "table" and old.songs[song]
       c.songs[song] = { holds = type(st.hub) == "table" and st.hub.song == true or nil, sees = type(was) == "table" and was.sees or hub.seen(st) }
@@ -322,6 +331,20 @@ function hub.lagging(live, list)
     end
   end
   return heard >= hub.LAG_HEARD
+end
+-- Behind on Syncthing, is this computer also blind to someone in the room? live: as above; sees: those its own link reaches (names); me.
+-- True when a bandmate heard over the link says its link reaches someone this one's doesn't: that one is known here only by a file, and
+-- the files are what's behind. Then its election may be missing someone the others count, and holding a role it could be a second hub
+-- (rt-p9's case). With nobody like that, the link brings every status its election reads, and being behind changes nothing in it. Pure.
+function hub.blind(live, sees, me)
+  local mine = {}
+  for _, u in ipairs(sees or {}) do mine[u] = true end
+  for _, st in pairs(type(live) == "table" and live or {}) do
+    if type(st) == "table" and type(st.time) == "string" and band.age(st.time) < hub.FRESH then
+      for u in pairs(hub.seen(st)) do if u ~= me and not mine[u] then return true end end
+    end
+  end
+  return false
 end
 
 -- Failover in seconds. reach: direct.reach's user -> { ok, at } for those here; mem: this computer's memory of each, kept between ticks. One
@@ -588,6 +611,9 @@ local function with_me(list, cfg, song, sees, lag)
   me.machine = me.machine or require("sync").machine()
   me.since, me.link, me.off, me.studio = hub.since(), link_ok, hub.off(cfg.root), h.studio == true
   me.ext, me.sees, me.lag = my_ext() or "0", {}, lag or nil
+  -- (its own live audio, as its status says it: lib/liveaudio.lua my_la. One that can't run isn't elected while another's can. rt-audio3)
+  local okla, la = pcall(function() return require("liveaudio").my_la() end)
+  me.nola = okla and hub.NO_LA[la] or nil
   for _, u in ipairs(sees or {}) do me.sees[u] = true end
   me.songs[song] = { holds = h.songs[song] == true, sees = me.sees }
   -- Just came online: for LISTEN s it takes no role it doesn't hold, so it has heard the room first: the others' statuses read over more than
@@ -643,9 +669,15 @@ function hub.tick(proj, cfg, b)
   local lag = hub.lagging(okl and live or nil, list)
   -- (holding a role, it gives it up for that only once it has lasted REACH_SETTLE s without a break: the desktop's Syncthing slow for a
   -- moment handed Cross Test to the laptop and back within 21 s in rt-r2. Holding nothing, it takes none at once, as before. rt-fix7)
+  -- (and only if it is blind to someone too, hub.blind. The desktop's Syncthing sat scanning for minutes at a time in rt-r3 while its link
+  -- reached everyone the others reach: it had every status its election reads, and still handed Cross Test away and took it back 17 times
+  -- in three hours, the room's live mix moving with it each time. A holder that sees the whole room keeps its role. rt-audio3)
   local hh = held[cfg.root]
   if not lag then lag_from[tk] = nil
-  elseif hh and (hh.studio or hh.songs[b.song]) then lag_from[tk] = lag_from[tk] or now; lag = now - lag_from[tk] >= hub.REACH_SETTLE end
+  elseif hh and (hh.studio or hh.songs[b.song]) then
+    if not hub.blind(okl and live or nil, sees, cfg.user) then lag, lag_from[tk] = false, nil
+    else lag_from[tk] = lag_from[tk] or now; lag = now - lag_from[tk] >= hub.REACH_SETTLE end
+  end
   lag_now[tk] = lag or nil
   list = hub.vouched(with_me(hub.with_room(list, okp and type(sts) == "table" and sts or {}, b.song), cfg, b.song, sees, lag))
   local lost, fast = {}, false

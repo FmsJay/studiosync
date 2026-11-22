@@ -403,8 +403,9 @@ function livex.mix_cands(sts, users, me, home, gs)
   for _, st in ipairs(sts or {}) do
     if type(st) == "table" and type(st.user) == "string" and on_link[st.user] then
       local h = type(st.hub) == "table" and st.hub or {}
-      -- (can: its extension mixes, and is new enough for the hub's jobs: lib/hub.lua EXT, as the song's hub election. rt-hubfix)
-      list[#list + 1] = { user = st.user, net = st.net, rtt = tonumber(st.lrtt), cpu = tonumber(st.cpu), can = st.lhub == true and require("hub").fits(h.ext), guest = gs[st.user] == true,
+      -- (can: its extension mixes, and is new enough for the hub's jobs: lib/hub.lua EXT, as the song's hub election. rt-hubfix. And its live
+      -- audio runs, by its own status word: lib/hub.lua NO_LA. rt-audio3)
+      list[#list + 1] = { user = st.user, net = st.net, rtt = tonumber(st.lrtt), cpu = tonumber(st.cpu), can = st.lhub == true and hubm.fits(h.ext) and not hubm.NO_LA[st.la], guest = gs[st.user] == true,
         off = h.off == true, lmix = st.lmix == true, home = st.user == home }
       scpu = scpu or st.scpu == true
     end
@@ -421,7 +422,8 @@ function livex.mix_host(cfg, b, hub, users, st, laS)
   sts = okp and type(sts) == "table" and sts or {}
   local okc, cpu = pcall(function() return require("hops").cpu_now() end)
   local okn, net = pcall(livex.net_now)
-  local me = { user = cfg.user, net = okn and net or nil, rtt = livex.lrtt(st, reaper.time_precise()), cpu = okc and cpu or nil, can = require("liveaudio").hub_fit(),
+  local me = { user = cfg.user, net = okn and net or nil, rtt = livex.lrtt(st, reaper.time_precise()), cpu = okc and cpu or nil,
+    can = require("liveaudio").hub_fit() and st.running ~= false, -- (and its engine runs: one that can't run live audio mixes for nobody. rt-audio3)
     off = require("hub").off(cfg.root), lmix = type(laS.hub) == "table" and laS.hub.serve == true, scpu = livex.scpu_here(reaper.EnumProjects(-1)),
     hub = require("hub").status_part(cfg, b) } -- (its ext and sees, as its status says them: who reaches whom, mix_cands)
   local list, scpu = livex.mix_cands(sts, users, me, hub, guests(cfg.root))

@@ -97,12 +97,24 @@ local function exe_path() return ((reaper.GetExePath() .. "/reaper.exe"):gsub("/
 
 -- Is the Windows firewall rule there? (Not Windows: true.) Asked in the background every minute, every 5 s for two minutes after setting it up.
 local fw_fast_until = -math.huge
+-- A "no" after a "yes" counts only once the rule hasn't been seen for FW_HOLD s (rt-audio3). The answer is netsh's text, read from a file its
+-- background run is still writing (lib/services.lua writes it in place), and a look that caught half of it found the rule's name but not yet
+-- its program, port or UDP twin: "missing" for that one look. On the desktop that stopped and started live audio 30 times in an evening
+-- ("Windows needs its firewall rule first", rt-r3: each a second of everyone's audio gone, and of everyone's mix when it was the hub) and
+-- started the direct link again without listening, which the others' link watch took for the hub dropping. A rule really removed is
+-- noticed FW_HOLD s later. mem: kept between calls (key -> when the rule was last seen); now: reaper.time_precise. Pure.
+direct.FW_HOLD = 150
+function direct.firewall_held(mem, key, ok, now)
+  if ok then mem[key] = now; return true end
+  return mem[key] ~= nil and now - mem[key] < direct.FW_HOLD
+end
+local fw_seen = {}
 -- proto: nil for the link's TCP rule; "UDP" for live audio's twin (lib/liveaudio.lua).
 function direct.firewall_ok(proto)
   if not band.WIN then return true end
   local every = reaper.time_precise() < fw_fast_until and 5 or 60
   local out = require("services").run_hidden("direct-fw", 'netsh advfirewall firewall show rule name="' .. direct.RULE .. '" verbose', every)
-  return direct.firewall_in(out, exe_path(), direct.port(), proto)
+  return direct.firewall_held(fw_seen, proto or "TCP", direct.firewall_in(out, exe_path(), direct.port(), proto), reaper.time_precise())
 end
 -- Adds the rule, through Windows' own UAC prompt (one, for removing an older rule and adding this one). -> true, or nil + why.
 -- The button: Health's direct-link row, while direct.firewall_ok() is false on Windows.
