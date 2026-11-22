@@ -5380,6 +5380,7 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
   mirror.map_tag(proj, ev) -- (the tempo map its seconds are on: whoever lands it elsewhere puts it on the same beat there. rt-converge)
   if o.kind == "track" and opts.local_mix then ev.state, ev.local_mix = mirror.band_faders(state, last and not last.gone and last.state), true end
   if o.kind == "track" and w.moved_from then ev.moved = w.moved_from[o.oid] end -- (the track it sat under before you moved it: mirror.moved_since)
+  if w.unasked[o.oid] then ev.unasked = true end -- (sent past an auto-claim whose claimer couldn't be asked: W.refuse, sync.receive's soft_ok)
   if ev.moved ~= nil then w.order_out = true end -- (a move of yours goes out: the studio's order list follows, after this look's sends)
   if o.kind == "item" and type(state) == "string" and state:find("BANDLANE", 1, true) then -- (a comp piece's source lane: mirror.comp_from)
     local others, t = {}, by_oid[o.track]
@@ -5525,7 +5526,12 @@ function W.refuse(w, o, rk, rev, evid, kord, last, name, ok_before)
   local asked, quiet = nil, nil
   if opts.ask then asked, quiet = opts.ask(ok_before and name or (last and last.name or ""), pos) end
   if asked == true then mirror.unsent[rk] = true; return end
-  if asked == false then return W.send(w, o, rk, rev, evid, kord, last, name) end -- (their auto-claim, and the link can't reach them to ask. rt-fix6a)
+  -- (their auto-claim, and the link can't reach them to ask: it goes out, rt-fix6a, and says so (`unasked`), so the computers the link does
+  -- reach land it at once too. Unsaid, each of them held it back for the claimer's auto-claim, a minute or two: rt-r3. rt-converge)
+  if asked == false then
+    w.unasked[o.oid] = true
+    return W.send(w, o, rk, rev, evid, kord, last, name)
+  end
   if type(asked) == "string" then return put_back(o, rev, evid, { name = ok_before and name or (last and last.name or ""), copy = true, text = asked, quiet = quiet }) end
   -- (someone's claim: what was done to it goes to them to accept. lib/suggest.lua)
   local to = propose(o, rev, who, ok_before and name or (last and last.name or ""), pos, name)
@@ -6046,7 +6052,8 @@ function W.gone(w)
         -- (the clock past what it deletes, and an owner's step, as W.send does: a restart behind the version's clock read as made apart, and
         -- a non-owner's later edit brought an owner's deletion back. Round 1 review, 0.59.45)
         mirror.hlc_seen(last.hlc)
-        local ev = { type = "obj", obj = o.kind, oid = g.oid, rev = mirror.next_rev(g.rev, mirror.owned(opts, me, name, last.pos, w.is_claimed)), base = g.rev or 0, base_ev = (g.evid or "") ~= "" and g.evid or nil, gone = true, track = o.track, name = name, pos = last.pos, act = w.act }
+        local unasked = asked_memo ~= nil and asked_memo[1] == false or nil -- (past an auto-claim that couldn't be asked: as W.send says it)
+        local ev = { type = "obj", obj = o.kind, oid = g.oid, rev = mirror.next_rev(g.rev, mirror.owned(opts, me, name, last.pos, w.is_claimed)), base = g.rev or 0, base_ev = (g.evid or "") ~= "" and g.evid or nil, gone = true, track = o.track, name = name, pos = last.pos, act = w.act, unasked = unasked }
         local id = sync.post(cfg, song, room, ev)
         remember(proj, g.oid, ev.rev, "", id, mirror.order_of(ev)) -- (with its order: a racing edit is settled alike everywhere)
         mirror.unsent[tostring(proj) .. g.oid] = nil
@@ -6418,7 +6425,7 @@ function mirror.watch(proj, cfg, song, room, opts)
   local suggest = require("suggest")
   local w = { band = band, sync = sync, proj = proj, cfg = cfg, song = song, room = room, opts = opts, me = me, room_dir = room_dir, media = media,
     objs = objs, by_oid = by_oid, sent = 0, back = 0, suggest = suggest, kept_back = {}, holds = mirror.holds[tostring(proj)] or {}, credit = {},
-    back_tracks = {}, held_tracks = {}, clean = {} }
+    back_tracks = {}, held_tracks = {}, clean = {}, unasked = {} }
   w.edited = mirror.user_edited(pk, opts.edited_at, now, reaper.Undo_CanUndo2 and reaper.Undo_CanUndo2(proj) or nil) -- (auto-claims: rt-fix6a)
   w.pending = function() -- (how many of the band's changes wait here: once a look)
     if w.n_pending == nil then w.n_pending = sync.pending_events(proj, cfg, song, room) end

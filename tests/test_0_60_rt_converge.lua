@@ -1224,4 +1224,47 @@ do
   print("rt-converge 24: a note the claimer moved stays theirs through your own change to it")
 end
 
+-- ---- 25. an edit sent past an auto-claim whose claimer the link can't reach lands at once on the others too (rt-r3: 60-120 s) -----------------
+do
+  local S = studio("Conv25", "open")
+  local A, B = S.computer("James"), S.computer("Bee")
+  S.edit(A, function(F) F.add_item(F.add_track("Keys"), midi(1, 2)) end)
+  S.recv(B)
+  local oid = S.track(A, "Keys").items[1].ext.band_oid
+  local first = S.events(function(v) return v.oid == oid end)[1]
+  -- Cee, whom the link doesn't reach, moved the item a moment ago: her auto-claim is on Keys
+  T = T + sync.AUTO_IDLE + 120
+  files[S.dir .. "/claims/Cee.json"] = { user = "Cee", time = iso(T), tracks = { "Keys" }, since = { ["tracks:keys"] = iso(T) }, auto = { ["tracks:keys"] = iso(T) } }
+  local cees = band.json_decode(band.json_encode(first))
+  cees.id, cees.rev, cees.base, cees.base_ev, cees.hlc, cees.user, cees.time = "Cee-20270115-130000Z-00001-0025", first.rev + 1, first.rev, first.id, math.floor(T * 1000), "Cee", iso(T)
+  cees.state, cees.hash, cees.pos = first.state:gsub("POSITION [^\n]+", "POSITION 3"), nil, 3
+  files[S.dir .. "/events/" .. cees.id .. ".json"] = cees
+  T = T + 5
+  S.recv(A); S.recv(B)
+  local function pos_of(c) return num(S.track(c, "Keys").items[1].text, "POSITION") end
+  assert(pos_of(A) == 3 and pos_of(B) == 3, "Cee's move on both (" .. pos_of(A) .. " / " .. pos_of(B) .. ")")
+  here_now = { James = true, Bee = true, Cee = true }
+  claimask.reachable = function(_, _, u) if u == "Cee" then return false end return nil end
+  logged = {}
+  T = T + 2
+  S.edit(A, function(F) local it = S.track(A, "Keys").items[1]; F.set_text(it, (it.text:gsub("POSITION [^\n]+", "POSITION 5"))) end)
+  assert(told("the direct link can't reach them to ask"), "James's move went out past Cee's auto-claim, and says why (rt-fix6a)")
+  local sent = S.events(function(v) return v.oid == oid and v.user == "James" and v.rev > cees.rev end)[1]
+  assert(sent and sent.unasked == true, "the change says its sender couldn't ask")
+  S.recv(B)
+  assert(pos_of(B) == 5, "and it lands on Bee's at once, as it went out (was: held back a minute for Cee's auto-claim): " .. pos_of(B))
+  -- a lasting claim of Cee's still holds on Bee's, whatever a change says
+  files[S.dir .. "/claims/Cee.json"] = { user = "Cee", time = iso(T), tracks = { "Keys" }, since = { ["tracks:keys"] = iso(T - 60) } }
+  local forged = band.json_decode(band.json_encode(sent))
+  forged.id, forged.rev, forged.base, forged.base_ev, forged.hlc, forged.time = "James-20270115-130100Z-00009-0025", sent.rev + 1, sent.rev, sent.id, sent.hlc + 9000, iso(T + 1)
+  forged.state, forged.hash, forged.pos = sent.state:gsub("POSITION [^\n]+", "POSITION 7"), nil, 7
+  files[S.dir .. "/events/" .. forged.id .. ".json"] = forged
+  T = T + 2
+  S.recv(B, true)
+  assert(pos_of(B) == 5, "a change marked unasked doesn't pass a claim made on purpose: " .. pos_of(B))
+  claimask.reachable = function() return nil end
+  here_now = {}
+  print("rt-converge 25: a change sent past an unreachable auto-claimer lands at once on the computers the link reaches")
+end
+
 print("ok rt-converge")

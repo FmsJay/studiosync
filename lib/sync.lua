@@ -1942,6 +1942,11 @@ function sync.receive(proj, cfg, song, room, can)
     local m = require("mirror")
     local who = sync.soft and sync.soft.room == room and sync.soft.fn(ev.name or "", ev.pos, ev.user)
     if not who then return false end
+    -- (its sender couldn't ask the claimer: the link doesn't reach them, and an auto-claim doesn't hold then (claimask.unreachable). It went
+    -- out saying so, and lands here as it went out there: held back for the auto-claim, the computers the link does reach got it a minute
+    -- or two after the sender said "your edit went out" (rt-r3). A sender's word, like every claim check: a lasting claim still refuses,
+    -- and a refused change lands after its minute anyway. rt-converge)
+    if ev.unasked == true then return true end
     -- (an Undo or Redo of the sender's own change: what it's built on is theirs, so nothing of the claimer's is in it. Their sends it as the edit
     -- went, mirror.revert; a deletion among them, which isn't something to merge. rt-edits)
     if (ev.undoes or ev.redoes) and ev.base_ev then
