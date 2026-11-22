@@ -585,6 +585,7 @@ end
 -- would look alike, so a file is trusted from cache only once it was read CLAIMS_SETTLE s after its time. The listing is band.listing's
 -- (a fraction of a second, longer while the folder's time stands still). The tables are shared: never change them. (James, rt)
 sync.CLAIMS_SETTLE = 60
+sync.track_claims = {} -- "<song>/<room>" -> lower track name -> { user, time, name, auto }, as of the last sync.authority for that room
 local claims_cache = {} -- dir -> f -> { key, c, settled }
 function sync.claims_files(dir)
   local stat = reaper and reaper.JS_File_Stat
@@ -716,6 +717,7 @@ function sync.authority(cfg, song, room, s)
   local granted = mode == "admins" and require("grants").list(cfg, song, room) or {} -- (Admins only: who an admin let edit in this room)
   sync.owner_of = owner -- for messages ("... is James's to change")
   sync.is_claimed = claimed -- (sync.maker_may)
+  sync.track_claims[song .. "/" .. room] = tracks -- (who holds each track name and since when, per room: sync.receive's rename judgement)
   return function(user, track, pos, take, drv, at) -- drv: the driver to judge by (an event's own time), else today's; at: that time, for claims
       if mode == "driver" then return user == (drv or driver) end
       if mode == "everyone" then return true end -- (Open: claims off)
@@ -1914,13 +1916,32 @@ function sync.receive(proj, cfg, song, room, can)
   -- (a track change that renames the track here is judged by the name it has here too, which is the name its claim is on. By its new name
   -- nobody has claimed it, so only the sender judged a rename, and a StudioSync from before 0.59.49.74 renamed a bandmate's claimed track
   -- for everyone. -> refused, and the name it has here when that's why. rt-edits, backlog 1)
+  -- (two holders: claims go by name, so once a track is renamed two names mean it, and two people can each hold it by one. Each computer
+  -- then judged the other's version "a rename of my claimed track" and answered it (set_back below), back and forth for good, an event file
+  -- each way every 2 s: the soak's bug 2. Two things end it, the same on every computer:
+  --   only a change that itself renames is a rename: its name against the version it was built on, not against the name here. A fader moved
+  --   by someone who hadn't the rename yet names the old name and renames nothing: it waits its minute if it looks refused, and merges.
+  --   of two claims on one track, by its old name and its new, the newer holds it, as for two claims on one name (sync.authority): a rename
+  --   by whoever's claim on the new name is the newer of the two stands, and isn't answered. rt-converge)
+  local function renames(ev) -- -> false when the version it was built on has the same name; true when another, or it can't be read (as before)
+    local m = require("mirror")
+    local from = type(ev.base_ev) == "string" and m.event_file(sync.room_dir(cfg, song, room), ev.base_ev)
+    if not (from and type(from.name) == "string") then return true end
+    return from.name:lower() ~= tostring(ev.name or ""):lower()
+  end
+  local function rename_stands(ev, old)
+    local tc = sync.track_claims[song .. "/" .. room] or {}
+    local theirs, held = tc[(base_name(tostring(ev.name or "")) or ""):lower()], tc[(base_name(old) or ""):lower()]
+    if not (theirs and held and theirs.user == ev.user and held.user ~= ev.user) then return false end
+    return theirs.time > held.time or (theirs.time == held.time and theirs.user > held.user)
+  end
   local function refused(ev)
     if ev.type == "obj" and ev.obj == "track" and not ev.gone and not ev.alone and ev.user ~= cfg.user then
       local tr = require("mirror").find(proj, "track", ev.oid)
       local old = tr and select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)) or ""
-      if old ~= "" and old:lower() ~= tostring(ev.name or ""):lower()
+      if old ~= "" and old:lower() ~= tostring(ev.name or ""):lower() and not rename_stands(ev, old)
           and not sync.obj_allowed(setmetatable({ name = old }, { __index = ev }), can, driver_at(ev.time)) then
-        return true, old
+        return true, renames(ev) and old or nil -- (the name it has here only for a rename: what set_back answers)
       end
     end
     return not (sync.ANYONE[ev.type] or ev.alone or (ev.type == "obj" and (sync.obj_allowed(ev, can, driver_at(ev.time)) or soft_ok(ev)))
@@ -1960,12 +1981,12 @@ function sync.receive(proj, cfg, song, room, can)
     if ev.obj ~= "track" or ev.gone or latest[ev.oid] ~= ev or sync.loading[tostring(proj)] or band.age(ev.time) > sync.RENAME_BACK then return false end
     local no, old = refused(ev)
     if not (no and old and can(cfg.user, old, ev.pos)) then return false end
-    require("mirror").set_back(proj, ev, string.format("%s has claimed %s: %s's rename to %s is put back (their StudioSync is older and didn't ask first)",
+    require("mirror").set_back(proj, ev, string.format("%s has claimed %s: %s's rename to %s is put back (it crossed with the claim, or their StudioSync is older and didn't ask first)",
       cfg.user, old, tostring(ev.user), tostring(ev.name)))
     setext(proj, sync.APPLIED, ev.id, "1")
     stamp(proj, ev)
-    band.log(string.format("%s renamed %s, which you've claimed, to %s, from an older StudioSync that doesn't ask first: the name is put back for "
-      .. "everyone. Rename it yourself if you want the new name", tostring(ev.user), old, tostring(ev.name)))
+    band.log(string.format("%s renamed %s, which you've claimed, to %s, without asking (the rename crossed with your claim, or their StudioSync is "
+      .. "older): the name is put back for everyone. Rename it yourself if you want the new name", tostring(ev.user), old, tostring(ev.name)))
     return true
   end
   for _, ev in ipairs(pending) do

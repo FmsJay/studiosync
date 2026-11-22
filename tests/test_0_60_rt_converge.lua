@@ -253,4 +253,43 @@ do
   print("rt-converge 3: a rename doesn't move its track; a move does")
 end
 
+-- ---- 5. two holders of one track don't answer each other's rename for ever (the soak's bug 2) ------------------------------------------------
+do
+  local S = studio("Conv5", "open")
+  local A, C = S.computer("James"), S.computer("Cee")
+  here_now = { James = true, Cee = true }
+  S.edit(A, function(F) F.add_track("Gtr"); F.add_track("Keys") end)
+  S.recv(C)
+  T = T + sync.AUTO_IDLE + 120 -- (sharing the song is nobody's work in progress any more)
+  local seen = {}
+  for p in pairs(files) do seen[p] = true end
+  local function new_events(c)
+    local out = {}
+    for p, v in pairs(files) do if not seen[p] and p:find(S.dir .. "/events/", 1, true) and type(v) == "table" then seen[p] = true; out[#out + 1] = v end end
+    return out
+  end
+  -- James renames Gtr; Cee, who hasn't the rename yet, turns its fader down in the same second: each auto-claims the track, by another name
+  S.edit(A, function(F) reaper.GetSetMediaTrackInfo_String(S.track(A, "Gtr"), "P_NAME", "T180", true) end)
+  S.edit(C, function(F) reaper.SetMediaTrackInfo_Value(S.track(C, "Gtr"), "D_VOL", 0.25) end)
+  local w = select(2, sync.authority(A.cfg, S.song, "main", S.sess))
+  assert(w.tracks.t180 and w.tracks.t180.user == "James" and w.tracks.gtr and w.tracks.gtr.user == "Cee", "two holders of one track: James by T180, Cee by Gtr")
+  new_events()
+  logged = {}
+  for round = 1, 6 do
+    S.recv(A); S.recv(C)
+    T = T + 61 -- (a refused change's minute)
+    for _, c in ipairs({ A, C }) do c.F.clock = c.F.clock + 61 end
+  end
+  local sent = new_events()
+  assert(#sent <= 2, "the two computers settle it in a round, not by answering each other for good (" .. #sent .. " more changes went out)")
+  assert(S.track(A, "T180") and S.track(C, "T180") or S.track(A, "Gtr") and S.track(C, "Gtr"), "one name on both (" .. S.names(A) .. " / " .. S.names(C) .. ")")
+  local ta, tc = S.track(A, "T180") or S.track(A, "Gtr"), S.track(C, "T180") or S.track(C, "Gtr")
+  S.as(A); local va = reaper.GetMediaTrackInfo_Value(ta, "D_VOL")
+  S.as(C); local vc = reaper.GetMediaTrackInfo_Value(tc, "D_VOL")
+  assert(va == vc, "and one fader (" .. va .. " / " .. vc .. ")")
+  assert(S.track(A, "T180") and va == 0.25, "James's rename and Cee's fader both: her change renamed nothing, so it's merged in (" .. S.names(A) .. ", " .. va .. ")")
+  assert(not told("renamed T180, which you've claimed"), "and James isn't told Cee renamed his track, nor answers her: " .. (told("renamed T180") or ""))
+  print("rt-converge 5: a rename and an edit that cross, each holder by another name: settled, no rename war")
+end
+
 print("ok rt-converge")
