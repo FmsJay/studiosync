@@ -253,6 +253,40 @@ do
   print("rt-converge 3: a rename doesn't move its track; a move does")
 end
 
+-- ---- 4. a returning track's items come back on every computer (the soak's bug 4) ----------------------------------------------------------------
+do
+  local S = studio("Conv4", "everyone")
+  local A, B, C = S.computer("James"), S.computer("Bee"), S.computer("Cee")
+  S.edit(A, function(F) F.add_track("Bass"); F.add_track("Keys") end)
+  S.recv(B); S.recv(C)
+  -- Bee records a take on Bass (nothing else is on it: no other change is skipped while the track is gone); it reaches Cee, not James, who
+  -- deletes Bass that moment
+  S.edit(B, function(F) F.add_item(S.track(B, "Bass"), midi(5, 2)) end)
+  S.recv(C)
+  assert(S.items(C, "Bass") == 1, "Bee's take is on Cee's")
+  local seen = {}
+  for p in pairs(files) do seen[p] = true end
+  S.edit(A, function(F) reaper.DeleteTrack(S.track(A, "Bass")) end)
+  local gone
+  for p, v in pairs(files) do if not seen[p] and type(v) == "table" and v.obj == "track" and v.gone then gone = v end end
+  assert(gone, "James's deletion of Bass went out")
+  S.recv(B); S.recv(C); S.recv(A)
+  assert(not S.track(A, "Bass") and not S.track(B, "Bass") and not S.track(C, "Bass"), "Bass is gone everywhere")
+  assert(S.track(B, "Bass (yours, not sent)") and S.items(B, "Bass (yours, not sent)") == 1, "Bee's own fresh take is kept on a track of Bee's own, as before")
+  -- the deletion is taken back (an Undo's or a Restore's version of the track, built on the deletion)
+  local first = S.events(function(v) return v.oid == gone.oid and not v.gone end)[1]
+  local back = band.json_decode(band.json_encode(first))
+  back.id, back.rev, back.base, back.base_ev, back.hlc, back.user = "James-20270115-080000Z-00099-0099", gone.rev + 1, gone.rev, gone.id, gone.hlc + 5, "James"
+  files[S.dir .. "/events/" .. back.id .. ".json"] = back
+  for _, c in ipairs({ A, B, C }) do S.recv(c) end
+  for _, c in ipairs({ A, B, C }) do S.recv(c) end
+  assert(S.track(A, "Bass") and S.track(B, "Bass") and S.track(C, "Bass"), "Bass is back everywhere")
+  assert(S.items(A, "Bass") == 1, "on James's, with Bee's take, whose change he had skipped while the track was gone (as before): " .. S.items(A, "Bass"))
+  assert(S.items(C, "Bass") == 1, "on Cee's too, where the take had landed before the deletion and went with the track (was: gone for good): " .. S.items(C, "Bass"))
+  assert(S.items(B, "Bass") == 1, "and on Bee's own, who recorded it (was: only on the track of Bee's own): " .. S.items(B, "Bass"))
+  print("rt-converge 4: a track that comes back brings its items back on every computer")
+end
+
 -- ---- 5. two holders of one track don't answer each other's rename for ever (the soak's bug 2) ------------------------------------------------
 do
   local S = studio("Conv5", "open")

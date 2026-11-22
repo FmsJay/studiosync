@@ -3825,6 +3825,12 @@ function mirror.apply(proj, ev, media_dir, local_mix)
       local colours = mirror.track_colours(proj)
       reaper.DeleteTrack(p)
       mirror.hold_colours(proj, colours)
+      -- (should the track come back (the deletion undone, a Restore), what sat on it is looked over again, on every computer: sync.receive
+      -- heals when a track noted here exists again. Only a computer that had skipped a change while the track was gone noted it, so a
+      -- bandmate's fresh take came back there and nowhere else, not even on the computer that recorded it: the soak's bug 4. rt-converge)
+      local o = mirror.orphaned[tostring(proj)] or {}
+      o[oid] = true
+      mirror.orphaned[tostring(proj)] = o
     end
     return true, ""
   end
@@ -7101,7 +7107,9 @@ function mirror.heal(proj, room_dir, local_mix)
     local old_merge = ev ~= plain and kev == plain.id and mirror.split_merge(ev.id) ~= nil
       and os.time() - (select(2, id_span(ev.id)) or math.huge) > mirror.MERGE_NEWS_SECS
     -- (and a part recorded gone here whose newest change isn't a deletion, its track here: a track that came back bare. Round 1 review, 0.59.45)
-    local bare = kev == ev.id and kh == "" and not ev.gone and mirror.PART[ev.obj] and ev.track and mirror.find(proj, "track", ev.track)
+    -- (and an item recorded gone with its track (W.gone: "the band deleted its track, and the item went with it"), the track back and the
+    -- item's own newest change still not a deletion: it comes back with the track, as it does where its change was skipped. rt-converge)
+    local bare = kev == ev.id and kh == "" and not ev.gone and (mirror.PART[ev.obj] or ev.obj == "item") and ev.track and mirror.find(proj, "track", ev.track)
     -- (never back to an older version: what this computer holds is newer than the newest read, and wasn't among what was read, so nothing
     -- here weighed it: it came over the direct link and its copies aren't readable now, or its file is half-synced. It's judged once it reads.
     -- One that was read and still isn't the settled one is a race the settled one won, a deletion over an edit: that lands. F5, rt-undo)
