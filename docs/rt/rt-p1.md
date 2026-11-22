@@ -276,3 +276,5 @@ unless said). Claims mode ("open"). ReaEQ + ReaComp added to XT Keys C for P1-1.
 - P1-9 (no "Look over the room" action found by that name), P1-10, P1-11, P1-12, P1-13 (panel/web flows), P1-15 (no heavy song): not run.
 
 - rt-r3 (2026-11-22 UTC, 0.59.49.95 + extension 1.0.37): the rt-fix6a re-checks (P1-8, round 5 C, no claim without an edit, claim asks off the link) are written up in `docs/rt/rt-fix6a.md`, "REAPER re-check results (rt-r3 ...)".
+
+- rt-r4 (2026-11-22 UTC, 0.59.49.96 + extension 1.0.37): P1-1, P1-4, P1-5, P1-6's Ctrl+Z and P1-8's second part re-run: all pass (P1-5 still asks where the claimer added the plug-ins, as designed); results in `docs/rt/rt-converge.md`, "REAPER re-check results (rt-r4 ...)".

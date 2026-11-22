@@ -474,3 +474,79 @@ lowest, because nothing here was caused by it.
   one puts that sender's own returning track somewhere else. `unasked` (true): lands a change past someone's **auto**-claim at once
   instead of after the minute it would land anyway; a claim made on purpose doesn't give way to it. No new power, noted for the pass that
   decides whether claims should bind (Recommendation 4).
+
+## REAPER re-check results (rt-r4, 2026-11-22 12:18-13:32 UTC, StudioSync 0.59.49.96 from 904bffe + extension 1.0.37, Deafen 1, no sound tests)
+
+Desktop (d), laptop (l), LinuxBox (x); LinuxBox2 (x2) resumed 13:24-13:32 for checks 6, 7 and 11, then suspended again. The Mac was offline.
+Edits by script through each REAPER's dev eval hook, in undo blocks as REAPER's own actions name them; paired edits at one moment on the shared
+link clock (`direct.shared_now`, each pair ran 3-60 ms apart). Claims mode ("open") unless said. Where a check pauses "the laptop's" link and
+Syncthing, LinuxBox stood in (Live sync stopped and its Syncthing paused through its REST API): the desktop's and laptop's Syncthing were not
+touched. Cross Test was put back after each check and compared on all computers (`cmp.lua`: tracks, items, notes, envelopes, markers, tempo):
+equal to the starting state each time, the laptop included up to the soak. Probes: `<scratchpad>/rt-r4/` (`tm.sh` + `c/*.lua`, `cmp3.sh`,
+`soak_body.lua`).
+
+**The laptop's REAPER is blocked since 13:13:10 UTC (left that way, see the soak).** A modal StudioSync box, "Undo: changed an item on XT
+Keys C at 7.38 s? It goes to everyone. James changed it after that ...", Yes/No, opened by the soak driver's StudioSync Undo (`undo.step`
+asks with `reaper.MB` when a bandmate changed the same thing since). Its Live sync and dev hook are stopped behind it. Answer **No** there (it
+undoes nothing); its project then catches up. The laptop may still hold the soak's first edit of its own unsent (one op before the box):
+compare the three after it's answered and put back if anything differs.
+
+| # | Check | Result | Evidence |
+| --- | --- | --- | --- |
+| 1 | Cross-map landing against REAPER's own move | **pass** | Project timebase 1 (beats: position, length, rate). XT Rec A's lane-0 take given fades 0.5/0.7 s and snap offset 0.3, synced. LinuxBox offline; the desktop set the first tempo 130 -> 100 (REAPER moved its items: that take to 4.799979, fades 0.65/0.91, snap 0.39, rate 0.769231); LinuxBox, still on 130, moved that take and XT Keys C's item one beat (to 4.153830 and 7.846154); back online 12:21:41. All three, to the microsecond: take pos 5.399979 len 7.099733 fades 0.650/0.910 snap 0.390 rate 0.769231, XT Keys C 10.200000 len 4.799600 (= 4.153830 x 1.3, 7.846154 x 1.3). The desktop's copy was placed by `mirror.retime` ("LinuxBox changed an item on XT Rec A as you did, at the same time: both changes are kept"), LinuxBox's by REAPER: fades, snap offset and rate agree with REAPER's own. |
+| 2 | Bug 1 again | **pass** | Desktop hand-claimed XT Drums A, set 130 -> 120 bpm; 12 s later (the tempo had landed) the laptop moved the item +0.5 s: "asked James to release XT Drums A ..." -> 30 s -> "Not sent ... put back"; all three 2.166667. No silent local move. |
+| 3 | Bug 5 again | **pass** | Desktop hand-claimed XT Keys C. The laptop lengthened the note (0-960 -> 0-1440) and the desktop set 130 -> 100 bpm 0.33 s later (12:31:14). The laptop asked, no answer, "Not sent ... put back" at 06:31:43 CT; all three `pos=9.6 len=4.799600 notes 48@0-960` (the length on the new map). Also run with the tempo 12 s before the edit: the same. |
+| 4 | Rename war | **no war; the rename is lost (bug A)** | The desktop renamed XT Drums R4 -> R5 and the laptop set that track's fader 0.5 at the same moment (12:35:15.020 / .017). One name everywhere within a second, no "which you've claimed" line, the log stops. But the name on all three, **the desktop included, is the old "XT Drums R4"**, with the laptop's 0.5: the desktop's rename never went out ("James-Laptop: changed a track on XT Drums R4", then nothing) and its log says nothing about its own edit. Again with R4 -> R6 / 0.7 at 12:37:30: the same. A rename alone goes out at once (12:33:33). |
+| 5 | P1-4, P1-1, P1-6's Ctrl+Z | **pass** | See P1-1, P1-4, P1-6 below. |
+| 6 | LinuxBox2's lanes | **pass** | LinuxBox2 took 0.59.49.96 by Syncthing within 30 s of resuming; its REAPER restarted (13:27:09), Cross Test opened, Live sync on .96. Untouched until 13:29:50: no change went out from it, XT Rec A's lane names `1..8` on d, x, x2. Lane 0 renamed "1 r4" there by hand (13:30:14): "claimed XT Rec A ... 1 change(s) went", on d and x within 12 s. |
+| 7 | A late joiner | **partial pass** | LinuxBox2 (suspended since 11-21 21:58) joined after the soak and its put-back: "caught up on 14 changes ..." and 57 changes landed; equal to the desktop and LinuxBox within 3 minutes, track order included; no order heal line on d or x. Health not read; the laptop was blocked, so "all four" wasn't possible. |
+| 8 | Undo | **pass, 4 of 5 parts** | (a) the desktop deleted the laptop's new item, Undo (REAPER's), Redo: back on all three, then gone on all three. (b) The desktop moved the laptop's item, the laptop deleted it, the desktop's Undo: "0 change(s) brought back ... (1 deleted by a bandmate since, left deleted)". (d) Marker "R4 mark" renamed, the laptop set 130 -> 100, the desktop's Undo: "R4 mark" at 7.8 s (where it sits now) on all three, one marker, 100 bpm kept; the log's words "now 130 bpm" are wrong (the tempo stayed 100). (e) "R4 Mine" added at the top, the laptop added "R4 Theirs" above it, Undo then Redo: Theirs, Mine, ... on all three. (c) Undo of a marker made a second after a bandmate's Restore: **not run** (Restore needs the panel's History page; no scripted Restore). |
+| 9 | One tempo marker to a place | **one marker, but the first tempo** | `AddTempoTimeSigMarker` at 10 s with 120, then at 10 s with 110: one marker at 10 s, **120** (both calls returned true). So REAPER keeps one marker to a place, but a second insert there is ignored rather than changing it; the soak's stand-in "changes the marker that is there". The UI action (it opens a dialog) wasn't tried. |
+| 10 | A copied stand-in | **not run** | Needs a recorded take kept grey on one computer (Syncthing paused there) and a duplicate made meanwhile; the desktop's input is the work-call bus and no sound tests were allowed this round. |
+| 11 | rt-r3 again | **pass** | P1-8's second part, the off-link auto-claim and bug 9: below. |
+| 12 | Seed 5028 | **shipped build: not reproduced; the patch: not run** | The laptop turned XT Drums A's ReaComp ratio to 0.5 with no undo point (as a control surface) and deleted the project's first track (XT Keys C) in the same script call (13:02:37): "3 change(s) went to the others", the knob 0.500 on all three. The one-line W.order change was not tried: `_tools/studiosync` is in the synced studio folder, so patching it on the laptop would reach every computer. (REAPER's own Undo of that deletion also put the knob back to 0.400, on all three alike: REAPER's undo state, not StudioSync.) |
+
+**The P1 re-runs (rt-p1.md) and rt-r3's three.**
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| P1-1 (no 61 s, no lost laptop edit) | **pass** | ReaEQ + ReaComp added to XT Keys C by LinuxBox. Desktop EQ band 2 gain 0.7, laptop ReaComp ratio 0.2, at shared ...876.0 (10 and 13 ms late): all three 0.700 / 0.200; both "... as you did, at the same time: both changes are kept"; the laptop's change on the desktop in the same second (05:51:16), not 61 s. |
+| P1-4 (plug-in race, no silent loss) | **pass** | Desktop moved ReaComp to the top while the laptop set EQ gain 0.8 (both with undo points): ReaComp first with 0.800 on all three, "both changes are kept". With the knob turned raw (no undo point, rt-r2's cause) against the desktop moving ReaComp back: the laptop's chain was held for a look and its change asked ("James is editing the plug-ins on XT Keys C too: both changes go in ..." then "asked James to release" in the same second), Not sent after 30 s with the chain saved as an RfxChain: no silent loss, but the two lines contradict each other (rt-r1's pattern, here for a knob found by a later look). |
+| P1-5 | **pass (chain added by a third computer); asked as designed when the claimer added it** | Desktop auto-claim on XT Keys C from its EQ edits; the laptop's ReaComp change went out with no ask; the laptop's change of EQ band 2 asked ("James-Laptop wants to edit XT Keys C") and was put back after 30 s. With ReaDelay + ReaComp added to XT Drums A by the desktop a minute before: the laptop's ReaComp change asked ("asked James to release XT Drums A"), as rt-converge row 18 expects. Released by the desktop inside the 30 s, the edit then went out. |
+| P1-6 Ctrl+Z after a track delete | **pass** | XT Gtr (one MIDI item, ReaEQ) deleted on the desktop at ...367.06, renamed on the laptop at ...367.14: "James also changed something on XT Gtr at the same moment as you: theirs is in"; gone on all three for a minute. The desktop's Ctrl+Z (REAPER's Undo of "Remove tracks"): XT Gtr back at #3 with its item, note and ReaEQ on all three in under 10 s; no "opened without its last save", no "mirror sync skipped", no error line in any log. Left: the laptop kept its auto-claim on "XT Gtr renamed" (a name nothing has) until released by hand, as in rt-r2. |
+| P1-8 second part | **pass** | Desktop moved XT Keys C's note a beat (48@0 -> 48@960, auto-claim), the laptop transposed it +2 0.4 s later: "both changes go in", all three `50@960-1920`. The laptop's second move of that note: "asked James to release XT Keys C" -> put back after 30 s. Another transposition then: went out with no ask (`52@960-1920` on all three). |
+| fix6a off-link auto-claim timing (rt-r3 8) | **pass for LinuxBox; the laptop not run** | LinuxBox2 (no Tailscale) auto-claimed XT Rec A by renaming a lane; the desktop's lane rename at 13:30:40: "LinuxBox2 auto-claimed XT Rec A, but the direct link can't reach them to ask ...: your edit went out"; LinuxBox applied it in the same second (13:30:40), LinuxBox2 at 13:30:42. (rt-r3: 60 s and 2 min.) The laptop was blocked. |
+| rt-r3 bug 9 | **pass** | The desktop made "XT R4 del" (auto-claimed), LinuxBox offline, the desktop deleted it ("let go of your claim on XT R4 del: you deleted it": Who controls empty at once), LinuxBox moved its item, then came back: its move went out, the deletion stood, no "(yours, not sent)" track, no Release/Keep on the desktop. Also "let go of your claim on R4 Mine / R4 Theirs: you deleted it" in check 8 (e). |
+
+**Mini soak (13:13:00-13:18:14 UTC).** A driver in each REAPER (`soak_body.lua`, seeds 401/402/403): every 2-6 s one of move (the three
+studio items or a scratch item), rename a studio track (`name~<who><n>`, or back), fader, tempo (110/120/130/140), add a scratch track at a
+random place, delete a scratch track, add or delete a scratch MIDI item, StudioSync Undo or Redo (the Ctrl+Z script's logic). The desktop
+switched the room to Open ("everyone") at half time. 71 ops on the desktop, 78 on LinuxBox, **one on the laptop**: its first StudioSync Undo
+opened the modal box above at 13:13:10 and the laptop did nothing more. Then quiet. **Desktop and LinuxBox were identical at quiet + 90 s,
++ 180 s and + 270 s** (cmp.lua, the desktop's local "StudioSync live out" track aside): XT Keys C~x9 0.8, XT Drums A~x11 0.5, XT Rec A~d16
+0.9 with the envelope and all 8 takes moved to 110 bpm alike, one scratch track, tempo 110, "Verse" 3.2727-21.8182. Two claim holders were
+left on one track (James and LinuxBox both auto on "XT Rec A~d16"), settled by "the newer holds" as designed. No error line in either log.
+The laptop's comparison is still owed (it froze 10 s in). Put back from the desktop (13:23:13: scratch tracks deleted, names, faders,
+positions, tempo 130, room back to Claims): desktop = LinuxBox = LinuxBox2 = the starting state.
+
+**Bugs found.**
+
+- **A. A rename made at the same moment as a bandmate's change of that track is lost on the renamer's own computer, silently** (check 4, two of
+  two). The laptop's fader change, built on the old name, landed over the desktop's rename before a look had sent it; the desktop's track
+  went back to the old name, nothing went out and nothing was said. The P1-4 class (an incoming version applied over an edit no look has
+  seen yet), for a track's settings: `sync.seen_mine` should hold the receive while REAPER's change count has moved since the last look, so
+  the rename was either not seen as moving it in time or the incoming track version was applied whole instead of merged by setting.
+- **B. A tempo change made after a bandmate's tempo change auto-claims XT Rec A** (three of three; never when the previous tempo change was
+  this computer's own, two of two). XT Rec A is the track with automation (a volume envelope) and eight takes on fixed lanes; XT Keys C and
+  XT Drums A aren't claimed. `mirror.lua` ~5455: `tempo_only` (`mirror.only_map_moved`) is false for one of XT Rec A's objects whose band
+  version was made by a bandmate under another map. Round 10's "tempo changes claim nothing" holds only for the computer that made the last one.
+- **C. (rig, not the product) StudioSync Undo's "a bandmate changed it since" box is modal**, so a scripted Undo blocks that REAPER until it's
+  answered. A soak driver should stub `reaper.MB` in its own Lua state around `undo.step` (answer No) instead of calling it bare.
+- Small: Undo of a marker rename says "now 130 bpm" though the bandmate's 100 bpm stays; the tempo-maker's own re-sent items are reported
+  as "LinuxBox changed the same thing as you on an item on XT Keys C: theirs stands" on the computer that only changed the tempo (check 1);
+  a renamer's auto-claim on a deleted track outlives the track's return; a raw knob found by a later look gets "both changes go in" and
+  "asked ... to release" in the same second (P1-4).
+
+**Left for the next re-check.** Answer the laptop's box and compare the three; the laptop's part of the soak (re-run with the MB stub); 8 (c)
+with the panel's Restore; 10 (a copied stand-in, needs a take); 12's patched build (only in a non-synced copy); 7's Health on all four;
+P1-9..P1-16 as listed in rt-p1.md.
